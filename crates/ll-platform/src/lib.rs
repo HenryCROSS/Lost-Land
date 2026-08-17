@@ -1,0 +1,39 @@
+//! 平台层：窗口、输入、日志与并行任务池。
+//!
+//! 本层封装一切与操作系统打交道的部分，使上层完全不感知平台差异。
+//! 它**不含任何游戏逻辑**——判断某个类型该放这里还是放上层，标准是
+//! 「换一个操作系统时它是否需要改」。
+
+#![forbid(unsafe_code)]
+#![warn(missing_docs)]
+
+pub mod input;
+pub mod jobs;
+pub mod logging;
+pub mod window;
+
+use core::fmt;
+
+/// 平台层的错误。
+#[derive(Debug)]
+pub enum PlatformError {
+    /// 日志系统重复初始化。
+    LoggingAlreadyInitialized,
+    /// 窗口创建或事件循环失败，附带底层原因。
+    WindowCreation(String),
+}
+
+impl fmt::Display for PlatformError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            PlatformError::LoggingAlreadyInitialized => {
+                write!(f, "logging subsystem was already initialized")
+            }
+            PlatformError::WindowCreation(reason) => {
+                write!(f, "failed to create window: {reason}")
+            }
+        }
+    }
+}
+
+impl core::error::Error for PlatformError {}
