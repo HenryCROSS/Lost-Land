@@ -61,7 +61,8 @@ pub struct Pivot {
 pub struct Layer(pub u8);
 
 impl Layer {
-    /// 地形。恒在最底层，不参与 Y 排序。
+    /// 地形。恒在最底层——同层内部仍按 `foot_y` 比较，只是地形自身
+    /// 平铺不重叠，视觉上感知不到这层内部的排序差异。
     pub const TERRAIN: Layer = Layer(0);
     /// 装饰物（草丛、碎石等不参与遮挡逻辑但需要按 Y 排的物件）。
     pub const DECOR: Layer = Layer(1);
