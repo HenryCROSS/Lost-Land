@@ -1,0 +1,15 @@
+[package]
+name = "ll-world"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的世界层：世界状态、环面地形、视野、昼夜四季"
+
+[dependencies]
+ll-core = { path = "../ll-core" }
+serde = { version = "1", features = ["derive"] }
+tracing = "0.1"
+
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
