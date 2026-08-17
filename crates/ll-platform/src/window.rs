@@ -91,10 +91,12 @@ impl FrameId {
 ///
 /// 存在的理由：平台层不认识任何游戏概念，无从判断「玩家是否想退出」。
 /// 让 [`AppHandler::on_frame`] 把这个决定回传，退出就成了上层的显式意图，
-/// 而不是靠平台层猜某个按键的含义。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 而不是靠平台层猜某个按键的含义——退出可能来自 Esc、来自菜单里的
+/// 「退出游戏」、来自剧情结局，平台层无从判断，也不该判断。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FrameOutcome {
     /// 继续驱动下一帧。
+    #[default]
     Continue,
     /// 请求结束事件循环。
     Exit,
@@ -114,10 +116,17 @@ pub trait AppHandler {
     /// 窗口尺寸或缩放因子变化时调用，surface 必须据此重建。
     fn on_resize(&mut self, size: PhysicalSize<u32>);
 
-    /// 每帧调用一次。
-    fn on_frame(&mut self, frame: FrameId, input: &InputState);
+    /// 每帧调用一次。返回值告诉平台层是否应当退出。
+    ///
+    /// 让退出成为上层的**显式意图**，平台层不必去猜某个按键的含义——
+    /// 退出可能来自 Esc、来自菜单里的「退出游戏」、来自剧情结局，
+    /// 平台层无从判断，也不该判断。
+    fn on_frame(&mut self, frame: FrameId, input: &InputState) -> FrameOutcome;
 
     /// 退出前调用，用于保存与清理。
+    ///
+    /// 无论退出是由窗口关闭按钮触发还是由 [`FrameOutcome::Exit`] 触发，
+    /// 都**恰好调用一次**。
     fn on_exit(&mut self);
 }
 
@@ -251,12 +260,19 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                 self.last_frame_at = Some(now);
 
                 self.input.begin_frame(now, self.config.repeat);
-                self.handler.on_frame(self.frame, &self.input);
+                let outcome = self.handler.on_frame(self.frame, &self.input);
+                // 必须在逻辑处理之后清「刚按下」与「本帧重复触发」标志，
+                // 放在之前会让所有「刚按下」判定永远为假。
                 self.input.end_frame();
                 self.frame = self.frame.next();
 
-                if let Some(window) = &self.window {
-                    window.request_redraw();
+                match outcome {
+                    FrameOutcome::Exit => self.shutdown(event_loop),
+                    FrameOutcome::Continue => {
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
                 }
             }
             _ => {}
@@ -351,6 +367,16 @@ mod tests {
 
         // Assert
         assert_eq!(action, Some(GameKey::Cancel));
+    }
+
+    #[test]
+    fn 帧结果默认为继续而非退出() {
+        // 平台层不该在没有上层显式意图时主动退出。
+        // Arrange & Act
+        let outcome = FrameOutcome::default();
+
+        // Assert
+        assert_eq!(outcome, FrameOutcome::Continue);
     }
 
     #[test]

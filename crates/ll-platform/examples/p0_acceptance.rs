@@ -7,7 +7,7 @@
 //! 通过日志输出。这是刻意的：地基层的验收不该依赖尚不存在的上层。
 //!
 //! 运行：`cargo run -p ll-platform --example p0_acceptance`
-//! 操作：方向键或 WASD 移动光标，M 打印世界快照；关闭窗口退出。
+//! 操作：方向键或 WASD 移动光标，M 打印世界快照，Esc 或关闭窗口退出。
 
 use ll_core::hashing::StateHasher;
 use ll_core::rng::DetRng;
@@ -16,7 +16,7 @@ use ll_core::torus::{TorusPos, TorusSize};
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::jobs::JobPool;
 use ll_platform::logging::init_logging;
-use ll_platform::window::{AppHandler, FrameId, WindowConfig, run};
+use ll_platform::window::{AppHandler, FrameId, FrameOutcome, WindowConfig, run};
 use std::sync::Arc;
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
@@ -119,7 +119,11 @@ impl AppHandler for Demo {
         tracing::info!(width = size.width, height = size.height, "window resized");
     }
 
-    fn on_frame(&mut self, _frame: FrameId, input: &InputState) {
+    fn on_frame(&mut self, _frame: FrameId, input: &InputState) -> FrameOutcome {
+        if input.was_just_pressed(GameKey::Cancel) {
+            return FrameOutcome::Exit;
+        }
+
         // 方向键用 was_activated：首次按下立即走一格，长按则由输入层的
         // 自动重复驱动连续移动。Map 仍用 was_just_pressed——它是一次性
         // 动作，不该跟着长按连续触发。
@@ -138,6 +142,8 @@ impl AppHandler for Demo {
         if input.was_just_pressed(GameKey::Map) {
             self.snapshot();
         }
+
+        FrameOutcome::Continue
     }
 
     fn on_exit(&mut self) {
