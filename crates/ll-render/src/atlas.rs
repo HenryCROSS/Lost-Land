@@ -49,11 +49,20 @@ impl AtlasMetadata {
     /// 解析并校验图集元数据 JSON。
     ///
     /// 图集元数据来自第三方 mod，是外部不可信输入。`serde_json` 只保证
-    /// 结构合法，不保证语义合法，因此反序列化之后还要拒绝两类畸形
-    /// 输入：零尺寸的帧矩形（会生成退化的四边形，部分驱动上是未定义
-    /// 行为），以及重名条目（会让 [`Self::lookup`] 的结果取决于条目
-    /// 顺序，是 mod 冲突的常见来源）。校验失败一律返回
-    /// [`RenderError::AtlasMetadata`]，绝不 panic。
+    /// 结构合法，不保证语义合法，因此反序列化之后还要拒绝畸形输入：
+    ///
+    /// - 零尺寸的帧矩形（会生成退化的四边形，部分驱动上是未定义行为）。
+    /// - 零尺寸的占地格数（[`Footprint::tile_count`] 会静默返回 0，
+    ///   下游拿到「占 0 格」的实体不会报错，只会悄悄从世界里消失——
+    ///   这正是「外部输入只能返回错误、不能悄悄错」这条要求要挡的事）。
+    /// - 落在帧矩形之外的锚点（[`Pivot`] 描述的是帧内的一个像素，越界
+    ///   的锚点在批渲染阶段会算出指向图集之外的采样坐标）。
+    /// - 重名条目（会让 [`Self::lookup`] 的结果取决于条目顺序，是 mod
+    ///   冲突的常见来源）。
+    ///
+    /// 帧矩形是否超出图集图片的真实边界不在这里检查——`parse` 只看得到
+    /// 元数据，看不到图片，这项校验在 [`Atlas::load`] 解码出图片尺寸后
+    /// 进行。校验失败一律返回 [`RenderError::AtlasMetadata`]，绝不 panic。
     pub fn parse(json: &str) -> Result<AtlasMetadata, RenderError> {
         let metadata: AtlasMetadata = serde_json::from_str(json)
             .map_err(|error| RenderError::AtlasMetadata(error.to_string()))?;
@@ -64,6 +73,18 @@ impl AtlasMetadata {
                 return Err(RenderError::AtlasMetadata(format!(
                     "条目 '{}' 的帧矩形尺寸为零（{}x{}）",
                     entry.name, entry.rect.width, entry.rect.height
+                )));
+            }
+            if entry.footprint.width == 0 || entry.footprint.height == 0 {
+                return Err(RenderError::AtlasMetadata(format!(
+                    "条目 '{}' 的占地格数为零（{}x{}）",
+                    entry.name, entry.footprint.width, entry.footprint.height
+                )));
+            }
+            if !pivot_within_rect(entry.pivot, entry.rect) {
+                return Err(RenderError::AtlasMetadata(format!(
+                    "条目 '{}' 的锚点 ({}, {}) 落在帧矩形之外（帧尺寸 {}x{}）",
+                    entry.name, entry.pivot.x, entry.pivot.y, entry.rect.width, entry.rect.height
                 )));
             }
             if !seen_names.insert(entry.name.as_str()) {
@@ -84,10 +105,56 @@ impl AtlasMetadata {
     }
 }
 
+/// 锚点是否落在帧矩形范围内（含边界）。
+///
+/// 锚点允许恰好落在矩形右/下边缘（等于宽/高），因为像素坐标系里
+/// 「宽度为 W 的矩形」的有效横坐标是 `[0, W]`——`W` 本身是右边界，
+/// 不是越界。
+fn pivot_within_rect(pivot: Pivot, rect: FrameRect) -> bool {
+    pivot.x >= 0
+        && pivot.y >= 0
+        && (pivot.x as u32) <= rect.width as u32
+        && (pivot.y as u32) <= rect.height as u32
+}
+
+/// 校验图集条目的帧矩形是否都落在图片真实边界内。
+///
+/// 抽成不依赖 GPU 的自由函数，是为了不需要真实 [`GpuContext`] 就能单测
+/// 覆盖——校验只依赖解码出的图片尺寸，与 GPU 设备无关（同样的做法见
+/// [`crate::gpu::is_presentable`]）。
+///
+/// `rect.x`/`rect.width` 等字段都是 `u16`，先转 `u32` 再相加：若直接在
+/// `u16` 上相加，两个接近 `u16::MAX` 的畸形值会在加法本身就溢出，
+/// debug 下 panic、release 下静默环绕成一个看似合法的小矩形——那就是
+/// 「元数据看起来完全合法」这种最难定位的错误的来源。转到 `u32` 后，
+/// 两个 `u16` 之和的理论上限（约 13 万）远小于 `u32::MAX`，不会溢出。
+fn validate_entries_within_image(
+    entries: &[AtlasEntry],
+    image_width: u32,
+    image_height: u32,
+) -> Result<(), RenderError> {
+    for entry in entries {
+        let rect = entry.rect;
+        let right = rect.x as u32 + rect.width as u32;
+        let bottom = rect.y as u32 + rect.height as u32;
+        if right > image_width || bottom > image_height {
+            return Err(RenderError::AtlasMetadata(format!(
+                "条目 '{}' 的帧矩形超出图片边界：矩形右下角 ({right}, {bottom})，图片尺寸 {image_width}x{image_height}",
+                entry.name
+            )));
+        }
+    }
+    Ok(())
+}
+
 /// 已上传到 GPU 的图集纹理及其元数据。
+///
+/// 只持有 [`wgpu::TextureView`] 而非原始 [`wgpu::Texture`]：`Texture::create_view`
+/// 内部会克隆一份 `Texture` 句柄存进返回的 `TextureView`（wgpu 30 的实现如此），
+/// 因此 view 本身已经足以让底层 GPU 资源存活到 `Atlas` 被丢弃为止，不需要
+/// 额外持有一份原始句柄。
 pub struct Atlas {
     metadata: AtlasMetadata,
-    texture: wgpu::Texture,
     view: wgpu::TextureView,
     sampler: wgpu::Sampler,
 }
@@ -107,6 +174,12 @@ impl Atlas {
             .map_err(|error| RenderError::AtlasDecode(error.to_string()))?
             .to_rgba8();
         let (width, height) = decoded.dimensions();
+
+        // 元数据本身只描述矩形数字，看不到图片；只有在这里解码出真实
+        // 尺寸后，才能判断畸形或恶意的 mod 是否给出了越界矩形。不查这
+        // 一项的后果是花屏或贴图错乱——而且因为元数据本身「看起来完全
+        // 合法」，这类问题在批渲染阶段会极难定位。
+        validate_entries_within_image(&metadata.entries, width, height)?;
 
         let size = wgpu::Extent3d {
             width,
@@ -155,7 +228,6 @@ impl Atlas {
 
         Ok(Atlas {
             metadata,
-            texture,
             view,
             sampler,
         })
@@ -174,11 +246,6 @@ impl Atlas {
     /// 图集采样器，固定最近邻过滤。
     pub fn sampler(&self) -> &wgpu::Sampler {
         &self.sampler
-    }
-
-    /// 图集纹理本身，供需要底层句柄的高级用法（如生成 mipmap）使用。
-    pub fn texture(&self) -> &wgpu::Texture {
-        &self.texture
     }
 }
 
@@ -264,5 +331,102 @@ mod tests {
 
         // Assert
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn 占地格数为零的条目被拒绝() {
+        // tile_count 对零尺寸会静默返回 0，下游拿到的实体会悄悄从世界
+        // 里消失而不报错，正是「外部输入只能返回错误」这条要求要挡的事。
+        // Arrange
+        let broken = SAMPLE.replace("\"width\": 1,", "\"width\": 0,");
+
+        // Act
+        let result = AtlasMetadata::parse(&broken);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 锚点落在帧矩形之外的条目被拒绝() {
+        // 越界的锚点在批渲染阶段会算出指向图集之外的采样坐标。
+        // Arrange
+        let broken = SAMPLE.replace(
+            "\"pivot\": { \"x\": 8, \"y\": 24 }",
+            "\"pivot\": { \"x\": 8, \"y\": 999 }",
+        );
+
+        // Act
+        let result = AtlasMetadata::parse(&broken);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 帧矩形超出图片边界的条目被拒绝() {
+        // 构造一张真实解码出的 8x8 小图，模拟 Atlas::load 拿到的图片尺寸；
+        // 畸形或恶意的 mod 完全可以给出比图片本身还大的矩形，若不查，
+        // 后果是花屏或贴图错乱——而且元数据本身「看起来完全合法」，
+        // 这类问题在批渲染阶段会极难定位。
+        // Arrange
+        let mut png_bytes = Vec::new();
+        image::DynamicImage::ImageRgba8(image::RgbaImage::new(8, 8))
+            .write_to(
+                &mut std::io::Cursor::new(&mut png_bytes),
+                image::ImageFormat::Png,
+            )
+            .expect("内存编码 8x8 PNG 不应失败");
+        let decoded = image::load_from_memory(&png_bytes)
+            .expect("刚编码的 PNG 应能解码")
+            .to_rgba8();
+        let (width, height) = decoded.dimensions();
+
+        let entries = vec![AtlasEntry {
+            name: "oversized".to_string(),
+            rect: FrameRect {
+                x: 0,
+                y: 0,
+                width: 16,
+                height: 16,
+            },
+            pivot: Pivot { x: 0, y: 0 },
+            footprint: Footprint {
+                width: 1,
+                height: 1,
+            },
+        }];
+
+        // Act
+        let result = validate_entries_within_image(&entries, width, height);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 帧矩形恰好贴合图片边界时被接受() {
+        // 边界值：矩形右下角恰好等于图片尺寸，不应被误判为越界。
+        // Arrange
+        let entries = vec![AtlasEntry {
+            name: "exact_fit".to_string(),
+            rect: FrameRect {
+                x: 0,
+                y: 0,
+                width: 8,
+                height: 8,
+            },
+            pivot: Pivot { x: 0, y: 0 },
+            footprint: Footprint {
+                width: 1,
+                height: 1,
+            },
+        }];
+
+        // Act
+        let result = validate_entries_within_image(&entries, 8, 8);
+
+        // Assert
+        assert!(result.is_ok());
     }
 }
