@@ -50,18 +50,30 @@ winit = { version = "0.30", default-features = false, features = [
 
 ## 被否决的替代方案
 
-2026-08 实查，全部许可证合规，问题在稳定性与维护：
+`winit 0.31` 另计——它不是换库，是同一个库的下一条版本线，仍是 beta（发布已逾
+八个月未 stable），故不在下表中，理由见「决定・一」。
 
-| 方案 | 否决理由 |
-|---|---|
-| winit 0.31 | 仍是 beta，未 stable |
-| sdl3-rs | 官方自述「still heavily in development, you may run into teething issues」 |
-| rust-sdl2 | 成熟但 SDL2 已是上一代，上游重心在 SDL3 |
-| tao（Tauri 分叉） | 面向桌面应用（菜单、托盘），游戏场景无增益 |
-| glfw-rs | 绑定更新节奏明显慢于 winit |
+真正的换库候选，2026-08 实查：
 
-且换 SDL 会引入 C 依赖，与「纯基础库、好跨平台」的项目约束冲突。
-winit 侧 rust-windowing 组织活跃（每周五 UTC 15:00 例会，各平台 issue 持续处理）。
+| 候选 | 版本 | 许可证 | 否决理由 |
+|---|---|---|---|
+| sdl3 | 0.18.4 | MIT | 需要 SDL3 这个 C 库，各平台要处理捆绑/构建，违背纯 Rust 跨平台目标 |
+| sdl2 | 0.38.0 | MIT | 同上，且已是上一代，上游重心在 SDL3 |
+| glfw | 0.62.0 | Apache-2.0 | 同为 C 依赖；GLFW 本体最近稳定版是 2024-02 的 3.4，活跃度低于 winit |
+| miniquad | 0.4.11 | MIT/Apache-2.0 | 自带 GL 渲染器，与既定的 wgpu 方案冲突 |
+| tao | 0.36.0 | Apache-2.0 | Tauri 对 winit 的分叉，面向桌面应用（菜单/托盘）而非游戏，依赖树更大 |
+
+换 SDL/GLFW 都会引入 C 依赖，与「纯基础库、好跨平台」的项目约束冲突；miniquad
+自带渲染器与 wgpu 方案二选一冲突；tao 面向桌面应用而非游戏。
+winit 侧 rust-windowing 组织活跃（每周五 UTC 15:00 例会，各平台 issue 持续处理），
+是 wgpu 生态事实标准，故结论仍是留在 winit，只裁 feature。
+
+## 架构保障
+
+只有 `ll-platform` 这一个 crate 直接依赖 `winit`；上层只看得到
+`AppHandler` / `InputState` / `GameKey` 这几个平台无关的抽象。将来若真要换窗口库，
+改动面收在这一个 crate 内，不会波及整个项目——这也是敢把 winit 锁在稳定线、
+只做 feature 裁剪而不是急着换库的底气所在。
 
 ## 后果与持续风险
 
