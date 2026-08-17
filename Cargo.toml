@@ -1,6 +1,23 @@
-[package]
-name = "LostLand"
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
 version = "0.1.0"
 edition = "2024"
+license = "MIT OR Apache-2.0"
 
-[dependencies]
+# 依赖版本在此统一管理，各 crate 用 workspace = true 引用。
+# 这样升级依赖只需改一处，避免各 crate 版本漂移。
+[workspace.dependencies]
+proptest = "1.11"
+criterion = "0.8"
+
+# 地基层的性能直接决定上层天花板，故 release 开满优化。
+[profile.release]
+lto = "thin"
+codegen-units = 1
+
+# 依赖也在开发构建下优化，否则 proptest 跑几千个用例会慢到没人愿意跑。
+[profile.dev.package."*"]
+opt-level = 2

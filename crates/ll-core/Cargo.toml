@@ -1,0 +1,14 @@
+[package]
+name = "ll-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的纯数据基础层：环面坐标、确定性随机、命名空间标识、世界时间"
+
+# ll-core 必须保持零运行时依赖。它被所有其他 crate 依赖，
+# 任何引入这里的依赖都会传染给整个项目。
+[dependencies]
+
+[dev-dependencies]
+proptest.workspace = true
+criterion.workspace = true
