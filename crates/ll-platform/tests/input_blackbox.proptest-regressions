@@ -1,0 +1,10 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 8200bad1df74a5dd94d51e21d1eecef3244e2d22f6e5cd60640b5872a0b6485b # shrinks to ops = [Press, Release]
+# 上面这颗种子锁定的是：release 不得清除 just_pressed。
+# 它最初抓出的测试已被替换（原不变量「刚按下为真则必然按住」本身不成立），
+# 现由「刚按下的判定只能由结束帧清除」承接。请勿删除本文件。

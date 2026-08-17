@@ -8,7 +8,22 @@ description = "迷途大陆的平台层：窗口、输入、日志、并行任�
 [dependencies]
 ll-core = { path = "../ll-core" }
 # winit 锁在 0.30 稳定线。0.31 目前只有 beta，地基层不能压在 beta 上。
-winit = "0.30"
+#
+# 显式列出 feature 而非用默认集合：默认集合含 wayland-csd-adwaita，它会启用
+# sctk-adwaita/ab_glyph，进而拉入已被作者宣布停止维护的 ttf-parser
+# （RUSTSEC-2026-0192）。改用 wayland-csd-adwaita-notitle 后仍保留 Wayland
+# 窗口装饰，只丢掉由 winit 绘制的标题文字——本项目自绘全部 UI，这个损失
+# 可忽略。其余四项与默认集合一字不差，rwh_06 尤其不能删（wgpu 靠它拿
+# raw-window-handle）。
+#
+# 取舍：显式列 feature 意味着 winit 0.30.x 后续若新增默认 feature，不会自动获得。
+winit = { version = "0.30", default-features = false, features = [
+    "rwh_06",
+    "x11",
+    "wayland",
+    "wayland-dlopen",
+    "wayland-csd-adwaita-notitle",
+] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 rayon = "1.12"
