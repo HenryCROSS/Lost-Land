@@ -12,6 +12,24 @@ pub const LOGICAL_WIDTH: u32 = 640;
 /// 逻辑分辨率高度。规格决策 6 固定为 360。
 pub const LOGICAL_HEIGHT: u32 = 360;
 
+/// 离屏渲染目标固定使用的像素格式。
+///
+/// **必须与窗口 surface 格式脱钩、固定不变**——这是两件本来就不是
+/// 同一回事的东西：
+///
+/// - 离屏纹理只被两处消费：场景批渲染画进去（[`crate::batch::SpriteBatch`]，
+///   同样固定 sRGB 语义采样图集）、`read_pixels` 读出来做视觉回归比对。
+///   两者都不关心运行它的窗口用什么 surface 格式。
+/// - 若像早期实现那样让离屏格式抄自 `gpu.surface_format()`（平台决定，
+///   常见的是非 sRGB 的 `Bgra8Unorm`），会同时踩两个坑：着色器从
+///   sRGB 图集采到线性值、原样写进 UNORM 目标，画面整体发白；而且
+///   离屏格式随平台变化，[`RenderTarget::read_pixels`] 产出的基准 PNG
+///   就**不可跨平台比对**——这条基准存在的全部理由就是跨环境比对。
+///
+/// 与图集纹理固定用的格式一致（见 `atlas.rs` 里 `Atlas::load` 的说明），
+/// 这样批渲染管线两端的颜色空间语义天然对齐，不需要额外转换。
+pub const TARGET_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8UnormSrgb;
+
 /// 离屏画面在窗口中的摆放方式。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Viewport {
@@ -48,8 +66,10 @@ pub fn fit_viewport(window_width: u32, window_height: u32) -> Viewport {
 
 /// 固定 640×360 的离屏渲染目标及其放大 blit 管线。
 ///
-/// 纹理格式与窗口 surface 一致（见 [`GpuContext::surface_format`]），这样
-/// blit 管线不必处理格式转换。
+/// 离屏纹理固定用 [`TARGET_FORMAT`]（与窗口 surface 格式无关，理由见
+/// 该常量文档）；blit 管线把它采样后写进的 color target 则必须用
+/// [`GpuContext::surface_format`]——那才是最终提交给合成器的那张
+/// 纹理的真实格式，这是两件不同的事，不能共用一个变量表示。
 pub struct RenderTarget {
     texture: wgpu::Texture,
     view: wgpu::TextureView,
@@ -61,7 +81,7 @@ pub struct RenderTarget {
 impl RenderTarget {
     /// 创建离屏纹理与放大 blit 所需的全部 GPU 资源。
     pub fn new(gpu: &GpuContext) -> RenderTarget {
-        let format = gpu.surface_format();
+        let format = TARGET_FORMAT;
 
         let texture = gpu.device().create_texture(&wgpu::TextureDescriptor {
             label: Some("ll-render offscreen target"),
@@ -157,8 +177,12 @@ impl RenderTarget {
                     module: &shader,
                     entry_point: Some("fs_main"),
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    // 必须用 gpu.surface_format()，不是离屏纹理的 `format`：
+                    // 这个管线画的目的地是 blit_to 传入的窗口 surface 纹理，
+                    // 其真实格式恒等于 gpu.surface_format()，与离屏纹理固定
+                    // 的 TARGET_FORMAT 是两件独立的事。
                     targets: &[Some(wgpu::ColorTargetState {
-                        format,
+                        format: gpu.surface_format(),
                         blend: None,
                         write_mask: wgpu::ColorWrites::ALL,
                     })],
@@ -194,6 +218,16 @@ impl RenderTarget {
     /// 离屏纹理的视图，场景批渲染以此为绘制目标。
     pub fn view(&self) -> &wgpu::TextureView {
         &self.view
+    }
+
+    /// 离屏纹理的像素格式，恒为 [`TARGET_FORMAT`]。
+    ///
+    /// 场景批渲染（[`crate::batch::SpriteBatch::new`]）的管线要画进这张
+    /// 离屏纹理，其 color target 格式必须与它一致——调用方应传这个
+    /// 访问器的返回值，而不是 `GpuContext::surface_format()`（那是窗口
+    /// surface 的格式，两者不再保证相等，见模块文档）。
+    pub fn format(&self) -> wgpu::TextureFormat {
+        self.format
     }
 
     /// 把离屏画面按 `viewport` 整数倍放大 blit 到 `destination`。
