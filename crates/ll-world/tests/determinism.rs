@@ -20,7 +20,15 @@ use ll_world::generate::GenParams;
 use ll_world::state::WorldState;
 
 /// 由首次运行记录的黄金基准。修改前请阅读本文件顶部说明。
-const EXPECTED_WORLD_DIGEST: u64 = 12_666_463_013_737_699_895;
+///
+/// # 本次重冻的原因（P2 最终评审 Important 3）
+///
+/// `ll_world::noise::TileableNoise::octaves` 从「只在 `CELL_SIZE`（16
+/// 格）基础上叠加更高频」改为「先叠加与世界尺寸同量级的大陆尺度层，
+/// 再叠加到 `CELL_SIZE` 及更细」——这是地形生成算法本身的有意变更
+/// （详见 `noise.rs` 模块文档），不是平台相关行为泄漏，因此这里的
+/// 期望值随之更新为新算法在同一种子、同一尺寸下的真实产出。
+const EXPECTED_WORLD_DIGEST: u64 = 17_645_793_944_024_546_775;
 
 /// 测试世界尺寸：64 是噪声格点周期的整数倍，且大于视口跨度，满足
 /// [`WorldState::new`] 的全部构造前置条件。
