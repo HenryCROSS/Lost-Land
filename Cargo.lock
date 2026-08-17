@@ -1011,7 +1011,10 @@ name = "ll-world"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "image",
  "ll-core",
+ "ll-platform",
+ "ll-render",
  "proptest",
  "serde",
  "serde_json",

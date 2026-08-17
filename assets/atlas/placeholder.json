@@ -36,6 +36,48 @@
             "rect": { "x": 48, "y": 16, "width": 16, "height": 16 },
             "pivot": { "x": 0, "y": 0 },
             "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "terrain_deep_water",
+            "rect": { "x": 64, "y": 0, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "terrain_shallow_water",
+            "rect": { "x": 80, "y": 0, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "terrain_sand",
+            "rect": { "x": 64, "y": 16, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "terrain_forest",
+            "rect": { "x": 80, "y": 16, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "terrain_hill",
+            "rect": { "x": 64, "y": 32, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "terrain_mountain",
+            "rect": { "x": 80, "y": 32, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "terrain_snow",
+            "rect": { "x": 64, "y": 48, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
         }
     ]
 }
