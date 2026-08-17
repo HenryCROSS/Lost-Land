@@ -113,18 +113,19 @@ impl AppHandler for Demo {
             return FrameOutcome::Exit;
         }
 
-        // 只响应「刚按下」，否则按住方向键会让光标瞬间飞出去——这正是
-        // 输入层区分两种状态的实际价值。
-        if input.was_just_pressed(GameKey::Up) {
+        // 方向键用 was_activated：首次按下立即走一格，长按则由输入层的
+        // 自动重复驱动连续移动。Map 仍用 was_just_pressed——它是一次性
+        // 动作，不该跟着长按连续触发。
+        if input.was_activated(GameKey::Up) {
             self.step(0, -1);
         }
-        if input.was_just_pressed(GameKey::Down) {
+        if input.was_activated(GameKey::Down) {
             self.step(0, 1);
         }
-        if input.was_just_pressed(GameKey::Left) {
+        if input.was_activated(GameKey::Left) {
             self.step(-1, 0);
         }
-        if input.was_just_pressed(GameKey::Right) {
+        if input.was_activated(GameKey::Right) {
             self.step(1, 0);
         }
         if input.was_just_pressed(GameKey::Map) {

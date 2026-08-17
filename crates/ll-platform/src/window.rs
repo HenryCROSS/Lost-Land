@@ -12,7 +12,8 @@
 //! 边缘出现宽窄不一的锯齿，是像素美术最刺眼的瑕疵。
 
 use crate::PlatformError;
-use crate::input::{GameKey, InputState};
+use crate::input::{GameKey, InputState, RepeatConfig};
+use std::time::Instant;
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
@@ -32,6 +33,8 @@ pub struct WindowConfig {
     ///
     /// 存键而非字面量，因为标题是用户可见字符串，必须走 i18n。
     pub title_key: &'static str,
+    /// 按键自动重复的时序参数，逐帧驱动 [`InputState::begin_frame`]。
+    pub repeat: RepeatConfig,
 }
 
 impl Default for WindowConfig {
@@ -42,6 +45,7 @@ impl Default for WindowConfig {
             // 默认 2 倍得到 1280×720，在绝大多数显示器上都能完整显示。
             scale: 2,
             title_key: "window.title",
+            repeat: RepeatConfig::default(),
         }
     }
 }
@@ -173,9 +177,12 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                 self.input.clear();
             }
             WindowEvent::RedrawRequested => {
+                // 必须在逻辑处理之前推进自动重复计时，否则本帧的长按
+                // 重复判定永远看不到时间的推进。
+                self.input.begin_frame(Instant::now(), self.config.repeat);
                 let outcome = self.handler.on_frame(&self.input);
-                // 必须在逻辑处理之后清「刚按下」标志，放在之前会让所有
-                // 「刚按下」判定永远为假。
+                // 必须在逻辑处理之后清「刚按下」与「本帧重复触发」标志，
+                // 放在之前会让所有「刚按下」判定永远为假。
                 self.input.end_frame();
 
                 match outcome {
