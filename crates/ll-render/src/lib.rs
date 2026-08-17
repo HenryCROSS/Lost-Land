@@ -34,6 +34,10 @@ pub enum RenderError {
     DeviceRequest(String),
     /// 创建绘制表面失败。
     SurfaceCreation(String),
+    /// 取得当前可呈现的 surface 帧失败（重新配置并重试一次之后仍然失败，
+    /// 或遇到 `Timeout`/`Occluded`/`Validation` 这类调用方应当跳过本帧
+    /// 或直接视为故障的情形）。见 [`gpu::GpuContext::acquire_frame`]。
+    SurfaceAcquire(String),
     /// 图集图片解码失败。
     AtlasDecode(String),
     /// 图集元数据不合法。
@@ -46,6 +50,7 @@ impl fmt::Display for RenderError {
             RenderError::NoAdapter => write!(f, "no suitable graphics adapter found"),
             RenderError::DeviceRequest(why) => write!(f, "failed to request device: {why}"),
             RenderError::SurfaceCreation(why) => write!(f, "failed to create surface: {why}"),
+            RenderError::SurfaceAcquire(why) => write!(f, "failed to acquire surface frame: {why}"),
             RenderError::AtlasDecode(why) => write!(f, "failed to decode atlas image: {why}"),
             RenderError::AtlasMetadata(why) => write!(f, "invalid atlas metadata: {why}"),
         }

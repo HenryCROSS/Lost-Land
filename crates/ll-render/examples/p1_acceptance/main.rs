@@ -7,9 +7,7 @@
 //! 3. 一个 32×48 的重点目标，占 2×2 格却画得比格子高；普通单位巡逻
 //!    经过它脚下时，二者的遮挡关系随 Y 排序正确切换。
 //! 4. 方向键平移相机；世界是环面，移到边缘会无缝绕回而不是跳变。
-//! 5. 窗口尺寸变化时，离屏画面应始终整数倍居中、四周黑边（见下方
-//!    「已知缺口」，本 demo 只能实现这条的换算逻辑，无法在窗口里
-//!    实际验证）。
+//! 5. 窗口尺寸变化时，离屏画面始终整数倍居中、四周黑边。
 //! 6. 按 M 键（见下方「按键替代」）把当前离屏纹理存成 PNG——这是冻结
 //!    视觉回归基准的入口，不是调试功能。
 //!
@@ -32,18 +30,15 @@
 //! 贴切。真正接上 F2 需要先在 `ll-platform` 补一个动作键与物理键
 //! 映射，留给后续任务。
 //!
-//! # 已知缺口：无法把画面呈现到窗口
+//! # 呈现流程
 //!
-//! [`GpuContext`] 只暴露 `device()`/`queue()`/`surface_format()`，
-//! 不暴露内部持有的 `wgpu::Surface`，也没有任何「取当前可呈现纹理」
-//! 或「呈现」的方法。这意味着**当前的公开 API 下，任何调用方都无法
-//! 把渲染结果 blit 到窗口上**——`RenderTarget::blit_to` 需要一个
-//! `&wgpu::TextureView` 作为目标，而窗口那张纹理从外部完全拿不到。
-//! 本 demo 因此每帧仍把完整场景画进离屏 [`RenderTarget`]（地形、动画、
-//! 遮挡、相机换算全部真实发生，`read_pixels` 也能验证结果），但**不会
-//! 在窗口里显示任何画面**。这不是本 demo 的实现缺陷，是 `gpu.rs`
-//! （Task 2，已评审通过、本任务不可修改）遗漏了呈现相关的公开接口，
-//! 已经作为独立事项记录。
+//! 每帧先把完整场景画进离屏 [`RenderTarget`]（地形、动画、遮挡、相机
+//! 换算），再用 [`GpuContext::acquire_frame`] 取窗口 surface 的当前帧、
+//! 从它的纹理建一个视图、[`RenderTarget::blit_to`] 按整数倍缩放
+//! blit 进去、最后 `present()` 提交给合成器。`acquire_frame` 对
+//! `Outdated`/`Lost` 已经内部重配重试过一次，仍失败或遇到
+//! `Timeout`/`Occluded`/`Validation` 时本帧直接跳过（记一条警告日志，
+//! 不影响下一帧继续尝试）。
 
 mod layout;
 mod png;
@@ -136,6 +131,10 @@ pub(crate) struct GpuResources {
     batch: SpriteBatch,
     /// 图集条目名 -> 归一化 UV 矩形，`on_resume` 时算好，避免每帧重算。
     uv_table: HashMap<String, [f32; 4]>,
+    /// 最近一次已知的窗口物理尺寸，`on_frame` 据此算 [`Viewport`]——
+    /// `on_frame` 本身收不到窗口尺寸，只能由 `on_resume`/`on_resize`
+    /// 更新后存在这里。
+    window_size: PhysicalSize<u32>,
 }
 
 impl GpuResources {
@@ -167,7 +166,37 @@ impl GpuResources {
             atlas,
             batch,
             uv_table,
+            window_size: size,
         }
+    }
+
+    /// 窗口尺寸变化时重配 surface 并记下新尺寸，供下一帧算 [`Viewport`]。
+    fn resize(&mut self, size: PhysicalSize<u32>) {
+        self.gpu.resize(size);
+        self.window_size = size;
+    }
+
+    /// 把离屏 `render_target` 按整数倍缩放呈现到窗口。
+    ///
+    /// `acquire_frame` 失败时只记一条警告并跳过本帧——单帧呈现失败
+    /// （`Timeout`/`Occluded` 等，见 [`GpuContext::acquire_frame`] 文档）
+    /// 不该让整个 demo 崩溃或卡住，下一帧还会正常重试。
+    fn present(&self) {
+        let frame = match self.gpu.acquire_frame() {
+            Ok(frame) => frame,
+            Err(error) => {
+                tracing::warn!(%error, "跳过本帧的窗口呈现");
+                return;
+            }
+        };
+        let view = frame
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let viewport = fit_viewport(self.window_size.width, self.window_size.height);
+        self.render_target.blit_to(&self.gpu, &view, viewport);
+        // wgpu 30 把 `present` 挪到了 `Queue` 上（接收 `SurfaceTexture`
+        // 按值消费），不再是 `SurfaceTexture` 自己的方法。
+        self.gpu.queue().present(frame);
     }
 
     /// 查条目名对应的 [`AtlasEntry`]，找不到时记录一条错误日志。
@@ -375,9 +404,7 @@ impl AppHandler for Demo {
         let Some(resources) = self.resources.as_mut() else {
             return;
         };
-        resources.gpu.resize(size);
-        // 只能算出并记录目标视口——见本文件顶部文档「已知缺口」，当前
-        // 公开 API 下无法真正把离屏画面 blit 到窗口。
+        resources.resize(size);
         let viewport = fit_viewport(size.width, size.height);
         tracing::info!(
             scale = viewport.scale,
@@ -424,6 +451,7 @@ impl AppHandler for Demo {
         resources
             .batch
             .flush(&resources.gpu, resources.render_target.view());
+        resources.present();
 
         FrameOutcome::Continue
     }

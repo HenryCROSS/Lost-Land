@@ -118,6 +118,57 @@ impl GpuContext {
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.config.format
     }
+
+    /// 取得当前帧的呈现目标。
+    ///
+    /// 调用方需自行创建视图、渲染，然后把返回值传给
+    /// `queue().present(frame)` 提交给合成器——wgpu 30 把 `present`
+    /// 挪到了 `Queue` 上，不再是 `SurfaceTexture` 自己的方法。
+    /// 不把这三步包成一个回调，是因为渲染内容由上层决定，回调会把控制
+    /// 反转得毫无必要。
+    ///
+    /// `wgpu::Surface::get_current_texture` 在这个版本的 wgpu 里返回的
+    /// 是 [`wgpu::CurrentSurfaceTexture`] 枚举（wgpu 30 把旧版
+    /// `Result<SurfaceTexture, SurfaceError>` 改成了专用枚举，各变体的
+    /// 语义与旧版 `SurfaceError` 基本对应），本方法按变体分别处理：
+    ///
+    /// - `Outdated`/`Lost`（窗口尺寸变化、显示器切换或驱动重置时会
+    ///   发生）：用当前配置重新 `configure` 一次 surface 后重试一次
+    ///   ——上层对「surface 需要重新配置」这件事本身无能为力，而重配
+    ///   是标准且总能恢复的做法，不该把它当成需要向上传播的错误。
+    /// - `Suboptimal`：纹理仍可正常绘制，只是不再是最优配置；正常
+    ///   返回，同时顺带重配一次 surface，让下一帧恢复最优。
+    /// - `Timeout`/`Occluded`：wgpu 自身文档建议「跳过本帧，稍后重试」
+    ///   ——这不是真正的故障，这里转成 `Err` 交给调用方跳过本帧，而不是
+    ///   当场重试到成功为止（重试到成功可能无限阻塞主循环）。
+    /// - `Validation`：真正的错误，直接返回 `Err`。
+    pub fn acquire_frame(&self) -> Result<wgpu::SurfaceTexture, RenderError> {
+        match self.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(frame) => Ok(frame),
+            wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+                self.surface.configure(&self.device, &self.config);
+                Ok(frame)
+            }
+            wgpu::CurrentSurfaceTexture::Outdated | wgpu::CurrentSurfaceTexture::Lost => {
+                self.surface.configure(&self.device, &self.config);
+                match self.surface.get_current_texture() {
+                    wgpu::CurrentSurfaceTexture::Success(frame)
+                    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => Ok(frame),
+                    other => Err(RenderError::SurfaceAcquire(format!(
+                        "重新配置后仍无法取得 surface 帧：{other:?}"
+                    ))),
+                }
+            }
+            wgpu::CurrentSurfaceTexture::Timeout | wgpu::CurrentSurfaceTexture::Occluded => {
+                Err(RenderError::SurfaceAcquire(
+                    "本帧暂时取不到 surface 纹理，调用方应跳过本帧".to_string(),
+                ))
+            }
+            wgpu::CurrentSurfaceTexture::Validation => Err(RenderError::SurfaceAcquire(
+                "取得 surface 帧时发生校验错误".to_string(),
+            )),
+        }
+    }
 }
 
 /// 该尺寸是否可用于配置绘制表面。
