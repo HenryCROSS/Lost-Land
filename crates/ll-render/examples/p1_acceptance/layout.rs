@@ -1,50 +1,54 @@
-//! 与 GPU 无关的纯计算：UV 归一化、地形花色、巡逻路径、精灵摆放。
+//! 与 GPU 无关的纯计算：地形花色、巡逻路径、精灵摆放；以及描述演示
+//! 场景布局的常量。
 //!
 //! 单独成模块是为了让这些逻辑可以脱离 [`super::GpuResources`] 被单测
 //! 覆盖——它们都是纯函数，不需要真实窗口或图形适配器。
+//!
+//! # 常量必须只有一处定义
+//!
+//! [`BOSS_TILE`]/[`BOSS_ENTITY`]/[`HERO_ENTITY`]/巡逻区间这些常量曾经
+//! 在 `main.rs` 定义一份、又在这个文件的测试模块里重抄一份用来断言。
+//! 两份数字长得一样不代表它们是同一个东西——把 `main.rs` 里的
+//! `BOSS_ENTITY` 改掉，测试模块里那份重抄的副本纹丝不动，遮挡关系
+//! 反转了测试照样全绿，测试形同虚设。这里把它们收作本模块唯一的
+//! 权威定义，`main.rs` 与测试模块都从这里引用，改一处、两边同时生效。
 
 use ll_core::torus::TorusPos;
 use ll_platform::window::FrameId;
-use ll_render::atlas::FrameRect;
 use ll_render::sprite::{Footprint, Pivot, TILE_SIZE};
 
-/// 把图集条目的像素矩形换算成 [`ll_render::batch::SpriteInstance::uv_rect`]
-/// 需要的归一化 `(u, v, width, height)`。
-///
-/// 两个换算陷阱在这里被处理：
-///
-/// 1. **必须除以图集纹理的真实像素尺寸**（`image_width`/`image_height`），
-///    不是逻辑分辨率 640×360——图集与离屏渲染目标是两张完全不同尺寸的
-///    纹理，用错分母会让整张贴图的采样坐标系全错，表现为贴图整体错位
-///    或被拉伸/压缩，而不是某一处局部瑕疵。
-/// 2. **半 texel 内缩**：即便采样器固定最近邻（见 `atlas.rs`/`target.rs`
-///    对 `FilterMode::Nearest` 的选择），把 UV 精确算在两个纹素的分界线
-///    上仍可能因浮点误差被舍入到分界线另一侧，采样出邻居贴图的颜色——
-///    这是像素图集最常见也最难定位的花屏成因之一：现象是「某个精灵的
-///    一条边缘偶尔混进了旁边贴图的颜色」，而且往往只在特定缩放或特定
-///    GPU 上出现，元数据与代码本身完全看不出问题。这里把矩形四边各
-///    内缩最多 0.5 像素（不足 0.5 像素宽/高的极端帧按实际半宽内缩，
-///    避免缩成负数）：内缩幅度远小于一个纹素，最近邻过滤仍稳定选中
-///    同一个纹素，不会引入任何肉眼可见的裁切。
-pub(crate) fn normalized_uv_rect(rect: FrameRect, image_width: u32, image_height: u32) -> [f32; 4] {
-    let inset_x = axis_inset(rect.width);
-    let inset_y = axis_inset(rect.height);
-    let image_width = image_width as f32;
-    let image_height = image_height as f32;
+/// 演示世界的宽度（格）。刻意大于相机单帧可见的瓦片跨度（约 43 格），
+/// 平时看不到重复瓦片；又刻意不太大，短暂按住方向键就能移动到接缝。
+pub(crate) const WORLD_WIDTH: u32 = 48;
 
-    [
-        (rect.x as f32 + inset_x) / image_width,
-        (rect.y as f32 + inset_y) / image_height,
-        (rect.width as f32 - 2.0 * inset_x) / image_width,
-        (rect.height as f32 - 2.0 * inset_y) / image_height,
-    ]
-}
+/// 演示世界的高度（格），理由同 [`WORLD_WIDTH`]。
+pub(crate) const WORLD_HEIGHT: u32 = 32;
 
-/// 单边内缩量：正常帧取半个纹素（0.5px），窄于 1px 的极端帧退化为
-/// 半宽，保证 `size - 2*inset` 恒不为负。
-fn axis_inset(size: u16) -> f32 {
-    (size as f32 / 2.0).min(0.5)
-}
+/// 棋盘格地形要求宽高都是偶数：奇数会让世界接缝处两块同色地形相邻，
+/// 看起来像是棋盘格本身断了一条缝，即便绕回逻辑其实完全正确。
+const _: () = assert!(WORLD_WIDTH.is_multiple_of(2) && WORLD_HEIGHT.is_multiple_of(2));
+
+/// 重点目标（boss）左上角所在格，占 2×2。
+pub(crate) const BOSS_TILE: (i32, i32) = (23, 14);
+
+/// 巡逻路径纵坐标的上下界，取得比 boss 的 2 格占地更宽，这样巡逻既有
+/// 「完全在 boss 之后」也有「完全在 boss 之前」的区间，不只是临界点。
+pub(crate) const HERO_PATROL_MIN_Y: i32 = 8;
+pub(crate) const HERO_PATROL_MAX_Y: i32 = 22;
+
+/// 巡逻路径每挪一格所停留的帧数。60fps 下约 100ms 一格，肉眼能跟上。
+pub(crate) const HERO_PATROL_FRAMES_PER_STEP: u64 = 6;
+
+/// 绘制顺序里给 hero 用的稳定实体号。
+pub(crate) const HERO_ENTITY: u64 = 1;
+
+/// 绘制顺序里给 boss 用的稳定实体号。
+///
+/// **必须小于 [`HERO_ENTITY`]**：当两者的 `foot_y` 恰好相等（hero 走到
+/// boss 占地的最下一行）时，`DrawOrder` 按实体号打破平局，数值小的
+/// 先绘制——boss 先画、hero 后画，hero 站在 boss 的落脚线上时应显示在
+/// 前面，这正是较大的实体号后画、盖住先画者的直觉。
+pub(crate) const BOSS_ENTITY: u64 = 0;
 
 /// 世界格坐标决定地形贴图种类：奇偶棋盘格。
 ///
@@ -118,77 +122,6 @@ mod tests {
     use ll_core::torus::TorusSize;
     use ll_render::sprite::{DrawOrder, Layer};
 
-    const WORLD_WIDTH: u32 = 48;
-    const WORLD_HEIGHT: u32 = 32;
-    const BOSS_TILE: (i32, i32) = (23, 14);
-    const PATROL_MIN_Y: i32 = 8;
-    const PATROL_MAX_Y: i32 = 22;
-    const PATROL_FRAMES_PER_STEP: u64 = 6;
-    const BOSS_ENTITY: u64 = 0;
-    const HERO_ENTITY: u64 = 1;
-
-    #[test]
-    fn uv矩形按图集真实尺寸而非逻辑分辨率换算() {
-        // 这是评审点名的关键陷阱：分母必须是图集像素尺寸（这里 64），
-        // 用逻辑分辨率 640 会让整张贴图的采样坐标系全错。
-        // Arrange
-        let rect = FrameRect {
-            x: 0,
-            y: 0,
-            width: 16,
-            height: 24,
-        };
-
-        // Act
-        let uv = normalized_uv_rect(rect, 64, 72);
-
-        // Assert：宽高各按半 texel 内缩一整像素（两边各 0.5），
-        // 分母必须是图集真实尺寸 64/72，而不是逻辑分辨率 640/360。
-        assert!((uv[2] - 15.0 / 64.0).abs() < f32::EPSILON);
-        assert!((uv[3] - 23.0 / 72.0).abs() < f32::EPSILON);
-    }
-
-    #[test]
-    fn uv矩形内缩后小于原始像素矩形换算值() {
-        // 半 texel 内缩必须真的把矩形往内收，否则起不到防止采样越界到
-        // 邻居贴图的作用。
-        // Arrange
-        let rect = FrameRect {
-            x: 16,
-            y: 0,
-            width: 32,
-            height: 48,
-        };
-
-        // Act
-        let uv = normalized_uv_rect(rect, 64, 72);
-        let naive_u = rect.x as f32 / 64.0;
-        let naive_width = rect.width as f32 / 64.0;
-
-        // Assert
-        assert!(uv[0] > naive_u);
-        assert!(uv[2] < naive_width);
-    }
-
-    #[test]
-    fn 一像素宽的帧内缩后宽度不为负() {
-        // 内缩量必须按帧实际宽高钳制，否则极窄的帧会算出负宽度。
-        // Arrange
-        let rect = FrameRect {
-            x: 0,
-            y: 0,
-            width: 1,
-            height: 1,
-        };
-
-        // Act
-        let uv = normalized_uv_rect(rect, 64, 64);
-
-        // Assert
-        assert!(uv[2] >= 0.0);
-        assert!(uv[3] >= 0.0);
-    }
-
     #[test]
     fn 棋盘格相邻格纹理种类交替() {
         // 棋盘格的意义在于让相机绕回处的错位一眼可见；前提是相邻格
@@ -222,46 +155,51 @@ mod tests {
         // Arrange & Act
         let y = hero_patrol_y(
             FrameId(0),
-            PATROL_MIN_Y,
-            PATROL_MAX_Y,
-            PATROL_FRAMES_PER_STEP,
+            HERO_PATROL_MIN_Y,
+            HERO_PATROL_MAX_Y,
+            HERO_PATROL_FRAMES_PER_STEP,
         );
 
         // Assert
-        assert_eq!(y, PATROL_MIN_Y);
+        assert_eq!(y, HERO_PATROL_MIN_Y);
     }
 
     #[test]
     fn 巡逻路径会到达上界() {
         // Arrange
-        let span = (PATROL_MAX_Y - PATROL_MIN_Y) as u64;
-        let frame = FrameId(span * PATROL_FRAMES_PER_STEP);
+        let span = (HERO_PATROL_MAX_Y - HERO_PATROL_MIN_Y) as u64;
+        let frame = FrameId(span * HERO_PATROL_FRAMES_PER_STEP);
 
         // Act
-        let y = hero_patrol_y(frame, PATROL_MIN_Y, PATROL_MAX_Y, PATROL_FRAMES_PER_STEP);
+        let y = hero_patrol_y(
+            frame,
+            HERO_PATROL_MIN_Y,
+            HERO_PATROL_MAX_Y,
+            HERO_PATROL_FRAMES_PER_STEP,
+        );
 
         // Assert
-        assert_eq!(y, PATROL_MAX_Y);
+        assert_eq!(y, HERO_PATROL_MAX_Y);
     }
 
     #[test]
     fn 巡逻路径到达上界后折返下降() {
         // 三角波过了半程应该往回走，而不是继续单调递增或突然跳变。
         // Arrange
-        let span = (PATROL_MAX_Y - PATROL_MIN_Y) as u64;
-        let at_peak = FrameId(span * PATROL_FRAMES_PER_STEP);
-        let one_step_later = FrameId(at_peak.0 + PATROL_FRAMES_PER_STEP);
+        let span = (HERO_PATROL_MAX_Y - HERO_PATROL_MIN_Y) as u64;
+        let at_peak = FrameId(span * HERO_PATROL_FRAMES_PER_STEP);
+        let one_step_later = FrameId(at_peak.0 + HERO_PATROL_FRAMES_PER_STEP);
 
         // Act
         let y = hero_patrol_y(
             one_step_later,
-            PATROL_MIN_Y,
-            PATROL_MAX_Y,
-            PATROL_FRAMES_PER_STEP,
+            HERO_PATROL_MIN_Y,
+            HERO_PATROL_MAX_Y,
+            HERO_PATROL_FRAMES_PER_STEP,
         );
 
         // Assert
-        assert_eq!(y, PATROL_MAX_Y - 1);
+        assert_eq!(y, HERO_PATROL_MAX_Y - 1);
     }
 
     #[test]
@@ -326,6 +264,10 @@ mod tests {
         // hero 的 foot_y 与 boss 的 foot_y 恰好相等时（hero 站在 boss
         // 占地的最后一行），必须由实体号打破平局，且 hero 应该排在后面
         // （画在上层、盖住 boss），因为它此刻站在最靠近镜头的落脚线上。
+        //
+        // BOSS_ENTITY/HERO_ENTITY 引用的是本模块顶部唯一的权威定义
+        // ——谁在 main.rs 改了绘制时用的实体号，这里立刻反映出来，
+        // 而不是像此前那样各测各的、改了权威定义测试也发现不了。
         // Arrange
         let boss_foot_y = footprint_bottom_world_y(BOSS_TILE.1, 2);
         let hero_tile_y = BOSS_TILE.1 + 1; // boss 占地的最下一行
@@ -347,7 +289,7 @@ mod tests {
     fn 巡逻路径完全在重点目标上方时重点目标排在前面() {
         // Arrange
         let boss_foot_y = footprint_bottom_world_y(BOSS_TILE.1, 2);
-        let hero_foot_y = footprint_bottom_world_y(PATROL_MIN_Y, 1);
+        let hero_foot_y = footprint_bottom_world_y(HERO_PATROL_MIN_Y, 1);
 
         // Act
         let boss_order = DrawOrder::new(Layer::ENTITY, boss_foot_y, BOSS_ENTITY);
@@ -361,7 +303,7 @@ mod tests {
     fn 巡逻路径完全在重点目标下方时普通单位排在前面() {
         // Arrange
         let boss_foot_y = footprint_bottom_world_y(BOSS_TILE.1, 2);
-        let hero_foot_y = footprint_bottom_world_y(PATROL_MAX_Y, 1);
+        let hero_foot_y = footprint_bottom_world_y(HERO_PATROL_MAX_Y, 1);
 
         // Act
         let boss_order = DrawOrder::new(Layer::ENTITY, boss_foot_y, BOSS_ENTITY);

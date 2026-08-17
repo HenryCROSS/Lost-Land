@@ -43,10 +43,10 @@
 mod layout;
 mod png;
 
-use image::GenericImageView;
 use layout::{
-    footprint_bottom_world_y, hero_patrol_y, normalized_uv_rect, sprite_draw_position,
-    terrain_entry_name,
+    BOSS_ENTITY, BOSS_TILE, HERO_ENTITY, HERO_PATROL_FRAMES_PER_STEP, HERO_PATROL_MAX_Y,
+    HERO_PATROL_MIN_Y, WORLD_HEIGHT, WORLD_WIDTH, footprint_bottom_world_y, hero_patrol_y,
+    sprite_draw_position, terrain_entry_name,
 };
 use ll_core::torus::TorusSize;
 use ll_platform::input::{GameKey, InputState};
@@ -61,51 +61,22 @@ use ll_render::camera::Camera;
 use ll_render::gpu::GpuContext;
 use ll_render::sprite::{DrawOrder, Footprint, Layer, SpriteSize, TILE_SIZE};
 use ll_render::target::{RenderTarget, fit_viewport};
+// 走 ll_render 重新导出的 wgpu，不直接依赖 wgpu crate 本身——即便本
+// demo 是同包 example、两条路径当前都能解析，独立 crate 的下游只有
+// 这一条路径能用，这里特意走同一条路径，免得这个问题被同包关系遮住。
+use ll_render::wgpu;
 use png::save_baseline_png;
-use std::collections::HashMap;
 use std::sync::Arc;
-
-/// 演示世界的宽度（格）。刻意大于相机单帧可见的瓦片跨度（约 43 格），
-/// 平时看不到重复瓦片；又刻意不太大，短暂按住方向键就能移动到接缝。
-const WORLD_WIDTH: u32 = 48;
-
-/// 演示世界的高度（格），理由同 [`WORLD_WIDTH`]。
-const WORLD_HEIGHT: u32 = 32;
-
-/// 棋盘格地形要求宽高都是偶数：奇数会让世界接缝处两块同色地形相邻，
-/// 看起来像是棋盘格本身断了一条缝，即便绕回逻辑其实完全正确。
-const _: () = assert!(WORLD_WIDTH.is_multiple_of(2) && WORLD_HEIGHT.is_multiple_of(2));
-
-/// 重点目标（boss）左上角所在格，占 2×2。
-const BOSS_TILE: (i32, i32) = (23, 14);
 
 /// 普通单位（hero）巡逻路径固定的横坐标，落在 boss 的占地列内，
 /// 这样巡逻路径必然穿过它的脚下，才能演示遮挡关系的切换。
 const HERO_PATROL_X: i32 = BOSS_TILE.0;
-
-/// 巡逻路径纵坐标的上下界，取得比 boss 的 2 格占地更宽，这样巡逻既有
-/// 「完全在 boss 之后」也有「完全在 boss 之前」的区间，不只是临界点。
-const HERO_PATROL_MIN_Y: i32 = 8;
-const HERO_PATROL_MAX_Y: i32 = 22;
-
-/// 巡逻路径每挪一格所停留的帧数。60fps 下约 100ms 一格，肉眼能跟上。
-const HERO_PATROL_FRAMES_PER_STEP: u64 = 6;
 
 /// 行走动画每帧停留的游戏帧数。
 const WALK_FRAMES_PER_STEP: u32 = 8;
 
 /// 相机初始注视点，取世界近似中心，一开局就能看见 boss 与 hero。
 const INITIAL_CAMERA: (i32, i32) = (24, 16);
-
-/// 绘制顺序里给 hero 用的稳定实体号。
-const HERO_ENTITY: u64 = 1;
-/// 绘制顺序里给 boss 用的稳定实体号。
-///
-/// **必须小于 [`HERO_ENTITY`]**：当两者的 `foot_y` 恰好相等（hero 走到
-/// boss 占地的最下一行）时，[`DrawOrder`] 按实体号打破平局，数值小的
-/// 先绘制——boss 先画、hero 后画，hero 站在 boss 的落脚线上时应显示在
-/// 前面，这正是较大的实体号后画、盖住先画者的直觉。
-const BOSS_ENTITY: u64 = 0;
 
 /// 瓦片绘制顺序号的起始偏移，避开 [`HERO_ENTITY`]/[`BOSS_ENTITY`] 这两个
 /// 保留号，避免撞车导致排序键意外相等。
@@ -129,8 +100,6 @@ pub(crate) struct GpuResources {
     render_target: RenderTarget,
     atlas: Atlas,
     batch: SpriteBatch,
-    /// 图集条目名 -> 归一化 UV 矩形，`on_resume` 时算好，避免每帧重算。
-    uv_table: HashMap<String, [f32; 4]>,
     /// 最近一次已知的窗口物理尺寸，`on_frame` 据此算 [`Viewport`]——
     /// `on_frame` 本身收不到窗口尺寸，只能由 `on_resume`/`on_resize`
     /// 更新后存在这里。
@@ -143,29 +112,22 @@ impl GpuResources {
         let render_target = RenderTarget::new(&gpu);
 
         let metadata = AtlasMetadata::parse(ATLAS_JSON).expect("内嵌图集元数据应为合法 JSON");
-        let (image_width, image_height) = image::load_from_memory(ATLAS_PNG)
-            .expect("内嵌图集 PNG 应能解码")
-            .dimensions();
-
-        let mut uv_table = HashMap::with_capacity(metadata.entries.len());
-        for entry in &metadata.entries {
-            uv_table.insert(
-                entry.name.clone(),
-                normalized_uv_rect(entry.rect, image_width, image_height),
-            );
-        }
-
+        // 不在这里再解码一遍 PNG 拿宽高：Atlas::load 自己解码时已经拿到
+        // 了真实尺寸并保存在 Atlas::size() 里，UV 归一化（含半 texel
+        // 内缩）也整套下沉进了 Atlas::uv_rect，不需要在 demo 里重犯一遍
+        // 「除错分母」这类渲染层的坑。
         let atlas =
             Atlas::load(&gpu, metadata, ATLAS_PNG).expect("内嵌图集资源应能上传为 GPU 纹理");
-        let format = gpu.surface_format();
-        let batch = SpriteBatch::new(&gpu, &atlas, format);
+        // 批渲染画的是离屏 render_target，管线的 color target 格式必须
+        // 跟着它走（render_target.format()），不是窗口 surface 的格式
+        // ——这两者不再保证相等，见 target.rs 的 TARGET_FORMAT 文档。
+        let batch = SpriteBatch::new(&gpu, &atlas, render_target.format());
 
         GpuResources {
             gpu,
             render_target,
             atlas,
             batch,
-            uv_table,
             window_size: size,
         }
     }
@@ -199,14 +161,15 @@ impl GpuResources {
         self.gpu.queue().present(frame);
     }
 
-    /// 查条目名对应的 [`AtlasEntry`]，找不到时记录一条错误日志。
+    /// 查条目名对应的 [`AtlasEntry`] 与它的归一化 UV 矩形，找不到时记录
+    /// 一条错误日志。
     ///
     /// 内嵌资产在编译期就已固定，正常运行下这里恒能查到；仍返回
     /// `Option` 而不是 `unwrap`，是不假设调用方传入的名字一定存在于
     /// 图集里——这条防线比「反正不会错」更值得信任。
     fn lookup<'a>(&'a self, name: &str) -> Option<(&'a AtlasEntry, [f32; 4])> {
         let entry = self.atlas.metadata().lookup(name);
-        let uv = self.uv_table.get(name).copied();
+        let uv = self.atlas.uv_rect(name);
         match (entry, uv) {
             (Some(entry), Some(uv)) => Some((entry, uv)),
             _ => {
@@ -295,13 +258,7 @@ fn collect_sprites(
         );
         resources.batch.push(
             order,
-            sprite_instance(
-                sx as f32,
-                sy as f32,
-                entry.rect.width,
-                entry.rect.height,
-                uv,
-            ),
+            sprite_instance(sx as f32, sy as f32, entry.sprite_size(), uv),
         );
     }
 
@@ -328,10 +285,9 @@ fn push_boss(world: TorusSize, camera: &Camera, resources: &mut GpuResources) {
         footprint_bottom_world_y(BOSS_TILE.1, 2),
         BOSS_ENTITY,
     );
-    resources.batch.push(
-        order,
-        sprite_instance(px, py, entry.rect.width, entry.rect.height, uv),
-    );
+    resources
+        .batch
+        .push(order, sprite_instance(px, py, entry.sprite_size(), uv));
 }
 
 fn push_hero(
@@ -373,18 +329,18 @@ fn push_hero(
         footprint_bottom_world_y(hero_y, 1),
         HERO_ENTITY,
     );
-    resources.batch.push(
-        order,
-        sprite_instance(px, py, entry.rect.width, entry.rect.height, uv),
-    );
+    resources
+        .batch
+        .push(order, sprite_instance(px, py, entry.sprite_size(), uv));
 }
 
 /// 拼一个 [`SpriteInstance`]：位置+像素尺寸+UV+不调制的颜色。
 ///
 /// 抽成自由函数是因为地形、boss、hero 三处调用点共享同一套字段拼装
-/// 逻辑，唯一的差别只是位置、尺寸与 UV 从哪里来。
-fn sprite_instance(x: f32, y: f32, width: u16, height: u16, uv_rect: [f32; 4]) -> SpriteInstance {
-    let size = SpriteSize { width, height };
+/// 逻辑，唯一的差别只是位置、尺寸与 UV 从哪里来。`size` 直接用
+/// [`AtlasEntry::sprite_size`] 的返回值，不再自己从 `rect.width`/
+/// `rect.height` 现拼一份。
+fn sprite_instance(x: f32, y: f32, size: SpriteSize, uv_rect: [f32; 4]) -> SpriteInstance {
     SpriteInstance {
         position: [x, y],
         size: [size.width as f32, size.height as f32],
