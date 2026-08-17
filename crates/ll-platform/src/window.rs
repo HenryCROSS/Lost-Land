@@ -149,12 +149,8 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
 }
 
 /// 建窗并驱动事件循环，直到窗口关闭。
-pub fn run<H: AppHandler + 'static>(
-    config: WindowConfig,
-    handler: H,
-) -> Result<(), PlatformError> {
-    let event_loop =
-        EventLoop::new().map_err(|e| PlatformError::WindowCreation(e.to_string()))?;
+pub fn run<H: AppHandler + 'static>(config: WindowConfig, handler: H) -> Result<(), PlatformError> {
+    let event_loop = EventLoop::new().map_err(|e| PlatformError::WindowCreation(e.to_string()))?;
 
     // Poll 而非 Wait：回合制虽然不需要持续重绘，但离屏世界推进要利用玩家
     // 思考的空窗期，因此主循环必须持续转动而不是阻塞等事件。
@@ -221,9 +217,6 @@ mod tests {
         let config = WindowConfig::default();
 
         // Assert
-        assert_eq!(
-            (config.logical_width, config.logical_height),
-            (640, 360)
-        );
+        assert_eq!((config.logical_width, config.logical_height), (640, 360));
     }
 }
