@@ -16,11 +16,18 @@ use crate::input::{GameKey, InputState, RepeatConfig};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
-use winit::window::{Window, WindowId};
+use winit::window::WindowId;
+
+// 向上层重新导出窗口层的类型。
+//
+// 上层需要命名这两个类型才能接收 `AppHandler::on_resume` 的参数，但
+// 不应为此直接依赖 winit——本项目只允许 ll-platform 接触窗口库，
+// 这样将来更换窗口库时只需改这一个 crate，上层源码一行不动。
+pub use winit::dpi::PhysicalSize;
+pub use winit::window::Window;
 
 /// 窗口配置。
 #[derive(Debug, Clone)]

@@ -5,9 +5,8 @@
 //! ——`GpuContext` 只负责「能不能画」，不关心「画多大」。
 
 use crate::RenderError;
+use ll_platform::window::{PhysicalSize, Window};
 use std::sync::Arc;
-use winit::dpi::PhysicalSize;
-use winit::window::Window;
 
 /// 持有 wgpu 设备、队列与窗口 surface。
 ///
