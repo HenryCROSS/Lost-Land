@@ -113,23 +113,67 @@ EOF
 
 **Files:** 创建 `crates/ll-sim/{Cargo.toml, src/lib.rs, src/entity.rs}`；修改 `crates/ll-world/src/state.rs`
 
-> ## 裁定：不使用 ECS 库，用世代索引竞技场
+> ## 裁定：采用 ECS 的**列式存储**思想，但不引入 ECS 框架
 >
-> 规格 §3 技术栈表列了 `hecs` 作为实体存储。**本阶段不采用**：
+> 规格 §3 技术栈表列了 `hecs`。**本阶段不采用该库，但要采用它最核心的那个思想。**
 >
-> 1. **`WorldState` 必须完整序列化且迭代顺序确定。** ECS 的原型存储让序列化与确定性迭代都变复杂，而这两条是模式3 自由读档与确定性重放的地基。
-> 2. **ECS 的优势用不上。** 它擅长「多种组件组合的稀疏查询」，而本项目的 agent 相当同质；背景 NPC 走批量公式（见 Agent 目标与经济 §7.2），不做逐实体组件查询。
-> 3. **零依赖更可控。** 世代索引竞技场约 100 行，完全可测。
+> ### 为什么需要列式存储（SoA）
 >
-> **实施第一步须更新规格 §3 技术栈表**，把 `hecs` 一行改为「自研世代索引竞技场」并注明理由——否则就是文档与代码不一致（§13 视为缺陷）。
+> 薄层人口要容纳数十万到数百万个 NPC，且靠**批量公式**驱动（见 [Agent 目标与经济](../../../knowledge/design/agent-goals-and-economy.md) §7.2）。**批量算一百万个钱包是一次列式操作**——若 `Agent` 是十来个字段的结构体存在 `Vec<Agent>`（行式 / AoS），只读 `wallet` 一个字段也会把整条缓存行拉进来，**十倍的内存带宽浪费**。
+>
+> ### 为什么不要 ECS 框架
+>
+> | ECS 的组成 | 需要吗 |
+> |---|---|
+> | **列式存储（SoA）** | **需要**——薄层批量计算全靠它 |
+> | 原型动态分组 | **不需要**——薄层字段是固定模式，人人一样，动态分组只有开销没有收益 |
+> | 稀疏组件查询 | **不需要**——不做「找出同时具备 A 与 B 组件的实体」 |
+> | 系统调度器 | **不需要**——已有时间轴与 Intent 管线 |
+>
+> `hecs` 的原型机制是为「组件动态增删」设计的，而我们的薄层是固定模式——用它等于付了原型管理的代价却拿不到收益，还要额外跟它的序列化与**迭代顺序不确定性**搏斗，而后者恰是自由读档与确定性重放的地基。
+>
+> ### 两层用不同的排布
+>
+> | 层 | 规模 | 排布 | 理由 |
+> |---|---|---|---|
+> | **薄层**（被记住） | 数十万～数百万 | **列式 SoA** | 批量遍历单一字段，可向量化 |
+> | **厚层**（被模拟） | 数百，有界 | **行式 AoS** | 数量少、按实体随机访问、一次读全部字段 |
+>
+> **实施第一步须更新规格 §3 技术栈表**，把 `hecs` 一行改为「自研列式实体存储（采用 ECS 的 SoA 思想，不引入 ECS 框架）」并注明理由——否则就是文档与代码不一致（§13 视为缺陷）。
 
 **Interfaces Produces:**
 - `pub struct EntityId { index: u32, generation: u32 }`
-- `pub struct Arena<T>`：`new`、`spawn(T) -> EntityId`、`get(EntityId) -> Option<&T>`、`get_mut`、`despawn(EntityId) -> bool`、`iter()`、`len()`
-- `pub struct Agent`（字段见下）
-- `WorldState` 新增 `pub agents: Arena<Agent>`、`pub timeline: Timeline`
+- `pub struct ThinPopulation`（列式 SoA）：`spawn`、`get_slot(EntityId) -> Option<Slot>`、`wallet_of(EntityId) -> i64`、`batch_update_wallets(...)`、`promote(EntityId) -> Agent`、`rebase(EntityId)`、`len()`
+- `pub struct Arena<Agent>`（行式 AoS，厚层）：`spawn`、`get`、`get_mut`、`despawn`、`iter`、`len`
+- `WorldState` 新增 `pub population: ThinPopulation`、`pub actors: Arena<Agent>`、`pub timeline: Timeline`
 
 > **世代索引解决悬垂 ID**：实体死亡后槽位被复用，旧 ID 因世代号不匹配而查询失败，而不是静默指向新实体。回合制里尤其重要——时间轴队列可能残留已死实体的条目。
+
+### 薄层：列式，容纳数百万
+
+```rust
+/// 薄层人口。字段是固定模式，人人一样，故用列式排布。
+///
+/// 每个 `Vec` 是一列，同一下标对应同一个 NPC。批量更新钱包时遍历的是
+/// 一条连续的 `Vec<i64>`，完全可向量化——若改成 `Vec<Agent>` 行式排布，
+/// 只读钱包一个字段也会把整条缓存行拉进来，浪费十倍内存带宽。
+pub struct ThinPopulation {
+    generation:    Vec<u32>,
+    settlement:    Vec<u16>,
+    profession:    Vec<ContentIndex>,
+    family:        Vec<FamilyId>,
+    /// 钱包的基准值。重定基准时刷新。
+    wallet_rebase: Vec<i64>,
+    /// 钱包相对公式结果的偏移量。玩家给钱、抢劫只改这个。
+    wallet_delta:  Vec<i64>,
+    /// 上次重定基准的时刻。
+    rebase_at:     Vec<Tick>,
+}
+```
+
+**钱包不是直接存的值，而是 `公式(种子, id, 距 rebase_at 的时长) + wallet_delta`。** 这让被玩家动过的 NPC **立刻能回到批量公式**，不必永久占用昂贵的模拟槽位——见 [Agent 目标与经济](../../../knowledge/design/agent-goals-and-economy.md) 的「棘轮问题」一节。
+
+### 厚层：行式，数量有界
 
 ```rust
 pub struct Agent {
@@ -141,9 +185,9 @@ pub struct Agent {
     // ↓ 以下四个 P3 可留空，但字段必须现在就有。
     // 往 WorldState 加字段意味着存档迁移，而存档格式在 P5 冻结——
     // P3 加是零成本，P8 加要写迁移链。
-    /// 归属列表（势力/宗教/行会/文化）。见 society-and-affiliation.md
+    /// 归属列表（势力/宗教/行会/文化/家族）。见 society-and-affiliation.md
     pub affiliations: Vec<Affiliation>,
-    /// 钱包，最小货币单位。见 agent-goals-and-economy.md
+    /// 钱包，最小货币单位。厚层直接存值，不走公式。
     pub wallet: i64,
     /// 当前职业，指向注册表。
     pub profession: ContentIndex,
@@ -152,6 +196,10 @@ pub struct Agent {
 }
 ```
 
+**厚层用行式（AoS）是刻意的**：数量少、按实体随机访问、一次要读它的全部字段，行式排布反而更优。**两层用不同排布不是不一致，是各自匹配访问模式。**
+
+> **P3 阶段厚层可以只有玩家与几个敌人，薄层可以是空的。** 但**两层的结构必须现在就建立**——它们决定 `WorldState` 的形状，而存档格式在 P5 冻结。
+
 - [ ] **TDD 循环**，测试至少覆盖：
 - `新生成的实体可以按标识取回`
 - `销毁后原标识无法再取到实体`
@@ -159,8 +207,52 @@ pub struct Agent {
 - `销毁不存在的实体返回假而非崩溃`
 - `序列化往返后实体数量不变`
 - `世代号溢出时槽位被弃用而非回绕`（回绕会让旧标识意外复活）
+- `薄层各列的长度恒相等`（列式存储最容易出的错：某一列忘了同步 push）
+- `钱包由基准值与偏移量共同决定`
+- `重定基准后偏移归零而钱包值不变`（重定基准的正确性判据）
 
 - [ ] **提交**（规格更新单独一次 `docs:` 提交）
+
+---
+
+### Task 2b：名字生成——纯函数，零存储
+
+**Files:** `crates/ll-sim/src/naming.rs`
+
+**Interfaces Produces:**
+- `pub struct NamingRules { pub onsets: Vec<String>, pub nuclei: Vec<String>, pub codas: Vec<String>, pub syllables: (u8, u8), pub surname_first: bool }`
+- `pub fn given_name(rules: &NamingRules, seed: u64, entity: EntityId) -> String`
+- `pub fn surname(rules: &NamingRules, seed: u64, family: FamilyId) -> String`
+- `pub fn full_name(rules: &NamingRules, seed: u64, entity: EntityId, family: FamilyId) -> String`
+
+> ## 为什么名字必须是纯函数
+>
+> 每个 NPC 都有名字，而 NPC 可达数百万。**若把名字存成字符串，光名字就要占几十兆，且要跟进存档迁移。**
+>
+> 名字是纯函数则**零存储**：
+>
+> ```
+> 名 = 音素表(文化, hash(种子, entity_id))
+> 姓 = 音素表(文化, hash(种子, family_id))     ← 同族同姓，白送
+> 全名 = 按文化的姓名顺序拼接
+> ```
+>
+> 任何时候都能重算，同一个 NPC 每次算出来永远一样。DF 用几万个矮人验证过这条：起名字本身极便宜，与性能瓶颈毫无关系。
+>
+> **三个白送的效果**：每个文化一套音素表，「这名字听起来像山地族」不需额外设计；姓氏随家族 ID 派生，联姻改姓与子女继承都是自然结果；玩家改名或剧情赐名存成偏移，未改过的不占存储——与钱包同一个模式。
+
+**必须用 `DetRng::for_entity` 而非任何全局随机**，否则同一 NPC 的名字会因调用顺序而变。
+
+- [ ] **TDD 循环**，测试至少覆盖：
+- `同一实体每次生成的名字相同`
+- `不同实体生成不同的名字`
+- `同一家族的成员姓氏相同`
+- `不同家族的姓氏不同`
+- `姓在前的文化按其顺序拼接`
+- `音素表为空时不崩溃而返回占位名`（mod 可能提供空表）
+- `名字生成不依赖调用顺序`（连续生成 A、B 与先 B 后 A，结果一致）
+
+- [ ] **提交**
 
 ---
 
