@@ -1,0 +1,27 @@
+[package]
+name = "ll-render"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的渲染层：wgpu 精灵批渲染、图集、相机、图层、Y 排序"
+
+[dependencies]
+ll-core = { path = "../ll-core" }
+ll-platform = { path = "../ll-platform" }
+# GpuContext::new 直接接收 ll-platform 传来的 winit::window::Window /
+# PhysicalSize，因此需要直接依赖 winit 才能命名这些类型；只开 rwh_06——
+# wgpu 的 surface 创建靠它拿 raw-window-handle，窗口后端（x11/wayland）
+# 由 ll-platform 负责，这里不需要重复声明。
+winit = { version = "0.30", default-features = false, features = ["rwh_06"] }
+wgpu = "30"
+bytemuck = { version = "1.25", features = ["derive"] }
+# 只启用 PNG：图集是我们自己资产管线的产物，格式由我们决定，
+# 没必要为此把 JPEG/GIF/TIFF 等一整套解码器编进来。
+image = { version = "0.25", default-features = false, features = ["png"] }
+pollster = "1.0"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+
+[dev-dependencies]
+proptest.workspace = true
