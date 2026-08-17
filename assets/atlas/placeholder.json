@@ -1,0 +1,29 @@
+{
+    "image": "placeholder.png",
+    "entries": [
+        {
+            "name": "hero_idle_0",
+            "rect": { "x": 0, "y": 0, "width": 16, "height": 24 },
+            "pivot": { "x": 8, "y": 24 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "boss_idle_0",
+            "rect": { "x": 16, "y": 0, "width": 32, "height": 48 },
+            "pivot": { "x": 16, "y": 48 },
+            "footprint": { "width": 2, "height": 2 }
+        },
+        {
+            "name": "terrain_grass",
+            "rect": { "x": 48, "y": 0, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "terrain_dirt",
+            "rect": { "x": 48, "y": 16, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        }
+    ]
+}
