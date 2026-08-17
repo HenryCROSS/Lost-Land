@@ -19,6 +19,12 @@
 ### 决策记录
 
 - [0001 — Steel 沙箱能力实测](decisions/0001-steel-sandbox-verification.md) — Steel 能否保证 mod 脚本不搞死游戏进程
+- [0002 — 世界状态一律用整数](decisions/0002-integer-only-world-state.md) — 为什么禁止浮点，以及最容易破防的那一处
+- [0003 — winit 版本与 feature 策略](decisions/0003-winit-dependency-policy.md) — 为什么锁 0.30、为什么裁 feature 而非豁免公告
+
+### 许可证
+
+- [2026-08-16 P0 收尾扫描](licenses/2026-08-16-p0-scan.md) — 四项全过；含「没有远程就必须手工跑」的提醒
 
 ### 协作
 
