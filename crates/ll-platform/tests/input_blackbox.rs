@@ -29,17 +29,22 @@ fn apply(input: &mut InputState, key: GameKey, op: Op) {
 
 proptest! {
     #[test]
-    fn 刚按下为真时必然处于按住状态(ops in prop::collection::vec(op_strategy(), 0..64)) {
-        // 「刚按下但没按住」是自相矛盾的状态，任何操作序列都不该产生它。
+    fn 刚按下的判定只能由结束帧清除(ops in prop::collection::vec(op_strategy(), 0..64)) {
+        // just_pressed 是「本帧内曾按下过」这一事实的记录，与当前是否按住无关。
+        // 除 end_frame 外，任何操作都不得让它由真变假——否则同一帧内按下又
+        // 松开的快速点击会被静默丢弃。
         // Arrange
         let mut input = InputState::new();
         let key = GameKey::Confirm;
 
         // Act & Assert
         for op in ops {
+            let before = input.was_just_pressed(key);
             apply(&mut input, key, op);
-            if input.was_just_pressed(key) {
-                prop_assert!(input.is_held(key));
+            let after = input.was_just_pressed(key);
+
+            if before && !after {
+                prop_assert!(matches!(op, Op::EndFrame));
             }
         }
     }

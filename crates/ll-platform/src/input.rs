@@ -85,13 +85,13 @@ impl InputState {
 
     /// 记录一次松开。
     ///
-    /// 同时清「刚按下」标志：若不清，按下后未等 `end_frame` 就松开会留下
-    /// 「刚按下为真但未按住」的自相矛盾状态——这正是黑箱属性测试
-    /// （见 `tests/input_blackbox.rs`）撞出的问题。
+    /// **刻意不清除「刚按下」标志**：`just_pressed` 只能由 `end_frame` 清除。
+    /// 「本帧内曾按下过」与「当前是否按住」是两个独立事实——若在此处一并
+    /// 清除，同一帧内按下又松开的快速点击就会被静默丢弃。本项目主循环会在
+    /// 玩家思考的空窗期推进离屏世界模拟，慢帧属预期常态，届时丢输入的概率
+    /// 恰恰最高。
     pub fn release(&mut self, key: GameKey) {
-        let index = key.index();
-        self.held[index] = false;
-        self.just_pressed[index] = false;
+        self.held[key.index()] = false;
     }
 
     /// 该键当前是否被按住。
@@ -196,5 +196,19 @@ mod tests {
 
         // Assert
         assert!(!input.is_held(GameKey::Down));
+    }
+
+    #[test]
+    fn 松开不会撤销本帧的刚按下判定() {
+        // 同一帧内按下又松开的快速点击必须仍被游戏看到。
+        // Arrange
+        let mut input = InputState::new();
+        input.press(GameKey::Confirm);
+
+        // Act
+        input.release(GameKey::Confirm);
+
+        // Assert
+        assert!(input.was_just_pressed(GameKey::Confirm));
     }
 }
