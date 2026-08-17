@@ -3,13 +3,18 @@
 `placeholder.png` 与 `placeholder.json` 是**程序生成的临时占位资产**，
 不是美术成品。
 
-- `placeholder.png`：64×64 RGBA PNG，由 `ll-render` Task 5 提交时的一段
+- `placeholder.png`：64×72 RGBA PNG，由 `ll-render` Task 5 提交时的一段
   一次性脚本（未随本次提交保留）生成，纯色块拼出四块内容：16×24 的
   「普通单位」、32×48 的「重点目标」、两块 16×16 地形。每个单位顶部
   留了一小块浅色标记，仅用来在测试截图里辨认朝向，不代表任何美术设计。
+  Task 9 验收 demo 需要展示循环播放的行走动画，又用另一段一次性脚本
+  （同样未随本次提交保留）在原图未使用的列 0、行 24-72 区域追加了两帧
+  行走姿态（`hero_walk_0`/`hero_walk_1`，脚部标记左右交替），画布高度
+  因此从 64 增至 72；原有四块内容的像素**未被改动**，仍在原坐标。
 - `placeholder.json`：与上图配套的 [`ll_render::atlas::AtlasMetadata`]
-  元数据，条目名 `hero_idle_0`、`boss_idle_0`、`terrain_grass`、
-  `terrain_dirt` 是内部标识符，供渲染层单测与集成测试引用。
+  元数据，条目名 `hero_idle_0`、`hero_walk_0`、`hero_walk_1`、
+  `boss_idle_0`、`terrain_grass`、`terrain_dirt` 是内部标识符，供渲染层
+  单测与集成测试引用。
 
 ## 待办
 

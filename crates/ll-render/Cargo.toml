@@ -20,3 +20,10 @@ tracing = "0.1"
 
 [dev-dependencies]
 proptest.workspace = true
+
+# 默认 examples 的 test = false：cargo test --workspace 只保证它们能编译，
+# 不会跑里面的 #[test]。这个 demo 里的 UV 换算、棋盘格、Y 排序平局等
+# 逻辑值得被 `cargo test --workspace` 真正覆盖，而不只是编译检查。
+[[example]]
+name = "p1_acceptance"
+test = true
