@@ -5,9 +5,16 @@ edition.workspace = true
 license.workspace = true
 description = "迷途大陆的纯数据基础层：环面坐标、确定性随机、命名空间标识、世界时间"
 
-# ll-core 必须保持零运行时依赖。它被所有其他 crate 依赖，
-# 任何引入这里的依赖都会传染给整个项目。
+# ll-core 默认零运行时依赖。它被所有其他 crate 依赖，任何强制引入的
+# 依赖都会传染给整个项目。`serde` 是唯一例外，且以 `optional = true`
+# 的可选依赖形式存在：不开启 `serde` feature 就不会被编译进来，因此
+# 不违反上述约束——开启方（如 ll-world，为了让 WorldState 完整可
+# 序列化）自行承担这份依赖成本。
 [dependencies]
+serde = { version = "1", optional = true, features = ["derive"] }
+
+[features]
+serde = ["dep:serde"]
 
 [dev-dependencies]
 proptest.workspace = true

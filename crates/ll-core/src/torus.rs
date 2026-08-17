@@ -20,7 +20,15 @@
 /// 距离与位移是尺寸的方法而非坐标的方法，因为脱离世界尺寸，两个环面
 /// 坐标之间的距离根本无法定义。这个 API 形状让「忘记传尺寸」变成编译
 /// 错误，而不是运行时的错误答案。
+/// `serde` 派生由同名 feature 开关（默认关闭）：见 `ll-core` 的
+/// `Cargo.toml` 顶部说明。`WorldState` 需要它才能完整序列化。
+///
+/// 派生 `Deserialize` 意味着反序列化不会重新经过 [`TorusSize::new`] 的
+/// 校验——一份被篡改或损坏的存档理论上能反序列化出零尺寸的
+/// `TorusSize`。这是本任务允许的范围（只加派生、不改逻辑）内接受的
+/// 已知代价，不是没考虑到。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TorusSize {
     width: u32,
     height: u32,

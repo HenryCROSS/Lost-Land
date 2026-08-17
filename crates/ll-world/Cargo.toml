@@ -6,10 +6,15 @@ license.workspace = true
 description = "迷途大陆的世界层：世界状态、环面地形、视野、昼夜四季"
 
 [dependencies]
-ll-core = { path = "../ll-core" }
+# 开启 ll-core 的可选 serde feature：WorldState 需要 Tick 与 TorusSize
+# 可序列化才能完整往返（见 ll-core/Cargo.toml 顶部对该 feature 的说明）。
+ll-core = { path = "../ll-core", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 
 [dev-dependencies]
 proptest.workspace = true
 criterion.workspace = true
+# 仅用于序列化往返测试：验证 WorldState 能经过一种真实的 serde 格式
+# 完整往返，而不只是停留在 derive 能编译这一层面。
+serde_json = "1"

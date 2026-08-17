@@ -44,7 +44,11 @@ pub enum Season {
 }
 
 /// 世界时刻，以刻度计，从世界创建那一刻开始计数。
+///
+/// `serde` 派生由同名 feature 开关（默认关闭）：见 `ll-core` 的
+/// `Cargo.toml` 顶部说明。`WorldState` 需要它才能完整序列化。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Tick(pub i64);
 
 impl Tick {
