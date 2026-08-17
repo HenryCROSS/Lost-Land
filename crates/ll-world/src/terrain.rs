@@ -1,5 +1,7 @@
 //! 地形种类与其游戏规则属性。
 
+use serde::Deserialize;
+
 /// 地形种类。
 ///
 /// 用 `u16` 而非枚举：mod 需要能注册新地形，而枚举无法在运行时扩展。
@@ -11,8 +13,59 @@
 /// `8..100` 这段编号：自然地形以后要加沼泽、熔岩之类新种类，建筑地形
 /// 以后要加桥梁、陷阱之类新种类，各自往后接着编即可，不必为了插入
 /// 新种类而把已经序列化进存档的既有数值往后挪。
+///
+/// # 反序列化必须校验是否已知（与 [`Self::is_known`] 同源）
+///
+/// 若直接派生 `Deserialize`，任意 `u16` 都能直通成一个 `TerrainKind`。
+/// 存档是外部不可信输入，篡改档里混入的未知 ID 会一路传到
+/// [`Self::blocks_sight`]/[`Self::blocks_move`]，撞上那两个函数内部的
+/// `debug_assert!(is_known())`——debug 构建直接 panic，release 构建
+/// `debug_assert!` 不生效，未知地形被静默当成「可通行且透明的地板」，
+/// 两种表现都不可接受（规格 §14.3：任何输入都不得 panic，只允许返回
+/// `Err`）。因此这里同样用 `#[serde(try_from = "TerrainKindRepr")]` 让
+/// 反序列化必经一次 [`Self::is_known`] 校验，不给绕过的余地——与
+/// [`crate::state::WorldState`]、`ll_core::torus::TorusSize` 是同一套
+/// 修法（裁定 P2-6）。`Serialize` 不受影响，仍是直接派生。
+///
+/// # P4 迁移债务：这条校验在 mod 注册表落地后需要改口径
+///
+/// 现在的校验标准是「是否是本体常量」（[`Self::is_known`]），这意味着
+/// **mod 注册的自定义地形现阶段无法反序列化**——存档里出现任何注册表
+/// ID 都会被拒。这是刻意的取舍，不是遗漏：P2 阶段还没有 mod 注册表（见
+/// `docs/superpowers/specs/2026-08-16-lostland-design.md` §15 P4 行的
+/// 迁移债务记录），此刻「拒绝未知 ID」比「静默接受」更安全——静默接受
+/// 一个不知道规则的地形，会让它在移动/视线判断里被当成任意值处理，
+/// 后果比拒绝加载这份存档更难排查。**P4 接入注册表后，这里的校验标准
+/// 必须从「是否是本体常量」改为「是否已在注册表中登记」**，否则那时
+/// 所有 mod 地形都会继续被这层校验挡在存档之外。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "TerrainKindRepr")]
 pub struct TerrainKind(pub u16);
+
+/// [`TerrainKind`] 反序列化的中转表示。
+///
+/// 见 [`TerrainKind`] 文档「反序列化必须校验是否已知」一节：这个类型
+/// 本身没有任何不变式，只是让 serde 有一个「先落地成普通整数，再交给
+/// [`TryFrom`] 校验」的中转落点。newtype 结构体的 serde 表示是透明的
+/// （直接是内部整数，不额外包一层对象），因此这个中转类型与
+/// [`TerrainKind`] 在存档里的字节形状完全一致，不影响既有存档的兼容性。
+#[derive(Deserialize)]
+struct TerrainKindRepr(u16);
+
+impl TryFrom<TerrainKindRepr> for TerrainKind {
+    type Error = String;
+
+    /// 唯一的构造路径：委托给 [`TerrainKind::is_known`]，拒绝任何不在
+    /// 本体常量之列的 ID。取舍与 P4 迁移债务见 [`TerrainKind`] 文档。
+    fn try_from(repr: TerrainKindRepr) -> Result<Self, Self::Error> {
+        let kind = TerrainKind(repr.0);
+        if kind.is_known() {
+            Ok(kind)
+        } else {
+            Err(format!("未注册的地形 ID: {}", repr.0))
+        }
+    }
+}
 
 impl TerrainKind {
     // ---- 自然地形：0..8 ----
@@ -277,5 +330,31 @@ mod tests {
         // 用 u32::MAX 而非 Option，让寻路算法不必对每格做分支判断。
         // Arrange & Act & Assert
         assert_eq!(TerrainKind::DEEP_WATER.move_cost(), u32::MAX);
+    }
+
+    #[test]
+    fn 未注册的地形编号无法反序列化() {
+        // 模拟被篡改或损坏的存档：9999 不在本体常量之列。
+        // Arrange
+        let json = "9999";
+
+        // Act
+        let result: Result<TerrainKind, _> = serde_json::from_str(json);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 本体地形可以正常往返() {
+        // Arrange
+        let original = TerrainKind::MOUNTAIN;
+        let json = serde_json::to_string(&original).expect("本体常量必然可序列化");
+
+        // Act
+        let decoded: TerrainKind = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
     }
 }
