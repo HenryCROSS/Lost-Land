@@ -20,18 +20,49 @@
 /// 距离与位移是尺寸的方法而非坐标的方法，因为脱离世界尺寸，两个环面
 /// 坐标之间的距离根本无法定义。这个 API 形状让「忘记传尺寸」变成编译
 /// 错误，而不是运行时的错误答案。
+///
 /// `serde` 派生由同名 feature 开关（默认关闭）：见 `ll-core` 的
 /// `Cargo.toml` 顶部说明。`WorldState` 需要它才能完整序列化。
 ///
-/// 派生 `Deserialize` 意味着反序列化不会重新经过 [`TorusSize::new`] 的
-/// 校验——一份被篡改或损坏的存档理论上能反序列化出零尺寸的
-/// `TorusSize`。这是本任务允许的范围（只加派生、不改逻辑）内接受的
-/// 已知代价，不是没考虑到。
+/// # 反序列化必须重新经过 `new` 的校验（裁定 P2-6）
+///
+/// 若直接派生 `Deserialize`，serde 会绕过私有字段的访问控制、绕过
+/// [`TorusSize::new`] 直接填字段。存档是外部不可信输入——玩家会手改、
+/// 文件会损坏、旧版本存档可能带来意料之外的值——零尺寸的 `TorusSize`
+/// 一旦这样混进来，[`TorusSize::wrap`] 里的 `rem_euclid` 会直接除零
+/// panic。因此这里没有直接派生 `Deserialize`，而是用 `#[serde(try_from
+/// = "TorusSizeRepr")]` 让反序列化必经一次 [`TorusSize::new`] 调用，
+/// 不给绕过的余地。`Serialize` 不受影响，仍是直接派生——序列化只是把
+/// 已经合法的值写出去，没有校验可绕。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "TorusSizeRepr"))]
 pub struct TorusSize {
     width: u32,
     height: u32,
+}
+
+/// [`TorusSize`] 反序列化的中转表示，仅在 `serde` feature 下存在。
+///
+/// 见 [`TorusSize`] 文档「反序列化必须重新经过 `new` 的校验」一节：
+/// 这个类型本身没有任何不变式，只是让 serde 有一个「先落地成普通字段，
+/// 再交给 [`TryFrom`] 校验」的中转落点。
+#[cfg(feature = "serde")]
+#[derive(serde::Deserialize)]
+struct TorusSizeRepr {
+    width: u32,
+    height: u32,
+}
+
+#[cfg(feature = "serde")]
+impl TryFrom<TorusSizeRepr> for TorusSize {
+    type Error = &'static str;
+
+    /// 唯一的构造路径：委托给 [`TorusSize::new`]，宽高非零与不超过
+    /// [`TorusSize::MAX_EXTENT`] 这两条校验因此对反序列化同样生效。
+    fn try_from(raw: TorusSizeRepr) -> Result<Self, Self::Error> {
+        TorusSize::new(raw.width, raw.height).ok_or("世界尺寸的宽高必须为正，且不超过 MAX_EXTENT")
+    }
 }
 
 /// 环面世界上的一个位置。
@@ -231,5 +262,53 @@ mod tests {
 
         // Assert
         assert!(result.is_none());
+    }
+
+    // 裁定 P2-6：反序列化必须重新经过 TorusSize::new 的校验，见本文件
+    // 顶部 TorusSize 文档「反序列化必须重新经过 new 的校验」一节。
+    // 这三条测试只在 serde feature 开启时编译——不开启这个 feature，
+    // serde::Deserialize 这个 trait 根本不存在，无从测起。
+    #[cfg(feature = "serde")]
+    mod serde_tests {
+        use super::*;
+
+        #[test]
+        fn 零宽度的世界尺寸无法反序列化() {
+            // 直接构造中转表示的 JSON，绕过 TorusSize::new 的入口，
+            // 模拟被篡改或损坏的存档。
+            // Arrange
+            let json = r#"{"width":0,"height":10}"#;
+
+            // Act
+            let result: Result<TorusSize, _> = serde_json::from_str(json);
+
+            // Assert
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn 零高度的世界尺寸无法反序列化() {
+            // Arrange
+            let json = r#"{"width":10,"height":0}"#;
+
+            // Act
+            let result: Result<TorusSize, _> = serde_json::from_str(json);
+
+            // Assert
+            assert!(result.is_err());
+        }
+
+        #[test]
+        fn 合法的世界尺寸可以正常往返() {
+            // Arrange
+            let original = TorusSize::new(43, 25).expect("43x25 是合法的 TorusSize");
+
+            // Act
+            let json = serde_json::to_string(&original).expect("合法值必然可序列化");
+            let decoded: TorusSize = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+            // Assert
+            assert_eq!(decoded, original);
+        }
     }
 }

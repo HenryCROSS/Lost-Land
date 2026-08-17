@@ -974,6 +974,7 @@ dependencies = [
  "criterion",
  "proptest",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

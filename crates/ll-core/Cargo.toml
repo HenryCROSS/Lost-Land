@@ -19,6 +19,9 @@ serde = ["dep:serde"]
 [dev-dependencies]
 proptest.workspace = true
 criterion.workspace = true
+# 仅用于 serde feature 开启时的反序列化校验测试（裁定 P2-6），验证
+# TorusSize 经真实的 serde 格式往返，而不只是停留在 derive 能编译。
+serde_json = "1"
 
 [[bench]]
 name = "torus"
