@@ -160,7 +160,7 @@ mod tests {
     }
 
     #[test]
-    fn 跨块边界的写入互不干扰() {
+    fn 跨块边界的写入不会污染本块() {
         // 块边界是分块存储最容易出错的地方：算错块索引会让写入落到邻块。
         // Arrange
         let mut grid = grid();
@@ -173,6 +173,24 @@ mod tests {
 
         // Assert
         assert_eq!(grid.terrain_at(inside), TerrainKind::SAND);
+    }
+
+    #[test]
+    fn 跨块边界的写入能在邻块正确读回() {
+        // 只验前一条「本块未被污染」还不够：块索引算错也可能让写入
+        // 落到第三块而非邻块，那样 inside 依然不受影响，此测试才能
+        // 揭出这类错误。
+        // Arrange
+        let mut grid = grid();
+        let inside = grid.world().wrap(31, 31);
+        let across = grid.world().wrap(32, 32);
+
+        // Act
+        grid.set_terrain(inside, TerrainKind::SAND);
+        grid.set_terrain(across, TerrainKind::SNOW);
+
+        // Assert
+        assert_eq!(grid.terrain_at(across), TerrainKind::SNOW);
     }
 
     #[test]

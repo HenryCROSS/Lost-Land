@@ -237,4 +237,27 @@ mod tests {
         // Act & Assert
         assert_eq!(noise.octaves(5, 7, 0), noise.sample(5, 7));
     }
+
+    #[test]
+    fn 五次多项式平滑在下边界返回零() {
+        // sample() 里传给 smooth 的 frac 由 rem_euclid(CELL_SIZE) *
+        // SCALE_MAX / CELL_SIZE 算出，整数截断下最大只到 937，永远碰
+        // 不到上边界——必须直接调用 smooth 才能锁住 0 这一端。
+        // Arrange & Act
+        let value = TileableNoise::smooth(0);
+
+        // Assert
+        assert_eq!(value, 0);
+    }
+
+    #[test]
+    fn 五次多项式平滑在上边界返回上界值() {
+        // 理由同上一条：sample() 的间接调用永远到不了 SCALE_MAX 这一端，
+        // 必须直接调用 smooth 才能验证它。
+        // Arrange & Act
+        let value = TileableNoise::smooth(SCALE_MAX);
+
+        // Assert
+        assert_eq!(value, SCALE_MAX);
+    }
 }

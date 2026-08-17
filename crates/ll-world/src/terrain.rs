@@ -73,11 +73,48 @@ impl TerrainKind {
     /// 下楼梯：可通行，比平地略慢，不阻挡视线。
     pub const STAIRS_DOWN: TerrainKind = TerrainKind(108);
 
+    /// 是否是当前版本已知的地形 ID。
+    ///
+    /// 用于 [`Self::blocks_sight`]/[`Self::blocks_move`]/[`Self::move_cost`]
+    /// 内部的 `debug_assert!`：P2 阶段还没有 mod 注册表（见
+    /// `docs/superpowers/specs/2026-08-16-lostland-design.md` §15 P4 行的
+    /// 迁移债务记录），任何不在本体常量之列的 ID 在这个阶段只可能来自
+    /// 两种情况——本体新增了地形常量却忘了把它加进这里，或者调用方
+    /// 传入了垃圾 ID。二者都该在开发期被发现。
+    fn is_known(self) -> bool {
+        matches!(
+            self,
+            TerrainKind::DEEP_WATER
+                | TerrainKind::SHALLOW_WATER
+                | TerrainKind::SAND
+                | TerrainKind::GRASS
+                | TerrainKind::FOREST
+                | TerrainKind::HILL
+                | TerrainKind::MOUNTAIN
+                | TerrainKind::SNOW
+                | TerrainKind::FLOOR_WOOD
+                | TerrainKind::FLOOR_STONE
+                | TerrainKind::WALL_WOOD
+                | TerrainKind::WALL_STONE
+                | TerrainKind::DOOR_CLOSED
+                | TerrainKind::DOOR_OPEN
+                | TerrainKind::WINDOW
+                | TerrainKind::STAIRS_UP
+                | TerrainKind::STAIRS_DOWN
+        )
+    }
+
     /// 该地形是否阻挡视线。
     ///
     /// 只有实体足够高大、足够密实的地形才返回真：森林的树冠、山地的
     /// 山体、墙体、关着的门。窗户特意不在此列——见 [`Self::WINDOW`]。
+    ///
+    /// 这是 FOV 每格都要过的热路径，未知 ID 用 `debug_assert!` 而非
+    /// `tracing::warn!` 提示：`debug_assert!` 只在 debug 构建生效，
+    /// release 零开销；无条件打日志的开销会在成千上万格的视野计算里
+    /// 累积起来，而且没法在 release 构建里关掉。
     pub fn blocks_sight(&self) -> bool {
+        debug_assert!(self.is_known(), "未注册的地形 ID: {self:?}");
         matches!(
             *self,
             TerrainKind::FOREST
@@ -88,8 +125,10 @@ impl TerrainKind {
         )
     }
 
-    /// 该地形是否完全不可通行。
+    /// 该地形是否完全不可通行。理由见 [`Self::blocks_sight`] 关于
+    /// `debug_assert!` 的说明——寻路同样每格都要调用这个函数。
     pub fn blocks_move(&self) -> bool {
+        debug_assert!(self.is_known(), "未注册的地形 ID: {self:?}");
         matches!(
             *self,
             TerrainKind::DEEP_WATER
@@ -108,7 +147,8 @@ impl TerrainKind {
     /// 「过得去但更慢」这种地形能被正确表达，而不是被压扁成布尔值。
     ///
     /// 未识别的自定义地形（mod 注册的 ID）默认按平地基准处理：这是
-    /// 对扩展 ID 最安全的兜底——既不无故挡路，也不无故挡视线。
+    /// 对扩展 ID 最安全的兜底——既不无故挡路，也不无故挡视线。开发期
+    /// 仍会经由 [`Self::blocks_move`] 内的 `debug_assert!` 被提示。
     pub fn move_cost(&self) -> u32 {
         if self.blocks_move() {
             return u32::MAX;
@@ -149,53 +189,86 @@ mod tests {
     }
 
     #[test]
-    fn 浅水可以通行但代价高于草地() {
+    fn 浅水可以通行() {
+        // Arrange & Act & Assert
+        assert!(!TerrainKind::SHALLOW_WATER.blocks_move());
+    }
+
+    #[test]
+    fn 浅水的移动代价高于草地() {
         // Arrange & Act
         let shallow_water_cost = TerrainKind::SHALLOW_WATER.move_cost();
         let grass_cost = TerrainKind::GRASS.move_cost();
 
         // Assert
-        assert!(!TerrainKind::SHALLOW_WATER.blocks_move());
         assert!(shallow_water_cost > grass_cost);
     }
 
     #[test]
-    fn 山可以通行但代价远高于平地() {
+    fn 山可以通行() {
+        // Arrange & Act & Assert
+        assert!(!TerrainKind::MOUNTAIN.blocks_move());
+    }
+
+    #[test]
+    fn 山的移动代价远高于平地() {
         // Arrange & Act
         let mountain_cost = TerrainKind::MOUNTAIN.move_cost();
         let grass_cost = TerrainKind::GRASS.move_cost();
 
         // Assert
-        assert!(!TerrainKind::MOUNTAIN.blocks_move());
         assert!(mountain_cost > grass_cost * 2);
     }
 
     #[test]
-    fn 森林阻挡视线但可以通行() {
+    fn 森林阻挡视线() {
         // Arrange & Act & Assert
         assert!(TerrainKind::FOREST.blocks_sight());
+    }
+
+    #[test]
+    fn 森林可以通行() {
+        // Arrange & Act & Assert
         assert!(!TerrainKind::FOREST.blocks_move());
     }
 
     #[test]
-    fn 窗不可通行但不阻挡视线() {
-        // 这是刻意设计而非疏漏：窗户可以隔窗放箭、也会被隔窗看见。
+    fn 窗不可通行() {
+        // 这是刻意设计而非疏漏：窗户可以隔窗放箭、也会被隔窗看见，
+        // 详见 TerrainKind::WINDOW 的文档注释。不要把这条断言删掉或
+        // 改成 assert!(!...)——那意味着有人把窗「修」成了墙。
         // Arrange & Act & Assert
         assert!(TerrainKind::WINDOW.blocks_move());
+    }
+
+    #[test]
+    fn 窗不阻挡视线() {
+        // 与上一条断言配对：窗挡路但不挡视线，这是刻意设计而非疏漏。
+        // Arrange & Act & Assert
         assert!(!TerrainKind::WINDOW.blocks_sight());
     }
 
     #[test]
-    fn 关着的门既不可通行也阻挡视线() {
+    fn 关着的门不可通行() {
         // Arrange & Act & Assert
         assert!(TerrainKind::DOOR_CLOSED.blocks_move());
+    }
+
+    #[test]
+    fn 关着的门阻挡视线() {
+        // Arrange & Act & Assert
         assert!(TerrainKind::DOOR_CLOSED.blocks_sight());
     }
 
     #[test]
-    fn 开着的门可通行且不阻挡视线() {
+    fn 开着的门可以通行() {
         // Arrange & Act & Assert
         assert!(!TerrainKind::DOOR_OPEN.blocks_move());
+    }
+
+    #[test]
+    fn 开着的门不阻挡视线() {
+        // Arrange & Act & Assert
         assert!(!TerrainKind::DOOR_OPEN.blocks_sight());
     }
 
