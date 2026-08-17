@@ -91,6 +91,11 @@ impl ContentIndex {
 }
 
 /// 字符串标识符与运行时索引之间的双向映射池。
+///
+/// **不变式：内部的哈希表永远不得被遍历。** 索引只能来自 `to_id` 的插入
+/// 顺序，而哈希表的遍历顺序不保证跨运行稳定——一旦有任何逻辑依赖它，
+/// 确定性存档与跨平台一致性会同时失效。若将来需要枚举全部标识符，
+/// 请遍历 `to_id`。
 #[derive(Debug, Default)]
 pub struct Interner {
     to_index: HashMap<NamespacedId, ContentIndex>,
@@ -108,6 +113,9 @@ impl Interner {
         if let Some(existing) = self.to_index.get(&id) {
             return *existing;
         }
+        // 四十亿条内容 ID 在现实中不会出现，但静默截断会让两个不同的
+        // 标识符映射到同一索引，属于最难排查的一类缺陷，故留一道断言。
+        debug_assert!(self.to_id.len() < u32::MAX as usize);
         // 索引即插入顺序下标，故 to_id 与 to_index 恒保持一致。
         let index = ContentIndex(self.to_id.len() as u32);
         self.to_id.push(id.clone());

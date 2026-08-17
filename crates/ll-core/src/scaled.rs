@@ -25,8 +25,22 @@ impl Milli {
     pub const ZERO: Milli = Milli(0);
 
     /// 由整数构造，自动放大 [`SCALE`] 倍。
+    ///
+    /// **输入必须满足 `|whole| <= i64::MAX / SCALE`**。超出该范围时，
+    /// debug 构建 panic、release 构建静默回绕。需要处理不可信输入时
+    /// 请改用 [`Self::checked_from_whole`]。
     pub const fn from_whole(whole: i64) -> Self {
         Milli(whole * SCALE)
+    }
+
+    /// 由整数构造，溢出时返回 [`None`]。
+    ///
+    /// 供来源不可信的数值使用（存档迁移、mod 数据表）。
+    pub const fn checked_from_whole(whole: i64) -> Option<Self> {
+        match whole.checked_mul(SCALE) {
+            Some(scaled) => Some(Milli(scaled)),
+            None => None,
+        }
     }
 
     /// 取整数部分，**向零截断**。
@@ -112,6 +126,18 @@ mod tests {
 
         // Act
         let result = huge.checked_mul_ratio(2, 1);
+
+        // Assert
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn 检查版构造在溢出时返回空值() {
+        // Arrange
+        let too_large = i64::MAX;
+
+        // Act
+        let result = Milli::checked_from_whole(too_large);
 
         // Assert
         assert_eq!(result, None);

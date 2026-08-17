@@ -18,8 +18,20 @@ use tracing_subscriber::EnvFilter;
 pub fn init_logging(verbose: bool) -> Result<(), PlatformError> {
     let default_level = if verbose { "debug" } else { "info" };
 
-    let filter =
-        EnvFilter::try_from_env("LOSTLAND_LOG").unwrap_or_else(|_| EnvFilter::new(default_level));
+    let filter = match EnvFilter::try_from_env("LOSTLAND_LOG") {
+        Ok(filter) => filter,
+        Err(error) => {
+            // 变量未设置是常态，内容非法则是开发者敲错了字。两者都返回 Err，
+            // 一视同仁地吞掉会让敲错的人完全得不到反馈，只能疑惑过滤器
+            // 为何不生效。此处只在变量确实被设置过时才告警。
+            if std::env::var_os("LOSTLAND_LOG").is_some() {
+                eprintln!(
+                    "LOSTLAND_LOG is set but could not be parsed ({error}); falling back to {default_level}"
+                );
+            }
+            EnvFilter::new(default_level)
+        }
+    };
 
     tracing_subscriber::fmt()
         .with_env_filter(filter)

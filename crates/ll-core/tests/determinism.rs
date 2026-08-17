@@ -15,7 +15,7 @@
 
 use ll_core::hashing::StateHasher;
 use ll_core::rng::DetRng;
-use ll_core::time::{TICKS_PER_DAY, Tick};
+use ll_core::time::{TICKS_PER_DAY, TICKS_PER_HOUR, Tick};
 use ll_core::torus::TorusSize;
 
 /// 由首次运行记录的黄金基准。修改前请阅读本文件顶部说明。
@@ -25,7 +25,7 @@ const EXPECTED_RNG_DIGEST: u64 = 7_219_837_048_615_413_302;
 const EXPECTED_TORUS_DIGEST: u64 = 5_790_311_870_083_093_695;
 
 /// 由首次运行记录的黄金基准。
-const EXPECTED_TIME_DIGEST: u64 = 18_277_905_380_052_857_537;
+const EXPECTED_TIME_DIGEST: u64 = 11_375_461_100_615_141_029;
 
 #[test]
 fn 随机序列的摘要跨平台稳定() {
@@ -68,9 +68,12 @@ fn 季节推进的摘要跨平台稳定() {
 
     // Act
     for day in 0..365_i64 {
-        let tick = Tick(day * TICKS_PER_DAY);
+        // 加小时偏移，使 hour_of_day 与 is_daylight 真正参与摘要。
+        // 原先采样点恒为当日 0 点，这两列是常量，等于没有被覆盖。
+        let tick = Tick(day * TICKS_PER_DAY + (day % 24) * TICKS_PER_HOUR);
         hasher.write_i64(tick.day_of_year());
         hasher.write_i64(tick.season() as i64);
+        hasher.write_i64(tick.hour_of_day());
         hasher.write_i64(tick.is_daylight() as i64);
     }
 

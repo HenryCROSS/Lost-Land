@@ -65,7 +65,7 @@ crates/
 - Delete: `src/main.rs`
 - Create: `deny.toml`
 - Create: `.github/workflows/ci.yml`
-- Create: `crates/ll-core/Cargo.toml`、`crates/ll-core/src/lib.rs` 及六个占位模块
+- Create: `crates/ll-core/Cargo.toml`、`crates/ll-core/src/lib.rs` 及七个占位模块
 
 **Interfaces:**
 - Consumes: 无（首个任务）
@@ -625,7 +625,8 @@ cargo test -p ll-core torus
 //!
 //! 只要项目中有任何一处写了普通的欧氏距离，就会出现「小地图上明明
 //! 相邻、寻路却绕了半个世界」这类缺陷——而且极难定位，因为出错的
-//! 地方看起来完全正常。CI 会静态检查禁止手写欧氏距离（规格 §7.1）。
+//! 地方看起来完全正常。该约束**自 P1 起**由 CI 静态检查强制；在此之前
+//! 由人工评审把关（规格 §7.1）。
 //!
 //! # 适用范围
 //!

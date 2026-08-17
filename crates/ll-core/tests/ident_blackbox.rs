@@ -37,10 +37,17 @@ proptest! {
     }
 
     #[test]
-    fn 任意输入都不会崩溃(raw in ".{0,64}") {
+    fn 任意输入要么被拒要么原样往返(raw in ".{0,64}") {
         // 标识符会来自第三方 mod 的清单文件，属于外部不可信输入。
         // 无论内容多畸形都只能返回 Err，绝不能 panic。
+        // 更进一步：凡是被接受的输入，其显示形式必须与原文一致——
+        // 否则存档写出的 ID 会与读入的对不上。
         // Act
-        let _ = NamespacedId::parse(&raw);
+        let parsed = NamespacedId::parse(&raw);
+
+        // Assert
+        if let Ok(id) = parsed {
+            prop_assert_eq!(id.to_string(), raw);
+        }
     }
 }
