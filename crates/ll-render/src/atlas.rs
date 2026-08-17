@@ -6,7 +6,7 @@
 
 use crate::RenderError;
 use crate::gpu::GpuContext;
-use crate::sprite::{Footprint, Pivot};
+use crate::sprite::{Footprint, Pivot, SpriteSize};
 use std::collections::HashSet;
 
 /// 图集纹理上的一块矩形区域，单位为像素，原点在图像左上角。
@@ -34,6 +34,21 @@ pub struct AtlasEntry {
     pub pivot: Pivot,
     /// 逻辑占地格数。
     pub footprint: Footprint,
+}
+
+impl AtlasEntry {
+    /// 这个条目的视觉像素尺寸，即帧矩形的宽高。
+    ///
+    /// [`SpriteSize`] 描述「画多大」，与描述「占几格」的 [`Footprint`]
+    /// 刻意分开（规格 §12.1，见 `sprite.rs` 模块文档）；这个方法是两者
+    /// 在图集条目上的唯一交汇点——把 [`FrameRect`] 的宽高转换成调用方
+    /// 应该用来绘制的视觉尺寸，而不需要自己伸手拆 `rect.width`/`rect.height`。
+    pub fn sprite_size(&self) -> SpriteSize {
+        SpriteSize {
+            width: self.rect.width,
+            height: self.rect.height,
+        }
+    }
 }
 
 /// 一张图集的完整元数据：所属图片文件与其中的全部条目。
@@ -147,6 +162,30 @@ fn validate_entries_within_image(
     Ok(())
 }
 
+/// 把图集条目的像素矩形换算成归一化 `(u, v, width, height)`。
+///
+/// 换算陷阱见 [`Atlas::uv_rect`] 文档；提成自由函数是为了不依赖真实
+/// GPU 纹理就能单测覆盖（同样的做法见 `gpu.rs` 的 `is_presentable`）。
+fn normalized_uv_rect(rect: FrameRect, image_width: u32, image_height: u32) -> [f32; 4] {
+    let inset_x = axis_inset(rect.width);
+    let inset_y = axis_inset(rect.height);
+    let image_width = image_width as f32;
+    let image_height = image_height as f32;
+
+    [
+        (rect.x as f32 + inset_x) / image_width,
+        (rect.y as f32 + inset_y) / image_height,
+        (rect.width as f32 - 2.0 * inset_x) / image_width,
+        (rect.height as f32 - 2.0 * inset_y) / image_height,
+    ]
+}
+
+/// 单边内缩量：正常帧取半个纹素（0.5px），窄于 1px 的极端帧退化为
+/// 半宽，保证 `size - 2*inset` 恒不为负。
+fn axis_inset(size: u16) -> f32 {
+    (size as f32 / 2.0).min(0.5)
+}
+
 /// 已上传到 GPU 的图集纹理及其元数据。
 ///
 /// 只持有 [`wgpu::TextureView`] 而非原始 [`wgpu::Texture`]：`Texture::create_view`
@@ -155,6 +194,10 @@ fn validate_entries_within_image(
 /// 额外持有一份原始句柄。
 pub struct Atlas {
     metadata: AtlasMetadata,
+    /// 图集纹理的真实像素尺寸，[`Self::uv_rect`] 把像素矩形换算成归一化
+    /// UV 时要除以它——绝不能用逻辑分辨率或任何其他尺寸代替（见该方法
+    /// 文档「换算陷阱」）。
+    size: (u32, u32),
     view: wgpu::TextureView,
     sampler: wgpu::Sampler,
 }
@@ -228,6 +271,7 @@ impl Atlas {
 
         Ok(Atlas {
             metadata,
+            size: (width, height),
             view,
             sampler,
         })
@@ -246,6 +290,40 @@ impl Atlas {
     /// 图集采样器，固定最近邻过滤。
     pub fn sampler(&self) -> &wgpu::Sampler {
         &self.sampler
+    }
+
+    /// 图集纹理的真实像素尺寸 `(width, height)`。
+    ///
+    /// 调用方（尤其是需要自行换算 UV 的场景）必须用这个值做分母，
+    /// 不能用逻辑分辨率或任何猜测值——见 [`Self::uv_rect`] 文档。
+    pub fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// 按条目名查出它在图集里的归一化 UV 矩形 `(u, v, width, height)`，
+    /// 供 [`crate::batch::SpriteInstance::uv_rect`] 直接使用。
+    ///
+    /// 这是渲染层的核心知识，不该留给每个调用方各自重新推导——两个
+    /// 换算陷阱都在这里被处理：
+    ///
+    /// 1. **必须除以图集纹理的真实像素尺寸**（[`Self::size`]），不是
+    ///    逻辑分辨率 640×360——图集与离屏渲染目标是两张完全不同尺寸的
+    ///    纹理，用错分母会让整张贴图的采样坐标系全错，表现为贴图整体
+    ///    错位或被拉伸/压缩，而不是某一处局部瑕疵。
+    /// 2. **半 texel 内缩**：即便采样器固定最近邻（见 [`Self::load`]），
+    ///    把 UV 精确算在两个纹素的分界线上仍可能因浮点误差被舍入到
+    ///    分界线另一侧，采样出邻居贴图的颜色——这是像素图集最常见也
+    ///    最难定位的花屏成因之一：现象是「某个精灵的一条边缘偶尔混进
+    ///    了旁边贴图的颜色」，且往往只在特定缩放或特定 GPU 上出现，
+    ///    元数据与代码本身完全看不出问题。这里把矩形四边各内缩最多
+    ///    0.5 像素（不足 0.5 像素宽/高的极端帧按实际半宽内缩，避免
+    ///    缩成负数）：内缩幅度远小于一个纹素，最近邻过滤仍稳定选中
+    ///    同一个纹素，不会引入任何肉眼可见的裁切。
+    ///
+    /// 条目名不存在时返回 [`None`]，理由同 [`AtlasMetadata::lookup`]。
+    pub fn uv_rect(&self, name: &str) -> Option<[f32; 4]> {
+        let entry = self.metadata.lookup(name)?;
+        Some(normalized_uv_rect(entry.rect, self.size.0, self.size.1))
     }
 }
 
@@ -428,5 +506,99 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn uv矩形按图集真实尺寸而非逻辑分辨率换算() {
+        // 这是评审点名的关键陷阱：分母必须是图集像素尺寸（这里 64），
+        // 不能是逻辑分辨率 640。
+        // Arrange
+        let rect = FrameRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 24,
+        };
+
+        // Act
+        let uv = normalized_uv_rect(rect, 64, 72);
+
+        // Assert：宽高各按半 texel 内缩一整像素（两边各 0.5）。
+        assert!((uv[2] - 15.0 / 64.0).abs() < f32::EPSILON);
+        assert!((uv[3] - 23.0 / 72.0).abs() < f32::EPSILON);
+    }
+
+    #[test]
+    fn uv矩形内缩后小于原始像素矩形换算值() {
+        // 半 texel 内缩必须真的把矩形往内收，否则起不到防止采样越界到
+        // 邻居贴图的作用。
+        // Arrange
+        let rect = FrameRect {
+            x: 16,
+            y: 0,
+            width: 32,
+            height: 48,
+        };
+
+        // Act
+        let uv = normalized_uv_rect(rect, 64, 72);
+        let naive_u = rect.x as f32 / 64.0;
+        let naive_width = rect.width as f32 / 64.0;
+
+        // Assert
+        assert!(uv[0] > naive_u);
+        assert!(uv[2] < naive_width);
+    }
+
+    #[test]
+    fn 一像素宽的帧内缩后宽度不为负() {
+        // 内缩量必须按帧实际宽高钳制，否则极窄的帧会算出负宽度。
+        // Arrange
+        let rect = FrameRect {
+            x: 0,
+            y: 0,
+            width: 1,
+            height: 1,
+        };
+
+        // Act
+        let uv = normalized_uv_rect(rect, 64, 64);
+
+        // Assert
+        assert!(uv[2] >= 0.0);
+        assert!(uv[3] >= 0.0);
+    }
+
+    #[test]
+    fn 查不到的条目名时uv矩形返回空值() {
+        // Arrange
+        let metadata = AtlasMetadata::parse(SAMPLE).expect("样例是合法 JSON");
+        let atlas_size = (64u32, 72u32);
+
+        // Act：绕开需要真实 GPU 的 Atlas::load，直接用同一份换算逻辑
+        // 验证「查不到条目」这一分支——uv_rect 本身的整体行为已经在
+        // 需要真实设备的黑箱测试里覆盖。
+        let result = metadata
+            .lookup("does_not_exist")
+            .map(|entry| normalized_uv_rect(entry.rect, atlas_size.0, atlas_size.1));
+
+        // Assert
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn 条目的视觉尺寸取自帧矩形的宽高() {
+        // SpriteSize 描述「画多大」，Footprint 描述「占几格」；这个
+        // 测试锁住 sprite_size() 取的是前者的数据源（帧矩形），不是
+        // 误取 footprint。
+        // Arrange
+        let metadata = AtlasMetadata::parse(SAMPLE).expect("样例是合法 JSON");
+        let entry = metadata.lookup("hero_idle_0").expect("样例含此条目");
+
+        // Act
+        let size = entry.sprite_size();
+
+        // Assert
+        assert_eq!((size.width, size.height), (16, 24));
     }
 }
