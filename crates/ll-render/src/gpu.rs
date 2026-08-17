@@ -50,9 +50,31 @@ impl GpuContext {
         .map_err(|error| RenderError::DeviceRequest(error.to_string()))?;
 
         let capabilities = surface.get_capabilities(&adapter);
-        // 首选格式即可：图集与离屏目标已经用同一格式画好，交给 surface
-        // 挑一个它保证支持的格式，不必强求 sRGB 与否。
-        let format = capabilities.formats[0];
+        // 必须优先挑 sRGB 变体，不能无条件取 formats[0]：blit.wgsl 的
+        // fs_main 是直通采样，不做任何色彩空间转换——离屏目标固定用
+        // TARGET_FORMAT（sRGB，见 target.rs），采样时 GPU 按 sRGB 语义
+        // 自动解码成线性值，这个线性值只有写进同样是 *Srgb 变体的 color
+        // target 时才会被 GPU 自动重新编码回 sRGB。若这里选中非 sRGB
+        // 格式（如 Bgra8Unorm），线性值会被当作 UNORM 字节直接写入，
+        // 画面会整体偏暗。绝大多数平台的 surface 能力列表里都有 sRGB
+        // 变体，找不到才退回首选格式并记一条警告——那种情况下画面偏暗
+        // 是已知的、被显式记录下来的风险，而不是没人注意到的巧合。
+        let format = capabilities
+            .formats
+            .iter()
+            .copied()
+            .find(|format| format.is_srgb())
+            .unwrap_or_else(|| {
+                let fallback = capabilities.formats[0];
+                tracing::warn!(
+                    ?fallback,
+                    "该平台的 surface 能力列表中没有 sRGB 格式变体，\
+                     blit 管线假设 color target 是 sRGB 的前提不成立，\
+                     画面可能整体偏暗"
+                );
+                fallback
+            });
+        tracing::info!(?format, "selected surface format");
         let alpha_mode = capabilities.alpha_modes[0];
 
         let width = size.width.max(1);
@@ -113,8 +135,13 @@ impl GpuContext {
 
     /// 窗口 surface 实际使用的纹理格式。
     ///
-    /// 离屏渲染目标（见 [`crate::target::RenderTarget`]）用同一格式创建，
-    /// 这样 blit 管线不必处理格式转换。
+    /// **与离屏渲染目标的格式是两件独立的事**（离屏目标固定用
+    /// [`crate::target::TARGET_FORMAT`]，见该常量文档）——这个值只跟
+    /// 窗口 surface 走，由 [`Self::new`] 里从 `capabilities.formats`
+    /// 优先挑出的 sRGB 变体决定（找不到才退回首选格式，见该处注释）。
+    /// [`crate::target::RenderTarget::blit_to`] 正是在「离屏目标固定的
+    /// `TARGET_FORMAT`」与「这里返回的窗口 surface 格式」之间做放大与
+    /// 格式转换，两者不需要也不应该相等。
     pub fn surface_format(&self) -> wgpu::TextureFormat {
         self.config.format
     }

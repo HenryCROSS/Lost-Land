@@ -7,6 +7,16 @@
 //
 // 采样器必须是最近邻（见 target.rs 里 Sampler 的创建）：线性插值会在放大
 // 时把像素边缘糊掉，这正是整数倍缩放要避免的瑕疵。
+//
+// fs_main 是直通采样，不做任何色彩空间转换——这依赖一个调用方必须维持
+// 的隐含前提：source_texture（离屏目标，固定 target.rs::TARGET_FORMAT，
+// 一个 sRGB 变体）采样时被 GPU 按 sRGB 语义自动解码成线性值，这个线性值
+// 只有在写入的 color target（这个管线画的目的地，即窗口 surface）本身
+// 也是 *Srgb 变体时，才会被 GPU 在写入时自动重新编码回 sRGB。若谁改了
+// gpu.rs 里 surface 格式的选择逻辑、不再优先挑 sRGB 变体，这里的直通
+// 采样就会失去这个前提，画面会整体偏暗——但改法不是在这里加手动 gamma
+// 转换兜底：正常的 sRGB 路径会被牵连着变成双重转换，画面又会过亮，
+// 比不管它更糟。正确的地方是 gpu.rs 选格式那一步。
 
 struct VertexOutput {
     @builtin(position) position: vec4<f32>,
