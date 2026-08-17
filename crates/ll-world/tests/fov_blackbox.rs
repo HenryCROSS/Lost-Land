@@ -86,6 +86,41 @@ proptest! {
     }
 
     #[test]
+    fn 墙格与原点的可见性对称(
+        wall_seed in any::<u64>(),
+        ox in 0i32..WORLD_WIDTH as i32,
+        oy in 0i32..WORLD_HEIGHT as i32,
+        radius in 3u32..16,
+    ) {
+        // 钉住裁定 P2-5 的取舍：墙格与地板格共用「中心落在扇区内」规则，
+        // 代价是约 97% 的随机场景里至少有一个「参与遮挡计算却自己不
+        // 可见」的墙格（见 fov.rs 模块文档）。这条代价换来的是对称性——
+        // 若有人把墙格「修」成「四角与扇区有重叠就无条件可见」，扫描
+        // 半径内的每一面墙都会在这里被检验一遍，对称性一旦被打破，
+        // 这条测试必定变红（已实测：把墙改成无条件可见后，本条在默认
+        // 用例数下稳定失败；改回来后稳定通过）。
+        // Arrange
+        let grid = random_grid(wall_seed);
+        let world = grid.world();
+        let origin = world.wrap(ox, oy);
+        let origin_visible = compute_fov(&grid, origin, radius);
+        let span = radius as i32;
+
+        // Act & Assert
+        for dy in -span..=span {
+            for dx in -span..=span {
+                let wall_pos = world.wrap(origin.x() + dx, origin.y() + dy);
+                if !grid.terrain_at(wall_pos).blocks_sight() {
+                    continue;
+                }
+                let origin_sees_wall = origin_visible.contains(wall_pos);
+                let wall_sees_origin = compute_fov(&grid, wall_pos, radius).contains(origin);
+                prop_assert_eq!(origin_sees_wall, wall_sees_origin);
+            }
+        }
+    }
+
+    #[test]
     fn 任意输入都不崩溃(
         wall_seed in any::<u64>(),
         ox in 0i32..WORLD_WIDTH as i32,
