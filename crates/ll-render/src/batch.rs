@@ -286,6 +286,11 @@ impl SpriteBatch {
                     depth_slice: None,
                     resolve_target: None,
                     ops: wgpu::Operations {
+                        // 清成黑色：TERRAIN 层恒在最底层且自身平铺不重叠
+                        // （见 sprite.rs 对 Layer::TERRAIN 的说明），但不
+                        // 保证铺满整个离屏目标——相机可能看到地图边缘之外
+                        // 或尚未生成地形的区域，此时黑色比任意其他颜色都
+                        // 不容易被误认成「有效画面」。
                         load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
                         store: wgpu::StoreOp::Store,
                     },
@@ -379,5 +384,42 @@ mod tests {
 
         // Assert
         assert!(grown >= 512);
+    }
+
+    /// 从 WGSL 源码里挖出形如 `const NAME: f32 = 640.0;` 的字面量。
+    ///
+    /// 只做够用的最简解析：找到 `const NAME`，取其后第一个 `=` 到第一个
+    /// `;` 之间的内容并去除首尾空白。类型标注（`: f32`）夹在名字和 `=`
+    /// 之间也没关系，因为我们只在 `=` 之后取值；空白差异（`= 640.0;`
+    /// 还是 `=640.0 ;`）靠 `trim` 兜住。解析失败返回 `None`，调用方必须
+    /// 显式处理——不能把「没找到」悄悄当成「通过」。
+    fn parse_wgsl_const_f32(source: &str, name: &str) -> Option<f32> {
+        let needle = format!("const {name}");
+        let after_name = &source[source.find(&needle)?..][needle.len()..];
+        let after_eq = &after_name[after_name.find('=')? + 1..];
+        let literal = &after_eq[..after_eq.find(';')?];
+        literal.trim().parse::<f32>().ok()
+    }
+
+    #[test]
+    fn 着色器中的逻辑分辨率与rust常量保持一致() {
+        // sprite.wgsl 因为 wgpu 30 的 immediate data 需要额外设备特性
+        // （见模块与着色器顶部注释），把逻辑分辨率写死成了 WGSL 常量，
+        // 与 crate::target::LOGICAL_WIDTH/LOGICAL_HEIGHT 各写一份。这份
+        // 一致性光靠注释约束不住——两个数字谁改了都不会有编译错误，
+        // 只会在运行时把每个精灵的屏幕坐标全部算错、画面整体错位。
+        // 用一个廉价单测把这类静默错误变成显式的测试失败。
+        // Arrange
+        let source = include_str!("shader/sprite.wgsl");
+
+        // Act
+        let shader_width = parse_wgsl_const_f32(source, "LOGICAL_WIDTH")
+            .expect("sprite.wgsl 应含形如 `const LOGICAL_WIDTH: f32 = 640.0;` 的常量定义");
+        let shader_height = parse_wgsl_const_f32(source, "LOGICAL_HEIGHT")
+            .expect("sprite.wgsl 应含形如 `const LOGICAL_HEIGHT: f32 = 360.0;` 的常量定义");
+
+        // Assert
+        assert_eq!(shader_width, crate::target::LOGICAL_WIDTH as f32);
+        assert_eq!(shader_height, crate::target::LOGICAL_HEIGHT as f32);
     }
 }

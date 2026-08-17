@@ -8,6 +8,11 @@
 // constant）传入，是因为那需要在设备上开启 Features::IMMEDIATES，而
 // GpuContext::new（gpu.rs）没有开启该特性，改动它超出本任务范围；离屏
 // 目标尺寸本身是全局固定常量、不会运行期变化，写死不算破坏可维护性。
+//
+// 但两处数字各写一份终究可能漂移，光靠这段注释约束不住——
+// `batch.rs` 里的 `tests::着色器中的逻辑分辨率与Rust常量保持一致`
+// 解析这个文件里的 `LOGICAL_WIDTH`/`LOGICAL_HEIGHT` 字面量并与 Rust 侧
+// 常量断言相等，改这两行任何一个数字而忘了同步，这个测试会红。
 
 const LOGICAL_WIDTH: f32 = 640.0;
 const LOGICAL_HEIGHT: f32 = 360.0;
