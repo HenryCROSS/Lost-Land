@@ -7,7 +7,7 @@
 //! 通过日志输出。这是刻意的：地基层的验收不该依赖尚不存在的上层。
 //!
 //! 运行：`cargo run -p ll-platform --example p0_acceptance`
-//! 操作：方向键或 WASD 移动光标，M 打印世界快照，Esc 退出。
+//! 操作：方向键或 WASD 移动光标，M 打印世界快照；关闭窗口退出。
 
 use ll_core::hashing::StateHasher;
 use ll_core::rng::DetRng;
@@ -16,7 +16,10 @@ use ll_core::torus::{TorusPos, TorusSize};
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::jobs::JobPool;
 use ll_platform::logging::init_logging;
-use ll_platform::window::{AppHandler, FrameOutcome, WindowConfig, run};
+use ll_platform::window::{AppHandler, FrameId, WindowConfig, run};
+use std::sync::Arc;
+use winit::dpi::PhysicalSize;
+use winit::window::Window;
 
 /// 演示用的极小世界，尺寸取小以便肉眼观察绕回行为。
 const WORLD_WIDTH: u32 = 32;
@@ -108,11 +111,15 @@ impl Demo {
 }
 
 impl AppHandler for Demo {
-    fn on_frame(&mut self, input: &InputState) -> FrameOutcome {
-        if input.was_just_pressed(GameKey::Cancel) {
-            return FrameOutcome::Exit;
-        }
+    fn on_resume(&mut self, _window: Arc<Window>, size: PhysicalSize<u32>) {
+        tracing::info!(width = size.width, height = size.height, "window resumed");
+    }
 
+    fn on_resize(&mut self, size: PhysicalSize<u32>) {
+        tracing::info!(width = size.width, height = size.height, "window resized");
+    }
+
+    fn on_frame(&mut self, _frame: FrameId, input: &InputState) {
         // 方向键用 was_activated：首次按下立即走一格，长按则由输入层的
         // 自动重复驱动连续移动。Map 仍用 was_just_pressed——它是一次性
         // 动作，不该跟着长按连续触发。
@@ -131,8 +138,6 @@ impl AppHandler for Demo {
         if input.was_just_pressed(GameKey::Map) {
             self.snapshot();
         }
-
-        FrameOutcome::Continue
     }
 
     fn on_exit(&mut self) {

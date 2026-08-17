@@ -13,8 +13,10 @@
 
 use crate::PlatformError;
 use crate::input::{GameKey, InputState, RepeatConfig};
-use std::time::Instant;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::{KeyCode, PhysicalKey};
@@ -35,6 +37,8 @@ pub struct WindowConfig {
     pub title_key: &'static str,
     /// 按键自动重复的时序参数，逐帧驱动 [`InputState::begin_frame`]。
     pub repeat: RepeatConfig,
+    /// 目标帧率，用于算出 [`WindowConfig::frame_budget`] 节流主循环。
+    pub target_fps: u32,
 }
 
 impl Default for WindowConfig {
@@ -46,7 +50,40 @@ impl Default for WindowConfig {
             scale: 2,
             title_key: "window.title",
             repeat: RepeatConfig::default(),
+            // 60 是像素游戏的通行帧率，且与常见显示器刷新率对齐。
+            target_fps: 60,
         }
+    }
+}
+
+impl WindowConfig {
+    /// 每帧的时间预算。目标帧率为零时返回零，表示不节流。
+    ///
+    /// 节流是必需的：主循环用 `ControlFlow::Poll`，不加预算会空转吃满
+    /// 一核。P0 阶段无渲染时这只是浪费电，接入 GPU 后会直接抬高功耗与
+    /// 温度。
+    pub fn frame_budget(&self) -> Duration {
+        if self.target_fps == 0 {
+            return Duration::ZERO;
+        }
+        Duration::from_nanos(1_000_000_000 / self.target_fps as u64)
+    }
+}
+
+/// 单调递增的帧号。
+///
+/// 动画播放以此为时间基准而非墙钟浮点秒数——整数帧号可以安全地进入
+/// 世界状态并被存档序列化，浮点秒数不行（会破坏跨平台确定性）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct FrameId(pub u64);
+
+impl FrameId {
+    /// 下一帧。
+    ///
+    /// 用 `wrapping_add`：以 60fps 计需连续运行约 97 亿年才会回绕，
+    /// 但回绕总好过在极端情况下 panic。
+    pub const fn next(self) -> Self {
+        FrameId(self.0.wrapping_add(1))
     }
 }
 
@@ -63,19 +100,24 @@ pub enum FrameOutcome {
     Exit,
 }
 
-/// 上层需要实现的帧回调。
+/// 上层需要实现的回调。
 ///
-/// 平台层只负责把事件归约成输入状态并按帧驱动，不含任何游戏逻辑。
+/// 平台层只负责把系统事件归约成输入状态并按帧驱动，不含任何游戏逻辑。
 pub trait AppHandler {
-    /// 每帧调用一次，`input` 是本帧归约后的输入状态。
+    /// 窗口就绪时调用，此时可以创建 GPU surface。
     ///
-    /// 返回值决定事件循环是否继续，见 [`FrameOutcome`]。
-    fn on_frame(&mut self, input: &InputState) -> FrameOutcome;
+    /// 传 `Arc<Window>` 而非 `&Window`：wgpu 的 surface 需要持有窗口的
+    /// 生命周期，共享所有权比移交所有权简单——移交后平台层自己就没法
+    /// 再用窗口了。
+    fn on_resume(&mut self, window: Arc<Window>, size: PhysicalSize<u32>);
 
-    /// 事件循环结束前调用一次，用于保存与清理。
-    ///
-    /// 无论退出是由窗口关闭按钮触发还是由 [`FrameOutcome::Exit`] 触发，
-    /// 都**恰好调用一次**。
+    /// 窗口尺寸或缩放因子变化时调用，surface 必须据此重建。
+    fn on_resize(&mut self, size: PhysicalSize<u32>);
+
+    /// 每帧调用一次。
+    fn on_frame(&mut self, frame: FrameId, input: &InputState);
+
+    /// 退出前调用，用于保存与清理。
     fn on_exit(&mut self);
 }
 
@@ -103,9 +145,11 @@ pub fn map_physical_key(key: KeyCode) -> Option<GameKey> {
 /// 事件循环的内部状态。
 struct App<H: AppHandler> {
     config: WindowConfig,
-    window: Option<Window>,
+    window: Option<Arc<Window>>,
     input: InputState,
     handler: H,
+    frame: FrameId,
+    last_frame_at: Option<Instant>,
     /// 是否已经调用过 `on_exit`。
     ///
     /// 窗口关闭与主动退出是两条独立路径，都会触发收尾；没有这个标志，
@@ -144,7 +188,9 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
         match event_loop.create_window(attributes) {
             Ok(window) => {
                 tracing::info!(width, height, "window created");
+                let window = Arc::new(window);
                 window.request_redraw();
+                self.handler.on_resume(window.clone(), window.inner_size());
                 self.window = Some(window);
             }
             Err(error) => {
@@ -176,22 +222,41 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                 // 收不到松开事件。不清空会导致切回来时角色持续移动。
                 self.input.clear();
             }
+            WindowEvent::Resized(size) => {
+                self.handler.on_resize(size);
+            }
+            WindowEvent::ScaleFactorChanged { .. } => {
+                // 缩放因子变化后物理尺寸随之改变，直接用当前尺寸重建。
+                if let Some(window) = &self.window {
+                    self.handler.on_resize(window.inner_size());
+                }
+            }
             WindowEvent::RedrawRequested => {
-                // 必须在逻辑处理之前推进自动重复计时，否则本帧的长按
-                // 重复判定永远看不到时间的推进。
-                self.input.begin_frame(Instant::now(), self.config.repeat);
-                let outcome = self.handler.on_frame(&self.input);
-                // 必须在逻辑处理之后清「刚按下」与「本帧重复触发」标志，
-                // 放在之前会让所有「刚按下」判定永远为假。
-                self.input.end_frame();
+                let now = Instant::now();
+                let budget = self.config.frame_budget();
 
-                match outcome {
-                    FrameOutcome::Exit => self.shutdown(event_loop),
-                    FrameOutcome::Continue => {
-                        if let Some(window) = &self.window {
-                            window.request_redraw();
-                        }
+                // 未到帧预算就跳过本帧的逻辑与绘制，只重新申请重绘。
+                // 这里刻意不 sleep——sleep 会让窗口事件的响应延迟一整个
+                // 帧时长，拖动窗口时会明显卡顿。
+                let too_early = match self.last_frame_at {
+                    Some(last) => !budget.is_zero() && now.duration_since(last) < budget,
+                    None => false,
+                };
+                if too_early {
+                    if let Some(window) = &self.window {
+                        window.request_redraw();
                     }
+                    return;
+                }
+                self.last_frame_at = Some(now);
+
+                self.input.begin_frame(now, self.config.repeat);
+                self.handler.on_frame(self.frame, &self.input);
+                self.input.end_frame();
+                self.frame = self.frame.next();
+
+                if let Some(window) = &self.window {
+                    window.request_redraw();
                 }
             }
             _ => {}
@@ -212,6 +277,8 @@ pub fn run<H: AppHandler + 'static>(config: WindowConfig, handler: H) -> Result<
         window: None,
         input: InputState::new(),
         handler,
+        frame: FrameId::default(),
+        last_frame_at: None,
         has_exited: false,
     };
 
@@ -284,5 +351,58 @@ mod tests {
 
         // Assert
         assert_eq!(action, Some(GameKey::Cancel));
+    }
+
+    #[test]
+    fn 帧号逐帧递增() {
+        // Arrange
+        let frame = FrameId(0);
+
+        // Act
+        let next = frame.next();
+
+        // Assert
+        assert_eq!(next, FrameId(1));
+    }
+
+    #[test]
+    fn 默认帧率为六十() {
+        // 60 是像素游戏的通行帧率，且与常见显示器刷新率对齐。
+        // Arrange & Act
+        let config = WindowConfig::default();
+
+        // Assert
+        assert_eq!(config.target_fps, 60);
+    }
+
+    #[test]
+    fn 帧预算由目标帧率算出() {
+        // Arrange
+        let config = WindowConfig {
+            target_fps: 60,
+            ..WindowConfig::default()
+        };
+
+        // Act
+        let budget = config.frame_budget();
+
+        // Assert
+        assert_eq!(budget, Duration::from_nanos(16_666_666));
+    }
+
+    #[test]
+    fn 目标帧率为零时退化为不节流() {
+        // 配置文件可能写出 0，与其除零崩溃不如退化为不限帧。
+        // Arrange
+        let config = WindowConfig {
+            target_fps: 0,
+            ..WindowConfig::default()
+        };
+
+        // Act
+        let budget = config.frame_budget();
+
+        // Assert
+        assert_eq!(budget, Duration::ZERO);
     }
 }

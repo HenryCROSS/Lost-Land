@@ -19,8 +19,6 @@ use core::fmt;
 pub enum PlatformError {
     /// 日志系统重复初始化。
     LoggingAlreadyInitialized,
-    /// 窗口创建失败，附带底层原因。
-    WindowCreation(String),
     /// 无法创建工作线程池，附带底层原因。
     ThreadPool(String),
     /// 事件循环创建或运行失败，附带底层原因。
@@ -32,9 +30,6 @@ impl fmt::Display for PlatformError {
         match self {
             PlatformError::LoggingAlreadyInitialized => {
                 write!(f, "logging subsystem was already initialized")
-            }
-            PlatformError::WindowCreation(reason) => {
-                write!(f, "failed to create window: {reason}")
             }
             PlatformError::ThreadPool(reason) => {
                 write!(f, "failed to build worker thread pool: {reason}")
