@@ -2,8 +2,8 @@
 
 `baseline/` 下的 PNG 是**视觉回归基准**，来自
 `crates/ll-render/examples/p1_acceptance/main.rs`：运行该 demo 后按
-M 键（见该文件顶部文档「按键替代：M 而非 F2」）把当前离屏渲染目标
-（`ll_render::target::RenderTarget::read_pixels`）存成 PNG。
+F2 把当前离屏渲染目标（`ll_render::target::RenderTarget::read_pixels`）
+存成 PNG。
 
 `p1_acceptance.png` 是这条通路产出的基准：640×360，地形棋盘格铺满
 视口、boss（重点目标）与 hero（普通单位，当时处于 `hero_idle_0` 帧）
@@ -28,5 +28,5 @@ M 键（见该文件顶部文档「按键替代：M 而非 F2」）把当前离�
 本仓库尚未接入 CI 自动像素比对（需要无头 GPU，如 lavapipe 或 WARP，
 验证成本较高，留给 P1 收尾后单独处理，见
 `.superpowers/sdd/2026-08-17-p1-render-animation/task-9-brief.md` 的
-自查表）。当前的比对方式是：跑一次 `p1_acceptance` demo，按 M 存一张
+自查表）。当前的比对方式是：跑一次 `p1_acceptance` demo，按 F2 存一张
 新 PNG，与 `baseline/` 下的基准肉眼或用外部工具逐像素对比。

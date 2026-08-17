@@ -13,8 +13,9 @@
 //! # 自动重复只对部分键开放
 //!
 //! 出于上一段同样的理由，`InputState` 的自动重复机制只对方向键与等待键
-//! 生效（见 [`GameKey::is_repeatable`]）。确认/取消/菜单/地图这类一次性
-//! 动作键若也参与自动重复，等于把 `press()` 特意去重的问题又引入回来。
+//! 生效（见 [`GameKey::is_repeatable`]）。确认/取消/菜单/地图/截图这类
+//! 一次性动作键若也参与自动重复，等于把 `press()` 特意去重的问题又引入
+//! 回来。
 //!
 //! # 计时只属于输入层
 //!
@@ -48,6 +49,11 @@ pub enum GameKey {
     Map,
     /// 原地等待一回合。
     Wait,
+    /// 把当前画面存成视觉回归基准。
+    ///
+    /// 这是冻结基准的入口，不是调试功能——基准是需要被保护的资产，
+    /// 详见 `crates/ll-render/tests/visual/README.md` 的处置规矩。
+    Screenshot,
 }
 
 /// 全部动作键，顺序必须与 [`GameKey`] 的变体声明顺序一致。
@@ -67,10 +73,11 @@ const ALL_KEYS: [GameKey; KEY_COUNT] = [
     GameKey::Menu,
     GameKey::Map,
     GameKey::Wait,
+    GameKey::Screenshot,
 ];
 
 /// 动作键总数，用于状态数组定长。
-const KEY_COUNT: usize = 9;
+const KEY_COUNT: usize = 10;
 
 impl GameKey {
     /// 在状态数组中的下标。
@@ -80,10 +87,10 @@ impl GameKey {
 
     /// 该键是否参与按键自动重复。
     ///
-    /// 方向键与等待键长按连续触发是回合制的刚需；确认/取消/菜单/地图
-    /// 这类一次性动作键则相反——按住若反复触发，会把整个菜单一路点穿，
-    /// 这正是 [`InputState::press`] 对操作系统按键重复事件去重要防的
-    /// 问题，让这些键参与自动重复等于开倒车。
+    /// 方向键与等待键长按连续触发是回合制的刚需；确认/取消/菜单/地图/
+    /// 截图这类一次性动作键则相反——按住若反复触发，会把整个菜单一路
+    /// 点穿、把视觉回归基准反复覆写，这正是 [`InputState::press`] 对操作
+    /// 系统按键重复事件去重要防的问题，让这些键参与自动重复等于开倒车。
     pub const fn is_repeatable(self) -> bool {
         matches!(
             self,
@@ -425,6 +432,7 @@ mod tests {
                 GameKey::Menu => 6,
                 GameKey::Map => 7,
                 GameKey::Wait => 8,
+                GameKey::Screenshot => 9,
             };
             assert_eq!(key.index(), expected_index);
             seen[key.index()] = true;
@@ -595,6 +603,28 @@ mod tests {
 
         // Assert
         assert!(!input.was_activated(GameKey::Confirm));
+    }
+
+    #[test]
+    fn 截图键按住不触发重复() {
+        // 截图是冻结视觉回归基准的一次性动作：长按若反复触发，会把同一
+        // 个基准文件反复覆写，与长按确认键把菜单点穿是同一类问题。
+        // Arrange
+        let mut input = InputState::new();
+        let config = RepeatConfig::default();
+        let pressed_at = Instant::now();
+        input.press(GameKey::Screenshot);
+        input.begin_frame(pressed_at, config);
+        input.end_frame();
+
+        // Act：时间推进到远超初始延迟与多个重复间隔
+        input.begin_frame(
+            pressed_at + config.initial_delay + config.interval * 10,
+            config,
+        );
+
+        // Assert
+        assert!(!input.was_activated(GameKey::Screenshot));
     }
 
     #[test]

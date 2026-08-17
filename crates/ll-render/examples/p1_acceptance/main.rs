@@ -8,11 +8,11 @@
 //!    经过它脚下时，二者的遮挡关系随 Y 排序正确切换。
 //! 4. 方向键平移相机；世界是环面，移到边缘会无缝绕回而不是跳变。
 //! 5. 窗口尺寸变化时，离屏画面始终整数倍居中、四周黑边。
-//! 6. 按 M 键（见下方「按键替代」）把当前离屏纹理存成 PNG——这是冻结
-//!    视觉回归基准的入口，不是调试功能。
+//! 6. 按 F2 把当前离屏纹理存成 PNG——这是冻结视觉回归基准的入口，
+//!    不是调试功能。
 //!
 //! 运行：`cargo run -p ll-render --example p1_acceptance`
-//! 操作：方向键/WASD 平移相机，M 存基准 PNG，Esc 退出。
+//! 操作：方向键/WASD 平移相机，F2 存基准 PNG，Esc 退出。
 //!
 //! # 文件拆分
 //!
@@ -20,15 +20,6 @@
 //! 精灵摆放），[`png`] 放基准 PNG 落盘，本文件只留 GPU 资源装配、
 //! `Demo` 状态与 [`ll_platform::window::AppHandler`] 接线——三个文件
 //! 各自控制在几百行内，理由见 `coding-style.md` 的文件规模约束。
-//!
-//! # 按键替代：M 而非 F2
-//!
-//! 简报要求用 F2 触发存图，但 `ll_platform::input::GameKey` 与
-//! `map_physical_key` 都不认识 F2——两者都属于本任务不可修改的
-//! 已完成模块（改动它们超出本任务范围）。这里改用已经映射到物理键
-//! `M` 的 [`GameKey::Map`]，语义上与「产出一张当前视图的快照」也算
-//! 贴切。真正接上 F2 需要先在 `ll-platform` 补一个动作键与物理键
-//! 映射，留给后续任务。
 //!
 //! # 呈现流程
 //!
@@ -392,7 +383,7 @@ impl AppHandler for Demo {
             return FrameOutcome::Continue;
         };
 
-        if input.was_just_pressed(GameKey::Map) {
+        if input.was_just_pressed(GameKey::Screenshot) {
             save_baseline_png(resources, BASELINE_PNG_PATH);
         }
 
@@ -419,7 +410,9 @@ impl AppHandler for Demo {
 
 fn main() {
     init_logging(true).expect("首次初始化日志不应失败");
-    tracing::info!("P1 acceptance demo: arrows/WASD pan camera, M saves baseline PNG, Esc to quit");
+    tracing::info!(
+        "P1 acceptance demo: arrows/WASD pan camera, F2 saves baseline PNG, Esc to quit"
+    );
 
     let demo = Demo::new();
     if let Err(error) = run(WindowConfig::default(), demo) {

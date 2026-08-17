@@ -146,6 +146,9 @@ pub trait AppHandler {
 /// 同时支持方向键与 WASD：传统 Roguelike 玩家的手部姿势偏好差异很大，
 /// 强制只用方向键会劝退相当一部分人。完整的按键重绑定在 P6 交付，此处
 /// 先给出可用的默认布局。
+///
+/// 截图（冻结视觉回归基准）放在 F2 而非某个字母键：功能键区不与移动、
+/// 确认这些高频键争抢位置，误触会覆写基准文件的代价也就不会发生。
 pub fn map_physical_key(key: KeyCode) -> Option<GameKey> {
     let action = match key {
         KeyCode::ArrowUp | KeyCode::KeyW => GameKey::Up,
@@ -157,6 +160,7 @@ pub fn map_physical_key(key: KeyCode) -> Option<GameKey> {
         KeyCode::Tab => GameKey::Menu,
         KeyCode::KeyM => GameKey::Map,
         KeyCode::Period => GameKey::Wait,
+        KeyCode::F2 => GameKey::Screenshot,
         _ => return None,
     };
     Some(action)
@@ -342,6 +346,20 @@ mod tests {
 
         // Assert
         assert_eq!(action, Some(GameKey::Up));
+    }
+
+    #[test]
+    fn 功能键映射到截图动作() {
+        // 冻结视觉回归基准的入口固定在 F2：功能键区不与移动、确认这些
+        // 高频键争抢位置，误触的代价（覆写基准文件）也就不会发生。
+        // Arrange
+        let physical = KeyCode::F2;
+
+        // Act
+        let action = map_physical_key(physical);
+
+        // Assert
+        assert_eq!(action, Some(GameKey::Screenshot));
     }
 
     #[test]
