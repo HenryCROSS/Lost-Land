@@ -12,3 +12,10 @@ description = "迷途大陆的纯数据基础层：环面坐标、确定性随�
 [dev-dependencies]
 proptest.workspace = true
 criterion.workspace = true
+
+[[bench]]
+name = "torus"
+harness = false
+# criterion 自带 harness，若不关掉 test 目标，`cargo test --all-targets`
+# 会把完整基准当测试跑一遍，把分钟级门禁拖成十分钟级。
+test = false
