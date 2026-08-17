@@ -1,8 +1,8 @@
 # 视觉回归基准
 
 `baseline/` 下的 PNG 是**视觉回归基准**，来自
-`crates/ll-render/examples/p1_acceptance.rs`：运行该 demo 后按 M 键
-（见该文件顶部文档「按键替代：M 而非 F2」）把当前离屏渲染目标
+`crates/ll-render/examples/p1_acceptance/main.rs`：运行该 demo 后按
+M 键（见该文件顶部文档「按键替代：M 而非 F2」）把当前离屏渲染目标
 （`ll_render::target::RenderTarget::read_pixels`）存成 PNG。
 
 `p1_acceptance.png` 是这条通路产出的基准：640×360，地形棋盘格铺满

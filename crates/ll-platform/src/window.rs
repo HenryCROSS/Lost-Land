@@ -121,6 +121,10 @@ pub trait AppHandler {
     fn on_resume(&mut self, window: Arc<Window>, size: PhysicalSize<u32>);
 
     /// 窗口尺寸或缩放因子变化时调用，surface 必须据此重建。
+    ///
+    /// `size` 可能为 `(0, 0)`（窗口最小化时）——这条零尺寸防线设在渲染层
+    /// （`ll-render` 的 `GpuContext::resize` 对零尺寸直接返回而不重配
+    /// surface），本层原样转发事件，不在此处过滤或校验。
     fn on_resize(&mut self, size: PhysicalSize<u32>);
 
     /// 每帧调用一次。返回值告诉平台层是否应当退出。
