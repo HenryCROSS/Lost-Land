@@ -83,11 +83,6 @@ impl ChunkGrid {
         self.world
     }
 
-    /// 分块总数。
-    pub fn chunk_count(&self) -> usize {
-        self.chunks.len()
-    }
-
     /// 读取给定坐标处的地形。
     pub fn terrain_at(&self, pos: TorusPos) -> TerrainKind {
         let (chunk_index, local_index) = self.locate(pos);

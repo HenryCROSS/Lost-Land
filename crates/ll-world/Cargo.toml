@@ -14,7 +14,10 @@ tracing = "0.1"
 
 [dev-dependencies]
 proptest.workspace = true
-criterion.workspace = true
+# 不声明 criterion：本 crate 没有 benches/ 目录，声明了也不会被用到。
+# ll-core 的 torus 基准（crates/ll-core/benches/torus.rs）已经覆盖了
+# 环面坐标运算的性能回归，本 crate 目前没有独立的性能敏感路径需要
+# 单独立基准——真出现性能问题时再补 benches/ 与这条依赖，而不是先占位。
 # 仅用于序列化往返测试：验证 WorldState 能经过一种真实的 serde 格式
 # 完整往返，而不只是停留在 derive 能编译这一层面。
 serde_json = "1"

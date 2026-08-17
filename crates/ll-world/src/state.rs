@@ -26,7 +26,25 @@ use crate::terrain::TerrainKind;
 ///
 /// 全部字段公开且可序列化：存档格式就是这个结构体本身，不经过额外的
 /// DTO 转换层——多一层转换就多一处可能与本体字段漂移的地方。
+///
+/// # 反序列化必须交叉校验 `size` 与 `terrain` 的尺寸（裁定 P2-6 的同源修复）
+///
+/// `size`（[`TorusSize`]）与 `terrain`（[`ChunkGrid`]）各自的反序列化都已
+/// 自证合法——前者不为零且不超过上限，后者的瓦片数与自带的宽高字段
+/// 匹配——但**两者互不知道对方的存在**。存档若被篡改或损坏成
+/// `size=512×320` 而 `terrain` 实际只有 `64×64` 格，两个字段各自看都
+/// 合法，唯独合在一起不自洽：[`Self::hash`]（或任何按 `size` 遍历坐标、
+/// 用 [`ChunkGrid::terrain_at`] 取值的调用）会用 512×320 的坐标去索引
+/// 一个按 64×64 分块的网格，直接越界 panic。
+///
+/// 这与 [`TorusSize`] 本身「反序列化必须重新经过 `new` 的校验」
+/// （裁定 P2-6，见 `ll_core::torus` 的说明）是同一类缺陷、同一个修法：
+/// 存档是外部不可信输入，任何输入都不得 panic，只允许返回 `Err`
+/// （规格 §14.3）。因此这里同样用 `#[serde(try_from = "WorldStateRepr")]`
+/// 让反序列化必经一次交叉校验，而不是让两个字段的合法性各自证明、
+/// 合在一起却可能矛盾。`Serialize` 不受影响，仍是直接派生。
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "WorldStateRepr")]
 pub struct WorldState {
     /// 生成本世界地形所用的种子。
     pub seed: u64,
@@ -36,6 +54,44 @@ pub struct WorldState {
     pub size: TorusSize,
     /// 世界地形。
     pub terrain: ChunkGrid,
+}
+
+/// [`WorldState`] 反序列化的中转表示。
+///
+/// 见 [`WorldState`] 文档「反序列化必须交叉校验」一节：这个类型本身没有
+/// 任何跨字段不变式，只是让 serde 有一个「先把四个字段各自反序列化
+/// （各自的校验仍然生效），再交给 [`TryFrom`] 做交叉校验」的中转落点。
+#[derive(Deserialize)]
+struct WorldStateRepr {
+    seed: u64,
+    clock: Tick,
+    size: TorusSize,
+    terrain: ChunkGrid,
+}
+
+impl TryFrom<WorldStateRepr> for WorldState {
+    type Error = String;
+
+    /// 唯一的构造路径：在委托给字段本身校验之后，额外校验
+    /// `terrain.world() == size`——两者是同一个世界尺寸的两份独立记录，
+    /// 必须一致，否则按 `size` 遍历坐标去查 `terrain` 就会越界。
+    fn try_from(repr: WorldStateRepr) -> Result<Self, Self::Error> {
+        if repr.terrain.world() != repr.size {
+            return Err(format!(
+                "存档中的世界尺寸 {}x{} 与地形网格的实际尺寸 {}x{} 不一致",
+                repr.size.width(),
+                repr.size.height(),
+                repr.terrain.world().width(),
+                repr.terrain.world().height(),
+            ));
+        }
+        Ok(WorldState {
+            seed: repr.seed,
+            clock: repr.clock,
+            size: repr.size,
+            terrain: repr.terrain,
+        })
+    }
 }
 
 impl WorldState {
@@ -151,49 +207,47 @@ mod tests {
         TorusSize::new(64, 64).expect("64x64 满足整除与视口跨度两条约束")
     }
 
+    // 「序列化往返后哈希不变」「相同种子与尺寸生成的哈希相同」
+    // 「推进时钟会改变哈希」这三条曾经在本文件与
+    // `tests/determinism.rs` 里逐字重复。保留在集成测试
+    // （`tests/determinism.rs`）而不是这里：那边本就收着黄金基准哈希，
+    // 用的是真实 `serde_json` 格式与公开 API，是这几条行为实际生效的
+    // 层级；这里的单元测试只留 [`WorldState::advance`] 本身的边界行为
+    // （负值回拨）与本次新增的 `try_from` 交叉校验，两组关注点不重叠。
+
     #[test]
-    fn 序列化往返后世界哈希不变() {
+    fn 世界尺寸与地形尺寸不一致的存档无法反序列化() {
+        // 模拟被篡改或损坏的存档：地形网格实际是测试尺寸（64x64），
+        // 但 size 字段被改成了另一个尺寸——两个字段各自反序列化都
+        // 合法，只有合在一起才不自洽，必须靠交叉校验拦住。
         // Arrange
         let world = WorldState::new(test_size(), &GenParams::default())
             .expect("测试尺寸满足全部构造前置条件");
-        let original_hash = world.hash();
+        let mut tampered: serde_json::Value =
+            serde_json::to_value(&world).expect("WorldState 全部字段可序列化");
+        tampered["size"] = serde_json::json!({ "width": 128, "height": 128 });
 
         // Act
-        let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
-        let decoded: WorldState = serde_json::from_slice(&encoded).expect("刚序列化的数据必然合法");
+        let result: Result<WorldState, _> = serde_json::from_value(tampered);
 
         // Assert
-        assert_eq!(decoded.hash(), original_hash);
+        assert!(result.is_err());
     }
 
     #[test]
-    fn 相同种子与尺寸生成的世界哈希相同() {
+    fn 尺寸一致的存档可以正常往返() {
+        // 与上一条相反的分支：size 与 terrain 尺寸一致时，交叉校验
+        // 必须放行，不能误伤合法存档。
         // Arrange
-        let params = GenParams {
-            seed: 42,
-            ..GenParams::default()
-        };
-
-        // Act
-        let first = WorldState::new(test_size(), &params).expect("测试尺寸满足全部构造前置条件");
-        let second = WorldState::new(test_size(), &params).expect("测试尺寸满足全部构造前置条件");
-
-        // Assert
-        assert_eq!(first.hash(), second.hash());
-    }
-
-    #[test]
-    fn 推进时钟会改变世界哈希() {
-        // Arrange
-        let mut world = WorldState::new(test_size(), &GenParams::default())
+        let world = WorldState::new(test_size(), &GenParams::default())
             .expect("测试尺寸满足全部构造前置条件");
-        let hash_before = world.hash();
+        let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
 
         // Act
-        world.advance(1);
+        let result: Result<WorldState, _> = serde_json::from_slice(&encoded);
 
         // Assert
-        assert_ne!(world.hash(), hash_before);
+        assert!(result.is_ok());
     }
 
     #[test]

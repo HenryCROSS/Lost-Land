@@ -39,16 +39,15 @@ pub enum WorldError {
     },
     /// 世界尺寸不能被噪声周期整除，无法保证接缝无缝。
     ///
-    /// 用于地形生成入口的前置校验；本批次尚未接入生成流程，
-    /// 这个变体暂时不会被构造。
+    /// 用于地形生成入口（[`crate::generate::generate_terrain`]）的前置
+    /// 校验：世界宽高必须都是 [`crate::noise::CELL_SIZE`] 的整数倍，
+    /// 否则接缝处会出现不连续。
     WorldNotTileable {
         /// 实际宽度（格）。
         width: u32,
         /// 实际高度（格）。
         height: u32,
     },
-    /// 请求的分块索引超出世界范围。
-    ChunkOutOfRange,
 }
 
 impl fmt::Display for WorldError {
@@ -60,7 +59,6 @@ impl fmt::Display for WorldError {
             WorldError::WorldNotTileable { width, height } => {
                 write!(f, "世界尺寸 {width}x{height} 不能被噪声周期整除")
             }
-            WorldError::ChunkOutOfRange => write!(f, "分块索引超出世界范围"),
         }
     }
 }
