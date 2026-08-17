@@ -176,8 +176,23 @@ impl InputState {
     /// 清除，同一帧内按下又松开的快速点击就会被静默丢弃。本项目主循环会在
     /// 玩家思考的空窗期推进离屏世界模拟，慢帧属预期常态，届时丢输入的概率
     /// 恰恰最高。
+    ///
+    /// **但顺带清空该键的重复计时基准 `repeat_next_at`。** 这与上面「不清
+    /// `just_pressed`」看似矛盾，实则相反：`just_pressed` 记录的是「本帧内
+    /// 发生过的事实」，清掉会丢失事实、丢输入；`repeat_next_at` 只是「下次
+    /// 该在什么时刻重新触发」的**调度状态**，不是事实记录，清掉不丢失任何
+    /// 输入。不清的后果是真实的竞态：winit 可能在同一轮事件泵里把
+    /// `press → release → press` 都处理完才触发一次 `RedrawRequested`，
+    /// 这三步会挤在两次 `begin_frame` 之间。`begin_frame` 只看调用时刻的
+    /// `held` 快照，那一刻它只看到「一直按住」，于是保留旧的
+    /// `repeat_next_at`——重按后第一次重复的等待时间就被错误压缩成
+    /// `interval`（90ms）而不是应有的 `initial_delay`（350ms），快速二连
+    /// 按会被误判为「从未松开过」，角色突然窜出去。在此处清空，重按后
+    /// `begin_frame` 看到的必是「计时基准为空」，从而正确重新等满
+    /// `initial_delay`。
     pub fn release(&mut self, key: GameKey) {
         self.held[key.index()] = false;
+        self.repeat_next_at[key.index()] = None;
     }
 
     /// 该键当前是否被按住。
@@ -517,6 +532,44 @@ mod tests {
         // Act：只推进到不足新一轮的初始延迟——若重复间隔被错误地沿用
         // （而非重新等满初始延迟），这里就会被误判为已触发
         input.begin_frame(repressed_at + config.interval, config);
+
+        // Assert
+        assert!(!input.was_activated(GameKey::Up));
+    }
+
+    #[test]
+    fn 同帧内松开再重按仍需等满初始延迟() {
+        // winit 可能在同一轮事件泵里把 press → release → press 三件事
+        // 全处理完才触发一次 RedrawRequested，这三步会挤在两次
+        // begin_frame 之间——本测试故意不在松开与重按之间插入 begin_frame，
+        // 复现这个真实的竞态窗口。若 release() 不清空 repeat_next_at，
+        // begin_frame 只看到「一直按住」，会误沿用旧的计时基准，让重按后
+        // 第一次重复被压缩成 interval 而不是应有的 initial_delay。
+        // Arrange：按下并触发过一次重复，建立一个「旧的」repeat_next_at
+        let mut input = InputState::new();
+        let config = RepeatConfig::default();
+        let pressed_at = Instant::now();
+        input.press(GameKey::Up);
+        input.begin_frame(pressed_at, config);
+        input.end_frame();
+        input.begin_frame(pressed_at + config.initial_delay, config);
+        input.end_frame();
+
+        // 松开与重按之间不调用 begin_frame，复现两者挤在同一轮事件泵、
+        // 只触发一次 RedrawRequested 的真实时序
+        input.release(GameKey::Up);
+        input.press(GameKey::Up);
+        let repress_frame_at = pressed_at + config.initial_delay + config.interval;
+        input.begin_frame(repress_frame_at, config);
+        // 本帧 was_activated 为真是合理的——它来自这次重按自身的
+        // just_pressed，与自动重复的计时基准是否被污染无关，先清掉它
+        // 不干扰下面才是本测试真正要观测的时刻。
+        input.end_frame();
+
+        // Act：时间只推进到超过 interval 但不足新一轮 initial_delay。
+        // 若 repeat_next_at 被错误沿用旧值（未被 release 清空），此刻
+        // 早已过了旧基准的下一次触发时刻，会被误判为已触发。
+        input.begin_frame(repress_frame_at + config.interval, config);
 
         // Assert
         assert!(!input.was_activated(GameKey::Up));
