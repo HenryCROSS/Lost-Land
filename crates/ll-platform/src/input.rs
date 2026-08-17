@@ -35,6 +35,24 @@ pub enum GameKey {
     Wait,
 }
 
+/// 全部动作键，顺序必须与 [`GameKey`] 的变体声明顺序一致。
+///
+/// 存在的意义是让「新增变体」变成编译期错误：下方的穷尽 match 测试会在
+/// 漏登记时拒绝编译。若只靠手抄一个数字常量，新增变体后代码照常编译、
+/// 测试照常通过，直到运行时数组越界才暴露。
+#[cfg_attr(not(test), allow(dead_code))]
+const ALL_KEYS: [GameKey; KEY_COUNT] = [
+    GameKey::Up,
+    GameKey::Down,
+    GameKey::Left,
+    GameKey::Right,
+    GameKey::Confirm,
+    GameKey::Cancel,
+    GameKey::Menu,
+    GameKey::Map,
+    GameKey::Wait,
+];
+
 /// 动作键总数，用于状态数组定长。
 const KEY_COUNT: usize = 9;
 
@@ -109,6 +127,18 @@ impl InputState {
     /// 必须在每帧逻辑处理**之后**调用。放在处理之前会让所有「刚按下」
     /// 判定永远为假。
     pub fn end_frame(&mut self) {
+        self.just_pressed = [false; KEY_COUNT];
+    }
+
+    /// 清空全部按键状态。
+    ///
+    /// 窗口失去焦点时必须调用。操作系统只把按键事件送给焦点窗口，
+    /// 玩家按住方向键时切走，对应的松开事件永远不会送达——不清空的话
+    /// `held` 会永久为真，切回来后角色持续移动且没有任何按键能解除。
+    ///
+    /// 「刚按下」标志一并清空：失焦瞬间尚未被消费的输入已经失去意义。
+    pub fn clear(&mut self) {
+        self.held = [false; KEY_COUNT];
         self.just_pressed = [false; KEY_COUNT];
     }
 }
@@ -210,5 +240,61 @@ mod tests {
 
         // Assert
         assert!(input.was_just_pressed(GameKey::Confirm));
+    }
+
+    #[test]
+    fn 清空后不再有任何按键处于按住状态() {
+        // Arrange
+        let mut input = InputState::new();
+        input.press(GameKey::Right);
+
+        // Act
+        input.clear();
+
+        // Assert
+        assert!(!input.is_held(GameKey::Right));
+    }
+
+    #[test]
+    fn 清空后刚按下的判定一并失效() {
+        // Arrange
+        let mut input = InputState::new();
+        input.press(GameKey::Confirm);
+
+        // Act
+        input.clear();
+
+        // Assert
+        assert!(!input.was_just_pressed(GameKey::Confirm));
+    }
+
+    #[test]
+    fn 每个动作键都已登记且下标互不重复() {
+        // 这个测试的真正作用在编译期：下面的 match 是穷尽的，新增 GameKey
+        // 变体而忘记同步 ALL_KEYS 与 KEY_COUNT 时，它会拒绝编译，
+        // 而不是等到运行时数组越界。
+        // Arrange
+        let mut seen = [false; KEY_COUNT];
+
+        // Act
+        for key in ALL_KEYS {
+            // 穷尽 match：新增变体时此处必须补齐，否则编译失败。
+            let expected_index = match key {
+                GameKey::Up => 0,
+                GameKey::Down => 1,
+                GameKey::Left => 2,
+                GameKey::Right => 3,
+                GameKey::Confirm => 4,
+                GameKey::Cancel => 5,
+                GameKey::Menu => 6,
+                GameKey::Map => 7,
+                GameKey::Wait => 8,
+            };
+            assert_eq!(key.index(), expected_index);
+            seen[key.index()] = true;
+        }
+
+        // Assert
+        assert!(seen.iter().all(|slot| *slot));
     }
 }

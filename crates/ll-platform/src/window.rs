@@ -46,14 +46,32 @@ impl Default for WindowConfig {
     }
 }
 
+/// 一帧处理完毕后，上层希望事件循环如何继续。
+///
+/// 存在的理由：平台层不认识任何游戏概念，无从判断「玩家是否想退出」。
+/// 让 [`AppHandler::on_frame`] 把这个决定回传，退出就成了上层的显式意图，
+/// 而不是靠平台层猜某个按键的含义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameOutcome {
+    /// 继续驱动下一帧。
+    Continue,
+    /// 请求结束事件循环。
+    Exit,
+}
+
 /// 上层需要实现的帧回调。
 ///
 /// 平台层只负责把事件归约成输入状态并按帧驱动，不含任何游戏逻辑。
 pub trait AppHandler {
     /// 每帧调用一次，`input` 是本帧归约后的输入状态。
-    fn on_frame(&mut self, input: &InputState);
+    ///
+    /// 返回值决定事件循环是否继续，见 [`FrameOutcome`]。
+    fn on_frame(&mut self, input: &InputState) -> FrameOutcome;
 
-    /// 窗口关闭前调用，用于保存与清理。
+    /// 事件循环结束前调用一次，用于保存与清理。
+    ///
+    /// 无论退出是由窗口关闭按钮触发还是由 [`FrameOutcome::Exit`] 触发，
+    /// 都**恰好调用一次**。
     fn on_exit(&mut self);
 }
 
@@ -84,6 +102,22 @@ struct App<H: AppHandler> {
     window: Option<Window>,
     input: InputState,
     handler: H,
+    /// 是否已经调用过 `on_exit`。
+    ///
+    /// 窗口关闭与主动退出是两条独立路径，都会触发收尾；没有这个标志，
+    /// 某些平台上两条路径先后触发会让存档逻辑跑两遍。
+    has_exited: bool,
+}
+
+impl<H: AppHandler> App<H> {
+    /// 执行一次且仅一次收尾，然后请求事件循环退出。
+    fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
+        if !self.has_exited {
+            self.has_exited = true;
+            self.handler.on_exit();
+        }
+        event_loop.exit();
+    }
 }
 
 impl<H: AppHandler> ApplicationHandler for App<H> {
@@ -119,8 +153,7 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         match event {
             WindowEvent::CloseRequested => {
-                self.handler.on_exit();
-                event_loop.exit();
+                self.shutdown(event_loop);
             }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
@@ -134,13 +167,24 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                     ElementState::Released => self.input.release(action),
                 }
             }
+            WindowEvent::Focused(false) => {
+                // 失焦后操作系统不再把按键事件送到本窗口，已按下的键将永远
+                // 收不到松开事件。不清空会导致切回来时角色持续移动。
+                self.input.clear();
+            }
             WindowEvent::RedrawRequested => {
-                self.handler.on_frame(&self.input);
+                let outcome = self.handler.on_frame(&self.input);
                 // 必须在逻辑处理之后清「刚按下」标志，放在之前会让所有
                 // 「刚按下」判定永远为假。
                 self.input.end_frame();
-                if let Some(window) = &self.window {
-                    window.request_redraw();
+
+                match outcome {
+                    FrameOutcome::Exit => self.shutdown(event_loop),
+                    FrameOutcome::Continue => {
+                        if let Some(window) = &self.window {
+                            window.request_redraw();
+                        }
+                    }
                 }
             }
             _ => {}
@@ -150,7 +194,7 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
 
 /// 建窗并驱动事件循环，直到窗口关闭。
 pub fn run<H: AppHandler + 'static>(config: WindowConfig, handler: H) -> Result<(), PlatformError> {
-    let event_loop = EventLoop::new().map_err(|e| PlatformError::WindowCreation(e.to_string()))?;
+    let event_loop = EventLoop::new().map_err(|e| PlatformError::EventLoop(e.to_string()))?;
 
     // Poll 而非 Wait：回合制虽然不需要持续重绘，但离屏世界推进要利用玩家
     // 思考的空窗期，因此主循环必须持续转动而不是阻塞等事件。
@@ -161,11 +205,12 @@ pub fn run<H: AppHandler + 'static>(config: WindowConfig, handler: H) -> Result<
         window: None,
         input: InputState::new(),
         handler,
+        has_exited: false,
     };
 
     event_loop
         .run_app(&mut app)
-        .map_err(|e| PlatformError::WindowCreation(e.to_string()))
+        .map_err(|e| PlatformError::EventLoop(e.to_string()))
 }
 
 #[cfg(test)]
@@ -218,5 +263,19 @@ mod tests {
 
         // Assert
         assert_eq!((config.logical_width, config.logical_height), (640, 360));
+    }
+
+    #[test]
+    fn 取消键映射到退出动作() {
+        // demo 与后续的「退出游戏」菜单都依赖这条映射，
+        // 它曾经是全项目唯一映射却无人消费的死映射。
+        // Arrange
+        let physical = KeyCode::Escape;
+
+        // Act
+        let action = map_physical_key(physical);
+
+        // Assert
+        assert_eq!(action, Some(GameKey::Cancel));
     }
 }

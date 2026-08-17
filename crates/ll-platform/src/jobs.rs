@@ -17,6 +17,7 @@
 //! 确定性的前提：若结果顺序随线程调度变化，后续对结果做的任何折叠运算
 //! 都会失去确定性，跨平台世界摘要就对不上了。
 
+use crate::PlatformError;
 use rayon::prelude::*;
 
 pub use crossbeam_channel::{Receiver, Sender, unbounded as channel};
@@ -32,15 +33,18 @@ impl JobPool {
     ///
     /// `threads` 为零时退化为单线程——配置文件可能写出 0，与其崩溃不如
     /// 退化运行。
-    pub fn new(threads: usize) -> Self {
+    ///
+    /// 返回 [`Err`] 的真实原因是**操作系统拒绝创建工作线程**（句柄或内存
+    /// 耗尽、容器的线程数上限），而非参数非法——参数已在上方钳制。
+    pub fn new(threads: usize) -> Result<Self, PlatformError> {
         let threads = threads.max(1);
         let inner = rayon::ThreadPoolBuilder::new()
             .num_threads(threads)
             // 线程命名后，日志与性能分析器里就能一眼看出是任务池线程。
             .thread_name(|index| format!("ll-job-{index}"))
             .build()
-            .expect("线程数已在上方钳制为至少 1，构建不应失败");
-        JobPool { inner }
+            .map_err(|error| PlatformError::ThreadPool(error.to_string()))?;
+        Ok(JobPool { inner })
     }
 
     /// 池中的线程数。
@@ -72,7 +76,7 @@ mod tests {
         // 顺序保持是确定性的前提。若结果顺序随线程调度变化，后续对结果
         // 做的任何折叠运算都会失去确定性。
         // Arrange
-        let pool = JobPool::new(4);
+        let pool = JobPool::new(4).expect("测试环境应能创建线程");
         let input: Vec<u64> = (0..1_000).collect();
 
         // Act
@@ -86,7 +90,7 @@ mod tests {
     #[test]
     fn 空输入返回空结果() {
         // Arrange
-        let pool = JobPool::new(2);
+        let pool = JobPool::new(2).expect("测试环境应能创建线程");
         let input: Vec<u64> = Vec::new();
 
         // Act
@@ -100,7 +104,7 @@ mod tests {
     fn 线程数为零时退化为单线程而非崩溃() {
         // 配置文件可能写出 0，与其崩溃不如退化。
         // Arrange
-        let pool = JobPool::new(0);
+        let pool = JobPool::new(0).expect("测试环境应能创建线程");
         let input = vec![1_u64, 2, 3];
 
         // Act
@@ -113,7 +117,7 @@ mod tests {
     #[test]
     fn 线程数为零时池内至少有一条线程() {
         // Arrange
-        let pool = JobPool::new(0);
+        let pool = JobPool::new(0).expect("测试环境应能创建线程");
 
         // Act
         let count = pool.thread_count();
@@ -123,7 +127,9 @@ mod tests {
     }
 
     #[test]
-    fn 通道可在线程间传递消息() {
+    fn 通道先发后收能取回消息() {
+        // 只验证同线程的收发契约。真正的跨线程行为由 crossbeam 自身的
+        // 测试套件保证，此处重复搭一条线程只会让测试变慢且更易不稳定。
         // Arrange
         let (sender, receiver) = channel::<u32>();
 

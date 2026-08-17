@@ -16,7 +16,7 @@ use ll_core::torus::{TorusPos, TorusSize};
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::jobs::JobPool;
 use ll_platform::logging::init_logging;
-use ll_platform::window::{AppHandler, WindowConfig, run};
+use ll_platform::window::{AppHandler, FrameOutcome, WindowConfig, run};
 
 /// 演示用的极小世界，尺寸取小以便肉眼观察绕回行为。
 const WORLD_WIDTH: u32 = 32;
@@ -48,7 +48,7 @@ impl Demo {
             world,
             cursor: world.wrap(0, 0),
             clock: Tick(0),
-            pool: JobPool::new(4),
+            pool: JobPool::new(4).expect("演示用固定线程数，构建失败属环境异常"),
             move_count: 0,
         }
     }
@@ -108,7 +108,11 @@ impl Demo {
 }
 
 impl AppHandler for Demo {
-    fn on_frame(&mut self, input: &InputState) {
+    fn on_frame(&mut self, input: &InputState) -> FrameOutcome {
+        if input.was_just_pressed(GameKey::Cancel) {
+            return FrameOutcome::Exit;
+        }
+
         // 只响应「刚按下」，否则按住方向键会让光标瞬间飞出去——这正是
         // 输入层区分两种状态的实际价值。
         if input.was_just_pressed(GameKey::Up) {
@@ -126,6 +130,8 @@ impl AppHandler for Demo {
         if input.was_just_pressed(GameKey::Map) {
             self.snapshot();
         }
+
+        FrameOutcome::Continue
     }
 
     fn on_exit(&mut self) {
