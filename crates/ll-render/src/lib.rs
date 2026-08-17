@@ -23,6 +23,19 @@ pub mod gpu;
 pub mod sprite;
 pub mod target;
 
+// 向上层重新导出 wgpu。
+//
+// 本 crate 的公开 API 已经全是 wgpu 类型（`GpuContext::acquire_frame`
+// 返回 `wgpu::SurfaceTexture`、`RenderTarget::view` 返回
+// `&wgpu::TextureView`、`SpriteBatch::new` 接收 `wgpu::TextureFormat`），
+// 不重新导出就等于要求每个下游自己声明一份 `wgpu = "30"` 依赖，还得
+// 自己保证版本号与这里用的完全一致——版本一旦漂移，这些类型在下游看来
+// 就是「不同的类型」，编译直接报错。这与 `ll-platform` 为守住「只有
+// 平台层接触窗口库」这条分层承诺而重新导出 `Window`/`PhysicalSize`
+// 是同一个问题的另一面：分层承诺不能以「下游必须偷偷自带同版本依赖」
+// 为代价维持。
+pub use wgpu;
+
 use core::fmt;
 
 /// 渲染层的错误。
