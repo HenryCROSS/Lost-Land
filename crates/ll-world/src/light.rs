@@ -9,11 +9,19 @@
 //! 发现矛盾。派生成本本身也低到不值得缓存：一次求值只是几个整数比较
 //! 与一次除法。
 //!
-//! # 为什么午夜是 100 而不是 0
+//! # 昼夜基准曲线在 `ll-core`，本模块只做季节缩放
 //!
-//! 全黑不是难度，是卡住：视野会被 [`sight_radius_at`] 缩到只剩原点，
-//! 玩家在那种状态下什么都做不了。取 100（十分之一亮度）既保留了「夜晚
-//! 更难看清」的玩法压力，又不会把游戏直接锁死。
+//! 未经季节缩放的昼夜渐变曲线（日出日落时刻、午夜/正午基准光照）定义
+//! 在 [`ll_core::light`]，不在这里——那条曲线同时也是
+//! [`ll_core::time::Tick::is_daylight`] 的判定依据，两处消费者共用同
+//! 一份定义，不再各自维护一套边界。详见 `ll_core::light` 的模块文档
+//! 「为什么这条曲线要下沉到 `ll-core`」一节：P2 阶段曾经因为两处各写
+//! 一份而互相矛盾，收敛到 `ll-core` 是唯一同时满足单一真相源与
+//! 「`ll-core` 不能反向依赖 `ll-world`」这条依赖方向约束的修法。
+//! 本模块只在那条基准曲线之上叠加 [`season_light_scale`]，理由是季节
+//! 缩放依赖 [`Season`]，`ll-core` 已有这个类型，不构成新的依赖问题，
+//! 而「随季节调暗调亮」终归是世界层的玩法参数，不属于 `ll-core` 该管
+//! 的纯数据基础设施。
 //!
 //! # 全程整数运算
 //!
@@ -22,7 +30,8 @@
 //! 不进状态，但会被视野半径这类确定性系统消费，浮点误差一旦混进来，
 //! 两台机器上算出的视野半径可能不同，破坏跨平台确定性重放。
 
-use ll_core::time::{Season, TICKS_PER_DAY, TICKS_PER_HOUR, Tick};
+use ll_core::light::day_curve;
+use ll_core::time::{Season, Tick};
 
 /// 千分比表示的环境光照，`0..=1000`，1000 为最亮。
 ///
@@ -32,77 +41,17 @@ use ll_core::time::{Season, TICKS_PER_DAY, TICKS_PER_HOUR, Tick};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LightLevel(pub i32);
 
-/// 日出开始的小时（含）。
-const SUNRISE_START_HOUR: i64 = 5;
-
-/// 日出结束的小时（不含），此后进入全天光照。
-const SUNRISE_END_HOUR: i64 = 7;
-
-/// 日落开始的小时（含）。
-const SUNSET_START_HOUR: i64 = 17;
-
-/// 日落结束的小时（不含），此后进入夜间光照。
-const SUNSET_END_HOUR: i64 = 19;
-
-/// 午夜（未经季节缩放的）基准光照。取 100 而非 0，理由见模块文档。
-const MIDNIGHT_LIGHT: i32 = 100;
-
-/// 正午（未经季节缩放的）基准光照。
-const NOON_LIGHT: i32 = 1000;
-
 /// 求某一世界时刻的环境光照。
 ///
-/// 昼夜曲线（[`day_curve`]）先给出未经季节缩放的基准值，再乘以
-/// [`season_light_scale`] 得到最终光照。两步分开是为了让季节缩放能被
-/// 单独测试与复用，而不必每次都重新构造一整天的 `Tick`。
+/// 昼夜曲线（[`ll_core::light::day_curve`]）先给出未经季节缩放的基准
+/// 值，再乘以 [`season_light_scale`] 得到最终光照。两步分开是为了让
+/// 季节缩放能被单独测试与复用，而不必每次都重新构造一整天的 `Tick`。
 pub fn ambient_light(tick: Tick) -> LightLevel {
     let base = day_curve(tick);
     let scale = season_light_scale(tick.season());
     // i64 中间结果避免 1000 * 1000 这种量级在极端输入下溢出 i32。
     let scaled = (i64::from(base) * i64::from(scale)) / 1000;
     LightLevel(scaled.clamp(0, 1000) as i32)
-}
-
-/// 未经季节缩放的昼夜基准光照，`100..=1000`。
-///
-/// 正午 1000、午夜 100，日出（5–7 点）与日落（17–19 点）之间线性渐变。
-/// 用 `tick.0`（刻度总数）而非只用 `hour_of_day` 计算：只精确到小时会
-/// 让渐变在两小时窗口内只有三级台阶，用刻度数能算出连续的线性插值。
-fn day_curve(tick: Tick) -> i32 {
-    let ticks_of_day = tick.0.rem_euclid(TICKS_PER_DAY);
-    let sunrise_start = SUNRISE_START_HOUR * TICKS_PER_HOUR;
-    let sunrise_end = SUNRISE_END_HOUR * TICKS_PER_HOUR;
-    let sunset_start = SUNSET_START_HOUR * TICKS_PER_HOUR;
-    let sunset_end = SUNSET_END_HOUR * TICKS_PER_HOUR;
-
-    if ticks_of_day < sunrise_start {
-        MIDNIGHT_LIGHT
-    } else if ticks_of_day < sunrise_end {
-        interpolate(
-            MIDNIGHT_LIGHT,
-            NOON_LIGHT,
-            ticks_of_day - sunrise_start,
-            sunrise_end - sunrise_start,
-        )
-    } else if ticks_of_day < sunset_start {
-        NOON_LIGHT
-    } else if ticks_of_day < sunset_end {
-        interpolate(
-            NOON_LIGHT,
-            MIDNIGHT_LIGHT,
-            ticks_of_day - sunset_start,
-            sunset_end - sunset_start,
-        )
-    } else {
-        MIDNIGHT_LIGHT
-    }
-}
-
-/// 在 `[from, to]` 之间按 `elapsed / span` 的比例线性插值。
-///
-/// 要求 `0 <= elapsed < span`，由调用方（[`day_curve`] 的分支条件）保证。
-fn interpolate(from: i32, to: i32, elapsed: i64, span: i64) -> i32 {
-    from + ((i64::from(to - from) * elapsed) / span) as i32
 }
 
 /// 季节对光照的缩放系数，千分比：夏 1000、春秋 900、冬 750。
@@ -132,6 +81,7 @@ pub fn sight_radius_at(base_radius: u32, light: LightLevel) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ll_core::time::{TICKS_PER_DAY, TICKS_PER_HOUR};
 
     #[test]
     fn 正午光照最强() {
@@ -161,11 +111,12 @@ mod tests {
     #[test]
     fn 日出时段光照递增() {
         // 三个采样点落在同一天（春季），只有小时不同，季节缩放恒定，
-        // 不会干扰基准曲线的单调性。
+        // 不会干扰基准曲线的单调性。日出窗口本身（5-7 点）的定义在
+        // `ll_core::light`，这里直接写字面量小时数，不重复定义常量。
         // Arrange
-        let at_dawn_start = Tick(SUNRISE_START_HOUR * TICKS_PER_HOUR);
+        let at_dawn_start = Tick(5 * TICKS_PER_HOUR);
         let at_dawn_mid = Tick(6 * TICKS_PER_HOUR);
-        let at_dawn_end = Tick(SUNRISE_END_HOUR * TICKS_PER_HOUR - 1);
+        let at_dawn_end = Tick(7 * TICKS_PER_HOUR - 1);
 
         // Act
         let start_light = ambient_light(at_dawn_start).0;

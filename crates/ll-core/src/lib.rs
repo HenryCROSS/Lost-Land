@@ -14,6 +14,7 @@
 pub mod error;
 pub mod hashing;
 pub mod ident;
+pub mod light;
 pub mod rng;
 pub mod scaled;
 pub mod time;
