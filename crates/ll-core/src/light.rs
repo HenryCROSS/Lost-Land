@@ -17,8 +17,11 @@
 //! 午夜/正午基准光照这些常量）整体下沉到这里：`ll-core::time` 与
 //! `ll-world::light` 都从这一份定义读数，不再各自维护一份。
 //! `ll-world::light` 现在只负责在这条基准曲线之上叠加季节缩放
-//! （[`ll_world::light::season_light_scale`]，那部分依赖 [`crate::time::Season`]，
-//! 是 `ll-core` 已有的类型，不构成新的依赖方向问题）。
+//! （`ll-world` 的 `light` 模块里的 `season_light_scale`，那部分依赖
+//! [`crate::time::Season`]，是 `ll-core` 已有的类型，不构成新的依赖
+//! 方向问题）。这里特意不用 intra-doc 链接语法指向 `ll_world` 的条目：
+//! `ll-core` 不依赖 `ll-world`，rustdoc 无法解析这样一个链接，用了会
+//! 让 `cargo doc` 报 broken link。
 //!
 //! # 全程整数运算
 //!
