@@ -125,7 +125,7 @@ pub struct Penetration {
 
 ### 社交与经济（接经济与随从系统）
 
-[议价](agent-goals-and-economy.md)（影响交易价格）/ [威望](society-and-affiliation.md)（与本地职业声望是两个不同的量，勿混淆） / **领导力**（决定可带随从数上限）
+[议价](agent-goals-and-economy.md)（影响交易价格）/ **名望**（个人次级属性，来自事迹；与[职业声望](society-and-affiliation.md)同词根、不同量，二者的区分见该文档「职业声望是局部的」一节，原冲突清单条目 4，已裁定） / **领导力**（决定可带随从数上限）
 
 ### 移动
 

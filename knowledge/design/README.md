@@ -4,7 +4,7 @@
 
 前五份（物品、装备、属性、社会、经济）是最早冻结的一批，后四份（种族、世界历史、身份与 ID 空间、命名与本地化）是在前五份基础上补的一批已拍板决定——它们大量引用前五份的既有结构（`Affiliation`、`Kinship`、`ContentIndex`、`BaseStats`……），几乎不新增底层机制，只是把前五份没覆盖到的角落（种族怎么算、历史怎么生成、生成物怎么引用、名字怎么本地化）填满。
 
-**交叉核对中发现的矛盾与缺口**，见 [conflicts.md](conflicts.md)（4 条待裁定、3 条设计缺口、2 条记录备查——均针对前五份文档，后四份写作时发现的新问题已直接记在各自文档正文或本索引「落地状态」一节里，未额外并入这份清单）。这些是文档之间还没对齐的地方，不代表某一方错了，读到相关章节时请留意。
+**交叉核对中发现的矛盾与缺口**，见 [conflicts.md](conflicts.md)（4 条待裁定均已裁定、3 条设计缺口、2 条记录备查——均针对前五份文档，后四份写作时发现的新问题已直接记在各自文档正文或本索引「落地状态」一节里，未额外并入这份清单）。已裁定的结论已经落进对应文档正文，这里仅保留裁定记录供追溯；设计缺口与记录备查两类尚未处理，读到相关章节时请留意。
 
 ---
 
@@ -14,7 +14,7 @@
 |---|---|---|
 | [物品系统](item-system.md) | `ItemDef`/`ItemStack` 定义与实例分离、堆叠合并规则、`Owner` 归属枚举、`ItemLocation` 位置模型、地面物品老化清理、六档品质与倍率表、耐久、重量与负重分档、`use_effect` 脚本接口 | 装备如何占用槽位（见装备文档）、物品如何提供属性加成的具体消费逻辑（`StatBonus` 未在任何文档定义，见缺口 5）、物品定价如何变成行会售价（见经济文档，换算关系未写明，见缺口 7）、`Owner::Faction` 背后的组织语义（见社会文档） |
 | [装备栏位与占位掩码](equipment-slots.md) | 22 槽位定义、`SlotMask` 位运算、装备互斥/自动卸下规则、渲染层排序、装备流程的 Effect 序列 | 装备如何转化为攻防数值（见属性文档）、`ItemDef`/`ItemStack` 本身的字段（见物品文档）、单槽位 `EquipSlot` 类型的正式定义（未在任何文档给出，见缺口 6） |
-| [属性系统](attribute-system.md) | 六维主属性（STR/DEX/CON/INT/WIS/CHA）、调整值公式、三系攻防、护盾、四种穿透、伤害公式、幸运、次级属性列表、d20 判定、与时间轴调度的接口 | 属性加成从哪来（`ItemDef.stat_bonuses` 的消费逻辑未定义）、装备如何贡献属性的具体聚合算法（未在装备文档给出）、议价/威望等次级属性如何真正接入经济结算（见经济、社会文档）、种族对主属性的修正（见种族文档） |
+| [属性系统](attribute-system.md) | 六维主属性（STR/DEX/CON/INT/WIS/CHA）、调整值公式、三系攻防、护盾、四种穿透、伤害公式、幸运、次级属性列表、d20 判定、与时间轴调度的接口 | 属性加成从哪来（`ItemDef.stat_bonuses` 的消费逻辑未定义）、装备如何贡献属性的具体聚合算法（未在装备文档给出）、议价/名望等次级属性如何真正接入经济结算（见经济、社会文档）、种族对主属性的修正（见种族文档） |
 | [社会系统](society-and-affiliation.md) | `Affiliation` 统一结构（势力/宗教/行会/文化/家族/职业六类共用一个数据结构）、`CultureDef` 生成权重、地图结构层（聚落/道路/遗迹/地标/资源点）、宗教如何运转、家族与代际、关系系统的默认派生与记忆偏移、性格 `Traits`、职业声望的局部化、LOD 兼容性 | 具体的悬赏任务结构、行会定价公式、钱包与货币守恒（见经济文档）、物品本身的字段（见物品文档）、种族对关系派生基线的贡献（见种族文档「种族偏见」一节）、`Affiliation.org` 的具体 ID 类型（见身份文档） |
 | [Agent 目标与经济](agent-goals-and-economy.md) | 目标—需求—任务—悬赏循环、行会中介贸易与定价、钱包与货币守恒、破产/致富/土匪负反馈、职业审计算法、商队与途中报价、背景/前景/具名三档精度与棘轮问题、惰性追赶的边界、`ll-econsim` 验收指标 | `Affiliation`/`CultureDef` 等归属结构本身（见社会文档）、物品与装备的字段定义（见物品、装备文档）、属性如何影响战斗结算（见属性文档） |
 | [种族系统](race-system.md) | `Agent.race`/`RaceDef` 的形状、属性修正的烘焙时机、时间轴速度的数值预算、暗视接口与 FOV 对称性的关系、体型的取舍边界、寿命的三条平衡手段、薄层存储与 `birth_settlement`、混血规则、种族偏见的乘法分解、美术成本约束 | `RaceDef` 的具体数值表（数值定稿属于内容设计，非本文档范围）、种族分布场如何生成（见世界历史文档）、命名是否跟种族走（不跟，见命名文档，本文档只管属性/时间轴/暗视/体型/寿命/偏见/美术） |
@@ -40,7 +40,7 @@
 | `StatBonus`（**未正式定义**，见缺口 5） | 无——[物品系统](item-system.md) 使用了这个类型名，两份相关文档区块都指向对方 | — |
 | `Affiliation` / `AffiliationKind`（势力/宗教/行会/文化/家族/职业统一结构） | [社会系统](society-and-affiliation.md) | [物品系统](item-system.md)（`Owner::Faction`）、[Agent 目标与经济](agent-goals-and-economy.md)（行会中介贸易即 `AffiliationKind::Guild`、职业审计即 `AffiliationKind::Profession`） |
 | `CultureDef`（文化生成权重） | [社会系统](society-and-affiliation.md) | — |
-| `Traits`（性格：勇敢/贪婪/忠诚/合群/记仇/虔诚） | [社会系统](society-and-affiliation.md) | [Agent 目标与经济](agent-goals-and-economy.md)（职业审计「性格允许」一档，但未显式列入判定公式，见冲突 3） |
+| `Traits`（性格：勇敢/贪婪/忠诚/合群/记仇/虔诚） | [社会系统](society-and-affiliation.md) | [Agent 目标与经济](agent-goals-and-economy.md)（职业审计「性格允许」一档；熟练度作为收益差距阈值的调制项已一并补入判定条件，原冲突 3，已裁定） |
 | `Kinship`（血缘：父母/配偶/子女） | [社会系统](society-and-affiliation.md) | — |
 | 关系默认派生基线 + 记忆偏移 | [社会系统](society-and-affiliation.md) | — |
 | `Agent`（厚层实体） | [社会系统](society-and-affiliation.md) §五 与 [Agent 目标与经济](agent-goals-and-economy.md) §九 **共同**约束（两份文档各列一半字段，代码里合并成一个结构） | 双方互相依赖；已落地为 `crates/ll-world/src/entity/agent.rs` |
@@ -48,8 +48,8 @@
 | `Task`（任务/悬赏，`assignee: Option` 区分私人队列与公开池） | [Agent 目标与经济](agent-goals-and-economy.md) | [社会系统](society-and-affiliation.md)（行会/神殿的任务接取权由 `Affiliation` 判定） |
 | `Caravan`（商队） | [Agent 目标与经济](agent-goals-and-economy.md) | [社会系统](society-and-affiliation.md)（沿道路走，与聚落道路正反馈是同一个循环） |
 | `WealthTier`（破产/温饱/小康/富裕） | [Agent 目标与经济](agent-goals-and-economy.md) | — |
-| 行会定价公式 | [Agent 目标与经济](agent-goals-and-economy.md) | [社会系统](society-and-affiliation.md)（「同势力/同行会打折」的具体落点，是否已含在公式内未写明，见冲突 2） |
-| 近景/中景/远景 LOD（决策 21） vs 背景/前景/具名三档精度 | [社会系统](society-and-affiliation.md) §六 与 [Agent 目标与经济](agent-goals-and-economy.md) §七之二 分别给出 | 两套三档划分是否为同一件事的两种叫法未写明，见冲突 1（本索引里最要紧的一条） |
+| 行会定价公式（`本地价` + 买家归属系数） | [Agent 目标与经济](agent-goals-and-economy.md) | [社会系统](society-and-affiliation.md)（「同势力/同行会打折」由 `成交价 = 本地价 × 买家归属系数` 实现，原冲突 2，已裁定） |
+| 背景层/前景层/具名层三档精度（「被记住/被模拟」两轴） | [社会系统](society-and-affiliation.md) §六「LOD 兼容性」与 [Agent 目标与经济](agent-goals-and-economy.md) §七之二 共同给出，术语已统一 | 早期决策 21「近景/中景/远景」的距离式提法已废弃——距离不是决定精度的轴，「被记住/被模拟」才是（原冲突 1，已裁定，本索引里曾经最要紧的一条） |
 | `RaceDef`（种族定义：属性修正/暗视地板/体型/寿命，注册表，mod 可扩展） | [种族系统](race-system.md) | [属性系统](attribute-system.md)（属性修正烘焙进 `BaseStats` 的时机）、[社会系统](society-and-affiliation.md)（`race_affinity` 挂在 `CultureDef` 上参与关系派生与职业审计） |
 | `Agent.race: ContentIndex` / `ThinPopulation.race` | [种族系统](race-system.md) | 已落地为 `crates/ll-world/src/entity/agent.rs` 与 `thin.rs`；**但薄层落地方式与设计不符**——当前是显式存储列，设计要求零列现算，见种族文档「存储」一节的实现债务框 |
 | `birth_settlement`（出生地，终身不变，区别于会随迁徙变化的 `settlement`） | [种族系统](race-system.md)「存储」一节首次提出 | [命名、改名与本地化](naming-and-localization.md)（同一列同时驱动命名依据的文化查询）；**未落地**，当前薄层只有 `settlement` 一列 |
@@ -108,7 +108,7 @@
 
 ## 四、阅读顺序建议
 
-1. **[属性系统](attribute-system.md)**——六维骨架最基础，其余各份都直接或间接依赖它（负重公式、CHA 驱动招募议价、威望次级属性）。
+1. **[属性系统](attribute-system.md)**——六维骨架最基础，其余各份都直接或间接依赖它（负重公式、CHA 驱动招募议价、名望次级属性）。
 2. **[物品系统](item-system.md)**——第二基础，定义与实例分离是整个持久化模型的原型。
 3. **[装备栏位与占位掩码](equipment-slots.md)**——依赖物品系统的 `equip_mask` 字段，读物品系统之后立刻读这份最顺。
 4. **[社会系统](society-and-affiliation.md)**——引入 `Agent` 结构的一半字段（`affiliations`/`wallet`/`profession`），信息量最大，建议单独留出时间读完关系系统与职业声望两节。
