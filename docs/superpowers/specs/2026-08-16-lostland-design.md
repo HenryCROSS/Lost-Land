@@ -35,7 +35,7 @@
 | 11 | 回合调度 | 时间轴事件队列（非能量累积制） |
 | 12 | 数据格式 | 用户设置 TOML；游戏数据表直接写为 Steel `.scm`；资产元数据 JSON；本地化 Fluent `.ftl` |
 | 13 | 存档格式 | 明文 JSON 头部 + `postcard` 二进制主体 + `lz4_flex` 压缩 + schema 版本迁移链 |
-| 14 | i18n | 首发简中 + 英文，日语预留空包；字体 Fusion Pixel Font（OFL-1.1） |
+| 14 | i18n | 首发简中 + 英文，日语预留空包；字体思源黑体 Source Han Sans（Adobe 发行版，OFL-1.1） |
 | 15 | Mod | **本体即 Mod**：本体与 mod 走完全相同的注册表 API，本体无特权通道 |
 | 16 | 内容 ID | 命名空间字符串 `lostland:fireball`；装载时映射为紧凑整数索引 |
 | 17 | Mod 形态 | 仅允许 Steel 脚本 + 资产，**禁止原生 dll** |
@@ -52,6 +52,8 @@
 | 28 | 装备栏位 | 22 个槽位（左右肩 / 臂 / 手 / 靴 / 戒指分离），每件装备声明**占位掩码**；装备时凡与掩码相交者自动卸下。双手武器、全身甲、连体装由同一条规则覆盖，无特例。详见 `knowledge/design/equipment-slots.md` |
 | 29 | 属性系统 | DnD 六维骨架（STR/DEX/CON/INT/WIS/CHA）映射到三系攻防；四种穿透各含固定值与千分比两分量，**先减固定再乘千分比**；**衍生属性为纯函数派生，绝不进存档**。详见 `knowledge/design/attribute-system.md` |
 | 30 | 伤害公式 | 先固定减法，再百分比减免，并设**攻击力 10% 的伤害下限**——下限用于杜绝「完全打不动」的死局 |
+
+> **[2026-08-17 规格修订]** 决策 14 的字体已从 Fusion Pixel Font 改为思源黑体 Source Han Sans（OFL-1.1）。理由与变更细节见 §3 表下方的对应说明。
 
 ---
 
@@ -72,7 +74,7 @@
 | 通道 | `crossbeam` | MIT OR Apache-2.0 |
 | 本地化 | `fluent` | Apache-2.0 |
 | 工具链 UI | `egui` | MIT OR Apache-2.0 |
-| 像素字体 | Fusion Pixel Font | SIL OFL-1.1 |
+| CJK 字体 | 思源黑体 Source Han Sans（Adobe 发行版） | OFL-1.1 |
 | 属性测试 | `proptest` | MIT OR Apache-2.0 |
 | 快照测试 | `insta` | Apache-2.0 |
 | 性能基准 | `criterion` | MIT OR Apache-2.0 |
@@ -83,6 +85,8 @@
 > **强制门禁**：CI 必须运行 `cargo-deny`，对**全传递依赖树**做许可证扫描。允许清单为 MIT / Apache-2.0 / BSD / zlib / ISC / Unicode-DFS / OFL-1.1。出现任何清单外许可证即构建失败。扫描报告归档至 `knowledge/licenses/`。
 >
 > 上表中除 `steel-core` 已实测确认外，其余版本与许可证均需在 P0 阶段由 `cargo-deny` 首次扫描正式核验，核验结果回写本表。
+>
+> **[2026-08-17 规格修订]** 字体从 Fusion Pixel Font 改为思源黑体 Source Han Sans（Adobe 发行版，OFL-1.1）。理由：像素点阵字体在 12px 下渲染汉字不可读——笔画多的字（「鑫」「囊」「攀」）会糊成一团，中文像素字体要到 16px 才勉强可读，而那个尺寸已经不成其为像素风了，「像素风字体 + 中文」本身是个别扭组合；项目首发要求简体中文，这条硬约束绕不过去。改用矢量无衬线 CJK 字体后，`cosmic-text` 处理的变宽排版、真实字体度量（前进宽度、行高、CJK 断行点）才有依据可用——等宽点阵字体不提供这些度量，i18n 排版（断行、行高、省略号）在旧方案下无从谈起。渲染架构相应从「离线预烘焙图集」改为「运行时 `cosmic-text` + `glyphon` 排版栅格化」，且文本渲染改为原生分辨率、不参与 640×360 世界层的整数缩放管线（理由与取舍见下方 §11.3）。§14 决策清单第 14 项、§5 crate 分层、§11.3 三处同步修订。详见 `knowledge/pipelines/text-and-font-rendering.md`、`knowledge/licenses/2026-08-17-text-font-license-scan.md`。
 
 ---
 
@@ -138,7 +142,7 @@ crates/
   ll-core       纯数据类型：环面坐标、时间、命名空间 ID、确定性 RNG、错误。零依赖
   ll-platform   winit 窗口、输入、文件系统、线程池、日志
   ll-render     wgpu 精灵批渲染、图集、相机、图层、Y 排序、跨接缝绘制
-  ll-text       cosmic-text 排版 + Fusion Pixel Font + Fluent i18n
+  ll-text       cosmic-text 排版 + glyphon 渲染（wgpu） + 思源黑体 Source Han Sans + Fluent i18n
   ll-audio      kira 封装 + 预留脚本合成接口
   ll-world      WorldState、环面地形、FOV、世界时钟、昼夜四季、分区
   ll-sim        Intent/Effect/Apply、时间轴调度器、战斗结算
@@ -338,7 +342,7 @@ docs/           设计文档与规格
 ### 11.3 i18n
 
 - **代码中不得出现任何硬编码的用户可见字符串**，由 CI 检查强制。
-- 字体 Fusion Pixel Font（OFL-1.1），8/10/12px 三档对应 640×360 逻辑分辨率。排版由 `cosmic-text` 处理 CJK 断行与字形回退。
+- 字体思源黑体 Source Han Sans（Adobe 发行版，OFL-1.1），Regular + Bold 两档字重打包（约 16MB），CJK 与拉丁字形出自同一套设计系统。**文本渲染独立于 640×360 世界层的整数缩放管线，走原生分辨率栅格化**——像素点阵字体在低分辨率下小字号糊连、且不带真实字体度量，撑不住变宽排版与 CJK 断行判定，故不采用（原方案 Fusion Pixel Font 已废弃，见 §3 表下方修订说明）。排版由 `cosmic-text` 处理整形、断行、字形回退，`glyphon` 负责把排版结果渲染到 wgpu。
 - 首发简中 + 英文，日语建空包。双语并行开发以尽早暴露硬编码字符串与长文本下的 UI 排版溢出。
 
 ---
@@ -468,9 +472,9 @@ docs/           设计文档与规格
 | P1 | 渲染与动画：wgpu 精灵批处理、图集、混合尺寸精灵、Y 排序、相机、跨接缝绘制 |
 | P2 | 世界与地形：环面坐标、可平铺整数噪声生成、瓦片、FOV、世界时钟、昼夜四季、大陆地图与小地图 |
 | P3 | 回合与战斗：时间轴调度器、Intent → Effect → Apply 管线 |
-| P4 | 脚本层与 Mod 框架：Steel 宿主、内存守卫、注册表、命名空间 ID、加载管理界面。**迁移债务**：P2 阶段 `TerrainKind` 的属性表为硬编码 `match` 占位，本阶段落地注册表时须将其迁入，使本体地形与 mod 地形走同一条注册路径。 |
+| P4 | 脚本层与 Mod 框架：Steel 宿主、内存守卫、注册表、命名空间 ID、加载管理界面。**迁移债务**：P2 阶段 `TerrainKind` 的属性表为硬编码 `match` 占位，本阶段落地注册表时须将其迁入，使本体地形与 mod 地形走同一条注册路径。**排期调整（2026-08-17）**：文本渲染地基（`ll-text`：`cosmic-text` 排版 + `glyphon` 栅格化，不含完整像素 UI 控件库）提前到本阶段就位，与 mod 框架同批交付——原因见 P6 行。 |
 | P5 | 玩法系统：职业、技能树、副职、网状任务、双模式存档。**迁移债务**：P2 阶段 `OverviewCell::explored` 恒为 `true`（`WorldState` 尚无探索记忆），本阶段接入真实探索记忆时须为 `minimap`/`continent_map` 增加「视角归属」参数。玩家探索记忆天然是按角色持久化的数据，与本阶段的双模式存档同属一层，故记在这里而非 P6 UI 层——P6 只消费这份数据画战争迷雾，不该反过来定义它存在哪。这份债务也正是裁定 P2-5（FOV「墙格与原点的可见性对称」一节）里「边缘墙格偶尔不可见」瑕疵得以被掩盖的机制：玩家上次看到那面墙时已被记入探索记忆，这一帧没被实时标记可见不会让它凭空消失成黑块；真正落地探索记忆时，这条掩盖关系也该一并复核。**迁移债务**：`ll-world` 的 `WorldState::population`（`ThinPopulation`）与 `WorldState::actors`（`Arena<Agent>`）当前均标 `#[serde(skip)]`，不参与序列化——两者依赖的 `ll_core::ident::ContentIndex`（薄层 `profession` 列、厚层 `Agent::profession`）依赖 mod 加载顺序，`ll_core::ident` 模块文档明确写着不可持久化，存档必须写字符串 ID 而非裸索引；`Agent::pos` 的 `TorusPos` 同样因唯一构造路径 `TorusSize::wrap` 需要世界尺寸上下文而无法脱离该上下文反序列化。本阶段存档格式落地时须给内容注册表补上 `ContentIndex` ↔ 字符串 ID 的映射层（并给位置反序列化补上世界尺寸校验通道），把这两处 `#[serde(skip)]` 换成真正的往返实现，而不是让居民数据在读档后总是清空重来。 |
-| P6 | UI 层：像素 UI 控件库、游戏内菜单、设置界面、i18n |
+| P6 | UI 层：像素 UI 控件库（九宫格边框、焦点导航）、游戏内菜单、设置界面、i18n。**排期调整（2026-08-17）**：文本渲染地基（`cosmic-text`/`glyphon`）已提前到 P4 就位，本阶段只负责完整控件库与菜单/设置这些真正意义上的「UI 层」，不再包含文本渲染管线本身。**理由**：§10.6「加载管理界面」是 P4 交付物，其内容（mod 名单分组、可展开的含文件名与行号的错误详情）是信息密度很高的变长文本，若文本渲染管线仍排在 P6，P4 阶段做不出这个交付物，或只能沿用验收 demo 级别的极简点阵字体应付——而点阵字体连拉丁字母可读性下限都撑不住（见 §3 表下方字体修订说明），更不必说任意 mod 文件名与错误堆栈。详见 `knowledge/pipelines/text-and-font-rendering.md` §6.0。 |
 | P7 | 随从与行为树、指令系统、据点派工 |
 | P8 | 智能体经济与人口模拟、Cohort LOD |
 | P9 | 工具链：地图 / 动画编辑器、数据校验、经济压测、资产打包 |
