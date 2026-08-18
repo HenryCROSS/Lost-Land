@@ -105,4 +105,92 @@ fn main() {
             Err(e) => println!("  出错：{e}"),
         }
     }
+
+    section("6. quasiquote/unquote 展开后长什么样——unquote 里的表达式是否需要被检查");
+    {
+        let mut engine = Engine::new_sandboxed();
+        match engine.emit_fully_expanded_ast("`(a ,(+ 1 2) c)", None) {
+            Ok(exprs) => {
+                for expr in &exprs {
+                    println!("{}", expr.to_pretty(80));
+                }
+            }
+            Err(e) => println!("  出错：{e}"),
+        }
+    }
+
+    section("7. 用户自定义宏（define-syntax/syntax-rules）展开后长什么样");
+    {
+        let mut engine = Engine::new_sandboxed();
+        let src = r#"
+        (define-syntax my-when
+          (syntax-rules ()
+            [(my-when test body) (if test body #f)]))
+        (my-when #t (+ 1 2))
+        "#;
+        match engine.emit_fully_expanded_ast(src, None) {
+            Ok(exprs) => {
+                for expr in &exprs {
+                    println!("  ---节点---");
+                    println!("{}", expr.to_pretty(80));
+                }
+            }
+            Err(e) => println!("  出错：{e}"),
+        }
+        // 也直接跑一次，确认宏本身能正常工作。
+        let mut engine2 = Engine::new_sandboxed();
+        match engine2.run(src.to_string()) {
+            Ok(v) => println!("  宏展开后运行结果：{v:?}"),
+            Err(e) => println!("  运行出错：{e}"),
+        }
+    }
+
+    section("8. 自定义结构体（struct）在 sandboxed 引擎下能否定义与使用");
+    {
+        let mut engine = Engine::new_sandboxed();
+        let src = r#"
+        (struct Point (x y))
+        (define p (Point 1 2))
+        (list (Point-x p) (Point-y p))
+        "#;
+        match engine.run(src.to_string()) {
+            Ok(v) => println!("  struct 在纯 sandboxed（未 poison meta）下：{v:?}"),
+            Err(e) => println!("  struct 在纯 sandboxed 下出错：{e}"),
+        }
+
+        // 展开后长什么样，看看 struct 底层依赖了哪些名字。
+        let mut engine2 = Engine::new_sandboxed();
+        match engine2.emit_fully_expanded_ast(src, None) {
+            Ok(exprs) => {
+                for expr in &exprs {
+                    println!("  ---节点---");
+                    println!("{}", expr.to_pretty(120));
+                }
+            }
+            Err(e) => println!("  展开出错：{e}"),
+        }
+    }
+
+    section("9. 自定义结构体在 steel/meta 被整体 poison 之后是否还能用");
+    {
+        use steel::steel_vm::builtin::BuiltInModule;
+        let mut engine = Engine::new_sandboxed();
+        if let Some(module) = engine.builtin_modules().get("steel/meta") {
+            for name in module.names() {
+                let leaked: &'static str = Box::leak(name.into_boxed_str());
+                engine.register_value(leaked, steel::rvals::SteelVal::Void);
+            }
+        }
+        engine.register_module(BuiltInModule::new("steel/meta"));
+
+        let src = r#"
+        (struct Point (x y))
+        (define p (Point 1 2))
+        (list (Point-x p) (Point-y p))
+        "#;
+        match engine.run(src.to_string()) {
+            Ok(v) => println!("  struct 在 steel/meta 整体 poison 之后：{v:?}"),
+            Err(e) => println!("  struct 在 steel/meta 整体 poison 之后出错：{e}"),
+        }
+    }
 }

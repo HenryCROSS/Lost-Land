@@ -38,6 +38,36 @@
 //! 唯一途径是 `eval!`/`run!`/`eval-string` 这类反射入口，而这些名字本身
 //! 不在白名单里，会在脚本引用它们的那一刻被拒绝——不需要额外识别「这是
 //! 不是拼出来的」。
+//!
+//! # 白名单的定位：能力边界，不是语言子集（项目所有者裁定，写死在这里）
+//!
+//! **必须挡住的是能力**：文件系统、网络、进程、线程、墙钟、非确定性
+//! 随机，以及能触达以上任意一项的反射入口（`eval!`/`run!`/
+//! `require-builtin` 之类）。**必须放行的是语言本身**：闭包、递归、
+//! 尾调用、宏（`define-syntax`/`syntax-rules`）、`quote`/`quasiquote`/
+//! `unquote`、`let`/`let*`/`letrec`/命名 let、高阶函数
+//! （`map`/`filter`/`fold`/`apply`）、列表/向量/哈希表作为数据结构、
+//! 字符串与数学运算、用户自定义 `struct`——这些都是"纯的东西"，被挡住
+//! 是白名单的缺陷，不是安全特性。
+//!
+//! **判断某个名字该不该放行的唯一标准是"它能不能到达上面那六类能力之
+//! 一"，不是"我们对它有没有把握"。** 遇到不确定的名字，先去查它的
+//! 实现（是否有 I/O、是否读写进程/主机状态、是否暴露随时间/运行而变的
+//! 内部值如内存地址），能证明纯净就放行；只有证明得到会触达被禁能力，
+//! 或者其行为在不同机器/不同次运行之间不一致（比如 `memory-address`
+//! 打印的是真实指针值），才归入拒绝名单——`host.rs` 的
+//! `META_DENY_LIST` 就是这样逐项审过的产物，不是"整个模块太复杂看不
+//! 过来所以全清空"的偷懒决定（那是 `steel/meta` 曾经的做法，已经因为
+//! 挡住了 `make-struct-type` 这种纯特性被推翻，见 ADR 0012）。
+//!
+//! # 与「本体即 Mod」的联系（规格 §10.3）
+//!
+//! 本体内容与 mod 走完全相同的 API，没有特权通道。白名单太窄的后果
+//! 不只是"mod 作者受限"，而是**本体自己也写不出内容来**——这与 ADR
+//! 0016 的守门规则同源：若本体需要一个 mod 够不着的东西，那是 API
+//! 缺陷，不是特性。反过来，白名单本身也要经受同一条检验：凡是"纯"的
+//! 语言能力被误挡，都会先在本体自己的内容定义里被撞见，而不是等到
+//! mod 作者抱怨。
 
 use std::collections::HashSet;
 
@@ -52,9 +82,41 @@ pub fn check_whitelist(
     exprs: &[ExprKind],
     allowed: &HashSet<&'static str>,
 ) -> Result<(), ScriptError> {
-    let no_locals = HashSet::new();
+    let mut locals = HashSet::new();
+    walk_sequence(exprs, allowed, &mut locals)
+}
+
+/// 按顺序遍历一串同层级的表达式（顶层程序，或 `begin` 块），并且**让
+/// 前面出现的 `define` 对后面的兄弟表达式可见**。
+///
+/// 这不是可选的优化，是正确性要求：`struct` 宏展开成一个 `begin` 块，
+/// 里面先 `(define struct:Point (quote uninitialized))` 占位，后面几个
+/// 兄弟表达式再 `(set! struct:Point ...)` 引用它——若每个兄弟表达式都
+/// 拿同一份只读的 `locals` 快照检查（早期实现的 bug），`struct:Point`
+/// 在被 `set!` 引用的那一刻会被误判成"没在前面的作用域里定义过的自由
+/// 引用"，进而被白名单拒绝。顶层脚本同理：`(define p (Point 1 2))`
+/// 后面接着 `(define (f) (list p))` 这种最常见的写法，也要求前一条
+/// 顶层 `define` 对后一条可见。
+fn walk_sequence<'a>(
+    exprs: &'a [ExprKind],
+    allowed: &HashSet<&'static str>,
+    locals: &mut HashSet<&'a str>,
+) -> Result<(), ScriptError> {
     for expr in exprs {
-        walk(expr, allowed, &no_locals)?;
+        if let ExprKind::Define(node) = expr {
+            // 先把名字收进 locals 再遍历函数体——顺序不能反：递归函数
+            // 的函数体要引用自己的名字（`(define (loop) (loop))`），
+            // 若先遍历函数体再收名字，函数体里那次自引用会在名字还没
+            // 加入 locals 时就被检查，被误判成白名单外的自由引用。
+            //
+            // 累加进同一个（可变的）locals，而不是像 Let/Lambda 那样
+            // 用一次性克隆——这正是"顶层/begin 序列"与"let/lambda 单个
+            // 作用域"两者语义的关键区别。
+            collect_bound_names(&node.name, locals);
+            walk(&node.body, allowed, locals)?;
+        } else {
+            walk(expr, allowed, locals)?;
+        }
     }
     Ok(())
 }
@@ -88,10 +150,15 @@ fn check_reference<'a>(
     }
 }
 
+/// `locals` 是**可变**的，不是只读快照——这是能正确处理"顶层/`begin`
+/// 序列里，前一条 `define` 要对后一条兄弟表达式可见"这条规则的关键
+/// （见 [`walk_sequence`] 文档）。`Let`/`Define`/`LambdaFunction` 各自
+/// 需要一个**不泄漏到调用方**的临时作用域时，做法是显式 `clone()` 一份
+/// 再传下去，而不是指望这个函数自己去分辨"这次调用该不该泄漏"。
 fn walk<'a>(
     expr: &'a ExprKind,
     allowed: &HashSet<&'static str>,
-    locals: &HashSet<&'a str>,
+    locals: &mut HashSet<&'a str>,
 ) -> Result<(), ScriptError> {
     match expr {
         ExprKind::Atom(atom) => walk_atom(atom, allowed, locals),
@@ -102,7 +169,8 @@ fn walk<'a>(
         }
         ExprKind::Let(node) => {
             // 绑定值在外层作用域求值（不能看见 let 自己引入的名字），
-            // body 才看得见新绑定的名字。
+            // body 才看得见新绑定的名字。用克隆的临时作用域：let 引入
+            // 的绑定不该泄漏到 let 表达式之外。
             for (_binding_name, value) in &node.bindings {
                 walk(value, allowed, locals)?;
             }
@@ -110,29 +178,44 @@ fn walk<'a>(
             for (binding_name, _value) in &node.bindings {
                 collect_bound_names(binding_name, &mut inner);
             }
-            walk(&node.body_expr, allowed, &inner)
+            walk(&node.body_expr, allowed, &mut inner)
         }
         ExprKind::Define(node) => {
-            // `node.name` 可能是单个原子（`(define x ...)`）也可能是一个
-            // 列表（`(define (f a b) ...)`，此时首元素是函数名、其余是
-            // 形参名）。两者都不需要在白名单里；函数体则需要能看见这些
-            // 名字（尤其是递归函数要引用自己的名字）。
+            // 单独出现（不在 walk_sequence 序列里）的 define——例如
+            // `if`/`let` 分支体本身就是一条孤立 define 的场景。`node.name`
+            // 可能是单个原子（`(define x ...)`）也可能是一个列表
+            // （`(define (f a b) ...)`，此时首元素是函数名、其余是形参
+            // 名）。两者都不需要在白名单里；函数体则需要能看见这些名字
+            // （尤其是递归函数要引用自己的名字）。用克隆的临时作用域，
+            // 不通过这条路径让定义的名字泄漏出去——真正需要"泄漏给后续
+            // 兄弟表达式"的顶层/begin 场景，走的是 walk_sequence 那条
+            // 专门路径，不经过这里。
             let mut inner = locals.clone();
             collect_bound_names(&node.name, &mut inner);
-            walk(&node.body, allowed, &inner)
+            walk(&node.body, allowed, &mut inner)
         }
         ExprKind::LambdaFunction(node) => {
             let mut inner = locals.clone();
             for arg in &node.args {
                 collect_bound_names(arg, &mut inner);
             }
-            walk(&node.body, allowed, &inner)
+            walk(&node.body, allowed, &mut inner)
         }
         ExprKind::Begin(node) => {
-            for e in &node.exprs {
-                walk(e, allowed, locals)?;
-            }
-            Ok(())
+            // **不克隆**，直接复用调用方传进来的可变作用域：`begin`
+            // 块内先出现的 define 必须对块内后出现的兄弟表达式可见
+            // （见 walk_sequence 文档），而"这份新增绑定要不要继续泄漏
+            // 到 begin 块之外"完全取决于调用方传进来的 locals 本身是否
+            // 可以被继续观察——例如顶层脚本的 begin（`struct` 宏在顶层
+            // 展开成的那个 begin）就应该让内部的 define 对同一份顶层
+            // locals 生效，因为顶层 begin 在真实 Scheme 语义里本来就是
+            // "拼接"进外层作用域,不是新开一层；而嵌套在 lambda 里的
+            // begin，因为 lambda 早已经克隆过一份 inner 传进来，begin
+            // 往这份 inner 里加的名字自然也只在这个 lambda 内部可见,
+            // 出了 lambda 那份 inner 就被丢弃了。两种场景用的是同一行
+            // 代码，靠调用链上"谁克隆过、谁没克隆过"自然分流，不需要
+            // begin 自己判断"我现在是不是在顶层"。
+            walk_sequence(&node.exprs, allowed, locals)
         }
         ExprKind::Return(node) => walk(&node.expr, allowed, locals),
         // reader 直接产出的 quote 节点：整体是数据，不检查内部标识符。
@@ -146,9 +229,16 @@ fn walk<'a>(
         // 成一串 define），但防御性地直接拒绝——这不该发生，发生了说明
         // 展开没有按预期完成，宁可保守拒绝。
         ExprKind::Require(_) => reject("require"),
-        // 不允许脚本自定义宏：宏能在展开期生成任意新代码，是比
-        // require-builtin 更难静态审查的攻击面，本阶段直接整体拒绝。
-        ExprKind::Macro(_) | ExprKind::SyntaxRules(_) => reject("define-syntax/宏定义"),
+        // 允许脚本自定义宏（define-syntax/syntax-rules）——这是 Lisp 的
+        // 核心能力，不能挡。安全性不靠"不让脚本写宏"，靠"校验的是宏
+        // 展开之后的树"：实测（probe_whitelist.rs 第 7 节）宏定义本身
+        // 在 emit_fully_expanded_ast 的输出里完全消失，宏的每一次使用
+        // 都被替换成它展开出的普通代码——那些代码会照常被这个 walk()
+        // 检查，宏本身不提供任何绕过白名单的额外能力。这两个变体在
+        // "完整展开后"的树里理论上不应该再出现（宏定义只在展开期起
+        // 作用，不留下运行期节点）；万一出现，不检查其内部的模式变量
+        // （那些是模式匹配占位符，不是真实引用），直接放行。
+        ExprKind::Macro(_) | ExprKind::SyntaxRules(_) => Ok(()),
         ExprKind::Vector(node) => {
             for e in &node.args {
                 walk(e, allowed, locals)?;
@@ -173,11 +263,17 @@ fn walk_atom<'a>(
 fn walk_list<'a>(
     list: &'a List,
     allowed: &HashSet<&'static str>,
-    locals: &HashSet<&'a str>,
+    locals: &mut HashSet<&'a str>,
 ) -> Result<(), ScriptError> {
     // 首元素是 quote/quasiquote 时整个列表是数据，不检查内部标识符——
     // 这是 `'x` 写法在字面 `(quote x)` 形态下的等价情况，与
     // `ExprKind::Quote` 处理的是同一件事的两种语法糖表示。
+    //
+    // `` `(a ,(+ 1 2) c) `` 这类带 unquote 的准引用不需要单独处理：
+    // 实测（probe_whitelist.rs 第 6 节）编译器在完整展开阶段就已经把
+    // 它降级成 `(cons 'a (cons (+ 1 2) (cons 'c '())))`——unquote 里的
+    // `(+ 1 2)` 在展开后的树里就是一个普通的、未被 quote 包住的函数
+    // 调用，会被下面的递归正常检查到，不会被这条 quote 分支误伤。
     if let Some(ExprKind::Atom(head)) = list.args.first()
         && let Some(name) = head.ident()
         && matches!(name.resolve(), "quote" | "quasiquote")
