@@ -1,0 +1,20 @@
+[package]
+name = "ll-sim"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的回合与模拟层：实体存储、名字生成"
+
+# 开启 ll-core 的可选 serde feature：Tick 需要可序列化才能出现在
+# 本 crate 的可序列化类型里（见 ll-core/Cargo.toml 顶部对该 feature
+# 的说明，与 ll-world 的做法一致）。
+[dependencies]
+ll-core = { path = "../ll-core", features = ["serde"] }
+serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+proptest.workspace = true
+# 仅用于 serde 往返测试：验证类型能经过一种真实的 serde 格式完整
+# 往返，而不只是停留在 derive 能编译这一层面（与 ll-core/ll-world
+# 同样的理由，见其 Cargo.toml）。
+serde_json = "1"

@@ -16,16 +16,30 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use ll_core::hashing::StateHasher;
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
+use ll_sim::entity::{Agent, Arena, ThinPopulation};
 
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
 use crate::generate::{GenParams, generate_terrain};
 use crate::terrain::TerrainKind;
 
-/// 完整的世界状态：种子、时钟、尺寸与地形。
+/// 完整的世界状态：种子、时钟、尺寸、地形、薄层人口与厚层实体池。
 ///
-/// 全部字段公开且可序列化：存档格式就是这个结构体本身，不经过额外的
-/// DTO 转换层——多一层转换就多一处可能与本体字段漂移的地方。
+/// 全部字段公开：存档格式就是这个结构体本身，不经过额外的 DTO 转换层
+/// ——多一层转换就多一处可能与本体字段漂移的地方。
+///
+/// # `population`/`actors` 暂不参与序列化（P3 阶段的已知限制）
+///
+/// [`ThinPopulation`] 与 [`Arena<Agent>`] 目前不派生 `serde`：前者的
+/// `profession` 列、后者的 `Agent::profession` 都是 `ll_core::ident::ContentIndex`
+/// ——该类型在 `ll_core::ident` 模块文档里被明确标记为不可持久化（依赖
+/// mod 加载顺序，存档必须写字符串 ID 而非裸索引）；`Agent::pos` 是
+/// `TorusPos`，其唯一构造路径 `TorusSize::wrap` 需要世界尺寸上下文，
+/// `ll-core` 里也没有为它提供可脱离该上下文使用的 `serde` 实现。两者
+/// 真正落地需要先给内容注册表与位置反序列化补上校验通道，这属于后续
+/// 批次（存档格式在 P5 冻结前）的工作，本任务只建两层的结构与操作，
+/// 用 `#[serde(skip)]` 如实标记这个已知缺口，而不是假装已经完整可
+/// 序列化。
 ///
 /// # 反序列化必须交叉校验 `size` 与 `terrain` 的尺寸（裁定 P2-6 的同源修复）
 ///
@@ -54,6 +68,14 @@ pub struct WorldState {
     pub size: TorusSize,
     /// 世界地形。
     pub terrain: ChunkGrid,
+    /// 薄层人口：数十万到数百万背景 NPC，列式排布。P3 阶段可以为空，
+    /// 见 [`ThinPopulation`] 模块文档。不参与序列化，理由见本类型文档。
+    #[serde(skip)]
+    pub population: ThinPopulation,
+    /// 厚层实体池：数百个被真正模拟的实体，行式排布。P3 阶段可以只有
+    /// 玩家与几个敌人，见 [`Arena`] 模块文档。不参与序列化，理由同上。
+    #[serde(skip)]
+    pub actors: Arena<Agent>,
 }
 
 /// [`WorldState`] 反序列化的中转表示。
@@ -90,6 +112,10 @@ impl TryFrom<WorldStateRepr> for WorldState {
             clock: repr.clock,
             size: repr.size,
             terrain: repr.terrain,
+            // 两者当前不参与序列化（见 WorldState 文档），存档里没有
+            // 对应数据可读，读档后总是从空状态开始。
+            population: ThinPopulation::default(),
+            actors: Arena::default(),
         })
     }
 }
@@ -103,6 +129,8 @@ impl WorldState {
             clock: Tick(0),
             size,
             terrain,
+            population: ThinPopulation::default(),
+            actors: Arena::default(),
         })
     }
 

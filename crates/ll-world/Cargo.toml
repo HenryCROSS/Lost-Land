@@ -9,6 +9,13 @@ description = "迷途大陆的世界层：世界状态、环面地形、视野�
 # 开启 ll-core 的可选 serde feature：WorldState 需要 Tick 与 TorusSize
 # 可序列化才能完整往返（见 ll-core/Cargo.toml 顶部对该 feature 的说明）。
 ll-core = { path = "../ll-core", features = ["serde"] }
+# WorldState 新增的 population/actors 两个字段的类型（ThinPopulation、
+# Arena<Agent>）定义在 ll-sim。ll-sim 目前只依赖 ll-core，故这条依赖
+# 不构成循环——后续批次若要给 ll-sim 加 resolve/apply 这类需要读
+# &WorldState 的模块，需要另想办法避免反向依赖（例如让那些函数直接
+# 接收 &ThinPopulation/&Arena<Agent> 等拆开的参数，而不是整个
+# WorldState），这里先记一笔。
+ll-sim = { path = "../ll-sim" }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
 
