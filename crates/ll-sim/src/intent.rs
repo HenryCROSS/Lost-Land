@@ -1,0 +1,367 @@
+//! `Intent`：玩家或 AI「想做什么」的纯数据描述，以及从玩家输入到
+//! `Intent` 的映射。
+//!
+//! # 为什么 `Intent` 必须是纯数据且可序列化
+//!
+//! 记录下一局游戏里每一次 `Intent` 加上世界种子，就足以完整重放这
+//! 一局——不需要额外录制随机数或帧时序，因为 `resolve`（批次 C）读到
+//! 同一个 `Intent` 时，从 `DetRng::for_entity` 派生出的随机数序列必然
+//! 相同（约束 C4）。这是排查玩家报告缺陷最强的手段：只要留住 Intent
+//! 流，就能在开发机上原样复现玩家遇到的那一局，而不必祈祷缺陷恰好
+//! 再次触发。
+//!
+//! `Intent` 本身不做任何校验或世界查询——它只是「玩家按了什么、想
+//! 干什么」的记录，合法性判断（能不能这样移动、这个方向有没有可攻击
+//! 的目标）全部留给 `resolve`。这也是为什么 `pos` 字段用裸
+//! `(i32, i32)` 而不是 `ll_core::torus::TorusPos`：后者的唯一构造
+//! 路径需要世界尺寸做取模归一化，而 `Intent` 在产生的这一刻未必已经
+//! 拿到世界——`resolve` 读取 `Intent` 时自然持有 `WorldState`，届时
+//! 用 `world.size.wrap(x, y)` 归一化一次即可，不需要 `Intent` 自己
+//! 提前做这件事。
+
+use ll_platform::input::InputState;
+use ll_world::entity::EntityId;
+use serde::{Deserialize, Serialize};
+
+/// 八方向。
+///
+/// 只是「移动往哪个方向」的枚举，不含步长——移动恒为一格，见
+/// `knowledge/design` 对回合制网格移动的约定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Direction {
+    /// 北（世界坐标 y 减一）。
+    North,
+    /// 南（世界坐标 y 加一）。
+    South,
+    /// 西（世界坐标 x 减一）。
+    West,
+    /// 东（世界坐标 x 加一）。
+    East,
+    /// 东北。
+    NorthEast,
+    /// 东南。
+    SouthEast,
+    /// 西南。
+    SouthWest,
+    /// 西北。
+    NorthWest,
+}
+
+impl Direction {
+    /// 该方向对应的一格位移 `(dx, dy)`。
+    ///
+    /// `dy` 的符号沿用既有的相机/移动惯例（见
+    /// `crates/ll-world/examples/p2_acceptance/main.rs` 的
+    /// `move_player` 调用点）：北是 `y - 1`，南是 `y + 1`。
+    pub const fn delta(self) -> (i32, i32) {
+        match self {
+            Direction::North => (0, -1),
+            Direction::South => (0, 1),
+            Direction::West => (-1, 0),
+            Direction::East => (1, 0),
+            Direction::NorthEast => (1, -1),
+            Direction::SouthEast => (1, 1),
+            Direction::SouthWest => (-1, 1),
+            Direction::NorthWest => (-1, -1),
+        }
+    }
+}
+
+/// 玩家或 AI「想做什么」的纯数据描述。见模块文档「为什么必须是纯数据
+/// 且可序列化」一节。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Intent {
+    /// 朝某方向移动一格。
+    Move {
+        /// 发起者。
+        actor: EntityId,
+        /// 移动方向。
+        dir: Direction,
+    },
+    /// 攻击某个目标。
+    Attack {
+        /// 发起者。
+        actor: EntityId,
+        /// 目标。
+        target: EntityId,
+    },
+    /// 原地等待一回合。
+    Wait {
+        /// 等待者。
+        actor: EntityId,
+    },
+    /// 开启某处的门。
+    OpenDoor {
+        /// 发起者。
+        actor: EntityId,
+        /// 门所在的世界坐标，未经归一化——见模块文档「为什么 `pos`
+        /// 用裸元组」一节。
+        pos: (i32, i32),
+    },
+}
+
+/// 把一帧的玩家输入映射成 `Intent`。
+///
+/// 只产出 [`Intent::Move`] 与 [`Intent::Wait`]：`Attack`/`OpenDoor`
+/// 需要知道「那个方向上到底有什么」（目标实体、门的确切位置），这
+/// 属于读世界之后才能判断的事，是 `resolve`（批次 C）从一次
+/// `Intent::Move` 结合世界状态推导出来的，不是输入层能单独决定的——
+/// 见批次 B 的分工：本层只管「按了什么键」，不读 `WorldState`。
+///
+/// 四个方向键按住的组合决定八向：例如同时按住上与右得到东北。若上下
+/// 或左右两个相反方向同时被按住，视为无方向输入（两者抵消，不猜测
+/// 玩家意图）。方向输入与等待键同时激活时，移动优先——方向输入的
+/// 信号更具体，等待通常只是长按等待键连续触发的巡航状态，不应盖过
+/// 一次明确的转向。
+///
+/// 无任何相关按键激活时返回 [`None`]。
+pub fn intent_from_input(actor: EntityId, input: &InputState) -> Option<Intent> {
+    if let Some(dir) = direction_from_input(input) {
+        return Some(Intent::Move { actor, dir });
+    }
+    if input.was_activated(ll_platform::input::GameKey::Wait) {
+        return Some(Intent::Wait { actor });
+    }
+    None
+}
+
+/// 单轴上按下的是负方向还是正方向。
+///
+/// 用具名的两变体枚举而非 `-1`/`1` 整数：整数版本的 `match` 需要对
+/// `i32` 的全部取值做穷尽性检查，编译器无法从字面量模式推断出实际
+/// 只会出现 `-1`/`1`/`None` 三种情况，被迫要求一个兜底分支——而兜底
+/// 分支恰恰是这里最想避免的：它会悄悄吞掉「本不该出现的第三种输入」
+/// 而不是让编译器帮忙钉死只有这两种可能。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Axis {
+    /// 该轴上的负方向（西、北）。
+    Negative,
+    /// 该轴上的正方向（东、南）。
+    Positive,
+}
+
+/// 从方向键的按住组合推出八向；两个相反方向键同时按住或都未按住时
+/// 返回 [`None`]。
+fn direction_from_input(input: &InputState) -> Option<Direction> {
+    use ll_platform::input::GameKey;
+
+    let vertical = match (
+        input.was_activated(GameKey::Up),
+        input.was_activated(GameKey::Down),
+    ) {
+        (true, false) => Some(Axis::Negative),
+        (false, true) => Some(Axis::Positive),
+        _ => None,
+    };
+    let horizontal = match (
+        input.was_activated(GameKey::Left),
+        input.was_activated(GameKey::Right),
+    ) {
+        (true, false) => Some(Axis::Negative),
+        (false, true) => Some(Axis::Positive),
+        _ => None,
+    };
+
+    match (horizontal, vertical) {
+        (Some(Axis::Negative), Some(Axis::Negative)) => Some(Direction::NorthWest),
+        (Some(Axis::Positive), Some(Axis::Negative)) => Some(Direction::NorthEast),
+        (Some(Axis::Negative), Some(Axis::Positive)) => Some(Direction::SouthWest),
+        (Some(Axis::Positive), Some(Axis::Positive)) => Some(Direction::SouthEast),
+        (Some(Axis::Negative), None) => Some(Direction::West),
+        (Some(Axis::Positive), None) => Some(Direction::East),
+        (None, Some(Axis::Negative)) => Some(Direction::North),
+        (None, Some(Axis::Positive)) => Some(Direction::South),
+        (None, None) => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ll_platform::input::{GameKey, InputState};
+    use ll_world::entity::Arena;
+
+    fn entity() -> EntityId {
+        let mut arena: Arena<()> = Arena::new();
+        arena.spawn(())
+    }
+
+    /// 按下给定按键组合后立即读一次意图——`press` 本身就会置起
+    /// `just_pressed`，`was_activated` 因此为真，不需要先走一帧
+    /// `begin_frame`。
+    fn intent_after_pressing(keys: &[GameKey]) -> Option<Intent> {
+        let mut input = InputState::new();
+        for &key in keys {
+            input.press(key);
+        }
+        intent_from_input(entity(), &input)
+    }
+
+    #[test]
+    fn 单按上键映射为向北移动() {
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Up]);
+
+        // Assert
+        assert!(matches!(
+            intent,
+            Some(Intent::Move {
+                dir: Direction::North,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn 单按下键映射为向南移动() {
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Down]);
+
+        // Assert
+        assert!(matches!(
+            intent,
+            Some(Intent::Move {
+                dir: Direction::South,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn 单按左键映射为向西移动() {
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Left]);
+
+        // Assert
+        assert!(matches!(
+            intent,
+            Some(Intent::Move {
+                dir: Direction::West,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn 单按右键映射为向东移动() {
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Right]);
+
+        // Assert
+        assert!(matches!(
+            intent,
+            Some(Intent::Move {
+                dir: Direction::East,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn 同按上与右映射为向东北移动() {
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Up, GameKey::Right]);
+
+        // Assert
+        assert!(matches!(
+            intent,
+            Some(Intent::Move {
+                dir: Direction::NorthEast,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn 同按上与左映射为向西北移动() {
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Up, GameKey::Left]);
+
+        // Assert
+        assert!(matches!(
+            intent,
+            Some(Intent::Move {
+                dir: Direction::NorthWest,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn 同按下与右映射为向东南移动() {
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Down, GameKey::Right]);
+
+        // Assert
+        assert!(matches!(
+            intent,
+            Some(Intent::Move {
+                dir: Direction::SouthEast,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn 同按下与左映射为向西南移动() {
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Down, GameKey::Left]);
+
+        // Assert
+        assert!(matches!(
+            intent,
+            Some(Intent::Move {
+                dir: Direction::SouthWest,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn 相反方向键同时按住时没有方向输入() {
+        // 上下抵消，不应猜测玩家意图；由于没有等待键，最终应无意图。
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Up, GameKey::Down]);
+
+        // Assert
+        assert!(intent.is_none());
+    }
+
+    #[test]
+    fn 无任何按键时返回空值() {
+        // Arrange
+        let input = InputState::new();
+
+        // Act
+        let intent = intent_from_input(entity(), &input);
+
+        // Assert
+        assert!(intent.is_none());
+    }
+
+    #[test]
+    fn 按下等待键映射为等待意图() {
+        // Act
+        let intent = intent_after_pressing(&[GameKey::Wait]);
+
+        // Assert
+        assert!(matches!(intent, Some(Intent::Wait { .. })));
+    }
+
+    #[test]
+    fn 意图序列化往返后与原值相等() {
+        // Arrange
+        let actor = entity();
+        let original = Intent::Attack {
+            actor,
+            target: entity(),
+        };
+
+        // Act
+        let json = serde_json::to_string(&original).expect("Intent 全字段均可序列化");
+        let decoded: Intent = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+}

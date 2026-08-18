@@ -1011,6 +1011,7 @@ name = "ll-sim"
 version = "0.1.0"
 dependencies = [
  "ll-core",
+ "ll-platform",
  "ll-world",
  "proptest",
  "serde",

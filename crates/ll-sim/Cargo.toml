@@ -10,13 +10,19 @@ workspace = true
 
 # 实体存储与名字生成已迁移到 ll-world（依赖方向修正，见规格 §5：
 # ll-world ← ll-sim，状态所在的 crate 不能反过来依赖演化所在的
-# crate）。本 crate 当前是占位 crate，下面这些依赖是下一批实现
-# timeline/intent/effect/resolve/apply 时才会真正用到——那批逻辑需要
-# 读 &WorldState（地形、FOV 等定义在 ll-world），故提前声明 ll-world
-# 依赖；ll-core/serde 则是本 crate 自身的 Tick/DetRng 等类型一贯需要的
-# 基础设施。先保留声明，方便下一批直接开工。
+# crate）。timeline/effect/apply 需要读 &WorldState（地形、FOV 等定义
+# 在 ll-world），故依赖 ll-world；ll-core/serde 是 Tick/DetRng/EntityId
+# 等类型一贯需要的基础设施。
+#
+# ll-platform 是 Task 4 新增的依赖：`intent_from_input` 要把玩家一帧的
+# 按键状态（`ll_platform::input::InputState`）映射成 `Intent`，这个
+# 映射规则天然属于「演化」层而不是平台层——按键含义会随玩法调整，
+# 平台层只管把操作系统事件归约成 `GameKey`，不该关心这些键在游戏里
+# 意味着什么。依赖方向 ll-platform ← ll-sim 不成环：ll-platform 只依赖
+# ll-core，不认识 ll-sim。
 [dependencies]
 ll-core = { path = "../ll-core", features = ["serde"] }
+ll-platform = { path = "../ll-platform" }
 ll-world = { path = "../ll-world" }
 serde = { version = "1", features = ["derive"] }
 
