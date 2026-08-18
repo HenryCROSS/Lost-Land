@@ -217,14 +217,20 @@ const BANNED_SOURCE_SUBSTRINGS: [&str; 2] = ["require-builtin", "(require "];
 /// 检查源码文本是否触碰了 [`BANNED_SOURCE_SUBSTRINGS`]。
 ///
 /// 命中哪一个子串，就把它写进错误信息里,方便 mod 作者定位——不能只说
-/// 「被拒绝」,不给理由。
+/// 「被拒绝」,不给理由。命中位置的字节偏移量一并带出（`source.find`
+/// 恰好能给出），供调用方（Task 11 加载管理界面）换算成行号——这是
+/// 文本层前置优化仍然值得携带位置信息的原因：它和 AST 白名单一样，
+/// 拒绝时不该让 mod 作者自己去脚本里逐行找是哪一处触发的。
 fn reject_dangerous_syntax(source: &str) -> Result<(), ScriptError> {
     for banned in BANNED_SOURCE_SUBSTRINGS {
-        if source.contains(banned) {
-            return Err(ScriptError::ParseError(format!(
-                "脚本源码包含禁止的语法「{banned}」——mod 脚本不允许 require 任何 Steel 内置模块，\
-                 所有能力必须通过宿主注册的函数访问"
-            )));
+        if let Some(byte_offset) = source.find(banned) {
+            return Err(ScriptError::ParseError(
+                format!(
+                    "脚本源码包含禁止的语法「{banned}」——mod 脚本不允许 require 任何 Steel 内置模块，\
+                     所有能力必须通过宿主注册的函数访问"
+                ),
+                Some(byte_offset as u32),
+            ));
         }
     }
     Ok(())
@@ -301,25 +307,52 @@ fn poisoned_identifiers(engine: &Engine) -> HashSet<&'static str> {
 /// [`ScriptEngine::load_source`] 的签名本身就是 `Result`，出错必定拿到
 /// `Err` 而不是 panic；具体要不要降级、降级成什么默认值，是**调用方**的
 /// 决定，本类型只保证「出错一定可观测」。
+/// 每个携带消息的变体都附带一个可选的**源码字节偏移量**（不是行号
+/// 本身）——`ScriptError`/`ll-script` 本身不知道调用方是用什么路径把
+/// 源码传进来的，无法自己把偏移量换算成行号（换算需要重新扫描一遍
+/// 源码文本数换行符，调用方已经持有那份源码字符串，没理由让本类型
+/// 再拷贝一份）。Task 11 加载管理界面据此在自己一侧换算出行号，见
+/// `ll-mod` 的换算帮手。
+///
+/// 实测（`crates/ll-script/examples/probe_span.rs`）：`SteelErr::span()`
+/// 对语法错误、`FreeIdentifier`、`ArityMismatch` 都能给出非空
+/// `Span`，白名单拒绝时 AST 节点自身的 `SyntaxObject::span` 同样可用
+/// （见 `crate::whitelist`）——因此加载管理界面能做到**行号级别**的错误
+/// 定位，不是简报草稿担心的「只能显示到哪个文件」那种退化情形。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScriptError {
     /// 因超时（脚本失控）被 `InterruptHandler` 强制掐断。
+    ///
+    /// 没有携带偏移量：超时是「整份脚本跑太久」，不是某一行的问题，
+    /// 不存在一个能归咎的具体位置。
     Interrupted,
     /// 调用 Rust 侧注册函数时缺参或多参。
-    ArityMismatch(String),
+    ArityMismatch(String, Option<u32>),
     /// 源码语法错误，编译阶段就失败，从未开始求值。
-    ParseError(String),
+    ParseError(String, Option<u32>),
     /// 求值期间的其余运行时错误（未定义标识符、类型不匹配等）。
-    Runtime(String),
+    Runtime(String, Option<u32>),
+}
+
+impl ScriptError {
+    /// 取出携带的源码字节偏移量，`Interrupted` 恒为 `None`。
+    pub fn byte_offset(&self) -> Option<u32> {
+        match self {
+            ScriptError::Interrupted => None,
+            ScriptError::ArityMismatch(_, offset)
+            | ScriptError::ParseError(_, offset)
+            | ScriptError::Runtime(_, offset) => *offset,
+        }
+    }
 }
 
 impl std::fmt::Display for ScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ScriptError::Interrupted => write!(f, "脚本执行超时被中断"),
-            ScriptError::ArityMismatch(msg) => write!(f, "参数个数不匹配：{msg}"),
-            ScriptError::ParseError(msg) => write!(f, "脚本语法错误：{msg}"),
-            ScriptError::Runtime(msg) => write!(f, "脚本运行时错误：{msg}"),
+            ScriptError::ArityMismatch(msg, _) => write!(f, "参数个数不匹配：{msg}"),
+            ScriptError::ParseError(msg, _) => write!(f, "脚本语法错误：{msg}"),
+            ScriptError::Runtime(msg, _) => write!(f, "脚本运行时错误：{msg}"),
         }
     }
 }
@@ -337,11 +370,15 @@ impl std::error::Error for ScriptError {}
 fn classify_error(err: SteelErr) -> ScriptError {
     use steel::rerrs::ErrorKind;
 
+    // 必须先取 span 再取 message：`err.to_string()` 不消费 err，取值
+    // 顺序其实无关紧要，这里先取 span 只是让「位置信息从哪来」在阅读
+    // 顺序上排在消息之前，与下面 match 里两者一起打包的顺序一致。
+    let offset = err.span().map(|span| span.start());
     let message = err.to_string();
     match err.kind() {
-        ErrorKind::ArityMismatch => ScriptError::ArityMismatch(message),
-        ErrorKind::Parse | ErrorKind::UnexpectedToken => ScriptError::ParseError(message),
-        _ => ScriptError::Runtime(message),
+        ErrorKind::ArityMismatch => ScriptError::ArityMismatch(message, offset),
+        ErrorKind::Parse | ErrorKind::UnexpectedToken => ScriptError::ParseError(message, offset),
+        _ => ScriptError::Runtime(message, offset),
     }
 }
 
@@ -501,7 +538,7 @@ mod tests {
         let result = engine.load_source("(needs-two-args 1)".to_string());
 
         // Assert
-        assert!(matches!(result, Err(ScriptError::ArityMismatch(_))));
+        assert!(matches!(result, Err(ScriptError::ArityMismatch(_, _))));
     }
 
     #[test]
@@ -513,7 +550,29 @@ mod tests {
         let result = engine.load_source("(+ 1 2".to_string());
 
         // Assert
-        assert!(matches!(result, Err(ScriptError::ParseError(_))));
+        assert!(matches!(result, Err(ScriptError::ParseError(_, _))));
+    }
+
+    #[test]
+    fn 语法错误携带的字节偏移量落在触发错误的那一行() {
+        // 加载管理界面（Task 11）要靠这个偏移量换算行号，这里钉住
+        // 「确实拿到了偏移量，且偏移量落在第二行」——不只是断言
+        // Some(_)，避免将来偷懒把偏移量恒定填成 0 也能让测试通过。
+        // Arrange：第一行是合法定义，第二行才是语法错误。
+        let mut engine = ScriptEngine::new();
+        let source = "(define x 1)\n(+ 1 2".to_string();
+
+        // Act
+        let result = engine.load_source(source.clone());
+
+        // Assert
+        match result {
+            Err(ScriptError::ParseError(_, Some(offset))) => {
+                let line = source[..offset as usize].matches('\n').count() + 1;
+                assert_eq!(line, 2);
+            }
+            other => panic!("期望带偏移量的 ParseError，实际拿到 {other:?}"),
+        }
     }
 
     #[test]
@@ -625,7 +684,7 @@ mod tests {
         let result = engine.load_source("(require-builtin steel/time)".to_string());
 
         // Assert
-        assert!(matches!(result, Err(ScriptError::ParseError(_))));
+        assert!(matches!(result, Err(ScriptError::ParseError(_, _))));
     }
 
     #[test]
@@ -791,7 +850,7 @@ mod tests {
         let result = engine.load_source("(some-future-unknown-builtin-capability)".to_string());
 
         // Assert
-        assert!(matches!(result, Err(ScriptError::ParseError(_))));
+        assert!(matches!(result, Err(ScriptError::ParseError(_, _))));
     }
 
     #[test]

@@ -21,6 +21,11 @@ ll-core = { path = "../ll-core" }
 # 违反方向（`ll-world` 本身不认识、也不依赖 `ll-mod`，见
 # `ll_world::terrain` 模块文档「与 Registry 的关系」）。
 ll-world = { path = "../ll-world" }
+# Task 11 新增：加载管线要真正跑到「加载脚本」这一步（发现→解析清单→
+# 拓扑排序→加载脚本→注册内容→交叉引用校验，规格 §10.6），需要驱动
+# `ll_script::host::ScriptEngine`。依赖方向 ll-script ← ll-mod（规格
+# §5）本就允许——`ll-script` 不认识、也不依赖 `ll-mod`。
+ll-script = { path = "../ll-script" }
 # mod 清单格式选 TOML（本任务的实现假设，理由见 task-6-brief.md：
 # 与规格 §11.1「用户设置 TOML」同类场景，且不需要先起 Steel VM 就能
 # 解析出依赖关系用于拓扑排序）。

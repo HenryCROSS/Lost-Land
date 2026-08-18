@@ -77,6 +77,14 @@ pub enum ModError {
     CyclicDependency(Vec<NamespacedId>),
     /// 依赖的某个 mod 未被发现，附带该依赖自身的标识符。
     MissingDependency(NamespacedId),
+    /// 两个（或更多）已发现的清单声明了同一个命名空间。
+    ///
+    /// **这是简报要求正面处理的已知缺口**：`topo_sort` 旧版实现用
+    /// `HashMap<&str, usize>` 把命名空间映射到清单下标，重复命名空间
+    /// 会静默地「后者覆盖前者」——玩家看到的是某个 mod 的内容莫名其妙
+    /// 被另一个同名 mod 顶替，作者本人却毫无察觉。见 [`crate::topo`]
+    /// 模块文档「重复命名空间」一节。
+    DuplicateNamespace(NamespacedId),
 }
 
 impl fmt::Display for ModError {
@@ -95,6 +103,11 @@ impl fmt::Display for ModError {
                 Ok(())
             }
             ModError::MissingDependency(id) => write!(f, "缺失依赖 mod: {id}"),
+            ModError::DuplicateNamespace(id) => write!(
+                f,
+                "命名空间 {} 被多个已发现的 mod 重复声明，拒绝加载以避免不确定选中哪一份定义",
+                id.namespace()
+            ),
         }
     }
 }

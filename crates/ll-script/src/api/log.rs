@@ -1,19 +1,15 @@
 //! 脚本内部错误/断言失败上报，携带来源信息，供加载管理界面（任务 11）
 //! 展示。
 //!
-//! # 能带多少信息，取决于 ADR 0012 的探针结果
+//! # 字节偏移已经补上（任务 11 落地时的回填）
 //!
-//! `SteelErr::span()` 返回 `Option<Span>`（字节偏移区间，不是行列号）
-//! ——ADR 0012 实测：对 `(+ 1 undefined-identifier)` 求值，确实拿到了
-//! `Some(Span { start: 5, end: 25, .. })`，精确框住了触发错误的那段
-//! 源码文本。但 [`crate::host::ScriptError`] 目前只保留了 `SteelErr`
-//! 的 `Display` 字符串，没有转发 `span()`——本模块提供的诊断类型因此
-//! 也只能携带 `ScriptError` 已经暴露出来的信息（错误分类 + 文本消息），
-//! 暂不含字节偏移。若加载管理界面确实需要精确定位到源码位置，需要回头
-//! 给 `ScriptError` 补一个 `span: Option<(u32, u32)>` 字段，把
-//! `classify_error` 里已经能拿到的 `err.span()` 转发出来——这是一次
-//! 很小的改动，但本任务不预先做：任务 11 还没有落地，此刻加这个字段
-//! 只能凭空猜测界面需要什么形状的数据。
+//! 本模块此前的文档预告了这件事、但刻意没做——「任务 11 还没有落地，
+//! 此刻加这个字段只能凭空猜测界面需要什么形状的数据」。任务 11 落地
+//! 时确认了形状：加载管理界面确实需要精确到行号，[`crate::host::ScriptError`]
+//! 现在转发了 `SteelErr::span()`/AST 节点 `SyntaxObject::span`（见其
+//! 文档与 [`crate::whitelist`]），[`ScriptDiagnostic::byte_offset`]
+//! 把这份信息原样带出来——换算成行号需要原始源码文本，那是 `ll-mod`
+//! 加载管理界面一侧的事（诊断类型本身不持有、也不该持有一份源码拷贝）。
 
 use crate::host::ScriptError;
 
@@ -28,6 +24,9 @@ pub struct ScriptDiagnostic {
     pub message: String,
     /// 严重程度。
     pub severity: Severity,
+    /// 触发错误的源码字节偏移量，来自 [`ScriptError::byte_offset`]；
+    /// `None` 表示这类错误（如超时）天生没有一个能归咎的具体位置。
+    pub byte_offset: Option<u32>,
 }
 
 /// 诊断严重程度。
@@ -45,13 +44,14 @@ impl ScriptDiagnostic {
     /// 从一次脚本调用失败构造诊断。
     pub fn from_error(source: impl Into<String>, error: &ScriptError) -> Self {
         let severity = match error {
-            ScriptError::ParseError(_) | ScriptError::ArityMismatch(_) => Severity::Error,
-            ScriptError::Interrupted | ScriptError::Runtime(_) => Severity::Warning,
+            ScriptError::ParseError(..) | ScriptError::ArityMismatch(..) => Severity::Error,
+            ScriptError::Interrupted | ScriptError::Runtime(..) => Severity::Warning,
         };
         ScriptDiagnostic {
             source: source.into(),
             message: error.to_string(),
             severity,
+            byte_offset: error.byte_offset(),
         }
     }
 }
@@ -73,7 +73,7 @@ mod tests {
     #[test]
     fn 语法错误归类为错误级严重程度() {
         // Arrange
-        let error = ScriptError::ParseError("缺右括号".to_string());
+        let error = ScriptError::ParseError("缺右括号".to_string(), None);
 
         // Act
         let diagnostic = ScriptDiagnostic::from_error("测试mod", &error);
@@ -85,7 +85,7 @@ mod tests {
     #[test]
     fn 运行时错误归类为警告级严重程度() {
         // Arrange
-        let error = ScriptError::Runtime("未定义标识符".to_string());
+        let error = ScriptError::Runtime("未定义标识符".to_string(), None);
 
         // Act
         let diagnostic = ScriptDiagnostic::from_error("测试mod", &error);
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn 诊断的显示文本包含来源与消息() {
         // Arrange
-        let error = ScriptError::Runtime("出错了".to_string());
+        let error = ScriptError::Runtime("出错了".to_string(), None);
         let diagnostic = ScriptDiagnostic::from_error("某个mod", &error);
 
         // Act
@@ -106,5 +106,18 @@ mod tests {
         // Assert
         assert!(text.contains("某个mod"));
         assert!(text.contains("出错了"));
+    }
+
+    #[test]
+    fn 携带字节偏移的错误诊断原样转发偏移量() {
+        // Arrange：模拟 classify_error 已经从 SteelErr::span() 取到偏移量
+        // 的场景——诊断类型不该在转发过程中把这份信息弄丢。
+        let error = ScriptError::ParseError("未闭合的括号".to_string(), Some(42));
+
+        // Act
+        let diagnostic = ScriptDiagnostic::from_error("某个mod", &error);
+
+        // Assert
+        assert_eq!(diagnostic.byte_offset, Some(42));
     }
 }

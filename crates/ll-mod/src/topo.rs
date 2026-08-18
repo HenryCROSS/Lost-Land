@@ -13,6 +13,25 @@
 //! 一律按 mod 自身的命名空间字符串字典序决定，不看它在输入切片里的
 //! 下标。这样即便把 `discover_mods` 的输出打乱后再解析、再排序，
 //! 只要清单内容集合不变，`topo_sort` 的结果就恒定不变。
+//!
+//! # 重复命名空间：曾经的已知缺口，现已修正
+//!
+//! 旧版实现直接 `namespace_to_idx.insert(m.id.namespace(), i)`——两个
+//! 已发现的清单若声明了同一个命名空间，后处理的那个会**静默覆盖**前
+//! 一个在映射表里的下标，依赖解析、拓扑排序此后全部只认得到那个「后
+//! 来者」，前一个 mod 的存在感在图里彻底消失，且不产生任何错误。这是
+//! 最坏的一类失败：玩家看到的行为莫名其妙（比如两个 mod 都定义了
+//! `yourmod:fireball` 但属性完全不同，游戏里只表现出其中一个），mod
+//! 作者也毫无察觉自己被覆盖了。
+//!
+//! 现在 [`topo_sort`] 在建立命名空间映射**之前**先做一次重复检测（见
+//! [`check_duplicate_namespaces`]）：按命名空间字典序扫描相邻项，一旦
+//! 撞见两个清单共享同一个命名空间就立即返回
+//! [`ModError::DuplicateNamespace`]，不再进入依赖解析/排序，也不再有
+//! 「选哪一个当权威定义」这个决策——两份定义本身就是冲突，选哪个都是
+//! 错的，唯一正确的处理是让整批加载停下来，把冲突显式报给加载管理界面
+//! （任务 11）。检测顺序按命名空间字典序（不是 `manifests` 原始下标），
+//! 与本模块其余「多个候选选一个」的场景遵循同一条确定性规则。
 
 use crate::manifest::{ModError, ModManifest, mod_self_id};
 use ll_core::ident::NamespacedId;
@@ -40,18 +59,24 @@ use std::collections::{BinaryHeap, HashMap};
 pub fn topo_sort(manifests: &[ModManifest]) -> Result<Vec<usize>, ModError> {
     let n = manifests.len();
 
-    // 命名空间 -> 下标。用于把依赖字符串解析回具体的 mod。这里的
-    // HashMap 只用于 O(1) 单键查找，从不被遍历产出顺序——遍历一律走
-    // 下面按命名空间排好序的 `sorted_by_namespace`。
-    let mut namespace_to_idx: HashMap<&str, usize> = HashMap::with_capacity(n);
-    for (i, m) in manifests.iter().enumerate() {
-        namespace_to_idx.insert(m.id.namespace(), i);
-    }
-
     // 所有「多个候选选一个」的场景都从这份按命名空间字典序排好的下标
     // 出发，而不是 0..n 这种依赖输入数组原始顺序的写法。
     let mut sorted_by_namespace: Vec<usize> = (0..n).collect();
     sorted_by_namespace.sort_by_key(|&i| manifests[i].id.namespace());
+
+    // 必须在建立 namespace_to_idx 之前做：重复命名空间会让下一步的
+    // HashMap 插入静默覆盖，见模块文档「重复命名空间」一节。
+    check_duplicate_namespaces(manifests, &sorted_by_namespace)?;
+
+    // 命名空间 -> 下标。用于把依赖字符串解析回具体的 mod。这里的
+    // HashMap 只用于 O(1) 单键查找，从不被遍历产出顺序——遍历一律走
+    // 上面按命名空间排好序的 `sorted_by_namespace`。经过上一步的重复
+    // 检测，此时每个命名空间在 `manifests` 里恰好出现一次，insert 不
+    // 会再发生静默覆盖。
+    let mut namespace_to_idx: HashMap<&str, usize> = HashMap::with_capacity(n);
+    for (i, m) in manifests.iter().enumerate() {
+        namespace_to_idx.insert(m.id.namespace(), i);
+    }
 
     check_missing_dependencies(manifests, &namespace_to_idx, &sorted_by_namespace)?;
 
@@ -67,6 +92,25 @@ pub fn topo_sort(manifests: &[ModManifest]) -> Result<Vec<usize>, ModError> {
         &namespace_to_idx,
         &sorted_by_namespace,
     )))
+}
+
+/// 检测是否有两个（或更多）清单声明了同一个命名空间。
+///
+/// `sorted_by_namespace` 已经按命名空间字典序排好，重复的命名空间必然
+/// 相邻——扫描一遍相邻对即可，不需要额外的 `HashSet`。命中的是字典序
+/// 下第一组冲突（多组冲突同时存在时，报告哪一组不依赖 `manifests` 的
+/// 原始下标顺序，与本模块其余检测的确定性规则一致）。
+fn check_duplicate_namespaces(
+    manifests: &[ModManifest],
+    sorted_by_namespace: &[usize],
+) -> Result<(), ModError> {
+    for pair in sorted_by_namespace.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        if manifests[a].id.namespace() == manifests[b].id.namespace() {
+            return Err(ModError::DuplicateNamespace(manifests[a].id.clone()));
+        }
+    }
+    Ok(())
 }
 
 /// 按命名空间字典序扫描依赖，第一个找不到的直接报告。字典序扫描
@@ -346,6 +390,60 @@ mod tests {
 
         // Assert
         assert_eq!(names_one, names_two);
+    }
+
+    #[test]
+    fn 两个清单共享同一命名空间时报告重复而不是静默覆盖() {
+        // 这是简报要求正面处理的已知缺口：旧版实现会让后一个清单静默
+        // 顶替前一个在 namespace_to_idx 里的下标，两个 mod 只有一个
+        // 还能被依赖解析看见。现在必须报错，不能让任何一份定义悄悄
+        // "赢"。
+        // Arrange：两份声明了同一个命名空间 "dup" 的清单，内容不同
+        // （版本号不同），模拟两个作者各自发布了同名 mod。
+        let manifests = vec![
+            ModManifest {
+                id: mod_self_id("dup").expect("测试用命名空间恒合法"),
+                version: "1.0.0".to_string(),
+                dependencies: Vec::new(),
+                entry_points: Vec::<PathBuf>::new(),
+            },
+            ModManifest {
+                id: mod_self_id("dup").expect("测试用命名空间恒合法"),
+                version: "2.0.0".to_string(),
+                dependencies: Vec::new(),
+                entry_points: Vec::<PathBuf>::new(),
+            },
+        ];
+
+        // Act
+        let result = topo_sort(&manifests);
+
+        // Assert
+        assert_eq!(
+            result,
+            Err(ModError::DuplicateNamespace(
+                mod_self_id("dup").expect("测试用命名空间恒合法")
+            ))
+        );
+    }
+
+    #[test]
+    fn 重复命名空间检测先于依赖解析生效() {
+        // 即使重复的那个命名空间同时也被其他 mod 依赖，报告的仍然是
+        // 重复本身，不是缺失依赖或别的下游错误——重复检测必须在建立
+        // namespace_to_idx 之前就拦下，顺序错了会让这条断言失败。
+        // Arrange
+        let manifests = vec![
+            manifest("dup", &[]),
+            manifest("dup", &[]),
+            manifest("c", &["dup"]),
+        ];
+
+        // Act
+        let result = topo_sort(&manifests);
+
+        // Assert
+        assert!(matches!(result, Err(ModError::DuplicateNamespace(_))));
     }
 
     #[test]

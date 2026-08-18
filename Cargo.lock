@@ -1550,6 +1550,7 @@ name = "ll-mod"
 version = "0.1.0"
 dependencies = [
  "ll-core",
+ "ll-script",
  "ll-world",
  "proptest",
  "serde",
@@ -1622,6 +1623,23 @@ dependencies = [
  "ll-core",
  "ll-render",
  "pollster",
+ "proptest",
+ "tracing",
+]
+
+[[package]]
+name = "ll-ui"
+version = "0.1.0"
+dependencies = [
+ "glyphon",
+ "image",
+ "ll-core",
+ "ll-mod",
+ "ll-platform",
+ "ll-render",
+ "ll-script",
+ "ll-text",
+ "ll-world",
  "proptest",
  "tracing",
 ]

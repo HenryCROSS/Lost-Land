@@ -1,0 +1,55 @@
+[package]
+name = "ll-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的游戏内 UI：本阶段（P4）范围限定为加载管理界面——mod 管理器与脚本错误控制台的合体（规格 §10.6）"
+
+[lints]
+workspace = true
+
+[dependencies]
+# 依赖方向 ll-core ← ll-render/ll-text ← ll-world ← ll-sim ← ll-script ←
+# ll-mod ← ll-ui（规格 §5，裁定 P4-1）：ll-ui 是依赖链最下游的消费者，
+# 本阶段只用得到 ll-mod 产出的 LoadReport 与 ll-text 的文本渲染地基，
+# 不直接依赖 ll-world/ll-sim/ll-script/ll-render——需要它们的类型时都
+# 是通过 ll-mod/ll-text 已经重新导出或转换过的形式拿到，不重复建立
+# 平行依赖。
+ll-core = { path = "../ll-core" }
+ll-mod = { path = "../ll-mod" }
+ll-text = { path = "../ll-text" }
+# `render_load_report` 的签名接收 `wgpu::Device`/`Queue`/`TextureView`
+# （`TextRenderer::render` 本身要求原生分辨率下的这三个原语，见
+# ll-text 文档）——走 ll-render 重新导出的 wgpu，不额外声明一份独立的
+# `wgpu = "30"`，理由与 ll-text/ll-sim 等既有 crate 一致：多一份独立
+# 声明就多一个版本漂移导致「同名不同类型」编译错误的风险点。
+ll-render = { path = "../ll-render" }
+# TextRun::color 的类型是 glyphon::Color；这里直接依赖 glyphon 而不是
+# 让 ll-text 重新导出它，理由与 ll-render 重新导出 wgpu 不同——
+# glyphon::Color 只是一个纯数据的 RGBA 元组结构，不像 wgpu 的类型那样
+# 牵扯设备/队列生命周期，两处各自声明同一个版本不会有「同名不同类型」
+# 的风险（cargo 按版本+来源去重，两处声明相同版本号解析到同一份）。
+glyphon = "0.12"
+
+[dev-dependencies]
+proptest.workspace = true
+# 仅供 p4_acceptance 验收 demo 使用：加载管理界面本身不依赖窗口/
+# 平台层/世界层/脚本层（分层约束见本 crate 顶层文档），但验收 demo
+# 要把「mod 目录 -> 加载管线 -> 注册表 -> 世界地形 -> 屏幕」这条完整
+# 链路真正跑起来，属于开发期验证工具而非产品代码，因此放在
+# dev-dependencies——不会传染给依赖 ll-ui 的下游 crate（P4 阶段 ll-ui
+# 还没有下游）。与 ll-sim 的 p3_acceptance 同样的取舍，见其 Cargo.toml。
+ll-core = { path = "../ll-core", features = ["serde"] }
+ll-platform = { path = "../ll-platform" }
+ll-script = { path = "../ll-script" }
+ll-world = { path = "../ll-world" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+tracing = "0.1"
+
+[[example]]
+name = "p4_acceptance"
+# 默认 examples 的 test = false：cargo test --workspace 只保证它能编译，
+# 不会跑里面的 #[test]。这个 demo 里的世界搭建、加载报告展示等纯函数
+# 逻辑值得被 `cargo test --workspace` 真正覆盖，而不只是编译检查——与
+# p1/p2/p3_acceptance 同样的理由。
+test = true

@@ -23,16 +23,27 @@
 //!   把 `ll_world::terrain` 定义的地形声明表，经 [`registry::Registry::intern`]
 //!   注册成本体的第一批内容。本体地形与 mod 未来注册的地形走的是
 //!   完全相同的这一条 `Registry::intern` 调用路径，见该模块文档。
+//! - [`script_terrain_api`] —— 把 `register-terrain` 注册进
+//!   `ll_script::host::ScriptEngine`，供 mod 脚本定义自定义地形（Task
+//!   11/12）。
+//! - [`pipeline`] —— 加载管线：串起发现→解析→拓扑排序→加载脚本→注册
+//!   内容，产出 [`load_report::LoadReport`]（Task 11/12）。
+//! - [`load_report`] —— 加载管理界面（`ll-ui`）依赖的数据形状：按 mod
+//!   归类的加载结果、失败阶段、尽力而为的源码位置（Task 11）。
 //!
 //! # 依赖方向
 //!
-//! 规格 §5：`ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod`。本 crate
-//! 是最上游的消费者，依赖 `ll-core` 与 `ll-world`（Task 8 新增，理由见
-//! [`base_terrain`] 模块文档），不得被下游任何 crate 反向依赖。
+//! 规格 §5：`ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod` ← `ll-ui`。
+//! 本 crate 依赖 `ll-core`、`ll-world`（Task 8 新增，理由见
+//! [`base_terrain`] 模块文档）与 `ll-script`（Task 11 新增，理由见
+//! [`pipeline`] 模块文档），不得被下游任何 crate 反向依赖。
 
 pub mod base_terrain;
 pub mod discover;
+pub mod load_report;
 pub mod manifest;
 pub mod mod_set;
+pub mod pipeline;
 pub mod registry;
+pub mod script_terrain_api;
 pub mod topo;

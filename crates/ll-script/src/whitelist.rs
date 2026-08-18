@@ -72,6 +72,7 @@
 use std::collections::HashSet;
 
 use steel::parser::ast::{Atom, ExprKind, List};
+use steel::parser::span::Span;
 
 use crate::host::ScriptError;
 
@@ -121,10 +122,17 @@ fn walk_sequence<'a>(
     Ok(())
 }
 
-fn reject(name: &str) -> Result<(), ScriptError> {
-    Err(ScriptError::ParseError(format!(
-        "脚本引用了不在白名单内的标识符「{name}」"
-    )))
+/// 拒绝一个不在白名单内的引用，附带它在源码里的字节偏移量——
+/// `steel::parser::ast::Atom`/`Require` 等节点自身携带 `SyntaxObject`，
+/// 其中的 `span` 在完整展开后的 AST 上依然可用（实测，见
+/// `crates/ll-script/examples/probe_span.rs`），不需要额外基础设施就能
+/// 拿到「哪个字节位置」这个信息，换算成行号是调用方（Task 11 加载
+/// 管理界面）的事，见 `crate::host::ScriptError` 文档。
+fn reject(name: &str, span: Span) -> Result<(), ScriptError> {
+    Err(ScriptError::ParseError(
+        format!("脚本引用了不在白名单内的标识符「{name}」"),
+        Some(span.start()),
+    ))
 }
 
 /// 一个标识符是否可以出现在这个位置：要么是白名单里的全局能力，要么是
@@ -140,13 +148,14 @@ fn reject(name: &str) -> Result<(), ScriptError> {
 /// 教科书里的自由变量分析，不是本模块发明的新概念。
 fn check_reference<'a>(
     name: &'a str,
+    span: Span,
     allowed: &HashSet<&'static str>,
     locals: &HashSet<&'a str>,
 ) -> Result<(), ScriptError> {
     if locals.contains(name) || allowed.contains(name) {
         Ok(())
     } else {
-        reject(name)
+        reject(name, span)
     }
 }
 
@@ -227,8 +236,9 @@ fn walk<'a>(
         }
         // 完整展开后的 AST 理论上不应该再出现 Require 节点（已经被展开
         // 成一串 define），但防御性地直接拒绝——这不该发生，发生了说明
-        // 展开没有按预期完成，宁可保守拒绝。
-        ExprKind::Require(_) => reject("require"),
+        // 展开没有按预期完成，宁可保守拒绝。`node.location` 是这个
+        // Require 节点自身的 `SyntaxObject`，同样带 span。
+        ExprKind::Require(node) => reject("require", node.location.span),
         // 允许脚本自定义宏（define-syntax/syntax-rules）——这是 Lisp 的
         // 核心能力，不能挡。安全性不靠"不让脚本写宏"，靠"校验的是宏
         // 展开之后的树"：实测（probe_whitelist.rs 第 7 节）宏定义本身
@@ -254,7 +264,7 @@ fn walk_atom<'a>(
     locals: &HashSet<&'a str>,
 ) -> Result<(), ScriptError> {
     match atom.ident() {
-        Some(name) => check_reference(name.resolve(), allowed, locals),
+        Some(name) => check_reference(name.resolve(), atom.syn.span, allowed, locals),
         // 非标识符的字面量（数字/布尔/字符串等），不是引用，不检查。
         None => Ok(()),
     }
@@ -385,8 +395,9 @@ mod tests {
 
         // Assert
         match result {
-            Err(ScriptError::ParseError(msg)) => {
+            Err(ScriptError::ParseError(msg, offset)) => {
                 assert!(msg.contains("totally-unknown-function"));
+                assert!(offset.is_some(), "违规引用应当携带源码字节偏移量");
             }
             other => panic!("期望 ParseError 且带上违规名字，实际拿到 {other:?}"),
         }
