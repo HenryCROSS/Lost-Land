@@ -68,7 +68,7 @@ pub struct Agent {
     /// 只存当前值」一节。
     pub health: i32,
 
-    // ↓ 以下四个字段 P3 可以留空，但字段必须现在就有——见
+    // ↓ 以下六个字段 P3 可以留空，但字段必须现在就有——见
     // `knowledge/design/society-and-affiliation.md` 第五节与
     // `knowledge/design/agent-goals-and-economy.md` 第九节：存档格式在
     // P5 冻结，P3 加是零成本，P8 加要写迁移链。
@@ -80,6 +80,33 @@ pub struct Agent {
     pub profession: ContentIndex,
     /// 目标栈。
     pub goals: Vec<Goal>,
+    /// 种族，指向注册表。
+    ///
+    /// 与 `profession` 同样的模式：种族是内容（mod 可以注册新种族），
+    /// 因此用 [`ContentIndex`] 而不是一个封闭的本体枚举——`fireball`
+    /// 那类命名冲突问题（见 `ll_core::ident` 模块文档）在种族上同样
+    /// 存在，不该单开一套不经注册表的表示法。
+    ///
+    /// 未来将驱动的东西：基础属性的种族修正（矮人体质高、精灵敏捷高
+    /// 这类刻板但好用的差异化）、种族专属的可穿装备槽位（见
+    /// `knowledge/design/equipment-slots.md`）、随从招募与关系系统里
+    /// 「同族/异族」这层筛选、以及部分剧情/势力对话分支的解锁条件。
+    /// P3 阶段不消费这个字段，只建布局。
+    pub race: ContentIndex,
+    /// 幸运。
+    ///
+    /// **刻意放在 `Agent` 而非 [`BaseStats`]**：`BaseStats` 的六项主
+    /// 属性统一走 `(属性 − 10) / 2` 的调整值公式（见
+    /// `knowledge/design/attribute-system.md` 「六、次级属性」前的调整
+    /// 值公式一节），而幸运走的是「每点 +5‰」的原始值语义（同文档
+    /// 「五、幸运」一节）——两套公式形状不同。把幸运塞进 `BaseStats`
+    /// 会让那个结构里出现一个不遵守自身公式的异类字段，后人照着
+    /// `BaseStats` 里其余六项的调整值公式去套用幸运，必然算错。
+    ///
+    /// 未来将驱动的东西（均详见 `attribute-system.md` 「五、幸运」）：
+    /// 暴击率（每点 +5‰）、优势掷骰（每满 20 点多掷一次取较优）、掉落
+    /// 品质权重、稀有事件触发权重。P3 阶段不消费这个字段，只建布局。
+    pub luck: i32,
 }
 
 impl Agent {

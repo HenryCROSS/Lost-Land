@@ -106,6 +106,8 @@ mod tests {
         let mut interner = ll_core::ident::Interner::new();
         let profession = interner
             .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
+        let race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
         Agent {
             pos: world.size.wrap(0, 0),
             stats: BaseStats::BASELINE,
@@ -115,6 +117,8 @@ mod tests {
             wallet: 0,
             profession,
             goals: Vec::new(),
+            race,
+            luck: 0,
         }
     }
 

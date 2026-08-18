@@ -26,7 +26,7 @@ const DAILY_INCOME: i64 = 10;
 /// cohort 批量更替预留的字段位——加字段现在零成本，P8 再加就要写
 /// 存档迁移链。
 ///
-/// 不派生 `serde`：`profession` 列是 `Vec<ContentIndex>`，
+/// 不派生 `serde`：`profession`/`race` 两列都是 `Vec<ContentIndex>`，
 /// `ll_core::ident` 模块文档明确写着 `ContentIndex` 不可持久化（依赖
 /// mod 加载顺序）。真正持久化薄层人口需要把每个 `ContentIndex` 解析回
 /// `NamespacedId` 字符串，这是内容注册表存档格式的职责，不在本任务
@@ -37,6 +37,9 @@ pub struct ThinPopulation {
     generation: Vec<u32>,
     settlement: Vec<u16>,
     profession: Vec<ContentIndex>,
+    /// 种族，指向注册表。与 `profession` 同一模式——见
+    /// [`crate::entity::Agent::race`] 文档。
+    race: Vec<ContentIndex>,
     family: Vec<FamilyId>,
     /// 钱包的基准值。重定基准时刷新。
     wallet_rebase: Vec<i64>,
@@ -54,6 +57,8 @@ pub struct ThinSlot {
     pub settlement: u16,
     /// 当前职业，指向注册表。
     pub profession: ContentIndex,
+    /// 种族，指向注册表。
+    pub race: ContentIndex,
     /// 所属家族编号。
     pub family: FamilyId,
     /// 钱包的基准值。重定基准时刷新。
@@ -71,6 +76,7 @@ impl ThinPopulation {
             generation: Vec::new(),
             settlement: Vec::new(),
             profession: Vec::new(),
+            race: Vec::new(),
             family: Vec::new(),
             wallet_rebase: Vec::new(),
             wallet_delta: Vec::new(),
@@ -83,13 +89,14 @@ impl ThinPopulation {
     /// `wallet_baseline` 是钱包公式的起点（见 [`Self::wallet_of`]），
     /// `now` 同时作为 `rebase_at` 的初始值。
     ///
-    /// **七个列必须在这一处、且只在这一处一起 push**——分散到多处各自
+    /// **八个列必须在这一处、且只在这一处一起 push**——分散到多处各自
     /// push 正是列式存储最容易出的错：某一列忘了同步，各列长度就此
     /// 错位，后续任何按下标读取都会读到别的 NPC 的数据。
     pub fn spawn(
         &mut self,
         settlement: u16,
         profession: ContentIndex,
+        race: ContentIndex,
         family: FamilyId,
         wallet_baseline: i64,
         now: Tick,
@@ -98,6 +105,7 @@ impl ThinPopulation {
         self.generation.push(0);
         self.settlement.push(settlement);
         self.profession.push(profession);
+        self.race.push(race);
         self.family.push(family);
         self.wallet_rebase.push(wallet_baseline);
         self.wallet_delta.push(0);
@@ -121,6 +129,7 @@ impl ThinPopulation {
         Some(ThinSlot {
             settlement: self.settlement[index],
             profession: self.profession[index],
+            race: self.race[index],
             family: self.family[index],
             wallet_rebase: self.wallet_rebase[index],
             wallet_delta: self.wallet_delta[index],
@@ -173,6 +182,9 @@ impl ThinPopulation {
             wallet,
             profession: self.profession[index],
             goals: Vec::new(),
+            race: self.race[index],
+            // 薄层不追踪幸运，升格时取零——见 Agent::luck 文档。
+            luck: 0,
         })
     }
 
@@ -238,13 +250,18 @@ mod tests {
         interner.intern(NamespacedId::parse("lostland:farmer").expect("合法标识符"))
     }
 
+    fn human() -> ContentIndex {
+        let mut interner = Interner::new();
+        interner.intern(NamespacedId::parse("lostland:human").expect("合法标识符"))
+    }
+
     #[test]
     fn 新生成的背景npc可以按标识取回() {
         // Arrange
         let mut population = ThinPopulation::new();
 
         // Act
-        let id = population.spawn(1, farmer(), FamilyId(1), 100, Tick(0));
+        let id = population.spawn(1, farmer(), human(), FamilyId(1), 100, Tick(0));
 
         // Assert
         assert!(population.get_slot(id).is_some());
@@ -258,7 +275,7 @@ mod tests {
 
         // Act
         for _ in 0..5 {
-            population.spawn(1, farmer(), FamilyId(1), 0, Tick(0));
+            population.spawn(1, farmer(), human(), FamilyId(1), 0, Tick(0));
         }
 
         // Assert
@@ -266,6 +283,7 @@ mod tests {
             population.generation.len(),
             population.settlement.len(),
             population.profession.len(),
+            population.race.len(),
             population.family.len(),
             population.wallet_rebase.len(),
             population.wallet_delta.len(),
@@ -278,7 +296,7 @@ mod tests {
     fn 世代不符的标识取不到槽位() {
         // Arrange
         let mut population = ThinPopulation::new();
-        let id = population.spawn(1, farmer(), FamilyId(1), 0, Tick(0));
+        let id = population.spawn(1, farmer(), human(), FamilyId(1), 0, Tick(0));
         let stale = EntityId::new(id.index(), id.generation() + 1);
 
         // Act & Assert
@@ -290,7 +308,7 @@ mod tests {
         // Arrange：同一时刻查询（elapsed 为零），公式贡献恒为零，
         // 于是钱包值必然等于基准值加偏移量。
         let mut population = ThinPopulation::new();
-        let id = population.spawn(1, farmer(), FamilyId(1), 1000, Tick(0));
+        let id = population.spawn(1, farmer(), human(), FamilyId(1), 1000, Tick(0));
 
         // Act
         population.batch_update_wallets(50);
@@ -306,7 +324,7 @@ mod tests {
     fn 重定基准后偏移归零而钱包值不变() {
         // Arrange
         let mut population = ThinPopulation::new();
-        let id = population.spawn(1, farmer(), FamilyId(1), 1000, Tick(0));
+        let id = population.spawn(1, farmer(), human(), FamilyId(1), 1000, Tick(0));
         population.batch_update_wallets(200);
         let before = population
             .wallet_of(id, 42, Tick(3 * TICKS_PER_DAY))
@@ -329,7 +347,7 @@ mod tests {
         // Arrange
         let mut population = ThinPopulation::new();
         let profession = farmer();
-        let id = population.spawn(1, profession, FamilyId(1), 500, Tick(0));
+        let id = population.spawn(1, profession, human(), FamilyId(1), 500, Tick(0));
         let world = ll_core::torus::TorusSize::new(16, 16).expect("常量非零");
         let at = world.wrap(3, 3);
 
@@ -340,6 +358,24 @@ mod tests {
 
         // Assert
         assert_eq!(agent.profession, profession);
+    }
+
+    #[test]
+    fn 升格后的agent携带薄层记录的种族() {
+        // Arrange
+        let mut population = ThinPopulation::new();
+        let race = human();
+        let id = population.spawn(1, farmer(), race, FamilyId(1), 500, Tick(0));
+        let world = ll_core::torus::TorusSize::new(16, 16).expect("常量非零");
+        let at = world.wrap(3, 3);
+
+        // Act
+        let agent = population
+            .promote(id, at, 42, Tick(0))
+            .expect("有效标识必然能升格");
+
+        // Assert
+        assert_eq!(agent.race, race);
     }
 
     #[test]
