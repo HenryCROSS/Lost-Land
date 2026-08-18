@@ -5,6 +5,8 @@
 //! （标准库能力面实测）——本 crate 的所有取舍都能在这两份 ADR 里找到实测
 //! 依据，不是假设。
 
+pub mod alloc_guard;
 pub mod host;
 
+pub use alloc_guard::ScriptAllocGuard;
 pub use host::{ScriptEngine, ScriptError};
