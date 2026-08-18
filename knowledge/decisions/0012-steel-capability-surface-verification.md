@@ -142,13 +142,12 @@ panic**，符合防线要求。
 1. `Engine::new_sandboxed()` 打底（真排除文件系统与网络，进程与线程需要下一步补）。
 2. 立即执行上述模块覆盖 + 已绑定名字覆盖，再往下才注册游戏自己的 API 与运行脚本。
 
-**已知未覆盖的残留面**：`command`（只构造 `CommandBuilder`，不产生副作用）
-本身没被单独覆盖测试过是否也需要显式 poison——`spawn-process!` 才是真正的
-执行点，只要它被覆盖，`command` 单独存在不构成风险，但下一步实现里应该
-把 `command`/`spawn-process!`/`wait->stdout`/`which` 等 `steel/process`
-暴露的每一个名字都枚举出来逐一 poison，不能只覆盖 `spawn-process!` 一个,
-因为 `which` 能探测宿主环境信息，也是我们不想让脚本拿到的能力。这份逐项
-清单留给任务 3 实现阶段做，本 ADR 只确认「覆盖手段本身有效」。
+**这一版手工点名 `command`/`spawn-process!` 的做法后来被放弃**：`ll-script`
+实现阶段（见下方「追加实测」一节）发现 `steel/process` 暴露的名字比预想
+多、`steel/meta` 更是有 102 个导出、且模块覆盖对 `steel/time` 确认无效——
+手工点名清单必然漏项。最终方案改成「枚举模块全部导出名字后整体清空」+
+「源码文本层面禁止 `require-builtin`/`require`」两道防线，不再手工维护
+危险名字清单。
 
 ## 性能实测（跨 VM 调用延迟，不是原子读探针）
 
@@ -179,6 +178,70 @@ panic**，符合防线要求。
 更便宜的选项，但语义不同——它只回滚全局绑定表，不清空已经产生的副作用
 （比如已经 spawn 的原生线程，虽然本项目已确认线程能力当前不可达）。是否
 用它替代整引擎重建留给任务 6/9（mod 生命周期）决策，本 ADR 只提供数字。
+
+## 追加实测——`steel/meta` 是比预想大得多的口子，且模块覆盖对 `steel/time` 确认无效
+
+「必须落地的缓解措施」一节写完初稿后，在 `ll-script` 实现阶段（`host.rs`）
+继续按图施工时发现两个问题，都已改用更稳的方案，如实记录发现过程：
+
+**发现一：`steel/meta` 实测导出 102 个名字**，混着 `eval!`、`run!`
+（`super::meta::EngineWrapper::call`，能在脚本内部构造一个**全新、完全不
+受本文件任何限制**的 `Engine::new()`）、`Engine::new`/`Engine::clone`/
+`Engine::add-module`、`env-var`/`maybe-get-env-var`（读宿主环境变量）、
+`set-env-var!`（改宿主环境变量，steel-core 源码里这个函数体本身标了
+`unsafe`）、`load`/`eval-string`/`eval`（把字符串当代码执行，能绕过任何
+「脚本源码里没写 XXX」式的静态检查）——同时也混着 `value->string`、
+`arity?`、`function-name` 这类完全无害的内省函数。这个模块同样在
+`ALL_MODULES` 里被无前缀 `require-builtin`，`command`/`spawn-native-thread`
+那套「引导期已经绑进全局作用域」的问题在这里更严重，因为口子多了几十个。
+
+**对策：不逐个甄别，整个模块清空。** 逐个挑「这个danger那个不danger」
+在 102 个名字的规模下必然会漏项（而且会随 steel-core 版本升级持续漏），
+本项目现阶段的 mod 脚本也不需要这个模块的任何能力（task 5 的 API 完全
+基于宿主自己 `register_fn` 的函数，不需要脚本自省）。实测：枚举
+`engine.builtin_modules().get("steel/meta").unwrap().names()` 后逐个
+`register_value(name, SteelVal::Void)`，`(eval! "(+ 1 2)")` 与
+`(run! (Engine::new) "(+ 1 2)")` 都变成 `Err`，验证有效。
+
+**发现二：「覆盖模块注册表」这条缓解手段对 `steel/time` 确认无效，且
+排查未能在预算内查明根因。** 用 Rust 侧内省确认过：覆盖后
+`engine.builtin_modules().get("steel/time")` 返回的模块 `names()` 长度
+确实是 0；但脚本 `(require-builtin steel/time) (instant/now)` 在**全新、
+从未被任何其他引擎接触过的独立进程**里依然成功返回真实
+`std::time::Instant`。用同样手法处理 `steel/random` 则每次都能可靠拦截。
+排查过「进程级缓存」「跨引擎共享 Arc」等几个假设，均被对照实验排除
+（`steel/random` 用的是完全相同的代码路径、完全相同的共享结构，行为却不同）；
+怀疑与 `require-builtin` 的宏展开（`src/parser/expand_visitor.rs`，
+`self.builtin_modules.get(s.resolve())`）在编译期读取的 `ModuleContainer`
+实例与运行期被我们覆盖的实例存在不为人知的分歧路径有关（可能是 Kernel
+内部持有独立的模块快照），但未能在本任务预算内继续深挖到底。
+
+**如实记录：这条缓解手段目前只能定性为「对部分模块有效、对至少一个模块
+（`steel/time`）确认无效」，不能整体宣称「模块覆盖排除了随机与时间」。**
+
+**因此改为不依赖它作为唯一防线**：新增 `reject_dangerous_syntax`，在源码
+**编译之前**，纯文本层面拒绝任何包含 `require-builtin` 或 `(require ` 字面
+子串的脚本源码。这条防线不依赖 steel-core 内部任何缓存/解析路径的行为，
+只要求「这两个词不出现在源码文本里」，因此对 `steel/time` 同样有效——
+实测 `(require-builtin steel/time)` 在文本关卡直接被拒绝
+（`ScriptError::ParseError`），根本不会进入编译。**mod 脚本设计上本来就
+不需要写 `require`**：所有能力都通过宿主预先注册好的函数直接调用，这条
+限制不损失任何设计内的合法用法。
+
+**最终防线结构（三层，缺一不可）：**
+
+1. **源码文本关**（`reject_dangerous_syntax`，在 `load_source` 里、编译之前）
+   ——拒绝任何出现 `require-builtin`/`(require ` 字面文本的源码。这是
+   `steel/time`/`steel/random`/`steel/tcp` 这类「需要脚本显式 require 才能
+   拿到」的能力被排除的**真正原因**，模块覆盖对它们而言只是锦上添花。
+2. **枚举清空**（`poison_module`，构造期）——对 `steel/process`、
+   `steel/threads`、`steel/meta` 这类**引导期已经无前缀绑进全局作用域**
+   的模块，逐个枚举导出名字并用 `SteelVal::Void` 覆盖。这是它们被排除的
+   真正原因，因为源码文本关挡不住「名字已经绑定、脚本不需要写 require
+   就能直接调用」这种情况。
+3. **模块注册表覆盖**（`poison_module` 的第二步）——尽力而为，对
+   `steel/random` 确认有效，对 `steel/time` 确认无效，保留是因为它不产生
+   任何已知副作用、且未来 steel-core 版本升级后也许能生效。
 
 ## 错误对象的源码位置信息
 

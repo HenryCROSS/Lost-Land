@@ -184,6 +184,36 @@ fn main() {
 
         // 额外手段：直接用毒值覆盖已经绑定的全局名字。
         engine.register_value("spawn-native-thread", SteelVal::Void);
+
+        // 诊断：steel/time 用同样的手法为什么在 host.rs 单元测试里没挡住？
+        try_run(
+            &mut engine,
+            "诊断：覆盖 steel/time 模块后 require-builtin 是否仍能拿到 instant/now",
+            r#"
+            (require-builtin steel/time)
+            (instant/now)
+            "#,
+        );
+
+        // Rust 侧直接内省：register_module 覆盖是否真的落进了 ModuleContainer？
+        let random_module = engine.builtin_modules().get("steel/random");
+        let time_module = engine.builtin_modules().get("steel/time");
+        println!(
+            "  Rust 侧内省：steel/random 覆盖后是否存在 -> {}",
+            random_module.is_some()
+        );
+        if let Some(m) = &random_module {
+            println!(
+                "  Rust 侧内省：steel/random 覆盖后导出名字数量 -> {}",
+                m.names().len()
+            );
+        }
+        if let Some(m) = &time_module {
+            println!(
+                "  Rust 侧内省：steel/time 覆盖后导出名字数量 -> {}",
+                m.names().len()
+            );
+        }
         try_run(
             &mut engine,
             "额外用 register_value 把 spawn-native-thread 覆盖成 Void 后，再调用是否报错",
@@ -261,7 +291,14 @@ fn main() {
                 .to_string(),
             )
         });
-        println!("  死循环脚本结果：{}", if res.is_err() { "Err（未 panic）" } else { "意外 Ok" });
+        println!(
+            "  死循环脚本结果：{}",
+            if res.is_err() {
+                "Err（未 panic）"
+            } else {
+                "意外 Ok"
+            }
+        );
 
         let res2 = engine.run("(+ 1 2 3)".to_string());
         println!("  中断后同一 Engine 继续处理下一次调用：{res2:?}");
@@ -273,7 +310,10 @@ fn main() {
         engine.register_fn("probe-add2", |a: i64, b: i64| a + b);
         // 预热：让 `probe-add2` 完成一次真正的函数值绑定与首次调用路径。
         engine
-            .call_function_by_name_with_args("probe-add2", vec![SteelVal::IntV(1), SteelVal::IntV(2)])
+            .call_function_by_name_with_args(
+                "probe-add2",
+                vec![SteelVal::IntV(1), SteelVal::IntV(2)],
+            )
             .unwrap();
 
         let iterations = 100_000u32;
@@ -323,7 +363,9 @@ fn main() {
         );
     }
 
-    section("10c. call_function_by_name_with_args 套上 InterruptHandler::run_with_timeout 的真实开销");
+    section(
+        "10c. call_function_by_name_with_args 套上 InterruptHandler::run_with_timeout 的真实开销",
+    );
     {
         // ScriptEngine::call（任务 3 产出）打算给每次调用都包一层中断防线，
         // 上面 10b 测的是裸调用，这里补测「防线包装后」的真实每次调用成本，
@@ -331,7 +373,10 @@ fn main() {
         let mut engine = Engine::new();
         engine.register_fn("probe-add3", |a: i64, b: i64| a + b);
         engine
-            .call_function_by_name_with_args("probe-add3", vec![SteelVal::IntV(1), SteelVal::IntV(2)])
+            .call_function_by_name_with_args(
+                "probe-add3",
+                vec![SteelVal::IntV(1), SteelVal::IntV(2)],
+            )
             .unwrap();
 
         let handler = InterruptHandler::new(&mut engine, Duration::from_millis(300));
