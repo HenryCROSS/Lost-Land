@@ -11,7 +11,28 @@
 /// 两层各自维护自己的 `(索引, 世代)` 分配——同一个 `EntityId` 值分别喂给
 /// 厚层与薄层是两次独立查询，互不相关，如同同一个整数可以是两张不同
 /// 哈希表各自的 key。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// # `Ord`/`serde` 派生（P3 批次 B 补齐）
+///
+/// 与 [`FamilyId`] 同理：`EntityId` 没有不变式——任意 `(index,
+/// generation)` 对都是结构上合法的值（一个悬垂的 `EntityId` 本身就是
+/// 有意义的合法状态，不是需要拒绝的非法输入），因此可以像 `FamilyId`
+/// 那样直接派生，不需要 `#[serde(try_from = "…")]` 中转校验。
+///
+/// 新增的原因：`ll-sim` 的时间轴队列（`TimelineEntry`）与 `Intent`
+/// 都需要把 `EntityId` 存进可完整序列化的结构体（存档要能把整条队列
+/// /整条 Intent 流写出去，见规格 §4「确定性重放」），而 `EntityId`
+/// 的字段私有、构造函数 `new` 又是 `pub(crate)`——下游 crate 唯一能
+/// 拿到 `EntityId` 的方式是通过 `Arena::spawn`/`ThinPopulation::spawn`
+/// 这类公开入口，无法在反序列化时凭空重建一个。派生宏在本文件内
+/// 展开，可以直接访问私有字段，因此这里补上派生就是唯一可行、且不
+/// 触碰任何既有方法实现的最小改动。`Ord` 用于 `BTreeMap<EntityId, _>`
+/// 这类需要确定性迭代顺序的容器（规格 C4：禁止 `HashMap` 迭代顺序参与
+/// 逻辑判断），比较顺序是 `(index, generation)` 字典序——一个任意但
+/// 稳定的全序，不必也不需要与 [`Self::as_u64`] 的打包顺序一致。
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, serde::Serialize, serde::Deserialize,
+)]
 pub struct EntityId {
     index: u32,
     generation: u32,
