@@ -139,9 +139,110 @@ impl Interner {
     }
 }
 
+/// 世界生成实例的持久标识——势力、家族、聚落、宗教团体、历史事件这类
+/// 「个体」用它，与 mod 定义「种类」用的 [`ContentIndex`] 分开（判据见
+/// `knowledge/design/identity-and-ids.md` 二）。
+///
+/// **永不复用，不需要代际号**：历史事件要求即便指向的对象已经消亡，
+/// 引用依然能正确解析——王朝覆灭多年后，「卡拉克第三王朝与铁血兄弟会
+/// 的战争」这条事件记录里的 `WorldId` 仍要能解析回那个已灭亡的王朝，
+/// 而不是解析成号码被回收后新分配给别的势力的东西。这与
+/// [`crate::error::CoreError`] 一类「拒绝非法输入」的校验无关，是构造
+/// 方式本身的责任：本类型不提供任何会导致号码倒退或重复分配的构造
+/// 途径，唯一的构造入口 [`WorldId::next`] 只会让传入的计数器单调前进。
+///
+/// 反直觉之处（免得后人给它「顺手」加代际号）：`ll-world` 的
+/// `entity::EntityId`（本 crate 不依赖 `ll-world`，故此处不能用 doc
+/// link，只能点名）用代际号防悬垂引用——槽位复用后旧 ID 因世代号不
+/// 匹配而查询失败，这是**故意让引用失效**。`WorldId` 的需求方向正好
+/// 相反：历史记录**故意**要指向一个已经不存在的东西，且必须永远解析
+/// 成功。两者设计目标互斥，不能共用同一套机制。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct WorldId(u32);
+
+impl WorldId {
+    /// 从计数器分配下一个 `WorldId`：取计数器当前值构造 ID，再让计数器
+    /// 前进一步。
+    ///
+    /// 调用方须让同一个计数器贯穿整个世界生成过程、从不倒退——这是
+    /// 「永不复用」的唯一来源，类型本身无法阻止调用方另起一个从零开始
+    /// 的计数器或倒拨已有计数器；本方法能保证的只是「同一个计数器只会
+    /// 前进，绝不会在耗尽 `u32` 空间时静默回绕到已分配过的号码」。
+    ///
+    /// `u32::MAX` 本身保留作「已耗尽」哨兵、不作为合法 ID 发放——发放
+    /// 区间因此是 `0..u32::MAX`，仍有约 40 亿个号可用（500 年世界只
+    /// 用掉两万多个，见模块级别 `Interner` 的同类论证）。这样设计是
+    /// 为了让每次调用要么完整成功（返回 ID 且计数器前进）、要么直接
+    /// panic，不存在「返回了 ID 但计数器没能前进」这种半成功状态——
+    /// 若允许 `counter` 真的加到溢出，成功返回 `u32::MAX` 那次调用会
+    /// 让计数器自身无法再前进，下一次调用要么 panic（安全但语义混乱：
+    /// 明明还没复用号码却报错）要么被迫做特判，不如直接少留一个号。
+    pub fn next(counter: &mut u32) -> Self {
+        assert!(
+            *counter < u32::MAX,
+            "WorldId 计数器已耗尽 u32 空间，不应在合理游戏时长内发生"
+        );
+        let id = WorldId(*counter);
+        *counter += 1;
+        id
+    }
+
+    /// 取出底层原始值。仅用于日志、调试展示；游戏逻辑不应依赖具体数值。
+    pub const fn get(&self) -> u32 {
+        self.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worldid单调递增不重复() {
+        // Arrange
+        let mut counter = 0u32;
+
+        // Act
+        let first = WorldId::next(&mut counter);
+        let second = WorldId::next(&mut counter);
+        let third = WorldId::next(&mut counter);
+
+        // Assert
+        assert!(first.get() < second.get() && second.get() < third.get());
+    }
+
+    #[test]
+    fn worldid在计数器接近上限时继续递增而非回绕() {
+        // 构造边界情形：计数器逼近 u32::MAX，验证递增逻辑本身在临界值
+        // 附近仍然逐一前进，不会提前折返成一个更小（意味着已被分配过）
+        // 的号码。正常游戏时长内不会触发这个区间。
+        // Arrange
+        let mut counter = u32::MAX - 3;
+
+        // Act
+        let first = WorldId::next(&mut counter);
+        let second = WorldId::next(&mut counter);
+        let third = WorldId::next(&mut counter);
+
+        // Assert
+        assert_eq!(
+            [first.get(), second.get(), third.get()],
+            [u32::MAX - 3, u32::MAX - 2, u32::MAX - 1]
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "耗尽")]
+    fn worldid计数器真正耗尽时panic而非静默回绕() {
+        // 验证「不回绕」不是靠运气：计数器到达保留哨兵值 u32::MAX 后，
+        // 再分配必须 panic，而不是让 *counter 溢出后静默变回 0。
+        // Arrange
+        let mut counter = u32::MAX;
+
+        // Act
+        let _ = WorldId::next(&mut counter);
+    }
 
     #[test]
     fn 解析合法标识符拆出命名空间与路径() {

@@ -31,13 +31,15 @@ mod agent;
 mod arena;
 mod goal;
 mod id;
+mod org;
 mod stats;
 mod thin;
 
-pub use affiliation::{Affiliation, AffiliationKind};
+pub use affiliation::{Affiliation, AffiliationKind, OrgRef};
 pub use agent::Agent;
 pub use arena::Arena;
 pub use goal::Goal;
 pub use id::{EntityId, FamilyId};
+pub use org::OrgInstance;
 pub use stats::BaseStats;
 pub use thin::{ThinPopulation, ThinSlot};
