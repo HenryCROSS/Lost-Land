@@ -135,8 +135,7 @@ fn pivot_within_rect(pivot: Pivot, rect: FrameRect) -> bool {
 /// 校验图集条目的帧矩形是否都落在图片真实边界内。
 ///
 /// 抽成不依赖 GPU 的自由函数，是为了不需要真实 [`GpuContext`] 就能单测
-/// 覆盖——校验只依赖解码出的图片尺寸，与 GPU 设备无关（同样的做法见
-/// [`crate::gpu::is_presentable`]）。
+/// 覆盖——校验只依赖解码出的图片尺寸，与 GPU 设备无关。
 ///
 /// `rect.x`/`rect.width` 等字段都是 `u16`，先转 `u32` 再相加：若直接在
 /// `u16` 上相加，两个接近 `u16::MAX` 的畸形值会在加法本身就溢出，
