@@ -2,6 +2,8 @@
 
 **冻结于** 2026-08-17。**实现阶段** P5，但**类型布局必须在 P2 建 `WorldState` 前定稿**。
 
+**落地状态**：纯设计。`crates/` 中尚未找到 `ItemDef`、`ItemStack`、`Owner`、`ItemLocation`、`Quality`、`StatBonus` 等类型（已核实：全代码库检索无匹配）。本文档全部内容仍待 P2/P5 实现验证。
+
 所有数值一律整数（见 [0002 世界状态一律用整数](../decisions/0002-integer-only-world-state.md)）。需要小数的量用 `Milli`（千分之一为单位）。
 
 ## 一、定义与实例分离
@@ -16,8 +18,8 @@
 | `base_weight: Milli` | `owner: Owner` 归属 |
 | `base_price: Milli` | `quality: Quality` 实例品质 |
 | `max_durability: Option<i32>` | `modifiers: Vec<ContentIndex>` 附魔词条 |
-| `equip_mask: SlotMask` 装备占位 | |
-| `stat_bonuses: Vec<StatBonus>` | |
+| `equip_mask: SlotMask` 装备占位，见[装备栏位与占位掩码](equipment-slots.md) | |
+| `stat_bonuses: Vec<StatBonus>`，参与[属性系统](attribute-system.md)的派生 | |
 | `use_effect: Option<ContentIndex>` 使用效果脚本 | |
 | `tags: Vec<ContentIndex>` 标签（武器 / 消耗品 / 任务物品…） | |
 
@@ -59,7 +61,7 @@ pub enum Owner {
 
 一个字段同时驱动三件事：
 
-- **偷窃判定**：拿起 `owner` 非 `Unowned` 且非 `Player` 的物品即构成盗窃；被目击则触发治安反应。
+- **偷窃判定**：拿起 `owner` 非 `Unowned` 且非 `Player` 的物品即构成盗窃；被目击则触发治安反应。`Owner::Faction` 的归属语义由[社会系统](society-and-affiliation.md)的 `Affiliation` 定义。
 - **随从装备归属**：给随从的装备仍可标记为 `Player`，随从叛离时按归属决定带不带走。
 - **商店库存**：商店物品天然带 `Shop` 归属，不必另做一套库存系统。
 
@@ -99,6 +101,8 @@ pub enum ItemLocation {
 
 倍率表可被 mod 覆盖——本体自己也是通过注册表提供这张表的（「本体即 Mod」）。
 
+价格倍率作用后的结果如何进入[行会定价](agent-goals-and-economy.md)的「基础价」因子，两份文档均未写明换算关系，见总索引冲突清单。
+
 ## 六、耐久
 
 - 当前 / 上限，均为 `i32`。
@@ -119,6 +123,8 @@ pub enum ItemLocation {
 | > 200% | 无法移动 |
 
 分档是刻意的：线性惩罚会逼玩家每拿一件东西都做算术；分档只需知道自己在哪一档，决策成本低得多。
+
+这组百分比与[属性系统](attribute-system.md)「与时间轴调度的接口」一节的 `行动耗时 = 基础代价 × 1000 / 有效敏捷` 公式吻合：敏捷打 8 折，耗时自然是 1/0.8 = 1.25 倍；打 5 折，耗时自然是 2 倍。表中数字不是另拍的，是那条公式的直接结果。
 
 ## 八、物品作用
 
