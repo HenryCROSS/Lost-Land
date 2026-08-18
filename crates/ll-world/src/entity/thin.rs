@@ -39,6 +39,16 @@ pub struct ThinPopulation {
     profession: Vec<ContentIndex>,
     /// 种族，指向注册表。与 `profession` 同一模式——见
     /// [`crate::entity::Agent::race`] 文档。
+    ///
+    /// **已知实现债务，本阶段（P3）裁定不修**：`knowledge/design/race-system.md`
+    /// 的设计是薄层**零列**——种族应由 `birth_settlement` 与聚落种族
+    /// 权重表现算派生，不该在薄层单独存一列。这一列之所以还在，是因为
+    /// `birth_settlement` 字段与聚落种族权重表都还没有落地（两者都属于
+    /// 世界生成阶段），且此列存的 `ContentIndex` 本就不可持久化（见本
+    /// 类型文档「不派生 serde」一节），薄层在 P3 也尚未被真正填充。要
+    /// 修必须与 `birth_settlement`、聚落种族权重表一起引入，不是这一列
+    /// 单独能改完的事。写在这里而不是只写在设计文档里，是为了让改这个
+    /// 结构体的人无需先去翻设计文档就能看见这条债务。
     race: Vec<ContentIndex>,
     family: Vec<FamilyId>,
     /// 钱包的基准值。重定基准时刷新。
