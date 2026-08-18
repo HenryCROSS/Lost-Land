@@ -149,6 +149,21 @@ impl TurnEngine {
     /// 是修好根因之外的第二道防线：即使某次改动又引入了同一类缺陷，
     /// 单帧最多空转这么多步就会放弃，把已经死循环的那个实体的
     /// `pending` 状态原样交还给下一帧，而不是冻结整个事件循环。
+    ///
+    /// # 玩家死亡必须在循环内部逐次核查，不能只在入口查一次
+    ///
+    /// 玩家不是本函数唯一处理的实体——本函数每一步都可能结算一个
+    /// 存活敌人对玩家的攻击，玩家因此完全可能在循环**进行到一半**时
+    /// 死亡（[`Self::perform`] 处理 `Effect::Kill` 时会把死者从
+    /// [`Timeline`] 里移除，见其实现）。玩家一旦被移出时间轴，
+    /// 「弹出的条目属于玩家」这条唯一的提前返回条件就再也不会成立：
+    /// 若这里只在循环开始前查一次玩家是否存活，玩家死后循环会继续
+    /// 反复结算其余存活敌人，直到耗尽 [`MAX_STEPS_PER_ADVANCE`] 才
+    /// 放弃——这正是真实发生过的缺陷：玩家死亡的那一帧要空转满
+    /// 10000 步才能画出下一帧，肉眼表现为长达数秒的卡顿。修法是把
+    /// 「玩家是否还在 `world.actors` 里」的核查放进循环体本身、
+    /// 每一步都问一次，玩家一死就能在下一步立即察觉并返回，不必等到
+    /// 弹出玩家自己的条目（那条条目已经不存在了）。
     pub(crate) fn advance_ai(
         &mut self,
         world: &mut WorldState,
@@ -157,6 +172,14 @@ impl TurnEngine {
     ) -> Vec<EntityId> {
         let mut acted = Vec::new();
         for _ in 0..MAX_STEPS_PER_ADVANCE {
+            if world.actors.get(player).is_none() {
+                // 玩家可能在上一步里被某个敌人杀死——玩家的时间轴条目
+                // 已经被 `perform` 清理掉，不会再有机会命中下面
+                // `entry.actor == player` 那条返回路径，必须在这里
+                // 单独察觉并立刻收工，否则会陷入本方法文档「玩家死亡
+                // 必须在循环内部逐次核查」一节描述的那种空转。
+                return acted;
+            }
             if self.pending.is_none() {
                 self.pending = self.timeline.pop_next();
             }
@@ -547,5 +570,44 @@ mod tests {
             "死者不应残留在时间轴预览里"
         );
         assert!(!popups.is_empty(), "本用例应产生至少一条伤害飘字");
+    }
+
+    #[test]
+    fn 玩家在advance_ai内被杀死后立即返回不耗尽单帧步数上限() {
+        // 这是「玩家死亡后主循环空转到 MAX_STEPS_PER_ADVANCE」这一真实
+        // 缺陷的直接回归：敌人甲与玩家相邻且攻击力极高，甲的回合排在
+        // 最前，会在 advance_ai 循环进行到一半时把玩家杀死——此时玩家
+        // 已被移出时间轴，若函数只在弹出玩家自己的条目时才返回，就再
+        // 也等不到那个条件成立，会转而对旁观者乙反复空转直到耗尽上限。
+        // Arrange
+        let mut world = test_world();
+        let player = spawn_at(&mut world, (5, 5), 10);
+        let killer = spawn_at(&mut world, (6, 5), 10);
+        world
+            .actors
+            .get_mut(killer)
+            .expect("刚生成的实体必然存在")
+            .stats
+            .strength = 9999;
+        let bystander = spawn_at(&mut world, (40, 40), 10);
+        let mut timeline = Timeline::new();
+        timeline.schedule(killer, Tick(0));
+        timeline.schedule(player, Tick(50));
+        timeline.schedule(bystander, Tick(100));
+        let mut engine = TurnEngine::new(timeline);
+        let mut popups = Vec::new();
+
+        // Act
+        let acted = engine.advance_ai(&mut world, player, &mut popups);
+
+        // Assert：玩家应已被击杀，且结算过的实体数应远小于
+        // MAX_STEPS_PER_ADVANCE（10000）——只有杀死玩家的那一击算数，
+        // 不应该在旁观者乙身上反复空转到耗尽上限才放弃。
+        assert!(world.actors.get(player).is_none(), "玩家应已被击杀");
+        assert!(
+            acted.len() < 10,
+            "玩家死亡后 advance_ai 应立即返回，实际结算了 {} 次",
+            acted.len()
+        );
     }
 }

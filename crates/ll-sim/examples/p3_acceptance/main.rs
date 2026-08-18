@@ -77,7 +77,7 @@ use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::Camera;
 use ll_render::gpu::GpuContext;
 use ll_render::sprite::{DrawOrder, Layer};
-use ll_render::target::{RenderTarget, fit_viewport};
+use ll_render::target::{LOGICAL_HEIGHT, LOGICAL_WIDTH, RenderTarget, fit_viewport};
 // 走 ll_render 重新导出的 wgpu，理由与 p1_acceptance/p2_acceptance 一致。
 use ll_render::wgpu;
 use ll_sim::timeline::Timeline;
@@ -123,6 +123,17 @@ const SIDEBAR_PREVIEW_COUNT: usize = 5;
 
 /// 伤害飘字随存活时间上升的速度（像素 / 3 帧），营造轻微的浮起动画。
 const DAMAGE_POPUP_RISE_PER_3_FRAMES: i32 = 1;
+
+/// 玩家死亡提示主标题（「GAME OVER」）的文字缩放，比伤害飘字更大——
+/// 这是全屏最重要的一条信息，必须一眼看清。
+const DEATH_TITLE_SCALE: f32 = 3.0;
+
+/// 玩家死亡提示副标题（操作提示）的文字缩放，与时间轴侧栏同一档——
+/// 比名字牌（[`NAME_TEXT_SCALE`]）更大，保证死亡后这条提示足够醒目。
+const DEATH_SUBTITLE_SCALE: f32 = SIDEBAR_TEXT_SCALE;
+
+/// 死亡提示两行文字之间的垂直间距（像素）。
+const DEATH_LINE_GAP_PX: f32 = 6.0;
 
 /// 图集元数据 JSON，编译期内嵌，不依赖运行时工作目录——与
 /// `p2_acceptance` 引用同一份占位图集，理由见其文档：demo 之间没有
@@ -233,6 +244,15 @@ struct Demo {
     naming: NamingRules,
     camera: Camera,
     popups: Vec<DamagePopup>,
+    /// 游戏结束状态：玩家一旦死亡就置真，此后永不复位（demo 没有重开，
+    /// 见本文件顶部模块文档「保持 demo 的定位」）。
+    ///
+    /// 不用「每帧现查 `world.actors.get(player).is_none()`」代替这个
+    /// 字段——那种写法虽然结果等价，却把「游戏是否结束」这个应该
+    /// 一目了然的状态藏进了一次实体查找里，`advance_turns`/`on_frame`
+    /// 里任何一处想问「玩家死了吗」都得重新查一次 Arena，容易漏查也
+    /// 不利于阅读；显式字段让这件事在类型层面就摆在明处。
+    player_dead: bool,
     resources: Option<GpuResources>,
 }
 
@@ -259,6 +279,7 @@ impl Demo {
             naming: demo_naming_rules(),
             camera,
             popups: Vec::new(),
+            player_dead: false,
             resources: None,
         }
     }
@@ -267,25 +288,54 @@ impl Demo {
     /// 掉，再尝试用本帧输入结算玩家一次行动，成功则继续推进后续的 AI
     /// 回合直到再次轮到玩家。
     ///
-    /// 玩家已死亡（`world.actors.get` 返回空）时跳过全部回合推进——
-    /// 世界仍会照常渲染供观察，只是不再接受输入或继续模拟。
+    /// `self.player_dead` 一旦置位就立即返回，跳过全部回合推进——世界
+    /// 仍会照常渲染供观察，只是不再接受移动/攻击输入或继续模拟。玩家
+    /// 可能在本函数内部的任意一次 `advance_ai`/`try_player_turn` 调用
+    /// 中死亡（被围攻致死），所以两次 `advance_ai` 调用之后都要重新
+    /// 核查一次，而不是只在函数入口查一次——`TurnEngine::advance_ai`
+    /// 自己虽然已经能在玩家死亡的那一步立即收工（见其文档「玩家死亡
+    /// 必须在循环内部逐次核查」一节），但那只保证了引擎内部不再空转，
+    /// 「demo 进入死亡状态、后续帧不再推进回合」这件事仍需要调用方
+    /// （这里）显式记下来。
     fn advance_turns(&mut self, input: &InputState) {
-        if self.world.actors.get(self.actors.player.id).is_none() {
+        if self.player_dead {
             return;
         }
         let all = self.actors.all();
         let player = self.actors.player.id;
         self.engine
             .advance_ai(&mut self.world, player, &mut self.popups);
+        if self.mark_player_dead_if_gone() {
+            return;
+        }
         let player_acted =
             self.engine
                 .try_player_turn(&mut self.world, player, &all, input, &mut self.popups);
         if player_acted {
             self.engine
                 .advance_ai(&mut self.world, player, &mut self.popups);
+            if self.mark_player_dead_if_gone() {
+                return;
+            }
         }
         if let Some(agent) = self.world.actors.get(player) {
             self.camera.center = agent.pos;
+        }
+    }
+
+    /// 若玩家已不在 `world.actors` 里，把 [`Self::player_dead`] 置真并
+    /// 返回真；玩家仍存活则不改动状态、返回假。
+    ///
+    /// 抽成方法而不是在 `advance_turns` 里各写一遍：玩家可能死于
+    /// 「排在玩家之前的敌人回合」或「玩家行动后紧接着结算的敌人回合」
+    /// 这两个不同时机中的任意一个，两处判断逻辑必须完全一致，抽出来
+    /// 才能保证不会有一处漏改。
+    fn mark_player_dead_if_gone(&mut self) -> bool {
+        if self.world.actors.get(self.actors.player.id).is_none() {
+            self.player_dead = true;
+            true
+        } else {
+            false
         }
     }
 }
@@ -492,6 +542,54 @@ fn push_timeline_sidebar(
     }
 }
 
+/// 玩家死亡后画在屏幕正中央的结束提示：两行文字，标题「GAME OVER」
+/// 加一行操作提示「ESC TO QUIT」——满足验收要求「一句清楚的你死了，
+/// 按 Esc 退出」，不引入任何新的 UI 系统，复用现有的像素字体与
+/// `push_text`。
+///
+/// 用词只从 [`font::CHARSET`] 里选字，理由见该常量文档：`C`/`Q` 是
+/// 专为这两行提示新增的两个字形。
+fn push_death_message(resources: &mut GpuResources) {
+    const TITLE: &str = "GAME OVER";
+    const SUBTITLE: &str = "ESC TO QUIT";
+
+    // 纵向锚定在屏幕上三分之一处，而不是正中央：玩家死亡时，杀死他的
+    // 敌人几乎必然就站在相机中心附近（相机恒跟随玩家，见
+    // `Demo::advance_turns` 对 `camera.center` 的更新），它们头顶的
+    // 名字牌（`push_actors` 画在实体正上方）会跟一条屏幕正中央的提示
+    // 撞在一起——这不是逻辑缺陷，只是两处独立摆放的文字凑巧同屏，但
+    // 挪开就能避免，不需要为此新增任何裁剪或层级机制。
+    let title_height = font::GLYPH_ROWS as f32 * DEATH_TITLE_SCALE;
+    let anchor_y = LOGICAL_HEIGHT as f32 / 3.0;
+    let title_origin = (
+        (LOGICAL_WIDTH as f32 - text_width(TITLE, DEATH_TITLE_SCALE)) / 2.0,
+        anchor_y - title_height - DEATH_LINE_GAP_PX / 2.0,
+    );
+    let subtitle_origin = (
+        (LOGICAL_WIDTH as f32 - text_width(SUBTITLE, DEATH_SUBTITLE_SCALE)) / 2.0,
+        anchor_y + DEATH_LINE_GAP_PX / 2.0,
+    );
+
+    push_text(
+        resources,
+        title_origin,
+        DEATH_TITLE_SCALE,
+        TITLE,
+        Layer::UI,
+        0,
+        [1.0, 0.25, 0.2, 1.0],
+    );
+    push_text(
+        resources,
+        subtitle_origin,
+        DEATH_SUBTITLE_SCALE,
+        SUBTITLE,
+        Layer::UI,
+        0,
+        [1.0, 1.0, 1.0, 1.0],
+    );
+}
+
 /// 一个字符在给定缩放下的横向步进（字形宽度 + 1 像素字距），乘以字符
 /// 数得到整段文字的像素宽度——供居中摆放伤害飘字/名字牌使用。
 fn text_width(text: &str, scale: f32) -> f32 {
@@ -617,6 +715,9 @@ impl AppHandler for Demo {
             tint,
             resources,
         );
+        if self.player_dead {
+            push_death_message(resources);
+        }
         resources
             .batch
             .flush(&resources.gpu, resources.render_target.view());
