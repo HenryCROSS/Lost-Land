@@ -80,7 +80,21 @@ impl fmt::Display for NamespacedId {
 /// 内容在运行时的紧凑索引。
 ///
 /// **不可持久化**——索引依赖 mod 加载顺序，存档必须写字符串 ID。
+///
+/// # 为什么可以直接派生 `Serialize`/`Deserialize`（不需要 `try_from`）
+///
+/// [0015](../../../knowledge/decisions/0015-content-id-registration-is-parsing-not-invariant.md)
+/// 把「结构合法」与「已注册」拆成两件事：本类型自身没有任何不依赖
+/// 运行期上下文就能判断对不对的不变式——任意 `u32` 都是一个「形状
+/// 合法」的裸索引，它是否对应一条真实注册过的内容，只有查当前的
+/// `Interner`/`Registry` 才知道。这正是 0011 的 `try_from` 模式**不**
+/// 适用的情形（该模式只管无上下文的不变式，见 0015「为什么这是两件
+/// 事」一节）。因此这里直接派生，反序列化只做「把整数落地成
+/// `ContentIndex`」这一步结构转换；「这个索引当前是否已注册」的校验
+/// 由拿到注册表之后的调用方显式完成（例如
+/// `ll_world::terrain::TerrainTable::validate_grid`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ContentIndex(u32);
 
 impl ContentIndex {

@@ -17,10 +17,10 @@ tracing = "0.1"
 
 [dev-dependencies]
 proptest.workspace = true
-# 不声明 criterion：本 crate 没有 benches/ 目录，声明了也不会被用到。
-# ll-core 的 torus 基准（crates/ll-core/benches/torus.rs）已经覆盖了
-# 环面坐标运算的性能回归，本 crate 目前没有独立的性能敏感路径需要
-# 单独立基准——真出现性能问题时再补 benches/ 与这条依赖，而不是先占位。
+# Task 8（TerrainKind 迁入注册表）新增：ADR 0017 要求「迁完之后不得
+# 变慢」必须用真实基准数据核实，不能靠直觉判断数组访问理应比 match
+# 快——见 benches/terrain.rs。
+criterion.workspace = true
 # 仅用于序列化往返测试：验证 WorldState 能经过一种真实的 serde 格式
 # 完整往返，而不只是停留在 derive 能编译这一层面。
 serde_json = "1"
@@ -39,3 +39,11 @@ name = "p2_acceptance"
 # 等纯函数逻辑值得被 `cargo test --workspace` 真正覆盖，而不只是编译
 # 检查（与 ll-render 的 p1_acceptance 同样的理由，见其 Cargo.toml）。
 test = true
+
+[[bench]]
+name = "terrain"
+harness = false
+# criterion 自带 harness，若不关掉 test 目标，`cargo test --all-targets`
+# 会把完整基准当测试跑一遍，拖慢门禁——与 ll-core 的 torus 基准同样的
+# 理由，见其 Cargo.toml。
+test = false
