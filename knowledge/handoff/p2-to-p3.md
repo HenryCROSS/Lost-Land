@@ -11,6 +11,8 @@
 
 ### 1. `DrawOrder.foot_y` 在环面上不成立
 
+> **[2026-08-17 doc-code-audit 更新] 已修复**，修复于提交 `c0768af`（`fix: DrawOrder 的排序键改用屏幕纵坐标`）。`DrawOrder::new` 的文档现已明确要求传屏幕纵坐标，`crates/ll-world/examples/p2_acceptance/main.rs` 的 `push_terrain`/`push_player` 均先经 `camera.world_to_screen` 换算再构造 `DrawOrder`。详见 `knowledge/audit/2026-08-17-doc-code-audit.md` 的 H-2。以下原文保留供追溯问题的历史背景。
+
 `ll-render::sprite` 把 `foot_y` 定义为「**世界**纵坐标」，P2 的 demo 传的也是世界 y。
 
 但在环面世界里，`y = 319` 与 `y = 0` 在屏幕上相邻却相差 319——**跨南北接缝的 Y 排序会反转**，站在接缝北侧的单位会被南侧的错误遮挡。
@@ -89,6 +91,8 @@ P2 收尾做了一次「反向核对规格」（查规格是否已被实现淘�
 | §7.2 | 「季节更替是**时间轴上的一个定时事件**，其 `Effect` 修改各城镇生产速率…」 | P2 用纯函数派生，无事件无 Effect |
 
 **第三项与 P3 直接相关**——P3 要建时间轴调度器，届时必须决定：季节到底是纯函数派生（当前实现）还是时间轴事件（规格原文）？**两者不能都留着。**
+
+> **[2026-08-17 doc-code-audit 更新]** 核实：光照透过率、气候条带两项仍零实现（未变化）。季节一项有新进展需要关注——`ll-sim::Effect` 枚举已经落地（`MoveTo`/`Damage`/`Kill`/`ScheduleNext`/`SetTerrain`/`AdjustWallet` 六个变体），但仍不含任何季节相关变体，`ll-world::light::season_light_scale` 仍是纯函数。时间轴基础设施已就位却仍未回应这个决策点，改造成本正在上升。已升级为独立审计发现 H-3，并产出工单 `knowledge/audit/worklist.md` 的 W-03，需要 P3 实现者/架构决策者裁定二选一。
 
 ---
 

@@ -9,6 +9,8 @@
 
 ## 一、P1 第一天必须改动的平台层接口
 
+> **[2026-08-17 doc-code-audit 更新] 本节四项均已修复**，修复于提交 `0c9fb27`（`refactor: 平台层为接入渲染做接口改造`）。`AppHandler::on_resume` 现接收 `Arc<Window>`，新增 `on_resize` 转发 `Resized`/`ScaleFactorChanged`，`on_frame` 携带整数 `FrameId`，`PlatformError::WindowCreation` 已随该提交移除。详见 `knowledge/audit/2026-08-17-doc-code-audit.md` 的 H-1。以下原文保留供追溯问题的历史背景。
+
 `ll-platform` 当前的接口是按「P0 不渲染」设计的，接入 wgpu 时三处必然要动：
 
 1. **`AppHandler` 拿不到 `Window`**。wgpu 需要 `Window` 来创建 surface，而当前 `Window` 被 `App` 私有持有，回调里够不着。
