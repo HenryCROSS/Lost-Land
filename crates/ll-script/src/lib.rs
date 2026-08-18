@@ -6,6 +6,7 @@
 //! 依据，不是假设。
 
 pub mod alloc_guard;
+pub mod api;
 pub mod host;
 
 pub use alloc_guard::ScriptAllocGuard;

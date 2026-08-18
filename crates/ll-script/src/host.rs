@@ -103,7 +103,7 @@ fn reject_dangerous_syntax(source: &str) -> Result<(), ScriptError> {
 
 /// 脚本调用失败的分类。
 ///
-/// 四道防线①②在此落地：[`ScriptEngine::call`] 与
+/// 四道防线①②在此落地：[`ScriptEngine::call_raw`] 与
 /// [`ScriptEngine::load_source`] 的签名本身就是 `Result`，出错必定拿到
 /// `Err` 而不是 panic；具体要不要降级、降级成什么默认值，是**调用方**的
 /// 决定，本类型只保证「出错一定可观测」。

@@ -1426,6 +1426,8 @@ name = "ll-script"
 version = "0.1.0"
 dependencies = [
  "ll-core",
+ "ll-sim",
+ "ll-world",
  "proptest",
  "steel-core",
 ]
