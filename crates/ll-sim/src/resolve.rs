@@ -45,11 +45,41 @@ const BASE_ACTION_COST: u32 = 100;
 /// 真正的「有效敏捷」需要 `derive_stats`（装备、状态效果、负重的综合
 /// 结果）驱动，但那是衍生属性，规则上必须是纯函数且不进存档（见
 /// `knowledge/design/attribute-system.md` 「七、衍生属性绝不进存档」），
-/// 而 `derive_stats` 本身属于后续批次才落地的东西。本批次先用「调整值
-/// 为零」对应的基准值代替，保证 Intent → Effect → 时间轴这条接线是
-/// 通的；`derive_stats` 落地后，只需把这个常量替换成
-/// `derive_stats(agent.stats, ..).effective_speed` 这一处调用。
+/// 而 `derive_stats` 本身属于后续批次才落地的东西。`derive_stats` 落地
+/// 后，[`effective_speed_from_dexterity`] 的函数体应替换成
+/// `derive_stats(agent.stats, ..).effective_speed`，调用点不变。
 const BASELINE_EFFECTIVE_SPEED: u32 = 1000;
+
+/// `BaseStats::BASELINE` 的敏捷值——[`effective_speed_from_dexterity`]
+/// 的线性映射以它为基准点：敏捷恰为这个值时，有效速度恰为
+/// [`BASELINE_EFFECTIVE_SPEED`]。
+const BASELINE_DEXTERITY: i64 = 10;
+
+/// 由角色敏捷推出有效行动速度：基准敏捷（10）对应
+/// [`BASELINE_EFFECTIVE_SPEED`]，此后与敏捷成正比。
+///
+/// # 为什么不能继续让全体角色共用同一个常量
+///
+/// 本函数落地前，四个 `resolve_*` 分支全部直接传入
+/// [`BASELINE_EFFECTIVE_SPEED`] 这个常量本身，不读 `agent.stats.dexterity`
+/// ——这是 P3 验收 demo（Task 9）排查时发现的阻断性缺陷：无论给敌人
+/// 分配多高或多低的敏捷，`resolve` 算出的行动耗时都完全相同，时间轴
+/// 调度器（[`crate::timeline`]）本身「敏捷高者能在同一窗口内多行动
+/// 几次」这条核心手感（见其模块文档开篇）在结算层根本没有输入通道
+/// 可以体现出来——`Timeline` 的排序逻辑是对的，喂给它的排期时刻却
+/// 从未因敏捷不同而不同。
+///
+/// 这不是要提前实现完整的 `derive_stats`（装备/状态效果/负重那套还
+/// 没有任何字段落地，见 [`BASELINE_EFFECTIVE_SPEED`] 文档），只是把
+/// 「敏捷」这个已经存在于 [`ll_world::entity::BaseStats`] 的字段接上
+/// 最朴素的线性比例，让 Intent → resolve → Effect → 时间轴这条链路
+/// 真正对「敏捷不同」敏感，而不是看起来接好了、实际上分支从不读取
+/// 敏捷字段。`derive_stats` 落地后应替换本函数体，调用点不必改动。
+fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
+    let dexterity = i64::from(dexterity).max(1);
+    let speed = i64::from(BASELINE_EFFECTIVE_SPEED) * dexterity / BASELINE_DEXTERITY;
+    speed.clamp(1, i64::from(u32::MAX)) as u32
+}
 
 /// 把一个 [`Intent`] 结合当前世界状态，翻译成一串 [`Effect`]。
 ///
@@ -74,10 +104,13 @@ fn schedule_after(world: &WorldState, cost: u32) -> Tick {
 
 /// 原地等待一回合：只消耗基础代价，不产生除排期外的任何效果。
 fn resolve_wait(world: &WorldState, actor: EntityId) -> Vec<Effect> {
-    if world.actors.get(actor).is_none() {
+    let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
-    }
-    let cost = action_cost(BASE_ACTION_COST, BASELINE_EFFECTIVE_SPEED);
+    };
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
     vec![Effect::ScheduleNext {
         actor,
         at: schedule_after(world, cost),
@@ -99,9 +132,10 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
     let (dx, dy) = dir.delta();
     let dest = world.size.wrap(agent.pos.x() + dx, agent.pos.y() + dy);
     let terrain = world.terrain.terrain_at(dest);
+    let speed = effective_speed_from_dexterity(agent.stats.dexterity);
 
     if terrain == TerrainKind::DOOR_CLOSED {
-        let cost = action_cost(BASE_ACTION_COST, BASELINE_EFFECTIVE_SPEED);
+        let cost = action_cost(BASE_ACTION_COST, speed);
         return vec![
             Effect::SetTerrain {
                 pos: dest,
@@ -118,7 +152,7 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
         return Vec::new();
     }
 
-    let cost = action_cost(terrain.move_cost(), BASELINE_EFFECTIVE_SPEED);
+    let cost = action_cost(terrain.move_cost(), speed);
     vec![
         Effect::MoveTo { actor, pos: dest },
         Effect::ScheduleNext {
@@ -159,7 +193,10 @@ fn resolve_attack(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<
         effects.push(Effect::Kill { target });
     }
 
-    let cost = action_cost(BASE_ACTION_COST, BASELINE_EFFECTIVE_SPEED);
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(attacker.stats.dexterity),
+    );
     effects.push(Effect::ScheduleNext {
         actor,
         at: schedule_after(world, cost),
@@ -171,15 +208,18 @@ fn resolve_attack(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<
 /// 与 [`resolve_move`] 撞墙时的处理一致，都是「动作在这个世界里无
 /// 意义，静默作废」而不是报错。
 fn resolve_open_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Vec<Effect> {
-    if world.actors.get(actor).is_none() {
+    let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
-    }
+    };
     let door_pos = world.size.wrap(pos.0, pos.1);
     if world.terrain.terrain_at(door_pos) != TerrainKind::DOOR_CLOSED {
         return Vec::new();
     }
 
-    let cost = action_cost(BASE_ACTION_COST, BASELINE_EFFECTIVE_SPEED);
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
     vec![
         Effect::SetTerrain {
             pos: door_pos,
@@ -233,6 +273,31 @@ mod tests {
     /// 的出生点配套——测试只需要一个已知、可控的目的地格。
     fn east_of_spawn(world: &WorldState) -> ll_core::torus::TorusPos {
         world.size.wrap(6, 5)
+    }
+
+    /// 造一个占位实体，站在 `(5, 5)`，除敏捷外六项主属性取基准值——
+    /// 供敏捷相关测试指定一个非基准的敏捷值。
+    fn spawn_agent_with_dexterity(world: &mut WorldState, dexterity: i32) -> EntityId {
+        let mut interner = ll_core::ident::Interner::new();
+        let profession = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
+        let race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
+        world.actors.spawn(Agent {
+            pos: world.size.wrap(5, 5),
+            stats: BaseStats {
+                dexterity,
+                ..BaseStats::BASELINE
+            },
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession,
+            goals: Vec::new(),
+            race,
+            luck: 0,
+        })
     }
 
     #[test]
@@ -351,6 +416,29 @@ mod tests {
                 .iter()
                 .any(|effect| matches!(effect, Effect::Damage { .. }))
         );
+    }
+
+    #[test]
+    fn 敏捷更高的角色等待耗时更短() {
+        // 这是 P3 验收 demo（Task 9）排查出的阻断性缺陷的回归测试：
+        // 修复前 resolve 的四个分支全部直接传常量 BASELINE_EFFECTIVE_SPEED，
+        // 不读 agent.stats.dexterity，敏捷高低对行动耗时毫无影响——时间轴
+        // 调度器「敏捷高者能在同一窗口内多行动几次」这条核心手感因此在
+        // 结算层根本不成立。
+        // Arrange
+        let mut slow_world = test_world();
+        let slow_actor = spawn_agent_with_dexterity(&mut slow_world, 5);
+        let mut fast_world = test_world();
+        let fast_actor = spawn_agent_with_dexterity(&mut fast_world, 40);
+
+        // Act
+        let slow_effects = resolve(&slow_world, &Intent::Wait { actor: slow_actor });
+        let fast_effects = resolve(&fast_world, &Intent::Wait { actor: fast_actor });
+
+        // Assert
+        let slow_cost = schedule_next_at(&slow_effects).0 - slow_world.clock.0;
+        let fast_cost = schedule_next_at(&fast_effects).0 - fast_world.clock.0;
+        assert!(fast_cost < slow_cost);
     }
 
     /// 从一批效果里取出 [`Effect::ScheduleNext`] 的排期时刻——上面几条
