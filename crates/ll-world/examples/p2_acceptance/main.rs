@@ -46,7 +46,7 @@ mod spawn;
 
 use layout::{
     BASE_SIGHT_RADIUS, CLOCK_STEP_HOUR, CLOCK_STEP_SEASON, INITIAL_CLOCK_TICKS, MINIMAP_CELL_PX,
-    MINIMAP_DOWNSAMPLE, WORLD_HEIGHT, WORLD_WIDTH, ambient_tint, footprint_bottom_world_y,
+    MINIMAP_DOWNSAMPLE, WORLD_HEIGHT, WORLD_WIDTH, ambient_tint, footprint_bottom_screen_y,
     minimap_cell_screen_pos, sprite_draw_position, terrain_entry_name,
 };
 use ll_core::torus::{TorusPos, TorusSize};
@@ -59,7 +59,7 @@ use ll_render::atlas::{Atlas, AtlasEntry, AtlasMetadata};
 use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::Camera;
 use ll_render::gpu::GpuContext;
-use ll_render::sprite::{DrawOrder, Footprint, Layer, SpriteSize, TILE_SIZE};
+use ll_render::sprite::{DrawOrder, Footprint, Layer, SpriteSize};
 use ll_render::target::{RenderTarget, fit_viewport};
 // 走 ll_render 重新导出的 wgpu，不直接依赖 wgpu crate 本身，理由与
 // p1_acceptance 完全一致：独立 crate 的下游只有这一条路径能用。
@@ -266,7 +266,7 @@ fn push_terrain(
         let (sx, sy) = camera.world_to_screen(pos);
         let order = DrawOrder::new(
             Layer::TERRAIN,
-            pos.y() * TILE_SIZE as i32,
+            sy,
             TERRAIN_ENTITY_BASE + pos.y() as u64 * WORLD_WIDTH as u64 + pos.x() as u64,
         );
         resources.batch.push(
@@ -289,7 +289,7 @@ fn push_player(camera: &Camera, player: TorusPos, tint: [f32; 4], resources: &mu
     let [px, py] = sprite_draw_position((tile_x, tile_y), footprint, entry.pivot);
     let order = DrawOrder::new(
         Layer::ENTITY,
-        footprint_bottom_world_y(player.y(), 1),
+        footprint_bottom_screen_y(tile_y, 1),
         PLAYER_ENTITY,
     );
     resources.batch.push(

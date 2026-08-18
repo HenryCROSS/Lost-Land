@@ -93,8 +93,17 @@ pub struct DrawOrder {
 impl DrawOrder {
     /// 构造绘制顺序键。
     ///
-    /// `foot_y` 应为精灵脚底（而非图像原点）的世界纵坐标；`entity` 是
-    /// 稳定的实体标识，用于在图层与纵坐标都相同时打破平局。
+    /// `foot_y` 应为精灵脚底（而非图像原点）的**屏幕**纵坐标（相机
+    /// 相对），不是世界纵坐标。
+    ///
+    /// 必须用屏幕坐标：环面世界里 `y = 世界高度 − 1` 与 `y = 0` 在屏幕上
+    /// 相邻却相差整个世界高度，用世界坐标会让跨南北接缝的排序反转，
+    /// 接缝北侧的单位被南侧的错误遮挡。
+    ///
+    /// 屏幕坐标由 `Camera::world_to_screen` 得出，它已处理环面最短位移，
+    /// 因此接缝两侧的相邻格在屏幕上也相邻。
+    ///
+    /// `entity` 是稳定的实体标识，用于在图层与纵坐标都相同时打破平局。
     pub const fn new(layer: Layer, foot_y: i32, entity: u64) -> DrawOrder {
         DrawOrder {
             layer,
@@ -128,6 +137,18 @@ mod tests {
 
         // Act & Assert
         assert!(far < near);
+    }
+
+    #[test]
+    fn 跨接缝的两个实体按屏幕纵坐标排序() {
+        // 环面世界里 y=世界高度-1 与 y=0 在屏幕上相邻。若排序键用世界
+        // 纵坐标，接缝北侧的单位会被南侧的错误遮挡。
+        // Arrange：屏幕坐标下北侧单位 y 更小（更靠上，应先绘制）。
+        let north_on_screen = DrawOrder::new(Layer::ENTITY, 100, 1);
+        let south_on_screen = DrawOrder::new(Layer::ENTITY, 116, 2);
+
+        // Act & Assert
+        assert!(north_on_screen < south_on_screen);
     }
 
     #[test]

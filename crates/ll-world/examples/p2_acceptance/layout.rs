@@ -158,10 +158,14 @@ pub(crate) fn sprite_draw_position(
     ]
 }
 
-/// 占地格块底边的世界纵坐标（像素），供 `ll_render::sprite::DrawOrder`
+/// 占地格块底边的**屏幕**纵坐标（像素），供 `ll_render::sprite::DrawOrder`
 /// 用作 `foot_y`。
-pub(crate) fn footprint_bottom_world_y(tile_y: i32, footprint_height: u8) -> i32 {
-    (tile_y + footprint_height as i32) * TILE_SIZE as i32
+///
+/// `screen_tile_y` 必须是占地左上角格的**屏幕**纵坐标（`Camera::world_to_screen`
+/// 的返回值），不能是世界纵坐标——环面世界里跨南北接缝时世界纵坐标
+/// 的排序会反转，详见 `ll_render::sprite::DrawOrder::new` 文档。
+pub(crate) fn footprint_bottom_screen_y(screen_tile_y: i32, footprint_height: u8) -> i32 {
+    screen_tile_y + footprint_height as i32 * TILE_SIZE as i32
 }
 
 #[cfg(test)]
@@ -297,10 +301,10 @@ mod tests {
     }
 
     #[test]
-    fn 占地底边世界纵坐标随占地高度增加() {
+    fn 占地底边屏幕纵坐标随占地高度增加() {
         // Arrange & Act
-        let one_tile = footprint_bottom_world_y(10, 1);
-        let two_tiles = footprint_bottom_world_y(10, 2);
+        let one_tile = footprint_bottom_screen_y(10, 1);
+        let two_tiles = footprint_bottom_screen_y(10, 2);
 
         // Assert
         assert!(two_tiles > one_tile);

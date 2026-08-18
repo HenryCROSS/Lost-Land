@@ -36,7 +36,7 @@ mod png;
 
 use layout::{
     BOSS_ENTITY, BOSS_TILE, HERO_ENTITY, HERO_PATROL_FRAMES_PER_STEP, HERO_PATROL_MAX_Y,
-    HERO_PATROL_MIN_Y, WORLD_HEIGHT, WORLD_WIDTH, footprint_bottom_world_y, hero_patrol_y,
+    HERO_PATROL_MIN_Y, WORLD_HEIGHT, WORLD_WIDTH, footprint_bottom_screen_y, hero_patrol_y,
     sprite_draw_position, terrain_entry_name,
 };
 use ll_core::torus::TorusSize;
@@ -50,7 +50,7 @@ use ll_render::atlas::{Atlas, AtlasEntry, AtlasMetadata};
 use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::Camera;
 use ll_render::gpu::GpuContext;
-use ll_render::sprite::{DrawOrder, Footprint, Layer, SpriteSize, TILE_SIZE};
+use ll_render::sprite::{DrawOrder, Footprint, Layer, SpriteSize};
 use ll_render::target::{RenderTarget, fit_viewport};
 // 走 ll_render 重新导出的 wgpu，不直接依赖 wgpu crate 本身——即便本
 // demo 是同包 example、两条路径当前都能解析，独立 crate 的下游只有
@@ -244,7 +244,7 @@ fn collect_sprites(
         let (sx, sy) = camera.world_to_screen(pos);
         let order = DrawOrder::new(
             Layer::TERRAIN,
-            pos.y() * TILE_SIZE as i32,
+            sy,
             TILE_ENTITY_BASE + pos.y() as u64 * WORLD_WIDTH as u64 + pos.x() as u64,
         );
         resources.batch.push(
@@ -273,7 +273,7 @@ fn push_boss(world: TorusSize, camera: &Camera, resources: &mut GpuResources) {
     );
     let order = DrawOrder::new(
         Layer::ENTITY,
-        footprint_bottom_world_y(BOSS_TILE.1, 2),
+        footprint_bottom_screen_y(tile_y, 2),
         BOSS_ENTITY,
     );
     resources
@@ -317,7 +317,7 @@ fn push_hero(
     );
     let order = DrawOrder::new(
         Layer::ENTITY,
-        footprint_bottom_world_y(hero_y, 1),
+        footprint_bottom_screen_y(tile_y, 1),
         HERO_ENTITY,
     );
     resources

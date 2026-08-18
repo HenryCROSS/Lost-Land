@@ -106,14 +106,18 @@ pub(crate) fn sprite_draw_position(
     ]
 }
 
-/// 占地格块底边的世界纵坐标（像素），供 `ll_render::sprite::DrawOrder`
+/// 占地格块底边的**屏幕**纵坐标（像素），供 `ll_render::sprite::DrawOrder`
 /// 用作 `foot_y`。
 ///
 /// **必须用占地底边而非精灵图像顶部**：高精灵若用图像顶部排序，会在
 /// 视觉上错误地挡住本该在它前面的矮单位（`ll_render::sprite` 模块文档
 /// 对此有详细说明）。
-pub(crate) fn footprint_bottom_world_y(tile_y: i32, footprint_height: u8) -> i32 {
-    (tile_y + footprint_height as i32) * TILE_SIZE as i32
+///
+/// `screen_tile_y` 必须是占地左上角格的**屏幕**纵坐标（`Camera::world_to_screen`
+/// 的返回值），不能是世界纵坐标——环面世界里跨南北接缝时世界纵坐标
+/// 的排序会反转，详见 `ll_render::sprite::DrawOrder::new` 文档。
+pub(crate) fn footprint_bottom_screen_y(screen_tile_y: i32, footprint_height: u8) -> i32 {
+    screen_tile_y + footprint_height as i32 * TILE_SIZE as i32
 }
 
 #[cfg(test)]
@@ -268,10 +272,13 @@ mod tests {
         // BOSS_ENTITY/HERO_ENTITY 引用的是本模块顶部唯一的权威定义
         // ——谁在 main.rs 改了绘制时用的实体号，这里立刻反映出来，
         // 而不是像此前那样各测各的、改了权威定义测试也发现不了。
-        // Arrange
-        let boss_foot_y = footprint_bottom_world_y(BOSS_TILE.1, 2);
+        // Arrange：本测试不涉及相机换算，直接用「格坐标 × 瓦片边长」
+        // 充当屏幕纵坐标——这里只验证占地底边的相对排序算术，真实的
+        // 世界到屏幕换算由 `Camera::world_to_screen` 承担、在其自己的
+        // 测试里覆盖。
+        let boss_foot_y = footprint_bottom_screen_y(BOSS_TILE.1 * TILE_SIZE as i32, 2);
         let hero_tile_y = BOSS_TILE.1 + 1; // boss 占地的最下一行
-        let hero_foot_y = footprint_bottom_world_y(hero_tile_y, 1);
+        let hero_foot_y = footprint_bottom_screen_y(hero_tile_y * TILE_SIZE as i32, 1);
         assert_eq!(
             boss_foot_y, hero_foot_y,
             "本测试的前提是两者 foot_y 恰好相等"
@@ -287,9 +294,9 @@ mod tests {
 
     #[test]
     fn 巡逻路径完全在重点目标上方时重点目标排在前面() {
-        // Arrange
-        let boss_foot_y = footprint_bottom_world_y(BOSS_TILE.1, 2);
-        let hero_foot_y = footprint_bottom_world_y(HERO_PATROL_MIN_Y, 1);
+        // Arrange：格坐标 × 瓦片边长充当屏幕纵坐标，理由同上一测试。
+        let boss_foot_y = footprint_bottom_screen_y(BOSS_TILE.1 * TILE_SIZE as i32, 2);
+        let hero_foot_y = footprint_bottom_screen_y(HERO_PATROL_MIN_Y * TILE_SIZE as i32, 1);
 
         // Act
         let boss_order = DrawOrder::new(Layer::ENTITY, boss_foot_y, BOSS_ENTITY);
@@ -301,9 +308,9 @@ mod tests {
 
     #[test]
     fn 巡逻路径完全在重点目标下方时普通单位排在前面() {
-        // Arrange
-        let boss_foot_y = footprint_bottom_world_y(BOSS_TILE.1, 2);
-        let hero_foot_y = footprint_bottom_world_y(HERO_PATROL_MAX_Y, 1);
+        // Arrange：格坐标 × 瓦片边长充当屏幕纵坐标，理由同上。
+        let boss_foot_y = footprint_bottom_screen_y(BOSS_TILE.1 * TILE_SIZE as i32, 2);
+        let hero_foot_y = footprint_bottom_screen_y(HERO_PATROL_MAX_Y * TILE_SIZE as i32, 1);
 
         // Act
         let boss_order = DrawOrder::new(Layer::ENTITY, boss_foot_y, BOSS_ENTITY);
