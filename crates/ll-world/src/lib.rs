@@ -1,9 +1,13 @@
 //! 迷途大陆的世界层。
 //!
 //! 承接 `ll-core` 的纯数据基础设施，落地成具体的世界状态：环面地形、
-//! 分块存储、噪声生成、视野与光照、昼夜四季。本 crate 不接触渲染或
-//! 平台细节——那些属于 `ll-render`/`ll-platform`，世界层只产出数据，
-//! 由上层决定怎么画。
+//! 分块存储、噪声生成、视野与光照、昼夜四季、居民（[`entity`] 的实体
+//! 存储与 [`naming`] 的名字生成）。本 crate 不接触渲染或平台细节——
+//! 那些属于 `ll-render`/`ll-platform`，世界层只产出数据，由上层决定
+//! 怎么画。世界的**演化**（时间轴调度、`Intent → resolve → Effect →
+//! apply`、战斗结算）属于下游的 `ll-sim`，不在本 crate——见规格 §5
+//! 的依赖顺序：`ll-world` 在前，`ll-sim` 依赖 `ll-world`，反过来会
+//! 成环。
 //!
 //! # 浮点边界
 //!
@@ -16,9 +20,11 @@
 use core::fmt;
 
 pub mod chunk;
+pub mod entity;
 pub mod fov;
 pub mod generate;
 pub mod light;
+pub mod naming;
 pub mod noise;
 pub mod overview;
 pub mod state;

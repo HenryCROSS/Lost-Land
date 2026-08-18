@@ -3,13 +3,18 @@ name = "ll-sim"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
-description = "迷途大陆的回合与模拟层：实体存储、名字生成"
+description = "迷途大陆的回合与模拟层：时间轴调度器、Intent/Effect/Apply 管线、战斗结算（占位）"
 
-# 开启 ll-core 的可选 serde feature：Tick 需要可序列化才能出现在
-# 本 crate 的可序列化类型里（见 ll-core/Cargo.toml 顶部对该 feature
-# 的说明，与 ll-world 的做法一致）。
+# 实体存储与名字生成已迁移到 ll-world（依赖方向修正，见规格 §5：
+# ll-world ← ll-sim，状态所在的 crate 不能反过来依赖演化所在的
+# crate）。本 crate 当前是占位 crate，下面这些依赖是下一批实现
+# timeline/intent/effect/resolve/apply 时才会真正用到——那批逻辑需要
+# 读 &WorldState（地形、FOV 等定义在 ll-world），故提前声明 ll-world
+# 依赖；ll-core/serde 则是本 crate 自身的 Tick/DetRng 等类型一贯需要的
+# 基础设施。先保留声明，方便下一批直接开工。
 [dependencies]
 ll-core = { path = "../ll-core", features = ["serde"] }
+ll-world = { path = "../ll-world" }
 serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]

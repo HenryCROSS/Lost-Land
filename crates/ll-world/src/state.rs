@@ -16,10 +16,10 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use ll_core::hashing::StateHasher;
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
-use ll_sim::entity::{Agent, Arena, ThinPopulation};
 
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
+use crate::entity::{Agent, Arena, ThinPopulation};
 use crate::generate::{GenParams, generate_terrain};
 use crate::terrain::TerrainKind;
 

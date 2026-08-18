@@ -50,11 +50,17 @@ pub struct ThinPopulation {
 /// 拼成一个值，供调用方一次性读取，不必分别调用七个列访问器。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ThinSlot {
+    /// 所属聚落编号。
     pub settlement: u16,
+    /// 当前职业，指向注册表。
     pub profession: ContentIndex,
+    /// 所属家族编号。
     pub family: FamilyId,
+    /// 钱包的基准值。重定基准时刷新。
     pub wallet_rebase: i64,
+    /// 钱包相对公式结果的偏移量。玩家给钱、抢劫只改这个。
     pub wallet_delta: i64,
+    /// 上次重定基准的时刻。
     pub rebase_at: Tick,
 }
 

@@ -1011,6 +1011,7 @@ name = "ll-sim"
 version = "0.1.0"
 dependencies = [
  "ll-core",
+ "ll-world",
  "proptest",
  "serde",
  "serde_json",
@@ -1024,7 +1025,6 @@ dependencies = [
  "ll-core",
  "ll-platform",
  "ll-render",
- "ll-sim",
  "proptest",
  "serde",
  "serde_json",
