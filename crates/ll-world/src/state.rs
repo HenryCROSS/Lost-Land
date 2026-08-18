@@ -153,6 +153,29 @@ impl WorldState {
     /// 确定性重放与存档回归测试的基础设施（详见 `ll_core::hashing`）。
     /// 地形按世界的规范行主序逐格混入，顺序固定，保证同一世界恒产出
     /// 同一摘要。
+    ///
+    /// # 厚层实体也参与摘要（P3 批次 C 补齐）
+    ///
+    /// 早期版本这里只混入地形，不含 `actors`——那时候世界里还没有会
+    /// 被结算改动的实体，加了也测不出什么。批次 C 落地 `resolve`/
+    /// `apply` 之后，`Effect::MoveTo`/`Damage`/`ScheduleNext`/
+    /// `AdjustWallet` 都会改动 `Agent` 的字段，若哈希仍只看地形，
+    /// 「同一意图流产出相同的世界哈希」这类确定性回归测试即使战斗结算
+    /// 悄悄跑偏（位置算错、伤害算错、排期算错）也测不出来——哈希会在
+    /// 两次不同的运行之间稳定相等，因为它们唯一还在看的地形本来就没
+    /// 变。这里混入 [`Arena::iter`] 遍历到的每个存活实体的
+    /// 位置/生命/钱包/下次行动时刻——`Arena` 内部是 `Vec`，不是
+    /// `HashMap`，`iter()` 按槽位下标顺序遍历，不依赖任何哈希表遍历
+    /// 顺序，满足约束 C3「禁止让 HashMap/HashSet 的迭代顺序参与逻辑
+    /// 判断」。已销毁的实体槽位不是 `Occupied`，`iter()` 自然跳过，
+    /// 因此 `Effect::Kill` 也会体现为摘要变化（少一份贡献），不需要
+    /// 单独混入「实体数量」。
+    ///
+    /// 目前只挑了 `resolve`/`apply` 这批已经会写的字段（`pos`/
+    /// `health`/`wallet`/`next_action_at`），不含 `stats`/
+    /// `affiliations`/`profession`/`race`/`luck`/`goals`——这些字段
+    /// 本批次没有任何 `Effect` 会改动它们，加进摘要不会多测出什么，
+    /// 等它们真正开始被结算改动时再补。
     pub fn hash(&self) -> u64 {
         let mut hasher = StateHasher::new();
         hasher.write_u64(self.seed);
@@ -164,6 +187,13 @@ impl WorldState {
                 let pos = self.size.wrap(x, y);
                 hasher.write_u64(u64::from(self.terrain.terrain_at(pos).0));
             }
+        }
+        for agent in self.actors.iter() {
+            hasher.write_i64(i64::from(agent.pos.x()));
+            hasher.write_i64(i64::from(agent.pos.y()));
+            hasher.write_i64(i64::from(agent.health));
+            hasher.write_i64(agent.wallet);
+            hasher.write_i64(agent.next_action_at.0);
         }
         hasher.finish()
     }
