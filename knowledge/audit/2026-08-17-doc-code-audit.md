@@ -213,7 +213,7 @@ P3（`ll-sim`）目前已经落地了完整的 Intent-Effect-Apply 骨架：`cra
 - `grep -rn "气候\|climate\|赤道\|极圈\|tropic" crates/ll-world/src crates/ll-core/src` 零命中。
 - `grep -rn "透过率\|transmit\|light_transparency" crates/ll-world/src crates/ll-core/src` 零命中；`crates/ll-world/src/terrain.rs` 的 `TerrainKind` 目前只有 `blocks_sight`/`blocks_move`/`move_cost` 三项属性（见 `knowledge/handoff/p2-to-p3.md` 第二节表格），没有透过率字段。
 
-**判断**：与 P2 收尾时记录的状态一致，不是新发现，只是核实"仍未过期"。规格 §15 阶段表里 P0-P9 都没有认领这两项。
+**判断**：与 P2 收尾时记录的状态一致，不是新发现，只是核实"仍未过期"。规格 §15 阶段表里 P0-P9（[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后阶段表延伸至 P0-P10）都没有认领这两项。
 
 **影响**：这两条会一直躺在规格里，直到某次实现真正需要它们（气候条带涉及 §7.1 的世界观设定"没有边缘、首尾相接的土地"；光照透过率会影响 FOV 与光照系统的后续扩展）时才被人重新翻出来核对——如果那时忘了看这份交接清单，很可能重新走一遍"规格是否已被淘汰"的调查流程。
 
@@ -248,7 +248,7 @@ society-and-affiliation.md   464 行
 
 **判断**：`knowledge/README.md` 自己写着"每一份文件都应该在半年后仍然有用""发现文档与代码不一致时按缺陷处理"——但它自己的索引已经与 `knowledge/design/` 目录的实际内容不一致，且不一致的恰好是两份已被代码直接引用为"唯一语义出处"的文档。
 
-**影响**：新读者按 README 索引浏览知识库时会误以为设计文档只有三份，找不到入口了解归属系统与经济/目标系统的设计意图——而这两个系统的字段布局已经提前埋入了 P3 的 `Agent` 类型（`affiliation.rs`、`goal.rs`），后续阶段（P7/P8）实现者若不知道有这两份文档存在，可能凭空重新设计一遍已经冻结的语义。
+**影响**：新读者按 README 索引浏览知识库时会误以为设计文档只有三份，找不到入口了解归属系统与经济/目标系统的设计意图——而这两个系统的字段布局已经提前埋入了 P3 的 `Agent` 类型（`affiliation.rs`、`goal.rs`），后续阶段（P8/P9，[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P7/P8 顺移为 P8/P9）实现者若不知道有这两份文档存在，可能凭空重新设计一遍已经冻结的语义。
 
 **处置**：待办工单 W-04（见 `worklist.md`）——`knowledge/README.md` 明确列在本次审计的禁区清单内，不动手改。
 
@@ -299,13 +299,13 @@ let footprint = Footprint {
 
 | 设计文档 | 规格实现阶段 | 落地程度 | 证据 |
 |---|---|---|---|
-| `item-system.md`（物品系统） | P5 | **零实现** | 全仓库搜索 `ItemDef`/`ItemStack`/`ItemLocation`/`Owner`（物品归属枚举）均零命中。纯设计。 |
-| `equipment-slots.md`（装备栏位） | P5 | **零实现** | 全仓库搜索 `SlotMask`/`EquipSlot`/`equip_mask` 均零命中。纯设计。 |
+| `item-system.md`（物品系统） | P5（写作本节时；[2026-08-18 规格修订] 已改为独立的新 P6「物品与装备」阶段，见规格 §15） | **零实现** | 全仓库搜索 `ItemDef`/`ItemStack`/`ItemLocation`/`Owner`（物品归属枚举）均零命中。纯设计。 |
+| `equipment-slots.md`（装备栏位） | P5（写作本节时；[2026-08-18 规格修订] 已改为独立的新 P6「物品与装备」阶段，见规格 §15） | **零实现** | 全仓库搜索 `SlotMask`/`EquipSlot`/`equip_mask` 均零命中。纯设计。 |
 | `attribute-system.md`（属性系统） | P3（骨架）+ P5（技能树） | **字段布局已落地，公式与衍生属性未落地** | `crates/ll-world/src/entity/stats.rs` 已实现 `BaseStats`（STR/DEX/CON/INT/WIS/CHA 六项整数字段 + `BASELINE` 常量），模块文档自述"具体的伤害/判定公式属于后续批次"。三系攻防、四种穿透、衍生属性纯函数、幸运机制、次级属性、d20 判定——设计文档二至九节全部尚未落地。 |
-| `society-and-affiliation.md`（社会与归属） | P8（`society-and-affiliation.md` 内注明） | **字段布局已落地，关系/声望逻辑未落地** | `crates/ll-world/src/entity/affiliation.rs` 已实现 `AffiliationKind`（势力/宗教/行会/文化/家族/职业六类）与 `Affiliation { kind, org, standing }`，模块文档明确写着"实现阶段是 P8，本任务只建 P3 建 `Agent` 时必须已经存在的字段布局"。声望如何传播、如何驱动交易折扣/治安反应等行为逻辑尚未落地。 |
-| `agent-goals-and-economy.md`（智能体目标与经济） | P8（目标栈）/ 贯穿（钱包） | **目标栈仅字段布局，钱包机制已有实质实现** | 目标栈：`crates/ll-world/src/entity/goal.rs` 仅 `Goal { kind, params, progress, priority }` 字段布局，模块文档自述"P3 阶段这个栈可以留空"。钱包：`crates/ll-world/src/entity/thin.rs` 已实现薄层人口的**惰性追赶钱包公式**（`wallet_of`、`batch_update_wallets`，按 §9.2 E2"薄个体+厚群体"的设计原话落地），`crates/ll-world/src/entity/agent.rs:39` 厚层 `Agent` 也有 `wallet: i64` 字段，`crates/ll-sim/src/effect.rs` 已有 `AdjustWallet` Effect。但市场节点、供需定价、价格稳定器、`ll-econsim` 压测——设计文档描述的完整经济模型（对应规格 §9.3）仍是零实现。 |
+| `society-and-affiliation.md`（社会与归属） | P9（`society-and-affiliation.md` 内注明；[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P8 顺移为 P9） | **字段布局已落地，关系/声望逻辑未落地** | `crates/ll-world/src/entity/affiliation.rs` 已实现 `AffiliationKind`（势力/宗教/行会/文化/家族/职业六类）与 `Affiliation { kind, org, standing }`，模块文档明确写着"实现阶段是 P9，本任务只建 P3 建 `Agent` 时必须已经存在的字段布局"。声望如何传播、如何驱动交易折扣/治安反应等行为逻辑尚未落地。 |
+| `agent-goals-and-economy.md`（智能体目标与经济） | P9（目标栈）/ 贯穿（钱包）（[2026-08-18 规格修订] 原 P8 顺移为 P9） | **目标栈仅字段布局，钱包机制已有实质实现** | 目标栈：`crates/ll-world/src/entity/goal.rs` 仅 `Goal { kind, params, progress, priority }` 字段布局，模块文档自述"P3 阶段这个栈可以留空"。钱包：`crates/ll-world/src/entity/thin.rs` 已实现薄层人口的**惰性追赶钱包公式**（`wallet_of`、`batch_update_wallets`，按 §9.2 E2"薄个体+厚群体"的设计原话落地），`crates/ll-world/src/entity/agent.rs:39` 厚层 `Agent` 也有 `wallet: i64` 字段，`crates/ll-sim/src/effect.rs` 已有 `AdjustWallet` Effect。但市场节点、供需定价、价格稳定器、`ll-econsim` 压测——设计文档描述的完整经济模型（对应规格 §9.3）仍是零实现。 |
 
-**这张表要传达的信息**：物品/装备两个系统目前**完全是纸上谈兵**，任何"物品系统已经有雏形"的印象都是错的；属性/归属/目标三个系统是**刻意提前预埋的字段布局**（P3 阶段的既定策略，规格 §15 P5/P8 行的"迁移债务"条目对此有明确交代，不是范围蔓延）；经济系统里恰好**钱包这一块是例外**，已经有可运行的薄层批量结算机制，比其余几项设计文档超前不少。
+**这张表要传达的信息**：物品/装备两个系统目前**完全是纸上谈兵**（[2026-08-18 规格修订] 现已认领为新 P6「物品与装备」阶段，见规格 §15），任何"物品系统已经有雏形"的印象都是错的；属性/归属/目标三个系统是**刻意提前预埋的字段布局**（P3 阶段的既定策略，规格 §15 P5/P9 行（原 P8 顺移为 P9）的"迁移债务"条目对此有明确交代，不是范围蔓延）；经济系统里恰好**钱包这一块是例外**，已经有可运行的薄层批量结算机制，比其余几项设计文档超前不少。
 
 ---
 

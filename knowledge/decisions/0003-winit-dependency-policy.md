@@ -78,7 +78,7 @@ winit 侧 rust-windowing 组织活跃（每周五 UTC 15:00 例会，各平台 i
 ## 后果与持续风险
 
 **代价**：Wayland 下窗口装饰栏不显示标题文字（X11 与 Windows 由服务端绘制，不受影响）。
-**P6 联动**：接入 i18n 设置真实标题后，**Wayland 用户仍然看不到标题**。
+**P7 联动**（[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后，i18n/UI 层原 P6 顺移为 P7）：接入 i18n 设置真实标题后，**Wayland 用户仍然看不到标题**。
 届时若 `ttf-parser` 已有维护继任者，可改回 `wayland-csd-adwaita`。
 
 **必须持续盯的风险 —— feature 合并（unification）**：

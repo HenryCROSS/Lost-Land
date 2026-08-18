@@ -62,7 +62,7 @@ P1 的验收 demo 靠 `WORLD_WIDTH = 48`、`WORLD_HEIGHT = 32` 规避。P2 生�
 | 非 sRGB surface 平台的画面偏暗 | 已缓解：`gpu.rs` 优先选 sRGB 变体，找不到才退回并 `tracing::warn!`。**不要在着色器里加手动 gamma 兜底**——那会在正常路径上双重转换、画面过亮 |
 | 窗口最小化是否真送 `(0,0)`、多显示器缩放是否重复触发 `resumed` | 未实机验证。零尺寸防线已在 `GpuContext::resize` 建好 |
 | `read_pixels` 内部用 `expect` 而非返回 `Result` | 已知接受。若 P2 的视觉回归需要区分「基础设施故障」与「渲染结果不符」，再改签名 |
-| `GameKey` 只认识 F2 一个功能键 | 已补 `GameKey::Screenshot`（物理键 F2），demo 存图不再借用 M 键。其余 F1–F12 仍未绑定，P6 做按键重绑定时一并处理 |
+| `GameKey` 只认识 F2 一个功能键 | 已补 `GameKey::Screenshot`（物理键 F2），demo 存图不再借用 M 键。其余 F1–F12 仍未绑定，P7 做按键重绑定时一并处理（[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后按键重绑定所在的 UI 层原 P6 顺移为 P7） |
 
 ---
 

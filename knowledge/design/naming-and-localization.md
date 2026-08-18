@@ -1,6 +1,6 @@
 # 命名、改名与本地化
 
-**冻结于** 2026-08-17。**实现阶段** 命名生成本体已落地（P2/P3 批次）；改名（作为 `Effect`）与 i18n 音素表对齐属于[世界历史生成](world-history.md)同一时期（约 P6），需要 `WorldId`（见[身份与 ID 空间](identity-and-ids.md)）先落地。
+**冻结于** 2026-08-17。**实现阶段** 命名生成本体已落地（P2/P3 批次）；改名（作为 `Effect`）与 i18n 音素表对齐属于[世界历史生成](world-history.md)同一时期（约 P7，[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P6 顺移为 P7），需要 `WorldId`（见[身份与 ID 空间](identity-and-ids.md)）先落地。
 
 **落地状态**：部分落地。`NamingRules { onsets, nuclei, codas, syllables, surname_first }` 与 `given_name`/`surname`/`full_name` 三个纯函数（`crates/ll-world/src/naming.rs`）已完整落地并有测试覆盖，`hash → 索引 → 取音素表 → 拼接` 的核心机制与本文档描述一致。**以下均未落地**：与「出生地文化」挂钩的裁定（当前 `given_name`/`surname` 只接受调用方直接传入的一份 `NamingRules`，不涉及任何「查文化」的中间步骤，出生地/文化关联需要在调用方拼起来）、i18n 多语言音素表对齐机制、改名 `Effect` 与 `HistoricalEvent`、覆盖名存储、mod 命名钩子与 `tag` 体系。
 

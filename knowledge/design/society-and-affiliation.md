@@ -1,6 +1,6 @@
 # 社会系统：归属、文化、聚落与地图结构
 
-**冻结于** 2026-08-17。**实现阶段** P8（智能体经济与人口）为主，但**归属字段必须在 P3 建实体时就预留**，否则 P8 落地要改遍所有实体与存档。
+**冻结于** 2026-08-17。**实现阶段** P9（智能体经济与人口；[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P8 顺移为 P9）为主，但**归属字段必须在 P3 建实体时就预留**，否则 P9 落地要改遍所有实体与存档。
 
 **落地状态**：部分落地。`Affiliation`/`AffiliationKind`（`crates/ll-world/src/entity/affiliation.rs`）与 `Agent.affiliations`/`wallet`/`profession` 字段（`crates/ll-world/src/entity/agent.rs`）已落地；`NamingRules`（`crates/ll-world/src/naming.rs`）已落地，但只是 `CultureDef.naming` 这一个子字段，完整 `CultureDef` 未落地。关系派生基线、`Kinship`、`Traits`、`StructureKind`、宗教戒律系统、LOD 组织聚合均**未落地**，仍是纯设计。
 
@@ -442,7 +442,7 @@ pub struct Agent {
 }
 ```
 
-**理由**：往 `WorldState` 加字段意味着存档迁移。存档格式在 P5 冻结——**P3 加是零成本，P8 加要写迁移链。**
+**理由**：往 `WorldState` 加字段意味着存档迁移。存档格式在 P5 冻结——**P3 加是零成本，P9 加要写迁移链。**（[2026-08-18 规格修订] 原 P8 顺移为 P9）
 
 `wallet` 与 `goals` 的完整语义见[Agent 目标与经济](agent-goals-and-economy.md)第九节——两份文档共同约束同一个 `Agent` 结构，已在代码 `crates/ll-world/src/entity/agent.rs` 中合并落地。
 

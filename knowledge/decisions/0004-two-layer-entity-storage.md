@@ -50,7 +50,7 @@ cc0552e 把实体存储（`entity.rs`、`entity/*.rs`、`naming.rs`）搬回 `ll
 ## 后果
 
 - **判断错误的代价是重写整个实体层**。薄厚层怎么拆、哪些字段进哪一层，是提前下的赌注，不是可以随时改主意的细节。
-- **P3 阶段就要为 P8 预留字段**：`Agent`/`BaseStats`/`Affiliation`/`Goal` 的字段布局已在 P3 建好，部分字段暂时留空，因为存档格式在 P5 冻结——P3 加是零成本，P8 才加则要写存档迁移链。
+- **P3 阶段就要为 P9 预留字段**（[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P8 顺移为 P9）：`Agent`/`BaseStats`/`Affiliation`/`Goal` 的字段布局已在 P3 建好，部分字段暂时留空，因为存档格式在 P5 冻结——P3 加是零成本，P9 才加则要写存档迁移链。
 - **已知的序列化缺口**：`WorldState` 的 `population`/`actors` 两个字段暂不参与序列化（`#[serde(skip)]`），并已记入 P5 阶段表的迁移债务（7f8c4bc）。原因：
   - `Agent::profession` 与 `ThinPopulation` 的 `profession` 列都是 `ContentIndex`，该类型依赖 mod 加载顺序，不可持久化（`ll_core::ident` 模块文档已写明）；
   - `Agent::pos` 是 `TorusPos`，其构造必经 `TorusSize::wrap`，脱离世界尺寸上下文无法在反序列化时重新校验。
