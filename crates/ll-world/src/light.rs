@@ -63,7 +63,8 @@ pub fn ambient_light(tick: Tick) -> LightLevel {
 ///
 /// 规格 §7.2 原文把季节更替描述成「时间轴上的一个定时事件，其 `Effect`
 /// 修改各城镇生产速率、地形通行性与野怪分布表」，`knowledge/audit/worklist.md`
-/// 的 W-03 要求 P3 在建完时间轴调度器（[`ll_sim::timeline`]）后就此
+/// 的 W-03 要求 P3 在建完时间轴调度器（`ll_sim::timeline`，定义在
+/// 依赖本 crate 的下游 crate，本文件无法以文档链接形式指向它）后就此
 /// 二选一裁定。这里选**纯函数派生**（维持本模块当前实现），不接入
 /// `ll_sim::effect::Effect`：
 ///
