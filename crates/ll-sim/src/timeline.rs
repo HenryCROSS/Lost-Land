@@ -147,13 +147,22 @@ impl<'de> Deserialize<'de> for Timeline {
 /// 公式（来自属性系统）：`基础代价 × 1000 / max(1, 有效敏捷)`，整数
 /// 除法。`max(1, …)` 防止敏捷被临时减到零时除零——即使敏捷归零，行动
 /// 依然按「敏捷为 1」计耗时，而不是崩溃或耗时无穷大。
+///
+/// 结果再做一次 `max(1)` 下限钳位：有效敏捷高到一定程度（约超过
+/// 1000）时，整数除法本身会把结果截断为 0——`action_cost` 为 0 意味着
+/// 该实体的下次可行动时刻等于当前时刻，会在同一 tick 被时间轴无限
+/// 重排，直到耗尽 `MAX_STEPS_PER_ADVANCE`。当前 demo 里全部单位敏捷
+/// ≤ 30、种族修正约定限制在 ±2~4，从数值上碰不到这个截断点，但那只是
+/// 一条数值约定，不是结构性保证——P4 引入 mod 后，mod 作者可以给任意
+/// 实体叠加到任意敏捷，约定会失效。下限钳位把「代价至少为 1」做成
+/// 公式自身的不变式，不依赖调用方遵守数值上限。
 pub fn action_cost(base_cost: u32, effective_speed: u32) -> u32 {
     let speed = u64::from(effective_speed.max(1));
     let cost = u64::from(base_cost) * 1000 / speed;
     // 正常游戏数值下 cost 远小于 u32::MAX；这里用 u64 只是为了让乘法
     // 本身不因中间结果溢出而在 debug 构建下 panic，不是期望这个值真的
     // 逼近上限。
-    cost as u32
+    (cost as u32).max(1)
 }
 
 #[cfg(test)]
@@ -168,5 +177,21 @@ mod tests {
 
         // Assert
         assert_eq!(cost, 1000);
+    }
+
+    #[test]
+    fn 极端有效速度下行动代价不为零() {
+        // 有效速度 200_000 会让 base_cost * 1000 / speed 在整数除法下
+        // 截断为 0（100 * 1000 / 200_000 = 0.5，向下取整为 0）——数值
+        // 约定挡不住 mod 给实体叠加到任意敏捷，钳位必须在公式内部生效。
+        // Arrange
+        let base_cost = 100;
+        let extreme_speed = 200_000;
+
+        // Act
+        let cost = action_cost(base_cost, extreme_speed);
+
+        // Assert
+        assert!(cost >= 1);
     }
 }
