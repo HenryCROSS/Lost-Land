@@ -1,0 +1,3 @@
+# 见 ../dup_a/mod.toml 的说明：两份清单声明了同一个命名空间 "dup"。
+namespace = "dup"
+version = "2.0.0"

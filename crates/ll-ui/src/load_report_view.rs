@@ -145,12 +145,12 @@ pub fn load_report_lines(
                 origin.0,
                 line_height,
                 FAILED_COLOR,
-                format!("    原因：{}", error.message),
+                format!("    原因：{}", truncate_for_panel(&error.message)),
             );
             let location_text = match &error.location {
                 Some(loc) => match loc.line {
-                    Some(line) => format!("    位置：{}:{line}", loc.file.display()),
-                    None => format!("    位置：{}（无法定位具体行）", loc.file.display()),
+                    Some(line) => format!("    位置：{}:{line}", short_path(&loc.file)),
+                    None => format!("    位置：{}（无法定位具体行）", short_path(&loc.file)),
                 },
                 None => "    位置：未知".to_string(),
             };
@@ -193,6 +193,55 @@ pub fn load_report_lines(
     }
 
     lines
+}
+
+/// 把面板上单行展示的文字截到一个不容易触发 `cosmic-text` 自动换行
+/// 的长度，超出部分换成省略号。
+///
+/// 与 [`short_path`] 缓解的是同一类真实撞见的问题（见其文档）：错误
+/// 消息本身也可能很长（`ll-script` 的 `reject_dangerous_syntax` 在
+/// 实测验收 demo 里就产出过一条中英夹杂近 60 字的解释，导致这一行
+/// 在面板宽度内换行、压住下一行文字）。按**字符数**而不是字节数截断
+/// ——`str` 按字节切片可能切在多字节字符中间导致 panic，
+/// `chars().take(n)` 不会有这个问题。这不是根治（真正的根治见
+/// [`short_path`] 文档最后一段），只是让面板在当前项目的错误消息长度
+/// 分布下保持可读，本身也促使错误消息的作者把话说得更精炼——这与
+/// 「代价可见，人才会去省」是同一条精神在文案篇幅上的体现。
+const PANEL_MESSAGE_MAX_CHARS: usize = 44;
+
+fn truncate_for_panel(text: &str) -> String {
+    let char_count = text.chars().count();
+    if char_count <= PANEL_MESSAGE_MAX_CHARS {
+        return text.to_string();
+    }
+    let mut truncated: String = text.chars().take(PANEL_MESSAGE_MAX_CHARS).collect();
+    truncated.push('…');
+    truncated
+}
+
+/// 只取路径最后两段（通常是「mod 目录名/文件名」，如
+/// `broken_syntax/main.scm`）——**实测撞见的真实缺陷**：本地开发环境
+/// 的仓库路径可能很长（尤其是嵌套目录名含中文时，`cosmic-text` 按
+/// 显示宽度而不是字符数断行，中文字符更宽，更容易撞上
+/// [`DEFAULT_MAX_WIDTH`]），完整绝对路径拼上其余文字后会在面板宽度内
+/// 自动折行成两行，而 [`load_report_lines`] 是按「一条逻辑行 = 一个
+/// 固定行高」推进光标的，断行发生时下一条目会与它重叠——用真实验收
+/// demo 截图撞见的（`.superpowers/sdd/2026-08-18-p4-script-and-mod/
+/// task-11-12-report.md` 有截图记录）。缩短成两段既足够定位「哪个 mod
+/// 的哪个文件」，又大幅降低撞上断行阈值的概率——这不是从根本上解决
+/// 「文本可能超宽」这个问题（真正的根治需要 `load_report_lines` 感知
+/// `cosmic-text` 的实际断行结果动态推进 `cursor_y`，那是一次不小的
+/// 重构，本任务的诚实范围内先用这个更便宜的缓解手段），但对本项目
+/// 当前的路径深度和面板宽度是有效的。
+fn short_path(path: &std::path::Path) -> String {
+    let components: Vec<_> = path.components().collect();
+    let tail: Vec<String> = components
+        .iter()
+        .rev()
+        .take(2)
+        .map(|c| c.as_os_str().to_string_lossy().into_owned())
+        .collect();
+    tail.into_iter().rev().collect::<Vec<_>>().join("/")
 }
 
 /// 追加一行并把光标下移一行高——抽成帮手避免上面五处分组各自重复
@@ -289,6 +338,51 @@ mod tests {
 
     fn id(raw: &str) -> NamespacedId {
         NamespacedId::parse(raw).expect("测试用标识符恒合法")
+    }
+
+    #[test]
+    fn truncate_for_panel对短文本原样返回() {
+        // Arrange & Act & Assert
+        assert_eq!(truncate_for_panel("短消息"), "短消息");
+    }
+
+    #[test]
+    fn truncate_for_panel对超长文本截断并加省略号() {
+        // Arrange：故意超过 PANEL_MESSAGE_MAX_CHARS 字符数。
+        let long_text = "字".repeat(PANEL_MESSAGE_MAX_CHARS + 10);
+
+        // Act
+        let truncated = truncate_for_panel(&long_text);
+
+        // Assert
+        assert_eq!(truncated.chars().count(), PANEL_MESSAGE_MAX_CHARS + 1);
+        assert!(truncated.ends_with('…'));
+    }
+
+    #[test]
+    fn short_path只保留最后两段路径() {
+        // Arrange：模拟真实撞见的过长绝对路径（含中文目录名）。
+        let path = PathBuf::from(
+            "C:\\Users\\henry\\Desktop\\迷途大陆\\LostLand\\mods\\broken_syntax\\main.scm",
+        );
+
+        // Act
+        let short = short_path(&path);
+
+        // Assert
+        assert_eq!(short, "broken_syntax/main.scm");
+    }
+
+    #[test]
+    fn short_path对只有一段的路径原样返回() {
+        // Arrange
+        let path = PathBuf::from("main.scm");
+
+        // Act
+        let short = short_path(&path);
+
+        // Assert
+        assert_eq!(short, "main.scm");
     }
 
     #[test]

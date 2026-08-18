@@ -1,0 +1,5 @@
+# 迷途大陆示例 mod：P4 验收 demo（task-12）用来证明 mod 能新增真实内容
+# 并走与本体完全相同的注册路径。
+namespace = "examplemod"
+version = "0.1.0"
+entry_points = ["terrain.scm"]

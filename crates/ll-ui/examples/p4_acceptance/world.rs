@@ -1,0 +1,331 @@
+//! 世界搭建：本体地形注册、真实 mod 目录装载、玩家出生、熔岩地板落地。
+//!
+//! 这是本 demo 唯一负责证明「完整调用链」的模块（task-12-brief 的
+//! 自查表）：`register_base_terrain` → `load_all` → `Registry`/
+//! `TerrainTable` → `WorldState` → 玩家可查询/可行走的地形属性，一条
+//! 链路里没有任何为 demo 单独开的旁路。
+
+use std::path::Path;
+
+use ll_core::ident::{Interner, NamespacedId};
+use ll_core::torus::{TorusPos, TorusSize};
+use ll_mod::base_terrain::register_base_terrain;
+use ll_mod::load_report::LoadReport;
+use ll_mod::pipeline::load_all;
+use ll_mod::registry::Registry;
+use ll_world::chunk::ChunkGrid;
+use ll_world::entity::{Agent, BaseStats, EntityId};
+use ll_world::generate::GenParams;
+use ll_world::state::WorldState;
+use ll_world::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
+
+use crate::layout::{INITIAL_CLOCK_TICKS, WORLD_HEIGHT, WORLD_WIDTH};
+
+/// 示例 mod 注册的熔岩地板 id。
+pub(crate) const LAVA_FLOOR_ID: &str = "examplemod:lava_floor";
+
+/// 出生点搜索的最大环半径——与 p2/p3_acceptance 同一算法，取世界较小
+/// 维度的一半，保证除非整张地图没有一格可站立，否则恒能找到。
+const SEARCH_MAX_RADIUS: i32 = (if WORLD_WIDTH < WORLD_HEIGHT {
+    WORLD_WIDTH
+} else {
+    WORLD_HEIGHT
+} / 2) as i32;
+
+/// 装载完毕的世界：世界状态本身、本体地形索引缓存、加载报告、熔岩
+/// 地板的地形索引（`None` 表示 examplemod 这次没能成功注册它——
+/// 三种故意写错的 mod 都不会影响到这一个，但如实处理这个可能性，不
+/// 假设它必然存在）。
+pub(crate) struct DemoWorld {
+    pub(crate) world: WorldState,
+    pub(crate) terrain_ids: BaseTerrainIds,
+    pub(crate) report: LoadReport,
+    pub(crate) lava_kind: Option<TerrainKind>,
+    pub(crate) player: EntityId,
+    /// examplemod 的清单路径——供「一键重载」演示使用（见
+    /// `crate::main` 对 'R' 键的处理）。
+    pub(crate) example_mod_manifest: std::path::PathBuf,
+}
+
+/// 三个 mod 根目录相对本 crate `Cargo.toml` 的路径。分成三个独立目录
+/// 的理由见各自 `mod.toml` 里的注释：拓扑排序对缺失依赖/成环/重复
+/// 命名空间是「整批中止」的，混进同一个目录会让其他示例 mod 各自的
+/// 失败原因被掩盖。
+const PRIMARY_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
+const MISSING_DEPENDENCY_ROOT: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods_missing_dependency");
+const DUPLICATE_NAMESPACE_ROOT: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../mods_duplicate_namespace"
+);
+
+/// 搭建演示世界：注册本体地形、跑三次装载管线（分别对应「正常 mod +
+/// 两种脚本错误」「缺失依赖」「重复命名空间」三批目录）、生成地形、
+/// 出生玩家、把熔岩地板铺在玩家出生点附近。
+pub(crate) fn build_demo_world() -> DemoWorld {
+    let mut registry = Registry::new();
+    let (terrain_ids, mut table) =
+        register_base_terrain(&mut registry).expect("本体地形声明表内部一致，注册恒不失败");
+
+    let mut report = load_all(Path::new(PRIMARY_MODS_ROOT), &mut registry, &mut table);
+    let missing_dependency_report = load_all(
+        Path::new(MISSING_DEPENDENCY_ROOT),
+        &mut registry,
+        &mut table,
+    );
+    let duplicate_namespace_report = load_all(
+        Path::new(DUPLICATE_NAMESPACE_ROOT),
+        &mut registry,
+        &mut table,
+    );
+    report.entries.extend(missing_dependency_report.entries);
+    report.entries.extend(duplicate_namespace_report.entries);
+
+    let lava_kind = registry
+        .get(&NamespacedId::parse(LAVA_FLOOR_ID).expect("字面量恒合法"))
+        .map(TerrainKind::from_index);
+
+    let size = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("演示世界尺寸为非零常量");
+    let mut world = WorldState::new(size, &GenParams::default(), &terrain_ids, table)
+        .expect("演示世界尺寸满足生成入口的全部约束");
+    world.advance(INITIAL_CLOCK_TICKS);
+
+    // 交叉引用校验（规格 §10.6 六阶段的最后一步）：整张地图上出现的
+    // 每一个地形索引，此刻是否都能在 world.terrain_table 里查到定义。
+    // 这一步必须放在铺熔岩地板**之后**才有意义——校验的正是「刚刚
+    // 手动写进网格的那些索引」也在表里登记过，不是走个过场。
+    let player_pos = find_walkable_near(
+        &world.terrain,
+        &world.terrain_table,
+        world.size.wrap(world.size.width() as i32 / 2, 1),
+    );
+    if let Some(lava) = lava_kind {
+        place_lava_patch(&mut world, player_pos, lava);
+    }
+    report.cross_validate = Some(
+        world
+            .terrain_table
+            .validate_grid(&world.terrain)
+            .map_err(|err| err.to_string()),
+    );
+
+    let player = spawn_player(&mut world, player_pos);
+
+    DemoWorld {
+        world,
+        terrain_ids,
+        report,
+        lava_kind,
+        player,
+        example_mod_manifest: Path::new(PRIMARY_MODS_ROOT)
+            .join("example_mod")
+            .join("mod.toml"),
+    }
+}
+
+/// 从玩家出生点**正东紧邻一格**开始铺一小片（3×2）熔岩地板。
+///
+/// **实测撞见的真实缺陷**：早期版本从东偏移 3 格开始铺（见提交历史），
+/// 出生点与熔岩地板之间隔着 `find_walkable_near` 从未检查过的地形——
+/// 出生点搜索只保证出生点本身可站立，不保证它与任意远处的另一格之间
+/// 存在一条可通行路径；这次生成的地图上两者之间恰好隔着深水，验收
+/// demo 用真实窗口驱动方向键截图时，连续按右方向键三次玩家始终停在
+/// 原地（P3 交接强调的纪律再次应验：只有真正跑起来才会暴露断链，
+/// 单元测试测的是"熔岩地板本身属性正确"，测不出"玩家是否真的够得到
+/// 它"）。现在从 `dx = 1`（出生点正东紧邻一格）开始铺，不再依赖中间
+/// 地形是否可通行——覆盖掉的无论原来是什么地形，写入后都会变成可通行
+/// 的熔岩地板，且因为紧邻出生点，一次方向键按下就能走上去。
+fn place_lava_patch(world: &mut WorldState, origin: TorusPos, lava: TerrainKind) {
+    for dy in 0..2 {
+        for dx in 1..4 {
+            let pos = world.size.wrap(origin.x() + dx, origin.y() + dy);
+            world.terrain.set_terrain(pos, lava);
+        }
+    }
+}
+
+/// 该地形是否可站立。
+fn is_walkable(grid: &ChunkGrid, table: &TerrainTable, pos: TorusPos) -> bool {
+    !grid.terrain_at(pos).blocks_move(table)
+}
+
+/// 从 `target` 起按环逐圈向外搜索一格可站立的地形——与 p2/p3_acceptance
+/// 的 `find_spawn`/`find_walkable_near` 同一算法。
+fn find_walkable_near(grid: &ChunkGrid, table: &TerrainTable, target: TorusPos) -> TorusPos {
+    let world = grid.world();
+    if is_walkable(grid, table, target) {
+        return target;
+    }
+    for radius in 1..=SEARCH_MAX_RADIUS {
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                if dx.abs().max(dy.abs()) != radius {
+                    continue;
+                }
+                let pos = world.wrap(target.x() + dx, target.y() + dy);
+                if is_walkable(grid, table, pos) {
+                    return pos;
+                }
+            }
+        }
+    }
+    target
+}
+
+/// 生成玩家单位，写入 `world.actors`。
+fn spawn_player(world: &mut WorldState, pos: TorusPos) -> EntityId {
+    let mut interner = Interner::new();
+    let profession =
+        interner.intern(NamespacedId::parse("lostland:wanderer").expect("demo 内置标识符恒合法"));
+    let race =
+        interner.intern(NamespacedId::parse("lostland:human").expect("demo 内置标识符恒合法"));
+    world.actors.spawn(Agent {
+        pos,
+        stats: BaseStats::BASELINE,
+        next_action_at: ll_core::time::Tick(0),
+        health: Agent::STARTING_HEALTH,
+        affiliations: Vec::new(),
+        wallet: 0,
+        profession,
+        goals: Vec::new(),
+        race,
+        luck: 0,
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ll_mod::load_report::LoadStatus;
+
+    #[test]
+    fn 示例mod的熔岩地板成功注册且能在世界里查到属性() {
+        // Arrange & Act
+        let demo = build_demo_world();
+
+        // Assert
+        let lava = demo.lava_kind.expect("examplemod:lava_floor 应当成功注册");
+        assert!(!lava.blocks_move(&demo.world.terrain_table));
+        assert!(!lava.blocks_sight(&demo.world.terrain_table));
+        assert!(lava.move_cost(&demo.world.terrain_table) > 100);
+    }
+
+    #[test]
+    fn 三种故意写错的mod全部归入失败分组() {
+        // Arrange & Act
+        let demo = build_demo_world();
+
+        // Assert：brokensyntax/brokenwhitelist/brokendependency 三个
+        // 命名空间都应该能在报告里找到，且都是 Failed。
+        for namespace in ["brokensyntax", "brokenwhitelist", "brokendependency"] {
+            let status = demo
+                .report
+                .entries
+                .iter()
+                .find(|(id, _)| id.namespace() == namespace)
+                .map(|(_, status)| status)
+                .unwrap_or_else(|| panic!("报告里应当有 {namespace} 的条目"));
+            assert!(
+                matches!(status, LoadStatus::Failed(_)),
+                "{namespace} 应当归入失败分组，实际 {status:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn 正常mod加载成功不受其余目录里的错误mod连累() {
+        // Arrange & Act
+        let demo = build_demo_world();
+
+        // Assert
+        let status = demo
+            .report
+            .entries
+            .iter()
+            .find(|(id, _)| id.namespace() == "examplemod")
+            .map(|(_, status)| status);
+        assert_eq!(status, Some(&LoadStatus::Loaded));
+    }
+
+    #[test]
+    fn 重复命名空间的两个mod都归入失败分组() {
+        // Arrange & Act
+        let demo = build_demo_world();
+
+        // Assert
+        let dup_entries: Vec<_> = demo
+            .report
+            .entries
+            .iter()
+            .filter(|(id, _)| id.namespace() == "dup")
+            .collect();
+        assert_eq!(dup_entries.len(), 2);
+        for (_, status) in dup_entries {
+            assert!(matches!(status, LoadStatus::Failed(_)));
+        }
+    }
+
+    #[test]
+    fn 交叉引用校验通过() {
+        // 铺熔岩地板之后整张地图的地形索引都应当能在当前表里查到——
+        // 这是规格 §10.6 六阶段最后一步的直接回归。
+        // Arrange & Act
+        let demo = build_demo_world();
+
+        // Assert
+        assert_eq!(demo.report.cross_validate, Some(Ok(())));
+    }
+
+    #[test]
+    fn 玩家出生点可以站立() {
+        // Arrange & Act
+        let demo = build_demo_world();
+        let player_pos = demo
+            .world
+            .actors
+            .get(demo.player)
+            .expect("刚生成的玩家必然存在")
+            .pos;
+
+        // Assert
+        assert!(
+            !demo
+                .world
+                .terrain
+                .terrain_at(player_pos)
+                .blocks_move(&demo.world.terrain_table)
+        );
+    }
+
+    #[test]
+    fn 玩家出生点正东紧邻一格就是熔岩地板一步可达() {
+        // 这是真实撞见过的回归：早期版本把熔岩地板铺在出生点东偏移
+        // 3~6 格处，中间隔着的地形不保证可通行——用真实窗口驱动方向键
+        // 截图时，玩家连续按右三次纹丝不动（隔着深水）。这条断言直接
+        // 钉住"出生点正东紧邻一格"这个约束，任何人若把偏移量改回一个
+        // 不紧邻出生点的值，这里会立刻变红，而不必再靠一次手工截图
+        // 才能发现。
+        // Arrange & Act
+        let demo = build_demo_world();
+        let player_pos = demo
+            .world
+            .actors
+            .get(demo.player)
+            .expect("刚生成的玩家必然存在")
+            .pos;
+        let east_neighbor = demo.world.size.wrap(player_pos.x() + 1, player_pos.y());
+
+        // Assert
+        assert_eq!(
+            demo.world.terrain.terrain_at(east_neighbor),
+            demo.lava_kind.unwrap()
+        );
+        assert!(
+            !demo
+                .world
+                .terrain
+                .terrain_at(east_neighbor)
+                .blocks_move(&demo.world.terrain_table)
+        );
+    }
+}

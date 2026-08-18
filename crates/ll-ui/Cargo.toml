@@ -42,6 +42,10 @@ proptest.workspace = true
 ll-core = { path = "../ll-core", features = ["serde"] }
 ll-platform = { path = "../ll-platform" }
 ll-script = { path = "../ll-script" }
+# 玩家移动走 ll_sim::intent/resolve/apply 这条 P3 已验收的链路，不
+# 重新发明一套移动逻辑——demo 只需要 Move/Wait 两种 Intent，不需要
+# 时间轴/AI（那部分 P3 已经验收过，见 p3_acceptance）。
+ll-sim = { path = "../ll-sim" }
 ll-world = { path = "../ll-world" }
 image = { version = "0.25", default-features = false, features = ["png"] }
 tracing = "0.1"

@@ -221,14 +221,18 @@ const BANNED_SOURCE_SUBSTRINGS: [&str; 2] = ["require-builtin", "(require "];
 /// 恰好能给出），供调用方（Task 11 加载管理界面）换算成行号——这是
 /// 文本层前置优化仍然值得携带位置信息的原因：它和 AST 白名单一样，
 /// 拒绝时不该让 mod 作者自己去脚本里逐行找是哪一处触发的。
+///
+/// 消息文案刻意保持简短（不到 30 字）——实测（P4 验收 demo 截图，见
+/// `.superpowers/sdd/2026-08-18-p4-script-and-mod/task-11-12-report.md`）
+/// 早期版本的完整解释性文案在加载管理界面的错误详情面板里会自动换行,
+/// 压住下一行文字。面板本身已经加了截断兜底
+/// （`ll_ui::load_report_view::truncate_for_panel`），但从源头把消息
+/// 写短既不依赖那道兜底，也让面板不需要截断就能完整展示。
 fn reject_dangerous_syntax(source: &str) -> Result<(), ScriptError> {
     for banned in BANNED_SOURCE_SUBSTRINGS {
         if let Some(byte_offset) = source.find(banned) {
             return Err(ScriptError::ParseError(
-                format!(
-                    "脚本源码包含禁止的语法「{banned}」——mod 脚本不允许 require 任何 Steel 内置模块，\
-                     所有能力必须通过宿主注册的函数访问"
-                ),
+                format!("禁止的语法「{banned}」：mod 脚本不能 require 内置模块"),
                 Some(byte_offset as u32),
             ));
         }
