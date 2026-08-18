@@ -276,3 +276,170 @@ panic**，符合防线要求。
   不排除进程/线程/时间/随机」，不能笼统写「sandboxed」。
 - `steel/threads` 当前不可达是 Cargo feature 未打开的副作用，不是主动设计，
   必须当成脆弱假设持续盯防，而不是当成已解决问题。
+
+## 追加实测二——从黑名单换成 AST 白名单（可行，已落地）
+
+背景：项目所有者指出 `reject_dangerous_syntax` 是黑名单，只能拦住写进
+清单里的写法，拦不住未来 `steel-core` 新增的、没人预料到的口子。要求
+评估并尽量实现「语法树层面的形式白名单」——不在允许列表里的标识符，
+不论以什么方式出现，一律拒绝，包括我们没想到的。
+
+### 三个可行性问题的实测答案
+
+**1. `steel-core` 0.8.2 是否暴露「先解析后求值」的 API？——是。**
+
+`Engine::emit_fully_expanded_ast(&mut self, expr: &str, path: Option<PathBuf>)
+-> Result<Vec<ExprKind>>` 是公开 API，返回完整的、可编程遍历的 AST
+（`steel::parser::ast::ExprKind`），且**不会**顺带执行脚本——用它拿到树、
+校验完再决定要不要真的 `run`，是这条防线成立的前提。
+
+**2. 宏展开会不会绕过白名单？校验能否在展开之后？——会绕过，但可以在
+展开之后校验，实测验证过。**
+
+`emit_fully_expanded_ast` 给出的**就是**完整展开之后的树。用
+`crates/ll-script/examples/probe_whitelist.rs` 第 1 节实测：对
+`(require-builtin steel/time) (instant/now)` 调用它，`require-builtin`
+已经展开成一串
+
+```scheme
+(define instant/now
+  (%module-get% %-builtin-module-steel/time (quote instant/now)))
+```
+
+这样的 `define`——真正被引用的名字（`instant/now`、`%module-get%`、
+`%-builtin-module-steel/time`）全部摆在明面上，即使白名单从没听说过
+`steel/time` 这个模块名，只要这三个名字不在白名单里，遍历到它们就会
+被拒绝。**校验对象必须是这份展开后的树，不能是展开前的**（展开前只有
+一个 `Require` 节点，看不出脚本最终引用了什么）。
+
+**3. 运行时能否构造出调用（字符串拼符号再求值）绕过白名单？——实测：
+符号构造本身不构成绕过，但依赖 `eval!`/`run!` 类反射入口本身也在白名单
+之外。**
+
+用 `probe_whitelist.rs` 第 4 节实测：脚本执行
+
+```scheme
+(define parts (list "require" "-" "builtin"))
+(define word (string->symbol (apply string-append parts)))
+```
+
+真的拼出了一个字面等于 `require-builtin` 的**符号值**，`displayln`
+确认打印出来。但这只是数据构造——`require-builtin` 是编译期宏，只认
+字面出现在源码文本里的 `(require-builtin ...)` 形式，运行时拼出来的
+符号值不会触发任何宏展开或模块加载。真正能让「拼出来的代码」产生效果的
+唯一途径是 `eval!`/`run!`/`eval-string`/`load` 这类反射入口——这些名字
+本身就是普通的被引用标识符，会在脚本引用它们的那一刻被白名单挡下（已
+实测：`crates/ll-script/src/host.rs` 的
+`白名单挡住脚本自己拼出来的require_builtin符号` 测试完整跑了上面这段
+拼接脚本，`string->symbol` 调用成功、返回值正确，但没有任何
+`require-builtin` 副作用发生）。
+
+### 结论：白名单挡住了黑名单挡不住的东西
+
+黑名单（`reject_dangerous_syntax`）只在源码文本里出现字面
+`require-builtin`/`(require ` 时生效；白名单不依赖这个前提。用
+`host.rs` 的 `白名单挡住没有出现require字样的裸引用` 测试验证：脚本源码
+`(some-future-unknown-builtin-capability)`——不含任何黑名单关键词，
+模拟"未来 steel-core 新增的、我们从没见过的内置能力"——被白名单直接
+拒绝（`ScriptError::ParseError`）。这正是黑名单结构性做不到的事：黑名单
+拦的是"我们想到的坏词"，白名单拦的是"任何不在好词单里的词"。
+
+### 实现要点（`crates/ll-script/src/whitelist.rs` + `host.rs`）
+
+- 白名单基础集合来自两处：`SAFE_MODULES`（18 个确认纯计算、无 I/O、无
+  反射能力的 Steel 内置模块，运行期枚举其真实导出名）与
+  `ScriptEngine::register_fn` 注册的每一个函数名（自动加入，调用方不需要
+  手工同步）。刻意不收录 `steel/io`/`steel/filesystem`/`steel/ports`/
+  `steel/json`/`steel/syntax`/`steel/git`，即便沙箱版某些模块本身已经
+  零导出——这份列表只收录"确认过安全"的模块，不收录"恰好现在是空的"
+  模块，两者的安全性来源不同。
+- **必须区分"自由引用"与"局部绑定"，否则会把合法脚本也拒了**：实测
+  `(define (add a b) (+ a b))` 完整展开后，函数体引用的是卫生宏重写过的
+  `##a2`/`##b2`，不是原始形参名 `a`/`b`。若不做作用域跟踪，任何带参数的
+  函数定义都会被误判成引用了白名单外的标识符。做法是标准的自由变量
+  分析：遍历时维护"当前作用域内绑定了哪些局部名"（来自 `let` 绑定、
+  `lambda` 形参、`define` 的函数名+形参），只有不在这个集合里的引用才
+  对照白名单，实现在 `whitelist.rs` 的 `walk`/`collect_bound_names`。
+- **跳过 `quote` 包住的部分**：脚本用符号表达数据是正常用法（本项目
+  `api/intent.rs` 约定脚本用 `(list 'move 'north)` 表达意图），`'north`
+  不是"引用"，是字面量，不检查。
+- **不允许脚本自定义宏**（`ExprKind::Macro`/`SyntaxRules` 直接拒绝）：
+  宏能在展开期生成任意新代码，是比 `require-builtin` 更难静态审查的
+  攻击面，本阶段整体拒绝，没有已知的合法 mod 需求需要它。
+- 校验开销：`load_source` 里对同一份源码多解析一次
+  （`emit_fully_expanded_ast` 之外，`run` 内部还会再解析一次），刻意
+  接受——mod 加载是一次性的加载期操作，不是每帧热路径，ADR 0012 前面
+  「性能实测」一节已经量出单次 `run(源码字符串)` 是百微秒量级，多付
+  一次完全在可接受范围。用 `probe_whitelist.rs` 第 5c 节实测过：先
+  `emit_fully_expanded_ast` 再对同一份源码 `run`、甚至重复 `run` 两次，
+  都不产生重复定义报错或其他副作用。
+
+### 现在黑名单（`reject_dangerous_syntax`）扮演什么角色
+
+**降级为快速失败的前置优化，不再是权威防线。** 源码里出现字面
+`require-builtin` 几乎没有合法用途，在真正付出「解析 + 完整宏展开」的
+成本之前用一次字符串 `contains` 拦掉，省一次编译；删掉这一层不会有
+任何能力重新泄漏——白名单会独立、完整地挡住同样的东西（已用
+`whitelist::tests::require_builtin展开后引用的模块内部名字被拒绝` 验证：
+这个测试直接调用 `check_whitelist`，完全绕开 `reject_dangerous_syntax`，
+依然正确拒绝）。
+
+### 已知边界（诚实记录，不留在会话里）
+
+- `SAFE_MODULES` 的 18 个模块是否真的"确认过安全"依赖人工审阅每个
+  模块导出的函数列表——本次审阅了名字与模块用途，**没有逐个函数体验证
+  实现细节**（例如 `steel/strings`/`steel/lists` 里是否存在某个函数
+  间接读了进程环境）。这是比黑名单更小、但不是零的残余面。
+- 若未来某个安全模块（如 `steel/hash`）新增了一个不安全的导出函数
+  （steel-core 版本升级），本机制会**自动**把新函数纳入白名单（因为
+  是运行期枚举 `module.names()`，不是写死的名字列表）——这是白名单
+  相对黑名单的优势在别处失效的一个例外：对于"已经在安全名单里的模块
+  新增了不安全函数"这一种情况，白名单不比黑名单更安全，需要升级
+  `steel-core` 版本时人工复核这 18 个模块有没有新增导出。
+- `steel/meta` 完全清空（[`FULLY_POISONED_MODULES`]）与白名单是两套
+  独立机制，`steel/meta` 里 `value->string`/`arity?` 这类无害的内省
+  函数目前**没有**被单独放行进白名单——若后续任务发现 mod 作者确实
+  需要，应该走"给白名单显式加一个名字并写清楚理由"的路径，不是恢复
+  整个 `steel/meta` 模块。
+
+## 待查项（未解决，明确记录，不随会话消失）
+
+**`steel/time` 模块注册表覆盖为什么失效，根因未查清。**
+
+已排除的可能性：
+- **不是**因为模块本身没被真正清空——Rust 侧内省确认
+  `engine.builtin_modules().get("steel/time").unwrap().names().len()`
+  在覆盖后确实是 0，与 `steel/random`（覆盖后确认有效）用的是完全相同
+  的覆盖代码路径。
+- **不是**进程级或跨引擎共享状态——`probe_isolate.rs` 在两个完全独立、
+  互不干扰的进程里分别单独测试 `steel/time` 与 `steel/random`，结果
+  依然一个失效一个生效。
+- **不是**"先请求过一次就被永久缓存"——`steel/random` 在被覆盖测试之前
+  已经在另一个引擎实例上被成功请求过一次（`probe.rs` 第 5 节），随后
+  在新引擎上覆盖依然生效，说明不存在"第一次成功 require 就永久解锁"
+  这种缓存机制（至少 `steel/random` 不是这样，无法解释为何 `steel/time`
+  表现不同）。
+
+尚未验证、留给后续有余力时查证的方向：`require-builtin` 的宏展开
+（`src/parser/expand_visitor.rs`，`self.builtin_modules.get(s.resolve())`）
+在编译期读取的 `ModuleContainer` 实例，与我们运行期覆盖的
+`Engine.modules` 是否是**同一个** `Arc`——`Kernel::new()` 内部持有一个
+独立的 `Box<Engine>`（用于宏展开），如果 `require-builtin` 的展开实际上
+走的是 Kernel 内部那个引擎的模块注册表而不是外层引擎的，覆盖外层引擎
+就不会生效；但这个假说需要解释为什么 `steel/random` 又不受影响，尚未
+找到自洽的解释。
+
+**这条待查项目前不影响产品代码的正确性**——`whitelist.rs` 从另一个
+完全独立的角度（校验展开后的 AST 而不是覆盖模块注册表）同样能排除
+`steel/time`，已经过测试验证。但根因不明意味着**不能假设这个模式在
+未来遇到的新模块上会重演或不会重演**，任何新增的"清空模块"操作都应该
+像本次一样，用 `probe_isolate.rs` 式的独立进程实测去验证，不能凭这次
+的经验类推。
+
+### 重新评估触发条件
+
+- `steel-core` 升级版本时，逐一重跑 `probe.rs`/`probe_isolate.rs`/
+  `probe_whitelist.rs` 三份探针，确认标准库范围、模块覆盖有效性、AST
+  展开形状三件事都没有变化。
+- 若发现 `require-builtin` 展开机制的官方文档或源码注释提到 Kernel 与
+  外层引擎的模块解析分工，回来补上这条待查项的根因。

@@ -8,6 +8,7 @@
 //! 原生线程、系统时间、非 `DetRng` 随机——这四项在两种引擎下都默认可达，
 //! 必须在构造期主动清空，见 [`ScriptEngine::new`]。
 
+use std::collections::HashSet;
 use std::time::Duration;
 
 use steel::SteelErr;
@@ -16,6 +17,8 @@ use steel::steel_vm::builtin::BuiltInModule;
 use steel::steel_vm::engine::Engine;
 use steel::steel_vm::interrupt::InterruptHandler;
 use steel::steel_vm::register_fn::RegisterFn;
+
+use crate::whitelist::check_whitelist;
 
 /// 脚本失控时的中断预算：超过这个墙钟时长仍未返回就强制掐断。
 ///
@@ -75,14 +78,13 @@ fn poison_module(engine: &mut Engine, module_name: &'static str) {
 
 /// 出现在脚本源码里就直接拒绝加载的字面子串。
 ///
-/// 这不是「审查脚本写了什么」的黑名单式思路——它是
-/// [`FULLY_POISONED_MODULES`] 那套「清空已绑定名字」机制对 `steel/time`
-/// 失效之后，唯一验证有效的兜底：`require-builtin`/`require` 都是**编译期**
-/// 处理的特殊语法，不是普通函数值，无法用 `register_value` 覆盖成毒值；
-/// 唯一能确定挡住它们的办法是不让含有这个词的源码进入编译。脚本合法的
-/// mod 逻辑本来就不需要写 `require`——task 5 的全部能力都通过宿主预先
-/// `register_fn` 好的函数直接调用,不需要脚本自己 `require` 任何 Steel
-/// 内置模块。
+/// **这一层已经降级成快速失败的前置优化，不再是权威防线**——权威防线是
+/// 下面的 [`crate::whitelist`] AST 白名单（见 `ScriptEngine::load_source`）。
+/// 保留这一层的原因很朴素：源码里出现 `require-builtin` 几乎总是没有
+/// 合法用途（本项目的 mod 脚本设计上不需要 `require` 任何 Steel 内置
+/// 模块），在真正调用较重的「解析 + 完整宏展开」之前就用一次字符串
+/// `contains` 拦掉，省一次编译。删掉这一层不会有任何能力重新泄漏——
+/// 白名单会独立、完整地挡住同样的东西。
 const BANNED_SOURCE_SUBSTRINGS: [&str; 2] = ["require-builtin", "(require "];
 
 /// 检查源码文本是否触碰了 [`BANNED_SOURCE_SUBSTRINGS`]。
@@ -99,6 +101,52 @@ fn reject_dangerous_syntax(source: &str) -> Result<(), ScriptError> {
         }
     }
     Ok(())
+}
+
+/// 纯计算、不含任何 I/O 或反射能力的 Steel 内置模块——是 mod 脚本白名单
+/// 的自动来源之一（另一来源是宿主自己 `register_fn` 的函数名，见
+/// [`ScriptEngine::register_fn`]）。
+///
+/// 刻意排除了 `steel/io`/`steel/filesystem`/`steel/ports`/`steel/json`/
+/// `steel/syntax`/`steel/git`——即便沙箱版某些模块（如
+/// `steel/filesystem`）本身已经零导出，把它们排除在"安全模块"自动来源
+/// 之外仍然是更清楚的表达：这份列表只收录"我们确认过、纯计算、没有
+/// 任何副作用"的模块，不收录"恰好现在是空的"模块——后者的安全性依赖于
+/// 一个我们无法在这里重新校验的外部事实（sandboxed 版本确实是空的），
+/// 前者的安全性是这份代码自己就能保证的。
+const SAFE_MODULES: [&str; 18] = [
+    "steel/hash",
+    "steel/sets",
+    "steel/lists",
+    "steel/strings",
+    "steel/symbols",
+    "steel/vectors",
+    "steel/immutable-vectors",
+    "steel/streams",
+    "steel/identity",
+    "steel/numbers",
+    "steel/equality",
+    "steel/ord",
+    "steel/transducers",
+    "steel/constants",
+    "steel/core/result",
+    "steel/core/option",
+    "steel/core/types",
+    "steel/bytevectors",
+];
+
+/// 枚举 [`SAFE_MODULES`] 里每个模块当前真实导出的全部名字，构成白名单
+/// 的基础集合。
+fn safe_module_names(engine: &Engine) -> HashSet<&'static str> {
+    let mut names = HashSet::new();
+    for module_name in SAFE_MODULES {
+        if let Some(module) = engine.builtin_modules().get(module_name) {
+            for name in module.names() {
+                names.insert(Box::leak(name.into_boxed_str()) as &'static str);
+            }
+        }
+    }
+    names
 }
 
 /// 脚本调用失败的分类。
@@ -156,9 +204,18 @@ fn classify_error(err: SteelErr) -> ScriptError {
 /// 每次调用都套一层 [`InterruptHandler`]：ADR 0012 实测这层包装把单次
 /// 调用从 74ns 拉到 326ns，仍是纳秒级，可以放在每帧每实体的热路径上，
 /// 不需要为脚本调用另开线程。
+///
+/// # 能力边界的权威定义是白名单，不是黑名单
+///
+/// [`allowed_identifiers`](Self::allowed_identifiers) 才是"脚本能引用
+/// 什么"的权威判据——[`FULLY_POISONED_MODULES`]/[`reject_dangerous_syntax`]
+/// 是在此之上的额外防线（分别处理"名字已经绑定，poison 不到"与"省一次
+/// 完整解析+展开"两种场景），三者共同生效，但唯独白名单具备"未来
+/// steel-core 新增我们没见过的内置能力也自动排除在外"这个性质。
 pub struct ScriptEngine {
     engine: Engine,
     interrupt: InterruptHandler,
+    allowed_identifiers: HashSet<&'static str>,
 }
 
 impl ScriptEngine {
@@ -166,7 +223,8 @@ impl ScriptEngine {
     ///
     /// 顺序不能变：`Engine::new_sandboxed()` 打底之后必须**立即**清空
     /// 危险模块与危险全局名字，任何脚本源码都不能在这之前被求值——
-    /// 否则清空动作本身就晚了。
+    /// 否则清空动作本身就晚了。白名单基础集合（[`safe_module_names`]）
+    /// 在同一时刻构建，之后每次 [`Self::register_fn`] 都会追加新名字。
     pub fn new() -> Self {
         let mut engine = Engine::new_sandboxed();
 
@@ -174,12 +232,19 @@ impl ScriptEngine {
             poison_module(&mut engine, module_name);
         }
 
+        let allowed_identifiers = safe_module_names(&engine);
         let interrupt = InterruptHandler::new(&mut engine, INTERRUPT_TIMEOUT);
 
-        Self { engine, interrupt }
+        Self {
+            engine,
+            interrupt,
+            allowed_identifiers,
+        }
     }
 
-    /// 注册一个 Rust 函数，供脚本以 `name` 调用。
+    /// 注册一个 Rust 函数，供脚本以 `name` 调用，并把 `name` 加入白名单
+    /// ——脚本引擎自己注册的函数天然是"我们想让脚本用的能力"，不需要
+    /// 调用方再手工同步一份白名单。
     ///
     /// 转发到 Steel 的 `RegisterFn` trait；缺参/多参的 arity 检查是 Steel
     /// 原生行为（ADR 0001 已确认），这里不重新实现。
@@ -188,15 +253,35 @@ impl ScriptEngine {
         Engine: RegisterFn<F, Args, Ret>,
     {
         self.engine.register_fn(name, func);
+        self.allowed_identifiers.insert(name);
         self
     }
 
     /// 加载并执行一段脚本源码（通常是 mod 的顶层定义）。
     ///
-    /// 先过 [`reject_dangerous_syntax`] 这道源码文本关，再套中断防线执行：
-    /// 源码本身死循环也会在预算耗尽后返回 `Err`。
+    /// 三道关卡依次生效：
+    /// 1. [`reject_dangerous_syntax`]——源码文本快速失败，省一次解析。
+    /// 2. **AST 白名单**（[`crate::whitelist::check_whitelist`]）——解析并
+    ///    完整展开源码（`Engine::emit_fully_expanded_ast`，宏与
+    ///    `require-builtin` 均已展开），确认树上出现的每一个被引用的
+    ///    标识符都在 [`Self::allowed_identifiers`] 或脚本自己的局部作用域
+    ///    里，这是权威防线。
+    /// 3. 通过前两关才真正 `run`，套着中断防线执行——脚本本身死循环
+    ///    也会在预算耗尽后返回 `Err`。
+    ///
+    /// 步骤 2 会对同一份源码重新解析一次（`run` 内部还会再解析一次）——
+    /// 这是刻意的简化：mod 加载是一次性的加载期操作，不是每帧热路径，
+    /// 多付一次解析的代价（ADR 0012 实测量级 ~百微秒）换来"校验的是
+    /// 真正要执行的那份展开结果"这个正确性保证，用真实脚本验证过重复
+    /// 解析/重复 `define` 不会产生副作用或报错。
     pub fn load_source(&mut self, source: String) -> Result<(), ScriptError> {
         reject_dangerous_syntax(&source)?;
+
+        let exprs = self
+            .engine
+            .emit_fully_expanded_ast(&source, None)
+            .map_err(classify_error)?;
+        check_whitelist(&exprs, &self.allowed_identifiers)?;
 
         let engine = &mut self.engine;
         self.interrupt
@@ -389,6 +474,57 @@ mod tests {
 
         // Assert
         assert!(matches!(result, Err(ScriptError::ParseError(_))));
+    }
+
+    #[test]
+    fn 白名单挡住没有出现require字样的裸引用() {
+        // 证明白名单不依赖 reject_dangerous_syntax 的文本黑名单：这段
+        // 源码里根本没有 "require-builtin"/"(require " 字样，若真的存在
+        // 某个像 command/spawn-native-thread 一样"引导期已绑定"的名字，
+        // 黑名单对它无能为力，必须靠白名单的默认拒绝兜底。用一个真实
+        // 世界里不存在、但语法上完全合法的裸引用模拟"未来 steel-core
+        // 新增的、我们从没见过的内置能力"。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_source("(some-future-unknown-builtin-capability)".to_string());
+
+        // Assert
+        assert!(matches!(result, Err(ScriptError::ParseError(_))));
+    }
+
+    #[test]
+    fn 白名单挡住脚本自己拼出来的require_builtin符号() {
+        // 实测（见 examples/probe_whitelist.rs 第 4 节）：脚本能用
+        // string->symbol 拼出一个字面等于 "require-builtin" 的符号，但
+        // 这只是数据构造，不会触发宏展开——因此这里断言的不是"拼接本身
+        // 被挡住"，而是"拼接之后没有任何路径能把这个符号变成真正的
+        // require-builtin 效果"：整段脚本本身用到的 string->symbol/
+        // string-append/apply/list 都在白名单内，应当正常跑完，但不会
+        // 产生任何 require-builtin 的副作用。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_source(
+                r#"
+                (define (probe)
+                  (string->symbol (apply string-append (list "require" "-" "builtin"))))
+                "#
+                .to_string(),
+            )
+            .unwrap();
+
+        // Act
+        let result = engine.call_raw("probe", Vec::new());
+
+        // Assert：拼出来的只是一个惰性符号值，调用成功但不产生任何
+        // require-builtin 效果——因为脚本从未真正拥有触发它的能力
+        // （eval!/run!/eval-string 等反射入口不在白名单内）。
+        assert_eq!(
+            result,
+            Ok(steel::rvals::SteelVal::SymbolV("require-builtin".into()))
+        );
     }
 
     #[test]

@@ -8,6 +8,7 @@
 pub mod alloc_guard;
 pub mod api;
 pub mod host;
+pub mod whitelist;
 
 pub use alloc_guard::ScriptAllocGuard;
 pub use host::{ScriptEngine, ScriptError};
