@@ -72,3 +72,81 @@ jobs:
             exit 1
           fi
           echo "未发现手写欧氏距离。"
+
+  # 规格 §14.5 要求"行覆盖率 ≥ 80%，核心 crate（ll-core/ll-sim/ll-world）
+  # ≥ 90%"，但 `cargo-llvm-cov` 从未在本项目任何环境安装或运行过——不是
+  # "曾经达标后来退化"，是从 P0 到现在都不知道真实数字。没有这道门禁，
+  # 一段"调用了但没有任何断言"的空转测试可以无限混进代码库把覆盖率数字
+  # 撑高却什么都没测，而覆盖率真正下降时也没有任何东西会拦、会告诉你。
+  #
+  # 阈值不是规格原文的 80%/90%，是棘轮阈值：只许调高，不许调低。理由见
+  # scripts/ci/check_coverage.sh 头部注释——2026-08-17 首次在本项目实测，
+  # workspace 行覆盖率 79.71%、核心三个 crate 合计 96.85%。一上来就把阈值
+  # 设成 80%，若因为运行间的正常抖动差一点点没达标，团队第一反应通常是
+  # 关掉这项检查而不是立刻补测试，那就等于这道门禁从未存在过；设成"当前
+  # 真实值向下取整、留出抖动余量"则今天就能生效，且从此不会退步——能
+  # 生效的低阈值胜过被关掉的高阈值。
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: taiki-e/install-action@cargo-llvm-cov
+      - uses: Swatinem/rust-cache@v2
+      - name: 覆盖率门禁（棘轮阈值，只许调高不许调低，见脚本头注释）
+        run: bash scripts/ci/check_coverage.sh
+
+  # 规格 §11.3："代码中不得出现任何硬编码的用户可见字符串，由 CI 检查
+  # 强制"。项目目前还没有 `ll-ui`、没有任何 `.ftl` 本地化文件，风险现在
+  # 是潜在的而非现实的——但风险会在 UI 层落地、菜单文案第一次被写进代码
+  # 的那一刻突然出现。到那时如果这道检查还不存在，第一批硬编码字符串会
+  # 在无人察觉的情况下进入代码库，往后每一条新字符串都只能靠人眼在
+  # review 里揪，而字符串字面量恰恰是 review 里最容易被漏看的一类改动
+  # （它不像逻辑错误那样会让测试变红）。现在先把检查骨架和豁免约定定下
+  # 来，好过等第一批硬编码字符串已经进了代码库之后再回头补规则。
+  #
+  # 当前是 warn 模式，不阻断合并：脚本 2026-08-17 在本代码库实测命中 19
+  # 处，逐条核实后全部是内部错误类型 Display/Err 构造里的中文诊断文案，
+  # 与 `crates/ll-core/src/error.rs` 里 `CoreError::Display` 的先例（该处
+  # 注释明确写"此处文案面向开发者与日志，不面向玩家，故不走 i18n"）是
+  # 同一类东西，只是还没有补上同款的 `// i18n-exempt` 豁免标记。给这些
+  # 位置补标记属于 `crates/**` 源码改动，不在本次 CI 门禁补齐任务的
+  # 授权范围内。一旦标记补上，或者 `ll-ui`/i18n 机制真正落地，请把下面
+  # 这一步改成 `python3 scripts/ci/check_i18n_strings.py --strict`——不要
+  # 一直留在 warn 模式，那样这道门禁就只是摆设。
+  no-hardcoded-i18n-strings:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 硬编码用户可见字符串扫描（当前 warn 模式，见脚本头注释）
+        run: python3 scripts/ci/check_i18n_strings.py
+
+  # 规格 §13："代码卫生（持续执行）……文档与代码不一致即视为缺陷。"
+  # 这两步各自覆盖一类机器能查的"文档与代码/文件系统不一致"：
+  #
+  # 1. `cargo doc` 断链——历史上真实出现过（见提交记录里
+  #    `crates/ll-render/src/atlas.rs`/`batch.rs` 指向不存在或不可见条目
+  #    的 intra-doc link）。这类问题 `clippy` 与 `cargo test` 都不检查，
+  #    只能靠人工点开每一条文档链接核实，代码规模变大后必然会漏、会
+  #    积累一整个项目周期无人发现。`rustdoc::private_intra_doc_links`
+  #    （公开文档链到私有项）单独降级为警告：这是可见性设计问题，不是
+  #    真正的死链——链接目标确实存在，只是暂时不可见，调整 `pub` 或加
+  #    `--document-private-items` 就能让它消失，噪音大、价值低。真正的
+  #    `rustdoc::broken_intra_doc_links`（链接目标根本不存在）仍然阻断，
+  #    这才是"断链"本体。
+  # 2. Markdown 死链——`knowledge/`、`docs/` 里指向不存在文件的相对链接，
+  #    同样没有任何现有工具检查，只能靠人工点开。
+  docs-and-links:
+    runs-on: ubuntu-latest
+    env:
+      RUSTDOCFLAGS: -D rustdoc::broken_intra_doc_links -A rustdoc::private_intra_doc_links
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: 文档断链检查（真正的断链阻断，公开链到私有项仅警告）
+        run: cargo doc --workspace --no-deps --document-private-items
+      - name: Markdown 死链检查（docs/、knowledge/）
+        run: python3 scripts/ci/check_markdown_links.py
