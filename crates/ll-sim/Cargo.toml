@@ -32,3 +32,23 @@ proptest.workspace = true
 # 往返，而不只是停留在 derive 能编译这一层面（与 ll-core/ll-world
 # 同样的理由，见其 Cargo.toml）。
 serde_json = "1"
+# 仅供 p3_acceptance 验收 demo 使用：模拟层本身不依赖渲染/平台层
+# （分层约束见本 crate 顶层文档），但验收 demo 要把 Intent → resolve →
+# Effect → apply → 时间轴这条链路真正画到屏幕上，属于开发期验证工具而
+# 非产品代码，因此放在 dev-dependencies——不会传染给依赖 ll-sim 的下游
+# crate。与 `ll-world` 的 `p2_acceptance` 同样的取舍，见其 Cargo.toml。
+ll-render = { path = "../ll-render" }
+image = { version = "0.25", default-features = false, features = ["png"] }
+# 仅供 p3_acceptance 使用：demo 沿用 ll-render/ll-world 既有 demo 的
+# 结构化日志纪律（窗口生命周期、GPU 资源缺失等按结构化字段记录），
+# 本 crate 的库代码本身不需要日志，故放在 dev-dependencies。
+tracing = "0.1"
+
+[[example]]
+name = "p3_acceptance"
+# 默认 examples 的 test = false：cargo test --workspace 只保证它能编译，
+# 不会跑里面的 #[test]。这个 demo 里的回合引擎、AI 路由、字体栅格化等
+# 纯函数逻辑值得被 `cargo test --workspace` 真正覆盖，而不只是编译检查
+# ——与 `ll-world` 的 `p2_acceptance`、`ll-render` 的 `p1_acceptance`
+# 同样的理由。
+test = true

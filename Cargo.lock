@@ -1010,12 +1010,15 @@ dependencies = [
 name = "ll-sim"
 version = "0.1.0"
 dependencies = [
+ "image",
  "ll-core",
  "ll-platform",
+ "ll-render",
  "ll-world",
  "proptest",
  "serde",
  "serde_json",
+ "tracing",
 ]
 
 [[package]]
