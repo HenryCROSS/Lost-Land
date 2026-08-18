@@ -65,7 +65,7 @@
 | 音频设备 | `cpal` | Apache-2.0 |
 | 音频混音 | `kira` | MIT OR Apache-2.0 |
 | 文本排版 | `cosmic-text` | MIT OR Apache-2.0 |
-| 实体存储 | `hecs` | MIT OR Apache-2.0 |
+| 实体存储 | 自研列式实体存储（采用 ECS 的 SoA 思想，不引入 ECS 框架）——薄层人口需百万级批量遍历，`hecs` 的原型动态分组是为组件动态增删设计的，本项目薄层字段固定、不做稀疏组件查询，引入它只会背上原型管理开销与不确定迭代顺序（与确定性重放冲突），却拿不到对应收益 | — |
 | 序列化 | `serde` + `postcard` | MIT OR Apache-2.0 |
 | 压缩 | `lz4_flex` | MIT（纯 Rust，无 C 依赖） |
 | 数据并行 | `rayon` | MIT OR Apache-2.0 |
