@@ -33,6 +33,25 @@
 | Ark Pixel Font（方向变更前的候选，已不采纳） | `OFL-1.1` | 未逐一核实 | `TakWolf/ark-pixel-font` 仓库页面 | 中（README 摘要，未直接读 LICENSE 原文） |
 | Cubic 11 / 俐方體 11 號（方向变更前的候选，已不采纳） | `OFL-1.1` | 有，保留名为「Cubic」「俐方体」 | `ACh-K/Cubic-11` 仓库页面 | 中（README 摘要，未直接读 LICENSE 原文） |
 
+## 图标字体（功能性 UI 图标）
+
+只针对功能性 UI 图标（设置、关闭、音量一类），不适用于游戏内容图标（物品/技能/状态效果必须手绘像素图）。判定标准：优先无署名义务的宽松许可（MIT/ISC/Apache-2.0），CC BY 4.0 一类视为协议风险，非必要不采纳；必须有官方字体文件形态（`.ttf`/`.woff`）。
+
+| 候选 | 许可证（SPDX，一手来源核实） | 官方字体文件 | 核实来源 |
+|---|---|---|---|
+| **Tabler Icons** — 推荐 | `MIT` | 是（`packages/icons-webfont`） | `LICENSE` 原文 + `packages/` 目录列表，`github.com/tabler/tabler-icons` |
+| Bootstrap Icons | `MIT` | 是（`font/fonts/*.woff*`，GitHub API 实测字节数） | `LICENSE` 原文 + 目录字节数，`github.com/twbs/icons` |
+| Remix Icon | 非标准 SPDX，「Remix Icon License v1.0」（2026-01 换版，issue #1069 一手确认），署名可选非强制 | 是（`fonts/*.ttf`/`*.woff*`） | `License` 原文 + `fonts/` 目录列表，`github.com/Remix-Design/RemixIcon` |
+| Phosphor Icons | `MIT` | 是（官方 `@phosphor-icons/web`） | `phosphor-icons/homepage` 仓库 `LICENSE` 原文；字体文件见 `phosphor-icons/web` 仓库 |
+| Material Symbols | `Apache-2.0` | 是（官方可变字体，`variablefont/*.ttf`/`*.woff2`，GitHub API 实测字节数） | `google/material-design-icons` 仓库 `LICENSE` 原文 + 目录字节数 |
+| Lucide | `ISC`（主体）+ `MIT`（约 140 个 Feather 派生图标） | **否**，仅 SVG/框架组件，无官方字体文件（`packages/` 逐一核实） | `LICENSE` 原文，`github.com/lucide-icons/lucide` |
+| Feather Icons | `MIT` | **否**，仅 SVG，无官方字体文件（仓库根目录逐一核实） | `LICENSE` 原文，`github.com/feathericons/feather` |
+| Font Awesome Free（未在候选清单内，一并核实） | **分层**：代码 MIT；SVG/JS 图标 CC BY 4.0；**字体文件（.ttf/.woff）走 SIL OFL 1.1，不是 CC BY 4.0** | 是 | `LICENSE.txt` 原文，`github.com/FortAwesome/Font-Awesome` |
+
+**结论**：推荐 **Tabler Icons**（`MIT`，6,184 个图标，官方维护 webfont 包，最近发布 2026-07-28，本文档要求的十二类功能图标逐一核实全部存在）。**Font Awesome Free 需要单独澄清一点**：其图标整体常被认为是 CC BY 4.0，但那只适用于 SVG/JS 形态；字体文件形态实际走 SIL OFL 1.1，若只用字体文件形态、不碰 SVG/JS 资产，许可证本身并不构成排除理由——本文档仍不推荐它，但理由是图标规模与字体文件按风格拆分带来的整合成本，不是许可证。
+
+Lucide 与 Feather Icons 均无官方字体文件形态，若日后风格评估更偏好它们，需要额外走「自建 SVG→字体转换管线」这条路，本次调研没有评估这条路径的成本。
+
 ## 「操作系统字体」这一类，评估过但不采纳
 
 项目所有者最初提到希望用「操作系统那种字体」的观感，核实后确认这指的是视觉风格，不是真的要打包系统字体本身——两款代表性的系统中文黑体都不满足分发条件：

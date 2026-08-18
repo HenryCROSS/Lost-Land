@@ -243,6 +243,71 @@ P3 验收 demo 目前用的是手写 **4×6** 像素点阵字体（`crates/ll-si
 
 ---
 
+## 9. 图标字体（功能性 UI 图标，不含游戏内容图标）
+
+**范围先划清楚**（项目所有者明确定的界限，写进文档）：
+
+| | 例子 | 用什么 |
+|---|---|---|
+| 功能性 UI 图标 | 设置齿轮、关闭叉、音量、箭头、滚动条 | **图标字体** |
+| 游戏内容图标 | 物品、技能、状态效果、职业徽记 | **必须手绘像素图，不得用图标字体**——装备栏里的剑图标若用图标字体，会直接毁掉美术方向，现代扁平网页图标放在日式动漫像素画旁边格格不入 |
+
+以下调研只针对前一类。判定标准：**首选无署名义务的宽松许可（MIT/ISC/Apache-2.0 这类）；带署名义务的（CC BY 4.0 一类）视为有协议风险，除非无可替代，否则直接排除**；必须有字体文件形态（`.ttf`/`.woff`）或可靠的 SVG→字体转换路径；风格线性、不过度装饰；覆盖设置/音量/存档/加载/关闭/展开折叠/排序/筛选/警告/错误/锁定/搜索这十二类功能图标不能有缺口。
+
+**关于"署名义务"这个词要先澄清一层，避免文档误导**：MIT/ISC/Apache-2.0 的原文都写了"版权声明与许可证文本必须包含在软件的副本中"，字面上也是一种"署名"要求——但这与 CC BY 4.0 的署名要求不是同一量级的义务。前者的通行满足方式是在游戏的"第三方许可"清单文件里附一份 `THIRD-PARTY-LICENSES.txt`（本项目 `deny.toml` 许可证纪律本来就要求给每个依赖存证，这属于顺手的事），不需要在游戏界面上给这个图标署名；CC BY 4.0 通常被理解为要求"以适合媒介的合理方式"给出署名，实践中更常见的是在关于页面/制作人员名单里逐条列出，处理起来更重、且边界更模糊（"合理方式"没有像 MIT 那样有业界公认的"塞进一个文件就算完成"的安全做法）。**本文档下面说的"无署名义务"，指的是可以用"附许可证文件"这种轻量方式满足，不是真的完全不需要提及来源。**
+
+### 9.1 逐款核实结果
+
+| 候选 | 许可证（SPDX，一手来源核实） | 图标数量 | 官方字体文件形态 | 维护状态（一手核实） | 来源 |
+|---|---|---|---|---|---|
+| **Tabler Icons** — 推荐 | `MIT` | 6,184（5,130 线性 + 1,054 填充） | **是**，官方 `packages/icons-webfont` 包 | `v3.46.0`，2026-07-28（GitHub Releases API 实测） | [tabler/tabler-icons](https://github.com/tabler/tabler-icons) |
+| **Bootstrap Icons** | `MIT` | 2,000+（README 原文"over 2,000 icons"，未见精确到个位的数字） | **是**，官方仓库 `font/fonts/bootstrap-icons.woff`（180,288 字节）与 `.woff2`（134,044 字节），GitHub API 直接读取字节数确认 | `v1.13.1`，2025-05-09（GitHub Releases API 实测，距今超一年，明显慢于 Tabler） | [twbs/icons](https://github.com/twbs/icons) |
+| **Remix Icon** | 非标准 SPDX，自定义「Remix Icon License v1.0」（2026 年 1 月新换的版本，取代旧协议，GitHub issue #1069 一手确认换版原因与时间） | 3,200+（README 原文） | **是**，官方仓库 `fonts/remixicon.ttf`/`.woff`/`.woff2` | 最新包版本 `4.9.0`（README 里的 CDN 链接实测，未单独核实精确发布日期） | [Remix-Design/RemixIcon](https://github.com/Remix-Design/RemixIcon) |
+| **Phosphor Icons** | `MIT`（`phosphor-icons/homepage` 仓库 `LICENSE` 原文核实） | 未精确核实（官方称 6 档字重：regular/thin/light/bold/fill/duotone，每档图标数未逐一核实总数） | **是**，`phosphor-icons/web` 仓库直接找到 `src/regular/Phosphor.woff` 等文件，官方 `@phosphor-icons/web` 包 | `web` 仓库最新 release `v2.1.2`，2025-03-31（GitHub Releases API 实测）——**这个仓库是网页集成包，不是图标本体仓库（图标本体在 `core` 子模块），这个日期只代表集成包的更新节奏，不完全等于图标本身的更新节奏，这一点未展开核实** | [phosphor-icons/web](https://github.com/phosphor-icons/web) |
+| **Material Symbols** | `Apache-2.0`（`google/material-design-icons` 仓库 `LICENSE` 原文核实，是通用 Apache 2.0 模板，非项目专属条款） | 未精确核实（Google 官方称覆盖数千个 Material Design 图标，具体总数未找到一手数字） | **是**，官方 `variablefont/` 目录下 Outlined/Rounded/Sharp 三种风格的可变字体（如 `MaterialSymbolsOutlined[FILL,GRAD,opsz,wght].ttf`，实测 10,640,568 字节；对应 `.woff2` 实测 3,960,036 字节），单一可变字体文件通过 `wght`（字重）等轴变化覆盖全部字重，**不需要像其他候选那样为每档字重单独发一个文件** | 未单独核实最近 release 日期 | [google/material-design-icons](https://github.com/google/material-design-icons) |
+| **Lucide** | `ISC`（主体）+ `MIT`（约 140 个从 Feather 派生的图标） | 1,600+（README 原文） | **否**——仓库根目录与 `packages/` 下逐一核实（`lucide-static` 包只含 SVG 构建脚本，没有 `font`/`.woff`/`.ttf`），**没有官方维护的字体文件**，只有 SVG/各前端框架组件包 | `v1.31.0`，2026-08-09（GitHub Releases API 实测，8 天前，维护活跃） | [lucide-icons/lucide](https://github.com/lucide-icons/lucide) |
+| **Feather Icons** | `MIT`（`feathericons/feather` 仓库 `LICENSE` 原文核实） | 未精确核实（图标集规模明显小于其余候选，是 Lucide 的上游前身之一） | **否**——仓库根目录逐一核实（`icons/`、`src/`、`bin/` 均无字体产物），**只发行 SVG**，无官方 webfont | 未单独核实最近 release 日期 | [feathericons/feather](https://github.com/feathericons/feather) |
+| Font Awesome Free（未在候选清单内，项目所有者主动提到，一并核实） | **分层许可**，三部分各不相同：代码 `MIT`；**SVG/JS 打包的图标是 `CC BY 4.0`**；**但 Web/Desktop 字体文件（`.ttf`/`.woff`）打包的图标是 `SIL OFL 1.1`**（三条均为 `FortAwesome/Font-Awesome` 仓库 `LICENSE.txt` 原文核实） | 免费版约 2,000 个图标级别（未精确核实具体数字） | **是**，这本来就是它的传统形态 | 未单独核实 | [FortAwesome/Font-Awesome](https://github.com/FortAwesome/Font-Awesome) |
+
+**Font Awesome Free 需要单独说一句，纠正一处容易搞错的地方**：项目所有者提到"若确为 CC BY 4.0，按此标准应予排除"——**这个前提只对了一半**。CC BY 4.0 确实适用于 Font Awesome Free，但**只适用于 SVG/JS 形态的图标**；本项目的判定标准要求"必须有字体文件形态"，而**字体文件（`.ttf`/`.woff`）形态的图标走的是 SIL OFL 1.1，不是 CC BY 4.0**——这一点是本次核实中一个容易被想当然的地方，原文直接引用：「In the Font Awesome Free download, the CC BY 4.0 license applies to all icons packaged as SVG and JS file types.」「the SIL OFL license applies to all icons packaged as web and desktop font files.」。也就是说，**如果只用它的字体文件形态、完全不碰 SVG/JS 资产，Font Awesome Free 在许可证这一项上其实是过关的**，不构成必须排除的理由。**但本文档仍然不推荐它**，理由不是许可证，是第 9.1 节表格之外的因素：免费版图标数量明显少于 Tabler/Bootstrap/Remix，且字体文件默认按图标风格（Solid/Regular/Brands）拆成多个字体文件而不是单一文件，需要额外做整合工作。**这一处判断上的修正比结论本身更重要**：不能只看某个图标库"整体上"用什么许可证，必须按"我们实际会用到的那个资产形态"去核实许可证，SVG 和字体文件完全可能是两种不同许可证。
+
+### 9.2 覆盖面核对（只对推荐候选 Tabler Icons 做了逐项核实）
+
+用 GitHub API 逐个请求文件路径确认存在性（不是看目录列表——`icons/outline/` 目录文件数太多，GitHub API 分页会截断，直接按预期文件名请求单个文件路径更可靠），十二类功能图标**全部找到对应文件**：
+
+| 需求 | Tabler Icons 文件 | 核实方式 |
+|---|---|---|
+| 设置 | `settings.svg` | API 直接请求确认存在 |
+| 音量 | `volume.svg` | 同上 |
+| 存档 | `device-floppy.svg` | 同上 |
+| 加载 | `upload.svg` | 同上（"加载"取存盘/取盘的语义对，用 upload/download 一对） |
+| 关闭 | `x.svg` | 同上 |
+| 展开折叠 | `chevron-down.svg` | 同上 |
+| 排序 | `sort-ascending.svg` | 同上 |
+| 筛选 | `filter.svg` | 同上 |
+| 警告 | `alert-triangle.svg` | 目录截断列表中直接可见 |
+| 错误 | `alert-circle.svg` | 目录截断列表中直接可见 |
+| 锁定 | `lock.svg` | API 直接请求确认存在 |
+| 搜索 | `search.svg` | API 直接请求确认存在 |
+
+**十二类零缺口**，且 6,184 个图标的体量意味着后续追加需求（比如某个具体状态图标）大概率也能在同一套里找到，不容易出现"做到一半发现缺几个关键图标被迫混用两套"的情况——这正是任务里点名要防的坑。Bootstrap Icons、Remix Icon 两款备选**没有做这一层逐项核实**，只是从图标规模（2,000+、3,200+）推断大概率也能覆盖，这一点标注为**未核实**，不作为确定结论。
+
+### 9.3 三个实现问题
+
+**① 与 i18n 方案如何配合，图标是文本内字符还是独立绘制调用？**
+
+**独立绘制调用，不进 Fluent 文本流**。理由：[命名、改名与本地化](../design/naming-and-localization.md) 与规格 §11.3 定的 i18n 机制是"翻译键 + 变量插值"，Fluent `.ftl` 文件存的是给人读的自然语言字符串；图标字体的 PUA 码位是纯粹的渲染层实现细节（"用哪个字体的哪个码位画出这个图标"与"这句话翻译成哪种语言"是两个维度的问题，混在一起会导致翻译人员的 `.ftl` 文件里出现不可读的私用区字符，翻译工具/审校流程大概率把这些字符当乱码处理，坏得更彻底）。推荐做法：UI 布局层把"图标"当成一种独立于文本的可绘制单元（类似"这里放一个 16×16 的东西，可能是一段文字，也可能是一个图标"这种插槽概念），图标本身用一个稳定的符号 ID（不是 PUA 码位本身，是给 ID 起一个人类可读的名字，比如 `icon.settings`）在代码里引用，渲染时才查表转换成对应字体的 PUA 码位喂给 `cosmic-text`/`glyphon`。**这一条是本文档给出的设计建议，不是从外部资料核实来的结论**，供后续 `ll-ui` 落地时参考。
+
+**② 与"无硬编码用户可见字符串"CI 门禁冲不冲突？图标码位算不算硬编码字符串？**
+
+**判断：不冲突，但要在门禁规则里显式排除，不能靠"正好没被扫到"这种侥幸**。规格 §11.3 原文是"代码中不得出现任何硬编码的**用户可见字符串**"——这条规则的立法目的是防止翻译遗漏（硬编码的英文提示永远不会被翻译成中文）。图标的 PUA 码位不满足"用户可见字符串"的实质要件：它不是给人读的语言文本，同一个码位在所有语言版本下画出来的都是同一个图形符号，不存在"漏翻译"的风险。但**字面上**，如果这条 CI 门禁的实现方式是简单粗暴地"扫描代码里任何非 ASCII/非标识符的字符串字面量"，PUA 码位（`\u{E000}`–`\u{F8FF}` 这类）大概率会被一并误报为"疑似硬编码文本"——这正是任务里提醒的"该门禁目前是警告模式，趁现在把规则想清楚"这句话点到的风险。**建议**：这条门禁的实现规则需要明确排除"图标符号 ID → PUA 码位"这一类映射表（理想情况下这类映射表应该集中放在一个专门的模块/常量表里，门禁规则按路径白名单排除这个模块，而不是排除某个字符范围——按路径排除比按字符范围排除更不容易被滥用来夹带真正的硬编码文本）。**这条门禁具体怎么实现、现在是否已经是"简单扫非 ASCII 字符串"这种粗糙规则，本文档没有去读 CI 配置或门禁脚本本身去核实**（`.github/**` 不在本次任务可写目录范围内，读取需要额外授权，本文档没有做这一步），标注为**未核实，只给出方向性建议**。
+
+**③ 正文字体 + 图标字体同时加载时，`cosmic-text` 的字体回退怎么配置？**
+
+**技术上可行，具体做法**：`cosmic-text` 的 `FontSystem` 基于 `fontdb::Database` 做字体发现与排版时的回退（[docs.rs 官方文档](https://docs.rs/cosmic-text/latest/cosmic_text/struct.FontSystem.html) 确认 `FontSystem` 持有一个字体数据库，回退机制在这个数据库的基础上工作，官方文档原话是这套回退"复用了 Chromium/Firefox 这类浏览器的静态回退列表思路"）。具体到本项目：把思源黑体（Regular/Bold）与 Tabler Icons 的官方字体文件都注册进同一个 `fontdb::Database`，交给 `FontSystem::new_with_locale_and_db` 这类构造函数；排版时按码位查找——正文字符落在思源黑体覆盖的范围内，自然用思源黑体的字形；图标符号的 PUA 码位只有图标字体里有对应字形，`cosmic-text` 的回退机制会退到图标字体去找，两者不需要在应用代码里手写"这段是文字用字体 A、这段是图标用字体 B"的判断逻辑，只要码位不冲突（图标字体全部落在 PUA，思源黑体不会用到 PUA），排版引擎按码位自动选字体这条路径就是通的。**这一条的"原理可行"部分是核实过的（官方文档确认了字体数据库与回退机制的存在），但"具体 API 调用怎么写、实测效果如何"没有做，需要接入真实渲染管线时验证**，与第 8 节列的其他未验证项同一性质。
+
+---
+
 ## 相关文档
 
 - [0002 — 世界状态一律用整数](../decisions/0002-integer-only-world-state.md) —— 浮点只许留在渲染/音频层这条规矩的出处
