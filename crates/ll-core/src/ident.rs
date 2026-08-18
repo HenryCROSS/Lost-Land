@@ -128,6 +128,30 @@ impl Interner {
         self.to_id.get(index.get() as usize)
     }
 
+    /// 由标识符查索引，**不登记**——查不到就返回 `None`，不会像
+    /// [`Interner::intern`] 那样顺手创建一条新记录。
+    ///
+    /// 这是 [0015](../../../knowledge/decisions/0015-content-id-registration-is-parsing-not-invariant.md)
+    /// 「注册校验是解析，不是不变式」分工里，「解析」那一半的具体落点：
+    /// mod 内容互相引用时（例如某技能声明里写的职业 ID），要查的是
+    /// 「这个字符串现在是否已注册」，而不是「把它也顺便注册进来」——
+    /// 两者是完全不同的操作，混在一起会让「引用了不存在的内容」这类
+    /// 缺失 mod 场景静默变成「凭空多注册出一条从未有人定义过的内容」。
+    /// 查不到时，调用方应把它当成规格 §10.4「缺失 mod」的检测点。
+    pub fn get(&self, id: &NamespacedId) -> Option<ContentIndex> {
+        self.to_index.get(id).copied()
+    }
+
+    /// 按索引顺序（即登记顺序）列出全部标识符。
+    ///
+    /// 返回的是 `to_id`——一个 `Vec`，天然保证顺序稳定，不是遍历
+    /// `to_index` 这个哈希表（模块文档已强调该表不得被遍历）。存档头
+    /// 需要写出「索引 ↔ 字符串」映射表时，遍历本方法的返回值即可按
+    /// `ContentIndex` 从 0 开始的顺序拿到对应字符串。
+    pub fn ids(&self) -> &[NamespacedId] {
+        &self.to_id
+    }
+
     /// 已登记的标识符数量。
     pub fn len(&self) -> usize {
         self.to_id.len()
@@ -322,5 +346,53 @@ mod tests {
 
         // Assert
         assert_eq!(resolved, Some(&id));
+    }
+
+    #[test]
+    fn get查询已登记标识符返回索引且不改变池大小() {
+        // get 是「解析」不是「登记」——查询已存在的 ID 不应产生副作用。
+        // Arrange
+        let mut interner = Interner::new();
+        let id = NamespacedId::parse("lostland:fireball").expect("合法");
+        let index = interner.intern(id.clone());
+
+        // Act
+        let found = interner.get(&id);
+
+        // Assert
+        assert_eq!(found, Some(index));
+        assert_eq!(interner.len(), 1);
+    }
+
+    #[test]
+    fn get查询未登记标识符返回none且不登记它() {
+        // 这是「缺失 mod」检测点：查不到不能顺手创建一条新记录，否则
+        // 「引用了不存在的内容」会静默变成「凭空注册出这条内容」。
+        // Arrange
+        let interner = Interner::new();
+        let unregistered = NamespacedId::parse("yourmod:never_registered").expect("合法");
+
+        // Act
+        let found = interner.get(&unregistered);
+
+        // Assert
+        assert_eq!(found, None);
+        assert!(interner.is_empty());
+    }
+
+    #[test]
+    fn ids按登记顺序列出全部标识符() {
+        // Arrange
+        let mut interner = Interner::new();
+        let first = NamespacedId::parse("lostland:mountain").expect("合法");
+        let second = NamespacedId::parse("lostland:fireball").expect("合法");
+        interner.intern(first.clone());
+        interner.intern(second.clone());
+
+        // Act
+        let ids = interner.ids();
+
+        // Assert
+        assert_eq!(ids, &[first, second]);
     }
 }
