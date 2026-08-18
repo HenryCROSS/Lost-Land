@@ -1,0 +1,24 @@
+[package]
+name = "ll-mod"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的 mod 框架核心：发现、清单解析、依赖拓扑排序、内容注册表、mod 集合双记录"
+
+[lints]
+workspace = true
+
+[dependencies]
+# 依赖方向 ll-world ← ll-sim ← ll-script ← ll-mod（规格 §5）：ll-mod 是
+# 最上游的消费者，只应依赖更底层的 crate，绝不能被 ll-world/ll-sim/
+# ll-script 反过来依赖。本批（Task 6/7/9）尚不需要触碰 Steel VM，因此
+# 只依赖 ll-core（NamespacedId/ContentIndex/Interner/StateHasher）。
+ll-core = { path = "../ll-core" }
+# mod 清单格式选 TOML（本任务的实现假设，理由见 task-6-brief.md：
+# 与规格 §11.1「用户设置 TOML」同类场景，且不需要先起 Steel VM 就能
+# 解析出依赖关系用于拓扑排序）。
+serde = { version = "1", features = ["derive"] }
+toml = "0.9"
+
+[dev-dependencies]
+proptest.workspace = true
