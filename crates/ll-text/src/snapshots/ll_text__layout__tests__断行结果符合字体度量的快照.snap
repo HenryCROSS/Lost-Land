@@ -1,0 +1,21 @@
+---
+source: crates/ll-text/src/layout.rs
+expression: summary
+---
+[
+    (
+        0,
+        26,
+        159,
+    ),
+    (
+        26,
+        51,
+        157,
+    ),
+    (
+        52,
+        61,
+        48,
+    ),
+]

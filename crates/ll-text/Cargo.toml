@@ -1,0 +1,39 @@
+[package]
+name = "ll-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的文本渲染地基：cosmic-text 排版 + glyphon 栅格化，原生分辨率、不参与世界层的整数缩放"
+
+[lints]
+workspace = true
+
+[dependencies]
+ll-core = { path = "../ll-core" }
+# 复用 ll-render 已建好的 GpuContext（设备/队列/surface 格式），并走它
+# 重新导出的 wgpu——不额外声明一份 `wgpu = "30"`，理由与 ll-render 自己
+# 重新导出 wgpu 的理由相同（见 ll-render/src/lib.rs 顶部文档）：多一份
+# 独立声明就多一个版本漂移导致「同名不同类型」编译错误的风险点。
+ll-render = { path = "../ll-render" }
+# 排版：整形、断行、双向、字形回退。选型依据见
+# knowledge/pipelines/text-and-font-rendering.md 第 2.1 节。
+cosmic-text = "0.19"
+# cosmic-text 官方配套的 wgpu 渲染后端，把排版结果栅格化上屏。
+glyphon = "0.12"
+tracing = "0.1"
+
+[dev-dependencies]
+proptest.workspace = true
+pollster = "1.0"
+# 只启用 PNG：截图证据落盘用，不需要其余格式解码器。
+image = { version = "0.25", default-features = false, features = ["png"] }
+# 断行结果快照测试——像素级渲染快照对字体/驱动版本太敏感，只测排版
+# 的结构化结果（行数、每行文本范围、宽度）。
+insta = "1"
+
+# 最小可行验证 demo：离屏渲染一行中英混排文本 + 一个 Tabler 图标，
+# 存 PNG 作截图证据。不建窗口——headless 请求 adapter，不依赖显示环境
+# 的窗口系统调用能否成功，只依赖 GPU 适配器本身是否可用。
+[[example]]
+name = "mixed_text_demo"
+test = false
