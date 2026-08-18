@@ -896,7 +896,7 @@ gpu.queue().present(frame) ✓
 ### 有意留给后续阶段的缺口
 
 - **分区场景**（有界局部地图）本阶段只在 Task 7 提供数据视图；真正的场景加载与切换属 P5。
-- **寻路**不在 P2。`TerrainKind::move_cost` 已就位，供 P3 的行动结算与 P7 的行为树使用。
+- **寻路**不在 P2。`TerrainKind::move_cost` 已就位，供 P3 的行动结算与 P8 的行为树使用。
 - **实体存储**不在 P2。`WorldState` 本阶段只含种子、时钟、尺寸、地形；实体随 P3 的 Intent/Effect 管线一并加入。
 - **`cargo-llvm-cov` 与 `cargo-mutants`** 仍未接入 CI。P2 结束时代码量已足够支撑，建议在 P2 收尾单独处理。
 - **CI 视觉回归自动比对**仍需先验证「无独显环境的软件后端回退」（P1 交接的未决项）。
