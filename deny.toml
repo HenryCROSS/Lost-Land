@@ -48,5 +48,11 @@ ignore = [
     "RUSTSEC-2025-0141", # bincode 1.3.3——steel-core 自身序列化依赖，团队因骚扰事件停止维护，1.3.3 被其自身认定为「完整版本」
     "RUSTSEC-2026-0247", # bitmaps 2.1.0——im-rc 的传递依赖，仓库已归档
     "RUSTSEC-2026-0250", # im-rc 15.1.0——steel-core 默认 feature 依赖，仓库已归档
+    # 2026-08-18 追加：ttf-parser 0.25.1，经 cosmic-text → fontdb 0.23.0 传入，
+    # 作者标记 unmaintained，无安全升级路径。同属 unmaintained 而非漏洞，
+    # 按上述同一条纪律处理；触发条件相同。替代方案（换掉 cosmic-text）代价
+    # 远大于收益——它是本项目唯一可行的 CJK 排版方案，见
+    # knowledge/pipelines/text-and-font-rendering.md。
+    "RUSTSEC-2026-0192", # ttf-parser 0.25.1——cosmic-text/fontdb 的字体解析依赖，作者停止维护
     "RUSTSEC-2026-0251", # sized-chunks 0.6.5——im-rc 的传递依赖，仓库已归档
 ]
