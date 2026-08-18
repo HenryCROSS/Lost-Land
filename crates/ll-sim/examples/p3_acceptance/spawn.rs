@@ -14,6 +14,7 @@ use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::naming::NamingRules;
 use ll_world::state::WorldState;
+use ll_world::terrain::{BaseTerrainIds, TerrainTable, base_terrain_fixture};
 
 use crate::layout::{WORLD_HEIGHT, WORLD_WIDTH};
 
@@ -112,30 +113,37 @@ pub(crate) fn demo_naming_rules() -> NamingRules {
 }
 
 /// 建立演示世界：真实生成的环面地形，时钟拨到正午。
-pub(crate) fn build_world() -> WorldState {
+///
+/// 地形定义用 [`base_terrain_fixture`] 现造——demo 不牵扯真实的 mod
+/// 加载流程，见其文档。返回值附带 [`BaseTerrainIds`]：调用方（渲染层
+/// 需要按具体地形种类挑图集条目）不能自己再另起一次
+/// `base_terrain_fixture`——那会是一个不同的 `Interner`，索引虽因固定
+/// 注册顺序而恰好数值相同，仍不应该在类型层面制造这种隐晦的耦合。
+pub(crate) fn build_world() -> (WorldState, BaseTerrainIds) {
     let size = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("演示世界尺寸为非零常量");
-    let mut world =
-        WorldState::new(size, &GenParams::default()).expect("演示世界尺寸满足生成入口的全部约束");
+    let (terrain_ids, terrain_table) = base_terrain_fixture();
+    let mut world = WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
+        .expect("演示世界尺寸满足生成入口的全部约束");
     world.advance(crate::layout::INITIAL_CLOCK_TICKS);
-    world
+    (world, terrain_ids)
 }
 
 /// 该地形是否可站立（不阻挡移动）。
-fn is_walkable(grid: &ChunkGrid, pos: TorusPos) -> bool {
-    !grid.terrain_at(pos).blocks_move()
+fn is_walkable(grid: &ChunkGrid, table: &TerrainTable, pos: TorusPos) -> bool {
+    !grid.terrain_at(pos).blocks_move(table)
 }
 
 /// 从 `target` 开始按环逐圈向外搜索一格可站立的地形——与
 /// `p2_acceptance::spawn::find_spawn` 同一算法，只是把「必须从世界中心
 /// 出发」泛化成「从任意目标点出发」，供玩家与三个敌人共用同一套出生点
 /// 搜索逻辑。
-fn find_walkable_near(grid: &ChunkGrid, target: TorusPos) -> TorusPos {
+fn find_walkable_near(grid: &ChunkGrid, table: &TerrainTable, target: TorusPos) -> TorusPos {
     let world = grid.world();
-    if is_walkable(grid, target) {
+    if is_walkable(grid, table, target) {
         return target;
     }
     for radius in 1..=SEARCH_MAX_RADIUS {
-        if let Some(pos) = search_ring(grid, world, target, radius) {
+        if let Some(pos) = search_ring(grid, table, world, target, radius) {
             return pos;
         }
     }
@@ -145,6 +153,7 @@ fn find_walkable_near(grid: &ChunkGrid, target: TorusPos) -> TorusPos {
 /// 在距 `center` 切比雪夫距离恰为 `radius` 的环上寻找第一个可站立格。
 fn search_ring(
     grid: &ChunkGrid,
+    table: &TerrainTable,
     world: TorusSize,
     center: TorusPos,
     radius: i32,
@@ -155,7 +164,7 @@ fn search_ring(
                 continue;
             }
             let pos = world.wrap(center.x() + dx, center.y() + dy);
-            if is_walkable(grid, pos) {
+            if is_walkable(grid, table, pos) {
                 return Some(pos);
             }
         }
@@ -217,6 +226,7 @@ pub(crate) fn spawn_actors(world: &mut WorldState, timeline: &mut Timeline) -> S
 
     let player_pos = find_walkable_near(
         &world.terrain,
+        &world.terrain_table,
         world
             .size
             .wrap(world.size.width() as i32 / 2, PLAYER_SPAWN_TARGET_Y),
@@ -235,6 +245,7 @@ pub(crate) fn spawn_actors(world: &mut WorldState, timeline: &mut Timeline) -> S
 
     let tank_pos = find_walkable_near(
         &world.terrain,
+        &world.terrain_table,
         world.size.wrap(
             player_pos.x() + ENEMY_TANK_OFFSET.0,
             player_pos.y() + ENEMY_TANK_OFFSET.1,
@@ -254,6 +265,7 @@ pub(crate) fn spawn_actors(world: &mut WorldState, timeline: &mut Timeline) -> S
 
     let medium_pos = find_walkable_near(
         &world.terrain,
+        &world.terrain_table,
         world.size.wrap(
             player_pos.x() + ENEMY_MEDIUM_OFFSET.0,
             player_pos.y() + ENEMY_MEDIUM_OFFSET.1,
@@ -273,6 +285,7 @@ pub(crate) fn spawn_actors(world: &mut WorldState, timeline: &mut Timeline) -> S
 
     let fast_pos = find_walkable_near(
         &world.terrain,
+        &world.terrain_table,
         world.size.wrap(
             player_pos.x() + ENEMY_SEAM_OFFSET.0,
             player_pos.y() + ENEMY_SEAM_OFFSET.1,
@@ -301,33 +314,37 @@ mod tests {
     use super::*;
     use ll_world::generate::generate_terrain;
 
-    fn test_grid() -> ChunkGrid {
+    fn test_grid(terrain_ids: &BaseTerrainIds) -> ChunkGrid {
         let world = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("demo 世界尺寸满足约束");
-        generate_terrain(world, &GenParams::default()).expect("demo 世界尺寸满足生成入口约束")
+        generate_terrain(world, &GenParams::default(), terrain_ids)
+            .expect("demo 世界尺寸满足生成入口约束")
     }
 
     #[test]
     fn 出生点搜索结果可以站立() {
         // Arrange
-        let grid = test_grid();
+        let (terrain_ids, table) = base_terrain_fixture();
+        let grid = test_grid(&terrain_ids);
         let world = grid.world();
         let target = world.wrap(world.width() as i32 / 2, PLAYER_SPAWN_TARGET_Y);
 
         // Act
-        let pos = find_walkable_near(&grid, target);
+        let pos = find_walkable_near(&grid, &table, target);
 
         // Assert
-        assert!(is_walkable(&grid, pos));
+        assert!(is_walkable(&grid, &table, pos));
     }
 
     #[test]
     fn 世界几乎全是深水时出生点搜索仍会终止() {
         // Arrange：ChunkGrid::new 本就把全部格子初始化为深水（阻挡移动）。
+        let (terrain_ids, table) = base_terrain_fixture();
         let world = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("demo 世界尺寸满足约束");
-        let grid = ChunkGrid::new(world).expect("demo 世界尺寸满足构造前置条件");
+        let grid =
+            ChunkGrid::new(world, terrain_ids.deep_water).expect("demo 世界尺寸满足构造前置条件");
 
         // Act & Assert：函数确实返回了（没有死循环/panic），且坐标合法。
-        let pos = find_walkable_near(&grid, world.wrap(0, 0));
+        let pos = find_walkable_near(&grid, &table, world.wrap(0, 0));
         let _ = grid.terrain_at(pos);
     }
 
@@ -335,7 +352,7 @@ mod tests {
     fn 生成的四个单位敏捷各不相同() {
         // 「至少三个敌人，各有不同敏捷」这条验收点的直接回归。
         // Arrange
-        let mut world = build_world();
+        let (mut world, _terrain_ids) = build_world();
         let mut timeline = Timeline::new();
 
         // Act
@@ -367,7 +384,7 @@ mod tests {
         // 条目名——具体的 footprint 数值来自图集元数据，不在本文件
         // 断言范围内（那是 `ll_render::atlas` 的职责）。
         // Arrange
-        let mut world = build_world();
+        let (mut world, _terrain_ids) = build_world();
         let mut timeline = Timeline::new();
 
         // Act
@@ -380,7 +397,7 @@ mod tests {
     #[test]
     fn 全部单位的初次行动均已排入时间轴() {
         // Arrange
-        let mut world = build_world();
+        let (mut world, _terrain_ids) = build_world();
         let mut timeline = Timeline::new();
 
         // Act

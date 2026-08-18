@@ -19,12 +19,18 @@
 //!   两种记录，类型层面强制区分，防止只存一份导致种子分享/缺陷复现/
 //!   回归测试失效（见 `knowledge/design/identity-and-ids.md`
 //!   「存档与 mod 集合」）。
+//! - [`base_terrain`] —— 「本体即 Mod」的第一次真实验收（P4 Task 8）：
+//!   把 `ll_world::terrain` 定义的地形声明表，经 [`registry::Registry::intern`]
+//!   注册成本体的第一批内容。本体地形与 mod 未来注册的地形走的是
+//!   完全相同的这一条 `Registry::intern` 调用路径，见该模块文档。
 //!
 //! # 依赖方向
 //!
 //! 规格 §5：`ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod`。本 crate
-//! 是最上游的消费者，只依赖 `ll-core`，不得被下游任何 crate 反向依赖。
+//! 是最上游的消费者，依赖 `ll-core` 与 `ll-world`（Task 8 新增，理由见
+//! [`base_terrain`] 模块文档），不得被下游任何 crate 反向依赖。
 
+pub mod base_terrain;
 pub mod discover;
 pub mod manifest;
 pub mod mod_set;

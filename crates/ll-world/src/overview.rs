@@ -98,13 +98,16 @@ pub fn continent_map(world: &WorldState, downsample: u32) -> Vec<OverviewCell> {
 mod tests {
     use super::*;
     use crate::generate::GenParams;
+    use crate::terrain::base_terrain_fixture;
 
     /// 测试世界尺寸：64 是噪声格点周期的整数倍，且大于视口跨度，满足
     /// `WorldState::new` 的全部构造前置条件。
     fn test_world() -> WorldState {
         let size =
             ll_core::torus::TorusSize::new(64, 64).expect("64x64 满足整除与视口跨度两条约束");
-        WorldState::new(size, &GenParams::default()).expect("测试尺寸满足全部构造前置条件")
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
+            .expect("测试尺寸满足全部构造前置条件")
     }
 
     #[test]

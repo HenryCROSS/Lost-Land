@@ -9,7 +9,7 @@
 use ll_core::time::{Season, TICKS_PER_HOUR, Tick};
 use ll_render::sprite::{Footprint, Pivot, TILE_SIZE};
 use ll_world::light::ambient_light;
-use ll_world::terrain::TerrainKind;
+use ll_world::terrain::{BaseTerrainIds, TerrainKind};
 
 /// 演示世界的宽度（格）。
 ///
@@ -37,17 +37,28 @@ pub(crate) const INITIAL_CLOCK_TICKS: i64 = 12 * TICKS_PER_HOUR;
 /// 与 `p2_acceptance::layout::terrain_entry_name` 逐字同构：同一份
 /// 图集元数据、同一套八种自然地形，没有理由让两个 demo 的映射表各写
 /// 一份、还可能悄悄漂移。
-pub(crate) fn terrain_entry_name(kind: TerrainKind) -> Option<&'static str> {
-    match kind {
-        TerrainKind::DEEP_WATER => Some("terrain_deep_water"),
-        TerrainKind::SHALLOW_WATER => Some("terrain_shallow_water"),
-        TerrainKind::SAND => Some("terrain_sand"),
-        TerrainKind::GRASS => Some("terrain_grass"),
-        TerrainKind::FOREST => Some("terrain_forest"),
-        TerrainKind::HILL => Some("terrain_hill"),
-        TerrainKind::MOUNTAIN => Some("terrain_mountain"),
-        TerrainKind::SNOW => Some("terrain_snow"),
-        _ => None,
+pub(crate) fn terrain_entry_name(
+    kind: TerrainKind,
+    terrain_ids: &BaseTerrainIds,
+) -> Option<&'static str> {
+    if kind == terrain_ids.deep_water {
+        Some("terrain_deep_water")
+    } else if kind == terrain_ids.shallow_water {
+        Some("terrain_shallow_water")
+    } else if kind == terrain_ids.sand {
+        Some("terrain_sand")
+    } else if kind == terrain_ids.grass {
+        Some("terrain_grass")
+    } else if kind == terrain_ids.forest {
+        Some("terrain_forest")
+    } else if kind == terrain_ids.hill {
+        Some("terrain_hill")
+    } else if kind == terrain_ids.mountain {
+        Some("terrain_mountain")
+    } else if kind == terrain_ids.snow {
+        Some("terrain_snow")
+    } else {
+        None
     }
 }
 
@@ -116,27 +127,31 @@ mod tests {
     #[test]
     fn 八种自然地形都能查到图集条目() {
         // Arrange
+        let (terrain_ids, _table) = ll_world::terrain::base_terrain_fixture();
         let natural_kinds = [
-            TerrainKind::DEEP_WATER,
-            TerrainKind::SHALLOW_WATER,
-            TerrainKind::SAND,
-            TerrainKind::GRASS,
-            TerrainKind::FOREST,
-            TerrainKind::HILL,
-            TerrainKind::MOUNTAIN,
-            TerrainKind::SNOW,
+            terrain_ids.deep_water,
+            terrain_ids.shallow_water,
+            terrain_ids.sand,
+            terrain_ids.grass,
+            terrain_ids.forest,
+            terrain_ids.hill,
+            terrain_ids.mountain,
+            terrain_ids.snow,
         ];
 
         // Act & Assert
         for kind in natural_kinds {
-            assert!(terrain_entry_name(kind).is_some());
+            assert!(terrain_entry_name(kind, &terrain_ids).is_some());
         }
     }
 
     #[test]
     fn 建筑地形没有对应的地形图集条目() {
-        // Arrange & Act & Assert
-        assert!(terrain_entry_name(TerrainKind::WALL_STONE).is_none());
+        // Arrange
+        let (terrain_ids, _table) = ll_world::terrain::base_terrain_fixture();
+
+        // Act & Assert
+        assert!(terrain_entry_name(terrain_ids.wall_stone, &terrain_ids).is_none());
     }
 
     #[test]

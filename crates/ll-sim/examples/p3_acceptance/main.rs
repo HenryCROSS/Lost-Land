@@ -86,6 +86,7 @@ use ll_world::fov::{VisibleSet, compute_fov};
 use ll_world::light::{ambient_light, sight_radius_at};
 use ll_world::naming::{NamingRules, given_name};
 use ll_world::state::WorldState;
+use ll_world::terrain::BaseTerrainIds;
 use png::save_baseline_png;
 use spawn::{Combatant, SpawnedActors, build_world, demo_naming_rules, spawn_actors};
 use std::sync::Arc;
@@ -239,6 +240,9 @@ impl GpuResources {
 /// P3 验收 demo 的完整状态。
 struct Demo {
     world: WorldState,
+    /// 本体地形的固定索引缓存，与 `world.terrain_table` 出自同一次
+    /// `spawn::build_world` 调用——理由见该函数文档。
+    terrain_ids: BaseTerrainIds,
     engine: TurnEngine,
     actors: SpawnedActors,
     naming: NamingRules,
@@ -258,7 +262,7 @@ struct Demo {
 
 impl Demo {
     fn new() -> Demo {
-        let mut world = build_world();
+        let (mut world, terrain_ids) = build_world();
         let mut timeline = Timeline::new();
         let actors = spawn_actors(&mut world, &mut timeline);
         let engine = TurnEngine::new(timeline);
@@ -274,6 +278,7 @@ impl Demo {
 
         Demo {
             world,
+            terrain_ids,
             engine,
             actors,
             naming: demo_naming_rules(),
@@ -354,6 +359,7 @@ fn find_combatant(all: &[Combatant], id: EntityId) -> Option<&Combatant> {
 #[allow(clippy::too_many_arguments)]
 fn collect_sprites(
     world: &WorldState,
+    terrain_ids: &BaseTerrainIds,
     engine: &TurnEngine,
     actors: &SpawnedActors,
     naming: &NamingRules,
@@ -364,7 +370,7 @@ fn collect_sprites(
     resources: &mut GpuResources,
 ) {
     let all = actors.all();
-    push_terrain(world, camera, visible, tint, resources);
+    push_terrain(world, terrain_ids, camera, visible, tint, resources);
     push_actors(world, &all, naming, camera, visible, tint, resources);
     push_damage_popups(popups, camera, resources);
     push_timeline_sidebar(engine, &all, naming, world.seed, resources);
@@ -374,6 +380,7 @@ fn collect_sprites(
 /// `p2_acceptance::push_terrain` 同一实现，理由见其文档。
 fn push_terrain(
     world: &WorldState,
+    terrain_ids: &BaseTerrainIds,
     camera: &Camera,
     visible: &VisibleSet,
     tint: [f32; 4],
@@ -384,7 +391,7 @@ fn push_terrain(
             continue;
         }
         let kind = world.terrain.terrain_at(pos);
-        let Some(name) = terrain_entry_name(kind) else {
+        let Some(name) = terrain_entry_name(kind, terrain_ids) else {
             continue;
         };
         let Some((entry, uv)) = resources.lookup(name) else {
@@ -699,6 +706,7 @@ impl AppHandler for Demo {
         // （见本文件顶部模块文档「文件拆分」一节引用的既有 demo 惯例）。
         let visible = compute_fov(
             &self.world.terrain,
+            &self.world.terrain_table,
             player_pos_or_camera(&self.world, self.actors.player.id, self.camera.center),
             radius,
         );
@@ -706,6 +714,7 @@ impl AppHandler for Demo {
 
         collect_sprites(
             &self.world,
+            &self.terrain_ids,
             &self.engine,
             &self.actors,
             &self.naming,

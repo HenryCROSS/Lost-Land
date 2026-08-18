@@ -29,7 +29,7 @@ use ll_sim::resolve::resolve;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::state::WorldState;
-use ll_world::terrain::TerrainKind;
+use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
 
 /// 测试世界尺寸：64 是噪声格点周期的整数倍，满足 [`WorldState::new`]
 /// 的前置条件（与本仓库其余测试同一常量）。
@@ -55,20 +55,22 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         seed,
         ..GenParams::default()
     };
-    let mut world = WorldState::new(test_size(), &params).expect("测试尺寸满足全部构造前置条件");
+    let (terrain_ids, terrain_table): (BaseTerrainIds, _) = base_terrain_fixture();
+    let mut world = WorldState::new(test_size(), &params, &terrain_ids, terrain_table)
+        .expect("测试尺寸满足全部构造前置条件");
 
     world
         .terrain
-        .set_terrain(world.size.wrap(11, 10), TerrainKind::GRASS);
+        .set_terrain(world.size.wrap(11, 10), terrain_ids.grass);
     world
         .terrain
-        .set_terrain(world.size.wrap(11, 9), TerrainKind::SHALLOW_WATER);
+        .set_terrain(world.size.wrap(11, 9), terrain_ids.shallow_water);
     world
         .terrain
-        .set_terrain(world.size.wrap(12, 9), TerrainKind::GRASS);
+        .set_terrain(world.size.wrap(12, 9), terrain_ids.grass);
     world
         .terrain
-        .set_terrain(world.size.wrap(13, 9), TerrainKind::DOOR_CLOSED);
+        .set_terrain(world.size.wrap(13, 9), terrain_ids.door_closed);
 
     let mut interner = Interner::new();
     let race = interner.intern(NamespacedId::parse("lostland:human").expect("合法标识符"));
@@ -157,7 +159,14 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 }
 
 /// 由首次运行记录的黄金基准。修改前请阅读本文件顶部说明。
-const EXPECTED_REPLAY_DIGEST: u64 = 16_344_661_415_853_277_445;
+///
+/// # 本次重冻的原因（P4 Task 8：`TerrainKind` 迁入内容注册表）
+///
+/// 与 `crates/ll-world/tests/determinism.rs` 同一个理由：地形不再是
+/// 硬编码的 `u16` 值，而是注册期按顺序分配的稠密 `ContentIndex`。
+/// `WorldState::hash` 混入的地形原始数值编码方式变了，期望值随之
+/// 更新为新编码在同一种子、同一意图流下的真实产出。
+const EXPECTED_REPLAY_DIGEST: u64 = 16_052_812_501_842_541_409;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {
@@ -260,6 +269,10 @@ fn 序列化世界并读回后继续执行同一意图流结果与不中断执�
         serde_json::from_slice(&encoded).expect("刚序列化的数据必然合法");
     reloaded.actors = live.actors.clone();
     reloaded.population = live.population.clone();
+    // terrain_table 同样不参与序列化（见 WorldState 文档），本任务新增
+    // 的已知限制，与 actors/population 同一处理方式：直接搬运当前会话
+    // 已经注册好的表，而不是假装读档本身就能重建它。
+    reloaded.terrain_table = live.terrain_table.clone();
     play(&mut reloaded, &resumed_intents[checkpoint..]);
 
     // Assert

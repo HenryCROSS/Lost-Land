@@ -1550,6 +1550,7 @@ name = "ll-mod"
 version = "0.1.0"
 dependencies = [
  "ll-core",
+ "ll-world",
  "proptest",
  "serde",
  "toml",
@@ -1629,6 +1630,7 @@ dependencies = [
 name = "ll-world"
 version = "0.1.0"
 dependencies = [
+ "criterion",
  "image",
  "ll-core",
  "ll-platform",

@@ -21,7 +21,7 @@ use crate::WorldError;
 use crate::chunk::ChunkGrid;
 use crate::entity::{Agent, Arena, ThinPopulation};
 use crate::generate::{GenParams, generate_terrain};
-use crate::terrain::TerrainKind;
+use crate::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
 
 /// 完整的世界状态：种子、时钟、尺寸、地形、薄层人口与厚层实体池。
 ///
@@ -76,6 +76,20 @@ pub struct WorldState {
     /// 玩家与几个敌人，见 [`Arena`] 模块文档。不参与序列化，理由同上。
     #[serde(skip)]
     pub actors: Arena<Agent>,
+    /// 地形属性表：`terrain` 网格里的 [`TerrainKind`] 值查这张表才能
+    /// 问出「阻不阻挡视线」「移动代价多少」。**不参与序列化**——与
+    /// `population`/`actors` 同一类已知限制（P4 阶段）：这张表本质是
+    /// 当前会话已加载 mod 集合的注册期产物（见
+    /// `crate::terrain` 模块文档「与 Registry 的关系」），依赖 mod
+    /// 加载顺序，与 `ContentIndex` 本身一样不可持久化
+    /// （`ll_core::ident` 模块文档）。读档后这张表默认是空的——所有
+    /// 地形查询会退化成安全兜底值（[`TerrainTable::move_cost`] 等
+    /// 文档），直到调用方显式用当前会话重新注册出的表替换它。真正的
+    /// 存档接线（读档后如何拿到「当前应该用哪张表」）留给 P5 冻结
+    /// 存档格式时解决，本任务只保证字段本身存在、且不会让读档过程本
+    /// 身失败。
+    #[serde(skip)]
+    pub terrain_table: TerrainTable,
 }
 
 /// [`WorldState`] 反序列化的中转表示。
@@ -117,18 +131,30 @@ impl TryFrom<WorldStateRepr> for WorldState {
             clock: repr.clock,
             size: repr.size,
             terrain: repr.terrain,
-            // 两者当前不参与序列化（见 WorldState 文档），存档里没有
-            // 对应数据可读，读档后总是从空状态开始。
+            // 三者当前都不参与序列化（见 WorldState 文档），存档里没有
+            // 对应数据可读，读档后总是从空/默认状态开始。
             population: ThinPopulation::default(),
             actors: Arena::default(),
+            terrain_table: TerrainTable::default(),
         })
     }
 }
 
 impl WorldState {
     /// 按尺寸与生成参数创建一个新世界，时钟从零开始。
-    pub fn new(size: TorusSize, params: &GenParams) -> Result<WorldState, WorldError> {
-        let terrain = generate_terrain(size, params)?;
+    ///
+    /// `terrain_ids`/`terrain_table` 是调用方已经注册好的地形定义（见
+    /// `crate::terrain::materialize_base_terrain`）——世界状态本身不
+    /// 知道如何取得注册表，只负责把已经注册好的结果用于地形生成、并
+    /// 把属性表随世界一起持有，供后续的 `resolve`/FOV 等只读查询使用
+    /// （见 [`Self::terrain_table`] 字段文档）。
+    pub fn new(
+        size: TorusSize,
+        params: &GenParams,
+        terrain_ids: &BaseTerrainIds,
+        terrain_table: TerrainTable,
+    ) -> Result<WorldState, WorldError> {
+        let terrain = generate_terrain(size, params, terrain_ids)?;
         Ok(WorldState {
             seed: params.seed,
             clock: Tick(0),
@@ -136,6 +162,7 @@ impl WorldState {
             terrain,
             population: ThinPopulation::default(),
             actors: Arena::default(),
+            terrain_table,
         })
     }
 
@@ -185,7 +212,7 @@ impl WorldState {
         for y in 0..self.size.height() as i32 {
             for x in 0..self.size.width() as i32 {
                 let pos = self.size.wrap(x, y);
-                hasher.write_u64(u64::from(self.terrain.terrain_at(pos).0));
+                hasher.write_u64(u64::from(self.terrain.terrain_at(pos).index().get()));
             }
         }
         for agent in self.actors.iter() {
@@ -248,7 +275,17 @@ impl<'de> Deserialize<'de> for ChunkGrid {
             return Err(D::Error::custom("存档中的地形格数量与尺寸不匹配"));
         }
 
-        let mut grid = ChunkGrid::new(size).map_err(|err| D::Error::custom(err.to_string()))?;
+        // fill 只是 ChunkGrid::new 分配时的占位值，下面的双重循环会把
+        // 每一格都覆写一遍（expected_len 已校验与 tiles 长度一致，包括
+        // (0, 0) 这一格），借第一格的真实值占位，不产生任何浪费，也
+        // 不需要凭空造一个 TerrainKind——ChunkGrid 反序列化这一层没有
+        // 注册表可查，见 TerrainKind 模块文档。
+        let fill = *data
+            .tiles
+            .first()
+            .ok_or_else(|| D::Error::custom("存档中的地形格数据为空"))?;
+        let mut grid =
+            ChunkGrid::new(size, fill).map_err(|err| D::Error::custom(err.to_string()))?;
         let mut tiles = data.tiles.into_iter();
         for y in 0..size.height() as i32 {
             for x in 0..size.width() as i32 {
@@ -263,11 +300,24 @@ impl<'de> Deserialize<'de> for ChunkGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::base_terrain_fixture;
 
     /// 测试世界尺寸：64 是噪声格点周期的整数倍，且大于视口跨度，
     /// 满足 [`WorldState::new`] 的全部构造前置条件。
     fn test_size() -> TorusSize {
         TorusSize::new(64, 64).expect("64x64 满足整除与视口跨度两条约束")
+    }
+
+    /// 按测试尺寸建一个新世界，地形定义用 [`base_terrain_fixture`]。
+    fn test_world() -> WorldState {
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        WorldState::new(
+            test_size(),
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+        )
+        .expect("测试尺寸满足全部构造前置条件")
     }
 
     // 「序列化往返后哈希不变」「相同种子与尺寸生成的哈希相同」
@@ -284,8 +334,7 @@ mod tests {
         // 但 size 字段被改成了另一个尺寸——两个字段各自反序列化都
         // 合法，只有合在一起才不自洽，必须靠交叉校验拦住。
         // Arrange
-        let world = WorldState::new(test_size(), &GenParams::default())
-            .expect("测试尺寸满足全部构造前置条件");
+        let world = test_world();
         let mut tampered: serde_json::Value =
             serde_json::to_value(&world).expect("WorldState 全部字段可序列化");
         tampered["size"] = serde_json::json!({ "width": 128, "height": 128 });
@@ -302,8 +351,7 @@ mod tests {
         // 与上一条相反的分支：size 与 terrain 尺寸一致时，交叉校验
         // 必须放行，不能误伤合法存档。
         // Arrange
-        let world = WorldState::new(test_size(), &GenParams::default())
-            .expect("测试尺寸满足全部构造前置条件");
+        let world = test_world();
         let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
 
         // Act
@@ -318,8 +366,7 @@ mod tests {
         // 读档迁移或时间倒流类效果可能需要回拨时钟，advance 不应拒绝
         // 负值。
         // Arrange
-        let mut world = WorldState::new(test_size(), &GenParams::default())
-            .expect("测试尺寸满足全部构造前置条件");
+        let mut world = test_world();
         world.advance(100);
 
         // Act

@@ -68,6 +68,7 @@ use std::collections::HashSet;
 use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::chunk::ChunkGrid;
+use crate::terrain::TerrainTable;
 
 /// 一次视野计算得到的可见格集合。
 #[derive(Debug, Clone)]
@@ -116,7 +117,12 @@ impl VisibleSet {
 /// 停止的时机，返回的可见格依然全部满足
 /// `TorusSize::chebyshev(origin, pos) <= radius`：见 `tests/fov_blackbox.rs`
 /// 的属性测试。
-pub fn compute_fov(grid: &ChunkGrid, origin: TorusPos, radius: u32) -> VisibleSet {
+pub fn compute_fov(
+    grid: &ChunkGrid,
+    table: &TerrainTable,
+    origin: TorusPos,
+    radius: u32,
+) -> VisibleSet {
     let world = grid.world();
     let mut tiles = HashSet::new();
     tiles.insert(origin);
@@ -126,6 +132,7 @@ pub fn compute_fov(grid: &ChunkGrid, origin: TorusPos, radius: u32) -> VisibleSe
 
     let mut ctx = ScanContext {
         grid,
+        table,
         world,
         origin,
         radius_sq,
@@ -141,6 +148,7 @@ pub fn compute_fov(grid: &ChunkGrid, origin: TorusPos, radius: u32) -> VisibleSe
 /// 一次视野计算共享的只读/累积状态，打包传递以避免单个函数参数过多。
 struct ScanContext<'a> {
     grid: &'a ChunkGrid,
+    table: &'a TerrainTable,
     world: TorusSize,
     origin: TorusPos,
     radius_sq: u64,
@@ -311,7 +319,7 @@ fn scan_row_in_sector(
             ctx.tiles.insert(pos);
         }
 
-        if ctx.grid.terrain_at(pos).blocks_sight() {
+        if ctx.grid.terrain_at(pos).blocks_sight(ctx.table) {
             if in_clear_run && run_start.le(tile_low) {
                 next_sectors.push(Sector {
                     low: run_start,
@@ -337,7 +345,7 @@ fn scan_row_in_sector(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::terrain::TerrainKind;
+    use crate::terrain::{BaseTerrainIds, TerrainTable, base_terrain_fixture};
 
     /// 测试世界尺寸：远大于视野半径，避免环面绕回影响单元测试的几何
     /// 直觉（这些测试关心的是局部遮挡关系，不是绕回本身）。
@@ -345,19 +353,22 @@ mod tests {
         TorusSize::new(64, 64).expect("64x64 满足 ChunkGrid 的最小视口跨度")
     }
 
-    /// 一张没有任何阻挡地形的网格，代表开阔地带。
-    fn open_grid() -> ChunkGrid {
-        ChunkGrid::new(test_world()).expect("64x64 满足 ChunkGrid 的最小视口跨度")
+    /// 一张没有任何阻挡地形的网格，代表开阔地带，配上本体地形表。
+    fn open_grid() -> (BaseTerrainIds, TerrainTable, ChunkGrid) {
+        let (ids, table) = base_terrain_fixture();
+        let grid =
+            ChunkGrid::new(test_world(), ids.grass).expect("64x64 满足 ChunkGrid 的最小视口跨度");
+        (ids, table, grid)
     }
 
     #[test]
     fn 原点自身恒可见() {
         // Arrange
-        let grid = open_grid();
+        let (_ids, table, grid) = open_grid();
         let origin = grid.world().wrap(10, 10);
 
         // Act
-        let visible = compute_fov(&grid, origin, 5);
+        let visible = compute_fov(&grid, &table, origin, 5);
 
         // Assert
         assert!(visible.contains(origin));
@@ -366,11 +377,11 @@ mod tests {
     #[test]
     fn 半径为零时只看见原点() {
         // Arrange
-        let grid = open_grid();
+        let (_ids, table, grid) = open_grid();
         let origin = grid.world().wrap(10, 10);
 
         // Act
-        let visible = compute_fov(&grid, origin, 0);
+        let visible = compute_fov(&grid, &table, origin, 0);
 
         // Assert
         assert_eq!(visible.len(), 1);
@@ -380,15 +391,15 @@ mod tests {
     fn 墙后的格子不可见() {
         // 原点、墙、目标三点共线：墙直接挡在原点与目标之间。
         // Arrange
-        let mut grid = open_grid();
+        let (ids, table, mut grid) = open_grid();
         let world = grid.world();
         let origin = world.wrap(10, 10);
         let wall = world.wrap(12, 10);
         let behind_wall = world.wrap(14, 10);
-        grid.set_terrain(wall, TerrainKind::WALL_STONE);
+        grid.set_terrain(wall, ids.wall_stone);
 
         // Act
-        let visible = compute_fov(&grid, origin, 6);
+        let visible = compute_fov(&grid, &table, origin, 6);
 
         // Assert
         assert!(!visible.contains(behind_wall));
@@ -406,14 +417,14 @@ mod tests {
         // `墙格与原点的可见性对称` 属性测试钉住，不要靠改这条单测来
         // 补上。
         // Arrange
-        let mut grid = open_grid();
+        let (ids, table, mut grid) = open_grid();
         let world = grid.world();
         let origin = world.wrap(10, 10);
         let wall = world.wrap(12, 10);
-        grid.set_terrain(wall, TerrainKind::WALL_STONE);
+        grid.set_terrain(wall, ids.wall_stone);
 
         // Act
-        let visible = compute_fov(&grid, origin, 6);
+        let visible = compute_fov(&grid, &table, origin, 6);
 
         // Assert
         assert!(visible.contains(wall));
@@ -425,12 +436,12 @@ mod tests {
         // 圆」——若算法退化成方形视野（(2r+1)² = 441，r = 10 时），
         // 上界会先被戳穿；若视野异常小，下界会被戳穿。
         // Arrange
-        let grid = open_grid();
+        let (_ids, table, grid) = open_grid();
         let origin = grid.world().wrap(32, 32);
         let radius = 10u32;
 
         // Act
-        let visible = compute_fov(&grid, origin, radius);
+        let visible = compute_fov(&grid, &table, origin, radius);
 
         // Assert
         let lower = 3 * (radius as usize) * (radius as usize);

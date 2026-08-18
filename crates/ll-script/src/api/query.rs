@@ -76,7 +76,10 @@ pub fn register(engine: &mut ScriptEngine) {
 fn world_move_cost_at(x: i64, y: i64) -> i64 {
     with_active_world(0, |world| {
         let pos = world.size.wrap(x as i32, y as i32);
-        world.terrain.terrain_at(pos).move_cost() as i64
+        world
+            .terrain
+            .terrain_at(pos)
+            .move_cost(&world.terrain_table) as i64
     })
 }
 
@@ -84,7 +87,10 @@ fn world_move_cost_at(x: i64, y: i64) -> i64 {
 fn world_blocks_sight_at(x: i64, y: i64) -> bool {
     with_active_world(false, |world| {
         let pos = world.size.wrap(x as i32, y as i32);
-        world.terrain.terrain_at(pos).blocks_sight()
+        world
+            .terrain
+            .terrain_at(pos)
+            .blocks_sight(&world.terrain_table)
     })
 }
 
@@ -102,11 +108,14 @@ fn world_ambient_light() -> i64 {
 mod tests {
     use super::*;
     use ll_world::generate::GenParams;
-    use ll_world::terrain::TerrainKind;
+    use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
 
-    fn small_world() -> WorldState {
+    fn small_world() -> (WorldState, BaseTerrainIds) {
         let size = ll_core::torus::TorusSize::new(64, 64).unwrap();
-        WorldState::new(size, &GenParams::default()).unwrap()
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        let world =
+            WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table).unwrap();
+        (world, terrain_ids)
     }
 
     #[test]
@@ -127,10 +136,10 @@ mod tests {
         engine
             .load_source("(define (probe) (world-move-cost-at 0 0))".to_string())
             .unwrap();
-        let mut world = small_world();
+        let (mut world, terrain_ids) = small_world();
         world
             .terrain
-            .set_terrain(world.size.wrap(0, 0), TerrainKind::GRASS);
+            .set_terrain(world.size.wrap(0, 0), terrain_ids.grass);
 
         // Act
         let result = unsafe {
@@ -141,7 +150,7 @@ mod tests {
         };
 
         // Assert
-        let expected = TerrainKind::GRASS.move_cost() as isize;
+        let expected = terrain_ids.grass.move_cost(&world.terrain_table) as isize;
         assert_eq!(result, Ok(steel::rvals::SteelVal::IntV(expected)));
     }
 
@@ -153,7 +162,7 @@ mod tests {
         engine
             .load_source("(define (probe) (world-tick))".to_string())
             .unwrap();
-        let mut world = small_world();
+        let (mut world, _terrain_ids) = small_world();
         world.advance(5);
 
         // Act

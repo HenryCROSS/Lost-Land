@@ -69,6 +69,7 @@ use ll_world::generate::GenParams;
 use ll_world::light::{ambient_light, sight_radius_at};
 use ll_world::overview::continent_map;
 use ll_world::state::WorldState;
+use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
 use png::save_baseline_png;
 use std::sync::Arc;
 
@@ -179,6 +180,10 @@ impl GpuResources {
 /// 这里的玩家标记只是本 demo 自己的镜头/视野锚点，不是真正的游戏实体。
 struct Demo {
     world: WorldState,
+    /// 本体地形的固定索引缓存——demo 现造一个空 `Interner` 注册出来
+    /// （见 `ll_world::terrain::base_terrain_fixture` 文档），不牵扯
+    /// 真实的 mod 加载流程。
+    terrain_ids: BaseTerrainIds,
     player: TorusPos,
     camera: Camera,
     resources: Option<GpuResources>,
@@ -187,13 +192,14 @@ struct Demo {
 impl Demo {
     fn new() -> Demo {
         let size = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("演示世界尺寸为非零常量");
-        let mut world = WorldState::new(size, &GenParams::default())
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        let mut world = WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
             .expect("演示世界尺寸满足生成入口的全部约束");
         // 开局定在正午而非引擎默认的午夜，理由见 INITIAL_CLOCK_TICKS 文档。
         world.advance(INITIAL_CLOCK_TICKS);
 
-        let player = spawn::find_spawn(&world.terrain);
-        spawn::carve_wall_ridge(&mut world.terrain, player);
+        let player = spawn::find_spawn(&world.terrain, &world.terrain_table);
+        spawn::carve_wall_ridge(&mut world.terrain, player, &terrain_ids);
 
         let camera = Camera {
             center: player,
@@ -202,6 +208,7 @@ impl Demo {
 
         Demo {
             world,
+            terrain_ids,
             player,
             camera,
             resources: None,
@@ -228,15 +235,16 @@ impl Demo {
 /// 其中一个字段」混为一谈，报出并不存在的借用冲突。
 fn collect_sprites(
     world: &WorldState,
+    terrain_ids: &BaseTerrainIds,
     camera: &Camera,
     player: TorusPos,
     visible: &VisibleSet,
     tint: [f32; 4],
     resources: &mut GpuResources,
 ) {
-    push_terrain(world, camera, visible, tint, resources);
+    push_terrain(world, terrain_ids, camera, visible, tint, resources);
     push_player(camera, player, tint, resources);
-    push_minimap(world, resources);
+    push_minimap(world, terrain_ids, resources);
 }
 
 /// 画出相机视口内、且落在本帧视野（[`VisibleSet`]）内的地形瓦片。
@@ -247,6 +255,7 @@ fn collect_sprites(
 /// 不需要额外画一层「未探索」贴图。
 fn push_terrain(
     world: &WorldState,
+    terrain_ids: &BaseTerrainIds,
     camera: &Camera,
     visible: &VisibleSet,
     tint: [f32; 4],
@@ -257,7 +266,7 @@ fn push_terrain(
             continue;
         }
         let kind = world.terrain.terrain_at(pos);
-        let Some(name) = terrain_entry_name(kind) else {
+        let Some(name) = terrain_entry_name(kind, terrain_ids) else {
             continue;
         };
         let Some((entry, uv)) = resources.lookup(name) else {
@@ -304,14 +313,14 @@ fn push_player(camera: &Camera, player: TorusPos, tint: [f32; 4], resources: &mu
 /// 一部分，传统 roguelike 里小地图/大地图也通常不受局部光照影响
 /// ——若也被夜晚调暗，会让玩家在最需要靠小地图辨认方向的夜间场景里
 /// 反而看不清它，这与它的作用背道而驰。
-fn push_minimap(world: &WorldState, resources: &mut GpuResources) {
+fn push_minimap(world: &WorldState, terrain_ids: &BaseTerrainIds, resources: &mut GpuResources) {
     let cols = world.size.width().div_ceil(MINIMAP_DOWNSAMPLE);
     let cells = continent_map(world, MINIMAP_DOWNSAMPLE);
 
     for (index, cell) in cells.iter().enumerate() {
         let col = index as u32 % cols;
         let row = index as u32 / cols;
-        let Some(name) = terrain_entry_name(cell.terrain) else {
+        let Some(name) = terrain_entry_name(cell.terrain, terrain_ids) else {
             continue;
         };
         let Some((_, uv)) = resources.lookup(name) else {
@@ -406,11 +415,17 @@ impl AppHandler for Demo {
         // 这种极难复现的缺陷。
         let light = ambient_light(self.world.clock);
         let radius = sight_radius_at(BASE_SIGHT_RADIUS, light);
-        let visible = compute_fov(&self.world.terrain, self.player, radius);
+        let visible = compute_fov(
+            &self.world.terrain,
+            &self.world.terrain_table,
+            self.player,
+            radius,
+        );
         let tint = ambient_tint(self.world.clock);
 
         collect_sprites(
             &self.world,
+            &self.terrain_ids,
             &self.camera,
             self.player,
             &visible,

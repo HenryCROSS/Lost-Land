@@ -8,7 +8,7 @@ use ll_core::rng::DetRng;
 use ll_core::torus::TorusSize;
 use ll_world::chunk::ChunkGrid;
 use ll_world::fov::compute_fov;
-use ll_world::terrain::TerrainKind;
+use ll_world::terrain::{TerrainTable, base_terrain_fixture};
 use proptest::prelude::*;
 
 /// 属性测试用的世界宽度（格）。取值远大于测试用到的最大半径，
@@ -17,14 +17,16 @@ const WORLD_WIDTH: u32 = 64;
 /// 属性测试用的世界高度（格）。
 const WORLD_HEIGHT: u32 = 64;
 
-/// 按 `wall_seed` 确定性地铺出一张带随机墙体的网格。
+/// 按 `wall_seed` 确定性地铺出一张带随机墙体的网格，配上本体地形表。
 ///
 /// 用 [`DetRng`] 而非 `proptest` 自带的随机源直接生成地形：这样同一个
 /// `wall_seed` 恒对应同一张网格，`proptest` 收缩失败用例时能复现同一
 /// 张地图，而不是每次收缩都换一张全新的地图。
-fn random_grid(wall_seed: u64) -> ChunkGrid {
+fn random_grid(wall_seed: u64) -> (TerrainTable, ChunkGrid) {
+    let (terrain_ids, table) = base_terrain_fixture();
     let world = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("常量尺寸合法");
-    let mut grid = ChunkGrid::new(world).expect("64x64 满足 ChunkGrid 的最小视口跨度");
+    let mut grid =
+        ChunkGrid::new(world, terrain_ids.grass).expect("64x64 满足 ChunkGrid 的最小视口跨度");
     let mut rng = DetRng::for_entity(wall_seed, 0, 0);
 
     for y in 0..WORLD_HEIGHT as i32 {
@@ -33,11 +35,11 @@ fn random_grid(wall_seed: u64) -> ChunkGrid {
             // 太高又会让大部分格子相互不可见，两种极端都削弱这条属性
             // 测试的覆盖力。
             if rng.chance(1, 5) {
-                grid.set_terrain(world.wrap(x, y), TerrainKind::WALL_STONE);
+                grid.set_terrain(world.wrap(x, y), terrain_ids.wall_stone);
             }
         }
     }
-    grid
+    (table, grid)
 }
 
 proptest! {
@@ -53,14 +55,14 @@ proptest! {
         // 非对称算法会让玩家被自己看不见的敌人攻击——这条属性测试就是
         // 专门守护这一点：随机地形上随机取两点，互相可见性必须一致。
         // Arrange
-        let grid = random_grid(wall_seed);
+        let (table, grid) = random_grid(wall_seed);
         let world = grid.world();
         let a = world.wrap(ax, ay);
         let b = world.wrap(bx, by);
 
         // Act
-        let a_sees_b = compute_fov(&grid, a, radius).contains(b);
-        let b_sees_a = compute_fov(&grid, b, radius).contains(a);
+        let a_sees_b = compute_fov(&grid, &table, a, radius).contains(b);
+        let b_sees_a = compute_fov(&grid, &table, b, radius).contains(a);
 
         // Assert
         prop_assert_eq!(a_sees_b, b_sees_a);
@@ -74,12 +76,12 @@ proptest! {
         radius in 0u32..16,
     ) {
         // Arrange
-        let grid = random_grid(wall_seed);
+        let (table, grid) = random_grid(wall_seed);
         let world = grid.world();
         let origin = world.wrap(ox, oy);
 
         // Act
-        let visible = compute_fov(&grid, origin, radius);
+        let visible = compute_fov(&grid, &table, origin, radius);
 
         // Assert
         prop_assert!(visible.iter().all(|pos| world.chebyshev(origin, pos) <= radius));
@@ -100,21 +102,21 @@ proptest! {
         // 这条测试必定变红（已实测：把墙改成无条件可见后，本条在默认
         // 用例数下稳定失败；改回来后稳定通过）。
         // Arrange
-        let grid = random_grid(wall_seed);
+        let (table, grid) = random_grid(wall_seed);
         let world = grid.world();
         let origin = world.wrap(ox, oy);
-        let origin_visible = compute_fov(&grid, origin, radius);
+        let origin_visible = compute_fov(&grid, &table, origin, radius);
         let span = radius as i32;
 
         // Act & Assert
         for dy in -span..=span {
             for dx in -span..=span {
                 let wall_pos = world.wrap(origin.x() + dx, origin.y() + dy);
-                if !grid.terrain_at(wall_pos).blocks_sight() {
+                if !grid.terrain_at(wall_pos).blocks_sight(&table) {
                     continue;
                 }
                 let origin_sees_wall = origin_visible.contains(wall_pos);
-                let wall_sees_origin = compute_fov(&grid, wall_pos, radius).contains(origin);
+                let wall_sees_origin = compute_fov(&grid, &table, wall_pos, radius).contains(origin);
                 prop_assert_eq!(origin_sees_wall, wall_sees_origin);
             }
         }
@@ -130,12 +132,12 @@ proptest! {
         // 半径极大（含 u32::MAX）与原点贴着世界边缘（坐标取值范围含
         // 0 与宽/高减一）都在覆盖范围内。
         // Arrange
-        let grid = random_grid(wall_seed);
+        let (table, grid) = random_grid(wall_seed);
         let world = grid.world();
         let origin = world.wrap(ox, oy);
 
         // Act
-        let visible = compute_fov(&grid, origin, radius);
+        let visible = compute_fov(&grid, &table, origin, radius);
 
         // Assert
         prop_assert!(visible.contains(origin));

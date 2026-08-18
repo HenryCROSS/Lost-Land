@@ -14,7 +14,7 @@ use ll_core::torus::TorusSize;
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
 use crate::noise::{CELL_SIZE, TileableNoise};
-use crate::terrain::TerrainKind;
+use crate::terrain::{BaseTerrainIds, TerrainKind};
 
 /// 地形生成参数。
 ///
@@ -53,13 +53,22 @@ impl Default for GenParams {
 ///   运行时（玩家跨越世界边界看到地形突变），不如在生成入口直接拒绝。
 /// - 世界尺寸小于视口跨度时，由 [`ChunkGrid::new`] 返回
 ///   [`WorldError::WorldTooSmall`]。
-pub fn generate_terrain(world: TorusSize, params: &GenParams) -> Result<ChunkGrid, WorldError> {
+///
+/// `terrain_ids` 是调用方已经注册好的本体地形缓存（见
+/// [`crate::terrain::materialize_base_terrain`]）——生成算法本身只挑
+/// 「这格该是哪种地形」，具体某个名字对应哪个 [`TerrainKind`] 由调用方
+/// 决定，本函数不内置任何编译期常量。
+pub fn generate_terrain(
+    world: TorusSize,
+    params: &GenParams,
+    terrain_ids: &BaseTerrainIds,
+) -> Result<ChunkGrid, WorldError> {
     let noise = build_noise(world, params)?;
-    let mut grid = ChunkGrid::new(world)?;
+    let mut grid = ChunkGrid::new(world, terrain_ids.deep_water)?;
 
     for y in 0..world.height() as i32 {
         for x in 0..world.width() as i32 {
-            let kind = terrain_at_coord(&noise, params, x, y);
+            let kind = terrain_at_coord(&noise, params, x, y, terrain_ids);
             grid.set_terrain(world.wrap(x, y), kind);
         }
     }
@@ -95,38 +104,45 @@ fn build_noise(world: TorusSize, params: &GenParams) -> Result<TileableNoise, Wo
 /// 测试需要比较 `x = 0` 与 `x = world.width()` 这两个在环绕之后会被
 /// 判成同一个点的坐标，若这里的参数类型是已经环绕过的 `TorusPos`，
 /// 测试根本无法构造出这两个不同的原始坐标。
-fn terrain_at_coord(noise: &TileableNoise, params: &GenParams, x: i32, y: i32) -> TerrainKind {
+fn terrain_at_coord(
+    noise: &TileableNoise,
+    params: &GenParams,
+    x: i32,
+    y: i32,
+    terrain_ids: &BaseTerrainIds,
+) -> TerrainKind {
     let height = noise.octaves(x, y, params.octaves);
-    height_to_terrain(height, params)
+    height_to_terrain(height, params, terrain_ids)
 }
 
 /// 把噪声高度按阈值表映射为具体地形种类。
 ///
 /// 阈值全部取自 [`GenParams`] 的千分比整数，与 [`TileableNoise`] 的
 /// 输出区间保持一致，全程无浮点。
-fn height_to_terrain(height: i32, params: &GenParams) -> TerrainKind {
+fn height_to_terrain(height: i32, params: &GenParams, terrain_ids: &BaseTerrainIds) -> TerrainKind {
     if height < params.sea_level {
-        TerrainKind::DEEP_WATER
+        terrain_ids.deep_water
     } else if height < params.sea_level + 50 {
-        TerrainKind::SHALLOW_WATER
+        terrain_ids.shallow_water
     } else if height < params.sea_level + 100 {
-        TerrainKind::SAND
+        terrain_ids.sand
     } else if height < params.mountain_level - 150 {
-        TerrainKind::GRASS
+        terrain_ids.grass
     } else if height < params.mountain_level - 50 {
-        TerrainKind::FOREST
+        terrain_ids.forest
     } else if height < params.mountain_level {
-        TerrainKind::HILL
+        terrain_ids.hill
     } else if height < params.mountain_level + 100 {
-        TerrainKind::MOUNTAIN
+        terrain_ids.mountain
     } else {
-        TerrainKind::SNOW
+        terrain_ids.snow
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::base_terrain_fixture;
 
     /// 测试世界尺寸：64 是 [`CELL_SIZE`]（16）的整数倍，且大于
     /// [`ChunkGrid`] 要求的视口跨度（43×25），生成不会因尺寸被拒绝。
@@ -146,16 +162,17 @@ mod tests {
         result
     }
 
-    fn count_water(grid: &ChunkGrid) -> usize {
+    fn count_water(grid: &ChunkGrid, terrain_ids: &BaseTerrainIds) -> usize {
         collect_terrain(grid)
             .into_iter()
-            .filter(|kind| *kind == TerrainKind::DEEP_WATER || *kind == TerrainKind::SHALLOW_WATER)
+            .filter(|kind| *kind == terrain_ids.deep_water || *kind == terrain_ids.shallow_water)
             .count()
     }
 
     #[test]
     fn 相同种子生成完全相同的地形() {
         // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
         let world = test_world();
         let params = GenParams {
             seed: 42,
@@ -163,8 +180,10 @@ mod tests {
         };
 
         // Act
-        let first = generate_terrain(world, &params).expect("64x64 满足生成入口的约束");
-        let second = generate_terrain(world, &params).expect("64x64 满足生成入口的约束");
+        let first =
+            generate_terrain(world, &params, &terrain_ids).expect("64x64 满足生成入口的约束");
+        let second =
+            generate_terrain(world, &params, &terrain_ids).expect("64x64 满足生成入口的约束");
 
         // Assert
         assert_eq!(collect_terrain(&first), collect_terrain(&second));
@@ -173,6 +192,7 @@ mod tests {
     #[test]
     fn 不同种子生成不同的地形() {
         // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
         let world = test_world();
         let params_a = GenParams {
             seed: 1,
@@ -184,8 +204,8 @@ mod tests {
         };
 
         // Act
-        let a = generate_terrain(world, &params_a).expect("64x64 满足生成入口的约束");
-        let b = generate_terrain(world, &params_b).expect("64x64 满足生成入口的约束");
+        let a = generate_terrain(world, &params_a, &terrain_ids).expect("64x64 满足生成入口的约束");
+        let b = generate_terrain(world, &params_b, &terrain_ids).expect("64x64 满足生成入口的约束");
 
         // Assert
         assert_ne!(collect_terrain(&a), collect_terrain(&b));
@@ -194,11 +214,12 @@ mod tests {
     #[test]
     fn 世界宽度不是格子尺寸整数倍时生成失败() {
         // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
         let world = TorusSize::new(50, 64).expect("50x64 是合法的 TorusSize");
         let params = GenParams::default();
 
         // Act
-        let result = generate_terrain(world, &params);
+        let result = generate_terrain(world, &params, &terrain_ids);
 
         // Assert
         assert!(matches!(result, Err(WorldError::WorldNotTileable { .. })));
@@ -207,6 +228,7 @@ mod tests {
     #[test]
     fn 海平面调高会增加水域格数() {
         // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
         let world = test_world();
         let low_sea = GenParams {
             seed: 7,
@@ -220,11 +242,13 @@ mod tests {
         };
 
         // Act
-        let low_grid = generate_terrain(world, &low_sea).expect("64x64 满足生成入口的约束");
-        let high_grid = generate_terrain(world, &high_sea).expect("64x64 满足生成入口的约束");
+        let low_grid =
+            generate_terrain(world, &low_sea, &terrain_ids).expect("64x64 满足生成入口的约束");
+        let high_grid =
+            generate_terrain(world, &high_sea, &terrain_ids).expect("64x64 满足生成入口的约束");
 
         // Assert
-        assert!(count_water(&high_grid) > count_water(&low_grid));
+        assert!(count_water(&high_grid, &terrain_ids) > count_water(&low_grid, &terrain_ids));
     }
 
     #[test]
@@ -233,6 +257,7 @@ mod tests {
         // 所以这里直接比较生成入口会用到的同一条代码路径，而不是
         // 依赖 noise 模块自己的无缝性测试。
         // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
         let world = test_world();
         let params = GenParams {
             seed: 123,
@@ -242,8 +267,8 @@ mod tests {
 
         // Act & Assert
         for y in 0..world.height() as i32 {
-            let west = terrain_at_coord(&noise, &params, 0, y);
-            let east = terrain_at_coord(&noise, &params, world.width() as i32, y);
+            let west = terrain_at_coord(&noise, &params, 0, y, &terrain_ids);
+            let east = terrain_at_coord(&noise, &params, world.width() as i32, y, &terrain_ids);
             assert_eq!(west, east);
         }
     }
@@ -251,6 +276,7 @@ mod tests {
     #[test]
     fn 南北接缝两侧的地形一致() {
         // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
         let world = test_world();
         let params = GenParams {
             seed: 456,
@@ -260,8 +286,8 @@ mod tests {
 
         // Act & Assert
         for x in 0..world.width() as i32 {
-            let north = terrain_at_coord(&noise, &params, x, 0);
-            let south = terrain_at_coord(&noise, &params, x, world.height() as i32);
+            let north = terrain_at_coord(&noise, &params, x, 0, &terrain_ids);
+            let south = terrain_at_coord(&noise, &params, x, world.height() as i32, &terrain_ids);
             assert_eq!(north, south);
         }
     }

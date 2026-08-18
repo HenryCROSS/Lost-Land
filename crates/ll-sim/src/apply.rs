@@ -88,7 +88,7 @@ mod tests {
     use ll_core::torus::TorusSize;
     use ll_world::entity::{Agent, BaseStats};
     use ll_world::generate::GenParams;
-    use ll_world::terrain::TerrainKind;
+    use ll_world::terrain::base_terrain_fixture;
 
     use super::*;
 
@@ -96,7 +96,9 @@ mod tests {
     /// `WorldState::new` 的前置条件（与 `ll-world` 既有测试同一常量）。
     fn test_world() -> WorldState {
         let size = TorusSize::new(64, 64).expect("64x64 满足整除约束");
-        WorldState::new(size, &GenParams::default()).expect("测试尺寸满足全部构造前置条件")
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
+            .expect("测试尺寸满足全部构造前置条件")
     }
 
     fn blank_agent(world: &WorldState) -> Agent {
@@ -198,15 +200,16 @@ mod tests {
         // 依赖——SetTerrain 直接落在 WorldState::hash 已经覆盖的地形
         // 网格上，不需要为这条测试额外扩大 hash 的覆盖范围。
         // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
         let pos_a = TorusSize::new(64, 64).expect("64x64 合法").wrap(2, 2);
         let pos_b = TorusSize::new(64, 64).expect("64x64 合法").wrap(40, 12);
         let effect_a = Effect::SetTerrain {
             pos: pos_a,
-            kind: TerrainKind::FLOOR_STONE,
+            kind: terrain_ids.floor_stone,
         };
         let effect_b = Effect::SetTerrain {
             pos: pos_b,
-            kind: TerrainKind::WALL_STONE,
+            kind: terrain_ids.wall_stone,
         };
 
         let mut forward = test_world();

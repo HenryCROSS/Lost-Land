@@ -28,17 +28,24 @@ const MIN_WORLD_HEIGHT: u32 = 25;
 
 /// 一块 `CHUNK_SIZE × CHUNK_SIZE` 的地形。
 ///
-/// 新建时全部填为 [`TerrainKind::DEEP_WATER`]：这只是分配时的占位值，
-/// 真正的地形由后续批次的生成流程写入。
+/// 新建时全部填为调用方指定的 `fill`：这只是分配时的占位值，真正的
+/// 地形由后续批次的生成流程写入。
+///
+/// # 为什么 `fill` 是参数，不是编译期常量
+///
+/// 旧版直接写死 [`TerrainKind::DEEP_WATER`]；地形迁入注册表后
+/// `TerrainKind` 不再有编译期常量（数值由注册期加载顺序决定，见
+/// `crate::terrain` 模块文档），调用方必须显式传入一个已经从
+/// `BaseTerrainIds`（或 mod 自己的地形表）解析出来的占位值。
 #[derive(Debug, Clone)]
 struct Chunk {
     tiles: Vec<TerrainKind>,
 }
 
 impl Chunk {
-    fn new() -> Self {
+    fn new(fill: TerrainKind) -> Self {
         Chunk {
-            tiles: vec![TerrainKind::DEEP_WATER; (CHUNK_SIZE * CHUNK_SIZE) as usize],
+            tiles: vec![fill; (CHUNK_SIZE * CHUNK_SIZE) as usize],
         }
     }
 }
@@ -57,7 +64,11 @@ impl ChunkGrid {
     /// 世界任一维度小于视口跨度（[`MIN_WORLD_WIDTH`] × [`MIN_WORLD_HEIGHT`]）
     /// 时返回 [`WorldError::WorldTooSmall`]：与其让缺陷在运行时表现为
     /// 视觉异常（重复坐标、地形填不满留黑块），不如在构造点直接拒绝。
-    pub fn new(world: TorusSize) -> Result<Self, WorldError> {
+    ///
+    /// `fill` 是全部格子的初始占位地形，见 [`Chunk::new`] 文档「为什么
+    /// `fill` 是参数」一节——调用方通常传入 `BaseTerrainIds::deep_water`
+    /// 或等价的 mod 定义。
+    pub fn new(world: TorusSize, fill: TerrainKind) -> Result<Self, WorldError> {
         if world.width() < MIN_WORLD_WIDTH || world.height() < MIN_WORLD_HEIGHT {
             return Err(WorldError::WorldTooSmall {
                 width: world.width(),
@@ -74,7 +85,7 @@ impl ChunkGrid {
         Ok(ChunkGrid {
             world,
             chunks_x,
-            chunks: (0..chunk_total).map(|_| Chunk::new()).collect(),
+            chunks: (0..chunk_total).map(|_| Chunk::new(fill)).collect(),
         })
     }
 
@@ -119,11 +130,18 @@ impl ChunkGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::terrain::{BaseTerrainIds, base_terrain_fixture};
     use ll_core::torus::TorusSize;
 
-    fn grid() -> ChunkGrid {
+    fn grid_with(fill: TerrainKind) -> ChunkGrid {
         let world = TorusSize::new(64, 64).expect("常量非零");
-        ChunkGrid::new(world).expect("64x64 大于视口跨度")
+        ChunkGrid::new(world, fill).expect("64x64 大于视口跨度")
+    }
+
+    fn fixture() -> (BaseTerrainIds, ChunkGrid) {
+        let (ids, _table) = base_terrain_fixture();
+        let grid = grid_with(ids.deep_water);
+        (ids, grid)
     }
 
     #[test]
@@ -132,10 +150,11 @@ mod tests {
         // 地形填不满留黑块。与其让缺陷在运行时表现为视觉异常，
         // 不如在构造点直接拒绝。
         // Arrange
+        let (ids, _table) = base_terrain_fixture();
         let tiny = TorusSize::new(20, 20).expect("常量非零");
 
         // Act
-        let result = ChunkGrid::new(tiny);
+        let result = ChunkGrid::new(tiny, ids.deep_water);
 
         // Assert
         assert!(result.is_err());
@@ -144,30 +163,30 @@ mod tests {
     #[test]
     fn 写入后可读回同一地形() {
         // Arrange
-        let mut grid = grid();
+        let (ids, mut grid) = fixture();
         let pos = grid.world().wrap(10, 20);
 
         // Act
-        grid.set_terrain(pos, TerrainKind::MOUNTAIN);
+        grid.set_terrain(pos, ids.mountain);
 
         // Assert
-        assert_eq!(grid.terrain_at(pos), TerrainKind::MOUNTAIN);
+        assert_eq!(grid.terrain_at(pos), ids.mountain);
     }
 
     #[test]
     fn 跨块边界的写入不会污染本块() {
         // 块边界是分块存储最容易出错的地方：算错块索引会让写入落到邻块。
         // Arrange
-        let mut grid = grid();
+        let (ids, mut grid) = fixture();
         let inside = grid.world().wrap(31, 31);
         let across = grid.world().wrap(32, 32);
 
         // Act
-        grid.set_terrain(inside, TerrainKind::SAND);
-        grid.set_terrain(across, TerrainKind::SNOW);
+        grid.set_terrain(inside, ids.sand);
+        grid.set_terrain(across, ids.snow);
 
         // Assert
-        assert_eq!(grid.terrain_at(inside), TerrainKind::SAND);
+        assert_eq!(grid.terrain_at(inside), ids.sand);
     }
 
     #[test]
@@ -176,48 +195,57 @@ mod tests {
         // 落到第三块而非邻块，那样 inside 依然不受影响，此测试才能
         // 揭出这类错误。
         // Arrange
-        let mut grid = grid();
+        let (ids, mut grid) = fixture();
         let inside = grid.world().wrap(31, 31);
         let across = grid.world().wrap(32, 32);
 
         // Act
-        grid.set_terrain(inside, TerrainKind::SAND);
-        grid.set_terrain(across, TerrainKind::SNOW);
+        grid.set_terrain(inside, ids.sand);
+        grid.set_terrain(across, ids.snow);
 
         // Assert
-        assert_eq!(grid.terrain_at(across), TerrainKind::SNOW);
+        assert_eq!(grid.terrain_at(across), ids.snow);
     }
 
     #[test]
     fn 环面绕回的坐标指向同一格() {
         // Arrange
-        let mut grid = grid();
+        let (ids, mut grid) = fixture();
         let origin = grid.world().wrap(0, 0);
         let wrapped = grid.world().wrap(64, 64);
 
         // Act
-        grid.set_terrain(origin, TerrainKind::FOREST);
+        grid.set_terrain(origin, ids.forest);
 
         // Assert
-        assert_eq!(grid.terrain_at(wrapped), TerrainKind::FOREST);
+        assert_eq!(grid.terrain_at(wrapped), ids.forest);
     }
 
     #[test]
     fn 山地阻挡视线() {
-        // Arrange & Act & Assert
-        assert!(TerrainKind::MOUNTAIN.blocks_sight());
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+
+        // Act & Assert
+        assert!(ids.mountain.blocks_sight(&table));
     }
 
     #[test]
     fn 草地不阻挡视线() {
-        // Arrange & Act & Assert
-        assert!(!TerrainKind::GRASS.blocks_sight());
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+
+        // Act & Assert
+        assert!(!ids.grass.blocks_sight(&table));
     }
 
     #[test]
     fn 不可通行地形的移动代价为最大值() {
         // 用 u32::MAX 而非 Option，让寻路算法不必对每格做分支判断。
-        // Arrange & Act & Assert
-        assert_eq!(TerrainKind::DEEP_WATER.move_cost(), u32::MAX);
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+
+        // Act & Assert
+        assert_eq!(ids.deep_water.move_cost(&table), u32::MAX);
     }
 }

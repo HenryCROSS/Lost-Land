@@ -316,7 +316,11 @@ fn ai_intent(world: &WorldState, actor: EntityId, player: EntityId) -> Intent {
     let dest = world
         .size
         .wrap(agent.pos.x() + step_x, agent.pos.y() + step_y);
-    if world.terrain.terrain_at(dest).blocks_move() {
+    if world
+        .terrain
+        .terrain_at(dest)
+        .blocks_move(&world.terrain_table)
+    {
         return Intent::Wait { actor };
     }
     Intent::Move { actor, dir }
@@ -371,10 +375,14 @@ mod tests {
     use ll_platform::input::GameKey;
     use ll_world::entity::{Agent, BaseStats};
     use ll_world::generate::GenParams;
+    use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
 
-    fn test_world() -> WorldState {
+    fn test_world() -> (WorldState, BaseTerrainIds) {
         let size = TorusSize::new(64, 64).expect("64x64 满足整除约束");
-        WorldState::new(size, &GenParams::default()).expect("测试尺寸满足全部构造前置条件")
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        let world = WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
+            .expect("测试尺寸满足全部构造前置条件");
+        (world, terrain_ids)
     }
 
     fn spawn_at(world: &mut WorldState, pos: (i32, i32), dexterity: i32) -> EntityId {
@@ -410,7 +418,7 @@ mod tests {
     #[test]
     fn 相邻时ai选择攻击而非移动() {
         // Arrange
-        let mut world = test_world();
+        let (mut world, _terrain_ids) = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
         let enemy = spawn_at(&mut world, (6, 5), 10);
 
@@ -427,12 +435,12 @@ mod tests {
         // 下一格是否可通行（见其文档「移动前必须先看一眼地形」），若
         // 依赖生成地形恰好可通行，这条测试会随生成参数/世界尺寸的调整
         // 变得脆弱。
-        let mut world = test_world();
+        let (mut world, terrain_ids) = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
         let enemy = spawn_at(&mut world, (10, 5), 10);
         world
             .terrain
-            .set_terrain(world.size.wrap(9, 5), ll_world::terrain::TerrainKind::GRASS);
+            .set_terrain(world.size.wrap(9, 5), terrain_ids.grass);
 
         // Act
         let intent = ai_intent(&world, enemy, player);
@@ -450,7 +458,7 @@ mod tests {
     #[test]
     fn 移动到敌人所在格被路由成攻击() {
         // Arrange
-        let mut world = test_world();
+        let (mut world, _terrain_ids) = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
         let enemy = spawn_at(&mut world, (6, 5), 10);
         let all = vec![combatant(player), combatant(enemy)];
@@ -472,11 +480,11 @@ mod tests {
     #[test]
     fn 移动到空地不被路由成攻击() {
         // Arrange
-        let mut world = test_world();
+        let (mut world, terrain_ids) = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
         world
             .terrain
-            .set_terrain(world.size.wrap(6, 5), ll_world::terrain::TerrainKind::GRASS);
+            .set_terrain(world.size.wrap(6, 5), terrain_ids.grass);
         let all = vec![combatant(player)];
         let raw = Intent::Move {
             actor: player,
@@ -495,7 +503,7 @@ mod tests {
         // 这是「快角色在慢角色一次行动窗口内行动多次」这条核心验收点
         // 的自动化回归——图形环境不可用时，这条测试就是替代证据。
         // Arrange：一快一慢两个敌人都离玩家很远，纯移动不触发攻击。
-        let mut world = test_world();
+        let (mut world, _terrain_ids) = test_world();
         let player = spawn_at(&mut world, (0, 0), 10);
         let fast = spawn_at(&mut world, (40, 0), 30);
         let slow = spawn_at(&mut world, (0, 40), 5);
@@ -532,7 +540,7 @@ mod tests {
     #[test]
     fn 死亡实体不再出现在后续的时间轴预览中() {
         // Arrange：玩家攻击力设得极高，一击必杀相邻敌人。
-        let mut world = test_world();
+        let (mut world, _terrain_ids) = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
         world
             .actors
@@ -580,7 +588,7 @@ mod tests {
         // 已被移出时间轴，若函数只在弹出玩家自己的条目时才返回，就再
         // 也等不到那个条件成立，会转而对旁观者乙反复空转直到耗尽上限。
         // Arrange
-        let mut world = test_world();
+        let (mut world, _terrain_ids) = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
         let killer = spawn_at(&mut world, (6, 5), 10);
         world

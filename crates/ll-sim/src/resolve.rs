@@ -27,7 +27,6 @@
 use ll_core::time::Tick;
 use ll_world::entity::EntityId;
 use ll_world::state::WorldState;
-use ll_world::terrain::TerrainKind;
 
 use crate::combat::{Penetration, damage_after_defense};
 use crate::effect::Effect;
@@ -35,9 +34,9 @@ use crate::intent::{Direction, Intent};
 use crate::timeline::action_cost;
 
 /// 非位移动作（等待、攻击、开门）的基础代价，与平地移动同一基准
-/// （[`TerrainKind::GRASS`] 的 `move_cost()` 恰为这个值）——本批次没有
-/// 武器速度、技能读条之类会让这些动作耗时不同于「一次基准行动」的
-/// 系统，统一按这个基准计费，接入那些系统时按动作类型分别替换即可。
+/// （草地的 `move_cost` 恰为这个值）——本批次没有武器速度、技能读条
+/// 之类会让这些动作耗时不同于「一次基准行动」的系统，统一按这个基准
+/// 计费，接入那些系统时按动作类型分别替换即可。
 const BASE_ACTION_COST: u32 = 100;
 
 /// 基准有效敏捷，对应 `BaseStats::BASELINE` 的敏捷值（10，调整值为零）。
@@ -119,9 +118,14 @@ fn resolve_wait(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 
 /// 朝某方向移动一格：按目的地的地形分三种情形处理。
 ///
-/// - 目的地是关着的门：产生开门效果（[`TerrainKind::DOOR_CLOSED`] →
-///   [`TerrainKind::DOOR_OPEN`]），而不是移动效果——门挡住了这一步，
-///   但「撞门」本身是有意义的动作，不该像撞墙一样什么都不发生。
+/// - 目的地是一格「撞入即开」的地形（[`ll_world::terrain::TerrainTable::opens_into`]
+///   有值，例如关着的门）：产生把该格改写成 `opens_into` 目标地形的
+///   效果，而不是移动效果——门挡住了这一步，但「撞门」本身是有意义的
+///   动作，不该像撞墙一样什么都不发生。**这条规则是任何地形都能声明的
+///   属性，不是只对某个硬编码地形 ID 生效的特判**——见
+///   `ll_world::terrain` 模块文档「`opens_into`」一节：这正是本次迁移
+///   撞见并修掉的一处 API 洞，mod 现在可以给自己的地形也声明同样的
+///   行为。
 /// - 目的地完全不可通行（墙、窗等）：不产生任何效果，这一步作废。
 /// - 目的地可通行：产生移动效果，行动耗时按该地形的分级 `move_cost`
 ///   计算——浅水、山地这类「过得去但更慢」的地形因此耗时更长。
@@ -134,12 +138,12 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
     let terrain = world.terrain.terrain_at(dest);
     let speed = effective_speed_from_dexterity(agent.stats.dexterity);
 
-    if terrain == TerrainKind::DOOR_CLOSED {
+    if let Some(open_kind) = terrain.opens_into(&world.terrain_table) {
         let cost = action_cost(BASE_ACTION_COST, speed);
         return vec![
             Effect::SetTerrain {
                 pos: dest,
-                kind: TerrainKind::DOOR_OPEN,
+                kind: open_kind,
             },
             Effect::ScheduleNext {
                 actor,
@@ -148,11 +152,11 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
         ];
     }
 
-    if terrain.blocks_move() {
+    if terrain.blocks_move(&world.terrain_table) {
         return Vec::new();
     }
 
-    let cost = action_cost(terrain.move_cost(), speed);
+    let cost = action_cost(terrain.move_cost(&world.terrain_table), speed);
     vec![
         Effect::MoveTo { actor, pos: dest },
         Effect::ScheduleNext {
@@ -204,17 +208,22 @@ fn resolve_attack(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<
     effects
 }
 
-/// 开启某处的门：目的地不是关着的门时，这一步作废、不产生任何效果——
-/// 与 [`resolve_move`] 撞墙时的处理一致，都是「动作在这个世界里无
-/// 意义，静默作废」而不是报错。
+/// 开启某处的门：目的地不是一格「撞入即开」的地形时，这一步作废、不
+/// 产生任何效果——与 [`resolve_move`] 撞墙时的处理一致，都是「动作在
+/// 这个世界里无意义，静默作废」而不是报错。见 [`resolve_move`] 文档
+/// 「`opens_into`」一节：这里同样查表，不再恒等比较某个硬编码地形 ID。
 fn resolve_open_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
     let door_pos = world.size.wrap(pos.0, pos.1);
-    if world.terrain.terrain_at(door_pos) != TerrainKind::DOOR_CLOSED {
+    let Some(open_kind) = world
+        .terrain
+        .terrain_at(door_pos)
+        .opens_into(&world.terrain_table)
+    else {
         return Vec::new();
-    }
+    };
 
     let cost = action_cost(
         BASE_ACTION_COST,
@@ -223,7 +232,7 @@ fn resolve_open_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Ve
     vec![
         Effect::SetTerrain {
             pos: door_pos,
-            kind: TerrainKind::DOOR_OPEN,
+            kind: open_kind,
         },
         Effect::ScheduleNext {
             actor,
@@ -237,15 +246,26 @@ mod tests {
     use ll_core::torus::TorusSize;
     use ll_world::entity::{Agent, BaseStats};
     use ll_world::generate::GenParams;
+    use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
 
     use super::*;
 
     /// 测试世界尺寸：64 是噪声格点周期的整数倍，满足
     /// `WorldState::new` 的前置条件（与 `ll-sim`/`ll-world` 既有测试
     /// 同一常量）。
-    fn test_world() -> WorldState {
+    ///
+    /// 返回值附带 [`BaseTerrainIds`]：`terrain_ids` 与
+    /// `world.terrain_table` 必须来自同一次 [`base_terrain_fixture`]
+    /// 调用——`ContentIndex` 只在产出它的那个 `Interner` 里有意义
+    /// （`ll_core::ident` 模块文档），两次独立调用各自的索引分配虽然
+    /// 因为固定顺序而恰好数值相同，但把它们当成「必须配对」处理更不
+    /// 容易在将来注册顺序调整时踩坑。
+    fn test_world() -> (WorldState, BaseTerrainIds) {
         let size = TorusSize::new(64, 64).expect("64x64 满足整除约束");
-        WorldState::new(size, &GenParams::default()).expect("测试尺寸满足全部构造前置条件")
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        let world = WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
+            .expect("测试尺寸满足全部构造前置条件");
+        (world, terrain_ids)
     }
 
     /// 造一个占位实体，站在 `(5, 5)`，六项主属性取基准值。
@@ -307,11 +327,11 @@ mod tests {
         // 本身也绝不应改变世界的哈希（哈希已覆盖地形与实体状态，见
         // WorldState::hash 文档）。
         // Arrange
-        let mut world = test_world();
+        let (mut world, terrain_ids) = test_world();
         let actor = spawn_agent(&mut world);
         world
             .terrain
-            .set_terrain(east_of_spawn(&world), TerrainKind::GRASS);
+            .set_terrain(east_of_spawn(&world), terrain_ids.grass);
         let intent = Intent::Move {
             actor,
             dir: Direction::East,
@@ -329,11 +349,11 @@ mod tests {
     #[test]
     fn 移动到不可通行地形不产生移动效果() {
         // Arrange
-        let mut world = test_world();
+        let (mut world, terrain_ids) = test_world();
         let actor = spawn_agent(&mut world);
         world
             .terrain
-            .set_terrain(east_of_spawn(&world), TerrainKind::WALL_STONE);
+            .set_terrain(east_of_spawn(&world), terrain_ids.wall_stone);
         let intent = Intent::Move {
             actor,
             dir: Direction::East,
@@ -349,17 +369,17 @@ mod tests {
     #[test]
     fn 移动到浅水的行动耗时高于草地() {
         // Arrange
-        let mut grass_world = test_world();
+        let (mut grass_world, grass_ids) = test_world();
         let grass_actor = spawn_agent(&mut grass_world);
         grass_world
             .terrain
-            .set_terrain(east_of_spawn(&grass_world), TerrainKind::GRASS);
+            .set_terrain(east_of_spawn(&grass_world), grass_ids.grass);
 
-        let mut water_world = test_world();
+        let (mut water_world, water_ids) = test_world();
         let water_actor = spawn_agent(&mut water_world);
         water_world
             .terrain
-            .set_terrain(east_of_spawn(&water_world), TerrainKind::SHALLOW_WATER);
+            .set_terrain(east_of_spawn(&water_world), water_ids.shallow_water);
 
         // Act
         let grass_effects = resolve(
@@ -390,11 +410,11 @@ mod tests {
         // 地形；玩家的「攻击」输入落到 resolve 这里，撞见关着的门时
         // 被派生成开门而不是造成伤害。
         // Arrange
-        let mut world = test_world();
+        let (mut world, terrain_ids) = test_world();
         let actor = spawn_agent(&mut world);
         world
             .terrain
-            .set_terrain(east_of_spawn(&world), TerrainKind::DOOR_CLOSED);
+            .set_terrain(east_of_spawn(&world), terrain_ids.door_closed);
         let intent = Intent::Move {
             actor,
             dir: Direction::East,
@@ -406,16 +426,83 @@ mod tests {
         // Assert
         assert!(effects.iter().any(|effect| matches!(
             effect,
-            Effect::SetTerrain {
-                kind: TerrainKind::DOOR_OPEN,
-                ..
-            }
+            Effect::SetTerrain { kind, .. } if *kind == terrain_ids.door_open
         )));
         assert!(
             !effects
                 .iter()
                 .any(|effect| matches!(effect, Effect::Damage { .. }))
         );
+    }
+
+    #[test]
+    fn 撞入即开不是只对关着的门生效的特判() {
+        // 这是本次迁移撞见并修掉的 API 洞的直接验收：opens_into 是
+        // 任意地形都能声明的属性，不是只有 lostland:door_closed 才有
+        // 的硬编码特权——一个假想 mod 注册的「活板门」同样应该走这条
+        // 通用路径，而不需要去改 ll-sim 的源码。
+        //
+        // 用同一个 Interner 先注册本体 17 个地形、再追加两个自定义地形
+        // ——不能各自新起一个 Interner：ContentIndex 只在产出它的那个
+        // Interner 里有意义，另起一个会与本体的 0..17 撞号。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let (terrain_ids, mut table) =
+            ll_world::terrain::materialize_base_terrain(&mut |id| interner.intern(id))
+                .expect("本体地形声明表内部一致");
+        let hatch_open = ll_world::terrain::TerrainKind::from_index(
+            interner
+                .intern(ll_core::ident::NamespacedId::parse("yourmod:hatch_open").expect("合法")),
+        );
+        let hatch_closed = ll_world::terrain::TerrainKind::from_index(
+            interner
+                .intern(ll_core::ident::NamespacedId::parse("yourmod:hatch_closed").expect("合法")),
+        );
+        table
+            .define(
+                hatch_open.index(),
+                ll_world::terrain::TerrainAttrs {
+                    blocks_sight: false,
+                    blocks_move: false,
+                    move_cost: 100,
+                    opens_into: None,
+                },
+            )
+            .expect("测试声明内部自洽");
+        table
+            .define(
+                hatch_closed.index(),
+                ll_world::terrain::TerrainAttrs {
+                    blocks_sight: false,
+                    blocks_move: true,
+                    move_cost: u32::MAX,
+                    opens_into: Some(hatch_open),
+                },
+            )
+            .expect("测试声明内部自洽");
+
+        let size = TorusSize::new(64, 64).expect("64x64 满足整除约束");
+        let mut world = WorldState::new(size, &GenParams::default(), &terrain_ids, table)
+            .expect("测试尺寸满足全部构造前置条件");
+        world
+            .terrain
+            .set_terrain(east_of_spawn(&world), hatch_closed);
+        let actor = spawn_agent(&mut world);
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::Move {
+                actor,
+                dir: Direction::East,
+            },
+        );
+
+        // Assert
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::SetTerrain { kind, .. } if *kind == hatch_open
+        )));
     }
 
     #[test]
@@ -426,9 +513,9 @@ mod tests {
         // 调度器「敏捷高者能在同一窗口内多行动几次」这条核心手感因此在
         // 结算层根本不成立。
         // Arrange
-        let mut slow_world = test_world();
+        let (mut slow_world, _slow_ids) = test_world();
         let slow_actor = spawn_agent_with_dexterity(&mut slow_world, 5);
-        let mut fast_world = test_world();
+        let (mut fast_world, _fast_ids) = test_world();
         let fast_actor = spawn_agent_with_dexterity(&mut fast_world, 40);
 
         // Act
