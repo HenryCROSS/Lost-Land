@@ -34,6 +34,23 @@ use crate::effect::Effect;
 /// 在本文件之外看到 `&mut WorldState` 紧跟着字段赋值，就是这条纪律
 /// 被打破的信号，这正是简报原文给出的兜底标准（「在类型上做不到，
 /// 或至少显然错误」的后半句）。
+///
+/// # 目标实体不存在时：忽略，不报错
+///
+/// `Damage`/`Kill`（以及 `MoveTo`/`ScheduleNext`/`AdjustWallet`）的
+/// `target`/`actor` 都可能指向一个已经不存在的实体——时间轴队列或
+/// 一批 `resolve` 产出的 `Effect` 里，可能残留着指向刚被别的 `Effect`
+/// 销毁的实体的条目（例如同一轮结算里先 `Kill` 后又对同一目标
+/// `Damage`）。这里统一选择**静默忽略**而不是返回 `Err`：
+///
+/// 1. 这与既有五个分支（`MoveTo`/`ScheduleNext`/`AdjustWallet`
+///    用 `if let Some(..)`、`Arena::despawn` 对不存在的实体自己返回
+///    `false`）是同一套行为，`Damage`/`Kill` 不该是例外，否则调用方
+///    得区分「这个 `Effect` 需要处理返回值，那个不需要」。
+/// 2. `apply` 的签名是 `fn apply(..)`，不返回 `Result`——真要让某个
+///    分支报错，六个分支就都要改签名，这是比本次任务大得多的改动。
+/// 3. 目标不存在本身不是异常状况（见规则 2 的场景），是结算并发/时序
+///    下的正常可能性，不需要中断整批 `Effect` 的应用。
 pub fn apply(world: &mut WorldState, effect: &Effect) {
     match *effect {
         Effect::MoveTo { actor, pos } => {
@@ -42,11 +59,12 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
             }
         }
         Effect::Damage { target, amount } => {
-            *world.health.entry(target).or_insert(0) -= amount;
+            if let Some(agent) = world.actors.get_mut(target) {
+                agent.health -= amount;
+            }
         }
         Effect::Kill { target } => {
             world.actors.despawn(target);
-            world.health.remove(&target);
         }
         Effect::ScheduleNext { actor, at } => {
             if let Some(agent) = world.actors.get_mut(actor) {
@@ -92,6 +110,7 @@ mod tests {
             pos: world.size.wrap(0, 0),
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
             affiliations: Vec::new(),
             wallet: 0,
             profession,
@@ -129,13 +148,19 @@ mod tests {
         let mut world = test_world();
         let agent = blank_agent(&world);
         let target = world.actors.spawn(agent);
-        world.health.insert(target, 100);
 
         // Act
         apply(&mut world, &Effect::Damage { target, amount: 30 });
 
         // Assert
-        assert_eq!(world.health[&target], 70);
+        assert_eq!(
+            world
+                .actors
+                .get(target)
+                .expect("刚生成的实体必然存在")
+                .health,
+            Agent::STARTING_HEALTH - 30
+        );
     }
 
     #[test]

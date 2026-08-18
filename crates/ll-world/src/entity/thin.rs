@@ -168,6 +168,7 @@ impl ThinPopulation {
             pos: at,
             stats: BaseStats::BASELINE,
             next_action_at: now,
+            health: Agent::STARTING_HEALTH,
             affiliations: Vec::new(),
             wallet,
             profession: self.profession[index],

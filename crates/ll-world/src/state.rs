@@ -10,8 +10,6 @@
 //! 全程禁止浮点数，理由同 `ll-core`：浮点在不同平台/编译器/优化级别下
 //! 的运算结果可能有细微差异，跨平台存档兼容性会被悄悄破坏。
 
-use std::collections::BTreeMap;
-
 use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
@@ -21,7 +19,7 @@ use ll_core::torus::TorusSize;
 
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
-use crate::entity::{Agent, Arena, EntityId, ThinPopulation};
+use crate::entity::{Agent, Arena, ThinPopulation};
 use crate::generate::{GenParams, generate_terrain};
 use crate::terrain::TerrainKind;
 
@@ -29,21 +27,6 @@ use crate::terrain::TerrainKind;
 ///
 /// 全部字段公开：存档格式就是这个结构体本身，不经过额外的 DTO 转换层
 /// ——多一层转换就多一处可能与本体字段漂移的地方。
-///
-/// # 为什么 `health` 单独存在，而不是 `Agent` 的字段（P3 批次 B）
-///
-/// `ll-sim` 的 `Effect::Damage`/`Effect::Kill` 需要一个 `apply` 能写的
-/// 落点来记录「生命值」，但 `Agent`（本 crate 的既有类型）目前没有
-/// 生命字段——真正的属性驱动生命上限公式属于战斗结算批次（批次 C），
-/// 本批次只搭 `apply` 能安全写入的管线，不提前设计那个公式。与其为了
-/// 这一个字段改动 `Agent` 的既有布局，不如把它作为 `WorldState` 自己
-/// 新增的顶层字段：稀疏记录（`BTreeMap`，键必须是 `EntityId` 以外的
-/// 类型会失去悬垂 ID 检测的保护，故用它而非裸 `u64`；用 `BTreeMap`
-/// 而非 `HashMap` 是约束 C4——`HashMap` 的迭代顺序不得参与任何逻辑
-/// 判断，遍历全体生命值这类操作若需要确定性，必须走 `BTreeMap` 的键序
-/// 而不是哈希桶序），未出现在表中的实体视为「本批次尚未记录过生命值」
-/// ——`apply` 只管照 `Effect` 里的数字做加减，不判断这代表满血还是
-/// 半血，那是规则判断，不是 `apply` 的职责。
 ///
 /// # `population`/`actors` 暂不参与序列化（P3 阶段的已知限制）
 ///
@@ -93,10 +76,6 @@ pub struct WorldState {
     /// 玩家与几个敌人，见 [`Arena`] 模块文档。不参与序列化，理由同上。
     #[serde(skip)]
     pub actors: Arena<Agent>,
-    /// 各实体当前生命值的稀疏记录，见本类型文档「为什么 `health`
-    /// 单独存在」一节。未出现在表中的实体视为本批次尚未记录过生命值
-    /// （不代表满血或死亡——那是规则判断，本字段只是 `apply` 的落点）。
-    pub health: BTreeMap<EntityId, i32>,
 }
 
 /// [`WorldState`] 反序列化的中转表示。
@@ -104,17 +83,17 @@ pub struct WorldState {
 /// 见 [`WorldState`] 文档「反序列化必须交叉校验」一节：这个类型本身没有
 /// 任何跨字段不变式，只是让 serde 有一个「先把字段各自反序列化
 /// （各自的校验仍然生效），再交给 [`TryFrom`] 做交叉校验」的中转落点。
-/// `health` 没有需要交叉校验的不变式（`EntityId`/`i32` 的任意组合都
-/// 结构上合法），但仍经过这个中转类型，而不是绕开 `WorldStateRepr`
-/// 单独派生——这样 `WorldState` 整体只有一条反序列化路径，不必担心
-/// 「哪些字段走 `try_from`、哪些字段绕过它」这种容易漂移的分裂状态。
+/// 目前参与序列化的字段里只有 `size`/`terrain` 之间存在跨字段不变式，
+/// 但 `seed`/`clock` 仍然一起经过这个中转类型，而不是绕开
+/// `WorldStateRepr` 单独派生——这样 `WorldState` 整体只有一条反序列化
+/// 路径，不必担心「哪些字段走 `try_from`、哪些字段绕过它」这种容易
+/// 漂移的分裂状态。
 #[derive(Deserialize)]
 struct WorldStateRepr {
     seed: u64,
     clock: Tick,
     size: TorusSize,
     terrain: ChunkGrid,
-    health: BTreeMap<EntityId, i32>,
 }
 
 impl TryFrom<WorldStateRepr> for WorldState {
@@ -142,7 +121,6 @@ impl TryFrom<WorldStateRepr> for WorldState {
             // 对应数据可读，读档后总是从空状态开始。
             population: ThinPopulation::default(),
             actors: Arena::default(),
-            health: repr.health,
         })
     }
 }
@@ -158,7 +136,6 @@ impl WorldState {
             terrain,
             population: ThinPopulation::default(),
             actors: Arena::default(),
-            health: BTreeMap::new(),
         })
     }
 
