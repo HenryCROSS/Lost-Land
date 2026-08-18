@@ -94,3 +94,48 @@ feature 组合。
 ScriptEngine、`feat:` 内存守卫、以及 mod API 表面的实现）均已完成并通过
 `cargo fmt`/`cargo clippy`/`cargo test`，**唯独 `cargo deny check` 这一步
 未通过**——如实报告，不倒填结果。
+
+## 决策与执行（2026-08-18，项目所有者裁定）
+
+### 甲案：许可证白名单加入 MPL-2.0
+
+**裁定**：`deny.toml` 加入 `MPL-2.0`，接受这个许可证进入依赖树。
+
+**理由（与 GPL 的实质区别）**：
+
+| | GPL | MPL-2.0 |
+|---|---|---|
+| 链接进闭源程序 | 会传染 | 明确允许（§3.3） |
+| 必须公开自身源码 | 是 | 否 |
+| 义务范围 | 整个衍生作品 | 仅限被修改的那些文件 |
+
+项目的许可证规矩原文是「宽松许可，无 GPL、无付费」——MPL-2.0 是文件级
+弱 copyleft，不是 GPL 那种项目级传染。**唯一义务**：若修改
+`im-rc`/`sized-chunks`/`bitmaps` 的源文件，须以 MPL-2.0 发布那些修改；
+本项目不修改它们，义务不触发。
+
+**边界（写清楚给后来者看）**：将来若真要 fork 或 patch 这三个库中的
+任何一个，义务即刻生效——这是加白名单时接受的代价，见 `deny.toml`
+对应注释。
+
+### 4 条 unmaintained 公告：单独处理，不与许可证问题混在一起
+
+**这是「无人维护」，不是「有漏洞」**——`RUSTSEC-2025-0141`（bincode）、
+`RUSTSEC-2026-0247`（bitmaps）、`RUSTSEC-2026-0250`（im-rc）、
+`RUSTSEC-2026-0251`（sized-chunks）四条公告的性质都是「上游仓库已归档/
+团队停止维护」，当前**没有已知安全漏洞**。已在 `deny.toml` 的
+`[advisories] ignore` 里逐条列出并注明理由，与许可证白名单是两个独立的
+变更，性质不同不合并处理。
+
+**重新评估触发条件**：以上任意一条若被 RustSec 升级成真实的漏洞类
+公告（advisory 类型从 unmaintained 变成 vulnerability），必须立刻从
+`ignore` 列表移除，重新评估影响面，不能到时候顺手继续忽略。
+
+### 最终结果
+
+```
+advisories ok, bans ok, licenses ok, sources ok
+```
+
+四项全过。`deny.toml` 的改动本身（新增许可证 + advisories ignore 列表）
+单独一次提交，附完整理由注释——不是「加一行了事」。
