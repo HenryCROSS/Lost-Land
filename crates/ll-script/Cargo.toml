@@ -1,0 +1,27 @@
+[package]
+name = "ll-script"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的脚本宿主层：Steel VM 封装、内存守卫、mod API 表面"
+
+# 本 crate 不能用 `[lints] workspace = true`（Cargo 硬性限制：一旦声明
+# `workspace = true`，同一个 `[lints]` 表里不允许再出现任何覆盖项，
+# 实测报错 "cannot override `workspace.lints` in `lints`"）。而
+# `ScriptAllocGuard`（任务 4）必须 `unsafe impl GlobalAlloc`，这是
+# Steel 原生缺失内存守卫（ADR 0001「缺口」一节）的唯一对策，标准库
+# 没有安全替代 API；`forbid` 级别的 lint 无法用 `#[allow]` 局部覆盖
+# （E0453，即使在同一 crate 内也不行），所以本 crate 只能不继承
+# 工作区的 `unsafe_code = "forbid"`。为了不因此丢失其余工作区约束，
+# 手工镜像 `missing_docs = "warn"`，仅 `unsafe_code` 单独放宽为
+# `allow`，放宽范围仅限本 crate。
+[lints.rust]
+missing_docs = "warn"
+unsafe_code = "allow"
+
+[dependencies]
+ll-core = { path = "../ll-core" }
+steel-core = "0.8.2"
+
+[dev-dependencies]
+proptest.workspace = true
