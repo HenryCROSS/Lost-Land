@@ -39,6 +39,8 @@ P4 期间 CI 门禁数量未变（六道，与 P3 交接时相同），规格 §
 - **存档必须分开记录「生成期 mod 集合」与「当前 mod 集合」**（`knowledge/design/identity-and-ids.md` 六、存档与 mod 集合）：只存当前的话，玩家中途装个 mod，那个世界就再也复现不出来——**种子分享、缺陷复现、回归测试全部失效**。P4 已经做了类型层面的区分（`ll-mod::mod_set::{GenerationModSet, CurrentModSet}`，Task 9，裁定 P4-3），编译期阻止两者混用，但**没有接任何真实存档读写**，也没有真正的「世界生成」事件可以绑定「生成期」这个时刻（P6 才有世界生成器）。P5 冻结存档格式时必须把这两个类型真正写进存档头两个独立字段，不能图省事合并成一份。
 - **存内容哈希而非仅版本号**——`Registry::content_hash_of(namespace)`（Task 7）已经提供了这个能力（异或折叠，`crates/ll-mod/src/registry.rs`），但同样**没有接进存档头**。mod 作者改内容不改版本号是常态，P5 必须真正把这个哈希写进存档头,不能只满足于「有这个函数存在」。
 - **缺失 mod 的降级策略按内容类型分别定义**（`identity-and-ids.md` 六之②）：物品可丢弃、NPC 种族可降级占位、**玩家角色的种族不能降级**（降级意味着玩家失去自己的角色，是所有处理方式里唯一不可接受的一种）。**该文档建议再加一档只读模式**——允许打开存档查看、导出角色/物品但不能继续游玩，这好过现在「凑合丢数据继续玩」与「直接拒绝打开」的二选一。P4 完全没有触碰这部分（P4 计划「有意留给后续阶段的缺口」一节已明确列出），P5 必须正面设计这套降级策略，不能等玩家真的撞上缺失 mod 才临时决定怎么处理。
+- **脚本状态存储（`knowledge/design/script-state-storage.md`，本会话新定）同样是 P5 存档格式的一部分，应与 `ContentIndex` 映射层、mod 集合双记录同批落地**——三者共享同一类问题（"某种运行期/加载期才能确定的数据，怎么落进存档并在读档后正确复原"）：`ContentIndex` 依赖 mod 加载顺序需要字符串映射表回填，mod 集合需要生成期/当前两份独立记录，脚本状态存储的键本身用的又是同一套 `NamespacedId` 命名空间隔离规则。**脚本状态存储额外多一条别的两者都没有的依赖**：文档 3.3 节「能不能存实体引用」的结论（允许存，但只限厚层 `Arena<Agent>`）依赖 `WorldState::actors` 补齐 serde——这正是本节第二条「多处 `#[serde(skip)]` 待还」提到的同一处 P3 遗留债务，P5 若安排脚本状态存储接入存档，必须同时确认 `Arena<Agent>` 序列化往返能保持槽位下标与世代号逐位不变，否则会出现「存档时脚本状态里的实体引用还能查到，读档后却查不到」这类看似诡异、实则是 3.4 节既有失效检测约定的合法结果——容易被误判成新缺陷，值得在 P5 实现说明里提前写明。
+- **脚本状态存储还依赖两项本会话新定的配套决定,一并同批考虑**：[ADR 0019](../decisions/0019-denied-capability-needs-substitute-or-justification.md)（被禁能力必须有替代品或写明理由的通则,附带把现有拒绝清单与八条 mod 作者需求逐项核实过一遍,其中「整数几何工具」「每 mod 独立随机流」两条已核实是当前真实存在的缺口，优先级最高）与 [ADR 0020](../decisions/0020-scripts-may-use-floats-internally-boundary-type-gated.md)（脚本内部允许浮点，安全边界收拢到 `register_fn` 类型签名，部分取代 ADR 0002 的适用范围——`WorldState` 本身仍然零浮点不变）。三份文档同批产出、互相引用，P5 规划脚本相关任务时应当一并阅读，不要只挑其中一份。
 
 ---
 
@@ -124,6 +126,9 @@ ADR 0013（`knowledge/decisions/0013-ledger-vs-adr-discipline.md`）记录了这
 - [ADR 0015 — 内容 ID 的注册校验是解析，不是 serde 不变式](../decisions/0015-content-id-registration-is-parsing-not-invariant.md)
 - [ADR 0016 — mod 性能分档按声明方式，不按作者身份](../decisions/0016-mod-performance-tiers-by-declaration.md) — 「本体即 Mod」守门规则的完整论证
 - [ADR 0017 — 声明式分档物化为列式数据，注册期完整校验](../decisions/0017-tiered-declarations-materialize-columnar.md)
+- [脚本状态存储：受认可的跨帧/跨存档持久化机制](../design/script-state-storage.md)（本会话新定）— 脚本安全保存跨帧/跨存档状态的机制，属于 P5 存档格式的一部分，见本文档「二」新增条目
+- [ADR 0019 — 每禁一项脚本能力，必须提供确定性替代品，或写明这个需求不正当](../decisions/0019-denied-capability-needs-substitute-or-justification.md)（本会话新定）— 通则 + 现有拒绝清单与八条 mod 作者需求的逐项核实
+- [ADR 0020 — 脚本内部允许浮点，安全边界收拢到 `register_fn` 类型签名](../decisions/0020-scripts-may-use-floats-internally-boundary-type-gated.md)（本会话新定）— 部分取代 ADR 0002 的适用范围，`WorldState` 本身仍然零浮点
 - [覆盖率与缺失测试层](../../docs/qa/04-覆盖率与缺失测试层.md) — L1–L8 空白盘点，本文档第五节四处缺陷的测试层定位依据
 - Task 8 报告（`.superpowers/sdd/2026-08-18-p4-script-and-mod/task-8-report.md`）— 「本体特权」两处 API 洞、`terrain_table` 校验点缺口
 - Task 11/12 报告（`.superpowers/sdd/2026-08-18-p4-script-and-mod/task-11-12-report.md`）— 熔岩地板/文字换行两处端到端缺陷、SendKeys 限制、F2 基准范围
