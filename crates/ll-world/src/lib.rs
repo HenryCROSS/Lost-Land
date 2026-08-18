@@ -14,9 +14,6 @@
 //! 世界状态禁止浮点数：跨平台浮点差异会摧毁确定性存档与重放（详见
 //! `ll-core` 的说明）。本 crate 的所有模块全程使用整数与定点数。
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
-
 use core::fmt;
 
 pub mod chunk;

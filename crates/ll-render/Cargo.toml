@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "迷途大陆的渲染层：wgpu 精灵批渲染、图集、相机、图层、Y 排序"
 
+[lints]
+workspace = true
+
 [dependencies]
 ll-core = { path = "../ll-core" }
 ll-platform = { path = "../ll-platform" }

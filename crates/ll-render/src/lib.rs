@@ -12,9 +12,6 @@
 //! 本层内部使用 `f32`（GPU 要求如此），但**这些值绝不可回流入世界状态或
 //! 被存档序列化**。世界状态是整数格坐标，渲染层负责把它们换算成像素。
 
-#![forbid(unsafe_code)]
-#![warn(missing_docs)]
-
 pub mod anim;
 pub mod atlas;
 pub mod batch;

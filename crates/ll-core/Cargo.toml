@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "迷途大陆的纯数据基础层：环面坐标、确定性随机、命名空间标识、世界时间"
 
+[lints]
+workspace = true
+
 # ll-core 默认零运行时依赖。它被所有其他 crate 依赖，任何强制引入的
 # 依赖都会传染给整个项目。`serde` 是唯一例外，且以 `optional = true`
 # 的可选依赖形式存在：不开启 `serde` feature 就不会被编译进来，因此

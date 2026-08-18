@@ -7,6 +7,20 @@ version = "0.1.0"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 
+# 集中声明 lint，而不是让每个 crate 的 lib.rs 各自写一份
+# `#![forbid(unsafe_code)]` / `#![warn(missing_docs)]`。
+#
+# 根因：新建一个 crate 就是一次「记得在 lib.rs 顶部补两行」的人工考验，
+# 忘记补不会有任何提示——上一批 `ThinSlot` 的六个公开字段没有文档
+# 注释，就是在 `ll-sim`（当时没有这两行声明）里一路无人拦截，直到搬进
+# 已经声明了这两行的 `ll-world` 才被 `-D warnings` 抓住。集中到工作区
+# 一处之后，新建 crate 只需在其 `Cargo.toml` 加一行
+# `[lints]\nworkspace = true`，且漏加这一行会在 Cargo.toml 评审时一眼
+# 看见，不再是藏在某个 lib.rs 文件头部、容易被忽略的细节。
+[workspace.lints.rust]
+unsafe_code = "forbid"
+missing_docs = "warn"
+
 # 依赖版本在此统一管理，各 crate 用 workspace = true 引用。
 # 这样升级依赖只需改一处，避免各 crate 版本漂移。
 [workspace.dependencies]

@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "迷途大陆的世界层：世界状态、环面地形、视野、昼夜四季"
 
+[lints]
+workspace = true
+
 [dependencies]
 # 开启 ll-core 的可选 serde feature：WorldState 需要 Tick 与 TorusSize
 # 可序列化才能完整往返（见 ll-core/Cargo.toml 顶部对该 feature 的说明）。

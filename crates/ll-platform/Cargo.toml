@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "迷途大陆的平台层：窗口、输入、日志、并行任务池"
 
+[lints]
+workspace = true
+
 [dependencies]
 ll-core = { path = "../ll-core" }
 # winit 锁在 0.30 稳定线。0.31 目前只有 beta，地基层不能压在 beta 上。

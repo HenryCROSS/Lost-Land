@@ -5,6 +5,9 @@ edition.workspace = true
 license.workspace = true
 description = "迷途大陆的回合与模拟层：时间轴调度器、Intent/Effect/Apply 管线、战斗结算（占位）"
 
+[lints]
+workspace = true
+
 # 实体存储与名字生成已迁移到 ll-world（依赖方向修正，见规格 §5：
 # ll-world ← ll-sim，状态所在的 crate 不能反过来依赖演化所在的
 # crate）。本 crate 当前是占位 crate，下面这些依赖是下一批实现
