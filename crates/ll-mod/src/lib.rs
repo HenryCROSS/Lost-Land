@@ -14,7 +14,11 @@
 //!   尝试解析。
 //! - [`registry`] —— 内容注册表核心：字符串 ID ↔ 紧凑整数索引
 //!   （[`ll_core::ident::ContentIndex`]）的双向映射，以及按 mod
-//!   命名空间统计的内容哈希。后续任务会在此基础上补齐 mod 集合双记录。
+//!   命名空间统计的内容哈希。
+//! - [`mod_set`] —— 存档需要的「生成期 mod 集合」与「当前 mod 集合」
+//!   两种记录，类型层面强制区分，防止只存一份导致种子分享/缺陷复现/
+//!   回归测试失效（见 `knowledge/design/identity-and-ids.md`
+//!   「存档与 mod 集合」）。
 //!
 //! # 依赖方向
 //!
@@ -23,5 +27,6 @@
 
 pub mod discover;
 pub mod manifest;
+pub mod mod_set;
 pub mod registry;
 pub mod topo;
