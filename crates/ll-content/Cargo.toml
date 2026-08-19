@@ -10,12 +10,13 @@ workspace = true
 
 [dependencies]
 # 依赖方向 ll-core ← … ← ll-world ← ll-sim ← ll-script ← ll-mod ←
-# ll-content（规格 §5）：ll-content 是依赖链最上游的消费者。本任务
-# （task 1，存档头骨架 + 迁移框架）本身不读取 ll-core/ll-mod 的任何
-# 类型——header.rs 的核心约束就是不依赖 ContentIndex（见其模块文档），
-# migration.rs 只操作裸字节。真正需要 ll-core（NamespacedId 解析）与
-# ll-mod（Registry 快照/重建）是任务 2（ContentIndex 映射表接线），
-# 依赖声明留给那次提交一并加入,避免这里出现声明了却没人用的依赖。
+# ll-content（规格 §5）：ll-content 是依赖链最上游的消费者，只读
+# ll-mod::registry::Registry（任务 2 的 ContentIndex 映射表接线）与
+# ll-core::ident（NamespacedId 解析），不得被 ll-world/ll-sim/ll-mod
+# 反向依赖。
+ll-core = { path = "../ll-core", features = ["serde"] }
+# 任务 2 新增：content_index_map 模块需要真正读写 Registry。
+ll-mod = { path = "../ll-mod" }
 serde = { version = "1", features = ["derive"] }
 # 存档头是明文 JSON（规格 §11.2「存档列表界面只读头部」，见 header.rs
 # 模块文档）——header 与 migration 框架本身用它做序列化往返测试。

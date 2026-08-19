@@ -19,11 +19,14 @@
 //!   其模块文档「为什么头部不能引用 `ContentIndex`」）。
 //! - [`migration`] —— schema 版本迁移框架：按起始版本串联起迁移函数,
 //!   与 mod 版本是两条正交的失败轴（详见其模块文档）。
+//! - [`content_index_map`] —— 把 `Registry::snapshot()`/
+//!   `Registry::rebuild_from()` 真正接入存档头 `content_index_map`
+//!   字段的读写路径。
 //!
-//! 存档主体读写管线（`save_file`）、`ContentIndex` 映射表接线
-//! （`content_index_map`）、世界身份（`world_identity`）、缺失 mod
-//! 降级策略（`degrade`）等后续任务的模块留给各自任务落地,本 crate
-//! 当前只包含以上两个模块。
+//! 存档主体读写管线（`save_file`）、世界身份（`world_identity`）、
+//! 缺失 mod 降级策略（`degrade`）等后续任务的模块留给各自任务落地,
+//! 本 crate 当前只包含以上三个模块。
 
+pub mod content_index_map;
 pub mod header;
 pub mod migration;
