@@ -63,6 +63,18 @@ pub enum ContentKind {
     /// 世界生成用的地形生成器——世界已生成完毕，缺失只影响未来可能的
     /// 重新生成，不影响已存在的地形。
     WorldGenerator,
+    /// 目标类型（[`ll_world::entity::Goal::kind`]）——任务 9（存档主体
+    /// 读写管线）真正走通读档重映射时才发现的场景，本枚举原先没有覆盖：
+    /// 目标是角色「想要什么」的一条记录，不是角色本体的种族/职业，丢失
+    /// 一条目标不会让角色「失去自己」，行为上与物品同类——无条件丢弃并
+    /// 警告，不区分归属（玩家角色丢一条目标与 NPC 丢一条目标处理方式
+    /// 相同）。
+    Goal,
+    /// 归属定义（[`ll_world::entity::Affiliation::org`] 里的
+    /// `OrgRef::Def`，对应文化/职业类归属）——同样是任务 9 才发现的
+    /// 覆盖缺口：这是「实体拥有的一条归属记录」而非「实体本体」，处理
+    /// 方式与 [`ContentKind::Goal`] 相同，无条件丢弃并警告。
+    Affiliation,
 }
 
 /// 一条缺失内容记录归属于谁。
@@ -104,7 +116,10 @@ pub fn decide_degrade_action(
     placeholder: Option<ContentIndex>,
 ) -> DegradeAction {
     match content_kind {
-        ContentKind::Item | ContentKind::WorldGenerator => DegradeAction::DropWithWarning,
+        ContentKind::Item
+        | ContentKind::WorldGenerator
+        | ContentKind::Goal
+        | ContentKind::Affiliation => DegradeAction::DropWithWarning,
         ContentKind::CharacterAttribute => match owner {
             OwnerContext::Player => DegradeAction::Reject,
             OwnerContext::Npc | OwnerContext::None => match placeholder {
@@ -234,6 +249,26 @@ mod tests {
     fn 物品类内容缺失时决策为丢弃并警告() {
         // Arrange & Act
         let action = decide_degrade_action(ContentKind::Item, OwnerContext::None, None);
+
+        // Assert
+        assert_eq!(action, DegradeAction::DropWithWarning);
+    }
+
+    #[test]
+    fn 目标类型缺失时决策为丢弃并警告不论归属() {
+        // 任务 9 才发现的覆盖缺口：目标是角色拥有的一条记录，不是角色
+        // 本体，即便归属是玩家也不应该拒绝降级。
+        // Arrange & Act
+        let action = decide_degrade_action(ContentKind::Goal, OwnerContext::Player, None);
+
+        // Assert
+        assert_eq!(action, DegradeAction::DropWithWarning);
+    }
+
+    #[test]
+    fn 归属定义缺失时决策为丢弃并警告() {
+        // Arrange & Act
+        let action = decide_degrade_action(ContentKind::Affiliation, OwnerContext::Npc, None);
 
         // Assert
         assert_eq!(action, DegradeAction::DropWithWarning);

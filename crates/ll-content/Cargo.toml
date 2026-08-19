@@ -24,6 +24,11 @@ ll-mod = { path = "../ll-mod" }
 # 而不是只靠 ll-mod 传递访问，是因为 world_identity.rs 直接引用
 # `ll_world` 的类型，显式依赖让这层引用一目了然。
 ll-world = { path = "../ll-world" }
+# 任务 9 新增：读档流程需要 rebuild_all_engines_after_load/rebuild_count
+# 强制重建脚本引擎（约束 C1 修订版：VM 必须可随时从零重建）。依赖方向
+# 规格 §5：ll-script 排在 ll-mod 之前、ll-content 之后，允许直接依赖
+# （ll-mod 自己也直接依赖 ll-script，见其 Cargo.toml）。
+ll-script = { path = "../ll-script" }
 serde = { version = "1", features = ["derive"] }
 # 存档头是明文 JSON（规格 §11.2「存档列表界面只读头部」，见 header.rs
 # 模块文档）——header 与 migration 框架本身用它做序列化往返测试。

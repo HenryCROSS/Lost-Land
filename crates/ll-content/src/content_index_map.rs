@@ -48,7 +48,23 @@ pub fn snapshot_for_header(registry: &Registry) -> Vec<String> {
 /// 本身格式不对，可能意味着文件损坏,调用方应当把这与"缺 mod"分开
 /// 处理。
 pub fn rebuild_from_header(entries: &[String]) -> Result<Registry, ContentIndexMapError> {
-    let ids = entries
+    let ids = parse_content_index_map(entries)?;
+    Ok(Registry::rebuild_from(&ids))
+}
+
+/// 只做「字符串 → `NamespacedId`」这一步解析，不重建 `Registry`。
+///
+/// 存档主体读写管线（任务 9）的重映射步骤需要的不是一个凭空重建的
+/// 幻影 `Registry`（那个的索引分配只是「存档写出时的顺序」的镜像，
+/// 见 [`rebuild_from_header`] 文档），而是「旧索引 → 字符串」这张查表
+/// ——真正的索引换算要查**当前会话**已经装载好的那个 `Registry`
+/// （见 `ll_content::remap` 模块文档）。抽出这个函数，让 [`rebuild_from_header`]
+/// （防御性校验用途）与重映射（真正的读档路径）共享同一份解析逻辑，
+/// 不必各自维护一份等价代码。
+pub fn parse_content_index_map(
+    entries: &[String],
+) -> Result<Vec<NamespacedId>, ContentIndexMapError> {
+    entries
         .iter()
         .enumerate()
         .map(|(index, raw)| {
@@ -57,8 +73,7 @@ pub fn rebuild_from_header(entries: &[String]) -> Result<Registry, ContentIndexM
                 raw: raw.clone(),
             })
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(Registry::rebuild_from(&ids))
+        .collect()
 }
 
 /// `content_index_map` 重建过程中可能出现的错误。

@@ -29,8 +29,9 @@
 //!   报错。
 //! - [`mode`] —— 双模式存档（纯永久死亡 / 自由读档）与单向降级
 //!   （任务 10）。
-//!
-//! 存档主体读写管线（`save_file`）等后续任务的模块留给各自任务落地。
+//! - [`remap`] —— 存档主体读入后的 `ContentIndex` 重映射（任务 9）。
+//! - [`save_file`] —— 存档主体读写管线：把以上模块串成一条完整的
+//!   存档 → 读档路径（任务 9）。
 
 pub mod content_index_map;
 pub mod degrade;
@@ -38,4 +39,6 @@ pub mod header;
 pub mod load_error;
 pub mod migration;
 pub mod mode;
+pub mod remap;
+pub mod save_file;
 pub mod world_identity;

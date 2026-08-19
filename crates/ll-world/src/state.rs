@@ -130,6 +130,29 @@ pub struct WorldState {
     /// 调用 `Agent.current_space = space` 与
     /// `WorldState::enter_interior`/`exit_interior`，两者各自维护自己
     /// 的那份状态，不互相依赖。
+    ///
+    /// # `#[serde(skip)]`（P5 任务 9 修正的既有缺陷）
+    ///
+    /// 本字段类型本身完全可以序列化（`SpaceId` 是裸整数,上面这段文档
+    /// 曾经据此断言「不需要为这个字段引入新的 `#[serde(skip)]`」）——
+    /// 但那条断言遗漏了一半事实：[`WorldStateRepr`] 从一开始就没有把
+    /// 这个字段列进去，[`TryFrom::try_from`] 也一直把它硬编码为
+    /// `None`（「读档后总是从『没有进入任何 `Interior`』的状态开始」，
+    /// 见该实现的注释）——也就是说 Deserialize 这一侧从来就没有真正
+    /// 读过这个字段，只是此前 `Serialize` 仍然把它写出去了。用
+    /// `serde_json` 这类自描述、按字段名匹配的格式，这条不对称是无害
+    /// 的（多出来的字段在 Deserialize 时被直接忽略）；但存档主体读写
+    /// 管线（任务 9）改用 `postcard`——一种**按声明顺序**、不带字段名
+    /// 的定位编码格式，两侧字段集合不一致会让这个字段序列化出的字节
+    /// 被解码器当成**下一个字段**（`population`）的开头去读，从而错位
+    /// 整个后续的字节流（任务 9 落地时确实用一个真实的 `postcard`
+    /// 往返测试撞见了这个缺陷：只要 `actors` 非空就会在 `Arena`/
+    /// `ThinPopulation` 的内部校验处报出一个语焉不详的
+    /// `SerdeDeCustom`）。加上这个属性后 `Serialize` 也不再写出这个
+    /// 字段，两侧重新对称——这正是 [`Self::surface_profile`]/
+    /// [`Self::terrain_table`] 已经在用的同一种模式（「读档后总是重置
+    /// 为固定初始值的字段，不需要参与序列化」）。
+    #[serde(skip)]
     pub current_interior: Option<SpaceId>,
     /// 地表默认层属性索引（任务 12：两级坐标系重写）——`Intent::ExitSpace`
     /// 结算时用于重新构造 `Space::Surface { .. }`，见

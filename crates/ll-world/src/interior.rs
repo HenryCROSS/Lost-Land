@@ -205,6 +205,16 @@ impl InteriorTable {
         ids
     }
 
+    /// 可写遍历全部 `Interior` 实例，不带顺序保证——供存档读入后的
+    /// `ContentIndex` 重映射（`ll-content` 任务 9）使用：每个 `Interior`
+    /// 的 `profile` 字段各自独立重映射，互不依赖，重映射的正确性不受
+    /// 遍历顺序影响（与 [`Self::total_floor_count`] 用 `values()` 求和
+    /// 同一类安全用法，见其文档），因此不需要像 [`Self::entries_at`]
+    /// 那样收集后再排序。
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = &mut Interior> {
+        self.interiors.values_mut()
+    }
+
     /// 全部 `Interior` 已加载楼层数之和——供
     /// [`crate::state::WorldState`] 计算 `Surface` 与 `Interior` 共享的
     /// 常驻预算（关键设计判断 3、裁定 CS-3）。不需要排序（只是求和，

@@ -241,6 +241,28 @@ impl ThinPopulation {
         true
     }
 
+    /// 把 `profession`/`race` 两列的 `ContentIndex` 原地重映射——存档
+    /// 读入后的重映射步骤（`ll-content` 任务 9）需要，两列走同一条规则
+    /// （薄层 NPC 恒是 [`crate::entity::Agent::race`] 文档同一种「角色
+    /// 属性」，且薄层不追踪玩家，见 [`ThinPopulation`] 模块文档），因此
+    /// 一个闭包足够，不必对两列各暴露一个方法。
+    ///
+    /// 泛型的错误类型 `E`——本 crate 不知道、也不该知道调用方（`ll-content`）
+    /// 会怎么报错，只负责在闭包报错时立即中止并把错误原样透传，不吞掉
+    /// 也不猜测该包成什么错误类型。
+    pub fn try_remap_content_indices<E>(
+        &mut self,
+        mut remap: impl FnMut(ContentIndex) -> Result<ContentIndex, E>,
+    ) -> Result<(), E> {
+        for slot in &mut self.profession {
+            *slot = remap(*slot)?;
+        }
+        for slot in &mut self.race {
+            *slot = remap(*slot)?;
+        }
+        Ok(())
+    }
+
     /// 当前人口数量。
     pub fn len(&self) -> usize {
         self.generation.len()

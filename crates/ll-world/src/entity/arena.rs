@@ -153,6 +153,25 @@ impl<T> Arena<T> {
             })
     }
 
+    /// 依次访问全部存活实体，附带各自的 [`EntityId`]，可写。
+    ///
+    /// 供存档读入后的 `ContentIndex` 重映射（`ll-content` 任务 9）使用
+    /// ——重映射需要同时知道「这是哪个实体」（用于比对
+    /// `WorldState::player_entity`，决定降级策略该按玩家还是 NPC 的
+    /// 规则走）与「改它的字段」，[`Self::iter_with_id`] 只给不可变
+    /// 引用满足不了后者，[`Self::iter`] 不带标识满足不了前者。
+    pub fn iter_mut_with_id(&mut self) -> impl Iterator<Item = (EntityId, &mut T)> {
+        self.slots
+            .iter_mut()
+            .enumerate()
+            .filter_map(|(index, slot)| match slot {
+                Slot::Occupied { generation, value } => {
+                    Some((EntityId::new(index as u32, *generation), value))
+                }
+                _ => None,
+            })
+    }
+
     /// 存活实体数量（不含空闲与已弃用槽位）。
     pub fn len(&self) -> usize {
         self.iter().count()

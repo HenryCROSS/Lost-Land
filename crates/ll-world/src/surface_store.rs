@@ -329,6 +329,42 @@ impl SurfaceStore {
         self.resident.get(&zone).map(|grid| grid.terrain_at(local))
     }
 
+    /// 把全部常驻区块里的每一格地形原地重映射——存档读入后的
+    /// `ContentIndex` 重映射（`ll-content` 任务 9）需要：地形格里存的
+    /// [`TerrainKind`] 内部就是一个 `ContentIndex`（见其定义），存档
+    /// 写出时用的是当次会话的索引，读档后必须换成当前会话的索引，
+    /// 否则某一格的地形会静默变成别的东西（与 `Agent::profession` 那类
+    /// 字段是同一个问题，见 `ll-content::remap` 模块文档）。
+    ///
+    /// 遍历 [`Self::resident_zones`]（已排序）而不是内部 `HashMap` 的
+    /// 原始迭代顺序（C5），逐格调用 `remap`；只有结果与原值不同才调用
+    /// [`Self::set_terrain`] 写回，避免对每一格都触发一次不必要的写入。
+    ///
+    /// 泛型的错误类型 `E`，理由同 [`crate::entity::ThinPopulation::try_remap_content_indices`]
+    /// ——本 crate 不猜测调用方想要什么错误类型，原样透传。
+    pub fn try_remap_resident_terrain<E>(
+        &mut self,
+        mut remap: impl FnMut(TerrainKind) -> Result<TerrainKind, E>,
+    ) -> Result<(), E> {
+        let span = self.layout.zone_span() as i32;
+        let size = self.layout.tile_size();
+        for zone in self.resident_zones() {
+            for ly in 0..span {
+                for lx in 0..span {
+                    let pos = size.wrap(zone.x() * span + lx, zone.y() * span + ly);
+                    let kind = self
+                        .terrain_at_resident(pos)
+                        .expect("resident_zones() 返回的区块坐标此刻必然常驻");
+                    let remapped = remap(kind)?;
+                    if remapped != kind {
+                        self.set_terrain(pos, remapped);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// 调整常驻上限。不会立即淘汰现有条目——只影响下一次
     /// [`Self::terrain_at`] 判断「是否需要腾位置」时用的阈值，不主动
     /// 清退已经常驻的区块（调低上限本身不应该造成数据丢失的副作用）。
