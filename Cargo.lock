@@ -1563,6 +1563,7 @@ dependencies = [
  "ll-core",
  "ll-mod",
  "ll-script",
+ "ll-sim",
  "ll-world",
  "lz4_flex",
  "postcard",

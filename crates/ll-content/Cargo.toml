@@ -49,3 +49,14 @@ lz4_flex = "0.11"
 
 [dev-dependencies]
 proptest.workspace = true
+# 任务 13（验收 demo）新增：demo 需要证明「脚本状态写入经
+# Effect::SetScriptState → apply 这条唯一入口是否真的被
+# WorldState::hash() 正确捕捉」（P5 计划验收纪律点 a），这要求直接
+# 调用 ll_sim::apply::apply/ll_sim::effect::Effect 与
+# ll_sim::intent/resolve（走一遍真实的 Intent → resolve → Effect →
+# apply 链路，而不是绕过去直接改字段）。依赖方向规格 §5 允许——
+# ll-content 已经直接依赖 ll-world 与 ll-script，两者分别排在 ll-sim
+# 的前后两侧，新增这一条不反转任何箭头。只在 examples/tests 里使用，
+# 放 dev-dependencies 不进入生产依赖图（不影响
+# `cargo tree -p ll-world | grep ll-sim` 这条既有验证）。
+ll-sim = { path = "../ll-sim" }
