@@ -24,6 +24,7 @@ pub mod light;
 pub mod naming;
 pub mod noise;
 pub mod overview;
+pub mod space;
 pub mod state;
 pub mod terrain;
 
