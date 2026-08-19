@@ -338,6 +338,24 @@ impl SkillCatalog for SkillTable {
     }
 }
 
+/// [`SkillTable`] 对 [`ll_sim::skill_overview::SkillTreeCatalog`] 的
+/// 实现（P5-B 任务 8）——给技能树 UI 数据视图（`ll_sim::skill_overview`）
+/// 提供"当前一共登记了哪些技能""某个技能的前置是什么"这两项
+/// `SkillCatalog` 本身不携带的信息。与上面的 `SkillCatalog` 实现同一个
+/// 理由：不需要任何转换逻辑，`SkillView::prerequisites` 与
+/// [`Self::defined_indices`] 直接就是 trait 方法要求的形状。
+impl ll_sim::skill_overview::SkillTreeCatalog for SkillTable {
+    fn all_skills(&self) -> Vec<ContentIndex> {
+        self.defined_indices()
+    }
+
+    fn prerequisites(&self, skill: ContentIndex) -> Vec<ContentIndex> {
+        self.get(skill)
+            .map(|view| view.prerequisites.to_vec())
+            .unwrap_or_default()
+    }
+}
+
 /// 本体基础技能在当前注册表里的索引缓存。
 ///
 /// 构成一棵有分支的技能树（验收「树而不是线性序列」这条形状要求，见

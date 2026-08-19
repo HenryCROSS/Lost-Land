@@ -42,6 +42,10 @@
 //!   `QuestNodeDef` 的前置列表是单一真相源，`unlocked_by` 现算「解锁了
 //!   哪些后续任务」；任务进度（"这个实体完成了哪些任务节点"）走脚本
 //!   状态存储的每实体存储，不是 `Agent` 字段，见该模块文档。
+//! - [`quest_overview`] —— 任务日志 UI 数据层（P5-B 任务 8）：给定
+//!   `Agent`/`QuestTable`/`Registry`，返回一份纯数据的
+//!   `QuestLogView`（已完成/已解锁未完成），不含任何渲染，见该模块
+//!   文档。
 //! - [`base_placeholder`] —— 同一个模式在「占位/未知内容」上的落点
 //!   （P5-A 任务 14 补齐）：把本体的占位内容注册进
 //!   [`registry::Registry`]，让 NPC 种族缺失的占位降级分支在生产读档
@@ -75,6 +79,7 @@ pub mod mod_set;
 pub mod pipeline;
 pub(crate) mod prereq_graph;
 pub mod quest;
+pub mod quest_overview;
 pub mod registry;
 pub mod script_terrain_api;
 pub mod skill;

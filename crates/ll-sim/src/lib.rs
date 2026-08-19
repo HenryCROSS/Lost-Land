@@ -20,6 +20,10 @@
 //! [`quest`]（P5-B 接线批次）：击杀结算需要的任务完成判定接口
 //! （[`quest::QuestCatalog`] trait）与任务进度基础操作，与 `skill`
 //! 同一套依赖倒置手法，见该模块文档。
+//!
+//! [`skill_overview`]（P5-B 任务 8）：技能树 UI 数据视图——给定一个
+//! `Agent`，返回哪些技能已解锁/可解锁/冷却中的一份纯数据结构，不含
+//! 任何渲染，见该模块文档「明确边界」一节。
 
 pub mod apply;
 pub mod combat;
@@ -28,4 +32,5 @@ pub mod intent;
 pub mod quest;
 pub mod resolve;
 pub mod skill;
+pub mod skill_overview;
 pub mod timeline;
