@@ -28,6 +28,7 @@ pub mod overview;
 pub mod space;
 pub mod space_profile;
 pub mod state;
+pub mod surface_store;
 pub mod terrain;
 pub mod zone;
 

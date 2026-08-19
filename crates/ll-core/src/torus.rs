@@ -75,7 +75,26 @@ impl TryFrom<TorusSizeRepr> for TorusSize {
 /// （C5：禁止 `HashMap`/`HashSet` 迭代顺序参与逻辑判断）提供一个稳定
 /// 排序依据，**不赋予任何游戏逻辑含义**：`(5, 0) < (0, 5)` 不代表前者
 /// 在游戏世界里更「小」或更靠前，只是一个可复现的排序结果。
+///
+/// # 为什么可以直接派生 `Serialize`/`Deserialize`（不需要 [`TorusSize`] 那样的 `try_from`）
+///
+/// 与 [`crate::ident::ContentIndex`] 同一个理由（见其文档「为什么可以
+/// 直接派生」一节）：`TorusPos` 自身没有任何**不依赖外部上下文**就能
+/// 判断对不对的不变式——「坐标是否落在 `[0, width) × [0, height)` 内」
+/// 只有配上产出它的那个 [`TorusSize`] 才有意义，脱离这个上下文，任意
+/// `(i32, i32)` 都是一个结构上合法的 `TorusPos`。因此这里只做结构转换，
+/// 不校验；真正的「这个坐标相对当前世界/网格是否越界」交给持有具体
+/// 尺寸上下文的调用方在读取时做交叉校验（例如
+/// `ll_world::state::WorldState` 反序列化时校验 `terrain.world() == size`
+/// 的同一种手法）。
+///
+/// 这个 derive 是区块流式加载与 `Interior` 锚点（`coordinate-system-
+/// and-layers.md` 批次 C）第一次真正需要 `TorusPos` 独立于 `WorldState`
+/// 完整序列化——此前 `ll_world::state` 模块文档明确记录过这个缺口
+/// （`Agent::pos` 因为「`ll-core` 里没有为它提供可脱离该上下文使用的
+/// serde 实现」而被迫 `#[serde(skip)]`），本次补上。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct TorusPos {
     x: i32,
     y: i32,
@@ -328,6 +347,22 @@ mod tests {
             // Act
             let json = serde_json::to_string(&original).expect("合法值必然可序列化");
             let decoded: TorusSize = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+            // Assert
+            assert_eq!(decoded, original);
+        }
+
+        #[test]
+        fn torus坐标可以正常往返() {
+            // TorusPos 直接派生（不经过 try_from 中转），见其文档「为什么
+            // 可以直接派生」——这里验证结构转换本身确实往返成立。
+            // Arrange
+            let world = TorusSize::new(10, 10).expect("10x10 是合法尺寸");
+            let original = world.wrap(3, 7);
+
+            // Act
+            let json = serde_json::to_string(&original).expect("TorusPos 必然可序列化");
+            let decoded: TorusPos = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
 
             // Assert
             assert_eq!(decoded, original);
