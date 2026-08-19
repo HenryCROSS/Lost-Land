@@ -1,0 +1,677 @@
+//! 网状任务图注册表——「本体即 Mod」在任务系统上的落点（P5-B 任务 6）。
+//!
+//! # 与 `SkillTable` 同一套模式，同一套图校验
+//!
+//! 见 [`crate::skill`] 模块文档「与 `ClassTable` 同一套模式，但多一步
+//! 图校验」一节——任务节点的定义/存储/查询走完全相同的思路：私有字段 +
+//! `QuestTable::define` 注册期校验 + `materialize_base_quests` 本体
+//! 注册入口 + `base_quest_fixture` 测试夹具。任务节点比技能多出的同样
+//! 是**前置关系**，但语义更贴近"任务"本身：`QuestNodeDef.prerequisites`
+//! 描述的是"完成哪些任务节点之后，这个任务节点才能开始"，图结构本身与
+//! 技能树完全同构（都是 DAG），因此无环校验直接复用
+//! [`crate::prereq_graph`]（见该模块文档「为什么现在才抽出来」一节），
+//! 不重新写一份 DFS。
+//!
+//! # 网状而非树状——单一真相源，`unlocked_by` 是派生视图
+//!
+//! `QuestNodeDef` 只存"我需要哪些前置任务"，不存"我完成后解锁哪些
+//! 后续任务"——后者由 [`unlocked_by`] 现算，与
+//! `knowledge/design/class-skill-quest-system.md` 第四节「单一真相源」
+//! 一致（同一条纪律在两级坐标系重写批次的 `Interior.anchor`/反向索引
+//! 已经用过）。"网状"体现在两处都允许多对多：一个任务节点可以有多个
+//! 前置（多条完成路径汇聚），一个前置任务节点完成后也可以同时解锁多个
+//! 后续节点（分支）——[`base_quest_fixture`] 的本体任务同时演示这两点，
+//! 见 [`BaseQuestIds`] 文档。
+//!
+//! # 完成条件分档（ADR 0018 三档分级在任务系统上的落点）
+//!
+//! [`QuestCondition`] 只有两个变体——一档（[`QuestCondition::KillCount`]，
+//! 声明式纯数据）与三档（[`QuestCondition::Script`]，脚本回调标识符）。
+//! **本批次不做二档**（受限公式）：任务完成条件在当前已知需求下要么是
+//! 简单计数（一档够用）要么是复杂逻辑（需要三档），中间的"公式"这一档
+//! 没有明确用例，按 YAGNI 推迟——若后续发现真实需要，应该是一个独立的
+//! 扩展任务，不是本批次顺手加的分支。
+//!
+//! **本批次只交付条件的注册/查询**，不交付"某个具体任务节点的条件当前
+//! 是否已经满足"这个判定逻辑本身（一档需要读取"该实体击杀过多少个某类
+//! 敌人"这类计数器，三档需要真正调用脚本——两者都需要串起
+//! `ll-sim`/`ll-script` 的运行期管线，超出本批次范围，与
+//! `crates/ll-sim/src/skill.rs` 模块文档「本任务选择的解法」一节列出的
+//! 「已知缺口，记录不硬做」同一条纪律）。
+//!
+//! # 任务进度持久化：留给任务 7
+//!
+//! "这个实体完成了哪些任务节点"这一部分（走脚本状态存储的每实体存储，
+//! 不是 `Agent` 字段，见关键设计判断 2）由 P5-B 任务 7 落地，不在本
+//! 任务范围内——本任务只交付 `QuestNodeDef`/`QuestTable`/`unlocked_by`
+//! 这份**类型**层面的注册表，任务进度是**实例状态**，两者不混在一起。
+//!
+//! # 跨表引用：`QuestCondition::KillCount.target_kind` 无法在注册期校验
+//!
+//! 与 `SkillDef.owning_class` 是否指向真实 `ClassDef` 同一类已知缺口
+//! （见 [`crate::skill`] 模块文档「与规格 §15 P6 边界的关系」一节的
+//! 姊妹缺口，以及 `crates/ll-sim/src/skill.rs` 模块文档「代价是真实的
+//! 重复」一节）：`target_kind: ContentIndex` 意在指向"某种敌人类型"，
+//! 但当前代码库还没有任何"敌人/生物类型"注册表存在，`QuestTable` 因此
+//! 完全没有办法校验这个索引"指向的东西是否真实存在、是不是真的是一个
+//! 敌人类型"——不是遗漏，是这张表在当前批次根本够不到那张不存在的表。
+//! 记录在此，不提前为一张不存在的表造校验逻辑；待敌人类型注册表在
+//! 未来某批次落地后，应该并入计划里"统一的交叉引用校验阶段"一并处理。
+
+use std::fmt;
+
+use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+
+/// 任务完成条件。**只有一档、三档，不做二档**——见模块文档「完成条件
+/// 分档」一节。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestCondition {
+    /// 一档：声明式，纯数据——击杀 `count` 个 `target_kind` 类型的敌人。
+    ///
+    /// `target_kind` 指向"敌人类型"这个概念上的内容索引——当前代码库
+    /// 尚无实际的敌人类型注册表，本变体只声明这份静态数据，不校验
+    /// `target_kind` 是否真实存在，见模块文档「跨表引用」一节。
+    KillCount {
+        /// 目标敌人类型。
+        target_kind: ContentIndex,
+        /// 需要击杀的数量。
+        count: u32,
+    },
+    /// 三档：脚本回调判定是否完成——处理"拜访某个 NPC 并说出特定台词"
+    /// 这类无法穷举成数据的条件。
+    ///
+    /// 存的是回调标识符（`NamespacedId`），不是函数指针本身——与
+    /// `SkillDef.effect` 一样，注册期只存"引用"，真正在运行期调用这个
+    /// 回调是判定管线（超出本批次范围）的职责，本批次只保证这个变体
+    /// 能被正确注册、查询、参与无环校验。
+    Script(NamespacedId),
+}
+
+/// 单条任务节点声明：本体与 mod 注册任务时共用的同一个输入形状。
+///
+/// 这就是「本体即 Mod」在任务层面的验收标的——本体的声明与未来 mod 的
+/// 声明除了 `id` 里的命名空间字符串不同之外，不存在任何结构性差异。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestNodeDef {
+    /// 命名空间标识符，例如 `lostland:main_quest_1`、`yourmod:side_quest`。
+    pub id: NamespacedId,
+    /// 前置任务节点，DAG 的边，单一真相源——"完成后解锁了哪些后续任务"
+    /// 是 [`unlocked_by`] 现算出的派生视图，不是另一份存储（见模块
+    /// 文档「网状而非树状」一节）。空列表表示这是一个不需要任何前置即
+    /// 可开始的"起点"任务。
+    pub prerequisites: Vec<ContentIndex>,
+    /// 完成条件，见 [`QuestCondition`] 文档。
+    pub condition: QuestCondition,
+}
+
+/// [`QuestTable::define`] 实际存进列式存储的属性子集——不含 `id`，
+/// 理由同 [`crate::skill::SkillAttrs`]。**必须公开**：这是 `define`
+/// 唯一的参数类型，任何想直接调用 `define`（而不是走
+/// [`materialize_base_quests`] 那条便捷路径）的调用方——包括未来 mod
+/// 自己的任务注册函数——都需要能构造这个类型。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestAttrs {
+    /// 前置任务节点列表。
+    pub prerequisites: Vec<ContentIndex>,
+    /// 完成条件。
+    pub condition: QuestCondition,
+}
+
+/// 任务注册期可能出现的错误。ADR 0017「注册期完整校验」要求这些错误
+/// 在加载时就报出来。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuestError {
+    /// 同一个内容索引被定义了两次，理由同
+    /// [`crate::skill::SkillError::DuplicateDefinition`]。
+    DuplicateDefinition(ContentIndex),
+    /// 前置任务列表里引用了一个当前表从未登记过的索引，理由同
+    /// [`crate::skill::SkillError::UnregisteredPrerequisite`]。
+    UnregisteredPrerequisite {
+        /// 声明了这条悬空前置的任务节点。
+        quest: ContentIndex,
+        /// 被引用但未登记的索引。
+        missing: ContentIndex,
+    },
+    /// 前置关系构成环——附带环路上具体的任务节点索引（按环路顺序）。
+    CyclicPrerequisites(Vec<ContentIndex>),
+}
+
+impl fmt::Display for QuestError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            QuestError::DuplicateDefinition(index) => {
+                write!(f, "任务索引 {} 被重复定义", index.get())
+            }
+            QuestError::UnregisteredPrerequisite { quest, missing } => write!(
+                f,
+                "任务索引 {} 声明的前置索引 {} 未在当前任务表中登记",
+                quest.get(),
+                missing.get()
+            ),
+            QuestError::CyclicPrerequisites(cycle) => {
+                let ids: Vec<String> = cycle.iter().map(|c| c.get().to_string()).collect();
+                write!(f, "任务前置关系形成环：{}", ids.join(" -> "))
+            }
+        }
+    }
+}
+
+impl std::error::Error for QuestError {}
+
+/// 一次任务查询命中的完整结果，理由同 [`crate::skill::SkillView`]。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuestView<'a> {
+    /// 前置任务节点列表。
+    pub prerequisites: &'a [ContentIndex],
+    /// 完成条件——`QuestCondition` 携带 `NamespacedId`（三档变体），
+    /// 不是 `Copy`（与 `SkillView::effect` 直接返回值的写法不同），
+    /// 这里按引用交出，避免每次查询都克隆一份。
+    pub condition: &'a QuestCondition,
+}
+
+/// 任务节点属性的列式存储：按 [`ContentIndex`] 下标索引，不按内容分
+/// 结构（ADR 0017），与 [`crate::skill::SkillTable`] 同一套道理。
+#[derive(Debug, Default, Clone)]
+pub struct QuestTable {
+    prerequisites: Vec<Vec<ContentIndex>>,
+    condition: Vec<QuestCondition>,
+    defined: Vec<bool>,
+    /// 按注册顺序记录已定义的索引，理由同
+    /// [`crate::skill::SkillTable`] 同名字段文档。
+    defined_ids: Vec<ContentIndex>,
+}
+
+impl QuestTable {
+    /// 建立空表。
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// 注册期入口：给一个已经 `intern` 出来的索引附上任务属性。
+    ///
+    /// 只做「不得重复定义」这一项校验，不在这里校验前置关系——理由同
+    /// [`crate::skill::SkillTable::define`]：前置可以是"尚未 `define`、
+    /// 但已经 `intern` 过"的索引，真正的图级别校验在全部任务定义完毕
+    /// 后由 [`validate_no_cycles`] 一次性做。
+    pub fn define(&mut self, index: ContentIndex, attrs: QuestAttrs) -> Result<(), QuestError> {
+        let idx = index.get() as usize;
+        if idx >= self.defined.len() {
+            let new_len = idx + 1;
+            self.defined.resize(new_len, false);
+            self.prerequisites.resize(new_len, Vec::new());
+            // QuestCondition 没有语义上的默认值——用一个 count 为 0 的
+            // KillCount 占位，与 TerrainTable::move_cost 扩容时填 0
+            // 同一个理由：未定义的槽位永远被 `defined` 位图挡住，不会
+            // 被外部查询实际读到。
+            self.condition.resize(
+                new_len,
+                QuestCondition::KillCount {
+                    target_kind: ContentIndex::default(),
+                    count: 0,
+                },
+            );
+        }
+
+        if self.defined[idx] {
+            return Err(QuestError::DuplicateDefinition(index));
+        }
+
+        self.defined[idx] = true;
+        self.prerequisites[idx] = attrs.prerequisites;
+        self.condition[idx] = attrs.condition;
+        self.defined_ids.push(index);
+        Ok(())
+    }
+
+    /// 给定的任务索引当前是否已经登记过属性。
+    pub fn is_defined(&self, quest: ContentIndex) -> bool {
+        self.defined
+            .get(quest.get() as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// 查询一个任务节点的完整属性，未注册的索引返回 `None`（对齐 ADR
+    /// 0015，同 [`crate::skill::SkillTable::get`]）。
+    pub fn get(&self, quest: ContentIndex) -> Option<QuestView<'_>> {
+        if !self.is_defined(quest) {
+            return None;
+        }
+        let idx = quest.get() as usize;
+        Some(QuestView {
+            prerequisites: &self.prerequisites[idx],
+            condition: &self.condition[idx],
+        })
+    }
+}
+
+/// [`QuestTable`] 对 [`crate::prereq_graph::PrerequisiteGraph`] 的适配
+/// ——与 [`crate::skill::SkillTable`] 的同名实现同一个理由，两张表因此
+/// 共用 [`crate::prereq_graph::validate_no_cycles`] 同一份 DFS。
+impl crate::prereq_graph::PrerequisiteGraph for QuestTable {
+    fn is_defined(&self, node: ContentIndex) -> bool {
+        QuestTable::is_defined(self, node)
+    }
+
+    fn prerequisites(&self, node: ContentIndex) -> &[ContentIndex] {
+        self.get(node).map(|view| view.prerequisites).unwrap_or(&[])
+    }
+}
+
+/// 注册期校验：给定全部已注册任务的前置关系，是否存在环；顺带校验
+/// 每条前置是否指向一个当前表里真实登记过的任务节点。算法委托给
+/// [`crate::prereq_graph::validate_no_cycles`]，理由见
+/// [`crate::skill::validate_no_cycles`] 文档「算法委托给
+/// `prereq_graph`」一节——两张表共用同一份三色 DFS，本函数只做「适配 +
+/// 把通用错误映射回 [`QuestError`]」。
+pub fn validate_no_cycles(quests: &QuestTable) -> Result<(), QuestError> {
+    crate::prereq_graph::validate_no_cycles(quests, &quests.defined_ids).map_err(|err| match err {
+        crate::prereq_graph::CycleError::UnregisteredPrerequisite { node, missing } => {
+            QuestError::UnregisteredPrerequisite {
+                quest: node,
+                missing,
+            }
+        }
+        crate::prereq_graph::CycleError::Cycle(cycle) => QuestError::CyclicPrerequisites(cycle),
+    })
+}
+
+/// 派生视图：给定一个已完成的任务节点集合，返回因此解锁的后续节点。
+///
+/// **不是存储，是纯函数**——见模块文档「网状而非树状」一节：单一真相
+/// 源是 `prerequisites`（谁需要谁），"解锁了谁"每次调用现算，不缓存、
+/// 不随时间变化产出不同结果（只要 `table`/`completed` 不变）。
+///
+/// 一个节点"因此解锁"的判定：不在 `completed` 集合里（已完成的节点
+/// 不需要再"解锁"一次），且它的全部前置都落在 `completed` 集合内——
+/// 空前置列表天然满足"全部前置都落在集合内"（`Iterator::all` 对空
+/// 迭代器恒真），因此起点任务（无前置）即便 `completed` 为空也总是
+/// 出现在结果里，这正是"不需要任何前置即可开始"的字面含义。
+///
+/// 返回列表按 [`ContentIndex::get`] 数值升序排列（约束 C5）——不依赖
+/// `table` 内部 `defined_ids` 的注册顺序，保证同一个已完成集合无论
+/// `table` 是以什么顺序注册出来的，结果都逐位一致。
+pub fn unlocked_by(table: &QuestTable, completed: &[ContentIndex]) -> Vec<ContentIndex> {
+    use std::collections::BTreeSet;
+
+    let completed_set: BTreeSet<ContentIndex> = completed.iter().copied().collect();
+    let mut order = table.defined_ids.clone();
+    order.sort_by_key(ContentIndex::get);
+
+    let mut unlocked = Vec::new();
+    for node in order {
+        if completed_set.contains(&node) {
+            continue;
+        }
+        let view = table
+            .get(node)
+            .expect("defined_ids 里的索引必然已通过 define 注册");
+        if view.prerequisites.iter().all(|p| completed_set.contains(p)) {
+            unlocked.push(node);
+        }
+    }
+    unlocked
+}
+
+/// 本体基础任务节点在当前注册表里的索引缓存。
+///
+/// 构成一个**网状**（不是树状）的最小示例：`main_quest_1`（起点）同时
+/// 解锁 `branch_a`/`branch_b` 两条分支（一个前置解锁多个后续，验收
+/// "网"而不是"线性序列"）；`finale` 要求 `branch_a` 与 `branch_b` 两个
+/// 前置同时满足才能开始（两条分支在此汇聚，验收"一个任务可以有多个
+/// 前置"——这一点单靠"树"结构表达不了，节点只有一个父节点是树的定义
+/// 性质，`finale` 有两个父节点，图因此不是树）。同时演示两档完成条件：
+/// `main_quest_1`/`branch_a`/`finale` 用一档（`KillCount`），`branch_b`
+/// 用三档（`Script`）。
+#[derive(Debug, Clone, Copy)]
+pub struct BaseQuestIds {
+    /// 起点任务：无前置。
+    pub main_quest_1: ContentIndex,
+    /// `main_quest_1` 的分支之一：一档完成条件。
+    pub branch_a: ContentIndex,
+    /// `main_quest_1` 的分支之一：三档完成条件（脚本回调）。
+    pub branch_b: ContentIndex,
+    /// 汇聚任务：要求 `branch_a` 与 `branch_b` 两个前置同时满足。
+    pub finale: ContentIndex,
+}
+
+/// 本体任务注册的唯一入口：本体与 mod 共用的注册路径，理由同
+/// [`crate::skill::materialize_base_skills`]。
+pub fn materialize_base_quests(
+    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
+) -> Result<(BaseQuestIds, QuestTable), QuestError> {
+    let mut table = QuestTable::new();
+
+    let goblin_kind = intern(NamespacedId::parse("lostland:goblin").expect("固定字面量恒合法"));
+
+    let main_quest_1 = define_quest(
+        &mut table,
+        intern,
+        "lostland:main_quest_1",
+        Vec::new(),
+        QuestCondition::KillCount {
+            target_kind: goblin_kind,
+            count: 3,
+        },
+    )?;
+    let branch_a = define_quest(
+        &mut table,
+        intern,
+        "lostland:branch_a",
+        vec![main_quest_1],
+        QuestCondition::KillCount {
+            target_kind: goblin_kind,
+            count: 5,
+        },
+    )?;
+    let branch_b = define_quest(
+        &mut table,
+        intern,
+        "lostland:branch_b",
+        vec![main_quest_1],
+        QuestCondition::Script(
+            NamespacedId::parse("lostland:branch_b_condition").expect("固定字面量恒合法"),
+        ),
+    )?;
+    let finale = define_quest(
+        &mut table,
+        intern,
+        "lostland:finale",
+        vec![branch_a, branch_b],
+        QuestCondition::KillCount {
+            target_kind: goblin_kind,
+            count: 1,
+        },
+    )?;
+
+    validate_no_cycles(&table)?;
+
+    Ok((
+        BaseQuestIds {
+            main_quest_1,
+            branch_a,
+            branch_b,
+            finale,
+        },
+        table,
+    ))
+}
+
+/// [`materialize_base_quests`] 的内部帮手：把一条声明拆开传入，换取
+/// 一次 `intern` + 一次 [`QuestTable::define`]。
+fn define_quest(
+    table: &mut QuestTable,
+    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
+    id: &str,
+    prerequisites: Vec<ContentIndex>,
+    condition: QuestCondition,
+) -> Result<ContentIndex, QuestError> {
+    let index = intern(NamespacedId::parse(id).expect("本体任务 id 字面量恒合法"));
+    table.define(
+        index,
+        QuestAttrs {
+            prerequisites,
+            condition,
+        },
+    )?;
+    Ok(index)
+}
+
+/// 供测试使用：现造一个空 [`Interner`]，注册本体全部基础任务，返回
+/// 可用的 `(BaseQuestIds, QuestTable)`。不是生产路径，理由同
+/// [`crate::skill::base_skill_fixture`]。
+pub fn base_quest_fixture() -> (BaseQuestIds, QuestTable) {
+    let mut interner = Interner::new();
+    materialize_base_quests(&mut |id| interner.intern(id))
+        .expect("本体任务声明表内部一致（无环、前置均已注册），注册恒不失败")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::registry::Registry;
+
+    fn id(raw: &str) -> NamespacedId {
+        NamespacedId::parse(raw).expect("测试用标识符恒合法")
+    }
+
+    fn kill_count_attrs(prerequisites: Vec<ContentIndex>) -> QuestAttrs {
+        QuestAttrs {
+            prerequisites,
+            condition: QuestCondition::KillCount {
+                target_kind: ContentIndex::default(),
+                count: 1,
+            },
+        }
+    }
+
+    #[test]
+    fn 网状结构一个前置任务解锁多个后续任务() {
+        // Arrange
+        let (ids, table) = base_quest_fixture();
+
+        // Act
+        let branches = [ids.branch_a, ids.branch_b];
+        let all_reference_main = branches
+            .iter()
+            .all(|&branch| table.get(branch).expect("已注册").prerequisites == [ids.main_quest_1]);
+
+        // Assert
+        assert!(all_reference_main);
+    }
+
+    #[test]
+    fn 网状结构一个任务节点要求多个前置同时满足() {
+        // Arrange
+        let (ids, table) = base_quest_fixture();
+
+        // Act
+        let view = table.get(ids.finale).expect("finale 已注册");
+
+        // Assert：两个前置都在,证明这不是一棵树（树里每个节点只有一个
+        // 父节点)。
+        assert_eq!(view.prerequisites, &[ids.branch_a, ids.branch_b]);
+    }
+
+    #[test]
+    fn 脚本回调型完成条件可以被本体与mod同样注册() {
+        // Arrange
+        let mut registry = Registry::new();
+        let (base_ids, mut table) =
+            materialize_base_quests(&mut |id| registry.intern(id)).expect("本体任务声明表内部一致");
+
+        // Act：mod 注册一个三档任务，前置指向本体的 finale。
+        let mod_index = registry.intern(id("yourmod:epilogue"));
+        table
+            .define(
+                mod_index,
+                QuestAttrs {
+                    prerequisites: vec![base_ids.finale],
+                    condition: QuestCondition::Script(id("yourmod:epilogue_condition")),
+                },
+            )
+            .expect("mod 任务与本体任务调用同一个公开 define 函数,理应同样成功");
+
+        // Assert
+        let view = table.get(mod_index).expect("mod 任务已通过 define 登记");
+        assert_eq!(
+            view.condition,
+            &QuestCondition::Script(id("yourmod:epilogue_condition"))
+        );
+    }
+
+    #[test]
+    fn unlocked_by对给定已完成集合返回正确的后续节点() {
+        // Arrange
+        let (ids, table) = base_quest_fixture();
+
+        // Act：只完成 main_quest_1——两条分支都应解锁,finale 还不该
+        // 解锁（它还需要 branch_a/branch_b 都完成)。
+        let unlocked = unlocked_by(&table, &[ids.main_quest_1]);
+
+        // Assert
+        assert_eq!(unlocked, vec![ids.branch_a, ids.branch_b]);
+    }
+
+    #[test]
+    fn unlocked_by在两条分支都完成后解锁汇聚任务() {
+        // Arrange
+        let (ids, table) = base_quest_fixture();
+
+        // Act
+        let unlocked = unlocked_by(&table, &[ids.main_quest_1, ids.branch_a, ids.branch_b]);
+
+        // Assert
+        assert_eq!(unlocked, vec![ids.finale]);
+    }
+
+    #[test]
+    fn unlocked_by不是存储两次调用产出相同结果() {
+        // 验收"纯函数性质"：同一个 table/completed，多次调用不应该因为
+        // 内部状态变化而产出不同结果（本函数根本不持有任何可变状态)。
+        // Arrange
+        let (ids, table) = base_quest_fixture();
+        let completed = [ids.main_quest_1];
+
+        // Act
+        let first = unlocked_by(&table, &completed);
+        let second = unlocked_by(&table, &completed);
+
+        // Assert
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn unlocked_by对空的已完成集合只返回无前置的起点任务() {
+        // Arrange
+        let (ids, table) = base_quest_fixture();
+
+        // Act
+        let unlocked = unlocked_by(&table, &[]);
+
+        // Assert
+        assert_eq!(unlocked, vec![ids.main_quest_1]);
+    }
+
+    #[test]
+    fn 任务前置关系形成环时注册失败() {
+        // Arrange：a 需要 b，b 需要 a——二节点环。
+        let mut interner = Interner::new();
+        let a = interner.intern(id("yourmod:a"));
+        let b = interner.intern(id("yourmod:b"));
+        let mut table = QuestTable::new();
+        table
+            .define(a, kill_count_attrs(vec![b]))
+            .expect("a 定义应当成功");
+        table
+            .define(b, kill_count_attrs(vec![a]))
+            .expect("b 定义应当成功");
+
+        // Act
+        let result = validate_no_cycles(&table);
+
+        // Assert
+        match result {
+            Err(QuestError::CyclicPrerequisites(cycle)) => {
+                assert_eq!(cycle.len(), 2);
+                assert!(cycle.contains(&a) && cycle.contains(&b));
+            }
+            other => panic!("期望 CyclicPrerequisites，实际是 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 前置引用未注册的索引时报告悬空引用而非静默通过() {
+        // Arrange
+        let mut interner = Interner::new();
+        let a = interner.intern(id("yourmod:a"));
+        let ghost = interner.intern(id("yourmod:ghost"));
+        let mut table = QuestTable::new();
+        table
+            .define(a, kill_count_attrs(vec![ghost]))
+            .expect("a 定义应当成功");
+
+        // Act
+        let result = validate_no_cycles(&table);
+
+        // Assert
+        assert_eq!(
+            result,
+            Err(QuestError::UnregisteredPrerequisite {
+                quest: a,
+                missing: ghost
+            })
+        );
+    }
+
+    #[test]
+    fn 重复定义同一个索引返回错误而非静默覆盖() {
+        // Arrange
+        let mut interner = Interner::new();
+        let index = interner.intern(id("lostland:main_quest_1"));
+        let mut table = QuestTable::new();
+        table
+            .define(index, kill_count_attrs(Vec::new()))
+            .expect("首次定义应当成功");
+
+        // Act
+        let result = table.define(index, kill_count_attrs(Vec::new()));
+
+        // Assert
+        assert_eq!(result, Err(QuestError::DuplicateDefinition(index)));
+    }
+
+    #[test]
+    fn 未注册的内容索引查询返回none() {
+        // Arrange
+        let mut interner = Interner::new();
+        let never_defined = interner.intern(id("yourmod:never_defined"));
+        let table = QuestTable::new();
+
+        // Act
+        let result = table.get(never_defined);
+
+        // Assert
+        assert_eq!(result, None);
+    }
+
+    #[test]
+    fn 本体任务通过与mod任务完全相同的intern调用路径注册() {
+        // 本任务最核心的一条断言，理由同 crate::skill 模块的等价测试。
+        // Arrange
+        let mut registry = Registry::new();
+
+        // Act
+        let (base_ids, mut table) =
+            materialize_base_quests(&mut |id| registry.intern(id)).expect("本体任务声明表内部一致");
+        let mod_index = registry.intern(id("yourmod:side_quest"));
+        table
+            .define(
+                mod_index,
+                QuestAttrs {
+                    prerequisites: vec![base_ids.main_quest_1],
+                    condition: QuestCondition::KillCount {
+                        target_kind: ContentIndex::default(),
+                        count: 2,
+                    },
+                },
+            )
+            .expect("mod 任务与本体任务调用同一个公开 define 函数,理应同样成功");
+
+        // Assert
+        let view = table.get(mod_index).expect("mod 任务已通过 define 登记");
+        assert_eq!(view.prerequisites, &[base_ids.main_quest_1]);
+    }
+
+    #[test]
+    fn 本体任务表通过完整dag校验() {
+        // Arrange
+        let (_ids, table) = base_quest_fixture();
+
+        // Act
+        let result = validate_no_cycles(&table);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+}

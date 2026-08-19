@@ -36,6 +36,11 @@
 //! - [`subclass`] —— 副职注册表（P5-B 任务 4）：裁定 P5-4（主职与副职
 //!   共享技能命名空间）在代码层面的落点，`SubclassDef` 本身不携带任何
 //!   命名空间字段，见该模块文档。
+//! - `prereq_graph`（crate 内部，不对外公开）—— [`skill`]/[`quest`] 共用
+//!   的前置关系 DAG 无环校验算法（P5-B 任务 6 从任务 3 的实现里抽出）。
+//! - [`quest`] —— 网状任务图注册表（P5-B 任务 6）：`QuestNodeDef` 的
+//!   前置列表是单一真相源，`unlocked_by` 现算「解锁了哪些后续任务」，
+//!   见该模块文档。任务进度持久化（P5-B 任务 7）随后落在同一个模块。
 //! - [`base_placeholder`] —— 同一个模式在「占位/未知内容」上的落点
 //!   （P5-A 任务 14 补齐）：把本体的占位内容注册进
 //!   [`registry::Registry`]，让 NPC 种族缺失的占位降级分支在生产读档
@@ -64,6 +69,8 @@ pub mod load_report;
 pub mod manifest;
 pub mod mod_set;
 pub mod pipeline;
+pub(crate) mod prereq_graph;
+pub mod quest;
 pub mod registry;
 pub mod script_terrain_api;
 pub mod skill;

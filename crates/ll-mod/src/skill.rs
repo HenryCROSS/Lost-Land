@@ -23,11 +23,12 @@
 //!
 //! [`crate::topo::topo_sort`] 已经示范过同一类问题的解法：图算法里
 //! 「多个候选、选哪个先走」的时刻，一律按某个与输入顺序无关的键排序
-//! 决定，不看原始下标。`validate_no_cycles` 同样先把已登记的
-//! [`ContentIndex`] 按数值升序排好（`Vec::sort_by_key`，不是
-//! `HashMap`/`HashSet` 遍历顺序），再从这份排好序的列表出发做白/灰/黑
-//! 三色 DFS——即便两次调用之间 `define` 的调用顺序不同（只要最终登记
-//! 的技能集合与前置关系相同），报告出来的具体环路也恒定不变。
+//! 决定，不看原始下标。[`validate_no_cycles`] 把「先把已登记的
+//! [`ContentIndex`] 按数值升序排好，再从这份排好序的列表出发做白/灰/黑
+//! 三色 DFS」这套算法委托给 [`crate::prereq_graph::validate_no_cycles`]
+//! （P5-B 任务 6 抽出，`QuestTable` 需要同一套无环校验，见该模块文档）
+//! ——即便两次调用之间 `define` 的调用顺序不同（只要最终登记的技能
+//! 集合与前置关系相同），报告出来的具体环路也恒定不变。
 //!
 //! # 与规格 §15 P6 边界的关系
 //!
@@ -290,94 +291,42 @@ impl SkillTable {
     }
 }
 
-/// 三色标记，供 [`validate_no_cycles`] 的 DFS 使用——与 `ll-mod::topo`
-/// 内部的 `find_one_cycle`（模块私有，不对外导出，故此处不用可解析的
-/// 文档内链接）同一种手法：灰色是当前递归路径上尚未退栈的节点，再次
-/// 访问到灰色节点即找到一条环。
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Color {
-    White,
-    Gray,
-    Black,
+/// [`SkillTable`] 对 [`crate::prereq_graph::PrerequisiteGraph`] 的适配
+/// ——把「查询前置列表」翻译成通用图算法认得的形状（P5-B 任务 6 从
+/// 本模块抽出 [`crate::prereq_graph`] 时新增，见该模块文档「为什么现在
+/// 才抽出来」一节）。
+impl crate::prereq_graph::PrerequisiteGraph for SkillTable {
+    fn is_defined(&self, node: ContentIndex) -> bool {
+        SkillTable::is_defined(self, node)
+    }
+
+    fn prerequisites(&self, node: ContentIndex) -> &[ContentIndex] {
+        self.get(node).map(|view| view.prerequisites).unwrap_or(&[])
+    }
 }
 
 /// 注册期校验：给定全部已注册技能的前置关系，是否存在环；顺带校验
 /// 每条前置是否指向一个当前表里真实登记过的技能。
 ///
-/// # 复用 `ll_mod::topo` 的算法思路，但独立实现
+/// # 算法委托给 `prereq_graph`（P5-B 任务 6 起）
 ///
-/// [`crate::topo::topo_sort`] 的图是 mod 清单之间的依赖（节点是
-/// `usize` 下标、邻接关系由命名空间字符串查表得到），技能图的节点是
-/// [`ContentIndex`]、邻接关系直接存在 `SkillTable::prerequisites`
-/// 里——两者的图表示形状不同，`topo_sort` 的具体签名不能直接套用，
-/// 因此本函数独立实现，但采用与 `find_one_cycle`（同上，模块私有）
-/// 完全相同的「白/灰/黑三色 DFS + 报告具体环路」这套算法与错误粒度
-/// （技能简报的明确要求）。
-///
-/// # 遍历顺序确定性（约束 C5）
-///
-/// 起点按 [`ContentIndex::get`] 数值升序排列，不按 `define` 调用的
-/// 原始顺序——`SkillTable::defined_ids` 本身已经是一个 `Vec`（不是
-/// `HashMap`/`HashSet`），但这里仍然显式排序，保证即便未来的调用方以
-/// 不同注册顺序拼出同一个技能集合，报告出来的环路也逐位一致。单个
-/// 技能内部的前置遍历顺序，直接沿用 [`SkillDef::prerequisites`] 这个
-/// `Vec` 本身的声明顺序（同一条理由：`Vec` 顺序确定，不是
-/// `HashSet`）。
+/// 核心的白/灰/黑三色 DFS 与「起点按 [`ContentIndex::get`] 数值升序
+/// 尝试」（约束 C5 的确定性要求）现在都在
+/// [`crate::prereq_graph::validate_no_cycles`] 里——任务 6 引入
+/// `QuestTable` 之后需要同一套校验，两张表因此共用同一份算法，本函数
+/// 只做「适配 + 把通用错误映射回 [`SkillError`]」这一层薄包装，公开
+/// 签名、错误变体、错误粒度（报告具体环路而非笼统"存在环"）与之前
+/// 完全一致，不影响任何既有调用方或测试。
 pub fn validate_no_cycles(skills: &SkillTable) -> Result<(), SkillError> {
-    let mut order = skills.defined_ids.clone();
-    order.sort_by_key(ContentIndex::get);
-
-    let len = skills.defined.len();
-    let mut color = vec![Color::White; len];
-    let mut path: Vec<ContentIndex> = Vec::new();
-
-    for start in order {
-        let start_idx = start.get() as usize;
-        if color[start_idx] == Color::White {
-            visit(start, skills, &mut color, &mut path)?;
-        }
-    }
-
-    Ok(())
-}
-
-/// [`validate_no_cycles`] 的递归帮手：对 `node` 做一次 DFS，遇到灰色
-/// 节点即返回构成环的错误；遇到不在表里的前置索引即返回悬空引用错误。
-fn visit(
-    node: ContentIndex,
-    skills: &SkillTable,
-    color: &mut [Color],
-    path: &mut Vec<ContentIndex>,
-) -> Result<(), SkillError> {
-    let idx = node.get() as usize;
-    color[idx] = Color::Gray;
-    path.push(node);
-
-    let view = skills.get(node).expect("visit 只在 defined 索引上调用");
-    for &prereq in view.prerequisites {
-        let prereq_idx = prereq.get() as usize;
-        if prereq_idx >= color.len() || !skills.is_defined(prereq) {
-            return Err(SkillError::UnregisteredPrerequisite {
+    crate::prereq_graph::validate_no_cycles(skills, &skills.defined_ids).map_err(|err| match err {
+        crate::prereq_graph::CycleError::UnregisteredPrerequisite { node, missing } => {
+            SkillError::UnregisteredPrerequisite {
                 skill: node,
-                missing: prereq,
-            });
-        }
-        match color[prereq_idx] {
-            Color::White => visit(prereq, skills, color, path)?,
-            Color::Gray => {
-                let start = path
-                    .iter()
-                    .position(|&x| x == prereq)
-                    .expect("灰色节点必然仍在当前递归路径上");
-                return Err(SkillError::CyclicPrerequisites(path[start..].to_vec()));
+                missing,
             }
-            Color::Black => {}
         }
-    }
-
-    path.pop();
-    color[idx] = Color::Black;
-    Ok(())
+        crate::prereq_graph::CycleError::Cycle(cycle) => SkillError::CyclicPrerequisites(cycle),
+    })
 }
 
 /// 本体基础技能在当前注册表里的索引缓存。
