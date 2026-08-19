@@ -626,4 +626,28 @@ mod tests {
         // Assert
         assert!(visible.contains(corner));
     }
+
+    #[test]
+    fn 有界网格长宽悬殊时max_scan_row不提前截断长轴可见格() {
+        // 补齐批次 B 留下的缺口：BoundedGrid::max_scan_row 取
+        // max(width, height) 而非 min，是为了避免在长宽悬殊的地图上把
+        // 扫描沿长轴方向提前截断（见 SightGrid::max_scan_row 的
+        // BoundedGrid 实现文档）。此前只有静态论证，没有专门测试。
+        //
+        // 构造一张窄长地图（3 宽 20 高）：若误用 min(width,height)=3,
+        // 扫描行数会被限制到 3,原点正下方 19 格远的格子就测不到；
+        // 用 max(3,20)=20 才能让半径 19 的视野覆盖到长轴另一端。
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+        let size = BoundedSize::new(3, 20).expect("3x20 是合法尺寸");
+        let grid = BoundedGrid::new(size, ids.grass);
+        let origin = size.try_pos(1, 0).expect("1,0 在范围内");
+        let far_end = size.try_pos(1, 19).expect("1,19 在范围内");
+
+        // Act
+        let visible = compute_fov(&grid, &table, origin, 19);
+
+        // Assert
+        assert!(visible.contains(far_end));
+    }
 }
