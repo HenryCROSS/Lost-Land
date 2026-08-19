@@ -26,6 +26,10 @@
 //! - [`base_space_profile`] —— 同一个模式在 `ll_world::space_profile`
 //!   上的落点（两级坐标系重写批次 C 补齐）：把本体的地表/洞窟/地下城/
 //!   建筑内部四种基础空间类型注册进 [`registry::Registry`]。
+//! - [`base_placeholder`] —— 同一个模式在「占位/未知内容」上的落点
+//!   （P5-A 任务 14 补齐）：把本体的占位内容注册进
+//!   [`registry::Registry`]，让 NPC 种族缺失的占位降级分支在生产读档
+//!   管线里真正可达。
 //! - [`script_terrain_api`] —— 把 `register-terrain` 注册进
 //!   `ll_script::host::ScriptEngine`，供 mod 脚本定义自定义地形（Task
 //!   11/12）。
@@ -41,6 +45,7 @@
 //! [`base_terrain`] 模块文档）与 `ll-script`（Task 11 新增，理由见
 //! [`pipeline`] 模块文档），不得被下游任何 crate 反向依赖。
 
+pub mod base_placeholder;
 pub mod base_space_profile;
 pub mod base_terrain;
 pub mod discover;

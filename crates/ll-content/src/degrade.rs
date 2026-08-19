@@ -27,22 +27,27 @@
 //! 来产出 [`OwnerContext`]，本模块自身不做这个比较——它是纯决策函数，
 //! 不持有也不查询 `WorldState`。
 //!
-//! # `ContentIndex` 缺占位值的既知债务
+//! # `ContentIndex` 缺占位值的既知债务（P5-A 任务 14 已在注册层面补上）
 //!
-//! 坐标系重写批次报告记录过一条待办：本项目目前没有为任何内容类型
+//! 坐标系重写批次报告记录过一条待办：本项目此前没有为任何内容类型
 //! （地形、空间层属性、种族、职业……）注册过一个「占位/未知」条目——
 //! `materialize_base_terrain`/`register_base_space_profiles` 一类注册
 //! 函数只声明真实存在的内容，不预留「找不到就退到这里」的兜底索引。
-//! 本任务确实撞上了这条债务：[`decide_degrade_action`] 需要一个真实
-//! 已注册的 `ContentIndex` 才能返回 [`DegradeAction::FallbackToPlaceholder`]，
-//! 而调用方（在占位内容真正被本体注册之前）可能根本拿不出这样一个
-//! 索引。本模块用 `placeholder: Option<ContentIndex>` 参数诚实表达这
-//! 件事——拿不到占位索引时不会伪造一个（`ContentIndex::default()` 同
-//! 样有「索引 0 可能是合法内容」的歧义，见
-//! `ll_world::state::WorldState::surface_profile` 文档的同类核实），而
-//! 是退化为 [`DegradeAction::Reject`]，交给只读模式兜底——「降级失败」
-//! 本身也是一种需要诚实面对的失败，不能用一个可能指向错误内容的假
-//! 占位索引掩盖过去。
+//! P5-A 任务 14 补上了这一半：[`ll_mod::base_placeholder`] 现在会把
+//! 一条本体占位内容真实注册进 `ll_mod::registry::Registry`（走与
+//! `base_terrain` 完全相同的 `Registry::intern` 通道），
+//! `ll-content::save_file::load_full` 因此能查到一个真实索引传给这里，
+//! [`DegradeAction::FallbackToPlaceholder`]
+//! 分支在完整读档管线里不再永远不可达。
+//!
+//! 本模块的 `placeholder: Option<ContentIndex>` 参数**保持不变**——这不
+//! 是遗留代码，是刻意保留的防御：调用方传入的 `Registry` 仍然可能没
+//! 注册过占位内容（例如某些测试特意构造的最小注册表，或未来某种精简
+//! 装载模式），这种情况下 [`decide_degrade_action`] 依旧诚实退化为
+//! [`DegradeAction::Reject`]，交给只读模式兜底，不会伪造一个索引
+//! （`ContentIndex::default()` 同样有「索引 0 可能是合法内容」的歧义，
+//! 见 `ll_world::state::WorldState::surface_profile` 文档的同类核实）
+//! ——「降级失败」本身也是一种需要诚实面对的失败。
 
 use ll_core::ident::ContentIndex;
 use ll_world::state::WorldState;
