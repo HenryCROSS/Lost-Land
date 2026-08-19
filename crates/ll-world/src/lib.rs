@@ -21,6 +21,7 @@ pub mod chunk;
 pub mod entity;
 pub mod fov;
 pub mod generate;
+pub mod interior;
 pub mod light;
 pub mod naming;
 pub mod noise;

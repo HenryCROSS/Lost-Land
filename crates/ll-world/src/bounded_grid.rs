@@ -19,6 +19,8 @@
 //! 分块管理的复杂度。单一 `Vec<TerrainKind>` 按行主序存储已经足够。
 
 use ll_core::bounded::{BoundedPos, BoundedSize};
+use serde::de::Error as _;
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::terrain::TerrainKind;
 
@@ -69,6 +71,79 @@ impl BoundedGrid {
     /// 把有界局部坐标换算成 `tiles` 里的下标，行主序。
     fn index_of(&self, pos: BoundedPos) -> usize {
         pos.y() as usize * self.size.width() as usize + pos.x() as usize
+    }
+}
+
+/// [`BoundedGrid`] 序列化用的扁平化表示：尺寸加按行主序排列的全部
+/// 地形格。
+///
+/// 与 `crate::state` 里 [`crate::chunk::ChunkGrid`] 的序列化实现同一个
+/// 手法（私有字段不能直接派生，借公开的 `size`/`terrain_at` 接口手写）
+/// ——批次 C（`Interior` 楼层，见 `crate::interior`）第一次真正需要
+/// `BoundedGrid` 独立于任何更大结构完整序列化，这里补上。不同于
+/// `ChunkGrid` 的序列化实现放在 `state.rs`（因为 `chunk.rs` 在那一批次
+/// 被冻结，见其文档），本批次 `bounded_grid.rs` 没有被冻结，实现直接
+/// 放在类型自己的文件里，不必绕道。
+#[derive(Serialize, Deserialize)]
+struct BoundedGridData {
+    width: u32,
+    height: u32,
+    tiles: Vec<TerrainKind>,
+}
+
+impl Serialize for BoundedGrid {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let size = self.size();
+        let mut tiles = Vec::with_capacity(size.width() as usize * size.height() as usize);
+        for y in 0..size.height() as i32 {
+            for x in 0..size.width() as i32 {
+                let pos = size.try_pos(x, y).expect("行主序遍历范围内的坐标恒合法");
+                tiles.push(self.terrain_at(pos));
+            }
+        }
+        BoundedGridData {
+            width: size.width(),
+            height: size.height(),
+            tiles,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for BoundedGrid {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let data = BoundedGridData::deserialize(deserializer)?;
+        let size = BoundedSize::new(data.width, data.height)
+            .ok_or_else(|| D::Error::custom("存档中的有界地图尺寸非法"))?;
+
+        let expected_len = data.width as usize * data.height as usize;
+        if data.tiles.len() != expected_len {
+            return Err(D::Error::custom("存档中的地形格数量与尺寸不匹配"));
+        }
+
+        // fill 只是 BoundedGrid::new 分配时的占位值，下面的双重循环会
+        // 把每一格都覆写一遍——与 ChunkGrid 反序列化实现同一个理由，
+        // 见 crate::state 的对应注释。
+        let fill = *data
+            .tiles
+            .first()
+            .ok_or_else(|| D::Error::custom("存档中的地形格数据为空"))?;
+        let mut grid = BoundedGrid::new(size, fill);
+        let mut tiles = data.tiles.into_iter();
+        for y in 0..size.height() as i32 {
+            for x in 0..size.width() as i32 {
+                let kind = tiles.next().expect("长度已在上面校验与预期长度相等");
+                let pos = size.try_pos(x, y).expect("行主序遍历范围内的坐标恒合法");
+                grid.set_terrain(pos, kind);
+            }
+        }
+        Ok(grid)
     }
 }
 
