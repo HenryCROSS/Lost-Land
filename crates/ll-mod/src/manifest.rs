@@ -183,6 +183,7 @@ pub fn parse_manifest(path: &Path) -> Result<ModManifest, ModError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::tempdir;
     use std::fs;
 
     /// 在临时目录下写一个 `mod.toml` 并返回其路径，供各测试复用。
@@ -303,31 +304,5 @@ mod tests {
 
         // Assert
         assert!(manifest.dependencies.is_empty() && manifest.entry_points.is_empty());
-    }
-
-    /// 极简临时目录：本 crate 不引入 `tempfile` 依赖（只有测试需要，
-    /// 且需求简单到手写几行就够），用进程 ID + 计数器拼一个大概率不
-    /// 冲突的路径，测试结束时清理。
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn tempdir() -> TempDir {
-        use std::sync::atomic::{AtomicU64, Ordering};
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path = std::env::temp_dir().join(format!("ll-mod-test-{}-{n}", std::process::id()));
-        fs::create_dir_all(&path).expect("测试临时目录创建不应失败");
-        TempDir(path)
     }
 }

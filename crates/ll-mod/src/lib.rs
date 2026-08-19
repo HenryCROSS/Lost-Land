@@ -84,4 +84,6 @@ pub mod registry;
 pub mod script_terrain_api;
 pub mod skill;
 pub mod subclass;
+#[cfg(test)]
+mod test_support;
 pub mod topo;

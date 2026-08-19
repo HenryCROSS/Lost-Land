@@ -305,32 +305,8 @@ fn line_number(source: &str, byte_offset: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::tempdir;
     use std::fs;
-    use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU64, Ordering};
-
-    struct TempDir(PathBuf);
-
-    impl TempDir {
-        fn path(&self) -> &Path {
-            &self.0
-        }
-    }
-
-    impl Drop for TempDir {
-        fn drop(&mut self) {
-            let _ = fs::remove_dir_all(&self.0);
-        }
-    }
-
-    fn tempdir() -> TempDir {
-        static COUNTER: AtomicU64 = AtomicU64::new(0);
-        let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-        let path =
-            std::env::temp_dir().join(format!("ll-mod-pipeline-test-{}-{n}", std::process::id()));
-        fs::create_dir_all(&path).expect("测试临时目录创建不应失败");
-        TempDir(path)
-    }
 
     /// 在 `root` 下建一个候选 mod 子目录，写入清单与（可选）脚本。
     fn write_mod(root: &Path, dir_name: &str, manifest_toml: &str, script: Option<&str>) {
