@@ -17,6 +17,13 @@ workspace = true
 ll-core = { path = "../ll-core", features = ["serde"] }
 # 任务 2 新增：content_index_map 模块需要真正读写 Registry。
 ll-mod = { path = "../ll-mod" }
+# 任务 4 新增：world_identity 模块需要 ZoneLayout/WorldError（推荐预设
+# 与 validate_size_choice）。依赖方向 ll-world ← … ← ll-mod ← ll-content
+# （规格 §5）本就允许——ll-content 是依赖链最上游的消费者，ll-mod 自己
+# 也已经直接依赖 ll-world（见其 Cargo.toml 同款说明），这里显式列出
+# 而不是只靠 ll-mod 传递访问，是因为 world_identity.rs 直接引用
+# `ll_world` 的类型，显式依赖让这层引用一目了然。
+ll-world = { path = "../ll-world" }
 serde = { version = "1", features = ["derive"] }
 # 存档头是明文 JSON（规格 §11.2「存档列表界面只读头部」，见 header.rs
 # 模块文档）——header 与 migration 框架本身用它做序列化往返测试。

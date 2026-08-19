@@ -16,15 +16,18 @@
 //! 存档格式冻结后再补，就是一次追不回旧档的存档迁移，因此本任务在
 //! 类型层面提前把这条区分钉死。
 //!
-//! # 本阶段范围（裁定 P4-3）
+//! # 绑定时机：世界创建时刻（P5 任务 4 定案）
 //!
-//! P4 还没有世界生成器（P6 才落地），「生成期 mod 集合」目前没有真正
-//! 的生成事件可以绑定。本模块**只做类型层面的区分**，不接入任何真实
-//! 的存档读写（存档格式本身在 P5 冻结）：[`GenerationModSet`] 与
-//! [`CurrentModSet`] 是两个不同的类型，编译期即可发现「把当前集合错
-//! 当成生成期集合传参」这类混用，但「世界生成时刻绑定生成期集合」这
-//! 条真正的语义要等 P6 世界生成落地才有意义——**这不是完整实现，是
-//! 接口占位**。
+//! 这条注释曾经写「留给 P6 世界生成器」——规格插入新 P6（物品与装备）
+//! 后，真正的历史世界生成器现排到了 P7，若继续按这句话字面理解，
+//! [`GenerationModSet::capture`] 就要一直等到 P7 才有地方调用，但那样
+//! 会让存档格式在 P5 冻结时缺一块本该有的东西。真正需要绑定的时刻是
+//! **世界创建**（`WorldState::new` 之前的建档流程）,不是「世界生成器
+//! 跑完」——两者不是同一件事：本体自带的默认地形生成从 P2 起就存在,
+//! 「世界生成器」特指 P7 的历史/势力生成,不生成也可以先有一个世界。
+//! [`GenerationModSet::capture`] 因此在 P5 任务 4 就已落地并可调用，
+//! 调用点是任意「新建世界」流程紧接着 `Registry` 装载完成之后,一次性
+//! 调用、写入存档头后永久不变——不是每次读档都重新计算。
 //!
 //! 故意尝试混用两种集合会编译失败，用于把这条约束钉在文档里而不是
 //! 只写在注释中：
@@ -54,20 +57,46 @@ pub struct ModSetEntry {
     pub id: NamespacedId,
     /// mod 作者填写的版本号，原样保留。
     pub version: String,
-    /// 该 mod 命名空间贡献的内容哈希，`0` 表示该 mod 本次装载未贡献
-    /// 任何内容（或注册表里确实查不到——两者当前不做区分，属于本任务
-    /// 未处理的边界，见模块级 rustdoc 之外的实现说明）。
-    pub content_hash: u64,
+    /// 该 mod 命名空间贡献的内容哈希，取自
+    /// [`Registry::content_hash_of`]——`None` 表示该命名空间从未贡献过
+    /// 任何内容，`Some(hash)` 表示贡献了内容且哈希是 `hash`（`hash`
+    /// 本身理论上也可能恰好是 `0`，与「从未贡献」是两件不同的事）。
+    ///
+    /// # 为什么不是 `u64`（P5 任务 4 修复的债务）
+    ///
+    /// `Registry::content_hash_of` 自己已经用 `Option<u64>` 区分「从未
+    /// 贡献」与「贡献了内容、哈希恰好是 0」这两种情况——旧版本这里用
+    /// `u64` 加 `.unwrap_or(0)` 把两者折叠成同一个值，导致「mod 彻底
+    /// 失效、从有内容变成无内容」与「mod 从始至终都没贡献过任何内容」
+    /// 在存档比对时看起来完全一样，削弱了任务 7 mod 内容变化判定的
+    /// 精度。这里保留 `content_hash_of` 已经提供的区分，不在下游提前
+    /// 丢弃它。
+    pub content_hash: Option<u64>,
 }
 
 /// 生成期 mod 集合：世界是用这一批 mod 生成的，写入存档后永久不变。
 ///
 /// 只有这一份能用来复现世界——种子分享、缺陷复现、回归测试都依赖
 /// 「同一个种子 + 同一批内容 ⇒ 同一个世界」这条前提，而这份集合正是
-/// 「同一批内容」的锚点。真正的绑定时机（世界生成那一刻，把当时的
-/// mod 集合封存进这个类型）留给 P6 世界生成器，本任务只定形状。
+/// 「同一批内容」的锚点。绑定时机是世界创建时刻（见模块文档「绑定
+/// 时机」一节），由 [`Self::capture`] 落地。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GenerationModSet(pub Vec<ModSetEntry>);
+
+impl GenerationModSet {
+    /// 世界创建时刻调用一次：把当次 mod 装载的 `Registry` 与清单封存为
+    /// 生成期集合，此后永久不变。
+    ///
+    /// 与 [`CurrentModSet::derive_from`] 完全同构（内部直接委托，不重复
+    /// 一份归并逻辑）——两者的区别只在**调用时机**的语义,不在归并算法
+    /// 本身：`derive_from` 允许随时重新调用反映"当前"状态,`capture`
+    /// 只应该在世界创建那一刻调用一次,调用方（未来的建档流程）必须把
+    /// 结果写入存档头后不再重新计算，见模块文档。
+    pub fn capture(registry: &Registry, manifests: &[ModManifest]) -> Self {
+        let CurrentModSet(entries) = CurrentModSet::derive_from(registry, manifests);
+        GenerationModSet(entries)
+    }
+}
 
 /// 当前 mod 集合：玩家现在实际开着的这一批，会随时间漂移。
 ///
@@ -91,9 +120,7 @@ impl CurrentModSet {
             .map(|manifest| ModSetEntry {
                 id: manifest.id.clone(),
                 version: manifest.version.clone(),
-                content_hash: registry
-                    .content_hash_of(manifest.id.namespace())
-                    .unwrap_or(0),
+                content_hash: registry.content_hash_of(manifest.id.namespace()),
             })
             .collect();
         CurrentModSet(entries)
@@ -136,16 +163,20 @@ mod tests {
             CurrentModSet(vec![ModSetEntry {
                 id: mod_self_id("yourmod").unwrap(),
                 version: "0.1.0".to_string(),
-                content_hash: registry.content_hash_of("yourmod").unwrap(),
+                content_hash: registry.content_hash_of("yourmod"),
             }])
         );
     }
 
     #[test]
-    fn 未贡献内容的mod派生出的条目哈希为零() {
+    fn 未贡献内容的mod派生出的条目哈希为空() {
         // Arrange：mod 已发现、已排序，但本次装载没有注册任何内容
         // （例如清单声明了脚本入口，但脚本尚未被求值/尚未调用注册
         // 函数——这属于 ll-script 的职责，不在本任务范围内）。
+        //
+        // 断言的是 None 而不是零——「从未贡献任何内容」与「贡献了内容
+        // 但哈希恰好是零」是两件不同的事（P5 任务 4 修复的债务，见
+        // ModSetEntry::content_hash 文档）。
         let registry = Registry::new();
         let manifests = vec![manifest("emptymod", "1.0.0")];
 
@@ -153,7 +184,7 @@ mod tests {
         let current = CurrentModSet::derive_from(&registry, &manifests);
 
         // Assert
-        assert_eq!(current.0[0].content_hash, 0);
+        assert_eq!(current.0[0].content_hash, None);
     }
 
     #[test]
@@ -170,5 +201,44 @@ mod tests {
         // Assert
         let namespaces: Vec<&str> = current.0.iter().map(|e| e.id.namespace()).collect();
         assert_eq!(namespaces, vec!["a", "b"]);
+    }
+
+    #[test]
+    fn capture与derive_from对同一份输入产出相同条目() {
+        // capture 内部直接委托 derive_from（同一份归并逻辑），这里锁住
+        // 这条委托关系本身——两者对相同的 registry/manifests 必须产出
+        // 逐字段相等的结果。
+        // Arrange
+        let mut registry = Registry::new();
+        registry.intern(id("lostland:mountain"));
+        let manifests = vec![manifest("lostland", "0.1.0")];
+
+        // Act
+        let generation = GenerationModSet::capture(&registry, &manifests);
+        let CurrentModSet(current_entries) = CurrentModSet::derive_from(&registry, &manifests);
+
+        // Assert
+        assert_eq!(generation.0, current_entries);
+    }
+
+    #[test]
+    fn 生成期集合封存后不受registry后续变化影响() {
+        // 落地"绑定时机是世界创建时刻"这条语义：capture 按值拷贝当时的
+        // 归并结果，后续继续往 registry 里注册新内容,不会让已经封存的
+        // GenerationModSet 跟着变。
+        // Arrange
+        let mut registry = Registry::new();
+        registry.intern(id("lostland:mountain"));
+        let manifests = vec![manifest("lostland", "0.1.0")];
+        let generation = GenerationModSet::capture(&registry, &manifests);
+        let hash_at_capture = generation.0[0].content_hash;
+
+        // Act：世界创建之后,玩家继续加载内容,registry 的内容哈希改变。
+        registry.intern(id("lostland:river"));
+        let current_after_change = CurrentModSet::derive_from(&registry, &manifests);
+
+        // Assert：封存的那份没有跟着变,当前集合已经不同。
+        assert_eq!(generation.0[0].content_hash, hash_at_capture);
+        assert_ne!(current_after_change.0[0].content_hash, hash_at_capture);
     }
 }

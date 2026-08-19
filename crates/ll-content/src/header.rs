@@ -31,12 +31,14 @@ use serde::{Deserialize, Serialize};
 
 /// 存档头：schema 版本、存档时间、角色名、当前区域、游玩时长、
 /// 启用 mod 列表（分生成期/当前两组）、`ContentIndex` ↔ 字符串映射表、
-/// 世界身份要素之一（尺寸）。
+/// 世界身份三要素（尺寸、种子、生成期 mod 集合，见
+/// [`crate::world_identity`] 模块文档）。
 ///
-/// 世界身份的第三要素——种子——与生成期 mod 集合的真正封存时机一并
-/// 由任务 4（`ll_content::world_identity`，本批次未实现）落地；本类型
-/// 现在先把「生成期/当前 mod 集合各自独立记录」「尺寸」这两块骨架
-/// 立好，避免任务 4 落地时才发现头部结构需要推倒重来。
+/// 世界身份三要素——种子、尺寸、生成期 mod 集合——三者缺一，同一个
+/// 世界都无法复现（[`crate::world_identity`] 模块文档）：地图大小在
+/// 开局建档前由玩家选择、世界可以是长方形，种子相同但尺寸不同产出的
+/// 不是同一个世界；换一批生成期 mod 同样如此。三者在这个类型里各自
+/// 对应 [`Self::world_seed`]/[`Self::world_size`]/[`Self::generation_mods`]。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveHeader {
     /// 存档主体的格式版本号——迁移链（[`crate::migration`]）按这个
@@ -67,12 +69,20 @@ pub struct SaveHeader {
     /// `ContentIndex` 从 0 开始的顺序排列（来自
     /// `Registry::snapshot()`，见 [`crate::content_index_map`]）。
     pub content_index_map: Vec<String>,
-    /// 世界身份三要素之二：地图尺寸（`(zone_span_x, zone_span_y)` 或
-    /// 等价的宽高对，具体语义留给任务 4 的 `world_identity` 模块与
-    /// `ZoneLayout` 对齐）。地图大小在开局建档前由玩家选择、世界可
-    /// 长方形——种子相同但尺寸不同产出的不是同一个世界，因此尺寸与
-    /// 种子、生成期 mod 集合一样，缺一不可。
+    /// 世界身份三要素之一：地图尺寸——`(zone_count_x, zone_count_y)`,
+    /// 与 [`crate::world_identity::validate_size_choice`] 的入参、
+    /// `ll_world::zone::ZoneLayout::zone_count` 对齐（区块边长固定
+    /// 128,见 [`crate::world_identity`] 模块文档，不需要单独再存一个
+    /// 字段）。地图大小在开局建档前由玩家选择、世界可以是长方形——
+    /// 种子相同但尺寸不同产出的不是同一个世界。
     pub world_size: (u32, u32),
+    /// 世界身份三要素之二：生成本世界地形所用的种子。与
+    /// [`ll_world::state::WorldState::seed`] 是同一个值——存档主体本身
+    /// 已经带着它（`WorldState` 参与序列化），这里额外在头部存一份，
+    /// 是为了让「仅读头部」（规格 §11.2）就能看到完整的世界身份三要素，
+    /// 不必先解压主体——例如存档列表界面展示「种子：12345，可分享给
+    /// 好友」，或未来的种子去重/展示功能，都不需要触发主体解压。
+    pub world_seed: u64,
 }
 
 /// 存档头里记录的单个 mod 条目：命名空间、版本号、内容哈希。
@@ -126,6 +136,7 @@ mod tests {
                 "yourmod:iceball".to_string(),
             ],
             world_size: (48, 32),
+            world_seed: 20_260_819,
         }
     }
 
@@ -171,6 +182,19 @@ mod tests {
             .as_array()
             .expect("content_index_map 应当是一个 JSON 数组");
         assert!(entries.iter().all(|entry| entry.is_string()));
+    }
+
+    #[test]
+    fn 种子不同的两份头部不相等即便其余字段全部相同() {
+        // 世界身份三要素之一是种子——头部必须能仅凭自身字段区分出
+        // 「同一批 mod、同一尺寸，但种子不同」的两个世界,不能让种子
+        // 缺席这道比较。
+        // Arrange
+        let mut other = sample_header();
+        other.world_seed = sample_header().world_seed.wrapping_add(1);
+
+        // Act & Assert
+        assert_ne!(other, sample_header());
     }
 
     #[test]

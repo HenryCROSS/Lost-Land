@@ -22,11 +22,13 @@
 //! - [`content_index_map`] —— 把 `Registry::snapshot()`/
 //!   `Registry::rebuild_from()` 真正接入存档头 `content_index_map`
 //!   字段的读写路径。
+//! - [`world_identity`] —— 世界身份三要素（种子/尺寸/生成期 mod
+//!   集合）的推荐预设与校验，生成期 mod 集合的绑定时机。
 //!
-//! 存档主体读写管线（`save_file`）、世界身份（`world_identity`）、
-//! 缺失 mod 降级策略（`degrade`）等后续任务的模块留给各自任务落地,
-//! 本 crate 当前只包含以上三个模块。
+//! 存档主体读写管线（`save_file`）、缺失 mod 降级策略（`degrade`）等
+//! 后续任务的模块留给各自任务落地,本 crate 当前包含以上四个模块。
 
 pub mod content_index_map;
 pub mod header;
 pub mod migration;
+pub mod world_identity;
