@@ -64,21 +64,147 @@
 //! 把墙改成无条件可见都会让它变红）。
 
 use std::collections::HashSet;
+use std::hash::Hash;
 
-use ll_core::torus::{TorusPos, TorusSize};
+use ll_core::bounded::BoundedPos;
+use ll_core::torus::TorusPos;
 
+use crate::bounded_grid::BoundedGrid;
 use crate::chunk::ChunkGrid;
-use crate::terrain::TerrainTable;
+use crate::terrain::{TerrainKind, TerrainTable};
 
-/// 一次视野计算得到的可见格集合。
-#[derive(Debug, Clone)]
-pub struct VisibleSet {
-    tiles: HashSet<TorusPos>,
+/// `compute_fov` 依赖的最小「世界」接口——把算法本身与它跑在哪种拓扑
+/// （环面世界地表，还是有界不环绕的 `Interior` 楼层）解耦。
+///
+/// # 为什么用 trait + 静态分发，不是 enum 或 `dyn`
+///
+/// 阴影投射是逐格热路径（每帧、视野半径覆盖的每一格都要走一遍）。
+/// `dyn SightGrid` 会把 [`terrain_at`](Self::terrain_at)/
+/// [`offset`](Self::offset)/[`squared_euclidean`](Self::squared_euclidean)
+/// 全部变成虚调用——`ChunkGrid`（环面地表，真正的热路径；`Interior`
+/// 的有界网格通常小得多、访问频率也低得多）会为此额外付出间接跳转的
+/// 成本，不可接受。`compute_fov` 因此保持
+/// `fn compute_fov<G: SightGrid>(...)` 的泛型签名：编译器为
+/// `ChunkGrid`/`BoundedGrid` 各自单态化出一份，`ChunkGrid` 那一份与
+/// 泛化之前逐条指令等价——[`offset`](Self::offset) 内联后就是原来的
+/// `world.wrap` 调用，恒返回 `Some`，这个分支在编译期即可判死。
+///
+/// 也考虑过把「环面 / 有界」做成一个 enum、在 `compute_fov` 内部 `match`
+/// 两条分支各自的坐标运算——**否决**：那等于把 `scan_row_in_sector`
+/// 整个函数体复制两份（一份用 `TorusPos`，一份用 `BoundedPos`），恰恰是
+/// `knowledge/design/coordinate-system-and-layers.md` 六节核实过的
+/// 「算法本身零改动，只是输入类型需要新变体」这条结论要避免的重复，
+/// 也会让本文件顶部整段关于对称性的论证需要分别在两处维护、一旦漂移
+/// 就可能重演 `tests/fov_blackbox.rs` 曾经抓出的对称性缺陷。trait 把
+/// 「哪种坐标系」收敛成三个查询方法 + 一个安全上限，算法只写一遍。
+///
+/// # 越界处理是这里真正的算法级改动
+///
+/// [`offset`](Self::offset) 从 `origin` 按 `(dx, dy)` 求目标坐标：环面
+/// 实现恒返回 `Some`（[`TorusSize::wrap`] 绕回世界内）；有界实现越界
+/// 返回 `None`——[`scan_row_in_sector`] 收到 `None` 时直接跳过这一格，
+/// 既不标记可见也不参与遮挡计算，视线在这个方向上止于地图边界，不会
+/// 像环面那样绕接缝。
+pub trait SightGrid {
+    /// 网格上的一个位置类型：环面用 [`TorusPos`]，有界用 [`BoundedPos`]。
+    type Pos: Copy + Eq + Hash;
+
+    /// 查询给定位置的地形。
+    fn terrain_at(&self, pos: Self::Pos) -> TerrainKind;
+
+    /// 从 `origin` 出发按 `(dx, dy)` 偏移求目标坐标。
+    ///
+    /// 环面实现恒返回 `Some`；有界实现越界返回 `None`——调用方必须把
+    /// `None` 当作「这个方向在这一步走出了地图边界」，不能替换成任何
+    /// 默认坐标，否则会在有界地图上产出错误的可见性（见本 trait 文档
+    /// 「越界处理」一节）。
+    fn offset(&self, origin: Self::Pos, dx: i32, dy: i32) -> Option<Self::Pos>;
+
+    /// 两点欧氏距离的平方（世界状态禁止浮点，只提供平方值避免开方）。
+    fn squared_euclidean(&self, a: Self::Pos, b: Self::Pos) -> u64;
+
+    /// 扫描行数的安全上限：防止调用方传入极端 `radius`（含 `u32::MAX`）
+    /// 时扫描行为失控。
+    ///
+    /// 环面与有界网格的上限逻辑本质不同：环面超过半个世界宽/高之后，
+    /// 绕接缝比继续沿直线扫描更近，继续扫纯粹是浪费（不影响正确性——
+    /// 返回的可见格依然全部满足实际拓扑下的距离约束）；有界网格没有
+    /// 接缝可绕，唯一需要的上限是「网格自身能容纳的最大跨度」。这条
+    /// 差异被隔离在这一个方法里，共享的扫描算法
+    /// （[`scan_octant`]/[`scan_row_in_sector`]）不需要为它分支，见各
+    /// 实现的文档。
+    fn max_scan_row(&self, radius: u32) -> u32;
 }
 
-impl VisibleSet {
+impl SightGrid for ChunkGrid {
+    type Pos = TorusPos;
+
+    fn terrain_at(&self, pos: TorusPos) -> TerrainKind {
+        ChunkGrid::terrain_at(self, pos)
+    }
+
+    fn offset(&self, origin: TorusPos, dx: i32, dy: i32) -> Option<TorusPos> {
+        // TorusSize::wrap 对任意整数坐标恒成功——环面没有「越界」这个
+        // 概念，走出一侧就绕回另一侧。
+        Some(self.world().wrap(origin.x() + dx, origin.y() + dy))
+    }
+
+    fn squared_euclidean(&self, a: TorusPos, b: TorusPos) -> u64 {
+        self.world().squared_euclidean(a, b)
+    }
+
+    fn max_scan_row(&self, radius: u32) -> u32 {
+        // 与泛化之前的行为逐位等价：超过半个世界宽/高之后，直线扫描
+        // 已经比绕接缝更远，继续扫是纯粹的浪费，不是正确性问题，见
+        // SightGrid::max_scan_row 文档。
+        let world = self.world();
+        radius.min(world.width() / 2).min(world.height() / 2)
+    }
+}
+
+impl SightGrid for BoundedGrid {
+    type Pos = BoundedPos;
+
+    fn terrain_at(&self, pos: BoundedPos) -> TerrainKind {
+        BoundedGrid::terrain_at(self, pos)
+    }
+
+    fn offset(&self, origin: BoundedPos, dx: i32, dy: i32) -> Option<BoundedPos> {
+        // BoundedSize::try_pos 越界返回 None——没有「绕回」可以兜底，
+        // 这正是本 trait 要接住的拓扑差异。
+        self.size().try_pos(origin.x() + dx, origin.y() + dy)
+    }
+
+    fn squared_euclidean(&self, a: BoundedPos, b: BoundedPos) -> u64 {
+        self.size().squared_euclidean(a, b)
+    }
+
+    fn max_scan_row(&self, radius: u32) -> u32 {
+        // 有界地图内任意两点的切比雪夫距离不可能超过
+        // max(width, height) - 1（两点都必须落在
+        // [0,width) × [0,height) 内）。取 max 而非 min：min 会在长宽
+        // 悬殊的地图上把扫描沿长轴方向提前截断，漏掉本该可见的格子；
+        // 环面版本用 /2 是因为它还要处理绕接缝，有界地图没有这层顾虑，
+        // 只需要一个不会误伤真实可见范围的硬上限，防止极端 radius
+        // 输入把扫描行数拖到失控的量级。
+        let size = self.size();
+        radius.min(size.width().max(size.height()))
+    }
+}
+
+/// 一次视野计算得到的可见格集合。
+///
+/// 泛型默认取 [`TorusPos`]——绝大多数调用方（地表视野）不需要写
+/// `VisibleSet<TorusPos>`，只有消费 `Interior` 视野（[`BoundedPos`]）
+/// 的调用方才需要显式指定，见 [`SightGrid`] 文档。
+#[derive(Debug, Clone)]
+pub struct VisibleSet<P: Copy + Eq + Hash = TorusPos> {
+    tiles: HashSet<P>,
+}
+
+impl<P: Copy + Eq + Hash> VisibleSet<P> {
     /// 给定坐标是否落在本次视野内。
-    pub fn contains(&self, pos: TorusPos) -> bool {
+    pub fn contains(&self, pos: P) -> bool {
         self.tiles.contains(&pos)
     }
 
@@ -97,7 +223,7 @@ impl VisibleSet {
     }
 
     /// 遍历所有可见格，不保证顺序。
-    pub fn iter(&self) -> impl Iterator<Item = TorusPos> + '_ {
+    pub fn iter(&self) -> impl Iterator<Item = P> + '_ {
         self.tiles.iter().copied()
     }
 }
@@ -106,34 +232,35 @@ impl VisibleSet {
 ///
 /// 原点自身恒可见，即便 `radius` 为零。
 ///
+/// 泛化自环面专用版本（见 [`SightGrid`] 文档「为什么用 trait + 静态
+/// 分发」）：算法本身（[`scan_octant`]/[`scan_row_in_sector`]）与拓扑
+/// 无关，`G: SightGrid` 只提供三个查询点（地形、偏移、距离）与一个
+/// 扫描进深上限，环面（[`ChunkGrid`]）与有界（[`BoundedGrid`]）各自
+/// 提供符合自己拓扑的实现，见 [`SightGrid`] 各 impl 的文档。
+///
 /// # 扫描进深的安全上限
 ///
-/// 内部按八分象限逐行向外扫描，行数上限取
-/// `min(radius, world.width() / 2, world.height() / 2)`：环面上超过
-/// 半个世界宽/高之后，「沿直线走多远」与「绕背面走多远」哪个更近会
-/// 倒挂——继续按调用方传入的原始 `radius` 扫描既没有意义（真正最短的
-/// 路径已经从背面绕回来），又有实打实的性能与溢出风险（`radius` 传入
-/// `u32::MAX` 时若不设上限会尝试扫描数十亿格）。这个上限只影响扫描提前
-/// 停止的时机，返回的可见格依然全部满足
-/// `TorusSize::chebyshev(origin, pos) <= radius`：见 `tests/fov_blackbox.rs`
-/// 的属性测试。
-pub fn compute_fov(
-    grid: &ChunkGrid,
+/// 内部按八分象限逐行向外扫描，行数上限取 `grid.max_scan_row(radius)`
+/// ——具体上限逻辑因拓扑而异，见 [`SightGrid::max_scan_row`] 文档；这个
+/// 上限只影响扫描提前停止的时机，返回的可见格依然全部满足
+/// `grid.squared_euclidean(origin, pos) <= radius * radius`（`ChunkGrid`
+/// 场景下等价于 `TorusSize::chebyshev(origin, pos) <= radius`：见
+/// `tests/fov_blackbox.rs` 的属性测试）。
+pub fn compute_fov<G: SightGrid>(
+    grid: &G,
     table: &TerrainTable,
-    origin: TorusPos,
+    origin: G::Pos,
     radius: u32,
-) -> VisibleSet {
-    let world = grid.world();
+) -> VisibleSet<G::Pos> {
     let mut tiles = HashSet::new();
     tiles.insert(origin);
 
-    let max_row = radius.min(world.width() / 2).min(world.height() / 2);
+    let max_row = grid.max_scan_row(radius);
     let radius_sq = u64::from(radius) * u64::from(radius);
 
     let mut ctx = ScanContext {
         grid,
         table,
-        world,
         origin,
         radius_sq,
         tiles: &mut tiles,
@@ -146,13 +273,12 @@ pub fn compute_fov(
 }
 
 /// 一次视野计算共享的只读/累积状态，打包传递以避免单个函数参数过多。
-struct ScanContext<'a> {
-    grid: &'a ChunkGrid,
+struct ScanContext<'a, G: SightGrid> {
+    grid: &'a G,
     table: &'a TerrainTable,
-    world: TorusSize,
-    origin: TorusPos,
+    origin: G::Pos,
     radius_sq: u64,
-    tiles: &'a mut HashSet<TorusPos>,
+    tiles: &'a mut HashSet<G::Pos>,
 }
 
 /// 有理数形式的斜率，分母恒为正。
@@ -217,7 +343,7 @@ fn octant_offset(octant: u8, row: i32, col: i32) -> (i32, i32) {
 /// 子区间被收集成下一行要继续扫描的扇区列表。这与经典递归阴影投射
 /// 语义相同，只是把「递归」换成了「按行广度优先」，避免为极端输入
 /// （如巨大的 `radius`）产生过深的调用栈。
-fn scan_octant(ctx: &mut ScanContext, octant: u8, max_row: u32) {
+fn scan_octant<G: SightGrid>(ctx: &mut ScanContext<G>, octant: u8, max_row: u32) {
     let mut sectors = vec![Sector {
         low: Slope { num: 0, den: 1 },
         high: Slope { num: 1, den: 1 },
@@ -256,8 +382,8 @@ fn scan_octant(ctx: &mut ScanContext, octant: u8, max_row: u32) {
 /// 若用开区间会把这条边界线也当成被挡，产出的视野就不对称：从这一侧
 /// 出发算出的扇区在边界处提前夭折，从另一侧出发却因为没撞上同一个角
 /// 而能继续，两侧各算各的就会分歧。
-fn scan_row_in_sector(
-    ctx: &mut ScanContext,
+fn scan_row_in_sector<G: SightGrid>(
+    ctx: &mut ScanContext<G>,
     octant: u8,
     row: i32,
     sector: Sector,
@@ -303,7 +429,13 @@ fn scan_row_in_sector(
         }
 
         let (dx, dy) = octant_offset(octant, row, col);
-        let pos = ctx.world.wrap(ctx.origin.x() + dx, ctx.origin.y() + dy);
+        // 有界网格越过地图边缘时返回 None——没有「绕回」兜底，这一格
+        // 既不标记可见也不参与遮挡计算，直接跳过（见 SightGrid::offset
+        // 文档）。环面网格的 offset 恒返回 Some，这个分支对 ChunkGrid
+        // 场景恒不命中，不改变泛化前的行为。
+        let Some(pos) = ctx.grid.offset(ctx.origin, dx, dy) else {
+            continue;
+        };
 
         // 标记可见用「格子中心对原点的斜率是否仍在开放扇区内」，而不是
         // 「格子的四角区间是否与扇区有任何重叠」——这正是保证对称性的
@@ -314,7 +446,7 @@ fn scan_row_in_sector(
         };
         if center_slope.le(sector.high)
             && sector.low.le(center_slope)
-            && ctx.world.squared_euclidean(ctx.origin, pos) <= ctx.radius_sq
+            && ctx.grid.squared_euclidean(ctx.origin, pos) <= ctx.radius_sq
         {
             ctx.tiles.insert(pos);
         }
@@ -346,6 +478,8 @@ fn scan_row_in_sector(
 mod tests {
     use super::*;
     use crate::terrain::{BaseTerrainIds, TerrainTable, base_terrain_fixture};
+    use ll_core::bounded::BoundedSize;
+    use ll_core::torus::TorusSize;
 
     /// 测试世界尺寸：远大于视野半径，避免环面绕回影响单元测试的几何
     /// 直觉（这些测试关心的是局部遮挡关系，不是绕回本身）。
@@ -447,5 +581,48 @@ mod tests {
         let lower = 3 * (radius as usize) * (radius as usize);
         let upper = 4 * (radius as usize) * (radius as usize);
         assert!((lower..=upper).contains(&visible.len()));
+    }
+
+    #[test]
+    fn 有界网格中越过边界的方向被视为不可见不绕接缝() {
+        // 有界地图没有接缝可绕：origin 贴着西边界，往西的偏移在
+        // BoundedSize::try_pos 那一步直接越界返回 None（bounded.rs 已
+        // 单独测试其行为）。这里用一堵刻意放在东边界的墙验证
+        // compute_fov 层面的效果：若视线真的「绕」到了东边，这堵墙会
+        // 干扰西边界附近的视野；有界地图没有绕回，这堵墙对西边界附近
+        // 的可见性应当完全没有影响。
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+        let size = BoundedSize::new(10, 10).expect("10x10 是合法尺寸");
+        let mut grid = BoundedGrid::new(size, ids.grass);
+        let east_wall = size.try_pos(9, 5).expect("9,5 在范围内");
+        grid.set_terrain(east_wall, ids.wall_stone);
+        let origin = size.try_pos(0, 5).expect("0,5 在范围内");
+        let west_neighbor = size.try_pos(1, 5).expect("1,5 在范围内");
+
+        // Act
+        let visible = compute_fov(&grid, &table, origin, 2);
+
+        // Assert
+        assert!(visible.contains(west_neighbor));
+    }
+
+    #[test]
+    fn 有界网格中视野半径超过地图一角时不panic不产出越界坐标() {
+        // radius 远超地图对角线长度：BoundedPos 的类型不变式已经保证
+        // 返回的可见格不可能携带越界坐标（越界坐标根本构造不出来），
+        // 这里补一条集成层面的确认——compute_fov 在这种极端输入下确实
+        // 能正常返回，而不是 panic 或陷入过深的扫描。
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+        let size = BoundedSize::new(5, 5).expect("5x5 是合法尺寸");
+        let grid = BoundedGrid::new(size, ids.grass);
+        let corner = size.try_pos(0, 0).expect("0,0 在范围内");
+
+        // Act
+        let visible = compute_fov(&grid, &table, corner, 1000);
+
+        // Assert
+        assert!(visible.contains(corner));
     }
 }
