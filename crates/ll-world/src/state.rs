@@ -36,7 +36,7 @@ use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
-use crate::entity::{Affiliation, Agent, Arena, Goal, OrgRef, ThinPopulation};
+use crate::entity::{Affiliation, Agent, Arena, EntityId, Goal, OrgRef, ThinPopulation};
 use crate::generate::{GenParams, build_zone_noise};
 use crate::interior::{Interior, InteriorTable};
 use crate::noise::TileableNoise;
@@ -189,6 +189,36 @@ pub struct WorldState {
     /// 厚层实体池：数百个被真正模拟的实体，行式排布。P3 阶段可以只有
     /// 玩家与几个敌人，见 [`Arena`] 模块文档。参与序列化，理由同上。
     pub actors: Arena<Agent>,
+    /// 玩家角色对应的厚层实体（P5 任务 6 定案，裁定 P5-3）。
+    ///
+    /// # 为什么需要这个字段
+    ///
+    /// 存档必须知道玩家是谁——读档要恢复视角（相机对准哪个实体）、
+    /// 双模式存档要判断"玩家死了没"、缺失 mod 降级策略（见
+    /// `ll_content::degrade`）要区分"这条记录是不是玩家自己的角色"
+    /// （玩家角色种族缺失不可降级，NPC 可以）。此前三个既有验收 demo
+    /// （`p3_acceptance`/`p4_acceptance`/`p5_coordinate_acceptance`）都
+    /// 是各自在应用层用一个局部变量记住玩家的 `EntityId`——这等于把
+    /// "谁是玩家"这件事排除在存档之外：换一个读档会话，应用层的局部
+    /// 变量不会跟着存档一起回来。
+    ///
+    /// # 为什么是 `Option` 而不是必填
+    ///
+    /// 不是每个 `WorldState`（尤其是测试/demo 构造出来的）都真的有一个
+    /// "玩家"概念——`None` 是诚实的初始状态，不是需要拒绝的非法输入。
+    ///
+    /// # 为什么不是 `WorldState::new` 的参数
+    ///
+    /// 与 `surface_profile`/`terrain_table` 不同的考量：这个字段不依赖
+    /// 任何注册期上下文，不需要为了避免新增 `#[serde(skip)]` 而延后
+    /// 赋值——纯粹是为了不改变 `WorldState::new` 现有签名、不牵连三个
+    /// 既有验收 demo 与全部既有测试的调用点（与 P5 任务 3「只加派生不
+    /// 改字段类型」同一条最小改动纪律）。调用方应在 `Arena::spawn`
+    /// 产出玩家的 `EntityId` 之后，显式赋值 `world.player_entity =
+    /// Some(id)`。
+    ///
+    /// # 未参与 `hash()`（暂定，见 `Self::hash` 文档）
+    pub player_entity: Option<EntityId>,
     /// 地形属性表：`terrain` 网格里的 [`TerrainKind`] 值查这张表才能
     /// 问出「阻不阻挡视线」「移动代价多少」。**不参与序列化**——与
     /// `population`/`actors` 同一类已知限制（P4 阶段）：这张表本质是
@@ -221,9 +251,10 @@ pub struct WorldState {
 /// `current_interior` 不出现在这里——读档后总是从「没有进入任何
 /// `Interior`」的状态开始（见 [`TryFrom::try_from`]），不需要参与这次
 /// 中转。`population`/`actors` 现在**出现在这里**（P5 批次 B）：两者
-/// 已经真正参与序列化，见 [`WorldState`] 文档同名一节；`surface_profile`/
-/// `terrain_table` 仍然不出现——那两处 `#[serde(skip)]` 不在本批次
-/// 范围内。
+/// 已经真正参与序列化，见 [`WorldState`] 文档同名一节；`player_entity`
+/// 同样出现在这里（P5 任务 6）——不依赖任何注册期上下文，没有理由不
+/// 参与序列化；`surface_profile`/`terrain_table` 仍然不出现——那两处
+/// `#[serde(skip)]` 不在本批次范围内。
 #[derive(Deserialize)]
 struct WorldStateRepr {
     seed: u64,
@@ -233,6 +264,7 @@ struct WorldStateRepr {
     interiors: InteriorTable,
     population: ThinPopulation,
     actors: Arena<Agent>,
+    player_entity: Option<EntityId>,
 }
 
 impl TryFrom<WorldStateRepr> for WorldState {
@@ -272,6 +304,7 @@ impl TryFrom<WorldStateRepr> for WorldState {
             surface_profile: ContentIndex::default(),
             population: repr.population,
             actors: repr.actors,
+            player_entity: repr.player_entity,
             terrain_table: TerrainTable::default(),
         })
     }
@@ -313,6 +346,7 @@ impl WorldState {
             surface_profile: ContentIndex::default(),
             population: ThinPopulation::default(),
             actors: Arena::default(),
+            player_entity: None,
             terrain_table,
         })
     }
@@ -813,6 +847,49 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn player_entity序列化往返后保持原样而非被重置() {
+        // 裁定 P5-3：存档必须知道玩家是谁——这里锁住 player_entity 真的
+        // 参与了序列化,不是像 surface_profile/terrain_table 那样读档后
+        // 被重置成默认值。
+        // Arrange
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let player_id = world.actors.spawn(Agent {
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: ContentIndex::default(),
+            luck: 0,
+            current_space: Space::surface(zone, ContentIndex::default()),
+        });
+        world.player_entity = Some(player_id);
+        let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
+
+        // Act
+        let decoded: WorldState = serde_json::from_slice(&encoded).expect("往返不应失败");
+
+        // Assert
+        assert_eq!(decoded.player_entity, Some(player_id));
+    }
+
+    #[test]
+    fn 新建的世界玩家实体默认为空() {
+        // WorldState::new 不强制要求"谁是玩家"这个概念——None 是诚实的
+        // 初始状态,不是需要拒绝的非法输入。
+        // Arrange & Act
+        let world = test_world();
+
+        // Assert
+        assert_eq!(world.player_entity, None);
     }
 
     #[test]

@@ -24,11 +24,13 @@
 //!   字段的读写路径。
 //! - [`world_identity`] —— 世界身份三要素（种子/尺寸/生成期 mod
 //!   集合）的推荐预设与校验，生成期 mod 集合的绑定时机。
+//! - [`degrade`] —— 缺失 mod 降级策略：按内容类型分级 + 只读模式。
 //!
-//! 存档主体读写管线（`save_file`）、缺失 mod 降级策略（`degrade`）等
-//! 后续任务的模块留给各自任务落地,本 crate 当前包含以上四个模块。
+//! 存档主体读写管线（`save_file`）等后续任务的模块留给各自任务落地,
+//! 本 crate 当前包含以上五个模块。
 
 pub mod content_index_map;
+pub mod degrade;
 pub mod header;
 pub mod migration;
 pub mod world_identity;
