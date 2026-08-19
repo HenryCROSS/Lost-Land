@@ -69,7 +69,13 @@ impl TryFrom<TorusSizeRepr> for TorusSize {
 ///
 /// 不变式：坐标恒被规范化到 `[0, width) × [0, height)`。字段私有以保证
 /// 该不变式无法从外部破坏——只能经 [`TorusSize::wrap`] 构造。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+///
+/// `Ord`/`PartialOrd` 按 `(x, y)` 字典序派生（字段声明顺序即比较顺序）
+/// ——纯粹是为了给区块索引、常驻集合快照这类需要确定性排序键的场景
+/// （C5：禁止 `HashMap`/`HashSet` 迭代顺序参与逻辑判断）提供一个稳定
+/// 排序依据，**不赋予任何游戏逻辑含义**：`(5, 0) < (0, 5)` 不代表前者
+/// 在游戏世界里更「小」或更靠前，只是一个可复现的排序结果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct TorusPos {
     x: i32,
     y: i32,
@@ -251,6 +257,22 @@ mod tests {
 
         // Assert
         assert_eq!(distance, 2);
+    }
+
+    #[test]
+    fn 环面坐标按横纵坐标字典序排序() {
+        // 新增 Ord：只用于 C5 要求的确定性排序场景，不代表游戏逻辑上的
+        // 「大小」。这里只验证字典序本身——x 小的排前面；x 相同时看 y。
+        // Arrange
+        let world = size();
+        let smaller_x = world.wrap(0, 5);
+        let larger_x = world.wrap(5, 0);
+        let same_x_smaller_y = world.wrap(3, 1);
+        let same_x_larger_y = world.wrap(3, 2);
+
+        // Act & Assert
+        assert!(smaller_x < larger_x);
+        assert!(same_x_smaller_y < same_x_larger_y);
     }
 
     #[test]

@@ -8,6 +8,7 @@
 //! - 随机性只能来自按实体 ID 派生的确定性流，禁止全局 RNG。
 //! - 环面距离只能通过本 crate 的类型计算，禁止在别处手写。
 
+pub mod bounded;
 pub mod error;
 pub mod hashing;
 pub mod ident;
