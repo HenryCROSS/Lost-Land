@@ -355,7 +355,7 @@ fn direction_toward(dx: i32, dy: i32) -> Direction {
 
 /// 在 `all` 里找出（若有）站在 `pos` 的那个存活单位，`exclude` 自身
 /// 除外。`all` 是 [`Vec`]，遍历顺序恒为出生顺序——不经过任何
-/// `HashMap`/`HashSet`，满足约束 C3。
+/// `HashMap`/`HashSet`，满足约束 C5。
 fn find_actor_at(
     world: &WorldState,
     all: &[Combatant],
