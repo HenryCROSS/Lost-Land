@@ -1588,9 +1588,11 @@ version = "0.1.0"
 dependencies = [
  "ll-core",
  "ll-script",
+ "ll-sim",
  "ll-world",
  "proptest",
  "serde",
+ "serde_json",
  "toml",
 ]
 

@@ -34,3 +34,16 @@ toml = "0.9"
 
 [dev-dependencies]
 proptest.workspace = true
+# P5-B 任务 7：`quest.rs` 的持久化测试需要真正走
+# `ll_sim::effect::Effect::SetScriptState → ll_sim::apply::apply` 这条
+# 唯一写入口（裁定 P5-1/ADR 0023），证明任务进度的写入没有绕开它。
+# 只作为测试依赖——生产路径（`mark_quest_completed`/
+# `is_quest_completed`）本身不依赖 `ll-sim`，只产出/读取
+# `ll_world::script_state` 的数据，真正把它包成 `Effect` 交给 `apply`
+# 是调用方（未来的判定管线）的职责，见 `quest` 模块文档。依赖方向
+# ll-world ← ll-sim ← ll-script ← ll-mod（规格 §5）允许 `ll-mod` 依赖
+# `ll-sim`（更下游）。
+ll-sim = { path = "../ll-sim" }
+# 序列化往返测试（任务 7 的存档一致性验证）与 `ll-world` 的同类测试
+# 用同一个编码格式。
+serde_json = "1"

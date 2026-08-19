@@ -1,4 +1,5 @@
-//! 网状任务图注册表——「本体即 Mod」在任务系统上的落点（P5-B 任务 6）。
+//! 网状任务图注册表 + 任务进度持久化——「本体即 Mod」在任务系统上的
+//! 落点（P5-B 任务 6/7）。
 //!
 //! # 与 `SkillTable` 同一套模式，同一套图校验
 //!
@@ -39,12 +40,27 @@
 //! `crates/ll-sim/src/skill.rs` 模块文档「本任务选择的解法」一节列出的
 //! 「已知缺口，记录不硬做」同一条纪律）。
 //!
-//! # 任务进度持久化：留给任务 7
+//! # 任务进度持久化：脚本状态存储，不是 `Agent` 字段（关键设计判断 2）
 //!
-//! "这个实体完成了哪些任务节点"这一部分（走脚本状态存储的每实体存储，
-//! 不是 `Agent` 字段，见关键设计判断 2）由 P5-B 任务 7 落地，不在本
-//! 任务范围内——本任务只交付 `QuestNodeDef`/`QuestTable`/`unlocked_by`
-//! 这份**类型**层面的注册表，任务进度是**实例状态**，两者不混在一起。
+//! "这个实体完成了哪些任务节点"走 P5-A 任务 8 交付的脚本状态存储的
+//! **每实体存储**，不是 `Agent` 的直接字段——理由（计划原文）：任务
+//! 内容高度依赖 mod 扩展，不是每回合都要读的高频状态；脚本状态存储的
+//! 命名空间隔离天然适合"任务是 mod 定义的内容，进度应该按 mod 命名
+//! 空间隔离"这条需求。见 [`mark_quest_completed`]/[`is_quest_completed`]
+//! 文档。
+//!
+//! # 写入必须经 `apply`（裁定 P5-1 / ADR 0023）
+//!
+//! [`mark_quest_completed`] 只产出一条 [`ScriptStateWrite`]，**不直接
+//! 改任何 `WorldState`**——脚本状态就是 `WorldState` 的一部分（挂在
+//! `Agent::script_state`），写它就是改世界，必须经
+//! `ll_sim::effect::Effect::SetScriptState → apply` 这条唯一写入口
+//! （约束 C1），否则"同一串 Intent 重放"复现不出任务进度。调用方（未来
+//! 串起任务判定管线的 `resolve`，或本模块测试）负责把它包进
+//! `Effect::SetScriptState` 交给 `apply`；本模块测试直接调用
+//! `ll_sim::apply::apply` 验证这条路径确实被走通（`ll-sim` 只作为
+//! `dev-dependency` 引入，生产代码路径本身不依赖它，见
+//! `crates/ll-mod/Cargo.toml` 注释）。
 //!
 //! # 跨表引用：`QuestCondition::KillCount.target_kind` 无法在注册期校验
 //!
@@ -61,6 +77,8 @@
 use std::fmt;
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_world::entity::{Agent, EntityId};
+use ll_world::script_state::{ScriptStateTarget, ScriptStateWrite, ScriptValue};
 
 /// 任务完成条件。**只有一档、三档，不做二档**——见模块文档「完成条件
 /// 分档」一节。
@@ -311,6 +329,72 @@ pub fn unlocked_by(table: &QuestTable, completed: &[ContentIndex]) -> Vec<Conten
         }
     }
     unlocked
+}
+
+/// 任务进度键的前缀——脚本状态存储按 `(mod_namespace, key)` 隔离
+/// （`ll_world::script_state` 模块文档），前缀避免任务进度与该 mod 存
+/// 的其他状态（声望、计数器等）撞键。
+const QUEST_PROGRESS_KEY_PREFIX: &str = "quest_progress:";
+
+/// 给定任务节点 id，返回它在脚本状态存储里对应的键。
+///
+/// # 为什么存储命名空间用任务自身的定义命名空间
+///
+/// 按关键设计判断 2 的理由，"任务是 mod 定义的内容，进度应该按 mod
+/// 命名空间隔离"指的是**任务本身归属的 mod**，不是"判定这次完成的逻辑
+/// 恰好跑在哪个 mod 的脚本上下文里"——即便未来某个通用"任务判定引擎"
+/// 由另一个 mod 提供，某个任务节点的完成记录也应该始终落在定义它的那
+/// 个 mod 的命名空间下，这样卸载/替换判定引擎 mod 不会让已有的任务
+/// 进度数据变得孤儿或错位。[`mark_quest_completed`]/[`is_quest_completed`]
+/// 因此都用 `quest.namespace()` 作为存储命名空间，键本身再把完整
+/// `NamespacedId`（含命名空间）拼进字符串——这一层看起来冗余（命名
+/// 空间在存储位置与键字符串里各出现一次），但保留完整 id 让读者从键
+/// 本身就能确认"这是哪个任务"，不需要再回头看外层是哪个 mod 命名空间
+/// 才能拼出完整语义。
+pub fn quest_progress_key(quest: &NamespacedId) -> String {
+    format!("{QUEST_PROGRESS_KEY_PREFIX}{quest}")
+}
+
+/// 产出一条标记 `actor` 已完成 `quest` 的脚本状态写入记录。
+///
+/// **不直接改任何 `WorldState`**——本函数只产出数据，见模块文档「写入
+/// 必须经 `apply`」一节：调用方（未来串起任务判定管线的 `resolve`，或
+/// 本模块测试）负责把返回值包进
+/// `ll_sim::effect::Effect::SetScriptState` 交给 `apply`。写入的值固定
+/// 是 `ScriptValue::Int(1)`——"完成"是一个存在性判断（写过就是完成），
+/// 不需要一个可以取多种值的状态机，`1` 只是一个非零哨兵，语义上等价于
+/// 布尔真值（`ScriptValue::Bool` 也可以，选 `Int` 是与设计文档给出的
+/// scheme 示例 `(entity-state-set! actor-handle "quest_progress:..." 1)`
+/// 保持字面一致，见 `knowledge/design/class-skill-quest-system.md`
+/// 及实施计划任务 7 的「Interfaces Produces」一节）。
+pub fn mark_quest_completed(actor: EntityId, quest: &NamespacedId) -> ScriptStateWrite {
+    ScriptStateWrite {
+        target: ScriptStateTarget::Entity(actor),
+        mod_namespace: quest.namespace().to_string(),
+        key: quest_progress_key(quest),
+        value: ScriptValue::Int(1),
+    }
+}
+
+/// 查询 `agent` 是否已完成 `quest`——直接读取已提交的
+/// [`Agent::script_state`]，不经脚本调用。
+///
+/// # 为什么是 Rust 直接读取路径，不强制经脚本
+///
+/// `ll_script::api::state` 的 `entity-state-get!` 是脚本调用路径（脚本
+/// 代码里判定任务完成状态时使用）；C1「`apply` 是唯一写入口」只约束
+/// **写**，不约束读——直接读取已提交的 `WorldState` 字段是全代码库
+/// 到处都在做的事（`ll_sim::resolve` 的绝大多数判定都是这么读的）。
+/// 本函数因此是给未来 Rust 侧判定逻辑（例如 `resolve` 判断某个任务
+/// 节点是否已完成、进而决定是否触发后续解锁）准备的直接路径，不需要
+/// 每次判定都起一次 Steel VM 调用。
+pub fn is_quest_completed(agent: &Agent, quest: &NamespacedId) -> bool {
+    matches!(
+        agent
+            .script_state
+            .get(&(quest.namespace().to_string(), quest_progress_key(quest))),
+        Some(ScriptValue::Int(1))
+    )
 }
 
 /// 本体基础任务节点在当前注册表里的索引缓存。
@@ -673,5 +757,161 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn quest_progress_key对不同任务产出不同的键() {
+        // Arrange
+        let quest_a = id("lostland:main_quest_1");
+        let quest_b = id("lostland:branch_a");
+
+        // Act & Assert
+        assert_ne!(quest_progress_key(&quest_a), quest_progress_key(&quest_b));
+    }
+
+    /// P5-B 任务 7：任务进度持久化——脚本状态存储接线的测试。
+    mod progress_persistence {
+        use super::*;
+        use ll_sim::apply::apply;
+        use ll_sim::effect::Effect;
+        use ll_world::entity::BaseStats;
+        use ll_world::generate::GenParams;
+        use ll_world::space::Space;
+        use ll_world::state::WorldState;
+        use ll_world::terrain::base_terrain_fixture;
+        use ll_world::zone::ZoneLayout;
+        use std::collections::BTreeMap;
+
+        /// 测试用最小世界——理由同 `ll_sim::apply` 测试模块的同名帮手：
+        /// 只需要满足 `WorldState::new` 的前置条件，具体地形/尺寸细节
+        /// 不影响本模块要验证的行为（任务进度只挂在 `Agent` 上）。
+        fn test_world() -> WorldState {
+            let zone_count = ll_core::torus::TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+            let layout = ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束");
+            let (terrain_ids, terrain_table) = base_terrain_fixture();
+            let spawn = layout.tile_size().wrap(0, 0);
+            WorldState::new(
+                layout,
+                &GenParams::default(),
+                &terrain_ids,
+                terrain_table,
+                spawn,
+            )
+            .expect("测试布局满足全部构造前置条件")
+        }
+
+        /// 一份内部自洽的空白 `Agent`——字段列表需要与
+        /// `ll_world::entity::Agent` 保持同步，理由同
+        /// `ll_sim::apply` 测试模块的同名帮手。
+        fn blank_agent(world: &WorldState) -> Agent {
+            let mut interner = Interner::new();
+            let profession = interner.intern(id("lostland:tester"));
+            let race = interner.intern(id("lostland:human"));
+            let pos = world.size.wrap(0, 0);
+            let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+            Agent {
+                pos,
+                stats: BaseStats::BASELINE,
+                next_action_at: ll_core::time::Tick(0),
+                health: Agent::STARTING_HEALTH,
+                affiliations: Vec::new(),
+                wallet: 0,
+                profession,
+                goals: Vec::new(),
+                race,
+                luck: 0,
+                mana: Agent::STARTING_MANA,
+                stamina: Agent::STARTING_STAMINA,
+                unlocked_skills: Vec::new(),
+                skill_cooldowns: BTreeMap::new(),
+                subclasses: Vec::new(),
+                active_stat_modifiers: BTreeMap::new(),
+                current_space: Space::surface(zone, ContentIndex::default()),
+                script_state: BTreeMap::new(),
+            }
+        }
+
+        #[test]
+        fn 任务进度写入后可以在同一会话内读回() {
+            // Arrange
+            let mut world = test_world();
+            let actor = world.actors.spawn(blank_agent(&world));
+            let quest = id("lostland:main_quest_1");
+
+            // Act：mark_quest_completed 只产出数据，真正落盘经
+            // Effect::SetScriptState -> apply（裁定 P5-1）。
+            let write = mark_quest_completed(actor, &quest);
+            apply(
+                &mut world,
+                &Effect::SetScriptState {
+                    writes: vec![write],
+                },
+            );
+
+            // Assert
+            let agent = world.actors.get(actor).expect("刚生成的实体必然存在");
+            assert!(is_quest_completed(agent, &quest));
+        }
+
+        #[test]
+        fn 未标记完成的任务查询为未完成() {
+            // Arrange：没有任何写入——防御性测试，确认"没写过"与"写过"
+            // 在读取侧确实是两种不同的可观察结果，不是哨兵值恰好等于
+            // "已完成"这种巧合。
+            let world = test_world();
+            let agent = blank_agent(&world);
+            let quest = id("lostland:main_quest_1");
+
+            // Act & Assert
+            assert!(!is_quest_completed(&agent, &quest));
+        }
+
+        #[test]
+        fn 任务进度经worldstate序列化往返后保持一致() {
+            // Arrange
+            let mut world = test_world();
+            let actor = world.actors.spawn(blank_agent(&world));
+            let quest = id("lostland:main_quest_1");
+            apply(
+                &mut world,
+                &Effect::SetScriptState {
+                    writes: vec![mark_quest_completed(actor, &quest)],
+                },
+            );
+
+            // Act：完整序列化往返，模拟存档读写（P5-A 任务 9 的
+            // `ll-content` 管线尚未接线时的替代验证方式，见实施计划
+            // 任务 7「必须验证」一节）。
+            let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
+            let reloaded: WorldState = serde_json::from_slice(&encoded).expect("往返不应失败");
+
+            // Assert
+            let agent = reloaded.actors.get(actor).expect("往返后实体仍然存在");
+            assert!(is_quest_completed(agent, &quest));
+        }
+
+        #[test]
+        fn 不同mod命名空间的任务进度互不干扰() {
+            // Arrange：两个不同命名空间、但路径部分相同的任务节点——
+            // 若命名空间隔离出了问题（例如键里漏掉了命名空间），两者会
+            // 在存储里互相覆盖。
+            let mut world = test_world();
+            let actor = world.actors.spawn(blank_agent(&world));
+            let quest_a = id("moda:shared_path");
+            let quest_b = id("modb:shared_path");
+
+            // Act：只标记 quest_a 完成。
+            apply(
+                &mut world,
+                &Effect::SetScriptState {
+                    writes: vec![mark_quest_completed(actor, &quest_a)],
+                },
+            );
+
+            // Assert：quest_a 已完成，quest_b（不同命名空间）不受影响。
+            let agent = world.actors.get(actor).expect("刚生成的实体必然存在");
+            assert!(is_quest_completed(agent, &quest_a));
+            assert!(!is_quest_completed(agent, &quest_b));
+        }
     }
 }
