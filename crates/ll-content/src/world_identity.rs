@@ -29,6 +29,8 @@ use ll_mod::mod_set::GenerationModSet;
 use ll_world::WorldError;
 use ll_world::zone::ZoneLayout;
 
+use crate::header::ModHeaderEntry;
+
 /// 一档推荐的地图尺寸预设：区块边长（固定 128，与
 /// [`ZoneLayout::default_config`] 一致）+ 世界区块数。
 ///
@@ -126,6 +128,39 @@ impl WorldIdentity {
     }
 }
 
+/// 把 [`GenerationModSet`]（`ll_mod::mod_set`）转换成
+/// [`crate::header::SaveHeader::generation_mods`] 可以直接使用的
+/// `Vec<ModHeaderEntry>`。
+///
+/// # 断链三修复（P5-A 任务 14）
+///
+/// `ll_mod::mod_set::ModSetEntry` 与 `crate::header::ModHeaderEntry`
+/// 字段形状几乎相同（命名空间 + 版本号 + 内容哈希），但分属两个不同
+/// crate 的类型，此前没有任何生产代码把两者接起来——`ll-content` 全部
+/// 现存测试（含 P5 批次 E、L6 端到端脚手架）都是直接手写
+/// `Vec<ModHeaderEntry>` 或干脆留空，验收 demo（任务 13）为了走通
+/// `WorldIdentity::bind` 到「可以写进存档头」这一环，临时在 demo 自己
+/// 的代码里补了一份等价的转换逻辑（不是生产代码），并如实记录了这处
+/// 缺口。本函数是补上的那一环——`ModHeaderEntry` 只用 `String`/整数/
+/// 枚举这类原始类型（见 [`crate::header`] 模块文档「为什么头部不能
+/// 引用 `ContentIndex`」），转换本身只是把 `NamespacedId` 取出命名空间
+/// 部分、版本号与内容哈希原样搬过来，不涉及任何需要额外校验或推导的
+/// 逻辑。
+///
+/// 调用点：见 [`crate::save_file`] 的存档写出流程测试与
+/// `crates/ll-content/examples/p5_save_acceptance.rs`——两处都已经改为
+/// 调用这个函数，不再各自重新发明一份等价的搬运代码。
+pub fn generation_mods_to_header_entries(set: &GenerationModSet) -> Vec<ModHeaderEntry> {
+    set.0
+        .iter()
+        .map(|entry| ModHeaderEntry {
+            namespace: entry.id.namespace().to_string(),
+            version: entry.version.clone(),
+            content_hash: entry.content_hash,
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -165,6 +200,57 @@ mod tests {
 
         // Assert：已绑定的三要素原样不变。
         assert_eq!(identity.generation_mods, generation);
+    }
+
+    #[test]
+    fn generation_mods_to_header_entries产出的条目字段与源数据逐一对应() {
+        // 断链三修复的核心验证：GenerationModSet -> Vec<ModHeaderEntry>
+        // 这次转换本身只是原样搬运,不丢字段、不改数值。
+        // Arrange
+        let mut registry = Registry::new();
+        registry.intern(id("lostland:mountain"));
+        let manifests = vec![manifest("lostland", "0.1.0")];
+        let generation = GenerationModSet::capture(&registry, &manifests);
+
+        // Act
+        let entries = generation_mods_to_header_entries(&generation);
+
+        // Assert
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].namespace, "lostland");
+        assert_eq!(entries[0].version, "0.1.0");
+        assert_eq!(
+            entries[0].content_hash,
+            registry.content_hash_of("lostland")
+        );
+    }
+
+    #[test]
+    fn generation_mods_to_header_entries对未贡献内容的mod保留空哈希() {
+        // 裁定 P5-8 配套：「在场但从未贡献内容」的 content_hash 是
+        // None,转换过程不能把它折叠成任何裸整数（例如 0）。
+        // Arrange
+        let registry = Registry::new();
+        let manifests = vec![manifest("emptymod", "1.0.0")];
+        let generation = GenerationModSet::capture(&registry, &manifests);
+
+        // Act
+        let entries = generation_mods_to_header_entries(&generation);
+
+        // Assert
+        assert_eq!(entries[0].content_hash, None);
+    }
+
+    #[test]
+    fn generation_mods_to_header_entries对空集合产出空列表() {
+        // Arrange
+        let generation = GenerationModSet(Vec::new());
+
+        // Act
+        let entries = generation_mods_to_header_entries(&generation);
+
+        // Assert
+        assert!(entries.is_empty());
     }
 
     #[test]
