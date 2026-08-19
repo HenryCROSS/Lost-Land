@@ -79,6 +79,19 @@ impl Camera {
 /// `knowledge/design/coordinate-system-and-layers.md` 六节「`ll-render`
 /// 是否需要改动」一节的核实结论：「不是要重写屏幕换算算法本身，而是
 /// 需要给 `Camera` 提供一个基于有界坐标的等价『世界』上下文」。
+///
+/// # 为什么不与 [`Camera`] 共享一个 trait（对照 `ll_world::fov::SightGrid`）
+///
+/// `Camera`/`BoundedCamera` 与 `SightGrid` 表面上是同一类问题——都要
+/// 同时服务环面与有界两种坐标系——但 `SightGrid` 抽了 trait，这里
+/// 没有，且这不是风格取舍。`compute_fov` 抽 trait 是因为阴影投射的
+/// 扫描逻辑本身要被两种网格**共用**（不抽会复制一整套热路径算法）；
+/// `Camera`/`BoundedCamera` 的方法集本就不同（环面要处理绕接缝，有界
+/// 要处理边界钳制/留白），也从未被同一份泛型代码统一调用过——没有
+/// 算法要共用，抽 trait 只会插入一层没有实际内容的接口。判据见
+/// `knowledge/decisions/0021-abstraction-requires-shared-algorithm-not-symmetry.md`：
+/// 抽象的理由是「有算法要共用」，不是「看起来该对称」。若未来两种
+/// 相机确实长出共享逻辑，那时候抽出 trait 或共享函数才是对的时机。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BoundedCamera {
     /// 相机注视的有界局部坐标，恒显示在视口正中。
