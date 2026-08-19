@@ -1,0 +1,38 @@
+# `cargo-fuzz` target 骨架（任务 11）。
+#
+# 本次实施的开发环境（Windows，无 nightly 工具链、`clang` 不在
+# `PATH` 上）核实过跑不起来真正的 `cargo fuzz run`——`libFuzzer` 的
+# 覆盖率插桩依赖 clang，且 `cargo-fuzz` 要求 nightly rustc（`-Z` 编译
+# 选项）。这份骨架按标准结构落地，供工具链齐备的环境（CI、Linux/macOS
+# 开发机）直接使用；本次会话实际跑过的等价覆盖见
+# `../tests/fuzz_save_load.rs`（`proptest`，见其模块文档）。
+#
+# 按 `cargo-fuzz` 惯例，本目录是独立的虚拟工作区根（下面的
+# `[workspace]` 空表），不被父工作区的 `members = ["crates/*"]` 纳入
+# ——`crates/ll-content/fuzz` 不是 `crates/*` 的直接匹配项，两者互不
+# 干扰，`cargo check --workspace`/`cargo test --workspace` 都不会触碰
+# 到这个目录。
+
+[package]
+name = "ll-content-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+ll-content = { path = ".." }
+ll-mod = { path = "../../ll-mod" }
+ll-world = { path = "../../ll-world" }
+
+[[bin]]
+name = "save_load"
+path = "fuzz_targets/save_load.rs"
+test = false
+doc = false
+bench = false
+
+[workspace]

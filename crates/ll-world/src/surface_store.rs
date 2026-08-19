@@ -579,8 +579,30 @@ impl<'de> Deserialize<'de> for SurfaceStore {
     {
         let data = SurfaceStoreData::deserialize(deserializer)?;
         let local_size = data.layout.local_size();
+        let zone_count = data.layout.zone_count();
         let mut resident = HashMap::new();
         for (zone, grid) in data.resident {
+            // `ZoneCoord`（即 `TorusPos`）自身没有「这是区块坐标」这层
+            // 上下文——它的 `Deserialize` 只保证坐标非负，不保证落在
+            // 这份 `layout` 的区块数范围内。一个被篡改的存档完全可以
+            // 塞进一个数值巨大的坐标（例如把某个字节位翻转成 `x =
+            // 999999999`）：这样的键插进 `resident` 之后，
+            // `resident_zones()`/`terrain_at_resident` 等下游代码按
+            // `zone.x() * zone_span + 局部偏移` 反推瓦片坐标、再用
+            // `TorusSize::wrap` 环绕回一个合法瓦片坐标时，会落到与这个
+            // 越界键完全不对应的另一个瓦片，查询该瓦片所属的（正确）
+            // 区块键在 `resident` 里往往不存在——这正是任务 11 模糊
+            // 测试撞见的真实缺陷：下游多处（`Self::try_remap_resident_terrain`/
+            // `WorldState::hash`）依赖「`resident_zones()` 报出的坐标此刻
+            // 必然能查到地形」这条不变式，在这个前提被打破后触发
+            // `.expect()` panic，而不是本该发生的、体面的反序列化失败。
+            // 在最早能拦住的地方（反序列化）校验区块坐标本身落在
+            // `zone_count` 范围内，把这类畸形输入变成一次干净的 `Err`。
+            if zone.x() as u32 >= zone_count.width() || zone.y() as u32 >= zone_count.height() {
+                return Err(D::Error::custom(
+                    "存档中某个常驻区块的坐标超出了区块布局的区块数范围",
+                ));
+            }
             if grid.world() != local_size {
                 return Err(D::Error::custom(
                     "存档中某个常驻区块的地形网格尺寸与区块布局不一致",
