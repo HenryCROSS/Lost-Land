@@ -1,6 +1,9 @@
 [workspace]
 resolver = "3"
-members = ["crates/*"]
+# tools/* 是仓库维护用的一次性/低频小工具（例如占位美术资产生成器），
+# 不是游戏本体的一部分，但仍需纳入工作区才能共享 lints 声明与统一的
+# 依赖版本管理，理由见下方 workspace.lints 注释。
+members = ["crates/*", "tools/*"]
 
 [workspace.package]
 version = "0.1.0"

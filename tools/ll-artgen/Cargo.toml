@@ -1,0 +1,17 @@
+[package]
+name = "ll-artgen"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "占位图集像素点缀生成器：读 assets/atlas/placeholder.json 的既有布局，重新生成 assets/atlas/placeholder.png 的像素内容"
+publish = false
+
+[lints]
+workspace = true
+
+[dependencies]
+# 只启用 PNG：这个工具只读写图集这一种资产，没必要为此把 JPEG/GIF/TIFF
+# 等一整套解码器编进来——与 crates/ll-render 等既有 crate 的取舍一致。
+image = { version = "0.25", default-features = false, features = ["png"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
