@@ -25,12 +25,15 @@
 //! - [`world_identity`] —— 世界身份三要素（种子/尺寸/生成期 mod
 //!   集合）的推荐预设与校验，生成期 mod 集合的绑定时机。
 //! - [`degrade`] —— 缺失 mod 降级策略：按内容类型分级 + 只读模式。
+//! - [`load_error`] —— schema 版本与 mod 版本两条正交失败轴的分类
+//!   报错。
 //!
 //! 存档主体读写管线（`save_file`）等后续任务的模块留给各自任务落地,
-//! 本 crate 当前包含以上五个模块。
+//! 本 crate 当前包含以上六个模块。
 
 pub mod content_index_map;
 pub mod degrade;
 pub mod header;
+pub mod load_error;
 pub mod migration;
 pub mod world_identity;

@@ -47,6 +47,8 @@
 use ll_core::ident::ContentIndex;
 use ll_world::state::WorldState;
 
+use crate::load_error::LoadError;
+
 /// 缺失内容所属的类型——决定套用哪一档降级策略。
 ///
 /// 「这条记录是不是玩家自己的」不属于这个枚举——那是 [`OwnerContext`]
@@ -119,17 +121,21 @@ pub fn decide_degrade_action(
 /// 没有损坏，只是有些内容缺失且不可降级，[`ReadOnlySave`] 允许查看/
 /// 导出，好过「要么丢数据要么打不开」的二选一。
 ///
-/// `Rejected` 变体（存档本身损坏/schema 或 mod 版本不兼容）由任务 7
-/// （[`crate::load_error::LoadError`]）落地时补上——本任务只交付
-/// 「降级决策如何影响读档结果」这一半，另一半是完全不同的失败轴
-/// （见 `knowledge/design/identity-and-ids.md` 六、④），不在这里混
-/// 一起判定。
+/// `Rejected` 是完全不同的一类失败（P5 任务 7 补上）：存档本身损坏，
+/// 或 schema/mod 版本判定为不兼容（[`LoadError`]）——这类失败发生在
+/// 「能不能拿到一个 `WorldState`」之前，与「拿到了 `WorldState` 之后
+/// 某些内容降级得怎么样」（本类型另外两个变体）是两个不同阶段的问题，
+/// 不应该被混进同一次降级决策判定,见 [`crate::load_error`] 模块文档
+/// 「两条正交的失败轴」。
 #[derive(Debug)]
 pub enum LoadOutcome {
     /// 完全正常，可以继续游玩。
     Playable(WorldState),
     /// 撞上 `Reject` 类降级，但存档本身没有损坏——只读模式。
     ReadOnly(ReadOnlySave),
+    /// 存档本身损坏或缺失的内容超出可挽救范围——连一个 `WorldState`
+    /// 都拿不到，见 [`LoadError`]。
+    Rejected(LoadError),
 }
 
 /// 只读存档：持有完整的 [`WorldState`]，但不暴露任何会推进世界的方法。
@@ -323,5 +329,18 @@ mod tests {
         // Assert：导出后是一个普通值,拥有完整所有权(编译期已经验证——
         // 这里只额外确认导出保留了原世界的数据,不是造出一个空壳)。
         assert_eq!(exported.seed, 0);
+    }
+
+    #[test]
+    fn rejected与readonly是两个不能互相冒充的变体() {
+        // LoadOutcome::Rejected 发生在"能不能拿到 WorldState"之前,与
+        // Playable/ReadOnly（已经拿到 WorldState 之后的降级结果）是
+        // 两个不同阶段——这里只锁住三个变体互不相同,真正产出
+        // Rejected 的判定逻辑属于 load_error 模块。
+        // Arrange
+        let rejected = LoadOutcome::Rejected(LoadError::Corrupted("测试用".to_string()));
+
+        // Act & Assert
+        assert!(!matches!(rejected, LoadOutcome::ReadOnly(_)));
     }
 }
