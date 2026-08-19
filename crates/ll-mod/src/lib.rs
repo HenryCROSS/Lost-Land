@@ -23,6 +23,9 @@
 //!   把 `ll_world::terrain` 定义的地形声明表，经 [`registry::Registry::intern`]
 //!   注册成本体的第一批内容。本体地形与 mod 未来注册的地形走的是
 //!   完全相同的这一条 `Registry::intern` 调用路径，见该模块文档。
+//! - [`base_space_profile`] —— 同一个模式在 `ll_world::space_profile`
+//!   上的落点（两级坐标系重写批次 C 补齐）：把本体的地表/洞窟/地下城/
+//!   建筑内部四种基础空间类型注册进 [`registry::Registry`]。
 //! - [`script_terrain_api`] —— 把 `register-terrain` 注册进
 //!   `ll_script::host::ScriptEngine`，供 mod 脚本定义自定义地形（Task
 //!   11/12）。
@@ -38,6 +41,7 @@
 //! [`base_terrain`] 模块文档）与 `ll-script`（Task 11 新增，理由见
 //! [`pipeline`] 模块文档），不得被下游任何 crate 反向依赖。
 
+pub mod base_space_profile;
 pub mod base_terrain;
 pub mod discover;
 pub mod load_report;
