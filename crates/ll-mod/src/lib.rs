@@ -30,6 +30,9 @@
 //!   本 crate（不像地形那样拆成 `ll-world` 定义 + `ll-mod` 薄封装两处
 //!   ——职业不依赖任何世界空间概念，见该模块文档「为什么定义本身直接
 //!   落在 `ll-mod`」一节）。
+//! - [`skill`] —— 技能注册表 + 前置关系 DAG 校验（P5-B 任务 3）：技能树
+//!   的「解锁」判定要求前置关系无环，注册期用拓扑着色法检测环并报告
+//!   具体环路，见该模块文档。
 //! - [`base_placeholder`] —— 同一个模式在「占位/未知内容」上的落点
 //!   （P5-A 任务 14 补齐）：把本体的占位内容注册进
 //!   [`registry::Registry`]，让 NPC 种族缺失的占位降级分支在生产读档
@@ -60,4 +63,5 @@ pub mod mod_set;
 pub mod pipeline;
 pub mod registry;
 pub mod script_terrain_api;
+pub mod skill;
 pub mod topo;
