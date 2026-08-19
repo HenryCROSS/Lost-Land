@@ -104,7 +104,8 @@ pub fn minimap(
 ///
 /// 与地表的关系是「同一份种子噪声的两种粒度采样」，不是两份可能漂移
 /// 的地形真相——两者都经过
-/// [`crate::generate::build_zone_noise`]/[`crate::generate::terrain_at_coord`]
+/// [`crate::generate::build_zone_noise`]/`crate::generate::terrain_at_coord`
+/// （后者是模块私有函数，不能做成文档内链，见 `generate.rs` 模块文档）
 /// 那同一条阈值逻辑，只是采样密度不同。
 #[derive(Debug, Clone)]
 pub struct ContinentField {

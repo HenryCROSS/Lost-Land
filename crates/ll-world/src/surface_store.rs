@@ -407,10 +407,11 @@ impl SurfaceStore {
     /// 这个方法不实现任何新的生成/淘汰逻辑——它只是对邻域内每个区块的
     /// 代表坐标各调用一次 [`Self::terrain_at`]（流式加载唯一入口），
     /// 复用同一套 LRU 淘汰与确定性纪律（C4/C5）。已经常驻的区块只会被
-    /// `touch` 刷新访问时间，不会重复生成——这正是
-    /// [`crate::state::warm_spawn_neighborhood`]（`WorldState::new` 的
-    /// 出生点预热）内部改为直接调用本方法的原因：两处「预热一圈邻域」
-    /// 是同一个操作，不该维护两份几乎相同的双重循环。
+    /// `touch` 刷新访问时间，不会重复生成——这正是 `crate::state` 模块
+    /// 内 `warm_spawn_neighborhood`（模块私有函数，`WorldState::new` 的
+    /// 出生点预热，不能做成文档内链）内部改为直接调用本方法的原因：
+    /// 两处「预热一圈邻域」是同一个操作，不该维护两份几乎相同的双重
+    /// 循环。
     pub fn stream_neighborhood(
         &mut self,
         noise: &TileableNoise,

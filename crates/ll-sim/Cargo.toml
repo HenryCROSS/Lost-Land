@@ -52,3 +52,13 @@ name = "p3_acceptance"
 # ——与 `ll-world` 的 `p2_acceptance`、`ll-render` 的 `p1_acceptance`
 # 同样的理由。
 test = true
+
+[[example]]
+name = "p5_coordinate_acceptance"
+# 两级坐标系重写（任务 15）的验收 demo，宿主选在本 crate 而非
+# `ll-world`：需要 Intent → resolve → Effect → apply 这条链路
+# （进出 Interior、EnterSpace/ExitSpace 都要走它，见 ll-sim::resolve
+# 任务 12），`ll-world` 没有这些类型；本 crate 已经具备
+# ll-render/ll-platform 两个 dev-dependency（p3_acceptance 已经在用），
+# 不需要为此新引入依赖或换一个尚不存在的 crate（ll-app）。
+test = true
