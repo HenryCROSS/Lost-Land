@@ -5,6 +5,10 @@
 - 版本：`steel-core` 0.8.2，Rust 1.97.1，Windows 11
 - 探针代码：`crates/ll-script/examples/probe.rs`（一次性验证工具，不是产品代码）
 
+> **[已过时提示 2026-08-19]** 本文中「本体即 Mod」的无限定用法早于 [ADR 0018](0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)。
+> 该检验现在**只在玩法层内成立**——引擎层（渲染、物理、寻路、FOV、光照、时间轴队列机制）
+> 本体与 mod 都碰不到。本文其余实测结论不受影响。
+
 ## 背景
 
 ADR 0001 回答了「脚本能否搞死游戏进程」，测的是中断机制本身。但它没有回答

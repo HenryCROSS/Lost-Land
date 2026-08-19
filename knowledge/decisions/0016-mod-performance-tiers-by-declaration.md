@@ -1,7 +1,12 @@
 # 0016 — mod 性能分档按声明方式，不按作者身份
 
 **日期**：2026-08-18（P4 开工前裁定，代号 P4-4）
-**状态**：已定稿的设计决定，等待实现（`ll-mod` 尚未建立；影响 Task 5/7/11）
+**状态**：已实现（2026-08-19 复核更正——原文「`ll-mod` 尚未建立」已过期）。`ll-mod` 已于 P4 建立，注册表核心与地形的第一档列式物化均已落地
+
+> **[已收窄 2026-08-19]** 本文的**守门规则**（「若本体需要一个 mod 够不着的档位，
+> 那是 API 缺陷」）早于 [ADR 0018](0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)，
+> 现已被其收窄：该规则**只在玩法层内成立**——引擎层本来就是 mod 够不着的，那不是缺陷。
+> 分档机制本身不受影响。**本文正文保持原样未改写**，这是 [ADR 0013](0013-ledger-vs-adr-discipline.md) 立的取代而非篡改原则。
 **关键提交**：无独立提交——本裁定目前只存在于 P4 阶段账本（`.superpowers/sdd/2026-08-18-p4-script-and-mod/progress.md`，BASE = 7157b4e）
 **影响范围**：未来的 `ll-mod`（mod API 表面、内容注册表核心）、`ll-script`（Steel VM 宿主，[0001](0001-steel-sandbox-verification.md)/[0012](0012-steel-capability-surface-verification.md) 已验证其能力边界与性能特征）、未来的加载管理界面（`ll-ui`）
 
