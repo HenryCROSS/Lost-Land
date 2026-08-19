@@ -243,7 +243,21 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 注释掉重新跑这条测试，摘要回到迁移前的旧常量
 /// `6_078_574_347_230_641_570`——确认这次变化完全、只来自
 /// `current_space` 被纳入摘要这一处改动，没有引入其他意外的行为漂移。
-const EXPECTED_REPLAY_DIGEST: u64 = 16_465_209_158_075_336_802;
+///
+/// # 第三次重冻的原因（P5 批次 B：`population`/`actors` 摘掉 `#[serde(skip)]`）
+///
+/// `WorldState::hash` 现在额外把每个存活实体的 `stats`/`profession`/
+/// `race`/`luck`/`affiliations`/`goals` 混入摘要（见其文档新增段落）
+/// ——`setup` 里两个实体的 `profession`/`race` 是从真实 `Interner`
+/// 登记出来的非零 `ContentIndex`，`stats` 取 `BaseStats::BASELINE`
+/// （六项均为 10，非零），因此这六项加入摘要必然改变数值。人工核验：
+/// 把这六行新增的混入调用临时注释掉重新跑这条测试，摘要回到本次重冻
+/// 之前的旧常量 `16_465_209_158_075_336_802`——确认这次变化完全、只
+/// 来自这一处改动，没有引入其他意外的行为漂移（与上面两次重冻同一套
+/// 核验方法）。`affiliations`/`goals` 在这份测试夹具里恒为空
+/// `Vec`（`setup` 从不填充），只贡献一次长度为零的写入，真正让摘要
+/// 改变的是 `stats`/`profession`/`race`/`luck` 四项标量。
+const EXPECTED_REPLAY_DIGEST: u64 = 10_420_841_280_615_735_009;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {
@@ -312,22 +326,18 @@ fn 不同意图流产出不同哈希() {
 fn 序列化世界并读回后继续执行同一意图流结果与不中断执行一致() {
     // 这是本文件最关键的一条：同时验证存档完整性与重放确定性。
     //
-    // `WorldState` 当前只有 `seed`/`clock`/`size`/`terrain` 四个字段
-    // 真正参与序列化——`population`/`actors` 两个字段标着
-    // `#[serde(skip)]`，这是 P3 阶段的已知限制，见 `WorldState` 自己
-    // 的文档「population/actors 暂不参与序列化」一节：厚层 `Agent` 的
-    // `profession`/`race` 是 `ContentIndex`，`ll_core::ident` 模块文档
-    // 明确写着这个类型不可持久化（依赖 mod 加载顺序，真正持久化需要
-    // 先把它解析回字符串 ID），这是存档格式在 P5 冻结前才会补齐的
-    // 内容注册表工作，不在本批次范围内。
+    // `population`/`actors` 现在真正参与序列化（P5 批次 B，摘掉了
+    // `WorldState` 上这两个字段的 `#[serde(skip)]`）——厚层 `Agent` 的
+    // `profession`/`race` 是 `ContentIndex`，该类型已经补齐无上下文的
+    // 直接 `Serialize`/`Deserialize`（见 `WorldState` 模块文档
+    // 「population/actors 现在参与序列化」一节）。因此这里不再需要像
+    // 此前那样手动搬运 `actors`/`population`：`serde_json` 序列化再
+    // 反序列化整个 `WorldState` 就足以复现「读档后继续」这个场景，
+    // 包括两个实体各自的职业/种族/属性都要经过真实的编解码往返。
     //
-    // 因此这里对「读档后继续」的模拟是：让 `seed`/`clock`/`size`/
-    // `terrain` 真正走一遍 `serde_json` 序列化再反序列化（验证这四个
-    // 字段当前就有的存档能力确实完整、无损），而 `actors`/
-    // `population` 两个尚不支持序列化的字段直接搬运过去（对应它们
-    // 「暂留在内存里、还不真正落盘」的当前实现现实）。等 P5 补上
-    // 内容注册表、这两个字段也能真正序列化后，这里应当改为对整个
-    // `WorldState` 做序列化往返，不再手动搬运。
+    // `terrain_table` 仍然不参与序列化（该字段的 `#[serde(skip)]` 不在
+    // 本批次范围内，见 `WorldState` 文档），因此仍需手动搬运——这与
+    // 「读档后必须由调用方重新灌入当前会话地形表」这条既有设计一致。
     // Arrange
     let (mut uninterrupted, player, enemy) = setup(2026);
     let full_intents = intent_stream(player, enemy);
@@ -339,21 +349,46 @@ fn 序列化世界并读回后继续执行同一意图流结果与不中断执�
     let checkpoint = resumed_intents.len() / 2;
     play(&mut live, &resumed_intents[..checkpoint]);
 
-    // Act：序列化往返只覆盖当前真正参与序列化的字段，actors/population
-    // 原样搬运——见上方本测试的说明。
-    let encoded = serde_json::to_vec(&live).expect("WorldState 当前参与序列化的字段必可序列化");
+    // Act：population/actors 现在随整个 WorldState 一起真正序列化，
+    // 只有 terrain_table 仍需手动搬运——见上方本测试的说明。
+    let encoded = serde_json::to_vec(&live).expect("WorldState 全部字段可序列化");
     let mut reloaded: WorldState =
         serde_json::from_slice(&encoded).expect("刚序列化的数据必然合法");
-    reloaded.actors = live.actors.clone();
-    reloaded.population = live.population.clone();
-    // terrain_table 同样不参与序列化（见 WorldState 文档），本任务新增
-    // 的已知限制，与 actors/population 同一处理方式：直接搬运当前会话
-    // 已经注册好的表，而不是假装读档本身就能重建它。
     reloaded.terrain_table = live.terrain_table.clone();
     play(&mut reloaded, &resumed_intents[checkpoint..]);
 
     // Assert
     assert_eq!(reloaded.hash(), uninterrupted_hash);
+}
+
+#[test]
+fn 序列化往返后厚层实体的职业与种族保持原样而非默认值() {
+    // 直接对应 P5 批次 B 存在的理由：population/actors 摘掉
+    // `#[serde(skip)]` 之前，这条断言根本无法成立——读档后 actors
+    // 恒是空的 `Arena::default()`，任何关于职业/种族是否保留的断言都
+    // 无从谈起。现在两者真正参与序列化，这里锁定「往返后不是默认值，
+    // 而是往返前的真实内容」这条性质，防止将来有人不小心把 `Repr` 里
+    // 的字段接回默认值（例如像 `surface_profile` 那样在 `TryFrom` 里
+    // 手滑写成 `Arena::default()`）却没有任何测试能抓到。
+    // Arrange
+    let (world, player, _enemy) = setup(2026);
+    let before = world
+        .actors
+        .get(player)
+        .expect("setup 刚 spawn 的玩家标识必然有效")
+        .clone();
+
+    // Act
+    let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
+    let decoded: WorldState = serde_json::from_slice(&encoded).expect("刚序列化的数据必然合法");
+    let after = decoded
+        .actors
+        .get(player)
+        .expect("往返后同一个标识必须仍能取到实体");
+
+    // Assert：整个 Agent 逐字段相等（Agent 派生了 PartialEq），职业与
+    // 种族这两个此前被 skip 掉的 ContentIndex 字段自然也在其中。
+    assert_eq!(after, &before);
 }
 
 /// 回归测试：撞向关着的门那一步真的产生了「派生开门」效果，而不是

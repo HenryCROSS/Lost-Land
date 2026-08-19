@@ -36,7 +36,7 @@ use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
-use crate::entity::{Agent, Arena, ThinPopulation};
+use crate::entity::{Affiliation, Agent, Arena, Goal, OrgRef, ThinPopulation};
 use crate::generate::{GenParams, build_zone_noise};
 use crate::interior::{Interior, InteriorTable};
 use crate::noise::TileableNoise;
@@ -59,15 +59,22 @@ const SPAWN_WARM_RADIUS: i32 = 2;
 /// 全部字段公开：存档格式就是这个结构体本身，不经过额外的 DTO 转换层
 /// ——多一层转换就多一处可能与本体字段漂移的地方。
 ///
-/// # `population`/`actors` 暂不参与序列化（P3 阶段的已知限制）
+/// # `population`/`actors` 现在参与序列化（P5 批次 B，偿还历史债务）
 ///
-/// [`ThinPopulation`] 与 [`Arena<Agent>`] 目前不派生 `serde`：前者的
+/// [`ThinPopulation`] 与 [`Arena<Agent>`] 曾经不派生 `serde`：前者的
 /// `profession` 列、后者的 `Agent::profession` 都是 `ll_core::ident::ContentIndex`
-/// ——该类型在 `ll_core::ident` 模块文档里被明确标记为不可持久化（依赖
-/// mod 加载顺序，存档必须写字符串 ID 而非裸索引）。两者真正落地需要
-/// 先给内容注册表补上校验通道，这属于 P5 冻结存档格式时的工作，本
-/// 类型只建两层的结构与操作，用 `#[serde(skip)]` 如实标记这个已知
-/// 缺口，而不是假装已经完整可序列化。
+/// ——当时该类型还没有可直接使用的序列化实现。这条障碍已解除：
+/// `ContentIndex` 现在直接派生 `Serialize`/`Deserialize`（[0015](../../../knowledge/decisions/0015-content-id-registration-is-parsing-not-invariant.md)：
+/// 「结构合法」与「已注册」是两件事，前者无上下文可以直接派生，后者是
+/// 依赖当前会话加载了哪些 mod 的独立解析，不塞进这里的派生），
+/// `TorusPos` 同样已在两级坐标系重写批次补齐。两层因此现在都真正随
+/// `WorldState` 一起序列化——见 [`WorldStateRepr`] 与其 `TryFrom` 实现。
+///
+/// **这不等于「读档后立刻可以安全查询内容」**：反序列化出的
+/// `ContentIndex` 只是结构合法的裸索引，它是否对应当前会话真实注册的
+/// 内容，仍然是存档主体读写管线（任务 9）拿到当前会话注册表之后才能
+/// 完成的独立解析步骤——解析失败正是规格 §10.4「缺失 mod」的检测点。
+/// 本类型的序列化只负责「结构 ↔ 数据」这一半，不负责这一半。
 ///
 /// # `size` 与 `terrain` 的关系：默认派生，交叉校验（ADR 0011 案例三）
 ///
@@ -146,12 +153,11 @@ pub struct WorldState {
     #[serde(skip)]
     pub surface_profile: ContentIndex,
     /// 薄层人口：数十万到数百万背景 NPC，列式排布。P3 阶段可以为空，
-    /// 见 [`ThinPopulation`] 模块文档。不参与序列化，理由见本类型文档。
-    #[serde(skip)]
+    /// 见 [`ThinPopulation`] 模块文档。参与序列化，见本类型文档
+    /// 「`population`/`actors` 现在参与序列化」一节。
     pub population: ThinPopulation,
     /// 厚层实体池：数百个被真正模拟的实体，行式排布。P3 阶段可以只有
-    /// 玩家与几个敌人，见 [`Arena`] 模块文档。不参与序列化，理由同上。
-    #[serde(skip)]
+    /// 玩家与几个敌人，见 [`Arena`] 模块文档。参与序列化，理由同上。
     pub actors: Arena<Agent>,
     /// 地形属性表：`terrain` 网格里的 [`TerrainKind`] 值查这张表才能
     /// 问出「阻不阻挡视线」「移动代价多少」。**不参与序列化**——与
@@ -175,8 +181,11 @@ pub struct WorldState {
 /// 没有任何跨字段不变式，只是让 serde 有一个「先把字段各自反序列化
 /// （各自的校验仍然生效），再交给 [`TryFrom`] 做交叉校验」的中转落点。
 /// `current_interior` 不出现在这里——读档后总是从「没有进入任何
-/// `Interior`」的状态开始（与 `population`/`actors` 同一处理方式，见
-/// [`TryFrom::try_from`]），不需要参与这次中转。
+/// `Interior`」的状态开始（见 [`TryFrom::try_from`]），不需要参与这次
+/// 中转。`population`/`actors` 现在**出现在这里**（P5 批次 B）：两者
+/// 已经真正参与序列化，见 [`WorldState`] 文档同名一节；`surface_profile`/
+/// `terrain_table` 仍然不出现——那两处 `#[serde(skip)]` 不在本批次
+/// 范围内。
 #[derive(Deserialize)]
 struct WorldStateRepr {
     seed: u64,
@@ -184,6 +193,8 @@ struct WorldStateRepr {
     size: TorusSize,
     terrain: SurfaceStore,
     interiors: InteriorTable,
+    population: ThinPopulation,
+    actors: Arena<Agent>,
 }
 
 impl TryFrom<WorldStateRepr> for WorldState {
@@ -213,12 +224,16 @@ impl TryFrom<WorldStateRepr> for WorldState {
             // 读档后总是从「没有进入任何 Interior」的状态开始——见
             // WorldStateRepr 文档。
             current_interior: None,
-            // 四者当前都不参与序列化（见 WorldState 文档），存档里没有
-            // 对应数据可读，读档后总是从空/默认状态开始；surface_profile
-            // 额外要求调用方读档后显式重新赋值才能安全开放 ExitSpace。
+            // population/actors 现在是存档里的真实数据，直接从 repr
+            // 搬过来——见 WorldState 文档「population/actors 现在参与
+            // 序列化」一节。surface_profile/terrain_table 仍然不参与
+            // 序列化（各自的 #[serde(skip)] 不在本批次范围内），存档里
+            // 没有对应数据可读，读档后总是从空/默认状态开始；
+            // surface_profile 额外要求调用方读档后显式重新赋值才能安全
+            // 开放 ExitSpace。
             surface_profile: ContentIndex::default(),
-            population: ThinPopulation::default(),
-            actors: Arena::default(),
+            population: repr.population,
+            actors: repr.actors,
             terrain_table: TerrainTable::default(),
         })
     }
@@ -412,11 +427,23 @@ impl WorldState {
     /// 因此 `Effect::Kill` 也会体现为摘要变化（少一份贡献），不需要
     /// 单独混入「实体数量」。
     ///
-    /// 目前只挑了 `resolve`/`apply` 这批已经会写的字段（`pos`/
-    /// `health`/`wallet`/`next_action_at`），不含 `stats`/
-    /// `affiliations`/`profession`/`race`/`luck`/`goals`——这些字段
-    /// 本批次没有任何 `Effect` 会改动它们，加进摘要不会多测出什么，
-    /// 等它们真正开始被结算改动时再补。
+    /// # `stats`/`affiliations`/`profession`/`race`/`goals`/`luck` 也已混入（P5 批次 B）
+    ///
+    /// 早期版本只挑了 `resolve`/`apply` 这批已经会写的字段（`pos`/
+    /// `health`/`wallet`/`next_action_at`），不含这六项——彼时的理由是
+    /// 「本批次没有任何 `Effect` 会改动它们，加进摘要不会多测出什么」。
+    /// 这条理由只覆盖「同一次运行内两次 `resolve`/`apply` 是否产生相同
+    /// 结果」这一种回归；`population`/`actors` 摘掉 `#[serde(skip)]`
+    /// 之后，序列化往返多出一整类新风险（`Repr`/`TryFrom` 接线写错、
+    /// `Arena`/`Vec` 顺序在编解码过程中被打乱），本方法自身文档开篇就
+    /// 写着「用于两次运行/**序列化往返**是否产生了相同的世界」——若这
+    /// 六项字段仍然缺席，一次把 `profession` 编错、`goals` 顺序打乱的
+    /// 序列化缺陷不会让任何一条黄金基准变红，正是先例（P3 阶段
+    /// `WorldState::health` 完全不进摘要、确定性回归测试测不出战斗结算
+    /// 跑偏）警告过的同一类判据缺口。因此这里补齐：`stats` 六项主属性、
+    /// `profession`/`race` 的裸索引、`luck`，以及 `affiliations`/`goals`
+    /// 两个 `Vec`（先混入长度、再逐项混入，`Vec` 本身保序，不涉及
+    /// `HashMap`/`HashSet` 迭代顺序，满足约束 C5）。
     pub fn hash(&self) -> u64 {
         let mut hasher = StateHasher::new();
         hasher.write_u64(self.seed);
@@ -447,6 +474,18 @@ impl WorldState {
             hasher.write_i64(agent.wallet);
             hasher.write_i64(agent.next_action_at.0);
             write_space(&mut hasher, agent.current_space);
+            write_stats(&mut hasher, agent.stats);
+            hasher.write_u64(u64::from(agent.profession.get()));
+            hasher.write_u64(u64::from(agent.race.get()));
+            hasher.write_i64(i64::from(agent.luck));
+            hasher.write_u64(agent.affiliations.len() as u64);
+            for affiliation in &agent.affiliations {
+                write_affiliation(&mut hasher, affiliation);
+            }
+            hasher.write_u64(agent.goals.len() as u64);
+            for goal in &agent.goals {
+                write_goal(&mut hasher, goal);
+            }
         }
         hasher.finish()
     }
@@ -489,6 +528,50 @@ fn write_space(hasher: &mut StateHasher, space: Space) {
             hasher.write_u64(u64::from(profile.get()));
         }
     }
+}
+
+/// 把一份 [`crate::entity::BaseStats`] 混入哈希——[`WorldState::hash`]
+/// 的帮手（P5 批次 B）。六项主属性逐一混入，顺序与字段声明顺序一致，
+/// 恒定不依赖任何运行期状态。
+fn write_stats(hasher: &mut StateHasher, stats: crate::entity::BaseStats) {
+    hasher.write_i64(i64::from(stats.strength));
+    hasher.write_i64(i64::from(stats.dexterity));
+    hasher.write_i64(i64::from(stats.constitution));
+    hasher.write_i64(i64::from(stats.intelligence));
+    hasher.write_i64(i64::from(stats.willpower));
+    hasher.write_i64(i64::from(stats.charisma));
+}
+
+/// 把一条 [`Affiliation`] 混入哈希——[`WorldState::hash`] 的帮手（P5
+/// 批次 B）。`kind` 是无数据枚举，直接转 `u64` 取判别值；`org` 与
+/// [`write_space`] 同样的模式：先混入一个变体判别字节，再混入各自
+/// 携带的值，两个变体互不混淆。
+fn write_affiliation(hasher: &mut StateHasher, affiliation: &Affiliation) {
+    hasher.write_u64(affiliation.kind as u64);
+    match affiliation.org {
+        OrgRef::Def(index) => {
+            hasher.write_u64(0);
+            hasher.write_u64(u64::from(index.get()));
+        }
+        OrgRef::Instance(id) => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(id.get()));
+        }
+    }
+    hasher.write_i64(i64::from(affiliation.standing));
+}
+
+/// 把一条 [`Goal`] 混入哈希——[`WorldState::hash`] 的帮手（P5 批次
+/// B）。`params` 先混入长度再逐项混入——`Vec` 本身保序，不依赖
+/// `HashMap`/`HashSet` 的遍历顺序（约束 C5）。
+fn write_goal(hasher: &mut StateHasher, goal: &Goal) {
+    hasher.write_u64(u64::from(goal.kind.get()));
+    hasher.write_u64(goal.params.len() as u64);
+    for param in &goal.params {
+        hasher.write_i64(*param);
+    }
+    hasher.write_i64(i64::from(goal.progress));
+    hasher.write_i64(i64::from(goal.priority));
 }
 
 /// 世界创建时预热出生点周围的邻域，而不是一次性生成整张地图——这是
@@ -600,6 +683,7 @@ impl<'de> Deserialize<'de> for ChunkGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::BaseStats;
     use crate::terrain::base_terrain_fixture;
 
     /// 测试用区块布局：边长 64（满足视口跨度、是 16 与 32 的整数倍），
@@ -672,6 +756,45 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn worldstate序列化往返后actors不再是空的默认值() {
+        // 直接对应 P5 批次 B 存在的理由：population/actors 摘掉
+        // `#[serde(skip)]` 之前，这条断言不可能写——读档后 actors 恒是
+        // 空的 `Arena::default()`。这里往测试世界里真正 spawn 一个
+        // `Agent`，往返后必须还能按原标识取回同一份内容，而不是退化成
+        // 默认空池。
+        // Arrange
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let profession = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
+        let race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let id = world.actors.spawn(Agent {
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 999,
+            profession,
+            goals: Vec::new(),
+            race,
+            luck: 0,
+            current_space: Space::surface(zone, ContentIndex::default()),
+        });
+
+        // Act
+        let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
+        let decoded: WorldState = serde_json::from_slice(&encoded).expect("刚序列化的数据必然合法");
+
+        // Assert：往返后 actors 不是空池，且能按原标识取回同一份内容。
+        assert!(!decoded.actors.is_empty());
+        assert_eq!(decoded.actors.get(id), world.actors.get(id));
     }
 
     #[test]
