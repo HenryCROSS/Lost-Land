@@ -101,8 +101,9 @@ use crate::terrain::{TerrainKind, TerrainTable};
 /// # 越界处理是这里真正的算法级改动
 ///
 /// [`offset`](Self::offset) 从 `origin` 按 `(dx, dy)` 求目标坐标：环面
-/// 实现恒返回 `Some`（[`TorusSize::wrap`] 绕回世界内）；有界实现越界
-/// 返回 `None`——[`scan_row_in_sector`] 收到 `None` 时直接跳过这一格，
+/// 实现恒返回 `Some`（[`TorusSize::wrap`](ll_core::torus::TorusSize::wrap)
+/// 绕回世界内）；有界实现越界返回 `None`——[`scan_row_in_sector`] 收到
+/// `None` 时直接跳过这一格，
 /// 既不标记可见也不参与遮挡计算，视线在这个方向上止于地图边界，不会
 /// 像环面那样绕接缝。
 pub trait SightGrid {
