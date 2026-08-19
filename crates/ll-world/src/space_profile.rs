@@ -44,6 +44,9 @@
 use std::fmt;
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_core::time::Tick;
+
+use crate::light::{LightLevel, ambient_light};
 
 /// 一种空间类型的静态属性，本体与 mod 注册层属性时共用的同一个输入
 /// 形状——与 [`crate::terrain::TerrainDef`] 是同一个模式（本体的声明
@@ -387,6 +390,36 @@ fn define_base(
     Ok(index)
 }
 
+/// 求某个空间在某一世界时刻的有效环境光——`SpaceProfile` 与既有光照
+/// 曲线（[`crate::light`]）的**组合点**，不是第二套光照实现。
+///
+/// # 为什么不能对 `Interior` 直接调用 [`ambient_light`]
+///
+/// [`ambient_light`] 只依赖世界时钟，不知道调用它的是露天地表还是
+/// 伸手不见五指的地下城——直接对 `Interior` 调用会让地下城在正午呈现
+/// 满光照，这是纯粹的接线错误，不是设计冲突。任何消费光照的调用方
+/// 都必须先经过本函数，不能绕过去直接调用 `ambient_light(tick)`。
+///
+/// # 不是第二个真相源
+///
+/// [`crate::light`] 模块文档「光照是纯函数派生，绝不进世界状态」的
+/// 纪律在这里继续成立，也是 ADR 0010「白昼判定收敛为同一份真相源」
+/// 教训的直接延续：本函数不重新定义昼夜曲线的任何一段，`exposed_to_sky`
+/// 为真时原样转发给既有的 [`ambient_light`]；为假时改用
+/// `profile.ambient_light_floor`，与世界时钟完全无关——**这条地板值
+/// 路径不知道、也不需要知道时钟现在走到哪**，不存在与 [`ambient_light`]
+/// 各自维护一份边界、彼此可能矛盾的风险。
+///
+/// 见 `knowledge/design/coordinate-system-and-layers.md` 七节「与既有
+/// 光照系统的组合，而非替换」。
+pub fn effective_ambient_light(profile: &SpaceProfile, tick: Tick) -> LightLevel {
+    if profile.exposed_to_sky {
+        ambient_light(tick)
+    } else {
+        LightLevel(profile.ambient_light_floor)
+    }
+}
+
 /// 供测试与验收 demo 使用：现造一个空 [`Interner`]，注册本体全部四个
 /// 空间类型，返回可用的 `(BaseSpaceProfileIds, SpaceProfileTable)`。
 ///
@@ -401,6 +434,71 @@ pub fn base_space_profile_fixture() -> (BaseSpaceProfileIds, SpaceProfileTable) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ll_core::time::{TICKS_PER_DAY, TICKS_PER_HOUR};
+
+    /// 一个仅在测试里现造的露天 profile：不经过表/注册表，直接构造
+    /// `SpaceProfile`，因为 `effective_ambient_light` 只依赖这个结构体
+    /// 本身的字段，不需要牵扯 `SpaceProfileTable`/`ContentIndex`。
+    fn surface_like_profile() -> SpaceProfile {
+        SpaceProfile {
+            id: NamespacedId::parse("lostland:surface").expect("合法"),
+            ambient_light_floor: 0,
+            exposed_to_sky: true,
+            base_temperature: 200,
+            diggable: true,
+            buildable: true,
+            reverb_tag: None,
+        }
+    }
+
+    /// 一个仅在测试里现造的不露天 profile，地板值取一个非零、能与
+    /// `ambient_light` 曲线在正午/午夜的取值明显区分开的数。
+    fn underground_like_profile() -> SpaceProfile {
+        SpaceProfile {
+            id: NamespacedId::parse("lostland:dungeon").expect("合法"),
+            ambient_light_floor: 50,
+            exposed_to_sky: false,
+            base_temperature: 80,
+            diggable: false,
+            buildable: false,
+            reverb_tag: None,
+        }
+    }
+
+    #[test]
+    fn 露天profile的有效光照随时钟变化() {
+        // Arrange
+        let profile = surface_like_profile();
+        let midnight = Tick(0);
+        let summer_noon = Tick(30 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR);
+
+        // Act
+        let midnight_light = effective_ambient_light(&profile, midnight);
+        let noon_light = effective_ambient_light(&profile, summer_noon);
+
+        // Assert
+        assert_ne!(midnight_light.0, noon_light.0);
+    }
+
+    #[test]
+    fn 地下profile的有效光照恒为地板值不随时钟变化() {
+        // Arrange
+        let profile = underground_like_profile();
+        let midnight = Tick(0);
+        let summer_noon = Tick(30 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR);
+
+        // Act
+        let midnight_light = effective_ambient_light(&profile, midnight);
+        let noon_light = effective_ambient_light(&profile, summer_noon);
+
+        // Assert：两个相差极大的时刻算出同一个值，且这个值就是地板值——
+        // 一次 assert_eq! 同时钉住「恒定」与「等于地板值」两条，不拆成
+        // 两条各自平凡的断言。
+        assert_eq!(
+            (midnight_light.0, noon_light.0),
+            (profile.ambient_light_floor, profile.ambient_light_floor)
+        );
+    }
 
     #[test]
     fn 地表的exposed_to_sky为真() {
