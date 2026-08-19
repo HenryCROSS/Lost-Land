@@ -2,7 +2,7 @@
 
 **冻结于** 2026-08-17。**实现阶段** P6（物品与装备，[2026-08-18 规格修订] 新插入阶段，插在 P5 与原 P6 之间——本文档此前误标为 P5，但规格 §15 原 P5「玩法系统」的交付物清单从未真正包含物品/装备，这正是本轮插入新阶段要修正的认领缺口），但**类型布局必须在 P2 建 `WorldState` 前定稿**。
 
-**落地状态**：纯设计。`crates/` 中尚未找到 `ItemDef`、`ItemStack`、`Owner`、`ItemLocation`、`Quality`、`StatBonus` 等类型（已核实：全代码库检索无匹配）。本文档全部内容仍待 P2/P5 实现验证。
+**落地状态**：纯设计。`crates/` 中尚未找到 `ItemDef`、`ItemStack`、`Owner`、`ItemLocation`、`Quality`、`StatBonus` 等类型（已核实：全代码库检索无匹配）。本文档全部内容仍待 P6 实现验证（P2 只要求类型布局在概念上定稿，不要求落地；P5 从未实现物品系统，见 `knowledge/handoff/p5-to-p6.md` 相关文档一节）。
 
 所有数值一律整数（见 [0002 世界状态一律用整数](../decisions/0002-integer-only-world-state.md)）。需要小数的量用 `Milli`（千分之一为单位）。
 
