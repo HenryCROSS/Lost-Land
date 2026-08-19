@@ -16,6 +16,7 @@
 
 use core::fmt;
 
+pub mod bounded_grid;
 pub mod chunk;
 pub mod entity;
 pub mod fov;
