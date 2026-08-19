@@ -27,6 +27,32 @@ pub struct BaseStats {
     pub charisma: i32,
 }
 
+/// 六项主属性的枚举形式——供职业「主属性倾向」、技能「临时属性修正」
+/// 等需要「指定某一项属性」而非「持有一份完整 [`BaseStats`]」的场景
+/// 使用（P5-B `knowledge/design/class-skill-quest-system.md` 第一节
+/// `ClassDef::primary_attribute`、第五节 `SkillEffect::TemporaryStatModifier`
+/// 的落点）。
+///
+/// [`BaseStats`] 回答「这个实体的六项数值分别是多少」，`AttributeKind`
+/// 回答「指的是六项里的哪一项」——两者服务不同的场景，并存不冲突。
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
+pub enum AttributeKind {
+    /// 力量：物理攻击、负重上限。
+    Strength,
+    /// 敏捷：时间轴速度、闪避、命中。
+    Dexterity,
+    /// 体质：生命上限、抗性、耐力。
+    Constitution,
+    /// 智力：魔法攻击、法力、学习速度。
+    Intelligence,
+    /// 意志：精神攻防、抵抗、视野半径。
+    Willpower,
+    /// 魅力：招募随从、交易议价、随从士气。
+    Charisma,
+}
+
 impl BaseStats {
     /// 六项主属性均取「调整值为零」的基准点（10）——`(10 − 10) / 2 = 0`，
     /// 见 `attribute-system.md` 的调整值公式。用作背景 NPC 升格
@@ -84,5 +110,24 @@ mod tests {
 
         // Assert
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn 属性种类序列化往返后不变() {
+        // Arrange
+        let original = AttributeKind::Willpower;
+
+        // Act
+        let json = serde_json::to_string(&original).expect("枚举变体必可序列化");
+        let decoded: AttributeKind = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn 不同属性种类不相等() {
+        // Arrange & Act & Assert
+        assert_ne!(AttributeKind::Strength, AttributeKind::Dexterity);
     }
 }

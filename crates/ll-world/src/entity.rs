@@ -41,5 +41,5 @@ pub use arena::Arena;
 pub use goal::Goal;
 pub use id::{EntityId, FamilyId};
 pub use org::OrgInstance;
-pub use stats::BaseStats;
+pub use stats::{AttributeKind, BaseStats};
 pub use thin::{ThinPopulation, ThinSlot};

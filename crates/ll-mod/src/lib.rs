@@ -26,6 +26,10 @@
 //! - [`base_space_profile`] —— 同一个模式在 `ll_world::space_profile`
 //!   上的落点（两级坐标系重写批次 C 补齐）：把本体的地表/洞窟/地下城/
 //!   建筑内部四种基础空间类型注册进 [`registry::Registry`]。
+//! - [`class`] —— 职业注册表（P5-B 任务 2）：`ClassDef` 的定义直接落在
+//!   本 crate（不像地形那样拆成 `ll-world` 定义 + `ll-mod` 薄封装两处
+//!   ——职业不依赖任何世界空间概念，见该模块文档「为什么定义本身直接
+//!   落在 `ll-mod`」一节）。
 //! - [`base_placeholder`] —— 同一个模式在「占位/未知内容」上的落点
 //!   （P5-A 任务 14 补齐）：把本体的占位内容注册进
 //!   [`registry::Registry`]，让 NPC 种族缺失的占位降级分支在生产读档
@@ -48,6 +52,7 @@
 pub mod base_placeholder;
 pub mod base_space_profile;
 pub mod base_terrain;
+pub mod class;
 pub mod discover;
 pub mod load_report;
 pub mod manifest;
