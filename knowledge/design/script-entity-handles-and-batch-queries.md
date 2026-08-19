@@ -2,7 +2,7 @@
 
 - **冻结时间**：2026-08-18
 - **基线提交**：`270783e`（写作本文档时的 HEAD，工作区干净，496 测试全绿）
-- **状态**：纯设计，**不要求本次实现**——目标是把接口形状与语义设计到能直接照着写代码的具体程度
+- **状态**（2026-08-19 复核更正——原文「纯设计，不要求本次实现」已部分过期）：**部分落地**。三、2/3 节的句柄形状与防伪造机制已随脚本状态存储批次（提交 `ac27217`）落地为 `crates/ll-script/src/api/handle.rs::ScriptEntityHandle`，模块文档明确写着「该文档整体标注『纯设计,不要求本次实现』,但本批次的脚本状态存储需要一个可以安全跨越 Steel FFI 边界的实体引用表示……因此这里按该设计文档已经给出的形状把它落地」——即句柄机制是作为脚本状态存储的前置依赖顺带落地的，不是本文档本身被认领实现。四节 `Intent::Attack` 的解禁也已落地（`crates/ll-sim/src/intent.rs` 已有 `Attack` 变体）。**五节「批量查询原语」（`filter-within-distance`/`average` 等）仍是纯设计，未落地**——已核实 `crates/ll-script/src/api/query.rs` 不含这些函数名。读者应分节看待落地状态，不能整份文档一概而论。
 - **落地依赖**：`crates/ll-script/src/api/`（新增模块，路径见正文）、`crates/ll-world/src/entity/`（复用既有机制，无需改动）、`crates/ll-sim/src/intent.rs`（`Intent::Attack` 解禁，需要新增变体）
 - **对应任务**：填补 `.superpowers/sdd/2026-08-18-p4-script-and-mod/task-3-5-report.md` 记录的缺口——`intent.rs` 只支持 `Move`/`Wait`，`Attack` 因「脚本如何安全持有一个不可伪造的 `EntityId`」这个未设计的机制而被搁置
 

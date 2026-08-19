@@ -2,7 +2,7 @@
 
 **冻结于** 2026-08-18，对应提交 `4736bb61333e236e2eae23af06db6d01f88f753c`。
 
-**落地状态**：纯设计，尚无代码。已核实：`crates/` 中没有区块（zone）、`Space`、`Interior`、`SpaceProfile` 的任何实现。现有的连续地表（`crates/ll-world/src/{chunk,generate,noise}.rs`）、FOV（`fov.rs`）、光照（`light.rs`）、相机（`crates/ll-render/src/camera.rs`）均按「整张世界是一张连续瓦片图」的旧模型实现，本文档在此基础上提出替换方案，不修改既有代码。
+**落地状态**（2026-08-19 复核更正——原文「纯设计，尚无代码」已过期）：**已完整落地**。`docs/superpowers/plans/2026-08-18-coordinate-system-rewrite.md` 划的 15 个任务已全部完成（提交 `8ec08de` 起至 `260d7ca` 止，另有收尾澄清提交 `0b3244e`），代码基线从该计划记录的 495 个 `#[test]` 涨到验收 demo 落地时的 597 个。已核实存在的实现：`crates/ll-world/src/space.rs`（`Space` 统一接口）、`space_profile.rs`（`SpaceProfile` 走内容注册表，仿 `TerrainDef`/`TerrainTable` 模式）、`interior.rs`（`Interior` 存储与锚点）、`zone.rs`（区块坐标换算与流式加载，`ChunkGrid` 内部存储块层已按裁定 CS-5 取消，区块直接是存储单位）；`WorldState.terrain` 已换型为 `SurfaceStore`（常驻区块 LRU），FOV/相机各自有 `BoundedGrid`/`BoundedCamera` 姊妹类型服务 `Interior` 场景；`Space` 已接入 `WorldState`/`Agent`，进出 `Interior` 走完整 `Intent`/`Effect` 链路；验收 demo 见 `crates/ll-sim/examples/p5_coordinate_acceptance/`。本文档提出的替换方案已经是当前代码的实际模型，不再是「在旧模型基础上的设计提案」——正文其余章节描述的仍是设计当时的推导过程，读代码请以上述文件为准，不要按本文档的字面细节反推实现（两者在具体命名与文件划分上可能有出入，是设计文档与实现之间的正常落差，不代表实现有误）。
 
 本文档是一项已拍板架构变更的设计记录，经过与项目所有者的多轮往返定案，过程中若干早期判断被后续裁定推翻或收窄——**正文只记录最终结论**，不逐轮复述推翻过程；被否决的方案单独列出并注明否决理由，供后来者知道当初排除了什么。
 
