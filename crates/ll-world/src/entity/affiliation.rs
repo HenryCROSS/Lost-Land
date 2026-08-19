@@ -11,7 +11,7 @@
 use ll_core::ident::{ContentIndex, WorldId};
 
 /// 归属类别。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AffiliationKind {
     /// 势力：领土、法律、税收、兵役。世界生成期间造出来的实例，走
     /// [`OrgRef::Instance`]。
@@ -43,7 +43,7 @@ pub enum AffiliationKind {
 /// `match` 一次就能拿到正确类型，不需要「看 kind 再决定该读哪个字段」
 /// 这种隐式约定。这是本任务自己的实现判断，原文档只裁定了字段该改成
 /// 什么形状的方向，未裁定具体到枚举还是双字段。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OrgRef {
     /// 类型：文化、职业——mod 装载时确定，集合封闭、数量小，走
     /// [`ContentIndex`]。
@@ -55,12 +55,13 @@ pub enum OrgRef {
 
 /// 一个实体对某个组织的归属与声望。
 ///
-/// `org` 不派生 `serde`：[`OrgRef::Def`] 里的 [`ContentIndex`] 依赖
-/// mod 加载顺序，`ll_core::ident` 模块文档明确写着不可持久化，理由同
-/// [`crate::entity::Goal::kind`]。[`OrgRef::Instance`] 里的 [`WorldId`]
-/// 本身是可持久化的（永不复用、构造不依赖加载顺序），但只要 `OrgRef`
-/// 整体还兼容 `Def` 分支，就不能绕过前者直接对整个枚举派生 `serde`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// `org` 现在可以直接派生 `serde`（P5 批次 B）：[`OrgRef::Def`] 里的
+/// [`ContentIndex`] 与 [`OrgRef::Instance`] 里的 [`WorldId`] 都已各自
+/// 补齐无上下文的直接 `Serialize`/`Deserialize`（见
+/// [`crate::entity::Agent`] 模块文档「可派生 `serde`」一节的完整论证）
+/// ——`ContentIndex` 反序列化只做结构转换，「是否已注册」的解析留给
+/// 拿到注册表之后的调用方，不塞进这里的派生。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Affiliation {
     /// 归属类别。
     pub kind: AffiliationKind,

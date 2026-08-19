@@ -3,6 +3,7 @@
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
+use serde::{Deserialize, Serialize};
 
 use crate::space::Space;
 
@@ -14,14 +15,29 @@ use super::{Affiliation, BaseStats, Goal};
 /// 字段，行式排布比列式更优——与薄层 [`crate::entity::ThinPopulation`]
 /// 用列式排布不是不一致，是各自匹配访问模式（见该类型文档）。
 ///
-/// 不派生 `serde`：`pos` 是 [`TorusPos`]、`profession` 是
-/// [`ContentIndex`]，两者在 `ll-core` 里都没有（也不该有，见各自字段
-/// 文档）可直接使用的序列化实现——`TorusPos` 的唯一构造路径是
-/// `TorusSize::wrap`，脱离世界尺寸上下文无法在反序列化时重新校验其
-/// 「恒被规范化」的不变式；`ContentIndex` 则被 `ll_core::ident` 模块
-/// 文档明确标记为不可持久化。厚层的存档格式需要世界尺寸与内容注册表
-/// 两项额外上下文，属于后续批次（`apply`/`resolve` 落地、存档格式在
-/// P5 冻结时）要解决的问题，本任务只建字段布局。
+/// # 可派生 `serde`（P5 批次 B 补齐，偿还两处历史债务）
+///
+/// 曾经不派生 `serde`：`pos` 是 [`TorusPos`]、`profession`/`race` 是
+/// [`ContentIndex`]，两者当时在 `ll-core` 里都没有可直接使用的序列化
+/// 实现。两处障碍现在都已解除：
+///
+/// 1. `TorusPos` 已在两级坐标系重写批次补上不依赖世界尺寸上下文的直接
+///    `Serialize`/`Deserialize`（`ll-core/src/torus.rs`）——它本身没有
+///    需要跨字段校验的不变式（任意一对 `(x, y)` 只要落在构造它的
+///    `TorusSize` 环内就是合法值，反序列化只做结构转换）。
+/// 2. `ContentIndex` 同样直接派生（[0015](../../../../knowledge/decisions/0015-content-id-registration-is-parsing-not-invariant.md)）：
+///    「结构合法」与「已注册」是两件事，前者无上下文、可以直接派生；
+///    后者依赖当前会话加载了哪些 mod，是一次独立的解析，不能也不该
+///    塞进 serde 的 `try_from`——`ll_core::ident` 模块文档「为什么可以
+///    直接派生」一节详述了这条判断。反序列化出的 `ContentIndex` 是否
+///    对应当前会话里一条真实注册的内容，由拿到注册表之后的调用方
+///    （存档主体读写管线，见任务 9）显式解析，解析失败即是「缺失 mod」
+///    的检测点——不是本类型自身要负责的事。
+///
+/// 因此 `Agent` 现在可以直接派生：全部字段要么是纯整数/字符串组合
+/// （`health`/`wallet`/`luck`/`Vec<Affiliation>`/`Vec<Goal>`），要么是
+/// 已经各自补齐直接派生的复合类型（`TorusPos`/`BaseStats`/
+/// `ContentIndex`/`Space`）。
 ///
 /// # 为什么 `health` 是 `Agent` 的字段，而不是 `WorldState` 的旁挂表
 ///
@@ -56,7 +72,7 @@ use super::{Affiliation, BaseStats, Goal};
 /// 防的缺陷类别。因此这里只留「当前生命值」这一个存档需要的字段；
 /// 上限留到 `derive_stats` 落地时按 `stats` 现算，不占字段、不需要
 /// 同步。
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Agent {
     /// 环面世界坐标。
     pub pos: TorusPos,
@@ -144,4 +160,80 @@ impl Agent {
     /// 明确标记为占位的常量，供 [`crate::entity::ThinPopulation::promote`]
     /// 等构造路径统一使用，公式落地后只需替换这一处。
     pub const STARTING_HEALTH: i32 = 100;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::entity::{AffiliationKind, OrgRef};
+    use crate::space::Space;
+    use ll_core::ident::{Interner, NamespacedId, WorldId};
+
+    /// 构造一个全字段都非默认值的 `Agent`——包括非空的 `affiliations`/
+    /// `goals`，确保往返测试真的会经过 `Vec` 分支，而不是恰好因为空
+    /// `Vec` 序列化恒等于自身而掩盖真正的编解码缺陷。
+    fn fully_populated_agent() -> Agent {
+        let mut interner = Interner::new();
+        let profession =
+            interner.intern(NamespacedId::parse("lostland:blacksmith").expect("合法标识符"));
+        let race = interner.intern(NamespacedId::parse("lostland:dwarf").expect("合法标识符"));
+        let culture =
+            interner.intern(NamespacedId::parse("lostland:mountain").expect("合法标识符"));
+        let goal_kind = interner.intern(NamespacedId::parse("lostland:trade").expect("合法标识符"));
+        let mut world_id_counter = 7u32;
+        let zone = ll_core::torus::TorusSize::new(48, 32)
+            .expect("48x32 是合法尺寸")
+            .wrap(3, 5);
+
+        Agent {
+            pos: ll_core::torus::TorusSize::new(64, 64)
+                .expect("64x64 是合法尺寸")
+                .wrap(10, 20),
+            stats: BaseStats {
+                strength: 14,
+                dexterity: 12,
+                constitution: 16,
+                intelligence: 8,
+                willpower: 11,
+                charisma: 9,
+            },
+            next_action_at: Tick(42),
+            health: 77,
+            affiliations: vec![Affiliation {
+                kind: AffiliationKind::Culture,
+                org: OrgRef::Def(culture),
+                standing: 250,
+            }],
+            wallet: 12345,
+            profession,
+            goals: vec![Goal {
+                kind: goal_kind,
+                params: vec![1, -2, 3],
+                progress: 500,
+                priority: 3,
+            }],
+            race,
+            current_space: Space::Interior {
+                id: WorldId::next(&mut world_id_counter),
+                floor: -2,
+                anchor: zone,
+                profile: ContentIndex::default(),
+            },
+            luck: 9,
+        }
+    }
+
+    #[test]
+    fn agent序列化往返后全部字段逐一相等() {
+        // Arrange
+        let original = fully_populated_agent();
+
+        // Act
+        let encoded = serde_json::to_string(&original).expect("全部字段均已可派生序列化");
+        let decoded: Agent = serde_json::from_str(&encoded).expect("刚序列化的数据必然合法");
+
+        // Assert：Agent 派生了 PartialEq，逐字段比较（含 current_space）
+        // 由这一个断言覆盖，不需要逐个字段单独断言。
+        assert_eq!(decoded, original);
+    }
 }

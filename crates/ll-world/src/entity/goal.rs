@@ -11,11 +11,13 @@ use ll_core::ident::ContentIndex;
 /// 一条目标：类型、参数、进度、优先级。
 ///
 /// `kind` 用 [`ContentIndex`] 指向注册表，与 [`crate::entity::Agent::profession`]
-/// 同理——不派生 `serde`：`ContentIndex` 是运行时紧凑索引，依赖 mod
-/// 加载顺序，`ll_core::ident` 模块文档明确写着「不可持久化」。真正持久化
-/// 目标栈需要把 `kind` 解析回 [`ll_core::ident::NamespacedId`] 字符串
-/// 再重新登记，这属于内容注册表的存档格式，不在本任务范围内。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 同理——现在可以直接派生 `serde`（P5 批次 B）：`ContentIndex` 本身已
+/// 补齐无上下文的直接序列化实现（见 [`crate::entity::Agent`] 模块文档
+/// 「可派生 `serde`」一节），反序列化只做「整数落地成 `ContentIndex`」
+/// 这一步结构转换；把它解析回 [`ll_core::ident::NamespacedId`] 字符串
+/// 再重新登记进当前会话注册表，是存档主体读写管线（任务 9）拿到注册表
+/// 之后才能做的独立解析步骤，不是本类型派生 `serde` 要负责的事。
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct Goal {
     /// 目标类型，指向注册表（mod 可扩展）。
     pub kind: ContentIndex,

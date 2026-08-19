@@ -4,6 +4,7 @@ use ll_core::ident::ContentIndex;
 use ll_core::rng::DetRng;
 use ll_core::time::{TICKS_PER_DAY, Tick};
 use ll_core::torus::TorusPos;
+use serde::{Deserialize, Serialize};
 
 use crate::space::Space;
 
@@ -28,13 +29,17 @@ const DAILY_INCOME: i64 = 10;
 /// cohort 批量更替预留的字段位——加字段现在零成本，P8 再加就要写
 /// 存档迁移链。
 ///
-/// 不派生 `serde`：`profession`/`race` 两列都是 `Vec<ContentIndex>`，
-/// `ll_core::ident` 模块文档明确写着 `ContentIndex` 不可持久化（依赖
-/// mod 加载顺序）。真正持久化薄层人口需要把每个 `ContentIndex` 解析回
-/// `NamespacedId` 字符串，这是内容注册表存档格式的职责，不在本任务
-/// 范围内——[`crate::entity::Arena`] 的序列化往返测试已经覆盖了「实体
-/// 存储机制本身」这条要验证的东西，不依赖 `ContentIndex`。
-#[derive(Debug, Clone)]
+/// # 可直接派生 `serde`（P5 批次 B，偿还历史债务）
+///
+/// 曾经不派生 `serde`：`profession`/`race` 两列都是 `Vec<ContentIndex>`，
+/// 当时 `ContentIndex` 还没有可直接使用的序列化实现。这条障碍已解除
+/// ——`ContentIndex` 现在直接派生 `Serialize`/`Deserialize`（结构合法
+/// 与已注册是两件事，见 [`crate::entity::Agent`] 模块文档「可派生
+/// `serde`」一节的完整论证，以及 `ll_core::ident` 模块文档），每一列
+/// 因此都可以直接派生，不需要额外的解析上下文。真正把索引解析回
+/// `NamespacedId` 字符串、核对当前会话是否仍注册着这条内容，是存档
+/// 主体读写管线（任务 9）拿到注册表之后才能做的独立步骤。
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinPopulation {
     generation: Vec<u32>,
     settlement: Vec<u16>,
@@ -280,6 +285,29 @@ mod tests {
     fn human() -> ContentIndex {
         let mut interner = Interner::new();
         interner.intern(NamespacedId::parse("lostland:human").expect("合法标识符"))
+    }
+
+    #[test]
+    fn thinpopulation序列化往返后各列长度与内容一致() {
+        // 直接对应 P5 批次 B 存在的理由：ThinPopulation 摘掉
+        // `#[serde(skip)]` 之前，这条断言无法成立——薄层压根不参与
+        // 序列化。这里放入两个不同的 NPC（职业/种族/家族/钱包各不
+        // 相同），确认往返后每一列的每一个下标都对应回原来的值，而不
+        // 只是长度凑巧相等。
+        // Arrange
+        let mut original = ThinPopulation::new();
+        let first = original.spawn(1, farmer(), human(), FamilyId(10), 500, Tick(0));
+        let second = original.spawn(2, farmer(), human(), FamilyId(20), 800, Tick(5));
+
+        // Act
+        let encoded = serde_json::to_string(&original).expect("全部列均已可派生序列化");
+        let decoded: ThinPopulation =
+            serde_json::from_str(&encoded).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded.len(), original.len());
+        assert_eq!(decoded.get_slot(first), original.get_slot(first));
+        assert_eq!(decoded.get_slot(second), original.get_slot(second));
     }
 
     #[test]

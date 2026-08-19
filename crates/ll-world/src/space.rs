@@ -45,7 +45,14 @@ pub type SpaceId = WorldId;
 /// 注册表里的一条层属性定义——环境光基准、是否露天、温度基准等，见
 /// [`crate::space_profile::SpaceProfile`]。两个变体的 `profile` 字段
 /// 类型完全一致，调用方可以用同一个查表函数处理，不需要按变体分支。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// # 可直接派生 `serde`（P5 批次 B，随 `Agent::current_space` 一起补齐）
+///
+/// `zone`/`anchor` 是 [`TorusPos`]、`id` 是 [`SpaceId`]（即 `WorldId`）、
+/// `profile` 是 [`ContentIndex`]——三者都已各自补齐无上下文的直接序列化
+/// 实现（见 [`crate::entity::Agent`] 模块文档「可派生 `serde`」一节），
+/// 因此本枚举可以直接派生，不需要 `try_from` 中转。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Space {
     /// 露天层：连续地表的一格区块。地形来自世界尺度连续噪声场的窗口
     /// 采样，见设计文档五节。
