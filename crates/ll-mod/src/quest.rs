@@ -399,10 +399,29 @@ impl QuestCatalog for RegisteredQuests<'_> {
             let Some(quest_id) = self.registry.resolve(index) else {
                 continue;
             };
+            // 前置任务同样需要反查成 NamespacedId——见 QuestKillRule::
+            // prerequisites 文档「这不是可选的装饰字段」一节：任何一个
+            // 前置反查失败都整条规则跳过（保守处理，把"无法验证前置
+            // 是否满足"当成"前置未满足"，不是当成"没有前置"）。
+            let mut prerequisites = Vec::with_capacity(view.prerequisites.len());
+            let mut prerequisites_resolved = true;
+            for prerequisite in view.prerequisites {
+                match self.registry.resolve(*prerequisite) {
+                    Some(prerequisite_id) => prerequisites.push(prerequisite_id.clone()),
+                    None => {
+                        prerequisites_resolved = false;
+                        break;
+                    }
+                }
+            }
+            if !prerequisites_resolved {
+                continue;
+            }
             rules.push(QuestKillRule {
                 quest: quest_id.clone(),
                 target_kind: *target_kind,
                 required_count: *count,
+                prerequisites,
             });
         }
         rules

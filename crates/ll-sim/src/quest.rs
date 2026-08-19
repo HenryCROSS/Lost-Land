@@ -78,6 +78,16 @@ pub struct QuestKillRule {
     pub target_kind: ContentIndex,
     /// 需要达到的击杀数量。
     pub required_count: u32,
+    /// 这条任务节点的前置任务，同样已反查成 [`NamespacedId`]——
+    /// [`kill_progress_effects`] 用它判断"这个节点是否已经解锁"（全部
+    /// 前置都已完成），不满足就不产出完成写入，即使 `required_count`
+    /// 本身已经达标。**这不是可选的装饰字段**：这是验收 demo（P5-B
+    /// 任务 9）实测抓出的一处真实缺陷的修复——`finale` 节点自己的
+    /// `KillCount` 条件只要求击杀 1 个哥布林，若不检查前置，玩家杀满
+    /// 3 个哥布林（够 `main_quest_1` 的阈值）时 `finale` 会跟着一起
+    /// "完成"，即便 `branch_a`/`branch_b` 两个前置任务都还没做——一个
+    /// 尚未解锁、玩家从未在任务日志里见过的任务节点凭空显示为已完成。
+    pub prerequisites: Vec<NamespacedId>,
 }
 
 /// `resolve` 结算击杀时需要的最小"任务目录"接口——把"哪些任务节点有
@@ -227,8 +237,13 @@ pub fn kill_progress_effects(
         value: ScriptValue::Int(new_count),
     }];
     for rule in quests.kill_count_quests() {
+        let prerequisites_met = rule
+            .prerequisites
+            .iter()
+            .all(|prerequisite| is_quest_completed(agent, prerequisite));
         if rule.target_kind == killed_kind
             && new_count >= i64::from(rule.required_count)
+            && prerequisites_met
             && !is_quest_completed(agent, &rule.quest)
         {
             writes.push(mark_quest_completed(actor, &rule.quest));

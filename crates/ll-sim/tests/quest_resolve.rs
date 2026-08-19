@@ -104,6 +104,7 @@ fn 击杀达到阈值后任务被标记完成() {
             quest: quest.clone(),
             target_kind: goblin,
             required_count: 1,
+            prerequisites: Vec::new(),
         }],
     };
 
@@ -143,6 +144,7 @@ fn 击杀未达阈值时计数增加但任务不完成() {
             quest: quest.clone(),
             target_kind: goblin,
             required_count: 3,
+            prerequisites: Vec::new(),
         }],
     };
 
@@ -185,6 +187,7 @@ fn 击杀种类不匹配的目标不推进任务() {
             quest: quest.clone(),
             target_kind: goblin,
             required_count: 1,
+            prerequisites: Vec::new(),
         }],
     };
 
@@ -246,5 +249,49 @@ fn 非attack意图不触发任务进度接线() {
         !effects
             .iter()
             .any(|effect| matches!(effect, Effect::SetScriptState { .. }))
+    );
+}
+
+#[test]
+fn 前置任务未完成时即使达到击杀阈值也不标记完成() {
+    // 回归测试：P5-B 任务 9 验收 demo 实测抓出的真实缺陷——一个任务
+    // 节点自己的 KillCount 阈值达标,不代表这个节点已经"解锁"（它的
+    // 前置任务可能压根还没完成）。修复前，`finale`（前置是
+    // branch_a/branch_b，自身条件只要求击杀 1 个哥布林）会在玩家杀满
+    // 3 个哥布林、凑够 main_quest_1 的阈值时被一起标记完成——即便
+    // finale 从未在任务日志里出现过。
+    // Arrange：quest 的前置是 prerequisite，且 prerequisite 尚未完成。
+    let mut world = test_world();
+    let mut interner = Interner::new();
+    let goblin = interner.intern(NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+    let prerequisite = NamespacedId::parse("lostland:main_quest_1").expect("合法标识符");
+    let quest = NamespacedId::parse("lostland:finale").expect("合法标识符");
+    let actor = spawn_agent_with_race(&mut world, ContentIndex::default(), Agent::STARTING_HEALTH);
+    let target = spawn_agent_with_race(&mut world, goblin, 1);
+    let catalog = FakeQuestCatalog {
+        rules: vec![QuestKillRule {
+            quest: quest.clone(),
+            target_kind: goblin,
+            required_count: 1,
+            prerequisites: vec![prerequisite],
+        }],
+    };
+
+    // Act：一次击杀就足以达到 required_count,但前置从未被标记完成。
+    let effects = resolve_with_skills_and_quests(
+        &world,
+        &Intent::Attack { actor, target },
+        &NoSkills,
+        &catalog,
+    );
+    for effect in &effects {
+        ll_sim::apply::apply(&mut world, effect);
+    }
+
+    // Assert
+    let agent = world.actors.get(actor).expect("攻击者应仍存在");
+    assert!(
+        !is_quest_completed(agent, &quest),
+        "前置未完成时,即使击杀阈值达标也不应该标记完成"
     );
 }
