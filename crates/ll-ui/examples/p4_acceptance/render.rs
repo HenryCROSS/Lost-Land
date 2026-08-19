@@ -29,7 +29,11 @@ pub(crate) fn push_terrain(
     resources: &mut GpuResources,
 ) {
     for pos in camera.visible_tiles() {
-        let kind = world.terrain.terrain_at(pos);
+        // demo 世界是单区块布局，WorldState::new 的出生点邻域预热已让
+        // 它整体常驻，见 `world::is_walkable` 文档同一节。
+        let kind = world
+            .terrain_at(pos)
+            .expect("demo 世界是单区块布局，已整体常驻");
         let Some((name, tint)) = terrain_entry_name_and_tint(kind, terrain_ids, lava_kind) else {
             continue;
         };

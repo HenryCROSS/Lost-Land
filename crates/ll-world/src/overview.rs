@@ -21,10 +21,13 @@
 //! §15 的 P5 行，而不是留在这里的代码注释——代码 TODO 会腐烂，规格里
 //! 的记录会被已生效的「每阶段收尾反向核对规格」机制自动捕获。
 
+use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 
+use crate::generate::GenParams;
+use crate::noise::TileableNoise;
 use crate::state::WorldState;
-use crate::terrain::TerrainKind;
+use crate::terrain::{BaseTerrainIds, TerrainKind};
 
 /// 地图视图里的一格：地形种类加是否已被探索。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,7 +47,26 @@ pub struct OverviewCell {
 /// 只走 [`ll_core::torus::TorusSize::wrap`] 换算越界坐标：环面世界四面
 /// 全连通，手写坐标换算会在世界边缘产出「小地图上很近，实际却隔着半个
 /// 世界」这类缺陷，详见 `ll_core::torus` 的模块文档。
-pub fn minimap(world: &WorldState, center: TorusPos, span: u32) -> Vec<OverviewCell> {
+///
+/// # 为什么需要 `&mut WorldState`（两级坐标系重写，任务 11）
+///
+/// `terrain` 换成 [`crate::surface_store::SurfaceStore`] 之后，任意
+/// 坐标的地形查询都可能命中尚未常驻的区块。`minimap` 不是 `resolve`
+/// （C1 只约束 `resolve` 必须是纯函数），允许在需要时触发按需生成——
+/// 保持「按半径给出一份稠密的 `span × span` 栅格」这个既有约定不变
+/// （调用方按下标定位某个偏移量的惯例不该因为迁移悄悄变成「可能缺格」
+/// 的稀疏列表），比起改成只读、跳过未常驻的格子，代价更小、行为更
+/// 好预测。
+#[allow(clippy::too_many_arguments)]
+pub fn minimap(
+    world: &mut WorldState,
+    noise: &TileableNoise,
+    params: &GenParams,
+    terrain_ids: &BaseTerrainIds,
+    center: TorusPos,
+    span: u32,
+    at_tick: Tick,
+) -> Vec<OverviewCell> {
     let half = (span / 2) as i32;
     let mut cells = Vec::with_capacity((span * span) as usize);
 
@@ -54,7 +76,7 @@ pub fn minimap(world: &WorldState, center: TorusPos, span: u32) -> Vec<OverviewC
                 .size
                 .wrap(center.x() + dx - half, center.y() + dy - half);
             cells.push(OverviewCell {
-                terrain: world.terrain.terrain_at(pos),
+                terrain: world.terrain_at_streaming(noise, params, terrain_ids, pos, at_tick),
                 explored: true,
             });
         }
@@ -71,7 +93,26 @@ pub fn minimap(world: &WorldState, center: TorusPos, span: u32) -> Vec<OverviewC
 /// `downsample` 为零时会在下面的除法里退化成非法输入，故夹到最小值 1，
 /// 效果等价于不做下采样——与其让调用方在这里撞见除零 panic，不如把它
 /// 当成「不缩小」处理。
-pub fn continent_map(world: &WorldState, downsample: u32) -> Vec<OverviewCell> {
+///
+/// # 迁移后的临时状态：仍然会触发生成（两级坐标系重写，任务 11）
+///
+/// 这个函数目前仍然按瓦片分辨率遍历整个世界并触发按需生成——这**不是**
+/// 流式加载想要的最终效果（设计文档五节明确要求「不能为了画一张概览
+/// 图就把全部区块的完整地形都生成出来」），而是任务 13（`continent_map`
+/// 新数据源）的范围：那里会换成世界创建时一次性生成的粗粒度
+/// `ContinentField`，按区块而非瓦片分辨率，不触发任何区块的按需生成。
+/// 本次迁移（任务 11）的范围只到「换型之后继续编译、继续按原有断言
+/// 通过」，不提前实现任务 13 的正确行为——见任务 11 迁移策略表
+/// 「`continent_map` 测试留给任务 13」。
+#[allow(clippy::too_many_arguments)]
+pub fn continent_map(
+    world: &mut WorldState,
+    noise: &TileableNoise,
+    params: &GenParams,
+    terrain_ids: &BaseTerrainIds,
+    downsample: u32,
+    at_tick: Tick,
+) -> Vec<OverviewCell> {
     let downsample = downsample.max(1);
     let width = world.size.width();
     let height = world.size.height();
@@ -85,7 +126,7 @@ pub fn continent_map(world: &WorldState, downsample: u32) -> Vec<OverviewCell> {
             let y = (row * downsample) as i32;
             let pos = world.size.wrap(x, y);
             cells.push(OverviewCell {
-                terrain: world.terrain.terrain_at(pos),
+                terrain: world.terrain_at_streaming(noise, params, terrain_ids, pos, at_tick),
                 explored: true,
             });
         }
@@ -97,28 +138,55 @@ pub fn continent_map(world: &WorldState, downsample: u32) -> Vec<OverviewCell> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generate::GenParams;
+    use crate::generate::build_zone_noise;
     use crate::terrain::base_terrain_fixture;
+    use crate::zone::ZoneLayout;
+    use ll_core::torus::TorusSize;
 
-    /// 测试世界尺寸：64 是噪声格点周期的整数倍，且大于视口跨度，满足
-    /// `WorldState::new` 的全部构造前置条件。
+    /// 测试用区块布局：边长 64，单个区块——整个测试世界落在一个区块
+    /// 内，`WorldState::new` 预热出生点邻域时就会把它整个装进常驻
+    /// 集合，`minimap`/`continent_map` 的按需生成调用因此总是命中已
+    /// 常驻的区块，不需要在每条测试里操心流式加载本身（那部分是
+    /// `surface_store.rs` 测试的关注点）。
+    fn test_layout() -> ZoneLayout {
+        let zone_count = TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+        ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束")
+    }
+
     fn test_world() -> WorldState {
-        let size =
-            ll_core::torus::TorusSize::new(64, 64).expect("64x64 满足整除与视口跨度两条约束");
+        let layout = test_layout();
         let (terrain_ids, terrain_table) = base_terrain_fixture();
-        WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
-            .expect("测试尺寸满足全部构造前置条件")
+        let spawn = layout.tile_size().wrap(0, 0);
+        WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件")
     }
 
     #[test]
     fn 小地图格子数等于跨度的平方() {
         // Arrange
-        let world = test_world();
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
         let center = world.size.wrap(32, 32);
         let span = 9;
 
         // Act
-        let cells = minimap(&world, center, span);
+        let cells = minimap(
+            &mut world,
+            &noise,
+            &params,
+            &terrain_ids,
+            center,
+            span,
+            Tick(0),
+        );
 
         // Assert
         assert_eq!(cells.len(), (span * span) as usize);
@@ -127,11 +195,22 @@ mod tests {
     #[test]
     fn 小地图跨度为零时返回空列表() {
         // Arrange
-        let world = test_world();
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
         let center = world.size.wrap(32, 32);
 
         // Act
-        let cells = minimap(&world, center, 0);
+        let cells = minimap(
+            &mut world,
+            &noise,
+            &params,
+            &terrain_ids,
+            center,
+            0,
+            Tick(0),
+        );
 
         // Assert
         assert!(cells.is_empty());
@@ -141,17 +220,33 @@ mod tests {
     fn 小地图中心格的地形与直接查询世界一致() {
         // 小地图不该重算或篡改地形，只是把世界现有数据搬到另一种排列。
         // Arrange
-        let world = test_world();
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
         let center = world.size.wrap(10, 20);
         let span = 5;
         let half = (span / 2) as usize;
 
         // Act
-        let cells = minimap(&world, center, span);
+        let cells = minimap(
+            &mut world,
+            &noise,
+            &params,
+            &terrain_ids,
+            center,
+            span,
+            Tick(0),
+        );
         let center_cell = cells[half * span as usize + half];
 
         // Assert
-        assert_eq!(center_cell.terrain, world.terrain.terrain_at(center));
+        assert_eq!(
+            center_cell.terrain,
+            world
+                .terrain_at(center)
+                .expect("测试世界只有一个区块，预热后必然常驻")
+        );
     }
 
     #[test]
@@ -159,15 +254,28 @@ mod tests {
         // 原点附近的小地图会向西/向北探出世界边界，必须走 wrap 绕回
         // 对侧，而不是产出越界坐标或手写的错误换算。
         // Arrange
-        let world = test_world();
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
         let origin = world.size.wrap(0, 0);
         let span = 5;
 
         // Act
-        let cells = minimap(&world, origin, span);
+        let cells = minimap(
+            &mut world,
+            &noise,
+            &params,
+            &terrain_ids,
+            origin,
+            span,
+            Tick(0),
+        );
         // span=5 时 half=2，(0,0) 左上角第一格对应 (-2,-2)，
         // 环绕后应等于世界最后两行两列的那一格。
-        let wrapped_expected = world.terrain.terrain_at(world.size.wrap(-2, -2));
+        let wrapped_expected = world
+            .terrain_at(world.size.wrap(-2, -2))
+            .expect("测试世界只有一个区块，预热后必然常驻");
 
         // Assert
         assert_eq!(cells[0].terrain, wrapped_expected);
@@ -176,11 +284,21 @@ mod tests {
     #[test]
     fn 大陆地图格子数按下采样倍率整除向上取整() {
         // Arrange
-        let world = test_world();
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
         let downsample = 16;
 
         // Act
-        let cells = continent_map(&world, downsample);
+        let cells = continent_map(
+            &mut world,
+            &noise,
+            &params,
+            &terrain_ids,
+            downsample,
+            Tick(0),
+        );
 
         // Assert
         let expected =
@@ -191,10 +309,13 @@ mod tests {
     #[test]
     fn 大陆地图下采样倍率为零时退化为原始尺寸() {
         // Arrange
-        let world = test_world();
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
 
         // Act
-        let cells = continent_map(&world, 0);
+        let cells = continent_map(&mut world, &noise, &params, &terrain_ids, 0, Tick(0));
 
         // Assert
         assert_eq!(cells.len() as u32, world.size.width() * world.size.height());
@@ -203,17 +324,29 @@ mod tests {
     #[test]
     fn 大陆地图每格取块内左上角地形而非平均() {
         // Arrange
-        let world = test_world();
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
         let downsample = 4;
 
         // Act
-        let cells = continent_map(&world, downsample);
+        let cells = continent_map(
+            &mut world,
+            &noise,
+            &params,
+            &terrain_ids,
+            downsample,
+            Tick(0),
+        );
         let first_cell = cells[0];
 
         // Assert
         assert_eq!(
             first_cell.terrain,
-            world.terrain.terrain_at(world.size.wrap(0, 0))
+            world
+                .terrain_at(world.size.wrap(0, 0))
+                .expect("测试世界只有一个区块，预热后必然常驻")
         );
     }
 
@@ -221,11 +354,22 @@ mod tests {
     fn 小地图格子恒标记为已探索() {
         // 现阶段 WorldState 不持有玩家探索记忆，见本模块文档顶部说明。
         // Arrange
-        let world = test_world();
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
         let center = world.size.wrap(0, 0);
 
         // Act
-        let cells = minimap(&world, center, 3);
+        let cells = minimap(
+            &mut world,
+            &noise,
+            &params,
+            &terrain_ids,
+            center,
+            3,
+            Tick(0),
+        );
 
         // Assert
         assert!(cells.iter().all(|cell| cell.explored));

@@ -30,11 +30,14 @@ use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::state::WorldState;
 use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
+use ll_world::zone::ZoneLayout;
 
-/// 测试世界尺寸：64 是噪声格点周期的整数倍，满足 [`WorldState::new`]
-/// 的前置条件（与本仓库其余测试同一常量）。
-fn test_size() -> TorusSize {
-    TorusSize::new(64, 64).expect("64x64 满足整除约束")
+/// 测试用区块布局：边长 64，单个区块——是噪声格点周期的整数倍，满足
+/// [`WorldState::new`] 的前置条件（与本仓库其余测试同一常量），整个
+/// 测试世界（玩家/敌人/门都落在这个范围内）落在这一个区块内。
+fn test_layout() -> ZoneLayout {
+    let zone_count = TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+    ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束")
 }
 
 /// 搭一个带两个固定实体、固定地形的世界：玩家站在 `(10, 10)`，敌人站
@@ -56,8 +59,10 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         ..GenParams::default()
     };
     let (terrain_ids, terrain_table): (BaseTerrainIds, _) = base_terrain_fixture();
-    let mut world = WorldState::new(test_size(), &params, &terrain_ids, terrain_table)
-        .expect("测试尺寸满足全部构造前置条件");
+    let layout = test_layout();
+    let spawn = layout.tile_size().wrap(0, 0);
+    let mut world = WorldState::new(layout, &params, &terrain_ids, terrain_table, spawn)
+        .expect("测试布局满足全部构造前置条件");
 
     world
         .terrain
@@ -160,13 +165,21 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 
 /// 由首次运行记录的黄金基准。修改前请阅读本文件顶部说明。
 ///
-/// # 本次重冻的原因（P4 Task 8：`TerrainKind` 迁入内容注册表）
+/// # 本次重冻的原因（两级坐标系重写，任务 11）
 ///
-/// 与 `crates/ll-world/tests/determinism.rs` 同一个理由：地形不再是
-/// 硬编码的 `u16` 值，而是注册期按顺序分配的稠密 `ContentIndex`。
-/// `WorldState::hash` 混入的地形原始数值编码方式变了，期望值随之
-/// 更新为新编码在同一种子、同一意图流下的真实产出。
-const EXPECTED_REPLAY_DIGEST: u64 = 16_052_812_501_842_541_409;
+/// 与 `crates/ll-world/tests/determinism.rs` 同一个理由：`WorldState.terrain`
+/// 从 `ChunkGrid` 换成按区块流式生成与常驻的 `SurfaceStore`，
+/// `WorldState::hash` 相应地从「按 `size` 遍历世界每一格」改为「按
+/// `resident_zones()` 排序后的区块坐标集合遍历，且额外把区块坐标本身
+/// 混入哈希」（见 `WorldState::hash` 文档「不再遍历整个世界的每一格」）。
+/// `setup` 里的测试世界仍然只有一个区块（64×64 单区块布局），地形/
+/// 实体内容与迁移前完全相同，但哈希算法本身的输入构造方式变了，产出
+/// 的摘要数值随之改变——这是「基准值变了」，不是「断言结构变了」：
+/// 仍然是「同一份意图流产出同一个摘要」这条断言，只是摘要的计算方式
+/// 换了输入顺序。人工核对：迁移前后分别跑通本文件另外三条测试（相同
+/// 种子相同哈希、不同意图流不同哈希、序列化往返一致）全部保持通过，
+/// 证明哈希仍然对种子/意图流/序列化敏感，不是退化成常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 10_964_837_711_040_915_745;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

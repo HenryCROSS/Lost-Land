@@ -390,7 +390,11 @@ fn push_terrain(
         if !visible.contains(pos) {
             continue;
         }
-        let kind = world.terrain.terrain_at(pos);
+        // demo 世界是单区块布局，WorldState::new 的出生点邻域预热已让
+        // 它整体常驻，见 `spawn::is_walkable` 文档同一节。
+        let kind = world
+            .terrain_at(pos)
+            .expect("demo 世界是单区块布局，已整体常驻");
         let Some(name) = terrain_entry_name(kind, terrain_ids) else {
             continue;
         };
@@ -704,8 +708,11 @@ impl AppHandler for Demo {
         // 借用，编译器才能看出它与 `resources` 借用的是不相交的两块
         // 数据——理由与 `collect_sprites` 取自由函数而非方法完全一致
         // （见本文件顶部模块文档「文件拆分」一节引用的既有 demo 惯例）。
+        // SurfaceWindow 假定视野范围内的区块都已经常驻——demo 世界是
+        // 单区块布局，WorldState::new 的出生点邻域预热已让它整体常驻
+        // （见其文档「前置条件与任务 14 的关系」）。
         let visible = compute_fov(
-            &self.world.terrain,
+            &ll_world::surface_store::SurfaceWindow::new(&self.world.terrain),
             &self.world.terrain_table,
             player_pos_or_camera(&self.world, self.actors.player.id, self.camera.center),
             radius,

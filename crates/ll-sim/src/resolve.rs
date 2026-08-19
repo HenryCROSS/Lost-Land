@@ -135,7 +135,15 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
     };
     let (dx, dy) = dir.delta();
     let dest = world.size.wrap(agent.pos.x() + dx, agent.pos.y() + dy);
-    let terrain = world.terrain.terrain_at(dest);
+    // resolve 必须是纯函数（C1），不能触发 SurfaceStore 的按需生成——
+    // 见 WorldState::terrain_at 文档「resolve 只读、加载收窄到……」。
+    // 目的地所属区块尚未常驻时（真正的邻域缓冲维护接线是设计文档
+    // 任务 14 的范围，本次迁移之后正常游玩路径下应恒已常驻），保守地
+    // 视为不可通行——与撞墙同一种「这一步作废」结果，不产生任何效果，
+    // 不是让整个结算 panic。
+    let Some(terrain) = world.terrain_at(dest) else {
+        return Vec::new();
+    };
     let speed = effective_speed_from_dexterity(agent.stats.dexterity);
 
     if let Some(open_kind) = terrain.opens_into(&world.terrain_table) {
@@ -217,11 +225,12 @@ fn resolve_open_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Ve
         return Vec::new();
     };
     let door_pos = world.size.wrap(pos.0, pos.1);
-    let Some(open_kind) = world
-        .terrain
-        .terrain_at(door_pos)
-        .opens_into(&world.terrain_table)
-    else {
+    // 同 resolve_move：只读查询，未常驻时视为「这一步无意义」，不
+    // panic、不触发生成——见其文档。
+    let Some(terrain) = world.terrain_at(door_pos) else {
+        return Vec::new();
+    };
+    let Some(open_kind) = terrain.opens_into(&world.terrain_table) else {
         return Vec::new();
     };
 
@@ -247,13 +256,18 @@ mod tests {
     use ll_world::entity::{Agent, BaseStats};
     use ll_world::generate::GenParams;
     use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
+    use ll_world::zone::ZoneLayout;
 
     use super::*;
 
-    /// 测试世界尺寸：64 是噪声格点周期的整数倍，满足
-    /// `WorldState::new` 的前置条件（与 `ll-sim`/`ll-world` 既有测试
-    /// 同一常量）。
-    ///
+    /// 测试用区块布局：边长 64，单个区块——是噪声格点周期的整数倍，
+    /// 满足 `WorldState::new` 的前置条件（与 `ll-sim`/`ll-world` 既有
+    /// 测试同一常量），整个测试世界落在这一个区块内。
+    fn test_layout() -> ZoneLayout {
+        let zone_count = TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+        ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束")
+    }
+
     /// 返回值附带 [`BaseTerrainIds`]：`terrain_ids` 与
     /// `world.terrain_table` 必须来自同一次 [`base_terrain_fixture`]
     /// 调用——`ContentIndex` 只在产出它的那个 `Interner` 里有意义
@@ -261,10 +275,17 @@ mod tests {
     /// 因为固定顺序而恰好数值相同，但把它们当成「必须配对」处理更不
     /// 容易在将来注册顺序调整时踩坑。
     fn test_world() -> (WorldState, BaseTerrainIds) {
-        let size = TorusSize::new(64, 64).expect("64x64 满足整除约束");
+        let layout = test_layout();
         let (terrain_ids, terrain_table) = base_terrain_fixture();
-        let world = WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
-            .expect("测试尺寸满足全部构造前置条件");
+        let spawn = layout.tile_size().wrap(0, 0);
+        let world = WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件");
         (world, terrain_ids)
     }
 
@@ -481,9 +502,10 @@ mod tests {
             )
             .expect("测试声明内部自洽");
 
-        let size = TorusSize::new(64, 64).expect("64x64 满足整除约束");
-        let mut world = WorldState::new(size, &GenParams::default(), &terrain_ids, table)
-            .expect("测试尺寸满足全部构造前置条件");
+        let layout = test_layout();
+        let spawn = layout.tile_size().wrap(0, 0);
+        let mut world = WorldState::new(layout, &GenParams::default(), &terrain_ids, table, spawn)
+            .expect("测试布局满足全部构造前置条件");
         world
             .terrain
             .set_terrain(east_of_spawn(&world), hatch_closed);

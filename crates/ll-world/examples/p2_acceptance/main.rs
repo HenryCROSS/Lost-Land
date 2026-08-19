@@ -49,6 +49,7 @@ use layout::{
     MINIMAP_DOWNSAMPLE, WORLD_HEIGHT, WORLD_WIDTH, ambient_tint, footprint_bottom_screen_y,
     minimap_cell_screen_pos, sprite_draw_position, terrain_entry_name,
 };
+use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::logging::init_logging;
@@ -65,13 +66,30 @@ use ll_render::target::{RenderTarget, fit_viewport};
 // p1_acceptance 完全一致：独立 crate 的下游只有这一条路径能用。
 use ll_render::wgpu;
 use ll_world::fov::{VisibleSet, compute_fov};
-use ll_world::generate::GenParams;
+use ll_world::generate::{GenParams, build_zone_noise};
 use ll_world::light::{ambient_light, sight_radius_at};
+use ll_world::noise::TileableNoise;
 use ll_world::overview::continent_map;
 use ll_world::state::WorldState;
+use ll_world::surface_store::SurfaceWindow;
 use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
+use ll_world::zone::ZoneLayout;
 use png::save_baseline_png;
 use std::sync::Arc;
+
+/// 区块边长（格）。选 64：是噪声格点尺寸（16）与
+/// `ll_world::chunk::CHUNK_SIZE`（32）的整数倍，[`WORLD_WIDTH`]/
+/// [`WORLD_HEIGHT`] 都能被它整除，demo 世界因此正好是 8×5 个区块
+/// （见 [`build_zone_layout`]）。
+const ZONE_SPAN: u32 = 64;
+
+/// 建立本 demo 用的区块布局：世界总尺寸仍是 [`WORLD_WIDTH`]×
+/// [`WORLD_HEIGHT`]，只是现在按 [`ZONE_SPAN`] 分区块表达。
+fn build_zone_layout() -> ZoneLayout {
+    let zone_count = TorusSize::new(WORLD_WIDTH / ZONE_SPAN, WORLD_HEIGHT / ZONE_SPAN)
+        .expect("演示世界尺寸按 ZONE_SPAN 整除后仍为非零常量");
+    ZoneLayout::new(ZONE_SPAN, zone_count).expect("ZONE_SPAN 满足全部对齐与跨度约束")
+}
 
 /// 绘制顺序号：玩家标记的固定实体号。
 const PLAYER_ENTITY: u64 = 0;
@@ -184,6 +202,14 @@ struct Demo {
     /// （见 `ll_world::terrain::base_terrain_fixture` 文档），不牵扯
     /// 真实的 mod 加载流程。
     terrain_ids: BaseTerrainIds,
+    /// 世界尺度噪声源——两级坐标系重写（任务 11）之后，`minimap`/
+    /// `continent_map` 每帧都可能触发按需生成，需要复用同一个噪声源
+    /// 实例（`build_noise` 本身是 O(1) 操作，见其文档，不必每帧重建）。
+    noise: TileableNoise,
+    /// 与 `noise` 配套的生成参数，同样只在流式生成时需要，见
+    /// `WorldState::terrain_at_streaming` 文档「为什么 WorldState 本身
+    /// 不持有它们」。
+    params: GenParams,
     player: TorusPos,
     camera: Camera,
     resources: Option<GpuResources>,
@@ -191,24 +217,45 @@ struct Demo {
 
 impl Demo {
     fn new() -> Demo {
-        let size = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("演示世界尺寸为非零常量");
+        let layout = build_zone_layout();
+        let params = GenParams::default();
         let (terrain_ids, terrain_table) = base_terrain_fixture();
-        let mut world = WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
-            .expect("演示世界尺寸满足生成入口的全部约束");
+        let noise = build_zone_noise(&layout, &params).expect("build_zone_layout 满足全部约束");
+
+        // 本 demo 的重点是「真实生成的地形能不能在真实窗口里正确显示」，
+        // 不是流式加载本身（那是任务 9 已经独立验证过的机制）——世界
+        // 总面积不大（40 个区块），预热全部区块让 find_spawn/FOV/小
+        // 地图都能像迁移前那样直接寻址任意坐标，见
+        // `SurfaceStore::warm_all` 文档。占位出生点随便给一个合法坐标
+        // 即可：紧接着 warm_all 会覆盖它划出的那圈邻域预热范围。
+        let placeholder_spawn = layout.tile_size().wrap(0, 0);
+        let mut world = WorldState::new(
+            layout,
+            &params,
+            &terrain_ids,
+            terrain_table,
+            placeholder_spawn,
+        )
+        .expect("演示世界布局满足生成入口的全部约束");
+        world
+            .terrain
+            .warm_all(&noise, &params, &terrain_ids, Tick(0));
         // 开局定在正午而非引擎默认的午夜，理由见 INITIAL_CLOCK_TICKS 文档。
         world.advance(INITIAL_CLOCK_TICKS);
 
-        let player = spawn::find_spawn(&world.terrain, &world.terrain_table);
-        spawn::carve_wall_ridge(&mut world.terrain, player, &terrain_ids);
+        let player = spawn::find_spawn(&world);
+        spawn::carve_wall_ridge(&mut world, player, &terrain_ids);
 
         let camera = Camera {
             center: player,
-            world: size,
+            world: world.size,
         };
 
         Demo {
             world,
             terrain_ids,
+            noise,
+            params,
             player,
             camera,
             resources: None,
@@ -233,8 +280,11 @@ impl Demo {
 /// 一致：`on_frame` 需要同时持有 `&mut self.resources` 与 `self` 的
 /// 其余字段，写成 `&self` 方法会让编译器把「借了整个 `self`」和「借了
 /// 其中一个字段」混为一谈，报出并不存在的借用冲突。
+#[allow(clippy::too_many_arguments)]
 fn collect_sprites(
-    world: &WorldState,
+    world: &mut WorldState,
+    noise: &TileableNoise,
+    params: &GenParams,
     terrain_ids: &BaseTerrainIds,
     camera: &Camera,
     player: TorusPos,
@@ -244,7 +294,7 @@ fn collect_sprites(
 ) {
     push_terrain(world, terrain_ids, camera, visible, tint, resources);
     push_player(camera, player, tint, resources);
-    push_minimap(world, terrain_ids, resources);
+    push_minimap(world, noise, params, terrain_ids, resources);
 }
 
 /// 画出相机视口内、且落在本帧视野（[`VisibleSet`]）内的地形瓦片。
@@ -265,7 +315,11 @@ fn push_terrain(
         if !visible.contains(pos) {
             continue;
         }
-        let kind = world.terrain.terrain_at(pos);
+        // demo 世界已经在 Demo::new 里用 warm_all 整体预热过，相机
+        // 视口内的坐标必然常驻——见 WorldState::terrain_at 文档。
+        let kind = world
+            .terrain_at(pos)
+            .expect("demo 世界已经用 warm_all 整体预热");
         let Some(name) = terrain_entry_name(kind, terrain_ids) else {
             continue;
         };
@@ -313,9 +367,23 @@ fn push_player(camera: &Camera, player: TorusPos, tint: [f32; 4], resources: &mu
 /// 一部分，传统 roguelike 里小地图/大地图也通常不受局部光照影响
 /// ——若也被夜晚调暗，会让玩家在最需要靠小地图辨认方向的夜间场景里
 /// 反而看不清它，这与它的作用背道而驰。
-fn push_minimap(world: &WorldState, terrain_ids: &BaseTerrainIds, resources: &mut GpuResources) {
+fn push_minimap(
+    world: &mut WorldState,
+    noise: &TileableNoise,
+    params: &GenParams,
+    terrain_ids: &BaseTerrainIds,
+    resources: &mut GpuResources,
+) {
     let cols = world.size.width().div_ceil(MINIMAP_DOWNSAMPLE);
-    let cells = continent_map(world, MINIMAP_DOWNSAMPLE);
+    let at_tick = world.clock;
+    let cells = continent_map(
+        world,
+        noise,
+        params,
+        terrain_ids,
+        MINIMAP_DOWNSAMPLE,
+        at_tick,
+    );
 
     for (index, cell) in cells.iter().enumerate() {
         let col = index as u32 % cols;
@@ -415,8 +483,11 @@ impl AppHandler for Demo {
         // 这种极难复现的缺陷。
         let light = ambient_light(self.world.clock);
         let radius = sight_radius_at(BASE_SIGHT_RADIUS, light);
+        // SurfaceWindow 假定视野范围内的区块都已经常驻——demo 世界已经
+        // 在 Demo::new 里用 warm_all 整体预热过，前提成立，见其文档
+        // 「前置条件与任务 14 的关系」。
         let visible = compute_fov(
-            &self.world.terrain,
+            &SurfaceWindow::new(&self.world.terrain),
             &self.world.terrain_table,
             self.player,
             radius,
@@ -424,7 +495,9 @@ impl AppHandler for Demo {
         let tint = ambient_tint(self.world.clock);
 
         collect_sprites(
-            &self.world,
+            &mut self.world,
+            &self.noise,
+            &self.params,
             &self.terrain_ids,
             &self.camera,
             self.player,

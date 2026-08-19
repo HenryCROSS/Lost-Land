@@ -19,31 +19,32 @@ use ll_world::chunk::ChunkGrid;
 use ll_world::generate::GenParams;
 use ll_world::state::WorldState;
 use ll_world::terrain::base_terrain_fixture;
+use ll_world::zone::ZoneLayout;
 
 /// 由首次运行记录的黄金基准。修改前请阅读本文件顶部说明。
 ///
-/// # P4 Task 8（`TerrainKind` 迁入内容注册表）为什么没有改变这个值
+/// # 两级坐标系重写（任务 11）为什么改变了这个值
 ///
-/// 地形不再是硬编码的 `u16` 枚举值（自然地形 0..8、建筑地形
-/// 100..109，中间留空为未来扩展让路），而是
-/// `ll_core::ident::Interner::intern` 按 `materialize_base_terrain`
-/// 固定顺序发出的稠密 `ContentIndex`。但 `materialize_base_terrain`
-/// 特意保持了与旧枚举完全相同的登记顺序（深水、浅水、沙、草、林、丘、
-/// 山、雪……），八种自然地形因此仍然落在 `0..8`、数值与迁移前逐一
-/// 相同；只有建筑地形的编号从旧版留出空隙的 `100..109` 收缩到紧接着
-/// 自然地形之后的 `8..17`（命名空间字符串已经彻底解决了「未来扩展
-/// 需要预留编号空间」这个旧问题，见 `ll_world::terrain` 模块文档）。
-/// 这条用例的世界完全由 `generate_terrain` 生成，只会用到八种自然
-/// 地形，因此迁移前后哈希实测逐位相同——**不是没有验证到位，是这条
-/// 用例的场景覆盖不到发生变化的那一段编号**；建筑地形编号变化的真实
-/// 影响，由 `crates/ll-sim/tests/replay.rs`（意图流里显式经过一扇门，
-/// 门属于建筑地形）已经改变的黄金基准体现。
-const EXPECTED_WORLD_DIGEST: u64 = 17_645_793_944_024_546_775;
+/// `WorldState.terrain` 从一次性生成、整体常驻的 [`ChunkGrid`] 换成
+/// 按区块流式生成与常驻的 `SurfaceStore`，[`WorldState::hash`] 相应地
+/// 从「按 `size` 遍历世界每一格」改为「按 `resident_zones()` 排序后的
+/// 区块坐标集合遍历，且额外把区块坐标本身混入哈希」（见其文档「不再
+/// 遍历整个世界的每一格」）。测试世界仍然只有一个区块（64×64 的单区块
+/// 布局，见 [`test_layout`]），地形内容与迁移前完全相同，但哈希算法
+/// 本身的输入构造方式变了，产出的摘要数值随之改变——这是预期之内的
+/// 「基准值变了」，不是「断言结构变了」：仍然是「同一份世界产出同一个
+/// 摘要」这条断言，只是摘要的计算方式换了输入顺序。人工核对：迁移
+/// 前后本文件另外三条测试（序列化往返哈希不变、相同种子哈希相同、
+/// 推进时钟哈希改变）全部保持通过，证明哈希仍然对种子/时钟/序列化
+/// 敏感，不是退化成常量。
+const EXPECTED_WORLD_DIGEST: u64 = 2_466_608_231_210_883_991;
 
-/// 测试世界尺寸：64 是噪声格点周期的整数倍，且大于视口跨度，满足
+/// 测试用区块布局：边长 64（是噪声格点周期的整数倍，且大于视口跨度），
+/// 单个区块——整个测试世界落在这一个区块内，满足
 /// [`WorldState::new`] 的全部构造前置条件。
-fn test_size() -> TorusSize {
-    TorusSize::new(64, 64).expect("64x64 满足整除与视口跨度两条约束")
+fn test_layout() -> ZoneLayout {
+    let zone_count = TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+    ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束")
 }
 
 #[test]
@@ -54,10 +55,12 @@ fn 固定种子的六十四乘六十四世界摘要跨平台稳定() {
         ..GenParams::default()
     };
     let (terrain_ids, terrain_table) = base_terrain_fixture();
+    let layout = test_layout();
+    let spawn = layout.tile_size().wrap(0, 0);
 
     // Act
-    let world = WorldState::new(test_size(), &params, &terrain_ids, terrain_table)
-        .expect("测试尺寸满足全部构造前置条件");
+    let world = WorldState::new(layout, &params, &terrain_ids, terrain_table, spawn)
+        .expect("测试布局满足全部构造前置条件");
 
     // Assert
     assert_eq!(world.hash(), EXPECTED_WORLD_DIGEST);
@@ -67,13 +70,16 @@ fn 固定种子的六十四乘六十四世界摘要跨平台稳定() {
 fn 序列化往返后世界哈希不变() {
     // Arrange
     let (terrain_ids, terrain_table) = base_terrain_fixture();
+    let layout = test_layout();
+    let spawn = layout.tile_size().wrap(0, 0);
     let world = WorldState::new(
-        test_size(),
+        layout,
         &GenParams::default(),
         &terrain_ids,
         terrain_table,
+        spawn,
     )
-    .expect("测试尺寸满足全部构造前置条件");
+    .expect("测试布局满足全部构造前置条件");
     let original_hash = world.hash();
 
     // Act
@@ -93,12 +99,14 @@ fn 相同种子与尺寸生成的世界哈希相同() {
     };
     let (first_ids, first_table) = base_terrain_fixture();
     let (second_ids, second_table) = base_terrain_fixture();
+    let layout = test_layout();
+    let spawn = layout.tile_size().wrap(0, 0);
 
     // Act
-    let first = WorldState::new(test_size(), &params, &first_ids, first_table)
-        .expect("测试尺寸满足全部构造前置条件");
-    let second = WorldState::new(test_size(), &params, &second_ids, second_table)
-        .expect("测试尺寸满足全部构造前置条件");
+    let first = WorldState::new(layout, &params, &first_ids, first_table, spawn)
+        .expect("测试布局满足全部构造前置条件");
+    let second = WorldState::new(layout, &params, &second_ids, second_table, spawn)
+        .expect("测试布局满足全部构造前置条件");
 
     // Assert
     assert_eq!(first.hash(), second.hash());
@@ -108,13 +116,16 @@ fn 相同种子与尺寸生成的世界哈希相同() {
 fn 推进时钟会改变世界哈希() {
     // Arrange
     let (terrain_ids, terrain_table) = base_terrain_fixture();
+    let layout = test_layout();
+    let spawn = layout.tile_size().wrap(0, 0);
     let mut world = WorldState::new(
-        test_size(),
+        layout,
         &GenParams::default(),
         &terrain_ids,
         terrain_table,
+        spawn,
     )
-    .expect("测试尺寸满足全部构造前置条件");
+    .expect("测试布局满足全部构造前置条件");
     let hash_before = world.hash();
 
     // Act

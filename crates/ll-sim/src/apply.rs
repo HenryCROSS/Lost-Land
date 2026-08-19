@@ -89,16 +89,30 @@ mod tests {
     use ll_world::entity::{Agent, BaseStats};
     use ll_world::generate::GenParams;
     use ll_world::terrain::base_terrain_fixture;
+    use ll_world::zone::ZoneLayout;
 
     use super::*;
 
-    /// 测试世界尺寸：64 是噪声格点周期的整数倍，满足
-    /// `WorldState::new` 的前置条件（与 `ll-world` 既有测试同一常量）。
+    /// 测试用区块布局：边长 64，单个区块——与 `ll-world` 既有测试同一
+    /// 常量，满足 `WorldState::new` 的前置条件，整个测试世界落在这一
+    /// 个区块内。
+    fn test_layout() -> ZoneLayout {
+        let zone_count = TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+        ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束")
+    }
+
     fn test_world() -> WorldState {
-        let size = TorusSize::new(64, 64).expect("64x64 满足整除约束");
+        let layout = test_layout();
         let (terrain_ids, terrain_table) = base_terrain_fixture();
-        WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
-            .expect("测试尺寸满足全部构造前置条件")
+        let spawn = layout.tile_size().wrap(0, 0);
+        WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件")
     }
 
     fn blank_agent(world: &WorldState) -> Agent {

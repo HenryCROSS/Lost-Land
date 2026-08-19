@@ -76,10 +76,15 @@ pub fn register(engine: &mut ScriptEngine) {
 fn world_move_cost_at(x: i64, y: i64) -> i64 {
     with_active_world(0, |world| {
         let pos = world.size.wrap(x as i32, y as i32);
+        // 只读查询：脚本层只能拿到 &WorldState（见本模块文档「活跃
+        // 世界指针」），不能触发 SurfaceStore 的按需生成——与
+        // `ll-sim::resolve` 保持只读的理由相同，见
+        // `WorldState::terrain_at` 文档。坐标所属区块尚未常驻时降级
+        // 成与「没有活跃世界」相同的默认值 0，不 panic。
         world
-            .terrain
             .terrain_at(pos)
-            .move_cost(&world.terrain_table) as i64
+            .map(|kind| kind.move_cost(&world.terrain_table) as i64)
+            .unwrap_or(0)
     })
 }
 
@@ -87,10 +92,12 @@ fn world_move_cost_at(x: i64, y: i64) -> i64 {
 fn world_blocks_sight_at(x: i64, y: i64) -> bool {
     with_active_world(false, |world| {
         let pos = world.size.wrap(x as i32, y as i32);
+        // 同上：未常驻时降级为「不阻挡」，与「没有活跃世界」同一个
+        // 默认值，不触发生成。
         world
-            .terrain
             .terrain_at(pos)
-            .blocks_sight(&world.terrain_table)
+            .map(|kind| kind.blocks_sight(&world.terrain_table))
+            .unwrap_or(false)
     })
 }
 
@@ -111,10 +118,18 @@ mod tests {
     use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
 
     fn small_world() -> (WorldState, BaseTerrainIds) {
-        let size = ll_core::torus::TorusSize::new(64, 64).unwrap();
+        let zone_count = ll_core::torus::TorusSize::new(1, 1).unwrap();
+        let layout = ll_world::zone::ZoneLayout::new(64, zone_count).unwrap();
         let (terrain_ids, terrain_table) = base_terrain_fixture();
-        let world =
-            WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table).unwrap();
+        let spawn = layout.tile_size().wrap(0, 0);
+        let world = WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .unwrap();
         (world, terrain_ids)
     }
 

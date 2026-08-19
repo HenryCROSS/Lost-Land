@@ -37,10 +37,11 @@ use serde::de::Error as _;
 use serde::{Deserialize, Serialize, Serializer};
 
 use crate::chunk::ChunkGrid;
+use crate::fov::SightGrid;
 use crate::generate::generate_zone_window;
 use crate::noise::TileableNoise;
 use crate::space::ZoneCoord;
-use crate::terrain::{BaseTerrainIds, TerrainKind};
+use crate::terrain::{BaseTerrainIds, TerrainError, TerrainKind, TerrainTable};
 use crate::zone::ZoneLayout;
 
 /// 通用的确定性淘汰时钟：按「最近访问 tick」排序，同一 tick 内按键
@@ -308,6 +309,136 @@ impl SurfaceStore {
         let mut zones: Vec<ZoneCoord> = self.resident.keys().copied().collect();
         zones.sort();
         zones
+    }
+
+    /// 只读查询：假定该坐标所属区块已经常驻，不触发生成，也不刷新
+    /// 访问时间（这不是一次「访问」，只是查看当前是否已加载）。
+    ///
+    /// # 为什么未常驻时返回 `None` 而不是 panic
+    ///
+    /// 与 [`Self::set_terrain`] 的 panic 选择不同——写入未常驻区块几乎
+    /// 总是调用方逻辑错误（见其文档）。这里不同：调用方（`ll-sim::resolve`，
+    /// 见其模块文档「`resolve` 如何在流式加载的地形上保持纯函数」）
+    /// 只能查询、不能触发生成（C1：`resolve` 必须是纯函数），在真正的
+    /// 邻域缓冲维护接线之前（设计文档的任务 14），玩家移动到尚未预热
+    /// 的区域是可能出现的正常路径，不是编程错误——panic 会让整个游戏
+    /// 在这种情况下崩溃。调用方决定 `None` 时如何降级（`resolve` 目前
+    /// 选择视为不可通行，见其文档）。
+    pub fn terrain_at_resident(&self, pos: TorusPos) -> Option<TerrainKind> {
+        let (zone, local) = self.layout.tile_to_zone(pos);
+        self.resident.get(&zone).map(|grid| grid.terrain_at(local))
+    }
+
+    /// 调整常驻上限。不会立即淘汰现有条目——只影响下一次
+    /// [`Self::terrain_at`] 判断「是否需要腾位置」时用的阈值，不主动
+    /// 清退已经常驻的区块（调低上限本身不应该造成数据丢失的副作用）。
+    ///
+    /// 供 [`crate::state::WorldState`] 接线 `Surface` 与 `Interior`
+    /// 共享的 256 常驻预算使用（关键设计判断 3、裁定 CS-3）——批次 C
+    /// 完成时特意把这条接线留给了任务 11，见 [`crate::interior`] 模块
+    /// 文档「与共享常驻预算的关系」一节。
+    pub fn set_resident_cap(&mut self, cap: usize) {
+        self.resident_cap = cap;
+    }
+
+    /// 校验当前**常驻**的全部区块——不像 [`TerrainTable::validate_grid`]
+    /// 那样遍历整个世界（多数区块未常驻，压根没有具体地形数据可读），
+    /// 只校验已经流式加载的部分。这与 [`crate::state::WorldState::hash`]
+    /// 面对同一处架构变化时选择的做法一致（见其文档「不能再遍历整个
+    /// 世界的每一格」）。
+    pub fn validate_resident(&self, table: &TerrainTable) -> Result<(), TerrainError> {
+        for zone in self.resident_zones() {
+            let grid = self
+                .resident
+                .get(&zone)
+                .expect("resident_zones 只返回 resident 中真实存在的键");
+            table.validate_grid(grid)?;
+        }
+        Ok(())
+    }
+
+    /// 一次性预热布局里的**全部**区块——只应该用于小世界（测试、demo）
+    /// 或明确需要「整张地图都可寻址」的场景，正常游玩路径应该用
+    /// [`Self::terrain_at`] 按需流式加载，调用本方法会让流式加载失去
+    /// 意义（把全部区块一次性生成出来，正是流式加载要避免的事）。
+    ///
+    /// 供本 crate 与下游的验收 demo 复用——demo 世界通常小到可以完整
+    /// 常驻（远小于 `resident_cap`），且 demo 里出生点搜索、FOV 等
+    /// 逻辑此前假定「任意坐标都能直接查询」，迁移到 [`SurfaceStore`]
+    /// 后若不预热全部区块，这些查询会撞见「尚未常驻」而需要额外处理
+    /// 一条在生产环境里才有意义的分支。
+    pub fn warm_all(
+        &mut self,
+        noise: &TileableNoise,
+        params: &crate::generate::GenParams,
+        terrain_ids: &BaseTerrainIds,
+        at_tick: Tick,
+    ) {
+        let zone_count = self.layout.zone_count();
+        let span = self.layout.zone_span() as i32;
+        let tile_size = self.layout.tile_size();
+        for zy in 0..zone_count.height() as i32 {
+            for zx in 0..zone_count.width() as i32 {
+                let pos = tile_size.wrap(zx * span, zy * span);
+                self.terrain_at(noise, params, terrain_ids, pos, at_tick);
+            }
+        }
+    }
+}
+
+/// 只读适配器：让 [`SurfaceStore`] 当前**已常驻**的部分像单张
+/// [`ChunkGrid`] 一样喂给 [`crate::fov::compute_fov`]。
+///
+/// # 前置条件与任务 14 的关系
+///
+/// [`Self::terrain_at`](SightGrid::terrain_at) 假定被查询坐标所在的
+/// 区块已经常驻，未常驻时 panic——这不是一个可以在生产环境安全使用的
+/// 通用适配器，而是任务 11 范围内的一座过渡桥梁：调用方必须自己保证
+/// 视野半径覆盖的全部坐标都已经常驻（例如 demo 世界用
+/// [`SurfaceStore::warm_all`] 整个预热过）。真正「随玩家移动流式维护
+/// 一圈常驻邻域、FOV 只在这圈邻域内计算」的完整实现是设计文档任务 14
+/// 的范围，本类型只解决「任务 11 换型之后，此前直接把 `ChunkGrid` 喂
+/// 给 `compute_fov` 的既有验收 demo 该怎么继续编译、继续跑」这一步。
+pub struct SurfaceWindow<'a> {
+    store: &'a SurfaceStore,
+}
+
+impl<'a> SurfaceWindow<'a> {
+    /// 包装一个 [`SurfaceStore`] 引用。
+    pub fn new(store: &'a SurfaceStore) -> Self {
+        SurfaceWindow { store }
+    }
+}
+
+impl SightGrid for SurfaceWindow<'_> {
+    type Pos = TorusPos;
+
+    fn terrain_at(&self, pos: TorusPos) -> TerrainKind {
+        self.store.terrain_at_resident(pos).unwrap_or_else(|| {
+            panic!(
+                "SurfaceWindow 假定视野范围内的区块都已经常驻，{pos:?} 所属区块尚未加载——\
+                 见 SurfaceWindow 文档「前置条件」"
+            )
+        })
+    }
+
+    fn offset(&self, origin: TorusPos, dx: i32, dy: i32) -> Option<TorusPos> {
+        // 与 ChunkGrid 的 SightGrid 实现同理：环面没有「越界」这个概念。
+        Some(
+            self.store
+                .layout
+                .tile_size()
+                .wrap(origin.x() + dx, origin.y() + dy),
+        )
+    }
+
+    fn squared_euclidean(&self, a: TorusPos, b: TorusPos) -> u64 {
+        self.store.layout.tile_size().squared_euclidean(a, b)
+    }
+
+    fn max_scan_row(&self, radius: u32) -> u32 {
+        let world = self.store.layout.tile_size();
+        radius.min(world.width() / 2).min(world.height() / 2)
     }
 }
 
@@ -620,6 +751,175 @@ mod tests {
 
         // Act
         store.set_terrain(pos, dummy_kind);
+    }
+
+    #[test]
+    fn 只读查询未常驻区块返回none() {
+        // Arrange
+        let layout = test_layout();
+        let store = SurfaceStore::new(layout, 256);
+        let pos = tile_pos_of_zone(&layout, 0);
+
+        // Act
+        let result = store.terrain_at_resident(pos);
+
+        // Assert
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn 只读查询已常驻区块返回与terrain_at一致的地形() {
+        // Arrange
+        let layout = test_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_layout 满足全部约束");
+        let mut store = SurfaceStore::new(layout, 256);
+        let pos = tile_pos_of_zone(&layout, 0);
+        let loaded = store.terrain_at(&noise, &params, &terrain_ids, pos, Tick(1));
+
+        // Act
+        let readonly = store.terrain_at_resident(pos);
+
+        // Assert
+        assert_eq!(readonly, Some(loaded));
+    }
+
+    #[test]
+    fn 调低常驻上限后已有条目不会被立即清退() {
+        // Arrange：cap=3 装满三个区块。
+        let layout = test_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_layout 满足全部约束");
+        let mut store = SurfaceStore::new(layout, 3);
+        for n in 0..3 {
+            store.terrain_at(
+                &noise,
+                &params,
+                &terrain_ids,
+                tile_pos_of_zone(&layout, n),
+                Tick(n as i64),
+            );
+        }
+
+        // Act：把上限调到 1——不应该主动清退已经常驻的三个。
+        store.set_resident_cap(1);
+
+        // Assert
+        assert_eq!(store.resident_zones().len(), 3);
+    }
+
+    #[test]
+    fn 调低常驻上限后下一次准入会依据新上限淘汰() {
+        // Arrange
+        let layout = test_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_layout 满足全部约束");
+        let mut store = SurfaceStore::new(layout, 3);
+        for n in 0..3 {
+            store.terrain_at(
+                &noise,
+                &params,
+                &terrain_ids,
+                tile_pos_of_zone(&layout, n),
+                Tick(n as i64),
+            );
+        }
+        store.set_resident_cap(1);
+
+        // Act：准入第四个区块——新上限是 1，应该淘汰到只剩一个。
+        store.terrain_at(
+            &noise,
+            &params,
+            &terrain_ids,
+            tile_pos_of_zone_2d(&layout, 0, 1),
+            Tick(10),
+        );
+
+        // Assert
+        assert_eq!(store.resident_zones().len(), 1);
+    }
+
+    #[test]
+    fn 预热全部区块后每个区块都常驻() {
+        // Arrange
+        let layout = test_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_layout 满足全部约束");
+        let mut store = SurfaceStore::new(layout, 256);
+
+        // Act
+        store.warm_all(&noise, &params, &terrain_ids, Tick(0));
+
+        // Assert：3x3 布局共 9 个区块。
+        assert_eq!(store.resident_zones().len(), 9);
+    }
+
+    #[test]
+    fn 校验全部常驻区块时未注册地形返回错误() {
+        // Arrange：只注册一个空表（不含 warm_all 生成用到的任何地形）。
+        let layout = test_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_layout 满足全部约束");
+        let mut store = SurfaceStore::new(layout, 256);
+        store.warm_all(&noise, &params, &terrain_ids, Tick(0));
+        let empty_table = TerrainTable::default();
+
+        // Act
+        let result = store.validate_resident(&empty_table);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 校验全部常驻区块时地形均已注册返回成功() {
+        // Arrange
+        let layout = test_layout();
+        let (terrain_ids, table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_layout 满足全部约束");
+        let mut store = SurfaceStore::new(layout, 256);
+        store.warm_all(&noise, &params, &terrain_ids, Tick(0));
+
+        // Act
+        let result = store.validate_resident(&table);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn surfacewindow喂给compute_fov在预热区域内产出与直接查chunkgrid一致的可见集() {
+        // SurfaceWindow 存在的唯一理由：让既有 compute_fov 调用点在
+        // SurfaceStore 换型后不必改算法——这里验证它对同一份数据产出
+        // 与直接对 generate_zone_window 结果调用 compute_fov 相同的
+        // 可见集合（只要视野半径不越出预热的单个区块）。
+        // Arrange
+        let layout = test_layout();
+        let (terrain_ids, table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_layout 满足全部约束");
+        let mut store = SurfaceStore::new(layout, 256);
+        store.warm_all(&noise, &params, &terrain_ids, Tick(0));
+        let origin = tile_pos_of_zone_2d(&layout, 1, 1);
+        let radius = 5;
+
+        // Act
+        let via_window =
+            crate::fov::compute_fov(&SurfaceWindow::new(&store), &table, origin, radius);
+        let (zone, local) = layout.tile_to_zone(origin);
+        let direct_grid = generate_zone_window(&noise, &params, &layout, zone, &terrain_ids)
+            .expect("test_layout 满足全部约束");
+        let via_grid = crate::fov::compute_fov(&direct_grid, &table, local, radius);
+
+        // Assert：视野半径 5 小于区块边长 64 的一半,不会跨出这个区块,
+        // 两种查询路径应产出相同数量的可见格。
+        assert_eq!(via_window.len(), via_grid.len());
     }
 
     #[test]

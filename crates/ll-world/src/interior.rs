@@ -118,6 +118,15 @@ impl Interior {
         floors.sort();
         floors
     }
+
+    /// 当前已生成的楼层数量。
+    ///
+    /// 供 [`InteriorTable::total_floor_count`] 汇总——不走
+    /// [`Self::floor_numbers`]（那个方法要排序，这里只要计数，没必要
+    /// 多做一次排序）。
+    pub fn floor_count(&self) -> usize {
+        self.floors.len()
+    }
 }
 
 /// 全部 `Interior` 实例的权威集合：按 [`SpaceId`] 索引的稀疏表（设计
@@ -169,6 +178,15 @@ impl InteriorTable {
             .collect();
         ids.sort();
         ids
+    }
+
+    /// 全部 `Interior` 已加载楼层数之和——供
+    /// [`crate::state::WorldState`] 计算 `Surface` 与 `Interior` 共享的
+    /// 常驻预算（关键设计判断 3、裁定 CS-3）。不需要排序（只是求和，
+    /// 不像 `entries_at` 那样要产出一份稳定顺序的结果），求和结果与
+    /// `HashMap` 遍历顺序无关，不违反 C5。
+    pub fn total_floor_count(&self) -> usize {
+        self.interiors.values().map(Interior::floor_count).sum()
     }
 }
 
@@ -300,6 +318,36 @@ mod tests {
 
         // Assert
         assert_eq!(floors, vec![-1, 0, 2]);
+    }
+
+    #[test]
+    fn 全部interior已加载楼层数之和正确计数() {
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let mut counter = 0u32;
+        let size = BoundedSize::new(4, 4).expect("4x4 是合法尺寸");
+        let mut first = Interior::new(
+            WorldId::next(&mut counter),
+            anchor_at(0, 0),
+            profile_index(),
+        );
+        first.set_floor(0, BoundedGrid::new(size, ids.floor_stone));
+        first.set_floor(1, BoundedGrid::new(size, ids.floor_stone));
+        let mut second = Interior::new(
+            WorldId::next(&mut counter),
+            anchor_at(1, 1),
+            profile_index(),
+        );
+        second.set_floor(0, BoundedGrid::new(size, ids.floor_wood));
+        let mut table = InteriorTable::new();
+        table.insert(first);
+        table.insert(second);
+
+        // Act
+        let total = table.total_floor_count();
+
+        // Assert
+        assert_eq!(total, 3);
     }
 
     #[test]

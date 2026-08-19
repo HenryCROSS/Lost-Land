@@ -13,13 +13,23 @@ use ll_mod::base_terrain::register_base_terrain;
 use ll_mod::load_report::LoadReport;
 use ll_mod::pipeline::load_all;
 use ll_mod::registry::Registry;
-use ll_world::chunk::ChunkGrid;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::state::WorldState;
-use ll_world::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
+use ll_world::terrain::{BaseTerrainIds, TerrainKind};
+use ll_world::zone::ZoneLayout;
 
 use crate::layout::{INITIAL_CLOCK_TICKS, WORLD_HEIGHT, WORLD_WIDTH};
+
+/// 区块边长（格）：取世界边长本身，demo 世界因此正好是单个区块（与
+/// `WORLD_WIDTH == WORLD_HEIGHT` 一致）——理由与 `p3_acceptance` 同一
+/// 常量选择一致，见其 `spawn.rs` 文档。
+const ZONE_SPAN: u32 = WORLD_WIDTH;
+
+fn build_zone_layout() -> ZoneLayout {
+    let zone_count = TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+    ZoneLayout::new(ZONE_SPAN, zone_count).expect("ZONE_SPAN 满足全部对齐与跨度约束")
+}
 
 /// 示例 mod 注册的熔岩地板 id。
 pub(crate) const LAVA_FLOOR_ID: &str = "examplemod:lava_floor";
@@ -85,27 +95,34 @@ pub(crate) fn build_demo_world() -> DemoWorld {
         .get(&NamespacedId::parse(LAVA_FLOOR_ID).expect("字面量恒合法"))
         .map(TerrainKind::from_index);
 
-    let size = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("演示世界尺寸为非零常量");
-    let mut world = WorldState::new(size, &GenParams::default(), &terrain_ids, table)
-        .expect("演示世界尺寸满足生成入口的全部约束");
+    let layout = build_zone_layout();
+    let placeholder_spawn = layout.tile_size().wrap(0, 0);
+    let mut world = WorldState::new(
+        layout,
+        &GenParams::default(),
+        &terrain_ids,
+        table,
+        placeholder_spawn,
+    )
+    .expect("演示世界布局满足生成入口的全部约束");
     world.advance(INITIAL_CLOCK_TICKS);
 
     // 交叉引用校验（规格 §10.6 六阶段的最后一步）：整张地图上出现的
     // 每一个地形索引，此刻是否都能在 world.terrain_table 里查到定义。
     // 这一步必须放在铺熔岩地板**之后**才有意义——校验的正是「刚刚
     // 手动写进网格的那些索引」也在表里登记过，不是走个过场。
-    let player_pos = find_walkable_near(
-        &world.terrain,
-        &world.terrain_table,
-        world.size.wrap(world.size.width() as i32 / 2, 1),
-    );
+    let player_pos = find_walkable_near(&world, world.size.wrap(world.size.width() as i32 / 2, 1));
     if let Some(lava) = lava_kind {
         place_lava_patch(&mut world, player_pos, lava);
     }
+    // WorldState::hash 面对同一处架构变化选择「只校验常驻区块」，见其
+    // 文档；这里同理改用 SurfaceStore::validate_resident——demo 世界是
+    // 单区块布局，此刻整体常驻（WorldState::new 的出生点邻域预热已
+    // 覆盖），实际校验范围与迁移前遍历整个世界等价。
     report.cross_validate = Some(
         world
-            .terrain_table
-            .validate_grid(&world.terrain)
+            .terrain
+            .validate_resident(&world.terrain_table)
             .map_err(|err| err.to_string()),
     );
 
@@ -145,15 +162,24 @@ fn place_lava_patch(world: &mut WorldState, origin: TorusPos, lava: TerrainKind)
 }
 
 /// 该地形是否可站立。
-fn is_walkable(grid: &ChunkGrid, table: &TerrainTable, pos: TorusPos) -> bool {
-    !grid.terrain_at(pos).blocks_move(table)
+///
+/// # 为什么接受 `&WorldState`（两级坐标系重写，任务 11）
+///
+/// 见 `p2_acceptance::spawn::is_spawnable` 文档同一节：demo 世界是
+/// 单区块布局（[`ZONE_SPAN`] = 世界边长），`WorldState::new` 自带的
+/// 出生点邻域预热已经让它整体常驻，`.expect(..)` 因此总能成立。
+fn is_walkable(world: &WorldState, pos: TorusPos) -> bool {
+    let kind = world
+        .terrain_at(pos)
+        .expect("demo 世界是单区块布局，WorldState::new 的出生点邻域预热已让它整体常驻");
+    !kind.blocks_move(&world.terrain_table)
 }
 
 /// 从 `target` 起按环逐圈向外搜索一格可站立的地形——与 p2/p3_acceptance
 /// 的 `find_spawn`/`find_walkable_near` 同一算法。
-fn find_walkable_near(grid: &ChunkGrid, table: &TerrainTable, target: TorusPos) -> TorusPos {
-    let world = grid.world();
-    if is_walkable(grid, table, target) {
+fn find_walkable_near(world: &WorldState, target: TorusPos) -> TorusPos {
+    let size = world.size;
+    if is_walkable(world, target) {
         return target;
     }
     for radius in 1..=SEARCH_MAX_RADIUS {
@@ -162,8 +188,8 @@ fn find_walkable_near(grid: &ChunkGrid, table: &TerrainTable, target: TorusPos) 
                 if dx.abs().max(dy.abs()) != radius {
                     continue;
                 }
-                let pos = world.wrap(target.x() + dx, target.y() + dy);
-                if is_walkable(grid, table, pos) {
+                let pos = size.wrap(target.x() + dx, target.y() + dy);
+                if is_walkable(world, pos) {
                     return pos;
                 }
             }
@@ -288,13 +314,11 @@ mod tests {
             .pos;
 
         // Assert
-        assert!(
-            !demo
-                .world
-                .terrain
-                .terrain_at(player_pos)
-                .blocks_move(&demo.world.terrain_table)
-        );
+        let kind = demo
+            .world
+            .terrain_at(player_pos)
+            .expect("demo 世界是单区块布局，已整体常驻");
+        assert!(!kind.blocks_move(&demo.world.terrain_table));
     }
 
     #[test]
@@ -316,16 +340,11 @@ mod tests {
         let east_neighbor = demo.world.size.wrap(player_pos.x() + 1, player_pos.y());
 
         // Assert
-        assert_eq!(
-            demo.world.terrain.terrain_at(east_neighbor),
-            demo.lava_kind.unwrap()
-        );
-        assert!(
-            !demo
-                .world
-                .terrain
-                .terrain_at(east_neighbor)
-                .blocks_move(&demo.world.terrain_table)
-        );
+        let kind = demo
+            .world
+            .terrain_at(east_neighbor)
+            .expect("demo 世界是单区块布局，已整体常驻");
+        assert_eq!(kind, demo.lava_kind.unwrap());
+        assert!(!kind.blocks_move(&demo.world.terrain_table));
     }
 }

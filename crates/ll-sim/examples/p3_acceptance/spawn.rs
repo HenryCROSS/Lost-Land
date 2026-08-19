@@ -9,14 +9,26 @@ use ll_core::ident::{Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
 use ll_sim::timeline::Timeline;
-use ll_world::chunk::ChunkGrid;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::naming::NamingRules;
 use ll_world::state::WorldState;
-use ll_world::terrain::{BaseTerrainIds, TerrainTable, base_terrain_fixture};
+use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
+use ll_world::zone::ZoneLayout;
 
 use crate::layout::{WORLD_HEIGHT, WORLD_WIDTH};
+
+/// 区块边长（格）：取世界边长本身，demo 世界因此正好是单个区块——
+/// 128 满足全部对齐（16/32 的整数倍）与视口跨度约束，见
+/// `ll_world::zone::ZoneLayout::new` 文档。单区块布局下
+/// `WorldState::new` 自带的出生点邻域预热（半径 2，环绕回同一个区块）
+/// 已经让整个 demo 世界从构造起就常驻，不需要额外调用 `warm_all`。
+const ZONE_SPAN: u32 = WORLD_WIDTH;
+
+fn build_zone_layout() -> ZoneLayout {
+    let zone_count = TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+    ZoneLayout::new(ZONE_SPAN, zone_count).expect("ZONE_SPAN 满足全部对齐与跨度约束")
+}
 
 /// 出生点搜索的最大环半径（格）。
 ///
@@ -120,30 +132,47 @@ pub(crate) fn demo_naming_rules() -> NamingRules {
 /// `base_terrain_fixture`——那会是一个不同的 `Interner`，索引虽因固定
 /// 注册顺序而恰好数值相同，仍不应该在类型层面制造这种隐晦的耦合。
 pub(crate) fn build_world() -> (WorldState, BaseTerrainIds) {
-    let size = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("演示世界尺寸为非零常量");
+    let layout = build_zone_layout();
     let (terrain_ids, terrain_table) = base_terrain_fixture();
-    let mut world = WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
-        .expect("演示世界尺寸满足生成入口的全部约束");
+    let spawn = layout.tile_size().wrap(0, 0);
+    let mut world = WorldState::new(
+        layout,
+        &GenParams::default(),
+        &terrain_ids,
+        terrain_table,
+        spawn,
+    )
+    .expect("演示世界布局满足生成入口的全部约束");
     world.advance(crate::layout::INITIAL_CLOCK_TICKS);
     (world, terrain_ids)
 }
 
 /// 该地形是否可站立（不阻挡移动）。
-fn is_walkable(grid: &ChunkGrid, table: &TerrainTable, pos: TorusPos) -> bool {
-    !grid.terrain_at(pos).blocks_move(table)
+///
+/// # 为什么接受 `&WorldState`（两级坐标系重写，任务 11）
+///
+/// 见 `ll-world` 的 `p2_acceptance::spawn::is_spawnable` 文档同一节：
+/// `terrain` 换成 `SurfaceStore` 之后不再有单一「一张网格」可传，本
+/// demo 世界是单个区块（[`ZONE_SPAN`] = 世界边长），`WorldState::new`
+/// 自带的出生点邻域预热已经让它整体常驻，`.expect(..)` 因此总能成立。
+fn is_walkable(world: &WorldState, pos: TorusPos) -> bool {
+    let kind = world
+        .terrain_at(pos)
+        .expect("demo 世界是单区块布局，WorldState::new 的出生点邻域预热已让它整体常驻");
+    !kind.blocks_move(&world.terrain_table)
 }
 
 /// 从 `target` 开始按环逐圈向外搜索一格可站立的地形——与
 /// `p2_acceptance::spawn::find_spawn` 同一算法，只是把「必须从世界中心
 /// 出发」泛化成「从任意目标点出发」，供玩家与三个敌人共用同一套出生点
 /// 搜索逻辑。
-fn find_walkable_near(grid: &ChunkGrid, table: &TerrainTable, target: TorusPos) -> TorusPos {
-    let world = grid.world();
-    if is_walkable(grid, table, target) {
+fn find_walkable_near(world: &WorldState, target: TorusPos) -> TorusPos {
+    let size = world.size;
+    if is_walkable(world, target) {
         return target;
     }
     for radius in 1..=SEARCH_MAX_RADIUS {
-        if let Some(pos) = search_ring(grid, table, world, target, radius) {
+        if let Some(pos) = search_ring(world, size, target, radius) {
             return pos;
         }
     }
@@ -152,9 +181,8 @@ fn find_walkable_near(grid: &ChunkGrid, table: &TerrainTable, target: TorusPos) 
 
 /// 在距 `center` 切比雪夫距离恰为 `radius` 的环上寻找第一个可站立格。
 fn search_ring(
-    grid: &ChunkGrid,
-    table: &TerrainTable,
-    world: TorusSize,
+    world: &WorldState,
+    size: TorusSize,
     center: TorusPos,
     radius: i32,
 ) -> Option<TorusPos> {
@@ -163,8 +191,8 @@ fn search_ring(
             if dx.abs().max(dy.abs()) != radius {
                 continue;
             }
-            let pos = world.wrap(center.x() + dx, center.y() + dy);
-            if is_walkable(grid, table, pos) {
+            let pos = size.wrap(center.x() + dx, center.y() + dy);
+            if is_walkable(world, pos) {
                 return Some(pos);
             }
         }
@@ -225,8 +253,7 @@ pub(crate) fn spawn_actors(world: &mut WorldState, timeline: &mut Timeline) -> S
     let mut interner = Interner::new();
 
     let player_pos = find_walkable_near(
-        &world.terrain,
-        &world.terrain_table,
+        world,
         world
             .size
             .wrap(world.size.width() as i32 / 2, PLAYER_SPAWN_TARGET_Y),
@@ -244,8 +271,7 @@ pub(crate) fn spawn_actors(world: &mut WorldState, timeline: &mut Timeline) -> S
     );
 
     let tank_pos = find_walkable_near(
-        &world.terrain,
-        &world.terrain_table,
+        world,
         world.size.wrap(
             player_pos.x() + ENEMY_TANK_OFFSET.0,
             player_pos.y() + ENEMY_TANK_OFFSET.1,
@@ -264,8 +290,7 @@ pub(crate) fn spawn_actors(world: &mut WorldState, timeline: &mut Timeline) -> S
     );
 
     let medium_pos = find_walkable_near(
-        &world.terrain,
-        &world.terrain_table,
+        world,
         world.size.wrap(
             player_pos.x() + ENEMY_MEDIUM_OFFSET.0,
             player_pos.y() + ENEMY_MEDIUM_OFFSET.1,
@@ -284,8 +309,7 @@ pub(crate) fn spawn_actors(world: &mut WorldState, timeline: &mut Timeline) -> S
     );
 
     let fast_pos = find_walkable_near(
-        &world.terrain,
-        &world.terrain_table,
+        world,
         world.size.wrap(
             player_pos.x() + ENEMY_SEAM_OFFSET.0,
             player_pos.y() + ENEMY_SEAM_OFFSET.1,
@@ -312,40 +336,48 @@ pub(crate) fn spawn_actors(world: &mut WorldState, timeline: &mut Timeline) -> S
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ll_world::generate::generate_terrain;
-
-    fn test_grid(terrain_ids: &BaseTerrainIds) -> ChunkGrid {
-        let world = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("demo 世界尺寸满足约束");
-        generate_terrain(world, &GenParams::default(), terrain_ids)
-            .expect("demo 世界尺寸满足生成入口约束")
-    }
 
     #[test]
     fn 出生点搜索结果可以站立() {
         // Arrange
-        let (terrain_ids, table) = base_terrain_fixture();
-        let grid = test_grid(&terrain_ids);
-        let world = grid.world();
-        let target = world.wrap(world.width() as i32 / 2, PLAYER_SPAWN_TARGET_Y);
+        let (world, _terrain_ids) = build_world();
+        let size = world.size;
+        let target = size.wrap(size.width() as i32 / 2, PLAYER_SPAWN_TARGET_Y);
 
         // Act
-        let pos = find_walkable_near(&grid, &table, target);
+        let pos = find_walkable_near(&world, target);
 
         // Assert
-        assert!(is_walkable(&grid, &table, pos));
+        assert!(is_walkable(&world, pos));
     }
 
     #[test]
     fn 世界几乎全是深水时出生点搜索仍会终止() {
-        // Arrange：ChunkGrid::new 本就把全部格子初始化为深水（阻挡移动）。
-        let (terrain_ids, table) = base_terrain_fixture();
-        let world = TorusSize::new(WORLD_WIDTH, WORLD_HEIGHT).expect("demo 世界尺寸满足约束");
-        let grid =
-            ChunkGrid::new(world, terrain_ids.deep_water).expect("demo 世界尺寸满足构造前置条件");
+        // Arrange：把整个（单区块）世界覆写成深水（阻挡移动）。
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        let layout = build_zone_layout();
+        let spawn = layout.tile_size().wrap(0, 0);
+        let mut world = WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("demo 世界布局满足全部构造前置条件");
+        let size = world.size;
+        for y in 0..size.height() as i32 {
+            for x in 0..size.width() as i32 {
+                world
+                    .terrain
+                    .set_terrain(size.wrap(x, y), terrain_ids.deep_water);
+            }
+        }
 
-        // Act & Assert：函数确实返回了（没有死循环/panic），且坐标合法。
-        let pos = find_walkable_near(&grid, &table, world.wrap(0, 0));
-        let _ = grid.terrain_at(pos);
+        // Act & Assert：函数确实返回了（没有死循环/panic），且坐标合法
+        // （产出越界坐标会让 terrain_at 返回 None 而不是 panic）。
+        let pos = find_walkable_near(&world, size.wrap(0, 0));
+        assert!(world.terrain_at(pos).is_some());
     }
 
     #[test]

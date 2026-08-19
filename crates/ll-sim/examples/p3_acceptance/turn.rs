@@ -316,11 +316,13 @@ fn ai_intent(world: &WorldState, actor: EntityId, player: EntityId) -> Intent {
     let dest = world
         .size
         .wrap(agent.pos.x() + step_x, agent.pos.y() + step_y);
-    if world
-        .terrain
+    // 只读查询：demo 世界是单区块布局，WorldState::new 的出生点邻域
+    // 预热已让它整体常驻，见 `spawn::is_walkable` 文档同一节。未常驻
+    // 时保守地原地等待，与「相邻格不可通行」走同一条分支。
+    let blocked = world
         .terrain_at(dest)
-        .blocks_move(&world.terrain_table)
-    {
+        .is_none_or(|kind| kind.blocks_move(&world.terrain_table));
+    if blocked {
         return Intent::Wait { actor };
     }
     Intent::Move { actor, dir }
@@ -376,12 +378,21 @@ mod tests {
     use ll_world::entity::{Agent, BaseStats};
     use ll_world::generate::GenParams;
     use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
+    use ll_world::zone::ZoneLayout;
 
     fn test_world() -> (WorldState, BaseTerrainIds) {
-        let size = TorusSize::new(64, 64).expect("64x64 满足整除约束");
+        let zone_count = TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+        let layout = ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束");
         let (terrain_ids, terrain_table) = base_terrain_fixture();
-        let world = WorldState::new(size, &GenParams::default(), &terrain_ids, terrain_table)
-            .expect("测试尺寸满足全部构造前置条件");
+        let spawn = layout.tile_size().wrap(0, 0);
+        let world = WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件");
         (world, terrain_ids)
     }
 
