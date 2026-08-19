@@ -2,7 +2,7 @@
 
 **冻结于** 2026-08-17。**实现阶段** 需在[世界历史生成](world-history.md)（约 P7，[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P6 顺移为 P7）动工前定案——它是该阶段明确列出的三件「必须提前做」的事之一,但类型本身在更早的 P4（内容注册表）落地也不构成问题。
 
-**落地状态**：纯设计,尚无代码。已核实：`crates/ll-core/src/ident.rs` 只有 `NamespacedId` 与 `ContentIndex`（见「问题的真面目」一节引用),本文档提出的 `WorldId`、`OrgInstance` 均**未落地**。`Affiliation.org: ContentIndex`（`crates/ll-world/src/entity/affiliation.rs`,已落地）正是本文档要处理的问题的现状——它把两种不同的东西用同一个类型表示,详见下文。
+**落地状态**（2026-08-19 复核更正——原文「纯设计,尚无代码」已过期）：`WorldId` 已随坐标系重写批次落地（`crates/ll-core/src/ident.rs`，含 `next`/`get` 与三条单元测试），是当时 `SpaceId` 需要而顺带交付的。`OrgInstance` 仍**未落地**——本文档「势力/家族/聚落」相关部分（二、四节）仍是纯设计。`Affiliation.org: ContentIndex`（`crates/ll-world/src/entity/affiliation.rs`,已落地）依然是本文档要处理的问题的现状——它把两种不同的东西用同一个类型表示,详见下文。
 
 ---
 

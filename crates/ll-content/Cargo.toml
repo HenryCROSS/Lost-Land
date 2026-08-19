@@ -1,0 +1,38 @@
+[package]
+name = "ll-content"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的存档格式与内容加载层：存档头/主体读写、schema 迁移、ContentIndex 映射表接线"
+
+[lints]
+workspace = true
+
+[dependencies]
+# 依赖方向 ll-core ← … ← ll-world ← ll-sim ← ll-script ← ll-mod ←
+# ll-content（规格 §5）：ll-content 是依赖链最上游的消费者。本任务
+# （task 1，存档头骨架 + 迁移框架）本身不读取 ll-core/ll-mod 的任何
+# 类型——header.rs 的核心约束就是不依赖 ContentIndex（见其模块文档），
+# migration.rs 只操作裸字节。真正需要 ll-core（NamespacedId 解析）与
+# ll-mod（Registry 快照/重建）是任务 2（ContentIndex 映射表接线），
+# 依赖声明留给那次提交一并加入,避免这里出现声明了却没人用的依赖。
+serde = { version = "1", features = ["derive"] }
+# 存档头是明文 JSON（规格 §11.2「存档列表界面只读头部」，见 header.rs
+# 模块文档）——header 与 migration 框架本身用它做序列化往返测试。
+serde_json = "1"
+# 存档主体编码，规格 §11.2 指定。本任务（task 1/2）只搭骨架，不接入
+# 真实读写（那是任务 9），这里先声明依赖并核实
+# `cargo deny check` 许可证扫描通过，机制留给任务 9 落地。
+#
+# 显式关闭默认 feature：postcard 的 `default = ["heapless-cas"]` 会拉入
+# `heapless`，其依赖链上的 `atomic-polyfill` 触发 `cargo deny check`
+# 的 unmaintained 公告（RUSTSEC-2023-0089，见
+# knowledge/licenses/2026-08-19-ll-content-postcard-lz4-scan.md）。本
+# 项目是纯桌面应用，不需要 `heapless` 面向的 no_std 场景，改用
+# `use-std`（`serde/std` + `alloc`）即可拿到 `to_allocvec`/`from_bytes`
+# 这类基于 `Vec`/`std` 的 API，同时彻底避开这条依赖链。
+postcard = { version = "1", default-features = false, features = ["use-std"] }
+lz4_flex = "0.11"
+
+[dev-dependencies]
+proptest.workspace = true
