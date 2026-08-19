@@ -36,7 +36,7 @@
 | 12 | 数据格式 | 用户设置 TOML；游戏数据表直接写为 Steel `.scm`；资产元数据 JSON；本地化 Fluent `.ftl` |
 | 13 | 存档格式 | 明文 JSON 头部 + `postcard` 二进制主体 + `lz4_flex` 压缩 + schema 版本迁移链 |
 | 14 | i18n | 首发简中 + 英文，日语预留空包；字体思源黑体 Source Han Sans（Adobe 发行版，OFL-1.1） |
-| 15 | Mod | **本体即 Mod（玩法层内成立）**：本体与 mod 走完全相同的注册表 API，本体无特权通道 [已过时 2026-08-19：本行是决策清单的摘要,未跟着 §10.3 一起改;完整限定语与判据见 §10.3 与 [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)] |
+| 15 | Mod | **本体即 Mod（玩法层内成立）**：本体与 mod 走完全相同的注册表 API，本体无特权通道；引擎层（渲染、物理、寻路、FOV、光照、时间轴队列机制）不受此约束，本体与 mod 都碰不到。完整判据见 §10.3 与 [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md) |
 | 16 | 内容 ID | 命名空间字符串 `lostland:fireball`；装载时映射为紧凑整数索引 |
 | 17 | Mod 形态 | 仅允许 Steel 脚本 + 资产，**禁止原生 dll** |
 | 18 | UI | 双轨：游戏内自研像素 UI（`ll-ui`）；工具链用 `egui`（`tools/`） |
