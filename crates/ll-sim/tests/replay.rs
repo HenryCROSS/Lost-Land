@@ -104,6 +104,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         race,
         luck: 0,
         current_space: Space::surface(player_zone, ll_core::ident::ContentIndex::default()),
+        script_state: std::collections::BTreeMap::new(),
     });
     let enemy_pos = world.size.wrap(20, 20);
     let (enemy_zone, _) = world.terrain.layout().tile_to_zone(enemy_pos);
@@ -119,6 +120,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         race,
         luck: 0,
         current_space: Space::surface(enemy_zone, ll_core::ident::ContentIndex::default()),
+        script_state: std::collections::BTreeMap::new(),
     });
 
     (world, player, enemy)
@@ -257,7 +259,19 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 核验方法）。`affiliations`/`goals` 在这份测试夹具里恒为空
 /// `Vec`（`setup` 从不填充），只贡献一次长度为零的写入，真正让摘要
 /// 改变的是 `stats`/`profession`/`race`/`luck` 四项标量。
-const EXPECTED_REPLAY_DIGEST: u64 = 10_420_841_280_615_735_009;
+///
+/// # 第四次重冻的原因（脚本状态存储批次，裁定 P5-9）
+///
+/// `WorldState::hash` 新混入 `player_entity`（`Option<EntityId>`）与
+/// `global_script_state`——本文件的 `setup` 从不设置 `player_entity`
+/// （恒 `None`）、也从不写脚本状态（恒空），但混入本身仍然改变字节流
+/// （`write_optional_entity` 恒写一个判别字节，`write_script_state`
+/// 恒写一个长度字节），摘要数值随之改变，与前三次重冻同一个模式：
+/// 断言结构不变，只是 `hash()` 的输入构造方式变了。人工核验：把
+/// `write_optional_entity`/`write_script_state` 两处新增调用临时注释
+/// 掉重新跑这条测试，摘要回到本次重冻之前的旧常量
+/// `10_420_841_280_615_735_009`。
+const EXPECTED_REPLAY_DIGEST: u64 = 54_795_308_315_924_513;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

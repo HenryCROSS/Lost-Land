@@ -225,6 +225,7 @@ fn spawn_player(world: &mut WorldState, pos: TorusPos) -> EntityId {
             zone,
             ll_core::ident::ContentIndex::default(),
         ),
+        script_state: std::collections::BTreeMap::new(),
     })
 }
 

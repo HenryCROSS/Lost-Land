@@ -421,6 +421,7 @@ mod tests {
                 zone,
                 ll_core::ident::ContentIndex::default(),
             ),
+            script_state: std::collections::BTreeMap::new(),
         })
     }
 

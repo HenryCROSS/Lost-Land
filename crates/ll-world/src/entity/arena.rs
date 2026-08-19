@@ -133,6 +133,26 @@ impl<T> Arena<T> {
         })
     }
 
+    /// 依次访问全部存活实体，附带各自的 [`EntityId`]。
+    ///
+    /// 供需要「这份数据属于哪个具体实体」的调用方使用——例如脚本状态
+    /// 存储（`ll_world::script_state`）的配额判定需要按实体过滤某个
+    /// mod 的每实体存储占用，仅有 [`Self::iter`] 拿不到实体标识，无法
+    /// 区分「这条记录属于哪个实体」。下标本身即槽位下标，世代号取自
+    /// 该槽位当前的 `Occupied` 状态——与 [`Self::spawn`]/[`Self::get`]
+    /// 使用的是同一份世代号账本，不会出现下标相同但世代不一致的情况。
+    pub fn iter_with_id(&self) -> impl Iterator<Item = (EntityId, &T)> {
+        self.slots
+            .iter()
+            .enumerate()
+            .filter_map(|(index, slot)| match slot {
+                Slot::Occupied { generation, value } => {
+                    Some((EntityId::new(index as u32, *generation), value))
+                }
+                _ => None,
+            })
+    }
+
     /// 存活实体数量（不含空闲与已弃用槽位）。
     pub fn len(&self) -> usize {
         self.iter().count()
@@ -284,6 +304,24 @@ mod tests {
 
         // Assert
         assert!(!destroyed);
+    }
+
+    #[test]
+    fn iter_with_id产出的标识可以用来查回同一个值() {
+        // Arrange：混入一次销毁，确保下标复用的场景也被覆盖——复用后
+        // 的世代号必须与 iter_with_id 报出的世代号一致，否则用它反查
+        // 会失败。
+        let mut arena = Arena::new();
+        let doomed = arena.spawn(1);
+        arena.despawn(doomed);
+        let survivor = arena.spawn(2);
+
+        // Act
+        let seen: Vec<(EntityId, i32)> = arena.iter_with_id().map(|(id, v)| (id, *v)).collect();
+
+        // Assert
+        assert_eq!(seen, vec![(survivor, 2)]);
+        assert_eq!(arena.get(seen[0].0), Some(&2));
     }
 
     #[test]

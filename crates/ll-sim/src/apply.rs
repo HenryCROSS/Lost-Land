@@ -1,5 +1,6 @@
 //! `apply`：把一个 [`Effect`] 落到 [`WorldState`] 上的唯一入口。
 
+use ll_world::script_state::ScriptStateTarget;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 
@@ -53,45 +54,79 @@ use crate::effect::Effect;
 /// 3. 目标不存在本身不是异常状况（见规则 2 的场景），是结算并发/时序
 ///    下的正常可能性，不需要中断整批 `Effect` 的应用。
 pub fn apply(world: &mut WorldState, effect: &Effect) {
-    match *effect {
+    // 不再 `match *effect`（`Effect` 因 `SetScriptState` 携带 `Vec` 而
+    // 不再是 `Copy`，见其文档）——改为按引用匹配，Copy 子字段用 `*`
+    // 显式取值，与既有六个分支的赋值写法保持一致；`SetScriptState`
+    // 携带的 `Vec`/`String`/`ScriptValue` 本身不是 `Copy`，逐条 `clone`
+    // 写入，见该分支注释。
+    match effect {
         Effect::MoveTo { actor, pos } => {
-            if let Some(agent) = world.actors.get_mut(actor) {
-                agent.pos = pos;
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.pos = *pos;
             }
         }
         Effect::Damage { target, amount } => {
-            if let Some(agent) = world.actors.get_mut(target) {
+            if let Some(agent) = world.actors.get_mut(*target) {
                 agent.health -= amount;
             }
         }
         Effect::Kill { target } => {
-            world.actors.despawn(target);
+            world.actors.despawn(*target);
         }
         Effect::ScheduleNext { actor, at } => {
-            if let Some(agent) = world.actors.get_mut(actor) {
-                agent.next_action_at = at;
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.next_action_at = *at;
             }
         }
         Effect::SetTerrain { pos, kind } => {
-            world.terrain.set_terrain(pos, kind);
+            world.terrain.set_terrain(*pos, *kind);
         }
         Effect::AdjustWallet { actor, delta } => {
-            if let Some(agent) = world.actors.get_mut(actor) {
+            if let Some(agent) = world.actors.get_mut(*actor) {
                 agent.wallet += delta;
             }
         }
         Effect::ChangeSpace { actor, space } => {
-            if let Some(agent) = world.actors.get_mut(actor) {
-                agent.current_space = space;
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.current_space = *space;
             }
             // 与常驻预算的钉住状态同步（裁定 CS-3）——这两行不是
             // 「规则判断」，是把同一个决定（目标空间是什么）落到
             // WorldState 已有的两处状态上，见 Effect::ChangeSpace 文档。
             match space {
                 Space::Interior { id, .. } => {
-                    world.enter_interior(id);
+                    world.enter_interior(*id);
                 }
-                Space::Surface { .. } => world.exit_interior(),
+                Space::Surface { .. } => {
+                    world.exit_interior();
+                }
+            }
+        }
+        Effect::SetScriptState { writes } => {
+            // 逐条写入，各自落到全局或对应实体的每实体存储——实体已
+            // 不存在时静默跳过，与本函数其余分支「目标实体不存在时忽略
+            // 不报错」的既有纪律一致（见本函数文档）。这里不做任何
+            // 判断（配额、命名空间隔离全部已经在 `ll-script` 侧的
+            // `state-set!`/`entity-state-set!` 完成，进了这批 `writes`
+            // 就是已经通过校验、只等落盘的数据），符合「apply 不含任何
+            // 游戏逻辑」的纪律。
+            for write in writes {
+                match write.target {
+                    ScriptStateTarget::Global => {
+                        world.global_script_state.insert(
+                            (write.mod_namespace.clone(), write.key.clone()),
+                            write.value.clone(),
+                        );
+                    }
+                    ScriptStateTarget::Entity(entity) => {
+                        if let Some(agent) = world.actors.get_mut(entity) {
+                            agent.script_state.insert(
+                                (write.mod_namespace.clone(), write.key.clone()),
+                                write.value.clone(),
+                            );
+                        }
+                    }
+                }
             }
         }
     }
@@ -156,6 +191,7 @@ mod tests {
                 zone,
                 ll_core::ident::ContentIndex::default(),
             ),
+            script_state: std::collections::BTreeMap::new(),
         }
     }
 
@@ -354,5 +390,113 @@ mod tests {
 
         // Act & Assert
         assert_eq!(forward.hash(), backward.hash());
+    }
+
+    #[test]
+    fn setscriptstate效果写入全局存储() {
+        // 裁定 P5-1 的直接验收：脚本状态写入经由 Effect::SetScriptState
+        // 走 apply 这唯一写入口落进 WorldState.global_script_state。
+        // Arrange
+        let mut world = test_world();
+        let effect = Effect::SetScriptState {
+            writes: vec![ll_world::script_state::ScriptStateWrite {
+                target: ll_world::script_state::ScriptStateTarget::Global,
+                mod_namespace: "lostland".to_string(),
+                key: "reputation".to_string(),
+                value: ll_world::script_state::ScriptValue::Int(100),
+            }],
+        };
+
+        // Act
+        apply(&mut world, &effect);
+
+        // Assert
+        assert_eq!(
+            world
+                .global_script_state
+                .get(&("lostland".to_string(), "reputation".to_string())),
+            Some(&ll_world::script_state::ScriptValue::Int(100))
+        );
+    }
+
+    #[test]
+    fn setscriptstate效果写入指定实体的每实体存储() {
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let actor = world.actors.spawn(agent);
+        let effect = Effect::SetScriptState {
+            writes: vec![ll_world::script_state::ScriptStateWrite {
+                target: ll_world::script_state::ScriptStateTarget::Entity(actor),
+                mod_namespace: "lostland".to_string(),
+                key: "cooldown".to_string(),
+                value: ll_world::script_state::ScriptValue::Int(5),
+            }],
+        };
+
+        // Act
+        apply(&mut world, &effect);
+
+        // Assert
+        let stored = world
+            .actors
+            .get(actor)
+            .expect("刚生成的实体必然存在")
+            .script_state
+            .get(&("lostland".to_string(), "cooldown".to_string()));
+        assert_eq!(stored, Some(&ll_world::script_state::ScriptValue::Int(5)));
+    }
+
+    #[test]
+    fn setscriptstate效果对已销毁实体的写入静默忽略而不崩溃() {
+        // 与本文件其余分支「目标实体不存在时忽略不报错」的既有纪律
+        // 一致——见本文件 apply 函数文档。
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let actor = world.actors.spawn(agent);
+        world.actors.despawn(actor);
+        let effect = Effect::SetScriptState {
+            writes: vec![ll_world::script_state::ScriptStateWrite {
+                target: ll_world::script_state::ScriptStateTarget::Entity(actor),
+                mod_namespace: "lostland".to_string(),
+                key: "cooldown".to_string(),
+                value: ll_world::script_state::ScriptValue::Int(5),
+            }],
+        };
+
+        // Act & Assert：不应崩溃。
+        apply(&mut world, &effect);
+    }
+
+    #[test]
+    fn 一条setscriptstate效果可以携带多组键值() {
+        // 裁定 P5-1 的性能解法：一次决策期间的多次写入收集成一条
+        // Effect 携带多组键值一次性发出——这里验证 apply 会把批内每一
+        // 条都落地，不只处理第一条。
+        // Arrange
+        let mut world = test_world();
+        let effect = Effect::SetScriptState {
+            writes: vec![
+                ll_world::script_state::ScriptStateWrite {
+                    target: ll_world::script_state::ScriptStateTarget::Global,
+                    mod_namespace: "lostland".to_string(),
+                    key: "a".to_string(),
+                    value: ll_world::script_state::ScriptValue::Int(1),
+                },
+                ll_world::script_state::ScriptStateWrite {
+                    target: ll_world::script_state::ScriptStateTarget::Global,
+                    mod_namespace: "lostland".to_string(),
+                    key: "b".to_string(),
+                    value: ll_world::script_state::ScriptValue::Int(2),
+                },
+            ],
+        };
+
+        // Act
+        apply(&mut world, &effect);
+
+        // Assert
+        assert_eq!(world.global_script_state.len(), 2);
     }
 }

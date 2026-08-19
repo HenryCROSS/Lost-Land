@@ -2,7 +2,7 @@
 
 - **冻结时间**：2026-08-18
 - **基线提交**：`df4e5c6`（写作本文档时的 HEAD，工作区干净，496 测试全绿）
-- **状态**：纯设计，不要求本次实现——本文档只把接口形状、语义与配套策略设计到能直接照着写代码的程度
+- **状态**：**已落地**（P5 批次 D，2026-08-19）——`ScriptValue`/配额/孤儿保留/命名空间隔离/VM 强制重建均已实现，见 `crates/ll-world/src/script_state.rs`、`crates/ll-script/src/api/state.rs`、`crates/ll-script/src/host.rs::rebuild_all_engines_after_load`。落地过程中发现并修订了本文档 8.2 节「直接写穿」的表述——与规格 §4 C1 字面冲突，裁定 P5-1 改为经 `apply` 写入，本文档 8.2 节已同步更新为修订后的表述，不再是原文的错误论证。其余章节（值类型、命名空间隔离、配额数字、孤儿保留策略、VM 重建时机）按原设计原样落地，未发现其他需要修订之处。
 - **落地依赖**：`crates/ll-world/src/state.rs`（`WorldState` 新增字段）、`crates/ll-world/src/entity/agent.rs`（`Agent` 新增字段）、`crates/ll-script/src/api/`（新增模块）、`crates/ll-world/src/entity/arena.rs`（`Arena<Agent>` 补齐 serde——本文档依赖这条既有债务被还清，见第三节「依赖前提」）
 - **前置阅读**：[脚本层数据句柄与批量查询](script-entity-handles-and-batch-queries.md)（`ScriptEntityHandle`/`Custom` trait 防伪造机制，本文档直接复用）、[0018](../decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)（引擎层/玩法层边界）、[0016](../decisions/0016-mod-performance-tiers-by-declaration.md)/[0017](../decisions/0017-tiered-declarations-materialize-columnar.md)（性能分档与列式物化）、[0009](../decisions/0009-derive-by-default-store-only-deviation.md)（默认派生，只存偏差）、[0010](../decisions/0010-single-source-of-truth-for-daylight.md)（单一真相源）、[身份与 ID 空间](identity-and-ids.md)（`WorldId`/`ContentIndex`、存档与 mod 集合）
 - **配套 ADR**：[0019 — 被禁能力必须有替代品或理由](../decisions/0019-denied-capability-needs-substitute-or-justification.md)——本文档是该 ADR 通则的第二个具名范例（第一个是 `DetRng` 替代 OS 随机源）；[0020 — 脚本内部允许浮点，边界类型把关](../decisions/0020-scripts-may-use-floats-internally-boundary-type-gated.md)——本文档 3.1 节 `ScriptValue` 排除浮点变体，正是 0020 所要求的「`register_fn` 边界类型把关」在脚本状态存储这个具体 API 上的落地
@@ -204,14 +204,20 @@ pub enum ScriptValue {
 
 **脚本状态因此必须存,这不是对 0009 的违反,是 0009 自己写明的适用边界之外的东西**——0009 管的是"能重算就不存"的那一类数据（钱包基线、姓名、关系默认值),脚本状态从一开始就不属于这一类。两者不冲突,是互补关系:0009 减少了需要存储的数据量,脚本状态存储解决"剩下这部分真正没法省的数据该往哪存"的问题。
 
-### 8.2 ADR 0010「单一真相源」——`WorldState` 是真相源，VM 副本是缓存，如何防止脱节
+### 8.2 ADR 0010「单一真相源」——`WorldState` 是真相源，写入必须经 `apply`（裁定 P5-1，本节已修订）
 
-[0010](../decisions/0010-single-source-of-truth-for-daylight.md) 的教训是"写了警告不等于警告会被遵守"——一份数据的两套独立定义迟早会分裂。脚本状态的真相源必须是 `WorldState`（第二节已经定下),VM 内部**不应该、也不需要**为它维护任何"缓存副本"：
+**本节原文写「直接写穿，没有中间层」，是错的——已被裁定 P5-1（P5 实现阶段）推翻。原文的论证前提是「`WorldState` 是真相源，VM 不该有自己的缓存副本」，这个前提本身没错，但推出的结论「所以脚本可以直接写穿」忽略了一个更高优先级的约束：规格 §4 C1「`apply` 是全局唯一能改世界的地方」。脚本状态就存在 `WorldState` 里（第二节已经定下）——它就是世界状态的一部分，写它就是改世界，"直接写穿"意味着存在一条不经过 `apply` 的写入路径，与 C1 的"唯一"字面冲突。**
 
-- **读**：`state-get`/`entity-state-get` 每次调用都直接查 `WorldState` 里的存储（经 `with_active_world` 同款的活跃世界指针模式,`crates/ll-script/src/api/query.rs` 已有先例),不做"VM 侧缓存一份,定期同步"这种设计——那正是 0010 教训里"另设一套定义"的现代等价物。
-- **写**：`state-set!`/`entity-state-set!` 直接写穿到 `WorldState`,没有"先写 VM 本地变量,回合结束再同步"这种中间层。脚本每次读到的都是"当前 `WorldState` 里的最新值",不存在"脚本自己以为的状态"与"真实存档状态"不一致的窗口。
+**裁定 P5-1 选择 C1 赢，理由不是教条**：脚本状态存在 `WorldState` 里，那是它存在的全部意义（要进存档）——所以它就是世界状态。绕开 `Effect` 流，重放就复现不出它：同一串 Intent 重跑，脚本存的东西不会重新出现。"脚本自己的数据"这个类别在存档意义上并不真实存在。
 
-这个设计选择的代价是每次读写都要经过一次跨界调用（[脚本层数据句柄与批量查询](script-entity-handles-and-batch-queries.md) 已经论证过单次跨界 326ns,纳秒级,可以放在热路径),换来的是"VM 重建"这件事在语义上完全无痛——VM 里从来没有值得保留的东西,重建前后脚本读到的 `state-get` 结果完全一致,因为读到的本来就是同一个 `WorldState`。
+[0010](../decisions/0010-single-source-of-truth-for-daylight.md) 的教训——"一份数据的两套独立定义迟早会分裂"——在修订后的设计里同样成立，只是落点变了：
+
+- **读**：`state-get!`/`entity-state-get!` 每次调用都直接查已提交的 `WorldState`（经 `with_active_world` 同款的活跃世界指针模式，`crates/ll-script/src/api/query.rs` 已有先例，本模块复用而非另起一套），同时优先查一眼当前决策窗口内尚未提交的待写缓冲区（保持"先写后读同一个键"在同一次决策内立即可见）——不做"VM 侧缓存一份，定期同步"这种设计，那正是 0010 教训里"另设一套定义"的现代等价物。
+- **写**：`state-set!`/`entity-state-set!` **不**直接写穿到 `WorldState`——写入先进入一个线程局部的待写缓冲区（`ll_script::api::state::PENDING_WRITES`），脚本调用窗口结束后，宿主取走整批、包成一条 `ll_sim::effect::Effect::SetScriptState`，交给既有的 `resolve → apply` 管线，`apply` 才是真正把值写进 `WorldState.global_script_state`/`Agent.script_state` 的唯一入口。
+
+**性能解法**：一次决策期间脚本可能连续调用多次 `state-set!`/`entity-state-set!`——若每次调用都发一条独立 `Effect`，会为每次写入多付一条 `Effect` 的开销。解法是**把一次决策期间的多次写入收集起来，作为一条携带多组键值的 `Effect` 一次性发出**（`Effect::SetScriptState { writes: Vec<ScriptStateWrite> }`，每条 `ScriptStateWrite` 自带目标——全局或某个具体实体——与命名空间/键/值）。`Effect` 流因此保持"每一次状态变化都经过它"的诚实，又不必为每次写入单独付一条 `Effect` 的开销。
+
+这个设计选择的代价是「写入」不再是即时生效（要等到脚本调用窗口结束、`apply` 真正跑过一次才落盘），换来的是脚本状态的写入与游戏世界其余状态的写入走的是同一条被测试、被重放机制覆盖的路径——不存在"脚本状态的变化在确定性回归测试里测不出来"这类判据缺口（`WorldState::hash()` 混入脚本状态，见五、3 节，此举本身也依赖写入确实经过了 `WorldState` 而不是活在 VM 内存里）。「VM 重建」这件事在语义上仍然无痛：VM 里从来没有值得保留的东西——待写缓冲区本身也不是"VM 状态"，是宿主（`ll-script` 这个 crate）持有的线程局部数据，与某个具体 `ScriptEngine` 实例的生命周期无关，重建 VM 不会丢失尚未提交的写入（当然，宿主的调用约定要求缓冲区在每次决策窗口结束时都被取走并提交，不允许跨越"重建"这类事件遗留待写数据）。
 
 ### 8.3 约束 C1 的修订表述
 

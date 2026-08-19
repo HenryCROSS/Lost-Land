@@ -49,7 +49,11 @@ pub fn clear_active_world() {
 /// 有 bug」这种情况的降级策略——查询函数本身不属于「脚本错误」四道
 /// 防线覆盖的范围，但同样的降级思路仍然适用：宁可给出一个明确、可预期
 /// 的默认值，也不要让整个游戏进程因为一次接线疏忽而崩溃。
-fn with_active_world<T>(default: T, f: impl FnOnce(&WorldState) -> T) -> T {
+///
+/// `pub(crate)`——`api::state`（脚本状态存储）复用同一套活跃世界指针
+/// 机制读取已提交的 `WorldState`（配额判定、`state-get!` 系列读取），
+/// 不需要另起一套 `unsafe` 裸指针基础设施。
+pub(crate) fn with_active_world<T>(default: T, f: impl FnOnce(&WorldState) -> T) -> T {
     ACTIVE_WORLD.with(|cell| {
         let ptr = cell.get();
         if ptr.is_null() {

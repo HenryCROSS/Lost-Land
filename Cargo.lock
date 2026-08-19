@@ -1629,6 +1629,7 @@ dependencies = [
  "ll-sim",
  "ll-world",
  "proptest",
+ "serde_json",
  "steel-core",
 ]
 
@@ -1689,6 +1690,7 @@ dependencies = [
  "ll-core",
  "ll-platform",
  "ll-render",
+ "postcard",
  "proptest",
  "serde",
  "serde_json",

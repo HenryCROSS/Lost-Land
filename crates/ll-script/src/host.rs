@@ -501,6 +501,65 @@ impl Default for ScriptEngine {
     }
 }
 
+/// 存档/读档边界的强制重建计数——每调用一次
+/// [`rebuild_all_engines_after_load`] 递增一次，供测试与调用方断言
+/// 「重建确实发生」，而不是只能断言"行为看起来正常"这种弱验证（设计
+/// 文档九、1 节 TDD 要求）。用 `AtomicU64` 而非 `Cell`：本类型的计数
+/// 是跨调用观测的全局状态，不依赖某个 `ScriptEngine` 实例的生命周期，
+/// `AtomicU64` 是这个场景标准的、无需额外同步原语包装的选择。
+static REBUILD_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// 存档/读档边界：强制重建全部脚本引擎（设计文档九、1 节）。
+///
+/// # 为什么是强制，不是「先检测再决定」
+///
+/// 若重建是可选的，需要一种「检测」机制判断某个 VM 实例是不是干净的
+/// ——而 `tools/ll-datacheck` 这类静态检查工具本身还不存在（设计文档
+/// 一、2 节已核实）。强制重建绕开了这条本来就没有可靠检测手段的路：
+/// 不管 VM 里有没有脏状态，统一清空重来，天然安全，不依赖任何检测的
+/// 可靠性——约束 C1 的修订表述正是把这条策略钉成了断言：「VM 必须可
+/// 随时从零重建，且重建不需要任何迁移步骤」（规格 §4 C1，见其修订
+/// 说明）。
+///
+/// # 参数与返回值
+///
+/// `sources` 是「（mod 命名空间，该 mod 已经装载成功的脚本源码）」的
+/// 列表——调用方（`ll-mod` 装载管线，或未来存档读取流程里持有已装载
+/// mod 清单的一方）负责提供，本函数不知道、也不需要知道这些源码原本
+/// 来自哪个文件。对每一对丢弃旧引擎、从零 `ScriptEngine::new()`、重新
+/// `load_source` 一遍，返回同样数量的 `(命名空间, 结果)`——各类 API
+/// 表面（`api::query`/`api::state` 等）的 `register` 调用仍需调用方
+/// 自行完成，本函数只负责「丢弃旧实例、从零构造、重新跑一遍脚本源码」
+/// 这一步本身，不知道每个 mod 具体需要挂载哪些 API 表面，那是装载
+/// 管线的职责（与 `ll_mod::pipeline::load_one_script` 同一层分工）。
+///
+/// # 存档（写盘）不需要调用本函数
+///
+/// 见 [`Effect`](ll_sim::effect::Effect) 模块与本设计的既有论证：VM
+/// 本身不该持有任何值得保留的状态（脚本状态经 `state-set!` 系列显式
+/// 写入 `WorldState`，不是 VM 内部的 `define`/`set!`），存盘只是把
+/// `WorldState` 序列化，不触碰 VM，因此只有**读档**（世界状态被替换
+/// 成另一个时间点的快照）才需要重建 VM。
+pub fn rebuild_all_engines_after_load(
+    sources: &[(String, String)],
+) -> Vec<(String, Result<ScriptEngine, ScriptError>)> {
+    REBUILD_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    sources
+        .iter()
+        .map(|(namespace, source)| {
+            let mut engine = ScriptEngine::new();
+            let result = engine.load_source(source.clone());
+            (namespace.clone(), result.map(|()| engine))
+        })
+        .collect()
+}
+
+/// 当前进程内 [`rebuild_all_engines_after_load`] 被调用的次数——供测试
+/// 断言"读档完成后确实触发了一次重建"，见其文档。
+pub fn rebuild_count() -> u64 {
+    REBUILD_COUNT.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -900,5 +959,74 @@ mod tests {
 
         // Assert
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn 读档完成后强制重建全部脚本引擎() {
+        // 用重建计数器断言「重建确实发生」——不是断言「行为看起来
+        // 正常」这种弱验证，见 rebuild_all_engines_after_load 文档。
+        // `REBUILD_COUNT` 是进程级全局状态，测试默认并行执行，其他
+        // 测试用例（本文件另外两条重建相关测试）可能同时递增它——因此
+        // 这里只断言"调用后计数严格增加"，不断言恰好 +1，避免对测试
+        // 执行顺序/并发性做出不成立的假设。
+        // Arrange
+        let sources = vec![
+            ("moda".to_string(), "(define answer 1) answer".to_string()),
+            ("modb".to_string(), "(define answer 2) answer".to_string()),
+        ];
+        let count_before = rebuild_count();
+
+        // Act
+        let rebuilt = rebuild_all_engines_after_load(&sources);
+
+        // Assert
+        assert!(rebuild_count() > count_before);
+        assert_eq!(rebuilt.len(), 2);
+        assert!(rebuilt.iter().all(|(_, result)| result.is_ok()));
+    }
+
+    #[test]
+    fn 重建产出的引擎是全新实例而非复用旧状态() {
+        // 每个 mod 各自拿到一个从零构造的 ScriptEngine——重建出的引擎
+        // 本身是功能完好的全新实例，可以正常继续装载/调用，不是一个
+        // 半残的占位对象。
+        // Arrange
+        let sources = vec![(
+            "lostland".to_string(),
+            "(define answer 1) answer".to_string(),
+        )];
+
+        // Act
+        let mut rebuilt = rebuild_all_engines_after_load(&sources);
+        let (namespace, engine_result) = rebuilt.remove(0);
+        let mut engine = engine_result.expect("合法脚本源码理应重建成功");
+        engine
+            .load_source("(define (probe) 42)".to_string())
+            .expect("重建出的引擎应当是一个功能完好的全新实例");
+
+        // Assert
+        assert_eq!(namespace, "lostland");
+        assert_eq!(
+            engine.call_raw("probe", Vec::new()),
+            Ok(steel::rvals::SteelVal::IntV(42))
+        );
+    }
+
+    #[test]
+    fn 重建时语法错误的mod返回err不影响同批其他mod() {
+        // Arrange
+        let sources = vec![
+            ("broken".to_string(), "(+ 1 2".to_string()),
+            ("good".to_string(), "(define answer 1) answer".to_string()),
+        ];
+
+        // Act
+        let rebuilt = rebuild_all_engines_after_load(&sources);
+
+        // Assert
+        let broken = rebuilt.iter().find(|(ns, _)| ns == "broken").unwrap();
+        let good = rebuilt.iter().find(|(ns, _)| ns == "good").unwrap();
+        assert!(broken.1.is_err());
+        assert!(good.1.is_ok());
     }
 }

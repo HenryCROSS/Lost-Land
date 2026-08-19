@@ -245,6 +245,7 @@ fn spawn_combatant(
             zone,
             ll_core::ident::ContentIndex::default(),
         ),
+        script_state: std::collections::BTreeMap::new(),
     });
     timeline.schedule(id, Tick(0));
     Combatant { id, sprite, tint }

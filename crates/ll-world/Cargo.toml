@@ -14,6 +14,13 @@ workspace = true
 ll-core = { path = "../ll-core", features = ["serde"] }
 serde = { version = "1", features = ["derive"] }
 tracing = "0.1"
+# 脚本状态存储（knowledge/design/script-state-storage.md 六节）的配额
+# 判定需要「按存档同款编码估算序列化后大小」——postcard 正是存档主体
+# 用的编码（ll-content 已依赖，见 knowledge/licenses/2026-08-19-ll-content-postcard-lz4-scan.md
+# 的许可扫描记录），这里复用同一个编码而不是发明另一套估算方式，
+# 使配额数字与真实落盘大小同源。关闭默认 feature 理由与 ll-content
+# 相同：`heapless-cas` 默认 feature 会拉入不需要的额外依赖。
+postcard = { version = "1", default-features = false, features = ["use-std"] }
 
 [dev-dependencies]
 proptest.workspace = true

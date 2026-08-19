@@ -33,3 +33,7 @@ steel-core = "0.8.2"
 
 [dev-dependencies]
 proptest.workspace = true
+# 仅用于脚本状态存储的孤儿保留测试：验证 WorldState 经过一种真实的
+# serde 格式完整往返后，读档时脚本状态原样保留——与 ll-world 自己的
+# 序列化往返测试同一个理由（见其 Cargo.toml 对应注释）。
+serde_json = "1"

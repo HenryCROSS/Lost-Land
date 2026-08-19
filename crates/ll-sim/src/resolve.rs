@@ -430,6 +430,7 @@ mod tests {
             race,
             luck: 0,
             current_space: surface_space_at(world, pos),
+            script_state: std::collections::BTreeMap::new(),
         })
     }
 
@@ -471,6 +472,7 @@ mod tests {
             race,
             luck: 0,
             current_space: surface_space_at(world, pos),
+            script_state: std::collections::BTreeMap::new(),
         })
     }
 

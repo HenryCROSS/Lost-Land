@@ -41,6 +41,29 @@ pub enum Severity {
 }
 
 impl ScriptDiagnostic {
+    /// 脚本状态写入超过配额（`knowledge/design/script-state-storage.md`
+    /// 六、3 节）时构造的诊断——不是 `ScriptError`：超限是运行时会
+    /// 发生的正常状况（mod 存的数据碰上了自己的配额上限），不是脚本
+    /// 语法/运行时出错，因此不走 [`Self::from_error`] 那条路径，单独
+    /// 给一个构造函数，级别定为 [`Severity::Warning`]（脚本引擎本身
+    /// 仍然可用，游戏可以继续跑，只是这一次写入被拒绝）。
+    ///
+    /// 若只把写入结果降级成失败哨兵值返回给脚本、不留下诊断痕迹，
+    /// mod 作者会看到"写入好像没生效"却毫无线索——这条诊断正是
+    /// 设计文档要求的"必须留痕"那一步。
+    pub fn quota_exceeded(mod_namespace: impl Into<String>, key: impl AsRef<str>) -> Self {
+        let mod_namespace = mod_namespace.into();
+        ScriptDiagnostic {
+            source: mod_namespace.clone(),
+            message: format!(
+                "脚本状态写入被拒绝：mod 「{mod_namespace}」的键 「{}」超出存储配额",
+                key.as_ref()
+            ),
+            severity: Severity::Warning,
+            byte_offset: None,
+        }
+    }
+
     /// 从一次脚本调用失败构造诊断。
     pub fn from_error(source: impl Into<String>, error: &ScriptError) -> Self {
         let severity = match error {
@@ -106,6 +129,19 @@ mod tests {
         // Assert
         assert!(text.contains("某个mod"));
         assert!(text.contains("出错了"));
+    }
+
+    #[test]
+    fn 配额超限诊断归类为警告级严重程度且携带命名空间与键() {
+        // Arrange & Act
+        let diagnostic = ScriptDiagnostic::quota_exceeded("lostland", "reputation");
+
+        // Assert
+        assert_eq!(diagnostic.severity, Severity::Warning);
+        assert_eq!(diagnostic.byte_offset, None);
+        let text = diagnostic.to_string();
+        assert!(text.contains("lostland"));
+        assert!(text.contains("reputation"));
     }
 
     #[test]

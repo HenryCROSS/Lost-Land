@@ -1,10 +1,13 @@
 //! 厚层实体：被真正模拟的 `Agent`。
 
+use std::collections::BTreeMap;
+
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use serde::{Deserialize, Serialize};
 
+use crate::script_state::ScriptValue;
 use crate::space::Space;
 
 use super::{Affiliation, BaseStats, Goal};
@@ -148,6 +151,29 @@ pub struct Agent {
     /// 暴击率（每点 +5‰）、优势掷骰（每满 20 点多掷一次取较优）、掉落
     /// 品质权重、稀有事件触发权重。P3 阶段不消费这个字段，只建布局。
     pub luck: i32,
+    /// 每实体脚本状态：依附于这个具体实体的脚本存储（NPC 当前在追的
+    /// 目标、某个技能的冷却计时……），键是 `(mod_namespace, key)`，见
+    /// `knowledge/design/script-state-storage.md` 二、四节。
+    ///
+    /// # 为什么随 `Agent` 走，不开一张 `WorldState` 旁挂表
+    ///
+    /// 与本类型文档「为什么 `health` 是 `Agent` 的字段」一节同一条
+    /// 理由：`Agent` 死亡时 `Arena::despawn` 会把整个槽位连同这个字段
+    /// 一起收走，物理上不会产生孤儿记录——若做成旁挂表，`Effect::Kill`
+    /// 一旦忘了同步清理，就会重演 `WorldState::health` 曾经的孤儿记录
+    /// 缺陷（见该节历史记录）。设计文档六、7 节讨论的「孤儿状态」专指
+    /// **mod 被卸载**这一种情况（数据仍应保留），不是「实体死亡」这
+    /// 一种（数据理应随实体一起消失）——两者是完全不同的生命周期，
+    /// 这里选用 `Agent` 字段而非旁挂表，保证的正是后一种「实体死亡
+    /// 即回收」不需要额外代码维护。
+    ///
+    /// `BTreeMap` 不是 `HashMap`：约束 C5 禁止 `HashMap`/`HashSet` 的
+    /// 迭代顺序参与逻辑判断，序列化/摘要遍历需要确定顺序，见设计文档
+    /// 五、1 节。**序列化走 [`crate::script_state::serde_map`]**——理由
+    /// 见该模块文档（JSON 等文本格式要求 map 键是字符串，元组键不
+    /// 满足）。
+    #[serde(with = "crate::script_state::serde_map")]
+    pub script_state: BTreeMap<(String, String), ScriptValue>,
 }
 
 impl Agent {
@@ -220,6 +246,10 @@ mod tests {
                 profile: ContentIndex::default(),
             },
             luck: 9,
+            script_state: BTreeMap::from([(
+                ("lostland".to_string(), "cooldown".to_string()),
+                ScriptValue::Int(5),
+            )]),
         }
     }
 

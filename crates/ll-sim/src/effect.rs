@@ -11,6 +11,7 @@
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use ll_world::entity::EntityId;
+use ll_world::script_state::ScriptStateWrite;
 use ll_world::space::Space;
 use ll_world::terrain::TerrainKind;
 
@@ -30,7 +31,14 @@ use ll_world::terrain::TerrainKind;
 /// 预留一个尚无内容可改的 `Effect` 变体没有意义。真正引入这些系统的
 /// 阶段落地时，应由那个阶段的实现者决定各自是否需要接入 `Effect`，
 /// 而不是现在为空气发一个变体。
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// # 为什么不再 `Copy`（脚本状态存储批次）
+///
+/// [`Effect::SetScriptState`] 携带一个 `Vec<ScriptStateWrite>`——`Vec`
+/// 不是 `Copy`，`derive(Copy)` 因此不能再成立。检查过全部既有调用点
+/// （`resolve.rs`/`apply.rs`/`ll-sim/tests/replay.rs` 等）：全部通过
+/// `&Effect` 引用或值移动使用 `Effect`，没有任何地方依赖隐式按位拷贝，
+/// 去掉 `Copy` 不需要改动这些调用点的用法。
+#[derive(Debug, Clone, PartialEq)]
 pub enum Effect {
     /// 把某实体的位置设为 `pos`。
     MoveTo {
@@ -93,5 +101,35 @@ pub enum Effect {
         actor: EntityId,
         /// 目标空间。
         space: Space,
+    },
+    /// 批量写入脚本状态（裁定 P5-1，脚本状态存储）。
+    ///
+    /// # 为什么脚本状态的写入也要走 `Effect`
+    ///
+    /// `knowledge/design/script-state-storage.md` 8.2 节原文写「直接
+    /// 写穿，没有中间层」，与本文档开篇、约束 C1「`apply` 是唯一写
+    /// 入口」字面冲突——脚本状态存在 `WorldState` 里（
+    /// `WorldState::global_script_state`/`Agent::script_state`），那就
+    /// 是世界状态的一部分：写它就是改世界，绕开 `Effect` 流意味着
+    /// 「同一串 Intent 重放」复现不出脚本存的东西，「脚本自己的数据」
+    /// 这个类别在存档/重放的意义上并不真实存在。裁定 P5-1 选择 C1
+    /// 赢：写入必须经这条唯一入口。
+    ///
+    /// # 为什么是一条 `Effect` 携带一批，而不是每次写入一条
+    ///
+    /// 一次决策期间脚本可能连续调用多次 `state-set!`/
+    /// `entity-state-set!`——若每次调用都发一条独立 `Effect`，会为每
+    /// 次写入多付一条 `Effect` 的开销。`ll_script::api::state` 模块在
+    /// 脚本调用窗口内把写入攒进一个线程局部缓冲，调用结束后宿主取走
+    /// 整批，包成一条本变体发出，交给既有的 `resolve → apply` 管线——
+    /// `Effect` 流因此保持「每一次状态变化都经过它」的诚实，又不必为
+    /// 每次写入单独付一条 `Effect` 的开销。
+    SetScriptState {
+        /// 这条 `Effect` 携带的全部写入，保留脚本调用它们时的原始
+        /// 顺序——同一个键在批内被覆写多次时，`apply` 按顺序逐条写入，
+        /// 最终生效的是最后一条（与 `ll-script` 侧缓冲区「同一决策内
+        /// 重复写同一个键只保留最后一次」的既有语义一致，见
+        /// [`ScriptStateWrite::matches`] 文档）。
+        writes: Vec<ScriptStateWrite>,
     },
 }

@@ -179,6 +179,7 @@ fn spawn_player(
         race,
         luck: 0,
         current_space: Space::surface(zone, surface_profile),
+        script_state: std::collections::BTreeMap::new(),
     })
 }
 
