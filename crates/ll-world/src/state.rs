@@ -150,6 +150,36 @@ pub struct WorldState {
     /// `Intent::ExitSpace` 会让退出后的 `Space::Surface.profile` 指向
     /// 一个可能未注册的占位索引，调用方必须保证在开放这条 Intent 之前
     /// 已经完成赋值。
+    ///
+    /// # 为什么这里没有同 `terrain_table` 一样补一个 `assert_*_loaded`（P5 任务 5 核实结论）
+    ///
+    /// 核实过程中发现两处与最初预期不同的事实，一并记录：
+    ///
+    /// 1. `Intent::ExitSpace` 并不是"尚未开放、留给未来任务"的功能——
+    ///    `ll_sim::resolve::resolve_exit_space` 已经真实读取本字段
+    ///    （`ll-sim` 依赖 `ll-world`，读的正是这份缓存值）,不能按
+    ///    "校验时机可以推迟到 Intent::ExitSpace 开放之前"这条思路
+    ///    延后处理。
+    /// 2. 但 `terrain_table.is_empty()` 那套"空即未灌入"的判定思路在
+    ///    这里**不成立**：`ContentIndex::default()` 是索引 `0`,而索引
+    ///    `0` 完全可能是某个真实会话里 `lostland:surface` 自己注册到
+    ///    的合法索引（取决于当前会话里 `Registry` 的其他内容在它之前
+    ///    注册了多少条）——`terrain_table` 用 `Vec::is_empty()` 判断
+    ///    "一条属性都没登记过"没有这个歧义（空 `Vec` 不可能是任何合法
+    ///    已登记状态），但拿一个具体索引值去和"占位默认值"比较相等,
+    ///    没有办法排除"这个索引真的就是 0"这种合法情况。一个基于相等
+    ///    比较的 `assert_surface_profile_loaded` 在这类场景下要么误报
+    ///    （合法的索引 0 被当成"没灌入"拒绝），要么漏报（取决于具体
+    ///    实现），两者都不可接受。
+    ///
+    /// 因此这里**没有**添加一个形状与 `assert_terrain_table_loaded`
+    /// 对称的校验方法——那会是一个看起来安全、实际不可靠的假保证。
+    /// 真正可靠的修复需要把本字段的类型从 `ContentIndex`（永远有值,
+    /// 用魔法值 0 当"未设置"）换成 `Option<ContentIndex>`（`None` 才是
+    /// 唯一、无歧义的"未设置"表达），但那会牵连 `WorldState::new` 的
+    /// 构造语义与 `resolve_exit_space` 的读取路径,超出本任务范围（本
+    /// 任务标题是"terrain_table 读档校验点"，不是"surface_profile 类型
+    /// 修正"），已如实记录为后续任务的开放项。
     #[serde(skip)]
     pub surface_profile: ContentIndex,
     /// 薄层人口：数十万到数百万背景 NPC，列式排布。P3 阶段可以为空，
@@ -167,10 +197,18 @@ pub struct WorldState {
     /// 加载顺序，与 `ContentIndex` 本身一样不可持久化
     /// （`ll_core::ident` 模块文档）。读档后这张表默认是空的——所有
     /// 地形查询会退化成安全兜底值（[`TerrainTable::move_cost`] 等
-    /// 文档），直到调用方显式用当前会话重新注册出的表替换它。真正的
-    /// 存档接线（读档后如何拿到「当前应该用哪张表」）留给 P5 冻结
-    /// 存档格式时解决，本任务只保证字段本身存在、且不会让读档过程本
-    /// 身失败。
+    /// 文档），直到调用方显式用当前会话重新注册出的表替换它。
+    ///
+    /// # 读档后的显式校验点（P5 任务 5）
+    ///
+    /// 「默认安全兜底」解决的是「不 panic」，不解决「玩家没注意到自己
+    /// 在用一张空表玩游戏」——兜底值会让地形查询看起来正常返回，只是
+    /// 结果全部错误（所有地形都变成「可通行、代价 100、不阻挡视线」）。
+    /// 这类静默错误正是坐标系重写批次 Task 8 报告建议 P5 补上显式校验
+    /// 的理由：读档后必须能主动问「灌没灌」，见
+    /// [`Self::assert_terrain_table_loaded`]，而不是依赖兜底值不报错
+    /// 就当作一切正常。真正在读档流程里调用这个校验点是任务 9 的
+    /// 职责，本字段与本方法只负责让这个问题变得可以被回答。
     #[serde(skip)]
     pub terrain_table: TerrainTable,
 }
@@ -299,6 +337,25 @@ impl WorldState {
     /// `None`」。
     pub fn terrain_at(&self, pos: TorusPos) -> Option<TerrainKind> {
         self.terrain.terrain_at_resident(pos)
+    }
+
+    /// 读档后置校验：`terrain_table` 是否已经被调用方重新灌入。
+    ///
+    /// 这不是构造时自动完成的——`terrain_table` 依赖当前会话的 mod
+    /// 加载结果，`WorldState` 反序列化本身没有能力单独产出一张正确的
+    /// 表（见 [`Self::terrain_table`] 字段文档），必须由调用方在拿到
+    /// 当前会话 `TerrainTable` 后显式重新赋值，再调用本方法确认。
+    ///
+    /// 未灌入时返回 [`WorldError::TerrainTableNotReloaded`]，而不是
+    /// 静默放行——空表不会让任何地形查询 panic（[`TerrainTable`] 的
+    /// 每个查询方法都有安全兜底值），这正是问题所在：不报错不等于
+    /// 结果正确，一张空表会让全部地形查询悄悄退化成兜底值,不调用本
+    /// 方法就没有任何信号能提醒调用方这件事发生了。
+    pub fn assert_terrain_table_loaded(&self) -> Result<(), WorldError> {
+        if self.terrain_table.is_empty() {
+            return Err(WorldError::TerrainTableNotReloaded);
+        }
+        Ok(())
     }
 
     /// 可能触发按需生成的地形查询——流式加载真正的触发点（见
@@ -810,6 +867,35 @@ mod tests {
 
         // Assert
         assert_eq!(world.clock, Tick(0));
+    }
+
+    #[test]
+    fn terrain_table为空时assert返回错误() {
+        // 模拟读档后调用方尚未重新灌入 terrain_table 的状态——直接使用
+        // 一张空表构造世界。
+        // Arrange
+        let mut world = test_world();
+        world.terrain_table = crate::terrain::TerrainTable::new();
+
+        // Act
+        let result = world.assert_terrain_table_loaded();
+
+        // Assert
+        assert_eq!(result, Err(WorldError::TerrainTableNotReloaded));
+    }
+
+    #[test]
+    fn terrain_table非空时assert返回成功() {
+        // test_world() 用 base_terrain_fixture() 构造，terrain_table
+        // 已经登记过本体全部 17 个地形，不是空表。
+        // Arrange
+        let world = test_world();
+
+        // Act
+        let result = world.assert_terrain_table_loaded();
+
+        // Assert
+        assert_eq!(result, Ok(()));
     }
 
     #[test]

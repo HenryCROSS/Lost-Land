@@ -305,6 +305,18 @@ impl TerrainTable {
             .unwrap_or(false)
     }
 
+    /// 这张表当前是否一条地形属性都还没登记过。
+    ///
+    /// 供 [`crate::state::WorldState::assert_terrain_table_loaded`] 这类
+    /// 读档后校验点使用——一张刚 `default()` 出来的表（读档后、调用方
+    /// 尚未用当前会话重新注册的表）`defined` 恒为空 `Vec`，与「确实
+    /// 登记过至少一条属性」在这里可以被可靠区分，不像 `ContentIndex`
+    /// 的默认值（0）那样可能和一个合法索引撞车——`Vec::is_empty` 不存
+    /// 在这类"占位值恰好等于某个合法值"的歧义。
+    pub fn is_empty(&self) -> bool {
+        self.defined.is_empty()
+    }
+
     /// 该地形是否阻挡视线。
     ///
     /// 未登记的索引（可能来自被篡改的存档，或引用了当前会话没有加载
@@ -646,6 +658,24 @@ pub fn base_terrain_fixture() -> (BaseTerrainIds, TerrainTable) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 新建的地形表是空的() {
+        // Arrange & Act
+        let table = TerrainTable::new();
+
+        // Assert
+        assert!(table.is_empty());
+    }
+
+    #[test]
+    fn 登记过至少一条属性的地形表不再是空的() {
+        // Arrange
+        let (_ids, table) = base_terrain_fixture();
+
+        // Act & Assert
+        assert!(!table.is_empty());
+    }
 
     #[test]
     fn 山地阻挡视线() {

@@ -65,6 +65,16 @@ pub enum WorldError {
         /// 实际传入的区块边长（格）。
         zone_span: u32,
     },
+    /// 读档后未重新灌入 `terrain_table` 就试图使用世界。
+    ///
+    /// `terrain_table`（[`crate::state::WorldState::terrain_table`]）不
+    /// 参与序列化——它是当前会话已加载 mod 集合的注册期产物，读档后
+    /// 默认是空表。调用方必须在拿到当前会话重新注册出的表之后显式
+    /// 替换它，见 [`crate::state::WorldState::assert_terrain_table_loaded`]
+    /// 这个读档后置校验点。未灌入就直接使用会让地形查询全部退化成
+    /// 安全兜底值，且不会有任何报错——这个变体把"灌没灌"从隐式的
+    /// 静默正确变成显式的、必须处理的失败。
+    TerrainTableNotReloaded,
 }
 
 impl fmt::Display for WorldError {
@@ -80,6 +90,12 @@ impl fmt::Display for WorldError {
                 write!(
                     f,
                     "区块边长 {zone_span} 不满足对齐约束（须为 CELL_SIZE 的整数倍，且不小于最小视口跨度）"
+                )
+            }
+            WorldError::TerrainTableNotReloaded => {
+                write!(
+                    f,
+                    "读档后尚未用当前会话重新灌入 terrain_table，不能直接使用"
                 )
             }
         }
