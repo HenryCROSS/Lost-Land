@@ -59,6 +59,32 @@
 //! 退化为 1，`octaves` 也随之退化成早期版本的纯细节叠加——这是可接受
 //! 的降级，不是需要额外校验拒绝的错误，世界尺寸的既有约束（必须是
 //! [`CELL_SIZE`] 的整数倍）保持不变，没有新增任何前置校验。
+//!
+//! # 一个更隐蔽的退化：正方形世界，边长恰为 2 的幂
+//!
+//! 上面那段话本身留了一个坑：`max_pow2_divisor(gcd(period_x, period_y))`
+//! 不只在互质时退化，**在 `period_x == period_y` 且两者本身就是 2 的
+//! 幂时也会退化**——只是退化到的不是 1，而是退化到 `period_x`/
+//! `period_y` 本身。例如 64×64 的世界：`period_x = period_y = 4`，
+//! `gcd(4, 4) = 4`，`max_pow2_divisor(4) = 4`，与两个周期恰好相等。
+//! 那一层的格点周期因此变成 `period / coarse_scale = 1`——**整张世界
+//! 只有一个格点**，`lattice_value` 对周期取模后恒为同一个值，全图范围
+//! 内是常数。`octaves` 里权重最高的这一层因此不携带任何空间变化，只剩
+//! 细节层的小抖动，不足以跨过深水到山地的阈值区间。实测过：64×64、
+//! 128×128、256×256 这类最常见的方形 2 的幂世界尺寸，多数种子下只产出
+//! 1～3 种地形，且是**静默**的——不报错、不变红，只是整张图几乎全是
+//! 水，直到有人去数地形种类才会发现。
+//!
+//! 这个坑不能靠「在生成入口拒绝这批尺寸」绕开：世界尺寸最终要开放给
+//! 玩家在开局界面选择，方形、2 的幂（64、128、256……）恰恰是最直觉的
+//! 选项，把它们全部拒绝等于把最常被选中的选项都变成错误提示。所以
+//! [`TileableNoise::new`] 改为用 [`safe_coarse_scale`] 而非
+//! `max_pow2_divisor(gcd(..))` 本身：候选值命中某一轴的周期（即那一轴
+//! 会退化成单点）时减半，直到两轴都严格大于它，或减到 1（两周期互质，
+//! 真的没有大于 1 的公共二次幂因子可用——这种情形下退化到 1 仍然是
+//! 无法避免的降级，保留上一段的结论）。减半后的值依旧整除
+//! `gcd(period_x, period_y)`，无缝性因此不受影响——见
+//! [`safe_coarse_scale`] 文档。
 
 use ll_core::rng::DetRng;
 
@@ -100,7 +126,7 @@ impl TileableNoise {
             seed,
             period_x,
             period_y,
-            coarse_scale: max_pow2_divisor(gcd(period_x, period_y)),
+            coarse_scale: safe_coarse_scale(period_x, period_y),
         })
     }
 
@@ -250,6 +276,35 @@ fn max_pow2_divisor(n: u32) -> u32 {
     1 << n.trailing_zeros()
 }
 
+/// 求 [`TileableNoise::octaves`] 最粗一层可用的格子放大倍数——
+/// [`gcd`] 的最大二次幂因数，但**不允许取到会让该层退化成整图常数的
+/// 那个值**。退化条件与修法见模块文档「一个更隐蔽的退化」一节。
+///
+/// # 为什么减半后仍然安全
+///
+/// `max_pow2_divisor(gcd(period_x, period_y))` 恒是 `period_x` 与
+/// `period_y` 的公因数（`gcd` 本身是公因数，其二次幂部分自然也是）。
+/// 一个 2 的幂公因数减半之后仍是 2 的幂、仍整除原来的 `gcd`——`sample_
+/// at_scale` 需要的只是「格子边长能整除周期换算出的格点数」，不要求
+/// 恰好取到最大值，减半不会破坏 [`TileableNoise::sample_at_scale`]
+/// 用到的无缝性前提。
+///
+/// # 为什么循环最多迭代一次就会停下（写成循环仅为清晰，非性能考量）
+///
+/// 设 `scale` 是候选值。它恒有 `scale <= period_x` 且 `scale <=
+/// period_y`（因为它整除二者）。若 `scale == period_x`，减半后的新值
+/// `scale / 2 < scale <= period_y`，不可能再等于 `period_y`；若同时
+/// `scale == period_y`，同理新值也不再等于 `period_x`。所以一次减半
+/// 必然让两个相等条件同时不再成立——循环写成 `while` 只是为了在阅读
+/// 时不必依赖这条数学论证也能确认终止，不是因为真的需要多次减半。
+fn safe_coarse_scale(period_x: u32, period_y: u32) -> u32 {
+    let mut scale = max_pow2_divisor(gcd(period_x, period_y));
+    while scale > 1 && (scale == period_x || scale == period_y) {
+        scale /= 2;
+    }
+    scale
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -352,11 +407,13 @@ mod tests {
     }
 
     #[test]
-    fn 周期存在公共二次幂因子时求得对应的粗层倍数() {
-        // period_x = period_y = 8 = 2^3，两者的最大公约数本身就是 8，
-        // 最粗一层应能把 CELL_SIZE 放大到 8 倍。
+    fn 周期存在公共二次幂因子且两轴都不等于该因子时无需减半() {
+        // period_x = 24 = 8*3、period_y = 40 = 8*5，gcd = 8。8 既不
+        // 等于 period_x 也不等于 period_y，两个轴换算到粗层的格点周期
+        // 分别是 3、5，都大于 1——不会退化成单点，safe_coarse_scale
+        // 不需要触发减半分支，直接得到 gcd 的最大二次幂因数本身。
         // Arrange & Act
-        let noise = TileableNoise::new(1, 8, 8).expect("周期非零");
+        let noise = TileableNoise::new(1, 24, 40).expect("周期非零");
 
         // Assert
         assert_eq!(noise.coarse_scale, 8);
@@ -371,6 +428,106 @@ mod tests {
 
         // Assert
         assert_eq!(noise.coarse_scale, 1);
+    }
+
+    #[test]
+    fn 正方形世界边长恰为二的幂时粗层不再退化成整图常数() {
+        // 这是本次要修的缺陷本身：period_x = period_y = 4（对应 64×64
+        // 世界）曾经让 max_pow2_divisor(gcd(4,4)) 恰好等于 4，粗层格点
+        // 周期退化为 1（整图单点、常数）。safe_coarse_scale 修复后应
+        // 减半到 2，让粗层格点周期变成 4/2=2——两个轴都还有真实起伏。
+        // Arrange & Act
+        let noise = TileableNoise::new(1, 4, 4).expect("周期非零");
+
+        // Assert
+        assert_eq!(noise.coarse_scale, 2);
+    }
+
+    #[test]
+    fn 较短边整除较长边且较短边恰为二的幂时粗层同样不退化() {
+        // 非正方形也可能撞上同一个坑：period_x=4（本身是 2 的幂）、
+        // period_y=12=4*3。gcd=4=period_x，候选值命中 x 轴，若不修复
+        // x 轴会退化成单点（即便 y 轴仍有 3 格起伏）。修复后应减半到 2。
+        // Arrange & Act
+        let noise = TileableNoise::new(1, 4, 12).expect("周期非零");
+
+        // Assert
+        assert_eq!(noise.coarse_scale, 2);
+    }
+
+    #[test]
+    fn 开局可选的方形二的幂区块数世界修复后不再退化() {
+        // 开局界面若允许玩家选「N×N 个区块」，最直觉的方形选项恰恰是
+        // 2 的幂：64、128 个区块（区块边长固定 128，见
+        // crate::zone::ZoneLayout::default_config）。换算成世界瓦片
+        // 周期（除以 CELL_SIZE=16）：64 区块 → 8192 瓦片 → period 512；
+        // 128 区块 → 16384 瓦片 → period 1024。两者都恰为 2 的幂，
+        // 修复前会让 coarse_scale 退化成 period 本身；这里直接算这两个
+        // 真实候选尺寸的周期，而不是用等价小尺寸代替——这条只断言
+        // coarse_scale（O(1) 的纯数值推导，不涉及生成整张地图），跑
+        // 大周期不产生实际性能负担。
+        // Arrange & Act
+        let noise_64_zones = TileableNoise::new(1, 512, 512).expect("周期非零");
+        let noise_128_zones = TileableNoise::new(1, 1024, 1024).expect("周期非零");
+
+        // Assert：粗层格点周期 = period / coarse_scale 必须大于 1，
+        // 即 coarse_scale 不能恰好等于 period 本身。
+        assert_ne!(
+            noise_64_zones.coarse_scale, 512,
+            "64 区块（8192×8192）的粗层退化成整图单点"
+        );
+        assert_ne!(
+            noise_128_zones.coarse_scale, 1024,
+            "128 区块（16384×16384）的粗层退化成整图单点"
+        );
+    }
+
+    #[test]
+    fn 生产默认区块布局对应的世界周期不触发大陆尺度层退化() {
+        // 生产默认配置见 crate::zone::ZoneLayout::default_config：
+        // 区块 128×128、世界 48×32 个区块，换算成瓦片周期
+        // （128*48/16, 128*32/16）= (384, 256)。这条锁住「当前生产配置
+        // 本就不在退化区间」这个结论——即便 safe_coarse_scale 没修，
+        // 384 与 256 也不相等，gcd 的最大二次幂因子（128）不等于二者中
+        // 任何一个，故 coarse_scale 本就不会退化；这里把这条结论写成
+        // 断言，防止未来改动 default_config 时无声破坏它。
+        // Arrange
+        let period_x = 128 * 48 / CELL_SIZE as u32;
+        let period_y = 128 * 32 / CELL_SIZE as u32;
+
+        // Act
+        let noise = TileableNoise::new(1, period_x, period_y).expect("周期非零");
+
+        // Assert
+        assert_ne!(noise.coarse_scale, period_x, "x 轴的粗层退化成整图单点");
+        assert_ne!(noise.coarse_scale, period_y, "y 轴的粗层退化成整图单点");
+    }
+
+    #[test]
+    fn 长方形预设区块数世界本就不触发大陆尺度层退化() {
+        // 若开局界面推荐长方形预设（32×24、48×32、64×48、96×64 个
+        // 区块，区块边长固定 128），换算成瓦片周期（区块数 * 128 / 16
+        // = 区块数 * 8）逐一验证：这些组合天然不会让 coarse_scale 撞上
+        // 某一轴的周期本身——不依赖 safe_coarse_scale 的减半分支也能
+        // 通过，用来确认「长方形预设本就安全」这个结论，而不是碰巧被
+        // 这次的修复带着变安全。
+        // Arrange
+        let zone_count_presets = [(32u32, 24u32), (48, 32), (64, 48), (96, 64)];
+
+        // Act & Assert
+        for (zones_w, zones_h) in zone_count_presets {
+            let period_x = zones_w * 128 / CELL_SIZE as u32;
+            let period_y = zones_h * 128 / CELL_SIZE as u32;
+            let noise = TileableNoise::new(1, period_x, period_y).expect("周期非零");
+            assert_ne!(
+                noise.coarse_scale, period_x,
+                "{zones_w}x{zones_h} 区块预设的 x 轴粗层退化成整图单点"
+            );
+            assert_ne!(
+                noise.coarse_scale, period_y,
+                "{zones_w}x{zones_h} 区块预设的 y 轴粗层退化成整图单点"
+            );
+        }
     }
 
     #[test]

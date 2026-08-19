@@ -226,6 +226,66 @@ mod tests {
             .count()
     }
 
+    /// 统计一张地图上出现过的不同地形种类数。
+    ///
+    /// 用线性扫描去重而非 `HashSet`：规避 C5（禁止哈希表迭代顺序参与
+    /// 任何逻辑判断）——这里只用得到集合大小，`HashSet::len()` 本身不
+    /// 依赖迭代顺序，风险其实很低，但地形种类数就是个位数量级，
+    /// `O(格数 × 种类数)` 的线性扫描完全够用，没有必要为了省这点常数
+    /// 就引入一个本项目其余地方刻意回避的容器。
+    fn distinct_terrain_kind_count(grid: &ChunkGrid) -> usize {
+        let mut seen: Vec<TerrainKind> = Vec::new();
+        for kind in collect_terrain(grid) {
+            if !seen.contains(&kind) {
+                seen.push(kind);
+            }
+        }
+        seen.len()
+    }
+
+    #[test]
+    fn 正方形且边长为二的幂的世界产出的地形种类数不再退化到个位以下() {
+        // 这是本次要修的缺陷本身的回归测试。64×64、128×128、256×256都
+        // 是「正方形 + 2 的幂」——TileableNoise 大陆尺度层曾经在这些
+        // 尺寸下退化成整图常数（见 noise 模块文档「一个更隐蔽的退化」），
+        // 权重最高的一层因此不携带任何空间变化，只剩细节层的小抖动不足
+        // 以跨过深水到山地的阈值区间，实测多数种子只产出 1～3 种地形。
+        // 这三个尺寸恰好是开局界面最直觉的方形选项，必须覆盖到；用五个
+        // 种子取最小值，避免单个种子恰好落在地形种类偏少的巧合区域，
+        // 掩盖了退化本身。
+        //
+        // 阈值取 4（deep_water/shallow_water/sand/grass 至少要出现,
+        // 更高地形不强求）：8 种地形的默认阈值表在 4 层倍频、没有粗层
+        // 兜底的纯细节噪声下也不一定次次都凑齐山地雪地，但连基本的
+        // 水陆过渡都凑不出 4 种，就已经足以证明「几乎全是水」这个描述。
+        // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let sizes = [64u32, 128, 256];
+        let seeds = [0u64, 1, 2, 3, 4];
+
+        // Act & Assert
+        for side in sizes {
+            let world = TorusSize::new(side, side).expect("边长满足整除与视口跨度两条约束");
+            let min_kinds = seeds
+                .iter()
+                .map(|&seed| {
+                    let params = GenParams {
+                        seed,
+                        ..GenParams::default()
+                    };
+                    let grid = generate_terrain(world, &params, &terrain_ids)
+                        .expect("正方形二的幂尺寸满足生成入口的约束");
+                    distinct_terrain_kind_count(&grid)
+                })
+                .min()
+                .expect("种子列表非空");
+            assert!(
+                min_kinds >= 4,
+                "{side}x{side} 世界在种子 0..5 中最少只产出 {min_kinds} 种地形，疑似大陆尺度层退化"
+            );
+        }
+    }
+
     #[test]
     fn 相同种子生成完全相同的地形() {
         // Arrange
