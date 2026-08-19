@@ -36,7 +36,7 @@
 | 12 | 数据格式 | 用户设置 TOML；游戏数据表直接写为 Steel `.scm`；资产元数据 JSON；本地化 Fluent `.ftl` |
 | 13 | 存档格式 | 明文 JSON 头部 + `postcard` 二进制主体 + `lz4_flex` 压缩 + schema 版本迁移链 |
 | 14 | i18n | 首发简中 + 英文，日语预留空包；字体思源黑体 Source Han Sans（Adobe 发行版，OFL-1.1） |
-| 15 | Mod | **本体即 Mod（玩法层内成立）**：本体与 mod 走完全相同的注册表 API，本体无特权通道；引擎层（渲染、物理、寻路、FOV、光照、时间轴队列机制）不受此约束，本体与 mod 都碰不到。完整判据见 §10.3 与 [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md) |
+| 15 | Mod | **玩法层内容（地形、种族、职业、技能、副职、任务、物品……）本体与 mod 走同一套注册 API**；引擎层（渲染、物理、寻路、FOV、光照、时间轴机制）两者都不暴露——不暴露不是缺陷。完整判据见 §10.3 与 [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md) |
 | 16 | 内容 ID | 命名空间字符串 `lostland:fireball`；装载时映射为紧凑整数索引 |
 | 17 | Mod 形态 | 仅允许 Steel 脚本 + 资产，**禁止原生 dll** |
 | 18 | UI | 双轨：游戏内自研像素 UI（`ll-ui`）；工具链用 `egui`（`tools/`） |
@@ -302,7 +302,7 @@ docs/           设计文档与规格
 3. **执行预算** — 时间维度由 `InterruptHandler` 覆盖；**内存维度需自研 `#[global_allocator]` 包装器**，以原子计数器统计脚本执行期间的分配量，超阈值时调用同一个 `ThreadStateController::interrupt()`。复用现成中断通道，开销为每次 alloc/dealloc 一次原子加减。
 4. **加载分阶段隔离** — 单个 mod 加载失败不影响其他 mod，除非存在依赖关系。
 
-### 10.3 本体即 Mod（玩法层内成立）
+### 10.3 玩法层内容注册 API 一致性（ADR 0018）
 
 > **规格修订（2026-08-18，裁定见 [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)）**：本节原文「本体不享有任何特权通道」没有限定适用范围——字面读法会把渲染、物理、寻路这些显然不该脚本化的系统也卷进「必须能被 mod API 表达」的要求里，这条原则因此要么被字面执行（荒谬），要么被含糊执行（那条线到底在哪，没人说得清）。本次修订按**系统类型**划一条线，取代原文隐含的「本体身份 vs mod 身份」这条轴：
 >
@@ -311,7 +311,7 @@ docs/           设计文档与规格
 >
 > 可操作的归类判据（三步法）、逐项验证（含已解决的 `TerrainKind` 迁入注册表、部分解决的 `opens_into` 声明化，以及 [ADR 0016](../../../knowledge/decisions/0016-mod-performance-tiers-by-declaration.md) 守门规则相应收窄的说明），见 ADR 0018，不在此重复。
 
-本体在玩法层的全部内容——职业、技能、物品、怪物、地图生成规则、任务图、行为树、本地化——**均通过与 mod 完全相同的注册表 API 注册，本体不享有任何特权通道**。
+玩法层内容——职业、技能、物品、怪物、地图生成规则、任务图、行为树、本地化——**本体与 mod 走同一套注册表 API**；引擎层内容（渲染、物理、寻路、FOV、光照、时间轴机制）本体与 mod 都不暴露——不暴露不是缺陷。
 
 这是保证「玩法层 API 覆盖所有内容」的唯一可靠手段：API 存在缺口时，本体自身先无法实现，缺口当场暴露。
 
@@ -543,6 +543,6 @@ knowledge/
 | 逐层铺地基导致长期无可见产出 | 中 | 每阶段强制交付 `examples/` demo |
 | 环面坐标遗漏导致隐蔽缺陷 | 中 | 类型封装 + CI 静态检查禁止手写欧氏距离 |
 | 脚本内存失控 | 中 | 自研 `#[global_allocator]` 守卫（P4 交付） |
-| Mod API 覆盖不全 | 中 | 「本体即 Mod」原则强制暴露缺口 |
+| Mod API 覆盖不全 | 中 | 玩法层内容本体与 mod 走同一套注册 API（§10.3，ADR 0018），缺口在本体自身实现时当场暴露 |
 | 混合精灵尺寸后期返工 | 中 | footprint / pivot 解耦作为 P1 硬性接口约束 |
 | 依赖引入非宽松许可 | 低 | `cargo-deny` CI 门禁 |
