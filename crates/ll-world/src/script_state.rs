@@ -182,10 +182,38 @@ pub fn entry_size(key: &str, value: &ScriptValue) -> usize {
         .unwrap_or(usize::MAX)
 }
 
+/// 汇总一份 `(命名空间, 键) -> 值` 存储里属于 `mod_namespace` 的已提交
+/// 条目大小，跳过 `pending` 里已有同名覆盖记录的条目——这是
+/// [`mod_total_bytes`]/[`entity_mod_bytes`] 共用的过滤 + 累加逻辑,抽出来
+/// 是因为它此前分别在「全局存储」「`mod_total_bytes` 内逐实体循环」
+/// 「`entity_mod_bytes`」三处几乎逐字重复,容易在改一处过滤条件时漏改
+/// 另外两处。
+fn sum_committed_bytes(
+    entries: &BTreeMap<(String, String), ScriptValue>,
+    target: ScriptStateTarget,
+    mod_namespace: &str,
+    pending: &[ScriptStateWrite],
+) -> usize {
+    let mut total = 0usize;
+    for ((namespace, key), value) in entries {
+        if namespace != mod_namespace {
+            continue;
+        }
+        if pending
+            .iter()
+            .any(|w| w.matches(target, mod_namespace, key))
+        {
+            continue; // 待写缓冲里有同名记录，以缓冲区的值为准，避免重复计入。
+        }
+        total += entry_size(key, value);
+    }
+    total
+}
+
 /// 计算 `mod_namespace` 在整个世界（全局存储 + 全部厚层实体的每实体
 /// 存储）当前占用的字节数，加上 `pending` 缓冲区里属于该 mod 的待写
 /// 记录——`pending` 里与某条已提交记录同名（目标+命名空间+键相同）的
-/// 记录会覆盖，不重复计入，见下方过滤逻辑。
+/// 记录会覆盖，不重复计入，见 [`sum_committed_bytes`]。
 ///
 /// **不扫描其他 mod 的数据**——只过滤 `mod_namespace` 匹配的条目，
 /// 天然满足设计文档六、1 节的确定性要求：A mod 的配额判定结果只取决于
@@ -196,34 +224,20 @@ pub fn mod_total_bytes(
     mod_namespace: &str,
     pending: &[ScriptStateWrite],
 ) -> usize {
-    let mut total = 0usize;
-
-    for ((namespace, key), value) in &world.global_script_state {
-        if namespace != mod_namespace {
-            continue;
-        }
-        if pending
-            .iter()
-            .any(|w| w.matches(ScriptStateTarget::Global, mod_namespace, key))
-        {
-            continue; // 待写缓冲里有同名记录，以缓冲区的值为准，避免重复计入。
-        }
-        total += entry_size(key, value);
-    }
+    let mut total = sum_committed_bytes(
+        &world.global_script_state,
+        ScriptStateTarget::Global,
+        mod_namespace,
+        pending,
+    );
 
     for (entity, agent) in world.actors.iter_with_id() {
-        for ((namespace, key), value) in &agent.script_state {
-            if namespace != mod_namespace {
-                continue;
-            }
-            if pending
-                .iter()
-                .any(|w| w.matches(ScriptStateTarget::Entity(entity), mod_namespace, key))
-            {
-                continue;
-            }
-            total += entry_size(key, value);
-        }
+        total += sum_committed_bytes(
+            &agent.script_state,
+            ScriptStateTarget::Entity(entity),
+            mod_namespace,
+            pending,
+        );
     }
 
     for write in pending {
@@ -247,18 +261,12 @@ pub fn entity_mod_bytes(
     let mut total = 0usize;
 
     if let Some(agent) = world.actors.get(entity) {
-        for ((namespace, key), value) in &agent.script_state {
-            if namespace != mod_namespace {
-                continue;
-            }
-            if pending
-                .iter()
-                .any(|w| w.matches(ScriptStateTarget::Entity(entity), mod_namespace, key))
-            {
-                continue;
-            }
-            total += entry_size(key, value);
-        }
+        total += sum_committed_bytes(
+            &agent.script_state,
+            ScriptStateTarget::Entity(entity),
+            mod_namespace,
+            pending,
+        );
     }
 
     for write in pending {
