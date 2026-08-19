@@ -41,7 +41,6 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 
-use ll_core::ident::ContentIndex;
 use ll_mod::manifest::ModManifest;
 use ll_mod::registry::Registry;
 use ll_world::state::WorldState;
@@ -222,7 +221,9 @@ fn decompress_body(compressed: &[u8]) -> Result<Vec<u8>, LoadError> {
 ///
 /// 参数：
 /// - `current_registry`/`current_manifests`：当前会话已完成的 mod
-///   装载结果。
+///   装载结果——`current_manifests` 除了未来展示「当前装了哪些 mod」，
+///   现在也被 [`check_mod_content`] 用来分清「mod 仍在场但内容变了」
+///   与「mod 完全不在场」（见其文档，P5-A 任务 14 断链二修复）。
 /// - `current_terrain_table`：当前会话按同一次装载重新注册出的地形
 ///   属性表——本函数负责把它灌回读出的 `WorldState` 并调用
 ///   [`WorldState::assert_terrain_table_loaded`] 校验，但不负责生成它
@@ -288,8 +289,6 @@ pub fn load_full_from_bytes(
     current_terrain_table: TerrainTable,
     current_script_sources: &[(String, String)],
 ) -> LoadOutcome {
-    let _ = current_manifests; // 见下方「为什么保留但当前不使用」
-
     let mut cursor = data;
     let header = match read_header_prefix_from_slice(&mut cursor) {
         Ok(header) => header,
@@ -329,15 +328,21 @@ pub fn load_full_from_bytes(
     // 身发生。
     let _ = ll_script::host::rebuild_all_engines_after_load(current_script_sources);
 
-    if let Err(err) = check_mod_content(&header.generation_mods, current_registry) {
+    if let Err(err) =
+        check_mod_content(&header.generation_mods, current_registry, current_manifests)
+    {
         return LoadOutcome::Rejected(err);
     }
 
-    // 占位索引：本任务未实现「注册一条占位内容」（批次 C 已经记录这条
-    // 已知债务，见 crate::degrade 模块文档「ContentIndex 缺占位值的
-    // 既知债务」），如实传 None——NPC 种族/职业缺失会诚实退化为
-    // Reject（只读模式），不伪造一个可能指向错误内容的占位索引。
-    let placeholder: Option<ContentIndex> = None;
+    // 占位索引：从当前会话的 registry 里查询本体占位内容（P5-A 任务 14
+    // 断链一修复，见 ll_mod::base_placeholder 模块文档）——不在这里
+    // 注册（`current_registry` 只是 `&Registry`，读档这一刻没有能力
+    // 也不应该反过来往注册表里塞新内容，注册是启动时装载阶段的职责）。
+    // 若调用方传入的 registry 从未注册过占位内容（例如某些测试特意
+    // 构造的最小注册表），这里诚实地拿到 None，`remap_world` 会按
+    // crate::degrade 模块文档「ContentIndex 缺占位值的既知债务」退化为
+    // Reject，不会伪造一个可能指向错误内容的索引。
+    let placeholder = ll_mod::base_placeholder::base_placeholder_index(current_registry);
     let degrade_actions = match remap_world(
         &mut world,
         &header.content_index_map,
@@ -358,17 +363,10 @@ pub fn load_full_from_bytes(
     summarize_load_outcome(world, &degrade_actions)
 }
 
-// 为什么保留 current_manifests 参数但当前不使用：概念形状（计划文档）
-// 明确要求这个参数，`check_mod_content` 目前只需要 `current_registry`
-// 就能完成生成期集合的哈希比对（见其文档），`current_manifests` 是
-// 「当前 mod 集合」快照（区别于生成期集合）未来真正需要展示给玩家
-// 「你现在装的是哪些 mod」时的落点——本任务不消费它，但签名保留，
-// 避免调用方之后接入这块展示逻辑时又要改一次函数签名。
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ll_core::ident::NamespacedId;
+    use ll_core::ident::{ContentIndex, NamespacedId};
     use ll_core::torus::TorusSize;
     use ll_mod::registry::Registry;
     use ll_world::generate::GenParams;
@@ -425,6 +423,19 @@ mod tests {
         let mut registry = Registry::new();
         let (_ids, terrain_table) = materialize_base_terrain(&mut |id| registry.intern(id))
             .expect("本体地形声明表内部一致，注册恒不失败");
+        (registry, terrain_table)
+    }
+
+    /// 与 [`current_session_registry_with_terrain`] 相同，另外注册了
+    /// 本体占位内容（[`ll_mod::base_placeholder::register_base_placeholder_content`]）
+    /// ——供需要验证 `load_full` 真的能走到
+    /// `DegradeAction::FallbackToPlaceholder` 分支的测试使用（P5-A 任务
+    /// 14 断链一修复：这条分支此前在完整读档管线里永远不可达）。
+    fn current_session_registry_with_terrain_and_placeholder() -> (Registry, TerrainTable) {
+        let mut registry = Registry::new();
+        let (_ids, terrain_table) = materialize_base_terrain(&mut |id| registry.intern(id))
+            .expect("本体地形声明表内部一致，注册恒不失败");
+        ll_mod::base_placeholder::register_base_placeholder_content(&mut registry);
         (registry, terrain_table)
     }
 
@@ -640,7 +651,9 @@ mod tests {
 
     #[test]
     fn mod内容哈希不匹配时读档返回rejected() {
-        // Arrange
+        // Arrange：mod 仍在场（current_manifests 里能找到 lostland），
+        // 内容却变了——真正的不兼容，必须硬拒绝（区别于下面「完全卸载
+        // 的 mod」那条测试，见 check_mod_content 文档「断链二修复」）。
         let path = temp_path("mod-content-mismatch");
         let mut header = sample_header(Vec::new());
         header.generation_mods.push(crate::header::ModHeaderEntry {
@@ -651,9 +664,21 @@ mod tests {
         save_to_file(&path, &header, &test_world()).expect("写出应当成功");
         let mut current_registry = Registry::new();
         current_registry.intern(id("lostland:river")); // 与生成期记录的哈希对不上
+        let current_manifests = vec![ModManifest {
+            id: id("lostland:self"),
+            version: "0.1.0".to_string(),
+            dependencies: Vec::new(),
+            entry_points: Vec::new(),
+        }];
 
         // Act
-        let outcome = load_full(&path, &current_registry, &[], TerrainTable::default(), &[]);
+        let outcome = load_full(
+            &path,
+            &current_registry,
+            &current_manifests,
+            TerrainTable::default(),
+            &[],
+        );
 
         // Assert
         assert!(matches!(
@@ -664,13 +689,69 @@ mod tests {
     }
 
     #[test]
-    fn 缺失mod的npc种族在读档后降级为只读模式() {
-        // 规格要求的三条最低验证之一：缺失 mod 时按类型正确降级且不
-        // 崩溃——这里覆盖 NPC 种族缺失且没有占位索引可用的场景（本
-        // 任务如实沿用批次 C「诚实退化为拒绝」的既有裁定,见
-        // load_full 文档「占位索引」一节）。
+    fn 完全卸载的mod读档后相关实体降级为只读而非直接拒绝() {
+        // P5-A 任务 14 断链二修复的核心验证：header.generation_mods 记录
+        // 了一条真实的（非留空规避）「vanishedmod」条目，且带着真实的
+        // 生成期内容哈希；当前会话的 current_manifests 里完全没有这个
+        // 命名空间（玩家把它整个卸载了）。此前版本会在 check_mod_content
+        // 这一步就直接判定 ModContentMismatch（Rejected），现在应当放行
+        // 到 remap_world，按内容类型（NPC 种族）细粒度降级为只读。
         // Arrange
-        let path = temp_path("npc-race-missing");
+        let path = temp_path("mod-fully-uninstalled");
+        let (mut world, mut registry) = test_world_with_save_registry();
+        let vanished_race = registry.intern(id("vanishedmod:ghost_race"));
+        let vanished_content_hash = registry
+            .content_hash_of("vanishedmod")
+            .expect("刚刚 intern 过，必有内容哈希");
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        world.actors.spawn(ll_world::entity::Agent {
+            pos: world.size.wrap(1, 1),
+            stats: ll_world::entity::BaseStats::BASELINE,
+            next_action_at: ll_core::time::Tick(0),
+            health: ll_world::entity::Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: vanished_race,
+            luck: 0,
+            current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
+            script_state: std::collections::BTreeMap::new(),
+        });
+        let content_index_map = registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let mut header = sample_header(content_index_map);
+        header.generation_mods.push(crate::header::ModHeaderEntry {
+            namespace: "vanishedmod".to_string(),
+            version: "0.1.0".to_string(),
+            content_hash: Some(vanished_content_hash),
+        });
+        save_to_file(&path, &header, &world).expect("写出应当成功");
+
+        // Act：当前会话的 manifests 里完全没有 vanishedmod（不是像旧
+        // 测试那样靠留空 generation_mods 绕过检查点，是真的卸载）。
+        let (current_registry, terrain_table) = current_session_registry_with_terrain();
+        let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+
+        // Assert：不是 Rejected(ModContentMismatch)，是细粒度降级后的
+        // ReadOnly——没有占位索引可用（当前会话未注册占位内容），NPC
+        // 种族缺失诚实退化为 Reject，整体只读。
+        assert!(matches!(outcome, LoadOutcome::ReadOnly(_)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 缺失mod的npc种族在当前会话未注册占位内容时读档后降级为只读模式() {
+        // 规格要求的三条最低验证之一：缺失 mod 时按类型正确降级且不
+        // 崩溃——这里覆盖 NPC 种族缺失、且当前会话确实没有注册占位内容
+        // 的场景（`crate::degrade` 模块文档「ContentIndex 缺占位值的
+        // 既知债务」这一档诚实兜底仍然保留，不强制要求调用方必须提供
+        // 占位内容）。与下一条「占位内容可用」的测试对照。
+        // Arrange
+        let path = temp_path("npc-race-missing-no-placeholder");
         let (mut world, mut registry) = test_world_with_save_registry();
         let vanished_race = registry.intern(id("vanishedmod:ghost_race"));
         let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
@@ -698,11 +779,116 @@ mod tests {
         let (current_registry, terrain_table) = current_session_registry_with_terrain();
 
         // Act：当前会话完全没有装载 vanishedmod（但装载了地形，让重
-        // 映射真正走到「找不到种族」这一步，而不是提前卡在地形上）。
+        // 映射真正走到「找不到种族」这一步，而不是提前卡在地形上），
+        // 也没有注册占位内容。
         let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
 
         // Assert
         assert!(matches!(outcome, LoadOutcome::ReadOnly(_)));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 缺失mod的npc种族在当前会话注册占位内容时读档后降级为占位且仍可游玩() {
+        // P5-A 任务 14 断链一修复的核心验证：`load_full` 的占位索引此前
+        // 硬编码为 None，这条分支在完整读档管线里永远走不到——现在改为
+        // 从 current_registry 里真的查询本体占位内容
+        // （`ll_mod::base_placeholder::base_placeholder_index`），NPC
+        // 种族缺失应当真正降级为占位而不是被拒绝，整体结果可继续游玩。
+        // Arrange
+        let path = temp_path("npc-race-missing-with-placeholder");
+        let (mut world, mut registry) = test_world_with_save_registry();
+        let vanished_race = registry.intern(id("vanishedmod:ghost_race"));
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let npc = world.actors.spawn(ll_world::entity::Agent {
+            pos: world.size.wrap(1, 1),
+            stats: ll_world::entity::BaseStats::BASELINE,
+            next_action_at: ll_core::time::Tick(0),
+            health: ll_world::entity::Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: vanished_race,
+            luck: 0,
+            current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
+            script_state: std::collections::BTreeMap::new(),
+        });
+        let content_index_map = registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let header = sample_header(content_index_map);
+        save_to_file(&path, &header, &world).expect("写出应当成功");
+        let (current_registry, terrain_table) =
+            current_session_registry_with_terrain_and_placeholder();
+        let expected_placeholder =
+            ll_mod::base_placeholder::base_placeholder_index(&current_registry)
+                .expect("刚刚注册过占位内容，必然能查到");
+
+        // Act
+        let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+
+        // Assert：不是 ReadOnly，是 Playable——占位内容真的顶上了。
+        match outcome {
+            LoadOutcome::Playable(loaded_world) => {
+                let race_after = loaded_world
+                    .actors
+                    .get(npc)
+                    .expect("NPC 实体应当仍存在")
+                    .race;
+                assert_eq!(race_after, expected_placeholder);
+            }
+            other => panic!("期望 Playable，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 建档流程真的调用了generation_mods_to_header_entries产出可读档的头部() {
+        // P5-A 任务 14 断链三修复的端到端验证：不再手写
+        // Vec<ModHeaderEntry> 或留空，而是真的走
+        // Registry -> GenerationModSet::capture ->
+        // crate::world_identity::generation_mods_to_header_entries ->
+        // SaveHeader.generation_mods 这条完整链路，再存档、读档，证明
+        // 这个转换函数产出的数据确实能撑起一次真实的 check_mod_content
+        // 通过——不是又一个只在自己模块测试里被调用的孤立函数。
+        // Arrange
+        let path = temp_path("generation-mods-conversion-wired");
+        let (world, registry) = test_world_with_save_registry();
+        let manifests = vec![ModManifest {
+            id: id("lostland:self"),
+            version: "0.1.0".to_string(),
+            dependencies: Vec::new(),
+            entry_points: Vec::new(),
+        }];
+        let generation = ll_mod::mod_set::GenerationModSet::capture(&registry, &manifests);
+        let generation_mods = crate::world_identity::generation_mods_to_header_entries(&generation);
+        assert_eq!(
+            generation_mods.len(),
+            1,
+            "本体地形已经贡献内容，生成期集合应当只有 lostland 这一条"
+        );
+
+        let content_index_map = registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let mut header = sample_header(content_index_map);
+        header.generation_mods = generation_mods;
+        save_to_file(&path, &header, &world).expect("写出应当成功");
+
+        // Act：读档一侧同样真实装载了 lostland,哈希应当对得上。
+        let (current_registry, terrain_table) = current_session_registry_with_terrain();
+        let outcome = load_full(&path, &current_registry, &manifests, terrain_table, &[]);
+
+        // Assert
+        assert!(
+            matches!(outcome, LoadOutcome::Playable(_)),
+            "generation_mods_to_header_entries 产出的头部应当能通过 check_mod_content 走到 Playable"
+        );
         let _ = std::fs::remove_file(&path);
     }
 }

@@ -192,6 +192,22 @@ fn 主体声明的解压后长度超出安全上限时不会崩溃或试图分�
 /// mod 内容哈希被篡改成一个不存在的命名空间数值——覆盖「篡改字段」
 /// 里语义层面（不是字节层面）的一种：头部本身是合法 JSON，只是记录的
 /// 内容与当前会话对不上。
+///
+/// # 断链二修复后，具体的 `LoadError` 变体变了（如实记录）
+///
+/// 这条用例把 `header_json` 里所有的 "lostland" 都替换成
+/// "nonexist"——不只是 `generation_mods[0].namespace`，`content_index_map`
+/// 里的每一条地形字符串（形如 `"lostland:mountain"`）也一并被换成了
+/// `"nonexist:mountain"`。`current_manifests` 传的是 `&[]`（空），P5-A
+/// 任务 14 断链二修复之后，`check_mod_content` 在 "nonexist" 命名空间
+/// 完全不在 manifests 里时不再硬拒绝（那是留给 `remap_world` 的「mod
+/// 不在了」放行分支，见其文档），判断因此推迟到 `remap_world`——它会
+/// 在重映射地表地形（结构性内容,没有可用的降级语义）时发现
+/// `"nonexist:mountain"` 在当前会话查不到，报
+/// `LoadError::Corrupted`（不是 `ModContentMismatch`）。两者都是
+/// `LoadOutcome::Rejected`，都不崩溃——这条用例的判据本来就是「不会
+/// 崩溃而是拒绝」，不是「必须报出哪一个具体变体」，因此这里放宽到判定
+/// 结果属于 `Rejected` 家族，不钉死具体是哪一个 `LoadError` 变体。
 #[test]
 fn 生成期mod集合被篡改成不存在的命名空间时不会崩溃而是拒绝() {
     let bytes = valid_save_bytes();
@@ -215,8 +231,6 @@ fn 生成期mod集合被篡改成不存在的命名空间时不会崩溃而是�
     let outcome = load_full_from_bytes(&data, &registry, &[], terrain_table, &[]);
     assert!(matches!(
         outcome,
-        ll_content::degrade::LoadOutcome::Rejected(
-            ll_content::load_error::LoadError::ModContentMismatch { .. }
-        )
+        ll_content::degrade::LoadOutcome::Rejected(_)
     ));
 }

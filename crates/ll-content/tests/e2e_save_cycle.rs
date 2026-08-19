@@ -185,15 +185,22 @@ fn 存档后卸载一个曾贡献内容的mod读档后相关实体降级为只�
     // 规格要求的核心场景：卸载一个曾贡献 NPC 种族的 mod，读档必须
     // 走通降级路径（不 panic、不崩溃），而不是让整个进程炸掉。
     //
-    // 已知的架构局限（如实记录，详见任务报告）：`generation_mods` 这里
-    // 刻意留空，不为「vanishedmod」记一条头部条目——若记了一条且带真实
-    // content_hash，`check_mod_content` 会在更早的检查点直接判定
-    // `ModContentMismatch`（`LoadOutcome::Rejected`），根本不会走到
-    // 本测试想验证的 `remap_world` 细粒度降级路径。这与
-    // `crate::save_file` 批次 E 既有测试同一手法，不是本文件独创。
+    // 此前的架构局限（P5-A 任务 14 断链二已修复，见
+    // `ll_content::load_error::check_mod_content` 文档「断链二修复」）：
+    // `generation_mods` 曾经必须刻意留空才能走到本测试想验证的
+    // `remap_world` 细粒度降级路径——若记了一条真实条目，
+    // `check_mod_content` 会在更早的检查点直接判定 `ModContentMismatch`
+    // （`LoadOutcome::Rejected`），根本不会走到降级路径。现在
+    // `check_mod_content` 借助 `current_manifests` 分清「mod 不在了」
+    // 与「mod 仍在场但内容变了」，本测试因此改为记一条真实的
+    // `generation_mods` 条目（带真实 content_hash），验证「完整卸载一个
+    // mod」这个最直观的玩家场景确实不会被硬拒绝。
     // Arrange
     let (mut world, mut registry, _terrain_ids) = world_with_registry();
     let vanished_race = registry.intern(id("vanishedmod:ghost_race"));
+    let vanished_content_hash = registry
+        .content_hash_of("vanishedmod")
+        .expect("刚刚 intern 过，必有内容哈希");
     let pos = world.size.wrap(1, 1);
     let zone = world.terrain.layout().tile_to_zone(pos).0;
     let mut npc = bare_agent(pos, zone);
@@ -201,15 +208,24 @@ fn 存档后卸载一个曾贡献内容的mod读档后相关实体降级为只�
     world.actors.spawn(npc);
 
     let content_index_map = snapshot_for_header(&registry);
-    let header = sample_header(content_index_map, SaveMode::Permadeath);
+    let mut header = sample_header(content_index_map, SaveMode::Permadeath);
+    header
+        .generation_mods
+        .push(ll_content::header::ModHeaderEntry {
+            namespace: "vanishedmod".to_string(),
+            version: "0.1.0".to_string(),
+            content_hash: Some(vanished_content_hash),
+        });
     let path = temp_path("mod-unload");
     save_to_file(&path, &header, &world).expect("写出应当成功");
 
-    // Act：当前会话完全没有装载 vanishedmod（只装载了本体地形）。
+    // Act：当前会话完全没有装载 vanishedmod（manifests 里也找不到它——
+    // 玩家把它整个卸载了，只装载了本体地形）。
     let (current_registry, terrain_table) = current_session_registry_with_terrain();
     let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
 
-    // Assert：不崩溃——落到只读模式，而不是 panic 或静默产出错误世界。
+    // Assert：不崩溃——落到只读模式（不是 Rejected(ModContentMismatch)），
+    // 而不是 panic 或静默产出错误世界。
     assert!(matches!(outcome, LoadOutcome::ReadOnly(_)));
     let _ = std::fs::remove_file(&path);
 }

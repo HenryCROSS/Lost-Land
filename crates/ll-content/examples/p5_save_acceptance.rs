@@ -31,31 +31,31 @@
 //! 任何「目视确认」的步骤；每一条结论都来自 `assert!`/`assert_eq!`，
 //! 断言失败会让本进程以非零状态退出，不会打印一个虚假的「通过」。
 //!
-//! # 运行过程中发现的两处真实限制（如实记录，不是本 demo 的失败）
+//! # 曾经记录的两处真实限制，P5-A 任务 14 已修复
 //!
-//! 1. **`load_full` 的 NPC 占位分支当前不可达**——`save_file.rs` 里
-//!    `load_full_from_bytes` 把 `placeholder` 参数硬编码为 `None`
-//!    （批次 C 已经记录的已知债务：项目至今没有注册过任何占位内容）。
-//!    这意味着通过完整读档管线，NPC 种族缺失现在只会产出
-//!    `DegradeAction::Reject`（与玩家角色缺失同一个结果），不会产出
-//!    `DegradeAction::FallbackToPlaceholder`——那条分支目前只能通过
-//!    直接调用 [`ll_content::remap::remap_world`]（跳过 `load_full`
-//!    这层硬编码）来观察，[`section_b_degrade_by_kind`] 因此对这两类
-//!    降级采用了不同的调用方式，并在代码里标注了原因。
-//! 2. **`check_mod_content` 与 `remap_world` 的细粒度降级是两个独立
-//!    的检查点，前者更严格**——若某个 mod 被记入了存档头
-//!    `generation_mods` 且带着真实内容哈希，而当前会话完全没有装载
-//!    它，`check_mod_content` 会在 `remap_world` 有机会展示任何「按
-//!    内容类型降级」之前就直接判定 `ModContentMismatch`
-//!    （`LoadOutcome::Rejected`，不是 `ReadOnly`）。也就是说，「玩家
-//!    卸载了一整个 mod」这个最直观的场景，现在的行为是硬拒绝，而不是
-//!    规格 §10.4 描述的「按内容类型优雅降级」。本 demo 的降级场景
-//!    因此沿用了 `crates/ll-content/src/save_file.rs`/
-//!    `crates/ll-content/tests/e2e_save_cycle.rs` 已经确立的手法——
-//!    存档头 `generation_mods` 留空，让缺失只在 `remap_world` 这一层
-//!    暴露——这不是本 demo 编造的捷径，是当前实现唯一能触达细粒度
-//!    降级路径的方式，如实记录在这里,供项目所有者判断是否需要后续
-//!    调整 `check_mod_content` 的判定粒度。
+//! 本 demo 早期版本在这里记录过两处生产代码限制,本次改动已经在
+//! `ll-content`/`ll-mod` 里修掉,如实更新说明（不是删掉历史,是标注
+//! 现状）：
+//!
+//! 1. **`load_full` 的 NPC 占位分支曾经不可达**——`save_file.rs` 里
+//!    `load_full_from_bytes` 曾把 `placeholder` 参数硬编码为 `None`。
+//!    修复：新增 [`ll_mod::base_placeholder`] 模块,把本体占位内容
+//!    注册进 `Registry`（与 `base_terrain` 完全相同的注册通道）,
+//!    `load_full` 现在从当前会话的 registry 里真的查询这个索引。
+//!    [`section_b_degrade_by_kind`] 的 `b4` 小节验证这条分支在完整
+//!    `load_full` 管线里确实可达,不再需要绕过它直接调用
+//!    [`ll_content::remap::remap_world`]。
+//! 2. **`check_mod_content` 曾经比 `remap_world` 的细粒度降级更严格**
+//!    ——若某个 mod 被记入存档头 `generation_mods` 且带着真实内容
+//!    哈希,而当前会话完全没有装载它,`check_mod_content` 会在
+//!    `remap_world` 有机会展示任何「按内容类型降级」之前就直接判定
+//!    `ModContentMismatch`（`LoadOutcome::Rejected`）——「玩家卸载了
+//!    一整个 mod」这个最直观的场景因此被硬拒绝,而不是规格 §10.4 描述
+//!    的「按内容类型优雅降级」。修复：`check_mod_content` 现在借助
+//!    `current_manifests` 分清「mod 仍在场但内容变了」（真不兼容,硬
+//!    拒绝）与「mod 完全不在场」（放行给 `remap_world` 降级）。
+//!    [`b3_player_missing_full_pipeline_readonly`] 现在记一条真实的
+//!    `generation_mods` 条目,不再需要靠留空规避这个检查点。
 
 use std::collections::BTreeMap;
 
@@ -69,7 +69,9 @@ use ll_content::remap::remap_world;
 use ll_content::save_file::{
     CURRENT_SCHEMA_VERSION, load_from_header_only, load_full, save_to_file,
 };
-use ll_content::world_identity::{WorldIdentity, validate_size_choice};
+use ll_content::world_identity::{
+    WorldIdentity, generation_mods_to_header_entries, validate_size_choice,
+};
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
@@ -192,24 +194,19 @@ fn temp_path(name: &str) -> std::path::PathBuf {
 // ---------------------------------------------------------------------
 
 /// 完整调用链的第一环：`validate_size_choice` → `WorldIdentity::bind` →
-/// `GenerationModSet::capture`——这是「玩家在开局界面选择世界尺寸」到
-/// 「世界创建」这一段，本 demo 之前的批次已经交付并测试过，这里只做
-/// 一次真实调用，确认这一环仍然接得通，不是假设它还成立。
+/// `GenerationModSet::capture` → `generation_mods_to_header_entries`——
+/// 这是「玩家在开局界面选择世界尺寸」到「世界创建」再到「写进存档头」
+/// 这一整段，本 demo 之前的批次已经交付并测试过前半段，这里做一次真实
+/// 调用，确认这一环仍然接得通，不是假设它还成立。
 ///
-/// # 顺带发现的一处生产代码缺口（如实记录，不在本任务修复）
+/// # 断链三已修复（P5-A 任务 14）
 ///
-/// `GenerationModSet`（`ll_mod::mod_set`）到
-/// `SaveHeader::generation_mods`（`ll_content::header`）之间**没有任何
-/// 生产代码里的转换函数**——`ll-content` 全部现存测试（含批次 E、
-/// 本计划任务 12 的 e2e 脚手架）都是直接手写 `Vec<ModHeaderEntry>` 或
-/// 留空，从未真正把 `GenerationModSet::capture` 的产出接上
-/// `SaveHeader`。P5 计划的完整调用链自查表把「`GenerationModSet`/
-/// `CurrentModSet` 写入 header 两个字段」记在
-/// `ll-content::world_identity`（任务 4）名下，但 `world_identity.rs`
-/// 里确实没有这样一个函数。下面 `mod_set_entries_to_header_entries`
-/// 是本 demo 为了走通这一环临时补的胶水代码，**不是生产代码**——真正
-/// 的存档触发点（未来 P7 的存档管理 UI 或更早的某个批次）需要在
-/// `ll-content` 里补一个这样的转换,不能指望调用方各自重新发明。
+/// 本 demo 早期版本在这里发现过一处生产代码缺口：`GenerationModSet`
+/// （`ll_mod::mod_set`）到 `SaveHeader::generation_mods`
+/// （`ll_content::header`）之间没有任何生产代码里的转换函数，demo 当时
+/// 只能在自己代码里临时补一份等价的胶水代码绕过去。现在改为直接调用
+/// [`ll_content::world_identity::generation_mods_to_header_entries`]——
+/// 这是补上的生产函数，本 demo 不再需要自己的胶水实现。
 fn step0_world_identity_chain_link() {
     println!("[步骤零] 建档：世界身份三要素绑定链路");
 
@@ -230,7 +227,7 @@ fn step0_world_identity_chain_link() {
     assert_eq!(identity.seed, 20_260_819);
     assert_eq!(identity.generation_mods, generation);
 
-    let header_entries = mod_set_entries_to_header_entries(&generation);
+    let header_entries = generation_mods_to_header_entries(&generation);
     assert_eq!(header_entries.len(), 1);
     assert_eq!(header_entries[0].namespace, "lostland");
     assert_eq!(header_entries[0].version, "0.1.0");
@@ -240,25 +237,11 @@ fn step0_world_identity_chain_link() {
     );
 
     println!(
-        "  world_identity 链路通：validate_size_choice -> WorldIdentity::bind -> GenerationModSet::capture"
+        "  world_identity 链路通：validate_size_choice -> WorldIdentity::bind -> GenerationModSet::capture -> generation_mods_to_header_entries"
     );
     println!(
-        "  （已发现的生产代码缺口：GenerationModSet -> Vec<ModHeaderEntry> 目前无生产转换函数，见本函数文档）\n"
+        "  （断链三已修复：调用的是 ll-content 生产代码里的转换函数，不是 demo 自己的胶水代码）\n"
     );
-}
-
-/// demo 专用的胶水代码——见 [`step0_world_identity_chain_link`] 文档
-/// 「顺带发现的一处生产代码缺口」。刻意不放进 `ll-content` 的
-/// `src/`：本任务的范围是任务 12/13，不是回头修任务 4 的产出。
-fn mod_set_entries_to_header_entries(set: &GenerationModSet) -> Vec<ModHeaderEntry> {
-    set.0
-        .iter()
-        .map(|entry| ModHeaderEntry {
-            namespace: entry.id.namespace().to_string(),
-            version: entry.version.clone(),
-            content_hash: entry.content_hash,
-        })
-        .collect()
 }
 
 // ---------------------------------------------------------------------
@@ -354,9 +337,9 @@ fn section_a_full_roundtrip() {
     );
 
     let content_index_map = snapshot_for_header(&registry);
-    // 见模块文档「已发现的生产代码缺口」：这里 generation_mods 留空，
-    // 是刻意让本节聚焦「往返逐位一致」这一件事,不与 mod 版本兼容性
-    // 检查纠缠——那件事由下方 section_b/section_c 分别验证。
+    // generation_mods 这里留空是刻意的（与断链二无关）：让本节聚焦
+    // 「往返逐位一致」这一件事,不与 mod 版本兼容性检查纠缠——那件事由
+    // 下方 section_b 分别验证（含真实的 generation_mods 条目）。
     let header = header_with(content_index_map.clone(), Vec::new(), SaveMode::Permadeath);
     let hash_before_save = world.hash();
     let path = temp_path("full-roundtrip");
@@ -401,6 +384,7 @@ fn section_b_degrade_by_kind() {
     b1_item_missing_policy_only();
     b2_player_vs_npc_race_missing_mixed_outcome();
     b3_player_missing_full_pipeline_readonly();
+    b4_npc_race_missing_full_pipeline_placeholder();
     println!();
 }
 
@@ -433,11 +417,12 @@ fn b1_item_missing_policy_only() {
 ///
 /// # 为什么直接调用 `remap_world`，不经过 `load_full`
 ///
-/// 见本文件顶部模块文档「已发现的两处真实限制」第 1 条：`load_full`
-/// 把占位索引硬编码成 `None`，NPC 占位分支在完整读档管线里现在不可达。
-/// 直接调用 [`remap_world`]（`ll-content` 对外公开的真实生产函数，不是
-/// 测试专用的影子实现）可以传入一个真实占位索引，验证「按归属区分
-/// 降级策略」这个机制本身是正确的。
+/// 这不再是绕过某处硬编码限制（`load_full` 的占位分支现在确实可达，
+/// 见 [`b4_npc_race_missing_full_pipeline_placeholder`]）——这里继续
+/// 直接调用 [`remap_world`]（`ll-content` 对外公开的真实生产函数）单纯
+/// 是因为本节要在**同一次**重映射里同时观察玩家与 NPC 两种归属的结果，
+/// `load_full` 每次调用只处理一份存档、产出一个整体 `LoadOutcome`，
+/// 拿不到「这一条具体是 Reject 还是 FallbackToPlaceholder」的逐条明细。
 fn b2_player_vs_npc_race_missing_mixed_outcome() {
     let (mut world, mut save_registry, _terrain_ids) = world_with_registry();
     let vanished_player_race = save_registry.intern(id("uninstalledmod:player_race"));
@@ -458,10 +443,12 @@ fn b2_player_vs_npc_race_missing_mixed_outcome() {
 
     let content_index_map = snapshot_for_header(&save_registry);
 
-    // 当前会话：装载了本体地形 + 一条真实注册的占位内容,但完全没有
-    // 装载 uninstalledmod。
+    // 当前会话：装载了本体地形 + 本体占位内容（走
+    // ll_mod::base_placeholder 的生产注册路径，不是 demo 自己拼一个
+    // 字符串），但完全没有装载 uninstalledmod。
     let (mut current_registry, _terrain_table) = current_session_registry_with_terrain();
-    let placeholder = current_registry.intern(id("lostland:placeholder_race"));
+    let placeholder =
+        ll_mod::base_placeholder::register_base_placeholder_content(&mut current_registry);
 
     let actions = remap_world(
         &mut world,
@@ -524,6 +511,9 @@ fn b2_player_vs_npc_race_missing_mixed_outcome() {
 fn b3_player_missing_full_pipeline_readonly() {
     let (mut world, mut save_registry, _terrain_ids) = world_with_registry();
     let vanished_race = save_registry.intern(id("uninstalledmod:player_race"));
+    let vanished_content_hash = save_registry
+        .content_hash_of("uninstalledmod")
+        .expect("刚刚 intern 过，必有内容哈希");
     let player_pos = world.size.wrap(1, 1);
     let player_zone = world.terrain.layout().tile_to_zone(player_pos).0;
     let mut player_agent = bare_agent(player_pos, player_zone);
@@ -533,14 +523,22 @@ fn b3_player_missing_full_pipeline_readonly() {
     world.player_entity = Some(player);
 
     let content_index_map = snapshot_for_header(&save_registry);
-    // 见模块文档「已发现的两处真实限制」第 2 条：generation_mods 留空
-    // 是让缺失只在 remap_world 层暴露，不在 check_mod_content 这一更早
-    // 的检查点就被拒绝——两者结果都不崩溃，但对应不同的 LoadError 分支,
-    // 本节要验证的是细粒度降级分支。
-    let header = header_with(content_index_map, Vec::new(), SaveMode::Permadeath);
+    // 断链二已修复：generation_mods 现在记一条真实的 uninstalledmod
+    // 条目（带真实 content_hash），不再需要靠留空规避 check_mod_content
+    // ——当前会话的 current_manifests（load_full 调用处传 &[]）里完全
+    // 找不到这个命名空间，check_mod_content 会把判断放行给
+    // remap_world，本节验证的正是这条放行之后的细粒度降级路径。
+    let generation_mods = vec![ModHeaderEntry {
+        namespace: "uninstalledmod".to_string(),
+        version: "0.1.0".to_string(),
+        content_hash: Some(vanished_content_hash),
+    }];
+    let header = header_with(content_index_map, generation_mods, SaveMode::Permadeath);
     let path = temp_path("player-race-missing");
     save_to_file(&path, &header, &world).expect("写出应当成功");
 
+    // current_manifests 传 &[]——uninstalledmod 确实被卸载了，manifests
+    // 里找不到它，这正是要验证的场景。
     let (current_registry, terrain_table) = current_session_registry_with_terrain();
     let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
 
@@ -571,6 +569,52 @@ fn b3_player_missing_full_pipeline_readonly() {
 
     println!(
         "  [2c] 玩家角色种族缺失（完整 load_full 管线）-> ReadOnly，未崩溃；只读模式下数据可查看/导出"
+    );
+}
+
+/// NPC 种族缺失，走完整的「文件 → load_full」管线（不是直接调用
+/// `remap_world`），确认占位降级分支在生产读档管线里真的可达
+/// （断链一修复，P5-A 任务 14）——此前这条分支只能通过直接调用
+/// `remap_world` 观察，见 [`b2_player_vs_npc_race_missing_mixed_outcome`]
+/// 文档。
+fn b4_npc_race_missing_full_pipeline_placeholder() {
+    let (mut world, mut save_registry, _terrain_ids) = world_with_registry();
+    let vanished_race = save_registry.intern(id("uninstalledmod:npc_race"));
+    let npc_pos = world.size.wrap(2, 1);
+    let npc_zone = world.terrain.layout().tile_to_zone(npc_pos).0;
+    let mut npc_agent = bare_agent(npc_pos, npc_zone);
+    npc_agent.race = vanished_race;
+    let npc = world.actors.spawn(npc_agent);
+
+    let content_index_map = snapshot_for_header(&save_registry);
+    let header = header_with(content_index_map, Vec::new(), SaveMode::Permadeath);
+    let path = temp_path("npc-race-missing-full-pipeline");
+    save_to_file(&path, &header, &world).expect("写出应当成功");
+
+    // 当前会话：地形 + 本体占位内容都走生产注册路径。
+    let (mut current_registry, terrain_table) = current_session_registry_with_terrain();
+    let expected_placeholder =
+        ll_mod::base_placeholder::register_base_placeholder_content(&mut current_registry);
+    let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+
+    match outcome {
+        LoadOutcome::Playable(loaded_world) => {
+            let race_after = loaded_world
+                .actors
+                .get(npc)
+                .expect("NPC 实体应当仍存在（不崩溃）")
+                .race;
+            assert_eq!(
+                race_after, expected_placeholder,
+                "NPC 种族应当真的被换成本体占位内容"
+            );
+        }
+        other => panic!("期望 Playable，实际 {other:?}"),
+    }
+    let _ = std::fs::remove_file(&path);
+
+    println!(
+        "  [2d] NPC 种族缺失（完整 load_full 管线，此前不可达）-> Playable，种族已换成占位内容"
     );
 }
 
