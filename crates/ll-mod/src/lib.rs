@@ -33,6 +33,9 @@
 //! - [`skill`] —— 技能注册表 + 前置关系 DAG 校验（P5-B 任务 3）：技能树
 //!   的「解锁」判定要求前置关系无环，注册期用拓扑着色法检测环并报告
 //!   具体环路，见该模块文档。
+//! - [`subclass`] —— 副职注册表（P5-B 任务 4）：裁定 P5-4（主职与副职
+//!   共享技能命名空间）在代码层面的落点，`SubclassDef` 本身不携带任何
+//!   命名空间字段，见该模块文档。
 //! - [`base_placeholder`] —— 同一个模式在「占位/未知内容」上的落点
 //!   （P5-A 任务 14 补齐）：把本体的占位内容注册进
 //!   [`registry::Registry`]，让 NPC 种族缺失的占位降级分支在生产读档
@@ -64,4 +67,5 @@ pub mod pipeline;
 pub mod registry;
 pub mod script_terrain_api;
 pub mod skill;
+pub mod subclass;
 pub mod topo;
