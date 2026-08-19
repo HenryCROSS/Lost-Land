@@ -222,6 +222,10 @@ fn spawn_combatant(
 ) -> Combatant {
     let profession = intern(interner, "lostland:wanderer");
     let race = intern(interner, "lostland:human");
+    // demo 世界没有任何 Interior，全部战斗单位恒在地表——层属性索引
+    // 用占位值即可，本 demo 不消费 Space::profile（P3 的重点是战斗结算
+    // 与时间轴，不是任务 12 才接线的进出 Interior）。
+    let (zone, _) = world.terrain.layout().tile_to_zone(pos);
     let id = world.actors.spawn(Agent {
         pos,
         stats: BaseStats {
@@ -237,6 +241,10 @@ fn spawn_combatant(
         goals: Vec::new(),
         race,
         luck: 0,
+        current_space: ll_world::space::Space::surface(
+            zone,
+            ll_core::ident::ContentIndex::default(),
+        ),
     });
     timeline.schedule(id, Tick(0));
     Combatant { id, sprite, tint }

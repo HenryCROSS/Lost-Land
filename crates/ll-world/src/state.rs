@@ -30,6 +30,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use ll_core::hashing::StateHasher;
+use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
 
@@ -39,7 +40,7 @@ use crate::entity::{Agent, Arena, ThinPopulation};
 use crate::generate::{GenParams, build_zone_noise};
 use crate::interior::{Interior, InteriorTable};
 use crate::noise::TileableNoise;
-use crate::space::SpaceId;
+use crate::space::{Space, SpaceId};
 use crate::surface_store::SurfaceStore;
 use crate::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
 use crate::zone::ZoneLayout;
@@ -120,6 +121,30 @@ pub struct WorldState {
     /// `WorldState::enter_interior`/`exit_interior`，两者各自维护自己
     /// 的那份状态，不互相依赖。
     pub current_interior: Option<SpaceId>,
+    /// 地表默认层属性索引（任务 12：两级坐标系重写）——`Intent::ExitSpace`
+    /// 结算时用于重新构造 `Space::Surface { .. }`，见
+    /// `ll_sim::resolve` 模块文档「`Interior` 退出如何拿到地表 profile」
+    /// 一节。
+    ///
+    /// # 为什么不参与序列化，为什么不是 `WorldState::new` 的参数
+    ///
+    /// 与 `terrain_table` 同一类已知限制：`ContentIndex` 依赖当前会话
+    /// 的注册表加载顺序，不可持久化（见其字段文档）。**没有做成构造
+    /// 参数**——与 `terrain_table`（生成地形这一步立刻就要用）不同，
+    /// 这个索引只在玩家真正触发一次 `Intent::ExitSpace` 时才被读取,
+    /// 绝大多数调用方（现有全部测试与三个既有验收 demo）从不构造/消费
+    /// 任何 `Interior`,不需要为了一个用不到的字段而在 `WorldState::new`
+    /// 的调用点上都多传一个参数。真正需要它的调用方（任务 12 起接线
+    /// 进出 `Interior` 的场景）应在拿到真实的
+    /// `BaseSpaceProfileIds`/`register_base_space_profiles` 结果后，
+    /// 显式赋值 `world.surface_profile = ids.surface`。读档后（以及未
+    /// 显式赋值时）的占位值是 [`ContentIndex::default`]，见其文档
+    /// 「不代表任何具体已注册内容」——在这个值被真正替换之前触发
+    /// `Intent::ExitSpace` 会让退出后的 `Space::Surface.profile` 指向
+    /// 一个可能未注册的占位索引，调用方必须保证在开放这条 Intent 之前
+    /// 已经完成赋值。
+    #[serde(skip)]
+    pub surface_profile: ContentIndex,
     /// 薄层人口：数十万到数百万背景 NPC，列式排布。P3 阶段可以为空，
     /// 见 [`ThinPopulation`] 模块文档。不参与序列化，理由见本类型文档。
     #[serde(skip)]
@@ -188,8 +213,10 @@ impl TryFrom<WorldStateRepr> for WorldState {
             // 读档后总是从「没有进入任何 Interior」的状态开始——见
             // WorldStateRepr 文档。
             current_interior: None,
-            // 三者当前都不参与序列化（见 WorldState 文档），存档里没有
-            // 对应数据可读，读档后总是从空/默认状态开始。
+            // 四者当前都不参与序列化（见 WorldState 文档），存档里没有
+            // 对应数据可读，读档后总是从空/默认状态开始；surface_profile
+            // 额外要求调用方读档后显式重新赋值才能安全开放 ExitSpace。
+            surface_profile: ContentIndex::default(),
             population: ThinPopulation::default(),
             actors: Arena::default(),
             terrain_table: TerrainTable::default(),
@@ -230,6 +257,7 @@ impl WorldState {
             terrain,
             interiors: InteriorTable::new(),
             current_interior: None,
+            surface_profile: ContentIndex::default(),
             population: ThinPopulation::default(),
             actors: Arena::default(),
             terrain_table,
@@ -418,8 +446,48 @@ impl WorldState {
             hasher.write_i64(i64::from(agent.health));
             hasher.write_i64(agent.wallet);
             hasher.write_i64(agent.next_action_at.0);
+            write_space(&mut hasher, agent.current_space);
         }
         hasher.finish()
+    }
+}
+
+/// 把一个 [`Space`] 值混入哈希——[`WorldState::hash`] 的帮手（任务 12）。
+///
+/// 若哈希只看地形与 `pos`/`health`/`wallet`/`next_action_at`，
+/// `Effect::ChangeSpace` 悄悄算错（例如把玩家送进了错误的 `Interior`
+/// 楼层，或者退出失败却没人发现）不会反映在世界哈希上——这正是
+/// [`WorldState::hash`] 文档「厚层实体也参与摘要」一节点名要避免的
+/// 同一类缺口，`current_space` 是这批新增字段里唯一一个会被
+/// `Effect::ChangeSpace` 改动、此前完全游离在确定性回归测试之外的
+/// 字段。
+///
+/// 两个变体先混入一个判别字节（`0`/`1`），再混入各自的全部字段——不
+/// 省略 `z`/`floor` 这类当前批次「恒定」或「预留」的字段：即便它们
+/// 现在不变，混入的代价接近零，却能在未来这些字段真的开始变化时立刻
+/// 被这条哈希覆盖，不需要那时再回来找哪里漏掉了一处摘要。
+fn write_space(hasher: &mut StateHasher, space: Space) {
+    match space {
+        Space::Surface { zone, z, profile } => {
+            hasher.write_u64(0);
+            hasher.write_i64(i64::from(zone.x()));
+            hasher.write_i64(i64::from(zone.y()));
+            hasher.write_i64(i64::from(z));
+            hasher.write_u64(u64::from(profile.get()));
+        }
+        Space::Interior {
+            id,
+            floor,
+            anchor,
+            profile,
+        } => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(id.get()));
+            hasher.write_i64(i64::from(floor));
+            hasher.write_i64(i64::from(anchor.x()));
+            hasher.write_i64(i64::from(anchor.y()));
+            hasher.write_u64(u64::from(profile.get()));
+        }
     }
 }
 

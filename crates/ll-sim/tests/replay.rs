@@ -29,6 +29,7 @@ use ll_sim::intent::{Direction, Intent};
 use ll_sim::resolve::resolve;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
+use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
 use ll_world::zone::ZoneLayout;
@@ -85,8 +86,14 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
     let enemy_profession =
         interner.intern(NamespacedId::parse("lostland:bandit").expect("合法标识符"));
 
+    // 两个实体的 current_space 都取地表——本文件的黄金基准只演练
+    // Move/Attack/OpenDoor/Wait 这批既有 Intent，不涉及进出 Interior
+    // （那部分留给 ll-sim/src/resolve.rs 的任务 12 单元测试覆盖），层
+    // 属性索引因此可以是占位值，不影响这条 Intent 流的结算逻辑。
+    let player_pos = world.size.wrap(10, 10);
+    let (player_zone, _) = world.terrain.layout().tile_to_zone(player_pos);
     let player = world.actors.spawn(Agent {
-        pos: world.size.wrap(10, 10),
+        pos: player_pos,
         stats: BaseStats::BASELINE,
         next_action_at: Tick(0),
         health: Agent::STARTING_HEALTH,
@@ -96,9 +103,12 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         goals: Vec::new(),
         race,
         luck: 0,
+        current_space: Space::surface(player_zone, ll_core::ident::ContentIndex::default()),
     });
+    let enemy_pos = world.size.wrap(20, 20);
+    let (enemy_zone, _) = world.terrain.layout().tile_to_zone(enemy_pos);
     let enemy = world.actors.spawn(Agent {
-        pos: world.size.wrap(20, 20),
+        pos: enemy_pos,
         stats: BaseStats::BASELINE,
         next_action_at: Tick(0),
         health: Agent::STARTING_HEALTH,
@@ -108,6 +118,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         goals: Vec::new(),
         race,
         luck: 0,
+        current_space: Space::surface(enemy_zone, ll_core::ident::ContentIndex::default()),
     });
 
     (world, player, enemy)
@@ -218,9 +229,21 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 意图流从不推进它），补一步进去只是把「谁先把门打开」的归属换了个
 /// 位置，最终世界状态（地形/位置/时钟）逐位不变——这也是为什么后面
 /// 那个「真正打开门的显式 OpenDoor 现在变成了空操作」的重构本身是
-/// 安全的：世界状态不因为顺序调整而漂移。人工核验：这里的常量数值与
-/// 只应用噪声修复、intent_stream 保持 8 步不变时实测到的哈希完全相同。
-const EXPECTED_REPLAY_DIGEST: u64 = 6_078_574_347_230_641_570;
+/// 安全的：世界状态不因为顺序调整而漂移。
+///
+/// # 任务 12 的第二次变更：`hash()` 新增混入 `current_space`
+///
+/// `WorldState::hash` 现在额外遍历每个存活实体的 `current_space`（见
+/// 其文档「厚层实体也参与摘要」一节新增的段落）。**这条 Intent 流
+/// 全程没有任何 `EnterSpace`/`ExitSpace`——两个实体的 `current_space`
+/// 从 `setup` 到结束恒为地表，数值本身没有变化**，摘要仍然改变，
+/// 是因为 `hash()` 现在多混入了这几个此前完全不参与摘要的字段（哪怕
+/// 它们的值本身没变，混入顺序本身就会让最终摘要不同），这与「地形/
+/// 位置/时钟没有变化」不矛盾。人工核验：把 `write_space` 的调用临时
+/// 注释掉重新跑这条测试，摘要回到迁移前的旧常量
+/// `6_078_574_347_230_641_570`——确认这次变化完全、只来自
+/// `current_space` 被纳入摘要这一处改动，没有引入其他意外的行为漂移。
+const EXPECTED_REPLAY_DIGEST: u64 = 16_465_209_158_075_336_802;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

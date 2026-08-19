@@ -97,6 +97,20 @@ impl fmt::Display for NamespacedId {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ContentIndex(u32);
 
+impl Default for ContentIndex {
+    /// 占位默认值（索引 0）——**不代表任何具体已注册内容**。
+    ///
+    /// 只用于像 `ll_world::state::WorldState::surface_profile` 这类
+    /// 「依赖当前会话注册表上下文，构造时未必已知」的字段需要一个初始
+    /// 值占位的场景（与 `terrain_table` 字段同一类已知限制，见
+    /// `ll_world::state` 模块文档）。调用方必须在拿到真实注册表之后
+    /// 显式替换这个占位值，不能把它当成任何具体内容的索引来使用——
+    /// 索引 `0` 在不同会话、不同 mod 组合下可能对应完全不同的内容。
+    fn default() -> Self {
+        ContentIndex(0)
+    }
+}
+
 impl ContentIndex {
     /// 取出底层原始索引值，供数组下标使用。
     pub const fn get(&self) -> u32 {

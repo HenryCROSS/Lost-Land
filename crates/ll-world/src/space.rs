@@ -117,6 +117,21 @@ impl Space {
             Space::Interior { profile, .. } => *profile,
         }
     }
+
+    /// 便捷构造：`z` 恒为 0 的地表空间（见 [`Space::Surface`] 文档
+    /// 「为什么恒为 0」）。
+    ///
+    /// 供 [`crate::entity::Agent::current_space`] 的默认值、以及任务 12
+    /// 结算 `Intent::ExitSpace` 时重新构造地表空间使用——两处都不需要
+    /// 关心 `z` 这个当前恒为零的预留维度，写这个构造函数避免每处调用
+    /// 都重复拼一遍 `z: 0`。
+    pub const fn surface(zone: ZoneCoord, profile: ContentIndex) -> Space {
+        Space::Surface {
+            zone,
+            z: 0,
+            profile,
+        }
+    }
 }
 
 #[cfg(test)]

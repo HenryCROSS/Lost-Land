@@ -5,6 +5,8 @@ use ll_core::rng::DetRng;
 use ll_core::time::{TICKS_PER_DAY, Tick};
 use ll_core::torus::TorusPos;
 
+use crate::space::Space;
+
 use super::{Agent, BaseStats, EntityId, FamilyId};
 
 /// 钱包公式每「天」的基础收入。P3 阶段的占位取值——真实的经济平衡
@@ -180,7 +182,21 @@ impl ThinPopulation {
     /// 所属聚落的位置。返回的 `Agent` 是升格那一刻的快照，此后不再与
     /// 薄层的公式挂钩；调用方需要自行决定何时（以及是否）通过
     /// [`Self::rebase`] 把它交还给薄层。
-    pub fn promote(&self, id: EntityId, at: TorusPos, seed: u64, now: Tick) -> Option<Agent> {
+    ///
+    /// `zone`/`surface_profile` 由调用方提供，用于构造升格后
+    /// `Agent::current_space` 的初始值（恒为 `Space::Surface`——薄层
+    /// NPC 只在地表活动，见 [`crate::entity::Agent::current_space`]
+    /// 文档）：薄层本身不持有 `ZoneLayout`/层属性注册表，这两样上下文
+    /// 只有调用方（持有 `WorldState` 的一方）才有。
+    pub fn promote(
+        &self,
+        id: EntityId,
+        at: TorusPos,
+        seed: u64,
+        now: Tick,
+        zone: crate::space::ZoneCoord,
+        surface_profile: ContentIndex,
+    ) -> Option<Agent> {
         let index = self.index_of(id)?;
         let wallet = self.wallet_of(id, seed, now)?;
         Some(Agent {
@@ -195,6 +211,7 @@ impl ThinPopulation {
             race: self.race[index],
             // 薄层不追踪幸运，升格时取零——见 Agent::luck 文档。
             luck: 0,
+            current_space: Space::surface(zone, surface_profile),
         })
     }
 
@@ -363,7 +380,7 @@ mod tests {
 
         // Act
         let agent = population
-            .promote(id, at, 42, Tick(0))
+            .promote(id, at, 42, Tick(0), zone_fixture(), ContentIndex::default())
             .expect("有效标识必然能升格");
 
         // Assert
@@ -381,7 +398,7 @@ mod tests {
 
         // Act
         let agent = population
-            .promote(id, at, 42, Tick(0))
+            .promote(id, at, 42, Tick(0), zone_fixture(), ContentIndex::default())
             .expect("有效标识必然能升格");
 
         // Assert
@@ -396,9 +413,24 @@ mod tests {
         let world = ll_core::torus::TorusSize::new(16, 16).expect("常量非零");
 
         // Act
-        let agent = population.promote(bogus, world.wrap(0, 0), 42, Tick(0));
+        let agent = population.promote(
+            bogus,
+            world.wrap(0, 0),
+            42,
+            Tick(0),
+            zone_fixture(),
+            ContentIndex::default(),
+        );
 
         // Assert
         assert!(agent.is_none());
+    }
+
+    /// 测试用区块坐标：升格相关测试不关心具体落在哪个区块，只需要一个
+    /// 合法值。
+    fn zone_fixture() -> crate::space::ZoneCoord {
+        ll_core::torus::TorusSize::new(48, 32)
+            .expect("48x32 是合法的区块尺寸")
+            .wrap(0, 0)
     }
 }

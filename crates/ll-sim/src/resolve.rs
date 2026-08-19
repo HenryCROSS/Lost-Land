@@ -23,9 +23,36 @@
 //! 多个实体时打谁」这类新规则，而本批次的验收测试不需要它，贸然实现
 //! 只会引入一段没有测试覆盖的行为。需要「撞人即攻击」的手感时，请把
 //! 这条判定和它的打靶规则一起补上，而不是只加派生这一半。
+//!
+//! # `Interior` 内部移动的范围边界（任务 12）
+//!
+//! `Intent::Move` 在 `agent.current_space` 是 `Space::Interior` 时**不
+//! 产生任何效果**——见本文件内部的 [`resolve_move`]。这是本批次刻意
+//! 划定的边界，不是遗漏：`Interior` 内部漫游需要一个「楼层内位置」的
+//! 独立坐标系（`ll_core::bounded::BoundedPos`），[`ll_world::entity::Agent`]
+//! 当前只有 `pos: TorusPos`（世界地图坐标，进出 `Interior` 都不改变，
+//! 见其文档），本批次的任务范围是「接线进出」（[`resolve_enter_space`]/
+//! [`resolve_exit_space`]），不是「接线内部漫游」——验收 demo（任务 15）
+//! 只需要证明「能进能出、只渲染当前层、层属性生效」，不需要玩家能在
+//! `Interior` 内部走动。若放任 `resolve_move` 在 `Interior` 内继续按
+//! `Space::Surface` 那套逻辑改 `agent.pos`，会直接破坏「进入 `Interior`
+//! 后 `Agent.pos` 不变」这条不变式（见 `Agent::current_space` 文档），
+//! 所以这里选择**静默无效**（与撞墙同一种处理），而不是放行一条会
+//! 悄悄弄脏世界地图坐标的路径。
+//!
+//! # `Interior` 退出如何拿到地表 profile
+//!
+//! [`resolve_exit_space`] 重新构造 `Space::Surface { .. }` 时，`profile`
+//! 字段取自 [`WorldState::surface_profile`]——这个索引依赖当前会话的
+//! 注册表加载顺序，`resolve` 不能自己现造一个（那会破坏「本体即 Mod」
+//! 走同一条注册路径的纪律），只能读 `WorldState` 已经缓存好的那一份，
+//! 见其字段文档「为什么不参与序列化，为什么不是 `WorldState::new` 的
+//! 参数」一节：调用方必须在开放 `Intent::ExitSpace` 之前显式设置好
+//! 这个字段。
 
 use ll_core::time::Tick;
 use ll_world::entity::EntityId;
+use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
 
 use crate::combat::{Penetration, damage_after_defense};
@@ -93,6 +120,8 @@ pub fn resolve(world: &WorldState, intent: &Intent) -> Vec<Effect> {
         Intent::Move { actor, dir } => resolve_move(world, actor, dir),
         Intent::Attack { actor, target } => resolve_attack(world, actor, target),
         Intent::OpenDoor { actor, pos } => resolve_open_door(world, actor, pos),
+        Intent::EnterSpace { actor, target } => resolve_enter_space(world, actor, target),
+        Intent::ExitSpace { actor } => resolve_exit_space(world, actor),
     }
 }
 
@@ -133,6 +162,12 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
+    // Interior 内部漫游不在本批次范围内——见模块文档「Interior 内部
+    // 移动的范围边界」一节。静默无效，不改 agent.pos，保住「进入
+    // Interior 后 Agent.pos 不变」这条不变式。
+    if !matches!(agent.current_space, Space::Surface { .. }) {
+        return Vec::new();
+    }
     let (dx, dy) = dir.delta();
     let dest = world.size.wrap(agent.pos.x() + dx, agent.pos.y() + dy);
     // resolve 必须是纯函数（C1），不能触发 SurfaceStore 的按需生成——
@@ -250,6 +285,90 @@ fn resolve_open_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Ve
     ]
 }
 
+/// 尝试进入 `target` 这个具体的 `Interior` 空间实例。
+///
+/// 三重校验，任一失败都静默作废（不产生效果，与撞墙同一种处理）：
+/// 1. `actor` 当前必须在地表——已经在某个 `Interior` 里时不允许直接
+///    「传送」进另一个（不支持 `Interior` 嵌套 `Interior`，本批次范围
+///    之外）。
+/// 2. `target` 必须真实存在于 `world.interiors`。
+/// 3. `target` 的入口锚点必须等于 `actor` 当前所在的世界格——玩家必须
+///    真的站在入口上，不能隔空进入。
+///
+/// 通过校验后，进入哪一层由 [`entry_floor`] 决定。
+fn resolve_enter_space(world: &WorldState, actor: EntityId, target: SpaceId) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    if !matches!(agent.current_space, Space::Surface { .. }) {
+        return Vec::new();
+    }
+    let Some(interior) = world.interiors.get(target) else {
+        return Vec::new();
+    };
+    if interior.anchor != agent.pos {
+        return Vec::new();
+    }
+    let Some(floor) = entry_floor(interior) else {
+        return Vec::new();
+    };
+    vec![Effect::ChangeSpace {
+        actor,
+        space: Space::Interior {
+            id: target,
+            floor,
+            anchor: interior.anchor,
+            profile: interior.profile,
+        },
+    }]
+}
+
+/// 从入口进入 `Interior` 时应该落在哪一层：优先取 0 层（约定俗成的
+/// 「地面层」），若这个 `Interior` 恰好没有 0 层（稀疏楼层，见
+/// [`ll_world::interior`] 模块文档「稀疏性」一节），退而取已生成楼层里
+/// 编号最小的一个。若一层都还没生成，返回 `None`——这不是编程错误
+/// （`Interior` 允许先插入实例、楼层由生成器按需补齐，见其模块文档
+/// 「与共享常驻预算的关系」），只是这一步无法进入，与撞墙同一种
+/// 「静默作废」处理。
+fn entry_floor(interior: &ll_world::interior::Interior) -> Option<i16> {
+    let floors = interior.floor_numbers();
+    if floors.contains(&0) {
+        Some(0)
+    } else {
+        floors.first().copied()
+    }
+}
+
+/// 退出当前所在的 `Interior`，返回地表。
+///
+/// 在地表触发（`agent.current_space` 不是 `Interior`）时静默作废——见
+/// 模块文档「已知的范围边界」一节的同一套处理方式。
+///
+/// 产出两个效果：把 `current_space` 换回地表（`profile` 取自
+/// [`WorldState::surface_profile`]，见模块文档「`Interior` 退出如何
+/// 拿到地表 profile」一节），以及把 `pos` 显式写回 `Interior` 的锚点
+/// ——`Interior` 内部漫游本批次不接线（见模块文档），`pos` 理论上从
+/// 进入起就没变过，这里仍然显式写一遍而不是依赖「反正没人动过它」：
+/// 显式写入让这条不变式不依赖调用方是否恰好遵守了另一条完全不同的
+/// 规则（`resolve_move` 对 `Interior` 静默无效），两条防线互相独立更
+/// 安全。
+fn resolve_exit_space(world: &WorldState, actor: EntityId) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let Space::Interior { anchor, .. } = agent.current_space else {
+        return Vec::new();
+    };
+    let (zone, _) = world.terrain.layout().tile_to_zone(anchor);
+    vec![
+        Effect::ChangeSpace {
+            actor,
+            space: Space::surface(zone, world.surface_profile),
+        },
+        Effect::MoveTo { actor, pos: anchor },
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use ll_core::torus::TorusSize;
@@ -289,15 +408,18 @@ mod tests {
         (world, terrain_ids)
     }
 
-    /// 造一个占位实体，站在 `(5, 5)`，六项主属性取基准值。
+    /// 造一个占位实体，站在 `(5, 5)`，六项主属性取基准值，`current_space`
+    /// 取地表（占位层属性索引——本文件的移动/攻击/开门测试不消费空间
+    /// 层属性，见 `Space::surface` 文档）。
     fn spawn_agent(world: &mut WorldState) -> EntityId {
         let mut interner = ll_core::ident::Interner::new();
         let profession = interner
             .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
         let race = interner
             .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
+        let pos = world.size.wrap(5, 5);
         world.actors.spawn(Agent {
-            pos: world.size.wrap(5, 5),
+            pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
             health: Agent::STARTING_HEALTH,
@@ -307,7 +429,16 @@ mod tests {
             goals: Vec::new(),
             race,
             luck: 0,
+            current_space: surface_space_at(world, pos),
         })
+    }
+
+    /// 造一份「站在 `pos` 上」的地表空间——`current_space` 的
+    /// `profile` 用一个占位 `ContentIndex`（本文件测试不消费空间层
+    /// 属性），`zone` 由测试世界自身的区块布局推出。
+    fn surface_space_at(world: &WorldState, pos: ll_core::torus::TorusPos) -> Space {
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        Space::surface(zone, ll_core::ident::ContentIndex::default())
     }
 
     /// 从 `(5, 5)` 向东（`dx = 1`）走一步的目的地，与 [`spawn_agent`]
@@ -324,8 +455,9 @@ mod tests {
             .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
         let race = interner
             .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
+        let pos = world.size.wrap(5, 5);
         world.actors.spawn(Agent {
-            pos: world.size.wrap(5, 5),
+            pos,
             stats: BaseStats {
                 dexterity,
                 ..BaseStats::BASELINE
@@ -338,6 +470,7 @@ mod tests {
             goals: Vec::new(),
             race,
             luck: 0,
+            current_space: surface_space_at(world, pos),
         })
     }
 
@@ -548,6 +681,158 @@ mod tests {
         let slow_cost = schedule_next_at(&slow_effects).0 - slow_world.clock.0;
         let fast_cost = schedule_next_at(&fast_effects).0 - fast_world.clock.0;
         assert!(fast_cost < slow_cost);
+    }
+
+    /// 在 `world` 里插入一个锚定在 `anchor` 的 `Interior`，带一层 0 层
+    /// 楼层（4x4 石地板）——task 12 进出空间测试的公共夹具。
+    fn insert_interior_at(
+        world: &mut WorldState,
+        anchor: ll_core::torus::TorusPos,
+    ) -> ll_core::ident::WorldId {
+        let mut counter = 0u32;
+        let mut interner = ll_core::ident::Interner::new();
+        let profile = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:dungeon").expect("字面量恒合法"));
+        let id = ll_core::ident::WorldId::next(&mut counter);
+        let mut interior = ll_world::interior::Interior::new(id, anchor, profile);
+        let (ids, _table) = base_terrain_fixture();
+        let size = ll_core::bounded::BoundedSize::new(4, 4).expect("4x4 是合法尺寸");
+        interior.set_floor(
+            0,
+            ll_world::bounded_grid::BoundedGrid::new(size, ids.floor_stone),
+        );
+        world.insert_interior(interior);
+        id
+    }
+
+    #[test]
+    fn 站在有interior入口的格子上触发进入意图产出changespace效果() {
+        // Arrange
+        let (mut world, _ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let anchor = world.actors.get(actor).expect("刚生成必然存在").pos;
+        let interior_id = insert_interior_at(&mut world, anchor);
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::EnterSpace {
+                actor,
+                target: interior_id,
+            },
+        );
+
+        // Assert
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::ChangeSpace { space: Space::Interior { id, .. }, .. } if *id == interior_id
+        )));
+    }
+
+    #[test]
+    fn 站在没有interior入口的格子上触发进入意图不产生任何空间切换() {
+        // Arrange：Interior 锚定在离玩家很远的一格,玩家当前所在格没有
+        // 任何入口。
+        let (mut world, _ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let far_anchor = world.size.wrap(40, 40);
+        let interior_id = insert_interior_at(&mut world, far_anchor);
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::EnterSpace {
+                actor,
+                target: interior_id,
+            },
+        );
+
+        // Assert
+        assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn 进入interior后agent的pos不变只有当前空间变化() {
+        // Arrange
+        let (mut world, _ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let anchor = world.actors.get(actor).expect("刚生成必然存在").pos;
+        let interior_id = insert_interior_at(&mut world, anchor);
+        let effects = resolve(
+            &world,
+            &Intent::EnterSpace {
+                actor,
+                target: interior_id,
+            },
+        );
+
+        // Act
+        for effect in &effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert
+        let agent = world.actors.get(actor).expect("刚生成必然存在");
+        assert_eq!(agent.pos, anchor);
+        assert!(matches!(agent.current_space, Space::Interior { id, .. } if id == interior_id));
+    }
+
+    #[test]
+    fn 退出interior后agent的pos恢复为interior的锚点() {
+        // Arrange：先进入,把玩家「弄脏」成一个非锚点位置不需要——本批次
+        // Interior 内部移动本就静默无效（见模块文档），这里直接验证
+        // 退出后 pos 仍精确等于锚点,而不是随便一个值。
+        let (mut world, _ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let anchor = world.actors.get(actor).expect("刚生成必然存在").pos;
+        let interior_id = insert_interior_at(&mut world, anchor);
+        for effect in &resolve(
+            &world,
+            &Intent::EnterSpace {
+                actor,
+                target: interior_id,
+            },
+        ) {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Act
+        let exit_effects = resolve(&world, &Intent::ExitSpace { actor });
+        for effect in &exit_effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert
+        let agent = world.actors.get(actor).expect("刚生成必然存在");
+        assert_eq!(agent.pos, anchor);
+        assert!(matches!(agent.current_space, Space::Surface { .. }));
+    }
+
+    #[test]
+    fn worldstate的hash纳入current_space的变化() {
+        // Arrange
+        let (mut world, _ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let anchor = world.actors.get(actor).expect("刚生成必然存在").pos;
+        let interior_id = insert_interior_at(&mut world, anchor);
+        let hash_before = world.hash();
+        let effects = resolve(
+            &world,
+            &Intent::EnterSpace {
+                actor,
+                target: interior_id,
+            },
+        );
+
+        // Act
+        for effect in &effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert：只有 current_space 变了（pos/health/wallet/
+        // next_action_at 均未受这条 Intent 影响),哈希仍必须不同——否则
+        // 说明 hash() 没有真正混入 current_space。
+        assert_ne!(world.hash(), hash_before);
     }
 
     /// 从一批效果里取出 [`Effect::ScheduleNext`] 的排期时刻——上面几条

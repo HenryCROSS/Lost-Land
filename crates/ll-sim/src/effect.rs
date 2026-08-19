@@ -11,6 +11,7 @@
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use ll_world::entity::EntityId;
+use ll_world::space::Space;
 use ll_world::terrain::TerrainKind;
 
 /// 「发生了什么」的纯数据描述。
@@ -78,5 +79,19 @@ pub enum Effect {
         actor: EntityId,
         /// 调整量。
         delta: i64,
+    },
+    /// 把某实体的当前空间设为 `space`（任务 12：两级坐标系重写）。
+    ///
+    /// `apply` 响应这个效果时，除了写 `Agent::current_space` 本身，还
+    /// 要同步 [`ll_world::state::WorldState::enter_interior`]/
+    /// [`ll_world::state::WorldState::exit_interior`]——这两步共同维护
+    /// 「当前所在空间的锚点区块钉住不淘汰」（裁定 CS-3），是 `apply`
+    /// 里少数几个需要碰两处状态才能保持内部一致的效果之一，见
+    /// [`crate::apply::apply`] 对应分支的文档。
+    ChangeSpace {
+        /// 被切换的实体。
+        actor: EntityId,
+        /// 目标空间。
+        space: Space,
     },
 }

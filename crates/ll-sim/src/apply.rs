@@ -1,5 +1,6 @@
 //! `apply`：把一个 [`Effect`] 落到 [`WorldState`] 上的唯一入口。
 
+use ll_world::space::Space;
 use ll_world::state::WorldState;
 
 use crate::effect::Effect;
@@ -79,6 +80,20 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
                 agent.wallet += delta;
             }
         }
+        Effect::ChangeSpace { actor, space } => {
+            if let Some(agent) = world.actors.get_mut(actor) {
+                agent.current_space = space;
+            }
+            // 与常驻预算的钉住状态同步（裁定 CS-3）——这两行不是
+            // 「规则判断」，是把同一个决定（目标空间是什么）落到
+            // WorldState 已有的两处状态上，见 Effect::ChangeSpace 文档。
+            match space {
+                Space::Interior { id, .. } => {
+                    world.enter_interior(id);
+                }
+                Space::Surface { .. } => world.exit_interior(),
+            }
+        }
     }
 }
 
@@ -124,8 +139,10 @@ mod tests {
             .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
         let race = interner
             .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
+        let pos = world.size.wrap(0, 0);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
         Agent {
-            pos: world.size.wrap(0, 0),
+            pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
             health: Agent::STARTING_HEALTH,
@@ -135,6 +152,10 @@ mod tests {
             goals: Vec::new(),
             race,
             luck: 0,
+            current_space: ll_world::space::Space::surface(
+                zone,
+                ll_core::ident::ContentIndex::default(),
+            ),
         }
     }
 
@@ -206,6 +227,103 @@ mod tests {
         apply(&mut world, &Effect::Kill { target: actor });
         apply(&mut world, &Effect::ScheduleNext { actor, at: Tick(5) });
         apply(&mut world, &Effect::AdjustWallet { actor, delta: 100 });
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        apply(
+            &mut world,
+            &Effect::ChangeSpace {
+                actor,
+                space: ll_world::space::Space::surface(
+                    zone,
+                    ll_core::ident::ContentIndex::default(),
+                ),
+            },
+        );
+    }
+
+    #[test]
+    fn 切换空间效果改变实体的当前空间() {
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let actor = world.actors.spawn(agent);
+        let mut counter = 0u32;
+        let mut interner = ll_core::ident::Interner::new();
+        let profile = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:dungeon").expect("字面量恒合法"));
+        let anchor = world.size.wrap(0, 0);
+        let interior_id = ll_core::ident::WorldId::next(&mut counter);
+        let mut interior = ll_world::interior::Interior::new(interior_id, anchor, profile);
+        let size = ll_core::bounded::BoundedSize::new(4, 4).expect("4x4 是合法尺寸");
+        let (ids, _table) = base_terrain_fixture();
+        interior.set_floor(
+            0,
+            ll_world::bounded_grid::BoundedGrid::new(size, ids.floor_stone),
+        );
+        world.insert_interior(interior);
+        let target_space = ll_world::space::Space::Interior {
+            id: interior_id,
+            floor: 0,
+            anchor,
+            profile,
+        };
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::ChangeSpace {
+                actor,
+                space: target_space,
+            },
+        );
+
+        // Assert
+        assert_eq!(
+            world
+                .actors
+                .get(actor)
+                .expect("刚生成的实体必然存在")
+                .current_space,
+            target_space
+        );
+    }
+
+    #[test]
+    fn 切换到interior空间会钉住其锚点区块() {
+        // apply 响应 ChangeSpace 时必须同步调用 WorldState::enter_interior
+        // ——不能只改 Agent 字段，否则常驻预算的钉住状态（裁定 CS-3）
+        // 会与玩家实际所在空间脱节。
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let actor = world.actors.spawn(agent);
+        let mut counter = 0u32;
+        let mut interner = ll_core::ident::Interner::new();
+        let profile = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:dungeon").expect("字面量恒合法"));
+        let anchor = world.size.wrap(0, 0);
+        let interior_id = ll_core::ident::WorldId::next(&mut counter);
+        world.insert_interior(ll_world::interior::Interior::new(
+            interior_id,
+            anchor,
+            profile,
+        ));
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::ChangeSpace {
+                actor,
+                space: ll_world::space::Space::Interior {
+                    id: interior_id,
+                    floor: 0,
+                    anchor,
+                    profile,
+                },
+            },
+        );
+
+        // Assert
+        assert_eq!(world.current_interior, Some(interior_id));
     }
 
     #[test]

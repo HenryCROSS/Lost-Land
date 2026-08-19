@@ -199,12 +199,17 @@ fn find_walkable_near(world: &WorldState, target: TorusPos) -> TorusPos {
 }
 
 /// 生成玩家单位，写入 `world.actors`。
+///
+/// `current_space` 取地表——demo 世界本次（P4）不放置任何 `Interior`
+/// 入口，进出 `Interior` 是任务 15 验收 demo 才展示的场景（见其
+/// `world.rs`），层属性索引这里用占位值即可。
 fn spawn_player(world: &mut WorldState, pos: TorusPos) -> EntityId {
     let mut interner = Interner::new();
     let profession =
         interner.intern(NamespacedId::parse("lostland:wanderer").expect("demo 内置标识符恒合法"));
     let race =
         interner.intern(NamespacedId::parse("lostland:human").expect("demo 内置标识符恒合法"));
+    let (zone, _) = world.terrain.layout().tile_to_zone(pos);
     world.actors.spawn(Agent {
         pos,
         stats: BaseStats::BASELINE,
@@ -216,6 +221,10 @@ fn spawn_player(world: &mut WorldState, pos: TorusPos) -> EntityId {
         goals: Vec::new(),
         race,
         luck: 0,
+        current_space: ll_world::space::Space::surface(
+            zone,
+            ll_core::ident::ContentIndex::default(),
+        ),
     })
 }
 

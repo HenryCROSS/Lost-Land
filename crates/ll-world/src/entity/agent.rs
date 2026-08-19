@@ -4,6 +4,8 @@ use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 
+use crate::space::Space;
+
 use super::{Affiliation, BaseStats, Goal};
 
 /// 厚层实体：数百个，有界，被真正模拟。
@@ -93,6 +95,29 @@ pub struct Agent {
     /// 「同族/异族」这层筛选、以及部分剧情/势力对话分支的解锁条件。
     /// P3 阶段不消费这个字段，只建布局。
     pub race: ContentIndex,
+    /// 当前所在的空间（任务 12：两级坐标系重写）。
+    ///
+    /// 默认（新生成的实体）是 `Space::Surface`——地表是唯一不需要「先
+    /// 存在一个具体实例」就能站上去的空间，`Interior` 必须先经由
+    /// `InteriorTable` 插入一个实例才谈得上「进入哪一个」。
+    ///
+    /// # 为什么不是「`pos` 之外的第二份位置真相源」
+    ///
+    /// `pos: TorusPos` 恒是这个实体在世界地图上的坐标，不因为进入
+    /// `Interior` 而改变（设计文档「内部移动不改变世界地图坐标」，见
+    /// [`crate::interior`] 模块文档）——`Interior` 内部的移动是另一个
+    /// 坐标系（[`ll_core::bounded::BoundedPos`]），本批次不引入对应的
+    /// 「楼层内位置」字段，见 `ll-sim::resolve` 模块文档「`Interior`
+    /// 内部移动的范围边界」一节：本批次只接线进出，不接线内部漫游。
+    /// `current_space` 因此只回答「这个实体此刻应该用哪一套地形/FOV/
+    /// 相机」，不重复记录位置。
+    ///
+    /// # 唯一写入口仍是 `apply`（C1）
+    ///
+    /// 与 `pos` 一样，这个字段只能通过
+    /// `ll_sim::apply::apply` 对 `Effect::ChangeSpace` 的响应写入,不得
+    /// 在渲染/输入层直接赋值。
+    pub current_space: Space,
     /// 幸运。
     ///
     /// **刻意放在 `Agent` 而非 [`BaseStats`]**：`BaseStats` 的六项主

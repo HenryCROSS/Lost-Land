@@ -401,8 +401,10 @@ mod tests {
         let profession =
             interner.intern(NamespacedId::parse("lostland:tester").expect("合法标识符"));
         let race = interner.intern(NamespacedId::parse("lostland:human").expect("合法标识符"));
+        let agent_pos = world.size.wrap(pos.0, pos.1);
+        let (zone, _) = world.terrain.layout().tile_to_zone(agent_pos);
         world.actors.spawn(Agent {
-            pos: world.size.wrap(pos.0, pos.1),
+            pos: agent_pos,
             stats: BaseStats {
                 dexterity,
                 ..BaseStats::BASELINE
@@ -415,6 +417,10 @@ mod tests {
             goals: Vec::new(),
             race,
             luck: 0,
+            current_space: ll_world::space::Space::surface(
+                zone,
+                ll_core::ident::ContentIndex::default(),
+            ),
         })
     }
 

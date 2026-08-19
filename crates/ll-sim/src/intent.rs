@@ -21,6 +21,7 @@
 
 use ll_platform::input::InputState;
 use ll_world::entity::EntityId;
+use ll_world::space::SpaceId;
 use serde::{Deserialize, Serialize};
 
 /// 八方向。
@@ -97,6 +98,31 @@ pub enum Intent {
         /// 门所在的世界坐标，未经归一化——见模块文档「为什么 `pos`
         /// 用裸元组」一节。
         pos: (i32, i32),
+    },
+    /// 尝试进入一个具体的 `Interior` 空间实例（任务 12：两级坐标系
+    /// 重写）。
+    ///
+    /// `target` 必须由调用方给出具体是哪一个实例——与
+    /// `Intent::OpenDoor` 的 `pos` 同一个理由：`resolve` 才持有
+    /// `WorldState`，能查「玩家当前站的这一格有哪些入口」
+    /// （`InteriorTable::entries_at`），但**选哪一个**（若同一格恰好有
+    /// 多个入口）不该由 `resolve` 替玩家决定——那是一个真实的玩法
+    /// 选择，不是可以静默取「排序后第一个」蒙混过去的实现细节。本批次
+    /// 的输入映射（[`intent_from_input`]）不产出这个变体（同一格多入口
+    /// 的选择 UI 不在本次重写范围内），它面向已经知道要进哪个具体
+    /// 实例的调用方（demo/未来的交互层）。
+    EnterSpace {
+        /// 发起者。
+        actor: EntityId,
+        /// 目标 `Interior` 实例。
+        target: SpaceId,
+    },
+    /// 退出当前所在的 `Interior`，返回地表。在地表触发这个意图是
+    /// 「这一步无意义」，`resolve` 静默作废（与撞墙同一种处理，见
+    /// `resolve.rs` 模块文档）。
+    ExitSpace {
+        /// 发起者。
+        actor: EntityId,
     },
 }
 
