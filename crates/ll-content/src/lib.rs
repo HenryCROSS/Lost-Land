@@ -27,13 +27,15 @@
 //! - [`degrade`] —— 缺失 mod 降级策略：按内容类型分级 + 只读模式。
 //! - [`load_error`] —— schema 版本与 mod 版本两条正交失败轴的分类
 //!   报错。
+//! - [`mode`] —— 双模式存档（纯永久死亡 / 自由读档）与单向降级
+//!   （任务 10）。
 //!
-//! 存档主体读写管线（`save_file`）等后续任务的模块留给各自任务落地,
-//! 本 crate 当前包含以上六个模块。
+//! 存档主体读写管线（`save_file`）等后续任务的模块留给各自任务落地。
 
 pub mod content_index_map;
 pub mod degrade;
 pub mod header;
 pub mod load_error;
 pub mod migration;
+pub mod mode;
 pub mod world_identity;
