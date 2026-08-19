@@ -91,6 +91,25 @@ pub struct SaveHeader {
 /// `content_hash` 取自 `Registry::content_hash_of`
 /// （`ll_mod::registry`），版本号相同但哈希不同就是「内容变了、版本号
 /// 没跟上」的信号，见 `knowledge/design/identity-and-ids.md` 六、①。
+///
+/// # 裁定 P5-8：`content_hash` 是 `Option<u64>`，不是 `u64`
+///
+/// `ll_mod::mod_set::ModSetEntry::content_hash` 已经是 `Option<u64>`
+/// ——`None` 表示「这个命名空间在场，但从未贡献过任何内容」，与「查询
+/// 失败/命名空间根本不存在」是两种不同的情况（后者体现为
+/// `generation_mods`/`current_mods` 里压根没有这条记录，不是
+/// `content_hash` 取某个特殊值）。此前头部这一侧仍是裸 `u64`，把这条
+/// 下游已经修好的区分在「`ModSetEntry` → `ModHeaderEntry`」的转换点
+/// 上重新折叠掉——转换逻辑本该只是把 `Option<u64>` 原样搬过来，若头部
+/// 类型是 `u64`，转换点就必须决定「`None` 时填什么裸整数」，任何选择
+/// 都是一次信息丢失。两边都用 `Option`，这次转换就不存在，不需要做
+/// 任何决定。
+///
+/// 配套：「从未贡献内容」的 mod 仍应进 `generation_mods`/`current_mods`
+/// 列表（`content_hash: None` 表示「在场但无贡献」），不能因为它没有
+/// 贡献内容就把它整条记录从列表里剔除——它的在场与否仍然影响「同一
+/// 批 mod 能否复现同一个世界」这条可复现性判定（世界身份三要素之一
+/// 是生成期 mod 集合本身，不只是每个 mod 贡献了什么）。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModHeaderEntry {
     /// mod 的命名空间（不含路径部分）。
@@ -99,8 +118,9 @@ pub struct ModHeaderEntry {
     /// 比较不是本类型的职责,内容哈希才是判定"是否真的变了"的依据。
     pub version: String,
     /// 该命名空间贡献的全部内容的哈希摘要（`Registry::content_hash_of`
-    /// 的返回值）。
-    pub content_hash: u64,
+    /// 的返回值）。`None` 表示该命名空间在场但从未贡献过任何内容，见
+    /// 本类型文档「裁定 P5-8」一节。
+    pub content_hash: Option<u64>,
 }
 
 #[cfg(test)]
@@ -117,18 +137,18 @@ mod tests {
             generation_mods: vec![ModHeaderEntry {
                 namespace: "lostland".to_string(),
                 version: "0.1.0".to_string(),
-                content_hash: 123,
+                content_hash: Some(123),
             }],
             current_mods: vec![
                 ModHeaderEntry {
                     namespace: "lostland".to_string(),
                     version: "0.1.0".to_string(),
-                    content_hash: 123,
+                    content_hash: Some(123),
                 },
                 ModHeaderEntry {
                     namespace: "yourmod".to_string(),
                     version: "0.2.0".to_string(),
-                    content_hash: 456,
+                    content_hash: Some(456),
                 },
             ],
             content_index_map: vec![
@@ -210,10 +230,39 @@ mod tests {
         header.current_mods.push(ModHeaderEntry {
             namespace: "thirdmod".to_string(),
             version: "1.0.0".to_string(),
-            content_hash: 789,
+            content_hash: Some(789),
         });
 
         // Assert
         assert_eq!(header.generation_mods.len(), generation_len_before);
+    }
+
+    #[test]
+    fn 从未贡献内容的mod仍以content_hash为空进入头部列表() {
+        // 裁定 P5-8 配套：一个「在场但从未贡献任何内容」的 mod（例如
+        // 纯粹的依赖声明、或本批次尚未注册任何内容的占位 mod）不能因为
+        // 没有贡献内容就被整条记录从列表里剔除——它的在场与否仍然影响
+        // 「同一批 mod 能否复现同一个世界」这条可复现性判定。
+        // Arrange
+        let mut header = sample_header();
+
+        // Act
+        header.generation_mods.push(ModHeaderEntry {
+            namespace: "emptymod".to_string(),
+            version: "0.1.0".to_string(),
+            content_hash: None,
+        });
+        let json = serde_json::to_value(&header).expect("序列化不应失败");
+
+        // Assert：条目本身仍在列表里，且 content_hash 序列化为 null，
+        // 不是被折叠回某个裸整数（例如 0——0 可能是真实哈希值，用它
+        // 当"无贡献"的哨兵会与合法哈希混淆）。
+        assert_eq!(header.generation_mods.len(), 2);
+        let entries = json["generation_mods"].as_array().expect("应为数组");
+        let empty_entry = entries
+            .iter()
+            .find(|entry| entry["namespace"] == "emptymod")
+            .expect("emptymod 条目应当存在");
+        assert!(empty_entry["content_hash"].is_null());
     }
 }

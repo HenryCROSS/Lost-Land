@@ -58,11 +58,16 @@ pub enum LoadError {
     ModContentMismatch {
         /// 不兼容的 mod 命名空间。
         namespace: String,
-        /// 存档头记录的生成期内容哈希。
-        expected_hash: u64,
+        /// 存档头记录的生成期内容哈希——`None` 表示生成那一刻这个
+        /// 命名空间就没有贡献任何内容（裁定 P5-8，与
+        /// `crate::header::ModHeaderEntry::content_hash` 同一个类型，
+        /// 转换点不折叠这条区分）。
+        expected_hash: Option<u64>,
         /// 当前会话实际查到的内容哈希——`None` 表示当前会话里这个
-        /// 命名空间完全没有贡献任何内容（比"哈希对不上"更严重的一种
-        /// 缺失：mod 可能整个没装）。
+        /// 命名空间完全没有贡献任何内容（可能是"这个 mod 从来就不贡献
+        /// 内容"，也可能是"mod 整个没装"——两者在这个字段上看起来一样，
+        /// 但 `expected_hash` 同为 `None` 时说明生成期也是"无贡献"，
+        /// 不构成真正的不匹配，见 `check_mod_content` 的比较逻辑）。
         actual_hash: Option<u64>,
     },
     /// 存档文件本身损坏（截断/篡改），与上面两类都无关——既不是我们
@@ -91,7 +96,7 @@ impl fmt::Display for LoadError {
                 actual_hash,
             } => write!(
                 f,
-                "mod 「{namespace}」内容已变化，无法确认与生成时的兼容性（期望哈希 {expected_hash:#x}，当前 {actual_hash:?}）"
+                "mod 「{namespace}」内容已变化，无法确认与生成时的兼容性（期望哈希 {expected_hash:?}，当前 {actual_hash:?}）"
             ),
             LoadError::Corrupted(reason) => write!(f, "存档文件已损坏：{reason}"),
         }
@@ -146,7 +151,11 @@ pub fn check_mod_content(
 ) -> Result<(), LoadError> {
     for entry in generation_mods {
         let actual_hash = registry.content_hash_of(&entry.namespace);
-        if actual_hash != Some(entry.content_hash) {
+        // 两边都是 Option<u64>（裁定 P5-8），直接比较——`None == None`
+        // （生成期与当前都「在场但无贡献」）视为匹配，不构成不兼容；
+        // 一边 Some 一边 None，或两边 Some 但数值不同，才是真正的
+        // 「内容变了」。
+        if actual_hash != entry.content_hash {
             return Err(LoadError::ModContentMismatch {
                 namespace: entry.namespace.clone(),
                 expected_hash: entry.content_hash,
@@ -170,7 +179,17 @@ mod tests {
         ModHeaderEntry {
             namespace: namespace.to_string(),
             version: "1.0.0".to_string(),
-            content_hash,
+            content_hash: Some(content_hash),
+        }
+    }
+
+    /// 「在场但从未贡献任何内容」的条目——`content_hash` 为 `None`，
+    /// 见裁定 P5-8。
+    fn empty_mod_entry(namespace: &str) -> ModHeaderEntry {
+        ModHeaderEntry {
+            namespace: namespace.to_string(),
+            version: "1.0.0".to_string(),
+            content_hash: None,
         }
     }
 
@@ -233,6 +252,47 @@ mod tests {
     }
 
     #[test]
+    fn 生成期与当前都无贡献时视为匹配不报mismatch() {
+        // 裁定 P5-8 配套：一个「在场但从未贡献任何内容」的 mod，生成期
+        // 与当前会话都是 None，不构成"内容变了"——两边同为 None 时是
+        // 匹配，不是需要报出的不兼容。
+        // Arrange：命名空间本身要"在场"（Registry 里出现过），但不
+        // intern 任何内容，content_hash_of 因此返回 None（与
+        // ModSetEntry::content_hash 文档「从未贡献内容」同一种状态）。
+        let registry = Registry::new();
+        let generation_mods = vec![empty_mod_entry("emptymod")];
+
+        // Act
+        let result = check_mod_content(&generation_mods, &registry);
+
+        // Assert
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn 生成期无贡献但当前会话有贡献时报mismatch() {
+        // 与上一条相反：生成期是 None，当前会话变成 Some——同样是一种
+        // "内容变了"，不能因为其中一边是 None 就特殊放行。
+        // Arrange
+        let mut registry = Registry::new();
+        registry.intern(id("emptymod:newly_added"));
+        let generation_mods = vec![empty_mod_entry("emptymod")];
+
+        // Act
+        let result = check_mod_content(&generation_mods, &registry);
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(LoadError::ModContentMismatch {
+                expected_hash: None,
+                actual_hash: Some(_),
+                ..
+            })
+        ));
+    }
+
+    #[test]
     fn 当前会话完全没有该命名空间时actual_hash为空() {
         // 比"哈希对不上"更严重的一种缺失：mod 可能整个没装。
         // Arrange
@@ -247,7 +307,7 @@ mod tests {
             result,
             Err(LoadError::ModContentMismatch {
                 namespace: "missingmod".to_string(),
-                expected_hash: 123,
+                expected_hash: Some(123),
                 actual_hash: None,
             })
         );
