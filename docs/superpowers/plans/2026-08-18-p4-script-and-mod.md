@@ -5,14 +5,14 @@
 
 **目标：** 建立 `ll-script`（Steel VM 宿主、内存守卫、mod API 表面）与 `ll-mod`（发现、清单解析、依赖拓扑排序、内容注册表）两个新 crate；把 `TerrainKind` 的硬编码属性表迁入注册表，使本体地形与 mod 地形走同一条注册路径；把文本渲染地基（`cosmic-text` + `glyphon`）提前接入 `ll-render` 的 wgpu 管线；交付加载管理界面；修复 P3 交接遗留的 `action_cost` 下限缺陷；落地类型/实例分离（`WorldId`/`OrgInstance`）。
 
-**架构：** 沿用 C1–C4（`apply` 唯一写入口、时间轴只装朴素数据、随机必经 `DetRng::for_entity`、后台推进必到确定 tick）。本阶段新增的架构判断——也是贯穿全部任务的主线——是：**mod 沙箱的安全性靠「脚本 API 表面上不存在破坏确定性的能力」，不是靠「禁止脚本这样做」的规则**。见下方专门一节。
+**架构：** 沿用 C1–C5（`apply` 唯一写入口、时间轴只装朴素数据、随机必经 `DetRng::for_entity`、后台推进必到确定 tick、禁止 `HashMap`/`HashSet` 迭代顺序参与逻辑判断）。C5 是 2026-08-18 才编号进规格 §4 的约束，本计划「有意排除的能力」表格里"无序容器的迭代顺序"一行、Task 5 的 `ordered.rs` 都是它在脚本层的具体落点，写计划时这条规则已经在设计里生效，只是当时还没有编号。本阶段新增的架构判断——也是贯穿全部任务的主线——是：**mod 沙箱的安全性靠「脚本 API 表面上不存在破坏确定性的能力」，不是靠「禁止脚本这样做」的规则**。见下方专门一节。
 
 **技术栈：** `ll-core` + `ll-world` + `ll-sim`（已有）+ `steel-core` 0.8.2 + `cosmic-text` 0.19 + `glyphon` 0.12。
 
 **规格：** [`docs/superpowers/specs/2026-08-16-lostland-design.md`](../specs/2026-08-16-lostland-design.md) §10、§15 P4 行
 **上阶段交接：** [`knowledge/handoff/p3-to-p4.md`](../../../knowledge/handoff/p3-to-p4.md)
 **相关设计：** [身份与 ID 空间](../../../knowledge/design/identity-and-ids.md)、[文本与字体渲染管线](../../../knowledge/pipelines/text-and-font-rendering.md)、[种族系统](../../../knowledge/design/race-system.md)、[世界历史生成](../../../knowledge/design/world-history.md)
-**架构骨架：** [`docs/architecture/`](../../architecture/README.md) 九份，尤其 [`03-invariants.md`](../../architecture/03-invariants.md)（C1–C4）、[`07-determinism.md`](../../architecture/07-determinism.md)（哪些写法会破坏确定性）
+**架构骨架：** [`docs/architecture/`](../../architecture/README.md) 九份，尤其 [`03-invariants.md`](../../architecture/03-invariants.md)（C1–C5）、[`07-determinism.md`](../../architecture/07-determinism.md)（哪些写法会破坏确定性）
 **实测依据：** [ADR 0001 — Steel 沙箱能力实测](../../../knowledge/decisions/0001-steel-sandbox-verification.md)（P0 阶段，`steel-core` 0.8.2）
 **serde 规矩：** [ADR 0011 — serde try_from 中转](../../../knowledge/decisions/0011-serde-try-from-bypasses-validating-constructors.md)
 
@@ -25,6 +25,7 @@
 - **`resolve` 是纯函数**，可并行。若 `resolve` 内部调脚本，脚本调用本身也必须满足这条纯函数约束（不持有跨调用可变状态）。
 - 所有随机性来自 `DetRng::for_entity`，**禁止全局 RNG**（C3）。**脚本侧同样禁止**——不是靠约定，是靠脚本 API 表面根本不提供任何构造 RNG 的手段，见下方专节。
 - **时间轴队列只能存纯数据**（C2）。
+- **禁止让 `HashMap`/`HashSet` 的迭代顺序参与任何逻辑判断**（C5）。**脚本侧同样禁止**——`ordered.rs`（任务 5）只提供按稳定键排序的遍历原语，不给脚本任何裸遍历无序容器的手段，见下方专节「有序遍历」。
 - 环面坐标只走 `TorusSize` 的方法。
 - **新增的每一个「私有字段 + 校验构造函数」类型，加 serde 派生时都必须用 `try_from` 中转**——本阶段的 `TerrainKind` 迁移会正面撞上这条规矩与「反序列化需要注册表上下文」之间的张力，见任务 8。
 - 所有公开项必须有文档注释；注释解释**为什么**。
@@ -45,7 +46,7 @@
 |---|---|---|
 | 系统时间、墙钟 | **未核实**：ADR 0001 只测试了中断/内存/参数检查/深递归，没有测过 `Engine::new()` 默认注册的标准库里是否含时间相关函数（例如 `steel/time` 模块，若存在）。这是本计划新增的、任务 3 第一步必须做的实测项，不是可以假设的结论 | 若默认标准库包含此类函数：`Engine` 构造时不加载对应模块，或显式 `shadow`/覆盖同名绑定为报错桩。若发现无法关闭：如实记入风险节，不假装解决了 |
 | 文件系统、网络 | 同上，**未核实** | 同上 |
-| 无序容器的迭代顺序 | **未核实**：需确认 Steel 是否内置哈希表类型（如 `hash-map`）且是否对脚本暴露遍历原语 | 若存在且暴露：只注册 get/set 类函数，不注册遍历函数；任何需要脚本侧顺序遍历的场景改由 Rust 侧提供一个显式有序的关联列表/`for-each-sorted` 函数，脚本不持有可遍历的无序结构 |
+| 无序容器的迭代顺序 | 对应规格 §4 约束 C5。**未核实**：需确认 Steel 是否内置哈希表类型（如 `hash-map`）且是否对脚本暴露遍历原语 | 若存在且暴露：只注册 get/set 类函数，不注册遍历函数；任何需要脚本侧顺序遍历的场景改由 Rust 侧提供一个显式有序的关联列表/`for-each-sorted` 函数，脚本不持有可遍历的无序结构 |
 | 非 `DetRng::for_entity` 的随机源 | Steel 本身大概率内置某种伪随机函数（多数 Lisp 系语言标准库都有），**未核实具体名称** | 不注册任何允许脚本自建随机流的函数。脚本能拿到的唯一随机通道见下方「确定性随机」——且这条通道**不给脚本传入种子的能力**，种子始终由宿主侧持有 |
 | 跨帧隐式可变状态 | 规格 §4 约束 C1 已经写明这条要求 | Steel `Engine` 内部允许 `define` 全局可变绑定，若脚本在两次调用之间用全局变量攒状态（例如一个技能脚本自己维护一个计数器），这条状态不会被序列化进存档，读档后会丢失或错位。**排除方式不是禁止 `define`（做不到，那是 Steel 语言本身的能力），而是每次调用一个 mod 函数前，用一份全新的 `Engine` 或显式重置的求值环境**——ADR 0001 已确认「中断后同一 `Engine` 可复用，一键重载成本低」，这条实测结果同时说明重建/重置引擎的开销可控，是这条排除得以落地的前提 |
 

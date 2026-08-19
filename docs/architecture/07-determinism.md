@@ -1,6 +1,8 @@
 # 确定性与可重放
 
-**冻结时间**：2026-08-17，核对提交 `7a126f5`。
+**冻结时间**：2026-08-17，核对提交 `7a126f5`。**2026-08-18 补充**：规格新增约束 C5 后，本文档
+补上了与 [`03-invariants.md`](03-invariants.md) C5 一节的交叉引用（HashMap 迭代顺序这条机制
+本身此前已经记录在本文档，只是未与规格编号对应），其余内容仍以 `7a126f5` 为准。
 
 规格称这是"整个游戏逻辑一次性解决的问题"之一，`knowledge/decisions/0002-integer-only-world-state.md`
 称其为"要求同一个种子加同一串操作，在任何机器上都必须产出逐位相同的世界状态"。本文档汇总
@@ -17,7 +19,7 @@
 | 环面距离的稳定打平局规则 | `TorusSize::shortest_offset`（见 [`04-torus-topology.md`](04-torus-topology.md)） | 消除"两个方向等长时结果不确定"的边界情形 |
 | 时间轴按值排序，不依赖插入历史 | `Timeline`（`crates/ll-sim/src/timeline.rs`，见下） | 消除堆内部数组顺序对存档字节的影响 |
 | `apply` 唯一写入口 + `Effect` 应用顺序无关 | `crates/ll-sim/src/apply.rs`（见下） | 消除"谁先谁后改世界"这类隐藏的顺序依赖 |
-| `BTreeMap` 而非 `HashMap` 存放需要确定性遍历的数据 | `EntityId` 派生 `Ord` 正是为此预留（见下） | 消除哈希表遍历顺序的不确定性 |
+| `BTreeMap` 而非 `HashMap` 存放需要确定性遍历的数据 | `EntityId` 派生 `Ord` 正是为此预留（见下） | 消除哈希表遍历顺序的不确定性（约束 C5，见 [`03-invariants.md`](03-invariants.md) "C5" 一节） |
 | `Interner` 禁止遍历内部哈希表 | `ll_core::ident::Interner`（见下） | 同上，专门针对内容 ID 池 |
 | FNV-1a 而非标准库 `DefaultHasher` | `ll_core::hashing::StateHasher`（见下） | 消除哈希算法本身跨版本/跨平台不稳定的风险 |
 | 跨平台黄金基准测试 | `crates/ll-core/tests/determinism.rs`、`crates/ll-world/tests/determinism.rs` | 把"确定性是否被破坏"变成一行可自动运行的断言 |
@@ -83,7 +85,8 @@ fn 效果的应用顺序不影响最终世界哈希() {
 顺序是 `(index, generation)` 字典序——模块文档说明这是"一个任意但稳定的全序，不必也不需要与
 `as_u64` 的打包顺序一致"，只要求它是稳定的，不要求它有业务含义。这条派生存在的直接目的就是
 让 `BTreeMap<EntityId, _>` 这类需要确定性遍历顺序的容器可用——`HashMap` 的迭代顺序不得参与
-任何逻辑判断，遍历全体实体这类操作若需要确定性，必须走 `BTreeMap` 的键序而不是哈希桶序。
+任何逻辑判断（约束 C5），遍历全体实体这类操作若需要确定性，必须走 `BTreeMap` 的键序而不是
+哈希桶序。
 
 这条纪律曾经有一个真实的用例：`WorldState` 一度用 `BTreeMap<EntityId, i32>` 存放各实体的
 生命值（而不是 `HashMap`，理由正是上一段）。但这个字段后来被完全移除，改成 `Agent::health`
@@ -104,8 +107,8 @@ fn 效果的应用顺序不影响最终世界哈希() {
 > 顺序不保证跨运行稳定——一旦有任何逻辑依赖它，确定性存档与跨平台一致性会同时失效。若将来
 > 需要枚举全部标识符，请遍历 `to_id`。
 
-这是全仓库里把"HashMap 遍历顺序不可信"这条原则表达得最直白的一处注释，也解释了为什么
-`Interner` 内部同时维护 `to_index: HashMap<..>` 与 `to_id: Vec<..>` 两份数据——`HashMap`
+这是全仓库里把"HashMap 遍历顺序不可信"这条原则（约束 C5）表达得最直白的一处注释，也解释了
+为什么 `Interner` 内部同时维护 `to_index: HashMap<..>` 与 `to_id: Vec<..>` 两份数据——`HashMap`
 只用于 O(1) 查找（"这个字符串 ID 有没有登记过"），永远不用于遍历；需要顺序遍历的场景一律
 走 `to_id`（一个按插入顺序排列的 `Vec`）。
 
@@ -153,7 +156,9 @@ fn 效果的应用顺序不影响最终世界哈希() {
 3. **用 `HashMap`/`HashSet` 存放需要确定性遍历顺序的世界数据，并遍历它**。只用于 O(1) 查找、
    从不遍历是可以的（如 `Interner::to_index`）；需要遍历就要用 `BTreeMap`/`Vec`（如
    `Interner::to_id`；`EntityId` 派生 `Ord` 正是为 `BTreeMap<EntityId, _>` 这类场景预留，
-   见本文档上一节）。
+   见本文档上一节）。见约束 C5（[`03-invariants.md`](03-invariants.md) "C5" 一节）——这条此前
+   只以约定俗成的形式活在代码注释里，2026-08-18 才正式编号进规格，历史上五处引用因此分裂标成
+   了 C3/C4，详见 C5 一节。
 4. **手写欧氏距离或直接比较原始世界坐标的大小/远近**，而不经过 `TorusSize::delta` 或
    `Camera::world_to_screen`。环面上原始坐标数值的大小关系在接缝处会反转（`DrawOrder` 的
    历史教训，见 [`04-torus-topology.md`](04-torus-topology.md)）。规格 §7.1 要求此项由 CI

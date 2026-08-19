@@ -4,7 +4,10 @@
 **核对依据提交**：`7a126f5`（写作期间仓库有其他代理并行提交，本组文档在写作过程中已根据该次核对做过一轮追加校对——例如
 `WorldState::health` 旁挂表被替换为 `Agent::health` 字段这次改动，已同步反映进
 [`02-core-data-flow.md`](02-core-data-flow.md)、[`06-entity-storage.md`](06-entity-storage.md)、
-[`07-determinism.md`](07-determinism.md)。此后若仓库继续变化，请以代码为准，本文档组不会自动跟随）
+[`07-determinism.md`](07-determinism.md)。此后若仓库继续变化，请以代码为准，本文档组不会自动跟随）。
+**2026-08-18 补充**：规格 §4 新增约束 C5（提交 `2f4cc26`），[`03-invariants.md`](03-invariants.md)
+与 [`07-determinism.md`](07-determinism.md) 已同步补上，本表第 3、7 行的描述已更新；这一次补充
+不改变本组文档其余部分对 `7a126f5` 的核对结论。
 
 这组文档面向**新加入项目、需要在半天内理解系统骨架**的工程师。它不是规格的复述——规格在
 [`docs/superpowers/specs/2026-08-16-lostland-design.md`](../superpowers/specs/2026-08-16-lostland-design.md)。
@@ -32,7 +35,7 @@
 |---|---|---|---|
 | 1 | [`01-crate-layering.md`](01-crate-layering.md) | Crate 分层、真实依赖图、`ll-world` 与 `ll-sim` 的边界 | §5 |
 | 2 | [`02-core-data-flow.md`](02-core-data-flow.md) | `Intent → resolve → Effect → apply` 单向数据流 | §4 |
-| 3 | [`03-invariants.md`](03-invariants.md) | 四条不可让步的约束 C1–C4，违反后果 | §4 |
+| 3 | [`03-invariants.md`](03-invariants.md) | 五条不可让步的约束 C1–C5，违反后果 | §4 |
 | 4 | [`04-torus-topology.md`](04-torus-topology.md) | 环面世界拓扑、`TorusSize::delta`、`DrawOrder` 排序键教训 | §7.1 |
 | 5 | [`05-integer-discipline.md`](05-integer-discipline.md) | 整数纪律、`Milli`、浮点边界 | §13、ADR 0002 |
 | 6 | [`06-entity-storage.md`](06-entity-storage.md) | 两层实体存储：薄层 SoA / 厚层 AoS | 技术栈表 |
