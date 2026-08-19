@@ -195,6 +195,26 @@ pub fn generate_zone_window(
     Ok(grid)
 }
 
+/// 区块级粗粒度采样：只取该区块**左上角一点**的地形，不生成整个区块
+/// 窗口（区块通常是 128×128 格，生成整窗只为了取一个代表点是纯粹的
+/// 浪费）——供 [`crate::overview::generate_continent_field`]（任务 13）
+/// 这类只需要「大致轮廓」的调用方使用。
+///
+/// 取左上角而非区块中心/平均：与既有 [`crate::overview::continent_map`]
+/// 「每格取块内左上角地形而非平均」的既有惯例一致（地形是离散分类值，
+/// 平均没有意义，见该函数文档），这里只是把同一条惯例从「瓦片块」搬到
+/// 「区块」这个更粗的分辨率。
+pub fn zone_representative_terrain(
+    noise: &TileableNoise,
+    params: &GenParams,
+    layout: &ZoneLayout,
+    zone: ZoneCoord,
+    terrain_ids: &BaseTerrainIds,
+) -> TerrainKind {
+    let span = layout.zone_span() as i32;
+    terrain_at_coord(noise, params, zone.x() * span, zone.y() * span, terrain_ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -452,5 +472,33 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn 区块代表地形与该区块窗口左上角地形一致() {
+        // zone_representative_terrain 不应该另外实现一套采样逻辑——它
+        // 取的必须恰好是 generate_zone_window 会写进局部坐标 (0,0) 的
+        // 那一格，两条路径的结果必须逐位相同。
+        // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let layout = test_zone_layout();
+        let params = GenParams {
+            seed: 7,
+            ..GenParams::default()
+        };
+        let noise = build_zone_noise(&layout, &params).expect("test_zone_layout 满足全部约束");
+        let zone = layout.zone_count().wrap(1, 0);
+        let window = generate_zone_window(&noise, &params, &layout, zone, &terrain_ids)
+            .expect("test_zone_layout 满足全部约束");
+
+        // Act
+        let representative =
+            zone_representative_terrain(&noise, &params, &layout, zone, &terrain_ids);
+
+        // Assert
+        assert_eq!(
+            representative,
+            window.terrain_at(layout.local_size().wrap(0, 0))
+        );
     }
 }

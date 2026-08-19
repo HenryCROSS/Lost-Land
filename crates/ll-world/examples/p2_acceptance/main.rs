@@ -68,8 +68,7 @@ use ll_render::wgpu;
 use ll_world::fov::{VisibleSet, compute_fov};
 use ll_world::generate::{GenParams, build_zone_noise};
 use ll_world::light::{ambient_light, sight_radius_at};
-use ll_world::noise::TileableNoise;
-use ll_world::overview::continent_map;
+use ll_world::overview::{ContinentField, continent_map, generate_continent_field};
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
 use ll_world::terrain::{BaseTerrainIds, base_terrain_fixture};
@@ -201,14 +200,10 @@ struct Demo {
     /// （见 `ll_world::terrain::base_terrain_fixture` 文档），不牵扯
     /// 真实的 mod 加载流程。
     terrain_ids: BaseTerrainIds,
-    /// 世界尺度噪声源——两级坐标系重写（任务 11）之后，`minimap`/
-    /// `continent_map` 每帧都可能触发按需生成，需要复用同一个噪声源
-    /// 实例（`build_noise` 本身是 O(1) 操作，见其文档，不必每帧重建）。
-    noise: TileableNoise,
-    /// 与 `noise` 配套的生成参数，同样只在流式生成时需要，见
-    /// `WorldState::terrain_at_streaming` 文档「为什么 WorldState 本身
-    /// 不持有它们」。
-    params: GenParams,
+    /// 世界创建时一次性生成的粗粒度地形场，专供小地图使用（任务 13）
+    /// ——不随玩家移动/世界修改重算，见 `ll_world::overview::ContinentField`
+    /// 文档；本 demo 也从不修改地形，重算与否观感上没有区别。
+    continent_field: ContinentField,
     player: TorusPos,
     camera: Camera,
     resources: Option<GpuResources>,
@@ -249,12 +244,12 @@ impl Demo {
             center: player,
             world: world.size,
         };
+        let continent_field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
 
         Demo {
             world,
             terrain_ids,
-            noise,
-            params,
+            continent_field,
             player,
             camera,
             resources: None,
@@ -282,9 +277,8 @@ impl Demo {
 #[allow(clippy::too_many_arguments)]
 fn collect_sprites(
     world: &mut WorldState,
-    noise: &TileableNoise,
-    params: &GenParams,
     terrain_ids: &BaseTerrainIds,
+    continent_field: &ContinentField,
     camera: &Camera,
     player: TorusPos,
     visible: &VisibleSet,
@@ -293,7 +287,7 @@ fn collect_sprites(
 ) {
     push_terrain(world, terrain_ids, camera, visible, tint, resources);
     push_player(camera, player, tint, resources);
-    push_minimap(world, noise, params, terrain_ids, resources);
+    push_minimap(world, terrain_ids, continent_field, resources);
 }
 
 /// 画出相机视口内、且落在本帧视野（[`VisibleSet`]）内的地形瓦片。
@@ -367,22 +361,18 @@ fn push_player(camera: &Camera, player: TorusPos, tint: [f32; 4], resources: &mu
 /// ——若也被夜晚调暗，会让玩家在最需要靠小地图辨认方向的夜间场景里
 /// 反而看不清它，这与它的作用背道而驰。
 fn push_minimap(
-    world: &mut WorldState,
-    noise: &TileableNoise,
-    params: &GenParams,
+    world: &WorldState,
     terrain_ids: &BaseTerrainIds,
+    continent_field: &ContinentField,
     resources: &mut GpuResources,
 ) {
-    let cols = world.size.width().div_ceil(MINIMAP_DOWNSAMPLE);
-    let at_tick = world.clock;
-    let cells = continent_map(
-        world,
-        noise,
-        params,
-        terrain_ids,
-        MINIMAP_DOWNSAMPLE,
-        at_tick,
-    );
+    let cols = world
+        .terrain
+        .layout()
+        .zone_count()
+        .width()
+        .div_ceil(MINIMAP_DOWNSAMPLE);
+    let cells = continent_map(continent_field, world.terrain.layout(), MINIMAP_DOWNSAMPLE);
 
     for (index, cell) in cells.iter().enumerate() {
         let col = index as u32 % cols;
@@ -495,9 +485,8 @@ impl AppHandler for Demo {
 
         collect_sprites(
             &mut self.world,
-            &self.noise,
-            &self.params,
             &self.terrain_ids,
+            &self.continent_field,
             &self.camera,
             self.player,
             &visible,

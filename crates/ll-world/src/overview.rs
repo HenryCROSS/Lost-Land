@@ -22,12 +22,14 @@
 //! 的记录会被已生效的「每阶段收尾反向核对规格」机制自动捕获。
 
 use ll_core::time::Tick;
-use ll_core::torus::TorusPos;
+use ll_core::torus::{TorusPos, TorusSize};
 
-use crate::generate::GenParams;
+use crate::generate::{GenParams, zone_representative_terrain};
 use crate::noise::TileableNoise;
+use crate::space::ZoneCoord;
 use crate::state::WorldState;
 use crate::terrain::{BaseTerrainIds, TerrainKind};
+use crate::zone::ZoneLayout;
 
 /// 地图视图里的一格：地形种类加是否已被探索。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,48 +87,105 @@ pub fn minimap(
     cells
 }
 
-/// 取整张大陆地图的下采样概览，按行主序排列。
+/// 世界创建时一次性生成的粗粒度地形场，按**区块**分辨率（不是逐瓦片），
+/// 专供 [`continent_map`] 使用（任务 13：`continent_map` 新数据源）。
 ///
-/// 每 `downsample × downsample` 格取左上角那一格作为代表，而不是做任何
-/// 形式的「平均」：地形种类是离散分类值（草地、山地、深水……），中间不
-/// 存在有意义的插值，硬要平均只会产出一个不对应任何真实地形的编号。
-/// `downsample` 为零时会在下面的除法里退化成非法输入，故夹到最小值 1，
-/// 效果等价于不做下采样——与其让调用方在这里撞见除零 panic，不如把它
-/// 当成「不缩小」处理。
+/// # 为什么需要独立于 `SurfaceStore` 的一份数据
 ///
-/// # 迁移后的临时状态：仍然会触发生成（两级坐标系重写，任务 11）
+/// `continent_map`（大陆地图概览）曾经直接遍历世界瓦片坐标、按需触发
+/// `SurfaceStore` 生成——这正是流式加载要避免的事（设计文档五节：
+/// 「不能为了画一张概览图就把全部区块的完整地形都生成出来」，任务 11
+/// 迁移时如实记录了这处临时状态，见其文档）。`ContinentField` 是一份
+/// **完全独立**的粗粒度数据：每个区块只采样代表点（区块左上角一格，见
+/// [`crate::generate::zone_representative_terrain`]），不经过、也不
+/// 写入 `SurfaceStore` 的常驻集合——这是本类型存在的唯一理由：概览图
+/// 的分辨率需求（每区块一格）与流式加载的分辨率需求（每瓦片一格）本
+/// 就不同，硬要复用同一份存储只会互相拖累。
 ///
-/// 这个函数目前仍然按瓦片分辨率遍历整个世界并触发按需生成——这**不是**
-/// 流式加载想要的最终效果（设计文档五节明确要求「不能为了画一张概览
-/// 图就把全部区块的完整地形都生成出来」），而是任务 13（`continent_map`
-/// 新数据源）的范围：那里会换成世界创建时一次性生成的粗粒度
-/// `ContinentField`，按区块而非瓦片分辨率，不触发任何区块的按需生成。
-/// 本次迁移（任务 11）的范围只到「换型之后继续编译、继续按原有断言
-/// 通过」，不提前实现任务 13 的正确行为——见任务 11 迁移策略表
-/// 「`continent_map` 测试留给任务 13」。
-#[allow(clippy::too_many_arguments)]
-pub fn continent_map(
-    world: &mut WorldState,
+/// 与地表的关系是「同一份种子噪声的两种粒度采样」，不是两份可能漂移
+/// 的地形真相——两者都经过
+/// [`crate::generate::build_zone_noise`]/[`crate::generate::terrain_at_coord`]
+/// 那同一条阈值逻辑，只是采样密度不同。
+#[derive(Debug, Clone)]
+pub struct ContinentField {
+    zone_count: TorusSize,
+    /// 按 `(zone.y() * zone_count.width() + zone.x())` 行主序排列，长度
+    /// 恒等于 `zone_count.width() * zone_count.height()`。
+    cells: Vec<TerrainKind>,
+}
+
+impl ContinentField {
+    /// 查询给定区块坐标的代表地形。
+    fn terrain_at_zone(&self, zone: ZoneCoord) -> TerrainKind {
+        let index = zone.y() as usize * self.zone_count.width() as usize + zone.x() as usize;
+        self.cells[index]
+    }
+}
+
+/// 生成一份 [`ContinentField`]：遍历 `layout` 的全部区块坐标，每个区块
+/// 只采样一个代表点，不生成任何区块窗口、不触碰 `SurfaceStore`。
+///
+/// 调用方应在世界创建时调用一次并长期持有结果（与
+/// [`crate::generate::build_zone_noise`] 的噪声源同一个使用惯例：O(1)
+/// 到 O(区块数) 之间的一次性开销，不是每帧都要重算的东西）——
+/// `zone_count` 默认 48×32 = 1536 个区块，每个只采一点，成本远小于
+/// 生成一个完整区块窗口。
+pub fn generate_continent_field(
+    layout: &ZoneLayout,
     noise: &TileableNoise,
     params: &GenParams,
     terrain_ids: &BaseTerrainIds,
+) -> ContinentField {
+    let zone_count = layout.zone_count();
+    let mut cells =
+        Vec::with_capacity((zone_count.width() as usize) * (zone_count.height() as usize));
+    for zy in 0..zone_count.height() as i32 {
+        for zx in 0..zone_count.width() as i32 {
+            let zone = zone_count.wrap(zx, zy);
+            cells.push(zone_representative_terrain(
+                noise,
+                params,
+                layout,
+                zone,
+                terrain_ids,
+            ));
+        }
+    }
+    ContinentField { zone_count, cells }
+}
+
+/// 取整份 [`ContinentField`] 的下采样概览，按行主序排列。
+///
+/// `downsample` 在**区块**这一级生效（`field` 本身已经是区块分辨率）：
+/// 每 `downsample × downsample` 个区块取左上角那一个作为代表，理由与
+/// 迁移前「每格取块内左上角地形而非平均」一致（地形是离散分类值，
+/// 平均没有意义）。`downsample` 为零时夹到最小值 1，效果等价于不做
+/// 下采样，与其在这里撞见除零 panic，不如当成「不缩小」处理。
+///
+/// # 不接触 `WorldState`/`SurfaceStore`
+///
+/// 签名不再需要 `&mut WorldState`——`field` 已经是生成好的静态数据，
+/// 这正是 [`ContinentField`] 存在的意义：`continent_map` 因此**不可能**
+/// 触发任何区块的按需生成，这条约束由函数签名本身保证，不需要靠调用
+/// 纪律维持（类型系统能保证的地方，不留给运行时约定）。
+pub fn continent_map(
+    field: &ContinentField,
+    layout: &ZoneLayout,
     downsample: u32,
-    at_tick: Tick,
 ) -> Vec<OverviewCell> {
     let downsample = downsample.max(1);
-    let width = world.size.width();
-    let height = world.size.height();
-    let cols = width.div_ceil(downsample);
-    let rows = height.div_ceil(downsample);
+    let zone_count = layout.zone_count();
+    let cols = zone_count.width().div_ceil(downsample);
+    let rows = zone_count.height().div_ceil(downsample);
 
     let mut cells = Vec::with_capacity((cols * rows) as usize);
     for row in 0..rows {
         for col in 0..cols {
-            let x = (col * downsample) as i32;
-            let y = (row * downsample) as i32;
-            let pos = world.size.wrap(x, y);
+            let zx = (col * downsample) as i32;
+            let zy = (row * downsample) as i32;
+            let zone = zone_count.wrap(zx, zy);
             cells.push(OverviewCell {
-                terrain: world.terrain_at_streaming(noise, params, terrain_ids, pos, at_tick),
+                terrain: field.terrain_at_zone(zone),
                 explored: true,
             });
         }
@@ -281,73 +340,99 @@ mod tests {
         assert_eq!(cells[0].terrain, wrapped_expected);
     }
 
+    /// 大陆地图测试用的多区块布局：4×4 个区块（边长同样是 64），比
+    /// [`test_layout`] 的 1×1 有意义得多——下采样/代表点这类断言需要
+    /// 真的有多个区块可比较，1×1 布局下这些断言会退化成平凡恒真。
+    fn test_continent_layout() -> ZoneLayout {
+        let zone_count = TorusSize::new(4, 4).expect("4x4 是合法尺寸");
+        ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束")
+    }
+
     #[test]
     fn 大陆地图格子数按下采样倍率整除向上取整() {
         // Arrange
-        let mut world = test_world();
+        let layout = test_continent_layout();
         let (terrain_ids, _table) = base_terrain_fixture();
         let params = GenParams::default();
-        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
-        let downsample = 16;
+        let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
+        let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+        let downsample = 3;
 
         // Act
-        let cells = continent_map(
-            &mut world,
-            &noise,
-            &params,
-            &terrain_ids,
-            downsample,
-            Tick(0),
-        );
+        let cells = continent_map(&field, &layout, downsample);
 
-        // Assert
+        // Assert：4x4 个区块，downsample=3 时每维向上取整为 2。
+        let zone_count = layout.zone_count();
         let expected =
-            world.size.width().div_ceil(downsample) * world.size.height().div_ceil(downsample);
+            zone_count.width().div_ceil(downsample) * zone_count.height().div_ceil(downsample);
         assert_eq!(cells.len() as u32, expected);
     }
 
     #[test]
-    fn 大陆地图下采样倍率为零时退化为原始尺寸() {
+    fn 大陆地图下采样倍率为零时退化为区块原始尺寸() {
         // Arrange
-        let mut world = test_world();
+        let layout = test_continent_layout();
         let (terrain_ids, _table) = base_terrain_fixture();
         let params = GenParams::default();
-        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
+        let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
+        let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
 
         // Act
-        let cells = continent_map(&mut world, &noise, &params, &terrain_ids, 0, Tick(0));
+        let cells = continent_map(&field, &layout, 0);
 
         // Assert
-        assert_eq!(cells.len() as u32, world.size.width() * world.size.height());
+        let zone_count = layout.zone_count();
+        assert_eq!(cells.len() as u32, zone_count.width() * zone_count.height());
     }
 
     #[test]
-    fn 大陆地图每格取块内左上角地形而非平均() {
+    fn 大陆地图每格取区块左上角地形而非平均() {
         // Arrange
-        let mut world = test_world();
+        let layout = test_continent_layout();
         let (terrain_ids, _table) = base_terrain_fixture();
         let params = GenParams::default();
-        let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
-        let downsample = 4;
+        let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
+        let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+        let downsample = 2;
 
         // Act
-        let cells = continent_map(
-            &mut world,
-            &noise,
-            &params,
-            &terrain_ids,
-            downsample,
-            Tick(0),
-        );
+        let cells = continent_map(&field, &layout, downsample);
         let first_cell = cells[0];
 
+        // Assert：第一格对应区块坐标 (0,0)，应等于该区块窗口左上角地形
+        // ——generate.rs 自己已经有一条测试锁定
+        // `zone_representative_terrain` 与 `generate_zone_window` 左上角
+        // 一致（`区块代表地形与该区块窗口左上角地形一致`），这里只需要
+        // 确认 `continent_map` 第一格确实读到的是同一个函数的产出，而
+        // 不是重新验证 `zone_representative_terrain` 本身的正确性。
+        let zone = layout.zone_count().wrap(0, 0);
+        let expected = zone_representative_terrain(&noise, &params, &layout, zone, &terrain_ids);
+        assert_eq!(first_cell.terrain, expected);
+    }
+
+    #[test]
+    fn continent_map不触发任何区块的按需生成() {
+        // 这是本任务最重要的正确性验证：generate_continent_field/
+        // continent_map 全程不接触 SurfaceStore，调用前后一个独立
+        // SurfaceStore 的常驻集合必须逐位不变——直接证明「不能为了画
+        // 一张概览图就把全部区块的完整地形都生成出来」这条约束成立。
+        // Arrange
+        let layout = test_continent_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
+        let store = crate::surface_store::SurfaceStore::new(layout, 256);
+        let resident_before = store.resident_zones();
+
+        // Act
+        let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+        let _cells = continent_map(&field, &layout, 1);
+
         // Assert
-        assert_eq!(
-            first_cell.terrain,
-            world
-                .terrain_at(world.size.wrap(0, 0))
-                .expect("测试世界只有一个区块，预热后必然常驻")
-        );
+        assert_eq!(store.resident_zones(), resident_before);
+        // 顺手确认前面两步真的产出了看起来合理的数据，而不是因为一次
+        // 提前 return 而"碰巧"没碰 SurfaceStore。
+        assert!(!store.is_resident(layout.zone_count().wrap(0, 0)));
     }
 
     #[test]

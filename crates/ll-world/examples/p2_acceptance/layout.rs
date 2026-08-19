@@ -60,15 +60,24 @@ pub(crate) const INITIAL_CLOCK_TICKS: i64 = 12 * TICKS_PER_HOUR;
 /// 「随季节变色」，不必等几十次按键才跨过一个季节边界。
 pub(crate) const CLOCK_STEP_SEASON: i64 = DAYS_PER_SEASON * TICKS_PER_DAY;
 
-/// 小地图每格对应的世界格数（下采样倍率），供
+/// 小地图每格对应的**区块**数（下采样倍率），供
 /// [`ll_world::overview::continent_map`] 使用。
-pub(crate) const MINIMAP_DOWNSAMPLE: u32 = 8;
+///
+/// # 任务 13：`continent_map` 改按区块分辨率取样
+///
+/// 迁移前这个常量在**瓦片**分辨率下生效（512×320 格按 8 倍下采样得到
+/// 64×40 格小地图）；`continent_map` 换成 [`ll_world::overview::ContinentField`]
+/// 之后，输入本身已经是区块分辨率（本 demo 世界只有 8×5 = 40 个区块，
+/// 见 `crate::build_zone_layout`），不需要再下采样一次——取 1（不缩小）
+/// 直接展示全部 40 个区块。
+pub(crate) const MINIMAP_DOWNSAMPLE: u32 = 1;
 
 /// 小地图每格在离屏目标上的像素边长。
 ///
-/// 取 2：512×320 的世界按 8 倍下采样得到 64×40 格，乘 2 像素得到
-/// 128×80 像素的小地图，能塞进 640×360 视口的角落而不过分遮挡主画面。
-pub(crate) const MINIMAP_CELL_PX: i32 = 2;
+/// 取 16：8×5 个区块乘 16 像素得到 128×80 像素的小地图，与迁移前
+/// （64×40 格乘 2 像素）同样大小，能塞进 640×360 视口的角落而不过分
+/// 遮挡主画面。
+pub(crate) const MINIMAP_CELL_PX: i32 = 16;
 
 /// 小地图左上角与离屏目标左上角的留白（像素）。
 pub(crate) const MINIMAP_MARGIN_PX: i32 = 4;
