@@ -216,6 +216,12 @@ impl ThinPopulation {
             race: self.race[index],
             // 薄层不追踪幸运，升格时取零——见 Agent::luck 文档。
             luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, surface_profile),
             // 薄层本就不支持脚本状态存储（设计文档三、3 节：只限厚层
             // `Arena<Agent>`），升格这一刻自然是空的。

@@ -45,7 +45,10 @@
 //! 降级语义（需要人工判断该怎么处理,不是机械重映射能自动覆盖的）有关，
 //! 如实记录在此，不假装是完全体的类型级证明。
 
+use std::collections::BTreeMap;
+
 use ll_core::ident::{ContentIndex, NamespacedId};
+use ll_core::time::Tick;
 use ll_mod::registry::Registry;
 use ll_world::entity::{Affiliation, Agent, Goal, OrgRef};
 use ll_world::space::Space;
@@ -243,6 +246,17 @@ fn remap_agent(
         ref mut goals,
         ref mut race,
         luck: _,
+        // 资源当前值——纯数值，不携带任何 ContentIndex，不需要重映射。
+        mana: _,
+        stamina: _,
+        // 三个 P5-B 任务 5 新增的 ContentIndex 承载字段：见下方各自的
+        // remap_* 帮手。
+        ref mut unlocked_skills,
+        ref mut skill_cooldowns,
+        ref mut subclasses,
+        // 临时属性修正按 AttributeKind（引擎内置的封闭枚举，不是内容
+        // 注册表索引）为键，不携带任何 ContentIndex，不需要重映射。
+        active_stat_modifiers: _,
         ref mut current_space,
         script_state: _,
     } = *agent;
@@ -252,6 +266,60 @@ fn remap_agent(
     remap_goals(remapper, goals)?;
     remap_affiliations(remapper, affiliations)?;
     remap_space(remapper, current_space)?;
+    remap_unlocked_skills(remapper, unlocked_skills)?;
+    remap_skill_cooldowns(remapper, skill_cooldowns)?;
+    remap_subclasses(remapper, subclasses)?;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的已解锁技能集合：找不到当前会话内容的技能整条
+/// 丢弃（[`ContentKind::Skill`]）——理由同 [`remap_goals`]，这是「学过
+/// 哪些技能」的记录，不是实体本体的核心身份。
+fn remap_unlocked_skills(
+    remapper: &mut Remapper<'_>,
+    unlocked_skills: &mut Vec<ContentIndex>,
+) -> Result<(), LoadError> {
+    let mut kept = Vec::with_capacity(unlocked_skills.len());
+    for skill in unlocked_skills.drain(..) {
+        if let Some(new_skill) = remapper.remap_droppable(skill, ContentKind::Skill)? {
+            kept.push(new_skill);
+        }
+    }
+    *unlocked_skills = kept;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的技能冷却表：键（技能索引）找不到当前会话内容
+/// 时整条丢弃（[`ContentKind::Skill`]，与 [`remap_unlocked_skills`] 同一
+/// 判断——冷却到期时刻本身不含 `ContentIndex`，跟着键一起丢弃或保留，
+/// 值不需要单独重映射）。
+fn remap_skill_cooldowns(
+    remapper: &mut Remapper<'_>,
+    skill_cooldowns: &mut BTreeMap<ContentIndex, Tick>,
+) -> Result<(), LoadError> {
+    let mut kept = BTreeMap::new();
+    for (skill, until) in std::mem::take(skill_cooldowns) {
+        if let Some(new_skill) = remapper.remap_droppable(skill, ContentKind::Skill)? {
+            kept.insert(new_skill, until);
+        }
+    }
+    *skill_cooldowns = kept;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的副职集合：找不到当前会话内容的副职整条丢弃
+/// （[`ContentKind::Subclass`]）——理由同 [`remap_unlocked_skills`]。
+fn remap_subclasses(
+    remapper: &mut Remapper<'_>,
+    subclasses: &mut Vec<ContentIndex>,
+) -> Result<(), LoadError> {
+    let mut kept = Vec::with_capacity(subclasses.len());
+    for subclass in subclasses.drain(..) {
+        if let Some(new_subclass) = remapper.remap_droppable(subclass, ContentKind::Subclass)? {
+            kept.push(new_subclass);
+        }
+    }
+    *subclasses = kept;
     Ok(())
 }
 
@@ -406,6 +474,12 @@ mod tests {
             goals: Vec::new(),
             race: ContentIndex::default(),
             luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(pos_zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
         }

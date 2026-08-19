@@ -103,6 +103,12 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         goals: Vec::new(),
         race,
         luck: 0,
+        mana: Agent::STARTING_MANA,
+        stamina: Agent::STARTING_STAMINA,
+        unlocked_skills: Vec::new(),
+        skill_cooldowns: std::collections::BTreeMap::new(),
+        subclasses: Vec::new(),
+        active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(player_zone, ll_core::ident::ContentIndex::default()),
         script_state: std::collections::BTreeMap::new(),
     });
@@ -119,6 +125,12 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         goals: Vec::new(),
         race,
         luck: 0,
+        mana: Agent::STARTING_MANA,
+        stamina: Agent::STARTING_STAMINA,
+        unlocked_skills: Vec::new(),
+        skill_cooldowns: std::collections::BTreeMap::new(),
+        subclasses: Vec::new(),
+        active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(enemy_zone, ll_core::ident::ContentIndex::default()),
         script_state: std::collections::BTreeMap::new(),
     });
@@ -271,7 +283,26 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// `write_optional_entity`/`write_script_state` 两处新增调用临时注释
 /// 掉重新跑这条测试，摘要回到本次重冻之前的旧常量
 /// `10_420_841_280_615_735_009`。
-const EXPECTED_REPLAY_DIGEST: u64 = 54_795_308_315_924_513;
+///
+/// # 第五次重冻的原因（P5-B 任务 5：`Agent` 新增职业/技能相关字段）
+///
+/// `WorldState::hash` 新混入 `Agent` 的 `mana`/`stamina`/
+/// `unlocked_skills`/`skill_cooldowns`/`subclasses`/
+/// `active_stat_modifiers` 六个字段（见其文档「职业/技能相关字段也已
+/// 混入」一节）——本文件的 `setup` 从不设置这六项（两个实体的
+/// `mana`/`stamina` 恒为 `Agent::STARTING_MANA`/`STARTING_STAMINA`，
+/// 其余四项恒为空），但混入本身仍然改变字节流（每一项都至少贡献一次
+/// 「长度为零」或「固定数值」的写入），摘要数值随之改变，与前四次
+/// 重冻同一个模式：断言结构不变，只是 `hash()` 的输入构造方式变了。
+///
+/// 人工核验（真实执行，不是假设）：把 `crates/ll-world/src/state.rs`
+/// 里 `hash()` 新增的那一段（`agent.mana`/`agent.stamina`/
+/// `write_content_index_vec` 两次调用/`skill_cooldowns` 循环/
+/// `active_stat_modifiers` 循环，共八行）临时删掉重新跑这条测试，摘要
+/// 精确回到本次重冻之前的旧常量 `54_795_308_315_924_513`——确认这次
+/// 变化完全、只来自这一处改动，恢复后重新跑通再确认新常量
+/// `3_120_509_028_390_886_945` 稳定复现。
+const EXPECTED_REPLAY_DIGEST: u64 = 3_120_509_028_390_886_945;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

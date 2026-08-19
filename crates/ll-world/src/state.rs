@@ -612,6 +612,23 @@ impl WorldState {
     /// 顺序（约束 C5）；字符串字段（命名空间、键、`Str`/`Ref` 值）混入
     /// 前先写入长度，避免相邻变长字段在字节流里边界不清导致的理论
     /// 碰撞（见 [`write_script_state`]）。
+    ///
+    /// # 职业/技能相关字段也已混入（P5-B 任务 5）
+    ///
+    /// 同一条先例第三次重演：`Agent` 新增的 `mana`/`stamina`/
+    /// `unlocked_skills`/`skill_cooldowns`/`subclasses`/
+    /// `active_stat_modifiers` 六个字段全部会被 `ll_sim::resolve` 的
+    /// `Intent::UseSkill` 分支改写（解锁技能、扣减资源、写入冷却、施加
+    /// 临时属性修正）——若哈希继续对它们视而不见，「技能结算悄悄算错」
+    /// 会重演 P3 阶段 `WorldState::hash` 完全不含实体状态、测不出战斗
+    /// 结算跑偏的同一类判据缺口（本方法文档已经用两次真实历史记录警告
+    /// 过这条教训，这是第三次）。`unlocked_skills`/`subclasses` 是
+    /// `Vec<ContentIndex>`（先混入长度、再逐项混入，保序，不涉及
+    /// `HashMap`/`HashSet` 迭代顺序）；`skill_cooldowns` 是
+    /// `BTreeMap<ContentIndex, Tick>`，`active_stat_modifiers` 是
+    /// `BTreeMap<AttributeKind, ActiveStatModifier>`，两者都按键的自然
+    /// 顺序遍历（`ContentIndex`/`AttributeKind` 均实现 `Ord`），满足
+    /// 约束 C5。
     pub fn hash(&self) -> u64 {
         let mut hasher = StateHasher::new();
         hasher.write_u64(self.seed);
@@ -653,6 +670,21 @@ impl WorldState {
             hasher.write_u64(agent.goals.len() as u64);
             for goal in &agent.goals {
                 write_goal(&mut hasher, goal);
+            }
+            hasher.write_i64(i64::from(agent.mana));
+            hasher.write_i64(i64::from(agent.stamina));
+            write_content_index_vec(&mut hasher, &agent.unlocked_skills);
+            write_content_index_vec(&mut hasher, &agent.subclasses);
+            hasher.write_u64(agent.skill_cooldowns.len() as u64);
+            for (skill, until) in &agent.skill_cooldowns {
+                hasher.write_u64(u64::from(skill.get()));
+                hasher.write_i64(until.0);
+            }
+            hasher.write_u64(agent.active_stat_modifiers.len() as u64);
+            for (attribute, modifier) in &agent.active_stat_modifiers {
+                hasher.write_u64(*attribute as u64);
+                hasher.write_i64(i64::from(modifier.delta));
+                hasher.write_i64(modifier.expires_at.0);
             }
             write_script_state(&mut hasher, &agent.script_state);
         }
@@ -745,6 +777,17 @@ fn write_goal(hasher: &mut StateHasher, goal: &Goal) {
     }
     hasher.write_i64(i64::from(goal.progress));
     hasher.write_i64(i64::from(goal.priority));
+}
+
+/// 把一份 `Vec<ContentIndex>` 混入哈希——[`WorldState::hash`] 的帮手
+/// （P5-B 任务 5），供 `Agent::unlocked_skills`/`Agent::subclasses`
+/// 共用：两者形状相同（保序的 `ContentIndex` 列表），先混入长度、再
+/// 逐项混入裸索引，不需要为两个字段各写一份几乎相同的循环。
+fn write_content_index_vec(hasher: &mut StateHasher, indices: &[ContentIndex]) {
+    hasher.write_u64(indices.len() as u64);
+    for index in indices {
+        hasher.write_u64(u64::from(index.get()));
+    }
 }
 
 /// 把一个 `Option<EntityId>` 混入哈希——[`WorldState::hash`] 的帮手
@@ -1032,6 +1075,12 @@ mod tests {
             goals: Vec::new(),
             race: ContentIndex::default(),
             luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
         });
@@ -1083,6 +1132,12 @@ mod tests {
             goals: Vec::new(),
             race,
             luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
         });
@@ -1365,6 +1420,12 @@ mod tests {
             goals: Vec::new(),
             race,
             luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             script_state: BTreeMap::new(),
         }

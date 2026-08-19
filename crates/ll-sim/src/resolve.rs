@@ -50,6 +50,7 @@
 //! 参数」一节：调用方必须在开放 `Intent::ExitSpace` 之前显式设置好
 //! 这个字段。
 
+use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_world::entity::EntityId;
 use ll_world::space::{Space, SpaceId};
@@ -58,6 +59,7 @@ use ll_world::state::WorldState;
 use crate::combat::{Penetration, damage_after_defense};
 use crate::effect::Effect;
 use crate::intent::{Direction, Intent};
+use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::timeline::action_cost;
 
 /// 非位移动作（等待、攻击、开门）的基础代价，与平地移动同一基准
@@ -114,7 +116,35 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
 /// [`crate::apply::apply`] 对不存在实体的处理方式一致（静默忽略而非
 /// panic 或报错），理由同样是「目标不存在不是异常状况，是结算并发/
 /// 时序下的正常可能性」。
+///
+/// # `Intent::UseSkill` 在这个入口下恒不产出效果
+///
+/// 本函数是 [`resolve_with_skills`] 在「调用方没有技能目录」时的薄
+/// 封装（传入 [`crate::skill::NoSkills`]）——本计划范围内还没有任何
+/// 生产代码把 `ll-mod` 的技能注册表接到结算层（见 [`crate::skill`]
+/// 模块文档「代价是真实的重复」一节，这条接线是游戏内容加载管线的
+/// 职责，超出本任务范围）。已有的全部调用点（`ll-content`/`ll-ui` 的
+/// 验收 demo、`ll-sim` 自身的重放测试）目前都不构造 `UseSkill` 意图，
+/// 因此这个默认行为不影响它们；真正想让技能结算生效的调用方应改用
+/// [`resolve_with_skills`]，传入实现了 [`crate::skill::SkillCatalog`]
+/// 的目录。
 pub fn resolve(world: &WorldState, intent: &Intent) -> Vec<Effect> {
+    resolve_with_skills(world, intent, &NoSkills)
+}
+
+/// [`resolve`] 的完整入口：额外接收一份技能目录，用于结算
+/// [`Intent::UseSkill`]。
+///
+/// 拆成两个函数（而不是给 [`resolve`] 加一个参数）是为了不破坏仓库里
+/// 已有的全部既有调用点（`ll-content`/`ll-ui` 的验收 demo、
+/// `ll-sim`/`ll-content` 的重放与序列化往返测试等，一一列在本次改动的
+/// 提交信息里）——它们都不需要技能结算，强迫它们每处都传一个目录（哪怕
+/// 是空的）只是无意义的噪音。
+pub fn resolve_with_skills(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+) -> Vec<Effect> {
     match *intent {
         Intent::Wait { actor } => resolve_wait(world, actor),
         Intent::Move { actor, dir } => resolve_move(world, actor, dir),
@@ -122,6 +152,11 @@ pub fn resolve(world: &WorldState, intent: &Intent) -> Vec<Effect> {
         Intent::OpenDoor { actor, pos } => resolve_open_door(world, actor, pos),
         Intent::EnterSpace { actor, target } => resolve_enter_space(world, actor, target),
         Intent::ExitSpace { actor } => resolve_exit_space(world, actor),
+        Intent::UseSkill {
+            actor,
+            skill,
+            target,
+        } => resolve_use_skill(world, actor, skill, target, skills),
     }
 }
 
@@ -369,6 +404,119 @@ fn resolve_exit_space(world: &WorldState, actor: EntityId) -> Vec<Effect> {
     ]
 }
 
+/// 使用一个技能（P5-B 任务 5）：四道门都不通过，静默作废（不产生任何
+/// 效果），与本文件其余分支「动作在这个世界里无意义」的既有纪律一致
+/// ——「技能不存在」「未解锁」「冷却中」「资源不足」四种情形对调用方
+/// 而言是同一件事（这一次施放没有发生），不需要用不同的返回形状区分。
+///
+/// # 「本体即 Mod」检验：不对 `skill` 做任何 `if == 某个具体 ID` 判断
+///
+/// 全部四道门都只读 `agent`/`skills.skill(skill)` 返回的通用数据，产出
+/// 效果那一步同样只是对 [`SkillEffect`] 的变体做 `match`——不出现任何
+/// 硬编码的技能 `ContentIndex` 比较。一个从未被本文件认识过的、由假想
+/// mod 注册的技能，只要能通过调用方提供的 [`SkillCatalog`] 查到，就会
+/// 被这条完全相同的通用路径正确处理，见
+/// `本体技能与假想mod技能走同一条resolve通用路径` 测试。
+fn resolve_use_skill(
+    world: &WorldState,
+    actor: EntityId,
+    skill: ContentIndex,
+    target: Option<EntityId>,
+    skills: &dyn SkillCatalog,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    // 门一：技能必须已解锁。
+    if !agent.unlocked_skills.contains(&skill) {
+        return Vec::new();
+    }
+    // 门二：冷却判定——惰性判定，读取时现比对世界时钟，不要求
+    // `skill_cooldowns` 主动清理过期条目（见 `Agent::skill_cooldowns`
+    // 文档「有意留给后续阶段的缺口」一节）。
+    if let Some(until) = agent.skill_cooldowns.get(&skill)
+        && until.0 > world.clock.0
+    {
+        return Vec::new();
+    }
+    // 门三：技能必须能在调用方提供的目录里查到——查不到与「不满足任何
+    // 使用条件」同等对待（ADR 0015：查不到就是查不到）。
+    let Some(rule) = skills.skill(skill) else {
+        return Vec::new();
+    };
+    // 门四：资源是否充足。
+    if let ResourceCost::Amount(kind, amount) = rule.resource_cost {
+        let current = current_resource(agent, kind);
+        if current < i64::from(amount) {
+            return Vec::new();
+        }
+    }
+
+    // 四道门都通过：产出资源扣减（若有）、技能效果映射出的效果、冷却
+    // 设置、以及与其余动作一致的排期效果。
+    let mut effects = Vec::new();
+    if let ResourceCost::Amount(kind, amount) = rule.resource_cost {
+        effects.push(Effect::AdjustResource {
+            actor,
+            resource: kind,
+            delta: -(amount as i32),
+        });
+    }
+    // 默认目标：未显式给出目标的技能施于自身（自我增益/恢复类技能的
+    // 常见形状），见 `Intent::UseSkill::target` 文档。
+    let effect_target = target.unwrap_or(actor);
+    match rule.effect {
+        SkillEffect::DealDamage { base } => {
+            effects.push(Effect::Damage {
+                target: effect_target,
+                amount: base,
+            });
+        }
+        SkillEffect::RestoreResource { resource, base } => {
+            effects.push(Effect::AdjustResource {
+                actor: effect_target,
+                resource,
+                delta: base,
+            });
+        }
+        SkillEffect::TemporaryStatModifier {
+            attribute,
+            amount,
+            duration_ticks,
+        } => {
+            effects.push(Effect::ApplyStatModifier {
+                target: effect_target,
+                attribute,
+                delta: amount,
+                expires_at: Tick(world.clock.0 + i64::from(duration_ticks)),
+            });
+        }
+    }
+    effects.push(Effect::SetSkillCooldown {
+        actor,
+        skill,
+        until: Tick(world.clock.0 + i64::from(rule.cooldown_ticks)),
+    });
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    effects.push(Effect::ScheduleNext {
+        actor,
+        at: schedule_after(world, cost),
+    });
+    effects
+}
+
+/// 读取 `agent` 当前某项资源的值——`resolve_use_skill` 的帮手，把
+/// [`crate::skill::ResourceKind`] 到 `Agent` 具体字段的映射收敛在一处。
+fn current_resource(agent: &ll_world::entity::Agent, kind: crate::skill::ResourceKind) -> i64 {
+    match kind {
+        crate::skill::ResourceKind::Mana => i64::from(agent.mana),
+        crate::skill::ResourceKind::Stamina => i64::from(agent.stamina),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use ll_core::torus::TorusSize;
@@ -429,6 +577,12 @@ mod tests {
             goals: Vec::new(),
             race,
             luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: surface_space_at(world, pos),
             script_state: std::collections::BTreeMap::new(),
         })
@@ -471,6 +625,12 @@ mod tests {
             goals: Vec::new(),
             race,
             luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: surface_space_at(world, pos),
             script_state: std::collections::BTreeMap::new(),
         })

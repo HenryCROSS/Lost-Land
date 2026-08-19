@@ -80,6 +80,17 @@ pub enum ContentKind {
     /// 覆盖缺口：这是「实体拥有的一条归属记录」而非「实体本体」，处理
     /// 方式与 [`ContentKind::Goal`] 相同，无条件丢弃并警告。
     Affiliation,
+    /// 已解锁的技能（[`ll_world::entity::Agent::unlocked_skills`]/
+    /// `skill_cooldowns`，P5-B 任务 5）——与 [`ContentKind::Goal`] 同一
+    /// 类判断：这是「实体学过哪些技能」的一条记录，不是实体本体的种族/
+    /// 职业，缺一条技能不等于「失去自己」，无条件丢弃并警告，不区分
+    /// 归属。
+    Skill,
+    /// 已持有的副职（[`ll_world::entity::Agent::subclasses`]，P5-B 任务
+    /// 5）——理由与 [`ContentKind::Skill`] 相同：副职是实体持有的一条
+    /// 记录而非实体本体的核心身份（核心身份是 [`ContentKind::CharacterAttribute`]
+    /// 覆盖的主职/种族），无条件丢弃并警告。
+    Subclass,
 }
 
 /// 一条缺失内容记录归属于谁。
@@ -124,7 +135,9 @@ pub fn decide_degrade_action(
         ContentKind::Item
         | ContentKind::WorldGenerator
         | ContentKind::Goal
-        | ContentKind::Affiliation => DegradeAction::DropWithWarning,
+        | ContentKind::Affiliation
+        | ContentKind::Skill
+        | ContentKind::Subclass => DegradeAction::DropWithWarning,
         ContentKind::CharacterAttribute => match owner {
             OwnerContext::Player => DegradeAction::Reject,
             OwnerContext::Npc | OwnerContext::None => match placeholder {

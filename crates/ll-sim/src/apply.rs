@@ -20,7 +20,7 @@ use crate::effect::Effect;
 ///    `if let Some(..)` 这类边界防御（实体是否还存在），没有一处在
 ///    判断「这算不算命中」「伤害该扣多少」之类的规则——那些判断已经
 ///    在 `resolve` 里做完，产出这个 `Effect` 时就已经带着最终数字。
-/// 3. **它必须极短。** 六个分支各自不超过两行，任何看起来需要更多
+/// 3. **它必须极短。** 全部分支各自不超过两行，任何看起来需要更多
 ///    行数才能表达的分支，多半是规则判断偷偷混了进来，应该退回
 ///    `resolve`。
 ///
@@ -50,13 +50,13 @@ use crate::effect::Effect;
 ///    `false`）是同一套行为，`Damage`/`Kill` 不该是例外，否则调用方
 ///    得区分「这个 `Effect` 需要处理返回值，那个不需要」。
 /// 2. `apply` 的签名是 `fn apply(..)`，不返回 `Result`——真要让某个
-///    分支报错，六个分支就都要改签名，这是比本次任务大得多的改动。
+///    分支报错，全部分支就都要改签名，这是比本次任务大得多的改动。
 /// 3. 目标不存在本身不是异常状况（见规则 2 的场景），是结算并发/时序
 ///    下的正常可能性，不需要中断整批 `Effect` 的应用。
 pub fn apply(world: &mut WorldState, effect: &Effect) {
     // 不再 `match *effect`（`Effect` 因 `SetScriptState` 携带 `Vec` 而
     // 不再是 `Copy`，见其文档）——改为按引用匹配，Copy 子字段用 `*`
-    // 显式取值，与既有六个分支的赋值写法保持一致；`SetScriptState`
+    // 显式取值，与既有全部分支的赋值写法保持一致；`SetScriptState`
     // 携带的 `Vec`/`String`/`ScriptValue` 本身不是 `Copy`，逐条 `clone`
     // 写入，见该分支注释。
     match effect {
@@ -100,6 +100,43 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
                 Space::Surface { .. } => {
                     world.exit_interior();
                 }
+            }
+        }
+        Effect::AdjustResource {
+            actor,
+            resource,
+            delta,
+        } => {
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                match resource {
+                    crate::skill::ResourceKind::Mana => agent.mana += delta,
+                    crate::skill::ResourceKind::Stamina => agent.stamina += delta,
+                }
+            }
+        }
+        Effect::SetSkillCooldown {
+            actor,
+            skill,
+            until,
+        } => {
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.skill_cooldowns.insert(*skill, *until);
+            }
+        }
+        Effect::ApplyStatModifier {
+            target,
+            attribute,
+            delta,
+            expires_at,
+        } => {
+            if let Some(agent) = world.actors.get_mut(*target) {
+                agent.active_stat_modifiers.insert(
+                    *attribute,
+                    ll_world::entity::ActiveStatModifier {
+                        delta: *delta,
+                        expires_at: *expires_at,
+                    },
+                );
             }
         }
         Effect::SetScriptState { writes } => {
@@ -187,6 +224,12 @@ mod tests {
             goals: Vec::new(),
             race,
             luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(
                 zone,
                 ll_core::ident::ContentIndex::default(),
@@ -498,5 +541,140 @@ mod tests {
 
         // Assert
         assert_eq!(world.global_script_state.len(), 2);
+    }
+
+    #[test]
+    fn adjustresource效果改变实体的法力值() {
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let actor = world.actors.spawn(agent);
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::AdjustResource {
+                actor,
+                resource: crate::skill::ResourceKind::Mana,
+                delta: -10,
+            },
+        );
+
+        // Assert
+        assert_eq!(
+            world.actors.get(actor).expect("刚生成的实体必然存在").mana,
+            Agent::STARTING_MANA - 10
+        );
+    }
+
+    #[test]
+    fn setskillcooldown效果写入技能冷却表() {
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let actor = world.actors.spawn(agent);
+        let mut interner = ll_core::ident::Interner::new();
+        let skill = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:strike").expect("合法标识符"));
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::SetSkillCooldown {
+                actor,
+                skill,
+                until: Tick(50),
+            },
+        );
+
+        // Assert
+        assert_eq!(
+            world
+                .actors
+                .get(actor)
+                .expect("刚生成的实体必然存在")
+                .skill_cooldowns
+                .get(&skill),
+            Some(&Tick(50))
+        );
+    }
+
+    #[test]
+    fn applystatmodifier效果写入活跃属性修正表() {
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let target = world.actors.spawn(agent);
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::ApplyStatModifier {
+                target,
+                attribute: ll_world::entity::AttributeKind::Constitution,
+                delta: 3,
+                expires_at: Tick(80),
+            },
+        );
+
+        // Assert
+        let stored = world
+            .actors
+            .get(target)
+            .expect("刚生成的实体必然存在")
+            .active_stat_modifiers
+            .get(&ll_world::entity::AttributeKind::Constitution);
+        assert_eq!(
+            stored,
+            Some(&ll_world::entity::ActiveStatModifier {
+                delta: 3,
+                expires_at: Tick(80),
+            })
+        );
+    }
+
+    #[test]
+    fn applystatmodifier效果对同一属性再次施加时刷新而非叠加() {
+        // 验收关键设计判断 4「堆叠策略固定为 RefreshDuration」：同一项
+        // 属性再次被施加修正时，新值覆盖旧值，不是两条修正共存。
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let target = world.actors.spawn(agent);
+        apply(
+            &mut world,
+            &Effect::ApplyStatModifier {
+                target,
+                attribute: ll_world::entity::AttributeKind::Strength,
+                delta: 2,
+                expires_at: Tick(30),
+            },
+        );
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::ApplyStatModifier {
+                target,
+                attribute: ll_world::entity::AttributeKind::Strength,
+                delta: 5,
+                expires_at: Tick(90),
+            },
+        );
+
+        // Assert：只有一条记录，且是后一次施加的值。
+        let modifiers = &world
+            .actors
+            .get(target)
+            .expect("刚生成的实体必然存在")
+            .active_stat_modifiers;
+        assert_eq!(modifiers.len(), 1);
+        assert_eq!(
+            modifiers.get(&ll_world::entity::AttributeKind::Strength),
+            Some(&ll_world::entity::ActiveStatModifier {
+                delta: 5,
+                expires_at: Tick(90),
+            })
+        );
     }
 }

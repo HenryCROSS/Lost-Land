@@ -5,6 +5,8 @@
 //! P5（职业技能树）。本任务只建 P3 建 [`crate::entity::Agent`] 时必须
 //! 已经存在的字段布局——具体的伤害/判定公式属于后续批次。
 
+use ll_core::time::Tick;
+
 /// 六项主属性。全部整数，理由见 `attribute-system.md` 开篇「所有数值
 /// 一律整数」。
 ///
@@ -51,6 +53,42 @@ pub enum AttributeKind {
     Willpower,
     /// 魅力：招募随从、交易议价、随从士气。
     Charisma,
+}
+
+/// 一条正在生效的临时属性修正——技能效果
+/// （`SkillEffect::TemporaryStatModifier`，见
+/// `knowledge/design/class-skill-quest-system.md` 第五节）落到具体实体
+/// 上的实例状态，P5-B 任务 5 新增。
+///
+/// # 惰性到期判定，不存「当前是否生效」
+///
+/// 只存「到期时刻」与「修正量」这两个静态量，不存一个可以现算出来的
+/// 布尔值——与 [`crate::entity::Agent::skill_cooldowns`] 同一条纪律
+/// （见其字段文档），也是 `buffs-and-triggers.md` 一、惰性到期判定的
+/// 直接落点：真正要读「这个属性当前的有效修正量」的调用方（衍生属性
+/// 计算，P3/P5 之后落地）在读取的那一刻自行比对世界时钟与 `expires_at`
+/// ，本类型自身不做任何判断，也不主动清理过期条目（同一条「有意留给
+/// 后续阶段的缺口」，见 `Agent::skill_cooldowns` 文档）。
+///
+/// # 堆叠策略固定为「刷新持续时间」
+///
+/// `Agent::active_stat_modifiers` 按 [`AttributeKind`] 做键——同一项
+/// 属性同一时刻只能有一条生效的修正，再次对同一属性施加修正（无论是
+/// 同一个技能重复释放,还是另一个技能修正了同一项属性）会直接覆盖旧
+/// 条目，这就是 `buffs-and-triggers.md` 五、`StackPolicy::RefreshDuration`
+/// （本计划固定选用的唯一堆叠策略,见关键设计判断 4）在数据结构层面的
+/// 体现，不需要额外的判断逻辑。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct ActiveStatModifier {
+    /// 增减量，可为负——与技能效果 `SkillEffect::TemporaryStatModifier`
+    /// 里的 `amount` 同一个数值,技能释放那一刻原样抄进来（完整形状见
+    /// `knowledge/design/class-skill-quest-system.md` 第五节；本 crate
+    /// 不依赖 `ll-mod`（依赖方向 `ll-world` ← `ll-sim` ← `ll-script` ←
+    /// `ll-mod`，规格 §5），这里只是引用文档说明来源,不是可解析的代码
+    /// 内链接）。
+    pub delta: i32,
+    /// 到期时刻——世界时钟达到或超过这个值时，这条修正视为已失效。
+    pub expires_at: Tick,
 }
 
 impl BaseStats {

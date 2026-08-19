@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use crate::script_state::ScriptValue;
 use crate::space::Space;
 
-use super::{Affiliation, BaseStats, Goal};
+use super::{ActiveStatModifier, Affiliation, AttributeKind, BaseStats, Goal};
 
 /// 厚层实体：数百个，有界，被真正模拟。
 ///
@@ -151,6 +151,60 @@ pub struct Agent {
     /// 暴击率（每点 +5‰）、优势掷骰（每满 20 点多掷一次取较优）、掉落
     /// 品质权重、稀有事件触发权重。P3 阶段不消费这个字段，只建布局。
     pub luck: i32,
+    /// 当前法力值。P5-B 任务 5 新增——`attribute-system.md`「六、次级
+    /// 属性」把法力/耐力列为「尚未落地」的次级属性，本字段只补上技能
+    /// 资源消耗判定（`ll_sim::resolve` 的 `Intent::UseSkill` 分支）需要
+    /// 的「当前值」这一半，不是完整的次级属性系统（上限、随体质/智力
+    /// 衍生的公式仍然属于后续批次，与 [`Self::health`] 「只存当前值，
+    /// 不存上限」同一条纪律，见该字段文档）。
+    pub mana: i32,
+    /// 当前耐力值。理由与 [`Self::mana`] 完全对称——见其文档。
+    pub stamina: i32,
+    /// 已解锁的技能集合。P5-B 任务 5 新增，关键设计判断 2 的落点：
+    /// 「解锁与否」是几乎每次技能结算都要查询的高频状态，直接归引擎层
+    /// 字段，不经脚本状态存储的跨界调用开销（见
+    /// `docs/superpowers/plans/2026-08-19-p5-gameplay-systems.md` 关键
+    /// 设计判断 2 的完整论证）。
+    ///
+    /// `Vec` 不是 `BTreeSet`：查询模式是「这个 `ContentIndex` 在不在
+    /// 里面」（`contains`，`O(n)`，n 是玩家已学技能数，量级不超过几十），
+    /// 不需要有序遍历或去重的额外开销；写入路径（学习新技能）本身应当
+    /// 保证不重复插入，不依赖容器自身去重——与 `Agent::goals`/
+    /// `Agent::affiliations` 同样用 `Vec` 的理由一致。
+    pub unlocked_skills: Vec<ContentIndex>,
+    /// 各技能的冷却到期时刻——**到期时刻，不是「剩余时长」**（关键设计
+    /// 判断 4 的惰性到期判定：存一个会随时间流逝而变得过时的「还剩多少」
+    /// 需要每帧主动递减维护，存「到期于哪一刻」则只需要在真正查询「能不
+    /// 能放技能」那一刻，把这个值与 `WorldState::clock` 比大小——两者
+    /// 语义等价，后者不需要任何每帧维护逻辑）。
+    ///
+    /// `BTreeMap` 不是 `HashMap`——约束 C5：禁止 `HashMap`/`HashSet` 的
+    /// 迭代顺序参与任何逻辑判断，`WorldState::hash` 需要按确定顺序遍历
+    /// 这个字段（见其文档）。
+    ///
+    /// **有意留给后续阶段的缺口**：某个技能一旦进入过冷却，条目会一直
+    /// 留在这个 `BTreeMap` 里（哪怕已经过期很久、这个技能再也没被使用
+    /// 过）——本任务不主动清理，理由同惰性判定本身：清理是一次额外的
+    /// 遍历成本，而「查询」路径已经能正确处理过期条目（判断 `tick <
+    /// clock` 即可，不需要条目本身消失）。若未来这个字段的条目数成为
+    /// 实际问题（例如某个 mod 允许一个实体学习成百上千个技能），届时
+    /// 再补一次定期清理，不在本任务范围内提前做。
+    pub skill_cooldowns: BTreeMap<ContentIndex, Tick>,
+    /// 已持有的副职集合。P5-B 任务 5 新增，裁定 P5-4（见
+    /// `knowledge/design/class-skill-quest-system.md` 第三节）：副职与
+    /// 主职（[`Self::profession`]）共享同一份技能 `ContentIndex` 命名
+    /// 空间，`subclasses` 本身只记录「这个实体持有哪些副职类型」，不
+    /// 需要为每个副职单独维护一段隔离的技能号段。
+    ///
+    /// `Vec` 不是单个 `Option<ContentIndex>`：设计文档裁定允许同时持有
+    /// 「至少一个」副职（复数），不是恰好一个——具体上限（若有）留给
+    /// 后续内容设计批次决定，本字段的容器形状本身不设上限。
+    pub subclasses: Vec<ContentIndex>,
+    /// 正在生效的临时属性修正，按 [`AttributeKind`] 索引。见
+    /// [`ActiveStatModifier`] 文档——惰性到期判定、`RefreshDuration`
+    /// 堆叠策略均由该类型与本字段的键结构共同实现，本字段自身只是
+    /// 存储，不含判断逻辑。
+    pub active_stat_modifiers: BTreeMap<AttributeKind, ActiveStatModifier>,
     /// 每实体脚本状态：依附于这个具体实体的脚本存储（NPC 当前在追的
     /// 目标、某个技能的冷却计时……），键是 `(mod_namespace, key)`，见
     /// `knowledge/design/script-state-storage.md` 二、四节。
@@ -186,6 +240,13 @@ impl Agent {
     /// 明确标记为占位的常量，供 [`crate::entity::ThinPopulation::promote`]
     /// 等构造路径统一使用，公式落地后只需替换这一处。
     pub const STARTING_HEALTH: i32 = 100;
+    /// 生成/升格新实体时的占位起始法力值，理由同 [`Self::STARTING_HEALTH`]
+    /// ——真正的上限应由智力经衍生公式算出，公式落地前需要一个非零
+    /// 占位，供 [`crate::entity::ThinPopulation::promote`] 等构造路径
+    /// 统一使用。
+    pub const STARTING_MANA: i32 = 50;
+    /// 生成/升格新实体时的占位起始耐力值，理由同 [`Self::STARTING_MANA`]。
+    pub const STARTING_STAMINA: i32 = 50;
 }
 
 #[cfg(test)]
@@ -206,6 +267,11 @@ mod tests {
         let culture =
             interner.intern(NamespacedId::parse("lostland:mountain").expect("合法标识符"));
         let goal_kind = interner.intern(NamespacedId::parse("lostland:trade").expect("合法标识符"));
+        let strike = interner.intern(NamespacedId::parse("lostland:strike").expect("合法标识符"));
+        let power_strike =
+            interner.intern(NamespacedId::parse("lostland:power_strike").expect("合法标识符"));
+        let ranger_subclass =
+            interner.intern(NamespacedId::parse("lostland:ranger_subclass").expect("合法标识符"));
         let mut world_id_counter = 7u32;
         let zone = ll_core::torus::TorusSize::new(48, 32)
             .expect("48x32 是合法尺寸")
@@ -246,6 +312,18 @@ mod tests {
                 profile: ContentIndex::default(),
             },
             luck: 9,
+            mana: 33,
+            stamina: 44,
+            unlocked_skills: vec![strike, power_strike],
+            skill_cooldowns: BTreeMap::from([(power_strike, Tick(120))]),
+            subclasses: vec![ranger_subclass],
+            active_stat_modifiers: BTreeMap::from([(
+                AttributeKind::Constitution,
+                ActiveStatModifier {
+                    delta: 3,
+                    expires_at: Tick(150),
+                },
+            )]),
             script_state: BTreeMap::from([(
                 ("lostland".to_string(), "cooldown".to_string()),
                 ScriptValue::Int(5),
@@ -265,5 +343,19 @@ mod tests {
         // Assert：Agent 派生了 PartialEq，逐字段比较（含 current_space）
         // 由这一个断言覆盖，不需要逐个字段单独断言。
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn agent可以同时持有一个主职与多个副职() {
+        // P5-B 任务 4 的 TDD 清单要求这条断言（「同一个 Agent 可以持有
+        // 一个主职与至少一个副职」），但字段本身定义在 Agent（本任务）
+        // ——这里补上，见 `subclasses` 字段文档。
+        // Arrange
+        let agent = fully_populated_agent();
+
+        // Act & Assert：主职（profession）与副职集合（subclasses）是两个
+        // 互不重叠的字段，后者当前恰好持有一个副职，容器形状本身允许
+        // 多于一个。
+        assert_eq!(agent.subclasses.len(), 1);
     }
 }

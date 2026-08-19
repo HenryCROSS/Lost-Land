@@ -8,12 +8,15 @@
 //! 同时跑（各自只读世界，互不冲突），产出的 `Effect` 收集起来后再单
 //! 线程依次 `apply`，读写从不交织。
 
+use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
-use ll_world::entity::EntityId;
+use ll_world::entity::{AttributeKind, EntityId};
 use ll_world::script_state::ScriptStateWrite;
 use ll_world::space::Space;
 use ll_world::terrain::TerrainKind;
+
+use crate::skill::ResourceKind;
 
 /// 「发生了什么」的纯数据描述。
 ///
@@ -131,5 +134,71 @@ pub enum Effect {
         /// 重复写同一个键只保留最后一次」的既有语义一致，见
         /// [`ScriptStateWrite::matches`] 文档）。
         writes: Vec<ScriptStateWrite>,
+    },
+    /// 把某个实体的某项资源（法力/耐力）调整 `delta`（P5-B 任务 5）。
+    ///
+    /// # 为什么这是本任务在计划草案之外新增的第三个变体
+    ///
+    /// `docs/superpowers/plans/2026-08-19-p5-gameplay-systems.md` 任务 5
+    /// 的接口草案只列了 `SetSkillCooldown`/`ApplyStatModifier` 两个新
+    /// 变体，但技能的 `resource_cost`（施放消耗）与
+    /// `SkillEffect::RestoreResource`（技能效果本身恢复资源）都需要
+    /// 一个「按增量调整某资源当前值」的落点——现有变体里没有一个能
+    /// 表达它（[`Effect::AdjustWallet`] 专用于货币，语义不通用）。留着
+    /// 这个缺口不补,会让 `resource_cost` 永远只是一个摆设的门槛检查
+    /// （能通过检查但从不真正扣减,技能可以被无限次免费施放）——这不是
+    /// 「有意留给后续阶段」的缺口,是会让资源系统名不副实的缺陷,因此
+    /// 这里补上,而不是假装计划草案已经穷尽了需要的变体（该草案本身
+    /// 标注为「概念形状」，允许实现时按需微调，见其文档）。
+    AdjustResource {
+        /// 被调整的实体。
+        actor: EntityId,
+        /// 资源种类。
+        resource: ResourceKind,
+        /// 调整量，可正可负——施放消耗传负值，`RestoreResource` 效果
+        /// 传正值，两个方向共用同一个变体。
+        delta: i32,
+    },
+    /// 把某个技能的冷却设为 `until`（到期时刻，P5-B 任务 5）。
+    ///
+    /// 与 [`Effect::ScheduleNext`] 同一种「只写一个字段，不触碰任何
+    /// 调度队列」的克制——这里只写
+    /// [`ll_world::entity::Agent::skill_cooldowns`] 这一个条目。
+    SetSkillCooldown {
+        /// 被设置冷却的实体。
+        actor: EntityId,
+        /// 冷却的技能。
+        skill: ContentIndex,
+        /// 冷却到期的世界时刻。
+        until: Tick,
+    },
+    /// 对某个实体施加一条临时属性修正（P5-B 任务 5）。
+    ///
+    /// # 只能是纯数值，不接装备（规格 §15 P6 边界）
+    ///
+    /// `attribute`/`delta` 是技能自身声明的静态数值，`apply` 落地时只是
+    /// 把这一条 `(delta, expires_at)` 写进
+    /// [`ll_world::entity::Agent::active_stat_modifiers`]——不触发任何
+    /// 装备槽位读取，也不触发完整的衍生属性重算（那属于 P6 装备落地
+    /// 之后的 `derive_stats`，见 `crates/ll-mod/src/skill.rs` 模块文档
+    /// 「与规格 §15 P6 边界的关系」一节，本变体延续同一条边界）。
+    ///
+    /// # 惰性到期，`apply` 不做判断
+    ///
+    /// 与 [`ll_world::entity::ActiveStatModifier`] 文档一致：`apply` 只
+    /// 管把这一条写进去（同一属性再次被写入即覆盖旧值，`RefreshDuration`
+    /// 堆叠策略天然由 `BTreeMap::insert` 的覆盖语义实现，不需要
+    /// `apply` 自己判断「要不要叠加」），是否已经过期由未来读取「有效
+    /// 属性值」的调用方在读取那一刻现比对世界时钟，`apply` 本身不含
+    /// 这个判断（三条纪律「不含任何游戏逻辑」）。
+    ApplyStatModifier {
+        /// 受影响的实体。
+        target: EntityId,
+        /// 受影响的属性。
+        attribute: AttributeKind,
+        /// 增减量，可为负。
+        delta: i32,
+        /// 到期时刻。
+        expires_at: Tick,
     },
 }

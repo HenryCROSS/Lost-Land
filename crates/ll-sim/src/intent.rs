@@ -19,6 +19,7 @@
 //! 用 `world.size.wrap(x, y)` 归一化一次即可，不需要 `Intent` 自己
 //! 提前做这件事。
 
+use ll_core::ident::ContentIndex;
 use ll_platform::input::InputState;
 use ll_world::entity::EntityId;
 use ll_world::space::SpaceId;
@@ -123,6 +124,23 @@ pub enum Intent {
     ExitSpace {
         /// 发起者。
         actor: EntityId,
+    },
+    /// 使用一个技能（P5-B 任务 5）。
+    ///
+    /// 与 [`Intent::OpenDoor`]/[`Intent::EnterSpace`] 同一条纪律：只携带
+    /// 「想用哪个技能、对谁用」这条裸请求，不做任何合法性判断——技能是
+    /// 否已解锁、是否在冷却、资源是否充足、具体产出什么效果，全部留给
+    /// `resolve`（见 `resolve_use_skill` 文档）结合
+    /// `Agent` 状态与调用方提供的技能定义现算，`Intent` 自身不查任何
+    /// 表。`target` 是 `Option`：某些技能效果（例如自我增益）不需要目标，
+    /// 由 `resolve_use_skill` 在缺省时回落到施法者自身。
+    UseSkill {
+        /// 发起者。
+        actor: EntityId,
+        /// 使用的技能，指向内容注册表。
+        skill: ContentIndex,
+        /// 目标（若这个技能需要一个）。
+        target: Option<EntityId>,
     },
 }
 
@@ -381,6 +399,26 @@ mod tests {
         let original = Intent::Attack {
             actor,
             target: entity(),
+        };
+
+        // Act
+        let json = serde_json::to_string(&original).expect("Intent 全字段均可序列化");
+        let decoded: Intent = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn useskill意图序列化往返后与原值相等() {
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let skill = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:strike").expect("合法标识符"));
+        let original = Intent::UseSkill {
+            actor: entity(),
+            skill,
+            target: Some(entity()),
         };
 
         // Act
