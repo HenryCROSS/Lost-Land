@@ -77,10 +77,9 @@ use ll_world::zone::ZoneLayout;
 use png::save_baseline_png;
 use std::sync::Arc;
 
-/// 区块边长（格）。选 64：是噪声格点尺寸（16）与
-/// `ll_world::chunk::CHUNK_SIZE`（32）的整数倍，[`WORLD_WIDTH`]/
-/// [`WORLD_HEIGHT`] 都能被它整除，demo 世界因此正好是 8×5 个区块
-/// （见 [`build_zone_layout`]）。
+/// 区块边长（格）。选 64：是噪声格点尺寸（16）的整数倍，
+/// [`WORLD_WIDTH`]/[`WORLD_HEIGHT`] 都能被它整除，demo 世界因此正好是
+/// 8×5 个区块（见 [`build_zone_layout`]）。
 const ZONE_SPAN: u32 = 64;
 
 /// 建立本 demo 用的区块布局：世界总尺寸仍是 [`WORLD_WIDTH`]×

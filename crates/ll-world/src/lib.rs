@@ -57,11 +57,10 @@ pub enum WorldError {
         /// 实际高度（格）。
         height: u32,
     },
-    /// 区块边长不满足对齐约束：必须同时是
-    /// [`crate::noise::CELL_SIZE`]（连续噪声无缝性的前提）与
-    /// [`crate::chunk::CHUNK_SIZE`]（甲案「区块 = 4×4 存储块」）的整数
-    /// 倍，且不小于视口所需的最小跨度（否则区块内部的 `ChunkGrid` 构造
-    /// 不出来）——见 [`crate::zone::ZoneLayout::new`] 文档。
+    /// 区块边长不满足对齐约束：必须是 [`crate::noise::CELL_SIZE`]
+    /// （连续噪声无缝性的前提）的整数倍，且不小于视口所需的最小跨度
+    /// （否则区块内部的 `ChunkGrid` 构造不出来）——见
+    /// [`crate::zone::ZoneLayout::new`] 文档。
     ZoneSpanNotAligned {
         /// 实际传入的区块边长（格）。
         zone_span: u32,
@@ -80,7 +79,7 @@ impl fmt::Display for WorldError {
             WorldError::ZoneSpanNotAligned { zone_span } => {
                 write!(
                     f,
-                    "区块边长 {zone_span} 不满足对齐约束（须为 CELL_SIZE 与 CHUNK_SIZE 的整数倍，且不小于最小视口跨度）"
+                    "区块边长 {zone_span} 不满足对齐约束（须为 CELL_SIZE 的整数倍，且不小于最小视口跨度）"
                 )
             }
         }

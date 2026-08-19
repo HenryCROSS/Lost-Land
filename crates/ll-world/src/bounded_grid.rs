@@ -2,21 +2,20 @@
 //!
 //! # 与 `ChunkGrid` 平行但不环绕
 //!
-//! [`crate::chunk::ChunkGrid`] 是环面世界地表的地形存储，按
-//! [`crate::chunk::CHUNK_SIZE`] 分块、坐标绕接缝折返。本模块提供同样
-//! 「存地形、按坐标读写」的接口，但坐标类型换成
-//! [`ll_core::bounded::BoundedPos`]/[`BoundedSize`]——越界坐标在
-//! [`BoundedSize::try_pos`] 那一步就被拒绝，根本构造不出来，因此本模块
-//! 不需要、也不做任何环绕折返。
+//! [`crate::chunk::ChunkGrid`] 是环面世界地表（区块内部）的地形存储，
+//! 坐标绕接缝折返。本模块提供同样「存地形、按坐标读写」的接口，但
+//! 坐标类型换成 [`ll_core::bounded::BoundedPos`]/[`BoundedSize`]——
+//! 越界坐标在 [`BoundedSize::try_pos`] 那一步就被拒绝，根本构造不出
+//! 来，因此本模块不需要、也不做任何环绕折返。
 //!
-//! # 为什么是单一 `Vec`，不分块
+//! # 为什么是单一 `Vec`
 //!
-//! `ChunkGrid` 按 [`crate::chunk::CHUNK_SIZE`]（32）分块存储，是为了让
-//! 数百万格的世界地表能按需分配、避免一次性巨额分配。`Interior` 楼层
-//! 不是这种量级——`knowledge/design/coordinate-system-and-layers.md`
-//! 十节末尾明确写道「这条对齐关系不适用于 `Interior` 的楼层地图」：
-//! 一栋建筑/一处地下城的单层地图整体一次性加载，没有理由为它再套一层
-//! 分块管理的复杂度。单一 `Vec<TerrainKind>` 按行主序存储已经足够。
+//! 与 [`crate::chunk::ChunkGrid`]（丙案取消存储块层之后，两者在实现
+//! 形状上完全对称，见其模块文档）同理：`Interior` 楼层的惰性分配与
+//! 流式加载由更外层的结构（`Interior::floors` 的 `HashMap<i16,
+//! BoundedGrid>` 稀疏索引）负责，`BoundedGrid` 自己不需要再为单个楼层
+//! 内部套一层分块管理的复杂度。单一 `Vec<TerrainKind>` 按行主序存储
+//! 已经足够。
 
 use ll_core::bounded::{BoundedPos, BoundedSize};
 use serde::de::Error as _;
@@ -26,10 +25,10 @@ use crate::terrain::TerrainKind;
 
 /// 一张有界（不环绕）局部地形图。
 ///
-/// 新建时全部填为调用方指定的 `fill`，理由与 `Chunk` 的对应设计相同
-/// （见 [`crate::chunk`] 模块文档）：这只是分配时的占位值，真正的地形
-/// 由具体生成器（洞穴算法/房间走廊算法/建筑定义，见设计文档六节）
-/// 写入。
+/// 新建时全部填为调用方指定的 `fill`，理由与 [`crate::chunk::ChunkGrid`]
+/// 的对应设计相同（见其文档「为什么 `fill` 是参数」一节）：这只是
+/// 分配时的占位值，真正的地形由具体生成器（洞穴算法/房间走廊算法/
+/// 建筑定义，见设计文档六节）写入。
 #[derive(Debug, Clone)]
 pub struct BoundedGrid {
     size: BoundedSize,

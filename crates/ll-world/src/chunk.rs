@@ -1,18 +1,38 @@
-//! 按固定边长分块的地形存储。
+//! 环面地形的扁平存储。
 //!
-//! # 为什么分块
+//! # 为什么是单一 `Vec`，不再分块（丙案，取代甲案）
 //!
-//! 世界可达数百万格，整块 `Vec` 一次性分配会吃掉大量内存且无法按需
-//! 生成。[`CHUNK_SIZE`] 取 32 是权衡点——再小则块管理开销占比过高，
-//! 再大则单块内存浪费明显。
+//! 早期版本按 `CHUNK_SIZE = 32` 把地形切成一批内部子块，理由是「世界
+//! 可达数百万格，整块 `Vec` 一次性分配会吃掉大量内存且无法按需生成」。
+//! 这条理由在两级坐标系重写（`crate::zone`/`crate::surface_store`）之后
+//! 不再成立：惰性分配与流式加载现在由
+//! [`crate::surface_store::SurfaceStore`] 在区块（zone，默认 128×128）
+//! 粒度上负责——它把每一个 `ChunkGrid` 实例当成不可再分的原子单位
+//! 管理（常驻、淘汰、序列化全部以一整个 `ChunkGrid` 为最小粒度），本
+//! 类型自己内部的 32×32 子块因此从未被外部感知，也从未被独立利用过：
+//!
+//! - 没有任何调用点按子块粒度做过部分生成、部分淘汰或部分序列化——
+//!   `crate::state` 里的手写序列化本来就把整个 `ChunkGrid` 摊平成一个
+//!   大 `Vec`，完全无视子块边界。
+//! - `knowledge/design/coordinate-system-and-layers.md` 十节把「存储块
+//!   层被证明只是穿透转发」列为重新评估丙案的触发条件之一——批次 C
+//!   （任务 11）落地 `SurfaceStore` 后核实：条件成立。
+//!
+//! 子分块因此是纯粹的历史包袱：一层从未被外部感知、也从未被独立利用
+//! 过的中间结构。移除它之后，本类型与
+//! [`crate::bounded_grid::BoundedGrid`]（`Interior` 用的有界局部网格,
+//! 本来就是单一 `Vec`）在实现形状上完全对称，唯一差异是坐标类型
+//! （环绕的 [`TorusPos`] vs 不环绕的
+//! [`BoundedPos`](ll_core::bounded::BoundedPos)）。
+//!
+//! 类型名与文件名仍然保留「chunk」字样：`ChunkGrid` 现在就是「区块的
+//! 存储与生成单位」本身（`crate::zone` 模块文档「关键设计判断 1」：
+//! 一个区块对应一个 `ChunkGrid` 实例），不再指代任何内部子分块。
 
 use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::WorldError;
 use crate::terrain::TerrainKind;
-
-/// 每块地形的边长（格）。
-pub const CHUNK_SIZE: u32 = 32;
 
 /// 视口能容纳的最小世界宽度（格）。
 ///
@@ -26,47 +46,33 @@ const MIN_WORLD_WIDTH: u32 = 43;
 /// 视口能容纳的最小世界高度（格）。理由同 [`MIN_WORLD_WIDTH`]。
 const MIN_WORLD_HEIGHT: u32 = 25;
 
-/// 一块 `CHUNK_SIZE × CHUNK_SIZE` 的地形。
+/// 一张环面地形网格：区块（zone）内部使用的地形存储，按行主序存一个
+/// `Vec<TerrainKind>`（见模块文档「为什么是单一 `Vec`，不再分块」）。
 ///
 /// 新建时全部填为调用方指定的 `fill`：这只是分配时的占位值，真正的
 /// 地形由后续批次的生成流程写入。
 ///
 /// # 为什么 `fill` 是参数，不是编译期常量
 ///
-/// 旧版直接写死 [`TerrainKind::DEEP_WATER`]；地形迁入注册表后
+/// 旧版直接写死 `TerrainKind::DEEP_WATER`；地形迁入注册表后
 /// `TerrainKind` 不再有编译期常量（数值由注册期加载顺序决定，见
 /// `crate::terrain` 模块文档），调用方必须显式传入一个已经从
 /// `BaseTerrainIds`（或 mod 自己的地形表）解析出来的占位值。
 #[derive(Debug, Clone)]
-struct Chunk {
+pub struct ChunkGrid {
+    world: TorusSize,
     tiles: Vec<TerrainKind>,
 }
 
-impl Chunk {
-    fn new(fill: TerrainKind) -> Self {
-        Chunk {
-            tiles: vec![fill; (CHUNK_SIZE * CHUNK_SIZE) as usize],
-        }
-    }
-}
-
-/// 按 [`CHUNK_SIZE`] 分块存储的环面地形网格。
-#[derive(Debug, Clone)]
-pub struct ChunkGrid {
-    world: TorusSize,
-    chunks_x: u32,
-    chunks: Vec<Chunk>,
-}
-
 impl ChunkGrid {
-    /// 按世界尺寸建立分块网格。
+    /// 按世界尺寸建立地形网格。
     ///
     /// 世界任一维度小于视口跨度（[`MIN_WORLD_WIDTH`] × [`MIN_WORLD_HEIGHT`]）
     /// 时返回 [`WorldError::WorldTooSmall`]：与其让缺陷在运行时表现为
     /// 视觉异常（重复坐标、地形填不满留黑块），不如在构造点直接拒绝。
     ///
-    /// `fill` 是全部格子的初始占位地形，见 [`Chunk::new`] 文档「为什么
-    /// `fill` 是参数」一节——调用方通常传入 `BaseTerrainIds::deep_water`
+    /// `fill` 是全部格子的初始占位地形，见本类型文档「为什么 `fill`
+    /// 是参数」一节——调用方通常传入 `BaseTerrainIds::deep_water`
     /// 或等价的 mod 定义。
     pub fn new(world: TorusSize, fill: TerrainKind) -> Result<Self, WorldError> {
         if world.width() < MIN_WORLD_WIDTH || world.height() < MIN_WORLD_HEIGHT {
@@ -76,16 +82,10 @@ impl ChunkGrid {
             });
         }
 
-        // 用除法向上取整而非要求世界宽高恰好整除 CHUNK_SIZE：边缘那一块
-        // 允许只用到一部分，换来对任意合法世界尺寸的支持。
-        let chunks_x = world.width().div_ceil(CHUNK_SIZE);
-        let chunks_y = world.height().div_ceil(CHUNK_SIZE);
-        let chunk_total = (chunks_x as usize) * (chunks_y as usize);
-
+        let len = (world.width() as usize) * (world.height() as usize);
         Ok(ChunkGrid {
             world,
-            chunks_x,
-            chunks: (0..chunk_total).map(|_| Chunk::new(fill)).collect(),
+            tiles: vec![fill; len],
         })
     }
 
@@ -96,34 +96,24 @@ impl ChunkGrid {
 
     /// 读取给定坐标处的地形。
     pub fn terrain_at(&self, pos: TorusPos) -> TerrainKind {
-        let (chunk_index, local_index) = self.locate(pos);
-        self.chunks[chunk_index].tiles[local_index]
+        self.tiles[self.index_of(pos)]
     }
 
     /// 写入给定坐标处的地形。
     pub fn set_terrain(&mut self, pos: TorusPos, kind: TerrainKind) {
-        let (chunk_index, local_index) = self.locate(pos);
-        self.chunks[chunk_index].tiles[local_index] = kind;
+        let idx = self.index_of(pos);
+        self.tiles[idx] = kind;
     }
 
-    /// 把环面坐标换算为（块索引，块内偏移）。
+    /// 把环面坐标换算成 `tiles` 里的下标，行主序。
     ///
-    /// 块边界是分块存储最容易出错的地方：算错块索引会让写入落到邻块。
-    /// 换算集中在这一处，供 `terrain_at`/`set_terrain` 共用，避免两处
-    /// 各写一份而彼此漂移。
-    fn locate(&self, pos: TorusPos) -> (usize, usize) {
+    /// 换算集中在这一处，供 [`Self::terrain_at`]/[`Self::set_terrain`]
+    /// 共用，避免两处各写一份而彼此漂移。
+    fn index_of(&self, pos: TorusPos) -> usize {
         // TorusPos 的不变式保证坐标恒非负，转换成 u32 不会丢失信息。
         let x = pos.x() as u32;
         let y = pos.y() as u32;
-
-        let chunk_x = x / CHUNK_SIZE;
-        let chunk_y = y / CHUNK_SIZE;
-        let local_x = x % CHUNK_SIZE;
-        let local_y = y % CHUNK_SIZE;
-
-        let chunk_index = (chunk_y * self.chunks_x + chunk_x) as usize;
-        let local_index = (local_y * CHUNK_SIZE + local_x) as usize;
-        (chunk_index, local_index)
+        (y * self.world.width() + x) as usize
     }
 }
 
@@ -174,37 +164,38 @@ mod tests {
     }
 
     #[test]
-    fn 跨块边界的写入不会污染本块() {
-        // 块边界是分块存储最容易出错的地方：算错块索引会让写入落到邻块。
+    fn 写入某坐标不会污染另一坐标() {
+        // 行主序下标换算是这类扁平存储最容易出错的地方：算错下标会让
+        // 写入落到别的格子。
         // Arrange
         let (ids, mut grid) = fixture();
-        let inside = grid.world().wrap(31, 31);
-        let across = grid.world().wrap(32, 32);
+        let a = grid.world().wrap(31, 31);
+        let b = grid.world().wrap(32, 32);
 
         // Act
-        grid.set_terrain(inside, ids.sand);
-        grid.set_terrain(across, ids.snow);
+        grid.set_terrain(a, ids.sand);
+        grid.set_terrain(b, ids.snow);
 
         // Assert
-        assert_eq!(grid.terrain_at(inside), ids.sand);
+        assert_eq!(grid.terrain_at(a), ids.sand);
     }
 
     #[test]
-    fn 跨块边界的写入能在邻块正确读回() {
-        // 只验前一条「本块未被污染」还不够：块索引算错也可能让写入
-        // 落到第三块而非邻块，那样 inside 依然不受影响，此测试才能
+    fn 写入某坐标后能在另一坐标正确读回() {
+        // 只验前一条「本格未被污染」还不够：下标算错也可能让写入落到
+        // 第三个格子而非目标格子，那样 a 依然不受影响，此测试才能
         // 揭出这类错误。
         // Arrange
         let (ids, mut grid) = fixture();
-        let inside = grid.world().wrap(31, 31);
-        let across = grid.world().wrap(32, 32);
+        let a = grid.world().wrap(31, 31);
+        let b = grid.world().wrap(32, 32);
 
         // Act
-        grid.set_terrain(inside, ids.sand);
-        grid.set_terrain(across, ids.snow);
+        grid.set_terrain(a, ids.sand);
+        grid.set_terrain(b, ids.snow);
 
         // Assert
-        assert_eq!(grid.terrain_at(across), ids.snow);
+        assert_eq!(grid.terrain_at(b), ids.snow);
     }
 
     #[test]

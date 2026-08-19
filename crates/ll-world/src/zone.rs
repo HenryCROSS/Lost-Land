@@ -17,11 +17,14 @@
 //! 的两种分辨率，`区块坐标 = 世界瓦片坐标 ÷ 区块边长`（整数除法），纯
 //! 函数派生，不是第二个真相源——见 [`ZoneLayout::tile_to_zone`]。
 //!
-//! # 甲案：区块 = 4×4 存储块
+//! # 丙案：区块即存储单位（原甲案已被取代）
 //!
-//! 「区块尺寸必须是 [`crate::chunk::CHUNK_SIZE`] 的整数倍」是结构性
-//! 约束（设计文档十节，甲案），由 [`ZoneLayout::new`] 在构造点校验；
-//! 「区块具体多大、世界多少区块」是可配置数值（设计文档十二节），由
+//! 早期版本要求「区块尺寸必须是 `CHUNK_SIZE` 的整数倍」（甲案，设计
+//! 文档十节）：区块内部当时按 32×32 分块存储。丙案取消了这层存储块
+//! （见 [`crate::chunk`] 模块文档「为什么是单一 `Vec`，不再分块」）,
+//! [`ZoneLayout::new`] 因此只保留「必须是 [`CELL_SIZE`] 的整数倍」这
+//! 一条结构性约束（连续噪声无缝性的前提）；「区块具体多大、世界多少
+//! 区块」仍然是可配置数值（设计文档十二节），由
 //! [`ZoneLayout::default_config`] 给出一份内部自洽的默认值（128×128、
 //! 48×32），调用方可以传别的值给 [`ZoneLayout::new`]。
 
@@ -29,15 +32,14 @@ use ll_core::torus::{TorusPos, TorusSize};
 use serde::{Deserialize, Serialize};
 
 use crate::WorldError;
-use crate::chunk::CHUNK_SIZE;
 use crate::noise::CELL_SIZE;
 use crate::space::ZoneCoord;
 
 /// 区块布局配置：区块边长（默认 128）+ 世界区块数（默认 48×32）。
 ///
 /// 两者都是可配置数值，不是结构约束（见设计文档十二节）——真正不可
-/// 违反的只有「区块边长必须是 [`CELL_SIZE`]/[`CHUNK_SIZE`] 的整数倍」,
-/// 由 [`Self::new`] 在构造点校验，构造成功之后的 `ZoneLayout` 恒满足
+/// 违反的只有「区块边长必须是 [`CELL_SIZE`] 的整数倍」，由
+/// [`Self::new`] 在构造点校验，构造成功之后的 `ZoneLayout` 恒满足
 /// 这条约束，下游（[`crate::generate::generate_zone_window`]、
 /// `SurfaceStore`）不需要重复校验。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -72,16 +74,15 @@ impl TryFrom<ZoneLayoutRepr> for ZoneLayout {
 ///
 /// # 为什么在这里重复一份常量而不是复用 `chunk.rs` 的
 ///
-/// `chunk.rs` 里的这两个常量是私有的，且本批次纪律是「只增不改」——
-/// 不改动既有文件的可见性声明。一个区块-层最终会被存进一个
-/// `ChunkGrid`（关键设计判断 1：「区块 = 一个 ChunkGrid 实例」），若
-/// `zone_span` 小于这个跨度，`ChunkGrid::new` 会在
-/// `generate::generate_zone_window` 内部返回
-/// [`WorldError::WorldTooSmall`]——与其让这个失败推迟到生成那一刻才
-/// 发生（生成入口因此不得不是 fallible 的，调用方每次都要处理一个
-/// 「正常配置下不可能发生」的错误分支），不如在 [`ZoneLayout::new`]
-/// 构造点提前拒绝，让下游可以安全假设「一个构造成功的 `ZoneLayout`，
-/// 它的每一个区块窗口都能生成成功」。
+/// `chunk.rs` 里的这两个常量是私有的，没有必要为了让这一处校验复用
+/// 它们而放宽其可见性——一个区块最终会被存进一个 `ChunkGrid`（关键
+/// 设计判断 1：「区块 = 一个 ChunkGrid 实例」），若 `zone_span` 小于
+/// 这个跨度，`ChunkGrid::new` 会在 `generate::generate_zone_window`
+/// 内部返回 [`WorldError::WorldTooSmall`]——与其让这个失败推迟到生成
+/// 那一刻才发生（生成入口因此不得不是 fallible 的，调用方每次都要
+/// 处理一个「正常配置下不可能发生」的错误分支），不如在
+/// [`ZoneLayout::new`] 构造点提前拒绝，让下游可以安全假设「一个构造
+/// 成功的 `ZoneLayout`，它的每一个区块窗口都能生成成功」。
 const MIN_ZONE_SPAN: u32 = 43;
 
 impl ZoneLayout {
@@ -89,17 +90,14 @@ impl ZoneLayout {
     ///
     /// 失败情形：
     /// - `zone_span` 不是 [`CELL_SIZE`] 的整数倍（连续噪声无缝性的前提，
-    ///   设计文档五节第一条）；
-    /// - `zone_span` 不是 [`CHUNK_SIZE`] 的整数倍（甲案，设计文档十节）；
+    ///   设计文档五节第一条——丙案取消存储块层之后，这是唯一的对齐
+    ///   约束，见模块文档「丙案：区块即存储单位」）；
     /// - `zone_span` 小于 [`MIN_ZONE_SPAN`]（否则该区块对应的
     ///   `ChunkGrid` 构造不出来，见 [`MIN_ZONE_SPAN`] 文档）；
     /// - `zone_span * zone_count` 在任一维上超过
     ///   [`TorusSize::MAX_EXTENT`]（否则 [`Self::tile_size`] 无法构造）。
     pub fn new(zone_span: u32, zone_count: TorusSize) -> Result<Self, WorldError> {
-        if zone_span < MIN_ZONE_SPAN
-            || !zone_span.is_multiple_of(CELL_SIZE as u32)
-            || !zone_span.is_multiple_of(CHUNK_SIZE)
-        {
+        if zone_span < MIN_ZONE_SPAN || !zone_span.is_multiple_of(CELL_SIZE as u32) {
             return Err(WorldError::ZoneSpanNotAligned { zone_span });
         }
 
@@ -205,14 +203,14 @@ mod tests {
     }
 
     #[test]
-    fn 区块边长不是cell_size或chunk_size整数倍时构造zonelayout失败() {
-        // 48 是 CELL_SIZE(16) 的倍数,但不是 CHUNK_SIZE(32) 的倍数——
-        // 甲案（区块 = 4×4 存储块）要求的是后者,前者不够。
+    fn 区块边长不是cell_size整数倍时构造zonelayout失败() {
+        // 50 大于最小视口跨度 43,但不是 CELL_SIZE(16) 的倍数——丙案
+        // 取消存储块层之后,这是唯一剩下的对齐约束。
         // Arrange
         let zone_count = TorusSize::new(4, 4).expect("4x4 是合法尺寸");
 
         // Act
-        let result = ZoneLayout::new(48, zone_count);
+        let result = ZoneLayout::new(50, zone_count);
 
         // Assert
         assert!(matches!(result, Err(WorldError::ZoneSpanNotAligned { .. })));
@@ -220,7 +218,7 @@ mod tests {
 
     #[test]
     fn 区块边长小于最小视口跨度时构造zonelayout失败() {
-        // 32 是 CHUNK_SIZE 的整数倍,对齐关系满足,但小于视口所需的
+        // 32 是 CELL_SIZE 的整数倍,对齐关系满足,但小于视口所需的
         // 43×25 跨度——对应的 ChunkGrid 根本构造不出来,必须在这里
         // 提前拒绝,而不是留到窗口化生成内部才失败。
         // Arrange
@@ -231,5 +229,21 @@ mod tests {
 
         // Assert
         assert!(matches!(result, Err(WorldError::ZoneSpanNotAligned { .. })));
+    }
+
+    #[test]
+    fn 区块边长是cell_size整数倍但不是32的倍数时构造成功() {
+        // 48 曾经在甲案下失败（不是 CHUNK_SIZE(32) 的整数倍）——丙案
+        // 取消存储块层之后,这条对齐约束不再存在,48 只要满足 CELL_SIZE
+        // 整数倍与最小视口跨度即可成功构造。这条测试直接锁定丙案生效
+        // 后的新行为,防止将来有人不小心把 32 的倍数约束又加回来。
+        // Arrange
+        let zone_count = TorusSize::new(4, 4).expect("4x4 是合法尺寸");
+
+        // Act
+        let result = ZoneLayout::new(48, zone_count);
+
+        // Assert
+        assert!(result.is_ok());
     }
 }
