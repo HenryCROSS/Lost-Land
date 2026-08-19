@@ -14,7 +14,9 @@ use ll_core::torus::TorusSize;
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
 use crate::noise::{CELL_SIZE, TileableNoise};
+use crate::space::ZoneCoord;
 use crate::terrain::{BaseTerrainIds, TerrainKind};
+use crate::zone::ZoneLayout;
 
 /// 地形生成参数。
 ///
@@ -139,10 +141,65 @@ fn height_to_terrain(height: i32, params: &GenParams, terrain_ids: &BaseTerrainI
     }
 }
 
+/// 按区块布局建立世界尺度噪声源，供窗口化生成与 `SurfaceStore` 复用。
+///
+/// 委托给 [`build_noise`]（本文件内部实现，逻辑不改一行）——只是把入参
+/// 从「世界瓦片尺寸」换成「区块布局」，因为流式加载场景下调用方通常
+/// 先有 [`ZoneLayout`]，而不是先手算出一个世界瓦片 `TorusSize`。构造
+/// 一次，此后所有区块窗口共用同一个实例（设计文档五节：`build_noise`
+/// 是 O(1) 操作）。
+pub fn build_zone_noise(
+    layout: &ZoneLayout,
+    params: &GenParams,
+) -> Result<TileableNoise, WorldError> {
+    build_noise(layout.tile_size(), params)
+}
+
+/// 只生成一个区块窗口的地形，不遍历整个世界——[`generate_terrain`] 的
+/// 窗口化版本，复用同一个 `noise` 源与同一套阈值逻辑
+/// （[`terrain_at_coord`]，不改一行）。
+///
+/// `noise` 由调用方预先用 [`build_zone_noise`] 构造一次并长期复用——
+/// `build_noise` 本身是 O(1) 操作（只依赖世界总尺寸），不需要每个区块
+/// 窗口各自重新构造一份（设计文档五节）。
+///
+/// # 错误
+///
+/// 一个正确构造的 [`ZoneLayout`]（经 `ZoneLayout::new` 校验过
+/// `zone_span >= 43`）恒能生成成功——这里返回 `Result` 只是与
+/// [`ChunkGrid::new`] 的签名保持一致，不代表调用方需要为「正常配置下
+/// 不可能发生」的失败分支编写实际处理逻辑。
+pub fn generate_zone_window(
+    noise: &TileableNoise,
+    params: &GenParams,
+    layout: &ZoneLayout,
+    zone: ZoneCoord,
+    terrain_ids: &BaseTerrainIds,
+) -> Result<ChunkGrid, WorldError> {
+    let span = layout.zone_span();
+    let local_size = layout.local_size();
+    let mut grid = ChunkGrid::new(local_size, terrain_ids.deep_water)?;
+
+    let origin_x = zone.x() * span as i32;
+    let origin_y = zone.y() * span as i32;
+
+    for ly in 0..span as i32 {
+        for lx in 0..span as i32 {
+            let world_x = origin_x + lx;
+            let world_y = origin_y + ly;
+            let kind = terrain_at_coord(noise, params, world_x, world_y, terrain_ids);
+            grid.set_terrain(local_size.wrap(lx, ly), kind);
+        }
+    }
+
+    Ok(grid)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::terrain::base_terrain_fixture;
+    use crate::zone::ZoneLayout;
 
     /// 测试世界尺寸：64 是 [`CELL_SIZE`]（16）的整数倍，且大于
     /// [`ChunkGrid`] 要求的视口跨度（43×25），生成不会因尺寸被拒绝。
@@ -289,6 +346,51 @@ mod tests {
             let north = terrain_at_coord(&noise, &params, x, 0, &terrain_ids);
             let south = terrain_at_coord(&noise, &params, x, world.height() as i32, &terrain_ids);
             assert_eq!(north, south);
+        }
+    }
+
+    /// 测试用区块布局：边长 64（满足 `>=43`、是 16 与 32 的倍数），
+    /// 2×1 个区块，凑出一个 128×64 的世界，便于和整图生成结果比较。
+    fn test_zone_layout() -> ZoneLayout {
+        let zone_count = TorusSize::new(2, 1).expect("2x1 是合法尺寸");
+        ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束")
+    }
+
+    #[test]
+    fn 相邻区块窗口生成的地形在共享边界上与整图生成结果一致() {
+        // 这是本任务最重要的正确性回归：直接验证设计文档五节「窗口化
+        // 调用不需要改这个函数一行」这条论断在区块粒度上真的成立——
+        // 逐格比较两个区块窗口拼接的结果与一次性整图生成的结果,而不是
+        // 只比较噪声层或只比较边界那一列。
+        // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let layout = test_zone_layout();
+        let params = GenParams {
+            seed: 99,
+            ..GenParams::default()
+        };
+        let noise = build_zone_noise(&layout, &params).expect("test_zone_layout 满足全部约束");
+        let full_world = layout.tile_size();
+        let full_grid =
+            generate_terrain(full_world, &params, &terrain_ids).expect("128x64 满足生成入口约束");
+        let span = layout.zone_span() as i32;
+
+        // Act & Assert：逐个区块窗口与整图对应位置比较。
+        for zone_x in 0..layout.zone_count().width() as i32 {
+            let zone = layout.zone_count().wrap(zone_x, 0);
+            let window = generate_zone_window(&noise, &params, &layout, zone, &terrain_ids)
+                .expect("test_zone_layout 满足全部约束");
+            for ly in 0..span {
+                for lx in 0..span {
+                    let local = layout.local_size().wrap(lx, ly);
+                    let world_pos = full_world.wrap(zone_x * span + lx, ly);
+                    assert_eq!(
+                        window.terrain_at(local),
+                        full_grid.terrain_at(world_pos),
+                        "区块 {zone:?} 局部坐标 ({lx},{ly}) 与整图结果不一致"
+                    );
+                }
+            }
         }
     }
 }
