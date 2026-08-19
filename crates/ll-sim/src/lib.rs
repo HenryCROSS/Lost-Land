@@ -16,11 +16,16 @@
 //! 只读视图（[`skill::SkillCatalog`] trait），不是技能注册表本身——
 //! 后者定义在下游的 `ll-mod`，依赖方向不允许本 crate 反过来依赖它，
 //! 见该模块文档完整论证。
+//!
+//! [`quest`]（P5-B 接线批次）：击杀结算需要的任务完成判定接口
+//! （[`quest::QuestCatalog`] trait）与任务进度基础操作，与 `skill`
+//! 同一套依赖倒置手法，见该模块文档。
 
 pub mod apply;
 pub mod combat;
 pub mod effect;
 pub mod intent;
+pub mod quest;
 pub mod resolve;
 pub mod skill;
 pub mod timeline;

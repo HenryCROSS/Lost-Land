@@ -31,19 +31,21 @@ ll-script = { path = "../ll-script" }
 # 解析出依赖关系用于拓扑排序）。
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+# P5-B 接线批次：从 [dev-dependencies] 升级为生产依赖。原先只在测试里
+# 用它验证「写入没有绕开 apply」（见下方历史注释），但 `resolve_use_skill`/
+# `Intent::Attack` 的击杀结算需要在真实游玩流程里查询本 crate 的
+# `SkillTable`/`QuestTable`——这要求 `SkillTable`/`QuestTable` 分别实现
+# `ll_sim::skill::SkillCatalog`/`ll_sim::quest::QuestCatalog`（依赖倒置，
+# 见 `crate::skill`/`crate::quest` 模块文档），trait 定义在 `ll-sim`，
+# 实现它必须先能看见它的类型签名，因此本 crate 现在需要在生产代码
+# （非 `#[cfg(test)]`）里 `use ll_sim::...`。依赖方向
+# ll-world ← ll-sim ← ll-script ← ll-mod（规格 §5）本就允许 `ll-mod`
+# 依赖 `ll-sim`（更下游）——`ll-sim` 不认识、也不依赖 `ll-mod`，
+# `cargo tree -p ll-world | grep ll-sim` 这条既有验证不受影响。
+ll-sim = { path = "../ll-sim" }
 
 [dev-dependencies]
 proptest.workspace = true
-# P5-B 任务 7：`quest.rs` 的持久化测试需要真正走
-# `ll_sim::effect::Effect::SetScriptState → ll_sim::apply::apply` 这条
-# 唯一写入口（裁定 P5-1/ADR 0023），证明任务进度的写入没有绕开它。
-# 只作为测试依赖——生产路径（`mark_quest_completed`/
-# `is_quest_completed`）本身不依赖 `ll-sim`，只产出/读取
-# `ll_world::script_state` 的数据，真正把它包成 `Effect` 交给 `apply`
-# 是调用方（未来的判定管线）的职责，见 `quest` 模块文档。依赖方向
-# ll-world ← ll-sim ← ll-script ← ll-mod（规格 §5）允许 `ll-mod` 依赖
-# `ll-sim`（更下游）。
-ll-sim = { path = "../ll-sim" }
 # 序列化往返测试（任务 7 的存档一致性验证）与 `ll-world` 的同类测试
 # 用同一个编码格式。
 serde_json = "1"

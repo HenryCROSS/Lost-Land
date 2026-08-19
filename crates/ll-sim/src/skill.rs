@@ -34,16 +34,18 @@
 //! 依赖方向没有被打破：`ll-mod` 实现一个 `ll-sim` 定义的 trait，是
 //! 「下游为上游的接口提供实现」，不是「上游依赖下游的类型」。
 //!
-//! **代价是真实的重复**：`SkillEffect`/`ResourceCost` 在两个 crate 里
-//! 各存在一份结构相同（或结构上更明确，见 [`SkillEffect::RestoreResource`]
-//! 文档）的声明，未来把 `ll-mod::skill::SkillTable` 真正接到
-//! `resolve_use_skill`（游戏内容加载管线，超出本计划范围）的那次改动，
-//! 需要一层显式的转换函数（`ll_mod::skill::SkillEffect` → 本模块
-//! `SkillEffect`）架在两者之间——这是「已知缺口，记录不硬做」的部分：
-//! 交叉引用/跨表桥接问题已经计划在统一的后续阶段处理（同 `SkillDef.owning_class`
-//! 是否指向真实 `ClassDef` 无法在注册期跨表校验的先例，见
-//! `crates/ll-mod/src/skill.rs` 模块文档），本任务不提前造一条不完整
-//! 的桥接代码。
+//! **接线批次的更新（原「代价是真实的重复」一节，如实标注现状）**：
+//! 上面这段论证写于任务 5，当时 `ll-mod` 还不允许依赖 `ll-sim`（那时
+//! 没有任何生产代码需要这个方向），`SkillEffect`/`ResourceCost` 因此在
+//! 两个 crate 里各存在一份结构相同（或结构上更明确，见
+//! [`SkillEffect::RestoreResource`] 文档）的独立声明。接线批次把
+//! `ll-sim` 提升为 `ll-mod` 的生产依赖（见 `crates/ll-mod/Cargo.toml`
+//! 的接线批次说明）之后，这个限制不再成立——`crates/ll-mod/src/skill.rs`
+//! 现在直接 `use` 本模块的 `ResourceCost`/`ResourceKind`/`SkillEffect`，
+//! 不再维护一份会漂移的副本；`ll_mod::skill::SkillTable` 也已经实现了
+//! 下面的 [`SkillCatalog`]，不需要任何转换函数。依赖方向没有变化：
+//! `ll-sim` 仍然不知道、也不依赖 `ll-mod` 的任何类型，只是 `ll-mod`
+//! 现在选择复用本模块的定义而不是重新声明一份。
 //!
 //! # 为什么不是改 `resolve` 的签名去接收 `ll-mod` 的具体类型
 //!
@@ -155,14 +157,15 @@ pub trait SkillCatalog {
 /// 空技能目录：查询任何索引恒返回 `None`。
 ///
 /// 是 [`crate::resolve::resolve`]（不接收技能目录参数的既有入口，见其
-/// 文档）内部用来处理 `Intent::UseSkill` 的默认实现——本计划范围内还
-/// 没有任何生产代码持有真正的技能注册表并接到 `resolve`（那是游戏内容
-/// 加载管线的职责，见本模块文档「代价是真实的重复」一节），因此
-/// `resolve` 对 `UseSkill` 意图的默认行为就是「任何技能都查不到」，
-/// 与「资源不足」「技能未解锁」走的是同一条「静默不产出效果」的既有
-/// 纪律（本函数不是特殊路径）。真正想让技能结算生效的调用方应改用
-/// [`crate::resolve::resolve_with_skills`]，传入一个真正实现了
-/// [`SkillCatalog`] 的目录。
+/// 文档）内部用来处理 `Intent::UseSkill` 的默认实现——调用方没有技能
+/// 内容（例如尚未装载任何 mod、或明确不需要技能结算的调用场景）时的
+/// 保底行为，`resolve` 对 `UseSkill` 意图的默认行为就是「任何技能都
+/// 查不到」，与「资源不足」「技能未解锁」走的是同一条「静默不产出
+/// 效果」的既有纪律（本函数不是特殊路径）。真正想让技能结算生效的
+/// 调用方应改用 [`crate::resolve::resolve_with_skills`]（或
+/// `resolve_with_skills_and_quests`），传入一个真正实现了
+/// [`SkillCatalog`] 的目录——`ll_mod::skill::SkillTable`（接线批次）
+/// 现在就是这样一个真正的实现，不再只有测试用的假目录。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoSkills;
 

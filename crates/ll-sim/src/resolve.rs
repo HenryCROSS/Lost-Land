@@ -59,6 +59,7 @@ use ll_world::state::WorldState;
 use crate::combat::{Penetration, damage_after_defense};
 use crate::effect::Effect;
 use crate::intent::{Direction, Intent};
+use crate::quest::{NoQuests, QuestCatalog};
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::timeline::action_cost;
 
@@ -117,35 +118,49 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
 /// panic 或报错），理由同样是「目标不存在不是异常状况，是结算并发/
 /// 时序下的正常可能性」。
 ///
-/// # `Intent::UseSkill` 在这个入口下恒不产出效果
+/// # `Intent::UseSkill` 与击杀任务进度在这个入口下恒不产出效果
 ///
-/// 本函数是 [`resolve_with_skills`] 在「调用方没有技能目录」时的薄
-/// 封装（传入 [`crate::skill::NoSkills`]）——本计划范围内还没有任何
-/// 生产代码把 `ll-mod` 的技能注册表接到结算层（见 [`crate::skill`]
-/// 模块文档「代价是真实的重复」一节，这条接线是游戏内容加载管线的
-/// 职责，超出本任务范围）。已有的全部调用点（`ll-content`/`ll-ui` 的
-/// 验收 demo、`ll-sim` 自身的重放测试）目前都不构造 `UseSkill` 意图，
-/// 因此这个默认行为不影响它们；真正想让技能结算生效的调用方应改用
-/// [`resolve_with_skills`]，传入实现了 [`crate::skill::SkillCatalog`]
-/// 的目录。
+/// 本函数是 [`resolve_with_skills_and_quests`] 在「调用方没有技能目录、
+/// 也没有任务目录」时的薄封装（传入 [`crate::skill::NoSkills`]/
+/// [`crate::quest::NoQuests`]）——不需要技能/任务结算的调用点（例如
+/// 只测试移动/开门这类不涉及内容注册表的场景）不需要为此多构造一份
+/// 目录。真正想让技能结算/击杀任务进度生效的调用方应改用
+/// [`resolve_with_skills`]/[`resolve_with_skills_and_quests`]，传入
+/// 实现了对应 trait 的真实目录——`ll_mod::skill::SkillTable`/
+/// `ll_mod::quest::RegisteredQuests`（接线批次）现在就是这样的真实
+/// 实现。
 pub fn resolve(world: &WorldState, intent: &Intent) -> Vec<Effect> {
-    resolve_with_skills(world, intent, &NoSkills)
+    resolve_with_skills_and_quests(world, intent, &NoSkills, &NoQuests)
 }
 
-/// [`resolve`] 的完整入口：额外接收一份技能目录，用于结算
-/// [`Intent::UseSkill`]。
-///
-/// 拆成两个函数（而不是给 [`resolve`] 加一个参数）是为了不破坏仓库里
-/// 已有的全部既有调用点（`ll-content`/`ll-ui` 的验收 demo、
-/// `ll-sim`/`ll-content` 的重放与序列化往返测试等，一一列在本次改动的
-/// 提交信息里）——它们都不需要技能结算，强迫它们每处都传一个目录（哪怕
-/// 是空的）只是无意义的噪音。
+/// [`resolve`] 的技能结算入口：额外接收一份技能目录，用于结算
+/// [`Intent::UseSkill`]。等价于
+/// `resolve_with_skills_and_quests(world, intent, skills, &NoQuests)`
+/// ——保留这个薄封装是为了不破坏仓库里已有的全部既有调用点（`ll-sim`
+/// 的技能结算测试、`ll-mod` 的接线测试等）：它们只需要技能结算，强迫
+/// 它们每处都多传一个任务目录（哪怕是空的）只是无意义的噪音。
 pub fn resolve_with_skills(
     world: &WorldState,
     intent: &Intent,
     skills: &dyn SkillCatalog,
 ) -> Vec<Effect> {
-    match *intent {
+    resolve_with_skills_and_quests(world, intent, skills, &NoQuests)
+}
+
+/// [`resolve`] 的完整入口：额外接收一份技能目录与一份任务目录，用于
+/// 结算 [`Intent::UseSkill`] 与击杀对任务进度的推进（P5-B 接线批次）。
+///
+/// 三层入口（`resolve` → `resolve_with_skills` →
+/// `resolve_with_skills_and_quests`）而不是给 `resolve` 加两个参数，
+/// 理由同 [`resolve_with_skills`] 文档：不强迫只需要技能、不需要任务
+/// 系统的既有调用点（反之亦然）都多传一份目录。
+pub fn resolve_with_skills_and_quests(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+    quests: &dyn QuestCatalog,
+) -> Vec<Effect> {
+    let mut effects = match *intent {
         Intent::Wait { actor } => resolve_wait(world, actor),
         Intent::Move { actor, dir } => resolve_move(world, actor, dir),
         Intent::Attack { actor, target } => resolve_attack(world, actor, target),
@@ -157,6 +172,41 @@ pub fn resolve_with_skills(
             skill,
             target,
         } => resolve_use_skill(world, actor, skill, target, skills),
+    };
+    if let Intent::Attack { actor, .. } = *intent {
+        append_quest_kill_progress(world, actor, &mut effects, quests);
+    }
+    effects
+}
+
+/// 击杀结算与任务进度的接线（P5-B 接线批次）：若 `effects` 里包含
+/// [`Effect::Kill`]，读取（结算前仍然存在的）被击杀目标的
+/// [`ll_world::entity::Agent::race`] 作为
+/// [`crate::quest::QuestKillRule::target_kind`] 的匹配依据，把击杀
+/// 计数、以及可能因此达标的任务完成写入一并追加进效果列表——见
+/// [`crate::quest`] 模块文档「击杀计数」「只有 `Intent::Attack` 会
+/// 触发这条接线」两节的完整论证与已知范围边界。
+///
+/// 必须在 `apply` 之前读取被击杀者的 `race`：本函数只接受
+/// `&WorldState`（`resolve` 必须是纯函数，C1），此刻目标仍然存在于
+/// `world.actors` 里，`Effect::Kill` 还没有被应用。
+fn append_quest_kill_progress(
+    world: &WorldState,
+    actor: EntityId,
+    effects: &mut Vec<Effect>,
+    quests: &dyn QuestCatalog,
+) {
+    let killed_kinds: Vec<ContentIndex> = effects
+        .iter()
+        .filter_map(|effect| match effect {
+            Effect::Kill { target } => world.actors.get(*target).map(|agent| agent.race),
+            _ => None,
+        })
+        .collect();
+    for kind in killed_kinds {
+        effects.extend(crate::quest::kill_progress_effects(
+            world, actor, kind, quests,
+        ));
     }
 }
 

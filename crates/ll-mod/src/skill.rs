@@ -33,73 +33,46 @@
 //! # 与规格 §15 P6 边界的关系
 //!
 //! `SkillEffect`/`ResourceCost` 的文档已经写明纯数值边界——技能效果
-//! 只能是本模块定义的这三种纯数值变体，不得引入任何读取装备槽位的
+//! 只能是这两个类型能表达的纯数值变体，不得引入任何读取装备槽位的
 //! 字段。真实防御来自装备，装备系统（P6）在本批次之后才落地；若某个
 //! 技能效果「看起来需要装备信息才能表达」，正确做法是记入待裁定，不是
-//! 提前给 `SkillEffect` 加一个装备相关变体。见各自类型的文档。
+//! 提前给 `SkillEffect` 加一个装备相关变体。见各自类型的文档
+//! （[`ll_sim::skill`]）。
+//!
+//! # `ResourceCost`/`SkillEffect`/`ResourceKind` 现在直接复用
+//! `ll_sim::skill` 的定义，不再本地重复声明（接线批次）
+//!
+//! 任务 3 实现这三个类型时，`ll-mod` 尚未（且当时也不需要）依赖
+//! `ll-sim`——`SkillDef`/`SkillTable` 只是内容注册表，不需要知道结算
+//! 层怎么用它们。任务 5 在 `ll-sim` 侧为了让 `resolve_use_skill` 能读到
+//! 技能定义，又在 `crates/ll-sim/src/skill.rs` 独立声明了一份结构几乎
+//! 相同的 `ResourceCost`/`SkillEffect`（该文件模块文档「本任务选择的
+//! 解法：依赖反转」一节详细论证了当时为什么只能这样做——`ll-sim` 不能
+//! 依赖 `ll-mod`，两边只能各自声明）。
+//!
+//! **这次接线改变了前提**：为了让 `SkillTable` 真正实现
+//! `ll_sim::skill::SkillCatalog`（把内容注册表接进 `resolve_with_skills`
+//! 真实调用得到的结算链路），`ll-mod` 现在必须依赖 `ll-sim`（见本 crate
+//! `Cargo.toml` 的接线批次说明）。依赖方向 `ll-world` ← `ll-sim` ←
+//! `ll-script` ← `ll-mod`（规格 §5）本就允许这个方向，此前只是「还没有
+//! 需要」——一旦允许，继续维持两份结构近似的重复声明就不再有理由：
+//! 那会让「技能效果长什么样」有两个可能漂移的真相源（`ll-sim` 那份的
+//! 模块文档已经指出过一处真实的字段不对齐：`RestoreResource` 该文件
+//! 的版本没有说明恢复的是哪种资源）。本模块因此改为直接
+//! `use ll_sim::skill::{ResourceCost, ResourceKind, SkillEffect};`，
+//! `ll-sim` 那份定义现在是唯一真相源，`ll-mod` 只是复用者——`ll-sim`
+//! 仍然不知道、也不依赖 `ll-mod` 的任何类型，依赖方向没有被打破。
 
 use std::fmt;
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+// `pub use`（不是普通 `use`）：`SkillAttrs`/`SkillDef` 的调用方（本体
+// 与未来的 mod 注册代码）需要能通过 `ll_mod::skill::ResourceCost`/
+// `ll_mod::skill::SkillEffect` 这两个既有路径构造这两个类型的值——
+// 这是任务 3 起就有的公开 API 形状，不能因为这次改成复用 `ll-sim` 的
+// 定义就让调用方被迫改成直接依赖 `ll-sim`。
+pub use ll_sim::skill::{ResourceCost, ResourceKind, SkillCatalog, SkillEffect, SkillRule};
 use ll_world::entity::AttributeKind;
-
-/// 技能消耗的资源类型与数量。
-///
-/// `Agent` 当前尚无法力/耐力这类「当前资源值」字段
-/// （`attribute-system.md`「六、次级属性」把"生命/法力/耐力"列为设计
-/// 层面的次级属性，标注"尚未落地"）——本类型只声明"哪种资源、消耗
-/// 多少"这份静态数据，真正对照 `Agent` 当前资源值判断是否足够、以及
-/// 是否需要给 `Agent` 补上对应字段，是 P5-B 任务 5 `resolve` 的职责，
-/// 不在本模块范围内。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ResourceCost {
-    /// 不消耗任何资源——纯冷却限制的技能。
-    None,
-    /// 消耗法力。
-    Mana(u32),
-    /// 消耗耐力。
-    Stamina(u32),
-}
-
-/// 技能效果——**只能是纯数值**，不得引入任何读取装备槽位的字段。
-///
-/// # 规格 §15 P6 边界（必须写在这里，供后来者直接看到）
-///
-/// 规格把 P6「物品与装备」排在 P5（技能树）之后。`attribute-system.md`
-/// 已经设计好三系攻防、四种穿透、10% 下限这套完整伤害公式，但那套
-/// 公式的「防御」来自装备，装备系统目前不存在——因此
-/// [`SkillEffect::DealDamage`] 只能产出一个裸的基础伤害数值，**不得**
-/// 触发完整的三系攻防结算，也不得读取任何 `ItemDef`/装备实例字段。
-/// 若某个技能效果「看起来需要装备信息才能表达」（例如"伤害 = 武器
-/// 攻击力 × 倍率"），正确做法是把它记录到待裁定/有意留给后续阶段的
-/// 缺口，不是提前给本枚举加一个装备相关变体——那会造出一堆将来 P6
-/// 装备落地时需要返工的接口。见
-/// `knowledge/design/class-skill-quest-system.md` 第五节。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkillEffect {
-    /// 造成伤害，基础值。
-    DealDamage {
-        /// 基础伤害值，不经任何装备/穿透加成。
-        base: i32,
-    },
-    /// 恢复资源（法力/耐力），基础值。
-    RestoreResource {
-        /// 基础恢复值。
-        base: i32,
-    },
-    /// 临时属性修正：`duration_ticks` 个 tick 内，`attribute` 项的
-    /// 有效值增减 `amount`。存的是"持续多久"这个静态声明，真正的
-    /// "到期时刻"由任务 5 在技能释放那一刻，用当前世界时钟 + 这个
-    /// 时长现算出来，惰性判定（`buffs-and-triggers.md` 一、）。
-    TemporaryStatModifier {
-        /// 受影响的主属性。
-        attribute: AttributeKind,
-        /// 增减量，可为负。
-        amount: i32,
-        /// 持续的 tick 数。
-        duration_ticks: u32,
-    },
-}
 
 /// 单条技能声明：本体与 mod 注册技能时共用的同一个输入形状。
 ///
@@ -289,6 +262,16 @@ impl SkillTable {
             effect: self.effect[idx],
         })
     }
+
+    /// 按 [`ContentIndex::get`] 数值升序返回全部已注册技能索引（约束
+    /// C5：不依赖内部 `defined_ids` 的原始注册顺序）——供任务 8 的
+    /// [`ll_sim::skill_overview::SkillTreeCatalog`] 实现遍历"当前一共
+    /// 登记了哪些技能"，理由同 [`crate::quest::QuestTable::defined_indices`]。
+    pub fn defined_indices(&self) -> Vec<ContentIndex> {
+        let mut ids = self.defined_ids.clone();
+        ids.sort_by_key(ContentIndex::get);
+        ids
+    }
 }
 
 /// [`SkillTable`] 对 [`crate::prereq_graph::PrerequisiteGraph`] 的适配
@@ -327,6 +310,32 @@ pub fn validate_no_cycles(skills: &SkillTable) -> Result<(), SkillError> {
         }
         crate::prereq_graph::CycleError::Cycle(cycle) => SkillError::CyclicPrerequisites(cycle),
     })
+}
+
+/// [`SkillTable`] 对 [`ll_sim::skill::SkillCatalog`] 的实现——「依赖
+/// 倒置」在技能系统上真正闭环的一步。
+///
+/// `ll_sim::skill` 模块文档「本任务选择的解法」一节论证过这条 trait
+/// 为什么定义在 `ll-sim`：`resolve_use_skill` 需要读技能定义，但依赖
+/// 方向不允许它直接依赖持有 `SkillTable` 的 `ll-mod`。那份文档写完的
+/// 时候，`ll-mod` 还没有实现方——本次接线批次补上这个实现：`SkillTable`
+/// 现在可以被直接传给 [`ll_sim::resolve::resolve_with_skills`]（或本 crate
+/// `Cargo.toml` 描述的批次），让真正由本体/未来 mod 注册出来的技能定义
+/// 参与真实结算，而不再是只有测试用的 `FakeCatalog`（`ll-sim/tests/
+/// skill_resolve.rs`）在验证这条 trait。
+///
+/// 实现本身没有任何转换逻辑——`SkillView::{cooldown_ticks,
+/// resource_cost, effect}` 与 [`ll_sim::skill::SkillRule`] 的对应字段
+/// 现在是完全相同的类型（见本模块文档「现在直接复用」一节），不需要
+/// 像本来预想的那样写一层桥接转换函数。
+impl SkillCatalog for SkillTable {
+    fn skill(&self, skill: ContentIndex) -> Option<SkillRule> {
+        self.get(skill).map(|view| SkillRule {
+            cooldown_ticks: view.cooldown_ticks,
+            resource_cost: view.resource_cost,
+            effect: view.effect,
+        })
+    }
 }
 
 /// 本体基础技能在当前注册表里的索引缓存。
@@ -384,7 +393,7 @@ pub fn materialize_base_skills(
         Some(warrior),
         vec![strike],
         20,
-        ResourceCost::Stamina(10),
+        ResourceCost::Amount(ResourceKind::Stamina, 10),
         SkillEffect::DealDamage { base: 12 },
     )?;
     let brace = define_skill(
@@ -394,7 +403,7 @@ pub fn materialize_base_skills(
         Some(warrior),
         vec![strike],
         15,
-        ResourceCost::Stamina(5),
+        ResourceCost::Amount(ResourceKind::Stamina, 5),
         SkillEffect::TemporaryStatModifier {
             attribute: AttributeKind::Constitution,
             amount: 3,
@@ -409,7 +418,13 @@ pub fn materialize_base_skills(
         vec![strike],
         10,
         ResourceCost::None,
-        SkillEffect::RestoreResource { base: 8 },
+        // 恢复法力——`resource` 字段是本次接线补上的（见本模块文档
+        // 「现在直接复用」一节）：`ll-sim` 那份定义此前用非结构化注释
+        // 表达「恢复的是哪种资源」，编译器管不到，接线时顺手补掉。
+        SkillEffect::RestoreResource {
+            resource: ResourceKind::Mana,
+            base: 8,
+        },
     )?;
     let combo = define_skill(
         &mut table,
@@ -418,7 +433,7 @@ pub fn materialize_base_skills(
         Some(warrior),
         vec![power_strike, brace],
         30,
-        ResourceCost::Stamina(15),
+        ResourceCost::Amount(ResourceKind::Stamina, 15),
         SkillEffect::DealDamage { base: 20 },
     )?;
 
@@ -681,7 +696,7 @@ mod tests {
                     owning_class: None,
                     prerequisites: vec![base_ids.strike],
                     cooldown_ticks: 25,
-                    resource_cost: ResourceCost::Mana(12),
+                    resource_cost: ResourceCost::Amount(ResourceKind::Mana, 12),
                     effect: SkillEffect::DealDamage { base: 15 },
                 },
             )
@@ -707,5 +722,87 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
+    }
+
+    /// 接线批次的核心验收：本体技能表（`materialize_base_skills` 真实
+    /// 产出的 [`SkillTable`]，不是任何测试专用的假目录）直接喂给
+    /// `ll_sim::resolve::resolve_with_skills`，走一遍与真实玩法完全
+    /// 相同的 `Intent::UseSkill → resolve → Effect → apply` 链路——
+    /// 证明「`SkillTable` 实现 `SkillCatalog`」不只是编译期类型对得上，
+    /// 运行期真的产出正确效果、`apply` 落地后 `Agent` 状态确实改变。
+    #[test]
+    fn 本体技能表接入resolve_with_skills后真实结算出伤害与冷却() {
+        // Arrange：一个 1x1 区块的最小世界 + 一个已解锁 strike 的攻击者
+        // + 一个待打的目标，两者共用同一个 Registry 与本体技能表。
+        let mut registry = Registry::new();
+        let (base_ids, table) =
+            materialize_base_skills(&mut |id| registry.intern(id)).expect("本体技能声明表内部一致");
+        let zone_count = ll_core::torus::TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+        let layout = ll_world::zone::ZoneLayout::new(64, zone_count).expect("64 满足全部约束");
+        let (terrain_ids, terrain_table) = ll_world::terrain::base_terrain_fixture();
+        let spawn = layout.tile_size().wrap(0, 0);
+        let mut world = ll_world::state::WorldState::new(
+            layout,
+            &ll_world::generate::GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件");
+
+        let profession = registry.intern(id("lostland:tester"));
+        let race = registry.intern(id("lostland:human"));
+        let pos = world.size.wrap(0, 0);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let blank = |unlocked_skills: Vec<ContentIndex>| ll_world::entity::Agent {
+            pos,
+            stats: ll_world::entity::BaseStats::BASELINE,
+            next_action_at: ll_core::time::Tick(0),
+            health: ll_world::entity::Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession,
+            goals: Vec::new(),
+            race,
+            luck: 0,
+            mana: ll_world::entity::Agent::STARTING_MANA,
+            stamina: ll_world::entity::Agent::STARTING_STAMINA,
+            unlocked_skills,
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
+            script_state: std::collections::BTreeMap::new(),
+        };
+        let actor = world.actors.spawn(blank(vec![base_ids.strike]));
+        let target = world.actors.spawn(blank(Vec::new()));
+
+        // Act：真实结算链路——不是直接构造 Effect，是从 Intent 出发。
+        let effects = ll_sim::resolve::resolve_with_skills(
+            &world,
+            &ll_sim::intent::Intent::UseSkill {
+                actor,
+                skill: base_ids.strike,
+                target: Some(target),
+            },
+            &table,
+        );
+        assert!(
+            !effects.is_empty(),
+            "已解锁、无冷却、无消耗的 strike 理应产出效果"
+        );
+        for effect in &effects {
+            ll_sim::apply::apply(&mut world, effect);
+        }
+
+        // Assert：伤害真的落到了目标身上（strike 的 base 伤害是 5，见
+        // materialize_base_skills），冷却也真的写回了施法者。
+        let defender = world.actors.get(target).expect("目标应仍存在");
+        assert_eq!(
+            defender.health,
+            ll_world::entity::Agent::STARTING_HEALTH - 5
+        );
+        let attacker = world.actors.get(actor).expect("攻击者应仍存在");
+        assert!(attacker.skill_cooldowns.contains_key(&base_ids.strike));
     }
 }

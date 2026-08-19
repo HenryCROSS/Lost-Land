@@ -58,8 +58,11 @@
 //!
 //! 规格 §5：`ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod` ← `ll-ui`。
 //! 本 crate 依赖 `ll-core`、`ll-world`（Task 8 新增，理由见
-//! [`base_terrain`] 模块文档）与 `ll-script`（Task 11 新增，理由见
-//! [`pipeline`] 模块文档），不得被下游任何 crate 反向依赖。
+//! [`base_terrain`] 模块文档）、`ll-script`（Task 11 新增，理由见
+//! [`pipeline`] 模块文档）与 `ll-sim`（P5-B 接线批次新增：
+//! [`skill::SkillTable`]/[`quest::RegisteredQuests`] 需要实现
+//! `ll_sim::skill::SkillCatalog`/`ll_sim::quest::QuestCatalog` 才能真正
+//! 接入 `resolve`，见两个模块的文档），不得被下游任何 crate 反向依赖。
 
 pub mod base_placeholder;
 pub mod base_space_profile;

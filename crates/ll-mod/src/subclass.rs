@@ -248,7 +248,7 @@ pub fn base_subclass_fixture() -> (BaseSubclassIds, SubclassTable) {
 mod tests {
     use super::*;
     use crate::registry::Registry;
-    use crate::skill::{ResourceCost, SkillAttrs, SkillEffect, SkillTable};
+    use crate::skill::{ResourceCost, ResourceKind, SkillAttrs, SkillEffect, SkillTable};
 
     #[test]
     fn 新建的副职表查询任意索引均为未注册() {
@@ -373,7 +373,7 @@ mod tests {
                     owning_class: Some(warrior),
                     prerequisites: Vec::new(),
                     cooldown_ticks: 20,
-                    resource_cost: ResourceCost::Stamina(10),
+                    resource_cost: ResourceCost::Amount(ResourceKind::Stamina, 10),
                     effect: SkillEffect::DealDamage { base: 12 },
                 },
             )
