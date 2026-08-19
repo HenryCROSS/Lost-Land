@@ -24,6 +24,7 @@ use ll_core::ident::{Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
+use ll_sim::effect::Effect;
 use ll_sim::intent::{Direction, Intent};
 use ll_sim::resolve::resolve;
 use ll_world::entity::{Agent, BaseStats, EntityId};
@@ -120,6 +121,20 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
 /// 混合了 `Move`/`Wait`/`Attack`/`OpenDoor` 四种 Intent，且后续几步
 /// 依赖前面几步的效果已经落地（走进门之前门必须已经被撞开）——足以
 /// 暴露「结算顺序被打乱」「某个效果没有真的落地」这类缺陷。
+///
+/// # 曾经的覆盖缺口（本次修复）
+///
+/// 这份 Intent 流一度只在玩家走到 `(12,9)`（门前一格）后直接下发显式
+/// `OpenDoor`——门是被这条显式意图第一次打开的，`resolve_move` 里
+/// 「撞门派生开门效果」那条分支（`opens_into` 分支，见 `resolve.rs`）
+/// 从未在这个文件里被真正走到过，与本文档「先由 `Move` 派生出开门
+/// 效果」的描述不符：显式 `OpenDoor` 在那种排布下做的是「第一次真正
+/// 开门」的工作，而不是文档所说的「确认幂等地停在原地」。现在补上了
+/// 一步专门撞向关着的门的 `Move`（下方第 6 个 Intent）：这一步走
+/// `opens_into` 分支，产出 `SetTerrain` 而非 `MoveTo`，玩家停在
+/// `(12,9)` 不动；紧随其后的显式 `OpenDoor` 这才是真正的「门已经开了,
+/// 再开一次确认没有副作用」——与文档描述完全对齐，且顺带让这个分支
+/// 第一次被这份黄金基准真正覆盖到。
 fn intent_stream(player: EntityId, enemy: EntityId) -> Vec<Intent> {
     vec![
         Intent::Move {
@@ -135,6 +150,12 @@ fn intent_stream(player: EntityId, enemy: EntityId) -> Vec<Intent> {
             actor: player,
             target: enemy,
         },
+        Intent::Move {
+            actor: player,
+            dir: Direction::East,
+        },
+        // 撞向关着的门：resolve_move 的 opens_into 分支派生出开门效果，
+        // 玩家原地不动（见上方模块文档「曾经的覆盖缺口」一节）。
         Intent::Move {
             actor: player,
             dir: Direction::East,
@@ -179,7 +200,27 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 换了输入顺序。人工核对：迁移前后分别跑通本文件另外三条测试（相同
 /// 种子相同哈希、不同意图流不同哈希、序列化往返一致）全部保持通过，
 /// 证明哈希仍然对种子/意图流/序列化敏感，不是退化成常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 10_964_837_711_040_915_745;
+///
+/// # 第二次重冻的原因（`TileableNoise` 大陆尺度层退化修复）
+///
+/// `TileableNoise::new` 改用 `safe_coarse_scale` 而非直接取 `gcd` 的
+/// 最大二次幂因数（见 `ll_world::noise` 模块文档「一个更隐蔽的退化」）
+/// ——本文件的测试世界是 64×64 单区块，换算出的格点周期恰好是
+/// `period_x = period_y = 4`，正好命中那个退化条件，修复前后大陆
+/// 尺度层的取值不同，世界背景地形（`setup` 里没有显式 `set_terrain`
+/// 覆盖的格子）随之改变，`world.hash()` 自然跟着变。
+///
+/// 同一次提交里 `intent_stream` 也补上了一步撞向关着的门的 `Move`
+/// （见其文档「曾经的覆盖缺口」一节）——但这**没有**让摘要再变一次：
+/// 补的那一步与它取代的显式 `OpenDoor` 做的是同一件事（把门从
+/// `door_closed` 改写成 `door_open`），而 `ScheduleNext` 覆盖式写入
+/// `next_action_at`（`schedule_after` 只读 `world.clock`，本文件的
+/// 意图流从不推进它），补一步进去只是把「谁先把门打开」的归属换了个
+/// 位置，最终世界状态（地形/位置/时钟）逐位不变——这也是为什么后面
+/// 那个「真正打开门的显式 OpenDoor 现在变成了空操作」的重构本身是
+/// 安全的：世界状态不因为顺序调整而漂移。人工核验：这里的常量数值与
+/// 只应用噪声修复、intent_stream 保持 8 步不变时实测到的哈希完全相同。
+const EXPECTED_REPLAY_DIGEST: u64 = 6_078_574_347_230_641_570;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {
@@ -290,4 +331,89 @@ fn 序列化世界并读回后继续执行同一意图流结果与不中断执�
 
     // Assert
     assert_eq!(reloaded.hash(), uninterrupted_hash);
+}
+
+/// 回归测试：撞向关着的门那一步真的产生了「派生开门」效果，而不是
+/// 悄悄落到某个从未被走到的分支。
+///
+/// 见 `intent_stream` 文档「曾经的覆盖缺口」：修复前这份 Intent 流从
+/// 玩家走到 `(12,9)` 后直接下发显式 `OpenDoor`，`resolve_move` 里
+/// 「撞门派生开门」的 `opens_into` 分支从未在本文件里被走到过。这里
+/// 单独把这一步（intent_stream 里第 6 个 Intent，紧接在显式 OpenDoor
+/// 之前的那个 `Move`）结算出来，断言它产出的是 `SetTerrain` 而不是
+/// `MoveTo`——门被撞开，人没挪窝。
+#[test]
+fn 撞向关着的门产生派生开门效果而不是移动效果() {
+    // Arrange：把序列跑到「刚走到门前一格」为止（跳过撞门这一步本身）。
+    let (mut world, player, enemy) = setup(3);
+    let intents = intent_stream(player, enemy);
+    let bump_door_index = 5; // 见 intent_stream：第 6 个（0 基下标 5）是撞门的 Move。
+    assert!(
+        matches!(intents[bump_door_index], Intent::Move { .. }),
+        "这个下标本该是撞门的 Move，而不是显式 OpenDoor——\
+         若这里断言失败，说明 intent_stream 又退回了「门只靠显式 \
+         OpenDoor 打开、opens_into 分支从未被走到」的旧结构"
+    );
+    for intent in &intents[..bump_door_index] {
+        for effect in resolve(&world, intent) {
+            apply(&mut world, &effect);
+        }
+    }
+    let before_bump = world.actors.get(player).map(|agent| agent.pos);
+
+    // Act
+    let effects = resolve(&world, &intents[bump_door_index]);
+    for effect in &effects {
+        apply(&mut world, effect);
+    }
+    let after_bump = world.actors.get(player).map(|agent| agent.pos);
+
+    // Assert：产出的是「改地形」而不是「挪位置」，且玩家确实原地未动。
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::SetTerrain { .. })),
+        "撞门这一步没有产生 SetTerrain 效果：{effects:?}"
+    );
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::MoveTo { .. })),
+        "撞门这一步不该产生 MoveTo 效果：{effects:?}"
+    );
+    assert_eq!(before_bump, after_bump, "撞门这一步玩家不应该真的挪动位置");
+}
+
+/// 回归测试：门打开之后，最后那步「往东走过打开的门」真的产生了
+/// `MoveTo` 效果，不是空 `Vec`。
+///
+/// 这条直接对应本任务要修的问题：曾经有种描述认为这一步的目的地格恒
+/// 不可通行、`resolve_move` 因此恒返回空效果。实测并非如此——目的地
+/// `(13,9)` 是 `setup` 显式 `set_terrain` 成 `door_closed` 的格子，
+/// 不依赖噪声地形生成，本就不受种子影响；这里直接断言这一步的效果
+/// 里确实含有 `MoveTo`，把这个结论钉成一条永久回归测试，而不是只靠
+/// 黄金哈希间接覆盖。
+#[test]
+fn 门打开后向东走过打开的门产生真正的移动效果() {
+    // Arrange：把序列跑到「门已经打开、人还在门前一格」为止。
+    let (mut world, player, enemy) = setup(5);
+    let intents = intent_stream(player, enemy);
+    let walk_through_index = intents.len() - 2; // 倒数第二条：穿门的 Move，最后一条是收尾 Wait。
+    for intent in &intents[..walk_through_index] {
+        for effect in resolve(&world, intent) {
+            apply(&mut world, &effect);
+        }
+    }
+
+    // Act
+    let effects = resolve(&world, &intents[walk_through_index]);
+
+    // Assert
+    let moved_to_door = effects.iter().any(
+        |effect| matches!(effect, Effect::MoveTo { pos, .. } if *pos == world.size.wrap(13, 9)),
+    );
+    assert!(
+        moved_to_door,
+        "穿门那一步没有产生真正的 MoveTo 效果：{effects:?}"
+    );
 }
