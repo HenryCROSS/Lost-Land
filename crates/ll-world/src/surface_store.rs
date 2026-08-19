@@ -384,6 +384,54 @@ impl SurfaceStore {
             }
         }
     }
+
+    /// 维护以 `pos` 所在区块为中心、`radius`（区块为单位）的一圈常驻
+    /// 邻域——流式滚动在生产环境下真正需要的接线（设计文档任务 14，
+    /// 也是 [`SurfaceWindow`] 文档「前置条件与任务 14 的关系」点名要
+    /// 解决的那一步）。
+    ///
+    /// # 为什么调用方（渲染主循环）必须在查询视野之前调用这个方法
+    ///
+    /// [`SurfaceWindow`] 假定视野半径覆盖的全部坐标都已经常驻，未常驻
+    /// 时直接 panic——那不是缺陷，是刻意的「过渡桥梁」设计（见其文档）：
+    /// 真正保证前提成立的责任被明确甩给了调用这个方法的一方。渲染主
+    /// 循环应该在**每次玩家跨越区块边界后**（或更保守地，每帧）调用
+    /// 一次 `stream_neighborhood`，用一个覆盖「视野半径 + 一点余量」的
+    /// `radius`，让相邻区块在相机/FOV 真正需要用到它们之前就已经生成
+    /// 好——这样玩家看到的只是「地表连续无缝」,不会撞见 `SurfaceWindow`
+    /// 的 panic，也不会在跨越边界的瞬间卡顿（生成发生在移动之前，不是
+    /// 移动的同一帧）。
+    ///
+    /// # 与 [`Self::terrain_at`] 的关系：只是循环调用同一个入口
+    ///
+    /// 这个方法不实现任何新的生成/淘汰逻辑——它只是对邻域内每个区块的
+    /// 代表坐标各调用一次 [`Self::terrain_at`]（流式加载唯一入口），
+    /// 复用同一套 LRU 淘汰与确定性纪律（C4/C5）。已经常驻的区块只会被
+    /// `touch` 刷新访问时间，不会重复生成——这正是
+    /// [`crate::state::warm_spawn_neighborhood`]（`WorldState::new` 的
+    /// 出生点预热）内部改为直接调用本方法的原因：两处「预热一圈邻域」
+    /// 是同一个操作，不该维护两份几乎相同的双重循环。
+    pub fn stream_neighborhood(
+        &mut self,
+        noise: &TileableNoise,
+        params: &crate::generate::GenParams,
+        terrain_ids: &BaseTerrainIds,
+        pos: TorusPos,
+        radius: i32,
+        at_tick: Tick,
+    ) {
+        let (center, _) = self.layout.tile_to_zone(pos);
+        let span = self.layout.zone_span() as i32;
+        let zone_count = self.layout.zone_count();
+        let tile_size = self.layout.tile_size();
+        for dy in -radius..=radius {
+            for dx in -radius..=radius {
+                let zone = zone_count.wrap(center.x() + dx, center.y() + dy);
+                let tile = tile_size.wrap(zone.x() * span, zone.y() * span);
+                self.terrain_at(noise, params, terrain_ids, tile, at_tick);
+            }
+        }
+    }
 }
 
 /// 只读适配器：让 [`SurfaceStore`] 当前**已常驻**的部分像单张
@@ -392,13 +440,18 @@ impl SurfaceStore {
 /// # 前置条件与任务 14 的关系
 ///
 /// [`Self::terrain_at`](SightGrid::terrain_at) 假定被查询坐标所在的
-/// 区块已经常驻，未常驻时 panic——这不是一个可以在生产环境安全使用的
-/// 通用适配器，而是任务 11 范围内的一座过渡桥梁：调用方必须自己保证
-/// 视野半径覆盖的全部坐标都已经常驻（例如 demo 世界用
-/// [`SurfaceStore::warm_all`] 整个预热过）。真正「随玩家移动流式维护
-/// 一圈常驻邻域、FOV 只在这圈邻域内计算」的完整实现是设计文档任务 14
-/// 的范围，本类型只解决「任务 11 换型之后，此前直接把 `ChunkGrid` 喂
-/// 给 `compute_fov` 的既有验收 demo 该怎么继续编译、继续跑」这一步。
+/// 区块已经常驻，未常驻时 panic——任务 11 落地时这还是一座「调用方
+/// 必须自己想办法保证前提成立」的过渡桥梁（当时唯一的办法是
+/// [`SurfaceStore::warm_all`] 整个预热掉，只适合小型 demo 世界）。
+///
+/// **任务 14 已经真正解决这一步**：[`SurfaceStore::stream_neighborhood`]
+/// 是生产环境下维护「玩家周围一圈区块常驻」的正确入口——渲染主循环
+/// 应该在每次玩家移动后调用它（覆盖「视野半径 + 余量」的区块半径），
+/// 让相邻区块在相机/FOV 真正查询到它们之前就已经生成好。调用了
+/// `stream_neighborhood` 之后，本类型的 panic 前提在正常游玩路径下
+/// 不会被触发——它仍然保留（而不是改成静默兜底），是为了在这条纪律
+/// 被违反时（例如调用方漏调了 `stream_neighborhood`，或半径给小了）
+/// 尽早、吵闹地暴露出来，而不是把一格看不见的黑块悄悄留在画面上。
 pub struct SurfaceWindow<'a> {
     store: &'a SurfaceStore,
 }
@@ -856,6 +909,76 @@ mod tests {
 
         // Assert：3x3 布局共 9 个区块。
         assert_eq!(store.resident_zones().len(), 9);
+    }
+
+    #[test]
+    fn 流式邻域维护后中心周围的区块全部常驻() {
+        // Arrange：5x5 布局，中心区块 (2,2)，半径 1 应覆盖 3x3 = 9 个
+        // 区块。
+        let zone_count = TorusSize::new(5, 5).expect("5x5 是合法尺寸");
+        let layout = ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束");
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("布局满足全部约束");
+        let mut store = SurfaceStore::new(layout, 256);
+        let pos = tile_pos_of_zone_2d(&layout, 2, 2);
+
+        // Act
+        store.stream_neighborhood(&noise, &params, &terrain_ids, pos, 1, Tick(0));
+
+        // Assert
+        for dy in -1..=1 {
+            for dx in -1..=1 {
+                let zone = zone_count.wrap(2 + dx, 2 + dy);
+                assert!(
+                    store.is_resident(zone),
+                    "区块 {zone:?} 应在半径 1 的流式邻域内常驻"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 流式邻域维护不影响半径外的区块() {
+        // Arrange：5x5 布局，半径 1 覆盖不到最外圈的角区块 (4,4)。
+        let zone_count = TorusSize::new(5, 5).expect("5x5 是合法尺寸");
+        let layout = ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束");
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("布局满足全部约束");
+        let mut store = SurfaceStore::new(layout, 256);
+        let pos = tile_pos_of_zone_2d(&layout, 2, 2);
+
+        // Act
+        store.stream_neighborhood(&noise, &params, &terrain_ids, pos, 1, Tick(0));
+
+        // Assert
+        assert!(!store.is_resident(zone_count.wrap(4, 4)));
+        assert_eq!(store.resident_zones().len(), 9);
+    }
+
+    #[test]
+    fn 重复调用流式邻域维护不重复生成已常驻的区块() {
+        // 幂等性：第二次调用同一个中心与半径,常驻区块集合不应变化——
+        // stream_neighborhood 只应刷新访问时间,不应该产生任何副作用
+        // 之外的行为（例如意外触发淘汰或重新生成）。
+        // Arrange
+        let zone_count = TorusSize::new(5, 5).expect("5x5 是合法尺寸");
+        let layout = ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束");
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("布局满足全部约束");
+        let mut store = SurfaceStore::new(layout, 256);
+        let pos = tile_pos_of_zone_2d(&layout, 2, 2);
+        store.stream_neighborhood(&noise, &params, &terrain_ids, pos, 1, Tick(0));
+        let first = store.resident_zones();
+
+        // Act
+        store.stream_neighborhood(&noise, &params, &terrain_ids, pos, 1, Tick(1));
+        let second = store.resident_zones();
+
+        // Assert
+        assert_eq!(first, second);
     }
 
     #[test]

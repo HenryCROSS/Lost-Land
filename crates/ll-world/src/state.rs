@@ -495,6 +495,11 @@ fn write_space(hasher: &mut StateHasher, space: Space) {
 /// 本次重写的核心目的（见本文件文档「不再一次性生成整张地图」）。
 /// 半径见 [`SPAWN_WARM_RADIUS`]，是设计文档五节给出的默认邻域缓冲
 /// 大小。
+///
+/// 直接委托给 [`SurfaceStore::stream_neighborhood`]（任务 14）——出生点
+/// 预热与玩家移动时的流式滚动本质是同一个操作（「以某个世界坐标为
+/// 中心，保证一圈邻域常驻」），不该维护两份几乎相同的双重循环，见该
+/// 方法文档「与 `terrain_at` 的关系」一节。
 fn warm_spawn_neighborhood(
     terrain: &mut SurfaceStore,
     noise: &TileableNoise,
@@ -502,17 +507,14 @@ fn warm_spawn_neighborhood(
     terrain_ids: &BaseTerrainIds,
     spawn: TorusPos,
 ) {
-    let layout = *terrain.layout();
-    let (center, _) = layout.tile_to_zone(spawn);
-    let span = layout.zone_span() as i32;
-    let zone_count = layout.zone_count();
-    for dy in -SPAWN_WARM_RADIUS..=SPAWN_WARM_RADIUS {
-        for dx in -SPAWN_WARM_RADIUS..=SPAWN_WARM_RADIUS {
-            let zone = zone_count.wrap(center.x() + dx, center.y() + dy);
-            let tile = layout.tile_size().wrap(zone.x() * span, zone.y() * span);
-            terrain.terrain_at(noise, params, terrain_ids, tile, Tick(0));
-        }
-    }
+    terrain.stream_neighborhood(
+        noise,
+        params,
+        terrain_ids,
+        spawn,
+        SPAWN_WARM_RADIUS,
+        Tick(0),
+    );
 }
 
 /// [`ChunkGrid`] 序列化用的扁平化表示：尺寸加按行主序排列的全部地形格。
