@@ -103,6 +103,7 @@ fn main() {
 fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
     match name {
         "hero_idle_0" => sprite::decorate_hero_idle(image, rect),
+        "hero_idle_1" => sprite::decorate_hero_idle_breath(image, rect),
         "hero_walk_0" => sprite::decorate_hero_walk(image, rect, 2),
         "hero_walk_1" => sprite::decorate_hero_walk(image, rect, 10),
         "boss_idle_0" => sprite::decorate_boss(image, rect),

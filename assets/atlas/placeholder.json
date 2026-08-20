@@ -8,6 +8,12 @@
             "footprint": { "width": 1, "height": 1 }
         },
         {
+            "name": "hero_idle_1",
+            "rect": { "x": 80, "y": 48, "width": 16, "height": 24 },
+            "pivot": { "x": 8, "y": 24 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
             "name": "hero_walk_0",
             "rect": { "x": 0, "y": 24, "width": 16, "height": 24 },
             "pivot": { "x": 8, "y": 24 },

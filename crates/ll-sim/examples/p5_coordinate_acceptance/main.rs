@@ -42,11 +42,12 @@ use ll_platform::logging::init_logging;
 use ll_platform::window::{
     AppHandler, FrameId, FrameOutcome, PhysicalSize, Window, WindowConfig, run,
 };
+use ll_render::anim::{Clip, Playback};
 use ll_render::atlas::{Atlas, AtlasEntry, AtlasMetadata};
 use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::{BoundedCamera, Camera};
 use ll_render::gpu::GpuContext;
-use ll_render::sprite::{DrawOrder, Layer};
+use ll_render::sprite::{DrawOrder, Layer, footprint_bottom_screen_y, sprite_draw_position};
 use ll_render::target::{RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::apply::apply;
@@ -58,8 +59,9 @@ use ll_world::space::Space;
 use ll_world::surface_store::SurfaceWindow;
 
 use layout::{
-    INTERIOR_VIEW_CENTER, MINIMAP_CELL_PX, MINIMAP_DOWNSAMPLE, STREAM_RADIUS_ZONES,
-    effective_sight_radius, effective_tint, minimap_cell_screen_pos, terrain_entry_name,
+    IDLE_BREATHE_FRAMES_PER_STEP, INTERIOR_VIEW_CENTER, MINIMAP_CELL_PX, MINIMAP_DOWNSAMPLE,
+    STREAM_RADIUS_ZONES, WALK_FRAMES_PER_STEP, effective_sight_radius, effective_tint,
+    minimap_cell_screen_pos, terrain_entry_name,
 };
 use png::save_baseline_png;
 use world::{DemoWorld, build_demo_world};
@@ -72,6 +74,22 @@ const TERRAIN_ENTITY_BASE: u64 = 1;
 const MINIMAP_ENTITY_BASE: u64 = 1_000_000;
 /// 绘制顺序号：小地图「你在这里」标记。
 const MINIMAP_MARKER_ENTITY: u64 = 2_000_000;
+
+/// 行走动画剪辑在 [`Demo::clips`] 里的下标。
+const WALK_CLIP: usize = 0;
+/// 待机呼吸动画剪辑在 [`Demo::clips`] 里的下标。
+const IDLE_CLIP: usize = 1;
+
+/// 玩家精灵缺帧时兜底显示的图集条目。
+///
+/// 动画剪辑引用的帧（`hero_walk_0`/`hero_walk_1`/`hero_idle_1`）是
+/// 「锦上添花」的可选资产——本 demo 内嵌的图集恒定包含它们，但动画帧
+/// 名最终来自可被 mod 覆盖的剪辑数据，属于外部不可信输入（见
+/// `ll_render::anim` 模块文档「降级而非崩溃」一节）。`hero_idle_0` 是
+/// 玩家精灵唯一「必须存在」的一帧，缺了它玩家标记本就画不出来，因此
+/// 拿它当兜底：mod 只提供这一帧是完全正常的情况，不该因此报错或让
+/// 玩家标记消失。
+const FALLBACK_SPRITE: &str = "hero_idle_0";
 
 const ATLAS_JSON: &str = include_str!("../../../../assets/atlas/placeholder.json");
 const ATLAS_PNG: &[u8] = include_bytes!("../../../../assets/atlas/placeholder.png");
@@ -153,6 +171,18 @@ struct Demo {
     /// 立刻重新跟随玩家（玩家的 `pos` 在 Interior 内不变，见
     /// `ll_world::entity::Agent::current_space` 文档）。
     camera: Camera,
+    /// 玩家精灵的两段动画剪辑：下标 [`WALK_CLIP`] 是行走、[`IDLE_CLIP`]
+    /// 是待机呼吸——用 [`ll_render::anim::Playback`] 驱动，不另造一套
+    /// 帧计时（见 `push_player_marker` 文档「为什么不能自己另造一套帧
+    /// 计时」）。
+    clips: Vec<Clip>,
+    /// 当前播放到哪段剪辑、从哪一帧开始——随「本帧是否有移动意图」在
+    /// [`WALK_CLIP`]/[`IDLE_CLIP`] 间切换，见 [`Demo::update_walk_animation`]。
+    playback: Playback,
+    /// 上一帧是否处于「有移动意图」状态，只用于检测状态**切换**的边沿
+    /// ——切换时才需要重置 `playback` 的起始帧号，见
+    /// [`Demo::update_walk_animation`] 文档。
+    is_moving: bool,
     resources: Option<GpuResources>,
 }
 
@@ -182,10 +212,36 @@ impl Demo {
             "demo world ready"
         );
 
+        // 行走剪辑：走姿 0 -> 立姿 -> 走姿 1 -> 立姿，与
+        // `p1_acceptance::Demo::new` 的 `walk_clip` 逐字同构（同一套
+        // 图集帧，没有理由播放节奏不一样）；用立姿做两个走姿之间的
+        // 过渡帧，避免两张走姿贴图直接互跳显得生硬。
+        let walk_clip = Clip {
+            frames: vec![
+                "hero_walk_0".to_string(),
+                FALLBACK_SPRITE.to_string(),
+                "hero_walk_1".to_string(),
+                FALLBACK_SPRITE.to_string(),
+            ],
+            frames_per_step: WALK_FRAMES_PER_STEP,
+            looping: true,
+        };
+        // 待机呼吸剪辑：只在待机图与「吸气」图之间缓慢往返，幅度克制
+        // （见 `assets/atlas/placeholder.json` 里 `hero_idle_1` 与
+        // `hero_idle_0` 的差异，只挪了 1 像素）。
+        let idle_clip = Clip {
+            frames: vec![FALLBACK_SPRITE.to_string(), "hero_idle_1".to_string()],
+            frames_per_step: IDLE_BREATHE_FRAMES_PER_STEP,
+            looping: true,
+        };
+
         Demo {
             demo_world,
             continent_field,
             camera,
+            clips: vec![walk_clip, idle_clip],
+            playback: Playback::new(IDLE_CLIP, FrameId(0)),
+            is_moving: false,
             resources: None,
         }
     }
@@ -196,7 +252,7 @@ impl Demo {
     /// 所在区块，在 `resolve`/FOV 真正查询它之前就已经常驻，见
     /// `ll_world::surface_store::SurfaceStore::stream_neighborhood`
     /// 文档「为什么调用方必须在查询视野之前调用这个方法」。
-    fn advance(&mut self, input: &InputState) {
+    fn advance(&mut self, input: &InputState, frame: FrameId) {
         self.maintain_streaming();
 
         if input.was_just_pressed(GameKey::Confirm) {
@@ -204,7 +260,14 @@ impl Demo {
         }
 
         let player = self.demo_world.player;
-        if let Some(intent) = intent_from_input(player, input) {
+        let intent = intent_from_input(player, input);
+        // 「有没有移动意图」而非「这一步是否真的挪动了位置」——按住方向
+        // 键顶着墙走不动时仍应播放行走动画（这也是绝大多数游戏的直觉：
+        // 角色原地踏步，而不是因为撞墙就悄悄切回待机姿势），且不需要
+        // 读 `resolve`/`apply` 的结果来判断，输入层这一步信息已经够用。
+        let is_moving = matches!(intent, Some(Intent::Move { .. }));
+        self.update_walk_animation(is_moving, frame);
+        if let Some(intent) = intent {
             self.apply_intent(&intent);
         }
 
@@ -213,6 +276,22 @@ impl Demo {
         {
             self.camera.center = agent.pos;
         }
+    }
+
+    /// 按「本帧是否有移动意图」在 [`WALK_CLIP`]/[`IDLE_CLIP`] 间切换。
+    ///
+    /// 只在状态**切换**的那一帧重建 `Playback`（把起始帧号重置为
+    /// `frame`）：如果每帧都无条件 `Playback::new`，剪辑会永远停在第
+    /// 0 帧，看起来像完全没有动画；如果切换时不重置起始帧号，从待机切
+    /// 到行走的第一帧会按「已经播放了一段时间」计算出剪辑中间某一帧，
+    /// 画面会跳一下，而不是从抬脚的第一帧开始迈步。
+    fn update_walk_animation(&mut self, is_moving: bool, frame: FrameId) {
+        if is_moving == self.is_moving {
+            return;
+        }
+        self.is_moving = is_moving;
+        let clip = if is_moving { WALK_CLIP } else { IDLE_CLIP };
+        self.playback = Playback::new(clip, frame);
     }
 
     fn maintain_streaming(&mut self) {
@@ -292,6 +371,7 @@ fn render_surface(
     demo_world: &DemoWorld,
     continent_field: &ContinentField,
     camera: &Camera,
+    sprite_name: &str,
     resources: &mut GpuResources,
 ) {
     let world = &demo_world.world;
@@ -345,7 +425,7 @@ fn render_surface(
     }
 
     let (px, py) = camera.world_to_screen(player_pos);
-    push_player_marker(px, py, tint, resources);
+    push_player_marker(px, py, sprite_name, tint, resources);
     push_minimap(demo_world, continent_field, resources);
 }
 
@@ -357,6 +437,7 @@ fn render_interior(
     id: ll_world::space::SpaceId,
     floor: i16,
     profile: ll_world::space_profile::SpaceProfile,
+    sprite_name: &str,
     resources: &mut GpuResources,
 ) {
     let world = &demo_world.world;
@@ -408,23 +489,47 @@ fn render_interior(
     }
 
     let (px, py) = camera.world_to_screen(center);
-    push_player_marker(px, py, tint, resources);
+    push_player_marker(px, py, sprite_name, tint, resources);
     push_minimap(demo_world, continent_field, resources);
 }
 
-/// 画出玩家标记（复用图集里的 `hero_idle_0`），地表/`Interior` 共用。
-fn push_player_marker(sx: i32, sy: i32, tint: [f32; 4], resources: &mut GpuResources) {
-    let Some((entry, uv)) = resources.lookup("hero_idle_0") else {
+/// 画出玩家标记，地表/`Interior` 共用。
+///
+/// `sprite_name` 是当前动画帧应显示的图集条目名（由 `on_frame` 通过
+/// [`Demo::playback`] 现算，缺帧时已经退回 [`FALLBACK_SPRITE`]，见
+/// [`resolve_player_sprite_name`]），不再硬编码 `"hero_idle_0"`——这正是
+/// 「接上行走/待机动画」这条修复的落点：此前这里恒定画同一帧，
+/// `hero_walk_0`/`hero_walk_1` 从未被显示过。
+///
+/// `sx`/`sy` 是**占地格左上角**的屏幕坐标（`Camera::world_to_screen`/
+/// `BoundedCamera::world_to_screen` 的返回值），不是精灵图像左上角
+/// ——这两者的换算必须走 [`sprite_draw_position`]，不能像本函数曾经
+/// 那样直接把 `(sx, sy)` 当绘制原点：`hero_idle_0` 是 16×24、
+/// [`ll_render::sprite::Pivot`] 是 `(8, 24)`，直接拿 `(sx, sy)` 当绘制
+/// 原点会让图像从占地格顶部往下多画出 8 像素、脚底凸出格子下方，而
+/// 不是头顶探出格子上方——这正是项目所有者实机操作时发现的缺陷，
+/// 详见 [`sprite_draw_position`] 文档「为什么高出格子的部分向上溢出，
+/// 而不是向下」一节。
+fn push_player_marker(
+    sx: i32,
+    sy: i32,
+    sprite_name: &str,
+    tint: [f32; 4],
+    resources: &mut GpuResources,
+) {
+    let Some((entry, uv)) = resources.lookup(sprite_name) else {
         return;
     };
+    let footprint = entry.footprint;
+    let [px, py] = sprite_draw_position((sx, sy), footprint, entry.pivot);
     let order = DrawOrder::new(
         Layer::ENTITY,
-        sy + entry.sprite_size().height as i32,
+        footprint_bottom_screen_y(sy, footprint.height),
         PLAYER_ENTITY,
     );
     resources.batch.push(
         order,
-        sprite_instance(sx as f32, sy as f32, entry.sprite_size(), uv, tint),
+        sprite_instance(px, py, entry.sprite_size(), uv, tint),
     );
 }
 
@@ -504,6 +609,54 @@ fn sprite_instance(
     }
 }
 
+/// 若 `frame_name` 在图集里查得到就原样用它，否则退回 `fallback`。
+///
+/// 这是「动画帧缺失时优雅退回」这条要求真正落地的地方，且刻意只依赖
+/// [`AtlasMetadata`]（纯数据，`AtlasMetadata::parse` 不需要 GPU）而不是
+/// 整个 [`GpuResources`]——这样它可以脱离窗口/图形适配器被单测直接
+/// 覆盖，不需要真的起一个 GPU 上下文才能验证「缺帧退回静态图」这条
+/// 行为。
+///
+/// 不直接调用 `GpuResources::lookup(frame_name)` 再在失败时回退：那样
+/// 每次「mod 只提供了部分帧」这种完全正常的情况都会先触发一条
+/// `tracing::error!`（见 `GpuResources::lookup` 文档），日志会被刷屏；
+/// 这里先用 `AtlasMetadata::lookup` 静默探测存在性，只有连 `fallback`
+/// 本身都查不到时，才会在调用方最终的 `resources.lookup` 里触发那条
+/// 错误日志——那已经是资产整体损坏，值得被记下来。
+fn resolve_player_sprite_name<'a>(
+    metadata: &AtlasMetadata,
+    frame_name: &'a str,
+    fallback: &'a str,
+) -> &'a str {
+    if metadata.lookup(frame_name).is_some() {
+        frame_name
+    } else {
+        fallback
+    }
+}
+
+/// 算出 `frame` 这一帧玩家精灵应显示的图集条目名，两层兜底叠加：
+///
+/// 1. [`Playback::current_frame`] 对损坏的剪辑数据（空剪辑、剪辑下标
+///    越界，见 `ll_render::anim` 模块文档「降级而非崩溃」）返回
+///    [`None`]，这里退回 [`FALLBACK_SPRITE`]。
+/// 2. 就算剪辑给出了一个帧名，那一帧也可能不在图集里（mod 只提供
+///    部分帧是正常情况），再用 [`resolve_player_sprite_name`] 确认。
+///
+/// 两层兜底都用同一个 `FALLBACK_SPRITE`，因为它是玩家精灵唯一「必须
+/// 存在」的一帧（见其文档）。
+fn current_player_sprite_name<'a>(
+    playback: &Playback,
+    clips: &'a [Clip],
+    frame: FrameId,
+    metadata: &AtlasMetadata,
+) -> &'a str {
+    let raw = playback
+        .current_frame(clips, frame)
+        .unwrap_or(FALLBACK_SPRITE);
+    resolve_player_sprite_name(metadata, raw, FALLBACK_SPRITE)
+}
+
 impl AppHandler for Demo {
     fn on_resume(&mut self, window: Arc<Window>, size: PhysicalSize<u32>) {
         tracing::info!(width = size.width, height = size.height, "window resumed");
@@ -517,12 +670,12 @@ impl AppHandler for Demo {
         resources.resize(size);
     }
 
-    fn on_frame(&mut self, _frame: FrameId, input: &InputState) -> FrameOutcome {
+    fn on_frame(&mut self, frame: FrameId, input: &InputState) -> FrameOutcome {
         if input.was_just_pressed(GameKey::Cancel) {
             return FrameOutcome::Exit;
         }
 
-        self.advance(input);
+        self.advance(input, frame);
 
         let Some(resources) = self.resources.as_mut() else {
             return FrameOutcome::Continue;
@@ -532,6 +685,18 @@ impl AppHandler for Demo {
             save_baseline_png(resources, BASELINE_PNG_PATH);
         }
 
+        // 当前动画帧应显示的图集条目名，两层兜底见
+        // `current_player_sprite_name` 文档；两层都失败时（连
+        // `FALLBACK_SPRITE` 本身都缺失）才会在 `GpuResources::lookup`
+        // 里记一条错误日志——那已经是资产整体损坏，不再是「可选帧
+        // 缺失」。
+        let sprite_name = current_player_sprite_name(
+            &self.playback,
+            &self.clips,
+            frame,
+            resources.atlas.metadata(),
+        );
+
         let current_space = self
             .demo_world
             .world
@@ -539,11 +704,11 @@ impl AppHandler for Demo {
             .get(self.demo_world.player)
             .map(|agent| agent.current_space);
 
-        // render_* 只取 &self.demo_world/&self.continent_field 两个
-        // 字段引用，与借出的 resources（&mut self.resources）是三个
-        // 互不重叠的字段借用——借用检查器能看出这一点，不需要像
-        // p1/p2/p3_acceptance 那样为了绕开「借了整个 self」的假阳性
-        // 而拆成自由函数（这里本来就是自由函数，只是连 &self 都不传）。
+        // render_* 只取 &self.demo_world/&self.continent_field/sprite_name
+        // 三个只读引用，与借出的 resources（&mut self.resources）互不
+        // 重叠——借用检查器能看出这一点，不需要像 p1/p2/p3_acceptance
+        // 那样为了绕开「借了整个 self」的假阳性而拆成自由函数（这里本来
+        // 就是自由函数，只是连 &self 都不传）。
         match current_space {
             Some(Space::Interior {
                 id,
@@ -563,6 +728,7 @@ impl AppHandler for Demo {
                     id,
                     floor,
                     profile_full,
+                    sprite_name,
                     resources,
                 );
             }
@@ -570,6 +736,7 @@ impl AppHandler for Demo {
                 &self.demo_world,
                 &self.continent_field,
                 &self.camera,
+                sprite_name,
                 resources,
             ),
         }
@@ -598,5 +765,83 @@ fn main() {
     let demo = Demo::new();
     if let Err(error) = run(WindowConfig::default(), demo) {
         tracing::error!(%error, "event loop terminated with error");
+    }
+}
+
+#[cfg(test)]
+mod animation_fallback_tests {
+    use super::*;
+
+    fn embedded_metadata() -> AtlasMetadata {
+        AtlasMetadata::parse(ATLAS_JSON).expect("内嵌图集元数据应为合法 JSON")
+    }
+
+    #[test]
+    fn 动画帧在图集里存在时按原样使用() {
+        // Arrange
+        let metadata = embedded_metadata();
+
+        // Act
+        let resolved = resolve_player_sprite_name(&metadata, "hero_walk_0", FALLBACK_SPRITE);
+
+        // Assert
+        assert_eq!(resolved, "hero_walk_0");
+    }
+
+    #[test]
+    fn 动画帧在图集里缺失时退回兜底帧() {
+        // 模拟 mod 覆盖图集后没有提供某一帧行走动画——这是完全正常的
+        // 情况（见 FALLBACK_SPRITE 文档），必须退回兜底帧，而不是画出
+        // 空白或让调用方 panic。
+        // Arrange
+        let metadata = embedded_metadata();
+
+        // Act
+        let resolved =
+            resolve_player_sprite_name(&metadata, "hero_walk_missing_from_mod", FALLBACK_SPRITE);
+
+        // Assert
+        assert_eq!(resolved, FALLBACK_SPRITE);
+    }
+
+    #[test]
+    fn 剪辑数据损坏时退回兜底帧而不是崩溃() {
+        // 模拟一段损坏的动画数据：`Playback` 引用的剪辑下标越界（例如
+        // mod 打包时漏掉了某段剪辑定义）——`Playback::current_frame`
+        // 对此返回 None（`ll_render::anim` 自身的测试已覆盖这一保证），
+        // 这里锁住「调用方在此基础上还能优雅退回静态图」这一步。
+        // Arrange
+        let metadata = embedded_metadata();
+        let clips = vec![Clip {
+            frames: vec!["hero_walk_0".to_string()],
+            frames_per_step: WALK_FRAMES_PER_STEP,
+            looping: true,
+        }];
+        let corrupted_playback = Playback::new(99, FrameId(0));
+
+        // Act
+        let resolved =
+            current_player_sprite_name(&corrupted_playback, &clips, FrameId(0), &metadata);
+
+        // Assert
+        assert_eq!(resolved, FALLBACK_SPRITE);
+    }
+
+    #[test]
+    fn 剪辑数据完好时按剪辑当前帧显示() {
+        // Arrange
+        let metadata = embedded_metadata();
+        let clips = vec![Clip {
+            frames: vec!["hero_walk_0".to_string()],
+            frames_per_step: WALK_FRAMES_PER_STEP,
+            looping: true,
+        }];
+        let playback = Playback::new(0, FrameId(0));
+
+        // Act
+        let resolved = current_player_sprite_name(&playback, &clips, FrameId(0), &metadata);
+
+        // Assert
+        assert_eq!(resolved, "hero_walk_0");
     }
 }

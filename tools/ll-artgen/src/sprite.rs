@@ -79,6 +79,18 @@ pub(crate) fn decorate_hero_idle(image: &mut RgbaImage, rect: EntryRect) {
     paint_chest_cross(image, rect, HERO_MARK);
 }
 
+/// 画 `hero_idle_1`：待机呼吸动画的第二帧，与 `hero_idle_0` 只差头部
+/// 标记纵向 1 像素（`dy` 从 2 挪到 1，模拟吸气时胸腔/头部略微抬起）。
+///
+/// 幅度刻意压到最小：呼吸动画若挪动太多像素，在像素风画面里会读成
+/// 「抖动」而不是「起伏」——项目所有者明确要求「不要做成明显的抖动」，
+/// 1 像素是这张 16×24 画布上能表达出可见变化的最小单位。
+pub(crate) fn decorate_hero_idle_breath(image: &mut RgbaImage, rect: EntryRect) {
+    fill_rect(image, rect, HERO_BODY);
+    paint_patch(image, rect, 6, 1, 4, 4, HERO_MARK);
+    paint_chest_cross(image, rect, HERO_MARK);
+}
+
 /// 画一帧 `hero_walk_*`：蓝色主体 + 顶部整行标记 + 左右交替的脚部标记
 /// （`foot_dx` 由调用方传 2 或 10，与既有两帧的既有位置一致）+ 新增的
 /// 胸口十字标志。两帧行走姿态共用这一个函数，避免同一份绘制逻辑在
@@ -167,6 +179,24 @@ mod tests {
         // boss 刻意不复用玩家的暖金色标志，见 BOSS_CHEST_MARK 文档。
         // Arrange & Act & Assert
         assert_ne!(BOSS_CHEST_MARK, HERO_MARK);
+    }
+
+    #[test]
+    fn 待机呼吸帧头部标记比待机帧高一像素() {
+        // Arrange
+        let mut idle = RgbaImage::new(16, 24);
+        let mut breath = RgbaImage::new(16, 24);
+
+        // Act
+        decorate_hero_idle(&mut idle, HERO_RECT);
+        decorate_hero_idle_breath(&mut breath, HERO_RECT);
+
+        // Assert：呼吸帧在头部标记顶行（y=1）已经是标记色，待机帧同一
+        // 行仍是主体色——两帧只差这一行像素，幅度克制在 1 像素，不是
+        // 明显的抖动。
+        let mark = Rgba([HERO_MARK.0, HERO_MARK.1, HERO_MARK.2, 255]);
+        assert_eq!(*breath.get_pixel(7, 1), mark);
+        assert_ne!(*idle.get_pixel(7, 1), mark);
     }
 
     #[test]
