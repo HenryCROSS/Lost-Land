@@ -103,6 +103,12 @@ pub fn remap_world(
         ref mut population,
         ref mut actors,
         player_entity,
+        // exploration（探索记忆）不含任何 ContentIndex——是纯粹的「看
+        // 没看过」位图（见 crate::exploration 模块文档），不需要跟着
+        // mod 重映射走，理由同 global_script_state（ScriptValue 里的
+        // Entity 变体虽然携带 EntityId，但 EntityId 不是 ContentIndex，
+        // 同样不需要本函数处理）。
+        exploration: _,
         global_script_state: _,
         terrain_table: _,
     } = *world;

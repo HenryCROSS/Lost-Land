@@ -73,7 +73,21 @@ use ll_world::zone::ZoneLayout;
 /// 同一个摘要」），变的只是输入构造方式，本文件另外三条测试（序列化
 /// 往返哈希不变、相同种子哈希相同、推进时钟哈希改变）迁移后仍然全部
 /// 通过，证明哈希依旧对种子/时钟/序列化敏感。
-const EXPECTED_WORLD_DIGEST: u64 = 3_209_542_191_240_274_209;
+///
+/// # 落地探索记忆批次为什么又改了这个值
+///
+/// [`WorldState::hash`] 新混入 `self.exploration.write_hash(&mut hasher)`
+/// （见 [`ll_world::exploration::ExplorationMemory::write_hash`]）——
+/// 本测试世界从不调用
+/// [`ll_world::exploration::ExplorationMemory::mark_explored`]，
+/// `exploration` 全程是一份空记忆，但混入本身仍然改变字节流（先写一个
+/// 恒为零的「已探索区块数」）。人工核验（真实执行）：把
+/// `crates/ll-world/src/state.rs` 的 `hash()` 里
+/// `self.exploration.write_hash(&mut hasher);` 这一行临时删掉重新跑
+/// 这条测试，摘要精确回到本次重冻之前的旧常量
+/// `3_209_542_191_240_274_209`——确认这次变化完全、只来自这一处改动，
+/// 恢复后重新跑通再确认新常量 `17_388_368_992_654_069_569` 稳定复现。
+const EXPECTED_WORLD_DIGEST: u64 = 17_388_368_992_654_069_569;
 
 /// 测试用区块布局：边长 48（是噪声格点周期的整数倍、大于视口跨度，
 /// 且刻意不是 2 的幂，避免大陆尺度噪声层退化成全图常数，见

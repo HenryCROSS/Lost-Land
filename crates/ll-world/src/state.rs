@@ -39,6 +39,7 @@ use ll_core::torus::{TorusPos, TorusSize};
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
 use crate::entity::{Affiliation, Agent, Arena, EntityId, Goal, OrgRef, ThinPopulation};
+use crate::exploration::ExplorationMemory;
 use crate::generate::{GenParams, build_zone_noise};
 use crate::interior::{Interior, InteriorTable};
 use crate::noise::TileableNoise;
@@ -249,6 +250,31 @@ pub struct WorldState {
     /// 导致确定性回归测试测不出战斗结算跑偏（见 `Self::hash` 文档
     /// 「厚层实体也参与摘要」一节）。判据漏了东西，测试就是在空跑。
     pub player_entity: Option<EntityId>,
+    /// 探索记忆：玩家「看没看过」某个格子的记录（见
+    /// [`crate::exploration`] 模块文档），供 [`crate::overview`] 的
+    /// `minimap`/`continent_map` 接线真实的战争迷雾数据。
+    ///
+    /// # 为什么按角色只存一份，不按 `SpaceId`/多角色拆分
+    ///
+    /// 当前一份 `WorldState` 就代表一个角色的存档（见
+    /// [`Self::player_entity`] 字段文档），探索记忆天然也只有「这个
+    /// 角色看没看过」这一份视角，不需要在此预先拆成
+    /// `BTreeMap<EntityId, ExplorationMemory>` 这类多视角容器——那是
+    /// 在没有真实多角色/多人共享世界需求之前的投机性设计（YAGNI）。
+    /// 真正需要多视角时，`minimap`/`continent_map` 的读取接口已经要求
+    /// 调用方显式传入 `&ExplorationMemory`（见 `crate::exploration`
+    /// 模块文档「为什么读取接口要求显式传入」一节），不需要为了那一天
+    /// 现在就改这里的存储形状。
+    ///
+    /// # 参与 `hash()`（ADR 0022）与序列化，不加 `#[serde(skip)]`
+    ///
+    /// 探索记忆是按角色持久化的真实数据（哪怕玩家换一台机器读同一份
+    /// 存档，之前去过的地方也不该重新蒙上战争迷雾），必须随
+    /// `WorldState` 一起序列化；也必须混入 [`Self::hash`]——否则
+    /// 「探索记忆悄悄算错」（例如误标记了不该标记的区块）不会在任何
+    /// 确定性回归测试里现出形状，重演本类型文档「厚层实体也参与摘要」
+    /// 一节已经出现过两次的同一类判据缺口。
+    pub exploration: ExplorationMemory,
     /// 脚本状态：全局命名空间存储（`knowledge/design/script-state-storage.md`
     /// 二、四节）——与任何具体实体无关的状态，例如教团累计声望、已解锁
     /// 的世界级 flag。键是 `(mod_namespace, key)`；每实体存储挂在
@@ -310,7 +336,11 @@ pub struct WorldState {
 /// 参与序列化；`surface_profile`/`terrain_table` 仍然不出现——那两处
 /// `#[serde(skip)]` 不在本批次范围内。`global_script_state` 同样出现
 /// 在这里（脚本状态存储批次）——没有任何注册期上下文依赖，是
-/// `WorldState` 的普通数据字段，见其字段文档。
+/// `WorldState` 的普通数据字段，见其字段文档。`exploration`
+/// （落地探索记忆批次）同理出现在这里，不依赖任何注册期上下文；
+/// `#[serde(default)]` 只是让本文件内部用 `serde_json::json!` 手写
+/// 局部字段的测试固件不必每条都补一份空探索记忆，不代表存在需要兼容
+/// 的旧存档（当前唯一存在过的 schema 版本本就带这个字段）。
 #[derive(Deserialize)]
 struct WorldStateRepr {
     seed: u64,
@@ -321,6 +351,8 @@ struct WorldStateRepr {
     population: ThinPopulation,
     actors: Arena<Agent>,
     player_entity: Option<EntityId>,
+    #[serde(default)]
+    exploration: ExplorationMemory,
     #[serde(default, with = "crate::script_state::serde_map")]
     global_script_state: BTreeMap<(String, String), ScriptValue>,
 }
@@ -363,6 +395,7 @@ impl TryFrom<WorldStateRepr> for WorldState {
             population: repr.population,
             actors: repr.actors,
             player_entity: repr.player_entity,
+            exploration: repr.exploration,
             // 脚本状态原样从存档搬过来——孤儿保留（设计文档七、1
             // 节）：读档本身只做数据搬运，不做「这个 mod 还在不在当前
             // 集合里」这类带业务判断的清理，缺失 mod 留下的命名空间
@@ -410,6 +443,7 @@ impl WorldState {
             population: ThinPopulation::default(),
             actors: Arena::default(),
             player_entity: None,
+            exploration: ExplorationMemory::new(),
             global_script_state: BTreeMap::new(),
             terrain_table,
         })
@@ -629,6 +663,14 @@ impl WorldState {
     /// `BTreeMap<AttributeKind, ActiveStatModifier>`，两者都按键的自然
     /// 顺序遍历（`ContentIndex`/`AttributeKind` 均实现 `Ord`），满足
     /// 约束 C5。
+    ///
+    /// # 探索记忆也已混入（落地探索记忆批次）
+    ///
+    /// 第四次重演同一条先例：[`Self::exploration`] 若不参与摘要，
+    /// 「探索记忆悄悄标记错格子」不会被任何确定性回归测试测出来。
+    /// [`ExplorationMemory::write_hash`] 自己负责按 `BTreeMap` 的自然
+    /// 顺序遍历（不依赖 `HashMap`/`HashSet` 迭代顺序，满足约束 C5），
+    /// 这里只是调用它，不重复实现一遍遍历逻辑。
     pub fn hash(&self) -> u64 {
         let mut hasher = StateHasher::new();
         hasher.write_u64(self.seed);
@@ -690,6 +732,7 @@ impl WorldState {
         }
 
         write_optional_entity(&mut hasher, self.player_entity);
+        self.exploration.write_hash(&mut hasher);
         write_script_state(&mut hasher, &self.global_script_state);
 
         hasher.finish()

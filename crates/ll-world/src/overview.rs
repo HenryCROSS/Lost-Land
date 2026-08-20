@@ -8,22 +8,20 @@
 //! 没有」。这类描述极难定位到具体缺陷（玩家说不清是地图错了还是脚下
 //! 的地形错了），比起损失一点重复计算的性能，宁可每次都现算。
 //!
-//! # 为什么 `explored` 现阶段恒为真
+//! # `explored` 现在接的是真实的探索记忆（落地探索记忆批次）
 //!
-//! `OverviewCell::explored` 是为「已探索/未探索」这类玩家视角的战争
-//! 迷雾预留的字段，但 [`WorldState`] 本身不持有任何按玩家区分的探索
-//! 记忆——那是更上层（角色/存档层面）的状态，而且 [`continent_map`]
-//! 甚至不接受任何「这是谁的视角」参数，没有数据来源可读。因此本批次
-//! 里两个函数产出的每一格都标记为已探索，等真正的玩家探索记忆落地后
-//! 再接入真实数据。这与 `TerrainKind` 硬编码属性表在 P4 落地 mod 注册表
-//! 前的处理方式一致：先占住接口形状，标注清楚缺的是什么，不是遗漏。
-//! 迁移债务记在 `docs/superpowers/specs/2026-08-16-lostland-design.md`
-//! §15 的 P5 行，而不是留在这里的代码注释——代码 TODO 会腐烂，规格里
-//! 的记录会被已生效的「每阶段收尾反向核对规格」机制自动捕获。
+//! `OverviewCell::explored` 曾经恒为真：`WorldState` 当时不持有任何
+//! 按玩家区分的探索记忆，`continent_map` 甚至不接受任何「这是谁的
+//! 视角」参数，没有数据来源可读。现在两者都要求调用方显式传入一份
+//! `&ExplorationMemory`（[`crate::exploration`] 模块），据此判定每一格
+//! 或每一区块是否已探索——这与 `TerrainKind` 硬编码属性表在 P4 落地
+//! mod 注册表前先占住接口形状、再接入真实数据的处理方式一致，见
+//! `crate::exploration` 模块文档「为什么读取接口要求显式传入」一节。
 
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
 
+use crate::exploration::ExplorationMemory;
 use crate::generate::{GenParams, zone_representative_terrain};
 use crate::noise::TileableNoise;
 use crate::space::ZoneCoord;
@@ -59,18 +57,24 @@ pub struct OverviewCell {
 /// （调用方按下标定位某个偏移量的惯例不该因为迁移悄悄变成「可能缺格」
 /// 的稀疏列表），比起改成只读、跳过未常驻的格子，代价更小、行为更
 /// 好预测。
+/// `exploration`：调用方是谁的视角——见模块文档「`explored` 现在接的是
+/// 真实的探索记忆」与 `crate::exploration` 模块文档「为什么读取接口
+/// 要求显式传入」一节。本函数只读取，不写入：标记探索是视野/FOV 结算
+/// 的职责，不在这里发生。
 #[allow(clippy::too_many_arguments)]
 pub fn minimap(
     world: &mut WorldState,
     noise: &TileableNoise,
     params: &GenParams,
     terrain_ids: &BaseTerrainIds,
+    exploration: &ExplorationMemory,
     center: TorusPos,
     span: u32,
     at_tick: Tick,
 ) -> Vec<OverviewCell> {
     let half = (span / 2) as i32;
     let mut cells = Vec::with_capacity((span * span) as usize);
+    let layout = *world.terrain.layout();
 
     for dy in 0..span as i32 {
         for dx in 0..span as i32 {
@@ -79,7 +83,7 @@ pub fn minimap(
                 .wrap(center.x() + dx - half, center.y() + dy - half);
             cells.push(OverviewCell {
                 terrain: world.terrain_at_streaming(noise, params, terrain_ids, pos, at_tick),
-                explored: true,
+                explored: exploration.is_explored(&layout, pos),
             });
         }
     }
@@ -169,9 +173,20 @@ pub fn generate_continent_field(
 /// 这正是 [`ContinentField`] 存在的意义：`continent_map` 因此**不可能**
 /// 触发任何区块的按需生成，这条约束由函数签名本身保证，不需要靠调用
 /// 纪律维持（类型系统能保证的地方，不留给运行时约定）。
+///
+/// # `exploration`：区块粒度，不是瓦片粒度
+///
+/// 本函数的分辨率是「每区块一格」（见 [`ContinentField`] 文档），因此
+/// 每格的 `explored` 取的是
+/// [`ExplorationMemory::zone_has_any_explored`]（该区块内是否至少有
+/// 一格被探索过），不是 [`ExplorationMemory::is_explored`] 那种瓦片级
+/// 精确查询——与 [`minimap`] 用同一份 `ExplorationMemory` 类型、不同
+/// 粒度的查询方法，理由同 [`ContinentField`] 与 `SurfaceStore` 分辨率
+/// 不同的既有设计（模块文档）。
 pub fn continent_map(
     field: &ContinentField,
     layout: &ZoneLayout,
+    exploration: &ExplorationMemory,
     downsample: u32,
 ) -> Vec<OverviewCell> {
     let downsample = downsample.max(1);
@@ -187,7 +202,7 @@ pub fn continent_map(
             let zone = zone_count.wrap(zx, zy);
             cells.push(OverviewCell {
                 terrain: field.terrain_at_zone(zone),
-                explored: true,
+                explored: exploration.zone_has_any_explored(zone),
             });
         }
     }
@@ -234,6 +249,7 @@ mod tests {
         let (terrain_ids, _table) = base_terrain_fixture();
         let params = GenParams::default();
         let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
+        let exploration = ExplorationMemory::new();
         let center = world.size.wrap(32, 32);
         let span = 9;
 
@@ -243,6 +259,7 @@ mod tests {
             &noise,
             &params,
             &terrain_ids,
+            &exploration,
             center,
             span,
             Tick(0),
@@ -259,6 +276,7 @@ mod tests {
         let (terrain_ids, _table) = base_terrain_fixture();
         let params = GenParams::default();
         let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
+        let exploration = ExplorationMemory::new();
         let center = world.size.wrap(32, 32);
 
         // Act
@@ -267,6 +285,7 @@ mod tests {
             &noise,
             &params,
             &terrain_ids,
+            &exploration,
             center,
             0,
             Tick(0),
@@ -284,6 +303,7 @@ mod tests {
         let (terrain_ids, _table) = base_terrain_fixture();
         let params = GenParams::default();
         let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
+        let exploration = ExplorationMemory::new();
         let center = world.size.wrap(10, 20);
         let span = 5;
         let half = (span / 2) as usize;
@@ -294,6 +314,7 @@ mod tests {
             &noise,
             &params,
             &terrain_ids,
+            &exploration,
             center,
             span,
             Tick(0),
@@ -318,6 +339,7 @@ mod tests {
         let (terrain_ids, _table) = base_terrain_fixture();
         let params = GenParams::default();
         let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
+        let exploration = ExplorationMemory::new();
         let origin = world.size.wrap(0, 0);
         let span = 5;
 
@@ -327,6 +349,7 @@ mod tests {
             &noise,
             &params,
             &terrain_ids,
+            &exploration,
             origin,
             span,
             Tick(0),
@@ -357,10 +380,11 @@ mod tests {
         let params = GenParams::default();
         let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
         let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+        let exploration = ExplorationMemory::new();
         let downsample = 3;
 
         // Act
-        let cells = continent_map(&field, &layout, downsample);
+        let cells = continent_map(&field, &layout, &exploration, downsample);
 
         // Assert：4x4 个区块，downsample=3 时每维向上取整为 2。
         let zone_count = layout.zone_count();
@@ -377,9 +401,10 @@ mod tests {
         let params = GenParams::default();
         let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
         let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+        let exploration = ExplorationMemory::new();
 
         // Act
-        let cells = continent_map(&field, &layout, 0);
+        let cells = continent_map(&field, &layout, &exploration, 0);
 
         // Assert
         let zone_count = layout.zone_count();
@@ -394,10 +419,11 @@ mod tests {
         let params = GenParams::default();
         let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
         let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+        let exploration = ExplorationMemory::new();
         let downsample = 2;
 
         // Act
-        let cells = continent_map(&field, &layout, downsample);
+        let cells = continent_map(&field, &layout, &exploration, downsample);
         let first_cell = cells[0];
 
         // Assert：第一格对应区块坐标 (0,0)，应等于该区块窗口左上角地形
@@ -424,10 +450,11 @@ mod tests {
         let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
         let store = crate::surface_store::SurfaceStore::new(layout, 256);
         let resident_before = store.resident_zones();
+        let exploration = ExplorationMemory::new();
 
         // Act
         let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
-        let _cells = continent_map(&field, &layout, 1);
+        let _cells = continent_map(&field, &layout, &exploration, 1);
 
         // Assert
         assert_eq!(store.resident_zones(), resident_before);
@@ -437,13 +464,15 @@ mod tests {
     }
 
     #[test]
-    fn 小地图格子恒标记为已探索() {
-        // 现阶段 WorldState 不持有玩家探索记忆，见本模块文档顶部说明。
+    fn 小地图未探索格子标记为未探索() {
+        // 落地探索记忆批次：explored 不再恒为真，一份空探索记忆下
+        // 全部格子都应标记为未探索。
         // Arrange
         let mut world = test_world();
         let (terrain_ids, _table) = base_terrain_fixture();
         let params = GenParams::default();
         let noise = build_zone_noise(&test_layout(), &params).expect("test_layout 满足全部约束");
+        let exploration = ExplorationMemory::new();
         let center = world.size.wrap(0, 0);
 
         // Act
@@ -452,12 +481,79 @@ mod tests {
             &noise,
             &params,
             &terrain_ids,
+            &exploration,
             center,
             3,
             Tick(0),
         );
 
         // Assert
-        assert!(cells.iter().all(|cell| cell.explored));
+        assert!(cells.iter().all(|cell| !cell.explored));
+    }
+
+    #[test]
+    fn 小地图已标记探索的格子反映在explored里() {
+        // Arrange
+        let layout = test_layout();
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_layout 满足全部约束");
+        let center = world.size.wrap(0, 0);
+        let mut exploration = ExplorationMemory::new();
+        exploration.mark_explored(&layout, center);
+
+        // Act
+        let cells = minimap(
+            &mut world,
+            &noise,
+            &params,
+            &terrain_ids,
+            &exploration,
+            center,
+            3,
+            Tick(0),
+        );
+        let half = 1usize; // span=3 时中心格下标
+        let center_cell = cells[half * 3 + half];
+
+        // Assert
+        assert!(center_cell.explored);
+    }
+
+    #[test]
+    fn 大陆地图未探索区块标记为未探索() {
+        // Arrange
+        let layout = test_continent_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
+        let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+        let exploration = ExplorationMemory::new();
+
+        // Act
+        let cells = continent_map(&field, &layout, &exploration, 1);
+
+        // Assert
+        assert!(cells.iter().all(|cell| !cell.explored));
+    }
+
+    #[test]
+    fn 大陆地图已探索区块内任意一格都会让该区块标记为已探索() {
+        // Arrange：只标记区块 (0,0) 内的一个瓦片，而不是整块。
+        let layout = test_continent_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
+        let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+        let mut exploration = ExplorationMemory::new();
+        exploration.mark_explored(&layout, layout.tile_size().wrap(3, 3));
+
+        // Act
+        let cells = continent_map(&field, &layout, &exploration, 1);
+
+        // Assert：区块坐标 (0,0) 对应 continent_map 输出的第一格
+        // （downsample=1 时按行主序，与 zone_count 遍历顺序一致）。
+        assert!(cells[0].explored);
     }
 }

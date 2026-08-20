@@ -372,7 +372,12 @@ fn push_minimap(
         .zone_count()
         .width()
         .div_ceil(MINIMAP_DOWNSAMPLE);
-    let cells = continent_map(continent_field, world.terrain.layout(), MINIMAP_DOWNSAMPLE);
+    let cells = continent_map(
+        continent_field,
+        world.terrain.layout(),
+        &world.exploration,
+        MINIMAP_DOWNSAMPLE,
+    );
 
     for (index, cell) in cells.iter().enumerate() {
         let col = index as u32 % cols;

@@ -302,7 +302,24 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 精确回到本次重冻之前的旧常量 `54_795_308_315_924_513`——确认这次
 /// 变化完全、只来自这一处改动，恢复后重新跑通再确认新常量
 /// `3_120_509_028_390_886_945` 稳定复现。
-const EXPECTED_REPLAY_DIGEST: u64 = 3_120_509_028_390_886_945;
+///
+/// # 第六次重冻的原因（落地探索记忆批次）
+///
+/// `WorldState::hash` 新混入 `self.exploration.write_hash(&mut hasher)`
+/// （见 [`ll_world::exploration::ExplorationMemory::write_hash`]）——
+/// 本文件的 `setup`/`play` 从不调用
+/// [`ll_world::exploration::ExplorationMemory::mark_explored`]，
+/// `world.exploration` 全程是一份空记忆，但混入本身仍然改变字节流
+/// （`write_hash` 恒先写一个「已探索区块数」的长度字节，即便该数字是
+/// 零），摘要数值随之改变，与前五次重冻同一个模式：断言结构不变，只是
+/// `hash()` 的输入构造方式变了。
+///
+/// 人工核验（真实执行，不是假设）：把 `crates/ll-world/src/state.rs`
+/// 的 `hash()` 里 `self.exploration.write_hash(&mut hasher);` 这一行
+/// 临时删掉重新跑这条测试，摘要精确回到本次重冻之前的旧常量
+/// `3_120_509_028_390_886_945`——确认这次变化完全、只来自这一处改动，
+/// 恢复后重新跑通再确认新常量 `9_151_147_838_687_915_073` 稳定复现。
+const EXPECTED_REPLAY_DIGEST: u64 = 9_151_147_838_687_915_073;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {
