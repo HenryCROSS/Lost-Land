@@ -457,15 +457,16 @@ mod tests {
 
     #[test]
     fn 开局可选的方形二的幂区块数世界修复后不再退化() {
-        // 开局界面若允许玩家选「N×N 个区块」，最直觉的方形选项恰恰是
-        // 2 的幂：64、128 个区块（区块边长固定 128，见
-        // crate::zone::ZoneLayout::default_config）。换算成世界瓦片
-        // 周期（除以 CELL_SIZE=16）：64 区块 → 8192 瓦片 → period 512；
-        // 128 区块 → 16384 瓦片 → period 1024。两者都恰为 2 的幂，
-        // 修复前会让 coarse_scale 退化成 period 本身；这里直接算这两个
-        // 真实候选尺寸的周期，而不是用等价小尺寸代替——这条只断言
-        // coarse_scale（O(1) 的纯数值推导，不涉及生成整张地图），跑
-        // 大周期不产生实际性能负担。
+        // 开局界面若允许玩家把区块边长配置成 128（ZoneLayout::new 仍然
+        // 接受这个取值，只是不再是 crate::zone::ZoneLayout::default_config
+        // 给出的默认值，见其文档「为什么区块边长从 128 改成 48」）并选
+        // 「N×N 个区块」，最直觉的方形选项恰恰是 2 的幂：64、128 个
+        // 区块。换算成世界瓦片周期（除以 CELL_SIZE=16）：64 区块 →
+        // 8192 瓦片 → period 512；128 区块 → 16384 瓦片 → period
+        // 1024。两者都恰为 2 的幂，修复前会让 coarse_scale 退化成
+        // period 本身；这里直接算这两个真实候选尺寸的周期，而不是用
+        // 等价小尺寸代替——这条只断言 coarse_scale（O(1) 的纯数值推导，
+        // 不涉及生成整张地图），跑大周期不产生实际性能负担。
         // Arrange & Act
         let noise_64_zones = TileableNoise::new(1, 512, 512).expect("周期非零");
         let noise_128_zones = TileableNoise::new(1, 1024, 1024).expect("周期非零");
@@ -485,15 +486,21 @@ mod tests {
     #[test]
     fn 生产默认区块布局对应的世界周期不触发大陆尺度层退化() {
         // 生产默认配置见 crate::zone::ZoneLayout::default_config：
-        // 区块 128×128、世界 48×32 个区块，换算成瓦片周期
-        // （128*48/16, 128*32/16）= (384, 256)。这条锁住「当前生产配置
+        // 区块 48×48、世界 96×64 个区块，换算成瓦片周期
+        // （48*96/16, 48*64/16）= (288, 192)。这条锁住「当前生产配置
         // 本就不在退化区间」这个结论——即便 safe_coarse_scale 没修，
-        // 384 与 256 也不相等，gcd 的最大二次幂因子（128）不等于二者中
-        // 任何一个，故 coarse_scale 本就不会退化；这里把这条结论写成
+        // gcd(288, 192) = 96，其最大二次幂因子是 32，不等于 288 也不
+        // 等于 192，故 coarse_scale 本就不会退化；这里把这条结论写成
         // 断言，防止未来改动 default_config 时无声破坏它。
+        //
+        // 这不是巧合：48 / CELL_SIZE = 3 是奇数，不带任何 2 的因子,
+        // `default_config` 文档「为什么区块边长从 128 改成 48」一节已经
+        // 证明——只要区块边长的这个倍数是奇数，任何 zone_count 组合都
+        // 不会触发这条退化,不需要逐一枚举验证,这里的具体数值断言只是
+        // 把这条证明落成一条可执行的回归。
         // Arrange
-        let period_x = 128 * 48 / CELL_SIZE as u32;
-        let period_y = 128 * 32 / CELL_SIZE as u32;
+        let period_x = 48 * 96 / CELL_SIZE as u32;
+        let period_y = 48 * 64 / CELL_SIZE as u32;
 
         // Act
         let noise = TileableNoise::new(1, period_x, period_y).expect("周期非零");
@@ -505,19 +512,20 @@ mod tests {
 
     #[test]
     fn 长方形预设区块数世界本就不触发大陆尺度层退化() {
-        // 若开局界面推荐长方形预设（32×24、48×32、64×48、96×64 个
-        // 区块，区块边长固定 128），换算成瓦片周期（区块数 * 128 / 16
-        // = 区块数 * 8）逐一验证：这些组合天然不会让 coarse_scale 撞上
-        // 某一轴的周期本身——不依赖 safe_coarse_scale 的减半分支也能
-        // 通过，用来确认「长方形预设本就安全」这个结论，而不是碰巧被
-        // 这次的修复带着变安全。
+        // 若开局界面推荐长方形预设（64×48、96×64、128×96、192×128 个
+        // 区块，区块边长固定 48，见
+        // ll_content::world_identity::RECOMMENDED_PRESETS），换算成瓦片
+        // 周期（区块数 * 48 / 16 = 区块数 * 3）逐一验证：这些组合天然
+        // 不会让 coarse_scale 撞上某一轴的周期本身——不依赖
+        // safe_coarse_scale 的减半分支也能通过，用来确认「长方形预设
+        // 本就安全」这个结论，而不是碰巧被这次的修复带着变安全。
         // Arrange
-        let zone_count_presets = [(32u32, 24u32), (48, 32), (64, 48), (96, 64)];
+        let zone_count_presets = [(64u32, 48u32), (96, 64), (128, 96), (192, 128)];
 
         // Act & Assert
         for (zones_w, zones_h) in zone_count_presets {
-            let period_x = zones_w * 128 / CELL_SIZE as u32;
-            let period_y = zones_h * 128 / CELL_SIZE as u32;
+            let period_x = zones_w * 48 / CELL_SIZE as u32;
+            let period_y = zones_h * 48 / CELL_SIZE as u32;
             let noise = TileableNoise::new(1, period_x, period_y).expect("周期非零");
             assert_ne!(
                 noise.coarse_scale, period_x,

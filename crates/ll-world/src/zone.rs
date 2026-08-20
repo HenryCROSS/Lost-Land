@@ -25,8 +25,10 @@
 //! [`ZoneLayout::new`] 因此只保留「必须是 [`CELL_SIZE`] 的整数倍」这
 //! 一条结构性约束（连续噪声无缝性的前提）；「区块具体多大、世界多少
 //! 区块」仍然是可配置数值（设计文档十二节），由
-//! [`ZoneLayout::default_config`] 给出一份内部自洽的默认值（128×128、
-//! 48×32），调用方可以传别的值给 [`ZoneLayout::new`]。
+//! [`ZoneLayout::default_config`] 给出一份内部自洽的默认值（48×48、
+//! 96×64——项目所有者裁定区块边长默认改为 48，理由见
+//! [`ZoneLayout::default_config`] 文档），调用方可以传别的值给
+//! [`ZoneLayout::new`]。
 
 use ll_core::torus::{TorusPos, TorusSize};
 use serde::{Deserialize, Serialize};
@@ -35,7 +37,7 @@ use crate::WorldError;
 use crate::noise::CELL_SIZE;
 use crate::space::ZoneCoord;
 
-/// 区块布局配置：区块边长（默认 128）+ 世界区块数（默认 48×32）。
+/// 区块布局配置：区块边长（默认 48）+ 世界区块数（默认 96×64）。
 ///
 /// 两者都是可配置数值，不是结构约束（见设计文档十二节）——真正不可
 /// 违反的只有「区块边长必须是 [`CELL_SIZE`] 的整数倍」，由
@@ -115,11 +117,43 @@ impl ZoneLayout {
         })
     }
 
-    /// 设计文档十一节给出的默认配置：区块 128×128，世界 48×32 个区块
-    /// （裁定 CS-2：这是数值，不是结构约束，可调）。
+    /// 默认配置：区块 48×48，世界 96×64 个区块（裁定 CS-2：这是数值，
+    /// 不是结构约束，可调；开局建档时玩家可选别的预设，见
+    /// `ll_content::world_identity::RECOMMENDED_PRESETS`）。
+    ///
+    /// # 为什么区块边长从 128 改成 48
+    ///
+    /// 项目所有者裁定：每个区块 48×48 格。48 同时满足
+    /// [`Self::new`] 的两条约束——大于 [`MIN_ZONE_SPAN`]（43，视口
+    /// 43×25 容不下更小的区块）、是 [`CELL_SIZE`]（16）的整数倍
+    /// （`48 = 16 * 3`）。
+    ///
+    /// 顺带消除了一整类噪声退化风险（见 `crate::noise` 模块文档「一个
+    /// 更隐蔽的退化」）：旧值 128 换算成噪声格点周期的倍数是
+    /// `128 / CELL_SIZE = 8 = 2^3`——一个纯 2 的幂，当区块数本身也凑成
+    /// 2 的幂（例如方形 64×64/128×128 个区块）时会撞上
+    /// `max_pow2_divisor(gcd(..))` 恰好等于某一轴周期的退化条件。48 换
+    /// 算出的倍数是 `48 / 16 = 3`——奇数，不带任何 2 的因子：
+    /// `gcd(period_x, period_y) = 3 * gcd(zone_count.width(),
+    /// zone_count.height())`，其最大 2 的幂因子恒等于
+    /// `gcd(zone_count.width(), zone_count.height())` 的最大 2 的幂因子，
+    /// 而后者必然小于等于 `min(zone_count.width(), zone_count.height())`
+    /// ——严格小于对应轴的周期 `3 * zone_count.width()`（或高）。也就是
+    /// 说，只要 `CELL_SIZE` 不变，**区块边长为 48 时，任何合法的
+    /// `zone_count` 都不会触发这条退化**，不需要再像旧默认值 128 那样
+    /// 靠「全部选长方形预设」规避——见
+    /// `crates/ll-world/src/noise.rs` 里更新后的
+    /// `生产默认区块布局对应的世界周期不触发大陆尺度层退化` 测试。
+    ///
+    /// 世界区块数从 48×32 改成 96×64（横纵各翻倍）：区块边长缩到约
+    /// 0.375 倍（48/128），若区块数不变，世界瓦片总尺寸会骤缩到约
+    /// 0.14 倍（面积按边长平方衰减）——翻倍区块数后世界瓦片尺寸是旧默认
+    /// （6144×4096）的约 0.75 倍（4608×3072），是「区块变小但世界仍然
+    /// 相当大」与「不过度膨胀区块总数」之间的折中，而不是保持区块数不变
+    /// 导致世界骤缩成一小块。
     pub fn default_config() -> Self {
-        let zone_count = TorusSize::new(48, 32).expect("48x32 是合法的 TorusSize");
-        ZoneLayout::new(128, zone_count).expect("128 满足全部对齐与跨度约束")
+        let zone_count = TorusSize::new(96, 64).expect("96x64 是合法的 TorusSize");
+        ZoneLayout::new(48, zone_count).expect("48 满足全部对齐与跨度约束")
     }
 
     /// 区块边长（格）。

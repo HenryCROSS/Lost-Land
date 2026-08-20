@@ -6,7 +6,7 @@
 //! 可达数百万格，整块 `Vec` 一次性分配会吃掉大量内存且无法按需生成」。
 //! 这条理由在两级坐标系重写（`crate::zone`/`crate::surface_store`）之后
 //! 不再成立：惰性分配与流式加载现在由
-//! [`crate::surface_store::SurfaceStore`] 在区块（zone，默认 128×128）
+//! [`crate::surface_store::SurfaceStore`] 在区块（zone，默认 48×48）
 //! 粒度上负责——它把每一个 `ChunkGrid` 实例当成不可再分的原子单位
 //! 管理（常驻、淘汰、序列化全部以一整个 `ChunkGrid` 为最小粒度），本
 //! 类型自己内部的 32×32 子块因此从未被外部感知，也从未被独立利用过：

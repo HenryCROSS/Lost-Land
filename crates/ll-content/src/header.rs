@@ -74,7 +74,7 @@ pub struct SaveHeader {
     /// 世界身份三要素之一：地图尺寸——`(zone_count_x, zone_count_y)`,
     /// 与 [`crate::world_identity::validate_size_choice`] 的入参、
     /// `ll_world::zone::ZoneLayout::zone_count` 对齐（区块边长固定
-    /// 128,见 [`crate::world_identity`] 模块文档，不需要单独再存一个
+    /// 48,见 [`crate::world_identity`] 模块文档，不需要单独再存一个
     /// 字段）。地图大小在开局建档前由玩家选择、世界可以是长方形——
     /// 种子相同但尺寸不同产出的不是同一个世界。
     pub world_size: (u32, u32),

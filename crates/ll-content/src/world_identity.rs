@@ -31,7 +31,7 @@ use ll_world::zone::ZoneLayout;
 
 use crate::header::ModHeaderEntry;
 
-/// 一档推荐的地图尺寸预设：区块边长（固定 128，与
+/// 一档推荐的地图尺寸预设：区块边长（固定 48，与
 /// [`ZoneLayout::default_config`] 一致）+ 世界区块数。
 ///
 /// 四档预设全部选长方形（`zone_count` 的宽高不相等）——不是因为正方形
@@ -40,6 +40,15 @@ use crate::header::ModHeaderEntry;
 /// 尺寸修复后都安全），而是长方形天然远离「两轴周期相等」这个退化
 /// 触发条件，不需要依赖减半分支就能确认安全,见
 /// `crates/ll-world/tests/noise_presets.rs` 的多样性回归测试。
+///
+/// # 为什么区块边长从 128 改成 48
+///
+/// 见 [`ZoneLayout::default_config`] 文档：项目所有者裁定区块边长默认
+/// 改为 48（`= CELL_SIZE * 3`，奇数倍数），这类取值下任何 `zone_count`
+/// 都不会触发噪声大陆尺度层退化（同一份文档给出证明），比旧值 128
+/// （`= CELL_SIZE * 8`，纯 2 的幂）更不容易踩雷——四档预设因此不需要
+/// 重新论证一遍是否落在退化区间，`crates/ll-world/tests/noise_presets.rs`
+/// 仍然保留实测多样性回归，作为独立于这条数学证明的经验性验证。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SizePreset {
     /// 供 UI 展示的标签，非最终文案（P7 UI 落地时按 Fluent 本地化）。
@@ -50,31 +59,32 @@ pub struct SizePreset {
     pub zone_count: (u32, u32),
 }
 
-/// 四档推荐预设：小/中/大/巨，区块边长固定 128。
+/// 四档推荐预设：小/中/大/巨，区块边长固定 48。
 ///
-/// 「中」正是 [`ZoneLayout::default_config`] 给出的默认配置（48×32
+/// 「标准」正是 [`ZoneLayout::default_config`] 给出的默认配置（96×64
 /// 区块）——推荐预设表不是凭空另起一套数值，是把设计文档十一节的默认
-/// 值纳入同一张表，与其余三档并列展示。
+/// 值纳入同一张表，与其余三档并列展示。其余三档在「标准」基础上按
+/// 相同的宽高比例（4:3 / 3:2 交替，与旧版预设表同一种排布习惯）伸缩。
 pub const RECOMMENDED_PRESETS: &[SizePreset] = &[
     SizePreset {
         label: "小陆地",
-        zone_span: 128,
-        zone_count: (32, 24),
-    },
-    SizePreset {
-        label: "标准",
-        zone_span: 128,
-        zone_count: (48, 32),
-    },
-    SizePreset {
-        label: "广阔",
-        zone_span: 128,
+        zone_span: 48,
         zone_count: (64, 48),
     },
     SizePreset {
-        label: "浩瀚",
-        zone_span: 128,
+        label: "标准",
+        zone_span: 48,
         zone_count: (96, 64),
+    },
+    SizePreset {
+        label: "广阔",
+        zone_span: 48,
+        zone_count: (128, 96),
+    },
+    SizePreset {
+        label: "浩瀚",
+        zone_span: 48,
+        zone_count: (192, 128),
     },
 ];
 
