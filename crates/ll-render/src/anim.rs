@@ -99,34 +99,46 @@ impl Playback {
     }
 }
 
-/// 由离散事件驱动的表现层触发式动画状态机，管理这类状态自己的生命
-/// 周期。
+/// 表现层动画状态机，同时支持两种互不相同的驱动方式：**离散事件+余韵**
+/// （[`AnimStateMachine::trigger`] + [`AnimStateMachine::update`]）与
+/// **电平驱动**（[`AnimStateMachine::set_level`]）。管理的是状态自己的
+/// 生命周期,与哪种驱动方式无关。
 ///
-/// # 要解决的问题：瞬时事件不能直接驱动动画状态
+/// # 两种驱动方式分别解决什么问题
 ///
-/// 回合制的移动、攻击、施法这类事件只在结算的那一帧存在于
-/// `Intent`/`Effect` 流里——下一帧它就不存在了（见
+/// **离散事件+余韵**：回合制的攻击、施法、受击、死亡这类事件只在结算
+/// 的那一帧存在于 `Intent`/`Effect` 流里——下一帧它就不存在了（见
 /// `knowledge/design/animation-and-vfx-boundary.md`「结算是瞬时的，
-/// 动画只是回放」）。若动画状态直接绑定「本帧有没有这个事件」，状态
-/// 会在事件消失的下一帧立刻回落到默认状态；连续触发同一个状态（例如
-/// 按住方向键连续移动）时，两次事件之间只要有一帧空档，画面就会回弹
-/// 到默认状态再切回来，表现为一闪一闪。
+/// 动画只是回放」）。若动画状态直接绑定「本帧有没有这个事件」，状态会
+/// 在事件消失的下一帧立刻回落到默认状态；这类事件本身没有「按住」这个
+/// 概念（不像方向键，攻击键通常也是点按），[`AnimStateMachine::trigger`]
+/// 让每个状态维持 [`Clip::exit_grace_frames`] 声明的余韵帧数，期间收到
+/// 同状态新事件只续期、不重建播放。
 ///
-/// # 解法：状态自带余韵，收到同状态事件续期而非重播
+/// **电平驱动**：移动这类由物理按键「按住/松开」两个边缘事件界定的
+/// 连续状态，更直接的判据是**按键当前是否仍按住**（见
+/// `ll_platform::input::InputState::is_held`），而不是「本帧有没有产生
+/// 一次移动意图」——后者只在按下与自动重复脉冲的帧为真，脉冲之间的
+/// 空档若拿「事件+余韵」硬凑，余韵长度需要盖过自动重复的初始延迟
+/// （`RepeatConfig::default` 的 `initial_delay`，350ms，约 21 帧于
+/// 60fps）与后续间隔（90ms，约 5.4 帧）两者之中较长的一个，否则连续
+/// 按住时仍会在初次触发后的第一段空档里露出一帧默认状态；调到能盖住
+/// 又会让松开后的停止拖上小半秒。按住/松开是边缘事件，两者
+/// 之间的「按住」本身连续，没有脉冲间隙需要靠超时容忍——
+/// [`AnimStateMachine::set_level`] 把每帧「现在该处于哪个状态」的判断
+/// 完全交给调用方，本类型只负责「状态没变就不重建播放」这一件事。
 ///
-/// 本类型让每个触发式状态维持 [`Clip::exit_grace_frames`] 声明的帧数
-/// ——这段时间内即使没有新事件也不回落；期间若收到同一个状态的新事
-/// 件，只续期（刷新还能维持多久）而不重建播放，`Playback` 保持原样
-/// 从原来的起始帧连续播放,不会跳回第一帧——这正是连续触发时不闪烁
-/// 的关键。
-///
-/// # 不假设只有两态
+/// # 不假设只有两态，也不假设只有一种驱动方式
 ///
 /// 状态本身就是调用方 `Clip` 表里的下标，不是写死的「行走/待机」二
-/// 态枚举——未来新增攻击、施法、受击、死亡等触发式状态，调用方只需
-/// 要为它们各自定义一个 `Clip`（各自带上自己的 `exit_grace_frames`），
-/// 在对应事件到达时调用 [`AnimStateMachine::trigger`]，不需要改动本
-/// 类型一行代码，也不需要修改已有的行走/待机两态调用点。
+/// 态枚举；调用方也不需要为每个状态统一选择同一种驱动方式——移动这类
+/// 有「按住」语义的状态用 `set_level`，攻击/施法/受击/死亡这类纯粹由
+/// 结算事件界定的一次性状态继续用 `trigger`+`update`，两条路径可以在
+/// 同一个 `AnimStateMachine` 实例上交替使用（`set_level` 不读也不写
+/// `expires_at` 以外的字段，见其文档）。这也是同一套机制能同时服务
+/// 玩家（有键盘可以「按住」）与 NPC（没有键盘，只有 AI 决策出的「持续
+/// 移动意图」标志，或攻击这类离散动作）的原因：两者都只是「谁在调用
+/// `set_level`/`trigger`」的区别，本类型内部不区分调用者是谁。
 pub struct AnimStateMachine {
     /// 不处于任何触发式状态时回落到的默认剪辑下标（通常是待机）。
     default_clip: usize,
@@ -192,6 +204,36 @@ impl AnimStateMachine {
             self.playback = Playback::new(self.default_clip, now);
             self.expires_at = None;
         }
+    }
+
+    /// 电平驱动地设置当前活跃状态：`clip` 就是这一帧该处于的状态，不
+    /// 存在「过期」这个概念——调用方（例如「移动方向键是否按住」）应当
+    /// **每帧无条件调用**，而不是像 [`AnimStateMachine::trigger`] 那样
+    /// 只在事件到达的帧调用、再配合 [`AnimStateMachine::update`] 老化。
+    ///
+    /// 与 `trigger` 的关键区别：`trigger` 只在离散事件到达的那一帧被
+    /// 调用，状态在两次事件之间靠 [`Clip::exit_grace_frames`] 声明的
+    /// 余韵维持；`set_level` 每帧都被调用，「现在该处于哪个状态」这件
+    /// 事本身已经由调用方每帧算好，不需要余韵去猜下一次调用何时到达，
+    /// 也就不读 `clips`（不需要查 `exit_grace_frames`）。
+    ///
+    /// - `clip` 与当前活跃剪辑相同：不重建 `playback`，继续播放——与
+    ///   `trigger` 同样的理由，剪辑仍从原来的起始帧连续播放，不会跳回
+    ///   第一帧。
+    /// - `clip` 与当前不同：从 `now` 重新起播新剪辑。
+    ///
+    /// 调用后 `expires_at` 恒为 [`None`]：电平驱动的状态没有「超时回落」
+    /// 这件事，`update` 对它是无操作（`update` 只在 `expires_at` 为
+    /// `Some` 时才可能回落，见其文档）。若同一个实例此前用 `trigger`
+    /// 进入过某个状态，改调 `set_level` 会立刻清掉遗留的 `expires_at`
+    /// ——这是刻意的：电平驱动接管之后，调用方自己的判断就是唯一权威,
+    /// 不应该再被上一次 `trigger` 留下的余韵计时悄悄打断。
+    pub fn set_level(&mut self, clip: usize, now: FrameId) {
+        if clip != self.current_clip {
+            self.current_clip = clip;
+            self.playback = Playback::new(clip, now);
+        }
+        self.expires_at = None;
     }
 
     /// 当前活跃的剪辑下标——调用方用它判断「现在是不是在播某个具体
@@ -475,5 +517,151 @@ mod anim_state_machine_tests {
         // Assert：零余韵意味着下一帧 `update` 就已经过期，回落默认
         // 状态；关键是整个过程没有 panic。
         assert_eq!(machine.active_clip(), 待机);
+    }
+}
+
+#[cfg(test)]
+mod set_level_tests {
+    use super::*;
+
+    /// 与 `anim_state_machine_tests::clips` 同一套形状（行走 3 帧循环、
+    /// 每步 5 帧；待机单帧），独立定义一份而不是跨 `mod` 复用私有测试
+    /// 辅助函数——理由同 `anim_state_machine_tests::clips` 文档。
+    /// `exit_grace_frames` 全填零：`set_level` 从不读取这个字段（见其
+    /// 文档），非零值只会误导读者以为它参与了判断。
+    fn clips() -> Vec<Clip> {
+        vec![
+            Clip {
+                frames: vec!["w0".into(), "w1".into(), "w2".into()],
+                frames_per_step: 5,
+                looping: true,
+                exit_grace_frames: 0,
+            },
+            Clip {
+                frames: vec!["idle".into()],
+                frames_per_step: 1,
+                looping: true,
+                exit_grace_frames: 0,
+            },
+        ]
+    }
+
+    const 待机: usize = 1;
+    const 行走: usize = 0;
+
+    #[test]
+    fn 电平驱动连续多帧调用同一状态全程不回弹到默认状态() {
+        // 这正是项目所有者报告的缺陷的回归测试：移动状态里不应该掺入
+        // idle 贴图。旧的「触发+余韵」方案靠余韵去覆盖自动重复脉冲之间
+        // 的空档，余韵长度总有算不准的时候；`set_level` 从根上不存在
+        // 这类空档——调用方（按住状态）每帧都调用，这里逐帧模拟「每帧
+        // 都在按住方向键」，覆盖的帧跨度（0..=40）明显超过旧方案 12 帧
+        // 的余韵、也超过按键自动重复的初始延迟（约 21 帧于 60fps），
+        // 全程状态必须停在「行走」，一帧都不例外。
+        // Arrange
+        let mut machine = AnimStateMachine::new(待机, FrameId(0));
+
+        // Act & Assert
+        for frame in 0..=40u64 {
+            machine.set_level(行走, FrameId(frame));
+            assert_eq!(machine.active_clip(), 行走, "第 {frame} 帧不应回弹到待机");
+        }
+    }
+
+    #[test]
+    fn 电平驱动连续调用同一状态时不重建播放进度() {
+        // 若每帧调用 `set_level` 都错误地重建 `Playback`，t=6 时的帧
+        // 计算会把本帧自己当成起播点，算出第 0 步（w0）而不是延续自
+        // t=0 起播、已经过去一步的 w1——与
+        // `anim_state_machine_tests::续期时不重建播放进度` 同一个底层
+        // 关切，这里验证 `set_level` 路径同样成立。
+        // Arrange
+        let clips = clips();
+        let mut machine = AnimStateMachine::new(待机, FrameId(0));
+
+        // Act：逐帧调用，模拟连续按住。
+        for frame in 0..=6u64 {
+            machine.set_level(行走, FrameId(frame));
+        }
+        let frame = machine.playback().current_frame(&clips, FrameId(6));
+
+        // Assert：`frames_per_step` 是 5，从 t=0 算到 t=6 应该是第 1
+        // 步（w1）。
+        assert_eq!(frame, Some("w1"));
+    }
+
+    #[test]
+    fn 电平驱动切换状态时从新剪辑起始帧重新起播() {
+        // Arrange
+        let clips = clips();
+        let mut machine = AnimStateMachine::new(待机, FrameId(0));
+        for frame in 0..=4u64 {
+            machine.set_level(行走, FrameId(frame)); // 行走播到中途
+        }
+
+        // Act：松开方向键，切回待机。
+        machine.set_level(待机, FrameId(5));
+
+        // Assert
+        assert_eq!(machine.active_clip(), 待机);
+        assert_eq!(
+            machine.playback().current_frame(&clips, FrameId(5)),
+            Some("idle")
+        );
+    }
+
+    #[test]
+    fn 松开后立即切回默认状态不拖延() {
+        // 项目所有者明确要求「停下时要及时切回 idle，不能拖沓」——
+        // `set_level` 没有余韵机制，切换态即时生效，这里验证切换当帧
+        // 就能观察到默认状态，不需要再等任何帧数。
+        // Arrange
+        let mut machine = AnimStateMachine::new(待机, FrameId(0));
+        machine.set_level(行走, FrameId(0));
+        assert_eq!(machine.active_clip(), 行走, "前置条件：先进入行走状态");
+
+        // Act：同一帧内松开方向键。
+        machine.set_level(待机, FrameId(1));
+
+        // Assert
+        assert_eq!(machine.active_clip(), 待机);
+    }
+
+    #[test]
+    fn 电平驱动后expires_at恒为空闲置字段() {
+        // `set_level` 文档承诺调用后 `expires_at` 恒为 `None`——这里
+        // 通过行为间接验证：即使此前用 `trigger` 进入过一个还没过期、
+        // 带正数余韵的触发式状态，改调 `set_level` 之后再调用 `update`
+        // （用远超那次遗留余韵的帧号）也不应该有任何可观察的状态变化，
+        // 因为 `set_level` 已经清空了遗留的过期计时。
+        // Arrange：本测试专用一份带非零余韵的剪辑表，与本模块其余测试
+        // 共用的 `clips()`（余韵全零，见其文档）区分开——余韵为零会让
+        // `trigger` 遗留的 `expires_at` 从一开始就已经过期，测不出
+        // 「set_level 主动清空了它」与「它本来就已经过期」的差别。
+        let grace_clips = vec![
+            Clip {
+                frames: vec!["w0".into()],
+                frames_per_step: 5,
+                looping: true,
+                exit_grace_frames: 5,
+            },
+            Clip {
+                frames: vec!["idle".into()],
+                frames_per_step: 1,
+                looping: true,
+                exit_grace_frames: 0,
+            },
+        ];
+        let mut machine = AnimStateMachine::new(待机, FrameId(0));
+        machine.trigger(&grace_clips, 行走, FrameId(0)); // 到期于第 5 帧，此刻还没过期
+        machine.set_level(行走, FrameId(1)); // 电平驱动接管
+
+        // Act：`update` 用远超那次遗留余韵到期帧（5）的帧号。
+        machine.update(FrameId(1000));
+
+        // Assert：`update` 对电平驱动的状态是无操作，仍停在行走——若
+        // `set_level` 没有清空遗留的 `expires_at`，这里会错误地回落
+        // 到待机。
+        assert_eq!(machine.active_clip(), 行走);
     }
 }

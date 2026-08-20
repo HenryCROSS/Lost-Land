@@ -63,8 +63,8 @@ use ll_world::surface_store::SurfaceWindow;
 
 use layout::{
     IDLE_BREATHE_FRAMES_PER_STEP, INTERIOR_VIEW_CENTER, MINIMAP_CELL_PX, MINIMAP_DOWNSAMPLE,
-    STREAM_RADIUS_ZONES, WALK_EXIT_GRACE_FRAMES, WALK_FRAMES_PER_STEP, effective_sight_radius,
-    effective_tint, minimap_cell_screen_pos, terrain_entry_name,
+    STREAM_RADIUS_ZONES, WALK_FRAMES_PER_STEP, effective_sight_radius, effective_tint,
+    minimap_cell_screen_pos, terrain_entry_name,
 };
 use png::save_baseline_png;
 use world::{DemoWorld, build_demo_world};
@@ -180,15 +180,35 @@ struct Demo {
     /// 不关心——将来新增攻击/施法/受击/死亡时，只需要在这个表里再加
     /// 一段 `Clip`。
     clips: Vec<Clip>,
-    /// 玩家精灵触发式动画状态的生命周期管理：收到移动事件后维持
-    /// [`Clip::exit_grace_frames`]（见 [`layout::WALK_EXIT_GRACE_FRAMES`]）
-    /// 帧，期间即使没有新的移动事件也不回落到待机，见
-    /// [`AnimStateMachine`] 模块文档「要解决的问题」。这正是修复「走
-    /// 一格闪一下」缺陷的落点——此前直接用 `Playback` 绑定「本帧是否
-    /// 有移动意图」，瞬时信号驱动导致状态没有自己的生命周期，见
-    /// [`Demo::update_walk_animation`] 文档。
+    /// 玩家精灵行走/待机动画状态的生命周期管理：电平驱动
+    /// （[`AnimStateMachine::set_level`]），每帧直接由
+    /// [`Demo::update_player_animation`] 算出「现在该播放哪个状态」，
+    /// 不经过 `trigger`/`update` 的「离散事件+余韵」机制——这正是修复
+    /// 「移动状态里仍掺入 idle 贴图」缺陷的落点，见
+    /// [`Demo::update_player_animation`] 文档「为什么从『意图脉冲驱动』
+    /// 换成『按住状态驱动』」一节。
     anim: AnimStateMachine,
     resources: Option<GpuResources>,
+}
+
+/// 玩家此刻是不是正在执行「移动」这个动作。
+///
+/// # 留给未来「行动能力」过滤的接入点
+///
+/// 目前的判定就是「是否有任意一个移动方向键处于按住状态」
+/// （[`InputState::is_held`]）——本仓库此刻没有任何会阻断移动的机制
+/// （眩晕/定身零实现，物品/背包系统排在 P6，任务交接记录已核实），
+/// 因此「按键是否按住」与「是否正在执行移动动作」在结果上完全等价。
+/// 这不是巧合：本函数刻意按后者命名、按后者的语义写文档——将来输入
+/// 上下文/行动能力/动画状态三层抽象（另一位代理正在设计）落地后，
+/// 应当只需要在本函数最前面插入一次「当前行动能力是否允许移动」查询、
+/// 查询为否时提前返回 `false`，不需要改动调用方
+/// [`Demo::update_player_animation`] 或 [`AnimStateMachine`] 一行代码。
+fn player_is_moving(input: &InputState) -> bool {
+    input.is_held(GameKey::Up)
+        || input.is_held(GameKey::Down)
+        || input.is_held(GameKey::Left)
+        || input.is_held(GameKey::Right)
 }
 
 impl Demo {
@@ -230,10 +250,15 @@ impl Demo {
             ],
             frames_per_step: WALK_FRAMES_PER_STEP,
             looping: true,
-            // 见 `layout::WALK_EXIT_GRACE_FRAMES` 文档「为什么是 12」
-            // ——这是项目所有者要的可自定义延迟，覆盖按键自动重复脉冲
-            // 之间的空档，避免连续移动时闪回待机。
-            exit_grace_frames: WALK_EXIT_GRACE_FRAMES,
+            // 行走状态现在电平驱动（`AnimStateMachine::set_level`，见
+            // `Demo::update_player_animation` 文档），不再经过
+            // `trigger`/`update` 的「触发+余韵」机制，这个字段从不被
+            // 读取——与 idle_clip 一样填零。旧值
+            // `layout::WALK_EXIT_GRACE_FRAMES`（12 帧）已随这次改动
+            // 一并删除：它是为覆盖按键自动重复脉冲间隙而存在的常量，
+            // 那个问题本身随着换成按住状态驱动而不复存在，继续留着
+            // 是死配置（项目政策：过时的东西删掉，git 保留历史）。
+            exit_grace_frames: 0,
         };
         // 待机呼吸剪辑：只在待机图与「吸气」图之间缓慢往返，幅度克制
         // （见 `assets/atlas/placeholder.json` 里 `hero_idle_1` 与
@@ -270,13 +295,16 @@ impl Demo {
             self.try_interact();
         }
 
+        // 动画判定排在移动结算之前：`update_player_animation` 只读
+        // `input`（按住状态），不依赖本帧是否真的产生了移动意图或移动
+        // 是否成功，见其文档「为什么从『意图脉冲驱动』换成『按住状态
+        // 驱动』」一节，因此与下面的移动结算互不依赖，先后顺序不影响
+        // 结果——这里维持「先动画后结算」只是与 `maintain_streaming`/
+        // `try_interact` 排在最前的既有风格一致。
+        self.update_player_animation(input, frame);
+
         let player = self.demo_world.player;
         let intent = intent_from_input(player, input);
-        // 「有没有移动意图」而非「这一步是否真的挪动了位置」——按住方向
-        // 键顶着墙走不动时仍应播放行走动画（这也是绝大多数游戏的直觉：
-        // 角色原地踏步，而不是因为撞墙就悄悄切回待机姿势），且不需要
-        // 读 `resolve`/`apply` 的结果来判断，输入层这一步信息已经够用。
-        self.update_walk_animation(intent.as_ref(), frame);
         if let Some(intent) = intent {
             self.apply_intent(&intent);
         }
@@ -288,33 +316,43 @@ impl Demo {
         }
     }
 
-    /// 推进玩家行走/待机的触发式动画状态：先老化当前状态（可能因为
-    /// 超过余韵而回落到待机），再看本帧有没有新的移动意图，有就触发
-    /// （或续期）行走状态。
+    /// 推进玩家行走/待机动画：电平驱动而非离散事件驱动——每帧直接问
+    /// 「玩家此刻是不是正在执行移动这个动作」（[`player_is_moving`]），
+    /// 答案就是这一帧该播放的状态，通过 [`AnimStateMachine::set_level`]
+    /// 落地，不经过 `trigger`/`update` 的「离散事件+余韵」机制，因此也
+    /// 不读 [`Clip::exit_grace_frames`]（见 `walk_clip` 构造处的注释）。
     ///
-    /// # 为什么不能再用「本帧是否有移动意图」直接驱动
+    /// # 为什么从「意图脉冲驱动」换成「按住状态驱动」
     ///
-    /// 此前这里直接比较「本帧是否有移动意图」与上一帧的记录，一旦状态
-    /// 变化就重建 `Playback`——但回合制的移动意图本身只在按键刚按下、
-    /// 或自动重复脉冲触发的那一帧才存在（见
-    /// `ll_platform::input::InputState` 模块文档「为什么要区分『按住』
-    /// 与『刚按下』」），脉冲之间的空档没有意图，直接绑定意味着状态会
-    /// 在每个空档都先弹回待机、下一个脉冲再弹回行走——这正是项目所有者
-    /// 报告的「走一格闪一下」。现在改用 [`AnimStateMachine`]：意图存在
-    /// 的那一帧触发/续期行走状态，`update` 每帧无条件调用负责老化，
-    /// 只有真的超过 [`Clip::exit_grace_frames`] 声明的余韵仍没有新意图
-    /// 才回落待机——这段余韵就是项目所有者要的可自定义延迟。
+    /// 此前这里用 `AnimStateMachine::trigger`（收到 `Intent::Move` 就
+    /// 触发/续期）+ `update`（每帧老化，超过 `exit_grace_frames` 仍没
+    /// 有新触发才回落待机）去覆盖自动重复脉冲之间的空档——但项目所有者
+    /// 验证后指出更直接的办法：按下/松开是边缘事件，两者之间「按住」
+    /// 的状态本身是连续的，压根不存在脉冲间隙需要余韵去容忍。核实过的
+    /// 数字：自动重复的初始延迟（`RepeatConfig::default` 的
+    /// `initial_delay`，350ms，60fps 下约合 21 帧）与后续间隔（90ms，
+    /// 约 5.4 帧）——旧方案的余韵（`layout::WALK_EXIT_GRACE_FRAMES`，
+    /// 12 帧）盖不住初始延迟，正是「移动状态里仍掺入 idle 贴图」这个
+    /// 缺陷的真正成因；调大到能盖住初始延迟又会让松开后的停止拖上小
+    /// 半秒，两难。换成 [`player_is_moving`] 直接查按键是否按住后，这
+    /// 个两难本身就不存在了：只要键没松开，`InputState::is_held` 每帧
+    /// 都为真，不需要靠余韵去猜下一次自动重复脉冲何时到达。
     ///
-    /// `update` 必须排在 `trigger` 之前：若顺序反过来，刚触发本状态就
-    /// 立刻用当前帧检查过期，`exit_grace_frames = 0`（例如未来某个一
-    /// 次性状态刻意不要余韵）时会导致触发的这一帧都观察不到目标状态；
-    /// 先老化上一帧遗留的状态、再处理本帧的新触发，触发本身产生的新
-    /// 状态才总能在触发的这一帧被观察到。
-    fn update_walk_animation(&mut self, intent: Option<&Intent>, frame: FrameId) {
-        self.anim.update(frame);
-        if matches!(intent, Some(Intent::Move { .. })) {
-            self.anim.trigger(&self.clips, WALK_CLIP, frame);
-        }
+    /// # 撞墙/撞门也算「正在移动」，这里不需要读结算结果
+    ///
+    /// 项目所有者决策：顶着墙按住方向键也应播放行走动画——`resolve_move`
+    /// 现在对「目的地不可通行」同样产出 `Effect::ScheduleNext`（消耗
+    /// 时间，只是位置不变，见 `ll_sim::resolve` 模块文档「目的地完全
+    /// 不可通行」一节），这一步在模拟里就是一次真实的移动尝试。因此
+    /// 本方法不需要读 `resolve`/`apply` 的结果来判断「这一步是否真的
+    /// 挪动了位置」——`player_is_moving` 只问按键状态已经足够。
+    fn update_player_animation(&mut self, input: &InputState, frame: FrameId) {
+        let target_clip = if player_is_moving(input) {
+            WALK_CLIP
+        } else {
+            IDLE_CLIP
+        };
+        self.anim.set_level(target_clip, frame);
     }
 
     fn maintain_streaming(&mut self) {
@@ -889,5 +927,116 @@ mod animation_fallback_tests {
 
         // Assert
         assert_eq!(resolved, "hero_walk_0");
+    }
+}
+
+/// 玩家行走/待机动画状态机的选择链路——程序化构造一串按下/松开/清空
+/// 事件，断言 [`Demo::update_player_animation`] 在每种情形下选出的
+/// `AnimStateMachine` 活跃剪辑是否正确。ADR 0025 明确禁止用 `SendKeys`
+/// 之类的手段盲注按键做验收（曾把按键泄漏进项目所有者的对话），这条
+/// 链路完全脱离窗口系统，直接构造 [`InputState`] 调用 `press`/
+/// `release`/`clear`，不需要真实按键或窗口事件循环。
+#[cfg(test)]
+mod player_animation_tests {
+    use super::*;
+
+    #[test]
+    fn 按住移动键期间连续多帧动画状态全程停在行走不掉回待机() {
+        // 项目所有者报告的缺陷的端到端回归测试：给定「按下后持续按住」
+        // 这一串输入状态，断言状态机每一帧选出的剪辑都是行走。覆盖的
+        // 帧跨度（0..=40）明显超过旧「触发+余韵」方案的余韵（12 帧）、
+        // 也超过按键自动重复的初始延迟（约 21 帧于 60fps）——若动画
+        // 仍然按脉冲驱动，这条测试会在某一帧观察到待机贴图掺入。
+        // Arrange
+        let mut demo = Demo::new();
+        let mut input = InputState::new();
+        input.press(GameKey::Up);
+
+        // Act & Assert
+        for frame in 0..=40u64 {
+            demo.update_player_animation(&input, FrameId(frame));
+            assert_eq!(
+                demo.anim.active_clip(),
+                WALK_CLIP,
+                "第 {frame} 帧不应回弹到待机"
+            );
+        }
+    }
+
+    #[test]
+    fn 松开移动键后下一帧立即切回待机不拖延() {
+        // 项目所有者明确要求「停下时要及时切回 idle，不能拖沓」。
+        // Arrange
+        let mut demo = Demo::new();
+        let mut input = InputState::new();
+        input.press(GameKey::Up);
+        demo.update_player_animation(&input, FrameId(0));
+        assert_eq!(demo.anim.active_clip(), WALK_CLIP, "前置条件：先进入行走");
+
+        // Act：松开方向键。
+        input.release(GameKey::Up);
+        demo.update_player_animation(&input, FrameId(1));
+
+        // Assert
+        assert_eq!(demo.anim.active_clip(), IDLE_CLIP);
+    }
+
+    #[test]
+    fn 未按任何移动键时保持待机() {
+        // Arrange
+        let mut demo = Demo::new();
+        let input = InputState::new();
+
+        // Act
+        demo.update_player_animation(&input, FrameId(0));
+
+        // Assert
+        assert_eq!(demo.anim.active_clip(), IDLE_CLIP);
+    }
+
+    #[test]
+    fn 清空按键状态后动画立即回到待机() {
+        // 模拟窗口失焦：`ll_platform::window` 里 `WindowEvent::Focused(false)`
+        // 的处理器已经接了 `InputState::clear`（见其文档「窗口失去焦点
+        // 时必须调用」），本测试验证动画层看到清空后的 `InputState`
+        // 会正确回落到待机——不需要真的构造一个窗口事件循环去触发
+        // 失焦事件（那需要真实 winit 后端，ADR 0025 明确排除盲注按键/
+        // 窗口事件的验收方式），`InputState::clear` 之后的效果与真实
+        // 失焦时完全一样：全部按住状态归零。
+        // Arrange
+        let mut demo = Demo::new();
+        let mut input = InputState::new();
+        input.press(GameKey::Right);
+        demo.update_player_animation(&input, FrameId(0));
+        assert_eq!(demo.anim.active_clip(), WALK_CLIP, "前置条件：先进入行走");
+
+        // Act：模拟失焦清空。
+        input.clear();
+        demo.update_player_animation(&input, FrameId(1));
+
+        // Assert
+        assert_eq!(demo.anim.active_clip(), IDLE_CLIP);
+    }
+
+    #[test]
+    fn 四个方向键分别按住都会进入行走状态() {
+        // `player_is_moving` 对四个方向键取「任一按住」，这里逐个验证
+        // 没有漏掉某个方向。
+        for key in [GameKey::Up, GameKey::Down, GameKey::Left, GameKey::Right] {
+            // Arrange
+            let mut demo = Demo::new();
+            let mut input = InputState::new();
+            input.press(key);
+
+            // Act
+            demo.update_player_animation(&input, FrameId(0));
+
+            // Assert
+            assert_eq!(
+                demo.anim.active_clip(),
+                WALK_CLIP,
+                "方向键 {key:?} 应触发行走"
+            );
+        }
     }
 }
