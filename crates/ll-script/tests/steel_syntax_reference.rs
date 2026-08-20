@@ -290,6 +290,88 @@ mod 一_基础语法 {
             )
         );
     }
+
+    /// 文档「一、7 数值：大整数、有理数、exact/inexact」——来自 Steel 官方
+    /// book《Values > Numbers》一节，实测确认 book 描述的四种数值形式
+    /// （bignum/有理数/`exact`/`inexact`）在 0.8.2 上均可用。
+    #[test]
+    fn 数值大整数有理数与exact_inexact转换() {
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_source(
+                r#"
+                (define (probe)
+                  (list
+                    9999999999999999999999
+                    1/2
+                    (exact 1.5)
+                    (inexact 3/2)
+                    (exact? 1/2)
+                    (numerator 3/4)
+                    (denominator 3/4)))
+                "#
+                .to_string(),
+            )
+            .unwrap();
+
+        let result = engine.call_raw("probe", Vec::new()).unwrap();
+        // 大整数、`inexact` 结果与浮点相关的成员用字符串化比对，避免依赖
+        // `SteelVal` 大整数/浮点变体的内部构造细节；有理数与整数成员直接
+        // 比对结构化值。
+        let rendered = format!("{result:?}");
+        assert!(rendered.contains("9999999999999999999999"));
+        assert!(rendered.contains("1.5"));
+        match result {
+            SteelVal::ListV(items) => {
+                let items: Vec<_> = items.into_iter().collect();
+                assert_eq!(items[4], SteelVal::BoolV(true)); // (exact? 1/2)
+                assert_eq!(items[5], SteelVal::IntV(3)); // (numerator 3/4)
+                assert_eq!(items[6], SteelVal::IntV(4)); // (denominator 3/4)
+            }
+            other => panic!("期望 ListV，实际拿到 {other:?}"),
+        }
+    }
+
+    /// 文档「一、8 字符串与符号操作」——来自 book《Values > Strings /
+    /// Symbols》两节列出的函数名，逐个实测确认在 0.8.2 上可调用。
+    #[test]
+    fn 字符串与符号操作() {
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_source(
+                r#"
+                (define (probe)
+                  (list
+                    (string-append "a" "b" "c")
+                    (symbol->string 'foo)
+                    (string->symbol "bar")
+                    (concat-symbols 'foo 'bar)
+                    (starts-with? "hello" "he")
+                    (ends-with? "hello" "lo")
+                    (trim "  hi  ")))
+                "#
+                .to_string(),
+            )
+            .unwrap();
+
+        let result = engine.call_raw("probe", Vec::new()).unwrap();
+        assert_eq!(
+            result,
+            SteelVal::ListV(
+                [
+                    SteelVal::StringV("abc".into()),
+                    SteelVal::StringV("foo".into()),
+                    SteelVal::SymbolV("bar".into()),
+                    SteelVal::SymbolV("foobar".into()),
+                    SteelVal::BoolV(true),
+                    SteelVal::BoolV(true),
+                    SteelVal::StringV("hi".into()),
+                ]
+                .into_iter()
+                .collect()
+            )
+        );
+    }
 }
 
 // ============================================================
@@ -435,6 +517,302 @@ mod 二_核心能力 {
 
         let result = engine.call_raw("probe", Vec::new()).unwrap();
         assert_eq!(result, SteelVal::IntV(3628800));
+    }
+
+    /// 文档「二、5 宏的嵌套省略号模式」——book《Language Reference >
+    /// Macros》给出的是单层 `y ...`；这里额外验证嵌套形式（`syntax-rules`
+    /// 模式里出现 `([var val] rest ...)` 这种"列表的列表 + 省略号"）在
+    /// 0.8.2 上同样展开正确，对应一个手写的 `let*`。
+    #[test]
+    fn 宏支持嵌套省略号模式() {
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_source(
+                r#"
+                (define-syntax my-let*
+                  (syntax-rules ()
+                    [(my-let* () body ...) (begin body ...)]
+                    [(my-let* ([var val] rest ...) body ...)
+                     (let ([var val]) (my-let* (rest ...) body ...))]))
+                (define (probe) (my-let* ([a 1] [b (+ a 1)] [c (+ b 1)]) (list a b c)))
+                "#
+                .to_string(),
+            )
+            .unwrap();
+
+        let result = engine.call_raw("probe", Vec::new()).unwrap();
+        assert_eq!(
+            result,
+            SteelVal::ListV([1, 2, 3].into_iter().map(SteelVal::IntV).collect())
+        );
+    }
+
+    /// 文档「二、6 宏的卫生性」——经典卫生性探针：宏在展开出的 `let`
+    /// 里引入一个和调用点变量同名的绑定（都叫 `t`），若宏是卫生的，
+    /// 调用点传入的 `t`（全局变量，值 100）不会被宏内部的 `t` 遮蔽；
+    /// 若不卫生（朴素文本替换），三处 `t` 会被合并成同一个绑定，结果是
+    /// `#f` 而不是 `100`。实测返回 `100`，确认 `syntax-rules` 展开卫生。
+    #[test]
+    fn 宏展开卫生不遮蔽调用点同名变量() {
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_source(
+                r#"
+                (define-syntax my-or
+                  (syntax-rules ()
+                    [(my-or a b) (let ([t a]) (if t t b))]))
+                (define t 100)
+                (define (probe) (my-or #f t))
+                "#
+                .to_string(),
+            )
+            .unwrap();
+
+        let result = engine.call_raw("probe", Vec::new()).unwrap();
+        assert_eq!(result, SteelVal::IntV(100));
+    }
+
+    /// 文档「二、7 `syntax-case` 过程式宏」——book 提到 Steel 同时提供
+    /// `syntax-rules` 和 `syntax-case` 两套宏系统，但没有给出 `syntax-case`
+    /// 的调用形状。**实测发现**：`(define-syntax name (syntax-case () ...))`
+    /// 这种照抄 `syntax-rules` 形状的写法会在运行期报错
+    /// `"syntax-case expects a function"`；正确形状必须是过程式变换器
+    /// `(define-syntax (name stx) (syntax-case stx () [pattern #'template]))`
+    /// ——`stx` 是显式参数，`#'`/`#` 构造语法对象，这与 `syntax-rules`
+    /// 声明式的 `(syntax-rules () [pattern template])` 形状不同。
+    /// 正确形状照 steel-core 自身测试
+    /// （`steel-core-0.8.2/src/tests/success/syntax_case.scm`）核对过。
+    #[test]
+    fn syntax_case必须写成过程式变换器形式() {
+        let mut engine = ScriptEngine::new();
+
+        // 错误形状：直接照抄 syntax-rules 的声明式写法，编译期能过
+        // （white list 不拦宏定义本身），但运行期报错。
+        let mut wrong_engine = ScriptEngine::new();
+        let wrong = wrong_engine.load_source(
+            r#"
+            (define-syntax my-thing
+              (syntax-case ()
+                [(my-thing a) (quote (a))]))
+            (define (probe) (my-thing 5))
+            "#
+            .to_string(),
+        );
+        match wrong {
+            Err(ll_script::ScriptError::Runtime(ref msg, _)) => {
+                assert!(
+                    msg.contains("syntax-case expects a function"),
+                    "期望「syntax-case expects a function」，实际消息：{msg}"
+                );
+            }
+            other => panic!("期望运行期错误，实际拿到 {other:?}"),
+        }
+
+        // 正确形状：过程式变换器。
+        engine
+            .load_source(
+                r#"
+                (define-syntax (my-thing stx)
+                  (syntax-case stx ()
+                    [(_ a) #'(list 'got a)]))
+                (define (probe) (my-thing 5))
+                "#
+                .to_string(),
+            )
+            .unwrap();
+        let result = engine.call_raw("probe", Vec::new()).unwrap();
+        assert_eq!(
+            result,
+            SteelVal::ListV(
+                [SteelVal::SymbolV("got".into()), SteelVal::IntV(5)]
+                    .into_iter()
+                    .collect()
+            )
+        );
+    }
+
+    /// 文档「二、8 `match` 模式匹配」——book 的
+    /// `#%private/steel/match`（`match`/`match-define`/`match-syntax`）
+    /// 一节只给出"该模块在 prelude 里自动可用"这一句话，没给示例；
+    /// 实测对照 steel-core 0.8.2 自带的
+    /// `src/scheme/modules/match.scm` 源码，确认 `match` 支持：
+    /// `(list ...)` 前缀的列表模式、裸符号做绑定变量（不需要 `?` 前缀，
+    /// 这与另一份仅用于 steel-core 自身测试、从未随 crate 发布的
+    /// `matcher.scm`／`match!` 实验版本要求 `?x` 前缀不同）、`_` 通配、
+    /// `else` 兜底分支、`(list first rest ...)` 省略号收集剩余元素、
+    /// `#:when` 守卫子句。
+    #[test]
+    fn match模式匹配列表下划线else省略号与guard() {
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_source(
+                r#"
+                (define (probe-basic)
+                  (match (list 1 2 3)
+                    [(list a b c) (+ a b c)]))
+                (define (probe-wildcard x)
+                  (match x
+                    [(list a _ c) (list 'three a c)]
+                    [else 'other]))
+                (define (probe-rest)
+                  (match (list 1 2 3 4 5)
+                    [(list first rest ...) (list first rest)]))
+                (define (probe-guard n)
+                  (match n
+                    [n #:when (> n 10) 'big]
+                    [n 'small]))
+                "#
+                .to_string(),
+            )
+            .unwrap();
+
+        assert_eq!(
+            engine.call_raw("probe-basic", Vec::new()).unwrap(),
+            SteelVal::IntV(6)
+        );
+        assert_eq!(
+            engine
+                .call_raw(
+                    "probe-wildcard",
+                    vec![SteelVal::ListV(
+                        [SteelVal::IntV(1), SteelVal::IntV(2), SteelVal::IntV(3)]
+                            .into_iter()
+                            .collect()
+                    )]
+                )
+                .unwrap(),
+            SteelVal::ListV(
+                [
+                    SteelVal::SymbolV("three".into()),
+                    SteelVal::IntV(1),
+                    SteelVal::IntV(3),
+                ]
+                .into_iter()
+                .collect()
+            )
+        );
+        assert_eq!(
+            engine
+                .call_raw("probe-wildcard", vec![SteelVal::IntV(5)])
+                .unwrap(),
+            SteelVal::SymbolV("other".into())
+        );
+        assert_eq!(
+            engine.call_raw("probe-rest", Vec::new()).unwrap(),
+            SteelVal::ListV(
+                [
+                    SteelVal::IntV(1),
+                    SteelVal::ListV([2, 3, 4, 5].into_iter().map(SteelVal::IntV).collect()),
+                ]
+                .into_iter()
+                .collect()
+            )
+        );
+        assert_eq!(
+            engine
+                .call_raw("probe-guard", vec![SteelVal::IntV(20)])
+                .unwrap(),
+            SteelVal::SymbolV("big".into())
+        );
+        assert_eq!(
+            engine
+                .call_raw("probe-guard", vec![SteelVal::IntV(3)])
+                .unwrap(),
+            SteelVal::SymbolV("small".into())
+        );
+    }
+
+    /// 文档「二、8 `match`」的一处限制——**实测发现，book 没提**：
+    /// `match` 的列表模式不能直接写成 `(struct名 字段...)` 去匹配一个
+    /// `struct` 实例并同时解构字段，因为 `match.scm` 的模式编译器只认
+    /// 两种列表模式形状：`(list ...)` 前缀，或者裸符号/通配符/嵌套列表
+    /// ——把 `(Pt a b)` 当模式写会被当成"没有 `list` 前缀的列表模式"，
+    /// 直接报错 `"list pattern must start with `list` - found Pt"`。
+    /// 要匹配 `struct` 实例，只能退回 `Pt?` 谓词 + 手动调用访问器
+    /// （`Pt-x`/`Pt-y`），不能指望 `match` 直接解构。**这个检查发生在
+    /// `load_source` 阶段**（`match` 是 `syntax-rules` 宏，模式形状是在
+    /// 宏展开时、也就是编译期被检查的，不需要真的调用 `probe` 就会报
+    /// 错），不是运行时才暴露。
+    #[test]
+    fn match不支持直接解构struct实例() {
+        let mut engine = ScriptEngine::new();
+        let result = engine.load_source(
+            r#"
+            (struct Pt (x y))
+            (define (probe p)
+              (match p
+                [(Pt a b) (+ a b)]))
+            "#
+            .to_string(),
+        );
+
+        match result {
+            Err(ll_script::ScriptError::Runtime(msg, _)) => {
+                assert!(
+                    msg.contains("list pattern must start with"),
+                    "期望「list pattern must start with」，实际消息：{msg}"
+                );
+            }
+            other => panic!("期望 struct 解构模式在编译期报错，实际拿到 {other:?}"),
+        }
+    }
+
+    /// 文档「二、9 `hashset`」——book《Collections > Hash sets》给出
+    /// `(hashset 10 20 30 30 40)` 的构造示例，这里补一个查询用法。
+    #[test]
+    fn hashset构造与包含判断() {
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_source(
+                r#"
+                (define (probe)
+                  (define hs (hashset 1 2 3))
+                  (list (hashset-contains? hs 2) (hashset-contains? hs 99)))
+                "#
+                .to_string(),
+            )
+            .unwrap();
+
+        let result = engine.call_raw("probe", Vec::new()).unwrap();
+        assert_eq!(
+            result,
+            SteelVal::ListV(
+                [SteelVal::BoolV(true), SteelVal::BoolV(false)]
+                    .into_iter()
+                    .collect()
+            )
+        );
+    }
+
+    /// 文档「二、10 脚本侧捕获运行时错误：`with-handler`」——**book 完全
+    /// 没有错误处理章节**（`docs/src/stdlib/private_steel_stdlib.md` 通篇
+    /// 搜索 `with-handler`/`guard`/`raise`/`call-with-exception-handler`
+    /// 均无结果），这条写法是直接读 `steel-core` 0.8.2 的
+    /// `src/scheme/stdlib.scm`（`with-handler` 的 `define-syntax` 定义，
+    /// 基于 `call-with-exception-handler` + `reset`/`shift` 分界续延）
+    /// 找到、再实测验证的，不来自官方文档。**R7RS 标准的 `guard`/`raise`
+    /// 在 0.8.2 里不存在**——不是被白名单挡住（`guard` 报的是
+    /// `ParseError`「不在白名单内」，但白名单本身是"能力边界，不是语言
+    /// 子集"：一个标识符从未在 prelude 里 `define` 过，天然不会出现在
+    /// `compute_allowed_identifiers` 收集到的全局作用域里，这与"故意
+    /// 拒绝"是两回事，是"压根不存在"）。`with-handler` 用起来是
+    /// `(with-handler (lambda (e) ...) 可能出错的表达式)`。
+    #[test]
+    fn with_handler捕获脚本内运行时错误() {
+        let mut engine = ScriptEngine::new();
+        engine
+            .load_source(
+                r#"
+                (define (probe)
+                  (with-handler (lambda (e) 'caught)
+                                (car '())))
+                "#
+                .to_string(),
+            )
+            .unwrap();
+
+        let result = engine.call_raw("probe", Vec::new()).unwrap();
+        assert_eq!(result, SteelVal::SymbolV("caught".into()));
     }
 }
 

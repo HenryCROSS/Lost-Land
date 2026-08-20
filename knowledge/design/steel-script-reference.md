@@ -1,8 +1,9 @@
 # Steel 语法参考——在迷途大陆里能写什么
 
-- **冻结时间**：2026-08-19
-- **对应提交**：`aeac32af32dde3616e4259f3c00f060bebd7589a`（`main` 分支，908 条既有测试全绿、六道门禁全过时的状态）
+- **冻结时间**：2026-08-19（初版）；2026-08-19 补充官方 book 对照（同日追加批次）
+- **对应提交**：`aeac32af32dde3616e4259f3c00f060bebd7589a`（初版冻结时的提交，`main` 分支，908 条既有测试全绿、六道门禁全过时的状态）；本次补充批次对应提交 `d77f997`（958 条测试全绿）
 - **`steel-core` 版本**：`0.8.2`（见 `crates/ll-script/Cargo.toml`）
+- **官方文档**：<https://mattwparas.github.io/steel/book/>（mdbook，源码在 <https://github.com/mattwparas/steel> 的 `docs/src/`）——**页面上没有任何地方标注对应的 `steel-core` 版本号**，`docs/src/SUMMARY.md`/各章节页面都没有版本字段，无法确认查阅时的 book 是否与本项目锁定的 `0.8.2` 完全同步；本次核对是拿 book 的说法逐条在 `0.8.2` 上实跑，跑不通的都在下面标注，没发现跑不通的地方按"未见不一致"处理，不代表两者百分之百同版本。
 - **验证方式**：`crates/ll-script/tests/steel_syntax_reference.rs`——本文档每一段标注「已实测」的代码，都能在该文件里找到同名（或本文档指名）的测试函数，运行的是真实的 `ll_script::ScriptEngine`，不是纸面推演。少数几段因为跨 crate 边界（见下）无法从 `ll-script` 自己的测试里验证，改为指向 `ll-mod`/`ll-script` 源码里已经存在、且持续跑在 CI 里的其他测试。
 
 ## 零、这份文档回答的是什么问题
@@ -88,6 +89,42 @@
 
 返回 `(move north (sum 3 end) (a 1 2 3 b))`。`'north` 是符号字面量（数据，不是"引用了一个叫 north 的函数"——白名单专门跳过 `quote` 包住的部分，不要求 `north` 出现在白名单里，见 `whitelist.rs` 模块文档「为什么跳过 quote 包住的部分」）；`` `(...) `` 里 `,` 展开一个表达式的值、`,@` 展开并拼接一个列表——本项目 `api/intent.rs` 就是用 `(list 'move 'north)` 这种写法让脚本表达"这一回合想干什么"，见下面第三节。
 
+### 7. 数值：大整数、有理数、`exact`/`inexact`（已实测：`数值大整数有理数与exact_inexact转换`）
+
+来源：官方 book《Values > Numbers》一节，列出了 Steel 数值塔的几种字面量形式：`1`（`i64`）、`3.14`（`f64`）、`1/2`（有理数）、`6.02e+23`（`f64`）、`1+2i`（复数）、`9999999999999999999999`（大整数，堆分配）。
+
+```scheme
+(define (probe)
+  (list
+    9999999999999999999999      ; 大整数字面量，超出 i64 范围
+    1/2                          ; 有理数字面量
+    (exact 1.5)                  ; 浮点 → 有理数：3/2
+    (inexact 3/2)                ; 有理数 → 浮点：1.5
+    (exact? 1/2)                 ; #t
+    (numerator 3/4)              ; 3
+    (denominator 3/4)))          ; 4
+```
+
+book 描述的四种形式（大整数、有理数、`exact`/`inexact` 互转、`numerator`/`denominator`）在 `0.8.2` 上全部实测通过。**但这只是脚本内部计算允许的形式**——[ADR 0020](../decisions/0020-scripts-may-use-floats-internally-boundary-type-gated.md) 划定的边界是：脚本内部可以自由用浮点/有理数/大整数做计算，但跨过 `register_fn` 这道墙传给宿主（比如第三节的 `register-skill`）时，宿主侧的 Rust 签名只收整数（`i64`）与 `Milli`（定点小数），不接受浮点或有理数——把一个 `1/2` 或 `1.5` 传给期望整数参数的注册函数，会在 FFI 转换层直接报错，不是脚本语法层面的限制。
+
+### 8. 字符串与符号操作（已实测：`字符串与符号操作`）
+
+来源：官方 book《Values > Strings》与《Values > Symbols》两节列出的函数名。
+
+```scheme
+(define (probe)
+  (list
+    (string-append "a" "b" "c")   ; "abc"
+    (symbol->string 'foo)         ; "foo"
+    (string->symbol "bar")        ; 'bar
+    (concat-symbols 'foo 'bar)    ; 'foobar
+    (starts-with? "hello" "he")   ; #t
+    (ends-with? "hello" "lo")     ; #t
+    (trim "  hi  ")))             ; "hi"
+```
+
+book 还列出了 `string->list`（转字符列表）、`split-whitespace`、`string->upper`/`string->lower`、`trim-start`/`trim-end`、`to-string`（把任意值拼接成字符串表示）——这些没有单独写测试逐个验证，但都属于同一批 `steel/strings`/`steel/symbols` 导出，与已验证的几个函数同源，按白名单"能力边界不是语言子集"的定位，没有理由单独被挡。真要确认某个具体函数名能不能用，仍按第四节末尾给出的方法：写一小段脚本调用它试跑。
+
 ## 二、Lisp 的核心能力（本项目明确保留的）
 
 以下例子对应 `steel_syntax_reference.rs` 的 `二_核心能力` 模块。这一节的每一项都曾经在某个历史版本的白名单实现里被误挡（[ADR 0012](../decisions/0012-steel-capability-surface-verification.md)「追加实测三」记录了三个真实 bug 的修复过程），项目所有者明确裁定「白名单的定位是能力边界，不是语言子集」之后才恢复——这里列出来不是走过场，是因为它们曾经真的坏过。
@@ -152,6 +189,127 @@
 ```
 
 递归本身不受任何特殊限制，尾递归（第一节「五」）只是"更省栈"的一种写法，不是"唯一合法的写法"。
+
+### 5. 宏的嵌套省略号模式（已实测：`宏支持嵌套省略号模式`）
+
+官方 book《Language Reference > Macros》给出的示例只有单层省略号（`(or x y ...)`）。嵌套形式——模式里出现"列表的列表 + 省略号"，比如 `syntax-rules` 里常见的 `([var val] rest ...)`——book 没有专门举例，实测确认同样能正确展开：
+
+```scheme
+(define-syntax my-let*
+  (syntax-rules ()
+    [(my-let* () body ...) (begin body ...)]
+    [(my-let* ([var val] rest ...) body ...)
+     (let ([var val]) (my-let* (rest ...) body ...))]))
+(define (probe) (my-let* ([a 1] [b (+ a 1)] [c (+ b 1)]) (list a b c)))
+```
+
+`(probe)` 返回 `(1 2 3)`——手写了一个 `let*`，验证嵌套省略号模式在递归展开中逐层匹配正确。
+
+### 6. 宏的卫生性（已实测：`宏展开卫生不遮蔽调用点同名变量`）
+
+book 只有一句话带过："These macros allow for a simple extension of Steel"，没有专门讲卫生性保证。用经典探针实测确认 `syntax-rules` 展开是卫生的：
+
+```scheme
+(define-syntax my-or
+  (syntax-rules ()
+    [(my-or a b) (let ([t a]) (if t t b))]))
+(define t 100)
+(define (probe) (my-or #f t))
+```
+
+`(probe)` 返回 `100`。如果宏展开不卫生（朴素文本替换），宏内部引入的 `t` 和调用点传入的 `t`（`b` 参数字面量就是符号 `t`）会被合并成同一个绑定，展开成 `(let ([t #f]) (if t t t))`，三处 `t` 全部指向同一个值 `#f`，结果会是 `#f`；实测拿到 `100`，说明宏内部的 `t` 与调用点的全局变量 `t` 被区分开了，没有发生变量捕获。
+
+### 7. `syntax-case` 过程式宏（已实测：`syntax_case必须写成过程式变换器形式`）——**实测发现，book 举例不够，容易写错**
+
+book 提到 Steel 同时提供 `syntax-rules` 和 `syntax-case` 两套宏系统，但页面上没有给出 `syntax-case` 的调用形状。**实测踩坑记录**：照抄 `syntax-rules` 的声明式形状去写 `syntax-case` 会在运行期报错，不是编译期：
+
+```scheme
+;; 错的写法——照抄 syntax-rules 的形状
+(define-syntax my-thing
+  (syntax-case ()
+    [(my-thing a) (quote (a))]))
+```
+
+`load_source` 拿到 `Err(Runtime("Error: Generic:  syntax-case expects a function", ...))`——这份宏定义本身通过了白名单和编译，但求值到 `syntax-case` 那一步时，它发现自己的参数不是一个"函数"，运行期才报错。
+
+正确形状是**过程式变换器**：`(define-syntax (名字 stx) (syntax-case stx () [模式 #'模板]))`——`stx` 是显式接收的语法对象参数，`#'`/`#\`` 构造语法而不是普通数据，这与 `syntax-rules` 声明式的 `(syntax-rules () [模式 模板])` 形状完全不同。写法照 `steel-core` 自身测试（`steel-core-0.8.2/src/tests/success/syntax_case.scm`）核对过：
+
+```scheme
+(define-syntax (my-thing stx)
+  (syntax-case stx ()
+    [(_ a) #'(list 'got a)]))
+(define (probe) (my-thing 5))
+```
+
+`(probe)` 返回 `(got 5)`。`syntax-case` 能力更强（可以在展开体里嵌任意 Steel 代码做判断，`syntax-rules` 只能做纯模式替换），但调用形状是本文档实测才发现的，book 页面本身没写清楚。
+
+### 8. `match` 模式匹配（已实测：`match模式匹配列表下划线else省略号与guard`、`match不支持直接解构struct实例`）
+
+官方 book 的 `#%private/steel/match` 一节只说了一句"这个模块在 prelude 里，因此运行 Steel 时自动可用"，没有给出任何调用示例。**对照 `steel-core` 0.8.2 自带的 `src/scheme/modules/match.scm` 源码逐条实测**，确认 `match` 支持：
+
+- `(list ...)` 前缀的列表模式
+- 裸符号做绑定变量——**不需要 `?` 前缀**（这一点容易搞混：`steel-core` 仓库里另有一份只用于自身测试、从未随 crate 一起发布的 `matcher.scm`/`match!` 实验版本，那个版本要求变量写成 `?x`；随 `0.8.2` 真正发布并自动进入 prelude 的是 `match.scm`，变量就是普通符号）
+- `_` 通配符（忽略该位置，不绑定）
+- `else` 兜底分支
+- `(list first rest ...)` 用省略号收集剩余元素
+- `#:when` 守卫子句
+
+```scheme
+(define (probe-basic)
+  (match (list 1 2 3)
+    [(list a b c) (+ a b c)]))               ; 6
+
+(define (probe-wildcard x)
+  (match x
+    [(list a _ c) (list 'three a c)]
+    [else 'other]))                          ; (list 1 2 3) => (three 1 3)；5 => 'other
+
+(define (probe-rest)
+  (match (list 1 2 3 4 5)
+    [(list first rest ...) (list first rest)])) ; (1 (2 3 4 5))
+
+(define (probe-guard n)
+  (match n
+    [n #:when (> n 10) 'big]
+    [n 'small]))                             ; 20 => 'big；3 => 'small
+```
+
+**实测发现的限制，book 完全没提**：`match` 不能直接用 `(结构体名 字段...)` 这种形状去匹配并解构一个 `struct` 实例：
+
+```scheme
+(struct Pt (x y))
+(define (probe p)
+  (match p
+    [(Pt a b) (+ a b)]))
+```
+
+`load_source` 直接拿到 `Err(Runtime("Error: Generic:  list pattern must start with \`list - found  Pt", ...))`——这个检查发生在**编译期**（`match` 宏展开时），不需要真的调用 `probe` 就会报错，原因是 `match.scm` 的模式编译器只认"`list` 前缀的列表模式"或"裸符号/通配符/嵌套列表"两类形状，把 `(Pt a b)` 当模式写会被当成"没有 `list` 前缀"直接拒绝。要匹配一个 `struct` 实例，只能退回 `Pt?` 谓词判断 + 手动调用访问器（`Pt-x`/`Pt-y`，第二节「3」），不能指望 `match` 帮忙解构。
+
+### 9. `hashset`（已实测：`hashset构造与包含判断`）
+
+book《Collections > Hash sets》给出构造示例 `(hashset 10 20 30 30 40)`（重复元素自动去重）。实测补一个查询用法：
+
+```scheme
+(define (probe)
+  (define hs (hashset 1 2 3))
+  (list (hashset-contains? hs 2) (hashset-contains? hs 99)))
+```
+
+`(probe)` 返回 `(#t #f)`。`hashset` 与 `hash`（第一节「二」）同样基于哈希数组映射字典树（HAMT）实现，**同样不应该假定遍历顺序稳定**——book 没有为 `hashset` 单独写遍历顺序说明，但实现机制与 `hash` 共享（`crates` 依赖树里都落到 `im`/`im_rc`/`steel_imbl` 的同一套 `GenericHashMap`/`GenericHashSet`），第一节「二」对 `hash` 遍历顺序不稳定的警告同样适用于 `hashset`，脚本侧不要写依赖 `hashset` 遍历顺序的逻辑（C5）。
+
+### 10. 脚本侧捕获运行时错误：`with-handler`（已实测：`with_handler捕获脚本内运行时错误`）——**book 完全没有错误处理章节，这条不来自官方文档**
+
+对官方 book 通篇检索 `with-handler`/`guard`/`raise`/`call-with-exception-handler`，**没有任何一处提及**——book 没有错误处理相关的章节。这条写法是直接读 `steel-core` 0.8.2 的 `src/scheme/stdlib.scm` 源码找到的：`with-handler` 是一个 `define-syntax` 宏，基于 `call-with-exception-handler` 加上 `reset`/`shift` 分界续延实现，随 prelude 自动可用：
+
+```scheme
+(define (probe)
+  (with-handler (lambda (e) 'caught)
+                (car '())))
+```
+
+`(probe)` 返回 `'caught`——`(car '())` 本该产生一个第四节「4」描述的 `ScriptError::Runtime`，但因为被 `with-handler` 包住，错误在脚本内部被处理程序捕获，`call_raw` 从宿主视角看到的是正常返回值 `'caught`，不是 `Err`。**这意味着脚本可以自己决定哪些运行时错误要处理、哪些要继续向上抛给宿主**——`with-handler` 只包住它的表达式体，没被包住的错误照样按第四节「4」的方式冒出来变成 `Err`。
+
+**R7RS 标准的 `guard`/`raise` 语法在 `0.8.2` 里不存在**：全仓库检索 `steel-core` 的 `.scm` 源码，从未找到 `guard` 的定义。脚本里写 `(guard (e (#t ...)) ...)` 会得到 `ParseError("脚本引用了不在白名单内的标识符「guard」", ...)`——**这不是白名单故意拒绝，是"压根不存在"**：白名单的机制是从 prelude 引导后的全局作用域里收集允许的标识符（`compute_allowed_identifiers`），一个从未在任何 `.scm` 源码里 `define`/`define-syntax` 过的名字，天然不会出现在这份收集结果里，报错文案和"故意拉黑的名字"（比如 `eval!`）用的是同一种 `ParseError`，但成因完全不同——如果 `steel-core` 未来版本加入了 `guard`，这个名字会自动出现在允许列表里，不需要本项目做任何改动。
 
 ## 三、本项目提供的 mod API
 
@@ -413,6 +571,7 @@
 | 给自定义效果设置延迟触发（"5 回合后触发某效果"） | 拒绝异步族（`poll!`/`block-on`/`join!` 等），**待办** | 已设计接口形状 `(schedule-after ticks 'handler-name payload)`（具名处理器 + 可序列化 payload，不能是闭包），**尚未实现** |
 | 给技能范围/弹道计算距离、三角函数 | 不适用——不是"被拒绝"，是**这类工具尚未注册给脚本**（`TorusSize::{delta, chebyshev, squared_euclidean}` 在 `ll-core` 里已经实现，但没有任何 `register_fn` 把它们暴露出来） | **待办，且已核实是当前优先级最高的真实缺口**（ADR 0019 B-1）——目前完全没有替代品，需要脚本做距离/朝向判定的 mod 作者会在这里撞墙 |
 | 本地化文本拼接（多语言语序） | 不适用——本项目还没有任何本地化 API 暴露给脚本 | **待办**——`(format-text "key" 'name name 'count n)` 具名参数格式化工具已设计，未实现（ADR 0019 B-2） |
+| R7RS 风格的 `guard`/`raise` 异常处理 | **不适用——不是被拒绝，是"压根不存在"**（第二节「10」已详细核实）：`guard` 从未在 `steel-core` 0.8.2 的任何 `.scm` 源码里定义过，报的 `ParseError` 只是"标识符不在允许列表"的通用文案，不是白名单专门拉黑了它 | `with-handler`（第二节「10」）——语义不完全等价（`with-handler` 是单一处理函数包住单一表达式，不是 R7RS `guard` 那种带多分支条件判断的语法），但能满足"脚本内部捕获运行时错误、不让整份脚本调用直接失败"这个核心需求 |
 
 **如何验证某个具体名字到底能不能用**：白名单是权威判据，不是这张表——若表里没列到的某个 Steel 内置函数不确定能不能用，最快的办法是直接写一小段脚本调用它，跑 `ScriptEngine::load_source`，看是拿到 `Ok` 还是 `ParseError`（白名单拒绝走的正是这条路径，见第五节）。
 
