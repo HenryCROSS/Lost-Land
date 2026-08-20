@@ -256,9 +256,14 @@ fn generate_legacy_shared_atlas(atlas: &AtlasJson, atlas_dir: &Path) {
         .map(|entry| (entry.name.as_str(), entry.rect))
         .collect();
     let (canvas_width, canvas_height) = canvas_size(&entries);
+    // 96×96：比合并资产 VFS 前的 96×72 多出一整行（y 72..96），装新增
+    // 的 4 张走路过渡帧（`hero_walk_2..5`，每张 16×24，见
+    // `assets/atlas/placeholder.json`）——这四张只在遗留共享画布这条
+    // 路径里需要摆坐标，松散贴图路径（`generate_loose_sprites`）不关心
+    // `rect.x`/`rect.y`，各自的独立画布互不影响。
     assert_eq!(
         (canvas_width, canvas_height),
-        (96, 72),
+        (96, 96),
         "画布尺寸与已知布局不符，placeholder.json 的条目矩形可能被意外改动"
     );
 
@@ -284,8 +289,22 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
     match name {
         "hero_idle_0" => sprite::decorate_hero_idle(image, rect),
         "hero_idle_1" => sprite::decorate_hero_idle_breath(image, rect),
-        "hero_walk_0" => sprite::decorate_hero_walk(image, rect, 2),
-        "hero_walk_1" => sprite::decorate_hero_walk(image, rect, 10),
+        // 六帧行走循环，播放顺序见 `ll_game::animation::player_clips`
+        // 等三处剪辑定义里的 `frames` 列表：
+        // walk_0(接触) -> walk_2(过渡) -> walk_3(过腿) -> walk_1(接触)
+        // -> walk_4(过渡) -> walk_5(过腿) -> 循环回 walk_0。
+        // `foot_dx` 取值 2 → 4 → 7 → 10 → 8 → 5 → （回到 2）沿一条单调
+        // 折返的路径走，相邻两帧位移只有 2~3 像素，比此前两帧一步位移
+        // 8 像素（2 直接跳到 10）更连贯；`passing` 标记脚摆到中线附近
+        // 的两帧（walk_3/walk_5），见 `sprite::decorate_hero_walk` 文档。
+        // walk_0/walk_1 的像素内容与合并前完全一致（数值未改），只是
+        // 现在多了 4 张新的过渡帧穿插在它们之间播放。
+        "hero_walk_0" => sprite::decorate_hero_walk(image, rect, 2, false),
+        "hero_walk_1" => sprite::decorate_hero_walk(image, rect, 10, false),
+        "hero_walk_2" => sprite::decorate_hero_walk(image, rect, 4, false),
+        "hero_walk_3" => sprite::decorate_hero_walk(image, rect, 7, true),
+        "hero_walk_4" => sprite::decorate_hero_walk(image, rect, 8, false),
+        "hero_walk_5" => sprite::decorate_hero_walk(image, rect, 5, true),
         "boss_idle_0" => sprite::decorate_boss(image, rect),
         _ => match terrain::terrain_spec(name) {
             Some(spec) => terrain::decorate_terrain_tile(image, rect, spec),
@@ -358,7 +377,7 @@ mod tests {
     }
 
     #[test]
-    fn 真实图集json解析后能算出已知的96乘72画布() {
+    fn 真实图集json解析后能算出已知的96乘96画布() {
         // 用仓库里真实的 placeholder.json 验证解析与尺寸推导没有脱节——
         // 这条测试会随仓库内容变化，一旦布局被意外改动就会在这里先
         // 炸掉，而不是留到跑生成器时才被 assert_eq! 抓住。
@@ -376,7 +395,7 @@ mod tests {
         let size = canvas_size(&entries);
 
         // Assert
-        assert_eq!(size, (96, 72));
+        assert_eq!(size, (96, 96));
     }
 
     #[test]
@@ -473,5 +492,111 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&out_dir);
+    }
+
+    #[test]
+    fn 连续生成两次松散贴图产出逐位相同的文件() {
+        // 「确定性」是资产 VFS 依赖的前提（见本工具模块文档、
+        // `ll_render::atlas_pack` 模块文档「确定性」一节）：图集内容若
+        // 不确定，将来的资产哈希与测试都会漂。本测试直接对生成出的
+        // PNG/JSON 文件字节比对，而不是只比对内存里的像素缓冲区——
+        // 覆盖到 PNG 编码这一步本身是否确定性的问题。
+        // Arrange：用真实仓库的 placeholder.json，覆盖全部条目而不是
+        // 挑一个，六帧新增的行走过渡帧也在其中。
+        let json_text = std::fs::read_to_string(atlas_dir().join("placeholder.json"))
+            .expect("仓库应自带 placeholder.json");
+        let atlas: AtlasJson = serde_json::from_str(&json_text).expect("应是合法 JSON");
+        let first_dir = std::env::temp_dir().join(format!(
+            "ll-artgen-determinism-first-{}",
+            std::process::id()
+        ));
+        let second_dir = std::env::temp_dir().join(format!(
+            "ll-artgen-determinism-second-{}",
+            std::process::id()
+        ));
+
+        // Act：各自独立生成一遍，互不复用任何缓存或中间状态。
+        generate_loose_sprites(&atlas, &first_dir);
+        generate_loose_sprites(&atlas, &second_dir);
+
+        // Assert：manifest 与每张贴图的文件字节逐一相同。
+        for entry in &atlas.entries {
+            let file_name = format!("{}.png", entry.name);
+            let first_bytes =
+                std::fs::read(first_dir.join(&file_name)).expect("第一次生成应写出该文件");
+            let second_bytes =
+                std::fs::read(second_dir.join(&file_name)).expect("第二次生成应写出该文件");
+            assert_eq!(first_bytes, second_bytes, "{file_name} 两次生成的字节不同");
+        }
+        let first_manifest = std::fs::read(first_dir.join("manifest.json")).expect("应已写出");
+        let second_manifest = std::fs::read(second_dir.join("manifest.json")).expect("应已写出");
+        assert_eq!(first_manifest, second_manifest);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&first_dir);
+        let _ = std::fs::remove_dir_all(&second_dir);
+    }
+
+    /// 六帧行走循环的播放顺序，与三处消费方（`ll_game::animation::player_clips`、
+    /// `p1_acceptance`、`p5_coordinate_acceptance` 的 `walk_clip`）保持
+    /// 一致：接触 → 过渡 → 过腿 → 接触 → 过渡 → 过腿 → 循环回接触。
+    const WALK_CYCLE_ORDER: [&str; 6] = [
+        "hero_walk_0",
+        "hero_walk_2",
+        "hero_walk_3",
+        "hero_walk_1",
+        "hero_walk_4",
+        "hero_walk_5",
+    ];
+
+    /// 统计两张同尺寸图片有多少像素不同——相邻帧像素差异的度量单位，
+    /// 与项目所有者实测「待机两帧差 8/384」「行走两帧差 32/384」
+    /// 「行走对待机差 48/384」用的是同一种量法，方便直接对照。
+    fn count_differing_pixels(a: &RgbaImage, b: &RgbaImage) -> usize {
+        assert_eq!(a.dimensions(), b.dimensions(), "只应比较同尺寸的两帧");
+        a.pixels().zip(b.pixels()).filter(|(p, q)| p != q).count()
+    }
+
+    #[test]
+    fn 六帧行走循环相邻帧像素差异全部小于两帧方案的直接互跳() {
+        // 合并前只有两张走姿贴图，直接互跳的差异是 32/384（见
+        // `animation.rs`/`sprite.rs` 模块文档引用的项目所有者实测
+        // 数字）。本测试断言扩成六帧后，循环里**每一对相邻帧**
+        // （含首尾循环回去那一对）的差异都严格小于 32——即六帧方案
+        // 里没有任何一步比原来两帧方案的那一次硬切更突兀；同时差异必须
+        // 大于 0，确保六帧不是复制粘贴出来的重复贴图。
+        // Arrange
+        const HERO_RECT: EntryRect = EntryRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 24,
+        };
+        let frames: Vec<RgbaImage> = WALK_CYCLE_ORDER
+            .iter()
+            .map(|&name| {
+                let mut image = RgbaImage::new(HERO_RECT.width, HERO_RECT.height);
+                draw_entry(&mut image, name, HERO_RECT);
+                image
+            })
+            .collect();
+
+        // Act & Assert：逐对相邻帧（含循环回第一帧的那一对）比较。
+        for i in 0..frames.len() {
+            let next = (i + 1) % frames.len();
+            let diff = count_differing_pixels(&frames[i], &frames[next]);
+            assert!(
+                diff > 0,
+                "{} 与 {} 应有可见差异，不应是同一张图",
+                WALK_CYCLE_ORDER[i],
+                WALK_CYCLE_ORDER[next]
+            );
+            assert!(
+                diff < 32,
+                "{} 与 {} 差异 {diff} 像素，应小于两帧方案直接互跳的 32 像素基准",
+                WALK_CYCLE_ORDER[i],
+                WALK_CYCLE_ORDER[next]
+            );
+        }
     }
 }

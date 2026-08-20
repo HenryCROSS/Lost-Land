@@ -49,6 +49,54 @@
       }
     },
     {
+      "name": "hero_walk_2",
+      "file": "hero_walk_2.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_walk_3",
+      "file": "hero_walk_3.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_walk_4",
+      "file": "hero_walk_4.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_walk_5",
+      "file": "hero_walk_5.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
       "name": "boss_idle_0",
       "file": "boss_idle_0.png",
       "pivot": {

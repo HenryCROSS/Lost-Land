@@ -65,7 +65,7 @@ use ll_world::surface_store::SurfaceWindow;
 
 use layout::{
     IDLE_BREATHE_FRAMES_PER_STEP, INTERIOR_VIEW_CENTER, MINIMAP_CELL_PX, MINIMAP_DOWNSAMPLE,
-    STREAM_RADIUS_ZONES, WALK_FRAMES_PER_STEP, effective_sight_radius, effective_tint,
+    STREAM_RADIUS_ZONES, WALK_CYCLE, WALK_FRAMES_PER_STEP, effective_sight_radius, effective_tint,
     minimap_cell_screen_pos, terrain_entry_name,
 };
 use png::save_baseline_png;
@@ -220,16 +220,18 @@ impl Demo {
             "demo world ready"
         );
 
-        // 行走剪辑：走姿 0 -> 立姿 -> 走姿 1 -> 立姿，与
-        // `p1_acceptance::Demo::new` 的 `walk_clip` 逐字同构（同一套
-        // 图集帧，没有理由播放节奏不一样）；用立姿做两个走姿之间的
-        // 过渡帧，避免两张走姿贴图直接互跳显得生硬。
+        // 行走剪辑：播放 WALK_CYCLE 六帧，与 `p1_acceptance::Demo::new`
+        // 的 `walk_clip` 逐字同构（同一套图集帧，没有理由播放节奏或
+        // 顺序不一样）；走姿之间用专门画的过渡帧（挪腿 + 抬脚），不再
+        // 用立姿当过渡帧。
         let walk_clip = Clip {
-            // 只放两张行走帧，**不掺立姿**：立姿当过渡帧会让「按住方向
-            // 键」时出现待机贴图，项目所有者两次实测都报告了这一点。
-            // 他要的是「原地站就是 idle 循环，移动就是 walk 循环」，
-            // 两个循环的帧不该重叠。
-            frames: vec!["hero_walk_0".to_string(), "hero_walk_1".to_string()],
+            // 六帧全是行走姿态，**不掺立姿**：立姿当过渡帧会让「按住
+            // 方向键」时出现待机贴图，项目所有者两次实测都报告了这
+            // 一点；他要的是「原地站就是 idle 循环，移动就是 walk
+            // 循环」，两个循环的帧不该重叠。只放两张接触帧直接互跳又
+            // 显得生硬（差异 32/384，接近行走对待机差异的 48/384）
+            // ——这次补齐 4 张过渡帧，见 `layout::WALK_CYCLE` 文档。
+            frames: WALK_CYCLE.iter().map(|&name| name.to_string()).collect(),
             frames_per_step: WALK_FRAMES_PER_STEP,
             looping: true,
             // 行走状态现在电平驱动（`AnimStateMachine::set_level`，见

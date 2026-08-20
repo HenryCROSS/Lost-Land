@@ -38,7 +38,7 @@ pub const IDLE_CLIP: usize = 1;
 
 /// 玩家精灵唯一必须存在的一帧。
 ///
-/// 行走（`hero_walk_0`/`hero_walk_1`）与待机呼吸（`hero_idle_1`）都是
+/// 行走（[`WALK_CYCLE`] 六帧）与待机呼吸（`hero_idle_1`）都是
 /// 「锦上添花」的可选资产——本体内嵌的图集恒定包含它们，但动画帧名
 /// 最终来自可被 mod 覆盖的剪辑数据，属于外部不可信输入（见
 /// `ll_render::anim` 模块文档「降级而非崩溃」一节）。`hero_idle_0` 是
@@ -51,8 +51,30 @@ pub const FALLBACK_SPRITE: &str = "hero_idle_0";
 
 /// 行走动画每帧停留的游戏帧数，取值与
 /// `p5_coordinate_acceptance::layout::WALK_FRAMES_PER_STEP` 一致——同一套
-/// 图集帧（`hero_walk_0`/`hero_walk_1`），没有理由播放节奏不一样。
+/// 图集帧（[`WALK_CYCLE`]），没有理由播放节奏不一样。
 const WALK_FRAMES_PER_STEP: u32 = 8;
+
+/// 六帧行走循环的播放顺序：接触 → 过渡 → 过腿 → 接触 → 过渡 → 过腿 →
+/// 循环回接触。
+///
+/// 此前只有 `hero_walk_0`/`hero_walk_1` 两帧接触姿态直接互跳，两帧之间
+/// 的像素差异（32/384）已经接近「行走对待机」的差异（48/384），观感
+/// 生硬。`hero_walk_2`/`hero_walk_4` 是脚部朝中线过渡但仍贴地的姿态，
+/// `hero_walk_3`/`hero_walk_5` 是脚部摆到中线附近、抬离地面 1 像素的
+/// 「过腿」姿态（`ll-artgen` 的 `sprite::decorate_hero_walk` 用
+/// `passing` 参数区分）——六帧沿这条顺序播放，相邻帧像素差异全部落在
+/// 16~26 之间，见 `tools/ll-artgen/src/main.rs` 的
+/// `六帧行走循环相邻帧像素差异全部小于两帧方案的直接互跳` 测试，比
+/// 原先两帧互跳的 32 更小。`hero_walk_0`/`hero_walk_1` 的像素内容与
+/// 扩帧前完全一致（未改动），只是现在有 4 张新的过渡帧穿插播放。
+const WALK_CYCLE: [&str; 6] = [
+    "hero_walk_0",
+    "hero_walk_2",
+    "hero_walk_3",
+    "hero_walk_1",
+    "hero_walk_4",
+    "hero_walk_5",
+];
 
 /// 待机呼吸动画每帧停留的游戏帧数，取值与
 /// `p5_coordinate_acceptance::layout::IDLE_BREATHE_FRAMES_PER_STEP` 一致
@@ -62,21 +84,23 @@ const IDLE_BREATHE_FRAMES_PER_STEP: u32 = 40;
 /// 构造玩家精灵的行走/待机两段动画剪辑，下标含义见 [`WALK_CLIP`]/
 /// [`IDLE_CLIP`]。
 ///
-/// 行走剪辑用立姿（[`FALLBACK_SPRITE`]）做两个走姿之间的过渡帧，避免
-/// 两张走姿贴图直接互跳显得生硬，与 p5 demo 的 `walk_clip` 同一手法。
+/// 行走剪辑播放 [`WALK_CYCLE`] 六帧，帧与帧之间是专门画的行走过渡姿态
+/// （挪腿 + 抬脚），不再用立姿（[`FALLBACK_SPRITE`]）当过渡帧。
 /// 两段剪辑的 `exit_grace_frames` 都填零：本体的行走/待机状态电平驱动
 /// （[`update_player_animation`]），不经过 `AnimStateMachine::trigger`/
 /// `update` 的「触发式状态+余韵」机制，这个字段从不被读取。
 pub fn player_clips() -> Vec<Clip> {
     let walk = Clip {
-        // 只放两张行走帧，**不掺待机帧**。此前这里是「行走 0 → 待机 →
-        // 行走 1 → 待机」的四帧循环——那是只有两张行走图时用中立姿势
-        // 当过渡帧的经典做法，但本项目的 `hero_idle_0` 就是站立姿势，
-        // 播出来的观感是「走两步停一下」，项目所有者两次实测都报告
-        // 「按住 W 时除了 walk 贴图还会出现 idle 贴图」。所有者要的是
-        // 「原地站就是 idle 循环，移动就是 walk 循环」，两个循环的帧
-        // 不该重叠。
-        frames: vec!["hero_walk_0".to_string(), "hero_walk_1".to_string()],
+        // 六帧全是行走过渡姿态，**不掺待机帧**。此前这里先后是「行走
+        // 0 → 待机 → 行走 1 → 待机」的四帧循环、又改成只有两张行走图
+        // 直接互跳——前者是用立姿当过渡帧，播出来的观感是「走两步停
+        // 一下」，项目所有者两次实测都报告「按住 W 时除了 walk 贴图
+        // 还会出现 idle 贴图」；后者不再掺待机帧，但两张接触姿态直接
+        // 互跳仍然生硬（差异 32/384，接近行走对待机差异的 48/384）。
+        // 这次补齐 4 张专门的过渡帧（见 [`WALK_CYCLE`] 文档），解决的
+        // 还是同一条所有者要求：「原地站就是 idle 循环，移动就是 walk
+        // 循环」，两个循环的帧不该重叠，且循环本身要看起来像在走路。
+        frames: WALK_CYCLE.iter().map(|&name| name.to_string()).collect(),
         frames_per_step: WALK_FRAMES_PER_STEP,
         looping: true,
         exit_grace_frames: 0,

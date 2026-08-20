@@ -26,6 +26,30 @@
             "footprint": { "width": 1, "height": 1 }
         },
         {
+            "name": "hero_walk_2",
+            "rect": { "x": 0, "y": 72, "width": 16, "height": 24 },
+            "pivot": { "x": 8, "y": 24 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "hero_walk_3",
+            "rect": { "x": 16, "y": 72, "width": 16, "height": 24 },
+            "pivot": { "x": 8, "y": 24 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "hero_walk_4",
+            "rect": { "x": 32, "y": 72, "width": 16, "height": 24 },
+            "pivot": { "x": 8, "y": 24 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "hero_walk_5",
+            "rect": { "x": 48, "y": 72, "width": 16, "height": 24 },
+            "pivot": { "x": 8, "y": 24 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
             "name": "boss_idle_0",
             "rect": { "x": 16, "y": 0, "width": 32, "height": 48 },
             "pivot": { "x": 16, "y": 48 },
