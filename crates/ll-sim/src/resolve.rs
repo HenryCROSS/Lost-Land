@@ -385,7 +385,12 @@ fn resolve_wait(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 ///   `ll_world::terrain` 模块文档「`opens_into`」一节：这正是本次迁移
 ///   撞见并修掉的一处 API 洞，mod 现在可以给自己的地形也声明同样的
 ///   行为。
-/// - 目的地完全不可通行（墙、窗等）：不产生任何效果，这一步作废。
+/// - 目的地完全不可通行（墙、窗等）：**不产生 `Effect::MoveTo`，但仍
+///   产生 `Effect::ScheduleNext`**——项目所有者决策：撞墙本身也是一次
+///   真实的行动尝试（伸手推了一下、发现推不开），应当消耗时间，只是
+///   位置不变；耗时按 [`BASE_ACTION_COST`] 计费，不查地形的 `move_cost`
+///   （那是「走完整段距离」的代价，撞墙这一步根本没有走完，用它定价
+///   不成立，见 [`resolve_wait`] 同样按基准代价计费的理由）。
 /// - 目的地可通行：产生移动效果，行动耗时按该地形的分级 `move_cost`
 ///   计算——浅水、山地这类「过得去但更慢」的地形因此耗时更长；若移动的
 ///   是玩家自己，额外追加一条 [`Effect::MarkExplored`]（见其文档），
@@ -416,9 +421,12 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
     // resolve 必须是纯函数（C1），不能触发 SurfaceStore 的按需生成——
     // 见 WorldState::terrain_at 文档「resolve 只读、加载收窄到……」。
     // 目的地所属区块尚未常驻时（真正的邻域缓冲维护接线是设计文档
-    // 任务 14 的范围，本次迁移之后正常游玩路径下应恒已常驻），保守地
-    // 视为不可通行——与撞墙同一种「这一步作废」结果，不产生任何效果，
-    // 不是让整个结算 panic。
+    // 任务 14 的范围，本次迁移之后正常游玩路径下应恒已常驻），这是防御
+    // 性兜底而非玩家能在正常游玩中触发的情形，保守地不产生任何效果、
+    // 也不消耗时间——不是让整个结算 panic。**与下方撞墙分支不同**：
+    // 撞墙是「查得到地形、确认过不去」的确定结果，值得消耗一次行动；
+    // 这里根本查不到地形，无法判断这一步「本该」耗时多久，静默作废
+    // 更安全。
     let Some(terrain) = world.terrain_at(dest) else {
         return Vec::new();
     };
@@ -439,7 +447,13 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
     }
 
     if terrain.blocks_move(&world.terrain_table) {
-        return Vec::new();
+        // 撞墙仍消耗时间——见本函数文档「目的地完全不可通行」一节。
+        // 位置不变（不产生 `Effect::MoveTo`），只推进时间轴。
+        let cost = action_cost(BASE_ACTION_COST, speed);
+        return vec![Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        }];
     }
 
     let cost = action_cost(terrain.move_cost(&world.terrain_table), speed);
@@ -516,28 +530,39 @@ fn resolve_attack(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<
     effects
 }
 
-/// 开启某处的门：目的地不是一格「撞入即开」的地形时，这一步作废、不
-/// 产生任何效果——与 [`resolve_move`] 撞墙时的处理一致，都是「动作在
-/// 这个世界里无意义，静默作废」而不是报错。见 [`resolve_move`] 文档
-/// 「`opens_into`」一节：这里同样查表，不再恒等比较某个硬编码地形 ID。
+/// 开启某处的门：目的地不是一格「撞入即开」的地形时，位置与地形都不
+/// 变，但仍消耗一次行动的时间——与 [`resolve_move`] 撞墙时的处理是
+/// 同一类判断（都是「查得到目标、确认这个动作在此处不成立」的确定
+/// 结果，值得消耗一次行动，而不是像目标区块未常驻那样彻底放弃判断）,
+/// 见 [`resolve_move`] 文档「目的地完全不可通行」一节；这里同样查表，
+/// 不再恒等比较某个硬编码地形 ID，见其「`opens_into`」一节。
+///
+/// 目的地所属区块尚未常驻（`world.terrain_at` 落空）是另一种情形，
+/// 与 [`resolve_move`] 对应分支同一条纪律：无法判断这一步「本该」耗时
+/// 多久，静默作废、不消耗时间。
 fn resolve_open_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
     let door_pos = world.size.wrap(pos.0, pos.1);
-    // 同 resolve_move：只读查询，未常驻时视为「这一步无意义」，不
-    // panic、不触发生成——见其文档。
+    // 同 resolve_move：只读查询，未常驻时无法判断耗时，静默作废、不
+    // panic、不触发生成、不消耗时间——见本函数文档。
     let Some(terrain) = world.terrain_at(door_pos) else {
         return Vec::new();
     };
-    let Some(open_kind) = terrain.opens_into(&world.terrain_table) else {
-        return Vec::new();
-    };
-
     let cost = action_cost(
         BASE_ACTION_COST,
         effective_speed_from_dexterity(agent.stats.dexterity),
     );
+    let Some(open_kind) = terrain.opens_into(&world.terrain_table) else {
+        // 目标不是（或已经不是）一扇能开的门——仍消耗时间,见本函数
+        // 文档。位置与地形都不变,只产出排期效果。
+        return vec![Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        }];
+    };
+
     vec![
         Effect::SetTerrain {
             pos: door_pos,
@@ -926,6 +951,9 @@ mod tests {
 
     #[test]
     fn 移动到不可通行地形不产生移动效果() {
+        // 项目所有者决策：撞墙仍要消耗时间（见 resolve_move 文档「目的地
+        // 完全不可通行」一节），本用例只锁定「不产生 MoveTo」这一件事
+        // ——时间是否推进、位置是否不变分别由下面两条测试独立断言。
         // Arrange
         let (mut world, terrain_ids) = test_world();
         let actor = spawn_agent(&mut world);
@@ -941,7 +969,68 @@ mod tests {
         let effects = resolve(&world, &intent);
 
         // Assert
-        assert!(effects.is_empty());
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::MoveTo { .. }))
+        );
+    }
+
+    #[test]
+    fn 撞墙仍产生排期效果推进行动时间() {
+        // 撞墙本身是一次真实的行动尝试（伸手推了一下、发现推不开），
+        // 应当消耗时间——这是本次缺陷交接记录明确记录的项目所有者决策。
+        // Arrange
+        let (mut world, terrain_ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        world
+            .terrain
+            .set_terrain(east_of_spawn(&world), terrain_ids.wall_stone);
+        let intent = Intent::Move {
+            actor,
+            dir: Direction::East,
+        };
+
+        // Act
+        let effects = resolve(&world, &intent);
+
+        // Assert
+        assert!(
+            effects.iter().any(
+                |effect| matches!(effect, Effect::ScheduleNext { actor: a, .. } if *a == actor)
+            )
+        );
+    }
+
+    #[test]
+    fn 撞墙结算后应用效果位置不变() {
+        // 与上一条互补：确认「消耗时间」没有连带着悄悄移动位置——两件
+        // 事分别断言,不合并进同一个测试。
+        // Arrange
+        let (mut world, terrain_ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        world
+            .terrain
+            .set_terrain(east_of_spawn(&world), terrain_ids.wall_stone);
+        let pos_before = world
+            .actors
+            .get(actor)
+            .expect("刚 spawn 的实体必然存在")
+            .pos;
+        let intent = Intent::Move {
+            actor,
+            dir: Direction::East,
+        };
+
+        // Act
+        let effects = resolve(&world, &intent);
+        for effect in &effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert
+        let pos_after = world.actors.get(actor).expect("apply 不会移除实体").pos;
+        assert_eq!(pos_after, pos_before);
     }
 
     #[test]
@@ -1082,6 +1171,58 @@ mod tests {
             effect,
             Effect::SetTerrain { kind, .. } if *kind == hatch_open
         )));
+    }
+
+    #[test]
+    fn 对着不能开的地形使用开门意图仍消耗行动时间() {
+        // 与 resolve_move 撞墙同一条决策：`Intent::OpenDoor` 对着一格
+        // 并非「撞入即开」的地形（这里直接用普通草地）时，仍是一次
+        // 「查得到目标、确认这个动作在此处不成立」的确定结果，应当
+        // 消耗时间——见 resolve_open_door 文档。
+        // Arrange
+        let (mut world, terrain_ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let target = east_of_spawn(&world);
+        world.terrain.set_terrain(target, terrain_ids.grass);
+        let intent = Intent::OpenDoor {
+            actor,
+            pos: (target.x(), target.y()),
+        };
+
+        // Act
+        let effects = resolve(&world, &intent);
+
+        // Assert
+        assert!(
+            effects.iter().any(
+                |effect| matches!(effect, Effect::ScheduleNext { actor: a, .. } if *a == actor)
+            )
+        );
+    }
+
+    #[test]
+    fn 对着不能开的地形使用开门意图不改写地形() {
+        // 与上一条互补：确认「消耗时间」没有连带着悄悄把目标地形改写成
+        // 别的东西——两件事分别断言，不合并进同一个测试。
+        // Arrange
+        let (mut world, terrain_ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let target = east_of_spawn(&world);
+        world.terrain.set_terrain(target, terrain_ids.grass);
+        let intent = Intent::OpenDoor {
+            actor,
+            pos: (target.x(), target.y()),
+        };
+
+        // Act
+        let effects = resolve(&world, &intent);
+
+        // Assert
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::SetTerrain { .. }))
+        );
     }
 
     #[test]
