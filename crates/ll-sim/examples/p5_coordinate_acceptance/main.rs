@@ -225,12 +225,11 @@ impl Demo {
         // 图集帧，没有理由播放节奏不一样）；用立姿做两个走姿之间的
         // 过渡帧，避免两张走姿贴图直接互跳显得生硬。
         let walk_clip = Clip {
-            frames: vec![
-                "hero_walk_0".to_string(),
-                FALLBACK_SPRITE.to_string(),
-                "hero_walk_1".to_string(),
-                FALLBACK_SPRITE.to_string(),
-            ],
+            // 只放两张行走帧，**不掺立姿**：立姿当过渡帧会让「按住方向
+            // 键」时出现待机贴图，项目所有者两次实测都报告了这一点。
+            // 他要的是「原地站就是 idle 循环，移动就是 walk 循环」，
+            // 两个循环的帧不该重叠。
+            frames: vec!["hero_walk_0".to_string(), "hero_walk_1".to_string()],
             frames_per_step: WALK_FRAMES_PER_STEP,
             looping: true,
             // 行走状态现在电平驱动（`AnimStateMachine::set_level`，见

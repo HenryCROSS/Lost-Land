@@ -69,12 +69,14 @@ const IDLE_BREATHE_FRAMES_PER_STEP: u32 = 40;
 /// `update` 的「触发式状态+余韵」机制，这个字段从不被读取。
 pub fn player_clips() -> Vec<Clip> {
     let walk = Clip {
-        frames: vec![
-            "hero_walk_0".to_string(),
-            FALLBACK_SPRITE.to_string(),
-            "hero_walk_1".to_string(),
-            FALLBACK_SPRITE.to_string(),
-        ],
+        // 只放两张行走帧，**不掺待机帧**。此前这里是「行走 0 → 待机 →
+        // 行走 1 → 待机」的四帧循环——那是只有两张行走图时用中立姿势
+        // 当过渡帧的经典做法，但本项目的 `hero_idle_0` 就是站立姿势，
+        // 播出来的观感是「走两步停一下」，项目所有者两次实测都报告
+        // 「按住 W 时除了 walk 贴图还会出现 idle 贴图」。所有者要的是
+        // 「原地站就是 idle 循环，移动就是 walk 循环」，两个循环的帧
+        // 不该重叠。
+        frames: vec!["hero_walk_0".to_string(), "hero_walk_1".to_string()],
         frames_per_step: WALK_FRAMES_PER_STEP,
         looping: true,
         exit_grace_frames: 0,
@@ -112,6 +114,31 @@ pub fn update_player_animation(anim: &mut AnimStateMachine, input: &InputState, 
 
 #[cfg(test)]
 mod tests {
+    /// 行走循环里混进待机帧会让「按住方向键」时出现站立贴图——这个
+    /// 缺陷在 p1/p5/`ll-game` 三处被逐字抄了三遍，项目所有者两次实测
+    /// 都报告了，而当时没有任何测试能发现它：既有测试只断言状态机停在
+    /// 行走剪辑，从不检查那个剪辑**里装的是什么帧**。本测试补上这一层。
+    #[test]
+    fn 行走剪辑与待机剪辑的帧不重叠() {
+        // Arrange
+        let clips = super::player_clips();
+
+        // Act
+        let walk: std::collections::BTreeSet<&str> = clips[super::WALK_CLIP]
+            .frames
+            .iter()
+            .map(String::as_str)
+            .collect();
+        let idle: std::collections::BTreeSet<&str> = clips[super::IDLE_CLIP]
+            .frames
+            .iter()
+            .map(String::as_str)
+            .collect();
+
+        // Assert
+        assert!(walk.intersection(&idle).next().is_none());
+    }
+
     use ll_platform::input::GameKey;
     use ll_render::anim::{Playback, current_sprite_name};
     use ll_render::atlas::AtlasMetadata;
