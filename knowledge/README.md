@@ -69,6 +69,7 @@
 - [坐标系与空间模型](design/coordinate-system-and-layers.md) — 区块与两种坐标分辨率、`Space`（`Surface`/`Interior`）统一接口、地表连续流式加载、离散空间稀疏存储；**已完整落地**（P5 坐标系重写批次）
 - [脚本层数据句柄与批量查询](design/script-entity-handles-and-batch-queries.md) — 脚本操作 Rust 侧数据的句柄语义、防伪造论证、批量查询原语清单
 - [脚本状态存储](design/script-state-storage.md) — 脚本跨帧/跨存档持久化状态的受认可通道，`ScriptValue` 值类型系统、命名空间隔离、有界配额；**已落地**（P5 批次 D）
+- [Steel 语法参考](design/steel-script-reference.md) — 在迷途大陆的 mod 沙箱里能写什么：基础语法、宏/闭包/结构体、六个 `register-*` 内容注册函数的真实参数顺序、被拒绝能力的替代品对照表、常见错误；每段示例对应 `crates/ll-script/tests/steel_syntax_reference.rs` 里的一个实测
 - [职业 / 技能树 / 副职 / 任务系统](design/class-skill-quest-system.md) — `ClassDef`/`SkillDef`/`SubclassDef`/`QuestDef` 四个内容注册表；`ClassDef`/`SkillDef` 已落地（P5-B）
 - [三轴战斗结算](design/combat-three-axis.md) — 瞄准形状 × 伤害系别 × 投送方式三条正交轴，取代按武器类型分类实现的直觉方案
 - [增益与通用触发器](design/buffs-and-triggers.md) — `ActiveEffect` 惰性到期判定、`TriggerDef`/`TriggerResponse` 通用触发器框架、堆叠策略三选一
