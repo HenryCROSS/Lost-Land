@@ -246,9 +246,10 @@ fn best_effort_mod_id(manifest_path: &Path) -> NamespacedId {
 
 /// `topo_sort` 失败时整批加载中止——把失败原因分摊到 `parsed` 里的每
 /// 一个清单：直接牵涉的（重复命名空间的两个命名空间、缺失依赖的
-/// 依赖方、环路上的成员）拿到具体原因，其余的拿到一条「因为别的 mod
-/// 导致整批中止」的说明。不让任何一个已经成功解析的候选从报告里
-/// 悄悄消失——它们确实没能加载成功，报告应当如实反映。
+/// 依赖方、环路上的成员、版本不兼容的依赖方与依赖目标）拿到具体原因，
+/// 其余的拿到一条「因为别的 mod 导致整批中止」的说明。不让任何一个
+/// 已经成功解析的候选从报告里悄悄消失——它们确实没能加载成功，报告
+/// 应当如实反映。
 fn attribute_topo_error(report: &mut LoadReport, parsed: &[ModManifest], err: &ModError) {
     let culprits: Vec<&NamespacedId> = match err {
         ModError::DuplicateNamespace(id) => parsed
@@ -258,7 +259,11 @@ fn attribute_topo_error(report: &mut LoadReport, parsed: &[ModManifest], err: &M
             .collect(),
         ModError::MissingDependency(missing) => parsed
             .iter()
-            .filter(|m| m.dependencies.iter().any(|dep| dep == missing.namespace()))
+            .filter(|m| {
+                m.dependencies
+                    .iter()
+                    .any(|dep| dep.namespace == missing.namespace())
+            })
             .map(|m| &m.id)
             .collect(),
         ModError::CyclicDependency(cycle) => parsed
@@ -266,7 +271,14 @@ fn attribute_topo_error(report: &mut LoadReport, parsed: &[ModManifest], err: &M
             .filter(|m| cycle.contains(&m.id))
             .map(|m| &m.id)
             .collect(),
-        // topo_sort 只会产出以上三种错误，其余两个变体（Io/ParseError）
+        // 版本不兼容牵涉两方：声明了约束的依赖方，与版本对不上的依赖
+        // 目标——两者都拿到具体原因，不只是"发起方"一个人的事。
+        ModError::IncompatibleDependencyVersion(detail) => parsed
+            .iter()
+            .filter(|m| m.id == detail.dependent || m.id == detail.dependency)
+            .map(|m| &m.id)
+            .collect(),
+        // topo_sort 只会产出以上四种错误，其余两个变体（Io/ParseError）
         // 只可能来自 parse_manifest，这里防御性地不牵连任何清单。
         ModError::Io(_) | ModError::ParseError(_) => Vec::new(),
     };
@@ -569,6 +581,50 @@ mod tests {
         match &report.entries[0].1 {
             LoadStatus::Failed(err) => assert_eq!(err.stage, LoadStage::Topo),
             other => panic!("期望 Topo 阶段的 Failed，实际 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 依赖版本不兼容导致整批加载在topo阶段中止() {
+        // Arrange：needs_new_provider 要求 provider >=2.0，但 provider
+        // 实际只有 1.0.0——整批中止，provider 自己虽然没有声明任何
+        // 依赖，也应该出现在报告里且被标记为 Failed（见
+        // attribute_topo_error 文档「整批中止」一节）。
+        let root = tempdir();
+        write_mod(
+            root.path(),
+            "needs_new_provider",
+            r#"
+            namespace = "needs_new_provider"
+            version = "0.1.0"
+
+            [dependencies]
+            provider = ">=2.0"
+            "#,
+            None,
+        );
+        write_mod(
+            root.path(),
+            "provider",
+            r#"
+            namespace = "provider"
+            version = "1.0.0"
+            "#,
+            None,
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert：两个 mod 都没能加载成功，都归入 Topo 阶段的 Failed。
+        assert_eq!(report.entries.len(), 2);
+        for (_, status) in &report.entries {
+            match status {
+                LoadStatus::Failed(err) => assert_eq!(err.stage, LoadStage::Topo),
+                other => panic!("期望 Topo 阶段的 Failed，实际 {other:?}"),
+            }
         }
     }
 

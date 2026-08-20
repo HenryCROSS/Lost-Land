@@ -125,3 +125,4 @@ pub mod subclass;
 #[cfg(test)]
 mod test_support;
 pub mod topo;
+pub mod version_constraint;
