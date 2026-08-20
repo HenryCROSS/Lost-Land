@@ -24,12 +24,13 @@
 //! 序列化——世界状态的时间只认确定性的 `Tick`，`Instant` 在不同机器、
 //! 不同进程之间不可比较，混进去会破坏重放的确定性。
 
+use ll_core::ident::NamespacedId;
 use std::time::{Duration, Instant};
 
 /// 游戏语义的动作键。
 ///
 /// 上层只认这些，不认物理按键。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub enum GameKey {
     /// 向上移动或菜单上移。
     Up,
@@ -96,6 +97,32 @@ impl GameKey {
             self,
             GameKey::Up | GameKey::Down | GameKey::Left | GameKey::Right | GameKey::Wait
         )
+    }
+
+    /// 这个动作在设置界面等 UI 场景下的显示名，走 i18n 而不是硬编码
+    /// 中文/英文字符串——与 `ll-mod` 的 `ClassDef`/`SubclassDef` 用
+    /// `display_name_key: NamespacedId` 表达显示名同一个做法（见
+    /// `crates/ll-mod/src/class.rs`）、与 `crate::window::WindowConfig`
+    /// 的 `title_key` 同一个理由：显示字符串是用户可见内容，必须能被
+    /// 翻译，硬编码任何一种语言都会在做本地化时被迫回头重构。
+    ///
+    /// 调用 `expect`：这里的每个键都是编译期写死的合法字面量，解析
+    /// 失败只可能是本方法自身写错了命名空间格式，属于开发期就该
+    /// 发现的缺陷，不是需要向调用方传播的运行期错误。
+    pub fn display_name_key(self) -> NamespacedId {
+        let raw = match self {
+            GameKey::Up => "lostland:keybind.action.up",
+            GameKey::Down => "lostland:keybind.action.down",
+            GameKey::Left => "lostland:keybind.action.left",
+            GameKey::Right => "lostland:keybind.action.right",
+            GameKey::Confirm => "lostland:keybind.action.confirm",
+            GameKey::Cancel => "lostland:keybind.action.cancel",
+            GameKey::Menu => "lostland:keybind.action.menu",
+            GameKey::Map => "lostland:keybind.action.map",
+            GameKey::Wait => "lostland:keybind.action.wait",
+            GameKey::Screenshot => "lostland:keybind.action.screenshot",
+        };
+        NamespacedId::parse(raw).expect("硬编码的 i18n 键必然是合法的命名空间标识符")
     }
 }
 
@@ -440,6 +467,37 @@ mod tests {
 
         // Assert
         assert!(seen.iter().all(|slot| *slot));
+    }
+
+    #[test]
+    fn 每个动作键的显示名i18n键各不相同() {
+        // 设置界面要能分别展示每个动作的名字；若两个动作共用同一个
+        // i18n 键，翻译文件里就没法给它们分配不同的显示文本。
+        // Arrange
+        let keys: Vec<NamespacedId> = ALL_KEYS.iter().map(|key| key.display_name_key()).collect();
+
+        // Act
+        let unique_count = {
+            let mut sorted = keys.clone();
+            sorted.sort();
+            sorted.dedup();
+            sorted.len()
+        };
+
+        // Assert
+        assert_eq!(unique_count, keys.len());
+    }
+
+    #[test]
+    fn 动作键的显示名走命名空间标识而不是裸字符串() {
+        // 显示名键必须能解析成 NamespacedId（"命名空间:路径"），这就是
+        // 「走 i18n」在类型层面的保证——裸的中文/英文字面量不具备这个
+        // 形状，无法通过 NamespacedId::parse。
+        // Arrange & Act
+        let key = GameKey::Up.display_name_key();
+
+        // Assert
+        assert_eq!(key.namespace(), "lostland");
     }
 
     #[test]

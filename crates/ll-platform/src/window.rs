@@ -12,13 +12,14 @@
 //! 边缘出现宽窄不一的锯齿，是像素美术最刺眼的瑕疵。
 
 use crate::PlatformError;
-use crate::input::{GameKey, InputState, RepeatConfig};
+use crate::input::{InputState, RepeatConfig};
+use crate::keybind::{InputContext, KeyBindings, Modifiers};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
 use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::keyboard::{KeyCode, PhysicalKey};
+use winit::keyboard::PhysicalKey;
 use winit::window::WindowId;
 
 // 向上层重新导出窗口层的类型。
@@ -46,6 +47,13 @@ pub struct WindowConfig {
     pub repeat: RepeatConfig,
     /// 目标帧率，用于算出 [`WindowConfig::frame_budget`] 节流主循环。
     pub target_fps: u32,
+    /// 物理按键 → 抽象动作的绑定表。
+    ///
+    /// 默认取 [`KeyBindings::default_bindings`]（第一档静态声明，见
+    /// `crate::keybind` 模块文档）。上层若想跑一份自定义绑定（例如从
+    /// 未来的配置文件加载出来的结果），在这里替换即可——事件循环本身
+    /// 不关心这张表从哪来，只调用 [`KeyBindings::resolve`]。
+    pub bindings: KeyBindings,
 }
 
 impl Default for WindowConfig {
@@ -59,6 +67,7 @@ impl Default for WindowConfig {
             repeat: RepeatConfig::default(),
             // 60 是像素游戏的通行帧率，且与常见显示器刷新率对齐。
             target_fps: 60,
+            bindings: KeyBindings::default_bindings(),
         }
     }
 }
@@ -141,37 +150,17 @@ pub trait AppHandler {
     fn on_exit(&mut self);
 }
 
-/// 把物理按键映射为游戏动作。
-///
-/// 同时支持方向键与 WASD：传统 Roguelike 玩家的手部姿势偏好差异很大，
-/// 强制只用方向键会劝退相当一部分人。完整的按键重绑定在 P7 交付
-/// （[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后，原 P6 顺移
-/// 为 P7），此处先给出可用的默认布局。
-///
-/// 截图（冻结视觉回归基准）放在 F2 而非某个字母键：功能键区不与移动、
-/// 确认这些高频键争抢位置，误触会覆写基准文件的代价也就不会发生。
-pub fn map_physical_key(key: KeyCode) -> Option<GameKey> {
-    let action = match key {
-        KeyCode::ArrowUp | KeyCode::KeyW => GameKey::Up,
-        KeyCode::ArrowDown | KeyCode::KeyS => GameKey::Down,
-        KeyCode::ArrowLeft | KeyCode::KeyA => GameKey::Left,
-        KeyCode::ArrowRight | KeyCode::KeyD => GameKey::Right,
-        KeyCode::Enter | KeyCode::Space => GameKey::Confirm,
-        KeyCode::Escape => GameKey::Cancel,
-        KeyCode::Tab => GameKey::Menu,
-        KeyCode::KeyM => GameKey::Map,
-        KeyCode::Period => GameKey::Wait,
-        KeyCode::F2 => GameKey::Screenshot,
-        _ => return None,
-    };
-    Some(action)
-}
-
 /// 事件循环的内部状态。
 struct App<H: AppHandler> {
     config: WindowConfig,
     window: Option<Arc<Window>>,
     input: InputState,
+    /// 当前按住的修饰键状态，随 `WindowEvent::ModifiersChanged` 更新。
+    ///
+    /// winit 把修饰键变化与按键事件报告为两条独立的 `WindowEvent`，
+    /// 必须自己攒住最近一次的状态，供 `KeyboardInput` 事件到达时查询
+    /// ——`KeyboardInput` 本身不随附修饰键信息。
+    modifiers: Modifiers,
     handler: H,
     frame: FrameId,
     last_frame_at: Option<Instant>,
@@ -230,11 +219,18 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
             WindowEvent::CloseRequested => {
                 self.shutdown(event_loop);
             }
+            WindowEvent::ModifiersChanged(modifiers) => {
+                self.modifiers = Modifiers::from(modifiers.state());
+            }
             WindowEvent::KeyboardInput { event, .. } => {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
                 };
-                let Some(action) = map_physical_key(code) else {
+                let Some(action) =
+                    self.config
+                        .bindings
+                        .resolve(code, self.modifiers, InputContext::Gameplay)
+                else {
                     return;
                 };
                 match event.state {
@@ -308,6 +304,7 @@ pub fn run<H: AppHandler + 'static>(config: WindowConfig, handler: H) -> Result<
         config,
         window: None,
         input: InputState::new(),
+        modifiers: Modifiers::NONE,
         handler,
         frame: FrameId::default(),
         last_frame_at: None,
@@ -322,81 +319,36 @@ pub fn run<H: AppHandler + 'static>(config: WindowConfig, handler: H) -> Result<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::input::GameKey;
     use winit::keyboard::KeyCode;
 
     #[test]
-    fn 方向键映射到对应动作() {
+    fn 默认窗口配置的绑定表能解析方向键() {
+        // 物理按键到动作的映射此前是本模块一段硬编码 match（
+        // `map_physical_key`），现在改由 `crate::keybind::KeyBindings`
+        // 承担——这里锁住 `WindowConfig::default()` 确实把默认绑定表
+        // 接了进来，而不是留一个空表。
         // Arrange
-        let physical = KeyCode::ArrowUp;
+        let config = WindowConfig::default();
 
         // Act
-        let action = map_physical_key(physical);
+        let action =
+            config
+                .bindings
+                .resolve(KeyCode::ArrowUp, Modifiers::NONE, InputContext::Gameplay);
 
         // Assert
         assert_eq!(action, Some(GameKey::Up));
     }
 
     #[test]
-    fn 字母键位也映射到方向以适应手部姿势偏好() {
-        // 传统 Roguelike 玩家习惯 WASD，强制只用方向键会劝退一部分人。
-        // Arrange
-        let physical = KeyCode::KeyW;
-
-        // Act
-        let action = map_physical_key(physical);
-
-        // Assert
-        assert_eq!(action, Some(GameKey::Up));
-    }
-
-    #[test]
-    fn 功能键映射到截图动作() {
-        // 冻结视觉回归基准的入口固定在 F2：功能键区不与移动、确认这些
-        // 高频键争抢位置，误触的代价（覆写基准文件）也就不会发生。
-        // Arrange
-        let physical = KeyCode::F2;
-
-        // Act
-        let action = map_physical_key(physical);
-
-        // Assert
-        assert_eq!(action, Some(GameKey::Screenshot));
-    }
-
-    #[test]
-    fn 未绑定的键返回空值() {
-        // Arrange
-        let physical = KeyCode::F13;
-
-        // Act
-        let action = map_physical_key(physical);
-
-        // Assert
-        assert_eq!(action, None);
-    }
-
-    #[test]
-    fn 默认配置使用规格规定的逻辑分辨率() {
+    fn 默认窗口配置使用规格规定的逻辑分辨率() {
         // 规格 §2 决策 6：逻辑分辨率固定 640×360。
         // Arrange & Act
         let config = WindowConfig::default();
 
         // Assert
         assert_eq!((config.logical_width, config.logical_height), (640, 360));
-    }
-
-    #[test]
-    fn 取消键映射到退出动作() {
-        // demo 与后续的「退出游戏」菜单都依赖这条映射，
-        // 它曾经是全项目唯一映射却无人消费的死映射。
-        // Arrange
-        let physical = KeyCode::Escape;
-
-        // Act
-        let action = map_physical_key(physical);
-
-        // Assert
-        assert_eq!(action, Some(GameKey::Cancel));
     }
 
     #[test]

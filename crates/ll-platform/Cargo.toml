@@ -20,17 +20,30 @@ ll-core = { path = "../ll-core" }
 # raw-window-handle）。
 #
 # 取舍：显式列 feature 意味着 winit 0.30.x 后续若新增默认 feature，不会自动获得。
+#
+# 额外开启 "serde"：键位绑定表（crate::keybind::KeyBindings）需要把
+# KeyCode 存进可序列化的绑定数据里——按键重绑定要能落盘成配置，见
+# crate::keybind 模块文档「持久化」一节。
 winit = { version = "0.30", default-features = false, features = [
     "rwh_06",
     "x11",
     "wayland",
     "wayland-dlopen",
     "wayland-csd-adwaita-notitle",
+    "serde",
 ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 rayon = "1.12"
 crossbeam-channel = "0.5"
+# 键位绑定表需要完整可序列化，为将来的配置文件持久化打底（见
+# crate::keybind 模块文档）——与 ll-world 依赖 serde 的理由同类，都是
+# 「这个 crate 确实需要它，不值得再用可选 feature 包一层」。
+serde = { version = "1", features = ["derive"] }
 
 [dev-dependencies]
 proptest.workspace = true
+# 仅用于绑定表的序列化往返测试：验证 KeyBindings 经过一种真实的 serde
+# 格式完整往返，而不只是停留在 derive 能编译，与 ll-world/ll-core 的
+# 同类测试同一个理由。
+serde_json = "1"

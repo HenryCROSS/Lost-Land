@@ -11,7 +11,9 @@
 //!
 //! # 完整调用链
 //!
-//! 按键 → [`ll_platform::input::InputState`] → [`ll_sim::intent::intent_from_input`]
+//! 物理按键 → [`ll_platform::keybind::KeyBindings::resolve`]（这一步把
+//! 「玩家按了 W」变成「玩家想向北移动」，见该模块文档）→
+//! [`ll_platform::input::InputState`] → [`ll_sim::intent::intent_from_input`]
 //! （移动/等待）或本文件 [`Demo::try_interact`]（进出 `Interior`，
 //! `intent_from_input` 按设计不产出这个变体，见其文档）→
 //! [`ll_sim::resolve::resolve`] → [`ll_sim::effect::Effect`] →
@@ -38,6 +40,7 @@ mod world;
 use std::sync::Arc;
 
 use ll_platform::input::{GameKey, InputState};
+use ll_platform::keybind::KeyBindings;
 use ll_platform::logging::init_logging;
 use ll_platform::window::{
     AppHandler, FrameId, FrameOutcome, PhysicalSize, Window, WindowConfig, run,
@@ -787,8 +790,24 @@ fn main() {
          entrance tile, F2 saves baseline PNG, Esc quits."
     );
 
+    // 显式构造键位绑定表而不是隐式借用 `WindowConfig::default()` 里的
+    // 同一份默认值：这是「抽象键位绑定层真的驱动了这个 demo 的输入」
+    // 这条验收要求的落点——本 demo 从这里开始就在使用
+    // `ll_platform::keybind::KeyBindings`，而不是此前 `window.rs` 内部
+    // 一段无人能看见、也无法替换的硬编码 `match`。
+    let bindings = KeyBindings::default_bindings();
+    tracing::info!(
+        binding_count = bindings.bindings().len(),
+        "键位绑定表已加载，demo 的物理按键解析全程走这张表"
+    );
+
+    let config = WindowConfig {
+        bindings,
+        ..WindowConfig::default()
+    };
+
     let demo = Demo::new();
-    if let Err(error) = run(WindowConfig::default(), demo) {
+    if let Err(error) = run(config, demo) {
         tracing::error!(%error, "event loop terminated with error");
     }
 }

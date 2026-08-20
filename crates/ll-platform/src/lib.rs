@@ -6,6 +6,7 @@
 
 pub mod input;
 pub mod jobs;
+pub mod keybind;
 pub mod logging;
 pub mod window;
 
