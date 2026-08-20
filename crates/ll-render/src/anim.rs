@@ -25,6 +25,18 @@ use crate::atlas::AtlasMetadata;
 /// 两套独立数据（剪辑描述「按什么顺序播放」，图集描述「这一帧长什么
 /// 样」），用名字间接引用让两者可以独立由不同的 mod 资产提供，互不
 /// 耦合。
+///
+/// # 派生 `Clone`/`PartialEq`/`Eq`
+///
+/// 这是 ADR 0016/0017 第一档「声明静态值」的数据形状本身——`ll-mod`
+/// 的 `ClipTable`（把 `register-animation-clip`/本体注册的剪辑声明
+/// 物化成 [`AnimStateMachine`]/[`Playback`] 直接消费的平铺表，见其
+/// 模块文档）需要按 [`ll_core::ident::ContentIndex`] 下标存一份、按
+/// 下标取一份，取值时要么克隆出所有权、要么原样搬进返回的 `Vec`，两条
+/// 路都需要 `Clone`；测试断言「这段剪辑长这样」需要 `PartialEq`。三个
+/// 字段（`Vec<String>`/`u32`/`bool`）本身都已经是这两个 trait 的
+/// 自然持有者，派生不引入任何新的运行期开销。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Clip {
     /// 依序播放的图集条目名。
     pub frames: Vec<String>,
@@ -50,6 +62,67 @@ pub struct Clip {
     /// 段；原地循环动画（模块文档 2.1）与直接单独使用 [`Playback`]
     /// 的场景都不读它，取值随意（通常填零）。
     pub exit_grace_frames: u32,
+}
+
+/// 本体英雄角色行走动画的权威帧序列——见 [`base_hero_clips`] 文档
+/// 「为什么这份内容放在机制 crate 里」一节。
+pub const HERO_WALK_FRAMES: [&str; 2] = ["hero_walk_0", "hero_walk_1"];
+/// 本体英雄角色行走动画每帧停留的游戏帧数。
+pub const HERO_WALK_FRAMES_PER_STEP: u32 = 8;
+/// 本体英雄角色待机呼吸动画的权威帧序列，见 [`base_hero_clips`]。
+pub const HERO_IDLE_FRAMES: [&str; 2] = ["hero_idle_0", "hero_idle_1"];
+/// 本体英雄角色待机呼吸动画每帧停留的游戏帧数——远大于行走的步长，
+/// 呼吸本就该比迈步慢得多。
+pub const HERO_IDLE_FRAMES_PER_STEP: u32 = 40;
+
+/// 构造本体英雄角色的行走/待机两段剪辑：`(行走, 待机)`。
+///
+/// # 为什么这份内容放在机制 crate 里，而不是内容注册表（`ll-mod`）
+///
+/// 这份具体的帧名/节奏本质上是**内容**，不是机制——本函数存在的
+/// 唯一理由是消掉一处历史 bug：同一份「行走剪辑不该掺待机帧」的
+/// 数据此前在 `ll-render` 的 `p1_acceptance`、`ll-sim` 的
+/// `p5_coordinate_acceptance`、`ll-game` 三处被逐字抄了三遍，抄三遍
+/// 就错三遍（项目所有者两次实测报告过同一个缺陷）。真正面向 mod 开放、
+/// 玩家实际读到的权威定义是 `ll_mod::base_clip::register_base_clips`
+/// ——它才是「本体即 Mod」这条注册路径上的入口，向脚本层暴露、参与
+/// 装载报告、与 mod 自定义剪辑共用同一个 [`ll_core::ident::ContentIndex`]
+/// 号段。
+///
+/// 但 `p1_acceptance`（本 crate 自己的验收 demo）与
+/// `p5_coordinate_acceptance`（`ll-sim` 的验收 demo，经既有
+/// `dev-dependency` 引用本 crate）两处历史遗留调用点**架构上无法依赖
+/// `ll-mod`**——依赖顺序是 `ll-render`/`ll-world` ← `ll-sim` ←
+/// `ll-script` ← `ll-mod`（规格 §5），`ll-mod` 反过来已经是 `ll-sim`
+/// 的生产依赖方（`crates/ll-mod/Cargo.toml`：P5-B 批次为
+/// `SkillCatalog`/`QuestCatalog` trait 实现新增），`ll-sim` 再依赖
+/// `ll-mod` 会直接成环。三个消费方里有两个够不着 `ll-mod`，若把这份
+/// 数据的唯一定义放在 `ll-mod`，就注定至少要在 `ll-render`/`ll-sim`
+/// 里再抄一份——等于什么也没解决。`ll-render` 是三者共同能触达的
+/// 最底层 crate（`p1` 是本 crate 自己的例子；`p5` 已经把本 crate列为
+/// `dev-dependency`；`ll_mod::base_clip::register_base_clips` 允许
+/// 依赖 `ll-render`，因为依赖方向上 `ll-mod` 本就排在 `ll-render` 的
+/// 下游），因此本函数是能让三处调用点、外加 `ll-mod` 的本体注册路径
+/// 共用同一份 Rust 字面量的唯一落点——不是说机制/内容不该分离，是在
+/// 「三个消费方里有两个够不着内容注册表」这条真实的 Cargo 依赖约束下，
+/// 唯一能把重复次数从三次收敛到一次的选择。
+pub fn base_hero_clips() -> (Clip, Clip) {
+    let walk = Clip {
+        frames: HERO_WALK_FRAMES.iter().map(|s| s.to_string()).collect(),
+        frames_per_step: HERO_WALK_FRAMES_PER_STEP,
+        looping: true,
+        // 本体的行走/待机状态电平驱动（`AnimStateMachine::set_level`），
+        // 不经过 `trigger`/`update` 的「触发+余韵」机制，这个字段在
+        // 这两段剪辑上从不被读取。
+        exit_grace_frames: 0,
+    };
+    let idle = Clip {
+        frames: HERO_IDLE_FRAMES.iter().map(|s| s.to_string()).collect(),
+        frames_per_step: HERO_IDLE_FRAMES_PER_STEP,
+        looping: true,
+        exit_grace_frames: 0,
+    };
+    (walk, idle)
 }
 
 /// 一次具体的动画播放：播放哪段剪辑、从哪一帧开始。
@@ -579,6 +652,31 @@ mod tests {
 
         // Act & Assert
         assert_eq!(playback.current_frame(&clips, FrameId(999)), Some("w0"));
+    }
+
+    #[test]
+    fn 本体行走剪辑与待机剪辑的帧不重叠() {
+        // 行走循环里混进待机帧会让「按住方向键」时出现站立贴图——这个
+        // 缺陷曾在 p1_acceptance/p5_coordinate_acceptance/ll-game 三处
+        // 被逐字抄了三遍（项目所有者两次实测报告），三处现在都改成调用
+        // `base_hero_clips`，本测试锁住这唯一一份数据不再犯同一个错。
+        //
+        // 这条约束**只对这两段本体剪辑成立**，不是 `ClipTable::define`/
+        // `register-animation-clip` 的通用校验规则——mod 可以自由定义
+        // 帧有重叠的剪辑（例如刻意复用某几帧表达"半个循环"），见
+        // `ll-mod::clip` 模块文档「行走/待机不重叠是断言，不是校验」
+        // 一节。
+        // Arrange
+        let (walk, idle) = super::base_hero_clips();
+
+        // Act
+        let walk_frames: std::collections::BTreeSet<&str> =
+            walk.frames.iter().map(String::as_str).collect();
+        let idle_frames: std::collections::BTreeSet<&str> =
+            idle.frames.iter().map(String::as_str).collect();
+
+        // Assert
+        assert!(walk_frames.intersection(&idle_frames).next().is_none());
     }
 
     #[test]
