@@ -50,6 +50,14 @@ tracing = "0.1"
 # 依赖 `ll-sim`（更下游）——`ll-sim` 不认识、也不依赖 `ll-mod`，
 # `cargo tree -p ll-world | grep ll-sim` 这条既有验证不受影响。
 ll-sim = { path = "../ll-sim" }
+# 动画剪辑接线批次新增：`crate::clip`/`crate::base_clip` 需要
+# `ll_render::anim::Clip`（剪辑数据本身的类型）与
+# `ll_render::anim::base_hero_clips`（本体英雄行走/待机剪辑的唯一权威
+# 定义，见其文档「为什么这份内容放在机制 crate 里」）。依赖方向
+# `ll-render` ← `ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod`（规格
+# §5）本就允许——`ll-render` 只依赖 `ll-core`/`ll-platform`，不认识、
+# 也不依赖 `ll-mod`，不构成环。
+ll-render = { path = "../ll-render" }
 
 [dev-dependencies]
 proptest.workspace = true

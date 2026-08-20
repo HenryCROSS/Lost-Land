@@ -63,21 +63,6 @@ use std::sync::Arc;
 /// 这样巡逻路径必然穿过它的脚下，才能演示遮挡关系的切换。
 const HERO_PATROL_X: i32 = BOSS_TILE.0;
 
-/// 行走动画每帧停留的游戏帧数。
-const WALK_FRAMES_PER_STEP: u32 = 8;
-
-/// 六帧行走循环的播放顺序，与 `ll_game::animation::WALK_CYCLE` 逐字
-/// 同构（同一套图集帧，没有理由播放节奏或顺序不一样）：接触 → 过渡 →
-/// 过腿 → 接触 → 过渡 → 过腿 → 循环回接触。
-const WALK_CYCLE: [&str; 6] = [
-    "hero_walk_0",
-    "hero_walk_2",
-    "hero_walk_3",
-    "hero_walk_1",
-    "hero_walk_4",
-    "hero_walk_5",
-];
-
 /// 相机初始注视点，取世界近似中心，一开局就能看见 boss 与 hero。
 const INITIAL_CAMERA: (i32, i32) = (24, 16);
 
@@ -201,23 +186,17 @@ impl Demo {
             world,
         };
 
-        // 六帧循环（见 WALK_CYCLE 文档）拼出一个连续的行走动画：走姿
-        // 之间用专门画的过渡帧（挪腿 + 抬脚），不再用立姿当过渡帧。
-        let walk_clip = vec![Clip {
-            // 六帧全是行走姿态，**不掺立姿**：立姿当过渡帧会让「按住
-            // 方向键」时出现待机贴图，项目所有者两次实测都报告了这
-            // 一点；只放两张行走帧直接互跳又显得生硬（差异 32/384，
-            // 接近行走对待机差异的 48/384）——这次补齐 4 张过渡帧。
-            frames: WALK_CYCLE.iter().map(|&name| name.to_string()).collect(),
-            frames_per_step: WALK_FRAMES_PER_STEP,
-            looping: true,
-            // 本 demo 里巡逻单位恒定循环播放这段行走剪辑，没有待机态
-            // 切换（见本文件模块文档「二、一个 16×24 的普通单位……
-            // 循环播放三帧行走动画」），不经
-            // `ll_render::anim::AnimStateMachine` 管理，因此这个字段
-            // 在这里从不被读取，填零即可。
-            exit_grace_frames: 0,
-        }];
+        // 行走剪辑不再由本 demo 自己抄一份字面量——唯一权威定义是
+        // `ll_render::anim::base_hero_clips`（见其文档「起因」：这份
+        // 数据此前在本文件、`p5_coordinate_acceptance`、`ll-game` 三处
+        // 被逐字抄了三遍，抄三遍就能错三遍——现在是六帧的过渡帧循环，
+        // 见 `HERO_WALK_FRAMES` 文档）。本 demo 里巡逻单位恒定循环播放
+        // 这段行走剪辑，没有待机态切换（见本文件模块文档「二、一个
+        // 16×24 的普通单位……循环播放三帧行走动画」），不经
+        // `ll_render::anim::AnimStateMachine` 管理，`exit_grace_frames`
+        // 在这里从不被读取。
+        let (walk_clip, _idle_clip) = ll_render::anim::base_hero_clips();
+        let walk_clip = vec![walk_clip];
         let walk_playback = Playback::new(0, FrameId(0));
 
         Demo {

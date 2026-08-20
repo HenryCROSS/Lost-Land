@@ -11,6 +11,7 @@ use ll_core::ident::{Interner, NamespacedId};
 use ll_core::torus::{TorusPos, TorusSize};
 use ll_mod::base_terrain::register_base_terrain;
 use ll_mod::class::ClassTable;
+use ll_mod::clip::ClipTable;
 use ll_mod::load_report::LoadReport;
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
@@ -86,15 +87,16 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut registry = Registry::new();
     let (terrain_ids, mut table) =
         register_base_terrain(&mut registry).expect("本体地形声明表内部一致，注册恒不失败");
-    // P4 demo 本身只演示地形（P5 才引入职业/技能/副职/任务/种族），但
-    // `load_all` 的签名要求六张表一起传——见 `ll_mod::pipeline::
-    // GameplayTables` 文档：五张非地形表在这里只是陪跑的空表，不影响
+    // P4 demo 本身只演示地形（P5 才引入职业/技能/副职/任务/种族/动画
+    // 剪辑），但 `load_all` 的签名要求七张表一起传——见 `ll_mod::pipeline::
+    // GameplayTables` 文档：六张非地形表在这里只是陪跑的空表，不影响
     // demo 的验收范围。
     let mut class = ClassTable::new();
     let mut skill = SkillTable::new();
     let mut subclass = SubclassTable::new();
     let mut quest = QuestTable::new();
     let mut race = RaceTable::new();
+    let mut clip = ClipTable::new();
 
     let mut report = load_all(
         Path::new(PRIMARY_MODS_ROOT),
@@ -106,6 +108,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             subclass: &mut subclass,
             quest: &mut quest,
             race: &mut race,
+            clip: &mut clip,
         },
     );
     let missing_dependency_report = load_all(
@@ -118,6 +121,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             subclass: &mut subclass,
             quest: &mut quest,
             race: &mut race,
+            clip: &mut clip,
         },
     );
     let duplicate_namespace_report = load_all(
@@ -130,6 +134,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             subclass: &mut subclass,
             quest: &mut quest,
             race: &mut race,
+            clip: &mut clip,
         },
     );
     report.entries.extend(missing_dependency_report.entries);

@@ -64,9 +64,8 @@ use ll_world::space::Space;
 use ll_world::surface_store::SurfaceWindow;
 
 use layout::{
-    IDLE_BREATHE_FRAMES_PER_STEP, INTERIOR_VIEW_CENTER, MINIMAP_CELL_PX, MINIMAP_DOWNSAMPLE,
-    STREAM_RADIUS_ZONES, WALK_CYCLE, WALK_FRAMES_PER_STEP, effective_sight_radius, effective_tint,
-    minimap_cell_screen_pos, terrain_entry_name,
+    INTERIOR_VIEW_CENTER, MINIMAP_CELL_PX, MINIMAP_DOWNSAMPLE, STREAM_RADIUS_ZONES,
+    effective_sight_radius, effective_tint, minimap_cell_screen_pos, terrain_entry_name,
 };
 use png::save_baseline_png;
 use world::{DemoWorld, build_demo_world};
@@ -220,41 +219,17 @@ impl Demo {
             "demo world ready"
         );
 
-        // 行走剪辑：播放 WALK_CYCLE 六帧，与 `p1_acceptance::Demo::new`
-        // 的 `walk_clip` 逐字同构（同一套图集帧，没有理由播放节奏或
-        // 顺序不一样）；走姿之间用专门画的过渡帧（挪腿 + 抬脚），不再
-        // 用立姿当过渡帧。
-        let walk_clip = Clip {
-            // 六帧全是行走姿态，**不掺立姿**：立姿当过渡帧会让「按住
-            // 方向键」时出现待机贴图，项目所有者两次实测都报告了这
-            // 一点；他要的是「原地站就是 idle 循环，移动就是 walk
-            // 循环」，两个循环的帧不该重叠。只放两张接触帧直接互跳又
-            // 显得生硬（差异 32/384，接近行走对待机差异的 48/384）
-            // ——这次补齐 4 张过渡帧，见 `layout::WALK_CYCLE` 文档。
-            frames: WALK_CYCLE.iter().map(|&name| name.to_string()).collect(),
-            frames_per_step: WALK_FRAMES_PER_STEP,
-            looping: true,
-            // 行走状态现在电平驱动（`AnimStateMachine::set_level`，见
-            // `Demo::update_player_animation` 文档），不再经过
-            // `trigger`/`update` 的「触发+余韵」机制，这个字段从不被
-            // 读取——与 idle_clip 一样填零。旧值
-            // `layout::WALK_EXIT_GRACE_FRAMES`（12 帧）已随这次改动
-            // 一并删除：它是为覆盖按键自动重复脉冲间隙而存在的常量，
-            // 那个问题本身随着换成按住状态驱动而不复存在，继续留着
-            // 是死配置（项目政策：过时的东西删掉，git 保留历史）。
-            exit_grace_frames: 0,
-        };
-        // 待机呼吸剪辑：只在待机图与「吸气」图之间缓慢往返，幅度克制
-        // （见 `assets/atlas/placeholder.json` 里 `hero_idle_1` 与
-        // `hero_idle_0` 的差异，只挪了 1 像素）。
-        let idle_clip = Clip {
-            frames: vec![FALLBACK_SPRITE.to_string(), "hero_idle_1".to_string()],
-            frames_per_step: IDLE_BREATHE_FRAMES_PER_STEP,
-            looping: true,
-            // 待机是 `AnimStateMachine` 的默认状态，从不「过期」，这个
-            // 字段在这里从不被读取（见 `Clip::exit_grace_frames` 文档）。
-            exit_grace_frames: 0,
-        };
+        // 行走/待机两段剪辑不再由本 demo 自己抄一份字面量——唯一权威
+        // 定义是 `ll_render::anim::base_hero_clips`（见其文档
+        // 「起因」：这份数据此前在本文件、`p1_acceptance`、`ll-game`
+        // 三处被逐字抄了三遍，抄三遍就能错三遍，项目所有者两次实测
+        // 报告过同一个「行走剪辑掺了待机帧」的缺陷——现在是六帧的
+        // 过渡帧循环，见 `ll_render::anim::HERO_WALK_FRAMES` 文档）。
+        // 行走状态电平驱动（`AnimStateMachine::set_level`，见
+        // `Demo::update_player_animation` 文档），不经过
+        // `trigger`/`update` 的「触发+余韵」机制，两段剪辑的
+        // `exit_grace_frames` 在这里都从不被读取。
+        let (walk_clip, idle_clip) = ll_render::anim::base_hero_clips();
 
         Demo {
             demo_world,
@@ -846,7 +821,7 @@ mod animation_fallback_tests {
         let metadata = embedded_metadata();
         let clips = vec![Clip {
             frames: vec!["hero_walk_0".to_string()],
-            frames_per_step: WALK_FRAMES_PER_STEP,
+            frames_per_step: 8, // 测试专用字面量，不再与生产剪辑数据共享常量
             looping: true,
             exit_grace_frames: 0, // 本测试只验证 `Playback` 本身的降级，不涉及状态机
         }];
@@ -866,7 +841,7 @@ mod animation_fallback_tests {
         let metadata = embedded_metadata();
         let clips = vec![Clip {
             frames: vec!["hero_walk_0".to_string()],
-            frames_per_step: WALK_FRAMES_PER_STEP,
+            frames_per_step: 8, // 测试专用字面量，不再与生产剪辑数据共享常量
             looping: true,
             exit_grace_frames: 0, // 本测试只验证 `Playback` 本身的降级，不涉及状态机
         }];

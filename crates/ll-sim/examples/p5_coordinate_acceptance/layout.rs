@@ -97,30 +97,6 @@ pub(crate) const MINIMAP_CELL_PX: i32 = 12;
 /// 小地图左上角与离屏目标左上角的留白（像素）。
 pub(crate) const MINIMAP_MARGIN_PX: i32 = 4;
 
-/// 行走动画每帧停留的游戏帧数，取值与 `p1_acceptance::WALK_FRAMES_PER_STEP`
-/// 一致——两个 demo 用的是同一套图集帧（[`WALK_CYCLE`]），没有理由
-/// 播放节奏不一样。
-pub(crate) const WALK_FRAMES_PER_STEP: u32 = 8;
-
-/// 六帧行走循环的播放顺序，与 `p1_acceptance::WALK_CYCLE`、
-/// `ll_game::animation::WALK_CYCLE` 逐字同构：接触 → 过渡 → 过腿 →
-/// 接触 → 过渡 → 过腿 → 循环回接触。详细论证（为什么是六帧、每相邻
-/// 两帧像素差异多大）见 `ll_game::animation` 模块的 `WALK_CYCLE` 文档，
-/// 三处只维护同构的常量数据，不重复论证。
-pub(crate) const WALK_CYCLE: [&str; 6] = [
-    "hero_walk_0",
-    "hero_walk_2",
-    "hero_walk_3",
-    "hero_walk_1",
-    "hero_walk_4",
-    "hero_walk_5",
-];
-
-/// 待机呼吸动画每帧停留的游戏帧数，取值远大于行走的步长——呼吸本就该
-/// 比迈步慢得多，步长太接近会让「呼吸」看起来像原地抖动，而不是缓慢
-/// 起伏（项目所有者明确要求「不要做成明显的抖动」）。
-pub(crate) const IDLE_BREATHE_FRAMES_PER_STEP: u32 = 40;
-
 /// 把地形种类映射到图集条目名——覆盖本 demo 用到的地表自然地形，
 /// 以及 Interior 楼层用到的地板/墙（复用既有图集条目，本 demo 不新增
 /// 美术资产：石地板借用 `terrain_dirt`、石墙借用 `terrain_mountain`，

@@ -15,11 +15,11 @@
 //!
 //! # 加载顺序
 //!
-//! 先注册本体内容（地形 → 种族 → 空间层属性 → 占位内容），再跑
-//! [`ll_mod::pipeline::load_all`] 装载 `mods_root` 下的 mod——
+//! 先注册本体内容（地形 → 种族 → 空间层属性 → 占位内容 → 动画剪辑），
+//! 再跑 [`ll_mod::pipeline::load_all`] 装载 `mods_root` 下的 mod——
 //! 顺序理由见 [`ll_mod::pipeline`] 模块文档「本体内容不经过这条
 //! 管线」一节：mod 内容 intern 进同一个 `Registry`，必须排在本体注册
-//! 之后才能保证号段不冲突。四类本体注册彼此之间顺序不影响正确性
+//! 之后才能保证号段不冲突。五类本体注册彼此之间顺序不影响正确性
 //! （各自对应不同的命名空间前缀，见 `ll_mod::base_race` 模块文档
 //! 「调用顺序与 register_base_placeholder_content 无关」一节），这里
 //! 固定一个顺序只是为了让日志读起来是线性的。
@@ -27,11 +27,13 @@
 use std::path::Path;
 
 use ll_mod::asset_vfs::{self, AssetVfs};
+use ll_mod::base_clip::register_base_clips;
 use ll_mod::base_placeholder::register_base_placeholder_content;
 use ll_mod::base_race::register_base_races;
 use ll_mod::base_space_profile::register_base_space_profiles;
 use ll_mod::base_terrain::register_base_terrain;
 use ll_mod::class::ClassTable;
+use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::discover::discover_mods;
 use ll_mod::load_report::{LoadReport, LoadStatus};
 use ll_mod::manifest::{ModManifest, parse_manifest};
@@ -79,6 +81,12 @@ pub struct LoadedContent {
     pub subclass_table: SubclassTable,
     /// 任务表。
     pub quest_table: QuestTable,
+    /// 本体动画剪辑索引缓存（行走/待机）。
+    pub clip_ids: BaseClipIds,
+    /// 动画剪辑表——纯表现层内容，不进 `WorldState`、不参与
+    /// `WorldState::hash()`（ADR 0020 甲区，见 `ll_mod::clip` 模块
+    /// 文档），只被渲染层（`crate::animation`/`crate::app`）读取。
+    pub clip_table: ClipTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -124,6 +132,8 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     let (space_ids, space_table) = register_base_space_profiles(&mut registry)
         .expect("本体空间层属性声明表内部一致，注册恒不失败");
     register_base_placeholder_content(&mut registry);
+    let (clip_ids, mut clip_table) =
+        register_base_clips(&mut registry).expect("本体剪辑声明表内部一致，注册恒不失败");
 
     let mut class_table = ClassTable::new();
     let mut skill_table = SkillTable::new();
@@ -140,6 +150,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             subclass: &mut subclass_table,
             quest: &mut quest_table,
             race: &mut race_table,
+            clip: &mut clip_table,
         },
     );
 
@@ -178,6 +189,8 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         skill_table,
         subclass_table,
         quest_table,
+        clip_ids,
+        clip_table,
         manifests,
         script_sources,
         report,
@@ -361,6 +374,35 @@ mod tests {
                 .any(|c| c.as_os_str() == "example_mod"),
             "terrain_dirt 的源文件应指向 example_mod 的覆盖文件，实际是 {}",
             terrain_dirt.source_file.display()
+        );
+    }
+
+    #[test]
+    fn 真实mods目录装载后examplemod的动画剪辑已注册() {
+        // ADR 0018「API 完备性判据要求有真实 mod 脚本为证，不能靠单元
+        // 测试自证」——本测试装载仓库真实的 mods/example_mod/animation.scm
+        // （不是临时构造的测试脚本文本），断言其中的
+        // `register-animation-clip` 调用确实通过完整的
+        // 「发现 → 解析 → 拓扑排序 → 加载脚本 → 注册内容」链路把
+        // `examplemod:slime_squish` 写进了 `clip_table`。
+        // Arrange
+        let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
+
+        // Act
+        let loaded = load_content(&mods_root, &repo_assets_dir());
+
+        // Assert
+        let clip_index = loaded
+            .registry
+            .get(&ll_core::ident::NamespacedId::parse("examplemod:slime_squish").unwrap())
+            .expect("examplemod:slime_squish 应已注册");
+        let clip = loaded
+            .clip_table
+            .get(clip_index)
+            .expect("已注册的剪辑索引应能查回剪辑内容");
+        assert_eq!(
+            clip.frames,
+            vec!["slime_0".to_string(), "slime_1".to_string()]
         );
     }
 }

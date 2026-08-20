@@ -19,7 +19,7 @@ use ll_platform::config::DisplayConfig;
 use ll_platform::config::ScaleFilter;
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::window::{AppHandler, FrameId, FrameOutcome, PhysicalSize, Window};
-use ll_render::anim::{AnimStateMachine, Clip, current_sprite_name};
+use ll_render::anim::{AnimStateMachine, current_sprite_name};
 use ll_render::atlas::{Atlas, AtlasEntry};
 use ll_render::atlas_pack::{SpriteSource, pack_atlas};
 use ll_render::batch::{SpriteBatch, SpriteInstance};
@@ -192,10 +192,13 @@ pub struct Demo {
     /// 但 `resources` 要等窗口就绪才能创建（见该字段文档），因此本
     /// 结构体自己先存一份。
     display: DisplayConfig,
-    /// 玩家精灵的行走/待机两段动画剪辑——下标含义见
-    /// [`animation::WALK_CLIP`]/[`animation::IDLE_CLIP`]，构造见
-    /// [`animation::player_clips`]。
-    clips: Vec<Clip>,
+    /// 玩家行走剪辑在 `content.clip_table` 里的下标——装载期由
+    /// [`ll_mod::base_clip::register_base_clips`] 分配，见
+    /// `LoadedContent::clip_ids`。
+    walk_clip: usize,
+    /// 玩家待机剪辑在 `content.clip_table` 里的下标，理由同
+    /// `walk_clip` 字段文档。
+    idle_clip: usize,
     /// 玩家精灵行走/待机动画状态的生命周期管理：电平驱动
     /// （[`AnimStateMachine::set_level`]），每帧由
     /// [`animation::update_player_animation`] 算出「现在该播放哪个
@@ -226,11 +229,12 @@ impl Demo {
             center: player_pos,
             world: game_world.world.size,
         };
-        let clips = animation::player_clips();
+        let walk_clip = content.clip_ids.hero_walk.get() as usize;
+        let idle_clip = content.clip_ids.hero_idle.get() as usize;
         tracing::info!(
-            clip_count = clips.len(),
-            walk_clip = animation::WALK_CLIP,
-            idle_clip = animation::IDLE_CLIP,
+            clip_count = content.clip_table.as_clips().len(),
+            walk_clip,
+            idle_clip,
             "玩家动画状态机已装载"
         );
         Demo {
@@ -241,8 +245,9 @@ impl Demo {
             save_path,
             character_name,
             display,
-            clips,
-            anim: AnimStateMachine::new(animation::IDLE_CLIP, FrameId(0)),
+            walk_clip,
+            idle_clip,
+            anim: AnimStateMachine::new(idle_clip, FrameId(0)),
             resources: None,
         }
     }
@@ -257,7 +262,13 @@ impl Demo {
     fn advance(&mut self, input: &InputState, frame: FrameId) {
         self.maintain_streaming();
         self.update_zoom(input);
-        animation::update_player_animation(&mut self.anim, input, frame);
+        animation::update_player_animation(
+            &mut self.anim,
+            input,
+            frame,
+            self.walk_clip,
+            self.idle_clip,
+        );
 
         let player = self.game_world.player;
         let intent = intent_from_input(player, input);
@@ -549,7 +560,7 @@ impl AppHandler for Demo {
         // 那已经是资产整体损坏，不再是「可选帧缺失」。
         let sprite_name = current_sprite_name(
             self.anim.playback(),
-            &self.clips,
+            self.content.clip_table.as_clips(),
             frame,
             resources.atlas.metadata(),
             FALLBACK_SPRITE,

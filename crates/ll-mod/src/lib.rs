@@ -56,6 +56,15 @@
 //!   `RaceTable` 里查询恒返回 `None`），见其模块文档。
 //! - [`base_race`] —— 同一个模式在种族上的生产注册入口，照
 //!   [`base_terrain`]。
+//! - [`clip`] —— 动画剪辑注册表（动画剪辑接线批次）：把
+//!   `ll_render::anim::Clip`（此前只能写死在 Rust 里的动画帧序列/节奏/
+//!   循环声明，见其模块文档起因）做成可注册内容，`ClipDef` 与 `class`/
+//!   `race` 同一个理由直接落在本 crate；`exit_grace_frames` 是否暴露给
+//!   脚本的结论见该模块文档。
+//! - [`base_clip`] —— 同一个模式在动画剪辑上的生产注册入口，照
+//!   [`base_terrain`]/[`base_race`]；本体行走/待机两段剪辑的唯一权威
+//!   数据来自 `ll_render::anim::base_hero_clips`（不是本模块自己另抄
+//!   一份，见其文档）。
 //! - [`active_registry`] —— 装载会话内唯一共享的活跃 `Registry`，供
 //!   全部 `register-*` 脚本注册函数在同一次脚本求值窗口内共用（P5-C
 //!   接线批次新增：此前只有 `register-terrain` 一个注册函数，`Registry`
@@ -71,16 +80,18 @@
 //!   [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
 //!   判定为「玩法层」、但此前只有纯 Rust 函数调用能触达、脚本完全够
 //!   不到的四类 + 种族共五类注册 API。
+//! - [`script_clip_api`] —— 同一个模式在动画剪辑上的脚本绑定（动画
+//!   剪辑接线批次）：补上此前完全漏掉的第七类可注册玩法层内容——早先
+//!   的接口审计列出六种，「动画剪辑」当时不在其中。
 //! - [`pipeline`] —— 加载管线：串起发现→解析→拓扑排序→加载脚本→注册
 //!   内容，产出 [`load_report::LoadReport`]（Task 11/12；P5-C 批次扩展
-//!   到同时接线全部六种 `register-*` 函数）。
+//!   到同时接线六种 `register-*` 函数；动画剪辑接线批次扩展到七种）。
 //! - [`load_report`] —— 加载管理界面（`ll-ui`）依赖的数据形状：按 mod
 //!   归类的加载结果、失败阶段、尽力而为的源码位置（Task 11）。
 //! - [`script_behavior_api`] —— 行为树运行期查询 `skill-ready?`（规格
 //!   §10.5 接线批次）：把「这个技能现在能不能用」暴露给脚本，需要
-//!   `Registry` 把字符串 ID 解析成 `ContentIndex`，理由与六个
-//!   `register-*` 内容注册函数相同，但接线方式不同（一次性快照，不是
-//!   活跃指针），见其模块文档。
+//!   `Registry` 把字符串 ID 解析成 `ContentIndex`，理由与内容注册函数
+//!   相同，但接线方式不同（一次性快照，不是活跃指针），见其模块文档。
 //! - [`script_behavior_source`] —— `ll_sim::behavior::BehaviorTreeSource`
 //!   的真实实现：装载行为树脚本、注册全部运行期查询 API、把求值结果
 //!   翻译成 `Intent`，是「AI 真的做出决策」这一环此前缺失的最后一块
@@ -88,21 +99,26 @@
 //!
 //! # 依赖方向
 //!
-//! 规格 §5：`ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod` ← `ll-ui`。
-//! 本 crate 依赖 `ll-core`、`ll-world`（Task 8 新增，理由见
+//! 规格 §5：`ll-render` ← `ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod`
+//! ← `ll-ui`。本 crate 依赖 `ll-core`、`ll-world`（Task 8 新增，理由见
 //! [`base_terrain`] 模块文档）、`ll-script`（Task 11 新增，理由见
-//! [`pipeline`] 模块文档）与 `ll-sim`（P5-B 接线批次新增：
+//! [`pipeline`] 模块文档）、`ll-sim`（P5-B 接线批次新增：
 //! [`skill::SkillTable`]/[`quest::RegisteredQuests`] 需要实现
 //! `ll_sim::skill::SkillCatalog`/`ll_sim::quest::QuestCatalog` 才能真正
-//! 接入 `resolve`，见两个模块的文档），不得被下游任何 crate 反向依赖。
+//! 接入 `resolve`，见两个模块的文档）与 `ll-render`（动画剪辑接线批次
+//! 新增：[`clip`]/[`base_clip`] 需要 `ll_render::anim::Clip`/
+//! `base_hero_clips`，见 [`clip`] 模块文档），不得被下游任何 crate
+//! 反向依赖。
 
 pub mod active_registry;
 pub mod asset_vfs;
+pub mod base_clip;
 pub mod base_placeholder;
 pub mod base_race;
 pub mod base_space_profile;
 pub mod base_terrain;
 pub mod class;
+pub mod clip;
 pub mod discover;
 pub mod load_report;
 pub mod manifest;
@@ -116,6 +132,7 @@ pub mod registry;
 pub mod script_behavior_api;
 pub mod script_behavior_source;
 pub mod script_class_api;
+pub mod script_clip_api;
 pub mod script_quest_api;
 pub mod script_race_api;
 pub mod script_skill_api;
