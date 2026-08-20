@@ -42,7 +42,7 @@ use ll_platform::logging::init_logging;
 use ll_platform::window::{
     AppHandler, FrameId, FrameOutcome, PhysicalSize, Window, WindowConfig, run,
 };
-use ll_render::anim::{Clip, Playback};
+use ll_render::anim::{AnimStateMachine, Clip, Playback};
 use ll_render::atlas::{Atlas, AtlasEntry, AtlasMetadata};
 use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::{BoundedCamera, Camera};
@@ -60,8 +60,8 @@ use ll_world::surface_store::SurfaceWindow;
 
 use layout::{
     IDLE_BREATHE_FRAMES_PER_STEP, INTERIOR_VIEW_CENTER, MINIMAP_CELL_PX, MINIMAP_DOWNSAMPLE,
-    STREAM_RADIUS_ZONES, WALK_FRAMES_PER_STEP, effective_sight_radius, effective_tint,
-    minimap_cell_screen_pos, terrain_entry_name,
+    STREAM_RADIUS_ZONES, WALK_EXIT_GRACE_FRAMES, WALK_FRAMES_PER_STEP, effective_sight_radius,
+    effective_tint, minimap_cell_screen_pos, terrain_entry_name,
 };
 use png::save_baseline_png;
 use world::{DemoWorld, build_demo_world};
@@ -171,18 +171,20 @@ struct Demo {
     /// 立刻重新跟随玩家（玩家的 `pos` 在 Interior 内不变，见
     /// `ll_world::entity::Agent::current_space` 文档）。
     camera: Camera,
-    /// 玩家精灵的两段动画剪辑：下标 [`WALK_CLIP`] 是行走、[`IDLE_CLIP`]
-    /// 是待机呼吸——用 [`ll_render::anim::Playback`] 驱动，不另造一套
-    /// 帧计时（见 `push_player_marker` 文档「为什么不能自己另造一套帧
-    /// 计时」）。
+    /// 玩家精灵的两段（未来可扩展更多）动画剪辑：下标 [`WALK_CLIP`] 是
+    /// 行走、[`IDLE_CLIP`] 是待机呼吸。具体维护哪些剪辑、每种剪辑对应
+    /// 哪个触发式状态由这里（调用方）决定，[`AnimStateMachine`] 本身
+    /// 不关心——将来新增攻击/施法/受击/死亡时，只需要在这个表里再加
+    /// 一段 `Clip`。
     clips: Vec<Clip>,
-    /// 当前播放到哪段剪辑、从哪一帧开始——随「本帧是否有移动意图」在
-    /// [`WALK_CLIP`]/[`IDLE_CLIP`] 间切换，见 [`Demo::update_walk_animation`]。
-    playback: Playback,
-    /// 上一帧是否处于「有移动意图」状态，只用于检测状态**切换**的边沿
-    /// ——切换时才需要重置 `playback` 的起始帧号，见
+    /// 玩家精灵触发式动画状态的生命周期管理：收到移动事件后维持
+    /// [`Clip::exit_grace_frames`]（见 [`layout::WALK_EXIT_GRACE_FRAMES`]）
+    /// 帧，期间即使没有新的移动事件也不回落到待机，见
+    /// [`AnimStateMachine`] 模块文档「要解决的问题」。这正是修复「走
+    /// 一格闪一下」缺陷的落点——此前直接用 `Playback` 绑定「本帧是否
+    /// 有移动意图」，瞬时信号驱动导致状态没有自己的生命周期，见
     /// [`Demo::update_walk_animation`] 文档。
-    is_moving: bool,
+    anim: AnimStateMachine,
     resources: Option<GpuResources>,
 }
 
@@ -225,6 +227,10 @@ impl Demo {
             ],
             frames_per_step: WALK_FRAMES_PER_STEP,
             looping: true,
+            // 见 `layout::WALK_EXIT_GRACE_FRAMES` 文档「为什么是 12」
+            // ——这是项目所有者要的可自定义延迟，覆盖按键自动重复脉冲
+            // 之间的空档，避免连续移动时闪回待机。
+            exit_grace_frames: WALK_EXIT_GRACE_FRAMES,
         };
         // 待机呼吸剪辑：只在待机图与「吸气」图之间缓慢往返，幅度克制
         // （见 `assets/atlas/placeholder.json` 里 `hero_idle_1` 与
@@ -233,6 +239,9 @@ impl Demo {
             frames: vec![FALLBACK_SPRITE.to_string(), "hero_idle_1".to_string()],
             frames_per_step: IDLE_BREATHE_FRAMES_PER_STEP,
             looping: true,
+            // 待机是 `AnimStateMachine` 的默认状态，从不「过期」，这个
+            // 字段在这里从不被读取（见 `Clip::exit_grace_frames` 文档）。
+            exit_grace_frames: 0,
         };
 
         Demo {
@@ -240,8 +249,7 @@ impl Demo {
             continent_field,
             camera,
             clips: vec![walk_clip, idle_clip],
-            playback: Playback::new(IDLE_CLIP, FrameId(0)),
-            is_moving: false,
+            anim: AnimStateMachine::new(IDLE_CLIP, FrameId(0)),
             resources: None,
         }
     }
@@ -265,8 +273,7 @@ impl Demo {
         // 键顶着墙走不动时仍应播放行走动画（这也是绝大多数游戏的直觉：
         // 角色原地踏步，而不是因为撞墙就悄悄切回待机姿势），且不需要
         // 读 `resolve`/`apply` 的结果来判断，输入层这一步信息已经够用。
-        let is_moving = matches!(intent, Some(Intent::Move { .. }));
-        self.update_walk_animation(is_moving, frame);
+        self.update_walk_animation(intent.as_ref(), frame);
         if let Some(intent) = intent {
             self.apply_intent(&intent);
         }
@@ -278,20 +285,33 @@ impl Demo {
         }
     }
 
-    /// 按「本帧是否有移动意图」在 [`WALK_CLIP`]/[`IDLE_CLIP`] 间切换。
+    /// 推进玩家行走/待机的触发式动画状态：先老化当前状态（可能因为
+    /// 超过余韵而回落到待机），再看本帧有没有新的移动意图，有就触发
+    /// （或续期）行走状态。
     ///
-    /// 只在状态**切换**的那一帧重建 `Playback`（把起始帧号重置为
-    /// `frame`）：如果每帧都无条件 `Playback::new`，剪辑会永远停在第
-    /// 0 帧，看起来像完全没有动画；如果切换时不重置起始帧号，从待机切
-    /// 到行走的第一帧会按「已经播放了一段时间」计算出剪辑中间某一帧，
-    /// 画面会跳一下，而不是从抬脚的第一帧开始迈步。
-    fn update_walk_animation(&mut self, is_moving: bool, frame: FrameId) {
-        if is_moving == self.is_moving {
-            return;
+    /// # 为什么不能再用「本帧是否有移动意图」直接驱动
+    ///
+    /// 此前这里直接比较「本帧是否有移动意图」与上一帧的记录，一旦状态
+    /// 变化就重建 `Playback`——但回合制的移动意图本身只在按键刚按下、
+    /// 或自动重复脉冲触发的那一帧才存在（见
+    /// `ll_platform::input::InputState` 模块文档「为什么要区分『按住』
+    /// 与『刚按下』」），脉冲之间的空档没有意图，直接绑定意味着状态会
+    /// 在每个空档都先弹回待机、下一个脉冲再弹回行走——这正是项目所有者
+    /// 报告的「走一格闪一下」。现在改用 [`AnimStateMachine`]：意图存在
+    /// 的那一帧触发/续期行走状态，`update` 每帧无条件调用负责老化，
+    /// 只有真的超过 [`Clip::exit_grace_frames`] 声明的余韵仍没有新意图
+    /// 才回落待机——这段余韵就是项目所有者要的可自定义延迟。
+    ///
+    /// `update` 必须排在 `trigger` 之前：若顺序反过来，刚触发本状态就
+    /// 立刻用当前帧检查过期，`exit_grace_frames = 0`（例如未来某个一
+    /// 次性状态刻意不要余韵）时会导致触发的这一帧都观察不到目标状态；
+    /// 先老化上一帧遗留的状态、再处理本帧的新触发，触发本身产生的新
+    /// 状态才总能在触发的这一帧被观察到。
+    fn update_walk_animation(&mut self, intent: Option<&Intent>, frame: FrameId) {
+        self.anim.update(frame);
+        if matches!(intent, Some(Intent::Move { .. })) {
+            self.anim.trigger(&self.clips, WALK_CLIP, frame);
         }
-        self.is_moving = is_moving;
-        let clip = if is_moving { WALK_CLIP } else { IDLE_CLIP };
-        self.playback = Playback::new(clip, frame);
     }
 
     fn maintain_streaming(&mut self) {
@@ -691,7 +711,7 @@ impl AppHandler for Demo {
         // 里记一条错误日志——那已经是资产整体损坏，不再是「可选帧
         // 缺失」。
         let sprite_name = current_player_sprite_name(
-            &self.playback,
+            self.anim.playback(),
             &self.clips,
             frame,
             resources.atlas.metadata(),
@@ -816,6 +836,7 @@ mod animation_fallback_tests {
             frames: vec!["hero_walk_0".to_string()],
             frames_per_step: WALK_FRAMES_PER_STEP,
             looping: true,
+            exit_grace_frames: 0, // 本测试只验证 `Playback` 本身的降级，不涉及状态机
         }];
         let corrupted_playback = Playback::new(99, FrameId(0));
 
@@ -835,6 +856,7 @@ mod animation_fallback_tests {
             frames: vec!["hero_walk_0".to_string()],
             frames_per_step: WALK_FRAMES_PER_STEP,
             looping: true,
+            exit_grace_frames: 0, // 本测试只验证 `Playback` 本身的降级，不涉及状态机
         }];
         let playback = Playback::new(0, FrameId(0));
 

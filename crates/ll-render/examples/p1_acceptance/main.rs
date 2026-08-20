@@ -200,6 +200,12 @@ impl Demo {
             ],
             frames_per_step: WALK_FRAMES_PER_STEP,
             looping: true,
+            // 本 demo 里巡逻单位恒定循环播放这段行走剪辑，没有待机态
+            // 切换（见本文件模块文档「二、一个 16×24 的普通单位……
+            // 循环播放三帧行走动画」），不经
+            // `ll_render::anim::AnimStateMachine` 管理，因此这个字段
+            // 在这里从不被读取，填零即可。
+            exit_grace_frames: 0,
         }];
         let walk_playback = Playback::new(0, FrameId(0));
 

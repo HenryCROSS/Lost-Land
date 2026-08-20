@@ -107,6 +107,24 @@ pub(crate) const WALK_FRAMES_PER_STEP: u32 = 8;
 /// 起伏（项目所有者明确要求「不要做成明显的抖动」）。
 pub(crate) const IDLE_BREATHE_FRAMES_PER_STEP: u32 = 40;
 
+/// 行走这一触发式动画状态在没有新的移动意图时，继续维持播放多少帧
+/// 才回落到待机——即状态退出前的余韵，见
+/// [`ll_render::anim::AnimStateMachine`] 文档「要解决的问题」。
+///
+/// # 为什么是 12
+///
+/// 回合制的移动意图并非每帧都有：按住方向键时，`InputState` 只在
+/// 按键刚按下、以及此后每次自动重复脉冲触发的那一帧才产出
+/// `Intent::Move`（见 `ll_platform::input` 模块文档「为什么要区分
+/// 『按住』与『刚按下』」），脉冲之间的默认间隔
+/// （`ll_platform::input::RepeatConfig::default` 的 `interval`，
+/// 90ms）在本 demo 目标帧率（`WindowConfig::default` 的
+/// `target_fps` = 60）下约合 5.4 帧。若余韵短于这个间隔，两次脉冲
+/// 之间的空档就会先回落到待机再切回行走，正是项目所有者报告的「走
+/// 一格闪一下」——这里取约两倍余量（12 帧）覆盖脉冲间隔本身的抖动
+/// 与慢帧下重复脉冲被合并/延迟到达的情形。
+pub(crate) const WALK_EXIT_GRACE_FRAMES: u32 = 12;
+
 /// 把地形种类映射到图集条目名——覆盖本 demo 用到的地表自然地形，
 /// 以及 Interior 楼层用到的地板/墙（复用既有图集条目，本 demo 不新增
 /// 美术资产：石地板借用 `terrain_dirt`、石墙借用 `terrain_mountain`，
