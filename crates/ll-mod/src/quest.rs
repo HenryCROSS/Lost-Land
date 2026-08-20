@@ -589,7 +589,19 @@ mod tests {
     }
 
     #[test]
-    fn 脚本回调型完成条件可以被本体与mod同样注册() {
+    fn 本体与mod注册的脚本回调型条件调用同一个公开define函数完成注册() {
+        // 结构等价断言，理由同 crate::skill 模块的等价测试。
+        //
+        // 边界：本测试只证明 `QuestCondition::Script(id)` 这个数据值
+        // 能被本体与 mod 走同一条 `Registry::intern`/`define` 路径注册，
+        // 不运行任何脚本、也不证明"脚本回调"这四个字所暗示的东西——
+        // `QuestCondition::Script` 目前只是一个携带命名空间 ID 的数据
+        // 标签，真正求值它指向的脚本回调是尚未落地的能力（`unlocked_by`/
+        // 任务完成判定当前只处理 `KillCount` 变体，见本文件其余测试）。
+        // 与「十二条结构等价测试改名」同一批修正：原名字里的「脚本回调型
+        // 完成条件」容易被误读成"脚本已经能跑"，实际验证的只是数据值的
+        // 注册路径。真正的脚本可达证据在 `crate::pipeline` 的脚本装载
+        // 测试与 `mods/example_mod/gameplay.scm`。
         // Arrange
         let mut registry = Registry::new();
         let (base_ids, mut table) =
