@@ -123,6 +123,16 @@ pub(crate) fn build_demo_world() -> DemoWorld {
 
     let (zone, _) = layout.tile_to_zone(spawn);
     let player = spawn_player(&mut world, spawn, zone, space_ids.surface);
+    // 必须显式赋值——见 WorldState::player_entity 字段文档「调用方应在
+    // spawn 产出玩家的 EntityId 之后，显式赋值」一节。探索记忆的写入
+    // 路径（ll_sim::resolve::resolve_move 追加的 Effect::MarkExplored）
+    // 按这个字段区分「谁在动」，只给玩家标记探索——见该函数文档「为
+    // 什么只有玩家移动才追加」一节。这里若漏赋值，`world.player_entity`
+    // 恒为 `None`，`resolve_move` 的 `world.player_entity == Some(actor)`
+    // 恒假，探索记忆永远收不到任何写入，小地图会一直是战争迷雾全黑——
+    // 这正是本 demo 曾经出现过的表现（探索记忆批次交付了存储与读取，
+    // 却没有接上这处写入的前置条件）。
+    world.player_entity = Some(player);
 
     DemoWorld {
         world,

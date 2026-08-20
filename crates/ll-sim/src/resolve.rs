@@ -110,6 +110,30 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
     speed.clamp(1, i64::from(u32::MAX)) as u32
 }
 
+/// 玩家每走一步，探索记忆按这个半径覆盖新位置的可见格（见
+/// [`resolve_move`] 尾部、[`crate::effect::Effect::MarkExplored`] 文档）。
+///
+/// # 为什么是固定值，不接光照/层属性算出的真实视野半径
+///
+/// 渲染那一路（demo 里的 `effective_sight_radius`）会按
+/// `SpaceProfile` 的环境光基准与世界时钟现算视野半径——地下城更暗，
+/// 半径更小。但那份换算（`ll_world::space_profile::SpaceProfile` +
+/// `ll_world::light::effective_ambient_light`）此刻只在各个 demo 的
+/// `examples/*/layout.rs` 里现算，`resolve` 所在的 `ll-sim` 库代码从没
+/// 有拿到一份可查询的 `SpaceProfileTable`——那是注册期内容表，走
+/// `ll-mod::Registry`，而 `resolve` 按依赖顺序（规格 §5）在
+/// `ll-mod` 上游，不能反过来依赖它。要让探索半径也感知光照，需要先把
+/// 「层属性表」接成 `WorldState` 能查询到的东西，这是比「补上写入路径」
+/// 大得多的另一件事，本次任务不做（YAGNI）。
+///
+/// 用固定半径也不是权宜之计——「记不记得某处地形」与「此刻这里有多暗」
+/// 本就是两件事：现实里哪怕举着火把只能看清脚下几步，也不会因为这一刻
+/// 昏暗就忘记白天来过这里时看清楚的布局。`minimap`/`continent_map`
+/// 只消费「探不探索过」这一个是/否位（[`ll_world::exploration`] 模块
+/// 文档「只存位图」一节），不消费「当时有多亮」，固定半径与这份精度
+/// 完全匹配，不需要为它单独追一份光照相关的输入。
+const EXPLORATION_SIGHT_RADIUS: u32 = 12;
+
 /// 把一个 [`Intent`] 结合当前世界状态，翻译成一串 [`Effect`]。
 ///
 /// 目标实体（`actor`/`target`）若已不在 `world.actors` 中（可能已在
@@ -257,7 +281,20 @@ fn resolve_wait(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 ///   行为。
 /// - 目的地完全不可通行（墙、窗等）：不产生任何效果，这一步作废。
 /// - 目的地可通行：产生移动效果，行动耗时按该地形的分级 `move_cost`
-///   计算——浅水、山地这类「过得去但更慢」的地形因此耗时更长。
+///   计算——浅水、山地这类「过得去但更慢」的地形因此耗时更长；若移动的
+///   是玩家自己，额外追加一条 [`Effect::MarkExplored`]（见其文档），
+///   把探索记忆的写入接到这唯一的移动落点。
+///
+/// # 为什么只有玩家移动才追加 `MarkExplored`
+///
+/// 本函数同时服务玩家与 NPC——`actor` 是任意实体。[`WorldState::exploration`]
+/// 却只代表玩家一个人的视角（见其字段文档「为什么按角色只存一份」）。
+/// 若不加区分地让每个 NPC 的移动都追加一条 `MarkExplored`，游荡的怪物
+/// 会替玩家「看见」它们自己路过的地方——那是把探索记忆的语义换成了
+/// 「世界上任意实体去过哪」，与「玩家亲眼见过哪」是两个不同的东西，
+/// 后者才是战争迷雾要回答的问题。这里用 `world.player_entity ==
+/// Some(actor)` 这一个比较收住范围，不需要改 `Intent`/`Effect` 的
+/// 形状去区分「谁在动」。
 fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
@@ -300,13 +337,27 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
     }
 
     let cost = action_cost(terrain.move_cost(&world.terrain_table), speed);
-    vec![
+    let mut effects = vec![
         Effect::MoveTo { actor, pos: dest },
         Effect::ScheduleNext {
             actor,
             at: schedule_after(world, cost),
         },
-    ]
+    ];
+    // 只在移动者是玩家、且这一步真的挪动了位置（本分支恒如此）时追加
+    // 探索标记——见本函数文档「为什么只有玩家移动才追加」一节。没有
+    // `MoveTo` 就不该有 `MarkExplored`：站着不动（`Intent::Wait`）或
+    // 撞墙（上面 `blocks_move` 分支提前返回空 `Vec`）都不会走到这里，
+    // 天然不会为「原地不动」重复标记同一批格子，这正是避免每帧全量
+    // 重写探索位图的做法（见 `Effect::MarkExplored` 文档「何时才触发」
+    // 一节）。
+    if world.player_entity == Some(actor) {
+        effects.push(Effect::MarkExplored {
+            origin: dest,
+            radius: EXPLORATION_SIGHT_RADIUS,
+        });
+    }
+    effects
 }
 
 /// 直接攻击一个已知目标（与 [`resolve_move`] 的隐式派生分开的显式路径，

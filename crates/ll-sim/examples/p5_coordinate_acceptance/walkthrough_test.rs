@@ -28,10 +28,12 @@ use ll_sim::apply::apply;
 use ll_sim::effect::Effect;
 use ll_sim::intent::{Direction, Intent};
 use ll_sim::resolve::resolve;
+use ll_world::overview::{continent_map, generate_continent_field};
 use ll_world::space::Space;
 
 use crate::layout::{
-    EAST_CORRIDOR_LENGTH, EAST_WALK_INTO_UNWARMED_ZONE, STREAM_RADIUS_ZONES, effective_sight_radius,
+    EAST_CORRIDOR_LENGTH, EAST_WALK_INTO_UNWARMED_ZONE, MINIMAP_DOWNSAMPLE, STREAM_RADIUS_ZONES,
+    effective_sight_radius,
 };
 use crate::world::{DemoWorld, build_demo_world};
 
@@ -241,4 +243,57 @@ fn 进出interior的完整调用链走通且层属性生效() {
     let agent = demo.world.actors.get(player).expect("必然存在");
     assert_eq!(agent.pos, demo.interior_anchor);
     assert!(matches!(agent.current_space, Space::Surface { .. }));
+}
+
+#[test]
+fn 玩家走过的区块在世界地图上标记为已探索而未去过的区块不是() {
+    // 补上探索记忆写入路径批次的程序化证据：探索记忆曾经只交付了存储
+    // 与读取，`mark_explored` 没有任何调用方（见 `ll_world::exploration`
+    // 模块与 `Effect::MarkExplored` 文档），小地图因此会一直显示全部
+    // 未探索。这条测试走的是 `main.rs::push_minimap` 消费的同一条生产
+    // 代码路径——`build_demo_world` 搭世界、`generate_continent_field`
+    // 建大陆场、`continent_map` 现算概览——而不是直接摆弄
+    // `ExplorationMemory` 的内部方法，因此比 `ll_sim::apply` 单元测试
+    // 多证明一层：写入路径真的接到了小地图消费的这个函数上，不是两边
+    // 各自正确却没连起来。用 `SendKeys` 键盘注入 + 真实窗口截图逐像素
+    // 比对 minimap 区域不在本次可行范围内——理由见本文件顶部「为什么
+    // 需要这个文件」一节（ADR 0025：这台机器上的合成按键无法可靠地
+    // 只送达目标窗口）；这里改用同一份「不模拟按键，直接驱动真实调用
+    // 链路」的方法论，程序化验证 `continent_map` 的输出而不是肉眼看
+    // 截图。
+    // Arrange
+    let mut demo = build_demo_world();
+    let layout = *demo.world.terrain.layout();
+    let field = generate_continent_field(&layout, &demo.noise, &demo.params, &demo.terrain_ids);
+    let start_pos = demo.world.actors.get(demo.player).expect("必然存在").pos;
+    let (start_zone, _) = layout.tile_to_zone(start_pos);
+    let zone_count = layout.zone_count();
+    let cols = zone_count.width().div_ceil(MINIMAP_DOWNSAMPLE);
+    // 世界另一端、玩家全程走不到的区块——用来确认下面的标记不是恒真
+    // （即不是「continent_map 随便什么都判已探索」这种退化实现）。
+    let untouched_zone = zone_count.wrap(
+        start_zone.x() + zone_count.width() as i32 / 2,
+        start_zone.y() + zone_count.height() as i32 / 2,
+    );
+
+    // Act：沿走廊走几步——每一步都会触发 `resolve_move` 追加的
+    // `Effect::MarkExplored`（见其文档），`apply` 据此把玩家视野内的
+    // 格子写进 `world.exploration`。
+    for _ in 0..10 {
+        step(&mut demo, Direction::East);
+    }
+
+    // Assert：出生区块（玩家确定去过、且视野半径覆盖了它)已探索，
+    // 世界另一端从未涉足的区块仍是战争迷雾。
+    let cells = continent_map(&field, &layout, &demo.world.exploration, MINIMAP_DOWNSAMPLE);
+    let start_index = (start_zone.y() as u32 * cols + start_zone.x() as u32) as usize;
+    let untouched_index = (untouched_zone.y() as u32 * cols + untouched_zone.x() as u32) as usize;
+    assert!(
+        cells[start_index].explored,
+        "出生区块 {start_zone:?} 应当已探索"
+    );
+    assert!(
+        !cells[untouched_index].explored,
+        "从未去过的区块 {untouched_zone:?} 不应该被标记为已探索"
+    );
 }

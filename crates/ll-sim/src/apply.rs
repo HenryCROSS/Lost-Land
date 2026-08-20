@@ -1,8 +1,10 @@
 //! `apply`：把一个 [`Effect`] 落到 [`WorldState`] 上的唯一入口。
 
+use ll_world::fov::compute_fov;
 use ll_world::script_state::ScriptStateTarget;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
+use ll_world::surface_store::SurfaceWindow;
 
 use crate::effect::Effect;
 
@@ -164,6 +166,25 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
                         }
                     }
                 }
+            }
+        }
+        Effect::MarkExplored { origin, radius } => {
+            // 与渲染路径同一套调用（SurfaceWindow + compute_fov）——
+            // 全过程唯一一处真正跑 FOV，见 Effect::MarkExplored 文档
+            // 「为什么『apply 算出的集合与 resolve 看到的完全一致』
+            // 自动成立」一节。`layout` 取自 `world.terrain`，与
+            // `ExplorationMemory::mark_explored` 要求的「同一个
+            // ZoneLayout」天然一致（同一个 WorldState 只有一份地形，
+            // 不存在换布局的可能）。
+            let layout = *world.terrain.layout();
+            let visible = compute_fov(
+                &SurfaceWindow::new(&world.terrain),
+                &world.terrain_table,
+                *origin,
+                *radius,
+            );
+            for pos in visible.iter() {
+                world.exploration.mark_explored(&layout, pos);
             }
         }
     }
@@ -676,5 +697,72 @@ mod tests {
                 expires_at: Tick(90),
             })
         );
+    }
+
+    #[test]
+    fn markexplored效果把视野内的格子写入探索记忆() {
+        // 探索记忆写入路径的最小验收：apply 落地 Effect::MarkExplored
+        // 之后，原点自身（compute_fov 恒把原点纳入可见集合，见
+        // ll_world::fov::compute_fov 文档）必须能在探索记忆里查到。
+        // Arrange
+        let mut world = test_world();
+        let origin = world.size.wrap(10, 10);
+        let layout = *world.terrain.layout();
+
+        // Act
+        apply(&mut world, &Effect::MarkExplored { origin, radius: 3 });
+
+        // Assert
+        assert!(world.exploration.is_explored(&layout, origin));
+    }
+
+    #[test]
+    fn 已探索的墙格在玩家走远后仍然保留在探索记忆里() {
+        // ADR 0007：对称阴影投射刻意接受「某些墙格的四角参与遮挡计算、
+        // 自己却因中心恰好落在扇区外而不被标记可见」这个代价（见
+        // ll_world::fov 模块文档「为什么墙本身可见（但不是每一面墙）」
+        // 一节），靠探索记忆的「只增不减」兜底——玩家上次见过这面墙时
+        // 已经记下来了，之后哪怕站在一个当下看不见它的位置，它也不该
+        // 从地图上凭空消失。这条测试不复现那个具体的边界几何反例（那
+        // 由 fov_blackbox.rs 的属性测试守护），而是直接锁住更根本的
+        // 前提：探索记忆没有「取消标记」这个操作，一次不包含某格的
+        // MarkExplored 不会把它从「已探索」改回「未探索」。
+        //
+        // Arrange：贴着出发点正东两格摆一面墙——与
+        // ll_world::fov::tests::正对原点的墙可见 完全同一种布局，这类
+        // 布局下墙必然进入可见集合。出发点与墙之间的地形显式改写成
+        // 草地，不依赖噪声生成算法在这一带恰好给出可通行地形；玩家
+        // 随后走到一个半径完全覆盖不到这面墙的远处。
+        let mut world = test_world();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let near = world.size.wrap(10, 10);
+        let between = world.size.wrap(11, 10);
+        let wall = world.size.wrap(12, 10);
+        let far = world.size.wrap(40, 40);
+        world.terrain.set_terrain(near, terrain_ids.grass);
+        world.terrain.set_terrain(between, terrain_ids.grass);
+        world.terrain.set_terrain(wall, terrain_ids.wall_stone);
+        let layout = *world.terrain.layout();
+
+        // Act：先在墙跟前标记一次（墙进入可见集合、被记进探索记忆），
+        // 再在远处标记一次（这次的可见集合完全不覆盖墙，但也不应该
+        // 把上一次的标记抹掉）。
+        apply(
+            &mut world,
+            &Effect::MarkExplored {
+                origin: near,
+                radius: 6,
+            },
+        );
+        apply(
+            &mut world,
+            &Effect::MarkExplored {
+                origin: far,
+                radius: 3,
+            },
+        );
+
+        // Assert
+        assert!(world.exploration.is_explored(&layout, wall));
     }
 }

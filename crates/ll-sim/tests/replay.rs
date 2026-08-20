@@ -112,6 +112,14 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         current_space: Space::surface(player_zone, ll_core::ident::ContentIndex::default()),
         script_state: std::collections::BTreeMap::new(),
     });
+    // 探索记忆写入路径（`resolve_move` 追加的 `Effect::MarkExplored`）
+    // 按 `player_entity` 区分「谁在动」，只给玩家标记探索——见其文档
+    // 「为什么只有玩家移动才追加」一节。不赋值这里，`intent_stream`
+    // 里全部的 `Intent::Move { actor: player, .. }` 都不会产出任何
+    // `MarkExplored` 效果，这条黄金基准就测不出写入路径本身，见本文件
+    // `EXPECTED_REPLAY_DIGEST` 文档「本次重冻的原因（探索记忆写入路径
+    // 批次）」一节。
+    world.player_entity = Some(player);
     let enemy_pos = world.size.wrap(20, 20);
     let (enemy_zone, _) = world.terrain.layout().tile_to_zone(enemy_pos);
     let enemy = world.actors.spawn(Agent {
@@ -319,7 +327,39 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 临时删掉重新跑这条测试，摘要精确回到本次重冻之前的旧常量
 /// `3_120_509_028_390_886_945`——确认这次变化完全、只来自这一处改动，
 /// 恢复后重新跑通再确认新常量 `9_151_147_838_687_915_073` 稳定复现。
-const EXPECTED_REPLAY_DIGEST: u64 = 9_151_147_838_687_915_073;
+///
+/// # 第七次重冻的原因（探索记忆写入路径批次）
+///
+/// 上一批（第六次重冻）只交付了 [`ll_world::exploration::ExplorationMemory`]
+/// 的存储与读取，`mark_explored` 没有任何调用方——本文件的 `setup`
+/// 因此从不设置 `world.player_entity`（恒 `None`），这条黄金基准测不出
+/// 任何写入路径。这一批补上了两处改动，两处都真实改变了摘要：
+///
+/// 1. `setup` 现在显式赋值 `world.player_entity = Some(player);`——
+///    [`ll_sim::resolve::resolve_move`] 新增的 `Effect::MarkExplored`
+///    只在移动者是玩家时才追加（见其文档「为什么只有玩家移动才追加」
+///    一节），不赋值这个字段，`intent_stream` 里的全部 `Intent::Move`
+///    都测不到新写入路径，等于没测。
+/// 2. `resolve_move` 在产生 `Effect::MoveTo` 的分支里追加一条
+///    `Effect::MarkExplored`，`apply` 落地时据此调用
+///    `compute_fov` + `ExplorationMemory::mark_explored`，把玩家沿途
+///    看到的格子真正记进 `world.exploration`——`intent_stream` 里三步
+///    `Intent::Move` 都会触发，`world.exploration` 不再是一份空记忆，
+///    `write_hash` 混入的字节流因此改变。
+///
+/// 人工核验（真实执行，不是假设，两步改动分开验证）：
+///
+/// - 只加第 1 项（`player_entity` 赋值），把 `resolve_move` 里
+///   `effects.push(Effect::MarkExplored { .. })` 这一行临时注释掉重新
+///   跑这条测试，摘要是 `3_069_981_719_783_750_112`——证明「玩家身份
+///   被记下来」本身也会改摘要（`player_entity` 从 `None` 变成
+///   `Some`，这条字节流本就参与哈希，见第四次重冻）。
+/// - 恢复 `MarkExplored` 的追加（两项改动都在），摘要变成
+///   `17_575_307_657_617_953_743`——证明真正的探索记忆写入（而不只是
+///   `player_entity` 本身）也确实改变了摘要，写入路径不是摆设。
+///
+/// 两步核验都在本次提交前实际跑过，不是假设的推演。
+const EXPECTED_REPLAY_DIGEST: u64 = 17_575_307_657_617_953_743;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {
