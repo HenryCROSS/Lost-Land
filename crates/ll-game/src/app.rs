@@ -5,10 +5,11 @@
 //!
 //! 渲染管线（图集加载、精灵批、相机、FOV 裁剪可见格）直接复用
 //! `ll-render` 已经交付的部件，取舍与 `ll-sim` 的
-//! `p5_coordinate_acceptance` 完全一致（同一批零件），差异只在本模块
-//! 更薄——不做 Interior 出入、不做行走/待机触发式动画状态机、不画
-//! 小地图（规格 §15 把这类打磨排在 P7，见任务顶层说明「不是做 UI
-//! 项目」），聚焦「能玩、能存」这条最小闭环本身。
+//! `p5_coordinate_acceptance` 完全一致（同一批零件，包括玩家精灵的
+//! 行走/待机动画状态机——见 [`crate::animation`] 模块文档「这是『声明
+//! 了但从没接线』的第十处修复」），差异只在本模块更薄——不做 Interior
+//! 出入、不画小地图（规格 §15 把这类打磨排在 P7，见任务顶层说明「不是
+//! 做 UI 项目」），聚焦「能玩、能存」这条最小闭环本身。
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,6 +18,7 @@ use ll_platform::config::DisplayConfig;
 use ll_platform::config::ScaleFilter;
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::window::{AppHandler, FrameId, FrameOutcome, PhysicalSize, Window};
+use ll_render::anim::{AnimStateMachine, Clip, current_sprite_name};
 use ll_render::atlas::{Atlas, AtlasEntry, AtlasMetadata};
 use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::{Camera, Zoom, apply_zoom};
@@ -31,6 +33,7 @@ use ll_world::fov::compute_fov;
 use ll_world::space::Space;
 use ll_world::surface_store::SurfaceWindow;
 
+use crate::animation::{self, FALLBACK_SPRITE};
 use crate::content::LoadedContent;
 use crate::layout::{effective_sight_radius, effective_tint, terrain_entry_name, tile_tint};
 use crate::save::save_game;
@@ -47,9 +50,6 @@ const ZOOM_STEP: f32 = 0.1;
 const PLAYER_ENTITY: u64 = 0;
 /// 地形瓦片绘制顺序号的起始偏移。
 const TERRAIN_ENTITY_BASE: u64 = 1;
-/// 玩家精灵唯一必须存在的一帧——本体图集恒定内嵌它，见
-/// `ll-sim` 的 `p5_coordinate_acceptance::FALLBACK_SPRITE` 同一取舍。
-const PLAYER_SPRITE: &str = "hero_idle_0";
 
 const ATLAS_JSON: &str = include_str!("../../../assets/atlas/placeholder.json");
 const ATLAS_PNG: &[u8] = include_bytes!("../../../assets/atlas/placeholder.png");
@@ -144,6 +144,16 @@ pub struct Demo {
     /// 但 `resources` 要等窗口就绪才能创建（见该字段文档），因此本
     /// 结构体自己先存一份。
     display: DisplayConfig,
+    /// 玩家精灵的行走/待机两段动画剪辑——下标含义见
+    /// [`animation::WALK_CLIP`]/[`animation::IDLE_CLIP`]，构造见
+    /// [`animation::player_clips`]。
+    clips: Vec<Clip>,
+    /// 玩家精灵行走/待机动画状态的生命周期管理：电平驱动
+    /// （[`AnimStateMachine::set_level`]），每帧由
+    /// [`animation::update_player_animation`] 算出「现在该播放哪个
+    /// 状态」——与 `ll-sim` 的 `p5_coordinate_acceptance::Demo::anim`
+    /// 同一套接线方式，只是本体二进制这一份是独立的运行期实例。
+    anim: AnimStateMachine,
     resources: Option<GpuResources>,
 }
 
@@ -168,6 +178,13 @@ impl Demo {
             center: player_pos,
             world: game_world.world.size,
         };
+        let clips = animation::player_clips();
+        tracing::info!(
+            clip_count = clips.len(),
+            walk_clip = animation::WALK_CLIP,
+            idle_clip = animation::IDLE_CLIP,
+            "玩家动画状态机已装载"
+        );
         Demo {
             content,
             game_world,
@@ -176,18 +193,23 @@ impl Demo {
             save_path,
             character_name,
             display,
+            clips,
+            anim: AnimStateMachine::new(animation::IDLE_CLIP, FrameId(0)),
             resources: None,
         }
     }
 
     /// 每帧输入处理：先维护流式邻域（必须排在移动之前，见
     /// `ll_world::surface_store::SurfaceStore::stream_neighborhood`
-    /// 文档），再处理缩放与移动——缩放只影响 `self.zoom`（渲染层状态），
-    /// 与移动、流式邻域完全独立，顺序先后不影响正确性，放在移动之前
-    /// 只是让「本帧输入」的处理顺序读起来更顺。
-    fn advance(&mut self, input: &InputState) {
+    /// 文档），再处理缩放、动画与移动——动画判定只读 `input`（按住
+    /// 状态），不依赖本帧是否真的产生了移动意图或移动是否成功（见
+    /// [`animation::update_player_animation`] 文档），因此与缩放、移动
+    /// 结算互不依赖，顺序先后不影响正确性，这里的排列只是让「本帧
+    /// 输入」的处理顺序读起来更顺。
+    fn advance(&mut self, input: &InputState, frame: FrameId) {
         self.maintain_streaming();
         self.update_zoom(input);
+        animation::update_player_animation(&mut self.anim, input, frame);
 
         let player = self.game_world.player;
         let intent = intent_from_input(player, input);
@@ -307,6 +329,7 @@ fn render_surface(
     content: &LoadedContent,
     camera: &Camera,
     zoom: Zoom,
+    sprite_name: &str,
     resources: &mut GpuResources,
 ) {
     let world = &game_world.world;
@@ -362,7 +385,7 @@ fn render_surface(
     }
 
     let (px, py) = camera.world_to_screen(player_pos);
-    push_player_marker(px, py, tint, zoom, resources);
+    push_player_marker(px, py, sprite_name, tint, zoom, resources);
 }
 
 /// 空间的完整 [`ll_world::space_profile::SpaceProfile`]——`Space` 本身
@@ -384,8 +407,20 @@ fn space_profile_of(
     }
 }
 
-fn push_player_marker(sx: i32, sy: i32, tint: [f32; 4], zoom: Zoom, resources: &mut GpuResources) {
-    let Some((entry, uv)) = resources.lookup(PLAYER_SPRITE) else {
+/// 画出玩家标记。`sprite_name` 是当前动画帧应显示的图集条目名（由
+/// [`AppHandler::on_frame`] 通过 [`current_sprite_name`] 现算，缺帧时
+/// 已经退回 [`FALLBACK_SPRITE`]），不再恒定画同一帧静态图——这正是
+/// 「接上行走/待机动画」这条修复的落点，见 [`crate::animation`]
+/// 模块文档。
+fn push_player_marker(
+    sx: i32,
+    sy: i32,
+    sprite_name: &str,
+    tint: [f32; 4],
+    zoom: Zoom,
+    resources: &mut GpuResources,
+) {
+    let Some((entry, uv)) = resources.lookup(sprite_name) else {
         return;
     };
     let footprint = entry.footprint;
@@ -444,22 +479,35 @@ impl AppHandler for Demo {
         resources.resize(size);
     }
 
-    fn on_frame(&mut self, _frame: FrameId, input: &InputState) -> FrameOutcome {
+    fn on_frame(&mut self, frame: FrameId, input: &InputState) -> FrameOutcome {
         if input.was_just_pressed(ll_platform::input::GameKey::Cancel) {
             return FrameOutcome::Exit;
         }
 
-        self.advance(input);
+        self.advance(input, frame);
 
         let Some(resources) = self.resources.as_mut() else {
             return FrameOutcome::Continue;
         };
+
+        // 当前动画帧应显示的图集条目名，两层兜底见
+        // `current_sprite_name` 文档；两层都失败时（连 `FALLBACK_SPRITE`
+        // 本身都缺失）才会在 `GpuResources::lookup` 里记一条错误日志，
+        // 那已经是资产整体损坏，不再是「可选帧缺失」。
+        let sprite_name = current_sprite_name(
+            self.anim.playback(),
+            &self.clips,
+            frame,
+            resources.atlas.metadata(),
+            FALLBACK_SPRITE,
+        );
 
         render_surface(
             &self.game_world,
             &self.content,
             &self.camera,
             self.zoom,
+            sprite_name,
             resources,
         );
 

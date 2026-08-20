@@ -15,6 +15,7 @@
 //! 不可单元测试，这与本仓库其余验收 demo 的取舍一致：渲染/输入glue
 //! 层薄而不可测，纯逻辑层厚而可测。
 
+pub mod animation;
 pub mod app;
 pub mod content;
 pub mod layout;

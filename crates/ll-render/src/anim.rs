@@ -14,7 +14,10 @@
 //! 对这三种情形一律返回 [`None`] 或停在首帧，绝不 panic（除零、越界
 //! 索引）。
 
+use ll_platform::input::{GameKey, InputState};
 use ll_platform::window::FrameId;
+
+use crate::atlas::AtlasMetadata;
 
 /// 一段动画剪辑：帧序列、播放速度、是否循环。
 ///
@@ -248,6 +251,216 @@ impl AnimStateMachine {
     /// 的换算继续复用现成的 `Playback`，不重复实现。
     pub fn playback(&self) -> &Playback {
         &self.playback
+    }
+}
+
+/// 是否有任意一个移动方向键当前处于按住状态。
+///
+/// 供 [`AnimStateMachine::set_level`] 的电平驱动调用方判断「这一帧该不
+/// 该播行走动画」——按下/松开是边缘事件，两者之间「按住」本身连续，
+/// 不存在脉冲间隙需要余韵去容忍，直接查 [`InputState::is_held`] 即可，
+/// 详细论证见 [`AnimStateMachine`] 模块文档「电平驱动」一节。
+///
+/// 本函数原是 `ll-sim` 的 `p5_coordinate_acceptance` demo 里的
+/// `player_is_moving`，随「游戏本体二进制也要接线同一套移动驱动动画」
+/// 一起提到这里——两处调用方（P5 demo 与本体二进制 `ll-game`）需要
+/// 完全相同的判据，重复实现一份没有理由，见本仓库「同一算术在多处
+/// 手抄」教训（`ll_render::sprite::sprite_draw_position` 模块文档）。
+///
+/// # 留给未来「行动能力」过滤的接入点
+///
+/// 目前的判定就是「是否有任意一个移动方向键处于按住状态」——本仓库此
+/// 刻没有任何会阻断移动的机制（眩晕/定身零实现，物品/背包系统排在
+/// 未来阶段），因此「按键是否按住」与「是否正在执行移动动作」在结果
+/// 上完全等价。这不是巧合：本函数刻意按后者的语义写文档——将来输入
+/// 上下文/行动能力/动画状态三层抽象落地后，应当只需要在本函数最前面
+/// 插入一次「当前行动能力是否允许移动」查询、查询为否时提前返回
+/// `false`，不需要改动任何调用方一行代码。
+pub fn movement_key_held(input: &InputState) -> bool {
+    input.is_held(GameKey::Up)
+        || input.is_held(GameKey::Down)
+        || input.is_held(GameKey::Left)
+        || input.is_held(GameKey::Right)
+}
+
+/// 在图集元数据里核实 `frame_name` 是否存在，不存在则退回 `fallback`。
+///
+/// 动画剪辑引用的帧名最终来自可被 mod 覆盖的资产，属于外部不可信输入
+/// （见模块文档「降级而非崩溃」）：mod 只提供部分帧是完全正常的情况，
+/// 不应该因此报错或让精灵消失，这里只做最朴素的「存在性探测 + 兜底
+/// 换名」，不引入除字符串查找之外的机制。
+pub fn resolve_sprite_name<'a>(
+    metadata: &AtlasMetadata,
+    frame_name: &'a str,
+    fallback: &'a str,
+) -> &'a str {
+    if metadata.lookup(frame_name).is_some() {
+        frame_name
+    } else {
+        fallback
+    }
+}
+
+/// 算出 `frame` 这一帧应显示的图集条目名，两层兜底叠加：
+///
+/// 1. [`Playback::current_frame`] 对损坏的剪辑数据（空剪辑、剪辑下标
+///    越界，见模块文档「降级而非崩溃」）返回 [`None`]，这里退回
+///    `fallback`。
+/// 2. 就算剪辑给出了一个帧名，那一帧也可能不在图集里（mod 只提供部分
+///    帧是正常情况），再用 [`resolve_sprite_name`] 确认。
+///
+/// 调用方应当传入自己那唯一「必须存在」的一帧作为 `fallback`（例如
+/// `hero_idle_0`）——两层兜底都退回同一帧，这也是「行走/待机动画都是
+/// 可选的，都缺失时退回单张静态图」这条产品要求在代码里唯一的落点：
+/// 调用方完全不需要为「两段动画都被 mod 移除」这种情况另写特殊分支，
+/// 缺帧时 `current_frame` 与 `resolve_sprite_name` 会一路降级到同一个
+/// `fallback`。
+pub fn current_sprite_name<'a>(
+    playback: &Playback,
+    clips: &'a [Clip],
+    frame: FrameId,
+    metadata: &AtlasMetadata,
+    fallback: &'a str,
+) -> &'a str {
+    let raw = playback.current_frame(clips, frame).unwrap_or(fallback);
+    resolve_sprite_name(metadata, raw, fallback)
+}
+
+#[cfg(test)]
+mod driving_and_fallback_tests {
+    use super::*;
+
+    fn sample_metadata() -> AtlasMetadata {
+        AtlasMetadata::parse(
+            r#"{
+                "image": "placeholder.png",
+                "entries": [
+                    { "name": "known_frame",
+                      "rect": { "x": 0, "y": 0, "width": 16, "height": 24 },
+                      "pivot": { "x": 8, "y": 24 },
+                      "footprint": { "width": 1, "height": 1 } }
+                ]
+            }"#,
+        )
+        .expect("样例是合法 JSON")
+    }
+
+    #[test]
+    fn 四个方向键任意按住都判定为正在移动() {
+        for key in [GameKey::Up, GameKey::Down, GameKey::Left, GameKey::Right] {
+            // Arrange
+            let mut input = InputState::new();
+            input.press(key);
+
+            // Act & Assert
+            assert!(movement_key_held(&input), "方向键 {key:?} 应判定为正在移动");
+        }
+    }
+
+    #[test]
+    fn 没有任何方向键按住时判定为未在移动() {
+        // Arrange
+        let input = InputState::new();
+
+        // Act & Assert
+        assert!(!movement_key_held(&input));
+    }
+
+    #[test]
+    fn 帧名在图集里存在时按原样使用() {
+        // Arrange
+        let metadata = sample_metadata();
+
+        // Act
+        let resolved = resolve_sprite_name(&metadata, "known_frame", "fallback_frame");
+
+        // Assert
+        assert_eq!(resolved, "known_frame");
+    }
+
+    #[test]
+    fn 帧名在图集里缺失时退回兜底帧() {
+        // 模拟 mod 覆盖图集后没有提供某一帧——完全正常的情况，必须退回
+        // 兜底帧，而不是画出空白或让调用方 panic。
+        // Arrange
+        let metadata = sample_metadata();
+
+        // Act
+        let resolved = resolve_sprite_name(&metadata, "missing_from_mod", "fallback_frame");
+
+        // Assert
+        assert_eq!(resolved, "fallback_frame");
+    }
+
+    #[test]
+    fn 剪辑数据损坏时退回兜底帧而不是崩溃() {
+        // 模拟一段损坏的动画数据：Playback 引用的剪辑下标越界（例如 mod
+        // 打包时漏掉了某段剪辑定义）——current_frame 对此返回 None，这里
+        // 锁住「调用方在此基础上还能优雅退回静态图」这一步。
+        // Arrange
+        let metadata = sample_metadata();
+        let clips = vec![Clip {
+            frames: vec!["known_frame".to_string()],
+            frames_per_step: 5,
+            looping: true,
+            exit_grace_frames: 0,
+        }];
+        let corrupted_playback = Playback::new(99, FrameId(0));
+
+        // Act
+        let resolved = current_sprite_name(
+            &corrupted_playback,
+            &clips,
+            FrameId(0),
+            &metadata,
+            "fallback_frame",
+        );
+
+        // Assert
+        assert_eq!(resolved, "fallback_frame");
+    }
+
+    #[test]
+    fn 剪辑数据完好时按剪辑当前帧显示() {
+        // Arrange
+        let metadata = sample_metadata();
+        let clips = vec![Clip {
+            frames: vec!["known_frame".to_string()],
+            frames_per_step: 5,
+            looping: true,
+            exit_grace_frames: 0,
+        }];
+        let playback = Playback::new(0, FrameId(0));
+
+        // Act
+        let resolved =
+            current_sprite_name(&playback, &clips, FrameId(0), &metadata, "fallback_frame");
+
+        // Assert
+        assert_eq!(resolved, "known_frame");
+    }
+
+    #[test]
+    fn 两段动画都被剪辑数据排除时退回同一兜底帧() {
+        // 项目所有者要求：走路和待机动画都是可选的，都没有就退回单张
+        // 静态图——用一段只引用图集里不存在的帧的剪辑模拟"mod 移除了
+        // 全部可选动画帧"，两层兜底应当一路降级到同一个 fallback。
+        // Arrange
+        let metadata = sample_metadata();
+        let clips = vec![Clip {
+            frames: vec!["hero_walk_removed_by_mod".to_string()],
+            frames_per_step: 5,
+            looping: true,
+            exit_grace_frames: 0,
+        }];
+        let playback = Playback::new(0, FrameId(0));
+
+        // Act
+        let resolved =
+            current_sprite_name(&playback, &clips, FrameId(0), &metadata, "fallback_frame");
+
+        // Assert
+        assert_eq!(resolved, "fallback_frame");
     }
 }
 

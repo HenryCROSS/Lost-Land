@@ -45,7 +45,9 @@ use ll_platform::logging::init_logging;
 use ll_platform::window::{
     AppHandler, FrameId, FrameOutcome, PhysicalSize, Window, WindowConfig, run,
 };
-use ll_render::anim::{AnimStateMachine, Clip, Playback};
+#[cfg(test)]
+use ll_render::anim::resolve_sprite_name;
+use ll_render::anim::{AnimStateMachine, Clip, Playback, current_sprite_name, movement_key_held};
 use ll_render::atlas::{Atlas, AtlasEntry, AtlasMetadata};
 use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::{BoundedCamera, Camera};
@@ -192,26 +194,6 @@ struct Demo {
     resources: Option<GpuResources>,
 }
 
-/// 玩家此刻是不是正在执行「移动」这个动作。
-///
-/// # 留给未来「行动能力」过滤的接入点
-///
-/// 目前的判定就是「是否有任意一个移动方向键处于按住状态」
-/// （[`InputState::is_held`]）——本仓库此刻没有任何会阻断移动的机制
-/// （眩晕/定身零实现，物品/背包系统排在 P6，任务交接记录已核实），
-/// 因此「按键是否按住」与「是否正在执行移动动作」在结果上完全等价。
-/// 这不是巧合：本函数刻意按后者命名、按后者的语义写文档——将来输入
-/// 上下文/行动能力/动画状态三层抽象（另一位代理正在设计）落地后，
-/// 应当只需要在本函数最前面插入一次「当前行动能力是否允许移动」查询、
-/// 查询为否时提前返回 `false`，不需要改动调用方
-/// [`Demo::update_player_animation`] 或 [`AnimStateMachine`] 一行代码。
-fn player_is_moving(input: &InputState) -> bool {
-    input.is_held(GameKey::Up)
-        || input.is_held(GameKey::Down)
-        || input.is_held(GameKey::Left)
-        || input.is_held(GameKey::Right)
-}
-
 impl Demo {
     fn new() -> Demo {
         let demo_world = build_demo_world();
@@ -318,7 +300,7 @@ impl Demo {
     }
 
     /// 推进玩家行走/待机动画：电平驱动而非离散事件驱动——每帧直接问
-    /// 「玩家此刻是不是正在执行移动这个动作」（[`player_is_moving`]），
+    /// 「玩家此刻是不是正在执行移动这个动作」（[`movement_key_held`]），
     /// 答案就是这一帧该播放的状态，通过 [`AnimStateMachine::set_level`]
     /// 落地，不经过 `trigger`/`update` 的「离散事件+余韵」机制，因此也
     /// 不读 [`Clip::exit_grace_frames`]（见 `walk_clip` 构造处的注释）。
@@ -335,7 +317,7 @@ impl Demo {
     /// 约 5.4 帧）——旧方案的余韵（`layout::WALK_EXIT_GRACE_FRAMES`，
     /// 12 帧）盖不住初始延迟，正是「移动状态里仍掺入 idle 贴图」这个
     /// 缺陷的真正成因；调大到能盖住初始延迟又会让松开后的停止拖上小
-    /// 半秒，两难。换成 [`player_is_moving`] 直接查按键是否按住后，这
+    /// 半秒，两难。换成 [`movement_key_held`] 直接查按键是否按住后，这
     /// 个两难本身就不存在了：只要键没松开，`InputState::is_held` 每帧
     /// 都为真，不需要靠余韵去猜下一次自动重复脉冲何时到达。
     ///
@@ -346,9 +328,9 @@ impl Demo {
     /// 时间，只是位置不变，见 `ll_sim::resolve` 模块文档「目的地完全
     /// 不可通行」一节），这一步在模拟里就是一次真实的移动尝试。因此
     /// 本方法不需要读 `resolve`/`apply` 的结果来判断「这一步是否真的
-    /// 挪动了位置」——`player_is_moving` 只问按键状态已经足够。
+    /// 挪动了位置」——`movement_key_held` 只问按键状态已经足够。
     fn update_player_animation(&mut self, input: &InputState, frame: FrameId) {
-        let target_clip = if player_is_moving(input) {
+        let target_clip = if movement_key_held(input) {
             WALK_CLIP
         } else {
             IDLE_CLIP
@@ -558,10 +540,10 @@ fn render_interior(
 /// 画出玩家标记，地表/`Interior` 共用。
 ///
 /// `sprite_name` 是当前动画帧应显示的图集条目名（由 `on_frame` 通过
-/// [`Demo::playback`] 现算，缺帧时已经退回 [`FALLBACK_SPRITE`]，见
-/// [`resolve_player_sprite_name`]），不再硬编码 `"hero_idle_0"`——这正是
-/// 「接上行走/待机动画」这条修复的落点：此前这里恒定画同一帧，
-/// `hero_walk_0`/`hero_walk_1` 从未被显示过。
+/// [`current_player_sprite_name`] 现算，缺帧时已经退回
+/// [`FALLBACK_SPRITE`]，见 [`resolve_sprite_name`]），不再硬编码
+/// `"hero_idle_0"`——这正是「接上行走/待机动画」这条修复的落点：此前
+/// 这里恒定画同一帧，`hero_walk_0`/`hero_walk_1` 从未被显示过。
 ///
 /// `sx`/`sy` 是**占地格左上角**的屏幕坐标（`Camera::world_to_screen`/
 /// `BoundedCamera::world_to_screen` 的返回值），不是精灵图像左上角
@@ -676,52 +658,18 @@ fn sprite_instance(
     }
 }
 
-/// 若 `frame_name` 在图集里查得到就原样用它，否则退回 `fallback`。
-///
-/// 这是「动画帧缺失时优雅退回」这条要求真正落地的地方，且刻意只依赖
-/// [`AtlasMetadata`]（纯数据，`AtlasMetadata::parse` 不需要 GPU）而不是
-/// 整个 [`GpuResources`]——这样它可以脱离窗口/图形适配器被单测直接
-/// 覆盖，不需要真的起一个 GPU 上下文才能验证「缺帧退回静态图」这条
-/// 行为。
-///
-/// 不直接调用 `GpuResources::lookup(frame_name)` 再在失败时回退：那样
-/// 每次「mod 只提供了部分帧」这种完全正常的情况都会先触发一条
-/// `tracing::error!`（见 `GpuResources::lookup` 文档），日志会被刷屏；
-/// 这里先用 `AtlasMetadata::lookup` 静默探测存在性，只有连 `fallback`
-/// 本身都查不到时，才会在调用方最终的 `resources.lookup` 里触发那条
-/// 错误日志——那已经是资产整体损坏，值得被记下来。
-fn resolve_player_sprite_name<'a>(
-    metadata: &AtlasMetadata,
-    frame_name: &'a str,
-    fallback: &'a str,
-) -> &'a str {
-    if metadata.lookup(frame_name).is_some() {
-        frame_name
-    } else {
-        fallback
-    }
-}
-
-/// 算出 `frame` 这一帧玩家精灵应显示的图集条目名，两层兜底叠加：
-///
-/// 1. [`Playback::current_frame`] 对损坏的剪辑数据（空剪辑、剪辑下标
-///    越界，见 `ll_render::anim` 模块文档「降级而非崩溃」）返回
-///    [`None`]，这里退回 [`FALLBACK_SPRITE`]。
-/// 2. 就算剪辑给出了一个帧名，那一帧也可能不在图集里（mod 只提供
-///    部分帧是正常情况），再用 [`resolve_player_sprite_name`] 确认。
-///
-/// 两层兜底都用同一个 `FALLBACK_SPRITE`，因为它是玩家精灵唯一「必须
-/// 存在」的一帧（见其文档）。
+/// 算出 `frame` 这一帧玩家精灵应显示的图集条目名——薄包装：把本 demo
+/// 固定的 [`FALLBACK_SPRITE`] 绑进 `ll_render::anim` 的
+/// [`current_sprite_name`]，两层兜底（剪辑数据损坏、单帧缺失于图集）
+/// 的实现本身与 `ll-game` 本体二进制共用同一份，不在这里重复，见该
+/// 函数文档。
 fn current_player_sprite_name<'a>(
     playback: &Playback,
     clips: &'a [Clip],
     frame: FrameId,
     metadata: &AtlasMetadata,
 ) -> &'a str {
-    let raw = playback
-        .current_frame(clips, frame)
-        .unwrap_or(FALLBACK_SPRITE);
-    resolve_player_sprite_name(metadata, raw, FALLBACK_SPRITE)
+    current_sprite_name(playback, clips, frame, metadata, FALLBACK_SPRITE)
 }
 
 impl AppHandler for Demo {
@@ -865,7 +813,7 @@ mod animation_fallback_tests {
         let metadata = embedded_metadata();
 
         // Act
-        let resolved = resolve_player_sprite_name(&metadata, "hero_walk_0", FALLBACK_SPRITE);
+        let resolved = resolve_sprite_name(&metadata, "hero_walk_0", FALLBACK_SPRITE);
 
         // Assert
         assert_eq!(resolved, "hero_walk_0");
@@ -881,7 +829,7 @@ mod animation_fallback_tests {
 
         // Act
         let resolved =
-            resolve_player_sprite_name(&metadata, "hero_walk_missing_from_mod", FALLBACK_SPRITE);
+            resolve_sprite_name(&metadata, "hero_walk_missing_from_mod", FALLBACK_SPRITE);
 
         // Assert
         assert_eq!(resolved, FALLBACK_SPRITE);
@@ -1021,7 +969,7 @@ mod player_animation_tests {
 
     #[test]
     fn 四个方向键分别按住都会进入行走状态() {
-        // `player_is_moving` 对四个方向键取「任一按住」，这里逐个验证
+        // `movement_key_held` 对四个方向键取「任一按住」，这里逐个验证
         // 没有漏掉某个方向。
         for key in [GameKey::Up, GameKey::Down, GameKey::Left, GameKey::Right] {
             // Arrange
