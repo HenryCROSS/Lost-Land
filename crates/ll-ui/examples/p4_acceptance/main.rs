@@ -41,7 +41,7 @@ use ll_render::atlas::{Atlas, AtlasEntry, AtlasMetadata};
 use ll_render::batch::SpriteBatch;
 use ll_render::camera::Camera;
 use ll_render::gpu::GpuContext;
-use ll_render::target::{RenderTarget, fit_viewport};
+use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::apply::apply;
 use ll_sim::intent::intent_from_input;
@@ -85,7 +85,7 @@ pub(crate) struct GpuResources {
 
 impl GpuResources {
     fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> GpuResources {
-        let gpu = GpuContext::new(window, size).expect("demo 环境应能取得可用的图形适配器");
+        let gpu = GpuContext::new(window, size, true).expect("demo 环境应能取得可用的图形适配器");
         let render_target = RenderTarget::new(&gpu);
 
         let metadata = AtlasMetadata::parse(ATLAS_JSON).expect("内嵌图集元数据应为合法 JSON");
@@ -287,7 +287,7 @@ impl AppHandler for Demo {
         let viewport = fit_viewport(resources.window_size.width, resources.window_size.height);
         resources
             .render_target
-            .blit_to(&resources.gpu, &view, viewport);
+            .blit_to(&resources.gpu, &view, viewport, BlitFilter::Nearest);
 
         if let Err(error) = render_load_report(
             &mut resources.text_renderer,

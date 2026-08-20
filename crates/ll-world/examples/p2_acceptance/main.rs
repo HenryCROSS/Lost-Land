@@ -61,7 +61,7 @@ use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::Camera;
 use ll_render::gpu::GpuContext;
 use ll_render::sprite::{DrawOrder, Footprint, Layer, SpriteSize};
-use ll_render::target::{RenderTarget, fit_viewport};
+use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 // 走 ll_render 重新导出的 wgpu，不直接依赖 wgpu crate 本身，理由与
 // p1_acceptance 完全一致：独立 crate 的下游只有这一条路径能用。
 use ll_render::wgpu;
@@ -129,7 +129,7 @@ struct GpuResources {
 
 impl GpuResources {
     fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> GpuResources {
-        let gpu = GpuContext::new(window, size).expect("demo 环境应能取得可用的图形适配器");
+        let gpu = GpuContext::new(window, size, true).expect("demo 环境应能取得可用的图形适配器");
         let render_target = RenderTarget::new(&gpu);
 
         let metadata = AtlasMetadata::parse(ATLAS_JSON).expect("内嵌图集元数据应为合法 JSON");
@@ -169,7 +169,8 @@ impl GpuResources {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let viewport = fit_viewport(self.window_size.width, self.window_size.height);
-        self.render_target.blit_to(&self.gpu, &view, viewport);
+        self.render_target
+            .blit_to(&self.gpu, &view, viewport, BlitFilter::Nearest);
         self.gpu.queue().present(frame);
     }
 

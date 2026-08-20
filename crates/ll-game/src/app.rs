@@ -13,14 +13,16 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use ll_platform::input::InputState;
+use ll_platform::config::DisplayConfig;
+use ll_platform::config::ScaleFilter;
+use ll_platform::input::{GameKey, InputState};
 use ll_platform::window::{AppHandler, FrameId, FrameOutcome, PhysicalSize, Window};
 use ll_render::atlas::{Atlas, AtlasEntry, AtlasMetadata};
 use ll_render::batch::{SpriteBatch, SpriteInstance};
-use ll_render::camera::Camera;
+use ll_render::camera::{Camera, Zoom, apply_zoom};
 use ll_render::gpu::GpuContext;
 use ll_render::sprite::{DrawOrder, Layer, footprint_bottom_screen_y, sprite_draw_position};
-use ll_render::target::{RenderTarget, fit_viewport};
+use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::apply::apply;
 use ll_sim::intent::intent_from_input;
@@ -32,7 +34,14 @@ use ll_world::surface_store::SurfaceWindow;
 use crate::content::LoadedContent;
 use crate::layout::{effective_sight_radius, effective_tint, terrain_entry_name};
 use crate::save::save_game;
-use crate::world::{GameWorld, STREAM_RADIUS_ZONES};
+use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
+
+/// 每次「放大/缩小」动作激活时，缩放倍率的调整步长。
+///
+/// 取一个小到不会让画面一步跳变太多、又大到几次按键/滚动就能感受到
+/// 明显差异的值——纯粹的手感取舍，不影响正确性，任意正数都不会破坏
+/// `Zoom::new`/`MIN_SAFE_ZOOM`/`MAX_SAFE_ZOOM` 的钳制。
+const ZOOM_STEP: f32 = 0.1;
 
 /// 玩家标记在绘制顺序里固定的实体号。
 const PLAYER_ENTITY: u64 = 0;
@@ -53,11 +62,17 @@ struct GpuResources {
     atlas: Atlas,
     batch: SpriteBatch,
     window_size: PhysicalSize<u32>,
+    /// 离屏画面放大到窗口时的采样滤波方式，来自
+    /// [`crate::run_game`] 装载的 [`DisplayConfig::scale_filter`]，
+    /// 只读一份贯穿整个运行期——切换滤波方式需要重启（P7 之前没有
+    /// 设置界面，见规格 §15），不是本体二进制现在要支持的场景。
+    blit_filter: BlitFilter,
 }
 
 impl GpuResources {
-    fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> GpuResources {
-        let gpu = GpuContext::new(window, size).expect("运行环境应能取得可用的图形适配器");
+    fn new(window: Arc<Window>, size: PhysicalSize<u32>, display: DisplayConfig) -> GpuResources {
+        let gpu =
+            GpuContext::new(window, size, display.vsync).expect("运行环境应能取得可用的图形适配器");
         let render_target = RenderTarget::new(&gpu);
         let metadata = AtlasMetadata::parse(ATLAS_JSON).expect("内嵌图集元数据应为合法 JSON");
         let atlas =
@@ -69,6 +84,10 @@ impl GpuResources {
             atlas,
             batch,
             window_size: size,
+            blit_filter: match display.scale_filter {
+                ScaleFilter::Nearest => BlitFilter::Nearest,
+                ScaleFilter::SharpBilinear => BlitFilter::SharpBilinear,
+            },
         }
     }
 
@@ -89,7 +108,8 @@ impl GpuResources {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let viewport = fit_viewport(self.window_size.width, self.window_size.height);
-        self.render_target.blit_to(&self.gpu, &view, viewport);
+        self.render_target
+            .blit_to(&self.gpu, &view, viewport, self.blit_filter);
         self.gpu.queue().present(frame);
     }
 
@@ -111,8 +131,19 @@ pub struct Demo {
     content: LoadedContent,
     game_world: GameWorld,
     camera: Camera,
+    /// 当前画面缩放倍率——ADR 0020 甲区（渲染层浮点，结果只变成
+    /// 像素，见 `ll_render::camera::Zoom` 文档），钳制在
+    /// `[MIN_SAFE_ZOOM, MAX_SAFE_ZOOM]`（不是 `Zoom` 的通用上下限，
+    /// 那两个常量的推导见 `crate::world` 模块文档「常驻区块集合完全
+    /// 解耦」——本字段绝不进 `GameWorld`/`WorldState`，只是 `Demo`
+    /// 自己的运行期渲染状态。
+    zoom: Zoom,
     save_path: PathBuf,
     character_name: String,
+    /// 垂直同步与缩放滤波偏好，`on_resume` 建 [`GpuResources`] 时需要，
+    /// 但 `resources` 要等窗口就绪才能创建（见该字段文档），因此本
+    /// 结构体自己先存一份。
+    display: DisplayConfig,
     resources: Option<GpuResources>,
 }
 
@@ -125,6 +156,7 @@ impl Demo {
         game_world: GameWorld,
         save_path: PathBuf,
         character_name: String,
+        display: DisplayConfig,
     ) -> Demo {
         let player_pos = game_world
             .world
@@ -140,17 +172,22 @@ impl Demo {
             content,
             game_world,
             camera,
+            zoom: Zoom::default(),
             save_path,
             character_name,
+            display,
             resources: None,
         }
     }
 
     /// 每帧输入处理：先维护流式邻域（必须排在移动之前，见
     /// `ll_world::surface_store::SurfaceStore::stream_neighborhood`
-    /// 文档），再处理移动。
+    /// 文档），再处理缩放与移动——缩放只影响 `self.zoom`（渲染层状态），
+    /// 与移动、流式邻域完全独立，顺序先后不影响正确性，放在移动之前
+    /// 只是让「本帧输入」的处理顺序读起来更顺。
     fn advance(&mut self, input: &InputState) {
         self.maintain_streaming();
+        self.update_zoom(input);
 
         let player = self.game_world.player;
         let intent = intent_from_input(player, input);
@@ -166,6 +203,27 @@ impl Demo {
         {
             self.camera.center = agent.pos;
         }
+    }
+
+    /// 按本帧激活的缩放动作调整 `self.zoom`。`was_activated` 而非
+    /// `was_just_pressed`：缩放键参与自动重复（`GameKey::is_repeatable`
+    /// 已把 `ZoomIn`/`ZoomOut` 收进去），长按应当连续变化；滚轮每次
+    /// 滚动只调用一次 `InputState::pulse`，`was_activated` 对它同样
+    /// 恰好触发一帧，两种输入源殊途同归，见 `ll-platform` 的
+    /// `crate::keybind::WheelDirection` 模块文档。
+    ///
+    /// 钳制到 `[MIN_SAFE_ZOOM, MAX_SAFE_ZOOM]`，不是 `Zoom` 的通用
+    /// 上下限——这是拉远不会让渲染剔除范围超出常驻区块集合覆盖范围的
+    /// 唯一强制点，见 `crate::world::MIN_SAFE_ZOOM` 文档。
+    fn update_zoom(&mut self, input: &InputState) {
+        let mut value = self.zoom.get();
+        if input.was_activated(GameKey::ZoomIn) {
+            value += ZOOM_STEP;
+        }
+        if input.was_activated(GameKey::ZoomOut) {
+            value -= ZOOM_STEP;
+        }
+        self.zoom = Zoom::new(value.clamp(MIN_SAFE_ZOOM, MAX_SAFE_ZOOM));
     }
 
     fn maintain_streaming(&mut self) {
@@ -207,10 +265,18 @@ impl Demo {
 }
 
 /// 把地表世界画到离屏目标：地形（仅可见格）+ 玩家标记。
+///
+/// `zoom` 只影响**画在哪里、画多大**（`apply_zoom` 与逐精灵尺寸乘法）
+/// 与**枚举多大范围**（`visible_tiles_zoomed`），完全不影响 FOV 半径
+/// `radius`——视野看得多远是玩法规则（`effective_sight_radius`
+/// 读的是空间属性表与时钟，两者都不知道 `zoom` 存在），缩放只是把
+/// 「已经算好可见的这批格子」画得更大或更小、连带能塞进画布的格子
+/// 更少或更多，从未反过来影响「哪些格子算可见」这个判定本身。
 fn render_surface(
     game_world: &GameWorld,
     content: &LoadedContent,
     camera: &Camera,
+    zoom: Zoom,
     resources: &mut GpuResources,
 ) {
     let world = &game_world.world;
@@ -232,7 +298,7 @@ fn render_surface(
     );
 
     let world_width = world.size.width() as u64;
-    for pos in camera.visible_tiles() {
+    for pos in camera.visible_tiles_zoomed(zoom) {
         if !visible.contains(pos) {
             continue;
         }
@@ -245,20 +311,25 @@ fn render_surface(
         let Some((entry, uv)) = resources.lookup(name) else {
             continue;
         };
+        // 先按未缩放的相机换算拿到屏幕坐标（DrawOrder 排序用这份原始
+        // 坐标即可——zoom 是围绕视口中心的单调变换，纵坐标的大小关系
+        // 恒定不变，见 apply_zoom 文档），再对绘制位置单独套一次
+        // apply_zoom。
         let (sx, sy) = camera.world_to_screen(pos);
         let order = DrawOrder::new(
             Layer::TERRAIN,
             sy,
             TERRAIN_ENTITY_BASE + pos.y() as u64 * world_width + pos.x() as u64,
         );
+        let [zx, zy] = apply_zoom([sx as f32, sy as f32], zoom);
         resources.batch.push(
             order,
-            sprite_instance(sx as f32, sy as f32, entry.sprite_size(), uv, tint),
+            sprite_instance(zx, zy, entry.sprite_size(), uv, tint, zoom),
         );
     }
 
     let (px, py) = camera.world_to_screen(player_pos);
-    push_player_marker(px, py, tint, resources);
+    push_player_marker(px, py, tint, zoom, resources);
 }
 
 /// 空间的完整 [`ll_world::space_profile::SpaceProfile`]——`Space` 本身
@@ -280,33 +351,48 @@ fn space_profile_of(
     }
 }
 
-fn push_player_marker(sx: i32, sy: i32, tint: [f32; 4], resources: &mut GpuResources) {
+fn push_player_marker(sx: i32, sy: i32, tint: [f32; 4], zoom: Zoom, resources: &mut GpuResources) {
     let Some((entry, uv)) = resources.lookup(PLAYER_SPRITE) else {
         return;
     };
     let footprint = entry.footprint;
+    // 锚点/pivot 换算全部走未缩放坐标——sprite.rs 的这套算术不知道、
+    // 也不需要知道 zoom 存在（见 apply_zoom 文档「为什么是围绕视口
+    // 自由函数」），缩放作为最后一步的后处理套在算出来的最终绘制
+    // 位置上：这等价于把整张离屏画布围绕中心缩放，pivot 偏移量本身
+    // 也会随之成比例缩放，marker 不会因为缩放而错位。
     let [px, py] = sprite_draw_position((sx, sy), footprint, entry.pivot);
     let order = DrawOrder::new(
         Layer::ENTITY,
         footprint_bottom_screen_y(sy, footprint.height),
         PLAYER_ENTITY,
     );
+    let [zx, zy] = apply_zoom([px, py], zoom);
     resources.batch.push(
         order,
-        sprite_instance(px, py, entry.sprite_size(), uv, tint),
+        sprite_instance(zx, zy, entry.sprite_size(), uv, tint, zoom),
     );
 }
 
+/// 构造一个精灵实例：`x`/`y` 应为已经套过 [`apply_zoom`] 的最终屏幕
+/// 位置，`size` 是精灵未缩放的原生像素尺寸，本函数负责按 `zoom` 把
+/// 它换算成绘制尺寸——位置需要「围绕中心」的特殊变换（`apply_zoom`），
+/// 尺寸只是单纯的比例缩放，两者不能共用同一个变换，因此调用方必须
+/// 先各自处理好再传进来，本函数只做最后的结构体组装。
 fn sprite_instance(
     x: f32,
     y: f32,
     size: ll_render::sprite::SpriteSize,
     uv_rect: [f32; 4],
     color: [f32; 4],
+    zoom: Zoom,
 ) -> SpriteInstance {
     SpriteInstance {
         position: [x, y],
-        size: [size.width as f32, size.height as f32],
+        size: [
+            size.width as f32 * zoom.get(),
+            size.height as f32 * zoom.get(),
+        ],
         uv_rect,
         color,
     }
@@ -315,7 +401,7 @@ fn sprite_instance(
 impl AppHandler for Demo {
     fn on_resume(&mut self, window: Arc<Window>, size: PhysicalSize<u32>) {
         tracing::info!(width = size.width, height = size.height, "window resumed");
-        self.resources = Some(GpuResources::new(window, size));
+        self.resources = Some(GpuResources::new(window, size, self.display));
     }
 
     fn on_resize(&mut self, size: PhysicalSize<u32>) {
@@ -336,7 +422,13 @@ impl AppHandler for Demo {
             return FrameOutcome::Continue;
         };
 
-        render_surface(&self.game_world, &self.content, &self.camera, resources);
+        render_surface(
+            &self.game_world,
+            &self.content,
+            &self.camera,
+            self.zoom,
+            resources,
+        );
 
         resources
             .batch

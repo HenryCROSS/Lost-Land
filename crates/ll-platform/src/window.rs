@@ -13,7 +13,7 @@
 
 use crate::PlatformError;
 use crate::input::{InputState, RepeatConfig};
-use crate::keybind::{InputContext, KeyBindings, Modifiers};
+use crate::keybind::{InputContext, KeyBindings, Modifiers, WheelDirection};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
@@ -236,6 +236,22 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                 match event.state {
                     ElementState::Pressed => self.input.press(action),
                     ElementState::Released => self.input.release(action),
+                }
+            }
+            WindowEvent::MouseWheel { delta, .. } => {
+                // 滚轮走独立的 resolve_wheel/pulse 入口，不复用键盘的
+                // resolve/press——两者判重维度不同（键盘按 (key,
+                // modifiers, context)，滚轮按 (direction, context)），
+                // pulse 的语义也与 press 不同（不进入「按住」状态，见
+                // `InputState::pulse` 文档），理由见
+                // `crate::keybind::WheelDirection` 模块文档。
+                if let Some(direction) = WheelDirection::from_scroll_delta(delta)
+                    && let Some(action) = self
+                        .config
+                        .bindings
+                        .resolve_wheel(direction, InputContext::Gameplay)
+                {
+                    self.input.pulse(action);
                 }
             }
             WindowEvent::Focused(false) => {

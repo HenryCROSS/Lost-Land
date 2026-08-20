@@ -55,6 +55,12 @@ pub enum GameKey {
     /// 这是冻结基准的入口，不是调试功能——基准是需要被保护的资产，
     /// 详见 `crates/ll-render/tests/visual/README.md` 的处置规矩。
     Screenshot,
+    /// 放大画面（拉近视角）。可由按键（长按参与自动重复）或滚轮（每次
+    /// 滚动一格触发一次脉冲，见 [`InputState::pulse`]）触发，见
+    /// `crate::keybind` 模块文档「滚轮滚动的离散方向」一节。
+    ZoomIn,
+    /// 缩小画面（拉远视角），理由同 `ZoomIn`。
+    ZoomOut,
 }
 
 /// 全部动作键，顺序必须与 [`GameKey`] 的变体声明顺序一致。
@@ -75,10 +81,12 @@ const ALL_KEYS: [GameKey; KEY_COUNT] = [
     GameKey::Map,
     GameKey::Wait,
     GameKey::Screenshot,
+    GameKey::ZoomIn,
+    GameKey::ZoomOut,
 ];
 
 /// 动作键总数，用于状态数组定长。
-const KEY_COUNT: usize = 10;
+const KEY_COUNT: usize = 12;
 
 impl GameKey {
     /// 在状态数组中的下标。
@@ -88,14 +96,29 @@ impl GameKey {
 
     /// 该键是否参与按键自动重复。
     ///
-    /// 方向键与等待键长按连续触发是回合制的刚需；确认/取消/菜单/地图/
-    /// 截图这类一次性动作键则相反——按住若反复触发，会把整个菜单一路
-    /// 点穿、把视觉回归基准反复覆写，这正是 [`InputState::press`] 对操作
-    /// 系统按键重复事件去重要防的问题，让这些键参与自动重复等于开倒车。
+    /// 方向键与等待键长按连续触发是回合制的刚需；缩放键同理——长按
+    /// 放大/缩小键应当连续变化视野，而不是像菜单操作那样一次只响应
+    /// 一格。确认/取消/菜单/地图/截图这类一次性动作键则相反——按住若
+    /// 反复触发，会把整个菜单一路点穿、把视觉回归基准反复覆写，这正是
+    /// [`InputState::press`] 对操作系统按键重复事件去重要防的问题，
+    /// 让这些键参与自动重复等于开倒车。
+    ///
+    /// **滚轮触发的缩放不受这条自动重复机制影响**：滚轮从不调用
+    /// `press`/`release`，而是每次滚动调用一次 [`InputState::pulse`]
+    /// （见其文档），`pulse` 不置起 `held`，因此不会进入
+    /// [`InputState::begin_frame`] 的自动重复计时——滚一格就只触发
+    /// 一次，多滚才多触发，这与滚轮天然的「离散步进」手感一致；只有
+    /// **按键**长按缩放键时才会经这条自动重复机制连续触发。
     pub const fn is_repeatable(self) -> bool {
         matches!(
             self,
-            GameKey::Up | GameKey::Down | GameKey::Left | GameKey::Right | GameKey::Wait
+            GameKey::Up
+                | GameKey::Down
+                | GameKey::Left
+                | GameKey::Right
+                | GameKey::Wait
+                | GameKey::ZoomIn
+                | GameKey::ZoomOut
         )
     }
 
@@ -121,6 +144,8 @@ impl GameKey {
             GameKey::Map => "lostland:keybind.action.map",
             GameKey::Wait => "lostland:keybind.action.wait",
             GameKey::Screenshot => "lostland:keybind.action.screenshot",
+            GameKey::ZoomIn => "lostland:keybind.action.zoom_in",
+            GameKey::ZoomOut => "lostland:keybind.action.zoom_out",
         };
         NamespacedId::parse(raw).expect("硬编码的 i18n 键必然是合法的命名空间标识符")
     }
@@ -227,6 +252,27 @@ impl InputState {
     pub fn release(&mut self, key: GameKey) {
         self.held[key.index()] = false;
         self.repeat_next_at[key.index()] = None;
+    }
+
+    /// 触发一次「瞬时脉冲」：本帧视为该键刚激活一次，但不进入「按住」
+    /// 状态。
+    ///
+    /// # 为什么滚轮不能复用 `press`
+    ///
+    /// 滚轮没有物理上的「按住」概念——每次滚动只是一个瞬间信号，不像
+    /// 键盘那样有对应的松开事件（`crate::window` 的事件循环从
+    /// `WindowEvent::MouseWheel` 只能拿到「滚动了一次」，从没有、也
+    /// 永远不会有一个「滚轮松开了」的事件）。若复用 `press()`，该键
+    /// 会被标记为 `held = true`，此后永远等不到 `release()` 来解除；
+    /// [`Self::begin_frame`] 的自动重复机制还会把它当成「一直按住」
+    /// 持续触发——这不是滚轮输入该有的语义，滚一下应当只触发一次。
+    ///
+    /// `pulse` 只置起 `just_pressed`，完全不触碰 `held`：`is_held`
+    /// 对这个键恒返回 `false`，`begin_frame` 的自动重复分支因为看到
+    /// `!self.held[index]` 而直接跳过，不会把这次脉冲错误地纳入连续
+    /// 重复计时。
+    pub fn pulse(&mut self, key: GameKey) {
+        self.just_pressed[key.index()] = true;
     }
 
     /// 该键当前是否被按住。
@@ -460,6 +506,8 @@ mod tests {
                 GameKey::Map => 7,
                 GameKey::Wait => 8,
                 GameKey::Screenshot => 9,
+                GameKey::ZoomIn => 10,
+                GameKey::ZoomOut => 11,
             };
             assert_eq!(key.index(), expected_index);
             seen[key.index()] = true;
@@ -683,6 +731,67 @@ mod tests {
 
         // Assert
         assert!(!input.was_activated(GameKey::Screenshot));
+    }
+
+    #[test]
+    fn 脉冲触发本帧刚按下判定() {
+        // Arrange
+        let mut input = InputState::new();
+
+        // Act
+        input.pulse(GameKey::ZoomIn);
+
+        // Assert
+        assert!(input.was_activated(GameKey::ZoomIn));
+    }
+
+    #[test]
+    fn 脉冲不会让该键进入按住状态() {
+        // 这是滚轮语义的核心：滚一下不该被当成「按住」，否则自动重复
+        // 机制会在后续帧里持续触发同一个动作。
+        // Arrange
+        let mut input = InputState::new();
+
+        // Act
+        input.pulse(GameKey::ZoomIn);
+
+        // Assert
+        assert!(!input.is_held(GameKey::ZoomIn));
+    }
+
+    #[test]
+    fn 脉冲触发的刚按下判定在帧结束后失效() {
+        // Arrange
+        let mut input = InputState::new();
+        input.pulse(GameKey::ZoomIn);
+
+        // Act
+        input.end_frame();
+
+        // Assert
+        assert!(!input.was_activated(GameKey::ZoomIn));
+    }
+
+    #[test]
+    fn 脉冲之后不会经自动重复机制在后续帧继续触发() {
+        // 若脉冲错误地建立了重复计时基准，long 之后的 begin_frame 会
+        // 让它像长按一样持续触发——这正是不能复用 press() 的理由。
+        // Arrange
+        let mut input = InputState::new();
+        let config = RepeatConfig::default();
+        let pulsed_at = Instant::now();
+        input.pulse(GameKey::ZoomIn);
+        input.begin_frame(pulsed_at, config);
+        input.end_frame();
+
+        // Act：时间推进到远超初始延迟与多个重复间隔
+        input.begin_frame(
+            pulsed_at + config.initial_delay + config.interval * 10,
+            config,
+        );
+
+        // Assert
+        assert!(!input.was_activated(GameKey::ZoomIn));
     }
 
     #[test]
