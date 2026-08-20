@@ -1,6 +1,6 @@
 # 设计文档总索引
 
-本目录下十九份文档共同描述「迷途大陆」的物品、装备、属性、社会、经济、种族、世界历史、身份标识、命名与本地化、坐标与空间模型、脚本层数据句柄与批量查询、脚本状态存储、三轴战斗结算、增益与通用触发器、职业技能与任务、动画与视觉特效边界、击杀与死亡记录、mod 包结构与资产 VFS、剧本系统十九个子系统。它们分开冻结、分次写成，彼此高度依赖但没有统一校对过——这份索引是校对结果：谁管什么、谁引用了谁、贯穿全局的原则用在哪几处、该按什么顺序读。
+本目录下二十份文档共同描述「迷途大陆」的物品、装备、属性、社会、经济、种族、世界历史、身份标识、命名与本地化、坐标与空间模型、脚本层数据句柄与批量查询、脚本状态存储、三轴战斗结算、增益与通用触发器、职业技能与任务、动画与视觉特效边界、击杀与死亡记录、mod 包结构与资产 VFS、剧本系统、伤害公式 mod API 二十个子系统。它们分开冻结、分次写成，彼此高度依赖但没有统一校对过——这份索引是校对结果：谁管什么、谁引用了谁、贯穿全局的原则用在哪几处、该按什么顺序读。
 
 前五份（物品、装备、属性、社会、经济）是最早冻结的一批，中间四份（种族、世界历史、身份与 ID 空间、命名与本地化）是在前五份基础上补的一批已拍板决定——它们大量引用前五份的既有结构（`Affiliation`、`Kinship`、`ContentIndex`、`BaseStats`……），几乎不新增底层机制，只是把前五份没覆盖到的角落（种族怎么算、历史怎么生成、生成物怎么引用、名字怎么本地化）填满。
 
@@ -43,6 +43,7 @@
 | [击杀与死亡记录](kill-and-death-events.md) | `HistoricalEvent` 信封的首次正式定型、`KillRecord`/`KillCause`/`KillingBlow`/`VictimState` 字段、击杀/死亡的分级记录规则与量级估算、死亡统计存储方案（个体字段/聚落聚合/事件查询三分）、`Effect::Kill` 扩展 `killer`/`cause` 字段的形状、`CreatureKindDef` 小注册表解「敌人类型」歧义 | 世界历史生成的其余事件种类（建城/战争/王朝更替，见世界历史文档）、关系记忆偏移的存储结构本身（见社会文档，未落地，本文档只指出触发点）、`WorldId` 是否覆盖"历史人物"这一类的正式定案（见身份文档，本文档只指出消费端依赖） |
 | [mod 包结构与资产 VFS](mod-package-structure.md) | mod 包推荐目录布局（脚本/资产/本地化分区的理由）、清单新增字段（`display_name_key`/`description_key`/`author`/`compatible_game_version`/`[dependencies]` 版本约束）及被否决字段、入口点按用途分类（`[scripts]` 表，解决 `behavior.scm` 长期"不在任何清单里"的坑）、资产 VFS 的引用/覆盖约定（同路径覆盖、按拓扑序决胜）、依赖版本约束的两条独立轴与失败语义 | 具体图集清单字段格式（footprint/pivot/UV，见资产管线 `knowledge/pipelines/`）、mod 分发/市场机制（未规划）、存档与 mod 集合的内容哈希策略（见身份文档，本文档只说明版本约束与之如何配合而不重叠） |
 | [剧本系统](narrative-system.md) | 剧本与任务系统的边界判据、"具体人地 vs 生成世界"矛盾的三条路评估与定案（按角色绑定,解析一次持久化）、`NarrativeDef`/`NarrativeBeatDef`/`NarrativeRoleDef` 的一/三档存储形状、进度持久化复用脚本状态存储并提出 `ScriptValue` 新增 `World(WorldId)` 变体、剧本事件是否并入历史事件的判断与否决、剧本对话的本地化与 `format-text` 依赖、阶段归属与最小可用形状 | 具体剧本内容（内容设计范畴）、角色查询的具体实现算法（见身份/世界历史文档，本文档只定"按 0016 分级表达"这层形状）、剧本管理 UI/编辑器工具（见规格 §12/§16，未落地） |
+| [伤害公式 mod API](damage-formula-mod-api.md) | mod 用 D&D 风格骰子表达式（s-表达式，`quote` 载体，仿照 `behavior.scm` 模式）书写伤害公式；装载期编译成扁平指令数组，运行期零脚本调用（ADR 0017 第二档）；`FormulaOp`/`FormulaOperand` 指令集（算术/骰子/优势劣势骰/多轮判定）；多轮判定与既有 `damage_after_defense` 减伤链路正交共存；幸运→暴击率的接线、幸运→优势骰机制相同但当前无挂载点（如实标注）；`damage_formula: ContentIndex` 按武器/技能各自声明，覆盖冲突复用 `topo_sort`+`LoadStatus::Warning`；SRD 协议边界 | 具体武器/技能数值内容（内容设计范畴）、伤害类型与抗性的具体规则（尚不存在，只给未来接线形状）、命中判定/AC 模型（评估后否决，见该文档五节）、`StatBonus`/装备接线本身（见属性/装备/三轴战斗文档） |
 
 一句话版边界：**物品定义「是什么」，装备定义「戴在哪」，属性定义「打起来怎么算」，社会定义「谁跟谁什么关系」，经济定义「钱和活儿怎么流动」，种族定义「先天差异有多少、体现在哪几处」，世界历史定义「世界是怎么变成现在这样的」，身份定义「东西怎么被引用而不会指错」，命名定义「叫什么、谁能改」，坐标与空间定义「世界本身怎么划分、怎么按需生成」，三轴战斗定义「打的时候具体算什么」，增益与触发器定义「效果怎么持续、怎么互相触发而不失控」，职业技能任务定义「玩家能学什么、接什么」，动画与视觉特效边界定义「算完的东西该怎么演给玩家看，演的过程绝不能反过来改算的结果」，击杀与死亡记录定义「谁杀了谁、用什么杀的，记成历史事件而不是另开一本战斗日志」，mod 包结构定义「一个 mod 长什么样、脚本与资产怎么组织、怎么被发现与覆盖」，剧本系统定义「有顺序、有具体人地的故事该怎么讲，而不与任务系统的完成判定重叠」。** 十九者共用同一个 `Agent`/`ItemStack`/`Affiliation`/`TorusPos`/`DerivedStats`/`Effect`/`ScriptValue` 底座，但没有一份文档试图覆盖别人的地盘——边界比内容更容易搞混，出现「这个概念该去哪份文档找」的疑惑时，先查下面的对照表。
 
@@ -97,6 +98,7 @@
 | 资产 VFS「同路径覆盖」约定（`assets/overrides/<目标命名空间>/...`） | [mod 包结构与资产 VFS](mod-package-structure.md) | 复用 [职业/技能树/副职/任务系统](class-skill-quest-system.md) 等文档已经验证的 `topo_sort` 确定性总序，作为覆盖冲突的决胜规则 |
 | `NarrativeDef` / `NarrativeBeatDef` / `NarrativeRoleDef`（剧本：beat DAG、角色绑定声明，均**未落地**） | [剧本系统](narrative-system.md) | 依赖 [职业/技能树/副职/任务系统](class-skill-quest-system.md)（`BeatCompletion::QuestLinked` 直接绑定既有 `QuestNodeDef`）、[身份与 ID 空间](identity-and-ids.md)（角色绑定的查询式解析对象） |
 | `ScriptValue::World(WorldId)`（脚本状态存储值类型系统的新增变体，**未落地**） | [剧本系统](narrative-system.md) | 补齐 [脚本状态存储](script-state-storage.md)「十、开放问题」第 1 条悬而未决的"是否需要支持存储 `WorldId`"——本文档给出第一个真实需求（剧本角色绑定到势力/组织实例） |
+| `FormulaDef`/`FormulaOp`/`FormulaOperand`（伤害表达式编译产物：扁平指令数组，含骰子/优势劣势骰/多轮判定，**未落地**） | [伤害公式 mod API](damage-formula-mod-api.md) | [三轴战斗结算](combat-three-axis.md)（`WeaponDef.damage_formula` 字段挂靠点）、[增益与通用触发器](buffs-and-triggers.md)（`TriggerResponse::Formula` 占位复用同一套机制） |
 
 ---
 
@@ -204,6 +206,10 @@
 
 19. **[剧本系统](narrative-system.md)**——建议紧接第十八份读完之后就读；先读「一、剧本与任务的边界」避免把两个系统做成重叠的东西，再读「二、核心矛盾」——这是全篇最难的一节,给出了"按角色绑定"这一条结论与另外两条被否决路线的完整论证，最后读「四、进度持久化」——这一节点出的 `ScriptValue::World(WorldId)` 缺口是[脚本状态存储](script-state-storage.md)留下的悬而未决的开放问题第一次被真实需求填上。
 
+第二十份回到「玩起来怎么算」这条主线，紧接第十三份（三轴战斗结算）读最顺——它接的正是该文档「四、接线点」留下的伤害公式空白；读之前建议先看过 [ADR 0016](../decisions/0016-mod-performance-tiers-by-declaration.md)/[0017](../decisions/0017-tiered-declarations-materialize-columnar.md)（性能分档）与 `mods/example_mod/behavior.scm`（s-表达式 + `quote` 载体的既有先例）：
+
+20. **[伤害公式 mod API](damage-formula-mod-api.md)**——先读「一、现状核实」看清 `damage_after_defense` 目前唯一的真实调用点与 `resolve_use_skill` 绕过它的已知缺口，再读「二、定档」理解"声明式装载"与"运行期成本"是两个独立的轴，接着读「三、表达式语法」与「四、两个示例」看 s-表达式语法本身，最后读「五、命中/减伤模型」——这是全篇论证最重的一节，给出了"多轮判定与既有减伤公式正交共存、10% 下限不冗余"这条不那么直觉的结论。
+
 ---
 
 ## 五、落地状态速览
@@ -231,5 +237,6 @@
 | 击杀与死亡记录 | 纯设计，代码中无任何对应类型；它要接线的对象——`Effect::Kill`（`crates/ll-sim/src/effect.rs`，目前只有 `target` 一个字段）、`resolve_attack`/`resolve_use_skill`（`crates/ll-sim/src/resolve.rs`）、`KillCount` 任务条件借用 `Agent::race` 的已知简化（`crates/ll-mod/src/quest.rs`）——均已落地且已核实现状 |
 | mod 包结构与资产 VFS | 纯设计，代码中无任何对应类型；`ModManifest` 现有四字段（`crates/ll-mod/src/manifest.rs`）与 `mods/example_mod/` 现有平铺布局已核实作为现状基线，资产 VFS 本身规格 §5 已规划但 `crates/ll-mod/src/` 无 `vfs.rs` 或等价实现（[ADR 0019](../decisions/0019-denied-capability-needs-substitute-or-justification.md) J 组已核实同一结论） |
 | 剧本系统 | 纯设计，代码中无任何对应类型；它依赖的既有机制——`QuestNodeDef`/`QuestCondition`（`crates/ll-mod/src/quest.rs`，已落地）、`ScriptValue`/每实体脚本状态存储（`crates/ll-world/src/script_state.rs`，已落地但未含本文档提出的 `World(WorldId)` 新变体）——均已核实现状；角色绑定解析依赖的 `OrgInstance`/`WorldId`/世界生成本身仍是纯设计,详见文档「七、阶段归属」 |
+| 伤害公式 mod API | 纯设计，代码中无任何对应类型；它要接线的对象——`damage_after_defense`（`crates/ll-sim/src/combat.rs`）、`resolve_attack`（`crates/ll-sim/src/resolve.rs`，唯一真实调用点）——均已核实现状；`resolve_use_skill` 绕过 `damage_after_defense` 的既有缺口一并记录在案；机制本身（编译器/求值器）归 P4，接入战斗结算归 P6，详见文档「十四、阶段归属」 |
 
 三份最早冻结、「已部分落地」的文档中，真正验证过的只是 P3 阶段要求的字段布局与钱包机制；描述战斗结算、经济博弈、社会涌现的大部分内容仍是纸上设计，随时可能在 P5/P8/P9 实现时被推翻或调整（[2026-08-18 规格修订] 原 P7/P8 顺移为 P8/P9）。中间四份里，种族系统与命名系统同样只有字段/函数布局落地，核心机制（现算公式、i18n 对齐、改名事件）尚未验证；世界历史生成与身份空间目前完全是纸面设计。第十份（坐标系与空间模型）虽是纯设计，但它要替换的对象是 P2 阶段验证过的真实代码，不是在空白处新增——这与前九份「在已有底座上补新系统」的性质不同，实现时的返工面积也更大，见该文档「对既有 P2 成果的影响范围」一节的诚实评估。
