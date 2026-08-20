@@ -55,6 +55,55 @@ pub fn effective_tint(profile: &SpaceProfile, clock: Tick) -> [f32; 4] {
     [light, light, light, 1.0]
 }
 
+/// 已探索但当前无视野的格子（战争迷雾「记忆」层）在 [`effective_tint`]
+/// 基础上再压暗的系数。
+///
+/// 只影响像素颜色，不进 [`ll_world::state::WorldState`]——世界状态禁止
+/// 浮点（约束见 `ll_world::exploration` 模块文档「只存位图」一节：
+/// `ExplorationMemory` 只记「看没看过」这一个 bit，暗化多少是纯表现层
+/// 决策，不该反过来污染世界状态）。取值小于 1 让记忆层比当前视野暗、
+/// 大于零让它比「从未探索」（完全不画、留黑）更亮——三层可见性
+/// （项目所有者原话：「没有视野的地方就暗下来一些……没去过的地方就
+/// 黑着」）因此不是三个离散色阶,而是「不画」与「按此系数压暗」两种
+/// 处理叠加在同一套 `effective_tint` 光照调制之上。
+const EXPLORED_MEMORY_DIM_FACTOR: f32 = 0.35;
+
+/// 把当前光照色调换算成「已探索但当前无视野」格子应使用的记忆色调。
+///
+/// 见 [`EXPLORED_MEMORY_DIM_FACTOR`] 文档：只压暗 RGB，不动 alpha——
+/// 记忆层格子仍需完全不透明地画出来，只是比当前视野内的格子暗。
+pub fn memory_tint(tint: [f32; 4]) -> [f32; 4] {
+    [
+        tint[0] * EXPLORED_MEMORY_DIM_FACTOR,
+        tint[1] * EXPLORED_MEMORY_DIM_FACTOR,
+        tint[2] * EXPLORED_MEMORY_DIM_FACTOR,
+        tint[3],
+    ]
+}
+
+/// 三层可见性判定：给定一格「当前是否在玩家视野内」与「是否已被探索
+/// 过」，返回这一帧该不该画这一格、画的话用哪种色调。
+///
+/// 从 [`crate::app`] 的 `render_surface` 抽成与 GPU 无关的纯函数——三层
+/// 可见性本身只是一张判定表（项目所有者原话：「没有视野的地方就暗
+/// 下来一些，有视野的地方就没问题。而没去过的地方就黑着」），不需要
+/// 靠跑起整条渲染管线才能验证：
+///
+/// - 当前有视野 → 画，用 `tint`（当前光照色调）。
+/// - 当前无视野但已探索过 → 画，用 [`memory_tint`]（记忆层，比当前
+///   光照暗）。
+/// - 既无视野也没探索过 → 不画（`None`），调用方应当跳过这一格，让
+///   `ll-render` 的黑色清屏背景顶替「从未探索」的黑。
+pub fn tile_tint(currently_visible: bool, explored: bool, tint: [f32; 4]) -> Option<[f32; 4]> {
+    if currently_visible {
+        Some(tint)
+    } else if explored {
+        Some(memory_tint(tint))
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -98,5 +147,77 @@ mod tests {
 
         // Assert
         assert!(radius < BASE_SIGHT_RADIUS);
+    }
+
+    #[test]
+    fn 记忆色调比原始光照色调暗() {
+        // Arrange
+        let tint = [1.0, 1.0, 1.0, 1.0];
+
+        // Act
+        let dimmed = memory_tint(tint);
+
+        // Assert
+        assert!(dimmed[0] < tint[0]);
+    }
+
+    #[test]
+    fn 记忆色调不改变透明度() {
+        // Arrange
+        let tint = [0.6, 0.6, 0.6, 1.0];
+
+        // Act
+        let dimmed = memory_tint(tint);
+
+        // Assert
+        assert_eq!(dimmed[3], tint[3]);
+    }
+
+    #[test]
+    fn 全黑光照下记忆色调仍是全黑() {
+        // Arrange：夜间/无光照场景，压暗系数不该把零变成非零。
+        let tint = [0.0, 0.0, 0.0, 1.0];
+
+        // Act
+        let dimmed = memory_tint(tint);
+
+        // Assert
+        assert_eq!(dimmed, [0.0, 0.0, 0.0, 1.0]);
+    }
+
+    #[test]
+    fn 当前有视野的格子用原始色调绘制() {
+        // Arrange
+        let tint = [0.8, 0.8, 0.8, 1.0];
+
+        // Act
+        let result = tile_tint(true, false, tint);
+
+        // Assert
+        assert_eq!(result, Some(tint));
+    }
+
+    #[test]
+    fn 探索过但当前无视野的格子用记忆色调绘制() {
+        // Arrange
+        let tint = [0.8, 0.8, 0.8, 1.0];
+
+        // Act
+        let result = tile_tint(false, true, tint);
+
+        // Assert
+        assert_eq!(result, Some(memory_tint(tint)));
+    }
+
+    #[test]
+    fn 从未探索且当前无视野的格子不绘制() {
+        // Arrange
+        let tint = [0.8, 0.8, 0.8, 1.0];
+
+        // Act
+        let result = tile_tint(false, false, tint);
+
+        // Assert
+        assert_eq!(result, None);
     }
 }
