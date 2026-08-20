@@ -6,15 +6,23 @@
 //! [`crate::content::LoadedContent`] 的真实装载结果，不是测试用的
 //! `*_fixture` 便捷函数——本体二进制走的是与 mod 完全相同的注册通道。
 
+use std::collections::VecDeque;
+
 use ll_core::time::Tick;
-use ll_core::torus::TorusPos;
+use ll_core::torus::{TorusPos, TorusSize};
+use ll_world::chunk::ChunkGrid;
 use ll_world::entity::{Agent, BaseStats, EntityId};
-use ll_world::generate::{GenParams, build_zone_noise};
+use ll_world::generate::{
+    GenParams, build_zone_noise, generate_zone_window, zone_representative_terrain,
+};
 use ll_world::noise::TileableNoise;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::zone::ZoneLayout;
-use ll_world::{WorldError, terrain::TerrainTable};
+use ll_world::{
+    WorldError,
+    terrain::{BaseTerrainIds, TerrainTable},
+};
 
 use crate::content::LoadedContent;
 
@@ -33,10 +41,35 @@ const ZONE_SPAN: u32 = 48;
 /// 启动与流式加载都足够快。
 const ZONE_COUNT: (u32, u32) = (64, 48);
 
-/// 出生点周围强制铺成草地的半径（格）——不依赖噪声生成恰好在
-/// `(0, 0)` 给出可站立地形，见模块文档。半径 3 覆盖玩家开局能立刻
-/// 看到、走到的一小片范围，不是整张地图。
+/// 出生点周围强制铺成草地的半径（格）——[`find_spawn_site`] 找不到
+/// 合格陆地、退回 [`carve_spawn_clearing`] 兜底时用的补丁大小,不再是
+/// 常规路径,见 [`carve_spawn_clearing`] 文档。半径 3 只够玩家开局立刻
+/// 看到、走到的一小片范围,不是整张地图。
 const SPAWN_CLEARING_RADIUS: i32 = 3;
+
+/// [`find_spawn_site`] 判定「够大」的最小连通可行走区域格数。
+///
+/// # 取值理由
+///
+/// 旧版补丁（[`SPAWN_CLEARING_RADIUS`] = 3 的 7×7 强铺草地）只有 49
+/// 格——正是项目所有者实测报告里那座「小得可怜的岛」。这里取
+/// `500`：约是旧补丁面积的十倍，换算成正方形约 22×22，明显大到「能
+/// 走开」，同时仍只占单个区块窗口（`ZONE_SPAN × ZONE_SPAN = 2304`
+/// 格,见 [`find_spawn_site`] 「扫描粒度」一节）约 22%——普通草原/
+/// 平原区块的连通陆地远超这个比例，阈值不会把搜索卡在几乎找不到解的
+/// 境地，只会真正挡住「出生点只挨着一小片孤立陆地」这类情形。
+const MIN_SPAWN_LAND_AREA: usize = 500;
+
+/// [`find_spawn_site`] 最多完整检查（生成整个区块窗口 + 连通域分析）
+/// 的区块数——超出后放弃搜索,不再无限找下去,见该函数文档「有界」
+/// 一节。
+///
+/// 取值 128：本体默认区块布局（[`ZONE_COUNT`]）是 64×48，128 恰好是
+/// 其中两整行区块——多数种子在几个区块内就能找到合格陆地，给两整行
+/// 的余量足以吸收局部地形恰好破碎的偶然情况；又远小于区块总数
+/// （`64 × 48 = 3072`），不会在几乎全是水的病态种子上退化成等价于
+/// 生成整张地图的开销。
+const MAX_SPAWN_SEARCH_ZONES: usize = 128;
 
 /// 流式邻域维护半径（区块数）——与 `p5_coordinate_acceptance` 同一
 /// 取值，见其 `layout::STREAM_RADIUS_ZONES` 文档。
@@ -123,7 +156,24 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
     };
     let noise = build_zone_noise(&layout, &params)?;
 
-    let spawn = layout.tile_size().wrap(0, 0);
+    // 出生点必须落在真实、连得开的陆地上——不能再像旧版那样把它硬
+    // 钉在 `(0, 0)`，赌噪声场恰好在那一点给出可站立地形（项目所有者
+    // 实测报告：那一赌就是玩家看到的那座「小得可怜的岛」，见
+    // `find_spawn_site` 文档）。搜索失败（`None`，见该函数文档「有界」
+    // 一节）时退回旧版硬编码坐标 + [`carve_spawn_clearing`] 强铺兜底，
+    // 并记一条警告日志，让这种情形可见而不是静默发生。
+    let located_spawn = find_spawn_site(
+        &layout,
+        &noise,
+        &params,
+        &content.terrain_ids,
+        &content.terrain_table,
+    );
+    let (spawn, spawn_land_area) = match located_spawn {
+        Some((pos, area)) => (pos, area),
+        None => (layout.tile_size().wrap(0, 0), 0),
+    };
+
     // TerrainTable 不是 Copy——WorldState::new 需要拿走它的所有权,
     // 出生点铺地之后本函数还要用 &content.terrain_ids（不需要表本身），
     // 故这里克隆一份而不是尝试在 new 之后再找回同一张表。地形属性表
@@ -150,7 +200,26 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
     // 只剩最小值`。
     world.clock = NEW_GAME_START_TICK;
 
-    carve_spawn_clearing(&mut world, &noise, &params, content, spawn);
+    if located_spawn.is_some() {
+        tracing::info!(
+            seed,
+            spawn_x = spawn.x(),
+            spawn_y = spawn.y(),
+            connected_land_area = spawn_land_area,
+            min_required_area = MIN_SPAWN_LAND_AREA,
+            "出生点选址完成：落在一片连通陆地上"
+        );
+    } else {
+        tracing::warn!(
+            seed,
+            spawn_x = spawn.x(),
+            spawn_y = spawn.y(),
+            max_zones_inspected = MAX_SPAWN_SEARCH_ZONES,
+            min_required_area = MIN_SPAWN_LAND_AREA,
+            "出生点搜索在有界步数内未找到满足最小连通陆地面积的候选,退回强制铺地兜底"
+        );
+        carve_spawn_clearing(&mut world, &noise, &params, content, spawn);
+    }
 
     let (zone, _) = layout.tile_to_zone(spawn);
     let player = spawn_player(&mut world, spawn, zone, content);
@@ -174,6 +243,26 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
 /// 不到的区块），再 `set_terrain` 覆写——这正是流式加载的正常使用
 /// 方式,不是绕过它,见 `p5_coordinate_acceptance::world` 模块文档同一
 /// 段说明。
+///
+/// # 现在只是兜底,不是常规路径（处置结论）
+///
+/// 这个函数曾经是出生点选址的全部逻辑——不管噪声场在 `(0, 0)` 生成的
+/// 是什么，都在原地强行铺出一块 7×7 的草地。项目所有者实测报告里那座
+/// 「小得可怜的岛」正是这块补丁：出生点落在水里，`carve_spawn_clearing`
+/// 没有换个地方出生，而是在海上打了个补丁。
+///
+/// **没有删掉它**——[`find_spawn_site`] 本身是有界搜索（见其文档「有
+/// 界」一节），一定存在找不到合格候选、必须放弃的情形（例如某个种子
+/// 的世界几乎全是水）。这种情形下仍然需要一个「保证出生点这一格能站
+/// 人」的最后手段，否则退回的硬编码坐标 `(0, 0)` 可能连玩家自己站的
+/// 那一格都是水——这就是本函数继续存在的唯一职责：**只在
+/// [`find_spawn_site`] 放弃之后调用**，不再是出生点选址的默认路径,
+/// 调用点见 [`build_new_world`]。
+///
+/// 也没有缩小职责（例如只清出生点正下方一格）：搜索已经放弃、真实
+/// 地形大概率不可靠的情况下，7×7 这块小小的确定性安全区仍然比单独
+/// 一格更经受得住「玩家出生时紧挨着的那格恰好是墙/树」这类边缘情形，
+/// 维持原有半径不额外增加风险，只是收窄了触发它的条件。
 fn carve_spawn_clearing(
     world: &mut WorldState,
     noise: &TileableNoise,
@@ -191,6 +280,172 @@ fn carve_spawn_clearing(
             world.terrain.set_terrain(pos, content.terrain_ids.grass);
         }
     }
+}
+
+/// 在整张世界地形里按固定顺序搜索一块「足够大」的连通可行走陆地，
+/// 作为新游戏出生点。成功时返回 `(出生点, 该点所在连通分量的格数)`。
+///
+/// # 为什么不能只检查候选格本身能不能走
+///
+/// 旧版直接把出生点定在 `(0, 0)`，靠 [`carve_spawn_clearing`] 在原地
+/// 强行铺出一块 7×7 的草地——`(0, 0)` 落在海里时,玩家看到的就是被
+/// 人工补丁包住、周围全是水的一座「小岛」（项目所有者实测报告）。只
+/// 检查候选格本身能不能走同样会踩坑：一格可通行的礁石被大片深水包围
+/// 时依旧能通过这条检查,玩家还是走不远。必须验证出生点所在的连通可
+/// 行走区域本身够大（阈值见 [`MIN_SPAWN_LAND_AREA`]）。
+///
+/// # 扫描顺序与扫描粒度
+///
+/// 1. 按区块坐标光栅序（`zone_y` 从 0 递增，每行内 `zone_x` 从 0 递
+///    增，从 `(0, 0)` 起步）遍历全部区块——不依赖任何
+///    `HashMap`/`HashSet` 迭代顺序（约束 C5）。
+/// 2. 每个区块先用 [`zone_representative_terrain`]（O(1)，只采样区块
+///    左上角一点）做便宜的预筛——代表点本身不可通行（多半是水）的
+///    区块直接跳过，不生成整个区块窗口。
+/// 3. 预筛通过的区块才用 [`generate_zone_window`] 生成完整的
+///    `ZONE_SPAN × ZONE_SPAN` 窗口，对窗口内全部格做连通域分析（见
+///    [`largest_walkable_component_start`]），取窗口内最大的连通可行走
+///    分量——分析范围只在单个区块窗口内部，不跨区块边界，见该函数
+///    文档。
+/// 4. 该分量格数 ≥ [`MIN_SPAWN_LAND_AREA`] 时,取分量内光栅序意义上
+///    最先被访问到的格,换算成世界坐标返回,搜索结束。
+///
+/// # 有界：最多完整检查 [`MAX_SPAWN_SEARCH_ZONES`] 个区块
+///
+/// 预筛本身遍历全部区块（代价是每区块一次 O(1) 噪声采样，便宜，恒
+/// 会跑完，不会提前退出），但只有通过预筛、进入第 3 步完整检查的
+/// 区块计入 [`MAX_SPAWN_SEARCH_ZONES`] 这个上限——达到上限仍未找到
+/// 合格陆地就返回 `None`，调用方（[`build_new_world`]）退回
+/// [`carve_spawn_clearing`] 兜底并记一条警告日志。整个函数不含任何
+/// 无界循环，也不会 panic。
+///
+/// # 确定性
+///
+/// 全程只依赖区块/区块内局部坐标的数值大小与噪声场的纯函数采样，不
+/// 引入任何随机性，也不触碰任何 `HashMap`/`HashSet` 的迭代顺序——同一
+/// 个种子（连同同一份地形注册结果）永远走完全相同的一条搜索路径，
+/// 产出完全相同的出生点（世界身份三要素之一，见
+/// `ll_content::world_identity` 模块文档）。
+fn find_spawn_site(
+    layout: &ZoneLayout,
+    noise: &TileableNoise,
+    params: &GenParams,
+    terrain_ids: &BaseTerrainIds,
+    table: &TerrainTable,
+) -> Option<(TorusPos, usize)> {
+    let zone_count = layout.zone_count();
+    let span = layout.zone_span();
+    let mut zones_fully_inspected: usize = 0;
+
+    for zone_y in 0..zone_count.height() as i32 {
+        for zone_x in 0..zone_count.width() as i32 {
+            let zone = zone_count.wrap(zone_x, zone_y);
+
+            let representative =
+                zone_representative_terrain(noise, params, layout, zone, terrain_ids);
+            if representative.blocks_move(table) {
+                continue;
+            }
+
+            if zones_fully_inspected >= MAX_SPAWN_SEARCH_ZONES {
+                return None;
+            }
+            zones_fully_inspected += 1;
+
+            let window = generate_zone_window(noise, params, layout, zone, terrain_ids)
+                .expect("layout 已在 build_zone_layout 中校验过，区块窗口恒能生成");
+            let Some((local, area)) =
+                largest_walkable_component_start(&window, layout.local_size(), table)
+            else {
+                continue;
+            };
+
+            let world_x = zone.x() * span as i32 + local.x();
+            let world_y = zone.y() * span as i32 + local.y();
+            return Some((layout.tile_size().wrap(world_x, world_y), area));
+        }
+    }
+
+    None
+}
+
+/// 在一个已生成的区块窗口内做连通域分析（BFS），返回**格数最大**的
+/// 连通可行走分量里、按光栅序最先访问到的那一格（区块内局部坐标）与
+/// 该分量的格数——供 [`find_spawn_site`] 换算成世界坐标。分量格数不足
+/// [`MIN_SPAWN_LAND_AREA`] 时返回 `None`。
+///
+/// 区块内部坐标不做环绕：本函数只关心「这个区块窗口内部,连通到一起
+/// 的陆地有多大」，不把窗口一条边界的移动接到本窗口另一条边界（那会
+/// 把两个本不相邻的世界坐标误判成相邻）——跨区块的连通性判断留给
+/// 「换一个区块继续搜」这一层，不在这里假装两者相邻。
+fn largest_walkable_component_start(
+    window: &ChunkGrid,
+    local_size: TorusSize,
+    table: &TerrainTable,
+) -> Option<(TorusPos, usize)> {
+    debug_assert_eq!(
+        local_size.width(),
+        local_size.height(),
+        "区块窗口的局部坐标系恒为正方形,见 ZoneLayout::local_size 文档"
+    );
+    let span = local_size.width() as i32;
+
+    let mut visited = vec![false; (span * span) as usize];
+    let mut best_size = 0usize;
+    let mut best_start: Option<(i32, i32)> = None;
+
+    for start_y in 0..span {
+        for start_x in 0..span {
+            let start_idx = (start_y * span + start_x) as usize;
+            if visited[start_idx] {
+                continue;
+            }
+            visited[start_idx] = true;
+            if window
+                .terrain_at(local_size.wrap(start_x, start_y))
+                .blocks_move(table)
+            {
+                continue;
+            }
+
+            // 广度优先收集这个连通分量,邻居固定按上、右、下、左的顺序
+            // 入队——不依赖任何哈希容器的迭代顺序（约束 C5）。
+            let mut queue = VecDeque::new();
+            let mut size = 0usize;
+            queue.push_back((start_x, start_y));
+            while let Some((x, y)) = queue.pop_front() {
+                size += 1;
+                for (nx, ny) in [(x, y - 1), (x + 1, y), (x, y + 1), (x - 1, y)] {
+                    if nx < 0 || ny < 0 || nx >= span || ny >= span {
+                        continue;
+                    }
+                    let n_idx = (ny * span + nx) as usize;
+                    if visited[n_idx] {
+                        continue;
+                    }
+                    visited[n_idx] = true;
+                    if window
+                        .terrain_at(local_size.wrap(nx, ny))
+                        .blocks_move(table)
+                    {
+                        continue;
+                    }
+                    queue.push_back((nx, ny));
+                }
+            }
+
+            if size > best_size {
+                best_size = size;
+                best_start = Some((start_x, start_y));
+            }
+        }
+    }
+
+    let (best_x, best_y) = best_start?;
+    if best_size < MIN_SPAWN_LAND_AREA {
+        return None;
+    }
+    Some((local_size.wrap(best_x, best_y), best_size))
 }
 
 /// 生成玩家单位，写入 `world.actors`，`current_space` 取地表。
@@ -330,5 +585,137 @@ mod tests {
         assert_eq!(first.world.terrain_at(first.world.size.wrap(10, 10)), {
             second.world.terrain_at(second.world.size.wrap(10, 10))
         });
+    }
+
+    #[test]
+    fn 相同种子两次搜索产出完全相同的出生点坐标() {
+        // 世界身份三要素之一（种子）在「出生点选址」这一步的直接体现
+        // ——find_spawn_site 不引入任何随机性、不依赖任何哈希容器迭代
+        // 顺序（约束 C5），同一种子必须永远选中同一个出生点，不能只是
+        // 「地形一致」，坐标本身也必须逐位相同。
+        // Arrange
+        let content = test_content();
+
+        // Act
+        let first = build_new_world(&content, 42).expect("测试用布局满足全部前置条件");
+        let second = build_new_world(&content, 42).expect("测试用布局满足全部前置条件");
+        let first_pos = first
+            .world
+            .actors
+            .get(first.player)
+            .expect("玩家刚生成，必然存在")
+            .pos;
+        let second_pos = second
+            .world
+            .actors
+            .get(second.player)
+            .expect("玩家刚生成，必然存在")
+            .pos;
+
+        // Assert
+        assert_eq!(first_pos, second_pos);
+    }
+
+    #[test]
+    fn 世界几乎全是水时出生点搜索在有界步数内放弃而不panic() {
+        // 直接对应「有界」这条硬约束：把海平面阈值调到噪声输出区间
+        // （0..=1000，见 `ll_world::noise` SCALE_MAX）完全够不到的高度,
+        // 保证全世界逐格都是深水,find_spawn_site 找不到任何合格候选。
+        // 这条测试真正验证的是「函数确实会返回 None 收场,而不是死循环
+        // 或 panic」——用一个远小于本体默认区块数（64×48 = 3072）的
+        // 小布局把测试跑快，不代表搜索上限本身与布局大小有关。
+        // Arrange
+        let content = test_content();
+        let zone_count = TorusSize::new(4, 4).expect("4x4 是合法尺寸");
+        let layout = ZoneLayout::new(48, zone_count).expect("48 满足全部对齐与跨度约束");
+        let params = GenParams {
+            seed: 5,
+            sea_level: 100_000,
+            ..GenParams::default()
+        };
+        let noise = build_zone_noise(&layout, &params).expect("布局满足生成入口的约束");
+
+        // Act
+        let result = find_spawn_site(
+            &layout,
+            &noise,
+            &params,
+            &content.terrain_ids,
+            &content.terrain_table,
+        );
+
+        // Assert
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn 出生点周围连通可行走区域超过最小陆地面积阈值() {
+        // 这是本模块最重要的一条断言,直接编码项目所有者的实测抱怨：
+        // 出生点四周得真能走开,不能只是「出生点本身这一格能走」。用
+        // 洪水填充（BFS）实测出生点所在连通可行走区域的大小,断言不小
+        // 于 find_spawn_site 选址时要求的阈值——若把出生点强行改回旧版
+        // 硬编码坐标 `(0, 0)`（不经过 find_spawn_site 搜索）,这条断言
+        // 会在出生点落在水域的种子上失败,已手工验证过（见任务报告）。
+        // Arrange
+        let content = test_content();
+        let game_world = build_new_world(&content, 1).expect("测试用布局满足全部前置条件");
+        let spawn = game_world
+            .world
+            .actors
+            .get(game_world.player)
+            .expect("玩家刚生成，必然存在")
+            .pos;
+
+        // Act：有界洪水填充，上限给到阈值的数倍——只需要证明「远超
+        // 阈值」，不需要真的数完整片连通区域。
+        let area = flood_fill_walkable_area(&game_world.world, spawn, MIN_SPAWN_LAND_AREA * 4);
+
+        // Assert
+        assert!(
+            area >= MIN_SPAWN_LAND_AREA,
+            "出生点周围连通可行走区域只有 {area} 格，未达到阈值 {MIN_SPAWN_LAND_AREA}"
+        );
+    }
+
+    /// 测试专用：从 `start` 出发做有界洪水填充，统计连通可行走区域
+    /// 大小，达到 `cap` 格后提前停止。
+    ///
+    /// 用 `Vec<TorusPos>` 线性查找记录已访问坐标，不用 `HashSet`——
+    /// 这不是热路径（只在测试里跑一次，`cap` 通常只有几千），换取的是
+    /// 不必为「区块内局部坐标」之外的、跨越任意区块边界的世界坐标
+    /// 另外设计一套下标方案；`largest_walkable_component_start`（生产
+    /// 路径）仍然用数组下标,这里的取舍只服务测试代码本身。
+    fn flood_fill_walkable_area(world: &WorldState, start: TorusPos, cap: usize) -> usize {
+        let mut visited: Vec<TorusPos> = vec![start];
+        let mut queue = VecDeque::new();
+        queue.push_back(start);
+
+        while let Some(pos) = queue.pop_front() {
+            if visited.len() >= cap {
+                break;
+            }
+            for (dx, dy) in [(0, -1), (1, 0), (0, 1), (-1, 0)] {
+                let neighbor = world.size.wrap(pos.x() + dx, pos.y() + dy);
+                if visited.contains(&neighbor) {
+                    continue;
+                }
+                let Some(kind) = world.terrain_at(neighbor) else {
+                    // 未常驻的区块视作探索边界，不计入——出生邻域预热
+                    // 半径足够覆盖单个区块窗口内的连通分量，真正撞到
+                    // 这个分支只会让统计结果偏保守，不会误报。
+                    continue;
+                };
+                if kind.blocks_move(&world.terrain_table) {
+                    continue;
+                }
+                visited.push(neighbor);
+                queue.push_back(neighbor);
+                if visited.len() >= cap {
+                    break;
+                }
+            }
+        }
+
+        visited.len()
     }
 }
