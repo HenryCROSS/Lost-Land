@@ -625,10 +625,18 @@ mod tests {
     }
 
     #[test]
-    fn 本体profile与假想mod的profile走同一条intern路径() {
-        // 「本体即 Mod」的最小验收：本体注册完之后，用同一个 Interner
+    fn 本体profile与假想mod的profile调用同一个公开define函数完成注册() {
+        // 结构等价的最小验收：本体注册完之后，用同一个 Interner
         // 追加一条假想 mod 风格的层属性声明，验证走的是同一个
         // intern + define 调用组合，没有任何本体专属的特权通道。
+        //
+        // 边界：本测试只证明本体与 mod（这里甚至只是假想的、直接用
+        // Interner 构造的 mod 风格 id，不经过 ll-mod 的 Registry 或
+        // 任何脚本）走同一条注册路径，不能证明 mod 脚本调得到这套
+        // API——`ll-world` 本身也不认识脚本这个概念（见本模块「与
+        // Registry 的关系」一节）。真正的「脚本能注册」证据在
+        // `ll-mod` 的 `crate::pipeline` 脚本装载测试与
+        // `mods/example_mod/gameplay.scm`。
         // Arrange
         let mut interner = Interner::new();
         let (_ids, mut table) = materialize_base_space_profiles(&mut |id| interner.intern(id))

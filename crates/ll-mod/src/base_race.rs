@@ -46,7 +46,12 @@ mod tests {
     use ll_core::ident::NamespacedId;
 
     #[test]
-    fn 本体种族通过与mod种族完全相同的intern调用路径注册() {
+    fn 本体种族与mod种族共用registry同一段连续递增的索引号段() {
+        // 本测试只证明本体种族与 mod 种族走同一条 Registry::intern
+        // 调用路径、共用同一个单调递增的号段——不为本体预留任何特殊
+        // 区间。这是「结构等价」，不是「mod 脚本调得到这套 API」的
+        // 证据；后者的证据在 crate::pipeline 的脚本装载测试与
+        // mods/example_mod/gameplay.scm。
         // Arrange
         let mut registry = Registry::new();
 

@@ -75,11 +75,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 本体占位内容通过与mod内容完全相同的intern调用路径注册() {
-        // 这是本模块最核心的一条断言：占位内容与 mod 内容除了命名空间
-        // 字符串不同之外,没有任何结构性差异——都只是往同一个
-        // Registry::intern 里塞一个 NamespacedId,没有任何一条只对占位
-        // 内容开放的旁路。
+    fn 本体占位内容与mod内容共用registry同一段连续递增的索引号段() {
+        // 本测试只证明本体占位内容与 mod 内容走同一条 Registry::intern
+        // 调用路径、共用同一个单调递增的号段——不为占位内容预留任何
+        // 特殊区间。这是「结构等价」，不是「mod 脚本调得到这套 API」的
+        // 证据；后者的证据在 crate::pipeline 的脚本装载测试与
+        // mods/example_mod/gameplay.scm。
         // Arrange
         let mut registry = Registry::new();
 

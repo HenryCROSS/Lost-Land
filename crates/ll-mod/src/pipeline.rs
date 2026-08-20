@@ -665,6 +665,20 @@ mod tests {
         // 必须落在同一个 Registry 上（否则 ContentIndex 会撞车），且
         // 六张表各自都收到了正确的内容——这是 crate::active_registry
         // 模块文档论证的那个「必须共享同一个 Registry」场景的直接回归。
+        //
+        // 这是「mod 脚本调得到这套 API」的真正证据——本测试走的是真实
+        // 的 `.scm` 源码文本经 `ScriptEngine::load_source` 解析执行，
+        // 不是在 Rust 里直接调用 `Registry::intern`/`*Table::define`。
+        // 与之互补的另一半是「结构等价」测试（本体注册与 mod 注册走
+        // 同一条注册路径、注册表内部不给本体开后门），分布在
+        // `base_placeholder.rs`/`base_race.rs`/`base_terrain.rs`/
+        // `base_space_profile.rs`/`class.rs`/`quest.rs`/`race.rs`/
+        // `skill.rs`/`subclass.rs`（以及 `ll-world` 的
+        // `space_profile.rs`）各自的单元测试里——那批测试只证明「本体
+        // 与 mod 内容在 Rust 类型层面无法区分」，不能单独证明脚本可达，
+        // 两类证据合起来才是完整的「玩法层 API 完备性」验收，见本
+        // 模块顶部「本体内容……不经过这条管线」一节与 ADR 0018。
+        // 真实使用中的完整示例见 `mods/example_mod/gameplay.scm`。
         // Arrange
         let root = tempdir();
         write_mod(

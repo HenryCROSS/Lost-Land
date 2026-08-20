@@ -45,13 +45,14 @@ mod tests {
     use ll_core::ident::NamespacedId;
 
     #[test]
-    fn 本体地形通过与mod地形完全相同的intern调用路径注册() {
-        // 这是本任务最核心的一条断言：本体注册与 mod 注册除了命名空间
-        // 字符串不同之外，没有任何结构性差异——都只是往同一个
-        // Registry::intern 里塞一个 NamespacedId。用「本体注册完之后，
-        // 再拿同一个 Registry 直接 intern 一个 mod 风格的 id，两者
-        // 分配到的索引连续递增」证明它们走的是完全相同的通道，没有
-        // 任何一条只对本体开放的旁路。
+    fn 本体地形与mod地形共用registry同一段连续递增的索引号段() {
+        // 用「本体注册完之后，再拿同一个 Registry 直接 intern 一个
+        // mod 风格的 id，两者分配到的索引连续递增」证明它们走的是完全
+        // 相同的通道，没有任何一条只对本体开放的旁路。
+        //
+        // 边界：本测试只证明本体与 mod 走同一条注册路径（结构等价），
+        // 不能证明 mod 脚本调得到这套 API。真正的证据在
+        // crate::pipeline 的脚本装载测试与 mods/example_mod/gameplay.scm。
         // Arrange
         let mut registry = Registry::new();
 
@@ -68,8 +69,12 @@ mod tests {
 
     #[test]
     fn 本体地形与mod注册的自定义地形在registry内部结构上不可区分() {
-        // 直接的「本体即 Mod」验收断言：除了命名空间字符串本身，注册表
+        // 直接的「结构等价」验收断言：除了命名空间字符串本身，注册表
         // 内部（content_hash 的累积方式）看不出这条内容是谁注册的。
+        //
+        // 边界：本测试只证明本体与 mod 走同一条注册路径，不能证明
+        // mod 脚本调得到这套 API。真正的证据在 crate::pipeline 的
+        // 脚本装载测试与 mods/example_mod/gameplay.scm。
         // Arrange
         let mut registry = Registry::new();
         let (_terrain_ids, _table) =

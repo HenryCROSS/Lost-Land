@@ -319,11 +319,15 @@ mod tests {
     }
 
     #[test]
-    fn 本体副职通过与mod副职完全相同的intern调用路径注册() {
-        // 本任务最核心的一条断言，理由同 crate::class/crate::skill 模块
-        // 的等价测试：本体副职与 mod 副职都只是往同一个
-        // Registry::intern 里塞一个 NamespacedId，再用完全相同的公开
+    fn 本体副职与mod注册的自定义副职调用同一个公开define函数完成注册() {
+        // 结构等价断言，理由同 crate::class/crate::skill 模块的等价
+        // 测试：本体副职与 mod 副职都只是往同一个 Registry::intern
+        // 里塞一个 NamespacedId，再用完全相同的公开
         // SubclassTable::define 函数登记属性。
+        //
+        // 边界：本测试只证明本体与 mod 走同一条注册路径，不能证明
+        // mod 脚本调得到这套 API。真正的证据在 crate::pipeline 的
+        // 脚本装载测试与 mods/example_mod/gameplay.scm。
         // Arrange
         let mut registry = Registry::new();
 

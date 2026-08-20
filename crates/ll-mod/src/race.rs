@@ -463,8 +463,12 @@ mod tests {
     }
 
     #[test]
-    fn 本体种族通过与mod种族完全相同的intern调用路径注册() {
-        // 本模块最核心的一条断言，理由同 crate::class 模块的等价测试。
+    fn 本体种族与mod种族调用同一个公开define函数完成注册() {
+        // 结构等价断言，理由同 crate::class 模块的等价测试。
+        //
+        // 边界：本测试只证明本体与 mod 走同一条注册路径，不能证明
+        // mod 脚本调得到这套 API。真正的证据在 crate::pipeline 的
+        // 脚本装载测试与 mods/example_mod/gameplay.scm。
         // Arrange
         let mut registry = Registry::new();
 

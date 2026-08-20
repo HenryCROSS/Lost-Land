@@ -372,14 +372,15 @@ mod tests {
     }
 
     #[test]
-    fn 本体职业通过与mod职业完全相同的intern调用路径注册() {
-        // 本任务最核心的一条断言：本体注册与 mod 注册除了命名空间
-        // 字符串不同之外，没有任何结构性差异——都只是往同一个
-        // Registry::intern 里塞一个 NamespacedId，再用完全相同的公开
-        // ClassTable::define 函数登记属性。用「本体注册完之后，再拿
-        // 同一个 Registry 直接注册一个 mod 风格的职业，两者分配到的
-        // 索引连续递增」证明它们走的是完全相同的通道，没有任何一条
-        // 只对本体开放的旁路。
+    fn 本体职业与mod注册的自定义职业调用同一个公开define函数完成注册() {
+        // 本体注册与 mod 注册除了命名空间字符串不同之外，没有任何
+        // 结构性差异——都只是往同一个 Registry::intern 里塞一个
+        // NamespacedId，再用完全相同的公开 ClassTable::define 函数
+        // 登记属性，没有任何一条只对本体开放的旁路。
+        //
+        // 边界：本测试只证明本体与 mod 走同一条注册路径（结构等价），
+        // 不能证明 mod 脚本调得到这套 API。真正的证据在
+        // crate::pipeline 的脚本装载测试与 mods/example_mod/gameplay.scm。
         // Arrange
         let mut registry = Registry::new();
 
