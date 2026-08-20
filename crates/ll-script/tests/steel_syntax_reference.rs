@@ -685,31 +685,21 @@ mod 四_常见错误 {
 
     /// 文档「五、5 超时中断」——死循环得到 `Err`，不崩溃进程。
     ///
-    /// **实测发现，与 `host.rs` 文档字面表述不一致**：`ScriptError`
-    /// 确实定义了专门的 `Interrupted` 变体（文档写着「没有携带偏移量：
-    /// 超时是整份脚本跑太久，不存在一个能归咎的具体位置」），但实测
-    /// `classify_error`（`host.rs`）从未构造过这个变体——全仓库搜索
-    /// `ScriptError::Interrupted` 只在这个类型自己的 `Display`/
-    /// `byte_offset` 实现里出现，没有任何一处 `match`/构造语句真正
-    /// 产出它。超时实际得到的是 `ScriptError::Runtime`，消息形如
-    /// `"Error: Generic: Thread: ThreadId(..) - Interrupted by user"`，
-    /// **且携带一个字节偏移量**（本次实测拿到 `Some(16)`）——这与文档
-    /// 「超时没有偏移量」的说法相反，偏移量来自 Steel 中断时恰好落在
-    /// 的那条字节码对应的 span，不是"没有位置"，是"位置恰好在死循环
-    /// 内部"。这里只断言"确实是 `Err`，且消息提到中断"，不断言具体
-    /// 变体——已知与文档不符，如实记录，不代为"修正"成文档预期的样子
-    /// （改动 `classify_error` 让它真正识别中断并返回 `Interrupted`
-    /// 属于代码修复，不在本次「写参考文档」的任务范围内）。
+    /// **已修复，历史记录见下**：本测试曾经记录过 `classify_error`
+    /// （`host.rs`）与 `ScriptError::Interrupted` 变体文档字面表述不一致
+    /// 的一处实测发现——超时实际拿到的是 `ScriptError::Runtime`（消息
+    /// 含 `"Interrupted by user"`，且携带一个字节偏移量），从未真正
+    /// 构造过 `Interrupted` 这个变体，是一处死变体。这处不一致已经
+    /// 在 `classify_error` 里修复（识别消息里的 `"Interrupted by user"`
+    /// 标记，提前返回 `Interrupted`，见其文档「为什么按消息文本而不是
+    /// `ErrorKind` 判断超时中断」一节的完整论证），本测试同步更新为
+    /// 断言修复后的真实行为，不再断言"与文档不符"这个已经不成立的
+    /// 事实。
     #[test]
-    fn 死循环返回err而不崩溃进程_变体与文档字面表述不符() {
+    fn 死循环返回interrupted变体而不崩溃进程() {
         let mut engine = ScriptEngine::new();
         let result = engine.load_source("(define (loop) (loop)) (loop)".to_string());
-        match result {
-            Err(ll_script::ScriptError::Runtime(msg, _offset)) => {
-                assert!(msg.contains("Interrupted"));
-            }
-            other => panic!("期望 Runtime（已知与 Interrupted 变体文档不符），实际拿到 {other:?}"),
-        }
+        assert_eq!(result, Err(ll_script::ScriptError::Interrupted));
     }
 
     /// 文档「五、6 字节偏移 → 行号」——加载管理界面据此定位到具体行的

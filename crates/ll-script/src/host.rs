@@ -365,6 +365,13 @@ impl std::fmt::Display for ScriptError {
 
 impl std::error::Error for ScriptError {}
 
+/// `InterruptHandler` 掐断超时脚本时，`steel-core` 内部构造的错误消息
+/// 固定含有这个子串（`steel_vm/vm.rs`：
+/// `format!("Thread: {:?} - Interrupted by user", ...)`）——这是**唯一**
+/// 可靠区分「这次 `Err` 是不是超时中断」的信号，见 [`classify_error`]
+/// 文档「为什么按消息文本而不是 `ErrorKind` 判断」一节。
+const INTERRUPTED_MESSAGE_MARKER: &str = "Interrupted by user";
+
 /// 把 Steel 的 [`SteelErr`] 归类成 [`ScriptError`]。
 ///
 /// 分类依据 `SteelErr::kind()`：`ArityMismatch` 与 `Parse` 各自独立成一类
@@ -373,6 +380,31 @@ impl std::error::Error for ScriptError {}
 /// （可以只丢弃这一次结果）。其余错误种类（`FreeIdentifier`、
 /// `TypeMismatch`、`ContractViolation` 等）现阶段没有差异化处理需求，
 /// 统一归入 `Runtime`，需要时再拆细。
+///
+/// # 为什么按消息文本而不是 `ErrorKind` 判断超时中断
+///
+/// 曾经的实现留了一个 [`ScriptError::Interrupted`] 变体但从未在这里
+/// 构造过它——`InterruptHandler` 掐断死循环时，`steel-core`
+/// （`steel_vm/vm.rs:1796`）用 `stop!(Generic => ...)` 抛出错误，
+/// `ErrorKind::Generic` 是整个 `steel-core` 里最常见的兜底错误种类
+/// （核实：`grep -rc "stop!(Generic" steel-core-0.8.2/src` 命中三十多个
+/// 文件，从数字类型错误到端口 I/O 错误全都用它），落进上面 `match` 的
+/// `_` 分支得到 `Runtime`，从未真正产出过 `Interrupted`——这正是
+/// `ScriptError::Interrupted` 曾经是一个死变体的根因：文档说它是超时
+/// 变体，实现却从未构造它，真实超时永远走 `Runtime`（消息含
+/// `"Interrupted by user"` 且带一个语义上没有意义的字节偏移，见该
+/// 变体文档「没有携带偏移量」一节的论证——中断发生在任意一条字节码
+/// 上，不是某一行源码的错，偏移量因此不该被当作可归咎的位置）。
+/// `ErrorKind` 给不出任何区分度，能用来识别超时的唯一信号是这条
+/// 错误消息本身固定包含的 [`INTERRUPTED_MESSAGE_MARKER`] 子串——这里
+/// 选择让 `Interrupted` 真正可达（更符合文档承诺、也让
+/// `crate::pipeline`（`ll-mod`）的 `classify_script_stage`
+/// 能把真正的超时正确分类为「脚本本身没跑完」而不是与「装载期注册
+/// 校验失败」共用 `Runtime` 这个笼统分类），而不是删掉这个变体——
+/// 判断依据虽然是消息文本匹配、天生比 `ErrorKind` 判断脆弱（未来
+/// `steel-core` 版本若改了这句话的英文措辞，识别会静默失效、退化回
+/// 旧行为），但这是当前版本唯一可用的信号，且退化后果只是「重新变回
+/// 死变体之前的样子」，不是错误分类或安全问题，可接受。
 fn classify_error(err: SteelErr) -> ScriptError {
     use steel::rerrs::ErrorKind;
 
@@ -381,6 +413,9 @@ fn classify_error(err: SteelErr) -> ScriptError {
     // 顺序上排在消息之前，与下面 match 里两者一起打包的顺序一致。
     let offset = err.span().map(|span| span.start());
     let message = err.to_string();
+    if message.contains(INTERRUPTED_MESSAGE_MARKER) {
+        return ScriptError::Interrupted;
+    }
     match err.kind() {
         ErrorKind::ArityMismatch => ScriptError::ArityMismatch(message, offset),
         ErrorKind::Parse | ErrorKind::UnexpectedToken => ScriptError::ParseError(message, offset),
@@ -679,6 +714,44 @@ mod tests {
                 assert_eq!(line, 2);
             }
             other => panic!("期望带偏移量的 ParseError，实际拿到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 死循环脚本被中断时归类为interrupted而不是runtime() {
+        // 曾经的死变体：`ScriptError::Interrupted` 从未被 `classify_error`
+        // 构造过，真实超时一律落进 `Runtime`（见 `classify_error` 文档
+        // 「为什么按消息文本而不是 ErrorKind 判断超时中断」一节）。这条
+        // 测试钉住修复后的行为——不只是断言 `is_err()`（那条既有测试
+        // 「死循环脚本返回错误而非崩溃」测的是更粗的粒度），而是断言
+        // 具体拿到的是哪一个变体。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_source("(define (loop) (loop)) (loop)".to_string());
+
+        // Assert
+        assert_eq!(result, Err(ScriptError::Interrupted));
+    }
+
+    #[test]
+    fn interrupted变体不携带字节偏移量() {
+        // 中断发生在任意一条字节码上，不是某一行源码的错——即使
+        // `steel-core` 底层的 `SteelErr` 本身带了一个 span（`classify_error`
+        // 因为命中消息标记而提前 return，从未把这个 span 装进
+        // `ScriptError::Interrupted`），`byte_offset()` 恒为 `None`，见
+        // 该变体文档。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_source("(define (loop) (loop)) (loop)".to_string());
+
+        // Assert
+        match result {
+            Err(err @ ScriptError::Interrupted) => assert_eq!(err.byte_offset(), None),
+            other => panic!("期望 Interrupted，实际 {other:?}"),
         }
     }
 
