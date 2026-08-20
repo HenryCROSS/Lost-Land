@@ -93,16 +93,36 @@ pub fn season_light_scale(season: Season) -> i32 {
     }
 }
 
-/// 按光照缩放基准视野半径，下限为 1。
+/// 无论光照多暗都保留的视野半径下限。
+///
+/// 原先的下限是 1，那只保证「不至于连脚下都看不见」，实测下来午夜开局
+/// 是一片黑加正中央五个格子——项目所有者的要求是「让黑夜有个最低视野
+/// 范围」。取 4 的理由：它足够看清相邻几格、能走能躲，又明显小于白天的
+/// 基准半径（12），夜晚仍然是需要谨慎的时段而不只是换了个色调。
+///
+/// 这条是**玩法规则**，不是表现层调节：视野半径决定 FOV，FOV 决定探索
+/// 记忆写入哪些格子，而探索记忆进 `WorldState::hash()`。画面亮度的下限
+/// 是另一回事，见 `ll_game::layout` 的 `MIN_VISIBLE_TINT`。
+pub const MIN_SIGHT_RADIUS: u32 = 4;
+
+/// 按光照缩放基准视野半径，下限为 [`MIN_SIGHT_RADIUS`]。
 ///
 /// 下限存在的理由与午夜光照取 100 而非 0 相同：视野缩到零会让玩家连
 /// 自己脚下都看不见，那是卡住而不是难度。`light` 的分量在调用前会被
 /// 夹到 `0..=1000`，即便调用方传入了越界值（例如某个未来的负面效果
 /// 直接构造了 `LightLevel(-1)`），也不会产出负的或超比例的半径。
+///
+/// 下限不随 `base_radius` 缩放——它表达的是「人在暗处也能摸到周围」这
+/// 条底线，与角色本身视力多好无关；若某天出现基准半径本就小于下限的
+/// 角色，取两者较小值，避免下限反而把视野**放大**。
 pub fn sight_radius_at(base_radius: u32, light: LightLevel) -> u32 {
     let clamped_light = light.0.clamp(0, 1000) as u64;
     let scaled = (u64::from(base_radius) * clamped_light) / 1000;
-    (scaled as u32).max(1)
+    // 夜间下限不得反过来把「基准视野本就很小」的角色**放大**，故先与
+    // `base_radius` 取小；但「永不为零」这条绝对底线始终成立——基准为
+    // 零时仍返回 1，与本函数原有契约一致。
+    let night_floor = MIN_SIGHT_RADIUS.min(base_radius).max(1);
+    (scaled as u32).max(night_floor)
 }
 
 #[cfg(test)]
@@ -170,7 +190,7 @@ mod tests {
     }
 
     #[test]
-    fn 视野半径下限为一() {
+    fn 基准半径为零时视野仍不为零() {
         // 基准半径为零时，若不设下限，缩放结果恒为零。
         // Arrange
         let base_radius = 0;
@@ -184,7 +204,7 @@ mod tests {
     }
 
     #[test]
-    fn 光照为零时视野仍为一() {
+    fn 光照为零时视野仍保有夜间下限() {
         // Arrange
         let base_radius = 10;
         let no_light = LightLevel(0);
@@ -193,6 +213,6 @@ mod tests {
         let radius = sight_radius_at(base_radius, no_light);
 
         // Assert
-        assert_eq!(radius, 1);
+        assert_eq!(radius, MIN_SIGHT_RADIUS);
     }
 }

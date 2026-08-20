@@ -49,9 +49,26 @@ pub fn effective_sight_radius(profile: &SpaceProfile, clock: Tick) -> u32 {
     sight_radius_at(BASE_SIGHT_RADIUS, light)
 }
 
-/// 画面整体亮度调制（灰阶）。
+/// 画面整体亮度的下限——再暗的夜晚也不会低于这个值。
+///
+/// 项目所有者的要求是「黑夜要有一个还算能看的亮度」。原先午夜的调制
+/// 系数是 0.1，连当前视野内的格子都被压得几乎看不出地形。
+///
+/// 这条是**纯表现层**决策（ADR 0020 甲区：结果只变成像素），与视野半径
+/// 的下限 [`ll_world::light::MIN_SIGHT_RADIUS`] 分属两件事——一个管
+/// 「看得清不清」，一个管「看得到多远」。前者可以自由用浮点、不进
+/// `WorldState`、不参与 `hash()`；后者会经 FOV 影响探索记忆，是世界状态。
+///
+/// 取 0.4 而不是更高：夜晚仍要明显暗于白天（正午为 1.0），否则昼夜就
+/// 只剩计时意义。已探索但当前无视野的格子还会再乘
+/// [`EXPLORED_MEMORY_DIM_FACTOR`]，因此夜里的记忆层约为 0.14——能看出
+/// 轮廓，但一眼能和当前视野区分开。
+pub const MIN_VISIBLE_TINT: f32 = 0.4;
+
+/// 画面整体亮度调制（灰阶），下限为 [`MIN_VISIBLE_TINT`]。
 pub fn effective_tint(profile: &SpaceProfile, clock: Tick) -> [f32; 4] {
     let light = effective_ambient_light(profile, clock).0.clamp(0, 1000) as f32 / 1000.0;
+    let light = light.max(MIN_VISIBLE_TINT);
     [light, light, light, 1.0]
 }
 
@@ -195,6 +212,51 @@ mod tests {
 
         // Assert
         assert!(tint[0] > 0.5);
+    }
+
+    /// 项目所有者的要求：「让黑夜有个最低视野范围以及一个还算能看的
+    /// 亮度」。这条锁住亮度那一半，视野那一半由
+    /// `ll_world::light` 的 `午夜视野不低于最小半径` 锁住。
+    #[test]
+    fn 午夜的画面亮度不低于可见下限() {
+        // Arrange：露天地表，午夜，没有任何额外光源。
+        let profile = SpaceProfile {
+            id: ll_core::ident::NamespacedId::parse("lostland:test_surface").expect("字面量恒合法"),
+            ambient_light_floor: 0,
+            exposed_to_sky: true,
+            base_temperature: 0,
+            diggable: true,
+            buildable: true,
+            reverb_tag: None,
+        };
+
+        // Act
+        let tint = effective_tint(&profile, Tick(0));
+
+        // Assert
+        assert!(tint[0] >= MIN_VISIBLE_TINT);
+    }
+
+    /// 但夜晚仍必须明显暗于正午，否则昼夜只剩计时意义。
+    #[test]
+    fn 午夜画面明显暗于正午() {
+        // Arrange
+        let profile = SpaceProfile {
+            id: ll_core::ident::NamespacedId::parse("lostland:test_surface").expect("字面量恒合法"),
+            ambient_light_floor: 0,
+            exposed_to_sky: true,
+            base_temperature: 0,
+            diggable: true,
+            buildable: true,
+            reverb_tag: None,
+        };
+
+        // Act
+        let midnight = effective_tint(&profile, Tick(0));
+        let noon = effective_tint(&profile, Tick(12 * ll_core::time::TICKS_PER_HOUR));
+
+        // Assert
+        assert!(midnight[0] < noon[0]);
     }
 
     #[test]
