@@ -31,6 +31,13 @@ ll-script = { path = "../ll-script" }
 # 解析出依赖关系用于拓扑排序）。
 serde = { version = "1", features = ["derive"] }
 toml = "0.9"
+# 资产 VFS（`crate::asset_vfs`）解析 mod 自带的 `assets/sprites/manifest.json`
+# ——从 [dev-dependencies] 升级为生产依赖：此前只有测试用它验证存档
+# 序列化往返，现在装载管线本身在生产代码路径上要解析这份 JSON。
+serde_json = "1"
+# `crate::asset_vfs` 对路径穿越、清单解析失败等非致命问题记警告日志
+# （「降级而非崩溃」），与 `ll-render`/`ll-game` 使用的是同一个门面。
+tracing = "0.1"
 # P5-B 接线批次：从 [dev-dependencies] 升级为生产依赖。原先只在测试里
 # 用它验证「写入没有绕开 apply」（见下方历史注释），但 `resolve_use_skill`/
 # `Intent::Attack` 的击杀结算需要在真实游玩流程里查询本 crate 的
@@ -46,9 +53,6 @@ ll-sim = { path = "../ll-sim" }
 
 [dev-dependencies]
 proptest.workspace = true
-# 序列化往返测试（任务 7 的存档一致性验证）与 `ll-world` 的同类测试
-# 用同一个编码格式。
-serde_json = "1"
 # 规格 §10.5 接线批次新增：`script_behavior_api`/`script_behavior_source`
 # 的测试要直接断言 `ScriptEngine::call_raw` 的返回值（`steel::rvals::
 # SteelVal`）——生产代码本身不需要点名这个类型（`register_fn` 靠泛型

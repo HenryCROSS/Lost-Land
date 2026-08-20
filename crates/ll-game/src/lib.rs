@@ -41,6 +41,12 @@ const CONFIG_FILE_NAME: &str = "config.json";
 const SAVE_FILE_NAME: &str = "save.llsave";
 /// mod 根目录相对可执行文件所在目录的路径——与仓库根 `mods/` 对齐。
 const MODS_DIR_NAME: &str = "mods";
+/// 本体资产根目录相对可执行文件所在目录的路径——与仓库根 `assets/`
+/// 对齐，内含本体自己的 `sprites/manifest.json`（见
+/// `ll_mod::asset_vfs` 模块文档）。与 `mods/` 一样，发行时需要与可
+/// 执行文件放在同一目录下——本体目前没有安装器，这是与 `mods/` 完全
+/// 相同的既有部署假设，不是本次新增的限制。
+const ASSETS_DIR_NAME: &str = "assets";
 
 /// 新游戏使用的默认地形种子——本体目前没有开局选择种子的界面（P7），
 /// 固定用一个值保证「同一份构建反复运行产出同一个世界」，便于开发期
@@ -56,16 +62,19 @@ pub struct GamePaths {
     pub save: PathBuf,
     /// mod 根目录。
     pub mods_root: PathBuf,
+    /// 本体资产根目录。
+    pub assets_root: PathBuf,
 }
 
 impl GamePaths {
-    /// 以 `base` 为根目录推出三个路径——生产环境用可执行文件所在目录，
+    /// 以 `base` 为根目录推出四个路径——生产环境用可执行文件所在目录，
     /// 测试用临时目录，两者走同一套推导逻辑,不需要两份实现。
     pub fn under(base: &Path) -> GamePaths {
         GamePaths {
             config: base.join(CONFIG_FILE_NAME),
             save: base.join(SAVE_FILE_NAME),
             mods_root: base.join(MODS_DIR_NAME),
+            assets_root: base.join(ASSETS_DIR_NAME),
         }
     }
 }
@@ -162,7 +171,7 @@ pub fn run_game() {
         tracing::warn!(%error, path = %paths.config.display(), "写出默认配置失败，继续使用内存中的默认值");
     }
 
-    let content = load_content(&paths.mods_root);
+    let content = load_content(&paths.mods_root, &paths.assets_root);
     tracing::info!(
         registered_mods = content.report.loaded_count(),
         failed_mods = content.report.failed_count(),
@@ -209,6 +218,7 @@ mod tests {
         assert_eq!(paths.config, base.join(CONFIG_FILE_NAME));
         assert_eq!(paths.save, base.join(SAVE_FILE_NAME));
         assert_eq!(paths.mods_root, base.join(MODS_DIR_NAME));
+        assert_eq!(paths.assets_root, base.join(ASSETS_DIR_NAME));
     }
 
     #[test]
@@ -220,7 +230,7 @@ mod tests {
             std::env::temp_dir().join(format!("ll-game-lib-test-no-save-{}", std::process::id()));
         std::fs::create_dir_all(&base).expect("创建测试目录应当成功");
         let paths = GamePaths::under(&base);
-        let content = load_content(&paths.mods_root);
+        let content = load_content(&paths.mods_root, &paths.assets_root);
 
         // Act
         let game_world = load_or_new_game(&paths, &content);
@@ -239,7 +249,7 @@ mod tests {
             std::env::temp_dir().join(format!("ll-game-lib-test-with-save-{}", std::process::id()));
         std::fs::create_dir_all(&base).expect("创建测试目录应当成功");
         let paths = GamePaths::under(&base);
-        let content = load_content(&paths.mods_root);
+        let content = load_content(&paths.mods_root, &paths.assets_root);
         let original = new_game(&content);
         let original_pos = original
             .world

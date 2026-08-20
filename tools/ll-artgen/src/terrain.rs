@@ -115,6 +115,29 @@ const TERRAIN_SPECS: &[TerrainSpec] = &[
         accent_lightness_delta: -0.35,
         accent_saturation_boost: 0.4,
     },
+    // 以下两份配方不属于本体图集（不会出现在 `assets/atlas/placeholder.json`
+    // 里），只供 `mods/example_mod` 的真实资产 VFS 验收 demo 使用——见
+    // `main.rs` 里 `generate_mod_demo_assets` 一节。放进同一张配方表，
+    // 是因为点缀算法（`decorate_terrain_tile`）与地形种类无关，没有
+    // 理由为了区区两种地形另起一套绘制逻辑。
+    TerrainSpec {
+        name: "lava_floor",
+        // 熔岩：饱和度极高的橙红，与本体全部地形色都拉开明显差距——
+        // `examplemod:lava_floor` 是 mod 自己新增的地形种类,不是本体
+        // 任何既有地形的变体,颜色不该跟任何一个既有配方相近。
+        base: (226, 88, 24),
+        accent_lightness_delta: 0.30,
+        accent_saturation_boost: 0.0,
+    },
+    TerrainSpec {
+        name: "examplemod_terrain_dirt_override",
+        // 覆盖 demo：与本体 `terrain_dirt`（暖褐色 `(120, 100, 80)`）
+        // 主色相近但明显更红——玩家应该能一眼看出「这块地被换了皮肤」，
+        // 而不是「颜色几乎一样看不出差异」。
+        base: (150, 70, 60),
+        accent_lightness_delta: -0.20,
+        accent_saturation_boost: 0.0,
+    },
 ];
 
 /// 按条目名查配方；查不到返回 `None`，由调用方决定如何处理——见

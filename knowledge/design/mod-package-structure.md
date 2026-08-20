@@ -11,6 +11,8 @@
 
 本文档不实现代码，只定形状；对现有 `mods/example_mod/` 的迁移成本（把 `entry_points` 拆成分类字段）在各节随手标注，不单独另起一节。
 
+**落地状态更新（2026-08-20，资产 VFS 批次）**：四节「资产 VFS」已实现——`crates/ll-mod/src/asset_vfs.rs`（路径校验、`assets/sprites/manifest.json` 解析、`assets/overrides/<目标命名空间>/sprites/` 覆盖解析、冲突产出 `LoadStatus::Warning`）与 `crates/ll-render/src/atlas_pack.rs`（运行期图集打包，取代 `include_bytes!` 编译期烧死）。目录约定与本节描述基本一致，一处已知偏差：清单文件名固定为 `manifest.json`（不是 `<相对路径>.atlas.json` 这个按文件命名的形式），且不含 `rect` 字段（摆放位置改由打包器运行期决定，而非声明方预先给出）——这是「运行期打包」这个后续决定（详见提交历史与 `crates/ll-render/src/atlas_pack.rs` 模块文档）反过来收窄的一处形状调整，本节其余部分（覆盖规则、路径安全、冲突处理）未受影响。一节「目录布局」、二/三/五节（清单字段、入口点分类、依赖版本约束）仍是纯设计，未在本批次实现。
+
 ---
 
 ## 一、目录布局

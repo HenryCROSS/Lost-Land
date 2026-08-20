@@ -97,6 +97,7 @@
 //! 接入 `resolve`，见两个模块的文档），不得被下游任何 crate 反向依赖。
 
 pub mod active_registry;
+pub mod asset_vfs;
 pub mod base_placeholder;
 pub mod base_race;
 pub mod base_space_profile;
