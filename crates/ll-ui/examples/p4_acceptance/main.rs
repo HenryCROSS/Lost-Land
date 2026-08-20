@@ -354,6 +354,12 @@ fn main() {
         failed = demo.demo_world.report.failed_count(),
         "mod loading pipeline finished"
     );
+    // P5-C 缺口修补批次：证明脚本注册的不只是地形——mods/example_mod/
+    // gameplay.scm 的 register-class 调用是否真的写进了职业表。
+    tracing::info!(
+        necromancer_primary_attribute = ?demo.demo_world.necromancer_primary_attribute,
+        "examplemod:necromancer class registration"
+    );
 
     if let Err(error) = run(WindowConfig::default(), demo) {
         tracing::error!(%error, "event loop terminated with error");

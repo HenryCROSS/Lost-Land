@@ -10,9 +10,14 @@ use std::path::Path;
 use ll_core::ident::{Interner, NamespacedId};
 use ll_core::torus::{TorusPos, TorusSize};
 use ll_mod::base_terrain::register_base_terrain;
+use ll_mod::class::ClassTable;
 use ll_mod::load_report::LoadReport;
-use ll_mod::pipeline::load_all;
+use ll_mod::pipeline::{GameplayTables, load_all};
+use ll_mod::quest::QuestTable;
+use ll_mod::race::RaceTable;
 use ll_mod::registry::Registry;
+use ll_mod::skill::SkillTable;
+use ll_mod::subclass::SubclassTable;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::state::WorldState;
@@ -55,6 +60,11 @@ pub(crate) struct DemoWorld {
     /// examplemod 的清单路径——供「一键重载」演示使用（见
     /// `crate::main` 对 'R' 键的处理）。
     pub(crate) example_mod_manifest: std::path::PathBuf,
+    /// `mods/example_mod/gameplay.scm` 注册的亡灵法师职业的主属性倾向
+    /// ——P5-C 缺口修补批次新增，证明 `register-class` 这类玩法层脚本
+    /// 绑定在完整装载管线（不只是孤立的单元测试）里也确实生效。`None`
+    /// 表示这次没能成功注册（如实处理，理由同 `lava_kind` 字段文档）。
+    pub(crate) necromancer_primary_attribute: Option<ll_world::entity::AttributeKind>,
 }
 
 /// 三个 mod 根目录相对本 crate `Cargo.toml` 的路径。分成三个独立目录
@@ -76,17 +86,51 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut registry = Registry::new();
     let (terrain_ids, mut table) =
         register_base_terrain(&mut registry).expect("本体地形声明表内部一致，注册恒不失败");
+    // P4 demo 本身只演示地形（P5 才引入职业/技能/副职/任务/种族），但
+    // `load_all` 的签名要求六张表一起传——见 `ll_mod::pipeline::
+    // GameplayTables` 文档：五张非地形表在这里只是陪跑的空表，不影响
+    // demo 的验收范围。
+    let mut class = ClassTable::new();
+    let mut skill = SkillTable::new();
+    let mut subclass = SubclassTable::new();
+    let mut quest = QuestTable::new();
+    let mut race = RaceTable::new();
 
-    let mut report = load_all(Path::new(PRIMARY_MODS_ROOT), &mut registry, &mut table);
+    let mut report = load_all(
+        Path::new(PRIMARY_MODS_ROOT),
+        &mut registry,
+        &mut GameplayTables {
+            terrain: &mut table,
+            class: &mut class,
+            skill: &mut skill,
+            subclass: &mut subclass,
+            quest: &mut quest,
+            race: &mut race,
+        },
+    );
     let missing_dependency_report = load_all(
         Path::new(MISSING_DEPENDENCY_ROOT),
         &mut registry,
-        &mut table,
+        &mut GameplayTables {
+            terrain: &mut table,
+            class: &mut class,
+            skill: &mut skill,
+            subclass: &mut subclass,
+            quest: &mut quest,
+            race: &mut race,
+        },
     );
     let duplicate_namespace_report = load_all(
         Path::new(DUPLICATE_NAMESPACE_ROOT),
         &mut registry,
-        &mut table,
+        &mut GameplayTables {
+            terrain: &mut table,
+            class: &mut class,
+            skill: &mut skill,
+            subclass: &mut subclass,
+            quest: &mut quest,
+            race: &mut race,
+        },
     );
     report.entries.extend(missing_dependency_report.entries);
     report.entries.extend(duplicate_namespace_report.entries);
@@ -94,6 +138,10 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let lava_kind = registry
         .get(&NamespacedId::parse(LAVA_FLOOR_ID).expect("字面量恒合法"))
         .map(TerrainKind::from_index);
+    let necromancer_primary_attribute = registry
+        .get(&NamespacedId::parse("examplemod:necromancer").expect("字面量恒合法"))
+        .and_then(|index| class.get(index))
+        .map(|view| view.primary_attribute);
 
     let layout = build_zone_layout();
     let placeholder_spawn = layout.tile_size().wrap(0, 0);
@@ -137,6 +185,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
         example_mod_manifest: Path::new(PRIMARY_MODS_ROOT)
             .join("example_mod")
             .join("mod.toml"),
+        necromancer_primary_attribute,
     }
 }
 
@@ -272,6 +321,21 @@ mod tests {
                 "{namespace} 应当归入失败分组，实际 {status:?}"
             );
         }
+    }
+
+    #[test]
+    fn 示例mod的亡灵法师职业通过完整装载管线成功注册() {
+        // P5-C 缺口修补批次：证明 register-class 不只是在孤立的单元
+        // 测试里能被脚本调用，在真实的「发现→解析→拓扑排序→加载脚本→
+        // 注册内容」完整管线里同样生效。
+        // Arrange & Act
+        let demo = build_demo_world();
+
+        // Assert
+        assert_eq!(
+            demo.necromancer_primary_attribute,
+            Some(ll_world::entity::AttributeKind::Willpower)
+        );
     }
 
     #[test]

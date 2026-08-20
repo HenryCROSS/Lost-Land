@@ -14,17 +14,18 @@
 //!          读文件                   -> IO 失败归入 LoadScript 阶段
 //!          ScriptEngine::load_source -> 语法错误/白名单拒绝/超时/缺参
 //!                                       归入 LoadScript 阶段；
-//!                                       register-terrain 内部校验失败
-//!                                       归入 Register 阶段（见
+//!                                       register-* 内部校验失败归入
+//!                                       Register 阶段（见
 //!                                       `classify_script_stage` 文档，
 //!                                       这是一处已知的简化）
 //! ```
 //!
-//! 本体地形（[`crate::base_terrain::register_base_terrain`]）**不经过
-//! 这条管线**——它是一次直接的 Rust 函数调用，没有清单、没有脚本，见
-//! 该模块文档。调用方应在跑本管线之前先调用一次
-//! `register_base_terrain`，两者共享同一个 [`crate::registry::Registry`]
-//! 与 `ll_world::terrain::TerrainTable`。
+//! 本体内容（[`crate::base_terrain::register_base_terrain`]/
+//! [`crate::base_race::register_base_races`] 等 `base_*` 模块）**不经过
+//! 这条管线**——它们是一次直接的 Rust 函数调用，没有清单、没有脚本，
+//! 见各自模块文档。调用方应在跑本管线之前先调用一遍全部 `base_*`
+//! 注册函数，两者共享同一个 [`crate::registry::Registry`] 与
+//! [`GameplayTables`] 里的各张内容表。
 
 use std::path::Path;
 
@@ -32,23 +33,82 @@ use ll_core::ident::NamespacedId;
 use ll_script::host::{ScriptEngine, ScriptError};
 use ll_world::terrain::TerrainTable;
 
+use crate::class::ClassTable;
 use crate::load_report::{LoadError, LoadReport, LoadStage, LoadStatus, SourceLocation};
 use crate::manifest::{ModError, ModManifest, mod_self_id, parse_manifest};
+use crate::quest::QuestTable;
+use crate::race::RaceTable;
 use crate::registry::Registry;
-use crate::script_terrain_api::{register_terrain_api, set_active_target, take_active_target};
+use crate::skill::SkillTable;
+use crate::subclass::SubclassTable;
 use crate::{discover, topo};
 
+use crate::active_registry::{set_active_registry, take_active_registry};
+use crate::script_class_api::{
+    register_class_api, set_active_target as set_active_class_target,
+    take_active_target as take_active_class_target,
+};
+use crate::script_quest_api::{
+    register_quest_api, set_active_target as set_active_quest_target,
+    take_active_target as take_active_quest_target,
+};
+use crate::script_race_api::{
+    register_race_api, set_active_target as set_active_race_target,
+    take_active_target as take_active_race_target,
+};
+use crate::script_skill_api::{
+    register_skill_api, set_active_target as set_active_skill_target,
+    take_active_target as take_active_skill_target,
+};
+use crate::script_subclass_api::{
+    register_subclass_api, set_active_target as set_active_subclass_target,
+    take_active_target as take_active_subclass_target,
+};
+use crate::script_terrain_api::{
+    register_terrain_api, set_active_target as set_active_terrain_target,
+    take_active_target as take_active_terrain_target,
+};
+
+/// 加载管线一次装载会话内，脚本注册函数可以写入的全部内容表——地形、
+/// 职业、技能、副职、任务、种族。
+///
+/// 集中成一个结构体，而不是让 [`load_all`]/[`load_one_script`] 各自
+/// 接收六个独立的 `&mut` 参数：这六张表在装载管线里总是同进同出（同一
+/// 份 mod 脚本可能在同一个文件里先后调用 `register-terrain`/
+/// `register-class`/……），拆成六个位置参数只会让调用点的参数顺序成为
+/// 易错点，结构体把「这六张表必须一起传」这条约束在类型上表达出来。
+/// `Registry` 不在这个结构体里——它走 [`crate::active_registry`] 单独
+/// 的共享目标，理由见该模块文档。
+pub struct GameplayTables<'a> {
+    /// 地形表。
+    pub terrain: &'a mut TerrainTable,
+    /// 职业表。
+    pub class: &'a mut ClassTable,
+    /// 技能表。
+    pub skill: &'a mut SkillTable,
+    /// 副职表。
+    pub subclass: &'a mut SubclassTable,
+    /// 任务表。
+    pub quest: &'a mut QuestTable,
+    /// 种族表。
+    pub race: &'a mut RaceTable,
+}
+
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
-/// 排序、按序加载脚本、注册内容——写入 `registry`/`table`，返回一份
+/// 排序、按序加载脚本、注册内容——写入 `registry`/`tables`，返回一份
 /// 报告。
 ///
-/// `registry`/`table` 应当已经装过本体内容（`register_base_terrain`）：
-/// 本函数只管 mod 目录，不知道、也不需要知道本体是怎么注册进去的——
-/// 这正是「本体即 Mod」在管线层面的体现：本体的注册发生在调用本函数
-/// **之前**的一次独立调用，mod 内容随后 intern 进同一个 `Registry`，
-/// 两者共用同一段单调递增的 `ContentIndex` 号段（见
-/// `crate::base_terrain` 模块文档与其测试）。
-pub fn load_all(mods_root: &Path, registry: &mut Registry, table: &mut TerrainTable) -> LoadReport {
+/// `registry`/`tables` 应当已经装过本体内容（`register_base_terrain`/
+/// `register_base_races` 等）：本函数只管 mod 目录，不知道、也不需要
+/// 知道本体是怎么注册进去的——这正是「本体即 Mod」在管线层面的体现：
+/// 本体的注册发生在调用本函数**之前**的一次独立调用，mod 内容随后
+/// intern 进同一个 `Registry`，两者共用同一段单调递增的 `ContentIndex`
+/// 号段（见 `crate::base_terrain` 模块文档与其测试）。
+pub fn load_all(
+    mods_root: &Path,
+    registry: &mut Registry,
+    tables: &mut GameplayTables,
+) -> LoadReport {
     let mut report = LoadReport::new();
 
     let candidates = discover::discover_mods(mods_root);
@@ -93,7 +153,7 @@ pub fn load_all(mods_root: &Path, registry: &mut Registry, table: &mut TerrainTa
 
         let mut failure = None;
         for entry in &manifest.entry_points {
-            if let Err(err) = load_one_script(manifest, entry, registry, table) {
+            if let Err(err) = load_one_script(manifest, entry, registry, tables) {
                 failure = Some(err);
                 break;
             }
@@ -148,9 +208,22 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     }
 
     let mut registry = Registry::new();
-    let mut table = TerrainTable::new();
+    let mut terrain = TerrainTable::new();
+    let mut class = ClassTable::new();
+    let mut skill = SkillTable::new();
+    let mut subclass = SubclassTable::new();
+    let mut quest = QuestTable::new();
+    let mut race = RaceTable::new();
+    let mut tables = GameplayTables {
+        terrain: &mut terrain,
+        class: &mut class,
+        skill: &mut skill,
+        subclass: &mut subclass,
+        quest: &mut quest,
+        race: &mut race,
+    };
     for entry in &manifest.entry_points {
-        if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut table) {
+        if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
             return LoadStatus::Failed(err);
         }
     }
@@ -218,12 +291,14 @@ fn attribute_topo_error(report: &mut LoadReport, parsed: &[ModManifest], err: &M
 }
 
 /// 加载单个脚本文件：读文件、跑 `ScriptEngine::load_source`，成功时
-/// `register-terrain` 的效果已经写进 `registry`/`table`。
+/// `register-terrain`/`register-class`/`register-skill`/
+/// `register-subclass`/`register-quest`/`register-race` 的效果已经写进
+/// `registry`/`tables`。
 fn load_one_script(
     manifest: &ModManifest,
     entry: &Path,
     registry: &mut Registry,
-    table: &mut TerrainTable,
+    tables: &mut GameplayTables,
 ) -> Result<(), LoadError> {
     let source = std::fs::read_to_string(entry).map_err(|io_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -235,21 +310,37 @@ fn load_one_script(
         }),
     })?;
 
-    // 把 registry/table 整体移进线程局部存储，供 register-terrain 在
-    // 脚本求值期间写入；脚本跑完（不论成功失败）都要原样移回——
-    // `ScriptEngine::load_source` 本身不会 panic（四道防线①②），这里
-    // 不需要 catch_unwind 之类的补救。
-    let owned_registry = std::mem::take(registry);
-    let owned_table = std::mem::take(table);
-    set_active_target(owned_registry, owned_table);
+    // 把 registry 与全部六张表整体移进各自的线程局部存储，供对应的
+    // register-* 函数在脚本求值期间写入；脚本跑完（不论成功失败）都要
+    // 原样移回——`ScriptEngine::load_source` 本身不会 panic（四道防线
+    // ①②），这里不需要 catch_unwind 之类的补救。`Registry` 走
+    // `crate::active_registry` 的共享目标（六个 register-* 函数必须
+    // 共用同一个 `Registry` 实例，理由见该模块文档），六张表各自走
+    // 自己模块的 `thread_local!`。
+    set_active_registry(std::mem::take(registry));
+    set_active_terrain_target(std::mem::take(tables.terrain));
+    set_active_class_target(std::mem::take(tables.class));
+    set_active_skill_target(std::mem::take(tables.skill));
+    set_active_subclass_target(std::mem::take(tables.subclass));
+    set_active_quest_target(std::mem::take(tables.quest));
+    set_active_race_target(std::mem::take(tables.race));
 
     let mut engine = ScriptEngine::new();
     register_terrain_api(&mut engine);
+    register_class_api(&mut engine);
+    register_skill_api(&mut engine);
+    register_subclass_api(&mut engine);
+    register_quest_api(&mut engine);
+    register_race_api(&mut engine);
     let result = engine.load_source(source.clone());
 
-    let (restored_registry, restored_table) = take_active_target();
-    *registry = restored_registry;
-    *table = restored_table;
+    *registry = take_active_registry();
+    *tables.terrain = take_active_terrain_target();
+    *tables.class = take_active_class_target();
+    *tables.skill = take_active_skill_target();
+    *tables.subclass = take_active_subclass_target();
+    *tables.quest = take_active_quest_target();
+    *tables.race = take_active_race_target();
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -267,16 +358,19 @@ fn load_one_script(
 /// 把 [`ScriptError`] 归到 [`LoadStage::LoadScript`] 还是
 /// [`LoadStage::Register`]。
 ///
-/// **已知简化**：本管线当前唯一注册给脚本的、会产生副作用的能力就是
-/// `register-terrain`（见 `crate::script_terrain_api`），因此把
-/// `ScriptError::Runtime`（`register-terrain` 内部校验失败时正是走这一
-/// 类，见其文档「返回 Result<bool, String>」一节）整体归为 Register
-/// 阶段。这会把一个与内容注册无关、纯粹是脚本自身写错的运行时错误
-/// （比如引用了一个已声明但尚未 `define` 的变量）也误标成 Register——
-/// 只要脚本能引用的副作用函数还只有 `register-terrain` 一个，这个简化
-/// 就不会产生错误归类；一旦本项目后续给脚本注册第二个有副作用的函数
-/// （比如未来的技能/物品注册），这里需要回来改成更精确的判据（例如让
-/// 每个注册函数把自己的错误包一层可辨识的前缀）。
+/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有六个
+/// （`register-terrain`/`register-class`/`register-skill`/
+/// `register-subclass`/`register-quest`/`register-race`），把
+/// `ScriptError::Runtime`（任一 `register-*` 内部校验失败时都走这一
+/// 类，见各自模块文档「返回 Result<bool, String>」一节）整体归为
+/// Register 阶段。这会把一个与内容注册无关、纯粹是脚本自身写错的运行
+/// 时错误（比如引用了一个已声明但尚未 `define` 的变量）也误标成
+/// Register——原始简化写下时只有 `register-terrain` 一个注册函数，
+/// 补齐另外五个之后这条简化本身没有变得更精确（六个函数的运行时错误
+/// 依然与「脚本自身写错」共用同一个 `ScriptError::Runtime` 变体，无法
+/// 从错误类型本身区分），仍然是一处已知的简化，不是本批次修掉的缺口
+/// ——若未来需要更精确的判据，需要让每个注册函数把自己的错误包一层
+/// 可辨识的前缀。
 fn classify_script_stage(err: &ScriptError) -> LoadStage {
     match err {
         ScriptError::Runtime(..) => LoadStage::Register,
@@ -306,7 +400,35 @@ fn line_number(source: &str, byte_offset: u32) -> u32 {
 mod tests {
     use super::*;
     use crate::test_support::tempdir;
+    use ll_world::terrain::TerrainKind;
     use std::fs;
+
+    /// 测试帮手：现造一套全新的空内容表，供 [`GameplayTables`] 借用——
+    /// 各测试只关心地形（`register-terrain` 仍是既有场景里用得最多的
+    /// 一类），但 `load_all` 的签名要求六张表一起传，本结构体把「造出
+    /// 六个空表」这件事集中成一次调用，不必在每条测试里重复六行。
+    #[derive(Default)]
+    struct OwnedTables {
+        terrain: TerrainTable,
+        class: ClassTable,
+        skill: SkillTable,
+        subclass: SubclassTable,
+        quest: QuestTable,
+        race: RaceTable,
+    }
+
+    impl OwnedTables {
+        fn as_gameplay_tables(&mut self) -> GameplayTables<'_> {
+            GameplayTables {
+                terrain: &mut self.terrain,
+                class: &mut self.class,
+                skill: &mut self.skill,
+                subclass: &mut self.subclass,
+                quest: &mut self.quest,
+                race: &mut self.race,
+            }
+        }
+    }
 
     /// 在 `root` 下建一个候选 mod 子目录，写入清单与（可选）脚本。
     fn write_mod(root: &Path, dir_name: &str, manifest_toml: &str, script: Option<&str>) {
@@ -332,10 +454,10 @@ mod tests {
             None,
         );
         let mut registry = Registry::new();
-        let mut table = TerrainTable::new();
+        let mut owned = OwnedTables::default();
 
         // Act
-        let report = load_all(root.path(), &mut registry, &mut table);
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
 
         // Assert
         assert_eq!(
@@ -359,10 +481,10 @@ mod tests {
             Some(r#"(register-terrain "examplemod:lava_floor" #f #t 4294967295 "")"#),
         );
         let mut registry = Registry::new();
-        let mut table = TerrainTable::new();
+        let mut owned = OwnedTables::default();
 
         // Act
-        let report = load_all(root.path(), &mut registry, &mut table);
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
 
         // Assert
         assert_eq!(
@@ -400,10 +522,10 @@ mod tests {
             None,
         );
         let mut registry = Registry::new();
-        let mut table = TerrainTable::new();
+        let mut owned = OwnedTables::default();
 
         // Act
-        let report = load_all(root.path(), &mut registry, &mut table);
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
 
         // Assert
         let broken_status = report
@@ -438,10 +560,10 @@ mod tests {
             None,
         );
         let mut registry = Registry::new();
-        let mut table = TerrainTable::new();
+        let mut owned = OwnedTables::default();
 
         // Act
-        let report = load_all(root.path(), &mut registry, &mut table);
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
 
         // Assert
         match &report.entries[0].1 {
@@ -464,10 +586,10 @@ mod tests {
             None,
         );
         let mut registry = Registry::new();
-        let mut table = TerrainTable::new();
+        let mut owned = OwnedTables::default();
 
         // Act
-        let report = load_all(root.path(), &mut registry, &mut table);
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
 
         // Assert
         assert_eq!(report.entries.len(), 1);
@@ -493,10 +615,10 @@ mod tests {
             Some("(require-builtin steel/time)\n(instant/now)"),
         );
         let mut registry = Registry::new();
-        let mut table = TerrainTable::new();
+        let mut owned = OwnedTables::default();
 
         // Act
-        let report = load_all(root.path(), &mut registry, &mut table);
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
 
         // Assert
         match &report.entries[0].1 {
@@ -520,10 +642,10 @@ mod tests {
             Some("(define x 1)\n(+ 1 2"),
         );
         let mut registry = Registry::new();
-        let mut table = TerrainTable::new();
+        let mut owned = OwnedTables::default();
 
         // Act
-        let report = load_all(root.path(), &mut registry, &mut table);
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
 
         // Assert
         match &report.entries[0].1 {
@@ -533,6 +655,82 @@ mod tests {
             }
             other => panic!("期望带行号的 Failed，实际 {other:?}"),
         }
+    }
+
+    #[test]
+    fn 单个脚本内连续调用六种注册函数全部真实写进各自的表() {
+        // 端到端验证：一个 mod 脚本在同一个文件里依次调用
+        // register-terrain/register-class/register-skill/
+        // register-subclass/register-quest/register-race，六次调用
+        // 必须落在同一个 Registry 上（否则 ContentIndex 会撞车），且
+        // 六张表各自都收到了正确的内容——这是 crate::active_registry
+        // 模块文档论证的那个「必须共享同一个 Registry」场景的直接回归。
+        // Arrange
+        let root = tempdir();
+        write_mod(
+            root.path(),
+            "gameplay",
+            r#"
+            namespace = "gameplay"
+            version = "0.1.0"
+            entry_points = ["main.scm"]
+            "#,
+            Some(
+                r#"
+                (register-terrain "gameplay:lava_floor" #f #f 350 "")
+                (register-class "gameplay:necromancer" "gameplay:necromancer_display_name" "willpower")
+                (register-subclass "gameplay:shadowdancer" "gameplay:shadowdancer_display_name")
+                (register-skill "gameplay:frostbolt" "" (list) 25 "mana" 12 "deal-damage" "" 15 0)
+                (register-quest "gameplay:kill_goblins" (list) "kill-count" "gameplay:goblin" 3)
+                (register-race "gameplay:half_elf" "gameplay:half_elf_display_name" 0 1 0 0 0 1 0 1 1 150)
+                "#,
+            ),
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert：mod 整体加载成功。
+        assert_eq!(
+            report.entries,
+            vec![(mod_self_id("gameplay").unwrap(), LoadStatus::Loaded)]
+        );
+        // 六类内容各自都能在对应的表里查到——不是只注册进了 Registry
+        // 却没有写进属性表。
+        let terrain_index = registry
+            .get(&NamespacedId::parse("gameplay:lava_floor").unwrap())
+            .expect("地形应已注册");
+        assert_eq!(
+            TerrainKind::from_index(terrain_index).move_cost(&owned.terrain),
+            350
+        );
+
+        let class_index = registry
+            .get(&NamespacedId::parse("gameplay:necromancer").unwrap())
+            .expect("职业应已注册");
+        assert!(owned.class.get(class_index).is_some());
+
+        let subclass_index = registry
+            .get(&NamespacedId::parse("gameplay:shadowdancer").unwrap())
+            .expect("副职应已注册");
+        assert!(owned.subclass.get(subclass_index).is_some());
+
+        let skill_index = registry
+            .get(&NamespacedId::parse("gameplay:frostbolt").unwrap())
+            .expect("技能应已注册");
+        assert!(owned.skill.get(skill_index).is_some());
+
+        let quest_index = registry
+            .get(&NamespacedId::parse("gameplay:kill_goblins").unwrap())
+            .expect("任务应已注册");
+        assert!(owned.quest.get(quest_index).is_some());
+
+        let race_index = registry
+            .get(&NamespacedId::parse("gameplay:half_elf").unwrap())
+            .expect("种族应已注册");
+        assert!(owned.race.get(race_index).is_some());
     }
 
     #[test]

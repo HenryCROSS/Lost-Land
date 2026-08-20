@@ -50,11 +50,30 @@
 //!   （P5-A 任务 14 补齐）：把本体的占位内容注册进
 //!   [`registry::Registry`]，让 NPC 种族缺失的占位降级分支在生产读档
 //!   管线里真正可达。
+//! - [`race`] —— 种族注册表（P5-C 缺口修补批次）：`RaceDef`/`RaceTable`
+//!   落地 `knowledge/design/race-system.md`「核心形状」一节的设计，与
+//!   [`base_placeholder`] 的占位种族索引协调（互不冲突，占位索引在
+//!   `RaceTable` 里查询恒返回 `None`），见其模块文档。
+//! - [`base_race`] —— 同一个模式在种族上的生产注册入口，照
+//!   [`base_terrain`]。
+//! - [`active_registry`] —— 装载会话内唯一共享的活跃 `Registry`，供
+//!   全部 `register-*` 脚本注册函数在同一次脚本求值窗口内共用（P5-C
+//!   接线批次新增：此前只有 `register-terrain` 一个注册函数，`Registry`
+//!   可以整个打包进地形表自己的 `thread_local!`；补齐职业/技能/副职/
+//!   任务/种族五类注册函数后，多个注册函数必须共享同一个 `Registry`
+//!   实例才能保证 `ContentIndex` 号段不冲突，见其模块文档）。
 //! - [`script_terrain_api`] —— 把 `register-terrain` 注册进
 //!   `ll_script::host::ScriptEngine`，供 mod 脚本定义自定义地形（Task
 //!   11/12）。
+//! - [`script_class_api`]/[`script_skill_api`]/[`script_subclass_api`]/
+//!   [`script_quest_api`]/[`script_race_api`] —— 同一个模式在职业/技能/
+//!   副职/任务/种族上的脚本绑定（P5-C 缺口修补批次）：补上
+//!   [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
+//!   判定为「玩法层」、但此前只有纯 Rust 函数调用能触达、脚本完全够
+//!   不到的四类 + 种族共五类注册 API。
 //! - [`pipeline`] —— 加载管线：串起发现→解析→拓扑排序→加载脚本→注册
-//!   内容，产出 [`load_report::LoadReport`]（Task 11/12）。
+//!   内容，产出 [`load_report::LoadReport`]（Task 11/12；P5-C 批次扩展
+//!   到同时接线全部六种 `register-*` 函数）。
 //! - [`load_report`] —— 加载管理界面（`ll-ui`）依赖的数据形状：按 mod
 //!   归类的加载结果、失败阶段、尽力而为的源码位置（Task 11）。
 //!
@@ -68,7 +87,9 @@
 //! `ll_sim::skill::SkillCatalog`/`ll_sim::quest::QuestCatalog` 才能真正
 //! 接入 `resolve`，见两个模块的文档），不得被下游任何 crate 反向依赖。
 
+pub mod active_registry;
 pub mod base_placeholder;
+pub mod base_race;
 pub mod base_space_profile;
 pub mod base_terrain;
 pub mod class;
@@ -80,7 +101,13 @@ pub mod pipeline;
 pub(crate) mod prereq_graph;
 pub mod quest;
 pub mod quest_overview;
+pub mod race;
 pub mod registry;
+pub mod script_class_api;
+pub mod script_quest_api;
+pub mod script_race_api;
+pub mod script_skill_api;
+pub mod script_subclass_api;
 pub mod script_terrain_api;
 pub mod skill;
 pub mod subclass;
