@@ -473,7 +473,7 @@ panic**，符合防线要求。
    展开后依赖 `make-struct-type`、`#%vtable-update-entry!`、
    `#%struct-property-ref` 等一批纯 VM 内机制（无 I/O，不触达任何被禁
    能力），全部挂在 `steel/meta` 下。改为逐项审查 102 个导出名字，
-   只拒绝确认危险的 44 个（见 `host.rs` 的 `META_DENY_LIST` 系列常量及
+   只拒绝确认危险的 49 个（见 `host.rs` 的 `META_DENY_LIST` 系列常量及
    其分类注释），其余（含 `struct` 依赖的、`call/cc`、`box`/`unbox`、
    错误处理、函数内省等）默认放行。
 3. **手工维护的"安全模块"清单遗漏了整个 Scheme 标准库**——`map`/
@@ -524,7 +524,7 @@ panic**，符合防线要求。
 
 ### 保留在拒绝名单上的项目（如实说明理由，不是含糊地"不确定所以挡住"）
 
-`META_DENY_LIST`/`META_DENY_LIST_2`/`META_DENY_LIST_3` 共 44 个名字，
+`META_DENY_LIST`/`META_DENY_LIST_2`/`META_DENY_LIST_3` 共 49 个名字，
 逐条分类理由见 `host.rs` 常量文档；这里只点两个容易被质疑"是不是保守
 过头"的：
 
