@@ -35,7 +35,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::keybind::KeyBindings;
 
-/// 游戏配置：当前只承载键位绑定，未来的图形/音频选项按同样的模式
+/// 游戏配置：键位绑定 + 显示选项，未来的音频等选项按同样的模式
 /// （新增字段 + `#[serde(default = ...)]` 兜底旧配置文件）追加，不需要
 /// 改动本模块的读写逻辑。
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -43,14 +43,86 @@ pub struct GameConfig {
     /// 物理按键 → 抽象动作的绑定表，见 [`crate::keybind`] 模块文档。
     #[serde(default = "KeyBindings::default_bindings")]
     pub bindings: KeyBindings,
+    /// 垂直同步与画面缩放滤波选项，见 [`DisplayConfig`]。
+    #[serde(default)]
+    pub display: DisplayConfig,
 }
 
 impl Default for GameConfig {
     fn default() -> Self {
         GameConfig {
             bindings: KeyBindings::default_bindings(),
+            display: DisplayConfig::default(),
         }
     }
+}
+
+/// 显示相关的图形选项：垂直同步开关、画面缩放滤波方式。
+///
+/// 与 `bindings` 同一条纪律——只是用户偏好，绝不能进
+/// `ll_world::state::WorldState`、不参与 `hash()`、不影响确定性重放
+/// （[ADR 0020](../../../knowledge/decisions/0020-scripts-may-use-floats-internally-boundary-type-gated.md)
+/// 甲区：结果只变成像素/呈现时序，从不回流世界状态）。`ll-platform`
+/// 从未、也不应该反向依赖 `ll-world`/`ll-sim`，理由与 [`crate::keybind`]
+/// 模块文档「持久化」一节完全一致。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DisplayConfig {
+    /// 垂直同步开关。`true` 用 `Fifo` 呈现模式（画面撕裂绝不会发生，
+    /// 帧率被锁定在显示器刷新率以内），`false` 用 `Immediate`（延迟
+    /// 最低但可能画面撕裂）——具体如何落到 wgpu 的呈现模式、平台不
+    /// 支持时如何回退，见 `ll_render::gpu::GpuContext::new` 文档。
+    #[serde(default = "default_vsync")]
+    pub vsync: bool,
+    /// 离屏画面（固定 640×360）放大到窗口尺寸时的采样滤波方式，见
+    /// [`ScaleFilter`]。
+    #[serde(default)]
+    pub scale_filter: ScaleFilter,
+}
+
+/// `vsync` 字段的默认值——独立的具名函数而非字面量，理由与
+/// [`KeyBindings::default_bindings`] 作为 `bindings` 字段默认值同一个
+/// 模式：字段级默认值统一走具名函数，`derive(Default)` 在结构体级别
+/// 组合它们（见 [`DisplayConfig`] 的 `Default` 派生），不需要在
+/// `impl Default for GameConfig` 里手写第二份初始化逻辑。
+fn default_vsync() -> bool {
+    true
+}
+
+impl Default for DisplayConfig {
+    fn default() -> Self {
+        DisplayConfig {
+            vsync: default_vsync(),
+            scale_filter: ScaleFilter::default(),
+        }
+    }
+}
+
+/// 离屏画面（固定 640×360）放大到窗口尺寸时的采样方式。
+///
+/// # 为什么没有 MSAA 选项
+///
+/// 传统多重采样抗锯齿（MSAA）平滑的是三角形几何边缘的锯齿；本项目的
+/// 呈现管线画的是铺满视口的全屏三角形（`ll_render::target` 的 blit
+/// 通道），边缘裁在视口之外，不存在需要抗锯齿的可见几何边缘——真正
+/// 决定画面观感的是离屏画布的像素怎么被放大取样。像素游戏的硬边缘是
+/// 刻意画出来的美术语言，MSAA 会把它们和传统抗锯齿一样糊掉，这不是
+/// 这类游戏需要的「抗锯齿」；真正对应的旋钮就是这里的采样方式选择——
+/// 详细论证见 `ll_render` crate 的 `ll_render::target::BlitFilter` 文档
+/// （不做成文档内链：`ll-platform` 不依赖 `ll-render`，rustdoc 在这个
+/// crate 的作用域里解析不到那个类型，链接会被判定为 broken_intra_doc_links。
+/// 本类型与它逐个变体一一对应，二者分处 `ll-platform`/`ll-render` 两个
+/// crate 正是因为这条依赖方向——`ll-game` 在构造 blit 参数时把
+/// `ScaleFilter` 映射成 `BlitFilter`）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum ScaleFilter {
+    /// 最近邻——像素边缘恒定锐利，但窗口尺寸不是逻辑分辨率整数倍时
+    /// 会让相邻像素被放大成宽窄不一的方块、画面轻微抖动闪烁。
+    #[default]
+    Nearest,
+    /// 锐利双线性（sharp bilinear）——只在纹素边界上做平滑过渡，纹素
+    /// 内部保持平坦：任意窗口尺寸下像素边缘依然锐利，同时消除
+    /// `Nearest` 在非整数倍下的不均匀瑕疵。
+    SharpBilinear,
 }
 
 /// 从 `path` 加载配置；文件不存在、无法读取或内容不是合法的
@@ -215,6 +287,59 @@ mod tests {
 
         // Cleanup
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 默认配置的垂直同步默认开启() {
+        // 与 `ll_render::gpu::GpuContext::new` 文档一致：找不到用户
+        // 偏好时应当默认「不撕裂」而不是默认「最低延迟」。
+        // Arrange & Act
+        let config = GameConfig::default();
+
+        // Assert
+        assert!(config.display.vsync);
+    }
+
+    #[test]
+    fn 默认配置的缩放滤波默认最近邻() {
+        // 默认值必须与既有渲染行为逐位一致——最近邻是本项目此前唯一
+        // 用过的滤波方式,切换默认值会让所有没碰过设置的玩家画面突然
+        // 改变观感。
+        // Arrange & Act
+        let config = GameConfig::default();
+
+        // Assert
+        assert_eq!(config.display.scale_filter, ScaleFilter::Nearest);
+    }
+
+    #[test]
+    fn 缺少display字段的旧配置文件仍能反序列化() {
+        // 兜底旧配置文件——本字段引入之前写出的 JSON 不含 display 键,
+        // 应当退回默认显示配置而不是解析失败。
+        // Arrange
+        let json = r#"{"bindings":{"bindings":[]}}"#;
+
+        // Act
+        let config: GameConfig = serde_json::from_str(json).expect("缺失 display 字段应当兜底");
+
+        // Assert
+        assert_eq!(config.display, DisplayConfig::default());
+    }
+
+    #[test]
+    fn 显示配置能序列化后再反序列化出等价内容() {
+        // Arrange
+        let display = DisplayConfig {
+            vsync: false,
+            scale_filter: ScaleFilter::SharpBilinear,
+        };
+
+        // Act
+        let json = serde_json::to_string(&display).expect("应能序列化");
+        let restored: DisplayConfig = serde_json::from_str(&json).expect("刚序列化的数据应能读回");
+
+        // Assert
+        assert_eq!(restored, display);
     }
 
     #[test]

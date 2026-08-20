@@ -35,6 +35,51 @@ const SPAWN_CLEARING_RADIUS: i32 = 3;
 /// 取值，见其 `layout::STREAM_RADIUS_ZONES` 文档。
 pub const STREAM_RADIUS_ZONES: i32 = 2;
 
+/// 画面缩放允许的最小倍率——比 [`ll_render::camera::Zoom::MIN`]（通用
+/// 下限，与任何具体世界的常驻区块策略无关）更窄，是本体二进制专属的
+/// 「安全」下限：拉得再远也不能让 `Camera::visible_tiles_zoomed`
+/// 枚举出超出常驻区块集合覆盖范围的坐标，否则
+/// `ll_world::surface_store::SurfaceWindow::terrain_at` 会因坐标所在
+/// 区块尚未常驻而 panic（见其文档「前置条件」一节）。
+///
+/// # 推导：常驻区块集合保证的最小边距
+///
+/// `STREAM_RADIUS_ZONES`（本文件，取 2）与 `ZONE_SPAN`（本文件私有
+/// 常量，取 48，不做成文档内链——rustdoc 默认不为私有项生成页面，
+/// 链接会解析失败，同一取舍见 `build_new_world` 文档提到的
+/// `warm_spawn_neighborhood`）共同决定 `SurfaceStore::stream_neighborhood`
+/// 每帧维护的常驻区块
+/// 集合——以玩家所在**区块**为中心、`STREAM_RADIUS_ZONES` 圈内的全部
+/// 区块常驻，构成一块 `(2×2+1)×(2×2+1) = 5×5` 区块、
+/// `5×48 = 240` 格见方的常驻区域，玩家所在区块位于这块区域正中。
+///
+/// 玩家在自己所在区块内的具体位置（`0..ZONE_SPAN` 的局部坐标）决定了
+/// 玩家到常驻区域边缘的实际距离：局部坐标为 `0` 时，到那一侧边缘的
+/// 距离恰好是 `STREAM_RADIUS_ZONES × ZONE_SPAN = 96` 格（两整个区块的
+/// 宽度，玩家自己所在区块里一格都不占）；局部坐标为
+/// `ZONE_SPAN - 1 = 47` 时，到**另一侧**边缘的距离同样是 `96` 格。
+/// 无论玩家站在区块内哪个位置，到最近一侧常驻边缘的距离恒
+/// **不小于** `96` 格——这是常驻集合能保证的、与玩家具体站位无关的
+/// 最小边距，`Camera::visible_tiles_zoomed` 枚举出的范围必须始终
+/// 落在这个边距之内。
+///
+/// # 为什么留出安全余量，不用满 96
+///
+/// 逻辑分辨率 640×360 与瓦片边长 16 未必能让缩放后的有效瓦片边长
+/// 整除，浮点舍入、以及未来若调整 `ZONE_SPAN`/逻辑分辨率而忘记同步
+/// 这里的常量，都值得留一点缓冲而不是卡着理论上限走。取
+/// `MIN_SAFE_ZOOM = 0.3` 时 `visible_half_extent(640, 0.3) = 67`
+/// （见下方测试），距 96 格的硬边界还有 29 格缓冲；`MAX_SAFE_ZOOM`
+/// 则完全不受这条约束
+/// （拉近只会让可见范围变小，永远在常驻区域之内），直接取
+/// [`ll_render::camera::Zoom::MAX`]。
+pub const MIN_SAFE_ZOOM: f32 = 0.3;
+
+/// 画面缩放允许的最大倍率——拉近不受常驻区块集合约束，直接复用
+/// [`ll_render::camera::Zoom`] 的通用上限，见 [`MIN_SAFE_ZOOM`] 文档
+/// 「为什么留出安全余量」一节末句。
+pub const MAX_SAFE_ZOOM: f32 = ll_render::camera::Zoom::MAX;
+
 /// 建立本体默认使用的区块布局。
 pub fn build_zone_layout() -> Result<ZoneLayout, WorldError> {
     let zone_count = ll_core::torus::TorusSize::new(ZONE_COUNT.0, ZONE_COUNT.1).ok_or(
@@ -214,6 +259,40 @@ mod tests {
 
         // Assert
         assert_eq!(game_world.world.player_entity, Some(game_world.player));
+    }
+
+    #[test]
+    fn 最小安全缩放下的可见范围不超出常驻区块集合保证的边距() {
+        // 直接对应 MIN_SAFE_ZOOM 文档「推导」一节的核心断言：
+        // STREAM_RADIUS_ZONES × ZONE_SPAN = 2 × 48 = 96 格是常驻区块
+        // 集合保证的、与玩家具体站位无关的最小边距,MIN_SAFE_ZOOM 换算
+        // 出的可见半径必须严格小于它(不能只是"不大于",否则玩家恰好
+        // 站在区块边界时会撞见未常驻的坐标)。
+        // Arrange
+        let resident_margin = STREAM_RADIUS_ZONES * ZONE_SPAN as i32;
+
+        // Act
+        let half_extent_x = ll_render::camera::visible_half_extent(
+            640,
+            ll_render::camera::Zoom::new(MIN_SAFE_ZOOM),
+        );
+        let half_extent_y = ll_render::camera::visible_half_extent(
+            360,
+            ll_render::camera::Zoom::new(MIN_SAFE_ZOOM),
+        );
+
+        // Assert
+        assert!(half_extent_x < resident_margin);
+        assert!(half_extent_y < resident_margin);
+    }
+
+    #[test]
+    fn 最大安全缩放不改变最小安全缩放的钳制上限() {
+        // 拉近永远不会让可见范围超出常驻区块集合——这里只锁住
+        // MAX_SAFE_ZOOM 确实复用了 Zoom 的通用上限,没有被本文件意外
+        // 收窄或放宽。
+        // Arrange & Act & Assert
+        assert_eq!(MAX_SAFE_ZOOM, ll_render::camera::Zoom::MAX);
     }
 
     #[test]

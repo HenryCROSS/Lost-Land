@@ -51,7 +51,7 @@ use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::{BoundedCamera, Camera};
 use ll_render::gpu::GpuContext;
 use ll_render::sprite::{DrawOrder, Layer, footprint_bottom_screen_y, sprite_draw_position};
-use ll_render::target::{RenderTarget, fit_viewport};
+use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::apply::apply;
 use ll_sim::intent::{Intent, intent_from_input};
@@ -114,7 +114,7 @@ struct GpuResources {
 
 impl GpuResources {
     fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> GpuResources {
-        let gpu = GpuContext::new(window, size).expect("demo 环境应能取得可用的图形适配器");
+        let gpu = GpuContext::new(window, size, true).expect("demo 环境应能取得可用的图形适配器");
         let render_target = RenderTarget::new(&gpu);
         let metadata = AtlasMetadata::parse(ATLAS_JSON).expect("内嵌图集元数据应为合法 JSON");
         let atlas =
@@ -146,7 +146,8 @@ impl GpuResources {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let viewport = fit_viewport(self.window_size.width, self.window_size.height);
-        self.render_target.blit_to(&self.gpu, &view, viewport);
+        self.render_target
+            .blit_to(&self.gpu, &view, viewport, BlitFilter::Nearest);
         self.gpu.queue().present(frame);
     }
 

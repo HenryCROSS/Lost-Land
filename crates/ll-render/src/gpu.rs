@@ -26,9 +26,22 @@ impl GpuContext {
     /// false` 只是不强制回退，并不排除 CPU 光栅化适配器如 Mesa lavapipe 被
     /// 选中）——CI 环境通常没有独显，若排斥软件后端，视觉回归测试将无法运行。
     ///
-    /// 呈现模式固定为 `Fifo`（垂直同步）：这是唯一所有平台都保证支持的模式，
-    /// 且帧节流已由平台层的帧预算完成，不需要更激进的呈现模式。
-    pub fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> Result<GpuContext, RenderError> {
+    /// `vsync` 选择呈现模式：`true` 用 [`wgpu::PresentMode::Fifo`]
+    /// （垂直同步，画面撕裂绝不会发生，但帧率被锁定在显示器刷新率
+    /// 以内——这是唯一所有平台都保证支持的模式，也是找不到 `vsync`
+    /// 首选模式时的兜底），`false` 用 [`wgpu::PresentMode::Immediate`]
+    /// （不等垂直消隐直接呈现，延迟最低但可能画面撕裂，多数平台支持，
+    /// 但不保证——见 [`choose_present_mode`] 的回退逻辑）。不直接把
+    /// wgpu 全部六种呈现模式（还有 `AutoVsync`/`AutoNoVsync`/
+    /// `FifoRelaxed`/`Mailbox`）暴露给用户配置：多数游戏的「垂直同步」
+    /// 选项就是这两选一，`Mailbox` 等模式不是所有平台都支持、语义也
+    /// 更微妙（三缓冲低延迟），加进用户可选项只会让配置界面的选择
+    /// 变得难以解释，而没有对应的实际收益（YAGNI）。
+    pub fn new(
+        window: Arc<Window>,
+        size: PhysicalSize<u32>,
+        vsync: bool,
+    ) -> Result<GpuContext, RenderError> {
         let instance = wgpu::Instance::default();
 
         let surface = instance
@@ -80,13 +93,16 @@ impl GpuContext {
         let width = size.width.max(1);
         let height = size.height.max(1);
 
+        let present_mode = choose_present_mode(&capabilities.present_modes, vsync);
+        tracing::info!(?present_mode, vsync, "selected present mode");
+
         let config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
             color_space: wgpu::SurfaceColorSpace::Auto,
             width,
             height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             desired_maximum_frame_latency: 2,
             alpha_mode,
             view_formats: vec![],
@@ -198,6 +214,33 @@ impl GpuContext {
     }
 }
 
+/// 按 `vsync` 偏好从该 surface 实际支持的呈现模式列表里选一个。
+///
+/// 首选模式若不在 `supported` 里，退回 [`wgpu::PresentMode::Fifo`]——
+/// 这是 wgpu 文档保证「所有平台都支持」的唯一模式（见
+/// [`GpuContext::new`] 文档），因此这条兜底恒安全，不需要再处理
+/// 「兜底本身也不受支持」这种情况。
+///
+/// 提取成自由函数是为了让这个选择逻辑能被单测覆盖——`GpuContext`
+/// 本身需要真实窗口与 GPU 适配器，在 CI 里测不了，这与 `is_presentable`
+/// 提取的理由完全一致。
+fn choose_present_mode(supported: &[wgpu::PresentMode], vsync: bool) -> wgpu::PresentMode {
+    let preferred = if vsync {
+        wgpu::PresentMode::Fifo
+    } else {
+        wgpu::PresentMode::Immediate
+    };
+    if supported.contains(&preferred) {
+        preferred
+    } else {
+        tracing::warn!(
+            ?preferred,
+            "该平台不支持首选的呈现模式，退回 Fifo（垂直同步，所有平台都保证支持）"
+        );
+        wgpu::PresentMode::Fifo
+    }
+}
+
 /// 该尺寸是否可用于配置绘制表面。
 ///
 /// 窗口最小化时尺寸会变成零，此时重新配置 surface 会让 wgpu 报错甚至
@@ -228,5 +271,41 @@ mod tests {
     fn 正常尺寸可呈现() {
         // Arrange & Act & Assert
         assert!(is_presentable(1280, 720));
+    }
+
+    #[test]
+    fn 请求垂直同步且受支持时选中fifo() {
+        // Arrange
+        let supported = [wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate];
+
+        // Act
+        let chosen = choose_present_mode(&supported, true);
+
+        // Assert
+        assert_eq!(chosen, wgpu::PresentMode::Fifo);
+    }
+
+    #[test]
+    fn 不请求垂直同步且受支持时选中immediate() {
+        // Arrange
+        let supported = [wgpu::PresentMode::Fifo, wgpu::PresentMode::Immediate];
+
+        // Act
+        let chosen = choose_present_mode(&supported, false);
+
+        // Assert
+        assert_eq!(chosen, wgpu::PresentMode::Immediate);
+    }
+
+    #[test]
+    fn 不请求垂直同步但平台不支持immediate时退回fifo() {
+        // Arrange：只支持 Fifo 的平台列表。
+        let supported = [wgpu::PresentMode::Fifo];
+
+        // Act
+        let chosen = choose_present_mode(&supported, false);
+
+        // Assert
+        assert_eq!(chosen, wgpu::PresentMode::Fifo);
     }
 }

@@ -77,7 +77,7 @@ use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::Camera;
 use ll_render::gpu::GpuContext;
 use ll_render::sprite::{DrawOrder, Layer};
-use ll_render::target::{LOGICAL_HEIGHT, LOGICAL_WIDTH, RenderTarget, fit_viewport};
+use ll_render::target::{BlitFilter, LOGICAL_HEIGHT, LOGICAL_WIDTH, RenderTarget, fit_viewport};
 // 走 ll_render 重新导出的 wgpu，理由与 p1_acceptance/p2_acceptance 一致。
 use ll_render::wgpu;
 use ll_sim::timeline::Timeline;
@@ -161,7 +161,7 @@ struct GpuResources {
 
 impl GpuResources {
     fn new(window: Arc<Window>, size: PhysicalSize<u32>) -> GpuResources {
-        let gpu = GpuContext::new(window, size).expect("demo 环境应能取得可用的图形适配器");
+        let gpu = GpuContext::new(window, size, true).expect("demo 环境应能取得可用的图形适配器");
         let render_target = RenderTarget::new(&gpu);
 
         let base_metadata = AtlasMetadata::parse(ATLAS_JSON).expect("内嵌图集元数据应为合法 JSON");
@@ -217,7 +217,8 @@ impl GpuResources {
             .texture
             .create_view(&wgpu::TextureViewDescriptor::default());
         let viewport = fit_viewport(self.window_size.width, self.window_size.height);
-        self.render_target.blit_to(&self.gpu, &view, viewport);
+        self.render_target
+            .blit_to(&self.gpu, &view, viewport, BlitFilter::Nearest);
         self.gpu.queue().present(frame);
     }
 

@@ -143,6 +143,14 @@ pub fn run_game() {
     let paths = GamePaths::under(&base);
 
     let config = load_or_default(&paths.config);
+    tracing::info!(
+        vsync = config.display.vsync,
+        scale_filter = ?config.display.scale_filter,
+        zoom_default = ll_render::camera::Zoom::default().get(),
+        zoom_range_min = crate::world::MIN_SAFE_ZOOM,
+        zoom_range_max = crate::world::MAX_SAFE_ZOOM,
+        "显示配置已装载"
+    );
     // 首次启动时把默认配置写回磁盘——证明配置系统的写入路径确实被
     // 使用,不只是「有读的代码」。写入失败只记日志,不阻塞启动：配置
     // 文件系统是用户体验的一部分,不该因为一次性写入失败（例如目录
@@ -171,7 +179,13 @@ pub fn run_game() {
         bindings: config.bindings,
         ..WindowConfig::default()
     };
-    let demo = Demo::new(content, game_world, paths.save.clone(), "旅人".to_string());
+    let demo = Demo::new(
+        content,
+        game_world,
+        paths.save.clone(),
+        "旅人".to_string(),
+        config.display,
+    );
 
     if let Err(error) = run(window_config, demo) {
         tracing::error!(%error, "event loop terminated with error");
