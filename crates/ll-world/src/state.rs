@@ -360,6 +360,52 @@ pub struct WorldState {
     /// 四节对同一类问题的论证：这不是遍历成本的问题，是数据源本身
     /// 无法重算）。
     pub next_world_id: u32,
+    /// 无名单位击杀的聚合计数（项目所有者决策一：「无名单位击杀改
+    /// 计数」）——按 [`crate::entity::Agent::creature_kind`]（`None` 时
+    /// 回退到 [`crate::entity::Agent::race`]，与该字段文档「用于击杀
+    /// 匹配与死因统计分类」一节同一条既有回退规则）归并的击杀次数。
+    ///
+    /// # 为什么不是完整 `KillRecord`
+    ///
+    /// 只有已具名（`remembered_id` 已赋值）的死者才产出完整
+    /// [`crate::history::HistoricalEvent`]（见 [`Self::record_kill`]
+    /// 文档「调用时机」一节引用的触发判据）——绝大多数背景怪物从未被
+    /// "记住"，为它们逐条保留完整记录会让 [`Self::history`] 随游玩时长
+    /// 无界增长。本字段是"默认派生，只存偏差"这条本仓库反复复用的模式
+    /// 在这里的应用：聚合计数覆盖绝大多数无名死亡（默认路径，不需要
+    /// 逐条留痕），完整记录只留给"值得被记住"的偏差情形。
+    ///
+    /// # 为什么不能是运行期局部变量，必须是 `WorldState` 字段
+    ///
+    /// 理由与 [`Self::next_world_id`] 同一条：若只存在于某次会话的局部
+    /// 变量里，读档后重新从零计数会丢失存档前的累计——"杀了 47 只
+    /// 哥布林"这类统计必须能跨读档/存档往返幸存。
+    ///
+    /// # 只累加无名单位的击杀，不重复计入已具名死者
+    ///
+    /// 一场击杀要么产出完整记录（受害者已具名），要么累加本字段（受害
+    /// 者未具名），两者互斥，不会同时发生——见
+    /// `ll_sim::resolve` 模块内部 `append_kill_history` 文档开篇。已具名
+    /// 死者的"总共死了多少个这一种"如果将来需要，应由消费方扫描
+    /// [`Self::history`] 现算，不在这里重复存一份可能与 `history` 内容
+    /// 冲突的计数。
+    ///
+    /// `BTreeMap` 不是 `HashMap`：约束 C5，按键（`ContentIndex`）自然
+    /// 顺序遍历，不依赖任何哈希表迭代顺序。
+    ///
+    /// # 参与 `hash()`（ADR 0022）与序列化，不加 `#[serde(skip)]`
+    ///
+    /// 与 [`Self::history`]/[`Self::next_world_id`] 同一条纪律：这是
+    /// 真正影响"传说浏览/死因统计"查询结果的数据，缺席 `hash()` 会重演
+    /// "新字段只加了，没人测过它是否被正确覆盖"的既有判据缺口（见
+    /// [`Self::hash`] 文档同名历史记录）。
+    ///
+    /// # schema v4 新增字段
+    ///
+    /// 本字段是继 `history`/`next_world_id`（schema v3）之后的又一次
+    /// 破坏性存档结构变化，配套迁移函数是
+    /// `ll_content::migrations::Migration3To4`。
+    pub kill_counts: BTreeMap<ContentIndex, u64>,
 }
 
 /// [`WorldState`] 反序列化的中转表示。
@@ -404,6 +450,14 @@ struct WorldStateRepr {
     /// WorldId 分配计数器，理由与 `history` 同一节。
     #[serde(default)]
     next_world_id: u32,
+    /// 无名单位击杀聚合计数——`#[serde(default)]` 的理由与
+    /// `history`/`next_world_id` 一致：真正需要兼容 schema v3 存档（本
+    /// 字段引入之前写出的存档）走的是
+    /// `ll_content::migrations::Migration3To4` 这条真正的迁移路径，这里
+    /// 的默认值只服务本文件内部用 `serde_json::json!` 手写局部字段的
+    /// 测试固件。
+    #[serde(default)]
+    kill_counts: BTreeMap<ContentIndex, u64>,
 }
 
 impl TryFrom<WorldStateRepr> for WorldState {
@@ -453,6 +507,7 @@ impl TryFrom<WorldStateRepr> for WorldState {
             terrain_table: TerrainTable::default(),
             history: repr.history,
             next_world_id: repr.next_world_id,
+            kill_counts: repr.kill_counts,
         })
     }
 }
@@ -499,6 +554,7 @@ impl WorldState {
             terrain_table,
             history: Vec::new(),
             next_world_id: 0,
+            kill_counts: BTreeMap::new(),
         })
     }
 
@@ -712,6 +768,16 @@ impl WorldState {
         Some(victim_id)
     }
 
+    /// 累加一次无名单位击杀计数（项目所有者决策一）——
+    /// `ll_sim::apply::apply` 响应 `Effect::IncrementKillCount` 时调用
+    /// 的唯一入口（约束 C1：写世界只能经 `apply`），`kind` 已经由
+    /// `resolve` 阶段算好（受害者的 `creature_kind`，`None` 时回退到
+    /// `race`，见 [`Self::kill_counts`] 文档），本方法只管把这个数字
+    /// 累加进去，不重新判断该按什么归并。
+    pub fn record_kill_count(&mut self, kind: ContentIndex) {
+        *self.kill_counts.entry(kind).or_insert(0) += 1;
+    }
+
     /// 把整个世界状态归约成一个 64 位摘要。
     ///
     /// 用于「两次运行/序列化往返是否产生了相同的世界」这类断言，是
@@ -886,6 +952,15 @@ impl WorldState {
             write_historical_event(&mut hasher, event);
         }
         hasher.write_u64(u64::from(self.next_world_id));
+
+        // 无名单位击杀聚合计数（决策一）——理由见 Self::kill_counts
+        // 文档「参与 hash()」一节：同一条先例第六次重演。BTreeMap 按键
+        // 自然顺序遍历，不涉及 HashMap/HashSet 迭代顺序（约束 C5）。
+        hasher.write_u64(self.kill_counts.len() as u64);
+        for (kind, count) in &self.kill_counts {
+            hasher.write_u64(u64::from(kind.get()));
+            hasher.write_u64(*count);
+        }
 
         hasher.finish()
     }
@@ -1849,5 +1924,86 @@ mod tests {
         // Assert
         assert_eq!(result, None);
         assert!(world.history.is_empty());
+    }
+
+    #[test]
+    fn record_kill_count对同一个kind累加() {
+        // Arrange
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let goblin = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+
+        // Act
+        world.record_kill_count(goblin);
+        world.record_kill_count(goblin);
+        world.record_kill_count(goblin);
+
+        // Assert
+        assert_eq!(world.kill_counts.get(&goblin), Some(&3));
+    }
+
+    #[test]
+    fn kill_counts变化会改变world的哈希() {
+        // 红/绿判据：这是 ADR 0022「不完整的确定性哈希等于没有哈希」的
+        // 直接验收——若 hash() 漏掉 kill_counts，这条断言会失败（红），
+        // 补齐 hash() 之后才会通过（绿）。
+        // Arrange
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let goblin = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+        let hash_before = world.hash();
+
+        // Act
+        world.record_kill_count(goblin);
+
+        // Assert
+        assert_ne!(world.hash(), hash_before);
+    }
+
+    #[test]
+    fn kill_counts为空与非空的两个世界哈希不同() {
+        // 与上一条互补：不是随便改动世界状态都会撞上这条哈希差异
+        // （避免巧合通过），这里直接对比两个独立构造的世界。
+        // Arrange
+        let empty_world = test_world();
+        let mut counted_world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let goblin = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+        counted_world.record_kill_count(goblin);
+
+        // Act & Assert
+        assert_ne!(counted_world.hash(), empty_world.hash());
+    }
+
+    #[test]
+    fn kill_counts序列化往返后保持原样() {
+        // 存档往返性质的直接验证——不是只测结构，是测真实的
+        // serde_json 序列化路径（与本文件其余往返测试同一套判据）。
+        // Arrange
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let goblin = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+        world.record_kill_count(goblin);
+        world.record_kill_count(goblin);
+
+        // Act
+        let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
+        let decoded: WorldState = serde_json::from_slice(&encoded).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded.kill_counts.get(&goblin), Some(&2));
+    }
+
+    #[test]
+    fn 新建的世界kill_counts默认为空() {
+        // Arrange & Act
+        let world = test_world();
+
+        // Assert
+        assert!(world.kill_counts.is_empty());
     }
 }

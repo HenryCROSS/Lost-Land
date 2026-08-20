@@ -75,7 +75,55 @@ pub enum LoadError {
     /// 的格式变了，也不是某个 mod 的内容变了，是这份数据本身就读不
     /// 出一个自洽的结构。
     Corrupted(String),
+    /// 硬门禁（决策二，项目所有者拍板）：存档记录的某个生成期 mod 在
+    /// 当前会话完全不存在，或者存在但版本号与存档记录不一致——见
+    /// [`check_mod_set`] 文档。与 [`Self::ModContentMismatch`] 是两种
+    /// 不同粒度的失败：后者要求 mod 仍在场、版本号也没变，只是贡献的
+    /// 内容哈希变了；本变体覆盖更前一步、更粗粒度的事实（在不在、
+    /// 版本号对不对得上），两者互不掩盖，见 [`check_mod_set`] 文档
+    /// 「与 `check_mod_content` 的关系」一节。
+    ModSetMismatch(ModSetMismatch),
 }
+
+/// [`LoadError::ModSetMismatch`] 携带的详情。
+///
+/// # 为什么没有一句现成的中文/英文句子
+///
+/// 规格 §11.3：用户可见文本不得硬编码字面量，必须走 Fluent `.ftl`。
+/// 本类型因此只携带结构化数据（缺哪个 mod、要什么版本、当前是什么
+/// 版本）与一个技术标识符 [`Self::message_key`]——与
+/// `ClassDef::display_name_key`/`ModManifest::display_name_key` 等既有
+/// 「内容文本走本地化键，不存字面字符串」字段同一条纪律（见
+/// `knowledge/design/mod-package-structure.md`「本地化文件」一节）。
+/// 真正给玩家看的句子留给 UI 层用 `message_key` 查
+/// `locales/<lang>.ftl` 拼出，本类型自己不预先拼好任何一种语言的
+/// 文案。下方的 [`std::fmt::Display`] 实现（挂在 [`LoadError`] 上）
+/// 只把这些结构化字段原样打印出来，服务开发者/日志（与
+/// `LoadError` 其余变体的既有定位一致，见本模块文档），不是玩家会
+/// 看到的文案，因此同样不含任何硬编码的自然语言句子。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModSetMismatch {
+    /// Fluent 消息 id——不是自然语言文案，是查 `.ftl` 用的技术标识符
+    /// （取值见 [`SAVE_MOD_MISSING_MESSAGE_KEY`]/
+    /// [`SAVE_MOD_VERSION_MISMATCH_MESSAGE_KEY`]），UI 层负责拼出真正
+    /// 给玩家看的句子。
+    pub message_key: &'static str,
+    /// 缺失/版本不对的 mod 命名空间。
+    pub namespace: String,
+    /// 存档记录的生成期版本号——玩家需要装上这个版本才能进入存档。
+    pub required_version: String,
+    /// 当前会话实际装载到的版本号。`None` 表示这个 mod 在当前会话完全
+    /// 不存在（[`SAVE_MOD_MISSING_MESSAGE_KEY`] 分支）；`Some` 表示 mod
+    /// 在场但版本号不同（[`SAVE_MOD_VERSION_MISMATCH_MESSAGE_KEY`] 分支）。
+    pub current_version: Option<String>,
+}
+
+/// [`ModSetMismatch::message_key`] 取值之一：这个 mod 在当前会话完全
+/// 不存在。
+pub const SAVE_MOD_MISSING_MESSAGE_KEY: &str = "save-mod-missing";
+/// [`ModSetMismatch::message_key`] 取值之一：这个 mod 在场，但版本号
+/// 与存档记录的生成期版本不一致。
+pub const SAVE_MOD_VERSION_MISMATCH_MESSAGE_KEY: &str = "save-mod-version-mismatch";
 
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -100,6 +148,10 @@ impl fmt::Display for LoadError {
                 "mod 「{namespace}」内容已变化，无法确认与生成时的兼容性（期望哈希 {expected_hash:?}，当前 {actual_hash:?}）"
             ),
             LoadError::Corrupted(reason) => write!(f, "存档文件已损坏：{reason}"),
+            // 不拼一句现成的中文/英文句子——见 ModSetMismatch 文档
+            // 「为什么没有一句现成的中文/英文句子」一节：这里只把结构化
+            // 字段原样打印，真正给玩家看的文案留给 UI 层查 message_key。
+            LoadError::ModSetMismatch(detail) => write!(f, "{detail:?}"),
         }
     }
 }
@@ -197,6 +249,79 @@ pub fn check_mod_content(
                 expected_hash: entry.content_hash,
                 actual_hash,
             });
+        }
+    }
+    Ok(())
+}
+
+/// 硬门禁（决策二，项目所有者拍板：「存档的 mod 如果不存在或者版本对
+/// 不上就不能进入这个存档」）：存档头记录的生成期 mod 集合，逐条核对
+/// 是否仍在当前会话装载的 mod 里、版本号是否仍然一致。
+///
+/// # 这是一条新的、更粗粒度、优先于细粒度降级的检查
+///
+/// [`check_mod_content`] 检查的是「mod 仍在场、版本号也没变、只是贡献
+/// 的内容哈希变了」这一档；对「mod 完全不在了」这一档，它此前故意
+/// 放行（P5-A 任务 14 断链二修复，见其文档），把决定权交给
+/// [`crate::remap::remap_world`] 按内容类型细粒度降级（NPC 种族占位、
+/// 玩家角色只读……）。
+///
+/// 项目所有者的决策二推翻了这条既有设计对「完全不在」这一档、以及
+/// 「版本号不一致」这一档的处理：两者一律拒绝载入存档，不进入细粒度
+/// 降级。调用方（[`crate::save_file::load_full_from_bytes`]）因此必须
+/// 把本函数排在 [`check_mod_content`]（乃至 `remap_world`）之前调用—
+/// —一旦命中，直接产出 [`LoadError::ModSetMismatch`]，
+/// [`crate::degrade`] 模块那一整套按内容类型分级降级的策略不再有机会
+/// 介入「mod 完全缺失」「mod 版本不对」这两个场景（该模块其余场景——
+/// 单个物品/目标/归属缺失、内容哈希不一致但 mod 本身仍在场且版本号
+/// 对得上——不受影响）。
+///
+/// # 版本号比较：原样字符串相等，不做语义化版本解析
+///
+/// 与 [`crate::header::ModHeaderEntry::version`] 字段文档同一条既有
+/// 纪律——版本号比较本不是这一层该做的事，内容哈希才是判定「是否真的
+/// 变了」的依据。但决策二明确把「版本号对不对得上」本身列为一个独立
+/// 的硬门禁判据，这里因此只做最朴素的字符串相等比较，不引入语义化
+/// 版本（`1.2.0` 与 `1.2` 是否兼容之类的判断）——那是一个更大的独立
+/// 设计问题，不在决策二的范围内。
+///
+/// # 与 [`check_mod_content`] 的关系
+///
+/// 两者都读 `generation_mods`，判据完全独立：本函数只看「在不在、版本
+/// 号是不是原样相等」，`check_mod_content` 只看「内容哈希是否一致」
+/// （版本号相同但内容变了的场景，`identity-and-ids.md` 六、①点名的
+/// 真实存在的作者疏忽）。调用方依次调用两者，任一个失败都提前拒绝，
+/// 不需要合并成一次判断——同一套「两条正交轴分别报错」的既有纪律
+/// （见本模块文档），只是这里多出的是第三条轴。
+///
+/// 只要有一条判定为「不在场」或「版本不一致」就立即返回——第一条不
+/// 匹配的记录已经足够定位问题，不需要收集全部不一致再报告。
+pub fn check_mod_set(
+    generation_mods: &[ModHeaderEntry],
+    current_manifests: &[ModManifest],
+) -> Result<(), LoadError> {
+    for entry in generation_mods {
+        let current = current_manifests
+            .iter()
+            .find(|manifest| manifest.id.namespace() == entry.namespace);
+        match current {
+            None => {
+                return Err(LoadError::ModSetMismatch(ModSetMismatch {
+                    message_key: SAVE_MOD_MISSING_MESSAGE_KEY,
+                    namespace: entry.namespace.clone(),
+                    required_version: entry.version.clone(),
+                    current_version: None,
+                }));
+            }
+            Some(manifest) if manifest.version != entry.version => {
+                return Err(LoadError::ModSetMismatch(ModSetMismatch {
+                    message_key: SAVE_MOD_VERSION_MISMATCH_MESSAGE_KEY,
+                    namespace: entry.namespace.clone(),
+                    required_version: entry.version.clone(),
+                    current_version: Some(manifest.version.clone()),
+                }));
+            }
+            Some(_) => {}
         }
     }
     Ok(())
@@ -439,5 +564,78 @@ mod tests {
 
         // Assert
         assert!(matches!(load_error, LoadError::Corrupted(_)));
+    }
+
+    #[test]
+    fn 生成期mod在当前会话完全找不到时判定为modsetmismatch() {
+        // 决策二核心场景之一：mod 完全不在了（current_manifests 里连
+        // 命名空间都找不到）——不再像 check_mod_content 那样放行给
+        // remap_world 降级，这里直接硬拒绝。
+        // Arrange
+        let generation_mods = vec![mod_entry("vanishedmod", 123)];
+        let current_manifests: Vec<ModManifest> = Vec::new();
+
+        // Act
+        let result = check_mod_set(&generation_mods, &current_manifests);
+
+        // Assert
+        assert_eq!(
+            result,
+            Err(LoadError::ModSetMismatch(ModSetMismatch {
+                message_key: SAVE_MOD_MISSING_MESSAGE_KEY,
+                namespace: "vanishedmod".to_string(),
+                required_version: "1.0.0".to_string(),
+                current_version: None,
+            }))
+        );
+    }
+
+    #[test]
+    fn 生成期mod在场但版本号不一致时判定为modsetmismatch() {
+        // 决策二核心场景之二：mod 仍在场,但版本号跟存档记录的不一样。
+        // Arrange
+        let generation_mods = vec![mod_entry("lostland", 123)]; // version "1.0.0"
+        let current_manifests = vec![ModManifest {
+            id: NamespacedId::parse("lostland:self").expect("测试用命名空间恒合法"),
+            version: "2.0.0".to_string(),
+            dependencies: Vec::new(),
+            entry_points: Vec::new(),
+        }];
+
+        // Act
+        let result = check_mod_set(&generation_mods, &current_manifests);
+
+        // Assert
+        assert_eq!(
+            result,
+            Err(LoadError::ModSetMismatch(ModSetMismatch {
+                message_key: SAVE_MOD_VERSION_MISMATCH_MESSAGE_KEY,
+                namespace: "lostland".to_string(),
+                required_version: "1.0.0".to_string(),
+                current_version: Some("2.0.0".to_string()),
+            }))
+        );
+    }
+
+    #[test]
+    fn 生成期mod在场且版本号一致时校验通过() {
+        // Arrange
+        let generation_mods = vec![mod_entry("lostland", 123)]; // version "1.0.0"
+        let current_manifests = vec![manifest("lostland")]; // version "1.0.0"
+
+        // Act
+        let result = check_mod_set(&generation_mods, &current_manifests);
+
+        // Assert
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn 生成期mod集合为空时校验恒通过() {
+        // Arrange & Act
+        let result = check_mod_set(&[], &[]);
+
+        // Assert
+        assert_eq!(result, Ok(()));
     }
 }

@@ -48,7 +48,7 @@ use ll_world::terrain::TerrainTable;
 
 use crate::degrade::{LoadOutcome, summarize_load_outcome};
 use crate::header::SaveHeader;
-use crate::load_error::{LoadError, check_mod_content, check_schema_version};
+use crate::load_error::{LoadError, check_mod_content, check_mod_set, check_schema_version};
 use crate::migration::MigrationChain;
 use crate::remap::remap_world;
 
@@ -78,7 +78,17 @@ use crate::remap::remap_world;
 /// 破坏性存档变更，不如现在（存档格式仍处于早期迭代、尚无真实玩家
 /// 存档）就把容器补齐。配套的迁移函数是
 /// [`crate::migrations::Migration2To3`]，已注册进 `migration_chain`。
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+///
+/// # 为什么是 4，不再是 3（无名单位击杀计数批次）
+///
+/// `ll_world::state::WorldState` 新增了 `kill_counts` 字段——项目所有者
+/// 拍板「无名单位击杀改计数」（决策一）：无名单位被击杀时不再产出完整
+/// `HistoricalEvent`，而是按 `creature_kind`（或回退到 `race`）归并的
+/// 一份聚合计数,这份计数必须进存档并参与 `hash()`（ADR 0022），因此是
+/// 真正的存档结构变化。配套的迁移函数是
+/// [`crate::migrations::Migration3To4`]，已注册进 `migration_chain`——
+/// 旧存档没有任何「已经发生」的无名击杀计数可继承，迁移后恒为空表。
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 /// 头部 JSON 长度声明的安全上限——防御「声明长度与实际不符」类畸形
 /// 存档（规格 §14.3 fuzz 要求之一）：一个只有几十字节的文件却在长度
@@ -122,9 +132,9 @@ impl std::fmt::Display for SaveError {
 
 impl std::error::Error for SaveError {}
 
-/// 当前认识的 schema 迁移链：v1 → v2 → v3 两步（
-/// [`crate::migrations::Migration1To2`]/[`crate::migrations::Migration2To3`]，
-/// 见 [`CURRENT_SCHEMA_VERSION`] 文档）。
+/// 当前认识的 schema 迁移链：v1 → v2 → v3 → v4 三步（
+/// [`crate::migrations::Migration1To2`]/[`crate::migrations::Migration2To3`]/
+/// [`crate::migrations::Migration3To4`]，见 [`CURRENT_SCHEMA_VERSION`] 文档）。
 ///
 /// # 为什么不是空的了
 ///
@@ -143,6 +153,7 @@ fn migration_chain() -> MigrationChain {
     MigrationChain::new(vec![
         Box::new(crate::migrations::Migration1To2),
         Box::new(crate::migrations::Migration2To3),
+        Box::new(crate::migrations::Migration3To4),
     ])
 }
 
@@ -260,13 +271,22 @@ fn decompress_body(compressed: &[u8]) -> Result<Vec<u8>, LoadError> {
 ///   意味着世界状态被替换成另一个时间点的快照，VM 必须强制从零重建
 ///   （约束 C1 修订版，见该函数文档）。
 ///
-/// 完整调用链：读头部 → schema 版本判定（必要时走迁移链）→ 解压 +
-/// 反序列化主体 → **VM 强制重建**（世界即将被替换）→ mod 内容哈希
-/// 校验 → `ContentIndex` 重映射（[`crate::remap::remap_world`]）→
-/// 灌回 `terrain_table` 并**显式校验** → 汇总降级决策产出
-/// [`LoadOutcome`]。任何一步失败都提前返回
+/// 完整调用链：读头部 → schema 版本判定（必要时走迁移链）→ **mod 集合
+/// 硬门禁**（[`check_mod_set`]，决策二：mod 缺失或版本不对直接拒绝，
+/// 见其文档）→ 解压 + 反序列化主体 → **VM 强制重建**（世界即将被
+/// 替换）→ mod 内容哈希校验 → `ContentIndex` 重映射
+/// （[`crate::remap::remap_world`]）→ 灌回 `terrain_table` 并**显式
+/// 校验** → 汇总降级决策产出 [`LoadOutcome`]。任何一步失败都提前返回
 /// [`LoadOutcome::Rejected`]，不会把一个已知不自洽的 `WorldState`
 /// 交给调用方。
+///
+/// # 为什么 `check_mod_set` 排在解压主体之前
+///
+/// 决策二是一条硬门禁：mod 缺失或版本不对根本不允许进入这份存档,不需要
+/// 先解压、迁移、反序列化一整个 `WorldState` 才能知道这件事——`header`
+/// 已经带着判定所需的全部信息（`generation_mods`）。提前到这里既能让
+/// 判定失败时更快返回,也让「决策二命中」与「存档主体本身是否完整」这
+/// 两件事在阅读代码时不需要靠先后顺序猜测谁先谁后。
 pub fn load_full(
     path: &Path,
     current_registry: &Registry,
@@ -322,6 +342,12 @@ pub fn load_full_from_bytes(
     };
 
     if let Err(err) = check_schema_version(header.schema_version, CURRENT_SCHEMA_VERSION) {
+        return LoadOutcome::Rejected(err);
+    }
+
+    // 决策二硬门禁：见本函数文档「为什么 check_mod_set 排在解压主体
+    // 之前」一节——不需要先解压/迁移/反序列化整个存档主体就能判定。
+    if let Err(err) = check_mod_set(&header.generation_mods, current_manifests) {
         return LoadOutcome::Rejected(err);
     }
 
@@ -725,13 +751,15 @@ mod tests {
     }
 
     #[test]
-    fn 完全卸载的mod读档后相关实体降级为只读而非直接拒绝() {
-        // P5-A 任务 14 断链二修复的核心验证：header.generation_mods 记录
-        // 了一条真实的（非留空规避）「vanishedmod」条目，且带着真实的
-        // 生成期内容哈希；当前会话的 current_manifests 里完全没有这个
-        // 命名空间（玩家把它整个卸载了）。此前版本会在 check_mod_content
-        // 这一步就直接判定 ModContentMismatch（Rejected），现在应当放行
-        // 到 remap_world，按内容类型（NPC 种族）细粒度降级为只读。
+    fn 完全卸载的mod读档后被硬门禁拒绝而非降级为只读() {
+        // 决策二（项目所有者拍板，见 crate::load_error::check_mod_set
+        // 文档）推翻了这条测试曾经验证的行为：header.generation_mods
+        // 记录了一条真实的（非留空规避）「vanishedmod」条目；当前会话
+        // 的 current_manifests 里完全没有这个命名空间（玩家把它整个
+        // 卸载了）。P5-A 任务 14 断链二修复时，这种场景曾经被特意放行
+        // 到 remap_world 按内容类型细粒度降级为只读——决策二明确要求
+        // 「mod 不存在……就不能进入这个存档」，不再给这个场景细粒度
+        // 降级的机会，check_mod_set 会在解压存档主体之前就直接拒绝。
         // Arrange
         let path = temp_path("mod-fully-uninstalled");
         let (mut world, mut registry) = test_world_with_save_registry();
@@ -781,10 +809,77 @@ mod tests {
         let (current_registry, terrain_table) = current_session_registry_with_terrain();
         let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
 
-        // Assert：不是 Rejected(ModContentMismatch)，是细粒度降级后的
-        // ReadOnly——没有占位索引可用（当前会话未注册占位内容），NPC
-        // 种族缺失诚实退化为 Reject，整体只读。
-        assert!(matches!(outcome, LoadOutcome::ReadOnly(_)));
+        // Assert：硬门禁直接拒绝，错误信息指明了是哪个 mod、要什么
+        // 版本、当前是什么版本（None——完全不在场）。
+        match outcome {
+            LoadOutcome::Rejected(LoadError::ModSetMismatch(detail)) => {
+                assert_eq!(
+                    detail,
+                    crate::load_error::ModSetMismatch {
+                        message_key: crate::load_error::SAVE_MOD_MISSING_MESSAGE_KEY,
+                        namespace: "vanishedmod".to_string(),
+                        required_version: "0.1.0".to_string(),
+                        current_version: None,
+                    }
+                );
+            }
+            other => panic!("期望 Rejected(ModSetMismatch)，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 生成期mod版本号不一致时读档被硬门禁拒绝() {
+        // 决策二第二条判据——mod 仍在场，但版本号跟存档记录的不一样。
+        // 与「完全不在场」是两条独立触发路径，这里单独覆盖。
+        // Arrange
+        let path = temp_path("mod-version-mismatch");
+        let (world, mut registry) = test_world_with_save_registry();
+        registry.intern(id("lostland:farmer"));
+        let content_index_map = registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>();
+        let mut header = sample_header(content_index_map);
+        header.generation_mods.push(crate::header::ModHeaderEntry {
+            namespace: "lostland".to_string(),
+            version: "0.1.0".to_string(),
+            content_hash: registry.content_hash_of("lostland"),
+        });
+        save_to_file(&path, &header, &world).expect("写出应当成功");
+
+        // Act：当前会话确实装载了 lostland，但版本号变成了 0.2.0。
+        let (current_registry, terrain_table) = current_session_registry_with_terrain();
+        let current_manifests = vec![ModManifest {
+            id: id("lostland:self"),
+            version: "0.2.0".to_string(),
+            dependencies: Vec::new(),
+            entry_points: Vec::new(),
+        }];
+        let outcome = load_full(
+            &path,
+            &current_registry,
+            &current_manifests,
+            terrain_table,
+            &[],
+        );
+
+        // Assert
+        match outcome {
+            LoadOutcome::Rejected(LoadError::ModSetMismatch(detail)) => {
+                assert_eq!(
+                    detail,
+                    crate::load_error::ModSetMismatch {
+                        message_key: crate::load_error::SAVE_MOD_VERSION_MISMATCH_MESSAGE_KEY,
+                        namespace: "lostland".to_string(),
+                        required_version: "0.1.0".to_string(),
+                        current_version: Some("0.2.0".to_string()),
+                    }
+                );
+            }
+            other => panic!("期望 Rejected(ModSetMismatch)，实际 {other:?}"),
+        }
         let _ = std::fs::remove_file(&path);
     }
 

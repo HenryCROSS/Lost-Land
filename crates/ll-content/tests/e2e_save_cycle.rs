@@ -190,20 +190,16 @@ fn 含实体与地形改动的世界存档读档后哈希一致() {
 }
 
 #[test]
-fn 存档后卸载一个曾贡献内容的mod读档后相关实体降级为只读而不崩溃() {
-    // 规格要求的核心场景：卸载一个曾贡献 NPC 种族的 mod，读档必须
-    // 走通降级路径（不 panic、不崩溃），而不是让整个进程炸掉。
-    //
-    // 此前的架构局限（P5-A 任务 14 断链二已修复，见
-    // `ll_content::load_error::check_mod_content` 文档「断链二修复」）：
-    // `generation_mods` 曾经必须刻意留空才能走到本测试想验证的
-    // `remap_world` 细粒度降级路径——若记了一条真实条目，
-    // `check_mod_content` 会在更早的检查点直接判定 `ModContentMismatch`
-    // （`LoadOutcome::Rejected`），根本不会走到降级路径。现在
-    // `check_mod_content` 借助 `current_manifests` 分清「mod 不在了」
-    // 与「mod 仍在场但内容变了」，本测试因此改为记一条真实的
-    // `generation_mods` 条目（带真实 content_hash），验证「完整卸载一个
-    // mod」这个最直观的玩家场景确实不会被硬拒绝。
+fn 存档后卸载一个曾贡献内容的mod读档后被硬门禁拒绝而不崩溃() {
+    // 决策二（项目所有者拍板：「存档的 mod 如果不存在或者版本对不上
+    // 就不能进入这个存档」）推翻了这条测试曾经验证的行为——P5-A 任务
+    // 14 断链二修复时，「完整卸载一个曾贡献内容的 mod」曾经被特意放行
+    // 给 `remap_world` 按内容类型细粒度降级为只读；决策二明确要求这个
+    // 场景一律拒绝进入存档，不再给细粒度降级机会。本测试因此改为验证
+    // 「不崩溃」的新形态：拒绝是显式的、可诊断的
+    // （`LoadOutcome::Rejected(LoadError::ModSetMismatch)`，错误信息
+    // 指明了具体是哪个 mod、要什么版本、当前是什么版本），不是 panic
+    // 或静默产出一个不自洽的世界。
     // Arrange
     let (mut world, mut registry, _terrain_ids) = world_with_registry();
     let vanished_race = registry.intern(id("vanishedmod:ghost_race"));
@@ -233,9 +229,15 @@ fn 存档后卸载一个曾贡献内容的mod读档后相关实体降级为只�
     let (current_registry, terrain_table) = current_session_registry_with_terrain();
     let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
 
-    // Assert：不崩溃——落到只读模式（不是 Rejected(ModContentMismatch)），
-    // 而不是 panic 或静默产出错误世界。
-    assert!(matches!(outcome, LoadOutcome::ReadOnly(_)));
+    // Assert：硬门禁拒绝，且错误信息指明了缺的是哪个 mod、要什么版本。
+    match outcome {
+        LoadOutcome::Rejected(ll_content::load_error::LoadError::ModSetMismatch(detail)) => {
+            assert_eq!(detail.namespace, "vanishedmod");
+            assert_eq!(detail.required_version, "0.1.0");
+            assert_eq!(detail.current_version, None);
+        }
+        other => panic!("期望 Rejected(ModSetMismatch)，实际 {other:?}"),
+    }
     let _ = std::fs::remove_file(&path);
 }
 

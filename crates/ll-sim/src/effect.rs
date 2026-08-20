@@ -116,6 +116,37 @@ pub enum Effect {
         /// 致命一击结算后的剩余生命值。
         remaining_health: i32,
     },
+    /// 累加一次"无名单位"击杀计数（项目所有者决策一：「无名单位击杀
+    /// 改计数」）——`resolve` 侧的 `append_kill_history`
+    /// （`crate::resolve` 模块）判断这场击杀的受害者尚未"具名"
+    /// （`Agent::remembered_id` 为 `None`）时产出本效果，取代
+    /// `Effect::RecordHistoricalEvent`（那份完整记录只留给已具名的
+    /// 死者，见其文档）；`apply` 响应它时调用
+    /// [`ll_world::state::WorldState::record_kill_count`]，按
+    /// `kind` 归并进 [`ll_world::state::WorldState::kill_counts`]。
+    ///
+    /// # 为什么按 `kind: ContentIndex`，不是新建一张生物类型注册表
+    ///
+    /// `Agent::creature_kind` 字段本就已经声明了这个归并键的取法——
+    /// `Some` 时用它本身，`None`（绝大多数"有种族意义"的智慧类人型）
+    /// 时回退到 `Agent::race`（见该字段文档「用于击杀匹配与死因统计
+    /// 分类」一节，与 `crate::quest` 模块「击杀计数」既有的
+    /// `target_kind: ContentIndex` 匹配规则同一套键空间）。核实过当前
+    /// 仓库没有任何 `CreatureKindDef` 注册表——引入一张只服务本次计数
+    /// 而不服务任何其它系统的新注册表是投机性设计（YAGNI），复用已经
+    /// 存在的字段与既有回退规则就是"最小的 kind 标识"。
+    ///
+    /// # 为什么必须排在对应的 `Effect::Kill` 之前
+    ///
+    /// 与 `Effect::RecordHistoricalEvent` 同一条纪律：本效果携带的
+    /// `kind` 由 `resolve` 阶段读取（结算前仍然存在的）受害者的
+    /// `creature_kind`/`race` 算出，`apply` 只是照单据把这个已经算好
+    /// 的值累加进去，不重新判断一遍"该按什么归并"。
+    IncrementKillCount {
+        /// 归并键——受害者的 `creature_kind`，若为 `None` 则回退到
+        /// `race`，见本变体文档「为什么按 kind: ContentIndex」一节。
+        kind: ContentIndex,
+    },
     /// 把某实体下一次可行动的时刻设为 `at`。
     ///
     /// 只写 [`ll_world::entity::Agent::next_action_at`] 这个字段本身，
