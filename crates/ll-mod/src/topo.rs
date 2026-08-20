@@ -32,8 +32,46 @@
 //! 错的，唯一正确的处理是让整批加载停下来，把冲突显式报给加载管理界面
 //! （任务 11）。检测顺序按命名空间字典序（不是 `manifests` 原始下标），
 //! 与本模块其余「多个候选选一个」的场景遵循同一条确定性规则。
+//!
+//! # 依赖版本约束：在这里检查，与缺失依赖同级、整批中止
+//!
+//! [`check_dependency_versions`] 紧跟在 [`check_missing_dependencies`]
+//! 之后执行——版本不满足与依赖压根不存在，都是「这条依赖边不可用」，
+//! 严重性相同：依赖方很可能调用了目标 mod 里某个版本才有的能力，让
+//! 依赖方单独失败、目标 mod 继续加载，只会留下一个半坏的世界（依赖方
+//! 缺失的内容仍然可能被其他已加载的 mod 引用到）。因此版本不满足复用
+//! 与 [`ModError::MissingDependency`]/[`ModError::CyclicDependency`]/
+//! [`ModError::DuplicateNamespace`] 完全相同的失败语义：`topo_sort`
+//! 返回 `Err`，[`crate::pipeline::load_all`] 让**整批**候选 mod 都标记
+//! 为 `Failed`（`attribute_topo_error` 只是把「是不是直接肇事者」体现
+//! 在错误文案措辞上，不改变整批中止这个后果）。
+//!
+//! # 与存档 mod 集合硬门禁的关系（两个不同的检查，不要混）
+//!
+//! `ll_content::load_error::check_mod_set`（存档硬门禁，项目所有者决策
+//! 二）与本模块的依赖版本约束检查都在「比较版本号」，容易被误认为是
+//! 同一件事的两处实现，但回答的问题、比较的对象完全不同：
+//!
+//! | 检查 | 回答的问题 | 时机 | 比较对象 |
+//! |---|---|---|---|
+//! | 本模块 [`check_dependency_versions`] | 这些 mod 现在能不能一起加载 | 每次装载（Topo 阶段） | mod 声明的依赖约束 vs 依赖目标 mod **当前**的 `version` |
+//! | `check_mod_set` | 和这份存档记得的是不是同一回事 | 读档时 | 存档头记录的**生成期** `version` vs 当前会话该 mod 的 `version` |
+//!
+//! 两者的输入完全不相交：本模块只看当前一批 mod 清单彼此之间的依赖
+//! 约束，从不读存档；`check_mod_set` 只比较「存档记住的版本」与「现在
+//! 装的版本」，从不知道 mod 之间谁依赖谁、要求什么版本范围。同一次
+//! 「读一份存档」的完整流程如果两个检查都要跑，应当分别独立调用，互不
+//! 替代——本模块检查通过只说明「这批 mod 内部自洽，装得起来」，不说明
+//! 「和某份存档兼容」；`check_mod_set` 通过只说明「和存档记录的版本
+//! 一致」，不说明「这批 mod 之间的依赖关系本身是自洽的」（例如存档
+//! 记录的两个 mod 版本都没变，但二者之间原本就没声明过依赖，或依赖
+//! 约束本就无法满足——`check_mod_set` 完全看不到这类问题，只有本模块
+//! 才会在装载那一刻就拦下）。
 
-use crate::manifest::{ModError, ModManifest, mod_self_id};
+use crate::manifest::{
+    DependencyVersionMismatch, MOD_DEPENDENCY_VERSION_MISMATCH_MESSAGE_KEY, ModError, ModManifest,
+    mod_self_id,
+};
 use ll_core::ident::NamespacedId;
 use std::cmp::Reverse;
 use std::collections::{BinaryHeap, HashMap};
@@ -41,8 +79,9 @@ use std::collections::{BinaryHeap, HashMap};
 /// 对 `manifests` 做依赖拓扑排序，返回一个下标排列——`result[k]` 是
 /// 第 `k` 个应当被加载的 mod 在 `manifests` 中的下标。
 ///
-/// 依赖用 [`ModManifest::dependencies`] 里的裸命名空间字符串表达，
-/// 按名字匹配 `manifests` 里其他清单的 [`ModManifest::id`]（用
+/// 依赖用 [`ModManifest::dependencies`] 里每一条
+/// [`crate::manifest::ModDependency::namespace`] 表达，按名字匹配
+/// `manifests` 里其他清单的 [`ModManifest::id`]（用
 /// [`crate::manifest::mod_self_id`] 同一套约定还原成可比较的
 /// [`NamespacedId`]）。
 ///
@@ -54,6 +93,9 @@ use std::collections::{BinaryHeap, HashMap};
 ///   「注册校验是解析」分工里那一步「解析失败」的落点——`manifest.rs`
 ///   只校验依赖名字符是否合法，「这个依赖是否真的存在」只有等所有
 ///   候选都发现完、集齐 `manifests` 之后才能回答。
+/// - 依赖存在但版本不满足声明的约束：
+///   [`ModError::IncompatibleDependencyVersion`]，见模块文档「依赖版本
+///   约束」一节。
 /// - 依赖成环：[`ModError::CyclicDependency`]，附带环路上具体的 mod
 ///   （按环路顺序，不是"所有卡住的 mod"这种粗粒度报告）。
 pub fn topo_sort(manifests: &[ModManifest]) -> Result<Vec<usize>, ModError> {
@@ -79,6 +121,11 @@ pub fn topo_sort(manifests: &[ModManifest]) -> Result<Vec<usize>, ModError> {
     }
 
     check_missing_dependencies(manifests, &namespace_to_idx, &sorted_by_namespace)?;
+
+    // 必须在 check_missing_dependencies 之后：版本比较要去
+    // namespace_to_idx 里查依赖目标的下标，前一步已确保这里的依赖必然
+    // 存在，本函数不需要再处理"查不到"这个分支。
+    check_dependency_versions(manifests, &namespace_to_idx, &sorted_by_namespace)?;
 
     let (indegree, dependents) = build_graph(manifests, &namespace_to_idx);
     let order = kahn_sort(manifests, &sorted_by_namespace, indegree, &dependents);
@@ -123,14 +170,45 @@ fn check_missing_dependencies(
     sorted_by_namespace: &[usize],
 ) -> Result<(), ModError> {
     for &i in sorted_by_namespace {
-        for dep_ns in &manifests[i].dependencies {
-            if !namespace_to_idx.contains_key(dep_ns.as_str()) {
+        for dep in &manifests[i].dependencies {
+            if !namespace_to_idx.contains_key(dep.namespace.as_str()) {
                 // 依赖名字符合法性已在 parse_manifest 里校验过，这里的
                 // mod_self_id 不会失败；万一失败也不该 panic 整个加载
                 // 流程，退化为一个不太可能撞见的占位错误文案。
-                let missing = mod_self_id(dep_ns)
+                let missing = mod_self_id(&dep.namespace)
                     .unwrap_or_else(|_| mod_self_id("invalid").expect("固定字面量 invalid 恒合法"));
                 return Err(ModError::MissingDependency(missing));
+            }
+        }
+    }
+    Ok(())
+}
+
+/// 按命名空间字典序扫描依赖，逐条核对目标 mod **实际**的 `version` 是
+/// 否满足声明的约束。调用前提：[`check_missing_dependencies`] 已确认
+/// 每条依赖在 `namespace_to_idx` 里都能查到，本函数不再处理"查不到"
+/// 这个分支。第一个不满足的直接报告——与本模块其余检测同一条「找到
+/// 第一个问题就返回，不收集全部」的确定性纪律，见模块文档「依赖版本
+/// 约束」一节。
+fn check_dependency_versions(
+    manifests: &[ModManifest],
+    namespace_to_idx: &HashMap<&str, usize>,
+    sorted_by_namespace: &[usize],
+) -> Result<(), ModError> {
+    for &i in sorted_by_namespace {
+        for dep in &manifests[i].dependencies {
+            let dep_idx = namespace_to_idx[dep.namespace.as_str()];
+            let actual_version = &manifests[dep_idx].version;
+            if !dep.constraint.is_satisfied_by(actual_version) {
+                return Err(ModError::IncompatibleDependencyVersion(Box::new(
+                    DependencyVersionMismatch {
+                        message_key: MOD_DEPENDENCY_VERSION_MISMATCH_MESSAGE_KEY,
+                        dependent: manifests[i].id.clone(),
+                        dependency: manifests[dep_idx].id.clone(),
+                        required: dep.constraint.to_string(),
+                        actual: actual_version.clone(),
+                    },
+                )));
             }
         }
     }
@@ -148,9 +226,9 @@ fn build_graph(
     let mut dependents: Vec<Vec<usize>> = vec![Vec::new(); n];
 
     for (j, m) in manifests.iter().enumerate() {
-        for dep_ns in &m.dependencies {
+        for dep in &m.dependencies {
             // check_missing_dependencies 已确保这里必然能查到。
-            let i = namespace_to_idx[dep_ns.as_str()];
+            let i = namespace_to_idx[dep.namespace.as_str()];
             dependents[i].push(j);
             indegree[j] += 1;
         }
@@ -221,8 +299,8 @@ fn find_one_cycle(
         color[i] = Color::Gray;
         path.push(i);
 
-        for dep_ns in &manifests[i].dependencies {
-            let Some(&j) = namespace_to_idx.get(dep_ns.as_str()) else {
+        for dep in &manifests[i].dependencies {
+            let Some(&j) = namespace_to_idx.get(dep.namespace.as_str()) else {
                 continue;
             };
             match color[j] {
@@ -272,13 +350,43 @@ fn find_one_cycle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::manifest::ModDependency;
+    use crate::version_constraint::VersionConstraint;
     use std::path::PathBuf;
 
     fn manifest(namespace: &str, dependencies: &[&str]) -> ModManifest {
         ModManifest {
             id: mod_self_id(namespace).expect("测试用命名空间恒合法"),
             version: "0.1.0".to_string(),
-            dependencies: dependencies.iter().map(|s| s.to_string()).collect(),
+            dependencies: dependencies
+                .iter()
+                .map(|s| ModDependency {
+                    namespace: s.to_string(),
+                    constraint: VersionConstraint::Any,
+                })
+                .collect(),
+            entry_points: Vec::<PathBuf>::new(),
+        }
+    }
+
+    /// 与 [`manifest`] 的区别：可以指定版本号与每条依赖各自的版本约束，
+    /// 供版本约束相关测试使用——[`manifest`] 固定用 `VersionConstraint::Any`
+    /// 与 `"0.1.0"`，不足以构造版本不匹配的场景。
+    fn manifest_with_constraint(
+        namespace: &str,
+        version: &str,
+        dependencies: &[(&str, VersionConstraint)],
+    ) -> ModManifest {
+        ModManifest {
+            id: mod_self_id(namespace).expect("测试用命名空间恒合法"),
+            version: version.to_string(),
+            dependencies: dependencies
+                .iter()
+                .map(|(ns, constraint)| ModDependency {
+                    namespace: ns.to_string(),
+                    constraint: constraint.clone(),
+                })
+                .collect(),
             entry_points: Vec::<PathBuf>::new(),
         }
     }
@@ -456,5 +564,154 @@ mod tests {
 
         // Assert
         assert!(order.is_empty());
+    }
+
+    #[test]
+    fn 依赖版本满足精确约束时拓扑排序通过() {
+        // Arrange
+        let manifests = vec![
+            manifest_with_constraint("a", "0.3.0", &[]),
+            manifest_with_constraint(
+                "b",
+                "0.1.0",
+                &[("a", VersionConstraint::Exact("0.3.0".to_string()))],
+            ),
+        ];
+
+        // Act
+        let result = topo_sort(&manifests);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn 依赖版本不满足精确约束时拓扑排序报告版本不兼容() {
+        // Arrange：b 要求 a 恰好是 0.3.0，a 实际是 0.4.0。
+        let manifests = vec![
+            manifest_with_constraint("a", "0.4.0", &[]),
+            manifest_with_constraint(
+                "b",
+                "0.1.0",
+                &[("a", VersionConstraint::Exact("0.3.0".to_string()))],
+            ),
+        ];
+
+        // Act
+        let result = topo_sort(&manifests);
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(ModError::IncompatibleDependencyVersion(_))
+        ));
+    }
+
+    #[test]
+    fn 依赖版本满足下限约束时拓扑排序通过() {
+        // Arrange
+        let manifests = vec![
+            manifest_with_constraint("a", "0.5.0", &[]),
+            manifest_with_constraint(
+                "b",
+                "0.1.0",
+                &[("a", VersionConstraint::AtLeast(vec![0, 4]))],
+            ),
+        ];
+
+        // Act
+        let result = topo_sort(&manifests);
+
+        // Assert
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn 依赖版本低于下限约束时拓扑排序报告版本不兼容() {
+        // Arrange
+        let manifests = vec![
+            manifest_with_constraint("a", "0.2.0", &[]),
+            manifest_with_constraint(
+                "b",
+                "0.1.0",
+                &[("a", VersionConstraint::AtLeast(vec![0, 4]))],
+            ),
+        ];
+
+        // Act
+        let result = topo_sort(&manifests);
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(ModError::IncompatibleDependencyVersion(_))
+        ));
+    }
+
+    #[test]
+    fn 版本不兼容错误信息附带发起依赖与依赖目标的具体标识() {
+        // 这条测试专门锁定简报要求「错误信息必须包含哪个 mod、要求
+        // 什么、实际是什么」——直接断言结构化字段，不断言 Display
+        // 输出的具体文案（本模块的错误没有现成的自然语言句子，见
+        // ModError 模块文档）。
+        // Arrange
+        let manifests = vec![
+            manifest_with_constraint(
+                "depender",
+                "0.1.0",
+                &[("provider", VersionConstraint::AtLeast(vec![2, 0]))],
+            ),
+            manifest_with_constraint("provider", "1.5.0", &[]),
+        ];
+
+        // Act
+        let result = topo_sort(&manifests);
+
+        // Assert
+        match result {
+            Err(ModError::IncompatibleDependencyVersion(detail)) => {
+                assert_eq!(detail.dependent.namespace(), "depender");
+                assert_eq!(detail.dependency.namespace(), "provider");
+                assert_eq!(detail.required, ">=2.0");
+                assert_eq!(detail.actual, "1.5.0");
+            }
+            other => panic!("期望 IncompatibleDependencyVersion，实际是 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 依赖版本约束检查不会误判缺失依赖为版本不兼容() {
+        // 版本比较必须建立在「目标 mod 存在」这个前提上——这条测试用
+        // 一个同时缺失依赖又声明了版本约束的场景，验证报的是
+        // MissingDependency，不是别的：check_dependency_versions 若排在
+        // check_missing_dependencies 之前执行，会在查 namespace_to_idx
+        // 时直接 panic，而不是走到这条断言。
+        let manifests = vec![manifest_with_constraint(
+            "a",
+            "0.1.0",
+            &[("ghost", VersionConstraint::Exact("1.0.0".to_string()))],
+        )];
+
+        let result = topo_sort(&manifests);
+
+        assert!(matches!(result, Err(ModError::MissingDependency(_))));
+    }
+
+    #[test]
+    fn 旧版裸命名空间依赖不比较版本号即便实际版本完全不同() {
+        // 向后兼容核心场景：旧版 `dependencies = [...]` 语义等价于
+        // VersionConstraint::Any——即便被依赖 mod 的实际版本与依赖方
+        // 通常会写的任何约束都对不上，也不应该被判定为不兼容。
+        // Arrange
+        let manifests = vec![
+            manifest_with_constraint("a", "9.9.9", &[]),
+            manifest_with_constraint("b", "0.1.0", &[("a", VersionConstraint::Any)]),
+        ];
+
+        // Act
+        let result = topo_sort(&manifests);
+
+        // Assert
+        assert!(result.is_ok());
     }
 }
