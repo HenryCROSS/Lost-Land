@@ -6,7 +6,7 @@
 
 use ll_core::torus::TorusPos;
 use ll_render::camera::Camera;
-use ll_render::sprite::{DrawOrder, Layer};
+use ll_render::sprite::{DrawOrder, Layer, footprint_bottom_screen_y, sprite_draw_position};
 use ll_world::state::WorldState;
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
 
@@ -61,31 +61,26 @@ pub(crate) fn push_terrain(
     }
 }
 
-/// 占地格块锚点像素坐标（占地矩形底边中点）——与
-/// p1/p2/p3_acceptance 的 `footprint_anchor_pixel` 同一算法：横向取
-/// 占地宽度一半，纵向取占地高度（贴底边）。
-fn footprint_anchor_pixel(
-    tile_origin: (i32, i32),
-    footprint: ll_render::sprite::Footprint,
-) -> (i32, i32) {
-    let half_width_px = footprint.width as i32 * ll_render::sprite::TILE_SIZE as i32 / 2;
-    let height_px = footprint.height as i32 * ll_render::sprite::TILE_SIZE as i32;
-    (tile_origin.0 + half_width_px, tile_origin.1 + height_px)
-}
-
 /// 画出玩家精灵。
+///
+/// 占地锚点、图像左上角的换算全部走 `ll_render::sprite` 的公开函数
+/// （[`sprite_draw_position`]/[`footprint_bottom_screen_y`]），不再在本
+/// demo 里重复实现——这条换算曾经在四个验收 demo 里各写一份、还漏了
+/// 第五份（见 `ll_render::sprite::sprite_draw_position` 文档「调用方
+/// 不得自行重实现这条换算」一节），统一收口才能保证改一处、处处生效。
 pub(crate) fn push_player(pos: TorusPos, camera: &Camera, resources: &mut GpuResources) {
     let Some((entry, uv)) = resources.lookup("hero_idle_0") else {
         return;
     };
     let footprint = entry.footprint;
-    let pivot = entry.pivot;
     let sprite_size = entry.sprite_size();
     let (tile_x, tile_y) = camera.world_to_screen(pos);
-    let (anchor_x, anchor_y) = footprint_anchor_pixel((tile_x, tile_y), footprint);
-    let px = (anchor_x - pivot.x as i32) as f32;
-    let py = (anchor_y - pivot.y as i32) as f32;
-    let order = DrawOrder::new(Layer::ENTITY, anchor_y, PLAYER_ENTITY_BASE);
+    let [px, py] = sprite_draw_position((tile_x, tile_y), footprint, entry.pivot);
+    let order = DrawOrder::new(
+        Layer::ENTITY,
+        footprint_bottom_screen_y(tile_y, footprint.height),
+        PLAYER_ENTITY_BASE,
+    );
     resources.batch.push(
         order,
         ll_render::batch::SpriteInstance {

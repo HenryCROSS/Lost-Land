@@ -15,7 +15,15 @@
 
 use ll_core::torus::TorusPos;
 use ll_platform::window::FrameId;
-use ll_render::sprite::{Footprint, Pivot, TILE_SIZE};
+// 「占地锚点 − pivot = 图像左上角」这条换算曾经是本文件的私有函数，
+// 且被后续几个 demo 各抄一份、又被 P5 demo 完全遗漏——遗漏没有在编译期
+// 暴露，因为大多数 demo 画的是 1×1 小图，凑巧看不出偏移方向反了。现已
+// 提升为 `ll_render::sprite` 的公开函数，这里只重新导出 `main.rs` 真正
+// 用到的两个（`footprint_anchor_pixel` 只在本文件测试模块里直接用到，
+// 在那里单独导入，不在此处重新导出，避免非测试构建下的未使用警告），
+// 不再保留第二份实现，理由见其文档「调用方不得自行重实现这条换算」
+// 一节。
+pub(crate) use ll_render::sprite::{footprint_bottom_screen_y, sprite_draw_position};
 
 /// 演示世界的宽度（格）。刻意大于相机单帧可见的瓦片跨度（约 43 格），
 /// 平时看不到重复瓦片；又刻意不太大，短暂按住方向键就能移动到接缝。
@@ -80,51 +88,13 @@ pub(crate) fn hero_patrol_y(frame: FrameId, min_y: i32, max_y: i32, frames_per_s
     min_y + offset
 }
 
-/// 占地 `footprint` 格、左上角像素原点为 `tile_origin` 的图块，其锚点
-/// （占地区域底边水平中点）在离屏目标像素空间中的位置。
-///
-/// 无论是 1×1 的普通单位还是 2×2 的重点目标，锚点规则统一：脚站在
-/// 占地格块的底边中点，而不是某个角上——这正是 [`Footprint`] 与
-/// [`Pivot`] 解耦要支撑的表现（见 `ll_render::sprite` 模块文档）。
-pub(crate) fn footprint_anchor_pixel(tile_origin: (i32, i32), footprint: Footprint) -> (i32, i32) {
-    let half_width_px = footprint.width as i32 * TILE_SIZE as i32 / 2;
-    let height_px = footprint.height as i32 * TILE_SIZE as i32;
-    (tile_origin.0 + half_width_px, tile_origin.1 + height_px)
-}
-
-/// 把「占地锚点」与「图像内锚点（pivot）」相减，得到精灵图像左上角
-/// 应绘制在离屏目标像素空间中的位置。
-pub(crate) fn sprite_draw_position(
-    tile_origin: (i32, i32),
-    footprint: Footprint,
-    pivot: Pivot,
-) -> [f32; 2] {
-    let (anchor_x, anchor_y) = footprint_anchor_pixel(tile_origin, footprint);
-    [
-        (anchor_x - pivot.x as i32) as f32,
-        (anchor_y - pivot.y as i32) as f32,
-    ]
-}
-
-/// 占地格块底边的**屏幕**纵坐标（像素），供 `ll_render::sprite::DrawOrder`
-/// 用作 `foot_y`。
-///
-/// **必须用占地底边而非精灵图像顶部**：高精灵若用图像顶部排序，会在
-/// 视觉上错误地挡住本该在它前面的矮单位（`ll_render::sprite` 模块文档
-/// 对此有详细说明）。
-///
-/// `screen_tile_y` 必须是占地左上角格的**屏幕**纵坐标（`Camera::world_to_screen`
-/// 的返回值），不能是世界纵坐标——环面世界里跨南北接缝时世界纵坐标
-/// 的排序会反转，详见 `ll_render::sprite::DrawOrder::new` 文档。
-pub(crate) fn footprint_bottom_screen_y(screen_tile_y: i32, footprint_height: u8) -> i32 {
-    screen_tile_y + footprint_height as i32 * TILE_SIZE as i32
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use ll_core::torus::TorusSize;
-    use ll_render::sprite::{DrawOrder, Layer};
+    use ll_render::sprite::{
+        DrawOrder, Footprint, Layer, Pivot, TILE_SIZE, footprint_anchor_pixel,
+    };
 
     #[test]
     fn 棋盘格相邻格纹理种类交替() {

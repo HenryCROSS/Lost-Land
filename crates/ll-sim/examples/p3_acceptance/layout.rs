@@ -7,9 +7,14 @@
 //! 一份。
 
 use ll_core::time::{Season, TICKS_PER_HOUR, Tick};
-use ll_render::sprite::{Footprint, Pivot, TILE_SIZE};
 use ll_world::light::ambient_light;
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
+// 「占地锚点 − pivot = 图像左上角」这条精灵摆放换算不再在本文件重复
+// 实现，改用 `ll_render::sprite` 的公开函数——这里只重新导出 `main.rs`
+// 真正用到的两个（`footprint_anchor_pixel` 只在本文件测试模块里直接
+// 用到，在那里单独导入，避免非测试构建下的未使用警告），理由见其
+// 文档「调用方不得自行重实现这条换算」一节。
+pub(crate) use ll_render::sprite::{footprint_bottom_screen_y, sprite_draw_position};
 
 /// 演示世界的宽度（格）。
 ///
@@ -82,47 +87,10 @@ pub(crate) fn ambient_tint(clock: Tick) -> [f32; 4] {
     [r * brightness, g * brightness, b * brightness, 1.0]
 }
 
-/// 占地 `footprint` 格、左上角像素原点为 `tile_origin` 的图块，其锚点
-/// （占地区域底边水平中点）在离屏渲染目标像素空间中的位置。
-///
-/// 与 `ll-render`/`ll-world` 两份 `p1_acceptance`/`p2_acceptance` 的
-/// 同名函数逐字同构：同一条渲染规则（脚站在占地格块的底边中点）不该
-/// 在第三个 demo 里再漂出第三份实现。
-pub(crate) fn footprint_anchor_pixel(tile_origin: (i32, i32), footprint: Footprint) -> (i32, i32) {
-    let half_width_px = footprint.width as i32 * TILE_SIZE as i32 / 2;
-    let height_px = footprint.height as i32 * TILE_SIZE as i32;
-    (tile_origin.0 + half_width_px, tile_origin.1 + height_px)
-}
-
-/// 把「占地锚点」与「图像内锚点（pivot）」相减，得到精灵图像左上角
-/// 应绘制在离屏渲染目标像素空间中的位置。
-pub(crate) fn sprite_draw_position(
-    tile_origin: (i32, i32),
-    footprint: Footprint,
-    pivot: Pivot,
-) -> [f32; 2] {
-    let (anchor_x, anchor_y) = footprint_anchor_pixel(tile_origin, footprint);
-    [
-        (anchor_x - pivot.x as i32) as f32,
-        (anchor_y - pivot.y as i32) as f32,
-    ]
-}
-
-/// 占地格块底边的**屏幕**纵坐标（像素），供 `ll_render::sprite::DrawOrder`
-/// 用作 `foot_y`。
-///
-/// `screen_tile_y` 必须是占地左上角格的**屏幕**纵坐标
-/// （`Camera::world_to_screen` 的返回值），不能是世界纵坐标——这正是
-/// Task 1 修复的缺陷：环面世界里跨南北接缝时世界纵坐标的排序会反转，
-/// 本 demo 故意把一个敌人摆在与玩家出生点隔着接缝的一侧（见
-/// `spawn::ENEMY_FAST_OFFSET`），用真实渲染路径验证这条修复。
-pub(crate) fn footprint_bottom_screen_y(screen_tile_y: i32, footprint_height: u8) -> i32 {
-    screen_tile_y + footprint_height as i32 * TILE_SIZE as i32
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ll_render::sprite::{Footprint, footprint_anchor_pixel};
 
     #[test]
     fn 八种自然地形都能查到图集条目() {
