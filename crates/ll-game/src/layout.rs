@@ -149,6 +149,54 @@ mod tests {
         assert!(radius < BASE_SIGHT_RADIUS);
     }
 
+    /// 开局那一刻玩家到底看得见什么——这条是**组合断言**。
+    ///
+    /// 午夜环境光（千分之一百）、`sight_radius_at` 的缩放、`effective_tint`
+    /// 的整体调制、以及三层可见性里「从未探索就不画」，四条规则各自都
+    /// 正确、各自都有测试守着，叠在一起却让 `Tick(0)` 开局变成纯黑屏加
+    /// 正中央五个格子——项目所有者实测报告了这个现象。缺的从来不是某
+    /// 一块的测试，而是「这些块凑在一起时开局长什么样」这一条。
+    #[test]
+    fn 新游戏起始时刻的地表视野远大于最小半径() {
+        // Arrange：露天地表，没有额外的环境光下限加成。
+        let profile = SpaceProfile {
+            id: ll_core::ident::NamespacedId::parse("lostland:test_surface").expect("字面量恒合法"),
+            ambient_light_floor: 0,
+            exposed_to_sky: true,
+            base_temperature: 0,
+            diggable: true,
+            buildable: true,
+            reverb_tag: None,
+        };
+
+        // Act
+        let radius = effective_sight_radius(&profile, crate::world::NEW_GAME_START_TICK);
+
+        // Assert：至少要有基准半径的一半，否则开局仍然近乎瞎。
+        assert!(radius >= BASE_SIGHT_RADIUS / 2);
+    }
+
+    /// 与上一条配套：起始时刻的画面整体亮度不能低到把可见格子也压黑。
+    #[test]
+    fn 新游戏起始时刻的画面亮度过半() {
+        // Arrange
+        let profile = SpaceProfile {
+            id: ll_core::ident::NamespacedId::parse("lostland:test_surface").expect("字面量恒合法"),
+            ambient_light_floor: 0,
+            exposed_to_sky: true,
+            base_temperature: 0,
+            diggable: true,
+            buildable: true,
+            reverb_tag: None,
+        };
+
+        // Act
+        let tint = effective_tint(&profile, crate::world::NEW_GAME_START_TICK);
+
+        // Assert
+        assert!(tint[0] > 0.5);
+    }
+
     #[test]
     fn 记忆色调比原始光照色调暗() {
         // Arrange

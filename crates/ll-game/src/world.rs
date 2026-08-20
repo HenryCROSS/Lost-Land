@@ -18,6 +18,13 @@ use ll_world::{WorldError, terrain::TerrainTable};
 
 use crate::content::LoadedContent;
 
+/// 新游戏的起始世界时刻——早上八点。
+///
+/// 选白天而不是 `Tick(0)`（午夜）的理由见 [`new_world`] 里设置它的那段
+/// 注释：午夜的环境光会让开局画面几乎全黑。取整点只是为了让「第 0 天
+/// 早八点」这个起点读起来自然，没有玩法含义。
+pub const NEW_GAME_START_TICK: Tick = Tick(8 * ll_core::time::TICKS_PER_HOUR);
+
 /// 区块边长（格）：固定 48，与 `ll_content::world_identity` 推荐预设表
 /// 一致（该模块文档：区块边长固定 48）。
 const ZONE_SPAN: u32 = 48;
@@ -129,6 +136,19 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
         spawn,
     )?;
     world.surface_profile = content.space_ids.surface;
+    // 新游戏从早晨开始，而不是 `Tick(0)`（午夜）。
+    //
+    // 三条各自正确的规则叠在一起会让午夜开局变成纯黑屏：午夜环境光是
+    // 千分之一百（`ll_world::light` 刻意不取零，有测试守着），
+    // `sight_radius_at` 把 `BASE_SIGHT_RADIUS`(12) 缩成 1，
+    // `effective_tint` 又把整幅画面乘上 0.1，而三层可见性里「从未探索」
+    // 是完全不画、露出黑色清屏底。结果就是一片黑加正中央五个格子、
+    // 亮度一成——项目所有者实测报告「运行以后出来的是黑屏」。
+    //
+    // 每一块单独看都有测试、都按设计工作，缺的是「开局那一刻玩家看到
+    // 什么」这条组合断言，见本模块测试 `新游戏起始时刻的视野半径不至于
+    // 只剩最小值`。
+    world.clock = NEW_GAME_START_TICK;
 
     carve_spawn_clearing(&mut world, &noise, &params, content, spawn);
 
