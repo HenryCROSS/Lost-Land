@@ -13,11 +13,13 @@ use std::time::Duration;
 
 use steel::SteelErr;
 use steel::rvals::SteelVal;
+use steel::steel_vm::ThreadStateController;
 use steel::steel_vm::builtin::BuiltInModule;
 use steel::steel_vm::engine::Engine;
 use steel::steel_vm::interrupt::InterruptHandler;
 use steel::steel_vm::register_fn::RegisterFn;
 
+use crate::alloc_guard;
 use crate::whitelist::check_whitelist;
 
 /// 脚本失控时的中断预算：超过这个墙钟时长仍未返回就强制掐断。
@@ -399,10 +401,25 @@ fn classify_error(err: SteelErr) -> ScriptError {
 /// 是在此之上的额外防线（分别处理"名字已经绑定，poison 不到"与"省一次
 /// 完整解析+展开"两种场景），三者共同生效，但唯独白名单具备"未来
 /// steel-core 新增我们没见过的内置能力也自动排除在外"这个性质。
+///
+/// # 第四道防线：内存执行预算
+///
+/// `alloc_controller` 是本引擎的 [`ThreadStateController`]——与
+/// `interrupt` 内部持有的是同一份底层状态的另一份 `Clone`（两者都来自
+/// `engine.get_thread_state_controller()`，见 [`Self::new`]），单独存一份
+/// 的原因是 [`InterruptHandler`] 不对外暴露它持有的那一份。[`Self::call_raw`]/
+/// [`Self::load_source`] 在真正求值前把这份 `Clone` 交给
+/// [`crate::alloc_guard::set_active_controller`]，超预算时
+/// [`crate::alloc_guard`] 会调用它的 `interrupt()`——脚本侧看到的效果与
+/// 死循环被 `InterruptHandler` 掐断完全一样。装没装 `#[global_allocator]`
+/// 决定这道防线是否真的在拦截：见 `alloc_guard` 模块文档，本 crate 自己
+/// 的测试二进制没有安装它，真正验证过「装上之后」的测试在
+/// `crates/ll-script/tests/memory_budget_enforced.rs`。
 pub struct ScriptEngine {
     engine: Engine,
     interrupt: InterruptHandler,
     allowed_identifiers: HashSet<&'static str>,
+    alloc_controller: ThreadStateController,
 }
 
 impl ScriptEngine {
@@ -426,12 +443,18 @@ impl ScriptEngine {
         }
         poison_meta_deny_list(&mut engine);
 
+        // 必须在构造 InterruptHandler 之前或之后都行——两者各自拿到的是
+        // 同一份底层状态的独立 Clone（见 ScriptEngine 结构体文档），谁先
+        // 谁后不影响观测到的行为。放在这里是为了让 alloc_controller 的
+        // 初始化紧挨着字段列表，阅读顺序上更直接。
+        let alloc_controller = engine.get_thread_state_controller();
         let interrupt = InterruptHandler::new(&mut engine, INTERRUPT_TIMEOUT);
 
         Self {
             engine,
             interrupt,
             allowed_identifiers,
+            alloc_controller,
         }
     }
 
@@ -452,14 +475,17 @@ impl ScriptEngine {
 
     /// 加载并执行一段脚本源码（通常是 mod 的顶层定义）。
     ///
-    /// 三道关卡依次生效：
+    /// 四道关卡依次生效：
     /// 1. [`reject_dangerous_syntax`]——源码文本快速失败，省一次解析。
     /// 2. **AST 白名单**（[`crate::whitelist::check_whitelist`]）——解析并
     ///    完整展开源码（`Engine::emit_fully_expanded_ast`，宏与
     ///    `require-builtin` 均已展开），确认树上出现的每一个被引用的
     ///    标识符都在 [`Self::allowed_identifiers`] 或脚本自己的局部作用域
     ///    里，这是权威防线。
-    /// 3. 通过前两关才真正 `run`，套着中断防线执行——脚本本身死循环
+    /// 3. **内存执行预算**（[`crate::alloc_guard`]）——真正求值前重置计数
+    ///    器、把本引擎的中断通道登记为「当前线程活跃通道」，求值结束后
+    ///    立刻解除登记，见 [`Self::alloc_controller`](Self) 字段文档。
+    /// 4. 通过前面几关才真正 `run`，套着中断防线执行——脚本本身死循环
     ///    也会在预算耗尽后返回 `Err`。
     ///
     /// 步骤 2 会对同一份源码重新解析一次（`run` 内部还会再解析一次）——
@@ -476,22 +502,40 @@ impl ScriptEngine {
             .map_err(classify_error)?;
         check_whitelist(&exprs, &self.allowed_identifiers)?;
 
+        // 步骤 3：登记内存守卫。窗口只覆盖下面这一次 `run`——前面两步
+        // 的解析/展开分配不该算进脚本自己的预算（见 alloc_guard 模块
+        // 文档「MEMORY_BUDGET 默认排除引擎构造本身」同一条精神）。
+        alloc_guard::reset_alloc_counter();
+        alloc_guard::set_active_controller(self.alloc_controller.clone());
+
         let engine = &mut self.engine;
-        self.interrupt
+        let result = self
+            .interrupt
             .run_with_timeout(|| engine.run(source))
             .map(|_| ())
-            .map_err(classify_error)
+            .map_err(classify_error);
+
+        alloc_guard::clear_active_controller();
+        result
     }
 
     /// 以 `name` 调用一个已经在脚本中定义好的函数。
     ///
-    /// 每次调用都包中断防线（见结构体文档的开销说明），出错返回 `Err`，
+    /// 每次调用都包中断防线（见结构体文档的开销说明）与内存执行预算窗口
+    /// （见 [`Self::load_source`] 步骤 3 的同一套接线），出错返回 `Err`，
     /// 绝不 panic。降级策略由调用方决定。
     pub fn call_raw(&mut self, name: &str, args: Vec<SteelVal>) -> Result<SteelVal, ScriptError> {
+        alloc_guard::reset_alloc_counter();
+        alloc_guard::set_active_controller(self.alloc_controller.clone());
+
         let engine = &mut self.engine;
-        self.interrupt
+        let result = self
+            .interrupt
             .run_with_timeout(|| engine.call_function_by_name_with_args(name, args))
-            .map_err(classify_error)
+            .map_err(classify_error);
+
+        alloc_guard::clear_active_controller();
+        result
     }
 }
 
