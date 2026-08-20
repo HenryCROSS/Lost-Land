@@ -1598,6 +1598,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "ll-game"
+version = "0.1.0"
+dependencies = [
+ "ll-content",
+ "ll-core",
+ "ll-mod",
+ "ll-platform",
+ "ll-render",
+ "ll-script",
+ "ll-sim",
+ "ll-world",
+ "proptest",
+ "tracing",
+]
+
+[[package]]
 name = "ll-mod"
 version = "0.1.0"
 dependencies = [

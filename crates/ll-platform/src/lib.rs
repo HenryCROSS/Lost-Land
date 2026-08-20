@@ -4,6 +4,7 @@
 //! 它**不含任何游戏逻辑**——判断某个类型该放这里还是放上层，标准是
 //! 「换一个操作系统时它是否需要改」。
 
+pub mod config;
 pub mod input;
 pub mod jobs;
 pub mod keybind;

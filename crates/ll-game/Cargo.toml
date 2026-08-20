@@ -1,0 +1,28 @@
+[package]
+name = "ll-game"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的游戏本体二进制：把六个验收 demo 各自证明过的零件（窗口、渲染、世界、战斗、UI、坐标）装成一台整机——启动、装载内容、建世界/读档、游玩、存档、退出。"
+
+[lints]
+workspace = true
+
+# 依赖方向规格 §5：ll-core ← … ← ll-world ← ll-sim ← ll-script ← ll-mod
+# ← ll-content ← ll-ui。本体二进制排在依赖链的最下游，六个上游 crate
+# 全部需要——它是唯一把它们全部串起来的地方，没有任何一个更下游的
+# crate 反过来依赖它（它本身就是这条依赖链的终点，除了未来的
+# ll-ui 完整控件库，见规格 §15 P7）。
+[dependencies]
+ll-content = { path = "../ll-content" }
+ll-core = { path = "../ll-core" }
+ll-mod = { path = "../ll-mod" }
+ll-platform = { path = "../ll-platform" }
+ll-render = { path = "../ll-render" }
+ll-script = { path = "../ll-script" }
+ll-sim = { path = "../ll-sim" }
+ll-world = { path = "../ll-world" }
+tracing = "0.1"
+
+[dev-dependencies]
+proptest.workspace = true

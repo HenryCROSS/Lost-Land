@@ -40,10 +40,10 @@ crossbeam-channel = "0.5"
 # crate::keybind 模块文档）——与 ll-world 依赖 serde 的理由同类，都是
 # 「这个 crate 确实需要它，不值得再用可选 feature 包一层」。
 serde = { version = "1", features = ["derive"] }
+# crate::config 的配置文件系统需要真正把 GameConfig 编解码成 JSON 落盘
+# ——不再只是测试专属的往返验证依赖（此前只在 dev-dependencies 里），
+# 见 crate::config 模块文档。
+serde_json = "1"
 
 [dev-dependencies]
 proptest.workspace = true
-# 仅用于绑定表的序列化往返测试：验证 KeyBindings 经过一种真实的 serde
-# 格式完整往返，而不只是停留在 derive 能编译，与 ll-world/ll-core 的
-# 同类测试同一个理由。
-serde_json = "1"
