@@ -115,7 +115,7 @@ mod tests {
         let dir =
             std::env::temp_dir().join(format!("ll-game-save-test-content-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
-        let content = load_content(&dir);
+        let content = load_content(&dir, &dir.join("assets"));
         let _ = std::fs::remove_dir_all(&dir);
         content
     }

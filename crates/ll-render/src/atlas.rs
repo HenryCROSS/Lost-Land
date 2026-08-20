@@ -215,9 +215,26 @@ impl Atlas {
         let decoded = image::load_from_memory(image_bytes)
             .map_err(|error| RenderError::AtlasDecode(error.to_string()))?
             .to_rgba8();
+        Atlas::from_rgba(gpu, metadata, decoded)
+    }
+
+    /// 把一张已经解码好的 RGBA 图像连同其元数据上传为 GPU 图集纹理。
+    ///
+    /// 与 [`Self::load`] 共享同一段校验 + 上传逻辑，区别只在输入：
+    /// [`Self::load`] 从原始 PNG 字节解码，本方法接收调用方已经解码好
+    /// 的画布——运行期图集打包（`crate::atlas_pack::pack_atlas`）本身
+    /// 就要把多张松散贴图合成一张 [`image::RgbaImage`] 画布，若为了
+    /// 复用 [`Self::load`] 而把这张画布重新编码成 PNG 再传进去解码
+    /// 一遍，是一趟纯粹浪费的编解码往返——两边共享的画布类型让这趟
+    /// 往返完全没有必要。
+    pub fn from_rgba(
+        gpu: &GpuContext,
+        metadata: AtlasMetadata,
+        decoded: image::RgbaImage,
+    ) -> Result<Atlas, RenderError> {
         let (width, height) = decoded.dimensions();
 
-        // 元数据本身只描述矩形数字，看不到图片；只有在这里解码出真实
+        // 元数据本身只描述矩形数字，看不到图片；只有在这里拿到真实
         // 尺寸后，才能判断畸形或恶意的 mod 是否给出了越界矩形。不查这
         // 一项的后果是花屏或贴图错乱——而且因为元数据本身「看起来完全
         // 合法」，这类问题在批渲染阶段会极难定位。

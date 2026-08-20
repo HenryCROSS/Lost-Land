@@ -1,0 +1,16 @@
+{
+  "entries": [
+    {
+      "name": "lava_floor",
+      "file": "lava_floor.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    }
+  ]
+}
