@@ -118,6 +118,7 @@ fn sample_header(content_index_map: Vec<String>, mode: SaveMode) -> SaveHeader {
         playtime_ticks: 0,
         generation_mods: Vec::new(),
         current_mods: Vec::new(),
+        content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
         content_index_map,
         world_size: (1, 1),
         world_seed: 0,

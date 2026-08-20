@@ -70,6 +70,7 @@ fn valid_save_bytes() -> Vec<u8> {
             content_hash: registry.content_hash_of("lostland"),
         }],
         current_mods: Vec::new(),
+        content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
         content_index_map: registry
             .snapshot()
             .iter()

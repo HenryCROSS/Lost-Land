@@ -52,6 +52,23 @@ pub enum LoadError {
         /// 迁移链找不到路径的起始版本。
         from: u32,
     },
+    /// 内容哈希算法已升级：存档头记录的算法版本
+    /// （[`crate::header::SaveHeader::content_hash_algorithm_version`]）
+    /// 低于当前游戏使用的算法版本
+    /// （[`ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION`]）——
+    /// 与 [`Self::ModContentMismatch`] 是完全不同的原因，必须分开报错
+    /// （见 [`check_content_hash_algorithm`] 文档「为什么必须与
+    /// `ModContentMismatch` 分开」一节）：这份存档记录的哈希是用一套
+    /// **已经不再使用**的编码方式算出来的，与当前算法算出来的哈希
+    /// 不可比较——不是 mod 内容真的变了，是量尺本身换了。若把这种
+    /// 情况也报成 `ModContentMismatch`，mod 作者会被误导去检查自己
+    /// 的 mod 是不是改坏了，而实际上什么都没改坏。
+    ContentHashAlgorithmUpgraded {
+        /// 存档头记录的算法版本。
+        save_algorithm_version: u32,
+        /// 当前游戏使用的算法版本。
+        current_algorithm_version: u32,
+    },
     /// mod 内容不兼容：存档头记录的生成期内容哈希与当前会话实际拿到
     /// 的内容哈希不一致——版本号相同也会触发，因为哈希本来就是为了
     /// 覆盖"版本号没变但内容变了"这种情况才存在的（`identity-and-ids.md`
@@ -139,6 +156,13 @@ impl fmt::Display for LoadError {
                 f,
                 "schema 迁移链找不到从版本 {from} 开始的升级路径（迁移链本身有缺口）"
             ),
+            LoadError::ContentHashAlgorithmUpgraded {
+                save_algorithm_version,
+                current_algorithm_version,
+            } => write!(
+                f,
+                "存档记录的内容哈希算法版本 {save_algorithm_version} 早于当前游戏使用的版本 {current_algorithm_version}，这份存档写于内容哈希升级之前，无法用当前算法核对内容是否变化（不是 mod 内容真的变了）"
+            ),
             LoadError::ModContentMismatch {
                 namespace,
                 expected_hash,
@@ -186,6 +210,54 @@ pub fn check_schema_version(save_version: u32, max_supported: u32) -> Result<(),
         Err(LoadError::SchemaTooNew {
             save_version,
             max_supported,
+        })
+    } else {
+        Ok(())
+    }
+}
+
+/// 校验存档头记录的内容哈希算法版本是否与当前游戏使用的版本一致。
+///
+/// # 为什么必须与 `check_mod_content` 分开、且排在它之前
+///
+/// [`check_mod_content`] 靠比较 `content_hash` 数值判断"内容是否真的
+/// 变了"——但这个比较隐含一个前提：两边的哈希是用**同一套编码方式**
+/// 算出来的。内容哈希本身经历过一次不兼容升级
+/// （[`ll_mod::content_hash`] 模块文档「为什么不能在 `intern` 内部做」
+/// 一节：从"只追踪 id 集合"升级成"追踪字段值"），升级前写出的存档记录
+/// 的哈希与升级后当前会话算出来的哈希，即便对应的 mod 内容真的一个
+/// 字节都没变，数值也几乎必然不同——旧算法根本没把字段值编码进去，
+/// 新算法编码了，两者不是同一个函数的两次求值,不能直接比较。
+///
+/// 若不先做这条检查，[`check_mod_content`] 会把"存档写于算法升级之前"
+/// 误判成"mod 内容真的变了"（`LoadError::ModContentMismatch`）——这对
+/// mod 作者是一条彻头彻尾的假警报：诊断信息与"真的改坏了内容"完全
+/// 一样，排查者会被引导去检查自己的 mod，而实际上什么都没改坏。本函数
+/// 因此必须排在 [`check_mod_content`] 之前调用,一旦命中就提前用
+/// [`LoadError::ContentHashAlgorithmUpgraded`] 报出来,不让流程走到
+/// `check_mod_content` 那个会产出误导性错误的分支。
+///
+/// # 为什么不排在 `check_mod_set` 之前
+///
+/// [`check_mod_set`] 只比较"mod 在不在、版本号字符串是否相等"，完全不
+/// 涉及内容哈希，算法升级对它没有任何影响——一份存档记录的 mod 若真的
+/// 缺失或版本号不对，即便算法版本也顺带过期了，`check_mod_set` 报出的
+/// 「mod 缺失/版本不对」仍然是更准确、更该优先展示的原因（决策二的
+/// 硬门禁本就优先于内容哈希这一档，见 [`check_mod_set`] 文档）。两者
+/// 调用顺序因此维持 `check_mod_set` 在先不变，本函数只需要排在
+/// [`check_mod_content`] 之前。
+pub fn check_content_hash_algorithm(
+    save_algorithm_version: u32,
+    current_algorithm_version: u32,
+) -> Result<(), LoadError> {
+    // 用不等而非"小于"：两边只要不是同一个版本号，就不是同一个哈希
+    // 函数的两次求值,不可比较——不局限于"存档更旧"这一个方向（哪怕
+    // 现实中反方向几乎不会发生：游戏本体不会把算法版本号往回调）,
+    // 判据本身不应该隐含一个未经声明的方向性假设。
+    if save_algorithm_version != current_algorithm_version {
+        Err(LoadError::ContentHashAlgorithmUpgraded {
+            save_algorithm_version,
+            current_algorithm_version,
         })
     } else {
         Ok(())
@@ -387,6 +459,50 @@ mod tests {
 
         // Assert
         assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn 算法版本一致时校验通过() {
+        // Arrange & Act
+        let result = check_content_hash_algorithm(1, 1);
+
+        // Assert
+        assert_eq!(result, Ok(()));
+    }
+
+    #[test]
+    fn 存档记录的算法版本早于当前版本时返回contenthashalgorithmupgraded() {
+        // 核心场景：存档写于值哈希升级之前（旧算法版本 0），当前游戏
+        // 已经用上新算法（版本 1）——必须报专门的
+        // ContentHashAlgorithmUpgraded，不能被后续的 check_mod_content
+        // 误判成 ModContentMismatch。
+        // Arrange & Act
+        let result = check_content_hash_algorithm(0, 1);
+
+        // Assert
+        assert_eq!(
+            result,
+            Err(LoadError::ContentHashAlgorithmUpgraded {
+                save_algorithm_version: 0,
+                current_algorithm_version: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn 存档记录的算法版本晚于当前版本时同样返回contenthashalgorithmupgraded() {
+        // 判据不预设方向性——只要两边不是同一个版本号，就不可比较。
+        // Arrange & Act
+        let result = check_content_hash_algorithm(2, 1);
+
+        // Assert
+        assert_eq!(
+            result,
+            Err(LoadError::ContentHashAlgorithmUpgraded {
+                save_algorithm_version: 2,
+                current_algorithm_version: 1,
+            })
+        );
     }
 
     #[test]

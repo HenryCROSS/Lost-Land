@@ -465,6 +465,7 @@ fn section4_save_load_roundtrip(content: &Content, world: &WorldState) {
         playtime_ticks: 0,
         generation_mods: Vec::<ModHeaderEntry>::new(),
         current_mods: Vec::new(),
+        content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
         content_index_map: content_index_map.clone(),
         world_size: (1, 1),
         world_seed: 0,
