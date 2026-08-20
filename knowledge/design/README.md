@@ -48,6 +48,7 @@
 | [剧本系统](narrative-system.md) | 剧本与任务系统的边界判据、"具体人地 vs 生成世界"矛盾的三条路评估与定案（按角色绑定,解析一次持久化）、`NarrativeDef`/`NarrativeBeatDef`/`NarrativeRoleDef` 的一/三档存储形状、进度持久化复用脚本状态存储并提出 `ScriptValue` 新增 `World(WorldId)` 变体、剧本事件是否并入历史事件的判断与否决、剧本对话的本地化与 `format-text` 依赖、阶段归属与最小可用形状 | 具体剧本内容（内容设计范畴）、角色查询的具体实现算法（见身份/世界历史文档，本文档只定"按 0016 分级表达"这层形状）、剧本管理 UI/编辑器工具（见规格 §12/§16，未落地） |
 | [伤害公式 mod API](damage-formula-mod-api.md) | mod 用 D&D 风格骰子表达式（s-表达式，`quote` 载体，仿照 `behavior.scm` 模式）书写伤害公式；装载期编译成扁平指令数组，运行期零脚本调用（ADR 0017 第二档）；`FormulaOp`/`FormulaOperand` 指令集（算术/骰子/优势劣势骰/多轮判定）；多轮判定与既有 `damage_after_defense` 减伤链路正交共存；幸运→暴击率的接线、幸运→优势骰机制相同但当前无挂载点（如实标注）；`damage_formula: ContentIndex` 按武器/技能各自声明，覆盖冲突复用 `topo_sort`+`LoadStatus::Warning`；SRD 协议边界 | 具体武器/技能数值内容（内容设计范畴）、伤害类型与抗性的具体规则（尚不存在，只给未来接线形状）、命中判定/AC 模型（评估后否决，见该文档五节）、`StatBonus`/装备接线本身（见属性/装备/三轴战斗文档） |
 | [行动能力与输入上下文](action-capability-and-input-context.md) | 「角色为什么动不了」的统一抽象：`ActionCapability` 位标志集（`MOVE`/`ATTACK`/`CAST`/`ITEM` 四类，纯派生、绝不存储，与 `DerivedStats` 同一模式）、`InputContext` 新增 `Menu` 变体与 `UiMode` 模式栈的接缝、`InputContext` 切换时按住键的处理（复用既有 `InputState::clear()`）、「`resolve()` 是否被调用」决定消不消耗 tick 的一致性判据（撞墙/眩晕/背包三种情形统一） | 具体增益内容（沉默/眩晕/定身的数值，内容设计范畴）、`UiMode` 栈与背包 UI 本身的具体形状（P7 范畴）、mod 定义新 UI 屏幕（如实标注为未解决的开放问题） |
+| [载具与骑乘系统](vehicle-and-mounting.md) | 「载具是关系而非实体类型」：马与船都落在既有 `Arena<Agent>`，差异靠内容注册表数据（`MountDef`）而非 Rust 类型区分；`SurfaceKind` 地表分类轴与有条件通行性；骑乘期间坐骑退出时间轴（复用既有 `Timeline::remove`/`schedule`）与重入 tick 的防滥用规则；载具攻防加成复用既有 `active_stat_modifiers`；载具授予技能、冷却记在载具上的派生规则（`unlocked_skills` ∪ 载具授予）；渲染层「载具自己声明画不画骑手」；`register-vehicle` 签名与一档判据 | 多人载具、载具改装、驯养/繁殖、目标重定向、载具耐久（依赖「物品变实体」这条尚不存在的路径，见文档七节）、`resolve_attack`/`derive_stats` 聚合公式本身的具体实现（既有缺口，非载具专属） |
 
 一句话版边界：**物品定义「是什么」，装备定义「戴在哪」，属性定义「打起来怎么算」，社会定义「谁跟谁什么关系」，经济定义「钱和活儿怎么流动」，种族定义「先天差异有多少、体现在哪几处」，世界历史定义「世界是怎么变成现在这样的」，身份定义「东西怎么被引用而不会指错」，命名定义「叫什么、谁能改」，坐标与空间定义「世界本身怎么划分、怎么按需生成」，三轴战斗定义「打的时候具体算什么」，增益与触发器定义「效果怎么持续、怎么互相触发而不失控」，职业技能任务定义「玩家能学什么、接什么」，动画与视觉特效边界定义「算完的东西该怎么演给玩家看，演的过程绝不能反过来改算的结果」，击杀与死亡记录定义「谁杀了谁、用什么杀的，记成历史事件而不是另开一本战斗日志」，mod 包结构定义「一个 mod 长什么样、脚本与资产怎么组织、怎么被发现与覆盖」，剧本系统定义「有顺序、有具体人地的故事该怎么讲，而不与任务系统的完成判定重叠」。** 十九者共用同一个 `Agent`/`ItemStack`/`Affiliation`/`TorusPos`/`DerivedStats`/`Effect`/`ScriptValue` 底座，但没有一份文档试图覆盖别人的地盘——边界比内容更容易搞混，出现「这个概念该去哪份文档找」的疑惑时，先查下面的对照表。
 
@@ -105,6 +106,8 @@
 | `FormulaDef`/`FormulaOp`/`FormulaOperand`（伤害表达式编译产物：扁平指令数组，含骰子/优势劣势骰/多轮判定，**未落地**） | [伤害公式 mod API](damage-formula-mod-api.md) | [三轴战斗结算](combat-three-axis.md)（`WeaponDef.damage_formula` 字段挂靠点）、[增益与通用触发器](buffs-and-triggers.md)（`TriggerResponse::Formula` 占位复用同一套机制） |
 | `ActionCapability`（行动能力位标志集：`MOVE`/`ATTACK`/`CAST`/`ITEM`，纯派生，**未落地**） | [行动能力与输入上下文](action-capability-and-input-context.md) | [增益与通用触发器](buffs-and-triggers.md)（未来 `BuffDef.restricts` 字段的挂载点，折叠对象是同一个 `active_buffs`）、[装备栏位](equipment-slots.md)（`SlotMask` 位标志先例，mod 扩展位号分配方式照抄） |
 | `InputContext::Menu`（输入上下文新变体）/ `UiMode` 模式栈（UI 导航层维护，**未落地**） | [行动能力与输入上下文](action-capability-and-input-context.md) | `crates/ll-platform/src/keybind.rs`（`InputContext` 既有枚举，已落地，仅需追加变体）、`crates/ll-platform/src/input.rs`（`InputState::clear()` 既有方法，已落地，本文档提议在上下文切换时复用） |
+| `MountDef`（载具/坐骑的注册表数据：占地、可穿越地表、攻防加成、授予技能，**未落地**）/ `Agent.mounted_on`/`rider`/`mount_profile`/`suspended_action_offset`（骑乘关系四字段，**未落地**） | [载具与骑乘系统](vehicle-and-mounting.md) | `crates/ll-world/src/entity/agent.rs`（`Agent`，已落地，本文档提议新增四个字段）、`crates/ll-sim/src/timeline.rs`（`Timeline::remove`/`schedule`，已落地，骑乘期间坐骑退出/重入时间轴直接复用）、`crates/ll-world/src/entity/stats.rs`（`active_stat_modifiers`/`unlocked_skills`/`skill_cooldowns`，已落地，载具攻防加成与技能授予直接复用） |
+| `SurfaceKind`（地表分类位标志：水域等，**未落地**） | [载具与骑乘系统](vehicle-and-mounting.md) | `crates/ll-world/src/terrain.rs`（`TerrainDef`/`TerrainTable`，已落地，本文档提议新增一列）；位分配方式照抄 [装备栏位](equipment-slots.md) `SlotMask`/[行动能力与输入上下文](action-capability-and-input-context.md) `ActionCapability` 的既有先例 |
 
 ---
 
@@ -216,6 +219,10 @@
 
 20. **[伤害公式 mod API](damage-formula-mod-api.md)**——先读「一、现状核实」看清 `damage_after_defense` 目前唯一的真实调用点与 `resolve_use_skill` 绕过它的已知缺口，再读「二、定档」理解"声明式装载"与"运行期成本"是两个独立的轴，接着读「三、表达式语法」与「四、两个示例」看 s-表达式语法本身，最后读「五、命中/减伤模型」——这是全篇论证最重的一节，给出了"多轮判定与既有减伤公式正交共存、10% 下限不冗余"这条不那么直觉的结论。
 
+第二十三份不属于前面任何一条依赖链，但读之前建议先看过[三轴战斗结算](combat-three-axis.md)「一、现状核实」（`resolve_attack` 的占位实现）与[行动能力与输入上下文](action-capability-and-input-context.md)（「调度层不生成 `Intent` 即可让实体完全不行动」的先例，本文档四节直接复用）：
+
+21. **[载具与骑乘系统](vehicle-and-mounting.md)**——先读「一、现状核实」，它比大多数纯设计文档引用了更多**已经落地**的既有机制（`Timeline::remove`、`Agent.active_stat_modifiers`/`unlocked_skills`/`skill_cooldowns`），这是本文档能把「回合经济」「能力授予」两节写得比初版更简单的直接原因；再读「二、核心判断」看「载具是关系不是实体类型」的论证与 [ADR 0021](../decisions/0021-abstraction-requires-shared-algorithm-not-symmetry.md) 的关系；「四、回合经济」与「六、能力授予」两节是项目所有者三轮追加裁定后的结论，建议对照「零、项目所有者的要求」一节的原话一起读，能看清每条设计选择具体回应的是哪一句话。
+
 ---
 
 ## 五、落地状态速览
@@ -246,5 +253,6 @@
 | 剧本系统 | 纯设计，代码中无任何对应类型；它依赖的既有机制——`QuestNodeDef`/`QuestCondition`（`crates/ll-mod/src/quest.rs`，已落地）、`ScriptValue`/每实体脚本状态存储（`crates/ll-world/src/script_state.rs`，已落地但未含本文档提出的 `World(WorldId)` 新变体）——均已核实现状；角色绑定解析依赖的 `OrgInstance`/`WorldId`/世界生成本身仍是纯设计,详见文档「七、阶段归属」 |
 | 伤害公式 mod API | 纯设计，代码中无任何对应类型；它要接线的对象——`damage_after_defense`（`crates/ll-sim/src/combat.rs`）、`resolve_attack`（`crates/ll-sim/src/resolve.rs`，唯一真实调用点）——均已核实现状；`resolve_use_skill` 绕过 `damage_after_defense` 的既有缺口一并记录在案；机制本身（编译器/求值器）归 P4，接入战斗结算归 P6，详见文档「十四、阶段归属」 |
 | 行动能力与输入上下文 | 纯设计，代码中无任何对应类型；它要接线的对象——`InputContext`（`crates/ll-platform/src/keybind.rs`，已落地但仅 `Gameplay` 一个变体）、`InputState`/`InputState::clear()`（`crates/ll-platform/src/input.rs`，已落地，现用于窗口失焦，本文档提议复用于输入上下文切换）、`resolve_move`/`resolve_attack`（`crates/ll-sim/src/resolve.rs`，已落地，本文档提议在函数顶部插入能力检查）——均已核实现状；`ActionCapability`/`UiMode` 栈本身依赖 buff 系统（`buffs-and-triggers.md`）与背包 UI（P6/P7）尚未落地的基础设施，详见文档「五、阶段归属」 |
+| 载具与骑乘系统 | 纯设计，代码中无任何对应类型；它大量复用的既有落地机制——`Timeline::remove`/`schedule`（`crates/ll-sim/src/timeline.rs`）、`Agent.active_stat_modifiers`/`unlocked_skills`/`skill_cooldowns`（`crates/ll-world/src/entity/stats.rs`，均已进 `WorldState::hash()`）、`TerrainTable`（`crates/ll-world/src/terrain.rs`）、`Footprint`/`Pivot`/`DrawOrder`（`crates/ll-render/src/sprite.rs`）——均已核实现状；它要接线但确认尚未落地的对象——`resolve_attack` 读取 `active_stat_modifiers`（`crates/ll-sim/src/resolve.rs`，目前仍是攻击力恒读力量、防御恒为零的占位实现，与[三轴战斗结算](combat-three-axis.md)已核实的现状一致）——见文档「一、现状核实」与「七、P6 必须先提供什么」 |
 
 三份最早冻结、「已部分落地」的文档中，真正验证过的只是 P3 阶段要求的字段布局与钱包机制；描述战斗结算、经济博弈、社会涌现的大部分内容仍是纸上设计，随时可能在 P5/P8/P9 实现时被推翻或调整（[2026-08-18 规格修订] 原 P7/P8 顺移为 P8/P9）。中间四份里，种族系统与命名系统同样只有字段/函数布局落地，核心机制（现算公式、i18n 对齐、改名事件）尚未验证；世界历史生成与身份空间目前完全是纸面设计。第十份（坐标系与空间模型）虽是纯设计，但它要替换的对象是 P2 阶段验证过的真实代码，不是在空白处新增——这与前九份「在已有底座上补新系统」的性质不同，实现时的返工面积也更大，见该文档「对既有 P2 成果的影响范围」一节的诚实评估。
