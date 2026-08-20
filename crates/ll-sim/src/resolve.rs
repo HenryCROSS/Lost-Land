@@ -255,10 +255,17 @@ fn append_quest_kill_progress(
     }
 }
 
-/// 击杀历史记录的接线（`knowledge/design/kill-and-death-events.md`）：
-/// 若 `effects` 里包含 [`Effect::Kill`] 且被击杀者已经"具名"
-/// （[`ll_world::entity::Agent::remembered_id`] 有值），在对应的
-/// `Effect::Kill` **之前**插入一条 [`Effect::RecordHistoricalEvent`]。
+/// 击杀历史记录与无名单位击杀计数的接线
+/// （`knowledge/design/kill-and-death-events.md`）：若 `effects` 里包含
+/// [`Effect::Kill`]，在对应的 `Effect::Kill` **之前**插入一条效果——
+/// 被击杀者已经"具名"（[`ll_world::entity::Agent::remembered_id`] 有
+/// 值）时插入 [`Effect::RecordHistoricalEvent`]（完整记录），否则插入
+/// [`Effect::IncrementKillCount`]（项目所有者决策一：「无名单位击杀
+/// 改计数」——聚合计数按 `creature_kind`/`race` 归并，见该效果变体
+/// 文档）。两者互斥：一场击杀要么产出完整记录，要么只累加计数，不会
+/// 同时产出两者——这正是"默认派生，只存偏差"的又一次应用：聚合计数是
+/// 覆盖绝大多数背景死亡的默认路径，完整记录只留给"值得被记住"的偏差
+/// 情形。
 ///
 /// # 触发判据：为什么只看 `victim` 是否已具名
 ///
@@ -275,14 +282,16 @@ fn append_quest_kill_progress(
 ///    （而不是像 `append_quest_kill_progress` 那样追加在末尾）的原因。
 /// 2. 设计文档五节原文承认"一方不具名时，`KillRecord.killer` 或本
 ///    条记录本身如何处理不具名的一侧，属于实现期需要拍板的细节"——
-///    本批次的拍板结果是：`victim` 未具名时不产出记录（即便 `killer`
-///    已具名，例如玩家杀死一只从未被记住的哥布林）。真正做到"玩家
-///    相关全记，不论对方是否具名"需要在这里对 `victim` 也做懒分配，
-///    但那需要先确认懒分配发生在 `apply`（`resolve` 不能碰
-///    `&mut WorldState`，C1）、且这次懒分配不会与同一批效果里其他
-///    `Effect` 的 `apply` 顺序产生新的竞态——这是比"五条硬要求"更大
-///    的一块工作，本批次如实记录为已知缺口，不假装已经实现了完整的
-///    三档分级。
+///    本批次的拍板结果是：`victim` 未具名时不产出**完整记录**（即便
+///    `killer` 已具名，例如玩家杀死一只从未被记住的哥布林），改为产出
+///    一次聚合计数（决策一，见本函数文档开篇）——「不产出完整记录」
+///    与「什么都不产出」在这之后是两件不同的事,决策一之前两者恰好
+///    重合,决策一落地后不再重合。真正做到"玩家相关全记,不论对方是否
+///    具名"需要在这里对 `victim` 也做懒分配,但那需要先确认懒分配发生
+///    在 `apply`（`resolve` 不能碰 `&mut WorldState`，C1）、且这次懒
+///    分配不会与同一批效果里其他 `Effect` 的 `apply` 顺序产生新的竞态
+///    ——这是比"五条硬要求"更大的一块工作,本批次如实记录为已知缺口,
+///    不假装已经实现了完整的三档分级。
 ///
 /// `killer` 是否具名完全独立判断——具名与否只影响
 /// `KillRecord.killer` 是 `Some` 还是 `None`（见
@@ -331,6 +340,16 @@ fn append_kill_history(world: &WorldState, effects: &mut Vec<Effect>) {
             };
             effects.insert(kill_index, record);
             kill_index += 1; // 跳过刚插入的记录，下一轮从真正的 Kill 开始。
+        } else {
+            // 无名单位击杀改计数（决策一）：受害者从未被"记住",不产出
+            // 完整记录,改为按 kind 归并的聚合计数——kind 取受害者的
+            // creature_kind,为 None 时回退到 race（见
+            // Effect::IncrementKillCount 文档「为什么按 kind: ContentIndex」
+            // 一节，与 Agent::creature_kind 字段文档同一条既有回退
+            // 规则,不是本函数新发明的判断）。
+            let kind = victim_agent.creature_kind.unwrap_or(victim_agent.race);
+            effects.insert(kill_index, Effect::IncrementKillCount { kind });
+            kill_index += 1; // 跳过刚插入的计数效果，下一轮从真正的 Kill 开始。
         }
         kill_index += 1;
     }
@@ -1339,9 +1358,12 @@ mod tests {
     #[test]
     fn 未具名目标被击杀时不产生历史事件记录() {
         // 与上一条对照：victim 从未被"记住"（remembered_id 恒
-        // None）——本批次的分级判据要求 victim 已具名才记录（见
-        // append_kill_history 文档「触发判据」一节），这里验证「不
-        // 记录」也是真实生效的分支，不是恰好每次都触发。
+        // None）——分级判据要求 victim 已具名才产出完整记录（见
+        // append_kill_history 文档「触发判据」一节），这里验证「不产出
+        // 完整记录」也是真实生效的分支，不是恰好每次都触发。决策一
+        // 落地后，这类击杀改为产出聚合计数而不是"什么都不产生"——那条
+        // 断言由下面 未具名目标被击杀时按生物类型归并计数加一 单独
+        // 覆盖，这里只关注"没有完整记录"这一件事。
         // Arrange
         let (mut world, _terrain_ids) = test_world();
         let attacker = spawn_agent(&mut world);
@@ -1386,5 +1408,90 @@ mod tests {
         // 「击杀发生」与「值不值得记录」分开，两者不能混为一谈。
         assert!(world.actors.get(victim).is_none());
         assert!(world.history.is_empty());
+    }
+
+    #[test]
+    fn 未具名目标被击杀时按生物类型归并计数加一() {
+        // 决策一端到端验证：杀死一个无名单位（remembered_id 恒
+        // None）——从 Intent::Attack 一路到 apply,断言 world.kill_counts
+        // 里对应 race 的计数恰好 +1,且没有产生完整历史事件（两件事
+        // 同时成立,互不替代）。
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        let mut interner = ll_core::ident::Interner::new();
+        let goblin_race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+        let victim = world.actors.spawn(Agent {
+            pos: victim_pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: 1,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: goblin_race,
+            luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: surface_space_at(&world, victim_pos),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: Tick(0),
+            remembered_id: None,
+        });
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+        );
+        for effect in &effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert
+        assert!(world.actors.get(victim).is_none());
+        assert!(world.history.is_empty());
+        assert_eq!(world.kill_counts.get(&goblin_race), Some(&1));
+    }
+
+    #[test]
+    fn 具名目标被击杀时不增加聚合计数() {
+        // 与上一条对照：具名死者已经产出完整历史记录（见
+        // 近战攻击致死已具名目标后历史事件记录着近战死因），本次拍板
+        // 选择不让它额外再累加聚合计数——聚合计数与完整记录是互斥的
+        // 两条路径（见 append_kill_history 文档开篇），不是叠加关系。
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        let victim = spawn_named_agent(&mut world, victim_pos, 1);
+        let victim_race = world.actors.get(victim).expect("刚生成必然存在").race;
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+        );
+        for effect in &effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert
+        assert_eq!(world.history.len(), 1);
+        assert_eq!(world.kill_counts.get(&victim_race), None);
     }
 }

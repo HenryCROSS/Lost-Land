@@ -101,6 +101,13 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
                 remaining_health: *remaining_health,
             });
         }
+        Effect::IncrementKillCount { kind } => {
+            // 决策一（无名单位击杀改计数）——把「按 kind 归并」这个已经
+            // 在 resolve 阶段算好的判断原样落到 WorldState.kill_counts，
+            // apply 本身不重新判断该按什么归并，符合「apply 不含任何
+            // 游戏逻辑」的纪律。
+            world.record_kill_count(*kind);
+        }
         Effect::ScheduleNext { actor, at } => {
             if let Some(agent) = world.actors.get_mut(*actor) {
                 agent.next_action_at = *at;
@@ -310,6 +317,42 @@ mod tests {
             world.actors.get(actor).expect("刚生成的实体必然存在").pos,
             target_pos
         );
+    }
+
+    #[test]
+    fn incrementkillcount效果按kind累加计数() {
+        // Arrange
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let goblin = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+
+        // Act：同一个 kind 累加两次。
+        apply(&mut world, &Effect::IncrementKillCount { kind: goblin });
+        apply(&mut world, &Effect::IncrementKillCount { kind: goblin });
+
+        // Assert
+        assert_eq!(world.kill_counts.get(&goblin), Some(&2));
+    }
+
+    #[test]
+    fn incrementkillcount效果对不同kind分别计数() {
+        // Arrange
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let goblin = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+        let wolf = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:wolf").expect("合法标识符"));
+
+        // Act
+        apply(&mut world, &Effect::IncrementKillCount { kind: goblin });
+        apply(&mut world, &Effect::IncrementKillCount { kind: wolf });
+        apply(&mut world, &Effect::IncrementKillCount { kind: wolf });
+
+        // Assert
+        assert_eq!(world.kill_counts.get(&goblin), Some(&1));
+        assert_eq!(world.kill_counts.get(&wolf), Some(&2));
     }
 
     #[test]

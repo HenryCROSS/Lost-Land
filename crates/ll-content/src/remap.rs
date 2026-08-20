@@ -126,6 +126,12 @@ pub fn remap_world(
         history: _,
         // WorldId 分配计数器：纯 u32，不依赖 mod 加载顺序，不需要重映射。
         next_world_id: _,
+        // 无名单位击杀聚合计数（决策一）：键本身就是 ContentIndex（受
+        // 害者的 creature_kind 或回退到 race），与 profession/race 同一
+        // 类"依赖 mod 加载顺序"的内容,必须显式重映射——否则读档后这份
+        // 统计会悄悄挂在错误的内容上（模块文档「为什么这一步不能省」
+        // 一节点名的正是这类静默错位）。见下方 remap_kill_counts。
+        ref mut kill_counts,
     } = *world;
 
     terrain.try_remap_resident_terrain(|kind| -> Result<TerrainKind, LoadError> {
@@ -150,7 +156,33 @@ pub fn remap_world(
         remap_agent(&mut remapper, agent, owner)?;
     }
 
+    remap_kill_counts(&mut remapper, kill_counts)?;
+
     Ok(remapper.actions)
+}
+
+/// 重映射无名单位击杀聚合计数（决策一）：键（`ContentIndex`）找不到
+/// 当前会话内容时整桶丢弃（[`ContentKind::KillCount`]），与
+/// [`remap_skill_cooldowns`] 同一个形状——键是需要重映射/可丢弃的
+/// `ContentIndex`，值（计数）本身不含任何 `ContentIndex`，原样搬到
+/// 新键下。
+///
+/// 若两个旧键（理论上不会发生：`content_index_map` 是旧索引到字符串的
+/// 一一映射，`Registry::get` 也是字符串到新索引的一一映射）恰好被映射
+/// 到同一个新键，两边的计数相加而不是互相覆盖——不假设"不会发生"就
+/// 简单覆盖丢数据。
+fn remap_kill_counts(
+    remapper: &mut Remapper<'_>,
+    kill_counts: &mut BTreeMap<ContentIndex, u64>,
+) -> Result<(), LoadError> {
+    let mut kept = BTreeMap::new();
+    for (kind, count) in std::mem::take(kill_counts) {
+        if let Some(new_kind) = remapper.remap_droppable(kind, ContentKind::KillCount)? {
+            *kept.entry(new_kind).or_insert(0) += count;
+        }
+    }
+    *kill_counts = kept;
+    Ok(())
 }
 
 /// 逐条 `ContentIndex` 重映射的执行者：持有「旧索引 → 字符串」查表、
@@ -760,6 +792,53 @@ mod tests {
 
         // Assert
         assert!(matches!(result, Err(LoadError::Corrupted(_))));
+    }
+
+    #[test]
+    fn 击杀计数按字符串对号重映射到新索引() {
+        // Arrange：存档写出时与当前会话的登记顺序不同——重映射必须靠
+        // 字符串而不是靠索引数值巧合对上号,与 profession/race 同一条
+        // 判据。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let goblin_old = save_registry.intern(id("lostland:goblin"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        world.kill_counts.insert(goblin_old, 47);
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:wolf")); // 抢先登记,打乱顺序
+        let goblin_new = current.intern(id("lostland:goblin"));
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(actions.is_empty());
+        assert_eq!(world.kill_counts.get(&goblin_new), Some(&47));
+    }
+
+    #[test]
+    fn 击杀计数对应的内容在当前会话找不到时整桶丢弃并记录droppwithwarning() {
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished = save_registry.intern(id("lostland:vanished"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        world.kill_counts.insert(vanished, 3);
+        let current = current_session_registry_with_terrain();
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(world.kill_counts.is_empty());
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
     }
 
     #[test]

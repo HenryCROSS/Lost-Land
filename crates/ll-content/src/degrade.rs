@@ -91,6 +91,14 @@ pub enum ContentKind {
     /// 记录而非实体本体的核心身份（核心身份是 [`ContentKind::CharacterAttribute`]
     /// 覆盖的主职/种族），无条件丢弃并警告。
     Subclass,
+    /// 无名单位击杀聚合计数的归并键
+    /// （[`ll_world::state::WorldState::kill_counts`]，决策一）——这是
+    /// "杀了多少个这一种"的一个统计桶，不属于任何实体本体，也没有
+    /// [`OwnerContext::Player`] 意义上的归属（"玩家杀了多少" 与 "杀掉的
+    /// 是玩家" 是两件不同的事，本类型只覆盖后者），找不到当前会话内容
+    /// 时丢弃这一桶统计并警告——与 [`ContentKind::Goal`] 同一条判断：
+    /// 丢一条统计不等于"失去自己"。
+    KillCount,
 }
 
 /// 一条缺失内容记录归属于谁。
@@ -137,7 +145,8 @@ pub fn decide_degrade_action(
         | ContentKind::Goal
         | ContentKind::Affiliation
         | ContentKind::Skill
-        | ContentKind::Subclass => DegradeAction::DropWithWarning,
+        | ContentKind::Subclass
+        | ContentKind::KillCount => DegradeAction::DropWithWarning,
         ContentKind::CharacterAttribute => match owner {
             OwnerContext::Player => DegradeAction::Reject,
             OwnerContext::Npc | OwnerContext::None => match placeholder {
@@ -287,6 +296,15 @@ mod tests {
     fn 归属定义缺失时决策为丢弃并警告() {
         // Arrange & Act
         let action = decide_degrade_action(ContentKind::Affiliation, OwnerContext::Npc, None);
+
+        // Assert
+        assert_eq!(action, DegradeAction::DropWithWarning);
+    }
+
+    #[test]
+    fn 击杀计数桶缺失时决策为丢弃并警告() {
+        // Arrange & Act
+        let action = decide_degrade_action(ContentKind::KillCount, OwnerContext::None, None);
 
         // Assert
         assert_eq!(action, DegradeAction::DropWithWarning);

@@ -41,6 +41,7 @@ use ll_core::torus::{TorusPos, TorusSize};
 use ll_world::bounded_grid::BoundedGrid;
 use ll_world::entity::{Affiliation, Agent, Arena, BaseStats, EntityId, Goal, ThinPopulation};
 use ll_world::exploration::ExplorationMemory;
+use ll_world::history::HistoricalEvent;
 use ll_world::interior::{Interior, InteriorTable};
 use ll_world::script_state::ScriptValue;
 use ll_world::space::{Space, SpaceId};
@@ -228,6 +229,16 @@ struct WorldStateV2 {
 /// `Tick(0)`——旧存档不知道具体出生时刻，世界纪元起点是唯一不需要
 /// 编造数据的占位值；本字段本批次尚无任何消费方读取它，选用这个占位
 /// 值不影响任何现有判定）。
+///
+/// # 为什么产出 `WorldStateV3`，不是当前真实的 `WorldState`
+///
+/// 理由与 [`Migration1To2`] 文档「产出 v2 形状……」一节完全相同（后来
+/// 者是本注释被写下时已经踩过的同一个坑）：无名单位击杀计数批次给
+/// `WorldState` 新增了 `kill_counts` 字段，真实 `WorldState` 现在是 v4
+/// 形状，若这里直接编码真实类型，本迁移就会把 v2 存档一步跳成 v4 形状
+/// 的字节，但 `MigrationChain` 记录的 `target_version` 仍然是 3，链条
+/// 自身的版本号与实际产出的字节形状会对不上——下一步 `Migration3To4`
+/// 会用 v3 形状去解码一份实际是 v4 形状的字节，同样静默错位。
 pub struct Migration2To3;
 
 impl Migration for Migration2To3 {
@@ -270,27 +281,99 @@ impl Migration for Migration2To3 {
             remembered_id: None,
         });
 
-        let world = WorldState {
+        let v3 = WorldStateV3 {
             seed: v2.seed,
             clock: v2.clock,
             size: v2.size,
             terrain: v2.terrain,
             interiors: v2.interiors,
-            current_interior: None,
-            surface_profile: ContentIndex::default(),
             population: v2.population,
             actors,
             player_entity: v2.player_entity,
             exploration: v2.exploration,
             global_script_state: v2.global_script_state,
-            terrain_table: TerrainTable::default(),
             history: Vec::new(),
             next_world_id: 0,
         };
 
-        postcard::to_allocvec(&world).map_err(|err| MigrationError::StepFailed {
+        postcard::to_allocvec(&v3).map_err(|err| MigrationError::StepFailed {
             at_version: 2,
             reason: format!("v3 存档主体编码失败：{err}"),
+        })
+    }
+}
+
+/// v3 存档主体的顶层形状——`WorldState` 新增 `kill_counts` 字段（无名
+/// 单位击杀计数批次）之前，字段顺序与当时的 `WorldStateRepr` 一致。
+/// `Agent` 自身的形状在 v3/v4 之间没有变化（本批次只改 `WorldState`
+/// 本身，不改 `Agent`），因此直接复用真实 `Agent` 类型解析——与
+/// [`Migration2To3`] 模块文档「为什么用……而不是直接操作字节」一节同一
+/// 个理由：只给「形状变了」的类型（这里只有 `WorldState` 本身）留一份
+/// 镜像，其余字段复用真实类型。`Serialize` 无条件派生的理由见
+/// [`AgentV2`] 文档「为什么 Serialize 不是 cfg(test) 专属」一节——本
+/// 类型同样要供 [`Migration2To3`] 的生产 `migrate` 实现编码成 v3 形状
+/// 的真实输出字节。
+#[derive(Deserialize, Serialize)]
+struct WorldStateV3 {
+    seed: u64,
+    clock: Tick,
+    size: TorusSize,
+    terrain: SurfaceStore,
+    interiors: InteriorTable,
+    population: ThinPopulation,
+    actors: Arena<Agent>,
+    player_entity: Option<EntityId>,
+    exploration: ExplorationMemory,
+    #[serde(with = "ll_world::script_state::serde_map")]
+    global_script_state: BTreeMap<(String, String), ScriptValue>,
+    history: Vec<HistoricalEvent>,
+    next_world_id: u32,
+}
+
+/// v3 → v4：补齐 `WorldState::kill_counts`（恒为空表——v3 存档写出时
+/// 无名单位击杀计数这个概念还不存在，没有任何"已经发生"的无名击杀可
+/// 继承，空表是唯一诚实的起点,见 `ll_world::state::WorldState::kill_counts`
+/// 文档）。
+pub struct Migration3To4;
+
+impl Migration for Migration3To4 {
+    fn source_version(&self) -> u32 {
+        3
+    }
+
+    fn target_version(&self) -> u32 {
+        4
+    }
+
+    fn migrate(&self, body: Vec<u8>) -> Result<Vec<u8>, MigrationError> {
+        let v3: WorldStateV3 =
+            postcard::from_bytes(&body).map_err(|err| MigrationError::StepFailed {
+                at_version: 3,
+                reason: format!("v3 存档主体解码失败：{err}"),
+            })?;
+
+        let world = WorldState {
+            seed: v3.seed,
+            clock: v3.clock,
+            size: v3.size,
+            terrain: v3.terrain,
+            interiors: v3.interiors,
+            current_interior: None,
+            surface_profile: ContentIndex::default(),
+            population: v3.population,
+            actors: v3.actors,
+            player_entity: v3.player_entity,
+            exploration: v3.exploration,
+            global_script_state: v3.global_script_state,
+            terrain_table: TerrainTable::default(),
+            history: v3.history,
+            next_world_id: v3.next_world_id,
+            kill_counts: BTreeMap::new(),
+        };
+
+        postcard::to_allocvec(&world).map_err(|err| MigrationError::StepFailed {
+            at_version: 3,
+            reason: format!("v4 存档主体编码失败：{err}"),
         })
     }
 }
@@ -349,12 +432,12 @@ mod tests {
         interner.intern(NamespacedId::parse("lostland:dungeon").expect("合法"))
     }
 
-    /// 把一份 v1 形状的存档主体字节沿着完整的迁移链（v1→v2→v3）升级，
-    /// 解码成当前真实的 `WorldState`——`Migration1To2` 单独的产出是
-    /// v2 形状（`WorldStateV2`），不能再直接当作当前 `WorldState`
-    /// 解码（见 `Migration1To2` 文档「产出 v2 形状……」一节），本仓库
-    /// 已知的"当前最新 schema"因此永远是"把链条走完"，不是"跑完某一
-    /// 具体的一步"。
+    /// 把一份 v1 形状的存档主体字节沿着完整的迁移链（v1→v2→v3→v4）升
+    /// 级，解码成当前真实的 `WorldState`——`Migration1To2`/`Migration2To3`
+    /// 单独的产出分别是 v2/v3 形状（`WorldStateV2`/`WorldStateV3`），
+    /// 不能再直接当作当前 `WorldState` 解码（见 `Migration1To2` 文档
+    /// 「产出 v2 形状……」一节），本仓库已知的"当前最新 schema"因此永远
+    /// 是"把链条走完"，不是"跑完某一具体的一步"。
     fn migrate_v1_body_to_current(body: Vec<u8>) -> WorldState {
         let v2_body = Migration1To2
             .migrate(body)
@@ -362,7 +445,10 @@ mod tests {
         let v3_body = Migration2To3
             .migrate(v2_body)
             .expect("v2 到 v3 的迁移应当成功");
-        postcard::from_bytes(&v3_body).expect("迁移产出的字节必须是合法的 v3 存档")
+        let v4_body = Migration3To4
+            .migrate(v3_body)
+            .expect("v3 到 v4 的迁移应当成功");
+        postcard::from_bytes(&v4_body).expect("迁移产出的字节必须是合法的 v4 存档")
     }
 
     #[test]
@@ -544,7 +630,7 @@ mod tests {
         let migrated = Migration2To3
             .migrate(body)
             .expect("v2 到 v3 的迁移应当成功");
-        let migrated_world: WorldState =
+        let migrated_world: WorldStateV3 =
             postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v3 存档");
 
         // Assert：只断言这一批"迁移前就存在的字段"，新字段的默认值由
@@ -570,7 +656,7 @@ mod tests {
         let migrated = Migration2To3
             .migrate(body)
             .expect("v2 到 v3 的迁移应当成功");
-        let migrated_world: WorldState =
+        let migrated_world: WorldStateV3 =
             postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v3 存档");
 
         // Assert
@@ -593,7 +679,7 @@ mod tests {
         let migrated = Migration2To3
             .migrate(body)
             .expect("v2 到 v3 的迁移应当成功");
-        let migrated_world: WorldState =
+        let migrated_world: WorldStateV3 =
             postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v3 存档");
 
         // Assert
@@ -609,7 +695,7 @@ mod tests {
         let migrated = Migration2To3
             .migrate(body)
             .expect("v2 到 v3 的迁移应当成功");
-        let migrated_world: WorldState =
+        let migrated_world: WorldStateV3 =
             postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v3 存档");
 
         // Assert
@@ -628,6 +714,95 @@ mod tests {
         assert!(matches!(
             result,
             Err(MigrationError::StepFailed { at_version: 2, .. })
+        ));
+    }
+
+    /// 手写编码一份 v3 形状的存档主体字节——理由同 [`encode_v1_body`]/
+    /// [`encode_v2_body`]：独立于当前生产类型，模拟"升级前写盘的真实旧
+    /// 字节"。`history` 非空时供「迁移后既有历史事件原样保留」这条断言
+    /// 使用。
+    fn encode_v3_body(history: Vec<HistoricalEvent>, next_world_id: u32) -> Vec<u8> {
+        let world = base_v1_world();
+        let v3 = WorldStateV3 {
+            seed: world.seed,
+            clock: world.clock,
+            size: world.size,
+            terrain: world.terrain,
+            interiors: world.interiors,
+            population: world.population,
+            actors: Arena::new(),
+            player_entity: None,
+            exploration: world.exploration,
+            global_script_state: world.global_script_state,
+            history,
+            next_world_id,
+        };
+        postcard::to_allocvec(&v3).expect("手写的 v3 镜像类型必然可编码")
+    }
+
+    #[test]
+    fn 迁移后world的kill_counts为空() {
+        // Arrange
+        let body = encode_v3_body(Vec::new(), 0);
+
+        // Act
+        let migrated = Migration3To4
+            .migrate(body)
+            .expect("v3 到 v4 的迁移应当成功");
+        let migrated_world: WorldState =
+            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v4 存档");
+
+        // Assert
+        assert!(migrated_world.kill_counts.is_empty());
+    }
+
+    #[test]
+    fn 迁移后v3里既有的历史事件与worldid计数器原样保留() {
+        // 与「新字段取诚实默认值」相对：v3 已经存在的数据不应该被这次
+        // 迁移悄悄丢掉或改写。
+        // Arrange
+        let mut counter = 5u32;
+        let event = HistoricalEvent {
+            id: ll_core::ident::WorldId::next(&mut counter),
+            at: Tick(10),
+            location: v1_layout().tile_size().wrap(1, 1),
+            kind: ll_world::history::HistoricalEventKind::Kill(ll_world::history::KillRecord {
+                killer: None,
+                victim: ll_core::ident::WorldId::next(&mut counter),
+                cause: ll_world::history::KillCause::Fall,
+                killing_blow: ll_world::history::KillingBlow {
+                    damage: 5,
+                    remaining_health: -1,
+                },
+                victim_state: ll_world::history::VictimState::UNKNOWN,
+            }),
+        };
+        let body = encode_v3_body(vec![event.clone()], 7);
+
+        // Act
+        let migrated = Migration3To4
+            .migrate(body)
+            .expect("v3 到 v4 的迁移应当成功");
+        let migrated_world: WorldState =
+            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v4 存档");
+
+        // Assert
+        assert_eq!(migrated_world.history, vec![event]);
+        assert_eq!(migrated_world.next_world_id, 7);
+    }
+
+    #[test]
+    fn 损坏的v3字节迁移失败而不panic() {
+        // Arrange
+        let corrupted = vec![0xFFu8; 4];
+
+        // Act
+        let result = Migration3To4.migrate(corrupted);
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(MigrationError::StepFailed { at_version: 3, .. })
         ));
     }
 }
