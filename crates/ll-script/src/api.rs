@@ -3,6 +3,7 @@
 //! 每个子模块对应一类能力，见各自文档。内容注册相关的函数留给任务 7
 //! 按需添加，不在这里预先造好（避免为还没有消费者的形状猜测接口）。
 
+pub mod actor;
 pub mod handle;
 pub mod intent;
 pub mod log;

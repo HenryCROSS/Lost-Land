@@ -22,20 +22,20 @@
 //! 个假的，这正是要避免的事。留给后续任务在 `ll-world` 补一个"不可
 //! 伪造的不透明句柄"机制之后再扩展。
 //!
-//! # `UseSkill` 的 `target` 恒为 `None`（同一个"更大的问题"，仍未解决）
+//! # `Attack`/带目标的 `UseSkill`（行为树接线批次解禁）
 //!
 //! [`crate::api::handle::ScriptEntityHandle`]（P5-A 脚本状态存储批次
-//! 新增）已经解决了"脚本如何安全持有一个不可伪造的 `EntityId`"这个
-//! 机制问题本身——但截至本次改动，还没有任何脚本可调用的查询函数会
-//! 把"附近的敌人是谁"这类信息包成 `ScriptEntityHandle` 交给脚本。没有
-//! 这样一个查询源，`parse_intent` 即便认识某种"目标"语法，脚本也无法
-//! 提供一个真实、非伪造的目标——因此本函数解析出的 [`Intent::UseSkill`]
-//! 固定把 `target` 设为 `None`（技能施于自身，见
-//! `ll_sim::intent::Intent::UseSkill::target` 文档"未显式给出目标的
-//! 技能施于自身"的既定语义），不是遗漏，是如实反映当前脚本层查不到
-//! 目标这个事实。若未来给脚本补上"最近的敌人"一类返回
-//! `ScriptEntityHandle` 的查询函数，这里可以再扩展一种带目标的
-//! `use-skill` 列表形状。
+//! 新增）解决了"脚本如何安全持有一个不可伪造的 `EntityId`"这个机制
+//! 问题本身；`crate::api::actor::nearby_enemy`（行为树接线批次新增）
+//! 补上了本文档曾经缺失的那一半——把"附近的敌人是谁"包成
+//! `ScriptEntityHandle` 交给脚本的查询函数。有了真实、非伪造的目标
+//! 来源，`parse_intent` 现在识别两种新形状：
+//! - 二元素列表 `(list 'attack target-handle)` → [`Intent::Attack`]，
+//!   落地 `knowledge/design/script-entity-handles-and-batch-queries.md`
+//!   四节「`Intent::Attack` 的解禁」。
+//! - 三元素列表 `(list 'use-skill "id" target-handle)` → 带显式目标的
+//!   [`Intent::UseSkill`]；仍保留原有的二元素形状（`target` 为 `None`，
+//!   技能施于自身）——两种形状都合法，不是替换关系。
 //!
 //! # 为什么 `parse_intent` 需要一个 `resolve_skill` 回调
 //!
@@ -56,6 +56,8 @@ use ll_sim::intent::{Direction, Intent};
 use ll_world::entity::EntityId;
 use steel::rvals::SteelVal;
 
+use crate::api::handle::ScriptEntityHandle;
+
 /// 把脚本返回值解析成 [`Intent`]。
 ///
 /// `actor` 由宿主提供——调用脚本时宿主已经知道在为哪个实体请求意图，
@@ -64,16 +66,22 @@ use steel::rvals::SteelVal;
 /// [`ContentIndex`]，理由见模块文档「为什么 `parse_intent` 需要一个
 /// `resolve_skill` 回调」一节。
 ///
-/// 识别三种形状：
+/// 识别五种形状：
 /// - 符号 `'wait` → [`Intent::Wait`]
 /// - 二元素列表 `(list 'move 'north)`（方向名见 [`direction_from_symbol`]）
 ///   → [`Intent::Move`]
+/// - 二元素列表 `(list 'attack target-handle)`（`target-handle` 是
+///   [`ScriptEntityHandle`]，例如 `nearby-enemy` 的返回值）→
+///   [`Intent::Attack`]。
 /// - 二元素列表 `(list 'use-skill "lostland:strike")`（技能命名空间
 ///   标识符字符串，经 `resolve_skill` 解析）→ [`Intent::UseSkill`]，
-///   `target` 恒为 `None`（见模块文档同名一节）；`resolve_skill` 返回
-///   `None`（字符串不合法，或当前会话没有注册这个技能）时，本函数
-///   整体返回 `None`——与"脚本产出一个不认识的形状"同等对待，不是
-///   单独的错误路径。
+///   `target` 为 `None`（技能施于自身）。
+/// - 三元素列表 `(list 'use-skill "lostland:strike" target-handle)`
+///   ——同上，但 `target` 为 `Some(target-handle 解出的 EntityId)`。
+///
+/// 两种情形下 `resolve_skill` 返回 `None`（字符串不合法，或当前会话
+/// 没有注册这个技能）时，本函数整体返回 `None`——与"脚本产出一个不
+/// 认识的形状"同等对待，不是单独的错误路径。
 ///
 /// 其余形状（包括脚本产出的任何不认识的符号/结构）返回 `None`——宿主
 /// 应把 `None` 当作"这一回合什么都不做"处理。脚本产出一个我们不认识
@@ -99,8 +107,19 @@ pub fn parse_intent(
                     }
                     Some(Intent::Move { actor, dir })
                 }
+                "attack" => {
+                    let target = entity_handle(iter.next()?)?;
+                    if iter.next().is_some() {
+                        return None;
+                    }
+                    Some(Intent::Attack { actor, target })
+                }
                 "use-skill" => {
                     let skill_id = string_str(iter.next()?)?;
+                    let target = match iter.next() {
+                        Some(value) => Some(entity_handle(value)?),
+                        None => None,
+                    };
                     if iter.next().is_some() {
                         return None;
                     }
@@ -108,7 +127,7 @@ pub fn parse_intent(
                     Some(Intent::UseSkill {
                         actor,
                         skill,
-                        target: None,
+                        target,
                     })
                 }
                 _ => None,
@@ -116,6 +135,18 @@ pub fn parse_intent(
         }
         _ => None,
     }
+}
+
+/// 从一个 `SteelVal` 里取出 [`ScriptEntityHandle`] 并解包成
+/// [`EntityId`]——句柄不合法（脚本没有能力伪造出这样一个值，见
+/// `crate::api::handle` 模块文档「防伪造的三层论证」，因此这里唯一
+/// 会失败的情形是脚本传了一个完全不相干的值，比如整数）时返回
+/// `None`，与本函数其余分支同一条「宁可拒绝也不猜测」的纪律。
+fn entity_handle(value: &SteelVal) -> Option<EntityId> {
+    use steel::rvals::FromSteelVal;
+    ScriptEntityHandle::from_steelval(value)
+        .ok()
+        .map(|handle| handle.entity_id())
 }
 
 fn symbol_str(value: &SteelVal) -> Option<&str> {
@@ -158,6 +189,7 @@ mod tests {
     use super::*;
     use crate::host::ScriptEngine;
     use ll_world::entity::Arena;
+    use steel::rvals::FromSteelVal;
 
     fn some_actor() -> EntityId {
         let mut arena: Arena<()> = Arena::new();
@@ -294,5 +326,90 @@ mod tests {
 
         // Assert
         assert_eq!(intent, None);
+    }
+
+    /// 现造一个真实的目标句柄——`nearby-enemy` 之类查询函数在生产
+    /// 路径上产出的正是这种值，这里直接用 `ScriptEntityHandle` 自己的
+    /// `IntoSteelVal` 构造，不需要真的跑一遍查询函数。
+    fn some_target_handle() -> SteelVal {
+        use steel::rvals::IntoSteelVal;
+        ScriptEntityHandle::new(some_actor())
+            .into_steelval()
+            .expect("Custom 类型转换恒成功")
+    }
+
+    #[test]
+    fn 列表attack加合法句柄解析为攻击意图() {
+        // Arrange
+        let actor = some_actor();
+        let target_handle = some_target_handle();
+        let target = ScriptEntityHandle::from_steelval(&target_handle)
+            .expect("刚构造的句柄恒能转换回去")
+            .entity_id();
+        let value = SteelVal::ListV(
+            [SteelVal::SymbolV("attack".into()), target_handle]
+                .into_iter()
+                .collect(),
+        );
+
+        // Act
+        let intent = parse_intent(actor, &value, &|_: &str| None);
+
+        // Assert
+        assert_eq!(intent, Some(Intent::Attack { actor, target }));
+    }
+
+    #[test]
+    fn attack参数不是合法句柄时解析为空() {
+        // Arrange：脚本没有任何合法路径构造出一个句柄——这里模拟的是
+        // 「脚本传了个完全不相干的值」这种防御性场景，而不是「脚本
+        // 伪造了句柄」（后者结构上不可能，见句柄防伪造论证）。
+        let actor = some_actor();
+        let value = SteelVal::ListV(
+            [SteelVal::SymbolV("attack".into()), SteelVal::IntV(999)]
+                .into_iter()
+                .collect(),
+        );
+
+        // Act
+        let intent = parse_intent(actor, &value, &|_: &str| None);
+
+        // Assert
+        assert_eq!(intent, None);
+    }
+
+    #[test]
+    fn 三元素列表use_skill加句柄解析为带目标的使用技能意图() {
+        // Arrange
+        let actor = some_actor();
+        let skill = some_skill_index();
+        let target_handle = some_target_handle();
+        let target = ScriptEntityHandle::from_steelval(&target_handle)
+            .expect("刚构造的句柄恒能转换回去")
+            .entity_id();
+        let value = SteelVal::ListV(
+            [
+                SteelVal::SymbolV("use-skill".into()),
+                SteelVal::StringV("lostland:strike".into()),
+                target_handle,
+            ]
+            .into_iter()
+            .collect(),
+        );
+
+        // Act
+        let intent = parse_intent(actor, &value, &|id| {
+            (id == "lostland:strike").then_some(skill)
+        });
+
+        // Assert
+        assert_eq!(
+            intent,
+            Some(Intent::UseSkill {
+                actor,
+                skill,
+                target: Some(target),
+            })
+        );
     }
 }

@@ -7,6 +7,7 @@
 
 pub mod alloc_guard;
 pub mod api;
+pub mod behavior;
 pub mod host;
 pub mod whitelist;
 

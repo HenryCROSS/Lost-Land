@@ -49,3 +49,10 @@ proptest.workspace = true
 # 序列化往返测试（任务 7 的存档一致性验证）与 `ll-world` 的同类测试
 # 用同一个编码格式。
 serde_json = "1"
+# 规格 §10.5 接线批次新增：`script_behavior_api`/`script_behavior_source`
+# 的测试要直接断言 `ScriptEngine::call_raw` 的返回值（`steel::rvals::
+# SteelVal`）——生产代码本身不需要点名这个类型（`register_fn` 靠泛型
+# 转换，见 `ll-script` 既有模式），只有测试需要构造/比较具体的
+# `SteelVal` 值，因此只加进 dev-dependencies，不升级成生产依赖。版本
+# 与 `ll-script`/`Cargo.lock` 锁定的一致。
+steel-core = "0.8.2"

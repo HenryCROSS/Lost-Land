@@ -24,8 +24,14 @@
 //! [`skill_overview`]（P5-B 任务 8）：技能树 UI 数据视图——给定一个
 //! `Agent`，返回哪些技能已解锁/可解锁/冷却中的一份纯数据结构，不含
 //! 任何渲染，见该模块文档「明确边界」一节。
+//!
+//! [`behavior`]（规格 §10.5 接线批次）：AI 决策来源的依赖倒置接口
+//! （[`behavior::BehaviorTreeSource`]）——行为树 tick 求值器本身需要
+//! `ll-script` 的 `SteelVal`，本 crate 不能依赖 `ll-script`，与
+//! `skill`/`quest` 同一套依赖倒置手法，见该模块文档。
 
 pub mod apply;
+pub mod behavior;
 pub mod combat;
 pub mod effect;
 pub mod intent;

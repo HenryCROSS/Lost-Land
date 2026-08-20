@@ -42,6 +42,35 @@ pub fn clear_active_world() {
     ACTIVE_WORLD.with(|cell| cell.set(std::ptr::null()));
 }
 
+/// 安全包装：在 `f` 执行期间把 `world` 设为活跃世界，执行完毕后（无论
+/// `f` 是否 panic 都不例外，因为清空发生在 `f()` 返回之后而不是靠
+/// 调用方记得写第二行）清空。
+///
+/// # 为什么需要这一层，[`set_active_world`] 不够用
+///
+/// [`set_active_world`] 是 `unsafe fn`——本 crate 允许 `unsafe`（见
+/// crate 顶层 `Cargo.toml` 的 lints 覆盖说明），但下游 crate 未必允许：
+/// `ll-mod` 继承工作区 `unsafe_code = "forbid"`，`ScriptEngine` 的运行
+/// 期决策来源实现（`ll_mod::script_behavior_source::ScriptBehaviorSource`）
+/// 需要设置活跃世界，却没有能力写一个 `unsafe` 块。这个函数把
+/// [`set_active_world`] 的安全性论证（"调用方必须保证 `world` 在设置
+/// 到清空这段窗口内持续有效、不被可变借用"）**在类型签名层面兑现**：
+/// `world: &WorldState`（共享借用，编译期保证不被可变借用）+ `f` 在
+/// 设置之后、清空之前被调用且恰好只调用这一次——调用方不需要、也没有
+/// 办法违反这个窗口，`unsafe` 因此可以完全封装在本函数内部，不需要
+/// 暴露给任何调用方。
+pub fn with_active_world_for<T>(world: &WorldState, f: impl FnOnce() -> T) -> T {
+    // Safety: `world` 是 `&WorldState`（共享引用），编译期已经保证在
+    // 本函数返回之前不会被可变借用；`clear_active_world` 紧跟在 `f()`
+    // 之后无条件执行，窗口精确等于 `f` 的执行期间。
+    unsafe {
+        set_active_world(world);
+    }
+    let result = f();
+    clear_active_world();
+    result
+}
+
 /// 在活跃世界上执行 `f`；没有设置活跃世界时返回 `default`。
 ///
 /// 「没有活跃世界」按调用约定不应该发生（宿主总应该在调用脚本前设置

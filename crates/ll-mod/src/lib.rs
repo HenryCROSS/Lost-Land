@@ -76,6 +76,15 @@
 //!   到同时接线全部六种 `register-*` 函数）。
 //! - [`load_report`] —— 加载管理界面（`ll-ui`）依赖的数据形状：按 mod
 //!   归类的加载结果、失败阶段、尽力而为的源码位置（Task 11）。
+//! - [`script_behavior_api`] —— 行为树运行期查询 `skill-ready?`（规格
+//!   §10.5 接线批次）：把「这个技能现在能不能用」暴露给脚本，需要
+//!   `Registry` 把字符串 ID 解析成 `ContentIndex`，理由与六个
+//!   `register-*` 内容注册函数相同，但接线方式不同（一次性快照，不是
+//!   活跃指针），见其模块文档。
+//! - [`script_behavior_source`] —— `ll_sim::behavior::BehaviorTreeSource`
+//!   的真实实现：装载行为树脚本、注册全部运行期查询 API、把求值结果
+//!   翻译成 `Intent`，是「AI 真的做出决策」这一环此前缺失的最后一块
+//!   拼图，见其模块文档「四步链路」一节。
 //!
 //! # 依赖方向
 //!
@@ -103,6 +112,8 @@ pub mod quest;
 pub mod quest_overview;
 pub mod race;
 pub mod registry;
+pub mod script_behavior_api;
+pub mod script_behavior_source;
 pub mod script_class_api;
 pub mod script_quest_api;
 pub mod script_race_api;
