@@ -21,7 +21,7 @@ use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
 use ll_sim::quest::{NoQuests, QuestCatalog, QuestKillRule, is_quest_completed};
 use ll_sim::resolve::resolve_with_skills_and_quests;
-use ll_sim::skill::NoSkills;
+use ll_sim::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect, SkillRule};
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -38,6 +38,20 @@ struct FakeQuestCatalog {
 impl QuestCatalog for FakeQuestCatalog {
     fn kill_count_quests(&self) -> Vec<QuestKillRule> {
         self.rules.clone()
+    }
+}
+
+/// 一个只认识一个固定技能索引的测试目录——理由同
+/// `skill_resolve.rs::FakeCatalog`，本文件独立声明一份是因为集成测试
+/// 文件各自编译成独立的 crate，互相看不见对方的私有测试夹具。
+struct FakeSkillCatalog {
+    skill: ContentIndex,
+    rule: SkillRule,
+}
+
+impl SkillCatalog for FakeSkillCatalog {
+    fn skill(&self, skill: ContentIndex) -> Option<SkillRule> {
+        (skill == self.skill).then_some(self.rule)
     }
 }
 
@@ -126,6 +140,71 @@ fn 击杀达到阈值后任务被标记完成() {
     }
 
     // Assert
+    let agent = world.actors.get(actor).expect("攻击者应仍存在");
+    assert!(is_quest_completed(agent, &quest));
+}
+
+#[test]
+fn 使用技能击杀目标同样能推进击杀任务进度() {
+    // P5-C 缺口修补批次的核心验收：`resolve_use_skill` 此前不判断
+    // 「这一下是否致死」，技能永远不产出 `Effect::Kill`，任务系统也就
+    // 永远看不到技能击杀——本用例证明两处修复（致死判定本身 +
+    // `Intent::UseSkill` 接入 `append_quest_kill_progress`）都真的生效。
+    // Arrange：与 `击杀达到阈值后任务被标记完成` 同一套场景，只是把
+    // 攻击换成技能。
+    let mut world = test_world();
+    let mut interner = Interner::new();
+    let goblin = interner.intern(NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+    let skill = interner.intern(NamespacedId::parse("lostland:strike").expect("合法标识符"));
+    let quest = NamespacedId::parse("lostland:main_quest_1").expect("合法标识符");
+    let actor = spawn_agent_with_race(&mut world, ContentIndex::default(), Agent::STARTING_HEALTH);
+    world
+        .actors
+        .get_mut(actor)
+        .expect("刚生成必然存在")
+        .unlocked_skills
+        .push(skill);
+    let target = spawn_agent_with_race(&mut world, goblin, 1);
+    let quest_catalog = FakeQuestCatalog {
+        rules: vec![QuestKillRule {
+            quest: quest.clone(),
+            target_kind: goblin,
+            required_count: 1,
+            prerequisites: Vec::new(),
+        }],
+    };
+    let skill_catalog = FakeSkillCatalog {
+        skill,
+        rule: SkillRule {
+            cooldown_ticks: 0,
+            resource_cost: ResourceCost::None,
+            effect: SkillEffect::DealDamage { base: 10 },
+        },
+    };
+
+    // Act
+    let effects = resolve_with_skills_and_quests(
+        &world,
+        &Intent::UseSkill {
+            actor,
+            skill,
+            target: Some(target),
+        },
+        &skill_catalog,
+        &quest_catalog,
+    );
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Kill { .. })),
+        "本用例的技能伤害（10）应当足以致死生命值为 1 的目标，否则测不出击杀分支"
+    );
+    for effect in &effects {
+        ll_sim::apply::apply(&mut world, effect);
+    }
+
+    // Assert：目标真的死了，且任务因此被标记完成。
+    assert!(world.actors.get(target).is_none(), "目标应已被击杀");
     let agent = world.actors.get(actor).expect("攻击者应仍存在");
     assert!(is_quest_completed(agent, &quest));
 }
@@ -234,8 +313,9 @@ fn 使用noquests目录时击杀不产生任何任务相关写入() {
 #[test]
 fn 非attack意图不触发任务进度接线() {
     // Arrange：Wait 意图不会产出 Kill，即使传入了会匹配一切的目录,
-    // append_quest_kill_progress 也不应该被触发（它只在 Attack 分支
-    // 生效，见 resolve.rs 文档）。
+    // append_quest_kill_progress 也不应该被触发——它现在对
+    // Attack/UseSkill 两种可能产出 Effect::Kill 的意图生效（见
+    // resolve.rs 文档），但 Wait 恒不在其中。
     let mut world = test_world();
     let actor = spawn_agent_with_race(&mut world, ContentIndex::default(), Agent::STARTING_HEALTH);
     let catalog = FakeQuestCatalog { rules: Vec::new() };

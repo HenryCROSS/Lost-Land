@@ -280,6 +280,88 @@ fn 成功使用技能后产出伤害效果与冷却设置() {
 }
 
 #[test]
+fn 技能伤害足以致死时产出kill效果() {
+    // P5-C 缺口修补批次修复的缺口：resolve_use_skill 的 DealDamage
+    // 分支此前不判断"这一下是否致死"，与 resolve_attack 的既有纪律
+    // 不一致，技能永远打不死目标。本用例直接对照
+    // `成功使用技能后产出伤害效果与冷却设置`：同一条技能规则（10 点
+    // 伤害），唯一区别是目标生命值只有 5（小于 10），必须产出
+    // `Effect::Kill`。
+    // Arrange
+    let mut world = test_world();
+    let actor = spawn_agent(&mut world);
+    let target = spawn_agent(&mut world);
+    world.actors.get_mut(target).expect("刚生成必然存在").health = 5;
+    let mut interner = Interner::new();
+    let skill = interner.intern(NamespacedId::parse("lostland:strike").expect("合法标识符"));
+    world
+        .actors
+        .get_mut(actor)
+        .expect("刚生成必然存在")
+        .unlocked_skills
+        .push(skill);
+    let catalog = catalog_with(skill, deal_damage_rule());
+
+    // Act
+    let effects = resolve_with_skills(
+        &world,
+        &Intent::UseSkill {
+            actor,
+            skill,
+            target: Some(target),
+        },
+        &catalog,
+    );
+
+    // Assert
+    assert!(
+        effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Kill { target: t } if *t == target)),
+        "生命值 5 的目标挨了 10 点技能伤害，理应产出 Effect::Kill"
+    );
+}
+
+#[test]
+fn 技能伤害不足以致死时不产出kill效果() {
+    // 与上一条用例对照：目标生命值高于技能伤害时不应该产出 Kill——
+    // 防止「致死判定」被写成恒真（例如漏掉 <= 判断，任何伤害都触发
+    // Kill）这类退化实现。
+    // Arrange
+    let mut world = test_world();
+    let actor = spawn_agent(&mut world);
+    let target = spawn_agent(&mut world);
+    let mut interner = Interner::new();
+    let skill = interner.intern(NamespacedId::parse("lostland:strike").expect("合法标识符"));
+    world
+        .actors
+        .get_mut(actor)
+        .expect("刚生成必然存在")
+        .unlocked_skills
+        .push(skill);
+    let catalog = catalog_with(skill, deal_damage_rule());
+
+    // Act：目标满血（Agent::STARTING_HEALTH 远大于 10 点伤害）。
+    let effects = resolve_with_skills(
+        &world,
+        &Intent::UseSkill {
+            actor,
+            skill,
+            target: Some(target),
+        },
+        &catalog,
+    );
+
+    // Assert
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::Kill { .. })),
+        "满血目标挨一下 10 点伤害不应该被判定为致死"
+    );
+}
+
+#[test]
 fn 成功使用技能后扣减对应资源() {
     // Arrange
     let mut world = test_world();

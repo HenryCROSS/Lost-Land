@@ -43,16 +43,22 @@
 //! 用途上使用 `race`，不会撞见这个混淆，但记入验收报告，不假装这是
 //! 完整解。
 //!
-//! # 只有 `Intent::Attack` 会触发这条接线，如实记录范围边界
+//! # `Intent::Attack` 与 `Intent::UseSkill` 都会触发这条接线（缺口
+//! 修补批次已解除的范围边界）
 //!
-//! [`crate::resolve::resolve_with_skills_and_quests`] 只在
-//! `Intent::Attack` 产出 `Effect::Kill` 时才调用
-//! [`kill_progress_effects`]——`resolve_use_skill` 的
-//! `SkillEffect::DealDamage` 分支目前不判断"这一下是否致死"，不产出
-//! `Effect::Kill`（技能伤害因此永远不会触发死亡，也就永远不会推进
-//! `KillCount` 进度）。这是本次接线过程中发现的一处既有缺陷，记入验收
-//! 报告「新发现的缺陷」一节，不在本次接线范围内顺手修——那是技能伤害
-//! 结算本身的正确性问题，与"把已有的 Kill 效果接上任务系统"是两件事。
+//! 本节曾经记录一条范围边界：[`crate::resolve::resolve_with_skills_and_quests`]
+//! 只在 `Intent::Attack` 产出 `Effect::Kill` 时才调用
+//! [`kill_progress_effects`]，因为 `resolve_use_skill` 的
+//! `SkillEffect::DealDamage` 分支当时不判断"这一下是否致死"，永远不
+//! 产出 `Effect::Kill`——把 `Intent::UseSkill` 也接进这条判定在当时没
+//! 有意义（接了也触发不到）。缺口修补批次（P5-C）先补上了
+//! `resolve_use_skill` 缺失的致死判定（`crates/ll-sim/src/resolve.rs`
+//! 的 `resolve_use_skill` 文档「与 `resolve_attack` 共享同一条致死判定
+//! 纪律」一节），这条边界随之解除的前提就成立了——
+//! `resolve_with_skills_and_quests` 现在对 `Intent::Attack` 与
+//! `Intent::UseSkill` 都会调用 [`kill_progress_effects`]（准确地说是
+//! 调用 `crate::resolve::append_quest_kill_progress`，它再转调本函数），
+//! 见该函数当前文档。
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_world::entity::{Agent, EntityId};

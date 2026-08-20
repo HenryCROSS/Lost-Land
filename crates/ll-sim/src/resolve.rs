@@ -173,7 +173,21 @@ pub fn resolve_with_skills_and_quests(
             target,
         } => resolve_use_skill(world, actor, skill, target, skills),
     };
-    if let Intent::Attack { actor, .. } = *intent {
+    // 击杀任务进度：`Intent::Attack` 与 `Intent::UseSkill` 都可能产出
+    // `Effect::Kill`（后者见 `resolve_use_skill` 的 `DealDamage` 分支，
+    // 本批次修掉的缺口），两者因此共用同一条推进逻辑——`append_quest_
+    // kill_progress` 本身只扫描 `effects` 里的 `Effect::Kill`，不关心
+    // 是哪种 `Intent` 产出的，唯一需要从 `intent` 里取的只是「谁是
+    // 击杀者」这一个字段。`crate::quest` 模块文档「只有 Intent::Attack
+    // 会触发这条接线」一节记录的范围边界到此解除——该节本就说明这条
+    // 边界的唯一成因是 `resolve_use_skill` 当时不产出 `Effect::Kill`，
+    // 不是设计上刻意排除技能击杀。
+    let kill_progress_actor = match *intent {
+        Intent::Attack { actor, .. } => Some(actor),
+        Intent::UseSkill { actor, .. } => Some(actor),
+        _ => None,
+    };
+    if let Some(actor) = kill_progress_actor {
         append_quest_kill_progress(world, actor, &mut effects, quests);
     }
     effects
@@ -184,8 +198,9 @@ pub fn resolve_with_skills_and_quests(
 /// [`ll_world::entity::Agent::race`] 作为
 /// [`crate::quest::QuestKillRule::target_kind`] 的匹配依据，把击杀
 /// 计数、以及可能因此达标的任务完成写入一并追加进效果列表——见
-/// [`crate::quest`] 模块文档「击杀计数」「只有 `Intent::Attack` 会
-/// 触发这条接线」两节的完整论证与已知范围边界。
+/// [`crate::quest`] 模块文档「击杀计数」一节的完整论证。调用方
+/// （[`resolve_with_skills_and_quests`]）现在对 `Intent::Attack` 与
+/// `Intent::UseSkill` 都会调用本函数，理由见该处注释。
 ///
 /// 必须在 `apply` 之前读取被击杀者的 `race`：本函数只接受
 /// `&WorldState`（`resolve` 必须是纯函数，C1），此刻目标仍然存在于
@@ -467,6 +482,15 @@ fn resolve_exit_space(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// mod 注册的技能，只要能通过调用方提供的 [`SkillCatalog`] 查到，就会
 /// 被这条完全相同的通用路径正确处理，见
 /// `本体技能与假想mod技能走同一条resolve通用路径` 测试。
+///
+/// # `DealDamage` 与 `resolve_attack` 共享同一条致死判定纪律
+///
+/// 若这一下会让目标生命值降到零或以下，额外产出一个 [`Effect::Kill`]
+/// ——与 [`resolve_attack`] 完全同一条纪律（见其文档）：是否致死是
+/// 规则判断，必须在这里（`resolve`）做出，`apply` 只管照数字做加减。
+/// 这一步此前缺失，技能永远打不死目标，也永远不会推进
+/// [`append_quest_kill_progress`] 依赖的击杀任务进度——两处结算同属
+/// 引擎侧，死亡判定没有设计自由度，属于纯实现缺口，不是分层错误。
 fn resolve_use_skill(
     world: &WorldState,
     actor: EntityId,
@@ -521,6 +545,21 @@ fn resolve_use_skill(
                 target: effect_target,
                 amount: base,
             });
+            // 是否致死是规则判断，必须在这里（resolve）做出，`apply`
+            // 只管照数字做加减——与 `resolve_attack` 同一条纪律（见其
+            // 文档），此前这里漏掉了这一步：技能伤害因此永远不会真正
+            // 杀死目标，也永远不会推进依赖 `Effect::Kill` 的击杀任务
+            // 进度（`append_quest_kill_progress` 只扫描 `Effect::Kill`）。
+            // 目标若已不在 `world.actors` 中（例如同一批效果里已被更早
+            // 的 `Effect::Kill` 移除），静默跳过——与本文件其余分支对
+            // 「目标不存在」的处理方式一致。
+            if let Some(defender) = world.actors.get(effect_target)
+                && defender.health - base <= 0
+            {
+                effects.push(Effect::Kill {
+                    target: effect_target,
+                });
+            }
         }
         SkillEffect::RestoreResource { resource, base } => {
             effects.push(Effect::AdjustResource {
