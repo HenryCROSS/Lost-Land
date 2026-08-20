@@ -54,10 +54,19 @@ use crate::remap::remap_world;
 
 /// 当前游戏认识的最新存档 schema 版本。
 ///
-/// 本批次没有任何字段升级需要迁移（[`SaveHeader`]/`WorldState` 都是
-/// 本批次一次性冻结的形状），因此定为 `1`，配套的 `migration_chain` 函数
-/// 当前是空链——见其文档「为什么允许是空的」。
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+/// # 为什么是 2，不再是 1（落地探索记忆批次）
+///
+/// `ll_world::interior::Interior` 新增了 `origin` 字段（ADR 0024 裁定
+/// P5-7），`ll_world::state::WorldState` 新增了 `exploration` 字段
+/// （落地探索记忆批次）——两者都直接改变了存档主体（`postcard`
+/// 编码，按声明顺序定位、不带字段名）的字节布局，是真正的 schema
+/// 版本升级，不是内部实现细节的调整。配套的迁移函数是
+/// [`crate::migrations::Migration1To2`]，已注册进
+/// `migration_chain`——见其模块文档「为什么现在补，不等生成器落地
+/// 时再补」一节：当前还没有任何真实存档，是把这两个字段补进格式、
+/// 同时把迁移链条从「空链」变成「至少验证过一条真实路径」成本最低的
+/// 时刻。
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// 头部 JSON 长度声明的安全上限——防御「声明长度与实际不符」类畸形
 /// 存档（规格 §14.3 fuzz 要求之一）：一个只有几十字节的文件却在长度
@@ -101,23 +110,22 @@ impl std::fmt::Display for SaveError {
 
 impl std::error::Error for SaveError {}
 
-/// 空的 schema 迁移链——当前唯一存在过的版本就是 [`CURRENT_SCHEMA_VERSION`]，
-/// 没有任何更早的版本需要升级路径。
+/// 当前认识的 schema 迁移链：目前只有 v1 → v2 一步（
+/// [`crate::migrations::Migration1To2`]，见 [`CURRENT_SCHEMA_VERSION`]
+/// 文档）。
 ///
-/// # 为什么允许是空的
+/// # 为什么不是空的了
 ///
-/// [`crate::migration::MigrationChain`] 本身不关心链是否为空——「没有
-/// 任何迁移函数」与「有迁移函数但都不适用」在它的判定逻辑里是同一种
-/// 结果（[`crate::migration::MigrationChain::apply`] 找不到路径时返回
-/// [`crate::migration::MigrationError::NoPathFrom`]）。[`load_full`]
-/// 因此只在 `header.schema_version < CURRENT_SCHEMA_VERSION` 时才会
-/// 调用这条链——当前唯一合法的版本号就是 1，这个分支在正常存档上
-/// 永远不会触发，但代码路径必须存在且能被测试：一份声称自己是「更早
-/// 版本」的存档在空链条下会诚实地报出
-/// [`crate::load_error::LoadError::SchemaMigrationGap`]（迁移链本身
-/// 有缺口），而不是被静默当成当前版本处理。
+/// 这条链曾经是空的（「本批次没有任何字段升级需要迁移」）——落地探索
+/// 记忆批次是第一次真正需要升级已冻结的存档结构，因此第一次往这里
+/// 注册了一条真实迁移函数。[`crate::migration::MigrationChain`] 本身
+/// 不关心链有多长，[`load_full`] 仍然只在
+/// `header.schema_version < CURRENT_SCHEMA_VERSION` 时才会调用这条
+/// 链：低于 1（当前链条完全不认识）的版本号依旧会诚实地报出
+/// [`crate::load_error::LoadError::SchemaMigrationGap`]，不会被这一步
+/// 新迁移悄悄吞掉。
 fn migration_chain() -> MigrationChain {
-    MigrationChain::new(Vec::new())
+    MigrationChain::new(vec![Box::new(crate::migrations::Migration1To2)])
 }
 
 /// 把 `world` 与 `header` 写出到 `path`，见模块文档「物理布局」。
@@ -579,9 +587,10 @@ mod tests {
     }
 
     #[test]
-    fn schema版本低于当前版本且迁移链为空时返回迁移缺口错误() {
-        // Arrange：伪造一份"更早版本"的存档——当前链条是空的,不认识
-        // 任何更早的版本号。
+    fn schema版本低于当前版本且迁移链不认识该版本时返回迁移缺口错误() {
+        // Arrange：伪造一份"更早版本"的存档——当前链条只认识 1 到 2
+        // 这一步（见 migration_chain 文档），版本 0 既不是任何一步的
+        // 起点也不是终点,链条对它一无所知。
         let path = temp_path("schema-migration-gap");
         let mut header = sample_header(Vec::new());
         header.schema_version = 0;

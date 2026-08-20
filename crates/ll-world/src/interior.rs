@@ -83,13 +83,51 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::bounded_grid::BoundedGrid;
 use crate::space::SpaceId;
 
+/// 生成器类型标签——决定某个 [`Interior`] 该用哪一套生成算法重算
+/// （ADR 0024，裁定 P5-7）。
+///
+/// 三个变体直接复用 [`Interior`] 类型文档已经写明的三种空间实例
+/// （「地下城、洞窟或建筑内部」），不是凭空新造一套分类——本次只是给
+/// 这三种已知类型各自留一个可以在存档里区分的标签，具体每种标签对应
+/// 什么生成算法属于生成器本身的实现，不在本次范围（见 [`GeneratorParams`]
+/// 文档）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum GeneratorKind {
+    /// 地下城。
+    Dungeon,
+    /// 洞窟。
+    Cave,
+    /// 建筑内部。
+    Building,
+}
+
+/// `Interior` 生成来源的最小占位形状（ADR 0024，裁定 P5-7）。
+///
+/// # 为什么现在只有种子和类型标签
+///
+/// 本次只补「能不能重算」这一位信息的存档接口形状——真正的房间/地下城
+/// 生成算法属于世界生成阶段（P7）的范围，不在本次任务内实现，与
+/// `Interior::origin` 字段文档「为什么现在补，不等生成器落地时再补」
+/// 一节是同一条最小改动纪律。字段以后会随生成器一起长大（例如加入
+/// 房间数量、难度参数之类的具体控制项），当前的最小形状只保证「存
+/// 起来、能序列化、能在未来被生成器读取」这几件事，不预先猜测生成器
+/// 具体需要哪些参数（YAGNI）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GeneratorParams {
+    /// 生成用的种子——与地表 [`crate::generate::GenParams::seed`] 是
+    /// 同一种角色：同一个种子、同一套生成算法应当能重算出同一层内容。
+    pub seed: u64,
+    /// 生成器类型标签，决定用哪一套算法。
+    pub kind: GeneratorKind,
+}
+
 /// 一个独立的离散空间实例：地下城、洞窟或建筑内部（设计文档六节）。
 ///
-/// `id`/`anchor`/`profile` 公开——这三者是这个空间实例的身份与位置,
-/// 没有需要保护的不变式。`floors` 私有：只能通过 [`Self::set_floor`]
-/// 写入，避免调用方绕过本模块直接塞入与 `id` 不一致的楼层映射之类的
-/// 误用（虽然 `floors` 本身也没有跨字段不变式，私有只是防御性的封装
-/// 习惯，不是本类型真正的正确性保证来源）。
+/// `id`/`anchor`/`profile`/`origin` 公开——这几个都是这个空间实例的
+/// 身份/位置/生成来源，没有需要保护的不变式。`floors` 私有：只能通过
+/// [`Self::set_floor`] 写入，避免调用方绕过本模块直接塞入与 `id` 不
+/// 一致的楼层映射之类的误用（虽然 `floors` 本身也没有跨字段不变式，
+/// 私有只是防御性的封装习惯，不是本类型真正的正确性保证来源）。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Interior {
     /// 这个空间实例的持久标识，复用 [`ll_core::ident::WorldId`]。
@@ -99,6 +137,36 @@ pub struct Interior {
     pub anchor: TorusPos,
     /// 指向 `crate::space_profile` 注册表的层属性。
     pub profile: ContentIndex,
+    /// 生成来源：`None` 表示这个空间实例是玩家所建（或来源不可重算），
+    /// 全靠偏差（`floors` 里已经生成/改动过的具体内容）常驻；`Some`
+    /// 表示它原则上可以从这份 [`GeneratorParams`] 重新生成。
+    ///
+    /// # 为什么现在补，不等生成器落地时再补（ADR 0024，裁定 P5-7）
+    ///
+    /// ADR 0024 的判据：真正的分界不是「地表 vs 室内」，而是「有没有
+    /// 生成器」——能重算的才能在常驻预算紧张时淘汰，不能重算的必须
+    /// 常驻（见 `crate::interior` 模块文档「楼层本身仍然不参与淘汰」
+    /// 一节，那正是「当前没有生成器，所以只能保守地全部当成不可重算」
+    /// 的现状）。但存档格式冻结时这个字段不在里面——`Interior` 曾经只
+    /// 有 `id`/`anchor`/`profile`/`floors`，即按「整层快照」表达空间，
+    /// 不区分「可重算部分 + 偏差」。这不是无关紧要的疏漏：格式一旦
+    /// 冻结成「整层快照」，将来真的做出生成器时也无法用它反推「这层
+    /// 是不是当初由某个生成器造出来的」——没有这个字段，旧存档里的
+    /// 每一层都只能被当成「玩家所建」（`origin = None`），永远无法安全
+    /// 淘汰重算，即便生成器已经就绪。现在补只需要一次 schema 迁移
+    /// （见 `ll_content::migration` 的迁移链框架，本次配套注册了一条
+    /// 真实迁移函数），且当前**还没有任何真实存档**，是补这个字段成本
+    /// 最低的时刻——过了这个窗口，每晚一天都会多一批只能视为
+    /// `origin = None` 的存量存档。
+    ///
+    /// # 本次只补接口形状，不实现生成器
+    ///
+    /// 与「不做游戏循环接线」的探索记忆批次同一条最小改动纪律：本字段
+    /// 只保证「能存、能序列化、能在未来被读取」，`Interior` 的插入点
+    /// （[`crate::state::WorldState::insert_interior`]、[`Interior::new`]）
+    /// 目前恒传 `None`——没有生成器就没有任何调用方能诚实地传出
+    /// `Some`，见 [`Self::with_origin`] 文档。
+    pub origin: Option<GeneratorParams>,
     /// 稀疏：一栋楼可能只有 `{0, 1, 2, -1}` 四个 floor（设计文档六节
     /// 「存在性稀疏」）。用 [`crate::bounded_grid::BoundedGrid`]（不是
     /// [`crate::chunk::ChunkGrid`]）——`Interior` 是有界不环绕的局部
@@ -107,13 +175,39 @@ pub struct Interior {
 }
 
 impl Interior {
-    /// 建立一个尚无任何楼层的空间实例。楼层由 [`Self::set_floor`] 按需
-    /// 加入——不要求构造时就补齐全部楼层，这正是「稀疏」的含义。
+    /// 建立一个尚无任何楼层、来源不可重算（`origin = None`）的空间
+    /// 实例。楼层由 [`Self::set_floor`] 按需加入——不要求构造时就补齐
+    /// 全部楼层，这正是「稀疏」的含义。
+    ///
+    /// 现存全部调用方（世界生成/建造玩法的既有测试与验收 demo）都没有
+    /// 真正的生成器可用，`origin = None` 是唯一诚实的选择——见
+    /// [`Self::origin`] 字段文档「本次只补接口形状」一节。
     pub fn new(id: SpaceId, anchor: TorusPos, profile: ContentIndex) -> Self {
         Interior {
             id,
             anchor,
             profile,
+            origin: None,
+            floors: HashMap::new(),
+        }
+    }
+
+    /// 建立一个来源可重算的空间实例：记录 `origin`，使得这个空间实例
+    /// 理论上可以在未来由匹配的生成器从同一份参数重新造出来。
+    ///
+    /// 当前没有任何调用方（本次任务范围内不实现生成器，见
+    /// [`Self::origin`] 字段文档），预留给 P7 世界生成器落地时使用。
+    pub fn with_origin(
+        id: SpaceId,
+        anchor: TorusPos,
+        profile: ContentIndex,
+        origin: GeneratorParams,
+    ) -> Self {
+        Interior {
+            id,
+            anchor,
+            profile,
+            origin: Some(origin),
             floors: HashMap::new(),
         }
     }
@@ -419,5 +513,65 @@ mod tests {
 
         // Assert
         assert_eq!(decoded.entries_at(anchor), table.entries_at(anchor));
+    }
+
+    #[test]
+    fn new构造的interior来源标记为不可重算() {
+        // Arrange
+        let mut counter = 0u32;
+
+        // Act
+        let interior = Interior::new(
+            WorldId::next(&mut counter),
+            anchor_at(0, 0),
+            profile_index(),
+        );
+
+        // Assert
+        assert!(interior.origin.is_none());
+    }
+
+    #[test]
+    fn with_origin构造的interior保留传入的生成参数() {
+        // Arrange
+        let mut counter = 0u32;
+        let params = GeneratorParams {
+            seed: 7,
+            kind: GeneratorKind::Dungeon,
+        };
+
+        // Act
+        let interior = Interior::with_origin(
+            WorldId::next(&mut counter),
+            anchor_at(0, 0),
+            profile_index(),
+            params,
+        );
+
+        // Assert
+        assert_eq!(interior.origin, Some(params));
+    }
+
+    #[test]
+    fn interior经serde格式往返后origin字段保留() {
+        // Arrange
+        let mut counter = 0u32;
+        let params = GeneratorParams {
+            seed: 99,
+            kind: GeneratorKind::Cave,
+        };
+        let interior = Interior::with_origin(
+            WorldId::next(&mut counter),
+            anchor_at(2, 2),
+            profile_index(),
+            params,
+        );
+        let json = serde_json::to_string(&interior).expect("Interior 必然可序列化");
+
+        // Act
+        let decoded: Interior = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded.origin, Some(params));
     }
 }
