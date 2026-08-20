@@ -19,11 +19,24 @@
 //! 解决过同一个问题（把状态放进线程局部存储，注册的闭包本身不捕获任何
 //! 非 `Send`/`Sync` 数据，因此天然满足约束）——本模块照搬同一套约定，
 //! 见这两个模块的文档「为什么需要 unsafe」/模块顶部注释。与它们的
-//! 区别是：本模块的活跃状态需要**被拥有**（`Registry`/`TerrainTable`
-//! 在装载会话期间持续累积内容，不是每帧现成的只读引用），因此用
+//! 区别是：本模块的活跃状态需要**被拥有**（`TerrainTable` 在装载会话
+//! 期间持续累积内容，不是每帧现成的只读引用），因此用
 //! `RefCell<Option<T>>` 把值整个移进/移出，而不是存一个裸指针——这样
 //! 不需要 `unsafe`，`ll-mod` 也确实继承了工作区 `unsafe_code = "forbid"`
 //! （不像 `ll-script` 那样为 `ScriptAllocGuard` 单独放宽）。
+//!
+//! # `Registry` 不再由本模块单独持有（P5-C 接线批次）
+//!
+//! 早期版本（P4 Task 11/12）把 `(Registry, TerrainTable)` 打包成一个
+//! 元组整体持有在本模块私有的 `thread_local!` 里——当时脚本唯一能
+//! 注册的内容就是地形，没有问题。P5-C 批次给脚本补上
+//! `register-class`/`register-skill`/`register-subclass`/
+//! `register-quest`/`register-race` 之后，同一个 mod 脚本可能在同一次
+//! `load_source` 里既注册地形又注册职业——这些调用必须共用**同一个**
+//! `Registry` 实例，否则 `ContentIndex` 会在不同内容类型之间撞车（见
+//! [`crate::active_registry`] 模块文档的完整论证）。`Registry` 因此被
+//! 拆到 [`crate::active_registry`] 一个共享的 `thread_local!` 里，本
+//! 模块只保留 `TerrainTable` 自己那一份。
 
 use std::cell::RefCell;
 
@@ -31,24 +44,23 @@ use ll_core::ident::NamespacedId;
 use ll_script::host::ScriptEngine;
 use ll_world::terrain::{TerrainAttrs, TerrainError, TerrainKind, TerrainTable};
 
+use crate::active_registry::with_active_registry;
 use crate::registry::Registry;
 
 thread_local! {
-    /// 当前调用窗口内，`register-terrain` 应该写入的注册表与地形表。
-    /// 装载管线在为一个 mod 的脚本调用 [`ScriptEngine::load_source`]
-    /// 之前用 [`set_active_target`] 把 `(Registry, TerrainTable)` 整体
-    /// 移进来，脚本跑完之后用 [`take_active_target`] 原样移回——两次
-    /// 调用之间夹住的正是这一次 `load_source`。
-    static ACTIVE_TARGET: RefCell<Option<(Registry, TerrainTable)>> = const { RefCell::new(None) };
+    /// 当前调用窗口内，`register-terrain` 应该写入的地形表。`Registry`
+    /// 走 [`crate::active_registry`] 的共享目标，理由见模块文档。
+    static ACTIVE_TABLE: RefCell<Option<TerrainTable>> = const { RefCell::new(None) };
 }
 
-/// 把 `(registry, table)` 设为当前调用窗口内 `register-terrain` 可写入
-/// 的目标，取走两者的所有权。
-pub fn set_active_target(registry: Registry, table: TerrainTable) {
-    ACTIVE_TARGET.with(|cell| *cell.borrow_mut() = Some((registry, table)));
+/// 把 `table` 设为当前调用窗口内 `register-terrain` 可写入的目标，取走
+/// 其所有权。`Registry` 由调用方另行调用
+/// [`crate::active_registry::set_active_registry`] 设置。
+pub fn set_active_target(table: TerrainTable) {
+    ACTIVE_TABLE.with(|cell| *cell.borrow_mut() = Some(table));
 }
 
-/// 取回 [`set_active_target`] 放进去的 `(Registry, TerrainTable)`。
+/// 取回 [`set_active_target`] 放进去的 `TerrainTable`。
 ///
 /// 调用约定：**必须**与 [`set_active_target`] 成对出现，且中间不能
 /// 再嵌套一次 `set_active_target`（会覆盖，见 `panic` 分支的注释）。
@@ -56,8 +68,8 @@ pub fn set_active_target(registry: Registry, table: TerrainTable) {
 /// 路径（脚本只能调用 `register-terrain`，够不到这两个函数），而是
 /// 装载管线自身的接线契约，接线写错理应在开发期就暴露，不是静默吞掉
 /// 装载会话的内容。
-pub fn take_active_target() -> (Registry, TerrainTable) {
-    ACTIVE_TARGET.with(|cell| {
+pub fn take_active_target() -> TerrainTable {
+    ACTIVE_TABLE.with(|cell| {
         cell.borrow_mut()
             .take()
             .expect("take_active_target 必须与 set_active_target 成对调用")
@@ -98,23 +110,25 @@ fn register_terrain(
     move_cost: i64,
     opens_into: String,
 ) -> Result<bool, String> {
-    ACTIVE_TARGET.with(|cell| {
-        let mut slot = cell.borrow_mut();
-        let Some((registry, table)) = slot.as_mut() else {
-            // 装载管线接线错误（忘了先 set_active_target）——不是 mod
-            // 作者能触发的情形,但脚本调用不能 panic（四道防线①②），
-            // 只能降级成一条错误消息。
-            return Err("register-terrain 在没有活跃注册目标的窗口内被调用".to_string());
-        };
-        do_register_terrain(
-            registry,
-            table,
-            &id,
-            blocks_sight,
-            blocks_move,
-            move_cost,
-            &opens_into,
-        )
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                // 装载管线接线错误（忘了先 set_active_target）——不是 mod
+                // 作者能触发的情形,但脚本调用不能 panic（四道防线①②），
+                // 只能降级成一条错误消息。
+                return Err("register-terrain 在没有活跃地形表的窗口内被调用".to_string());
+            };
+            do_register_terrain(
+                registry,
+                table,
+                &id,
+                blocks_sight,
+                blocks_move,
+                move_cost,
+                &opens_into,
+            )
+        })
     })
 }
 
@@ -269,7 +283,8 @@ mod tests {
         // Arrange
         let mut engine = ScriptEngine::new();
         register_terrain_api(&mut engine);
-        set_active_target(Registry::new(), TerrainTable::new());
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(TerrainTable::new());
 
         // Act
         let result = engine.load_source(
@@ -278,7 +293,8 @@ mod tests {
 
         // Assert
         assert!(result.is_ok());
-        let (registry, _table) = take_active_target();
+        let registry = crate::active_registry::take_active_registry();
+        let _table = take_active_target();
         assert!(
             registry
                 .get(&NamespacedId::parse("examplemod:lava_floor").unwrap())
@@ -291,7 +307,8 @@ mod tests {
         // Arrange：非法命名空间——脚本作者笔误，宿主必须优雅报错。
         let mut engine = ScriptEngine::new();
         register_terrain_api(&mut engine);
-        set_active_target(Registry::new(), TerrainTable::new());
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(TerrainTable::new());
 
         // Act
         let result =
@@ -301,8 +318,9 @@ mod tests {
         assert!(result.is_err());
 
         // Cleanup：即便脚本出错，接线契约仍要求成对调用，否则下一个
-        // 测试用例会因为 ACTIVE_TARGET 里残留旧值而互相污染
-        // （thread_local 在同一测试线程内跨用例存活）。
+        // 测试用例会因为 ACTIVE_TABLE/ACTIVE_REGISTRY 里残留旧值而互相
+        // 污染（thread_local 在同一测试线程内跨用例存活）。
         take_active_target();
+        crate::active_registry::take_active_registry();
     }
 }
