@@ -12,6 +12,7 @@ use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use ll_world::entity::{AttributeKind, EntityId};
+use ll_world::history::KillCause;
 use ll_world::script_state::ScriptStateWrite;
 use ll_world::space::Space;
 use ll_world::terrain::TerrainKind;
@@ -61,6 +62,59 @@ pub enum Effect {
     Kill {
         /// 被销毁的实体。
         target: EntityId,
+        /// 谁杀的——环境/坠落/饥饿致死，或击杀者本身尚未"具名"（见
+        /// `ll_world::entity::Agent::remembered_id` 文档）时为 `None`。
+        ///
+        /// # 为什么这是朴素数据（C2）
+        ///
+        /// `killer` 是 `EntityId`——一个不透明的整数句柄，不含引用、
+        /// 闭包或裸指针，与 `Effect::Damage.target`/`Effect::MoveTo.actor`
+        /// 同一类值，见 `Effect::RecordHistoricalEvent` 文档「决策在
+        /// resolve」一节的完整论证。
+        killer: Option<EntityId>,
+        /// 怎么杀的——项目所有者点名要求的"精确到武器/技能/环境"这一
+        /// 级，见 `knowledge/design/kill-and-death-events.md` 二节。
+        cause: KillCause,
+    },
+    /// 落盘一条击杀历史事件（`knowledge/design/kill-and-death-events.md`
+    /// 五节）——`resolve` 侧的 `append_kill_history`
+    /// （`crate::resolve` 模块）判断这场击杀是否值得被记录（`victim`
+    /// 已具名，见其文档），值得记录时产出本效果；`apply` 响应它时调用
+    /// [`ll_world::state::WorldState::record_kill`]，由该方法分配
+    /// `WorldId`、把事件追加进 `WorldState::history`。
+    ///
+    /// # 决策在 `resolve`，不在 `apply`（约束 C1）
+    ///
+    /// 是否要产出本效果（分级规则：`victim` 是否已具名）本身是游戏
+    /// 逻辑判断，必须在 `resolve` 做出——`apply` 三条纪律之一是「不含
+    /// 任何游戏逻辑」。本效果携带的全部字段因此都是 `resolve` 已经
+    /// 读出的朴素数据（`EntityId`/`KillCause`/`Tick`/`TorusPos`/`i32`），
+    /// `apply` 只是照单据执行写入,不再做任何判断。
+    ///
+    /// # 为什么必须排在对应的 `Effect::Kill` 之前
+    ///
+    /// `WorldState::record_kill` 需要读取（并可能懒分配）`victim` 的
+    /// `remembered_id`——若 `Effect::Kill` 已经把 `victim` 从
+    /// `world.actors` 里销毁，这个查询会直接失败、静默不产出任何记录。
+    /// `crate::resolve` 模块内部的 `append_kill_history`（模块私有，
+    /// 不对外公开，故此处不使用文档链接）因此把本效果插入在对应
+    /// `Effect::Kill` **之前**，而不是像 `append_quest_kill_progress`
+    /// 那样追加在整批效果的末尾。
+    RecordHistoricalEvent {
+        /// 事件发生的世界时刻。
+        at: Tick,
+        /// 事件发生地点——记录时 `victim` 仍然存活，取自其当前 `pos`。
+        location: TorusPos,
+        /// 被击杀的实体。
+        victim: EntityId,
+        /// 击杀者，若有。
+        killer: Option<EntityId>,
+        /// 怎么杀的。
+        cause: KillCause,
+        /// 致命一击造成的伤害量。
+        damage: i32,
+        /// 致命一击结算后的剩余生命值。
+        remaining_health: i32,
     },
     /// 把某实体下一次可行动的时刻设为 `at`。
     ///

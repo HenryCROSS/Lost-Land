@@ -66,7 +66,19 @@ use crate::remap::remap_world;
 /// 时再补」一节：当前还没有任何真实存档，是把这两个字段补进格式、
 /// 同时把迁移链条从「空链」变成「至少验证过一条真实路径」成本最低的
 /// 时刻。
-pub const CURRENT_SCHEMA_VERSION: u32 = 2;
+///
+/// # 为什么是 3，不再是 2（击杀与死亡记录批次）
+///
+/// `ll_world::state::WorldState` 新增了 `history`/`next_world_id` 两个
+/// 字段，`ll_world::entity::Agent` 新增了
+/// `creature_kind`/`spawned_at`/`remembered_id` 三个字段——理由与
+/// `identity-and-ids.md`「schema 迁移问题」一节已经论证过的紧迫性
+/// 一致：`kill-and-death-events.md`「阶段归属」一节指出这几个字段若
+/// 拖到对应系统（死因统计、传说浏览）真正落地才补，就必然是一次
+/// 破坏性存档变更，不如现在（存档格式仍处于早期迭代、尚无真实玩家
+/// 存档）就把容器补齐。配套的迁移函数是
+/// [`crate::migrations::Migration2To3`]，已注册进 `migration_chain`。
+pub const CURRENT_SCHEMA_VERSION: u32 = 3;
 
 /// 头部 JSON 长度声明的安全上限——防御「声明长度与实际不符」类畸形
 /// 存档（规格 §14.3 fuzz 要求之一）：一个只有几十字节的文件却在长度
@@ -110,22 +122,28 @@ impl std::fmt::Display for SaveError {
 
 impl std::error::Error for SaveError {}
 
-/// 当前认识的 schema 迁移链：目前只有 v1 → v2 一步（
-/// [`crate::migrations::Migration1To2`]，见 [`CURRENT_SCHEMA_VERSION`]
-/// 文档）。
+/// 当前认识的 schema 迁移链：v1 → v2 → v3 两步（
+/// [`crate::migrations::Migration1To2`]/[`crate::migrations::Migration2To3`]，
+/// 见 [`CURRENT_SCHEMA_VERSION`] 文档）。
 ///
 /// # 为什么不是空的了
 ///
 /// 这条链曾经是空的（「本批次没有任何字段升级需要迁移」）——落地探索
 /// 记忆批次是第一次真正需要升级已冻结的存档结构，因此第一次往这里
-/// 注册了一条真实迁移函数。[`crate::migration::MigrationChain`] 本身
-/// 不关心链有多长，[`load_full`] 仍然只在
-/// `header.schema_version < CURRENT_SCHEMA_VERSION` 时才会调用这条
-/// 链：低于 1（当前链条完全不认识）的版本号依旧会诚实地报出
-/// [`crate::load_error::LoadError::SchemaMigrationGap`]，不会被这一步
-/// 新迁移悄悄吞掉。
+/// 注册了一条真实迁移函数；击杀与死亡记录批次是第二次。
+/// [`crate::migration::MigrationChain`] 本身不关心链有多长，
+/// [`load_full`] 仍然只在 `header.schema_version <
+/// CURRENT_SCHEMA_VERSION` 时才会调用这条链：低于 1（当前链条完全不
+/// 认识）的版本号依旧会诚实地报出
+/// [`crate::load_error::LoadError::SchemaMigrationGap`]，不会被这些
+/// 迁移悄悄吞掉。`MigrationChain::apply` 会沿着 `source_version` 自动
+/// 串联——从 1 开始的存档先经 `Migration1To2` 到 2，再经
+/// `Migration2To3` 到 3，调用方不需要关心中间跳了几步。
 fn migration_chain() -> MigrationChain {
-    MigrationChain::new(vec![Box::new(crate::migrations::Migration1To2)])
+    MigrationChain::new(vec![
+        Box::new(crate::migrations::Migration1To2),
+        Box::new(crate::migrations::Migration2To3),
+    ])
 }
 
 /// 把 `world` 与 `header` 写出到 `path`，见模块文档「物理布局」。
@@ -517,6 +535,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         });
         world.player_entity = Some(player);
         let content_index_map = registry
@@ -738,6 +759,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         });
         let content_index_map = registry
             .snapshot()
@@ -795,6 +819,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         });
         let content_index_map = registry
             .snapshot()
@@ -846,6 +873,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         });
         let content_index_map = registry
             .snapshot()

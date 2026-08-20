@@ -53,6 +53,7 @@
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_world::entity::EntityId;
+use ll_world::history::KillCause;
 use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
 
@@ -214,6 +215,11 @@ pub fn resolve_with_skills_and_quests(
     if let Some(actor) = kill_progress_actor {
         append_quest_kill_progress(world, actor, &mut effects, quests);
     }
+    // 击杀历史记录：与击杀任务进度同一个触发点（同一批 Effect::Kill），
+    // 各自独立追加,互不依赖——见 append_kill_history 文档。不需要按
+    // Intent 类型区分调用与否：函数本身只扫描 effects 里已经存在的
+    // Effect::Kill,对没有产出击杀的意图（Wait/Move/...）是无操作。
+    append_kill_history(world, &mut effects);
     effects
 }
 
@@ -238,7 +244,7 @@ fn append_quest_kill_progress(
     let killed_kinds: Vec<ContentIndex> = effects
         .iter()
         .filter_map(|effect| match effect {
-            Effect::Kill { target } => world.actors.get(*target).map(|agent| agent.race),
+            Effect::Kill { target, .. } => world.actors.get(*target).map(|agent| agent.race),
             _ => None,
         })
         .collect();
@@ -246,6 +252,87 @@ fn append_quest_kill_progress(
         effects.extend(crate::quest::kill_progress_effects(
             world, actor, kind, quests,
         ));
+    }
+}
+
+/// 击杀历史记录的接线（`knowledge/design/kill-and-death-events.md`）：
+/// 若 `effects` 里包含 [`Effect::Kill`] 且被击杀者已经"具名"
+/// （[`ll_world::entity::Agent::remembered_id`] 有值），在对应的
+/// `Effect::Kill` **之前**插入一条 [`Effect::RecordHistoricalEvent`]。
+///
+/// # 触发判据：为什么只看 `victim` 是否已具名
+///
+/// 设计文档三节的分级规则是"玩家相关/具名 NPC 相关"两档、任一方具名
+/// 即全记。本函数把这两档收敛成一个更窄、但可以在不引入"死亡瞬间
+/// 懒分配跨越 despawn 时序"这类额外复杂度的前提下正确实现的判据：
+/// **只要求 `victim` 已经具名**。理由：
+///
+/// 1. `KillRecord.victim: WorldId` 是非 `Option` 的必填字段——若
+///    `victim` 未具名，压根没有 `WorldId` 可以填进这个字段，必须先
+///    有一次懒分配。懒分配本身要求在 `victim` 被 `Effect::Kill`
+///    销毁**之前**执行（`WorldState::record_kill` 文档「调用时机」
+///    一节），这是本函数把 `RecordHistoricalEvent` 插到 `Kill` 之前
+///    （而不是像 `append_quest_kill_progress` 那样追加在末尾）的原因。
+/// 2. 设计文档五节原文承认"一方不具名时，`KillRecord.killer` 或本
+///    条记录本身如何处理不具名的一侧，属于实现期需要拍板的细节"——
+///    本批次的拍板结果是：`victim` 未具名时不产出记录（即便 `killer`
+///    已具名，例如玩家杀死一只从未被记住的哥布林）。真正做到"玩家
+///    相关全记，不论对方是否具名"需要在这里对 `victim` 也做懒分配，
+///    但那需要先确认懒分配发生在 `apply`（`resolve` 不能碰
+///    `&mut WorldState`，C1）、且这次懒分配不会与同一批效果里其他
+///    `Effect` 的 `apply` 顺序产生新的竞态——这是比"五条硬要求"更大
+///    的一块工作，本批次如实记录为已知缺口，不假装已经实现了完整的
+///    三档分级。
+///
+/// `killer` 是否具名完全独立判断——具名与否只影响
+/// `KillRecord.killer` 是 `Some` 还是 `None`（见
+/// `WorldState::record_kill` 文档「killer 不做懒分配」一节），不影响
+/// 「要不要记录」这个判断本身。
+fn append_kill_history(world: &WorldState, effects: &mut Vec<Effect>) {
+    let mut kill_index = 0;
+    while kill_index < effects.len() {
+        let Effect::Kill {
+            target,
+            killer,
+            cause,
+        } = &effects[kill_index]
+        else {
+            kill_index += 1;
+            continue;
+        };
+        let (target, killer, cause) = (*target, *killer, *cause);
+        let Some(victim_agent) = world.actors.get(target) else {
+            kill_index += 1;
+            continue;
+        };
+        if victim_agent.remembered_id.is_some() {
+            // 这一下的伤害量：同一批效果里，`resolve_attack`/
+            // `resolve_use_skill` 恒先产出对同一 target 的
+            // `Effect::Damage`，再产出 `Effect::Kill`（见两者文档）——
+            // 这里从已经产出的效果里读回那个数字，而不是重新计算一遍
+            // 伤害公式（那属于 resolve_attack/resolve_use_skill 各自的
+            // 职责，本函数不应该重复一遍规则判断）。查不到时按 0 处理
+            // ——理论上不会发生，是防御性兜底，不是设计允许的正常路径。
+            let damage = effects
+                .iter()
+                .find_map(|effect| match effect {
+                    Effect::Damage { target: t, amount } if *t == target => Some(*amount),
+                    _ => None,
+                })
+                .unwrap_or(0);
+            let record = Effect::RecordHistoricalEvent {
+                at: world.clock,
+                location: victim_agent.pos,
+                victim: target,
+                killer,
+                cause,
+                damage,
+                remaining_health: victim_agent.health - damage,
+            };
+            effects.insert(kill_index, record);
+            kill_index += 1; // 跳过刚插入的记录，下一轮从真正的 Kill 开始。
+        }
+        kill_index += 1;
     }
 }
 
@@ -388,7 +475,15 @@ fn resolve_attack(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<
         amount: damage,
     }];
     if defender.health - damage <= 0 {
-        effects.push(Effect::Kill { target });
+        // 近战击杀——本批次没有武器系统（护甲/武器均属 P5 装备落地
+        // 之后，见本函数文档「防御与穿透」一节），`weapon` 恒
+        // `None`，与「徒手」在类型上无法区分，是当前已知的诚实简化，
+        // 见 `ll_world::history::KillCause::Melee` 文档。
+        effects.push(Effect::Kill {
+            target,
+            killer: Some(actor),
+            cause: KillCause::Melee { weapon: None },
+        });
     }
 
     let cost = action_cost(
@@ -609,6 +704,8 @@ fn resolve_use_skill(
             {
                 effects.push(Effect::Kill {
                     target: effect_target,
+                    killer: Some(actor),
+                    cause: KillCause::Skill { skill },
                 });
             }
         }
@@ -725,6 +822,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: surface_space_at(world, pos),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         })
     }
 
@@ -773,6 +873,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: surface_space_at(world, pos),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         })
     }
 
@@ -1148,5 +1251,140 @@ mod tests {
                 _ => None,
             })
             .expect("本文件的移动类测试用例都应产生 ScheduleNext 效果")
+    }
+
+    /// 造一个已具名（`remembered_id` 已赋值）的占位实体，站在 `pos`,
+    /// 生命值可由调用方指定——供击杀历史记录的端到端测试构造"低血量
+    /// 但已经被记住"的目标。
+    fn spawn_named_agent(
+        world: &mut WorldState,
+        pos: ll_core::torus::TorusPos,
+        health: i32,
+    ) -> EntityId {
+        let mut interner = ll_core::ident::Interner::new();
+        let profession = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
+        let race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
+        let mut world_id_counter = 0u32;
+        world.actors.spawn(Agent {
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession,
+            goals: Vec::new(),
+            race,
+            luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: surface_space_at(world, pos),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: Tick(0),
+            remembered_id: Some(ll_core::ident::WorldId::next(&mut world_id_counter)),
+        })
+    }
+
+    #[test]
+    fn 近战攻击致死已具名目标后历史事件记录着近战死因() {
+        // 端到端验证（不是结构往返）：从 Intent::Attack 造成致死伤害
+        // 开始，一路断言到 apply 真的把这条击杀写进
+        // world.history——KillCause 必须精确到「近战」这一级，而不是
+        // 只有一句"A 杀了 B"。
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        // 生命值 1：BASELINE 力量算出的攻击力必然大于 1（见
+        // combat::damage_after_defense 的单元测试），一击必死。
+        let victim = spawn_named_agent(&mut world, victim_pos, 1);
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+        );
+        for effect in &effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert：目标真的被销毁（不是只造出了记录、目标却还活着）。
+        assert!(world.actors.get(victim).is_none());
+        // 历史事件真的被写入了,不是只在效果列表里飘过。
+        assert_eq!(world.history.len(), 1);
+        let ll_world::history::HistoricalEventKind::Kill(record) = &world.history[0].kind;
+        // 致死手段精确到「近战」——不是笼统的"被杀"。
+        assert!(matches!(
+            record.cause,
+            ll_world::history::KillCause::Melee { weapon: None }
+        ));
+        // 攻击者没有被记住（remembered_id 为 None），记录里的
+        // killer 因此如实为 None——不是伪造出一个不存在的具名击杀者。
+        assert_eq!(record.killer, None);
+        // 致命一击确实造成了伤害、结算后生命值不高于零。
+        assert!(record.killing_blow.damage > 0);
+        assert!(record.killing_blow.remaining_health <= 0);
+    }
+
+    #[test]
+    fn 未具名目标被击杀时不产生历史事件记录() {
+        // 与上一条对照：victim 从未被"记住"（remembered_id 恒
+        // None）——本批次的分级判据要求 victim 已具名才记录（见
+        // append_kill_history 文档「触发判据」一节），这里验证「不
+        // 记录」也是真实生效的分支，不是恰好每次都触发。
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        let victim = world.actors.spawn(Agent {
+            pos: victim_pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: 1,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: ContentIndex::default(),
+            luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: surface_space_at(&world, victim_pos),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: Tick(0),
+            remembered_id: None,
+        });
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+        );
+        for effect in &effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert：目标依旧真的死了，但没有产生历史事件——分级判据把
+        // 「击杀发生」与「值不值得记录」分开，两者不能混为一谈。
+        assert!(world.actors.get(victim).is_none());
+        assert!(world.history.is_empty());
     }
 }

@@ -22,6 +22,7 @@ pub mod entity;
 pub mod exploration;
 pub mod fov;
 pub mod generate;
+pub mod history;
 pub mod interior;
 pub mod light;
 pub mod naming;

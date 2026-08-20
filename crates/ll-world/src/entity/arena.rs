@@ -181,6 +181,32 @@ impl<T> Arena<T> {
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
+
+    /// 保留槽位下标与世代号不变，把每个存活实体的值按 `f` 变换成新
+    /// 类型——供存档 schema 迁移（`ll_content::migrations`）在实体自身
+    /// 的形状变化（例如 `Agent` 新增字段）时重建整座 `Arena`，同时不
+    /// 破坏迁移前后 [`EntityId`] 的一致性：`Vacant`/`Retired` 槽位与
+    /// `free` 列表原样保留，只有 `Occupied` 槽位的 `value` 换了类型，
+    /// 下标与世代号完全不受影响，任何指向旧类型某个实体的 `EntityId`
+    /// 在新类型的 `Arena` 里仍然指向同一个逻辑实体。
+    pub fn map<U>(self, mut f: impl FnMut(T) -> U) -> Arena<U> {
+        let slots = self
+            .slots
+            .into_iter()
+            .map(|slot| match slot {
+                Slot::Occupied { generation, value } => Slot::Occupied {
+                    generation,
+                    value: f(value),
+                },
+                Slot::Vacant { generation } => Slot::Vacant { generation },
+                Slot::Retired => Slot::Retired,
+            })
+            .collect();
+        Arena {
+            slots,
+            free: self.free,
+        }
+    }
 }
 
 impl<T> Serialize for Arena<T>
@@ -358,6 +384,24 @@ mod tests {
 
         // Assert
         assert_eq!(decoded.len(), arena.len());
+    }
+
+    #[test]
+    fn map变换值类型后原有标识仍能查到变换后的值() {
+        // 供存档迁移重建 Arena<Agent> 使用——这里用 i32 -> String 验证
+        // 核心性质：下标/世代号不变，只有值的类型与内容换了。
+        // Arrange：混入一次销毁，确保空闲槽位与世代号递增也参与验证。
+        let mut arena = Arena::new();
+        let doomed = arena.spawn(1);
+        arena.despawn(doomed);
+        let survivor = arena.spawn(2);
+
+        // Act
+        let mapped = arena.map(|n| format!("v{n}"));
+
+        // Assert：旧标识（世代已递增）查不到,存活者标识能查到变换后的值。
+        assert_eq!(mapped.get(doomed), None);
+        assert_eq!(mapped.get(survivor), Some(&"v2".to_string()));
     }
 
     #[test]

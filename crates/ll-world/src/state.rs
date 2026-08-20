@@ -32,7 +32,7 @@ use serde::de::Error as _;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use ll_core::hashing::StateHasher;
-use ll_core::ident::ContentIndex;
+use ll_core::ident::{ContentIndex, WorldId};
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
 
@@ -41,6 +41,7 @@ use crate::chunk::ChunkGrid;
 use crate::entity::{Affiliation, Agent, Arena, EntityId, Goal, OrgRef, ThinPopulation};
 use crate::exploration::ExplorationMemory;
 use crate::generate::{GenParams, build_zone_noise};
+use crate::history::{HistoricalEvent, HistoricalEventKind, KillCause, KillingBlow, VictimState};
 use crate::interior::{Interior, InteriorTable};
 use crate::noise::TileableNoise;
 use crate::script_state::ScriptValue;
@@ -321,6 +322,44 @@ pub struct WorldState {
     /// 职责，本字段与本方法只负责让这个问题变得可以被回答。
     #[serde(skip)]
     pub terrain_table: TerrainTable,
+    /// 历史事件日志——击杀/死亡记录（`kill-and-death-events.md`）的
+    /// 存储，未来其余历史事件种类（建城、战争、王朝更替……）落地时会
+    /// 共用同一份存储，见 [`crate::history`] 模块文档「为什么落在
+    /// ll-world」一节。
+    ///
+    /// # schema v3 新增字段（P5 之后）
+    ///
+    /// `identity-and-ids.md`「schema 迁移问题」一节已经提前论证：这个
+    /// 容器字段若拖到对应系统真正落地才加进 `WorldState`，就必然是一次
+    /// 破坏性存档变更——本字段正是那次变更，见
+    /// `ll_content::migrations::Migration2To3`。
+    ///
+    /// # 参与 `hash()`（ADR 0022）与序列化，不加 `#[serde(skip)]`
+    ///
+    /// 与 [`Self::exploration`]/[`Self::player_entity`] 同一条纪律：
+    /// 历史事件是真正影响玩法与传说浏览查询结果的数据，缺席
+    /// `hash()` 会重演「新字段只加了，没人测过它是否被正确覆盖」的
+    /// 既有判据缺口（见 `Self::hash` 文档同名历史记录）。
+    pub history: Vec<HistoricalEvent>,
+    /// [`WorldId`] 分配计数器——`WorldId::next` 要求调用方提供一个
+    /// 贯穿整个世界生命周期、只会前进的计数器（见其文档），这里是
+    /// 那个计数器的持久存放处。见 [`Self::allocate_world_id`]。
+    ///
+    /// # 为什么不能是运行期局部变量
+    ///
+    /// 若计数器只存在于某次会话的局部变量里，读档后重新从 0 开始计数
+    /// 会与已经写进 [`Self::history`]（以及未来 `OrgInstance` 等）的
+    /// 旧 `WorldId` 撞号——`WorldId` 的核心约定「永不复用」（见其文档）
+    /// 因此要求计数器本身必须是存档的一部分，随世界一起持久化。
+    ///
+    /// # 参与 `hash()`，不加 `#[serde(skip)]`
+    ///
+    /// 理由同 [`Self::history`]：计数器的值影响"下一个被记住的实体会
+    /// 拿到哪个 WorldId"，是真正的玩法状态，不是可以每次会话重新算出
+    /// 的衍生值（ADR 0009 的"默认派生"不适用——见 `kill-and-death-events.md`
+    /// 四节对同一类问题的论证：这不是遍历成本的问题，是数据源本身
+    /// 无法重算）。
+    pub next_world_id: u32,
 }
 
 /// [`WorldState`] 反序列化的中转表示。
@@ -355,6 +394,16 @@ struct WorldStateRepr {
     exploration: ExplorationMemory,
     #[serde(default, with = "crate::script_state::serde_map")]
     global_script_state: BTreeMap<(String, String), ScriptValue>,
+    /// 历史事件日志——`#[serde(default)]` 的理由与 `exploration` 一致
+    /// （见其字段注释）：真正需要兼容 schema v2 存档（本字段引入之前
+    /// 写出的存档）走的是 `ll_content::migrations::Migration2To3`
+    /// 这条真正的迁移路径，这里的默认值只服务本文件内部用
+    /// `serde_json::json!` 手写局部字段的测试固件。
+    #[serde(default)]
+    history: Vec<HistoricalEvent>,
+    /// WorldId 分配计数器，理由与 `history` 同一节。
+    #[serde(default)]
+    next_world_id: u32,
 }
 
 impl TryFrom<WorldStateRepr> for WorldState {
@@ -402,6 +451,8 @@ impl TryFrom<WorldStateRepr> for WorldState {
             // 残留原样保留在这里，直到玩家显式做维护操作。
             global_script_state: repr.global_script_state,
             terrain_table: TerrainTable::default(),
+            history: repr.history,
+            next_world_id: repr.next_world_id,
         })
     }
 }
@@ -446,6 +497,8 @@ impl WorldState {
             exploration: ExplorationMemory::new(),
             global_script_state: BTreeMap::new(),
             terrain_table,
+            history: Vec::new(),
+            next_world_id: 0,
         })
     }
 
@@ -572,6 +625,91 @@ impl WorldState {
         let loaded_floors = self.interiors.total_floor_count();
         let cap = DEFAULT_RESIDENT_CAP.saturating_sub(loaded_floors).max(1);
         self.terrain.set_resident_cap(cap);
+    }
+
+    /// 分配一个新的、单调递增的 [`WorldId`]。
+    ///
+    /// 唯一的分配入口——历史事件记录（[`Self::record_kill`]）、懒分配
+    /// 的 `remembered_id`（[`Self::remembered_id_of_or_assign`]）都经
+    /// 这里取号，共用同一个持久计数器（[`Self::next_world_id`]），保证
+    /// 「永不复用」这条 `WorldId` 的核心约定不会因为存在两个独立计数器
+    /// 而被绕开。
+    pub fn allocate_world_id(&mut self) -> WorldId {
+        WorldId::next(&mut self.next_world_id)
+    }
+
+    /// 若 `entity` 尚未被"记住"（[`crate::entity::Agent::remembered_id`]
+    /// 为 `None`），懒分配一个新 `WorldId` 并写回；已经具名则直接返回
+    /// 既有值。`entity` 不存在时返回 `None`（与本文件其余查询「目标
+    /// 不存在时静默返回，不 panic」的既有纪律一致）。
+    ///
+    /// # 为什么这是"值得被记住"的懒分配落点
+    ///
+    /// `Agent::remembered_id` 文档「懒分配」一节列出的触发时机（出生进
+    /// 族谱、被玩家收为随从、成为任务发布者……）里，"死于一场被记录的
+    /// 击杀"是其中之一——本方法是这个触发时机在代码里的具体落点，由
+    /// [`Self::record_kill`] 在确认这场击杀值得被记录之后调用。
+    pub fn remembered_id_of_or_assign(&mut self, entity: EntityId) -> Option<WorldId> {
+        if let Some(existing) = self
+            .actors
+            .get(entity)
+            .and_then(|agent| agent.remembered_id)
+        {
+            return Some(existing);
+        }
+        let id = self.allocate_world_id();
+        let agent = self.actors.get_mut(entity)?;
+        agent.remembered_id = Some(id);
+        Some(id)
+    }
+
+    /// 追加一条击杀历史事件——`ll_sim::apply::apply` 响应
+    /// `Effect::RecordHistoricalEvent` 时调用的唯一入口（约束 C1：写
+    /// 世界只能经 `apply`，本方法把"如何写"这个细节封装在 `ll-world`
+    /// 内部，`apply` 只负责决定"要不要调、传什么参数"）。
+    ///
+    /// # 调用时机：必须在 `victim` 被 `Effect::Kill` 销毁之前
+    ///
+    /// [`Self::remembered_id_of_or_assign`] 需要读取（并可能写入）
+    /// `victim` 对应的 `Agent`——若这个实体已经被 `Arena::despawn`
+    /// 收走，本方法直接返回 `None`、不产出任何历史事件。`ll_sim::resolve`
+    /// 因此必须把这条效果排在对应的 `Effect::Kill` **之前**，见
+    /// `ll_sim::effect::Effect::RecordHistoricalEvent` 文档。
+    ///
+    /// # `killer` 不做懒分配
+    ///
+    /// 只有 `victim`（这场死亡本身）触发懒分配——`killer` 若尚未具名，
+    /// `KillRecord.killer` 就是 `None`,不会仅仅因为"参与了一场被记录
+    /// 的击杀"就顺手给击杀者也发一个 `WorldId`。这条不对称是刻意的：
+    /// 触发记录的判据是"victim 已具名"（见调用方 `ll_sim::resolve`
+    /// 的 `append_kill_history` 文档），killer 具名与否是这条判据之外
+    /// 的独立事实，不应该被这次记录动作反过来影响。
+    ///
+    /// 返回本次分配/复用的 `victim` `WorldId`；`victim` 已不存在时
+    /// 返回 `None` 且不追加任何记录。
+    pub fn record_kill(&mut self, report: crate::history::KillReport) -> Option<WorldId> {
+        let victim_id = self.remembered_id_of_or_assign(report.victim)?;
+        let killer_id = report
+            .killer
+            .and_then(|killer| self.actors.get(killer))
+            .and_then(|agent| agent.remembered_id);
+        let id = self.allocate_world_id();
+        self.history.push(HistoricalEvent {
+            id,
+            at: report.at,
+            location: report.location,
+            kind: HistoricalEventKind::Kill(crate::history::KillRecord {
+                killer: killer_id,
+                victim: victim_id,
+                cause: report.cause,
+                killing_blow: KillingBlow {
+                    damage: report.damage,
+                    remaining_health: report.remaining_health,
+                },
+                victim_state: VictimState::UNKNOWN,
+            }),
+        });
+        Some(victim_id)
     }
 
     /// 把整个世界状态归约成一个 64 位摘要。
@@ -729,13 +867,103 @@ impl WorldState {
                 hasher.write_i64(modifier.expires_at.0);
             }
             write_script_state(&mut hasher, &agent.script_state);
+            write_optional_content_index(&mut hasher, agent.creature_kind);
+            hasher.write_i64(agent.spawned_at.0);
+            write_optional_world_id(&mut hasher, agent.remembered_id);
         }
 
         write_optional_entity(&mut hasher, self.player_entity);
         self.exploration.write_hash(&mut hasher);
         write_script_state(&mut hasher, &self.global_script_state);
 
+        // 历史事件日志与 WorldId 分配计数器（击杀与死亡记录批次）——
+        // 理由见 Self::history/Self::next_world_id 字段文档「参与
+        // hash()」一节：这是同一条先例（P3 阶段 hash() 不含实体状态
+        // 测不出战斗结算跑偏）第五次重演的预防性覆盖。`history` 是
+        // `Vec`，保序，不涉及 HashMap/HashSet 迭代顺序（约束 C5）。
+        hasher.write_u64(self.history.len() as u64);
+        for event in &self.history {
+            write_historical_event(&mut hasher, event);
+        }
+        hasher.write_u64(u64::from(self.next_world_id));
+
         hasher.finish()
+    }
+}
+
+/// 把一个 `Option<ContentIndex>` 混入哈希——[`WorldState::hash`] 的
+/// 帮手，供 `Agent::creature_kind` 使用。与 [`write_optional_entity`]
+/// 同一种模式：先写判别字节区分 `Some`/`None`。
+fn write_optional_content_index(hasher: &mut StateHasher, index: Option<ContentIndex>) {
+    match index {
+        Some(index) => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(index.get()));
+        }
+        None => hasher.write_u64(0),
+    }
+}
+
+/// 把一个 `Option<WorldId>` 混入哈希——[`WorldState::hash`] 的帮手，
+/// 供 `Agent::remembered_id`/`KillRecord::killer` 使用。
+fn write_optional_world_id(hasher: &mut StateHasher, id: Option<WorldId>) {
+    match id {
+        Some(id) => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(id.get()));
+        }
+        None => hasher.write_u64(0),
+    }
+}
+
+/// 把一条 [`HistoricalEvent`] 混入哈希——[`WorldState::hash`] 的帮手
+/// （击杀与死亡记录批次）。`kind` 目前只有一个变体（[`crate::history`]
+/// 模块文档「为什么只有 Kill 一个 kind 变体」），但仍然先写一个判别
+/// 字节——未来新增变体时,这个判别字节让新旧变体产出的哈希天然不会
+/// 因为字段布局恰好雷同而碰撞,不需要等到第二个变体出现时才回头补。
+fn write_historical_event(hasher: &mut StateHasher, event: &HistoricalEvent) {
+    hasher.write_u64(u64::from(event.id.get()));
+    hasher.write_i64(event.at.0);
+    hasher.write_i64(i64::from(event.location.x()));
+    hasher.write_i64(i64::from(event.location.y()));
+    match &event.kind {
+        HistoricalEventKind::Kill(record) => {
+            hasher.write_u64(0);
+            write_optional_world_id(hasher, record.killer);
+            hasher.write_u64(u64::from(record.victim.get()));
+            write_kill_cause(hasher, &record.cause);
+            hasher.write_i64(i64::from(record.killing_blow.damage));
+            hasher.write_i64(i64::from(record.killing_blow.remaining_health));
+            hasher.write_u64(u64::from(record.victim_state.poisoned));
+            hasher.write_u64(u64::from(record.victim_state.surrounded));
+        }
+    }
+}
+
+/// 把一个 [`KillCause`] 混入哈希——[`write_historical_event`] 的帮手。
+/// 与 [`write_space`]/[`write_affiliation`] 同一种模式：先写变体判别
+/// 字节，各变体互不混淆。
+fn write_kill_cause(hasher: &mut StateHasher, cause: &KillCause) {
+    match *cause {
+        KillCause::Melee { weapon } => {
+            hasher.write_u64(0);
+            write_optional_content_index(hasher, weapon);
+        }
+        KillCause::Skill { skill } => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(skill.get()));
+        }
+        KillCause::Terrain { kind } => {
+            hasher.write_u64(2);
+            hasher.write_u64(u64::from(kind.index().get()));
+        }
+        KillCause::Fall => hasher.write_u64(3),
+        KillCause::Starvation => hasher.write_u64(4),
+        KillCause::Poison => hasher.write_u64(5),
+        KillCause::Environmental(index) => {
+            hasher.write_u64(6);
+            hasher.write_u64(u64::from(index.get()));
+        }
     }
 }
 
@@ -1126,6 +1354,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         });
         world.player_entity = Some(player_id);
         let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
@@ -1183,6 +1414,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         });
 
         // Act
@@ -1471,6 +1705,149 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             script_state: BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         }
+    }
+
+    #[test]
+    fn 历史事件日志增加一条记录后世界哈希改变() {
+        // 红/绿测试的「绿」半边：ADR 0022 要求新字段必须真正进
+        // hash()，这里直接验证——若这条断言失败（改动 history 后哈希
+        // 不变），说明 hash() 没有覆盖这个字段，回归测试对这部分状态
+        // 完全空跑。
+        // Arrange
+        let mut world = test_world();
+        let victim = world.actors.spawn(blank_agent(&world));
+        let hash_before = world.hash();
+
+        // Act
+        world.record_kill(crate::history::KillReport {
+            at: Tick(1),
+            location: world.actors.get(victim).expect("刚生成必然存在").pos,
+            victim,
+            killer: None,
+            cause: crate::history::KillCause::Fall,
+            damage: 999,
+            remaining_health: -1,
+        });
+
+        // Assert
+        assert_ne!(world.hash(), hash_before);
+    }
+
+    #[test]
+    fn worldid分配计数器推进后世界哈希改变() {
+        // 红/绿测试的另一半：即使 history 本身长度不变（本用例不追加
+        // 任何历史事件），单独推进 next_world_id 也必须改变哈希——
+        // 否则「计数器悄悄跳号」这类缺陷不会被任何黄金基准测出来。
+        // Arrange
+        let mut world = test_world();
+        let hash_before = world.hash();
+
+        // Act
+        world.allocate_world_id();
+
+        // Assert
+        assert_ne!(world.hash(), hash_before);
+    }
+
+    #[test]
+    fn record_kill未改变world时哈希与改动前逐位相同() {
+        // 红/绿测试的「红」半边：两个独立构造、内容逐字段相同的世界，
+        // 哈希必须相等——证明上面两条「改了就变」的断言不是因为
+        // hash() 本身不稳定/每次调用都不同才恰好通过。
+        // Arrange
+        let world_a = test_world();
+        let world_b = test_world();
+
+        // Act & Assert
+        assert_eq!(world_a.hash(), world_b.hash());
+    }
+
+    #[test]
+    fn worldid分配器同一段模拟跑两遍产出相同的id序列() {
+        // WorldId 分配器必须确定性（约束 C5：不得依赖 HashMap 迭代
+        // 顺序；也不得用随机或时间）——这里跑两遍完全相同的一段"模拟"
+        // （对同一批实体依次记录击杀），断言两次产出的历史事件 id
+        // 序列逐一相等。
+        // Arrange
+        fn run_once() -> Vec<u32> {
+            let mut world = test_world();
+            let a = world.actors.spawn(blank_agent(&world));
+            let b = world.actors.spawn(blank_agent(&world));
+            let c = world.actors.spawn(blank_agent(&world));
+            for victim in [a, b, c] {
+                let pos = world.actors.get(victim).expect("刚生成必然存在").pos;
+                world.record_kill(crate::history::KillReport {
+                    at: Tick(1),
+                    location: pos,
+                    victim,
+                    killer: None,
+                    cause: crate::history::KillCause::Fall,
+                    damage: 50,
+                    remaining_health: -1,
+                });
+            }
+            world.history.iter().map(|event| event.id.get()).collect()
+        }
+
+        // Act
+        let first_run = run_once();
+        let second_run = run_once();
+
+        // Assert
+        assert_eq!(first_run, second_run);
+        // 附带核实序列本身确实是三个不同的、单调递增的号——不是碰巧
+        // 全部相等（例如实现里误把计数器写死成常量）才通过上面那条
+        // 断言。每次 record_kill 消耗两个号（先给 victim 懒分配
+        // remembered_id，再给事件本身分配 id，见其文档），因此三次
+        // 击杀产出 [1, 3, 5] 而不是连续的 [0, 1, 2]。
+        assert_eq!(first_run, vec![1, 3, 5]);
+    }
+
+    #[test]
+    fn remembered_id_of_or_assign对已具名实体不改变其id() {
+        // Arrange
+        let mut world = test_world();
+        let victim = world.actors.spawn(blank_agent(&world));
+        let first = world
+            .remembered_id_of_or_assign(victim)
+            .expect("刚生成的实体必然存在");
+
+        // Act
+        let second = world
+            .remembered_id_of_or_assign(victim)
+            .expect("同一个实体第二次查询仍然存在");
+
+        // Assert：第二次调用返回同一个 id，不是又分配了一个新的。
+        assert_eq!(first, second);
+    }
+
+    #[test]
+    fn record_kill在victim已被销毁时不追加任何历史事件() {
+        // 调用时机纪律的直接验证——见 WorldState::record_kill 文档
+        // 「调用时机」一节。
+        // Arrange
+        let mut world = test_world();
+        let victim = world.actors.spawn(blank_agent(&world));
+        let pos = world.actors.get(victim).expect("刚生成必然存在").pos;
+        world.actors.despawn(victim);
+
+        // Act
+        let result = world.record_kill(crate::history::KillReport {
+            at: Tick(1),
+            location: pos,
+            victim,
+            killer: None,
+            cause: crate::history::KillCause::Fall,
+            damage: 10,
+            remaining_health: -1,
+        });
+
+        // Assert
+        assert_eq!(result, None);
+        assert!(world.history.is_empty());
     }
 }

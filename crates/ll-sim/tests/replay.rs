@@ -111,6 +111,9 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(player_zone, ll_core::ident::ContentIndex::default()),
         script_state: std::collections::BTreeMap::new(),
+        creature_kind: None,
+        spawned_at: ll_core::time::Tick(0),
+        remembered_id: None,
     });
     // 探索记忆写入路径（`resolve_move` 追加的 `Effect::MarkExplored`）
     // 按 `player_entity` 区分「谁在动」，只给玩家标记探索——见其文档
@@ -141,6 +144,9 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(enemy_zone, ll_core::ident::ContentIndex::default()),
         script_state: std::collections::BTreeMap::new(),
+        creature_kind: None,
+        spawned_at: ll_core::time::Tick(0),
+        remembered_id: None,
     });
 
     (world, player, enemy)
@@ -359,7 +365,28 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///   `player_entity` 本身）也确实改变了摘要，写入路径不是摆设。
 ///
 /// 两步核验都在本次提交前实际跑过，不是假设的推演。
-const EXPECTED_REPLAY_DIGEST: u64 = 17_575_307_657_617_953_743;
+///
+/// # 第八次重冻的原因（击杀与死亡记录批次）
+///
+/// `WorldState::hash` 新增混入了 `Agent::creature_kind`/`spawned_at`/
+/// `remembered_id` 三个字段（每个存活实体一份）与 `WorldState::history`/
+/// `next_world_id` 两个字段（见 `ll_world::state::WorldState::hash`
+/// 文档同名字段的「参与 hash()」一节）——本文件的 `intent_stream` 没有
+/// 让任何一次攻击致死（见 `setup`/`intent_stream` 文档，本用例只覆盖
+/// 移动/开门/攻击的普通结算路径，不含 `Effect::Kill`），因此
+/// `history`/`next_world_id` 的取值本身没变（仍是空/零）；但新增字段
+/// 意味着喂进哈希器的字节流本身变长了，摘要因此改变，这与前几次重冻
+/// （新增字段即便取值恒定也会移动摘要，因为哈希覆盖的是"这个字段有没有
+/// 被纳入"而不是"这个字段现在的值是不是默认值"）是同一条先例。
+///
+/// 人工核验（真实执行）：把
+/// `crates/ll-world/src/state.rs` 里新增的
+/// `write_optional_content_index`/`hasher.write_i64(agent.spawned_at.0)`/
+/// `write_optional_world_id(&mut hasher, agent.remembered_id)` 三行与
+/// `history`/`next_world_id` 混入的三行临时删掉重新跑这条测试，摘要
+/// 精确回到本次重冻之前的旧常量 `17_575_307_657_617_953_743`，恢复
+/// 后重新跑通再确认新常量 `6_199_102_875_138_192_911` 稳定复现。
+const EXPECTED_REPLAY_DIGEST: u64 = 6_199_102_875_138_192_911;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

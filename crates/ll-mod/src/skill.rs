@@ -795,6 +795,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         };
         let actor = world.actors.spawn(blank(vec![base_ids.strike]));
         let target = world.actors.spawn(blank(Vec::new()));

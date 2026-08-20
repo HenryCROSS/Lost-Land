@@ -87,6 +87,9 @@ fn spawn_agent(world: &mut WorldState) -> EntityId {
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
         script_state: BTreeMap::new(),
+        creature_kind: None,
+        spawned_at: ll_core::time::Tick(0),
+        remembered_id: None,
     })
 }
 
@@ -317,7 +320,7 @@ fn 技能伤害足以致死时产出kill效果() {
     assert!(
         effects
             .iter()
-            .any(|effect| matches!(effect, Effect::Kill { target: t } if *t == target)),
+            .any(|effect| matches!(effect, Effect::Kill { target: t, .. } if *t == target)),
         "生命值 5 的目标挨了 10 点技能伤害，理应产出 Effect::Kill"
     );
 }

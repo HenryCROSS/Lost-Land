@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use ll_core::ident::ContentIndex;
+use ll_core::ident::{ContentIndex, WorldId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use serde::{Deserialize, Serialize};
@@ -228,6 +228,40 @@ pub struct Agent {
     /// 满足）。
     #[serde(with = "crate::script_state::serde_map")]
     pub script_state: BTreeMap<(String, String), ScriptValue>,
+    /// 生物类型，用于击杀匹配与死因统计分类
+    /// （`knowledge/design/kill-and-death-events.md` 六节）。
+    ///
+    /// `None` 时退回 [`Self::race`]——绝大多数"有种族意义"的智慧类
+    /// 人型（玩家、NPC）不需要设置这个字段，只有专门的"怪物"内容需要。
+    /// 独立于 `race` 存在的理由：`race` 原本设计给玩家角色种族，用它
+    /// 兼职"敌人类型"会让"击杀 3 个哥布林"与"击杀 3 个哥布林种族的
+    /// 玩家角色"共用同一个索引——这正是 `crates/ll-mod/src/quest.rs`
+    /// 模块文档「跨表引用」一节如实记录的既有简化，本字段是消除它的
+    /// 落点（匹配规则本身留给消费方——本批次只新增字段，不改动既有的
+    /// `KillCount` 匹配逻辑，避免在同一批改动里牵连任务系统）。
+    pub creature_kind: Option<ContentIndex>,
+    /// 出生/升格为厚层实体的世界时刻——供死亡记录里"存活时长"一类
+    /// 未来统计使用，也是"这个实体何时开始存在"这一问题唯一的权威
+    /// 答案（薄层不追踪逐个体的时间，见 [`crate::entity::ThinPopulation`]
+    /// 模块文档）。
+    pub spawned_at: Tick,
+    /// 若这个实体已经"值得被记住"（出生进历史家族族谱、被玩家收为
+    /// 随从、成为任务发布者、死于一场被记录的击杀……），这里是它的
+    /// 永久标识；否则为 `None`。
+    ///
+    /// # 懒分配，不是每个 `Agent` 出生时的必填项
+    ///
+    /// `knowledge/design/identity-and-ids.md`「类型/实例分离」定案表
+    /// 只把 `WorldId` 分配给「势力、家族、聚落、宗教团体、历史事件」，
+    /// 没有覆盖「历史人物/具名 NPC」这一类个体——
+    /// `kill-and-death-events.md` 五节指出了这个缺口，本字段是消费端
+    /// （"判断一个实体是否具名"）需要的落点，正式归属留给该文档未来
+    /// 修订。若给每个 `Agent` 出生时都发一个 `WorldId`，"被记住"这个
+    /// 本该几乎零成本的轴就要背上"必须分配全局唯一递增 ID"的负担，
+    /// 与背景 NPC 零存储现算的设计前提冲突（见同一节论证）——因此只在
+    /// 首次"值得被记住"的那一刻才赋值，见
+    /// [`crate::state::WorldState::remembered_id_of_or_assign`]。
+    pub remembered_id: Option<WorldId>,
 }
 
 impl Agent {
@@ -328,6 +362,9 @@ mod tests {
                 ("lostland".to_string(), "cooldown".to_string()),
                 ScriptValue::Int(5),
             )]),
+            creature_kind: Some(race),
+            spawned_at: Tick(10),
+            remembered_id: Some(WorldId::next(&mut world_id_counter)),
         }
     }
 

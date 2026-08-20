@@ -112,7 +112,7 @@ impl TurnEngine {
                 });
             }
             apply(world, effect);
-            if let Effect::Kill { target } = effect {
+            if let Effect::Kill { target, .. } = effect {
                 // Timeline 与 WorldState 是两个独立的存储（见
                 // `ll_sim::timeline` 模块文档），apply 只知道
                 // WorldState，清理时间轴里残留的死者行动记录是调用方
@@ -428,6 +428,9 @@ mod tests {
                 ll_core::ident::ContentIndex::default(),
             ),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         })
     }
 

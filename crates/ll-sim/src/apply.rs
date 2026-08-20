@@ -72,8 +72,34 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
                 agent.health -= amount;
             }
         }
-        Effect::Kill { target } => {
+        Effect::Kill { target, .. } => {
+            // killer/cause 只服务 `resolve` 侧的历史事件判定
+            // （`append_kill_history` 在此之前已经读过它们，见
+            // `Effect::RecordHistoricalEvent` 文档「为什么必须排在
+            // 对应的 Effect::Kill 之前」）——apply 本身销毁实体不需要
+            // 这两个字段，忽略它们不是遗漏，是「apply 不含游戏逻辑」
+            // 纪律的直接体现：这两个字段的意义已经在 resolve 阶段被
+            // 消费完毕。
             world.actors.despawn(*target);
+        }
+        Effect::RecordHistoricalEvent {
+            at,
+            location,
+            victim,
+            killer,
+            cause,
+            damage,
+            remaining_health,
+        } => {
+            world.record_kill(ll_world::history::KillReport {
+                at: *at,
+                location: *location,
+                victim: *victim,
+                killer: *killer,
+                cause: *cause,
+                damage: *damage,
+                remaining_health: *remaining_health,
+            });
         }
         Effect::ScheduleNext { actor, at } => {
             if let Some(agent) = world.actors.get_mut(*actor) {
@@ -256,6 +282,9 @@ mod tests {
                 ll_core::ident::ContentIndex::default(),
             ),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
         }
     }
 
@@ -324,7 +353,14 @@ mod tests {
                 amount: 10,
             },
         );
-        apply(&mut world, &Effect::Kill { target: actor });
+        apply(
+            &mut world,
+            &Effect::Kill {
+                target: actor,
+                killer: None,
+                cause: ll_world::history::KillCause::Fall,
+            },
+        );
         apply(&mut world, &Effect::ScheduleNext { actor, at: Tick(5) });
         apply(&mut world, &Effect::AdjustWallet { actor, delta: 100 });
         let (zone, _) = world.terrain.layout().tile_to_zone(pos);

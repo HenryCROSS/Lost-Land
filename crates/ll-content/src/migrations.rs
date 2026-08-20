@@ -39,17 +39,15 @@ use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
 use ll_world::bounded_grid::BoundedGrid;
-use ll_world::entity::{Agent, Arena, EntityId, ThinPopulation};
+use ll_world::entity::{Affiliation, Agent, Arena, BaseStats, EntityId, Goal, ThinPopulation};
 use ll_world::exploration::ExplorationMemory;
 use ll_world::interior::{Interior, InteriorTable};
 use ll_world::script_state::ScriptValue;
-use ll_world::space::SpaceId;
+use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceStore;
 use ll_world::terrain::TerrainTable;
-use serde::Deserialize;
-#[cfg(test)]
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
 use crate::migration::{Migration, MigrationError};
@@ -77,6 +75,16 @@ struct InteriorTableDataV1 {
 
 /// v1 存档主体的顶层形状——`WorldState` 新增 `exploration` 字段之前，
 /// 字段顺序与当年的 `WorldStateRepr` 一致（见模块文档）。
+///
+/// # 为什么 `actors` 是 `Arena<AgentV2>`，不是 `Arena<Agent>`
+///
+/// `Agent` 自身的形状在 v1/v2 之间没有变化（击杀与死亡记录批次新增
+/// 的三个字段是 v2→v3 才发生的事），但**当前**（v3 之后）的真实
+/// `Agent` 类型已经带上了那三个字段——继续用真实 `Agent` 类型解析 v1
+/// 字节会按错位的字段布局解码，静默产出损坏数据而不是报错。
+/// [`AgentV2`]（本文件下方定义，随 v2→v3 迁移一起引入）恰好是「v1/v2
+/// 共同的旧形状」，用它解析 v1 字节是正确的，不是偷懒复用了一个名字
+/// 不太对但恰好能编译的类型。
 #[derive(Deserialize)]
 #[cfg_attr(test, derive(Serialize))]
 struct WorldStateV1 {
@@ -86,7 +94,7 @@ struct WorldStateV1 {
     terrain: SurfaceStore,
     interiors: InteriorTableDataV1,
     population: ThinPopulation,
-    actors: Arena<Agent>,
+    actors: Arena<AgentV2>,
     player_entity: Option<EntityId>,
     #[serde(with = "ll_world::script_state::serde_map")]
     global_script_state: BTreeMap<(String, String), ScriptValue>,
@@ -124,25 +132,165 @@ impl Migration for Migration1To2 {
             interiors.insert(interior);
         }
 
-        let world = WorldState {
+        // 产出 v2 形状（WorldStateV2），不是当前真实的 WorldState——
+        // 真实 WorldState 现在是 v3 形状（多出 history/next_world_id/
+        // Agent 三个新字段），若这里直接编码真实类型，本迁移就会悄悄
+        // 把 v1 存档一步跳成 v3 形状的字节，但 MigrationChain 记录的
+        // target_version 仍然是 2，链条自身的版本号与实际产出的字节
+        // 形状会对不上——下一步 Migration2To3 会用 v2 形状去解码一份
+        // 实际是 v3 形状的字节，同样静默错位。
+        let v2 = WorldStateV2 {
             seed: v1.seed,
             clock: v1.clock,
             size: v1.size,
             terrain: v1.terrain,
             interiors,
-            current_interior: None,
-            surface_profile: ContentIndex::default(),
             population: v1.population,
             actors: v1.actors,
             player_entity: v1.player_entity,
             exploration: ExplorationMemory::new(),
             global_script_state: v1.global_script_state,
+        };
+
+        postcard::to_allocvec(&v2).map_err(|err| MigrationError::StepFailed {
+            at_version: 1,
+            reason: format!("v2 存档主体编码失败：{err}"),
+        })
+    }
+}
+
+/// v2 存档里的 `Agent` 形状——击杀与死亡记录批次新增
+/// `creature_kind`/`spawned_at`/`remembered_id` 三个字段之前，字段顺序
+/// 与当前 `Agent` 的前 18 个字段一致（见 `ll_world::entity::agent`
+/// 模块）。
+///
+/// # 为什么 `Serialize` 不是 `#[cfg(test)]` 专属
+///
+/// 与 `WorldStateV1`/`InteriorV1` 不同——那两个类型只在测试里构造
+/// 「模拟旧字节」才需要编码，生产代码只解码它们；`AgentV2`/
+/// `WorldStateV2` 还要供 [`Migration1To2`] 的生产 `migrate` 实现编码
+/// 成 v2 形状的真实输出字节（见其文档「产出 v2 形状……」一节），因此
+/// 两者的 `Serialize` 必须无条件派生。
+#[derive(Deserialize, Serialize)]
+struct AgentV2 {
+    pos: TorusPos,
+    stats: BaseStats,
+    next_action_at: Tick,
+    health: i32,
+    affiliations: Vec<Affiliation>,
+    wallet: i64,
+    profession: ContentIndex,
+    goals: Vec<Goal>,
+    race: ContentIndex,
+    current_space: Space,
+    luck: i32,
+    mana: i32,
+    stamina: i32,
+    unlocked_skills: Vec<ContentIndex>,
+    skill_cooldowns: BTreeMap<ContentIndex, Tick>,
+    subclasses: Vec<ContentIndex>,
+    active_stat_modifiers:
+        BTreeMap<ll_world::entity::AttributeKind, ll_world::entity::ActiveStatModifier>,
+    #[serde(with = "ll_world::script_state::serde_map")]
+    script_state: BTreeMap<(String, String), ScriptValue>,
+}
+
+/// v2 存档主体的顶层形状——`WorldState` 新增 `history`/`next_world_id`
+/// 字段之前,字段顺序与当前 `WorldStateRepr` 一致（见
+/// `ll_world::state` 模块文档）。`interiors`/`terrain`/`population`/
+/// `exploration` 等字段自 v1→v2 之后形状未变,直接复用真实类型解析——
+/// 与 [`Migration1To2`] 模块文档「为什么用……而不是直接操作字节」一节
+/// 同一个理由：只给「形状变了」的类型（这里是 `Agent`/`WorldState`
+/// 本身）各留一份镜像,其余字段复用真实类型。`Serialize` 无条件派生的
+/// 理由见 [`AgentV2`] 文档同名一节。
+#[derive(Deserialize, Serialize)]
+struct WorldStateV2 {
+    seed: u64,
+    clock: Tick,
+    size: TorusSize,
+    terrain: SurfaceStore,
+    interiors: InteriorTable,
+    population: ThinPopulation,
+    actors: Arena<AgentV2>,
+    player_entity: Option<EntityId>,
+    exploration: ExplorationMemory,
+    #[serde(with = "ll_world::script_state::serde_map")]
+    global_script_state: BTreeMap<(String, String), ScriptValue>,
+}
+
+/// v2 → v3：补齐 `WorldState::history`（恒为空——v2 存档写出时击杀与
+/// 死亡记录这个概念还不存在，没有任何"已经发生"的历史事件可继承）、
+/// `WorldState::next_world_id`（恒为 0——v2 存档从未分配过任何
+/// `WorldId`，从零开始计数是唯一诚实的起点，见
+/// `WorldId::next` 文档「永不复用」）与 `Agent` 新增的
+/// `creature_kind`/`remembered_id`（恒为 `None`——迁移后的旧角色一律
+/// 视为"尚未具名"/"未设置生物类型"）、`spawned_at`（恒为
+/// `Tick(0)`——旧存档不知道具体出生时刻，世界纪元起点是唯一不需要
+/// 编造数据的占位值；本字段本批次尚无任何消费方读取它，选用这个占位
+/// 值不影响任何现有判定）。
+pub struct Migration2To3;
+
+impl Migration for Migration2To3 {
+    fn source_version(&self) -> u32 {
+        2
+    }
+
+    fn target_version(&self) -> u32 {
+        3
+    }
+
+    fn migrate(&self, body: Vec<u8>) -> Result<Vec<u8>, MigrationError> {
+        let v2: WorldStateV2 =
+            postcard::from_bytes(&body).map_err(|err| MigrationError::StepFailed {
+                at_version: 2,
+                reason: format!("v2 存档主体解码失败：{err}"),
+            })?;
+
+        let actors = v2.actors.map(|agent| Agent {
+            pos: agent.pos,
+            stats: agent.stats,
+            next_action_at: agent.next_action_at,
+            health: agent.health,
+            affiliations: agent.affiliations,
+            wallet: agent.wallet,
+            profession: agent.profession,
+            goals: agent.goals,
+            race: agent.race,
+            current_space: agent.current_space,
+            luck: agent.luck,
+            mana: agent.mana,
+            stamina: agent.stamina,
+            unlocked_skills: agent.unlocked_skills,
+            skill_cooldowns: agent.skill_cooldowns,
+            subclasses: agent.subclasses,
+            active_stat_modifiers: agent.active_stat_modifiers,
+            script_state: agent.script_state,
+            creature_kind: None,
+            spawned_at: Tick(0),
+            remembered_id: None,
+        });
+
+        let world = WorldState {
+            seed: v2.seed,
+            clock: v2.clock,
+            size: v2.size,
+            terrain: v2.terrain,
+            interiors: v2.interiors,
+            current_interior: None,
+            surface_profile: ContentIndex::default(),
+            population: v2.population,
+            actors,
+            player_entity: v2.player_entity,
+            exploration: v2.exploration,
+            global_script_state: v2.global_script_state,
             terrain_table: TerrainTable::default(),
+            history: Vec::new(),
+            next_world_id: 0,
         };
 
         postcard::to_allocvec(&world).map_err(|err| MigrationError::StepFailed {
-            at_version: 1,
-            reason: format!("v2 存档主体编码失败：{err}"),
+            at_version: 2,
+            reason: format!("v3 存档主体编码失败：{err}"),
         })
     }
 }
@@ -184,7 +332,12 @@ mod tests {
             terrain: world.terrain,
             interiors: InteriorTableDataV1 { interiors },
             population: world.population,
-            actors: world.actors,
+            // WorldState::new 从不 spawn 任何 Agent（见其文档），这里
+            // 恒是空池——Arena<AgentV2> 是「v1/v2 共同旧形状」，与真实
+            // WorldState 现在的 Arena<Agent>（v3 形状）不是同一个类型,
+            // 不能直接搬 world.actors 过来，但两者在「空」这个状态下
+            // 反正没有任何字段差异需要体现。
+            actors: Arena::new(),
             player_entity: world.player_entity,
             global_script_state: world.global_script_state,
         };
@@ -196,17 +349,29 @@ mod tests {
         interner.intern(NamespacedId::parse("lostland:dungeon").expect("合法"))
     }
 
+    /// 把一份 v1 形状的存档主体字节沿着完整的迁移链（v1→v2→v3）升级，
+    /// 解码成当前真实的 `WorldState`——`Migration1To2` 单独的产出是
+    /// v2 形状（`WorldStateV2`），不能再直接当作当前 `WorldState`
+    /// 解码（见 `Migration1To2` 文档「产出 v2 形状……」一节），本仓库
+    /// 已知的"当前最新 schema"因此永远是"把链条走完"，不是"跑完某一
+    /// 具体的一步"。
+    fn migrate_v1_body_to_current(body: Vec<u8>) -> WorldState {
+        let v2_body = Migration1To2
+            .migrate(body)
+            .expect("v1 到 v2 的迁移应当成功");
+        let v3_body = Migration2To3
+            .migrate(v2_body)
+            .expect("v2 到 v3 的迁移应当成功");
+        postcard::from_bytes(&v3_body).expect("迁移产出的字节必须是合法的 v3 存档")
+    }
+
     #[test]
     fn 迁移后空interior的存档能解码成合法的世界状态() {
         // Arrange
         let body = encode_v1_body(Vec::new());
 
         // Act
-        let migrated = Migration1To2
-            .migrate(body)
-            .expect("v1 到 v2 的迁移应当成功");
-        let world: WorldState =
-            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v2 存档");
+        let world = migrate_v1_body_to_current(body);
 
         // Assert
         assert_eq!(world.interiors.total_floor_count(), 0);
@@ -218,11 +383,7 @@ mod tests {
         let body = encode_v1_body(Vec::new());
 
         // Act
-        let migrated = Migration1To2
-            .migrate(body)
-            .expect("v1 到 v2 的迁移应当成功");
-        let world: WorldState =
-            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v2 存档");
+        let world = migrate_v1_body_to_current(body);
 
         // Assert
         assert_eq!(world.exploration, ExplorationMemory::new());
@@ -248,11 +409,7 @@ mod tests {
         }]);
 
         // Act
-        let migrated = Migration1To2
-            .migrate(body)
-            .expect("v1 到 v2 的迁移应当成功");
-        let world: WorldState =
-            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v2 存档");
+        let world = migrate_v1_body_to_current(body);
 
         // Assert
         let interior = world
@@ -277,11 +434,7 @@ mod tests {
         }]);
 
         // Act
-        let migrated = Migration1To2
-            .migrate(body)
-            .expect("v1 到 v2 的迁移应当成功");
-        let world: WorldState =
-            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v2 存档");
+        let world = migrate_v1_body_to_current(body);
 
         // Assert
         let interior = world
@@ -303,6 +456,178 @@ mod tests {
         assert!(matches!(
             result,
             Err(MigrationError::StepFailed { at_version: 1, .. })
+        ));
+    }
+
+    /// 手写编码一份 v2 形状的存档主体字节——理由同 [`encode_v1_body`]：
+    /// 独立于当前生产类型，模拟"升级前写盘的真实旧字节"。`agent` 为
+    /// `Some` 时会往 `actors` 里放一个具体的 v2 形状 `Agent`，供「迁移
+    /// 后数据没丢」这条断言使用。
+    fn encode_v2_body(agent: Option<AgentV2>) -> Vec<u8> {
+        let world = base_v1_world();
+        let mut actors: Arena<AgentV2> = Arena::new();
+        if let Some(agent) = agent {
+            actors.spawn(agent);
+        }
+        let v2 = WorldStateV2 {
+            seed: world.seed,
+            clock: world.clock,
+            size: world.size,
+            terrain: world.terrain,
+            interiors: world.interiors,
+            population: world.population,
+            actors,
+            player_entity: None,
+            exploration: world.exploration,
+            global_script_state: world.global_script_state,
+        };
+        postcard::to_allocvec(&v2).expect("手写的 v2 镜像类型必然可编码")
+    }
+
+    /// [`encode_v1_body`]/[`encode_v2_body`] 共用的空世界构造——只是
+    /// 借用 `WorldState::new` 拿到一份地形/尺寸数据，不消费其
+    /// `actors`/`player_entity`。
+    fn base_v1_world() -> WorldState {
+        let layout = v1_layout();
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        let spawn = layout.tile_size().wrap(0, 0);
+        WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件")
+    }
+
+    /// 一个字段取值互不相同的 v2 `Agent`——供往返测试确认每个字段都
+    /// 真的被迁移函数原样保留，而不是巧合地相等。
+    fn sample_agent_v2(world: &WorldState) -> AgentV2 {
+        let mut interner = Interner::new();
+        let profession = interner.intern(NamespacedId::parse("lostland:farmer").expect("合法"));
+        let race = interner.intern(NamespacedId::parse("lostland:dwarf").expect("合法"));
+        let pos = world.size.wrap(3, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        AgentV2 {
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(7),
+            health: 55,
+            affiliations: Vec::new(),
+            wallet: 321,
+            profession,
+            goals: Vec::new(),
+            race,
+            current_space: Space::surface(zone, ContentIndex::default()),
+            luck: 4,
+            mana: 20,
+            stamina: 30,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: BTreeMap::new(),
+            script_state: BTreeMap::new(),
+        }
+    }
+
+    #[test]
+    fn 迁移后v2里的agent核心字段原样保留() {
+        // Arrange
+        let world = base_v1_world();
+        let agent_v2 = sample_agent_v2(&world);
+        let (expected_pos, expected_health, expected_wallet) =
+            (agent_v2.pos, agent_v2.health, agent_v2.wallet);
+        let body = encode_v2_body(Some(agent_v2));
+
+        // Act
+        let migrated = Migration2To3
+            .migrate(body)
+            .expect("v2 到 v3 的迁移应当成功");
+        let migrated_world: WorldState =
+            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v3 存档");
+
+        // Assert：只断言这一批"迁移前就存在的字段"，新字段的默认值由
+        // 下面几条独立测试各自断言。
+        let agent = migrated_world
+            .actors
+            .iter()
+            .next()
+            .expect("迁移后应当保留这个 Agent");
+        assert_eq!(
+            (agent.pos, agent.health, agent.wallet),
+            (expected_pos, expected_health, expected_wallet)
+        );
+    }
+
+    #[test]
+    fn 迁移后v2里的agent新字段取诚实默认值而非编造数据() {
+        // Arrange
+        let world = base_v1_world();
+        let body = encode_v2_body(Some(sample_agent_v2(&world)));
+
+        // Act
+        let migrated = Migration2To3
+            .migrate(body)
+            .expect("v2 到 v3 的迁移应当成功");
+        let migrated_world: WorldState =
+            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v3 存档");
+
+        // Assert
+        let agent = migrated_world
+            .actors
+            .iter()
+            .next()
+            .expect("迁移后应当保留这个 Agent");
+        assert_eq!(agent.creature_kind, None);
+        assert_eq!(agent.spawned_at, Tick(0));
+        assert_eq!(agent.remembered_id, None);
+    }
+
+    #[test]
+    fn 迁移后world的历史事件日志为空() {
+        // Arrange
+        let body = encode_v2_body(None);
+
+        // Act
+        let migrated = Migration2To3
+            .migrate(body)
+            .expect("v2 到 v3 的迁移应当成功");
+        let migrated_world: WorldState =
+            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v3 存档");
+
+        // Assert
+        assert!(migrated_world.history.is_empty());
+    }
+
+    #[test]
+    fn 迁移后world的worldid分配计数器为零() {
+        // Arrange
+        let body = encode_v2_body(None);
+
+        // Act
+        let migrated = Migration2To3
+            .migrate(body)
+            .expect("v2 到 v3 的迁移应当成功");
+        let migrated_world: WorldState =
+            postcard::from_bytes(&migrated).expect("迁移产出的字节必须是合法的 v3 存档");
+
+        // Assert
+        assert_eq!(migrated_world.next_world_id, 0);
+    }
+
+    #[test]
+    fn 损坏的v2字节迁移失败而不panic() {
+        // Arrange
+        let corrupted = vec![0xFFu8; 4];
+
+        // Act
+        let result = Migration2To3.migrate(corrupted);
+
+        // Assert
+        assert!(matches!(
+            result,
+            Err(MigrationError::StepFailed { at_version: 2, .. })
         ));
     }
 }

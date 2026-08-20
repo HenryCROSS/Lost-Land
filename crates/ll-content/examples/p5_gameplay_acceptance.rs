@@ -191,6 +191,9 @@ fn bare_agent(world: &WorldState, pos: TorusPos) -> Agent {
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
         script_state: BTreeMap::new(),
+        creature_kind: None,
+        spawned_at: ll_core::time::Tick(0),
+        remembered_id: None,
     }
 }
 

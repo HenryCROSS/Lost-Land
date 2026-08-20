@@ -111,6 +111,21 @@ pub fn remap_world(
         exploration: _,
         global_script_state: _,
         terrain_table: _,
+        // 历史事件记录（击杀与死亡记录批次新增）：`HistoricalEvent`
+        // 内部的 `KillRecord`/`KillCause` 确实可能携带 `ContentIndex`
+        // （`Skill`/`Melee.weapon`/`Environmental` 三个变体）——与
+        // `Goal`/`Affiliation` 这类叶子类型同一个既知局限（见模块文档
+        // 「代价与局限」一节）：本函数的穷尽解构只保护顶层容器结构体
+        // 新增字段这一类疏漏，不递归展开到叶子类型内部未来可能出现的
+        // `ContentIndex`。历史记录是"已经发生、不再变化"的既往事实，
+        // 缺失 mod 时让它继续携带旧索引（不伪造、不崩溃，与
+        // `DegradeAction::Reject` 同一种"诚实保留"取舍）比在这一批改动
+        // 里发明一套新的"历史记录专用降级语义"更负责——真正需要按当前
+        // 会话内容展示这些记录时，消费方（传说浏览）应自行处理查不到
+        // 的情形，如实记录为已知缺口，不在本次变更范围内补齐。
+        history: _,
+        // WorldId 分配计数器：纯 u32，不依赖 mod 加载顺序，不需要重映射。
+        next_world_id: _,
     } = *world;
 
     terrain.try_remap_resident_terrain(|kind| -> Result<TerrainKind, LoadError> {
@@ -265,6 +280,14 @@ fn remap_agent(
         active_stat_modifiers: _,
         ref mut current_space,
         script_state: _,
+        // 击杀与死亡记录批次新增的三个字段——逐一显式决定：
+        ref mut creature_kind,
+        // 出生时刻——纯数值，不携带任何 ContentIndex，不需要重映射。
+        spawned_at: _,
+        // WorldId 不依赖 mod 加载顺序（`ll_core::ident::WorldId` 模块
+        // 文档：构造过程本身稳定，永不复用），与 `remap_affiliations`
+        // 对 `OrgRef::Instance` 的既有处理同一个理由，不需要重映射。
+        remembered_id: _,
     } = *agent;
 
     *profession = remapper.remap_character_attribute(*profession, owner)?;
@@ -275,6 +298,23 @@ fn remap_agent(
     remap_unlocked_skills(remapper, unlocked_skills)?;
     remap_skill_cooldowns(remapper, skill_cooldowns)?;
     remap_subclasses(remapper, subclasses)?;
+    remap_creature_kind(remapper, creature_kind, owner)?;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的生物类型标记：`Some` 时与 `profession`/`race`
+/// 同一条路径（[`Remapper::remap_character_attribute`]）——`creature_kind`
+/// 同样是"这个实体是什么"的角色属性，找不到当前会话内容时的降级/
+/// 拒绝语义应当与种族/职业一致，不是新的一类。`None`（绝大多数有
+/// 种族意义的智慧类人型）原样保留，不触发任何查表。
+fn remap_creature_kind(
+    remapper: &mut Remapper<'_>,
+    creature_kind: &mut Option<ContentIndex>,
+    owner: OwnerContext,
+) -> Result<(), LoadError> {
+    if let Some(kind) = *creature_kind {
+        *creature_kind = Some(remapper.remap_character_attribute(kind, owner)?);
+    }
     Ok(())
 }
 
@@ -488,6 +528,9 @@ mod tests {
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(pos_zone, ContentIndex::default()),
             script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: Tick(0),
+            remembered_id: None,
         }
     }
 
@@ -526,6 +569,74 @@ mod tests {
                 .expect("实体应当仍存在")
                 .profession,
             farmer_new
+        );
+    }
+
+    #[test]
+    fn creature_kind有值时按角色属性同一路径重映射() {
+        // creature_kind 与 profession/race 走同一条 remap_character_attribute
+        // 路径（见 remap_creature_kind 文档），这里独立验证：存档写出时
+        // 与当前会话的登记顺序不同,重映射后仍能靠字符串对号找到新索引。
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let goblin_old = save_registry.intern(id("lostland:goblin"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:wolf")); // 抢先登记,打乱顺序
+        let goblin_new = current.intern(id("lostland:goblin"));
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.creature_kind = Some(goblin_old);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(actions.is_empty());
+        assert_eq!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .creature_kind,
+            Some(goblin_new)
+        );
+    }
+
+    #[test]
+    fn creature_kind为none时重映射不做任何处理() {
+        // 绝大多数「有种族意义」的智慧类人型不设置这个字段——None 必须
+        // 原样保留,不应该被重映射逻辑意外改写成 Some。
+        // Arrange
+        let (mut world, save_registry) = test_world_with_save_registry();
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let agent = bare_agent(zone);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert_eq!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .creature_kind,
+            None
         );
     }
 
