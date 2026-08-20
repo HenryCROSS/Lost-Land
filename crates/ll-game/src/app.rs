@@ -30,7 +30,7 @@ use ll_world::space::Space;
 use ll_world::surface_store::SurfaceWindow;
 
 use crate::content::LoadedContent;
-use crate::layout::{effective_sight_radius, effective_tint, terrain_entry_name};
+use crate::layout::{effective_sight_radius, effective_tint, terrain_entry_name, tile_tint};
 use crate::save::save_game;
 use crate::world::{GameWorld, STREAM_RADIUS_ZONES};
 
@@ -206,7 +206,32 @@ impl Demo {
     }
 }
 
-/// 把地表世界画到离屏目标：地形（仅可见格）+ 玩家标记。
+/// 把地表世界画到离屏目标：地形 + 玩家标记。
+///
+/// # 三层可见性（战争迷雾）
+///
+/// 项目所有者原话：「没有视野的地方就暗下来一些，有视野的地方就没
+/// 问题。而没去过的地方就黑着」。三层对应到这里的三种处理：
+///
+/// 1. **从未探索**——完全跳过绘制，留下 `ll_render::batch` 既有的黑色
+///    清屏背景（见 `crates/ll-render/src/batch.rs` 的
+///    `wgpu::LoadOp::Clear(wgpu::Color::BLACK)`），不需要本函数另画
+///    一层黑色。
+/// 2. **探索过、当前无视野**——照常画出该格当前的地形（地形是确定性
+///    噪声，参见 `ll_world::exploration` 模块文档「只存位图，不存
+///    地形副本」：记忆里的样子等价于现在重新算出的样子，没有另存
+///    快照的必要），但用比当前光照更暗的记忆色调。
+/// 3. **当前有视野**——按 [`effective_tint`] 正常绘制。
+///
+/// 三层的判定表本身是 [`crate::layout::tile_tint`]（与 GPU 无关的纯
+/// 函数，见其文档），本函数只负责喂参数、按结果决定画不画。
+///
+/// `exploration` 读自 `world.exploration`——`ExplorationMemory` 是随
+/// `WorldState` 一起持久化、参与 `hash()` 的世界状态（见
+/// `ll_world::state::WorldState::exploration` 字段文档），写入路径是
+/// `ll_sim::resolve::resolve_move` 在玩家移动后追加的
+/// `ll_sim::effect::Effect::MarkExplored`，经 `apply` 落地——本函数只
+/// 读，不写。
 fn render_surface(
     game_world: &GameWorld,
     content: &LoadedContent,
@@ -223,6 +248,7 @@ fn render_surface(
     let clock = world.clock;
     let radius = effective_sight_radius(&profile, clock);
     let tint = effective_tint(&profile, clock);
+    let layout = *world.terrain.layout();
 
     let visible = compute_fov(
         &SurfaceWindow::new(&world.terrain),
@@ -233,9 +259,11 @@ fn render_surface(
 
     let world_width = world.size.width() as u64;
     for pos in camera.visible_tiles() {
-        if !visible.contains(pos) {
+        let explored = world.exploration.is_explored(&layout, pos);
+        let Some(pos_tint) = tile_tint(visible.contains(pos), explored, tint) else {
+            // 从未探索：不画，交给清屏背景表现「黑」，见本函数文档。
             continue;
-        }
+        };
         let Some(kind) = world.terrain_at(pos) else {
             continue;
         };
@@ -253,7 +281,7 @@ fn render_surface(
         );
         resources.batch.push(
             order,
-            sprite_instance(sx as f32, sy as f32, entry.sprite_size(), uv, tint),
+            sprite_instance(sx as f32, sy as f32, entry.sprite_size(), uv, pos_tint),
         );
     }
 
