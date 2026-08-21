@@ -26,7 +26,7 @@ use ll_core::ident::NamespacedId;
 pub enum LoadStage {
     /// 在 mod 根目录下列出候选子目录（[`crate::discover::discover_mods`]）。
     Discover,
-    /// 解析单个候选的 `mod.toml`（[`crate::manifest::parse_manifest`]）。
+    /// 解析单个候选的 `mod.json5`（[`crate::manifest::parse_manifest`]）。
     Parse,
     /// 依赖拓扑排序，含重复命名空间/缺失依赖/成环三类失败
     /// （[`crate::topo::topo_sort`]）。

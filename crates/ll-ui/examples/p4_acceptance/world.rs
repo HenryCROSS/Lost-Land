@@ -69,7 +69,7 @@ pub(crate) struct DemoWorld {
 }
 
 /// 三个 mod 根目录相对本 crate `Cargo.toml` 的路径。分成三个独立目录
-/// 的理由见各自 `mod.toml` 里的注释：拓扑排序对缺失依赖/成环/重复
+/// 的理由见各自 `mod.json5` 里的注释：拓扑排序对缺失依赖/成环/重复
 /// 命名空间是「整批中止」的，混进同一个目录会让其他示例 mod 各自的
 /// 失败原因被掩盖。
 const PRIMARY_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
@@ -189,7 +189,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
         player,
         example_mod_manifest: Path::new(PRIMARY_MODS_ROOT)
             .join("example_mod")
-            .join("mod.toml"),
+            .join(ll_mod::discover::MANIFEST_FILENAME),
         necromancer_primary_attribute,
     }
 }

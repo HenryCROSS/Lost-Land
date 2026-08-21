@@ -1,6 +1,6 @@
 //! 占位美术生成器：从 `assets/atlas/placeholder.json` 这份既有的布局
 //! 规格出发，生成本体资产 VFS 需要的松散贴图树
-//! （`assets/sprites/*.png` + `assets/sprites/manifest.json`）。
+//! （`assets/sprites/*.png` + `assets/sprites/manifest.json5`）。
 //!
 //! # 定位变化：从「烧图集」到「烧松散贴图」
 //!
@@ -17,9 +17,14 @@
 //!
 //! 本工具的新主职责因此是 [`generate_loose_sprites`]：给每个条目单独
 //! 画一张恰好 `width`×`height` 大小的独立画布，写到
-//! `assets/sprites/<name>.png`，并产出配套的 `assets/sprites/manifest.json`
+//! `assets/sprites/<name>.png`，并产出配套的 `assets/sprites/manifest.json5`
 //! （形状见 `ll_mod::asset_vfs` 模块文档「目录约定」一节：`name`/`file`/
-//! `pivot`/`footprint`，**不含 `rect`**）。
+//! `pivot`/`footprint`，**不含 `rect`**）。清单文件名后缀是 `.json5`
+//! ——项目所有者 2026-08-20 裁定手写配置统一 JSON5（见
+//! `ll_mod::asset_vfs` 模块文档「目录约定」一节），但本工具产出的内容
+//! 仍然是普通 JSON：JSON 是 JSON5 的严格子集，生成端不需要注释/尾逗号，
+//! 消费端（`ll_mod::asset_vfs`）统一用 `json5::from_str` 读取，两边不需要
+//! 维护两套解析器。
 //!
 //! # 旧的共享画布生成能力保留，但已降级为「遗留」
 //!
@@ -114,7 +119,7 @@ fn main() {
         .unwrap_or_else(|error| panic!("解析 {} 失败：{error}", json_path.display()));
 
     let sprite_count = generate_loose_sprites(&atlas, &sprites_dir());
-    println!("已生成 {sprite_count} 张松散贴图与 assets/sprites/manifest.json");
+    println!("已生成 {sprite_count} 张松散贴图与 assets/sprites/manifest.json5");
 
     generate_legacy_shared_atlas(&atlas, &atlas_dir);
     println!(
@@ -170,7 +175,7 @@ fn generate_mod_demo_assets(mod_assets_dir: &Path) {
         }],
     };
     let manifest_json = serde_json::to_string_pretty(&manifest).expect("序列化清单不应失败");
-    std::fs::write(sprites_dir.join("manifest.json"), manifest_json)
+    std::fs::write(sprites_dir.join("manifest.json5"), manifest_json)
         .expect("写入 example_mod 精灵清单不应失败");
 
     let override_dir = mod_assets_dir
@@ -203,7 +208,7 @@ fn example_mod_assets_dir() -> PathBuf {
 }
 
 /// 给每个条目单独画一张 `width`×`height` 的独立画布，写到
-/// `sprites_dir/<name>.png`，并在同一目录下写出 `manifest.json`。
+/// `sprites_dir/<name>.png`，并在同一目录下写出 `manifest.json5`。
 /// 返回实际生成的贴图数量。
 fn generate_loose_sprites(atlas: &AtlasJson, sprites_dir: &Path) -> usize {
     std::fs::create_dir_all(sprites_dir)
@@ -238,7 +243,7 @@ fn generate_loose_sprites(atlas: &AtlasJson, sprites_dir: &Path) -> usize {
 
     let manifest = SpriteManifestOut { entries };
     let manifest_json = serde_json::to_string_pretty(&manifest).expect("序列化清单不应失败");
-    let manifest_path = sprites_dir.join("manifest.json");
+    let manifest_path = sprites_dir.join("manifest.json5");
     std::fs::write(&manifest_path, manifest_json)
         .unwrap_or_else(|error| panic!("写入 {} 失败：{error}", manifest_path.display()));
 
@@ -449,7 +454,7 @@ mod tests {
         // Assert
         assert_eq!(count, 1);
         assert!(out_dir.join("hero_idle_0.png").exists());
-        assert!(out_dir.join("manifest.json").exists());
+        assert!(out_dir.join("manifest.json5").exists());
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&out_dir);
@@ -485,7 +490,7 @@ mod tests {
         // Act
         generate_loose_sprites(&atlas, &out_dir);
         let manifest_text =
-            std::fs::read_to_string(out_dir.join("manifest.json")).expect("清单应已写出");
+            std::fs::read_to_string(out_dir.join("manifest.json5")).expect("清单应已写出");
 
         // Assert
         assert!(!manifest_text.contains("\"rect\""));
@@ -528,8 +533,8 @@ mod tests {
                 std::fs::read(second_dir.join(&file_name)).expect("第二次生成应写出该文件");
             assert_eq!(first_bytes, second_bytes, "{file_name} 两次生成的字节不同");
         }
-        let first_manifest = std::fs::read(first_dir.join("manifest.json")).expect("应已写出");
-        let second_manifest = std::fs::read(second_dir.join("manifest.json")).expect("应已写出");
+        let first_manifest = std::fs::read(first_dir.join("manifest.json5")).expect("应已写出");
+        let second_manifest = std::fs::read(second_dir.join("manifest.json5")).expect("应已写出");
         assert_eq!(first_manifest, second_manifest);
 
         // Cleanup

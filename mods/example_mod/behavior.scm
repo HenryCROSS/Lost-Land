@@ -9,7 +9,7 @@
 ;;   2. 附近有敌人（技能不可用）   → 普通近战攻击
 ;;   3. 都不满足                  → 有敌人则走近一步，否则原地等待
 ;;
-;; 注意：**本文件不在 mod.toml 的 entry_points 里**——`nearby-enemy`/
+;; 注意：**本文件不在 mod.json5 的 entry_points 里**——`nearby-enemy`/
 ;; `skill-ready?`/`direction-toward` 是运行期查询 API（由
 ;; `ll_mod::script_behavior_source::ScriptBehaviorSource` 在构造它
 ;; 自己的 `ScriptEngine` 时注册），不是 mod 装载管线

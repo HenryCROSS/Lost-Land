@@ -26,14 +26,17 @@ ll-world = { path = "../ll-world" }
 # `ll_script::host::ScriptEngine`。依赖方向 ll-script ← ll-mod（规格
 # §5）本就允许——`ll-script` 不认识、也不依赖 `ll-mod`。
 ll-script = { path = "../ll-script" }
-# mod 清单格式选 TOML（本任务的实现假设，理由见 task-6-brief.md：
-# 与规格 §11.1「用户设置 TOML」同类场景，且不需要先起 Steel VM 就能
-# 解析出依赖关系用于拓扑排序）。
+# mod 清单格式：JSON5（项目所有者 2026-08-20 裁定「全用 json5 吧,
+# 还可以写注释方便日后维护」，统一本仓库全部手写配置格式；此前的
+# TOML 假设见提交历史）。`json5` crate 只做解析，不提供序列化，但
+# JSON 是 JSON5 的严格子集——手写文件（`mod.json5`）享受注释/尾逗号，
+# 由本 crate 生成的 JSON（若将来出现）继续用 `serde_json` 写出即可,
+# 两边统一走 `json5::from_str` 读取,不需要维护两套解析器。
 serde = { version = "1", features = ["derive"] }
-toml = "0.9"
-# 资产 VFS（`crate::asset_vfs`）解析 mod 自带的 `assets/sprites/manifest.json`
+json5 = "1.3.1"
+# 资产 VFS（`crate::asset_vfs`）解析 mod 自带的 `assets/sprites/manifest.json5`
 # ——从 [dev-dependencies] 升级为生产依赖：此前只有测试用它验证存档
-# 序列化往返，现在装载管线本身在生产代码路径上要解析这份 JSON。
+# 序列化往返，现在装载管线本身在生产代码路径上要解析这份 JSON5。
 serde_json = "1"
 # `crate::asset_vfs` 对路径穿越、清单解析失败等非致命问题记警告日志
 # （「降级而非崩溃」），与 `ll-render`/`ll-game` 使用的是同一个门面。

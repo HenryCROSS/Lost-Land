@@ -117,7 +117,7 @@ pub struct LoadedContent {
 /// 最后解析 `assets_root` 下本体与全部 mod 的资产 VFS。
 ///
 /// `assets_root` 是本体自己的 `assets/` 目录（内含
-/// `sprites/manifest.json`），与 `mods_root` 是两个独立的目录树——
+/// `sprites/manifest.json5`），与 `mods_root` 是两个独立的目录树——
 /// 本体资产不属于任何一个 mod 目录，见 [`ll_mod::asset_vfs`] 模块
 /// 文档「为什么本体资产也要走这条路径」一节。
 ///

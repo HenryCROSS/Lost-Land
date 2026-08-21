@@ -241,7 +241,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     LoadStatus::Loaded
 }
 
-/// 从 `mod.toml` 所在目录名推出一个尽力而为的 mod 身份，供清单本身都
+/// 从 `mod.json5` 所在目录名推出一个尽力而为的 mod 身份，供清单本身都
 /// 解析失败时仍能在报告里有个地方挂靠——与 `crate::topo` 里
 /// `check_missing_dependencies` 同一套「解析恒不失败，万一失败退化成
 /// 固定占位符」的降级写法（见其文档），不是本模块发明的新约定。
@@ -460,10 +460,14 @@ mod tests {
     }
 
     /// 在 `root` 下建一个候选 mod 子目录，写入清单与（可选）脚本。
-    fn write_mod(root: &Path, dir_name: &str, manifest_toml: &str, script: Option<&str>) {
+    fn write_mod(root: &Path, dir_name: &str, manifest_json5: &str, script: Option<&str>) {
         let mod_dir = root.join(dir_name);
         fs::create_dir_all(&mod_dir).expect("创建 mod 子目录");
-        fs::write(mod_dir.join("mod.toml"), manifest_toml).expect("写入清单");
+        fs::write(
+            mod_dir.join(crate::discover::MANIFEST_FILENAME),
+            manifest_json5,
+        )
+        .expect("写入清单");
         if let Some(source) = script {
             fs::write(mod_dir.join("main.scm"), source).expect("写入脚本");
         }
@@ -476,10 +480,7 @@ mod tests {
         write_mod(
             root.path(),
             "puredata",
-            r#"
-            namespace = "puredata"
-            version = "0.1.0"
-            "#,
+            r#"{ namespace: "puredata", version: "0.1.0" }"#,
             None,
         );
         let mut registry = Registry::new();
@@ -502,11 +503,11 @@ mod tests {
         write_mod(
             root.path(),
             "examplemod",
-            r#"
-            namespace = "examplemod"
-            version = "0.1.0"
-            entry_points = ["main.scm"]
-            "#,
+            r#"{
+                namespace: "examplemod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
             Some(r#"(register-terrain "examplemod:lava_floor" #f #t 4294967295 "")"#),
         );
         let mut registry = Registry::new();
@@ -534,20 +535,17 @@ mod tests {
         write_mod(
             root.path(),
             "broken",
-            r#"
-            namespace = "broken"
-            version = "0.1.0"
-            entry_points = ["main.scm"]
-            "#,
+            r#"{
+                namespace: "broken",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
             Some("(+ 1 2"),
         );
         write_mod(
             root.path(),
             "good",
-            r#"
-            namespace = "good"
-            version = "0.1.0"
-            "#,
+            r#"{ namespace: "good", version: "0.1.0" }"#,
             None,
         );
         let mut registry = Registry::new();
@@ -581,11 +579,11 @@ mod tests {
         write_mod(
             root.path(),
             "needs_ghost",
-            r#"
-            namespace = "needs_ghost"
-            version = "0.1.0"
-            dependencies = ["ghost"]
-            "#,
+            r#"{
+                namespace: "needs_ghost",
+                version: "0.1.0",
+                dependencies: ["ghost"],
+            }"#,
             None,
         );
         let mut registry = Registry::new();
@@ -611,22 +609,17 @@ mod tests {
         write_mod(
             root.path(),
             "needs_new_provider",
-            r#"
-            namespace = "needs_new_provider"
-            version = "0.1.0"
-
-            [dependencies]
-            provider = ">=2.0"
-            "#,
+            r#"{
+                namespace: "needs_new_provider",
+                version: "0.1.0",
+                dependencies: { provider: ">=2.0" },
+            }"#,
             None,
         );
         write_mod(
             root.path(),
             "provider",
-            r#"
-            namespace = "provider"
-            version = "1.0.0"
-            "#,
+            r#"{ namespace: "provider", version: "1.0.0" }"#,
             None,
         );
         let mut registry = Registry::new();
@@ -652,10 +645,7 @@ mod tests {
         write_mod(
             root.path(),
             "BadNamespace",
-            r#"
-            namespace = "BadNamespace"
-            version = "0.1.0"
-            "#,
+            r#"{ namespace: "BadNamespace", version: "0.1.0" }"#,
             None,
         );
         let mut registry = Registry::new();
@@ -680,11 +670,11 @@ mod tests {
         write_mod(
             root.path(),
             "sneaky",
-            r#"
-            namespace = "sneaky"
-            version = "0.1.0"
-            entry_points = ["main.scm"]
-            "#,
+            r#"{
+                namespace: "sneaky",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
             Some("(require-builtin steel/time)\n(instant/now)"),
         );
         let mut registry = Registry::new();
@@ -707,11 +697,11 @@ mod tests {
         write_mod(
             root.path(),
             "twoline",
-            r#"
-            namespace = "twoline"
-            version = "0.1.0"
-            entry_points = ["main.scm"]
-            "#,
+            r#"{
+                namespace: "twoline",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
             Some("(define x 1)\n(+ 1 2"),
         );
         let mut registry = Registry::new();
@@ -759,11 +749,11 @@ mod tests {
         write_mod(
             root.path(),
             "gameplay",
-            r#"
-            namespace = "gameplay"
-            version = "0.1.0"
-            entry_points = ["main.scm"]
-            "#,
+            r#"{
+                namespace: "gameplay",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
             Some(
                 r#"
                 (register-terrain "gameplay:lava_floor" #f #f 350 "")
@@ -835,16 +825,21 @@ mod tests {
         write_mod(
             root.path(),
             "examplemod",
-            r#"
-            namespace = "examplemod"
-            version = "0.1.0"
-            entry_points = ["main.scm"]
-            "#,
+            r#"{
+                namespace: "examplemod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
             Some(r#"(register-terrain "examplemod:lava_floor" #f #t 4294967295 "")"#),
         );
 
         // Act
-        let status = reload_mod(&root.path().join("examplemod").join("mod.toml"));
+        let status = reload_mod(
+            &root
+                .path()
+                .join("examplemod")
+                .join(crate::discover::MANIFEST_FILENAME),
+        );
 
         // Assert
         assert_eq!(status, LoadStatus::Loaded);
@@ -857,16 +852,21 @@ mod tests {
         write_mod(
             root.path(),
             "broken",
-            r#"
-            namespace = "broken"
-            version = "0.1.0"
-            entry_points = ["main.scm"]
-            "#,
+            r#"{
+                namespace: "broken",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
             Some("(+ 1 2"),
         );
 
         // Act
-        let status = reload_mod(&root.path().join("broken").join("mod.toml"));
+        let status = reload_mod(
+            &root
+                .path()
+                .join("broken")
+                .join(crate::discover::MANIFEST_FILENAME),
+        );
 
         // Assert
         assert!(matches!(status, LoadStatus::Failed(_)));

@@ -1,0 +1,7 @@
+// 故意写错的 mod（P4 验收 demo）：脚本语法错误，用来证明加载管理界面
+// 能捕获这类失败、显示到哪一行，且不会拖垮进程。
+{
+  namespace: "brokensyntax",
+  version: "0.1.0",
+  entry_points: ["main.scm"],
+}

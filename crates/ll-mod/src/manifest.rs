@@ -1,9 +1,16 @@
 //! mod 清单：解析、结构、错误。
 //!
-//! **清单格式：TOML。** 规格没有明文规定 mod 清单格式，这是本任务的
-//! 实现假设，理由是与规格 §11.1「用户设置 TOML」同一类「给人手改的
-//! 元数据」场景，且不需要先起 Steel VM 就能解析出依赖关系用于拓扑
-//! 排序（清单本身不该依赖脚本求值）。若与预期不符，评审时可调整。
+//! **清单格式：JSON5。** 项目所有者 2026-08-20 裁定「全用 json5 吧,
+//! 还可以写注释方便日后维护」，本仓库全部手写配置格式统一成 JSON5
+//! （本地化 `.ftl` 除外，那是所有者另一条裁定「i18n 就用 FTL」）——此前
+//! 本模块用的是 TOML（理由曾是与规格 §11.1「用户设置 TOML」同一类
+//! 「给人手改的元数据」场景），迁移到 JSON5 不改变这条理由本身：仍然
+//! 不需要先起 Steel VM 就能解析出依赖关系用于拓扑排序（清单本身不该
+//! 依赖脚本求值），额外换来的是注释与尾逗号——手写清单终于能写清楚
+//! 「这个字段为什么这样填」，不必只靠外部文档。解析用 [`json5::from_str`]，
+//! 它只做解析、不提供序列化，但本模块从不需要把 [`ModManifest`] 写回
+//! 磁盘（清单永远是 mod 作者手写的输入，不是本体生成的输出），因此
+//! 「只解析」这条限制不构成问题。
 //!
 //! # 校验分工（[0015](../../../knowledge/decisions/0015-content-id-registration-is-parsing-not-invariant.md)）
 //!
@@ -20,19 +27,21 @@
 //!
 //! 清单里 `dependencies` 字段支持两种写法：
 //!
-//! ```toml
-//! dependencies = ["othermod"]          # 旧版：裸命名空间列表
+//! ```json5
+//! dependencies: ["othermod"]           // 旧版：裸命名空间列表
 //! ```
-//! ```toml
-//! [dependencies]                       # 新版：命名空间 -> 版本约束
-//! othermod = ">=1.0.0"
+//! ```json5
+//! dependencies: {                      // 新版：命名空间 -> 版本约束
+//!   othermod: ">=1.0.0",
+//! }
 //! ```
 //!
 //! 旧版写法不报废、不需要迁移——每一项解析成
 //! [`crate::version_constraint::VersionConstraint::Any`]（只要求依赖
 //! 存在，不比较版本），与这个字段加版本约束之前的既有行为完全等价。
-//! `mods/example_mod/mod.toml` 当前没有 `dependencies` 字段，两种写法
-//! 对它都不构成迁移压力。
+//! `mods/example_mod/mod.json5` 当前没有 `dependencies` 字段，两种写法
+//! 对它都不构成迁移压力。两种写法在 TOML 与 JSON5 之间也是同构的
+//! （数组 ↔ 数组，表 ↔ 对象），从 TOML 迁移到 JSON5 没有引入新的歧义。
 
 use crate::version_constraint::{VersionConstraint, parse_constraint};
 use ll_core::error::CoreError;
@@ -212,7 +221,7 @@ impl fmt::Display for ModError {
 
 impl core::error::Error for ModError {}
 
-/// 从清单文件反序列化出的原始结构，字段与磁盘上的 TOML 一一对应。
+/// 从清单文件反序列化出的原始结构，字段与磁盘上的 JSON5 一一对应。
 ///
 /// 与 [`ModManifest`] 分开是 0015 分工的直接体现：本结构只负责
 /// 「字符串 ↔ 结构」这一层，`namespace` 字段还没有被解析成
@@ -225,7 +234,7 @@ struct RawManifest {
     namespace: String,
     /// 版本号，必填。
     version: String,
-    /// 依赖的其他 mod。允许缺省为空（多数 mod 无依赖），两种 TOML
+    /// 依赖的其他 mod。允许缺省为空（多数 mod 无依赖），两种 JSON5
     /// 形状都接受，见 [`RawDependencies`]。
     #[serde(default)]
     dependencies: RawDependencies,
@@ -234,21 +243,20 @@ struct RawManifest {
     entry_points: Vec<String>,
 }
 
-/// 清单里 `dependencies` 字段的两种合法 TOML 形状——向后兼容旧版裸命名
-/// 空间列表，同时支持新版「命名空间 = 版本约束」表（见模块文档「依赖
+/// 清单里 `dependencies` 字段的两种合法 JSON5 形状——向后兼容旧版裸命名
+/// 空间列表，同时支持新版「命名空间 -> 版本约束」对象（见模块文档「依赖
 /// 版本约束：向后兼容」一节）。
 ///
 /// 用 `#[serde(untagged)]` 而不是手写 `Deserialize` 去探测输入形状：
-/// 两种 TOML 语法本身互斥（数组用 `[...]`，表用 `[dependencies]` 段落
-/// 或内联 `{}`），serde 依次尝试两个变体本身就能无歧义地区分，不需要
-/// 额外的判别逻辑。
+/// 两种 JSON5 语法本身互斥（数组用 `[...]`，对象用 `{...}`），serde
+/// 依次尝试两个变体本身就能无歧义地区分，不需要额外的判别逻辑。
 #[derive(Debug, serde::Deserialize)]
 #[serde(untagged)]
 enum RawDependencies {
-    /// 旧版形式：`dependencies = ["othermod"]`。每一项只是命名空间，
+    /// 旧版形式：`dependencies: ["othermod"]`。每一项只是命名空间，
     /// 不附带版本要求——解析后统一变成 [`VersionConstraint::Any`]。
     List(Vec<String>),
-    /// 新版形式：`[dependencies]` 段落，`othermod = ">=1.0.0"`。键是
+    /// 新版形式：`dependencies: { othermod: ">=1.0.0" }`。键是
     /// 命名空间，值是版本约束原始文案，交给
     /// [`crate::version_constraint::parse_constraint`] 解析。用
     /// `BTreeMap` 而不是 `HashMap`——遍历顺序必须是命名空间字典序这一
@@ -291,7 +299,7 @@ pub fn parse_manifest(path: &Path) -> Result<ModManifest, ModError> {
     let content = std::fs::read_to_string(path)
         .map_err(|err| ModError::Io(format!("{}: {err}", path.display())))?;
 
-    let raw: RawManifest = toml::from_str(&content)
+    let raw: RawManifest = json5::from_str(&content)
         .map_err(|err| ModError::ParseError(format!("{}: {err}", path.display())))?;
 
     let id = mod_self_id(&raw.namespace).map_err(|err| {
@@ -347,9 +355,10 @@ mod tests {
     use crate::test_support::tempdir;
     use std::fs;
 
-    /// 在临时目录下写一个 `mod.toml` 并返回其路径，供各测试复用。
+    /// 在临时目录下写一个 [`crate::discover::MANIFEST_FILENAME`]
+    /// 并返回其路径，供各测试复用。
     fn write_manifest(dir: &Path, content: &str) -> PathBuf {
-        let path = dir.join("mod.toml");
+        let path = dir.join(crate::discover::MANIFEST_FILENAME);
         fs::write(&path, content).expect("测试临时文件写入不应失败");
         path
     }
@@ -360,12 +369,12 @@ mod tests {
         let dir = tempdir();
         let path = write_manifest(
             dir.path(),
-            r#"
-            namespace = "yourmod"
-            version = "0.1.0"
-            dependencies = ["othermod"]
-            entry_points = ["main.scm"]
-            "#,
+            r#"{
+                namespace: "yourmod",
+                version: "0.1.0",
+                dependencies: ["othermod"],
+                entry_points: ["main.scm"],
+            }"#,
         );
 
         // Act
@@ -385,19 +394,44 @@ mod tests {
     }
 
     #[test]
+    fn 带注释与尾逗号的清单解析出与紧凑写法相同的字段() {
+        // JSON5 相对 JSON 的两项核心增益——项目所有者选它正是为了这两样
+        // （见模块文档「清单格式：JSON5」一节）：手写清单能加解释性注释，
+        // 结尾多余的逗号不会让解析报错。本测试直接验证两者都被
+        // `json5::from_str` 正确处理，不只是文档里空口宣称。
+        // Arrange
+        let dir = tempdir();
+        let path = write_manifest(
+            dir.path(),
+            r#"{
+                // 命名空间必须全小写，见 NamespacedId::parse。
+                namespace: "yourmod",
+                version: "0.1.0", // 版本号原样保留，不做语义化解析
+            }"#,
+        );
+
+        // Act
+        let manifest = parse_manifest(&path).expect("注释与尾逗号不应导致解析失败");
+
+        // Assert
+        assert_eq!(manifest.id, mod_self_id("yourmod").unwrap());
+        assert_eq!(manifest.version, "0.1.0");
+    }
+
+    #[test]
     fn 旧版裸命名空间依赖列表解析出any约束保持向后兼容() {
-        // 简报要求的核心结论：旧版 `dependencies = [...]` 写法不报废、
+        // 简报要求的核心结论：旧版 `dependencies: [...]` 写法不报废、
         // 不需要迁移——每一项解析成 VersionConstraint::Any（只要求依赖
         // 存在，不比较版本）。
         // Arrange
         let dir = tempdir();
         let path = write_manifest(
             dir.path(),
-            r#"
-            namespace = "yourmod"
-            version = "0.1.0"
-            dependencies = ["othermod"]
-            "#,
+            r#"{
+                namespace: "yourmod",
+                version: "0.1.0",
+                dependencies: ["othermod"],
+            }"#,
         );
 
         // Act
@@ -420,14 +454,14 @@ mod tests {
         let dir = tempdir();
         let path = write_manifest(
             dir.path(),
-            r#"
-            namespace = "yourmod"
-            version = "0.1.0"
-
-            [dependencies]
-            exactmod = "0.3"
-            atleastmod = ">=0.4"
-            "#,
+            r#"{
+                namespace: "yourmod",
+                version: "0.1.0",
+                dependencies: {
+                    exactmod: "0.3",
+                    atleastmod: ">=0.4",
+                },
+            }"#,
         );
 
         // Act
@@ -456,13 +490,11 @@ mod tests {
         let dir = tempdir();
         let path = write_manifest(
             dir.path(),
-            r#"
-            namespace = "yourmod"
-            version = "0.1.0"
-
-            [dependencies]
-            othermod = "~1.0.0"
-            "#,
+            r#"{
+                namespace: "yourmod",
+                version: "0.1.0",
+                dependencies: { othermod: "~1.0.0" },
+            }"#,
         );
 
         // Act
@@ -476,12 +508,7 @@ mod tests {
     fn 缺少版本号字段时解析失败() {
         // Arrange
         let dir = tempdir();
-        let path = write_manifest(
-            dir.path(),
-            r#"
-            namespace = "yourmod"
-            "#,
-        );
+        let path = write_manifest(dir.path(), r#"{ namespace: "yourmod" }"#);
 
         // Act
         let result = parse_manifest(&path);
@@ -494,12 +521,7 @@ mod tests {
     fn 缺少命名空间字段时解析失败() {
         // Arrange
         let dir = tempdir();
-        let path = write_manifest(
-            dir.path(),
-            r#"
-            version = "0.1.0"
-            "#,
-        );
+        let path = write_manifest(dir.path(), r#"{ version: "0.1.0" }"#);
 
         // Act
         let result = parse_manifest(&path);
@@ -514,13 +536,7 @@ mod tests {
         // 一套自己的规则。
         // Arrange
         let dir = tempdir();
-        let path = write_manifest(
-            dir.path(),
-            r#"
-            namespace = "YourMod"
-            version = "0.1.0"
-            "#,
-        );
+        let path = write_manifest(dir.path(), r#"{ namespace: "YourMod", version: "0.1.0" }"#);
 
         // Act
         let result = parse_manifest(&path);
@@ -533,7 +549,7 @@ mod tests {
     fn 清单文件不存在时返回io错误() {
         // Arrange
         let dir = tempdir();
-        let missing = dir.path().join("mod.toml");
+        let missing = dir.path().join(crate::discover::MANIFEST_FILENAME);
 
         // Act
         let result = parse_manifest(&missing);
@@ -548,10 +564,7 @@ mod tests {
         let dir = tempdir();
         let path = write_manifest(
             dir.path(),
-            r#"
-            namespace = "barebones"
-            version = "0.0.1"
-            "#,
+            r#"{ namespace: "barebones", version: "0.0.1" }"#,
         );
 
         // Act

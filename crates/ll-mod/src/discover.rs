@@ -9,7 +9,13 @@ use std::path::{Path, PathBuf};
 
 /// mod 清单文件的约定名。每个候选 mod 是 `root` 下的一个子目录，清单
 /// 文件位于该子目录内、固定用这个文件名。
-pub const MANIFEST_FILENAME: &str = "mod.toml";
+///
+/// 格式是 JSON5，不是 JSON——项目所有者 2026-08-20 裁定「全用 json5
+/// 吧,还可以写注释方便日后维护」，统一了本仓库全部手写配置格式（此前
+/// 是 TOML，见提交历史）。手写清单因此可以带注释与尾逗号（示例见
+/// `mods/example_mod/mod.json5`），解析走 [`crate::manifest::parse_manifest`]
+/// 的 `json5::from_str`。
+pub const MANIFEST_FILENAME: &str = "mod.json5";
 
 /// 列出 `root` 目录下的所有候选 mod 清单路径。
 ///

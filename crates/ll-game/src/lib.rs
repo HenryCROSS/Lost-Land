@@ -34,8 +34,11 @@ use app::Demo;
 use content::load_content;
 use world::{GameWorld, build_new_world};
 
-/// 配置文件相对可执行文件所在目录的文件名。
-const CONFIG_FILE_NAME: &str = "config.json";
+/// 配置文件相对可执行文件所在目录的文件名。格式是 JSON5，不是
+/// JSON——项目所有者 2026-08-20 裁定手写配置统一 JSON5，见
+/// `ll_platform::config` 模块文档「格式：JSON5，读写不对称」一节：
+/// 玩家手改这份文件时可以加注释、留尾逗号。
+const CONFIG_FILE_NAME: &str = "config.json5";
 /// 存档文件相对可执行文件所在目录的文件名——本体目前只有单一存档位
 /// （规格 §11.2 模式2 默认单存档位，见 `ll_content::mode` 模块文档），
 /// 多存档位管理属于 P7 存档界面范围。
@@ -43,7 +46,7 @@ const SAVE_FILE_NAME: &str = "save.llsave";
 /// mod 根目录相对可执行文件所在目录的路径——与仓库根 `mods/` 对齐。
 const MODS_DIR_NAME: &str = "mods";
 /// 本体资产根目录相对可执行文件所在目录的路径——与仓库根 `assets/`
-/// 对齐，内含本体自己的 `sprites/manifest.json`（见
+/// 对齐，内含本体自己的 `sprites/manifest.json5`（见
 /// `ll_mod::asset_vfs` 模块文档）。与 `mods/` 一样，发行时需要与可
 /// 执行文件放在同一目录下——本体目前没有安装器，这是与 `mods/` 完全
 /// 相同的既有部署假设，不是本次新增的限制。

@@ -15,20 +15,26 @@
 //! # 目录约定
 //!
 //! ```text
-//! <mod 目录>/assets/sprites/manifest.json   本 mod（或本体）自带的精灵声明
+//! <mod 目录>/assets/sprites/manifest.json5  本 mod（或本体）自带的精灵声明
 //! <mod 目录>/assets/sprites/<相对路径>.png  声明里 `file` 字段指向的图片
 //! <mod 目录>/assets/overrides/<目标命名空间>/sprites/<相对路径>.png
 //!                                            覆盖目标命名空间下同相对路径的资产
 //! ```
 //!
-//! `manifest.json` 的形状：
+//! `manifest.json5` 的形状：
 //!
-//! ```json
-//! { "entries": [
-//!     { "name": "lava_floor", "file": "lava_floor.png",
-//!       "pivot": { "x": 0, "y": 0 }, "footprint": { "width": 1, "height": 1 } }
+//! ```json5
+//! { entries: [
+//!     { name: "lava_floor", file: "lava_floor.png",
+//!       pivot: { x: 0, y: 0 }, footprint: { width: 1, height: 1 } },
 //! ] }
 //! ```
+//!
+//! 格式是 JSON5，不是 JSON——与 [`crate::manifest`] 同一条纪律（项目
+//! 所有者 2026-08-20 裁定，见其模块文档「清单格式：JSON5」一节），解析
+//! 走 [`json5::from_str`]。由本工具（`tools/ll-artgen`）生成的清单文件
+//! 继续写纯 JSON——JSON 是 JSON5 的严格子集，生成端不需要注释/尾逗号
+//! 这些手写才用得上的特性，两边统一走同一个解析器读取。
 //!
 //! **没有 `rect` 字段**——与本体旧的 `assets/atlas/placeholder.json`
 //! 不同，这里的精灵是运行期打包的松散贴图，摆放到图集里哪个矩形完全
@@ -44,7 +50,7 @@
 //!
 //! # 路径安全
 //!
-//! [`validate_relative_asset_path`] 是路径穿越的唯一防线：`manifest.json`
+//! [`validate_relative_asset_path`] 是路径穿越的唯一防线：`manifest.json5`
 //! 里的 `file` 字段是外部不可信输入（mod 作者可以写任何字符串），必须
 //! 拒绝 `..`、绝对路径、Windows 盘符前缀（`C:`）、UNC 路径
 //! （`\\server\share`）——这里用 [`std::path::Component`] 逐段判断而不是
@@ -83,7 +89,7 @@ pub const SPRITES_DIR: &str = "sprites";
 /// 覆盖资产子目录名。
 pub const OVERRIDES_DIR: &str = "overrides";
 /// 精灵清单文件的固定名。
-pub const SPRITE_MANIFEST_FILENAME: &str = "manifest.json";
+pub const SPRITE_MANIFEST_FILENAME: &str = "manifest.json5";
 
 /// 精灵图像内的锚点，字段形状与 `ll_render::sprite::Pivot`（`i16` x/y）
 /// 逐一对应——本 crate 不依赖 `ll-render`（依赖方向见 `crate` 模块
@@ -106,7 +112,7 @@ pub struct SpriteFootprint {
     pub height: u8,
 }
 
-/// `manifest.json` 里的一条精灵声明。
+/// `manifest.json5` 里的一条精灵声明。
 #[derive(Debug, Clone, serde::Deserialize)]
 struct SpriteManifestEntry {
     name: String,
@@ -115,7 +121,7 @@ struct SpriteManifestEntry {
     footprint: SpriteFootprint,
 }
 
-/// `manifest.json` 的顶层结构。
+/// `manifest.json5` 的顶层结构。
 #[derive(Debug, Default, serde::Deserialize)]
 struct SpriteManifestFile {
     #[serde(default)]
@@ -146,7 +152,7 @@ impl fmt::Display for AssetVfsError {
 
 impl core::error::Error for AssetVfsError {}
 
-/// 校验并规范化一段「资产相对路径」（`manifest.json` 里 `file` 字段的
+/// 校验并规范化一段「资产相对路径」（`manifest.json5` 里 `file` 字段的
 /// 原始文本），拒绝任何可能逃出 mod 自己资产目录的输入。
 ///
 /// # 为什么用 [`Component`] 逐段判断而不是字符串匹配
@@ -338,7 +344,7 @@ pub fn build(
     }
 }
 
-/// 解析 `assets_dir/sprites/manifest.json`，把每条声明注册进 `sprites`。
+/// 解析 `assets_dir/sprites/manifest.json5`，把每条声明注册进 `sprites`。
 ///
 /// 没有清单文件是完全合法的（多数 mod 不带美术资产）——静默跳过，
 /// 不是错误。清单存在但解析失败、单条声明的名字/路径不合法，都只
@@ -354,7 +360,7 @@ fn register_own_sprites(
     let Ok(text) = std::fs::read_to_string(&manifest_path) else {
         return;
     };
-    let manifest: SpriteManifestFile = match serde_json::from_str(&text) {
+    let manifest: SpriteManifestFile = match json5::from_str(&text) {
         Ok(manifest) => manifest,
         Err(error) => {
             tracing::warn!(
@@ -529,8 +535,8 @@ mod tests {
 
     fn write_mod_manifest(root: &Path, namespace: &str) {
         write_file(
-            &root.join(namespace).join("mod.toml"),
-            &format!("namespace = \"{namespace}\"\nversion = \"0.1.0\"\n"),
+            &root.join(namespace).join(discover::MANIFEST_FILENAME),
+            &format!(r#"{{ namespace: "{namespace}", version: "0.1.0" }}"#),
         );
     }
 
@@ -624,7 +630,7 @@ mod tests {
 
     #[test]
     fn 带路径穿越的精灵声明在构建时被拒绝而不影响其它条目() {
-        // 端到端场景：一个 mod 的 manifest.json 里混了一条路径穿越声明
+        // 端到端场景：一个 mod 的 manifest.json5 里混了一条路径穿越声明
         // 与一条合法声明——穿越的那条必须被拒绝，不能让整个 mod 的资产
         // VFS 构建崩溃或把其它合法声明也一并丢弃。
         // Arrange
@@ -704,7 +710,7 @@ mod tests {
 
     #[test]
     fn 没有精灵清单的mod不产出任何条目也不报错() {
-        // Arrange：mod 存在，但完全没有 assets/sprites/manifest.json。
+        // Arrange：mod 存在，但完全没有 assets/sprites/manifest.json5。
         let root = tempdir();
         let base_assets = root.path().join("base_assets");
         write_mod_manifest(root.path().join("mods").as_path(), "puredata");
@@ -1038,8 +1044,8 @@ mod tests {
                 .path()
                 .join("mods")
                 .join("needs_ghost")
-                .join("mod.toml"),
-            "namespace = \"needs_ghost\"\nversion = \"0.1.0\"\ndependencies = [\"ghost\"]\n",
+                .join(discover::MANIFEST_FILENAME),
+            r#"{ namespace: "needs_ghost", version: "0.1.0", dependencies: ["ghost"] }"#,
         );
 
         // Act

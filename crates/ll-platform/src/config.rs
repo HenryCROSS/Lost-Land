@@ -1,4 +1,16 @@
-//! 配置文件系统：把用户偏好（当前只有键位绑定）落盘成一个 JSON 文件。
+//! 配置文件系统：把用户偏好（当前只有键位绑定）落盘成一个 JSON5 文件。
+//!
+//! # 格式：JSON5，读写不对称
+//!
+//! 项目所有者 2026-08-20 裁定「全用 json5 吧，还可以写注释方便日后
+//! 维护」，本仓库全部手写配置格式统一成 JSON5——`config.json5` 是玩家
+//! 可能会手改的文件（例如手动调整按键绑定），理应享受注释与尾逗号。
+//! 但读写用的是两个不同的库，理由是 [`json5`] crate 只提供解析、不
+//! 提供序列化：[`load_or_default`] 走 `json5::from_str`，能读手写文件
+//! 里的注释；[`save`] 继续走 `serde_json::to_string_pretty`——JSON 是
+//! JSON5 的严格子集，游戏自己写出的配置文件不需要注释（没有人手写它），
+//! 用哪个库写出结果都一样能被 `json5::from_str` 读回，不需要为「写」
+//! 这一侧另外拉一个能序列化的 JSON5 库。
 //!
 //! # 为什么现在补
 //!
@@ -161,7 +173,7 @@ pub enum ScaleFilter {
 }
 
 /// 从 `path` 加载配置；文件不存在、无法读取或内容不是合法的
-/// [`GameConfig`]（含 JSON 语法错误与 [`KeyBindings`] 自身的冲突校验
+/// [`GameConfig`]（含 JSON5 语法错误与 [`KeyBindings`] 自身的冲突校验
 /// 失败，见 `crate::keybind` 模块文档 ADR 0011 一节）时，记一条日志并
 /// 退回 [`GameConfig::default`]——**绝不 panic**，见模块文档「损坏时的
 /// 退化策略」。
@@ -178,7 +190,7 @@ pub fn load_or_default(path: &Path) -> GameConfig {
         }
     };
 
-    match serde_json::from_str(&text) {
+    match json5::from_str(&text) {
         Ok(config) => config,
         Err(error) => {
             tracing::warn!(
@@ -214,7 +226,12 @@ impl std::fmt::Display for ConfigSaveError {
 impl std::error::Error for ConfigSaveError {}
 
 /// 把 `config` 写出到 `path`，人类可读的缩进 JSON——配置文件是用户
-/// 会手改的东西，不值得为了省几百字节的空白符换成压缩格式。
+/// 会手改的东西，不值得为了省几百字节的空白符换成压缩格式。写出的是
+/// 普通 JSON 而非带注释的 JSON5：`serde_json` 不提供 JSON5 序列化,
+/// 但 JSON 是 JSON5 的严格子集,程序自动写出的这份文件不携带任何
+/// 说明性注释（没有人手写它，注释也无从谈起），用 [`load_or_default`]
+/// 的 `json5::from_str` 读回去完全等价，见模块文档「格式：JSON5，
+/// 读写不对称」一节。
 pub fn save(path: &Path, config: &GameConfig) -> Result<(), ConfigSaveError> {
     let json = serde_json::to_string_pretty(config).map_err(ConfigSaveError::Encode)?;
     if let Some(parent) = path.parent()
@@ -350,12 +367,15 @@ mod tests {
     #[test]
     fn 缺少display字段的旧配置文件仍能反序列化() {
         // 兜底旧配置文件——本字段引入之前写出的 JSON 不含 display 键,
-        // 应当退回默认显示配置而不是解析失败。
+        // 应当退回默认显示配置而不是解析失败。走 json5::from_str 而不是
+        // serde_json::from_str——这才是 load_or_default 实际使用的解析器
+        // （见模块文档「格式：JSON5，读写不对称」一节），测试应验证真实
+        // 路径,不是一个凑巧行为相同的替代品。
         // Arrange
         let json = r#"{"bindings":{"bindings":[]}}"#;
 
         // Act
-        let config: GameConfig = serde_json::from_str(json).expect("缺失 display 字段应当兜底");
+        let config: GameConfig = json5::from_str(json).expect("缺失 display 字段应当兜底");
 
         // Assert
         assert_eq!(config.display, DisplayConfig::default());
@@ -364,15 +384,45 @@ mod tests {
     #[test]
     fn 缺少language字段的旧配置文件仍能反序列化() {
         // 与「缺少display字段」同一条纪律：本字段是后补的，早期写出的
-        // 配置文件不含 language 键，不该因此解析失败。
+        // 配置文件不含 language 键，不该因此解析失败。同样走
+        // json5::from_str，理由见上一条测试。
         // Arrange
         let json = r#"{"bindings":{"bindings":[]}}"#;
 
         // Act
-        let config: GameConfig = serde_json::from_str(json).expect("缺失 language 字段应当兜底");
+        let config: GameConfig = json5::from_str(json).expect("缺失 language 字段应当兜底");
 
         // Assert
         assert_eq!(config.language, "zh-CN");
+    }
+
+    #[test]
+    fn 带注释与尾逗号的配置文件能通过load_or_default正常读出() {
+        // JSON5 相对 JSON 的两项核心增益（项目所有者选它正是为了这两样，
+        // 见模块文档「格式：JSON5，读写不对称」一节）：手改的配置文件能
+        // 加解释性注释，结尾多余的逗号不会让解析报错。本测试直接验证
+        // load_or_default 这条生产路径确实能处理两者，不只是文档空口
+        // 宣称「格式是 JSON5」。
+        // Arrange
+        let path = temp_path("json5-comments-trailing-comma");
+        let json5_text = r#"{
+            // 玩家手改：喜欢锐利双线性滤波
+            "display": {
+                "vsync": false,
+                "scale_filter": "SharpBilinear",
+            },
+        }"#;
+        fs::write(&path, json5_text).expect("测试用写入应当成功");
+
+        // Act
+        let config = load_or_default(&path);
+
+        // Assert
+        assert_eq!(config.display.scale_filter, ScaleFilter::SharpBilinear);
+        assert!(!config.display.vsync);
+
+        // Cleanup
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

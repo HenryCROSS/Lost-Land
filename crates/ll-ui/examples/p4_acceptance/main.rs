@@ -7,7 +7,7 @@
 //!
 //! # 完整调用链
 //!
-//! `mods/example_mod/{mod.toml,terrain.scm}`
+//! `mods/example_mod/{mod.json5,terrain.scm}`
 //!   → [`ll_mod::pipeline::load_all`]（内部依次调用 discover_mods →
 //!     parse_manifest → topo_sort → ScriptEngine::load_source →
 //!     register-terrain → Registry::intern/TerrainTable::define）
