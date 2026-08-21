@@ -68,6 +68,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
     let mut bindings = XpCurveBindings::new();
     let mut trait_def = TraitTable::new();
     let mut resource_pool = ll_mod::resource_pool::ResourcePoolTable::new();
+    let mut item = ll_mod::item::ItemTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -84,6 +85,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
             xp_curve_bindings: &mut bindings,
             trait_def: &mut trait_def,
             resource_pool: &mut resource_pool,
+            item: &mut item,
         },
     );
     // mod 自身在 LoadReport 里的标识按 `ll_mod::manifest::mod_self_id`

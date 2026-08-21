@@ -35,6 +35,7 @@ use ll_world::terrain::TerrainTable;
 
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
+use crate::item::ItemTable;
 use crate::load_report::{LoadError, LoadReport, LoadStage, LoadStatus, SourceLocation};
 use crate::manifest::{ModError, ModManifest, mod_self_id, parse_manifest};
 use crate::quest::QuestTable;
@@ -54,6 +55,10 @@ use crate::script_class_api::{
 use crate::script_clip_api::{
     register_clip_api, set_active_target as set_active_clip_target,
     take_active_target as take_active_clip_target,
+};
+use crate::script_item_api::{
+    register_item_api, set_active_target as set_active_item_target,
+    take_active_target as take_active_item_target,
 };
 use crate::script_quest_api::{
     register_quest_api, set_active_target as set_active_quest_target,
@@ -132,6 +137,9 @@ pub struct GameplayTables<'a> {
     /// `register-resource-pool` 的写入目标，见 `crate::resource_pool`
     /// 模块文档。
     pub resource_pool: &'a mut ResourcePoolTable,
+    /// 物品表（P6 第一批：物品基础新增）——`register-item` 的写入
+    /// 目标，见 `crate::item` 模块文档。
+    pub item: &'a mut ItemTable,
 }
 
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
@@ -259,6 +267,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut xp_curve_bindings = XpCurveBindings::new();
     let mut trait_def = TraitTable::new();
     let mut resource_pool = ResourcePoolTable::new();
+    let mut item = ItemTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -271,6 +280,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         xp_curve_bindings: &mut xp_curve_bindings,
         trait_def: &mut trait_def,
         resource_pool: &mut resource_pool,
+        item: &mut item,
     };
     for entry in &manifest.entry_points {
         if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
@@ -393,6 +403,7 @@ fn load_one_script(
     );
     set_active_trait_target(std::mem::take(tables.trait_def));
     set_active_resource_pool_target(std::mem::take(tables.resource_pool));
+    set_active_item_target(std::mem::take(tables.item));
 
     let mut engine = ScriptEngine::new();
     register_terrain_api(&mut engine);
@@ -405,6 +416,7 @@ fn load_one_script(
     register_xp_curve_api(&mut engine);
     register_trait_api(&mut engine);
     register_resource_pool_api(&mut engine);
+    register_item_api(&mut engine);
     let result = engine.load_source(source.clone());
 
     *registry = take_active_registry();
@@ -420,6 +432,7 @@ fn load_one_script(
     *tables.xp_curve_bindings = xp_curve_bindings;
     *tables.trait_def = take_active_trait_target();
     *tables.resource_pool = take_active_resource_pool_target();
+    *tables.item = take_active_item_target();
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -437,13 +450,13 @@ fn load_one_script(
 /// 把 [`ScriptError`] 归到 [`LoadStage::LoadScript`] 还是
 /// [`LoadStage::Register`]。
 ///
-/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有十四个
+/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有十五个
 /// （`register-terrain`/`register-class`/`register-skill`/
 /// `register-subclass`/`register-quest`/`register-race`/
 /// `register-animation-clip`/`register-xp-curve`/
 /// `register-class-xp-curve`/`register-race-xp-curve`/`register-trait`/
 /// `register-race-trait`/`register-resource-pool`/
-/// `register-trait-resource-pool`），把
+/// `register-trait-resource-pool`/`register-item`），把
 /// `ScriptError::Runtime`（任一 `register-*` 内部校验失败时都走这一类，
 /// 见各自模块文档「返回 Result<bool, String>」一节）整体归为 Register
 /// 阶段。这会把一个与内容注册无关、纯粹是脚本自身写错的运行时错误
@@ -504,6 +517,7 @@ mod tests {
         xp_curve_bindings: XpCurveBindings,
         trait_def: TraitTable,
         resource_pool: ResourcePoolTable,
+        item: ItemTable,
     }
 
     impl OwnedTables {
@@ -520,6 +534,7 @@ mod tests {
                 xp_curve_bindings: &mut self.xp_curve_bindings,
                 trait_def: &mut self.trait_def,
                 resource_pool: &mut self.resource_pool,
+                item: &mut self.item,
             }
         }
     }

@@ -72,6 +72,11 @@
 //!   `ll_sim::resource_pool::ResourcePoolCatalog`（依赖倒置），本批次
 //!   只落地标量池形状，见其模块文档「本批次范围」一节。血池
 //!   （`Agent::health` 本身）不经过这张表。
+//! - [`item`] —— 物品注册表（P6 第一批：物品基础）：`ItemDef` 是独立
+//!   内容类型（定义/实例分离，运行时实例
+//!   `ll_sim::item::ItemStack` 定义在 `ll-sim`，依赖方向使然），本批次
+//!   不接线任何 `resolve` 侧消费者（背包/装备/使用效果留给后续批次），
+//!   见其模块文档「本批次范围」一节。
 //! - [`clip`] —— 动画剪辑注册表（动画剪辑接线批次）：把
 //!   `ll_render::anim::Clip`（此前只能写死在 Rust 里的动画帧序列/节奏/
 //!   循环声明，见其模块文档起因）做成可注册内容，`ClipDef` 与 `class`/
@@ -106,6 +111,8 @@
 //! - [`script_resource_pool_api`] —— 同一个模式在资源池上的脚本绑定
 //!   （资源池落地批次）：`register-resource-pool`，见 [`resource_pool`]
 //!   模块文档。
+//! - [`script_item_api`] —— 同一个模式在物品上的脚本绑定（P6 第一批）：
+//!   `register-item`，见 [`item`] 模块文档。
 //! - [`script_clip_api`] —— 同一个模式在动画剪辑上的脚本绑定（动画
 //!   剪辑接线批次）：补上此前完全漏掉的第七类可注册玩法层内容——早先
 //!   的接口审计列出六种，「动画剪辑」当时不在其中。
@@ -148,6 +155,7 @@ pub mod class;
 pub mod clip;
 pub mod content_hash;
 pub mod discover;
+pub mod item;
 pub mod load_report;
 pub mod manifest;
 pub mod mod_set;
@@ -162,6 +170,7 @@ pub mod script_behavior_api;
 pub mod script_behavior_source;
 pub mod script_class_api;
 pub mod script_clip_api;
+pub mod script_item_api;
 pub mod script_quest_api;
 pub mod script_race_api;
 pub mod script_resource_pool_api;

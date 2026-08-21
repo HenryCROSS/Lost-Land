@@ -12,6 +12,7 @@ use ll_core::torus::{TorusPos, TorusSize};
 use ll_mod::base_terrain::register_base_terrain;
 use ll_mod::class::ClassTable;
 use ll_mod::clip::ClipTable;
+use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadReport;
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
@@ -103,6 +104,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut xp_curve_bindings = XpCurveBindings::new();
     let mut trait_def = TraitTable::new();
     let mut resource_pool = ll_mod::resource_pool::ResourcePoolTable::new();
+    let mut item = ItemTable::new();
 
     let mut report = load_all(
         Path::new(PRIMARY_MODS_ROOT),
@@ -119,6 +121,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_def,
             resource_pool: &mut resource_pool,
+            item: &mut item,
         },
     );
     let missing_dependency_report = load_all(
@@ -136,6 +139,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_def,
             resource_pool: &mut resource_pool,
+            item: &mut item,
         },
     );
     let duplicate_namespace_report = load_all(
@@ -153,6 +157,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_def,
             resource_pool: &mut resource_pool,
+            item: &mut item,
         },
     );
     report.entries.extend(missing_dependency_report.entries);

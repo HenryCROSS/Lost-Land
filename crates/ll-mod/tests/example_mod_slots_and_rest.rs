@@ -69,6 +69,7 @@ fn load_real_mods() -> RealModsHandle {
     let mut xp_curve_bindings = XpCurveBindings::new();
     let mut trait_def = TraitTable::new();
     let mut resource_pool = ResourcePoolTable::new();
+    let mut item = ll_mod::item::ItemTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -85,6 +86,7 @@ fn load_real_mods() -> RealModsHandle {
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_def,
             resource_pool: &mut resource_pool,
+            item: &mut item,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();

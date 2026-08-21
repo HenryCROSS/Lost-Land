@@ -58,6 +58,13 @@
 //! 文档「本批次范围」一节。血池（`ResourceCost::Blood`）不经过这张
 //! 目录——它直接读/写 `Agent::health`，不是注册表内容,见
 //! [`skill::ResourceCost::Blood`] 文档。
+//!
+//! [`item`]（P6 第一批：物品基础）：物品的运行时实例
+//! （[`item::ItemStack`]）与堆叠/合并/拆分（[`item::merge_stacks`]/
+//! [`item::split_stack`]）——与 `skill`/`traits`/`resource_pool` 同一套
+//! 依赖倒置手法：静态定义（`ItemDef`）留在下游的 `ll-mod::item`,本
+//! crate 只放运行时实例本身与不依赖注册表就能算清楚的纯函数，见该
+//! 模块文档「本批次范围」一节。
 
 pub mod apply;
 pub mod behavior;
@@ -65,6 +72,7 @@ pub mod combat;
 pub mod effect;
 pub mod experience;
 pub mod intent;
+pub mod item;
 pub mod quest;
 pub mod resolve;
 pub mod resource_pool;

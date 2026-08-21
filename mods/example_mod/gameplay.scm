@@ -18,6 +18,7 @@
 ;;   register-resource-pool                crates/ll-mod/src/script_resource_pool_api.rs
 ;;   register-trait-resource-pool          crates/ll-mod/src/script_trait_api.rs
 ;;   register-trait-resource-pool-by-level crates/ll-mod/src/script_trait_api.rs
+;;   register-item                         crates/ll-mod/src/script_item_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -142,3 +143,14 @@
   (list 3 0 0))
 (register-race "examplemod:gnome" "examplemod:gnome_display_name" 0 1 0 1 0 0 0 1 1 400)
 (register-race-trait "examplemod:gnome" "examplemod:druidic_casting" 1)
+
+;; P6 第一批（物品基础）：knowledge/design/item-system.md 二节「堆叠
+;; 规则」的真实版本——一种可堆叠物品（箭矢，堆叠上限 99，没有耐久
+;; 概念）与一种不可堆叠物品（铁剑，堆叠上限 1，带 100 点耐久上限），
+;; 证明 register-item 这个新脚本 API 真的能被 mod 脚本调用，且两种
+;; 堆叠形状都被正确注册——ADR 0018「玩法层内容必须能从 mod 脚本注册，
+;; 且要有真实 mod 脚本为证」，crates/ll-mod/tests/example_mod_items.rs
+;; 是那份证据，不能靠单元测试自证。基础重量/价格是 Milli（千分之一为
+;; 单位）的原始整数，见 register-item 文档。
+(register-item "examplemod:arrow" "examplemod:arrow_display_name" 99 50 2000 -1)
+(register-item "examplemod:iron_sword" "examplemod:iron_sword_display_name" 1 3000 50000 100)

@@ -38,6 +38,7 @@ use ll_mod::class::ClassTable;
 use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
 use ll_mod::discover::discover_mods;
+use ll_mod::item::ItemTable;
 use ll_mod::load_report::{LoadReport, LoadStatus};
 use ll_mod::manifest::{ModManifest, parse_manifest};
 use ll_mod::pipeline::{GameplayTables, load_all};
@@ -112,6 +113,10 @@ pub struct LoadedContent {
     /// 一起供 `ll_sim::resolve` 的资源消耗/回复分支消费，见
     /// `ll_mod::resource_pool` 模块文档。
     pub resource_pool_table: ResourcePoolTable,
+    /// 物品表（P6 第一批：物品基础新增）——`ll_mod::item::ItemTable`，
+    /// 本批次没有任何 `resolve` 侧消费者，见其模块文档「本批次范围」
+    /// 一节。
+    pub item_table: ItemTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -170,6 +175,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     let mut xp_curve_bindings = XpCurveBindings::new();
     let mut trait_table = TraitTable::new();
     let mut resource_pool_table = ResourcePoolTable::new();
+    let mut item_table = ItemTable::new();
 
     let mut report = load_all(
         mods_root,
@@ -186,6 +192,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_table,
             resource_pool: &mut resource_pool_table,
+            item: &mut item_table,
         },
     );
 
@@ -258,6 +265,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         xp_curve_bindings,
         trait_table,
         resource_pool_table,
+        item_table,
         manifests,
         script_sources,
         report,
