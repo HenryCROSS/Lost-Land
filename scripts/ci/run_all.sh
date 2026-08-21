@@ -16,8 +16,9 @@
 # 平台盲区：本机（本仓库开发机是 Windows）只能覆盖 windows-latest 这一
 # 半 target。CI 的 `test` job 在 ubuntu-latest 与 windows-latest 两个
 # target 上各跑一次 fmt/clippy/test；`licenses`/`no-manual-euclidean-
-# distance`/`coverage`/`no-hardcoded-i18n-strings`/`docs-and-links` 五个
-# job 全部只在 ubuntu-latest 上跑，本地完全没有对应环境。任何依平台生效
+# distance`/`coverage`/`no-hardcoded-i18n-strings`/`docs-and-links`/
+# `field-consumer-check` 六个 job 全部只在 ubuntu-latest 上跑，本地完全
+# 没有对应环境。任何依平台生效
 # 的差异——`std::path::Component` 解析、`cfg(unix)`/`cfg(windows)` 条件
 # 编译分支、规格 §14.4 要求的双 target 世界哈希逐位相同——本脚本永远
 # 发现不了，例子见 2026-08 那次 `asset_vfs` 路径校验测试事故（本地
@@ -58,6 +59,7 @@ run_step "Clippy"                       bash scripts/ci/check_clippy.sh
 run_step "测试"                         bash scripts/ci/run_tests.sh
 run_step "许可证与安全公告扫描"           bash scripts/ci/check_licenses.sh
 run_step "禁止手写欧氏距离"               bash scripts/ci/check_no_manual_euclidean_distance.sh
+run_step "字段接线检查（声明但无决策层消费者，阻断模式）" python3 scripts/ci/check_field_consumers.py
 run_step "硬编码用户可见字符串扫描（warn 模式）" python3 scripts/ci/check_i18n_strings.py
 run_step "文档断链检查"                   bash scripts/ci/check_doc_links.sh
 run_step "Markdown 死链检查"              python3 scripts/ci/check_markdown_links.py

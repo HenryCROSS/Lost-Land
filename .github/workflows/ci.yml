@@ -56,6 +56,33 @@ jobs:
         shell: bash
         run: bash scripts/ci/check_no_manual_euclidean_distance.sh
 
+  # 本项目最顽固的失败模式：字段被声明、被存储、被序列化、被哈希、有测试
+  # 守着往返——却没有任何游戏逻辑读它。已点名十九处，三个当前活着的例子
+  # 是 `Agent.luck`（进 `WorldState::hash()`，全项目零逻辑读取）、
+  # `RaceDef.darkvision_floor`（存取完整、两条测试断言往返正确，但没有
+  # 任何函数实现它自己文档写的 `effective_light = max(...)`）、
+  # `RuleModifier::Resistance`（能从 mod 声明、进内容值哈希，战斗里没人
+  # 读）。共同点：它们各自都有测试，测试也都过——因为测的是存储往返或
+  # 注册路径，不是效果；`cargo` 的 `dead_code` lint 抓不到，因为这些字段
+  # 确实"被用了"（写进表、读出来、哈希、测试）。
+  #
+  # 本门禁对一份显式列出的"应当影响玩法的字段/枚举变体"清单
+  # （`scripts/ci/check_field_consumers.py` 里的 `TARGET_TYPES`），检查
+  # 每一个在"决策层"（`ll-sim/src/*.rs`、`ll-world/src/{fov,light}.rs`）
+  # 是否至少有一处真实读取（区别于只在存储层/哈希/测试夹具里出现）。
+  # 未接线的字段必须显式出现在同一个文件的 `EXEMPTIONS` 豁免清单里,写明
+  # 理由与预期接线阶段——新增一个死字段会让这道门禁报错，逼一个决定：
+  # 要么接上决策层逻辑，要么在 code review 里能看见的地方补一条豁免。
+  # 直接阻断（不是 warn）：豁免清单在 `scripts/ci/` 内维护，不需要碰
+  # `crates/**` 就能让门禁一开始就是绿的，没有"先 warn 免得 CI 一上来就
+  # 红"的顾虑，见脚本头注释「warn 还是阻断」一节。
+  field-consumer-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 字段接线检查（声明但没有决策层消费者，阻断模式）
+        run: python3 scripts/ci/check_field_consumers.py
+
   # 规格 §14.5 要求"行覆盖率 ≥ 80%，核心 crate（ll-core/ll-sim/ll-world）
   # ≥ 90%"，但 `cargo-llvm-cov` 从未在本项目任何环境安装或运行过——不是
   # "曾经达标后来退化"，是从 P0 到现在都不知道真实数字。没有这道门禁，
