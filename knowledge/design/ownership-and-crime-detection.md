@@ -11,7 +11,7 @@
 - `HistoricalEvent`/`KillRecord`（`crates/ll-world/src/history.rs`）已落地，是本文档设计犯罪记录的直接先例，见五节。
 - `Affiliation`/`OrgRef`（`crates/ll-world/src/entity/affiliation.rs`）已落地（P3）：`AffiliationKind::Faction` 对应 `OrgRef::Instance(WorldId)`——势力是**世界生成期间产出的实例**，不是 mod 装载期确定的类型。这与 `item-system.md` 原文 `Owner::Faction(ContentIndex)` 的类型选择**不一致**，见一节 1.2。
 - `Agent::remembered_id: Option<WorldId>`（`crates/ll-world/src/entity/agent.rs:355`）与 `WorldState::remembered_id_of_or_assign`（`crates/ll-world/src/state.rs:803`）已落地——字段文档明确列出的懒分配触发时机是一个**开放列表**（"出生进历史家族族谱、被玩家收为随从、成为任务发布者、死于一场被记录的击杀……"），当前唯一真实调用点是死亡路径，但机制本身通用，见一节 1.2 与七节场景一。
-- **空间查询现状复核**（`trait-system.md` 五节 6、217 行）：`resolve`/`resolve_attack` 拿不到"以某个位置为中心查附近实体"的输入；`script-entity-handles-and-batch-queries.md` 状态行已核实五节「批量查询原语」（`filter-within-distance` 等）仍是纯设计，`crates/ll-script/src/api/query.rs` 不含这些函数名。结论仍然成立：**没有任何路径能在结算时问"我旁边有没有人"**，见二节 2.3。
+- **空间查询现状复核——2026-08-21 二次复核，结论修正**：初版核实过 `resolve_attack`/伤害公式求值器拿不到"以目标为中心查附近同阵营实体"这一条特定输入（`trait-system.md` 五节 6、217 行，盗贼偷袭要的"目标旁边有没有我的盟友"），以及 `script-entity-handles-and-batch-queries.md` 状态行核实的批量查询原语（`filter-within-distance` 等）仍是纯设计——**这两条依然成立，未被推翻**。但初版把这两条**过度泛化**成了"没有任何路径能问'我旁边有没有人'"，这句话经复核**不成立**：`compute_fov`（`crates/ll-world/src/fov.rs:250`）的原点自始至终是参数，不是玩家专属；`Arena::iter_with_id`（`crates/ll-world/src/entity/arena.rs:144`）能连 `EntityId` 一起遍历 `world.actors`；`crates/ll-sim/src/apply.rs:246` 已经示范了 `compute_fov(&SurfaceWindow::new(&world.terrain), &world.terrain_table, origin, radius)` 这个调用形状能在 `ll-sim`（`resolve`/`apply` 所在 crate）内部直接使用，不依赖 `ll-mod` 的任何注册表。**修正结论：目击可以表达——遍历 `world.actors`、以每个 NPC 自己的位置算一次 FOV、检查肇事者是否落在其中即可**，见二节新 2.3–2.7。
 - 依赖但未落地的邻接系统：`society-and-affiliation.md`（势力/文化 P9，`CultureDef` 未落地）、任何交易/对话/悬赏系统（不存在）。
 
 ---
@@ -76,19 +76,81 @@ pub struct ItemStack {
 
 「直接拿」= `Intent::PickUp`，唯一的挂载点就是 `resolve_pick_up`（`crates/ll-sim/src/resolve.rs:1265`）。现状：`find(|item| item.pos == agent.pos)` 找到脚下第一堆就直接拾取，`Owner` 落地后要在这里插入一次比较——`ground.stack.owner` 是否等于"这次拾取算合法"的判据（`Unowned`，或 `Player` 且 `actor == world.player_entity`，或 `Npc(id)` 且 `id` 等于 `actor` 自己的 `remembered_id`）。不满足则这次拾取在**归属意义上**是盗窃——但"归属意义上是盗窃"和"会被追究"是两件不同的事，见 2.2。
 
-### 2.2 「有主人但主人不在场」vs「被目击」
+### 2.2 「有主人但主人不在场」vs「被目击」——两者依然分开判定
 
-现实里，拿走一件有主之物本身就构成盗窃（既遂），不需要有人看见——目击只影响会不会被追究。项目所有者的原话「需要经过一段时间自动销赃」也隐含了这个前提：**销赃的对象是"已经既遂但没人立刻发现"的盗窃**，若目击是入罪的必要条件，"没被目击的盗窃"根本不会进入犯罪记录，销赃这个概念也就无从谈起。**结论：拾取判定与目击判定分开——拿了有主之物即记一条犯罪事件（既遂），"是否被目击"只决定"这条记录能不能立刻触发即时后果"（通缉、NPC 敌意），不决定"算不算犯罪"。**
+现实里，拿走一件有主之物本身就构成盗窃（既遂），不需要有人看见——目击只影响会不会被追究。项目所有者的原话「需要经过一段时间自动销赃」也隐含了这个前提：**销赃的对象是"已经既遂但没人立刻发现"的盗窃**，若目击是入罪的必要条件，"没被目击的盗窃"根本不会进入犯罪记录，销赃这个概念也就无从谈起。**结论不变：拾取判定与目击判定分开——拿了有主之物即记一条犯罪事件（既遂），"是否被目击"只决定这条记录带不带目击者名单，不决定"算不算犯罪"。** 与初版的区别只在于：初版认为目击判定做不到，只能恒 `false`；本次复核确认目击判定可以真正算出来，见 2.3–2.6。
 
-### 2.3 「目击」能不能表达——空间查询现状复核
+### 2.3 目击算法：两段式（粗过滤 + FOV）
 
-`trait-system.md` 五节（217、532 行）已经核实并记录：`resolve_attack`/伤害公式求值器"目前完全拿不到"以目标为中心的空间查询这类输入,只接受攻防双方各自的属性；`script-entity-handles-and-batch-queries.md` 状态行核实五节「批量查询原语」（`filter-within-distance`/`average` 等）仍是纯设计，`crates/ll-script/src/api/query.rs` 不含这些函数名。本文档复核这两处结论：**仍然成立，没有任何新代码改变这个现状**。`WorldState::terrain_at`（`crates/ll-world/src/state.rs:674`）这类"查我脚下"式的自查询不算——它只读查询者自己所在坐标的地形，不是"以某个位置为圆心查附近有哪些实体"，两者是完全不同的能力（前者是常数时间的单点查表，后者需要某种空间索引或线性扫描 + 距离比较，当前 `ground_items`/`actors` 都没有为这类查询建过索引）。
+**核实结论：目击可以表达，用项目所有者提出的思路——遍历厚层实体、以每个 NPC 自己的位置算一次 FOV、看肇事者在不在里面。**
 
-**结论：目击判定当前不可表达，如实说。**
+```rust
+// 纯设计示意，不写实现代码
+//
+// 只读——resolve 阶段只能拿到 &WorldState，不能给未具名目击者懒分配
+// remembered_id（那需要 &mut self）。本函数只产出"哪些实体看见了"这
+// 件事实（EntityId 足够，resolve 阶段本就持有），真正把目击者翻译成
+// 永久的 WorldId 留给 apply 侧的 record_crime（与 record_kill 现在
+// 调用 remembered_id_of_or_assign 是同一处分工：resolve 判断"发生了
+// 什么"，apply 才允许"写世界"，约束 C1）。
+fn witnessed_by(world: &WorldState, culprit_pos: TorusPos, at: Tick) -> Vec<EntityId> {
+    let mut witnesses = Vec::new();
+    for (id, agent) in world.actors.iter_with_id() {          // 见 2.4「顺序」
+        if agent.pos == culprit_pos {
+            continue; // 肇事者自己不算目击者
+        }
+        let sight = sight_radius_at(NPC_BASE_SIGHT_RADIUS, ambient_light(at)); // 2.6
+        if world.terrain.layout().chebyshev(agent.pos, culprit_pos) > sight {
+            continue; // 第一段：粗距离过滤，见 2.5
+        }
+        let visible = compute_fov(
+            &SurfaceWindow::new(&world.terrain),
+            &world.terrain_table,
+            agent.pos,
+            sight,
+        );
+        if visible.contains(culprit_pos) {                    // 第二段：真正的 FOV
+            witnesses.push(id);
+        }
+    }
+    witnesses
+}
+```
 
-### 2.4 不需要目击的最小形状
+`apply` 侧对应的 `WorldState::record_crime`（形状见五节）拿到这份 `Vec<EntityId>` 后，对每一个调用一次既有的 `remembered_id_of_or_assign`——与 `record_kill` 现在对 `killer`/`victim` 做的事完全同构，"目击一次犯罪"顺理成章地成为 `remembered_id_of_or_assign` 那份开放触发清单的第六项（前五项见一节 1.2）。
 
-拾取判定本身（2.1）不需要任何空间查询——它只比较拾取者与 `ground.stack.owner`，两者都是 `resolve_pick_up` 已经持有的数据（`actor` 参数、`ground.stack` 字段），不需要问"附近有没有人"。犯罪记录（五节）因此也不需要目击信息就能产生：**拿了就记，`witnessed` 字段（若要保留这个概念）恒为 `false`/`None`，与 `history.rs` 里 `VictimState.poisoned`/`surrounded` 现在恒为 `false`（字段照设计文档定型、真实参与序列化，取值等上游系统落地）是同一个既有模式**——是否被追究（即时后果）这件事本身也标为将来扩展（五节 5.3），本批不因为做不到目击就连"记一笔"都放弃。
+- **第一段（粗过滤）**：`TorusSize::chebyshev`（`crates/ll-core/src/torus.rs:184`）已落地，`O(1)` 每候选者——`compute_fov` 自己返回的可见格本就满足 `chebyshev(origin, pos) <= radius`（fov.rs 文档「扫描进深的安全上限」一节已证），所以"候选者到肇事地点的切比雪夫距离超过候选者自己的视野半径"时，真正跑一遍阴影投射也不可能得出"看得见"，可以安全跳过。
+- **第二段（真正的 FOV）**：只对幸存者调用 `compute_fov`，成员测试用 `VisibleSet::contains`（`crates/ll-world/src/fov.rs:207`）。
+- **候选者从哪来**：`world.actors`（`Arena<Agent>`，厚层）——`crate::entity::ThinPopulation` 模块文档原文「薄层容器：列式（SoA）人口，容纳数十万到数百万背景 NPC」已经核实：数量级巨大的背景人口根本不在 `actors` 里，`iter_with_id` 遍历的候选池天然只是"当前被具体模拟"的前景实体，规模远小于世界总人口。
+
+### 2.4 C5 边界：只做成员测试，不遍历 `VisibleSet` 做决策；目击者名单顺序
+
+`VisibleSet` 内部是 `HashSet<P>`（`crates/ll-world/src/fov.rs:203`），`iter()` 的文档原文明确写着「遍历所有可见格，不保证顺序」。**目击判定只调用 `contains`（成员测试）**——这不依赖迭代顺序，是安全的；**本设计不遍历 `VisibleSet` 做任何决策**，如果未来有人想"列出这个 NPC 视野里的全部实体"而不是"肇事者在不在视野里"，那才会触及 `iter()` 的顺序问题，届时需要额外排序（例如按 `TorusPos` 或 `EntityId` 排序）才能满足 C5（`docs/architecture/03-invariants.md` 137 行：「禁止让 `HashMap`/`HashSet` 的迭代顺序参与逻辑判断」）——本设计不需要这一步，如实标注边界。
+
+**目击者名单的收集顺序**：`witnesses` 这个 `Vec<WorldId>` 的顺序**就是 `Arena::iter_with_id` 的顺序**——`Arena::slots: Vec<Slot<T>>`（`crates/ll-world/src/entity/arena.rs:34`），`iter_with_id` 是 `self.slots.iter().enumerate().filter_map(..)`，按 `Vec` 下标升序遍历，全程不经过任何 `HashMap`/`HashSet`。**这个顺序是确定的，满足 C5**，与 `resident_zones`/`topo_sort` 等既有先例同一类判据。
+
+### 2.5 性能：两段式可行；非法操作频率够低
+
+**两段式核实可行**：粗过滤是 `O(1)`/候选者的整数比较，真正的阴影投射（`O(radius²)`，半径 12 大概几百格，`fov.rs` 模块文档未见 `criterion` 基准——`crates/ll-world/benches/` 目前只有 `terrain.rs` 一个基准文件，没有 FOV 专属基准，本文档给不出实测 µs 数字，如实标注）只跑在幸存者身上。
+
+**频率核实**：`Intent::PickUp` 是事件驱动，不是每 tick 每实体的轮询——拾取判定只在玩家/NPC 真正发出一次拾取意图时触发一次，不会随世界人口或帧率线性增长。更有力的既有先例：`crates/ll-sim/src/apply.rs:246` 显示，**玩家每走一步**（`Effect::MarkExplored`，见 `resolve.rs` 「为什么只有玩家移动才追加 `MarkExplored`」一节）就无条件跑一次同样量级的 `compute_fov`（半径 12）——移动的频率远高于拾取有主之物这种边缘操作。**若"每步一次 FOV"这个开销这个代码库已经在承受，"每次拾取对幸存者集合各算一次 FOV"的开销级别不会更差，且幸存者集合经过粗过滤后通常远小于全体前景实体数。** 该文档同一节也解释了为什么 `MarkExplored` 只给玩家一个人算、不给每个 NPC 都算——这正是本文档"先粗过滤缩小候选池"这条设计要避免的同一类爆炸，两处判断方向一致，不矛盾。
+
+### 2.6 视野半径用谁的——光照会影响，暗视目前不影响
+
+`ambient_light(tick)`/`sight_radius_at(base_radius, light)`（均在 `crates/ll-world/src/light.rs:118`/`45`）都是**只依赖 `Tick` 的纯函数**，不需要 `SpaceProfile` 注册表，可以在 `ll-sim` 内部直接调用——这与 `resolve.rs` 里 `EXPLORATION_SIGHT_RADIUS`（固定值，不接光照）是**不同的判断**：那处固定半径的理由是"记不记得某处地形与此刻多暗是两件事"（玩法语义选择），不是"技术上做不到"，其文档原文明确写着真正随光照变化的换算（`effective_ambient_light`）此刻只在 `ll-game` 的 demo 层现算，因为那条换算需要 `SpaceProfile` 表（室内/室外的额外调光），`ll-sim` 依赖顺序上拿不到——**但目击判定不需要 `SpaceProfile` 这一层，只需要纯时间驱动的 `ambient_light`，这一条在 `ll-sim` 内部可以直接调用，不受这条依赖限制**。
+
+**结论：「晚上偷东西更不容易被发现」在这条纯时间驱动的链路上成立**——光照越低，`sight_radius_at` 算出的候选者视野半径越小，2.3 的粗过滤与 FOV 两段都会更容易把候选者判定为"看不见"，越是深夜候选者能命中肇事地点的概率越低（不会低于 `MIN_SIGHT_RADIUS = 4` 这个硬下限）。
+
+**但种族暗视不成立，需要更正项目所有者原话里的这半句**：核实结论——`RaceDef.darkvision_floor` 字段本身已落地（`crates/ll-mod/src/race.rs:107`，参与哈希与测试），字段文档写明了意图公式「`effective_light = max(实际光照, darkvision_floor)`」，但**全代码库检索确认没有任何函数名为 `effective_light`、也没有任何地方真正执行这条 `max` 运算**——`darkvision_floor` 是一个"字段就位、消费者未接线"的既有模式（与 `history.rs` 的 `VictimState.poisoned` 恒 `false` 同一类），不是"暗视已经在生效"。**若要让暗视种族在夜间维持更大的目击半径，需要新增一步：候选者的视野半径改用 `sight_radius_at(base, LightLevel(ambient_light(at).0.max(darkvision_floor)))`，这一步现在不存在，本文档只指出接线点，不假装它已经工作。**
+
+### 2.7 判定入口的可扩展形状——不写死 `is_theft`
+
+项目所有者原话「玩家进行了 xxx 非法操作」暗示盗窃不是唯一一种。**判定入口不应该是一个只服务盗窃的布尔函数**，而应该分成两个职责独立的部分：
+
+1. **各自的 `resolve_*` 判断"这是不是一次非法操作"，产出一个 `CrimeKind`**（五节给出形状）——`resolve_pick_up` 判断"拿了不属于自己的物品"，产出 `CrimeKind::Theft { .. }`；未来 `resolve_open_door` 可以判断"这扇门锁着且不是你的"产出破门变体；`resolve_attack` 可以判断"目标是非战斗 NPC"产出袭击平民变体；某种区域判定可以产出闯入禁区变体——**这些变体现在都不设计，只是指出它们将来都能落进同一个枚举**。
+2. **一对通用帮手不关心具体是哪种非法操作**：`witnessed_by`（2.3，只需要肇事地点与时刻）+ `record_crime`（五节，只需要肇事者、地点、`CrimeKind`、目击者名单）。任何新增的 `CrimeKind` 变体都直接复用这两个帮手，不需要为每种非法操作各写一套目击逻辑。
+
+这与 `KillCause`（`history.rs`）现在 7 个变体、当前只有 2 个变体真正被构造是同一个既有模式——枚举形状按未来需要预先留好扩展位，具体消费方逐个落地时各自追加变体，不是本文档现在就要设计"破门"的判定细节。
 
 ---
 
@@ -192,40 +254,75 @@ pub fn transfer_item_ownership(&mut self, /* 定位到具体哪一堆的参数 *
 
 **结论：是，理由与 `kill-and-death-events.md` 一节论证完全同构。** 玩家偷了村民的剑、NPC 偷了另一个 NPC 的东西、悬赏任务因为一次盗窃而触发——这是同一件事（谁、对谁、做了什么、在哪、什么时候）在不同后果规模下的实例，区别只在"值不值得被记住"，不在"记录的形状该是什么"。若单开一张"犯罪日志"，会立刻复现 `kill-and-death-events.md` 已经否决过的 `BattleLog` 那类问题：下游消费者（未来的通缉系统、NPC 态度调整、传说浏览）要么被迫适配两套数据源（历史事件查"谁杀了谁"、犯罪日志查"谁偷了谁"，"这个 NPC 有没有前科"这类跨类型查询要同时扫两张表），要么两张表之间出现"一处更新漏了同步"的静默不一致——与 [0010](../decisions/0010-single-source-of-truth-for-daylight.md)/[0014](../decisions/0014-season-pure-function-derivation.md) 记录的教训是同一个根因。
 
-`HistoricalEventKind` 因此新增一个变体：
+`HistoricalEventKind` 因此新增一个变体——**这一版按二节 2.7 的可扩展要求，把它设计成 `Crime(CrimeRecord)` 而不是专属盗窃的 `Theft(TheftRecord)`**，具体是哪种非法操作走内层的 `CrimeKind`：
 
 ```rust
 pub enum HistoricalEventKind {
     Kill(KillRecord),
-    Theft(TheftRecord),   // 新增
+    Crime(CrimeRecord),   // 新增
 }
 
-pub struct TheftRecord {
-    /// 拿走物品的一方——None 表示尚未"具名"（懒分配失败，理论上
-    /// 不该发生：resolve_pick_up 阶段应当已经确保 actor 存在）。
-    pub thief: Option<WorldId>,
-    /// 原本的归属——Npc/Faction 场景下是被偷者，Unowned 场景下
-    /// 这条记录根本不会产生（见下）。
-    pub victim: Owner,
-    pub item_def: ContentIndex,
-    pub count: u32,
-    /// 是否被目击——二节 2.4 已论证目击不可表达，恒为 false，
-    /// 与 VictimState.poisoned 现在恒为 false 同一个既有模式。
-    pub witnessed: bool,
+pub struct CrimeRecord {
+    /// 肇事者——None 表示尚未"具名"（懒分配失败，理论上不该发生：
+    /// resolve_pick_up 阶段应当已经确保 actor 存在）。
+    pub perpetrator: Option<WorldId>,
+    /// 目击者名单——二节 2.3 算出的结果，经 apply 侧翻译成 WorldId
+    /// （见二节 2.3 末尾）。**不额外存一个 `witnessed: bool`**——
+    /// "是否被目击"就是 `!witnesses.is_empty()`，与本节下文"是否犯罪
+    /// 是查询不是存储字段"同一条 0009 纪律，避免两个字段互相漂移。
+    pub witnesses: Vec<WorldId>,
+    /// 具体是哪一种非法操作，见下。
+    pub kind: CrimeKind,
+}
+
+/// 非法操作的具体种类——本批次只交付 `Theft`，见二节 2.7「判定入口
+/// 的可扩展形状」：破门、袭击平民、闯入禁区等未来变体直接追加进这个
+/// 枚举，不需要改目击算法（二节 2.3）或 `record_crime`（下）一行代码
+/// ——与 `KillCause` 现在 7 个变体、当前只有 2 个真正被构造是同一个
+/// 既有模式。
+pub enum CrimeKind {
+    Theft {
+        /// 原本的归属——Npc/Faction 场景下是被偷者，Unowned 场景下
+        /// 这条记录根本不会产生（见下）。
+        victim: Owner,
+        item_def: ContentIndex,
+        count: u32,
+    },
+}
+```
+
+`apply` 侧对应的 `WorldState::record_crime` 形状（与 `record_kill` 同构，`crates/ll-world/src/state.rs:841` 附近）：
+
+```rust
+pub fn record_crime(
+    &mut self,
+    at: Tick,
+    location: TorusPos,
+    perpetrator: EntityId,
+    witnesses: &[EntityId],   // 二节 2.3 的 witnessed_by 只读产出的候选
+    kind: CrimeKind,
+) -> Option<WorldId> {
+    let perpetrator_id = self.remembered_id_of_or_assign(perpetrator);
+    let witness_ids: Vec<WorldId> = witnesses
+        .iter()
+        .filter_map(|&w| self.remembered_id_of_or_assign(w))
+        .collect();
+    // push HistoricalEvent { kind: Crime(CrimeRecord { .. }), .. }，
+    // 与 record_kill 同一套结构
 }
 ```
 
 **`Owner::Unowned` 的拾取根本不产出这个变体**——`resolve_pick_up` 判定"是否构成盗窃"本身就是这条记录存不存在的前提,七节场景二会逐步演示这一点。
 
-**"是否犯罪"是查询，不是存储字段**——`WorldState` 不需要一个 `is_criminal: bool` 字段挂在 `Agent` 上,而是在需要时扫描 `history` 里 `HistoricalEventKind::Theft` 且 `thief == 某 WorldId` 的条目（可选按时间窗口过滤）。这与 [0009](../decisions/0009-derive-by-default-store-only-deviation.md) "默认派生、只存偏差"是同一条既有纪律的直接应用——犯罪状态是从不可变的历史日志派生出来的只读视图，不是需要额外维护、可能与日志本身产生不一致的第二份真相。
+**"是否犯罪"是查询，不是存储字段**——`WorldState` 不需要一个 `is_criminal: bool` 字段挂在 `Agent` 上,而是在需要时扫描 `history` 里 `HistoricalEventKind::Crime` 且 `perpetrator == 某 WorldId` 的条目（可选按时间窗口过滤）。这与 [0009](../decisions/0009-derive-by-default-store-only-deviation.md) "默认派生、只存偏差"是同一条既有纪律的直接应用——犯罪状态是从不可变的历史日志派生出来的只读视图，不是需要额外维护、可能与日志本身产生不一致的第二份真相。
 
 ### 5.2 管辖区——依赖 P9，如实标注
 
-「在 A 城偷东西，B 城知不知道」这个问题的答案取决于"A 城和 B 城之间有没有信息渠道/是否同属一个势力"——这需要**领土归属**（哪片地属于哪个势力）与**势力间关系**（`Affiliation.standing` 已经落地这个概念，但势力实例本身要 P9 世界生成才存在）。当前没有任何代码能回答"某个坐标属于哪个势力"这个问题——`society-and-affiliation.md` 状态行已核实"关系派生基线、`Kinship`……均未落地"，`CultureDef` 未落地。**结论：管辖区无法实现,如实标注为将来扩展。** 当前唯一可行的降级方案是"犯罪记录全局可查，不按地理范围过滤"——`TheftRecord` 本身携带 `HistoricalEvent.location`（信封自带字段，不需要额外新增），未来势力/领土系统落地后，按地点反查所属势力、再决定"这个势力知不知道"是一个纯粹的**查询期**过滤逻辑，不需要改动 `TheftRecord` 本身的形状。
+「在 A 城偷东西，B 城知不知道」这个问题的答案取决于"A 城和 B 城之间有没有信息渠道/是否同属一个势力"——这需要**领土归属**（哪片地属于哪个势力）与**势力间关系**（`Affiliation.standing` 已经落地这个概念，但势力实例本身要 P9 世界生成才存在）。当前没有任何代码能回答"某个坐标属于哪个势力"这个问题——`society-and-affiliation.md` 状态行已核实"关系派生基线、`Kinship`……均未落地"，`CultureDef` 未落地。**结论：管辖区无法实现,如实标注为将来扩展。** 当前唯一可行的降级方案是"犯罪记录全局可查，不按地理范围过滤"——`CrimeRecord` 本身不需要单独携带位置，`HistoricalEvent.location`（信封自带字段）已经够用，未来势力/领土系统落地后，按地点反查所属势力、再决定"这个势力知不知道"是一个纯粹的**查询期**过滤逻辑，不需要改动 `CrimeRecord` 本身的形状。
 
 ### 5.3 后果——只给挂载点
 
-通缉、赏金、NPC 态度——这些系统均不存在（悬赏结构未落地、NPC 态度/关系记忆偏移未落地，`kill-and-death-events.md` 状态行已核实"关系记忆偏移的存储结构本身……未落地，本文档只指出触发点"，本文档面对的是同一个上游缺口）。**挂载点：`Effect::RecordHistoricalEvent(HistoricalEventKind::Theft(..))` 产出的那一刻,是未来任何后果系统应该订阅的事件源**——与"三轴战斗结算的命中判定……是未来驱动动画播放的 `Effect` 来源"（README 索引第十六份文档描述）同一个模式：本文档只交付事件本身,不交付任何消费它的下游系统。
+通缉、赏金、NPC 态度——这些系统均不存在（悬赏结构未落地、NPC 态度/关系记忆偏移未落地，`kill-and-death-events.md` 状态行已核实"关系记忆偏移的存储结构本身……未落地，本文档只指出触发点"，本文档面对的是同一个上游缺口）。**挂载点：`Effect::RecordHistoricalEvent(HistoricalEventKind::Crime(..))` 产出的那一刻,是未来任何后果系统应该订阅的事件源**——目击者名单（`CrimeRecord.witnesses`）非空时尤其该是通缉/NPC 态度系统的第一个消费入口,但两者本身仍不存在,本文档不代它们设计——与"三轴战斗结算的命中判定……是未来驱动动画播放的 `Effect` 来源"（README 索引第十六份文档描述）同一个模式：本文档只交付事件本身,不交付任何消费它的下游系统。
 
 ---
 
@@ -237,7 +334,8 @@ pub struct TheftRecord {
 | **`can_merge` 追加 `owner`/`stolen_marker` 比较** | 引擎规则,不可配置 | 数据完整性约束,与 `durability` 的比较同一类,不属于"内容" |
 | **某件具体物品是否允许公共取用、不算偷**（例如任务给的物品、公共设施里的展示品） | **可配置,一档**,复用现有 `ItemDef.tags` 机制,不新开注册函数 | 见下文 |
 | **销赃时长** | **可配置,运行期参数**,不进注册表 | 见下文，与 `DEFAULT_GROUND_ITEM_MAX_AGE_TICKS` 同一先例 |
-| **目击判定的具体半径/规则** | 不存在,无法配置——机制本身缺失（二节 2.3），配置一个查不到的东西没有意义 | — |
+| **NPC 目击半径基准值（`NPC_BASE_SIGHT_RADIUS`）** | **可配置,运行期参数**,不进注册表——与销赃时长同一先例，见下文 | 二节 2.3/2.6 |
+| **暗视对目击半径的加成** | 不存在,无法配置——`darkvision_floor` 字段已落地但零消费者（二节 2.6），配置一个没有被读取的字段没有意义,先接线再谈可配置 | 二节 2.6 |
 | **后果（通缉/赏金/态度）** | 将来扩展,连挂载系统本身都未落地,现在不给档位 | 五节 5.3 |
 
 ### 「公共取用」——复用现有 `tags`，不新增注册函数
@@ -266,6 +364,18 @@ pub fn launder_stolen_items(&mut self, threshold_ticks: i64) -> usize { /* 见�
 
 `threshold_ticks` 是运行期参数，mod/未来的"游戏规则配置层"只需要算出一个新数字传进来，不需要引擎方法跟着改一行代码——**不为这一个数字单独造注册表，与老化阈值同一条 YAGNI 判断**，等真正的"游戏规则配置表"这个更大的基础设施存在时（当前不存在，`cleanup_aged_ground_items` 文档已经如实标注过这一点），销赃时长自然会成为那张表里的一行，不需要现在提前搭一套只服务它自己的机制。
 
+### `NPC_BASE_SIGHT_RADIUS`——同一先例的第二个数字
+
+二节 2.3/2.6 的目击算法需要一个"NPC 基准视野半径"（喂给 `sight_radius_at` 再叠加光照缩放）。这不是内容——它不按物品/角色各自配置，是一个全局标量——**按与销赃时长完全相同的判断，同样不新开注册表**：
+
+```rust
+pub const DEFAULT_NPC_BASE_SIGHT_RADIUS: u32 = 12; // 与玩家渲染层 BASE_SIGHT_RADIUS 同一量级,具体数值留给项目所有者拍板
+
+fn witnessed_by(world: &WorldState, culprit_pos: TorusPos, at: Tick, base_radius: u32) -> Vec<EntityId> { /* 见二节 2.3 */ }
+```
+
+`base_radius` 运行期传入，`DEFAULT_NPC_BASE_SIGHT_RADIUS` 只是不需要自定义时的默认值——与销赃阈值、地面物品老化阈值同一条既有纪律，不重复论证。**种族级别的差异化（暗视加成、种族基准视野不同）不在这条参数化范围内**——那需要先把 `darkvision_floor` 接上 `effective_light` 这条缺失的一步（二节 2.6），本节的参数化只解决"这一个全局数字该怎么给"，不解决"暗视要不要生效"。
+
 ---
 
 ## 七、场景走查
@@ -274,17 +384,22 @@ pub fn launder_stolen_items(&mut self, threshold_ticks: i64) -> usize { /* 见�
 
 1. **前置**：村民 NPC（`EntityId` 为 `V`）的背包里有一把剑 `ItemStack { def: iron_sword, count: 1, durability: Some(100), owner: Owner::Npc(W_v), stolen_marker: None }`——`W_v` 是这个村民的 `remembered_id`，在给他的私产打归属时懒分配（一节 1.2）。
 2. 玩家角色（`actor`，`world.player_entity == Some(actor)`）执行 `Intent::PickUp`。**注**：本场景假设剑已经从村民背包被丢在地上（`GroundItemStack { pos, stack, dropped_at }`）——当前引擎的 `resolve_pick_up` 只能捡地面物品，"从别人背包里直接偷"这个动作本身（不经过地面这一步）需要一个新的 `Intent`（例如 `Intent::Steal { target: EntityId }`），当前不存在，本场景走的是"剑已经在地上"这条现有路径能表达的部分。
-3. `resolve_pick_up` 读到 `ground.stack.owner == Owner::Npc(W_v)`，`actor` 的归属判据（`Owner::Player`）与之不符 → 判定为盗窃。产出效果序列：`RemoveGroundItem` + `MergeIntoInventory`（原有两个）+ 新增一步——把即将合并进背包的 `ItemStack` 的 `stolen_marker` 设为 `Some(StolenMarker { original_owner: Owner::Npc(W_v), stolen_at: world.clock })`（`owner` 字段本身**不变**，仍是 `Owner::Npc(W_v)`，见三节 3.3 表格第一行）+ `Effect::RecordHistoricalEvent(HistoricalEventKind::Theft(TheftRecord { thief: Some(player_remembered_id), victim: Owner::Npc(W_v), item_def: iron_sword, count: 1, witnessed: false }))`。
-4. 玩家背包里现在有一把 `owner` 仍标记为 `Owner::Npc(W_v)`、带 `stolen_marker` 的剑——**账面上这把剑依然不是玩家的**，只是玩家实际持有它。历史日志里多了一条可查询的 `Theft` 记录。
-5. 世界时钟推进（`advance`），期间玩家可以把剑丢在地上再捡起（`stolen_marker` 原样携带,不重置，三节 3.3）、可以带着它到处走。
-6. 某次惰性追赶/系统性检查调用 `launder_stolen_items(DEFAULT_LAUNDER_TICKS)`（六节）：`now - stolen_at >= threshold_ticks` 成立 → 这把剑的 `owner` 改写为 `Owner::Player`，`stolen_marker` 清空为 `None`。
-7. 销赃完成：这把剑现在是玩家账面上合法的财产,再次执行任何"这是谁的"判定（例如未来的合法转移四节）都会得到 `Owner::Player`,不再关联最初的盗窃。**这条销赃动作本身不产出新的历史事件**（`HistoricalEventKind` 没有新增"洗白"变体）——`Theft` 记录本身不可变、永久留在日志里（五节 5.1 已论证"是否犯罪"是查询而非存储），销赃只改变当下的 `Owner`,不改写历史,这正是"洗白"这个词准确的含义：物品变得合法,不代表"曾经偷过"这件事从未发生过。
+3. `resolve_pick_up` 读到 `ground.stack.owner == Owner::Npc(W_v)`，`actor` 的归属判据（`Owner::Player`）与之不符 → 判定为盗窃（既遂）。产出效果序列：`RemoveGroundItem` + `MergeIntoInventory`（原有两个）+ 新增一步——把即将合并进背包的 `ItemStack` 的 `stolen_marker` 设为 `Some(StolenMarker { original_owner: Owner::Npc(W_v), stolen_at: world.clock })`（`owner` 字段本身**不变**，仍是 `Owner::Npc(W_v)`，见三节 3.3 表格第一行）。
+4. **目击判定**（二节 2.3）：`resolve_pick_up` 同一次结算里调用 `witnessed_by(world, actor.pos, world.clock)`，对 `world.actors` 做两段式扫描。两种走向都要交代：
+   - **若村民 V 本人此刻就站在自己家里**（`V` 是厚层实体，`agent.pos` 与犯罪地点的切比雪夫距离落在其视野半径内，且 FOV 真的能看到该坐标）→ `witnessed_by` 返回 `[V 的 EntityId]`。
+   - **若这间屋子此刻无人**（`V` 已外出，或 `V` 只是薄层背景人口、根本不在 `world.actors` 里）→ 返回空列表。
+   - **无论哪种走向，第 3 步的既遂判定与 `stolen_marker` 计时都照常发生**——二节 2.2 的结论没有变：目击只决定 `CrimeRecord.witnesses` 是否非空，不决定"算不算犯罪"。
+5. `Effect::RecordHistoricalEvent(HistoricalEventKind::Crime(CrimeRecord { perpetrator: Some(player_remembered_id), witnesses, kind: CrimeKind::Theft { victim: Owner::Npc(W_v), item_def: iron_sword, count: 1 } }))`——`witnesses` 是第 4 步算出的结果（经 `apply` 侧 `record_crime` 把 `EntityId` 翻译成 `WorldId`，可能是空 `Vec`）。
+6. 玩家背包里现在有一把 `owner` 仍标记为 `Owner::Npc(W_v)`、带 `stolen_marker` 的剑——**账面上这把剑依然不是玩家的**，只是玩家实际持有它。历史日志里多了一条可查询的 `Crime` 记录（不论是否被目击）。
+7. 世界时钟推进（`advance`），期间玩家可以把剑丢在地上再捡起（`stolen_marker` 原样携带,不重置，三节 3.3）、可以带着它到处走。
+8. 某次惰性追赶/系统性检查调用 `launder_stolen_items(DEFAULT_LAUNDER_TICKS)`（六节）：`now - stolen_at >= threshold_ticks` 成立 → 这把剑的 `owner` 改写为 `Owner::Player`，`stolen_marker` 清空为 `None`。
+9. 销赃完成：这把剑现在是玩家账面上合法的财产,再次执行任何"这是谁的"判定（例如未来的合法转移四节）都会得到 `Owner::Player`,不再关联最初的盗窃。**这条销赃动作本身不产出新的历史事件**（`HistoricalEventKind` 没有新增"洗白"变体）——`Crime` 记录本身不可变、永久留在日志里（五节 5.1 已论证"是否犯罪"是查询而非存储），销赃只改变当下的 `Owner`,不改写历史,这正是"洗白"这个词准确的含义：物品变得合法,不代表"曾经偷过、曾经被人看见"这些事从未发生过。
 
 ### 场景二：从怪物尸体上捡东西——无主，不算犯罪
 
 1. 一只怪物被击杀，`resolve_attack`/`apply` 结算完成后产出若干 `GroundItemStack`（掉落物）——这些堆在生成时 `owner` 字段应为 `Owner::Unowned`（一节 1.5，默认值）,`stolen_marker` 为 `None`。
 2. 玩家角色执行 `Intent::PickUp`，`resolve_pick_up` 读到 `ground.stack.owner == Owner::Unowned`。
-3. 判定逻辑：`Unowned` 不触发盗窃分支（二节 2.1 已给出判据：`Unowned` 恒放行）——直接走现有的两个 `Effect`（`RemoveGroundItem` + `MergeIntoInventory`），**不追加 `stolen_marker`，不产出 `HistoricalEventKind::Theft`**。
+3. 判定逻辑：`Unowned` 不触发盗窃分支（二节 2.1 已给出判据：`Unowned` 恒放行）——直接走现有的两个 `Effect`（`RemoveGroundItem` + `MergeIntoInventory`），**不追加 `stolen_marker`，不调用 `witnessed_by`，不产出 `HistoricalEventKind::Crime`**（即使这一刻真有 NPC 站在旁边看着，也不构成犯罪——目击判定只在第 3 步已经认定"这是非法操作"之后才会触发，`Unowned` 从不触发这一步，二节 2.7 的判定入口分工在此处生效）。
 4. 玩家背包里的战利品 `owner` 仍是 `Owner::Unowned`——这堆物品此刻"谁都不欠"，未来若玩家把它送给别人（四节合法转移），转移校验（"发起方是否是当前 `owner`"）对 `Unowned` 恒放行，因为没有人的权益因为这次转移受损。
 
 ---
@@ -295,9 +410,10 @@ pub fn launder_stolen_items(&mut self, threshold_ticks: i64) -> usize { /* 见�
 
 - 给 `ItemStack` 加 `owner: Owner`/`stolen_marker: Option<StolenMarker>` 两个字段，`can_merge` 追加对应比较——一节 1.6，机械改动，`merge_stacks`/`split_stack` 免改。
 - `GroundItemStack` 的构造点补上 `owner: Owner::Unowned` 默认值——一节 1.5。
-- `resolve_pick_up` 插入归属判定分支（`Unowned`/`Player` 自己/`Npc` 自己放行，否则记 `stolen_marker` + 产出 `Theft` 记录）——二节 2.1、三节 3.3。
-- `HistoricalEventKind::Theft(TheftRecord)` 变体本身与 `record_theft`（对齐 `record_kill` 的既有模式）——五节 5.1。
-- `launder_stolen_items` 方法本身（对齐 `cleanup_aged_ground_items` 的既有模式，运行期参数、不进注册表）——六节。
+- `resolve_pick_up` 插入归属判定分支（`Unowned`/`Player` 自己/`Npc` 自己放行，否则记 `stolen_marker`）——二节 2.1、三节 3.3。
+- `witnessed_by` 两段式目击算法本身（`chebyshev` 粗过滤 + `compute_fov` 成员测试，全部基于已落地的 `Arena::iter_with_id`/`fov.rs`/`ll_world::light`）——二节 2.3–2.6，**这是本轮修订新确认可以现在做的部分**，不再是"等空间查询"。
+- `HistoricalEventKind::Crime(CrimeRecord{ kind: CrimeKind, .. })` 变体本身与 `record_crime`（对齐 `record_kill` 的既有模式，内部对每个目击者调用既有的 `remembered_id_of_or_assign`）——五节 5.1。
+- `launder_stolen_items`/`DEFAULT_LAUNDER_TICKS`、`NPC_BASE_SIGHT_RADIUS`/`DEFAULT_NPC_BASE_SIGHT_RADIUS` 两个运行期参数（对齐 `cleanup_aged_ground_items` 的既有模式，不进注册表）——六节。
 - `register-item-theft-exempt` 一档注册函数——六节，不改任何既有 `register-*` 参数个数。
 
 **等什么**（本文档不能替它们做决定，只给出接口形状/依赖标注）：
@@ -305,7 +421,10 @@ pub fn launder_stolen_items(&mut self, threshold_ticks: i64) -> usize { /* 见�
 | 缺口 | 阻塞了什么 | 状态 |
 |---|---|---|
 | **"从别人背包直接偷"这个 `Intent`**（当前只能偷地面物品，场景一走的是"剑已经在地上"这条降级路径） | 更完整的盗窃场景（直接从 NPC 背包/尸体容器行窃） | 不存在,`Intent` 需要新变体 |
-| **空间查询（以某坐标为中心查附近实体）** | 目击判定（二节 2.3）——没有它,犯罪记录只能恒 `witnessed: false` | `trait-system.md`/`script-entity-handles-and-batch-queries.md` 均已核实纯设计 |
+| ~~空间查询（以某坐标为中心查附近实体）~~——**本轮修订已核实解除**：目击判定用 `compute_fov`（原点是参数）+ `Arena::iter_with_id` 现在就能表达，见二节 2.3。仍然真实存在、未解除的是两条更窄的缺口： | | |
+| ├ `resolve_attack` 拿不到"以目标为中心查同阵营盟友"这一条特定输入（盗贼偷袭需要的能力，非本文档范围） | 天赋系统的偷袭条件（`trait-system.md`），与本文档的目击判定是两回事 | `trait-system.md` 已核实,仍未解除 |
+| ├ 室内/建筑物的额外调光（`effective_ambient_light`/`SpaceProfile`）在 `ll-sim` 里拿不到，目击半径只按纯时间光照算，不区分"在室内还是室外" | 二节 2.6「室内更暗」这层细节表达不出来,只有昼夜这一层能表达 | `resolve.rs` 已核实同一处依赖缺口 |
+| ├ `RaceDef.darkvision_floor` 字段已落地但零消费者，`effective_light = max(实际光照, darkvision_floor)` 这条公式没有任何代码执行 | 暗视种族"晚上依然能看见"这半句玩法结论暂不成立 | 二节 2.6 已核实,需要新增一步接线 |
 | **交易系统** | 合法转移之"购买"（四节） | 不存在,无价格结算/货币接线 |
 | **对话/交互系统** | 合法转移之"赠送" | 不存在 |
 | **任务奖励发放的 `resolve`/`Effect`** | 合法转移之"任务" | `QuestNodeDef` 已落地但奖励发放机制未落地 |
