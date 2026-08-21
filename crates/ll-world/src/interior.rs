@@ -324,7 +324,7 @@ impl InteriorTable {
 ///
 /// # 为什么不直接对 `HashMap<SpaceId, Interior>` 派生序列化
 ///
-/// `SpaceId` 是 [`WorldId`] 的类型别名，一个 newtype 元组结构体——虽然
+/// `SpaceId` 是 [`ll_core::ident::WorldId`] 的类型别名，一个 newtype 元组结构体——虽然
 /// 多数 serde 实现会把单字段 newtype 在 map key 位置「透明化」成内层
 /// 的整数，但这依赖具体序列化格式的实现细节，不是 serde 数据模型本身
 /// 保证的行为。为了不让 `InteriorTable` 的可序列化性悄悄绑定在某个

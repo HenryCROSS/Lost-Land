@@ -160,13 +160,35 @@ impl core::error::Error for AssetVfsError {}
 /// 只允许 [`Component::Normal`] 段通过；[`Component::ParentDir`]（`..`）、
 /// [`Component::RootDir`]（前导分隔符）、[`Component::Prefix`]（Windows
 /// 盘符 `C:` 或 UNC `\\server\share`）、[`Component::CurDir`]（`.`）
-/// 一律拒绝。`std::path::Path` 在 Windows 目标上原生同时识别 `/` 与 `\`
-/// 两种分隔符——`Path::new("..\\..\\secret.png").components()` 与
-/// `Path::new("../../secret.png").components()` 产出的都是两个
-/// [`Component::ParentDir`]，不需要手写字符串替换去统一分隔符，也不
-/// 存在「校验只认斜杠、漏了反斜杠」这类平台相关的疏漏。
+/// 一律拒绝。
+///
+/// `std::path::Component` 对反斜杠、盘符、UNC 前缀的解析**依平台而
+/// 异**：`\` 只在 Windows 目标上被当作分隔符识别，在类 Unix 目标上是
+/// 合法的普通文件名字符；`C:\foo`、`\\server\share` 同理，只在 Windows
+/// 上才会被拆成 `Prefix`/`RootDir` 分量，在 Unix 上整段会被解析成一个
+/// `Normal` 分量而放行。mod 是要跨平台分发的，同一个 mod 在 Linux 和
+/// Windows 上必须被同样地接受或拒绝，否则作者在一个平台上测通的路径
+/// 声明换一个平台就会作为路径穿越漏洞被放行（或反过来，合法声明被误
+/// 拒）。因此这里先做与平台无关的显式字符串检查（反斜杠、盘符模式），
+/// 排除掉这些歧义输入之后，再用 `Component` 白名单兜底其余情形（`..`、
+/// 前导 `/`、`.`）。
 pub fn validate_relative_asset_path(raw: &str) -> Result<PathBuf, AssetVfsError> {
     if raw.is_empty() {
+        return Err(AssetVfsError::PathTraversal(raw.to_string()));
+    }
+
+    // 反斜杠：在 Unix 上是合法文件名字符，`Component` 不会拒绝含反斜杠
+    // 的单段路径（如 `..\..\secret.png` 会被解析成一个 Normal 分量）。
+    // 显式拒绝，不依赖 `Component` 的平台相关解析。
+    if raw.contains('\\') {
+        return Err(AssetVfsError::PathTraversal(raw.to_string()));
+    }
+
+    // Windows 盘符模式（`C:`、`d:` 等）：在 Unix 上 `:` 没有路径语义，
+    // `C:/secret.png` 会被解析成 Normal("C:") + Normal("secret.png")，
+    // 两个都合法，不会被 `Component` 白名单拦下。显式拒绝。
+    let bytes = raw.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
         return Err(AssetVfsError::PathTraversal(raw.to_string()));
     }
 
@@ -581,6 +603,22 @@ mod tests {
     fn unc路径声明被拒绝() {
         // Arrange & Act
         let result = validate_relative_asset_path("\\\\server\\share\\secret.png");
+
+        // Assert
+        assert!(matches!(result, Err(AssetVfsError::PathTraversal(_))));
+    }
+
+    #[test]
+    fn 正斜杠盘符路径声明被拒绝() {
+        // 不含反斜杠的盘符写法（`C:/secret.png`）：在 Unix 上 `std::path`
+        // 会把它解析成 Normal("C:") + Normal("secret.png") 两个合法分量，
+        // 单靠 `Component` 白名单或者「只拒绝反斜杠」都拦不住——必须靠
+        // 显式的盘符字符串检查。这条用例的判定逻辑（字符串前两字节是否
+        // 匹配 `[A-Za-z]:`）与 `Component` 的平台相关解析完全无关，因此
+        // 在本机（Windows）与 CI 的 Linux 目标上会得到相同结果，可以确
+        // 认此修复在两个平台上都生效。
+        // Arrange & Act
+        let result = validate_relative_asset_path("C:/secret.png");
 
         // Assert
         assert!(matches!(result, Err(AssetVfsError::PathTraversal(_))));

@@ -28,7 +28,8 @@
 //! 所有者索引，还我它授予哪些天赋」）与所有者是种族、职业、副职、载具
 //! 还是 buff 无关，未来接入其余四路时不需要改这个 trait 的签名,只需要
 //! 让对应的表也实现它,再在调用点多传一个来源（见
-//! [`crate::resolve::resolve_use_skill`] 目前只读一路来源的诚实标注）。
+//! `resolve::resolve_use_skill`——模块私有，无法作为 rustdoc 链接目标——
+//! 目前只读一路来源的诚实标注）。
 //!
 //! # 聚合顺序为什么确定（约束 C5）
 //!
@@ -140,7 +141,7 @@ impl TraitGrantSource for NoTraitGrants {
 /// Space` 都要求一个真实世界上下文才能造出合法值，见
 /// `crates/ll-sim/src/resolve.rs` 测试模块 `spawn_agent` 帮手），本
 /// 模块的单元测试因此不需要为了验证一条纯粹的整数比较逻辑而搭一个
-/// 完整世界——与 [`crate::resolve::action_cost`]/
+/// 完整世界——与 [`crate::timeline::action_cost`]/
 /// `effective_speed_from_dexterity` 只取 `Agent` 的某个具体字段作为
 /// 参数，而不是整个 `&Agent`，是同一种取舍。
 ///
@@ -149,8 +150,8 @@ impl TraitGrantSource for NoTraitGrants {
 /// 天赋是纯派生（`trait-system.md` 八节：`RaceDef.traits` 是注册表
 /// 数据的一部分,不进 `WorldState::hash()`,`race`/`level` 已经是存过、
 /// 已 hash 的字段）——每次要用时现算，不缓存进 `WorldState`。调用
-/// 频率见 [`crate::resolve::resolve_use_skill`] 文档「性能」一节：
-/// 与技能释放同频率,不是逐 tick 热路径。
+/// 频率见 `resolve::resolve_use_skill`（模块私有，无法作为 rustdoc
+/// 链接目标）文档「性能」一节：与技能释放同频率,不是逐 tick 热路径。
 pub fn effective_traits(
     race: ContentIndex,
     level: i32,

@@ -29,7 +29,7 @@ use crate::xp_curve::{XpCurveError, XpCurveTable};
 pub const DEFAULT_XP_CURVE_ID: &str = "lostland:default_xp_curve";
 
 /// 本体默认曲线注册的唯一入口：`intern` 是外部传入的解析回调，理由同
-/// [`crate::base_race::materialize_base_races`] 文档。
+/// [`crate::race::materialize_base_races`] 文档。
 pub fn register_base_xp_curve(
     intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
 ) -> Result<(ContentIndex, XpCurveTable), XpCurveError> {

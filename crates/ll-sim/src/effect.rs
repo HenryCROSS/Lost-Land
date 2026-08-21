@@ -276,7 +276,7 @@ pub enum Effect {
     ///
     /// 与 `target`（受影响的实体）是完全不同的两个字段——`source` 是
     /// 「这条修正来自哪份内容定义」（目前唯一的生产者是
-    /// [`crate::resolve::resolve_use_skill`]，传入被使用的技能自身的
+    /// `resolve::resolve_use_skill`（模块私有，不对外可链接），传入被使用的技能自身的
     /// `ContentIndex`），供 `apply` 判断「这是不是同一个效果的重复
     /// 施加」：`(target 身上的 attribute, source)` 相同即视为同源，走
     /// `merge_same_source`；不同则各自独立存在、叠加生效。见
@@ -285,8 +285,8 @@ pub enum Effect {
     /// # 惰性到期，`apply` 不做「是否已过期」的判断
     ///
     /// 与 [`ll_world::entity::ActiveStatModifier`] 文档一致：是否已经
-    /// 过期由未来读取「有效属性值」的调用方（[`crate::resolve::resolve_attack`]
-    /// 经 `effective_attribute`）在读取那一刻现比对世界时钟，`apply`
+    /// 过期由未来读取「有效属性值」的调用方（`resolve::resolve_attack`
+    /// ——模块私有，不对外可链接——经 `effective_attribute`）在读取那一刻现比对世界时钟，`apply`
     /// 本身不含这个判断（三条纪律「不含任何游戏逻辑」）——`apply` 唯一
     /// 要做的判断是「同源合并」，这是一个纯粹由两个既有值机械算出结果
     /// 的固定算法（[`ll_world::entity::ActiveStatModifier::merge_same_source`]），

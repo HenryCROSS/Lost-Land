@@ -230,8 +230,9 @@ impl ExplorationMemory {
     /// 先混入区块数，再按 `zones`（`BTreeMap`，自然按 `ZoneCoord`
     /// 排序）遍历——不依赖任何 `HashMap`/`HashSet` 迭代顺序（约束
     /// C5）。每个区块先混入坐标、再混入位图字数与逐个位图字，理由与
-    /// [`crate::state::write_script_state`] 一致：变长数据混入前先写
-    /// 长度，避免相邻字段在字节流里边界不清导致的理论碰撞。
+    /// `state::write_script_state`（模块私有，无法作为 rustdoc 链接
+    /// 目标）一致：变长数据混入前先写长度，避免相邻字段在字节流里
+    /// 边界不清导致的理论碰撞。
     pub(crate) fn write_hash(&self, hasher: &mut StateHasher) {
         hasher.write_u64(self.zones.len() as u64);
         for (zone, exploration) in &self.zones {

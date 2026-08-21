@@ -42,7 +42,8 @@ use ll_render::anim::{AnimStateMachine, movement_key_held};
 
 /// 玩家精灵唯一必须存在的一帧。
 ///
-/// 行走（[`WALK_CYCLE`] 六帧）与待机呼吸（`hero_idle_1`）都是
+/// 行走（[`ll_render::anim::HERO_WALK_FRAMES`] 六帧）与待机呼吸
+/// （`hero_idle_1`）都是
 /// 「锦上添花」的可选资产——本体内嵌的图集恒定包含它们，但动画帧名
 /// 最终来自可被 mod 覆盖的剪辑数据，属于外部不可信输入（见
 /// `ll_render::anim` 模块文档「降级而非崩溃」一节）。`hero_idle_0` 是

@@ -361,9 +361,10 @@ pub fn materialize_base_space_profiles(
 
 /// [`materialize_base_space_profiles`] 的内部帮手：把一条声明的字面量
 /// 字段拆开传入，换取一次 `intern` + 一次 [`SpaceProfileTable::define`]。
-/// 与 [`crate::terrain::define_base`] 同一个理由抽成函数，避免四份
-/// 几乎相同的样板代码互相漂移。`reverb_tag` 本次全部传 `None`——「仅
-/// 预留字段，不展开」，见模块文档。
+/// 与 `terrain::define_base`（模块私有，无法作为 rustdoc 链接目标，
+/// 是 `crates/ll-world/src/terrain.rs` 里同名的内部帮手）同一个理由
+/// 抽成函数，避免四份几乎相同的样板代码互相漂移。`reverb_tag` 本次
+/// 全部传 `None`——「仅预留字段，不展开」，见模块文档。
 #[allow(clippy::too_many_arguments)]
 fn define_base(
     table: &mut SpaceProfileTable,

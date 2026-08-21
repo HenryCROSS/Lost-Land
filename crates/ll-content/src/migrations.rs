@@ -2,7 +2,8 @@
 //!
 //! [`crate::migration`] 只搭了迁移链的机制骨架（见其模块文档「本任务
 //! 只搭机制，不接入真实迁移函数」一节），本模块原本是把具体迁移函数
-//! 真正注册进 [`crate::save_file::migration_chain`] 的地方。发布前的
+//! 真正注册进 `save_file::migration_chain`（模块私有，无法作为 rustdoc
+//! 链接目标）的地方。发布前的
 //! 开发过程中，这里累计注册过三步具体迁移（`Migration1To2`：落地探索
 //! 记忆批次新增 `WorldState::exploration`/`Interior::origin`；
 //! `Migration2To3`：击杀与死亡记录批次新增
@@ -28,7 +29,7 @@
 //!
 //! # 老存档现在会发生什么
 //!
-//! [`crate::save_file::migration_chain`] 现在返回一条空链——不再有任何
+//! `save_file::migration_chain` 现在返回一条空链——不再有任何
 //! 已注册的迁移路径。任何 `schema_version` 与当前唯一认识的版本不一致
 //! 的存档都会在读档管线里被明确拒绝
 //! （[`crate::load_error::LoadError::SchemaTooNew`]/
@@ -45,5 +46,5 @@
 //! 「找不到路径时报错」「单步失败时错误向上传播」等机制本身的正确性）
 //! 原样保留在 [`crate::migration`]——发布之后真实存档需要升级时，新的
 //! 迁移函数重新实现 [`crate::migration::Migration`]、往
-//! [`crate::save_file::migration_chain`] 里注册即可，不需要重新设计
+//! `save_file::migration_chain` 里注册即可，不需要重新设计
 //! 这套机制。

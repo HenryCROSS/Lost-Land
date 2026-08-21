@@ -447,7 +447,8 @@ const INTERRUPTED_MESSAGE_MARKER: &str = "Interrupted by user";
 ///    `steel_vm/interrupt.rs`，本 crate 不能修改）——`run_with_timeout`
 ///    的调用没能在 [`INTERRUPT_TIMEOUT`] 内送回完成信号时触发，运行在
 ///    **另一根**看门狗线程上。
-/// 2. [`crate::alloc_guard::record_alloc`]——单次调用的净分配字节数超出
+/// 2. `alloc_guard::record_alloc`（模块私有，无法作为 rustdoc 链接
+///    目标）——单次调用的净分配字节数超出
 ///    [`crate::alloc_guard::set_memory_budget`] 设定的预算时触发，运行
 ///    在脚本自己执行的那根线程上（分配本来就发生在那根线程）。
 ///

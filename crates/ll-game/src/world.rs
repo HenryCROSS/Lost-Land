@@ -28,7 +28,7 @@ use crate::content::LoadedContent;
 
 /// 新游戏的起始世界时刻——早上八点。
 ///
-/// 选白天而不是 `Tick(0)`（午夜）的理由见 [`new_world`] 里设置它的那段
+/// 选白天而不是 `Tick(0)`（午夜）的理由见 [`build_new_world`] 里设置它的那段
 /// 注释：午夜的环境光会让开局画面几乎全黑。取整点只是为了让「第 0 天
 /// 早八点」这个起点读起来自然，没有玩法含义。
 pub const NEW_GAME_START_TICK: Tick = Tick(8 * ll_core::time::TICKS_PER_HOUR);
