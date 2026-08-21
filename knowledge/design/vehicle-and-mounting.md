@@ -36,7 +36,7 @@
 - **地形通行性是静态查表**：`crates/ll-world/src/terrain.rs` 的 `TerrainTable::blocks_move`/`move_cost` 是按 `ContentIndex` 下标的纯列式查表，注册期一次性 `define`，运行期 `O(1)` 数组访问。`ContentIndex` **是一个全局共享号段**——地形、技能、种族……未来的表面分类全部从同一个 `Interner`/`Registry` 里分配，不是「地形专属的连续编号」（`terrain.rs` 模块文档原话），这一点直接决定了三节 `SurfaceKind` 不能直接拿 `ContentIndex.get()` 当位图下标（会导致位图大小等于整个内容空间）。
 - **`resolve_move` 的真实形状**（`crates/ll-sim/src/resolve.rs:409` 起）：撞墙仍消耗 `action_cost(BASE_ACTION_COST, speed)`；可通行时产生 `MoveTo` + `ScheduleNext`；`speed` 全程来自 `effective_speed_from_dexterity(agent.stats.dexterity)`。
 - **`resolve_attack` 仍是占位实现，攻防聚合尚未接线**（`crates/ll-sim/src/resolve.rs:495`）：攻击力直接读原始 `BaseStats` 字段，防御恒为 `0`，`Agent.active_stat_modifiers` 完全没有被读取。这不是本文档新发现的缺口，是 [三轴战斗结算](combat-three-axis.md) 已经点名、独立于载具存在的既有缺口。
-- **`Agent.active_stat_modifiers: BTreeMap<AttributeKind, ActiveStatModifier>` 已经落地**（`crates/ll-world/src/entity/stats.rs:82`、`agent.rs:207`），已进 `WorldState::hash()`（`state.rs:929`）。按 `AttributeKind` 键控，`RefreshDuration`（后写覆盖先写），不是叠加多条。**`AttributeKind` 只有六个定长变体**（`Strength`/`Dexterity`/`Constitution`/`Intelligence`/`Willpower`/`Charisma`），**没有对应「护甲/防御」的变体**——`DerivedStats.armor` 按 [属性系统](attribute-system.md) §七来自 `derive_stats(基础属性, 装备, 状态效果, 负重)`，不是某个 `AttributeKind` 的直接映射。
+- **`Agent.active_stat_modifiers: BTreeMap<AttributeKind, BTreeMap<ContentIndex, ActiveStatModifier>>` 已经落地**（`crates/ll-world/src/entity/stats.rs:82`、`agent.rs:207`），已进 `WorldState::hash()`（`state.rs:929`）。**（更正，提交 `883d572`）此前这里记录的是单层 `BTreeMap<AttributeKind, ActiveStatModifier>`、按 `AttributeKind` 键控、后写覆盖先写——`buffs-and-triggers.md` 六节裁定「不同效果能叠加，同效果只刷新时间」后，该记录已过时：现在是按 `(属性, 来源)` 两层键控，外层 `AttributeKind`，内层「来源」的 `ContentIndex`；不同来源各自独立存在、聚合时求和（`resolve_attack` 一类读取路径逐条过滤未过期条目再求和），同一来源再次施加时走 `ActiveStatModifier::merge_same_source`——强度取 `|delta|` 较大者、到期时刻取 `.max()`（不是两段时长相加），两个维度独立比较。** **`AttributeKind` 只有六个定长变体**（`Strength`/`Dexterity`/`Constitution`/`Intelligence`/`Willpower`/`Charisma`），**没有对应「护甲/防御」的变体**——`DerivedStats.armor` 按 [属性系统](attribute-system.md) §七来自 `derive_stats(基础属性, 装备, 状态效果, 负重)`，不是某个 `AttributeKind` 的直接映射。
 - **`Agent.unlocked_skills`/`Agent.skill_cooldowns` 已经落地**，均已进 `WorldState::hash()`（`state.rs:922`/`924`）。「能不能放某技能」的真实查询路径只有一处：`resolve_use_skill`（`resolve.rs:684`）。
 - **`Timeline::remove(actor: EntityId)`/`Timeline::schedule(actor, at)` 已经落地**（`crates/ll-sim/src/timeline.rs:87`/`72`），`remove` 用 `BinaryHeap::retain`，与插入历史无关，满足约束 C5，且已经是「死亡清理残留条目」的既有用途。
 - **`EntityId` 不是跨存储唯一的**（`crates/ll-world/src/entity/id.rs` 模块文档）——二节据此否决「新开一个实体池装船」的方案。
@@ -339,8 +339,13 @@ pub struct MountDef {
     // ……
     /// 骑乘期间叠加给骑手的属性修正列表——始终叠加,不支持"替换"
     /// 模式,理由见下「替换/叠加要不要开放给mod」。走既有的
-    /// Agent.active_stat_modifiers 通道（一节已核实已落地、已进
-    /// hash()），Effect::Mount/Dismount 时逐项插入/覆盖清空。
+    /// Agent.active_stat_modifiers 通道（一节已核实，提交 `883d572`
+    /// 起是按 `(属性, 来源)` 两层键控），Effect::Mount 以这个载具自身
+    /// 的 ContentIndex 作为来源键逐项插入，Effect::Dismount 按同一
+    /// 来源键逐项移除——不是「覆盖清空」整个属性槽位：两层键控下，
+    /// 插入不会覆盖骑手身上其他来源（技能/装备）对同一属性的既有
+    /// 修正，移除时也只精确删掉这个载具自己写入的条目，骑手自己的
+    /// 修正原样保留。
     pub stat_modifiers: Vec<(AttributeKind, i32)>,
 }
 ```

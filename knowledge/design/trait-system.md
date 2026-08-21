@@ -117,7 +117,7 @@ pub struct ActiveTraitInstance {
 
 ---
 
-## 三、天赋效果的三类表达
+## 三、天赋效果的四类表达
 
 ### ① 授予能力——直接复用载具已确立的模式，职业技能同样适用
 
@@ -231,6 +231,43 @@ pub struct ConditionalRuleModifier {
 
 **`RuleModifier` 的变体集合是封闭的 Rust 枚举，不能被 mod 添加新变体**——与 `buffs-and-triggers.md` 的 `TriggerResponse`（`ApplyBuff`/`DealDamage`/`Formula`/`Script` 四个变体同样封闭）是同一层判断：ADR 0017 要求一档/二档内容压平成 Rust 侧可以直接匹配的固定操作类型，"操作的种类"必须封闭，"操作作用在哪个具体值上"（`damage_category`/`value`/`check_context`）必须开放。**mod 能做的**：用已有变体表达新内容（"精灵抗魅惑"是新的 `Resistance { damage_category: charm_id, ... }`，`damage_category` 走 `damage-formula-mod-api.md` 十七节已经开放的 `register-damage-category`，mod 可以先注册一个新伤害类别再声明抗它）——**mod 不能做的**：发明一种全新的规则修改方式（例如"每次未命中都能立刻再攻击一次"这种全新的战斗节奏改写），那需要 Rust 侧新增一个 `RuleModifier` 变体，是引擎层改动，不是天赋声明能表达的自由度。**这不是遗漏——`buffs-and-triggers.md` 的 `TriggerResponse::Script` 是这条边界的既有逃生舱**，本设计同构地留一个未来口子（不现在设计）：若某天真的需要"规则修改本身要跑一段任意逻辑"，走三档脚本回调（`TraitDef` 可以有一个 `Script(NamespacedId)` 变体，同构于 `TriggerResponse::Script`），**本次三个示例都不需要它，不现在加**（YAGNI）。
 
+### ④ 资源池容量——`resource-pools-and-rest.md` 三节提出的补丁，按其精确要求落地
+
+**来源：`resource-pools-and-rest.md`（提交 `2e7dc02`）三节采纳"资源池由天赋授予"这个方向后，指出 `TraitDef` 需要第四类效果，并在该文档三节末尾精确列出了补丁形状，标注为待办——该文档没有本文件的写权限。本小节按其原文落地，不另发明一套。**
+
+法力池、法术位、血法力许可不是 `Agent` 上人人都有的固定字段，而是天赋（种族/职业/副职/装备/buff）授予的能力——这是①②③已经确立的"没有对应授予关系就是没有，`effective_traits` 找不到匹配即为零"这条纪律的第四次应用，不是新发明。
+
+```rust
+pub granted_resource_pools: Vec<ResourcePoolGrant>,   // TraitDef 新增第四个字段，见下方四节
+
+/// 一条"这个天赋授予多少这种资源池容量"的声明。
+pub struct ResourcePoolGrant {
+    pub pool: ContentIndex,          // 指向 ResourcePoolDef（resource-pools-and-rest.md 二节）
+    pub capacity: CapacityFormula,
+}
+
+pub enum CapacityFormula {
+    Fixed(u32),                        // 容量恒定，不随等级变化——血魔法许可、多数标量池
+    ByLevel(BTreeMap<u32, CapacityValue>), // 随 Agent.level 查表，阶梯式增长；未覆盖的等级
+                                            // 取小于等于它的最大已声明等级对应的值
+}
+
+pub enum CapacityValue {
+    Scalar(u32),
+    Tiered(Vec<u32>),   // 每档一个数，索引 0 = 第 1 档（法术位环位）
+}
+```
+
+**存储**：`Agent` 新增 `resource_pools: BTreeMap<ContentIndex, i32>`（标量池当前值，绝对量）与 `spent_slots: BTreeMap<(ContentIndex, u8), u32>`（法术位已消耗数，偏差量）——容量本身不存储，`effective_capacity(agent, world, pool)` 每次现算，与 `resource_pools`/`spent_slots` 只存"当前偏离了多少"是同一条"默认派生、只存偏差"的纪律（八节已编号到十二个实例的既有清单，本条是第十三个）。
+
+**聚合规则**：`effective_capacity` 复用 `effective_traits(agent, world)`（四节既有函数，不重新实现聚合逻辑），对全部命中 `pool` 的 `ResourcePoolGrant` **求和**——与三节②`stat_modifiers` 的叠加语义一致，**不是** `Resistance`"取第一条命中"的语义：`Resistance` 取第一条是为了避免"免疫乘免疫"的荒谬结果，容量是"两个来源各自贡献一部分"的自然叠加，两者性质不同，不能套同一条规则。
+
+**容量变化时读时钳位，不主动改写存储值**：容量变大（升级、新装备）时 `resource_pools`/`spent_slots` 不自动补满/清空，靠既有恢复规则自然填上差距；容量变小（掉装备、天赋失效）时不回写存储值，改为每次读取"当前可用量"时现场钳位——标量池 `usable = min(stored_current, effective_cap)`，法术位 `remaining(tier) = effective_cap(tier).saturating_sub(stored_spent(tier))`。**不主动改写的理由**：若做成"变化时立刻遍历改写"，需要一套"天赋/装备变化时通知资源池"的观察者机制，与 `buffs-and-triggers.md`"惰性判定优于事件驱动"（约束 C4）同一条精神相悖——查询时现比较一次，比维护一套变化通知便宜。
+
+**血池不走这条通道**：血池的容量是最大生命值，来自体质衍生（`Agent.health` 既有纪律，公式尚未落地），不是天赋容量表；`granted_resource_pools` 只服务需要一个数字（容量）的资源——标量池与法术位，不服务血池。血法师"能不能用血代价"完全由"会不会某个 `resource_cost` 是 `Blood(N)` 的技能"决定，已经是①`granted_skills` 在管的事，不在此重复。
+
+**调用频率**：`effective_capacity` 只在技能结算（每次 `Intent::UseSkill` 一次）与回合开始的自动恢复检查（每个实体自己的回合一次）两处被调用——与 `effective_traits`/`resistance_multiplier` 同一档，不是热路径。
+
 ---
 
 ## 四、天赋归谁所有
@@ -239,7 +276,7 @@ pub struct ConditionalRuleModifier {
 
 ### 为什么——真正共享的算法是什么
 
-- **聚合算法共享**：三节①已经证明"有效技能 = 并集"这条算法要同时喂给种族、职业、副职、载具、buff 五个来源；②"哪条通道消费属性修正"、③"抗性/重骰去哪张表查"，全部要遍历"这个实体当前持有的全部天赋"。**若每个所有者类型各自长一份 `granted_skills`/`stat_modifiers`/`rule_modifiers` 字段（而不是引用同一张 `TraitDef` 表），聚合函数就要对五种不同的宿主类型各写一份取字段的代码，字段名/类型哪怕有一处漂移（例如某天有人给 `ClassDef` 的字段改了名字）都会在聚合函数里产生不对称的特例分支**——这正是二节"为什么天赋要和种族脱钩"一节论证过的同一类风险的重演。
+- **聚合算法共享**：三节①已经证明"有效技能 = 并集"这条算法要同时喂给种族、职业、副职、载具、buff 五个来源；②"哪条通道消费属性修正"、③"抗性/重骰去哪张表查"、④"`effective_capacity` 去哪张表求和"，全部要遍历"这个实体当前持有的全部天赋"，`effective_capacity(agent, world, pool)` 与 `effective_traits` 共用同一份聚合遍历，不是第六套并行逻辑。**若每个所有者类型各自长一份 `granted_skills`/`stat_modifiers`/`rule_modifiers`/`granted_resource_pools` 字段（而不是引用同一张 `TraitDef` 表），聚合函数就要对五种不同的宿主类型各写一份取字段的代码，字段名/类型哪怕有一处漂移（例如某天有人给 `ClassDef` 的字段改了名字）都会在聚合函数里产生不对称的特例分支**——这正是二节"为什么天赋要和种族脱钩"一节论证过的同一类风险的重演。
 - **DRY**：龙裔吐息这个天赋，若龙裔亚种、某个"龙裔血统"副职、某件传说装备都想授予它，独立注册一次、三处引用同一个 `ContentIndex`，比在三处分别声明三份等价但独立维护的效果数据更不容易漂移——与 `class-skill-quest-system.md`「主职与副职共享同一份技能命名空间」的理由（避免复制导致的内容漂移）完全同构。
 
 ### `register-trait` 签名与档位
@@ -259,12 +296,13 @@ pub struct TraitDef {
     pub granted_skills: Vec<ContentIndex>,      // 三节①
     pub stat_modifiers: Vec<(AttributeKind, i32)>, // 三节②，格式复用 vehicle-and-mounting.md 六节
     pub rule_modifiers: Vec<RuleModifier>,      // 三节③
+    pub granted_resource_pools: Vec<ResourcePoolGrant>, // 三节④，resource-pools-and-rest.md 三节要求
 }
 ```
 
-**档位：一档。** 三步判据：有自由度（mod 能声明任意新天赋）；自由度落在纯数据上（`granted_skills`/`stat_modifiers`/`rule_modifiers` 全部是注册期一次性交出的值，运行期只查表/遍历小列表，不消费运行期才存在的输入——三节已经论证过 `Resistance`/`RerollOnce` 各自的消费点都不需要脚本回调）；调用频率——天赋聚合发生在"这个实体当前持有哪些天赋"每次被查询时（技能可用性判断、减伤链路、骰子取值），是战斗结算的热路径，必须一档。
+**档位：一档。** 三步判据：有自由度（mod 能声明任意新天赋）；自由度落在纯数据上（`granted_skills`/`stat_modifiers`/`rule_modifiers`/`granted_resource_pools` 全部是注册期一次性交出的值，运行期只查表/遍历小列表，不消费运行期才存在的输入——三节已经论证过 `Resistance`/`RerollOnce` 各自的消费点都不需要脚本回调，`ResourcePoolGrant.capacity` 同理是注册期定死的公式，不消费运行期输入除了 `agent.level` 本身）；调用频率——天赋聚合发生在"这个实体当前持有哪些天赋"每次被查询时（技能可用性判断、减伤链路、骰子取值、资源池容量查询），是战斗结算的热路径，必须一档。
 
-**注册期校验**：`granted_skills` 每项必须已经 `register-skill` 注册过（与 `vehicle-and-mounting.md` 校验 `granted-skills` 同一条纪律）；`stat_modifiers` 的属性名必须是六个既有 `AttributeKind` 变体之一；`Resistance.damage_category` 必须已经 `register-damage-category` 注册过（复用该文档 21 节 `MountTable::define` 校验 `grants-passage` 表面 ID 的同构纪律）；重复定义同一个 `TraitDef` 索引——报错，不静默覆盖（与全部既有 `*Table::define` 同一条纪律）。
+**注册期校验**：`granted_skills` 每项必须已经 `register-skill` 注册过（与 `vehicle-and-mounting.md` 校验 `granted-skills` 同一条纪律）；`stat_modifiers` 的属性名必须是六个既有 `AttributeKind` 变体之一；`Resistance.damage_category` 必须已经 `register-damage-category` 注册过（复用该文档 21 节 `MountTable::define` 校验 `grants-passage` 表面 ID 的同构纪律）；`granted_resource_pools` 里的 `pool` 必须已经注册过对应的 `ResourcePoolDef`（校验时机与形式留给 `resource-pools-and-rest.md` 自己的注册 API 裁定，本文档只声明字段与聚合规则）；重复定义同一个 `TraitDef` 索引——报错，不静默覆盖（与全部既有 `*Table::define` 同一条纪律）。
 
 ---
 
@@ -328,6 +366,8 @@ pub struct TraitGrant {
 
 **种族/亚种/副职/装备/buff 恒填 `unlock_level = 1`，不是因为"没有等级"这件事需要特判**，是因为这些来源本身的存在与否不随等级变化（你拥有这个种族的那一刻起就该有它的天赋,不存在"三级矮人才有抗毒"这种设计），`unlock_level = 1` 与"任何等级都满足"在数值上恒等——**不需要一个独立的"不限等级"哨兵值，用最小合法等级表达"总是满足"是最省心的写法**，与 `skill-learn-requirements.md` 三节"空列表表示不限"是同一种"用默认值表达'无限制'"的思路。
 
+**`unlock_level` 只回答"存在与否"，不回答"存在之后有多少"——与三节④ `ResourcePoolGrant.CapacityFormula::ByLevel` 是两个不同的轴，不要混用**：法师"5 级获得三环位、9 级获得五环位"这条曲线，不通过声明多条 `TraitGrant`（"法师 1 环位+1""法师 1 环位+2"……那样既冗余又难维护）表达，而是单条 `TraitGrant { unlock_level: 1 }` 声明"法术位这件事从 1 级就成立"，容量随等级怎么涨完全交给 `ResourcePoolGrant.capacity: CapacityFormula::ByLevel` 去查表——前者回答"有没有这个池"，后者回答"有了之后具体是多少"（`resource-pools-and-rest.md` 三节原始论证）。
+
 ### 消费者需要 `Agent.level`——本文档不引入它，明确标注为待另一份文档补齐的假设
 
 **`unlock_level` 字段现在就可以声明（结构成本为零），但它完全无法被消费，直到 `Agent` 上出现某种"当前等级"字段。** 本文档核实过（一节）：这个字段今天不存在。**本文档对它的假设**：
@@ -343,13 +383,13 @@ pub struct TraitGrant {
 
 **核实结论（一节）：`ResourceKind` 只有 `Mana`/`Stamina` 两种，扁平，不分级；没有"休息"这个事件/`Effect`；资源恢复只能靠 `SkillEffect::RestoreResource` 这种主动技能效果。**
 
-**法师的分级法术位在当前架构下完全无法表达。** 缺的东西不是天赋系统能补的：
+**后续更新（`resource-pools-and-rest.md` 提交 `2e7dc02`）：法师的分级法术位这半个问题——"归属哪个天赋、按等级给多少容量"——现在能在天赋系统这层声明了（三节④ `TraitDef.granted_resource_pools` + `CapacityFormula::ByLevel`），但下面三点缺口原样成立，不因三节④而改变**——三节④只回答"容量从哪个天赋来、多少"，不回答"这种资源池长什么样、怎么恢复、怎么消耗"，那三个问题依然完全在天赋系统之外：
 
-1. **分级资源池的形状**——法术位不是"一个当前值"，是"每个环位各自一个计数"（1 环 4 个、2 环 3 个……），`ResourceKind` 需要变成能表达"某个种类下有 N 个独立子池"，或者干脆是另一套完全不同的资源模型，这是资源系统本身的重新设计，不是加一个新 `ResourceKind` 变体能解决的。
-2. **休息事件本身**——"长休恢复全部法术位、短休恢复部分"需要"长休"/"短休"是可以被触发的游戏动作（大概率是一个新 `Intent`/`Effect`），当前完全不存在。
+1. **分级资源池的形状**——法术位不是"一个当前值"，是"每个环位各自一个计数"（1 环 4 个、2 环 3 个……），`ResourceKind` 需要变成能表达"某个种类下有 N 个独立子池"，或者干脆是另一套完全不同的资源模型，这是资源系统本身的重新设计，不是加一个新 `ResourceKind` 变体能解决的。**`resource-pools-and-rest.md` 已经给出这个形状（`ResourcePoolDef`/`ResourcePoolShape`，该文档二节），但那是该文档的产物，不是本文档的。**
+2. **休息事件本身**——"长休恢复全部法术位、短休恢复部分"需要"长休"/"短休"是可以被触发的游戏动作（大概率是一个新 `Intent`/`Effect`），当前完全不存在。`resource-pools-and-rest.md` 四节已设计（复用 `Intent::Wait`/`Timeline` 机制扩展），仍未落地任何代码。
 3. **技能消耗"某个环位"而不是"某种资源的 N 点"**——`ResourceCost::Amount(ResourceKind, u32)` 表达的是"扣一种资源的固定数量"，法术位消耗的语义是"占用一个环位的一个格子"，格子被占用后要等恢复事件才能重新使用，这是"计数池"而不是"扣血条"的形状,现有 `ResourceCost` 天生表达不了。
 
-**本文档的边界**：`TraitDef.granted_skills` 引用的技能，其 `ResourceCost` 只能引用**已经存在**的 `ResourceKind` 变体（`Mana`/`Stamina`）——天赋系统不能、也不该在自己的设计里顺手发明新的资源池形状,那会让"资源系统该长什么样"这个更大的决定被一个天赋系统文档的附带产物意外定型。**法师法术位需要一个独立的资源系统设计任务,本文档只如实指出这个依赖,不代为设计。**
+**本文档的边界**：`TraitDef.granted_skills` 引用的技能，其 `ResourceCost` 只能引用**已经存在**的 `ResourceKind` 变体（`Mana`/`Stamina`）——天赋系统不能、也不该在自己的设计里顺手发明新的资源池形状,那会让"资源系统该长什么样"这个更大的决定被一个天赋系统文档的附带产物意外定型。**三节④的 `granted_resource_pools` 没有违反这条边界**：它只引用一个已注册的 `ResourcePoolDef`（`ContentIndex`）声明"这个天赋给多少容量"，不定义池子本身长什么样、怎么恢复、怎么消耗——那三件事仍然是 `resource-pools-and-rest.md` 的份内工作,本文档不代为设计。
 
 **野蛮人狂暴的资源消耗则可以今天就表达**——狂暴不需要"每日次数"这种分级池,复用已存在的 `Stamina`（`ResourceCost::Amount(Stamina, N)`）在数值预算上是合理的替代（D&D 原版"每长休 N 次"这条限制本身依赖"长休"事件,同样缺失,但"消耗耐力"这个替代形状不依赖它,见九节示例四）。
 
@@ -455,7 +495,19 @@ ApplyTrait { trait_id: ContentIndex, duration_ticks: u32 },
 
 **示例六：法师法术位（分级资源池）**
 
-**结论：完全无法表达。** 见七节——缺分级资源池的形状本身、缺休息事件、缺"占用格子而非扣点数"的消耗语义。天赋系统这边能做的只有"声明一个 `TraitDef` 引用某个尚不存在的 `ResourceKind` 变体"，但那个变体本身不该由本文档发明（七节已论证，越权决定资源系统的形状不是天赋系统该做的事）。**如实标注：这是三个职业示例里唯一一个连近似都给不出的，等资源系统重新设计后再回来接。**
+**结论：结构上现在可以声明，运行期仍完全不可用——`resource-pools-and-rest.md`（提交 `2e7dc02`）填补了这半个问题。**
+
+```scheme
+;; 示意：法师法术位归属声明，容量随等级阶梯式增长（1 环 4 个起，9 级追加五环位）
+(register-trait "lostland:wizard_spell_slots"
+  "lostland:trait.wizard_spell_slots.display_name"
+  (list) (list) (list)
+  ;; granted-resource-pools（三节④新增第四个参数,示意语法待 register-trait
+  ;; 签名真正扩展时定案）：pool、capacity-formula（by-level 阶梯表）
+  (list (grant-resource-pool "lostland:spell_slots" (by-level ...))))
+```
+
+`TraitDef.granted_resource_pools`（三节④）能表达"这个天赋归属哪个职业、按等级给多少容量"——但七节已经重申，这只解决了三个缺口里的零个：**分级资源池的形状本身**（`ResourcePoolDef`/`ResourcePoolShape`）、**休息事件**（长休/短休 `Intent`）、**"占用格子而非扣点数"的消耗语义**，全部仍在 `resource-pools-and-rest.md` 的范畴内，且该文档本身也是纯设计，无任何代码。**依赖链变成三层——资源池 → 天赋 → 等级（`resource-pools-and-rest.md` 三节末尾原话）**：本文档的 `granted_resource_pools` 归属 `agent.level`（六节已标注 `Agent.level` 不存在），最底层不落地，上面两层在实现意义上都动不了。**如实标注：这是三个职业示例里此前唯一连近似都给不出的，现在结构上补齐了，但仍是三层纯设计里最深的一层，离能跑起来最远。**
 
 ---
 
@@ -468,6 +520,7 @@ ApplyTrait { trait_id: ContentIndex, duration_ticks: u32 },
 3. `RaceDef` 新增 `parent_race`/`traits` 两个字段（五节）——`RaceDef` 已落地，加字段是纯结构体扩展，无阻塞；但**若要真正生效，需要 P9 世界历史生成种族分布场那批工作一并核对**（`race-system.md` 已有的既有依赖，非本设计新增）。
 4. `ClassDef`/`SubclassDef` 新增 `traits: Vec<TraitGrant>` 字段——同上，纯结构体扩展。
 5. `RuleModifier::Resistance`/`RerollOnce` 两个变体的数据结构与注册期校验（三节）——可以现在声明，**但运行期没有任何消费者**，见下方"等什么"。
+6. `TraitDef` 新增 `granted_resource_pools: Vec<ResourcePoolGrant>` 字段与 `CapacityFormula`/`CapacityValue` 数据结构（三节④，`resource-pools-and-rest.md` 三节要求的补丁）——纯结构体扩展，无阻塞；但**运行期没有任何消费者**，见下方"等什么"第 10 项（依赖链比其余五项更深，三层全是纯设计）。
 
 **等什么（明确阻塞，本文档不解决）：**
 
@@ -480,7 +533,7 @@ ApplyTrait { trait_id: ContentIndex, duration_ticks: u32 },
 7. **`SkillEffect` 需要新增 `ApplyTrait` 变体**（示例四已给出建议形状）——当前 `SkillEffect` 三个变体都不能表达"授予一份天赋载荷、限时",这是本文档对战斗/技能批次提出的新接线需求。
 8. **`Agent.active_traits: Vec<ActiveTraitInstance>` 字段本身不存在**——二节新定义的类型,连同它必须进 `hash()` 这条纪律,都要等实现批次真正加这个字段时才成立(现在只是设计)。
 9. **`Agent.level`（或逐职业等级）不存在**——六节已详细标注为等待另一份并行设计的等级/经验系统文档,本文档的 `TraitGrant.unlock_level` 字段现在可以声明,但无法被消费。
-10. **分级资源池 + 休息事件不存在**——七节,法师法术位完全无法表达的根因,需要独立的资源系统重新设计任务,不是天赋系统的份内工作。
+10. **分级资源池 + 休息事件不存在**——七节,法师法术位此前完全无法表达的根因,需要独立的资源系统重新设计任务,不是天赋系统的份内工作。`resource-pools-and-rest.md`（提交 `2e7dc02`）已经给出该任务的设计,依赖链因此变成三层——资源池（该文档,`ResourcePoolDef`/`ResourcePoolTable`/`Agent.resource_pools`/`Agent.spent_slots`）→ 天赋（本文档三节④ `granted_resource_pools`,**现在能声明**）→ 等级（第 9 项,`Agent.level` 不存在）——三层全部纯设计,最底层不落地,上面两层在实现意义上都动不了。
 11. **`buffs-and-triggers.md` 需要补一句"`ActiveEffect.def` 指向 `TraitTable`"**（二节）——本次任务写权限不包含该文件,标注为待下一次触碰该文档的批次顺手补上的小改动。
 12. **P6 装备系统**——`TraitDef` 被装备引用（"这件武器天生带一个天赋"）这条所有权路径,要等 P6 `WeaponDef`/`ItemDef` 落地才有地方挂,与几乎每一份已冻结设计文档点名的既有缺口相同,非本设计新增。
 
@@ -493,6 +546,7 @@ ApplyTrait { trait_id: ContentIndex, duration_ticks: u32 },
 - [技能可学条件设计](skill-learn-requirements.md) — `SkillRequirement` 声明式闸门的既有先例，六节 `TraitGrant.unlock_level` 的消费路径形状直接类比该文档"可学"闸门
 - [增益与通用触发器](buffs-and-triggers.md) — `ActiveEffect`/`TriggerResponse::ApplyBuff` 的既有形状，二节补上其 `def` 字段此前缺失的具体类型
 - [载具与骑乘系统](vehicle-and-mounting.md) 六节 — "有效技能=并集"、`stat-modifiers` 通用列表两条模式的原始出处，三节①②直接复用
+- [资源池与休息系统](resource-pools-and-rest.md) 三、四节 — `TraitDef.granted_resource_pools` 第四类效果的原始需求方与精确补丁形状，三节④按其原文落地；分级资源池的形状、休息事件、消耗语义均在该文档，七节"不属于天赋系统"的边界依据
 - [伤害公式的 mod API](damage-formula-mod-api.md) 六、十七、二十节 — 骰子取数求值器、开放伤害类别注册表、抗性挂载点，三节③直接对接
 - [角色属性系统](attribute-system.md) §五、§八 — 幸运→优势骰/暴击率描述、d20 判定机制（尚未接入战斗，三节③"等什么"的直接依据）
 - `crates/ll-mod/src/{race,class,subclass,skill}.rs`、`script_race_api.rs` — 一节现状核实的代码依据
