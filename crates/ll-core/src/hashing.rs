@@ -15,6 +15,8 @@
 //! 因而跨平台跨版本恒定。它不适合做哈希表（抗碰撞性一般），但用于
 //! 检测「状态是否改变」完全足够。
 
+use crate::ident::NamespacedId;
+
 /// FNV-1a 64 位的初始值，由算法规范定义。
 const FNV_OFFSET_BASIS: u64 = 0xCBF2_9CE4_8422_2325;
 
@@ -67,6 +69,32 @@ impl StateHasher {
         // 直接按位重解释而非取绝对值：负数的位模式必须原样参与哈希，
         // 否则 -1 与 1 会得到相同摘要。
         self.write_u64(value as u64);
+    }
+
+    /// 混入一段带长度前缀的变长字节——字符串一类变长字段的公共写法。
+    ///
+    /// 不带长度前缀直接拼接会让 `("ab", "c")` 与 `("a", "bc")` 撞出同
+    /// 一段字节序列（`ll_world::state` 已经在世界状态哈希里踩过这条
+    /// 边界并确立了「变长字段一律长度前缀」这条约定，见该 crate
+    /// `write_len_prefixed_bytes` 的文档），这里把同一条约定收进
+    /// `StateHasher` 本身，供 [`Self::write_namespaced_id`] 与未来任何
+    /// 需要混入变长字节的调用方复用，不必各自重新发明一份等价逻辑。
+    pub fn write_len_prefixed_bytes(&mut self, bytes: &[u8]) {
+        self.write_u64(bytes.len() as u64);
+        self.write_bytes(bytes);
+    }
+
+    /// 混入一个 [`NamespacedId`]——命名空间与路径各自带长度前缀分别
+    /// 混入，见 [`Self::write_len_prefixed_bytes`] 文档「不带长度前缀」
+    /// 一节的碰撞论证。
+    ///
+    /// 供 `ll_mod::registry`（按命名空间折叠内容哈希）与
+    /// `ll_mod::content_hash`（值哈希：把字段里出现的 `ContentIndex`
+    /// 解析回 `NamespacedId` 字符串再混入，见该模块文档）共用同一份
+    /// 编码，避免两处各写一遍迟早漂移出不一致的字节布局。
+    pub fn write_namespaced_id(&mut self, id: &NamespacedId) {
+        self.write_len_prefixed_bytes(id.namespace().as_bytes());
+        self.write_len_prefixed_bytes(id.path().as_bytes());
     }
 
     /// 取当前摘要。可在中途多次调用，不影响后续混入。
@@ -148,6 +176,42 @@ mod tests {
         // Act
         first.write_bytes(b"lostland");
         second.write_bytes(b"yourmod");
+
+        // Assert
+        assert_ne!(first.finish(), second.finish());
+    }
+
+    #[test]
+    fn write_len_prefixed_bytes对不带分隔符会撞在一起的两组字段产出不同摘要() {
+        // 验证长度前缀确实防住了 ("ab","c") 与 ("a","bc") 这类边界
+        // 情形——若不带长度前缀，两者裸拼接后是同一段字节序列
+        // "abc"，摘要会相同。
+        // Arrange
+        let mut first = StateHasher::new();
+        let mut second = StateHasher::new();
+
+        // Act
+        first.write_len_prefixed_bytes(b"ab");
+        first.write_len_prefixed_bytes(b"c");
+        second.write_len_prefixed_bytes(b"a");
+        second.write_len_prefixed_bytes(b"bc");
+
+        // Assert
+        assert_ne!(first.finish(), second.finish());
+    }
+
+    #[test]
+    fn write_namespaced_id对不同标识符产出不同摘要() {
+        // Arrange
+        use crate::ident::NamespacedId;
+        let mut first = StateHasher::new();
+        let mut second = StateHasher::new();
+        let fireball = NamespacedId::parse("lostland:fireball").expect("测试用标识符恒合法");
+        let iceball = NamespacedId::parse("lostland:iceball").expect("测试用标识符恒合法");
+
+        // Act
+        first.write_namespaced_id(&fireball);
+        second.write_namespaced_id(&iceball);
 
         // Assert
         assert_ne!(first.finish(), second.finish());

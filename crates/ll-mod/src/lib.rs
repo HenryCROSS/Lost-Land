@@ -15,6 +15,10 @@
 //! - [`registry`] —— 内容注册表核心：字符串 ID ↔ 紧凑整数索引
 //!   （[`ll_core::ident::ContentIndex`]）的双向映射，以及按 mod
 //!   命名空间统计的内容哈希。
+//! - [`content_hash`] —— 内容哈希的值哈希升级：把
+//!   [`registry::Registry`] 只追踪 id 集合的哈希，升级为同时追踪六张
+//!   内容表的字段值。装载完成后一次性调用，见该模块文档「为什么不能
+//!   在 `intern` 内部做」一节。
 //! - [`mod_set`] —— 存档需要的「生成期 mod 集合」与「当前 mod 集合」
 //!   两种记录，类型层面强制区分，防止只存一份导致种子分享/缺陷复现/
 //!   回归测试失效（见 `knowledge/design/identity-and-ids.md`
@@ -119,6 +123,7 @@ pub mod base_space_profile;
 pub mod base_terrain;
 pub mod class;
 pub mod clip;
+pub mod content_hash;
 pub mod discover;
 pub mod load_report;
 pub mod manifest;

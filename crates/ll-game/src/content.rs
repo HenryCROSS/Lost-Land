@@ -34,6 +34,7 @@ use ll_mod::base_space_profile::register_base_space_profiles;
 use ll_mod::base_terrain::register_base_terrain;
 use ll_mod::class::ClassTable;
 use ll_mod::clip::{BaseClipIds, ClipTable};
+use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
 use ll_mod::discover::discover_mods;
 use ll_mod::load_report::{LoadReport, LoadStatus};
 use ll_mod::manifest::{ModManifest, parse_manifest};
@@ -151,6 +152,27 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             quest: &mut quest_table,
             race: &mut race_table,
             clip: &mut clip_table,
+        },
+    );
+
+    // 值哈希升级：全部六张内容表此刻已经装载完毕（本体 + mod），在
+    // 这里跑一次性收尾步骤,把字段值折进 registry 已有的 id 摘要——
+    // 见 `ll_mod::content_hash` 模块文档「为什么不能在 `intern` 内部
+    // 做」一节。必须排在 `load_all` 之后（六张表还没装完就跑,会漏掉
+    // 后到的内容）、排在 `manifests`/`GenerationModSet::capture`（世界
+    // 创建时刻,见 `ll_mod::mod_set` 模块文档「绑定时机」一节）真正读取
+    // `content_hash_of` 之前——本函数返回的 `LoadedContent::registry`
+    // 因此总是已经跑完值哈希的那一份,调用方不需要、也不应该再手动
+    // 调用一次。
+    apply_value_hashes(
+        &mut registry,
+        &ContentValueTables {
+            terrain: &terrain_table,
+            class: &class_table,
+            skill: &skill_table,
+            subclass: &subclass_table,
+            quest: &quest_table,
+            race: &race_table,
         },
     );
 

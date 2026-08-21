@@ -41,6 +41,7 @@ use std::fs::File;
 use std::io::{Read, Write};
 use std::path::Path;
 
+use ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION;
 use ll_mod::manifest::ModManifest;
 use ll_mod::registry::Registry;
 use ll_world::state::WorldState;
@@ -48,7 +49,9 @@ use ll_world::terrain::TerrainTable;
 
 use crate::degrade::{LoadOutcome, summarize_load_outcome};
 use crate::header::SaveHeader;
-use crate::load_error::{LoadError, check_mod_content, check_mod_set, check_schema_version};
+use crate::load_error::{
+    LoadError, check_content_hash_algorithm, check_mod_content, check_mod_set, check_schema_version,
+};
 use crate::migration::MigrationChain;
 use crate::remap::remap_world;
 
@@ -380,6 +383,17 @@ pub fn load_full_from_bytes(
     // 身发生。
     let _ = ll_script::host::rebuild_all_engines_after_load(current_script_sources);
 
+    // 必须排在 check_mod_content 之前：算法版本不一致时,内容哈希数值
+    // 本身就不可比较,继续跑 check_mod_content 只会把"存档写于算法升级
+    // 之前"误判成"mod 内容真的变了"，见 check_content_hash_algorithm
+    // 文档「为什么必须与 check_mod_content 分开」一节。
+    if let Err(err) = check_content_hash_algorithm(
+        header.content_hash_algorithm_version,
+        CONTENT_HASH_ALGORITHM_VERSION,
+    ) {
+        return LoadOutcome::Rejected(err);
+    }
+
     if let Err(err) =
         check_mod_content(&header.generation_mods, current_registry, current_manifests)
     {
@@ -500,6 +514,7 @@ mod tests {
             playtime_ticks: 0,
             generation_mods: Vec::new(),
             current_mods: Vec::new(),
+            content_hash_algorithm_version: CONTENT_HASH_ALGORITHM_VERSION,
             content_index_map,
             world_size: (1, 1),
             world_seed: 0,
@@ -746,6 +761,55 @@ mod tests {
         assert!(matches!(
             outcome,
             LoadOutcome::Rejected(LoadError::ModContentMismatch { .. })
+        ));
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 存档记录的内容哈希算法版本早于当前版本时返回contenthashalgorithmupgraded而非modcontentmismatch()
+     {
+        // 核心场景：mod 版本号对得上（check_mod_set 放行），内容哈希
+        // 数值也刻意设成与当前会话完全一致（若真的走到
+        // check_mod_content，理应判定为兼容）——唯一的差异是 header
+        // 记录的算法版本比当前旧。这条差异必须在 check_mod_content 之前
+        // 就被拦下,不能因为哈希数值凑巧一致就被放行,也不能被误判成
+        // ModContentMismatch。
+        // Arrange
+        let path = temp_path("content-hash-algorithm-upgraded");
+        let mut current_registry = Registry::new();
+        current_registry.intern(id("lostland:mountain"));
+        let matching_hash = current_registry.content_hash_of("lostland");
+        let mut header = sample_header(Vec::new());
+        header.content_hash_algorithm_version = 0; // 早于当前版本（哨兵值）
+        header.generation_mods.push(crate::header::ModHeaderEntry {
+            namespace: "lostland".to_string(),
+            version: "0.1.0".to_string(),
+            content_hash: matching_hash,
+        });
+        save_to_file(&path, &header, &test_world()).expect("写出应当成功");
+        let current_manifests = vec![ModManifest {
+            id: id("lostland:self"),
+            version: "0.1.0".to_string(),
+            dependencies: Vec::new(),
+            entry_points: Vec::new(),
+        }];
+
+        // Act
+        let outcome = load_full(
+            &path,
+            &current_registry,
+            &current_manifests,
+            TerrainTable::default(),
+            &[],
+        );
+
+        // Assert
+        assert!(matches!(
+            outcome,
+            LoadOutcome::Rejected(LoadError::ContentHashAlgorithmUpgraded {
+                save_algorithm_version: 0,
+                current_algorithm_version: CONTENT_HASH_ALGORITHM_VERSION,
+            })
         ));
         let _ = std::fs::remove_file(&path);
     }

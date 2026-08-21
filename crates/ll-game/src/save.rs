@@ -17,6 +17,7 @@ use ll_content::header::{ModHeaderEntry, SaveHeader};
 use ll_content::mode::SaveMode;
 use ll_content::save_file::{CURRENT_SCHEMA_VERSION, SaveError, load_full, save_to_file};
 use ll_content::world_identity::generation_mods_to_header_entries;
+use ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION;
 use ll_mod::mod_set::{CurrentModSet, GenerationModSet, ModSetEntry};
 
 use crate::content::LoadedContent;
@@ -82,6 +83,7 @@ pub fn save_game(
         playtime_ticks: game_world.world.clock.0,
         generation_mods,
         current_mods,
+        content_hash_algorithm_version: CONTENT_HASH_ALGORITHM_VERSION,
         content_index_map,
         world_size: (zone_count.width(), zone_count.height()),
         world_seed: game_world.world.seed,

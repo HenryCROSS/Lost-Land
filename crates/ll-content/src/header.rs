@@ -67,6 +67,36 @@ pub struct SaveHeader {
     /// 不满足「同一个种子 + 同一批内容 ⇒ 同一个世界」这条前提，不能
     /// 用来复现世界，只用来与生成期集合比对、判定缺失/内容变化。
     pub current_mods: Vec<ModHeaderEntry>,
+    /// 写出这份存档时使用的内容哈希算法版本——见
+    /// [`ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION`] 文档。
+    ///
+    /// # 为什么需要这个字段：让「算法升级」与「内容真的变了」可诊断
+    ///
+    /// `generation_mods`/`current_mods` 里的 `content_hash` 数值本身
+    /// 不携带「用哪种算法算出来的」这条信息——若内容哈希的编码方式
+    /// 发生不兼容变化（例如 [0027](../../../knowledge/decisions/0027-content-hash-covers-field-values.md)
+    /// 把哈希从「只追踪 id 集合」升级成「追踪字段值」），旧存档记录的
+    /// 哈希与新算法算出来的哈希不可比较，读档校验
+    /// （[`crate::load_error::check_mod_content`]）会把这种纯粹因为
+    /// 算法换了而产生的差异，误判成「mod 内容真的变了」——这对 mod
+    /// 作者是一条彻头彻尾的假警报,却与真实的内容变化在诊断信息上
+    /// 完全一样,排查者会被引导去检查自己的 mod 有没有改坏,而实际上
+    /// 什么都没改坏。
+    ///
+    /// 有了这个字段，[`crate::load_error::check_content_hash_algorithm`]
+    /// 就能在跑 `check_mod_content` 之前先判断「这份存档的算法版本是不
+    /// 是已经过时」，过时时产出专门的
+    /// [`crate::load_error::LoadError::ContentHashAlgorithmUpgraded`]，
+    /// 与 `ModContentMismatch`（mod 真的改了内容）在诊断上明确区分。
+    ///
+    /// `#[serde(default)]`：本字段是值哈希升级批次新增的，升级前写出
+    /// 的存档 JSON 里没有这个键，反序列化时缺省为 `0`——这个默认值本身
+    /// 就是「这份存档写于本字段存在之前」的信号：当前算法版本号从 `1`
+    /// 开始编号（[0027](../../../knowledge/decisions/0027-content-hash-covers-field-values.md)
+    /// 的裁定），`0` 从未被任何真实算法使用过，专门留作「早于本字段
+    /// 存在」的哨兵，不会与任何真实算法版本混淆。
+    #[serde(default)]
+    pub content_hash_algorithm_version: u32,
     /// `ContentIndex` ↔ `NamespacedId` 字符串形式映射表，按
     /// `ContentIndex` 从 0 开始的顺序排列（来自
     /// `Registry::snapshot()`，见 [`crate::content_index_map`]）。
@@ -159,6 +189,7 @@ mod tests {
                     content_hash: Some(456),
                 },
             ],
+            content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
             content_index_map: vec![
                 "lostland:fireball".to_string(),
                 "yourmod:iceball".to_string(),
@@ -193,6 +224,35 @@ mod tests {
 
         // Assert
         assert_eq!(restored, header);
+    }
+
+    #[test]
+    fn 缺少内容哈希算法版本字段的老存档json反序列化为哨兵值零() {
+        // 值哈希升级前写出的存档 JSON 里没有 content_hash_algorithm_version
+        // 这个键——#[serde(default)] 必须让反序列化仍然成功，且补上的
+        // 默认值是 0（专门留作"早于本字段存在"的哨兵，不是任何真实算法
+        // 版本），不能让老存档直接反序列化失败。
+        // Arrange：手写一份缺该字段的 JSON,模拟升级前的真实存档格式。
+        let json = serde_json::json!({
+            "schema_version": 1,
+            "saved_at": 1_755_000_000i64,
+            "character_name": "旅人",
+            "current_region": "初始村落",
+            "playtime_ticks": 42,
+            "generation_mods": [],
+            "current_mods": [],
+            "content_index_map": [],
+            "world_size": [48, 32],
+            "world_seed": 20_260_819u64,
+            "mode": "Permadeath",
+        });
+
+        // Act
+        let restored: SaveHeader =
+            serde_json::from_value(json).expect("缺该字段的老存档 JSON 仍应反序列化成功");
+
+        // Assert
+        assert_eq!(restored.content_hash_algorithm_version, 0);
     }
 
     #[test]

@@ -24,6 +24,17 @@
 //! 已注册，查不到就是规格 §10.4「缺失 mod」的检测点，不会像 `intern`
 //! 那样顺手创建一条新记录。两者是完全不同的操作，混在一起会让「引用
 //! 了不存在的内容」静默变成「凭空注册出这条内容」。
+//!
+//! # 内容哈希覆盖 id 集合与字段值两部分（[0027](../../../knowledge/decisions/0027-content-hash-covers-field-values.md)）
+//!
+//! [`Registry::content_hash_of`] 对外呈现一个统一的按命名空间摘要，
+//! 但它的产生分两步：[`Registry::intern`] 只知道字符串 id（见本节
+//! 「校验分工」一段与 [`Registry::content_hash_of`] 文档「覆盖范围」一节）；
+//! 字段值那一半由 [`crate::content_hash`] 模块在全部六张内容表装载
+//! 完毕后通过 [`Registry::fold_content_digest`] 补上。本类型自身不
+//! 认识任何一张具体内容表——那会让 `Registry` 与六张表各自的字段
+//! 变化互相耦合，见 [`crate::content_hash`] 模块文档「为什么不能在
+//! `intern` 内部做」一节。
 
 use ll_core::hashing::StateHasher;
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
@@ -36,8 +47,11 @@ pub struct Registry {
     /// 复用 `ll-core` 已有的双向映射池，不重新发明一份等价逻辑。
     interner: Interner,
     /// 按 mod 命名空间统计的内容哈希。键是命名空间（不含路径部分），
-    /// 值是该命名空间贡献的全部内容 ID 的一个顺序无关摘要（见
-    /// [`Self::intern`] 的说明）。
+    /// 值是该命名空间贡献的全部内容的一个顺序无关摘要——[`Self::intern`]
+    /// 折入「贡献了哪些内容 id」这一半，[`Self::fold_content_digest`]
+    /// 折入「这些内容各自的字段值是什么」这一半（值哈希升级，见
+    /// [`Self::content_hash_of`] 文档「覆盖范围」一节）。两半用同一种
+    /// 异或折叠手法叠加，结果仍是一个不依赖折叠顺序的单一摘要。
     content_hash: HashMap<String, u64>,
 }
 
@@ -52,8 +66,11 @@ impl Registry {
     /// 同一个 `id` 重复注册返回相同索引（复用
     /// [`Interner::intern`](ll_core::ident::Interner::intern) 已有的
     /// 这条不变式），且**不会**因为重复注册而让该命名空间的内容哈希
-    /// 发生变化——哈希摘要的是「这个命名空间贡献了哪些内容 ID」这个
-    /// 集合，不是「intern 被调用了多少次」。
+    /// 发生变化——本方法折入的哈希摘要的是「这个命名空间贡献了哪些
+    /// 内容 ID」这个集合，不是「intern 被调用了多少次」。这只是完整
+    /// 内容哈希的一半（id 集合），字段值那一半由
+    /// [`Self::fold_content_digest`] 在装载完成后补上，见
+    /// [`Self::content_hash_of`] 文档「覆盖范围」一节。
     pub fn intern(&mut self, id: NamespacedId) -> ContentIndex {
         let namespace = id.namespace().to_owned();
         let already_registered = self.interner.get(&id).is_some();
@@ -95,10 +112,51 @@ impl Registry {
     /// 贡献的全部内容的哈希——版本号相同但内容变了时用于警告（见
     /// `knowledge/design/identity-and-ids.md` 「存档与 mod 集合」①）。
     ///
+    /// # 覆盖范围：id 集合 + 字段值（值哈希升级）
+    ///
+    /// [`Self::intern`] 只把「这个命名空间贡献了哪些内容 id」折进这个
+    /// 摘要——它在注册那一刻发生，那时候某条内容具体的字段值（伤害、
+    /// 冷却、属性修正……）还没有被任何 `*Table::define` 写入,压根不
+    /// 存在,无法参与哈希。真正覆盖字段值的那一半由
+    /// [`Self::fold_content_digest`] 补上——`ll_mod::content_hash`
+    /// 模块在全部六张内容表装载完毕后调用它一次,把每条内容的字段值
+    /// 摘要按命名空间异或折叠进这里已经有的 id 摘要之上。两次折叠
+    /// 用的是同一种异或手法（可交换,不依赖调用顺序）,因此最终结果
+    /// 同时覆盖「id 集合变了」与「某条内容的字段值变了」两类变化——
+    /// 只调用了 `intern`、还没跑值哈希那一步的调用方（本模块自身的
+    /// 单元测试、`base_*_fixture` 一类测试夹具）看到的是前一半（id
+    /// 集合），这是历史行为，不是缺陷；生产装载路径
+    /// （`ll_game::content::load_content`）总会在返回前跑完值哈希那
+    /// 一步,见 `ll_mod::content_hash` 模块文档。
+    ///
     /// 该命名空间从未贡献过任何内容（未被任何 `intern` 调用触及）时
     /// 返回 `None`，与「贡献了内容但哈希恰好是 0」的合法情况区分开。
     pub fn content_hash_of(&self, namespace: &str) -> Option<u64> {
         self.content_hash.get(namespace).copied()
+    }
+
+    /// 把一份「字段值摘要」按命名空间异或折叠进已有的内容哈希。
+    ///
+    /// **不是替换,是叠加**——供 `ll_mod::content_hash::apply_value_hashes`
+    /// 在全部六张内容表装载完毕后，对每一条已注册内容调用一次：
+    /// [`Self::intern`] 早于任何 `*Table::define` 发生,那一刻还没有
+    /// 字段值可以哈希（见 [`Self::content_hash_of`] 文档「覆盖范围」
+    /// 一节），本方法因此不在 `intern` 内部调用,而是留给装载完成后
+    /// 的一次性收尾步骤。
+    ///
+    /// 用的是与 [`Self::intern`] 内部完全相同的异或折叠手法：可交换、
+    /// 不依赖调用顺序——同一批内容不论以什么顺序被 `fold_content_digest`
+    /// 折入,同一个命名空间最终摘要恒相同（这正是「不同装载顺序产出
+    /// 相同哈希」这条不变式在 API 层面的落点，测试见
+    /// `ll_mod::content_hash` 模块）。命名空间此前从未在 `content_hash`
+    /// 里出现过（`intern` 阶段就没贡献过任何 id）时,这里同样用
+    /// `or_insert` 让它首次出现,不强求调用方先手动初始化一条零值
+    /// 记录。
+    pub fn fold_content_digest(&mut self, namespace: &str, digest: u64) {
+        self.content_hash
+            .entry(namespace.to_owned())
+            .and_modify(|existing| *existing ^= digest)
+            .or_insert(digest);
     }
 
     /// `ContentIndex` ↔ 字符串 ID 映射快照，按 `ContentIndex` 顺序
@@ -131,19 +189,14 @@ impl Registry {
 /// 对一个 `NamespacedId` 求一个确定性摘要，供 [`Registry::intern`] 累积
 /// 进命名空间级别的内容哈希。
 ///
-/// 复用 `ll-core` 已有的 [`StateHasher`]（手写 FNV-1a，跨平台跨版本
-/// 恒定），不在本 crate 里另起一套哈希实现——[0017](../../../knowledge/decisions/0017-tiered-declarations-materialize-columnar.md)
-/// 与本模块都需要「同一份内容在任何机器上算出同一个摘要」这条性质，
-/// 两处各写一遍迟早会漂移出不一致的算法。
+/// 直接委托 [`StateHasher::write_namespaced_id`]（长度前缀编码，见其
+/// 文档「不带长度前缀」一节的碰撞论证）——`ll_mod::content_hash` 需要
+/// 把字段里出现的 `ContentIndex` 解析回 `NamespacedId` 再混入,与这里
+/// 「注册期只知道 id 本身」是同一份编码的两个调用点,两处共用
+/// `ll-core` 这一份实现,不各自维护一套容易漂移的字节布局。
 fn hash_namespaced_id(id: &NamespacedId) -> u64 {
     let mut hasher = StateHasher::new();
-    hasher.write_bytes(id.namespace().as_bytes());
-    // 命名空间与路径之间混入一个不出现在合法段落字符集里的分隔字节
-    // （合法字符只有小写字母/数字/`_`/`-`/`.`），避免 `("ab", "c")` 与
-    // `("a", "bc")` 这类不同的 (namespace, path) 拼接后撞出同一段字节
-    // 序列。
-    hasher.write_bytes(b":");
-    hasher.write_bytes(id.path().as_bytes());
+    hasher.write_namespaced_id(id);
     hasher.finish()
 }
 
@@ -276,5 +329,49 @@ mod tests {
             rebuilt.content_hash_of("yourmod"),
             original.content_hash_of("yourmod")
         );
+    }
+
+    #[test]
+    fn fold_content_digest叠加在intern已有的id摘要之上而非替换() {
+        // 值哈希升级的核心不变式：fold_content_digest 是"再叠一层"，
+        // 不是"重新赋值"——同一个命名空间先 intern 一个 id、再
+        // fold_content_digest 一次，结果必须与"只 intern、不额外折叠"
+        // 不同（新一层确实生效了），也不等于"只折叠、不 intern"（旧
+        // 一层没有被覆盖丢弃）。
+        // Arrange
+        let mut only_intern = Registry::new();
+        only_intern.intern(id("yourmod:fireball"));
+        let id_only_hash = only_intern
+            .content_hash_of("yourmod")
+            .expect("已 intern 过内容");
+
+        let mut interned_then_folded = Registry::new();
+        interned_then_folded.intern(id("yourmod:fireball"));
+        interned_then_folded.fold_content_digest("yourmod", 0xABCD);
+
+        // Act
+        let combined_hash = interned_then_folded
+            .content_hash_of("yourmod")
+            .expect("已 intern 且已折叠");
+
+        // Assert：叠加后的结果与"只有 id 摘要"不同（值那一半确实生效），
+        // 且异或折叠具体值可验证（不是随便什么不同的值）。
+        assert_ne!(combined_hash, id_only_hash);
+        assert_eq!(combined_hash, id_only_hash ^ 0xABCD);
+    }
+
+    #[test]
+    fn fold_content_digest对从未intern过的命名空间也能建立记录() {
+        // Registry::intern 内部 or_insert 的同一条纪律在这里同样成立
+        // ——命名空间此前完全没有出现过时，第一次 fold_content_digest
+        // 就应该让它出现，不强求调用方先手动插入一条零值占位。
+        // Arrange
+        let mut registry = Registry::new();
+
+        // Act
+        registry.fold_content_digest("brandnew", 42);
+
+        // Assert
+        assert_eq!(registry.content_hash_of("brandnew"), Some(42));
     }
 }

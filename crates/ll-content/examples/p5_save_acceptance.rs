@@ -182,6 +182,7 @@ fn header_with(
         playtime_ticks: 0,
         generation_mods,
         current_mods: Vec::new(),
+        content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
         content_index_map,
         world_size: (1, 1),
         world_seed: 0,
