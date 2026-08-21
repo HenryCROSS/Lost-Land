@@ -25,6 +25,7 @@ pub mod world;
 use std::path::{Path, PathBuf};
 
 use ll_content::degrade::LoadOutcome;
+use ll_i18n::Catalog;
 use ll_platform::config::{load_or_default, save as save_config};
 use ll_platform::logging::init_logging;
 use ll_platform::window::{WindowConfig, run};
@@ -47,6 +48,12 @@ const MODS_DIR_NAME: &str = "mods";
 /// 执行文件放在同一目录下——本体目前没有安装器，这是与 `mods/` 完全
 /// 相同的既有部署假设，不是本次新增的限制。
 const ASSETS_DIR_NAME: &str = "assets";
+/// 本体本地化文件目录，相对可执行文件所在目录——与
+/// `knowledge/design/mod-package-structure.md`「本地化文件」一节
+/// `locales/<语言标签>.ftl` 的固定目录名约定一致，本体（命名空间
+/// `lostland`）的这一份就放在资产根目录下，与任何 mod 的 `locales/`
+/// 是同一套查找规则,不需要另开一条特殊路径。
+const LOCALES_DIR_NAME: &str = "locales";
 
 /// 新游戏使用的默认地形种子——本体目前没有开局选择种子的界面（P7），
 /// 固定用一个值保证「同一份构建反复运行产出同一个世界」，便于开发期
@@ -64,17 +71,22 @@ pub struct GamePaths {
     pub mods_root: PathBuf,
     /// 本体资产根目录。
     pub assets_root: PathBuf,
+    /// 本体本地化文件目录（`assets_root` 下的 `locales/`），见
+    /// [`LOCALES_DIR_NAME`]。
+    pub locales_root: PathBuf,
 }
 
 impl GamePaths {
-    /// 以 `base` 为根目录推出四个路径——生产环境用可执行文件所在目录，
+    /// 以 `base` 为根目录推出五个路径——生产环境用可执行文件所在目录，
     /// 测试用临时目录，两者走同一套推导逻辑,不需要两份实现。
     pub fn under(base: &Path) -> GamePaths {
+        let assets_root = base.join(ASSETS_DIR_NAME);
         GamePaths {
             config: base.join(CONFIG_FILE_NAME),
             save: base.join(SAVE_FILE_NAME),
             mods_root: base.join(MODS_DIR_NAME),
-            assets_root: base.join(ASSETS_DIR_NAME),
+            locales_root: assets_root.join(LOCALES_DIR_NAME),
+            assets_root,
         }
     }
 }
@@ -144,6 +156,16 @@ fn rebuild_noise() -> ll_world::noise::TileableNoise {
         .expect("默认区块布局满足全部构造前置条件")
 }
 
+/// 用 `catalog` 把 `title_key` 解析成 `language` 下的真实显示文本。
+///
+/// 单独拆出这个一行函数，是为了给「键 → 加载器 → 实际渲染文字」这条
+/// 链路留一个不需要真开窗口就能单元测试的接缝——[`run_game`] 本身因为
+/// 会驱动 winit 事件循环，不可单元测试（见模块文档「为什么拆成库 + 薄
+/// 二进制」一节），但标题解析这一步的正确性不应该因此就测不到。
+fn resolve_window_title(catalog: &Catalog, language: &str, title_key: &'static str) -> String {
+    catalog.resolve(language, title_key)
+}
+
 /// 完整启动流程：日志 → 配置 → 内容装载 → 建世界/读档 → 运行事件
 /// 循环，直到窗口关闭或玩家按下取消键。
 pub fn run_game() {
@@ -185,10 +207,30 @@ pub fn run_game() {
         "世界就绪"
     );
 
-    let window_config = WindowConfig {
+    // 装载本地化：真正的消费点在下面——用当前配置里的 `language`
+    // 把 `title_key` 解析成实际显示文本，而不是让 winit 直接拿键名当
+    // 标题（那是本地化系统落地之前的临时占位行为，见
+    // `ll_platform::window::WindowConfig::title_key` 文档）。
+    let catalog = Catalog::load_dir(&paths.locales_root);
+    tracing::info!(
+        language = %config.language,
+        loaded_language_count = catalog.loaded_language_count(),
+        locales_root = %paths.locales_root.display(),
+        "本地化目录已装载"
+    );
+
+    let mut window_config = WindowConfig {
         bindings: config.bindings,
         ..WindowConfig::default()
     };
+    window_config.resolved_title =
+        resolve_window_title(&catalog, &config.language, window_config.title_key);
+    tracing::info!(
+        title_key = window_config.title_key,
+        resolved_title = %window_config.resolved_title,
+        language = %config.language,
+        "窗口标题已解析"
+    );
     let demo = Demo::new(
         content,
         game_world,
@@ -206,8 +248,56 @@ pub fn run_game() {
 mod tests {
     use super::*;
 
+    /// 仓库根目录下真实的 `assets/locales/`——`ll-game` 位于
+    /// `crates/ll-game`，向上两级到根。用真实资产而不是临时 fixture，
+    /// 是因为这条测试要证明的正是「真实消费点接的是真实内容」，不是
+    /// 「查表逻辑本身正确」（那部分已由 `ll_i18n::Catalog` 自己的单元
+    /// 测试覆盖）。
+    fn real_locales_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("assets")
+            .join("locales")
+    }
+
     #[test]
-    fn 路径推导把三个文件都放在同一个基目录下() {
+    fn 窗口标题键在中文配置下解析出中文标题() {
+        // 端到端验证 run_game 里真正会执行的那条链路：
+        // WindowConfig::default().title_key → Catalog::resolve → 中文
+        // 标题文本，用的是仓库里真实的 assets/locales/zh-CN.ftl。
+        // Arrange
+        let catalog = Catalog::load_dir(&real_locales_dir());
+        let title_key = WindowConfig::default().title_key;
+
+        // Act
+        let title = resolve_window_title(&catalog, "zh-CN", title_key);
+
+        // Assert
+        assert_eq!(title, "迷途大陆");
+    }
+
+    #[test]
+    fn 窗口标题键切换到英文配置后解析出不同的标题() {
+        // 这是「本地化真的能切换」在真实消费点上的证据，与
+        // `ll_i18n::Catalog` 自己那条同名断言的测试是两个不同层次：
+        // 那条测的是查表器本身，这条测的是本体二进制实际会用到的键
+        // （`WindowConfig::title_key`）在切换语言后确实产出不同文本。
+        // Arrange
+        let catalog = Catalog::load_dir(&real_locales_dir());
+        let title_key = WindowConfig::default().title_key;
+
+        // Act
+        let zh_title = resolve_window_title(&catalog, "zh-CN", title_key);
+        let en_title = resolve_window_title(&catalog, "en", title_key);
+
+        // Assert
+        assert_ne!(zh_title, en_title);
+        assert_eq!(en_title, "Lost Land");
+    }
+
+    #[test]
+    fn 路径推导把全部文件都放在同一个基目录下() {
         // Arrange
         let base = PathBuf::from("/tmp/lostland-test-base");
 
@@ -219,6 +309,10 @@ mod tests {
         assert_eq!(paths.save, base.join(SAVE_FILE_NAME));
         assert_eq!(paths.mods_root, base.join(MODS_DIR_NAME));
         assert_eq!(paths.assets_root, base.join(ASSETS_DIR_NAME));
+        assert_eq!(
+            paths.locales_root,
+            base.join(ASSETS_DIR_NAME).join(LOCALES_DIR_NAME)
+        );
     }
 
     #[test]

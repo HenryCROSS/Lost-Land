@@ -41,8 +41,22 @@ pub struct WindowConfig {
     pub scale: u32,
     /// 窗口标题的本地化键。
     ///
-    /// 存键而非字面量，因为标题是用户可见字符串，必须走 i18n。
+    /// 存键而非字面量，因为标题是用户可见字符串，必须走 i18n。**本层
+    /// 自己不解析这个键**——`ll-platform` 不认识 Fluent，也不该认识：
+    /// 平台层只管「怎么开一扇窗」，查表是表现层（`ll-i18n`）的职责。
+    /// 真正显示的文本是 [`resolved_title`](Self::resolved_title)，由
+    /// 调用方在装载完 `ll_i18n::Catalog` 后解析好再填进来。这个字段
+    /// 保留下来是给调用方留一个「这个标题本该走哪个键」的可核对锚点，
+    /// 也是缺省未解析场景（[`Default`] 实现）的兜底来源。
     pub title_key: &'static str,
+    /// 已经解析好、真正会出现在窗口标题栏/任务栏上的文本。
+    ///
+    /// 默认等于 [`title_key`](Self::title_key) 本身——这不是偷懒，是
+    /// 刻意与 `ll_i18n::Catalog` 缺键时的回退策略保持同一套语义（见其
+    /// 模块文档「缺键与缺语言」一节）：没有真正解析过的标题，就该长得
+    /// 像一个未解析的键，而不是猜一个看起来正常的占位字符串——那样会
+    /// 把「i18n 根本没接上」这个缺陷伪装成「已经接上但选错了文案」。
+    pub resolved_title: String,
     /// 按键自动重复的时序参数，逐帧驱动 [`InputState::begin_frame`]。
     pub repeat: RepeatConfig,
     /// 目标帧率，用于算出 [`WindowConfig::frame_budget`] 节流主循环。
@@ -64,6 +78,7 @@ impl Default for WindowConfig {
             // 默认 2 倍得到 1280×720，在绝大多数显示器上都能完整显示。
             scale: 2,
             title_key: "window.title",
+            resolved_title: "window.title".to_string(),
             repeat: RepeatConfig::default(),
             // 60 是像素游戏的通行帧率，且与常见显示器刷新率对齐。
             target_fps: 60,
@@ -194,8 +209,7 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
         let height = self.config.logical_height * self.config.scale;
 
         let attributes = Window::default_attributes()
-            // 标题此处暂用键名占位，i18n 接入后由上层设置真实标题。
-            .with_title(self.config.title_key)
+            .with_title(&self.config.resolved_title)
             .with_inner_size(winit::dpi::PhysicalSize::new(width, height))
             .with_resizable(false);
 
@@ -355,6 +369,18 @@ mod tests {
 
         // Assert
         assert_eq!(action, Some(GameKey::Up));
+    }
+
+    #[test]
+    fn 默认窗口配置的已解析标题等于未解析的键名本身() {
+        // 未经真正的 i18n 解析时，`resolved_title` 应当长得像一个
+        // 没被翻译过的键，而不是任何看起来正常的占位文案——理由见
+        // `WindowConfig::resolved_title` 文档。
+        // Arrange & Act
+        let config = WindowConfig::default();
+
+        // Assert
+        assert_eq!(config.resolved_title, config.title_key);
     }
 
     #[test]

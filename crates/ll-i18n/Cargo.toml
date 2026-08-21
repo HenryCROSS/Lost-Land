@@ -1,0 +1,26 @@
+[package]
+name = "ll-i18n"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "迷途大陆的本地化查表层：把 _key 字段解析成 Fluent .ftl 里的真实字串，不含任何渲染/窗口逻辑"
+
+[lints]
+workspace = true
+
+[dependencies]
+# 规格 §11.3 与既有设计文档（knowledge/design/mod-package-structure.md
+# 「本地化文件」一节）钦定的格式——`.ftl`、按语言标签分文件、消息 id
+# 不含冒号。umbrella crate 一次性带对齐版本的 fluent-bundle/
+# fluent-syntax/unic-langid，避免三个子 crate 各自单独声明版本导致漂移。
+fluent = "0.17"
+# fluent 0.17 只重导出 FluentBundle/FluentResource/FluentArgs 等消息层
+# 类型，语言标签类型 `LanguageIdentifier` 仍需直接依赖它的宿主 crate
+# ——版本必须与 `fluent` 传递依赖的那份一致，否则 `FluentBundle::new`
+# 会因为「同名不同类型」拒绝编译（与 `ll-text` Cargo.toml 里
+# wgpu/cosmic-text 版本对齐问题同一类风险）。
+unic-langid = "0.9"
+tracing = "0.1"
+
+[dev-dependencies]
+proptest.workspace = true

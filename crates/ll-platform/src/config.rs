@@ -46,6 +46,31 @@ pub struct GameConfig {
     /// 垂直同步与画面缩放滤波选项，见 [`DisplayConfig`]。
     #[serde(default)]
     pub display: DisplayConfig,
+    /// 显示语言，取值是 `.ftl` 文件名去掉扩展名的语言标签（如
+    /// `"zh-CN"`/`"en"`，见 `ll_i18n::Catalog` 模块文档「语言标签」
+    /// 一节的约定）。
+    ///
+    /// # 为什么是用户偏好，不是世界状态
+    ///
+    /// 语言选择只影响「同一份内容用哪种文字呈现」，不影响世界本身
+    /// 是什么——与 [`bindings`](Self::bindings)/[`display`](Self::display)
+    /// 同一条纪律：绝不能进 `ll_world::state::WorldState`、不参与
+    /// `WorldState::hash()`、不影响确定性重放。种子分享给用不同语言
+    /// 客户端的朋友，双方看到的世界必须逐位相同，只是文字长得不一样
+    /// ——这也是
+    /// `knowledge/design/naming-and-localization.md`「i18n 的坑与解法」
+    /// 一节反复强调的边界：本地化只换皮肤，不换世界。
+    ///
+    /// # 为什么是 `String` 而不是一个语言枚举
+    ///
+    /// mod 可以带自己的 `locales/<语言标签>.ftl`（见
+    /// `knowledge/design/mod-package-structure.md`「本地化文件」一节），
+    /// 语言标签集合因此不是本体编译期就能穷举完的封闭集合——一个写死
+    /// 的 Rust 枚举会在每次有人想加一种新语言翻译时逼着改这里的代码。
+    /// `ll_i18n::Catalog` 本身也只按字符串标签索引已装载的 `FluentBundle`，
+    /// 用 `String` 与它的实际形状一致，不需要在这两层之间来回转换。
+    #[serde(default = "default_language")]
+    pub language: String,
 }
 
 impl Default for GameConfig {
@@ -53,8 +78,18 @@ impl Default for GameConfig {
         GameConfig {
             bindings: KeyBindings::default_bindings(),
             display: DisplayConfig::default(),
+            language: default_language(),
         }
     }
+}
+
+/// `language` 字段的默认值——独立具名函数，理由与
+/// [`default_vsync`] 同一个模式（见 [`DisplayConfig`] 文档）。选
+/// `zh-CN` 是因为这是本项目的原始开发语言（代码注释、设计文档、测试
+/// 名全部是中文），首次启动且没有配置文件时应当先说开发者自己的语言，
+/// 而不是默认已经做了一次「选择英语更保险」的隐含假设。
+fn default_language() -> String {
+    "zh-CN".to_string()
 }
 
 /// 显示相关的图形选项：垂直同步开关、画面缩放滤波方式。
@@ -324,6 +359,49 @@ mod tests {
 
         // Assert
         assert_eq!(config.display, DisplayConfig::default());
+    }
+
+    #[test]
+    fn 缺少language字段的旧配置文件仍能反序列化() {
+        // 与「缺少display字段」同一条纪律：本字段是后补的，早期写出的
+        // 配置文件不含 language 键，不该因此解析失败。
+        // Arrange
+        let json = r#"{"bindings":{"bindings":[]}}"#;
+
+        // Act
+        let config: GameConfig = serde_json::from_str(json).expect("缺失 language 字段应当兜底");
+
+        // Assert
+        assert_eq!(config.language, "zh-CN");
+    }
+
+    #[test]
+    fn 默认配置的显示语言是中文() {
+        // Arrange & Act
+        let config = GameConfig::default();
+
+        // Assert
+        assert_eq!(config.language, "zh-CN");
+    }
+
+    #[test]
+    fn 写出后读回的显示语言与原配置一致() {
+        // Arrange
+        let path = temp_path("language-roundtrip");
+        let config = GameConfig {
+            language: "en".to_string(),
+            ..GameConfig::default()
+        };
+
+        // Act
+        save(&path, &config).expect("写出应当成功");
+        let loaded = load_or_default(&path);
+
+        // Assert
+        assert_eq!(loaded.language, "en");
+
+        // Cleanup
+        let _ = fs::remove_file(&path);
     }
 
     #[test]

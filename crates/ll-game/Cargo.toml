@@ -16,6 +16,10 @@ workspace = true
 [dependencies]
 ll-content = { path = "../ll-content" }
 ll-core = { path = "../ll-core" }
+# 本地化查表——本体二进制是唯一同时认识 ll-platform（要设置窗口标题）
+# 与 ll-i18n（要解析标题该显示什么文字）两边的地方，接线自然落在这里。
+# 见 crate::run_game 里 window_config.resolved_title 的赋值。
+ll-i18n = { path = "../ll-i18n" }
 ll-mod = { path = "../ll-mod" }
 ll-platform = { path = "../ll-platform" }
 ll-render = { path = "../ll-render" }
