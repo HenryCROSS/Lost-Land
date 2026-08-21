@@ -83,6 +83,7 @@ fn spawn_agent(world: &mut WorldState) -> EntityId {
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
         spent_slots: std::collections::BTreeMap::new(),
+        inventory: Vec::new(),
         resting: None,
         unlocked_skills: Vec::new(),
         skill_cooldowns: BTreeMap::new(),

@@ -43,6 +43,7 @@ use crate::exploration::ExplorationMemory;
 use crate::generate::{GenParams, build_zone_noise};
 use crate::history::{HistoricalEvent, HistoricalEventKind, KillCause, KillingBlow, VictimState};
 use crate::interior::{Interior, InteriorTable};
+use crate::item::{GroundItemStack, ItemStack};
 use crate::noise::TileableNoise;
 use crate::script_state::ScriptValue;
 use crate::space::{Space, SpaceId};
@@ -405,6 +406,35 @@ pub struct WorldState {
     /// "新字段只加了，没人测过它是否被正确覆盖"的既有判据缺口（见
     /// [`Self::hash`] 文档同名历史记录）。
     pub kill_counts: BTreeMap<ContentIndex, u64>,
+    /// 地面物品（P6 第二批：背包与地面物品）——`item-system.md` 四节
+    /// `ItemLocation::Ground { pos, dropped_at }` 的落地，
+    /// [`crate::entity::Agent::inventory`] 字段文档「为什么是 `Agent`
+    /// 的字段」一节讨论了背包为什么挂在实体上；地面物品不属于任何
+    /// 实体，天然只能挂在 `WorldState` 本身。
+    ///
+    /// # 为什么是 `Vec`，不是按位置索引的 `BTreeMap`
+    ///
+    /// [`ll_core::torus::TorusPos`] 没有实现 `Ord`（只有
+    /// `PartialEq`/`Eq`/`Hash`，见其定义），不能直接当 `BTreeMap` 键；
+    /// 拆成 `(i32, i32)` 元组键虽然可行，但当前查询模式（
+    /// `ll_sim::resolve::resolve_pick_up` 找「这个位置有没有物品」）
+    /// 是线性扫描，量级是"这个世界当前地面物品堆数"，与
+    /// [`crate::entity::Agent::inventory`] 同一条"没有槽位概念，量级
+    /// 不大"的既有判断——真正的性能考量应该来自"远景区域惰性扫掉过期
+    /// 物品"这条设计（`item-system.md` 四节「这条清理正好搭在惰性
+    /// 追赶机制上」），而不是提前假设需要按位置索引查询。
+    ///
+    /// # 老化清理见 [`Self::cleanup_aged_ground_items`]
+    ///
+    /// `Vec` 保序，不涉及 `HashMap`/`HashSet` 迭代顺序（约束 C5）。
+    ///
+    /// # 参与 `hash()`（ADR 0022）与序列化，不加 `#[serde(skip)]`
+    ///
+    /// 与 [`Self::history`]/[`Self::kill_counts`] 同一条纪律：地面物品
+    /// 是真正影响玩法（拾取/丢弃/合并/老化）的数据，缺席 `hash()` 会
+    /// 重演"新字段只加了，没人测过它是否被正确覆盖"的既有判据缺口（见
+    /// [`Self::hash`] 文档同名历史记录）。
+    pub ground_items: Vec<GroundItemStack>,
 }
 
 /// [`WorldState`] 反序列化的中转表示。
@@ -455,6 +485,11 @@ struct WorldStateRepr {
     /// `serde_json::json!` 手写局部字段的测试固件。
     #[serde(default)]
     kill_counts: BTreeMap<ContentIndex, u64>,
+    /// 地面物品——`#[serde(default)]` 的理由与 `history`/`next_world_id`/
+    /// `kill_counts` 一致，这里的默认值只服务本文件内部用
+    /// `serde_json::json!` 手写局部字段的测试固件。
+    #[serde(default)]
+    ground_items: Vec<GroundItemStack>,
 }
 
 impl TryFrom<WorldStateRepr> for WorldState {
@@ -505,6 +540,7 @@ impl TryFrom<WorldStateRepr> for WorldState {
             history: repr.history,
             next_world_id: repr.next_world_id,
             kill_counts: repr.kill_counts,
+            ground_items: repr.ground_items,
         })
     }
 }
@@ -552,6 +588,7 @@ impl WorldState {
             history: Vec::new(),
             next_world_id: 0,
             kill_counts: BTreeMap::new(),
+            ground_items: Vec::new(),
         })
     }
 
@@ -561,6 +598,67 @@ impl WorldState {
     /// 时间倒流类效果回拨时钟的用法。
     pub fn advance(&mut self, ticks: i64) {
         self.clock = Tick(self.clock.0 + ticks);
+    }
+
+    /// 地面物品老化清理的默认阈值：30 游戏日（`item-system.md` 四节
+    /// 「地面物品与老化清理」原文：「地面物品在丢弃满 30 游戏日……时
+    /// 清除」）。
+    ///
+    /// **只是一个默认值，不是写死进 [`Self::cleanup_aged_ground_items`]
+    /// 本身的常量**——该方法的阈值是运行期参数，调用方可以传任意值。
+    /// 这是模块任务书「老化阈值不该写死在引擎里」的落点：引擎（本
+    /// crate）不在方法体内引用这个常量，它只是给不需要自定义阈值的
+    /// 调用方（demo/测试）准备的一个方便默认值，与
+    /// [`crate::item::ItemStack::new`]/`merge_stacks` 把 `stack_limit`
+    /// 当参数传入、不由引擎自己决定是同一条纪律。
+    pub const DEFAULT_GROUND_ITEM_MAX_AGE_TICKS: i64 = 30 * ll_core::time::TICKS_PER_DAY;
+
+    /// 清除丢弃时长超过 `max_age_ticks` 的地面物品堆，返回被清除的堆数。
+    ///
+    /// # 阈值为什么是参数，不是常量或字段
+    ///
+    /// `item-system.md` 四节原文没有把 30 天这个数字定成一成不变的
+    /// 规则——项目任务书明确要求「老化阈值不该写死在引擎里」并要求
+    /// 给出结论：本方法选择**运行期参数**这一档（与
+    /// [`crate::item::merge_stacks`] 的 `stack_limit` 同一条既有纪律，
+    /// 见其文档），不是全局配置项或按物品各自配置：
+    ///
+    /// 1. 当前没有任何"每种物品各自的老化阈值"字段（`ItemDef` 没有
+    ///    这个概念，见 `ll_mod::item` 模块文档「本批次范围」一节——
+    ///    高价值物品"永不清理"依赖 `Quality`，而 `Quality` 本身还没
+    ///    有 Rust 定形，见 [`crate::item`] 模块文档「`Owner` 本批次
+    ///    仍然不落地」一节同一条 YAGNI 判断：不能为一个还不存在的
+    ///    品质轴提前发明"按品质豁免"的分支），因此"每物品各自配置"
+    ///    在本批次没有可挂靠的地方。
+    /// 2. 做成 `WorldState` 字段（"全局配置进存档"）会让这个数字参与
+    ///    `hash()`/序列化——但它是纯粹的规则参数，不是任何一次具体
+    ///    结算读出的世界状态，与 `ll_sim::timeline::action_cost` 里
+    ///    `BASE_ACTION_COST` 这类"规则常量不进 `WorldState`"是同一
+    ///    类判断，不应该无谓地进存档。
+    ///
+    /// **mod 能不能改**：能——本方法不读取任何写死的数字，调用方
+    /// （未来的"游戏规则配置"层，或者 mod 通过 `register-*` 声明的
+    /// 一个全局规则表）只需要算出一个新的 `max_age_ticks` 传进来，本
+    /// 方法不需要跟着改一行代码。当前代码库还没有一张"游戏规则配置
+    /// 表"（[`Self::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS`] 就是唯一现成
+    /// 的数字来源），真正的"mod 可声明覆盖"需要那张表先存在，不在
+    /// 本批次范围内提前搭建一套只服务这一个数字的注册表（YAGNI）。
+    ///
+    /// # 为什么不是 `Effect`/走 `apply`
+    ///
+    /// 与 `crate::entity::ThinPopulation` 的 `rebase`/`wallet_of`（薄层
+    /// 人口的钱包惰性追赶）同一类"系统级被动演化"，不是任何一次玩家/
+    /// AI `Intent` 的直接后果——本方法文档「这条清理正好搭在惰性追赶
+    /// 机制上」（`item-system.md` 四节原文）描述的正是这类调用点：
+    /// 真正把它接到"玩家靠近远景区域时顺带扫一次"这条触发路径上是
+    /// 惰性追赶系统本身的调用方职责，不在本批次范围内（本批次只交付
+    /// 这个可独立调用、可独立测试的清理机制本身）。
+    pub fn cleanup_aged_ground_items(&mut self, max_age_ticks: i64) -> usize {
+        let now = self.clock.0;
+        let before = self.ground_items.len();
+        self.ground_items
+            .retain(|item| now.saturating_sub(item.dropped_at.0) < max_age_ticks);
+        before - self.ground_items.len()
     }
 
     /// 只读地形查询：假定该坐标所属区块已经常驻，不触发按需生成。
@@ -1019,6 +1117,16 @@ impl WorldState {
             write_optional_content_index(&mut hasher, agent.creature_kind);
             hasher.write_i64(agent.spawned_at.0);
             write_optional_world_id(&mut hasher, agent.remembered_id);
+            // 背包（P6 第二批：背包与地面物品）——`Intent::PickUp`/
+            // `Intent::Drop` 都会真实改写这个字段，若哈希继续看不见它，
+            // 「拾取/丢弃/合并悄悄算错」这一类跑偏测不出来，重演本方法
+            // 文档「新增字段若不在这里显式写一行……」一节点名的失效
+            // 模式。`Vec` 保序，不涉及 HashMap/HashSet 迭代顺序（约束
+            // C5）。
+            hasher.write_u64(agent.inventory.len() as u64);
+            for stack in &agent.inventory {
+                write_item_stack(&mut hasher, stack);
+            }
         }
 
         write_optional_entity(&mut hasher, self.player_entity);
@@ -1045,7 +1153,34 @@ impl WorldState {
             hasher.write_u64(*count);
         }
 
+        // 地面物品（P6 第二批：背包与地面物品）——同一条先例第七次
+        // 重演：`Intent::Drop`/`Intent::PickUp`/老化清理都会真实改写
+        // `ground_items`，缺席 hash() 测不出这些结算跑偏。`Vec` 保序，
+        // 不涉及 HashMap/HashSet 迭代顺序（约束 C5）。
+        hasher.write_u64(self.ground_items.len() as u64);
+        for item in &self.ground_items {
+            hasher.write_i64(i64::from(item.pos.x()));
+            hasher.write_i64(i64::from(item.pos.y()));
+            write_item_stack(&mut hasher, &item.stack);
+            hasher.write_i64(item.dropped_at.0);
+        }
+
         hasher.finish()
+    }
+}
+
+/// 把一个 [`ItemStack`] 混入哈希——[`WorldState::hash`] 的帮手，供
+/// 背包（`Agent::inventory`）与地面物品（`WorldState::ground_items`）
+/// 共用，两者都是"一堆 `ItemStack`"，理应用同一套编码，不各写一份。
+fn write_item_stack(hasher: &mut StateHasher, stack: &ItemStack) {
+    hasher.write_u64(u64::from(stack.def.get()));
+    hasher.write_u64(u64::from(stack.count));
+    match stack.durability {
+        Some(durability) => {
+            hasher.write_u64(1);
+            hasher.write_i64(i64::from(durability));
+        }
+        None => hasher.write_u64(0),
     }
 }
 
@@ -1508,6 +1643,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1565,6 +1701,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1648,6 +1785,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::from([(pool, current)]),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1715,6 +1853,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::from([((pool, tier), spent)]),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1774,6 +1913,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1843,6 +1983,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2140,6 +2281,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2485,5 +2627,165 @@ mod tests {
 
         // Assert
         assert!(world.kill_counts.is_empty());
+    }
+
+    #[test]
+    fn 新建的世界地面物品默认为空() {
+        // Arrange & Act
+        let world = test_world();
+
+        // Assert
+        assert!(world.ground_items.is_empty());
+    }
+
+    #[test]
+    fn 地面物品序列化往返后保持原样() {
+        // 与 kill_counts序列化往返后保持原样 同一条判据——真实
+        // serde_json 路径，不只是结构层面。
+        // Arrange
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let arrow = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        world.ground_items.push(GroundItemStack {
+            pos: world.size.wrap(3, 4),
+            stack: ItemStack::new(arrow, 12),
+            dropped_at: Tick(200),
+        });
+
+        // Act
+        let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
+        let decoded: WorldState = serde_json::from_slice(&encoded).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded.ground_items, world.ground_items);
+    }
+
+    #[test]
+    fn 清理超过阈值的地面物品会被移除() {
+        // Arrange：世界时钟推进到超过阈值的时刻,丢弃时刻停留在 0。
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let arrow = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        world.ground_items.push(GroundItemStack {
+            pos: world.size.wrap(0, 0),
+            stack: ItemStack::new(arrow, 1),
+            dropped_at: Tick(0),
+        });
+        world.advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS + 1);
+
+        // Act
+        let removed =
+            world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS);
+
+        // Assert
+        assert_eq!(removed, 1);
+        assert!(world.ground_items.is_empty());
+    }
+
+    #[test]
+    fn 清理未超过阈值的地面物品保留() {
+        // 红/绿对照：把上一条测试的阈值判定改成"<="会让这条测试变红
+        // （恰好等于阈值的物品被误删）——这里额外验证"未到阈值"这个
+        // 更常见的场景,两条测试合起来锁住边界条件。
+        // Arrange
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let arrow = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        world.ground_items.push(GroundItemStack {
+            pos: world.size.wrap(0, 0),
+            stack: ItemStack::new(arrow, 1),
+            dropped_at: Tick(0),
+        });
+        world.advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS - 1);
+
+        // Act
+        let removed =
+            world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS);
+
+        // Assert
+        assert_eq!(removed, 0);
+        assert_eq!(world.ground_items.len(), 1);
+    }
+
+    #[test]
+    fn 老化阈值由调用方传入不同世界可以用不同阈值() {
+        // 「老化阈值不该写死在引擎里」的直接验收：同一份刚好卡在 100
+        // ticks 的地面物品,传 50 判定为过期,传 200 判定为未过期——
+        // 阈值真的是运行期参数,不是编译期常量。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let arrow = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        let mut world_a = test_world();
+        world_a.ground_items.push(GroundItemStack {
+            pos: world_a.size.wrap(0, 0),
+            stack: ItemStack::new(arrow, 1),
+            dropped_at: Tick(0),
+        });
+        world_a.advance(100);
+        let mut world_b = test_world();
+        world_b.ground_items.push(GroundItemStack {
+            pos: world_b.size.wrap(0, 0),
+            stack: ItemStack::new(arrow, 1),
+            dropped_at: Tick(0),
+        });
+        world_b.advance(100);
+
+        // Act
+        let removed_with_short_threshold = world_a.cleanup_aged_ground_items(50);
+        let removed_with_long_threshold = world_b.cleanup_aged_ground_items(200);
+
+        // Assert
+        assert_eq!(removed_with_short_threshold, 1);
+        assert_eq!(removed_with_long_threshold, 0);
+    }
+
+    #[test]
+    fn 地面物品不同的两个世界哈希不同() {
+        // ADR 0022 判据：新增世界状态必须进 hash()——这里直接验证
+        // ground_items 真的参与了摘要计算,不是加了字段但漏了混入。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let arrow = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        let world_a = test_world();
+        let mut world_b = test_world();
+        world_b.ground_items.push(GroundItemStack {
+            pos: world_b.size.wrap(0, 0),
+            stack: ItemStack::new(arrow, 1),
+            dropped_at: Tick(0),
+        });
+
+        // Act & Assert
+        assert_ne!(world_a.hash(), world_b.hash());
+    }
+
+    #[test]
+    fn 背包不同的两个世界哈希不同() {
+        // 同一条 ADR 0022 判据,覆盖 Agent::inventory 这一侧。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let arrow = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        let mut world_a = test_world();
+        blank_agent_spawn(&mut world_a, Vec::new());
+        let mut world_b = test_world();
+        blank_agent_spawn(&mut world_b, vec![ItemStack::new(arrow, 1)]);
+
+        // Act & Assert
+        assert_ne!(world_a.hash(), world_b.hash());
+    }
+
+    /// [`背包不同的两个世界哈希不同`] 专用的最小实体生成帮手——本文件
+    /// 既有的 `blank_agent` 固定了 `inventory: Vec::new()`（见 sed 批量
+    /// 插入的既有测试固件），这里补一个允许调用方指定背包内容的变体，
+    /// 不改动既有 `blank_agent` 的签名（避免牵连它的全部既有调用点）。
+    fn blank_agent_spawn(world: &mut WorldState, inventory: Vec<ItemStack>) -> EntityId {
+        let mut agent = blank_agent(world);
+        agent.inventory = inventory;
+        world.actors.spawn(agent)
     }
 }

@@ -59,12 +59,16 @@
 //! 目录——它直接读/写 `Agent::health`，不是注册表内容,见
 //! [`skill::ResourceCost::Blood`] 文档。
 //!
-//! [`item`]（P6 第一批：物品基础）：物品的运行时实例
-//! （[`item::ItemStack`]）与堆叠/合并/拆分（[`item::merge_stacks`]/
-//! [`item::split_stack`]）——与 `skill`/`traits`/`resource_pool` 同一套
-//! 依赖倒置手法：静态定义（`ItemDef`）留在下游的 `ll-mod::item`,本
-//! crate 只放运行时实例本身与不依赖注册表就能算清楚的纯函数，见该
-//! 模块文档「本批次范围」一节。
+//! [`item`]（P6 第二批：背包与地面物品）：`ItemStack`/`GroundItemStack`
+//! 与堆叠/合并/拆分（P6 第一批落地）已挪到 `ll_world::item`——背包与
+//! 地面物品是世界状态（`ll_world::entity::Agent::inventory`/
+//! `ll_world::state::WorldState::ground_items`），`ll-world` 不能依赖
+//! `ll-sim`，见该模块（挪动后的）文档「为什么从 `ll-sim` 挪到本模块」
+//! 一节。本模块现在 `pub use` 它们，并新增 `resolve` 侧需要的堆叠上限
+//! 依赖倒置接口（[`item::ItemCatalog`]）——静态定义（`ItemDef`）仍然
+//! 留在下游的 `ll-mod::item`，本 crate 只声明「给我一个物品索引，还我
+//! 它的堆叠上限」这个最小接口，与 `skill`/`traits`/`resource_pool`
+//! 同一套依赖倒置手法。
 
 pub mod apply;
 pub mod behavior;

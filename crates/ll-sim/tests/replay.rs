@@ -107,6 +107,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
         spent_slots: std::collections::BTreeMap::new(),
+        inventory: Vec::new(),
         resting: None,
         unlocked_skills: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
@@ -146,6 +147,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
         spent_slots: std::collections::BTreeMap::new(),
+        inventory: Vec::new(),
         resting: None,
         unlocked_skills: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
@@ -488,7 +490,33 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    唯一成因。
 /// 3. 恢复这三段后重新跑通，再次确认新常量
 ///    `2_505_820_810_245_065_935` 稳定复现，才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 2_505_820_810_245_065_935;
+///
+/// # 第十三次重冻的原因（P6 第二批：背包与地面物品）
+///
+/// `WorldState::hash` 新增混入了每个 `Agent` 的 `inventory`
+/// （`Vec<ItemStack>`，紧邻上一批插入的 `remembered_id` 之后）与
+/// `WorldState::ground_items`（`Vec<GroundItemStack>`，紧邻
+/// `kill_counts` 之后）——见 `crates/ll-world/src/state.rs` `hash()`
+/// 对应位置新增的 `hasher.write_u64(agent.inventory.len() as u64)`/
+/// 逐条 `write_item_stack` 循环，以及末尾对
+/// `self.ground_items` 同一形状的一段。本文件 `setup` 生成的
+/// `player`/`enemy` 都不持有任何背包物品，`intent_stream` 也没有任何
+/// `Intent::PickUp`/`Intent::Drop`，两个新字段因此恒为空，但新增字段
+/// 意味着喂进哈希器的字节流本身变长了（各多出一个长度为零的
+/// `u64`），摘要因此改变，与前十二次重冻同一条先例。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 先在改动后的代码上把这条测试单独跑了两次（两次独立的
+///    `cargo test` 进程），确认新摘要 `5_311_272_733_871_972_559`
+///    在两次独立进程里稳定复现（不是一次性偶然值）。
+/// 2. 再把 `state.rs` `hash()` 里新增的 `agent.inventory`/
+///    `self.ground_items` 两段混入代码临时注释掉重新跑这条测试，摘要
+///    精确回到本次重冻之前的旧常量 `2_505_820_810_245_065_935`（与上面
+///    记录的第十二次重冻结果一致），证明这两段确实是本次摘要变化的
+///    唯一成因。
+/// 3. 恢复这两段后重新跑通，再次确认新常量
+///    `5_311_272_733_871_972_559` 稳定复现，才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 5_311_272_733_871_972_559;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

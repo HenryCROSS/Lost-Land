@@ -156,6 +156,43 @@ pub enum Intent {
         /// 目标持续的 tick 数。
         target_ticks: u32,
     },
+    /// 拾取脚下地面上的一堆物品（P6 第二批：背包与地面物品）。
+    ///
+    /// # 为什么不指定要捡哪一种（对比 `Intent::Drop` 的 `def`）
+    ///
+    /// 与 [`Intent::OpenDoor`]/[`Intent::EnterSpace`] 同一条纪律：只携带
+    /// 「想干什么」这条裸请求,不做任何合法性判断——脚下有没有东西、
+    /// 捡起来之后要不要跟背包已有的堆合并,全部留给 `resolve`
+    /// （`crate::resolve::resolve_pick_up`）结合 `WorldState` 现算。
+    /// 不要求调用方指定 `def` 是刻意的：捡东西的人事先并不知道地上
+    /// 那堆到底是什么（不像 `Intent::Drop`——玩家丢东西时看的是自己
+    /// 背包里已知的物品列表）。若同一格恰好有多堆不同种类的物品,
+    /// `resolve_pick_up` 按 [`ll_world::state::WorldState::ground_items`]
+    /// 的存储顺序取第一条——多堆选择 UI 不在本批次范围内,与
+    /// `Intent::EnterSpace` 「同一格多入口的选择 UI 不在本次重写范围内」
+    /// 同一条既有先例。
+    PickUp {
+        /// 发起者，捡到它自己的背包里。
+        actor: EntityId,
+    },
+    /// 把背包里的某种物品整堆丢在脚下（P6 第二批：背包与地面物品）。
+    ///
+    /// # 为什么是整堆，不支持部分数量
+    ///
+    /// [`ll_world::item::split_stack`] 已经存在且已在 P6 第一批测试
+    /// 过——但把"丢一部分"接进 `Intent` 需要再决定"数量哪里来"（新增
+    /// 一个 `amount` 字段还是走两步式的"先拆堆再丢整堆"交互),这属于
+    /// 背包 UI/槽位批次（第三批）该定的手感,不是本批次要解决的问题。
+    /// 本批次的验收范围（拾取/丢弃/合并/老化,见项目任务书）不需要
+    /// 部分丢弃,提前引入只会制造一个当前没有测试覆盖的分支。
+    Drop {
+        /// 发起者。
+        actor: EntityId,
+        /// 要丢弃的物品定义——玩家从自己背包的已知列表里选,不像
+        /// `Intent::PickUp` 那样不知道地上有什么,因此这里要求显式
+        /// 指定。
+        def: ContentIndex,
+    },
 }
 
 impl Intent {
@@ -174,7 +211,9 @@ impl Intent {
             | Intent::EnterSpace { actor, .. }
             | Intent::ExitSpace { actor }
             | Intent::UseSkill { actor, .. }
-            | Intent::Rest { actor, .. } => actor,
+            | Intent::Rest { actor, .. }
+            | Intent::PickUp { actor }
+            | Intent::Drop { actor, .. } => actor,
         }
     }
 }
@@ -462,6 +501,48 @@ mod tests {
 
         // Assert
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn pickup意图序列化往返后与原值相等() {
+        // Arrange
+        let original = Intent::PickUp { actor: entity() };
+
+        // Act
+        let json = serde_json::to_string(&original).expect("Intent 全字段均可序列化");
+        let decoded: Intent = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn drop意图序列化往返后与原值相等() {
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let def = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        let original = Intent::Drop {
+            actor: entity(),
+            def,
+        };
+
+        // Act
+        let json = serde_json::to_string(&original).expect("Intent 全字段均可序列化");
+        let decoded: Intent = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn actor方法对pickup意图返回发起者字段() {
+        // Arrange
+        let actor = entity();
+        let intent = Intent::PickUp { actor };
+
+        // Act & Assert
+        assert_eq!(intent.actor(), actor);
     }
 
     #[test]

@@ -7,6 +7,7 @@ use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use serde::{Deserialize, Serialize};
 
+use crate::item::ItemStack;
 use crate::script_state::ScriptValue;
 use crate::space::Space;
 
@@ -372,6 +373,25 @@ pub struct Agent {
     /// 同一条「不做不必要的重复计算」纪律在不同数学结构（纯函数 vs
     /// 递推）下的正确应用，不是破例——详见该字段的完整论证。
     pub xp_to_next_level: i64,
+    /// 背包（P6 第二批：背包与地面物品）——`item-system.md` 四节
+    /// `ItemLocation::Inventory { holder, slot }` 在本批次的落地：`holder`
+    /// 就是这个 `Agent` 自身（因此不需要在 `ItemStack` 上重复记
+    /// 一份持有者），`slot` 尚未落地（22 槽位与 `SlotMask` 是第三批的
+    /// 工作，见项目任务书「本批次范围」一节），本批次的背包是一个无
+    /// 序容器，不区分槽位。
+    ///
+    /// # 为什么是 `Agent` 的字段，不是 `WorldState` 的旁挂表
+    ///
+    /// 与 [`Self::health`] 「为什么是 `Agent` 字段」同一条理由（见其
+    /// 文档）：背包是逐实体状态，`Agent` despawn 时应当随实体一起被
+    /// `Arena` 整体收走，不产生指向不存在实体的孤儿库存记录。
+    ///
+    /// `Vec` 不是 `BTreeMap<u16, ItemStack>`（尽管设计文档的 `slot`
+    /// 字段暗示了槽位索引）：本批次没有槽位概念（见上），查询模式是
+    /// 「背包里有没有这个 `def`」（`iter().find`，`O(n)`，n 是背包物品
+    /// 种类数，量级不超过几十），与 [`Self::unlocked_skills`] 同样用
+    /// `Vec` 而非有序容器的理由一致。
+    pub inventory: Vec<ItemStack>,
 }
 
 /// [`Agent::spent_slots`] 的自定义 serde 编码：把 `(ContentIndex, u8)`
@@ -535,6 +555,10 @@ mod tests {
             level: 5,
             experience: 250,
             xp_to_next_level: 800,
+            // 非空背包——见 agent序列化往返后全部字段逐一相等 文档：
+            // 空 Vec 序列化恒等于自身,不足以验证真正的编解码,必须让
+            // 往返测试真的经过至少一条 ItemStack。
+            inventory: vec![ItemStack::with_durability(strike, 3, 80)],
         }
     }
 

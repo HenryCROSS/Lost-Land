@@ -61,6 +61,7 @@ use crate::combat::{Penetration, damage_after_defense};
 use crate::effect::Effect;
 use crate::experience::ExperienceCatalog;
 use crate::intent::{Direction, Intent};
+use crate::item::{ItemCatalog, NoItems, can_merge, merge_stacks};
 use crate::quest::{NoQuests, QuestCatalog};
 use crate::resource_pool::{
     NoResourcePools, RegenRule, ResourcePoolCatalog, ResourcePoolShape, RestRecoveryAmount,
@@ -265,6 +266,7 @@ pub fn resolve_with_skills_and_traits(
         race_traits,
         traits,
         &NoResourcePools,
+        &NoItems,
     )
 }
 
@@ -293,7 +295,51 @@ pub fn resolve_with_skills_traits_and_pools(
     traits: &dyn TraitCatalog,
     pools: &dyn ResourcePoolCatalog,
 ) -> Vec<Effect> {
-    resolve_dispatch(world, intent, skills, &NoQuests, race_traits, traits, pools)
+    resolve_dispatch(
+        world,
+        intent,
+        skills,
+        &NoQuests,
+        race_traits,
+        traits,
+        pools,
+        &NoItems,
+    )
+}
+
+/// [`resolve`] 的最完整入口：在 [`resolve_with_skills_traits_and_pools`]
+/// 之上再额外接收一份物品目录，用于结算 [`Intent::PickUp`]
+/// 拾取时与背包已有堆合并所需的堆叠上限查询（P6 第二批：背包与地面
+/// 物品，见 [`resolve_pick_up`] 文档）。
+///
+/// 六层入口而不是给某个既有入口加参数，理由同
+/// [`resolve_with_skills`] 文档：不强迫仓库里已有的全部调用点都多传
+/// 一份物品目录——传 [`NoItems`] 与"不传"在行为上完全等价（[`resolve_pick_up`]
+/// 查不到堆叠上限时按"不限量"处理，见 [`NoItems`] 文档），本函数只
+/// 服务真正想让拾取时自动合并生效的调用方（`ll_mod::item::ItemTable`
+/// 现在就是这样的真实实现）。
+///
+/// [`Intent::Drop`] 不消费 `items` 参数——丢弃不需要查堆叠上限，见
+/// [`resolve_drop`] 文档。
+pub fn resolve_with_skills_traits_pools_and_items(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
+    resolve_dispatch(
+        world,
+        intent,
+        skills,
+        &NoQuests,
+        race_traits,
+        traits,
+        pools,
+        items,
+    )
 }
 
 /// [`resolve`] 的技能结算入口：额外接收一份技能目录，用于结算
@@ -334,13 +380,24 @@ pub fn resolve_with_skills_and_quests(
         &NoTraitGrants,
         &NoTraits,
         &NoResourcePools,
+        &NoItems,
     )
 }
 
 /// [`resolve_with_skills_and_quests`]/[`resolve_with_skills_and_traits`]/
-/// [`resolve_with_skills_traits_and_pools`] 共用的核心分派逻辑——三个
-/// 公开入口都只是"缺一份目录时传对应的 `No*` 空实现"的薄封装，真正的
-/// `Intent` 匹配与效果产出只写这一份，不重复。
+/// [`resolve_with_skills_traits_and_pools`]/
+/// [`resolve_with_skills_traits_pools_and_items`] 共用的核心分派逻辑——
+/// 四个公开入口都只是"缺一份目录时传对应的 `No*` 空实现"的薄封装，
+/// 真正的 `Intent` 匹配与效果产出只写这一份，不重复。
+///
+/// `#[allow(clippy::too_many_arguments)]`：八个参数分别对应七种
+/// 结算需要的只读依赖（技能/任务/种族天赋来源/天赋/资源池/物品目录）
+/// 加 `world`/`intent` 本身，拆分成多份目录正是「resolve 依赖倒置」
+/// 这套手法刻意要做的事（见模块文档同一批目录的既有取舍），不是可以
+/// 合并成一个结构体的意外堆叠——与
+/// `crates/ll-sim/tests/resource_pool_resolve.rs` 的
+/// `spawn_agent_with_pool` 同一条既有先例。
+#[allow(clippy::too_many_arguments)]
 fn resolve_dispatch(
     world: &WorldState,
     intent: &Intent,
@@ -349,6 +406,7 @@ fn resolve_dispatch(
     race_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     pools: &dyn ResourcePoolCatalog,
+    items: &dyn ItemCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => resolve_wait(world, actor, race_traits, traits, pools),
@@ -366,6 +424,8 @@ fn resolve_dispatch(
             actor,
             target_ticks,
         } => resolve_rest(world, actor, target_ticks, race_traits, traits, pools),
+        Intent::PickUp { actor } => resolve_pick_up(world, actor, items),
+        Intent::Drop { actor, def } => resolve_drop(world, actor, def),
     };
     // 休息中断（`resource-pools-and-rest.md` 八节「中断怎么表达」一节）：
     // 任何非 `Wait`/`Rest` 意图,若发起者当前正在休息,追加一条不带恢复
@@ -1017,6 +1077,102 @@ fn tiered_slot_rest_effects(
 /// 后者才是战争迷雾要回答的问题。这里用 `world.player_entity ==
 /// Some(actor)` 这一个比较收住范围，不需要改 `Intent`/`Effect` 的
 /// 形状去区分「谁在动」。
+/// [`Intent::PickUp`] 结算（P6 第二批：背包与地面物品）：捡起 `actor`
+/// 脚下的第一堆地面物品（见 `Intent::PickUp` 文档「为什么不指定要捡
+/// 哪一种」一节），若背包已有可合并的同种堆（[`can_merge`]），一并
+/// 算出合并结果。
+///
+/// # 静默无效的两种情形
+///
+/// `actor` 不存在，或脚下没有任何地面物品——与 `resolve_attack`/
+/// `resolve_open_door` 目标不存在时的既有纪律一致（见模块文档开篇
+/// 「目标实体……若已不在 `world.actors` 中……一律返回空 `Vec`」），
+/// 不是错误，只是这一步什么都不发生。
+///
+/// # 为什么合并结果由这里算好，`apply` 只做替换
+///
+/// 见 [`Effect::MergeIntoInventory`] 文档「为什么合并结果由 `resolve`
+/// 算好」一节：`stack_limit` 查不到（`items` 没有这个 `def` 的记录）
+/// 时按「不限量」处理（`u32::MAX`），理由见 [`NoItems`] 文档——没有
+/// 真实的物品注册表可查不该表现成"这件物品异常地不能堆叠"。
+fn resolve_pick_up(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let Some(ground) = world.ground_items.iter().find(|item| item.pos == agent.pos) else {
+        return Vec::new();
+    };
+    let picked = ground.stack;
+
+    let existing = agent
+        .inventory
+        .iter()
+        .find(|stack| can_merge(stack, &picked));
+    let (replaced, resulting) = match existing {
+        Some(existing) => {
+            let stack_limit = items
+                .item(picked.def)
+                .map_or(u32::MAX, |rule| rule.stack_limit);
+            match merge_stacks(*existing, picked, stack_limit) {
+                Ok((merged, overflow)) => {
+                    let mut resulting = vec![merged];
+                    resulting.extend(overflow);
+                    (Some((existing.def, existing.durability)), resulting)
+                }
+                Err(_) => {
+                    // can_merge 刚判定过真——merge_stacks 只会在 def/
+                    // durability 不同时拒绝（见其文档），这里理论不可达，
+                    // 保守回落到"不合并、直接追加"而不是 panic。
+                    (None, vec![picked])
+                }
+            }
+        }
+        None => (None, vec![picked]),
+    };
+
+    vec![
+        Effect::RemoveGroundItem {
+            pos: ground.pos,
+            def: picked.def,
+        },
+        Effect::MergeIntoInventory {
+            actor,
+            replaced,
+            resulting,
+        },
+    ]
+}
+
+/// [`Intent::Drop`] 结算（P6 第二批：背包与地面物品）：把 `actor` 背包
+/// 里第一条匹配 `def` 的整堆丢在其当前脚下（见 `Intent::Drop` 文档
+/// 「为什么是整堆」一节）。
+///
+/// # 静默无效的两种情形
+///
+/// `actor` 不存在，或背包里没有匹配 `def` 的堆——与 [`resolve_pick_up`]
+/// 同一条纪律。
+fn resolve_drop(world: &WorldState, actor: EntityId, def: ContentIndex) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let Some(stack) = agent.inventory.iter().find(|stack| stack.def == def) else {
+        return Vec::new();
+    };
+
+    vec![
+        Effect::RemoveFromInventory {
+            actor,
+            def,
+            durability: stack.durability,
+        },
+        Effect::AddGroundItem {
+            pos: agent.pos,
+            stack: *stack,
+            dropped_at: world.clock,
+        },
+    ]
+}
+
 fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
@@ -1645,6 +1801,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1702,6 +1859,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2237,6 +2395,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2587,6 +2746,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2648,6 +2808,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),

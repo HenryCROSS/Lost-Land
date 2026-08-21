@@ -791,6 +791,7 @@ mod tests {
             stamina: ll_world::entity::Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills,
             skill_cooldowns: std::collections::BTreeMap::new(),

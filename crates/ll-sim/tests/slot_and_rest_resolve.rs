@@ -136,6 +136,7 @@ fn spawn_agent(
         stamina: Agent::STARTING_STAMINA,
         resource_pools,
         spent_slots,
+        inventory: Vec::new(),
         resting,
         unlocked_skills: unlocked_skill.into_iter().collect(),
         skill_cooldowns: BTreeMap::new(),

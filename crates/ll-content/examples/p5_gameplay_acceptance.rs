@@ -187,6 +187,7 @@ fn bare_agent(world: &WorldState, pos: TorusPos) -> Agent {
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
         spent_slots: std::collections::BTreeMap::new(),
+        inventory: Vec::new(),
         resting: None,
         unlocked_skills: Vec::new(),
         skill_cooldowns: BTreeMap::new(),

@@ -17,6 +17,7 @@ use ll_world::script_state::ScriptStateWrite;
 use ll_world::space::Space;
 use ll_world::terrain::TerrainKind;
 
+use crate::item::ItemStack;
 use crate::skill::ResourceKind;
 
 /// 「发生了什么」的纯数据描述。
@@ -477,5 +478,82 @@ pub enum Effect {
     ClearResting {
         /// 结束休息的实体。
         actor: EntityId,
+    },
+    /// 从地面移除一堆物品（P6 第二批：背包与地面物品）——
+    /// `crate::resolve::resolve_pick_up` 唯一的产出者，与
+    /// [`Effect::MergeIntoInventory`] 成对出现（先移除地面上的，再写进
+    /// 背包）。
+    ///
+    /// # 为什么按 `(pos, def)` 定位，不是索引
+    ///
+    /// `resolve` 只有 `&WorldState`（C1），拿不到
+    /// [`ll_world::state::WorldState::ground_items`] 的 `&mut`，无法把
+    /// "移除哪一条"这件事本身预先做掉再产出效果——但 `apply` 也不能
+    /// 反过来自己判断"该移除哪一堆"（那是规则判断，`apply` 不含任何
+    /// 游戏逻辑）。折中是让 `resolve` 把它已经读到的坐标与物品定义
+    /// 原样写进本效果，`apply` 只做一次按键查找+移除（机械执行，不是
+    /// 判断该不该移除），这与 `Effect::SetSkillCooldown`
+    /// 按 `(actor, skill)` 这一对键写入 `BTreeMap` 是同一类"用内容
+    /// 索引定位，不用容器内部下标"的既有做法——`Vec` 下标会在同一批
+    /// 效果里其它条目改动 `ground_items` 后失效，内容索引不会。
+    RemoveGroundItem {
+        /// 地面物品所在的位置。
+        pos: TorusPos,
+        /// 要移除的物品定义——本批次每次移除脚下匹配到的第一条整堆
+        /// （不支持部分数量,见 [`crate::intent::Intent::Drop`] 文档
+        /// 「为什么是整堆」一节同一条范围裁定）。
+        def: ContentIndex,
+    },
+    /// 在地面上新增一堆物品——`crate::resolve::resolve_drop` 的产出者。
+    AddGroundItem {
+        /// 放置位置——通常是丢弃者当前所在坐标。
+        pos: TorusPos,
+        /// 具体是哪一堆物品，数量/耐久均已由 `resolve` 决定。
+        stack: ItemStack,
+        /// 丢弃时刻——`WorldState::cleanup_aged_ground_items` 的老化
+        /// 判定依据，见其文档。
+        dropped_at: Tick,
+    },
+    /// 把物品写进某实体的背包，可能同时替换掉背包里已有的同种可堆叠
+    /// 堆（`crate::resolve::resolve_pick_up` 的产出者）。
+    ///
+    /// # 为什么合并结果由 `resolve` 算好，`apply` 只做替换
+    ///
+    /// 是否要合并（`can_merge`）、合并后主堆/溢出堆各自多少
+    /// （`merge_stacks`，需要查 [`crate::item::ItemCatalog`] 拿堆叠
+    /// 上限）——这些全部是规则判断，必须在 `resolve` 做完；`apply` 拿
+    /// 到的 `resulting` 已经是最终要写进背包的完整数据，不再做任何
+    /// 算术,只做"找到旧堆位置并替换成新的这一批"这个纯粹的容器操作，
+    /// 与 [`Effect::ApplyStatModifier`] 「apply 只管照单据执行」是同一
+    /// 条纪律。
+    MergeIntoInventory {
+        /// 背包的持有者。
+        actor: EntityId,
+        /// 若与背包已有的一堆合并了，这里给出旧堆的 `(def, durability)`
+        /// 用于原地定位并移除——`can_merge` 的判据正是这两个字段（见
+        /// 其文档），`resolve` 已经用它确认过这堆确实存在。`None`
+        /// 表示没有可合并的旧堆，本效果单纯往背包里追加。
+        replaced: Option<(ContentIndex, Option<i32>)>,
+        /// 合并/追加后要写进背包的结果——没有溢出时一条,有溢出（触及
+        /// 堆叠上限）时两条。
+        resulting: Vec<ItemStack>,
+    },
+    /// 从某实体背包移除一整堆匹配的物品——`crate::resolve::resolve_drop`
+    /// 的产出者，与 [`Effect::AddGroundItem`] 成对出现。
+    ///
+    /// # 为什么按 `(def, durability)` 定位，不是索引
+    ///
+    /// 与 [`Effect::RemoveGroundItem`] 同一条理由：`resolve` 只有共享
+    /// 引用，无法预先从背包里摘掉这一堆再产出效果，只能把已经读到的
+    /// 定位信息原样写进本效果，交给 `apply` 做一次按键查找+移除。
+    RemoveFromInventory {
+        /// 背包的持有者。
+        actor: EntityId,
+        /// 要移除的物品定义。
+        def: ContentIndex,
+        /// 要移除的那一堆的耐久——与 `def` 一起构成 `can_merge` 判据，
+        /// 保证移除的是 `resolve` 实际读到的那一堆，不是"随便一堆同
+        /// `def` 的"。
+        durability: Option<i32>,
     },
 }

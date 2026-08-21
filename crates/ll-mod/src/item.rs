@@ -59,6 +59,7 @@ use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
+use ll_sim::item::{ItemCatalog, ItemRule};
 
 /// 单条物品声明：本体与 mod 注册物品时共用的同一个输入形状——
 /// 「本体即 Mod」在物品层面的验收标的，理由同 [`crate::race::RaceDef`]
@@ -215,6 +216,21 @@ impl ItemTable {
     }
 }
 
+/// `resolve` 侧的堆叠上限查询——`ll_sim::resolve::resolve_pick_up` 判断
+/// 「拾取时能否与背包已有堆合并」需要它，见
+/// `ll_sim::item::ItemCatalog` 文档「本模块新增」一节。与
+/// `impl ResourcePoolCatalog for ResourcePoolTable`
+/// （`crate::resource_pool` 模块）同一条既有先例：只把 `ItemView` 里
+/// `resolve` 真正要读的那一个字段（`stack_limit`）搬进
+/// [`ItemRule`]，不是把整条 `ItemView` 转发出去。
+impl ItemCatalog for ItemTable {
+    fn item(&self, item: ContentIndex) -> Option<ItemRule> {
+        self.get(item).map(|view| ItemRule {
+            stack_limit: view.stack_limit,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -316,5 +332,45 @@ mod tests {
         // Assert
         assert_eq!(table.get(index).unwrap().stack_limit, 1);
         assert_eq!(table.get(index).unwrap().max_durability, Some(100));
+    }
+
+    #[test]
+    fn itemcatalog实现对已注册物品返回真实堆叠上限() {
+        // Arrange
+        let mut registry = Registry::new();
+        let index = registry.intern(NamespacedId::parse("lostland:arrow").unwrap());
+        let mut table = ItemTable::new();
+        table
+            .define(
+                index,
+                ItemAttrs {
+                    display_name_key: NamespacedId::parse("lostland:item.arrow").unwrap(),
+                    stack_limit: 99,
+                    base_weight: Milli::from_whole(0),
+                    base_price: Milli::from_whole(2),
+                    max_durability: None,
+                },
+            )
+            .expect("首次定义应当成功");
+
+        // Act
+        let rule = ItemCatalog::item(&table, index);
+
+        // Assert
+        assert_eq!(rule, Some(ItemRule { stack_limit: 99 }));
+    }
+
+    #[test]
+    fn itemcatalog实现对未注册物品返回none() {
+        // Arrange
+        let mut registry = Registry::new();
+        let never_defined = registry.intern(NamespacedId::parse("yourmod:never_defined").unwrap());
+        let table = ItemTable::new();
+
+        // Act
+        let rule = ItemCatalog::item(&table, never_defined);
+
+        // Assert
+        assert_eq!(rule, None);
     }
 }

@@ -13,6 +13,15 @@
 //!
 //! 世界状态禁止浮点数：跨平台浮点差异会摧毁确定性存档与重放（详见
 //! `ll-core` 的说明）。本 crate 的所有模块全程使用整数与定点数。
+//!
+//! # [`item`]（P6 第二批：背包与地面物品）
+//!
+//! 物品的运行时实例（[`item::ItemStack`]）与地面物品堆
+//! （[`item::GroundItemStack`]）——从 `ll-sim` 挪到本模块，理由见该
+//! 模块文档「为什么从 `ll-sim` 挪到本模块」一节：背包
+//! （[`entity::Agent::inventory`]）与地面物品
+//! （[`state::WorldState::ground_items`]）都是世界状态，必须定义在
+//! `Agent`/`WorldState` 所在的本 crate，`ll-world` 不能依赖 `ll-sim`。
 
 use core::fmt;
 
@@ -24,6 +33,7 @@ pub mod fov;
 pub mod generate;
 pub mod history;
 pub mod interior;
+pub mod item;
 pub mod light;
 pub mod naming;
 pub mod noise;

@@ -304,6 +304,61 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.resting = None;
             }
         }
+        Effect::RemoveGroundItem { pos, def } => {
+            // 按 (pos, def) 定位并移除第一条匹配——resolve 已经确认过
+            // 这堆存在（见 Effect::RemoveGroundItem 文档「为什么按
+            // (pos, def) 定位」一节），这里只做机械的查找+移除，不再
+            // 判断该不该移除。
+            if let Some(index) = world
+                .ground_items
+                .iter()
+                .position(|item| item.pos == *pos && item.stack.def == *def)
+            {
+                world.ground_items.remove(index);
+            }
+        }
+        Effect::AddGroundItem {
+            pos,
+            stack,
+            dropped_at,
+        } => {
+            world.ground_items.push(ll_world::item::GroundItemStack {
+                pos: *pos,
+                stack: *stack,
+                dropped_at: *dropped_at,
+            });
+        }
+        Effect::MergeIntoInventory {
+            actor,
+            replaced,
+            resulting,
+        } => {
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                if let Some((def, durability)) = replaced
+                    && let Some(index) = agent
+                        .inventory
+                        .iter()
+                        .position(|stack| stack.def == *def && stack.durability == *durability)
+                {
+                    agent.inventory.remove(index);
+                }
+                agent.inventory.extend(resulting.iter().copied());
+            }
+        }
+        Effect::RemoveFromInventory {
+            actor,
+            def,
+            durability,
+        } => {
+            if let Some(agent) = world.actors.get_mut(*actor)
+                && let Some(index) = agent
+                    .inventory
+                    .iter()
+                    .position(|stack| stack.def == *def && stack.durability == *durability)
+            {
+                agent.inventory.remove(index);
+            }
+        }
     }
 }
 
@@ -419,6 +474,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),

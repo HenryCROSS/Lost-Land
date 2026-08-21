@@ -51,6 +51,7 @@ use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::time::Tick;
 use ll_mod::registry::Registry;
 use ll_world::entity::{ActiveStatModifier, Affiliation, Agent, AttributeKind, Goal, OrgRef};
+use ll_world::item::{GroundItemStack, ItemStack};
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::terrain::TerrainKind;
@@ -135,6 +136,13 @@ pub fn remap_world(
         // 「为什么这一步不能省」一节点名的正是这类静默错位）。见下方
         // remap_kill_counts。
         ref mut kill_counts,
+        // 地面物品（P6 第二批：背包与地面物品）：`stack.def` 指向
+        // `ItemDef`，依赖 mod 加载顺序，必须显式重映射——否则读档后
+        // 地面上的物品会静默指向错误的内容（模块文档「为什么这一步
+        // 不能省」一节点名的正是这类静默错位）。`pos`/`dropped_at` 都
+        // 是纯数值，不含 ContentIndex，随 def 一起保留或丢弃。见下方
+        // remap_ground_items。
+        ref mut ground_items,
     } = *world;
 
     terrain.try_remap_resident_terrain(|kind| -> Result<TerrainKind, LoadError> {
@@ -160,6 +168,7 @@ pub fn remap_world(
     }
 
     remap_kill_counts(&mut remapper, kill_counts)?;
+    remap_ground_items(&mut remapper, ground_items)?;
 
     Ok(remapper.actions)
 }
@@ -349,6 +358,10 @@ fn remap_agent(
         level: _,
         experience: _,
         xp_to_next_level: _,
+        // 背包（P6 第二批：背包与地面物品）：每一堆的 def 指向
+        // ItemDef，依赖 mod 加载顺序，必须显式重映射——见下方
+        // remap_inventory。
+        ref mut inventory,
     } = *agent;
 
     *profession = remapper.remap_character_attribute(*profession, owner)?;
@@ -363,6 +376,7 @@ fn remap_agent(
     remap_creature_kind(remapper, creature_kind, owner)?;
     remap_resource_pools(remapper, resource_pools)?;
     remap_spent_slots(remapper, spent_slots)?;
+    remap_inventory(remapper, inventory)?;
     Ok(())
 }
 
@@ -401,6 +415,56 @@ fn remap_spent_slots(
         }
     }
     *spent_slots = kept;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的背包（P6 第二批：背包与地面物品）：每一堆
+/// `ItemStack.def` 找不到当前会话内容时整堆丢弃（[`ContentKind::Item`]，
+/// 该变体的文档原文就是「背包/地面堆叠里引用的 `ItemDef`」，本函数
+/// 与 [`remap_ground_items`] 正是它点名的两个消费者）——理由同
+/// [`remap_unlocked_skills`]：这是「持有哪些物品」的一条记录，不是
+/// 实体本体的核心身份，缺一件物品不等于「失去自己」。`count`/
+/// `durability` 都是纯数值，不含 `ContentIndex`，随 `def` 一起保留或
+/// 丢弃。
+fn remap_inventory(
+    remapper: &mut Remapper<'_>,
+    inventory: &mut Vec<ItemStack>,
+) -> Result<(), LoadError> {
+    let mut kept = Vec::with_capacity(inventory.len());
+    for stack in inventory.drain(..) {
+        if let Some(new_def) = remapper.remap_droppable(stack.def, ContentKind::Item)? {
+            kept.push(ItemStack {
+                def: new_def,
+                ..stack
+            });
+        }
+    }
+    *inventory = kept;
+    Ok(())
+}
+
+/// 重映射地面物品（[`WorldState::ground_items`]，P6 第二批）：与
+/// [`remap_inventory`] 同一条判据，`def` 找不到当前会话内容时整堆
+/// 丢弃（[`ContentKind::Item`]）——地面上一堆物品同样不是任何实体的
+/// 核心身份，`pos`/`dropped_at` 不含 `ContentIndex`，随 `def` 一起保留
+/// 或丢弃。
+fn remap_ground_items(
+    remapper: &mut Remapper<'_>,
+    ground_items: &mut Vec<GroundItemStack>,
+) -> Result<(), LoadError> {
+    let mut kept = Vec::with_capacity(ground_items.len());
+    for item in ground_items.drain(..) {
+        if let Some(new_def) = remapper.remap_droppable(item.stack.def, ContentKind::Item)? {
+            kept.push(GroundItemStack {
+                stack: ItemStack {
+                    def: new_def,
+                    ..item.stack
+                },
+                ..item
+            });
+        }
+    }
+    *ground_items = kept;
     Ok(())
 }
 
@@ -654,6 +718,7 @@ mod tests {
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1218,5 +1283,133 @@ mod tests {
                 .len(),
             1
         );
+    }
+
+    #[test]
+    fn 背包物品按字符串对号重映射到新索引() {
+        // Arrange：存档写出时与当前会话的登记顺序不同——与 profession/
+        // race 同一条判据，重映射必须靠字符串而不是索引数值巧合对上号。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let arrow_old = save_registry.intern(id("lostland:arrow"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记,打乱顺序
+        let arrow_new = current.intern(id("lostland:arrow"));
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.inventory.push(ItemStack::new(arrow_old, 30));
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert：def 换成了新索引,数量原样保留。
+        assert!(actions.is_empty());
+        assert_eq!(
+            world.actors.get(entity).expect("实体应当仍存在").inventory,
+            vec![ItemStack::new(arrow_new, 30)]
+        );
+    }
+
+    #[test]
+    fn 背包物品对应的内容在当前会话找不到时整堆丢弃并记录droppwithwarning() {
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished = save_registry.intern(id("lostland:vanished"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.inventory.push(ItemStack::new(vanished, 1));
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .inventory
+                .is_empty()
+        );
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
+    }
+
+    #[test]
+    fn 地面物品按字符串对号重映射到新索引() {
+        // Arrange：与背包物品同一条判据——见「背包物品按字符串对号
+        // 重映射到新索引」。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let sword_old = save_registry.intern(id("lostland:iron_sword"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记,打乱顺序
+        let sword_new = current.intern(id("lostland:iron_sword"));
+
+        let pos = world.size.wrap(3, 4);
+        world.ground_items.push(ll_world::item::GroundItemStack {
+            pos,
+            stack: ItemStack::with_durability(sword_old, 1, 90),
+            dropped_at: Tick(50),
+        });
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert：def 换成了新索引,位置与丢弃时刻原样保留。
+        assert!(actions.is_empty());
+        assert_eq!(
+            world.ground_items,
+            vec![ll_world::item::GroundItemStack {
+                pos,
+                stack: ItemStack::with_durability(sword_new, 1, 90),
+                dropped_at: Tick(50),
+            }]
+        );
+    }
+
+    #[test]
+    fn 地面物品对应的内容在当前会话找不到时整堆丢弃并记录droppwithwarning() {
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished = save_registry.intern(id("lostland:vanished"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+
+        world.ground_items.push(ll_world::item::GroundItemStack {
+            pos: world.size.wrap(0, 0),
+            stack: ItemStack::new(vanished, 1),
+            dropped_at: Tick(0),
+        });
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(world.ground_items.is_empty());
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
     }
 }
