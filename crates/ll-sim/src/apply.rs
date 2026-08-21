@@ -102,10 +102,11 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
             });
         }
         Effect::IncrementKillCount { kind } => {
-            // 决策一（无名单位击杀改计数）——把「按 kind 归并」这个已经
-            // 在 resolve 阶段算好的判断原样落到 WorldState.kill_counts，
-            // apply 本身不重新判断该按什么归并，符合「apply 不含任何
-            // 游戏逻辑」的纪律。
+            // 决策二（数全部击杀，取代决策一原有的无名单位限定，见
+            // Effect::IncrementKillCount 文档）——把「按 kind 归并」这个
+            // 已经在 resolve 阶段算好的判断原样落到 WorldState.kill_counts，
+            // apply 本身不重新判断该按什么归并、也不重新判断这场击杀
+            // 该不该计数，符合「apply 不含任何游戏逻辑」的纪律。
             world.record_kill_count(*kind);
         }
         Effect::ScheduleNext { actor, at } => {

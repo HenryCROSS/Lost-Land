@@ -255,19 +255,43 @@ fn append_quest_kill_progress(
     }
 }
 
-/// 击杀历史记录与无名单位击杀计数的接线
+/// 击杀历史记录与击杀计数的接线
 /// （`knowledge/design/kill-and-death-events.md`）：若 `effects` 里包含
-/// [`Effect::Kill`]，在对应的 `Effect::Kill` **之前**插入一条效果——
-/// 被击杀者已经"具名"（[`ll_world::entity::Agent::remembered_id`] 有
-/// 值）时插入 [`Effect::RecordHistoricalEvent`]（完整记录），否则插入
-/// [`Effect::IncrementKillCount`]（项目所有者决策一：「无名单位击杀
-/// 改计数」——聚合计数按 `creature_kind`/`race` 归并，见该效果变体
-/// 文档）。两者互斥：一场击杀要么产出完整记录，要么只累加计数，不会
-/// 同时产出两者——这正是"默认派生，只存偏差"的又一次应用：聚合计数是
-/// 覆盖绝大多数背景死亡的默认路径，完整记录只留给"值得被记住"的偏差
-/// 情形。
+/// [`Effect::Kill`]，在对应的 `Effect::Kill` **之前**插入效果——
 ///
-/// # 触发判据：为什么只看 `victim` 是否已具名
+/// 1. 恒插入一条 [`Effect::IncrementKillCount`]（决策二，见下节）：
+///    聚合计数按 `creature_kind`/`race` 归并，不论 `victim` 是否已
+///    "具名"。
+/// 2. 被击杀者已经"具名"（[`ll_world::entity::Agent::remembered_id`]
+///    有值）时，**额外**再插入一条 [`Effect::RecordHistoricalEvent`]
+///    （完整记录）。
+///
+/// # 决策二：叠加计算，不再互斥（项目所有者裁定「一起计算，就是杀了
+/// 10 只」）
+///
+/// 决策一（无名单位击杀改计数）落地时把两条路径设计成互斥——一场
+/// 击杀要么产出完整记录，要么只累加计数，不会同时产出两者。项目所有
+/// 者复核后否决了这条互斥：杀 10 只哥布林、其中 1 只有名字，计数器
+/// 理应显示 10，不是 9——"一起计算，就是杀了 10 只"。本函数因此改为
+/// 两条路径叠加：聚合计数覆盖**全部**击杀（默认路径），完整记录只
+/// 额外覆盖"值得被记住"的具名死者（偏差路径的加法，不再是替代）。
+///
+/// # 老存档的计数是低估，且无法从 `history` 补算
+///
+/// 决策二落地前产出的存档里，`kill_counts` 只计了无名击杀——具名击杀
+/// 全部只进了 `history`，从未累加进 `kill_counts`。读这类旧存档不会
+/// 触发新的 schema 迁移（`kill_counts` 字段本身的类型/位置都没变，见
+/// `ll_world::state::WorldState::kill_counts` 文档「决策二」一节），
+/// 因此**不会**被自动补算：旧存档里的 `kill_counts` 在决策二之后仍然
+/// 只反映"曾经的无名击杀"，是一次性的、永久的低估，不随读档自动修复
+/// ——`ll_world::history::KillRecord` 不携带 `creature_kind`/`race`
+/// 这类归并键（只有 `killer`/`victim` 两个 `WorldId`，`WorldId` 是不
+/// 透明整数句柄，查不回死者当时的物种），补算需要的数据在写入 `history`
+/// 那一刻就已经丢失，不是遍历成本问题，是数据源本身不完整，因此如实
+/// 记录为已知缺口，不假装能补算：新增的击杀从代码更新那一刻起按决策
+/// 二正确计数，旧记录只能原样接受。
+///
+/// # 触发判据：为什么"是否额外产出完整记录"只看 `victim` 是否已具名
 ///
 /// 设计文档三节的分级规则是"玩家相关/具名 NPC 相关"两档、任一方具名
 /// 即全记。本函数把这两档收敛成一个更窄、但可以在不引入"死亡瞬间
@@ -283,20 +307,19 @@ fn append_quest_kill_progress(
 /// 2. 设计文档五节原文承认"一方不具名时，`KillRecord.killer` 或本
 ///    条记录本身如何处理不具名的一侧，属于实现期需要拍板的细节"——
 ///    本批次的拍板结果是：`victim` 未具名时不产出**完整记录**（即便
-///    `killer` 已具名，例如玩家杀死一只从未被记住的哥布林），改为产出
-///    一次聚合计数（决策一，见本函数文档开篇）——「不产出完整记录」
-///    与「什么都不产出」在这之后是两件不同的事,决策一之前两者恰好
-///    重合,决策一落地后不再重合。真正做到"玩家相关全记,不论对方是否
-///    具名"需要在这里对 `victim` 也做懒分配,但那需要先确认懒分配发生
-///    在 `apply`（`resolve` 不能碰 `&mut WorldState`，C1）、且这次懒
-///    分配不会与同一批效果里其他 `Effect` 的 `apply` 顺序产生新的竞态
-///    ——这是比"五条硬要求"更大的一块工作,本批次如实记录为已知缺口,
-///    不假装已经实现了完整的三档分级。
+///    `killer` 已具名，例如玩家杀死一只从未被记住的哥布林）。真正做到
+///    "玩家相关全记，不论对方是否具名"需要在这里对 `victim` 也做懒
+///    分配，但那需要先确认懒分配发生在 `apply`（`resolve` 不能碰
+///    `&mut WorldState`，C1）、且这次懒分配不会与同一批效果里其他
+///    `Effect` 的 `apply` 顺序产生新的竞态——这是比"五条硬要求"更大
+///    的一块工作，本批次如实记录为已知缺口，不假装已经实现了完整的
+///    三档分级。
 ///
 /// `killer` 是否具名完全独立判断——具名与否只影响
 /// `KillRecord.killer` 是 `Some` 还是 `None`（见
 /// `WorldState::record_kill` 文档「killer 不做懒分配」一节），不影响
-/// 「要不要记录」这个判断本身。
+/// 「要不要记录」这个判断本身，也不影响是否累加聚合计数（决策二之后
+/// 聚合计数不再看具名与否）。
 fn append_kill_history(world: &WorldState, effects: &mut Vec<Effect>) {
     let mut kill_index = 0;
     while kill_index < effects.len() {
@@ -314,7 +337,22 @@ fn append_kill_history(world: &WorldState, effects: &mut Vec<Effect>) {
             kill_index += 1;
             continue;
         };
+
+        // 决策二：聚合计数数全部击杀，不论 victim 是否具名——kind 取
+        // 受害者的 creature_kind，为 None 时回退到 race（见
+        // Effect::IncrementKillCount 文档「为什么按 kind: ContentIndex」
+        // 一节，与 Agent::creature_kind 字段文档同一条既有回退规则，不
+        // 是本函数新发明的判断）。必须插在 Kill 之前——理由与
+        // RecordHistoricalEvent 同一条（见 Effect::IncrementKillCount
+        // 文档「为什么必须排在对应的 Effect::Kill 之前」一节）。
+        let kind = victim_agent.creature_kind.unwrap_or(victim_agent.race);
+        effects.insert(kill_index, Effect::IncrementKillCount { kind });
+        kill_index += 1; // 跳过刚插入的计数效果。
+
         if victim_agent.remembered_id.is_some() {
+            // 具名死者在聚合计数之外额外产出一份完整记录——决策二之后
+            // 两者叠加，不再互斥，见本函数文档「决策二」一节。
+            //
             // 这一下的伤害量：同一批效果里，`resolve_attack`/
             // `resolve_use_skill` 恒先产出对同一 target 的
             // `Effect::Damage`，再产出 `Effect::Kill`（见两者文档）——
@@ -339,19 +377,9 @@ fn append_kill_history(world: &WorldState, effects: &mut Vec<Effect>) {
                 remaining_health: victim_agent.health - damage,
             };
             effects.insert(kill_index, record);
-            kill_index += 1; // 跳过刚插入的记录，下一轮从真正的 Kill 开始。
-        } else {
-            // 无名单位击杀改计数（决策一）：受害者从未被"记住",不产出
-            // 完整记录,改为按 kind 归并的聚合计数——kind 取受害者的
-            // creature_kind,为 None 时回退到 race（见
-            // Effect::IncrementKillCount 文档「为什么按 kind: ContentIndex」
-            // 一节，与 Agent::creature_kind 字段文档同一条既有回退
-            // 规则,不是本函数新发明的判断）。
-            let kind = victim_agent.creature_kind.unwrap_or(victim_agent.race);
-            effects.insert(kill_index, Effect::IncrementKillCount { kind });
-            kill_index += 1; // 跳过刚插入的计数效果，下一轮从真正的 Kill 开始。
+            kill_index += 1; // 跳过刚插入的记录。
         }
-        kill_index += 1;
+        kill_index += 1; // 跳到真正的 Kill 之后。
     }
 }
 
@@ -1607,11 +1635,14 @@ mod tests {
     }
 
     #[test]
-    fn 具名目标被击杀时不增加聚合计数() {
-        // 与上一条对照：具名死者已经产出完整历史记录（见
-        // 近战攻击致死已具名目标后历史事件记录着近战死因），本次拍板
-        // 选择不让它额外再累加聚合计数——聚合计数与完整记录是互斥的
-        // 两条路径（见 append_kill_history 文档开篇），不是叠加关系。
+    fn 具名目标被击杀时按生物类型归并计数加一() {
+        // 与「未具名目标被击杀时按生物类型归并计数加一」对照,同时与
+        // 「近战攻击致死已具名目标后历史事件记录着近战死因」互补——
+        // 后者已经单独证明了具名死者仍会产出完整历史记录,本测试只
+        // 补上另一半：项目所有者裁定否决了决策一原有的互斥设计（「一
+        // 起计算,就是杀了 10 只」,见 append_kill_history 文档「决策二」
+        // 一节）之后,具名死者的击杀现在也照常累加聚合计数,不再因为
+        // 已经产出完整记录就被排除在计数之外。
         // Arrange
         let (mut world, _terrain_ids) = test_world();
         let attacker = spawn_agent(&mut world);
@@ -1632,7 +1663,6 @@ mod tests {
         }
 
         // Assert
-        assert_eq!(world.history.len(), 1);
-        assert_eq!(world.kill_counts.get(&victim_race), None);
+        assert_eq!(world.kill_counts.get(&victim_race), Some(&1));
     }
 }

@@ -126,11 +126,14 @@ pub fn remap_world(
         history: _,
         // WorldId 分配计数器：纯 u32，不依赖 mod 加载顺序，不需要重映射。
         next_world_id: _,
-        // 无名单位击杀聚合计数（决策一）：键本身就是 ContentIndex（受
-        // 害者的 creature_kind 或回退到 race），与 profession/race 同一
-        // 类"依赖 mod 加载顺序"的内容,必须显式重映射——否则读档后这份
-        // 统计会悄悄挂在错误的内容上（模块文档「为什么这一步不能省」
-        // 一节点名的正是这类静默错位）。见下方 remap_kill_counts。
+        // 击杀聚合计数（现按决策二数全部击杀，见
+        // ll_world::state::WorldState::kill_counts 文档「决策二」一
+        // 节；本函数只关心键的形状,不关心计数是怎么累加的）：键本身
+        // 就是 ContentIndex（受害者的 creature_kind 或回退到 race），
+        // 与 profession/race 同一类"依赖 mod 加载顺序"的内容,必须显式
+        // 重映射——否则读档后这份统计会悄悄挂在错误的内容上（模块文档
+        // 「为什么这一步不能省」一节点名的正是这类静默错位）。见下方
+        // remap_kill_counts。
         ref mut kill_counts,
     } = *world;
 
@@ -161,7 +164,9 @@ pub fn remap_world(
     Ok(remapper.actions)
 }
 
-/// 重映射无名单位击杀聚合计数（决策一）：键（`ContentIndex`）找不到
+/// 重映射击杀聚合计数（决策二：数全部击杀,见
+/// `ll_world::state::WorldState::kill_counts` 文档「决策二」一节）：
+/// 键（`ContentIndex`）找不到
 /// 当前会话内容时整桶丢弃（[`ContentKind::KillCount`]），与
 /// [`remap_skill_cooldowns`] 同一个形状——键是需要重映射/可丢弃的
 /// `ContentIndex`，值（计数）本身不含任何 `ContentIndex`，原样搬到

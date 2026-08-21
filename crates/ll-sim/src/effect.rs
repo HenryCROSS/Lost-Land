@@ -116,12 +116,14 @@ pub enum Effect {
         /// 致命一击结算后的剩余生命值。
         remaining_health: i32,
     },
-    /// 累加一次"无名单位"击杀计数（项目所有者决策一：「无名单位击杀
-    /// 改计数」）——`resolve` 侧的 `append_kill_history`
-    /// （`crate::resolve` 模块）判断这场击杀的受害者尚未"具名"
-    /// （`Agent::remembered_id` 为 `None`）时产出本效果，取代
-    /// `Effect::RecordHistoricalEvent`（那份完整记录只留给已具名的
-    /// 死者，见其文档）；`apply` 响应它时调用
+    /// 累加一次击杀计数（项目所有者决策二：「一起计算，就是杀了 10
+    /// 只」，取代了决策一「无名单位击杀改计数」原有的互斥设计）——
+    /// `resolve` 侧的 `append_kill_history`（`crate::resolve` 模块）对
+    /// **每一场**击杀都产出本效果，不论受害者是否"具名"
+    /// （`Agent::remembered_id`）；受害者已具名时，`append_kill_history`
+    /// 还会**额外**再产出一条 `Effect::RecordHistoricalEvent`（完整
+    /// 记录，见其文档）——两者是叠加关系，不是互斥的替代关系，本效果
+    /// 不会因为已经产出了完整记录就被跳过。`apply` 响应它时调用
     /// [`ll_world::state::WorldState::record_kill_count`]，按
     /// `kind` 归并进 [`ll_world::state::WorldState::kill_counts`]。
     ///
