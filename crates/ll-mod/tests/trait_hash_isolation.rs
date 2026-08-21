@@ -121,6 +121,7 @@ fn 天赋定义不同但世界存储状态相同时哈希相同() {
                     trait_id: trait_a,
                     unlock_level: 1,
                 }],
+                starting_items: Vec::new(),
             },
         )
         .expect("世界 A 种族声明内部自洽");
@@ -160,6 +161,7 @@ fn 天赋定义不同但世界存储状态相同时哈希相同() {
                 xp_reward: 0,
                 // 世界 B 的关键差异：这个种族不授予任何天赋。
                 traits: Vec::new(),
+                starting_items: Vec::new(),
             },
         )
         .expect("世界 B 种族声明内部自洽");

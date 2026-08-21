@@ -562,6 +562,17 @@ fn write_race_fields(
         write_optional_resolved(hasher, Some(grant.trait_id), registry);
         hasher.write_i64(i64::from(grant.unlock_level));
     }
+    // `starting_items`（NPC 生命周期批次新增）：与上面 `traits` 同一条
+    // 覆盖纪律——`RaceAttrs` 新增字段而忘记回来同步本函数,正是本函数
+    // 文档点名的既有漂移案例本身,这里补的是"新增字段的同时立刻同步值
+    // 哈希",不是又一次事后补救。`(def, count)` 里的 `def` 同样要解析成
+    // `NamespacedId` 字符串（与 `trait_id` 同一条理由，`ContentIndex`
+    // 数值本身不是稳定的跨会话身份）。
+    hasher.write_u64(view.starting_items.len() as u64);
+    for &(def, count) in view.starting_items {
+        write_optional_resolved(hasher, Some(def), registry);
+        hasher.write_u64(u64::from(count));
+    }
 }
 
 /// 混入 [`crate::skill::SkillDef`] 的全部字段——`owning_class`/
@@ -1060,6 +1071,7 @@ mod tests {
             lifespan_years: 80,
             xp_reward: 0,
             traits: Vec::new(),
+            starting_items: Vec::new(),
         }
     }
 

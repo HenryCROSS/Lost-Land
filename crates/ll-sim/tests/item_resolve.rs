@@ -131,6 +131,7 @@ fn 拾取地面物品后背包里有了地面上没了() {
         pos,
         stack: ItemStack::new(arrow, 5),
         dropped_at: Tick(0),
+        contents: Vec::new(),
     });
 
     // Act
@@ -186,6 +187,7 @@ fn 丢弃背包物品后地面上有了背包里没了且dropped_at为当前世�
             pos,
             stack: ItemStack::new(arrow, 5),
             dropped_at: Tick(123),
+            contents: Vec::new(),
         }]
     );
 }
@@ -206,6 +208,7 @@ fn 拾取时与背包已有同种堆合并而非新开一堆() {
         pos,
         stack: ItemStack::new(arrow, 15),
         dropped_at: Tick(0),
+        contents: Vec::new(),
     });
 
     // Act
@@ -241,6 +244,7 @@ fn 拾取时合并超过堆叠上限产出主堆与溢出堆两条() {
         pos,
         stack: ItemStack::new(arrow, 15),
         dropped_at: Tick(0),
+        contents: Vec::new(),
     });
 
     // Act
@@ -276,6 +280,7 @@ fn 拾取时背包为空直接把地面堆搬进背包() {
         pos,
         stack: ItemStack::with_durability(arrow, 1, 50),
         dropped_at: Tick(0),
+        contents: Vec::new(),
     });
 
     // Act

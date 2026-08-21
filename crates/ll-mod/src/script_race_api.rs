@@ -35,12 +35,13 @@ pub fn take_active_target() -> RaceTable {
     })
 }
 
-/// 把 `register-race`/`register-race-xp-reward`/`register-race-trait`
-/// 注册进 `engine`。
+/// 把 `register-race`/`register-race-xp-reward`/`register-race-trait`/
+/// `register-race-starting-item` 注册进 `engine`。
 pub fn register_race_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-race", register_race);
     engine.register_fn("register-race-xp-reward", register_race_xp_reward);
     engine.register_fn("register-race-trait", register_race_trait);
+    engine.register_fn("register-race-starting-item", register_race_starting_item);
 }
 
 /// `(register-race id display-name-key
@@ -140,6 +141,7 @@ fn do_register_race(
                 // register-race-xp-reward。
                 xp_reward: 0,
                 traits: Vec::new(),
+                starting_items: Vec::new(),
             },
         )
         .map(|()| true)
@@ -255,6 +257,67 @@ fn do_register_race_trait(
                 unlock_level: unlock_level as i32,
             },
         )
+        .map(|()| true)
+        .map_err(|err: RaceError| err.to_string())
+}
+
+/// `(register-race-starting-item race-id item-id count)`——追加声明
+/// 「这个种族出生携带一件物品」（NPC 生命周期批次：NPC 带物品 → 死亡
+/// 掉落 → 尸体 → 老化回收），与 `register-race-trait` 同一个「不改
+/// 既有签名,新增能力用新函数」模式，见 [`crate::race`] 模块文档「与
+/// `register-race-xp-reward` 的关系」一节同一条先例。
+///
+/// - `race-id`：已经通过 `register-race` 注册过的完整命名空间标识符
+///   字符串——目标必须已存在（ADR 0017「注册期完整校验」）。
+/// - `item-id`：物品的完整命名空间标识符字符串——**不要求**已经通过
+///   `register-item` 注册过（只 `intern`，不跨表校验存在性，理由同
+///   `register-race-trait` 文档「不要求」一节，是当前代码库尚未建立
+///   跨表校验基础设施的已知简化）。
+/// - `count`：携带的数量，必须 `>= 1`——与 `ItemStack.count` 「恒 ≥ 1」
+///   的既有不变式对齐（见 `ll_world::item::ItemStack::count` 文档），
+///   `0` 没有意义（携带零个等于不携带，应当干脆不调用本函数）。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_race` 文档。
+fn register_race_starting_item(
+    race_id: String,
+    item_id: String,
+    count: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err(
+                    "register-race-starting-item 在没有活跃种族表的窗口内被调用".to_string()
+                );
+            };
+            do_register_race_starting_item(registry, table, &race_id, &item_id, count)
+        })
+    })
+}
+
+/// [`register_race_starting_item`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_race_starting_item(
+    registry: &mut Registry,
+    table: &mut RaceTable,
+    race_id: &str,
+    item_id: &str,
+    count: i64,
+) -> Result<bool, String> {
+    let parsed_race_id =
+        NamespacedId::parse(race_id).map_err(|err| format!("非法内容标识符 {race_id:?}：{err}"))?;
+    let Some(race_index) = registry.get(&parsed_race_id) else {
+        return Err(format!("种族 {race_id:?} 尚未通过 register-race 注册"));
+    };
+    let parsed_item_id =
+        NamespacedId::parse(item_id).map_err(|err| format!("非法内容标识符 {item_id:?}：{err}"))?;
+    if count < 1 {
+        return Err(format!("出生物品数量必须 >= 1：{count}"));
+    }
+    let item_index = registry.intern(parsed_item_id);
+    table
+        .add_starting_item(race_index, item_index, count as u32)
         .map(|()| true)
         .map_err(|err: RaceError| err.to_string())
 }
@@ -663,5 +726,138 @@ mod tests {
             .get(&NamespacedId::parse("yourmod:dragonborn").unwrap())
             .expect("刚注册的内容应能查到索引");
         assert_eq!(table.get(race_index).unwrap().traits.len(), 1);
+    }
+
+    #[test]
+    fn 合法出生物品声明追加成功并写入种族表() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+        do_register_race(
+            &mut registry,
+            &mut table,
+            "yourmod:goblin",
+            "yourmod:goblin_display_name",
+            BaseStats {
+                strength: 0,
+                dexterity: 0,
+                constitution: 0,
+                intelligence: 0,
+                willpower: 0,
+                charisma: 0,
+            },
+            0,
+            (1, 1),
+            5,
+        )
+        .expect("先注册种族本体");
+
+        // Act
+        let result = do_register_race_starting_item(
+            &mut registry,
+            &mut table,
+            "yourmod:goblin",
+            "yourmod:crude_dagger",
+            1,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let race_index = registry
+            .get(&NamespacedId::parse("yourmod:goblin").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        let item_index = registry
+            .get(&NamespacedId::parse("yourmod:crude_dagger").unwrap())
+            .expect("register-race-starting-item 应当 intern 出物品索引");
+        assert_eq!(
+            table.get(race_index).unwrap().starting_items,
+            &[(item_index, 1)]
+        );
+    }
+
+    #[test]
+    fn 对尚未注册的种族追加声明出生物品返回err() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+
+        // Act
+        let result = do_register_race_starting_item(
+            &mut registry,
+            &mut table,
+            "yourmod:never_seen",
+            "yourmod:crude_dagger",
+            1,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 数量小于一的出生物品声明返回err而不写入表() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+        do_register_race(
+            &mut registry,
+            &mut table,
+            "yourmod:goblin",
+            "yourmod:goblin_display_name",
+            BaseStats {
+                strength: 0,
+                dexterity: 0,
+                constitution: 0,
+                intelligence: 0,
+                willpower: 0,
+                charisma: 0,
+            },
+            0,
+            (1, 1),
+            5,
+        )
+        .expect("先注册种族本体");
+
+        // Act
+        let result = do_register_race_starting_item(
+            &mut registry,
+            &mut table,
+            "yourmod:goblin",
+            "yourmod:crude_dagger",
+            0,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_race_starting_item() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_race_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(RaceTable::new());
+        engine
+            .load_source(
+                r#"(register-race "yourmod:goblin" "yourmod:goblin_display_name" 0 0 0 0 0 0 0 1 1 5)"#
+                    .to_string(),
+            )
+            .expect("先注册种族本体");
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-race-starting-item "yourmod:goblin" "yourmod:crude_dagger" 1)"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let race_index = registry
+            .get(&NamespacedId::parse("yourmod:goblin").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(table.get(race_index).unwrap().starting_items.len(), 1);
     }
 }

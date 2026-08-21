@@ -91,6 +91,7 @@ mod tests {
                 lifespan_years: 80,
                 xp_reward: 0,
                 traits: Vec::new(),
+                starting_items: Vec::new(),
             },
         );
 

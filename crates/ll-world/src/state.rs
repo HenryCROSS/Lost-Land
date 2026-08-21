@@ -1174,6 +1174,15 @@ impl WorldState {
             hasher.write_i64(i64::from(item.pos.y()));
             write_item_stack(&mut hasher, &item.stack);
             hasher.write_i64(item.dropped_at.0);
+            // 容器内容物（NPC 死亡掉落批次新增，`GroundItemStack::contents`
+            // 字段文档「参与 hash()」一节）——尸体搜刮真实改写世界状态，
+            // 缺席这里同样会重演「新字段只加了，没人测过是否被覆盖」的
+            // 既有判据缺口。空 contents（绝大多数普通地面物品）只写一个
+            // 长度 0，不额外产生任何哈希副作用。
+            hasher.write_u64(item.contents.len() as u64);
+            for content_stack in &item.contents {
+                write_item_stack(&mut hasher, content_stack);
+            }
         }
 
         hasher.finish()
@@ -2669,6 +2678,7 @@ mod tests {
             pos: world.size.wrap(3, 4),
             stack: ItemStack::new(arrow, 12),
             dropped_at: Tick(200),
+            contents: Vec::new(),
         });
 
         // Act
@@ -2762,6 +2772,7 @@ mod tests {
             pos: world.size.wrap(0, 0),
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
+            contents: Vec::new(),
         });
         world.advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS + 1);
 
@@ -2788,6 +2799,7 @@ mod tests {
             pos: world.size.wrap(0, 0),
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
+            contents: Vec::new(),
         });
         world.advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS - 1);
 
@@ -2814,6 +2826,7 @@ mod tests {
             pos: world_a.size.wrap(0, 0),
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
+            contents: Vec::new(),
         });
         world_a.advance(100);
         let mut world_b = test_world();
@@ -2821,6 +2834,7 @@ mod tests {
             pos: world_b.size.wrap(0, 0),
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
+            contents: Vec::new(),
         });
         world_b.advance(100);
 
@@ -2847,6 +2861,7 @@ mod tests {
             pos: world_b.size.wrap(0, 0),
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
+            contents: Vec::new(),
         });
 
         // Act & Assert

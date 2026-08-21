@@ -481,26 +481,38 @@ fn remap_equipment(
     Ok(())
 }
 
-/// 重映射地面物品（[`WorldState::ground_items`]，P6 第二批）：与
-/// [`remap_inventory`] 同一条判据，`def` 找不到当前会话内容时整堆
-/// 丢弃（[`ContentKind::Item`]）——地面上一堆物品同样不是任何实体的
-/// 核心身份，`pos`/`dropped_at` 不含 `ContentIndex`，随 `def` 一起保留
-/// 或丢弃。
+/// 重映射地面物品（[`WorldState::ground_items`]，P6 第二批；NPC 死亡
+/// 掉落批次扩展到容器内容物）：与 [`remap_inventory`] 同一条判据，
+/// `def` 找不到当前会话内容时整堆丢弃（[`ContentKind::Item`]）——地面
+/// 上一堆物品同样不是任何实体的核心身份，`pos`/`dropped_at` 不含
+/// `ContentIndex`，随 `def` 一起保留或丢弃。
+///
+/// # 容器内容物：逐条独立重映射，不是随容器整体丢弃
+///
+/// `item.contents`（尸体等容器装着的战利品）是一个 `Vec<ItemStack>`，
+/// 每一条都独立可能找不到当前会话内容——与 [`remap_inventory`] 对
+/// 背包的处理完全同一套逻辑（本函数复用它）：找不到的那一条单独丢弃，
+/// 不会因为容器里某一件已卸载 mod 的战利品就连累容器本身（`stack`，
+/// 例如尸体这具"物品"本身）与其余内容物一起消失——尸体是否还存在、
+/// 装着什么，是两个独立的问题。
 fn remap_ground_items(
     remapper: &mut Remapper<'_>,
     ground_items: &mut Vec<GroundItemStack>,
 ) -> Result<(), LoadError> {
     let mut kept = Vec::with_capacity(ground_items.len());
-    for item in ground_items.drain(..) {
-        if let Some(new_def) = remapper.remap_droppable(item.stack.def, ContentKind::Item)? {
-            kept.push(GroundItemStack {
-                stack: ItemStack {
-                    def: new_def,
-                    ..item.stack
-                },
-                ..item
-            });
-        }
+    for mut item in ground_items.drain(..) {
+        let Some(new_def) = remapper.remap_droppable(item.stack.def, ContentKind::Item)? else {
+            continue;
+        };
+        remap_inventory(remapper, &mut item.contents)?;
+        kept.push(GroundItemStack {
+            stack: ItemStack {
+                def: new_def,
+                ..item.stack
+            },
+            contents: item.contents,
+            ..item
+        });
     }
     *ground_items = kept;
     Ok(())
@@ -1481,6 +1493,7 @@ mod tests {
             pos,
             stack: ItemStack::with_durability(sword_old, 1, 90),
             dropped_at: Tick(50),
+            contents: Vec::new(),
         });
 
         // Act
@@ -1494,6 +1507,98 @@ mod tests {
                 pos,
                 stack: ItemStack::with_durability(sword_new, 1, 90),
                 dropped_at: Tick(50),
+                contents: Vec::new(),
+            }]
+        );
+    }
+
+    #[test]
+    fn 尸体内容物按字符串对号重映射到新索引() {
+        // NPC 死亡掉落批次：GroundItemStack::contents 里的每一条
+        // ItemStack.def 与 stack.def 同样依赖 mod 加载顺序，必须一并
+        // 重映射——否则读档后尸体里装的物品会静默指向错误的内容,与
+        // 「地面物品按字符串对号重映射到新索引」同一条判据,只是这次
+        // 覆盖的是容器内容物这一层。
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let corpse_old = save_registry.intern(id("lostland:goblin"));
+        let sword_old = save_registry.intern(id("lostland:iron_sword"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记,打乱顺序
+        let corpse_new = current.intern(id("lostland:goblin"));
+        let sword_new = current.intern(id("lostland:iron_sword"));
+
+        let pos = world.size.wrap(3, 4);
+        world.ground_items.push(ll_world::item::GroundItemStack {
+            pos,
+            stack: ItemStack::new(corpse_old, 1),
+            dropped_at: Tick(50),
+            contents: vec![ItemStack::new(sword_old, 1)],
+        });
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert：容器本身与内容物的 def 都换成了新索引。
+        assert!(actions.is_empty());
+        assert_eq!(
+            world.ground_items,
+            vec![ll_world::item::GroundItemStack {
+                pos,
+                stack: ItemStack::new(corpse_new, 1),
+                dropped_at: Tick(50),
+                contents: vec![ItemStack::new(sword_new, 1)],
+            }]
+        );
+    }
+
+    #[test]
+    fn 尸体内容物里找不到的物品被单独丢弃而尸体本身保留() {
+        // 与背包/地面物品「整堆丢弃」不同：容器内容物是一个列表,列表
+        // 内某一条找不到当前会话内容时,只丢弃那一条,容器（尸体）本身
+        // 与其余内容物原样保留——不应该因为死者身上一件已卸载 mod 的
+        // 物品就让整具尸体连同其余战利品一起消失。
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let corpse_old = save_registry.intern(id("lostland:goblin"));
+        let vanished = save_registry.intern(id("lostland:vanished"));
+        let sword_old = save_registry.intern(id("lostland:iron_sword"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        let corpse_new = current.intern(id("lostland:goblin"));
+        let sword_new = current.intern(id("lostland:iron_sword"));
+
+        let pos = world.size.wrap(0, 0);
+        world.ground_items.push(ll_world::item::GroundItemStack {
+            pos,
+            stack: ItemStack::new(corpse_old, 1),
+            dropped_at: Tick(0),
+            contents: vec![ItemStack::new(vanished, 1), ItemStack::new(sword_old, 1)],
+        });
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert：尸体保留,内容物只剩下能重映射的那一条。
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
+        assert_eq!(
+            world.ground_items,
+            vec![ll_world::item::GroundItemStack {
+                pos,
+                stack: ItemStack::new(corpse_new, 1),
+                dropped_at: Tick(0),
+                contents: vec![ItemStack::new(sword_new, 1)],
             }]
         );
     }
@@ -1514,6 +1619,7 @@ mod tests {
             pos: world.size.wrap(0, 0),
             stack: ItemStack::new(vanished, 1),
             dropped_at: Tick(0),
+            contents: Vec::new(),
         });
 
         // Act

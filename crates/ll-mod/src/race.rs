@@ -83,6 +83,7 @@
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_sim::traits::{TraitGrant, TraitGrantSource};
 use ll_world::entity::BaseStats;
+use ll_world::item::ItemStack;
 use std::fmt;
 
 /// 单条种族声明：本体与 mod 注册种族时共用的同一个输入形状。
@@ -133,6 +134,25 @@ pub struct RaceDef {
     /// 天赋——与 `unlocked_skills` 空列表表示零解锁同一条纪律,不需要
     /// 一个独立的哨兵值。
     pub traits: Vec<TraitGrant>,
+    /// 这个种族/生物出生时随身携带的物品（NPC 生命周期批次：NPC 带
+    /// 物品 → 死亡掉落 → 尸体 → 老化回收，本字段是"带物品"这一半的
+    /// 落点）——`register-race` 现有的脚本签名不携带这一项（不能改
+    /// 参数个数，见模块文档「与 `register-race-xp-reward` 的关系」
+    /// 一节同一条先例），真正想给种族声明出生物品的 mod 作者需要额外
+    /// 调用 [`RaceTable::add_starting_item`]（脚本入口
+    /// `register-race-starting-item`，见 `crate::script_race_api`）。
+    /// 空列表表示这个种族出生不带任何物品——与 `traits` 空列表表示
+    /// 不授予任何天赋同一条纪律,不需要一个独立的哨兵值。
+    ///
+    /// 元素是 `(物品定义, 数量)`——只声明"带什么、带多少"这两个不依赖
+    /// 任何运行期上下文就能确定的量,不声明耐久：出生装备恒是"全新"
+    /// 状态（`ItemStack::new` 的 `durability: None`，见
+    /// [`Self::starting_items`] 唯一的消费者
+    /// [`starting_inventory`] 的实现),真要支持"某个种族天生带着一把
+    /// 半磨损的祖传武器"这类设计,是该场景真正落地时再给这里加字段,
+    /// 不在本批次预留（YAGNI，同一条纪律见模块文档「`Owner` 本批次
+    /// 仍然不落地」一节）。
+    pub starting_items: Vec<(ContentIndex, u32)>,
 }
 
 /// [`RaceTable::define`] 实际存进列式存储的属性子集——不含 `id`，理由同
@@ -163,6 +183,11 @@ pub struct RaceAttrs {
     /// 恒传空列表，真正想给种族追加天赋的 mod 作者需要额外调用
     /// [`RaceTable::add_trait_grant`]。
     pub traits: Vec<TraitGrant>,
+    /// 出生携带的物品列表——见 [`RaceDef::starting_items`] 文档，
+    /// `register-race` 现有的脚本签名同样不携带这一项，调用方在这里
+    /// 恒传空列表，真正想给种族声明出生物品的 mod 作者需要额外调用
+    /// [`RaceTable::add_starting_item`]。
+    pub starting_items: Vec<(ContentIndex, u32)>,
 }
 
 /// 种族注册期可能出现的错误。ADR 0017「注册期完整校验」要求这些错误
@@ -216,6 +241,9 @@ pub struct RaceView<'a> {
     pub xp_reward: i64,
     /// 这个种族授予的天赋引用列表，见 [`RaceDef::traits`] 文档。
     pub traits: &'a [TraitGrant],
+    /// 出生携带的物品列表（`(物品定义, 数量)`），见
+    /// [`RaceDef::starting_items`] 文档。
+    pub starting_items: &'a [(ContentIndex, u32)],
 }
 
 /// 零修正的基准值——[`RaceTable::define`] 在扩容未定义槽位时使用的
@@ -245,6 +273,7 @@ pub struct RaceTable {
     lifespan_years: Vec<u32>,
     xp_reward: Vec<i64>,
     traits: Vec<Vec<TraitGrant>>,
+    starting_items: Vec<Vec<(ContentIndex, u32)>>,
     defined: Vec<bool>,
 }
 
@@ -271,6 +300,7 @@ impl RaceTable {
             self.lifespan_years.resize(new_len, 0);
             self.xp_reward.resize(new_len, 0);
             self.traits.resize(new_len, Vec::new());
+            self.starting_items.resize(new_len, Vec::new());
         }
 
         if self.defined[idx] {
@@ -285,6 +315,7 @@ impl RaceTable {
         self.lifespan_years[idx] = attrs.lifespan_years;
         self.xp_reward[idx] = attrs.xp_reward;
         self.traits[idx] = attrs.traits;
+        self.starting_items[idx] = attrs.starting_items;
         Ok(())
     }
 
@@ -316,6 +347,7 @@ impl RaceTable {
             lifespan_years: self.lifespan_years[idx],
             xp_reward: self.xp_reward[idx],
             traits: &self.traits[idx],
+            starting_items: &self.starting_items[idx],
         })
     }
 
@@ -357,6 +389,49 @@ impl RaceTable {
         self.traits[race.get() as usize].push(grant);
         Ok(())
     }
+
+    /// 追加声明「这个种族出生携带一件物品」——`register-race` 的既有
+    /// 脚本签名同样不能改参数个数（[`RaceDef::starting_items`] 文档），
+    /// 因此出生物品走这条独立的、注册后追加的路径，与
+    /// [`Self::add_trait_grant`] 同一个模式。**追加，不是覆盖**：一个
+    /// 种族可以被多次调用授予多件不同的出生物品（每次调用 push 一条
+    /// `(def, count)`），与 `add_trait_grant`「追加」同一条纪律。目标
+    /// 索引必须已经 `define` 过，否则返回 [`RaceError::NotDefined`]
+    /// （ADR 0017）。**不校验 `def` 是否已经在 `ItemTable` 里注册过**
+    /// ——与 [`Self::add_trait_grant`] 对 `grant.trait_id` 的既有处理
+    /// 方式一致（只 `intern` 不跨表校验存在性）。
+    pub fn add_starting_item(
+        &mut self,
+        race: ContentIndex,
+        def: ContentIndex,
+        count: u32,
+    ) -> Result<(), RaceError> {
+        if !self.is_defined(race) {
+            return Err(RaceError::NotDefined(race));
+        }
+        self.starting_items[race.get() as usize].push((def, count));
+        Ok(())
+    }
+}
+
+/// 把一个种族的出生携带物列表算成可以直接写入
+/// [`ll_world::entity::Agent::inventory`] 的 [`ItemStack`] 列表——
+/// [`RaceDef::starting_items`] 唯一的消费者，供 NPC/玩家生成流程
+/// （例如 `ll_game::world::spawn_player`）在拿到某个实体的种族之后
+/// 调用。
+///
+/// 每一条 `(def, count)` 独立算成一个 `ItemStack::new(def, count)`
+/// ——不做任何堆叠合并（同一次出生声明两次同种物品，就会在背包里得到
+/// 两条独立的堆，而不是自动合并成一条）：合并需要查 `ItemDef.stack_limit`
+/// （`ItemCatalog`），把这层规则塞进一个不持有任何目录引用的纯转换
+/// 函数会让签名平白多出一个通常用不到的依赖——mod 作者只要不重复声明
+/// 同一种出生物品就不会遇到这个情况，属于内容作者自己该避免的重复
+/// 声明，不是引擎需要替其兜底的场景。
+pub fn starting_inventory(view: &RaceView<'_>) -> Vec<ItemStack> {
+    view.starting_items
+        .iter()
+        .map(|&(def, count)| ItemStack::new(def, count))
+        .collect()
 }
 
 /// `ll_sim::traits::TraitGrantSource` 的真实实现——
@@ -474,6 +549,7 @@ fn define_base(
             // 这类内容属于内容设计，不在本任务范围（模块文档「本批次
             // 范围」一节），mod 通过 `register-race-trait` 追加声明。
             traits: Vec::new(),
+            starting_items: Vec::new(),
         },
     )?;
     Ok(index)
@@ -574,6 +650,7 @@ mod tests {
                     lifespan_years: 80,
                     xp_reward: 0,
                     traits: Vec::new(),
+                    starting_items: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -590,6 +667,7 @@ mod tests {
                 lifespan_years: 80,
                 xp_reward: 0,
                 traits: Vec::new(),
+                starting_items: Vec::new(),
             },
         );
 
@@ -630,6 +708,99 @@ mod tests {
     }
 
     #[test]
+    fn 合法出生物品声明追加成功并写入种族表() {
+        // Arrange
+        let mut interner = Interner::new();
+        let race_index = interner.intern(NamespacedId::parse("yourmod:goblin").unwrap());
+        let mut table = RaceTable::new();
+        table
+            .define(
+                race_index,
+                RaceAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:goblin_display_name")
+                        .expect("合法"),
+                    stat_modifiers: ZERO_STAT_MODIFIERS,
+                    darkvision_floor: 0,
+                    footprint: (1, 1),
+                    lifespan_years: 5,
+                    xp_reward: 0,
+                    traits: Vec::new(),
+                    starting_items: Vec::new(),
+                },
+            )
+            .expect("先注册种族本体");
+        let item_index = interner.intern(NamespacedId::parse("yourmod:crude_dagger").unwrap());
+
+        // Act
+        let result = table.add_starting_item(race_index, item_index, 1);
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        let view = table.get(race_index).expect("刚注册的种族应能查到属性");
+        assert_eq!(view.starting_items, &[(item_index, 1)]);
+    }
+
+    #[test]
+    fn 对尚未定义的索引追加声明出生物品返回notdefined错误() {
+        // Arrange
+        let mut interner = Interner::new();
+        let never_defined = interner.intern(NamespacedId::parse("yourmod:never_defined").unwrap());
+        let item_index = interner.intern(NamespacedId::parse("yourmod:crude_dagger").unwrap());
+        let mut table = RaceTable::new();
+
+        // Act
+        let result = table.add_starting_item(never_defined, item_index, 1);
+
+        // Assert
+        assert_eq!(result, Err(RaceError::NotDefined(never_defined)));
+    }
+
+    #[test]
+    fn 出生物品列表转换成对应数量的物品堆() {
+        // starting_inventory 是 RaceDef::starting_items 唯一的消费者
+        // ——验证 (def, count) 列表机械转换成同等数量的 ItemStack,不做
+        // 任何堆叠合并（见其文档「不做任何堆叠合并」一节）。
+        // Arrange
+        let mut interner = Interner::new();
+        let race_index = interner.intern(NamespacedId::parse("yourmod:goblin").unwrap());
+        let mut table = RaceTable::new();
+        table
+            .define(
+                race_index,
+                RaceAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:goblin_display_name")
+                        .expect("合法"),
+                    stat_modifiers: ZERO_STAT_MODIFIERS,
+                    darkvision_floor: 0,
+                    footprint: (1, 1),
+                    lifespan_years: 5,
+                    xp_reward: 0,
+                    traits: Vec::new(),
+                    starting_items: Vec::new(),
+                },
+            )
+            .expect("先注册种族本体");
+        let dagger = interner.intern(NamespacedId::parse("yourmod:crude_dagger").unwrap());
+        let torch = interner.intern(NamespacedId::parse("yourmod:torch").unwrap());
+        table
+            .add_starting_item(race_index, dagger, 1)
+            .expect("追加出生物品应当成功");
+        table
+            .add_starting_item(race_index, torch, 2)
+            .expect("追加出生物品应当成功");
+
+        // Act
+        let view = table.get(race_index).expect("刚注册的种族应能查到属性");
+        let inventory = starting_inventory(&view);
+
+        // Assert
+        assert_eq!(
+            inventory,
+            vec![ItemStack::new(dagger, 1), ItemStack::new(torch, 2)]
+        );
+    }
+
+    #[test]
     fn 本体种族与mod种族调用同一个公开define函数完成注册() {
         // 结构等价断言，理由同 crate::class 模块的等价测试。
         //
@@ -659,6 +830,7 @@ mod tests {
                     lifespan_years: 150,
                     xp_reward: 0,
                     traits: Vec::new(),
+                    starting_items: Vec::new(),
                 },
             )
             .expect("mod 种族与本体种族调用同一个公开 define 函数,理应同样成功");

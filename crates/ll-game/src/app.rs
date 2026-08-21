@@ -261,6 +261,11 @@ impl Demo {
     /// 输入」的处理顺序读起来更顺。
     fn advance(&mut self, input: &InputState, frame: FrameId) {
         self.maintain_streaming();
+        // 地面物品老化清理（NPC 生命周期批次）——见
+        // `crate::world::cleanup_aged_ground_items` 文档「为什么挂在
+        // 这里」一节：与 `maintain_streaming` 并列，是当前代码库里
+        // 已经存在、每帧真正跑一遍的位置。
+        crate::world::cleanup_aged_ground_items(&mut self.game_world.world);
         self.update_zoom(input);
         animation::update_player_animation(
             &mut self.anim,

@@ -133,15 +133,56 @@ impl ItemStack {
 /// 「物品此刻在哪」时（例如脚本要查询一件物品当前位置），再引入这个
 /// 枚举把 `Inventory`/`Ground`/未来的 `Equipped`/`Container` 收拢，不
 /// 在本批次提前做。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+/// 这堆地面物品是否有效地是一具尸体（或任何容器）——`contents` 非空。
+///
+/// # 为什么用「`contents` 是否非空」作判据，不是一个独立的 `is_corpse`
+/// 布尔字段
+///
+/// NPC 死亡掉落批次要求「尸体是一件地面物品，它装着死者的东西」——
+/// 与其为「这堆地面物品是不是容器」再开一个可能与 `contents`
+/// 不同步的布尔字段（`is_corpse == true` 但 `contents` 恰好为空、或
+/// 反过来的不一致状态需要额外维护），不如让 `contents.is_empty()`
+/// 本身就是唯一的真相源——container 与 non-container 之间不存在
+/// 「是容器但没内容物」这种中间状态需要表达，见
+/// [`crate::item::ItemStack::count`] 文档「恒 ≥ 1」一节同一条「不引入
+/// 需要手动维持一致的冗余状态」纪律。`resolve_pick_up`
+/// （`ll_sim::resolve::resolve_pick_up`，本 crate 不能引用它，依赖方向
+/// 不允许，这里只点名）用这条判据把尸体排除在普通拾取目标之外——见该
+/// 函数文档。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroundItemStack {
     /// 这堆物品所在的世界坐标。
     pub pos: TorusPos,
     /// 具体是哪一堆物品。
     pub stack: ItemStack,
     /// 丢弃/生成时刻——老化清理（[`crate::state::WorldState::cleanup_aged_ground_items`]）
-    /// 的判定依据，见该方法文档。
+    /// 的判定依据，见该方法文档，尸体与普通丢弃物共用同一套老化清理，
+    /// 见 NPC 生命周期批次任务书「尸体也随着时间最后消失回收」一节：
+    /// 尸体和内容物作为一个整体老化，不需要给尸体单独发明第二套计时。
     pub dropped_at: Tick,
+    /// 容器内容物（NPC 死亡掉落批次新增）——非空表示这堆地面物品本身
+    /// 是一具尸体（或未来任何容器：箱子、袋子……），`stack` 此时只是
+    /// 容器本身这件"物品"的壳，`contents` 才是死者真正掉落的家当。
+    /// 绝大多数普通丢弃/拾取场景（`ll_sim::resolve::resolve_drop`）
+    /// 产出的地面物品这里恒为空 `Vec`——见类型文档「为什么用 `contents`
+    /// 是否非空作判据」一节。
+    ///
+    /// # 为什么不是 `Option<Vec<ItemStack>>`
+    ///
+    /// `None` 与 `Some(vec![])`（空容器）在本批次没有任何可区分的
+    /// 语义差异——两者都表示"这不是一具还有东西可捡的尸体"，多出的
+    /// `Option` 只会制造一个需要在每个消费点都多写一层
+    /// `unwrap_or_default` 的冗余包装，不提供额外信息，与
+    /// [`crate::item::ItemStack::durability`]（`None`/`Some` 确实对应
+    /// "没有耐久概念"/"有耐久概念"两种不同语义，因此保留 `Option`）
+    /// 是相反的判断依据。
+    ///
+    /// # 参与 `hash()`（ADR 0022）与序列化，不加 `#[serde(skip)]`
+    ///
+    /// 与 [`crate::state::WorldState::ground_items`] 本身同一条纪律：
+    /// 尸体内容物是真正影响玩法（搜刮）的数据，缺席 `hash()` 会重演
+    /// "新字段只加了，没人测过它是否被正确覆盖"的既有判据缺口。
+    pub contents: Vec<ItemStack>,
 }
 
 /// 单个装备槽位——[`SlotMask`] 的一个具体位，也是
@@ -793,6 +834,35 @@ mod tests {
             pos: size.wrap(10, 20),
             stack: ItemStack::new(arrow_def, 5),
             dropped_at: Tick(123),
+            contents: Vec::new(),
+        };
+
+        // Act
+        let encoded = serde_json::to_string(&original).expect("全部字段均已可派生序列化");
+        let decoded: GroundItemStack =
+            serde_json::from_str(&encoded).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn 带容器内容物的地面物品堆序列化往返后与原值相等() {
+        // 尸体（NPC 死亡掉落批次）是 contents 非空的地面物品——单独
+        // 验证这条路径的往返,不依赖整个 WorldState。
+        // Arrange
+        let mut interner = Interner::new();
+        let corpse_def = interner.intern(NamespacedId::parse("lostland:goblin").unwrap());
+        let sword_def = interner.intern(NamespacedId::parse("lostland:iron_sword").unwrap());
+        let size = TorusSize::new(64, 64).expect("64x64 是合法尺寸");
+        let original = GroundItemStack {
+            pos: size.wrap(3, 4),
+            stack: ItemStack::new(corpse_def, 1),
+            dropped_at: Tick(50),
+            contents: vec![
+                ItemStack::new(sword_def, 1),
+                ItemStack::with_durability(sword_def, 1, 30),
+            ],
         };
 
         // Act

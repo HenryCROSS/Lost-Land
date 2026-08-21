@@ -505,15 +505,32 @@ pub enum Effect {
         /// 「为什么是整堆」一节同一条范围裁定）。
         def: ContentIndex,
     },
-    /// 在地面上新增一堆物品——`crate::resolve::resolve_drop` 的产出者。
+    /// 在地面上新增一堆物品——`crate::resolve::resolve_drop`（普通丢弃，
+    /// `contents` 恒空）与 `crate::resolve::append_corpse_drop`（NPC
+    /// 死亡掉落批次：死者变成一具装着战利品的尸体，`contents` 是死者
+    /// 结算前的背包+装备）共用的产出者。
+    ///
+    /// # 为什么复用同一个变体，不给尸体单开一个 `Effect`
+    ///
+    /// 尸体在数据形状上就是"一件带 `contents` 的地面物品"（见
+    /// [`ll_world::item::GroundItemStack::contents`] 文档「为什么用
+    /// `contents` 是否非空作判据」一节）——`apply` 侧要做的机械操作
+    /// （往 `world.ground_items` 追加一条）与普通丢弃完全相同，只是
+    /// 多带一份内容物,不需要为同一个机械操作开两条 `Effect` 变体。
     AddGroundItem {
-        /// 放置位置——通常是丢弃者当前所在坐标。
+        /// 放置位置——通常是丢弃者/死者当前所在坐标。
         pos: TorusPos,
-        /// 具体是哪一堆物品，数量/耐久均已由 `resolve` 决定。
+        /// 具体是哪一堆物品（普通丢弃）或容器本身这件"物品"的壳
+        /// （尸体），数量/耐久均已由 `resolve` 决定。
         stack: ItemStack,
-        /// 丢弃时刻——`WorldState::cleanup_aged_ground_items` 的老化
-        /// 判定依据，见其文档。
+        /// 丢弃/生成时刻——`WorldState::cleanup_aged_ground_items` 的
+        /// 老化判定依据，见其文档；尸体与内容物共用同一个时刻，作为
+        /// 一个整体老化。
         dropped_at: Tick,
+        /// 容器内容物——普通丢弃恒为空 `Vec`，尸体是死者结算前的
+        /// `inventory` + `equipment` 全部物品，见
+        /// [`ll_world::item::GroundItemStack::contents`] 文档。
+        contents: Vec<ItemStack>,
     },
     /// 把物品写进某实体的背包，可能同时替换掉背包里已有的同种可堆叠
     /// 堆（`crate::resolve::resolve_pick_up` 的产出者）。

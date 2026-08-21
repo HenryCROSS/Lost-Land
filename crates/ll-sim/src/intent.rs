@@ -248,6 +248,30 @@ pub enum Intent {
         /// 要使用的物品定义——玩家从自己背包的已知列表里选。
         def: ContentIndex,
     },
+    /// 搜刮脚下的一具容器（尸体，NPC 死亡掉落批次）——把容器
+    /// [`ll_world::item::GroundItemStack::contents`] 里的全部战利品
+    /// 移进背包,容器本身随后从地面消失。
+    ///
+    /// # 为什么不是 `Intent::PickUp` 多分支一条判断
+    ///
+    /// 与 [`Intent::PickUp`] 是两个不同的玩法动作，不是同一个意图的两
+    /// 种结果：`PickUp` 面向"地上有什么就捡什么"的无差别拾取，`Loot`
+    /// 面向"这是一具尸体，我要搜刮它"这个明确的、需要与普通拾取区分
+    /// 交互提示的动作（项目所有者裁定「尸体变成放在地上可交互的物品，
+    /// 其他物品在地上也一样能被交互，只是有不同选项而已」）——两者的
+    /// 结算规则也确实不同（`resolve_pick_up`/`resolve_loot`，见各自
+    /// 文档），合并成一个意图内部分支判断反而会让"这次到底捡到了什么"
+    /// 这个问题在 `Intent` 层就变得含糊。
+    ///
+    /// # 为什么不指定要搜刮哪一具（对比 `Intent::Drop` 的 `def`）
+    ///
+    /// 与 [`Intent::PickUp`] 同一条纪律：玩家事先不知道脚下这具容器
+    /// 里到底装着什么，只知道"我要搜刮它"——具体内容物由 `resolve`
+    /// （`crate::resolve::resolve_loot`）结合 `WorldState` 现算。
+    Loot {
+        /// 发起者，搜刮到它自己的背包里。
+        actor: EntityId,
+    },
 }
 
 impl Intent {
@@ -271,7 +295,8 @@ impl Intent {
             | Intent::Drop { actor, .. }
             | Intent::Equip { actor, .. }
             | Intent::Unequip { actor, .. }
-            | Intent::Use { actor, .. } => actor,
+            | Intent::Use { actor, .. }
+            | Intent::Loot { actor } => actor,
         }
     }
 }

@@ -455,6 +455,20 @@ fn spawn_player(
     zone: ll_world::space::ZoneCoord,
     content: &LoadedContent,
 ) -> EntityId {
+    // 出生携带物品（NPC 生命周期批次：NPC 带物品 → 死亡掉落 → 尸体 →
+    // 老化回收，本行是「带物品」这一半在真实生产路径上唯一的接线点
+    // ——见 `ll_mod::race::starting_inventory` 文档）：玩家角色的种族
+    // 固定是 `content.race_ids.human`（见下方 `race` 字段），本体三种
+    // 基础种族当前都不声明出生物品（`ll_mod::race::materialize_base_races`
+    // 恒传 `starting_items: Vec::new()`），因此这里对本体内容是零成本
+    // 的空 `Vec`；一旦某个 mod 通过 `register-race-starting-item` 给
+    // 人类种族追加声明,新玩家出生时会真实带着这些物品——不需要再改
+    // 这一行代码。
+    let starting_items = content
+        .race_table
+        .get(content.race_ids.human)
+        .map(|view| ll_mod::race::starting_inventory(&view))
+        .unwrap_or_default();
     world.actors.spawn(Agent {
         pos,
         stats: BaseStats::BASELINE,
@@ -473,7 +487,7 @@ fn spawn_player(
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
         spent_slots: std::collections::BTreeMap::new(),
-        inventory: Vec::new(),
+        inventory: starting_items,
         equipment: std::collections::BTreeMap::new(),
         resting: None,
         unlocked_skills: Vec::new(),
@@ -497,6 +511,48 @@ fn spawn_player(
 /// 见 `ll_content::save_file::load_full` 文档）。
 pub fn cloned_terrain_table(content: &LoadedContent) -> TerrainTable {
     content.terrain_table.clone()
+}
+
+/// 每帧维护：清理老化超过默认阈值的地面物品
+/// （[`WorldState::cleanup_aged_ground_items`]，第二批已实装但当时
+/// 「零生产调用方」——NPC 生命周期批次给它接上真正的调用点）。
+///
+/// # 为什么挂在这里，不是新建一套惰性追赶系统
+///
+/// 第二批当时的设想是接到「玩家靠近远景区域时顺带扫一次」这条惰性
+/// 追赶路径上——但那套系统当前不存在（`ll_world::surface_store` 的
+/// `stream_neighborhood` 只惰性生成地形，不涉及任何「扫一遍列表」这类
+/// 通用惰性追赶框架，新建一套只为这一个清理调用点服务是过度设计）。
+/// [`crate::app::Demo::advance`] 每帧都会调用
+/// [`WorldState::terrain::stream_neighborhood`](ll_world::surface_store::SurfaceStore::stream_neighborhood)
+/// 维护流式邻域——这正是当前代码库里**已经存在**的、每帧真正跑一遍的
+/// 位置，本函数与它并列调用，理由同 `crate::app` 模块文档「不做…… 聚焦
+/// 『能玩、能存』这条最小闭环」：复用已有的每帧钩子，比新建一套框架
+/// 更小、更诚实。
+///
+/// # 开销：每帧一次 `O(n)` 线性扫描，`n` 是地面物品堆数
+///
+/// `WorldState::cleanup_aged_ground_items` 内部是 `Vec::retain`——对每
+/// 条地面物品堆做一次减法+比较，n 在真实游玩场景里是"当前世界还没被
+/// 拾取/搜刮/老化清理掉的地面物品堆总数"，量级是几十到几百（背包/尸体
+/// 批次都没有引入任何会让这个数字失控增长的机制：拾取、搜刮、丢弃互相
+/// 抵消，老化本身也持续把这个数字往下拉），比同一帧紧挨着调用的
+/// `stream_neighborhood`（要遍历一整圈区块窗口的地形瓦片）便宜一到
+/// 两个数量级——不需要额外的节流（按帧计数器跳过若干帧）机制,那类
+/// 节流本身需要新增状态与测试,收益在这个开销量级下不成比例。
+///
+/// # 为什么不是"只在世界时钟真正推进时才清理"
+///
+/// 严格来说，`world.clock` 在当前 `Demo` 这套最小闭环里还没有任何
+/// 生产代码会推进它（`ll_world::state::WorldState::advance` 目前只在
+/// `build_new_world` 建局那一刻调用一次，见 `crate::world` 模块「新
+/// 游戏起始时钟」相关常量）——这是先于本批次就存在的独立缺口，不在本
+/// 批次修复范围内。本函数只负责"给 `cleanup_aged_ground_items` 一个
+/// 真实的、每帧都会被调用的生产入口"这一件事,不去动"世界时钟该如何
+/// 推进"这个更大的、独立的问题——一旦时钟推进被接上,地面物品就会在
+/// 真实游玩里按预期老化,不需要再改这里一行代码。
+pub fn cleanup_aged_ground_items(world: &mut WorldState) -> usize {
+    world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS)
 }
 
 #[cfg(test)]
@@ -530,6 +586,50 @@ mod tests {
             .terrain_at(pos)
             .expect("出生点所在区块已被出生邻域预热");
         assert!(!kind.blocks_move(&game_world.world.terrain_table));
+    }
+
+    #[test]
+    fn 真实生产入口清理老化地面物品而保留未老化的() {
+        // 验证 crate::world::cleanup_aged_ground_items——crate::app::Demo::advance
+        // 每帧真正调用的同一个函数（见其文档「为什么挂在这里」一节）
+        // ——在一个由 build_new_world 建出的真实 GameWorld（真实注册表/
+        // 地形，不是手搭的裸 WorldState）上生效：老化超过阈值的地面
+        // 物品被移除，未超过阈值的保留。不验证 Demo::advance 本身
+        // （需要 GPU/窗口，本测试模块没有那套环境）,验证的是它每帧
+        // 调用的同一个生产函数在真实世界上确实生效。
+        // Arrange
+        use ll_core::ident::{Interner, NamespacedId};
+        use ll_world::item::{GroundItemStack, ItemStack};
+        let content = test_content();
+        let mut game_world = build_new_world(&content, 1).expect("测试用布局满足全部前置条件");
+        let mut interner = Interner::new();
+        let arrow = interner.intern(NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        let pos = game_world.world.size.wrap(0, 0);
+        let stale_dropped_at = game_world.world.clock;
+        game_world.world.ground_items.push(GroundItemStack {
+            pos,
+            stack: ItemStack::new(arrow, 1),
+            dropped_at: stale_dropped_at,
+            contents: Vec::new(),
+        });
+        game_world
+            .world
+            .advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS + 1);
+        // 第二堆在时钟推进之后才丢下,此刻的 age 是 0,应当保留。
+        game_world.world.ground_items.push(GroundItemStack {
+            pos,
+            stack: ItemStack::new(arrow, 1),
+            dropped_at: game_world.world.clock,
+            contents: Vec::new(),
+        });
+
+        // Act
+        let removed = cleanup_aged_ground_items(&mut game_world.world);
+
+        // Assert：老化的一条被清掉,同一时刻新丢的一条（dropped_at 恰好
+        // 等于清理前的 clock,推进后未超阈值）保留。
+        assert_eq!(removed, 1);
+        assert_eq!(game_world.world.ground_items.len(), 1);
     }
 
     #[test]

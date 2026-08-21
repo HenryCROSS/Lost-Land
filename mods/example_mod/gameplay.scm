@@ -23,6 +23,7 @@
 ;;   register-item-stat-bonus              crates/ll-mod/src/script_item_api.rs
 ;;   register-item-use-effect              crates/ll-mod/src/script_item_api.rs
 ;;   register-item-penetration             crates/ll-mod/src/script_item_api.rs
+;;   register-race-starting-item           crates/ll-mod/src/script_race_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -203,3 +204,14 @@
 ;; 内容必须能从 mod 脚本注册，且要有真实 mod 脚本为证」，
 ;; crates/ll-mod/tests/example_mod_weapon_reference.rs 是那份证据。
 (register-item-penetration "examplemod:war_hammer" 3 100)
+
+;; NPC 生命周期批次（NPC 带物品 → 死亡掉落 → 尸体 → 老化回收）：给上面
+;; 已经注册过的哥布林种族（"examplemod:goblin"，第 50 行）声明出生
+;; 携带的物品——一把粗制匕首、两支箭，证明 register-race-starting-item
+;; 这个新脚本 API 真的能被 mod 脚本调用,且真实注册的出生物品能通过
+;; crate::race::starting_inventory 转换成背包物品——ADR 0018「玩法层
+;; 内容必须能从 mod 脚本注册，且要有真实 mod 脚本为证」，
+;; crates/ll-mod/tests/example_mod_starting_items.rs 是那份证据。
+(register-item "examplemod:crude_dagger" "examplemod:crude_dagger_display_name" 1 500 8000 20)
+(register-race-starting-item "examplemod:goblin" "examplemod:crude_dagger" 1)
+(register-race-starting-item "examplemod:goblin" "examplemod:arrow" 2)

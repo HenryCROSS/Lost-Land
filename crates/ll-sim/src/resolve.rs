@@ -589,6 +589,7 @@ fn resolve_dispatch(
             target_ticks,
         } => resolve_rest(world, actor, target_ticks, race_traits, traits, pools),
         Intent::PickUp { actor } => resolve_pick_up(world, actor, items),
+        Intent::Loot { actor } => resolve_loot(world, actor, items),
         Intent::Drop { actor, def } => resolve_drop(world, actor, def),
         Intent::Equip { actor, def } => resolve_equip(world, actor, def, items),
         Intent::Unequip { actor, slot } => resolve_unequip(world, actor, slot, items),
@@ -643,6 +644,10 @@ fn resolve_dispatch(
     // Intent 类型区分调用与否：函数本身只扫描 effects 里已经存在的
     // Effect::Kill,对没有产出击杀的意图（Wait/Move/...）是无操作。
     append_kill_history(world, &mut effects);
+    // 死亡掉落（NPC 生命周期批次）：与击杀历史记录同一个触发点（同一批
+    // Effect::Kill），各自独立追加,互不依赖——见 append_corpse_drop
+    // 文档。不需要按 Intent 类型区分调用与否,理由同 append_kill_history。
+    append_corpse_drop(world, &mut effects);
     effects
 }
 
@@ -984,6 +989,89 @@ fn append_kill_history(world: &WorldState, effects: &mut Vec<Effect>) {
     }
 }
 
+/// 死亡掉落（NPC 生命周期批次）：若 `effects` 里包含 [`Effect::Kill`]，
+/// 读取（结算前仍然存在的）被击杀目标的 `pos`/`inventory`/`equipment`，
+/// 只要两者合计非空，就把死者变成一具装着这些物品的尸体——落地项目
+/// 所有者裁定「死亡后就会爆出身上所有的物品……尸体也会随着时间最后
+/// 消失回收」。
+///
+/// # 必须在 `Effect::Kill` 之前读取
+///
+/// 与 [`append_kill_history`] 文档「必须排在对应的 Effect::Kill 之前」
+/// 同一条时序依赖：`Effect::Kill` 应用后 `target` 会被
+/// `Arena::despawn` 整体收走，`inventory`/`equipment` 随之物理消失
+/// （见 `Agent::inventory`/`Agent::equipment` 字段文档「为什么是 Agent
+/// 字段」一节——这正是本批次要修的隐患：死亡结算此前只有
+/// `world.actors.despawn(target)` 一步，背包随实体静默消失）。本函数
+/// 因此必须在 `Effect::Kill` 仍然指向一个存在于 `world.actors` 的
+/// 实体这一刻读出这两个字段，`resolve` 只有 `&WorldState`（C1），无法
+/// 先移除背包再产出效果，只能把已经读到的物品原样打包进
+/// [`Effect::AddGroundItem`]。
+///
+/// # 空手死者不产出尸体
+///
+/// `inventory`/`equipment` 合计为空时不追加任何效果——`GroundItemStack::contents`
+/// 非空是"这是一具容器"的唯一判据（见其文档），一具打不出任何东西的
+/// 尸体没有玩法意义（[`resolve_loot`]/[`resolve_pick_up`] 都不会把它
+/// 当作合法目标），提前占一个 `ground_items` 条目只会增加后续老化清理
+/// 与存档体积的无谓开销。
+///
+/// # 尸体的 `def`：复用死者的 `creature_kind`/`race`，不新开一张
+/// "尸体物品"注册表
+///
+/// `ll-sim` 不能依赖 `ll-mod`（依赖方向，规格 §5），本函数因此拿不到
+/// 任何 `ItemCatalog`/`Registry` 去 `intern` 一个专门的
+/// `lostland:corpse` 内容 ID——即便能拿到，也需要每个 mod 各自声明
+/// "我的种族死了要用哪个尸体物品"这类新的注册表，而当前没有任何真实
+/// 消费场景需要区分"哥布林尸体"与"人类尸体"这两件事本身是两种不同的
+/// 可堆叠物品（YAGNI，同一条判断见 `ll_world::item` 模块文档「`Owner`
+/// 本批次仍然不落地」一节）。`victim_agent.creature_kind.unwrap_or(victim_agent.race)`
+/// ——与 [`Effect::IncrementKillCount`] 归并键完全同一套既有回退规则
+/// （见其文档「为什么按 `kind: ContentIndex`」一节）——天然给出一个
+/// "这具尸体是什么生物"的身份，不需要新的注册表或跨 crate 依赖：
+/// 一具哥布林的尸体，`def` 就是"哥布林"这个种族/生物类型索引本身。
+///
+/// `stack.durability` 恒 `None`——尸体这件"容器"本身没有耐久概念，与
+/// [`ItemStack::new`] 材料/消耗品的既有语义一致。
+///
+/// # 两具尸体不会被静默合并
+///
+/// [`resolve_pick_up`] 已经把 `contents` 非空的地面物品整体排除在
+/// 合并/拾取路径之外（见其文档「为什么跳过容器」一节）——`can_merge`
+/// 只比较 `ItemStack` 的 `def`/`durability`，两具同种生物的尸体确实会
+/// 在这两个字段上相等（`can_merge` 会判定为"可合并"），但这条判定
+/// 永远不会被触发到：尸体从不作为 [`Intent::PickUp`] 的目标进入
+/// `merge_into_inventory_effect`，真正阻止"两具尸体的战利品被静默
+/// 混进同一个背包堆"的是这道路径排除，不是 `stack_limit`（`stack_limit`
+/// 查不到该 `def` 对应的 `ItemDef` 时按"不限量"处理，见
+/// [`resolve_pick_up`] 文档，本身并不能阻止 `can_merge` 判真——两具
+/// 尸体的地面条目本身也从不会被本函数或任何既有代码路径互相合并，
+/// `AddGroundItem` 的 `apply` 分支恒是无条件 `push`，见其文档）。
+fn append_corpse_drop(world: &WorldState, effects: &mut Vec<Effect>) {
+    let drops: Vec<Effect> = effects
+        .iter()
+        .filter_map(|effect| {
+            let Effect::Kill { target, .. } = effect else {
+                return None;
+            };
+            let victim = world.actors.get(*target)?;
+            let mut loot = victim.inventory.clone();
+            loot.extend(victim.equipment.values().copied());
+            if loot.is_empty() {
+                return None;
+            }
+            let corpse_def = victim.creature_kind.unwrap_or(victim.race);
+            Some(Effect::AddGroundItem {
+                pos: victim.pos,
+                stack: ItemStack::new(corpse_def, 1),
+                dropped_at: world.clock,
+                contents: loot,
+            })
+        })
+        .collect();
+    effects.extend(drops);
+}
+
 /// 算出「从现在起 `cost` 个 tick 之后」的世界时刻。
 fn schedule_after(world: &WorldState, cost: u32) -> Tick {
     Tick(world.clock.0 + i64::from(cost))
@@ -1245,16 +1333,29 @@ fn tiered_slot_rest_effects(
 /// Some(actor)` 这一个比较收住范围，不需要改 `Intent`/`Effect` 的
 /// 形状去区分「谁在动」。
 /// [`Intent::PickUp`] 结算（P6 第二批：背包与地面物品）：捡起 `actor`
-/// 脚下的第一堆地面物品（见 `Intent::PickUp` 文档「为什么不指定要捡
-/// 哪一种」一节），若背包已有可合并的同种堆（[`can_merge`]），一并
-/// 算出合并结果。
+/// 脚下的第一堆**非容器**地面物品（见 `Intent::PickUp` 文档「为什么不
+/// 指定要捡哪一种」一节），若背包已有可合并的同种堆（[`can_merge`]），
+/// 一并算出合并结果。
 ///
-/// # 静默无效的两种情形
+/// # 静默无效的三种情形
 ///
-/// `actor` 不存在，或脚下没有任何地面物品——与 `resolve_attack`/
-/// `resolve_open_door` 目标不存在时的既有纪律一致（见模块文档开篇
-/// 「目标实体……若已不在 `world.actors` 中……一律返回空 `Vec`」），
-/// 不是错误，只是这一步什么都不发生。
+/// `actor` 不存在，脚下没有任何地面物品，或脚下只有容器（尸体，见下
+/// 「为什么跳过容器」一节）——与 `resolve_attack`/`resolve_open_door`
+/// 目标不存在时的既有纪律一致（见模块文档开篇「目标实体……若已不在
+/// `world.actors` 中……一律返回空 `Vec`」），不是错误，只是这一步什么都
+/// 不发生。
+///
+/// # 为什么跳过容器（NPC 死亡掉落批次）
+///
+/// 容器（[`ll_world::item::GroundItemStack::contents`] 非空,典型是
+/// 尸体）不是[`Intent::PickUp`]的合法目标——本函数只会把 `ground.stack`
+/// 这一个字段拿去合并进背包，容器真正的价值（`contents` 里的战利品）
+/// 会被原样丢在地上、永久不可达,这不是"物品异常地不能堆叠"那类可以
+/// 接受的降级，是真实的数据丢失。搜刮容器走专门的
+/// [`Intent::Loot`]（[`resolve_loot`]），本函数因此显式过滤掉
+/// `!item.contents.is_empty()` 的地面物品，与 `GroundItemStack::contents`
+/// 字段文档「`resolve_pick_up` 用这条判据把尸体排除在普通拾取目标
+/// 之外」一节相互印证。
 ///
 /// # 为什么合并结果由这里算好，`apply` 只做替换
 ///
@@ -1266,7 +1367,11 @@ fn resolve_pick_up(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog)
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
-    let Some(ground) = world.ground_items.iter().find(|item| item.pos == agent.pos) else {
+    let Some(ground) = world
+        .ground_items
+        .iter()
+        .find(|item| item.pos == agent.pos && item.contents.is_empty())
+    else {
         return Vec::new();
     };
     let picked = ground.stack;
@@ -1278,6 +1383,65 @@ fn resolve_pick_up(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog)
         },
         merge_into_inventory_effect(agent, actor, picked, items),
     ]
+}
+
+/// [`Intent::Loot`] 结算（NPC 死亡掉落批次）：把 `actor` 脚下第一具
+/// 容器（[`ll_world::item::GroundItemStack::contents`] 非空,典型是
+/// 尸体）的全部内容物移进背包，容器本身随后从地面移除——「搜刮」是
+/// 一次性、全部拿走，不支持挑拣部分战利品,与 `Intent::Drop`「不支持
+/// 部分数量」同一条范围裁定（见其文档）：本批次的验收范围不需要战利品
+/// 挑选 UI,提前引入只会制造一个当前没有测试覆盖的分支。
+///
+/// # 静默无效的两种情形
+///
+/// `actor` 不存在，或脚下没有任何容器——与 [`resolve_pick_up`] 同一条
+/// 纪律。
+///
+/// # 为什么容器本身用 [`Effect::RemoveGroundItem`]，不新开一个变体
+///
+/// 与 [`resolve_pick_up`] 移除已拾取的普通地面物品是同一个机械操作
+/// （按 `(pos, def)` 定位并移除），没有理由为"移除的这一条恰好是容器"
+/// 单独发明一个效果变体——`apply` 侧的写入逻辑完全相同。
+///
+/// # 已知限制：容器按 `(pos, def)` 定位，多具同 `def` 容器共存一格时
+/// 可能误删
+///
+/// 与 [`Effect::RemoveGroundItem`] 文档「为什么按 `(pos, def)` 定位」
+/// 一节同一条既有限制：若同一格恰好摞着两具"生物种类相同"的尸体
+/// （`def` 相同，见 [`append_corpse_drop`] 文档「尸体的 `def`」一节），
+/// `Effect::RemoveGroundItem` 按 `(pos, def)` 匹配到的不保证是本函数
+/// 读到的那一具——这是"第一条匹配"既有纪律（`Intent::PickUp` 文档
+/// 「为什么不指定要捡哪一种」一节同一先例）在容器场景下的延伸,不是本
+/// 批次新引入的缺陷,如实记录为已知边界情形。
+///
+/// # 已知限制：不处理"搜刮的多条战利品本可以互相合并"的情形
+///
+/// 与 [`merge_into_inventory_effect`] 文档「已知限制」一节同一条既有
+/// 局限：每条内容物各自基于同一份背包快照判断"有没有可合并的旧堆"，
+/// 不产生数据错误（数量守恒），只是可能错过一次本可以做的合并。
+fn resolve_loot(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let Some(container) = world
+        .ground_items
+        .iter()
+        .find(|item| item.pos == agent.pos && !item.contents.is_empty())
+    else {
+        return Vec::new();
+    };
+
+    let mut effects = vec![Effect::RemoveGroundItem {
+        pos: container.pos,
+        def: container.stack.def,
+    }];
+    effects.extend(
+        container
+            .contents
+            .iter()
+            .map(|loot| merge_into_inventory_effect(agent, actor, *loot, items)),
+    );
+    effects
 }
 
 /// 把 `incoming` 这一堆物品合并进 `agent` 背包，产出对应的
@@ -1363,6 +1527,9 @@ fn resolve_drop(world: &WorldState, actor: EntityId, def: ContentIndex) -> Vec<E
             pos: agent.pos,
             stack: *stack,
             dropped_at: world.clock,
+            // 普通丢弃恒不带容器内容物——contents 非空是尸体专属的
+            // 判据，见 GroundItemStack::contents 文档。
+            contents: Vec::new(),
         },
     ]
 }
