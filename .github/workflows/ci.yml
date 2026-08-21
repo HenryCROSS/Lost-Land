@@ -25,11 +25,11 @@ jobs:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
       - name: 格式检查
-        run: cargo fmt --all --check
+        run: bash scripts/ci/check_fmt.sh
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: bash scripts/ci/check_clippy.sh
       - name: 测试
-        run: cargo test --workspace
+        run: bash scripts/ci/run_tests.sh
 
   licenses:
     runs-on: ubuntu-latest
@@ -38,7 +38,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-deny
       - name: 许可证与安全公告扫描
-        run: cargo deny check
+        run: bash scripts/ci/check_licenses.sh
 
   # 规格 §7.1 明写「此项由 CI 静态检查强制」，但门禁一直没有真正实现
   # （见 knowledge/handoff/p2-to-p3.md 第五节）。补上它：环面世界里手写
@@ -54,24 +54,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: 禁止手写欧氏距离
         shell: bash
-        run: |
-          set -euo pipefail
-          violations=0
-          while IFS= read -r -d '' file; do
-            while IFS=: read -r line_no content; do
-              trimmed="$(printf '%s' "$content" | sed -e 's/^[[:space:]]*//')"
-              case "$trimmed" in
-                //*) continue ;;
-              esac
-              echo "::error file=$file,line=$line_no::检测到疑似手写欧氏距离：${content}。环面世界必须改用 TorusSize 的 chebyshev/squared_euclidean/delta（crates/ll-core/src/torus.rs），不得手写 sqrt/powi(2)/hypot 计算距离。"
-              violations=$((violations + 1))
-            done < <(grep -nE '\bsqrt\(|\.powi\(2\)|\bhypot\(' "$file" || true)
-          done < <(find crates -type f -name '*.rs' -print0)
-          if [ "$violations" -gt 0 ]; then
-            echo "共发现 $violations 处疑似手写欧氏距离，见上方逐条标注。"
-            exit 1
-          fi
-          echo "未发现手写欧氏距离。"
+        run: bash scripts/ci/check_no_manual_euclidean_distance.sh
 
   # 规格 §14.5 要求"行覆盖率 ≥ 80%，核心 crate（ll-core/ll-sim/ll-world）
   # ≥ 90%"，但 `cargo-llvm-cov` 从未在本项目任何环境安装或运行过——不是
@@ -147,6 +130,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: 文档断链检查（真正的断链阻断，公开链到私有项仅警告）
-        run: cargo doc --workspace --no-deps --document-private-items
+        run: bash scripts/ci/check_doc_links.sh
       - name: Markdown 死链检查（docs/、knowledge/）
         run: python3 scripts/ci/check_markdown_links.py
