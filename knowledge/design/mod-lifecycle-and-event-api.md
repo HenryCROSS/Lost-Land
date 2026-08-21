@@ -404,7 +404,7 @@ thread_local! {
 - [脚本层数据句柄与批量查询](script-entity-handles-and-batch-queries.md) — 本文档三、2 节直接复用其五节的句柄/算子设计
 - [增益与通用触发器](buffs-and-triggers.md) §三/§四 — 本文档事件监听 API 的既有先例（内容级粒度）与深度限界触发队列（世界状态类监听器复用同一条队列）
 - [伤害公式的 mod API](damage-formula-mod-api.md) — 命中级别调用频率的独立实测论证来源之一、六节扁平指令数组的形状来源
-- [脚本状态存储](script_state_storage.md) — `PENDING_WRITES` 批量提交模式，`ScriptEngine` 一次调用多次写入的既有先例
+- [脚本状态存储](script-state-storage.md) — `PENDING_WRITES` 批量提交模式，`ScriptEngine` 一次调用多次写入的既有先例
 - [Steel 语法参考](steel-script-reference.md) — `map`/`filter`/`foldl`/`foldr` 等高阶函数的既有实测记录
 - [世界历史生成](world-history.md) — 六节世界历史生成场景的规模数字来源（几十王朝、几百聚落、25 万次更新/秒级）
 - [Agent 目标与经济](agent-goals-and-economy.md) — 六节经济/Cohort LOD 场景的任务池规模来源（聚落数量级，非原始事件数）
