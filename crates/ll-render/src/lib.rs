@@ -14,6 +14,7 @@
 
 pub mod anim;
 pub mod atlas;
+pub mod atlas_pack;
 pub mod batch;
 pub mod camera;
 pub mod gpu;

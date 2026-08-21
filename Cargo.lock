@@ -1618,6 +1618,7 @@ name = "ll-mod"
 version = "0.1.0"
 dependencies = [
  "ll-core",
+ "ll-render",
  "ll-script",
  "ll-sim",
  "ll-world",
@@ -1626,6 +1627,7 @@ dependencies = [
  "serde_json",
  "steel-core",
  "toml",
+ "tracing",
 ]
 
 [[package]]

@@ -15,24 +15,27 @@
 //!
 //! # 加载顺序
 //!
-//! 先注册本体内容（地形 → 种族 → 空间层属性 → 占位内容），再跑
-//! [`ll_mod::pipeline::load_all`] 装载 `mods_root` 下的 mod——
+//! 先注册本体内容（地形 → 种族 → 空间层属性 → 占位内容 → 动画剪辑），
+//! 再跑 [`ll_mod::pipeline::load_all`] 装载 `mods_root` 下的 mod——
 //! 顺序理由见 [`ll_mod::pipeline`] 模块文档「本体内容不经过这条
 //! 管线」一节：mod 内容 intern 进同一个 `Registry`，必须排在本体注册
-//! 之后才能保证号段不冲突。四类本体注册彼此之间顺序不影响正确性
+//! 之后才能保证号段不冲突。五类本体注册彼此之间顺序不影响正确性
 //! （各自对应不同的命名空间前缀，见 `ll_mod::base_race` 模块文档
 //! 「调用顺序与 register_base_placeholder_content 无关」一节），这里
 //! 固定一个顺序只是为了让日志读起来是线性的。
 
 use std::path::Path;
 
+use ll_mod::asset_vfs::{self, AssetVfs};
+use ll_mod::base_clip::register_base_clips;
 use ll_mod::base_placeholder::register_base_placeholder_content;
 use ll_mod::base_race::register_base_races;
 use ll_mod::base_space_profile::register_base_space_profiles;
 use ll_mod::base_terrain::register_base_terrain;
 use ll_mod::class::ClassTable;
+use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::discover::discover_mods;
-use ll_mod::load_report::LoadReport;
+use ll_mod::load_report::{LoadReport, LoadStatus};
 use ll_mod::manifest::{ModManifest, parse_manifest};
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
@@ -42,6 +45,13 @@ use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
+
+/// 本体自己的命名空间——「本体即 Mod」原则下，本体的资产也走
+/// `ll_mod::asset_vfs` 同一套解析（见其模块文档），需要一个固定的
+/// 命名空间字符串区分「这是本体自己声明的资产」与「这是某个 mod
+/// 声明的资产」。与 `registry.content_hash_of("lostland")`
+/// （既有测试用到的同一个字符串）保持一致。
+pub const BASE_NAMESPACE: &str = "lostland";
 
 /// 一次装载会话的完整产出：注册表、六张玩法内容表、本体索引缓存、
 /// 已成功解析的 mod 清单（供 [`ll_mod::mod_set::GenerationModSet`]
@@ -71,6 +81,12 @@ pub struct LoadedContent {
     pub subclass_table: SubclassTable,
     /// 任务表。
     pub quest_table: QuestTable,
+    /// 本体动画剪辑索引缓存（行走/待机）。
+    pub clip_ids: BaseClipIds,
+    /// 动画剪辑表——纯表现层内容，不进 `WorldState`、不参与
+    /// `WorldState::hash()`（ADR 0020 甲区，见 `ll_mod::clip` 模块
+    /// 文档），只被渲染层（`crate::animation`/`crate::app`）读取。
+    pub clip_table: ClipTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -84,15 +100,29 @@ pub struct LoadedContent {
     /// 这份文本却不属于装载管线自身的职责，见
     /// `ll_content::save_file::load_full` 文档。
     pub script_sources: Vec<(String, String)>,
-    /// 本次 mod 装载报告：按 mod 归类的成功/失败结果。
+    /// 本次 mod 装载报告：按 mod 归类的成功/失败结果。资产覆盖冲突
+    /// （见 [`asset_vfs`] 模块文档）已经并入这份报告，作为额外的
+    /// [`LoadStatus::Warning`] 条目——调用方不需要另外单独处理资产
+    /// 冲突的展示，加载管理界面按既有的「按状态分组展示」逻辑即可
+    /// 覆盖到。
     pub report: LoadReport,
+    /// 已解析完覆盖规则的资产 VFS——本体贴图与全部 mod 贴图（含已经
+    /// 生效的覆盖）打包前的最终来源，供 [`crate::app`] 喂给
+    /// `ll_render::atlas_pack::pack_atlas`。
+    pub asset_vfs: AssetVfs,
 }
 
-/// 装载全部游戏内容：先注册本体内容，再装载 `mods_root` 下的 mod。
+/// 装载全部游戏内容：先注册本体内容，再装载 `mods_root` 下的 mod，
+/// 最后解析 `assets_root` 下本体与全部 mod 的资产 VFS。
+///
+/// `assets_root` 是本体自己的 `assets/` 目录（内含
+/// `sprites/manifest.json`），与 `mods_root` 是两个独立的目录树——
+/// 本体资产不属于任何一个 mod 目录，见 [`ll_mod::asset_vfs`] 模块
+/// 文档「为什么本体资产也要走这条路径」一节。
 ///
 /// **本体二进制应当只调用本函数一次**（启动时）——这是本模块存在的
 /// 唯一理由，见模块文档。
-pub fn load_content(mods_root: &Path) -> LoadedContent {
+pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     let mut registry = Registry::new();
 
     let (terrain_ids, mut terrain_table) =
@@ -102,13 +132,15 @@ pub fn load_content(mods_root: &Path) -> LoadedContent {
     let (space_ids, space_table) = register_base_space_profiles(&mut registry)
         .expect("本体空间层属性声明表内部一致，注册恒不失败");
     register_base_placeholder_content(&mut registry);
+    let (clip_ids, mut clip_table) =
+        register_base_clips(&mut registry).expect("本体剪辑声明表内部一致，注册恒不失败");
 
     let mut class_table = ClassTable::new();
     let mut skill_table = SkillTable::new();
     let mut subclass_table = SubclassTable::new();
     let mut quest_table = QuestTable::new();
 
-    let report = load_all(
+    let mut report = load_all(
         mods_root,
         &mut registry,
         &mut GameplayTables {
@@ -118,16 +150,30 @@ pub fn load_content(mods_root: &Path) -> LoadedContent {
             subclass: &mut subclass_table,
             quest: &mut quest_table,
             race: &mut race_table,
+            clip: &mut clip_table,
         },
     );
 
     let manifests = successfully_parsed_manifests(mods_root);
     let script_sources = read_script_sources(&manifests);
 
+    let asset_result = asset_vfs::build(mods_root, assets_root, BASE_NAMESPACE);
+    for (mod_id, message) in asset_result.conflicts {
+        // 这正是 `LoadStatus::Warning` 此前「声明了但从没被构造过」的
+        // 产出路径——见 `ll_mod::load_report` 模块文档与
+        // `ll_mod::asset_vfs` 模块文档「确定性」一节。追加而不是
+        // `replace`：这个 mod 本身的脚本装载结果（`Loaded`/`Failed`）
+        // 已经有一条独立的记录，资产冲突是另一件事，两条记录并存，
+        // 加载管理界面按状态分组展示时天然都能看到。
+        report.push(mod_id, LoadStatus::Warning(message));
+    }
+
     tracing::info!(
         mods_root = %mods_root.display(),
+        assets_root = %assets_root.display(),
         loaded = report.loaded_count(),
         failed = report.failed_count(),
+        sprites = asset_result.vfs.sprites.len(),
         "内容装载完成"
     );
 
@@ -143,9 +189,12 @@ pub fn load_content(mods_root: &Path) -> LoadedContent {
         skill_table,
         subclass_table,
         quest_table,
+        clip_ids,
+        clip_table,
         manifests,
         script_sources,
         report,
+        asset_vfs: asset_result.vfs,
     }
 }
 
@@ -185,16 +234,24 @@ fn read_script_sources(manifests: &[ModManifest]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
+
+    /// 仓库真实的 `assets/` 目录——`ll-game` 到仓库根固定隔两级
+    /// `../..`，与既有的「真实 mods/ 目录」测试同一套推导。
+    fn repo_assets_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets")
+    }
 
     #[test]
     fn 空目录下装载只产出本体内容不报任何mod失败() {
-        // Arrange：一个存在但不含任何 mod 子目录的空目录。
+        // Arrange：一个存在但不含任何 mod 子目录的空目录。资产目录
+        // 也不存在——`asset_vfs::build` 应当优雅处理，不需要真的存在。
         let dir =
             std::env::temp_dir().join(format!("ll-game-content-test-empty-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
 
         // Act
-        let loaded = load_content(&dir);
+        let loaded = load_content(&dir, &dir.join("assets"));
 
         // Assert
         assert_eq!(loaded.report.failed_count(), 0);
@@ -217,7 +274,7 @@ mod tests {
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
 
         // Act
-        let loaded = load_content(&dir);
+        let loaded = load_content(&dir, &dir.join("assets"));
 
         // Assert
         assert!(loaded.registry.content_hash_of("lostland").is_some());
@@ -242,12 +299,110 @@ mod tests {
         let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
 
         // Act
-        let loaded = load_content(&mods_root);
+        let loaded = load_content(&mods_root, &repo_assets_dir());
 
         // Assert
         assert!(
             !loaded.manifests.is_empty(),
             "仓库真实 mods/ 目录应当至少包含一个可解析的 mod 清单"
+        );
+    }
+
+    #[test]
+    fn 真实资产目录装载后本体精灵已注册进资产vfs() {
+        // 端到端断言：装载仓库真实的 assets/ 目录，资产 VFS 里应当能
+        // 找到本体的精灵条目——不是恒为空的死字段。
+        // Arrange
+        let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
+
+        // Act
+        let loaded = load_content(&mods_root, &repo_assets_dir());
+
+        // Assert
+        assert!(
+            !loaded.asset_vfs.sprites.is_empty(),
+            "仓库真实 assets/ 目录应当至少包含一份本体精灵声明"
+        );
+    }
+
+    #[test]
+    fn 真实mod资产覆盖本体地形后examplemod的精灵可按完整命名空间id查到() {
+        // 端到端断言：`mods/example_mod` 自带的 lava_floor 精灵确实
+        // 进了资产 VFS，且条目名是完整命名空间 ID——与
+        // `examplemod:lava_floor` 这个地形注册 ID 完全一致，供
+        // `crate::layout` 的地形回退查图集直接复用（见其模块文档）。
+        // Arrange
+        let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
+
+        // Act
+        let loaded = load_content(&mods_root, &repo_assets_dir());
+
+        // Assert
+        assert!(
+            loaded
+                .asset_vfs
+                .sprites
+                .iter()
+                .any(|sprite| sprite.atlas_name == "examplemod:lava_floor"),
+            "example_mod 应当自带一份 lava_floor 精灵声明"
+        );
+    }
+
+    #[test]
+    fn 真实mod覆盖本体地形贴图后源文件指向mod的覆盖文件() {
+        // 端到端断言：`mods/example_mod` 自带的
+        // `assets/overrides/lostland/sprites/terrain_dirt.png` 确实
+        // 生效——本体 `terrain_dirt` 条目的最终来源文件应指向 mod 的
+        // 覆盖文件，而不是本体自己的 `assets/sprites/terrain_dirt.png`。
+        // Arrange
+        let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
+
+        // Act
+        let loaded = load_content(&mods_root, &repo_assets_dir());
+
+        // Assert
+        let terrain_dirt = loaded
+            .asset_vfs
+            .sprites
+            .iter()
+            .find(|sprite| sprite.atlas_name == "terrain_dirt")
+            .expect("本体应声明 terrain_dirt 精灵");
+        assert!(
+            terrain_dirt
+                .source_file
+                .components()
+                .any(|c| c.as_os_str() == "example_mod"),
+            "terrain_dirt 的源文件应指向 example_mod 的覆盖文件，实际是 {}",
+            terrain_dirt.source_file.display()
+        );
+    }
+
+    #[test]
+    fn 真实mods目录装载后examplemod的动画剪辑已注册() {
+        // ADR 0018「API 完备性判据要求有真实 mod 脚本为证，不能靠单元
+        // 测试自证」——本测试装载仓库真实的 mods/example_mod/animation.scm
+        // （不是临时构造的测试脚本文本），断言其中的
+        // `register-animation-clip` 调用确实通过完整的
+        // 「发现 → 解析 → 拓扑排序 → 加载脚本 → 注册内容」链路把
+        // `examplemod:slime_squish` 写进了 `clip_table`。
+        // Arrange
+        let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
+
+        // Act
+        let loaded = load_content(&mods_root, &repo_assets_dir());
+
+        // Assert
+        let clip_index = loaded
+            .registry
+            .get(&ll_core::ident::NamespacedId::parse("examplemod:slime_squish").unwrap())
+            .expect("examplemod:slime_squish 应已注册");
+        let clip = loaded
+            .clip_table
+            .get(clip_index)
+            .expect("已注册的剪辑索引应能查回剪辑内容");
+        assert_eq!(
+            clip.frames,
+            vec!["slime_0".to_string(), "slime_1".to_string()]
         );
     }
 }

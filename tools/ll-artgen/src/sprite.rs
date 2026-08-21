@@ -67,8 +67,23 @@ fn paint_patch(
 /// 2px 高，交叉居中。选十字而非更复杂的图案，是因为它在只有 16 像素
 /// 宽的画布上仍能保持轴对称，不会因为画布太窄而变形走样。
 fn paint_chest_cross(image: &mut RgbaImage, rect: EntryRect, color: (u8, u8, u8)) {
-    paint_patch(image, rect, 7, 11, 2, 6, color);
-    paint_patch(image, rect, 5, 13, 6, 2, color);
+    paint_chest_cross_shifted(image, rect, 0, color);
+}
+
+/// [`paint_chest_cross`] 的通用版本，纵向额外偏移 `dy_shift`（可为负）。
+/// 待机呼吸帧（[`decorate_hero_idle_breath`]）与行走的「过腿」帧
+/// （[`decorate_hero_walk`] 的 `passing = true`）都要在原十字位置上下
+/// 挪 1 像素模拟胸腔起伏，抽出这个通用版本避免两处各抄一份坐标算术。
+fn paint_chest_cross_shifted(
+    image: &mut RgbaImage,
+    rect: EntryRect,
+    dy_shift: i32,
+    color: (u8, u8, u8),
+) {
+    let vertical_dy = (11 + dy_shift).max(0) as u32;
+    let horizontal_dy = (13 + dy_shift).max(0) as u32;
+    paint_patch(image, rect, 7, vertical_dy, 2, 6, color);
+    paint_patch(image, rect, 5, horizontal_dy, 6, 2, color);
 }
 
 /// 画 `hero_idle_0`：蓝色主体 + 头部方块标记（位置与既有像素一致）+
@@ -79,26 +94,55 @@ pub(crate) fn decorate_hero_idle(image: &mut RgbaImage, rect: EntryRect) {
     paint_chest_cross(image, rect, HERO_MARK);
 }
 
-/// 画 `hero_idle_1`：待机呼吸动画的第二帧，与 `hero_idle_0` 只差头部
-/// 标记纵向 1 像素（`dy` 从 2 挪到 1，模拟吸气时胸腔/头部略微抬起）。
+/// 画 `hero_idle_1`：待机呼吸动画的第二帧，与 `hero_idle_0` 差两处
+/// ——头部标记纵向 1 像素（`dy` 从 2 挪到 1）、胸口十字纵向同向挪 1
+/// 像素（`dy_shift = -1`），一起模拟吸气时胸腔/头部整体略微抬起。
 ///
-/// 幅度刻意压到最小：呼吸动画若挪动太多像素，在像素风画面里会读成
-/// 「抖动」而不是「起伏」——项目所有者明确要求「不要做成明显的抖动」，
-/// 1 像素是这张 16×24 画布上能表达出可见变化的最小单位。
+/// 此前只挪头部标记一处，两帧只差 8 个像素（384 像素画布的 2%），呼吸
+/// 效果基本不可见；这次补上胸口十字同向的 1 像素挪动，实测把差异抬到
+/// 20 像素，仍然明显低于行走相邻帧的差异（16~26 像素，见
+/// `decorate_hero_walk` 文档），不会喧宾夺主。幅度依旧刻意压到最小：
+/// 呼吸动画若挪动太多像素，在像素风画面
+/// 里会读成「抖动」而不是「起伏」——项目所有者明确要求「不要做成明显
+/// 的抖动」，1 像素是这张 16×24 画布上能表达出可见变化的最小单位。
 pub(crate) fn decorate_hero_idle_breath(image: &mut RgbaImage, rect: EntryRect) {
     fill_rect(image, rect, HERO_BODY);
     paint_patch(image, rect, 6, 1, 4, 4, HERO_MARK);
-    paint_chest_cross(image, rect, HERO_MARK);
+    paint_chest_cross_shifted(image, rect, -1, HERO_MARK);
 }
 
-/// 画一帧 `hero_walk_*`：蓝色主体 + 顶部整行标记 + 左右交替的脚部标记
-/// （`foot_dx` 由调用方传 2 或 10，与既有两帧的既有位置一致）+ 新增的
-/// 胸口十字标志。两帧行走姿态共用这一个函数，避免同一份绘制逻辑在
-/// `main.rs` 里被抄两遍。
-pub(crate) fn decorate_hero_walk(image: &mut RgbaImage, rect: EntryRect, foot_dx: u32) {
+/// 画一帧 `hero_walk_*`：蓝色主体 + 顶部整行标记（肩线，固定不动）+
+/// 沿水平方向挪动的脚部标记 + 胸口十字标志。六帧共用这一个函数，靠
+/// 两个参数区分姿态，避免同一份绘制逻辑在 `main.rs` 里被抄六遍：
+///
+/// - `foot_dx`：脚部标记的水平位置（0..=12，标记本身 4px 宽）。六帧
+///   按 2 → 4 → 7 → 10 → 8 → 5 → （循环回 2）取值，每相邻两帧只挪 2~3
+///   像素——标记宽度是 4px，位移小于宽度时新旧位置有重叠，读起来是
+///   「脚在挪」而不是「换了张完全不同的图」。落点 2 与 10 是接触地面
+///   的极值姿态（`hero_walk_0`/`hero_walk_1` 沿用的既有像素，未改动），
+///   中间值是脚正在摆动过程中的过渡姿态。
+/// - `passing`：是否处于「过腿」相位（脚摆到接近身体中线、尚未落地）。
+///   为真时脚标记纵向抬高 1 像素（`dy` 从 20 变 19，模拟脚离地）——
+///   「挪腿」这一种过渡手法的最小实现。
+///
+///   刻意不让 `passing` 再顺带牵动胸口十字（呼吸帧才用
+///   [`paint_chest_cross_shifted`] 表达身体起伏，见
+///   [`decorate_hero_idle_breath`]）：脚部水平位移与纵向抬高已经是
+///   两个同时变化的量，若再叠加胸口纵向偏移，会让「passing 翻转」的
+///   那几对相邻帧一步变化过大（实测会超过原先两帧直接互跳的 32 像素
+///   基准）。胸口十字在六帧里保持不动，把「变化幅度」完全交给脚部，
+///   使全部相邻帧对的像素差异都不超过 26 像素——见 `main.rs` 里的
+///   `六帧行走循环相邻帧像素差异全部小于两帧方案的直接互跳` 测试。
+pub(crate) fn decorate_hero_walk(
+    image: &mut RgbaImage,
+    rect: EntryRect,
+    foot_dx: u32,
+    passing: bool,
+) {
     fill_rect(image, rect, HERO_BODY);
     paint_patch(image, rect, 0, 0, rect.width, 1, HERO_MARK);
-    paint_patch(image, rect, foot_dx, 20, 4, 4, HERO_FOOT_MARK);
+    let foot_dy = if passing { 19 } else { 20 };
+    paint_patch(image, rect, foot_dx, foot_dy, 4, 4, HERO_FOOT_MARK);
     paint_chest_cross(image, rect, HERO_MARK);
 }
 
@@ -200,19 +244,56 @@ mod tests {
     }
 
     #[test]
-    fn 两帧行走姿态的脚部标记落在不同列() {
-        // Arrange
+    fn 两个接触帧的脚部标记落在不同列() {
+        // Arrange：hero_walk_0/hero_walk_1 沿用的两个接触极值姿态。
         let mut left = RgbaImage::new(16, 24);
         let mut right = RgbaImage::new(16, 24);
 
         // Act
-        decorate_hero_walk(&mut left, HERO_RECT, 2);
-        decorate_hero_walk(&mut right, HERO_RECT, 10);
+        decorate_hero_walk(&mut left, HERO_RECT, 2, false);
+        decorate_hero_walk(&mut right, HERO_RECT, 10, false);
 
         // Assert：左脚帧在 x=2 处是脚部标记色，右脚帧在同一位置不是。
         let foot = Rgba([HERO_FOOT_MARK.0, HERO_FOOT_MARK.1, HERO_FOOT_MARK.2, 255]);
         assert_eq!(*left.get_pixel(2, 20), foot);
         assert_ne!(*right.get_pixel(2, 20), foot);
+    }
+
+    #[test]
+    fn 过腿帧的脚部标记比接触帧高一像素() {
+        // Arrange：同一水平位置，只切换 passing。
+        let mut contact = RgbaImage::new(16, 24);
+        let mut passing = RgbaImage::new(16, 24);
+
+        // Act
+        decorate_hero_walk(&mut contact, HERO_RECT, 7, false);
+        decorate_hero_walk(&mut passing, HERO_RECT, 7, true);
+
+        // Assert：过腿帧脚部标记顶行（y=19）已经是标记色（脚离地抬高
+        // 1 像素），接触帧同一行仍是主体色。
+        let foot = Rgba([HERO_FOOT_MARK.0, HERO_FOOT_MARK.1, HERO_FOOT_MARK.2, 255]);
+        assert_eq!(*passing.get_pixel(7, 19), foot);
+        assert_ne!(*contact.get_pixel(7, 19), foot);
+    }
+
+    #[test]
+    fn 行走帧的胸口十字不随passing挪动() {
+        // Arrange：胸口十字在行走的六帧里保持不动，只有脚部标记随
+        // passing 变化——理由见 decorate_hero_walk 文档「刻意不让
+        // passing 再顺带牵动胸口十字」一节：把变化幅度全部交给脚部，
+        // 才能让 passing 翻转的相邻帧对差异保持在可控范围内。
+        let mut contact = RgbaImage::new(16, 24);
+        let mut passing = RgbaImage::new(16, 24);
+
+        // Act
+        decorate_hero_walk(&mut contact, HERO_RECT, 7, false);
+        decorate_hero_walk(&mut passing, HERO_RECT, 7, true);
+
+        // Assert：胸口十字竖条顶行（y=11）两帧都是标记色，未随
+        // passing 挪动。
+        let mark = Rgba([HERO_MARK.0, HERO_MARK.1, HERO_MARK.2, 255]);
+        assert_eq!(*contact.get_pixel(7, 11), mark);
+        assert_eq!(*passing.get_pixel(7, 11), mark);
     }
 
     #[test]

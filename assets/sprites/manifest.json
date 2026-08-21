@@ -1,0 +1,220 @@
+{
+  "entries": [
+    {
+      "name": "hero_idle_0",
+      "file": "hero_idle_0.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_idle_1",
+      "file": "hero_idle_1.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_walk_0",
+      "file": "hero_walk_0.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_walk_1",
+      "file": "hero_walk_1.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_walk_2",
+      "file": "hero_walk_2.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_walk_3",
+      "file": "hero_walk_3.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_walk_4",
+      "file": "hero_walk_4.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hero_walk_5",
+      "file": "hero_walk_5.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "boss_idle_0",
+      "file": "boss_idle_0.png",
+      "pivot": {
+        "x": 16,
+        "y": 48
+      },
+      "footprint": {
+        "width": 2,
+        "height": 2
+      }
+    },
+    {
+      "name": "terrain_grass",
+      "file": "terrain_grass.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_dirt",
+      "file": "terrain_dirt.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_deep_water",
+      "file": "terrain_deep_water.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_shallow_water",
+      "file": "terrain_shallow_water.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_sand",
+      "file": "terrain_sand.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_forest",
+      "file": "terrain_forest.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_hill",
+      "file": "terrain_hill.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_mountain",
+      "file": "terrain_mountain.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_snow",
+      "file": "terrain_snow.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    }
+  ]
+}

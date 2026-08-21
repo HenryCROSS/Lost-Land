@@ -9,6 +9,7 @@
 //! 规则），保持逻辑一致但物理上各自独立。
 
 use ll_core::time::Tick;
+use ll_mod::registry::Registry;
 use ll_world::light::sight_radius_at;
 use ll_world::space_profile::{SpaceProfile, effective_ambient_light};
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
@@ -41,6 +42,40 @@ pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'s
     } else {
         None
     }
+}
+
+/// 把地形种类映射到图集条目名，覆盖本体注册的自然地形**与** mod 注册
+/// 的自定义地形（例如 `mods/example_mod` 的 `examplemod:lava_floor`）。
+///
+/// # 为什么需要这个回退，而不是只用 [`terrain_entry_name`]
+///
+/// [`terrain_entry_name`] 是一张写死的静态映射表，只认识本体注册的
+/// 那几种基础地形——mod 通过 `register-terrain` 注册的新地形种类，
+/// 这张表天然查不到（它压根不知道这些地形的存在），此前 mod 自定义
+/// 地形因此永远画不出来，只能靠 [`tile_tint`] 之外没有任何降级路径，
+/// 直接在 [`terrain_entry_name`] 返回 `None` 时被跳过——这正是「mod
+/// 能注册一把剑，却给不了它一张图」这条真实瓶颈在地形渲染上的具体
+/// 体现。
+///
+/// 回退路径反查 [`Registry::resolve`] 拿到这个地形种类的完整命名空间
+/// ID（例如 `"examplemod:lava_floor"`），直接把这个字符串当图集查找
+/// 键——`ll_mod::asset_vfs` 对非本体命名空间的精灵，图集条目名恒定就是
+/// 这个完整 ID 字符串（见其模块文档 [`crate::content::BASE_NAMESPACE`]
+/// 一节「为什么本体资产用裸名字，mod 资产用完整命名空间字符串」），
+/// 两边约定完全对齐，不需要额外的映射表。
+///
+/// 与 GPU 无关的纯函数：[`Registry`] 是普通数据，不需要真实图集就能
+/// 单测覆盖「查到了哪个字符串」这层逻辑；「这个字符串在图集里查不查
+/// 得到条目」是下一步 `GpuResources::lookup` 的职责，不在本函数范围。
+pub fn terrain_atlas_key(
+    kind: TerrainKind,
+    ids: &BaseTerrainIds,
+    registry: &Registry,
+) -> Option<String> {
+    if let Some(bare) = terrain_entry_name(kind, ids) {
+        return Some(bare.to_string());
+    }
+    registry.resolve(kind.index()).map(|id| id.to_string())
 }
 
 /// 给定空间在某一世界时刻的有效光照换算出的视野半径。
@@ -124,6 +159,46 @@ pub fn tile_tint(currently_visible: bool, explored: bool, tint: [f32; 4]) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 本体地形直接查到裸名字图集条目而不需要回退到registry() {
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+        let registry = Registry::new();
+
+        // Act
+        let key = terrain_atlas_key(ids.grass, &ids, &registry);
+
+        // Assert
+        assert_eq!(key.as_deref(), Some("terrain_grass"));
+    }
+
+    #[test]
+    fn mod注册的地形回退到registry查出完整命名空间字符串() {
+        // 这条测试直接对应「mod 能注册一把剑，却给不了它一张图」这条
+        // 瓶颈在地形渲染上的修复：examplemod 注册的 lava_floor 不在
+        // BaseTerrainIds 这张静态表里，terrain_atlas_key 必须回退到
+        // Registry 反查出完整命名空间字符串，而不是直接判定「查不到」。
+        // Arrange：地形索引与 mod 地形索引必须来自同一个 Registry——
+        // 与真实装载流程一致（本体先注册、mod 后 intern，见
+        // `ll_mod::pipeline` 模块文档「本体内容不经过这条管线」一节）。
+        // 若各用一个独立 `Registry::new()`，两边的索引计数器各自从零
+        // 开始，数值可能巧合重叠，`terrain_entry_name` 会在真正测试
+        // 回退逻辑之前就已经因为索引数值碰巧相等而误判命中。
+        let mut registry = Registry::new();
+        let (ids, _table) = ll_mod::base_terrain::register_base_terrain(&mut registry)
+            .expect("本体地形声明表内部一致，注册恒不失败");
+        let mod_id = ll_core::ident::NamespacedId::parse("examplemod:lava_floor")
+            .expect("测试用命名空间恒合法");
+        let index = registry.intern(mod_id);
+        let mod_terrain = ll_world::terrain::TerrainKind::from_index(index);
+
+        // Act
+        let key = terrain_atlas_key(mod_terrain, &ids, &registry);
+
+        // Assert
+        assert_eq!(key.as_deref(), Some("examplemod:lava_floor"));
+    }
 
     #[test]
     fn 全部自然地形都能查到图集条目() {

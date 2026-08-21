@@ -14,12 +14,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use ll_mod::asset_vfs::AssetVfs;
 use ll_platform::config::DisplayConfig;
 use ll_platform::config::ScaleFilter;
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::window::{AppHandler, FrameId, FrameOutcome, PhysicalSize, Window};
-use ll_render::anim::{AnimStateMachine, Clip, current_sprite_name};
-use ll_render::atlas::{Atlas, AtlasEntry, AtlasMetadata};
+use ll_render::anim::{AnimStateMachine, current_sprite_name};
+use ll_render::atlas::{Atlas, AtlasEntry};
+use ll_render::atlas_pack::{SpriteSource, pack_atlas};
 use ll_render::batch::{SpriteBatch, SpriteInstance};
 use ll_render::camera::{Camera, Zoom, apply_zoom};
 use ll_render::gpu::GpuContext;
@@ -35,7 +37,7 @@ use ll_world::surface_store::SurfaceWindow;
 
 use crate::animation::{self, FALLBACK_SPRITE};
 use crate::content::LoadedContent;
-use crate::layout::{effective_sight_radius, effective_tint, terrain_entry_name, tile_tint};
+use crate::layout::{effective_sight_radius, effective_tint, terrain_atlas_key, tile_tint};
 use crate::save::save_game;
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
@@ -51,8 +53,42 @@ const PLAYER_ENTITY: u64 = 0;
 /// 地形瓦片绘制顺序号的起始偏移。
 const TERRAIN_ENTITY_BASE: u64 = 1;
 
-const ATLAS_JSON: &str = include_str!("../../../assets/atlas/placeholder.json");
-const ATLAS_PNG: &[u8] = include_bytes!("../../../assets/atlas/placeholder.png");
+/// 把资产 VFS 已经解析完覆盖规则的精灵声明，逐个从磁盘读出图片字节，
+/// 转换成 `ll_render::atlas_pack::pack_atlas` 需要的输入。
+///
+/// 单个精灵文件读不到（mod 作者声明的路径写错、文件被误删）只跳过
+/// 那一条并记警告日志，不让整个图集打包失败——`pack_atlas` 自己对
+/// 「读到了字节但解码失败」这一层已经做了同样的降级（见其模块文档
+/// 「打包失败必须优雅」一节），这里补的是更前一步「连字节都读不到」
+/// 的同一条降级路径。
+fn load_sprite_sources(vfs: &AssetVfs) -> Vec<SpriteSource> {
+    vfs.sprites
+        .iter()
+        .filter_map(|sprite| match std::fs::read(&sprite.source_file) {
+            Ok(image_bytes) => Some(SpriteSource {
+                name: sprite.atlas_name.clone(),
+                image_bytes,
+                pivot: ll_render::sprite::Pivot {
+                    x: sprite.pivot.x,
+                    y: sprite.pivot.y,
+                },
+                footprint: ll_render::sprite::Footprint {
+                    width: sprite.footprint.width,
+                    height: sprite.footprint.height,
+                },
+            }),
+            Err(error) => {
+                tracing::warn!(
+                    name = %sprite.atlas_name,
+                    path = %sprite.source_file.display(),
+                    %error,
+                    "精灵源文件读取失败，已跳过并降级"
+                );
+                None
+            }
+        })
+        .collect()
+}
 
 /// 存活于 `on_resume` 之后的 GPU 相关资源——不能在 `Demo::new` 阶段
 /// 就创建：窗口句柄要等 `on_resume` 才可用。
@@ -70,13 +106,25 @@ struct GpuResources {
 }
 
 impl GpuResources {
-    fn new(window: Arc<Window>, size: PhysicalSize<u32>, display: DisplayConfig) -> GpuResources {
+    /// `asset_vfs` 是本次装载会话已经解析完覆盖规则的资产清单
+    /// （[`LoadedContent::asset_vfs`]）——图集不再是编译期
+    /// `include_bytes!` 烧死的单一 PNG，而是运行期从本体与全部 mod
+    /// 的松散贴图现场打包，见 `ll_render::atlas_pack` 模块文档「为什么
+    /// 本体资产也要走这条路径」一节。
+    fn new(
+        window: Arc<Window>,
+        size: PhysicalSize<u32>,
+        display: DisplayConfig,
+        asset_vfs: &AssetVfs,
+    ) -> GpuResources {
         let gpu =
             GpuContext::new(window, size, display.vsync).expect("运行环境应能取得可用的图形适配器");
         let render_target = RenderTarget::new(&gpu);
-        let metadata = AtlasMetadata::parse(ATLAS_JSON).expect("内嵌图集元数据应为合法 JSON");
-        let atlas =
-            Atlas::load(&gpu, metadata, ATLAS_PNG).expect("内嵌图集资源应能上传为 GPU 纹理");
+        let sources = load_sprite_sources(asset_vfs);
+        tracing::info!(sprite_count = sources.len(), "开始运行期图集打包");
+        let packed = pack_atlas(&sources);
+        let atlas = Atlas::from_rgba(&gpu, packed.metadata, packed.canvas)
+            .expect("运行期打包的图集画布应能上传为 GPU 纹理");
         let batch = SpriteBatch::new(&gpu, &atlas, render_target.format());
         GpuResources {
             gpu,
@@ -144,10 +192,13 @@ pub struct Demo {
     /// 但 `resources` 要等窗口就绪才能创建（见该字段文档），因此本
     /// 结构体自己先存一份。
     display: DisplayConfig,
-    /// 玩家精灵的行走/待机两段动画剪辑——下标含义见
-    /// [`animation::WALK_CLIP`]/[`animation::IDLE_CLIP`]，构造见
-    /// [`animation::player_clips`]。
-    clips: Vec<Clip>,
+    /// 玩家行走剪辑在 `content.clip_table` 里的下标——装载期由
+    /// [`ll_mod::base_clip::register_base_clips`] 分配，见
+    /// `LoadedContent::clip_ids`。
+    walk_clip: usize,
+    /// 玩家待机剪辑在 `content.clip_table` 里的下标，理由同
+    /// `walk_clip` 字段文档。
+    idle_clip: usize,
     /// 玩家精灵行走/待机动画状态的生命周期管理：电平驱动
     /// （[`AnimStateMachine::set_level`]），每帧由
     /// [`animation::update_player_animation`] 算出「现在该播放哪个
@@ -178,11 +229,12 @@ impl Demo {
             center: player_pos,
             world: game_world.world.size,
         };
-        let clips = animation::player_clips();
+        let walk_clip = content.clip_ids.hero_walk.get() as usize;
+        let idle_clip = content.clip_ids.hero_idle.get() as usize;
         tracing::info!(
-            clip_count = clips.len(),
-            walk_clip = animation::WALK_CLIP,
-            idle_clip = animation::IDLE_CLIP,
+            clip_count = content.clip_table.as_clips().len(),
+            walk_clip,
+            idle_clip,
             "玩家动画状态机已装载"
         );
         Demo {
@@ -193,8 +245,9 @@ impl Demo {
             save_path,
             character_name,
             display,
-            clips,
-            anim: AnimStateMachine::new(animation::IDLE_CLIP, FrameId(0)),
+            walk_clip,
+            idle_clip,
+            anim: AnimStateMachine::new(idle_clip, FrameId(0)),
             resources: None,
         }
     }
@@ -209,7 +262,13 @@ impl Demo {
     fn advance(&mut self, input: &InputState, frame: FrameId) {
         self.maintain_streaming();
         self.update_zoom(input);
-        animation::update_player_animation(&mut self.anim, input, frame);
+        animation::update_player_animation(
+            &mut self.anim,
+            input,
+            frame,
+            self.walk_clip,
+            self.idle_clip,
+        );
 
         let player = self.game_world.player;
         let intent = intent_from_input(player, input);
@@ -361,10 +420,10 @@ fn render_surface(
         let Some(kind) = world.terrain_at(pos) else {
             continue;
         };
-        let Some(name) = terrain_entry_name(kind, &content.terrain_ids) else {
+        let Some(name) = terrain_atlas_key(kind, &content.terrain_ids, &content.registry) else {
             continue;
         };
-        let Some((entry, uv)) = resources.lookup(name) else {
+        let Some((entry, uv)) = resources.lookup(&name) else {
             continue;
         };
         // 先按未缩放的相机换算拿到屏幕坐标（DrawOrder 排序用这份原始
@@ -469,7 +528,12 @@ fn sprite_instance(
 impl AppHandler for Demo {
     fn on_resume(&mut self, window: Arc<Window>, size: PhysicalSize<u32>) {
         tracing::info!(width = size.width, height = size.height, "window resumed");
-        self.resources = Some(GpuResources::new(window, size, self.display));
+        self.resources = Some(GpuResources::new(
+            window,
+            size,
+            self.display,
+            &self.content.asset_vfs,
+        ));
     }
 
     fn on_resize(&mut self, size: PhysicalSize<u32>) {
@@ -496,7 +560,7 @@ impl AppHandler for Demo {
         // 那已经是资产整体损坏，不再是「可选帧缺失」。
         let sprite_name = current_sprite_name(
             self.anim.playback(),
-            &self.clips,
+            self.content.clip_table.as_clips(),
             frame,
             resources.atlas.metadata(),
             FALLBACK_SPRITE,

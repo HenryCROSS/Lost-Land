@@ -47,7 +47,7 @@ fn test_content() -> LoadedContent {
         line!()
     ));
     std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
-    let content = ll_game::content::load_content(&dir);
+    let content = ll_game::content::load_content(&dir, &dir.join("assets"));
     let _ = std::fs::remove_dir_all(&dir);
     content
 }
