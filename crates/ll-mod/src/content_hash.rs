@@ -1297,6 +1297,102 @@ mod tests {
     }
 
     #[test]
+    fn 种族出生物品字段变化时命名空间哈希也改变() {
+        // NPC 生命周期批次新增 RaceDef::starting_items——与上面
+        // xp_reward 那条测试同一条判据：写 write_race_fields 时若忘了
+        // 混入这个新字段,两份"除出生物品外逐字段相同"的种族声明会算出
+        // 相同的值哈希,静默漏判两份不同的内容。
+        // Arrange
+        let mut registry_a = Registry::new();
+        let index_a = registry_a.intern(id("yourmod:goblin"));
+        let item_a_id = registry_a.intern(id("yourmod:crude_dagger"));
+        let mut race_a = RaceTable::new();
+        race_a
+            .define(index_a, race_attrs("yourmod:goblin_name", 0))
+            .expect("测试用声明内部自洽");
+        race_a
+            .add_starting_item(index_a, item_a_id, 1)
+            .expect("追加出生物品应当成功");
+        let (
+            terrain_a,
+            class_a,
+            skill_a,
+            subclass_a,
+            quest_a,
+            space_a,
+            clip_a,
+            trait_a,
+            pool_a,
+            item_a,
+            xp_a,
+        ) = empty_non_race_tables();
+
+        let mut registry_b = Registry::new();
+        let index_b = registry_b.intern(id("yourmod:goblin"));
+        let mut race_b = RaceTable::new();
+        race_b
+            .define(index_b, race_attrs("yourmod:goblin_name", 0))
+            .expect("测试用声明内部自洽");
+        // 不追加任何出生物品——两份种族声明除 starting_items 外逐字段
+        // 相同。
+        let (
+            terrain_b,
+            class_b,
+            skill_b,
+            subclass_b,
+            quest_b,
+            space_b,
+            clip_b,
+            trait_b,
+            pool_b,
+            item_b,
+            xp_b,
+        ) = empty_non_race_tables();
+
+        // Act
+        apply_value_hashes(
+            &mut registry_a,
+            &ContentValueTables {
+                terrain: &terrain_a,
+                class: &class_a,
+                skill: &skill_a,
+                subclass: &subclass_a,
+                quest: &quest_a,
+                race: &race_a,
+                space_profile: &space_a,
+                clip: &clip_a,
+                trait_def: &trait_a,
+                resource_pool: &pool_a,
+                item: &item_a,
+                xp_curve: &xp_a,
+            },
+        );
+        apply_value_hashes(
+            &mut registry_b,
+            &ContentValueTables {
+                terrain: &terrain_b,
+                class: &class_b,
+                skill: &skill_b,
+                subclass: &subclass_b,
+                quest: &quest_b,
+                race: &race_b,
+                space_profile: &space_b,
+                clip: &clip_b,
+                trait_def: &trait_b,
+                resource_pool: &pool_b,
+                item: &item_b,
+                xp_curve: &xp_b,
+            },
+        );
+
+        // Assert
+        assert_ne!(
+            registry_a.content_hash_of("yourmod"),
+            registry_b.content_hash_of("yourmod")
+        );
+    }
+
+    #[test]
     fn 新纳入覆盖的物品表字段值改变时命名空间哈希也改变() {
         // 直接验收本次批次新增的表覆盖之一（物品表）：两份物品声明除
         // stack_limit 外逐字段相同，值哈希必须能看见这条差异。
