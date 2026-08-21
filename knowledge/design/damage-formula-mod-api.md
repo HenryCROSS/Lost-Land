@@ -1,10 +1,10 @@
 # 伤害公式的 mod API：D&D 骰子表达式，s-表达式载体，第二档
 
-**冻结于** 2026-08-20。**落地状态**：纯设计，`crates/` 中无任何对应类型。核对提交 `2226469`（`main` 分支）。已核实的现状：`damage_after_defense`（`crates/ll-sim/src/combat.rs`）与调用它的唯一真实入口 `resolve_attack`（`crates/ll-sim/src/resolve.rs:462`）——见「一、现状核实」。本文档是同一次设计任务的第三版：第一版判定「受限公式,Rust 侧构造指令」，项目所有者两次追加要求后改为「参考 D&D 骰子记号 + 本项目属性」「表达式载体用 s-表达式,仿照 `mods/example_mod/behavior.scm` 的既有模式」——本文档正文直接给出修正后的结论,不逐版本重复推导过程。
+**冻结于** 2026-08-20。**落地状态**：纯设计，`crates/` 中无任何对应类型。核对提交 `2226469`（`main` 分支，前三版）与 `4ade0ed`（`main` 分支，本次第四版追加，1216 测试全绿）。已核实的现状：`damage_after_defense`（`crates/ll-sim/src/combat.rs`）与调用它的唯一真实入口 `resolve_attack`（`crates/ll-sim/src/resolve.rs:462`，第四版复核为 `:495`，行号随后续提交小幅漂移，函数本身未变）——见「一、现状核实」。本文档是同一次设计任务的第四版：第一版判定「受限公式,Rust 侧构造指令」，项目所有者三次追加要求后依次改为「参考 D&D 骰子记号 + 本项目属性」「表达式载体用 s-表达式,仿照 `mods/example_mod/behavior.scm` 的既有模式」「加入武器类别与伤害类别,各自独立公式,配置后合并计算」——本文档正文直接给出修正后的结论,不逐版本重复推导过程；第四版新增内容集中在「十六」及之后的章节,一至十五节结论不变,仅在九、十一两节末尾补了指向新章节的前向指针。
 
 ---
 
-## 零、项目所有者的要求（三次，累加）
+## 零、项目所有者的要求（四次，累加）
 
 > 「关于伤害计算公式，我希望也能留个 api 给 mod，让 mod 有能力写出不同的计算公式。」
 
@@ -12,7 +12,11 @@
 
 > 「这个表达式应该还很适配 steel 那种 lisp 的函数风格。也就是变成对应的函数。」
 
-三条要求共同定出的形状：**mod 写一份 D&D 风格的骰子表达式（`1d8 + 力量调整值`这一类），载体是 Steel 的 s-表达式（不是自定义字符串文法），装载期一次性编译成扁平指令数组，运行期零脚本调用**。机制在 Rust 里实现好,真正可游玩的内容由 mod 填充——这是 P4 定下的架构划分（[ADR 0016](../decisions/0016-mod-performance-tiers-by-declaration.md)）,本文档回答的是「机制该长什么样」,不产出任何具体武器/技能的数值内容。
+> 「我对伤害公式突然有了些想法。首先是我希望有一定的随机数让伤害每次都不再是固定值，然后增加武器类别和伤害的类别，每一种都有独特的公式，然后配置好以后合并在一起计算。例如剑和斧头，弓和弩，魔法也加入元素以及其他类别的设定。这样在给物品添加伤害的同时还可以选择他的公式，当然也会有最默认的公式。」
+
+前三条共同定出的形状：**mod 写一份 D&D 风格的骰子表达式（`1d8 + 力量调整值`这一类），载体是 Steel 的 s-表达式（不是自定义字符串文法），装载期一次性编译成扁平指令数组，运行期零脚本调用**。机制在 Rust 里实现好,真正可游玩的内容由 mod 填充——这是 P4 定下的架构划分（[ADR 0016](../decisions/0016-mod-performance-tiers-by-declaration.md)）,本文档回答的是「机制该长什么样」,不产出任何具体武器/技能的数值内容。
+
+第四条拆开是四件事：**（1）随机数**——现有设计已覆盖（`(d N S)` 骰子算子，见三节），本次不重新设计；**（2）武器类别**（剑/斧、弓/弩）——各有独特公式，新设计见十七节；**（3）伤害类别**（物理/元素/……）——同样各有独特公式，新设计见十七节；**（4）合并计算**——配置好的多个公式合起来算，且有默认公式，是本次的核心，新设计见十八、十九节。
 
 ---
 
@@ -378,7 +382,9 @@ attack-power 的来源，现在有三种可以任选（mod 作者在表达式里
 - **元素伤害类型（火/冰/雷/毒/暗/光）与状态抗性（流血/中毒/眩晕……）**——只在 `attribute-system.md` §六「次级属性」的一份**名词清单**里出现,**没有任何数值规则**（没有减免百分比、没有免疫/易伤倍率、没有任何字段定义），该文档「落地状态」明确标注次级属性「均未落地」。
 - **免疫/半伤/双倍这类抗性乘数机制**——**在本项目任何设计文档或代码里都不存在**，是本文档核实后确认的一处真正的空白，不是遗漏去找。
 
-**结论：伤害类型与抗性系统都不存在，符合项目所有者的预判。本文档不实现它——不止是「实现属于代码任务、本文档只做设计」这条一般理由，是这个系统本身连数值规则都还没有被设计过，本文档若现在就为它设计表达式接口，等于在一个空白上凭空捏造需求形状（YAGNI 的双重违反：既不需要，也没有可以参照的既有设计）。**
+**结论：伤害类型与抗性系统都不存在，符合项目所有者的预判。本文档不实现它——不止是「实现属于代码任务、本文档只做设计」这条一般理由，是这个系统本身连数值规则都还没有被设计过，本文档若现在就为它设计表达式接口，等于在一个空白上凭空捏造需求形状（YAGNI 的双重违反：既不需要，也没有可以参照的既有设计）。
+
+**第四版更正**：上面这条结论是第三版写的，成立的前提是「没有真实需求驱动」——第四版项目所有者明确提出「武器类别和伤害类别，每一种都有独特的公式，配置好以后合并在一起计算」，YAGNI 的前提（不需要）不再成立，本节被否决的只是「现在没有真实需求所以不设计」这句话本身，不是本节核实出的现状（伤害类型/抗性系统在代码里仍然不存在，这个事实没有变）。**新设计见十七至二十一节**——武器类别、伤害类别的表达方式与合并模型现在有了明确形状；但**抗性的具体数值规则（免疫/半伤/双倍乘数本身）本次仍不设计**，理由与本节原论证相同：抗性乘数要落在谁身上（种族？装备词条？两者都有？）、数值范围多大，这些问题本次任务没有被问到，二十节只给出抗性在减伤链路里的**挂载点**（在减伤之后），不给数值规则本身，这个边界与本节原结论保持一致，不是又一次凭空捏造。**
 
 ### 未来怎么容纳，不需要改动本文档的指令集
 
@@ -407,6 +413,8 @@ attack-power 的来源，现在有三种可以任选（mod 作者在表达式里
 **两个 mod 都想替换伤害公式怎么办**：区分「各自开一把新武器」（天然无冲突）与「争抢同一件已存在的内容」（例如都想改写 `lostland:iron_sword` 或 `lostland:default_damage_formula` 本身）。后者不是伤害公式独有的问题,是"内容注册表里一个已经被定义过的 `ContentIndex` 能不能被另一个 mod 重新 `define`"这个更通用的问题（武器/地形/公式皆然）,本文档复用项目已经在资产覆盖场景验证过的既有解法（[mod 包结构与资产 VFS](mod-package-structure.md)「覆盖冲突」一节）：**`topo_sort`（`crates/ll-mod/src/topo.rs`）确定性总序决定谁的覆盖生效，且必须可见——`LoadStatus::Warning(String)`（`crates/ll-mod/src/load_report.rs`）产出一条明确指出"被谁覆盖、当前生效谁"的诊断**,不是本文档单独发明一套解法。
 
 **全局一套还是按类型各一套**：都不是,按内容各自声明，允许共享——本体三系默认共享同一个公式（当前数值结构同构），不是机制强制。
+
+**第四版扩展，不是推翻**：本节「一件内容引用恰好一个 `FormulaDef`」在第四版扩展为「一件内容引用一份**分项列表**（可以只有一项，此时与本节原结论完全等价）」——十八节详细展开为什么要扩展、扩展到什么程度。**没有声明任何分项的内容（当前所有本体武器/技能）行为完全不变**：仍然是本节这套「按内容各自声明，允许共享，本体默认指向 `lostland:default_damage_formula`」，十九节的默认链最终也会解析到同一个公式——这不是本节论证的失效，是本节论证在「只有一项」这个特例下的自然覆盖。
 
 ---
 
@@ -475,6 +483,298 @@ attack-power 的来源，现在有三种可以任选（mod 作者在表达式里
 - **给公式的表达式分支加"懒惰求值"（未选中分支不消耗随机数）**——否决（暂不）：需要求值器支持真正的控制流跳过,与"扁平数组、每条指令执行一次"这个简单模型冲突,换来的收益（省一点随机流位置）不足以承担复杂度,真正需要省随机数的场景应该把判断挪到公式外（六节已给出推荐模式）。
 - **伤害类型/抗性现在就设计具体字段与百分比规则**——否决：系统本身尚不存在（无数值规则、无代码），现在设计等于凭空捏造需求,只给出未来接线形状（九节）。
 - **`KillCause` 记录用了哪套公式/是否发生过降级**——否决：与武器/技能字段冗余,服务对象不同,不该混进同一条记录（十三节）。
+- **武器类别与伤害类别合并成同一个类别体系**——否决：一个描述「用什么打」，一个描述「造成哪种伤害」，一把火焰剑需要同时是「剑」与「火」，合并成一个体系就表达不出这种正交组合，与既有 `DamageSchool` 也会产生职责重叠（十七节）。
+- **多个公式"串联"（前一个的输出作为后一个的输入）**——否决：伤害层面的"串联"没有清晰的玩法含义——"剑的输出喂给火的公式当输入"意味着什么，作者难以预判，容易在多层嵌套下产生失控的放大/缩小；串联更适合"对基础伤害做修饰"的场景（例如增益公式），不适合"两种描述同时为真"的场景（十八节）。
+- **多个公式"分层覆盖"，只有最具体的一个生效**——否决作为合并手段：覆盖意味着只有一份生效，丢失了"这把武器同时造成物理和火焰"的可能性，与项目所有者原句「合并在一起计算」矛盾——覆盖是「选择」不是「合并」；分层覆盖被保留用于**默认公式解析**（十九节），但不能替代分项之间的合并本身。
+- **现在就把 `Effect::Damage` 改造成 `Vec<DamageComponent>`**——否决（暂不）：抗性系统本身尚不存在（九节已核实），分项之间此刻没有任何差异化处理的余地，改动一个没有消费者的数据结构违反 YAGNI；十八节给出的两阶段方案在公式内部维护分项列表、化简成标量再送入 `Effect::Damage`，抗性落地时只需要改"化简"这一步，不需要现在就承担 `Effect::Damage`/击杀记录/UI 的改动代价。
+- **让公式合并的优先级可由 mod 配置**——否决：会引入组合爆炸与循环优先级的可能性，且没有真实需求驱动——想要不同优先级，直接显式声明自己的分项/公式覆盖掉整条默认链即可，这就是「配置」本身，不需要再发明一套「配置优先级的配置」（十九节）。
+
+---
+
+## 十六、第四版现状核实（写作前已去代码核实，`4ade0ed`）
+
+**`AttributeKind` 里没有抗性**——`crates/ll-world/src/entity/stats.rs:43` 起的六个变体是 `Strength`/`Dexterity`/`Constitution`/`Intelligence`/`Willpower`/`Charisma`，`Constitution` 的文档注释提到"生命上限、抗性、耐力"，但这是"体质这个主属性泛泛驱动防御类数值"的描述性文字，**不是**一张按伤害类别（火/冰/……）分列的抗性表——没有任何字段能回答"这个实体对火焰伤害的抗性是多少"。二十节设计的抗性挂载点因此完全没有数值可读，只是一个尚无生产者的输入槽，与九节原有结论一致，不是新缺口。
+
+**`resolve_attack` 完全不读 `active_stat_modifiers`**——`crates/ll-sim/src/resolve.rs:503`：`let attack_power = attacker.stats.strength;`，直接读 `BaseStats` 的固定字段，整个函数体（495~531 行）没有出现 `active_stat_modifiers` 一次。这与[设计文档总索引](README.md)「落地状态速览」表 [载具与骑乘系统](vehicle-and-mounting.md) 一行已经点出的缺口是同一处（"`resolve_attack` 读取 `active_stat_modifiers`……目前仍是攻击力恒读力量、防御恒为零的占位实现"）——**武器伤害要真正因装备词条/临时增益浮动，这条线必须先接上**，本文档设计的 `str-mod`/`AttributeModifier` 操作数（三节既有）在公式层面完全正确，但只要 `resolve_attack` 不读 `active_stat_modifiers`，任何来自装备/buff 的临时属性修正在实际战斗里就是不生效的——这不是本文档能解决的缺口，是二十三节要点名的前置依赖之一，不是本次要修的代码。
+
+**`SurfaceKind` 先例引用的是被否决之后的最终版本，不是最初版本**——[载具与骑乘系统](vehicle-and-mounting.md) 三节原本把 `SurfaceKind` 设计成定宽位标志（仿照 `SlotMask`/`ActionCapability`），**该文档自己否决了这个版本**，改用「`Registry::intern` 内容索引 + 装载期定长位集」，理由是表面分类"可扩展项没有自然上限"（熔岩、云层、流沙……mod 可以无限新增），与 `SlotMask`（22 槽位封顶）/`ActionCapability`（四类封闭）性质不同。十七节引用 `SurfaceKind` 先例时，引用的是这个**最终确立的版本**（`Registry::intern`），不是被否决的定宽位标志版本——武器类别、伤害类别与表面分类是同一种"可扩展项无自然上限"的开放集合（"剑/斧/弓/弩……"与"火/冰/雷/毒/暗/光……"都可能被 mod 无限追加），先例适用的判据一致。
+
+---
+
+## 十七、武器类别与伤害类别：不是同一种东西，各自走开放注册表
+
+### 是不是同一种东西：不是
+
+**武器类别描述"用什么打"，伤害类别描述"造成哪种伤害"**——项目所有者的初判成立。两者是两条独立的轴，一把武器在两条轴上各占一个值，不是同一条轴上的两个层级：
+
+- 一把「铁剑」：武器类别 = 剑，伤害类别 = 物理。
+- 一把「火焰剑」：武器类别 = 剑（挥砍的手法、近战投送方式不变），伤害类别 = 物理 **和** 火（挥出去同时带着刀刃的物理伤害与灼烧的元素伤害）——**同一件武器在武器类别轴上仍然只是"剑"，但在伤害类别轴上不再是单一值**，这正是十八节要处理的"分项"由来。
+
+若把两者合并成一个体系（例如"火焰剑"直接算作一个叫"火剑"的新类别），会立刻遇到组合爆炸——武器类别（剑/斧/弓/弩/法杖……）× 伤害类别（物理/火/冰/雷/毒/暗/光……）任意组合都可能被 mod 用到，合并后的类别数是两边的笛卡尔积，且"这把武器算不算剑"（用于任何"剑类武器加成"的判定）这个问题在合并后无法回答，除非再拆回两条轴——不如从一开始就是两条轴。
+
+### 与既有 `DamageSchool` 的关系：正交，不合并
+
+[三轴战斗结算](combat-three-axis.md) 已经定义了 `DamageSchool`（物理/魔法/精神，封闭三值枚举）——它回答的是"用哪一组攻防数值、哪一种穿透"（护甲 vs 破甲、法抗 vs 破魔、意志抗性 vs 破意），是三轴战斗结算管线里**决定读 `DerivedStats` 哪个字段**的分类，值域天然有限（本项目的攻防体系目前就是三系）。
+
+本节新增的**伤害类别**（物理/火/冰/雷/毒/暗/光……）是更细粒度、**开放、mod 可无限扩展**的分类，服务两个不同的目的：**（a）挂载公式**（十八节，一个伤害类别可以有自己的默认公式）、**（b）挂载未来的抗性**（二十节，抗性天然是按"火抗""冰抗"这类细粒度类别分别定义的，不可能按"物理/魔法/精神"三个粗粒度系别定义——同属"魔法"系别的火球与冰锥,一个目标可能对火免疫对冰却很脆弱,三系粒度表达不了这种差异)。
+
+**两者不合并的理由**：`DamageSchool` 的值域有限且封闭，是"读哪个防御字段"这个具体问题的答案，改起来影响面是整条三轴战斗结算管线；伤害类别的值域开放且要频繁被 mod 扩展，是"挂哪个公式/查哪个抗性"这个问题的答案。**一个物理伤害的分项，`damage_school` 仍然是 `Physical`（决定查护甲、查破甲穿透），但它的伤害类别是新注册的 `lostland:physical`（决定挂哪个公式、未来查哪个抗性）**——同一件事在两条轴上各自被问了一遍，答案可能相同（本体三系默认各自映射到一个同名的伤害类别，见十九节），但这是巧合不是必然，元素伤害（火/冰/雷……）在 `DamageSchool` 轴上依然要归到"魔法"，但在伤害类别轴上是彼此独立的新类别，`DamageSchool` 表达不了"火"与"冰"的区别，这正是需要新开一条轴的原因。
+
+### 表达方式：两个开放 `Registry::intern` 集合，照抄 `SurfaceKind` 先例（十六节已核实的最终版本）
+
+武器类别、伤害类别都是"可扩展项没有自然上限"的开放集合——一个大型整合包可以轻易新增二十种武器类别与十几种元素类别，与地表分类（`SurfaceKind`）面对的是同一种约束，不能走 `SlotMask`/`ActionCapability` 那种定宽位标志（先例已被否决，理由见十六节）。因此两者都走 `register-*` + `Registry::intern` 分配 `ContentIndex`：
+
+```rust
+// crates/ll-sim/src/formula.rs（设计，未落地，与 FormulaDef 同一文件）
+
+/// 武器类别的注册表条目——「剑」「斧」「弓」「弩」这一类。
+pub struct WeaponCategoryDef {
+    pub id: ContentIndex,
+    /// 这个武器类别没有被具体武器覆盖时使用的默认公式，见十九节。
+    /// `None` 表示继续下探到全局默认。
+    pub default_formula: Option<ContentIndex>,
+}
+
+/// 伤害类别的注册表条目——「物理」「火」「冰」这一类。
+pub struct DamageCategoryDef {
+    pub id: ContentIndex,
+    /// 同上，见十九节。
+    pub default_formula: Option<ContentIndex>,
+}
+
+pub struct WeaponCategoryTable { entries: std::collections::BTreeMap<ContentIndex, WeaponCategoryDef> }
+pub struct DamageCategoryTable { entries: std::collections::BTreeMap<ContentIndex, DamageCategoryDef> }
+```
+
+**与 `SurfaceKindTable` 刻意的一处不同，需要说明为什么**：`SurfaceKindTable` 除了 `intern` 出 `ContentIndex`，还要分配一个**稠密位下标**（`dense_bit_of`），因为地表分类的消费场景是"某个坐骑能不能通过某种地形"这类**高频运行期位测试**，位集比 `BTreeMap` 查找更省。武器类别/伤害类别的消费场景是"这把武器的这一分项该用哪个默认公式"——**这是一次性查表**：同一件武器/技能的类别在注册期就已知，`WeaponDef` 解析时直接把默认公式（或找不到默认时的哨兵）缓存进自己的字段（见十八节 `DamageComponent::formula` 的 `None` 语义），运行期不会反复查 `WeaponCategoryTable`/`DamageCategoryTable`——不需要稠密位集带来的位运算性能，`BTreeMap<ContentIndex, _>` 已经足够，引入位集只会增加一层复杂度而没有对应的收益。**取的是 `SurfaceKind` 先例"开放集合走内容索引"这一条判据，不是它"配位集"这个具体实现**，两者要解决的性能问题不同。
+
+档位：一档（ADR 0016/0017）——声明式，一次性交出「ID + 可选默认公式」，运行期只查表，不消费任何运行期才存在的输入，与 `register-surface-kind` 同一判据（八节「档位：一档」的三步判据完全适用）。
+
+---
+
+## 十八、合并模型：分项相加是唯一不丢信息的选择，但只做半程落地
+
+### 四个候选方案评估
+
+- **求和**（各公式各算一个数，加起来）——作为"最终语义"不够：一旦未来接入抗性，抗性必须按伤害类别分别算，"先加起来再统一处理"就再也分不清这个总数里哪部分该打几折——**但在抗性系统落地之前，求和与分项相加在数字上完全等价**（下面详述），这是本节选中"分项相加"却"半程落地成求和"的关键原因。
+- **串联**（前一个的输出作为下一个的输入）——否决：见十五节，语义不明确，容易在多层嵌套下产生失控的放大/缩小，且找不到"剑的输出喂给火"这个操作对应的玩法含义。
+- **分层覆盖**（更具体的覆盖更一般的）——否决作为合并手段，但保留作为**默认值解析**手段：十九节的默认公式挂载链条本质就是分层覆盖，用来回答"这一分项没指定公式时用哪个"，但它解决的是"单个分项缺公式怎么办"，不是"多个分项怎么合成一个数"——两个问题不能用同一个机制回答，覆盖不能替代合并。
+- **分项相加**（每个公式产出一条"伤害条目"——数值 + 伤害类别，不合并成单一数字，分别过抗性再求和）——**采纳为目标语义**。天然支持"火焰剑造成 5 物理 + 3 火焰"，且与减伤链路"哪个类别就该查哪个抗性"这个诉求完全对应，是唯一不丢失信息的方案：物理分项与火焰分项各自独立求值、各自过减伤链路，未来各自乘上对应的抗性系数，最后求和才是这一下的总伤害。
+
+### 目标数据形状：`DamageComponent` 列表，替代原来的"单一 `damage_formula` 字段"
+
+```rust
+// crates/ll-sim/src/formula.rs（设计，未落地）——扩展十一节「damage_formula: ContentIndex」
+pub struct DamageComponent {
+    /// 这一分项造成的伤害属于哪个伤害类别（十七节的开放注册表）。
+    pub damage_category: ContentIndex,
+    /// 这一分项显式声明的公式；`None` 时走十九节的默认链解析。
+    pub formula: Option<ContentIndex>,
+}
+
+// WeaponDef/SkillDef（P6 范畴，本文档只给形状，不代为定义整个类型）
+// 十一节原有的单一字段：
+//   pub damage_formula: ContentIndex,
+// 第四版扩展为：
+//   pub damage_components: Vec<DamageComponent>,  // 可以为空，见十九节退化规则
+// 原字段的语义（一件内容引用一个公式）没有消失，是「分项列表恰好只有
+// 一项」这个特例下的完全等价形式（十一节末尾已补的前向指针）。
+```
+
+### 为什么现在只做半程：抗性不存在时，分项相加在数字上退化成求和
+
+`resolve` 对每一分项独立求值：跑该分项解析出的公式（十九节）得到这一分项的 `attack-power`，送进**不变的** `damage_after_defense`（分项当前共享同一个 `DamageSchool` 决定的护甲/穿透，见十七节"正交不合并"一节），得到这一分项的"减后伤害"。**九节已核实：抗性乘数机制在本项目任何地方都不存在**——因此分项之间目前没有任何可以差异化处理的信息，"先把每一分项的减后伤害求和"与"给每一分项乘一个（不存在的）抗性系数再求和"在数值上完全相同（乘数缺席等价于乘 1）。这意味着**当前只需要在 `resolve` 内部维护一份分项列表，逐项求值、逐项走减伤链路，最后对减后伤害求和，产出一个标量交给 `Effect::Damage`**——`Effect::Damage.amount: i32` 不需要现在改：
+
+```rust
+// crates/ll-sim/src/resolve.rs（设计，未落地，示意，非最终签名）
+fn resolve_weapon_damage(
+    components: &[DamageComponent],
+    weapon_category: ContentIndex,
+    attacker: &Agent,
+    defender: &Agent,
+    damage_school: DamageSchool,
+) -> i32 {
+    let mut total: i32 = 0;
+    for component in components {
+        let formula = resolve_formula_for(component, weapon_category); // 十九节默认链
+        let attack_power = eval_formula(formula, attacker, /* needs_rng 流见六节 */);
+        let real_defense = defense_for_school(damage_school, defender); // 四节既有接线点
+        let mitigated = damage_after_defense(attack_power, real_defense, penetration_for(damage_school));
+        // 抗性系统落地前：直接累加，无乘数（二十节详述插入点）。
+        // 抗性系统落地后：mitigated = mitigated * resistance_multiplier(defender, component.damage_category) / 1000;
+        total = total.saturating_add(mitigated);
+    }
+    total.max(0) // 十二节既有：调用方结构性 max(0, …)
+}
+```
+
+**这不是"选了求和方案"，是"分项相加在抗性乘数恒为 1（即不存在）的世界里，数学上退化成对减后伤害求和"**——选它的原因不是图省事，是这份分项列表的**数据结构**现在就要定下来（不然抗性系统落地时无从下手往里插乘数），但 `Effect::Damage`/`KillCause`/UI 的改动被推迟到抗性系统真正落地、乘数不再恒为 1 的那一刻。
+
+### 完全落地（分项各自过抗性、不合并成单一数字）的代价，诚实列出
+
+若严格按"分项相加"字面意思，`Effect::Damage` 应该从一个标量变成一份列表，代价至少覆盖三处：
+
+- **`Effect::Damage`**（`crates/ll-sim/src/effect.rs:55~59`）：`amount: i32` 需要改成 `Vec<{ category: ContentIndex, amount: i32 }>` 或拆成每类别一条独立 `Effect::Damage`——前者要求 `apply` 侧新增聚合逻辑（生命值扣减仍是总和，但要保留每类别子项供下游消费），后者要求"一次攻击产出 N 条 `Effect::Damage`"，两者都比当前"一次攻击一条 `Effect::Damage`"复杂。
+- **[击杀与死亡记录](kill-and-death-events.md)**：`KillRecord`/`KillCause` 若要精确记录"这一下由哪几个类别共同造成"，字段需要扩展；退化选项是只记录总量与"贡献最大的类别"，牺牲精度换取不改动信封结构。
+- **UI（跳字/伤害数字显示）**：需要决定是显示一个总数，还是分类跳字（例如"12（物理）+ 5（火）"两行）——这是纯粹的表现层决定，本文档不代为设计，但下游需要知道数据源从标量变成了列表这件事本身。
+
+**这条代价链本次不支付**——上一小节的半程方案让分项数据结构现在就存在，但不强迫这三处現在改动，是本节应用 YAGNI 的具体体现：改一个当前没有任何消费者会读的数据形状（`Effect::Damage` 变成列表，却没有任何抗性乘数会让分类信息产生可观测差异）没有意义。
+
+---
+
+## 十九、默认公式的挂载层级与优先级
+
+项目所有者原话「也会有最默认的公式」——本节给出挂载层级、没配置时的行为、以及优先级本身要不要可配置这三个问题的结论。
+
+### 挂载层级（从具体到一般，四层）
+
+1. **分项自己显式声明的公式**——`DamageComponent.formula = Some(id)`，最具体，直接用。
+2. **该分项所属伤害类别的默认公式**——`DamageCategoryDef.default_formula`（十七节），例如"火"这个类别自己声明了一个默认的元素伤害公式。
+3. **该武器所属武器类别的默认公式**——`WeaponCategoryDef.default_formula`（十七节），例如"弓"这个类别自己声明了一个默认的远程物理公式。
+4. **全局默认**——`lostland:default_damage_formula`（十一节示例一，本体已有）。
+
+解析顺序 1→2→3→4，逐层下探，遇到第一个非 `None` 的就停。**为什么伤害类别的优先级高于武器类别（2 排在 3 前面）**：伤害类别更贴近"这一分项具体是什么伤害"（公式要表达的减伤/随机性行为通常由伤害的物理性质决定——元素伤害的减伤模型天然不同于物理伤害，见二十二节示例二），武器类别更贴近"用什么工具打出来的"，属于更外围的风格化描述；一把武器的多个分项可能共享同一个武器类别，但各自的伤害类别可能各自有更贴切的默认，因此让伤害类别先于武器类别生效，能让"物理分项用剑类默认、火分项用火类默认"这种最常见的诉求，不需要任何一方显式声明公式就自动成立（见二十二节示例二的实际展开）。
+
+### 没有声明任何分项时怎么办：退化成一个隐式分项，完全复现现有行为
+
+绝大多数 mod 作者、以及本体现有的全部武器/技能，不会去关心"分项"这个新概念——`damage_components` 留空是最常见的情形。此时按下面规则退化：
+
+```
+若 damage_components.is_empty():
+    隐式生成一个分项：
+      damage_category = 按 damage_school 映射到的本体默认类别
+                         (Physical → lostland:physical,
+                          Magical  → lostland:magic,
+                          Mental   → lostland:spirit——
+                          三个由本体在装载期注册好的伤害类别，
+                          本身不预置 default_formula，见下)
+      formula = None（走上面 1→2→3→4 的解析）
+```
+
+三个本体默认伤害类别（`lostland:physical`/`lostland:magic`/`lostland:spirit`）本身**不**声明 `default_formula`（对应上面第 2 层落空），本体武器/技能也不声明武器类别默认（第 3 层落空，本体现有内容此前从未走过武器类别这条轴），因此解析必然落到**第 4 层：全局默认**——与当前 `resolve_attack` 的行为（十一节示例一）逐字一致，**这保证"什么都不配置的武器"完全复现现有行为，不引入任何 breaking change**，这是刻意设计，不是巧合。
+
+### 优先级是否可配置：不可配置
+
+理由与十五节新增条目相同：让 mod 配置解析顺序本身，会引入组合爆炸（不同武器可能声明不同的优先级顺序，"这把武器的公式到底该怎么解析"从一条固定规则变成要读一份额外配置才能确定）与潜在的循环优先级（A 类别把优先级让给 B 类别，B 又让给 A），且没有真实需求驱动——**任何"想要不同优先级"的诉求，直接在分项上显式声明公式（第 1 层）就能达到同样效果**，这就是"配置"这个词本身的含义，不需要再发明"配置优先级的配置"。四层解析链条本身对全部内容固定不变，与 `topo_sort` 决定 mod 覆盖顺序时"总序固定、不可配置"是同一个思路的复用。
+
+---
+
+## 二十、抗性在减伤链路的哪一步：减伤之后，乘数形式，与 10% 下限不冲突
+
+### 结论：减伤之后
+
+`resolve` 对每一分项的求值顺序（扩展十八节的代码示意）：
+
+```
+1. 跑该分项的公式（十九节解析出）→ attack-power
+2. damage_after_defense(attack-power, 该 DamageSchool 对应防御, 穿透) → 减后伤害
+3. 【未来，抗性系统落地时插入】减后伤害 × resistance_multiplier(目标, 该分项伤害类别) / 1000 → 这一分项的最终产出
+4. 全部分项的（3 的结果，当前是 2 的结果）求和 → 这一下总伤害
+```
+
+### 为什么是"减伤之后"，不是"减伤之前"
+
+**穿透（`pen-flat`/`pen-permille`）的语义明确针对"防御"这一步**——「破甲」「破魔」「破意」三个词条描述的是"削弱对方的护甲/法抗/意志抗性"，如果把抗性放在减伤之前（例如"先把攻击力按抗性打折，再送进减伤链路"），穿透要不要对这个打折后的攻击力生效就成了一个新的、本文档未设计过的问题——穿透与抗性混在一起会让两条本该独立的机制互相纠缠。**放在减伤之后**，抗性乘数直接作用在"已经算出的最终减伤结果"上，穿透的语义完全不受影响（它只对防御生效，防御这一步在抗性介入之前就已经算完），两条机制保持正交，各自只回答自己的问题：减伤链路回答"打没打穿防具"，抗性回答"这个目标对这种伤害天生抵抗多少"。
+
+### 与 10% 下限的关系：不冲突，但要如实说明"免疫"能让下限之后的结果归零
+
+10% 下限（`damage_after_defense` 内部的 `floor = attack * DAMAGE_FLOOR_PERMILLE / PERMILLE_SCALE`）保证的是**减伤链路本身**不会因为防御过高而把伤害压到零以下（五节已有的正交论证：多轮判定摊平方差，10% 下限防系统性压制，两者互不替代）。抗性乘数作用在减伤链路**之后**（步骤 3），下限的保证只覆盖到步骤 2，**免疫（乘数 = 0）会合法地把步骤 3 的结果打成 0，即使步骤 2 的减后伤害满足了 10% 下限**——这不是 10% 下限失效，是两条机制服务不同的设计意图：10% 下限解决"防御数值本身造成的系统性压制"，回答的是"打不打得穿盔甲"；免疫是内容作者对"这个目标就是不怕这种伤害"这个设计决定的直接表达，回答的是"这种伤害对这个目标有没有意义"——一把火焰武器打一只对火焒完全免疫的元素生物，理应造成 0 点火焰伤害，不该被"10% 下限"强行保底成"至少打出一点火伤"，那样"免疫"这个词就名不副实了。**两者不冲突，是因为它们从来不覆盖同一个问题**。
+
+---
+
+## 二十一、mod 可配置：两个新注册函数，不改动既有 `register-damage-formula`
+
+### `register-weapon-category`：声明一个武器类别（第八个 `register-*`，若 `register-surface-kind` 已落地则为第九个，具体序号取决于两份设计的实现顺序）
+
+```scheme
+(register-weapon-category "lostland:sword" "")
+(register-weapon-category "lostland:axe" "mymod:axe_default_formula")
+```
+
+`(register-weapon-category id default-formula-id)` → `Result<bool, String>`。`default-formula-id` 传空字符串 `""` 表示不声明类别默认（十九节第 3 层落空，继续下探到第 4 层）——与 `register-skill` 的 `owning-class` 空串哨兵、`register-terrain` 的 `opens-into` 空串哨兵是同一个既有约定，不新造一套"可选参数"的表达方式。
+
+### `register-damage-category`：声明一个伤害类别
+
+```scheme
+(register-damage-category "lostland:physical" "")
+(register-damage-category "lostland:fire" "mymod:fire_default_formula")
+```
+
+`(register-damage-category id default-formula-id)` → `Result<bool, String>`，同上模式。
+
+两者档位均为一档（十七节已述），注册期做的事与 `register-surface-kind` 同构：`intern` 换 `ContentIndex`，写入各自的 `*Table`，重复注册同一 ID 报错不静默覆盖。`default-formula-id` 若非空，注册期需要能查到这个公式已经被某次 `register-damage-formula` 定义过——查不到即拒绝整个 mod 加载（与 `MountTable::define` 校验 `grants-passage` 表面 ID 的既有纪律同构，见十六节引用的 `vehicle-and-mounting.md` 八节）。
+
+### 明确没有改动 `register-damage-formula` 本身
+
+三节已定的 `(register-damage-formula id (quote 表达式))` 签名（两个参数：完整命名空间 ID、`quote` 包住的表达式）**本次不变**——它的职责是"定义一个公式的计算逻辑"，与"这个公式挂在哪个类别下"是两件独立的事，后者由 `register-weapon-category`/`register-damage-category` 的第二个参数表达。这遵循 `register-skill` 先例确立的纪律——**不改动既有函数的参数个数**（会破坏已经写好的真实 mod 脚本），新能力通过新函数表达。
+
+### 物品/技能怎么"选择公式"：`WeaponDef`/`SkillDef` 的分项字段（P6 范畴，本文档只给形状）
+
+十八节已给出 `DamageComponent { damage_category, formula }` 的 Rust 形状。给 mod 作者的书写体验设想（`register-weapon`，P6 范畴，未落地，本文档不代为定义完整签名，只示意分项这一部分怎么表达）：
+
+```scheme
+;; 示意：一件武器声明两个分项，第一个用默认（伤害类别自己的默认公式），
+;; 第二个显式指定公式——真实签名与武器系统其余字段（射程/瞄准形状/
+;; 投送方式）一起在 P6 落地时确定，此处只展示"分项"这一部分的表达
+;; 意图，不是最终 API。
+(register-weapon "mymod:flame_bow"
+  "lostland:bow"                       ; 武器类别
+  (list
+    (damage-component "lostland:physical" "")                       ; 空串 = 用默认
+    (damage-component "lostland:fire" "mymod:fire_bow_bonus_formula"))) ; 显式指定
+```
+
+---
+
+## 二十二、两个真实示例：铁剑（纯物理）与火焰长弓（远程 + 元素）
+
+### 示例一：铁剑——纯物理，不声明任何分项，完全走默认链
+
+```scheme
+(register-damage-formula "lostland:sword_default_formula"
+  (quote (max 1 (- attack-power (max 0 (- defense pen-flat))))))
+(register-weapon-category "lostland:sword" "lostland:sword_default_formula")
+(register-damage-category "lostland:physical" "")
+```
+
+铁剑本身（P6 `WeaponDef`，未落地）：`weapon_category = lostland:sword`，`damage_school = Physical`，`damage_components` 留空。求值时按十九节退化规则生成一个隐式分项 `(damage_category = lostland:physical, formula = None)`：第 1 层（分项自己）落空 → 第 2 层（`lostland:physical` 的默认，本例未声明）落空 → 第 3 层（`lostland:sword` 的默认）命中，取 `lostland:sword_default_formula`。只有这一个分项，十八节的"分项相加"退化成单项，合并结果与该分项的减后伤害逐位相同。
+
+### 示例二：火焰长弓——远程 + 元素，两个分项展示真实的"合并"
+
+```scheme
+;; 弓类武器类别的默认公式：远程、单次骰子，风格上比铁剑更依赖运气
+(register-damage-formula "lostland:bow_default_formula"
+  (quote (max 1 (- (d 1 8) (max 0 (- defense pen-flat))))))
+(register-weapon-category "lostland:bow" "lostland:bow_default_formula")
+
+;; 火伤害类别的默认公式：不查护甲穿透之外的任何减伤修饰，纯粹是一个
+;; 小骰子——元素伤害的减伤模型与物理天然不同，这正是十七节强调伤害
+;; 类别要能各自声明公式的原因
+(register-damage-formula "lostland:fire_default_formula"
+  (quote (max 0 (d 1 4))))
+(register-damage-category "lostland:fire" "lostland:fire_default_formula")
+
+;; 火焰长弓：weapon_category = lostland:bow，damage_school = Physical
+;; （投送判定仍是"远程"，护甲/破甲穿透仍按物理系别查——这条轴不因为
+;;  加了元素分项而改变，见十七节"与既有 DamageSchool 的关系：正交，
+;;  不合并"），damage_components 显式声明两项，均不指定公式：
+;;   [ (lostland:physical, None)
+;;   , (lostland:fire, None) ]
+```
+
+**合并怎么发生**：`resolve` 对两个分项分别求值——`lostland:physical` 分项走十九节解析（自身/类别默认均落空 → 落到武器类别 `lostland:bow` 的默认 `lostland:bow_default_formula`，掷 `1d8` 再走物理减伤链路）；`lostland:fire` 分项同样走十九节解析（自身落空 → 命中伤害类别 `lostland:fire` 的默认 `lostland:fire_default_formula`，掷 `1d4`，**当前**同样送进 `damage_after_defense` 用同一个物理防御值——因为抗性/独立减伤模型尚未落地，见十八节"半程落地"）。两个分项的减后伤害相加，就是这一箭的总伤害——**同一把武器上，"弓"（武器类别）与"火"（伤害类别）各自贡献了一份独立的公式，配置好之后在 `resolve` 里被加在一起**，正是项目所有者原话"配置好以后合并在一起计算"的最小可行形状。
+
+---
+
+## 二十三、诚实标注的前置依赖清单
+
+本节汇总本文档设计能真正在游戏里生效之前，必须先由其他工作补齐的缺口——本文档不实现它们，只如实指出：
+
+1. **`resolve_attack` 不读 `active_stat_modifiers`**（十六节已核实，`crates/ll-sim/src/resolve.rs:503`）——武器伤害要因装备/临时增益浮动，这条线必须先接上，否则公式里的 `str-mod`/`AttributeModifier` 操作数虽然定义正确，运行时读到的永远是未经任何装备/buff 修正的裸属性。
+2. **`AttributeKind` 没有抗性变体**（十六节已核实）——不影响本文档设计的公式机制本身（`str-mod` 等既有操作数不涉及抗性），但意味着二十节"抗性挂载点"目前没有任何数值来源，是纯占位。
+3. **抗性系统本身（数值规则、免疫/半伤/双倍怎么定义、挂在种族还是装备还是两者都有）不存在**（九节原有核实，第四版未推翻）——二十节只给出挂载的**位置**（减伤之后），不给数值规则，规则本身留给未来单独的设计任务。
+4. **`WeaponDef`/`SkillDef` 本身未落地**（P6 范畴，十四节已有归属）——本文档设计的 `damage_components: Vec<DamageComponent>` 字段、`register-weapon-category`/`register-damage-category` 两个新注册函数，都要等 P6 武器/装备系统真正开工时才有地方挂。
+5. **`derive_stats`/`StatBonus` 装备接线缺口**（四节已有引用，[三轴战斗结算](combat-three-axis.md) 四节、[设计文档总索引](README.md) 缺口 5）——真实防御值（`defense_for_school`）目前仍是占位 `0`，与依赖 1 是同一类"装备/属性没接线"的问题，但缺口本身在更早的文档里已经点过名，本文档不重复设计，只在十八节代码示意里再次标注这是一个尚未解决的输入。
 
 ---
 
@@ -486,6 +786,8 @@ attack-power 的来源，现在有三种可以任选（mod 作者在表达式里
 - [击杀与死亡记录](kill-and-death-events.md) — `KillCause` 携带的武器/技能 `ContentIndex`
 - [脚本状态存储](script-state-storage.md) — `ScriptDiagnostic` 落点
 - [mod 包结构与资产 VFS](mod-package-structure.md) 「覆盖冲突」一节 — `topo_sort` + `LoadStatus::Warning` 的既有解法
+- [载具与骑乘系统](vehicle-and-mounting.md) 三/八节 — `SurfaceKind` 从定宽位标志改为 `Registry::intern` 内容索引的完整论证，十七节武器类别/伤害类别的表达方式直接复用这条先例（十六节已核实引用的是被否决之后的最终版本）
+- `crates/ll-sim/src/resolve.rs:503`（`resolve_attack`） — 不读 `active_stat_modifiers` 的实测代码位置（十六、二十三节）
 - `mods/example_mod/behavior.scm`、`crates/ll-script/src/behavior.rs` — s-表达式 + `quote` 载体的既有先例（数据表示可取，逐叶子回调 Steel 的求值方式不可取，见一/二节）
 - [ADR 0012 — Steel 标准库能力面实测](../decisions/0012-steel-capability-surface-verification.md) — 326ns/327~400µs 跨界开销实测数字
 - [ADR 0016 — mod 性能分档按声明方式，不按作者身份](../decisions/0016-mod-performance-tiers-by-declaration.md)
