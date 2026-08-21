@@ -80,17 +80,17 @@ pub struct Clip {
 /// 原先两帧互跳的 32 更小。`hero_walk_0`/`hero_walk_1` 的像素内容与
 /// 扩帧前完全一致（未改动），只是现在有 4 张新的过渡帧穿插播放。
 pub const HERO_WALK_FRAMES: [&str; 6] = [
-    "hero_walk_0",
-    "hero_walk_2",
-    "hero_walk_3",
-    "hero_walk_1",
-    "hero_walk_4",
-    "hero_walk_5",
+    "lostland:hero_walk_0",
+    "lostland:hero_walk_2",
+    "lostland:hero_walk_3",
+    "lostland:hero_walk_1",
+    "lostland:hero_walk_4",
+    "lostland:hero_walk_5",
 ];
 /// 本体英雄角色行走动画每帧停留的游戏帧数。
 pub const HERO_WALK_FRAMES_PER_STEP: u32 = 8;
 /// 本体英雄角色待机呼吸动画的权威帧序列，见 [`base_hero_clips`]。
-pub const HERO_IDLE_FRAMES: [&str; 2] = ["hero_idle_0", "hero_idle_1"];
+pub const HERO_IDLE_FRAMES: [&str; 2] = ["lostland:hero_idle_0", "lostland:hero_idle_1"];
 /// 本体英雄角色待机呼吸动画每帧停留的游戏帧数——远大于行走的步长，
 /// 呼吸本就该比迈步慢得多。
 pub const HERO_IDLE_FRAMES_PER_STEP: u32 = 40;

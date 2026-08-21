@@ -387,7 +387,7 @@ mod tests {
             .asset_vfs
             .sprites
             .iter()
-            .find(|sprite| sprite.atlas_name == "terrain_dirt")
+            .find(|sprite| sprite.atlas_name == "lostland:terrain_dirt")
             .expect("本体应声明 terrain_dirt 精灵");
         assert!(
             terrain_dirt

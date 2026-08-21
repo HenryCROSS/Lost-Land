@@ -18,27 +18,38 @@ use ll_world::terrain::{BaseTerrainIds, TerrainKind};
 pub const BASE_SIGHT_RADIUS: u32 = 12;
 
 /// 把地形种类映射到图集条目名——覆盖本体注册的全部自然地形。
+///
+/// 返回值带 `lostland:` 前缀：图集条目名统一用完整命名空间字符串（见
+/// `ll_mod::asset_vfs::ResolvedSprite::atlas_name` 文档），这张表本身
+/// 是硬编码字面量，不经过 [`Registry`]，因此前缀直接写死在表里，而不是
+/// 运行期拼接。
+///
+/// 这张表的本地部分与地形在 [`Registry`] 里注册的内容 ID 本地部分并不
+/// 相同（例如 `ids.grass` 对应的注册 ID 是 `lostland:grass`，这里查出
+/// 的图集条目名却是 `lostland:terrain_grass`）——图集条目名描述的是
+/// 「贴图长什么样」，注册 ID 描述的是「这是哪种地形」，两者是两套独立
+/// 的字符串空间，只是恰好共享同一个本体命名空间前缀。
 pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'static str> {
     if kind == ids.deep_water {
-        Some("terrain_deep_water")
+        Some("lostland:terrain_deep_water")
     } else if kind == ids.shallow_water {
-        Some("terrain_shallow_water")
+        Some("lostland:terrain_shallow_water")
     } else if kind == ids.sand {
-        Some("terrain_sand")
+        Some("lostland:terrain_sand")
     } else if kind == ids.grass {
-        Some("terrain_grass")
+        Some("lostland:terrain_grass")
     } else if kind == ids.forest {
-        Some("terrain_forest")
+        Some("lostland:terrain_forest")
     } else if kind == ids.hill {
-        Some("terrain_hill")
+        Some("lostland:terrain_hill")
     } else if kind == ids.mountain {
-        Some("terrain_mountain")
+        Some("lostland:terrain_mountain")
     } else if kind == ids.snow {
-        Some("terrain_snow")
+        Some("lostland:terrain_snow")
     } else if kind == ids.floor_stone {
-        Some("terrain_dirt")
+        Some("lostland:terrain_dirt")
     } else if kind == ids.wall_stone {
-        Some("terrain_mountain")
+        Some("lostland:terrain_mountain")
     } else {
         None
     }
@@ -59,10 +70,16 @@ pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'s
 ///
 /// 回退路径反查 [`Registry::resolve`] 拿到这个地形种类的完整命名空间
 /// ID（例如 `"examplemod:lava_floor"`），直接把这个字符串当图集查找
-/// 键——`ll_mod::asset_vfs` 对非本体命名空间的精灵，图集条目名恒定就是
-/// 这个完整 ID 字符串（见其模块文档 [`crate::content::BASE_NAMESPACE`]
-/// 一节「为什么本体资产用裸名字，mod 资产用完整命名空间字符串」），
-/// 两边约定完全对齐，不需要额外的映射表。
+/// 键——`ll_mod::asset_vfs::ResolvedSprite::atlas_name` 对任意命名空间
+/// 的精灵，图集条目名恒定就是这个完整 ID 字符串（本体与 mod 统一，见
+/// 其文档），两边约定完全对齐，不需要额外的映射表。
+///
+/// 这条回退路径只对 mod 注册的地形成立——本体注册的自然地形已经被
+/// [`terrain_entry_name`] 挡在前面提前返回，走不到这里；[`Registry`]
+/// 里本体地形的注册 ID（本地部分是 `grass`/`mountain` 这类简称）与图集
+/// 条目名（本地部分是 `terrain_grass`/`terrain_mountain`）本就不是同一
+/// 个字符串，`registry.resolve` 直接查也查不出正确的图集键——这正是
+/// [`terrain_entry_name`] 这张表不能被这条回退路径整个取代的原因。
 ///
 /// 与 GPU 无关的纯函数：[`Registry`] 是普通数据，不需要真实图集就能
 /// 单测覆盖「查到了哪个字符串」这层逻辑；「这个字符串在图集里查不查
@@ -161,7 +178,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 本体地形直接查到裸名字图集条目而不需要回退到registry() {
+    fn 本体地形直接查到带命名空间前缀的图集条目而不需要回退到registry() {
         // Arrange
         let (ids, _table) = ll_world::terrain::base_terrain_fixture();
         let registry = Registry::new();
@@ -170,7 +187,7 @@ mod tests {
         let key = terrain_atlas_key(ids.grass, &ids, &registry);
 
         // Assert
-        assert_eq!(key.as_deref(), Some("terrain_grass"));
+        assert_eq!(key.as_deref(), Some("lostland:terrain_grass"));
     }
 
     #[test]

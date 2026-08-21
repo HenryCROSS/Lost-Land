@@ -50,8 +50,9 @@ use ll_render::anim::{AnimStateMachine, movement_key_held};
 /// 两段可选动画共同的兜底：mod 只提供这一帧、甚至完全不提供动画剪辑
 /// 数据，都是完全正常的情况，本体应当退回这一张静态图，而不是报错或
 /// 让玩家标记消失——与 `p5_coordinate_acceptance::FALLBACK_SPRITE` 同一
-/// 取舍。
-pub const FALLBACK_SPRITE: &str = "hero_idle_0";
+/// 取舍。带 `lostland:` 前缀——图集条目名统一用完整命名空间字符串，
+/// 见 `ll_mod::asset_vfs::ResolvedSprite::atlas_name` 文档。
+pub const FALLBACK_SPRITE: &str = "lostland:hero_idle_0";
 
 /// 每帧无条件调用：按当前是否有任意移动键按住
 /// （[`movement_key_held`]）电平驱动地设置玩家该播放的动画状态。
@@ -207,7 +208,7 @@ mod tests {
             r#"{
                 "image": "placeholder.png",
                 "entries": [
-                    { "name": "hero_idle_0",
+                    { "name": "lostland:hero_idle_0",
                       "rect": { "x": 0, "y": 0, "width": 16, "height": 24 },
                       "pivot": { "x": 8, "y": 24 },
                       "footprint": { "width": 1, "height": 1 } }

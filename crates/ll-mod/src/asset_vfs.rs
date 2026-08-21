@@ -207,11 +207,14 @@ pub struct ResolvedSprite {
     pub namespace: String,
     /// 供图集打包使用的条目名。
     ///
-    /// 本体资产用裸名字（例如 `"hero_idle_0"`）——本体二进制已有大量
-    /// 硬编码的裸名字查找（`ll-game::layout`/`ll-game::animation`），
-    /// 保持向后兼容；mod 资产用完整 `"namespace:name"`，天然不会与
-    /// 本体或其它 mod 的裸名字撞名，调用方（例如 mod 注册的地形回退
-    /// 查图集）直接用同一个命名空间 ID 字符串当查找键即可。
+    /// 本体资产与 mod 资产统一用完整 `"namespace:name"`（等价于
+    /// [`ResolvedSprite::id`] 的字符串表示）——此前本体资产曾特例用
+    /// 裸名字（例如 `"hero_idle_0"`）打包，导致本体与 mod 的图集键形式
+    /// 不对称：mod 作者想引用本体贴图，最自然的写法
+    /// `lostland:hero_idle_0` 反而查不到，必须知道「本体是裸名字」这条
+    /// 不成文的例外。项目所有者裁定本体也加前缀，消掉这条不对称——
+    /// 现在任何调用方（无论是本体二进制自己的硬编码查找，还是 mod 注册
+    /// 的地形回退查图集）统一用完整命名空间 ID 字符串当查找键。
     pub atlas_name: String,
     /// 锚点，沿用声明方原始值——覆盖不改变它，见模块文档「覆盖只换
     /// 字节」一节。
@@ -273,7 +276,6 @@ pub fn build(
     register_own_sprites(
         base_assets_dir,
         base_namespace,
-        base_namespace,
         &mut sprites,
         &mut index_by_id,
         &mut index_by_path,
@@ -314,7 +316,6 @@ pub fn build(
         register_own_sprites(
             &assets_dir,
             namespace,
-            base_namespace,
             &mut sprites,
             &mut index_by_id,
             &mut index_by_path,
@@ -345,7 +346,6 @@ pub fn build(
 fn register_own_sprites(
     assets_dir: &Path,
     owner_namespace: &str,
-    base_namespace: &str,
     sprites: &mut Vec<ResolvedSprite>,
     index_by_id: &mut HashMap<NamespacedId, usize>,
     index_by_path: &mut HashMap<(String, String), usize>,
@@ -388,11 +388,10 @@ fn register_own_sprites(
         };
 
         let source_file = assets_dir.join(SPRITES_DIR).join(&relative);
-        let atlas_name = if owner_namespace == base_namespace {
-            entry.name.clone()
-        } else {
-            id.to_string()
-        };
+        // 本体与 mod 统一用完整命名空间字符串当图集条目名，见
+        // `ResolvedSprite::atlas_name` 文档——不再有「本体是裸名字」
+        // 这条不对称的例外。
+        let atlas_name = id.to_string();
         let path_key = (owner_namespace.to_string(), normalize_path_key(&relative));
 
         let index = sprites.len();
@@ -660,7 +659,9 @@ mod tests {
     // ---- 基本装载 ----
 
     #[test]
-    fn 本体精灵使用裸名字作为图集条目名() {
+    fn 本体精灵使用完整命名空间字符串作为图集条目名() {
+        // 本体不再是「裸名字」的特例——与 mod 精灵统一用
+        // `namespace:name` 打包图集，消除本体/mod 之间键形式的不对称。
         // Arrange
         let root = tempdir();
         let base_assets = root.path().join("base_assets");
@@ -676,7 +677,7 @@ mod tests {
 
         // Assert
         assert_eq!(result.vfs.sprites.len(), 1);
-        assert_eq!(result.vfs.sprites[0].atlas_name, "hero_idle_0");
+        assert_eq!(result.vfs.sprites[0].atlas_name, "lostland:hero_idle_0");
     }
 
     #[test]
@@ -783,7 +784,7 @@ mod tests {
             .vfs
             .sprites
             .iter()
-            .find(|s| s.atlas_name == "terrain_grass")
+            .find(|s| s.atlas_name == "lostland:terrain_grass")
             .expect("本体地形条目应仍存在");
         assert_eq!(sprite.source_file, reskin_override);
     }
@@ -1046,6 +1047,92 @@ mod tests {
 
         // Assert
         assert_eq!(result.vfs.sprites.len(), 1);
-        assert_eq!(result.vfs.sprites[0].atlas_name, "hero_idle_0");
+        assert_eq!(result.vfs.sprites[0].atlas_name, "lostland:hero_idle_0");
+    }
+
+    // ---- 命名空间不变式 ----
+
+    #[test]
+    fn 图集里全部条目的键都带非空命名空间前缀() {
+        // 失败是静默的（查不到图集条目就跳过绘制，不报错，见模块所在
+        // crate 的既有降级纪律）——本体/mod 键形式对称这条不变式必须
+        // 有机器守着，不能靠人肉保证「改全了」。这里同时装载本体精灵与
+        // mod 精灵，断言 build() 产出的每一条 atlas_name 都形如
+        // `namespace:name`，任何将来重新引入「本体裸名字」特例的改动
+        // 都会被这里挡住。
+        // Arrange
+        let root = tempdir();
+        let base_assets = root.path().join("base_assets");
+        write_sprite_manifest(
+            &base_assets,
+            r#"{ "name": "hero_idle_0", "file": "hero_idle_0.png",
+                 "pivot": { "x": 8, "y": 24 }, "footprint": { "width": 1, "height": 1 } }"#,
+        );
+        write_placeholder_png(&base_assets.join(SPRITES_DIR).join("hero_idle_0.png"));
+        write_mod_manifest(root.path().join("mods").as_path(), "examplemod");
+        let mod_assets = root.path().join("mods").join("examplemod").join("assets");
+        write_sprite_manifest(
+            &mod_assets,
+            r#"{ "name": "lava_floor", "file": "lava_floor.png",
+                 "pivot": { "x": 0, "y": 0 }, "footprint": { "width": 1, "height": 1 } }"#,
+        );
+        write_placeholder_png(&mod_assets.join(SPRITES_DIR).join("lava_floor.png"));
+
+        // Act
+        let result = build(&root.path().join("mods"), &base_assets, "lostland");
+
+        // Assert
+        assert_eq!(
+            result.vfs.sprites.len(),
+            2,
+            "前置条件：本体与 mod 各贡献一条精灵"
+        );
+        let all_namespaced = result.vfs.sprites.iter().all(|sprite| {
+            sprite
+                .atlas_name
+                .split_once(':')
+                .is_some_and(|(namespace, _)| !namespace.is_empty())
+        });
+        assert!(
+            all_namespaced,
+            "存在缺少命名空间前缀的图集键：{:?}",
+            result
+                .vfs
+                .sprites
+                .iter()
+                .map(|s| &s.atlas_name)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn mod能按完整命名空间id查到本体精灵的图集条目() {
+        // 这正是本次要解决的问题的正面证据：mod 作者想引用本体的英雄
+        // 贴图，最自然的写法是完整命名空间 id `lostland:hero_idle_0`
+        // ——此前只能用裸名字 `hero_idle_0` 查到，`lostland:hero_idle_0`
+        // 查不到；现在两者统一，必须能按后者查到。
+        // Arrange
+        let root = tempdir();
+        let base_assets = root.path().join("base_assets");
+        write_sprite_manifest(
+            &base_assets,
+            r#"{ "name": "hero_idle_0", "file": "hero_idle_0.png",
+                 "pivot": { "x": 8, "y": 24 }, "footprint": { "width": 1, "height": 1 } }"#,
+        );
+        write_placeholder_png(&base_assets.join(SPRITES_DIR).join("hero_idle_0.png"));
+
+        // Act
+        let result = build(&root.path().join("mods"), &base_assets, "lostland");
+
+        // Assert
+        let found = result
+            .vfs
+            .sprites
+            .iter()
+            .any(|sprite| sprite.atlas_name == "lostland:hero_idle_0");
+        assert!(
+            found,
+            "mod 应能按 lostland:hero_idle_0 查到本体精灵的图集条目"
+        );
     }
 }
