@@ -48,6 +48,8 @@
 
 use ll_core::ident::ContentIndex;
 
+use crate::resource_pool::ResourcePoolGrant;
+
 /// 一条"某个所有者在什么等级授予某个天赋"的引用——种族/职业/副职/
 /// 装备/buff 的"这个所有者授予哪些天赋"字段统一用这个类型的列表，
 /// 不是裸 `Vec<ContentIndex>`（`trait-system.md` 六节）。
@@ -68,13 +70,18 @@ pub struct TraitGrant {
     pub unlock_level: i32,
 }
 
-/// `resolve` 侧需要的一条天赋定义的最小只读视图——本批次只接线①授予
-/// 技能，见模块文档「为什么这里只有两个小类型」一节。
+/// `resolve` 侧需要的一条天赋定义的最小只读视图——本批次接线①授予
+/// 技能与④授予资源池容量两项，见模块文档「为什么这里只有两个小类型」
+/// 一节与 [`crate::resource_pool`] 模块文档「本批次范围」一节。
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct TraitRule {
     /// 这个天赋授予的技能——三节①"有效技能=并集"公式里天赋这一路
     /// 贡献的技能集合。
     pub granted_skills: Vec<ContentIndex>,
+    /// 这个天赋授予的资源池容量——`trait-system.md` 三节④，
+    /// `crate::resource_pool::effective_scalar_capacity` 聚合这一路
+    /// 来源，见其文档。
+    pub granted_resource_pools: Vec<ResourcePoolGrant>,
 }
 
 /// `resolve_use_skill` 依赖的最小「天赋定义来源」接口——把结算算法
@@ -266,6 +273,7 @@ mod tests {
             trait_id,
             TraitRule {
                 granted_skills: vec![skill_id],
+                ..Default::default()
             },
         )]);
 
@@ -300,12 +308,14 @@ mod tests {
                 trait_a,
                 TraitRule {
                     granted_skills: vec![skill_id],
+                    ..Default::default()
                 },
             ),
             (
                 trait_b,
                 TraitRule {
                     granted_skills: vec![skill_id],
+                    ..Default::default()
                 },
             ),
         ]);

@@ -99,6 +99,13 @@ pub enum ContentKind {
     /// 时丢弃这一桶统计并警告——与 [`ContentKind::Goal`] 同一条判断：
     /// 丢一条统计不等于"失去自己"。
     KillCount,
+    /// 开放注册资源池当前值的归并键
+    /// （[`ll_world::entity::Agent::resource_pools`]，资源池落地批次）
+    /// ——这是「这个池现在还剩多少」的一条记录，不是实体本体的核心
+    /// 身份（核心身份是 [`ContentKind::CharacterAttribute`] 覆盖的
+    /// 主职/种族），找不到当前会话内容时丢弃这一条存量并警告,与
+    /// [`ContentKind::Skill`] 同一条判断。
+    ResourcePool,
 }
 
 /// 一条缺失内容记录归属于谁。
@@ -146,7 +153,8 @@ pub fn decide_degrade_action(
         | ContentKind::Affiliation
         | ContentKind::Skill
         | ContentKind::Subclass
-        | ContentKind::KillCount => DegradeAction::DropWithWarning,
+        | ContentKind::KillCount
+        | ContentKind::ResourcePool => DegradeAction::DropWithWarning,
         ContentKind::CharacterAttribute => match owner {
             OwnerContext::Player => DegradeAction::Reject,
             OwnerContext::Npc | OwnerContext::None => match placeholder {

@@ -44,6 +44,7 @@ use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
 use ll_mod::race::{BaseRaceIds, RaceTable};
 use ll_mod::registry::Registry;
+use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
 use ll_mod::trait_def::TraitTable;
@@ -105,6 +106,12 @@ pub struct LoadedContent {
     /// `ll_sim::resolve::resolve_with_skills_and_traits` 消费,见
     /// `ll_mod::trait_def` 模块文档。
     pub trait_table: TraitTable,
+    /// 资源池表（资源池落地批次新增，第一批：法力池/血池）——
+    /// `ll_mod::resource_pool::ResourcePoolTable` 实现
+    /// `ll_sim::resource_pool::ResourcePoolCatalog`，与 `trait_table`
+    /// 一起供 `ll_sim::resolve` 的资源消耗/回复分支消费，见
+    /// `ll_mod::resource_pool` 模块文档。
+    pub resource_pool_table: ResourcePoolTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -162,6 +169,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     let mut quest_table = QuestTable::new();
     let mut xp_curve_bindings = XpCurveBindings::new();
     let mut trait_table = TraitTable::new();
+    let mut resource_pool_table = ResourcePoolTable::new();
 
     let mut report = load_all(
         mods_root,
@@ -177,6 +185,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             xp_curve: &mut xp_curve_table,
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_table,
+            resource_pool: &mut resource_pool_table,
         },
     );
 
@@ -248,6 +257,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         xp_curve_table,
         xp_curve_bindings,
         trait_table,
+        resource_pool_table,
         manifests,
         script_sources,
         report,

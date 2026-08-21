@@ -256,6 +256,22 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
         Effect::GrantExperience { target, amount } => {
             grant_experience_and_level_up(world, *target, *amount, curves);
         }
+        Effect::AdjustResourcePool { actor, pool, delta } => {
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                let current = agent.resource_pools.entry(*pool).or_insert(0);
+                *current += delta;
+            }
+        }
+        Effect::SpendBloodCost { target, amount } => {
+            // 无条件扣血,不查防御/抗性——见 Effect::SpendBloodCost 文档
+            // 「为什么不是 Effect::Damage」一节,与 Effect::Damage 分支
+            // 唯一的差异就是"绕开减伤"这件事本身已经在 resolve 侧完成
+            // （血代价的数字从不经过 damage_after_defense),apply 这里
+            // 与 Damage 分支写法一样简单,只是不共用同一个变体。
+            if let Some(agent) = world.actors.get_mut(*target) {
+                agent.health -= amount;
+            }
+        }
     }
 }
 
@@ -369,6 +385,7 @@ mod tests {
             luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),

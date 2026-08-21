@@ -160,6 +160,27 @@ pub struct Agent {
     pub mana: i32,
     /// 当前耐力值。理由与 [`Self::mana`] 完全对称——见其文档。
     pub stamina: i32,
+    /// 开放注册的资源池当前值（法力池/未来的「气」「怒气」……），键是
+    /// 指向 `ResourcePoolDef`（`knowledge/design/resource-pools-and-rest.md`
+    /// 二节）的 [`ContentIndex`]，值是绝对量（不是偏差）——与
+    /// [`Self::mana`]/[`Self::stamina`] 同属「只存当前值」的既有纪律，
+    /// 但走开放注册表而不是封闭枚举，mod 可以声明任意新的标量池而不
+    /// 需要引擎新增字段。**不是 `mana`/`stamina` 的替代**：两条通道
+    /// 刻意并存（见 `ll_sim::skill::ResourceCost` 文档「为什么新增
+    /// `PoolAmount` 而不是就地改造 `Amount`」一节）——`mana`/`stamina`
+    /// 服务既有 `register-skill` 的 `"mana"`/`"stamina"` 内置资源种类，
+    /// 本字段服务经 `register-resource-pool` 注册的开放池。
+    ///
+    /// **容量（上限）不存在这里**：容量由天赋按等级现算
+    /// （`TraitDef.granted_resource_pools`/`CapacityFormula`），本字段
+    /// 只记「当前离零还差多少」这个真实偏差，与 `health`「只存当前值
+    /// 不存上限」是同一条纪律的又一次复用。查不到某个池的键时，当前
+    /// 值视为 `0`（从未获得过、或从未变动过）——不需要在角色获得一个
+    /// 新天赋的那一刻就急着写入一条 `0` 值占位。
+    ///
+    /// `BTreeMap` 不是 `HashMap`：约束 C5，`WorldState::hash()` 需要
+    /// 按确定顺序遍历这个字段。
+    pub resource_pools: BTreeMap<ContentIndex, i32>,
     /// 已解锁的技能集合。P5-B 任务 5 新增，关键设计判断 2 的落点：
     /// 「解锁与否」是几乎每次技能结算都要查询的高频状态，直接归引擎层
     /// 字段，不经脚本状态存储的跨界调用开销（见
@@ -396,6 +417,7 @@ mod tests {
             luck: 9,
             mana: 33,
             stamina: 44,
+            resource_pools: BTreeMap::from([(strike, 12)]),
             unlocked_skills: vec![strike, power_strike],
             skill_cooldowns: BTreeMap::from([(power_strike, Tick(120))]),
             subclasses: vec![ranger_subclass],

@@ -49,6 +49,15 @@
 //! `skill`/`quest`/`xp_curve` 同一套依赖倒置手法：完整的 `TraitDef`
 //! 定义在下游的 `ll-mod::trait_def`，本 crate 只声明 resolve 侧真正
 //! 要消费的最小形状，见该模块文档。
+//!
+//! [`resource_pool`]（资源池落地批次，第一批：法力池/血池）：法力池
+//! 一类标量资源池的容量聚合（[`resource_pool::effective_scalar_capacity`]）
+//! 与恢复节奏依赖倒置接口（[`resource_pool::ResourcePoolCatalog`]）——
+//! 与 `skill`/`traits` 同一套依赖倒置手法，`ResourcePoolDef`/
+//! `ResourcePoolTable` 定义在下游的 `ll-mod::resource_pool`，见该模块
+//! 文档「本批次范围」一节。血池（`ResourceCost::Blood`）不经过这张
+//! 目录——它直接读/写 `Agent::health`，不是注册表内容,见
+//! [`skill::ResourceCost::Blood`] 文档。
 
 pub mod apply;
 pub mod behavior;
@@ -58,6 +67,7 @@ pub mod experience;
 pub mod intent;
 pub mod quest;
 pub mod resolve;
+pub mod resource_pool;
 pub mod skill;
 pub mod skill_overview;
 pub mod timeline;

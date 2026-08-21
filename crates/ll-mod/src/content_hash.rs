@@ -362,19 +362,34 @@ fn write_skill_fields(
     write_optional_resolved(hasher, view.owning_class, registry);
     write_resolved_content_index_slice(hasher, view.prerequisites, registry);
     hasher.write_u64(u64::from(view.cooldown_ticks));
-    write_resource_cost(hasher, view.resource_cost);
+    write_resource_cost(hasher, view.resource_cost, registry);
     write_skill_effect(hasher, view.effect);
 }
 
 /// 混入一个 [`ResourceCost`]——先写变体判别字节，两个变体互不混淆，
 /// 与 `ll_world::state` 已确立的枚举哈希写法（先判别、后字段）同一
 /// 种模式。
-fn write_resource_cost(hasher: &mut StateHasher, cost: ResourceCost) {
+fn write_resource_cost(hasher: &mut StateHasher, cost: ResourceCost, registry: &Registry) {
     match cost {
         ResourceCost::None => hasher.write_u64(0),
         ResourceCost::Amount(kind, amount) => {
             hasher.write_u64(1);
             hasher.write_u64(kind as u64);
+            hasher.write_u64(u64::from(amount));
+        }
+        // 资源池落地批次新增两个变体——判别值接着既有两档往后编号,不
+        // 打乱 `None`/`Amount` 已经写死的 0/1,理由同模块文档「凡是
+        // `*Attrs` 里声明的字段,一律参与哈希」一节:新变体同样是真实
+        // 的内容变化,理应被这份哈希感知到。`PoolAmount` 携带
+        // `ContentIndex`,按模块文档「`ContentIndex` 字段」一节解析成
+        // 字符串再混入,不直接哈希裸索引数值。
+        ResourceCost::PoolAmount(pool, amount) => {
+            hasher.write_u64(2);
+            write_optional_resolved(hasher, Some(pool), registry);
+            hasher.write_u64(u64::from(amount));
+        }
+        ResourceCost::Blood(amount) => {
+            hasher.write_u64(3);
             hasher.write_u64(u64::from(amount));
         }
     }

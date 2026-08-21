@@ -66,6 +66,12 @@
 //!   `Vec<ll_sim::traits::TraitGrant>` 引用，`TraitTable` 实现
 //!   `ll_sim::traits::TraitCatalog`（依赖倒置，见该 trait 模块文档），
 //!   见其模块文档「本批次范围」一节的完整裁定。
+//! - [`resource_pool`] —— 资源池注册表（资源池落地批次，第一批：法力
+//!   池/血池）：`ResourcePoolDef` 是独立内容类型，被
+//!   `TraitDef.granted_resource_pools` 引用，`ResourcePoolTable` 实现
+//!   `ll_sim::resource_pool::ResourcePoolCatalog`（依赖倒置），本批次
+//!   只落地标量池形状，见其模块文档「本批次范围」一节。血池
+//!   （`Agent::health` 本身）不经过这张表。
 //! - [`clip`] —— 动画剪辑注册表（动画剪辑接线批次）：把
 //!   `ll_render::anim::Clip`（此前只能写死在 Rust 里的动画帧序列/节奏/
 //!   循环声明，见其模块文档起因）做成可注册内容，`ClipDef` 与 `class`/
@@ -94,7 +100,12 @@
 //!   落地批次）：`register-trait`，见 [`trait_def`] 模块文档「本批次
 //!   范围」一节；`register-race-trait`（给种族追加天赋引用）挂在
 //!   [`script_race_api`] 而不是这里——理由同 `register-race-xp-reward`
-//!   挂在同一个文件（追加对象是 `RaceTable`，不是 `TraitTable`）。
+//!   挂在同一个文件（追加对象是 `RaceTable`，不是 `TraitTable`）；
+//!   `register-trait-resource-pool`（给天赋追加资源池容量声明）同样
+//!   挂在这里——追加对象是 `TraitTable`。
+//! - [`script_resource_pool_api`] —— 同一个模式在资源池上的脚本绑定
+//!   （资源池落地批次）：`register-resource-pool`，见 [`resource_pool`]
+//!   模块文档。
 //! - [`script_clip_api`] —— 同一个模式在动画剪辑上的脚本绑定（动画
 //!   剪辑接线批次）：补上此前完全漏掉的第七类可注册玩法层内容——早先
 //!   的接口审计列出六种，「动画剪辑」当时不在其中。
@@ -146,12 +157,14 @@ pub mod quest;
 pub mod quest_overview;
 pub mod race;
 pub mod registry;
+pub mod resource_pool;
 pub mod script_behavior_api;
 pub mod script_behavior_source;
 pub mod script_class_api;
 pub mod script_clip_api;
 pub mod script_quest_api;
 pub mod script_race_api;
+pub mod script_resource_pool_api;
 pub mod script_skill_api;
 pub mod script_subclass_api;
 pub mod script_terrain_api;

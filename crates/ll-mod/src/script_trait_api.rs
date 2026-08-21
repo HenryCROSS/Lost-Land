@@ -23,7 +23,7 @@ use ll_script::host::ScriptEngine;
 
 use crate::active_registry::with_active_registry;
 use crate::registry::Registry;
-use crate::trait_def::{TraitAttrs, TraitError, TraitTable};
+use crate::trait_def::{CapacityFormula, ResourcePoolGrant, TraitAttrs, TraitError, TraitTable};
 
 thread_local! {
     /// 当前调用窗口内，`register-trait` 应该写入的天赋表。
@@ -44,9 +44,10 @@ pub fn take_active_target() -> TraitTable {
     })
 }
 
-/// 把 `register-trait` 注册进 `engine`。
+/// 把 `register-trait`/`register-trait-resource-pool` 注册进 `engine`。
 pub fn register_trait_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-trait", register_trait);
+    engine.register_fn("register-trait-resource-pool", register_trait_resource_pool);
 }
 
 /// `(register-trait id display-name-key granted-skills)`。
@@ -109,6 +110,93 @@ fn do_register_trait(
                 stat_modifiers: Vec::new(),
                 rule_modifiers: Vec::new(),
                 granted_resource_pools: Vec::new(),
+            },
+        )
+        .map(|()| true)
+        .map_err(|err: TraitError| err.to_string())
+}
+
+/// `(register-trait-resource-pool trait-id pool-id capacity-kind capacity-amount)`
+/// ——追加声明「这个天赋授予某个资源池多少容量」（资源池落地批次，
+/// `knowledge/design/trait-system.md` 三节④），与 `register-race-trait`
+/// 相对 `register-race` 同一个「不改既有签名,新增能力用新函数」模式,
+/// 见 [`crate::trait_def`] 模块文档「④授予资源池容量走的正是这条先例」
+/// 一节。
+///
+/// - `trait-id`：已经通过 `register-trait` 注册过的完整命名空间标识符
+///   字符串——目标必须已存在（ADR 0017「注册期完整校验」）。
+/// - `pool-id`：已经通过 `register-resource-pool`
+///   （[`crate::script_resource_pool_api`]）注册过的完整命名空间标识符
+///   字符串——**要求**已存在（与 `granted-skills`/`register-race-trait`
+///   的「只 intern 不跨表校验」不同：`resource-pools-and-rest.md` 三节
+///   原文明确要求这里校验，见 `crate::trait_def` 模块文档）。
+/// - `capacity-kind`：本批次只支持 `"fixed"`（容量恒定,不随等级变化）
+///   ——`"by-level"`（阶梯式查表）需要一套本代码库尚未使用过的「列表套
+///   元组」FFI 编码约定，留给法术位批次一起补上，见
+///   [`crate::trait_def`] 模块文档「本批次范围」一节同一条 YAGNI 判断。
+/// - `capacity-amount`：`capacity-kind` 为 `"fixed"` 时是容量数值,
+///   非负整数。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_trait_resource_pool(
+    trait_id: String,
+    pool_id: String,
+    capacity_kind: String,
+    capacity_amount: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err(
+                    "register-trait-resource-pool 在没有活跃天赋表的窗口内被调用".to_string(),
+                );
+            };
+            do_register_trait_resource_pool(
+                registry,
+                table,
+                &trait_id,
+                &pool_id,
+                &capacity_kind,
+                capacity_amount,
+            )
+        })
+    })
+}
+
+/// [`register_trait_resource_pool`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_trait_resource_pool(
+    registry: &mut Registry,
+    table: &mut TraitTable,
+    trait_id: &str,
+    pool_id: &str,
+    capacity_kind: &str,
+    capacity_amount: i64,
+) -> Result<bool, String> {
+    let parsed_trait_id = NamespacedId::parse(trait_id)
+        .map_err(|err| format!("非法内容标识符 {trait_id:?}：{err}"))?;
+    let Some(trait_index) = registry.get(&parsed_trait_id) else {
+        return Err(format!("天赋 {trait_id:?} 尚未通过 register-trait 注册"));
+    };
+    let parsed_pool_id =
+        NamespacedId::parse(pool_id).map_err(|err| format!("非法内容标识符 {pool_id:?}：{err}"))?;
+    let Some(pool_index) = registry.get(&parsed_pool_id) else {
+        return Err(format!(
+            "资源池 {pool_id:?} 尚未通过 register-resource-pool 注册"
+        ));
+    };
+    let capacity = match capacity_kind {
+        "fixed" => CapacityFormula::Fixed(capacity_amount.max(0) as u32),
+        _ => return Err(format!("未知的容量公式种类 {capacity_kind:?}")),
+    };
+
+    table
+        .add_resource_pool_grant(
+            trait_index,
+            ResourcePoolGrant {
+                pool: pool_index,
+                capacity,
             },
         )
         .map(|()| true)
@@ -233,5 +321,137 @@ mod tests {
             .get(&NamespacedId::parse("yourmod:draconic_breath").unwrap())
             .expect("刚注册的内容应能查到索引");
         assert_eq!(table.get(index).unwrap().granted_skills.len(), 1);
+    }
+
+    #[test]
+    fn 合法资源池容量声明追加成功且fixed公式数值正确() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = TraitTable::new();
+        do_register_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:innate_sorcery",
+            "yourmod:innate_sorcery_display_name",
+            &[],
+        )
+        .expect("先注册天赋本体");
+        let pool = registry.intern(NamespacedId::parse("yourmod:sorcery_points").unwrap());
+
+        // Act
+        let result = do_register_trait_resource_pool(
+            &mut registry,
+            &mut table,
+            "yourmod:innate_sorcery",
+            "yourmod:sorcery_points",
+            "fixed",
+            20,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:innate_sorcery").unwrap())
+            .unwrap();
+        let grants = &table.get(index).unwrap().granted_resource_pools;
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].pool, pool);
+        assert_eq!(grants[0].capacity, CapacityFormula::Fixed(20));
+    }
+
+    #[test]
+    fn 目标天赋尚未注册时资源池容量声明返回错误而不panic() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = TraitTable::new();
+        registry.intern(NamespacedId::parse("yourmod:sorcery_points").unwrap());
+
+        // Act
+        let result = do_register_trait_resource_pool(
+            &mut registry,
+            &mut table,
+            "yourmod:never_registered",
+            "yourmod:sorcery_points",
+            "fixed",
+            10,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 目标资源池尚未注册时容量声明返回错误而不panic() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = TraitTable::new();
+        do_register_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:innate_sorcery",
+            "yourmod:innate_sorcery_display_name",
+            &[],
+        )
+        .expect("先注册天赋本体");
+
+        // Act：pool-id 从未被 register-resource-pool 注册过。
+        let result = do_register_trait_resource_pool(
+            &mut registry,
+            &mut table,
+            "yourmod:innate_sorcery",
+            "yourmod:never_registered_pool",
+            "fixed",
+            10,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_trait_resource_pool() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        let mut registry = Registry::new();
+        let trait_index = registry.intern(NamespacedId::parse("yourmod:innate_sorcery").unwrap());
+        let pool = registry.intern(NamespacedId::parse("yourmod:sorcery_points").unwrap());
+        let mut table = TraitTable::new();
+        table
+            .define(
+                trait_index,
+                TraitAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:trait.innate_sorcery").unwrap(),
+                    granted_skills: Vec::new(),
+                    stat_modifiers: Vec::new(),
+                    rule_modifiers: Vec::new(),
+                    granted_resource_pools: Vec::new(),
+                },
+            )
+            .expect("先注册天赋本体");
+        crate::active_registry::set_active_registry(registry);
+        set_active_target(table);
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-trait-resource-pool "yourmod:innate_sorcery" "yourmod:sorcery_points" "fixed" 20)"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:innate_sorcery").unwrap())
+            .unwrap();
+        let grants = &table.get(index).unwrap().granted_resource_pools;
+        assert_eq!(
+            grants,
+            &[ResourcePoolGrant {
+                pool,
+                capacity: CapacityFormula::Fixed(20),
+            }]
+        );
     }
 }

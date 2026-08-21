@@ -218,6 +218,7 @@ impl ThinPopulation {
             luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),

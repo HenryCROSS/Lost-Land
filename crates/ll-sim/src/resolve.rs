@@ -62,9 +62,14 @@ use crate::effect::Effect;
 use crate::experience::ExperienceCatalog;
 use crate::intent::{Direction, Intent};
 use crate::quest::{NoQuests, QuestCatalog};
+use crate::resource_pool::{
+    NoResourcePools, RegenRule, ResourcePoolCatalog, effective_scalar_capacity,
+};
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::timeline::action_cost;
-use crate::traits::{NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, granted_skills};
+use crate::traits::{
+    NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, effective_traits, granted_skills,
+};
 
 /// 非位移动作（等待、攻击、开门）的基础代价，与平地移动同一基准
 /// （草地的 `move_cost` 恰为这个值）——本批次没有武器速度、技能读条
@@ -251,7 +256,43 @@ pub fn resolve_with_skills_and_traits(
     race_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
 ) -> Vec<Effect> {
-    resolve_dispatch(world, intent, skills, &NoQuests, race_traits, traits)
+    resolve_dispatch(
+        world,
+        intent,
+        skills,
+        &NoQuests,
+        race_traits,
+        traits,
+        &NoResourcePools,
+    )
+}
+
+/// [`resolve`] 的最完整入口：在 [`resolve_with_skills_and_traits`] 之上
+/// 再额外接收一份资源池目录，用于结算标量池的消耗判定（门四，
+/// [`resolve_use_skill`]）与每回合开始的自动恢复
+/// （`RegenRule::OnTurnStart`，`resource-pools-and-rest.md` 二、四节，
+/// 资源池落地批次，第一批：法力池/血池）。
+///
+/// 五层入口（`resolve` → `resolve_with_skills` →
+/// `resolve_with_skills_and_quests`/`resolve_with_skills_and_traits` →
+/// 本函数）而不是给某个既有入口加参数，理由同
+/// [`resolve_with_skills`] 文档：不强迫仓库里已有的全部调用点都多传
+/// 一份资源池目录——传 [`NoResourcePools`] 与"不传"在行为上完全等价
+/// （两者都让每回合恢复现算出一个空批次），本函数只服务真正想让法力
+/// 池等标量池的完整链路（消耗判定 + 每回合恢复）生效的调用方。
+///
+/// 血代价（`ResourceCost::Blood`）不依赖 `pools` 参数——它直接读/写
+/// `Agent::health`，见 [`crate::skill::ResourceCost::Blood`] 文档；本
+/// 入口对血魔法技能同样适用，只是它不消费本函数新增的这份目录。
+pub fn resolve_with_skills_traits_and_pools(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
+) -> Vec<Effect> {
+    resolve_dispatch(world, intent, skills, &NoQuests, race_traits, traits, pools)
 }
 
 /// [`resolve`] 的技能结算入口：额外接收一份技能目录，用于结算
@@ -284,13 +325,21 @@ pub fn resolve_with_skills_and_quests(
     skills: &dyn SkillCatalog,
     quests: &dyn QuestCatalog,
 ) -> Vec<Effect> {
-    resolve_dispatch(world, intent, skills, quests, &NoTraitGrants, &NoTraits)
+    resolve_dispatch(
+        world,
+        intent,
+        skills,
+        quests,
+        &NoTraitGrants,
+        &NoTraits,
+        &NoResourcePools,
+    )
 }
 
-/// [`resolve_with_skills_and_quests`]/[`resolve_with_skills_and_traits`]
-/// 共用的核心分派逻辑——两个公开入口都只是"缺一份目录时传对应的
-/// `No*` 空实现"的薄封装，真正的 `Intent` 匹配与效果产出只写这一份，
-/// 不重复。
+/// [`resolve_with_skills_and_quests`]/[`resolve_with_skills_and_traits`]/
+/// [`resolve_with_skills_traits_and_pools`] 共用的核心分派逻辑——三个
+/// 公开入口都只是"缺一份目录时传对应的 `No*` 空实现"的薄封装，真正的
+/// `Intent` 匹配与效果产出只写这一份，不重复。
 fn resolve_dispatch(
     world: &WorldState,
     intent: &Intent,
@@ -298,6 +347,7 @@ fn resolve_dispatch(
     quests: &dyn QuestCatalog,
     race_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => resolve_wait(world, actor),
@@ -312,6 +362,19 @@ fn resolve_dispatch(
             target,
         } => resolve_use_skill(world, actor, skill, target, skills, race_traits, traits),
     };
+    // 资源池每回合自动恢复（RegenRule::OnTurnStart,`resource-pools-and-rest.md`
+    // 四节）：每次结算一个实体的意图,就是这个实体"自己的回合"（本项目
+    // 的时间轴是逐实体调度,不是全体同时行动的固定回合制,见
+    // `crate::timeline` 模块文档),因此在这里为全部 `Intent` 变体统一
+    // 触发一次,不只是 `Intent::Wait`——一个法师每回合都在放技能同样应
+    // 该按节奏回蓝,不能因为它选择了"行动"而不是"等待"就跳过恢复。
+    effects.extend(resolve_resource_pool_regen(
+        world,
+        intent.actor(),
+        race_traits,
+        traits,
+        pools,
+    ));
     // 击杀任务进度：`Intent::Attack` 与 `Intent::UseSkill` 都可能产出
     // `Effect::Kill`（后者见 `resolve_use_skill` 的 `DealDamage` 分支，
     // 本批次修掉的缺口），两者因此共用同一条推进逻辑——`append_quest_
@@ -334,6 +397,59 @@ fn resolve_dispatch(
     // Intent 类型区分调用与否：函数本身只扫描 effects 里已经存在的
     // Effect::Kill,对没有产出击杀的意图（Wait/Move/...）是无操作。
     append_kill_history(world, &mut effects);
+    effects
+}
+
+/// 资源池每回合自动恢复（`RegenRule::OnTurnStart`,
+/// `resource-pools-and-rest.md` 四节，资源池落地批次，第一批）：遍历
+/// `actor` 当前 [`effective_traits`] 命中的每一条天赋的
+/// `granted_resource_pools`，对 `pools` 目录里恢复节奏是
+/// `RegenRule::OnTurnStart` 的每一条产出一个
+/// [`Effect::AdjustResourcePool`]（正值）。
+///
+/// # 为什么按「每条命中的授予声明」各自产出一条效果，不按池去重
+///
+/// 若两个不同天赋各自都授予了同一个池的容量（`trait-system.md` 三节④
+/// 「聚合规则」：容量按来源求和，不是取第一条命中），本函数同样让
+/// 两条来源各自贡献一次恢复量,最终效果是两条 `AdjustResourcePool`
+/// 效果各自的 `delta` 相加——与容量本身"两个来源各自贡献一部分"是
+/// 同一条叠加语义,不是"取一次就够"的互斥选择,理由同该节原文。
+///
+/// # 为什么这里不做"钳位到容量上限"
+///
+/// `resource-pools-and-rest.md` 三节「上限变化时怎么办」一节：容量
+/// 变化只在**读取**"当前可用量"时现场钳位（`usable = min(stored_current,
+/// effective_cap)`），不主动改写存储值——回合恢复只是又一处"写入"，
+/// 遵守同一条纪律：写入端不做钳位，`resolve_use_skill` 门四读取时自然
+/// 把超出容量的部分视为不可用，见其文档。
+fn resolve_resource_pool_regen(
+    world: &WorldState,
+    actor: EntityId,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let mut effects = Vec::new();
+    for trait_id in effective_traits(agent.race, agent.level, race_traits) {
+        let Some(rule) = traits.trait_rule(trait_id) else {
+            continue;
+        };
+        for grant in &rule.granted_resource_pools {
+            let Some(pool_rule) = pools.resource_pool(grant.pool) else {
+                continue;
+            };
+            if let RegenRule::OnTurnStart { amount } = pool_rule.regen_rule {
+                effects.push(Effect::AdjustResourcePool {
+                    actor,
+                    pool: grant.pool,
+                    delta: amount as i32,
+                });
+            }
+        }
+    }
     effects
 }
 
@@ -961,23 +1077,72 @@ fn resolve_use_skill(
     let Some(rule) = skills.skill(skill) else {
         return Vec::new();
     };
-    // 门四：资源是否充足。
-    if let ResourceCost::Amount(kind, amount) = rule.resource_cost {
-        let current = current_resource(agent, kind);
-        if current < i64::from(amount) {
-            return Vec::new();
+    // 门四：资源是否充足——`Amount`/`PoolAmount` 走同一条纪律（不足则
+    // 整个技能静默不产出任何效果，与其余三道门一致）；`Blood` 代价
+    // 刻意不设这道门,允许把施法者打死,理由见
+    // `resource-pools-and-rest.md` 五节「不设 1 点血兜底」与
+    // `crate::skill::ResourceCost::Blood` 文档。这条判定不是恒真：
+    // `PoolAmount` 分支真的会在 `usable < amount` 时拒绝——法力不够时
+    // 技能确实放不出来。
+    match rule.resource_cost {
+        ResourceCost::Amount(kind, amount) => {
+            let current = current_resource(agent, kind);
+            if current < i64::from(amount) {
+                return Vec::new();
+            }
         }
+        ResourceCost::PoolAmount(pool, amount) => {
+            if resource_pool_usable(agent, pool, race_traits, traits) < i64::from(amount) {
+                return Vec::new();
+            }
+        }
+        ResourceCost::Blood(_) | ResourceCost::None => {}
     }
 
     // 四道门都通过：产出资源扣减（若有）、技能效果映射出的效果、冷却
     // 设置、以及与其余动作一致的排期效果。
     let mut effects = Vec::new();
-    if let ResourceCost::Amount(kind, amount) = rule.resource_cost {
-        effects.push(Effect::AdjustResource {
-            actor,
-            resource: kind,
-            delta: -(amount as i32),
-        });
+    match rule.resource_cost {
+        ResourceCost::Amount(kind, amount) => {
+            effects.push(Effect::AdjustResource {
+                actor,
+                resource: kind,
+                delta: -(amount as i32),
+            });
+        }
+        ResourceCost::PoolAmount(pool, amount) => {
+            effects.push(Effect::AdjustResourcePool {
+                actor,
+                pool,
+                delta: -(amount as i32),
+            });
+        }
+        ResourceCost::Blood(amount) => {
+            // 直接扣血,绕开减伤/抗性——见 `Effect::SpendBloodCost`/
+            // `crate::skill::ResourceCost::Blood` 文档，**刻意不产出
+            // `Effect::Damage`**：血代价链路必须从一开始就不经过
+            // `damage_after_defense`,这里与 `resolve_attack`/
+            // `DealDamage` 分支唯一的区别就是这一点。
+            let cost = amount as i32;
+            effects.push(Effect::SpendBloodCost {
+                target: actor,
+                amount: cost,
+            });
+            // 用血施法致死：与 `resolve_attack`/`DealDamage` 分支完全
+            // 同构的既有纪律——结算前读 `caster.health - cost <= 0`,
+            // 是否致死是规则判断，必须在这里（resolve）做出。不设 1 点
+            // 血兜底，不在施法前拒绝——项目所有者的明确裁定，见
+            // `resource-pools-and-rest.md` 五节。`killer` 填施法者自己
+            // 而非 `None`：自尽的责任方明确是施法者本人。
+            if agent.health - cost <= 0 {
+                effects.push(Effect::Kill {
+                    target: actor,
+                    killer: Some(actor),
+                    cause: KillCause::Skill { skill },
+                });
+            }
+        }
+        ResourceCost::None => {}
     }
     // 默认目标：未显式给出目标的技能施于自身（自我增益/恢复类技能的
     // 常见形状），见 `Intent::UseSkill::target` 文档。
@@ -1057,6 +1222,25 @@ fn current_resource(agent: &ll_world::entity::Agent, kind: crate::skill::Resourc
     }
 }
 
+/// 读取 `agent` 当前对某个开放注册标量池的「可用量」——
+/// `resolve_use_skill` 门四的帮手，与 [`current_resource`] 是同一件事
+/// 在开放资源池这条通道上的对应物,但多一步容量钳位：
+/// `resource-pools-and-rest.md` 三节「上限变化时怎么办」一节裁定容量
+/// 变化只在**读取**这一刻现场钳位，不主动改写存储值——
+/// `usable = min(stored_current, effective_cap)`,不足则技能放不出来,
+/// 这条判定因此不是恒真（容量降到低于已消耗量时,`usable` 会真的比
+/// `stored_current` 小）。
+fn resource_pool_usable(
+    agent: &ll_world::entity::Agent,
+    pool: ContentIndex,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+) -> i64 {
+    let stored = agent.resource_pools.get(&pool).copied().unwrap_or(0);
+    let cap = effective_scalar_capacity(agent.race, agent.level, pool, race_traits, traits);
+    i64::from(stored).min(i64::from(cap)).max(0)
+}
+
 #[cfg(test)]
 mod tests {
     use ll_core::torus::TorusSize;
@@ -1119,6 +1303,7 @@ mod tests {
             luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -1173,6 +1358,7 @@ mod tests {
             luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -1705,6 +1891,7 @@ mod tests {
             luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -2052,6 +2239,7 @@ mod tests {
             luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -2110,6 +2298,7 @@ mod tests {
             luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -2172,5 +2361,119 @@ mod tests {
 
         // Assert
         assert_eq!(world.kill_counts.get(&victim_race), Some(&1));
+    }
+
+    /// 一个只认识固定种族索引的测试用天赋授予来源，供
+    /// [`resource_pool_usable`] 的钳位测试使用——理由同本文件其余
+    /// `Fake*` 测试替身。
+    struct FixedRacePoolGrant {
+        race: ContentIndex,
+        trait_id: ContentIndex,
+    }
+
+    impl TraitGrantSource for FixedRacePoolGrant {
+        fn granted_traits(&self, owner: ContentIndex) -> Vec<crate::traits::TraitGrant> {
+            if owner == self.race {
+                vec![crate::traits::TraitGrant {
+                    trait_id: self.trait_id,
+                    unlock_level: 1,
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    /// 固定把 `trait_id` 映射到一条授予 `pool` 某个固定容量的
+    /// `TraitRule`——供 [`resource_pool_usable`] 的钳位测试使用。
+    struct FixedPoolCapacity {
+        trait_id: ContentIndex,
+        pool: ContentIndex,
+        capacity: u32,
+    }
+
+    impl TraitCatalog for FixedPoolCapacity {
+        fn trait_rule(&self, trait_id: ContentIndex) -> Option<crate::traits::TraitRule> {
+            if trait_id != self.trait_id {
+                return None;
+            }
+            Some(crate::traits::TraitRule {
+                granted_skills: Vec::new(),
+                granted_resource_pools: vec![crate::resource_pool::ResourcePoolGrant {
+                    pool: self.pool,
+                    capacity: crate::resource_pool::CapacityFormula::Fixed(self.capacity),
+                }],
+            })
+        }
+    }
+
+    #[test]
+    fn 容量从十降到五时存储值八读出来被钳位为五而存储本身不改写() {
+        // 直接验收「容量变化时读时钳位,不主动改写存储值」
+        // （`resource-pools-and-rest.md` 三节）：先构造一个天赋只授予
+        // 5 点容量（模拟"容量已经从 10 降到 5"这一刻），但
+        // agent.resource_pools 里存储的当前值仍是掉容量之前留下的 8——
+        // usable 必须被钳位为 5,而 agent.resource_pools 这份存储数据
+        // 本身完全不受这次读取影响。
+        // Arrange
+        let (mut world, _ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let mut interner = ll_core::ident::Interner::new();
+        let race = world.actors.get(actor).expect("刚生成必然存在").race;
+        let trait_id = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:diminished_sorcery").unwrap());
+        let pool = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:sorcery_points").unwrap());
+        if let Some(agent) = world.actors.get_mut(actor) {
+            agent.resource_pools.insert(pool, 8);
+        }
+        let race_traits = FixedRacePoolGrant { race, trait_id };
+        let traits = FixedPoolCapacity {
+            trait_id,
+            pool,
+            capacity: 5,
+        };
+
+        // Act
+        let agent = world.actors.get(actor).expect("刚生成必然存在");
+        let usable = resource_pool_usable(agent, pool, &race_traits, &traits);
+
+        // Assert：读出来的可用量被钳位为容量（5），不是原始存储值（8）。
+        assert_eq!(usable, 5);
+    }
+
+    #[test]
+    fn 容量钳位不改写存储值本身() {
+        // 与上一条测试同一份构造,断言的对象换成「存储值」而不是
+        // 「读出来的可用量」——钳位只发生在读取这一刻,agent.resource_pools
+        // 里的原始 8 必须原封不动,不会被这次查询悄悄砍成 5。
+        // Arrange
+        let (mut world, _ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let mut interner = ll_core::ident::Interner::new();
+        let race = world.actors.get(actor).expect("刚生成必然存在").race;
+        let trait_id = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:diminished_sorcery").unwrap());
+        let pool = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:sorcery_points").unwrap());
+        if let Some(agent) = world.actors.get_mut(actor) {
+            agent.resource_pools.insert(pool, 8);
+        }
+        let race_traits = FixedRacePoolGrant { race, trait_id };
+        let traits = FixedPoolCapacity {
+            trait_id,
+            pool,
+            capacity: 5,
+        };
+
+        // Act：查询一次可用量（钳位只应该发生在这次读取的返回值上）。
+        let agent = world.actors.get(actor).expect("刚生成必然存在");
+        let _ = resource_pool_usable(agent, pool, &race_traits, &traits);
+
+        // Assert：存储值本身仍然是 8，没有被这次读取改写。
+        assert_eq!(
+            world.actors.get(actor).unwrap().resource_pools.get(&pool),
+            Some(&8)
+        );
     }
 }

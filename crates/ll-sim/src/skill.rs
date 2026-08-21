@@ -75,12 +75,46 @@ pub enum ResourceKind {
 
 /// 技能消耗的资源类型与数量——形状对齐 `ll_mod::skill::ResourceCost`
 /// （见本模块文档「为什么这里重新声明了一遍」）。
+///
+/// # 为什么新增 `PoolAmount`，不是就地把 `Amount` 的载荷从
+/// `ResourceKind` 改成 `ContentIndex`（资源池落地批次）
+///
+/// `resource-pools-and-rest.md` 二节的最终设计确实是把 `Amount` 的
+/// 载荷从封闭的 `ResourceKind` 换成开放的 `ContentIndex`——但
+/// `Amount(ResourceKind, u32)` 不是一个孤立的类型：`register-skill`
+/// 既有的 `resource-kind`/`resource-amount`（`"none"`/`"mana"`/
+/// `"stamina"`）两个参数、真实 mod 内容
+/// （`mods/example_mod/gameplay.scm` 的 `frostbolt`）、以及围绕它们的
+/// 全部既有测试都建立在这个封闭形状之上。就地改型会把一条已经稳定、
+/// 已经被真实内容使用的脚本 API 变成破坏性变更,且与本批次要解决的
+/// 问题（"落地一族新的开放资源池"）无关——[`PoolAmount`](Self::PoolAmount)
+/// 是新增的第三个变体,`Amount`/[`ResourceKind`] 原样保留,服务既有
+/// `"mana"`/`"stamina"` 两个内置资源种类;`PoolAmount` 服务经
+/// `register-resource-pool`（`ll_mod::resource_pool`）注册的开放池。
+/// 两条通道刻意并存，不是过渡态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ResourceCost {
     /// 不消耗任何资源——纯冷却限制的技能。
     None,
-    /// 消耗给定种类与数量的资源。
+    /// 消耗给定种类与数量的资源——`ResourceKind` 是封闭枚举，服务既有
+    /// `register-skill` 内置的 `"mana"`/`"stamina"` 两种资源，见本类型
+    /// 文档「为什么新增 `PoolAmount`」一节。
     Amount(ResourceKind, u32),
+    /// 消耗给定标量资源池当前值 `amount` 点（`resource-pools-and-rest.md`
+    /// 二节）——`ContentIndex` 指向经 `register-resource-pool` 注册的
+    /// `ResourcePoolDef`，容量走 `crate::resource_pool::effective_scalar_capacity`
+    /// 现算，不足则技能静默不产出效果，见 `crate::resolve::resolve_use_skill`
+    /// 「门四」文档。
+    PoolAmount(ContentIndex, u32),
+    /// 血代价：直接扣 `amount` 点 `Agent::health`，绕开减伤/抗性
+    /// （`resource-pools-and-rest.md` 五节）——**刻意不复用
+    /// [`SkillEffect::DealDamage`]**：`Effect::SpendBloodCost` 是独立
+    /// 效果，不查 `damage_after_defense`/`resistance_multiplier`/
+    /// `active_stat_modifiers`，也因此天然不触发任何键在
+    /// `Effect::Damage` 上的触发器（例如"受伤反击"）。不设最低血量
+    /// 兜底——扣到零或以下时施法者会被自己的法术杀死，见
+    /// `crate::resolve::resolve_use_skill` 「血代价」一节。
+    Blood(u32),
 }
 
 /// 技能效果——**只能是纯数值**，不得引入任何读取装备槽位的字段，见

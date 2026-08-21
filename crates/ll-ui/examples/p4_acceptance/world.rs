@@ -102,6 +102,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut xp_curve = XpCurveTable::new();
     let mut xp_curve_bindings = XpCurveBindings::new();
     let mut trait_def = TraitTable::new();
+    let mut resource_pool = ll_mod::resource_pool::ResourcePoolTable::new();
 
     let mut report = load_all(
         Path::new(PRIMARY_MODS_ROOT),
@@ -117,6 +118,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             xp_curve: &mut xp_curve,
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_def,
+            resource_pool: &mut resource_pool,
         },
     );
     let missing_dependency_report = load_all(
@@ -133,6 +135,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             xp_curve: &mut xp_curve,
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_def,
+            resource_pool: &mut resource_pool,
         },
     );
     let duplicate_namespace_report = load_all(
@@ -149,6 +152,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             xp_curve: &mut xp_curve,
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_def,
+            resource_pool: &mut resource_pool,
         },
     );
     report.entries.extend(missing_dependency_report.entries);
@@ -291,6 +295,7 @@ fn spawn_player(world: &mut WorldState, pos: TorusPos) -> EntityId {
         luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
+        resource_pools: std::collections::BTreeMap::new(),
         unlocked_skills: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),

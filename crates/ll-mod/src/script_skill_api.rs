@@ -63,7 +63,14 @@ pub fn register_skill_api(engine: &mut ScriptEngine) {
 ///   约定。
 /// - `prerequisites`：前置技能标识符字符串列表，空列表表示无前置。
 /// - `cooldown-ticks`：冷却 tick 数，非负整数。
-/// - `resource-kind`：`"none"`（不消耗资源）/`"mana"`/`"stamina"`。
+/// - `resource-kind`：`"none"`（不消耗资源）/`"mana"`/`"stamina"`（既有
+///   内置资源，`ResourceCost::Amount`）/`"blood"`（血代价,直接扣
+///   `health`,绕开减伤,`ResourceCost::Blood`,资源池落地批次新增,见
+///   `ll_sim::skill::ResourceCost::Blood` 文档）/其它任意字符串——按
+///   完整命名空间标识符解析,引用一个已经通过 `register-resource-pool`
+///   注册的开放资源池（`ResourceCost::PoolAmount`,资源池落地批次新增，
+///   要求目标池已注册,理由同 `register-trait-resource-pool` 对
+///   `pool-id` 的校验）。
 /// - `resource-amount`：`resource-kind` 为 `"none"` 时忽略。
 /// - `effect-kind`：`"deal-damage"`/`"restore-resource"`/
 ///   `"temporary-stat-modifier"`。
@@ -150,7 +157,7 @@ fn do_register_skill(
         prerequisite_indices.push(registry.intern(parsed));
     }
 
-    let resource_cost = parse_resource_cost(resource_kind, resource_amount)?;
+    let resource_cost = parse_resource_cost(registry, resource_kind, resource_amount)?;
     let effect = parse_effect(effect_kind, effect_tag, effect_amount, effect_amount2)?;
 
     table
@@ -169,7 +176,17 @@ fn do_register_skill(
 }
 
 /// `resource-kind`/`resource-amount` → [`ResourceCost`]。
-fn parse_resource_cost(kind: &str, amount: i64) -> Result<ResourceCost, String> {
+///
+/// `"none"`/`"mana"`/`"stamina"`/`"blood"` 四个保留字之外的任意字符串
+/// 按完整命名空间标识符解析，引用一个已注册的资源池（资源池落地
+/// 批次新增，见本函数文档所属的 [`register_skill`] 文档「resource-kind」
+/// 一节）——与 `register-trait-resource-pool` 对 `pool-id` 的校验同一条
+/// 纪律：目标池**要求**已经通过 `register-resource-pool` 注册。
+fn parse_resource_cost(
+    registry: &Registry,
+    kind: &str,
+    amount: i64,
+) -> Result<ResourceCost, String> {
     match kind {
         "none" => Ok(ResourceCost::None),
         "mana" => Ok(ResourceCost::Amount(
@@ -180,7 +197,15 @@ fn parse_resource_cost(kind: &str, amount: i64) -> Result<ResourceCost, String> 
             ResourceKind::Stamina,
             amount.max(0) as u32,
         )),
-        _ => Err(format!("未知的资源种类 {kind:?}")),
+        "blood" => Ok(ResourceCost::Blood(amount.max(0) as u32)),
+        _ => {
+            let parsed_pool = NamespacedId::parse(kind)
+                .map_err(|err| format!("未知的资源种类 {kind:?}：{err}"))?;
+            let pool = registry
+                .get(&parsed_pool)
+                .ok_or_else(|| format!("资源池 {kind:?} 尚未通过 register-resource-pool 注册"))?;
+            Ok(ResourceCost::PoolAmount(pool, amount.max(0) as u32))
+        }
     }
 }
 
@@ -410,5 +435,98 @@ mod tests {
         // Cleanup：同 script_terrain_api 的既有纪律。
         take_active_target();
         crate::active_registry::take_active_registry();
+    }
+
+    #[test]
+    fn resource_kind为blood时解析成血代价() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = SkillTable::new();
+
+        // Act
+        let result = do_register_skill(
+            &mut registry,
+            &mut table,
+            "yourmod:blood_bolt",
+            "",
+            &[],
+            10,
+            "blood",
+            15,
+            "deal-damage",
+            "",
+            30,
+            0,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:blood_bolt").unwrap())
+            .unwrap();
+        assert_eq!(
+            table.get(index).unwrap().resource_cost,
+            ResourceCost::Blood(15)
+        );
+    }
+
+    #[test]
+    fn resource_kind引用已注册资源池时解析成池消耗() {
+        // Arrange
+        let mut registry = Registry::new();
+        let pool = registry.intern(NamespacedId::parse("yourmod:sorcery_points").unwrap());
+        let mut table = SkillTable::new();
+
+        // Act
+        let result = do_register_skill(
+            &mut registry,
+            &mut table,
+            "yourmod:sorcerer_firebolt",
+            "",
+            &[],
+            10,
+            "yourmod:sorcery_points",
+            5,
+            "deal-damage",
+            "",
+            12,
+            0,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:sorcerer_firebolt").unwrap())
+            .unwrap();
+        assert_eq!(
+            table.get(index).unwrap().resource_cost,
+            ResourceCost::PoolAmount(pool, 5)
+        );
+    }
+
+    #[test]
+    fn resource_kind引用未注册资源池时返回错误而不panic() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = SkillTable::new();
+
+        // Act：从未 register-resource-pool 过 "yourmod:never_registered"。
+        let result = do_register_skill(
+            &mut registry,
+            &mut table,
+            "yourmod:x",
+            "",
+            &[],
+            0,
+            "yourmod:never_registered",
+            0,
+            "deal-damage",
+            "",
+            0,
+            0,
+        );
+
+        // Assert
+        assert!(result.is_err());
     }
 }

@@ -307,6 +307,10 @@ fn remap_agent(
         // 资源当前值——纯数值，不携带任何 ContentIndex，不需要重映射。
         mana: _,
         stamina: _,
+        // 开放注册资源池（资源池落地批次新增）：键是指向 ResourcePoolDef
+        // 的 ContentIndex，必须重映射；值是当前量，纯数值不需要处理，
+        // 见 remap_resource_pools 文档。
+        ref mut resource_pools,
         // 三个 P5-B 任务 5 新增的 ContentIndex 承载字段：见下方各自的
         // remap_* 帮手。
         ref mut unlocked_skills,
@@ -348,6 +352,26 @@ fn remap_agent(
     remap_subclasses(remapper, subclasses)?;
     remap_active_stat_modifiers(remapper, active_stat_modifiers)?;
     remap_creature_kind(remapper, creature_kind, owner)?;
+    remap_resource_pools(remapper, resource_pools)?;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的开放注册资源池当前值表：键（池索引）找不到
+/// 当前会话内容时整条丢弃（[`ContentKind::ResourcePool`]）——理由同
+/// [`remap_skill_cooldowns`]：这是「这个池现在还剩多少」的一条记录，
+/// 不是实体本体的核心身份，缺一个池的存量不等于「失去自己」。值
+/// （当前量）本身不含 `ContentIndex`，跟着键一起丢弃或保留。
+fn remap_resource_pools(
+    remapper: &mut Remapper<'_>,
+    resource_pools: &mut BTreeMap<ContentIndex, i32>,
+) -> Result<(), LoadError> {
+    let mut kept = BTreeMap::new();
+    for (pool, current) in std::mem::take(resource_pools) {
+        if let Some(new_pool) = remapper.remap_droppable(pool, ContentKind::ResourcePool)? {
+            kept.insert(new_pool, current);
+        }
+    }
+    *resource_pools = kept;
     Ok(())
 }
 
@@ -599,6 +623,7 @@ mod tests {
             luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -985,6 +1010,75 @@ mod tests {
 
         // Assert
         assert!(world.kill_counts.is_empty());
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
+    }
+
+    #[test]
+    fn 资源池键按字符串对号重映射到新索引() {
+        // Arrange：存档写出时与当前会话的登记顺序不同——与 profession/
+        // race 同一条判据,重映射必须靠字符串而不是索引数值巧合对上号。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let pool_old = save_registry.intern(id("lostland:sorcery_points"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记,打乱顺序
+        let pool_new = current.intern(id("lostland:sorcery_points"));
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.resource_pools.insert(pool_old, 12);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert：键换成了新索引,值（当前量）原样保留。
+        assert!(actions.is_empty());
+        assert_eq!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .resource_pools
+                .get(&pool_new),
+            Some(&12)
+        );
+    }
+
+    #[test]
+    fn 资源池键对应的内容在当前会话找不到时整条丢弃并记录droppwithwarning() {
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished_pool = save_registry.intern(id("lostland:vanished_pool"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.resource_pools.insert(vanished_pool, 7);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .resource_pools
+                .is_empty()
+        );
         assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
     }
 

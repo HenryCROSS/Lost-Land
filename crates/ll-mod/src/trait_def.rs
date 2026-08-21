@@ -11,19 +11,21 @@
 //! [`crate::skill`] 同一套列式存储手法——本模块不是第一次证明这套模式
 //! 好用，是第 N 次复用。
 //!
-//! # 本批次范围：四类效果的形状定义齐全，只接线①授予技能
+//! # 本批次范围：四类效果的形状定义齐全，接线①授予技能与④授予资源池容量
 //!
 //! `trait-system.md` 三节列出天赋的四类效果——①授予技能、②属性修正、
 //! ③改变规则本身（[`RuleModifier`]）、④授予资源池容量
-//! （[`ResourcePoolGrant`]）。[`TraitDef`] 四个字段因此一次性按设计
-//! 文档定形（省得将来加字段又要动一次已冻结的结构），但本批次的
-//! `resolve` 侧真正读取、真正有端到端测试验收的只有 `granted_skills`
-//! 一项——`stat_modifiers` 走既有的 `Agent::active_stat_modifiers`
-//! 通道（该节②：「不是新机制,是同一份数据被两种消费方式使用」,接线
-//! 是另一批的工作)；`rule_modifiers`/`granted_resource_pools` 现在没有
-//! 任何消费者（③需要的抗性机制、④需要的资源池系统都还是纯设计，见
-//! 该文档十节「等什么」清单第 1/10 两项）——本模块只负责让这两类效果
-//! 能被 mod 作者以正确的形状**声明**下来,不假装它们已经在游戏里生效。
+//! （[`ResourcePoolGrant`]）。[`TraitDef`] 四个字段一次性按设计文档
+//! 定形（省得将来加字段又要动一次已冻结的结构）——天赋系统落地批次
+//! 只接线①，资源池落地批次（第一批：法力池/血池）在此基础上追加接线
+//! ④：`impl TraitCatalog for TraitTable` 现在同时搬运 `granted_skills`/
+//! `granted_resource_pools` 两个字段，`ll_sim::resource_pool::effective_scalar_capacity`
+//! 据此聚合出角色对某个标量池的有效容量,见该函数文档。`stat_modifiers`
+//! 走既有的 `Agent::active_stat_modifiers` 通道（该节②：「不是新机制,
+//! 是同一份数据被两种消费方式使用」,接线是另一批的工作)；
+//! `rule_modifiers` 现在仍没有任何消费者（③需要的抗性机制还是纯设计，
+//! 见该文档十节「等什么」清单第 1 项）——本模块只负责让这一类效果能
+//! 被 mod 作者以正确的形状**声明**下来,不假装它已经在游戏里生效。
 //!
 //! # `register-trait` 脚本签名为什么只暴露①，不是设计文档的完整六参数
 //!
@@ -31,23 +33,31 @@
 //! 参数（granted-skills/stat-modifiers/rule-modifiers/
 //! granted-resource-pools）。本模块的 [`crate::script_trait_api`] 只
 //! 实现前两个位置参数（`id`/`display-name-key`）+ `granted-skills`
-//! 列表——`stat_modifiers`/`rule_modifiers`/`granted_resource_pools`
-//! 在 Rust 结构体里已经声明好形状（本模块），但脚本层还没有为
-//! "列表套元组"（`stat-modifiers`）与"打标签的构造子"
-//! （`rule-modifiers` 的 `(resistance ...)`/`(reroll-once ...)`）这两种
-//! FFI 编码约定过怎么做——本代码库现有全部 `register-*` 函数（`skill`/
-//! `class`/`quest`/`race`/`clip`/`xp_curve`）都只用「扁平参数 + 字符串
-//! 标签」这一种约定（见 `crate::script_skill_api` 模块文档「为什么
-//! 这里多出两处 FFI 转换上的麻烦」一节），没有任何一处示范过"列表里
-//! 每一项本身还是一个结构"要怎么从 `SteelVal` 转换。凭空发明一种新
-//! 约定服务两个当前没有 resolve 侧消费者的字段,不是这一批的份内工作
-//! （YAGNI）——`register-race-xp-reward` 相对 `register-race`「不改
-//! 既有签名,新增能力用新函数」的先例已经证明这条路走得通,②③④三类
-//! 效果的脚本入口留给各自真正接线的批次,用同一条先例补上。
+//! 列表——`stat_modifiers`/`rule_modifiers` 在 Rust 结构体里已经声明好
+//! 形状（本模块），但脚本层还没有为"列表套元组"（`stat-modifiers`）与
+//! "打标签的构造子"（`rule-modifiers` 的 `(resistance ...)`/
+//! `(reroll-once ...)`）这两种 FFI 编码约定过怎么做——本代码库现有全部
+//! `register-*` 函数（`skill`/`class`/`quest`/`race`/`clip`/`xp_curve`）
+//! 都只用「扁平参数 + 字符串标签」这一种约定（见
+//! `crate::script_skill_api` 模块文档「为什么这里多出两处 FFI 转换上的
+//! 麻烦」一节），没有任何一处示范过"列表里每一项本身还是一个结构"要
+//! 怎么从 `SteelVal` 转换。凭空发明一种新约定服务两个当前没有 resolve
+//! 侧消费者的字段,不是这一批的份内工作（YAGNI）——`register-race-xp-reward`
+//! 相对 `register-race`「不改既有签名,新增能力用新函数」的先例已经
+//! 证明这条路走得通,②③两类效果的脚本入口留给各自真正接线的批次,用
+//! 同一条先例补上。
+//!
+//! ④授予资源池容量走的正是这条「新增能力用新函数」先例——本模块新增
+//! `register-trait-resource-pool`（[`crate::script_trait_api`]），与
+//! `register-race-trait` 相对 `register-race` 同一个模式：追加声明
+//! 「这个天赋授予某个池多少容量」，不改 `register-trait` 已有的三参数
+//! 签名。容量公式（`fixed`/`by-level`）走扁平参数 + 字符串标签，理由
+//! 与本节其余部分一致，见该函数文档。
 
 use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
+pub use ll_sim::resource_pool::{CapacityFormula, CapacityValue, ResourcePoolGrant};
 use ll_sim::traits::{TraitCatalog, TraitRule};
 use ll_world::entity::AttributeKind;
 
@@ -92,40 +102,14 @@ pub enum RuleModifier {
 
 /// 三节④「资源池容量」——一条"这个天赋授予多少这种资源池容量"的声明,
 /// 按 `resource-pools-and-rest.md` 三节末尾原文落地（`trait-system.md`
-/// 三节④）。**当前没有任何消费者**：`effective_capacity` 与它依赖的
-/// `ResourcePoolDef`/`Agent.resource_pools` 都还是下一批的工作（该
-/// 文档十节「等什么」第 10 项）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ResourcePoolGrant {
-    /// 指向 `ResourcePoolDef`（`resource-pools-and-rest.md` 二节，
-    /// 该类型尚未落地，这里先存一个不透明的 `ContentIndex`）。
-    pub pool: ContentIndex,
-    /// 容量公式。
-    pub capacity: CapacityFormula,
-}
-
-/// [`ResourcePoolGrant::capacity`] 的两种计算方式。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CapacityFormula {
-    /// 容量恒定，不随等级变化——血魔法许可、多数标量池。
-    Fixed(u32),
-    /// 随等级查表，阶梯式增长；未覆盖的等级取小于等于它的最大已声明
-    /// 等级对应的值。键是等级，用 `BTreeMap` 而不是
-    /// `HashMap`——查询"小于等于某个等级的最大已声明键"需要键的自然
-    /// 顺序（约束 C5：不依赖 `HashMap` 迭代顺序，也不能，因为这里根本
-    /// 不是在遍历，是在做有序范围查询）。
-    ByLevel(std::collections::BTreeMap<u32, CapacityValue>),
-}
-
-/// [`CapacityFormula::ByLevel`] 某一级对应的容量值。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum CapacityValue {
-    /// 标量池的容量。
-    Scalar(u32),
-    /// 分级池（法术位）各档的容量，索引 0 = 第 1 档。
-    Tiered(Vec<u32>),
-}
-
+/// 三节④）。**类型定义现移居 `ll_sim::resource_pool`**（资源池落地
+/// 批次，第一批：法力池/血池）——`effective_scalar_capacity` 需要在
+/// `resolve` 侧消费它，而 `ll-sim` 不能反过来依赖 `ll-mod`（依赖
+/// 方向），本模块因此改为文件顶部 `pub use` 复用同一份声明，不再维护
+/// 会漂移的副本，见 `ll_sim::resource_pool` 模块文档「为什么这些类型
+/// 定义在 `ll-sim`」一节——与 `crate::skill` 现在直接复用
+/// `ll_sim::skill::ResourceCost`/`SkillEffect` 是同一条先例。
+///
 /// 单条天赋声明：本体与 mod 注册天赋时共用的同一个输入形状——
 /// 「本体即 Mod」在天赋层面的验收标的，理由同 [`crate::race::RaceDef`]
 /// 文档。
@@ -173,6 +157,10 @@ pub enum TraitError {
     /// 同一个内容索引被定义了两次，理由同
     /// [`crate::race::RaceError::DuplicateDefinition`]。
     DuplicateDefinition(ContentIndex),
+    /// `add_resource_pool_grant` 的目标天赋索引尚未通过 `define`
+    /// 注册——理由同 [`crate::race::RaceError::NotDefined`]：追加声明
+    /// 必须先有一个已登记的天赋可以追加。
+    NotDefined(ContentIndex),
 }
 
 impl fmt::Display for TraitError {
@@ -180,6 +168,9 @@ impl fmt::Display for TraitError {
         match self {
             TraitError::DuplicateDefinition(index) => {
                 write!(f, "天赋索引 {} 被重复定义", index.get())
+            }
+            TraitError::NotDefined(index) => {
+                write!(f, "天赋索引 {} 尚未通过 register-trait 注册", index.get())
             }
         }
     }
@@ -271,17 +262,40 @@ impl TraitTable {
             granted_resource_pools: &self.granted_resource_pools[idx],
         })
     }
+
+    /// 追加声明「这个天赋授予某个资源池多少容量」——`register-trait-resource-pool`
+    /// 的写入目标，与 [`crate::race::RaceTable::add_trait_grant`] 同一个
+    /// 「新增能力用新函数」模式：不改 `define`/`register-trait` 已有的
+    /// 签名，一个天赋可以被多次调用追加多条 `ResourcePoolGrant`（同一个
+    /// 天赋同时授予多个不同池的容量，或者——虽然内容作者通常不会这样
+    /// 声明——同一个池被同一个天赋声明两次,`effective_scalar_capacity`
+    /// 会把两条都计入求和,不在这里去重,理由同 `stat_modifiers` 允许
+    /// 重复声明同一属性两次各自叠加）。
+    pub fn add_resource_pool_grant(
+        &mut self,
+        trait_id: ContentIndex,
+        grant: ResourcePoolGrant,
+    ) -> Result<(), TraitError> {
+        if !self.is_defined(trait_id) {
+            return Err(TraitError::NotDefined(trait_id));
+        }
+        self.granted_resource_pools[trait_id.get() as usize].push(grant);
+        Ok(())
+    }
 }
 
 /// `ll_sim::traits::TraitCatalog` 的真实实现——`resolve_use_skill`
-/// 门一通过这个 impl 真正查到种族天赋授予的技能，见
-/// `ll_sim::traits` 模块文档「本任务选择的解法」一节同一套依赖倒置
-/// 手法。只搬运 `granted_skills` 一个字段——`TraitRule` 本身就只
-/// 声明这一个字段，见其文档。
+/// 门一通过这个 impl 真正查到种族天赋授予的技能，
+/// `ll_sim::resource_pool::effective_scalar_capacity` 通过同一个 impl
+/// 查到天赋授予的资源池容量声明，见 `ll_sim::traits` 模块文档「本任务
+/// 选择的解法」一节同一套依赖倒置手法。搬运 `granted_skills`/
+/// `granted_resource_pools` 两个字段——`TraitRule` 目前只声明这两个
+/// 字段，见其文档。
 impl TraitCatalog for TraitTable {
     fn trait_rule(&self, trait_id: ContentIndex) -> Option<TraitRule> {
         self.get(trait_id).map(|view| TraitRule {
             granted_skills: view.granted_skills.to_vec(),
+            granted_resource_pools: view.granted_resource_pools.to_vec(),
         })
     }
 }

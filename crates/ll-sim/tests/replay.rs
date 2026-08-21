@@ -105,6 +105,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
+        resource_pools: std::collections::BTreeMap::new(),
         unlocked_skills: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
@@ -141,6 +142,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
+        resource_pools: std::collections::BTreeMap::new(),
         unlocked_skills: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
@@ -429,7 +431,32 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    的唯一成因。
 /// 3. 恢复这三行后重新跑通，再次确认新常量
 ///    `13_338_753_139_158_337_327` 稳定复现，才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 13_338_753_139_158_337_327;
+///
+/// # 第十一次重冻的原因（资源池落地批次，第一批：法力池/血池）
+///
+/// `WorldState::hash` 新增混入了每个 `Agent` 的 `resource_pools`
+/// （`BTreeMap<ContentIndex, i32>`，紧邻 `mana`/`stamina` 插入，见
+/// `crates/ll-world/src/state.rs` `hash()` 对 `self.actors` 遍历新增的
+/// 一段 `hasher.write_u64(agent.resource_pools.len() as u64)` +
+/// 逐条遍历）——本文件 `setup` 生成的 `player`/`enemy` 都不持有任何
+/// 天赋授予的资源池（`intent_stream` 也没有任何 `Intent::UseSkill`），
+/// `resource_pools` 因此恒为空表，但新增字段意味着喂进哈希器的字节流
+/// 本身变长了（至少多出一个长度为零的 `u64`），摘要因此改变，与前十次
+/// 重冻同一条先例。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 先在改动后的代码上把这条测试单独跑了两次，确认新摘要
+///    `5_035_886_638_381_990_543` 在两次独立进程里稳定复现（不是一次性
+///    偶然值）。
+/// 2. 再把 `state.rs` `hash()` 里新增的
+///    `hasher.write_u64(agent.resource_pools.len() as u64)` 与紧随其后
+///    的 `for (pool, current) in &agent.resource_pools { .. }` 循环临时
+///    注释掉重新跑这条测试，摘要精确回到本次重冻之前的旧常量
+///    `13_338_753_139_158_337_327`（与上面记录的第十次重冻结果一致），
+///    证明这几行确实是本次摘要变化的唯一成因。
+/// 3. 恢复这几行后重新跑通，再次确认新常量
+///    `5_035_886_638_381_990_543` 稳定复现，才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 5_035_886_638_381_990_543;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

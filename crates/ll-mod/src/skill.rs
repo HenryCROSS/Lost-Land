@@ -789,6 +789,7 @@ mod tests {
             luck: 0,
             mana: ll_world::entity::Agent::STARTING_MANA,
             stamina: ll_world::entity::Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
             unlocked_skills,
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),

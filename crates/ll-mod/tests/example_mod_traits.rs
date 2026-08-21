@@ -63,6 +63,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
     let mut xp_curve = XpCurveTable::new();
     let mut xp_curve_bindings = XpCurveBindings::new();
     let mut trait_def = TraitTable::new();
+    let mut resource_pool = ll_mod::resource_pool::ResourcePoolTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -78,6 +79,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
             xp_curve: &mut xp_curve,
             xp_curve_bindings: &mut xp_curve_bindings,
             trait_def: &mut trait_def,
+            resource_pool: &mut resource_pool,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();
@@ -148,6 +150,7 @@ fn spawn_agent(world: &mut WorldState, race: ContentIndex, level: i32) -> Entity
         luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
+        resource_pools: std::collections::BTreeMap::new(),
         unlocked_skills: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),

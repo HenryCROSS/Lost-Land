@@ -144,6 +144,26 @@ pub enum Intent {
     },
 }
 
+impl Intent {
+    /// 这条意图的发起者——全部变体都恰好有一个 `actor: EntityId` 字段
+    /// （被谁发起、代表谁的这一次行动），本方法只是把这条穷尽 `match`
+    /// 收敛成一次调用，供 `crate::resolve` 判断"这是谁的回合"（例如
+    /// 资源池 `RegenRule::OnTurnStart` 的触发点，见
+    /// `crate::resolve::resolve_dispatch` 文档），不需要在每个调用点
+    /// 各自重复一遍这个 `match`。
+    pub fn actor(&self) -> EntityId {
+        match *self {
+            Intent::Move { actor, .. }
+            | Intent::Attack { actor, .. }
+            | Intent::Wait { actor }
+            | Intent::OpenDoor { actor, .. }
+            | Intent::EnterSpace { actor, .. }
+            | Intent::ExitSpace { actor }
+            | Intent::UseSkill { actor, .. } => actor,
+        }
+    }
+}
+
 /// 把一帧的玩家输入映射成 `Intent`。
 ///
 /// 只产出 [`Intent::Move`] 与 [`Intent::Wait`]：`Attack`/`OpenDoor`
@@ -427,5 +447,22 @@ mod tests {
 
         // Assert
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn actor方法对useskill意图返回发起者字段() {
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let skill = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:strike").expect("合法标识符"));
+        let actor = entity();
+        let intent = Intent::UseSkill {
+            actor,
+            skill,
+            target: None,
+        };
+
+        // Act & Assert
+        assert_eq!(intent.actor(), actor);
     }
 }

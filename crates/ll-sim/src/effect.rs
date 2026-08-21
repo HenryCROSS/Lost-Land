@@ -396,4 +396,43 @@ pub enum Effect {
         /// 意外的负数而死循环，见 `apply` 侧实现注释。
         amount: i64,
     },
+    /// 把某个实体的某个开放注册资源池当前值调整 `delta`（资源池落地
+    /// 批次，第一批：法力池/血池，`knowledge/design/resource-pools-and-rest.md`
+    /// 二节）——与 [`Effect::AdjustResource`] 是同一种「按增量调整某
+    /// 资源当前值」的语义，区别只在于资源身份的来源：`AdjustResource`
+    /// 走封闭的 [`crate::skill::ResourceKind`]，本变体走开放注册的
+    /// `ContentIndex`（服务 `ResourceCost::PoolAmount`/技能自身的
+    /// `RestoreResource`——本批次 `RestoreResource` 仍只支持
+    /// `ResourceKind`，未来若需要对开放池也支持"技能效果里恢复"，是
+    /// 该效果变体自身的扩展，不影响本变体）。
+    AdjustResourcePool {
+        /// 被调整的实体。
+        actor: EntityId,
+        /// 资源池索引（指向经 `register-resource-pool` 注册的
+        /// `ResourcePoolDef`）。
+        pool: ContentIndex,
+        /// 调整量，可正可负——施放消耗传负值，`RegenRule::OnTurnStart`
+        /// 传正值，两个方向共用同一个变体，与 `AdjustResource` 同一条
+        /// 既有纪律。
+        delta: i32,
+    },
+    /// 血代价：直接扣 `amount` 点 `Agent::health`，绕开减伤/抗性
+    /// （`resource-pools-and-rest.md` 五节）。
+    ///
+    /// # 为什么不是 `Effect::Damage`（刻意，不是漏写）
+    ///
+    /// `Effect::Damage` 携带的 `amount` 是 `resolve_attack`/
+    /// `resolve_use_skill` 已经跑完 `damage_after_defense`（固定减+
+    /// 百分比减+10% 下限）算出来的**最终**数字——若血代价复用这条
+    /// 路径，防御高的角色施法就会变得更便宜，这是规则错误。`apply`
+    /// 响应本效果时无条件 `agent.health -= amount`，不查任何防御/抗性
+    /// 表，也因此天然不会触发任何键在 `Effect::Damage` 上的触发器
+    /// （例如"受伤反击"）——血代价是施法者自己选择付出的资源，语义上
+    /// 是"消耗一种资源，恰好这种资源是生命值"，不是"被击中"。
+    SpendBloodCost {
+        /// 付出代价的实体——通常是施法者自己。
+        target: EntityId,
+        /// 代价量，非负。
+        amount: i32,
+    },
 }

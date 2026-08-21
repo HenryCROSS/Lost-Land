@@ -106,6 +106,7 @@ fn spawn_agent(world: &mut WorldState, race: ContentIndex, level: i32) -> Entity
         luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
+        resource_pools: std::collections::BTreeMap::new(),
         unlocked_skills: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
@@ -158,6 +159,7 @@ fn 种族天赋在等级达标时授予的技能即使未解锁也能真实放�
             trait_id,
             TraitRule {
                 granted_skills: vec![skill],
+                granted_resource_pools: Vec::new(),
             },
         )]),
     };
@@ -218,6 +220,7 @@ fn 种族天赋解锁等级未达标时授予的技能仍然不能使用() {
             trait_id,
             TraitRule {
                 granted_skills: vec![skill],
+                granted_resource_pools: Vec::new(),
             },
         )]),
     };

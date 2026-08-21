@@ -40,6 +40,7 @@ use crate::manifest::{ModError, ModManifest, mod_self_id, parse_manifest};
 use crate::quest::QuestTable;
 use crate::race::RaceTable;
 use crate::registry::Registry;
+use crate::resource_pool::ResourcePoolTable;
 use crate::skill::SkillTable;
 use crate::subclass::SubclassTable;
 use crate::trait_def::TraitTable;
@@ -61,6 +62,10 @@ use crate::script_quest_api::{
 use crate::script_race_api::{
     register_race_api, set_active_target as set_active_race_target,
     take_active_target as take_active_race_target,
+};
+use crate::script_resource_pool_api::{
+    register_resource_pool_api, set_active_target as set_active_resource_pool_target,
+    take_active_target as take_active_resource_pool_target,
 };
 use crate::script_skill_api::{
     register_skill_api, set_active_target as set_active_skill_target,
@@ -123,6 +128,10 @@ pub struct GameplayTables<'a> {
     /// 天赋表（天赋系统落地批次新增）——`register-trait` 的写入目标，
     /// 见 `crate::trait_def` 模块文档。
     pub trait_def: &'a mut TraitTable,
+    /// 资源池表（资源池落地批次新增，第一批：法力池/血池）——
+    /// `register-resource-pool` 的写入目标，见 `crate::resource_pool`
+    /// 模块文档。
+    pub resource_pool: &'a mut ResourcePoolTable,
 }
 
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
@@ -249,6 +258,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut xp_curve = XpCurveTable::new();
     let mut xp_curve_bindings = XpCurveBindings::new();
     let mut trait_def = TraitTable::new();
+    let mut resource_pool = ResourcePoolTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -260,6 +270,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         xp_curve: &mut xp_curve,
         xp_curve_bindings: &mut xp_curve_bindings,
         trait_def: &mut trait_def,
+        resource_pool: &mut resource_pool,
     };
     for entry in &manifest.entry_points {
         if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
@@ -381,6 +392,7 @@ fn load_one_script(
         std::mem::take(tables.xp_curve_bindings),
     );
     set_active_trait_target(std::mem::take(tables.trait_def));
+    set_active_resource_pool_target(std::mem::take(tables.resource_pool));
 
     let mut engine = ScriptEngine::new();
     register_terrain_api(&mut engine);
@@ -392,6 +404,7 @@ fn load_one_script(
     register_clip_api(&mut engine);
     register_xp_curve_api(&mut engine);
     register_trait_api(&mut engine);
+    register_resource_pool_api(&mut engine);
     let result = engine.load_source(source.clone());
 
     *registry = take_active_registry();
@@ -406,6 +419,7 @@ fn load_one_script(
     *tables.xp_curve = xp_curve;
     *tables.xp_curve_bindings = xp_curve_bindings;
     *tables.trait_def = take_active_trait_target();
+    *tables.resource_pool = take_active_resource_pool_target();
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -423,12 +437,13 @@ fn load_one_script(
 /// 把 [`ScriptError`] 归到 [`LoadStage::LoadScript`] 还是
 /// [`LoadStage::Register`]。
 ///
-/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有十二个
+/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有十四个
 /// （`register-terrain`/`register-class`/`register-skill`/
 /// `register-subclass`/`register-quest`/`register-race`/
 /// `register-animation-clip`/`register-xp-curve`/
 /// `register-class-xp-curve`/`register-race-xp-curve`/`register-trait`/
-/// `register-race-trait`），把
+/// `register-race-trait`/`register-resource-pool`/
+/// `register-trait-resource-pool`），把
 /// `ScriptError::Runtime`（任一 `register-*` 内部校验失败时都走这一类，
 /// 见各自模块文档「返回 Result<bool, String>」一节）整体归为 Register
 /// 阶段。这会把一个与内容注册无关、纯粹是脚本自身写错的运行时错误
@@ -488,6 +503,7 @@ mod tests {
         xp_curve: XpCurveTable,
         xp_curve_bindings: XpCurveBindings,
         trait_def: TraitTable,
+        resource_pool: ResourcePoolTable,
     }
 
     impl OwnedTables {
@@ -503,6 +519,7 @@ mod tests {
                 xp_curve: &mut self.xp_curve,
                 xp_curve_bindings: &mut self.xp_curve_bindings,
                 trait_def: &mut self.trait_def,
+                resource_pool: &mut self.resource_pool,
             }
         }
     }

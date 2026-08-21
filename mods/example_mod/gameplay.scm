@@ -15,6 +15,8 @@
 ;;   register-race-xp-curve    crates/ll-mod/src/script_xp_curve_api.rs
 ;;   register-trait            crates/ll-mod/src/script_trait_api.rs
 ;;   register-race-trait       crates/ll-mod/src/script_race_api.rs
+;;   register-resource-pool         crates/ll-mod/src/script_resource_pool_api.rs
+;;   register-trait-resource-pool   crates/ll-mod/src/script_trait_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -73,3 +75,23 @@
   (list "examplemod:breath_weapon"))
 (register-race "examplemod:dragonborn" "examplemod:dragonborn_display_name" 0 0 0 0 0 0 0 1 1 80)
 (register-race-trait "examplemod:dragonborn" "examplemod:draconic_breath" 1)
+
+;; 资源池落地批次（第一批：法力池/血池）：knowledge/design/resource-pools-and-rest.md
+;; 十一节「法师验收示例」版本二（法力池，术士式施法者）的真实版本——
+;; 一个标量法力池 + 一个授予它固定 20 点容量的天赋 + 一个消耗法力的
+;; 技能，三行连起来证明 register-resource-pool/register-trait-resource-pool
+;; 与 effective_scalar_capacity/resolve_use_skill 门四在完整装载管线里
+;; 真的接通，不是只在单元测试里自证（ADR 0018）。每回合自动回复 2
+;; 点——同时验收 RegenRule::OnTurnStart。
+(register-resource-pool "examplemod:sorcery_points" "examplemod:sorcery_points_display_name"
+  "scalar" "on-turn-start" 2)
+(register-trait "examplemod:innate_sorcery" "examplemod:innate_sorcery_display_name" (list))
+(register-trait-resource-pool "examplemod:innate_sorcery" "examplemod:sorcery_points" "fixed" 20)
+(register-race-trait "examplemod:half_elf" "examplemod:innate_sorcery" 1)
+(register-skill "examplemod:sorcerer_firebolt" "" (list) 10
+  "examplemod:sorcery_points" 5 "deal-damage" "" 12 0)
+
+;; 血法师附加示例（`resource-pools-and-rest.md` 十一节「血法师」）：
+;; 直接扣 15 点生命值,绕开减伤/抗性,不需要任何天赋授予"使用许可"——
+;; granted_skills（既有第一类天赋效果）已经完整覆盖了这层，见该节原文。
+(register-skill "examplemod:blood_bolt" "" (list) 10 "blood" 15 "deal-damage" "" 30 0)
