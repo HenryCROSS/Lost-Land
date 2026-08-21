@@ -52,7 +52,7 @@
 
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
-use ll_world::entity::{ActiveStatModifier, Agent, AttributeKind, EntityId};
+use ll_world::entity::{ActiveStatModifier, Agent, AttributeKind, BaseStats, EntityId};
 use ll_world::history::KillCause;
 use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
@@ -61,7 +61,9 @@ use crate::combat::{Penetration, damage_after_defense};
 use crate::effect::Effect;
 use crate::experience::ExperienceCatalog;
 use crate::intent::{Direction, Intent};
-use crate::item::{EquipSlot, ItemCatalog, ItemStack, NoItems, SlotMask, can_merge, merge_stacks};
+use crate::item::{
+    EquipSlot, ItemCatalog, ItemStack, NoItems, SlotMask, StatTarget, can_merge, merge_stacks,
+};
 use crate::quest::{NoQuests, QuestCatalog};
 use crate::resource_pool::{
     NoResourcePools, RegenRule, ResourcePoolCatalog, ResourcePoolShape, RestRecoveryAmount,
@@ -81,12 +83,18 @@ const BASE_ACTION_COST: u32 = 100;
 
 /// 基准有效敏捷，对应 `BaseStats::BASELINE` 的敏捷值（10，调整值为零）。
 ///
-/// 真正的「有效敏捷」需要 `derive_stats`（装备、状态效果、负重的综合
-/// 结果）驱动，但那是衍生属性，规则上必须是纯函数且不进存档（见
-/// `knowledge/design/attribute-system.md` 「七、衍生属性绝不进存档」），
-/// 而 `derive_stats` 本身属于后续批次才落地的东西。`derive_stats` 落地
-/// 后，[`effective_speed_from_dexterity`] 的函数体应替换成
-/// `derive_stats(agent.stats, ..).effective_speed`，调用点不变。
+/// 真正的「有效敏捷」需要 [`derive_stats`]（装备、状态效果、负重的
+/// 综合结果）驱动，但那是衍生属性，规则上必须是纯函数且不进存档（见
+/// `knowledge/design/attribute-system.md` 「七、衍生属性绝不进存档」）。
+/// [`derive_stats`] 本身已经在 P6 第四批落地（基础属性 + 状态效果 +
+/// 装备），但**移动速度本批次仍未接上它**——这不是遗漏，是刻意划定的
+/// 范围边界：`derive_stats(...).attribute(Dexterity)` 现在确实能算出
+/// 「叠加状态效果/装备加成后的敏捷」，但把它接进移动速度公式需要先
+/// 决定"跑腿类装备"要不要提供敏捷加成这类内容设计问题，本批次任务书
+/// 只要求接通战斗（`resolve_attack` 的攻防两端），未把移动速度列进
+/// 范围（见项目任务书「本批次范围」一节）。[`effective_speed_from_dexterity`]
+/// 因此继续吃裸 `agent.stats.dexterity`，接上 `derive_stats` 是留给
+/// 未来批次的工作，届时把这个常量与本函数体一并替换即可，调用点不变。
 const BASELINE_EFFECTIVE_SPEED: u32 = 1000;
 
 /// `BaseStats::BASELINE` 的敏捷值——[`effective_speed_from_dexterity`]
@@ -120,52 +128,144 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
     speed.clamp(1, i64::from(u32::MAX)) as u32
 }
 
-/// 给定某一项属性的裸值,查一次 [`ll_world::entity::Agent::active_stat_modifiers`]
-/// ，算出这一时刻真正生效的值——供任何要读「这项属性当前实际是多少」
-/// 的调用方共用，不要在各自的调用点各写一遍同样的到期判定。
+/// [`derive_stats`] 的产出——`attribute-system.md` §七 `derive_stats`
+/// 签名里的 `DerivedStats`：六项主属性的最终生效值（基础值 + 状态
+/// 效果 + 装备）与护甲（防御端的来源，P6 第四批新增）。
 ///
-/// # 多来源叠加：逐条过滤未过期条目再求和
+/// # 派生，不缓存——不进 `WorldState::hash()`
 ///
-/// `buffs-and-triggers.md` 六节裁定「不同效果能叠加」——`modifiers.get(&kind)`
-/// 现在拿到的是这一项属性上「按来源」索引的一整层 `BTreeMap`，本函数
-/// 遍历它的全部条目，过滤掉已过期的（惰性到期判定，见下），对剩下的
-/// `delta` 求和后叠加到 `base` 上，不再是「查到一条就直接用」。合并
-/// 顺序由内层 `BTreeMap<ContentIndex, _>` 自身的键序保证确定性——加法
-/// 可交换，顺序不影响这里的求和结果，但选一个天然有序的容器不需要为
-/// 这一点额外付出任何代价（`buffs-and-triggers.md` 六节「与二节排序
-/// 规则的关系」一段）。
+/// 这是 `attribute-system.md` 七节整节的标题：「衍生属性绝不进存档」。
+/// 本类型只在 [`derive_stats`] 被调用的那一刻现算现用（典型调用点是
+/// 每次 [`resolve_attack`] 结算），从不写回 [`ll_world::entity::Agent`]
+/// 或 `WorldState` 的任何字段，因此**不需要**、也**不应该**出现在
+/// `WorldState::hash()`——存进去必然与来源（基础属性/状态效果/装备）
+/// 不同步，见该节原文「脱了装备忘了减、buff 到期忘了移除，最终属性
+/// 面板显示的数字与实际结算用的数字对不上」。真正进 `hash()` 的仍然
+/// 只是三个来源自身的数据：`Agent::stats`（早已进）、
+/// `Agent::active_stat_modifiers`（早已进）、`Agent::equipment`（P6 第
+/// 三批已进）——本类型只是把三者现算汇总的临时产物，任何一次结算都
+/// 可以从这三份既有数据重新算出完全相同的 `DerivedStats`，缓存它换不
+/// 来任何正确性收益，只会新增一条要手动维持同步的不变式。
 ///
-/// # 性能：`m` 是这一项属性当前生效的不同来源数，现实规模下是个位数
+/// # 为什么能容纳载具「替换」语义（不需要现在就实现）
 ///
-/// 原实现是一次 `Option` 查表，`O(1)`；本实现是一次外层查表（`O(1)`，
-/// `AttributeKind` 只有六个变体）加一次对内层 `m` 条记录的遍历——`m`
-/// 不是「这个实体全部修正」，只是「这一项属性上的不同来源数」，且这次
-/// 遍历只在真正结算一次攻击时付一次（本函数只被 [`resolve_attack`]
-/// 调用），不是每 tick 都要跑一遍。`buffs-and-triggers.md` 六节已经判断
-/// 这个开销在当前内容规模下可接受，不需要额外优化——若未来某个内容
-/// 组合让 `m` 变得可观，问题出在内容设计本身，不是本函数的算法复杂度。
+/// `knowledge/design/vehicle-and-mounting.md` 四节③裁定：移动速度是
+/// **替换**语义（骑乘时读坐骑自己的敏捷，不是给骑手敏捷加一个 delta），
+/// 攻击/防御/其余属性加成是**叠加**语义。本类型不需要为这条区分新增
+/// 任何字段——`derive_stats` 本身是纯函数，输入是"某一个实体自己的
+/// `stats`/`active_stat_modifiers`/`equipment`"，`Armor`/`Attribute`
+/// 两类目标在同一个实体内部永远是叠加（装备/状态效果各自独立生效，
+/// 见 [`derive_stats`] 文档「装备加成与状态效果如何合」一节）；"替换"
+/// 不是某个属性内部的合并规则，是"这一步该向哪个实体要输入"这一层
+/// 决定——载具批次落地时，移动速度的计算只需要改成对坐骑（而不是
+/// 骑手）调用一次 `derive_stats` 取它的 `attribute(Dexterity)`，本类型
+/// 与 `derive_stats` 的签名完全不用改，`vehicle-and-mounting.md` 三节
+/// 给出的 `mover_speed` 伪代码（`mover.map_or(agent.stats.dexterity, |m|
+/// m.stats.dexterity)`）就是这个道理的直接体现，只是届时应换成读
+/// `derive_stats(mover, ..).attribute(Dexterity)` 而不是裸
+/// `m.stats.dexterity`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DerivedStats {
+    attributes: [i32; 6],
+    armor: i32,
+}
+
+impl DerivedStats {
+    /// 六项主属性里指定一项的最终生效值——`resolve_attack` 攻击力（力量）
+    /// 的读取入口，未来三轴战斗结算的魔法/精神攻击力同样从这里读
+    /// （`Intelligence`/`Willpower`）。
+    pub fn attribute(&self, kind: AttributeKind) -> i32 {
+        self.attributes[attribute_slot(kind)]
+    }
+
+    /// 护甲——`resolve_attack` 防御端的来源（P6 第四批：`derive_stats`
+    /// 与装备属性接进战斗，这是防御端第一次真的生效）。
+    pub fn armor(&self) -> i32 {
+        self.armor
+    }
+}
+
+/// [`AttributeKind`] 六个变体到 [`DerivedStats::attributes`] 数组下标的
+/// 映射——枚举变体本身没有稳定的数值表示（不依赖 `enum` 的
+/// discriminant，那是实现细节，不是公开契约），这里显式给出，唯一的
+/// 读者是 [`DerivedStats::attribute`] 与 [`derive_stats`] 自身。
+const fn attribute_slot(kind: AttributeKind) -> usize {
+    match kind {
+        AttributeKind::Strength => 0,
+        AttributeKind::Dexterity => 1,
+        AttributeKind::Constitution => 2,
+        AttributeKind::Intelligence => 3,
+        AttributeKind::Willpower => 4,
+        AttributeKind::Charisma => 5,
+    }
+}
+
+/// `attribute-system.md` §七 `derive_stats(基础属性, 装备, 状态效果,
+/// 负重) -> DerivedStats` 签名在 P6 第四批的落地——**单一聚合入口**：
+/// 把基础属性、状态效果（[`ll_world::entity::Agent::active_stat_modifiers`]）
+/// 与装备（已装备物品的 [`crate::item::ItemRule::stat_bonuses`]）三者汇总
+/// 成 [`DerivedStats`]。旧的 `effective_attribute`（本文件此前的私有
+/// 函数，只读状态效果这一个输入）已被本函数取代并删除——`98621f5`
+/// 建它时就说明了「将来 `derive_stats` 落地后应该用它的对应分支替换
+/// 这个函数体，调用点不变」，本函数是那句话的执行，调用点
+/// （[`resolve_attack`]）也确实不必改变调用形状（仍然是"给一个实体的
+/// 三份数据，要一个数"），只是数据来源从两份（基础值 + 状态效果）变成
+/// 了三份（基础值 + 状态效果 + 装备）。ADR 0021：只有算法真正可共享时
+/// 才抽象——旧函数与新函数做的是**同一件事**（把多个来源汇总成一个
+/// 最终生效值），不是表面相似的两件事，因此是替换而不是并存两条聚合
+/// 路径。
 ///
-/// 首个消费者是 [`resolve_attack`] 的攻击力（力量）；`knowledge/design/
-/// combat-three-axis.md` 四节已经点名防御方将来也要从 `derive_stats`
-/// 走同一条接口约定，`knowledge/design/vehicle-and-mounting.md` 六节
-/// 点名载具的 `stat_modifiers` 同样落在 `active_stat_modifiers` 这份
-/// 数据上——三处未来调用点共享的正是本函数这段「查表 + 到期判定」，
-/// 这就是抽出一个函数而不是让 `resolve_attack` 私自内联的理由（ADR
-/// 0021：抽象要有真实可共享的算法支撑，这里确实有）。
+/// **本批次不做**：`负重`——`ll_world::item` 模块文档已核实
+/// `Agent`/`ItemStack` 都还没有负重相关字段（背包物品的重量从未被
+/// 累加过），提前给这个入参一个假的默认值（例如恒 0）只会制造一个
+/// 看起来接了、实际上永远不生效的参数，与 `ll_mod::item` 模块文档
+/// 「本批次范围」一节同一条 YAGNI 判断。真正落地负重系统的批次照
+/// `equip_mask`/`stat_bonuses` 的先例，在 `derive_stats` 的签名上加一
+/// 个新参数即可，调用点跟着加一个入参,不需要改动本函数已有的三段
+/// 逻辑。
 ///
-/// # 为什么不是完整的 `derive_stats`
+/// # 状态效果：逐条过滤未过期条目再求和，异源叠加、同源已在写入时合并
 ///
-/// `attribute-system.md` §七定义的完整签名是 `derive_stats(基础属性,
-/// 装备, 状态效果, 负重) -> DerivedStats`——「装备」（`StatBonus` 累加）
-/// 与「负重」两个输入目前都还没有任何字段落地（`combat-three-axis.md`
-/// 四节：`StatBonus` 的正式定义与累加逻辑留给 P6 装备批次）。提前拼出
-/// 一个四个入参俱全、实际只有一个入参有真数据的 `derive_stats`，只会
-/// 让另外两个入参变成没有调用者会填的死参数。本函数只做「状态效果」
-/// 这一个输入——[`ActiveStatModifier`] 已经存在、已经有真实写入方
-/// （技能的 `SkillEffect::TemporaryStatModifier`，见 [`resolve_use_skill`]）
-/// ——这是本批次唯一有真实数据支撑的部分。`derive_stats` 落地后，本
-/// 函数应该被它的「状态效果」分支取代，调用点不必改动（与
-/// [`effective_speed_from_dexterity`] 同一条纪律，见其文档）。
+/// `buffs-and-triggers.md` 六节裁定「不同效果能叠加」——`active_modifiers`
+/// 外层按 [`AttributeKind`] 索引，内层按「来源」的 `ContentIndex` 索引，
+/// 本函数遍历内层全部条目，过滤掉已过期的（惰性到期判定，见下），对
+/// 剩下的 `delta` 求和。"同源刷新"发生在写入 `active_stat_modifiers`
+/// 的那一刻（[`ActiveStatModifier::merge_same_source`]），本函数只管
+/// 读取已经合并好的数据，不重复判断"是否同源"。
+///
+/// # 装备：逐件已装备物品的静态加成求和——异源叠加，没有"刷新"这个概念
+///
+/// 遍历 `equipment`（[`ll_world::entity::Agent::equipment`]，锚点槽位
+/// 为键，多槽物品只存一份，见其文档）的每一件已装备堆，查 `items`
+/// 目录拿到这件物品的 [`crate::item::ItemRule::stat_bonuses`]，按
+/// [`crate::item::StatTarget`] 分派累加到对应的主属性或护甲上。
+///
+/// # 装备加成与状态效果如何合：两条独立的数据通道，在这里第一次真正
+/// 汇合
+///
+/// 装备加成（[`crate::item::StatBonus`]，静态数据，随 `ItemDef` 走）
+/// 与状态效果（[`ActiveStatModifier`]，带 `expires_at` 的临时数据，随
+/// `Agent::active_stat_modifiers` 走）**不是同一套存储，也不需要互相
+/// 转换成对方的形状**——装备加成没有"过期"这个概念（穿没穿在身上是
+/// 二元状态，不需要惰性到期判定那一套），状态效果没有"物品堆"这个概念
+/// （技能/天赋/载具都不对应任何 `ItemStack`）。两条通道各自按自己的
+/// 规则算出一个 delta 之和,`derive_stats` 只是把两个和数**相加**到
+/// 同一个基础值上——这正是「四个来源要叠加」的字面含义：技能/天赋/
+/// 载具三者共享 `active_stat_modifiers` 这一条通道（内部按来源各自
+/// 独立），装备独占 `equipment` 这另一条通道，两条通道的结果在
+/// `derive_stats` 这一层、也只在这一层相加，不早于此（不会有任何一条
+/// 通道提前把另一条通道的贡献也算进自己的和里）,也不晚于此（不存在
+/// 第三处再次合并两者的地方——`resolve_attack` 只读 `DerivedStats` 现成
+/// 的最终值)。
+///
+/// # 护甲不参与状态效果通道（本批次）
+///
+/// `AttributeKind` 六个变体里没有对应"护甲"的一项（`vehicle-and-mounting.md`
+/// 一节已核实），本批次因此没有任何技能/天赋能通过 `active_stat_modifiers`
+/// 直接加护甲——护甲目前只有装备一条来源。这不是遗漏：
+/// `combat-three-axis.md` 四节把这条留给了"届时再定案"，本批次的任务
+/// 范围明确写着"（技能/天赋/载具）与装备两个通道怎么合"，不是"要不要
+/// 让技能也能加护甲"这个内容设计问题——如实沿用现状即可。
 ///
 /// # 惰性到期判定
 ///
@@ -173,22 +273,48 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
 /// 判定（其「门二」注释）同一条比较方向：世界时钟达到或超过到期时刻时
 /// 视为已失效，直接回落到裸属性值，不做任何清理，见 [`ActiveStatModifier`]
 /// 文档「惰性到期判定，不存『当前是否生效』」一节。
-fn effective_attribute(
-    base: i32,
-    kind: AttributeKind,
-    modifiers: &std::collections::BTreeMap<
+pub fn derive_stats(
+    base: BaseStats,
+    active_modifiers: &std::collections::BTreeMap<
         AttributeKind,
         std::collections::BTreeMap<ContentIndex, ActiveStatModifier>,
     >,
+    equipment: &std::collections::BTreeMap<EquipSlot, ItemStack>,
+    items: &dyn ItemCatalog,
     now: Tick,
-) -> i32 {
-    let Some(per_source) = modifiers.get(&kind) else {
-        return base;
-    };
-    per_source
-        .values()
-        .filter(|modifier| modifier.expires_at.0 > now.0)
-        .fold(base, |acc, modifier| acc + modifier.delta)
+) -> DerivedStats {
+    let mut attributes = [
+        base.strength,
+        base.dexterity,
+        base.constitution,
+        base.intelligence,
+        base.willpower,
+        base.charisma,
+    ];
+    let mut armor = 0;
+
+    for (&kind, per_source) in active_modifiers {
+        let delta: i32 = per_source
+            .values()
+            .filter(|modifier| modifier.expires_at.0 > now.0)
+            .map(|modifier| modifier.delta)
+            .sum();
+        attributes[attribute_slot(kind)] += delta;
+    }
+
+    for stack in equipment.values() {
+        let Some(rule) = items.item(stack.def) else {
+            continue;
+        };
+        for bonus in &rule.stat_bonuses {
+            match bonus.target {
+                StatTarget::Attribute(kind) => attributes[attribute_slot(kind)] += bonus.amount,
+                StatTarget::Armor => armor += bonus.amount,
+            }
+        }
+    }
+
+    DerivedStats { attributes, armor }
 }
 
 /// 玩家每走一步，探索记忆按这个半径覆盖新位置的可见格（见
@@ -411,7 +537,7 @@ fn resolve_dispatch(
     let mut effects = match *intent {
         Intent::Wait { actor } => resolve_wait(world, actor, race_traits, traits, pools),
         Intent::Move { actor, dir } => resolve_move(world, actor, dir),
-        Intent::Attack { actor, target } => resolve_attack(world, actor, target),
+        Intent::Attack { actor, target } => resolve_attack(world, actor, target, items),
         Intent::OpenDoor { actor, pos } => resolve_open_door(world, actor, pos),
         Intent::EnterSpace { actor, target } => resolve_enter_space(world, actor, target),
         Intent::ExitSpace { actor } => resolve_exit_space(world, actor),
@@ -1415,23 +1541,32 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 直接攻击一个已知目标（与 [`resolve_move`] 的隐式派生分开的显式路径，
 /// 供已经知道目标的调用方——例如已锁定目标的 AI ——直接使用）。
 ///
-/// 攻击力：裸力量值经 [`effective_attribute`] 叠加
-/// [`ll_world::entity::Agent::active_stat_modifiers`] 里力量项的临时
-/// 修正（技能增益/削弱由此接线生效，见该函数文档）。
+/// 攻击力：攻击者的 [`derive_stats`] 力量项（基础值 + 状态效果 + 装备
+/// 三个来源汇总后的最终生效值，技能增益/削弱与武器加成由此接线生效）。
 ///
-/// 防御与穿透：本批次 `Agent` 还没有护甲字段（护甲属于装备系统，
-/// P5 才落地；`AttributeKind` 六个变体里也没有对应「护甲/防御」的
-/// 一项，见 `knowledge/design/vehicle-and-mounting.md` 六节），故这里
-/// 固定传 `defense = 0`、`pen = Penetration::NONE`。[`damage_after_defense`]
-/// 本身的穿透/下限行为已经由 `combat.rs` 的单元测试独立验证正确，这里
-/// 只是先把攻击端接线接上；防御端要等 `derive_stats`「装备」输入落地、
-/// 产出真实 `DerivedStats.armor` 之后才有值可读，不是这一批次能造的
-/// 数据。
+/// 防御：防御方的 [`derive_stats`] 护甲——**P6 第四批：这是防御端第一
+/// 次真的生效**，此前恒为占位的 `0`。护甲的唯一来源目前是防御方已装备
+/// 物品的 [`crate::item::StatBonus`]（见 [`derive_stats`] 文档「护甲不
+/// 参与状态效果通道」一节）；没有任何已装备物品提供护甲时，
+/// `derive_stats` 算出的护甲仍是 `0`，与本批次之前的占位行为等价——
+/// 这也是黄金基准摘要（`replay.rs`/`determinism.rs`）在本批次改动后
+/// 精确复现旧常量的原因，见任务报告「黄金基准」一节。
+///
+/// 穿透：仍固定传 [`Penetration::NONE`]——本批次没有任何数据源能产出
+/// 非零穿透（`ItemDef`/`StatBonus` 都不携带穿透字段，`Intent::Attack`
+/// 也不携带武器引用），如实保持恒零，不伪造数据,见任务报告「穿透」
+/// 一节。[`damage_after_defense`] 本身的穿透/下限行为已经由 `combat.rs`
+/// 的单元测试独立验证正确。
 ///
 /// 若这一下会让目标生命值降到零或以下，额外产出一个 [`Effect::Kill`]
 /// ——是否致死是规则判断，必须在这里（`resolve`）做出，`apply` 只管
 /// 照数字做加减（见 [`crate::effect::Effect::Damage`] 文档）。
-fn resolve_attack(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<Effect> {
+fn resolve_attack(
+    world: &WorldState,
+    actor: EntityId,
+    target: EntityId,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
     let Some(attacker) = world.actors.get(actor) else {
         return Vec::new();
     };
@@ -1439,13 +1574,23 @@ fn resolve_attack(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<
         return Vec::new();
     };
 
-    let attack_power = effective_attribute(
-        attacker.stats.strength,
-        AttributeKind::Strength,
+    let attacker_derived = derive_stats(
+        attacker.stats,
         &attacker.active_stat_modifiers,
+        &attacker.equipment,
+        items,
         world.clock,
     );
-    let damage = damage_after_defense(attack_power, 0, Penetration::NONE);
+    let defender_derived = derive_stats(
+        defender.stats,
+        &defender.active_stat_modifiers,
+        &defender.equipment,
+        items,
+        world.clock,
+    );
+
+    let attack_power = attacker_derived.attribute(AttributeKind::Strength);
+    let damage = damage_after_defense(attack_power, defender_derived.armor(), Penetration::NONE);
 
     let mut effects = vec![Effect::Damage {
         target,
@@ -2805,17 +2950,24 @@ mod tests {
         )]);
 
         // Act
-        let effective = effective_attribute(10, AttributeKind::Strength, &modifiers, Tick(5));
+        let derived = derive_stats(
+            BaseStats::BASELINE,
+            &modifiers,
+            &std::collections::BTreeMap::new(),
+            &NoItems,
+            Tick(5),
+        );
 
-        // Assert：世界时钟已达到 expires_at,回落到裸值,不叠加 delta。
-        assert_eq!(effective, 10);
+        // Assert：世界时钟已达到 expires_at,回落到裸值（BASELINE 力量
+        // 为 10）,不叠加 delta。
+        assert_eq!(derived.attribute(AttributeKind::Strength), 10);
     }
 
     #[test]
     fn 不同来源的属性修正在生效值上求和而非互相覆盖() {
-        // 规则①「不同效果能叠加」在 effective_attribute 这一层的直接
-        // 验证：两个不同来源（source_a、source_b）各自给同一属性 +5、
-        // +7，有效值必须是 base + 5 + 7，不是只看到其中一条。
+        // 规则①「不同效果能叠加」在 derive_stats 这一层的直接验证：
+        // 两个不同来源（source_a、source_b）各自给同一属性 +5、+7，
+        // 有效值必须是 base + 5 + 7，不是只看到其中一条。
         // Arrange
         let mut interner = ll_core::ident::Interner::new();
         let source_a = interner
@@ -2843,10 +2995,16 @@ mod tests {
         )]);
 
         // Act
-        let effective = effective_attribute(10, AttributeKind::Strength, &modifiers, Tick(0));
+        let derived = derive_stats(
+            BaseStats::BASELINE,
+            &modifiers,
+            &std::collections::BTreeMap::new(),
+            &NoItems,
+            Tick(0),
+        );
 
         // Assert：10（base） + 5 + 7 = 22，两条修正都参与了求和。
-        assert_eq!(effective, 22);
+        assert_eq!(derived.attribute(AttributeKind::Strength), 22);
     }
 
     #[test]
@@ -2880,10 +3038,16 @@ mod tests {
         )]);
 
         // Act：世界时钟已经越过 source_a 的到期时刻，但仍早于 source_b。
-        let effective = effective_attribute(10, AttributeKind::Strength, &modifiers, Tick(10));
+        let derived = derive_stats(
+            BaseStats::BASELINE,
+            &modifiers,
+            &std::collections::BTreeMap::new(),
+            &NoItems,
+            Tick(10),
+        );
 
         // Assert：只有 source_b 的 +7 参与求和，source_a 已被过滤。
-        assert_eq!(effective, 17);
+        assert_eq!(derived.attribute(AttributeKind::Strength), 17);
     }
 
     #[test]

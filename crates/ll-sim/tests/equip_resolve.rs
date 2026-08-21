@@ -37,7 +37,7 @@ struct FakeItems {
 
 impl ItemCatalog for FakeItems {
     fn item(&self, item: ContentIndex) -> Option<ItemRule> {
-        self.items.get(&item).copied()
+        self.items.get(&item).cloned()
     }
 }
 
@@ -117,6 +117,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 ItemRule {
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND.mask(),
+                    stat_bonuses: Vec::new(),
                 },
             ),
             (
@@ -124,6 +125,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 ItemRule {
                     stack_limit: 1,
                     equip_mask: EquipSlot::OFF_HAND.mask(),
+                    stat_bonuses: Vec::new(),
                 },
             ),
             (
@@ -133,6 +135,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     equip_mask: EquipSlot::MAIN_HAND
                         .mask()
                         .union(EquipSlot::OFF_HAND.mask()),
+                    stat_bonuses: Vec::new(),
                 },
             ),
         ]),
@@ -392,6 +395,7 @@ fn 物品不可装备时装备意图静默无效() {
             ItemRule {
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
+                stat_bonuses: Vec::new(),
             },
         )]),
     };

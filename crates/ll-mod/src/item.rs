@@ -22,17 +22,12 @@
 //!   [`ItemDef::equip_mask`] 文档。原排除理由：`SlotMask`/`EquipSlot`
 //!   当时都还没有正式定义，抢先造型会在装备批次真正设计出这两个类型
 //!   之前把形状定死——批次到了，这条排除的前提本身已经不成立。
-//! - `stat_bonuses: Vec<StatBonus>`——`StatBonus` 类型仍未落地
-//!   （`attribute-system.md`「衍生属性绝不进存档」一节只给出了
-//!   `derive_stats` 的函数签名，没有定义 `StatBonus` 具体长什么样）。
-//!   P6 第三批复核过这条排除是否也该跟着解除：`SlotMask` 当时被排除
-//!   是因为它自己的类型没定形，而装备批次的核心工作正是定形
-//!   `SlotMask`——两者互为因果，批次到了就该做。`StatBonus` 不是同一
-//!   种情况：它依赖的是**另一个系统**（属性系统的 `derive_stats`）尚未
-//!   落地的设计，装备批次的范围（`equip_mask`/占位掩码/装备栏容器）不
-//!   会让 `StatBonus` 的形状变得更清楚——提前造一个未来可能对不上属性
-//!   系统真正落地时定的形状，是本模块文档一贯排除的那类返工风险，继续
-//!   排除。
+//! - ~~`stat_bonuses: Vec<StatBonus>`~~——**P6 第四批（`derive_stats`
+//!   与装备属性接进战斗）已补上**，见 [`ItemDef::stat_bonuses`] 文档。
+//!   原排除理由：`StatBonus` 依赖的「属性系统 `derive_stats`」尚未
+//!   落地的设计——批次到了，`derive_stats` 与 `StatBonus` 在同一批次
+//!   一并定形，这条排除的前提同样不成立了（与上面 `equip_mask` 那条
+//!   「批次到了就该做」是同一条判断）。
 //! - `use_effect: Option<ContentIndex>`——类型上不需要发明新东西
 //!   （`ContentIndex` 早已存在），但这个字段没有任何意义：它指向的
 //!   Steel 脚本要在 `Intent::Use` 结算时才会被读取
@@ -62,7 +57,7 @@ use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
-use ll_sim::item::{ItemCatalog, ItemRule, SlotMask};
+use ll_sim::item::{ItemCatalog, ItemRule, SlotMask, StatBonus};
 
 /// 单条物品声明：本体与 mod 注册物品时共用的同一个输入形状——
 /// 「本体即 Mod」在物品层面的验收标的，理由同 [`crate::race::RaceDef`]
@@ -109,6 +104,21 @@ pub struct ItemDef {
     /// `register-item-equip-mask`（`crate::script_item_api`），Rust 层
     /// 对应方法是 [`ItemTable::set_equip_mask`]。
     pub equip_mask: SlotMask,
+    /// 静态属性加成列表（P6 第四批：`derive_stats` 与装备属性接进
+    /// 战斗）——落地 `knowledge/design/attribute-system.md` 七节
+    /// `derive_stats(基础属性, 装备, 状态效果, 负重)` 签名里"装备"这一个
+    /// 输入,空列表（默认值）表示这件物品不提供任何属性加成。
+    ///
+    /// # 为什么不是 `register-item` 的参数，走 `add_stat_bonus` 追加
+    ///
+    /// 与 [`Self::equip_mask`] 同一条既有先例（`register-item` 的六参数
+    /// 签名不能改参数个数）——脚本层对应函数是
+    /// `register-item-stat-bonus`（`crate::script_item_api`），Rust 层
+    /// 对应方法是 [`ItemTable::add_stat_bonus`]。**追加,不是覆盖**：与
+    /// `equip_mask`（单值,覆盖）不同,`stat_bonuses` 是一个可以携带任意
+    /// 多条加成的列表（一件装备可以同时加力量与护甲），语义上更接近
+    /// `RaceTable::add_trait_grant`——多次调用累积,不是以最后一次为准。
+    pub stat_bonuses: Vec<StatBonus>,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -130,6 +140,11 @@ pub struct ItemAttrs {
     /// `register-item-equip-mask` 调用 [`ItemTable::set_equip_mask`]
     /// 写入，理由同 [`ItemDef::equip_mask`] 文档。
     pub equip_mask: SlotMask,
+    /// 静态属性加成列表——`register-item` 注册时恒为空列表（同上，
+    /// `do_register_item` 不接受这个参数），真正的取值由后续
+    /// `register-item-stat-bonus` 调用 [`ItemTable::add_stat_bonus`]
+    /// 追加写入，理由同 [`ItemDef::stat_bonuses`] 文档。
+    pub stat_bonuses: Vec<StatBonus>,
 }
 
 /// 物品注册期可能出现的错误。
@@ -138,9 +153,10 @@ pub enum ItemError {
     /// 同一个内容索引被定义了两次，理由同
     /// [`crate::race::RaceError::DuplicateDefinition`]。
     DuplicateDefinition(ContentIndex),
-    /// [`ItemTable::set_equip_mask`] 的目标索引尚未通过 `register-item`
-    /// 注册，理由同 [`crate::race::RaceError::NotDefined`]（ADR 0017
-    /// 「注册期完整校验」）。
+    /// [`ItemTable::set_equip_mask`]/[`ItemTable::add_stat_bonus`] 的
+    /// 目标索引尚未通过 `register-item` 注册，理由同
+    /// [`crate::race::RaceError::NotDefined`]（ADR 0017「注册期完整
+    /// 校验」）。
     NotDefined(ContentIndex),
 }
 
@@ -151,7 +167,11 @@ impl fmt::Display for ItemError {
                 write!(f, "物品索引 {} 被重复定义", index.get())
             }
             ItemError::NotDefined(index) => {
-                write!(f, "物品索引 {} 尚未定义，无法追加装备占位掩码", index.get())
+                write!(
+                    f,
+                    "物品索引 {} 尚未定义，无法追加装备占位掩码/属性加成",
+                    index.get()
+                )
             }
         }
     }
@@ -174,6 +194,10 @@ pub struct ItemView<'a> {
     pub max_durability: Option<i32>,
     /// 装备占位掩码。
     pub equip_mask: SlotMask,
+    /// 静态属性加成列表——借用视图，不克隆，理由同
+    /// [`Self::display_name_key`]（一读一写两个薄视图，读侧不复制底层
+    /// 存储）。
+    pub stat_bonuses: &'a [StatBonus],
 }
 
 /// 物品属性的列式存储：按 [`ContentIndex`] 下标索引，与
@@ -188,6 +212,7 @@ pub struct ItemTable {
     base_price: Vec<Milli>,
     max_durability: Vec<Option<i32>>,
     equip_mask: Vec<SlotMask>,
+    stat_bonuses: Vec<Vec<StatBonus>>,
     defined: Vec<bool>,
 }
 
@@ -209,6 +234,7 @@ impl ItemTable {
             self.base_price.resize(new_len, Milli::ZERO);
             self.max_durability.resize(new_len, None);
             self.equip_mask.resize(new_len, SlotMask::EMPTY);
+            self.stat_bonuses.resize(new_len, Vec::new());
         }
 
         if self.defined[idx] {
@@ -222,6 +248,7 @@ impl ItemTable {
         self.base_price[idx] = attrs.base_price;
         self.max_durability[idx] = attrs.max_durability;
         self.equip_mask[idx] = attrs.equip_mask;
+        self.stat_bonuses[idx] = attrs.stat_bonuses;
         Ok(())
     }
 
@@ -248,6 +275,7 @@ impl ItemTable {
             base_price: self.base_price[idx],
             max_durability: self.max_durability[idx],
             equip_mask: self.equip_mask[idx],
+            stat_bonuses: &self.stat_bonuses[idx],
         })
     }
 
@@ -271,21 +299,45 @@ impl ItemTable {
         self.equip_mask[item.get() as usize] = mask;
         Ok(())
     }
+
+    /// 追加一条静态属性加成（P6 第四批：`derive_stats` 与装备属性接进
+    /// 战斗）——`register-item` 的既有脚本签名不能改参数个数，理由同
+    /// [`Self::set_equip_mask`]。目标索引必须已经 `define` 过，否则
+    /// 返回 [`ItemError::NotDefined`]，同一条 ADR 0017 纪律。
+    ///
+    /// **追加，不是覆盖**——与 [`Self::set_equip_mask`]「单值覆盖」
+    /// 相反，与 [`crate::race::RaceTable::add_trait_grant`] 同一个模式：
+    /// 一件物品可以携带任意多条加成（例如同时加力量与护甲），多次调用
+    /// 累积进同一个列表，见 [`ItemDef::stat_bonuses`] 文档「为什么不是
+    /// `register-item` 的参数」一节。
+    pub fn add_stat_bonus(
+        &mut self,
+        item: ContentIndex,
+        bonus: StatBonus,
+    ) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        self.stat_bonuses[item.get() as usize].push(bonus);
+        Ok(())
+    }
 }
 
-/// `resolve` 侧的堆叠上限/装备占位查询——`ll_sim::resolve::resolve_pick_up`
+/// `resolve` 侧的堆叠上限/装备占位/属性加成查询——`ll_sim::resolve::resolve_pick_up`
 /// 判断「拾取时能否与背包已有堆合并」需要 `stack_limit`，
 /// `resolve_equip`/`resolve_unequip` 判断占位冲突需要 `equip_mask`
-/// （装备栏位批次，P6 第三批），见 `ll_sim::item::ItemCatalog` 文档
-/// 「本模块新增」一节。与 `impl ResourcePoolCatalog for ResourcePoolTable`
-/// （`crate::resource_pool` 模块）同一条既有先例：只把 `ItemView` 里
-/// `resolve` 真正要读的字段搬进 [`ItemRule`]，不是把整条 `ItemView`
-/// 转发出去。
+/// （装备栏位批次，P6 第三批），`ll_sim::resolve::derive_stats`（P6 第
+/// 四批）累加装备贡献的攻防加成需要 `stat_bonuses`——见
+/// `ll_sim::item::ItemCatalog` 文档「本模块新增」一节。与
+/// `impl ResourcePoolCatalog for ResourcePoolTable`（`crate::resource_pool`
+/// 模块）同一条既有先例：只把 `ItemView` 里 `resolve` 真正要读的字段
+/// 搬进 [`ItemRule`]，不是把整条 `ItemView` 转发出去。
 impl ItemCatalog for ItemTable {
     fn item(&self, item: ContentIndex) -> Option<ItemRule> {
         self.get(item).map(|view| ItemRule {
             stack_limit: view.stack_limit,
             equip_mask: view.equip_mask,
+            stat_bonuses: view.stat_bonuses.to_vec(),
         })
     }
 }
@@ -322,6 +374,7 @@ mod tests {
                     base_price: Milli::from_whole(2),
                     max_durability: None,
                     equip_mask: SlotMask::EMPTY,
+                    stat_bonuses: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -345,6 +398,7 @@ mod tests {
             base_price: Milli::from_whole(50),
             max_durability: Some(100),
             equip_mask: SlotMask::EMPTY,
+            stat_bonuses: Vec::new(),
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -387,6 +441,7 @@ mod tests {
                     base_price: Milli::from_whole(50),
                     max_durability: Some(100),
                     equip_mask: SlotMask::EMPTY,
+                    stat_bonuses: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -412,6 +467,7 @@ mod tests {
                     base_price: Milli::from_whole(2),
                     max_durability: None,
                     equip_mask: SlotMask::EMPTY,
+                    stat_bonuses: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -425,6 +481,7 @@ mod tests {
             Some(ItemRule {
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
+                stat_bonuses: Vec::new(),
             })
         );
     }
@@ -453,6 +510,7 @@ mod tests {
             base_price: Milli::from_whole(80),
             max_durability: Some(120),
             equip_mask: SlotMask::EMPTY,
+            stat_bonuses: Vec::new(),
         }
     }
 

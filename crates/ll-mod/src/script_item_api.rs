@@ -1,20 +1,23 @@
-//! 把 `register-item`/`register-item-equip-mask` 注册进脚本引擎：mod
-//! 脚本借此定义自定义物品（箭矢、铁剑……）与它们的装备占位掩码，落地
-//! `knowledge/design/item-system.md`/`knowledge/design/equipment-slots.md`。
+//! 把 `register-item`/`register-item-equip-mask`/`register-item-stat-bonus`
+//! 注册进脚本引擎：mod 脚本借此定义自定义物品（箭矢、铁剑……）、它们的
+//! 装备占位掩码与静态属性加成，落地
+//! `knowledge/design/item-system.md`/`knowledge/design/equipment-slots.md`/
+//! `knowledge/design/attribute-system.md`。
 //!
 //! 模式同 [`crate::script_resource_pool_api`]：扁平参数,没有为
 //! `Option<i32>`（`max-durability`）或 `Milli`（`base-weight`/
 //! `base-price`）发明任何新的 FFI 编码方式,理由见下面两节。
 //!
-//! # 为什么 `equip_mask` 走独立函数（装备栏位批次，P6 第三批）
+//! # 为什么 `equip_mask`/`stat_bonuses` 都走独立函数（装备栏位批次，
+//! P6 第三批；`derive_stats` 与装备属性接进战斗，P6 第四批）
 //!
 //! `register-item` 已经是仓库里真实 mod 脚本
 //! （`mods/example_mod/gameplay.scm`）在用的六参数签名——改参数个数
 //! 会破坏已有脚本，与 `register-race-xp-reward`/
 //! `register-trait-resource-pool` 「新增能力用新函数」同一条既有先例
-//! （见 [`crate::item::ItemDef::equip_mask`] 文档）。`register-item-equip-mask`
-//! 因此是本批次新增的第二个函数，追加对象是已经通过 `register-item`
-//! 注册过的物品。
+//! （见 [`crate::item::ItemDef::equip_mask`] 文档）。`register-item-equip-mask`/
+//! `register-item-stat-bonus` 因此都走独立函数，追加对象都是已经通过
+//! `register-item` 注册过的物品。
 
 use std::cell::RefCell;
 
@@ -25,7 +28,8 @@ use ll_script::host::ScriptEngine;
 use crate::active_registry::with_active_registry;
 use crate::item::{ItemAttrs, ItemError, ItemTable};
 use crate::registry::Registry;
-use ll_sim::item::{EquipSlot, SlotMask};
+use ll_sim::item::{EquipSlot, SlotMask, StatBonus, StatTarget};
+use ll_world::entity::AttributeKind;
 
 thread_local! {
     /// 当前调用窗口内，`register-item` 应该写入的物品表。
@@ -50,6 +54,7 @@ pub fn take_active_target() -> ItemTable {
 pub fn register_item_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-item", register_item);
     engine.register_fn("register-item-equip-mask", register_item_equip_mask);
+    engine.register_fn("register-item-stat-bonus", register_item_stat_bonus);
 }
 
 /// `(register-item id display-name-key stack-limit base-weight base-price max-durability)`。
@@ -147,6 +152,9 @@ fn do_register_item(
                 // 掩码，真正的取值由后续 register-item-equip-mask 调用
                 // 写入，见模块文档「为什么 equip_mask 走独立函数」一节。
                 equip_mask: SlotMask::EMPTY,
+                // 恒为空列表——同上，真正的取值由后续
+                // register-item-stat-bonus 调用追加写入。
+                stat_bonuses: Vec::new(),
             },
         )
         .map(|()| true)
@@ -218,6 +226,89 @@ fn do_register_item_equip_mask(
         .set_equip_mask(index, mask)
         .map(|()| true)
         .map_err(|err: ItemError| err.to_string())
+}
+
+/// `(register-item-stat-bonus id target amount)`——追加一条静态属性
+/// 加成（P6 第四批：`derive_stats` 与装备属性接进战斗），见
+/// [`crate::item::ItemDef::stat_bonuses`] 文档「为什么不是 `register-item`
+/// 的参数」一节。
+///
+/// - `id`：已经通过 `register-item` 注册过的完整命名空间标识符字符串
+///   ——目标必须已存在，与 [`register_item_equip_mask`] 同一条 ADR 0017
+///   「注册期完整校验」纪律。
+/// - `target`：加成目标名——六个主属性名之一（`"strength"`/`"dexterity"`/
+///   `"constitution"`/`"intelligence"`/`"willpower"`/`"charisma"`，与
+///   `crate::script_skill_api::attribute_kind_from_str`/
+///   `crate::script_class_api::attribute_kind_from_str` 同一份映射的
+///   独立拷贝，理由同它们的文档）或 `"armor"`（直接加护甲，见
+///   [`ll_sim::item::StatTarget::Armor`] 文档「为什么不是只有
+///   `AttributeKind` 一种取值」一节）。未知名称拒绝整次调用。
+/// - `amount`：增减量，可为负（诅咒装备）。
+///
+/// **累积，不是覆盖**——多次调用同一个 `id` 会依次追加多条加成，不是
+/// 以最后一次为准，见 [`crate::item::ItemTable::add_stat_bonus`] 文档
+/// 「追加，不是覆盖」一节。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_item_stat_bonus(id: String, target: String, amount: i64) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-item-stat-bonus 在没有活跃物品表的窗口内被调用".to_string());
+            };
+            do_register_item_stat_bonus(registry, table, &id, &target, amount)
+        })
+    })
+}
+
+/// [`register_item_stat_bonus`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_item_stat_bonus(
+    registry: &Registry,
+    table: &mut ItemTable,
+    id: &str,
+    target: &str,
+    amount: i64,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("物品 {id:?} 尚未通过 register-item 注册"));
+    };
+    let target =
+        stat_target_from_str(target).ok_or_else(|| format!("未知的属性加成目标 {target:?}"))?;
+
+    table
+        .add_stat_bonus(
+            index,
+            StatBonus {
+                target,
+                amount: amount as i32,
+            },
+        )
+        .map(|()| true)
+        .map_err(|err: ItemError| err.to_string())
+}
+
+/// 加成目标名字符串 → [`StatTarget`]——六个主属性名复用
+/// `crate::script_skill_api::attribute_kind_from_str` 同一份映射（各
+/// 模块独立拷贝一份的既有先例，理由同其文档），额外多认识 `"armor"`
+/// 这一个不属于 `AttributeKind` 的目标。
+fn stat_target_from_str(name: &str) -> Option<StatTarget> {
+    if name == "armor" {
+        return Some(StatTarget::Armor);
+    }
+    let attribute = match name {
+        "strength" => AttributeKind::Strength,
+        "dexterity" => AttributeKind::Dexterity,
+        "constitution" => AttributeKind::Constitution,
+        "intelligence" => AttributeKind::Intelligence,
+        "willpower" => AttributeKind::Willpower,
+        "charisma" => AttributeKind::Charisma,
+        _ => return None,
+    };
+    Some(StatTarget::Attribute(attribute))
 }
 
 #[cfg(test)]
@@ -544,5 +635,150 @@ mod tests {
             .mask()
             .union(EquipSlot::OFF_HAND.mask());
         assert_eq!(table.get(index).unwrap().equip_mask, expected);
+    }
+
+    #[test]
+    fn 追加的力量加成能被真正查到() {
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_great_axe();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的内容应能查到索引");
+
+        // Act
+        let result =
+            do_register_item_stat_bonus(&registry, &mut table, "yourmod:great_axe", "strength", 5);
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            table.get(index).unwrap().stat_bonuses,
+            &[StatBonus {
+                target: StatTarget::Attribute(AttributeKind::Strength),
+                amount: 5,
+            }]
+        );
+    }
+
+    #[test]
+    fn 追加的护甲加成目标不是主属性而是armor() {
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_great_axe();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的内容应能查到索引");
+
+        // Act
+        let result =
+            do_register_item_stat_bonus(&registry, &mut table, "yourmod:great_axe", "armor", 8);
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            table.get(index).unwrap().stat_bonuses,
+            &[StatBonus {
+                target: StatTarget::Armor,
+                amount: 8,
+            }]
+        );
+    }
+
+    #[test]
+    fn 连续两次调用追加而非覆盖此前的加成() {
+        // Arrange：先加力量,再加护甲——两条加成必须都留在列表里,不是
+        // 第二次调用把第一次的结果顶替掉,见 add_stat_bonus 文档「追加,
+        // 不是覆盖」一节。
+        let (registry, mut table) = registry_and_table_with_great_axe();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        do_register_item_stat_bonus(&registry, &mut table, "yourmod:great_axe", "strength", 5)
+            .expect("第一次追加应当成功");
+
+        // Act
+        do_register_item_stat_bonus(&registry, &mut table, "yourmod:great_axe", "armor", 8)
+            .expect("第二次追加应当成功");
+
+        // Assert
+        assert_eq!(
+            table.get(index).unwrap().stat_bonuses,
+            &[
+                StatBonus {
+                    target: StatTarget::Attribute(AttributeKind::Strength),
+                    amount: 5,
+                },
+                StatBonus {
+                    target: StatTarget::Armor,
+                    amount: 8,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn 未知的加成目标名称返回错误而不panic() {
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_great_axe();
+
+        // Act
+        let result =
+            do_register_item_stat_bonus(&registry, &mut table, "yourmod:great_axe", "swagger", 5);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 未注册的物品id追加属性加成返回错误() {
+        // Arrange
+        let registry = Registry::new();
+        let mut table = ItemTable::new();
+
+        // Act
+        let result = do_register_item_stat_bonus(
+            &registry,
+            &mut table,
+            "yourmod:never_registered",
+            "strength",
+            5,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_item_stat_bonus() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_item_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(ItemTable::new());
+        engine
+            .load_source(
+                r#"(register-item "yourmod:great_axe" "yourmod:item.great_axe" 1 5000 8000 120)"#
+                    .to_string(),
+            )
+            .expect("大斧基础注册应当成功");
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-item-stat-bonus "yourmod:great_axe" "strength" 5)"#.to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(
+            table.get(index).unwrap().stat_bonuses,
+            &[StatBonus {
+                target: StatTarget::Attribute(AttributeKind::Strength),
+                amount: 5,
+            }]
+        );
     }
 }

@@ -34,12 +34,12 @@
 use ll_core::ident::ContentIndex;
 
 pub use ll_world::item::{
-    EquipSlot, GroundItemStack, ItemStack, ItemStackError, SlotMask, can_merge, merge_stacks,
-    split_stack,
+    EquipSlot, GroundItemStack, ItemStack, ItemStackError, SlotMask, StatBonus, StatTarget,
+    can_merge, merge_stacks, split_stack,
 };
 
-/// `resolve` 侧需要的一条物品定义的最小只读视图——堆叠上限与装备占位
-/// 掩码，见模块文档「本模块新增」一节。
+/// `resolve` 侧需要的一条物品定义的最小只读视图——堆叠上限、装备占位
+/// 掩码与静态属性加成，见模块文档「本模块新增」一节。
 ///
 /// # `equip_mask` 为什么现在也收进来了（装备栏位批次，P6 第三批）
 ///
@@ -48,12 +48,34 @@ pub use ll_world::item::{
 /// 「一条规则覆盖所有特例」一节）——与 `stack_limit` 当初被收进来的
 /// 理由完全一样：真正的 `ItemDef` 在下游的 `ll-mod`，本 crate 只收敛
 /// `resolve` 真正要读的字段，不整条转发 `ItemView`。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// # `stat_bonuses` 为什么现在也收进来了（P6 第四批：`derive_stats`
+/// 与装备属性接进战斗）
+///
+/// `crate::resolve::derive_stats` 需要逐件已装备物品累加它的
+/// `stat_bonuses` 才能算出装备贡献的攻防加成——同一条「resolve 真正要
+/// 读的字段才收进 `ItemRule`」的理由。
+///
+/// # 为什么不再是 `Copy`
+///
+/// `stat_bonuses: Vec<StatBonus>` 不满足 `Copy`（`Vec` 需要堆分配），
+/// 本类型因此从 `Copy` 降级为只 `Clone`——`stack_limit`/`equip_mask`
+/// 两个既有字段本身仍是 `Copy`，但整体类型的 `Copy` 能力由最"重"的
+/// 那个字段决定,加一个 `Vec` 字段后整体必须跟着降级,不是可以只给
+/// 新字段单独开小灶的选择。全部既有调用点（`items.item(def)` 返回
+/// `Option<ItemRule>` 后直接 `.map`/`if let` 解构使用,或在测试夹具的
+/// `BTreeMap<ContentIndex, ItemRule>` 里从 `.copied()` 改为 `.cloned()`）
+/// 已经同步改过,不存在遗留的 `Copy` 依赖。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemRule {
     /// 堆叠上限，即 [`merge_stacks`] 的 `stack_limit` 参数。
     pub stack_limit: u32,
     /// 装备占位掩码——`SlotMask::EMPTY` 表示这件物品不可装备。
     pub equip_mask: SlotMask,
+    /// 静态属性加成列表——`crate::resolve::derive_stats` 汇总"装备"这
+    /// 一个输入的数据来源，空列表表示这件物品不提供任何加成（多数消耗
+    /// 品/材料的既有情形）。
+    pub stat_bonuses: Vec<StatBonus>,
 }
 
 /// `resolve` 依赖的最小「物品定义来源」接口——与

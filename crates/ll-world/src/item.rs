@@ -61,6 +61,8 @@ use ll_core::torus::TorusPos;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 
+use crate::entity::AttributeKind;
+
 /// 物品的运行时实例——一堆同一种物品，`item-system.md` 一节表格右列。
 ///
 /// 与 `ll_mod::item::ItemDef`（本模块不能直接引用它，依赖方向不
@@ -377,6 +379,84 @@ impl SlotMask {
             Some(EquipSlot(self.0.trailing_zeros() as u8))
         }
     }
+}
+
+/// [`StatBonus`] 加成落在哪个量上——`ItemDef.stat_bonuses`（P6 第四批：
+/// `derive_stats` 与装备属性接进战斗）的每一条都要回答"这份加成具体
+/// 加在什么上"，本类型是这个问题的答案域。
+///
+/// # 为什么不是只有 `AttributeKind` 一种取值
+///
+/// `AttributeKind` 只有六个变体（力量/敏捷/体质/智力/意志/魅力），且
+/// **没有对应"护甲/防御"的变体**——`knowledge/design/vehicle-and-mounting.md`
+/// 一节已经核实这一点，`attribute-system.md` 二节把护甲描述成三系
+/// 攻防里"防御"一侧的独立数值,不是某个主属性经调整值公式推出的派生
+/// 量。若把护甲强行映射成"加某个 `AttributeKind`"（例如"体质每点转 2
+/// 点护甲"），会在没有任何设计依据的情况下发明一条换算公式,并让
+/// "穿上这件护甲，体质却跟着变了"这种不该发生的副作用悄悄混进结算
+/// （体质还驱动生命上限/抗性，两者不该被装备的护甲加成污染）。因此
+/// `StatTarget` 需要能表达"直接加护甲"这个独立于六项主属性之外的
+/// 目标,与"加某一项主属性"并列,而不是复用 `AttributeKind`。
+///
+/// # 为什么不现在就加魔抗/意志抗性两个变体
+///
+/// `combat-three-axis.md` 四节点名的完整 `DerivedStats` 还应该有
+/// `magic_resist`/`will_resist`,但那两项服务的是尚未落地的魔法/精神
+/// 伤害系别（`DamageSchool`）——`resolve_attack` 本批次仍是纯物理近战
+/// 占位实现（见其文档「防御与穿透」一节，三轴战斗结算本身是后续批次
+/// 的工作)，`Armor` 是当前唯一有真实读者（`resolve_attack` 的防御端）
+/// 的目标，另外两项现在加进来只是两个没有任何消费者的死变体，与
+/// `ll_mod::item` 模块文档「本批次范围」一节同一条 YAGNI 判断。三轴
+/// 战斗结算批次落地魔法/精神伤害时,照本变体的先例各加一个即可，不需要
+/// 改动 `StatBonus` 自身的形状。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StatTarget {
+    /// 加在六项主属性其中一项上——与状态效果（`ActiveStatModifier`）
+    /// 共用同一个 [`AttributeKind`] 取值域,最终在 [`crate::state::WorldState`]
+    /// 之外的 `derive_stats`（`ll-sim`，装备批次新增）里与状态效果的
+    /// 修正求和到同一个"最终生效值"上。
+    Attribute(AttributeKind),
+    /// 直接加护甲——`resolve_attack` 防御端的来源，见本类型文档「为什么
+    /// 不是只有 `AttributeKind` 一种取值」一节。
+    Armor,
+}
+
+/// 装备/物品定义里的一条静态属性加成——`ItemDef.stat_bonuses`
+/// （`ll_mod::item`，本模块不能直接引用它，依赖方向不允许，见
+/// [`ItemStack`] 文档同一条约束）的元素类型，落地
+/// `knowledge/design/item-system.md`「定义与实例分离」表格右列
+/// `stat_bonuses: Vec<StatBonus>` 一行、`knowledge/design/attribute-system.md`
+/// 七节 `derive_stats` 签名里"装备"这一个输入。
+///
+/// # 为什么是"目标 + 增量"两个字段，不是六七个布尔/可选字段
+///
+/// 一件装备可能同时加力量与护甲（例如"猛虎护腕"）——`ItemDef.stat_bonuses`
+/// 因此是 `Vec<StatBonus>`，一件装备可以携带任意多条加成，每条各自声明
+/// 自己的目标与增量。与写成 `struct StatBonus { strength: i32, armor:
+/// i32, .. }`（七个字段各自可能是零）相比，"目标 + 增量"的列表形状不
+/// 需要为"这条加成到底加了几项"另外发明一套"哪些字段非零"的隐式约定，
+/// 也不会在新增第七个可加成的量时逼着已经写好的每一件装备都补一个新
+/// 字段的默认值——这与 `RaceDef.traits: Vec<TraitGrant>`「先定形状后续
+/// 接消费者」是同一条既有纪律（见 `crate::item::ItemDef::equip_mask`
+/// 文档同一类"新增能力用新函数/新条目，不改已有形状"的先例）。
+///
+/// # 静态数据，不是 `ActiveStatModifier`
+///
+/// 与状态效果（[`crate::entity::ActiveStatModifier`]）形状故意不同：
+/// 装备加成没有 `expires_at`——一件装备"生效"与否是二元的（穿没穿在
+/// 身上），不是一个会随世界时钟到期的临时效果，见 `derive_stats`
+/// （`ll-sim::resolve`）模块文档「装备加成与状态效果如何合」一节完整
+/// 论证：两条加成来源分处两条不同的数据通道，`derive_stats` 是把它们
+/// 汇总到同一个最终值的唯一入口，不是要把装备也塞进
+/// `active_stat_modifiers`。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatBonus {
+    /// 这份加成落在哪个量上。
+    pub target: StatTarget,
+    /// 增减量，可为负（诅咒装备："这把剑很锋利，但拿着它的手会发抖"
+    /// 一类设计需要负值,与 [`crate::entity::ActiveStatModifier::delta`]
+    /// 同一条"允许为负"的既有纪律）。
+    pub amount: i32,
 }
 
 /// 物品堆操作可能出现的错误。
@@ -881,5 +961,57 @@ mod tests {
 
         // Assert
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn 加成目标为不同主属性时不相等() {
+        // StatTarget::Attribute 包裹的 AttributeKind 不同,整个 StatTarget
+        // 也应视为不同——这是 derive_stats 按目标分派求和的前提。
+        // Arrange
+        let strength_target = StatTarget::Attribute(AttributeKind::Strength);
+        let dexterity_target = StatTarget::Attribute(AttributeKind::Dexterity);
+
+        // Act & Assert
+        assert_ne!(strength_target, dexterity_target);
+    }
+
+    #[test]
+    fn 加成目标护甲与加成目标同名主属性不相等() {
+        // Armor 是独立于 AttributeKind 之外的目标——不存在任何一个
+        // AttributeKind 变体的 StatTarget::Attribute 会与 StatTarget::Armor
+        // 相等,即使两者字面上都在讨论"防御相关"的属性。
+        // Arrange
+        let armor_target = StatTarget::Armor;
+        let constitution_target = StatTarget::Attribute(AttributeKind::Constitution);
+
+        // Act & Assert
+        assert_ne!(armor_target, constitution_target);
+    }
+
+    #[test]
+    fn 属性加成结构体保留目标与增量两个字段() {
+        // Arrange & Act
+        let bonus = StatBonus {
+            target: StatTarget::Attribute(AttributeKind::Strength),
+            amount: 5,
+        };
+
+        // Assert
+        assert_eq!(
+            (bonus.target, bonus.amount),
+            (StatTarget::Attribute(AttributeKind::Strength), 5)
+        );
+    }
+
+    #[test]
+    fn 属性加成允许负增量表达诅咒装备() {
+        // Arrange & Act
+        let cursed = StatBonus {
+            target: StatTarget::Attribute(AttributeKind::Dexterity),
+            amount: -3,
+        };
+
+        // Assert
+        assert_eq!(cursed.amount, -3);
     }
 }

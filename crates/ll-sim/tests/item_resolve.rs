@@ -42,7 +42,7 @@ struct FakeItems {
 
 impl ItemCatalog for FakeItems {
     fn item(&self, item: ContentIndex) -> Option<ItemRule> {
-        self.items.get(&item).copied()
+        self.items.get(&item).cloned()
     }
 }
 
@@ -110,6 +110,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
             ItemRule {
                 stack_limit: 99,
                 equip_mask: ll_sim::item::SlotMask::EMPTY,
+                stat_bonuses: Vec::new(),
             },
         )]),
     };

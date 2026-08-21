@@ -20,6 +20,7 @@
 ;;   register-trait-resource-pool-by-level crates/ll-mod/src/script_trait_api.rs
 ;;   register-item                         crates/ll-mod/src/script_item_api.rs
 ;;   register-item-equip-mask              crates/ll-mod/src/script_item_api.rs
+;;   register-item-stat-bonus              crates/ll-mod/src/script_item_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -168,3 +169,13 @@
 (register-item-equip-mask "examplemod:war_hammer" (list "main-hand" "off-hand"))
 (register-item "examplemod:wooden_shield" "examplemod:wooden_shield_display_name" 1 4000 12000 80)
 (register-item-equip-mask "examplemod:wooden_shield" (list "off-hand"))
+
+;; P6 第四批（derive_stats 与装备属性接进战斗）：knowledge/design/
+;; attribute-system.md 七节 derive_stats「装备」输入的真实版本——战锤
+;; 加力量（攻击端），木盾加护甲（防御端，第一次真的生效），证明
+;; register-item-stat-bonus 这个新脚本 API 真的能被 mod 脚本调用，且
+;; 装备后的加成真的能走真实 resolve_attack + apply 改变结算出的伤害
+;; ——ADR 0018「玩法层内容必须能从 mod 脚本注册，且要有真实 mod 脚本
+;; 为证」，crates/ll-mod/tests/example_mod_combat.rs 是那份证据。
+(register-item-stat-bonus "examplemod:war_hammer" "strength" 6)
+(register-item-stat-bonus "examplemod:wooden_shield" "armor" 8)
