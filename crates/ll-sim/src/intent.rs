@@ -142,6 +142,20 @@ pub enum Intent {
         /// 目标（若这个技能需要一个）。
         target: Option<EntityId>,
     },
+    /// 开始一段休息会话（`resource-pools-and-rest.md` 七节）——只用来
+    /// **开始**这段会话,后续每回合不需要再提交本意图,照常提交
+    /// [`Intent::Wait`] 即可,`resolve_wait` 会持续检查是否已到达
+    /// `target_ticks`（见 `crate::resolve::resolve_wait` 文档）。
+    ///
+    /// 若发起者已经在休息中,`resolve` 按继续休息处理（与提交
+    /// `Intent::Wait` 等价），不会重新开始一段会话——见
+    /// `crate::resolve::resolve_rest` 文档。
+    Rest {
+        /// 发起者。
+        actor: EntityId,
+        /// 目标持续的 tick 数。
+        target_ticks: u32,
+    },
 }
 
 impl Intent {
@@ -159,7 +173,8 @@ impl Intent {
             | Intent::OpenDoor { actor, .. }
             | Intent::EnterSpace { actor, .. }
             | Intent::ExitSpace { actor }
-            | Intent::UseSkill { actor, .. } => actor,
+            | Intent::UseSkill { actor, .. }
+            | Intent::Rest { actor, .. } => actor,
         }
     }
 }

@@ -106,6 +106,19 @@ pub enum ResourceCost {
     /// 现算，不足则技能静默不产出效果，见 `crate::resolve::resolve_use_skill`
     /// 「门四」文档。
     PoolAmount(ContentIndex, u32),
+    /// 消耗给定法术位池、`min_tier` 档或更高档的一个槽位
+    /// （`resource-pools-and-rest.md` 二节「从最低阶开始取」）——
+    /// `ContentIndex` 指向经 `register-resource-pool` 注册的
+    /// `ResourcePoolShape::TieredSlots` 池。消耗算法本质与
+    /// `PoolAmount` 不同（在有序档位里找空位，而不是减去固定数量），
+    /// 因此是独立变体,不是 `PoolAmount` 换个载荷就能表达——见
+    /// `crate::resource_pool` 模块文档「二节」原文引用的 ADR 0021。
+    /// 单向可兑换：高阶位能放低阶法术，低阶位不能放高阶法术——从
+    /// `min_tier` 起往上找第一个「上限 > 已消耗数」的档位占用，找不到
+    /// 则技能静默不产出效果，见 `crate::resolve::resolve_use_skill`
+    /// 「门四」文档。不支持玩家手选具体档位，理由见
+    /// `resource-pools-and-rest.md` 二节原文。
+    SlotTier(ContentIndex, u8),
     /// 血代价：直接扣 `amount` 点 `Agent::health`，绕开减伤/抗性
     /// （`resource-pools-and-rest.md` 五节）——**刻意不复用
     /// [`SkillEffect::DealDamage`]**：`Effect::SpendBloodCost` 是独立

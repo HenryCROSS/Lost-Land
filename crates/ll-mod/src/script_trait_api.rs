@@ -44,10 +44,15 @@ pub fn take_active_target() -> TraitTable {
     })
 }
 
-/// 把 `register-trait`/`register-trait-resource-pool` 注册进 `engine`。
+/// 把 `register-trait`/`register-trait-resource-pool`/
+/// `register-trait-resource-pool-by-level` 注册进 `engine`。
 pub fn register_trait_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-trait", register_trait);
     engine.register_fn("register-trait-resource-pool", register_trait_resource_pool);
+    engine.register_fn(
+        "register-trait-resource-pool-by-level",
+        register_trait_resource_pool_by_level,
+    );
 }
 
 /// `(register-trait id display-name-key granted-skills)`。
@@ -199,6 +204,91 @@ fn do_register_trait_resource_pool(
                 capacity,
             },
         )
+        .map(|()| true)
+        .map_err(|err: TraitError| err.to_string())
+}
+
+/// `(register-trait-resource-pool-by-level trait-id pool-id level tier-amounts)`
+/// ——追加声明「这个天赋在 `level` 级授予某个法术位池这一档分布」
+/// （法术位落地批次），服务
+/// `ResourcePoolShape::TieredSlots`：`register-trait-resource-pool`
+/// 的 `"fixed"` 容量公式无法表达法术位（一个不分档的固定数回答不了
+/// 「第几档有多少」这个问题，见 `ll_sim::resource_pool::eval_tier_formula`
+/// 文档「形状不匹配」一节）——本函数是`ResourcePoolShape::TieredSlots`
+/// 唯一的容量声明入口。
+///
+/// - `trait-id`/`pool-id`：同 `register-trait-resource-pool`。
+/// - `level`：这一档分布从几级开始生效——阶梯式，不需要每级都调用一次
+///   （`CapacityFormula::ByLevel` 未覆盖的等级取小于等于它的最大已声明
+///   等级对应的值）。
+/// - `tier-amounts`：这一级各档的容量,索引 0 = 第 1 档
+///   （`ResourcePoolShape::TieredSlots` 文档），非负整数列表。
+///
+/// **多次调用同一个 `(trait-id, pool-id)` 组合会累积进同一张表**，不是
+/// 各自新开一条独立的授予声明——见
+/// [`crate::trait_def::TraitTable::add_resource_pool_grant_tiered_level`]
+/// 文档「为什么不新开一条」一节：法术位一族典型要按等级声明好几个
+/// 断点（"5 级 4 个一环位、9 级追加五环位"这类阶梯式增长），mod 脚本
+/// 因此按等级从低到高多次调用本函数，各自追加同一张表里的一个断点。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_trait_resource_pool_by_level(
+    trait_id: String,
+    pool_id: String,
+    level: i64,
+    tier_amounts: Vec<i64>,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err(
+                    "register-trait-resource-pool-by-level 在没有活跃天赋表的窗口内被调用"
+                        .to_string(),
+                );
+            };
+            do_register_trait_resource_pool_by_level(
+                registry,
+                table,
+                &trait_id,
+                &pool_id,
+                level,
+                &tier_amounts,
+            )
+        })
+    })
+}
+
+/// [`register_trait_resource_pool_by_level`] 的纯函数核心，方便单元
+/// 测试不必绕过 `thread_local!`。
+fn do_register_trait_resource_pool_by_level(
+    registry: &mut Registry,
+    table: &mut TraitTable,
+    trait_id: &str,
+    pool_id: &str,
+    level: i64,
+    tier_amounts: &[i64],
+) -> Result<bool, String> {
+    let parsed_trait_id = NamespacedId::parse(trait_id)
+        .map_err(|err| format!("非法内容标识符 {trait_id:?}：{err}"))?;
+    let Some(trait_index) = registry.get(&parsed_trait_id) else {
+        return Err(format!("天赋 {trait_id:?} 尚未通过 register-trait 注册"));
+    };
+    let parsed_pool_id =
+        NamespacedId::parse(pool_id).map_err(|err| format!("非法内容标识符 {pool_id:?}：{err}"))?;
+    let Some(pool_index) = registry.get(&parsed_pool_id) else {
+        return Err(format!(
+            "资源池 {pool_id:?} 尚未通过 register-resource-pool 注册"
+        ));
+    };
+    let level = u32::try_from(level).map_err(|_| format!("非法等级断点 {level}（必须非负）"))?;
+    let tiers: Vec<u32> = tier_amounts
+        .iter()
+        .map(|&amount| amount.max(0) as u32)
+        .collect();
+
+    table
+        .add_resource_pool_grant_tiered_level(trait_index, pool_index, level, tiers)
         .map(|()| true)
         .map_err(|err: TraitError| err.to_string())
 }
@@ -453,5 +543,94 @@ mod tests {
                 capacity: CapacityFormula::Fixed(20),
             }]
         );
+    }
+
+    #[test]
+    fn 合法法术位分布追加成功且tiered公式档位数值正确() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = TraitTable::new();
+        do_register_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:arcane_casting",
+            "yourmod:arcane_casting_display_name",
+            &[],
+        )
+        .expect("先注册天赋本体");
+        let pool = registry.intern(NamespacedId::parse("yourmod:wizard_slots").unwrap());
+
+        // Act
+        let result = do_register_trait_resource_pool_by_level(
+            &mut registry,
+            &mut table,
+            "yourmod:arcane_casting",
+            "yourmod:wizard_slots",
+            5,
+            &[4, 3, 2],
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:arcane_casting").unwrap())
+            .unwrap();
+        let grants = &table.get(index).unwrap().granted_resource_pools;
+        assert_eq!(grants.len(), 1);
+        assert_eq!(grants[0].pool, pool);
+        assert_eq!(
+            grants[0].capacity,
+            CapacityFormula::ByLevel(std::collections::BTreeMap::from([(
+                5,
+                crate::trait_def::CapacityValue::Tiered(vec![4, 3, 2])
+            )]))
+        );
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_trait_resource_pool_by_level() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        let mut registry = Registry::new();
+        let trait_index = registry.intern(NamespacedId::parse("yourmod:arcane_casting").unwrap());
+        let pool = registry.intern(NamespacedId::parse("yourmod:wizard_slots").unwrap());
+        let mut table = TraitTable::new();
+        table
+            .define(
+                trait_index,
+                TraitAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:trait.arcane_casting").unwrap(),
+                    granted_skills: Vec::new(),
+                    stat_modifiers: Vec::new(),
+                    rule_modifiers: Vec::new(),
+                    granted_resource_pools: Vec::new(),
+                },
+            )
+            .expect("先注册天赋本体");
+        crate::active_registry::set_active_registry(registry);
+        set_active_target(table);
+
+        // Act：两次调用,累积进同一张 ByLevel 表。
+        let first = engine.load_source(
+            r#"(register-trait-resource-pool-by-level "yourmod:arcane_casting" "yourmod:wizard_slots" 1 (list 2 0 0))"#
+                .to_string(),
+        );
+        let second = engine.load_source(
+            r#"(register-trait-resource-pool-by-level "yourmod:arcane_casting" "yourmod:wizard_slots" 3 (list 4 2 0))"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(first.is_ok());
+        assert!(second.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:arcane_casting").unwrap())
+            .unwrap();
+        let grants = &table.get(index).unwrap().granted_resource_pools;
+        assert_eq!(grants.len(), 1, "两次调用应当合并进同一条授予声明");
+        assert_eq!(grants[0].pool, pool);
     }
 }

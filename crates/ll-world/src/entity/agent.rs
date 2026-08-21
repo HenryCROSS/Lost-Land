@@ -12,6 +12,24 @@ use crate::space::Space;
 
 use super::{ActiveStatModifier, Affiliation, AttributeKind, BaseStats, Goal};
 
+/// 一段正在进行的休息会话（`knowledge/design/resource-pools-and-rest.md`
+/// 七、八节）——`Agent::resting` 唯一的载荷类型。
+///
+/// # 为什么不区分短休/长休
+///
+/// 设计文档八节裁定「不设两档，只有一种休息动作」：`target_ticks` 由
+/// 发起时的 `Intent::Rest` 自带,力度差异（回满/回固定量）已经在
+/// `RegenRule::OnRest` 这一层给出,不需要在动作本身再叠一层分类。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RestState {
+    /// 这段休息开始时的世界时刻。
+    pub started_at: Tick,
+    /// 目标持续的 tick 数——`world.clock + 本次行动耗时 >= started_at +
+    /// target_ticks` 时视为「正常完成」，判定逻辑在 `ll-sim` 侧的
+    /// `resolve_wait`（本 crate 不依赖 `ll-sim`，这里只声明数据形状）。
+    pub target_ticks: u32,
+}
+
 /// 厚层实体：数百个，有界，被真正模拟。
 ///
 /// 行式排布（AoS）是刻意的：数量少、按实体随机访问、一次要读它的全部
@@ -181,6 +199,40 @@ pub struct Agent {
     /// `BTreeMap` 不是 `HashMap`：约束 C5，`WorldState::hash()` 需要
     /// 按确定顺序遍历这个字段。
     pub resource_pools: BTreeMap<ContentIndex, i32>,
+    /// 法术位（`ResourcePoolShape::TieredSlots`）各档已消耗数——键是
+    /// `(池索引, 档位)`，档位从 1 起（`resource-pools-and-rest.md` 二节
+    /// 「索引 0 = 第 1 档」是 `CapacityValue::Tiered` 内部 `Vec` 的约定，
+    /// 本字段与查询接口一律用 1 起的档位号，两者不是同一个数轴，见
+    /// `ll_sim::resource_pool::effective_slot_tier_capacity` 文档）。
+    ///
+    /// 与 [`Self::resource_pools`] 同一条「只存偏差，不存上限」纪律，但
+    /// 偏差的方向相反：标量池存「当前还剩多少」，本字段存「已经花掉
+    /// 多少」——法术位的消耗算法是「在有序档位里找空位」，天然需要知道
+    /// 「这一档已经占了几个」而不是「这一档还剩几个」，容量（上限）
+    /// 同样由天赋按等级现算，不存这里。查不到某个 `(池, 档位)` 键时，
+    /// 已消耗数视为 `0`（从未消耗过）。
+    ///
+    /// `BTreeMap` 不是 `HashMap`：约束 C5，`WorldState::hash()` 需要按
+    /// 确定顺序遍历这个字段——`(ContentIndex, u8)` 元组已实现 `Ord`
+    /// （字典序：先比池索引，再比档位），键序天然确定。
+    ///
+    /// **序列化走 [`spent_slots_serde`]**——理由同
+    /// [`Self::script_state`]（JSON 等文本格式要求 map 键是字符串，元组
+    /// 键不满足，见 `crate::script_state::serde_map` 模块文档）。
+    #[serde(with = "spent_slots_serde")]
+    pub spent_slots: BTreeMap<(ContentIndex, u8), u32>,
+    /// 正在进行的休息会话，`None` 表示当前未在休息
+    /// （`knowledge/design/resource-pools-and-rest.md` 七、八节）。
+    ///
+    /// # 为什么只存「何时开始、目标时长」，不存「已经过了多久」
+    ///
+    /// 与 [`Self::skill_cooldowns`] 同一条惰性判定纪律：`resolve_wait`
+    /// 每次结算时现比较 `world.clock + 本次行动耗时` 与
+    /// `started_at.0 + target_ticks`，不需要每个 tick 主动递减一个「剩余
+    /// 时长」字段——这也是八节「刷恢复漏洞」防线一成立的前提：恢复只在
+    /// 这个比较判定为「已到达」的那一刻整批产出，不存在一个可以被读取
+    /// 并按比例结算的中间进度值。
+    pub resting: Option<RestState>,
     /// 已解锁的技能集合。P5-B 任务 5 新增，关键设计判断 2 的落点：
     /// 「解锁与否」是几乎每次技能结算都要查询的高频状态，直接归引擎层
     /// 字段，不经脚本状态存储的跨界调用开销（见
@@ -322,6 +374,43 @@ pub struct Agent {
     pub xp_to_next_level: i64,
 }
 
+/// [`Agent::spent_slots`] 的自定义 serde 编码：把 `(ContentIndex, u8)`
+/// 元组键的 map 序列化成有序条目列表——理由与手法同
+/// `crate::script_state::serde_map`（JSON 等文本格式的 map 键必须是
+/// 字符串，元组键不满足；同一个模式在本 crate 内的第二次出现，不需要
+/// 抽成共享泛型工具：两处的键/值具体类型不同，各自十几行代码，提前
+/// 泛型化没有真实的第三个调用点驱动，见「ADR 0021：抽象要有真实可
+/// 共享的算法支撑」同一条判断）。
+mod spent_slots_serde {
+    use std::collections::BTreeMap;
+
+    use ll_core::ident::ContentIndex;
+    use serde::{Deserialize, Deserializer, Serialize, Serializer};
+
+    /// 把 map 序列化成有序条目列表。
+    pub fn serialize<S>(
+        map: &BTreeMap<(ContentIndex, u8), u32>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        let entries: Vec<(&(ContentIndex, u8), &u32)> = map.iter().collect();
+        entries.serialize(serializer)
+    }
+
+    /// 从有序条目列表重建 map。
+    pub fn deserialize<'de, D>(
+        deserializer: D,
+    ) -> Result<BTreeMap<(ContentIndex, u8), u32>, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let entries: Vec<((ContentIndex, u8), u32)> = Vec::deserialize(deserializer)?;
+        Ok(entries.into_iter().collect())
+    }
+}
+
 impl Agent {
     /// 生成/升格新实体时的占位起始生命值。
     ///
@@ -418,6 +507,11 @@ mod tests {
             mana: 33,
             stamina: 44,
             resource_pools: BTreeMap::from([(strike, 12)]),
+            spent_slots: BTreeMap::from([((strike, 3), 2)]),
+            resting: Some(RestState {
+                started_at: Tick(30),
+                target_ticks: 480,
+            }),
             unlocked_skills: vec![strike, power_strike],
             skill_cooldowns: BTreeMap::from([(power_strike, Tick(120))]),
             subclasses: vec![ranger_subclass],

@@ -136,6 +136,8 @@ fn spawn_agent_with_pool(
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: BTreeMap::from([(pool, pool_current)]),
+        spent_slots: std::collections::BTreeMap::new(),
+        resting: None,
         unlocked_skills: unlocked_skill.into_iter().collect(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
@@ -179,6 +181,8 @@ fn spawn_named_agent_with_pool(
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: BTreeMap::new(),
+        spent_slots: std::collections::BTreeMap::new(),
+        resting: None,
         unlocked_skills: vec![unlocked_skill],
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
@@ -384,6 +388,7 @@ fn 每回合开始时法力池按onturnstart真实回复() {
             pool,
             ResourcePoolRule {
                 regen_rule: RegenRule::OnTurnStart { amount: 3 },
+                shape: ll_sim::resource_pool::ResourcePoolShape::Scalar,
             },
         )]),
     };

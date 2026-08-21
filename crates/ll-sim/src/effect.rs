@@ -435,4 +435,47 @@ pub enum Effect {
         /// 代价量，非负。
         amount: i32,
     },
+    /// 把某个实体的某个法术位池、某一档的已消耗数调整 `delta`
+    /// （法术位落地批次，`resource-pools-and-rest.md` 二节）——与
+    /// [`Effect::AdjustResourcePool`] 是同一种「按增量调整某个数」的
+    /// 语义，区别只在于调整的是「已消耗数」不是「当前值」，方向也因此
+    /// 相反：施放消耗传正值（多花了一个槽位），休息/回合开始的恢复
+    /// 传负值（少了一些已消耗记录）。
+    AdjustResourceSlot {
+        /// 被调整的实体。
+        actor: EntityId,
+        /// 资源池索引（指向 `ResourcePoolShape::TieredSlots` 池）。
+        pool: ContentIndex,
+        /// 档位，1 起编号。
+        tier: u8,
+        /// 调整量，可正可负——`apply` 落地时钳位到非负（已消耗数不能
+        /// 是负的），见其分支注释。
+        delta: i32,
+    },
+    /// 开始一段休息会话（`resource-pools-and-rest.md` 七、八节）——
+    /// `resolve` 收到 [`crate::intent::Intent::Rest`] 时，若发起者当前
+    /// 未在休息，产出本效果 + 与 `Intent::Wait` 相同的
+    /// [`Effect::ScheduleNext`]。
+    BeginRest {
+        /// 开始休息的实体。
+        actor: EntityId,
+        /// 目标持续的 tick 数。
+        target_ticks: u32,
+    },
+    /// 结束一段休息会话——把 `resting` 清回 `None`。
+    ///
+    /// # 正常完成与中断共用同一个效果，区别在于它前面有没有恢复批次
+    ///
+    /// `resolve_wait` 判定「已到达 `target_ticks`」时，先追加恢复批次
+    /// （`Effect::AdjustResourcePool`/`Effect::AdjustResourceSlot`），
+    /// 再追加本效果；`resolve_dispatch` 判定「发起者正在休息、这次却
+    /// 提交了非 `Wait`/`Rest` 意图」（中断）时，只追加本效果，不带任何
+    /// 恢复——见 `resource-pools-and-rest.md` 八节「中断怎么表达」一节。
+    /// 这正是防刷漏洞的主防线：恢复只在「正常完成」这一刻整批产出，从
+    /// 不按已过时间比例给，反复「休息一回合、取消」不存在能刷出恢复的
+    /// 代码路径。
+    ClearResting {
+        /// 结束休息的实体。
+        actor: EntityId,
+    },
 }

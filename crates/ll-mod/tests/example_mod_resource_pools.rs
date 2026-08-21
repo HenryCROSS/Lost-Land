@@ -164,6 +164,8 @@ fn spawn_agent(
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools,
+        spent_slots: BTreeMap::new(),
+        resting: None,
         unlocked_skills,
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),

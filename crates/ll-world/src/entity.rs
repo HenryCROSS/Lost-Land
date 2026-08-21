@@ -36,7 +36,7 @@ mod stats;
 mod thin;
 
 pub use affiliation::{Affiliation, AffiliationKind, OrgRef};
-pub use agent::Agent;
+pub use agent::{Agent, RestState};
 pub use arena::Arena;
 pub use goal::Goal;
 pub use id::{EntityId, FamilyId};

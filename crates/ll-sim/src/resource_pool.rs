@@ -17,22 +17,27 @@
 //! `SkillEffect` 是同一条先例，见该模块文档「接线批次的更新」一节）,
 //! 不再维护一份会漂移的副本。
 //!
-//! # 本批次范围：只有 `Scalar` 形状与 `OnTurnStart` 恢复节奏
+//! # 第一批范围：只有 `Scalar` 形状与 `OnTurnStart` 恢复节奏（已完成）
 //!
 //! `resource-pools-and-rest.md` 二节的完整设计有两种池形状
 //! （`Scalar`/`TieredSlots`）与四种恢复节奏（`None`/`OnTurnStart`/
-//! `OnRest`/`ResetOnLeaveCombat`）——本批次的验收范围只要求法力池
+//! `OnRest`/`ResetOnLeaveCombat`）——第一批的验收范围只要求法力池
 //! （标量池）与「每回合回复固定量」这一条链路能端到端跑通（见项目
 //! 任务书「本次范围」一节的明确裁定：法术位与休息事件是下一批的工作，
-//! 混在一起两条都验不透）。[`ResourcePoolShape`]/[`RegenRule`] 因此
-//! 只声明本批次真正实现、真正有测试覆盖的变体，不像
-//! `ll_mod::trait_def::RuleModifier` 那样把设计文档的全部变体一次性
-//! 声明完（那份声明服务的是"形状已经在纯设计阶段冻结、只是还没有实现
-//! 期消费者"这种情形；本批次不同——`TieredSlots`/`OnRest`/
-//! `ResetOnLeaveCombat` 依赖的法术位存储/休息事件/脱战判定都还没有
-//! 设计出对应的消费算法，提前声明变体只会制造一批不知道该怎么处理的
-//! `match` 分支）。下一批实现法术位/休息事件时,在这里追加对应变体即可,
-//! 不需要改动本批次已落地的 `Scalar`/`OnTurnStart` 路径。
+//! 混在一起两条都验不透）。
+//!
+//! # 第二批范围：法术位（`TieredSlots`）与休息（`OnRest`）
+//!
+//! 本批次追加 [`ResourcePoolShape::TieredSlots`]（法术位）与
+//! [`RegenRule::OnRest`]（休息完成时恢复）——`ResetOnLeaveCombat` 仍然
+//! 不声明（脱战判定本身还没有设计出来，见
+//! `resource-pools-and-rest.md` 十二节「等什么」清单第 6 项，提前声明
+//! 变体只会制造一个不知道该怎么处理的 `match` 分支，同一条既有纪律）。
+//! `RegenRule` 与 `ResourcePoolShape` 保持正交——任意形状可以配任意
+//! 恢复节奏，mod 因此能配出「缓慢恢复的法术位」（`TieredSlots` +
+//! `OnTurnStart`）与「休息回满的法力池」（`Scalar` + `OnRest`）这类
+//! 反过来的组合，见 `ll_mod::script_resource_pool_api` 与
+//! `mods/example_mod/gameplay.scm` 的真实验收示例。
 
 use std::collections::BTreeMap;
 
@@ -48,6 +53,15 @@ pub enum ResourcePoolShape {
     /// 标量池：单个当前值，消耗算法是「减去固定数量」——法力、耐力、
     /// 气……的共同形状。
     Scalar,
+    /// 分级槽位族：每档一个已消耗数，消耗算法是「在 ≥ 请求档位的最低
+    /// 一档里找空位占用」——法术位的形状（`resource-pools-and-rest.md`
+    /// 二节）。`tier_count` 是这个池声明了几档（例如法师九级法术位是
+    /// 9），`ll_sim::skill::ResourceCost::SlotTier`/
+    /// [`effective_slot_tier_capacity`] 按这个上限迭代查询各档容量。
+    TieredSlots {
+        /// 档位数——档位从 1 起编号，1..=tier_count 均合法。
+        tier_count: u8,
+    },
 }
 
 /// [`ResourcePoolGrant::capacity`] 的两种计算方式（`trait-system.md`
@@ -89,8 +103,9 @@ pub struct ResourcePoolGrant {
 }
 
 /// 资源池的恢复节奏（`resource-pools-and-rest.md` 四节）——与
-/// [`ResourcePoolShape`] 正交，同一个形状可以配任意恢复节奏。本批次
-/// 只有 [`Self::OnTurnStart`]，见模块文档「本批次范围」一节。
+/// [`ResourcePoolShape`] **正交**，同一个形状可以配任意恢复节奏（模块
+/// 文档「第二批范围」一节：这是「两种流派」这个设计目标的关键，不写死
+/// 对应关系）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegenRule {
     /// 不自动恢复，只能靠主动效果（技能自身的 `RestoreResource`/
@@ -101,16 +116,42 @@ pub enum RegenRule {
         /// 每回合恢复的数量。
         amount: u32,
     },
+    /// 休息完成时恢复（`resource-pools-and-rest.md` 七、八节）——触发点
+    /// 在 `ll-sim::resolve` 的 `resolve_wait`（休息完成判定），不是新
+    /// 开一条通知链路，见该文档四节「恢复触发点复用既有机制」一节。
+    OnRest {
+        /// 恢复力度。
+        amount: RestRecoveryAmount,
+    },
 }
 
-/// `resolve` 侧需要的一条资源池定义的最小只读视图——本批次只需要恢复
-/// 节奏（消耗判定不需要查这张表，容量走 [`effective_scalar_capacity`]
-/// 单独的天赋聚合路径），与 [`crate::skill::SkillRule`] 只收敛
-/// `resolve_use_skill` 真正要读的字段是同一个理由。
+/// [`RegenRule::OnRest`] 的恢复力度——`resource-pools-and-rest.md` 四节
+/// 原文，两个变体在 [`ResourcePoolShape::Scalar`]/
+/// [`ResourcePoolShape::TieredSlots`] 上各自有不同的落地方式，见
+/// `ll-sim::resolve` 模块 `rest_completion_effects` 文档。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RestRecoveryAmount {
+    /// 回满——标量池恢复到当前有效容量，法术位每一档的已消耗数清零。
+    Full,
+    /// 回固定量——标量池当前值 `+= amount`；法术位从最低档开始，累计
+    /// 清掉 `amount` 个已消耗槽位（与消耗算法「从最低阶开始取」对称，
+    /// 见 `ll-sim::resolve` 模块文档）。
+    Amount(u32),
+}
+
+/// `resolve` 侧需要的一条资源池定义的最小只读视图——恢复节奏（消耗
+/// 判定不需要查这张表，容量走 [`effective_scalar_capacity`]/
+/// [`effective_slot_tier_capacity`] 单独的天赋聚合路径）+ 形状（法术位
+/// 休息回满需要知道 `tier_count` 才能遍历全部档位，见
+/// `ll-sim::resolve` 模块 `rest_completion_effects` 文档），与
+/// [`crate::skill::SkillRule`] 只收敛 `resolve_use_skill` 真正要读的
+/// 字段是同一个理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ResourcePoolRule {
     /// 恢复节奏。
     pub regen_rule: RegenRule,
+    /// 池的形状。
+    pub shape: ResourcePoolShape,
 }
 
 /// `resolve` 依赖的最小「资源池定义来源」接口——与
@@ -181,6 +222,70 @@ fn eval_scalar_formula(formula: &CapacityFormula, level: i32) -> u32 {
             match table.range(..=level).next_back() {
                 Some((_, CapacityValue::Scalar(amount))) => *amount,
                 Some((_, CapacityValue::Tiered(_))) | None => 0,
+            }
+        }
+    }
+}
+
+/// 聚合一个实体当前对某个法术位池、某一档的有效容量——与
+/// [`effective_scalar_capacity`] 同一套聚合规则（遍历 [`effective_traits`]，
+/// 对全部命中 `pool` 的 [`ResourcePoolGrant`] **求和**），区别只在于
+/// 求值出的是「这一档」的容量,而不是整池唯一的一个标量值。
+///
+/// `tier` 从 1 起编号（`ResourcePoolShape::TieredSlots` 文档）。
+/// `CapacityFormula::Fixed`（形状不匹配——法术位需要按档拆开的容量,
+/// `Fixed` 只能表达一个不分档的数）或 `ByLevel` 里对应等级的值是
+/// `CapacityValue::Scalar`（同样的形状不匹配,方向相反）时,这一条贡献
+/// 按零处理,理由同 [`effective_scalar_capacity`] 文档「形状不匹配」
+/// 一节——不是编译期拒绝这种声明,是内容作者的声明错误不该让引擎
+/// panic。
+pub fn effective_slot_tier_capacity(
+    race: ContentIndex,
+    level: i32,
+    pool: ContentIndex,
+    tier: u8,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+) -> u32 {
+    let mut total: u32 = 0;
+    for trait_id in effective_traits(race, level, race_traits) {
+        let Some(rule) = traits.trait_rule(trait_id) else {
+            continue;
+        };
+        for grant in &rule.granted_resource_pools {
+            if grant.pool != pool {
+                continue;
+            }
+            total = total.saturating_add(eval_tier_formula(&grant.capacity, level, tier));
+        }
+    }
+    total
+}
+
+/// [`CapacityFormula`] 在给定等级、给定档位下的求值——
+/// [`effective_slot_tier_capacity`] 的帮手，见其文档「形状不匹配」
+/// 一节的处理方式。`tier` 从 1 起编号，`CapacityValue::Tiered` 内部
+/// `Vec` 索引 0 对应第 1 档（`ResourcePoolShape::TieredSlots` 文档），
+/// 因此这里用 `tier - 1` 取索引；`tier == 0` 是调用方的声明错误（没有
+/// 第 0 档），`checked_sub` 失败时同样按零处理，不 panic。
+fn eval_tier_formula(formula: &CapacityFormula, level: i32, tier: u8) -> u32 {
+    match formula {
+        // Fixed 不携带任何按档拆开的数据——法术位的容量必须逐档声明,
+        // 一个不分档的固定数无法回答「第几档有多少」,按形状不匹配
+        // 处理（贡献零），理由同模块文档。
+        CapacityFormula::Fixed(_) => 0,
+        CapacityFormula::ByLevel(table) => {
+            let Ok(level) = u32::try_from(level) else {
+                return 0;
+            };
+            let Some(index) = tier.checked_sub(1) else {
+                return 0;
+            };
+            match table.range(..=level).next_back() {
+                Some((_, CapacityValue::Tiered(tiers))) => {
+                    tiers.get(index as usize).copied().unwrap_or(0)
+                }
+                Some((_, CapacityValue::Scalar(_))) | None => 0,
             }
         }
     }

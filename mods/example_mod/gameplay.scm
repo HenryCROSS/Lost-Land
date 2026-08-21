@@ -15,8 +15,9 @@
 ;;   register-race-xp-curve    crates/ll-mod/src/script_xp_curve_api.rs
 ;;   register-trait            crates/ll-mod/src/script_trait_api.rs
 ;;   register-race-trait       crates/ll-mod/src/script_race_api.rs
-;;   register-resource-pool         crates/ll-mod/src/script_resource_pool_api.rs
-;;   register-trait-resource-pool   crates/ll-mod/src/script_trait_api.rs
+;;   register-resource-pool                crates/ll-mod/src/script_resource_pool_api.rs
+;;   register-trait-resource-pool          crates/ll-mod/src/script_trait_api.rs
+;;   register-trait-resource-pool-by-level crates/ll-mod/src/script_trait_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -84,7 +85,7 @@
 ;; 真的接通，不是只在单元测试里自证（ADR 0018）。每回合自动回复 2
 ;; 点——同时验收 RegenRule::OnTurnStart。
 (register-resource-pool "examplemod:sorcery_points" "examplemod:sorcery_points_display_name"
-  "scalar" "on-turn-start" 2)
+  "scalar" 0 "on-turn-start" 2)
 (register-trait "examplemod:innate_sorcery" "examplemod:innate_sorcery_display_name" (list))
 (register-trait-resource-pool "examplemod:innate_sorcery" "examplemod:sorcery_points" "fixed" 20)
 (register-race-trait "examplemod:half_elf" "examplemod:innate_sorcery" 1)
@@ -95,3 +96,49 @@
 ;; 直接扣 15 点生命值,绕开减伤/抗性,不需要任何天赋授予"使用许可"——
 ;; granted_skills（既有第一类天赋效果）已经完整覆盖了这层，见该节原文。
 (register-skill "examplemod:blood_bolt" "" (list) 10 "blood" 15 "deal-damage" "" 30 0)
+
+;; 法术位落地批次（第二批）：knowledge/design/resource-pools-and-rest.md
+;; 十一节「法师验收示例」版本一（法术位，D&D 式法师）的真实版本——一个
+;; 四档法术位池 + 一个按等级授予档位分布的天赋 + 一个消耗三档法术位的
+;; 技能，四行连起来证明 register-resource-pool 的 "tiered-slots" 形状/
+;; register-trait-resource-pool-by-level 与
+;; effective_slot_tier_capacity/resolve_use_skill 门四在完整装载管线里
+;; 真的接通，不是只在单元测试里自证（ADR 0018）。休息完成时回满——
+;; 同时验收 RegenRule::OnRest(Full)，与上面术士的 sorcery_points
+;; （标量池 + RegenRule::OnTurnStart）合在一起，是「两种流派」这条设计
+;; 目标（`resource-pools-and-rest.md` 零节第五轮）的真实落地证据：一个
+;; 靠休息配给、一个靠回合缓慢回复,玩起来真的不一样。
+(register-resource-pool "examplemod:wizard_spell_slots" "examplemod:wizard_spell_slots_display_name"
+  "tiered-slots" 4 "on-rest-full" 0)
+(register-trait "examplemod:arcane_casting" "examplemod:arcane_casting_display_name" (list))
+;; 1 级：两个一环位；5 级追加：四个一环位、三个二环位；9 级追加：两个
+;; 三环位——阶梯式增长，未覆盖的等级取小于等于它的最大已声明档位
+;; （`CapacityFormula::ByLevel` 文档）。
+(register-trait-resource-pool-by-level "examplemod:arcane_casting" "examplemod:wizard_spell_slots" 1
+  (list 2 0 0 0))
+(register-trait-resource-pool-by-level "examplemod:arcane_casting" "examplemod:wizard_spell_slots" 5
+  (list 4 3 0 0))
+(register-trait-resource-pool-by-level "examplemod:arcane_casting" "examplemod:wizard_spell_slots" 9
+  (list 4 3 2 0))
+(register-race "examplemod:elf" "examplemod:elf_display_name" 0 1 0 1 0 0 0 1 1 700)
+(register-race-trait "examplemod:elf" "examplemod:arcane_casting" 1)
+;; 火球术：消耗三环位（或更高档，单向可兑换）——三环位直到 9 级断点
+;; 才出现（见上面），因此 1~8 级的精灵法师放不出这个技能（门四会因为
+;; 找不到任何 ≥3 档且有空位的档位而拒绝，见 `resolve_use_skill`
+;; 文档），这正是"三环法术不能用一环位放"这条单向兑换规则在真实内容
+;; 上的体现；9 级起真的能放出来,不需要任何额外校验。
+(register-skill "examplemod:fireball" "" (list) 30
+  "slot-tier:examplemod:wizard_spell_slots" 3 "deal-damage" "" 28 0)
+
+;; 反常组合（验证 RegenRule 与 ResourcePoolShape 正交，
+;; `resource-pools-and-rest.md` 四节）：法术位配「每回合缓慢恢复」而
+;; 不是「休息回满」——同样的 TieredSlots 形状，恢复节奏反过来，证明
+;; 引擎不在任何地方假设"位就该长休回满、池就该缓回"。设计文档四节
+;; 「反过来的组合一」的真实版本。
+(register-resource-pool "examplemod:druid_slots" "examplemod:druid_slots_display_name"
+  "tiered-slots" 3 "on-turn-start" 1)
+(register-trait "examplemod:druidic_casting" "examplemod:druidic_casting_display_name" (list))
+(register-trait-resource-pool-by-level "examplemod:druidic_casting" "examplemod:druid_slots" 1
+  (list 3 0 0))
+(register-race "examplemod:gnome" "examplemod:gnome_display_name" 0 1 0 1 0 0 0 1 1 400)
+(register-race-trait "examplemod:gnome" "examplemod:druidic_casting" 1)

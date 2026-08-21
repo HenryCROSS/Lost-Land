@@ -3,9 +3,11 @@
 //! 被 `TraitDef.granted_resource_pools`（[`crate::trait_def::ResourcePoolGrant`]）
 //! 引用,不新开一套与 `TraitTable`/`RaceTable` 不同的存储手法——第一批
 //! 只落地 [`ll_sim::resource_pool::ResourcePoolShape::Scalar`]（法力池
-//! 一类的标量池）,见 [`ll_sim::resource_pool`] 模块文档「本批次范围」
-//! 一节。血池不经过这张表——它就是 `Agent::health` 本身,完全排除在
-//! 资源池注册表之外（`resource-pools-and-rest.md` 五节）。
+//! 一类的标量池），第二批追加
+//! [`ll_sim::resource_pool::ResourcePoolShape::TieredSlots`]（法术位），
+//! 见 [`ll_sim::resource_pool`] 模块文档「第二批范围」一节。血池不经过
+//! 这张表——它就是 `Agent::health` 本身,完全排除在资源池注册表之外
+//! （`resource-pools-and-rest.md` 五节）。
 //!
 //! # 照抄 `race.rs`/`trait_def.rs` 已验证的模式
 //!
@@ -152,6 +154,7 @@ impl ResourcePoolCatalog for ResourcePoolTable {
     fn resource_pool(&self, pool: ContentIndex) -> Option<ResourcePoolRule> {
         self.get(pool).map(|view| ResourcePoolRule {
             regen_rule: view.regen_rule,
+            shape: view.shape,
         })
     }
 }

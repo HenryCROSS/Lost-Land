@@ -52,7 +52,7 @@
 
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
-use ll_world::entity::{ActiveStatModifier, AttributeKind, EntityId};
+use ll_world::entity::{ActiveStatModifier, Agent, AttributeKind, EntityId};
 use ll_world::history::KillCause;
 use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
@@ -63,7 +63,8 @@ use crate::experience::ExperienceCatalog;
 use crate::intent::{Direction, Intent};
 use crate::quest::{NoQuests, QuestCatalog};
 use crate::resource_pool::{
-    NoResourcePools, RegenRule, ResourcePoolCatalog, effective_scalar_capacity,
+    NoResourcePools, RegenRule, ResourcePoolCatalog, ResourcePoolShape, RestRecoveryAmount,
+    effective_scalar_capacity, effective_slot_tier_capacity,
 };
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::timeline::action_cost;
@@ -350,7 +351,7 @@ fn resolve_dispatch(
     pools: &dyn ResourcePoolCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
-        Intent::Wait { actor } => resolve_wait(world, actor),
+        Intent::Wait { actor } => resolve_wait(world, actor, race_traits, traits, pools),
         Intent::Move { actor, dir } => resolve_move(world, actor, dir),
         Intent::Attack { actor, target } => resolve_attack(world, actor, target),
         Intent::OpenDoor { actor, pos } => resolve_open_door(world, actor, pos),
@@ -361,7 +362,25 @@ fn resolve_dispatch(
             skill,
             target,
         } => resolve_use_skill(world, actor, skill, target, skills, race_traits, traits),
+        Intent::Rest {
+            actor,
+            target_ticks,
+        } => resolve_rest(world, actor, target_ticks, race_traits, traits, pools),
     };
+    // 休息中断（`resource-pools-and-rest.md` 八节「中断怎么表达」一节）：
+    // 任何非 `Wait`/`Rest` 意图,若发起者当前正在休息,追加一条不带恢复
+    // 批次的 `Effect::ClearResting`——与 D&D 长休/短休规则"做别的事就要
+    // 重新计时"一致。`Wait`/`Rest` 两个变体不在这里处理：`resolve_wait`/
+    // `resolve_rest` 内部已经各自判断"是否到达 target_ticks"并按需产出
+    // 带恢复的 `ClearResting`,不需要本检查再插一条。
+    if !matches!(*intent, Intent::Wait { .. } | Intent::Rest { .. })
+        && let Some(agent) = world.actors.get(intent.actor())
+        && agent.resting.is_some()
+    {
+        effects.push(Effect::ClearResting {
+            actor: intent.actor(),
+        });
+    }
     // 资源池每回合自动恢复（RegenRule::OnTurnStart,`resource-pools-and-rest.md`
     // 四节）：每次结算一个实体的意图,就是这个实体"自己的回合"（本项目
     // 的时间轴是逐实体调度,不是全体同时行动的固定回合制,见
@@ -441,13 +460,64 @@ fn resolve_resource_pool_regen(
             let Some(pool_rule) = pools.resource_pool(grant.pool) else {
                 continue;
             };
-            if let RegenRule::OnTurnStart { amount } = pool_rule.regen_rule {
-                effects.push(Effect::AdjustResourcePool {
-                    actor,
-                    pool: grant.pool,
-                    delta: amount as i32,
-                });
+            let RegenRule::OnTurnStart { amount } = pool_rule.regen_rule else {
+                continue;
+            };
+            // 按形状分流——`ResourcePoolShape::Scalar` 走既有的
+            // `AdjustResourcePool`（法术位落地批次之前唯一存在的分支,
+            // 原样保留）；`TieredSlots` 走"从最低档开始恢复"（与消耗
+            // 算法"从最低阶开始取"对称），落到
+            // `Effect::AdjustResourceSlot`——法术位落地批次新增,证明
+            // `RegenRule::OnTurnStart` 与 `ResourcePoolShape::TieredSlots`
+            // 这个"反过来的组合"（`resource-pools-and-rest.md` 四节）
+            // 真的会正确恢复,不是只能被声明、实际按标量语义误处理。
+            match pool_rule.shape {
+                ResourcePoolShape::Scalar => {
+                    effects.push(Effect::AdjustResourcePool {
+                        actor,
+                        pool: grant.pool,
+                        delta: amount as i32,
+                    });
+                }
+                ResourcePoolShape::TieredSlots { tier_count } => {
+                    effects.extend(restore_slots_from_lowest_tier(
+                        agent, actor, grant.pool, tier_count, amount,
+                    ));
+                }
             }
+        }
+    }
+    effects
+}
+
+/// 从第 1 档起，按顺序清掉总计 `amount` 个已消耗槽位——与消耗算法
+/// "从最低阶开始取"对称,供 [`resolve_resource_pool_regen`]
+/// （`RegenRule::OnTurnStart`）与 [`tiered_slot_rest_effects`]
+/// （`RegenRule::OnRest` 的 `Amount` 分支）共用同一段算法,不重复实现
+/// 两遍。只对 `agent.spent_slots` 里已消耗数非零的档位产出效果。
+fn restore_slots_from_lowest_tier(
+    agent: &Agent,
+    actor: EntityId,
+    pool: ContentIndex,
+    tier_count: u8,
+    amount: u32,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    let mut remaining = amount;
+    for tier in 1..=tier_count {
+        if remaining == 0 {
+            break;
+        }
+        let spent = agent.spent_slots.get(&(pool, tier)).copied().unwrap_or(0);
+        let restore = spent.min(remaining);
+        if restore > 0 {
+            effects.push(Effect::AdjustResourceSlot {
+                actor,
+                pool,
+                tier,
+                delta: -(restore as i32),
+            });
+            remaining -= restore;
         }
     }
     effects
@@ -692,8 +762,33 @@ fn schedule_after(world: &WorldState, cost: u32) -> Tick {
     Tick(world.clock.0 + i64::from(cost))
 }
 
-/// 原地等待一回合：只消耗基础代价，不产生除排期外的任何效果。
-fn resolve_wait(world: &WorldState, actor: EntityId) -> Vec<Effect> {
+/// 原地等待一回合：消耗基础代价；若发起者正在休息
+/// （`resource-pools-and-rest.md` 七、八节），额外检查这次行动结束时
+/// 是否已到达 `target_ticks`——到达则先追加恢复批次再清空休息状态，
+/// 否则休息状态原样保留（继续休息，不产生任何 resting 相关效果）。
+///
+/// # 完成判据：`world.clock + 本次行动耗时 >= started_at + target_ticks`
+///
+/// 与设计文档七节原文一致——判断的是「这一步等待做完之后」是否已经
+/// 到达目标时刻，不是「这一步开始时」，理由同 [`resolve_use_skill`]
+/// 冷却判定的既有比较方向：世界照常推进，玩家连续提交 `Intent::Wait`
+/// 直到这个比较成立为止。
+///
+/// # 为什么这是防刷漏洞的主防线
+///
+/// 恢复批次只在这个比较判定为真的**那一刻**产出——不存在任何按「已经
+/// 过了多少 tick」比例发放的代码路径。「休息一回合、取消」重复任意
+/// 多次，这个比较从未成立（除非 `target_ticks` 恰好等于一次基础行动
+/// 的耗时），因此从不触发恢复批次，见
+/// `resource-pools-and-rest.md` 八节「刷恢复漏洞——两条独立防线」
+/// 一节。
+fn resolve_wait(
+    world: &WorldState,
+    actor: EntityId,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
+) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
@@ -701,10 +796,194 @@ fn resolve_wait(world: &WorldState, actor: EntityId) -> Vec<Effect> {
         BASE_ACTION_COST,
         effective_speed_from_dexterity(agent.stats.dexterity),
     );
-    vec![Effect::ScheduleNext {
+    let next_at = schedule_after(world, cost);
+
+    let mut effects = Vec::new();
+    if let Some(rest) = agent.resting {
+        let target_at = rest
+            .started_at
+            .0
+            .saturating_add(i64::from(rest.target_ticks));
+        if next_at.0 >= target_at {
+            effects.extend(rest_completion_effects(
+                agent,
+                actor,
+                race_traits,
+                traits,
+                pools,
+            ));
+            effects.push(Effect::ClearResting { actor });
+        }
+    }
+    effects.push(Effect::ScheduleNext { actor, at: next_at });
+    effects
+}
+
+/// 开始一段休息会话——`Intent::Rest` 只用来**开始**这段会话（模块文档
+/// 「七节」，`Intent::Rest` 文档）：若发起者当前未在休息
+/// （`agent.resting.is_none()`），产出 `Effect::BeginRest` +
+/// 与 [`resolve_wait`] 相同的 `Effect::ScheduleNext`；若已经在休息中
+/// （脚本/AI 没有切换成 `Intent::Wait`，仍然反复提交 `Intent::Rest`），
+/// 按继续休息处理，直接委托给 [`resolve_wait`] 走同一条完成/中断检查
+/// ——不应该因为发起者选择了哪个 `Intent` 变体而让"继续休息"这件事
+/// 表现出不同的语义。
+fn resolve_rest(
+    world: &WorldState,
+    actor: EntityId,
+    target_ticks: u32,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    if agent.resting.is_some() {
+        return resolve_wait(world, actor, race_traits, traits, pools);
+    }
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    vec![
+        Effect::BeginRest {
+            actor,
+            target_ticks,
+        },
+        Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        },
+    ]
+}
+
+/// 休息正常完成时的恢复批次——遍历 `agent` 当前 [`effective_traits`]
+/// 命中的每一条天赋的 `granted_resource_pools`，对恢复节奏含
+/// `RegenRule::OnRest` 的池各产出对应效果，见
+/// `resource-pools-and-rest.md` 七节「休息完成时恢复什么」一节。
+///
+/// # 为什么按「去重后的池」而不是按「每条命中的授予声明」产出效果
+///
+/// 与 [`resolve_resource_pool_regen`]（`OnTurnStart`）刻意不同——那里
+/// 每条命中的授予声明各自贡献一次固定恢复量，多个来源各自独立叠加是
+/// 正确语义（该函数文档「为什么按每条命中的授予声明」一节）。`OnRest`
+/// 不同：`RestRecoveryAmount::Full` 只有相对**这个池的总容量**才有
+/// 意义（不存在"这一条授予声明各自的满"这种概念），因此这里先按池去重，
+/// 对每个池只查询一次总容量、只产出一批恢复效果，不会因为同一个池被
+/// 两条天赋各自授予容量就重复产出两次"回满"。
+fn rest_completion_effects(
+    agent: &Agent,
+    actor: EntityId,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
+) -> Vec<Effect> {
+    let mut seen_pools: Vec<ContentIndex> = Vec::new();
+    let mut effects = Vec::new();
+    for trait_id in effective_traits(agent.race, agent.level, race_traits) {
+        let Some(rule) = traits.trait_rule(trait_id) else {
+            continue;
+        };
+        for grant in &rule.granted_resource_pools {
+            if seen_pools.contains(&grant.pool) {
+                continue;
+            }
+            let Some(pool_rule) = pools.resource_pool(grant.pool) else {
+                continue;
+            };
+            let RegenRule::OnRest { amount } = pool_rule.regen_rule else {
+                continue;
+            };
+            seen_pools.push(grant.pool);
+            match pool_rule.shape {
+                ResourcePoolShape::Scalar => {
+                    if let Some(effect) =
+                        scalar_rest_effect(agent, actor, grant.pool, amount, race_traits, traits)
+                    {
+                        effects.push(effect);
+                    }
+                }
+                ResourcePoolShape::TieredSlots { tier_count } => {
+                    effects.extend(tiered_slot_rest_effects(
+                        agent, actor, grant.pool, tier_count, amount,
+                    ));
+                }
+            }
+        }
+    }
+    effects
+}
+
+/// 标量池的休息恢复——[`rest_completion_effects`] 的帮手。`Full` 恢复到
+/// 当前有效容量（`delta = capacity - stored_current`，`stored_current`
+/// 超过容量时不倒扣，见下方 `max(0, ..)`）；`Amount(n)` 恢复固定量，
+/// 与 `RegenRule::OnTurnStart` 同一条「不做写入端钳位，容量只在读取时
+/// 现场钳位」纪律（`resource-pools-and-rest.md` 三节「上限变化时怎么
+/// 办」一节），不查容量。`delta` 为零时不产出效果（没有变化，不需要
+/// 一条空操作的 `Effect`）。
+fn scalar_rest_effect(
+    agent: &Agent,
+    actor: EntityId,
+    pool: ContentIndex,
+    amount: RestRecoveryAmount,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+) -> Option<Effect> {
+    let delta = match amount {
+        RestRecoveryAmount::Full => {
+            let capacity =
+                effective_scalar_capacity(agent.race, agent.level, pool, race_traits, traits);
+            let current = agent.resource_pools.get(&pool).copied().unwrap_or(0);
+            (i64::from(capacity) - i64::from(current)).max(0)
+        }
+        RestRecoveryAmount::Amount(n) => i64::from(n),
+    };
+    if delta == 0 {
+        return None;
+    }
+    Some(Effect::AdjustResourcePool {
         actor,
-        at: schedule_after(world, cost),
-    }]
+        pool,
+        delta: delta.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+    })
+}
+
+/// 法术位池的休息恢复——[`rest_completion_effects`] 的帮手。`Full`
+/// 恢复：每一档的已消耗数清零（不需要查容量,"回满"对法术位而言就是
+/// "已消耗数归零",与容量无关——见 `RestRecoveryAmount::Full` 文档）。
+/// `Amount(n)` 恢复：从第 1 档起,按顺序清掉总计 `n` 个已消耗槽位——与
+/// 消耗算法"从最低阶开始取"对称,理由同 `RestRecoveryAmount::Amount`
+/// 文档。只对 `agent.spent_slots` 里已经存在的 `(pool, tier)` 条目产出
+/// 效果,已消耗数恒为零的档位不需要一条空操作的 `Effect`。
+fn tiered_slot_rest_effects(
+    agent: &Agent,
+    actor: EntityId,
+    pool: ContentIndex,
+    tier_count: u8,
+    amount: RestRecoveryAmount,
+) -> Vec<Effect> {
+    let mut effects = Vec::new();
+    match amount {
+        RestRecoveryAmount::Full => {
+            for tier in 1..=tier_count {
+                let spent = agent.spent_slots.get(&(pool, tier)).copied().unwrap_or(0);
+                if spent > 0 {
+                    effects.push(Effect::AdjustResourceSlot {
+                        actor,
+                        pool,
+                        tier,
+                        delta: -(spent as i32),
+                    });
+                }
+            }
+        }
+        RestRecoveryAmount::Amount(n) => {
+            effects.extend(restore_slots_from_lowest_tier(
+                agent, actor, pool, tier_count, n,
+            ));
+        }
+    }
+    effects
 }
 
 /// 朝某方向移动一格：按目的地的地形分三种情形处理。
@@ -1096,6 +1375,11 @@ fn resolve_use_skill(
                 return Vec::new();
             }
         }
+        ResourceCost::SlotTier(pool, min_tier) => {
+            if find_available_slot_tier(agent, pool, min_tier, race_traits, traits).is_none() {
+                return Vec::new();
+            }
+        }
         ResourceCost::Blood(_) | ResourceCost::None => {}
     }
 
@@ -1116,6 +1400,24 @@ fn resolve_use_skill(
                 pool,
                 delta: -(amount as i32),
             });
+        }
+        ResourceCost::SlotTier(pool, min_tier) => {
+            // 门四已经确认存在一个可用档位——这里重新查一次（`resolve`
+            // 是纯函数，两次调用之间世界状态不会变化，重算不会得到不同
+            // 结果，只是与既有 `Amount`/`PoolAmount` 分支同一种"门里只判
+            // 断、效果产出时才真正决定写什么"的写法一致）。找不到（理论
+            // 上不会发生，门四已经拦过）时静默不产出扣减，不 panic——
+            // 与其余分支「防御性处理不可能到达但也不该崩溃的分支」是
+            // 同一条既有纪律。
+            if let Some(tier) = find_available_slot_tier(agent, pool, min_tier, race_traits, traits)
+            {
+                effects.push(Effect::AdjustResourceSlot {
+                    actor,
+                    pool,
+                    tier,
+                    delta: 1,
+                });
+            }
         }
         ResourceCost::Blood(amount) => {
             // 直接扣血,绕开减伤/抗性——见 `Effect::SpendBloodCost`/
@@ -1241,6 +1543,44 @@ fn resource_pool_usable(
     i64::from(stored).min(i64::from(cap)).max(0)
 }
 
+/// 门四/效果产出共用的帮手：从 `min_tier` 起往上找第一个「上限 >
+/// 已消耗数」的档位——`resource-pools-and-rest.md` 二节"从最低阶开始
+/// 取"的引擎规则,见 [`crate::skill::ResourceCost::SlotTier`] 文档。
+/// 找不到时返回 `None`（技能静默不产出效果，与门四其余判定同一条
+/// 纪律）。**单向可兑换天然成立**：查询从 `min_tier` 起，从不往下看
+/// 低于 `min_tier` 的档位——三环法术（`min_tier = 3`）永远不会被路由
+/// 去占用一环位的空位，不需要任何额外的"不许往下兑换"检查,这条限制
+/// 就写在循环的起点里。
+///
+/// # 上界为什么是 `u8::MAX`，不是查询 `ResourcePoolShape::TieredSlots`
+/// 的 `tier_count`
+///
+/// 本函数不接收资源池目录参数——`resolve_use_skill` 因此不需要为了
+/// 这一条路径多接一份 `pools: &dyn ResourcePoolCatalog`（既有调用点
+/// `resolve_with_skills_traits_and_pools`/`resolve_with_skills_and_traits`
+/// 的层次已经足够深，见 `resolve_with_skills_and_traits` 文档）。任何
+/// 未被声明容量的档位，`effective_slot_tier_capacity` 天然算出零,不会
+/// 被误判为"可用"——循环最多跑 255 次,与 `resolve_use_skill` 门一
+/// 文档「性能」一节同一条判断：不是逐 tick 热路径,一场战斗一个实体
+/// 一回合最多用一次技能，这个量级的循环开销可以忽略不计。
+fn find_available_slot_tier(
+    agent: &ll_world::entity::Agent,
+    pool: ContentIndex,
+    min_tier: u8,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+) -> Option<u8> {
+    for tier in min_tier..=u8::MAX {
+        let capacity =
+            effective_slot_tier_capacity(agent.race, agent.level, pool, tier, race_traits, traits);
+        let spent = agent.spent_slots.get(&(pool, tier)).copied().unwrap_or(0);
+        if spent < capacity {
+            return Some(tier);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use ll_core::torus::TorusSize;
@@ -1304,6 +1644,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -1359,6 +1701,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -1892,6 +2236,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -2240,6 +2586,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -2299,6 +2647,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),

@@ -148,6 +148,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: unlocked,
             skill_cooldowns,
             subclasses: Vec::new(),

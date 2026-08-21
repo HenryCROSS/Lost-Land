@@ -54,6 +54,7 @@
 //! 签名。容量公式（`fixed`/`by-level`）走扁平参数 + 字符串标签，理由
 //! 与本节其余部分一致，见该函数文档。
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
@@ -282,6 +283,55 @@ impl TraitTable {
         self.granted_resource_pools[trait_id.get() as usize].push(grant);
         Ok(())
     }
+
+    /// 追加声明「这个天赋在 `level` 级授予某个法术位池这一档分布」
+    /// （法术位落地批次）——与 [`Self::add_resource_pool_grant`] 服务
+    /// 同一件事的不同容量公式：法术位需要按等级查一张多档表
+    /// （`CapacityFormula::ByLevel` + `CapacityValue::Tiered`），不是
+    /// 单个 `Fixed` 数值,`register-trait-resource-pool-by-level`
+    /// （[`crate::script_trait_api`]）每调用一次追加表里的一个等级
+    /// 断点,而不是每次都新开一条独立的 `ResourcePoolGrant`——若做成
+    /// 后者,同一个池的多条断点会各自独立参与
+    /// `effective_slot_tier_capacity` 的「跨授予来源求和」,在任意等级
+    /// 上会把多个断点的值错误地加在一起,而不是取「≤ 当前等级的最大
+    /// 断点」这一条设计要求的值（`resource-pools-and-rest.md` 三节
+    /// `CapacityFormula::ByLevel` 文档）。因此这里按「同一个天赋对
+    /// 同一个池、且容量公式已经是 `ByLevel`」找已有的那一条授予声明,
+    /// 找到则把新断点插入它的表里；找不到则新建一条只含这一个断点的
+    /// 授予声明,后续调用继续往里插。
+    pub fn add_resource_pool_grant_tiered_level(
+        &mut self,
+        trait_id: ContentIndex,
+        pool: ContentIndex,
+        level: u32,
+        tiers: Vec<u32>,
+    ) -> Result<(), TraitError> {
+        if !self.is_defined(trait_id) {
+            return Err(TraitError::NotDefined(trait_id));
+        }
+        let grants = &mut self.granted_resource_pools[trait_id.get() as usize];
+        let existing = grants.iter_mut().find(|grant| {
+            grant.pool == pool && matches!(grant.capacity, CapacityFormula::ByLevel(_))
+        });
+        match existing {
+            Some(grant) => {
+                let CapacityFormula::ByLevel(table) = &mut grant.capacity else {
+                    unreachable!("上面的 find 已经用 matches! 筛过,capacity 恒是 ByLevel");
+                };
+                table.insert(level, CapacityValue::Tiered(tiers));
+            }
+            None => {
+                grants.push(ResourcePoolGrant {
+                    pool,
+                    capacity: CapacityFormula::ByLevel(BTreeMap::from([(
+                        level,
+                        CapacityValue::Tiered(tiers),
+                    )])),
+                });
+            }
+        }
+        Ok(())
+    }
 }
 
 /// `ll_sim::traits::TraitCatalog` 的真实实现——`resolve_use_skill`
@@ -420,5 +470,62 @@ mod tests {
 
         // Act & Assert
         assert_eq!(TraitCatalog::trait_rule(&table, never_defined), None);
+    }
+
+    #[test]
+    fn 多次追加同一个天赋同一个池的按级法术位分布合并进同一张表() {
+        // 直接验收 add_resource_pool_grant_tiered_level 文档「为什么不
+        // 新开一条」一节：两次调用应当各自往同一条 ResourcePoolGrant 的
+        // ByLevel 表里插入一个断点，而不是产出两条独立的 ResourcePoolGrant
+        // ——后者会让 effective_slot_tier_capacity 在任意等级上把两个
+        // 断点的值错误地加在一起。
+        // Arrange
+        let mut registry = Registry::new();
+        let trait_id = registry.intern(NamespacedId::parse("lostland:arcane_casting").unwrap());
+        let pool = registry.intern(NamespacedId::parse("lostland:wizard_slots").unwrap());
+        let mut table = TraitTable::new();
+        table
+            .define(
+                trait_id,
+                no_effects(NamespacedId::parse("lostland:trait.arcane_casting").unwrap()),
+            )
+            .expect("首次定义应当成功");
+
+        // Act：两次调用，分别声明 1 级与 3 级的断点。
+        table
+            .add_resource_pool_grant_tiered_level(trait_id, pool, 1, vec![2, 0, 0])
+            .expect("首次追加应当成功");
+        table
+            .add_resource_pool_grant_tiered_level(trait_id, pool, 3, vec![4, 2, 0])
+            .expect("第二次追加应当成功");
+
+        // Assert：只有一条 ResourcePoolGrant,ByLevel 表里两个断点都在。
+        let grants = &table.get(trait_id).unwrap().granted_resource_pools;
+        assert_eq!(grants.len(), 1);
+        let CapacityFormula::ByLevel(levels) = &grants[0].capacity else {
+            panic!("容量公式应当是 ByLevel");
+        };
+        assert_eq!(
+            levels,
+            &BTreeMap::from([
+                (1, CapacityValue::Tiered(vec![2, 0, 0])),
+                (3, CapacityValue::Tiered(vec![4, 2, 0])),
+            ])
+        );
+    }
+
+    #[test]
+    fn 目标天赋尚未注册时法术位分布追加返回错误而不panic() {
+        // Arrange
+        let mut registry = Registry::new();
+        let pool = registry.intern(NamespacedId::parse("lostland:wizard_slots").unwrap());
+        let mut table = TraitTable::new();
+
+        // Act
+        let result =
+            table.add_resource_pool_grant_tiered_level(ContentIndex::default(), pool, 1, vec![1]);
+
+        // Assert
+        assert!(result.is_err());
     }
 }

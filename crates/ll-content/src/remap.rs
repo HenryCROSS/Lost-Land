@@ -311,6 +311,15 @@ fn remap_agent(
         // 的 ContentIndex，必须重映射；值是当前量，纯数值不需要处理，
         // 见 remap_resource_pools 文档。
         ref mut resource_pools,
+        // 法术位已消耗数（法术位落地批次新增）：键的前半是指向
+        // ResourcePoolDef 的 ContentIndex，必须重映射，理由与
+        // resource_pools 完全相同（同一个池身份，只是记录方向相反：
+        // 已消耗 vs 还剩多少），见 remap_spent_slots 文档。
+        ref mut spent_slots,
+        // 休息会话（法术位落地批次新增）：RestState 只有 started_at/
+        // target_ticks 两个纯数值字段，不携带任何 ContentIndex，不需要
+        // 重映射。
+        resting: _,
         // 三个 P5-B 任务 5 新增的 ContentIndex 承载字段：见下方各自的
         // remap_* 帮手。
         ref mut unlocked_skills,
@@ -353,6 +362,7 @@ fn remap_agent(
     remap_active_stat_modifiers(remapper, active_stat_modifiers)?;
     remap_creature_kind(remapper, creature_kind, owner)?;
     remap_resource_pools(remapper, resource_pools)?;
+    remap_spent_slots(remapper, spent_slots)?;
     Ok(())
 }
 
@@ -372,6 +382,25 @@ fn remap_resource_pools(
         }
     }
     *resource_pools = kept;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的法术位已消耗数表：键是 `(池索引, 档位)`，池
+/// 索引部分找不到当前会话内容时整条丢弃（[`ContentKind::ResourcePool`]，
+/// 与 [`remap_resource_pools`] 同一个 `ContentKind`——两者记录的是同一个
+/// 池身份，只是方向相反，缺失时的降级语义没有理由不同）。档位（`u8`）
+/// 与已消耗数（`u32`）都不含 `ContentIndex`，跟着键一起丢弃或保留。
+fn remap_spent_slots(
+    remapper: &mut Remapper<'_>,
+    spent_slots: &mut BTreeMap<(ContentIndex, u8), u32>,
+) -> Result<(), LoadError> {
+    let mut kept = BTreeMap::new();
+    for ((pool, tier), spent) in std::mem::take(spent_slots) {
+        if let Some(new_pool) = remapper.remap_droppable(pool, ContentKind::ResourcePool)? {
+            kept.insert((new_pool, tier), spent);
+        }
+    }
+    *spent_slots = kept;
     Ok(())
 }
 
@@ -624,6 +653,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -1077,6 +1108,75 @@ mod tests {
                 .get(entity)
                 .expect("实体应当仍存在")
                 .resource_pools
+                .is_empty()
+        );
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
+    }
+
+    #[test]
+    fn 法术位已消耗数键按字符串对号重映射到新索引() {
+        // Arrange：与资源池键同一条判据——重映射必须靠字符串而不是索引
+        // 数值巧合对上号，见「资源池键按字符串对号重映射到新索引」。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let pool_old = save_registry.intern(id("lostland:wizard_slots"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记,打乱顺序
+        let pool_new = current.intern(id("lostland:wizard_slots"));
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.spent_slots.insert((pool_old, 3), 1);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert：键的池索引部分换成了新索引,档位与已消耗数原样保留。
+        assert!(actions.is_empty());
+        assert_eq!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .spent_slots
+                .get(&(pool_new, 3)),
+            Some(&1)
+        );
+    }
+
+    #[test]
+    fn 法术位已消耗数键对应的内容在当前会话找不到时整条丢弃并记录droppwithwarning() {
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished_pool = save_registry.intern(id("lostland:vanished_pool"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.spent_slots.insert((vanished_pool, 1), 2);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .spent_slots
                 .is_empty()
         );
         assert_eq!(actions, vec![DegradeAction::DropWithWarning]);

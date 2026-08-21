@@ -272,6 +272,38 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.health -= amount;
             }
         }
+        Effect::AdjustResourceSlot {
+            actor,
+            pool,
+            tier,
+            delta,
+        } => {
+            // 已消耗数不能是负的——`i64` 运算后钳位到非负再落回 `u32`,
+            // 与 `Effect::AdjustResourcePool` 允许当前值降到负数不同
+            // （标量池的"当前值"语义上可以为负，钳位留给读取时的
+            // `resource_pool_usable`），已消耗数是一个纯粹的计数,负数
+            // 没有意义。
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                let current = agent.spent_slots.entry((*pool, *tier)).or_insert(0);
+                *current = (i64::from(*current) + i64::from(*delta)).max(0) as u32;
+            }
+        }
+        Effect::BeginRest {
+            actor,
+            target_ticks,
+        } => {
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.resting = Some(ll_world::entity::RestState {
+                    started_at: world.clock,
+                    target_ticks: *target_ticks,
+                });
+            }
+        }
+        Effect::ClearResting { actor } => {
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.resting = None;
+            }
+        }
     }
 }
 
@@ -386,6 +418,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),

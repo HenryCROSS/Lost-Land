@@ -106,6 +106,8 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
+        spent_slots: std::collections::BTreeMap::new(),
+        resting: None,
         unlocked_skills: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
@@ -143,6 +145,8 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
+        spent_slots: std::collections::BTreeMap::new(),
+        resting: None,
         unlocked_skills: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
@@ -456,7 +460,35 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    证明这几行确实是本次摘要变化的唯一成因。
 /// 3. 恢复这几行后重新跑通，再次确认新常量
 ///    `5_035_886_638_381_990_543` 稳定复现，才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 5_035_886_638_381_990_543;
+///
+/// # 第十二次重冻的原因（资源池落地批次，第二批：法术位/休息事件）
+///
+/// `WorldState::hash` 新增混入了每个 `Agent` 的 `spent_slots`
+/// （`BTreeMap<(ContentIndex, u8), u32>`）与 `resting`
+/// （`Option<RestState>`），紧邻上一批插入的 `resource_pools` 之后，见
+/// `crates/ll-world/src/state.rs` `hash()` 对 `self.actors` 遍历新增的
+/// 一段 `hasher.write_u64(agent.spent_slots.len() as u64)` + 逐条遍历，
+/// 以及紧随其后对 `agent.resting` 的 `match`——本文件 `setup` 生成的
+/// `player`/`enemy` 都不持有任何法术位（`intent_stream` 也没有任何
+/// `Intent::Rest`），`spent_slots` 因此恒为空表、`resting` 恒为
+/// `None`，但新增字段意味着喂进哈希器的字节流本身变长了（至少多出
+/// 一个长度为零的 `u64` 与一个判别用的 `u64`），摘要因此改变，与前
+/// 十一次重冻同一条先例。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 先在改动后的代码上把这条测试单独跑了两次，确认新摘要
+///    `2_505_820_810_245_065_935` 在两次独立进程里稳定复现（不是一次性
+///    偶然值）。
+/// 2. 再把 `state.rs` `hash()` 里新增的
+///    `hasher.write_u64(agent.spent_slots.len() as u64)`/紧随其后的
+///    `for ((pool, tier), spent) in &agent.spent_slots { .. }` 循环/
+///    `match agent.resting { .. }` 三段临时注释掉重新跑这条测试，摘要
+///    精确回到本次重冻之前的旧常量 `5_035_886_638_381_990_543`（与上面
+///    记录的第十一次重冻结果一致），证明这三段确实是本次摘要变化的
+///    唯一成因。
+/// 3. 恢复这三段后重新跑通，再次确认新常量
+///    `2_505_820_810_245_065_935` 稳定复现，才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 2_505_820_810_245_065_935;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

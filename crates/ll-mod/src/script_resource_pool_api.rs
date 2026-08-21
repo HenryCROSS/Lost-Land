@@ -12,7 +12,7 @@ use std::cell::RefCell;
 
 use ll_core::ident::NamespacedId;
 use ll_script::host::ScriptEngine;
-use ll_sim::resource_pool::{RegenRule, ResourcePoolShape};
+use ll_sim::resource_pool::{RegenRule, ResourcePoolShape, RestRecoveryAmount};
 
 use crate::active_registry::with_active_registry;
 use crate::registry::Registry;
@@ -42,24 +42,28 @@ pub fn register_resource_pool_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-resource-pool", register_resource_pool);
 }
 
-/// `(register-resource-pool id display-name-key shape regen-kind regen-amount)`。
+/// `(register-resource-pool id display-name-key shape tier-count regen-kind regen-amount)`。
 ///
 /// - `id`：完整命名空间标识符字符串。
 /// - `display-name-key`：指向 Fluent 本地化键的完整标识符字符串。
-/// - `shape`：池的形状——本批次只支持 `"scalar"`（标量池：法力、耐力、
-///   气……）。`"tiered-slots"`（法术位）留给下一批，见
-///   `ll_sim::resource_pool` 模块文档「本批次范围」一节。
+/// - `shape`：池的形状——`"scalar"`（标量池：法力、耐力、气……）或
+///   `"tiered-slots"`（法术位，法术位落地批次新增）。
+/// - `tier-count`：`shape` 为 `"scalar"` 时忽略（惯例填 0）；
+///   `"tiered-slots"` 时是这个池声明了几档（1..=255，档位从 1 起编号，
+///   见 `ll_sim::resource_pool::ResourcePoolShape::TieredSlots` 文档）。
 /// - `regen-kind`：恢复节奏——`"none"`（不自动恢复）/
-///   `"on-turn-start"`（每回合恢复固定量）。`"on-rest"` 留给休息事件
-///   批次。
-/// - `regen-amount`：`regen-kind` 为 `"none"` 时忽略；`"on-turn-start"`
-///   时是每回合恢复的数量，非负整数。
+///   `"on-turn-start"`（每回合恢复固定量）/`"on-rest-full"`（休息完成时
+///   回满，法术位落地批次新增）/`"on-rest-amount"`（休息完成时回固定
+///   量，同样新增）。
+/// - `regen-amount`：`regen-kind` 为 `"on-turn-start"`/`"on-rest-amount"`
+///   时是恢复的数量，非负整数；其余两种恢复节奏忽略这个参数。
 ///
 /// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
 fn register_resource_pool(
     id: String,
     display_name_key: String,
     shape: String,
+    tier_count: i64,
     regen_kind: String,
     regen_amount: i64,
 ) -> Result<bool, String> {
@@ -75,6 +79,7 @@ fn register_resource_pool(
                 &id,
                 &display_name_key,
                 &shape,
+                tier_count,
                 &regen_kind,
                 regen_amount,
             )
@@ -84,12 +89,14 @@ fn register_resource_pool(
 
 /// [`register_resource_pool`] 的纯函数核心，方便单元测试不必绕过
 /// `thread_local!`。
+#[allow(clippy::too_many_arguments)]
 fn do_register_resource_pool(
     registry: &mut Registry,
     table: &mut ResourcePoolTable,
     id: &str,
     display_name_key: &str,
     shape: &str,
+    tier_count: i64,
     regen_kind: &str,
     regen_amount: i64,
 ) -> Result<bool, String> {
@@ -102,9 +109,20 @@ fn do_register_resource_pool(
 
     let shape = match shape {
         "scalar" => ResourcePoolShape::Scalar,
+        "tiered-slots" => {
+            // 钳位到 u8 范围（1..=255）——0 或负数不是合法档位数（一个
+            // 没有任何档位的法术位池毫无意义），直接拒绝而不是静默钳位
+            // 成 1,那会掩盖内容作者笔误传了 0 的错误。
+            if tier_count < 1 || tier_count > i64::from(u8::MAX) {
+                return Err(format!("法术位档位数 {tier_count} 超出合法范围（1..=255）"));
+            }
+            ResourcePoolShape::TieredSlots {
+                tier_count: tier_count as u8,
+            }
+        }
         _ => {
             return Err(format!(
-                "未知的资源池形状 {shape:?}（本批次只支持 \"scalar\"）"
+                "未知的资源池形状 {shape:?}（支持 \"scalar\"/\"tiered-slots\"）"
             ));
         }
     };
@@ -112,6 +130,12 @@ fn do_register_resource_pool(
         "none" => RegenRule::None,
         "on-turn-start" => RegenRule::OnTurnStart {
             amount: regen_amount.max(0) as u32,
+        },
+        "on-rest-full" => RegenRule::OnRest {
+            amount: RestRecoveryAmount::Full,
+        },
+        "on-rest-amount" => RegenRule::OnRest {
+            amount: RestRecoveryAmount::Amount(regen_amount.max(0) as u32),
         },
         _ => return Err(format!("未知的恢复节奏 {regen_kind:?}")),
     };
@@ -134,7 +158,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 合法资源池声明注册成功并写入资源池表() {
+    fn 合法标量池声明注册成功并写入资源池表() {
         // Arrange
         let mut registry = Registry::new();
         let mut table = ResourcePoolTable::new();
@@ -146,6 +170,7 @@ mod tests {
             "yourmod:sorcery_points",
             "yourmod:pool.sorcery_points",
             "scalar",
+            0,
             "on-turn-start",
             2,
         );
@@ -161,6 +186,92 @@ mod tests {
     }
 
     #[test]
+    fn 合法法术位声明注册成功且携带正确的档位数() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ResourcePoolTable::new();
+
+        // Act
+        let result = do_register_resource_pool(
+            &mut registry,
+            &mut table,
+            "yourmod:wizard_slots",
+            "yourmod:pool.wizard_slots",
+            "tiered-slots",
+            9,
+            "on-rest-full",
+            0,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:wizard_slots").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        let view = table.get(index).expect("刚注册的资源池应能查到属性");
+        assert_eq!(view.shape, ResourcePoolShape::TieredSlots { tier_count: 9 });
+        assert_eq!(
+            view.regen_rule,
+            RegenRule::OnRest {
+                amount: RestRecoveryAmount::Full
+            }
+        );
+    }
+
+    #[test]
+    fn 休息回固定量的恢复节奏正确注册() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ResourcePoolTable::new();
+
+        // Act
+        let result = do_register_resource_pool(
+            &mut registry,
+            &mut table,
+            "yourmod:druid_slots",
+            "yourmod:pool.druid_slots",
+            "tiered-slots",
+            6,
+            "on-rest-amount",
+            1,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:druid_slots").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(
+            table.get(index).unwrap().regen_rule,
+            RegenRule::OnRest {
+                amount: RestRecoveryAmount::Amount(1)
+            }
+        );
+    }
+
+    #[test]
+    fn 法术位档位数为零时返回错误而不panic() {
+        // Arrange：内容作者笔误传了 0——没有任何档位的法术位池毫无意义。
+        let mut registry = Registry::new();
+        let mut table = ResourcePoolTable::new();
+
+        // Act
+        let result = do_register_resource_pool(
+            &mut registry,
+            &mut table,
+            "yourmod:x",
+            "yourmod:pool.x",
+            "tiered-slots",
+            0,
+            "none",
+            0,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
     fn 未知的资源池形状返回错误而不panic() {
         // Arrange
         let mut registry = Registry::new();
@@ -172,7 +283,8 @@ mod tests {
             &mut table,
             "yourmod:x",
             "yourmod:pool.x",
-            "tiered-slots",
+            "vector",
+            0,
             "none",
             0,
         );
@@ -194,6 +306,7 @@ mod tests {
             "yourmod:x",
             "yourmod:pool.x",
             "scalar",
+            0,
             "on-rest",
             0,
         );
@@ -212,7 +325,7 @@ mod tests {
 
         // Act
         let result = engine.load_source(
-            r#"(register-resource-pool "yourmod:sorcery_points" "yourmod:pool.sorcery_points" "scalar" "on-turn-start" 2)"#
+            r#"(register-resource-pool "yourmod:sorcery_points" "yourmod:pool.sorcery_points" "scalar" 0 "on-turn-start" 2)"#
                 .to_string(),
         );
 
@@ -239,7 +352,7 @@ mod tests {
 
         // Act
         let result = engine.load_source(
-            r#"(register-resource-pool "yourmod:x" "yourmod:pool.x" "vector" "none" 0)"#
+            r#"(register-resource-pool "yourmod:x" "yourmod:pool.x" "vector" 0 "none" 0)"#
                 .to_string(),
         );
 

@@ -392,6 +392,15 @@ fn write_resource_cost(hasher: &mut StateHasher, cost: ResourceCost, registry: &
             hasher.write_u64(3);
             hasher.write_u64(u64::from(amount));
         }
+        // 法术位落地批次新增第五个变体——判别值接着继续往后编号（4）,
+        // 理由同上方 PoolAmount/Blood 注释。`SlotTier` 同样携带
+        // `ContentIndex`,按同一条规则解析成字符串再混入；`min_tier`
+        // 是纯数值,直接混入。
+        ResourceCost::SlotTier(pool, min_tier) => {
+            hasher.write_u64(4);
+            write_optional_resolved(hasher, Some(pool), registry);
+            hasher.write_u64(u64::from(min_tier));
+        }
     }
 }
 

@@ -896,6 +896,14 @@ impl WorldState {
     /// 六次真实历史记录警告过的同一类判据缺口。紧邻 `mana`/`stamina`
     /// 插入，`resource-pools-and-rest.md` 十节给出的精确施工位置。血池
     /// 不新开哈希项——它就是 `Agent::health`，本来就已经参与哈希。
+    ///
+    /// # 法术位已消耗数与休息会话也已混入（法术位/休息事件落地批次）
+    ///
+    /// 第八次重演同一条先例：[`Agent::spent_slots`]/[`Agent::resting`]
+    /// 会被 `resolve_use_skill`（`ResourceCost::SlotTier` 消耗）与
+    /// `resolve_wait`（休息完成的恢复批次、休息中断清零）真实改写——若
+    /// 哈希继续视而不见，「法术位结算/休息防刷悄悄算错」这一类跑偏测不
+    /// 出来。紧邻 `resource_pools` 插入。
     pub fn hash(&self) -> u64 {
         let mut hasher = StateHasher::new();
         hasher.write_u64(self.seed);
@@ -954,6 +962,29 @@ impl WorldState {
             for (pool, current) in &agent.resource_pools {
                 hasher.write_u64(u64::from(pool.get()));
                 hasher.write_i64(i64::from(*current));
+            }
+            // 法术位已消耗数与休息会话也已混入（法术位/休息事件落地批次，
+            // `resource-pools-and-rest.md` 十节施工位置的直接延续，紧邻
+            // 上面的 resource_pools）——第八次重演同一条先例：
+            // `resolve_use_skill`（`ResourceCost::SlotTier` 消耗）与
+            // `resolve_wait`（休息完成的恢复批次、休息中断）都会真实
+            // 改写这两个字段，若哈希继续看不见它们，「法术位结算/休息
+            // 防刷悄悄算错」测不出来。`spent_slots` 键是 `(ContentIndex,
+            // u8)`，`BTreeMap` 天然按字典序遍历（先池再档位），不涉及
+            // `HashMap`/`HashSet` 迭代顺序（约束 C5）。
+            hasher.write_u64(agent.spent_slots.len() as u64);
+            for ((pool, tier), spent) in &agent.spent_slots {
+                hasher.write_u64(u64::from(pool.get()));
+                hasher.write_u64(u64::from(*tier));
+                hasher.write_u64(u64::from(*spent));
+            }
+            match agent.resting {
+                None => hasher.write_u64(0),
+                Some(rest) => {
+                    hasher.write_u64(1);
+                    hasher.write_i64(rest.started_at.0);
+                    hasher.write_u64(u64::from(rest.target_ticks));
+                }
             }
             // 等级与经验系统新增的三个字段（level-and-experience-system.md
             // 六节施工指引）——必须手动补进来：本函数对 `self.actors`
@@ -1378,7 +1409,7 @@ impl<'de> Deserialize<'de> for ChunkGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::{ActiveStatModifier, AttributeKind, BaseStats};
+    use crate::entity::{ActiveStatModifier, AttributeKind, BaseStats, RestState};
     use crate::terrain::base_terrain_fixture;
 
     /// 测试用区块布局：边长 64（满足视口跨度、是 16 与 32 的整数倍），
@@ -1476,6 +1507,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -1531,6 +1564,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -1612,6 +1647,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::from([(pool, current)]),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -1653,6 +1690,128 @@ mod tests {
         assert_ne!(hash_empty, hash_full);
     }
 
+    /// 造一个带唯一一个实体的测试世界，`spent_slots` 恰好一条条目——
+    /// 供法术位 hash 测试复用，理由同 [`test_world_with_one_agent`]。
+    fn test_world_with_one_agent_spent_slot(
+        pool: ContentIndex,
+        tier: u8,
+        spent: u32,
+    ) -> WorldState {
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        world.actors.spawn(Agent {
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: ContentIndex::default(),
+            luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::from([((pool, tier), spent)]),
+            resting: None,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: Space::surface(zone, ContentIndex::default()),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
+            level: Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        });
+        world
+    }
+
+    #[test]
+    fn 法术位已消耗数变化会改变世界哈希() {
+        // ADR 0022 红/绿验证，同一条先例：`Agent::spent_slots` 必须已经
+        // 手动补进 `hash()` 的逐字段遍历——本函数手工验证过会失败（临时
+        // 把 `state.rs` 里新增的 `hasher.write_u64(agent.spent_slots.len()..)`
+        // 与紧随其后的 `for` 循环删掉重跑，本测试会 panic：两个只有
+        // 已消耗数不同的世界算出同一个哈希），恢复后转绿。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let pool =
+            interner.intern(ll_core::ident::NamespacedId::parse("lostland:wizard_slots").unwrap());
+        let world_unspent = test_world_with_one_agent_spent_slot(pool, 3, 0);
+        let world_spent = test_world_with_one_agent_spent_slot(pool, 3, 1);
+
+        // Act
+        let (hash_unspent, hash_spent) = (world_unspent.hash(), world_spent.hash());
+
+        // Assert
+        assert_ne!(hash_unspent, hash_spent);
+    }
+
+    /// 造一个带唯一一个实体的测试世界，`resting` 取给定值——供休息事件
+    /// hash 测试复用，理由同 [`test_world_with_one_agent`]。
+    fn test_world_with_one_agent_resting(resting: Option<RestState>) -> WorldState {
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        world.actors.spawn(Agent {
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: ContentIndex::default(),
+            luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: Space::surface(zone, ContentIndex::default()),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
+            level: Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        });
+        world
+    }
+
+    #[test]
+    fn 休息状态变化会改变世界哈希() {
+        // ADR 0022 红/绿验证，同一条先例：`Agent::resting` 必须已经
+        // 手动补进 `hash()` 的逐字段遍历——本函数手工验证过会失败（临时
+        // 把 `state.rs` 里新增的 `match agent.resting { .. }` 分支删掉
+        // 重跑，本测试会 panic：一个正在休息、一个未在休息的世界算出
+        // 同一个哈希），恢复后转绿。
+        // Arrange
+        let world_idle = test_world_with_one_agent_resting(None);
+        let world_resting = test_world_with_one_agent_resting(Some(RestState {
+            started_at: Tick(0),
+            target_ticks: 480,
+        }));
+
+        // Act
+        let (hash_idle, hash_resting) = (world_idle.hash(), world_resting.hash());
+
+        // Assert
+        assert_ne!(hash_idle, hash_resting);
+    }
+
     #[test]
     fn worldstate序列化往返后actors不再是空的默认值() {
         // 直接对应 P5 批次 B 存在的理由：population/actors 摘掉
@@ -1683,6 +1842,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
@@ -1978,6 +2139,8 @@ mod tests {
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),

@@ -66,12 +66,17 @@ pub fn register_skill_api(engine: &mut ScriptEngine) {
 /// - `resource-kind`：`"none"`（不消耗资源）/`"mana"`/`"stamina"`（既有
 ///   内置资源，`ResourceCost::Amount`）/`"blood"`（血代价,直接扣
 ///   `health`,绕开减伤,`ResourceCost::Blood`,资源池落地批次新增,见
-///   `ll_sim::skill::ResourceCost::Blood` 文档）/其它任意字符串——按
-///   完整命名空间标识符解析,引用一个已经通过 `register-resource-pool`
-///   注册的开放资源池（`ResourceCost::PoolAmount`,资源池落地批次新增，
-///   要求目标池已注册,理由同 `register-trait-resource-pool` 对
-///   `pool-id` 的校验）。
-/// - `resource-amount`：`resource-kind` 为 `"none"` 时忽略。
+///   `ll_sim::skill::ResourceCost::Blood` 文档）/`"slot-tier:<pool-id>"`
+///   （法术位落地批次新增：冒号后接完整命名空间标识符,消耗该
+///   `ResourcePoolShape::TieredSlots` 池、`resource-amount` 档或更高档
+///   的一个槽位,`ResourceCost::SlotTier`——前缀约定理由见
+///   [`parse_resource_cost`] 文档）/其它任意字符串——按完整命名空间
+///   标识符解析,引用一个已经通过 `register-resource-pool` 注册的开放
+///   标量资源池（`ResourceCost::PoolAmount`,资源池落地批次新增，要求
+///   目标池已注册,理由同 `register-trait-resource-pool` 对 `pool-id`
+///   的校验）。
+/// - `resource-amount`：`resource-kind` 为 `"none"` 时忽略；
+///   `"slot-tier:<pool-id>"` 时是 `min_tier`（最低可用档位,1 起编号）。
 /// - `effect-kind`：`"deal-damage"`/`"restore-resource"`/
 ///   `"temporary-stat-modifier"`。
 /// - `effect-tag`：按 `effect-kind` 解释——`"deal-damage"` 忽略（传
@@ -178,10 +183,22 @@ fn do_register_skill(
 /// `resource-kind`/`resource-amount` → [`ResourceCost`]。
 ///
 /// `"none"`/`"mana"`/`"stamina"`/`"blood"` 四个保留字之外的任意字符串
-/// 按完整命名空间标识符解析，引用一个已注册的资源池（资源池落地
+/// 按完整命名空间标识符解析，引用一个已注册的标量资源池（资源池落地
 /// 批次新增，见本函数文档所属的 [`register_skill`] 文档「resource-kind」
 /// 一节）——与 `register-trait-resource-pool` 对 `pool-id` 的校验同一条
 /// 纪律：目标池**要求**已经通过 `register-resource-pool` 注册。
+///
+/// # 为什么法术位走 `"slot-tier:<pool-id>"` 前缀，不是新增一个位置参数
+///
+/// `resource-kind`/`resource-amount` 这一对参数已经用「字符串标签 +
+/// 解释规则」表达了四种资源通道（`none`/内置/血代价/开放标量池），第五
+/// 种（法术位）需要额外携带一个「哪个池」的标识符——若给
+/// `register_skill` 再加一个位置参数，既有内容（`mods/example_mod/gameplay.scm`
+/// 的 `frostbolt`/`sorcerer_firebolt`/`blood_bolt`）与既有测试全部要
+/// 补一个从不使用的哨兵参数。`"slot-tier:"` 前缀把「这是哪一类资源
+/// 通道」与「具体是哪个池」编码进同一个字符串参数，`resource-amount`
+/// 复用为 `min_tier`（本就是该参数在其余四种通道各自的解释规则一样，
+/// 按 `kind` 决定含义)——不引入新参数，也不需要改动任何既有调用点。
 fn parse_resource_cost(
     registry: &Registry,
     kind: &str,
@@ -198,6 +215,16 @@ fn parse_resource_cost(
             amount.max(0) as u32,
         )),
         "blood" => Ok(ResourceCost::Blood(amount.max(0) as u32)),
+        _ if kind.starts_with("slot-tier:") => {
+            let pool_id = &kind["slot-tier:".len()..];
+            let parsed_pool = NamespacedId::parse(pool_id)
+                .map_err(|err| format!("未知的法术位资源池 {pool_id:?}：{err}"))?;
+            let pool = registry.get(&parsed_pool).ok_or_else(|| {
+                format!("资源池 {pool_id:?} 尚未通过 register-resource-pool 注册")
+            })?;
+            let min_tier = amount.clamp(0, i64::from(u8::MAX)) as u8;
+            Ok(ResourceCost::SlotTier(pool, min_tier))
+        }
         _ => {
             let parsed_pool = NamespacedId::parse(kind)
                 .map_err(|err| format!("未知的资源种类 {kind:?}：{err}"))?;
@@ -520,6 +547,66 @@ mod tests {
             0,
             "yourmod:never_registered",
             0,
+            "deal-damage",
+            "",
+            0,
+            0,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn resource_kind为slot_tier前缀时解析成法术位消耗() {
+        // Arrange
+        let mut registry = Registry::new();
+        let pool = registry.intern(NamespacedId::parse("yourmod:wizard_slots").unwrap());
+        let mut table = SkillTable::new();
+
+        // Act
+        let result = do_register_skill(
+            &mut registry,
+            &mut table,
+            "yourmod:fireball",
+            "",
+            &[],
+            10,
+            "slot-tier:yourmod:wizard_slots",
+            3,
+            "deal-damage",
+            "",
+            28,
+            0,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:fireball").unwrap())
+            .unwrap();
+        assert_eq!(
+            table.get(index).unwrap().resource_cost,
+            ResourceCost::SlotTier(pool, 3)
+        );
+    }
+
+    #[test]
+    fn resource_kind为slot_tier前缀但目标资源池未注册时返回错误而不panic() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = SkillTable::new();
+
+        // Act：从未 register-resource-pool 过 "yourmod:never_registered"。
+        let result = do_register_skill(
+            &mut registry,
+            &mut table,
+            "yourmod:x",
+            "",
+            &[],
+            0,
+            "slot-tier:yourmod:never_registered",
+            1,
             "deal-damage",
             "",
             0,
