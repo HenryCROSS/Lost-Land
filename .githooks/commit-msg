@@ -1,0 +1,29 @@
+#!/bin/sh
+# 拒绝任何带 AI 署名或生成工具标记的提交信息。
+#
+# 为什么需要这道钩子：Bash 工具的 git 模板会自动往提交信息里塞
+# Co-Authored-By 署名，本项目全程禁止。截至 2026-08-20 已有三个代理
+# 分别踩中，三次都靠各自提交后自检加 `git commit --amend` 补救——那是
+# 一条「靠人记得」的约束，迟早会漏。
+#
+# 本项目的既定做法是把这类约束变成机器强制，同类先例：
+#   - ADR 0020 用 register_fn 的签名挡住浮点进入世界状态
+#   - 「图集条目的键必带命名空间」写成测试而不是约定
+#   - remap.rs 的穷尽解构让新增字段无法编译通过、逼人显式处理
+#
+# 命中就整个拒绝提交，不做自动删除——静默改写作者的提交信息比拒绝更
+# 糟，作者会不知道自己写的东西被动过。
+set -e
+
+msg_file="$1"
+pattern='co-authored-by:.*(claude|anthropic|gpt|copilot)|generated with \[?(claude|codex)'
+
+if grep -qiE "$pattern" "$msg_file"; then
+    echo "提交被拒绝：提交信息里含 AI 署名或生成工具标记。" >&2
+    echo "" >&2
+    echo "命中的行：" >&2
+    grep -inE "$pattern" "$msg_file" >&2
+    echo "" >&2
+    echo "请删掉这些行后重新提交。" >&2
+    exit 1
+fi
