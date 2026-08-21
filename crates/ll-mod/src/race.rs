@@ -81,6 +81,7 @@
 //! 存在命名冲突（不同的命名空间路径，`Registry::intern` 天然隔离）。
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_sim::traits::{TraitGrant, TraitGrantSource};
 use ll_world::entity::BaseStats;
 use std::fmt;
 
@@ -122,6 +123,16 @@ pub struct RaceDef {
     /// 阶段不显式声明经验值时，杀死它不产出经验，是安全的保守默认
     /// （不会意外让某个未平衡的内容变成刷经验点）。
     pub xp_reward: i64,
+    /// 这个种族授予的天赋引用列表（天赋系统落地批次，
+    /// `knowledge/design/trait-system.md` 四、六节）——`register-race`
+    /// 现有的脚本签名不携带这一项（不能改参数个数,见模块文档「与
+    /// `register-race-xp-reward` 的关系」一节同一条先例),真正想给
+    /// 种族追加天赋的 mod 作者需要额外调用
+    /// [`RaceTable::add_trait_grant`]（脚本入口 `register-race-trait`,
+    /// 见 `crate::script_race_api`）。空列表表示这个种族不授予任何
+    /// 天赋——与 `unlocked_skills` 空列表表示零解锁同一条纪律,不需要
+    /// 一个独立的哨兵值。
+    pub traits: Vec<TraitGrant>,
 }
 
 /// [`RaceTable::define`] 实际存进列式存储的属性子集——不含 `id`，理由同
@@ -147,6 +158,11 @@ pub struct RaceAttrs {
     /// 恒传 0，真正想声明非零经验值的 mod 作者需要额外调用
     /// `register-race-xp-reward` 补一次。
     pub xp_reward: i64,
+    /// 这个种族授予的天赋引用列表——见 [`RaceDef::traits`] 文档，
+    /// `register-race` 现有的脚本签名同样不携带这一项，调用方在这里
+    /// 恒传空列表，真正想给种族追加天赋的 mod 作者需要额外调用
+    /// [`RaceTable::add_trait_grant`]。
+    pub traits: Vec<TraitGrant>,
 }
 
 /// 种族注册期可能出现的错误。ADR 0017「注册期完整校验」要求这些错误
@@ -156,9 +172,10 @@ pub enum RaceError {
     /// 同一个内容索引被定义了两次，理由同
     /// [`crate::class::ClassError::DuplicateDefinition`]。
     DuplicateDefinition(ContentIndex),
-    /// [`RaceTable::set_xp_reward`] 的目标索引尚未经 [`RaceTable::define`]
-    /// 定义——与 `register-class-xp-curve` 找不到 `curve-id` 时的报错
-    /// 同一条纪律（ADR 0017「注册期完整校验」）：经验值是种族属性的
+    /// [`RaceTable::set_xp_reward`]/[`RaceTable::add_trait_grant`] 的
+    /// 目标索引尚未经 [`RaceTable::define`] 定义——与
+    /// `register-class-xp-curve` 找不到 `curve-id` 时的报错同一条纪律
+    /// （ADR 0017「注册期完整校验」）：经验值/天赋都是种族属性的
     /// 追加声明，追加对象必须先存在。
     NotDefined(ContentIndex),
 }
@@ -170,7 +187,11 @@ impl fmt::Display for RaceError {
                 write!(f, "种族索引 {} 被重复定义", index.get())
             }
             RaceError::NotDefined(index) => {
-                write!(f, "种族索引 {} 尚未定义，无法追加击杀经验值", index.get())
+                write!(
+                    f,
+                    "种族索引 {} 尚未定义，无法追加击杀经验值/天赋引用",
+                    index.get()
+                )
             }
         }
     }
@@ -193,6 +214,8 @@ pub struct RaceView<'a> {
     pub lifespan_years: u32,
     /// 击杀经验值，见 [`RaceDef::xp_reward`] 文档。
     pub xp_reward: i64,
+    /// 这个种族授予的天赋引用列表，见 [`RaceDef::traits`] 文档。
+    pub traits: &'a [TraitGrant],
 }
 
 /// 零修正的基准值——[`RaceTable::define`] 在扩容未定义槽位时使用的
@@ -221,6 +244,7 @@ pub struct RaceTable {
     footprint: Vec<(u8, u8)>,
     lifespan_years: Vec<u32>,
     xp_reward: Vec<i64>,
+    traits: Vec<Vec<TraitGrant>>,
     defined: Vec<bool>,
 }
 
@@ -246,6 +270,7 @@ impl RaceTable {
             self.footprint.resize(new_len, (1, 1));
             self.lifespan_years.resize(new_len, 0);
             self.xp_reward.resize(new_len, 0);
+            self.traits.resize(new_len, Vec::new());
         }
 
         if self.defined[idx] {
@@ -259,6 +284,7 @@ impl RaceTable {
         self.footprint[idx] = attrs.footprint;
         self.lifespan_years[idx] = attrs.lifespan_years;
         self.xp_reward[idx] = attrs.xp_reward;
+        self.traits[idx] = attrs.traits;
         Ok(())
     }
 
@@ -289,6 +315,7 @@ impl RaceTable {
             footprint: self.footprint[idx],
             lifespan_years: self.lifespan_years[idx],
             xp_reward: self.xp_reward[idx],
+            traits: &self.traits[idx],
         })
     }
 
@@ -305,6 +332,44 @@ impl RaceTable {
         }
         self.xp_reward[race.get() as usize] = amount;
         Ok(())
+    }
+
+    /// 追加声明「这个种族授予某个天赋，在什么等级」——`register-race`
+    /// 的既有脚本签名同样不能改参数个数（[`RaceDef::traits`] 文档），
+    /// 因此天赋引用走这条独立的、注册后追加的路径，与
+    /// [`Self::set_xp_reward`] 同一个模式。**追加，不是覆盖**：一个
+    /// 种族可以被多次调用授予多条不同的天赋（每次调用 push 一条
+    /// `TraitGrant`），这与 `set_xp_reward`「单值覆盖」不同——经验值
+    /// 只有一个数,天赋引用天然是一个集合。目标索引必须已经 `define`
+    /// 过，否则返回 [`RaceError::NotDefined`]（ADR 0017）。**不校验
+    /// `grant.trait_id` 是否已经在 `TraitTable` 里注册过**——与
+    /// `crate::skill::do_register_skill` 对 `prerequisites` 的既有处理
+    /// 方式一致（只 `intern` 不跨表校验存在性,见其文档,这是当前代码库
+    /// 尚未建立跨表校验基础设施的已知简化,不是本次新引入的松懈）。
+    pub fn add_trait_grant(
+        &mut self,
+        race: ContentIndex,
+        grant: TraitGrant,
+    ) -> Result<(), RaceError> {
+        if !self.is_defined(race) {
+            return Err(RaceError::NotDefined(race));
+        }
+        self.traits[race.get() as usize].push(grant);
+        Ok(())
+    }
+}
+
+/// `ll_sim::traits::TraitGrantSource` 的真实实现——
+/// `crate::traits::effective_traits`/`granted_skills` 通过这个 impl
+/// 真正查到种族授予的天赋引用,见 `ll_sim::traits` 模块文档「天赋归谁
+/// 所有」一节同一套依赖倒置手法。未注册的种族索引返回空列表——与
+/// `TraitGrantSource::granted_traits` 文档「查不到就是查不到」的既有
+/// 纪律一致,不是 panic 或特殊分支。
+impl TraitGrantSource for RaceTable {
+    fn granted_traits(&self, owner: ContentIndex) -> Vec<TraitGrant> {
+        self.get(owner)
+            .map(|view| view.traits.to_vec())
+            .unwrap_or_default()
     }
 }
 
@@ -405,6 +470,10 @@ fn define_base(
             // `register-race-xp-reward` 追加声明,见 RaceDef::xp_reward
             // 文档。
             xp_reward: 0,
+            // 本体三种基础种族当前不预置任何天赋——龙裔吐息/矮人抗毒
+            // 这类内容属于内容设计，不在本任务范围（模块文档「本批次
+            // 范围」一节），mod 通过 `register-race-trait` 追加声明。
+            traits: Vec::new(),
         },
     )?;
     Ok(index)
@@ -504,6 +573,7 @@ mod tests {
                     footprint: (1, 1),
                     lifespan_years: 80,
                     xp_reward: 0,
+                    traits: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -519,6 +589,7 @@ mod tests {
                 footprint: (1, 1),
                 lifespan_years: 80,
                 xp_reward: 0,
+                traits: Vec::new(),
             },
         );
 
@@ -587,6 +658,7 @@ mod tests {
                     footprint: (1, 1),
                     lifespan_years: 150,
                     xp_reward: 0,
+                    traits: Vec::new(),
                 },
             )
             .expect("mod 种族与本体种族调用同一个公开 define 函数,理应同样成功");

@@ -60,6 +60,12 @@
 //!   `RaceTable` 里查询恒返回 `None`），见其模块文档。
 //! - [`base_race`] —— 同一个模式在种族上的生产注册入口，照
 //!   [`base_terrain`]。
+//! - [`trait_def`] —— 天赋注册表（天赋系统落地批次）：
+//!   `knowledge/design/trait-system.md` 四节落地，`TraitDef` 是独立
+//!   内容类型，被种族（本批次唯一接入的所有者）通过
+//!   `Vec<ll_sim::traits::TraitGrant>` 引用，`TraitTable` 实现
+//!   `ll_sim::traits::TraitCatalog`（依赖倒置，见该 trait 模块文档），
+//!   见其模块文档「本批次范围」一节的完整裁定。
 //! - [`clip`] —— 动画剪辑注册表（动画剪辑接线批次）：把
 //!   `ll_render::anim::Clip`（此前只能写死在 Rust 里的动画帧序列/节奏/
 //!   循环声明，见其模块文档起因）做成可注册内容，`ClipDef` 与 `class`/
@@ -84,6 +90,11 @@
 //!   [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
 //!   判定为「玩法层」、但此前只有纯 Rust 函数调用能触达、脚本完全够
 //!   不到的四类 + 种族共五类注册 API。
+//! - [`script_trait_api`] —— 同一个模式在天赋上的脚本绑定（天赋系统
+//!   落地批次）：`register-trait`，见 [`trait_def`] 模块文档「本批次
+//!   范围」一节；`register-race-trait`（给种族追加天赋引用）挂在
+//!   [`script_race_api`] 而不是这里——理由同 `register-race-xp-reward`
+//!   挂在同一个文件（追加对象是 `RaceTable`，不是 `TraitTable`）。
 //! - [`script_clip_api`] —— 同一个模式在动画剪辑上的脚本绑定（动画
 //!   剪辑接线批次）：补上此前完全漏掉的第七类可注册玩法层内容——早先
 //!   的接口审计列出六种，「动画剪辑」当时不在其中。
@@ -144,11 +155,13 @@ pub mod script_race_api;
 pub mod script_skill_api;
 pub mod script_subclass_api;
 pub mod script_terrain_api;
+pub mod script_trait_api;
 pub mod script_xp_curve_api;
 pub mod skill;
 pub mod subclass;
 #[cfg(test)]
 mod test_support;
 pub mod topo;
+pub mod trait_def;
 pub mod version_constraint;
 pub mod xp_curve;

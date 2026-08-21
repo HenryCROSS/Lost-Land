@@ -13,6 +13,8 @@
 ;;   register-xp-curve         crates/ll-mod/src/script_xp_curve_api.rs
 ;;   register-class-xp-curve   crates/ll-mod/src/script_xp_curve_api.rs
 ;;   register-race-xp-curve    crates/ll-mod/src/script_xp_curve_api.rs
+;;   register-trait            crates/ll-mod/src/script_trait_api.rs
+;;   register-race-trait       crates/ll-mod/src/script_race_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -59,3 +61,15 @@
 ;; 分离"的绑定函数在完整装载管线里真的生效，不只是孤立的单元测试。
 (register-class-xp-curve "examplemod:necromancer" "examplemod:recursive_xp_curve")
 (register-race-xp-curve "examplemod:half_elf" "examplemod:linear_xp_curve")
+
+;; 天赋系统落地批次：龙裔吐息——knowledge/design/trait-system.md 九节
+;; 示例二「种族授予技能」的真实版本。吐息武器是一个不消耗任何资源、
+;; 造成 20 点伤害的技能；"龙裔吐息"这个天赋授予它；龙裔种族在 1 级
+;; （unlock_level=1，"拥有即生效"，见 trait-system.md 六节）被授予这个
+;; 天赋——三行连起来证明 resolve_use_skill 门一真的会去读种族天赋的
+;; 授予技能并集，不是只在单元测试里自证（ADR 0018）。
+(register-skill "examplemod:breath_weapon" "" (list) 30 "none" 0 "deal-damage" "" 20 0)
+(register-trait "examplemod:draconic_breath" "examplemod:draconic_breath_display_name"
+  (list "examplemod:breath_weapon"))
+(register-race "examplemod:dragonborn" "examplemod:dragonborn_display_name" 0 0 0 0 0 0 0 1 1 80)
+(register-race-trait "examplemod:dragonborn" "examplemod:draconic_breath" 1)

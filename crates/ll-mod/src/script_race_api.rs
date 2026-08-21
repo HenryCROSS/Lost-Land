@@ -9,6 +9,7 @@ use std::cell::RefCell;
 
 use ll_core::ident::NamespacedId;
 use ll_script::host::ScriptEngine;
+use ll_sim::traits::TraitGrant;
 use ll_world::entity::BaseStats;
 
 use crate::active_registry::with_active_registry;
@@ -34,10 +35,12 @@ pub fn take_active_target() -> RaceTable {
     })
 }
 
-/// 把 `register-race`/`register-race-xp-reward` 注册进 `engine`。
+/// 把 `register-race`/`register-race-xp-reward`/`register-race-trait`
+/// 注册进 `engine`。
 pub fn register_race_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-race", register_race);
     engine.register_fn("register-race-xp-reward", register_race_xp_reward);
+    engine.register_fn("register-race-trait", register_race_trait);
 }
 
 /// `(register-race id display-name-key
@@ -136,6 +139,7 @@ fn do_register_race(
                 // 真正想声明非零经验值的 mod 作者需要额外调用
                 // register-race-xp-reward。
                 xp_reward: 0,
+                traits: Vec::new(),
             },
         )
         .map(|()| true)
@@ -184,6 +188,73 @@ fn do_register_race_xp_reward(
     }
     table
         .set_xp_reward(index, amount)
+        .map(|()| true)
+        .map_err(|err: RaceError| err.to_string())
+}
+
+/// `(register-race-trait race-id trait-id unlock-level)`——追加声明
+/// 「这个种族在某个等级授予某个天赋」（天赋系统落地批次，
+/// `knowledge/design/trait-system.md` 四、六节），与
+/// `register-race-xp-reward` 同一个「不改既有签名,新增能力用新函数」
+/// 模式，见 [`crate::race`] 模块文档「与 `register-race-xp-reward`
+/// 的关系」一节同一条先例。
+///
+/// - `race-id`：已经通过 `register-race` 注册过的完整命名空间标识符
+///   字符串——目标必须已存在（ADR 0017「注册期完整校验」）。
+/// - `trait-id`：天赋的完整命名空间标识符字符串——**不要求**已经通过
+///   `register-trait` 注册过（只 `intern`，不跨表校验存在性，见
+///   [`crate::race::RaceTable::add_trait_grant`] 文档「不校验」一节，
+///   这是当前代码库尚未建立跨表校验基础设施的已知简化）。
+/// - `unlock-level`：解锁所需等级，非负整数——种族天赋按
+///   `trait-system.md` 六节的既有纪律恒传 `1`（"拥有即生效"），但本函数
+///   不强制这一点（允许 mod 作者声明"N 级矮人才有抗毒"这类非典型设计,
+///   校验只保证非负,不替内容作者做设计决定）。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_race` 文档。
+fn register_race_trait(
+    race_id: String,
+    trait_id: String,
+    unlock_level: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-race-trait 在没有活跃种族表的窗口内被调用".to_string());
+            };
+            do_register_race_trait(registry, table, &race_id, &trait_id, unlock_level)
+        })
+    })
+}
+
+/// [`register_race_trait`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_race_trait(
+    registry: &mut Registry,
+    table: &mut RaceTable,
+    race_id: &str,
+    trait_id: &str,
+    unlock_level: i64,
+) -> Result<bool, String> {
+    let parsed_race_id =
+        NamespacedId::parse(race_id).map_err(|err| format!("非法内容标识符 {race_id:?}：{err}"))?;
+    let Some(race_index) = registry.get(&parsed_race_id) else {
+        return Err(format!("种族 {race_id:?} 尚未通过 register-race 注册"));
+    };
+    let parsed_trait_id = NamespacedId::parse(trait_id)
+        .map_err(|err| format!("非法内容标识符 {trait_id:?}：{err}"))?;
+    if unlock_level < 0 {
+        return Err(format!("解锁等级不允许为负数：{unlock_level}"));
+    }
+    let trait_index = registry.intern(parsed_trait_id);
+    table
+        .add_trait_grant(
+            race_index,
+            TraitGrant {
+                trait_id: trait_index,
+                unlock_level: unlock_level as i32,
+            },
+        )
         .map(|()| true)
         .map_err(|err: RaceError| err.to_string())
 }
@@ -406,5 +477,191 @@ mod tests {
             .get(&NamespacedId::parse("yourmod:goblin").unwrap())
             .expect("刚注册的内容应能查到索引");
         assert_eq!(table.get(index).unwrap().xp_reward, 15);
+    }
+
+    #[test]
+    fn 合法天赋引用声明追加成功并写入种族表() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+        do_register_race(
+            &mut registry,
+            &mut table,
+            "yourmod:dragonborn",
+            "yourmod:dragonborn_display_name",
+            BaseStats {
+                strength: 0,
+                dexterity: 0,
+                constitution: 0,
+                intelligence: 0,
+                willpower: 0,
+                charisma: 0,
+            },
+            0,
+            (1, 1),
+            80,
+        )
+        .expect("先注册种族本体");
+
+        // Act
+        let result = do_register_race_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:dragonborn",
+            "yourmod:draconic_breath",
+            1,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let race_index = registry
+            .get(&NamespacedId::parse("yourmod:dragonborn").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        let trait_index = registry
+            .get(&NamespacedId::parse("yourmod:draconic_breath").unwrap())
+            .expect("register-race-trait 应当 intern 出天赋索引");
+        let grants = table.get(race_index).unwrap().traits;
+        assert_eq!(
+            grants,
+            &[TraitGrant {
+                trait_id: trait_index,
+                unlock_level: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn 对尚未注册的种族追加声明天赋引用返回err() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+
+        // Act
+        let result = do_register_race_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:never_seen",
+            "yourmod:some_trait",
+            1,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 负数解锁等级返回err而不写入表() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+        do_register_race(
+            &mut registry,
+            &mut table,
+            "yourmod:dragonborn",
+            "yourmod:dragonborn_display_name",
+            BaseStats {
+                strength: 0,
+                dexterity: 0,
+                constitution: 0,
+                intelligence: 0,
+                willpower: 0,
+                charisma: 0,
+            },
+            0,
+            (1, 1),
+            80,
+        )
+        .expect("先注册种族本体");
+
+        // Act
+        let result = do_register_race_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:dragonborn",
+            "yourmod:draconic_breath",
+            -1,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 同一个种族可以被追加多条不同的天赋引用() {
+        // Arrange：验证 add_trait_grant 是"追加"而不是"覆盖"——两次
+        // 调用 register-race-trait 都应当真实生效，不是后者覆盖前者。
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+        do_register_race(
+            &mut registry,
+            &mut table,
+            "yourmod:dwarf",
+            "yourmod:dwarf_display_name",
+            BaseStats {
+                strength: 0,
+                dexterity: 0,
+                constitution: 0,
+                intelligence: 0,
+                willpower: 0,
+                charisma: 0,
+            },
+            0,
+            (1, 1),
+            250,
+        )
+        .expect("先注册种族本体");
+        do_register_race_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:dwarf",
+            "yourmod:dwarven_resilience",
+            1,
+        )
+        .expect("首次追加应当成功");
+
+        // Act
+        do_register_race_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:dwarf",
+            "yourmod:stonecunning",
+            1,
+        )
+        .expect("第二次追加应当成功");
+
+        // Assert
+        let race_index = registry
+            .get(&NamespacedId::parse("yourmod:dwarf").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(table.get(race_index).unwrap().traits.len(), 2);
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_race_trait() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_race_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(RaceTable::new());
+        engine
+            .load_source(
+                r#"(register-race "yourmod:dragonborn" "yourmod:dragonborn_display_name" 0 0 0 0 0 0 0 1 1 80)"#
+                    .to_string(),
+            )
+            .expect("先注册种族本体");
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-race-trait "yourmod:dragonborn" "yourmod:draconic_breath" 1)"#.to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let race_index = registry
+            .get(&NamespacedId::parse("yourmod:dragonborn").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(table.get(race_index).unwrap().traits.len(), 1);
     }
 }

@@ -41,6 +41,14 @@
 //! [`experience`]：击杀产出经验值需要的「这个生物种类值多少经验」
 //! 只读接口（[`experience::ExperienceCatalog`] trait）——与 `skill`
 //! 同一套依赖倒置手法，见该模块文档。
+//!
+//! [`traits`]（天赋系统落地批次）：`resolve_use_skill` 门一需要读的
+//! 「这个实体有效的天赋授予了哪些技能」聚合函数（[`traits::effective_traits`]/
+//! [`traits::granted_skills`]）与两个依赖倒置接口
+//! （[`traits::TraitCatalog`]/[`traits::TraitGrantSource`]）——与
+//! `skill`/`quest`/`xp_curve` 同一套依赖倒置手法：完整的 `TraitDef`
+//! 定义在下游的 `ll-mod::trait_def`，本 crate 只声明 resolve 侧真正
+//! 要消费的最小形状，见该模块文档。
 
 pub mod apply;
 pub mod behavior;
@@ -53,4 +61,5 @@ pub mod resolve;
 pub mod skill;
 pub mod skill_overview;
 pub mod timeline;
+pub mod traits;
 pub mod xp_curve;

@@ -27,6 +27,7 @@ use ll_mod::race::RaceTable;
 use ll_mod::registry::Registry;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
+use ll_mod::trait_def::TraitTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::experience::ExperienceCatalog;
 use ll_sim::xp_curve::eval_xp_curve;
@@ -65,6 +66,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
     let mut clip = ClipTable::new();
     let mut xp_curve = XpCurveTable::new();
     let mut bindings = XpCurveBindings::new();
+    let mut trait_def = TraitTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -79,6 +81,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
             clip: &mut clip,
             xp_curve: &mut xp_curve,
             xp_curve_bindings: &mut bindings,
+            trait_def: &mut trait_def,
         },
     );
     // mod 自身在 LoadReport 里的标识按 `ll_mod::manifest::mod_self_id`

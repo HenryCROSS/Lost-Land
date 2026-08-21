@@ -467,6 +467,7 @@ mod tests {
             footprint: (1, 1),
             lifespan_years: 80,
             xp_reward: 0,
+            traits: Vec::new(),
         }
     }
 

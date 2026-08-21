@@ -19,6 +19,7 @@ use ll_mod::race::RaceTable;
 use ll_mod::registry::Registry;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
+use ll_mod::trait_def::TraitTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
@@ -100,6 +101,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut clip = ClipTable::new();
     let mut xp_curve = XpCurveTable::new();
     let mut xp_curve_bindings = XpCurveBindings::new();
+    let mut trait_def = TraitTable::new();
 
     let mut report = load_all(
         Path::new(PRIMARY_MODS_ROOT),
@@ -114,6 +116,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             clip: &mut clip,
             xp_curve: &mut xp_curve,
             xp_curve_bindings: &mut xp_curve_bindings,
+            trait_def: &mut trait_def,
         },
     );
     let missing_dependency_report = load_all(
@@ -129,6 +132,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             clip: &mut clip,
             xp_curve: &mut xp_curve,
             xp_curve_bindings: &mut xp_curve_bindings,
+            trait_def: &mut trait_def,
         },
     );
     let duplicate_namespace_report = load_all(
@@ -144,6 +148,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             clip: &mut clip,
             xp_curve: &mut xp_curve,
             xp_curve_bindings: &mut xp_curve_bindings,
+            trait_def: &mut trait_def,
         },
     );
     report.entries.extend(missing_dependency_report.entries);

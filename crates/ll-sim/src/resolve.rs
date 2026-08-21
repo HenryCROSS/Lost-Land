@@ -64,6 +64,7 @@ use crate::intent::{Direction, Intent};
 use crate::quest::{NoQuests, QuestCatalog};
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::timeline::action_cost;
+use crate::traits::{NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, granted_skills};
 
 /// 非位移动作（等待、攻击、开门）的基础代价，与平地移动同一基准
 /// （草地的 `move_cost` 恰为这个值）——本批次没有武器速度、技能读条
@@ -230,6 +231,29 @@ pub fn resolve(world: &WorldState, intent: &Intent) -> Vec<Effect> {
     resolve_with_skills_and_quests(world, intent, &NoSkills, &NoQuests)
 }
 
+/// [`resolve`] 的最完整入口：额外接收一份种族天赋授予来源与一份天赋
+/// 目录，用于结算 [`Intent::UseSkill`] 门一时把种族天赋授予的技能也
+/// 计入「有效技能」并集（`knowledge/design/trait-system.md` 三节①，
+/// 天赋系统落地批次）。
+///
+/// 四层入口（`resolve` → `resolve_with_skills` →
+/// `resolve_with_skills_and_quests` → 本函数）而不是给
+/// `resolve_with_skills_and_quests` 加两个参数，理由同
+/// [`resolve_with_skills`] 文档：不强迫仓库里已有的全部调用点（本文件
+/// 自身的既有测试、`ll-mod`/`ll-game` 的既有接线）都多传两份目录——
+/// 传 [`NoTraitGrants`]/[`NoTraits`] 与"不传"在行为上完全等价（两者
+/// 都让 `granted_skills` 现算出一个空集合），本函数只服务真正想让
+/// 种族天赋生效的调用方。
+pub fn resolve_with_skills_and_traits(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+) -> Vec<Effect> {
+    resolve_dispatch(world, intent, skills, &NoQuests, race_traits, traits)
+}
+
 /// [`resolve`] 的技能结算入口：额外接收一份技能目录，用于结算
 /// [`Intent::UseSkill`]。等价于
 /// `resolve_with_skills_and_quests(world, intent, skills, &NoQuests)`
@@ -250,12 +274,30 @@ pub fn resolve_with_skills(
 /// 三层入口（`resolve` → `resolve_with_skills` →
 /// `resolve_with_skills_and_quests`）而不是给 `resolve` 加两个参数，
 /// 理由同 [`resolve_with_skills`] 文档：不强迫只需要技能、不需要任务
-/// 系统的既有调用点（反之亦然）都多传一份目录。
+/// 系统的既有调用点（反之亦然）都多传一份目录。等价于
+/// `resolve_dispatch(world, intent, skills, quests, &NoTraitGrants, &NoTraits)`
+/// ——种族天赋这一路来源同样走「不传等价于传空」的既有纪律，见
+/// [`resolve_with_skills_and_traits`] 文档。
 pub fn resolve_with_skills_and_quests(
     world: &WorldState,
     intent: &Intent,
     skills: &dyn SkillCatalog,
     quests: &dyn QuestCatalog,
+) -> Vec<Effect> {
+    resolve_dispatch(world, intent, skills, quests, &NoTraitGrants, &NoTraits)
+}
+
+/// [`resolve_with_skills_and_quests`]/[`resolve_with_skills_and_traits`]
+/// 共用的核心分派逻辑——两个公开入口都只是"缺一份目录时传对应的
+/// `No*` 空实现"的薄封装，真正的 `Intent` 匹配与效果产出只写这一份，
+/// 不重复。
+fn resolve_dispatch(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+    quests: &dyn QuestCatalog,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => resolve_wait(world, actor),
@@ -268,7 +310,7 @@ pub fn resolve_with_skills_and_quests(
             actor,
             skill,
             target,
-        } => resolve_use_skill(world, actor, skill, target, skills),
+        } => resolve_use_skill(world, actor, skill, target, skills, race_traits, traits),
     };
     // 击杀任务进度：`Intent::Attack` 与 `Intent::UseSkill` 都可能产出
     // `Effect::Kill`（后者见 `resolve_use_skill` 的 `DealDamage` 分支，
@@ -867,18 +909,43 @@ fn resolve_exit_space(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 这一步此前缺失，技能永远打不死目标，也永远不会推进
 /// [`append_quest_kill_progress`] 依赖的击杀任务进度——两处结算同属
 /// 引擎侧，死亡判定没有设计自由度，属于纯实现缺口，不是分层错误。
+///
+/// # 性能：门一的 `granted_skills` 现算，不缓存——调用频率核实
+///
+/// `crate::traits::granted_skills` 每次门一判定都现场遍历一遍种族的
+/// `TraitGrant` 列表 + 命中天赋各自的 `granted_skills`，不做任何缓存。
+/// 这条路径**不是**逐 tick 热路径：`resolve_use_skill` 只在
+/// `Intent::UseSkill` 被结算时调用一次，而 `Intent::UseSkill` 只在
+/// 一个实体主动选择使用技能的那个回合才会出现（与 `Intent::Wait`/
+/// `Intent::Move` 这类每回合恒有的意图不同）——一场战斗里一个实体
+/// 一回合最多用一次技能，量级与 `resolve_attack` 每次普通攻击查询
+/// 一次减伤公式相同，不是 `ll_world::fov`/地形查询那种逐格/逐 tick
+/// 路径。种族目前最多声明个位数天赋、一个天赋最多声明个位数
+/// `granted_skills`，`Vec::contains`/`Vec` 遍历在这个规模下的常数
+/// 开销可以忽略——若未来某个种族/天赋的列表规模显著增长（远超「一个
+/// 内容作者手写的静态声明」这个量级），届时再考虑缓存，本批次不为
+/// 一个尚不存在的性能问题预先设计缓存策略（YAGNI）。
 fn resolve_use_skill(
     world: &WorldState,
     actor: EntityId,
     skill: ContentIndex,
     target: Option<EntityId>,
     skills: &dyn SkillCatalog,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
 ) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
-    // 门一：技能必须已解锁。
-    if !agent.unlocked_skills.contains(&skill) {
+    // 门一：技能必须已解锁，或者是种族天赋授予的（`granted_skills`
+    // 惰性现算，不缓存，见 `crate::traits` 模块文档「为什么不缓存」
+    // 一节）——`knowledge/design/trait-system.md` 三节①「有效技能=
+    // 并集」公式在本批次的唯一接线点：种族这一路来源（职业/副职/
+    // 载具/buff 四路仍是 `granted_skills(agent.race)` 之外的空集合，
+    // 见 `crate::traits` 模块文档「天赋归谁所有」一节的范围裁定）。
+    if !agent.unlocked_skills.contains(&skill)
+        && !granted_skills(agent.race, agent.level, race_traits, traits).contains(&skill)
+    {
         return Vec::new();
     }
     // 门二：冷却判定——惰性判定，读取时现比对世界时钟，不要求

@@ -42,6 +42,7 @@ use crate::race::RaceTable;
 use crate::registry::Registry;
 use crate::skill::SkillTable;
 use crate::subclass::SubclassTable;
+use crate::trait_def::TraitTable;
 use crate::{discover, topo};
 
 use crate::active_registry::{set_active_registry, take_active_registry};
@@ -72,6 +73,10 @@ use crate::script_subclass_api::{
 use crate::script_terrain_api::{
     register_terrain_api, set_active_target as set_active_terrain_target,
     take_active_target as take_active_terrain_target,
+};
+use crate::script_trait_api::{
+    register_trait_api, set_active_target as set_active_trait_target,
+    take_active_target as take_active_trait_target,
 };
 use crate::script_xp_curve_api::{
     register_xp_curve_api, set_active_target as set_active_xp_curve_target,
@@ -115,6 +120,9 @@ pub struct GameplayTables<'a> {
     /// `std::mem::take(tables.xp_curve_bindings)` 这条既有搬运手法，不
     /// 需要为这一对表单独发明搬运方式。
     pub xp_curve_bindings: &'a mut XpCurveBindings,
+    /// 天赋表（天赋系统落地批次新增）——`register-trait` 的写入目标，
+    /// 见 `crate::trait_def` 模块文档。
+    pub trait_def: &'a mut TraitTable,
 }
 
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
@@ -240,6 +248,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut clip = ClipTable::new();
     let mut xp_curve = XpCurveTable::new();
     let mut xp_curve_bindings = XpCurveBindings::new();
+    let mut trait_def = TraitTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -250,6 +259,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         clip: &mut clip,
         xp_curve: &mut xp_curve,
         xp_curve_bindings: &mut xp_curve_bindings,
+        trait_def: &mut trait_def,
     };
     for entry in &manifest.entry_points {
         if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
@@ -370,6 +380,7 @@ fn load_one_script(
         std::mem::take(tables.xp_curve),
         std::mem::take(tables.xp_curve_bindings),
     );
+    set_active_trait_target(std::mem::take(tables.trait_def));
 
     let mut engine = ScriptEngine::new();
     register_terrain_api(&mut engine);
@@ -380,6 +391,7 @@ fn load_one_script(
     register_race_api(&mut engine);
     register_clip_api(&mut engine);
     register_xp_curve_api(&mut engine);
+    register_trait_api(&mut engine);
     let result = engine.load_source(source.clone());
 
     *registry = take_active_registry();
@@ -393,6 +405,7 @@ fn load_one_script(
     let (xp_curve, xp_curve_bindings) = take_active_xp_curve_target();
     *tables.xp_curve = xp_curve;
     *tables.xp_curve_bindings = xp_curve_bindings;
+    *tables.trait_def = take_active_trait_target();
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -410,17 +423,18 @@ fn load_one_script(
 /// 把 [`ScriptError`] 归到 [`LoadStage::LoadScript`] 还是
 /// [`LoadStage::Register`]。
 ///
-/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有十个
+/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有十二个
 /// （`register-terrain`/`register-class`/`register-skill`/
 /// `register-subclass`/`register-quest`/`register-race`/
 /// `register-animation-clip`/`register-xp-curve`/
-/// `register-class-xp-curve`/`register-race-xp-curve`），把
+/// `register-class-xp-curve`/`register-race-xp-curve`/`register-trait`/
+/// `register-race-trait`），把
 /// `ScriptError::Runtime`（任一 `register-*` 内部校验失败时都走这一类，
 /// 见各自模块文档「返回 Result<bool, String>」一节）整体归为 Register
 /// 阶段。这会把一个与内容注册无关、纯粹是脚本自身写错的运行时错误
 /// （比如引用了一个已声明但尚未 `define` 的变量）也误标成 Register
 /// ——原始简化写下时只有 `register-terrain` 一个注册函数，补齐其余
-/// 九个之后这条简化本身没有变得更精确（十个函数的运行时错误依然与
+/// 十一个之后这条简化本身没有变得更精确（十二个函数的运行时错误依然与
 /// 「脚本自身写错」共用同一个 `ScriptError::Runtime` 变体，无法从错误
 /// 类型本身区分），仍然是一处已知的简化，不是本批次修掉的缺口——若
 /// 未来需要更精确的判据，需要让每个注册函数把自己的错误包一层可辨识
@@ -460,8 +474,8 @@ mod tests {
 
     /// 测试帮手：现造一套全新的空内容表，供 [`GameplayTables`] 借用——
     /// 各测试只关心地形（`register-terrain` 仍是既有场景里用得最多的
-    /// 一类），但 `load_all` 的签名要求九张表一起传，本结构体把「造出
-    /// 九个空表」这件事集中成一次调用，不必在每条测试里重复七行。
+    /// 一类），但 `load_all` 的签名要求十张表一起传，本结构体把「造出
+    /// 十个空表」这件事集中成一次调用，不必在每条测试里重复八行。
     #[derive(Default)]
     struct OwnedTables {
         terrain: TerrainTable,
@@ -473,6 +487,7 @@ mod tests {
         clip: ClipTable,
         xp_curve: XpCurveTable,
         xp_curve_bindings: XpCurveBindings,
+        trait_def: TraitTable,
     }
 
     impl OwnedTables {
@@ -487,6 +502,7 @@ mod tests {
                 clip: &mut self.clip,
                 xp_curve: &mut self.xp_curve,
                 xp_curve_bindings: &mut self.xp_curve_bindings,
+                trait_def: &mut self.trait_def,
             }
         }
     }

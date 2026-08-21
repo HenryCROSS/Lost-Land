@@ -1,0 +1,237 @@
+//! 把 `register-trait` 注册进脚本引擎：mod 脚本借此定义自定义天赋。
+//!
+//! 模式同 [`crate::script_skill_api`]（`granted-skills` 是
+//! `Vec<String>`，`steel-core` 的 `Vec<T>: FromSteelVal` 逐元素转换,
+//! 与该模块的 `prerequisites` 同一种手法）。
+//!
+//! # 为什么脚本签名只有三个参数，不是设计文档的六参数
+//!
+//! 见 [`crate::trait_def`] 模块文档「`register-trait` 脚本签名为什么
+//! 只暴露①，不是设计文档的完整六参数」一节——`stat_modifiers`/
+//! `rule_modifiers`/`granted_resource_pools` 三类效果在 Rust 结构体
+//! 里已经声明好形状,但脚本层尚未为"列表套元组"/"打标签的构造子"这两
+//! 种更复杂的 FFI 编码约定过怎么做,本批次不为没有 resolve 侧消费者
+//! 的字段发明新约定（YAGNI）。想给种族追加天赋引用,走
+//! `register-race-trait`（[`crate::script_race_api`]）；想给天赋追加
+//! ②③④三类效果,留给各自真正接线的批次用同一条"新增能力用新函数"的
+//! 先例补上。
+
+use std::cell::RefCell;
+
+use ll_core::ident::NamespacedId;
+use ll_script::host::ScriptEngine;
+
+use crate::active_registry::with_active_registry;
+use crate::registry::Registry;
+use crate::trait_def::{TraitAttrs, TraitError, TraitTable};
+
+thread_local! {
+    /// 当前调用窗口内，`register-trait` 应该写入的天赋表。
+    static ACTIVE_TABLE: RefCell<Option<TraitTable>> = const { RefCell::new(None) };
+}
+
+/// 把 `table` 设为当前调用窗口内 `register-trait` 可写入的目标。
+pub fn set_active_target(table: TraitTable) {
+    ACTIVE_TABLE.with(|cell| *cell.borrow_mut() = Some(table));
+}
+
+/// 取回 [`set_active_target`] 放进去的 `TraitTable`。
+pub fn take_active_target() -> TraitTable {
+    ACTIVE_TABLE.with(|cell| {
+        cell.borrow_mut()
+            .take()
+            .expect("take_active_target 必须与 set_active_target 成对调用")
+    })
+}
+
+/// 把 `register-trait` 注册进 `engine`。
+pub fn register_trait_api(engine: &mut ScriptEngine) {
+    engine.register_fn("register-trait", register_trait);
+}
+
+/// `(register-trait id display-name-key granted-skills)`。
+///
+/// - `id`：完整命名空间标识符字符串。
+/// - `display-name-key`：指向 Fluent 本地化键的完整标识符字符串。
+/// - `granted-skills`：这个天赋授予的技能标识符字符串列表，空列表
+///   表示这个天赋不授予任何技能——**不要求**每一项都已经通过
+///   `register-skill` 注册过（只 `intern`，不跨表校验存在性，理由同
+///   `crate::race::RaceTable::add_trait_grant` 文档「不校验」一节）。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+/// `stat_modifiers`/`rule_modifiers`/`granted_resource_pools` 三个
+/// 字段恒填空列表——见模块文档「为什么脚本签名只有三个参数」一节。
+fn register_trait(
+    id: String,
+    display_name_key: String,
+    granted_skills: Vec<String>,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-trait 在没有活跃天赋表的窗口内被调用".to_string());
+            };
+            do_register_trait(registry, table, &id, &display_name_key, &granted_skills)
+        })
+    })
+}
+
+/// [`register_trait`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_trait(
+    registry: &mut Registry,
+    table: &mut TraitTable,
+    id: &str,
+    display_name_key: &str,
+    granted_skills: &[String],
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let index = registry.intern(parsed_id);
+
+    let display_name_key = NamespacedId::parse(display_name_key)
+        .map_err(|err| format!("非法本地化键标识符 {display_name_key:?}：{err}"))?;
+
+    let mut granted_skill_indices = Vec::with_capacity(granted_skills.len());
+    for raw in granted_skills {
+        let parsed =
+            NamespacedId::parse(raw).map_err(|err| format!("非法技能标识符 {raw:?}：{err}"))?;
+        granted_skill_indices.push(registry.intern(parsed));
+    }
+
+    table
+        .define(
+            index,
+            TraitAttrs {
+                display_name_key,
+                granted_skills: granted_skill_indices,
+                stat_modifiers: Vec::new(),
+                rule_modifiers: Vec::new(),
+                granted_resource_pools: Vec::new(),
+            },
+        )
+        .map(|()| true)
+        .map_err(|err: TraitError| err.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 合法天赋声明注册成功并写入天赋表() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = TraitTable::new();
+
+        // Act
+        let result = do_register_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:draconic_breath",
+            "yourmod:draconic_breath_display_name",
+            &["yourmod:breath_weapon".to_string()],
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:draconic_breath").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        let skill_index = registry
+            .get(&NamespacedId::parse("yourmod:breath_weapon").unwrap())
+            .expect("register-trait 应当 intern 出技能索引");
+        assert_eq!(table.get(index).unwrap().granted_skills, &[skill_index]);
+    }
+
+    #[test]
+    fn 非法命名空间字符串返回错误而不panic() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = TraitTable::new();
+
+        // Act
+        let result = do_register_trait(
+            &mut registry,
+            &mut table,
+            "InvalidNamespace:foo",
+            "yourmod:foo_display_name",
+            &[],
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 重复定义同一个天赋索引返回错误而不panic() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = TraitTable::new();
+        do_register_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:halfling_luck",
+            "yourmod:halfling_luck_display_name",
+            &[],
+        )
+        .expect("首次注册应当成功");
+
+        // Act
+        let result = do_register_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:halfling_luck",
+            "yourmod:halfling_luck_display_name",
+            &[],
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 脚本内注册失败时load_source返回err而不panic() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(TraitTable::new());
+
+        // Act：非法命名空间字符串。
+        let result = engine.load_source(
+            r#"(register-trait "Invalid Namespace" "yourmod:foo" (list))"#.to_string(),
+        );
+
+        // Assert
+        assert!(result.is_err());
+        // 清理线程局部状态，避免污染同一进程内的其它测试。
+        let _ = crate::active_registry::take_active_registry();
+        let _ = take_active_target();
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_trait() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(TraitTable::new());
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-trait "yourmod:draconic_breath" "yourmod:draconic_breath_display_name" (list "yourmod:breath_weapon"))"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:draconic_breath").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(table.get(index).unwrap().granted_skills.len(), 1);
+    }
+}

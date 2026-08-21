@@ -46,6 +46,7 @@ use ll_mod::race::{BaseRaceIds, RaceTable};
 use ll_mod::registry::Registry;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
+use ll_mod::trait_def::TraitTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
@@ -98,6 +99,12 @@ pub struct LoadedContent {
     pub xp_curve_table: XpCurveTable,
     /// 职业/种族 → 经验曲线的绑定表。
     pub xp_curve_bindings: XpCurveBindings,
+    /// 天赋表（天赋系统落地批次新增）——`ll_mod::trait_def::TraitTable`
+    /// 实现 `ll_sim::traits::TraitCatalog`，与 `race_table`（实现
+    /// `ll_sim::traits::TraitGrantSource`）一起供
+    /// `ll_sim::resolve::resolve_with_skills_and_traits` 消费,见
+    /// `ll_mod::trait_def` 模块文档。
+    pub trait_table: TraitTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -154,6 +161,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     let mut subclass_table = SubclassTable::new();
     let mut quest_table = QuestTable::new();
     let mut xp_curve_bindings = XpCurveBindings::new();
+    let mut trait_table = TraitTable::new();
 
     let mut report = load_all(
         mods_root,
@@ -168,6 +176,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             clip: &mut clip_table,
             xp_curve: &mut xp_curve_table,
             xp_curve_bindings: &mut xp_curve_bindings,
+            trait_def: &mut trait_table,
         },
     );
 
@@ -238,6 +247,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         default_xp_curve_id,
         xp_curve_table,
         xp_curve_bindings,
+        trait_table,
         manifests,
         script_sources,
         report,
