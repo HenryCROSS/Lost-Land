@@ -23,7 +23,7 @@
 ### 1.1 现有管线阶段（核实自 `crates/ll-mod/src/pipeline.rs`）
 
 ```
-discover_mods(root)                    候选 mod.toml 路径（不解析）
+discover_mods(root)                    候选 mod.json5 路径（不解析）
   → parse_manifest(path)（逐个）       解析清单，互不影响
   → topo_sort(全部已解析清单)          一次性拿到确定性加载顺序，或在此中止整批
   → 按 topo 顺序逐个 mod：

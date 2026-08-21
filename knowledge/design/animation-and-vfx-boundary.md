@@ -221,7 +221,7 @@ pub struct EffectTable {
 }
 ```
 
-`define(index, attrs) -> Result<(), EffectError>`、`get(index) -> Option<EffectView<'_>>`、`defined_indices()` 按 `ContentIndex::get` 升序返回——三个方法签名照抄 `SkillTable` 对应方法即可。mod 若想给自己定义的技能配一套完全自定义的粒子效果，只需要在自己的 `mod.toml`/注册代码里 `define` 一条 `EffectAttrs`,再把这条 `ContentIndex` 填进自己 `SkillDef` 的可选字段——不需要碰任何引擎层代码，这正是「本体即 Mod」在特效系统上的落点：本体自带的技能与 mod 自定义的技能用同一张 `EffectTable`、同一套播放引擎，唯一的区别只是 `id` 里的命名空间字符串不同。
+`define(index, attrs) -> Result<(), EffectError>`、`get(index) -> Option<EffectView<'_>>`、`defined_indices()` 按 `ContentIndex::get` 升序返回——三个方法签名照抄 `SkillTable` 对应方法即可。mod 若想给自己定义的技能配一套完全自定义的粒子效果，只需要在自己的 `mod.json5`/注册代码里 `define` 一条 `EffectAttrs`,再把这条 `ContentIndex` 填进自己 `SkillDef` 的可选字段——不需要碰任何引擎层代码，这正是「本体即 Mod」在特效系统上的落点：本体自带的技能与 mod 自定义的技能用同一张 `EffectTable`、同一套播放引擎，唯一的区别只是 `id` 里的命名空间字符串不同。
 
 这个结论与 ADR 0018 逐项验证表里"精灵批渲染（`ll-render`）——否，纯工程正确性——引擎层"完全一致：批渲染算法本身不会因为本文档而改变归类，改变归类的只是"每个技能对应哪个 `Clip`"这一条声明式数据。
 

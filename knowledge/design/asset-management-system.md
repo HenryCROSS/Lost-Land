@@ -6,7 +6,7 @@
 
 `mod-package-structure.md`（冻结于 2026-08-20 早些时候，核对提交 `5769bae`）写作时，资产 VFS 是"规格已规划、`crates/ll-mod/src/` 无 `vfs.rs` 或等价实现"的纯设计。**这个现状已经变了，但改动还没有合入 `main`**：
 
-- 分支 `wt-walkart`（提交 `f474e5c`，1196 测试全绿；对应工作树 `.claude/worktrees/manual-walkart`）已经落地资产 VFS：`crates/ll-mod/src/asset_vfs.rs`（解析 `assets/sprites/manifest.json`，`overrides/<目标命名空间>/sprites/` 同路径覆盖，按 `topo_sort` 确定性总序生效，冲突产出 `LoadStatus::Warning`）与 `crates/ll-render/src/atlas_pack.rs`（运行期货架式装箱）。`crates/ll-game/src/content.rs::load_content` 已经把两者接进真实装载流程：先跑 `pipeline::load_all`（脚本），再跑 `asset_vfs::build`（JSON 清单），两条冲突记录追加进同一份 `LoadReport`。`main` 分支（HEAD `2d2dbcf`）尚不包含这批代码——本文档核实代码现状时读的是 `wt-walkart`，不是 `main`；本文档冻结之后，等 `wt-walkart` 合入 `main`，下面的行号/路径引用应视为对该分支内容的引用。
+- 分支 `wt-walkart`（提交 `f474e5c`，1196 测试全绿；对应工作树 `.claude/worktrees/manual-walkart`）已经落地资产 VFS：`crates/ll-mod/src/asset_vfs.rs`（解析 `assets/sprites/manifest.json5`，`overrides/<目标命名空间>/sprites/` 同路径覆盖，按 `topo_sort` 确定性总序生效，冲突产出 `LoadStatus::Warning`）与 `crates/ll-render/src/atlas_pack.rs`（运行期货架式装箱）。`crates/ll-game/src/content.rs::load_content` 已经把两者接进真实装载流程：先跑 `pipeline::load_all`（脚本），再跑 `asset_vfs::build`（JSON 清单），两条冲突记录追加进同一份 `LoadReport`。`main` 分支（HEAD `2d2dbcf`）尚不包含这批代码——本文档核实代码现状时读的是 `wt-walkart`，不是 `main`；本文档冻结之后，等 `wt-walkart` 合入 `main`，下面的行号/路径引用应视为对该分支内容的引用。
 - 已落地的形状比 `mod-package-structure.md` 四节最初设想的更简单：**没有 `.atlas.json` 图集清单**，精灵只声明 `name`/`file`/`pivot`/`footprint` 四要素，矩形怎么摆放完全交给运行期打包器决定；`tools/ll-artgen` 的主职因此从"生成图集"变成"生成松散贴图树 + 清单"。本文档尊重这个已经落地的更简单形状，不重新引入 `.atlas.json`。
 - `ModManifest`/`topo::topo_sort`/`version_constraint`（依赖声明、`"0.3"` 精确匹配、`">=0.4"` 下限约束，命名空间去重/成环/缺失依赖/版本不满足四类校验，均导致"整批中止"）已落地——本文档二节（全局资产 mod）直接复用，不重新设计。
 - `pipeline::load_all` 已核实：`entry_points` 为空是合法状态，直接判定 `LoadStatus::Loaded`（`crates/ll-mod/src/pipeline.rs:147`：「纯数据 mod（清单允许没有脚本入口，见 manifest.rs 文档），没有脚本可跑，直接算加载成功」）。
@@ -47,7 +47,7 @@ JSON 清单与脚本注册的产出，最终都要落进 `asset_vfs::build` 产�
 **基本等价**：都能表达 `name`/`file`/`pivot`/`footprint` 四要素，JSON 能声明的东西脚本一定能声明（脚本只是把四个字段换成函数参数）。但脚本能做两件 JSON 天然做不到的事：
 
 1. **条件/计算式生成**——例如按某个开关生成 N 个变体精灵（`for` 循环里调用 N 次 `register-sprite`），或者把 `footprint` 算成另一个已注册内容的函数。JSON 是纯数据文件，没有循环/条件这类表达力。
-2. **与同一个入口脚本里的其它 `register-*` 调用协同**——例如注册一种新地形的同时紧跟着注册它的贴图，两件事写在同一处、同一次审阅就能看全，不需要在 `.scm` 和 `manifest.json` 两个文件之间来回切换核对。
+2. **与同一个入口脚本里的其它 `register-*` 调用协同**——例如注册一种新地形的同时紧跟着注册它的贴图，两件事写在同一处、同一次审阅就能看全，不需要在 `.scm` 和 `manifest.json5` 两个文件之间来回切换核对。
 
 反过来，JSON 有脚本代替不了的优势：**不需要写一行 Steel 代码，`tools/ll-artgen` 能直接产出/校验它**——这不是能力问题，是门槛问题，见下「为什么保留两条」。
 
@@ -78,7 +78,7 @@ JSON 清单与脚本注册的产出，最终都要落进 `asset_vfs::build` 产�
 
 ### 核实 1：只有资产、没有脚本的 mod 现在能装载吗——能
 
-`crates/ll-mod/src/pipeline.rs:147`（`load_all`）与 `:206`（`reload_mod`）均已核实：`manifest.entry_points.is_empty()` 时直接判定 `LoadStatus::Loaded`，不报错。`manifest.rs` 测试 `assert!(manifest.dependencies.is_empty() && manifest.entry_points.is_empty())` 进一步确认清单解析层面也接受空 `entry_points`。一个只有 `mod.toml` + `assets/sprites/` 的目录，是一个完全合法、能正常装载成功的 mod。
+`crates/ll-mod/src/pipeline.rs:147`（`load_all`）与 `:206`（`reload_mod`）均已核实：`manifest.entry_points.is_empty()` 时直接判定 `LoadStatus::Loaded`，不报错。`manifest.rs` 测试 `assert!(manifest.dependencies.is_empty() && manifest.entry_points.is_empty())` 进一步确认清单解析层面也接受空 `entry_points`。一个只有 `mod.json5` + `assets/sprites/` 的目录，是一个完全合法、能正常装载成功的 mod。
 
 ### 核实 2：mod A 能不能引用 mod B 的资产——能，且这是默认行为，不是特别打通的特性
 
@@ -114,7 +114,7 @@ JSON 清单与脚本注册的产出，最终都要落进 `asset_vfs::build` 产�
 
 ### 核实：mod 是不是已经满足"玩家自己丢进去的贴图包"这个需求
 
-一个玩家想换皮，需要的东西——命名空间、覆盖目标路径、装载器怎么发现它——与"一个 mod 作者写一个 reskin mod"完全是同一件事：把资产放进 `assets/overrides/<目标命名空间>/sprites/` 下（四节已有设计），配一份最小的 `mod.toml`。**结构上没有第二种"玩家贴图包"，它就是一个 mod。**
+一个玩家想换皮，需要的东西——命名空间、覆盖目标路径、装载器怎么发现它——与"一个 mod 作者写一个 reskin mod"完全是同一件事：把资产放进 `assets/overrides/<目标命名空间>/sprites/` 下（四节已有设计），配一份最小的 `mod.json5`。**结构上没有第二种"玩家贴图包"，它就是一个 mod。**
 
 ### 核实：mod 是不是已经满足"跨存档共享"这个需求
 
@@ -122,11 +122,11 @@ mod 的装载发生在**进程层面**，不是按存档 scope 的——一份�
 
 ### 唯一真实的顾虑：门槛，不是能力——用工具解决，不是新机制
 
-期望一个普通玩家手写合法的 `mod.toml`（`namespace`/`version` 字段、TOML 语法）确实比"把图片拖进一个文件夹"门槛更高。**但这是 UX/工具问题，不是缺一层机制的证据**：`tools/ll-artgen` 已经承担"生成松散贴图树 + 清单"这个职责，顺手再生成一份最小 `mod.toml`（或者加载管理界面提供一个"导入贴图包"向导，自动填好这几行）就能把门槛压到跟"拖进一个文件夹"几乎一样低——不需要为此在 `ll-mod` 里另开一条平行的"非 mod 资产加载"代码路径。
+期望一个普通玩家手写合法的 `mod.json5`（`namespace`/`version` 字段、TOML 语法）确实比"把图片拖进一个文件夹"门槛更高。**但这是 UX/工具问题，不是缺一层机制的证据**：`tools/ll-artgen` 已经承担"生成松散贴图树 + 清单"这个职责，顺手再生成一份最小 `mod.json5`（或者加载管理界面提供一个"导入贴图包"向导，自动填好这几行）就能把门槛压到跟"拖进一个文件夹"几乎一样低——不需要为此在 `ll-mod` 里另开一条平行的"非 mod 资产加载"代码路径。
 
 ### 被否决的方案
 
-**加一个 `<游戏目录>/global_assets/` 之类的固定目录，不需要 `mod.toml`，直接扫描 `assets/` 结构。** 否决理由：这会制造出两套"资产从哪来"的解析逻辑——mod 的 `asset_vfs` 一套，这个新目录再一套。两者迟早要在覆盖规则、冲突警告、确定性总序上各自实现一遍，或者被迫共享代码却又不共享"命名空间"这个前提（这个新目录没有 namespace，"覆盖谁""被谁覆盖""拓扑序放在哪一步"都需要另外发明规则）。这完全是在重复"全局资产 mod"已经免费解决的问题，只是换了个不需要写 `mod.toml` 的说法——不值得为省几行 TOML 文本引入第二套机制。
+**加一个 `<游戏目录>/global_assets/` 之类的固定目录，不需要 `mod.json5`，直接扫描 `assets/` 结构。** 否决理由：这会制造出两套"资产从哪来"的解析逻辑——mod 的 `asset_vfs` 一套，这个新目录再一套。两者迟早要在覆盖规则、冲突警告、确定性总序上各自实现一遍，或者被迫共享代码却又不共享"命名空间"这个前提（这个新目录没有 namespace，"覆盖谁""被谁覆盖""拓扑序放在哪一步"都需要另外发明规则）。这完全是在重复"全局资产 mod"已经免费解决的问题，只是换了个不需要写 `mod.json5` 的说法——不值得为省几行 TOML 文本引入第二套机制。
 
 ---
 
@@ -136,7 +136,7 @@ mod 的装载发生在**进程层面**，不是按存档 scope 的——一份�
 
 ### 音频——零实现，谈"怎么声明"为时过早
 
-`crates/` 下没有任何 `ll-audio` 或音频相关 crate；`asset_vfs.rs` 只解析 `sprites/manifest.json` 与 `overrides/<ns>/sprites/`；`mod-package-structure.md` 一节的目录布局草图里画过 `audio/<相对路径>.ogg`，但从未落地为代码。**没有播放管线，就没有任何东西会消费"音频资产声明"这份数据**——声明了也没人读。现在设计音频资产的字段形状，是在给一个还不存在的消费方猜它需要什么，猜错的成本比现在不猜、等播放管线立项时一起设计更高。
+`crates/` 下没有任何 `ll-audio` 或音频相关 crate；`asset_vfs.rs` 只解析 `sprites/manifest.json5` 与 `overrides/<ns>/sprites/`；`mod-package-structure.md` 一节的目录布局草图里画过 `audio/<相对路径>.ogg`，但从未落地为代码。**没有播放管线，就没有任何东西会消费"音频资产声明"这份数据**——声明了也没人读。现在设计音频资产的字段形状，是在给一个还不存在的消费方猜它需要什么，猜错的成本比现在不猜、等播放管线立项时一起设计更高。
 
 ### 字体——已有独立且完整的既定方案，不属于本设计范围
 
