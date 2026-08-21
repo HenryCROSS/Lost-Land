@@ -196,21 +196,24 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         },
     );
 
-    // 值哈希升级：全部六张内容表此刻已经装载完毕（本体 + mod），在
+    // 值哈希升级：全部内容表此刻已经装载完毕（本体 + mod），在
     // 这里跑一次性收尾步骤,把字段值折进 registry 已有的 id 摘要——
     // 见 `ll_mod::content_hash` 模块文档「为什么不能在 `intern` 内部
-    // 做」一节。必须排在 `load_all` 之后（六张表还没装完就跑,会漏掉
+    // 做」一节。必须排在 `load_all` 之后（内容表还没装完就跑,会漏掉
     // 后到的内容）、排在 `manifests`/`GenerationModSet::capture`（世界
     // 创建时刻,见 `ll_mod::mod_set` 模块文档「绑定时机」一节）真正读取
     // `content_hash_of` 之前——本函数返回的 `LoadedContent::registry`
     // 因此总是已经跑完值哈希的那一份,调用方不需要、也不应该再手动
     // 调用一次。
-    // `ContentValueTables` 不含 `xp_curve`/`xp_curve_bindings`——与
-    // `clip_table` 已经确立的先例同一条理由（ADR 0020 甲区：不是每张
-    // 内容表都需要参与值哈希，见 `ll_mod::content_hash` 模块文档）：值
-    // 哈希服务的是「同一个 mod 集合，不同装载顺序，内容是否真的一致」
-    // 这个问题，本任务范围不含把经验曲线表并入这份校验，如实标注为
-    // 现状而非遗漏，需要时属于独立的后续扩展。
+    //
+    // `ContentValueTables` 现在覆盖十二张表（内容值哈希覆盖面扩展批次：
+    // 新增天赋/资源池/物品/动画剪辑/空间层属性/经验曲线六张,详见
+    // `ll_mod::content_hash` 模块文档「起因」一节）——仍不含
+    // `xp_curve_bindings`：那是一张只做 id → id 映射、自己不持有任何
+    // `ContentIndex` 条目的绑定表，`classify_index` 那套「按 id 归属
+    // 哪张表」的机制天然覆盖不到它，见 `ll_mod::content_hash` 模块
+    // 文档「哈希覆盖哪些字段」一节「例外，且是刻意的例外」一段——这是
+    // 本批次已知、显式记录的缺口，不是疏漏。
     apply_value_hashes(
         &mut registry,
         &ContentValueTables {
@@ -220,6 +223,12 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             subclass: &subclass_table,
             quest: &quest_table,
             race: &race_table,
+            space_profile: &space_table,
+            clip: &clip_table,
+            trait_def: &trait_table,
+            resource_pool: &resource_pool_table,
+            item: &item_table,
+            xp_curve: &xp_curve_table,
         },
     );
 
@@ -479,5 +488,58 @@ mod tests {
             clip.frames,
             vec!["slime_0".to_string(), "slime_1".to_string()]
         );
+    }
+
+    #[test]
+    fn 真实内容装载后仅本体占位种族被值哈希判定为无归属表() {
+        // 内容值哈希覆盖面扩展批次新增的覆盖率回归测试——
+        // `ll_mod::content_hash` 模块文档「编译期强制」一节明确点出的
+        // 局限："新增的 `*Table` 类型本身不会被编译器自动关联"到值
+        // 哈希覆盖，需要测试期兜底。本测试用仓库真实的 mods/ 目录+
+        // 本体内容跑一遍完整装载,断言"被 classify_index 判定成
+        // ContentTableKind::Opaque 的 id 集合"恰好等于已知的例外集合
+        // （当前只有本体占位种族一个,见 `ll_mod::base_placeholder`
+        // 模块文档）,不多不少——新增一张内容表却忘记让 classify_index
+        // 认领它,那张表全部条目会被判定成 Opaque,从而让下面的
+        // assert_eq! 断言变红,而不是像升级前那样只能靠代码评审肉眼
+        // 发现（ADR 0027「后果（技术债与后续）」一节记录的正是这条
+        // 局限）。
+        // Arrange
+        let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
+        let loaded = load_content(&mods_root, &repo_assets_dir());
+        let tables = ContentValueTables {
+            terrain: &loaded.terrain_table,
+            class: &loaded.class_table,
+            skill: &loaded.skill_table,
+            subclass: &loaded.subclass_table,
+            quest: &loaded.quest_table,
+            race: &loaded.race_table,
+            space_profile: &loaded.space_table,
+            clip: &loaded.clip_table,
+            trait_def: &loaded.trait_table,
+            resource_pool: &loaded.resource_pool_table,
+            item: &loaded.item_table,
+            xp_curve: &loaded.xp_curve_table,
+        };
+
+        // Act
+        let mut opaque_ids: Vec<String> = loaded
+            .registry
+            .snapshot()
+            .iter()
+            .filter(|entry_id| {
+                let index = loaded
+                    .registry
+                    .get(entry_id)
+                    .expect("snapshot 里的 id 恒能在同一个 registry 查回索引");
+                ll_mod::content_hash::classify_index(index, &tables)
+                    == ll_mod::content_hash::ContentTableKind::Opaque
+            })
+            .map(ToString::to_string)
+            .collect();
+        opaque_ids.sort();
+
+        // Assert
+        assert_eq!(opaque_ids, vec!["lostland:placeholder_race".to_string()]);
     }
 }
