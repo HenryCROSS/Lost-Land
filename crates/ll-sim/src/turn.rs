@@ -99,7 +99,29 @@ impl TurnEngine {
         intent: Intent,
         on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) {
+        // 世界时钟可观测性（调试期临时手段，见下方日志调用的文档）：
+        // 只在时钟真的变化时打一行，不是每次 `perform` 都打——同一
+        // 时刻可能有多个实体先后行动（`entry.at` 与当前 `world.clock`
+        // 相等），这种情况下不构成「时钟前进」，不该重复刷屏。
+        let previous_clock = world.clock;
         world.clock = entry.at;
+        if world.clock != previous_clock {
+            // 项目所有者此前无法确认「世界时钟到底走没走」（ADR 0025
+            // 禁止合成按键，测试证明过时钟推进但玩家本人无法实机
+            // 验证），这行日志就是让所有者跑起来按几下 WASD 就能在
+            // 终端里看见 `clock` 数值变化的最小手段。`info` 级别，默认
+            // `RUST_LOG=info`（`ll_platform::logging::init_logging` 的
+            // 既有默认值）下即可见，不需要额外设置环境变量。
+            //
+            // **临时手段，P7 落地世界时钟的 UI 显示后应当摘掉**：届时
+            // 时间对所有者可见靠界面，不再需要靠日志刷屏确认时钟活着。
+            tracing::info!(
+                previous = previous_clock.0,
+                current = world.clock.0,
+                actor = ?entry.actor,
+                "世界时钟推进（调试期临时日志，P7 时间 UI 落地后应摘除）"
+            );
+        }
         let effects = resolve(world, &intent);
         for effect in &effects {
             on_effect(world, effect);

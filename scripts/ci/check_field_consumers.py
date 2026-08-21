@@ -133,8 +133,12 @@ DECISION_LAYER_FILES: list[str] = [
 #       不会被这份门禁要求接线"。
 #   (b) 真正的死字段——数值/规则声明了,但没有任何决策层逻辑读它,已在
 #       模块文档里承认（例如 RuleModifier 变体文档"当前无消费者"）或者
-#       是本次核实新发现（例如 RaceDef.stat_modifiers 从未在生成角色时
-#       套用到 Agent.stats，见 ll-game/src/world.rs::spawn_player）。
+#       是当时核实新发现的死字段（例如 RaceDef.stat_modifiers——种族
+#       属性修正接线批次已经补上真实决策层消费者
+#       ll_sim::character::bake_race_stat_modifiers，见
+#       crates/ll-sim/src/character.rs，但因与 TraitDef.stat_modifiers
+#       同名字段撞车会污染本脚本的正则判定，本条豁免特意保留，理由见
+#       下方该条目自己的文字）。
 EXEMPTIONS: dict[str, str] = {
     # ---- (a) 结构性字段：id/本地化键/尚未有寻路消费者的体型 ----
     "RaceDef.id": "命名空间标识符，通过 ContentIndex 间接寻址，不是决策层直接按字段名读取的数值。",
@@ -163,7 +167,7 @@ EXEMPTIONS: dict[str, str] = {
     "RuleModifier::Advantage": "trait_def.rs 变体文档原文「占位变体，当前无消费者（本项目没有判定/检定系统）」。",
     "RuleModifier::Disadvantage": "语义同 RuleModifier::Advantage，方向相反，同样没有判定系统可挂载。",
     # ---- (b) 本次核实新发现：文档看似"已接线"，实测决策层无读取 ----
-    "RaceDef.stat_modifiers": "六项主属性固定增减量——存取完整、内容值哈希覆盖，但 ll-game/src/world.rs::spawn_player 生成角色时 stats 硬编码为 BaseStats::BASELINE，从未套用种族修正；ll-sim 决策层同样没有任何 .stat_modifiers 读取。这是本次门禁核实过程中发现的第四处死字段，不在任务书点名的三处之内，一并收录并如实标注。预期随角色创建流程真正消费种族属性修正一并接线。",
+    "RaceDef.stat_modifiers": "第二十处「声明了但没接线」修复批次已真正接上：ll_game::world::build_player_agent 生成角色时改为调用 ll_sim::character::bake_race_stat_modifiers，内部经 ll_sim::character::RaceStatModifierSource（真实实现 ll_mod::race::RaceTable）查到六项修正并叠加进 BaseStats——crates/ll-sim/src/character.rs、crates/ll-mod/src/race.rs 的对应测试均已覆盖端到端与真实 mod 种族两条路径。留在本清单是本脚本正则匹配的已知局限（见头注释「已知局限」第 2 条同一类问题）：该 trait 方法故意没有叫 stat_modifiers，而是叫 race_stat_modifiers——因为 ll_mod::trait_def::TraitDef 恰好也有一个同名字段 stat_modifiers（下面 TraitDef.stat_modifiers 一条，至今仍是真正的死字段），若这里用回同名方法，本脚本的全文正则会把两个不同结构体的同名字段一并误判成「已接线」。为了不把一个字段的真实接线连带污染另一个字段的状态判定，这里选择保留本条豁免（并把理由写清楚），而不是删除后制造一次假阳性。",
     "RaceDef.xp_reward": "杀死该种族/生物应授予的经验值——归并键设计已经在文档里论证清楚（与 Effect::IncrementKillCount 共享），但决策层目前没有 .xp_reward 读取点，经验授予的具体触发点尚未接上这张表。预期随击杀经验结算读取本字段一并接线。",
     "RaceDef.traits": "该种族授予的天赋引用列表——需要额外调用 RaceTable::add_trait_grant 才会真正生效，读取路径是通过 grant 表而非 .traits 字段本身，决策层没有直接 .traits 读取。",
     "RaceDef.starting_items": "出生携带物品列表——同 traits，声明与消费路径分离（starting_inventory 消费的是查表结果，不是对 RaceDef 实例做 .starting_items 点号访问），本脚本的字段名正则抓不到这条间接路径，见脚本头注释「已知局限」第 2 条。",

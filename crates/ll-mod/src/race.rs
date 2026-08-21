@@ -81,6 +81,7 @@
 //! 存在命名冲突（不同的命名空间路径，`Registry::intern` 天然隔离）。
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_sim::character::RaceStatModifierSource;
 use ll_sim::traits::{TraitGrant, TraitGrantSource};
 use ll_world::entity::BaseStats;
 use ll_world::item::ItemStack;
@@ -445,6 +446,20 @@ impl TraitGrantSource for RaceTable {
         self.get(owner)
             .map(|view| view.traits.to_vec())
             .unwrap_or_default()
+    }
+}
+
+/// `ll_sim::character::RaceStatModifierSource` 的真实实现——
+/// `ll_sim::character::bake_race_stat_modifiers` 通过这个 impl 真正查到
+/// 种族声明的六项固定增减量,见 `ll_sim::character` 模块文档「为什么放在
+/// `ll-sim`」一节同一套依赖倒置手法。未注册的种族索引返回全零修正——与
+/// [`TraitGrantSource::granted_traits`] 文档「查不到就是查不到」的既有
+/// 纪律一致,不是 panic 或特殊分支。
+impl RaceStatModifierSource for RaceTable {
+    fn race_stat_modifiers(&self, race: ContentIndex) -> BaseStats {
+        self.get(race)
+            .map(|view| view.stat_modifiers)
+            .unwrap_or(ZERO_STAT_MODIFIERS)
     }
 }
 
@@ -840,6 +855,38 @@ mod tests {
         assert_eq!(mod_index.get(), race_ids.elf.get() + 1);
         let view = table.get(mod_index).expect("mod 种族已通过 define 登记");
         assert_eq!(view.lifespan_years, 150);
+    }
+
+    #[test]
+    fn racestatmodifiersource查询矮人返回其体质力量修正() {
+        // 直接验收 impl RaceStatModifierSource for RaceTable：真实实现
+        // 确实把 stat_modifiers 字段透传给了 ll_sim::character 的依赖
+        // 倒置接口，不是一个只挂名字、内部恒返回零的空壳。
+        // Arrange
+        let (ids, table) = base_race_fixture();
+
+        // Act
+        let modifiers = RaceStatModifierSource::race_stat_modifiers(&table, ids.dwarf);
+
+        // Assert
+        assert_eq!(modifiers.constitution, 2);
+        assert_eq!(modifiers.strength, 1);
+    }
+
+    #[test]
+    fn racestatmodifiersource查询未注册索引返回全零修正() {
+        // 反例：未注册的索引不能返回任何非零的伪造数据。
+        // Arrange
+        let mut interner = Interner::new();
+        let never_defined =
+            interner.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
+        let table = RaceTable::new();
+
+        // Act
+        let modifiers = RaceStatModifierSource::race_stat_modifiers(&table, never_defined);
+
+        // Assert
+        assert_eq!(modifiers, ZERO_STAT_MODIFIERS);
     }
 
     #[test]

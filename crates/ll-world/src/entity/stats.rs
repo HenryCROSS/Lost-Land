@@ -136,11 +136,77 @@ impl BaseStats {
         willpower: 10,
         charisma: 10,
     };
+
+    /// 逐项相加，把一份固定增减量叠加到当前值上——种族属性修正的烘焙
+    /// 语义在这里落地：角色/NPC 创建那一刻调用一次
+    /// （见 `knowledge/design/race-system.md`「二、属性修正」一节与
+    /// `ll_sim::character::bake_race_stat_modifiers` 文档），产出的值
+    /// 直接写死进 `Agent.stats`，此后不再持有对修正来源的引用。
+    ///
+    /// 不做上下限裁剪——同本类型既有纪律（见类型文档「基础属性硬上限
+    /// 30」一节）：范围校验属于装备结算的职责，不是字段布局本身的
+    /// 不变式。
+    pub fn add_modifiers(self, modifiers: BaseStats) -> BaseStats {
+        BaseStats {
+            strength: self.strength + modifiers.strength,
+            dexterity: self.dexterity + modifiers.dexterity,
+            constitution: self.constitution + modifiers.constitution,
+            intelligence: self.intelligence + modifiers.intelligence,
+            willpower: self.willpower + modifiers.willpower,
+            charisma: self.charisma + modifiers.charisma,
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn add_modifiers叠加非零增减量后各项分别加上对应修正() {
+        // Arrange：矮人式修正——体质与力量各有增减，其余项恒零。
+        let modifiers = BaseStats {
+            strength: 1,
+            dexterity: 0,
+            constitution: 2,
+            intelligence: 0,
+            willpower: 0,
+            charisma: 0,
+        };
+
+        // Act
+        let baked = BaseStats::BASELINE.add_modifiers(modifiers);
+
+        // Assert
+        assert_eq!(
+            baked,
+            BaseStats {
+                strength: 11,
+                dexterity: 10,
+                constitution: 12,
+                intelligence: 10,
+                willpower: 10,
+                charisma: 10,
+            }
+        );
+    }
+
+    #[test]
+    fn add_modifiers叠加全零增减量后结果与基线相等() {
+        // Arrange & Act
+        let baked = BaseStats::BASELINE.add_modifiers(BaseStats {
+            strength: 0,
+            dexterity: 0,
+            constitution: 0,
+            intelligence: 0,
+            willpower: 0,
+            charisma: 0,
+        });
+
+        // Assert：反例——零修正必须原样等于基线，不是「无论如何都加点
+        // 什么」。
+        assert_eq!(baked, BaseStats::BASELINE);
+    }
 
     #[test]
     fn 基准属性的六项均为十() {

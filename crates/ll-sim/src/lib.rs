@@ -79,9 +79,19 @@
 //! `ll-game` 现在共用同一份实现，各自只保留自己独有的策略。
 //!
 //! [`apply`]：`Effect` 的唯一写入口。
+//!
+//! [`character`]（种族属性修正接线批次）：角色/NPC 创建那一刻把种族
+//! 声明的六项固定增减量烘焙进 `BaseStats` 的入口
+//! （[`character::bake_race_stat_modifiers`]）与依赖倒置接口
+//! （[`character::RaceStatModifierSource`]）——与 `traits`/`quest`/
+//! `xp_curve` 同一套手法：完整的 `RaceDef` 定义在下游的
+//! `ll_mod::race`，本 crate 只声明「给我一个种族索引，还我它的六项
+//! 修正」这个最小接口，真实实现（`ll_mod::race::RaceTable`）在下游
+//! 补齐。见该模块文档「为什么放在 `ll-sim`，不是 `ll-game`」一节。
 
 pub mod apply;
 pub mod behavior;
+pub mod character;
 pub mod combat;
 pub mod effect;
 pub mod experience;

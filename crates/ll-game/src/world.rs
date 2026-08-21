@@ -502,20 +502,6 @@ fn spawn_player(
     zone: ll_world::space::ZoneCoord,
     content: &LoadedContent,
 ) -> EntityId {
-    // 出生携带物品（NPC 生命周期批次：NPC 带物品 → 死亡掉落 → 尸体 →
-    // 老化回收，本行是「带物品」这一半在真实生产路径上唯一的接线点
-    // ——见 `ll_mod::race::starting_inventory` 文档）：玩家角色的种族
-    // 固定是 `content.race_ids.human`（见下方 `race` 字段），本体三种
-    // 基础种族当前都不声明出生物品（`ll_mod::race::materialize_base_races`
-    // 恒传 `starting_items: Vec::new()`），因此这里对本体内容是零成本
-    // 的空 `Vec`；一旦某个 mod 通过 `register-race-starting-item` 给
-    // 人类种族追加声明,新玩家出生时会真实带着这些物品——不需要再改
-    // 这一行代码。
-    let starting_items = content
-        .race_table
-        .get(content.race_ids.human)
-        .map(|view| ll_mod::race::starting_inventory(&view))
-        .unwrap_or_default();
     // 玩家的初次可行动时刻取当前世界时钟，不是字面量 `Tick(0)`——
     // `build_new_world` 在调用本函数之前已经把 `world.clock` 设成
     // `NEW_GAME_START_TICK`（早八点，见其赋值处注释）。若这里仍写
@@ -523,9 +509,57 @@ fn spawn_player(
     // 第一次行动时 `TurnEngine::perform` 把 `world.clock` 倒拨回午夜
     // ——时钟不但没有前进，反而先开局倒退了 8 小时。
     let next_action_at = world.clock;
-    world.actors.spawn(Agent {
+    // 玩家种族固定是 `content.race_ids.human`——选种族是 UI（P7）的
+    // 工作，不在本批次范围。但 `build_player_agent` 本身按任意
+    // `race: ContentIndex` 工作，不假设调用方只会传人类：见该函数文档。
+    world.actors.spawn(build_player_agent(
         pos,
-        stats: BaseStats::BASELINE,
+        zone,
+        content,
+        content.race_ids.human,
+        next_action_at,
+    ))
+}
+
+/// 按给定种族构造一份厚层玩家快照——`spawn_player` 实际的生成逻辑
+/// 参数化在这里，而不是把 `content.race_ids.human` 焊死进字段字面量：
+/// 换一个 `race` 就能生成一个属性/出生物品都不同的角色，测试直接用
+/// 这一点验证「种族修正真的接线了」，不需要等待选种族 UI 落地才能
+/// 验收这条链路。
+///
+/// # 属性修正：一次性烘焙，见 `ll_sim::character` 模块文档
+///
+/// `stats` 字段不再写死 `BaseStats::BASELINE`——`race` 声明的六项固定
+/// 增减量经 [`ll_sim::character::bake_race_stat_modifiers`] 一次性叠加
+/// 到基线上，产出的值直接写进 `Agent.stats`，此后不再与 `race_table`
+/// 挂钩（烘焙语义，见 `knowledge/design/race-system.md`「二、属性修正」
+/// 一节）。未注册的种族索引（正常运行不该发生）退化成裸基线，不是
+/// panic——见该函数文档「查不到就是查不到」纪律。
+fn build_player_agent(
+    pos: TorusPos,
+    zone: ll_world::space::ZoneCoord,
+    content: &LoadedContent,
+    race: ll_core::ident::ContentIndex,
+    next_action_at: Tick,
+) -> Agent {
+    // 出生携带物品（NPC 生命周期批次：NPC 带物品 → 死亡掉落 → 尸体 →
+    // 老化回收，本行是「带物品」这一半在真实生产路径上唯一的接线点
+    // ——见 `ll_mod::race::starting_inventory` 文档）：本体三种基础种族
+    // 当前都不声明出生物品（`ll_mod::race::materialize_base_races`
+    // 恒传 `starting_items: Vec::new()`），因此这里对本体内容是零成本
+    // 的空 `Vec`；一旦某个 mod 通过 `register-race-starting-item` 给
+    // 某个种族追加声明,用该种族生成的角色出生时会真实带着这些物品——
+    // 不需要再改这一行代码。
+    let starting_items = content
+        .race_table
+        .get(race)
+        .map(|view| ll_mod::race::starting_inventory(&view))
+        .unwrap_or_default();
+    let stats =
+        ll_sim::character::bake_race_stat_modifiers(BaseStats::BASELINE, race, &content.race_table);
+    Agent {
+        pos,
+        stats,
         next_action_at,
         health: Agent::STARTING_HEALTH,
         affiliations: Vec::new(),
@@ -535,7 +569,7 @@ fn spawn_player(
         // 是诚实的「尚无职业」表达，不是缺陷。
         profession: ll_core::ident::ContentIndex::default(),
         goals: Vec::new(),
-        race: content.race_ids.human,
+        race,
         luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
@@ -556,7 +590,7 @@ fn spawn_player(
         level: ll_world::entity::Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
-    })
+    }
 }
 
 /// 供渲染/存档使用的一张干净地形表克隆——存档读入（`load_full`）需要
@@ -879,5 +913,106 @@ mod tests {
         }
 
         visited.len()
+    }
+
+    /// 测试帮手：借 `build_new_world` 建一局真实世界（内部会用
+    /// `content.race_ids.human` 走一遍 `spawn_player`），只取它已经验证
+    /// 过「可站立」的出生 `pos`/`zone`——本批次新增的测试要验证的是
+    /// `build_player_agent` 换一个种族后属性是否正确，不是出生点选址
+    /// 算法本身，复用已验证过的坐标而不是手搭一对可能非法的坐标。
+    fn spawn_pos_and_zone(content: &LoadedContent) -> (TorusPos, ll_world::space::ZoneCoord) {
+        let game_world = build_new_world(content, 1).expect("测试用布局满足全部前置条件");
+        let agent = game_world
+            .world
+            .actors
+            .get(game_world.player)
+            .expect("玩家刚生成，必然存在");
+        let zone = match agent.current_space {
+            Space::Surface { zone, .. } => zone,
+            _ => panic!("build_new_world 生成的玩家 current_space 恒为地表"),
+        };
+        (agent.pos, zone)
+    }
+
+    #[test]
+    fn 用带非零属性修正的种族生成的角色属性真的包含了修正() {
+        // 端到端验收本批次的核心接线：build_player_agent（spawn_player
+        // 实际的生成逻辑）用一个声明了「+2 体质 +1 力量」修正的种族
+        // （本体自带的矮人，见 ll_mod::race::BaseRaceIds 文档）生成角色
+        // 后，角色的 stats 字段必须真的包含这份修正，不能仍是裸基线。
+        // Arrange
+        let content = test_content();
+        let (pos, zone) = spawn_pos_and_zone(&content);
+
+        // Act
+        let dwarf_agent = build_player_agent(pos, zone, &content, content.race_ids.dwarf, Tick(0));
+
+        // Assert
+        assert_eq!(
+            dwarf_agent.stats.constitution,
+            BaseStats::BASELINE.constitution + 2
+        );
+        assert_eq!(dwarf_agent.stats.strength, BaseStats::BASELINE.strength + 1);
+    }
+
+    #[test]
+    fn 修正为零的人类种族生成的角色属性等于基线() {
+        // 反例：证明上一条测试不是「无论如何都加点什么」——零修正的
+        // 人类种族，生成结果的 stats 必须原样等于基线。
+        // Arrange
+        let content = test_content();
+        let (pos, zone) = spawn_pos_and_zone(&content);
+
+        // Act
+        let human_agent = build_player_agent(pos, zone, &content, content.race_ids.human, Tick(0));
+
+        // Assert
+        assert_eq!(human_agent.stats, BaseStats::BASELINE);
+    }
+
+    #[test]
+    fn 真实mod种族half_elf生成的角色属性包含敏捷与魅力修正() {
+        // ADR 0018「API 完备性判据要求有真实 mod 脚本为证」——本测试
+        // 装载仓库真实的 mods/example_mod/gameplay.scm
+        // （`register-race "examplemod:half_elf" ... 0 1 0 0 0 1 0 1 1 150`，
+        // 第 3~8 个参数是六项属性修正：力量0/敏捷1/体质0/智力0/意志0/
+        // 魅力1），断言用这个真实 mod 种族生成的角色属性确实带上了
+        // 敏捷 +1、魅力 +1，其余四项不变——不是靠临时构造的测试脚本
+        // 文本自证。
+        // Arrange
+        let mods_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
+        let assets_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
+        let content = crate::content::load_content(&mods_root, &assets_root);
+        let half_elf = content
+            .registry
+            .get(&ll_core::ident::NamespacedId::parse("examplemod:half_elf").expect("合法标识符"))
+            .expect("example_mod 应已注册 half_elf 种族");
+        let (pos, zone) = spawn_pos_and_zone(&content);
+
+        // Act
+        let half_elf_agent = build_player_agent(pos, zone, &content, half_elf, Tick(0));
+
+        // Assert
+        assert_eq!(
+            half_elf_agent.stats.dexterity,
+            BaseStats::BASELINE.dexterity + 1
+        );
+        assert_eq!(
+            half_elf_agent.stats.charisma,
+            BaseStats::BASELINE.charisma + 1
+        );
+        assert_eq!(half_elf_agent.stats.strength, BaseStats::BASELINE.strength);
+        assert_eq!(
+            half_elf_agent.stats.constitution,
+            BaseStats::BASELINE.constitution
+        );
+        assert_eq!(
+            half_elf_agent.stats.intelligence,
+            BaseStats::BASELINE.intelligence
+        );
+        assert_eq!(
+            half_elf_agent.stats.willpower,
+            BaseStats::BASELINE.willpower
+        );
     }
 }
