@@ -22,6 +22,7 @@
 use ll_core::ident::ContentIndex;
 use ll_platform::input::InputState;
 use ll_world::entity::EntityId;
+use ll_world::item::EquipSlot;
 use ll_world::space::SpaceId;
 use serde::{Deserialize, Serialize};
 
@@ -193,6 +194,41 @@ pub enum Intent {
         /// 指定。
         def: ContentIndex,
     },
+    /// 把背包里的某种物品装备起来（装备栏位批次，P6 第三批）——落地
+    /// `knowledge/design/equipment-slots.md`「装备流程」一节。
+    ///
+    /// # 为什么携带 `def`，不携带目标槽位
+    ///
+    /// 与 [`Intent::Drop`] 同一条纪律：玩家从自己背包的已知列表里选
+    /// 「装备哪一种物品」，不需要（也不应该）自己算出这件物品该落在
+    /// 哪个槽位——槽位由物品自身的 `equip_mask` 决定
+    /// （[`crate::item::SlotMask::anchor_slot`]），这是内容数据决定的
+    /// 事实，不是玩家的选择，因此不做成 `Intent` 的字段，交给
+    /// `resolve_equip`（`crate::resolve`）结合物品目录现算。
+    Equip {
+        /// 发起者。
+        actor: EntityId,
+        /// 要装备的物品定义——玩家从自己背包的已知列表里选,与
+        /// `Intent::Drop` 的 `def` 同一条理由。
+        def: ContentIndex,
+    },
+    /// 卸下某个槽位当前装备的物品（装备栏位批次，P6 第三批）。
+    ///
+    /// # 为什么携带槽位而不是物品定义
+    ///
+    /// 与 `Intent::Equip` 反过来：玩家看到的是"装备栏里某个槽位现在
+    /// 穿着什么"，不一定记得住那件物品的确切内容 ID——从槽位出发更
+    /// 符合装备栏 UI 的自然交互（点开一个槽位、选择卸下）。`slot` 不
+    /// 要求精确落在物品的锚点槽位上——横跨多槽的物品（双手武器）任选
+    /// 其占用的一个槽位都能成功卸下,`resolve_unequip`
+    /// （`crate::resolve`）会把请求槽位翻译成真实的存储键（锚点槽位），
+    /// 见其文档。
+    Unequip {
+        /// 发起者。
+        actor: EntityId,
+        /// 玩家请求卸下的槽位。
+        slot: EquipSlot,
+    },
 }
 
 impl Intent {
@@ -213,7 +249,9 @@ impl Intent {
             | Intent::UseSkill { actor, .. }
             | Intent::Rest { actor, .. }
             | Intent::PickUp { actor }
-            | Intent::Drop { actor, .. } => actor,
+            | Intent::Drop { actor, .. }
+            | Intent::Equip { actor, .. }
+            | Intent::Unequip { actor, .. } => actor,
         }
     }
 }
@@ -540,6 +578,67 @@ mod tests {
         // Arrange
         let actor = entity();
         let intent = Intent::PickUp { actor };
+
+        // Act & Assert
+        assert_eq!(intent.actor(), actor);
+    }
+
+    #[test]
+    fn equip意图序列化往返后与原值相等() {
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let def = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:great_axe").expect("合法标识符"));
+        let original = Intent::Equip {
+            actor: entity(),
+            def,
+        };
+
+        // Act
+        let json = serde_json::to_string(&original).expect("Intent 全字段均可序列化");
+        let decoded: Intent = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn unequip意图序列化往返后与原值相等() {
+        // Arrange
+        let original = Intent::Unequip {
+            actor: entity(),
+            slot: EquipSlot::MAIN_HAND,
+        };
+
+        // Act
+        let json = serde_json::to_string(&original).expect("Intent 全字段均可序列化");
+        let decoded: Intent = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn actor方法对equip意图返回发起者字段() {
+        // Arrange
+        let actor = entity();
+        let mut interner = ll_core::ident::Interner::new();
+        let def = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:great_axe").expect("合法标识符"));
+        let intent = Intent::Equip { actor, def };
+
+        // Act & Assert
+        assert_eq!(intent.actor(), actor);
+    }
+
+    #[test]
+    fn actor方法对unequip意图返回发起者字段() {
+        // Arrange
+        let actor = entity();
+        let intent = Intent::Unequip {
+            actor,
+            slot: EquipSlot::HEAD,
+        };
 
         // Act & Assert
         assert_eq!(intent.actor(), actor);

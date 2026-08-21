@@ -97,6 +97,7 @@ fn spawn_agent_with_race(world: &mut WorldState, race: ContentIndex, health: i32
         resource_pools: std::collections::BTreeMap::new(),
         spent_slots: std::collections::BTreeMap::new(),
         inventory: Vec::new(),
+        equipment: std::collections::BTreeMap::new(),
         resting: None,
         unlocked_skills: Vec::new(),
         skill_cooldowns: BTreeMap::new(),

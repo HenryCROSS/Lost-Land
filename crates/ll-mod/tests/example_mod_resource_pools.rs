@@ -168,6 +168,7 @@ fn spawn_agent(
         resource_pools,
         spent_slots: BTreeMap::new(),
         inventory: Vec::new(),
+        equipment: std::collections::BTreeMap::new(),
         resting: None,
         unlocked_skills,
         skill_cooldowns: BTreeMap::new(),

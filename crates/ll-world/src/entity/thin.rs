@@ -221,6 +221,7 @@ impl ThinPopulation {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),

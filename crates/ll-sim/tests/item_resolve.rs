@@ -84,6 +84,7 @@ fn spawn_agent(world: &mut WorldState, inventory: Vec<ItemStack>) -> EntityId {
         resource_pools: BTreeMap::new(),
         spent_slots: std::collections::BTreeMap::new(),
         inventory,
+        equipment: BTreeMap::new(),
         resting: None,
         unlocked_skills: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
@@ -104,7 +105,13 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
     let mut interner = Interner::new();
     let arrow = interner.intern(NamespacedId::parse("lostland:arrow").expect("合法标识符"));
     let items = FakeItems {
-        items: BTreeMap::from([(arrow, ItemRule { stack_limit: 99 })]),
+        items: BTreeMap::from([(
+            arrow,
+            ItemRule {
+                stack_limit: 99,
+                equip_mask: ll_sim::item::SlotMask::EMPTY,
+            },
+        )]),
     };
     (arrow, items)
 }

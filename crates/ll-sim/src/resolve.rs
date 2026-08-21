@@ -61,7 +61,7 @@ use crate::combat::{Penetration, damage_after_defense};
 use crate::effect::Effect;
 use crate::experience::ExperienceCatalog;
 use crate::intent::{Direction, Intent};
-use crate::item::{ItemCatalog, NoItems, can_merge, merge_stacks};
+use crate::item::{EquipSlot, ItemCatalog, ItemStack, NoItems, SlotMask, can_merge, merge_stacks};
 use crate::quest::{NoQuests, QuestCatalog};
 use crate::resource_pool::{
     NoResourcePools, RegenRule, ResourcePoolCatalog, ResourcePoolShape, RestRecoveryAmount,
@@ -426,6 +426,8 @@ fn resolve_dispatch(
         } => resolve_rest(world, actor, target_ticks, race_traits, traits, pools),
         Intent::PickUp { actor } => resolve_pick_up(world, actor, items),
         Intent::Drop { actor, def } => resolve_drop(world, actor, def),
+        Intent::Equip { actor, def } => resolve_equip(world, actor, def, items),
+        Intent::Unequip { actor, slot } => resolve_unequip(world, actor, slot, items),
     };
     // 休息中断（`resource-pools-and-rest.md` 八节「中断怎么表达」一节）：
     // 任何非 `Wait`/`Rest` 意图,若发起者当前正在休息,追加一条不带恢复
@@ -1104,16 +1106,50 @@ fn resolve_pick_up(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog)
     };
     let picked = ground.stack;
 
+    vec![
+        Effect::RemoveGroundItem {
+            pos: ground.pos,
+            def: picked.def,
+        },
+        merge_into_inventory_effect(agent, actor, picked, items),
+    ]
+}
+
+/// 把 `incoming` 这一堆物品合并进 `agent` 背包，产出对应的
+/// [`Effect::MergeIntoInventory`]——[`resolve_pick_up`]/[`resolve_equip`]
+/// （卸下冲突槽位时）/[`resolve_unequip`] 三处共用同一段"找可合并的
+/// 旧堆→算合并结果"逻辑，理由是三者都要回答同一个问题："这一堆物品
+/// 放进背包后，背包状态该变成什么样"——`resolve_pick_up` 落地时
+/// （P6 第二批）这段逻辑还只有它一处调用，装备栏位批次（P6 第三批）
+/// 新增两处调用点后再抽取成帮手，避免三份几乎相同的代码分别漂移。
+///
+/// # 已知限制：不处理"同一批效果里两个新增堆本身能互相合并"的情形
+///
+/// 见 [`Effect::MergeIntoInventory`] 文档「为什么合并结果由 `resolve`
+/// 算好」一节：`agent` 是调用方传入的**只读快照**，若 `resolve_equip`
+/// 因双手武器占位冲突要连续卸下两件本可以互相合并的同类物品（例如
+/// 两个完全相同的戒指各自被不同规则挤占），本函数各自独立基于同一份
+/// 背包快照判断"有没有可合并的旧堆"，不会让这两个新卸下的堆彼此合并
+/// ——不产生数据错误（数量守恒，物品不会丢失或复制），只是错过一次
+/// 本可以做的合并。这是一个真实但边缘的场景（要求两件不同槽位的
+/// 装备恰好实例状态完全相同），本批次不为它引入"batch 内部先自我
+/// 合并一遍"的额外机制（YAGNI）。
+fn merge_into_inventory_effect(
+    agent: &Agent,
+    actor: EntityId,
+    incoming: ItemStack,
+    items: &dyn ItemCatalog,
+) -> Effect {
     let existing = agent
         .inventory
         .iter()
-        .find(|stack| can_merge(stack, &picked));
+        .find(|stack| can_merge(stack, &incoming));
     let (replaced, resulting) = match existing {
         Some(existing) => {
             let stack_limit = items
-                .item(picked.def)
+                .item(incoming.def)
                 .map_or(u32::MAX, |rule| rule.stack_limit);
-            match merge_stacks(*existing, picked, stack_limit) {
+            match merge_stacks(*existing, incoming, stack_limit) {
                 Ok((merged, overflow)) => {
                     let mut resulting = vec![merged];
                     resulting.extend(overflow);
@@ -1123,24 +1159,17 @@ fn resolve_pick_up(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog)
                     // can_merge 刚判定过真——merge_stacks 只会在 def/
                     // durability 不同时拒绝（见其文档），这里理论不可达，
                     // 保守回落到"不合并、直接追加"而不是 panic。
-                    (None, vec![picked])
+                    (None, vec![incoming])
                 }
             }
         }
-        None => (None, vec![picked]),
+        None => (None, vec![incoming]),
     };
-
-    vec![
-        Effect::RemoveGroundItem {
-            pos: ground.pos,
-            def: picked.def,
-        },
-        Effect::MergeIntoInventory {
-            actor,
-            replaced,
-            resulting,
-        },
-    ]
+    Effect::MergeIntoInventory {
+        actor,
+        replaced,
+        resulting,
+    }
 }
 
 /// [`Intent::Drop`] 结算（P6 第二批：背包与地面物品）：把 `actor` 背包
@@ -1170,6 +1199,142 @@ fn resolve_drop(world: &WorldState, actor: EntityId, def: ContentIndex) -> Vec<E
             stack: *stack,
             dropped_at: world.clock,
         },
+    ]
+}
+
+/// [`Intent::Equip`] 结算（装备栏位批次，P6 第三批）：把 `actor` 背包
+/// 里第一条匹配 `def` 的堆装备起来，落地
+/// `knowledge/design/equipment-slots.md`「装备流程」一节——
+/// 「一条规则覆盖所有特例」：装备时找出**全部**与新物品掩码相交的
+/// 已装备物品,逐一卸下（写回背包）,再把新物品写入它的锚点槽位。
+///
+/// # 静默无效的三种情形
+///
+/// `actor` 不存在、背包里没有匹配 `def` 的堆、`def` 不可装备
+/// （`items` 查不到这条物品的规则，或查到但 `equip_mask ==
+/// SlotMask::EMPTY`）——与 [`resolve_pick_up`]/[`resolve_drop`] 同一条
+/// 「静默无效，不是错误」纪律。**查不到物品规则时按"不可装备"处理，
+/// 不是"不限量"**——与 `resolve_pick_up` 对 `stack_limit` 查不到时的
+/// 「按不限量处理」方向相反（该函数文档已指出这条不对称本身是刻意
+/// 的）：一件连规则都查不到的物品，没有任何证据证明它能装备到任何
+/// 槽位，装备系统必须要求内容明确声明"占用哪些槽位"才能生效,这与
+/// `NoItems`/未注册物品在其它路径上的"宽容"取向不同——装备是会产生
+/// 持久世界状态变化（写入 `Agent.equipment`）的操作,`resolve_pick_up`
+/// 的"不限量"只是放宽一个数量上限,两者的保守方向本就不该一致。
+///
+/// # 占位冲突：找出全部相交的已装备物品
+///
+/// 遍历 `agent.equipment` 的每一条 `(锚点槽位, 已装备堆)`，查询该堆
+/// 自身的 `equip_mask`（依赖 `items` 目录——若查不到已装备物品自身的
+/// 规则，保守视为 `SlotMask::EMPTY`，即"当作不占用任何槽位、不冲突"，
+/// 理由是"能查到规则的物品才谈得上有冲突"，与本函数对`def`本身查不到
+/// 规则时拒绝装备是不同的方向：前者是"新物品必须证明自己能装备"，
+/// 后者是"老物品的冲突判定退化不应该无端阻塞新物品的装备"，两条保守
+/// 方向服务的是同一个目标——装备栏状态不因为目录查询残缺而卡死）,
+/// 与新物品的掩码相交即视为冲突,产出 `Effect::Unequip` +
+/// [`merge_into_inventory_effect`]（卸下的物品放回背包）。
+fn resolve_equip(
+    world: &WorldState,
+    actor: EntityId,
+    def: ContentIndex,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let Some(stack) = agent.inventory.iter().find(|s| s.def == def).copied() else {
+        return Vec::new();
+    };
+    let Some(rule) = items.item(def) else {
+        return Vec::new();
+    };
+    let new_mask = rule.equip_mask;
+    if new_mask == SlotMask::EMPTY {
+        return Vec::new();
+    }
+    let Some(anchor) = new_mask.anchor_slot() else {
+        return Vec::new();
+    };
+
+    let mut effects = Vec::new();
+    for (&existing_anchor, &existing_stack) in &agent.equipment {
+        let existing_mask = items
+            .item(existing_stack.def)
+            .map_or(SlotMask::EMPTY, |rule| rule.equip_mask);
+        if existing_mask.intersects(new_mask) {
+            effects.push(Effect::Unequip {
+                actor,
+                slot: existing_anchor,
+            });
+            effects.push(merge_into_inventory_effect(
+                agent,
+                actor,
+                existing_stack,
+                items,
+            ));
+        }
+    }
+
+    effects.push(Effect::RemoveFromInventory {
+        actor,
+        def,
+        durability: stack.durability,
+    });
+    effects.push(Effect::Equip {
+        actor,
+        slot: anchor,
+        stack,
+    });
+    effects
+}
+
+/// [`Intent::Unequip`] 结算（装备栏位批次，P6 第三批）：卸下玩家请求
+/// 槽位对应的已装备物品，写回背包。
+///
+/// # 为什么要把请求槽位翻译成锚点槽位
+///
+/// `Agent.equipment` 只以**锚点槽位**为键（见其文档「为什么以锚点
+/// 槽位为键」一节）——玩家请求的 `slot` 若恰好是某个横跨多槽物品
+/// （双手武器）的**非锚点**槽位（例如请求卸下 `OFF_HAND`，但双手武器
+/// 实际存储键是 `MAIN_HAND`），直接拿 `slot` 去查
+/// `agent.equipment.get(slot)` 会查不到——从玩家视角这是一个可见的
+/// bug（"我副手明明有东西，为什么卸不下来"）。本函数因此不做直接查表，
+/// 而是遍历全部已装备条目，用 `items` 目录现算每一条的完整 `equip_mask`，
+/// 找到"掩码覆盖了请求槽位"的那一条，用它的**真实存储键**产出
+/// `Effect::Unequip`。
+///
+/// # 静默无效的两种情形
+///
+/// `actor` 不存在，或没有任何已装备条目覆盖 `slot`——与
+/// [`resolve_drop`] 同一条纪律。查不到某条已装备物品自身规则时按
+/// `SlotMask::EMPTY` 处理（视为不覆盖任何槽位），理由同 [`resolve_equip`]
+/// 「占位冲突」一节同一段说明。
+fn resolve_unequip(
+    world: &WorldState,
+    actor: EntityId,
+    slot: EquipSlot,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+
+    let found = agent.equipment.iter().find(|(_, stack)| {
+        items
+            .item(stack.def)
+            .map_or(SlotMask::EMPTY, |rule| rule.equip_mask)
+            .contains_slot(slot)
+    });
+    let Some((&anchor, &stack)) = found else {
+        return Vec::new();
+    };
+
+    vec![
+        Effect::Unequip {
+            actor,
+            slot: anchor,
+        },
+        merge_into_inventory_effect(agent, actor, stack, items),
     ]
 }
 
@@ -1802,6 +1967,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1860,6 +2026,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2396,6 +2563,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2747,6 +2915,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2809,6 +2978,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),

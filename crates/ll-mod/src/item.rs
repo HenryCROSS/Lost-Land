@@ -18,18 +18,21 @@
 //! `item-system.md` 一节给出的完整 `ItemDef` 左列还有三类本批次故意
 //! 不声明的字段：
 //!
-//! - `equip_mask: SlotMask`——`SlotMask` 类型本身尚未落地（见
-//!   `knowledge/design/equipment-slots.md`「落地状态：纯设计」），且
-//!   该文档连 `EquipSlot`（单槽位类型，与 `SlotMask` 多槽位集合是两个
-//!   不同类型）都还没有正式定义（见其「左右分离的设计价值」一节前的
-//!   冲突记录）——本批次若为了" `ItemDef` 形状定形"而抢先造一个
-//!   `SlotMask`，等于在装备批次（第三批）真正设计 `EquipSlot`/22 槽位
-//!   表之前就把类型定死，一旦两者对不上就是本批次亲手挖的返工坑，
-//!   与项目任务书「一次只打通一条完整链路」的裁定直接冲突。
-//! - `stat_bonuses: Vec<StatBonus>`——`StatBonus` 类型同样尚未落地
+//! - ~~`equip_mask: SlotMask`~~——**P6 第三批（装备栏位）已补上**，见
+//!   [`ItemDef::equip_mask`] 文档。原排除理由：`SlotMask`/`EquipSlot`
+//!   当时都还没有正式定义，抢先造型会在装备批次真正设计出这两个类型
+//!   之前把形状定死——批次到了，这条排除的前提本身已经不成立。
+//! - `stat_bonuses: Vec<StatBonus>`——`StatBonus` 类型仍未落地
 //!   （`attribute-system.md`「衍生属性绝不进存档」一节只给出了
-//!   `derive_stats` 的函数签名，没有定义 `StatBonus` 具体长什么样），
-//!   同一条理由排除。
+//!   `derive_stats` 的函数签名，没有定义 `StatBonus` 具体长什么样）。
+//!   P6 第三批复核过这条排除是否也该跟着解除：`SlotMask` 当时被排除
+//!   是因为它自己的类型没定形，而装备批次的核心工作正是定形
+//!   `SlotMask`——两者互为因果，批次到了就该做。`StatBonus` 不是同一
+//!   种情况：它依赖的是**另一个系统**（属性系统的 `derive_stats`）尚未
+//!   落地的设计，装备批次的范围（`equip_mask`/占位掩码/装备栏容器）不
+//!   会让 `StatBonus` 的形状变得更清楚——提前造一个未来可能对不上属性
+//!   系统真正落地时定的形状，是本模块文档一贯排除的那类返工风险，继续
+//!   排除。
 //! - `use_effect: Option<ContentIndex>`——类型上不需要发明新东西
 //!   （`ContentIndex` 早已存在），但这个字段没有任何意义：它指向的
 //!   Steel 脚本要在 `Intent::Use` 结算时才会被读取
@@ -59,7 +62,7 @@ use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
-use ll_sim::item::{ItemCatalog, ItemRule};
+use ll_sim::item::{ItemCatalog, ItemRule, SlotMask};
 
 /// 单条物品声明：本体与 mod 注册物品时共用的同一个输入形状——
 /// 「本体即 Mod」在物品层面的验收标的，理由同 [`crate::race::RaceDef`]
@@ -91,6 +94,21 @@ pub struct ItemDef {
     /// 批次（第五批）的工作，见模块文档「`max_durability` 保留」
     /// 一节。
     pub max_durability: Option<i32>,
+    /// 装备占位掩码（装备栏位批次，P6 第三批）——`SlotMask::EMPTY`
+    /// （默认值）表示这件物品不可装备，落地
+    /// `knowledge/design/equipment-slots.md`。
+    ///
+    /// # 为什么不是 `register-item` 的参数，走 `set_equip_mask` 追加
+    ///
+    /// `register-item` 的脚本签名不能改参数个数（会破坏仓库里已有的
+    /// 真实 mod 脚本，见 `crate::script_item_api` 模块文档），与
+    /// `ItemDef.max_durability` 当初落地时定下的纪律不同：`max_durability`
+    /// 恰好是 `register-item` 原有六个参数之一，本字段是全新追加的，
+    /// 只能走 `register-race-xp-reward`/`register-trait-resource-pool`
+    /// 那条「新增能力用新函数」的既有先例——脚本层对应函数是
+    /// `register-item-equip-mask`（`crate::script_item_api`），Rust 层
+    /// 对应方法是 [`ItemTable::set_equip_mask`]。
+    pub equip_mask: SlotMask,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -107,6 +125,11 @@ pub struct ItemAttrs {
     pub base_price: Milli,
     /// 耐久上限。
     pub max_durability: Option<i32>,
+    /// 装备占位掩码——`register-item` 注册时恒填 `SlotMask::EMPTY`
+    /// （`do_register_item` 不接受这个参数），真正的取值由后续
+    /// `register-item-equip-mask` 调用 [`ItemTable::set_equip_mask`]
+    /// 写入，理由同 [`ItemDef::equip_mask`] 文档。
+    pub equip_mask: SlotMask,
 }
 
 /// 物品注册期可能出现的错误。
@@ -115,6 +138,10 @@ pub enum ItemError {
     /// 同一个内容索引被定义了两次，理由同
     /// [`crate::race::RaceError::DuplicateDefinition`]。
     DuplicateDefinition(ContentIndex),
+    /// [`ItemTable::set_equip_mask`] 的目标索引尚未通过 `register-item`
+    /// 注册，理由同 [`crate::race::RaceError::NotDefined`]（ADR 0017
+    /// 「注册期完整校验」）。
+    NotDefined(ContentIndex),
 }
 
 impl fmt::Display for ItemError {
@@ -122,6 +149,9 @@ impl fmt::Display for ItemError {
         match self {
             ItemError::DuplicateDefinition(index) => {
                 write!(f, "物品索引 {} 被重复定义", index.get())
+            }
+            ItemError::NotDefined(index) => {
+                write!(f, "物品索引 {} 尚未定义，无法追加装备占位掩码", index.get())
             }
         }
     }
@@ -142,6 +172,8 @@ pub struct ItemView<'a> {
     pub base_price: Milli,
     /// 耐久上限。
     pub max_durability: Option<i32>,
+    /// 装备占位掩码。
+    pub equip_mask: SlotMask,
 }
 
 /// 物品属性的列式存储：按 [`ContentIndex`] 下标索引，与
@@ -155,6 +187,7 @@ pub struct ItemTable {
     base_weight: Vec<Milli>,
     base_price: Vec<Milli>,
     max_durability: Vec<Option<i32>>,
+    equip_mask: Vec<SlotMask>,
     defined: Vec<bool>,
 }
 
@@ -175,6 +208,7 @@ impl ItemTable {
             self.base_weight.resize(new_len, Milli::ZERO);
             self.base_price.resize(new_len, Milli::ZERO);
             self.max_durability.resize(new_len, None);
+            self.equip_mask.resize(new_len, SlotMask::EMPTY);
         }
 
         if self.defined[idx] {
@@ -187,6 +221,7 @@ impl ItemTable {
         self.base_weight[idx] = attrs.base_weight;
         self.base_price[idx] = attrs.base_price;
         self.max_durability[idx] = attrs.max_durability;
+        self.equip_mask[idx] = attrs.equip_mask;
         Ok(())
     }
 
@@ -212,21 +247,45 @@ impl ItemTable {
             base_weight: self.base_weight[idx],
             base_price: self.base_price[idx],
             max_durability: self.max_durability[idx],
+            equip_mask: self.equip_mask[idx],
         })
+    }
+
+    /// 追加声明「这件物品占用哪些装备槽位」——`register-item` 的既有
+    /// 脚本签名不能改参数个数，因此装备占位掩码走这条独立的、注册后
+    /// 追加的路径，与 [`crate::race::RaceTable::set_xp_reward`] 同一个
+    /// 模式（见 [`ItemDef::equip_mask`] 文档）。目标索引必须已经
+    /// `define` 过，否则返回 [`ItemError`]（ADR 0017「注册期完整
+    /// 校验」）——本类型目前只有一种错误变体
+    /// （[`ItemError::DuplicateDefinition`]），"未定义" 复用同一个
+    /// 变体表达不准确，因此这里改为返回专门的
+    /// [`ItemError::NotDefined`]。
+    ///
+    /// **覆盖，不是追加**——与 `set_xp_reward`「单值覆盖」同理：一件
+    /// 物品的占位掩码是单个值，多次调用以最后一次为准，不像
+    /// `RaceTable::add_trait_grant` 那样天然是一个需要累积的集合。
+    pub fn set_equip_mask(&mut self, item: ContentIndex, mask: SlotMask) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        self.equip_mask[item.get() as usize] = mask;
+        Ok(())
     }
 }
 
-/// `resolve` 侧的堆叠上限查询——`ll_sim::resolve::resolve_pick_up` 判断
-/// 「拾取时能否与背包已有堆合并」需要它，见
-/// `ll_sim::item::ItemCatalog` 文档「本模块新增」一节。与
-/// `impl ResourcePoolCatalog for ResourcePoolTable`
+/// `resolve` 侧的堆叠上限/装备占位查询——`ll_sim::resolve::resolve_pick_up`
+/// 判断「拾取时能否与背包已有堆合并」需要 `stack_limit`，
+/// `resolve_equip`/`resolve_unequip` 判断占位冲突需要 `equip_mask`
+/// （装备栏位批次，P6 第三批），见 `ll_sim::item::ItemCatalog` 文档
+/// 「本模块新增」一节。与 `impl ResourcePoolCatalog for ResourcePoolTable`
 /// （`crate::resource_pool` 模块）同一条既有先例：只把 `ItemView` 里
-/// `resolve` 真正要读的那一个字段（`stack_limit`）搬进
-/// [`ItemRule`]，不是把整条 `ItemView` 转发出去。
+/// `resolve` 真正要读的字段搬进 [`ItemRule`]，不是把整条 `ItemView`
+/// 转发出去。
 impl ItemCatalog for ItemTable {
     fn item(&self, item: ContentIndex) -> Option<ItemRule> {
         self.get(item).map(|view| ItemRule {
             stack_limit: view.stack_limit,
+            equip_mask: view.equip_mask,
         })
     }
 }
@@ -262,6 +321,7 @@ mod tests {
                     base_weight: Milli::from_whole(0),
                     base_price: Milli::from_whole(2),
                     max_durability: None,
+                    equip_mask: SlotMask::EMPTY,
                 },
             )
             .expect("首次定义应当成功");
@@ -284,6 +344,7 @@ mod tests {
             base_weight: Milli::from_whole(3),
             base_price: Milli::from_whole(50),
             max_durability: Some(100),
+            equip_mask: SlotMask::EMPTY,
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -325,6 +386,7 @@ mod tests {
                     base_weight: Milli::from_whole(3),
                     base_price: Milli::from_whole(50),
                     max_durability: Some(100),
+                    equip_mask: SlotMask::EMPTY,
                 },
             )
             .expect("首次定义应当成功");
@@ -349,6 +411,7 @@ mod tests {
                     base_weight: Milli::from_whole(0),
                     base_price: Milli::from_whole(2),
                     max_durability: None,
+                    equip_mask: SlotMask::EMPTY,
                 },
             )
             .expect("首次定义应当成功");
@@ -357,7 +420,13 @@ mod tests {
         let rule = ItemCatalog::item(&table, index);
 
         // Assert
-        assert_eq!(rule, Some(ItemRule { stack_limit: 99 }));
+        assert_eq!(
+            rule,
+            Some(ItemRule {
+                stack_limit: 99,
+                equip_mask: SlotMask::EMPTY,
+            })
+        );
     }
 
     #[test]
@@ -372,5 +441,51 @@ mod tests {
 
         // Assert
         assert_eq!(rule, None);
+    }
+
+    use ll_sim::item::EquipSlot;
+
+    fn item_attrs() -> ItemAttrs {
+        ItemAttrs {
+            display_name_key: NamespacedId::parse("lostland:item.great_axe").unwrap(),
+            stack_limit: 1,
+            base_weight: Milli::from_whole(5),
+            base_price: Milli::from_whole(80),
+            max_durability: Some(120),
+            equip_mask: SlotMask::EMPTY,
+        }
+    }
+
+    #[test]
+    fn 注册后追加的装备掩码能被真正查到() {
+        // Arrange
+        let mut registry = Registry::new();
+        let index = registry.intern(NamespacedId::parse("lostland:great_axe").unwrap());
+        let mut table = ItemTable::new();
+        table.define(index, item_attrs()).expect("首次定义应当成功");
+        let two_handed = EquipSlot::MAIN_HAND
+            .mask()
+            .union(EquipSlot::OFF_HAND.mask());
+
+        // Act
+        let result = table.set_equip_mask(index, two_handed);
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        assert_eq!(table.get(index).unwrap().equip_mask, two_handed);
+    }
+
+    #[test]
+    fn 未注册的物品追加装备掩码返回未定义错误() {
+        // Arrange
+        let mut registry = Registry::new();
+        let never_defined = registry.intern(NamespacedId::parse("yourmod:never_defined").unwrap());
+        let mut table = ItemTable::new();
+
+        // Act
+        let result = table.set_equip_mask(never_defined, EquipSlot::HEAD.mask());
+
+        // Assert
+        assert_eq!(result, Err(ItemError::NotDefined(never_defined)));
     }
 }

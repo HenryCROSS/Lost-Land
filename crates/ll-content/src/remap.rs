@@ -51,7 +51,7 @@ use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::time::Tick;
 use ll_mod::registry::Registry;
 use ll_world::entity::{ActiveStatModifier, Affiliation, Agent, AttributeKind, Goal, OrgRef};
-use ll_world::item::{GroundItemStack, ItemStack};
+use ll_world::item::{EquipSlot, GroundItemStack, ItemStack};
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::terrain::TerrainKind;
@@ -362,6 +362,11 @@ fn remap_agent(
         // ItemDef，依赖 mod 加载顺序，必须显式重映射——见下方
         // remap_inventory。
         ref mut inventory,
+        // 装备栏（P6 第三批：装备槽位）：每一堆的 def 同样指向
+        // ItemDef，依赖 mod 加载顺序，必须显式重映射——键（EquipSlot）
+        // 是引擎内置的位下标常量，不依赖 mod 加载顺序，原样保留，见下方
+        // remap_equipment。
+        ref mut equipment,
     } = *agent;
 
     *profession = remapper.remap_character_attribute(*profession, owner)?;
@@ -377,6 +382,7 @@ fn remap_agent(
     remap_resource_pools(remapper, resource_pools)?;
     remap_spent_slots(remapper, spent_slots)?;
     remap_inventory(remapper, inventory)?;
+    remap_equipment(remapper, equipment)?;
     Ok(())
 }
 
@@ -440,6 +446,38 @@ fn remap_inventory(
         }
     }
     *inventory = kept;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的装备栏（装备栏位批次，P6 第三批）：与
+/// [`remap_inventory`] 同一条判据——每一堆 `ItemStack.def` 找不到当前
+/// 会话内容时整槽丢弃（[`ContentKind::Item`]，与背包共用同一个变体，
+/// 理由是两者引用的都是"背包/地面堆叠里引用的 `ItemDef`"这同一类
+/// 内容,装备栏没有理由用不同的降级语义）——这是「身上穿戴哪些装备」
+/// 的一条记录,不是实体本体的核心身份,缺一件装备不等于「失去自己」
+/// （角色仍然存在,只是变成裸装）。
+///
+/// 键（[`EquipSlot`]）是引擎内置的位下标常量，不依赖 mod 加载顺序，
+/// 原样保留，不需要重映射——与 `remap_active_stat_modifiers` 外层键
+/// （[`AttributeKind`]）「引擎内置的封闭枚举，不携带 `ContentIndex`」
+/// 同一条既有判断。
+fn remap_equipment(
+    remapper: &mut Remapper<'_>,
+    equipment: &mut BTreeMap<EquipSlot, ItemStack>,
+) -> Result<(), LoadError> {
+    let mut kept = BTreeMap::new();
+    for (slot, stack) in std::mem::take(equipment) {
+        if let Some(new_def) = remapper.remap_droppable(stack.def, ContentKind::Item)? {
+            kept.insert(
+                slot,
+                ItemStack {
+                    def: new_def,
+                    ..stack
+                },
+            );
+        }
+    }
+    *equipment = kept;
     Ok(())
 }
 
@@ -719,6 +757,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1344,6 +1383,78 @@ mod tests {
                 .get(entity)
                 .expect("实体应当仍存在")
                 .inventory
+                .is_empty()
+        );
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
+    }
+
+    #[test]
+    fn 装备物品按字符串对号重映射到新索引() {
+        // Arrange：与背包物品同一条判据——见「背包物品按字符串对号
+        // 重映射到新索引」（装备栏位批次，P6 第三批）。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let sword_old = save_registry.intern(id("lostland:iron_sword"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记,打乱顺序
+        let sword_new = current.intern(id("lostland:iron_sword"));
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.equipment.insert(
+            ll_world::item::EquipSlot::MAIN_HAND,
+            ItemStack::with_durability(sword_old, 1, 90),
+        );
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert：def 换成了新索引,槽位键与耐久原样保留。
+        assert!(actions.is_empty());
+        assert_eq!(
+            world.actors.get(entity).expect("实体应当仍存在").equipment,
+            BTreeMap::from([(
+                ll_world::item::EquipSlot::MAIN_HAND,
+                ItemStack::with_durability(sword_new, 1, 90)
+            )])
+        );
+    }
+
+    #[test]
+    fn 装备物品对应的内容在当前会话找不到时整槽丢弃并记录droppwithwarning() {
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished = save_registry.intern(id("lostland:vanished"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent
+            .equipment
+            .insert(ll_world::item::EquipSlot::HEAD, ItemStack::new(vanished, 1));
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .equipment
                 .is_empty()
         );
         assert_eq!(actions, vec![DegradeAction::DropWithWarning]);

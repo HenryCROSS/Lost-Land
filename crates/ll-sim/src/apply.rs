@@ -359,6 +359,19 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.inventory.remove(index);
             }
         }
+        Effect::Equip { actor, slot, stack } => {
+            // 无条件覆盖写入——resolve_equip 已经保证同一批效果里冲突
+            // 槽位的 Effect::Unequip 排在本效果之前,见 Effect::Equip
+            // 文档「为什么 apply 不检查槽位是否已被占用」一节。
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.equipment.insert(*slot, *stack);
+            }
+        }
+        Effect::Unequip { actor, slot } => {
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.equipment.remove(slot);
+            }
+        }
     }
 }
 
@@ -475,6 +488,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),

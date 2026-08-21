@@ -7,7 +7,7 @@ use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use serde::{Deserialize, Serialize};
 
-use crate::item::ItemStack;
+use crate::item::{EquipSlot, ItemStack};
 use crate::script_state::ScriptValue;
 use crate::space::Space;
 
@@ -392,6 +392,38 @@ pub struct Agent {
     /// 种类数，量级不超过几十），与 [`Self::unlocked_skills`] 同样用
     /// `Vec` 而非有序容器的理由一致。
     pub inventory: Vec<ItemStack>,
+    /// 装备栏（P6 第三批：装备槽位）——落地
+    /// `knowledge/design/equipment-slots.md`，`item-system.md` 四节
+    /// `ItemLocation::Equipped { holder, slot }` 在本批次的落地：`holder`
+    /// 就是这个 `Agent` 自身（与 [`Self::inventory`] 「`holder` 不需要
+    /// 在 `ItemStack` 上重复记一份」同一条理由）。
+    ///
+    /// # 为什么以锚点槽位为键，不是逐槽复制存一份
+    ///
+    /// 一件横跨多槽的物品（双手武器占 `MAIN_HAND`+`OFF_HAND`）**只存
+    /// 一份**，键取它自身 `equip_mask` 的最低位（[`crate::item::SlotMask::anchor_slot`]，
+    /// 例如双手武器的锚点是 `MAIN_HAND`）——被否决的替代方案是在
+    /// `MAIN_HAND`/`OFF_HAND` 两个键下各存一份指向同一堆物品的副本：
+    /// 那会制造一个必须手动维持一致的不变式（卸下时若只删掉其中一个
+    /// 键，就会残留一把"半卸下"的幽灵武器,悬空指向一件已经不完整的
+    /// 装备状态)。锚点键方案physical上排除了这类不一致——不存在"部分
+    /// 卸下"的中间状态,一次移除操作对应整件物品的完整卸下。代价是
+    /// "查询某个具体槽位当前是否被占用"不能只做一次哈希表查找,需要
+    /// 遍历全部已装备条目、结合各自的 `equip_mask` 判断是否覆盖目标
+    /// 槽位（`ll_sim::resolve::resolve_equip`/`resolve_unequip` 的查找
+    /// 逻辑），但装备栏条目数量的量级（≤22）让这次遍历的成本可以忽略。
+    ///
+    /// # 为什么是 `BTreeMap`，不是 `Vec`（与 `Self::inventory` 不同）
+    ///
+    /// 背包用 `Vec` 是因为查询模式是"有没有这个 `def`"（无序,`O(n)`
+    /// 足够）；装备栏的查询模式是"这个槽位现在是谁"（键是
+    /// [`crate::item::EquipSlot`]，与 `Self::skill_cooldowns`/
+    /// `Self::resource_pools` 同一类"按键查值"场景），且写入
+    /// `WorldState::hash()`（ADR 0022）时需要确定性的迭代顺序——
+    /// `BTreeMap` 按键的自然顺序遍历,不涉及 `HashMap`/`HashSet` 的
+    /// 迭代顺序不确定性（约束 C5），与 `Self::skill_cooldowns` 同一条
+    /// 既有纪律。
+    pub equipment: BTreeMap<EquipSlot, ItemStack>,
 }
 
 /// [`Agent::spent_slots`] 的自定义 serde 编码：把 `(ContentIndex, u8)`
@@ -559,6 +591,13 @@ mod tests {
             // 空 Vec 序列化恒等于自身,不足以验证真正的编解码,必须让
             // 往返测试真的经过至少一条 ItemStack。
             inventory: vec![ItemStack::with_durability(strike, 3, 80)],
+            // 非空装备栏——同一条理由（P6 第三批），且键用的是
+            // EquipSlot（新类型）而非 ContentIndex，往返测试必须真的
+            // 覆盖它的编解码,不能只靠空 BTreeMap 混过去。
+            equipment: BTreeMap::from([(
+                EquipSlot::MAIN_HAND,
+                ItemStack::with_durability(strike, 1, 100),
+            )]),
         }
     }
 

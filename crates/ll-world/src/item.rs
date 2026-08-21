@@ -142,6 +142,243 @@ pub struct GroundItemStack {
     pub dropped_at: Tick,
 }
 
+/// 单个装备槽位——[`SlotMask`] 的一个具体位，也是
+/// [`crate::entity::Agent::equipment`] 的键类型（装备栏位批次，P6 第
+/// 三批，落地 `knowledge/design/equipment-slots.md`）。
+///
+/// 与 `SlotMask`（多槽位集合）是两个不同类型——该设计文档「一条规则
+/// 覆盖所有特例」一节原文点名了这条区分但未给出 `EquipSlot` 的正式
+/// 形状（「本文档尚未给出 `EquipSlot` 的正式定义，只给出了槽位表」），
+/// 本类型是这条区分在代码里的落地。
+///
+/// # 为什么是「位下标的新类型」，不是一个 22 变体的 `enum`
+///
+/// 一个 `enum EquipSlot { MainHand, OffHand, .. }` 只能穷尽引擎已知的
+/// 22 个变体——`SlotMask` 给 mod 预留的 10 个高位（见 [`SlotMask`] 模块
+/// 文档「mod 扩展位」一节）就无法用同一个类型表示：mod 想引用自己的
+/// 保留位时，Rust 的 `enum` 不支持运行期新增变体。`EquipSlot(u8)` 把
+/// 「一个槽位」表示成「位下标」本身，22 个引擎槽位只是 22 个具名关联
+/// 常量（`u8` 取值 0..=21），mod 保留位（22..=31）用同一个类型、只是
+/// 没有具名常量——两者在类型层面完全统一，不需要为"引擎槽位"和"mod
+/// 槽位"分裂成两个类型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct EquipSlot(u8);
+
+impl EquipSlot {
+    /// 主手——武器、法杖。
+    pub const MAIN_HAND: EquipSlot = EquipSlot(0);
+    /// 副手——盾、副武器、法器。
+    pub const OFF_HAND: EquipSlot = EquipSlot(1);
+    /// 头顶——头盔、帽。
+    pub const HEAD: EquipSlot = EquipSlot(2);
+    /// 脸部——面具、口罩。
+    pub const FACE: EquipSlot = EquipSlot(3);
+    /// 眼——眼罩、护目镜。
+    pub const EYES: EquipSlot = EquipSlot(4);
+    /// 颈——项链、护符。
+    pub const NECK: EquipSlot = EquipSlot(5);
+    /// 上身——衬衣、内甲。
+    pub const BODY: EquipSlot = EquipSlot(6);
+    /// 外套——大衣、罩袍。
+    pub const OUTER: EquipSlot = EquipSlot(7);
+    /// 背部——披风、背包、翅膀。
+    pub const BACK: EquipSlot = EquipSlot(8);
+    /// 左肩甲。
+    pub const SHOULDER_L: EquipSlot = EquipSlot(9);
+    /// 右肩甲。
+    pub const SHOULDER_R: EquipSlot = EquipSlot(10);
+    /// 左臂——护腕、臂甲。
+    pub const ARM_L: EquipSlot = EquipSlot(11);
+    /// 右臂。
+    pub const ARM_R: EquipSlot = EquipSlot(12);
+    /// 左手甲——手套。
+    pub const HAND_L: EquipSlot = EquipSlot(13);
+    /// 右手甲。
+    pub const HAND_R: EquipSlot = EquipSlot(14);
+    /// 腰带。
+    pub const BELT: EquipSlot = EquipSlot(15);
+    /// 裙甲。
+    pub const TASSET: EquipSlot = EquipSlot(16);
+    /// 裤子。
+    pub const LEGS: EquipSlot = EquipSlot(17);
+    /// 左靴。
+    pub const BOOT_L: EquipSlot = EquipSlot(18);
+    /// 右靴。
+    pub const BOOT_R: EquipSlot = EquipSlot(19);
+    /// 左戒。
+    pub const RING_L: EquipSlot = EquipSlot(20);
+    /// 右戒。
+    pub const RING_R: EquipSlot = EquipSlot(21);
+
+    /// 引擎具名槽位的数量——`0..ENGINE_SLOT_COUNT` 是本体分配的位，
+    /// `ENGINE_SLOT_COUNT..32` 是 mod 保留位，见 [`SlotMask`] 模块文档
+    /// 「mod 扩展位」一节。
+    pub const ENGINE_SLOT_COUNT: u8 = 22;
+
+    /// 全部 22 个引擎具名槽位，按位下标升序——供脚本层名称解析
+    /// （[`Self::from_name`]）与测试穷尽遍历使用。
+    const ENGINE_SLOTS: [(EquipSlot, &'static str); 22] = [
+        (EquipSlot::MAIN_HAND, "main-hand"),
+        (EquipSlot::OFF_HAND, "off-hand"),
+        (EquipSlot::HEAD, "head"),
+        (EquipSlot::FACE, "face"),
+        (EquipSlot::EYES, "eyes"),
+        (EquipSlot::NECK, "neck"),
+        (EquipSlot::BODY, "body"),
+        (EquipSlot::OUTER, "outer"),
+        (EquipSlot::BACK, "back"),
+        (EquipSlot::SHOULDER_L, "shoulder-l"),
+        (EquipSlot::SHOULDER_R, "shoulder-r"),
+        (EquipSlot::ARM_L, "arm-l"),
+        (EquipSlot::ARM_R, "arm-r"),
+        (EquipSlot::HAND_L, "hand-l"),
+        (EquipSlot::HAND_R, "hand-r"),
+        (EquipSlot::BELT, "belt"),
+        (EquipSlot::TASSET, "tasset"),
+        (EquipSlot::LEGS, "legs"),
+        (EquipSlot::BOOT_L, "boot-l"),
+        (EquipSlot::BOOT_R, "boot-r"),
+        (EquipSlot::RING_L, "ring-l"),
+        (EquipSlot::RING_R, "ring-r"),
+    ];
+
+    /// 按 `knowledge/design/equipment-slots.md` 槽位表的 kebab-case 名称
+    /// 解析出一个引擎槽位——`register-item-equip-mask`
+    /// （`ll_mod::script_item_api`）用它把 mod 脚本传入的字符串列表
+    /// 转成 [`SlotMask`]。只认识 22 个引擎具名槽位,未知名称返回
+    /// `None`——mod 保留位（22..=31）目前没有名称可供脚本引用,见
+    /// [`SlotMask`] 模块文档「mod 扩展位」一节「本批次不做」小节。
+    pub fn from_name(name: &str) -> Option<EquipSlot> {
+        Self::ENGINE_SLOTS
+            .iter()
+            .find(|(_, slot_name)| *slot_name == name)
+            .map(|(slot, _)| *slot)
+    }
+
+    /// 取出底层位下标（0..=31）。
+    pub const fn get(self) -> u8 {
+        self.0
+    }
+
+    /// 这个槽位对应的单一位掩码——`1 << 位下标`。
+    pub const fn mask(self) -> SlotMask {
+        SlotMask(1 << self.0)
+    }
+}
+
+/// 装备占用的槽位集合，按位表示（装备栏位批次，P6 第三批）——落地
+/// `knowledge/design/equipment-slots.md`「一条规则覆盖所有特例」一节：
+/// 双手剑、全身板甲、连体服、独眼罩看起来是四种特殊情况，实际是同一个
+/// 机制——每件装备声明自己占用哪些槽位，装备时凡与之相交的已装备物品
+/// 全部自动卸下（[`crate::entity::Agent::equipment`] 文档「占位冲突」
+/// 一节是这条规则在 `resolve` 侧的落地）。
+///
+/// # 为什么是定宽位标志（`u32`），不是像 `SurfaceKind` 那样的稠密位集
+///
+/// 项目里对"要不要用定宽位标志"已经有过一次正面的判断分歧，值得在此
+/// 复核而不是想当然地照抄设计文档的既有选择：
+///
+/// `knowledge/design/vehicle-and-mounting.md` 三节讨论地表分类
+/// （`SurfaceKind`）时，明确**否决**了定宽位标志方案，改用「内容索引 +
+/// 装载期定长位集」（`Vec<u64>`，无上限）。该文档给出的判据是**「可
+/// 扩展项数量有没有自然上限」**：地表分类是开放集合（熔岩、云层、
+/// 流沙、酸液、蛛网、沼泽……一个整合包里五个 mod 各加三种就能把预留位
+/// 吃光，且位号依赖装载顺序，参与哈希时装载顺序一变就产生不必要的
+/// 失效）。同一份文档同时明确保留 `SlotMask`/`ActionCapability` 在**
+/// 各自领域**继续使用定宽位标志——原文：「这两者的可扩展项确实天然
+/// 有限」，并把「装备槽位统共 22 个」作为具体理由点出。
+///
+/// 本类型独立复核这条判据，不是因为文档这么说就照抄：装备槽位由**人形
+/// 解剖结构**天然约束——躯干、四肢、头部各只有固定的几个部位可以穿戴
+/// 东西，这是生物学事实，不是内容作者可以无限细分的开放集合。即使
+/// mod 想加"尾巴槽""第三只手"这类奇幻扩展，量级也是个位数（不会有
+/// 五个 mod 各自发明三种新装备部位——装备槽位不像地表分类那样是纯粹
+/// 描述性的环境标签，每加一个新槽位都要求配套的美术资产/UI 布局/护甲
+/// 计算全部跟进，这个制作成本本身就是一道天然的数量闸门，地表分类没有
+/// 同等的闸门）。22 个引擎槽位 + 10 个 mod 保留位（本类型选择的具体
+/// 数字，见下方「mod 扩展位」一节）稳稳落在 `u32` 内，不需要
+/// `SurfaceKind` 那种无上限的动态位集。
+///
+/// 换言之：两个场景用的是**同一条判据**（可扩展项数量有没有自然
+/// 上限），只是代入的答案不同——这与 `vehicle-and-mounting.md` 八节
+/// 「更正」一节的结论完全一致，本文档的独立复核只是把同一条判据在
+/// 装备槽位这个具体场景里重新论证了一遍，不是简单地援引"文档说过"。
+///
+/// # mod 扩展位
+///
+/// 低 22 位（`EquipSlot::ENGINE_SLOT_COUNT`）是引擎具名槽位（见
+/// [`EquipSlot`] 关联常量），高 10 位（22..=31）保留给 mod：
+/// [`Self::mod_bit`] 是**唯一**合法的构造方式——直接拿数字位移
+/// （例如 `SlotMask(1 << 25)`）绕过它，即使凑巧落在保留区间内也不算
+/// 「按规矩申请」，因为它跳过了`offset < 10` 的范围校验,一次笔误就可能
+/// 悄悄踩进引擎的 22 个位或另一个 mod 已经占用的位。
+///
+/// **本批次不做**：mod 保留位目前没有命名空间隔离的动态分配表（对比
+/// `SurfaceKindTable::define` 那样的"字符串 ID → 位下标"注册期分配）——
+/// 10 个位由多个 mod 各自协调认领哪个偏移量，运行期不做冲突检测。这不
+/// 是偷懒：本批次没有任何真实消费者需要"两个 mod 同时声明自定义槽位"
+/// 这个场景（`mods/example_mod` 的两个装备示例只用引擎槽位，见
+/// `crates/ll-mod/tests/example_mod_equipment.rs`），在没有真实场景
+/// 验证需求形状之前建一张`SurfaceKindTable` 式的分配表是投机性设计
+/// （YAGNI，同一条纪律见 `ll_mod::item` 模块文档「本批次范围」一节对
+/// `equip_mask`/`stat_bonuses` 的处理）。`Self::mod_bit` 只是把"如何
+/// 安全地构造一个落在保留区间内的位"这个最小职责先做对，真正的多 mod
+/// 协调分配表留给出现真实冲突场景的那个批次。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct SlotMask(u32);
+
+impl SlotMask {
+    /// 不占用任何槽位——不可装备的物品（材料、消耗品……）的默认值。
+    pub const EMPTY: SlotMask = SlotMask(0);
+
+    /// mod 保留位的数量——`EquipSlot::ENGINE_SLOT_COUNT` 之后还剩
+    /// `32 - 22 = 10` 位，见类型文档「mod 扩展位」一节。
+    pub const MOD_RESERVED_BITS: u8 = 32 - EquipSlot::ENGINE_SLOT_COUNT;
+
+    /// 按 mod 保留区间内的偏移量（`0..MOD_RESERVED_BITS`）构造一个单
+    /// 槽位掩码——`offset` 越界（`>= 10`）返回 `None`，不静默钳位或
+    /// 环绕，理由同 `register-item` 拒绝 `stack_limit == 0` 而不是静默
+    /// 钳位成 1（同一条"非法输入即拒绝,不猜测意图"纪律）。
+    pub const fn mod_bit(offset: u8) -> Option<SlotMask> {
+        if offset >= Self::MOD_RESERVED_BITS {
+            None
+        } else {
+            Some(SlotMask(1 << (EquipSlot::ENGINE_SLOT_COUNT + offset)))
+        }
+    }
+
+    /// 两个掩码的并集——`register-item-equip-mask` 把多个槽位名称各自
+    /// 解析成单槽位掩码后,用它们逐个并起来。
+    pub const fn union(self, other: SlotMask) -> SlotMask {
+        SlotMask(self.0 | other.0)
+    }
+
+    /// 两个掩码是否有交集——装备时用它找出需要卸下的物品
+    /// （`knowledge/design/equipment-slots.md`「一条规则覆盖所有特例」
+    /// 一节：双手武器/全身甲/连体装的占位冲突判定全部走这一个方法）。
+    pub const fn intersects(self, other: SlotMask) -> bool {
+        self.0 & other.0 != 0
+    }
+
+    /// 这个掩码是否包含某个具体槽位——`resolve_unequip`
+    /// （`ll_sim::resolve`）用它判断"玩家请求卸下的槽位，是否恰好落在
+    /// 某件已装备物品（可能是横跨多槽的双手武器）的占位范围内"。
+    pub const fn contains_slot(self, slot: EquipSlot) -> bool {
+        self.intersects(slot.mask())
+    }
+
+    /// 这个掩码里最低位对应的槽位——多槽物品在
+    /// [`crate::entity::Agent::equipment`] 里的存储键（"锚点槽位"），
+    /// 见该字段文档「为什么以锚点槽位为键」一节。空掩码返回 `None`。
+    pub const fn anchor_slot(self) -> Option<EquipSlot> {
+        if self.0 == 0 {
+            None
+        } else {
+            Some(EquipSlot(self.0.trailing_zeros() as u8))
+        }
+    }
+}
+
 /// 物品堆操作可能出现的错误。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ItemStackError {
@@ -472,6 +709,175 @@ mod tests {
         let encoded = serde_json::to_string(&original).expect("全部字段均已可派生序列化");
         let decoded: GroundItemStack =
             serde_json::from_str(&encoded).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn 双手武器占用的主手与副手掩码互相相交() {
+        // 双手武器占位规则的最小单元验证:MAIN_HAND | OFF_HAND 与单独
+        // 一个 MAIN_HAND 掩码相交——这是"装备双手武器要卸下主手已有
+        // 物品"这条规则成立的前提。
+        // Arrange
+        let two_handed = EquipSlot::MAIN_HAND
+            .mask()
+            .union(EquipSlot::OFF_HAND.mask());
+        let existing_main_hand_only = EquipSlot::MAIN_HAND.mask();
+
+        // Act & Assert
+        assert!(two_handed.intersects(existing_main_hand_only));
+    }
+
+    #[test]
+    fn 不相交的两个槽位掩码没有交集() {
+        // Arrange
+        let head = EquipSlot::HEAD.mask();
+        let legs = EquipSlot::LEGS.mask();
+
+        // Act & Assert
+        assert!(!head.intersects(legs));
+    }
+
+    #[test]
+    fn 空掩码不与任何掩码相交() {
+        // Arrange
+        let empty = SlotMask::EMPTY;
+        let head = EquipSlot::HEAD.mask();
+
+        // Act & Assert
+        assert!(!empty.intersects(head));
+    }
+
+    #[test]
+    fn 双手武器掩码的锚点槽位是位下标较低的主手() {
+        // 双手武器只在背包/装备栏存一份,存储键取掩码最低位——见
+        // Agent::equipment 文档「为什么以锚点槽位为键」一节。
+        // Arrange
+        let two_handed = EquipSlot::MAIN_HAND
+            .mask()
+            .union(EquipSlot::OFF_HAND.mask());
+
+        // Act
+        let anchor = two_handed.anchor_slot();
+
+        // Assert
+        assert_eq!(anchor, Some(EquipSlot::MAIN_HAND));
+    }
+
+    #[test]
+    fn 空掩码没有锚点槽位() {
+        // Arrange
+        let empty = SlotMask::EMPTY;
+
+        // Act & Assert
+        assert_eq!(empty.anchor_slot(), None);
+    }
+
+    #[test]
+    fn 单槽位掩码包含自身对应的槽位() {
+        // Arrange
+        let mask = EquipSlot::RING_L.mask();
+
+        // Act & Assert
+        assert!(mask.contains_slot(EquipSlot::RING_L));
+    }
+
+    #[test]
+    fn 单槽位掩码不包含其它槽位() {
+        // Arrange
+        let mask = EquipSlot::RING_L.mask();
+
+        // Act & Assert
+        assert!(!mask.contains_slot(EquipSlot::RING_R));
+    }
+
+    #[test]
+    fn 双手武器掩码包含副手槽位() {
+        // 验证"玩家请求卸下副手,resolve_unequip 需要能识别出这个请求
+        // 命中的其实是横跨两槽的双手武器"这条查询的最小单元前提。
+        // Arrange
+        let two_handed = EquipSlot::MAIN_HAND
+            .mask()
+            .union(EquipSlot::OFF_HAND.mask());
+
+        // Act & Assert
+        assert!(two_handed.contains_slot(EquipSlot::OFF_HAND));
+    }
+
+    #[test]
+    fn 按引擎槽位名称解析出对应的具名常量() {
+        // Arrange & Act & Assert
+        assert_eq!(
+            EquipSlot::from_name("main-hand"),
+            Some(EquipSlot::MAIN_HAND)
+        );
+        assert_eq!(EquipSlot::from_name("off-hand"), Some(EquipSlot::OFF_HAND));
+        assert_eq!(EquipSlot::from_name("ring-r"), Some(EquipSlot::RING_R));
+    }
+
+    #[test]
+    fn 未知的槽位名称解析返回空值() {
+        // Arrange & Act & Assert
+        assert_eq!(EquipSlot::from_name("tail"), None);
+    }
+
+    #[test]
+    fn mod保留位偏移量在合法范围内时构造成功() {
+        // Arrange & Act
+        let mask = SlotMask::mod_bit(0);
+
+        // Assert：mod 第一个保留位紧邻 22 个引擎槽位之后,即位下标 22。
+        assert_eq!(mask, Some(SlotMask(1 << 22)));
+    }
+
+    #[test]
+    fn mod保留位偏移量越界时构造返回空值() {
+        // 保留区间只有 10 位（偏移量 0..=9）,10 已经越界。
+        // Arrange & Act & Assert
+        assert_eq!(SlotMask::mod_bit(10), None);
+    }
+
+    #[test]
+    fn 引擎二十二个具名槽位互不相同() {
+        // 穷尽性验证:22 个具名常量对应 22 个互不相同的位下标,不存在
+        // 两个常量意外撞到同一个位——这是整张槽位表的基础不变式。
+        // Arrange
+        let slots: Vec<u8> = EquipSlot::ENGINE_SLOTS
+            .iter()
+            .map(|(slot, _)| slot.get())
+            .collect();
+        let mut unique = slots.clone();
+        unique.sort_unstable();
+        unique.dedup();
+
+        // Act & Assert
+        assert_eq!(slots.len(), unique.len());
+    }
+
+    #[test]
+    fn 装备槽位序列化往返后与原值相等() {
+        // Arrange
+        let original = EquipSlot::BODY;
+
+        // Act
+        let encoded = serde_json::to_string(&original).expect("EquipSlot 可派生序列化");
+        let decoded: EquipSlot = serde_json::from_str(&encoded).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn 装备掩码序列化往返后与原值相等() {
+        // Arrange
+        let original = EquipSlot::MAIN_HAND
+            .mask()
+            .union(EquipSlot::OFF_HAND.mask());
+
+        // Act
+        let encoded = serde_json::to_string(&original).expect("SlotMask 可派生序列化");
+        let decoded: SlotMask = serde_json::from_str(&encoded).expect("刚序列化的数据必然合法");
 
         // Assert
         assert_eq!(decoded, original);

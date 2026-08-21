@@ -111,8 +111,9 @@
 //! - [`script_resource_pool_api`] —— 同一个模式在资源池上的脚本绑定
 //!   （资源池落地批次）：`register-resource-pool`，见 [`resource_pool`]
 //!   模块文档。
-//! - [`script_item_api`] —— 同一个模式在物品上的脚本绑定（P6 第一批）：
-//!   `register-item`，见 [`item`] 模块文档。
+//! - [`script_item_api`] —— 同一个模式在物品上的脚本绑定：
+//!   `register-item`（P6 第一批），`register-item-equip-mask`（装备占位
+//!   掩码，P6 第三批），见 [`item`] 模块文档。
 //! - [`script_clip_api`] —— 同一个模式在动画剪辑上的脚本绑定（动画
 //!   剪辑接线批次）：补上此前完全漏掉的第七类可注册玩法层内容——早先
 //!   的接口审计列出六种，「动画剪辑」当时不在其中。

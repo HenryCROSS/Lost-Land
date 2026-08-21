@@ -19,6 +19,7 @@
 ;;   register-trait-resource-pool          crates/ll-mod/src/script_trait_api.rs
 ;;   register-trait-resource-pool-by-level crates/ll-mod/src/script_trait_api.rs
 ;;   register-item                         crates/ll-mod/src/script_item_api.rs
+;;   register-item-equip-mask              crates/ll-mod/src/script_item_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -154,3 +155,16 @@
 ;; 单位）的原始整数，见 register-item 文档。
 (register-item "examplemod:arrow" "examplemod:arrow_display_name" 99 50 2000 -1)
 (register-item "examplemod:iron_sword" "examplemod:iron_sword_display_name" 1 3000 50000 100)
+
+;; P6 第三批（装备槽位）：knowledge/design/equipment-slots.md「一条
+;; 规则覆盖所有特例」一节的真实版本——一件占用两个槽位的双手武器
+;; （战锤，同时占主手与副手）与一件只占一个槽位的单手装备（木盾，
+;; 只占副手），证明 register-item-equip-mask 这个新脚本 API 真的能被
+;; mod 脚本调用，且占位冲突判定（装备战锤会连带卸下已装备的木盾，
+;; 反之亦然）在真实注册的内容上成立——ADR 0018「玩法层内容必须能从
+;; mod 脚本注册，且要有真实 mod 脚本为证」，
+;; crates/ll-mod/tests/example_mod_equipment.rs 是那份证据。
+(register-item "examplemod:war_hammer" "examplemod:war_hammer_display_name" 1 6000 90000 150)
+(register-item-equip-mask "examplemod:war_hammer" (list "main-hand" "off-hand"))
+(register-item "examplemod:wooden_shield" "examplemod:wooden_shield_display_name" 1 4000 12000 80)
+(register-item-equip-mask "examplemod:wooden_shield" (list "off-hand"))

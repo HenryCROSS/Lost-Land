@@ -34,15 +34,26 @@
 use ll_core::ident::ContentIndex;
 
 pub use ll_world::item::{
-    GroundItemStack, ItemStack, ItemStackError, can_merge, merge_stacks, split_stack,
+    EquipSlot, GroundItemStack, ItemStack, ItemStackError, SlotMask, can_merge, merge_stacks,
+    split_stack,
 };
 
-/// `resolve` 侧需要的一条物品定义的最小只读视图——目前只有堆叠上限，
-/// 见模块文档「本模块新增」一节。
+/// `resolve` 侧需要的一条物品定义的最小只读视图——堆叠上限与装备占位
+/// 掩码，见模块文档「本模块新增」一节。
+///
+/// # `equip_mask` 为什么现在也收进来了（装备栏位批次，P6 第三批）
+///
+/// `resolve_equip`/`resolve_unequip`（`crate::resolve`）需要知道一件
+/// 物品占用哪些槽位才能判断占位冲突（`knowledge/design/equipment-slots.md`
+/// 「一条规则覆盖所有特例」一节）——与 `stack_limit` 当初被收进来的
+/// 理由完全一样：真正的 `ItemDef` 在下游的 `ll-mod`，本 crate 只收敛
+/// `resolve` 真正要读的字段，不整条转发 `ItemView`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ItemRule {
     /// 堆叠上限，即 [`merge_stacks`] 的 `stack_limit` 参数。
     pub stack_limit: u32,
+    /// 装备占位掩码——`SlotMask::EMPTY` 表示这件物品不可装备。
+    pub equip_mask: SlotMask,
 }
 
 /// `resolve` 依赖的最小「物品定义来源」接口——与

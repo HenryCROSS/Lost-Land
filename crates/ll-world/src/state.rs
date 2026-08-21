@@ -1127,6 +1127,17 @@ impl WorldState {
             for stack in &agent.inventory {
                 write_item_stack(&mut hasher, stack);
             }
+            // 装备栏（P6 第三批：装备槽位）——`Intent::Equip`/
+            // `Intent::Unequip` 都会真实改写这个字段，与 `inventory`
+            // 同一条先例：不进哈希就测不出装备/卸下悄悄算错。
+            // `BTreeMap<EquipSlot, ItemStack>` 按键自然顺序遍历（键的
+            // `Ord` 就是底层 `u8` 位下标的数值序），不涉及 `HashMap`/
+            // `HashSet` 迭代顺序（约束 C5）。
+            hasher.write_u64(agent.equipment.len() as u64);
+            for (slot, stack) in &agent.equipment {
+                hasher.write_u64(u64::from(slot.get()));
+                write_item_stack(&mut hasher, stack);
+            }
         }
 
         write_optional_entity(&mut hasher, self.player_entity);
@@ -1644,6 +1655,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1702,6 +1714,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1786,6 +1799,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::from([(pool, current)]),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1854,6 +1868,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::from([((pool, tier), spent)]),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1914,6 +1929,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -1984,6 +2000,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2282,6 +2299,7 @@ mod tests {
             resource_pools: std::collections::BTreeMap::new(),
             spent_slots: std::collections::BTreeMap::new(),
             inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
@@ -2786,6 +2804,48 @@ mod tests {
     fn blank_agent_spawn(world: &mut WorldState, inventory: Vec<ItemStack>) -> EntityId {
         let mut agent = blank_agent(world);
         agent.inventory = inventory;
+        world.actors.spawn(agent)
+    }
+
+    #[test]
+    fn 装备栏不同的两个世界哈希不同() {
+        // ADR 0022 判据,覆盖 Agent::equipment 这一侧（装备栏位批次，
+        // P6 第三批）——与「背包不同的两个世界哈希不同」同一条纪律：
+        // 直接验证 equipment 真的参与了摘要计算,不是加了字段但漏了
+        // 混入。人工核验（真实执行）：把 state.rs `hash()` 里混入
+        // `agent.equipment` 的那几行（`hasher.write_u64(agent.equipment.len()...)`
+        // 起，到内层 for 循环结束）临时注释掉重新跑本测试，
+        // 断言从通过变为失败（两个世界的哈希变得相等）——证明这条
+        // 覆盖测试确实是红/绿的，不是恒真断言。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let sword = interner.intern(
+            ll_core::ident::NamespacedId::parse("lostland:iron_sword").expect("合法标识符"),
+        );
+        let mut world_a = test_world();
+        blank_agent_spawn_with_equipment(&mut world_a, BTreeMap::new());
+        let mut world_b = test_world();
+        blank_agent_spawn_with_equipment(
+            &mut world_b,
+            BTreeMap::from([(
+                crate::item::EquipSlot::MAIN_HAND,
+                ItemStack::with_durability(sword, 1, 100),
+            )]),
+        );
+
+        // Act & Assert
+        assert_ne!(world_a.hash(), world_b.hash());
+    }
+
+    /// [`装备栏不同的两个世界哈希不同`] 专用的最小实体生成帮手——同一个
+    /// 「不改既有 `blank_agent` 签名」理由，见 [`blank_agent_spawn`]
+    /// 文档。
+    fn blank_agent_spawn_with_equipment(
+        world: &mut WorldState,
+        equipment: BTreeMap<crate::item::EquipSlot, ItemStack>,
+    ) -> EntityId {
+        let mut agent = blank_agent(world);
+        agent.equipment = equipment;
         world.actors.spawn(agent)
     }
 }

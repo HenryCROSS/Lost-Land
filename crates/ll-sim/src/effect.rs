@@ -13,6 +13,7 @@ use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use ll_world::entity::{AttributeKind, EntityId};
 use ll_world::history::KillCause;
+use ll_world::item::EquipSlot;
 use ll_world::script_state::ScriptStateWrite;
 use ll_world::space::Space;
 use ll_world::terrain::TerrainKind;
@@ -555,5 +556,49 @@ pub enum Effect {
         /// 保证移除的是 `resolve` 实际读到的那一堆，不是"随便一堆同
         /// `def` 的"。
         durability: Option<i32>,
+    },
+    /// 把物品堆装进某个槽位（装备栏位批次，P6 第三批）——
+    /// `crate::resolve::resolve_equip` 唯一的产出者。`slot` 是这件
+    /// 物品的**锚点槽位**（`crate::item::SlotMask::anchor_slot`，掩码
+    /// 最低位），不是玩家发起 `Intent::Equip` 时提供的任何字段——
+    /// `Intent::Equip` 根本不携带槽位（见其文档「为什么携带 `def`，不
+    /// 携带目标槽位」一节），锚点完全由 `resolve_equip` 查表算出。
+    /// 横跨多槽的物品（双手武器占 `MAIN_HAND`+`OFF_HAND`）只存一份，
+    /// 见 [`ll_world::entity::Agent::equipment`] 文档「为什么以锚点
+    /// 槽位为键」一节。
+    ///
+    /// # 为什么 `apply` 不检查槽位是否已被占用
+    ///
+    /// `resolve_equip` 保证在产出本效果之前，同一批效果里已经先产出了
+    /// 覆盖全部冲突槽位的 [`Effect::Unequip`]（`crate::resolve` 模块
+    /// 「占位冲突」一节），`apply` 按顺序依次执行这批效果，执行到本
+    /// 效果时冲突槽位理应已经清空——这是"决策在 resolve，apply 只管
+    /// 照单据执行"（约束 C1）的又一处体现，`apply` 无条件覆盖写入，不
+    /// 重新判断"这个槽位现在是不是空的"。
+    Equip {
+        /// 装备的持有者。
+        actor: EntityId,
+        /// 锚点槽位。
+        slot: EquipSlot,
+        /// 具体是哪一堆物品。
+        stack: ItemStack,
+    },
+    /// 从某个槽位卸下当前装备的物品（装备栏位批次，P6 第三批）——
+    /// `crate::resolve::resolve_equip`（因占位冲突而卸下）与
+    /// `crate::resolve::resolve_unequip`（玩家主动卸下）共用的产出者。
+    ///
+    /// `slot` 是**查找到的真实存储键**（锚点槽位），不是玩家在
+    /// `Intent::Unequip` 里提供的原始请求槽位——`resolve_unequip` 会把
+    /// 请求槽位翻译成真实存储键再产出本效果，见其文档「为什么要把
+    /// 请求槽位翻译成锚点槽位」一节。`apply` 响应本效果时只做
+    /// `agent.equipment.remove(&slot)` 这一步机械操作，不负责把卸下的
+    /// 物品放回背包——那是同一批效果里紧随其后的
+    /// [`Effect::MergeIntoInventory`] 的职责（`resolve_equip`/
+    /// `resolve_unequip` 都遵循"先卸下、再合并回背包"的产出顺序）。
+    Unequip {
+        /// 装备的持有者。
+        actor: EntityId,
+        /// 要清空的槽位（真实存储键）。
+        slot: EquipSlot,
     },
 }
