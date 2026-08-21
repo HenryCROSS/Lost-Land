@@ -259,25 +259,41 @@ pub enum Effect {
         /// 冷却到期的世界时刻。
         until: Tick,
     },
-    /// 对某个实体施加一条临时属性修正（P5-B 任务 5）。
+    /// 对某个实体施加一条临时属性修正（P5-B 任务 5；`source` 字段
+    /// 为 `buffs-and-triggers.md` 六节「多来源叠加」新增）。
     ///
     /// # 只能是纯数值，不接装备（规格 §15 P6 边界）
     ///
-    /// `attribute`/`delta` 是技能自身声明的静态数值，`apply` 落地时只是
-    /// 把这一条 `(delta, expires_at)` 写进
-    /// [`ll_world::entity::Agent::active_stat_modifiers`]——不触发任何
-    /// 装备槽位读取，也不触发完整的衍生属性重算（那属于 P6 装备落地
-    /// 之后的 `derive_stats`，见 `crates/ll-mod/src/skill.rs` 模块文档
-    /// 「与规格 §15 P6 边界的关系」一节，本变体延续同一条边界）。
+    /// `attribute`/`delta` 是技能自身声明的静态数值，`apply` 落地时把
+    /// 这一条 `(delta, expires_at)` 写进
+    /// [`ll_world::entity::Agent::active_stat_modifiers`] 里
+    /// `(attribute, source)` 对应的那个位置——不触发任何装备槽位读取，
+    /// 也不触发完整的衍生属性重算（那属于 P6 装备落地之后的
+    /// `derive_stats`，见 `crates/ll-mod/src/skill.rs` 模块文档「与规格
+    /// §15 P6 边界的关系」一节，本变体延续同一条边界）。
     ///
-    /// # 惰性到期，`apply` 不做判断
+    /// # `source`：施加者身份，不是「谁挨了这一下」
     ///
-    /// 与 [`ll_world::entity::ActiveStatModifier`] 文档一致：`apply` 只
-    /// 管把这一条写进去（同一属性再次被写入即覆盖旧值，`RefreshDuration`
-    /// 堆叠策略天然由 `BTreeMap::insert` 的覆盖语义实现，不需要
-    /// `apply` 自己判断「要不要叠加」），是否已经过期由未来读取「有效
-    /// 属性值」的调用方在读取那一刻现比对世界时钟，`apply` 本身不含
-    /// 这个判断（三条纪律「不含任何游戏逻辑」）。
+    /// 与 `target`（受影响的实体）是完全不同的两个字段——`source` 是
+    /// 「这条修正来自哪份内容定义」（目前唯一的生产者是
+    /// [`crate::resolve::resolve_use_skill`]，传入被使用的技能自身的
+    /// `ContentIndex`），供 `apply` 判断「这是不是同一个效果的重复
+    /// 施加」：`(target 身上的 attribute, source)` 相同即视为同源，走
+    /// `merge_same_source`；不同则各自独立存在、叠加生效。见
+    /// `buffs-and-triggers.md` 六节①「身份是『效果来源』」。
+    ///
+    /// # 惰性到期，`apply` 不做「是否已过期」的判断
+    ///
+    /// 与 [`ll_world::entity::ActiveStatModifier`] 文档一致：是否已经
+    /// 过期由未来读取「有效属性值」的调用方（[`crate::resolve::resolve_attack`]
+    /// 经 `effective_attribute`）在读取那一刻现比对世界时钟，`apply`
+    /// 本身不含这个判断（三条纪律「不含任何游戏逻辑」）——`apply` 唯一
+    /// 要做的判断是「同源合并」，这是一个纯粹由两个既有值机械算出结果
+    /// 的固定算法（[`ll_world::entity::ActiveStatModifier::merge_same_source`]），
+    /// 不是需要读取更多世界状态才能决定的游戏规则判断，与「不含任何
+    /// 游戏逻辑」这条纪律不冲突——`RefreshDuration` 曾经也是靠
+    /// `BTreeMap::insert` 的覆盖语义在 `apply` 里免费实现，这里是同一
+    /// 条先例的延续，只是覆盖语义换成了一个两行的合并函数。
     ApplyStatModifier {
         /// 受影响的实体。
         target: EntityId,
@@ -287,6 +303,9 @@ pub enum Effect {
         delta: i32,
         /// 到期时刻。
         expires_at: Tick,
+        /// 施加这条修正的来源——`(attribute, source)` 相同视为同一效果
+        /// 的重复施加（同源刷新），不同则视为不同效果（异源叠加）。
+        source: ContentIndex,
     },
     /// 把玩家探索记忆里、以 `origin` 为圆心、`radius` 为半径的可见格
     /// 标记为已探索（探索记忆写入路径批次）。

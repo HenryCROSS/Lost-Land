@@ -70,14 +70,18 @@ pub enum AttributeKind {
 /// ，本类型自身不做任何判断，也不主动清理过期条目（同一条「有意留给
 /// 后续阶段的缺口」，见 `Agent::skill_cooldowns` 文档）。
 ///
-/// # 堆叠策略固定为「刷新持续时间」
+/// # 堆叠策略：同源刷新、异源叠加（`buffs-and-triggers.md` 六节）
 ///
-/// `Agent::active_stat_modifiers` 按 [`AttributeKind`] 做键——同一项
-/// 属性同一时刻只能有一条生效的修正，再次对同一属性施加修正（无论是
-/// 同一个技能重复释放,还是另一个技能修正了同一项属性）会直接覆盖旧
-/// 条目，这就是 `buffs-and-triggers.md` 五、`StackPolicy::RefreshDuration`
-/// （本计划固定选用的唯一堆叠策略,见关键设计判断 4）在数据结构层面的
-/// 体现，不需要额外的判断逻辑。
+/// `Agent::active_stat_modifiers` 按 `(属性, 来源)` 两层键做索引——外层
+/// [`AttributeKind`]，内层「来源」（施加这条修正的技能/载具等内容自身
+/// 的 [`ll_core::ident::ContentIndex`]）。这不再是本类型早期版本那种
+/// 「同一项属性同一时刻只能有一条生效修正」的形状：**不同来源的修正
+/// 各自独立存在、聚合时求和**（`resolve_attack` 一类的读取路径逐条过滤
+/// 未过期条目再求和，见 `crates/ll-sim/src/resolve.rs` 的
+/// `effective_attribute`）；**同一来源再次施加时才合并**，合并规则见
+/// [`Self::merge_same_source`]。项目所有者原话「不同效果能叠加，同效果
+/// 只刷新时间」——「来源」就是这句话里「效果」的准确定义，见
+/// `buffs-and-triggers.md` 六、①。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveStatModifier {
     /// 增减量，可为负——与技能效果 `SkillEffect::TemporaryStatModifier`
@@ -89,6 +93,33 @@ pub struct ActiveStatModifier {
     pub delta: i32,
     /// 到期时刻——世界时钟达到或超过这个值时，这条修正视为已失效。
     pub expires_at: Tick,
+}
+
+impl ActiveStatModifier {
+    /// 同一个 `(属性, 来源)` 再次被施加时的合并规则——
+    /// `buffs-and-triggers.md` 六、②③的具体落地，两个维度独立比较，
+    /// 互不牵连：
+    ///
+    /// - **强度**（③）：取 `delta.abs()` 更大的那一个 `delta`。防止一次
+    ///   弱化的重复施放（低等级重复施放同名技能、或较弱施法者补了一刀）
+    ///   悄悄冲淡已经生效的强化版本。绝对值相等时退化成取新值——两者
+    ///   本就等价，谁赢都不改变结果。
+    /// - **到期时刻**（②）：恒取 `existing`/`incoming` 两者中较晚的
+    ///   `expires_at`（`.max()`），**不是把两段剩余时长相加**——时长
+    ///   相加会把「连续快速重复施放」这个漏洞从「数值无限叠加」原样
+    ///   平移成「持续时间无限叠加」，是同一个漏洞换了个维度发作。
+    ///   这一步与强度谁赢无关：哪怕弱化版本没能刷新强度，它依然应该把
+    ///   到期时刻续到自己本该持续到的那一刻。
+    pub fn merge_same_source(self, incoming: ActiveStatModifier) -> ActiveStatModifier {
+        ActiveStatModifier {
+            delta: if incoming.delta.abs() >= self.delta.abs() {
+                incoming.delta
+            } else {
+                self.delta
+            },
+            expires_at: self.expires_at.max(incoming.expires_at),
+        }
+    }
 }
 
 impl BaseStats {
@@ -167,5 +198,70 @@ mod tests {
     fn 不同属性种类不相等() {
         // Arrange & Act & Assert
         assert_ne!(AttributeKind::Strength, AttributeKind::Dexterity);
+    }
+
+    #[test]
+    fn 合并同源修正时到期时刻取较晚者而非两段时长相加() {
+        // Arrange：existing 剩余到 Tick(30)，incoming（同一来源再次施加）
+        // 到期于 Tick(90)——若退化成「时长相加」会得到远超两者中较晚者
+        // 的结果，这里断言的是 `.max()`，不是加法。
+        let existing = ActiveStatModifier {
+            delta: 2,
+            expires_at: Tick(30),
+        };
+        let incoming = ActiveStatModifier {
+            delta: 2,
+            expires_at: Tick(90),
+        };
+
+        // Act
+        let merged = existing.merge_same_source(incoming);
+
+        // Assert
+        assert_eq!(merged.expires_at, Tick(90));
+    }
+
+    #[test]
+    fn 合并同源修正时更弱的一次施加不冲淡已生效的强度() {
+        // Arrange：existing 是较强的修正（|delta| = 5），incoming 是同一
+        // 来源较弱的一次重复施放（|delta| = 2）——③要求强度保持较强值。
+        let existing = ActiveStatModifier {
+            delta: 5,
+            expires_at: Tick(10),
+        };
+        let incoming = ActiveStatModifier {
+            delta: 2,
+            expires_at: Tick(50),
+        };
+
+        // Act
+        let merged = existing.merge_same_source(incoming);
+
+        // Assert：强度不变（仍是较强的 5），到期时刻仍然取较晚者（50）
+        // ——两个维度独立比较，弱化的重复施放没能刷新强度，但依然续了
+        // 到期时刻。
+        assert_eq!(merged.delta, 5);
+        assert_eq!(merged.expires_at, Tick(50));
+    }
+
+    #[test]
+    fn 合并同源修正时更强的一次施加覆盖强度并取较晚到期时刻() {
+        // Arrange：existing 较弱，incoming 是同一来源更强的一次施放。
+        let existing = ActiveStatModifier {
+            delta: 2,
+            expires_at: Tick(50),
+        };
+        let incoming = ActiveStatModifier {
+            delta: 7,
+            expires_at: Tick(10),
+        };
+
+        // Act
+        let merged = existing.merge_same_source(incoming);
+
+        // Assert：强度更新为较强值（7），到期时刻取两者中较晚者（existing
+        // 的 50，尽管这次施加本身更强，但它自己的到期时刻更早）。
+        assert_eq!(merged.delta, 7);
+        assert_eq!(merged.expires_at, Tick(50));
     }
 }

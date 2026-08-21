@@ -50,7 +50,7 @@ use std::collections::BTreeMap;
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::time::Tick;
 use ll_mod::registry::Registry;
-use ll_world::entity::{Affiliation, Agent, Goal, OrgRef};
+use ll_world::entity::{ActiveStatModifier, Affiliation, Agent, AttributeKind, Goal, OrgRef};
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::terrain::TerrainKind;
@@ -312,9 +312,12 @@ fn remap_agent(
         ref mut unlocked_skills,
         ref mut skill_cooldowns,
         ref mut subclasses,
-        // 临时属性修正按 AttributeKind（引擎内置的封闭枚举，不是内容
-        // 注册表索引）为键，不携带任何 ContentIndex，不需要重映射。
-        active_stat_modifiers: _,
+        // 临时属性修正外层按 AttributeKind（引擎内置的封闭枚举，不是
+        // 内容注册表索引）为键，不需要重映射；但内层键是「来源」
+        // （buffs-and-triggers.md 六节①，`ContentIndex`）——六节存储
+        // 改法之前这个字段完全不携带 ContentIndex，改法落地后必须重
+        // 映射，见 remap_active_stat_modifiers。
+        ref mut active_stat_modifiers,
         ref mut current_space,
         script_state: _,
         // 击杀与死亡记录批次新增的三个字段——逐一显式决定：
@@ -335,6 +338,7 @@ fn remap_agent(
     remap_unlocked_skills(remapper, unlocked_skills)?;
     remap_skill_cooldowns(remapper, skill_cooldowns)?;
     remap_subclasses(remapper, subclasses)?;
+    remap_active_stat_modifiers(remapper, active_stat_modifiers)?;
     remap_creature_kind(remapper, creature_kind, owner)?;
     Ok(())
 }
@@ -387,6 +391,34 @@ fn remap_skill_cooldowns(
         }
     }
     *skill_cooldowns = kept;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的生效中临时属性修正
+/// （[`ll_world::entity::Agent::active_stat_modifiers`]，六节存储改法）：
+/// 外层键（[`AttributeKind`]）是引擎内置的封闭枚举，不携带
+/// `ContentIndex`，原样保留；内层键是「来源」——找不到当前会话内容时
+/// 整条丢弃，理由与 [`remap_skill_cooldowns`] 完全相同：目前唯一的
+/// 生产者是 `resolve_use_skill`（传入被使用的技能自身的索引），走
+/// [`ContentKind::Skill`] 判定丢弃是诚实的现状描述，不是提前假装
+/// 「来源」已经有一个专属的 `ContentKind`——`buffs-and-triggers.md`
+/// 六节①已经指出未来载具/天赋落地后会有第二、第三个生产者，届时
+/// 「来源」不再只可能是技能，这里的判定需要跟着扩展（不在本批次
+/// 范围内提前做）。修正本身（`delta`/`expires_at`）不含 `ContentIndex`，
+/// 随键一起丢弃或保留，不需要单独重映射。
+fn remap_active_stat_modifiers(
+    remapper: &mut Remapper<'_>,
+    active_stat_modifiers: &mut BTreeMap<AttributeKind, BTreeMap<ContentIndex, ActiveStatModifier>>,
+) -> Result<(), LoadError> {
+    for per_source in active_stat_modifiers.values_mut() {
+        let mut kept = BTreeMap::new();
+        for (source, modifier) in std::mem::take(per_source) {
+            if let Some(new_source) = remapper.remap_droppable(source, ContentKind::Skill)? {
+                kept.insert(new_source, modifier);
+            }
+        }
+        *per_source = kept;
+    }
     Ok(())
 }
 
@@ -750,6 +782,105 @@ mod tests {
                 .get(entity)
                 .expect("实体应当仍存在")
                 .goals
+                .is_empty()
+        );
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
+    }
+
+    #[test]
+    fn 属性修正的来源存在于当前会话时重映射后指向同一字符串标识的新索引() {
+        // buffs-and-triggers.md 六节存储改法：active_stat_modifiers 内层
+        // 键（来源）现在携带 ContentIndex，必须像 profession/race 一样
+        // 靠字符串标识对号，不能假设存档写出与当前会话的索引数值相同。
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let brace_old = save_registry.intern(id("lostland:brace"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记,打乱顺序
+        let brace_new = current.intern(id("lostland:brace"));
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.active_stat_modifiers.insert(
+            AttributeKind::Constitution,
+            BTreeMap::from([(
+                brace_old,
+                ActiveStatModifier {
+                    delta: 3,
+                    expires_at: Tick(80),
+                },
+            )]),
+        );
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert：修正的数值（delta/expires_at）原样保留,键从旧索引换成
+        // 了与当前会话字符串标识对应的新索引。
+        assert!(actions.is_empty());
+        let stored = world
+            .actors
+            .get(entity)
+            .expect("实体应当仍存在")
+            .active_stat_modifiers
+            .get(&AttributeKind::Constitution)
+            .and_then(|per_source| per_source.get(&brace_new));
+        assert_eq!(
+            stored,
+            Some(&ActiveStatModifier {
+                delta: 3,
+                expires_at: Tick(80),
+            })
+        );
+    }
+
+    #[test]
+    fn 属性修正的来源在当前会话找不到时整条丢弃并记录droppwithwarning() {
+        // Arrange
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished_source = save_registry.intern(id("lostland:vanished"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        // 当前会话有地形内容,但从未登记过 "lostland:vanished"。
+        let current = current_session_registry_with_terrain();
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.active_stat_modifiers.insert(
+            AttributeKind::Strength,
+            BTreeMap::from([(
+                vanished_source,
+                ActiveStatModifier {
+                    delta: 5,
+                    expires_at: Tick(50),
+                },
+            )]),
+        );
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert：这一项属性上的来源表变空（不是整个外层键被移除，
+        // remap_active_stat_modifiers 只清空内层 map），且记录了警告。
+        assert!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .active_stat_modifiers
+                .get(&AttributeKind::Strength)
+                .expect("外层键本身不会被移除")
                 .is_empty()
         );
         assert_eq!(actions, vec![DegradeAction::DropWithWarning]);

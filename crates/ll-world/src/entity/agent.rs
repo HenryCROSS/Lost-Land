@@ -200,11 +200,28 @@ pub struct Agent {
     /// 「至少一个」副职（复数），不是恰好一个——具体上限（若有）留给
     /// 后续内容设计批次决定，本字段的容器形状本身不设上限。
     pub subclasses: Vec<ContentIndex>,
-    /// 正在生效的临时属性修正，按 [`AttributeKind`] 索引。见
-    /// [`ActiveStatModifier`] 文档——惰性到期判定、`RefreshDuration`
-    /// 堆叠策略均由该类型与本字段的键结构共同实现，本字段自身只是
-    /// 存储，不含判断逻辑。
-    pub active_stat_modifiers: BTreeMap<AttributeKind, ActiveStatModifier>,
+    /// 正在生效的临时属性修正，外层按 [`AttributeKind`] 索引（匹配
+    /// `effective_attribute` 的真实访问模式：一次查询要问的始终是
+    /// 「这一项属性现在有哪些修正在生效」），内层按「来源」——施加这条
+    /// 修正的那份内容定义自己的 [`ContentIndex`]（目前唯一的生产者是
+    /// `resolve_use_skill`，传入被使用的技能索引；`buffs-and-triggers.md`
+    /// 六节①已指出未来载具/天赋落地后会有第二、第三个生产者，键的类型
+    /// 不需要为此改变）索引。
+    ///
+    /// # 同源刷新、异源叠加
+    ///
+    /// 项目所有者裁定「不同效果能叠加，同效果只刷新时间」——键的第二层
+    /// 就是这句话里「效果」的准确定义：`(属性, 来源)` 相同视为「同一
+    /// 效果再次施加」，走 [`ActiveStatModifier::merge_same_source`]；
+    /// 键不同（不同属性，或同一属性但不同来源）各自独立存在、互不覆盖，
+    /// 聚合时逐条过滤未过期条目再求和（见 `crates/ll-sim/src/resolve.rs`
+    /// 的 `effective_attribute`）。完整论证见 `buffs-and-triggers.md`
+    /// 六节；本字段的形状是该节裁定的直接落地，不是本文档重新设计的。
+    ///
+    /// 两层都是 `BTreeMap` 不是 `HashMap`——约束 C5：外层按
+    /// [`AttributeKind`]（已实现 `Ord`）排序，内层按 [`ContentIndex`]
+    /// （已实现 `Ord`）排序，不涉及任何 `HashMap`/`HashSet` 迭代顺序。
+    pub active_stat_modifiers: BTreeMap<AttributeKind, BTreeMap<ContentIndex, ActiveStatModifier>>,
     /// 每实体脚本状态：依附于这个具体实体的脚本存储（NPC 当前在追的
     /// 目标、某个技能的冷却计时……），键是 `(mod_namespace, key)`，见
     /// `knowledge/design/script-state-storage.md` 二、四节。
@@ -353,10 +370,13 @@ mod tests {
             subclasses: vec![ranger_subclass],
             active_stat_modifiers: BTreeMap::from([(
                 AttributeKind::Constitution,
-                ActiveStatModifier {
-                    delta: 3,
-                    expires_at: Tick(150),
-                },
+                BTreeMap::from([(
+                    strike,
+                    ActiveStatModifier {
+                        delta: 3,
+                        expires_at: Tick(150),
+                    },
+                )]),
             )]),
             script_state: BTreeMap::from([(
                 ("lostland".to_string(), "cooldown".to_string()),

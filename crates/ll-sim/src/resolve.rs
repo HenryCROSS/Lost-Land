@@ -115,6 +115,27 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
 /// ，算出这一时刻真正生效的值——供任何要读「这项属性当前实际是多少」
 /// 的调用方共用，不要在各自的调用点各写一遍同样的到期判定。
 ///
+/// # 多来源叠加：逐条过滤未过期条目再求和
+///
+/// `buffs-and-triggers.md` 六节裁定「不同效果能叠加」——`modifiers.get(&kind)`
+/// 现在拿到的是这一项属性上「按来源」索引的一整层 `BTreeMap`，本函数
+/// 遍历它的全部条目，过滤掉已过期的（惰性到期判定，见下），对剩下的
+/// `delta` 求和后叠加到 `base` 上，不再是「查到一条就直接用」。合并
+/// 顺序由内层 `BTreeMap<ContentIndex, _>` 自身的键序保证确定性——加法
+/// 可交换，顺序不影响这里的求和结果，但选一个天然有序的容器不需要为
+/// 这一点额外付出任何代价（`buffs-and-triggers.md` 六节「与二节排序
+/// 规则的关系」一段）。
+///
+/// # 性能：`m` 是这一项属性当前生效的不同来源数，现实规模下是个位数
+///
+/// 原实现是一次 `Option` 查表，`O(1)`；本实现是一次外层查表（`O(1)`，
+/// `AttributeKind` 只有六个变体）加一次对内层 `m` 条记录的遍历——`m`
+/// 不是「这个实体全部修正」，只是「这一项属性上的不同来源数」，且这次
+/// 遍历只在真正结算一次攻击时付一次（本函数只被 [`resolve_attack`]
+/// 调用），不是每 tick 都要跑一遍。`buffs-and-triggers.md` 六节已经判断
+/// 这个开销在当前内容规模下可接受，不需要额外优化——若未来某个内容
+/// 组合让 `m` 变得可观，问题出在内容设计本身，不是本函数的算法复杂度。
+///
 /// 首个消费者是 [`resolve_attack`] 的攻击力（力量）；`knowledge/design/
 /// combat-three-axis.md` 四节已经点名防御方将来也要从 `derive_stats`
 /// 走同一条接口约定，`knowledge/design/vehicle-and-mounting.md` 六节
@@ -146,13 +167,19 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
 fn effective_attribute(
     base: i32,
     kind: AttributeKind,
-    modifiers: &std::collections::BTreeMap<AttributeKind, ActiveStatModifier>,
+    modifiers: &std::collections::BTreeMap<
+        AttributeKind,
+        std::collections::BTreeMap<ContentIndex, ActiveStatModifier>,
+    >,
     now: Tick,
 ) -> i32 {
-    match modifiers.get(&kind) {
-        Some(modifier) if modifier.expires_at.0 > now.0 => base + modifier.delta,
-        _ => base,
-    }
+    let Some(per_source) = modifiers.get(&kind) else {
+        return base;
+    };
+    per_source
+        .values()
+        .filter(|modifier| modifier.expires_at.0 > now.0)
+        .fold(base, |acc, modifier| acc + modifier.delta)
 }
 
 /// 玩家每走一步，探索记忆按这个半径覆盖新位置的可见格（见
@@ -854,6 +881,12 @@ fn resolve_use_skill(
                 attribute,
                 delta: amount,
                 expires_at: Tick(world.clock.0 + i64::from(duration_ticks)),
+                // 来源就是这次施放的技能自身——调用方（本函数）已经持有
+                // `skill: ContentIndex` 这个参数，原样传入，不需要新查表
+                // （`buffs-and-triggers.md` 六节①：来源是「施加这条修正
+                // 的那份内容定义自己的 ContentIndex」，本函数正是这份
+                // 定义的施加者）。
+                source: skill,
             });
         }
     }
@@ -1597,6 +1630,9 @@ mod tests {
         // 生命值给够大的余量,这条测试只关心「伤害数值变了多少」，不
         // 关心目标是否被打死——致死路径已由上一条测试单独覆盖。
         let victim = spawn_named_agent(&mut world, victim_pos, 1_000);
+        let mut interner = ll_core::ident::Interner::new();
+        let source = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:brace").expect("合法标识符"));
         world
             .actors
             .get_mut(attacker)
@@ -1604,10 +1640,13 @@ mod tests {
             .active_stat_modifiers
             .insert(
                 AttributeKind::Strength,
-                ActiveStatModifier {
-                    delta: 20,
-                    expires_at: Tick(100),
-                },
+                std::collections::BTreeMap::from([(
+                    source,
+                    ActiveStatModifier {
+                        delta: 20,
+                        expires_at: Tick(100),
+                    },
+                )]),
             );
         // 期望伤害直接复用 combat::damage_after_defense（该公式本身已
         // 有独立单测覆盖，这里只用它算出「修正后的力量」应得的伤害，
@@ -1640,12 +1679,18 @@ mod tests {
         // 条目在读取时被当作已失效处理,即使它仍然留在
         // active_stat_modifiers 里没被清理（见 ActiveStatModifier 文档
         // 「惰性到期判定」一节）。
+        let mut interner = ll_core::ident::Interner::new();
+        let source = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:brace").expect("合法标识符"));
         let modifiers = std::collections::BTreeMap::from([(
             AttributeKind::Strength,
-            ActiveStatModifier {
-                delta: 20,
-                expires_at: Tick(5),
-            },
+            std::collections::BTreeMap::from([(
+                source,
+                ActiveStatModifier {
+                    delta: 20,
+                    expires_at: Tick(5),
+                },
+            )]),
         )]);
 
         // Act
@@ -1653,6 +1698,81 @@ mod tests {
 
         // Assert：世界时钟已达到 expires_at,回落到裸值,不叠加 delta。
         assert_eq!(effective, 10);
+    }
+
+    #[test]
+    fn 不同来源的属性修正在生效值上求和而非互相覆盖() {
+        // 规则①「不同效果能叠加」在 effective_attribute 这一层的直接
+        // 验证：两个不同来源（source_a、source_b）各自给同一属性 +5、
+        // +7，有效值必须是 base + 5 + 7，不是只看到其中一条。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let source_a = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:brace").expect("合法标识符"));
+        let source_b = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:blessing").expect("合法标识符"));
+        let modifiers = std::collections::BTreeMap::from([(
+            AttributeKind::Strength,
+            std::collections::BTreeMap::from([
+                (
+                    source_a,
+                    ActiveStatModifier {
+                        delta: 5,
+                        expires_at: Tick(100),
+                    },
+                ),
+                (
+                    source_b,
+                    ActiveStatModifier {
+                        delta: 7,
+                        expires_at: Tick(100),
+                    },
+                ),
+            ]),
+        )]);
+
+        // Act
+        let effective = effective_attribute(10, AttributeKind::Strength, &modifiers, Tick(0));
+
+        // Assert：10（base） + 5 + 7 = 22，两条修正都参与了求和。
+        assert_eq!(effective, 22);
+    }
+
+    #[test]
+    fn 一条来源过期后另一条来源的修正仍然独立生效() {
+        // 规则②③强调「各条修正各自到期」——这里验证的正是这一点：
+        // source_a 已过期，source_b 未过期，聚合结果应只包含 source_b。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let source_a = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:brace").expect("合法标识符"));
+        let source_b = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:blessing").expect("合法标识符"));
+        let modifiers = std::collections::BTreeMap::from([(
+            AttributeKind::Strength,
+            std::collections::BTreeMap::from([
+                (
+                    source_a,
+                    ActiveStatModifier {
+                        delta: 5,
+                        expires_at: Tick(10),
+                    },
+                ),
+                (
+                    source_b,
+                    ActiveStatModifier {
+                        delta: 7,
+                        expires_at: Tick(100),
+                    },
+                ),
+            ]),
+        )]);
+
+        // Act：世界时钟已经越过 source_a 的到期时刻，但仍早于 source_b。
+        let effective = effective_attribute(10, AttributeKind::Strength, &modifiers, Tick(10));
+
+        // Assert：只有 source_b 的 +7 参与求和，source_a 已被过滤。
+        assert_eq!(effective, 17);
     }
 
     #[test]

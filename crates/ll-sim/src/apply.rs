@@ -164,15 +164,26 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
             attribute,
             delta,
             expires_at,
+            source,
         } => {
             if let Some(agent) = world.actors.get_mut(*target) {
-                agent.active_stat_modifiers.insert(
-                    *attribute,
-                    ll_world::entity::ActiveStatModifier {
-                        delta: *delta,
-                        expires_at: *expires_at,
-                    },
-                );
+                let incoming = ll_world::entity::ActiveStatModifier {
+                    delta: *delta,
+                    expires_at: *expires_at,
+                };
+                // 同源合并：(attribute, source) 相同即视为同一效果再次
+                // 施加，走 merge_same_source（强度取较强、到期取较晚，
+                // 两个维度独立比较）；不同来源各自独立占一个内层键，
+                // 互不覆盖——这就是「不同效果能叠加，同效果只刷新时间」
+                // 在这里唯一要做的判断，见 Effect::ApplyStatModifier 文档
+                // 「source：施加者身份」一节。
+                agent
+                    .active_stat_modifiers
+                    .entry(*attribute)
+                    .or_default()
+                    .entry(*source)
+                    .and_modify(|existing| *existing = existing.merge_same_source(incoming))
+                    .or_insert(incoming);
             }
         }
         Effect::SetScriptState { writes } => {
@@ -700,12 +711,38 @@ mod tests {
         );
     }
 
+    /// 造一个仅用于「来源」的 `ContentIndex`——每次调用内部新开一个
+    /// `Interner`，只保证「这一个值是一个合法的 `ContentIndex`」，**不**
+    /// 保证与另一次独立调用得到的值不同（`Interner` 从零开始计数，两次
+    /// 独立调用哪怕传入不同字符串也可能撞到同一个索引）。只需要一个
+    /// 来源的测试用它；需要两个明确不同来源的测试必须用
+    /// [`test_two_sources`]，不能连续调用本函数两次。
+    fn test_source(id: &str) -> ll_core::ident::ContentIndex {
+        let mut interner = ll_core::ident::Interner::new();
+        interner.intern(ll_core::ident::NamespacedId::parse(id).expect("合法标识符"))
+    }
+
+    /// 造两个保证互不相同的「来源」`ContentIndex`——同一个 `Interner`
+    /// 里连续 `intern` 两个不同的命名空间字符串，`Interner` 对不同字符串
+    /// 分配不同索引这一点在同一实例内成立（见其模块文档），跨实例才不
+    /// 成立，这正是 [`test_source`] 文档警告的陷阱。
+    fn test_two_sources(
+        a: &str,
+        b: &str,
+    ) -> (ll_core::ident::ContentIndex, ll_core::ident::ContentIndex) {
+        let mut interner = ll_core::ident::Interner::new();
+        let source_a = interner.intern(ll_core::ident::NamespacedId::parse(a).expect("合法标识符"));
+        let source_b = interner.intern(ll_core::ident::NamespacedId::parse(b).expect("合法标识符"));
+        (source_a, source_b)
+    }
+
     #[test]
     fn applystatmodifier效果写入活跃属性修正表() {
         // Arrange
         let mut world = test_world();
         let agent = blank_agent(&world);
         let target = world.actors.spawn(agent);
+        let source = test_source("lostland:brace");
 
         // Act
         apply(
@@ -715,6 +752,7 @@ mod tests {
                 attribute: ll_world::entity::AttributeKind::Constitution,
                 delta: 3,
                 expires_at: Tick(80),
+                source,
             },
         );
 
@@ -724,7 +762,8 @@ mod tests {
             .get(target)
             .expect("刚生成的实体必然存在")
             .active_stat_modifiers
-            .get(&ll_world::entity::AttributeKind::Constitution);
+            .get(&ll_world::entity::AttributeKind::Constitution)
+            .and_then(|per_source| per_source.get(&source));
         assert_eq!(
             stored,
             Some(&ll_world::entity::ActiveStatModifier {
@@ -735,13 +774,15 @@ mod tests {
     }
 
     #[test]
-    fn applystatmodifier效果对同一属性再次施加时刷新而非叠加() {
-        // 验收关键设计判断 4「堆叠策略固定为 RefreshDuration」：同一项
-        // 属性再次被施加修正时，新值覆盖旧值，不是两条修正共存。
+    fn applystatmodifier效果对同一来源再次施加时合并而非各自独立存在() {
+        // 验收 buffs-and-triggers.md 六节②③「同效果只刷新时间」：同一
+        // (attribute, source) 再次被施加修正时，走 merge_same_source
+        // （强度取较强、到期取较晚），不是两条修正共存。
         // Arrange
         let mut world = test_world();
         let agent = blank_agent(&world);
         let target = world.actors.spawn(agent);
+        let source = test_source("lostland:brace");
         apply(
             &mut world,
             &Effect::ApplyStatModifier {
@@ -749,10 +790,11 @@ mod tests {
                 attribute: ll_world::entity::AttributeKind::Strength,
                 delta: 2,
                 expires_at: Tick(30),
+                source,
             },
         );
 
-        // Act
+        // Act：同一来源再次施加，强度更强（2 -> 5）、到期更晚（30 -> 90）。
         apply(
             &mut world,
             &Effect::ApplyStatModifier {
@@ -760,23 +802,178 @@ mod tests {
                 attribute: ll_world::entity::AttributeKind::Strength,
                 delta: 5,
                 expires_at: Tick(90),
+                source,
             },
         );
 
-        // Assert：只有一条记录，且是后一次施加的值。
-        let modifiers = &world
+        // Assert：这一项属性上只有一条记录（同源合并，不是两条并存），
+        // 且强度、到期都取了较晚/较强的那一次。
+        let per_source = world
             .actors
             .get(target)
             .expect("刚生成的实体必然存在")
-            .active_stat_modifiers;
-        assert_eq!(modifiers.len(), 1);
+            .active_stat_modifiers
+            .get(&ll_world::entity::AttributeKind::Strength)
+            .expect("已施加过修正");
+        assert_eq!(per_source.len(), 1);
         assert_eq!(
-            modifiers.get(&ll_world::entity::AttributeKind::Strength),
+            per_source.get(&source),
             Some(&ll_world::entity::ActiveStatModifier {
                 delta: 5,
                 expires_at: Tick(90),
             })
         );
+    }
+
+    #[test]
+    fn applystatmodifier效果对不同来源的同一属性各自叠加而非覆盖() {
+        // 验收六节①「不同效果能叠加」：两个不同来源（source_a、
+        // source_b）各自给同一属性施加修正，必须各自保留一条独立记录，
+        // 后写入的不能覆盖先写入的（这正是本节要推翻的旧行为）。
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let target = world.actors.spawn(agent);
+        let (source_a, source_b) = test_two_sources("lostland:brace", "lostland:blessing");
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::ApplyStatModifier {
+                target,
+                attribute: ll_world::entity::AttributeKind::Strength,
+                delta: 2,
+                expires_at: Tick(30),
+                source: source_a,
+            },
+        );
+        apply(
+            &mut world,
+            &Effect::ApplyStatModifier {
+                target,
+                attribute: ll_world::entity::AttributeKind::Strength,
+                delta: 3,
+                expires_at: Tick(50),
+                source: source_b,
+            },
+        );
+
+        // Assert：两条记录都在，互不覆盖。
+        let per_source = &world
+            .actors
+            .get(target)
+            .expect("刚生成的实体必然存在")
+            .active_stat_modifiers[&ll_world::entity::AttributeKind::Strength];
+        assert_eq!(per_source.len(), 2);
+        assert_eq!(
+            per_source.get(&source_a),
+            Some(&ll_world::entity::ActiveStatModifier {
+                delta: 2,
+                expires_at: Tick(30),
+            })
+        );
+        assert_eq!(
+            per_source.get(&source_b),
+            Some(&ll_world::entity::ActiveStatModifier {
+                delta: 3,
+                expires_at: Tick(50),
+            })
+        );
+    }
+
+    #[test]
+    fn applystatmodifier效果对同源更弱的再次施加保持较强强度但仍刷新到期时刻() {
+        // 验收六节③「同一来源不同强度」这条最容易写错的规则：较弱的
+        // 一次重复施放不应冲淡已经生效的强化版本（强度保持不变），但
+        // 依然应该把到期时刻续到自己本该持续到的那一刻（到期时刻仍然
+        // 更新）——两个维度独立比较，不是「较弱的施放完全不产生任何
+        // 效果」。
+        // Arrange：先施加一条较强的修正（|delta| = 5）。
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let target = world.actors.spawn(agent);
+        let source = test_source("lostland:brace");
+        apply(
+            &mut world,
+            &Effect::ApplyStatModifier {
+                target,
+                attribute: ll_world::entity::AttributeKind::Strength,
+                delta: 5,
+                expires_at: Tick(10),
+                source,
+            },
+        );
+
+        // Act：同一来源再次施加，这一次更弱（|delta| = 2），但到期时刻
+        // 更晚（50）。
+        apply(
+            &mut world,
+            &Effect::ApplyStatModifier {
+                target,
+                attribute: ll_world::entity::AttributeKind::Strength,
+                delta: 2,
+                expires_at: Tick(50),
+                source,
+            },
+        );
+
+        // Assert：强度仍是较强的 5（较弱的重复施放没能冲淡它），但到期
+        // 时刻更新为两者中较晚的 50（弱化版本依然续了到期时刻）。
+        let stored = world
+            .actors
+            .get(target)
+            .expect("刚生成的实体必然存在")
+            .active_stat_modifiers[&ll_world::entity::AttributeKind::Strength][&source];
+        assert_eq!(stored.delta, 5);
+        assert_eq!(stored.expires_at, Tick(50));
+    }
+
+    #[test]
+    fn applystatmodifier效果中一个来源过期后另一个来源仍然独立生效() {
+        // 验收「各条修正各自到期」——两个不同来源各自持有自己的
+        // expires_at，一条过期不影响另一条是否仍然生效（这里直接检查
+        // 存储层面两条记录都还在、各自的 expires_at 互不牵连；是否
+        // 「生效」的现算判断由 effective_attribute 负责，resolve.rs
+        // 的 `一条来源过期后另一条来源的修正仍然独立生效` 覆盖那一层）。
+        // Arrange
+        let mut world = test_world();
+        let agent = blank_agent(&world);
+        let target = world.actors.spawn(agent);
+        let (source_a, source_b) = test_two_sources("lostland:brace", "lostland:blessing");
+        apply(
+            &mut world,
+            &Effect::ApplyStatModifier {
+                target,
+                attribute: ll_world::entity::AttributeKind::Strength,
+                delta: 4,
+                expires_at: Tick(5),
+                source: source_a,
+            },
+        );
+        apply(
+            &mut world,
+            &Effect::ApplyStatModifier {
+                target,
+                attribute: ll_world::entity::AttributeKind::Strength,
+                delta: 6,
+                expires_at: Tick(200),
+                source: source_b,
+            },
+        );
+
+        // Act：不需要额外动作——两条记录的 expires_at 在写入时已经各自
+        // 独立固定，惰性判定不要求任何清理动作就能观察到「各自到期」
+        // 这件事本身（是否已过期由读取侧现比对，这里只断言两条记录各自
+        // 保留了自己写入时的 expires_at，互不覆盖）。
+
+        // Assert
+        let per_source = &world
+            .actors
+            .get(target)
+            .expect("刚生成的实体必然存在")
+            .active_stat_modifiers[&ll_world::entity::AttributeKind::Strength];
+        assert_eq!(per_source[&source_a].expires_at, Tick(5));
+        assert_eq!(per_source[&source_b].expires_at, Tick(200));
     }
 
     #[test]

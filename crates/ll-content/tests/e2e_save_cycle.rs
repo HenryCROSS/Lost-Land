@@ -143,6 +143,7 @@ fn 含实体与地形改动的世界存档读档后哈希一致() {
     let farmer = registry.intern(id("lostland:farmer"));
     let human = registry.intern(id("lostland:human"));
     let miner = registry.intern(id("lostland:miner"));
+    let brace = registry.intern(id("lostland:brace"));
 
     let player_pos = world.size.wrap(1, 1);
     let player_zone = world.terrain.layout().tile_to_zone(player_pos).0;
@@ -150,6 +151,21 @@ fn 含实体与地形改动的世界存档读档后哈希一致() {
     player_agent.profession = farmer;
     player_agent.race = human;
     player_agent.wallet = 42;
+    // buffs-and-triggers.md 六节：一条生效中的临时属性修正也要能完整
+    // 往返——这不是「结构能序列化」的空跑,是「存了能读回同一个世界」
+    // 这条要求本身,`ActiveStatModifier` 与它的来源（brace）都必须经过
+    // save_to_file -> load_full 这条真实链路（含 remap_active_stat_modifiers）
+    // 后原样保留,hash() 逐位相等的断言（见下）才有意义。
+    player_agent.active_stat_modifiers.insert(
+        ll_world::entity::AttributeKind::Constitution,
+        std::collections::BTreeMap::from([(
+            brace,
+            ll_world::entity::ActiveStatModifier {
+                delta: 3,
+                expires_at: Tick(150),
+            },
+        )]),
+    );
     let player = world.actors.spawn(player_agent);
     world.player_entity = Some(player);
 
@@ -184,6 +200,25 @@ fn 含实体与地形改动的世界存档读档后哈希一致() {
     match outcome {
         LoadOutcome::Playable(loaded_world) => {
             assert_eq!(loaded_world.hash(), hash_before);
+            // 逐字段核实——不只依赖哈希相等（哈希本身也是本批次改动的
+            // 一部分，单靠它会形成「用同一份可能有缺陷的代码验证自己」
+            // 的循环论证）：读回的玩家身上，力量属性上 brace 这个来源的
+            // 修正必须原样还在，delta/expires_at 都不变。
+            let reloaded_player = loaded_world
+                .actors
+                .get(player)
+                .expect("玩家实体读档后必然仍存在");
+            let reloaded_modifier = reloaded_player
+                .active_stat_modifiers
+                .get(&ll_world::entity::AttributeKind::Constitution)
+                .and_then(|per_source| per_source.get(&brace));
+            assert_eq!(
+                reloaded_modifier,
+                Some(&ll_world::entity::ActiveStatModifier {
+                    delta: 3,
+                    expires_at: Tick(150),
+                })
+            );
         }
         other => panic!("期望 Playable，实际 {other:?}"),
     }

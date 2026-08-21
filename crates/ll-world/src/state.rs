@@ -861,10 +861,23 @@ impl WorldState {
     /// 过这条教训，这是第三次）。`unlocked_skills`/`subclasses` 是
     /// `Vec<ContentIndex>`（先混入长度、再逐项混入，保序，不涉及
     /// `HashMap`/`HashSet` 迭代顺序）；`skill_cooldowns` 是
-    /// `BTreeMap<ContentIndex, Tick>`，`active_stat_modifiers` 是
-    /// `BTreeMap<AttributeKind, ActiveStatModifier>`，两者都按键的自然
-    /// 顺序遍历（`ContentIndex`/`AttributeKind` 均实现 `Ord`），满足
-    /// 约束 C5。
+    /// `BTreeMap<ContentIndex, Tick>`，两者都按键的自然顺序遍历
+    /// （`ContentIndex`/`AttributeKind` 均实现 `Ord`），满足约束 C5。
+    ///
+    /// # `active_stat_modifiers` 是两层 `BTreeMap`（`buffs-and-triggers.md`
+    /// 六节，多来源叠加存储改法）
+    ///
+    /// 外层按 [`crate::entity::AttributeKind`] 键控，内层按「来源」
+    /// （[`ll_core::ident::ContentIndex`]）键控——一次 agent 迭代要遍历
+    /// 两层，不再是六节改法之前的单层遍历。先混入外层条目数（有几种
+    /// 属性正被修正），再对每个属性混入内层条目数（这一属性上有几个
+    /// 不同来源）与逐条 `(来源, delta, expires_at)`，两层都由 `BTreeMap`
+    /// 自身的键序保证确定性遍历，不涉及任何 `HashMap`/`HashSet`（约束
+    /// C5）。若漏掉内层遍历（只混入外层条目数就结束），会重演本方法
+    /// 已经用真实历史记录警告过的同一类「哈希看不见真实生效的状态」
+    /// 缺口，只是这次缺口更隐蔽——外层条目数不为零看起来"哈希已经在
+    /// 关心这个字段"，实际内容（哪些来源、各自的 `delta`/`expires_at`）
+    /// 却完全没有混入。
     ///
     /// # 探索记忆也已混入（落地探索记忆批次）
     ///
@@ -925,10 +938,14 @@ impl WorldState {
                 hasher.write_i64(until.0);
             }
             hasher.write_u64(agent.active_stat_modifiers.len() as u64);
-            for (attribute, modifier) in &agent.active_stat_modifiers {
+            for (attribute, per_source) in &agent.active_stat_modifiers {
                 hasher.write_u64(*attribute as u64);
-                hasher.write_i64(i64::from(modifier.delta));
-                hasher.write_i64(modifier.expires_at.0);
+                hasher.write_u64(per_source.len() as u64);
+                for (source, modifier) in per_source {
+                    hasher.write_u64(u64::from(source.get()));
+                    hasher.write_i64(i64::from(modifier.delta));
+                    hasher.write_i64(modifier.expires_at.0);
+                }
             }
             write_script_state(&mut hasher, &agent.script_state);
             write_optional_content_index(&mut hasher, agent.creature_kind);
@@ -1324,7 +1341,7 @@ impl<'de> Deserialize<'de> for ChunkGrid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entity::BaseStats;
+    use crate::entity::{ActiveStatModifier, AttributeKind, BaseStats};
     use crate::terrain::base_terrain_fixture;
 
     /// 测试用区块布局：边长 64（满足视口跨度、是 16 与 32 的整数倍），
@@ -1782,6 +1799,116 @@ mod tests {
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
         }
+    }
+
+    #[test]
+    fn 属性修正内层来源的强度变化后世界哈希改变() {
+        // 红/绿测试的「绿」半边，六节存储改法（`active_stat_modifiers`
+        // 从单层 BTreeMap 换成两层）：两个世界的外层完全相同——都恰好
+        // 一项属性（力量）正被修正，来源也是同一个——仅内层记录的
+        // `delta` 不同。若 `hash()` 只混入了外层条目数就结束（漏掉内层
+        // 遍历，见 `WorldState::hash` 文档「`active_stat_modifiers` 是
+        // 两层 BTreeMap」一节警告的那类隐蔽缺口），这两个世界会算出
+        // 相同的哈希——这条断言就是用来测出这类缺口的。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let source = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:brace").expect("合法标识符"));
+
+        let mut world_a = test_world();
+        let mut agent_a = blank_agent(&world_a);
+        agent_a.active_stat_modifiers.insert(
+            AttributeKind::Strength,
+            BTreeMap::from([(
+                source,
+                ActiveStatModifier {
+                    delta: 5,
+                    expires_at: Tick(100),
+                },
+            )]),
+        );
+        world_a.actors.spawn(agent_a);
+
+        let mut world_b = test_world();
+        let mut agent_b = blank_agent(&world_b);
+        agent_b.active_stat_modifiers.insert(
+            AttributeKind::Strength,
+            BTreeMap::from([(
+                source,
+                ActiveStatModifier {
+                    delta: 9,
+                    expires_at: Tick(100),
+                },
+            )]),
+        );
+        world_b.actors.spawn(agent_b);
+
+        // Act & Assert：外层条目数（1 种正被修正的属性）逐位相同，仅
+        // 内层 delta 不同（5 对 9），哈希必须不同。
+        assert_ne!(world_a.hash(), world_b.hash());
+    }
+
+    #[test]
+    fn 属性修正内层来源不同但外层属性相同时世界哈希也不同() {
+        // 与上一条互补：这次外层属性种类数、每种属性的来源数、每条
+        // 修正的 delta/expires_at 全部相同，唯独「来源」这个内层键本身
+        // 不同——若 hash() 只混入 delta/expires_at 却忘了混入内层键
+        // （来源 ContentIndex 本身），这两个世界也会算出相同哈希。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let source_a = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:brace").expect("合法标识符"));
+        let source_b = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:blessing").expect("合法标识符"));
+
+        let mut world_a = test_world();
+        let mut agent_a = blank_agent(&world_a);
+        agent_a.active_stat_modifiers.insert(
+            AttributeKind::Strength,
+            BTreeMap::from([(
+                source_a,
+                ActiveStatModifier {
+                    delta: 5,
+                    expires_at: Tick(100),
+                },
+            )]),
+        );
+        world_a.actors.spawn(agent_a);
+
+        let mut world_b = test_world();
+        let mut agent_b = blank_agent(&world_b);
+        agent_b.active_stat_modifiers.insert(
+            AttributeKind::Strength,
+            BTreeMap::from([(
+                source_b,
+                ActiveStatModifier {
+                    delta: 5,
+                    expires_at: Tick(100),
+                },
+            )]),
+        );
+        world_b.actors.spawn(agent_b);
+
+        // Act & Assert
+        assert_ne!(world_a.hash(), world_b.hash());
+    }
+
+    #[test]
+    fn 空的属性修正映射与逐字段相同的另一个空世界哈希逐位相等() {
+        // 红/绿测试的「红」半边：两个独立构造、`active_stat_modifiers`
+        // 都是空的两层 BTreeMap 的世界，哈希必须逐位相等——证明上面两条
+        // 「内层变了就变」的断言不是因为 hash() 本身不稳定才恰好通过，
+        // 也顺带核实「空外层 BTreeMap 与空的两层嵌套 BTreeMap」在当前
+        // 混入方式下产生相同字节流（外层 `len()` 为零时循环体完全不
+        // 执行，不会因为值类型从单层换成两层而多写任何字节）。
+        // Arrange
+        let mut world_a = test_world();
+        world_a.actors.spawn(blank_agent(&world_a));
+        let mut world_b = test_world();
+        world_b.actors.spawn(blank_agent(&world_b));
+
+        // Act & Assert
+        assert_eq!(world_a.hash(), world_b.hash());
     }
 
     #[test]
