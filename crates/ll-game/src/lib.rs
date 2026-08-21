@@ -32,7 +32,7 @@ use ll_platform::window::{WindowConfig, run};
 
 use app::Demo;
 use content::load_content;
-use world::{GameWorld, build_new_world};
+use world::{GameWorld, build_new_world, rebuild_timeline};
 
 /// 配置文件相对可执行文件所在目录的文件名。格式是 JSON5，不是
 /// JSON——项目所有者 2026-08-20 裁定手写配置统一 JSON5，见
@@ -116,11 +116,18 @@ fn load_or_new_game(paths: &GamePaths, content: &content::LoadedContent) -> Game
         LoadOutcome::Playable(world) => {
             let player = world.player_entity.expect("可游玩的存档必然记录了玩家实体");
             tracing::info!(path = %paths.save.display(), "读档成功，继续游玩");
+            // 时间轴与 noise 同一类「运行期派生数据」，不随
+            // `WorldState` 序列化——按每个存活实体已持久化的
+            // `next_action_at` 重建即可，见
+            // `crate::world::rebuild_timeline` 文档「为什么时间轴不进
+            // 存档」一节。
+            let timeline = rebuild_timeline(&world);
             GameWorld {
                 world,
                 noise: rebuild_noise(),
                 params: default_params(),
                 player,
+                timeline,
             }
         }
         LoadOutcome::ReadOnly(_) => {

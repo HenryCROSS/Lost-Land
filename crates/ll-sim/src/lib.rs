@@ -69,6 +69,16 @@
 //! 留在下游的 `ll-mod::item`，本 crate 只声明「给我一个物品索引，还我
 //! 它的堆叠上限」这个最小接口，与 `skill`/`traits`/`resource_pool`
 //! 同一套依赖倒置手法。
+//!
+//! [`turn`]（世界时钟推进接线批次）：把「弹出时间轴 → 设世界时钟 →
+//! resolve → apply → 清理死者 → 重新排期」这条与具体游戏无关的核心
+//! 回合引擎（[`turn::TurnEngine`]）搬到本 crate——此前它只存在于
+//! `p3_acceptance` 验收 demo 里，`ll-game`（本体二进制）从未接线，
+//! 导致真实游玩时 `world.clock` 永不推进（见该模块文档「为什么这段
+//! 逻辑必须挪进 `ll-sim`」一节的完整论证）。`p3_acceptance` 与
+//! `ll-game` 现在共用同一份实现，各自只保留自己独有的策略。
+//!
+//! [`apply`]：`Effect` 的唯一写入口。
 
 pub mod apply;
 pub mod behavior;
@@ -84,4 +94,5 @@ pub mod skill;
 pub mod skill_overview;
 pub mod timeline;
 pub mod traits;
+pub mod turn;
 pub mod xp_curve;

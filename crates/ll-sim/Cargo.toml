@@ -25,6 +25,12 @@ ll-core = { path = "../ll-core", features = ["serde"] }
 ll-platform = { path = "../ll-platform" }
 ll-world = { path = "../ll-world" }
 serde = { version = "1", features = ["derive"] }
+# `turn::TurnEngine::advance_ai` 在单次调用达到 MAX_STEPS_PER_ADVANCE
+# 仍未轮到受控实体时记一条结构化错误日志——这是「必须保证进展」这道
+# 防线被真正触发时唯一能看见的信号（见该方法文档），不是可选的开发期
+# 工具，故属于 [dependencies] 而非 [dev-dependencies]：`ll-game`（生产
+# 二进制）与 `p3_acceptance`（验收 demo）都要调用这个方法。
+tracing = "0.1"
 
 [dev-dependencies]
 proptest.workspace = true
@@ -39,10 +45,6 @@ serde_json = "1"
 # crate。与 `ll-world` 的 `p2_acceptance` 同样的取舍，见其 Cargo.toml。
 ll-render = { path = "../ll-render" }
 image = { version = "0.25", default-features = false, features = ["png"] }
-# 仅供 p3_acceptance 使用：demo 沿用 ll-render/ll-world 既有 demo 的
-# 结构化日志纪律（窗口生命周期、GPU 资源缺失等按结构化字段记录），
-# 本 crate 的库代码本身不需要日志，故放在 dev-dependencies。
-tracing = "0.1"
 
 [[example]]
 name = "p3_acceptance"

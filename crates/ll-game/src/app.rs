@@ -28,11 +28,12 @@ use ll_render::gpu::GpuContext;
 use ll_render::sprite::{DrawOrder, Layer, footprint_bottom_screen_y, sprite_draw_position};
 use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
-use ll_sim::apply::apply;
-use ll_sim::intent::intent_from_input;
-use ll_sim::resolve::resolve;
+use ll_sim::intent::Intent;
+use ll_sim::turn::TurnEngine;
+use ll_world::entity::EntityId;
 use ll_world::fov::compute_fov;
 use ll_world::space::Space;
+use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
 
 use crate::animation::{self, FALLBACK_SPRITE};
@@ -40,6 +41,20 @@ use crate::content::LoadedContent;
 use crate::layout::{effective_sight_radius, effective_tint, terrain_atlas_key, tile_tint};
 use crate::save::save_game;
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
+
+/// 本体二进制目前唯一的实体是玩家——没有 NPC 可言（行为树属 P7,
+/// 见 `ll_sim::turn` 模块文档同一节），传给
+/// [`ll_sim::turn::TurnEngine::advance_ai`] 的 `ai_intent` 参数因此
+/// 恒不会被调用（时间轴里除了玩家没有别的实体会被弹出）。仍然接线
+/// 而不是干脆跳过 `advance_ai` 调用：一旦未来加入 NPC，只需要把这个
+/// 占位函数换成真正的策略，`Demo::advance` 的调用点不需要改动。
+/// 恒返回 `Intent::Wait`——即使真被调用到，也不会产出任何空效果导致
+/// `ll_sim::turn` 模块文档「必须保证进展」一节描述的死循环
+/// （`Intent::Wait` 恒产出 `Effect::ScheduleNext`，见 `ll_sim::resolve`
+/// 文档）。
+fn no_npc_ai(_world: &WorldState, actor: EntityId, _player: EntityId) -> Intent {
+    Intent::Wait { actor }
+}
 
 /// 每次「放大/缩小」动作激活时，缩放倍率的调整步长。
 ///
@@ -205,6 +220,13 @@ pub struct Demo {
     /// 状态」——与 `ll-sim` 的 `p5_coordinate_acceptance::Demo::anim`
     /// 同一套接线方式，只是本体二进制这一份是独立的运行期实例。
     anim: AnimStateMachine,
+    /// 回合引擎——世界时钟推进的唯一驱动者，见 [`Demo::advance`] 文档
+    /// 「世界时钟为什么会走」一节。由 [`Demo::new`] 从
+    /// `game_world.timeline` 接管（[`std::mem::take`]，见其字段文档），
+    /// 此后 `game_world.timeline` 恒为空，时间轴的权威副本只在本字段
+    /// 里——`GameWorld` 只是「建世界/读档」这一步的搬运容器，不是本
+    /// 引擎持续读写的地方。
+    engine: TurnEngine,
     resources: Option<GpuResources>,
 }
 
@@ -214,7 +236,7 @@ impl Demo {
     /// 本类型不负责「建世界还是读档」这个决定本身。
     pub fn new(
         content: LoadedContent,
-        game_world: GameWorld,
+        mut game_world: GameWorld,
         save_path: PathBuf,
         character_name: String,
         display: DisplayConfig,
@@ -237,6 +259,9 @@ impl Demo {
             idle_clip,
             "玩家动画状态机已装载"
         );
+        // 接管时间轴——见 `Demo::engine` 字段文档：本引擎此后是时间轴
+        // 唯一的权威持有者,`game_world.timeline` 留下的空值不再被读取。
+        let engine = TurnEngine::new(std::mem::take(&mut game_world.timeline));
         Demo {
             content,
             game_world,
@@ -247,6 +272,7 @@ impl Demo {
             display,
             walk_clip,
             idle_clip,
+            engine,
             anim: AnimStateMachine::new(idle_clip, FrameId(0)),
             resources: None,
         }
@@ -259,6 +285,25 @@ impl Demo {
     /// [`animation::update_player_animation`] 文档），因此与缩放、移动
     /// 结算互不依赖，顺序先后不影响正确性，这里的排列只是让「本帧
     /// 输入」的处理顺序读起来更顺。
+    ///
+    /// # 世界时钟为什么会走
+    ///
+    /// 本方法此前直接 `intent_from_input` → `resolve` → `apply`,完全
+    /// 绕开时间轴——`world.clock` 只在 `crate::world::build_new_world`
+    /// 建局那一刻被赋值一次,此后再没有任何生产代码推进它。真实游玩
+    /// 时,昼夜循环、buff 到期、技能冷却、地面物品老化全部靠这个会走
+    /// 的时钟,而它从未走过,是本项目当时最严重的缺陷。
+    ///
+    /// 现在改由 [`TurnEngine::advance_ai`]/[`TurnEngine::try_player_turn`]
+    /// 驱动：先结算排在玩家之前的非受控实体回合（本体二进制目前没有
+    /// NPC,这一步恒是空操作,见 [`no_npc_ai`] 文档),再尝试用本帧输入
+    /// 结算玩家一次行动——`try_player_turn` 内部才会真正
+    /// `world.clock = entry.at`。**这是本仓库回合制的核心手感：玩家不
+    /// 行动,时间就不走**（详见 `ll_sim::timeline` 模块文档「为什么不是
+    /// 『每个实体一轮』的传统回合制」与 `Intent::Wait` 的存在本身——
+    /// 「等待一回合」在纯实时游戏里没有意义,只有回合制才需要一个显式
+    /// 「什么都不做但仍然让时间前进」的意图）。没有按任何方向/等待键
+    /// 的这一帧,`try_player_turn` 直接返回假,时钟原地不动。
     fn advance(&mut self, input: &InputState, frame: FrameId) {
         self.maintain_streaming();
         // 地面物品老化清理（NPC 生命周期批次）——见
@@ -276,13 +321,17 @@ impl Demo {
         );
 
         let player = self.game_world.player;
-        let intent = intent_from_input(player, input);
-        if let Some(intent) = intent {
-            let effects = resolve(&self.game_world.world, &intent);
-            for effect in &effects {
-                apply(&mut self.game_world.world, effect);
-            }
-        }
+        // 本体二进制不渲染伤害飘字（`p3_acceptance` 才有,那是纯呈现层
+        // 的验收效果,见 `ll_sim::turn` 模块文档）,`on_effect` 回调没有
+        // 状态要收集，传一个空操作闭包即可。
+        self.engine.advance_ai(
+            &mut self.game_world.world,
+            player,
+            no_npc_ai,
+            &mut |_, _| {},
+        );
+        self.engine
+            .try_player_turn(&mut self.game_world.world, player, input, &mut |_, _| {});
 
         if let Some(agent) = self.game_world.world.actors.get(player)
             && matches!(agent.current_space, Space::Surface { .. })
@@ -591,5 +640,193 @@ impl AppHandler for Demo {
     fn on_exit(&mut self) {
         tracing::info!("demo exiting");
         self.save_on_exit();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! 世界时钟推进批次的组合断言——这是本任务真正要修的缺陷：
+    //! `Demo::advance`（真实生产入口，不是手搭的测试世界）此前完全不碰
+    //! `world.clock`，昼夜循环、buff 到期、技能冷却、地面物品老化全部
+    //! 因此失效。下面两条测试都跑在 [`test_demo`] 建出的真实
+    //! `Demo`（真实内容装载、真实 `build_new_world`、真实
+    //! `TurnEngine`）上，不是直接摆弄 `WorldState`/`resolve`/`apply`——
+    //! 那种写法只能证明「结算管线本身正确」，证明不了「真的接到了
+    //! 玩家输入这条生产路径上」。
+    //!
+    //! 手工验证过这两条测试确实会红：临时把 `Demo::advance` 里
+    //! `self.engine.advance_ai(...)`/`try_player_turn(...)` 两行注释掉、
+    //! 换回改动前那种直接 `intent_from_input` → `resolve` → `apply`
+    //! （不途经 `TurnEngine`，因此不写 `world.clock`）的写法，两条测试
+    //! 都会失败：第一条因为 `clock` 全程不变，第二条因为 buff 从不到期
+    //! （`derive_stats` 用的 `now` 全程等于建局时刻，恒早于 `expires_at`）。
+    //! 恢复后两条都转绿。
+
+    use super::*;
+    use ll_core::ident::ContentIndex;
+    use ll_core::time::Tick;
+    use ll_platform::input::GameKey;
+    use ll_sim::item::NoItems;
+    use ll_sim::resolve::derive_stats;
+    use ll_world::entity::{ActiveStatModifier, AttributeKind};
+
+    fn test_content() -> LoadedContent {
+        let dir = std::env::temp_dir().join(format!(
+            "ll-game-app-test-content-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
+        let content = crate::content::load_content(&dir, &dir.join("assets"));
+        let _ = std::fs::remove_dir_all(&dir);
+        content
+    }
+
+    /// 建一个真实可用的 `Demo`——`Demo::new` 本身不触碰 GPU/窗口（那些
+    /// 在 `on_resume` 才建，见 [`GpuResources`] 字段文档），因此可以
+    /// 脱离真实窗口直接在单元测试里构造并调用私有的 `advance`。
+    fn test_demo() -> Demo {
+        let content = test_content();
+        let game_world =
+            crate::world::build_new_world(&content, 1).expect("测试用布局满足全部构造前置条件");
+        let save_path = std::env::temp_dir().join(format!(
+            "ll-game-app-test-save-{}.llsave",
+            std::process::id()
+        ));
+        Demo::new(
+            content,
+            game_world,
+            save_path,
+            "测试旅人".to_string(),
+            DisplayConfig::default(),
+        )
+    }
+
+    /// 读出玩家当前结算出的力量值——途经与真实战斗结算
+    /// （`ll_sim::resolve::resolve_attack`）完全相同的
+    /// `ll_sim::resolve::derive_stats` 聚合入口,不是另写一套判断逻辑。
+    fn player_derived_strength(demo: &Demo) -> i32 {
+        let player = demo.game_world.player;
+        let agent = demo
+            .game_world
+            .world
+            .actors
+            .get(player)
+            .expect("玩家仍应存在");
+        let now = demo.game_world.world.clock;
+        derive_stats(
+            agent.stats,
+            &agent.active_stat_modifiers,
+            &agent.equipment,
+            &NoItems,
+            now,
+        )
+        .attribute(AttributeKind::Strength)
+    }
+
+    #[test]
+    fn 连续多次玩家等待后世界时钟真的前进() {
+        // Arrange
+        let mut demo = test_demo();
+        let clock_before = demo.game_world.world.clock;
+        let mut input = InputState::new();
+        input.press(GameKey::Wait);
+
+        // Act：推进三帧，每帧都带着等待键——`was_activated` 只依赖
+        // `just_pressed`/`repeated` 标志位（见 `ll_platform::input`
+        // 文档），本测试不调用 `begin_frame`/`end_frame`，`just_pressed`
+        // 因此在整个循环里保持置位，每一帧都会被 `try_player_turn`
+        // 判定为「等待键激活」并真正消费一次回合——与
+        // `ll_sim::turn::tests` 里驱动 `TurnEngine` 的现成测试同一个
+        // 手法（不模拟按键事件，只构造 `InputState` 的值）。
+        for frame in 0..3u64 {
+            demo.advance(&input, FrameId(frame));
+        }
+
+        // Assert：不是「变了」，是「前进了」——严格大于，不允许倒退。
+        assert!(demo.game_world.world.clock > clock_before);
+    }
+
+    #[test]
+    fn 临时属性修正过期后其加成不再计入结算() {
+        // 比「时钟前进了」更强的一条：验证时钟推进与既有的惰性到期
+        // 判定（`ll_sim::resolve::derive_stats`）真的咬合，不只是
+        // `world.clock` 这个数字在动——单看时钟前进可能被一个「每帧
+        // 直接 +1」之类的假实现骗过,这条测试还要求它与既有到期判定
+        // 生效的那一刻精确对齐。
+        // Arrange：跑两次等待，量出「一次行动」真实推进的 tick 数——
+        // 不写死 `ll-sim` 内部私有的 `BASE_ACTION_COST`,只依赖公开可
+        // 观察的时钟差值,避免测试与结算层的内部常量耦合。
+        //
+        // 第一次等待只是「热身」：玩家的初次可行动时刻就等于建局时的
+        // `world.clock`（`crate::world::spawn_player` 把 `next_action_at`
+        // 设成建局时的 `world.clock`,见其文档),`TurnEngine::perform`
+        // 结算这次弹出的条目时 `world.clock = entry.at` 恰好是「设成
+        // 它已经是的那个值」,不产生可观察的变化——真正能测出「一次
+        // 行动的 tick 代价」要看第二次、第三次行动之间的差值。
+        let mut demo = test_demo();
+        let player = demo.game_world.player;
+        let mut input = InputState::new();
+        input.press(GameKey::Wait);
+        demo.advance(&input, FrameId(0));
+        let clock_after_warm_up = demo.game_world.world.clock;
+        demo.advance(&input, FrameId(1));
+        let clock_after_second_wait = demo.game_world.world.clock;
+        let ticks_per_wait = clock_after_second_wait.0 - clock_after_warm_up.0;
+        assert!(ticks_per_wait > 0, "第二次等待起，世界时钟应当真实推进");
+
+        // 给玩家叠一条力量 +50 的临时修正，到期时刻卡在「刚才那次行动
+        // 结束的时刻」与「下一次行动结束的时刻」正中间——按同一份
+        // dexterity 结算出的行动代价恒定（本用例全程不改属性），下一次
+        // 等待结算后世界时钟必然已经越过这个到期时刻。
+        let source = ContentIndex::default();
+        let expires_at = Tick(clock_after_second_wait.0 + ticks_per_wait / 2);
+        {
+            let agent = demo
+                .game_world
+                .world
+                .actors
+                .get_mut(player)
+                .expect("玩家刚建局，必然存在");
+            agent
+                .active_stat_modifiers
+                .entry(AttributeKind::Strength)
+                .or_default()
+                .insert(
+                    source,
+                    ActiveStatModifier {
+                        delta: 50,
+                        expires_at,
+                    },
+                );
+        }
+        let base_strength = demo
+            .game_world
+            .world
+            .actors
+            .get(player)
+            .expect("玩家仍存在")
+            .stats
+            .strength;
+        assert_eq!(
+            player_derived_strength(&demo),
+            base_strength + 50,
+            "buff 生效期间应体现在结算出的力量值上——这一步只是确认
+             Arrange 本身摆对了，不是本测试真正要验证的断言"
+        );
+
+        // Act：再跑一次等待（第三次）——时钟应当越过 expires_at。
+        demo.advance(&input, FrameId(2));
+
+        // Assert：buff 已过期，结算值应回落到裸属性值。
+        assert_eq!(
+            player_derived_strength(&demo),
+            base_strength,
+            "buff 过期后不应再计入结算——时钟真的推进到了 expires_at \
+             之后，且推进结果真的被既有到期判定读到"
+        );
     }
 }

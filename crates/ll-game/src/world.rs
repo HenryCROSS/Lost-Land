@@ -10,6 +10,7 @@ use std::collections::VecDeque;
 
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
+use ll_sim::timeline::Timeline;
 use ll_world::chunk::ChunkGrid;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::{
@@ -132,7 +133,7 @@ pub fn build_zone_layout() -> Result<ZoneLayout, WorldError> {
 }
 
 /// 新游戏的完整世界：世界状态、噪声源与生成参数（流式加载持续需要）、
-/// 玩家实体 id。
+/// 玩家实体 id、回合时间轴。
 pub struct GameWorld {
     /// 世界状态本身——存档写出/读入的对象。
     pub world: WorldState,
@@ -142,6 +143,44 @@ pub struct GameWorld {
     pub params: GenParams,
     /// 玩家实体 id。
     pub player: EntityId,
+    /// 回合时间轴——喂给 [`ll_sim::turn::TurnEngine::new`] 驱动世界
+    /// 时钟推进,见 [`rebuild_timeline`] 文档「为什么时间轴不进存档」
+    /// 一节：与 `noise`/`params` 同一类「运行期派生数据」,不是
+    /// `WorldState` 的一部分,不参与序列化。
+    pub timeline: Timeline,
+}
+
+/// 从当前世界状态重建时间轴：按 [`WorldState::actors`] 里每个存活
+/// 实体各自持久化的 [`Agent::next_action_at`]，把它排回一条全新的
+/// [`Timeline`]。
+///
+/// # 为什么时间轴不进存档，也不需要进
+///
+/// `Timeline` 本身完全可以派生自 `WorldState` 已经持久化的数据——每个
+/// `Agent` 都随身带着自己的 `next_action_at`（`ll_sim::apply` 的
+/// `Effect::ScheduleNext` 分支唯一的写入点），这正是「谁下次什么时候
+/// 行动」这条信息的权威来源。存档只需要照常序列化 `WorldState`（见
+/// `crate::save::save_game`），读档后用本函数重建出的时间轴与存档前
+/// 那一条在弹出顺序上完全等价——不需要 `Timeline` 自己再序列化一份
+/// 冗余状态,也就不需要为它另开一个 `#[serde(skip)]` 字段。这与
+/// `crate::lib::rebuild_noise`（噪声同样是「按已持久化的种子随时能
+/// 重新派生」的运行期数据）是同一套取舍。
+///
+/// # 弹出顺序与迭代顺序无关，不违反约束 C5
+///
+/// [`ll_world::entity::Arena::iter_with_id`] 按槽位下标顺序
+/// 迭代，不依赖任何哈希容器——但即使换一种迭代顺序调用
+/// [`Timeline::schedule`]，弹出顺序也不会变：`Timeline` 内部是按
+/// `(Tick, EntityId)` 排序的堆（见其模块文档「同刻打破平局」一节），
+/// 弹出顺序只由条目的值决定,与入堆顺序无关。这里选 `iter_with_id`
+/// 只是因为它恰好是最省事的「遍历全部存活实体」的写法,不是为了保证
+/// 顺序。
+pub fn rebuild_timeline(world: &WorldState) -> Timeline {
+    let mut timeline = Timeline::new();
+    for (id, agent) in world.actors.iter_with_id() {
+        timeline.schedule(id, agent.next_action_at);
+    }
+    timeline
 }
 
 /// 建立一局新游戏：区块布局 → 噪声 → 世界状态 → 出生点铺地 → 玩家
@@ -229,12 +268,20 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
     // 缺陷 P5-A 阶段在 `p5_coordinate_acceptance` 里出现过一次，本体
     // 二进制不重演）。
     world.player_entity = Some(player);
+    // 玩家的初次行动排进时间轴——见 `rebuild_timeline` 文档「为什么时间轴
+    // 不进存档」一节：时间轴完全从 `Agent::next_action_at` 派生,
+    // `spawn_player` 已经把玩家的这个字段设成 `world.clock`（新游戏起始
+    // 时刻，而不是字面量 `Tick(0)`,否则玩家第一次行动时 `TurnEngine`
+    // 会把世界时钟倒拨回午夜,见该字段赋值处的注释），此处重建即可拿到
+    // 一条与「玩家现在就能行动」一致的时间轴。
+    let timeline = rebuild_timeline(&world);
 
     Ok(GameWorld {
         world,
         noise,
         params,
         player,
+        timeline,
     })
 }
 
@@ -469,10 +516,17 @@ fn spawn_player(
         .get(content.race_ids.human)
         .map(|view| ll_mod::race::starting_inventory(&view))
         .unwrap_or_default();
+    // 玩家的初次可行动时刻取当前世界时钟，不是字面量 `Tick(0)`——
+    // `build_new_world` 在调用本函数之前已经把 `world.clock` 设成
+    // `NEW_GAME_START_TICK`（早八点，见其赋值处注释）。若这里仍写
+    // `Tick(0)`（午夜），`rebuild_timeline` 派生出的时间轴会让玩家
+    // 第一次行动时 `TurnEngine::perform` 把 `world.clock` 倒拨回午夜
+    // ——时钟不但没有前进，反而先开局倒退了 8 小时。
+    let next_action_at = world.clock;
     world.actors.spawn(Agent {
         pos,
         stats: BaseStats::BASELINE,
-        next_action_at: Tick(0),
+        next_action_at,
         health: Agent::STARTING_HEALTH,
         affiliations: Vec::new(),
         wallet: 0,

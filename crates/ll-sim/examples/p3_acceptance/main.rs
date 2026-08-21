@@ -10,10 +10,11 @@
 //!    `ll_world::fov::compute_fov`，每帧现算不缓存）。
 //! 2. 三个敌人敏捷各不相同（5/10/30，[`ll_world::entity::BaseStats::BASELINE`]
 //!    的敏捷是 10），出手频率肉眼可见地不同——时间轴的核心验收点，见
-//!    `crate::turn::TurnEngine::advance_ai` 文档。
+//!    `ll_sim::turn::TurnEngine::advance_ai` 文档。
 //! 3. 左上角时间轴侧栏显示接下来几次出手顺序。
-//! 4. 攻击与受击：撞向敌人即攻击（`crate::turn::route_player_intent`），
-//!    伤害数字以飘字形式短暂显示在受创单位头顶。
+//! 4. 攻击与受击：撞向敌人即攻击（`ll_sim::turn` 内部的
+//!    `route_move_to_attack`），伤害数字以飘字形式短暂显示在受创单位
+//!    头顶。
 //! 5. 敌人头顶显示名字——由 `ll_world::naming::given_name` 现算，验证
 //!    该模块的纯函数命名真的能用。
 //! 6. 跨南北接缝时遮挡关系正确：`crate::spawn::ENEMY_SEAM_OFFSET` 把
@@ -31,15 +32,17 @@
 //! 表逐项列出：
 //!
 //! - `InputState::was_activated`/`was_just_pressed` → [`ll_sim::intent::intent_from_input`]
-//!   产出 `Option<Intent>`（`crate::turn::TurnEngine::try_player_turn`）。
-//! - `crate::turn::route_player_intent` 把「移动到敌人格」路由成
-//!   [`ll_sim::intent::Intent::Attack`]。
+//!   产出 `Option<Intent>`（`ll_sim::turn::TurnEngine::try_player_turn`）。
+//! - `ll_sim::turn` 内部的 `route_move_to_attack` 把「移动到敌人格」
+//!   路由成 [`ll_sim::intent::Intent::Attack`]。
 //! - [`ll_sim::resolve::resolve`]（`&WorldState`、`&Intent` → `Vec<Effect>`）
 //!   内部查 `world.terrain`/`world.actors`/`action_cost`。
 //! - `for effect in effects { apply(&mut world, &effect) }`
-//!   （`crate::turn::TurnEngine::perform`），全程只有这一处写世界。
+//!   （`ll_sim::turn::TurnEngine` 私有的 `perform`），全程只有这一处
+//!   写世界。
 //! - [`ll_sim::timeline::Timeline::pop_next`] 决定下一个行动者；玩家
-//!   之外全部走固定策略 AI（`crate::turn::ai_intent`）。
+//!   之外全部走固定策略 AI（`crate::turn::ai_intent`，本 demo 自己的
+//!   占位策略）。
 //! - [`ll_world::fov::compute_fov`] 用玩家当前位置与
 //!   `ll_world::light::sight_radius_at` 求出的半径现算视野。
 //! - [`ll_render::camera::Camera::world_to_screen`] 换算屏幕坐标，
@@ -50,9 +53,11 @@
 //! # 文件拆分
 //!
 //! [`layout`] 放不依赖 GPU、也不改动世界数据的纯呈现计算；[`spawn`]
-//! 放出生点搜索与战斗单位生成；[`turn`] 放回合引擎（时间轴推进、玩家
-//! 输入路由、固定策略 AI）；[`font`] 放极简像素字体与图集扩展；
-//! [`png`] 放基准 PNG 落盘；本文件只留 GPU 资源装配、`Demo` 状态与
+//! 放出生点搜索与战斗单位生成；[`turn`] 只留本 demo 独有的固定策略
+//! AI 与伤害飘字——回合引擎本身（时间轴推进、玩家输入路由）已经搬进
+//! `ll_sim::turn`，见该模块文档「为什么这段逻辑必须挪进 `ll-sim`」
+//! 一节；[`font`] 放极简像素字体与图集扩展；[`png`] 放基准 PNG 落盘；
+//! 本文件只留 GPU 资源装配、`Demo` 状态与
 //! [`ll_platform::window::AppHandler`] 接线——与 `p1_acceptance`/
 //! `p2_acceptance` 同样的拆分理由，见各自模块文档。
 
@@ -80,7 +85,9 @@ use ll_render::sprite::{DrawOrder, Layer};
 use ll_render::target::{BlitFilter, LOGICAL_HEIGHT, LOGICAL_WIDTH, RenderTarget, fit_viewport};
 // 走 ll_render 重新导出的 wgpu，理由与 p1_acceptance/p2_acceptance 一致。
 use ll_render::wgpu;
+use ll_sim::effect::Effect;
 use ll_sim::timeline::Timeline;
+use ll_sim::turn::TurnEngine;
 use ll_world::entity::EntityId;
 use ll_world::fov::{VisibleSet, compute_fov};
 use ll_world::light::{ambient_light, sight_radius_at};
@@ -90,7 +97,7 @@ use ll_world::terrain::BaseTerrainIds;
 use png::save_baseline_png;
 use spawn::{Combatant, SpawnedActors, build_world, demo_naming_rules, spawn_actors};
 use std::sync::Arc;
-use turn::{DamagePopup, TurnEngine, tick_popups};
+use turn::{DamagePopup, ai_intent, record_damage_popup, tick_popups};
 
 /// 绘制顺序号：地形瓦片的起始偏移。
 const TERRAIN_ENTITY_BASE: u64 = 1;
@@ -307,20 +314,47 @@ impl Demo {
         if self.player_dead {
             return;
         }
-        let all = self.actors.all();
         let player = self.actors.player.id;
-        self.engine
-            .advance_ai(&mut self.world, player, &mut self.popups);
-        if self.mark_player_dead_if_gone() {
+
+        // 每次只借用 `self.popups`/`self.world`/`self.engine` 各自需要
+        // 的那部分字段,不整体借用 `self`——`mark_player_dead_if_gone`
+        // 在两次 `advance_ai` 之间都要重新核查（见下方调用点注释），
+        // 若 `on_damage` 闭包借着 `self.popups` 的可变引用跨越那次核查
+        // 存活,会与「核查」本身需要的 `&self.world`（本质是 `&self`
+        // 的一部分）冲突——用小括号显式限定每个闭包的存活范围,而不是
+        // 把整个函数体的借用揉在一起。
+        {
+            let popups = &mut self.popups;
+            let mut on_damage = |world: &WorldState, effect: &Effect| {
+                record_damage_popup(world, effect, popups);
+            };
+            self.engine
+                .advance_ai(&mut self.world, player, ai_intent, &mut on_damage);
+        }
+        if Self::player_is_gone(&self.world, player) {
+            self.player_dead = true;
             return;
         }
-        let player_acted =
+
+        let player_acted = {
+            let popups = &mut self.popups;
+            let mut on_damage = |world: &WorldState, effect: &Effect| {
+                record_damage_popup(world, effect, popups);
+            };
             self.engine
-                .try_player_turn(&mut self.world, player, &all, input, &mut self.popups);
+                .try_player_turn(&mut self.world, player, input, &mut on_damage)
+        };
         if player_acted {
-            self.engine
-                .advance_ai(&mut self.world, player, &mut self.popups);
-            if self.mark_player_dead_if_gone() {
+            {
+                let popups = &mut self.popups;
+                let mut on_damage = |world: &WorldState, effect: &Effect| {
+                    record_damage_popup(world, effect, popups);
+                };
+                self.engine
+                    .advance_ai(&mut self.world, player, ai_intent, &mut on_damage);
+            }
+            if Self::player_is_gone(&self.world, player) {
+                self.player_dead = true;
                 return;
             }
         }
@@ -329,20 +363,15 @@ impl Demo {
         }
     }
 
-    /// 若玩家已不在 `world.actors` 里，把 [`Self::player_dead`] 置真并
-    /// 返回真；玩家仍存活则不改动状态、返回假。
-    ///
-    /// 抽成方法而不是在 `advance_turns` 里各写一遍：玩家可能死于
+    /// 玩家是否已不在 `world.actors` 里——取自由函数（读 `&WorldState`
+    /// 而非 `&self`）而不是取 `&mut self` 的方法：玩家可能死于
     /// 「排在玩家之前的敌人回合」或「玩家行动后紧接着结算的敌人回合」
-    /// 这两个不同时机中的任意一个，两处判断逻辑必须完全一致，抽出来
-    /// 才能保证不会有一处漏改。
-    fn mark_player_dead_if_gone(&mut self) -> bool {
-        if self.world.actors.get(self.actors.player.id).is_none() {
-            self.player_dead = true;
-            true
-        } else {
-            false
-        }
+    /// 这两个不同时机中的任意一个,两处判断逻辑必须完全一致,抽出来
+    /// 才能保证不会有一处漏改;只借 `&WorldState` 是为了不与
+    /// `advance_turns` 里仍然存活的 `self.popups`/`self.engine` 借用
+    /// 冲突（见该方法文档）。
+    fn player_is_gone(world: &WorldState, player: EntityId) -> bool {
+        world.actors.get(player).is_none()
     }
 }
 
