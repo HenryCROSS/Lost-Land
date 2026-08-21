@@ -1063,21 +1063,25 @@ mod 四_常见错误 {
 
     /// 文档「五、5 超时中断」——死循环得到 `Err`，不崩溃进程。
     ///
-    /// **已修复，历史记录见下**：本测试曾经记录过 `classify_error`
-    /// （`host.rs`）与 `ScriptError::Interrupted` 变体文档字面表述不一致
-    /// 的一处实测发现——超时实际拿到的是 `ScriptError::Runtime`（消息
-    /// 含 `"Interrupted by user"`，且携带一个字节偏移量），从未真正
-    /// 构造过 `Interrupted` 这个变体，是一处死变体。这处不一致已经
-    /// 在 `classify_error` 里修复（识别消息里的 `"Interrupted by user"`
-    /// 标记，提前返回 `Interrupted`，见其文档「为什么按消息文本而不是
-    /// `ErrorKind` 判断超时中断」一节的完整论证），本测试同步更新为
-    /// 断言修复后的真实行为，不再断言"与文档不符"这个已经不成立的
-    /// 事实。
+    /// **历史记录**：本测试曾经记录过 `classify_error`（`host.rs`）与
+    /// 早期 `ScriptError::Interrupted` 变体文档字面表述不一致的一处
+    /// 实测发现——超时实际拿到的是 `ScriptError::Runtime`（消息含
+    /// `"Interrupted by user"`，且携带一个字节偏移量），从未真正构造
+    /// 过 `Interrupted` 这个变体，是一处死变体。这处不一致先是在
+    /// `classify_error` 里修复成识别消息标记、提前返回 `Interrupted`；
+    /// 后来这个单一变体又被拆成 `Timeout`/`MemoryBudgetExceeded`
+    /// 两个（超时与超预算共用一个变体时，两条独立防线的失败在外部
+    /// 无法区分，见 `classify_error` 文档「`interrupt()` 通道的两个
+    /// 调用点」一节记录的两次真实误诊）。本测试断言的是拆分之后的
+    /// 真实行为：本测试二进制没装 `#[global_allocator]`（见
+    /// `alloc_guard` 模块文档），`alloc_guard` 不可能触发中断，死循环
+    /// 唯一可能的中断来源是 300ms 看门狗超时，因此这里必须拿到
+    /// `Timeout`，不是 `MemoryBudgetExceeded`。
     #[test]
-    fn 死循环返回interrupted变体而不崩溃进程() {
+    fn 死循环返回timeout变体而不崩溃进程() {
         let mut engine = ScriptEngine::new();
         let result = engine.load_source("(define (loop) (loop)) (loop)".to_string());
-        assert_eq!(result, Err(ll_script::ScriptError::Interrupted));
+        assert_eq!(result, Err(ll_script::ScriptError::Timeout));
     }
 
     /// 文档「五、6 字节偏移 → 行号」——加载管理界面据此定位到具体行的

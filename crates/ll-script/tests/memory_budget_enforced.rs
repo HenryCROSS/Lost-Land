@@ -19,6 +19,12 @@
 //! 状态的地方——生产二进制（未来的游戏本体）想要这道防线生效，同样
 //! 需要在自己的 `main.rs` 里装一次 `#[global_allocator]`，见
 //! `ScriptAllocGuard` 文档。
+//!
+//! 同一个理由让本文件成为「内存超预算」与「执行超时」这两种中断能否
+//! 被正确区分（`ScriptError::MemoryBudgetExceeded`/`ScriptError::Timeout`，
+//! 见 `host.rs::classify_error` 文档）的唯一权威验证场所：只有这里的
+//! 内存记账是真实生效的，别处的测试二进制里内存预算永远不会被真正
+//! 触发，「预算超限的错误确实归类成了那个变体」这件事只能在这里断言。
 
 use std::alloc::System;
 
@@ -39,21 +45,30 @@ static ALLOC: ScriptAllocGuard<System> = ScriptAllocGuard(System);
 /// 最初版本用 5,000,000 层，实测在 `cargo test --workspace` 并行跑时
 /// 偶发让下面「预算充足」那条测试失败——排查发现根因不是内存记账算错，
 /// 而是这个深度本身选得太大：`ScriptEngine`（见 `host.rs`）每次调用都套了
-/// 一层 300ms 的 `InterruptHandler` 超时，与本模块的内存预算共用同一条
-/// `interrupt()` 通道（`classify_error` 把两者都归一化成同一个
-/// `ScriptError::Interrupted`，从返回值分不出是哪个触发的）。ADR 0001
-/// 实测非尾递归 1,000,000 层约 59ms、10,000,000 层约 644ms，按此换算，
-/// 5,000,000 层在**完全没有并行负载**时就已经逼近 300ms 这条线；一旦
-/// `cargo test --workspace` 把其余测试二进制、其余 crate 的编译一起挤上
-/// CPU，「预算充足」那条调用真正等到的常常是 300ms 超时打断，而不是
-/// 跑到底——它的名字承诺的是"验证预算机制不会误伤"，实际却在赌调度器
-/// 是否来得及在 300ms 内把这次调用跑完，两件事完全不是一回事。
+/// 一层 300ms 的 `InterruptHandler` 超时。ADR 0001 实测非尾递归 1,000,000
+/// 层约 59ms、10,000,000 层约 644ms，按此换算，5,000,000 层在**完全没有
+/// 并行负载**时就已经逼近 300ms 这条线；一旦 `cargo test --workspace`
+/// 把其余测试二进制、其余 crate 的编译一起挤上 CPU，「预算充足」那条
+/// 调用真正等到的常常是 300ms 超时打断，而不是跑到底——它的名字承诺的
+/// 是"验证预算机制不会误伤"，实际却在赌调度器是否来得及在 300ms 内把
+/// 这次调用跑完，两件事完全不是一回事。
 ///
-/// 两万层不改变两条测试各自要验证的东西：下面 4KB 预算的用例仍然会在
-/// 最初几十次 `cons`（远小于两万层）内触发预算中断；`usize::MAX` 预算
-/// 的用例则把总耗时压到 ADR 0001 数据换算下的毫秒级，即使叠加两个数量级
-/// 的调度延迟也仍有充裕余量留在 300ms 超时线以内——用真实并行负载重复
-/// 跑满 10 次验证过（见提交信息）。
+/// **`ScriptError` 拆分之后，这个坑现在能被直接看见了**（见
+/// `host.rs::classify_error` 文档「`interrupt()` 通道的两个调用点」一
+/// 节——早年内存预算与执行超时共用同一个 `ScriptError::Interrupted`
+/// 变体时，「预算充足」这条测试即使真的撞上 300ms 超时，拿到的错误也
+/// 和"预算真的超了"长得一模一样，只能靠 `is_err()`/`is_ok()` 这种粗
+/// 粒度断言，看不出真相；现在撞上超时会明确拿到
+/// `ScriptError::Timeout`，不会被误当成 `MemoryBudgetExceeded`）。但
+/// **拆分本身不能替代把深度选对**：拆分只是让"分类对不对"这件事本身
+/// 可验证了，不代表可以放任一条名为"预算充足"的测试真的去赌 300ms
+/// 超时——即使分类分对了，`assert!(result.is_ok())` 依然会因为拿到
+/// `Err(Timeout)` 而失败，测试红了但原因和"预算机制"毫无关系。两万层
+/// 这个选择本身仍然是必要的（不是被拆分取代的旧措施）：下面 4KB 预算
+/// 的用例仍然会在最初几十次 `cons`（远小于两万层）内触发预算中断；
+/// `usize::MAX` 预算的用例则把总耗时压到 ADR 0001 数据换算下的毫秒级，
+/// 即使叠加两个数量级的调度延迟也仍有充裕余量留在 300ms 超时线以内——
+/// 用真实并行负载重复跑满 10 次验证过（见提交信息）。
 const ALLOCATING_SCRIPT: &str = r#"
 (define (build n acc)
   (if (= n 0)
@@ -64,7 +79,13 @@ const ALLOCATING_SCRIPT: &str = r#"
 "#;
 
 #[test]
-fn 超出内存预算的脚本被真实中断而非跑到底() {
+fn 超出内存预算的脚本被真实中断且归类为内存预算超限变体() {
+    // 这条测试历史上就是这次拆分要修的坏典型：拆分之前，无论中断
+    // 是内存超预算还是撞上 300ms 超时触发的，返回值都长得一样,断言
+    // 只能停在 `is_err()`——这条测试因此“一直因为错误的原因通过”,
+    // 从未真正验证过内存预算这道防线本身（见文件顶部模块文档与
+    // `host.rs::classify_error` 文档「两次真实误诊」一节）。拆分之后
+    // 这里必须钉住具体变体,而不只是“出错了”。
     // Arrange：先在默认预算（无限制）下把两个函数定义加载好——定义阶段
     // 本身的分配不应该受到接下来设的小预算影响，所以预算要等定义加载
     // 完、真正要执行 blow-budget 之前才调小。
@@ -80,21 +101,34 @@ fn 超出内存预算的脚本被真实中断而非跑到底() {
     // Act
     let result = engine.call_raw("blow-budget", Vec::new());
 
-    // Assert：脚本必须被打断并返回 Err，而不是分配到底跑出结果。
-    assert!(result.is_err());
+    // Assert：不仅要是 Err，还要具体是内存预算变体，且携带的诊断数据
+    // 要真实自洽（预算确实是刚设的 4096，累计分配确实超过了它）。
+    match result {
+        Err(ll_script::ScriptError::MemoryBudgetExceeded {
+            allocated_bytes,
+            budget_bytes,
+        }) => {
+            assert_eq!(budget_bytes, 4096);
+            assert!(allocated_bytes > budget_bytes);
+        }
+        other => panic!("期望 MemoryBudgetExceeded，实际拿到 {other:?}"),
+    }
 }
 
 #[test]
-fn 预算充足时同一脚本能正常跑完() {
+fn 预算充足时同一脚本能正常跑完而不是撞上超时() {
     // 作为上面那条测试的对照组：同样的递归结构，预算给得足够大（远超
     // 两万层链表的实际占用），应当正常返回而不是被误伤——证明「被
     // 打断」确实是预算太小导致的，不是这段脚本本身有问题。
     //
-    // 注意：这条测试断言的是「预算给够时不应该被打断」，不是「脚本一定
-    // 能在某个时间内跑完」——`ScriptEngine::call_raw` 内部还套了一层与
-    // 本模块无关的 300ms 超时（`host.rs` 的 `InterruptHandler`），两种
-    // 打断从返回值上无法区分（见 `ALLOCATING_SCRIPT` 文档）。选一个能在
-    // 该超时窗口内稳定跑完的递归深度，是让这条测试名实相符的前提。
+    // 拆分之前这条测试历史上真的“因为错误的原因失败”过：不是预算
+    // 出了问题，是脚本跑太久撞上了与内存预算完全无关的 300ms 超时（见
+    // 文件顶部 `ALLOCATING_SCRIPT` 文档「为什么是两万层」），当时的
+    // `assert!(result.is_ok())` 只会告诉你“失败了”，看不出撞的是哪
+    // 一堵墙。这里改用 `unwrap_or_else` 把具体的错误变体带进 panic
+    // 消息——万一这条测试将来又在某种极端负载下抖动，第一眼就能确认
+    // 是不是历史那个坑重演（`Timeout`），而不是内存记账真的算错了
+    // （`MemoryBudgetExceeded`）。
     // Arrange
     let mut engine = ScriptEngine::new();
     engine
@@ -106,5 +140,29 @@ fn 预算充足时同一脚本能正常跑完() {
     let result = engine.call_raw("blow-budget", Vec::new());
 
     // Assert
-    assert!(result.is_ok());
+    result.unwrap_or_else(|err| {
+        panic!("预算给够时不应该被中断（更不应该是历史上撞过的那个 300ms 超时坑）：{err:?}")
+    });
+}
+
+#[test]
+fn 超时中断的脚本被归类为超时变体而不是内存预算超限变体() {
+    // 与上面两条互补：拆分的意义就是两条路各测各的——这里专门覆盖
+    // 300ms 看门狗超时那条路径，脚本本身故意不做任何有意义的分配
+    // （纯粹自我调用、不接参数的死循环），即使把预算显式设成
+    // `usize::MAX` 也一样会被打断，证明打断原因确实是墙钟超时,不是
+    // 内存记账,`classify_error` 靠 `alloc_guard` 的线程局部中断原因
+    // 记号区分这两条路（见其文档），不是靠猜测经过了多久。
+    // Arrange：显式把预算设回 usize::MAX——不能依赖默认值，
+    // `MEMORY_BUDGET` 是线程局部状态，libtest 的线程池可能复用了跑过
+    // 上面「预算不足」用例（预算设成 4096）的同一根线程。
+    let mut engine = ScriptEngine::new();
+    set_memory_budget(usize::MAX);
+
+    // Act：纯自我调用、不接收参数、不做任何分配的死循环——300ms 内一定
+    // 跑不完，也一定不会撞上任何合理的内存预算。
+    let result = engine.load_source("(define (loop) (loop)) (loop)".to_string());
+
+    // Assert
+    assert_eq!(result, Err(ll_script::ScriptError::Timeout));
 }

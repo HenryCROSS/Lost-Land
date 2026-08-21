@@ -45,9 +45,10 @@ pub enum LoadStage {
 /// 错误发生的源码位置，尽力而为。
 ///
 /// `line` 是 `Option`：并非所有阶段的失败都定位得到具体行——发现阶段
-/// 失败（目录读不到）、清单 IO 错误只知道文件、脚本超时没有一个能
-/// 归咎的具体位置（见 `ll_script::host::ScriptError` 文档）。宁可让
-/// `line` 诚实地留空，也不要编造一个假的行号。
+/// 失败（目录读不到）、清单 IO 错误只知道文件、脚本被中断（超时或超
+/// 内存预算，两者都没有一个能归咎的具体位置，见
+/// `ll_script::host::ScriptError` 文档）。宁可让 `line` 诚实地留空，
+/// 也不要编造一个假的行号。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLocation {
     /// 出问题的文件路径。

@@ -327,11 +327,36 @@ fn poisoned_identifiers(engine: &Engine) -> HashSet<&'static str> {
 /// 定位，不是简报草稿担心的「只能显示到哪个文件」那种退化情形。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ScriptError {
-    /// 因超时（脚本失控）被 `InterruptHandler` 强制掐断。
+    /// 因执行墙钟时长超过 [`INTERRUPT_TIMEOUT`]，被 `InterruptHandler`
+    /// 的看门狗线程强制掐断——脚本失控（死循环）或单纯计算量太大。
     ///
-    /// 没有携带偏移量：超时是「整份脚本跑太久」，不是某一行的问题，
-    /// 不存在一个能归咎的具体位置。
-    Interrupted,
+    /// **曾经与内存预算共用同一个 `Interrupted` 变体**（见
+    /// [`classify_error`] 文档「两条路曾经共用一个变体，为什么必须拆」
+    /// 一节）——拆分之后，`Timeout` 专指墙钟超时这一条路。
+    ///
+    /// 没有携带任何诊断数据（既没有字节偏移，也没有耗时数字）：中断
+    /// 发生在任意一条字节码上，不是某一行源码的错，不存在一个能归咎
+    /// 的具体位置；至于"跑了多久"——`InterruptHandler` 的看门狗线程在
+    /// `steel-core` 内部（本 crate 不能修改，见 [`classify_error`]
+    /// 文档），它只知道"等了固定的 [`INTERRUPT_TIMEOUT`] 还没等到完成
+    /// 信号"，不追踪单次调用的真实耗时——能报告的"耗时"永远是那个
+    /// 固定常量本身，不是任何有信息量的每次调用数据，因此干脆不带。
+    Timeout,
+    /// 因单次调用的净分配字节数超过
+    /// [`crate::alloc_guard::set_memory_budget`] 设定的预算，被本 crate
+    /// 自己的内存守卫（[`crate::alloc_guard`]）强制掐断。
+    ///
+    /// 携带触发那一刻的诊断数据——与 [`Timeout`](Self::Timeout) 不同，
+    /// 这份数据本来就是内存记账过程的副产品（[`crate::alloc_guard`]
+    /// 本来就在每次分配时精确维护累计字节数），不是额外花代价采集的，
+    /// 没有理由不带。
+    MemoryBudgetExceeded {
+        /// 触发中断那一刻，当前线程累计的净分配字节数（已经越界之后
+        /// 的值，不是预算本身）。
+        allocated_bytes: usize,
+        /// 触发中断那一刻生效的预算，字节。
+        budget_bytes: usize,
+    },
     /// 调用 Rust 侧注册函数时缺参或多参。
     ArityMismatch(String, Option<u32>),
     /// 源码语法错误，编译阶段就失败，从未开始求值。
@@ -341,10 +366,13 @@ pub enum ScriptError {
 }
 
 impl ScriptError {
-    /// 取出携带的源码字节偏移量，`Interrupted` 恒为 `None`。
+    /// 取出携带的源码字节偏移量，两个中断变体
+    /// （[`Timeout`](Self::Timeout)/[`MemoryBudgetExceeded`](Self::MemoryBudgetExceeded)）
+    /// 恒为 `None`——理由分别见各自的变体文档。
     pub fn byte_offset(&self) -> Option<u32> {
         match self {
-            ScriptError::Interrupted => None,
+            ScriptError::Timeout => None,
+            ScriptError::MemoryBudgetExceeded { .. } => None,
             ScriptError::ArityMismatch(_, offset)
             | ScriptError::ParseError(_, offset)
             | ScriptError::Runtime(_, offset) => *offset,
@@ -355,7 +383,14 @@ impl ScriptError {
 impl std::fmt::Display for ScriptError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            ScriptError::Interrupted => write!(f, "脚本执行超时被中断"),
+            ScriptError::Timeout => write!(f, "脚本执行超时被中断"),
+            ScriptError::MemoryBudgetExceeded {
+                allocated_bytes,
+                budget_bytes,
+            } => write!(
+                f,
+                "脚本内存预算超限被中断：已分配 {allocated_bytes} 字节，预算 {budget_bytes} 字节"
+            ),
             ScriptError::ArityMismatch(msg, _) => write!(f, "参数个数不匹配：{msg}"),
             ScriptError::ParseError(msg, _) => write!(f, "脚本语法错误：{msg}"),
             ScriptError::Runtime(msg, _) => write!(f, "脚本运行时错误：{msg}"),
@@ -368,8 +403,10 @@ impl std::error::Error for ScriptError {}
 /// `InterruptHandler` 掐断超时脚本时，`steel-core` 内部构造的错误消息
 /// 固定含有这个子串（`steel_vm/vm.rs`：
 /// `format!("Thread: {:?} - Interrupted by user", ...)`）——这是**唯一**
-/// 可靠区分「这次 `Err` 是不是超时中断」的信号，见 [`classify_error`]
-/// 文档「为什么按消息文本而不是 `ErrorKind` 判断」一节。
+/// 可靠区分「这次 `Err` 是不是某种中断（超时或超预算）」的信号，见
+/// [`classify_error`] 文档「为什么按消息文本而不是 `ErrorKind` 判断」
+/// 一节。命中这个标记只回答"是不是中断"，回答不了"是哪一种"——那是
+/// [`classify_error`] 文档下一节的问题。
 const INTERRUPTED_MESSAGE_MARKER: &str = "Interrupted by user";
 
 /// 把 Steel 的 [`SteelErr`] 归类成 [`ScriptError`]。
@@ -381,30 +418,65 @@ const INTERRUPTED_MESSAGE_MARKER: &str = "Interrupted by user";
 /// `TypeMismatch`、`ContractViolation` 等）现阶段没有差异化处理需求，
 /// 统一归入 `Runtime`，需要时再拆细。
 ///
-/// # 为什么按消息文本而不是 `ErrorKind` 判断超时中断
+/// # 为什么按消息文本而不是 `ErrorKind` 判断中断
 ///
-/// 曾经的实现留了一个 [`ScriptError::Interrupted`] 变体但从未在这里
+/// 曾经的实现留了一个 `ScriptError::Interrupted` 变体但从未在这里
 /// 构造过它——`InterruptHandler` 掐断死循环时，`steel-core`
 /// （`steel_vm/vm.rs:1796`）用 `stop!(Generic => ...)` 抛出错误，
 /// `ErrorKind::Generic` 是整个 `steel-core` 里最常见的兜底错误种类
 /// （核实：`grep -rc "stop!(Generic" steel-core-0.8.2/src` 命中三十多个
 /// 文件，从数字类型错误到端口 I/O 错误全都用它），落进上面 `match` 的
-/// `_` 分支得到 `Runtime`，从未真正产出过 `Interrupted`——这正是
-/// `ScriptError::Interrupted` 曾经是一个死变体的根因：文档说它是超时
-/// 变体，实现却从未构造它，真实超时永远走 `Runtime`（消息含
-/// `"Interrupted by user"` 且带一个语义上没有意义的字节偏移，见该
-/// 变体文档「没有携带偏移量」一节的论证——中断发生在任意一条字节码
-/// 上，不是某一行源码的错，偏移量因此不该被当作可归咎的位置）。
-/// `ErrorKind` 给不出任何区分度，能用来识别超时的唯一信号是这条
-/// 错误消息本身固定包含的 [`INTERRUPTED_MESSAGE_MARKER`] 子串——这里
-/// 选择让 `Interrupted` 真正可达（更符合文档承诺、也让
-/// `crate::pipeline`（`ll-mod`）的 `classify_script_stage`
-/// 能把真正的超时正确分类为「脚本本身没跑完」而不是与「装载期注册
-/// 校验失败」共用 `Runtime` 这个笼统分类），而不是删掉这个变体——
-/// 判断依据虽然是消息文本匹配、天生比 `ErrorKind` 判断脆弱（未来
-/// `steel-core` 版本若改了这句话的英文措辞，识别会静默失效、退化回
-/// 旧行为），但这是当前版本唯一可用的信号，且退化后果只是「重新变回
-/// 死变体之前的样子」，不是错误分类或安全问题，可接受。
+/// `_` 分支得到 `Runtime`，从未真正产出过 `Interrupted`——这是
+/// `Interrupted` 曾经是一个死变体的根因：文档说它是超时变体，实现却
+/// 从未构造它，真实超时永远走 `Runtime`（消息含 `"Interrupted by
+/// user"` 且带一个语义上没有意义的字节偏移）。`ErrorKind` 给不出任何
+/// 区分度，能用来识别中断的唯一信号是这条错误消息本身固定包含的
+/// [`INTERRUPTED_MESSAGE_MARKER`] 子串——判断依据虽然是消息文本匹配、
+/// 天生比 `ErrorKind` 判断脆弱（未来 `steel-core` 版本若改了这句话的
+/// 英文措辞，识别会静默失效、退化成把中断错误落进 `Runtime` 这个笼统
+/// 分类），但这是当前版本唯一可用的信号，且退化后果不是错误分类或
+/// 安全问题，可接受。
+///
+/// # `interrupt()` 通道的两个调用点，与两者共用一个变体曾经造成的真实
+/// # 误诊（本节是拆分 `Timeout`/`MemoryBudgetExceeded` 的直接起因）
+///
+/// `ThreadStateController::interrupt()`（触发上面这条消息的根源）在
+/// 当前代码库里穷尽核实过只有两个真实可达的调用点：
+///
+/// 1. `InterruptHandler` 的看门狗线程（`steel-core`
+///    `steel_vm/interrupt.rs`，本 crate 不能修改）——`run_with_timeout`
+///    的调用没能在 [`INTERRUPT_TIMEOUT`] 内送回完成信号时触发，运行在
+///    **另一根**看门狗线程上。
+/// 2. [`crate::alloc_guard::record_alloc`]——单次调用的净分配字节数超出
+///    [`crate::alloc_guard::set_memory_budget`] 设定的预算时触发，运行
+///    在脚本自己执行的那根线程上（分配本来就发生在那根线程）。
+///
+/// （`steel/threads` 模块的 `thread-interrupt` 是第三个技术上存在的
+/// 调用点，但该模块在 [`FULLY_POISONED_MODULES`] 里被整体清空，脚本
+/// 没有能力触达，不构成真实来源。）
+///
+/// 两者最终都只是把同一个原子状态置成 `Interrupted`，VM 在下一次安全
+/// 点检查时观察到就抛出同一条含 [`INTERRUPTED_MESSAGE_MARKER`] 的
+/// 消息——**从这条消息本身完全无法反推是哪一个调用点触发的**。这不是
+/// 假设性的缺口：本 crate 的
+/// `crates/ll-script/tests/memory_budget_enforced.rs` 曾经因为这个
+/// 耦合真实误诊过两次——"预算不足"那条用例一直因为撞上 300ms 超时（而
+/// 不是真的验证了内存记账）而"碰巧"通过；"预算充足"那条则曾经因为
+/// 递归深度选得太大、在高并行负载下真的被超时打断而失败，两次事故都
+/// 与"内存预算是否生效"这件事本身无关，纯粹是分类信息不够精细掩盖了
+/// 真相。
+///
+/// 解法是显式记号，不是启发式：[`crate::alloc_guard`] 在调用点 2
+/// **触发 `interrupt()` 之前**，在当前线程的线程局部变量里显式立一个
+/// 记号（[`crate::alloc_guard::MemoryInterruptInfo`]，见其
+/// `INTERRUPT_REASON` 文档）。调用点 1（`steel-core` 内部代码）不知道
+/// 也不会去设这个记号——因此下面 `take_interrupt_reason()` 读到
+/// `Some(_)` 就唯一对应调用点 2，读到 `None` 就唯一对应调用点 1（穷尽
+/// 覆盖了上面核实过的两个真实来源）。这不是「跑了大约 300ms 就当作
+/// 超时」那种按耗时猜测的启发式——记号的设置严格发生在决定"要不要
+/// 中断"的同一次函数调用里，读取严格发生在"确认这次错误确实是中断"
+/// 之后，两者之间没有时间窗口或调度延迟能影响这个记号本身的值,高
+/// 负载只会让两条路各自变慢，不会让记号出现在错误的地方。
 fn classify_error(err: SteelErr) -> ScriptError {
     use steel::rerrs::ErrorKind;
 
@@ -414,7 +486,13 @@ fn classify_error(err: SteelErr) -> ScriptError {
     let offset = err.span().map(|span| span.start());
     let message = err.to_string();
     if message.contains(INTERRUPTED_MESSAGE_MARKER) {
-        return ScriptError::Interrupted;
+        return match alloc_guard::take_interrupt_reason() {
+            Some(reason) => ScriptError::MemoryBudgetExceeded {
+                allocated_bytes: reason.allocated_bytes,
+                budget_bytes: reason.budget_bytes,
+            },
+            None => ScriptError::Timeout,
+        };
     }
     match err.kind() {
         ErrorKind::ArityMismatch => ScriptError::ArityMismatch(message, offset),
@@ -518,8 +596,10 @@ impl ScriptEngine {
     ///    标识符都在 [`Self::allowed_identifiers`] 或脚本自己的局部作用域
     ///    里，这是权威防线。
     /// 3. **内存执行预算**（[`crate::alloc_guard`]）——真正求值前重置计数
-    ///    器、把本引擎的中断通道登记为「当前线程活跃通道」，求值结束后
-    ///    立刻解除登记，见 [`Self::alloc_controller`](Self) 字段文档。
+    ///    器、重置「超预算中断」诊断记号、把本引擎的中断通道登记为「当前
+    ///    线程活跃通道」，求值结束后立刻解除登记，见
+    ///    [`Self::alloc_controller`](Self) 字段文档与
+    ///    [`classify_error`] 文档「`interrupt()` 通道的两个调用点」。
     /// 4. 通过前面几关才真正 `run`，套着中断防线执行——脚本本身死循环
     ///    也会在预算耗尽后返回 `Err`。
     ///
@@ -540,7 +620,12 @@ impl ScriptEngine {
         // 步骤 3：登记内存守卫。窗口只覆盖下面这一次 `run`——前面两步
         // 的解析/展开分配不该算进脚本自己的预算（见 alloc_guard 模块
         // 文档「MEMORY_BUDGET 默认排除引擎构造本身」同一条精神）。
+        // `reset_interrupt_reason` 必须与 `reset_alloc_counter` 一起在
+        // 每次调用前清空：理由相同——上一次调用若曾经因超预算触发过
+        // 中断，遗留的记号不清空会污染这一次的 `classify_error` 判断
+        // （见 `alloc_guard::reset_interrupt_reason` 文档）。
         alloc_guard::reset_alloc_counter();
+        alloc_guard::reset_interrupt_reason();
         alloc_guard::set_active_controller(self.alloc_controller.clone());
 
         let engine = &mut self.engine;
@@ -561,6 +646,7 @@ impl ScriptEngine {
     /// 绝不 panic。降级策略由调用方决定。
     pub fn call_raw(&mut self, name: &str, args: Vec<SteelVal>) -> Result<SteelVal, ScriptError> {
         alloc_guard::reset_alloc_counter();
+        alloc_guard::reset_interrupt_reason();
         alloc_guard::set_active_controller(self.alloc_controller.clone());
 
         let engine = &mut self.engine;
@@ -718,13 +804,17 @@ mod tests {
     }
 
     #[test]
-    fn 死循环脚本被中断时归类为interrupted而不是runtime() {
+    fn 死循环脚本被中断时归类为timeout而不是runtime() {
         // 曾经的死变体：`ScriptError::Interrupted` 从未被 `classify_error`
         // 构造过，真实超时一律落进 `Runtime`（见 `classify_error` 文档
-        // 「为什么按消息文本而不是 ErrorKind 判断超时中断」一节）。这条
-        // 测试钉住修复后的行为——不只是断言 `is_err()`（那条既有测试
+        // 「为什么按消息文本而不是 ErrorKind 判断中断」一节）。这条测试
+        // 钉住修复后的行为——不只是断言 `is_err()`（那条既有测试
         // 「死循环脚本返回错误而非崩溃」测的是更粗的粒度），而是断言
-        // 具体拿到的是哪一个变体。
+        // 具体拿到的是哪一个变体。本测试二进制没装
+        // `#[global_allocator]`（见 `alloc_guard` 模块文档），
+        // `alloc_guard` 永远不会因为超预算触发中断，这里的死循环唯一
+        // 可能的中断来源就是 300ms 看门狗超时，因此 `Timeout` 是这条
+        // 测试环境下唯一能观察到的分类。
         // Arrange
         let mut engine = ScriptEngine::new();
 
@@ -732,15 +822,15 @@ mod tests {
         let result = engine.load_source("(define (loop) (loop)) (loop)".to_string());
 
         // Assert
-        assert_eq!(result, Err(ScriptError::Interrupted));
+        assert_eq!(result, Err(ScriptError::Timeout));
     }
 
     #[test]
-    fn interrupted变体不携带字节偏移量() {
+    fn timeout变体不携带字节偏移量() {
         // 中断发生在任意一条字节码上，不是某一行源码的错——即使
         // `steel-core` 底层的 `SteelErr` 本身带了一个 span（`classify_error`
         // 因为命中消息标记而提前 return，从未把这个 span 装进
-        // `ScriptError::Interrupted`），`byte_offset()` 恒为 `None`，见
+        // `ScriptError::Timeout`），`byte_offset()` 恒为 `None`，见
         // 该变体文档。
         // Arrange
         let mut engine = ScriptEngine::new();
@@ -750,8 +840,8 @@ mod tests {
 
         // Assert
         match result {
-            Err(err @ ScriptError::Interrupted) => assert_eq!(err.byte_offset(), None),
-            other => panic!("期望 Interrupted，实际 {other:?}"),
+            Err(err @ ScriptError::Timeout) => assert_eq!(err.byte_offset(), None),
+            other => panic!("期望 Timeout，实际 {other:?}"),
         }
     }
 

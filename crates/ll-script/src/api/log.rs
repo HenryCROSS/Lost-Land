@@ -25,7 +25,8 @@ pub struct ScriptDiagnostic {
     /// 严重程度。
     pub severity: Severity,
     /// 触发错误的源码字节偏移量，来自 [`ScriptError::byte_offset`]；
-    /// `None` 表示这类错误（如超时）天生没有一个能归咎的具体位置。
+    /// `None` 表示这类错误（如超时、如内存预算超限）天生没有一个能
+    /// 归咎的具体位置。
     pub byte_offset: Option<u32>,
 }
 
@@ -65,10 +66,19 @@ impl ScriptDiagnostic {
     }
 
     /// 从一次脚本调用失败构造诊断。
+    ///
+    /// `Timeout`/`MemoryBudgetExceeded` 与 `Runtime` 同归 `Warning`：
+    /// 三者共同的特点是「单次调用失败，但脚本引擎本身仍然可用」——不
+    /// 像语法错误/缺参那样意味着整份 mod 源码就没编译通过。拆分成两个
+    /// 变体只是为了让调用方（`ll-mod` 的 `classify_script_stage`、以及
+    /// mod 作者读到的诊断文本）能分辨"因为什么"失败，不改变"失败严重
+    /// 到什么程度"这个判断——两者是两个独立的维度。
     pub fn from_error(source: impl Into<String>, error: &ScriptError) -> Self {
         let severity = match error {
             ScriptError::ParseError(..) | ScriptError::ArityMismatch(..) => Severity::Error,
-            ScriptError::Interrupted | ScriptError::Runtime(..) => Severity::Warning,
+            ScriptError::Timeout
+            | ScriptError::MemoryBudgetExceeded { .. }
+            | ScriptError::Runtime(..) => Severity::Warning,
         };
         ScriptDiagnostic {
             source: source.into(),
@@ -103,6 +113,33 @@ mod tests {
 
         // Assert
         assert_eq!(diagnostic.severity, Severity::Error);
+    }
+
+    #[test]
+    fn 超时错误归类为警告级严重程度() {
+        // Arrange
+        let error = ScriptError::Timeout;
+
+        // Act
+        let diagnostic = ScriptDiagnostic::from_error("测试mod", &error);
+
+        // Assert
+        assert_eq!(diagnostic.severity, Severity::Warning);
+    }
+
+    #[test]
+    fn 内存预算超限错误归类为警告级严重程度() {
+        // Arrange
+        let error = ScriptError::MemoryBudgetExceeded {
+            allocated_bytes: 200,
+            budget_bytes: 100,
+        };
+
+        // Act
+        let diagnostic = ScriptDiagnostic::from_error("测试mod", &error);
+
+        // Assert
+        assert_eq!(diagnostic.severity, Severity::Warning);
     }
 
     #[test]

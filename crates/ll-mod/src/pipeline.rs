@@ -400,9 +400,10 @@ fn load_one_script(
 fn classify_script_stage(err: &ScriptError) -> LoadStage {
     match err {
         ScriptError::Runtime(..) => LoadStage::Register,
-        ScriptError::ParseError(..) | ScriptError::ArityMismatch(..) | ScriptError::Interrupted => {
-            LoadStage::LoadScript
-        }
+        ScriptError::ParseError(..)
+        | ScriptError::ArityMismatch(..)
+        | ScriptError::Timeout
+        | ScriptError::MemoryBudgetExceeded { .. } => LoadStage::LoadScript,
     }
 }
 
