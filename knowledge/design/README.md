@@ -230,6 +230,8 @@
 
 [天赋/特性系统](trait-system.md) 不属于前面任何一条依赖链，但依赖面最广，建议放在最后读，且读之前建议已经读过[种族系统](race-system.md)、[职业/技能树/副职/任务系统](class-skill-quest-system.md)、[载具与骑乘系统](vehicle-and-mounting.md)、[增益与通用触发器](buffs-and-triggers.md)、[伤害公式 mod API](damage-formula-mod-api.md) 五份——它是这五份文档已经各自摸到一半的「种族/职业授予了什么」这个问题第一次被合起来正面回答：先读「一、现状核实」看清种族/职业/副职现有字段为什么表达不了天赋的灵魂，再读「二、天赋与 buff 是不是同一个东西」——这一节顺带补上了 `buffs-and-triggers.md` 从未定义过的 `ActiveEffect.def` 具体类型，是全篇最核心的一次跨文档缝合；「三、天赋效果的三类表达」最长也最重要，「改变规则本身」一节给出的骰子取数钩子与条件式规则修正的诚实边界值得细读；最后读「九、六个示例」与「十、现在能做的 vs 等什么」——后者是目前索引里列出前置依赖最多的一份清单，建议对照着读，能看出天赋系统本身是一层很薄的粘合层，真正的深度缺口全部在它引用的既有系统里。
 
+[资源池与休息系统](resource-pools-and-rest.md) 建在天赋系统之上，建议紧接它读完之后就读——它直接回应天赋系统七节点名的缺口（法术位/法力池当时完全无法表达），核心结论是把资源池容量做成天赋能授予的第四类效果（`granted_resource_pools`，需要天赋系统文档补一个待办字段，本文档未越权代改），法力池/法术位/血池三种形态里只有前两者共享一张注册表，血池刻意排除在外、直接复用 `Agent.health`；「二、三种资源形态怎么统一表达」与「四、恢复节奏」两节的判断依据同一条 ADR 0021，建议与天赋系统五节"亚种要不要照抄副职"对照读；「七、八节」的休息事件把 `Intent::Wait` 既有机制扩展出一个可中断、防刷的休息动作，不新造一整套平行机制。
+
 ---
 
 ## 五、落地状态速览
@@ -262,5 +264,6 @@
 | 行动能力与输入上下文 | 纯设计，代码中无任何对应类型；它要接线的对象——`InputContext`（`crates/ll-platform/src/keybind.rs`，已落地但仅 `Gameplay` 一个变体）、`InputState`/`InputState::clear()`（`crates/ll-platform/src/input.rs`，已落地，现用于窗口失焦，本文档提议复用于输入上下文切换）、`resolve_move`/`resolve_attack`（`crates/ll-sim/src/resolve.rs`，已落地，本文档提议在函数顶部插入能力检查）——均已核实现状；`ActionCapability`/`UiMode` 栈本身依赖 buff 系统（`buffs-and-triggers.md`）与背包 UI（P6/P7）尚未落地的基础设施，详见文档「五、阶段归属」 |
 | 载具与骑乘系统 | 纯设计，代码中无任何对应类型；它大量复用的既有落地机制——`Timeline::remove`/`schedule`（`crates/ll-sim/src/timeline.rs`）、`Agent.active_stat_modifiers`/`unlocked_skills`/`skill_cooldowns`（`crates/ll-world/src/entity/stats.rs`，均已进 `WorldState::hash()`）、`TerrainTable`（`crates/ll-world/src/terrain.rs`）、`Footprint`/`Pivot`/`DrawOrder`（`crates/ll-render/src/sprite.rs`）——均已核实现状；它要接线但确认尚未落地的对象——`resolve_attack` 读取 `active_stat_modifiers`（`crates/ll-sim/src/resolve.rs`，目前仍是攻击力恒读力量、防御恒为零的占位实现，与[三轴战斗结算](combat-three-axis.md)已核实的现状一致）——见文档「一、现状核实」与「七、P6 必须先提供什么」 |
 | 天赋/特性系统 | 纯设计，代码中无任何对应类型；**核实更正了一处此前文档的过期记录**——`race-system.md`「落地状态」写 `RaceDef` 未落地，本文档写作时 `RaceDef`/`RaceTable`（`crates/ll-mod/src/race.rs`）**已经落地**；`ClassDef`/`SubclassDef`（`crates/ll-mod/src/class.rs`/`subclass.rs`）均已落地但只有标签字段，无任何效果载荷；`ResourceKind`/`SkillEffect`（`crates/ll-sim/src/skill.rs`）已核实为扁平二资源、三效果变体、无休息机制；全项目检索确认「等级」这个概念当前不存在于任何字段 |
+| 资源池与休息系统 | 纯设计，代码中无任何对应类型；依赖链三层（资源池→天赋→等级）全部是纯设计，需要 `trait-system.md` 补一个待办字段（`TraitDef.granted_resource_pools`）才能真正落地，本文档无该文件写权限，只标注了精确的补丁需求；`ResourceKind`/`ResourceCost`/`Agent.mana`/`Agent.stamina`/`Agent.health`（`crates/ll-sim/src/skill.rs`、`crates/ll-world/src/entity/agent.rs`）均已核实现状 |
 
 三份最早冻结、「已部分落地」的文档中，真正验证过的只是 P3 阶段要求的字段布局与钱包机制；描述战斗结算、经济博弈、社会涌现的大部分内容仍是纸上设计，随时可能在 P5/P8/P9 实现时被推翻或调整（[2026-08-18 规格修订] 原 P7/P8 顺移为 P8/P9）。中间四份里，种族系统与命名系统同样只有字段/函数布局落地，核心机制（现算公式、i18n 对齐、改名事件）尚未验证；世界历史生成与身份空间目前完全是纸面设计。第十份（坐标系与空间模型）虽是纯设计，但它要替换的对象是 P2 阶段验证过的真实代码，不是在空白处新增——这与前九份「在已有底座上补新系统」的性质不同，实现时的返工面积也更大，见该文档「对既有 P2 成果的影响范围」一节的诚实评估。
