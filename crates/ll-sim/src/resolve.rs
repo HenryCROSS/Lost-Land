@@ -52,7 +52,7 @@
 
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
-use ll_world::entity::EntityId;
+use ll_world::entity::{ActiveStatModifier, AttributeKind, EntityId};
 use ll_world::history::KillCause;
 use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
@@ -109,6 +109,50 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
     let dexterity = i64::from(dexterity).max(1);
     let speed = i64::from(BASELINE_EFFECTIVE_SPEED) * dexterity / BASELINE_DEXTERITY;
     speed.clamp(1, i64::from(u32::MAX)) as u32
+}
+
+/// 给定某一项属性的裸值,查一次 [`ll_world::entity::Agent::active_stat_modifiers`]
+/// ，算出这一时刻真正生效的值——供任何要读「这项属性当前实际是多少」
+/// 的调用方共用，不要在各自的调用点各写一遍同样的到期判定。
+///
+/// 首个消费者是 [`resolve_attack`] 的攻击力（力量）；`knowledge/design/
+/// combat-three-axis.md` 四节已经点名防御方将来也要从 `derive_stats`
+/// 走同一条接口约定，`knowledge/design/vehicle-and-mounting.md` 六节
+/// 点名载具的 `stat_modifiers` 同样落在 `active_stat_modifiers` 这份
+/// 数据上——三处未来调用点共享的正是本函数这段「查表 + 到期判定」，
+/// 这就是抽出一个函数而不是让 `resolve_attack` 私自内联的理由（ADR
+/// 0021：抽象要有真实可共享的算法支撑，这里确实有）。
+///
+/// # 为什么不是完整的 `derive_stats`
+///
+/// `attribute-system.md` §七定义的完整签名是 `derive_stats(基础属性,
+/// 装备, 状态效果, 负重) -> DerivedStats`——「装备」（`StatBonus` 累加）
+/// 与「负重」两个输入目前都还没有任何字段落地（`combat-three-axis.md`
+/// 四节：`StatBonus` 的正式定义与累加逻辑留给 P6 装备批次）。提前拼出
+/// 一个四个入参俱全、实际只有一个入参有真数据的 `derive_stats`，只会
+/// 让另外两个入参变成没有调用者会填的死参数。本函数只做「状态效果」
+/// 这一个输入——[`ActiveStatModifier`] 已经存在、已经有真实写入方
+/// （技能的 `SkillEffect::TemporaryStatModifier`，见 [`resolve_use_skill`]）
+/// ——这是本批次唯一有真实数据支撑的部分。`derive_stats` 落地后，本
+/// 函数应该被它的「状态效果」分支取代，调用点不必改动（与
+/// [`effective_speed_from_dexterity`] 同一条纪律，见其文档）。
+///
+/// # 惰性到期判定
+///
+/// `expires_at.0 > now.0` 才算仍然生效——与 [`resolve_use_skill`] 冷却
+/// 判定（其「门二」注释）同一条比较方向：世界时钟达到或超过到期时刻时
+/// 视为已失效，直接回落到裸属性值，不做任何清理，见 [`ActiveStatModifier`]
+/// 文档「惰性到期判定，不存『当前是否生效』」一节。
+fn effective_attribute(
+    base: i32,
+    kind: AttributeKind,
+    modifiers: &std::collections::BTreeMap<AttributeKind, ActiveStatModifier>,
+    now: Tick,
+) -> i32 {
+    match modifiers.get(&kind) {
+        Some(modifier) if modifier.expires_at.0 > now.0 => base + modifier.delta,
+        _ => base,
+    }
 }
 
 /// 玩家每走一步，探索记忆按这个半径覆盖新位置的可见格（见
@@ -511,11 +555,18 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 直接攻击一个已知目标（与 [`resolve_move`] 的隐式派生分开的显式路径，
 /// 供已经知道目标的调用方——例如已锁定目标的 AI ——直接使用）。
 ///
+/// 攻击力：裸力量值经 [`effective_attribute`] 叠加
+/// [`ll_world::entity::Agent::active_stat_modifiers`] 里力量项的临时
+/// 修正（技能增益/削弱由此接线生效，见该函数文档）。
+///
 /// 防御与穿透：本批次 `Agent` 还没有护甲字段（护甲属于装备系统，
-/// P5 才落地），故这里固定传 `defense = 0`、`pen = Penetration::NONE`。
-/// [`damage_after_defense`] 本身的穿透/下限行为已经由 `combat.rs` 的
-/// 单元测试独立验证正确，这里只是先把接线接上；装备落地后只需把
-/// 这两个占位值换成从目标身上算出的真实护甲与穿透。
+/// P5 才落地；`AttributeKind` 六个变体里也没有对应「护甲/防御」的
+/// 一项，见 `knowledge/design/vehicle-and-mounting.md` 六节），故这里
+/// 固定传 `defense = 0`、`pen = Penetration::NONE`。[`damage_after_defense`]
+/// 本身的穿透/下限行为已经由 `combat.rs` 的单元测试独立验证正确，这里
+/// 只是先把攻击端接线接上；防御端要等 `derive_stats`「装备」输入落地、
+/// 产出真实 `DerivedStats.armor` 之后才有值可读，不是这一批次能造的
+/// 数据。
 ///
 /// 若这一下会让目标生命值降到零或以下，额外产出一个 [`Effect::Kill`]
 /// ——是否致死是规则判断，必须在这里（`resolve`）做出，`apply` 只管
@@ -528,7 +579,12 @@ fn resolve_attack(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<
         return Vec::new();
     };
 
-    let attack_power = attacker.stats.strength;
+    let attack_power = effective_attribute(
+        attacker.stats.strength,
+        AttributeKind::Strength,
+        &attacker.active_stat_modifiers,
+        world.clock,
+    );
     let damage = damage_after_defense(attack_power, 0, Penetration::NONE);
 
     let mut effects = vec![Effect::Damage {
@@ -1522,6 +1578,81 @@ mod tests {
         // 致命一击确实造成了伤害、结算后生命值不高于零。
         assert!(record.killing_blow.damage > 0);
         assert!(record.killing_blow.remaining_health <= 0);
+    }
+
+    #[test]
+    fn 攻击者力量的生效中临时修正会改变结算出的伤害() {
+        // 端到端验证（不是结构往返）：给攻击者的 active_stat_modifiers
+        // 塞一条真实的力量修正 → 走真实的 resolve(Intent::Attack) +
+        // apply → 断言目标掉血量确实随之变化。这条链路此前断在
+        // resolve_attack 只读裸 attacker.stats.strength，从不看
+        // active_stat_modifiers——两端各自都有测试覆盖（ActiveStatModifier
+        // 的序列化往返、Effect::ApplyStatModifier 的 apply 单测），却没
+        // 有一条测试穿过中间那根线，见 resolve_attack 与
+        // effective_attribute 的文档。
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        // 生命值给够大的余量,这条测试只关心「伤害数值变了多少」，不
+        // 关心目标是否被打死——致死路径已由上一条测试单独覆盖。
+        let victim = spawn_named_agent(&mut world, victim_pos, 1_000);
+        world
+            .actors
+            .get_mut(attacker)
+            .expect("刚生成必然存在")
+            .active_stat_modifiers
+            .insert(
+                AttributeKind::Strength,
+                ActiveStatModifier {
+                    delta: 20,
+                    expires_at: Tick(100),
+                },
+            );
+        // 期望伤害直接复用 combat::damage_after_defense（该公式本身已
+        // 有独立单测覆盖，这里只用它算出「修正后的力量」应得的伤害，
+        // 不是重新验证公式本身）——BASELINE 力量为 10，加上本测试
+        // 施加的 +20 修正，应得力量 30。
+        let expected_damage =
+            damage_after_defense(BaseStats::BASELINE.strength + 20, 0, Penetration::NONE);
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+        );
+        for effect in &effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert：目标生命值精确反映了「叠加修正后的力量」算出的伤害，
+        // 不是裸力量值算出的那个（更低的）数字。
+        let victim_after = world.actors.get(victim).expect("生命值远高于伤害,不会死亡");
+        assert_eq!(victim_after.health, 1_000 - expected_damage);
+    }
+
+    #[test]
+    fn 已过期的属性修正不再叠加到有效值() {
+        // Arrange：到期时刻早于当前世界时钟——惰性到期判定要求这类
+        // 条目在读取时被当作已失效处理,即使它仍然留在
+        // active_stat_modifiers 里没被清理（见 ActiveStatModifier 文档
+        // 「惰性到期判定」一节）。
+        let modifiers = std::collections::BTreeMap::from([(
+            AttributeKind::Strength,
+            ActiveStatModifier {
+                delta: 20,
+                expires_at: Tick(5),
+            },
+        )]);
+
+        // Act
+        let effective = effective_attribute(10, AttributeKind::Strength, &modifiers, Tick(5));
+
+        // Assert：世界时钟已达到 expires_at,回落到裸值,不叠加 delta。
+        assert_eq!(effective, 10);
     }
 
     #[test]
