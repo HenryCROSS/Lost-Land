@@ -104,6 +104,103 @@ fn executable_dir() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from("."))
 }
 
+/// 显式覆盖数据目录（`assets_root`/`mods_root` 的共同上级）的环境变量
+/// ——见 [`resolve_data_dir`] 文档「三级查找顺序」一节，设置了就跳过
+/// 后面两条自动探测，方便测试与将来打包（例如 CI 跑一份临时装配好的
+/// 数据目录，或者未来的安装器把数据目录放在与可执行文件不同的位置）。
+pub const DATA_DIR_ENV_VAR: &str = "LOSTLAND_DATA_DIR";
+
+/// 定位不到任何含 `assets/` 目录的候选路径——[`resolve_data_dir`] 三级
+/// 查找全部失败时返回的错误,取代此前「找不到就静默回退成 `exe_dir`
+/// 本身继续跑」的旧行为。
+///
+/// # 为什么静默回退是真实缺陷，不是可接受的降级
+///
+/// 旧行为在 `cargo run`（exe 位于 `target/{debug,release}/`，资产仍在
+/// 仓库根）下会让 `assets_root`/`mods_root` 都指向一个不存在的目录，
+/// `ll_mod::asset_vfs::build` 对不存在的目录只会产出一份空 VFS
+/// （`sprites` 长度为零），装载阶段本身不报任何错误——直到每一帧绘制
+/// 都要按精灵名查图集，才在 `crate::app::Demo` 里刷出一屏
+/// 「图集条目缺失，跳过本次绘制」的 ERROR。同一个根因（数据目录解析
+/// 错误）被推迟到渲染阶段才第一次表现出来，而且是刷屏而不是一条,诊断
+/// 起来比在启动那一刻直接失败困难得多——这正是本类型要修的坑。
+#[derive(Debug)]
+pub struct DataDirNotFound {
+    searched_from: PathBuf,
+}
+
+impl std::fmt::Display for DataDirNotFound {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "从 {} 开始逐级向上查找，都找不到一个含 {ASSETS_DIR_NAME}/ 子目录的祖先目录；\
+请确认可执行文件旁边有 {ASSETS_DIR_NAME}/ 与 {MODS_DIR_NAME}/（发布布局），\
+或设置 {DATA_DIR_ENV_VAR} 环境变量显式指定数据目录",
+            self.searched_from.display()
+        )
+    }
+}
+
+impl std::error::Error for DataDirNotFound {}
+
+/// 从 `start` 出发，先看 `start` 自己是否含 `assets/` 子目录，找不到就
+/// 逐级向上查找第一个含 `assets/` 子目录的祖先——发布布局（exe 与
+/// `assets/`/`mods/` 同目录）在第一步就命中；开发布局（`cargo run`
+/// 产出的 exe 深埋在 `target/{debug,release}/` 下，资产在仓库根）天然
+/// 靠向上查找命中：`target/release/` 的上一级是 `target/`，再上一级
+/// 就是仓库根。
+///
+/// 拆成独立于 [`resolve_data_dir`] 的纯函数，是为了不依赖
+/// `std::env::current_exe()`（该函数在测试环境下返回的是测试二进制
+/// 自己的真实路径，测试无法控制它指向哪里）——查找算法本身只依赖一个
+/// 传入的起点路径，可以直接用临时目录测试两种布局与「两处都找不到」
+/// 的失败路径。
+fn find_data_dir_from(start: &Path) -> Result<PathBuf, DataDirNotFound> {
+    if start.join(ASSETS_DIR_NAME).is_dir() {
+        return Ok(start.to_path_buf());
+    }
+    let mut current = start;
+    while let Some(parent) = current.parent() {
+        if parent.join(ASSETS_DIR_NAME).is_dir() {
+            return Ok(parent.to_path_buf());
+        }
+        current = parent;
+    }
+    Err(DataDirNotFound {
+        searched_from: start.to_path_buf(),
+    })
+}
+
+/// 三级查找顺序推出真正要用的数据目录（`assets_root`/`mods_root` 的
+/// 共同上级）：
+///
+/// 1. [`DATA_DIR_ENV_VAR`] 环境变量——显式覆盖，优先级最高，设置了就
+///    不再走后面两条自动探测。
+/// 2. 可执行文件所在目录本身——发布布局，**必须保住的既有行为**。
+/// 3. 从可执行文件目录逐级向上查找（[`find_data_dir_from`]）——开发
+///    布局，`cargo run`/`cargo test` 场景。
+///
+/// 三级都找不到时返回 `Err`——见 [`DataDirNotFound`] 文档「为什么静默
+/// 回退是真实缺陷」一节：调用方（[`run_game`]）应当在这里直接终止
+/// 启动，而不是拿一个不存在的目录继续往下跑。
+fn resolve_data_dir() -> Result<PathBuf, DataDirNotFound> {
+    resolve_data_dir_with(std::env::var_os(DATA_DIR_ENV_VAR), &executable_dir())
+}
+
+/// [`resolve_data_dir`] 的可测试版本——环境变量的值与「可执行文件所在
+/// 目录」都作为参数传入，而不是分别读取真实的进程环境变量与
+/// `std::env::current_exe()`，理由同 [`find_data_dir_from`] 文档：两者
+/// 在测试环境下都不受测试控制。
+fn resolve_data_dir_with(
+    env_override: Option<std::ffi::OsString>,
+    exe_dir: &Path,
+) -> Result<PathBuf, DataDirNotFound> {
+    if let Some(over) = env_override {
+        return Ok(PathBuf::from(over));
+    }
+    find_data_dir_from(exe_dir)
+}
+
 /// 装载内容 → 建世界或读档：存档存在就读档，读档失败/降级为只读时
 /// 记日志退回新游戏，从不 panic——存档损坏不该让玩家彻底玩不了。
 fn load_or_new_game(paths: &GamePaths, content: &content::LoadedContent) -> GameWorld {
@@ -181,7 +278,14 @@ fn resolve_window_title(catalog: &Catalog, language: &str, title_key: &'static s
 pub fn run_game() {
     init_logging(false).expect("首次初始化日志不应失败");
 
-    let base = executable_dir();
+    let base = resolve_data_dir().unwrap_or_else(|error| {
+        // 找不到数据目录本身就是一条无法继续的启动期错误——不是回退
+        // 到某个猜测目录静默往下跑（那正是本次要修的旧缺陷，见
+        // `DataDirNotFound` 文档），直接终止，把可诊断的原因打进日志
+        // 后 panic。
+        tracing::error!(%error, "无法定位数据目录，游戏无法继续启动");
+        panic!("{error}");
+    });
     let paths = GamePaths::under(&base);
 
     let config = load_or_default(&paths.config);
@@ -207,8 +311,31 @@ pub fn run_game() {
     tracing::info!(
         registered_mods = content.report.loaded_count(),
         failed_mods = content.report.failed_count(),
+        sprites = content.asset_vfs.sprites.len(),
         "游戏内容装载完成"
     );
+    // 图集为空是一条启动期硬错误，不是等到每帧绘制时才暴露的降级——
+    // 见 `DataDirNotFound` 文档同一个教训：根因（数据目录解析错误，或
+    // assets_root 下确实没有任何精灵声明）被推迟到渲染阶段才第一次
+    // 表现出来，会在 `crate::app::Demo` 里刷出一整屏「图集条目缺失」
+    // 的 ERROR，而不是一条能直接定位原因的失败。这里选择直接终止启动
+    // （而不是打一条 ERROR 后继续跑）：一个画不出任何精灵的会话对玩家
+    // 没有可玩性，与其让他们面对空白画面 + 刷屏日志自己猜原因，不如
+    // 在启动那一刻就给出「去检查 assets_root/mods_root 是否指对了
+    // 地方」这个明确、可行动的结论。
+    if content.asset_vfs.sprites.is_empty() {
+        tracing::error!(
+            assets_root = %paths.assets_root.display(),
+            mods_root = %paths.mods_root.display(),
+            "图集为空（sprites=0）：assets_root/mods_root 下没有解析到任何精灵声明，\
+        游戏画面将完全空白；多半是数据目录解析到了错误的位置，而不是内容本身缺失贴图"
+        );
+        panic!(
+            "图集为空（sprites=0），拒绝继续启动：assets_root={}, mods_root={}",
+            paths.assets_root.display(),
+            paths.mods_root.display()
+        );
+    }
 
     let game_world = load_or_new_game(&paths, &content);
     tracing::info!(
@@ -344,6 +471,100 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn 发布布局下exe所在目录本身含assets时直接解析到该目录() {
+        // 发布布局：exe 旁边就有 assets/（与 mods/），第一级探测就该
+        // 命中，不需要向上找。
+        // Arrange
+        let exe_dir = std::env::temp_dir().join(format!(
+            "ll-game-lib-test-release-layout-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(exe_dir.join(ASSETS_DIR_NAME)).expect("创建测试目录应当成功");
+
+        // Act
+        let resolved = find_data_dir_from(&exe_dir).expect("exe 目录本身含 assets/ 应当直接命中");
+
+        // Assert
+        assert_eq!(resolved, exe_dir);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&exe_dir);
+    }
+
+    #[test]
+    fn 开发布局下exe在深层目录时向上找到含assets的祖先目录() {
+        // 开发布局：cargo run 产出的 exe 深埋在 target/{debug,release}/
+        // 下（这里用 a/b/c/ 模拟），assets/ 在最外层的 a/。
+        // Arrange
+        let root = std::env::temp_dir().join(format!(
+            "ll-game-lib-test-dev-layout-{}",
+            std::process::id()
+        ));
+        let exe_dir = root.join("b").join("c");
+        std::fs::create_dir_all(&exe_dir).expect("创建测试目录应当成功");
+        std::fs::create_dir_all(root.join(ASSETS_DIR_NAME)).expect("创建测试目录应当成功");
+
+        // Act
+        let resolved = find_data_dir_from(&exe_dir).expect("应当向上找到含 assets/ 的祖先目录");
+
+        // Assert
+        assert_eq!(resolved, root);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn 逐级向上都找不到assets目录时返回错误而非静默回退() {
+        // 找不到时必须是明确的 Err，不是回退到 exe_dir 本身继续跑
+        // （旧行为，正是「静默用空目录继续跑」这个缺陷的根源）。
+        // Arrange：一棵全新、确定不含 assets/ 的临时目录树；
+        // std::env::temp_dir() 本身及其全部祖先目录都不含名为
+        // assets 的子目录（真实开发机上的常规假设，本仓库的
+        // assets/ 只存在于仓库根，不在临时目录所在的路径链上）。
+        let exe_dir =
+            std::env::temp_dir().join(format!("ll-game-lib-test-not-found-{}", std::process::id()));
+        std::fs::create_dir_all(&exe_dir).expect("创建测试目录应当成功");
+
+        // Act
+        let result = find_data_dir_from(&exe_dir);
+
+        // Assert
+        assert!(result.is_err());
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&exe_dir);
+    }
+
+    #[test]
+    fn 数据目录环境变量覆盖优先于exe目录自动探测() {
+        // resolve_data_dir_with 收到非空 env_override 时，即使
+        // exe_dir 本身就含 assets/，也应当直接采用环境变量的值，
+        // 不做任何自动探测——env 覆盖的语义是显式指定，不是"探测不到
+        // 才用的兜底"。
+        // Arrange
+        let exe_dir = std::env::temp_dir().join(format!(
+            "ll-game-lib-test-env-override-exe-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(exe_dir.join(ASSETS_DIR_NAME)).expect("创建测试目录应当成功");
+        let override_dir = std::env::temp_dir().join(format!(
+            "ll-game-lib-test-env-override-target-{}",
+            std::process::id()
+        ));
+
+        // Act
+        let resolved = resolve_data_dir_with(Some(override_dir.clone().into_os_string()), &exe_dir)
+            .expect("显式覆盖不应失败");
+
+        // Assert
+        assert_eq!(resolved, override_dir);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&exe_dir);
     }
 
     #[test]
