@@ -1170,7 +1170,7 @@ mod tests {
         // 验收「各条修正各自到期」——两个不同来源各自持有自己的
         // expires_at，一条过期不影响另一条是否仍然生效（这里直接检查
         // 存储层面两条记录都还在、各自的 expires_at 互不牵连；是否
-        // 「生效」的现算判断由 effective_attribute 负责，resolve.rs
+        // 「生效」的现算判断由 derive_stats 负责，resolve.rs
         // 的 `一条来源过期后另一条来源的修正仍然独立生效` 覆盖那一层）。
         // Arrange
         let mut world = test_world();

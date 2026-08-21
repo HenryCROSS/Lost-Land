@@ -288,7 +288,7 @@ pub enum Effect {
     ///
     /// 与 [`ll_world::entity::ActiveStatModifier`] 文档一致：是否已经
     /// 过期由未来读取「有效属性值」的调用方（`resolve::resolve_attack`
-    /// ——模块私有，不对外可链接——经 `effective_attribute`）在读取那一刻现比对世界时钟，`apply`
+    /// ——模块私有，不对外可链接——经 `resolve::derive_stats`）在读取那一刻现比对世界时钟，`apply`
     /// 本身不含这个判断（三条纪律「不含任何游戏逻辑」）——`apply` 唯一
     /// 要做的判断是「同源合并」，这是一个纯粹由两个既有值机械算出结果
     /// 的固定算法（[`ll_world::entity::ActiveStatModifier::merge_same_source`]），
@@ -629,9 +629,11 @@ pub enum Effect {
         durability: Option<i32>,
     },
     /// 调整某个已装备物品的当前耐久（耐久与 `Intent::Use` 落地批次，
-    /// P6 第五批）——`crate::resolve::resolve_attack` 唯一的产出者：
-    /// 防御方每挨一下近战攻击，自己已装备的每一件带耐久的物品各损失
-    /// 一点耐久，见该函数文档「耐久消耗」一节完整论证。
+    /// P6 第五批；武器引用与穿透接线批次，P6 第六批收窄了产出规则）——
+    /// `crate::resolve::resolve_attack` 唯一的产出者：攻击方每打出一下
+    /// 近战攻击，若自己主手已装备的武器带耐久，这件武器损失一点耐久；
+    /// 防御方的护甲/其余已装备物品不再因为挨打而损耗耐久，见该函数
+    /// 文档「耐久消耗：为什么收窄到只有武器」一节完整论证。
     ///
     /// # 为什么钳位到非负在 `apply` 做，不在 `resolve` 做
     ///

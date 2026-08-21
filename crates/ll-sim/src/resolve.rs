@@ -81,10 +81,10 @@ use crate::traits::{
 /// 计费，接入那些系统时按动作类型分别替换即可。
 const BASE_ACTION_COST: u32 = 100;
 
-/// 防御方每挨一下近战攻击，自己已装备的每一件带耐久的物品各损失的
-/// 耐久点数（耐久与 `Intent::Use` 落地批次，P6 第五批）——见
-/// [`resolve_attack`] 文档「耐久消耗：为什么是防御方掉耐久，不是
-/// 攻击方」一节完整论证。
+/// 攻击方每打出一下近战攻击，自己主手已装备的武器（若带耐久）损失的
+/// 耐久点数——武器引用与穿透接线批次（P6 第六批）把耐久消耗从「防御方
+/// 全部已装备物品」收窄到「攻击方主手武器」，见 [`resolve_attack`]
+/// 文档「耐久消耗：为什么收窄到只有武器」一节完整论证。
 const EQUIPMENT_DURABILITY_LOSS_PER_HIT: i32 = 1;
 
 /// 基准有效敏捷，对应 `BaseStats::BASELINE` 的敏捷值（10，调整值为零）。
@@ -1689,48 +1689,80 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 次真的生效**，此前恒为占位的 `0`。护甲的唯一来源目前是防御方已装备
 /// 物品的 [`crate::item::StatBonus`]（见 [`derive_stats`] 文档「护甲不
 /// 参与状态效果通道」一节）；没有任何已装备物品提供护甲时，
-/// `derive_stats` 算出的护甲仍是 `0`，与本批次之前的占位行为等价——
-/// 这也是黄金基准摘要（`replay.rs`/`determinism.rs`）在本批次改动后
-/// 精确复现旧常量的原因，见任务报告「黄金基准」一节。
+/// `derive_stats` 算出的护甲仍是 `0`，与本批次之前的占位行为等价。
 ///
-/// 穿透：仍固定传 [`Penetration::NONE`]——本批次没有任何数据源能产出
-/// 非零穿透（`ItemDef`/`StatBonus` 都不携带穿透字段，`Intent::Attack`
-/// 也不携带武器引用），如实保持恒零，不伪造数据,见任务报告「穿透」
-/// 一节。[`damage_after_defense`] 本身的穿透/下限行为已经由 `combat.rs`
-/// 的单元测试独立验证正确。
+/// # 武器引用：`Intent::Attack` 为什么不改签名（武器引用与穿透接线
+/// 批次，P6 第六批）
+///
+/// 项目所有者裁定「`Intent::Attack` 肯定还是需要有武器引用的吧，不然
+/// 怎么做其他计算呢」——本批次要把这条缺口接上，有两条路：
+///
+/// **甲**：给 `Intent::Attack` 加一个武器字段，调用方显式传入用哪件
+/// 武器攻击。
+///
+/// **乙**：`Intent::Attack` 签名不变，本函数结算时自己从
+/// `attacker.equipment` 查询主手槽位。
+///
+/// **本函数选择乙**：攻击者的装备从 P6 第三批起就已经存在于
+/// `Agent.equipment`（`BTreeMap<EquipSlot, ItemStack>`，锚点槽位为键，
+/// 见其文档），`derive_stats` 也已经在读这份数据算攻击力/护甲——"用哪
+/// 件武器攻击"根本不是一个需要调用方现场决定、随每次 `Intent` 变化的
+/// 输入，是"这个实体当前主手上挂着什么"这一条**已经存在于世界状态里**
+/// 的事实，`resolve_attack` 只需要多读一遍同一份数据，不需要任何新的
+/// 输入通道。选甲需要把仓库里全部构造 `Intent::Attack` 的调用点（本
+/// 文件的测试、`ll-mod`/`ll-game` 的既有接线）都改成显式传武器引用，
+/// 但那份引用在几乎所有调用点上其实就是"去查一下 `attacker.equipment`
+/// 主手槽位"这同一个值——让调用方重复算一遍 `resolve_attack` 内部本来
+/// 就要读的同一份状态，只会制造"调用方传的武器引用与其装备栏实际内容
+/// 不一致"这一类新的不变式（这里的 `EntityId` 是谁，装备着什么，`Agent`
+/// 自己已经如实记录，不需要外部输入再确认一遍）。
+///
+/// 若未来要支持"用背包里某件东西砸人"（不经过装备栏、临时抄起一件未
+/// 装备的物品攻击）——那才是真正需要 `Intent::Attack` 携带显式武器
+/// 引用的场景，因为"用什么打"在那种手感下不再等于"当前装备着什么"，
+/// 两者会分道扬镳。本批次没有这个需求（`knowledge/design` 未点名，
+/// 也没有任何调用点要这个手感），届时再给 `Intent::Attack` 加一个
+/// `Option<ContentIndex>` 字段（`None` 表示"用当前装备的武器"，与
+/// 现在的行为向后兼容）即可，不需要现在为一个不存在的场景预留字段。
+///
+/// # 穿透：攻击者主手武器的 [`crate::item::ItemRule::penetration`]
+///
+/// 此前（P6 第四批到第五批）本函数恒传 [`Penetration::NONE`]——`ItemRule`
+/// 不携带穿透字段，`Intent::Attack` 也不携带武器引用，两个缺口叠在
+/// 一起使得穿透没有任何数据源。本批次同时补上了这两点（见上方「武器
+/// 引用」一节与 [`crate::item::ItemRule::penetration`] 文档），穿透因此
+/// 第一次真正生效：查询攻击者主手槽位的 `ItemStack`，用它的 `def` 向
+/// `items` 目录要 [`crate::item::ItemRule::penetration`]；主手为空
+/// （徒手）或 `items` 查不到这个 `def` 时按 [`Penetration::NONE`]
+/// 处理——理由同 `derive_stats` 查不到目录时的既有纪律（不伪造数据）。
+/// 已损坏（耐久归零）的武器不提供穿透，与 `derive_stats` 对属性加成
+/// 的「耐久归零即跳过」是同一条纪律（见其文档「耐久归零：损坏的装备
+/// 不再贡献属性加成」一节）——护甲加成与穿透都是"这件装备当前有没有
+/// 在正常发挥作用"的表现，不该有一个归零后失效、另一个归零后照常。
 ///
 /// 若这一下会让目标生命值降到零或以下，额外产出一个 [`Effect::Kill`]
 /// ——是否致死是规则判断，必须在这里（`resolve`）做出，`apply` 只管
 /// 照数字做加减（见 [`crate::effect::Effect::Damage`] 文档）。
 ///
-/// # 耐久消耗：为什么是防御方掉耐久，不是攻击方（耐久与 `Intent::Use`
-/// 落地批次，P6 第五批）
+/// # 耐久消耗：为什么收窄到只有武器（武器引用与穿透接线批次，P6 第六批）
 ///
-/// 这一批要给「攻击时掉武器耐久」还是「被击中掉护甲耐久」一个结论：
-/// **本函数选择后者**——挨这一下的防御方，自己已装备的每一件带耐久的
-/// 物品（不限于提供护甲加成的那些，见下方「为什么不限定装备槽位」
-/// 一节）各损失 [`EQUIPMENT_DURABILITY_LOSS_PER_HIT`] 点耐久。
-///
-/// 理由不是"护甲比武器更该耗损"这类内容设计判断，是当前架构下**哪一条
-/// 路径真的有数据可查**：`Intent::Attack` 只携带 `actor`/`target` 两个
-/// `EntityId`（见其文档），从未携带"用哪件武器打的"这个引用——`resolve`
-/// 因此**无法**把这一下的耐久损耗记到攻击方任何一件具体装备上（记到
-/// 哪一件？主手？双持时的另一只手？），这正是任务书点名的已知缺口
-/// （`Intent::Attack` 不携带武器引用），本批次不修它。防御方这一侧
-/// 完全不受这个缺口影响：`derive_stats` 已经在读 `defender.equipment`
-/// 算护甲（P6 第四批），本函数只是多读一遍同一份数据,不需要任何新的
-/// 输入通道。「被打就掉耐久」在直觉上也站得住：铠甲存在的意义就是替
-/// 穿它的人挨打,挨得越多，磨损得越多。
-///
-/// # 为什么不限定"只有提供护甲加成的装备"才掉耐久
-///
-/// `ItemRule::stat_bonuses` 里有没有 `StatTarget::Armor` 这一条,与
-/// `ItemStack.durability` 是不是 `Some` 是两件独立的事——一件戒指
-/// （只加属性，不加护甲）一样可以有耐久上限。本函数只看
-/// `stack.durability.is_some()`,不查 `stat_bonuses`,理由是"正在被
-/// 磨损"这件事只取决于"这件东西挂在你身上、这一下打中了你"，与它具体
-/// 提供什么加成无关——护甲那条判断是 `derive_stats` 的职责（算加成时
-/// 只看目标是不是 `Armor`），不该在这里重复。
+/// P6 第五批曾把"攻击时掉武器耐久"还是"被击中掉护甲耐久"选了后者
+/// （挨打的防御方所有已装备物品都掉耐久），原因是当时 `Intent::Attack`
+/// 无法把耐久损耗记到攻击方任何具体装备上——见本文件此前版本的记录。
+/// 项目所有者随后裁定「装备武器才有耐久，其余物品我倾向于没有」：一旦
+/// 「武器」这个引用已经能查到（见上方「武器引用」一节），当初选择
+/// 「被击中掉耐久」的前提（"打人这一方无法归因"）已经不成立，应当回到
+/// 更符合直觉的规则——**本函数现在改为：攻击方每打出这一下，若自己
+/// 主手已装备的武器带耐久（`ItemStack.durability.is_some()`），这件
+/// 武器损失 [`EQUIPMENT_DURABILITY_LOSS_PER_HIT`] 点耐久；防御方的
+/// 护甲/其余已装备物品不再因为挨打而损耗耐久**——耐久磨损现在只发生在
+/// 「正在被使用的武器」这一件事上，与所有者的裁定完全对应：装备武器
+/// 才有耐久，其余（包括护甲）不再有耐久这个概念本该走的路径是
+/// `register-item` 注册期本身就不该给非武器物品声明耐久上限，见
+/// `ll_mod::script_item_api::register_item_equip_mask` 文档「为什么在
+/// 这里校验耐久与武器槽位的组合」一节；本函数只负责"武器耐久确实会
+/// 随攻击减少、其余装备确实不再减少"这个结算侧的行为，不重复注册期的
+/// 校验职责。
 fn resolve_attack(
     world: &WorldState,
     actor: EntityId,
@@ -1760,34 +1792,42 @@ fn resolve_attack(
     );
 
     let attack_power = attacker_derived.attribute(AttributeKind::Strength);
-    let damage = damage_after_defense(attack_power, defender_derived.armor(), Penetration::NONE);
+    // 武器：攻击者主手槽位当前装备的物品——见本函数文档「武器引用」
+    // 一节，选择乙（结算时查装备栏，不改 `Intent::Attack` 签名）。
+    let weapon = attacker.equipment.get(&EquipSlot::MAIN_HAND);
+    let weapon_def = weapon.map(|stack| stack.def);
+    // 穿透：查主手武器的 def 向物品目录要 penetration；已损坏的武器
+    // 不提供穿透——见本函数文档「穿透」一节。
+    let penetration = weapon
+        .filter(|stack| stack.durability != Some(0))
+        .and_then(|stack| items.item(stack.def))
+        .map(|rule| rule.penetration)
+        .unwrap_or(Penetration::NONE);
+    let damage = damage_after_defense(attack_power, defender_derived.armor(), penetration);
 
     let mut effects = vec![Effect::Damage {
         target,
         amount: damage,
     }];
-    // 防御方每挨这一下，自己已装备的每一件带耐久的物品各损失一点
-    // 耐久——见本函数文档「耐久消耗」一节。`BTreeMap` 按键（槽位下标）
-    // 自然顺序遍历，不涉及 HashMap/HashSet 迭代顺序（约束 C5）。
-    effects.extend(defender.equipment.iter().filter_map(|(&slot, stack)| {
-        stack
-            .durability
-            .is_some()
-            .then_some(Effect::AdjustEquipmentDurability {
-                actor: target,
-                slot,
-                delta: -EQUIPMENT_DURABILITY_LOSS_PER_HIT,
-            })
+    // 攻击方主手武器（若带耐久）每打出这一下损失一点耐久——见本函数
+    // 文档「耐久消耗」一节；徒手（主手为空）或武器没有耐久概念时不
+    // 产出任何效果。
+    effects.extend(weapon.filter(|stack| stack.durability.is_some()).map(|_| {
+        Effect::AdjustEquipmentDurability {
+            actor,
+            slot: EquipSlot::MAIN_HAND,
+            delta: -EQUIPMENT_DURABILITY_LOSS_PER_HIT,
+        }
     }));
     if defender.health - damage <= 0 {
-        // 近战击杀——本批次没有武器系统（护甲/武器均属 P5 装备落地
-        // 之后，见本函数文档「防御与穿透」一节），`weapon` 恒
-        // `None`，与「徒手」在类型上无法区分，是当前已知的诚实简化，
-        // 见 `ll_world::history::KillCause::Melee` 文档。
+        // 近战击杀——`weapon` 现在真正指向攻击者主手已装备的物品
+        // （武器引用与穿透接线批次，P6 第六批），徒手攻击（主手为空）
+        // 时恒 `None`，两者在类型上第一次真正区分开，见本函数文档
+        // 「武器引用」一节与 `ll_world::history::KillCause::Melee` 文档。
         effects.push(Effect::Kill {
             target,
             killer: Some(actor),
-            cause: KillCause::Melee { weapon: None },
+            cause: KillCause::Melee { weapon: weapon_def },
         });
     }
 
@@ -3061,7 +3101,7 @@ mod tests {
         // active_stat_modifiers——两端各自都有测试覆盖（ActiveStatModifier
         // 的序列化往返、Effect::ApplyStatModifier 的 apply 单测），却没
         // 有一条测试穿过中间那根线，见 resolve_attack 与
-        // effective_attribute 的文档。
+        // derive_stats 的文档。
         // Arrange
         let (mut world, _terrain_ids) = test_world();
         let attacker = spawn_agent(&mut world);

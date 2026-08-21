@@ -21,6 +21,7 @@ use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
+use ll_sim::combat::Penetration;
 use ll_sim::intent::Intent;
 use ll_sim::item::{ItemCatalog, ItemRule, ItemStack, SlotMask};
 use ll_sim::resolve::resolve_with_skills_traits_pools_and_items;
@@ -111,6 +112,7 @@ fn potion_with_effect(effect: SkillEffect) -> (ContentIndex, FakeItems) {
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
                 use_effect: Some(effect),
+                penetration: Penetration::NONE,
             },
         )]),
     };
@@ -272,6 +274,7 @@ fn 没有use_effect的物品使用后不产出任何效果() {
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
                 use_effect: None,
+                penetration: Penetration::NONE,
             },
         )]),
     };

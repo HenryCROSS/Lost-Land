@@ -1,7 +1,7 @@
 //! 把 `register-item`/`register-item-equip-mask`/`register-item-stat-bonus`/
-//! `register-item-use-effect` 注册进脚本引擎：mod 脚本借此定义自定义
-//! 物品（箭矢、铁剑、药水……）、它们的装备占位掩码、静态属性加成与
-//! 使用效果，落地
+//! `register-item-use-effect`/`register-item-penetration` 注册进脚本
+//! 引擎：mod 脚本借此定义自定义物品（箭矢、铁剑、药水……）、它们的装备
+//! 占位掩码、静态属性加成、使用效果与穿透，落地
 //! `knowledge/design/item-system.md`/`knowledge/design/equipment-slots.md`/
 //! `knowledge/design/attribute-system.md`。
 //!
@@ -9,17 +9,19 @@
 //! `Option<i32>`（`max-durability`）或 `Milli`（`base-weight`/
 //! `base-price`）发明任何新的 FFI 编码方式,理由见下面两节。
 //!
-//! # 为什么 `equip_mask`/`stat_bonuses`/`use_effect` 都走独立函数
-//! （装备栏位批次，P6 第三批；`derive_stats` 与装备属性接进战斗，P6 第
-//! 四批；耐久与 `Intent::Use`，P6 第五批）
+//! # 为什么 `equip_mask`/`stat_bonuses`/`use_effect`/`penetration` 都走
+//! 独立函数（装备栏位批次，P6 第三批；`derive_stats` 与装备属性接进
+//! 战斗，P6 第四批；耐久与 `Intent::Use`，P6 第五批；武器引用与穿透
+//! 接线，P6 第六批）
 //!
 //! `register-item` 已经是仓库里真实 mod 脚本
 //! （`mods/example_mod/gameplay.scm`）在用的六参数签名——改参数个数
 //! 会破坏已有脚本，与 `register-race-xp-reward`/
 //! `register-trait-resource-pool` 「新增能力用新函数」同一条既有先例
 //! （见 [`crate::item::ItemDef::equip_mask`] 文档）。`register-item-equip-mask`/
-//! `register-item-stat-bonus`/`register-item-use-effect` 因此都走独立
-//! 函数，追加对象都是已经通过 `register-item` 注册过的物品。
+//! `register-item-stat-bonus`/`register-item-use-effect`/
+//! `register-item-penetration` 因此都走独立函数，追加对象都是已经通过
+//! `register-item` 注册过的物品。
 //!
 //! # `register-item-use-effect` 的参数形状照抄 `register-skill` 的
 //! `effect-kind`/`effect-tag`/`effect-amount`/`effect-amount2` 四元组
@@ -43,6 +45,7 @@ use ll_script::host::ScriptEngine;
 use crate::active_registry::with_active_registry;
 use crate::item::{ItemAttrs, ItemError, ItemTable};
 use crate::registry::Registry;
+use ll_sim::combat::Penetration;
 use ll_sim::item::{EquipSlot, SlotMask, StatBonus, StatTarget};
 use ll_sim::skill::{ResourceKind, SkillEffect};
 use ll_world::entity::AttributeKind;
@@ -51,6 +54,16 @@ thread_local! {
     /// 当前调用窗口内，`register-item` 应该写入的物品表。
     static ACTIVE_TABLE: RefCell<Option<ItemTable>> = const { RefCell::new(None) };
 }
+
+/// 「武器」这一组的槽位——`equipment-slots.md` 槽位表里 **主手与副手
+/// 同属一组**（原文分组列首行「武器」覆盖 `MAIN_HAND`/`OFF_HAND` 两行），
+/// 与「头部」「躯干」等其余分组并列。`do_register_item_equip_mask` 用它
+/// 判断"这件物品算不算武器"（耐久与武器槽位的组合校验，见其文档「为
+/// 什么在这里校验耐久与武器槽位的组合」一节）——不是只有主手才算数,
+/// 副手同样可以是「副武器」（该槽位官方说明原文：「盾、副武器、法器」）。
+const WEAPON_GROUP_SLOTS: SlotMask = EquipSlot::MAIN_HAND
+    .mask()
+    .union(EquipSlot::OFF_HAND.mask());
 
 /// 把 `table` 设为当前调用窗口内 `register-item` 可写入的目标。
 pub fn set_active_target(table: ItemTable) {
@@ -72,6 +85,7 @@ pub fn register_item_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-item-equip-mask", register_item_equip_mask);
     engine.register_fn("register-item-stat-bonus", register_item_stat_bonus);
     engine.register_fn("register-item-use-effect", register_item_use_effect);
+    engine.register_fn("register-item-penetration", register_item_penetration);
 }
 
 /// `(register-item id display-name-key stack-limit base-weight base-price max-durability)`。
@@ -188,6 +202,9 @@ fn do_register_item(
                 // 恒为 None——同上，真正的取值由后续
                 // register-item-use-effect 调用写入。
                 use_effect: None,
+                // 恒为 Penetration::NONE——同上，真正的取值由后续
+                // register-item-penetration 调用写入。
+                penetration: Penetration::NONE,
             },
         )
         .map(|()| true)
@@ -216,6 +233,49 @@ fn do_register_item(
 /// **覆盖，不是追加**——多次调用同一个 `id` 以最后一次为准，见
 /// [`crate::item::ItemTable::set_equip_mask`] 文档「覆盖，不是追加」
 /// 一节。
+///
+/// # 为什么在这里校验耐久与武器槽位的组合（武器引用与穿透接线批次，
+/// P6 第六批）
+///
+/// 项目所有者裁定「装备武器才有耐久，其余物品我倾向于没有」——`register-item`
+/// 已经有「可堆叠物品不能携带耐久上限」这一条注册期拒绝的先例（见其
+/// 文档），本函数照办同一条纪律，只是判据换成「有耐久却不占武器槽位」。
+///
+/// 「武器槽位」取 `equipment-slots.md` 槽位表自己的分组——**主手与副手
+/// 同属「武器」这一组**（原文「副手：盾、副武器、法器」），不是只有
+/// 主手才算武器：`mods/example_mod/gameplay.scm` 已注册的木盾
+/// （`examplemod:wooden_shield`，只占副手）本身带耐久，若把判据收窄成
+/// 「必须包含主手」会当场拒绝这份已经存在、已经通过测试的真实内容——
+/// 那不是本批次要修正的缺陷，是这件物品本就该继续合法。判据因此是
+/// 「掩码与 `MAIN_HAND | OFF_HAND` 有交集」，即
+/// [`WEAPON_GROUP_SLOTS`]。
+///
+/// 与 `resolve_attack` 结算时只读主手（见其文档「武器引用」一节）不是
+/// 同一个判据，两者服务不同的问题：本函数回答「这件物品的类型允不允许
+/// 有耐久」（登记时定型，主手/副手皆可），`resolve_attack` 回答「这一下
+/// 攻击具体用的是哪一件」（运行时只看主手，因为一次 `Intent::Attack`
+/// 只产出一次伤害判定，不模拟双持连击）——一个是"这类物品算不算武器"
+/// 的内容分类问题，一个是"这一下打出去用的是哪一件"的结算问题，判据
+/// 范围不必相同。
+///
+/// 这条校验不能放进 `register-item` 本身：耐久上限（`max-durability`）
+/// 是 `register-item` 六参数签名自带的既有参数，而装备占位掩码要等到
+/// **后续**这条独立调用才会写入（见模块文档「为什么 `equip_mask` 都走
+/// 独立函数」一节）——`register-item` 执行的那一刻，这件物品的
+/// `equip_mask` 恒是默认值 `SlotMask::EMPTY`，无法据此判断"将来会不会
+/// 占武器槽位"。只有到了本函数——两个事实（`max_durability` 是否为
+/// `Some`、即将写入的掩码是否与武器槽位相交）第一次同时可查的这一
+/// 刻——才能原子地做这个判断，因此校验放在这里，不在 `register-item`。
+///
+/// 一件物品若声明了耐久上限，之后把占位掩码设置成与武器槽位不相交
+/// （不占主手也不占副手，包括完全不调用本函数、掩码维持默认的
+/// `SlotMask::EMPTY`——`examplemod:iron_sword` 目前正是这个状态，见
+/// `mods/example_mod/gameplay.scm`：只 `register-item` 未追加占位掩码，
+/// 因此从未触发过本函数,不受这条校验影响），即拒绝整次调用——**反例**
+/// 见 `do_register_item_equip_mask` 测试「掩码与武器槽位相交时耐久声明
+/// 注册成功」：掩码包含副手（不含主手）时同样的耐久声明放行，证明这条
+/// 校验拒绝的是"有耐久却不占任何武器槽位"这个组合本身，不是耐久上限
+/// 这个字段恒被拒绝，也不是只有主手才算数。
 ///
 /// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
 fn register_item_equip_mask(id: String, slot_names: Vec<String>) -> Result<bool, String> {
@@ -253,6 +313,20 @@ fn do_register_item_equip_mask(
             return Err(format!("未知的装备槽位名称 {name:?}"));
         };
         mask = mask.union(slot.mask());
+    }
+
+    // 有耐久却不占任何武器槽位（主手/副手）——两条规则字面矛盾
+    // （"有耐久"暗示"是一件会被使用、磨损的武器"，"不占任何武器槽位"
+    // 暗示"不是武器"），注册期直接拒绝，理由见本函数文档「为什么在这里
+    // 校验耐久与武器槽位的组合」一节。
+    let max_durability = table
+        .get(index)
+        .expect("上面已经用 registry.get 确认过 id 存在，index 必然已被 define 过")
+        .max_durability;
+    if max_durability.is_some() && !mask.intersects(WEAPON_GROUP_SLOTS) {
+        return Err(format!(
+            "物品 {id:?} 声明了耐久上限（{max_durability:?}），但新的装备占位掩码不占用任何武器槽位（主手/副手）——只有武器才允许携带耐久"
+        ));
     }
 
     table
@@ -471,6 +545,69 @@ fn use_effect_attribute_kind_from_str(name: &str) -> Option<AttributeKind> {
         "charisma" => AttributeKind::Charisma,
         _ => return None,
     })
+}
+
+/// `(register-item-penetration id flat permille)`——设置这件物品的穿透
+/// （武器引用与穿透接线批次，P6 第六批），见
+/// [`crate::item::ItemDef::penetration`] 文档「为什么不是 `register-item`
+/// 的参数」一节。
+///
+/// - `id`：已经通过 `register-item` 注册过的完整命名空间标识符字符串
+///   ——目标必须已存在，与 [`register_item_equip_mask`] 同一条 ADR 0017
+///   「注册期完整校验」纪律。
+/// - `flat`：固定穿透值,对应 [`Penetration::flat`]。
+/// - `permille`：千分比穿透,对应 [`Penetration::permille`]（`1000`
+///   表示 100%）。
+///
+/// 本函数不要求 `id` 已经占用武器槽位——与 `register-item-stat-bonus`
+/// 同一条既有纪律（一件装备的属性加成/穿透只在它真的被装备时才会被
+/// `derive_stats`/`resolve_attack` 读到，见两者文档，注册期不重复这层
+/// "装备了才生效"的判断）。
+///
+/// **覆盖，不是追加**——与 [`register_item_equip_mask`]/
+/// [`register_item_use_effect`] 同一种"单值覆盖"语义：一件武器只有一份
+/// 穿透（不像 `stat_bonuses` 是可以累积的列表，见
+/// [`crate::item::ItemDef::penetration`] 文档「为什么现在也收进来了」
+/// 一节），多次调用同一个 `id` 以最后一次为准。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_item_penetration(id: String, flat: i64, permille: i64) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-item-penetration 在没有活跃物品表的窗口内被调用".to_string());
+            };
+            do_register_item_penetration(registry, table, &id, flat, permille)
+        })
+    })
+}
+
+/// [`register_item_penetration`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_item_penetration(
+    registry: &Registry,
+    table: &mut ItemTable,
+    id: &str,
+    flat: i64,
+    permille: i64,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("物品 {id:?} 尚未通过 register-item 注册"));
+    };
+
+    table
+        .set_penetration(
+            index,
+            Penetration {
+                flat: flat as i32,
+                permille: permille as i32,
+            },
+        )
+        .map(|()| true)
+        .map_err(|err: ItemError| err.to_string())
 }
 
 #[cfg(test)]
@@ -766,6 +903,56 @@ mod tests {
             .mask()
             .union(EquipSlot::OFF_HAND.mask());
         assert_eq!(table.get(index).unwrap().equip_mask, expected);
+    }
+
+    #[test]
+    fn 有耐久的物品占位掩码不占任何武器槽位时返回错误() {
+        // 大斧声明了耐久上限（120），若把占位掩码设置成不占用任何武器
+        // 槽位（这里选头顶，随便一个非武器分组的槽位即可），两条规则
+        // 字面矛盾——见 `do_register_item_equip_mask` 文档「为什么在
+        // 这里校验耐久与武器槽位的组合」一节。
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_great_axe();
+
+        // Act
+        let result = do_register_item_equip_mask(
+            &registry,
+            &mut table,
+            "yourmod:great_axe",
+            &["head".to_string()],
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 有耐久的物品占位掩码只占副手时注册成功() {
+        // 反例，与上一条测试成对：占位掩码只包含副手（不包含主手）时
+        // 同样的耐久声明必须放行——证明这条校验拒绝的是"不占任何武器
+        // 槽位"这个组合本身，不是耐久上限恒被拒绝，也不是只有主手才
+        // 算数（`equipment-slots.md` 槽位表「武器」这一组同时覆盖主手
+        // 与副手，见 `WEAPON_GROUP_SLOTS` 文档）。
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_great_axe();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的内容应能查到索引");
+
+        // Act
+        let result = do_register_item_equip_mask(
+            &registry,
+            &mut table,
+            "yourmod:great_axe",
+            &["off-hand".to_string()],
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            table.get(index).unwrap().equip_mask,
+            EquipSlot::OFF_HAND.mask()
+        );
     }
 
     #[test]
@@ -1218,6 +1405,104 @@ mod tests {
                 resource: ResourceKind::Mana,
                 base: 30,
             })
+        );
+    }
+
+    #[test]
+    fn 追加的穿透能被真正查到() {
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_great_axe();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的内容应能查到索引");
+
+        // Act
+        let result =
+            do_register_item_penetration(&registry, &mut table, "yourmod:great_axe", 4, 200);
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            table.get(index).unwrap().penetration,
+            Penetration {
+                flat: 4,
+                permille: 200,
+            }
+        );
+    }
+
+    #[test]
+    fn 连续两次调用穿透覆盖而非累加() {
+        // 与 register-item-equip-mask「覆盖，不是追加」同一条语义——第
+        // 二次调用的结果应当完全顶替第一次，不是两条穿透并存（一件
+        // 武器只有一份 `Penetration`，见 `ItemDef::penetration` 文档）。
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_great_axe();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        do_register_item_penetration(&registry, &mut table, "yourmod:great_axe", 4, 200)
+            .expect("第一次注册应当成功");
+
+        // Act
+        do_register_item_penetration(&registry, &mut table, "yourmod:great_axe", 1, 50)
+            .expect("第二次注册应当成功");
+
+        // Assert
+        assert_eq!(
+            table.get(index).unwrap().penetration,
+            Penetration {
+                flat: 1,
+                permille: 50,
+            }
+        );
+    }
+
+    #[test]
+    fn 未注册的物品id设置穿透返回错误() {
+        // Arrange
+        let registry = Registry::new();
+        let mut table = ItemTable::new();
+
+        // Act
+        let result =
+            do_register_item_penetration(&registry, &mut table, "yourmod:never_registered", 1, 0);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_item_penetration() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_item_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(ItemTable::new());
+        engine
+            .load_source(
+                r#"(register-item "yourmod:great_axe" "yourmod:item.great_axe" 1 5000 8000 120)"#
+                    .to_string(),
+            )
+            .expect("大斧基础注册应当成功");
+
+        // Act
+        let result = engine
+            .load_source(r#"(register-item-penetration "yourmod:great_axe" 4 200)"#.to_string());
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(
+            table.get(index).unwrap().penetration,
+            Penetration {
+                flat: 4,
+                permille: 200,
+            }
         );
     }
 }

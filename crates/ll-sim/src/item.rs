@@ -38,6 +38,7 @@ pub use ll_world::item::{
     can_merge, merge_stacks, split_stack,
 };
 
+use crate::combat::Penetration;
 use crate::skill::SkillEffect;
 
 /// `resolve` 侧需要的一条物品定义的最小只读视图——堆叠上限、装备占位
@@ -69,6 +70,18 @@ use crate::skill::SkillEffect;
 /// `BTreeMap<ContentIndex, ItemRule>` 里从 `.copied()` 改为 `.cloned()`）
 /// 已经同步改过,不存在遗留的 `Copy` 依赖。
 ///
+/// # `penetration` 为什么现在也收进来了（武器引用与穿透接线批次，P6 第
+/// 六批）
+///
+/// `crate::resolve::resolve_attack` 需要知道攻击者主手武器的穿透值才能
+/// 传给 [`crate::combat::damage_after_defense`]——此前（P6 第四批）
+/// `StatBonus`/`ItemRule` 都不携带穿透字段，`resolve_attack` 因此只能
+/// 恒传 [`Penetration::NONE`]。与 `stat_bonuses` 不同，穿透不是"目标 +
+/// 增量"列表形状——`Penetration` 本身已经是"固定值 + 千分比"两个分量
+/// 的完整类型（`combat.rs`），一件武器只有一份穿透（不像 `stat_bonuses`
+/// 那样一件装备可以同时加力量与护甲两条），因此这里是单个 `Penetration`
+/// 字段，不是 `Vec<Penetration>`。
+///
 /// # `use_effect` 为什么复用 `SkillEffect`，不是一个新的 `ItemEffect`
 /// 类型（耐久与 `Intent::Use` 落地批次，P6 第五批）
 ///
@@ -98,6 +111,11 @@ pub struct ItemRule {
     /// 对应的 `Effect`，见本类型文档「`use_effect` 为什么复用
     /// `SkillEffect`」一节。
     pub use_effect: Option<SkillEffect>,
+    /// 穿透——`crate::resolve::resolve_attack` 用攻击者主手武器的这个
+    /// 值传给 `damage_after_defense`，见本类型文档「`penetration` 为
+    /// 什么现在也收进来了」一节。`Penetration::NONE`（多数物品的既有
+    /// 默认值）表示这件物品不提供任何穿透。
+    pub penetration: Penetration,
 }
 
 /// `resolve` 依赖的最小「物品定义来源」接口——与

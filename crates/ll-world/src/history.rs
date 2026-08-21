@@ -117,9 +117,12 @@ pub struct KillRecord {
 pub enum KillCause {
     /// 近战。
     Melee {
-        /// 使用的武器；`None` 表示徒手，或当前会话还没有可归因的具体
-        /// 武器（装备系统未落地前，`ll-sim::resolve` 恒传 `None`，见
-        /// `crate::terrain` 同一类"系统未落地前先留字段"的既有模式）。
+        /// 使用的武器——武器引用与穿透接线批次（P6 第六批）起，
+        /// `ll-sim::resolve::resolve_attack` 真正查询攻击者主手
+        /// （`EquipSlot::MAIN_HAND`）已装备的物品并填入这里；`None`
+        /// 表示徒手（主手为空）。此前（装备系统落地之前）本字段恒传
+        /// `None`，与「徒手」在类型上无法区分——这条区分现在是实的，
+        /// 见 `ll_sim::resolve::resolve_attack` 文档「武器引用」一节。
         weapon: Option<ContentIndex>,
     },
     /// 技能击杀。

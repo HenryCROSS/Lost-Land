@@ -21,6 +21,7 @@ use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
+use ll_sim::combat::Penetration;
 use ll_sim::intent::Intent;
 use ll_sim::item::{ItemCatalog, ItemRule, ItemStack};
 use ll_sim::resolve::resolve_with_skills_traits_pools_and_items;
@@ -112,6 +113,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
                 equip_mask: ll_sim::item::SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
                 use_effect: None,
+                penetration: Penetration::NONE,
             },
         )]),
     };

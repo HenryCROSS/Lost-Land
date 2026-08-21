@@ -19,6 +19,7 @@ use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
+use ll_sim::combat::Penetration;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, SlotMask};
 use ll_sim::resolve::resolve_with_skills_traits_pools_and_items;
@@ -119,6 +120,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     equip_mask: EquipSlot::MAIN_HAND.mask(),
                     stat_bonuses: Vec::new(),
                     use_effect: None,
+                    penetration: Penetration::NONE,
                 },
             ),
             (
@@ -128,6 +130,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     equip_mask: EquipSlot::OFF_HAND.mask(),
                     stat_bonuses: Vec::new(),
                     use_effect: None,
+                    penetration: Penetration::NONE,
                 },
             ),
             (
@@ -139,6 +142,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                         .union(EquipSlot::OFF_HAND.mask()),
                     stat_bonuses: Vec::new(),
                     use_effect: None,
+                    penetration: Penetration::NONE,
                 },
             ),
         ]),
@@ -397,6 +401,7 @@ fn 物品不可装备时装备意图静默无效() {
             ore,
             ItemRule {
                 use_effect: None,
+                penetration: Penetration::NONE,
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),

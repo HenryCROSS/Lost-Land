@@ -76,6 +76,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                         amount: 6,
                     }],
                     use_effect: None,
+                    penetration: Penetration::NONE,
                 },
             ),
             (
@@ -88,6 +89,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                         amount: 8,
                     }],
                     use_effect: None,
+                    penetration: Penetration::NONE,
                 },
             ),
         ]),
@@ -399,13 +401,65 @@ fn 技能状态效果与装备加成同时生效且相加而非互相覆盖() {
 }
 
 #[test]
-fn 受到近战攻击后已装备物品耐久真的减少() {
-    // 耐久与 Intent::Use 落地批次（P6 第五批）——「耐久何时消耗」的
-    // 结论：被击中掉防御方装备耐久，见 `resolve_attack` 文档「耐久
-    // 消耗」一节。端到端验证：防御方穿着耐久 5 的铁质护甲,挨一下近战
-    // 攻击后耐久必须精确减到 4,不是保持不变。
+fn 攻击方主手武器的耐久真的减少() {
+    // 武器引用与穿透接线批次（P6 第六批）——「耐久何时消耗」的结论从
+    // P6 第五批的「被击中掉防御方装备耐久」改判为「攻击时掉攻击方
+    // 主手武器耐久」，见 `resolve_attack` 文档「耐久消耗：为什么收窄到
+    // 只有武器」一节。端到端验证：攻击方主手上挂着耐久 10 的测试物品
+    // （复用 `combat_items()` 的 `armor_def`，这里只借它的 `ItemStack`
+    // 形状当"武器"用，`resolve_attack` 不校验 `equip_mask` 是否真的
+    // 包含主手），打出一下攻击后耐久必须精确减到 9,不是保持不变。
     // Arrange
-    let (_gauntlets, armor, items) = combat_items();
+    let (_gauntlets, armor_def, items) = combat_items();
+    let mut world = test_world();
+    let attacker = spawn_agent(
+        &mut world,
+        Agent::STARTING_HEALTH,
+        Vec::new(),
+        BTreeMap::from([(
+            EquipSlot::MAIN_HAND,
+            ItemStack::with_durability(armor_def, 1, 10),
+        )]),
+        BTreeMap::new(),
+    );
+    let defender = spawn_agent(
+        &mut world,
+        1_000,
+        Vec::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
+
+    // Act
+    resolve_and_apply(
+        &mut world,
+        &Intent::Attack {
+            actor: attacker,
+            target: defender,
+        },
+        &items,
+    );
+
+    // Assert
+    let stack = world
+        .actors
+        .get(attacker)
+        .expect("攻击者仍然存活")
+        .equipment
+        .get(&EquipSlot::MAIN_HAND)
+        .expect("武器仍在装备栏里");
+    assert_eq!(stack.durability, Some(9));
+}
+
+#[test]
+fn 防御方护甲的耐久不再因为挨打而减少() {
+    // 与上一条测试成对——证明 P6 第六批把耐久消耗从「防御方全部已装备
+    // 物品」收窄到「攻击方主手武器」后，防御方的护甲即便带耐久,挨打也
+    // 不再损耗,这正是「护甲等其余装备不再掉耐久」这条新规则的直接
+    // 端到端验收（P6 第五批时这里断言的是 `Some(4)`，见本文件此前
+    // 版本）。
+    // Arrange
+    let (_gauntlets, armor_def, items) = combat_items();
     let mut world = test_world();
     let attacker = spawn_agent(
         &mut world,
@@ -418,7 +472,7 @@ fn 受到近战攻击后已装备物品耐久真的减少() {
         &mut world,
         1_000,
         Vec::new(),
-        BTreeMap::from([(EquipSlot::BODY, ItemStack::with_durability(armor, 1, 5))]),
+        BTreeMap::from([(EquipSlot::BODY, ItemStack::with_durability(armor_def, 1, 5))]),
         BTreeMap::new(),
     );
 
@@ -440,30 +494,31 @@ fn 受到近战攻击后已装备物品耐久真的减少() {
         .equipment
         .get(&EquipSlot::BODY)
         .expect("护甲仍在装备栏里");
-    assert_eq!(stack.durability, Some(4));
+    assert_eq!(stack.durability, Some(5));
 }
 
 #[test]
-fn 没有耐久概念的已装备物品被击中后不产出耐久调整效果() {
-    // 反例：耐久与 Intent::Use 落地批次之前既有的装备（`ItemStack::new`
-    // 恒 `durability: None`）挨打时不该凭空长出一个耐久值——
-    // resolve_attack 只对 `durability.is_some()` 的堆产出
+fn 主手物品没有耐久概念时攻击不产出耐久调整效果() {
+    // 反例，与「攻击方主手武器的耐久真的减少」成对：主手上挂着的物品
+    // 若没有耐久概念（`ItemStack::new` 恒 `durability: None`），攻击
+    // 不该凭空产出一个耐久调整效果——resolve_attack 只对
+    // `durability.is_some()` 的主手堆产出
     // `Effect::AdjustEquipmentDurability`,证明这条判定不是恒真。
     // Arrange
-    let (_gauntlets, armor, items) = combat_items();
+    let (_gauntlets, armor_def, items) = combat_items();
     let mut world = test_world();
     let attacker = spawn_agent(
         &mut world,
         Agent::STARTING_HEALTH,
         Vec::new(),
-        BTreeMap::new(),
+        BTreeMap::from([(EquipSlot::MAIN_HAND, ItemStack::new(armor_def, 1))]),
         BTreeMap::new(),
     );
     let defender = spawn_agent(
         &mut world,
         1_000,
         Vec::new(),
-        BTreeMap::from([(EquipSlot::BODY, ItemStack::new(armor, 1))]),
+        BTreeMap::new(),
         BTreeMap::new(),
     );
 

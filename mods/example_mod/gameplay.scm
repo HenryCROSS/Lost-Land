@@ -22,6 +22,7 @@
 ;;   register-item-equip-mask              crates/ll-mod/src/script_item_api.rs
 ;;   register-item-stat-bonus              crates/ll-mod/src/script_item_api.rs
 ;;   register-item-use-effect              crates/ll-mod/src/script_item_api.rs
+;;   register-item-penetration             crates/ll-mod/src/script_item_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -192,3 +193,13 @@
 ;; crates/ll-mod/tests/example_mod_use.rs 是那份证据。
 (register-item "examplemod:healing_potion" "examplemod:healing_potion_display_name" 10 200 500 -1)
 (register-item-use-effect "examplemod:healing_potion" "restore-resource" "mana" 40 0)
+
+;; P6 第六批（武器引用与穿透接线）：knowledge/design/attribute-system.md
+;; 三节「穿透属性」的真实版本——给战锤一份固定穿透 3、千分比穿透 100
+;; （10%），证明 register-item-penetration 这个新脚本 API 真的能被 mod
+;; 脚本调用，且真实注册的穿透值真的能走真实 resolve_attack + apply
+;; 改变结算出的伤害（攻击者主手装备战锤时，`damage_after_defense` 第三
+;; 个参数从 Penetration::NONE 变成这里注册的值）——ADR 0018「玩法层
+;; 内容必须能从 mod 脚本注册，且要有真实 mod 脚本为证」，
+;; crates/ll-mod/tests/example_mod_weapon_reference.rs 是那份证据。
+(register-item-penetration "examplemod:war_hammer" 3 100)

@@ -57,6 +57,7 @@ use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
+use ll_sim::combat::Penetration;
 use ll_sim::item::{ItemCatalog, ItemRule, SlotMask, StatBonus};
 use ll_sim::skill::SkillEffect;
 
@@ -149,6 +150,27 @@ pub struct ItemDef {
     /// 约束，因此本批次选择偏离设计文档原文的字段类型，改为复用既有
     /// 机制，而不是照抄文档新增一套平行的"物品脚本效果"通道。
     pub use_effect: Option<SkillEffect>,
+    /// 穿透（武器引用与穿透接线批次，P6 第六批）——`Penetration::NONE`
+    /// （默认值）表示这件物品不提供任何穿透加成。
+    ///
+    /// # 为什么现在也收进来了
+    ///
+    /// `crate::resolve::resolve_attack`（`ll-sim`）需要知道攻击者主手
+    /// 武器的穿透值才能传给 `damage_after_defense`——此前（P6 第四批到
+    /// 第五批）`ItemRule`/`StatBonus` 都不携带穿透字段，`resolve_attack`
+    /// 只能恒传 `Penetration::NONE`。见
+    /// [`ll_sim::item::ItemRule::penetration`] 文档完整论证。
+    ///
+    /// # 为什么不是 `register-item` 的参数，走 `set_penetration` 追加
+    ///
+    /// 与 [`Self::equip_mask`]/[`Self::stat_bonuses`]/[`Self::use_effect`]
+    /// 同一条既有先例（`register-item` 的六参数签名不能改参数个数）——
+    /// 脚本层对应函数是 `register-item-penetration`
+    /// （`crate::script_item_api`），Rust 层对应方法是
+    /// [`ItemTable::set_penetration`]。**覆盖，不是追加**——与
+    /// [`Self::use_effect`] 同一种"单值覆盖"语义：一件武器只有一份
+    /// 穿透，不是可以累积的列表。
+    pub penetration: Penetration,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -180,6 +202,11 @@ pub struct ItemAttrs {
     /// `register-item-use-effect` 调用 [`ItemTable::set_use_effect`]
     /// 写入，理由同 [`ItemDef::use_effect`] 文档。
     pub use_effect: Option<SkillEffect>,
+    /// 穿透——`register-item` 注册时恒为 `Penetration::NONE`（同上，
+    /// `do_register_item` 不接受这个参数），真正的取值由后续
+    /// `register-item-penetration` 调用 [`ItemTable::set_penetration`]
+    /// 写入，理由同 [`ItemDef::penetration`] 文档。
+    pub penetration: Penetration,
 }
 
 /// 物品注册期可能出现的错误。
@@ -235,6 +262,8 @@ pub struct ItemView<'a> {
     pub stat_bonuses: &'a [StatBonus],
     /// 使用效果。
     pub use_effect: Option<SkillEffect>,
+    /// 穿透。
+    pub penetration: Penetration,
 }
 
 /// 物品属性的列式存储：按 [`ContentIndex`] 下标索引，与
@@ -251,6 +280,7 @@ pub struct ItemTable {
     equip_mask: Vec<SlotMask>,
     stat_bonuses: Vec<Vec<StatBonus>>,
     use_effect: Vec<Option<SkillEffect>>,
+    penetration: Vec<Penetration>,
     defined: Vec<bool>,
 }
 
@@ -274,6 +304,7 @@ impl ItemTable {
             self.equip_mask.resize(new_len, SlotMask::EMPTY);
             self.stat_bonuses.resize(new_len, Vec::new());
             self.use_effect.resize(new_len, None);
+            self.penetration.resize(new_len, Penetration::NONE);
         }
 
         if self.defined[idx] {
@@ -289,6 +320,7 @@ impl ItemTable {
         self.equip_mask[idx] = attrs.equip_mask;
         self.stat_bonuses[idx] = attrs.stat_bonuses;
         self.use_effect[idx] = attrs.use_effect;
+        self.penetration[idx] = attrs.penetration;
         Ok(())
     }
 
@@ -317,6 +349,7 @@ impl ItemTable {
             equip_mask: self.equip_mask[idx],
             stat_bonuses: &self.stat_bonuses[idx],
             use_effect: self.use_effect[idx],
+            penetration: self.penetration[idx],
         })
     }
 
@@ -381,17 +414,38 @@ impl ItemTable {
         self.use_effect[item.get() as usize] = Some(effect);
         Ok(())
     }
+
+    /// 设置这件物品的穿透（武器引用与穿透接线批次，P6 第六批）——
+    /// `register-item` 的既有脚本签名不能改参数个数，理由同
+    /// [`Self::set_equip_mask`]。目标索引必须已经 `define` 过，否则
+    /// 返回 [`ItemError::NotDefined`]，同一条 ADR 0017 纪律。
+    ///
+    /// **覆盖，不是追加**——与 [`Self::set_use_effect`] 同一种"单值
+    /// 覆盖"语义，见 [`ItemDef::penetration`] 文档。
+    pub fn set_penetration(
+        &mut self,
+        item: ContentIndex,
+        penetration: Penetration,
+    ) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        self.penetration[item.get() as usize] = penetration;
+        Ok(())
+    }
 }
 
 /// `resolve` 侧的堆叠上限/装备占位/属性加成查询——`ll_sim::resolve::resolve_pick_up`
 /// 判断「拾取时能否与背包已有堆合并」需要 `stack_limit`，
 /// `resolve_equip`/`resolve_unequip` 判断占位冲突需要 `equip_mask`
 /// （装备栏位批次，P6 第三批），`ll_sim::resolve::derive_stats`（P6 第
-/// 四批）累加装备贡献的攻防加成需要 `stat_bonuses`——见
-/// `ll_sim::item::ItemCatalog` 文档「本模块新增」一节。与
-/// `impl ResourcePoolCatalog for ResourcePoolTable`（`crate::resource_pool`
-/// 模块）同一条既有先例：只把 `ItemView` 里 `resolve` 真正要读的字段
-/// 搬进 [`ItemRule`]，不是把整条 `ItemView` 转发出去。
+/// 四批）累加装备贡献的攻防加成需要 `stat_bonuses`，
+/// `ll_sim::resolve::resolve_attack`（P6 第六批）查攻击者主手武器的
+/// 穿透需要 `penetration`——见 `ll_sim::item::ItemCatalog` 文档「本模块
+/// 新增」一节。与 `impl ResourcePoolCatalog for ResourcePoolTable`
+/// （`crate::resource_pool` 模块）同一条既有先例：只把 `ItemView` 里
+/// `resolve` 真正要读的字段搬进 [`ItemRule`]，不是把整条 `ItemView`
+/// 转发出去。
 impl ItemCatalog for ItemTable {
     fn item(&self, item: ContentIndex) -> Option<ItemRule> {
         self.get(item).map(|view| ItemRule {
@@ -399,6 +453,7 @@ impl ItemCatalog for ItemTable {
             equip_mask: view.equip_mask,
             stat_bonuses: view.stat_bonuses.to_vec(),
             use_effect: view.use_effect,
+            penetration: view.penetration,
         })
     }
 }
@@ -437,6 +492,7 @@ mod tests {
                     equip_mask: SlotMask::EMPTY,
                     stat_bonuses: Vec::new(),
                     use_effect: None,
+                    penetration: Penetration::NONE,
                 },
             )
             .expect("首次定义应当成功");
@@ -462,6 +518,7 @@ mod tests {
             equip_mask: SlotMask::EMPTY,
             stat_bonuses: Vec::new(),
             use_effect: None,
+            penetration: Penetration::NONE,
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -506,6 +563,7 @@ mod tests {
                     equip_mask: SlotMask::EMPTY,
                     stat_bonuses: Vec::new(),
                     use_effect: None,
+                    penetration: Penetration::NONE,
                 },
             )
             .expect("首次定义应当成功");
@@ -533,6 +591,7 @@ mod tests {
                     equip_mask: SlotMask::EMPTY,
                     stat_bonuses: Vec::new(),
                     use_effect: None,
+                    penetration: Penetration::NONE,
                 },
             )
             .expect("首次定义应当成功");
@@ -548,6 +607,7 @@ mod tests {
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
                 use_effect: None,
+                penetration: Penetration::NONE,
             })
         );
     }
@@ -578,6 +638,7 @@ mod tests {
             equip_mask: SlotMask::EMPTY,
             stat_bonuses: Vec::new(),
             use_effect: None,
+            penetration: Penetration::NONE,
         }
     }
 
