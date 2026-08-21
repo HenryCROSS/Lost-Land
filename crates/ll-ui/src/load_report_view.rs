@@ -361,10 +361,21 @@ mod tests {
 
     #[test]
     fn short_path只保留最后两段路径() {
-        // Arrange：模拟真实撞见的过长绝对路径（含中文目录名）。
-        let path = PathBuf::from(
-            "C:\\Users\\henry\\Desktop\\迷途大陆\\LostLand\\mods\\broken_syntax\\main.scm",
-        );
+        // Arrange：模拟真实撞见的过长路径（含中文目录名）。
+        //
+        // 用 `join` 逐段拼，而不是写死一个带反斜杠的字面量：反斜杠在 Unix 上
+        // 是合法的文件名字符，那样的字面量在 Linux 上会被 `Path::components`
+        // 当成**单独一段**普通文件名，「取最后两段」等于取它自己，断言必然
+        // 失败。这条测试此前只在 Windows 上通过，CI 的 ubuntu 任务一直红着。
+        //
+        // 同族问题另见 `ll_mod::asset_vfs::validate_relative_asset_path` 的
+        // 测试——那里的反斜杠字面量是**故意**的，测的正是这类字符串会被拒绝，
+        // 两者不要混为一谈。
+        let path = PathBuf::from("迷途大陆")
+            .join("LostLand")
+            .join("mods")
+            .join("broken_syntax")
+            .join("main.scm");
 
         // Act
         let short = short_path(&path);
