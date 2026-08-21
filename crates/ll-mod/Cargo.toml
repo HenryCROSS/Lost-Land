@@ -53,6 +53,14 @@ tracing = "0.1"
 # 依赖 `ll-sim`（更下游）——`ll-sim` 不认识、也不依赖 `ll-mod`，
 # `cargo tree -p ll-world | grep ll-sim` 这条既有验证不受影响。
 ll-sim = { path = "../ll-sim" }
+# 等级与经验系统落地批次：从 [dev-dependencies] 升级为生产依赖。原先
+# 只有测试直接构造/比较 `SteelVal`（见下方历史注释），但
+# `crate::script_xp_curve_api` 的 `register-xp-curve` 需要在生产代码
+# 路径上把表达式参数声明成 `SteelVal` 类型本身（`(quote 表达式)` 交给
+# Rust 函数的就是这棵未求值的树，见该模块文档「为什么表达式参数的
+# Rust 类型是 SteelVal」一节），不能像其余 `register-*` 函数那样单靠
+# `register_fn` 的泛型自动转换绕开这个类型名。
+steel-core = "0.8.2"
 # 动画剪辑接线批次新增：`crate::clip`/`crate::base_clip` 需要
 # `ll_render::anim::Clip`（剪辑数据本身的类型）与
 # `ll_render::anim::base_hero_clips`（本体英雄行走/待机剪辑的唯一权威
@@ -64,10 +72,5 @@ ll-render = { path = "../ll-render" }
 
 [dev-dependencies]
 proptest.workspace = true
-# 规格 §10.5 接线批次新增：`script_behavior_api`/`script_behavior_source`
-# 的测试要直接断言 `ScriptEngine::call_raw` 的返回值（`steel::rvals::
-# SteelVal`）——生产代码本身不需要点名这个类型（`register_fn` 靠泛型
-# 转换，见 `ll-script` 既有模式），只有测试需要构造/比较具体的
-# `SteelVal` 值，因此只加进 dev-dependencies，不升级成生产依赖。版本
-# 与 `ll-script`/`Cargo.lock` 锁定的一致。
-steel-core = "0.8.2"
+# `steel-core` 已在等级与经验系统落地批次升级为生产依赖（见上方
+# [dependencies] 的注释），测试代码沿用同一份，不再单独声明。

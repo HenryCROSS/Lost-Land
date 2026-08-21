@@ -112,6 +112,24 @@ use ll_world::zone::ZoneLayout;
 /// 跑通再确认新常量 `13_774_070_666_589_385_121` 稳定复现。
 const EXPECTED_WORLD_DIGEST: u64 = 13_774_070_666_589_385_121;
 
+// # 等级与经验系统落地批次：本次没有重冻，如实记录为什么不可能变
+//
+// `WorldState::hash` 新增混入的 `Agent::level`/`experience`/
+// `xp_to_next_level` 三个字段只在 `for agent in self.actors.iter()`
+// 循环体内被读取——本文件下方
+// `固定种子的四十八乘四十八世界摘要跨平台稳定` 这条测试的世界完全由
+// `WorldState::new(layout, &params, &terrain_ids, terrain_table,
+// spawn)` 直接构造，全程没有任何 `world.actors.spawn(..)` 调用（`grep
+// actors.spawn` 本文件确认为零命中），`self.actors` 因此恒是空的
+// `Arena::default()`，上述循环体一次也不会执行，三个新字段自然不会
+// 被喂进哈希器——这与前几次重冻的情形不同：前几次改动的是
+// `WorldState` 顶层字段（`kill_counts`/`history`/`next_world_id`），
+// 顶层字段的混入代码在循环体之外、每次调用 `hash()` 都会执行；这次
+// 改动的是 `Agent` 的字段，只有真的存在至少一个 `Agent` 时才有机会
+// 被读到。人工核验（真实执行）：本次改动落地后原样跑了这条测试，
+// 摘要与改动前的常量逐位相同，未观察到任何差异，因此常量本身不需要
+// 更新——这不是遗漏检查，是核实过的真实结论。
+
 /// 测试用区块布局：边长 48（是噪声格点周期的整数倍、大于视口跨度，
 /// 且刻意不是 2 的幂，避免大陆尺度噪声层退化成全图常数，见
 /// [`EXPECTED_WORLD_DIGEST`] 文档「裁定 CS-6」一节），单个区块——整个

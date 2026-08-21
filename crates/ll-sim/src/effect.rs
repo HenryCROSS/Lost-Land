@@ -372,4 +372,28 @@ pub enum Effect {
         /// 视野半径。
         radius: u32,
     },
+    /// 给某实体授予 `amount` 点经验（等级与经验系统，
+    /// `knowledge/design/level-and-experience-system.md` 六节）。
+    ///
+    /// # 只携带「给多少」，不携带「该不该升级」
+    ///
+    /// 与 [`Effect::Damage`] 只携带 `amount`（一个决定,不是最终状态）
+    /// 同一个范式：本效果的产出者（`crate::resolve` 的
+    /// `append_kill_experience`）只判断「这场击杀该给多少经验」，不
+    /// 判断「加上这些经验后有没有升级、升几级」——那段判定没有任何
+    /// 下游效果需要提前知道结果（不像「是否致死」需要提前算出来才能
+    /// 同时产出 `Effect::Kill`），因此整段放进 `apply` 一次算完，见
+    /// [`crate::apply::apply_with_xp_curves`] 文档。不需要独立的
+    /// `Effect::LevelUp` 变体——升级是本效果在 `apply` 侧的一个自然
+    /// 后果，不是一个需要单独被「决定」的独立效果，见设计文档六节
+    /// 「被否决的选项」一节。
+    GrantExperience {
+        /// 获得经验的实体——通常是一场击杀的击杀者。
+        target: EntityId,
+        /// 经验量。设计上恒为非负（击杀不会倒扣经验），但本类型本身
+        /// 不校验这条约束——校验是产出者（`resolve`）的职责，`apply`
+        /// 侧的升级循环只要求 `xp_to_next_level > 0` 就不会因为一个
+        /// 意外的负数而死循环，见 `apply` 侧实现注释。
+        amount: i64,
+    },
 }

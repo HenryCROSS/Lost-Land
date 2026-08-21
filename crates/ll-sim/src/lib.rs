@@ -29,14 +29,28 @@
 //! （[`behavior::BehaviorTreeSource`]）——行为树 tick 求值器本身需要
 //! `ll-script` 的 `SteelVal`，本 crate 不能依赖 `ll-script`，与
 //! `skill`/`quest` 同一套依赖倒置手法，见该模块文档。
+//!
+//! [`xp_curve`]（等级与经验系统）：经验需求曲线的求值机器
+//! （`XpCurveDef`/`XpCurveOp`/`XpCurveOperand`，装载期由 `ll-mod` 编译
+//! 出的扁平指令数组，运行期本模块零脚本参与求值）与
+//! [`xp_curve::XpCurveCatalog`] trait——与 `skill`/`quest`/`behavior`
+//! 同一套依赖倒置手法：曲线注册表本身定义在下游的 `ll-mod`，本 crate
+//! 只声明「给我一个职业/种族，还我一条曲线」这个接口，见该模块文档
+//! 「为什么不复用 `FormulaOp`」一节。
+//!
+//! [`experience`]：击杀产出经验值需要的「这个生物种类值多少经验」
+//! 只读接口（[`experience::ExperienceCatalog`] trait）——与 `skill`
+//! 同一套依赖倒置手法，见该模块文档。
 
 pub mod apply;
 pub mod behavior;
 pub mod combat;
 pub mod effect;
+pub mod experience;
 pub mod intent;
 pub mod quest;
 pub mod resolve;
 pub mod skill;
 pub mod skill_overview;
 pub mod timeline;
+pub mod xp_curve;

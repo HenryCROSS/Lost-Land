@@ -26,12 +26,14 @@
 
 use std::path::Path;
 
+use ll_core::ident::ContentIndex;
 use ll_mod::asset_vfs::{self, AssetVfs};
 use ll_mod::base_clip::register_base_clips;
 use ll_mod::base_placeholder::register_base_placeholder_content;
 use ll_mod::base_race::register_base_races;
 use ll_mod::base_space_profile::register_base_space_profiles;
 use ll_mod::base_terrain::register_base_terrain;
+use ll_mod::base_xp_curve::register_base_xp_curve;
 use ll_mod::class::ClassTable;
 use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
@@ -44,6 +46,7 @@ use ll_mod::race::{BaseRaceIds, RaceTable};
 use ll_mod::registry::Registry;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
+use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 
@@ -88,6 +91,13 @@ pub struct LoadedContent {
     /// `WorldState::hash()`（ADR 0020 甲区，见 `ll_mod::clip` 模块
     /// 文档），只被渲染层（`crate::animation`/`crate::app`）读取。
     pub clip_table: ClipTable,
+    /// 本体默认经验曲线索引（`lostland:default_xp_curve`）——未被职业/
+    /// 种族显式绑定时的保底曲线，见 `ll_mod::base_xp_curve` 模块文档。
+    pub default_xp_curve_id: ContentIndex,
+    /// 经验曲线定义表。
+    pub xp_curve_table: XpCurveTable,
+    /// 职业/种族 → 经验曲线的绑定表。
+    pub xp_curve_bindings: XpCurveBindings,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -135,11 +145,15 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     register_base_placeholder_content(&mut registry);
     let (clip_ids, mut clip_table) =
         register_base_clips(&mut registry).expect("本体剪辑声明表内部一致，注册恒不失败");
+    let (default_xp_curve_id, mut xp_curve_table) =
+        register_base_xp_curve(&mut |id| registry.intern(id))
+            .expect("本体默认经验曲线声明内部一致，注册恒不失败");
 
     let mut class_table = ClassTable::new();
     let mut skill_table = SkillTable::new();
     let mut subclass_table = SubclassTable::new();
     let mut quest_table = QuestTable::new();
+    let mut xp_curve_bindings = XpCurveBindings::new();
 
     let mut report = load_all(
         mods_root,
@@ -152,6 +166,8 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             quest: &mut quest_table,
             race: &mut race_table,
             clip: &mut clip_table,
+            xp_curve: &mut xp_curve_table,
+            xp_curve_bindings: &mut xp_curve_bindings,
         },
     );
 
@@ -164,6 +180,12 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     // `content_hash_of` 之前——本函数返回的 `LoadedContent::registry`
     // 因此总是已经跑完值哈希的那一份,调用方不需要、也不应该再手动
     // 调用一次。
+    // `ContentValueTables` 不含 `xp_curve`/`xp_curve_bindings`——与
+    // `clip_table` 已经确立的先例同一条理由（ADR 0020 甲区：不是每张
+    // 内容表都需要参与值哈希，见 `ll_mod::content_hash` 模块文档）：值
+    // 哈希服务的是「同一个 mod 集合，不同装载顺序，内容是否真的一致」
+    // 这个问题，本任务范围不含把经验曲线表并入这份校验，如实标注为
+    // 现状而非遗漏，需要时属于独立的后续扩展。
     apply_value_hashes(
         &mut registry,
         &ContentValueTables {
@@ -213,6 +235,9 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         quest_table,
         clip_ids,
         clip_table,
+        default_xp_curve_id,
+        xp_curve_table,
+        xp_curve_bindings,
         manifests,
         script_sources,
         report,

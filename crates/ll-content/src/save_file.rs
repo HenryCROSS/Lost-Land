@@ -571,6 +571,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         });
         world.player_entity = Some(player);
         let content_index_map = registry
@@ -883,6 +886,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         });
         let content_index_map = registry
             .snapshot()
@@ -1010,6 +1016,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         });
         let content_index_map = registry
             .snapshot()
@@ -1064,6 +1073,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         });
         let content_index_map = registry
             .snapshot()

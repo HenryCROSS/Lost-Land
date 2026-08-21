@@ -34,9 +34,10 @@ pub fn take_active_target() -> RaceTable {
     })
 }
 
-/// 把 `register-race` 注册进 `engine`。
+/// 把 `register-race`/`register-race-xp-reward` 注册进 `engine`。
 pub fn register_race_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-race", register_race);
+    engine.register_fn("register-race-xp-reward", register_race_xp_reward);
 }
 
 /// `(register-race id display-name-key
@@ -129,8 +130,60 @@ fn do_register_race(
                 darkvision_floor,
                 footprint,
                 lifespan_years,
+                // register-race 的既有脚本签名不携带经验值（不能改
+                // 参数个数，见 crate::race 模块文档「与
+                // register-race-xp-reward 的关系」一节）——这里恒填 0，
+                // 真正想声明非零经验值的 mod 作者需要额外调用
+                // register-race-xp-reward。
+                xp_reward: 0,
             },
         )
+        .map(|()| true)
+        .map_err(|err: RaceError| err.to_string())
+}
+
+/// `(register-race-xp-reward id amount)`——追加声明「杀死这个种族给
+/// 多少经验」，见 [`crate::race`] 模块文档「与 `register-race-xp-reward`
+/// 的关系」一节：不改 `register-race` 既有签名,新能力走新函数。
+///
+/// - `id`：已经通过 `register-race` 注册过的完整命名空间标识符字符串
+///   ——目标必须已存在（ADR 0017「注册期完整校验」），未注册的 `id`
+///   在装载期报错，而不是静默创建一条只有经验值、没有其余属性的半成品
+///   种族记录。
+/// - `amount`：击杀经验值,允许为 0（等价于不声明）,但不允许写成
+///   负数——负经验没有设计动机（杀怪倒扣经验不是本次要支持的玩法）。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_race` 文档。
+fn register_race_xp_reward(id: String, amount: i64) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-race-xp-reward 在没有活跃种族表的窗口内被调用".to_string());
+            };
+            do_register_race_xp_reward(registry, table, &id, amount)
+        })
+    })
+}
+
+/// [`register_race_xp_reward`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_race_xp_reward(
+    registry: &Registry,
+    table: &mut RaceTable,
+    id: &str,
+    amount: i64,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("种族 {id:?} 尚未通过 register-race 注册"));
+    };
+    if amount < 0 {
+        return Err(format!("击杀经验值不允许为负数：{amount}"));
+    }
+    table
+        .set_xp_reward(index, amount)
         .map(|()| true)
         .map_err(|err: RaceError| err.to_string())
 }
@@ -246,5 +299,112 @@ mod tests {
         // Cleanup：同 script_terrain_api 的既有纪律。
         take_active_target();
         crate::active_registry::take_active_registry();
+    }
+
+    #[test]
+    fn 追加声明经验值对已注册种族生效() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+        do_register_race(
+            &mut registry,
+            &mut table,
+            "yourmod:goblin",
+            "yourmod:goblin_display_name",
+            BaseStats {
+                strength: 0,
+                dexterity: 0,
+                constitution: 0,
+                intelligence: 0,
+                willpower: 0,
+                charisma: 0,
+            },
+            0,
+            (1, 1),
+            20,
+        )
+        .expect("先注册种族本体");
+
+        // Act
+        let result = do_register_race_xp_reward(&registry, &mut table, "yourmod:goblin", 15);
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:goblin").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(table.get(index).unwrap().xp_reward, 15);
+    }
+
+    #[test]
+    fn 对尚未注册的种族追加声明经验值返回err() {
+        // Arrange
+        let registry = Registry::new();
+        let mut table = RaceTable::new();
+
+        // Act
+        let result = do_register_race_xp_reward(&registry, &mut table, "yourmod:never_seen", 10);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 负数经验值返回err而不写入表() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+        do_register_race(
+            &mut registry,
+            &mut table,
+            "yourmod:goblin",
+            "yourmod:goblin_display_name",
+            BaseStats {
+                strength: 0,
+                dexterity: 0,
+                constitution: 0,
+                intelligence: 0,
+                willpower: 0,
+                charisma: 0,
+            },
+            0,
+            (1, 1),
+            20,
+        )
+        .expect("先注册种族本体");
+
+        // Act
+        let result = do_register_race_xp_reward(&registry, &mut table, "yourmod:goblin", -5);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_race_xp_reward() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_race_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(RaceTable::new());
+        engine
+            .load_source(
+                r#"(register-race "yourmod:goblin" "yourmod:goblin_display_name" 0 0 0 0 0 0 0 1 1 20)"#
+                    .to_string(),
+            )
+            .expect("先注册种族本体");
+
+        // Act
+        let result =
+            engine.load_source(r#"(register-race-xp-reward "yourmod:goblin" 15)"#.to_string());
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:goblin").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(table.get(index).unwrap().xp_reward, 15);
     }
 }

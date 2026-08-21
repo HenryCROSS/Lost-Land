@@ -19,6 +19,7 @@ use ll_mod::race::RaceTable;
 use ll_mod::registry::Registry;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
+use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::state::WorldState;
@@ -97,6 +98,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut quest = QuestTable::new();
     let mut race = RaceTable::new();
     let mut clip = ClipTable::new();
+    let mut xp_curve = XpCurveTable::new();
+    let mut xp_curve_bindings = XpCurveBindings::new();
 
     let mut report = load_all(
         Path::new(PRIMARY_MODS_ROOT),
@@ -109,6 +112,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             quest: &mut quest,
             race: &mut race,
             clip: &mut clip,
+            xp_curve: &mut xp_curve,
+            xp_curve_bindings: &mut xp_curve_bindings,
         },
     );
     let missing_dependency_report = load_all(
@@ -122,6 +127,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             quest: &mut quest,
             race: &mut race,
             clip: &mut clip,
+            xp_curve: &mut xp_curve,
+            xp_curve_bindings: &mut xp_curve_bindings,
         },
     );
     let duplicate_namespace_report = load_all(
@@ -135,6 +142,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             quest: &mut quest,
             race: &mut race,
             clip: &mut clip,
+            xp_curve: &mut xp_curve,
+            xp_curve_bindings: &mut xp_curve_bindings,
         },
     );
     report.entries.extend(missing_dependency_report.entries);
@@ -289,6 +298,9 @@ fn spawn_player(world: &mut WorldState, pos: TorusPos) -> EntityId {
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,
+        level: ll_world::entity::Agent::STARTING_LEVEL,
+        experience: 0,
+        xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
     })
 }
 

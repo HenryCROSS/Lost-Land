@@ -114,6 +114,9 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,
+        level: ll_world::entity::Agent::STARTING_LEVEL,
+        experience: 0,
+        xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
     });
     // 探索记忆写入路径（`resolve_move` 追加的 `Effect::MarkExplored`）
     // 按 `player_entity` 区分「谁在动」，只给玩家标记探索——见其文档
@@ -147,6 +150,9 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,
+        level: ll_world::entity::Agent::STARTING_LEVEL,
+        experience: 0,
+        xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
     });
 
     (world, player, enemy)
@@ -399,7 +405,31 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 新增混入 `kill_counts` 的那几行临时删掉重新跑这条测试，摘要精确
 /// 回到本次重冻之前的旧常量 `6_199_102_875_138_192_911`，恢复后重新
 /// 跑通再确认新常量 `11_328_278_044_222_098_927` 稳定复现。
-const EXPECTED_REPLAY_DIGEST: u64 = 11_328_278_044_222_098_927;
+///
+/// # 第十次重冻的原因（等级与经验系统落地批次）
+///
+/// `WorldState::hash` 新增混入了每个 `Agent` 的
+/// `level`/`experience`/`xp_to_next_level` 三个字段（ADR 0022「判据
+/// 字段不全」的直接施工，见 `crates/ll-world/src/state.rs` `hash()`
+/// 对 `self.actors` 遍历新增的三行 `hasher.write_i64`）——本文件
+/// `setup` 生成的 `player`/`enemy` 都是真实 `Agent`（不是空表），三个
+/// 新字段各自取新增的占位默认值（`level = Agent::STARTING_LEVEL`
+/// （1）、`experience = 0`、`xp_to_next_level =
+/// Agent::STARTING_XP_TO_NEXT_LEVEL`（100）），喂进哈希器的字节流因此
+/// 真的变长、变了内容，摘要随之改变，与前九次重冻同一条先例。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 先在改动后的代码上把这条测试单独跑了两次，确认新摘要
+///    `13_338_753_139_158_337_327` 在两次独立进程里稳定复现（不是
+///    一次性偶然值）。
+/// 2. 再把 `state.rs` `hash()` 里新增的三行 `hasher.write_i64(agent.level
+///    /.experience/.xp_to_next_level)` 临时注释掉重新跑这条测试，摘要
+///    精确回到本次重冻之前的旧常量 `11_328_278_044_222_098_927`（与
+///    上面记录的第九次重冻结果一致），证明这三行确实是本次摘要变化
+///    的唯一成因。
+/// 3. 恢复这三行后重新跑通，再次确认新常量
+///    `13_338_753_139_158_337_327` 稳定复现，才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 13_338_753_139_158_337_327;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

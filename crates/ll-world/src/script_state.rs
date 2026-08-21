@@ -335,6 +335,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: crate::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         }
     }
 

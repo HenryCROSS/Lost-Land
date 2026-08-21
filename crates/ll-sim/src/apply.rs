@@ -1,5 +1,6 @@
 //! `apply`：把一个 [`Effect`] 落到 [`WorldState`] 上的唯一入口。
 
+use ll_world::entity::EntityId;
 use ll_world::fov::compute_fov;
 use ll_world::script_state::ScriptStateTarget;
 use ll_world::space::Space;
@@ -7,6 +8,7 @@ use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
 
 use crate::effect::Effect;
+use crate::xp_curve::{FlatXpCurve, XpCurveCatalog, eval_xp_curve};
 
 /// 把一个 [`Effect`] 应用到世界状态，这是全局唯一允许改动
 /// [`WorldState`] 的函数。
@@ -55,7 +57,26 @@ use crate::effect::Effect;
 ///    分支报错，全部分支就都要改签名，这是比本次任务大得多的改动。
 /// 3. 目标不存在本身不是异常状况（见规则 2 的场景），是结算并发/时序
 ///    下的正常可能性，不需要中断整批 `Effect` 的应用。
-pub fn apply(world: &mut WorldState, effect: &Effect) {
+///
+/// [`apply`] 的既有签名不接收任何内容注册表——这对绝大多数效果没有
+/// 影响（各分支的赋值都只需要 `Effect` 自身携带的朴素数据），但
+/// [`Effect::GrantExperience`] 的升级循环必须知道「这个实体该用哪条
+/// 经验曲线」才能重算 [`ll_world::entity::Agent::xp_to_next_level`]
+/// ——曲线注册表定义在下游的 `ll-mod`（依赖方向不允许本 crate 反过来
+/// 依赖它）。本函数是真正接住这个输入的入口，`apply` 本身则是保留
+/// 既有签名、传入保底曲线（[`FlatXpCurve::DEFAULT`]）的薄封装——与
+/// `resolve`/`resolve_with_skills`/`resolve_with_skills_and_quests` 的
+/// 分层入口同一个理由：不强迫尚未装载任何 mod、或明确不需要经验结算
+/// 的既有调用点都多传一份目录。
+///
+/// # 仍然是「唯一写入口」
+///
+/// `apply` 现在只是本函数套一层默认曲线的薄封装，不是第二个独立的
+/// 写入口——真正持有 `&mut WorldState` 并对字段赋值的代码只存在于本
+/// 函数体内，`apply` 自己不再重复一份匹配逻辑，模块文档「三条纪律」
+/// 描述的「全局唯一函数」这条不变式没有被打破，只是这个函数现在多了
+/// 一个可选输入。
+pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dyn XpCurveCatalog) {
     // 不再 `match *effect`（`Effect` 因 `SetScriptState` 携带 `Vec` 而
     // 不再是 `Copy`，见其文档）——改为按引用匹配，Copy 子字段用 `*`
     // 显式取值，与既有全部分支的赋值写法保持一致；`SetScriptState`
@@ -232,6 +253,62 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
                 world.exploration.mark_explored(&layout, pos);
             }
         }
+        Effect::GrantExperience { target, amount } => {
+            grant_experience_and_level_up(world, *target, *amount, curves);
+        }
+    }
+}
+
+/// [`apply`] 的既有调用点使用的薄封装：套一层
+/// [`FlatXpCurve::DEFAULT`] 保底曲线，行为对不产出 `Effect::GrantExperience`
+/// 的调用点完全透明，见 [`apply_with_xp_curves`] 文档。
+pub fn apply(world: &mut WorldState, effect: &Effect) {
+    apply_with_xp_curves(world, effect, &FlatXpCurve::DEFAULT);
+}
+
+/// [`Effect::GrantExperience`] 的完整落地逻辑：加经验、循环判定升级、
+/// 每次升级增量重算 `xp_to_next_level`——设计文档六节裁定「升级判定
+/// 整段放进 apply 一次算完」，本函数就是那一整段。
+///
+/// # 为什么是循环，不是一次 `if`
+///
+/// 一次性授予的经验量可能足够连续跨越好几级（例如一次性给了一大笔
+/// 任务奖励经验）——`while` 循环让每一级各自消耗掉对应的门槛、各自
+/// 重算下一级门槛，直到剩余经验不够再升一级为止，与设计文档「可能
+/// 连续触发好几次」一致。
+///
+/// # 经验语义：当前等级内的进度条，不是终身累计总量
+///
+/// 每次升级都从 `agent.experience` 里扣掉刚消耗的门槛（见
+/// [`ll_world::entity::Agent::experience`] 文档）——升级后的经验值是
+/// 「这一级已经攒了多少」，不是「一辈子攒了多少」，与
+/// [`ll_world::entity::Agent::xp_to_next_level`] 存的是「delta 门槛」
+/// 而不是「累积总门槛」这一点是同一套语义,两者必须按同一种口径才能
+/// 直接比较大小。
+///
+/// # 防御性下限：`xp_to_next_level <= 0` 时不循环
+///
+/// 正常曲线不会算出零或负的门槛，但装载期无法排除 mod 作者写出一条
+/// 退化曲线（例如恒返回 0）——`xp_to_next_level <= 0` 时经验永远
+/// `>=` 门槛，若不加这道防线会死循环。这里选择直接停止升级（不再
+/// 消耗经验、不再递增等级），是防御性兜底，不是设计允许的正常路径,
+/// 与 `XpCurveOp::Div` 除以零时返回 0 同一条纪律。
+fn grant_experience_and_level_up(
+    world: &mut WorldState,
+    target: EntityId,
+    amount: i64,
+    curves: &dyn XpCurveCatalog,
+) {
+    let Some(agent) = world.actors.get_mut(target) else {
+        return;
+    };
+    agent.experience = agent.experience.saturating_add(amount);
+    while agent.xp_to_next_level > 0 && agent.experience >= agent.xp_to_next_level {
+        let consumed = agent.xp_to_next_level;
+        agent.experience -= consumed;
+        agent.level += 1;
+        let curve = curves.curve_for(agent.profession, agent.race);
+        agent.xp_to_next_level = eval_xp_curve(&curve, agent.level, consumed);
     }
 }
 
@@ -304,6 +381,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         }
     }
 

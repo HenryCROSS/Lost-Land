@@ -235,6 +235,12 @@ impl ThinPopulation {
             // 升格是常规的前景层调度,不该顺手给每一个都发一个
             // WorldId（见 Agent::remembered_id 文档「懒分配」）。
             remembered_id: None,
+            // 薄层不追踪逐个体等级/经验——升格这一刻总是从 1 级、零
+            // 经验开始，与生命/法力/耐力同一条占位纪律，见
+            // Agent::STARTING_LEVEL/STARTING_XP_TO_NEXT_LEVEL 文档。
+            level: Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
         })
     }
 

@@ -73,15 +73,20 @@ use crate::script_terrain_api::{
     register_terrain_api, set_active_target as set_active_terrain_target,
     take_active_target as take_active_terrain_target,
 };
+use crate::script_xp_curve_api::{
+    register_xp_curve_api, set_active_target as set_active_xp_curve_target,
+    take_active_target as take_active_xp_curve_target,
+};
+use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 
 /// 加载管线一次装载会话内，脚本注册函数可以写入的全部内容表——地形、
 /// 职业、技能、副职、任务、种族、动画剪辑。
 ///
 /// 集中成一个结构体，而不是让 [`load_all`]/[`load_one_script`] 各自
-/// 接收七个独立的 `&mut` 参数：这七张表在装载管线里总是同进同出（同一
+/// 接收九个独立的 `&mut` 参数：这九张表在装载管线里总是同进同出（同一
 /// 份 mod 脚本可能在同一个文件里先后调用 `register-terrain`/
-/// `register-class`/……），拆成七个位置参数只会让调用点的参数顺序成为
-/// 易错点，结构体把「这七张表必须一起传」这条约束在类型上表达出来。
+/// `register-class`/……），拆成九个位置参数只会让调用点的参数顺序成为
+/// 易错点，结构体把「这九张表必须一起传」这条约束在类型上表达出来。
 /// `Registry` 不在这个结构体里——它走 [`crate::active_registry`] 单独
 /// 的共享目标，理由见该模块文档。
 pub struct GameplayTables<'a> {
@@ -99,8 +104,17 @@ pub struct GameplayTables<'a> {
     pub race: &'a mut RaceTable,
     /// 动画剪辑表——不进 `WorldState`、不参与 `WorldState::hash()`
     /// （ADR 0020 甲区，见 `crate::clip` 模块文档），但注册路径与另外
-    /// 六张表完全一致，随装载会话同进同出。
+    /// 八张表完全一致，随装载会话同进同出。
     pub clip: &'a mut ClipTable,
+    /// 经验曲线定义表（等级与经验系统落地批次新增）——`register-xp-curve`
+    /// 的写入目标，见 `crate::xp_curve` 模块文档。
+    pub xp_curve: &'a mut XpCurveTable,
+    /// 职业/种族 → 经验曲线的绑定表——`register-class-xp-curve`/
+    /// `register-race-xp-curve` 的写入目标。与 `xp_curve` 分成两个字段
+    /// 而不是一个元组字段，是为了和其余各表同样走
+    /// `std::mem::take(tables.xp_curve_bindings)` 这条既有搬运手法，不
+    /// 需要为这一对表单独发明搬运方式。
+    pub xp_curve_bindings: &'a mut XpCurveBindings,
 }
 
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
@@ -224,6 +238,8 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut quest = QuestTable::new();
     let mut race = RaceTable::new();
     let mut clip = ClipTable::new();
+    let mut xp_curve = XpCurveTable::new();
+    let mut xp_curve_bindings = XpCurveBindings::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -232,6 +248,8 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         quest: &mut quest,
         race: &mut race,
         clip: &mut clip,
+        xp_curve: &mut xp_curve,
+        xp_curve_bindings: &mut xp_curve_bindings,
     };
     for entry in &manifest.entry_points {
         if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
@@ -333,12 +351,12 @@ fn load_one_script(
         }),
     })?;
 
-    // 把 registry 与全部七张表整体移进各自的线程局部存储，供对应的
+    // 把 registry 与全部九张表整体移进各自的线程局部存储，供对应的
     // register-* 函数在脚本求值期间写入；脚本跑完（不论成功失败）都要
     // 原样移回——`ScriptEngine::load_source` 本身不会 panic（四道防线
     // ①②），这里不需要 catch_unwind 之类的补救。`Registry` 走
-    // `crate::active_registry` 的共享目标（七个 register-* 函数必须
-    // 共用同一个 `Registry` 实例，理由见该模块文档），七张表各自走
+    // `crate::active_registry` 的共享目标（九个 register-* 函数必须
+    // 共用同一个 `Registry` 实例，理由见该模块文档），九张表各自走
     // 自己模块的 `thread_local!`。
     set_active_registry(std::mem::take(registry));
     set_active_terrain_target(std::mem::take(tables.terrain));
@@ -348,6 +366,10 @@ fn load_one_script(
     set_active_quest_target(std::mem::take(tables.quest));
     set_active_race_target(std::mem::take(tables.race));
     set_active_clip_target(std::mem::take(tables.clip));
+    set_active_xp_curve_target(
+        std::mem::take(tables.xp_curve),
+        std::mem::take(tables.xp_curve_bindings),
+    );
 
     let mut engine = ScriptEngine::new();
     register_terrain_api(&mut engine);
@@ -357,6 +379,7 @@ fn load_one_script(
     register_quest_api(&mut engine);
     register_race_api(&mut engine);
     register_clip_api(&mut engine);
+    register_xp_curve_api(&mut engine);
     let result = engine.load_source(source.clone());
 
     *registry = take_active_registry();
@@ -367,6 +390,9 @@ fn load_one_script(
     *tables.quest = take_active_quest_target();
     *tables.race = take_active_race_target();
     *tables.clip = take_active_clip_target();
+    let (xp_curve, xp_curve_bindings) = take_active_xp_curve_target();
+    *tables.xp_curve = xp_curve;
+    *tables.xp_curve_bindings = xp_curve_bindings;
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -384,19 +410,21 @@ fn load_one_script(
 /// 把 [`ScriptError`] 归到 [`LoadStage::LoadScript`] 还是
 /// [`LoadStage::Register`]。
 ///
-/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有七个
+/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有十个
 /// （`register-terrain`/`register-class`/`register-skill`/
 /// `register-subclass`/`register-quest`/`register-race`/
-/// `register-animation-clip`），把 `ScriptError::Runtime`（任一
-/// `register-*` 内部校验失败时都走这一类，见各自模块文档「返回
-/// Result<bool, String>」一节）整体归为 Register 阶段。这会把一个与
-/// 内容注册无关、纯粹是脚本自身写错的运行时错误（比如引用了一个已
-/// 声明但尚未 `define` 的变量）也误标成 Register——原始简化写下时只有
-/// `register-terrain` 一个注册函数，补齐其余六个之后这条简化本身没有
-/// 变得更精确（七个函数的运行时错误依然与「脚本自身写错」共用同一个
-/// `ScriptError::Runtime` 变体，无法从错误类型本身区分），仍然是一处
-/// 已知的简化，不是本批次修掉的缺口——若未来需要更精确的判据，需要让
-/// 每个注册函数把自己的错误包一层可辨识的前缀。
+/// `register-animation-clip`/`register-xp-curve`/
+/// `register-class-xp-curve`/`register-race-xp-curve`），把
+/// `ScriptError::Runtime`（任一 `register-*` 内部校验失败时都走这一类，
+/// 见各自模块文档「返回 Result<bool, String>」一节）整体归为 Register
+/// 阶段。这会把一个与内容注册无关、纯粹是脚本自身写错的运行时错误
+/// （比如引用了一个已声明但尚未 `define` 的变量）也误标成 Register
+/// ——原始简化写下时只有 `register-terrain` 一个注册函数，补齐其余
+/// 九个之后这条简化本身没有变得更精确（十个函数的运行时错误依然与
+/// 「脚本自身写错」共用同一个 `ScriptError::Runtime` 变体，无法从错误
+/// 类型本身区分），仍然是一处已知的简化，不是本批次修掉的缺口——若
+/// 未来需要更精确的判据，需要让每个注册函数把自己的错误包一层可辨识
+/// 的前缀。
 fn classify_script_stage(err: &ScriptError) -> LoadStage {
     match err {
         ScriptError::Runtime(..) => LoadStage::Register,
@@ -432,8 +460,8 @@ mod tests {
 
     /// 测试帮手：现造一套全新的空内容表，供 [`GameplayTables`] 借用——
     /// 各测试只关心地形（`register-terrain` 仍是既有场景里用得最多的
-    /// 一类），但 `load_all` 的签名要求七张表一起传，本结构体把「造出
-    /// 七个空表」这件事集中成一次调用，不必在每条测试里重复七行。
+    /// 一类），但 `load_all` 的签名要求九张表一起传，本结构体把「造出
+    /// 九个空表」这件事集中成一次调用，不必在每条测试里重复七行。
     #[derive(Default)]
     struct OwnedTables {
         terrain: TerrainTable,
@@ -443,6 +471,8 @@ mod tests {
         quest: QuestTable,
         race: RaceTable,
         clip: ClipTable,
+        xp_curve: XpCurveTable,
+        xp_curve_bindings: XpCurveBindings,
     }
 
     impl OwnedTables {
@@ -455,6 +485,8 @@ mod tests {
                 quest: &mut self.quest,
                 race: &mut self.race,
                 clip: &mut self.clip,
+                xp_curve: &mut self.xp_curve,
+                xp_curve_bindings: &mut self.xp_curve_bindings,
             }
         }
     }
@@ -726,7 +758,7 @@ mod tests {
         // register-terrain/register-class/register-skill/
         // register-subclass/register-quest/register-race/
         // register-animation-clip，七次调用必须落在同一个 Registry 上
-        // （否则 ContentIndex 会撞车），且七张表各自都收到了正确的
+        // （否则 ContentIndex 会撞车），且九张表各自都收到了正确的
         // 内容——这是 crate::active_registry 模块文档论证的那个「必须
         // 共享同一个 Registry」场景的直接回归。
         //

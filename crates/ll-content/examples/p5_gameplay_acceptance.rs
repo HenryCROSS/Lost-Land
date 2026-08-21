@@ -194,6 +194,9 @@ fn bare_agent(world: &WorldState, pos: TorusPos) -> Agent {
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,
+        level: ll_world::entity::Agent::STARTING_LEVEL,
+        experience: 0,
+        xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
     }
 }
 

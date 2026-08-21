@@ -4,11 +4,15 @@
 ;; 纯 Rust 函数调用能触达的注册 API）。
 ;;
 ;; 每个 register-* 的签名见对应宿主模块的文档：
-;;   register-class    crates/ll-mod/src/script_class_api.rs
-;;   register-subclass crates/ll-mod/src/script_subclass_api.rs
-;;   register-skill    crates/ll-mod/src/script_skill_api.rs
-;;   register-quest    crates/ll-mod/src/script_quest_api.rs
-;;   register-race     crates/ll-mod/src/script_race_api.rs
+;;   register-class            crates/ll-mod/src/script_class_api.rs
+;;   register-subclass         crates/ll-mod/src/script_subclass_api.rs
+;;   register-skill            crates/ll-mod/src/script_skill_api.rs
+;;   register-quest            crates/ll-mod/src/script_quest_api.rs
+;;   register-race             crates/ll-mod/src/script_race_api.rs
+;;   register-race-xp-reward   crates/ll-mod/src/script_race_api.rs
+;;   register-xp-curve         crates/ll-mod/src/script_xp_curve_api.rs
+;;   register-class-xp-curve   crates/ll-mod/src/script_xp_curve_api.rs
+;;   register-race-xp-curve    crates/ll-mod/src/script_xp_curve_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -24,3 +28,34 @@
 
 ;; 一个新种族：半精灵——敏捷 +1、魅力 +1，寿命 150 年。
 (register-race "examplemod:half_elf" "examplemod:half_elf_display_name" 0 1 0 0 0 1 0 1 1 150)
+
+;; 另一个新种族：哥布林——上面 "examplemod:kill_goblins" 任务点名的
+;; 击杀目标，此前只是一个被 kill-count 匹配规则引用的裸字符串，从未
+;; 真正注册过（种族本身是否存在不影响击杀计数匹配，见
+;; crate::quest 模块文档「跨表引用」一节）。这里补上真实注册，并用
+;; register-race-xp-reward 声明"杀死一只哥布林给 15 点经验"——见
+;; crate::race 模块文档 RaceDef::xp_reward 一节：等级与经验系统落地
+;; 批次判断"生物值多少经验"落在种族表上，这两行就是那个判断的真实
+;; 落地证据，不是只在单元测试里自证。
+(register-race "examplemod:goblin" "examplemod:goblin_display_name" 0 0 0 0 0 0 0 1 1 5)
+(register-race-xp-reward "examplemod:goblin" 15)
+
+;; 两条形状截然不同的经验曲线（等级与经验系统落地批次新增,
+;; knowledge/design/level-and-experience-system.md 四节两条示例的真实
+;; 版本）——线性曲线完全不读 prev-requirement，递推曲线完全依赖它，
+;; 证明"不同公式"不是同一套算法调了两个系数。
+;;
+;; 线性：从 N 级升到 N+1 级需要 100 + 40*N 点经验，只读 level。
+(register-xp-curve "examplemod:linear_xp_curve" 140
+  (quote (+ 100 (* level 40))))
+
+;; 递推指数：下一级门槛 = max(上一级门槛+20, 上一级门槛×1.18)——早期
+;; 由加法分支主导、后期由千分比乘法分支主导，只读 prev-requirement。
+(register-xp-curve "examplemod:recursive_xp_curve" 80
+  (quote (max (+ prev-requirement 20) (mul-permille prev-requirement 1180))))
+
+;; 把两条曲线分别绑定给一个职业与一个种族——证明
+;; register-class-xp-curve/register-race-xp-curve 两个"配置与定义
+;; 分离"的绑定函数在完整装载管线里真的生效，不只是孤立的单元测试。
+(register-class-xp-curve "examplemod:necromancer" "examplemod:recursive_xp_curve")
+(register-race-xp-curve "examplemod:half_elf" "examplemod:linear_xp_curve")

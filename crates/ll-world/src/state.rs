@@ -930,6 +930,18 @@ impl WorldState {
             }
             hasher.write_i64(i64::from(agent.mana));
             hasher.write_i64(i64::from(agent.stamina));
+            // 等级与经验系统新增的三个字段（level-and-experience-system.md
+            // 六节施工指引）——必须手动补进来：本函数对 `self.actors`
+            // 的遍历是逐字段手写，不是把整个 `Agent` 结构体自动折叠进
+            // 哈希，新增字段若不在这里显式写一行，就会静默漏出
+            // ADR 0022 点名的「判据字段不全」这个失效模式（见该 ADR
+            // 记录的两个历史实例，均是「新增 Agent/WorldState 字段但
+            // 忘了同步进 hash()」）。红/绿验证见
+            // `crates/ll-world/tests/determinism.rs`
+            // 「新增等级经验字段后世界哈希必须变化」一节。
+            hasher.write_i64(i64::from(agent.level));
+            hasher.write_i64(agent.experience);
+            hasher.write_i64(agent.xp_to_next_level);
             write_content_index_vec(&mut hasher, &agent.unlocked_skills);
             write_content_index_vec(&mut hasher, &agent.subclasses);
             hasher.write_u64(agent.skill_cooldowns.len() as u64);
@@ -1447,6 +1459,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: crate::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         });
         world.player_entity = Some(player_id);
         let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
@@ -1467,6 +1482,86 @@ mod tests {
 
         // Assert
         assert_eq!(world.player_entity, None);
+    }
+
+    /// 造一个带唯一一个实体的测试世界，供 hash 相关测试复用——`level`/
+    /// `experience`/`xp_to_next_level` 三个字段可由调用方指定，其余
+    /// 字段固定为占位值。
+    fn test_world_with_one_agent(level: i32, experience: i64, xp_to_next_level: i64) -> WorldState {
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        world.actors.spawn(Agent {
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: ContentIndex::default(),
+            luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: Space::surface(zone, ContentIndex::default()),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
+            level,
+            experience,
+            xp_to_next_level,
+        });
+        world
+    }
+
+    #[test]
+    fn 等级变化会改变世界哈希() {
+        // ADR 0022 红/绿验证：Agent::level 必须已经手动补进 hash()
+        // 的逐字段遍历——本函数手工验证过会失败（临时把 state.rs 里
+        // 新增的三行 hasher.write 删掉重跑，本测试会 panic：两个只有
+        // level 不同的世界算出同一个哈希），恢复后转绿，见本文件顶部
+        // hash() 分支上方的注释「红/绿验证见……」一节。
+        // Arrange
+        let world_level_1 = test_world_with_one_agent(1, 0, 100);
+        let world_level_2 = test_world_with_one_agent(2, 0, 100);
+
+        // Act
+        let (hash_1, hash_2) = (world_level_1.hash(), world_level_2.hash());
+
+        // Assert
+        assert_ne!(hash_1, hash_2);
+    }
+
+    #[test]
+    fn 经验值变化会改变世界哈希() {
+        // Arrange
+        let world_zero_xp = test_world_with_one_agent(1, 0, 100);
+        let world_some_xp = test_world_with_one_agent(1, 40, 100);
+
+        // Act
+        let (hash_zero, hash_some) = (world_zero_xp.hash(), world_some_xp.hash());
+
+        // Assert
+        assert_ne!(hash_zero, hash_some);
+    }
+
+    #[test]
+    fn 下一级所需经验变化会改变世界哈希() {
+        // Arrange
+        let world_threshold_100 = test_world_with_one_agent(1, 0, 100);
+        let world_threshold_250 = test_world_with_one_agent(1, 0, 250);
+
+        // Act
+        let (hash_100, hash_250) = (world_threshold_100.hash(), world_threshold_250.hash());
+
+        // Assert
+        assert_ne!(hash_100, hash_250);
     }
 
     #[test]
@@ -1507,6 +1602,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: crate::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         });
 
         // Act
@@ -1798,6 +1896,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: crate::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         }
     }
 

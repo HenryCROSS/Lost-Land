@@ -279,6 +279,26 @@ pub struct Agent {
     /// 首次"值得被记住"的那一刻才赋值，见
     /// [`crate::state::WorldState::remembered_id_of_or_assign`]。
     pub remembered_id: Option<WorldId>,
+    /// 角色总等级（`knowledge/design/level-and-experience-system.md`
+    /// 二节）——单一整数，不拆分职业等级/技能等级，见该文档「什么东西
+    /// 有等级」一节的完整论证：当前项目只有一个主职（`profession` 是
+    /// 单值）、技能解锁走离散 DAG（不是连续练级量），两种「分拆等级」
+    /// 的既有范式都不成立。
+    pub level: i32,
+    /// 当前等级内已经累积的经验值——**不是**终身累计总量，是「距离
+    /// 下一级还差多少」这个进度条的分子，升级时随 [`Self::xp_to_next_level`]
+    /// 一起扣减归零重算，见 `ll_sim::apply` 模块 `GrantExperience` 分支
+    /// 的文档。
+    pub experience: i64,
+    /// 升到下一级所需的经验总量——**缓存值，不是现算**，见设计文档
+    /// 「为什么 `xp_to_next_level` 必须缓存」一节：驱动它的
+    /// `XpCurveDef` 是递推公式（下一级门槛依赖上一级门槛的求值结果），
+    /// 现算需要从 1 级重放整条递推链（`O(当前等级)`），缓存后只需要在
+    /// 真正升级的那一刻增量重算一次（`O(1)`）。与 [`Self::health`]/
+    /// [`Self::mana`] 「只存当前值不存上限」的既有纪律形式相反，但是
+    /// 同一条「不做不必要的重复计算」纪律在不同数学结构（纯函数 vs
+    /// 递推）下的正确应用，不是破例——详见该字段的完整论证。
+    pub xp_to_next_level: i64,
 }
 
 impl Agent {
@@ -298,6 +318,17 @@ impl Agent {
     pub const STARTING_MANA: i32 = 50;
     /// 生成/升格新实体时的占位起始耐力值，理由同 [`Self::STARTING_MANA`]。
     pub const STARTING_STAMINA: i32 = 50;
+    /// 生成/升格新实体时的起始等级——角色总是从 1 级开始，不是占位值
+    /// （不存在需要替换成别的公式的「真正的起始等级」）。
+    pub const STARTING_LEVEL: i32 = 1;
+    /// 生成/升格新实体时 1→2 级所需经验的占位值。真正的值应取自这个
+    /// 实体所属职业/种族绑定的 `XpCurveDef::base_requirement`
+    /// （`knowledge/design/level-and-experience-system.md` 三节「为什么
+    /// 需要种子值」）——但 `ll-world`/`ThinPopulation::promote` 这一层
+    /// 没有内容注册表可查（同一条理由见 [`Self::STARTING_HEALTH`] 文档），
+    /// 因此和生命/法力/耐力一样先给一个非零占位，供 `ll-sim`/`ll-mod`
+    /// 接线批次在真正生成角色时用查表结果覆盖。
+    pub const STARTING_XP_TO_NEXT_LEVEL: i64 = 100;
 }
 
 #[cfg(test)]
@@ -385,6 +416,9 @@ mod tests {
             creature_kind: Some(race),
             spawned_at: Tick(10),
             remembered_id: Some(WorldId::next(&mut world_id_counter)),
+            level: 5,
+            experience: 250,
+            xp_to_next_level: 800,
         }
     }
 

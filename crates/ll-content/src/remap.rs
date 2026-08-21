@@ -328,6 +328,14 @@ fn remap_agent(
         // 文档：构造过程本身稳定，永不复用），与 `remap_affiliations`
         // 对 `OrgRef::Instance` 的既有处理同一个理由，不需要重映射。
         remembered_id: _,
+        // 等级与经验系统新增的三个字段（level-and-experience-system.md
+        // 六节）：三者均是纯 i32/i64 数值，不携带任何 ContentIndex——
+        // 与 health/mana/stamina 同一类「纯数值不需要重映射」字段，显式
+        // 列在这里（而不是用 `..` 省略）本身就是穷尽解构要保护的那件事：
+        // 让下一个新增字段的人也必须在这里显式决定要不要重映射。
+        level: _,
+        experience: _,
+        xp_to_next_level: _,
     } = *agent;
 
     *profession = remapper.remap_character_attribute(*profession, owner)?;
@@ -600,6 +608,9 @@ mod tests {
             creature_kind: None,
             spawned_at: Tick(0),
             remembered_id: None,
+            level: Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
         }
     }
 

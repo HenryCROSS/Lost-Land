@@ -51,6 +51,19 @@
 //! `i32` 字段的语义已经由字段名本身（`strength`/`dexterity`/……）说
 //! 清楚，没有必要为了区分「绝对值」与「增量」两种用途另起一个结构体。
 //!
+//! # 与 `register-race-xp-reward` 的关系
+//!
+//! `RaceDef::xp_reward`（等级与经验系统落地批次新增）没有塞进
+//! `register-race` 现有的脚本签名——`skill-requires!`/
+//! `register-class-xp-curve` 已经立下的先例：不改既有 `register-*`
+//! 函数的参数个数，需要新能力就加新函数（会破坏真实调用它的
+//! `mods/example_mod/gameplay.scm`）。`register-race-xp-reward(id,
+//! amount)` 是这条先例在种族经验值上的应用：先用 `register-race`
+//! 声明种族本体，再用这个新函数追加声明「杀死它给多少经验」，两次
+//! 调用不会自动同步（`register-race` 不声明经验值时默认 0），与
+//! `skill-requires!`/`register-skill` 的「分类展示与强制闸门是两件
+//! 独立的事」同一条设计哲学。
+//!
 //! # 与 `lostland:placeholder_race` 的协调
 //!
 //! [`crate::base_placeholder`] 已经注册了一个占位种族索引
@@ -100,6 +113,15 @@ pub struct RaceDef {
     /// 论证过为什么不需要另外的硬编折扣系数：熟练度边际递减、家族传承
     /// 摩擦、后台推进的随机波动三条既有机制已经自然抑制线性累积。
     pub lifespan_years: u32,
+    /// 杀死这个种族/生物种类的实体应授予多少经验
+    /// （`knowledge/design/level-and-experience-system.md` 五节）——
+    /// 归并键与 `Effect::IncrementKillCount`/`crate::quest` 击杀计数完全
+    /// 同一套（`victim.creature_kind.unwrap_or(victim.race)`），见模块
+    /// 文档「归并键天然对齐」一节：种族注册表已经存在，用它承载这份
+    /// 数据不需要新开一张表。默认 0——大多数种族/生物在 `register-race`
+    /// 阶段不显式声明经验值时，杀死它不产出经验，是安全的保守默认
+    /// （不会意外让某个未平衡的内容变成刷经验点）。
+    pub xp_reward: i64,
 }
 
 /// [`RaceTable::define`] 实际存进列式存储的属性子集——不含 `id`，理由同
@@ -119,6 +141,12 @@ pub struct RaceAttrs {
     pub footprint: (u8, u8),
     /// 寿命（年）。
     pub lifespan_years: u32,
+    /// 击杀经验值——见 [`RaceDef::xp_reward`] 文档。`register-race`
+    /// 现有的脚本签名没有携带这一项（不能改既有函数的参数个数,见模块
+    /// 文档「与 `register-race-xp-reward` 的关系」一节），调用方在这里
+    /// 恒传 0，真正想声明非零经验值的 mod 作者需要额外调用
+    /// `register-race-xp-reward` 补一次。
+    pub xp_reward: i64,
 }
 
 /// 种族注册期可能出现的错误。ADR 0017「注册期完整校验」要求这些错误
@@ -128,6 +156,11 @@ pub enum RaceError {
     /// 同一个内容索引被定义了两次，理由同
     /// [`crate::class::ClassError::DuplicateDefinition`]。
     DuplicateDefinition(ContentIndex),
+    /// [`RaceTable::set_xp_reward`] 的目标索引尚未经 [`RaceTable::define`]
+    /// 定义——与 `register-class-xp-curve` 找不到 `curve-id` 时的报错
+    /// 同一条纪律（ADR 0017「注册期完整校验」）：经验值是种族属性的
+    /// 追加声明，追加对象必须先存在。
+    NotDefined(ContentIndex),
 }
 
 impl fmt::Display for RaceError {
@@ -135,6 +168,9 @@ impl fmt::Display for RaceError {
         match self {
             RaceError::DuplicateDefinition(index) => {
                 write!(f, "种族索引 {} 被重复定义", index.get())
+            }
+            RaceError::NotDefined(index) => {
+                write!(f, "种族索引 {} 尚未定义，无法追加击杀经验值", index.get())
             }
         }
     }
@@ -155,6 +191,8 @@ pub struct RaceView<'a> {
     pub footprint: (u8, u8),
     /// 寿命（年）。
     pub lifespan_years: u32,
+    /// 击杀经验值，见 [`RaceDef::xp_reward`] 文档。
+    pub xp_reward: i64,
 }
 
 /// 零修正的基准值——[`RaceTable::define`] 在扩容未定义槽位时使用的
@@ -182,6 +220,7 @@ pub struct RaceTable {
     darkvision_floor: Vec<i32>,
     footprint: Vec<(u8, u8)>,
     lifespan_years: Vec<u32>,
+    xp_reward: Vec<i64>,
     defined: Vec<bool>,
 }
 
@@ -206,6 +245,7 @@ impl RaceTable {
             self.darkvision_floor.resize(new_len, 0);
             self.footprint.resize(new_len, (1, 1));
             self.lifespan_years.resize(new_len, 0);
+            self.xp_reward.resize(new_len, 0);
         }
 
         if self.defined[idx] {
@@ -218,6 +258,7 @@ impl RaceTable {
         self.darkvision_floor[idx] = attrs.darkvision_floor;
         self.footprint[idx] = attrs.footprint;
         self.lifespan_years[idx] = attrs.lifespan_years;
+        self.xp_reward[idx] = attrs.xp_reward;
         Ok(())
     }
 
@@ -247,7 +288,23 @@ impl RaceTable {
             darkvision_floor: self.darkvision_floor[idx],
             footprint: self.footprint[idx],
             lifespan_years: self.lifespan_years[idx],
+            xp_reward: self.xp_reward[idx],
         })
+    }
+
+    /// 追加声明「杀死这个种族应授予多少经验」——`register-race` 的既有
+    /// 脚本签名不能改参数个数（模块文档「与 `register-race-xp-reward`
+    /// 的关系」一节），因此经验值走这条独立的、注册后追加的路径,与
+    /// `register-class-xp-curve`/`register-race-xp-curve`「配置与定义
+    /// 分离」同一个模式（`level-and-experience-system.md` 八节）。目标
+    /// 索引必须已经 `define` 过，否则返回 [`RaceError::NotDefined`]
+    /// （ADR 0017「注册期完整校验」）。
+    pub fn set_xp_reward(&mut self, race: ContentIndex, amount: i64) -> Result<(), RaceError> {
+        if !self.is_defined(race) {
+            return Err(RaceError::NotDefined(race));
+        }
+        self.xp_reward[race.get() as usize] = amount;
+        Ok(())
     }
 }
 
@@ -343,6 +400,11 @@ fn define_base(
             darkvision_floor,
             footprint,
             lifespan_years,
+            // 本体三种基础种族是玩家可选种族，不是设计给「打怪拿经验」
+            // 用的内容，击杀经验值留空（0）——真正的怪物内容由 mod 通过
+            // `register-race-xp-reward` 追加声明,见 RaceDef::xp_reward
+            // 文档。
+            xp_reward: 0,
         },
     )?;
     Ok(index)
@@ -441,6 +503,7 @@ mod tests {
                     darkvision_floor: 0,
                     footprint: (1, 1),
                     lifespan_years: 80,
+                    xp_reward: 0,
                 },
             )
             .expect("首次定义应当成功");
@@ -455,11 +518,44 @@ mod tests {
                 darkvision_floor: 0,
                 footprint: (1, 1),
                 lifespan_years: 80,
+                xp_reward: 0,
             },
         );
 
         // Assert
         assert_eq!(result, Err(RaceError::DuplicateDefinition(index)));
+    }
+
+    #[test]
+    fn 追加声明经验值后查询结果反映新值() {
+        // Arrange
+        let (ids, mut table) = base_race_fixture();
+
+        // Act
+        table
+            .set_xp_reward(ids.dwarf, 25)
+            .expect("矮人已经定义,追加声明应当成功");
+
+        // Assert
+        assert_eq!(
+            table.get(ids.dwarf).expect("矮人已在本体注册").xp_reward,
+            25
+        );
+    }
+
+    #[test]
+    fn 对尚未定义的索引追加声明经验值返回notdefined错误() {
+        // Arrange
+        let mut interner = Interner::new();
+        let never_defined =
+            interner.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
+        let mut table = RaceTable::new();
+
+        // Act
+        let result = table.set_xp_reward(never_defined, 10);
+
+        // Assert
+        assert_eq!(result, Err(RaceError::NotDefined(never_defined)));
     }
 
     #[test]
@@ -490,6 +586,7 @@ mod tests {
                     darkvision_floor: 0,
                     footprint: (1, 1),
                     lifespan_years: 150,
+                    xp_reward: 0,
                 },
             )
             .expect("mod 种族与本体种族调用同一个公开 define 函数,理应同样成功");

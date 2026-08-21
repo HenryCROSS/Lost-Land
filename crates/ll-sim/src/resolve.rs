@@ -59,6 +59,7 @@ use ll_world::state::WorldState;
 
 use crate::combat::{Penetration, damage_after_defense};
 use crate::effect::Effect;
+use crate::experience::ExperienceCatalog;
 use crate::intent::{Direction, Intent};
 use crate::quest::{NoQuests, QuestCatalog};
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
@@ -292,6 +293,80 @@ pub fn resolve_with_skills_and_quests(
     // Effect::Kill,对没有产出击杀的意图（Wait/Move/...）是无操作。
     append_kill_history(world, &mut effects);
     effects
+}
+
+/// [`resolve`] 的完整入口，额外接收一份经验目录，用于结算击杀产出的
+/// 经验（等级与经验系统，`knowledge/design/level-and-experience-system.md`
+/// 五节）。四层入口（`resolve` → `resolve_with_skills` →
+/// `resolve_with_skills_and_quests` → 本函数）而不是给某个既有入口加
+/// 参数，理由同 [`resolve_with_skills`] 文档：不强迫不关心经验结算的
+/// 既有调用点多传一份目录。
+///
+/// # 为什么挂在 `Effect::Kill`，不是 `HistoricalEvent::Kill`
+///
+/// 设计文档五节核实过：`kill-and-death-events.md` 把击杀分三档，「无名
+/// 小卒之间」完全不产出 `HistoricalEvent::Kill`——若经验产出挂在那里，
+/// 绝大多数战斗击杀不会触发经验。`Effect::Kill` 由 `resolve_attack`/
+/// `resolve_use_skill` 对**每一次**击杀产出，是前者的严格超集，本函数
+/// 因此复用 [`append_kill_history`] 已经在扫描的同一批 `effects`，见
+/// [`append_kill_experience`]。
+pub fn resolve_with_skills_quests_and_experience(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+    quests: &dyn QuestCatalog,
+    experience: &dyn ExperienceCatalog,
+) -> Vec<Effect> {
+    let mut effects = resolve_with_skills_and_quests(world, intent, skills, quests);
+    append_kill_experience(world, &mut effects, experience);
+    effects
+}
+
+/// 击杀产出经验的接线：若 `effects` 里包含 [`Effect::Kill`] 且
+/// `killer` 已知，读取（结算前仍然存在的）被击杀目标的
+/// `creature_kind`/`race`（与 [`Effect::IncrementKillCount`] 完全同一
+/// 个归并键，见 `append_kill_history` 文档），查询 `experience` 目录
+/// 该给多少经验，非零时追加一条 [`Effect::GrantExperience`]。
+///
+/// # 为什么追加在末尾，不像 `RecordHistoricalEvent` 那样插在 `Kill`
+/// 之前
+///
+/// [`Effect::GrantExperience`] 的 `target` 是击杀者，不是被击杀者——
+/// `apply` 处理这条效果时不需要查询 `victim` 是否仍然存在（`victim`
+/// 会不会已经被同一批效果里的 `Effect::Kill` 销毁与本效果无关），因此
+/// 没有 [`append_kill_history`] 文档「为什么必须排在对应的 Effect::Kill
+/// 之前」一节描述的那种时序依赖，追加在末尾（与
+/// `append_quest_kill_progress` 同一个位置）即可。
+fn append_kill_experience(
+    world: &WorldState,
+    effects: &mut Vec<Effect>,
+    experience: &dyn ExperienceCatalog,
+) {
+    let grants: Vec<Effect> = effects
+        .iter()
+        .filter_map(|effect| {
+            let Effect::Kill {
+                target,
+                killer: Some(killer),
+                ..
+            } = effect
+            else {
+                return None;
+            };
+            let victim = world.actors.get(*target)?;
+            let kind = victim.creature_kind.unwrap_or(victim.race);
+            let amount = experience.xp_reward_for(kind);
+            if amount > 0 {
+                Some(Effect::GrantExperience {
+                    target: *killer,
+                    amount,
+                })
+            } else {
+                None
+            }
+        })
+        .collect();
+    effects.extend(grants);
 }
 
 /// 击杀结算与任务进度的接线（P5-B 接线批次）：若 `effects` 里包含
@@ -986,6 +1061,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         })
     }
 
@@ -1037,6 +1115,9 @@ mod tests {
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         })
     }
 
@@ -1566,6 +1647,9 @@ mod tests {
             creature_kind: None,
             spawned_at: Tick(0),
             remembered_id: Some(ll_core::ident::WorldId::next(&mut world_id_counter)),
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         })
     }
 
@@ -1611,6 +1695,106 @@ mod tests {
         // 致命一击确实造成了伤害、结算后生命值不高于零。
         assert!(record.killing_blow.damage > 0);
         assert!(record.killing_blow.remaining_health <= 0);
+    }
+
+    /// 恒对任意生物种类返回同一个固定经验值的测试用经验目录——真实
+    /// 实现（`ll-mod` 的 `RaceTable::xp_reward`）会按种类区分，这里的
+    /// 测试只关心「经验真的被授予了」这条链路本身是否接通，不关心具体
+    /// 种族与经验值的对应关系，用固定值足够、也更不脆弱（不依赖攻击者
+    /// /受害者各自 `Interner` 分配出的具体 `ContentIndex` 数值）。
+    struct FixedReward(i64);
+
+    impl crate::experience::ExperienceCatalog for FixedReward {
+        fn xp_reward_for(&self, _kind: ll_core::ident::ContentIndex) -> i64 {
+            self.0
+        }
+    }
+
+    #[test]
+    fn 完整管线结算一次致死击杀后击杀者的经验真的增加() {
+        // 端到端验证：从 Intent::Attack 造成致死伤害开始，走
+        // resolve_with_skills_quests_and_experience（真实的四层入口，
+        // 不是直接构造 Effect::GrantExperience 抄近路）+
+        // apply_with_xp_curves，断言击杀者身上的 experience 字段确实
+        // 变化了——这是设计文档五节「Effect::Kill 是正确的挂载点」
+        // 落地后必须成立的最基本一条链路。
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        // 生命值 1：一击必死，见「近战攻击致死……」测试同一注释。
+        let victim = spawn_named_agent(&mut world, victim_pos, 1);
+        let reward_amount = 30; // 小于 Agent::STARTING_XP_TO_NEXT_LEVEL（100），这条测试不涉及升级。
+
+        // Act
+        let effects = resolve_with_skills_quests_and_experience(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+            &NoSkills,
+            &NoQuests,
+            &FixedReward(reward_amount),
+        );
+        for effect in &effects {
+            crate::apply::apply_with_xp_curves(
+                &mut world,
+                effect,
+                &crate::xp_curve::FlatXpCurve::DEFAULT,
+            );
+        }
+
+        // Assert：击杀者的经验值真的从零涨到了这次击杀应得的数额。
+        assert_eq!(
+            world
+                .actors
+                .get(attacker)
+                .expect("攻击者仍然存活")
+                .experience,
+            reward_amount
+        );
+    }
+
+    #[test]
+    fn 经验积累超过门槛时击杀者的等级真的提升且门槛真的重新求值() {
+        // 端到端验证：这次击杀产出的经验足以跨过默认门槛
+        // （Agent::STARTING_XP_TO_NEXT_LEVEL = 100），断言 apply 侧的
+        // 升级循环真的把 level 加了一、真的用曲线目录重新算出了新的
+        // xp_to_next_level（而不是原样保留旧值 100）——升级判定整段
+        // 放进 apply 一次算完，见 apply::apply_with_xp_curves 文档。
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        let victim = spawn_named_agent(&mut world, victim_pos, 1);
+        let reward_amount = 150; // 150 > 100（默认门槛），恰好触发一次升级，剩余 50 点经验。
+        // 升级后重算门槛用的曲线与 apply() 默认的保底曲线（100）取不同
+        // 的固定值（250），这样"门槛真的被重新求值"这件事才能通过
+        // "新值既不等于升级前的旧门槛，也不等于任何巧合相同的默认值"
+        // 来验证，而不是巧合蒙对。
+        let level_up_curve = crate::xp_curve::FlatXpCurve { amount: 250 };
+
+        // Act
+        let effects = resolve_with_skills_quests_and_experience(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+            &NoSkills,
+            &NoQuests,
+            &FixedReward(reward_amount),
+        );
+        for effect in &effects {
+            crate::apply::apply_with_xp_curves(&mut world, effect, &level_up_curve);
+        }
+
+        // Assert：等级真的从 1 涨到了 2，新门槛真的等于曲线目录重新
+        // 求值的结果（250），不是升级前的旧值（100）原样保留。
+        let attacker_agent = world.actors.get(attacker).expect("攻击者仍然存活");
+        assert_eq!(attacker_agent.level, Agent::STARTING_LEVEL + 1);
+        assert_eq!(attacker_agent.xp_to_next_level, 250);
     }
 
     #[test]
@@ -1810,6 +1994,9 @@ mod tests {
             creature_kind: None,
             spawned_at: Tick(0),
             remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         });
 
         // Act
@@ -1865,6 +2052,9 @@ mod tests {
             creature_kind: None,
             spawned_at: Tick(0),
             remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
         });
 
         // Act

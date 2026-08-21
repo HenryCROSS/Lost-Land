@@ -466,6 +466,7 @@ mod tests {
             darkvision_floor,
             footprint: (1, 1),
             lifespan_years: 80,
+            xp_reward: 0,
         }
     }
 
