@@ -38,6 +38,8 @@ pub use ll_world::item::{
     can_merge, merge_stacks, split_stack,
 };
 
+use crate::skill::SkillEffect;
+
 /// `resolve` 侧需要的一条物品定义的最小只读视图——堆叠上限、装备占位
 /// 掩码与静态属性加成，见模块文档「本模块新增」一节。
 ///
@@ -66,6 +68,21 @@ pub use ll_world::item::{
 /// `Option<ItemRule>` 后直接 `.map`/`if let` 解构使用,或在测试夹具的
 /// `BTreeMap<ContentIndex, ItemRule>` 里从 `.copied()` 改为 `.cloned()`）
 /// 已经同步改过,不存在遗留的 `Copy` 依赖。
+///
+/// # `use_effect` 为什么复用 `SkillEffect`，不是一个新的 `ItemEffect`
+/// 类型（耐久与 `Intent::Use` 落地批次，P6 第五批）
+///
+/// 喝一瓶药水，效果无非「造成伤害/恢复资源/临时属性修正」——这恰好是
+/// [`SkillEffect`] 已经能表达的全部三种效果。技能与物品的**触发条件**
+/// 不同（技能有冷却/资源消耗/可学条件，物品有数量/耐久），但**效果
+/// 本身**的算法完全相同：`crate::resolve::resolve_use_item` 对
+/// `SkillEffect` 三个变体的 `match` 与 `resolve_use_skill` 逐字对应
+/// （`DealDamage` → `Effect::Damage`+可能的 `Effect::Kill`，
+/// `RestoreResource` → `Effect::AdjustResource`，
+/// `TemporaryStatModifier` → `Effect::ApplyStatModifier`）。ADR 0021：
+/// 只有算法真正可共享才抽象——这里不是"表面相似的两件事"，是同一个
+/// 算法被两种不同的触发路径复用，另造一个字段完全相同、只是改了个
+/// 名字的 `ItemEffect` 才是真正的重复。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ItemRule {
     /// 堆叠上限，即 [`merge_stacks`] 的 `stack_limit` 参数。
@@ -76,6 +93,11 @@ pub struct ItemRule {
     /// 一个输入的数据来源，空列表表示这件物品不提供任何加成（多数消耗
     /// 品/材料的既有情形）。
     pub stat_bonuses: Vec<StatBonus>,
+    /// 使用效果——`None` 表示这件物品不能被 `Intent::Use`（材料、装备
+    /// 本身……），`Some` 时 `crate::resolve::resolve_use_item` 用它产出
+    /// 对应的 `Effect`，见本类型文档「`use_effect` 为什么复用
+    /// `SkillEffect`」一节。
+    pub use_effect: Option<SkillEffect>,
 }
 
 /// `resolve` 依赖的最小「物品定义来源」接口——与

@@ -1,6 +1,7 @@
-//! 把 `register-item`/`register-item-equip-mask`/`register-item-stat-bonus`
-//! 注册进脚本引擎：mod 脚本借此定义自定义物品（箭矢、铁剑……）、它们的
-//! 装备占位掩码与静态属性加成，落地
+//! 把 `register-item`/`register-item-equip-mask`/`register-item-stat-bonus`/
+//! `register-item-use-effect` 注册进脚本引擎：mod 脚本借此定义自定义
+//! 物品（箭矢、铁剑、药水……）、它们的装备占位掩码、静态属性加成与
+//! 使用效果，落地
 //! `knowledge/design/item-system.md`/`knowledge/design/equipment-slots.md`/
 //! `knowledge/design/attribute-system.md`。
 //!
@@ -8,16 +9,30 @@
 //! `Option<i32>`（`max-durability`）或 `Milli`（`base-weight`/
 //! `base-price`）发明任何新的 FFI 编码方式,理由见下面两节。
 //!
-//! # 为什么 `equip_mask`/`stat_bonuses` 都走独立函数（装备栏位批次，
-//! P6 第三批；`derive_stats` 与装备属性接进战斗，P6 第四批）
+//! # 为什么 `equip_mask`/`stat_bonuses`/`use_effect` 都走独立函数
+//! （装备栏位批次，P6 第三批；`derive_stats` 与装备属性接进战斗，P6 第
+//! 四批；耐久与 `Intent::Use`，P6 第五批）
 //!
 //! `register-item` 已经是仓库里真实 mod 脚本
 //! （`mods/example_mod/gameplay.scm`）在用的六参数签名——改参数个数
 //! 会破坏已有脚本，与 `register-race-xp-reward`/
 //! `register-trait-resource-pool` 「新增能力用新函数」同一条既有先例
 //! （见 [`crate::item::ItemDef::equip_mask`] 文档）。`register-item-equip-mask`/
-//! `register-item-stat-bonus` 因此都走独立函数，追加对象都是已经通过
-//! `register-item` 注册过的物品。
+//! `register-item-stat-bonus`/`register-item-use-effect` 因此都走独立
+//! 函数，追加对象都是已经通过 `register-item` 注册过的物品。
+//!
+//! # `register-item-use-effect` 的参数形状照抄 `register-skill` 的
+//! `effect-kind`/`effect-tag`/`effect-amount`/`effect-amount2` 四元组
+//!
+//! 物品使用效果复用 [`SkillEffect`]（见
+//! [`ll_sim::item::ItemRule::use_effect`] 文档「为什么复用 SkillEffect」
+//! 一节）——脚本层的编码没有理由另起一套，`parse_use_effect`（本模块）
+//! 与 `crate::script_skill_api::parse_effect` 是对同一个目标类型
+//! `SkillEffect` 的两份独立解析实现，理由同
+//! `crate::script_skill_api::attribute_kind_from_str` 文档「两个模块
+//! 目前都足够小，重复比引入一层间接更直接」——两个模块各自的调用点
+//! 语境不同（一个在解析技能定义，一个在解析物品定义），共享一个解析
+//! 函数需要先把两处的错误消息措辞、字段名字对齐,得不偿失。
 
 use std::cell::RefCell;
 
@@ -29,6 +44,7 @@ use crate::active_registry::with_active_registry;
 use crate::item::{ItemAttrs, ItemError, ItemTable};
 use crate::registry::Registry;
 use ll_sim::item::{EquipSlot, SlotMask, StatBonus, StatTarget};
+use ll_sim::skill::{ResourceKind, SkillEffect};
 use ll_world::entity::AttributeKind;
 
 thread_local! {
@@ -55,6 +71,7 @@ pub fn register_item_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-item", register_item);
     engine.register_fn("register-item-equip-mask", register_item_equip_mask);
     engine.register_fn("register-item-stat-bonus", register_item_stat_bonus);
+    engine.register_fn("register-item-use-effect", register_item_use_effect);
 }
 
 /// `(register-item id display-name-key stack-limit base-weight base-price max-durability)`。
@@ -138,6 +155,19 @@ fn do_register_item(
             ));
         }
     };
+    // 可堆叠物品不该有耐久——耐久落地之后，两把用过的剑几乎必然耐久
+    // 不同（P6 第一批定的 can_merge 判据：def 相同且耐久相同才能合并），
+    // 若一件 stack_limit > 1 的物品也携带耐久，每一份实例几乎必然各自
+    // 独立成一格，堆叠机制名存实亡——这不是"可以但不建议"的边缘情形,
+    // 是两条规则字面矛盾（"能堆叠"暗示"多份同质可以共存一格"，"有耐久"
+    // 暗示"每份实例携带自己独立的状态"）,注册期直接拒绝，不留一个
+    // 事后才会在背包 UI 上炸出来的组合,与 `register-resource-pool`
+    // 拒绝矛盾配置同一条"非法组合即拒绝,不留给运行时躺平"纪律。
+    if stack_limit > 1 && max_durability.is_some() {
+        return Err(format!(
+            "可堆叠物品（堆叠上限 {stack_limit}）不能携带耐久上限——耐久会让每份实例各自独立，与堆叠矛盾"
+        ));
+    }
 
     table
         .define(
@@ -155,6 +185,9 @@ fn do_register_item(
                 // 恒为空列表——同上，真正的取值由后续
                 // register-item-stat-bonus 调用追加写入。
                 stat_bonuses: Vec::new(),
+                // 恒为 None——同上，真正的取值由后续
+                // register-item-use-effect 调用写入。
+                use_effect: None,
             },
         )
         .map(|()| true)
@@ -311,6 +344,135 @@ fn stat_target_from_str(name: &str) -> Option<StatTarget> {
     Some(StatTarget::Attribute(attribute))
 }
 
+/// `(register-item-use-effect id effect-kind effect-tag effect-amount effect-amount2)`
+/// ——设置「使用这件物品会发生什么」（P6 第五批：耐久与 `Intent::Use`），
+/// 见 [`crate::item::ItemDef::use_effect`] 文档「为什么不是 `register-item`
+/// 的参数」一节。
+///
+/// - `id`：已经通过 `register-item` 注册过的完整命名空间标识符字符串
+///   ——目标必须已存在，与 [`register_item_equip_mask`] 同一条 ADR 0017
+///   「注册期完整校验」纪律。
+/// - `effect-kind`/`effect-tag`/`effect-amount`/`effect-amount2`：与
+///   `register-skill` 的同名四参数完全同一套编码（见
+///   `crate::script_skill_api::register_skill` 文档），因为两者的目标
+///   类型都是 [`SkillEffect`]——`"deal-damage"`/`"restore-resource"`/
+///   `"temporary-stat-modifier"`，`effect-tag` 按 `effect-kind` 解释,
+///   `effect-amount2` 只有 `"temporary-stat-modifier"` 使用（持续 tick
+///   数）。
+///
+/// **覆盖，不是追加**——多次调用同一个 `id` 以最后一次为准,与
+/// [`crate::item::ItemTable::set_use_effect`] 文档「覆盖，不是追加」
+/// 一节同一条既有语义。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_item_use_effect(
+    id: String,
+    effect_kind: String,
+    effect_tag: String,
+    effect_amount: i64,
+    effect_amount2: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-item-use-effect 在没有活跃物品表的窗口内被调用".to_string());
+            };
+            do_register_item_use_effect(
+                registry,
+                table,
+                &id,
+                &effect_kind,
+                &effect_tag,
+                effect_amount,
+                effect_amount2,
+            )
+        })
+    })
+}
+
+/// [`register_item_use_effect`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_item_use_effect(
+    registry: &Registry,
+    table: &mut ItemTable,
+    id: &str,
+    effect_kind: &str,
+    effect_tag: &str,
+    effect_amount: i64,
+    effect_amount2: i64,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("物品 {id:?} 尚未通过 register-item 注册"));
+    };
+    let effect = parse_use_effect(effect_kind, effect_tag, effect_amount, effect_amount2)?;
+
+    table
+        .set_use_effect(index, effect)
+        .map(|()| true)
+        .map_err(|err: ItemError| err.to_string())
+}
+
+/// `effect-kind`/`effect-tag`/`effect-amount`/`effect-amount2` →
+/// [`SkillEffect`]——与 `crate::script_skill_api::parse_effect` 是对
+/// 同一个目标类型的独立解析实现，见模块文档「`register-item-use-effect`
+/// 的参数形状」一节。
+fn parse_use_effect(
+    kind: &str,
+    tag: &str,
+    amount: i64,
+    amount2: i64,
+) -> Result<SkillEffect, String> {
+    match kind {
+        "deal-damage" => Ok(SkillEffect::DealDamage {
+            base: amount as i32,
+        }),
+        "restore-resource" => {
+            let resource = match tag {
+                "mana" => ResourceKind::Mana,
+                "stamina" => ResourceKind::Stamina,
+                _ => return Err(format!("未知的资源种类 {tag:?}")),
+            };
+            Ok(SkillEffect::RestoreResource {
+                resource,
+                base: amount as i32,
+            })
+        }
+        "temporary-stat-modifier" => {
+            let attribute = use_effect_attribute_kind_from_str(tag)
+                .ok_or_else(|| format!("未知的主属性名 {tag:?}"))?;
+            Ok(SkillEffect::TemporaryStatModifier {
+                attribute,
+                amount: amount as i32,
+                duration_ticks: amount2.max(0) as u32,
+            })
+        }
+        _ => Err(format!("未知的物品使用效果种类 {kind:?}")),
+    }
+}
+
+/// 属性名字符串 → [`AttributeKind`]，[`parse_use_effect`] 的
+/// `"temporary-stat-modifier"` 分支专用——与
+/// `crate::script_skill_api::attribute_kind_from_str`/
+/// `stat_target_from_str`（本模块，多认识 `"armor"`）是第三份独立
+/// 拷贝，理由同模块文档「`register-item-use-effect` 的参数形状」一节：
+/// 不借用 `stat_target_from_str` 是因为它的返回类型（`StatTarget`，
+/// 多一个 `Armor` 分支）与这里要的 `AttributeKind` 不同，硬借用需要
+/// 再过滤掉 `Armor` 这一支，比六行重复更绕。
+fn use_effect_attribute_kind_from_str(name: &str) -> Option<AttributeKind> {
+    Some(match name {
+        "strength" => AttributeKind::Strength,
+        "dexterity" => AttributeKind::Dexterity,
+        "constitution" => AttributeKind::Constitution,
+        "intelligence" => AttributeKind::Intelligence,
+        "willpower" => AttributeKind::Willpower,
+        "charisma" => AttributeKind::Charisma,
+        _ => return None,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -414,6 +576,55 @@ mod tests {
 
         // Assert
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn 可堆叠物品携带耐久上限时返回错误而不panic() {
+        // Arrange：堆叠上限 99（可堆叠）却同时声明了耐久上限——两条
+        // 规则字面矛盾，见 do_register_item「可堆叠物品不该有耐久」
+        // 一节。
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+
+        // Act
+        let result = do_register_item(
+            &mut registry,
+            &mut table,
+            "yourmod:cursed_arrow",
+            "yourmod:item.cursed_arrow",
+            99,
+            50,
+            2000,
+            10,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 不可堆叠物品携带耐久上限时注册成功() {
+        // 反例：stack_limit == 1 与耐久上限不矛盾，证明上一条测试拒绝
+        // 的确实是"可堆叠 + 有耐久"这个组合本身，不是耐久上限这个参数
+        // 恒被拒绝。
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+
+        // Act
+        let result = do_register_item(
+            &mut registry,
+            &mut table,
+            "yourmod:cursed_dagger",
+            "yourmod:item.cursed_dagger",
+            1,
+            50,
+            2000,
+            10,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
     }
 
     #[test]
@@ -779,6 +990,234 @@ mod tests {
                 target: StatTarget::Attribute(AttributeKind::Strength),
                 amount: 5,
             }]
+        );
+    }
+
+    /// 建一张已经注册过一件可堆叠消耗品（模拟治疗药水）的物品表 +
+    /// 对应的 registry——`register-item-use-effect` 的测试共用这份
+    /// 前置状态。
+    fn registry_and_table_with_healing_potion() -> (Registry, ItemTable) {
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        do_register_item(
+            &mut registry,
+            &mut table,
+            "yourmod:healing_potion",
+            "yourmod:item.healing_potion",
+            10,
+            200,
+            500,
+            -1,
+        )
+        .expect("治疗药水注册应当成功");
+        (registry, table)
+    }
+
+    #[test]
+    fn 恢复资源效果注册后能被真正查到() {
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_healing_potion();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:healing_potion").unwrap())
+            .expect("刚注册的内容应能查到索引");
+
+        // Act
+        let result = do_register_item_use_effect(
+            &registry,
+            &mut table,
+            "yourmod:healing_potion",
+            "restore-resource",
+            "mana",
+            30,
+            0,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            table.get(index).unwrap().use_effect,
+            Some(SkillEffect::RestoreResource {
+                resource: ResourceKind::Mana,
+                base: 30,
+            })
+        );
+    }
+
+    #[test]
+    fn 造成伤害效果注册后能被真正查到() {
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_healing_potion();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:healing_potion").unwrap())
+            .expect("刚注册的内容应能查到索引");
+
+        // Act
+        let result = do_register_item_use_effect(
+            &registry,
+            &mut table,
+            "yourmod:healing_potion",
+            "deal-damage",
+            "",
+            15,
+            0,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            table.get(index).unwrap().use_effect,
+            Some(SkillEffect::DealDamage { base: 15 })
+        );
+    }
+
+    #[test]
+    fn 临时属性修正效果携带持续tick数() {
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_healing_potion();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:healing_potion").unwrap())
+            .expect("刚注册的内容应能查到索引");
+
+        // Act
+        let result = do_register_item_use_effect(
+            &registry,
+            &mut table,
+            "yourmod:healing_potion",
+            "temporary-stat-modifier",
+            "strength",
+            5,
+            50,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            table.get(index).unwrap().use_effect,
+            Some(SkillEffect::TemporaryStatModifier {
+                attribute: AttributeKind::Strength,
+                amount: 5,
+                duration_ticks: 50,
+            })
+        );
+    }
+
+    #[test]
+    fn 连续两次调用使用效果覆盖而非追加() {
+        // 与 register-item-equip-mask「覆盖，不是追加」同一条语义——第
+        // 二次调用的结果应当完全顶替第一次，不是两条效果并存（`use_effect`
+        // 是 `Option<SkillEffect>`，类型上就不能装两条）。
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_healing_potion();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:healing_potion").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        do_register_item_use_effect(
+            &registry,
+            &mut table,
+            "yourmod:healing_potion",
+            "deal-damage",
+            "",
+            15,
+            0,
+        )
+        .expect("第一次注册应当成功");
+
+        // Act
+        do_register_item_use_effect(
+            &registry,
+            &mut table,
+            "yourmod:healing_potion",
+            "restore-resource",
+            "stamina",
+            20,
+            0,
+        )
+        .expect("第二次注册应当成功");
+
+        // Assert
+        assert_eq!(
+            table.get(index).unwrap().use_effect,
+            Some(SkillEffect::RestoreResource {
+                resource: ResourceKind::Stamina,
+                base: 20,
+            })
+        );
+    }
+
+    #[test]
+    fn 未知的使用效果种类返回错误而不panic() {
+        // Arrange
+        let (registry, mut table) = registry_and_table_with_healing_potion();
+
+        // Act
+        let result = do_register_item_use_effect(
+            &registry,
+            &mut table,
+            "yourmod:healing_potion",
+            "cast-a-spell",
+            "",
+            0,
+            0,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 未注册的物品id设置使用效果返回错误() {
+        // Arrange
+        let registry = Registry::new();
+        let mut table = ItemTable::new();
+
+        // Act
+        let result = do_register_item_use_effect(
+            &registry,
+            &mut table,
+            "yourmod:never_registered",
+            "deal-damage",
+            "",
+            15,
+            0,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_item_use_effect() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_item_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(ItemTable::new());
+        engine
+            .load_source(
+                r#"(register-item "yourmod:healing_potion" "yourmod:item.healing_potion" 10 200 500 -1)"#
+                    .to_string(),
+            )
+            .expect("治疗药水基础注册应当成功");
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-item-use-effect "yourmod:healing_potion" "restore-resource" "mana" 30 0)"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:healing_potion").unwrap())
+            .expect("刚注册的内容应能查到索引");
+        assert_eq!(
+            table.get(index).unwrap().use_effect,
+            Some(SkillEffect::RestoreResource {
+                resource: ResourceKind::Mana,
+                base: 30,
+            })
         );
     }
 }

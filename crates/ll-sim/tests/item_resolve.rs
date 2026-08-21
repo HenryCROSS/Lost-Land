@@ -111,6 +111,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
                 stack_limit: 99,
                 equip_mask: ll_sim::item::SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
+                use_effect: None,
             },
         )]),
     };

@@ -81,6 +81,12 @@ use crate::traits::{
 /// 计费，接入那些系统时按动作类型分别替换即可。
 const BASE_ACTION_COST: u32 = 100;
 
+/// 防御方每挨一下近战攻击，自己已装备的每一件带耐久的物品各损失的
+/// 耐久点数（耐久与 `Intent::Use` 落地批次，P6 第五批）——见
+/// [`resolve_attack`] 文档「耐久消耗：为什么是防御方掉耐久，不是
+/// 攻击方」一节完整论证。
+const EQUIPMENT_DURABILITY_LOSS_PER_HIT: i32 = 1;
+
 /// 基准有效敏捷，对应 `BaseStats::BASELINE` 的敏捷值（10，调整值为零）。
 ///
 /// 真正的「有效敏捷」需要 [`derive_stats`]（装备、状态效果、负重的
@@ -267,6 +273,27 @@ const fn attribute_slot(kind: AttributeKind) -> usize {
 /// 范围明确写着"（技能/天赋/载具）与装备两个通道怎么合"，不是"要不要
 /// 让技能也能加护甲"这个内容设计问题——如实沿用现状即可。
 ///
+/// # 耐久归零：损坏的装备不再贡献属性加成（耐久与 `Intent::Use` 落地
+/// 批次，P6 第五批）
+///
+/// `item-system.md` 六节裁定「归零 = 损坏不可用，但不消失，可修复」
+/// ——本函数遍历 `equipment` 时,`durability == Some(0)` 的堆直接跳过,
+/// 不查询它的 `stat_bonuses`，见下方实现里的 `continue` 分支。这正是
+/// "不可用"在结算侧的落点：装备仍然穿在身上（不自动卸下，见下一节），
+/// 只是不再提供任何攻防加成，与一件从未装备过的物品在 `derive_stats`
+/// 眼里等价。
+///
+/// # 耐久归零为什么不触发自动卸下
+///
+/// `resolve_attack`/`resolve_use_item` 只产出
+/// [`crate::effect::Effect::AdjustEquipmentDurability`]，从不产出
+/// [`crate::effect::Effect::Unequip`]——损坏的装备继续占着槽位（玩家
+/// 仍然看得到"这个槽位穿着一件坏掉的甲"，可修复系统落地后原地修好即可
+/// 继续生效，不需要重新装备）。这与
+/// `resolve_equip` 的占位冲突逻辑（换装时主动卸下冲突槽位）是两件不
+/// 同的事：那里卸下是因为"这个槽位要让给别的物品"，这里"槽位没有变，
+/// 只是这件物品暂时不生效"，没有任何理由把它请出槽位。
+///
 /// # 惰性到期判定
 ///
 /// `expires_at.0 > now.0` 才算仍然生效——与 [`resolve_use_skill`] 冷却
@@ -303,6 +330,17 @@ pub fn derive_stats(
     }
 
     for stack in equipment.values() {
+        // 耐久归零 = 损坏不可用（`item-system.md` 六节：「归零 = 损坏
+        // 不可用，但不消失」），本函数是"不可用"这句话在结算侧唯一的
+        // 落点——一件耐久归零的装备仍然占着槽位（不会被自动卸下，见
+        // 本函数文档「耐久归零为什么不触发自动卸下」一节），只是不再
+        // 贡献任何属性加成。`durability == Some(0)` 才算耗尽；`None`
+        // （没有耐久概念的物品）与 `Some(正数)` 都照常生效——这条判定
+        // 因此不是恒真：耐久未耗尽时（`Some(正数)` 或 `None`）不会走
+        // 这条 `continue`,见 `derive_stats` 的反例测试。
+        if stack.durability == Some(0) {
+            continue;
+        }
         let Some(rule) = items.item(stack.def) else {
             continue;
         };
@@ -554,6 +592,7 @@ fn resolve_dispatch(
         Intent::Drop { actor, def } => resolve_drop(world, actor, def),
         Intent::Equip { actor, def } => resolve_equip(world, actor, def, items),
         Intent::Unequip { actor, slot } => resolve_unequip(world, actor, slot, items),
+        Intent::Use { actor, def } => resolve_use_item(world, actor, def, items),
     };
     // 休息中断（`resource-pools-and-rest.md` 八节「中断怎么表达」一节）：
     // 任何非 `Wait`/`Rest` 意图,若发起者当前正在休息,追加一条不带恢复
@@ -1464,6 +1503,108 @@ fn resolve_unequip(
     ]
 }
 
+/// [`Intent::Use`] 结算（耐久与 `Intent::Use` 落地批次，P6 第五批）：
+/// 消耗 `actor` 背包里第一条匹配 `def` 的堆一个单位，产出它的
+/// `use_effect`（[`crate::item::ItemRule::use_effect`]，复用
+/// [`SkillEffect`]，见其文档「为什么复用 `SkillEffect`」一节）对应的
+/// `Effect`——`match` 分支与 [`resolve_use_skill`] 对同一个
+/// `SkillEffect` 的三个变体逐字对应，唯一的区别是本函数没有冷却/资源
+/// 消耗两道门（物品的"触发条件"是数量/耐久，不是冷却/资源，见
+/// `ll_sim::item::ItemRule::use_effect` 文档同一节）。
+///
+/// # 目标恒为发起者自身
+///
+/// 与 [`Intent::Use`] 文档「为什么携带 def，不携带目标」一节同一条
+/// 范围裁定：本批次的物品使用效果只施于使用者自己，没有「对着别人用
+/// 一件消耗品」的真实场景需要表达。
+///
+/// # 静默无效的三种情形
+///
+/// `actor` 不存在、背包里没有匹配 `def` 的堆、`def` 查不到物品规则或
+/// 查到但 `use_effect` 是 `None`（材料、装备本身……不能被使用）——与
+/// [`resolve_drop`]/[`resolve_equip`] 同一条「静默无效，不是错误」
+/// 纪律。
+fn resolve_use_item(
+    world: &WorldState,
+    actor: EntityId,
+    def: ContentIndex,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let Some(stack) = agent.inventory.iter().find(|s| s.def == def).copied() else {
+        return Vec::new();
+    };
+    let Some(rule) = items.item(def) else {
+        return Vec::new();
+    };
+    let Some(effect) = rule.use_effect else {
+        return Vec::new();
+    };
+
+    let mut effects = vec![Effect::ConsumeInventoryItem {
+        actor,
+        def,
+        durability: stack.durability,
+    }];
+
+    match effect {
+        SkillEffect::DealDamage { base } => {
+            effects.push(Effect::Damage {
+                target: actor,
+                amount: base,
+            });
+            // 是否致死是规则判断，必须在这里做出——与 resolve_attack/
+            // resolve_use_skill 完全同一条纪律（见 resolve_attack 文档）。
+            // 用 KillCause::Environmental(def) 归因：一件伤害类消耗品
+            // 不是近战也不是技能，是"本体死因枚举五个既有变体都覆盖
+            // 不到，走注册表标注"的既有 mod 扩展死因通道，见
+            // `ll_world::history::KillCause::Environmental` 文档。
+            if agent.health - base <= 0 {
+                effects.push(Effect::Kill {
+                    target: actor,
+                    killer: Some(actor),
+                    cause: KillCause::Environmental(def),
+                });
+            }
+        }
+        SkillEffect::RestoreResource { resource, base } => {
+            effects.push(Effect::AdjustResource {
+                actor,
+                resource,
+                delta: base,
+            });
+        }
+        SkillEffect::TemporaryStatModifier {
+            attribute,
+            amount,
+            duration_ticks,
+        } => {
+            effects.push(Effect::ApplyStatModifier {
+                target: actor,
+                attribute,
+                delta: amount,
+                expires_at: Tick(world.clock.0 + i64::from(duration_ticks)),
+                // 来源是这件物品自身的 ContentIndex——与
+                // resolve_use_skill 传技能自身索引同一条既有纪律（见其
+                // 文档），供 apply 判断"是不是同一件物品重复施加"。
+                source: def,
+            });
+        }
+    }
+
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    effects.push(Effect::ScheduleNext {
+        actor,
+        at: schedule_after(world, cost),
+    });
+    effects
+}
+
 fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
@@ -1561,6 +1702,35 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 若这一下会让目标生命值降到零或以下，额外产出一个 [`Effect::Kill`]
 /// ——是否致死是规则判断，必须在这里（`resolve`）做出，`apply` 只管
 /// 照数字做加减（见 [`crate::effect::Effect::Damage`] 文档）。
+///
+/// # 耐久消耗：为什么是防御方掉耐久，不是攻击方（耐久与 `Intent::Use`
+/// 落地批次，P6 第五批）
+///
+/// 这一批要给「攻击时掉武器耐久」还是「被击中掉护甲耐久」一个结论：
+/// **本函数选择后者**——挨这一下的防御方，自己已装备的每一件带耐久的
+/// 物品（不限于提供护甲加成的那些，见下方「为什么不限定装备槽位」
+/// 一节）各损失 [`EQUIPMENT_DURABILITY_LOSS_PER_HIT`] 点耐久。
+///
+/// 理由不是"护甲比武器更该耗损"这类内容设计判断，是当前架构下**哪一条
+/// 路径真的有数据可查**：`Intent::Attack` 只携带 `actor`/`target` 两个
+/// `EntityId`（见其文档），从未携带"用哪件武器打的"这个引用——`resolve`
+/// 因此**无法**把这一下的耐久损耗记到攻击方任何一件具体装备上（记到
+/// 哪一件？主手？双持时的另一只手？），这正是任务书点名的已知缺口
+/// （`Intent::Attack` 不携带武器引用），本批次不修它。防御方这一侧
+/// 完全不受这个缺口影响：`derive_stats` 已经在读 `defender.equipment`
+/// 算护甲（P6 第四批），本函数只是多读一遍同一份数据,不需要任何新的
+/// 输入通道。「被打就掉耐久」在直觉上也站得住：铠甲存在的意义就是替
+/// 穿它的人挨打,挨得越多，磨损得越多。
+///
+/// # 为什么不限定"只有提供护甲加成的装备"才掉耐久
+///
+/// `ItemRule::stat_bonuses` 里有没有 `StatTarget::Armor` 这一条,与
+/// `ItemStack.durability` 是不是 `Some` 是两件独立的事——一件戒指
+/// （只加属性，不加护甲）一样可以有耐久上限。本函数只看
+/// `stack.durability.is_some()`,不查 `stat_bonuses`,理由是"正在被
+/// 磨损"这件事只取决于"这件东西挂在你身上、这一下打中了你"，与它具体
+/// 提供什么加成无关——护甲那条判断是 `derive_stats` 的职责（算加成时
+/// 只看目标是不是 `Armor`），不该在这里重复。
 fn resolve_attack(
     world: &WorldState,
     actor: EntityId,
@@ -1596,6 +1766,19 @@ fn resolve_attack(
         target,
         amount: damage,
     }];
+    // 防御方每挨这一下，自己已装备的每一件带耐久的物品各损失一点
+    // 耐久——见本函数文档「耐久消耗」一节。`BTreeMap` 按键（槽位下标）
+    // 自然顺序遍历，不涉及 HashMap/HashSet 迭代顺序（约束 C5）。
+    effects.extend(defender.equipment.iter().filter_map(|(&slot, stack)| {
+        stack
+            .durability
+            .is_some()
+            .then_some(Effect::AdjustEquipmentDurability {
+                actor: target,
+                slot,
+                delta: -EQUIPMENT_DURABILITY_LOSS_PER_HIT,
+            })
+    }));
     if defender.health - damage <= 0 {
         // 近战击杀——本批次没有武器系统（护甲/武器均属 P5 装备落地
         // 之后，见本函数文档「防御与穿透」一节），`weapon` 恒

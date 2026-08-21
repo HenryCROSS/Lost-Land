@@ -21,6 +21,7 @@
 ;;   register-item                         crates/ll-mod/src/script_item_api.rs
 ;;   register-item-equip-mask              crates/ll-mod/src/script_item_api.rs
 ;;   register-item-stat-bonus              crates/ll-mod/src/script_item_api.rs
+;;   register-item-use-effect              crates/ll-mod/src/script_item_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -179,3 +180,15 @@
 ;; 为证」，crates/ll-mod/tests/example_mod_combat.rs 是那份证据。
 (register-item-stat-bonus "examplemod:war_hammer" "strength" 6)
 (register-item-stat-bonus "examplemod:wooden_shield" "armor" 8)
+
+;; P6 第五批（耐久与 Intent::Use）：knowledge/design/item-system.md 八节
+;; 「物品作用」的真实版本——一瓶可堆叠的治疗药水（堆叠上限 10，没有
+;; 耐久概念，见 register-item「可堆叠物品不能携带耐久上限」一节），
+;; 使用后恢复 40 点法力（复用 SkillEffect，与技能效果同一套编码，见
+;; register-item-use-effect 文档），证明 register-item-use-effect 这个
+;; 新脚本 API 真的能被 mod 脚本调用，且真实注册的消耗品能走真实
+;; Intent::Use + resolve + apply 让效果发生——ADR 0018「玩法层内容必须
+;; 能从 mod 脚本注册，且要有真实 mod 脚本为证」，
+;; crates/ll-mod/tests/example_mod_use.rs 是那份证据。
+(register-item "examplemod:healing_potion" "examplemod:healing_potion_display_name" 10 200 500 -1)
+(register-item-use-effect "examplemod:healing_potion" "restore-resource" "mana" 40 0)

@@ -601,4 +601,58 @@ pub enum Effect {
         /// 要清空的槽位（真实存储键）。
         slot: EquipSlot,
     },
+    /// 从某实体背包消耗一件物品——数量减一，减到零时整条堆从背包移除
+    /// （耐久与 `Intent::Use` 落地批次，P6 第五批）——
+    /// `crate::resolve::resolve_use_item` 唯一的产出者。
+    ///
+    /// # 为什么按 `(def, durability)` 定位，不是索引
+    ///
+    /// 与 [`Effect::RemoveFromInventory`]/[`Effect::RemoveGroundItem`]
+    /// 同一条既有理由：`resolve` 只有共享引用，无法预先从背包里摘掉
+    /// 这一堆再产出效果，只能把已经读到的定位信息原样写进本效果，交给
+    /// `apply` 做一次按键查找+扣减。
+    ///
+    /// # 为什么恒扣一，不带 `amount` 字段
+    ///
+    /// `Intent::Use` 本身只表达「用掉一件」（见其文档），与
+    /// `Intent::Drop`「不支持部分数量」是同一条范围裁定——一次性用掉
+    /// 一整堆药水不是本批次要支持的手感，真要支持「一次用 N 个」，应
+    /// 该是调用方连续提交 N 次 `Intent::Use`，不是给这条效果加一个
+    /// 目前没有任何调用点会填非一值的字段。
+    ConsumeInventoryItem {
+        /// 背包的持有者。
+        actor: EntityId,
+        /// 被消耗的物品定义。
+        def: ContentIndex,
+        /// 被消耗的那一堆的耐久——与 `def` 一起构成定位判据，理由同
+        /// [`Effect::RemoveFromInventory::durability`]。
+        durability: Option<i32>,
+    },
+    /// 调整某个已装备物品的当前耐久（耐久与 `Intent::Use` 落地批次，
+    /// P6 第五批）——`crate::resolve::resolve_attack` 唯一的产出者：
+    /// 防御方每挨一下近战攻击，自己已装备的每一件带耐久的物品各损失
+    /// 一点耐久，见该函数文档「耐久消耗」一节完整论证。
+    ///
+    /// # 为什么钳位到非负在 `apply` 做，不在 `resolve` 做
+    ///
+    /// 与 [`Effect::AdjustResourceSlot`] 「已消耗数不能是负的，钳位在
+    /// apply 侧做」同一条既有先例——`resolve` 只需要知道"这一下要扣多少"
+    /// 这个恒定的常量，不需要读取当前耐久才能决定扣多少（不像
+    /// `ResourceCost::PoolAmount` 那样需要先查容量才能判断扣多少），
+    /// 钳位是一个纯粹由当前值与固定增量机械算出结果的操作，符合
+    /// 「apply 不含任何游戏逻辑」纪律里"机械执行"这一类允许的操作
+    /// （与 `ApplyStatModifier` 的同源合并、`AdjustResourceSlot` 的非负
+    /// 钳位是同一类"两个数就能算完，不需要额外读取世界状态"的机械
+    /// 操作）。
+    AdjustEquipmentDurability {
+        /// 装备的持有者。
+        actor: EntityId,
+        /// 要调整的槽位（真实存储键——多槽物品的耐久只存一份，与
+        /// `Effect::Equip`/`Effect::Unequip` 同一条既有约束）。
+        slot: EquipSlot,
+        /// 调整量，恒为负（本批次唯一的产出者只会扣减，见本变体文档）
+        /// ——形状上仍允许正值，供未来修理系统复用同一条效果,不必再
+        /// 新开一个变体。
+        delta: i32,
+    },
 }

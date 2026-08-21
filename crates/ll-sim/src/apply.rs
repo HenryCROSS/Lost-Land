@@ -372,6 +372,41 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.equipment.remove(slot);
             }
         }
+        Effect::ConsumeInventoryItem {
+            actor,
+            def,
+            durability,
+        } => {
+            // 按 (def, durability) 定位——resolve 已经确认过这堆存在,
+            // 见 Effect::ConsumeInventoryItem 文档「为什么按 (def,
+            // durability) 定位」一节。数量减一,减到零时整条堆移除,不
+            // 留一个 count == 0 的死堆（ItemStack.count 文档「恒 ≥ 1」
+            // 一节的既有不变式）。
+            if let Some(agent) = world.actors.get_mut(*actor)
+                && let Some(index) = agent
+                    .inventory
+                    .iter()
+                    .position(|stack| stack.def == *def && stack.durability == *durability)
+            {
+                if agent.inventory[index].count > 1 {
+                    agent.inventory[index].count -= 1;
+                } else {
+                    agent.inventory.remove(index);
+                }
+            }
+        }
+        Effect::AdjustEquipmentDurability { actor, slot, delta } => {
+            // 钳位到非负——见 Effect::AdjustEquipmentDurability 文档
+            // 「为什么钳位到非负在 apply 做」一节。没有耐久概念的物品
+            // （`durability == None`）保持 `None`,不会被凭空赋予一个
+            // 耐久值。
+            if let Some(agent) = world.actors.get_mut(*actor)
+                && let Some(stack) = agent.equipment.get_mut(slot)
+                && let Some(durability) = stack.durability
+            {
+                stack.durability = Some((durability + delta).max(0));
+            }
+        }
     }
 }
 
@@ -434,6 +469,7 @@ mod tests {
     use ll_core::torus::TorusSize;
     use ll_world::entity::{Agent, BaseStats};
     use ll_world::generate::GenParams;
+    use ll_world::item::{EquipSlot, ItemStack};
     use ll_world::terrain::base_terrain_fixture;
     use ll_world::zone::ZoneLayout;
 
@@ -1242,5 +1278,144 @@ mod tests {
 
         // Assert
         assert!(world.exploration.is_explored(&layout, wall));
+    }
+
+    #[test]
+    fn consumeinventoryitem效果对数量大于一的堆只减一() {
+        // 耐久与 Intent::Use 落地批次（P6 第五批）。
+        // Arrange
+        let mut world = test_world();
+        let mut agent = blank_agent(&world);
+        let mut interner = ll_core::ident::Interner::new();
+        let potion =
+            interner.intern(ll_core::ident::NamespacedId::parse("lostland:potion").unwrap());
+        agent.inventory.push(ItemStack::new(potion, 3));
+        let actor = world.actors.spawn(agent);
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::ConsumeInventoryItem {
+                actor,
+                def: potion,
+                durability: None,
+            },
+        );
+
+        // Assert
+        let stack = world
+            .actors
+            .get(actor)
+            .expect("刚生成的实体必然存在")
+            .inventory
+            .iter()
+            .find(|s| s.def == potion)
+            .expect("数量减到二,堆本身仍应留在背包里");
+        assert_eq!(stack.count, 2);
+    }
+
+    #[test]
+    fn consumeinventoryitem效果对数量恰为一的堆整条移除() {
+        // 反例：与上一条测试成对——数量恰好是一时,消耗后不该留下一个
+        // count == 0 的死堆（ItemStack.count 文档「恒 ≥ 1」的既有
+        // 不变式），整条从背包移除,证明"只减一"不是无条件生效的分支。
+        // Arrange
+        let mut world = test_world();
+        let mut agent = blank_agent(&world);
+        let mut interner = ll_core::ident::Interner::new();
+        let potion =
+            interner.intern(ll_core::ident::NamespacedId::parse("lostland:potion").unwrap());
+        agent.inventory.push(ItemStack::new(potion, 1));
+        let actor = world.actors.spawn(agent);
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::ConsumeInventoryItem {
+                actor,
+                def: potion,
+                durability: None,
+            },
+        );
+
+        // Assert
+        assert!(
+            !world
+                .actors
+                .get(actor)
+                .expect("刚生成的实体必然存在")
+                .inventory
+                .iter()
+                .any(|s| s.def == potion)
+        );
+    }
+
+    #[test]
+    fn adjustequipmentdurability效果扣减指定槽位的耐久() {
+        // Arrange
+        let mut world = test_world();
+        let mut agent = blank_agent(&world);
+        let mut interner = ll_core::ident::Interner::new();
+        let armor = interner.intern(ll_core::ident::NamespacedId::parse("lostland:armor").unwrap());
+        agent
+            .equipment
+            .insert(EquipSlot::BODY, ItemStack::with_durability(armor, 1, 10));
+        let actor = world.actors.spawn(agent);
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::AdjustEquipmentDurability {
+                actor,
+                slot: EquipSlot::BODY,
+                delta: -3,
+            },
+        );
+
+        // Assert
+        let stack = world
+            .actors
+            .get(actor)
+            .expect("刚生成的实体必然存在")
+            .equipment
+            .get(&EquipSlot::BODY)
+            .expect("装备仍在槽位里");
+        assert_eq!(stack.durability, Some(7));
+    }
+
+    #[test]
+    fn adjustequipmentdurability效果钳位到零而不是负数() {
+        // 反例：扣减量超过当前耐久时,不该产出负的耐久值——见
+        // Effect::AdjustEquipmentDurability 文档「为什么钳位到非负」
+        // 一节,证明钳位逻辑真的在起作用,不是恰好没被触发到。
+        // Arrange
+        let mut world = test_world();
+        let mut agent = blank_agent(&world);
+        let mut interner = ll_core::ident::Interner::new();
+        let armor = interner.intern(ll_core::ident::NamespacedId::parse("lostland:armor").unwrap());
+        agent
+            .equipment
+            .insert(EquipSlot::BODY, ItemStack::with_durability(armor, 1, 2));
+        let actor = world.actors.spawn(agent);
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::AdjustEquipmentDurability {
+                actor,
+                slot: EquipSlot::BODY,
+                delta: -5,
+            },
+        );
+
+        // Assert
+        let stack = world
+            .actors
+            .get(actor)
+            .expect("刚生成的实体必然存在")
+            .equipment
+            .get(&EquipSlot::BODY)
+            .expect("装备仍在槽位里");
+        assert_eq!(stack.durability, Some(0));
     }
 }

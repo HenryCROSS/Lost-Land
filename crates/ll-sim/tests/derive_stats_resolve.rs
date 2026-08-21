@@ -19,9 +19,10 @@ use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
 use ll_sim::combat::{Penetration, damage_after_defense};
+use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, StatBonus, StatTarget};
-use ll_sim::resolve::resolve_with_skills_traits_pools_and_items;
+use ll_sim::resolve::{derive_stats, resolve_with_skills_traits_pools_and_items};
 use ll_world::entity::{ActiveStatModifier, Agent, AttributeKind, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -74,6 +75,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                         target: StatTarget::Attribute(AttributeKind::Strength),
                         amount: 6,
                     }],
+                    use_effect: None,
                 },
             ),
             (
@@ -85,6 +87,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                         target: StatTarget::Armor,
                         amount: 8,
                     }],
+                    use_effect: None,
                 },
             ),
         ]),
@@ -393,4 +396,142 @@ fn 技能状态效果与装备加成同时生效且相加而非互相覆盖() {
     // Assert
     let victim_after = world.actors.get(victim).expect("生命值远高于伤害,不会死亡");
     assert_eq!(victim_after.health, 1_000 - expected_damage);
+}
+
+#[test]
+fn 受到近战攻击后已装备物品耐久真的减少() {
+    // 耐久与 Intent::Use 落地批次（P6 第五批）——「耐久何时消耗」的
+    // 结论：被击中掉防御方装备耐久，见 `resolve_attack` 文档「耐久
+    // 消耗」一节。端到端验证：防御方穿着耐久 5 的铁质护甲,挨一下近战
+    // 攻击后耐久必须精确减到 4,不是保持不变。
+    // Arrange
+    let (_gauntlets, armor, items) = combat_items();
+    let mut world = test_world();
+    let attacker = spawn_agent(
+        &mut world,
+        Agent::STARTING_HEALTH,
+        Vec::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
+    let defender = spawn_agent(
+        &mut world,
+        1_000,
+        Vec::new(),
+        BTreeMap::from([(EquipSlot::BODY, ItemStack::with_durability(armor, 1, 5))]),
+        BTreeMap::new(),
+    );
+
+    // Act
+    resolve_and_apply(
+        &mut world,
+        &Intent::Attack {
+            actor: attacker,
+            target: defender,
+        },
+        &items,
+    );
+
+    // Assert
+    let stack = world
+        .actors
+        .get(defender)
+        .expect("生命值远高于伤害,不会死亡")
+        .equipment
+        .get(&EquipSlot::BODY)
+        .expect("护甲仍在装备栏里");
+    assert_eq!(stack.durability, Some(4));
+}
+
+#[test]
+fn 没有耐久概念的已装备物品被击中后不产出耐久调整效果() {
+    // 反例：耐久与 Intent::Use 落地批次之前既有的装备（`ItemStack::new`
+    // 恒 `durability: None`）挨打时不该凭空长出一个耐久值——
+    // resolve_attack 只对 `durability.is_some()` 的堆产出
+    // `Effect::AdjustEquipmentDurability`,证明这条判定不是恒真。
+    // Arrange
+    let (_gauntlets, armor, items) = combat_items();
+    let mut world = test_world();
+    let attacker = spawn_agent(
+        &mut world,
+        Agent::STARTING_HEALTH,
+        Vec::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
+    let defender = spawn_agent(
+        &mut world,
+        1_000,
+        Vec::new(),
+        BTreeMap::from([(EquipSlot::BODY, ItemStack::new(armor, 1))]),
+        BTreeMap::new(),
+    );
+
+    // Act
+    let effects = resolve_with_skills_traits_pools_and_items(
+        &world,
+        &Intent::Attack {
+            actor: attacker,
+            target: defender,
+        },
+        &ll_sim::skill::NoSkills,
+        &ll_sim::traits::NoTraitGrants,
+        &ll_sim::traits::NoTraits,
+        &ll_sim::resource_pool::NoResourcePools,
+        &items,
+    );
+
+    // Assert
+    assert!(
+        !effects
+            .iter()
+            .any(|effect| matches!(effect, Effect::AdjustEquipmentDurability { .. }))
+    );
+}
+
+#[test]
+fn 耐久归零的护甲不再贡献护甲加成() {
+    // 耐久与 Intent::Use 落地批次（P6 第五批）——「耐久归零怎么办」的
+    // 结论：损坏不可用但不消失（`item-system.md` 六节）。derive_stats
+    // 是这句话在结算侧的落点：直接调用 derive_stats（不经完整战斗
+    // 流程），装备一件耐久已经归零的护甲,断言护甲加成没有生效。
+    // Arrange
+    let (_gauntlets, armor_def, items) = combat_items();
+    let equipment =
+        BTreeMap::from([(EquipSlot::BODY, ItemStack::with_durability(armor_def, 1, 0))]);
+
+    // Act
+    let derived = derive_stats(
+        BaseStats::BASELINE,
+        &BTreeMap::new(),
+        &equipment,
+        &items,
+        Tick(0),
+    );
+
+    // Assert
+    assert_eq!(derived.armor(), 0);
+}
+
+#[test]
+fn 耐久未耗尽的护甲仍然贡献护甲加成() {
+    // 反例：与上一条测试成对——耐久为正（未耗尽）时,同一件护甲必须
+    // 照常生效,证明「归零跳过」这条判定不是恒真,而是真的在读
+    // durability 的具体取值。
+    // Arrange
+    let (_gauntlets, armor_def, items) = combat_items();
+    let equipment =
+        BTreeMap::from([(EquipSlot::BODY, ItemStack::with_durability(armor_def, 1, 5))]);
+
+    // Act
+    let derived = derive_stats(
+        BaseStats::BASELINE,
+        &BTreeMap::new(),
+        &equipment,
+        &items,
+        Tick(0),
+    );
+
+    // Assert：combat_items() 里铁质护甲的加成是 +8。
+    assert_eq!(derived.armor(), 8);
 }

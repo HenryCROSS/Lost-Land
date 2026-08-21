@@ -2680,6 +2680,78 @@ mod tests {
     }
 
     #[test]
+    fn 已装备物品的耐久序列化往返后保持原样() {
+        // 耐久与 Intent::Use 落地批次（P6 第五批）：`resolve_attack`
+        // 会真的改写 `Agent::equipment` 里某一堆的 `durability`（见
+        // `Effect::AdjustEquipmentDurability`），存档必须能把这个"用过、
+        // 磨损过"的状态原样带回来，不是每次读档都退回满耐久——与
+        // 上面「地面物品序列化往返后保持原样」同一条判据：真实
+        // serde_json 路径，不只是结构层面。
+        // Arrange
+        let mut world = test_world();
+        let mut interner = ll_core::ident::Interner::new();
+        let profession = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
+        let race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
+        let armor_def = interner.intern(
+            ll_core::ident::NamespacedId::parse("lostland:iron_armor").expect("合法标识符"),
+        );
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let mut equipment = std::collections::BTreeMap::new();
+        equipment.insert(
+            crate::item::EquipSlot::BODY,
+            ItemStack::with_durability(armor_def, 1, 37),
+        );
+        let id = world.actors.spawn(Agent {
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession,
+            goals: Vec::new(),
+            race,
+            luck: 0,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
+            equipment,
+            resting: None,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: Space::surface(zone, ContentIndex::default()),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
+            level: crate::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+        });
+
+        // Act
+        let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
+        let decoded: WorldState = serde_json::from_slice(&encoded).expect("刚序列化的数据必然合法");
+
+        // Assert：往返后耐久值恰好是 37，不是满耐久或默认值。
+        let decoded_stack = decoded
+            .actors
+            .get(id)
+            .expect("往返后仍能按原标识取回该实体")
+            .equipment
+            .get(&crate::item::EquipSlot::BODY)
+            .expect("往返后装备栏条目仍在");
+        assert_eq!(decoded_stack.durability, Some(37));
+    }
+
+    #[test]
     fn 清理超过阈值的地面物品会被移除() {
         // Arrange：世界时钟推进到超过阈值的时刻,丢弃时刻停留在 0。
         let mut world = test_world();

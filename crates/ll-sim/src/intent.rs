@@ -229,6 +229,25 @@ pub enum Intent {
         /// 玩家请求卸下的槽位。
         slot: EquipSlot,
     },
+    /// 使用背包里的一件物品（耐久与 `Intent::Use` 落地批次，P6 第五批）
+    /// ——落地 `knowledge/design/item-system.md` 八节「物品作用」。
+    ///
+    /// # 为什么携带 `def`，不携带目标
+    ///
+    /// 与 [`Intent::Drop`]/[`Intent::Equip`] 同一条纪律：玩家从自己背包
+    /// 的已知列表里选「用哪一种物品」。不携带目标实体——本批次的物品
+    /// 使用效果恒施于发起者自身（药水喝给自己），没有「对着别人用一件
+    /// 消耗品」这个真实场景需要表达（不像 `Intent::UseSkill::target`
+    /// 那样确实存在指向他人的技能），提前加一个恒为 `None`/恒被忽略的
+    /// 字段是死字段，见 `ll_mod::item` 模块文档同一条 YAGNI 判断。真要
+    /// 支持「扔药水砸别人」，是该场景真正落地时再给这个变体加字段，不
+    /// 在本批次预留。
+    Use {
+        /// 发起者，同时是效果的承受者。
+        actor: EntityId,
+        /// 要使用的物品定义——玩家从自己背包的已知列表里选。
+        def: ContentIndex,
+    },
 }
 
 impl Intent {
@@ -251,7 +270,8 @@ impl Intent {
             | Intent::PickUp { actor }
             | Intent::Drop { actor, .. }
             | Intent::Equip { actor, .. }
-            | Intent::Unequip { actor, .. } => actor,
+            | Intent::Unequip { actor, .. }
+            | Intent::Use { actor, .. } => actor,
         }
     }
 }
@@ -639,6 +659,40 @@ mod tests {
             actor,
             slot: EquipSlot::HEAD,
         };
+
+        // Act & Assert
+        assert_eq!(intent.actor(), actor);
+    }
+
+    #[test]
+    fn use意图序列化往返后与原值相等() {
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let def = interner.intern(
+            ll_core::ident::NamespacedId::parse("lostland:healing_potion").expect("合法标识符"),
+        );
+        let original = Intent::Use {
+            actor: entity(),
+            def,
+        };
+
+        // Act
+        let json = serde_json::to_string(&original).expect("Intent 全字段均可序列化");
+        let decoded: Intent = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn actor方法对use意图返回发起者字段() {
+        // Arrange
+        let actor = entity();
+        let mut interner = ll_core::ident::Interner::new();
+        let def = interner.intern(
+            ll_core::ident::NamespacedId::parse("lostland:healing_potion").expect("合法标识符"),
+        );
+        let intent = Intent::Use { actor, def };
 
         // Act & Assert
         assert_eq!(intent.actor(), actor);

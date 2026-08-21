@@ -118,6 +118,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND.mask(),
                     stat_bonuses: Vec::new(),
+                    use_effect: None,
                 },
             ),
             (
@@ -126,6 +127,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     stack_limit: 1,
                     equip_mask: EquipSlot::OFF_HAND.mask(),
                     stat_bonuses: Vec::new(),
+                    use_effect: None,
                 },
             ),
             (
@@ -136,6 +138,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                         .mask()
                         .union(EquipSlot::OFF_HAND.mask()),
                     stat_bonuses: Vec::new(),
+                    use_effect: None,
                 },
             ),
         ]),
@@ -393,6 +396,7 @@ fn 物品不可装备时装备意图静默无效() {
         items: BTreeMap::from([(
             ore,
             ItemRule {
+                use_effect: None,
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),

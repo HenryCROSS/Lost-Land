@@ -28,14 +28,14 @@
 //!   落地的设计——批次到了，`derive_stats` 与 `StatBonus` 在同一批次
 //!   一并定形，这条排除的前提同样不成立了（与上面 `equip_mask` 那条
 //!   「批次到了就该做」是同一条判断）。
-//! - `use_effect: Option<ContentIndex>`——类型上不需要发明新东西
-//!   （`ContentIndex` 早已存在），但这个字段没有任何意义：它指向的
-//!   Steel 脚本要在 `Intent::Use` 结算时才会被读取
-//!   （`item-system.md` 八节），而 `Intent::Use` 本身是耐久系统批次
-//!   （第五批）才会新增的意图变体——现在声明这个字段只是给内容作者
-//!   一个填了也没有任何效果的选项，不填一样，不是"形状先定好、消费者
-//!   以后接"（`stat_modifiers`/`rule_modifiers` 那种情形），是纯粹的
-//!   死字段，YAGNI。
+//! - ~~`use_effect: Option<ContentIndex>`~~——**P6 第五批（耐久与
+//!   `Intent::Use`）已补上，但形状与设计文档原文不同：`Option<SkillEffect>`，
+//!   不是指向 Steel 脚本的 `ContentIndex`**，见
+//!   [`ItemDef::use_effect`] 文档「与设计文档原文的偏离」一节。原排除
+//!   理由：它指向的脚本要在 `Intent::Use` 结算时才会被读取，而
+//!   `Intent::Use` 本身是耐久系统批次（第五批）才会新增的意图变体——
+//!   批次到了，这条排除的前提同样不成立了，与上面 `equip_mask`/
+//!   `stat_bonuses` 是同一条「批次到了就该做」判断。
 //!
 //! `max_durability: Option<i32>` **保留**——不需要发明新类型
 //! （`Option<i32>` 已经是本代码库到处在用的形状），且直接支撑本批次
@@ -58,6 +58,7 @@ use std::fmt;
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
 use ll_sim::item::{ItemCatalog, ItemRule, SlotMask, StatBonus};
+use ll_sim::skill::SkillEffect;
 
 /// 单条物品声明：本体与 mod 注册物品时共用的同一个输入形状——
 /// 「本体即 Mod」在物品层面的验收标的，理由同 [`crate::race::RaceDef`]
@@ -119,6 +120,35 @@ pub struct ItemDef {
     /// 多条加成的列表（一件装备可以同时加力量与护甲），语义上更接近
     /// `RaceTable::add_trait_grant`——多次调用累积,不是以最后一次为准。
     pub stat_bonuses: Vec<StatBonus>,
+    /// 使用效果（P6 第五批：耐久与 `Intent::Use`）——`None`（默认值）
+    /// 表示这件物品不能被 `Intent::Use` 使用（材料、装备本身……）。
+    ///
+    /// # 为什么不是 `register-item` 的参数，走 `set_use_effect` 追加
+    ///
+    /// 与 [`Self::equip_mask`]/[`Self::stat_bonuses`] 同一条既有先例
+    /// （`register-item` 的六参数签名不能改参数个数）——脚本层对应函数
+    /// 是 `register-item-use-effect`（`crate::script_item_api`），Rust
+    /// 层对应方法是 [`ItemTable::set_use_effect`]。**覆盖，不是追加**：
+    /// 一件物品的使用效果是单个值,与 [`Self::equip_mask`] 同一种"单值
+    /// 覆盖"语义，不像 `stat_bonuses` 那样天然是可以累积的列表。
+    ///
+    /// # 与设计文档原文的偏离：类型是 `Option<SkillEffect>`，不是
+    /// `Option<ContentIndex>`
+    ///
+    /// `item-system.md` 八节原文把 `use_effect` 定成指向一个 Steel 脚本
+    /// 的 `ContentIndex`，脚本产出 `Effect` 列表。本批次改用
+    /// `Option<SkillEffect>`——`SkillEffect`（`ll_sim::skill`）已经能
+    /// 表达「造成伤害/恢复资源/临时属性修正」，喝一瓶药水正是这三件
+    /// 事之一：`crate::resolve::resolve_use_item`
+    /// （`ll-sim`，本批次新增）对 `SkillEffect` 的 `match` 与既有的
+    /// `resolve_use_skill` 逐字对应，见 [`ll_sim::item::ItemRule::use_effect`]
+    /// 文档「为什么复用 `SkillEffect`」一节完整论证（ADR 0021：算法
+    /// 真正可共享才抽象）。走 Steel 脚本需要脚本沙箱在结算路径上现场
+    /// 求值，而 `SkillEffect` 是纯数据，`resolve` 保持纯函数（C1）不需要
+    /// 为此额外引入脚本引擎依赖——这是比"跟设计文档形状对齐"更硬的
+    /// 约束，因此本批次选择偏离设计文档原文的字段类型，改为复用既有
+    /// 机制，而不是照抄文档新增一套平行的"物品脚本效果"通道。
+    pub use_effect: Option<SkillEffect>,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -145,6 +175,11 @@ pub struct ItemAttrs {
     /// `register-item-stat-bonus` 调用 [`ItemTable::add_stat_bonus`]
     /// 追加写入，理由同 [`ItemDef::stat_bonuses`] 文档。
     pub stat_bonuses: Vec<StatBonus>,
+    /// 使用效果——`register-item` 注册时恒为 `None`（同上，
+    /// `do_register_item` 不接受这个参数），真正的取值由后续
+    /// `register-item-use-effect` 调用 [`ItemTable::set_use_effect`]
+    /// 写入，理由同 [`ItemDef::use_effect`] 文档。
+    pub use_effect: Option<SkillEffect>,
 }
 
 /// 物品注册期可能出现的错误。
@@ -198,6 +233,8 @@ pub struct ItemView<'a> {
     /// [`Self::display_name_key`]（一读一写两个薄视图，读侧不复制底层
     /// 存储）。
     pub stat_bonuses: &'a [StatBonus],
+    /// 使用效果。
+    pub use_effect: Option<SkillEffect>,
 }
 
 /// 物品属性的列式存储：按 [`ContentIndex`] 下标索引，与
@@ -213,6 +250,7 @@ pub struct ItemTable {
     max_durability: Vec<Option<i32>>,
     equip_mask: Vec<SlotMask>,
     stat_bonuses: Vec<Vec<StatBonus>>,
+    use_effect: Vec<Option<SkillEffect>>,
     defined: Vec<bool>,
 }
 
@@ -235,6 +273,7 @@ impl ItemTable {
             self.max_durability.resize(new_len, None);
             self.equip_mask.resize(new_len, SlotMask::EMPTY);
             self.stat_bonuses.resize(new_len, Vec::new());
+            self.use_effect.resize(new_len, None);
         }
 
         if self.defined[idx] {
@@ -249,6 +288,7 @@ impl ItemTable {
         self.max_durability[idx] = attrs.max_durability;
         self.equip_mask[idx] = attrs.equip_mask;
         self.stat_bonuses[idx] = attrs.stat_bonuses;
+        self.use_effect[idx] = attrs.use_effect;
         Ok(())
     }
 
@@ -276,6 +316,7 @@ impl ItemTable {
             max_durability: self.max_durability[idx],
             equip_mask: self.equip_mask[idx],
             stat_bonuses: &self.stat_bonuses[idx],
+            use_effect: self.use_effect[idx],
         })
     }
 
@@ -321,6 +362,25 @@ impl ItemTable {
         self.stat_bonuses[item.get() as usize].push(bonus);
         Ok(())
     }
+
+    /// 设置「使用这件物品会发生什么」（P6 第五批：耐久与 `Intent::Use`）
+    /// ——`register-item` 的既有脚本签名不能改参数个数，理由同
+    /// [`Self::set_equip_mask`]。目标索引必须已经 `define` 过，否则
+    /// 返回 [`ItemError::NotDefined`]，同一条 ADR 0017 纪律。
+    ///
+    /// **覆盖，不是追加**——与 [`Self::set_equip_mask`] 同一种"单值
+    /// 覆盖"语义，见 [`ItemDef::use_effect`] 文档。
+    pub fn set_use_effect(
+        &mut self,
+        item: ContentIndex,
+        effect: SkillEffect,
+    ) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        self.use_effect[item.get() as usize] = Some(effect);
+        Ok(())
+    }
 }
 
 /// `resolve` 侧的堆叠上限/装备占位/属性加成查询——`ll_sim::resolve::resolve_pick_up`
@@ -338,6 +398,7 @@ impl ItemCatalog for ItemTable {
             stack_limit: view.stack_limit,
             equip_mask: view.equip_mask,
             stat_bonuses: view.stat_bonuses.to_vec(),
+            use_effect: view.use_effect,
         })
     }
 }
@@ -375,6 +436,7 @@ mod tests {
                     max_durability: None,
                     equip_mask: SlotMask::EMPTY,
                     stat_bonuses: Vec::new(),
+                    use_effect: None,
                 },
             )
             .expect("首次定义应当成功");
@@ -399,6 +461,7 @@ mod tests {
             max_durability: Some(100),
             equip_mask: SlotMask::EMPTY,
             stat_bonuses: Vec::new(),
+            use_effect: None,
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -442,6 +505,7 @@ mod tests {
                     max_durability: Some(100),
                     equip_mask: SlotMask::EMPTY,
                     stat_bonuses: Vec::new(),
+                    use_effect: None,
                 },
             )
             .expect("首次定义应当成功");
@@ -468,6 +532,7 @@ mod tests {
                     max_durability: None,
                     equip_mask: SlotMask::EMPTY,
                     stat_bonuses: Vec::new(),
+                    use_effect: None,
                 },
             )
             .expect("首次定义应当成功");
@@ -482,6 +547,7 @@ mod tests {
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
+                use_effect: None,
             })
         );
     }
@@ -511,6 +577,7 @@ mod tests {
             max_durability: Some(120),
             equip_mask: SlotMask::EMPTY,
             stat_bonuses: Vec::new(),
+            use_effect: None,
         }
     }
 
