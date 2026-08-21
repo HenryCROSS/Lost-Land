@@ -327,12 +327,14 @@ pub struct WorldState {
     /// 共用同一份存储，见 [`crate::history`] 模块文档「为什么落在
     /// ll-world」一节。
     ///
-    /// # schema v3 新增字段（P5 之后）
+    /// # 曾经的破坏性存档结构变化（P5 之后）
     ///
     /// `identity-and-ids.md`「schema 迁移问题」一节已经提前论证：这个
     /// 容器字段若拖到对应系统真正落地才加进 `WorldState`，就必然是一次
-    /// 破坏性存档变更——本字段正是那次变更，见
-    /// `ll_content::migrations::Migration2To3`。
+    /// 破坏性存档变更——本字段正是那次变更。配套的迁移函数发布前一度
+    /// 落在 `ll_content::migrations`，随「老存档去掉就好了」的裁定一并
+    /// 清空（见该模块文档），现在只有 `ll-content` 唯一认识的一个
+    /// schema 版本，不再有「v3 新增」这类历史分档的意义。
     ///
     /// # 参与 `hash()`（ADR 0022）与序列化，不加 `#[serde(skip)]`
     ///
@@ -393,28 +395,6 @@ pub struct WorldState {
     /// 「决策二」一节完整论证）：现在对每一场击杀都累加本字段，受害者
     /// 已具名时**额外**再产出一条完整记录，两者叠加。
     ///
-    /// # 老存档的计数是永久低估，无法从 `history` 补算（如实记录的
-    /// 已知缺口）
-    ///
-    /// 决策二落地前写出的存档里，本字段只累加过无名击杀——决策二落地
-    /// 前的每一次具名击杀只进了 [`Self::history`]，从未累加进本字段
-    /// （决策一的互斥设计如上一节所述）。决策二本身**不需要新的
-    /// schema 版本**：本字段的类型/序列化位置都没有变化，`postcard`
-    /// 按声明顺序编码，语义变化不影响字节布局，读老存档不会触发
-    /// `ll_content::migrations` 里的任何新迁移步骤。因此老存档读进来
-    /// 之后，本字段的值**原样保留**（只反映"曾经的无名击杀"），不会
-    /// 被自动补算成决策二语义下的"真实总击杀数"。
-    ///
-    /// 曾经评估过用 `Self::history` 补算旧存档缺口，但核实后确认不
-    /// 可行：[`crate::history::KillRecord`] 只携带 `killer`/`victim`
-    /// 两个不透明的 `WorldId`，不携带 `creature_kind`/`race` 这类归并
-    /// 键——`WorldId` 本身查不回死者当时的物种（死者被销毁时这份信息
-    /// 已经从 `Agent` 里一并丢失，不是遍历 `history` 的成本问题，是
-    /// 数据源本身在写入 `history` 那一刻就已经不完整）。因此这是一个
-    /// 如实记录、不打算修复的已知缺口，不是本批次遗漏：老存档的这份
-    /// 统计从决策二落地那一刻起如实低估，新发生的击杀从代码更新那一
-    /// 刻起正确计数。
-    ///
     /// `BTreeMap` 不是 `HashMap`：约束 C5，按键（`ContentIndex`）自然
     /// 顺序遍历，不依赖任何哈希表迭代顺序。
     ///
@@ -424,15 +404,6 @@ pub struct WorldState {
     /// 真正影响"传说浏览/死因统计"查询结果的数据，缺席 `hash()` 会重演
     /// "新字段只加了，没人测过它是否被正确覆盖"的既有判据缺口（见
     /// [`Self::hash`] 文档同名历史记录）。
-    ///
-    /// # schema v4 新增字段（决策二未再新增 schema 版本）
-    ///
-    /// 本字段是继 `history`/`next_world_id`（schema v3）之后的又一次
-    /// 破坏性存档结构变化，配套迁移函数是
-    /// `ll_content::migrations::Migration3To4`。决策二只改变了本字段
-    /// 的填充语义（见上文「决策二」一节），字段本身的类型、位置、
-    /// 序列化形状均未变化，因此**没有**配套 `Migration4To5`——见上文
-    /// 「老存档的计数是永久低估」一节对老存档实际读档状态的完整说明。
     pub kill_counts: BTreeMap<ContentIndex, u64>,
 }
 
@@ -469,21 +440,19 @@ struct WorldStateRepr {
     #[serde(default, with = "crate::script_state::serde_map")]
     global_script_state: BTreeMap<(String, String), ScriptValue>,
     /// 历史事件日志——`#[serde(default)]` 的理由与 `exploration` 一致
-    /// （见其字段注释）：真正需要兼容 schema v2 存档（本字段引入之前
-    /// 写出的存档）走的是 `ll_content::migrations::Migration2To3`
-    /// 这条真正的迁移路径，这里的默认值只服务本文件内部用
-    /// `serde_json::json!` 手写局部字段的测试固件。
+    /// （见其字段注释）：发布前曾经需要兼容本字段引入之前写出的存档，
+    /// 走的是 `ll_content::migrations` 里当时真正注册的迁移路径（随
+    /// 「老存档去掉就好了」的裁定一并清空，见该模块文档），这里的默认
+    /// 值只服务本文件内部用 `serde_json::json!` 手写局部字段的测试
+    /// 固件。
     #[serde(default)]
     history: Vec<HistoricalEvent>,
     /// WorldId 分配计数器，理由与 `history` 同一节。
     #[serde(default)]
     next_world_id: u32,
     /// 无名单位击杀聚合计数——`#[serde(default)]` 的理由与
-    /// `history`/`next_world_id` 一致：真正需要兼容 schema v3 存档（本
-    /// 字段引入之前写出的存档）走的是
-    /// `ll_content::migrations::Migration3To4` 这条真正的迁移路径，这里
-    /// 的默认值只服务本文件内部用 `serde_json::json!` 手写局部字段的
-    /// 测试固件。
+    /// `history`/`next_world_id` 一致，这里的默认值只服务本文件内部用
+    /// `serde_json::json!` 手写局部字段的测试固件。
     #[serde(default)]
     kill_counts: BTreeMap<ContentIndex, u64>,
 }

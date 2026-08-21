@@ -36,22 +36,16 @@ use ll_mod::registry::Registry;
 pub enum LoadError {
     /// schema 版本高于当前游戏能处理的最新版本——需要更新游戏本体。
     /// 这条轴上唯一"不是迁移链的错"的失败：不是链条有缺口，是这个
-    /// 版本本来就还不存在于当前游戏认识的范围内。
-    SchemaTooNew {
-        /// 存档记录的 schema 版本。
-        save_version: u32,
-        /// 当前游戏支持到的最新 schema 版本。
-        max_supported: u32,
-    },
-    /// schema 迁移链找不到路径——不应该发生，除非迁移链本身有缺口
-    /// （某个中间版本的迁移函数没有被注册进来）。与 `SchemaTooNew`
-    /// 的区别：这个版本号本身不算"太新"（可能比 `max_supported` 还
-    /// 旧），只是链条恰好在这一段断掉了，指向的修复动作是"补一个迁移
-    /// 函数"而不是"存档版本过旧"。
-    SchemaMigrationGap {
-        /// 迁移链找不到路径的起始版本。
-        from: u32,
-    },
+    /// 版本本来就还不存在于当前游戏认识的范围内。结构化字段见
+    /// [`SchemaTooNew`]。
+    SchemaTooNew(SchemaTooNew),
+    /// schema 迁移链找不到路径——发布前表现为「老存档，迁移链已清空
+    /// （见 `crate::migrations` 模块文档），任何版本都没有已注册的
+    /// 路径」；发布后则应当只在迁移链本身有缺口（某个中间版本的迁移
+    /// 函数没有被注册进来）时才会发生。与 `SchemaTooNew` 的区别：这个
+    /// 版本号本身不算"太新"（可能比 `max_supported` 还旧），只是链条
+    /// 在这一段没有已知路径。结构化字段见 [`SchemaMigrationGap`]。
+    SchemaMigrationGap(SchemaMigrationGap),
     /// 内容哈希算法已升级：存档头记录的算法版本
     /// （[`crate::header::SaveHeader::content_hash_algorithm_version`]）
     /// 低于当前游戏使用的算法版本
@@ -102,6 +96,38 @@ pub enum LoadError {
     ModSetMismatch(ModSetMismatch),
 }
 
+/// [`LoadError::SchemaTooNew`] 携带的详情，与 [`ModSetMismatch`] 同一条
+/// 纪律：不预先拼好任何语言的句子，只携带结构化数据与一个技术标识符
+/// [`Self::message_key`]，理由见 [`ModSetMismatch`] 文档「为什么没有
+/// 一句现成的中文/英文句子」一节，这里不重复。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaTooNew {
+    /// Fluent 消息 id——查 `.ftl` 用的技术标识符，取值恒为
+    /// [`SAVE_SCHEMA_TOO_NEW_MESSAGE_KEY`]。
+    pub message_key: &'static str,
+    /// 存档记录的 schema 版本。
+    pub save_version: u32,
+    /// 当前游戏支持到的最新 schema 版本。
+    pub max_supported: u32,
+}
+
+/// [`SchemaTooNew::message_key`] 唯一取值。
+pub const SAVE_SCHEMA_TOO_NEW_MESSAGE_KEY: &str = "save-schema-too-new";
+
+/// [`LoadError::SchemaMigrationGap`] 携带的详情，同一条纪律（见
+/// [`SchemaTooNew`] 文档）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaMigrationGap {
+    /// Fluent 消息 id——查 `.ftl` 用的技术标识符，取值恒为
+    /// [`SAVE_SCHEMA_MIGRATION_GAP_MESSAGE_KEY`]。
+    pub message_key: &'static str,
+    /// 迁移链找不到路径的起始版本。
+    pub from: u32,
+}
+
+/// [`SchemaMigrationGap::message_key`] 唯一取值。
+pub const SAVE_SCHEMA_MIGRATION_GAP_MESSAGE_KEY: &str = "save-schema-migration-gap";
+
 /// [`LoadError::ModSetMismatch`] 携带的详情。
 ///
 /// # 为什么没有一句现成的中文/英文句子
@@ -145,17 +171,11 @@ pub const SAVE_MOD_VERSION_MISMATCH_MESSAGE_KEY: &str = "save-mod-version-mismat
 impl fmt::Display for LoadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoadError::SchemaTooNew {
-                save_version,
-                max_supported,
-            } => write!(
-                f,
-                "存档 schema 版本 {save_version} 高于当前游戏支持的最新版本 {max_supported}，需要更新游戏本体"
-            ),
-            LoadError::SchemaMigrationGap { from } => write!(
-                f,
-                "schema 迁移链找不到从版本 {from} 开始的升级路径（迁移链本身有缺口）"
-            ),
+            // 不拼一句现成的中文/英文句子——见 SchemaTooNew 文档，同一条
+            // 纪律：这里只把结构化字段原样打印，真正给玩家看的文案留给
+            // UI 层查 message_key。
+            LoadError::SchemaTooNew(detail) => write!(f, "{detail:?}"),
+            LoadError::SchemaMigrationGap(detail) => write!(f, "{detail:?}"),
             LoadError::ContentHashAlgorithmUpgraded {
                 save_algorithm_version,
                 current_algorithm_version,
@@ -192,7 +212,10 @@ impl From<MigrationError> for LoadError {
     /// 这一步处理的数据有问题。
     fn from(err: MigrationError) -> Self {
         match err {
-            MigrationError::NoPathFrom(from) => LoadError::SchemaMigrationGap { from },
+            MigrationError::NoPathFrom(from) => LoadError::SchemaMigrationGap(SchemaMigrationGap {
+                message_key: SAVE_SCHEMA_MIGRATION_GAP_MESSAGE_KEY,
+                from,
+            }),
             MigrationError::StepFailed { at_version, reason } => LoadError::Corrupted(format!(
                 "schema 迁移在版本 {at_version} 这一步失败：{reason}"
             )),
@@ -207,10 +230,11 @@ impl From<MigrationError> for LoadError {
 /// 模块要解决的那个问题（见模块文档）。
 pub fn check_schema_version(save_version: u32, max_supported: u32) -> Result<(), LoadError> {
     if save_version > max_supported {
-        Err(LoadError::SchemaTooNew {
+        Err(LoadError::SchemaTooNew(SchemaTooNew {
+            message_key: SAVE_SCHEMA_TOO_NEW_MESSAGE_KEY,
             save_version,
             max_supported,
-        })
+        }))
     } else {
         Ok(())
     }
@@ -445,10 +469,11 @@ mod tests {
         // Assert
         assert_eq!(
             result,
-            Err(LoadError::SchemaTooNew {
+            Err(LoadError::SchemaTooNew(SchemaTooNew {
+                message_key: SAVE_SCHEMA_TOO_NEW_MESSAGE_KEY,
                 save_version: 5,
                 max_supported: 3,
-            })
+            }))
         );
     }
 
@@ -664,7 +689,13 @@ mod tests {
         let load_error: LoadError = migration_error.into();
 
         // Assert
-        assert_eq!(load_error, LoadError::SchemaMigrationGap { from: 7 });
+        assert_eq!(
+            load_error,
+            LoadError::SchemaMigrationGap(SchemaMigrationGap {
+                message_key: SAVE_SCHEMA_MIGRATION_GAP_MESSAGE_KEY,
+                from: 7,
+            })
+        );
     }
 
     #[test]

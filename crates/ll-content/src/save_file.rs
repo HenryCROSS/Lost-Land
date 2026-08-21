@@ -55,43 +55,39 @@ use crate::load_error::{
 use crate::migration::MigrationChain;
 use crate::remap::remap_world;
 
-/// 当前游戏认识的最新存档 schema 版本。
+/// 当前游戏认识的唯一存档 schema 版本。
 ///
-/// # 为什么是 2，不再是 1（落地探索记忆批次）
+/// # 为什么重置为 1，而不是继续从发布前累计到的 4 往上加
 ///
-/// `ll_world::interior::Interior` 新增了 `origin` 字段（ADR 0024 裁定
-/// P5-7），`ll_world::state::WorldState` 新增了 `exploration` 字段
-/// （落地探索记忆批次）——两者都直接改变了存档主体（`postcard`
-/// 编码，按声明顺序定位、不带字段名）的字节布局，是真正的 schema
-/// 版本升级，不是内部实现细节的调整。配套的迁移函数是
-/// [`crate::migrations::Migration1To2`]，已注册进
-/// `migration_chain`——见其模块文档「为什么现在补，不等生成器落地
-/// 时再补」一节：当前还没有任何真实存档，是把这两个字段补进格式、
-/// 同时把迁移链条从「空链」变成「至少验证过一条真实路径」成本最低的
-/// 时刻。
+/// 发布前的开发过程中，这个常量曾经从 1 一路加到 4——落地探索记忆
+/// 批次（`Interior::origin`/`WorldState::exploration`）、击杀与死亡
+/// 记录批次（`WorldState::history`/`next_world_id`）、无名单位击杀
+/// 计数批次（`WorldState::kill_counts`）各贡献一次破坏性存档结构变化，
+/// 配套的迁移函数（`Migration1To2`/`Migration2To3`/`Migration3To4`，
+/// 曾经落在 `crate::migrations`）与「形状变了」的镜像类型逐批注册进
+/// [`migration_chain`]。项目所有者复核后裁定「老存档去掉就好了」：
+/// 项目尚未发布，此前累计的全部存档都是开发期产物，没有任何一份值得
+/// 维护迁移路径去兼容。继续背着这条越来越长的链，意味着往后
+/// `WorldState`/`Agent`/`Interior` 每新增一个字段都要多付一份镜像
+/// 类型与手写字节测试的维护成本，而它保护的对象在发布后根本不存在
+/// ——把常量重置为 1、清空 [`crate::migrations`] 里的具体迁移函数
+/// （见其模块文档），是「项目尚未发布」这个阶段独有的清理窗口。
 ///
-/// # 为什么是 3，不再是 2（击杀与死亡记录批次）
+/// 重置后任何 `schema_version != 1` 的存档都会被明确拒绝
+/// （[`crate::load_error::LoadError::SchemaTooNew`]/
+/// [`crate::load_error::LoadError::SchemaMigrationGap`]，见
+/// [`migration_chain`] 文档与本模块测试「旧版本号存档被拒绝」一节），
+/// 不会被静默按当前字段布局误解析。
 ///
-/// `ll_world::state::WorldState` 新增了 `history`/`next_world_id` 两个
-/// 字段，`ll_world::entity::Agent` 新增了
-/// `creature_kind`/`spawned_at`/`remembered_id` 三个字段——理由与
-/// `identity-and-ids.md`「schema 迁移问题」一节已经论证过的紧迫性
-/// 一致：`kill-and-death-events.md`「阶段归属」一节指出这几个字段若
-/// 拖到对应系统（死因统计、传说浏览）真正落地才补，就必然是一次
-/// 破坏性存档变更，不如现在（存档格式仍处于早期迭代、尚无真实玩家
-/// 存档）就把容器补齐。配套的迁移函数是
-/// [`crate::migrations::Migration2To3`]，已注册进 `migration_chain`。
+/// # 迁移框架本身没有被删除
 ///
-/// # 为什么是 4，不再是 3（无名单位击杀计数批次）
-///
-/// `ll_world::state::WorldState` 新增了 `kill_counts` 字段——项目所有者
-/// 拍板「无名单位击杀改计数」（决策一）：无名单位被击杀时不再产出完整
-/// `HistoricalEvent`，而是按 `creature_kind`（或回退到 `race`）归并的
-/// 一份聚合计数,这份计数必须进存档并参与 `hash()`（ADR 0022），因此是
-/// 真正的存档结构变化。配套的迁移函数是
-/// [`crate::migrations::Migration3To4`]，已注册进 `migration_chain`——
-/// 旧存档没有任何「已经发生」的无名击杀计数可继承，迁移后恒为空表。
-pub const CURRENT_SCHEMA_VERSION: u32 = 4;
+/// [`crate::migration::MigrationChain`] 依旧是读档管线的一环（见
+/// [`migration_chain`]），只是目前注册的迁移函数集合为空——发布之后
+/// 真的需要升级 schema 时，新的迁移函数照常实现
+/// [`crate::migration::Migration`] 并注册进 `migration_chain`，这个
+/// 常量再次成为「往上加一」的那一个，不需要重新设计版本判定或
+/// 迁移执行的机制。
+pub const CURRENT_SCHEMA_VERSION: u32 = 1;
 
 /// 头部 JSON 长度声明的安全上限——防御「声明长度与实际不符」类畸形
 /// 存档（规格 §14.3 fuzz 要求之一）：一个只有几十字节的文件却在长度
@@ -135,29 +131,25 @@ impl std::fmt::Display for SaveError {
 
 impl std::error::Error for SaveError {}
 
-/// 当前认识的 schema 迁移链：v1 → v2 → v3 → v4 三步（
-/// [`crate::migrations::Migration1To2`]/[`crate::migrations::Migration2To3`]/
-/// [`crate::migrations::Migration3To4`]，见 [`CURRENT_SCHEMA_VERSION`] 文档）。
+/// 当前认识的 schema 迁移链——目前是空的，见
+/// [`CURRENT_SCHEMA_VERSION`] 文档「为什么重置为 1」一节与
+/// [`crate::migrations`] 模块文档：发布前累计过的三步迁移
+/// （v1→v2→v3→v4）已随「老存档去掉就好了」的裁定一并清空。
 ///
-/// # 为什么不是空的了
+/// # 为什么这个函数还在，没有跟着一起删掉
 ///
-/// 这条链曾经是空的（「本批次没有任何字段升级需要迁移」）——落地探索
-/// 记忆批次是第一次真正需要升级已冻结的存档结构，因此第一次往这里
-/// 注册了一条真实迁移函数；击杀与死亡记录批次是第二次。
-/// [`crate::migration::MigrationChain`] 本身不关心链有多长，
-/// [`load_full`] 仍然只在 `header.schema_version <
-/// CURRENT_SCHEMA_VERSION` 时才会调用这条链：低于 1（当前链条完全不
-/// 认识）的版本号依旧会诚实地报出
-/// [`crate::load_error::LoadError::SchemaMigrationGap`]，不会被这些
-/// 迁移悄悄吞掉。`MigrationChain::apply` 会沿着 `source_version` 自动
-/// 串联——从 1 开始的存档先经 `Migration1To2` 到 2，再经
-/// `Migration2To3` 到 3，调用方不需要关心中间跳了几步。
+/// [`load_full_from_bytes`] 仍然在 `header.schema_version <
+/// CURRENT_SCHEMA_VERSION` 时调用这条链——保留这次调用，是保留「迁移
+/// 框架接在真实读档路径上」这件事本身：[`crate::migration::MigrationChain`]
+/// 空载时的行为（[`MigrationChain::apply`] 找不到已知版本就报
+/// [`crate::migration::MigrationError::NoPathFrom`]，经
+/// [`crate::load_error::LoadError`] 的 `From` 实现转换成
+/// [`crate::load_error::LoadError::SchemaMigrationGap`]）本身就是「老
+/// 存档被明确拒绝」这条要求的一部分，不是需要绕开的死代码。发布之后
+/// 真的需要升级 schema 时，新的迁移函数只需要加进这里的 `vec!`，
+/// [`load_full_from_bytes`] 调用这条链的方式不需要跟着变。
 fn migration_chain() -> MigrationChain {
-    MigrationChain::new(vec![
-        Box::new(crate::migrations::Migration1To2),
-        Box::new(crate::migrations::Migration2To3),
-        Box::new(crate::migrations::Migration3To4),
-    ])
+    MigrationChain::new(Vec::new())
 }
 
 /// 把 `world` 与 `header` 写出到 `path`，见模块文档「物理布局」。
@@ -643,16 +635,17 @@ mod tests {
         // Assert
         assert!(matches!(
             outcome,
-            LoadOutcome::Rejected(LoadError::SchemaTooNew { .. })
+            LoadOutcome::Rejected(LoadError::SchemaTooNew(_))
         ));
         let _ = std::fs::remove_file(&path);
     }
 
     #[test]
     fn schema版本低于当前版本且迁移链不认识该版本时返回迁移缺口错误() {
-        // Arrange：伪造一份"更早版本"的存档——当前链条只认识 1 到 2
-        // 这一步（见 migration_chain 文档），版本 0 既不是任何一步的
-        // 起点也不是终点,链条对它一无所知。
+        // Arrange：伪造一份"更早版本"的存档——迁移链已被清空（老存档
+        // 去掉就好了的裁定，见 migration_chain 文档），没有任何已注册
+        // 的路径,版本 0 既不是任何一步的起点也不是终点,链条对它
+        // 一无所知。
         let path = temp_path("schema-migration-gap");
         let mut header = sample_header(Vec::new());
         header.schema_version = 0;
@@ -662,10 +655,46 @@ mod tests {
         let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default(), &[]);
 
         // Assert
-        assert!(matches!(
-            outcome,
-            LoadOutcome::Rejected(LoadError::SchemaMigrationGap { from: 0 })
-        ));
+        match outcome {
+            LoadOutcome::Rejected(LoadError::SchemaMigrationGap(detail)) => {
+                assert_eq!(detail.from, 0);
+            }
+            other => panic!("期望 Rejected(SchemaMigrationGap)，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 老存档的schema版本号不再被支持时读档明确拒绝而不静默解析() {
+        // 项目所有者裁定「老存档去掉就好了」——发布前累计的迁移链已经
+        // 清空（crate::migrations 模块文档），CURRENT_SCHEMA_VERSION
+        // 重置为 1。这里模拟一份写于清空之前、版本号为 4（清空前的
+        // CURRENT_SCHEMA_VERSION）的老存档：读档不应该把它当成当前版本
+        // 静默塞进现在的 WorldState 类型解析，必须明确拒绝，且错误里
+        // 能读到具体的版本号，不是笼统的"损坏"。
+        // Arrange
+        let path = temp_path("legacy-schema-version-rejected");
+        let mut header = sample_header(Vec::new());
+        header.schema_version = 4;
+        save_to_file(&path, &header, &test_world()).expect("写出应当成功");
+
+        // Act
+        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default(), &[]);
+
+        // Assert
+        match outcome {
+            LoadOutcome::Rejected(LoadError::SchemaTooNew(detail)) => {
+                assert_eq!(
+                    detail,
+                    crate::load_error::SchemaTooNew {
+                        message_key: crate::load_error::SAVE_SCHEMA_TOO_NEW_MESSAGE_KEY,
+                        save_version: 4,
+                        max_supported: CURRENT_SCHEMA_VERSION,
+                    }
+                );
+            }
+            other => panic!("期望 Rejected(SchemaTooNew)，实际 {other:?}"),
+        }
         let _ = std::fs::remove_file(&path);
     }
 

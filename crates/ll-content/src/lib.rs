@@ -19,8 +19,9 @@
 //!   其模块文档「为什么头部不能引用 `ContentIndex`」）。
 //! - [`migration`] —— schema 版本迁移框架：按起始版本串联起迁移函数,
 //!   与 mod 版本是两条正交的失败轴（详见其模块文档）。
-//! - [`migrations`] —— 真正注册进迁移链的迁移函数本身（v1 → v2：
-//!   `Interior::origin`/`WorldState::exploration` 落地）。
+//! - [`migrations`] —— 真正注册进迁移链的迁移函数本身，目前是空的
+//!   （项目所有者裁定「老存档去掉就好了」，发布前的历史迁移已清空，
+//!   见其模块文档）。
 //! - [`content_index_map`] —— 把 `Registry::snapshot()`/
 //!   `Registry::rebuild_from()` 真正接入存档头 `content_index_map`
 //!   字段的读写路径。
