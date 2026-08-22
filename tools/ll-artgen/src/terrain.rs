@@ -28,18 +28,18 @@ const ANALOGOUS_LIGHTNESS_DELTA: f32 = 0.08;
 /// 地形单独调，目的是让互补点缀始终能在主色背景上「跳出来」。
 pub(crate) struct TerrainSpec {
     /// 图集条目名，用于从 JSON 派发到这份配方。
-    name: &'static str,
+    pub(crate) name: &'static str,
     /// 地形主色，与 `assets/atlas/README.md`「地形色块」一节记录的
     /// 既有颜色逐一对应；点缀不改变这个值，因此「地形主色调不变」这
     /// 条硬约束天然满足。
-    base: (u8, u8, u8),
+    pub(crate) base: (u8, u8, u8),
     /// 互补点缀色相对主色的明度偏移。
     ///
     /// 选择「让点缀跳出来」而非固定符号：主色本身偏暗（深水、森林）
     /// 就调亮，主色本身偏亮（沙地、雪地）就调暗——否则互补色虽然色相
     /// 对了，明度却跟主色接近，稀疏的几个像素在 16×16 的小块上几乎
     /// 看不见。
-    accent_lightness_delta: f32,
+    pub(crate) accent_lightness_delta: f32,
     /// 互补点缀色相对主色的饱和度偏移。
     ///
     /// 绝大多数地形不需要：主色本身饱和度够高，互补色相旋转 180° 后
@@ -47,7 +47,7 @@ pub(crate) struct TerrainSpec {
     /// （近白）例外——这两种颜色本身饱和度接近 0，色相这个维度在换算
     /// 回 RGB 时几乎不产生视觉差异，必须额外把饱和度顶上去，互补色相
     /// 才能真正显色，而不是又点出一个「浅一点/深一点的灰」。
-    accent_saturation_boost: f32,
+    pub(crate) accent_saturation_boost: f32,
 }
 
 /// 全部地形条目的点缀配方。颜色与 `assets/atlas/README.md`「地形色块」

@@ -26,6 +26,17 @@ ll-render = { path = "../ll-render" }
 ll-script = { path = "../ll-script" }
 ll-sim = { path = "../ll-sim" }
 ll-world = { path = "../ll-world" }
+# P7 第一批（只读观测 HUD：状态栏/角色面板/背包/装备栏）——本体二进制
+# 是唯一同时持有真实 `WorldState`/`Agent`、真实内容表（`ItemTable`）、
+# 真实 GPU 设备与真实本地化 `Catalog` 的地方，接线自然落在这里，见
+# `crate::app::draw_hud`。
+ll-ui = { path = "../ll-ui" }
+# `GpuResources::text_renderer` 的类型是 `ll_text::TextRenderer`——
+# `ll-ui` 已经依赖 `ll-text`，这里直接依赖而不是等 `ll-ui` 重新导出，
+# 理由与本体二进制既有的 `ll-render`/`wgpu` 直接依赖一致：本体二进制
+# 需要亲手构造 `TextRenderer`（`GpuResources::new`），不是只转发一个
+# 现成实例。
+ll-text = { path = "../ll-text" }
 tracing = "0.1"
 
 [dev-dependencies]

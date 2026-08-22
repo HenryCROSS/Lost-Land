@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use ll_i18n::Catalog;
 use ll_mod::asset_vfs::AssetVfs;
 use ll_platform::config::DisplayConfig;
 use ll_platform::config::ScaleFilter;
@@ -30,6 +31,14 @@ use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::intent::Intent;
 use ll_sim::turn::TurnEngine;
+use ll_text::TextRenderer;
+use ll_ui::hud::character_panel::CharacterPanelData;
+use ll_ui::hud::render::render_hud;
+use ll_ui::hud::status_bar::StatusBarData;
+use ll_ui::widget::quad::QuadRenderer;
+use ll_ui::widget::skin::NineSliceSkin;
+use ll_ui::widget::state::WidgetStateTable;
+use ll_ui::widget::textured_quad::TexturedQuadRenderer;
 use ll_world::entity::EntityId;
 use ll_world::fov::compute_fov;
 use ll_world::space::Space;
@@ -118,6 +127,22 @@ struct GpuResources {
     /// 只读一份贯穿整个运行期——切换滤波方式需要重启（P7 之前没有
     /// 设置界面，见规格 §15），不是本体二进制现在要支持的场景。
     blit_filter: BlitFilter,
+    /// HUD 文本渲染器（P7 第一批：只读观测界面）——与世界层
+    /// `render_target`/`batch` 是完全独立的第二条渲染通道，直接画在
+    /// 窗口 surface 的原生分辨率上，见 `ll_text` crate 顶层文档「两条
+    /// 渲染通道」一节与 `ll_ui::widget::quad` 模块文档。
+    text_renderer: TextRenderer,
+    /// HUD 面板背景/经验条渲染器——与 `text_renderer` 同一条通道，见
+    /// `ll_ui::widget::quad::QuadRenderer` 文档。
+    quad_renderer: QuadRenderer,
+    /// HUD 真实贴图（九宫格边框/条形）渲染器——采样与 `batch` 同一份
+    /// `atlas`，见 `ll_ui::widget::textured_quad::TexturedQuadRenderer`
+    /// 文档「与 SpriteBatch 的关系」一节。
+    textured_quad_renderer: TexturedQuadRenderer,
+    /// HUD 皮肤——引用 `atlas` 里 `ll-artgen` 生成的占位 UI 贴图,见
+    /// `ll_ui::widget::skin::NineSliceSkin` 文档。构造好之后不依赖任何
+    /// 运行期状态,贯穿整个会话复用同一份。
+    skin: NineSliceSkin,
 }
 
 impl GpuResources {
@@ -141,6 +166,21 @@ impl GpuResources {
         let atlas = Atlas::from_rgba(&gpu, packed.metadata, packed.canvas)
             .expect("运行期打包的图集画布应能上传为 GPU 纹理");
         let batch = SpriteBatch::new(&gpu, &atlas, render_target.format());
+        // HUD 两条子通道都画在窗口 surface 的原生分辨率上（不是
+        // `render_target` 的 640×360 逻辑分辨率），格式必须是
+        // `gpu.surface_format()`，不是 `render_target.format()`——
+        // 两者当前多数环境下相同，但语义上前者才是「最终真正呈现的
+        // 那张纹理」的格式，见 `ll_text::TextRenderer::new` 文档。
+        let text_renderer = TextRenderer::new(gpu.device(), gpu.queue(), gpu.surface_format())
+            .expect("内置字体资产应能正常装载");
+        let quad_renderer = QuadRenderer::new(gpu.device(), gpu.queue(), gpu.surface_format());
+        // 与 `text_renderer`/`quad_renderer` 同一条「原生分辨率、blit
+        // 之后」通道,但采样的是 `atlas`——`NineSliceSkin::new` 在这里
+        // 一次性查出全部需要的贴图 UV,之后每帧只是克隆已经查好的数据,
+        // 不重复查图集。
+        let textured_quad_renderer =
+            TexturedQuadRenderer::new(gpu.device(), gpu.queue(), gpu.surface_format(), &atlas);
+        let skin = NineSliceSkin::new(&atlas);
         GpuResources {
             gpu,
             render_target,
@@ -151,6 +191,10 @@ impl GpuResources {
                 ScaleFilter::Nearest => BlitFilter::Nearest,
                 ScaleFilter::SharpBilinear => BlitFilter::SharpBilinear,
             },
+            text_renderer,
+            quad_renderer,
+            textured_quad_renderer,
+            skin,
         }
     }
 
@@ -159,12 +203,18 @@ impl GpuResources {
         self.window_size = size;
     }
 
-    fn present(&self) {
+    /// 取得本帧窗口 surface 纹理并把世界层（离屏 `render_target`）
+    /// blit 上去——不在这一步就 `present`，留出空档让调用方在
+    /// [`Demo::on_frame`] 里追加 HUD 这第二条渲染通道（[`draw_hud`]），
+    /// 再调用 [`Self::present_frame`] 真正提交。取不到可用 surface 帧时
+    /// 返回 `None`，本帧直接跳过呈现（既有降级行为，只是从「一步做完」
+    /// 拆成了两步）。
+    fn acquire_and_blit(&self) -> Option<(wgpu::SurfaceTexture, wgpu::TextureView)> {
         let frame = match self.gpu.acquire_frame() {
             Ok(frame) => frame,
             Err(error) => {
                 tracing::warn!(%error, "跳过本帧的窗口呈现");
-                return;
+                return None;
             }
         };
         let view = frame
@@ -173,6 +223,11 @@ impl GpuResources {
         let viewport = fit_viewport(self.window_size.width, self.window_size.height);
         self.render_target
             .blit_to(&self.gpu, &view, viewport, self.blit_filter);
+        Some((frame, view))
+    }
+
+    /// 真正把已经画好（世界层 + HUD）的 `frame` 提交呈现。
+    fn present_frame(&self, frame: wgpu::SurfaceTexture) {
         self.gpu.queue().present(frame);
     }
 
@@ -228,6 +283,20 @@ pub struct Demo {
     /// 引擎持续读写的地方。
     engine: TurnEngine,
     resources: Option<GpuResources>,
+    /// 本地化目录（P7 第一批：只读观测 HUD）——状态栏/角色面板/背包/
+    /// 装备栏的全部标签、属性名、槽位名、物品名都经它解析，见
+    /// `ll_ui::hud` 模块文档「三、所有文本必须走 i18n」一节对应的
+    /// 任务书要求。由 [`crate::run_game`] 装载后移交给本类型持有——
+    /// `run_game` 已经装载过一次用于解析窗口标题，本字段是同一份
+    /// `Catalog`，不重复装载第二份。
+    catalog: Catalog,
+    /// 当前显示语言标签（如 `"zh-CN"`），来自
+    /// [`ll_platform::config::GameConfig::language`]。
+    language: String,
+    /// HUD 条形动画的持久状态（P7 追加：血条/经验条动画）——按控件 id
+    /// 索引的旁表,见 `ll_ui::widget::state` 模块文档「为什么是旁表」
+    /// 一节：结构上不可能污染 `WorldState`,只影响画面。
+    hud_anim: WidgetStateTable,
 }
 
 impl Demo {
@@ -240,6 +309,8 @@ impl Demo {
         save_path: PathBuf,
         character_name: String,
         display: DisplayConfig,
+        catalog: Catalog,
+        language: String,
     ) -> Demo {
         let player_pos = game_world
             .world
@@ -275,6 +346,9 @@ impl Demo {
             engine,
             anim: AnimStateMachine::new(idle_clip, FrameId(0)),
             resources: None,
+            catalog,
+            language,
+            hud_anim: WidgetStateTable::new(),
         }
     }
 
@@ -437,6 +511,72 @@ impl Demo {
 ///
 /// 同理，缩放也不改变上面三层的**归属**：拉远只是让更多格子进入枚举
 /// 范围，每一格属于哪一层仍由 FOV 与探索记忆决定。
+/// 画出只读观测 HUD（P7 第一批）：状态栏（常驻）、角色面板、背包、
+/// 装备栏——四块面板全部读玩家 `Agent` 与 `world.clock` 现算,不修改
+/// 任何世界状态,见 `ll_ui::hud` 模块文档「只读，不做任何交互」一节。
+///
+/// 拆成自由函数而非 `Demo` 的方法，理由与 [`render_surface`] 一致：
+/// 调用点需要同时持有 `&self.game_world`/`&self.content`/`&self.catalog`
+/// 与 `&mut resources`，写成 `&self` 方法会让借用检查器把两者混为一谈。
+///
+/// 玩家实体查不到时（不应该发生——`GameWorld::player` 恒指向一个刚
+/// 生成或刚读档必然存在的实体）跳过本帧 HUD 绘制并记一条警告,不
+/// panic：显示层的降级纪律与 `GpuResources::lookup`「图集条目缺失，
+/// 跳过本次绘制」一致，不能因为一次意外的查询落空就让整个游戏崩溃。
+#[allow(clippy::too_many_arguments)]
+fn draw_hud(
+    game_world: &GameWorld,
+    content: &LoadedContent,
+    catalog: &Catalog,
+    language: &str,
+    resources: &mut GpuResources,
+    view: &wgpu::TextureView,
+    hud_anim: &mut WidgetStateTable,
+    frame: FrameId,
+) {
+    let Some(agent) = game_world.world.actors.get(game_world.player) else {
+        tracing::warn!("玩家实体查不到，本帧跳过 HUD 绘制");
+        return;
+    };
+
+    let status = StatusBarData {
+        clock: game_world.world.clock,
+        health: agent.health,
+        mana: agent.mana,
+    };
+    let character = CharacterPanelData {
+        base_stats: agent.stats,
+        active_stat_modifiers: &agent.active_stat_modifiers,
+        equipment: &agent.equipment,
+        level: agent.level,
+        experience: agent.experience,
+        xp_to_next_level: agent.xp_to_next_level,
+        now: game_world.world.clock,
+    };
+
+    render_hud(
+        &mut resources.quad_renderer,
+        &mut resources.textured_quad_renderer,
+        &mut resources.text_renderer,
+        resources.gpu.device(),
+        resources.gpu.queue(),
+        view,
+        resources.window_size.width,
+        resources.window_size.height,
+        &status,
+        &character,
+        &agent.inventory,
+        &agent.equipment,
+        &content.item_table,
+        &content.item_table,
+        catalog,
+        language,
+        &resources.skin,
+        hud_anim,
+        frame.0,
+    );
+}
+
 fn render_surface(
     game_world: &GameWorld,
     content: &LoadedContent,
@@ -632,7 +772,25 @@ impl AppHandler for Demo {
         resources
             .batch
             .flush(&resources.gpu, resources.render_target.view());
-        resources.present();
+
+        // 世界层已经 blit 到窗口 surface——HUD（状态栏/角色面板/背包/
+        // 装备栏，P7 第一批）是紧接着追加的第二/三条渲染通道，画在
+        // 同一张 surface 视图上，见 `GpuResources::acquire_and_blit`
+        // 文档。取不到可用帧时（`acquire_and_blit` 返回 `None`）本帧
+        // 直接跳过，与既有降级行为一致。
+        if let Some((surface_frame, view)) = resources.acquire_and_blit() {
+            draw_hud(
+                &self.game_world,
+                &self.content,
+                &self.catalog,
+                &self.language,
+                resources,
+                &view,
+                &mut self.hud_anim,
+                frame,
+            );
+            resources.present_frame(surface_frame);
+        }
 
         FrameOutcome::Continue
     }
@@ -702,6 +860,8 @@ mod tests {
             save_path,
             "测试旅人".to_string(),
             DisplayConfig::default(),
+            Catalog::load_dir(&std::env::temp_dir().join("ll-game-app-test-empty-locales")),
+            "zh-CN".to_string(),
         )
     }
 

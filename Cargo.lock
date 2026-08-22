@@ -1683,6 +1683,8 @@ dependencies = [
  "ll-render",
  "ll-script",
  "ll-sim",
+ "ll-text",
+ "ll-ui",
  "ll-world",
  "proptest",
  "tracing",
@@ -1793,9 +1795,11 @@ dependencies = [
 name = "ll-ui"
 version = "0.1.0"
 dependencies = [
+ "bytemuck",
  "glyphon",
  "image",
  "ll-core",
+ "ll-i18n",
  "ll-mod",
  "ll-platform",
  "ll-render",

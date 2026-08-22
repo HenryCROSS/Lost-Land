@@ -18,6 +18,19 @@ workspace = true
 ll-core = { path = "../ll-core" }
 ll-mod = { path = "../ll-mod" }
 ll-text = { path = "../ll-text" }
+# P7 第一批（只读观测界面）新增：状态栏/角色面板/背包/装备栏需要读
+# `ll_world::entity::Agent`（生命/法力/背包/装备/生效中的属性修正）、
+# `ll_sim::resolve::derive_stats`（烘焙+装备+buff 之后的有效属性值，不
+# 是裸 `BaseStats`）与 `ll_core::time`（世界时钟换算）——按本 crate 顶层
+# 文档「依赖方向」一节，`ll-world`/`ll-sim` 本就排在 `ll-ui` 的上游，
+# P4 阶段的加载管理界面只是恰好用不到它们，不代表这两条依赖不允许存在。
+ll-world = { path = "../ll-world" }
+ll-sim = { path = "../ll-sim" }
+# `Catalog::resolve` 把属性名/槽位名/物品名的 `_key` 字段解析成真实
+# 显示文本——规格 §11.3 要求用户可见文本一律走 i18n，本批次是
+# `display_name_key` 系列字段第一个大规模消费者，见任务书「数据从哪来」
+# 一节。
+ll-i18n = { path = "../ll-i18n" }
 # `render_load_report` 的签名接收 `wgpu::Device`/`Queue`/`TextureView`
 # （`TextRenderer::render` 本身要求原生分辨率下的这三个原语，见
 # ll-text 文档）——走 ll-render 重新导出的 wgpu，不额外声明一份独立的
@@ -30,6 +43,14 @@ ll-render = { path = "../ll-render" }
 # 牵扯设备/队列生命周期，两处各自声明同一个版本不会有「同名不同类型」
 # 的风险（cargo 按版本+来源去重，两处声明相同版本号解析到同一份）。
 glyphon = "0.12"
+# `widget::quad::QuadInstance` 要按字节原样搬进 GPU 实例缓冲，理由与
+# `ll_render::batch::SpriteInstance` 一致——版本与 `ll-render` 保持一致
+# 避免同名不同类型的解析分裂。
+bytemuck = { version = "1.25", features = ["derive"] }
+# HUD 渲染失败（例如文本渲染错误）只记日志、不 panic，理由与
+# `ll-game::app` 既有的降级纪律一致——见 `crates/ll-ui/src/hud/render.rs`
+# 的 `render_hud`。
+tracing = "0.1"
 
 [dev-dependencies]
 proptest.workspace = true
@@ -42,13 +63,10 @@ proptest.workspace = true
 ll-core = { path = "../ll-core", features = ["serde"] }
 ll-platform = { path = "../ll-platform" }
 ll-script = { path = "../ll-script" }
-# 玩家移动走 ll_sim::intent/resolve/apply 这条 P3 已验收的链路，不
-# 重新发明一套移动逻辑——demo 只需要 Move/Wait 两种 Intent，不需要
-# 时间轴/AI（那部分 P3 已经验收过，见 p3_acceptance）。
-ll-sim = { path = "../ll-sim" }
-ll-world = { path = "../ll-world" }
+# ll-sim/ll-world 本身已经是 [dependencies] 的真实依赖（P7 第一批新增，
+# 见上方说明），这里不再重复声明——demo 仍然只用得到 P3 验收过的
+# Move/Wait 两种 Intent，不需要时间轴/AI。
 image = { version = "0.25", default-features = false, features = ["png"] }
-tracing = "0.1"
 
 [[example]]
 name = "p4_acceptance"

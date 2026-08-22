@@ -45,6 +45,7 @@
 mod color;
 mod sprite;
 mod terrain;
+mod ui;
 
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
@@ -261,14 +262,21 @@ fn generate_legacy_shared_atlas(atlas: &AtlasJson, atlas_dir: &Path) {
         .map(|entry| (entry.name.as_str(), entry.rect))
         .collect();
     let (canvas_width, canvas_height) = canvas_size(&entries);
-    // 96×96：比合并资产 VFS 前的 96×72 多出一整行（y 72..96），装新增
-    // 的 4 张走路过渡帧（`hero_walk_2..5`，每张 16×24，见
-    // `assets/atlas/placeholder.json`）——这四张只在遗留共享画布这条
-    // 路径里需要摆坐标，松散贴图路径（`generate_loose_sprites`）不关心
-    // `rect.x`/`rect.y`，各自的独立画布互不影响。
+    // 96×112：96×96（合并资产 VFS 后的既有布局，见下方历史注释）再往下
+    // 多出一整行（y 96..112，高 16），装 HUD 皮肤层的四张占位 UI 贴图
+    // （`ui_panel_border`/`ui_panel_fill`/`ui_bar_track`/`ui_bar_fill`，
+    // 见 `assets/atlas/placeholder.json` 与 `ui.rs`）——这四张贴图的
+    // `rect.x`/`rect.y` 全部落在新增的这一整行里,不touch 任何既有条目
+    // 的矩形（项目所有者硬要求「别动图集里既有条目的矩形」）。
+    //
+    // 历史：96×96 是比合并资产 VFS 前的 96×72 多出一整行（y 72..96），
+    // 装当时新增的 4 张走路过渡帧（`hero_walk_2..5`，每张 16×24）——这
+    // 些帧只在遗留共享画布这条路径里需要摆坐标，松散贴图路径
+    // （`generate_loose_sprites`）不关心 `rect.x`/`rect.y`，各自的独立
+    // 画布互不影响。
     assert_eq!(
         (canvas_width, canvas_height),
-        (96, 96),
+        (96, 112),
         "画布尺寸与已知布局不符，placeholder.json 的条目矩形可能被意外改动"
     );
 
@@ -311,10 +319,12 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         "hero_walk_4" => sprite::decorate_hero_walk(image, rect, 8, false),
         "hero_walk_5" => sprite::decorate_hero_walk(image, rect, 5, true),
         "boss_idle_0" => sprite::decorate_boss(image, rect),
-        _ => match terrain::terrain_spec(name) {
+        _ => match terrain::terrain_spec(name).or_else(|| ui::ui_spec(name)) {
             Some(spec) => terrain::decorate_terrain_tile(image, rect, spec),
             None => {
-                panic!("不知道如何绘制条目 '{name}'：请在 sprite.rs 或 terrain.rs 里补一份画法")
+                panic!(
+                    "不知道如何绘制条目 '{name}'：请在 sprite.rs、terrain.rs 或 ui.rs 里补一份画法"
+                )
             }
         },
     }
@@ -382,10 +392,12 @@ mod tests {
     }
 
     #[test]
-    fn 真实图集json解析后能算出已知的96乘96画布() {
+    fn 真实图集json解析后能算出已知的96乘112画布() {
         // 用仓库里真实的 placeholder.json 验证解析与尺寸推导没有脱节——
         // 这条测试会随仓库内容变化，一旦布局被意外改动就会在这里先
-        // 炸掉，而不是留到跑生成器时才被 assert_eq! 抓住。
+        // 炸掉，而不是留到跑生成器时才被 assert_eq! 抓住。112（不是
+        // 96）是 HUD 皮肤层四张占位 UI 贴图新增一整行之后的当前尺寸，
+        // 见 `generate_legacy_shared_atlas` 里的同一条断言与其历史注释。
         // Arrange
         let json_text = std::fs::read_to_string(atlas_dir().join("placeholder.json"))
             .expect("仓库应自带 placeholder.json");
@@ -400,7 +412,7 @@ mod tests {
         let size = canvas_size(&entries);
 
         // Assert
-        assert_eq!(size, (96, 96));
+        assert_eq!(size, (96, 112));
     }
 
     #[test]

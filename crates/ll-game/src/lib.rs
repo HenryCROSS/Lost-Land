@@ -374,6 +374,8 @@ pub fn run_game() {
         paths.save.clone(),
         "旅人".to_string(),
         config.display,
+        catalog,
+        config.language.clone(),
     );
 
     if let Err(error) = run(window_config, demo) {

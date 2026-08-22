@@ -108,6 +108,30 @@
             "rect": { "x": 64, "y": 48, "width": 16, "height": 16 },
             "pivot": { "x": 0, "y": 0 },
             "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "ui_panel_border",
+            "rect": { "x": 0, "y": 96, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "ui_panel_fill",
+            "rect": { "x": 16, "y": 96, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "ui_bar_track",
+            "rect": { "x": 32, "y": 96, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "ui_bar_fill",
+            "rect": { "x": 48, "y": 96, "width": 16, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
         }
     ]
 }

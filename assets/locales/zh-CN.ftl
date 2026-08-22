@@ -49,3 +49,60 @@ subclass-apprentice-display_name = 学徒
 save-mod-missing = 存档需要模组 { $namespace }（版本 { $required }），但当前会话未装载该模组。
 save-mod-version-mismatch = 存档需要模组 { $namespace } 版本 { $required }，但当前装载的是版本 { $current }。
 mod-dependency-version-mismatch = 模组 { $dependent } 依赖 { $dependency } 版本 { $required }，但当前装载的是版本 { $actual }。
+
+# 下面这批键服务只读观测 HUD（ll-ui::hud）——P7 第一批「状态栏/角色
+# 面板/背包/装备栏」。来源分组：
+#   - hud-status-*                          状态栏（时间/生命/法力，常驻）
+#   - hud-character-*                       角色面板（等级/经验/生效中的修正）
+#   - attribute-*-display_name              AttributeKind 六项主属性名
+#   - hud-inventory-*                       背包面板
+#   - hud-equipment-*                       装备面板标题与空槽位占位
+#   - equip_slot-*-display_name             EquipSlot 22 个引擎具名槽位
+
+hud-status-time-label = 时间
+hud-status-health-label = 生命
+hud-status-mana-label = 法力
+
+hud-character-panel-title = 角色
+hud-character-level-label = 等级
+hud-character-experience-label = 经验
+hud-character-modifiers-title = 生效中的属性修正
+hud-character-modifiers-empty = 无
+
+attribute-strength-display_name = 力量
+attribute-dexterity-display_name = 敏捷
+attribute-constitution-display_name = 体质
+attribute-intelligence-display_name = 智力
+attribute-willpower-display_name = 意志
+attribute-charisma-display_name = 魅力
+
+hud-inventory-panel-title = 背包
+hud-inventory-empty = （空）
+hud-inventory-durability-label = 耐久
+
+hud-equipment-panel-title = 装备
+hud-equipment-empty-slot = （空）
+
+equip_slot-main_hand-display_name = 主手
+equip_slot-off_hand-display_name = 副手
+equip_slot-head-display_name = 头部
+equip_slot-face-display_name = 面部
+equip_slot-eyes-display_name = 眼部
+equip_slot-neck-display_name = 颈部
+equip_slot-body-display_name = 躯干
+equip_slot-outer-display_name = 外袍
+equip_slot-back-display_name = 背部
+equip_slot-shoulder_l-display_name = 左肩
+equip_slot-shoulder_r-display_name = 右肩
+equip_slot-arm_l-display_name = 左臂
+equip_slot-arm_r-display_name = 右臂
+equip_slot-hand_l-display_name = 左手
+equip_slot-hand_r-display_name = 右手
+equip_slot-belt-display_name = 腰带
+equip_slot-tasset-display_name = 腿甲
+equip_slot-legs-display_name = 双腿
+equip_slot-boot_l-display_name = 左靴
+equip_slot-boot_r-display_name = 右靴
+equip_slot-ring_l-display_name = 左戒指
+equip_slot-ring_r-display_name = 右戒指
+equip_slot-unknown-display_name = 未知槽位

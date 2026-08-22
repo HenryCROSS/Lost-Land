@@ -421,6 +421,13 @@ mod tests {
     /// 与其余用临时目录 fixture 的测试不同，这条故意读仓库真实资产，
     /// 就是要在 CI 里当场发现「代码里新增了一个 `_key` 常量，但忘了
     /// 补对应 `.ftl` 条目」这类遗漏。
+    ///
+    /// P7 第一批（只读观测 HUD，`ll-ui::hud`）追加了状态栏/角色面板/
+    /// 背包/装备面板一批键——这批键不来自任何 `_key` 字段（它们是 UI
+    /// 布局自身的标签与 `AttributeKind`/`EquipSlot` 的展示名，不是内容
+    /// 表字段），但同样必须在真实 `.ftl` 里有译文，纳入同一条覆盖率
+    /// 检查，理由一致：不要让「新增一个 HUD 常量，但忘了补 `.ftl`」这
+    /// 类遗漏在 CI 里潜伏下去。
     const PRODUCTION_KEYS: &[&str] = &[
         "window.title",
         "lostland:keybind.action.up",
@@ -446,6 +453,48 @@ mod tests {
         "save-mod-missing",
         "save-mod-version-mismatch",
         "mod-dependency-version-mismatch",
+        "hud-status-time-label",
+        "hud-status-health-label",
+        "hud-status-mana-label",
+        "hud-character-panel-title",
+        "hud-character-level-label",
+        "hud-character-experience-label",
+        "hud-character-modifiers-title",
+        "hud-character-modifiers-empty",
+        "lostland:attribute.strength.display_name",
+        "lostland:attribute.dexterity.display_name",
+        "lostland:attribute.constitution.display_name",
+        "lostland:attribute.intelligence.display_name",
+        "lostland:attribute.willpower.display_name",
+        "lostland:attribute.charisma.display_name",
+        "hud-inventory-panel-title",
+        "hud-inventory-empty",
+        "hud-inventory-durability-label",
+        "hud-equipment-panel-title",
+        "hud-equipment-empty-slot",
+        "lostland:equip_slot.main_hand.display_name",
+        "lostland:equip_slot.off_hand.display_name",
+        "lostland:equip_slot.head.display_name",
+        "lostland:equip_slot.face.display_name",
+        "lostland:equip_slot.eyes.display_name",
+        "lostland:equip_slot.neck.display_name",
+        "lostland:equip_slot.body.display_name",
+        "lostland:equip_slot.outer.display_name",
+        "lostland:equip_slot.back.display_name",
+        "lostland:equip_slot.shoulder_l.display_name",
+        "lostland:equip_slot.shoulder_r.display_name",
+        "lostland:equip_slot.arm_l.display_name",
+        "lostland:equip_slot.arm_r.display_name",
+        "lostland:equip_slot.hand_l.display_name",
+        "lostland:equip_slot.hand_r.display_name",
+        "lostland:equip_slot.belt.display_name",
+        "lostland:equip_slot.tasset.display_name",
+        "lostland:equip_slot.legs.display_name",
+        "lostland:equip_slot.boot_l.display_name",
+        "lostland:equip_slot.boot_r.display_name",
+        "lostland:equip_slot.ring_l.display_name",
+        "lostland:equip_slot.ring_r.display_name",
+        "lostland:equip_slot.unknown.display_name",
     ];
 
     /// 仓库根目录——`ll-i18n` 位于 `crates/ll-i18n`，向上两级到根。
