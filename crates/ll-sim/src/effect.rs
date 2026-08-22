@@ -674,4 +674,41 @@ pub enum Effect {
         /// 新开一个变体。
         delta: i32,
     },
+    /// 卫兵盘查（卫兵职业接线批次）：`inspector` 检查了 `target` 此刻
+    /// 背包与已装备的全部物品，`items_seen` 是那一刻的完整快照——
+    /// `crate::resolve::resolve_inspect` 唯一的产出者。
+    ///
+    /// # 为什么 `apply` 不把它写进 `WorldState::history`
+    ///
+    /// `HistoricalEventKind`（`ll_world::history`）目前只有 `Kill` 一个
+    /// 变体，是"值得永久记住的例外"（击杀是稀有、重大的事件）——盘查
+    /// 不是：卫兵按行为树的既定概率随时可能发起盘查，若每次都落一条
+    /// 永久历史事件，`history` 会随卫兵数量/游戏时长线性无界增长，却
+    /// 没有任何下游系统会去读"第 10000 次盘查、什么都没查到"这种记录
+    /// （见 `knowledge/design/ownership-and-crime-detection.md`
+    /// 「五节 5.1」`BattleLog` 否决先例同一类顾虑）。因此本效果**刻意**
+    /// 不在 `apply` 里追加任何 `WorldState` 写入——它的可观察点就是
+    /// `resolve` 产出的这一刻本身：调用方（测试、未来的日志/UI 系统）
+    /// 直接消费 `resolve`/`resolve_ai_turn` 返回的 `Vec<Effect>` 里的
+    /// 这一条，不需要等它落进任何持久存储才能确认"盘查真的发生过、
+    /// 看到了什么"。
+    ///
+    /// # 为什么没有任何"是否违法"的判断
+    ///
+    /// `Owner`/`stolen_marker` 尚未落地（同上文档，纯设计）——"这堆
+    /// 东西是不是 `target` 自己的"这个问题本批次回答不了，本效果因此
+    /// 只如实记录"看到了什么"，不产出任何裁定。等 `Owner` 落地后，
+    /// 消费本效果的下游逻辑才谈得上比对 `items_seen` 与各堆的
+    /// `owner`、决定要不要转成一条 `HistoricalEventKind::Crime`——那是
+    /// 本效果预留的挂载点，不是本批次要交付的部分。
+    Inspect {
+        /// 发起盘查的一方（卫兵）。
+        inspector: EntityId,
+        /// 被盘查的一方。
+        target: EntityId,
+        /// 盘查那一刻 `target` 背包（原始顺序）与已装备物品（按
+        /// `EquipSlot` 顺序，`BTreeMap` 天然有序，不违反 C5）的物品
+        /// 定义快照，先背包后装备。
+        items_seen: Vec<ContentIndex>,
+    },
 }

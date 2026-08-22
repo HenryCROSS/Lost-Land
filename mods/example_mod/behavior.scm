@@ -38,3 +38,44 @@
            (goblin-try-skill)
            (goblin-try-attack)
            (goblin-try-approach))))
+
+;; 卫兵盘查（卫兵职业接线批次）——项目所有者原话「卫兵职业的单位有
+;; 概率会来核查其他单位身上的物品」。落地成一棵独立的行为树
+;; （`guard-ai-tree`），不是塞进上面哥布林那棵：卫兵与哥布林是两种
+;; 完全不同的行为模式,共用一棵树只会让 selector 分支互相污染。
+;;
+;; 概率本身——GUARD_INSPECT_CHANCE_PERMILLE——就写在这份脚本里，走
+;; 已有的 `rng-chance` 原语（crates/ll-script/src/api/rng.rs）；mod
+;; 作者要调这个概率，直接改这一个数字即可，不需要任何新的注册函数/
+;; 内容表：整棵行为树本身就是玩法内容,概率只是其中一个字面量,与
+;; 其余分支同一份可编辑性（ADR 0018 判定「这段逻辑该不该暴露给 mod
+;; 重新定义」——盘查触发率显然该）。
+;;
+;; `self-has-profession?`/`nearby-actor-in-view` 是本批次新增的运行期
+;; 查询 API：
+;;   - self-has-profession?  crates/ll-mod/src/script_behavior_api.rs
+;;     ——把 Agent.profession 与命名空间字符串的比对暴露给脚本,让这棵
+;;     树只对卫兵职业的实体生效（与 skill-ready? 同一接线手法）。
+;;   - nearby-actor-in-view  crates/ll-script/src/api/actor.rs
+;;     ——两段式过滤（chebyshev 粗筛 + compute_fov 成员测试）算出「视野
+;;     内离自己最近的任意实体」,不看敌对关系（区别于 nearby-enemy）,
+;;     隔着墙的目标不会被找到。
+
+(define GUARD_INSPECT_CHANCE_PERMILLE 500)
+
+(define (guard-try-inspect)
+  (if (self-has-profession? "lostland:guard")
+      (let ([target (nearby-actor-in-view)])
+        (if (and target (rng-chance GUARD_INSPECT_CHANCE_PERMILLE))
+            (list 'inspect target)
+            #f))
+      #f))
+
+(define (guard-try-approach)
+  (let ([target (nearby-actor-in-view)])
+    (if target (list 'move (direction-toward target)) 'wait)))
+
+(define (guard-ai-tree)
+  (quote (selector
+           (guard-try-inspect)
+           (guard-try-approach))))

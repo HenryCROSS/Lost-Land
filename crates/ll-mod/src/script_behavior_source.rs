@@ -31,7 +31,9 @@ use ll_world::entity::EntityId;
 use ll_world::state::WorldState;
 
 use crate::registry::Registry;
-use crate::script_behavior_api::{register_skill_ready_api, skill_index_snapshot};
+use crate::script_behavior_api::{
+    register_profession_check_api, register_skill_ready_api, skill_index_snapshot,
+};
 
 /// 装载了一棵行为树、能为脚本管理的实体产出真实 [`Intent`] 的决策来源。
 pub struct ScriptBehaviorSource {
@@ -73,6 +75,10 @@ impl ScriptBehaviorSource {
         ll_script::api::state::register(&mut engine, mod_namespace);
         let skill_index = skill_index_snapshot(registry);
         register_skill_ready_api(&mut engine, skill_index.clone());
+        // 卫兵职业接线批次：同一份快照（见 register_profession_check_api
+        // 文档「为什么复用 skill_index_snapshot」一节）再喂给
+        // self-has-profession?，让行为树能判断"我是不是卫兵职业"。
+        register_profession_check_api(&mut engine, skill_index.clone());
         engine.load_source(source.to_string())?;
         Ok(Self {
             engine,

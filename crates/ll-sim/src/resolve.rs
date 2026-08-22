@@ -710,6 +710,7 @@ fn resolve_dispatch(
         Intent::Equip { actor, def } => resolve_equip(world, actor, def, items),
         Intent::Unequip { actor, slot } => resolve_unequip(world, actor, slot, items),
         Intent::Use { actor, def } => resolve_use_item(world, actor, def, items),
+        Intent::Inspect { actor, target } => resolve_inspect(world, actor, target),
     };
     // 休息中断（`resource-pools-and-rest.md` 八节「中断怎么表达」一节）：
     // 任何非 `Wait`/`Rest` 意图,若发起者当前正在休息,追加一条不带恢复
@@ -1558,6 +1559,51 @@ fn resolve_loot(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) ->
             .map(|loot| merge_into_inventory_effect(agent, actor, *loot, items)),
     );
     effects
+}
+
+/// [`Intent::Inspect`] 的结算：读 `target` 此刻背包与已装备的全部
+/// 物品定义，打成一份快照，产出 [`Effect::Inspect`]——卫兵职业接线
+/// 批次唯一的产出者，见该效果文档「为什么 apply 不把它写进
+/// WorldState::history」一节。
+///
+/// `actor`/`target` 任一方已经不在 `world.actors`（同一批结算里被
+/// 更早的效果销毁，或调用方给的句柄已经过期）都返回空 `Vec`——与本
+/// 文件其余 `resolve_*` 同一条既有纪律（见 [`resolve`] 文档）。
+///
+/// # 不做任何合法性判断
+///
+/// `Owner`/`stolen_marker` 尚未落地（见 `Effect::Inspect` 文档「为什么
+/// 没有任何是否违法的判断」一节引用的设计文档）——本函数只如实读出
+/// `target` 此刻持有的物品定义列表，不比较、不裁定，"这堆东西是不是
+/// `target` 自己的"这个问题本批次回答不了。
+///
+/// # 谁来判断"该不该发起这次盘查"
+///
+/// 不是本函数——是否发起盘查（卫兵职业、视野内是否有目标、这一次的
+/// 概率判定）全部在 AI 决策阶段（行为树脚本，`ll_script::api::rng`
+/// 的 `rng-chance` 原语）完成，`Intent::Inspect` 一旦产出，本函数
+/// 恒执行、不重新判断"该不该查"——与 `resolve_attack` 不重新判断
+/// "这一下该不该打"是同一条既有分工：决策在决定要不要产生这个
+/// `Intent` 的那一步，`resolve` 只负责把已经决定要做的事翻译成
+/// `Effect`。
+fn resolve_inspect(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<Effect> {
+    if world.actors.get(actor).is_none() {
+        return Vec::new();
+    }
+    let Some(target_agent) = world.actors.get(target) else {
+        return Vec::new();
+    };
+    let mut items_seen: Vec<ContentIndex> = target_agent
+        .inventory
+        .iter()
+        .map(|stack| stack.def)
+        .collect();
+    items_seen.extend(target_agent.equipment.values().map(|stack| stack.def));
+    vec![Effect::Inspect {
+        inspector: actor,
+        target,
+        items_seen,
+    }]
 }
 
 /// 把 `incoming` 这一堆物品合并进 `agent` 背包，产出对应的

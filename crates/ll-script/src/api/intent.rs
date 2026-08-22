@@ -66,13 +66,16 @@ use crate::api::handle::ScriptEntityHandle;
 /// [`ContentIndex`]，理由见模块文档「为什么 `parse_intent` 需要一个
 /// `resolve_skill` 回调」一节。
 ///
-/// 识别五种形状：
+/// 识别六种形状：
 /// - 符号 `'wait` → [`Intent::Wait`]
 /// - 二元素列表 `(list 'move 'north)`（方向名见 [`direction_from_symbol`]）
 ///   → [`Intent::Move`]
 /// - 二元素列表 `(list 'attack target-handle)`（`target-handle` 是
 ///   [`ScriptEntityHandle`]，例如 `nearby-enemy` 的返回值）→
 ///   [`Intent::Attack`]。
+/// - 二元素列表 `(list 'inspect target-handle)`（卫兵职业接线批次；
+///   `target-handle` 通常来自 `nearby-actor-in-view`）→
+///   [`Intent::Inspect`]，形状与 `attack` 完全同构。
 /// - 二元素列表 `(list 'use-skill "lostland:strike")`（技能命名空间
 ///   标识符字符串，经 `resolve_skill` 解析）→ [`Intent::UseSkill`]，
 ///   `target` 为 `None`（技能施于自身）。
@@ -113,6 +116,17 @@ pub fn parse_intent(
                         return None;
                     }
                     Some(Intent::Attack { actor, target })
+                }
+                "inspect" => {
+                    // 卫兵职业接线批次——形状与 "attack" 完全同构（一个
+                    // 目标句柄，无第三个元素），理由同 `Intent::Attack`
+                    // 那一支：`Intent::Inspect` 同样只有 actor/target 两
+                    // 个 `EntityId` 字段。
+                    let target = entity_handle(iter.next()?)?;
+                    if iter.next().is_some() {
+                        return None;
+                    }
+                    Some(Intent::Inspect { actor, target })
                 }
                 "use-skill" => {
                     let skill_id = string_str(iter.next()?)?;
@@ -367,6 +381,45 @@ mod tests {
         let actor = some_actor();
         let value = SteelVal::ListV(
             [SteelVal::SymbolV("attack".into()), SteelVal::IntV(999)]
+                .into_iter()
+                .collect(),
+        );
+
+        // Act
+        let intent = parse_intent(actor, &value, &|_: &str| None);
+
+        // Assert
+        assert_eq!(intent, None);
+    }
+
+    #[test]
+    fn 列表inspect加合法句柄解析为盘查意图() {
+        // 卫兵职业接线批次——形状与 attack 完全同构，见模块文档。
+        // Arrange
+        let actor = some_actor();
+        let target_handle = some_target_handle();
+        let target = ScriptEntityHandle::from_steelval(&target_handle)
+            .expect("刚构造的句柄恒能转换回去")
+            .entity_id();
+        let value = SteelVal::ListV(
+            [SteelVal::SymbolV("inspect".into()), target_handle]
+                .into_iter()
+                .collect(),
+        );
+
+        // Act
+        let intent = parse_intent(actor, &value, &|_: &str| None);
+
+        // Assert
+        assert_eq!(intent, Some(Intent::Inspect { actor, target }));
+    }
+
+    #[test]
+    fn inspect参数不是合法句柄时解析为空() {
+        // Arrange
+        let actor = some_actor();
+        let value = SteelVal::ListV(
+            [SteelVal::SymbolV("inspect".into()), SteelVal::IntV(999)]
                 .into_iter()
                 .collect(),
         );

@@ -206,6 +206,16 @@ pub struct BaseClassIds {
     pub mage: ContentIndex,
     /// 游侠：敏捷倾向。
     pub ranger: ContentIndex,
+    /// 卫兵：体质倾向（卫兵职业接线批次——项目所有者裁定「卫兵算作一种
+    /// 职业」，见 `crate::script_behavior_api`/
+    /// `crates/ll-script/src/api/actor.rs` 的盘查行为接线；`ll-sim` 侧
+    /// 消费点是 `ll_script::api::query`/本 crate
+    /// `script_behavior_api::register_profession_check_api` 暴露给行为
+    /// 树脚本的 `self-has-profession?` 查询，不是本字段本身——`primary_
+    /// attribute` 与其余三种基础职业同一条豁免，见
+    /// `scripts/ci/check_field_consumers.py` 的
+    /// `ClassDef.primary_attribute` 条目）。
+    pub guard: ContentIndex,
 }
 
 /// 本体职业注册的唯一入口：本体与 mod 共用的注册路径。
@@ -241,12 +251,20 @@ pub fn materialize_base_classes(
         "lostland:class.ranger.display_name",
         AttributeKind::Dexterity,
     )?;
+    let guard = define_base(
+        &mut table,
+        intern,
+        "lostland:guard",
+        "lostland:class.guard.display_name",
+        AttributeKind::Constitution,
+    )?;
 
     Ok((
         BaseClassIds {
             warrior,
             mage,
             ranger,
+            guard,
         },
         table,
     ))
@@ -321,6 +339,20 @@ mod tests {
 
         // Assert
         assert_eq!(view.primary_attribute, AttributeKind::Intelligence);
+    }
+
+    #[test]
+    fn 卫兵的主属性倾向是体质() {
+        // 卫兵职业接线批次——项目所有者裁定「卫兵算作一种职业」，见
+        // 模块顶部 BaseClassIds::guard 字段文档。
+        // Arrange
+        let (ids, table) = base_class_fixture();
+
+        // Act
+        let view = table.get(ids.guard).expect("卫兵已在本体注册");
+
+        // Assert
+        assert_eq!(view.primary_attribute, AttributeKind::Constitution);
     }
 
     #[test]
@@ -400,10 +432,11 @@ mod tests {
             )
             .expect("mod 职业与本体职业调用同一个公开 define 函数,理应同样成功");
 
-        // Assert：mod 内容紧接在本体三种职业之后分配到索引，说明两者
-        // 共用同一个单调递增的号段，没有为本体预留任何特殊区间；且
-        // mod 注册的职业确实能通过 get 查到正确属性。
-        assert_eq!(mod_index.get(), class_ids.ranger.get() + 1);
+        // Assert：mod 内容紧接在本体四种职业（含卫兵职业接线批次新增
+        // 的卫兵）之后分配到索引，说明两者共用同一个单调递增的号段，
+        // 没有为本体预留任何特殊区间；且 mod 注册的职业确实能通过 get
+        // 查到正确属性。
+        assert_eq!(mod_index.get(), class_ids.guard.get() + 1);
         let view = table.get(mod_index).expect("mod 职业已通过 define 登记");
         assert_eq!(view.primary_attribute, AttributeKind::Willpower);
     }

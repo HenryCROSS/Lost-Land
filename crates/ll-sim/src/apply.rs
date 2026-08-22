@@ -409,6 +409,15 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 stack.durability = Some((durability + delta).max(0));
             }
         }
+        Effect::Inspect { .. } => {
+            // 刻意无操作——见 Effect::Inspect 文档「为什么 apply 不把它
+            // 写进 WorldState::history」一节：本效果的可观察点是 resolve
+            // 产出它的那一刻本身（Vec<Effect> 里的这一条），不是任何
+            // WorldState 字段。`Owner`/`stolen_marker` 落地后，这个分支
+            // 才需要真正读 items_seen 与 target 当前的 owner 比对、决定
+            // 要不要转成一条 HistoricalEventKind::Crime——那是未来批次
+            // 的工作，这里先不假装已经做了。
+        }
     }
 }
 

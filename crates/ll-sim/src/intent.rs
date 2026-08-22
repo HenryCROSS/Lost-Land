@@ -272,6 +272,29 @@ pub enum Intent {
         /// 发起者，搜刮到它自己的背包里。
         actor: EntityId,
     },
+    /// 盘查：`actor` 检查 `target` 此刻背包与已装备的物品（卫兵职业
+    /// 接线批次，见 `crate::resolve::resolve_inspect` 文档）。
+    ///
+    /// # 为什么没有携带任何"判定结果"字段
+    ///
+    /// 与 [`Intent::Attack`]/[`Intent::UseSkill`] 同一条纪律：`Intent`
+    /// 只记录"想做什么"，不预判"结果如何"——这次盘查会看到什么、算不
+    /// 算违法，全部留给 `resolve` 结合当时的 `WorldState` 现算（本批次
+    /// 只读出"看到了什么"，"算不算违法"需要 `Owner`，尚未落地，见
+    /// `knowledge/design/ownership-and-crime-detection.md`）。
+    ///
+    /// # 谁会产出这个变体
+    ///
+    /// 目前唯一的产出路径是卫兵职业的行为树脚本（`(list 'inspect
+    /// target)`，`ll_script::api::intent::parse_intent`
+    /// 识别，见其文档），不是玩家输入映射（`intent_from_input`
+    /// 不产出本变体）——盘查是卫兵 AI 的主动行为，不是玩家操作。
+    Inspect {
+        /// 发起盘查的一方（卫兵）。
+        actor: EntityId,
+        /// 被盘查的一方。
+        target: EntityId,
+    },
 }
 
 impl Intent {
@@ -296,7 +319,8 @@ impl Intent {
             | Intent::Equip { actor, .. }
             | Intent::Unequip { actor, .. }
             | Intent::Use { actor, .. }
-            | Intent::Loot { actor } => actor,
+            | Intent::Loot { actor }
+            | Intent::Inspect { actor, .. } => actor,
         }
     }
 }
@@ -661,6 +685,35 @@ mod tests {
 
         // Assert
         assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn inspect意图序列化往返后与原值相等() {
+        // Arrange
+        let original = Intent::Inspect {
+            actor: entity(),
+            target: entity(),
+        };
+
+        // Act
+        let json = serde_json::to_string(&original).expect("Intent 全字段均可序列化");
+        let decoded: Intent = serde_json::from_str(&json).expect("刚序列化的数据必然合法");
+
+        // Assert
+        assert_eq!(decoded, original);
+    }
+
+    #[test]
+    fn actor方法对inspect意图返回发起者字段() {
+        // Arrange
+        let actor = entity();
+        let intent = Intent::Inspect {
+            actor,
+            target: entity(),
+        };
+
+        // Act & Assert
+        assert_eq!(intent.actor(), actor);
     }
 
     #[test]

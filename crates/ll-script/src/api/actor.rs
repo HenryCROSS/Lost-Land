@@ -50,13 +50,38 @@
 //! 见 [`nearest_hostile`] 的 `min_by_key` 调用。本模块的查询不消费任何
 //! 随机性，谈不上 C3；行为树若要用随机性（本批次的示例 mod 不需要），
 //! 必须走 [`crate::api::rng`] 的 `DetRng` 通道，不能自行构造。
+//!
+//! # `nearby-actor-in-view`：真正的 FOV 可见性（卫兵职业接线批次新增）
+//!
+//! [`nearby_enemy`] 的「已知简化」第 1 条明确写着它用平方距离近似
+//! 代替真正的 FOV——那条简化对「敌人该不该追上来打」这类场景够用，
+//! 但卫兵盘查（`knowledge/design/ownership-and-crime-detection.md`
+//! 二节 2.3 论证过的同一套两段式算法）要求的是「卫兵真的看得见」，
+//! 隔着一面墙的目标不该被当成候选——这正是那条简化本身要回避的
+//! 差异。[`nearby_actor_in_view`] 因此不复用 [`nearest_hostile`]，
+//! 单独实现同一套「`TorusSize::chebyshev` 粗筛 → `compute_fov` 成员
+//! 测试」两段式过滤：粗筛用候选者到活跃实体的距离与查询半径比较
+//! （`O(1)`/候选者），只有通过粗筛的候选者才去查一次已经算好的
+//! `ll_world::fov::VisibleSet::contains`（`O(1)` 哈希查找）——FOV 本身只在活跃实体
+//! 的位置上算一次（不是每个候选者各算一次，那是二节 2.3
+//! `witnessed_by` 面对「多个观察者各自的视角」时才需要的形状；这里
+//! 只有活跃实体一个观察者，天然只需要一次），粗筛因此省下的是「明显
+//! 越界的候选者也要做一次 `HashSet` 查找」这一步,量级虽然本就便宜，
+//! 但与二节 2.3 描述的算法结构保持一致，也符合 C5（只用 `contains`
+//! 成员测试，不遍历 `VisibleSet` 做决策）。
+//!
+//! 不看敌对关系——[`is_hostile`] 的势力近似在这里不适用：卫兵要能
+//! 盘查任何看得见的单位（含友方/中立），不是只盘查敌人，见
+//! `mods/example_mod/behavior.scm` 的 `guard-try-inspect`。
 
 use std::cell::Cell;
 
 use steel::rvals::{IntoSteelVal, SteelVal};
 
 use ll_world::entity::{AffiliationKind, Agent, EntityId};
+use ll_world::fov::compute_fov;
 use ll_world::state::WorldState;
+use ll_world::surface_store::SurfaceWindow;
 
 use crate::api::handle::ScriptEntityHandle;
 use crate::api::query::with_active_world;
@@ -107,11 +132,19 @@ pub fn with_active_self<T: Copy>(default: T, f: impl FnOnce(&WorldState, &Agent)
 /// 「附近」的平方距离阈值——半径约 10 格（见模块文档「已知简化」）。
 const NEARBY_ENEMY_RANGE_SQ: i64 = 100;
 
-/// 注册 `self-handle`/`nearby-enemy`/`direction-toward` 三个行为树查询
-/// 原语。
+/// [`nearby_actor_in_view`] 的 FOV 查询半径——与
+/// `crate::resolve::EXPLORATION_SIGHT_RADIUS`（`ll-sim`,玩家探索标记）
+/// 及设计文档 `DEFAULT_NPC_BASE_SIGHT_RADIUS` 建议值同一个量级（12），
+/// 不是巧合：这是本代码库目前对「一个前景实体大致能看多远」的既有
+/// 拍板值,本模块沿用而不是另起一个数字。
+const NEARBY_ACTOR_VIEW_RADIUS: u32 = 12;
+
+/// 注册 `self-handle`/`nearby-enemy`/`nearby-actor-in-view`/
+/// `direction-toward` 四个行为树查询原语。
 pub fn register(engine: &mut ScriptEngine) {
     engine.register_fn("self-handle", self_handle);
     engine.register_fn("nearby-enemy", nearby_enemy);
+    engine.register_fn("nearby-actor-in-view", nearby_actor_in_view);
     engine.register_fn("direction-toward", direction_toward);
 }
 
@@ -139,6 +172,57 @@ fn nearby_enemy() -> SteelVal {
             }
         })
     })
+}
+
+/// `(nearby-actor-in-view)`：活跃实体视野内最近的一个实体句柄（不看
+/// 敌对关系，真正的 FOV 可见性，不是平方距离近似）；没有则 `#f`。见
+/// 模块文档「`nearby-actor-in-view`：真正的 FOV 可见性」一节。
+fn nearby_actor_in_view() -> SteelVal {
+    with_active_actor(SteelVal::BoolV(false), |actor| {
+        with_active_world(SteelVal::BoolV(false), |world| match nearest_visible_actor(
+            world,
+            actor,
+            NEARBY_ACTOR_VIEW_RADIUS,
+        ) {
+            Some(target) => ScriptEntityHandle::new(target)
+                .into_steelval()
+                .unwrap_or(SteelVal::BoolV(false)),
+            None => SteelVal::BoolV(false),
+        })
+    })
+}
+
+/// 找出 `world` 中离 `self_id` 最近、且真的落在它 FOV 内的实体；范围外
+/// 或不存在时返回 `None`。两段式过滤：`world.size.chebyshev` 粗筛
+/// （`O(1)`/候选者）+ `VisibleSet::contains` 成员测试，只对活跃实体自己
+/// 的位置算一次 [`compute_fov`]——完整论证见模块文档
+/// 「`nearby-actor-in-view`：真正的 FOV 可见性」一节。
+///
+/// 候选者遍历顺序（`Arena::iter_with_id`，`Vec` 支撑的固定顺序）与
+/// 距离相等时的打破平局规则（按 `EntityId` 升序）均与 [`nearest_hostile`]
+/// 同一条既有纪律（C5）。
+fn nearest_visible_actor(world: &WorldState, self_id: EntityId, radius: u32) -> Option<EntityId> {
+    let me = world.actors.get(self_id)?;
+    let visible = compute_fov(
+        &SurfaceWindow::new(&world.terrain),
+        &world.terrain_table,
+        me.pos,
+        radius,
+    );
+    world
+        .actors
+        .iter_with_id()
+        .filter(|(id, _)| *id != self_id)
+        .filter_map(|(id, other)| {
+            let dist = world.size.chebyshev(me.pos, other.pos);
+            if dist > radius {
+                return None; // 粗筛：距离已经超出半径，FOV 不可能命中。
+            }
+            visible.contains(other.pos).then_some((dist, id))
+        })
+        // 距离相等时按 EntityId 升序打破平局——见模块文档「确定性」。
+        .min_by_key(|&(dist, id)| (dist, id))
+        .map(|(_, id)| id)
 }
 
 /// `(direction-toward target)`：从活跃实体指向 `target` 的八向之一
@@ -333,6 +417,86 @@ mod tests {
         let result = unsafe {
             set_active_world(&world);
             let result = nearby_enemy();
+            clear_active_world();
+            result
+        };
+        clear_active_actor();
+
+        // Assert
+        assert_eq!(result, SteelVal::BoolV(false));
+    }
+
+    /// 与 `test_world` 同一套构造,但把 `BaseTerrainIds` 也交回调用方——
+    /// 本模块其余测试不需要 `wall_stone` 这类具体地形索引,`test_world`
+    /// 因此丢弃了它;下面两条 `nearby_actor_in_view` 测试需要摆放一面
+    /// 墙,必须拿到这份索引。
+    fn test_world_with_terrain_ids() -> (WorldState, ll_world::terrain::BaseTerrainIds) {
+        let zone_count = ll_core::torus::TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+        let layout = ZoneLayout::new(64, zone_count).expect("64 满足全部对齐约束");
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        let spawn = layout.tile_size().wrap(0, 0);
+        let world = WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件");
+        (world, terrain_ids)
+    }
+
+    #[test]
+    fn nearby_actor_in_view找到视野内最近的可见实体() {
+        // 与 nearby_enemy 的区别:两个候选者都没有势力归属,对
+        // nearby_enemy 而言二者互相敌对;本函数不看敌对关系,只看
+        // FOV——这里只是先验证「视野内有目标时能找到最近的那个」这条
+        // 基本路径,敌对与否不影响结果。
+        // Arrange
+        let mut world = test_world();
+        let me = spawn_agent_at(&mut world, 5, 5);
+        let near = spawn_agent_at(&mut world, 7, 5);
+        let _far = spawn_agent_at(&mut world, 40, 5);
+        set_active_actor(me);
+
+        // Act
+        let result = unsafe {
+            set_active_world(&world);
+            let result = nearby_actor_in_view();
+            clear_active_world();
+            result
+        };
+        clear_active_actor();
+
+        // Assert
+        let handle = ScriptEntityHandle::from_steelval(&result).expect("视野内应有一个可见目标");
+        assert_eq!(handle.entity_id(), near);
+    }
+
+    #[test]
+    fn 隔着石墙的目标即使距离很近也看不见() {
+        // 证明 nearby_actor_in_view 用的是真正的 FOV,不是距离近似——
+        // 目标与观察者的切比雪夫距离只有 2(远小于查询半径),若这里用
+        // 距离判定会误判为「看得见」;摆一整排石墙(阻挡视线)隔在两者
+        // 之间,FOV 应当判定看不见。
+        // Arrange
+        let (mut world, terrain_ids) = test_world_with_terrain_ids();
+        let me = spawn_agent_at(&mut world, 5, 5);
+        let _target = spawn_agent_at(&mut world, 7, 5);
+        // 竖直一整排石墙挡在 x=6 这一列,把 me 与 target 完全隔开
+        // (只挡这一条水平线上的直接视线还不够——阴影投射可能绕过单点
+        // 墙从斜向看到目标,一整列才能确保挡住全部路径)。
+        for y in 0..12 {
+            world
+                .terrain
+                .set_terrain(world.size.wrap(6, y), terrain_ids.wall_stone);
+        }
+        set_active_actor(me);
+
+        // Act
+        let result = unsafe {
+            set_active_world(&world);
+            let result = nearby_actor_in_view();
             clear_active_world();
             result
         };

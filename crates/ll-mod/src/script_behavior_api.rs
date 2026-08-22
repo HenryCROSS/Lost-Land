@@ -1,6 +1,7 @@
-//! 行为树运行期查询：`skill-ready?`——把「这个技能现在能不能用」暴露
-//! 给脚本，接上此前断掉的「AI 真的做出决策」最后一环（规格 §10.5
-//! 接线批次）。
+//! 行为树运行期查询：`skill-ready?`/`self-has-profession?`——分别把
+//! 「这个技能现在能不能用」「活跃实体是不是这个职业」暴露给脚本，
+//! 接上此前断掉的「AI 真的做出决策」最后一环（规格 §10.5 接线批次；
+//! `self-has-profession?` 是卫兵职业接线批次新增，见下文）。
 //!
 //! # 为什么这一个函数单独落在 `ll-mod`，其余行为树查询原语落在
 //! `ll-script`
@@ -94,6 +95,41 @@ fn skill_ready(skill: ContentIndex) -> bool {
                 .get(&skill)
                 .is_some_and(|until| until.0 > world.clock.0)
     })
+}
+
+/// 注册 `self-has-profession?` 进 `engine`（卫兵职业接线批次）——把
+/// 「活跃实体的 `Agent.profession` 是不是这个职业」暴露给脚本，理由与
+/// 用法都与 [`register_skill_ready_api`] 同构：`Agent.profession` 只是
+/// 一个 [`ContentIndex`]，脚本给的是命名空间字符串（例如
+/// `"lostland:guard"`），转换同样需要 `Registry`，因此同样落在
+/// `ll-mod`，不是 `ll-script`。
+///
+/// # 为什么复用 [`skill_index_snapshot`]，不新写一份
+///
+/// `skill_index_snapshot` 的实际语义是「注册表里全部命名空间 ID 的
+/// 快照」（不是只包含技能——名字沿用了它第一个调用方的名字，但函数体
+/// 本身对内容类型一无所知，只是 `Registry::snapshot` 的整体映射）。
+/// 职业 ID 与技能 ID 共享同一个 `Registry`（`ContentIndex` 号段是
+/// 全局的，见 `ll_mod::class` 模块文档「下标空间是全局的」一节），
+/// 因此这份快照天然也包含职业 ID，不需要再写一个只是把「技能」换成
+/// 「职业」的重复函数（DRY）——[`crate::script_behavior_source::ScriptBehaviorSource::new`]
+/// 因此对同一份 `skill_index` 快照调用两次注册函数,各自捕获自己需要
+/// 的那一份克隆。
+pub fn register_profession_check_api(
+    engine: &mut ScriptEngine,
+    class_index: BTreeMap<String, ContentIndex>,
+) {
+    engine.register_fn("self-has-profession?", move |name: String| -> bool {
+        match class_index.get(&name) {
+            Some(&index) => has_profession(index),
+            None => false,
+        }
+    });
+}
+
+/// 当前决策实体（活跃实体）的 `Agent.profession` 是否等于 `class`。
+fn has_profession(class: ContentIndex) -> bool {
+    ll_script::api::actor::with_active_self(false, |_world, agent| agent.profession == class)
 }
 
 #[cfg(test)]
@@ -256,6 +292,129 @@ mod tests {
         register_skill_ready_api(&mut engine, skill_index_snapshot(&registry));
         engine
             .load_source(r#"(define (probe) (skill-ready? "examplemod:frostbolt"))"#.to_string())
+            .unwrap();
+
+        // Act
+        let result = with_active_world_for(&world, || {
+            set_active_actor(actor);
+            let result = engine.call_raw("probe", Vec::new());
+            clear_active_actor();
+            result
+        });
+
+        // Assert
+        assert_eq!(result, Ok(steel::rvals::SteelVal::BoolV(true)));
+    }
+
+    /// 与 `test_world_with_agent` 同一套构造,但让调用方指定 `profession`
+    /// ——`self-has-profession?` 要比对的正是这个字段,不能像
+    /// `test_world_with_agent` 那样用一个跟外部 `Registry` 无关的本地
+    /// interner 现造一个恒为 "lostland:tester" 的职业索引。
+    fn test_world_with_profession(
+        profession: ContentIndex,
+    ) -> (ll_world::state::WorldState, ll_world::entity::EntityId) {
+        let zone_count = ll_core::torus::TorusSize::new(1, 1).expect("1x1 是合法尺寸");
+        let layout = ZoneLayout::new(64, zone_count).expect("64 满足全部对齐约束");
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        let spawn = layout.tile_size().wrap(0, 0);
+        let mut world = ll_world::state::WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件");
+        let mut interner = ll_core::ident::Interner::new();
+        let race = interner.intern(NamespacedId::parse("lostland:human").expect("合法标识符"));
+        let actor = world.actors.spawn(Agent {
+            pos: spawn,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession,
+            goals: Vec::new(),
+            race,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
+            resting: None,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: ll_world::space::Space::surface(
+                world.terrain.layout().tile_to_zone(spawn).0,
+                ll_core::ident::ContentIndex::default(),
+            ),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+        });
+        (world, actor)
+    }
+
+    #[test]
+    fn 职业匹配时has_profession判定为真() {
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let guard = interner.intern(NamespacedId::parse("lostland:guard").expect("合法标识符"));
+        let (world, actor) = test_world_with_profession(guard);
+
+        // Act
+        let matched = with_active_world_for(&world, || {
+            set_active_actor(actor);
+            let matched = has_profession(guard);
+            clear_active_actor();
+            matched
+        });
+
+        // Assert
+        assert!(matched);
+    }
+
+    #[test]
+    fn 职业不匹配时has_profession判定为假() {
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let guard = interner.intern(NamespacedId::parse("lostland:guard").expect("合法标识符"));
+        let warrior = interner.intern(NamespacedId::parse("lostland:warrior").expect("合法标识符"));
+        let (world, actor) = test_world_with_profession(warrior);
+
+        // Act
+        let matched = with_active_world_for(&world, || {
+            set_active_actor(actor);
+            let matched = has_profession(guard);
+            clear_active_actor();
+            matched
+        });
+
+        // Assert
+        assert!(!matched);
+    }
+
+    #[test]
+    fn 注册后脚本能调用self_has_profession判断当前职业() {
+        // Arrange：端到端——真实脚本源码经 ScriptEngine::load_source
+        // 调用 self-has-profession?，不是直接在 Rust 里调
+        // has_profession，理由同 `注册后脚本能调用skill_ready判断技能是否可用`。
+        let mut registry = Registry::new();
+        let guard_id = NamespacedId::parse("lostland:guard").expect("合法标识符");
+        let guard = registry.intern(guard_id);
+        let (world, actor) = test_world_with_profession(guard);
+        let mut engine = ScriptEngine::new();
+        register_profession_check_api(&mut engine, skill_index_snapshot(&registry));
+        engine
+            .load_source(r#"(define (probe) (self-has-profession? "lostland:guard"))"#.to_string())
             .unwrap();
 
         // Act
