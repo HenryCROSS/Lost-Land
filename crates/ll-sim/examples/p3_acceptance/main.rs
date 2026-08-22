@@ -85,6 +85,7 @@ use ll_render::sprite::{DrawOrder, Layer};
 use ll_render::target::{BlitFilter, LOGICAL_HEIGHT, LOGICAL_WIDTH, RenderTarget, fit_viewport};
 // 走 ll_render 重新导出的 wgpu，理由与 p1_acceptance/p2_acceptance 一致。
 use ll_render::wgpu;
+use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::effect::Effect;
 use ll_sim::timeline::Timeline;
 use ll_sim::turn::TurnEngine;
@@ -98,6 +99,13 @@ use png::save_baseline_png;
 use spawn::{Combatant, SpawnedActors, build_world, demo_naming_rules, spawn_actors};
 use std::sync::Arc;
 use turn::{DamagePopup, ai_intent, record_damage_popup, tick_popups};
+
+/// 本 demo 交给 [`TurnEngine`] 的空目录束——它自己合成世界与战斗单位
+/// （`spawn::build_world`/`spawn_actors`），从不装载 `mods/`，一份内容
+/// 表都没有，因此这里传空与本 demo 接入目录之前逐字等价（见
+/// `ll_sim::catalogs::ResolveCatalogs::empty` 文档）。真实目录经由
+/// `TurnEngine` 生效的那条链路属于本体二进制 `ll-game`，不属于本 demo。
+const EMPTY_CATALOGS: ResolveCatalogs<'static> = ResolveCatalogs::empty();
 
 /// 绘制顺序号：地形瓦片的起始偏移。
 const TERRAIN_ENTITY_BASE: u64 = 1;
@@ -328,8 +336,13 @@ impl Demo {
             let mut on_damage = |world: &WorldState, effect: &Effect| {
                 record_damage_popup(world, effect, popups);
             };
-            self.engine
-                .advance_ai(&mut self.world, player, ai_intent, &mut on_damage);
+            self.engine.advance_ai(
+                &mut self.world,
+                player,
+                ai_intent,
+                &EMPTY_CATALOGS,
+                &mut on_damage,
+            );
         }
         if Self::player_is_gone(&self.world, player) {
             self.player_dead = true;
@@ -341,8 +354,13 @@ impl Demo {
             let mut on_damage = |world: &WorldState, effect: &Effect| {
                 record_damage_popup(world, effect, popups);
             };
-            self.engine
-                .try_player_turn(&mut self.world, player, input, &mut on_damage)
+            self.engine.try_player_turn(
+                &mut self.world,
+                player,
+                input,
+                &EMPTY_CATALOGS,
+                &mut on_damage,
+            )
         };
         if player_acted {
             {
@@ -350,8 +368,13 @@ impl Demo {
                 let mut on_damage = |world: &WorldState, effect: &Effect| {
                     record_damage_popup(world, effect, popups);
                 };
-                self.engine
-                    .advance_ai(&mut self.world, player, ai_intent, &mut on_damage);
+                self.engine.advance_ai(
+                    &mut self.world,
+                    player,
+                    ai_intent,
+                    &EMPTY_CATALOGS,
+                    &mut on_damage,
+                );
             }
             if Self::player_is_gone(&self.world, player) {
                 self.player_dead = true;

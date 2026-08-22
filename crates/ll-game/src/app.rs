@@ -49,7 +49,7 @@ use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
 
 use crate::animation::{self, FALLBACK_SPRITE};
-use crate::content::LoadedContent;
+use crate::content::{LoadedContent, RuntimeCatalogs};
 use crate::layout::{
     effective_sight_radius, effective_sight_radius_for_race, effective_tint, terrain_atlas_key,
     tile_tint,
@@ -448,6 +448,20 @@ impl Demo {
         );
 
         let player = self.game_world.player;
+        // 本帧的结算目录束——每帧现借一次，不长期持有：`RuntimeCatalogs`
+        // 只借用 `self.content`（装载期产物，建局后不再变化），构造成本
+        // 是几个引用的复制，不是查表，与 ADR 0016/0017 的性能分级无关
+        // （它不跨脚本边界，也不进结算热路径的内层循环）。之所以是局部
+        // 变量而不是 `Demo` 的字段：`RuntimeCatalogs<'a>` 借着
+        // `self.content`，做成字段就是自引用结构体。
+        //
+        // 这一束是「天赋在真实游戏里生效」的唯一通道：本方法此前把
+        // `TurnEngine` 接上了时间轴（见上文「世界时钟为什么会走」），
+        // 但 `TurnEngine::perform` 当时调的是不带任何目录的 `resolve`,
+        // 于是种族/职业天赋、抗性、偷袭规则、资源池容量在真正能跑的
+        // 游戏里全都是死的——同一处接线缺口的第二层。
+        let runtime_catalogs = RuntimeCatalogs::new(&self.content);
+        let catalogs = runtime_catalogs.as_resolve_catalogs();
         // 本体二进制不渲染伤害飘字（`p3_acceptance` 才有,那是纯呈现层
         // 的验收效果,见 `ll_sim::turn` 模块文档）,`on_effect` 回调没有
         // 状态要收集，传一个空操作闭包即可。
@@ -455,10 +469,16 @@ impl Demo {
             &mut self.game_world.world,
             player,
             no_npc_ai,
+            &catalogs,
             &mut |_, _| {},
         );
-        self.engine
-            .try_player_turn(&mut self.game_world.world, player, input, &mut |_, _| {});
+        self.engine.try_player_turn(
+            &mut self.game_world.world,
+            player,
+            input,
+            &catalogs,
+            &mut |_, _| {},
+        );
 
         if let Some(agent) = self.game_world.world.actors.get(player)
             && matches!(agent.current_space, Space::Surface { .. })

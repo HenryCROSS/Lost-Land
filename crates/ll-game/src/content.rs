@@ -41,12 +41,12 @@ use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
 use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::discover::discover_mods;
-use ll_mod::formula::FormulaTable;
+use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::{LoadReport, LoadStatus};
 use ll_mod::manifest::{ModManifest, parse_manifest};
 use ll_mod::pipeline::{GameplayTables, load_all};
-use ll_mod::quest::QuestTable;
+use ll_mod::quest::{QuestTable, RegisteredQuests};
 use ll_mod::race::{BaseRaceIds, RaceTable};
 use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
@@ -55,6 +55,8 @@ use ll_mod::subclass::SubclassTable;
 use ll_mod::trait_def::TraitTable;
 use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
+use ll_sim::catalogs::ResolveCatalogs;
+use ll_sim::damage_category::NoDamageCategories;
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 
@@ -163,6 +165,81 @@ pub struct LoadedContent {
     /// `ll_render::atlas_pack::pack_atlas`。
     pub asset_vfs: AssetVfs,
 }
+
+/// 把一次装载会话的产出转成结算能直接消费的形状，供
+/// [`RuntimeCatalogs::as_resolve_catalogs`] 借出一束
+/// [`ResolveCatalogs`] 交给 [`ll_sim::turn::TurnEngine`]。
+///
+/// # 为什么需要这个中间类型
+///
+/// 九份目录里有两份不是「某张表自己就实现了 trait」：
+/// [`RegisteredQuests`] 要把 [`QuestTable`] 与 [`Registry`] 绑在一起，
+/// [`RegistryFormulas`] 要把 [`FormulaTable`] 与保底默认公式索引绑在
+/// 一起（各自的理由见它们自己的文档）。两者都是**借着 `LoadedContent`
+/// 现造**的值，而 `ResolveCatalogs` 的字段是 `&dyn`——不能指向一个
+/// 函数返回时就消失的临时值。本类型就是这两个值的落脚处：调用方先
+/// 让它活着（一个局部变量），再从它借出目录束。
+///
+/// # 为什么目录不挂进 `WorldState`
+///
+/// 见 [`ll_sim::catalogs`] 模块文档「为什么不挂到 `WorldState` 上」
+/// 一节：`WorldState` 是运行期状态、要进存档，内容表是装载期产物，
+/// `ll_content::save_file` 刻意不序列化任何 `*Table`。本类型只是借用
+/// 的搬运容器，不持有任何表的所有权，也不进任何存档。
+pub struct RuntimeCatalogs<'a> {
+    content: &'a LoadedContent,
+    quests: RegisteredQuests<'a>,
+    formulas: RegistryFormulas<'a>,
+}
+
+impl<'a> RuntimeCatalogs<'a> {
+    /// 从一次装载会话的产出借出全部结算目录。
+    pub fn new(content: &'a LoadedContent) -> RuntimeCatalogs<'a> {
+        RuntimeCatalogs {
+            content,
+            quests: RegisteredQuests {
+                table: &content.quest_table,
+                registry: &content.registry,
+            },
+            formulas: RegistryFormulas {
+                formulas: &content.formula_table,
+                default_formula: content.default_damage_formula_id,
+            },
+        }
+    }
+
+    /// 借出交给 [`ll_sim::turn::TurnEngine`] 的目录束。
+    ///
+    /// # 伤害类别这一路为什么仍是空实现
+    ///
+    /// [`ll_sim::damage_category::DamageCategoryCatalog`] 目前在
+    /// `ll-mod` 侧**还没有任何真实实现**（仓库里唯一的实现是 `ll-sim`
+    /// 自己的 `NoDamageCategories`），`LoadedContent::damage_category_table`
+    /// 与 `default_damage_category_id` 还没有对应的目录类型可以包装。
+    /// 这一路只影响「武器没有显式声明伤害类别时退回哪个默认类别」，
+    /// **不影响抗性生不生效**（防御方天赋声明了 `RuleModifier::Resistance`
+    /// 就会命中，见
+    /// `ll_sim::resolve::resolve_with_skills_traits_pools_items_formulas_and_damage_categories`
+    /// 文档「本函数不改变抗性本身生不生效」一节）。等 `ll-mod` 侧补上
+    /// 那个实现，只需要改本方法这一行。
+    pub fn as_resolve_catalogs(&self) -> ResolveCatalogs<'_> {
+        ResolveCatalogs {
+            skills: &self.content.skill_table,
+            quests: &self.quests,
+            race_traits: &self.content.race_table,
+            class_traits: &self.content.class_table,
+            trait_defs: &self.content.trait_table,
+            pools: &self.content.resource_pool_table,
+            items: &self.content.item_table,
+            formulas: &self.formulas,
+            damage_categories: &NO_DAMAGE_CATEGORIES,
+        }
+    }
+}
+
+/// [`RuntimeCatalogs::as_resolve_catalogs`] 借出的伤害类别空实现实例，
+/// 理由见该方法文档「伤害类别这一路为什么仍是空实现」一节。
+const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 
 /// 装载全部游戏内容：先注册本体内容，再装载 `mods_root` 下的 mod，
 /// 最后解析 `assets_root` 下本体与全部 mod 的资产 VFS。
@@ -358,6 +435,7 @@ fn read_script_sources(manifests: &[ModManifest]) -> Vec<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ll_core::ident::NamespacedId;
     use std::path::PathBuf;
 
     /// 仓库真实的 `assets/` 目录——`ll-game` 到仓库根固定隔两级
@@ -408,6 +486,90 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 交给回合引擎的目录束真的携带装载出来的内容表() {
+        // 接线守卫（本体二进制这一侧）：`Demo::advance` 每帧把
+        // `RuntimeCatalogs::as_resolve_catalogs` 的产物交给
+        // `ll_sim::turn::TurnEngine`,天赋能不能在真实游戏里生效完全
+        // 取决于这一束里装的是真表还是空实现。谁把它换成
+        // `ResolveCatalogs::empty()`（或漏填其中一路），本条立刻变红。
+        //
+        // 结算侧的端到端证据（真实天赋经由 `TurnEngine` 改变结算结果）
+        // 在 `crates/ll-mod/tests/turn_engine_catalogs.rs`——那里能直接
+        // 拿到 `ll-mod` 的表；本条守的是本体二进制这一侧「有没有把真表
+        // 交出去」，两者合起来才是完整的一条链。
+        // Arrange
+        let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
+        let loaded = load_content(&mods_root, &repo_assets_dir());
+        let index = |id: &str| {
+            loaded
+                .registry
+                .get(&NamespacedId::parse(id).expect("合法标识符"))
+                .unwrap_or_else(|| panic!("{id} 应当已被 mods/example_mod/gameplay.scm 注册"))
+        };
+
+        // Act
+        let runtime = RuntimeCatalogs::new(&loaded);
+        let catalogs = runtime.as_resolve_catalogs();
+
+        // Assert：逐路验收——每一路都用一条真实注册的内容确认它不是空
+        // 实现（空实现对任何索引恒返回 `None`/空列表）。
+        assert!(
+            !catalogs
+                .race_traits
+                .granted_traits(index("examplemod:ooze"))
+                .is_empty(),
+            "种族天赋来源必须是真实 RaceTable"
+        );
+        assert!(
+            !catalogs
+                .class_traits
+                .granted_traits(index("examplemod:rogue"))
+                .is_empty(),
+            "职业天赋来源必须是真实 ClassTable"
+        );
+        assert!(
+            catalogs
+                .trait_defs
+                .trait_rule(index("examplemod:acid_hide"))
+                .is_some(),
+            "天赋目录必须是真实 TraitTable"
+        );
+        assert!(
+            catalogs
+                .skills
+                .skill(index("examplemod:backstab"))
+                .is_some(),
+            "技能目录必须是真实 SkillTable"
+        );
+        assert!(
+            catalogs
+                .items
+                .item(index("examplemod:acid_dagger"))
+                .is_some(),
+            "物品目录必须是真实 ItemTable"
+        );
+        assert!(
+            catalogs
+                .pools
+                .resource_pool(index("examplemod:sorcery_points"))
+                .is_some(),
+            "资源池目录必须是真实 ResourcePoolTable"
+        );
+        assert!(
+            !catalogs.quests.kill_count_quests().is_empty(),
+            "任务目录必须是真实 RegisteredQuests"
+        );
+        assert_eq!(
+            catalogs
+                .formulas
+                .formula_for(Some(index("examplemod:iron_sword_formula")))
+                .id,
+            index("examplemod:iron_sword_formula"),
+            "公式目录必须是真实 RegistryFormulas"
+        );
     }
 
     #[test]

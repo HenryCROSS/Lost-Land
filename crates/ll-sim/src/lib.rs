@@ -98,6 +98,7 @@
 
 pub mod apply;
 pub mod behavior;
+pub mod catalogs;
 pub mod character;
 pub mod combat;
 pub mod damage_category;

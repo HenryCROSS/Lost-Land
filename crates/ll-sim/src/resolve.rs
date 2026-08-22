@@ -57,6 +57,7 @@ use ll_world::history::KillCause;
 use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
 
+use crate::catalogs::ResolveCatalogs;
 use crate::combat::{
     Penetration, apply_crit_multiplier, crit_chance_permille, damage_after_defense,
     sneak_attack_chance_permille,
@@ -659,6 +660,39 @@ pub fn resolve_with_all_catalogs(
         items,
         formulas,
         damage_categories,
+    )
+}
+
+/// [`resolve_with_all_catalogs`] 的「一束引用」版本：九份目录改由
+/// [`ResolveCatalogs`] 一次性带进来，其余行为逐字相同（本函数就是把
+/// 那一束拆开转发给同一个 `resolve_dispatch`）。
+///
+/// # 为什么两个入口并存
+///
+/// [`resolve_with_all_catalogs`] 的散参数签名是给**直接调用结算**的
+/// 代码用的：签名把「这段结算依赖哪几份只读内容」写在脸上，是依赖
+/// 倒置这套手法刻意要留的信号（见 `resolve_dispatch` 文档「不是可以
+/// 合并成一个结构体的意外堆叠」一节）。本函数服务的是另一类调用方：
+/// **把目录搬过一层边界、自己一份都不读**的中间层——目前唯一的这类
+/// 调用方是 [`crate::turn::TurnEngine`]，见 [`crate::catalogs`] 模块
+/// 文档「为什么需要这一束」一节。
+pub fn resolve_with_catalogs(
+    world: &WorldState,
+    intent: &Intent,
+    catalogs: &ResolveCatalogs<'_>,
+) -> Vec<Effect> {
+    resolve_dispatch(
+        world,
+        intent,
+        catalogs.skills,
+        catalogs.quests,
+        catalogs.race_traits,
+        catalogs.class_traits,
+        catalogs.trait_defs,
+        catalogs.pools,
+        catalogs.items,
+        catalogs.formulas,
+        catalogs.damage_categories,
     )
 }
 

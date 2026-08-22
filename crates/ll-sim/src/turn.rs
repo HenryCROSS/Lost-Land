@@ -35,9 +35,10 @@ use ll_world::entity::EntityId;
 use ll_world::state::WorldState;
 
 use crate::apply::apply;
+use crate::catalogs::ResolveCatalogs;
 use crate::effect::Effect;
 use crate::intent::{Intent, intent_from_input};
-use crate::resolve::resolve;
+use crate::resolve::resolve_with_catalogs;
 use crate::timeline::{Timeline, TimelineEntry};
 
 /// [`TurnEngine::advance_ai`] 单次调用最多结算的非受控实体回合数，超过
@@ -84,6 +85,21 @@ impl TurnEngine {
     /// 时刻，跑 `resolve` → 逐个 `apply`，实体死亡则从时间轴移除其
     /// 残留记录，存活则重新排入下一次行动。
     ///
+    /// `catalogs` 原样转交给 [`crate::resolve::resolve_with_catalogs`]，
+    /// 本引擎自己一份都不读——它是「谁在什么时刻行动」的调度者，不是
+    /// 结算规则的实现者。这个参数**必须存在**：本方法此前调的是不带
+    /// 任何目录的 `resolve`，于是种族/职业天赋、抗性、偷袭规则、资源池
+    /// 容量——全部走 `effective_traits` 的东西——在真正能跑的游戏里
+    /// 从未生效过（`ll-game` 全程只经本引擎驱动世界，从不直接调
+    /// `resolve_with_*` 系列），天赋系统当时全部的「真实证据」都止步于
+    /// 集成测试直接调 `resolve_with_*`。与本模块文档开头记的
+    /// 「`TurnEngine` 本身当初只在 demo 里接了线」是同一类缺陷的第二次
+    /// 复发，修法同样是「让生产路径走上那条真实链路」，不是再补一份
+    /// 只在测试里成立的证据。
+    ///
+    /// 没有任何内容表的调用方（`examples/` 里自己合成世界的验收 demo）
+    /// 传 [`ResolveCatalogs::empty`]，与接线之前逐字等价。
+    ///
     /// `on_effect` 在每条效果被 `apply` 之前调用一次——这是本引擎与
     /// 「这条效果在呈现层意味着什么」（例如要不要弹一条伤害飘字）
     /// 之间唯一的接缝：`ll-sim` 是「回合与模拟层」（见 crate 顶层
@@ -97,6 +113,7 @@ impl TurnEngine {
         world: &mut WorldState,
         entry: TimelineEntry,
         intent: Intent,
+        catalogs: &ResolveCatalogs<'_>,
         on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) {
         // 世界时钟推进——曾经在这里加过一条「只在变化时打一行」的
@@ -108,7 +125,7 @@ impl TurnEngine {
         // 需要靠日志刷屏确认时钟活着，该日志已按代码注释原文「P7 时间
         // UI 落地后应摘除」移除，不留任何调试期专用分支。
         world.clock = entry.at;
-        let effects = resolve(world, &intent);
+        let effects = resolve_with_catalogs(world, &intent, catalogs);
         for effect in &effects {
             on_effect(world, effect);
             apply(world, effect);
@@ -136,7 +153,7 @@ impl TurnEngine {
     /// 调用方状态捕获环境，函数指针已经足够,不需要为假设中的未来需求
     /// 引入更重的 `dyn FnMut`（YAGNI）。
     ///
-    /// `on_effect` 见 [`Self::perform`] 文档。
+    /// `catalogs`/`on_effect` 见 [`Self::perform`] 文档。
     ///
     /// 返回按结算顺序排列的行动者列表——调用方据此就能数出「这段窗口
     /// 里谁被结算了几次」，不必自己重新实现一遍时间轴推进逻辑。
@@ -171,6 +188,7 @@ impl TurnEngine {
         world: &mut WorldState,
         controlled: EntityId,
         ai_intent: fn(&WorldState, EntityId, EntityId) -> Intent,
+        catalogs: &ResolveCatalogs<'_>,
         on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) -> Vec<EntityId> {
         let mut acted = Vec::new();
@@ -194,7 +212,7 @@ impl TurnEngine {
                 return acted;
             }
             let intent = ai_intent(world, entry.actor, controlled);
-            self.perform(world, entry, intent, on_effect);
+            self.perform(world, entry, intent, catalogs, on_effect);
             acted.push(entry.actor);
             self.pending = None;
         }
@@ -213,11 +231,16 @@ impl TurnEngine {
     /// 即攻击，传统 roguelike 手感,见 [`route_move_to_attack`]）；
     /// `resolve` 刻意不做这个派生（见其模块文档），因为「同一格多个
     /// 实体时打谁」这类规则需要调用方按自己的场景决定。
+    ///
+    /// `catalogs`/`on_effect` 见 [`Self::perform`] 文档——玩家这条路径
+    /// 与 AI 那条走的是同一个 `perform`，天赋对玩家自己的攻击/技能/
+    /// 休息同样生效，不存在「只有 NPC 吃规则」的不对称。
     pub fn try_player_turn(
         &mut self,
         world: &mut WorldState,
         player: EntityId,
         input: &InputState,
+        catalogs: &ResolveCatalogs<'_>,
         on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) -> bool {
         let Some(entry) = self.pending.filter(|entry| entry.actor == player) else {
@@ -228,7 +251,7 @@ impl TurnEngine {
         };
         let intent = route_move_to_attack(world, raw);
         self.pending = None;
-        self.perform(world, entry, intent, on_effect);
+        self.perform(world, entry, intent, catalogs, on_effect);
         true
     }
 
@@ -291,6 +314,13 @@ mod tests {
     use ll_world::generate::GenParams;
     use ll_world::terrain::base_terrain_fixture;
     use ll_world::zone::ZoneLayout;
+
+    /// 本模块全部用例共用的空目录束——它们验收的是「谁在什么时刻被
+    /// 结算」这条调度逻辑本身，与任何内容表无关（世界也是合成的，没有
+    /// 装载过 `mods/`）。真实目录经由本引擎影响结算结果的端到端验收在
+    /// `crates/ll-mod/tests/turn_engine_catalogs.rs`——那里才有真实
+    /// mod 脚本注册的天赋可查。
+    const EMPTY: ResolveCatalogs<'static> = ResolveCatalogs::empty();
 
     /// 测试用世界：与 `crate::resolve` 测试模块同一套构造（边长 64、
     /// 单区块，见其文档「测试用区块布局」一节），本模块只关心时间轴
@@ -372,8 +402,8 @@ mod tests {
         input.press(GameKey::Wait);
 
         // Act
-        engine.advance_ai(&mut world, player, no_op_ai, &mut |_, _| {});
-        let acted = engine.try_player_turn(&mut world, player, &input, &mut |_, _| {});
+        engine.advance_ai(&mut world, player, no_op_ai, &EMPTY, &mut |_, _| {});
+        let acted = engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
 
         // Assert
         assert!(acted, "本用例应能成功结算一次受控实体的等待");
@@ -397,8 +427,8 @@ mod tests {
         // Act：记录每次结算后的时钟读数。
         let mut clocks = Vec::new();
         for _ in 0..3 {
-            engine.advance_ai(&mut world, player, no_op_ai, &mut |_, _| {});
-            engine.try_player_turn(&mut world, player, &input, &mut |_, _| {});
+            engine.advance_ai(&mut world, player, no_op_ai, &EMPTY, &mut |_, _| {});
+            engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
             clocks.push(world.clock);
         }
 
@@ -450,8 +480,8 @@ mod tests {
 
         // Act：连续结算六次基准敏捷的等待。
         for _ in 0..6 {
-            engine.advance_ai(&mut world, player, no_op_ai, &mut |_, _| {});
-            engine.try_player_turn(&mut world, player, &input, &mut |_, _| {});
+            engine.advance_ai(&mut world, player, no_op_ai, &EMPTY, &mut |_, _| {});
+            engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
         }
 
         // Assert
@@ -500,9 +530,10 @@ mod tests {
                 &mut world,
                 player,
                 move_toward_origin,
+                &EMPTY,
                 &mut |_, _| {},
             ));
-            let acted = engine.try_player_turn(&mut world, player, &input, &mut |_, _| {});
+            let acted = engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
             assert!(acted, "本用例中每一轮都应能成功结算一次受控实体等待");
         }
 
@@ -529,12 +560,12 @@ mod tests {
         timeline.schedule(player, Tick(0));
         timeline.schedule(victim, Tick(100));
         let mut engine = TurnEngine::new(timeline);
-        engine.advance_ai(&mut world, player, no_op_ai, &mut |_, _| {});
+        engine.advance_ai(&mut world, player, no_op_ai, &EMPTY, &mut |_, _| {});
         let mut input = InputState::new();
         input.press(GameKey::Right);
 
         // Act
-        let acted = engine.try_player_turn(&mut world, player, &input, &mut |_, _| {});
+        let acted = engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
 
         // Assert
         assert!(acted);
@@ -580,7 +611,7 @@ mod tests {
         }
 
         // Act
-        let acted = engine.advance_ai(&mut world, player, attack_player, &mut |_, _| {});
+        let acted = engine.advance_ai(&mut world, player, attack_player, &EMPTY, &mut |_, _| {});
 
         // Assert：受控实体应已被击杀，且结算过的实体数应远小于
         // MAX_STEPS_PER_ADVANCE（10000）。
