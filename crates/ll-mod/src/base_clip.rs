@@ -1,5 +1,5 @@
 //! 本体动画剪辑注册——「本体即 Mod」在动画上的落点，照
-//! [`crate::base_terrain`]/[`crate::base_race`] 的既有模式。
+//! [`crate::base_terrain`]/[`crate::base_placeholder`] 的既有模式。
 //!
 //! `crate::clip::materialize_base_clips` 定义了本体两段剪辑（行走、
 //! 待机）的声明与固定注册顺序，但它本身刻意不知道「谁来分配
@@ -9,7 +9,7 @@
 //!
 //! # 为什么这一步值得单独成模块，而不是内联在别处
 //!
-//! 与 [`crate::base_terrain`]/[`crate::base_race`] 同一个理由：这是
+//! 与 [`crate::base_terrain`]/[`crate::base_placeholder`] 同一个理由：这是
 //! 「本体即 Mod」的检验点——本体剪辑注册与未来 mod 剪辑注册（经
 //! `register-animation-clip`，见 [`crate::script_clip_api`]）要走
 //! **完全相同**的 [`Registry::intern`] 调用。单独成模块，让

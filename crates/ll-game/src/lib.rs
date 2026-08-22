@@ -309,7 +309,26 @@ pub fn run_game() {
         tracing::warn!(%error, path = %paths.config.display(), "写出默认配置失败，继续使用内存中的默认值");
     }
 
-    let content = load_content(&paths.mods_root, &paths.assets_root);
+    // 本体内容契约解析失败是一条启动期硬错误，与下面「图集为空」同一
+    // 条纪律：本体内容（当前是三个种族）现在住在 `mods/lostland/` 的
+    // 脚本里，误删/改名那个目录会让 `content.race_ids.human` 背后没有
+    // 任何真实内容。与其让玩家进到一个建不出角色的残破会话里自己猜
+    // 原因，不如在启动那一刻就点名缺了哪几条内容、该去看哪个目录。
+    // 错误文案本身（`ll_mod::base_contract::BaseContractError` 的
+    // Display）已经逐条列出缺失明细，这里补上它不知道的那一半：本次
+    // 会话的 mods_root 究竟指向哪里。
+    let content = load_content(&paths.mods_root, &paths.assets_root).unwrap_or_else(|error| {
+        tracing::error!(
+            mods_root = %paths.mods_root.display(),
+            %error,
+            "本体内容契约解析失败，游戏无法继续启动：请确认 mods_root 下的本体内容目录              lostland/ 完整存在且未被改名或删除"
+        );
+        panic!(
+            "本体内容契约解析失败（mods_root={}）：
+{error}",
+            paths.mods_root.display()
+        );
+    });
     tracing::info!(
         registered_mods = content.report.loaded_count(),
         failed_mods = content.report.failed_count(),
@@ -464,7 +483,11 @@ mod tests {
         let base = crate::test_support::unique_temp_path("ll-game-lib-test-no-save");
         std::fs::create_dir_all(&base).expect("创建测试目录应当成功");
         let paths = GamePaths::under(&base);
-        let content = load_content(&paths.mods_root, &paths.assets_root);
+        // mods_root 指向仓库真实的 mods/ 目录：本体内容（种族）现在
+        // 住在 mods/lostland/ 里，临时目录下没有它，契约解析会（正确
+        // 地）失败——见 `content::load_content` 文档。
+        let content = load_content(&crate::test_support::repo_mods_dir(), &paths.assets_root)
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
 
         // Act
         let game_world = load_or_new_game(&paths, &content);
@@ -564,7 +587,8 @@ mod tests {
         let base = crate::test_support::unique_temp_path("ll-game-lib-test-with-save");
         std::fs::create_dir_all(&base).expect("创建测试目录应当成功");
         let paths = GamePaths::under(&base);
-        let content = load_content(&paths.mods_root, &paths.assets_root);
+        let content = load_content(&crate::test_support::repo_mods_dir(), &paths.assets_root)
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
         let original = new_game(&content);
         let original_pos = original
             .world

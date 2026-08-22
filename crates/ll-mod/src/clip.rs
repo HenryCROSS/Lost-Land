@@ -212,7 +212,7 @@ pub struct BaseClipIds {
 /// 本体剪辑注册的唯一入口：本体与 mod 共用的注册路径。
 ///
 /// `intern` 是外部传入的解析回调，理由同
-/// [`crate::race::materialize_base_races`] 文档；帧数据本身来自
+/// [`ll_world::terrain::materialize_base_terrain`] 文档；帧数据本身来自
 /// [`ll_render::anim::base_hero_clips`]（唯一权威定义，见其文档「为
 /// 什么这份内容放在机制 crate 里」）。
 pub fn materialize_base_clips(

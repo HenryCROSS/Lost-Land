@@ -56,7 +56,12 @@ fn test_content() -> LoadedContent {
         std::process::id()
     ));
     std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
-    let content = ll_game::content::load_content(&dir, &dir.join("assets"));
+    // mods_root 指向仓库真实的 mods/ 目录：本体内容（三个种族）住在
+    // mods/lostland/ 的脚本里，临时空目录下契约解析会（正确地）失败,
+    // 见 `ll_mod::base_contract` 模块文档。
+    let mods_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
+    let content = ll_game::content::load_content(&mods_root, &dir.join("assets"))
+        .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
     let _ = std::fs::remove_dir_all(&dir);
     content
 }

@@ -31,9 +31,34 @@ pub(crate) fn unique_temp_path(prefix: &str) -> PathBuf {
     std::env::temp_dir().join(format!("{prefix}-{}-{n}", std::process::id()))
 }
 
+/// 仓库真实的 `mods/` 目录路径——`ll-game` 到仓库根固定隔两级 `../..`。
+///
+/// 本体游戏内容（当前是三个种族）住在 `mods/lostland/*.scm`，不再
+/// 硬编码在 Rust 里，因此**任何调用 `crate::content::load_content` 的
+/// 测试都必须能看到这个目录**：临时空目录下装载会（正确地）在本体
+/// 内容契约解析那一步失败，见 `ll_mod::base_contract` 模块文档。
+///
+/// 与 `unique_temp_path` 的分工：临时目录仍然用来隔离**写**（存档、
+/// 配置），mods_root 是只读输入，共享仓库里那一份即可，不需要每个
+/// 测试各拷一份。
+pub(crate) fn repo_mods_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mods")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 仓库真实mods目录存在且含本体内容目录() {
+        // 守卫：本体内容目录一旦被删/改名，先在这里红,而不是等到某个
+        // 装载测试报出一条难以定位的契约解析失败。
+        // Arrange & Act
+        let mods = repo_mods_dir();
+
+        // Assert
+        assert!(mods.join("lostland").join("mod.json5").is_file());
+    }
 
     #[test]
     fn 同一个前缀连续取两次得到不同路径() {

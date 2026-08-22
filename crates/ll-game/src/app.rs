@@ -958,7 +958,14 @@ mod tests {
     fn test_content() -> LoadedContent {
         let dir = crate::test_support::unique_temp_path("ll-game-app-test-content");
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
-        let content = crate::content::load_content(&dir, &dir.join("assets"));
+        // mods_root 指向仓库真实的 mods/ 目录（本体内容住在
+        // mods/lostland/，临时空目录下契约解析必然失败）；assets_root
+        // 仍指向临时目录，本文件的测试不需要真实贴图。
+        let content = crate::content::load_content(
+            &crate::test_support::repo_mods_dir(),
+            &dir.join("assets"),
+        )
+        .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
         let _ = std::fs::remove_dir_all(&dir);
         content
     }

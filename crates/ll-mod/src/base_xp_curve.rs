@@ -1,7 +1,7 @@
 //! 本体默认经验曲线注册——`knowledge/design/level-and-experience-system.md`
 //! 八节「未绑定的职业/种族退回 `lostland:default_xp_curve`」的落地。
 //!
-//! # 为什么走与 [`crate::base_race`] 完全相同的模式
+//! # 为什么走与 [`crate::base_terrain`] 完全相同的模式
 //!
 //! 与「本体即 Mod」既有先例同一条纪律：本体默认曲线与 mod 通过
 //! `register-xp-curve` 声明的曲线共用**完全相同**的
@@ -29,7 +29,7 @@ use crate::xp_curve::{XpCurveError, XpCurveTable};
 pub const DEFAULT_XP_CURVE_ID: &str = "lostland:default_xp_curve";
 
 /// 本体默认曲线注册的唯一入口：`intern` 是外部传入的解析回调，理由同
-/// [`crate::race::materialize_base_races`] 文档。
+/// [`ll_world::terrain::materialize_base_terrain`] 文档。
 pub fn register_base_xp_curve(
     intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
 ) -> Result<(ContentIndex, XpCurveTable), XpCurveError> {

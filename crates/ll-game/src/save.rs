@@ -116,7 +116,9 @@ mod tests {
     fn test_content() -> LoadedContent {
         let dir = crate::test_support::unique_temp_path("ll-game-save-test-content");
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
-        let content = load_content(&dir, &dir.join("assets"));
+        // 理由同 crate::app 的同名帮手：本体内容住在 mods/lostland/。
+        let content = load_content(&crate::test_support::repo_mods_dir(), &dir.join("assets"))
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
         let _ = std::fs::remove_dir_all(&dir);
         content
     }

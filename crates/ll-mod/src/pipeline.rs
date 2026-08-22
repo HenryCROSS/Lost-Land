@@ -20,12 +20,23 @@
 //!                                       这是一处已知的简化）
 //! ```
 //!
-//! 本体内容（[`crate::base_terrain::register_base_terrain`]/
-//! [`crate::base_race::register_base_races`] 等 `base_*` 模块）**不经过
-//! 这条管线**——它们是一次直接的 Rust 函数调用，没有清单、没有脚本，
-//! 见各自模块文档。调用方应在跑本管线之前先调用一遍全部 `base_*`
-//! 注册函数，两者共享同一个 [`crate::registry::Registry`] 与
-//! [`GameplayTables`] 里的各张内容表。
+//! 本体内容分两半，与这条管线的关系**不一样**，这是本模块最容易被
+//! 误读的一点：
+//!
+//! - **已迁进脚本的那一半**（当前是种族——`mods/lostland/races.scm`）
+//!   走的**就是这条管线**，与任何第三方 mod 完全同一条路径，没有任何
+//!   本体专属入口。它是**强制装载**的：装载完毕后
+//!   `ll_game::content::load_content` 会用 [`crate::base_contract`] 的
+//!   契约解析按 id 逐字段填充 `ll_mod::race::BaseRaceIds` 这类句柄，
+//!   缺任何一条就整批失败。
+//! - **尚未迁走的那一半**（[`crate::base_terrain::register_base_terrain`]/
+//!   [`crate::base_placeholder::register_base_placeholder_content`] 等
+//!   仍然存在的 `base_*` 模块）**不经过这条管线**——它们是一次直接的
+//!   Rust 函数调用，没有清单、没有脚本，见各自模块文档。调用方应在跑
+//!   本管线之前先调用一遍这些 `base_*` 注册函数。
+//!
+//! 两半共享同一个 [`crate::registry::Registry`] 与 [`GameplayTables`]
+//! 里的各张内容表。
 
 use std::path::Path;
 
@@ -172,12 +183,18 @@ pub struct GameplayTables<'a> {
 /// 排序、按序加载脚本、注册内容——写入 `registry`/`tables`，返回一份
 /// 报告。
 ///
-/// `registry`/`tables` 应当已经装过本体内容（`register_base_terrain`/
-/// `register_base_races` 等）：本函数只管 mod 目录，不知道、也不需要
-/// 知道本体是怎么注册进去的——这正是「本体即 Mod」在管线层面的体现：
-/// 本体的注册发生在调用本函数**之前**的一次独立调用，mod 内容随后
-/// intern 进同一个 `Registry`，两者共用同一段单调递增的 `ContentIndex`
-/// 号段（见 `crate::base_terrain` 模块文档与其测试）。
+/// `registry`/`tables` 应当已经装过**尚未迁进脚本的那部分**本体内容
+/// （`register_base_terrain`/`register_base_placeholder_content` 等）：
+/// 本函数只管 mod 目录，不知道、也不需要知道它们是怎么注册进去的
+/// ——这正是「本体即 Mod」在管线层面的体现：那部分注册发生在调用本
+/// 函数**之前**的一次独立调用，mod 内容随后 intern 进同一个
+/// `Registry`，两者共用同一段单调递增的 `ContentIndex` 号段（见
+/// `crate::base_terrain` 模块文档与其测试）。
+///
+/// 已经迁进脚本的本体内容（`mods/lostland/`）反过来是**本函数自己**
+/// 装载的，与任何第三方 mod 走同一条路径——调用方随后必须跑一次契约
+/// 解析（[`crate::race::resolve_base_races`]）确认它真的在，见
+/// [`crate::base_contract`] 模块文档。
 pub fn load_all(
     mods_root: &Path,
     registry: &mut Registry,

@@ -10,9 +10,22 @@
 //!
 //! 见 `crate::class` 模块文档「照抄 `terrain.rs`/`space_profile.rs`
 //! 已验证的模式」一节——私有字段 + `RaceTable::define` 注册期完整校验
-//! （ADR 0017）+ `materialize_base_races` 本体注册入口 +
-//! `base_race_fixture` 测试夹具，本模块走同一条路径，与职业同一个理由
-//! 直接落在 `ll-mod`（种族定义本身不依赖任何「世界空间」概念）。
+//! （ADR 0017），本模块走同一条路径，与职业同一个理由直接落在
+//! `ll-mod`（种族定义本身不依赖任何「世界空间」概念）。
+//!
+//! # 本体三个种族的定义已经搬进 `mods/lostland/races.scm`
+//!
+//! 本模块此前还有一对 `materialize_base_races`/`base_race_fixture`：
+//! 前者把人类/矮人/精灵三条声明的字段值写死在 Rust 字面量里，后者是
+//! 它的测试夹具。项目所有者裁定「本体主要是把整个框架做好做完整」
+//! ——Rust 只留**能力**（注册表、契约解析、值哈希），**实例**（哪个
+//! 种族、什么数值）落在 mod 脚本——之后，两者一并删除，三个种族改由
+//! `mods/lostland/races.scm` 调用与任何第三方 mod 完全相同的
+//! `register-race` 注册。
+//!
+//! 留下来的是 [`BaseRaceIds`]（句柄，保住使用点的编译期安全）与
+//! [`resolve_base_races`]（装载后按 id 逐字段解析这个句柄，缺一条就
+//! 整批失败）——见 [`crate::base_contract`] 模块文档。
 //!
 //! # 字段形状：以设计文档为准，但显示名走既有的 `NamespacedId` 惯例
 //!
@@ -77,11 +90,14 @@
 //! 调用方需要显式处理「这个实体的种族是占位值」这种情况，而不是期待
 //! `RaceTable` 为它兜底一份看似合法实则伪造的属性。两者共用同一个
 //! `Registry`、同一段 `ContentIndex` 号段，`lostland:placeholder_race`
-//! 与 `materialize_base_races` 注册的任何真实种族之间不存在也不可能
+//! 与 `mods/lostland/races.scm` 注册的任何真实种族之间不存在也不可能
 //! 存在命名冲突（不同的命名空间路径，`Registry::intern` 天然隔离）。
 
-use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_sim::character::RaceStatModifierSource;
+
+use crate::base_contract::{BaseContractError, BaseContractResolver};
+use crate::registry::Registry;
 use ll_sim::traits::{TraitGrant, TraitGrantSource};
 use ll_world::entity::BaseStats;
 use ll_world::item::ItemStack;
@@ -89,9 +105,10 @@ use std::fmt;
 
 /// 单条种族声明：本体与 mod 注册种族时共用的同一个输入形状。
 ///
-/// 这就是「本体即 Mod」在种族层面的验收标的——[`materialize_base_races`]
-/// 拿这个类型的值去调用外部传入的 `intern` 回调，本体的声明与未来 mod
-/// 的声明除了 `id` 里的命名空间字符串不同之外，不存在任何结构性差异。
+/// 这就是「本体即 Mod」在种族层面的验收标的——本体三个种族
+/// （`mods/lostland/races.scm`）与任何第三方 mod 的种族现在都经由
+/// `register-race` 落成这同一个形状，除了 `id` 里的命名空间字符串
+/// 不同之外，不存在任何结构性差异，也不存在任何本体专属的注册通道。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RaceDef {
     /// 命名空间标识符，例如 `lostland:dwarf`、`yourmod:half_elf`。
@@ -158,9 +175,9 @@ pub struct RaceDef {
 
 /// [`RaceTable::define`] 实际存进列式存储的属性子集——不含 `id`，理由同
 /// [`crate::class::ClassAttrs`]。**必须公开**：这是 `define` 唯一的
-/// 参数类型，任何想直接调用 `define`（而不是走
-/// [`materialize_base_races`] 那条便捷路径）的调用方——包括未来 mod
-/// 自己的种族注册函数——都需要能构造这个类型。
+/// 参数类型，任何想直接调用 `define`（而不是走 `register-race` 那条
+/// 脚本路径）的调用方——包括 `crate::script_race_api` 自己——都需要能
+/// 构造这个类型。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RaceAttrs {
     /// 指向 Fluent 本地化键。
@@ -478,12 +495,19 @@ impl ll_sim::vision::RaceDarkvisionSource for RaceTable {
     }
 }
 
-/// 本体基础种族在当前注册表里的索引缓存。
+/// 本体基础种族在当前注册表里的索引缓存——「句柄留在 Rust」那一半。
 ///
-/// 只注册占位性质的少数几种基础种族——真正的种族数值平衡与内容设计
-/// 不在本任务范围，与 [`crate::class::BaseClassIds`] 同一条纪律。三种
-/// 族演示三种不同的修正取向：人类（无修正，`race-system.md` 惯常的
-/// 「基准种族」角色）、矮人（体质向，暗视）、精灵（敏捷/智力向）。
+/// # 定义搬进了脚本，这个结构体刻意留下
+///
+/// 三个种族的**字段值**（属性修正、暗视下限、体型、寿命）现在住在
+/// `mods/lostland/races.scm`，不再是本文件里的 Rust 字面量。但本结构体
+/// **不能**跟着搬走：`ll_game::world::spawn_player` 里
+/// `content.race_ids.human` 这行代码的编译期安全全靠它——字段名少一个
+/// 就编译不过，没有任何"字符串拼错了、运行到那一步才发现"的空间。
+/// 搬走的是内容，留下的是契约，见 [`crate::base_contract`] 模块文档。
+///
+/// 填充由 [`resolve_base_races`] 在装载完成后按 id 逐字段解析完成，
+/// 缺任何一条整批失败。
 #[derive(Debug, Clone, Copy)]
 pub struct BaseRaceIds {
     /// 人类：无属性修正，暗视下限为零（无暗视）。
@@ -494,110 +518,161 @@ pub struct BaseRaceIds {
     pub elf: ContentIndex,
 }
 
-/// 本体种族注册的唯一入口：本体与 mod 共用的注册路径。
+/// 本体三个基础种族的 id 字面量——[`resolve_base_races`] 的契约清单，
+/// 同时也是 `mods/lostland/races.scm` 必须注册哪几条内容的唯一权威
+/// 来源。
 ///
-/// `intern` 是外部传入的解析回调，理由同
-/// [`crate::class::materialize_base_classes`] 文档。
-pub fn materialize_base_races(
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-) -> Result<(BaseRaceIds, RaceTable), RaceError> {
-    let mut table = RaceTable::new();
+/// 抽成常量而不是把字符串直接写在 [`resolve_base_races`] 里：集成测试
+/// （`crates/ll-mod/tests/base_mod_races.rs`）要按同一份清单核对脚本
+/// 真的注册了它们，两处各写一份字面量迟早会分叉。
+const BASE_RACE_IDS: [(&str, &str); 3] = [
+    ("BaseRaceIds::human", "lostland:human"),
+    ("BaseRaceIds::dwarf", "lostland:dwarf"),
+    ("BaseRaceIds::elf", "lostland:elf"),
+];
 
-    let human = define_base(
-        &mut table,
-        intern,
-        "lostland:human",
-        "lostland:race.human.display_name",
-        ZERO_STAT_MODIFIERS,
-        0,
-        (1, 1),
-        80,
-    )?;
-    let dwarf = define_base(
-        &mut table,
-        intern,
-        "lostland:dwarf",
-        "lostland:race.dwarf.display_name",
-        BaseStats {
-            constitution: 2,
-            strength: 1,
-            ..ZERO_STAT_MODIFIERS
-        },
-        // 暗视下限：取一个明显高于「完全黑暗」（0）又明显低于满光照的
-        // 值，具体数值本任务不做平衡设计，只保证字段真的被本体使用到。
-        4,
-        (1, 1),
-        250,
-    )?;
-    let elf = define_base(
-        &mut table,
-        intern,
-        "lostland:elf",
-        "lostland:race.elf.display_name",
-        BaseStats {
-            dexterity: 2,
-            intelligence: 1,
-            ..ZERO_STAT_MODIFIERS
-        },
-        0,
-        (1, 1),
-        400,
-    )?;
+/// 装载完成后解析本体种族契约：按 id 逐字段填充 [`BaseRaceIds`]，
+/// 缺任何一条就整批失败。
+///
+/// # 这个函数取代了原先的 `materialize_base_races`
+///
+/// 旧函数同时干「声明三个种族的字段值」与「产出句柄结构体」两件事；
+/// 项目所有者裁定「本体 = 框架能力，内容 = mod 实例」后，前一半搬进
+/// `mods/lostland/races.scm`，本函数只保留后一半——它**不注册任何
+/// 内容**，只查询：`registry` 里有没有这三个 id、`table` 里有没有它们
+/// 的定义。因此本体种族与第三方 mod 种族现在走的是**完全相同**的
+/// `register-race` 脚本通道，一条本体专属的 Rust 注册路径都不剩，
+/// 「本体即 Mod」在种族这一类内容上第一次是字面意义上成立的。
+///
+/// # 失败是常态分支，不是 `expect`
+///
+/// 旧函数的调用点写的是 `.expect("本体种族声明表内部一致，注册恒不
+/// 失败")`——那句话当时是真的（字面量写死在 Rust 里，不可能缺）。搬进
+/// 脚本之后它不再成立：玩家可能误删 `mods/lostland/`、脚本可能语法
+/// 出错、内容可能被改 id。本函数因此返回 `Result`，把这条真实存在的
+/// 失败摆到调用方面前，由调用方（`ll_game::content::load_content`
+/// → `ll_game::run_game`）决定怎么响亮地报给玩家。
+pub fn resolve_base_races(
+    registry: &Registry,
+    table: &RaceTable,
+) -> Result<BaseRaceIds, BaseContractError> {
+    let mut resolver = BaseContractResolver::new("本体种族", registry);
+    let mut resolved = BASE_RACE_IDS
+        .iter()
+        .map(|(field, id)| resolver.require(field, id, |index| table.is_defined(index)));
+    // 顺序与 BASE_RACE_IDS 的声明顺序一一对应；`BASE_RACE_IDS` 的长度
+    // 由类型（`[_; 3]`）钉死，少一条就编译不过。
+    let human = resolved.next().expect("BASE_RACE_IDS 恒有三条");
+    let dwarf = resolved.next().expect("BASE_RACE_IDS 恒有三条");
+    let elf = resolved.next().expect("BASE_RACE_IDS 恒有三条");
+    drop(resolved);
+    resolver.finish()?;
 
-    Ok((BaseRaceIds { human, dwarf, elf }, table))
-}
-
-/// [`materialize_base_races`] 的内部帮手：把一条声明的字面量字段拆开
-/// 传入，换取一次 `intern` + 一次 [`RaceTable::define`]。
-#[allow(clippy::too_many_arguments)]
-fn define_base(
-    table: &mut RaceTable,
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-    id: &str,
-    display_name_key: &str,
-    stat_modifiers: BaseStats,
-    darkvision_floor: i32,
-    footprint: (u8, u8),
-    lifespan_years: u32,
-) -> Result<ContentIndex, RaceError> {
-    let index = intern(NamespacedId::parse(id).expect("本体种族 id 字面量恒合法"));
-    table.define(
-        index,
-        RaceAttrs {
-            display_name_key: NamespacedId::parse(display_name_key)
-                .expect("本体种族本地化键字面量恒合法"),
-            stat_modifiers,
-            darkvision_floor,
-            footprint,
-            lifespan_years,
-            // 本体三种基础种族是玩家可选种族，不是设计给「打怪拿经验」
-            // 用的内容，击杀经验值留空（0）——真正的怪物内容由 mod 通过
-            // `register-race-xp-reward` 追加声明,见 RaceDef::xp_reward
-            // 文档。
-            xp_reward: 0,
-            // 本体三种基础种族当前不预置任何天赋——龙裔吐息/矮人抗毒
-            // 这类内容属于内容设计，不在本任务范围（模块文档「本批次
-            // 范围」一节），mod 通过 `register-race-trait` 追加声明。
-            traits: Vec::new(),
-            starting_items: Vec::new(),
-        },
-    )?;
-    Ok(index)
-}
-
-/// 供测试使用：现造一个空 [`Interner`]，注册本体全部基础种族，返回
-/// 可用的 `(BaseRaceIds, RaceTable)`。不是生产路径，理由同
-/// [`crate::class::base_class_fixture`]。
-pub fn base_race_fixture() -> (BaseRaceIds, RaceTable) {
-    let mut interner = Interner::new();
-    materialize_base_races(&mut |id| interner.intern(id))
-        .expect("本体种族声明表内部一致，注册恒不失败")
+    Ok(BaseRaceIds { human, dwarf, elf })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::Registry;
+    use ll_core::ident::Interner;
+
+    /// 一张现造的、与本体内容无关的种族表。
+    ///
+    /// 本模块的单元测试验的是 [`RaceTable`] 这套**机制**（`define`/
+    /// `get`/追加声明/三个依赖倒置 `impl`），不是「本体有哪几个种族、
+    /// 数值各是多少」——后者的定义已经搬进 `mods/lostland/races.scm`，
+    /// 由 `crates/ll-mod/tests/base_mod_races.rs` 端到端逐字段核对。
+    /// 这里刻意用 `testmod:` 命名空间现造两条测试数据，而不是照抄一份
+    /// 本体数值：在 Rust 里再埋一份本体内容字面量，恰恰是本次迁移要
+    /// 消除的那种「同一份内容存在两处、迟早分叉」。
+    ///
+    /// 返回的两条测试种族：`sturdy`（体质 +2、力量 +1，暗视下限 4）与
+    /// `nimble`（敏捷 +2，寿命 400）。
+    fn sample_table() -> (Registry, ContentIndex, ContentIndex, RaceTable) {
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+
+        let define = |registry: &mut Registry,
+                      table: &mut RaceTable,
+                      id: &str,
+                      stat_modifiers: BaseStats,
+                      darkvision_floor: i32,
+                      lifespan_years: u32| {
+            let index = registry.intern(NamespacedId::parse(id).expect("合法标识符"));
+            table
+                .define(
+                    index,
+                    RaceAttrs {
+                        display_name_key: NamespacedId::parse("testmod:display_name")
+                            .expect("合法标识符"),
+                        stat_modifiers,
+                        darkvision_floor,
+                        footprint: (1, 1),
+                        lifespan_years,
+                        xp_reward: 0,
+                        traits: Vec::new(),
+                        starting_items: Vec::new(),
+                    },
+                )
+                .expect("首次定义应当成功");
+            index
+        };
+
+        let sturdy = define(
+            &mut registry,
+            &mut table,
+            "testmod:sturdy",
+            BaseStats {
+                constitution: 2,
+                strength: 1,
+                ..ZERO_STAT_MODIFIERS
+            },
+            4,
+            120,
+        );
+        let nimble = define(
+            &mut registry,
+            &mut table,
+            "testmod:nimble",
+            BaseStats {
+                dexterity: 2,
+                ..ZERO_STAT_MODIFIERS
+            },
+            0,
+            400,
+        );
+
+        (registry, sturdy, nimble, table)
+    }
+
+    /// 造一份「本体三个种族都已注册」的注册表 + 种族表，供契约解析的
+    /// 正例测试使用——模拟 `mods/lostland/races.scm` 装载成功之后的
+    /// 状态。字段值一律取零/占位：本函数验的是**契约解析这套机制**，
+    /// 内容值的忠实性由 `tests/base_mod_races.rs` 对真实脚本负责。
+    fn registry_with_all_base_races() -> (Registry, RaceTable) {
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+        for (_, id) in BASE_RACE_IDS {
+            let index = registry.intern(NamespacedId::parse(id).expect("本体 id 字面量恒合法"));
+            table
+                .define(
+                    index,
+                    RaceAttrs {
+                        display_name_key: NamespacedId::parse("lostland:placeholder")
+                            .expect("合法标识符"),
+                        stat_modifiers: ZERO_STAT_MODIFIERS,
+                        darkvision_floor: 0,
+                        footprint: (1, 1),
+                        lifespan_years: 1,
+                        xp_reward: 0,
+                        traits: Vec::new(),
+                        starting_items: Vec::new(),
+                    },
+                )
+                .expect("首次定义应当成功");
+        }
+        (registry, table)
+    }
 
     #[test]
     fn 新建的种族表查询任意索引均为未注册() {
@@ -609,42 +684,73 @@ mod tests {
     }
 
     #[test]
-    fn 人类没有任何属性修正() {
+    fn 三个本体种族都在时契约解析成功且三个字段各指向对应id() {
         // Arrange
-        let (ids, table) = base_race_fixture();
+        let (registry, table) = registry_with_all_base_races();
 
         // Act
-        let view = table.get(ids.human).expect("人类已在本体注册");
+        let ids = resolve_base_races(&registry, &table).expect("三个种族都在，契约应当解析成功");
 
-        // Assert
-        assert_eq!(view.stat_modifiers, ZERO_STAT_MODIFIERS);
-        assert_eq!(view.darkvision_floor, 0);
+        // Assert：逐字段反查回字符串，证明填的不是占位索引也没错位。
+        let resolve = |index: ContentIndex| registry.resolve(index).map(|id| id.to_string());
+        assert_eq!(resolve(ids.human), Some("lostland:human".to_string()));
+        assert_eq!(resolve(ids.dwarf), Some("lostland:dwarf".to_string()));
+        assert_eq!(resolve(ids.elf), Some("lostland:elf".to_string()));
     }
 
     #[test]
-    fn 矮人体质修正为正二且暗视下限大于零() {
+    fn 本体种族目录整个缺失时契约解析失败并列出全部三条() {
+        // 这就是「玩家误删 mods/lostland/」那一幕：不是静默进到一个
+        // 没有种族的残破游戏，而是一条点名三条内容的失败。
         // Arrange
-        let (ids, table) = base_race_fixture();
+        let registry = Registry::new();
+        let table = RaceTable::new();
 
         // Act
-        let view = table.get(ids.dwarf).expect("矮人已在本体注册");
+        let error = resolve_base_races(&registry, &table).expect_err("空注册表必须解析失败");
 
         // Assert
-        assert_eq!(view.stat_modifiers.constitution, 2);
-        assert!(view.darkvision_floor > 0);
+        assert_eq!(error.required, 3);
+        assert_eq!(error.missing.len(), 3);
+        assert!(
+            error
+                .missing
+                .iter()
+                .all(|entry| entry.reason == crate::base_contract::MissingReason::NotInterned)
+        );
     }
 
     #[test]
-    fn 精灵寿命长于人类() {
-        // Arrange
-        let (ids, table) = base_race_fixture();
+    fn 少注册一个本体种族时契约解析失败并只点名缺的那一条() {
+        // Arrange：只注册人类与矮人，精灵缺席（模拟脚本被改坏了一行）。
+        let mut registry = Registry::new();
+        let mut table = RaceTable::new();
+        for (_, id) in BASE_RACE_IDS.iter().take(2) {
+            let index = registry.intern(NamespacedId::parse(id).expect("合法标识符"));
+            table
+                .define(
+                    index,
+                    RaceAttrs {
+                        display_name_key: NamespacedId::parse("lostland:placeholder")
+                            .expect("合法标识符"),
+                        stat_modifiers: ZERO_STAT_MODIFIERS,
+                        darkvision_floor: 0,
+                        footprint: (1, 1),
+                        lifespan_years: 1,
+                        xp_reward: 0,
+                        traits: Vec::new(),
+                        starting_items: Vec::new(),
+                    },
+                )
+                .expect("首次定义应当成功");
+        }
 
         // Act
-        let elf_view = table.get(ids.elf).expect("精灵已在本体注册");
-        let human_view = table.get(ids.human).expect("人类已在本体注册");
+        let error = resolve_base_races(&registry, &table).expect_err("缺一条必须解析失败");
 
         // Assert
-        assert!(elf_view.lifespan_years > human_view.lifespan_years);
+        assert_eq!(error.missing.len(), 1);
+        assert_eq!(error.missing[0].field, "BaseRaceIds::elf");
     }
 
     #[test]
@@ -708,18 +814,15 @@ mod tests {
     #[test]
     fn 追加声明经验值后查询结果反映新值() {
         // Arrange
-        let (ids, mut table) = base_race_fixture();
+        let (_registry, sturdy, _nimble, mut table) = sample_table();
 
         // Act
         table
-            .set_xp_reward(ids.dwarf, 25)
-            .expect("矮人已经定义,追加声明应当成功");
+            .set_xp_reward(sturdy, 25)
+            .expect("该种族已经定义,追加声明应当成功");
 
         // Assert
-        assert_eq!(
-            table.get(ids.dwarf).expect("矮人已在本体注册").xp_reward,
-            25
-        );
+        assert_eq!(table.get(sturdy).expect("该种族已定义").xp_reward, 25);
     }
 
     #[test]
@@ -831,18 +934,22 @@ mod tests {
     }
 
     #[test]
-    fn 本体种族与mod种族调用同一个公开define函数完成注册() {
-        // 结构等价断言，理由同 crate::class 模块的等价测试。
+    fn 本体种族与mod种族共存于同一张表且契约只解析本体那几条() {
+        // 迁移后的结构等价断言：本体种族已经没有任何 Rust 注册路径，
+        // 它与 mod 种族现在共用同一个 `define`（脚本侧同一个
+        // `register-race`）。本测试因此不再验「本体注册函数」，改验
+        // 契约解析的**作用域**：同一张表里本体三条与 mod 一条共存时，
+        // `resolve_base_races` 只认本体那三条，mod 那条既不被要求、
+        // 也不被它干扰。
         //
-        // 边界：本测试只证明本体与 mod 走同一条注册路径，不能证明
-        // mod 脚本调得到这套 API。真正的证据在 crate::pipeline 的
-        // 脚本装载测试与 mods/example_mod/gameplay.scm。
+        // 边界：本测试用 `define` 直接填表，不能证明 mod 脚本调得到
+        // 这套 API。真正的证据在 crate::pipeline 的脚本装载测试、
+        // mods/example_mod/gameplay.scm 与 tests/base_mod_races.rs。
         // Arrange
-        let mut registry = Registry::new();
+        let (mut registry, mut table) = registry_with_all_base_races();
 
         // Act
-        let (race_ids, mut table) =
-            materialize_base_races(&mut |id| registry.intern(id)).expect("本体种族声明表内部一致");
+        let race_ids = resolve_base_races(&registry, &table).expect("三个本体种族都已定义");
         let mod_id = NamespacedId::parse("yourmod:half_elf").expect("合法标识符");
         let mod_index = registry.intern(mod_id);
         table
@@ -866,22 +973,24 @@ mod tests {
             .expect("mod 种族与本体种族调用同一个公开 define 函数,理应同样成功");
 
         // Assert：mod 内容紧接在本体三种种族之后分配到索引，说明两者
-        // 共用同一个单调递增的号段。
+        // 共用同一个单调递增的号段；契约仍只解析本体那三条。
         assert_eq!(mod_index.get(), race_ids.elf.get() + 1);
         let view = table.get(mod_index).expect("mod 种族已通过 define 登记");
         assert_eq!(view.lifespan_years, 150);
+        let after = resolve_base_races(&registry, &table).expect("多出一条 mod 种族不影响本体契约");
+        assert_eq!(after.elf.get(), race_ids.elf.get());
     }
 
     #[test]
-    fn racestatmodifiersource查询矮人返回其体质力量修正() {
+    fn racestatmodifiersource查询已定义种族返回其体质力量修正() {
         // 直接验收 impl RaceStatModifierSource for RaceTable：真实实现
         // 确实把 stat_modifiers 字段透传给了 ll_sim::character 的依赖
         // 倒置接口，不是一个只挂名字、内部恒返回零的空壳。
         // Arrange
-        let (ids, table) = base_race_fixture();
+        let (_registry, sturdy, _nimble, table) = sample_table();
 
         // Act
-        let modifiers = RaceStatModifierSource::race_stat_modifiers(&table, ids.dwarf);
+        let modifiers = RaceStatModifierSource::race_stat_modifiers(&table, sturdy);
 
         // Assert
         assert_eq!(modifiers.constitution, 2);
@@ -905,15 +1014,15 @@ mod tests {
     }
 
     #[test]
-    fn racedarkvisionsource查询矮人返回其暗视下限() {
+    fn racedarkvisionsource查询已定义种族返回其暗视下限() {
         // 直接验收 impl RaceDarkvisionSource for RaceTable：真实实现
         // 确实把 darkvision_floor 字段透传给了 ll_sim::vision 的依赖
         // 倒置接口，不是一个只挂名字、内部恒返回零的空壳。
         // Arrange
-        let (ids, table) = base_race_fixture();
+        let (_registry, sturdy, _nimble, table) = sample_table();
 
         // Act
-        let floor = ll_sim::vision::RaceDarkvisionSource::darkvision_floor(&table, ids.dwarf);
+        let floor = ll_sim::vision::RaceDarkvisionSource::darkvision_floor(&table, sturdy);
 
         // Assert
         assert!(floor > 0);
@@ -941,12 +1050,11 @@ mod tests {
         // 两者共用同一个 Registry，互不冲突；占位索引在 RaceTable 里
         // 查不到属性——这是刻意的，不是遗漏。
         // Arrange
-        let mut registry = Registry::new();
+        let (mut registry, table) = registry_with_all_base_races();
         let placeholder = crate::base_placeholder::register_base_placeholder_content(&mut registry);
 
         // Act
-        let (race_ids, table) =
-            materialize_base_races(&mut |id| registry.intern(id)).expect("本体种族声明表内部一致");
+        let race_ids = resolve_base_races(&registry, &table).expect("三个本体种族都已定义");
 
         // Assert：占位索引与三种真实种族的索引互不相同。
         assert_ne!(placeholder, race_ids.human);

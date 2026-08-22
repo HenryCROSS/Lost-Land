@@ -15,24 +15,32 @@
 //!
 //! # 加载顺序
 //!
-//! 先注册本体内容（地形 → 种族 → 空间层属性 → 占位内容 → 动画剪辑），
-//! 再跑 [`ll_mod::pipeline::load_all`] 装载 `mods_root` 下的 mod——
-//! 顺序理由见 [`ll_mod::pipeline`] 模块文档「本体内容不经过这条
-//! 管线」一节：mod 内容 intern 进同一个 `Registry`，必须排在本体注册
-//! 之后才能保证号段不冲突。五类本体注册彼此之间顺序不影响正确性
-//! （各自对应不同的命名空间前缀，见 `ll_mod::base_race` 模块文档
-//! 「调用顺序与 register_base_placeholder_content 无关」一节），这里
-//! 固定一个顺序只是为了让日志读起来是线性的。
+//! 1. 注册**尚未迁进脚本的**本体内容（地形 → 空间层属性 → 占位内容
+//!    → 动画剪辑 → 经验曲线 → 伤害公式 → 伤害类别）——一次直接的 Rust
+//!    函数调用，见 [`ll_mod::pipeline`] 模块文档「本体内容分两半」一节。
+//!    这几类彼此之间顺序不影响正确性（各自对应不同的 id 前缀，
+//!    `Registry::intern` 天然隔离），固定一个顺序只是为了让日志读起来
+//!    是线性的。
+//! 2. 跑 [`ll_mod::pipeline::load_all`] 装载 `mods_root` 下的全部 mod
+//!    ——**包括本体自己的 `mods/lostland/`**（种族已经迁进去了）。
+//! 3. 跑本体内容契约解析（[`ll_mod::race::resolve_base_races`]）：按 id
+//!    逐字段填充 Rust 侧留下的句柄结构体，缺任何一条就整批失败，见
+//!    [`ll_mod::base_contract`] 模块文档。这是 [`load_content`] 会返回
+//!    `Err` 的唯一原因。
+//! 4. 跑一次 [`ll_mod::content_hash::apply_value_hashes`] 收尾。
+//!
+//! 第 1 步与第 2 步的先后不能颠倒：mod 内容 intern 进同一个 `Registry`，
+//! 排在本体 Rust 注册之后才能保证号段不冲突。
 
 use std::path::Path;
 
 use ll_core::ident::ContentIndex;
 use ll_mod::asset_vfs::{self, AssetVfs};
 use ll_mod::base_clip::register_base_clips;
+use ll_mod::base_contract::BaseContractError;
 use ll_mod::base_damage_category::register_base_damage_category;
 use ll_mod::base_damage_formula::register_base_damage_formula;
 use ll_mod::base_placeholder::register_base_placeholder_content;
-use ll_mod::base_race::register_base_races;
 use ll_mod::base_space_profile::register_base_space_profiles;
 use ll_mod::base_terrain::register_base_terrain;
 use ll_mod::base_xp_curve::register_base_xp_curve;
@@ -47,7 +55,7 @@ use ll_mod::load_report::{LoadReport, LoadStatus};
 use ll_mod::manifest::{ModManifest, parse_manifest};
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::{QuestTable, RegisteredQuests};
-use ll_mod::race::{BaseRaceIds, RaceTable};
+use ll_mod::race::{BaseRaceIds, RaceTable, resolve_base_races};
 use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::SkillTable;
@@ -241,8 +249,20 @@ impl<'a> RuntimeCatalogs<'a> {
 /// 理由见该方法文档「伤害类别这一路为什么仍是空实现」一节。
 const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 
-/// 装载全部游戏内容：先注册本体内容，再装载 `mods_root` 下的 mod，
-/// 最后解析 `assets_root` 下本体与全部 mod 的资产 VFS。
+/// 装载全部游戏内容：先注册尚未迁进脚本的本体内容，再装载 `mods_root`
+/// 下的全部 mod（含本体自己的 `mods/lostland/`），跑一次本体内容契约
+/// 解析，最后解析 `assets_root` 下本体与全部 mod 的资产 VFS。
+///
+/// # 返回 `Err` 的唯一原因：本体内容契约没解析成功
+///
+/// 本体内容（当前是三个种族）已经搬进 `mods/lostland/*.scm`，Rust 侧
+/// 只留下 `ll_mod::race::BaseRaceIds` 这类句柄结构体。句柄的填充要靠
+/// 「装载完毕后按 id 去注册表里查」，这一步是**真的可能失败**的：玩家
+/// 误删/改名了 `mods/lostland/`、脚本语法出错、内容改了 id。本函数
+/// 因此返回 `Result` 而不是像其余 `register_base_*` 那样 `expect`
+/// ——那几个 `expect` 的理由（"字面量写死在 Rust 里，不可能缺"）对
+/// 迁走的内容不再成立。调用方（`crate::run_game`）负责把这条失败
+/// 响亮地报给玩家，见 `ll_mod::base_contract` 模块文档。
 ///
 /// `assets_root` 是本体自己的 `assets/` 目录（内含
 /// `sprites/manifest.json5`），与 `mods_root` 是两个独立的目录树——
@@ -251,13 +271,14 @@ const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 ///
 /// **本体二进制应当只调用本函数一次**（启动时）——这是本模块存在的
 /// 唯一理由，见模块文档。
-pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
+pub fn load_content(
+    mods_root: &Path,
+    assets_root: &Path,
+) -> Result<LoadedContent, BaseContractError> {
     let mut registry = Registry::new();
 
     let (terrain_ids, mut terrain_table) =
         register_base_terrain(&mut registry).expect("本体地形声明表内部一致，注册恒不失败");
-    let (race_ids, mut race_table) =
-        register_base_races(&mut registry).expect("本体种族声明表内部一致，注册恒不失败");
     let (space_ids, space_table) = register_base_space_profiles(&mut registry)
         .expect("本体空间层属性声明表内部一致，注册恒不失败");
     register_base_placeholder_content(&mut registry);
@@ -273,6 +294,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         register_base_damage_category(&mut |id| registry.intern(id))
             .expect("本体默认伤害类别声明内部一致，注册恒不失败");
 
+    let mut race_table = RaceTable::new();
     let mut class_table = ClassTable::new();
     let mut skill_table = SkillTable::new();
     let mut subclass_table = SubclassTable::new();
@@ -304,6 +326,18 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             damage_category: &mut damage_category_table,
         },
     );
+
+    // 本体内容契约解析：`mods/lostland/` 里的本体内容此刻应当已经
+    // 装载完毕（它与任何第三方 mod 走同一条 `load_all` 路径）。这一步
+    // 按 id 逐字段填充 Rust 侧留下的句柄结构体，**缺任何一条就整批
+    // 失败**——见 `ll_mod::base_contract` 模块文档：内容定义搬进脚本
+    // 之后，这是把「Rust 代码引用的本体内容此刻在不在」重新变成一条
+    // 会失败的检查的唯一手段，也是「玩家误删 mods/lostland/ 会响亮
+    // 报错、而不是进到一个残破的游戏里」这条保证的落点。
+    //
+    // 必须排在 `load_all` 之后（脚本还没跑，内容当然不在）、排在
+    // `apply_value_hashes` 之前（契约都不成立就没必要再算哈希）。
+    let race_ids = resolve_base_races(&registry, &race_table)?;
 
     // 值哈希升级：全部内容表此刻已经装载完毕（本体 + mod），在
     // 这里跑一次性收尾步骤,把字段值折进 registry 已有的 id 摘要——
@@ -367,7 +401,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         "内容装载完成"
     );
 
-    LoadedContent {
+    Ok(LoadedContent {
         registry,
         terrain_ids,
         terrain_table,
@@ -396,7 +430,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         script_sources,
         report,
         asset_vfs: asset_result.vfs,
-    }
+    })
 }
 
 /// 重新走一遍「发现 → 解析」两步（与 [`load_all`] 内部完全相同的两个
@@ -444,22 +478,77 @@ mod tests {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets")
     }
 
+    /// 仓库真实的 `mods/` 目录——本体内容（`mods/lostland/`）住在这里，
+    /// 见 `crate::test_support::repo_mods_dir` 文档。
+    fn repo_mods_dir() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods")
+    }
+
     #[test]
-    fn 空目录下装载只产出本体内容不报任何mod失败() {
-        // Arrange：一个存在但不含任何 mod 子目录的空目录。资产目录
-        // 也不存在——`asset_vfs::build` 应当优雅处理，不需要真的存在。
+    fn 空目录下装载因本体内容契约解析失败而整批失败() {
+        // 这条测试的旧版本断言的是「空目录下装载只产出本体内容、不报
+        // 任何 mod 失败」——本体内容当时硬编码在 Rust 里，空 mods 目录
+        // 因此是一个完全合法的状态。本体内容迁进 `mods/lostland/` 之后
+        // 这个前提不再成立：空目录意味着本体内容根本不在场，继续产出
+        // 一个「装载成功」的 LoadedContent 才是错的。
+        //
+        // 这正是玩家误删 mods/lostland/ 那一幕的自动化证据：响亮失败，
+        // 不是静默进到一个建不出角色的残破游戏里。
+        // Arrange：一个存在但不含任何 mod 子目录的空目录。
         let dir = crate::test_support::unique_temp_path("ll-game-content-test-empty");
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
 
         // Act
-        let loaded = load_content(&dir, &dir.join("assets"));
+        let result = load_content(&dir, &dir.join("assets"));
 
-        // Assert
-        assert_eq!(loaded.report.failed_count(), 0);
-        assert!(loaded.manifests.is_empty());
+        // Assert：三条本体种族一条都不在，且错误里逐条点名。
+        // 用 let-else 而不是 `expect_err`：`LoadedContent` 刻意不实现
+        // `Debug`（它装着整个注册表与十几张内容表，打印出来毫无用处）。
+        let Err(error) = result else {
+            panic!("本体内容不在场时装载必须失败");
+        };
+        assert_eq!(error.required, 3);
+        assert_eq!(error.missing.len(), 3);
+        let text = error.to_string();
+        assert!(text.contains("lostland:human"), "{text}");
+        assert!(text.contains("lostland:dwarf"), "{text}");
+        assert!(text.contains("lostland:elf"), "{text}");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 本体内容mod在真实装载里被成功加载() {
+        // 旧版「空目录下装载只产出本体内容不报任何 mod 失败」那一半仍
+        // 然值得守，只是标的换了：本体内容现在**也是**一个 mod，它必须
+        // 出现在装载报告里且状态是 Loaded。
+        //
+        // 不断言 `failed_count() == 0`：仓库真实的 mods/ 目录里刻意
+        // 放着 broken_syntax/broken_whitelist 两个"故意坏掉"的夹具
+        // （管线容错测试的证据），它们失败是预期行为。这里逐条点名
+        // 断言"本体与 example_mod 都成功"，比一个会被无关夹具带偏的
+        // 计数更准确。
+        // Arrange & Act
+        let loaded = load_content(&repo_mods_dir(), &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
+
+        // Assert
+        let status_of = |namespace: &str| {
+            loaded
+                .report
+                .entries
+                .iter()
+                .find(|(id, _)| id.namespace() == namespace)
+                .map(|(_, status)| status.clone())
+        };
+        assert_eq!(
+            status_of("lostland"),
+            Some(LoadStatus::Loaded),
+            "本体内容 mod（mods/lostland/）必须成功加载"
+        );
+        assert_eq!(status_of("examplemod"), Some(LoadStatus::Loaded));
+        assert!(!loaded.manifests.is_empty());
     }
 
     #[test]
@@ -468,11 +557,9 @@ mod tests {
         // Registry，而不是各自只在自己的表里自说自话——用每个命名空间
         // 都能查到内容哈希来验证。
         // Arrange
-        let dir = crate::test_support::unique_temp_path("ll-game-content-test-registry");
-        std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
-
         // Act
-        let loaded = load_content(&dir, &dir.join("assets"));
+        let loaded = load_content(&repo_mods_dir(), &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
 
         // Assert
         assert!(loaded.registry.content_hash_of("lostland").is_some());
@@ -482,10 +569,15 @@ mod tests {
                 .resolve(loaded.terrain_ids.grass.index())
                 .is_some()
         );
-        assert!(loaded.registry.resolve(loaded.race_ids.human).is_some());
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
+        // 种族这一路现在是「脚本注册 + 契约解析」的产物，不再是 Rust
+        // 直接注册——能反查回字符串，说明契约填的是真索引不是占位值。
+        assert_eq!(
+            loaded
+                .registry
+                .resolve(loaded.race_ids.human)
+                .map(|id| id.to_string()),
+            Some("lostland:human".to_string())
+        );
     }
 
     #[test]
@@ -502,7 +594,8 @@ mod tests {
         // 交出去」，两者合起来才是完整的一条链。
         // Arrange
         let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
-        let loaded = load_content(&mods_root, &repo_assets_dir());
+        let loaded = load_content(&mods_root, &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
         let index = |id: &str| {
             loaded
                 .registry
@@ -581,7 +674,8 @@ mod tests {
         let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
 
         // Act
-        let loaded = load_content(&mods_root, &repo_assets_dir());
+        let loaded = load_content(&mods_root, &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
 
         // Assert
         assert!(
@@ -598,7 +692,8 @@ mod tests {
         let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
 
         // Act
-        let loaded = load_content(&mods_root, &repo_assets_dir());
+        let loaded = load_content(&mods_root, &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
 
         // Assert
         assert!(
@@ -617,7 +712,8 @@ mod tests {
         let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
 
         // Act
-        let loaded = load_content(&mods_root, &repo_assets_dir());
+        let loaded = load_content(&mods_root, &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
 
         // Assert
         assert!(
@@ -640,7 +736,8 @@ mod tests {
         let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
 
         // Act
-        let loaded = load_content(&mods_root, &repo_assets_dir());
+        let loaded = load_content(&mods_root, &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
 
         // Assert
         let terrain_dirt = loaded
@@ -671,7 +768,8 @@ mod tests {
         let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
 
         // Act
-        let loaded = load_content(&mods_root, &repo_assets_dir());
+        let loaded = load_content(&mods_root, &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
 
         // Assert
         let clip_index = loaded
@@ -704,7 +802,8 @@ mod tests {
         // 局限）。
         // Arrange
         let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
-        let loaded = load_content(&mods_root, &repo_assets_dir());
+        let loaded = load_content(&mods_root, &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
         let tables = ContentValueTables {
             terrain: &loaded.terrain_table,
             class: &loaded.class_table,

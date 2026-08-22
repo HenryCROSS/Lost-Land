@@ -58,8 +58,12 @@
 //!   落地 `knowledge/design/race-system.md`「核心形状」一节的设计，与
 //!   [`base_placeholder`] 的占位种族索引协调（互不冲突，占位索引在
 //!   `RaceTable` 里查询恒返回 `None`），见其模块文档。
-//! - [`base_race`] —— 同一个模式在种族上的生产注册入口，照
-//!   [`base_terrain`]。
+//! - [`base_contract`] —— 本体内容契约解析（本体内容迁进脚本批次
+//!   新增）：本体内容的**定义**搬进 `mods/lostland/*.scm` 之后，
+//!   `BaseRaceIds` 这类句柄结构体的**填充**改由「装载后按 id 逐字段
+//!   解析」完成，缺任何一条就整批失败。种族这一路的调用点是
+//!   [`race::resolve_base_races`]（原先的 `base_race` 模块随定义一并
+//!   删除），见其模块文档。
 //! - [`trait_def`] —— 天赋注册表（天赋系统落地批次）：
 //!   `knowledge/design/trait-system.md` 四节落地，`TraitDef` 是独立
 //!   内容类型，被种族（本批次唯一接入的所有者）通过
@@ -83,7 +87,7 @@
 //!   `race` 同一个理由直接落在本 crate；`exit_grace_frames` 是否暴露给
 //!   脚本的结论见该模块文档。
 //! - [`base_clip`] —— 同一个模式在动画剪辑上的生产注册入口，照
-//!   [`base_terrain`]/[`base_race`]；本体行走/待机两段剪辑的唯一权威
+//!   [`base_terrain`]/[`base_placeholder`]；本体行走/待机两段剪辑的唯一权威
 //!   数据来自 `ll_render::anim::base_hero_clips`（不是本模块自己另抄
 //!   一份，见其文档）。
 //! - [`active_registry`] —— 装载会话内唯一共享的活跃 `Registry`，供
@@ -150,10 +154,10 @@
 pub mod active_registry;
 pub mod asset_vfs;
 pub mod base_clip;
+pub mod base_contract;
 pub mod base_damage_category;
 pub mod base_damage_formula;
 pub mod base_placeholder;
-pub mod base_race;
 pub mod base_space_profile;
 pub mod base_terrain;
 pub mod base_xp_curve;
