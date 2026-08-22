@@ -96,8 +96,56 @@ pub fn terrain_atlas_key(
 }
 
 /// 给定空间在某一世界时刻的有效光照换算出的视野半径。
+///
+/// 不叠加任何种族暗视——本函数留给不知道「谁在看」的调用方（例如本
+/// 文件与 `ll-sim` p5 验收 demo 里只关心「这个空间本身多亮」的测试）。
+/// 真正的玩家渲染路径需要暗视时用 [`effective_sight_radius_for_race`]。
 pub fn effective_sight_radius(profile: &SpaceProfile, clock: Tick) -> u32 {
     let light = effective_ambient_light(profile, clock);
+    sight_radius_at(BASE_SIGHT_RADIUS, light)
+}
+
+/// 给定空间在某一世界时刻的有效光照，叠加某个种族的暗视下限后换算出
+/// 的视野半径——`race-system.md`「五、暗视」一节公式
+/// `effective_light = max(实际光照, darkvision_floor)` 的渲染侧接线点。
+///
+/// # 为什么接在这一步，不是更早或更晚
+///
+/// 现有链路是 `season_light_scale → ambient_light →
+/// effective_ambient_light → effective_sight_radius`——`ambient_light`/
+/// `effective_ambient_light` 只描述「这个世界时刻、这个空间本身多亮」，
+/// 与「谁在看」完全无关（同一个地下城任何种族站进去，`ambient_light_floor`
+/// 都一样），暗视是**观察者的属性**，不该往上游这两步塞：往
+/// `ambient_light` 塞会让同一个空间对所有种族都变亮（错——暗视应该是
+/// 「这个种族看得见，其余种族看不见」，不是「这个地方变亮了」），
+/// 往 `effective_ambient_light` 塞同理，且两者都定义在 `ll-world`，
+/// 而 `darkvision_floor` 在下游 `ll-mod::race`（依赖方向不允许
+/// `ll-world` 认识它）。唯一合适的落点是 `effective_ambient_light` 算
+/// 出「这个空间这一刻本身多亮」**之后**、喂给 `sight_radius_at` 算
+/// 「看多远」**之前**——[`ll_sim::vision::effective_light_for_race`]
+/// 正是卡在这两步中间，见其模块文档「为什么定义在 `ll-sim`」一节。
+///
+/// # 依赖方向：`RaceDarkvisionSource` 由调用方传入，不是本函数去查
+///
+/// `ll-game` 依赖 `ll-mod`/`ll-sim`（见 `Cargo.toml`），可以直接认识
+/// `ll_mod::race::RaceTable`，本可以在这里直接要一个 `&RaceTable`——
+/// 但 [`ll_sim::vision::effective_light_for_race`] 的签名是
+/// `&dyn RaceDarkvisionSource`（依赖倒置接口，定义在 `ll-sim`），这里
+/// 沿用同一个接口类型而不是收窄成具体的 `RaceTable`，理由与
+/// `ll_game::world::build_player_agent` 调用
+/// `ll_sim::character::bake_race_stat_modifiers` 时把
+/// `&content.race_table` 当 `&dyn RaceStatModifierSource` 传入完全
+/// 一致：调用方是唯一同时持有真实 `RaceTable` 与真实空间/时钟的地方，
+/// 但真正做换算的函数不需要认识 `RaceTable` 这个具体类型，只需要认识
+/// 接口。
+pub fn effective_sight_radius_for_race(
+    profile: &SpaceProfile,
+    clock: Tick,
+    race: ll_core::ident::ContentIndex,
+    darkvision: &dyn ll_sim::vision::RaceDarkvisionSource,
+) -> u32 {
+    let light = effective_ambient_light(profile, clock);
+    let light = ll_sim::vision::effective_light_for_race(light, race, darkvision);
     sight_radius_at(BASE_SIGHT_RADIUS, light)
 }
 
@@ -256,6 +304,89 @@ mod tests {
 
         // Assert
         assert!(radius < BASE_SIGHT_RADIUS);
+    }
+
+    /// 测试用的最小 `RaceDarkvisionSource`——固定返回同一个暗视下限，
+    /// 不依赖 `ll_mod::race::RaceTable`，只用来隔离验证
+    /// [`effective_sight_radius_for_race`] 这一步换算本身的行为，见其
+    /// 文档「依赖方向」一节。取 600（远高于
+    /// [`ll_world::light::MIN_SIGHT_RADIUS`] 在千分比光照下能自然达到
+    /// 的量级）而不是本体矮人实际声明的 4——本体那个值只保证字段真的
+    /// 被使用到（见 `ll_mod::race::materialize_base_races` 注释），量级
+    /// 太小，不足以在 `sight_radius_at` 的下限逻辑里产生可观测差异，
+    /// 这里换一个明显更大的值才能真正测出「暗视确实会让视野变大」这
+    /// 条效果，而不是巧合地被下限盖过去。
+    struct FixedDarkvision(i32);
+
+    impl ll_sim::vision::RaceDarkvisionSource for FixedDarkvision {
+        fn darkvision_floor(&self, _race: ll_core::ident::ContentIndex) -> i32 {
+            self.0
+        }
+    }
+
+    #[test]
+    fn 暗视种族夜间视野大于无暗视种族() {
+        // 同一时刻、同一地点，唯一变量是暗视下限——直接对应
+        // `effective_sight_radius_for_race` 模块文档「为什么接在这一步」
+        // 一节要接线的效果。手工验证：去掉
+        // `ll_sim::vision::effective_light_for_race` 里的 `max`（改成
+        // 直接返回 `light`，不叠加 `darkvision_floor`），这条测试会失败
+        // ——`with_darkvision` 与 `without_darkvision` 会变得相等（都
+        // 落到 `MIN_SIGHT_RADIUS` 这个下限），断言 `>` 不再成立。
+        // Arrange：地表深夜（`Tick(0)`，午夜光照按昼夜曲线不为零但很低,
+        // 远低于暗视下限 600）。
+        let profile = SpaceProfile {
+            id: ll_core::ident::NamespacedId::parse("lostland:test_surface").expect("字面量恒合法"),
+            ambient_light_floor: 0,
+            exposed_to_sky: true,
+            base_temperature: 0,
+            diggable: true,
+            buildable: true,
+            reverb_tag: None,
+        };
+        let midnight = Tick(0);
+        let race = ll_core::ident::ContentIndex::default();
+        let darkvision = FixedDarkvision(600);
+        let no_darkvision = FixedDarkvision(0);
+
+        // Act
+        let with_darkvision =
+            effective_sight_radius_for_race(&profile, midnight, race, &darkvision);
+        let without_darkvision =
+            effective_sight_radius_for_race(&profile, midnight, race, &no_darkvision);
+
+        // Assert
+        assert!(with_darkvision > without_darkvision);
+    }
+
+    #[test]
+    fn 白天暗视种族与无暗视种族视野相同() {
+        // 正午光照本就远高于暗视下限 600（正午满光照为 1000）——
+        // `max(实际光照, darkvision_floor)` 在这种输入下恒取实际光照,
+        // 证明暗视只在暗处起作用，不是无脑加成。
+        // Arrange：地表正午（与 `ll_world::light` 「正午光照最强」测试
+        // 同一个采样点：夏季第 30 天正午，季节缩放不折损）。
+        let profile = SpaceProfile {
+            id: ll_core::ident::NamespacedId::parse("lostland:test_surface").expect("字面量恒合法"),
+            ambient_light_floor: 0,
+            exposed_to_sky: true,
+            base_temperature: 0,
+            diggable: true,
+            buildable: true,
+            reverb_tag: None,
+        };
+        let noon = Tick(30 * ll_core::time::TICKS_PER_DAY + 12 * ll_core::time::TICKS_PER_HOUR);
+        let race = ll_core::ident::ContentIndex::default();
+        let darkvision = FixedDarkvision(600);
+        let no_darkvision = FixedDarkvision(0);
+
+        // Act
+        let with_darkvision = effective_sight_radius_for_race(&profile, noon, race, &darkvision);
+        let without_darkvision =
+            effective_sight_radius_for_race(&profile, noon, race, &no_darkvision);
+
+        // Assert
+        assert_eq!(with_darkvision, without_darkvision);
     }
 
     /// 开局那一刻玩家到底看得见什么——这条是**组合断言**。

@@ -160,8 +160,14 @@ EXEMPTIONS: dict[str, str] = {
     "ResourcePoolDef.display_name_key": "同上。",
     "TraitDef.display_name_key": "同上。",
     # ---- (b) 已知死字段：本任务书点名的三处 ----
-    "Agent.luck": "进 WorldState::hash()（state.rs），全项目零决策层逻辑读取——见 attribute-system.md 五节「未来将驱动」：暴击率/优势掷骰/掉落权重/稀有事件权重均未落地。P3 阶段只建布局，预期随暴击/优势判定系统一并接线。",
-    "RaceDef.darkvision_floor": "存取完整、两条测试断言往返正确，但没有任何函数实现 race-system.md 五节文档写的 effective_light = max(实际光照, darkvision_floor)。预期随视野/光照系统消费暗视一并接线（ll-world/src/{fov,light}.rs）。",
+    # `Agent.luck`/`RaceDef.darkvision_floor` 两条已在暗视/幸运接线批次
+    # 真正接上（见 crates/ll-sim/src/vision.rs、
+    # crates/ll-sim/src/resolve.rs::resolve_attack「暴击」一节、
+    # crates/ll-sim/src/combat.rs::crit_chance_permille），均已从本清单
+    # 移除——两个字段名在 TARGET_TYPES 覆盖的其余结构体里都不存在同名
+    # 字段，不存在 RaceDef.stat_modifiers 撞上 TraitDef.stat_modifiers
+    # 那种误判风险，因此选择让决策层直接用字段真名（`.darkvision_floor`/
+    # `.luck`），而不是像 race_stat_modifiers 那样刻意换名保留豁免。
     "RuleModifier::Resistance": "能从天赋声明、进内容值哈希，战斗里没人读——trait_def.rs 模块文档与枚举文档均已承认「当前没有任何 resolve 侧消费者」。预期随伤害结算的抗性乘数挂载点落地一并接线。",
     "RuleModifier::RerollOnce": "同 RuleModifier::Resistance，trait_def.rs 文档同一处承认无消费者——需要 roll_one_die 钩子，尚未落地。",
     "RuleModifier::Advantage": "trait_def.rs 变体文档原文「占位变体，当前无消费者（本项目没有判定/检定系统）」。",

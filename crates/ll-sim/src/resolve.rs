@@ -57,7 +57,9 @@ use ll_world::history::KillCause;
 use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
 
-use crate::combat::{Penetration, damage_after_defense};
+use crate::combat::{
+    Penetration, apply_crit_multiplier, crit_chance_permille, damage_after_defense,
+};
 use crate::effect::Effect;
 use crate::experience::ExperienceCatalog;
 use crate::intent::{Direction, Intent};
@@ -1930,6 +1932,35 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 这里校验耐久与武器槽位的组合」一节；本函数只负责"武器耐久确实会
 /// 随攻击减少、其余装备确实不再减少"这个结算侧的行为，不重复注册期的
 /// 校验职责。
+///
+/// # 暴击：唯一读取 `Agent.luck` 的地方（幸运接线批次）
+///
+/// 所有者原话（针对盗贼偷袭的裁定，本批次先落地最现成的一处）：「做成
+/// 技能判定吧，通过幸运值之类的属性以及一定的随机值组合一下」——暴击
+/// 正是「战斗结算里现成的、幸运能挂上去的判定点」（`combat.rs` 已有
+/// `damage_after_defense` 这条主干，暴击只是在它算出的伤害上再判一次
+/// 是否放大，不需要新开一条结算路径）。幸运通过
+/// [`crate::combat::crit_chance_permille`] 换算成千分比暴击率，
+/// `attacker.luck` 是唯一输入——`attribute-system.md`「五、幸运」一节
+/// 「幸运不直接加伤害，它改变随机判定的形状」原文在这里精确成立：
+/// 幸运本身从不出现在 `damage` 的加法项里，只出现在「这次判定要不要
+/// 放大伤害」这个概率里。
+///
+/// 随机数严格遵守约束 C3：必须走
+/// `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`，不得使用任何
+/// 全局随机流。三元组取 `(world.seed, actor.as_u64(), world.clock.0)`
+/// ——与 `ll_mod::script_behavior_source` 的 AI 决策随机流同一套取法
+/// （行为树 tick 同样用 `(世界种子, 实体 ID, 当前世界时钟)`）。约束 C5
+/// （取数顺序确定）在本函数里天然满足：整条 `resolve_attack` 只在这
+/// 一处消费随机数，前面的攻击力/护甲/穿透/伤害计算全部是纯算术，不
+/// 存在「先掷了别的骰子再掷这个」的顺序歧义。
+///
+/// 零幸运（本仓库全部现存测试夹具的默认值）换算出的暴击率精确为零
+/// （见 [`crate::combat::crit_chance_permille`] 文档「没有独立的
+/// 『基础暴击率』常量」一节）——这保证了本次接线不会让任何一条既有
+/// 的确定性伤害断言或黄金基准哈希（`crates/ll-sim/tests/replay.rs`）
+/// 变成依赖随机数的赌博：即便这里确实调用了 `DetRng`，`chance(0, ..)`
+/// 恒返回 `false`，`damage` 恒等于 `damage_after_defense` 的原始结果。
 fn resolve_attack(
     world: &WorldState,
     actor: EntityId,
@@ -1971,6 +2002,24 @@ fn resolve_attack(
         .map(|rule| rule.penetration)
         .unwrap_or(Penetration::NONE);
     let damage = damage_after_defense(attack_power, defender_derived.armor(), penetration);
+    // 暴击判定（幸运接线批次）：唯一读取 attacker.luck 的地方，见本
+    // 函数文档「暴击」一节。约束 C3——随机性必须走
+    // `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`，这里用攻击者
+    // 自己的实体 ID 与当前世界时钟作三元组的后两项，与
+    // `ll_mod::script_behavior_source` 的 AI 决策随机流同一套取法
+    // （见其文档「C3」一节）；约束 C5——本函数在整条 `resolve_attack`
+    // 里只消费这一次随机数，取数顺序天然确定，不存在「先读了别的随机
+    // 数再读这个」的排列组合问题。
+    let mut crit_rng =
+        ll_core::rng::DetRng::for_entity(world.seed, actor.as_u64(), world.clock.0 as u64);
+    // 分母 1000：千分比运算的分母，与 `combat::crit_chance_permille`
+    // 返回值同一个刻度（见该函数文档「夹在 0..=1000」）。
+    let is_critical = crit_rng.chance(crit_chance_permille(attacker.luck).max(0) as u32, 1000);
+    let damage = if is_critical {
+        apply_crit_multiplier(damage)
+    } else {
+        damage
+    };
 
     let mut effects = vec![Effect::Damage {
         target,
@@ -2571,6 +2620,52 @@ mod tests {
             script_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+        })
+    }
+
+    /// 造一个占位实体，站在 `pos`，除幸运外六项主属性取基准值——供
+    /// 暴击率频率测试指定一个非零的幸运值，与 [`spawn_agent_with_dexterity`]
+    /// 同一个模式。
+    fn spawn_agent_with_luck(
+        world: &mut WorldState,
+        pos: ll_core::torus::TorusPos,
+        luck: i32,
+    ) -> EntityId {
+        let mut interner = ll_core::ident::Interner::new();
+        let profession = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
+        let race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
+        world.actors.spawn(Agent {
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession,
+            goals: Vec::new(),
+            race,
+            luck,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
+            resting: None,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: surface_space_at(world, pos),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: Tick(0),
             remembered_id: None,
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
@@ -3317,6 +3412,75 @@ mod tests {
         // 不是裸力量值算出的那个（更低的）数字。
         let victim_after = world.actors.get(victim).expect("生命值远高于伤害,不会死亡");
         assert_eq!(victim_after.health, 1_000 - expected_damage);
+    }
+
+    #[test]
+    fn 幸运更高的角色暴击命中频率更高() {
+        // 频率断言，不是单次结果（见任务纪律：幸运只改变判定的概率
+        // 形状，不保证任意一次攻击必然暴击/不暴击，单次断言测不出这
+        // 条效果，只有在足够多次独立试验上比较命中频率才能）。用固定
+        // 世界种子、固定的两个幸运值，让 `world.clock` 在一段范围内
+        // 变化以取得一串不同的 `DetRng` 事件计数（见 `resolve_attack`
+        // 文档「暴击」一节：三元组是 `(世界种子, 实体 ID, 世界时钟)`），
+        // 统计两侧「伤害超过零暴击基准值」的次数。
+        // Arrange
+        let trials = 3_000i64;
+        let low_luck = 5; // 5 × 5‰ = 25‰（2.5%）暴击率。
+        let high_luck = 100; // 100 × 5‰ = 500‰（50%）暴击率。
+        let baseline_damage =
+            damage_after_defense(BaseStats::BASELINE.strength, 0, Penetration::NONE);
+
+        let (mut low_world, _low_terrain_ids) = test_world();
+        let low_attacker_pos = low_world.size.wrap(5, 5);
+        let low_attacker = spawn_agent_with_luck(&mut low_world, low_attacker_pos, low_luck);
+        let low_victim_pos = east_of_spawn(&low_world);
+        let low_victim = spawn_named_agent(&mut low_world, low_victim_pos, 1_000_000);
+
+        let (mut high_world, _high_terrain_ids) = test_world();
+        let high_attacker_pos = high_world.size.wrap(5, 5);
+        let high_attacker = spawn_agent_with_luck(&mut high_world, high_attacker_pos, high_luck);
+        let high_victim_pos = east_of_spawn(&high_world);
+        let high_victim = spawn_named_agent(&mut high_world, high_victim_pos, 1_000_000);
+
+        // Act：只挪动世界时钟取得不同的随机流，不真正推进回合/不
+        // `apply` 任何效果——每次试验都在同一份「满血目标」上独立重
+        // 打一次，伤害是否超过基准值只取决于这一次判定是否暴击。
+        let mut low_crits = 0i64;
+        let mut high_crits = 0i64;
+        for tick in 0..trials {
+            low_world.clock = Tick(tick);
+            let low_effects = resolve(
+                &low_world,
+                &Intent::Attack {
+                    actor: low_attacker,
+                    target: low_victim,
+                },
+            );
+            if low_effects.iter().any(
+                |effect| matches!(effect, Effect::Damage { amount, .. } if *amount > baseline_damage),
+            ) {
+                low_crits += 1;
+            }
+
+            high_world.clock = Tick(tick);
+            let high_effects = resolve(
+                &high_world,
+                &Intent::Attack {
+                    actor: high_attacker,
+                    target: high_victim,
+                },
+            );
+            if high_effects.iter().any(
+                |effect| matches!(effect, Effect::Damage { amount, .. } if *amount > baseline_damage),
+            ) {
+                high_crits += 1;
+            }
+        }
+
+        // Assert：50% 暴击率的一侧命中次数应远多于 2.5% 的一侧——差距
+        // 留了很大的安全边际（期望值相差约 950 次，这里只要求多过
+        // 100 次），避免二项分布的正常波动把测试变成偶发性失败。
+        assert!(high_crits > low_crits + 100);
     }
 
     #[test]

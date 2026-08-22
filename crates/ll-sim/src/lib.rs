@@ -88,6 +88,13 @@
 //! `ll_mod::race`，本 crate 只声明「给我一个种族索引，还我它的六项
 //! 修正」这个最小接口，真实实现（`ll_mod::race::RaceTable`）在下游
 //! 补齐。见该模块文档「为什么放在 `ll-sim`，不是 `ll-game`」一节。
+//!
+//! [`vision`]（暗视接线批次）：把 `RaceDef::darkvision_floor` 真正
+//! 接进有效光照计算（[`vision::effective_light_for_race`]，
+//! `race-system.md`「五、暗视」一节的公式 `effective_light = max(实际
+//! 光照, darkvision_floor)`）与依赖倒置接口
+//! （[`vision::RaceDarkvisionSource`]）——与 `character` 同一套手法，
+//! 见该模块文档「为什么定义在 `ll-sim`」一节。
 
 pub mod apply;
 pub mod behavior;
@@ -105,4 +112,5 @@ pub mod skill_overview;
 pub mod timeline;
 pub mod traits;
 pub mod turn;
+pub mod vision;
 pub mod xp_curve;

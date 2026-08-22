@@ -50,7 +50,10 @@ use ll_world::surface_store::SurfaceWindow;
 
 use crate::animation::{self, FALLBACK_SPRITE};
 use crate::content::LoadedContent;
-use crate::layout::{effective_sight_radius, effective_tint, terrain_atlas_key, tile_tint};
+use crate::layout::{
+    effective_sight_radius, effective_sight_radius_for_race, effective_tint, terrain_atlas_key,
+    tile_tint,
+};
 use crate::save::save_game;
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
@@ -676,14 +679,20 @@ fn render_surface(
     resources: &mut GpuResources,
 ) {
     let world = &game_world.world;
-    let player_pos = world
-        .actors
-        .get(game_world.player)
-        .map(|agent| agent.pos)
-        .unwrap_or(camera.center);
+    let player_agent = world.actors.get(game_world.player);
+    let player_pos = player_agent.map(|agent| agent.pos).unwrap_or(camera.center);
     let profile = space_profile_of(content, world.surface_profile);
     let clock = world.clock;
-    let radius = effective_sight_radius(&profile, clock);
+    // 视野半径叠加玩家种族的暗视下限（见 `effective_sight_radius_for_race`
+    // 模块文档「为什么接在这一步」一节）——玩家实体查不到（理论上不该
+    // 发生，见上方 `unwrap_or(camera.center)` 同一条降级纪律）时退化到
+    // 不叠加暗视的 `effective_sight_radius`，不是 panic。
+    let radius = match player_agent {
+        Some(agent) => {
+            effective_sight_radius_for_race(&profile, clock, agent.race, &content.race_table)
+        }
+        None => effective_sight_radius(&profile, clock),
+    };
     let tint = effective_tint(&profile, clock);
     let layout = *world.terrain.layout();
 

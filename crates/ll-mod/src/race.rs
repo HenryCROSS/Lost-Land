@@ -463,6 +463,20 @@ impl RaceStatModifierSource for RaceTable {
     }
 }
 
+/// `ll_sim::vision::RaceDarkvisionSource` 的真实实现——
+/// `ll_sim::vision::effective_light_for_race` 通过这个 impl 真正查到
+/// 种族声明的暗视下限，见 `ll_sim::vision` 模块文档「为什么定义在
+/// `ll-sim`」一节同一套依赖倒置手法。未注册的种族索引返回 `0`（无
+/// 暗视）——与 [`RaceStatModifierSource::race_stat_modifiers`] 文档
+/// 「查不到就是查不到」的既有纪律一致，不是 panic 或特殊分支。
+impl ll_sim::vision::RaceDarkvisionSource for RaceTable {
+    fn darkvision_floor(&self, race: ContentIndex) -> i32 {
+        self.get(race)
+            .map(|view| view.darkvision_floor)
+            .unwrap_or(0)
+    }
+}
+
 /// 本体基础种族在当前注册表里的索引缓存。
 ///
 /// 只注册占位性质的少数几种基础种族——真正的种族数值平衡与内容设计
@@ -887,6 +901,37 @@ mod tests {
 
         // Assert
         assert_eq!(modifiers, ZERO_STAT_MODIFIERS);
+    }
+
+    #[test]
+    fn racedarkvisionsource查询矮人返回其暗视下限() {
+        // 直接验收 impl RaceDarkvisionSource for RaceTable：真实实现
+        // 确实把 darkvision_floor 字段透传给了 ll_sim::vision 的依赖
+        // 倒置接口，不是一个只挂名字、内部恒返回零的空壳。
+        // Arrange
+        let (ids, table) = base_race_fixture();
+
+        // Act
+        let floor = ll_sim::vision::RaceDarkvisionSource::darkvision_floor(&table, ids.dwarf);
+
+        // Assert
+        assert!(floor > 0);
+    }
+
+    #[test]
+    fn racedarkvisionsource查询未注册索引返回零() {
+        // 反例：未注册的索引不能返回任何非零的伪造暗视下限。
+        // Arrange
+        let mut interner = Interner::new();
+        let never_defined =
+            interner.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
+        let table = RaceTable::new();
+
+        // Act
+        let floor = ll_sim::vision::RaceDarkvisionSource::darkvision_floor(&table, never_defined);
+
+        // Assert
+        assert_eq!(floor, 0);
     }
 
     #[test]
