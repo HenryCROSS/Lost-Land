@@ -117,6 +117,7 @@ mod tests {
                     intelligence: 0,
                     willpower: 0,
                     charisma: 0,
+                    luck: 0,
                 })
         }
     }
@@ -129,6 +130,7 @@ mod tests {
             intelligence: 0,
             willpower: 0,
             charisma: 0,
+            luck: 0,
         }
     }
 
@@ -147,6 +149,7 @@ mod tests {
                     intelligence: 0,
                     willpower: 0,
                     charisma: 0,
+                    luck: 0,
                 },
             )],
         };
@@ -157,6 +160,37 @@ mod tests {
         // Assert
         assert_eq!(baked.constitution, BaseStats::BASELINE.constitution + 2);
         assert_eq!(baked.strength, BaseStats::BASELINE.strength + 1);
+    }
+
+    #[test]
+    fn 带非零幸运修正的种族烘焙后幸运真的包含了修正() {
+        // Arrange：注册一个「+4 幸运」的种族，模拟半身人——核实
+        // RaceDef.stat_modifiers（BaseStats 类型）并入幸运后不需要为
+        // 种族幸运加成单开一条分支，bake_race_stat_modifiers 复用的
+        // BaseStats::add_modifiers 对幸运与其余六项走同一条加法路径
+        // （见 BaseStats::add_modifiers 文档）。
+        let mut interner = Interner::new();
+        let halfling = index(&mut interner, "lostland:halfling");
+        let source = FakeRaceStats {
+            entries: vec![(
+                halfling,
+                BaseStats {
+                    strength: 0,
+                    dexterity: 0,
+                    constitution: 0,
+                    intelligence: 0,
+                    willpower: 0,
+                    charisma: 0,
+                    luck: 4,
+                },
+            )],
+        };
+
+        // Act
+        let baked = bake_race_stat_modifiers(BaseStats::BASELINE, halfling, &source);
+
+        // Assert
+        assert_eq!(baked.luck, BaseStats::BASELINE.luck + 4);
     }
 
     #[test]

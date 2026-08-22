@@ -214,8 +214,6 @@ impl ThinPopulation {
             profession: self.profession[index],
             goals: Vec::new(),
             race: self.race[index],
-            // 薄层不追踪幸运，升格时取零——见 Agent::luck 文档。
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),

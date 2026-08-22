@@ -137,8 +137,9 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
 }
 
 /// [`derive_stats`] 的产出——`attribute-system.md` §七 `derive_stats`
-/// 签名里的 `DerivedStats`：六项主属性的最终生效值（基础值 + 状态
-/// 效果 + 装备）与护甲（防御端的来源，P6 第四批新增）。
+/// 签名里的 `DerivedStats`：七项属性（六项主属性 + 幸运，幸运并入
+/// `AttributeKind` 批次）的最终生效值（基础值 + 状态效果 + 装备）与护甲
+/// （防御端的来源，P6 第四批新增）。
 ///
 /// # 派生，不缓存——不进 `WorldState::hash()`
 ///
@@ -174,14 +175,15 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
 /// `m.stats.dexterity`。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DerivedStats {
-    attributes: [i32; 6],
+    attributes: [i32; 7],
     armor: i32,
 }
 
 impl DerivedStats {
-    /// 六项主属性里指定一项的最终生效值——`resolve_attack` 攻击力（力量）
-    /// 的读取入口，未来三轴战斗结算的魔法/精神攻击力同样从这里读
-    /// （`Intelligence`/`Willpower`）。
+    /// 七项属性（六项主属性 + 幸运，幸运并入 `AttributeKind` 批次）里
+    /// 指定一项的最终生效值——`resolve_attack` 攻击力（力量）与暴击率
+    /// 输入（幸运）的读取入口，未来三轴战斗结算的魔法/精神攻击力同样
+    /// 从这里读（`Intelligence`/`Willpower`）。
     pub fn attribute(&self, kind: AttributeKind) -> i32 {
         self.attributes[attribute_slot(kind)]
     }
@@ -193,10 +195,11 @@ impl DerivedStats {
     }
 }
 
-/// [`AttributeKind`] 六个变体到 [`DerivedStats::attributes`] 数组下标的
-/// 映射——枚举变体本身没有稳定的数值表示（不依赖 `enum` 的
-/// discriminant，那是实现细节，不是公开契约），这里显式给出，唯一的
-/// 读者是 [`DerivedStats::attribute`] 与 [`derive_stats`] 自身。
+/// [`AttributeKind`] 七个变体（六项主属性 + 幸运）到
+/// [`DerivedStats::attributes`] 数组下标的映射——枚举变体本身没有稳定的
+/// 数值表示（不依赖 `enum` 的 discriminant，那是实现细节，不是公开
+/// 契约），这里显式给出，唯一的读者是 [`DerivedStats::attribute`] 与
+/// [`derive_stats`] 自身。
 const fn attribute_slot(kind: AttributeKind) -> usize {
     match kind {
         AttributeKind::Strength => 0,
@@ -205,6 +208,7 @@ const fn attribute_slot(kind: AttributeKind) -> usize {
         AttributeKind::Intelligence => 3,
         AttributeKind::Willpower => 4,
         AttributeKind::Charisma => 5,
+        AttributeKind::Luck => 6,
     }
 }
 
@@ -268,7 +272,7 @@ const fn attribute_slot(kind: AttributeKind) -> usize {
 ///
 /// # 护甲不参与状态效果通道（本批次）
 ///
-/// `AttributeKind` 六个变体里没有对应"护甲"的一项（`vehicle-and-mounting.md`
+/// `AttributeKind` 七个变体里没有对应"护甲"的一项（`vehicle-and-mounting.md`
 /// 一节已核实），本批次因此没有任何技能/天赋能通过 `active_stat_modifiers`
 /// 直接加护甲——护甲目前只有装备一条来源。这不是遗漏：
 /// `combat-three-axis.md` 四节把这条留给了"届时再定案"，本批次的任务
@@ -319,6 +323,7 @@ pub fn derive_stats(
         base.intelligence,
         base.willpower,
         base.charisma,
+        base.luck,
     ];
     let mut armor = 0;
 
@@ -1933,18 +1938,26 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 随攻击减少、其余装备确实不再减少"这个结算侧的行为，不重复注册期的
 /// 校验职责。
 ///
-/// # 暴击：唯一读取 `Agent.luck` 的地方（幸运接线批次）
+/// # 暴击：读取 `attacker_derived.attribute(AttributeKind::Luck)`（幸运并入
+/// `AttributeKind` 批次）
 ///
 /// 所有者原话（针对盗贼偷袭的裁定，本批次先落地最现成的一处）：「做成
 /// 技能判定吧，通过幸运值之类的属性以及一定的随机值组合一下」——暴击
 /// 正是「战斗结算里现成的、幸运能挂上去的判定点」（`combat.rs` 已有
 /// `damage_after_defense` 这条主干，暴击只是在它算出的伤害上再判一次
 /// 是否放大，不需要新开一条结算路径）。幸运通过
-/// [`crate::combat::crit_chance_permille`] 换算成千分比暴击率，
-/// `attacker.luck` 是唯一输入——`attribute-system.md`「五、幸运」一节
-/// 「幸运不直接加伤害，它改变随机判定的形状」原文在这里精确成立：
-/// 幸运本身从不出现在 `damage` 的加法项里，只出现在「这次判定要不要
-/// 放大伤害」这个概率里。
+/// [`crate::combat::crit_chance_permille`] 换算成千分比暴击率，输入是
+/// `attacker_derived.attribute(AttributeKind::Luck)`——**派生值，不是裸
+/// `attacker.stats.luck`**：幸运并入 `AttributeKind` 批次之前，幸运是
+/// `Agent` 上不受装备/状态效果影响的独立字段，暴击只能读裸值；并入之后
+/// 幸运戒指（[`crate::item::StatTarget::Attribute`]）、祝福术/诅咒
+/// （[`ll_world::entity::ActiveStatModifier`]）都要能改变它，若这里继续
+/// 读裸 `attacker.stats.luck`，装备/buff 加的幸运永远不会反映到暴击率
+/// 上——那就白并了。`attacker_derived` 已经是 [`derive_stats`] 汇总过
+/// 基础值 + 状态效果 + 装备的结果（见本函数顶部），复用同一份派生结果，
+/// 不重新算一遍。`attribute-system.md`「五、幸运」一节「幸运不直接加
+/// 伤害，它改变随机判定的形状」原文在这里精确成立：幸运本身从不出现在
+/// `damage` 的加法项里，只出现在「这次判定要不要放大伤害」这个概率里。
 ///
 /// 随机数严格遵守约束 C3：必须走
 /// `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`，不得使用任何
@@ -2002,10 +2015,11 @@ fn resolve_attack(
         .map(|rule| rule.penetration)
         .unwrap_or(Penetration::NONE);
     let damage = damage_after_defense(attack_power, defender_derived.armor(), penetration);
-    // 暴击判定（幸运接线批次）：唯一读取 attacker.luck 的地方，见本
-    // 函数文档「暴击」一节。约束 C3——随机性必须走
-    // `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`，这里用攻击者
-    // 自己的实体 ID 与当前世界时钟作三元组的后两项，与
+    // 暴击判定（幸运并入 AttributeKind 批次）：读
+    // `attacker_derived.attribute(AttributeKind::Luck)`——派生值，装备/
+    // 状态效果加的幸运在这里生效，见本函数文档「暴击」一节。约束 C3
+    // ——随机性必须走 `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`，
+    // 这里用攻击者自己的实体 ID 与当前世界时钟作三元组的后两项，与
     // `ll_mod::script_behavior_source` 的 AI 决策随机流同一套取法
     // （见其文档「C3」一节）；约束 C5——本函数在整条 `resolve_attack`
     // 里只消费这一次随机数，取数顺序天然确定，不存在「先读了别的随机
@@ -2014,7 +2028,8 @@ fn resolve_attack(
         ll_core::rng::DetRng::for_entity(world.seed, actor.as_u64(), world.clock.0 as u64);
     // 分母 1000：千分比运算的分母，与 `combat::crit_chance_permille`
     // 返回值同一个刻度（见该函数文档「夹在 0..=1000」）。
-    let is_critical = crit_rng.chance(crit_chance_permille(attacker.luck).max(0) as u32, 1000);
+    let effective_luck = attacker_derived.attribute(AttributeKind::Luck);
+    let is_critical = crit_rng.chance(crit_chance_permille(effective_luck).max(0) as u32, 1000);
     let damage = if is_critical {
         apply_crit_multiplier(damage)
     } else {
@@ -2545,7 +2560,6 @@ mod tests {
             profession,
             goals: Vec::new(),
             race,
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -2604,7 +2618,6 @@ mod tests {
             profession,
             goals: Vec::new(),
             race,
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -2642,7 +2655,10 @@ mod tests {
             .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
         world.actors.spawn(Agent {
             pos,
-            stats: BaseStats::BASELINE,
+            stats: BaseStats {
+                luck,
+                ..BaseStats::BASELINE
+            },
             next_action_at: Tick(0),
             health: Agent::STARTING_HEALTH,
             affiliations: Vec::new(),
@@ -2650,7 +2666,6 @@ mod tests {
             profession,
             goals: Vec::new(),
             race,
-            luck,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -3187,7 +3202,6 @@ mod tests {
             profession,
             goals: Vec::new(),
             race,
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -3627,7 +3641,6 @@ mod tests {
             profession: ContentIndex::default(),
             goals: Vec::new(),
             race: ContentIndex::default(),
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -3690,7 +3703,6 @@ mod tests {
             profession: ContentIndex::default(),
             goals: Vec::new(),
             race: goblin_race,
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),

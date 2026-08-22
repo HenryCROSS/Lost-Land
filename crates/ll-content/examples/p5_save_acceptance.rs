@@ -154,7 +154,6 @@ fn bare_agent(pos: TorusPos, zone: ZoneCoord) -> Agent {
         profession: ContentIndex::default(),
         goals: Vec::new(),
         race: ContentIndex::default(),
-        luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),

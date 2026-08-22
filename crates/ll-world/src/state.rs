@@ -916,7 +916,7 @@ impl WorldState {
     /// 因此 `Effect::Kill` 也会体现为摘要变化（少一份贡献），不需要
     /// 单独混入「实体数量」。
     ///
-    /// # `stats`/`affiliations`/`profession`/`race`/`goals`/`luck` 也已混入（P5 批次 B）
+    /// # `stats`/`affiliations`/`profession`/`race`/`goals` 也已混入（P5 批次 B）
     ///
     /// 早期版本只挑了 `resolve`/`apply` 这批已经会写的字段（`pos`/
     /// `health`/`wallet`/`next_action_at`），不含这六项——彼时的理由是
@@ -929,9 +929,11 @@ impl WorldState {
     /// 六项字段仍然缺席，一次把 `profession` 编错、`goals` 顺序打乱的
     /// 序列化缺陷不会让任何一条黄金基准变红，正是先例（P3 阶段
     /// `WorldState::health` 完全不进摘要、确定性回归测试测不出战斗结算
-    /// 跑偏）警告过的同一类判据缺口。因此这里补齐：`stats` 六项主属性、
-    /// `profession`/`race` 的裸索引、`luck`，以及 `affiliations`/`goals`
-    /// 两个 `Vec`（先混入长度、再逐项混入，`Vec` 本身保序，不涉及
+    /// 跑偏）警告过的同一类判据缺口。因此这里补齐：`stats` 七项属性
+    /// （六项主属性 + 幸运，幸运并入 `AttributeKind` 批次前是单独混入
+    /// 的字段，并入后随 `stats` 一起混入，见 [`write_stats`] 文档）、
+    /// `profession`/`race` 的裸索引，以及 `affiliations`/`goals` 两个
+    /// `Vec`（先混入长度、再逐项混入，`Vec` 本身保序，不涉及
     /// `HashMap`/`HashSet` 迭代顺序，满足约束 C5）。
     ///
     /// # `player_entity`/脚本状态也已混入（裁定 P5-9）
@@ -1035,7 +1037,6 @@ impl WorldState {
             write_stats(&mut hasher, agent.stats);
             hasher.write_u64(u64::from(agent.profession.get()));
             hasher.write_u64(u64::from(agent.race.get()));
-            hasher.write_i64(i64::from(agent.luck));
             hasher.write_u64(agent.affiliations.len() as u64);
             for affiliation in &agent.affiliations {
                 write_affiliation(&mut hasher, affiliation);
@@ -1320,8 +1321,15 @@ fn write_space(hasher: &mut StateHasher, space: Space) {
 }
 
 /// 把一份 [`crate::entity::BaseStats`] 混入哈希——[`WorldState::hash`]
-/// 的帮手（P5 批次 B）。六项主属性逐一混入，顺序与字段声明顺序一致，
-/// 恒定不依赖任何运行期状态。
+/// 的帮手（P5 批次 B）。七项属性（六项主属性 + 幸运，幸运并入
+/// `AttributeKind` 批次新增）逐一混入，顺序与字段声明顺序一致，恒定
+/// 不依赖任何运行期状态。
+///
+/// 幸运曾经是 `Agent` 上独立于 `stats` 之外的字段，单独混入哈希（紧跟
+/// 在 `profession`/`race` 之后）；并入 `BaseStats` 后随 `stats` 一起在
+/// 这里混入——摘要的字节序列因此改变，黄金基准常量需要重新生成，见
+/// `crates/ll-sim/tests/replay.rs`/`crates/ll-world/tests/determinism.rs`
+/// 的 `EXPECTED_*_DIGEST`。
 fn write_stats(hasher: &mut StateHasher, stats: crate::entity::BaseStats) {
     hasher.write_i64(i64::from(stats.strength));
     hasher.write_i64(i64::from(stats.dexterity));
@@ -1329,6 +1337,7 @@ fn write_stats(hasher: &mut StateHasher, stats: crate::entity::BaseStats) {
     hasher.write_i64(i64::from(stats.intelligence));
     hasher.write_i64(i64::from(stats.willpower));
     hasher.write_i64(i64::from(stats.charisma));
+    hasher.write_i64(i64::from(stats.luck));
 }
 
 /// 把一条 [`Affiliation`] 混入哈希——[`WorldState::hash`] 的帮手（P5
@@ -1658,7 +1667,6 @@ mod tests {
             profession: ContentIndex::default(),
             goals: Vec::new(),
             race: ContentIndex::default(),
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -1717,7 +1725,6 @@ mod tests {
             profession: ContentIndex::default(),
             goals: Vec::new(),
             race: ContentIndex::default(),
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -1802,7 +1809,6 @@ mod tests {
             profession: ContentIndex::default(),
             goals: Vec::new(),
             race: ContentIndex::default(),
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::from([(pool, current)]),
@@ -1871,7 +1877,6 @@ mod tests {
             profession: ContentIndex::default(),
             goals: Vec::new(),
             race: ContentIndex::default(),
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -1932,7 +1937,6 @@ mod tests {
             profession: ContentIndex::default(),
             goals: Vec::new(),
             race: ContentIndex::default(),
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -2003,7 +2007,6 @@ mod tests {
             profession,
             goals: Vec::new(),
             race,
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -2302,7 +2305,6 @@ mod tests {
             profession,
             goals: Vec::new(),
             race,
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -2724,7 +2726,6 @@ mod tests {
             profession,
             goals: Vec::new(),
             race,
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),

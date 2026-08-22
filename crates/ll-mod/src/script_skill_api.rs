@@ -269,8 +269,11 @@ fn parse_effect(kind: &str, tag: &str, amount: i64, amount2: i64) -> Result<Skil
 
 /// 属性名字符串 → [`AttributeKind`]，与
 /// `crate::script_class_api::attribute_kind_from_str` 是同一份映射的
-/// 独立拷贝——两个模块目前都足够小，为六个固定分支的 `match` 单独抽出
-/// 一个共享帮手模块并不划算，重复这一份比引入一层间接更直接。
+/// 独立拷贝——两个模块目前都足够小，为七个固定分支的 `match` 单独抽出
+/// 一个共享帮手模块并不划算，重复这一份比引入一层间接更直接。`"luck"`
+/// 是幸运并入 `AttributeKind` 批次新增——`(register-skill ..
+/// "temporary-stat-modifier" "luck" ..)` 正是祝福术/诅咒这类技能能
+/// 临时改变幸运的 authoring 入口。
 fn attribute_kind_from_str(name: &str) -> Option<AttributeKind> {
     Some(match name {
         "strength" => AttributeKind::Strength,
@@ -279,6 +282,7 @@ fn attribute_kind_from_str(name: &str) -> Option<AttributeKind> {
         "intelligence" => AttributeKind::Intelligence,
         "willpower" => AttributeKind::Willpower,
         "charisma" => AttributeKind::Charisma,
+        "luck" => AttributeKind::Luck,
         _ => return None,
     })
 }

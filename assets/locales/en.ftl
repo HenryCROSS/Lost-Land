@@ -68,6 +68,7 @@ attribute-constitution-display_name = Constitution
 attribute-intelligence-display_name = Intelligence
 attribute-willpower-display_name = Willpower
 attribute-charisma-display_name = Charisma
+attribute-luck-display_name = Luck
 
 hud-inventory-panel-title = Inventory
 hud-inventory-empty = (empty)

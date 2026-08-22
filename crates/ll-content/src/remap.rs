@@ -312,7 +312,6 @@ fn remap_agent(
         ref mut profession,
         ref mut goals,
         ref mut race,
-        luck: _,
         // 资源当前值——纯数值，不携带任何 ContentIndex，不需要重映射。
         mana: _,
         stamina: _,
@@ -763,7 +762,6 @@ mod tests {
             profession: ContentIndex::default(),
             goals: Vec::new(),
             race: ContentIndex::default(),
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),

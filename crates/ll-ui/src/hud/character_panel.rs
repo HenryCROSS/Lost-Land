@@ -1,7 +1,7 @@
-//! 角色面板：六项属性（烘焙 + 装备 + buff 之后的有效值，不是裸
+//! 角色面板：七项属性（六项主属性 + 幸运，烘焙 + 装备 + buff 之后的有效值，不是裸
 //! `BaseStats`）+ 等级 + 经验 + 生效中的属性修正。
 //!
-//! # 六项属性走 `derive_stats`，不是裸 `Agent::stats`
+//! # 七项属性走 `derive_stats`，不是裸 `Agent::stats`
 //!
 //! 任务书「数据从哪来」一节明确要求：显示的必须是
 //! [`ll_sim::resolve::derive_stats`] 算出的有效值——裸 `BaseStats` 不
@@ -44,18 +44,20 @@ use super::{PanelContent, build_panel};
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
 
-/// 六项主属性按固定顺序展示——与 [`ll_world::entity::AttributeKind`]
-/// 声明顺序一致，力量在前、魅力在后。
-const ATTRIBUTE_ORDER: [AttributeKind; 6] = [
+/// 七项属性（六项主属性 + 幸运，幸运并入 `AttributeKind` 批次新增）
+/// 按固定顺序展示——与 [`ll_world::entity::AttributeKind`] 声明顺序
+/// 一致，力量在前、幸运在后。
+const ATTRIBUTE_ORDER: [AttributeKind; 7] = [
     AttributeKind::Strength,
     AttributeKind::Dexterity,
     AttributeKind::Constitution,
     AttributeKind::Intelligence,
     AttributeKind::Willpower,
     AttributeKind::Charisma,
+    AttributeKind::Luck,
 ];
 
-/// 把六项主属性变体映射到 Fluent 键——本项目当前没有为
+/// 把七项属性变体映射到 Fluent 键——本项目当前没有为
 /// `AttributeKind` 声明字符串名字的既有工具（`EquipSlot::from_name`
 /// 只做「kebab 名 → 槽位」的反向解析，不是给 UI 用的展示名），这批键
 /// 是本模块新增，见 `assets/locales/zh-CN.ftl` 的 `attribute-*`
@@ -68,6 +70,7 @@ fn attribute_key(kind: AttributeKind) -> &'static str {
         AttributeKind::Intelligence => "lostland:attribute.intelligence.display_name",
         AttributeKind::Willpower => "lostland:attribute.willpower.display_name",
         AttributeKind::Charisma => "lostland:attribute.charisma.display_name",
+        AttributeKind::Luck => "lostland:attribute.luck.display_name",
     }
 }
 
@@ -75,7 +78,7 @@ fn attribute_key(kind: AttributeKind) -> &'static str {
 /// [`super::status_bar::StatusBarData`] 一致：打包成一个结构体，未来
 /// 增删字段不需要跟着改函数签名。
 pub struct CharacterPanelData<'a> {
-    /// 基础属性（未烘焙装备/buff 前的六项）——喂给 `derive_stats`。
+    /// 基础属性（未烘焙装备/buff 前的七项）——喂给 `derive_stats`。
     pub base_stats: BaseStats,
     /// 正在生效的临时属性修正——`Agent::active_stat_modifiers`。
     pub active_stat_modifiers:
@@ -117,7 +120,7 @@ fn active_modifier_totals(
     totals
 }
 
-/// 把角色面板的全部内容行写进 `cursor`/`lines`——标题、六项有效属性、
+/// 把角色面板的全部内容行写进 `cursor`/`lines`——标题、七项有效属性、
 /// 等级、经验、生效中的属性修正（或「无」）。是 [`character_panel_lines`]
 /// 与 [`character_panel`] 共用的真正实现：前者为了不打破既有测试签名
 /// 自己新建一个 `RowCursor`，后者要接入 [`super::build_panel`] 现算
@@ -179,7 +182,7 @@ fn write_character_panel_lines(
     }
 }
 
-/// 产出角色面板的全部文本行：标题、六项有效属性、等级、经验、生效中
+/// 产出角色面板的全部文本行：标题、七项有效属性、等级、经验、生效中
 /// 的属性修正（或「无」）。纯函数，不接触 GPU——用
 /// [`crate::widget::list::RowCursor`] 逐行推进，产出
 /// [`crate::widget::label::Label`]，理由见 [`crate::widget`] 模块文档
@@ -238,7 +241,7 @@ mod tests {
     use std::path::Path;
 
     fn write_fixture_catalog(dir: &Path) {
-        std::fs::write(dir.join("zh-CN.ftl"), "hud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("zh-CN.ftl"), "hud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\n").expect("测试用写入应当成功");
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -251,9 +254,9 @@ mod tests {
     }
 
     #[test]
-    fn 角色面板文本包含六项有效属性数值() {
+    fn 角色面板文本包含七项有效属性数值() {
         // Arrange
-        let dir = temp_dir("six-attributes");
+        let dir = temp_dir("seven-attributes");
         write_fixture_catalog(&dir);
         let catalog = Catalog::load_dir(&dir);
         let modifiers = BTreeMap::new();
@@ -266,6 +269,7 @@ mod tests {
                 intelligence: 8,
                 willpower: 9,
                 charisma: 7,
+                luck: 0,
             },
             active_stat_modifiers: &modifiers,
             equipment: &equipment,
@@ -285,6 +289,44 @@ mod tests {
 
         // Assert
         assert!(joined.contains("力量 12"));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 角色面板文本包含幸运这一项() {
+        // Arrange：幸运并入 AttributeKind 批次——角色面板的
+        // ATTRIBUTE_ORDER 新增了 Luck，核实它真的渲染成一行，不是
+        // 枚举变体加了、展示层却漏掉。
+        let dir = temp_dir("luck-attribute-row");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let data = CharacterPanelData {
+            base_stats: BaseStats {
+                luck: 6,
+                ..BaseStats::BASELINE
+            },
+            active_stat_modifiers: &modifiers,
+            equipment: &equipment,
+            level: 1,
+            experience: 0,
+            xp_to_next_level: 100,
+            now: Tick(0),
+        };
+
+        // Act
+        let lines = character_panel_lines(&data, &NoItems, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let joined = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(joined.contains("幸运 6"));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

@@ -85,6 +85,7 @@ mod tests {
                     intelligence: 0,
                     willpower: 0,
                     charisma: 0,
+                    luck: 0,
                 },
                 darkvision_floor: 0,
                 footprint: (1, 1),

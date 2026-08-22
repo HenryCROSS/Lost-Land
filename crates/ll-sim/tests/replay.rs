@@ -102,7 +102,6 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         profession: player_profession,
         goals: Vec::new(),
         race,
-        luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
@@ -143,7 +142,6 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         profession: enemy_profession,
         goals: Vec::new(),
         race,
-        luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
@@ -541,7 +539,35 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    一致），证明这段确实是本次摘要变化的唯一成因。
 /// 3. 恢复这段后重新跑通，第三次独立进程再次确认新常量
 ///    `9_575_508_475_089_449_199` 稳定复现，才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 9_575_508_475_089_449_199;
+///
+/// # 第十五次重冻的原因（幸运并入 `AttributeKind` 批次）
+///
+/// 幸运曾经是 `Agent` 上独立于 `stats` 之外的字段，`WorldState::hash`
+/// 单独混入一次（紧跟在 `profession`/`race` 之后）；并入 `BaseStats`
+/// 后随 `stats` 一起在 [`ll_world::state::write_stats`]（本文件不能
+/// 直接引用这个私有函数，这里只指名）里混入——本文件的 `setup` 里两个
+/// 实体的 `stats` 取 `BaseStats::BASELINE`（`luck` 恒为 `0`），数值本身
+/// 没有变化，但字节流的**位置**变了（从"紧跟在 race 之后"挪到"紧跟在
+/// charisma 之后、profession 之前"），与前十四次重冻同一条先例：新增/
+/// 挪动混入位置即便取值不变也会移动摘要。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 把 [`ll_world::state`] 的 `write_stats` 里新增的
+///    `hasher.write_i64(i64::from(stats.luck));` 临时注释掉，同时在
+///    `hash()` 里 `write_stats`/`profession`/`race` 三行之后临时加回
+///    `hasher.write_i64(i64::from(agent.stats.luck));`（还原并入前的
+///    确切写入顺序，不是简单删掉新增的那一行——本批次把 `luck` 从
+///    `Agent` 独立字段挪进了 `BaseStats`，旧位置的字节流必须用
+///    `agent.stats.luck` 重建，不能假设"删掉新行就等于旧顺序"），重新
+///    跑这条测试，摘要精确回到旧常量 `9_575_508_475_089_449_199`——
+///    证明这次变化完全、只来自幸运混入位置的挪动，没有引入其他意外的
+///    行为漂移。
+/// 2. 恢复成当前代码（`write_stats` 混入 `luck`，`hash()` 不再单独混入
+///    `agent.stats.luck`），在改动后的代码上把这条测试单独跑了两次
+///    （两次独立的 `cargo test` 进程），确认新摘要
+///    `16_448_618_947_574_699_215` 在两次独立进程里稳定复现（不是
+///    一次性偶然值），才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 16_448_618_947_574_699_215;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

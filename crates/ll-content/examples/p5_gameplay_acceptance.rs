@@ -182,7 +182,6 @@ fn bare_agent(world: &WorldState, pos: TorusPos) -> Agent {
         profession: ContentIndex::default(),
         goals: Vec::new(),
         race: ContentIndex::default(),
-        luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),

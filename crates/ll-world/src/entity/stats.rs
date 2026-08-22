@@ -7,8 +7,10 @@
 
 use ll_core::time::Tick;
 
-/// 六项主属性。全部整数，理由见 `attribute-system.md` 开篇「所有数值
-/// 一律整数」。
+/// 六项主属性 + 幸运。全部整数，理由见 `attribute-system.md` 开篇「所有
+/// 数值一律整数」。幸运并入批次（见 [`Self::luck`] 文档）之前本类型只有
+/// 六个字段，字段名 `BaseStats` 沿用未改——七项数值仍然是"这个实体的
+/// 基础数值分别是多少"这一件事，改名不会让这件事更清楚。
 ///
 /// 基础属性硬上限 30（装备与临时效果可以突破，见该文档「成长上限」
 /// 一节），但那是 P5 装备系统要执行的规则，本类型自身不做范围校验——
@@ -27,16 +29,44 @@ pub struct BaseStats {
     pub willpower: i32,
     /// 魅力：招募随从、交易议价、随从士气。
     pub charisma: i32,
+    /// 幸运：暴击率（每点 +5‰，`ll_sim::combat::crit_chance_permille`）
+    /// 已接线，见 `ll_sim::resolve::resolve_attack`「暴击」一节。仍未
+    /// 落地的（均详见 `knowledge/design/attribute-system.md` 「五、
+    /// 幸运」）：优势掷骰（每满 20 点多掷一次取较优）、掉落品质权重、
+    /// 稀有事件触发权重——本字段只保证一个消费者（暴击率）真的读它，
+    /// 其余三项各自需要一套目前还不存在的机制（判定系统本身/掉落表/
+    /// 随机事件表），留给各自的系统落地批次。
+    ///
+    /// # 为什么现在并入 `BaseStats`（推翻旧裁定）
+    ///
+    /// 曾经刻意放在 `Agent` 而非 `BaseStats`，理由是幸运走「每点 +5‰」
+    /// 的原始值语义，与六项主属性统一的 `(属性 − 10) / 2` 调整值公式
+    /// 形状不同——但这条调整值公式当前在本仓库任何一处结算代码里都
+    /// **没有真正实现**（`derive_stats`/`resolve_attack` 至今直接使用
+    /// 六项主属性的裸整数值，没有任何地方对它们做 `(v − 10) / 2` 换算，
+    /// 见 `crates/ll-sim/src/resolve.rs`/`combat.rs`），因此「幸运的换算
+    /// 公式与其余六项不同」在当前代码里不成立：全部七项属性此刻都是
+    /// 原样传递给各自的消费者，幸运与其余六项在这一点上并无二致。
+    ///
+    /// 项目所有者裁定「幸运我希望也能被并入 `AttributeKind`」——并入后
+    /// 幸运戒指、祝福术、诅咒（降低幸运）这类装备/技能加成能复用
+    /// [`crate::entity::Agent::active_stat_modifiers`]（按 `AttributeKind`
+    /// 索引）与装备静态加成（`ll_sim::item::StatBonus`）这两条现成通道
+    /// ——不并入的话两条通道都碰不到幸运，装备/buff 永远无法影响它。
+    /// `AttributeKind` 因此新增 [`AttributeKind::Luck`] 变体，本字段随之
+    /// 从 `Agent` 挪进 `BaseStats`，与其余六项同一处存储、同一套
+    /// `derive_stats` 聚合路径——不再是「同一个概念两处存储」的隐患。
+    pub luck: i32,
 }
 
-/// 六项主属性的枚举形式——供职业「主属性倾向」、技能「临时属性修正」
-/// 等需要「指定某一项属性」而非「持有一份完整 [`BaseStats`]」的场景
-/// 使用（P5-B `knowledge/design/class-skill-quest-system.md` 第一节
+/// [`BaseStats`] 七项字段的枚举形式——供职业「主属性倾向」、技能「临时
+/// 属性修正」等需要「指定某一项属性」而非「持有一份完整 [`BaseStats`]」
+/// 的场景使用（P5-B `knowledge/design/class-skill-quest-system.md` 第一节
 /// `ClassDef::primary_attribute`、第五节 `SkillEffect::TemporaryStatModifier`
 /// 的落点）。
 ///
-/// [`BaseStats`] 回答「这个实体的六项数值分别是多少」，`AttributeKind`
-/// 回答「指的是六项里的哪一项」——两者服务不同的场景，并存不冲突。
+/// [`BaseStats`] 回答「这个实体的七项数值分别是多少」，`AttributeKind`
+/// 回答「指的是七项里的哪一项」——两者服务不同的场景，并存不冲突。
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
 )]
@@ -53,6 +83,11 @@ pub enum AttributeKind {
     Willpower,
     /// 魅力：招募随从、交易议价、随从士气。
     Charisma,
+    /// 幸运：暴击率（每点 +5‰），见 [`BaseStats::luck`] 文档「为什么
+    /// 现在并入 `BaseStats`」一节——并入批次新增变体，让幸运戒指/祝福术/
+    /// 诅咒这类装备/技能加成能复用 `active_stat_modifiers`/`StatBonus`
+    /// 两条现成通道。
+    Luck,
 }
 
 /// 一条正在生效的临时属性修正——技能效果
@@ -128,6 +163,16 @@ impl BaseStats {
     /// （[`crate::entity::ThinPopulation::promote`]）时的默认属性：薄层
     /// 本就不追踪逐项属性，升格时给一个不偏不倚的起点，好过任意选一个
     /// 具体数值却假装它有出处。
+    ///
+    /// **幸运取零，不是十**：幸运走「每点 +5‰」的原始值语义（见
+    /// [`Self::luck`] 文档），没有六项主属性那套调整值公式的「基准点」
+    /// 概念可言——`ll_sim::combat::crit_chance_permille`（定义在下游的
+    /// `ll-sim`，`ll-world` 不能反过来依赖它，见依赖方向 `ll-world` ←
+    /// `ll-sim`，这里只能用反引号纯文本指向，不能用 intra-doc link）
+    /// 文档「没有独立的『基础暴击率』常量」一节已经论证零幸运对应零
+    /// 暴击率是唯一
+    /// 选择，此处的零基准与之呼应，也保持了本仓库全部现存测试夹具「幸运
+    /// 恒为零」这条既有假设不被打破。
     pub const BASELINE: BaseStats = BaseStats {
         strength: 10,
         dexterity: 10,
@@ -135,6 +180,7 @@ impl BaseStats {
         intelligence: 10,
         willpower: 10,
         charisma: 10,
+        luck: 0,
     };
 
     /// 逐项相加，把一份固定增减量叠加到当前值上——种族属性修正的烘焙
@@ -142,6 +188,12 @@ impl BaseStats {
     /// （见 `knowledge/design/race-system.md`「二、属性修正」一节与
     /// `ll_sim::character::bake_race_stat_modifiers` 文档），产出的值
     /// 直接写死进 `Agent.stats`，此后不再持有对修正来源的引用。
+    ///
+    /// 幸运与其余六项同一条加法路径——种族对幸运的修正因此自动成立：
+    /// `RaceDef.stat_modifiers` 复用本类型，一旦某个种族声明非零
+    /// `luck`，本函数会像处理其余六项一样把它加进结果，调用方
+    /// （`ll_sim::character::bake_race_stat_modifiers`）不需要为幸运
+    /// 另写一条分支。
     ///
     /// 不做上下限裁剪——同本类型既有纪律（见类型文档「基础属性硬上限
     /// 30」一节）：范围校验属于装备结算的职责，不是字段布局本身的
@@ -154,6 +206,7 @@ impl BaseStats {
             intelligence: self.intelligence + modifiers.intelligence,
             willpower: self.willpower + modifiers.willpower,
             charisma: self.charisma + modifiers.charisma,
+            luck: self.luck + modifiers.luck,
         }
     }
 }
@@ -172,6 +225,7 @@ mod tests {
             intelligence: 0,
             willpower: 0,
             charisma: 0,
+            luck: 0,
         };
 
         // Act
@@ -187,8 +241,31 @@ mod tests {
                 intelligence: 10,
                 willpower: 10,
                 charisma: 10,
+                luck: 0,
             }
         );
+    }
+
+    #[test]
+    fn add_modifiers叠加非零幸运增减量后幸运随其余六项同一条路径相加() {
+        // Arrange：半身人式修正——只有幸运非零，验证种族幸运加成
+        // （knowledge/design/race-system.md「二、属性修正」一节）能通过
+        // 本函数自动成立，不需要为幸运单开一条分支。
+        let modifiers = BaseStats {
+            strength: 0,
+            dexterity: 0,
+            constitution: 0,
+            intelligence: 0,
+            willpower: 0,
+            charisma: 0,
+            luck: 3,
+        };
+
+        // Act
+        let baked = BaseStats::BASELINE.add_modifiers(modifiers);
+
+        // Assert
+        assert_eq!(baked.luck, 3);
     }
 
     #[test]
@@ -201,6 +278,7 @@ mod tests {
             intelligence: 0,
             willpower: 0,
             charisma: 0,
+            luck: 0,
         });
 
         // Assert：反例——零修正必须原样等于基线，不是「无论如何都加点
@@ -228,6 +306,16 @@ mod tests {
     }
 
     #[test]
+    fn 基准幸运为零() {
+        // Arrange & Act
+        let stats = BaseStats::BASELINE;
+
+        // Assert：幸运不遵循六项主属性「调整值为零→基准 10」的换算，
+        // 基准直接是原始值零，见 BASELINE 文档「幸运取零，不是十」一节。
+        assert_eq!(stats.luck, 0);
+    }
+
+    #[test]
     fn 序列化往返后属性值不变() {
         // Arrange
         let original = BaseStats {
@@ -237,6 +325,7 @@ mod tests {
             intelligence: 8,
             willpower: 11,
             charisma: 9,
+            luck: 7,
         };
 
         // Act

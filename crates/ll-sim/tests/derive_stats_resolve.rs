@@ -13,6 +13,21 @@
 //! 3. 卸下装备 → 加成真的消失（证明是派生不是一次性烘焙）。
 //! 4. 技能给的 `active_stat_modifiers` 与装备给的 `stat_bonuses` 同时
 //!    生效且相加，不是互相覆盖。
+//!
+//! # 幸运并入 `AttributeKind` 批次新增的三条验收
+//!
+//! 项目所有者裁定幸运并入 `AttributeKind` 之后，本文件追加三条端到端
+//! 验收——证明的不是"编译过了"，是"幸运真的能被装备/buff 影响，
+//! 且这份影响真的反映到暴击率上"：
+//!
+//! 5. `装备幸运戒指后有效幸运真的变高`：走 `derive_stats`，不是裸
+//!    `BaseStats.luck`。
+//! 6. `临时属性修正作用于幸运时生效期内更高过期后回落`：`active_stat_modifiers`
+//!    的惰性到期判定同样对幸运成立。
+//! 7. `装备幸运戒指后暴击率真的更高`：本条是最终验收——`resolve_attack`
+//!    读的是 `attacker_derived.attribute(AttributeKind::Luck)`，不是
+//!    `attacker.stats.luck`，只有装备加成真的传导到暴击判定，这条测试
+//!    才会通过；手工验证过这条会红，见测试注释。
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
@@ -22,7 +37,7 @@ use ll_sim::combat::{Penetration, damage_after_defense};
 use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, StatBonus, StatTarget};
-use ll_sim::resolve::{derive_stats, resolve_with_skills_traits_pools_and_items};
+use ll_sim::resolve::{derive_stats, resolve, resolve_with_skills_traits_pools_and_items};
 use ll_world::entity::{ActiveStatModifier, Agent, AttributeKind, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -121,7 +136,6 @@ fn spawn_agent(
         profession,
         goals: Vec::new(),
         race,
-        luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: BTreeMap::new(),
@@ -589,4 +603,197 @@ fn 耐久未耗尽的护甲仍然贡献护甲加成() {
 
     // Assert：combat_items() 里铁质护甲的加成是 +8。
     assert_eq!(derived.armor(), 8);
+}
+
+/// 建一份认识「幸运戒指」（幸运 +20）的目录，返回它的索引与目录本身
+/// ——幸运并入 `AttributeKind` 批次新增，与 [`combat_items`] 分开是
+/// 因为后者的调用点数量已经不小，不给它的返回元组再加一个字段。
+fn luck_ring_item() -> (ContentIndex, FakeItems) {
+    let mut interner = Interner::new();
+    let ring = interner.intern(NamespacedId::parse("lostland:luck_ring").expect("合法标识符"));
+    let items = FakeItems {
+        items: BTreeMap::from([(
+            ring,
+            ItemRule {
+                stack_limit: 1,
+                equip_mask: EquipSlot::RING_L.mask(),
+                stat_bonuses: vec![StatBonus {
+                    target: StatTarget::Attribute(AttributeKind::Luck),
+                    amount: 20,
+                }],
+                use_effect: None,
+                penetration: Penetration::NONE,
+            },
+        )]),
+    };
+    (ring, items)
+}
+
+#[test]
+fn 装备幸运戒指后有效幸运真的变高() {
+    // derive_stats 层面的验收：不装备时有效幸运等于裸 BaseStats.luck
+    // （0），装备幸运戒指（+20）后有效幸运必须真的变成 20，不是继续
+    // 停在 0——这是「幸运并入 AttributeKind」换来的直接能力：装备加成
+    // 现在能通过 StatTarget::Attribute(AttributeKind::Luck) 这条通道
+    // 影响幸运，此前 luck 是 Agent 上独立字段，这条通道完全碰不到它。
+    // Arrange
+    let (ring, items) = luck_ring_item();
+    let equipped = BTreeMap::from([(EquipSlot::RING_L, ItemStack::new(ring, 1))]);
+
+    // Act
+    let derived = derive_stats(
+        BaseStats::BASELINE,
+        &BTreeMap::new(),
+        &equipped,
+        &items,
+        Tick(0),
+    );
+
+    // Assert
+    assert_eq!(derived.attribute(AttributeKind::Luck), 20);
+}
+
+#[test]
+fn 临时属性修正作用于幸运时生效期内更高过期后回落() {
+    // active_stat_modifiers 惰性到期判定对幸运同样成立——与力量/体质等
+    // 其余六项走同一条 derive_stats 过滤规则（expires_at.0 > now.0）。
+    // 生效期内（now < expires_at）有效幸运必须包含这条临时修正，过期
+    // 后（now >= expires_at）必须精确回落到裸基础值，不是继续沿用
+    // 过期前的旧值。
+    // Arrange
+    let mut interner = Interner::new();
+    let blessing =
+        interner.intern(NamespacedId::parse("lostland:blessing_of_fortune").expect("合法标识符"));
+    let modifiers = BTreeMap::from([(
+        AttributeKind::Luck,
+        BTreeMap::from([(
+            blessing,
+            ActiveStatModifier {
+                delta: 15,
+                expires_at: Tick(100),
+            },
+        )]),
+    )]);
+    let no_items = FakeItems {
+        items: BTreeMap::new(),
+    };
+
+    // Act
+    let during = derive_stats(
+        BaseStats::BASELINE,
+        &modifiers,
+        &BTreeMap::new(),
+        &no_items,
+        Tick(50),
+    );
+    let after = derive_stats(
+        BaseStats::BASELINE,
+        &modifiers,
+        &BTreeMap::new(),
+        &no_items,
+        Tick(100),
+    );
+
+    // Assert
+    assert_eq!(during.attribute(AttributeKind::Luck), 15);
+    assert_eq!(after.attribute(AttributeKind::Luck), 0);
+}
+
+#[test]
+fn 装备幸运戒指后暴击率真的更高() {
+    // 最终验收——频率断言，不是单次结果（同 `ll_sim::resolve` 测试模块
+    // `幸运更高的角色暴击命中频率更高` 的既有纪律：幸运只改变判定的
+    // 概率形状，单次攻击测不出这条效果）。两个攻击者基础幸运恒为 0
+    // （BaseStats::BASELINE），唯一差异是其中一个装备了幸运戒指
+    // （+20 幸运 → 100‰ = 10% 暴击率），另一个不装备（0% 暴击率）。
+    //
+    // 手工验证过这条会红：把 `resolve_attack` 里
+    // `let effective_luck = attacker_derived.attribute(AttributeKind::Luck);`
+    // 改回读裸 `attacker.stats.luck`（本批次改动前，`resolve_attack`
+    // 唯一读取幸运的地方是 `Agent.luck` 字段本身），两个攻击者的
+    // `stats.luck` 都是 0（`BaseStats::BASELINE`），戒指的 +20 加成
+    // 完全不参与暴击判定，`ringed_crits`/`unringed_crits` 变得相等
+    // （都精确为 0）——完整记录见任务报告「第 1、3 条怎么变红」一节。
+    // Arrange
+    let trials = 3_000i64;
+    let baseline_damage = damage_after_defense(BaseStats::BASELINE.strength, 0, Penetration::NONE);
+    let (ring, items) = luck_ring_item();
+
+    let mut ringed_world = test_world();
+    let ringed_attacker = spawn_agent(
+        &mut ringed_world,
+        Agent::STARTING_HEALTH,
+        Vec::new(),
+        BTreeMap::from([(EquipSlot::RING_L, ItemStack::new(ring, 1))]),
+        BTreeMap::new(),
+    );
+    let ringed_victim = spawn_agent(
+        &mut ringed_world,
+        1_000_000,
+        Vec::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
+
+    let mut unringed_world = test_world();
+    let unringed_attacker = spawn_agent(
+        &mut unringed_world,
+        Agent::STARTING_HEALTH,
+        Vec::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
+    let unringed_victim = spawn_agent(
+        &mut unringed_world,
+        1_000_000,
+        Vec::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
+
+    // Act：只挪动世界时钟取得不同的随机流，不真正 apply 任何效果——
+    // 每次试验都在同一份满血目标上独立重打一次，理由同
+    // `ll_sim::resolve` 测试模块「幸运更高的角色暴击命中频率更高」。
+    let mut ringed_crits = 0i64;
+    let mut unringed_crits = 0i64;
+    for tick in 0..trials {
+        ringed_world.clock = Tick(tick);
+        let ringed_effects = resolve_with_skills_traits_pools_and_items(
+            &ringed_world,
+            &Intent::Attack {
+                actor: ringed_attacker,
+                target: ringed_victim,
+            },
+            &ll_sim::skill::NoSkills,
+            &ll_sim::traits::NoTraitGrants,
+            &ll_sim::traits::NoTraits,
+            &ll_sim::resource_pool::NoResourcePools,
+            &items,
+        );
+        if ringed_effects.iter().any(
+            |effect| matches!(effect, Effect::Damage { amount, .. } if *amount > baseline_damage),
+        ) {
+            ringed_crits += 1;
+        }
+
+        unringed_world.clock = Tick(tick);
+        let unringed_effects = resolve(
+            &unringed_world,
+            &Intent::Attack {
+                actor: unringed_attacker,
+                target: unringed_victim,
+            },
+        );
+        if unringed_effects.iter().any(
+            |effect| matches!(effect, Effect::Damage { amount, .. } if *amount > baseline_damage),
+        ) {
+            unringed_crits += 1;
+        }
+    }
+
+    // Assert：戴戒指一侧的暴击次数应明显多于不戴的一侧——0 幸运恒为
+    // 0% 暴击率（见 `crate_chance_permille` 文档「没有独立的『基础暴击
+    // 率』常量」一节），unringed_crits 理应精确为 0；用一个较大的余量
+    // （100）而不是直接比较 `> 0`，与既有同类频率测试的判据风格一致。
+    assert!(ringed_crits > unringed_crits + 100);
 }

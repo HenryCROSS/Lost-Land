@@ -77,7 +77,6 @@ fn spawn_agent(world: &mut WorldState, health: i32, inventory: Vec<ItemStack>) -
         profession,
         goals: Vec::new(),
         race,
-        luck: 0,
         mana: 0,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: BTreeMap::new(),

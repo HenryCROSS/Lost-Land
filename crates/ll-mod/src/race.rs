@@ -257,6 +257,7 @@ const ZERO_STAT_MODIFIERS: BaseStats = BaseStats {
     intelligence: 0,
     willpower: 0,
     charisma: 0,
+    luck: 0,
 };
 
 /// 种族属性的列式存储：按 [`ContentIndex`] 下标索引，不按内容分结构

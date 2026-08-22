@@ -83,6 +83,7 @@ attribute-constitution-display_name = 体质
 attribute-intelligence-display_name = 智力
 attribute-willpower-display_name = 意志
 attribute-charisma-display_name = 魅力
+attribute-luck-display_name = 幸运
 
 hud-inventory-panel-title = 背包
 hud-inventory-empty = （空）

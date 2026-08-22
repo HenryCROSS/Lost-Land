@@ -91,7 +91,6 @@ fn spawn_agent_with_race(world: &mut WorldState, race: ContentIndex, health: i32
         profession,
         goals: Vec::new(),
         race,
-        luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),

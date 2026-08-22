@@ -145,7 +145,6 @@ fn spawn_agent(world: &mut WorldState, inventory: Vec<ItemStack>) -> EntityId {
         profession,
         goals: Vec::new(),
         race,
-        luck: 0,
         // 起始法力恒为零：让「用完药水后法力恰好变成 40」这条断言不需要
         // 再减去一个基线值,直接验证效果本身。
         mana: 0,

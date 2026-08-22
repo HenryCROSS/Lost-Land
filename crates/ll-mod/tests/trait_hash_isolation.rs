@@ -70,7 +70,6 @@ fn spawn_agent(world: &mut WorldState, race: ContentIndex, level: i32) -> Entity
         profession: ContentIndex::default(),
         goals: Vec::new(),
         race,
-        luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),

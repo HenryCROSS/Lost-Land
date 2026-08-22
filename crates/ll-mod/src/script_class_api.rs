@@ -111,7 +111,11 @@ fn do_register_class(
 
 /// 属性名字符串 → [`AttributeKind`]。命名沿用属性系统既有的英文小写
 /// 惯例，与 `ll_script::api::intent::direction_from_symbol` 同一套
-/// 「字符串对字符串直接匹配，不识别就返回 `None`」的写法。
+/// 「字符串对字符串直接匹配，不识别就返回 `None`」的写法。`"luck"` 是
+/// 幸运并入 `AttributeKind` 批次新增，与
+/// `crate::script_skill_api::attribute_kind_from_str`/
+/// `crate::script_item_api::stat_target_from_str` 同步收录，保持「三份
+/// 独立拷贝、同一份映射」这条既有先例不出现遗漏的一份。
 fn attribute_kind_from_str(name: &str) -> Option<AttributeKind> {
     Some(match name {
         "strength" => AttributeKind::Strength,
@@ -120,6 +124,7 @@ fn attribute_kind_from_str(name: &str) -> Option<AttributeKind> {
         "intelligence" => AttributeKind::Intelligence,
         "willpower" => AttributeKind::Willpower,
         "charisma" => AttributeKind::Charisma,
+        "luck" => AttributeKind::Luck,
         _ => return None,
     })
 }
@@ -177,13 +182,16 @@ mod tests {
         let mut registry = Registry::new();
         let mut table = ClassTable::new();
 
-        // Act
+        // Act："wisdom" 不是本项目任何一个属性名（智力叫
+        // "intelligence"，本项目没有 D&D 式的 wisdom/intelligence 双属性
+        // 拆分）——`"luck"` 幸运并入 `AttributeKind` 批次后已经是合法
+        // 属性名，不能再用作"未知名称"的示例。
         let result = do_register_class(
             &mut registry,
             &mut table,
             "yourmod:x",
             "yourmod:x_display_name",
-            "luck",
+            "wisdom",
         );
 
         // Assert
@@ -222,6 +230,8 @@ mod tests {
     #[test]
     fn 脚本内注册失败时load_source返回err而不panic() {
         // Arrange：未知的主属性名——脚本作者笔误，宿主必须优雅报错。
+        // "wisdom" 不是本项目任何一个属性名，理由同
+        // `未知的主属性名返回错误`。
         let mut engine = ScriptEngine::new();
         register_class_api(&mut engine);
         crate::active_registry::set_active_registry(Registry::new());
@@ -229,7 +239,7 @@ mod tests {
 
         // Act
         let result = engine.load_source(
-            r#"(register-class "yourmod:x" "yourmod:x_display_name" "luck")"#.to_string(),
+            r#"(register-class "yourmod:x" "yourmod:x_display_name" "wisdom")"#.to_string(),
         );
 
         // Assert

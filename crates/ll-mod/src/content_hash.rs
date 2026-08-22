@@ -206,7 +206,17 @@ use crate::xp_curve::XpCurveTable;
 /// 把「表判别字节」的写入位置从各分支内部提到统一的一处，就是这样一次
 /// 不改变字节序列的重构，六张原有表的判别值编号也原样保留，理由见
 /// [`ContentTableKind`] 文档）。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 2;
+///
+/// 版本 3（幸运并入 `AttributeKind` 批次）：[`write_base_stats`] 新增
+/// 混入 `stats.luck` 这一项，改变了每一条携带 `BaseStats` 的内容
+/// （目前只有 `RaceDef.stat_modifiers`）的哈希字节序列——即便某条
+/// 具体种族定义的六项主属性与幸运数值完全没变，量尺本身也已经不同。
+/// 升版号让读档流程能正确识别这是「量尺换了」而不是「mod 内容真的
+/// 变了」——`ll-content` 依赖本 crate（依赖方向不允许反过来），下游
+/// `ll_content::load_error::LoadError::ContentHashAlgorithmUpgraded` 正是
+/// 消费本常量升级信号的分支，这里只能用反引号纯文本指向，不能用
+/// intra-doc link。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 3;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -484,10 +494,11 @@ fn write_resolved_content_index_slice(
     }
 }
 
-/// 把一份 [`BaseStats`] 混入哈希——六项主属性逐一混入，顺序与字段
-/// 声明顺序一致。与 `ll_world::state::write_stats`（该 crate 内部
-/// 私有）是同一种写法的独立实现：两者服务不同的哈希（世界状态摘要
-/// vs. 内容值哈希），不适合跨 crate 共享同一个私有帮手函数。
+/// 把一份 [`BaseStats`] 混入哈希——七项属性（六项主属性 + 幸运，幸运
+/// 并入 `AttributeKind` 批次新增字段）逐一混入，顺序与字段声明顺序
+/// 一致。与 `ll_world::state::write_stats`（该 crate 内部私有）是同一种
+/// 写法的独立实现：两者服务不同的哈希（世界状态摘要 vs. 内容值哈希），
+/// 不适合跨 crate 共享同一个私有帮手函数。
 fn write_base_stats(hasher: &mut StateHasher, stats: BaseStats) {
     hasher.write_i64(i64::from(stats.strength));
     hasher.write_i64(i64::from(stats.dexterity));
@@ -495,6 +506,7 @@ fn write_base_stats(hasher: &mut StateHasher, stats: BaseStats) {
     hasher.write_i64(i64::from(stats.intelligence));
     hasher.write_i64(i64::from(stats.willpower));
     hasher.write_i64(i64::from(stats.charisma));
+    hasher.write_i64(i64::from(stats.luck));
 }
 
 /// 混入 [`ll_world::terrain::TerrainDef`] 的全部字段——`opens_into`
@@ -1065,6 +1077,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 0,
+                luck: 0,
             },
             darkvision_floor,
             footprint: (1, 1),

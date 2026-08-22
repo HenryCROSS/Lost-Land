@@ -79,7 +79,6 @@ fn spawn_agent(world: &mut WorldState, inventory: Vec<ItemStack>) -> EntityId {
         profession,
         goals: Vec::new(),
         race,
-        luck: 0,
         mana: Agent::STARTING_MANA,
         stamina: Agent::STARTING_STAMINA,
         resource_pools: BTreeMap::new(),

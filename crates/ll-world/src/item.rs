@@ -438,7 +438,7 @@ impl SlotMask {
 ///
 /// # 为什么不是只有 `AttributeKind` 一种取值
 ///
-/// `AttributeKind` 只有六个变体（力量/敏捷/体质/智力/意志/魅力），且
+/// `AttributeKind` 有七个变体（力量/敏捷/体质/智力/意志/魅力/幸运），且
 /// **没有对应"护甲/防御"的变体**——`knowledge/design/vehicle-and-mounting.md`
 /// 一节已经核实这一点，`attribute-system.md` 二节把护甲描述成三系
 /// 攻防里"防御"一侧的独立数值,不是某个主属性经调整值公式推出的派生
@@ -446,8 +446,8 @@ impl SlotMask {
 /// 点护甲"），会在没有任何设计依据的情况下发明一条换算公式,并让
 /// "穿上这件护甲，体质却跟着变了"这种不该发生的副作用悄悄混进结算
 /// （体质还驱动生命上限/抗性，两者不该被装备的护甲加成污染）。因此
-/// `StatTarget` 需要能表达"直接加护甲"这个独立于六项主属性之外的
-/// 目标,与"加某一项主属性"并列,而不是复用 `AttributeKind`。
+/// `StatTarget` 需要能表达"直接加护甲"这个独立于 `AttributeKind` 全部
+/// 变体之外的目标,与"加某一项属性"并列,而不是复用 `AttributeKind`。
 ///
 /// # 为什么不现在就加魔抗/意志抗性两个变体
 ///
@@ -462,7 +462,8 @@ impl SlotMask {
 /// 改动 `StatBonus` 自身的形状。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StatTarget {
-    /// 加在六项主属性其中一项上——与状态效果（`ActiveStatModifier`）
+    /// 加在 `AttributeKind` 七个变体（六项主属性或幸运）其中一项
+    /// 上——与状态效果（`ActiveStatModifier`）
     /// 共用同一个 [`AttributeKind`] 取值域,最终在 [`crate::state::WorldState`]
     /// 之外的 `derive_stats`（`ll-sim`，装备批次新增）里与状态效果的
     /// 修正求和到同一个"最终生效值"上。

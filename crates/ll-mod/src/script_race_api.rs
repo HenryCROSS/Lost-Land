@@ -59,6 +59,25 @@ pub fn register_race_api(engine: &mut ScriptEngine) {
 ///   `u8` 范围。
 /// - `lifespan-years`：寿命（年），非负整数。
 ///
+/// # 幸运并入 `AttributeKind` 批次：本函数暂不新增 `luck-mod` 参数
+///
+/// `BaseStats`（[`crate::race::RaceAttrs::stat_modifiers`] 的类型）新增
+/// 了 `luck` 字段之后，种族幸运加成在决策层已经自动成立——
+/// `ll_sim::character::bake_race_stat_modifiers` 复用
+/// `BaseStats::add_modifiers`，幸运与其余六项走同一条加法路径，不需要
+/// 引擎侧再改一行代码。但本函数（mod 脚本 FFI 签名）暂不新增第十三个
+/// `luck-mod` 参数：现有全部 mod 脚本调用点都是十二个位置参数，插入一个
+/// 新参数会改变其余参数的位置含义,是破坏性变更；本批次任务范围明确
+/// 要求的是「幸运并入 `AttributeKind`、能被装备/技能加成影响」两件事
+/// （见 `register-item-stat-bonus`/`register-skill` 的
+/// `attribute_kind_from_str`），不是「打通每一条内容 authoring 通道」
+/// ——YAGNI：暗视下限/体型/寿命三个字段当初也是分批通过独立的
+/// `register-race-*` 追加指令补上的先例（本函数签名本身也在多次批次里
+/// 增长过），种族幸运的 authoring 入口留给需要它的后续批次，用同一种
+/// 追加指令的模式（而不是改动本函数现有的参数顺序）落地。此刻构造的
+/// `BaseStats.luck` 恒为 `0`——种族幸运加成的机制已经打通，只是暂时
+/// 没有 mod 作者可用的赋值入口。
+///
 /// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
 #[allow(clippy::too_many_arguments)]
 fn register_race(
@@ -93,6 +112,7 @@ fn register_race(
                     intelligence: intelligence_mod as i32,
                     willpower: willpower_mod as i32,
                     charisma: charisma_mod as i32,
+                    luck: 0,
                 },
                 darkvision_floor as i32,
                 (
@@ -345,6 +365,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 1,
+                luck: 0,
             },
             0,
             (1, 1),
@@ -380,6 +401,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 0,
+                luck: 0,
             },
             0,
             (1, 1),
@@ -452,6 +474,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 0,
+                luck: 0,
             },
             0,
             (1, 1),
@@ -500,6 +523,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 0,
+                luck: 0,
             },
             0,
             (1, 1),
@@ -559,6 +583,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 0,
+                luck: 0,
             },
             0,
             (1, 1),
@@ -629,6 +654,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 0,
+                luck: 0,
             },
             0,
             (1, 1),
@@ -667,6 +693,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 0,
+                luck: 0,
             },
             0,
             (1, 1),
@@ -745,6 +772,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 0,
+                luck: 0,
             },
             0,
             (1, 1),
@@ -811,6 +839,7 @@ mod tests {
                 intelligence: 0,
                 willpower: 0,
                 charisma: 0,
+                luck: 0,
             },
             0,
             (1, 1),

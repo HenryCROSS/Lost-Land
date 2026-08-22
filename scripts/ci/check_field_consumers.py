@@ -168,6 +168,17 @@ EXEMPTIONS: dict[str, str] = {
     # 字段，不存在 RaceDef.stat_modifiers 撞上 TraitDef.stat_modifiers
     # 那种误判风险，因此选择让决策层直接用字段真名（`.darkvision_floor`/
     # `.luck`），而不是像 race_stat_modifiers 那样刻意换名保留豁免。
+    #
+    # 后续更新（幸运并入 AttributeKind 批次）：`Agent.luck` 字段本身已经
+    # 从 `Agent` 结构体上整体移除（不再是"接上了但字段还在原处"，是
+    # "字段搬去了 BaseStats.luck"）——TARGET_TYPES 里的 Agent 条目会
+    # 自动按当前源码重新枚举字段列表，`luck` 不会再出现在扫描结果里，
+    # 不需要（也不应该）在这里补一条 "Agent.luck" 豁免。`BaseStats` 本身
+    # 不在 TARGET_TYPES 里（其余六项主属性字段——strength/dexterity/
+    # constitution/intelligence/willpower/charisma——同样从未被本门禁
+    # 单独追踪过，只通过 `Agent.stats`/各 `*Def.stat_modifiers` 这一层
+    # 字段名参与扫描），`luck` 现在与它们同一个待遇，不是被本门禁放过，
+    # 是从一开始就不属于本门禁的追踪粒度，与其余六项保持一致。
     "RuleModifier::Resistance": "能从天赋声明、进内容值哈希，战斗里没人读——trait_def.rs 模块文档与枚举文档均已承认「当前没有任何 resolve 侧消费者」。预期随伤害结算的抗性乘数挂载点落地一并接线。",
     "RuleModifier::RerollOnce": "同 RuleModifier::Resistance，trait_def.rs 文档同一处承认无消费者——需要 roll_one_die 钩子，尚未落地。",
     "RuleModifier::Advantage": "trait_def.rs 变体文档原文「占位变体，当前无消费者（本项目没有判定/检定系统）」。",

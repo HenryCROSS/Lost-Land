@@ -98,8 +98,9 @@ pub fn damage_after_defense(attack: i32, defense: i32, pen: Penetration) -> i32 
 /// 没有独立的「基础暴击率」常量：设计文档只论证了幸运的**增量**效应，
 /// 没有给出零幸运时的基准暴击率该是多少。取隐含基础值为零而不是自行
 /// 编造一个非零基准，还有一个额外的好处——本仓库全部现存测试夹具
-/// （`spawn_agent`/`test_world` 等）里的 `Agent.luck` 恒为 `0`
-/// （见 `crates/ll-sim/tests/*.rs`/本文件下方 `resolve.rs` 测试模块的
+/// （`spawn_agent`/`test_world` 等）里的 `BaseStats::BASELINE.luck`
+/// （幸运并入 `AttributeKind` 批次后的存放位置，曾经是 `Agent.luck`）
+/// 恒为 `0`（见 `crates/ll-sim/tests/*.rs`/本文件下方 `resolve.rs` 测试模块的
 /// 同名字面量），零幸运 ⟺ 零暴击率是唯一能保证「暴击接线批次不改变
 /// 任何一条既有确定性测试的期望伤害/黄金基准哈希」的选择：非零基础
 /// 暴击率会让这些原本假定「伤害必然等于 `damage_after_defense` 原始

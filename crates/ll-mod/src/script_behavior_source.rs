@@ -217,7 +217,6 @@ mod tests {
             profession,
             goals: Vec::new(),
             race,
-            luck: 0,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),

@@ -398,10 +398,13 @@ fn do_register_item_stat_bonus(
         .map_err(|err: ItemError| err.to_string())
 }
 
-/// 加成目标名字符串 → [`StatTarget`]——六个主属性名复用
+/// 加成目标名字符串 → [`StatTarget`]——七个属性名（六项主属性 + 幸运，
+/// 幸运并入 `AttributeKind` 批次新增）复用
 /// `crate::script_skill_api::attribute_kind_from_str` 同一份映射（各
 /// 模块独立拷贝一份的既有先例，理由同其文档），额外多认识 `"armor"`
-/// 这一个不属于 `AttributeKind` 的目标。
+/// 这一个不属于 `AttributeKind` 的目标。`"luck"` 正是幸运戒指一类装备
+/// （`register-item-stat-bonus id luck N`）的 authoring 入口——幸运并入
+/// `AttributeKind` 批次要求装备能影响幸运，这里是决定性的一步。
 fn stat_target_from_str(name: &str) -> Option<StatTarget> {
     if name == "armor" {
         return Some(StatTarget::Armor);
@@ -413,6 +416,7 @@ fn stat_target_from_str(name: &str) -> Option<StatTarget> {
         "intelligence" => AttributeKind::Intelligence,
         "willpower" => AttributeKind::Willpower,
         "charisma" => AttributeKind::Charisma,
+        "luck" => AttributeKind::Luck,
         _ => return None,
     };
     Some(StatTarget::Attribute(attribute))
@@ -543,6 +547,7 @@ fn use_effect_attribute_kind_from_str(name: &str) -> Option<AttributeKind> {
         "intelligence" => AttributeKind::Intelligence,
         "willpower" => AttributeKind::Willpower,
         "charisma" => AttributeKind::Charisma,
+        "luck" => AttributeKind::Luck,
         _ => return None,
     })
 }
