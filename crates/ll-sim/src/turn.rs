@@ -284,7 +284,7 @@ fn route_move_to_attack(world: &WorldState, raw: Intent) -> Intent {
 mod tests {
     use super::*;
     use ll_core::ident::{Interner, NamespacedId};
-    use ll_core::time::Tick;
+    use ll_core::time::{TICKS_PER_MINUTE, Tick};
     use ll_core::torus::TorusSize;
     use ll_platform::input::GameKey;
     use ll_world::entity::{Agent, BaseStats};
@@ -406,6 +406,58 @@ mod tests {
         // Assert：严格递增，不允许原地不动或倒退。
         assert!(clocks[0] < clocks[1]);
         assert!(clocks[1] < clocks[2]);
+    }
+
+    #[test]
+    fn 六次基准敏捷等待后世界时钟前进恰好一分钟() {
+        // 直接量化流速本身，不只是「时钟在走」：基准敏捷（10）下
+        // 一次等待的耗时是 `action_cost(BASE_ACTION_COST=100,
+        // effective_speed=1000) == 100` 刻度（见 `resolve::resolve_wait`
+        // /`timeline::action_cost`，本测试不重复该公式，只依赖其恒定
+        // 产出 100 这一事实，由旁边「连续三次等待后世界时钟严格递增」
+        // 同一套 `spawn_at(.., 10)` 基准敏捷保证），与
+        // `TICKS_PER_MINUTE` 完全无关——六次即固定 600 刻度，写成绝对
+        // 期望值，不与被测常量共用同一个表达式，防止「常量改了、断言
+        // 跟着自动改了因而测不出问题」这种自欺。
+        //
+        // 断言分两层：第一层锁定原始刻度数（验证流速常量的改动没有
+        // 意外牵动行动耗时本身，见 `TICKS_PER_MINUTE` 文档「完全不
+        // 出现在 action_cost 的公式里」一节）；第二层用
+        // `TICKS_PER_MINUTE` 把刻度换算成分钟——这一层如果把本次改动
+        // （60 → 600）还原回旧值，600 刻度就会变成 10 分钟而不是 1
+        // 分钟，断言会变红，真正验证了「流速确实变了」而不只是「时钟
+        // 在走」。
+        //
+        // 初始排期用 `Tick(100)` 而非 `Tick(0)`：`TurnEngine::perform`
+        // 把 `world.clock` 设成本次弹出的条目自身的 `at`（见其实现），
+        // 这个 `at` 是**上一次**行动结束时算出的排期，不是本次行动
+        // 结束后的时刻——若从 `Tick(0)` 起排，六次循环弹出的 `at` 依次
+        // 是 0/100/200/300/400/500，最后一次弹出仍是「上一次」的排期，
+        // 时钟停在 500 而非 600（这是 `TurnEngine` 消费队列的既有
+        // 行为，不是本测试要覆盖的缺陷，`单个受控实体等待一次后……`
+        // 那条既有测试同样从非零的 `Tick(100)` 起排,原因一致）。从
+        // `Tick(100)` 起排,六次循环弹出的 `at` 变成
+        // 100/200/300/400/500/600,时钟最终落在六次行动应得的 600,
+        // 测的是「六次行动共花掉多少刻度」这件事本身,不掺进队列消费
+        // 时机的位移。
+        // Arrange
+        let mut world = test_world();
+        let player = spawn_at(&mut world, (5, 5), 10);
+        let mut timeline = Timeline::new();
+        timeline.schedule(player, Tick(100));
+        let mut engine = TurnEngine::new(timeline);
+        let mut input = InputState::new();
+        input.press(GameKey::Wait);
+
+        // Act：连续结算六次基准敏捷的等待。
+        for _ in 0..6 {
+            engine.advance_ai(&mut world, player, no_op_ai, &mut |_, _| {});
+            engine.try_player_turn(&mut world, player, &input, &mut |_, _| {});
+        }
+
+        // Assert
+        assert_eq!(world.clock, Tick(600));
+        assert_eq!(world.clock.0 / TICKS_PER_MINUTE, 1);
     }
 
     #[test]

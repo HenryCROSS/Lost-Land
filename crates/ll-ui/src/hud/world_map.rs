@@ -95,9 +95,24 @@ pub struct WorldMapPanelData<'a> {
     pub terrain_ids: &'a BaseTerrainIds,
 }
 
-/// 把一份世界地图数据变成这一帧要画的格子矩形——铺满 `rect`，每格
-/// `rect.width / cols` 宽、`rect.height / rows` 高。战争迷雾在这里
-/// 生效：`explored` 为假的格子恒画 [`FOG_COLOR`]，见模块文档。
+/// 把一份世界地图数据变成这一帧要画的格子矩形——格子恒为正方形，
+/// 网格在 `rect` 内居中，不铺满整个 `rect`。战争迷雾在这里生效：
+/// `explored` 为假的格子恒画 [`FOG_COLOR`]，见模块文档。
+///
+/// # 为什么不能各轴独立除（曾经的缺陷）
+///
+/// 早先的实现分别用 `rect.width / cols`、`rect.height / rows` 算出
+/// 格宽与格高——`rect` 来自 `world_map_rect`（按屏幕原生宽高比现算，
+/// 见 `crate::hud::render::world_map_rect` 文档），一旦屏幕不是正方形
+/// （常态，例如 16:9），只要 `cols`/`rows` 的比例与屏幕宽高比不一致
+/// （同样是常态：`cols`/`rows` 来自世界的区块网格尺寸，与屏幕形状
+/// 没有任何关系），两个轴独立算出的格宽格高就不相等——所有者实测
+/// 反馈「世界地图格子不是正方形」正是这条路径。
+///
+/// 现在改为先取单一的 `cell_size = min(rect.width / cols, rect.height
+/// / rows)`，两个轴用同一个值，格子因此恒为正方形；网格整体尺寸
+/// （`cell_size * cols` × `cell_size * rows`）通常小于 `rect`，取
+/// 居中留白（而不是拉伸填满、破坏正方形）处理多出来的空间。
 ///
 /// 地图格子没有真实贴图可采样（不是精灵动画，是按地形分类现算的纯
 /// 色），因此恒产出 [`QuadInstance`]，不区分纯色/贴图两条路径——与
@@ -109,8 +124,11 @@ pub fn world_map_cell_quads(data: &WorldMapPanelData<'_>, rect: Rect) -> Vec<Qua
     if data.cols == 0 || data.rows == 0 {
         return Vec::new();
     }
-    let cell_width = rect.width / data.cols as f32;
-    let cell_height = rect.height / data.rows as f32;
+    let cell_size = (rect.width / data.cols as f32).min(rect.height / data.rows as f32);
+    let grid_width = cell_size * data.cols as f32;
+    let grid_height = cell_size * data.rows as f32;
+    let origin_x = rect.x + (rect.width - grid_width) / 2.0;
+    let origin_y = rect.y + (rect.height - grid_height) / 2.0;
     data.cells
         .iter()
         .enumerate()
@@ -124,10 +142,10 @@ pub fn world_map_cell_quads(data: &WorldMapPanelData<'_>, rect: Rect) -> Vec<Qua
             };
             QuadInstance {
                 position: [
-                    rect.x + col as f32 * cell_width,
-                    rect.y + row as f32 * cell_height,
+                    origin_x + col as f32 * cell_size,
+                    origin_y + row as f32 * cell_size,
                 ],
-                size: [cell_width, cell_height],
+                size: [cell_size, cell_size],
                 color,
             }
         })
@@ -250,6 +268,32 @@ mod tests {
 
         // Assert
         assert_eq!(quads.len(), 4);
+    }
+
+    #[test]
+    fn 非正方形面板与非正方形网格下格子仍为正方形() {
+        // 这是所有者实测反馈的缺陷本身：面板矩形按屏幕宽高比现算，
+        // 与地图的列数/行数比例通常不一致（这里故意选一个宽屏矩形
+        // 200x100 配 3 列 2 行——3:2 与 200:100=2:1 不相等），若格宽
+        // 格高各自独立除（旧实现），两者就会不等；改用统一的
+        // `cell_size` 后必须恒相等，不分辨率如何。
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let cells = [sample_cell(ids.grass, true); 6];
+        let data = WorldMapPanelData {
+            cells: &cells,
+            cols: 3,
+            rows: 2,
+            terrain_ids: &ids,
+        };
+
+        // Act
+        let quads = world_map_cell_quads(&data, Rect::new(0.0, 0.0, 200.0, 100.0));
+
+        // Assert
+        for quad in &quads {
+            assert_eq!(quad.size[0], quad.size[1]);
+        }
     }
 
     #[test]
