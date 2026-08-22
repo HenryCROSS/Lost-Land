@@ -33,6 +33,7 @@
 //! 一致，本模块没有引入任何新的依赖边。
 
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
+use crate::exposure::AmbientSource;
 use crate::formula::{DamageFormulaCatalog, NoFormulas};
 use crate::item::{ItemCatalog, NoItems};
 use crate::quest::{NoQuests, QuestCatalog};
@@ -78,9 +79,28 @@ pub struct ResolveCatalogs<'a> {
     pub formulas: &'a dyn DamageFormulaCatalog,
     /// 伤害类别目录——武器没有显式声明类别时退回哪一个。
     pub damage_categories: &'a dyn DamageCategoryCatalog,
+    /// 环境来源——空间层属性表 + 天气表，温度那一路的输入（温度系统
+    /// 批次新增）。
+    ///
+    /// # 为什么它不是一个 `&dyn 某某Catalog`
+    ///
+    /// 其余九份全是 `&'a dyn` trait 对象，因为它们背后的真实实现都在
+    /// **下游**的 `ll-mod`，`ll-sim` 只能靠依赖倒置够到。温度用的两张
+    /// 表（`ll_world::space_profile::SpaceProfileTable`/
+    /// `ll_world::weather::WeatherTable`）定义在**上游**的 `ll-world`，
+    /// 可以直接借具体类型——完整论证见
+    /// [`crate::exposure::AmbientSource`] 文档「为什么不是一个 trait」
+    /// 一节。为了对称而多造一对没有第二个实现的 trait，正是 ADR 0021
+    /// 点名要避免的那种抽象。
+    ///
+    /// 它是 `Copy` 值而不是引用：内部就是两个 `Option<&'a Table>`，
+    /// 再套一层引用只是多一次间接。
+    pub ambient: AmbientSource<'a>,
 }
 
-/// [`ResolveCatalogs::empty`] 借出的九个空实现的 `'static` 实例。
+/// [`ResolveCatalogs::empty`] 借出的九个目录空实现的 `'static` 实例。
+/// 第十项（环境来源）不在这里：它是 `Copy` 值，空对象就是
+/// [`AmbientSource::NONE`] 这个常量本身，不需要借出引用。
 ///
 /// 逐个具名而不是在 `empty` 里写 `&NoSkills`：零大小类型的临时值虽然
 /// 会被常量提升，但具名常量让「空目录只有这一组实例」这件事在阅读时
@@ -97,7 +117,7 @@ const NO_FORMULAS: NoFormulas = NoFormulas;
 const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 
 impl ResolveCatalogs<'static> {
-    /// 九路全空的一束——与「一份目录都没接」在行为上完全等价
+    /// 十路全空的一束——与「一份目录都没接」在行为上完全等价
     /// （[`crate::resolve::resolve`] 就是这个形状）。
     ///
     /// 供两类调用点使用：一是本身没有任何内容表的场景（`ll-sim` 的
@@ -116,6 +136,7 @@ impl ResolveCatalogs<'static> {
             items: &NO_ITEMS,
             formulas: &NO_FORMULAS,
             damage_categories: &NO_DAMAGE_CATEGORIES,
+            ambient: AmbientSource::NONE,
         }
     }
 }

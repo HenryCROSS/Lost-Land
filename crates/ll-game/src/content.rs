@@ -72,6 +72,7 @@ use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::damage_category::NoDamageCategories;
+use ll_sim::exposure::AmbientSource;
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 use ll_world::weather::{BaseWeatherIds, WeatherTable};
@@ -263,6 +264,14 @@ impl<'a> RuntimeCatalogs<'a> {
             items: &self.content.item_table,
             formulas: &self.formulas,
             damage_categories: &NO_DAMAGE_CATEGORIES,
+            // 温度这一路（温度系统批次）：把装载好的空间层属性表与天气
+            // 表借进来，`ll_sim::exposure::AmbientSource` 随后在每次结算
+            // 里按**当时**的 `world.clock` 现派生天气、按行动者所在空间
+            // 查出环境温度（见其 `temperature_in` 文档「天气在这里现
+            // 派生」一节）。这一行是保暖系统在真实游戏里唯一的接线点：
+            // `ll-game` 全程只经 `TurnEngine` 驱动世界，本方法就是那条
+            // 链路的入口。
+            ambient: AmbientSource::new(&self.content.space_table, &self.content.weather_table),
         }
     }
 }

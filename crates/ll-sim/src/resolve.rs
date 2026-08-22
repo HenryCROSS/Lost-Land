@@ -56,6 +56,7 @@ use ll_world::entity::{ActiveStatModifier, Agent, AttributeKind, BaseStats, Enti
 use ll_world::history::KillCause;
 use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
+use ll_world::temperature::Temperature;
 
 use crate::catalogs::ResolveCatalogs;
 use crate::combat::{
@@ -65,6 +66,7 @@ use crate::combat::{
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
 use crate::effect::Effect;
 use crate::experience::ExperienceCatalog;
+use crate::exposure::{AmbientSource, exposure_strength_penalty, felt_temperature};
 use crate::formula::{DamageFormulaCatalog, FormulaInputs, NoFormulas, eval_formula};
 use crate::intent::{Direction, Intent};
 use crate::item::{
@@ -185,6 +187,7 @@ fn effective_speed_from_dexterity(dexterity: i32) -> u32 {
 pub struct DerivedStats {
     attributes: [i32; 7],
     armor: i32,
+    insulation: i32,
 }
 
 impl DerivedStats {
@@ -200,6 +203,18 @@ impl DerivedStats {
     /// 与装备属性接进战斗，这是防御端第一次真的生效）。
     pub fn armor(&self) -> i32 {
         self.armor
+    }
+
+    /// 保暖绝缘值，十分之一摄氏度（温度系统批次新增）——逐件已装备
+    /// 物品的 [`StatTarget::Insulation`] 求和，与 [`Self::armor`] 是
+    /// 同一段算法的第二个目标（见该变体文档的 ADR 0021 一节）。
+    ///
+    /// 消费者是 [`crate::exposure::felt_temperature`]：`derive_stats`
+    /// 自己先用它算出体感温度、把力量惩罚并进 `attributes`，随后本
+    /// 访问器供调用方（以及 HUD 之类的呈现层）复查「我身上一共有多少
+    /// 保暖」。
+    pub fn insulation(&self) -> i32 {
+        self.insulation
     }
 }
 
@@ -324,6 +339,50 @@ pub fn derive_stats(
     items: &dyn ItemCatalog,
     now: Tick,
 ) -> DerivedStats {
+    derive_stats_at(
+        base,
+        active_modifiers,
+        equipment,
+        items,
+        now,
+        Temperature::TEMPERATE_BASELINE,
+    )
+}
+
+/// [`derive_stats`] 的环境感知版本：多接收一个**环境温度**，把
+/// [`crate::exposure`] 的暴露惩罚作为第三条来源并进最终属性。
+///
+/// # 为什么是两个入口，而不是给 `derive_stats` 加一个参数
+///
+/// 与 [`resolve_with_skills`] 之于 [`resolve_with_skills_and_quests`]
+/// 是同一条既有纪律：仓库里绝大多数 `derive_stats` 调用点（单元测试、
+/// 不装载任何内容表的验收 demo）根本没有空间层属性表可查，强迫它们
+/// 每处都多传一个「温度这一路等于没接」的常量只是无意义的噪音。
+///
+/// [`derive_stats`] 因此是本函数传
+/// [`Temperature::TEMPERATE_BASELINE`]（那个空对象，恒在冰点以上）的
+/// 薄封装——**两条路径逐位等价**，不是「旧入口走一套旧逻辑」：
+/// [`crate::exposure::exposure_strength_penalty`] 对中性温度恒返回 0，
+/// 加 0 与不加在结果上不可区分。黄金基准回放（`tests/replay.rs` 走的
+/// 是不带任何目录的 `resolve`）因此逐位不变，有测试钉住这条等价
+/// （见 `温度这一路没接时与旧入口逐位等价`）。
+///
+/// # 惩罚为什么加在装备与状态效果**之后**
+///
+/// 绝缘值本身来自装备，必须先把装备那一轮走完才知道身上一共有多少
+/// 保暖；而力量惩罚要落在「已经算完装备与 buff 的那个力量」上，才是
+/// 玩家在角色面板上看到的那个数减去惩罚。顺序在这里不是可选项。
+pub fn derive_stats_at(
+    base: BaseStats,
+    active_modifiers: &std::collections::BTreeMap<
+        AttributeKind,
+        std::collections::BTreeMap<ContentIndex, ActiveStatModifier>,
+    >,
+    equipment: &std::collections::BTreeMap<EquipSlot, ItemStack>,
+    items: &dyn ItemCatalog,
+    now: Tick,
+    ambient: Temperature,
+) -> DerivedStats {
     let mut attributes = [
         base.strength,
         base.dexterity,
@@ -334,6 +393,7 @@ pub fn derive_stats(
         base.luck,
     ];
     let mut armor = 0;
+    let mut insulation = 0;
 
     for (&kind, per_source) in active_modifiers {
         let delta: i32 = per_source
@@ -363,11 +423,25 @@ pub fn derive_stats(
             match bonus.target {
                 StatTarget::Attribute(kind) => attributes[attribute_slot(kind)] += bonus.amount,
                 StatTarget::Armor => armor += bonus.amount,
+                // 与上一行逐字同形——绝缘值是同一段累加算法的第三个
+                // 目标，不是另起的一条通道，见 `StatTarget::Insulation`
+                // 文档的 ADR 0021 一节。
+                StatTarget::Insulation => insulation += bonus.amount,
             }
         }
     }
 
-    DerivedStats { attributes, armor }
+    // 第三条来源：极端环境暴露。体感温度在冰点以上时恒为 0，与温度
+    // 这一路完全没接线逐位等价，见本函数文档与 `crate::exposure`
+    // 模块文档「只在极端条件下产生后果」一节。
+    let penalty = exposure_strength_penalty(felt_temperature(ambient, insulation));
+    attributes[attribute_slot(AttributeKind::Strength)] -= penalty;
+
+    DerivedStats {
+        attributes,
+        armor,
+        insulation,
+    }
 }
 
 /// 玩家每走一步，探索记忆按这个半径覆盖新位置的可见格（见
@@ -449,6 +523,7 @@ pub fn resolve_with_skills_and_traits(
         &NoItems,
         &NoFormulas,
         &NoDamageCategories,
+        AmbientSource::NONE,
     )
 }
 
@@ -489,6 +564,7 @@ pub fn resolve_with_skills_traits_and_pools(
         &NoItems,
         &NoFormulas,
         &NoDamageCategories,
+        AmbientSource::NONE,
     )
 }
 
@@ -527,6 +603,7 @@ pub fn resolve_with_skills_traits_pools_and_items(
         items,
         &NoFormulas,
         &NoDamageCategories,
+        AmbientSource::NONE,
     )
 }
 
@@ -567,6 +644,7 @@ pub fn resolve_with_skills_traits_pools_items_and_formulas(
         items,
         formulas,
         &NoDamageCategories,
+        AmbientSource::NONE,
     )
 }
 
@@ -613,6 +691,7 @@ pub fn resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
         items,
         formulas,
         damage_categories,
+        AmbientSource::NONE,
     )
 }
 
@@ -663,6 +742,7 @@ pub fn resolve_with_all_catalogs(
         items,
         formulas,
         damage_categories,
+        AmbientSource::NONE,
     )
 }
 
@@ -696,6 +776,7 @@ pub fn resolve_with_catalogs(
         catalogs.items,
         catalogs.formulas,
         catalogs.damage_categories,
+        catalogs.ambient,
     )
 }
 
@@ -741,6 +822,7 @@ pub fn resolve_with_skills_and_quests(
         &NoItems,
         &NoFormulas,
         &NoDamageCategories,
+        AmbientSource::NONE,
     )
 }
 
@@ -772,6 +854,7 @@ fn resolve_dispatch(
     items: &dyn ItemCatalog,
     formulas: &dyn DamageFormulaCatalog,
     damage_categories: &dyn DamageCategoryCatalog,
+    ambient: AmbientSource<'_>,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => {
@@ -788,6 +871,7 @@ fn resolve_dispatch(
             class_traits,
             traits,
             damage_categories,
+            ambient,
         ),
         Intent::OpenDoor { actor, pos } => resolve_open_door(world, actor, pos),
         Intent::EnterSpace { actor, target } => resolve_enter_space(world, actor, target),
@@ -2353,6 +2437,7 @@ fn resolve_attack(
     class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     damage_categories: &dyn DamageCategoryCatalog,
+    ambient: AmbientSource<'_>,
 ) -> Vec<Effect> {
     let Some(attacker) = world.actors.get(actor) else {
         return Vec::new();
@@ -2361,19 +2446,27 @@ fn resolve_attack(
         return Vec::new();
     };
 
-    let attacker_derived = derive_stats(
+    // 环境温度按**各自所在的空间**分别查（温度系统批次）：攻防双方
+    // 完全可能一个站在暴风雪里、一个站在屋檐下，用同一个温度会让「进
+    // 屋躲一躲」这条规避路径对被攻击的一方失效。`AmbientSource::NONE`
+    // 时两次查询都返回中性温度，与温度这一路没接线逐位等价。
+    let attacker_ambient = ambient.temperature_in(world, &attacker.current_space);
+    let defender_ambient = ambient.temperature_in(world, &defender.current_space);
+    let attacker_derived = derive_stats_at(
         attacker.stats,
         &attacker.active_stat_modifiers,
         &attacker.equipment,
         items,
         world.clock,
+        attacker_ambient,
     );
-    let defender_derived = derive_stats(
+    let defender_derived = derive_stats_at(
         defender.stats,
         &defender.active_stat_modifiers,
         &defender.equipment,
         items,
         world.clock,
+        defender_ambient,
     );
 
     let attack_power_input = attacker_derived.attribute(AttributeKind::Strength);
@@ -4386,6 +4479,94 @@ mod tests {
         // Assert：世界时钟已达到 expires_at,回落到裸值（BASELINE 力量
         // 为 10）,不叠加 delta。
         assert_eq!(derived.attribute(AttributeKind::Strength), 10);
+    }
+
+    #[test]
+    fn 温度这一路没接时与旧入口逐位等价() {
+        // `derive_stats` 是 `derive_stats_at(..., TEMPERATE_BASELINE)`
+        // 的薄封装，这条测试是那句话的机器检查——黄金基准回放走的正是
+        // 不带任何目录的 `resolve`，等价一旦破了，摘要就会变。
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let source = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:brace").expect("合法标识符"));
+        let modifiers = std::collections::BTreeMap::from([(
+            AttributeKind::Strength,
+            std::collections::BTreeMap::from([(
+                source,
+                ActiveStatModifier {
+                    delta: 4,
+                    expires_at: Tick(100),
+                },
+            )]),
+        )]);
+
+        // Act
+        let legacy = derive_stats(
+            BaseStats::BASELINE,
+            &modifiers,
+            &std::collections::BTreeMap::new(),
+            &NoItems,
+            Tick(5),
+        );
+        let explicit = derive_stats_at(
+            BaseStats::BASELINE,
+            &modifiers,
+            &std::collections::BTreeMap::new(),
+            &NoItems,
+            Tick(5),
+            Temperature::TEMPERATE_BASELINE,
+        );
+
+        // Assert
+        assert_eq!(legacy, explicit);
+        assert_eq!(legacy.attribute(AttributeKind::Strength), 14);
+    }
+
+    #[test]
+    fn 极寒环境削弱力量且只削弱力量() {
+        // 惩罚必须落在一个保证被 resolve_attack 读到的量上（力量），
+        // 且不该顺手污染别的属性或护甲。
+        // Arrange
+        let empty = std::collections::BTreeMap::new();
+
+        // Act
+        let warm = derive_stats_at(
+            BaseStats::BASELINE,
+            &empty,
+            &std::collections::BTreeMap::new(),
+            &NoItems,
+            Tick(0),
+            Temperature::TEMPERATE_BASELINE,
+        );
+        let frozen = derive_stats_at(
+            BaseStats::BASELINE,
+            &empty,
+            &std::collections::BTreeMap::new(),
+            &NoItems,
+            Tick(0),
+            Temperature(-120),
+        );
+
+        // Assert
+        assert!(
+            frozen.attribute(AttributeKind::Strength) < warm.attribute(AttributeKind::Strength)
+        );
+        for kind in [
+            AttributeKind::Dexterity,
+            AttributeKind::Constitution,
+            AttributeKind::Intelligence,
+            AttributeKind::Willpower,
+            AttributeKind::Charisma,
+            AttributeKind::Luck,
+        ] {
+            assert_eq!(
+                frozen.attribute(kind),
+                warm.attribute(kind),
+                "{kind:?} 不该被暴露惩罚牵连"
+            );
+        }
+        assert_eq!(frozen.armor(), warm.armor());
     }
 
     #[test]

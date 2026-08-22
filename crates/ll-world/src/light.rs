@@ -344,6 +344,7 @@ mod tests {
             kind: None,
             light_scale: 500,
             sight_scale: 1000,
+            temperature_offset: 0,
         };
 
         // Act
@@ -364,11 +365,13 @@ mod tests {
             kind: None,
             light_scale: -5000,
             sight_scale: 1000,
+            temperature_offset: 0,
         };
         let absurd_high = Weather {
             kind: None,
             light_scale: 9999,
             sight_scale: 1000,
+            temperature_offset: 0,
         };
 
         // Act & Assert
@@ -390,6 +393,7 @@ mod tests {
             kind: None,
             light_scale: 1000,
             sight_scale: 500,
+            temperature_offset: 0,
         };
         let light = ambient_light_under(noon, foggy);
 
@@ -417,6 +421,7 @@ mod tests {
                 kind: Some(*index),
                 light_scale: table.light_scale(*index),
                 sight_scale: table.sight_scale(*index),
+                temperature_offset: 0,
             };
             for season in all_seasons() {
                 for hour in 0..24i64 {
@@ -448,6 +453,7 @@ mod tests {
                 kind: Some(*index),
                 light_scale: table.light_scale(*index),
                 sight_scale: table.sight_scale(*index),
+                temperature_offset: 0,
             };
             let light = ambient_light_under(noon, weather);
             let radius = sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, weather);
@@ -473,6 +479,7 @@ mod tests {
                 kind: Some(*index),
                 light_scale: table.light_scale(*index),
                 sight_scale: table.sight_scale(*index),
+                temperature_offset: 0,
             };
             for season in all_seasons() {
                 let light = ambient_light_under(noon_of(season), weather);

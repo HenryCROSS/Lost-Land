@@ -1176,6 +1176,15 @@ fn inspect_weather(auditor: &mut Auditor<'_>, index: ContentIndex) {
         "WeatherAttrs::sight_scale",
         table.sight_scale(index) != WEATHER_SCALE_ONE,
     );
+    // 「非默认」判据是**不等于 0**（不像两个乘数那样比 WEATHER_SCALE_ONE）：
+    // 这一列是加法项，它的语义默认值是「不影响温度」，也就是 0，与两个
+    // 乘数的「不缩放」= 1000 恰好是两种形状，见
+    // `ll_world::weather::WeatherDef::temperature_offset` 文档「为什么是
+    // 增量而不是乘数」一节。
+    auditor.field(
+        "WeatherAttrs::temperature_offset",
+        table.temperature_offset(index) != 0,
+    );
     auditor.field(
         "WeatherAttrs::season_weights",
         table.season_weights(index).iter().any(|w| *w != 0),

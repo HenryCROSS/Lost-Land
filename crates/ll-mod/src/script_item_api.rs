@@ -359,9 +359,11 @@ fn do_register_item_equip_mask(
 ///   `"constitution"`/`"intelligence"`/`"willpower"`/`"charisma"`，与
 ///   `crate::script_skill_api::attribute_kind_from_str`/
 ///   `crate::script_class_api::attribute_kind_from_str` 同一份映射的
-///   独立拷贝，理由同它们的文档）或 `"armor"`（直接加护甲，见
+///   独立拷贝，理由同它们的文档）、`"armor"`（直接加护甲，见
 ///   [`ll_sim::item::StatTarget::Armor`] 文档「为什么不是只有
-///   `AttributeKind` 一种取值」一节）。未知名称拒绝整次调用。
+///   `AttributeKind` 一种取值」一节），或 `"insulation"`（保暖绝缘值，
+///   温度系统批次新增，单位是十分之一摄氏度，见
+///   [`ll_sim::item::StatTarget::Insulation`]）。未知名称拒绝整次调用。
 /// - `amount`：增减量，可为负（诅咒装备）。
 ///
 /// **累积，不是覆盖**——多次调用同一个 `id` 会依次追加多条加成，不是
@@ -414,12 +416,19 @@ fn do_register_item_stat_bonus(
 /// 幸运并入 `AttributeKind` 批次新增）复用
 /// `crate::script_skill_api::attribute_kind_from_str` 同一份映射（各
 /// 模块独立拷贝一份的既有先例，理由同其文档），额外多认识 `"armor"`
-/// 这一个不属于 `AttributeKind` 的目标。`"luck"` 正是幸运戒指一类装备
+/// 与 `"insulation"` 这两个不属于 `AttributeKind` 的目标。`"luck"` 正是幸运戒指一类装备
 /// （`register-item-stat-bonus id luck N`）的 authoring 入口——幸运并入
 /// `AttributeKind` 批次要求装备能影响幸运，这里是决定性的一步。
 fn stat_target_from_str(name: &str) -> Option<StatTarget> {
     if name == "armor" {
         return Some(StatTarget::Armor);
+    }
+    // 保暖绝缘值（温度系统批次）——与 `"armor"` 并列的第二个不属于
+    // `AttributeKind` 的目标。`derive_stats` 对它与护甲走**同一段求和
+    // 算法**（两层衣服比一层暖），不是 `ItemDef.rule_modifiers` 那条
+    // tie-break 通道，见 `ll_world::item::StatTarget::Insulation` 文档。
+    if name == "insulation" {
+        return Some(StatTarget::Insulation);
     }
     let attribute = match name {
         "strength" => AttributeKind::Strength,

@@ -8,6 +8,7 @@
 ;; register-weather 由宿主（crates/ll-mod/src/script_weather_api.rs）
 ;; 注册进脚本引擎，签名固定：
 ;;   (register-weather id display-name-key light-scale sight-scale
+;;                     temperature-offset
 ;;                     spring-weight summer-weight autumn-weight winter-weight)
 ;;
 ;; 灰烬雨：天空被灰烬遮蔽，明显变暗（光照乘数 550‰），同时呛人的
@@ -20,6 +21,14 @@
 ;; 冬季完全不出现（0）。冬季那个 0 是「取 0 表示这一季绝不出现」这条
 ;; 语义在 mod 侧的用例，与本体的雪（春夏为 0）互为镜像。
 ;;
+;; temperature-offset 取 +150（比无天气时**暖** 15℃，单位是十分之一
+;; 摄氏度）——这是温度系统批次给这条 register-* 通道补的第九个参数，
+;; 也是本体六种天气都没有覆盖到的那一半：本体的偏移全部是 0 或负数
+;; （天气只会让人更冷），灰烬雨是仓库里唯一一条**正**偏移的天气内容。
+;; 它验收的是 WEATHER_TEMPERATURE_OFFSET_LIMIT 那条「上下界对称」的
+;; 设计声明——「变暖」与「变冷」在语义上完全对等，不是只有一个方向
+;; 说得通。火山灰云锁住地表热量，在设定上也自洽。
+;;
 ;; 与本体六种天气（lostland:clear/overcast/rain/wind/fog/snow）走完全
 ;; 相同的 Registry::intern 通道，唯一的差异只是命名空间是 examplemod
 ;; 而不是 lostland——本体天气注册在
@@ -28,6 +37,7 @@
 (register-weather "examplemod:ashfall"
                   "examplemod:weather.ashfall.display_name"
                   550 400
+                  150
                   2 8 6 0)
 
 ;; ---------------------------------------------------- 空间层属性（补证）

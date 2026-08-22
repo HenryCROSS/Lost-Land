@@ -353,3 +353,29 @@
 (register-trait "examplemod:cutpurse_training" "examplemod:cutpurse_training_display_name"
   (list "examplemod:backstab"))
 (register-class-trait "examplemod:rogue" "examplemod:cutpurse_training" 3)
+
+;; 温度系统批次（保暖）：knowledge 里「温度必须有真实消费者」这条要求
+;; 的内容侧落点——两件保暖装备，各占一个**不同**的槽位（羊毛内衬占
+;; body，毛皮斗篷占 outer），于是它们可以同时穿在身上。
+;;
+;; 这正是「绝缘值走求和、不走 tie-break」那条判断在真实内容上的验收：
+;; 单穿内衬 +50（5℃）、单穿斗篷 +90（9℃）、两件都穿 +140（14℃）。本体
+;; 冬季午夜的地表是 -4℃，单穿任一件都还差一点、两件穿齐就完全不冷——
+;; 若绝缘值走的是 ll_sim::rule_modifier 那条 tie-break 语义（多个来源
+;; 只取一条），穿上第二件将毫无作用，这三档就塌成两档。
+;; crates/ll-mod/tests/example_mod_temperature.rs 是那份证据（ADR 0018
+;; 「玩法层内容必须能从 mod 脚本注册，且要有真实 mod 脚本为证」）。
+;;
+;; register-item-stat-bonus 的第二个参数多认识了一个目标名
+;; "insulation"（此前只有六个属性名 + "luck" + "armor"），单位是十分之
+;; 一摄氏度，与 ll_world::temperature::Temperature 同一量纲。
+;; 两件都传 -1（没有耐久概念）：register-item 的注册期校验只允许占用
+;; 武器槽位（主手/副手）的物品携带耐久上限，而这两件占的是 body/outer
+;; ——最初写成 60/90 时装载直接失败，是 ADR 0017「注册期完整校验」在
+;; 本批次内容上的一次真实拦截。
+(register-item "examplemod:wool_liner" "examplemod:wool_liner_display_name" 1 2000 8000 -1)
+(register-item-equip-mask "examplemod:wool_liner" (list "body"))
+(register-item-stat-bonus "examplemod:wool_liner" "insulation" 50)
+(register-item "examplemod:fur_cloak" "examplemod:fur_cloak_display_name" 1 5000 30000 -1)
+(register-item-equip-mask "examplemod:fur_cloak" (list "outer"))
+(register-item-stat-bonus "examplemod:fur_cloak" "insulation" 90)

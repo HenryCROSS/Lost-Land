@@ -58,6 +58,7 @@ use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::effect::Effect;
+use ll_sim::exposure::AmbientSource;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemStack};
 use ll_sim::quest::NoQuests;
@@ -114,6 +115,12 @@ impl RealModsHandle {
             items: &self.item,
             formulas,
             damage_categories: &NoDamageCategories,
+            // 本文件的两条场景都在一个 `ContentIndex::default()` 占位
+            // 层属性的地表上打架，温度这一路没有可查的表；接一个空的
+            // 环境来源与「温度还没接线」逐位等价（见
+            // `ll_sim::exposure::AmbientSource::NONE`）。温度真的接进
+            // 生产路径的证据在 `example_mod_temperature.rs`。
+            ambient: AmbientSource::NONE,
         }
     }
 }

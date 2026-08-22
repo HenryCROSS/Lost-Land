@@ -104,6 +104,7 @@ pub mod combat;
 pub mod damage_category;
 pub mod effect;
 pub mod experience;
+pub mod exposure;
 pub mod formula;
 pub mod intent;
 pub mod item;

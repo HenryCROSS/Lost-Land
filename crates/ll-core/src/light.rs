@@ -105,6 +105,41 @@ pub fn day_curve(tick: Tick) -> i32 {
     }
 }
 
+/// 昼夜曲线相对**曲线中点**的归一化偏离，千分比，取值 `-1000..=1000`。
+///
+/// 午夜恰好 `-1000`，正午恰好 `+1000`，日出正中（6 点）与日落正中
+/// （18 点）恰好 `0`——因为中点用的正是 [`DAYLIGHT_THRESHOLD`]，与
+/// [`crate::time::Tick::is_daylight`] 判定白昼用的是同一个值。本函数
+/// 因此不是又一条独立选定的昼夜刻度，而是把同一条曲线换算成一个**与
+/// 光照量纲无关**的比例，供「随昼夜起落、但本身不是光照」的派生量复用。
+///
+/// # 为什么需要这个换算，为什么它落在 `ll-core`
+///
+/// 第一个消费者是 `ll_world::temperature`（温度的昼夜偏移：正午最热、
+/// 午夜最冷）。温度不是光照，不能直接乘 [`day_curve`] 的绝对值——那条
+/// 曲线的量纲是「千分比亮度，午夜 100 正午 1000」，它的零点在「全黑」
+/// 而不在「不冷不热」，直接拿来当温度系数会得出「午夜仍比基准温度高
+/// 十分之一」这种没有意义的结论。温度需要的是**有符号的、以昼夜中点
+/// 为零的偏离比例**，也就是本函数。
+///
+/// 换算本身只依赖 [`day_curve`] 与它的三个私有常量，放在这里可以让
+/// 那三个常量继续保持私有——若让 `ll-world` 自己算，就必须把
+/// `MIDNIGHT_LIGHT`/`NOON_LIGHT`/[`DAYLIGHT_THRESHOLD`] 三个常量全部
+/// 公开出去，等于把「曲线的形状」这件本模块的内部知识散到下游，而本
+/// 模块文档开篇「为什么这条曲线要下沉到 `ll-core`」要防的正是这件事。
+///
+/// # 整数运算，两端恰好取到 ±1000
+///
+/// `NOON_LIGHT - DAYLIGHT_THRESHOLD` 与 `DAYLIGHT_THRESHOLD -
+/// MIDNIGHT_LIGHT` 相等（中点的定义），因此同一个半幅分母对上下两侧
+/// 都成立，两端各自整除得到恰好的 ±1000，不靠舍入凑近似值。
+pub fn day_curve_deviation_permille(tick: Tick) -> i32 {
+    /// 曲线半幅：中点到任一端的距离。中点取自两端的算术平均，因此
+    /// 上下两半等长，同一个分母对两侧都成立。
+    const HALF_SPAN: i32 = NOON_LIGHT - DAYLIGHT_THRESHOLD;
+    (day_curve(tick) - DAYLIGHT_THRESHOLD) * 1000 / HALF_SPAN
+}
+
 /// 在 `[from, to]` 之间按 `elapsed / span` 的比例线性插值。
 ///
 /// 要求 `0 <= elapsed < span`，由调用方（[`day_curve`] 的分支条件）保证。
@@ -183,5 +218,59 @@ mod tests {
 
         // Assert
         assert!(start_light < mid_light && mid_light < end_light);
+    }
+
+    #[test]
+    fn 昼夜偏离在午夜与正午恰好取到正负一千() {
+        // 两端恰好整除（不是近似），是 day_curve_deviation_permille
+        // 文档「中点等分上下两半」那条论证的直接验证。
+        // Arrange
+        let midnight = Tick(0);
+        let noon = Tick(12 * TICKS_PER_HOUR);
+
+        // Act
+        let at_midnight = day_curve_deviation_permille(midnight);
+        let at_noon = day_curve_deviation_permille(noon);
+
+        // Assert
+        assert_eq!((at_midnight, at_noon), (-1000, 1000));
+    }
+
+    #[test]
+    fn 昼夜偏离的零点与白昼判定阈值是同一条边界() {
+        // 这条测试钉住「温度的昼夜偏移与 is_daylight 共用同一条曲线」：
+        // 偏离非负 ⟺ 判定为白昼。两者若各自漂移，这里立刻变红。
+        // Arrange：一整天每半小时采样一次，覆盖两段渐变窗口的内部。
+        let samples: Vec<Tick> = (0..48).map(|i| Tick(i * TICKS_PER_HOUR / 2)).collect();
+
+        // Act & Assert
+        for tick in samples {
+            assert_eq!(
+                day_curve_deviation_permille(tick) >= 0,
+                tick.is_daylight(),
+                "刻度 {} 上两条判定不一致",
+                tick.0
+            );
+        }
+    }
+
+    #[test]
+    fn 昼夜偏离恒落在正负一千的闭区间内() {
+        // 下游（温度）按这个区间换算偏移量，越界会让偏移量放大到设计
+        // 之外的幅度。
+        // Arrange
+        let samples: Vec<Tick> = (0..(24 * 4))
+            .map(|i| Tick(i * TICKS_PER_HOUR / 4))
+            .collect();
+
+        // Act & Assert
+        for tick in samples {
+            let deviation = day_curve_deviation_permille(tick);
+            assert!(
+                (-1000..=1000).contains(&deviation),
+                "刻度 {} 的昼夜偏离 {deviation} 越界",
+                tick.0
+            );
+        }
     }
 }

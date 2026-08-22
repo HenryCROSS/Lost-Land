@@ -43,6 +43,7 @@ pub mod space;
 pub mod space_profile;
 pub mod state;
 pub mod surface_store;
+pub mod temperature;
 pub mod terrain;
 pub mod weather;
 pub mod zone;

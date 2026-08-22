@@ -83,6 +83,7 @@ pub fn register_weather_api(engine: &mut ScriptEngine) {
 }
 
 /// `(register-weather id display-name-key light-scale sight-scale
+///                    temperature-offset
 ///                    spring-weight summer-weight autumn-weight winter-weight)`。
 ///
 /// - `id`：完整命名空间标识符字符串，如 `"yourmod:ashfall"`。
@@ -97,6 +98,13 @@ pub fn register_weather_api(engine: &mut ScriptEngine) {
 /// - `sight-scale`：视野半径乘数，千分比整数，必须落在 `0..=1000`。
 ///   **不允许超过 1000**——视野「放大」是暗视这类观察者属性该做的事，
 ///   不是天气，见 `ll_world::weather::WeatherError::SightScaleOutOfRange`。
+/// - `temperature-offset`：温度增量偏移，**十分之一摄氏度**的整数
+///   （`-50` 即比不受天气影响时冷 5℃），必须落在
+///   `ll_world::weather::WEATHER_TEMPERATURE_OFFSET_LIMIT` 的正负范围内
+///   （±500，即 ±50℃）。取 0 表示这种天气不影响温度（本体的「晴」就是
+///   0）。**是增量不是乘数**——温度没有零点可言，乘法会得出「-20℃ 打
+///   八折等于变暖」这种荒谬结论，见
+///   `ll_world::weather::WeatherDef::temperature_offset` 文档。
 /// - `spring-weight`/`summer-weight`/`autumn-weight`/`winter-weight`：
 ///   四季各自的出现权重，非负整数。相对值，不必加起来等于任何特定的
 ///   数；取 0 表示这种天气在这一季**绝不出现**。四季拆成四个参数而不是
@@ -105,10 +113,23 @@ pub fn register_weather_api(engine: &mut ScriptEngine) {
 ///
 /// # 全部参数都是整数/布尔/字符串（ADR 0020）
 ///
-/// 没有任何浮点参数：两个乘数是千分比整数，四个权重是整数。天气经
-/// `ambient_light_under` → `effective_ambient_light` →
-/// `effective_sight_radius` 影响视野半径，属于 ADR 0020 的乙区，必须
+/// 没有任何浮点参数：两个乘数是千分比整数，温度偏移是十分之一摄氏度
+/// 整数，四个权重是整数。天气经 `ambient_light_under` →
+/// `effective_ambient_light` → `effective_sight_radius` 影响视野半径，
+/// 又经 `ll_world::space_profile::effective_temperature` →
+/// `ll_sim::exposure` 影响结算属性，两条都属于 ADR 0020 的乙区，必须
 /// 量化——脚本侧连表达一个浮点的机会都不给。
+///
+/// # 参数增加是一次破坏性签名变更，且是刻意的
+///
+/// 温度系统批次在第四个参数之后插入了 `temperature-offset`，既有的
+/// `(register-weather ...)` 调用会因为实参数量不符而在**装载期**报错，
+/// 不会静默把权重错位读成温度。这正是想要的行为：把一个新的必填内容
+/// 维度做成可选参数（或追加到末尾并给默认值），只会让 mod 作者在不知
+/// 情的情况下发布一批「温度偏移全是 0」的天气，而那与「这种天气不影响
+/// 温度」在数据上不可区分——`content_audit` 的字段覆盖检查要问的正是
+/// 「有没有内容真的用上了这个旋钮」。仓库内唯一的既有调用点
+/// （`mods/example_mod/weather.scm`）已随本批次更新。
 ///
 /// 返回 `Result<bool, String>`，错误处理约定见
 /// [`crate::script_terrain_api`] 同名一段。
@@ -118,6 +139,7 @@ fn register_weather(
     display_name_key: String,
     light_scale: i64,
     sight_scale: i64,
+    temperature_offset: i64,
     spring_weight: i64,
     summer_weight: i64,
     autumn_weight: i64,
@@ -139,6 +161,7 @@ fn register_weather(
                 &display_name_key,
                 light_scale,
                 sight_scale,
+                temperature_offset,
                 [spring_weight, summer_weight, autumn_weight, winter_weight],
             )
         })
@@ -147,6 +170,7 @@ fn register_weather(
 
 /// [`register_weather`] 的纯函数核心：不依赖线程局部状态，方便单元测试
 /// 不必绕过 `thread_local!`。
+#[allow(clippy::too_many_arguments)]
 fn do_register_weather(
     registry: &mut Registry,
     table: &mut WeatherTable,
@@ -154,6 +178,7 @@ fn do_register_weather(
     display_name_key: &str,
     light_scale: i64,
     sight_scale: i64,
+    temperature_offset: i64,
     season_weights: [i64; 4],
 ) -> Result<bool, String> {
     let parsed_id =
@@ -173,6 +198,12 @@ fn do_register_weather(
     })?;
     let sight_scale = i32::try_from(sight_scale).map_err(|_| {
         format!("sight-scale {sight_scale} 超出 32 位整数范围，合法区间是 0..=1000")
+    })?;
+    // 同一条「不钳位、直接拒绝」的纪律：越界的偏移本来就会被
+    // WeatherTable::define 的 ±500 校验拒绝，先钳成 i32::MAX 只会把错误
+    // 消息变得更难懂。
+    let temperature_offset = i32::try_from(temperature_offset).map_err(|_| {
+        format!("temperature-offset {temperature_offset} 超出 32 位整数范围，合法区间是 ±500")
     })?;
 
     const SEASON_NAMES: [&str; 4] = ["spring", "summer", "autumn", "winter"];
@@ -195,6 +226,7 @@ fn do_register_weather(
                 display_name_key: parsed_key,
                 light_scale,
                 sight_scale,
+                temperature_offset,
                 season_weights: weights,
             },
         )
@@ -222,6 +254,7 @@ mod tests {
             "yourmod:weather.ashfall.display_name",
             420,
             360,
+            0,
             [1, 2, 3, 4],
         );
 
@@ -254,6 +287,7 @@ mod tests {
             "yourmod:weather.x.display_name",
             1000,
             1000,
+            0,
             [1, 1, 1, 1],
         );
 
@@ -275,6 +309,7 @@ mod tests {
             "",
             1000,
             1000,
+            0,
             [1, 1, 1, 1],
         );
 
@@ -296,6 +331,7 @@ mod tests {
             "yourmod:weather.toobright.display_name",
             1001,
             1000,
+            0,
             [1, 1, 1, 1],
         );
 
@@ -319,6 +355,7 @@ mod tests {
             "yourmod:weather.ashfall.display_name",
             500,
             500,
+            0,
             [-1, 1, 1, 1],
         );
 
@@ -340,6 +377,7 @@ mod tests {
             "yourmod:weather.overflow.display_name",
             i64::from(i32::MAX) + 1,
             1000,
+            0,
             [1, 1, 1, 1],
         );
 
@@ -359,6 +397,7 @@ mod tests {
             "yourmod:weather.ashfall.display_name",
             500,
             500,
+            0,
             [1, 1, 1, 1],
         )
         .expect("第一次注册应当成功");
@@ -371,6 +410,7 @@ mod tests {
             "yourmod:weather.ashfall.display_name",
             700,
             700,
+            0,
             [2, 2, 2, 2],
         );
 
@@ -393,6 +433,7 @@ mod tests {
             "yourmod:weather.ashfall.display_name",
             300,
             400,
+            0,
             [5, 5, 5, 5],
         )
         .expect("合法声明应当注册成功");
@@ -424,7 +465,7 @@ mod tests {
 
         // Act
         let result = engine.load_source(
-            r#"(register-weather "yourmod:ashfall" "yourmod:weather.ashfall.display_name" 420 360 1 2 3 4)"#
+            r#"(register-weather "yourmod:ashfall" "yourmod:weather.ashfall.display_name" 420 360 -35 1 2 3 4)"#
                 .to_string(),
         );
 
@@ -449,7 +490,7 @@ mod tests {
 
         // Act
         let result = engine.load_source(
-            r#"(register-weather "Not Valid" "yourmod:weather.x.display_name" 1 1 1 1 1 1)"#
+            r#"(register-weather "Not Valid" "yourmod:weather.x.display_name" 1 1 0 1 1 1 1)"#
                 .to_string(),
         );
 

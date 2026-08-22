@@ -555,6 +555,7 @@ mod tests {
             kind: Some(ids.fog),
             light_scale: table.light_scale(ids.fog),
             sight_scale: table.sight_scale(ids.fog),
+            temperature_offset: 0,
         };
 
         // Act
@@ -587,6 +588,7 @@ mod tests {
             kind: None,
             light_scale: 100,
             sight_scale: 100,
+            temperature_offset: 0,
         };
 
         // Act & Assert
@@ -629,6 +631,7 @@ mod tests {
                 kind: Some(*index),
                 light_scale: table.light_scale(*index),
                 sight_scale: table.sight_scale(*index),
+                temperature_offset: 0,
             };
             let radius = effective_sight_radius(&profile, start, weather);
             assert!(

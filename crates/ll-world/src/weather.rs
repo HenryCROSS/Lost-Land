@@ -1,4 +1,4 @@
-//! 天气——晴/阴/雨/大风/雾/雪，以及它们对光照与视野的影响。
+//! 天气——晴/阴/雨/大风/雾/雪，以及它们对光照、视野与温度的影响。
 //!
 //! # 天气是纯派生的，零存档状态
 //!
@@ -60,9 +60,10 @@
 //!
 //! # 全程整数（ADR 0020 乙区）
 //!
-//! 光照乘数、视野乘数、季节权重全部是整数（前两者是千分比，与
-//! [`crate::light::LightLevel`] 同一量纲）。天气经环境光影响视野半径，
-//! 视野半径是玩法量，必须量化，一个浮点都不能有。
+//! 光照乘数、视野乘数、温度偏移、季节权重全部是整数（前两者是千分比，
+//! 与 [`crate::light::LightLevel`] 同一量纲；温度偏移是十分之一摄氏度，
+//! 与 [`crate::temperature::Temperature`] 同一量纲）。天气经环境光影响
+//! 视野半径、经温度影响结算，两者都是玩法量，必须量化，一个浮点都不能有。
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::rng::DetRng;
@@ -72,6 +73,25 @@ use std::fmt;
 
 /// 千分比乘数的「不缩放」基准值。
 pub const WEATHER_SCALE_ONE: i32 = 1000;
+
+/// [`WeatherDef::temperature_offset`] 绝对值的上界，十分之一摄氏度
+/// （500 = 50℃）。
+///
+/// # 为什么要有上界，为什么取这个数
+///
+/// 与两个乘数的 `0..=1000` 同一条 ADR 0017「注册期完整校验」纪律：一条
+/// 越界的声明应当在**装载时**报错，而不是等玩到某个下雪的冬夜才表现成
+/// 「玩家一出门就冻僵」这种查不出来源的怪行为。
+///
+/// 上界不卡得更死（例如 ±100）是刻意的：本体六种天气的偏移全部落在
+/// ±80 以内，但「岩浆喷发的灰烬雨让地表升温 30℃」「魔法极寒降下 40℃」
+/// 这类 mod 设定都在合理的设计空间里，把上界压到本体用量附近等于用
+/// 校验替设计做主。±50℃ 足够容纳任何说得通的天气，同时挡住把这一列当
+/// 成开关乱填一个七位数的笔误——那正是校验该拦的东西。
+///
+/// 上下界对称（不像 `sight_scale` 只封上界）：天气**变暖**与**变冷**
+/// 在语义上完全对等（焚风、热浪 vs 寒潮），没有任何一侧需要被特殊对待。
+pub const WEATHER_TEMPERATURE_OFFSET_LIMIT: i32 = 500;
 
 /// 一段天气持续多少刻度。
 ///
@@ -120,6 +140,22 @@ pub struct WeatherDef {
     /// 则相反（明显变暗但看得一样远）。只有一个乘数的话，这两种天气在
     /// 玩法上就只能是同一种东西的强弱版本。
     pub sight_scale: i32,
+    /// 天气对温度的**增量**偏移，十分之一摄氏度，必须落在
+    /// `-WEATHER_TEMPERATURE_OFFSET_LIMIT..=WEATHER_TEMPERATURE_OFFSET_LIMIT`
+    /// （见 [`WEATHER_TEMPERATURE_OFFSET_LIMIT`]）。
+    ///
+    /// # 为什么是增量而不是乘数
+    ///
+    /// [`Self::light_scale`]/[`Self::sight_scale`] 是**乘数**，因为光照
+    /// 与视野都有一个天然的零点（全黑、看不见），天气「打折」这件事
+    /// 说得通。温度没有这样的零点——摄氏零度只是水的相变点，不是「没有
+    /// 温度」，把 20℃ 乘以 0.8 得 16℃ 而把 -20℃ 乘以同一个 0.8 却得
+    /// -16℃（**变暖了**）显然荒谬。因此这一列是加法项，与
+    /// [`crate::temperature`] 里季节/昼夜两个偏移量同一种形状，三者
+    /// 直接相加。
+    ///
+    /// 取 0 表示这种天气不影响温度（本体的「晴」就是 0）。
+    pub temperature_offset: i32,
     /// 四季各自的出现权重，下标由 [`season_slot`] 给出（春/夏/秋/冬）。
     ///
     /// 权重是相对值，不必加起来等于任何特定的数；某一季全部天气权重之
@@ -141,6 +177,8 @@ pub struct WeatherAttrs {
     pub light_scale: i32,
     /// 视野半径乘数，千分比。
     pub sight_scale: i32,
+    /// 温度增量偏移，十分之一摄氏度，见 [`WeatherDef::temperature_offset`]。
+    pub temperature_offset: i32,
     /// 四季出现权重，下标见 [`season_slot`]。
     pub season_weights: [u32; 4],
 }
@@ -164,6 +202,9 @@ pub enum WeatherError {
     /// 的——天气对所有人一视同仁地遮挡视线，让某种天气反而让所有人看
     /// 得更远，在玩法语义上说不通。
     SightScaleOutOfRange(i32),
+    /// [`WeatherDef::temperature_offset`] 的绝对值超出
+    /// [`WEATHER_TEMPERATURE_OFFSET_LIMIT`]，见该常量文档。
+    TemperatureOffsetOutOfRange(i32),
 }
 
 impl fmt::Display for WeatherError {
@@ -177,6 +218,12 @@ impl fmt::Display for WeatherError {
             }
             WeatherError::SightScaleOutOfRange(value) => {
                 write!(f, "天气视野乘数 {value} 超出 0..=1000 的合法千分比范围")
+            }
+            WeatherError::TemperatureOffsetOutOfRange(value) => {
+                write!(
+                    f,
+                    "天气温度偏移 {value} 超出 ±{WEATHER_TEMPERATURE_OFFSET_LIMIT} 的合法范围（单位：十分之一摄氏度）"
+                )
             }
         }
     }
@@ -213,6 +260,7 @@ pub struct WeatherTable {
     display_name_key: Vec<Option<NamespacedId>>,
     light_scale: Vec<i32>,
     sight_scale: Vec<i32>,
+    temperature_offset: Vec<i32>,
     season_weights: Vec<[u32; 4]>,
     defined: Vec<bool>,
     order: Vec<ContentIndex>,
@@ -242,6 +290,11 @@ impl WeatherTable {
         if !(0..=WEATHER_SCALE_ONE).contains(&attrs.sight_scale) {
             return Err(WeatherError::SightScaleOutOfRange(attrs.sight_scale));
         }
+        if attrs.temperature_offset.abs() > WEATHER_TEMPERATURE_OFFSET_LIMIT {
+            return Err(WeatherError::TemperatureOffsetOutOfRange(
+                attrs.temperature_offset,
+            ));
+        }
 
         let idx = index.get() as usize;
         if idx >= self.defined.len() {
@@ -250,6 +303,7 @@ impl WeatherTable {
             self.display_name_key.resize(new_len, None);
             self.light_scale.resize(new_len, WEATHER_SCALE_ONE);
             self.sight_scale.resize(new_len, WEATHER_SCALE_ONE);
+            self.temperature_offset.resize(new_len, 0);
             self.season_weights.resize(new_len, [0; 4]);
         }
 
@@ -261,6 +315,7 @@ impl WeatherTable {
         self.display_name_key[idx] = Some(attrs.display_name_key);
         self.light_scale[idx] = attrs.light_scale;
         self.sight_scale[idx] = attrs.sight_scale;
+        self.temperature_offset[idx] = attrs.temperature_offset;
         self.season_weights[idx] = attrs.season_weights;
         self.order.push(index);
         Ok(())
@@ -314,6 +369,17 @@ impl WeatherTable {
             .unwrap_or(WEATHER_SCALE_ONE)
     }
 
+    /// 温度增量偏移，十分之一摄氏度。未登记索引兜底为 0（安全侧——
+    /// 损坏/缺失 mod 的天气退化成「不影响温度」，不会让玩家在一个说不
+    /// 清来源的低温里冻僵，与 [`Self::light_scale`] 同一条降级纪律）。
+    pub fn temperature_offset(&self, index: ContentIndex) -> i32 {
+        debug_assert!(self.is_defined(index), "查询未注册的天气: {index:?}");
+        self.temperature_offset
+            .get(index.get() as usize)
+            .copied()
+            .unwrap_or(0)
+    }
+
     /// 四季出现权重，下标见 [`season_slot`]。未登记索引兜底为全 0
     /// （「任何季节都不出现」——安全侧：一条坏数据不该被抽中）。
     pub fn season_weights(&self, index: ContentIndex) -> [u32; 4] {
@@ -340,6 +406,10 @@ pub struct Weather {
     pub light_scale: i32,
     /// 视野半径乘数，千分比。
     pub sight_scale: i32,
+    /// 温度增量偏移，十分之一摄氏度——从
+    /// [`WeatherTable::temperature_offset`] 取出后随本结构体一起传递，
+    /// 消费者是 [`crate::temperature::temperature_under`]。
+    pub temperature_offset: i32,
 }
 
 impl Weather {
@@ -352,6 +422,7 @@ impl Weather {
         kind: None,
         light_scale: WEATHER_SCALE_ONE,
         sight_scale: WEATHER_SCALE_ONE,
+        temperature_offset: 0,
     };
 
     /// 派生某一世界时刻的天气——本模块的唯一入口。
@@ -373,6 +444,7 @@ impl Weather {
             kind: Some(kind),
             light_scale: table.light_scale(kind),
             sight_scale: table.sight_scale(kind),
+            temperature_offset: table.temperature_offset(kind),
         }
     }
 }
@@ -491,17 +563,49 @@ pub struct BaseWeatherIds {
 /// 季节权重让四季各有性格：春多雨、夏多晴、秋多风多雾、冬多雪。雪在
 /// 春夏两季权重为 0（绝不出现），是 [`WeatherDef::season_weights`] 那
 /// 条「取 0 表示这一季绝不出现」在本体内容里的真实用例。
+///
+/// # 温度偏移的取舍（温度系统批次）
+///
+/// 晴 0、雾 -10、阴 -20、大风 -30、雨 -40、雪 -80（十分之一摄氏度）。
+/// 三条内部约束：
+///
+/// 1. **晴取 0**——它是 [`Weather::CLEAR`] 这个「这里不该有天气」的
+///    基准所对应的那一条内容，两者的温度语义必须一致，否则「洞窟里
+///    的天气」（恒为 `CLEAR`）与「外面恰好是晴」会算出不同的温度。
+/// 2. **雪严格最冷**——「冬季雪夜」是本体内容里唯一会触发
+///    `ll_sim::exposure` 惩罚的极端组合（见
+///    [`crate::temperature::SEASON_TEMPERATURE_OFFSETS`] 的取值表），
+///    雪若不是最冷的那一种，这句话就名不副实。有测试钉住。
+/// 3. **全部落在 ±80 以内**——远小于
+///    [`WEATHER_TEMPERATURE_OFFSET_LIMIT`]（±500）。天气是这套加法里
+///    幅度最小的一项（季节 -180、昼夜 ±60），它的角色是「让同一个冬夜
+///    比另一个冬夜更难熬」，不是自己单独把温度推过冰点——一场夏天的雪
+///    不该让人冻僵，那是季节该管的事。
+///
+/// 排序刻意与 [`WeatherDef::light_scale`] **不完全一致**：雾比阴天亮
+/// （850 > 800）却也比阴天暖（-10 > -20），而大风比雨亮（900 > 700）
+/// 也比雨暖（-30 > -40）——三个旋钮各自独立，不是同一个「恶劣程度」
+/// 标量的三份拷贝，这与 `light_scale`/`sight_scale` 当初分成两个旋钮
+/// 是同一条理由。
 pub fn materialize_base_weathers(
     intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
 ) -> Result<(BaseWeatherIds, WeatherTable), WeatherError> {
     let mut table = WeatherTable::new();
 
-    let clear = define_base(&mut table, intern, "clear", 1000, 1000, [45, 55, 45, 35])?;
-    let overcast = define_base(&mut table, intern, "overcast", 800, 950, [25, 20, 25, 25])?;
-    let rain = define_base(&mut table, intern, "rain", 700, 900, [20, 15, 15, 3])?;
-    let wind = define_base(&mut table, intern, "wind", 900, 950, [15, 8, 20, 12])?;
-    let fog = define_base(&mut table, intern, "fog", 850, 700, [12, 4, 15, 10])?;
-    let snow = define_base(&mut table, intern, "snow", 720, 800, [0, 0, 2, 30])?;
+    let clear = define_base(&mut table, intern, "clear", 1000, 1000, 0, [45, 55, 45, 35])?;
+    let overcast = define_base(
+        &mut table,
+        intern,
+        "overcast",
+        800,
+        950,
+        -20,
+        [25, 20, 25, 25],
+    )?;
+    let rain = define_base(&mut table, intern, "rain", 700, 900, -40, [20, 15, 15, 3])?;
+    let wind = define_base(&mut table, intern, "wind", 900, 950, -30, [15, 8, 20, 12])?;
+    let fog = define_base(&mut table, intern, "fog", 850, 700, -10, [12, 4, 15, 10])?;
+    let snow = define_base(&mut table, intern, "snow", 720, 800, -80, [0, 0, 2, 30])?;
 
     Ok((
         BaseWeatherIds {
@@ -524,12 +628,14 @@ pub fn materialize_base_weathers(
 /// `local` 只是本地名（例如 `"rain"`）：内容 id 与本地化键都由它拼出
 /// （`lostland:rain` 与 `lostland:weather.rain.display_name`），两者
 /// 因此不可能拼错到互相对不上。
+#[allow(clippy::too_many_arguments)]
 fn define_base(
     table: &mut WeatherTable,
     intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
     local: &str,
     light_scale: i32,
     sight_scale: i32,
+    temperature_offset: i32,
     season_weights: [u32; 4],
 ) -> Result<ContentIndex, WeatherError> {
     let id = NamespacedId::parse(&format!("lostland:{local}")).expect("本体天气 id 字面量恒合法");
@@ -542,6 +648,7 @@ fn define_base(
             display_name_key,
             light_scale,
             sight_scale,
+            temperature_offset,
             season_weights,
         },
     )?;
@@ -666,6 +773,7 @@ mod tests {
                         .expect("合法"),
                     light_scale: 500,
                     sight_scale: 400,
+                    temperature_offset: 0,
                     season_weights: [0, 0, 0, 10],
                 },
             )
@@ -754,6 +862,7 @@ mod tests {
                     .expect("合法"),
                 light_scale: 1001,
                 sight_scale: 1000,
+                temperature_offset: 0,
                 season_weights: [1, 1, 1, 1],
             },
         );
@@ -779,6 +888,7 @@ mod tests {
                     .expect("合法"),
                 light_scale: 1000,
                 sight_scale: 1500,
+                temperature_offset: 0,
                 season_weights: [1, 1, 1, 1],
             },
         );
@@ -800,6 +910,7 @@ mod tests {
                     .expect("合法"),
                 light_scale: 1000,
                 sight_scale: 1000,
+                temperature_offset: 0,
                 season_weights: [1, 1, 1, 1],
             },
         );
@@ -880,5 +991,141 @@ mod tests {
 
         // Assert
         assert_eq!(slots, [0, 1, 2, 3]);
+    }
+
+    #[test]
+    fn 本体天气的温度偏移全部落在合法上下界内并且至少有一条非零() {
+        // 「至少有一条非零」不是形式要求：本体若全填 0，这一列就成了
+        // 又一处没有任何内容真正用上的旋钮（`content_audit` 的字段覆盖
+        // 检查也会当场报出来）。
+        // Arrange
+        let (_ids, table) = base_weather_fixture();
+
+        // Act
+        let offsets: Vec<i32> = table
+            .registered()
+            .iter()
+            .map(|index| table.temperature_offset(*index))
+            .collect();
+
+        // Assert
+        assert!(offsets.iter().any(|offset| *offset != 0));
+        for offset in offsets {
+            assert!(offset.abs() <= WEATHER_TEMPERATURE_OFFSET_LIMIT);
+        }
+    }
+
+    #[test]
+    fn 雪是本体六种天气里最冷的一种() {
+        // 内容自洽：雪的温度偏移必须严格低于其余五种，否则「冬季雪夜」
+        // 这条唯一会触发惩罚的组合就名不副实。
+        // Arrange
+        let (ids, table) = base_weather_fixture();
+
+        // Act
+        let snow = table.temperature_offset(ids.snow);
+        let others: Vec<i32> = table
+            .registered()
+            .iter()
+            .filter(|index| **index != ids.snow)
+            .map(|index| table.temperature_offset(*index))
+            .collect();
+
+        // Assert
+        for other in others {
+            assert!(snow < other, "雪的温度偏移 {snow} 应当严格低于 {other}");
+        }
+    }
+
+    #[test]
+    fn 温度偏移越界时注册期就报错() {
+        // ADR 0017「注册期完整校验」：越界必须在装载时报出来，而不是
+        // 等玩到某个冬夜才表现成「一出门就冻僵」。
+        // Arrange
+        let mut interner = Interner::new();
+        let index = interner.intern(NamespacedId::parse("yourmod:absurd").expect("合法"));
+        let mut table = WeatherTable::new();
+
+        // Act
+        let result = table.define(
+            index,
+            WeatherAttrs {
+                display_name_key: NamespacedId::parse("yourmod:weather.absurd.display_name")
+                    .expect("合法"),
+                light_scale: 1000,
+                sight_scale: 1000,
+                temperature_offset: WEATHER_TEMPERATURE_OFFSET_LIMIT + 1,
+                season_weights: [1, 1, 1, 1],
+            },
+        );
+
+        // Assert
+        assert_eq!(
+            result,
+            Err(WeatherError::TemperatureOffsetOutOfRange(
+                WEATHER_TEMPERATURE_OFFSET_LIMIT + 1
+            ))
+        );
+    }
+
+    #[test]
+    fn 温度偏移的上下界对称() {
+        // 上下界对称是 WEATHER_TEMPERATURE_OFFSET_LIMIT 文档最后一段的
+        // 断言：变暖与变冷在语义上完全对等。
+        // Arrange
+        let mut interner = Interner::new();
+        let mut table = WeatherTable::new();
+        let warm = interner.intern(NamespacedId::parse("yourmod:foehn").expect("合法"));
+        let cold = interner.intern(NamespacedId::parse("yourmod:coldsnap").expect("合法"));
+        let key = NamespacedId::parse("yourmod:weather.x.display_name").expect("合法");
+
+        // Act
+        let warm_result = table.define(
+            warm,
+            WeatherAttrs {
+                display_name_key: key.clone(),
+                light_scale: 1000,
+                sight_scale: 1000,
+                temperature_offset: WEATHER_TEMPERATURE_OFFSET_LIMIT,
+                season_weights: [1, 1, 1, 1],
+            },
+        );
+        let cold_result = table.define(
+            cold,
+            WeatherAttrs {
+                display_name_key: key,
+                light_scale: 1000,
+                sight_scale: 1000,
+                temperature_offset: -WEATHER_TEMPERATURE_OFFSET_LIMIT,
+                season_weights: [1, 1, 1, 1],
+            },
+        );
+
+        // Assert
+        assert_eq!((warm_result, cold_result), (Ok(()), Ok(())));
+        assert_eq!(
+            table.temperature_offset(warm),
+            WEATHER_TEMPERATURE_OFFSET_LIMIT
+        );
+        assert_eq!(
+            table.temperature_offset(cold),
+            -WEATHER_TEMPERATURE_OFFSET_LIMIT
+        );
+    }
+
+    #[test]
+    fn 派生出来的天气把温度偏移一并带出来() {
+        // Weather 这个值类型存在的意义是"热路径不必反复回表查"，温度
+        // 偏移必须与两个乘数一样被带出来，否则消费者仍然要拿着表。
+        // Arrange
+        let (_ids, table) = base_weather_fixture();
+        let tick = Tick(11 * WEATHER_PERIOD_TICKS);
+
+        // Act
+        let weather = Weather::derive(0x5EED, tick, &table);
+
+        // Assert
+        let kind = weather.kind.expect("本体六种天气在任何季节权重和都非零");
+        assert_eq!(weather.temperature_offset, table.temperature_offset(kind));
     }
 }

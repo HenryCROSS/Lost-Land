@@ -47,6 +47,7 @@ use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 
 use crate::light::{LightLevel, ambient_light_under};
+use crate::temperature::{Temperature, temperature_under};
 use crate::weather::Weather;
 
 /// 一种空间类型的静态属性，本体与 mod 注册层属性时共用的同一个输入
@@ -66,7 +67,12 @@ pub struct SpaceProfile {
     /// 把关）；为假时环境光恒等于 `ambient_light_floor`，与世界时钟、
     /// 与外面在不在下雨都无关。
     pub exposed_to_sky: bool,
-    /// 温度基准。
+    /// 温度基准，十分之一摄氏度（`200` = 20℃），与
+    /// [`crate::temperature::Temperature`] 同一量纲。
+    ///
+    /// 露天空间（`exposed_to_sky` 为真）把它当作全年均温，季节/天气/
+    /// 昼夜三个偏移叠加在它之上；非露天空间的温度**恒等于**它。唯一
+    /// 正确的查询入口是 [`effective_temperature`]。
     pub base_temperature: i32,
     /// 是否允许挖掘。
     pub diggable: bool,
@@ -208,6 +214,41 @@ impl SpaceProfileTable {
         Ok(())
     }
 
+    /// [`effective_temperature`] 的**按索引**版本：只握着一个
+    /// [`ContentIndex`]（而不是一份完整的 [`SpaceProfile`]）的调用方
+    /// 用这一个（温度系统批次新增）。
+    ///
+    /// # 为什么需要这个入口
+    ///
+    /// 结算侧（`ll_sim::resolve`）从 `Agent::current_space` 拿到的正是
+    /// 一个裸的 `ContentIndex`。走自由函数版本就必须先现拼一份完整的
+    /// [`SpaceProfile`]——那需要一个 `id`，而结算侧根本没有理由知道
+    /// 这个空间叫什么，只能像 `ll_game::app::space_profile_of` 那样
+    /// 编造一个 `lostland:runtime_profile` 占位 id。为一次温度查询编造
+    /// 一个假身份是纯粹的噪音。
+    ///
+    /// 两个入口共用同一份实现（模块私有的 `temperature_of`），「露天与
+    /// 否」这条分支只写一处，不可能漂移。
+    ///
+    /// 未登记的索引在调试构建下触发断言（与本表其余访问器一致），发布
+    /// 构建下按 `exposed_to_sky` 的兜底值（假）走非露天分支，得到
+    /// `Temperature(0)`——0℃ 恰在冰点上、不触发暴露惩罚，是这里唯一
+    /// 说得通的降级取值。**调用方应当先用 [`Self::is_defined`] 把关**，
+    /// 见 `ll_sim::exposure::AmbientSource::temperature_in`。
+    pub fn effective_temperature(
+        &self,
+        index: ContentIndex,
+        tick: Tick,
+        weather: Weather,
+    ) -> Temperature {
+        temperature_of(
+            self.exposed_to_sky(index),
+            self.base_temperature(index),
+            tick,
+            weather,
+        )
+    }
+
     /// 给定的层属性索引当前是否已经登记过。
     pub fn is_defined(&self, index: ContentIndex) -> bool {
         self.defined
@@ -304,6 +345,18 @@ pub struct BaseSpaceProfileIds {
 /// 洞窟、地下城环境光基准取 0（伸手不见五指，暗视/火把才有意义，见
 /// 设计文档七节「连锁效果」）；建筑内部给一点非零的基准光（想象窗户/
 /// 天窗漏进来的光），与纯粹的地下空间区分开。
+///
+/// # 温度基准（温度系统批次）
+///
+/// 四个取值分别是地表 200（20℃，全年均温）、洞窟 100（10℃）、地下城
+/// 80（8℃）、建筑内部 220（22℃），单位见
+/// [`crate::temperature`]。三个**非露天**空间的取值有一条硬约束：
+/// **必须明确高于冰点**。它们的温度恒定不变（见
+/// [`effective_temperature`]），一旦低于冰点就等于让玩家一进洞窟就
+/// 永久挨罚——那正是 `ll_sim::exposure` 「只在极端条件下产生后果」这
+/// 条纪律最不该出现的失效方式（一个躲不掉、也解释不清的常驻惩罚）。
+/// 反过来，这条约束让「冬夜进洞躲一晚」成为一个真实有效的玩家决策，
+/// 有测试钉住（见本模块 `三种非露天空间的温度恒定且明确高于冰点`）。
 pub fn materialize_base_space_profiles(
     intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
 ) -> Result<(BaseSpaceProfileIds, SpaceProfileTable), SpaceProfileError> {
@@ -458,6 +511,71 @@ pub fn effective_weather(profile: &SpaceProfile, weather: Weather) -> Weather {
     }
 }
 
+/// 这个空间在某一世界时刻、某种天气下**实际**的温度——温度系统唯一
+/// 正确的查询入口（温度系统批次新增）。
+///
+/// - `exposed_to_sky` 为真：走 [`crate::temperature::temperature_under`]，
+///   在 `profile.base_temperature` 之上叠加季节、天气、昼夜三个偏移。
+/// - 为假：恒等于 `Temperature(profile.base_temperature)`，与世界时钟、
+///   与外面在不在下雪都无关。
+///
+/// # 与 [`effective_ambient_light`] 逐字同构，不是第二条判据
+///
+/// 本函数的形状与 [`effective_ambient_light`] 完全一致，且**走的是同
+/// 一个 [`effective_weather`]**——「这个空间受不受外界影响」这句话在
+/// 整个仓库里只有那一处定义（见 [`effective_weather`] 文档「为什么需要
+/// 这一步」一节）。温度是它的第三个消费者（前两个是环境光与视野半径），
+/// 加进来时没有新增任何一条「算不算露天」的判断，这正是 ADR 0010
+/// 「白昼判定收敛为同一份真相源」那条教训要求的做法。
+///
+/// 非露天分支为什么不叫 `temperature_floor`：`ambient_light_floor` 是
+/// 一个**下限**（露天时不生效，非露天时兜底），而 `base_temperature`
+/// 是一个**基准**（露天时是四个加数里的第一个，非露天时就是全部）。
+/// 两个字段在露天分支里的角色不同，命名如实反映这一点。
+///
+/// 洞窟冬暖夏凉因此是免费得到的：本体洞窟 `base_temperature = 80`
+/// （8℃）恒定，冬夜地表已经跌到 -4℃ 时，钻进洞窟就等于回到 8℃——
+/// 「进洞躲一夜」这个玩家决策不需要任何额外建模就成立了。
+pub fn effective_temperature(profile: &SpaceProfile, tick: Tick, weather: Weather) -> Temperature {
+    temperature_of(
+        profile.exposed_to_sky,
+        profile.base_temperature,
+        tick,
+        weather,
+    )
+}
+
+/// [`effective_temperature`] 与 [`SpaceProfileTable::effective_temperature`]
+/// 共用的**唯一**一份实现——「露天与否」这条分支只写这一处。
+///
+/// # 为什么这里不像光照那样再调一次 [`effective_weather`]
+///
+/// [`effective_ambient_light`] 在露天分支里调用
+/// `effective_weather(profile, weather)`，是因为它随后要把结果交给
+/// [`ambient_light_under`] 这个**不认识 profile** 的函数；那次调用在
+/// 露天分支里恒等于原样透传（见 [`effective_weather`] 实现），真正起
+/// 作用的是非露天分支的 `Weather::CLEAR`。
+///
+/// 温度这一路的非露天分支**根本不走到天气**——它直接返回
+/// `Temperature(base_temperature)`，三个偏移量一个都不叠。因此在露天
+/// 分支里插一次恒等透传只是装饰，且会让两条路径在阅读时看起来像是
+/// 「各自做了一次判断」。判据仍然只有 `exposed_to_sky` 这**一个字段**
+/// ——与 [`effective_weather`]/[`effective_ambient_light`] 读的是同一个
+/// ——没有引入第二条「算不算露天」的判断，ADR 0010 那条教训要防的正是
+/// 「同一个问题有两个答案」，不是「同一个字段被读了两次」。
+fn temperature_of(
+    exposed_to_sky: bool,
+    base_temperature: i32,
+    tick: Tick,
+    weather: Weather,
+) -> Temperature {
+    if exposed_to_sky {
+        temperature_under(base_temperature, tick, weather)
+    } else {
+        Temperature(base_temperature)
+    }
+}
+
 /// 供测试与验收 demo 使用：现造一个空 [`Interner`]，注册本体全部四个
 /// 空间类型，返回可用的 `(BaseSpaceProfileIds, SpaceProfileTable)`。
 ///
@@ -549,6 +667,7 @@ mod tests {
             kind: None,
             light_scale: 600,
             sight_scale: 1000,
+            temperature_offset: 0,
         };
 
         // Act
@@ -570,6 +689,7 @@ mod tests {
             kind: None,
             light_scale: 100,
             sight_scale: 100,
+            temperature_offset: 0,
         };
 
         // Act
@@ -595,6 +715,7 @@ mod tests {
             kind: None,
             light_scale: 900,
             sight_scale: 300,
+            temperature_offset: 0,
         };
 
         // Act & Assert
@@ -776,5 +897,138 @@ mod tests {
 
         // Act
         let _ = table.exposed_to_sky(unregistered);
+    }
+
+    #[test]
+    fn 露天空间的温度随昼夜与季节变化() {
+        // effective_temperature 露天分支的存在意义：同一个空间在不同
+        // 时刻应当有不同温度。
+        // Arrange
+        let profile = surface_like_profile();
+        let summer_noon = Tick(30 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR);
+        let winter_midnight = Tick(90 * TICKS_PER_DAY);
+
+        // Act
+        let hot = effective_temperature(&profile, summer_noon, Weather::CLEAR);
+        let cold = effective_temperature(&profile, winter_midnight, Weather::CLEAR);
+
+        // Assert
+        assert!(hot > cold, "夏季正午 {hot:?} 应当明显热于冬季午夜 {cold:?}");
+        assert!(!hot.is_freezing());
+        assert!(cold.is_freezing());
+    }
+
+    #[test]
+    fn 非露天空间的温度恒等于基准与时钟天气都无关() {
+        // 与「洞窟里下不下雨都一样黑」逐字同构的一条：非露天分支既不看
+        // 时钟也不看天气。
+        // Arrange
+        let mut profile = surface_like_profile();
+        profile.exposed_to_sky = false;
+        profile.base_temperature = 100;
+        let (ids, table) = crate::weather::base_weather_fixture();
+        let snow = Weather {
+            kind: Some(ids.snow),
+            light_scale: table.light_scale(ids.snow),
+            sight_scale: table.sight_scale(ids.snow),
+            temperature_offset: table.temperature_offset(ids.snow),
+        };
+
+        // Act
+        let winter_midnight = effective_temperature(&profile, Tick(90 * TICKS_PER_DAY), snow);
+        let summer_noon = effective_temperature(
+            &profile,
+            Tick(30 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR),
+            Weather::CLEAR,
+        );
+
+        // Assert
+        assert_eq!(winter_midnight, Temperature(100));
+        assert_eq!(summer_noon, Temperature(100));
+    }
+
+    #[test]
+    fn 温度与光照读的是同一个露天判据() {
+        // 「这个空间受不受天气影响」只有一条判据（exposed_to_sky）：给
+        // 非露天空间传一个温度偏移极大的天气，温度不受任何影响——与
+        // effective_weather 对光照那一路的把关结论完全一致。
+        // Arrange
+        let mut indoor = surface_like_profile();
+        indoor.exposed_to_sky = false;
+        indoor.base_temperature = 220;
+        let outdoor = surface_like_profile();
+        let blizzard = Weather {
+            kind: None,
+            light_scale: 1000,
+            sight_scale: 1000,
+            temperature_offset: -400,
+        };
+        let tick = Tick(30 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR);
+
+        // Act
+        let inside = effective_temperature(&indoor, tick, blizzard);
+        let outside = effective_temperature(&outdoor, tick, blizzard);
+
+        // Assert
+        assert_eq!(inside, Temperature(220), "非露天空间必须完全无视天气");
+        assert!(
+            outside.0 < 220,
+            "露天空间必须真的被这场天气压冷，否则本测试无法区分两条分支"
+        );
+    }
+
+    #[test]
+    fn 按索引与按结构体两个温度入口结论恒一致() {
+        // 两个公开入口共用同一份实现，这条测试是那句话的机器检查——
+        // 将来若有人给其中一个入口单独加了分支，这里立刻变红。
+        // Arrange
+        let (ids, table) = base_space_profile_fixture();
+        let (weather_ids, weather_table) = crate::weather::base_weather_fixture();
+        let snow = Weather {
+            kind: Some(weather_ids.snow),
+            light_scale: weather_table.light_scale(weather_ids.snow),
+            sight_scale: weather_table.sight_scale(weather_ids.snow),
+            temperature_offset: weather_table.temperature_offset(weather_ids.snow),
+        };
+
+        // Act & Assert
+        for index in [ids.surface, ids.cave, ids.dungeon, ids.building_interior] {
+            let profile = SpaceProfile {
+                id: NamespacedId::parse("lostland:probe").expect("合法"),
+                ambient_light_floor: table.ambient_light_floor(index),
+                exposed_to_sky: table.exposed_to_sky(index),
+                base_temperature: table.base_temperature(index),
+                diggable: table.diggable(index),
+                buildable: table.buildable(index),
+                reverb_tag: table.reverb_tag(index),
+            };
+            for hour in [0, 6, 12, 18] {
+                let tick = Tick(90 * TICKS_PER_DAY + hour * TICKS_PER_HOUR);
+                assert_eq!(
+                    table.effective_temperature(index, tick, snow),
+                    effective_temperature(&profile, tick, snow),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 三种非露天空间的温度恒定且明确高于冰点() {
+        // materialize_base_space_profiles 文档「温度基准」一节那条硬
+        // 约束：一个低于冰点的恒温空间等于永久惩罚，是 exposure 那条
+        // 「只在极端条件下」纪律最不该出现的失效方式。
+        // Arrange
+        let (ids, table) = base_space_profile_fixture();
+        let indoor_indices = [ids.cave, ids.dungeon, ids.building_interior];
+
+        // Act & Assert
+        for index in indoor_indices {
+            assert!(!table.exposed_to_sky(index));
+            let base = table.base_temperature(index);
+            assert!(
+                base > Temperature::FREEZING.0,
+                "非露天空间的温度基准 {base} 必须明确高于冰点"
+            );
+        }
     }
 }

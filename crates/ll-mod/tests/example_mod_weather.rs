@@ -249,6 +249,7 @@ fn 示例mod脚本注册的空间层属性进了层属性表且不受天气影�
         kind: Some(handle.ashfall_id),
         light_scale: handle.weather.light_scale(handle.ashfall_id),
         sight_scale: handle.weather.sight_scale(handle.ashfall_id),
+        temperature_offset: handle.weather.temperature_offset(handle.ashfall_id),
     };
 
     // Act

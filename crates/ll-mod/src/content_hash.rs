@@ -300,7 +300,26 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// `apply_value_hashes` 折进的物品条目摘要都会因为多出「规则修正条数
 /// （0）」这一个 `u64` 而改变——即使没有任何物品声明规则修正，长度
 /// 前缀本身也是新的哈希输入，量尺确实换了。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 9;
+/// 版本 10（温度系统批次）：两处「老表新增哈希输入」，同属版本
+/// 4/5（三）/7/9 那一类，不是「新增内容表」——[`ContentTableKind`] 的
+/// 十七个变体一个未变，[`ContentValueTables`] 的字段一个未加，
+/// `check_content_hash_gate_cross_coverage` 那条互校因此在本批次同样
+/// 无事可做（它只守「新增了表」）。
+///
+/// 1. [`write_weather_fields`] 新增混入 `WeatherDef.temperature_offset`
+///    （天气对温度的增量偏移，十分之一摄氏度）。任何已经注册过天气的
+///    存档，其天气条目摘要都会因为多出这一个 `i64` 而改变——本体六种
+///    天气里有五种的偏移非零，量尺确实换了。
+/// 2. [`write_stat_bonus`] 新增第三个判别值 `2`
+///    （[`StatTarget::Insulation`]）。这一条**只在真的有物品声明绝缘值
+///    时**改变摘要（既有的 `Attribute`/`Armor` 两个判别值逐字节不变），
+///    但它是一个新的可达哈希输入，与上一条同批次落地，一并计入本次
+///    递增。
+///
+/// 守门方式与版本 9 相同：本段文字 + `content_audit` 里同批次新增的
+/// `WeatherAttrs::temperature_offset` 花名册条目（字段覆盖率门禁会要求
+/// 真实内容覆盖它）。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 10;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -888,6 +907,12 @@ fn write_weather_fields(hasher: &mut StateHasher, table: &WeatherTable, index: C
     }
     hasher.write_i64(i64::from(table.light_scale(index)));
     hasher.write_i64(i64::from(table.sight_scale(index)));
+    // 温度系统批次新增的第四列——见 CONTENT_HASH_ALGORITHM_VERSION 的
+    // 「版本 10」一段。位置排在两个乘数之后、季节权重之前，与
+    // `WeatherAttrs` 的字段声明顺序一致：混入顺序本身就是哈希输入，
+    // 让它跟着结构体走可以让「读结构体就知道混入了什么、按什么顺序」
+    // 这件事不需要额外记忆。
+    hasher.write_i64(i64::from(table.temperature_offset(index)));
     for weight in table.season_weights(index) {
         hasher.write_u64(u64::from(weight));
     }
@@ -1146,6 +1171,11 @@ fn write_stat_bonus(hasher: &mut StateHasher, bonus: &StatBonus) {
             hasher.write_u64(attribute as u64);
         }
         StatTarget::Armor => hasher.write_u64(1),
+        // 判别值 2，温度系统批次新增——见 CONTENT_HASH_ALGORITHM_VERSION
+        // 的「版本 10」一段。新增判别值而不是复用 0/1：一件绝缘值 90
+        // 的斗篷与一件护甲 90 的胸甲若折出同一个摘要，换装的内容变化
+        // 就会在值哈希里塌缩掉，正是 ADR 0022/0027 要防的那类。
+        StatTarget::Insulation => hasher.write_u64(2),
     }
     hasher.write_i64(i64::from(bonus.amount));
 }

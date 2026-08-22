@@ -80,6 +80,7 @@ mod tests {
                     .expect("合法标识符"),
                 light_scale: 1000,
                 sight_scale: 1000,
+                temperature_offset: 0,
                 season_weights: [1, 1, 1, 1],
             },
         );
