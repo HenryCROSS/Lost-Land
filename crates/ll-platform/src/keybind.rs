@@ -87,13 +87,25 @@ use winit::keyboard::KeyCode;
 /// （例如 Esc 在菜单里是返回、在游戏内是暂停）——见模块文档「上下文」
 /// 一节。
 ///
-/// 目前只有 [`InputContext::Gameplay`] 一个变体：菜单/设置界面尚未
-/// 建成（P7），新增上下文只需要在此追加变体，[`KeyBindings`] 的其余
-/// 逻辑不需要跟着改。
+/// # `Menu`：UI 交互层批次新增
+///
+/// 覆盖游戏画面的任意模态 UI（背包首页、物品详情、确认框、未来的
+/// 设置界面/暂停菜单）全部共用这一个变体——哪一层具体在响应由 UI 层
+/// 自己的模式栈（`ll_ui::widget::ui_mode::UiModeStack`，本 crate 不
+/// 依赖 `ll-ui`，此处只是文字引用，不是可解析的文档内链，与
+/// `crate::keybind` 模块文档既有的同类写法一致）决定，不是
+/// `InputContext` 的职责。完整论证见
+/// `knowledge/design/action-capability-and-input-context.md` 2.1/2.2
+/// 节：不给每一层嵌套菜单各开一个变体（那是过度设计，嵌套深度是
+/// 运行时可变的），也不让 `InputContext` 自己变成一个栈（那会把
+/// `KeyBindings::resolve` 从纯函数变成有状态查询）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InputContext {
-    /// 游戏内主流程——目前唯一在用的上下文，全部 demo 都跑在这里。
+    /// 游戏内主流程——角色移动、攻击等直接作用于世界的输入。
     Gameplay,
+    /// 任意模态 UI 覆盖游戏画面时的输入上下文，见本类型文档「`Menu`」
+    /// 一节。
+    Menu,
 }
 
 /// 一次按键事件里参与判定的修饰键状态。
@@ -383,6 +395,86 @@ const DEFAULT_BINDINGS: &[KeyBinding] = &[
     KeyBinding::gameplay(KeyCode::Minus, GameKey::ZoomOut),
 ];
 
+/// `InputContext::Menu` 下的默认键位表：与 [`DEFAULT_BINDINGS`] 用
+/// **同一组物理键**映射到方向/确认/取消四个动作——设计文档 2.2 节
+/// 「共享同一份物理键映射」的直接落点：背包首页、物品详情、确认框等
+/// 全部模态 UI 共用这一份表，差异只在 UI 层自己怎么"读" `GameKey`
+/// （见 [`InputContext::Menu`] 文档），不是这张表要处理的事。
+///
+/// 与 `DEFAULT_BINDINGS` 的对应关系不是巧合：菜单导航复用玩家已经
+/// 熟悉的方向键手感（方向键=导航、Enter/Space=确认、Esc=返回），不
+/// 需要玩家为菜单单独学一套按键。`(键, 修饰键, 上下文)` 三元组判重
+/// 保证这张表与 `DEFAULT_BINDINGS` 互不冲突——两者的 `context` 字段
+/// 不同，即便物理键完全相同也不会被 [`KeyBindings::try_bind`] 拒绝。
+const DEFAULT_MENU_BINDINGS: &[KeyBinding] = &[
+    KeyBinding {
+        key: KeyCode::ArrowUp,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Up,
+    },
+    KeyBinding {
+        key: KeyCode::KeyW,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Up,
+    },
+    KeyBinding {
+        key: KeyCode::ArrowDown,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Down,
+    },
+    KeyBinding {
+        key: KeyCode::KeyS,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Down,
+    },
+    KeyBinding {
+        key: KeyCode::ArrowLeft,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Left,
+    },
+    KeyBinding {
+        key: KeyCode::KeyA,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Left,
+    },
+    KeyBinding {
+        key: KeyCode::ArrowRight,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Right,
+    },
+    KeyBinding {
+        key: KeyCode::KeyD,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Right,
+    },
+    KeyBinding {
+        key: KeyCode::Enter,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Confirm,
+    },
+    KeyBinding {
+        key: KeyCode::Space,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Confirm,
+    },
+    KeyBinding {
+        key: KeyCode::Escape,
+        modifiers: Modifiers::NONE,
+        context: InputContext::Menu,
+        action: GameKey::Cancel,
+    },
+];
+
 /// 默认滚轮绑定：与 [`DEFAULT_BINDINGS`] 里的缩放键位绑给同一对抽象
 /// 动作——`GameKey::ZoomIn`/`ZoomOut` 因此能同时由滚轮与按键触发，
 /// 上层游戏逻辑（`ll-game` 的 `Demo::advance`）只需要查询
@@ -408,8 +500,13 @@ impl KeyBindings {
     /// 冲突，那是表本身写错了，应当在开发期就地修正，不该把「内置
     /// 默认值可能非法」这种可能性泄漏给调用方处理。
     pub fn default_bindings() -> KeyBindings {
-        let mut table = KeyBindings::from_bindings(DEFAULT_BINDINGS.iter().copied())
-            .expect("DEFAULT_BINDINGS 是内置常量表，不应自相冲突");
+        let mut table = KeyBindings::from_bindings(
+            DEFAULT_BINDINGS
+                .iter()
+                .copied()
+                .chain(DEFAULT_MENU_BINDINGS.iter().copied()),
+        )
+        .expect("DEFAULT_BINDINGS/DEFAULT_MENU_BINDINGS 是内置常量表，不应自相冲突");
         for binding in DEFAULT_WHEEL_BINDINGS.iter().copied() {
             table
                 .try_bind_wheel(binding)
@@ -793,17 +890,44 @@ mod tests {
 
     #[test]
     fn bindings_for只返回指定动作的绑定() {
+        // `bindings_for` 按 `action` 过滤，不按 `context` 过滤——
+        // `GameKey::Up` 现在同时被 `DEFAULT_BINDINGS`（Gameplay）与
+        // `DEFAULT_MENU_BINDINGS`（Menu）各绑了 `ArrowUp`/`KeyW` 两个
+        // 物理键，因此这里只筛出 Gameplay 上下文那一半，理由见
+        // `bindings_for` 文档「设置界面展示这个动作当前绑了哪些键」——
+        // 展示界面天然是按上下文分别展示的，不会把两个上下文的绑定
+        // 混在一起呈现。
         // Arrange
         let table = KeyBindings::default_bindings();
 
         // Act
         let up_keys: Vec<KeyCode> = table
             .bindings_for(GameKey::Up)
+            .filter(|binding| binding.context == InputContext::Gameplay)
             .map(|binding| binding.key)
             .collect();
 
         // Assert
         assert_eq!(up_keys, vec![KeyCode::ArrowUp, KeyCode::KeyW]);
+    }
+
+    #[test]
+    fn bindings_for涵盖菜单上下文下的绑定() {
+        // 上一条测试只看 Gameplay 那一半，这条测试核实 Menu 那一半也
+        // 确实被 `bindings_for` 看到（防止未来有人误以为 Menu 绑定表
+        // 是另一套没有接进同一张 `bindings` 表的平行数据）。
+        // Arrange
+        let table = KeyBindings::default_bindings();
+
+        // Act
+        let menu_up_keys: Vec<KeyCode> = table
+            .bindings_for(GameKey::Up)
+            .filter(|binding| binding.context == InputContext::Menu)
+            .map(|binding| binding.key)
+            .collect();
+
+        // Assert
+        assert_eq!(menu_up_keys, vec![KeyCode::ArrowUp, KeyCode::KeyW]);
     }
 
     #[test]
@@ -1029,6 +1153,58 @@ mod tests {
 
         // Assert
         assert_eq!(direction, Some(WheelDirection::Away));
+    }
+
+    #[test]
+    fn 默认绑定表在菜单上下文下能解析方向键() {
+        // Arrange
+        let table = KeyBindings::default_bindings();
+
+        // Act
+        let action = table.resolve(KeyCode::ArrowUp, Modifiers::NONE, InputContext::Menu);
+
+        // Assert
+        assert_eq!(action, Some(GameKey::Up));
+    }
+
+    #[test]
+    fn 默认绑定表在菜单上下文下能解析确认键() {
+        // Arrange
+        let table = KeyBindings::default_bindings();
+
+        // Act
+        let action = table.resolve(KeyCode::Enter, Modifiers::NONE, InputContext::Menu);
+
+        // Assert
+        assert_eq!(action, Some(GameKey::Confirm));
+    }
+
+    #[test]
+    fn 默认绑定表在菜单上下文下能解析取消键() {
+        // Arrange
+        let table = KeyBindings::default_bindings();
+
+        // Act
+        let action = table.resolve(KeyCode::Escape, Modifiers::NONE, InputContext::Menu);
+
+        // Assert
+        assert_eq!(action, Some(GameKey::Cancel));
+    }
+
+    #[test]
+    fn 只在游戏内上下文绑定的键在菜单上下文下解析为空值() {
+        // 截图键（F2）只出现在 DEFAULT_BINDINGS（Gameplay），不在
+        // DEFAULT_MENU_BINDINGS 里——这条测试核实两张表确实是按上下文
+        // 隔离的，不是不小心共用了同一份判重逻辑而让所有键都跨上下文
+        // 生效。
+        // Arrange
+        let table = KeyBindings::default_bindings();
+
+        // Act
+        let action = table.resolve(KeyCode::F2, Modifiers::NONE, InputContext::Menu);
+
+        // Assert
+        assert_eq!(action, None);
     }
 
     #[test]

@@ -12,7 +12,7 @@
 //! 边缘出现宽窄不一的锯齿，是像素美术最刺眼的瑕疵。
 
 use crate::PlatformError;
-use crate::input::{InputState, RepeatConfig};
+use crate::input::{InputState, MouseButton, RepeatConfig};
 use crate::keybind::{InputContext, KeyBindings, Modifiers, WheelDirection};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -21,6 +21,20 @@ use winit::event::{ElementState, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::WindowId;
+
+/// 把 winit 的鼠标按键换算成本项目的 [`MouseButton`]——只认左中右三键
+/// （见 [`MouseButton`] 文档），winit 的 `Back`/`Forward`/`Other(_)`
+/// 当前没有任何消费者，换算成 `None` 让调用方原样忽略这次事件,不是
+/// 悄悄把它归到某个已有变体上（那会是一次错误的按键映射,比如把
+/// 侧键误判成右键）。
+fn map_mouse_button(button: winit::event::MouseButton) -> Option<MouseButton> {
+    match button {
+        winit::event::MouseButton::Left => Some(MouseButton::Left),
+        winit::event::MouseButton::Right => Some(MouseButton::Right),
+        winit::event::MouseButton::Middle => Some(MouseButton::Middle),
+        _ => None,
+    }
+}
 
 // 向上层重新导出窗口层的类型。
 //
@@ -268,9 +282,34 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                     self.input.pulse(action);
                 }
             }
+            WindowEvent::CursorMoved { position, .. } => {
+                // `position` 已经是窗口原生像素坐标系下的物理坐标（winit
+                // 的 `PhysicalPosition`），与 `ll_ui::widget::geometry::Rect`
+                // 同一套坐标系，不需要任何换算——见
+                // `InputState::cursor_position` 字段文档。
+                self.input
+                    .set_cursor_position((position.x as f32, position.y as f32));
+            }
+            WindowEvent::CursorLeft { .. } => {
+                // 光标确认离开了窗口范围——与失焦不同，这里没有「光标其实
+                // 还在原处只是收不到事件」的可能性，见
+                // `InputState::clear_cursor_position` 文档。
+                self.input.clear_cursor_position();
+            }
+            WindowEvent::MouseInput { state, button, .. } => {
+                let Some(button) = map_mouse_button(button) else {
+                    return;
+                };
+                match state {
+                    ElementState::Pressed => self.input.mouse_press(button),
+                    ElementState::Released => self.input.mouse_release(button),
+                }
+            }
             WindowEvent::Focused(false) => {
                 // 失焦后操作系统不再把按键事件送到本窗口，已按下的键将永远
-                // 收不到松开事件。不清空会导致切回来时角色持续移动。
+                // 收不到松开事件。不清空会导致切回来时角色持续移动。鼠标
+                // 按键同理（见 `InputState::clear` 文档「鼠标按键同理」
+                // 一节），`clear()` 已经把两者一并清空。
                 self.input.clear();
             }
             WindowEvent::Resized(size) => {

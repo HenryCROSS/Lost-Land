@@ -181,6 +181,36 @@ impl Default for RepeatConfig {
     }
 }
 
+/// 鼠标按键——UI 交互层批次新增，见模块顶层「光标与鼠标按键」一节。
+///
+/// 只收三个：`winit::event::MouseButton` 还有 `Back`/`Forward`/
+/// `Other(u16)`，本批次的按钮控件（[`crate::window`] 事件循环的
+/// `WindowEvent::MouseInput` 分支）只需要能区分左右中三键即可判断
+/// 「这是不是一次点击」，额外的侧键当前没有任何消费者，不提前为它们
+/// 建索引——这与 `GameKey`「只登记游戏语义需要的动作」是同一条克制。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum MouseButton {
+    /// 左键——点击按钮的主键。
+    Left,
+    /// 右键。
+    Right,
+    /// 中键（滚轮按下）。
+    Middle,
+}
+
+/// 鼠标按键总数，用于状态数组定长，理由同 [`KEY_COUNT`]。
+const MOUSE_BUTTON_COUNT: usize = 3;
+
+impl MouseButton {
+    const fn index(self) -> usize {
+        match self {
+            MouseButton::Left => 0,
+            MouseButton::Right => 1,
+            MouseButton::Middle => 2,
+        }
+    }
+}
+
 /// 一帧内的输入状态。
 ///
 /// 用定长数组而非哈希集合：动作键数量固定且很少，数组查询是一次下标
@@ -197,6 +227,21 @@ pub struct InputState {
     repeat_next_at: [Option<Instant>; KEY_COUNT],
     /// 本帧是否由自动重复触发。随 `just_pressed` 一并在 `end_frame` 清除。
     repeated: [bool; KEY_COUNT],
+    /// 光标在窗口原生像素坐标系下的当前位置——与
+    /// `crate::window::WindowConfig`/`ll_ui::widget::geometry::Rect` 同一
+    /// 套坐标系（窗口原生分辨率像素，不是 640×360 逻辑分辨率），命中
+    /// 测试因此可以直接拿这个值去比较控件的 `Rect` 而不需要任何换算。
+    ///
+    /// `None` 表示「本次会话还没收到过一次光标位置」或「光标已经离开
+    /// 窗口」（见 [`Self::clear_cursor_position`]）——命中测试对 `None`
+    /// 的正确反应是「什么都没被点中」，不是猜一个默认坐标。
+    cursor_position: Option<(f32, f32)>,
+    mouse_held: [bool; MOUSE_BUTTON_COUNT],
+    mouse_just_pressed: [bool; MOUSE_BUTTON_COUNT],
+    /// 本帧是否刚松开——鼠标点击的语义是「按下时落在控件上，松开时
+    /// 仍落在同一个控件上」（见 `ll_ui::widget::button` 模块文档），
+    /// 因此松开这一刻本身也需要能被查询到，不能只查 `held` 变成假。
+    mouse_just_released: [bool; MOUSE_BUTTON_COUNT],
 }
 
 impl Default for InputState {
@@ -213,6 +258,10 @@ impl InputState {
             just_pressed: [false; KEY_COUNT],
             repeat_next_at: [None; KEY_COUNT],
             repeated: [false; KEY_COUNT],
+            cursor_position: None,
+            mouse_held: [false; MOUSE_BUTTON_COUNT],
+            mouse_just_pressed: [false; MOUSE_BUTTON_COUNT],
+            mouse_just_released: [false; MOUSE_BUTTON_COUNT],
         }
     }
 
@@ -341,9 +390,11 @@ impl InputState {
     pub fn end_frame(&mut self) {
         self.just_pressed = [false; KEY_COUNT];
         self.repeated = [false; KEY_COUNT];
+        self.mouse_just_pressed = [false; MOUSE_BUTTON_COUNT];
+        self.mouse_just_released = [false; MOUSE_BUTTON_COUNT];
     }
 
-    /// 清空全部按键状态。
+    /// 清空全部按键状态（含鼠标按键，不含光标位置，见下方说明）。
     ///
     /// 窗口失去焦点时必须调用。操作系统只把按键事件送给焦点窗口，
     /// 玩家按住方向键时切走，对应的松开事件永远不会送达——不清空的话
@@ -351,11 +402,84 @@ impl InputState {
     ///
     /// 「刚按下」与重复计时状态一并清空：失焦瞬间尚未被消费的输入、
     /// 以及切走前积累的重复计时基准，切回来后都已经失去意义。
+    ///
+    /// # 鼠标按键同理，光标位置不在此列
+    ///
+    /// 失焦时按住的鼠标键与按住的键盘键是完全同一类 bug——玩家在按住
+    /// 鼠标左键拖拽/长按一个控件时切走窗口，操作系统同样不会把松开
+    /// 事件送到本窗口，`mouse_held` 不清空就会永久为真，切回来后
+    /// 控件会读到一个「鼠标一直按着」的幽灵状态。
+    ///
+    /// **光标位置刻意不清空**：一个过期的坐标不会造成「按键永远解除
+    /// 不了」这类结构性 bug（下一次 `WindowEvent::CursorMoved` 会带来
+    /// 新坐标覆盖它），而清空成 `None` 反而更糟——多数平台失焦重新
+    /// 聚焦时，如果鼠标物理位置没有移动，操作系统不保证会补发一次
+    /// `CursorMoved`，这段时间内命中测试会把「光标其实还停在控件上」
+    /// 误判成「什么都没指」，导致悬停高亮短暂消失又无预兆恢复。保留
+    /// 最后已知位置是更安全的默认值。
     pub fn clear(&mut self) {
         self.held = [false; KEY_COUNT];
         self.just_pressed = [false; KEY_COUNT];
         self.repeat_next_at = [None; KEY_COUNT];
         self.repeated = [false; KEY_COUNT];
+        self.mouse_held = [false; MOUSE_BUTTON_COUNT];
+        self.mouse_just_pressed = [false; MOUSE_BUTTON_COUNT];
+        self.mouse_just_released = [false; MOUSE_BUTTON_COUNT];
+    }
+
+    /// 记录一次光标移动——`position` 是窗口原生像素坐标系下的新位置，
+    /// 见 [`Self::cursor_position`] 字段文档。
+    pub fn set_cursor_position(&mut self, position: (f32, f32)) {
+        self.cursor_position = Some(position);
+    }
+
+    /// 光标离开窗口——`WindowEvent::CursorLeft` 触发。命中测试见到
+    /// `None` 后不会再判定任何控件被悬停/点中，这是「光标确实不在
+    /// 窗口范围内」这个事实的正确反映；与 [`Self::clear`] 刻意保留
+    /// 光标位置不同：那里是「窗口失焦但光标可能仍在窗口范围内、只是
+    /// 暂时收不到事件」，这里是「光标已经确认离开了窗口范围」，两者是
+    /// 不同的事实，不该用同一个处理方式。
+    pub fn clear_cursor_position(&mut self) {
+        self.cursor_position = None;
+    }
+
+    /// 光标当前位置，`None` 表示还没有过一次移动事件或已经离开窗口。
+    pub fn cursor_position(&self) -> Option<(f32, f32)> {
+        self.cursor_position
+    }
+
+    /// 记录一次鼠标按键按下，去重逻辑与 [`Self::press`] 完全一致。
+    pub fn mouse_press(&mut self, button: MouseButton) {
+        let index = button.index();
+        if !self.mouse_held[index] {
+            self.mouse_just_pressed[index] = true;
+        }
+        self.mouse_held[index] = true;
+    }
+
+    /// 记录一次鼠标按键松开——与 [`Self::release`] 不清「刚按下」标志
+    /// 同一条纪律对称：这里也不清 `mouse_just_pressed`，「本帧内曾按下
+    /// 过」与「当前是否按住」是两个独立事实。松开这一刻本身置起
+    /// `mouse_just_released`，供点击判定查询（见字段文档）。
+    pub fn mouse_release(&mut self, button: MouseButton) {
+        let index = button.index();
+        self.mouse_held[index] = false;
+        self.mouse_just_released[index] = true;
+    }
+
+    /// 该鼠标按键当前是否被按住。
+    pub fn is_mouse_held(&self, button: MouseButton) -> bool {
+        self.mouse_held[button.index()]
+    }
+
+    /// 该鼠标按键是否在本帧刚刚被按下。
+    pub fn was_mouse_just_pressed(&self, button: MouseButton) -> bool {
+        self.mouse_just_pressed[button.index()]
+    }
+
+    /// 该鼠标按键是否在本帧刚刚被松开。
+    pub fn was_mouse_just_released(&self, button: MouseButton) -> bool {
+        self.mouse_just_released[button.index()]
     }
 }
 
@@ -814,5 +938,187 @@ mod tests {
 
         // Assert
         assert!(!input.was_activated(GameKey::Up));
+    }
+
+    #[test]
+    fn 新建状态下没有光标位置() {
+        // Arrange & Act
+        let input = InputState::new();
+
+        // Assert
+        assert_eq!(input.cursor_position(), None);
+    }
+
+    #[test]
+    fn 设置光标位置后能查询到同一个坐标() {
+        // Arrange
+        let mut input = InputState::new();
+
+        // Act
+        input.set_cursor_position((12.0, 34.0));
+
+        // Assert
+        assert_eq!(input.cursor_position(), Some((12.0, 34.0)));
+    }
+
+    #[test]
+    fn 光标离开窗口后位置变为空值() {
+        // Arrange
+        let mut input = InputState::new();
+        input.set_cursor_position((12.0, 34.0));
+
+        // Act
+        input.clear_cursor_position();
+
+        // Assert
+        assert_eq!(input.cursor_position(), None);
+    }
+
+    #[test]
+    fn 鼠标按下后处于按住状态() {
+        // Arrange
+        let mut input = InputState::new();
+
+        // Act
+        input.mouse_press(MouseButton::Left);
+
+        // Assert
+        assert!(input.is_mouse_held(MouseButton::Left));
+    }
+
+    #[test]
+    fn 鼠标按下的一帧本身就应被视为刚按下() {
+        // Arrange
+        let mut input = InputState::new();
+
+        // Act
+        input.mouse_press(MouseButton::Left);
+
+        // Assert
+        assert!(input.was_mouse_just_pressed(MouseButton::Left));
+    }
+
+    #[test]
+    fn 鼠标刚按下的判定在帧结束后失效() {
+        // Arrange
+        let mut input = InputState::new();
+        input.mouse_press(MouseButton::Left);
+
+        // Act
+        input.end_frame();
+
+        // Assert
+        assert!(!input.was_mouse_just_pressed(MouseButton::Left));
+    }
+
+    #[test]
+    fn 鼠标松开后不再处于按住状态() {
+        // Arrange
+        let mut input = InputState::new();
+        input.mouse_press(MouseButton::Left);
+
+        // Act
+        input.mouse_release(MouseButton::Left);
+
+        // Assert
+        assert!(!input.is_mouse_held(MouseButton::Left));
+    }
+
+    #[test]
+    fn 鼠标松开的一帧能查询到刚松开() {
+        // Arrange
+        let mut input = InputState::new();
+        input.mouse_press(MouseButton::Left);
+
+        // Act
+        input.mouse_release(MouseButton::Left);
+
+        // Assert
+        assert!(input.was_mouse_just_released(MouseButton::Left));
+    }
+
+    #[test]
+    fn 鼠标刚松开的判定在帧结束后失效() {
+        // Arrange
+        let mut input = InputState::new();
+        input.mouse_press(MouseButton::Left);
+        input.mouse_release(MouseButton::Left);
+
+        // Act
+        input.end_frame();
+
+        // Assert
+        assert!(!input.was_mouse_just_released(MouseButton::Left));
+    }
+
+    #[test]
+    fn 不同鼠标按键的状态互不干扰() {
+        // Arrange
+        let mut input = InputState::new();
+
+        // Act
+        input.mouse_press(MouseButton::Left);
+
+        // Assert
+        assert!(!input.is_mouse_held(MouseButton::Right));
+    }
+
+    #[test]
+    fn 重复按下鼠标左键不会重新触发刚按下判定() {
+        // 与键盘按键同一条去重纪律——防止某些平台可能出现的重复按下
+        // 事件被误判成两次独立点击。
+        // Arrange
+        let mut input = InputState::new();
+        input.mouse_press(MouseButton::Left);
+        input.end_frame();
+
+        // Act
+        input.mouse_press(MouseButton::Left);
+
+        // Assert
+        assert!(!input.was_mouse_just_pressed(MouseButton::Left));
+    }
+
+    #[test]
+    fn 清空后鼠标按键不再处于按住状态() {
+        // 失焦时按住的鼠标键与按住的键盘键是同一类 bug，见 `clear`
+        // 文档「鼠标按键同理」一节。
+        // Arrange
+        let mut input = InputState::new();
+        input.mouse_press(MouseButton::Left);
+
+        // Act
+        input.clear();
+
+        // Assert
+        assert!(!input.is_mouse_held(MouseButton::Left));
+    }
+
+    #[test]
+    fn 清空后光标位置保持不变() {
+        // 见 `clear` 文档「光标位置刻意不清空」一节：过期坐标会被下一次
+        // 移动事件覆盖，清成空值反而会让命中测试短暂误判悬停消失。
+        // Arrange
+        let mut input = InputState::new();
+        input.set_cursor_position((5.0, 6.0));
+
+        // Act
+        input.clear();
+
+        // Assert
+        assert_eq!(input.cursor_position(), Some((5.0, 6.0)));
+    }
+
+    #[test]
+    fn 清空后鼠标刚按下与刚松开的判定一并失效() {
+        // Arrange
+        let mut input = InputState::new();
+        input.mouse_press(MouseButton::Left);
+
+        // Act
+        input.clear();
+
+        // Assert
+        assert!(!input.was_mouse_just_pressed(MouseButton::Left));
     }
 }

@@ -77,6 +77,19 @@ impl Rect {
             (self.height - inset * 2.0).max(0.0),
         )
     }
+
+    /// `point` 是否落在这个矩形内——命中测试（[`crate::widget::hit_test`]）
+    /// 与按钮悬停判定（[`crate::widget::button`]）共用的唯一几何判据。
+    ///
+    /// 左闭右开、上闭下开（`x` 落在 `[self.x, self.right())`，`y` 同理）：
+    /// 两个左右相邻、边界重合的控件（例如面板九宫格切出来的两块）不会
+    /// 因为「恰好落在公共边界上」而被同时判定命中——命中测试因此天然
+    /// 保证「同一个点最多算落在其中一块的范围内」，不需要调用方自己
+    /// 再处理边界重叠。
+    pub fn contains(&self, point: (f32, f32)) -> bool {
+        let (x, y) = point;
+        x >= self.x && x < self.right() && y >= self.y && y < self.bottom()
+    }
 }
 
 #[cfg(test)]
@@ -129,5 +142,42 @@ mod tests {
 
         // Assert
         assert_eq!(inner.width, 0.0);
+    }
+
+    #[test]
+    fn contains对矩形内部的点返回真() {
+        // Arrange
+        let rect = Rect::new(10.0, 10.0, 100.0, 50.0);
+
+        // Act & Assert
+        assert!(rect.contains((50.0, 30.0)));
+    }
+
+    #[test]
+    fn contains对矩形外部的点返回假() {
+        // Arrange
+        let rect = Rect::new(10.0, 10.0, 100.0, 50.0);
+
+        // Act & Assert
+        assert!(!rect.contains((200.0, 200.0)));
+    }
+
+    #[test]
+    fn contains对左上角边界点返回真() {
+        // Arrange：左闭右开、上闭下开——左上角属于闭区间一侧。
+        let rect = Rect::new(10.0, 10.0, 100.0, 50.0);
+
+        // Act & Assert
+        assert!(rect.contains((10.0, 10.0)));
+    }
+
+    #[test]
+    fn contains对右下角边界点返回假() {
+        // Arrange：右下角属于开区间一侧，恰好落在边界上不算命中——
+        // 这保证两个边界重合的相邻矩形不会同时判定命中同一个点。
+        let rect = Rect::new(10.0, 10.0, 100.0, 50.0);
+
+        // Act & Assert
+        assert!(!rect.contains((rect.right(), rect.bottom())));
     }
 }

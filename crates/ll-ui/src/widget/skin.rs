@@ -82,6 +82,7 @@
 use ll_render::atlas::Atlas;
 
 use super::bar::{FlatBarAppearance, TexturedBarAppearance, TexturedTwoLayerBarAppearance};
+use super::button::FlatButtonAppearance;
 use super::day_night_bar::{FlatDayNightBarAppearance, TexturedDayNightBarAppearance};
 use super::panel::{FlatPanelAppearance, TexturedPanelAppearance};
 
@@ -126,6 +127,36 @@ pub enum DayNightBarStyleId {
     Clock,
 }
 
+/// 按钮的语义样式名，理由同 [`PanelStyleId`]——UI 交互层批次目前只有
+/// 一种按钮外观（HUD 测试按钮与将来的确认框「确定/取消」共用），未来
+/// 若不同场景需要不同风格（例如危险操作的按钮要更醒目），在这里加新
+/// 变体即可，不影响 [`Skin`] trait 本身的形状。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonStyleId {
+    /// 常规按钮——目前唯一的样式。
+    Default,
+}
+
+/// 按钮的视觉状态——任务书原话「普通/悬停/按下/释放触发」里前三者是
+/// 外观状态（第四者「释放触发」是行为,不改外观本身,见
+/// `crate::widget::button::update_button` 文档）。四种状态外观必须
+/// 走皮肤,不在绘制代码里写死颜色——这是任务书的硬约束,与
+/// [`PanelStyleId`]/[`BarStyleId`] 同一条「换皮肤只改数据」纪律。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ButtonVisualState {
+    /// 未悬停、未按下、未禁用的默认外观。
+    Normal,
+    /// 光标悬停在按钮上，或按钮当前持有键盘/手柄焦点——两者共用同一
+    /// 种视觉反馈，理由见 `crate::widget::button::update_button` 文档
+    /// 「焦点也要有可见反馈」一节：纯键盘操作的玩家需要能看见焦点在
+    /// 哪，不能只有鼠标悬停才会变化外观。
+    Hovered,
+    /// 鼠标左键正按在按钮上（尚未松开）。
+    Pressed,
+    /// 按钮被禁用，不响应任何输入。
+    Disabled,
+}
+
 /// 皮肤：把语义样式名解析成控件真正认识的外观数据。见模块文档
 /// 「`Skin` trait 的两层方法」一节。
 pub trait Skin {
@@ -135,6 +166,10 @@ pub trait Skin {
     fn bar(&self, style: BarStyleId) -> FlatBarAppearance;
     /// 解析昼夜滑条样式（纯色回退，恒需要实现），理由同 [`Self::bar`]。
     fn day_night_bar(&self, style: DayNightBarStyleId) -> FlatDayNightBarAppearance;
+    /// 解析按钮在给定视觉状态下的外观（纯色回退，恒需要实现），理由同
+    /// [`Self::bar`]——四种状态各自独立解析，不是共用一份外观再由绘制
+    /// 代码现改颜色。
+    fn button(&self, style: ButtonStyleId, visual: ButtonVisualState) -> FlatButtonAppearance;
     /// 解析面板样式的真实贴图外观——默认没有,返回 `None` 即表示「用
     /// [`Self::panel`] 的纯色回退」。
     fn textured_panel(&self, _style: PanelStyleId) -> Option<TexturedPanelAppearance> {
@@ -153,6 +188,16 @@ pub trait Skin {
         &self,
         _style: DayNightBarStyleId,
     ) -> Option<TexturedDayNightBarAppearance> {
+        None
+    }
+    /// 解析按钮样式的真实贴图外观，默认 `None`——本批次没有按钮贴图
+    /// 资产（`ll-artgen` 尚未生成),恒回退到 [`Self::button`] 的纯色
+    /// 外观,理由同其余 `textured_*` 方法。
+    fn textured_button(
+        &self,
+        _style: ButtonStyleId,
+        _visual: ButtonVisualState,
+    ) -> Option<super::button::TexturedButtonAppearance> {
         None
     }
 }
@@ -181,6 +226,17 @@ impl Skin for FlatColorSkin {
     fn day_night_bar(&self, style: DayNightBarStyleId) -> FlatDayNightBarAppearance {
         match style {
             DayNightBarStyleId::Clock => FlatDayNightBarAppearance::DEFAULT,
+        }
+    }
+
+    fn button(&self, style: ButtonStyleId, visual: ButtonVisualState) -> FlatButtonAppearance {
+        match style {
+            ButtonStyleId::Default => match visual {
+                ButtonVisualState::Normal => FlatButtonAppearance::NORMAL,
+                ButtonVisualState::Hovered => FlatButtonAppearance::HOVERED,
+                ButtonVisualState::Pressed => FlatButtonAppearance::PRESSED,
+                ButtonVisualState::Disabled => FlatButtonAppearance::DISABLED,
+            },
         }
     }
 }
@@ -250,6 +306,12 @@ impl Skin for NineSliceSkin {
 
     fn day_night_bar(&self, style: DayNightBarStyleId) -> FlatDayNightBarAppearance {
         FlatColorSkin.day_night_bar(style)
+    }
+
+    fn button(&self, style: ButtonStyleId, visual: ButtonVisualState) -> FlatButtonAppearance {
+        // 贴图缺失时的纯色回退——见类型文档,与 `panel`/`bar`/
+        // `day_night_bar` 同一条既有纪律。
+        FlatColorSkin.button(style, visual)
     }
 
     fn textured_panel(&self, style: PanelStyleId) -> Option<TexturedPanelAppearance> {
@@ -379,4 +441,67 @@ mod tests {
         // Assert
         assert_eq!(appearance, FlatDayNightBarAppearance::DEFAULT);
     }
+
+    #[test]
+    fn flat_color_skin的按钮悬停外观与普通外观不同() {
+        // 四种状态外观必须走皮肤且互相可辨——这是任务书的硬约束,直接
+        // 核实颜色确实不同,不是只核实"能调用而不 panic"。
+        // Arrange
+        let skin = FlatColorSkin;
+
+        // Act
+        let normal = skin.button(ButtonStyleId::Default, ButtonVisualState::Normal);
+        let hovered = skin.button(ButtonStyleId::Default, ButtonVisualState::Hovered);
+
+        // Assert
+        assert_ne!(normal.fill_color, hovered.fill_color);
+    }
+
+    #[test]
+    fn flat_color_skin的按钮按下外观与悬停外观不同() {
+        // Arrange
+        let skin = FlatColorSkin;
+
+        // Act
+        let hovered = skin.button(ButtonStyleId::Default, ButtonVisualState::Hovered);
+        let pressed = skin.button(ButtonStyleId::Default, ButtonVisualState::Pressed);
+
+        // Assert
+        assert_ne!(hovered.fill_color, pressed.fill_color);
+    }
+
+    #[test]
+    fn flat_color_skin的按钮禁用外观与普通外观不同() {
+        // Arrange
+        let skin = FlatColorSkin;
+
+        // Act
+        let normal = skin.button(ButtonStyleId::Default, ButtonVisualState::Normal);
+        let disabled = skin.button(ButtonStyleId::Default, ButtonVisualState::Disabled);
+
+        // Assert
+        assert_ne!(normal.fill_color, disabled.fill_color);
+    }
+
+    #[test]
+    fn flat_color_skin的按钮贴图方法恒返回none() {
+        // Arrange
+        let skin = FlatColorSkin;
+
+        // Act & Assert：trait 默认实现，未被覆盖。
+        assert!(
+            skin.textured_button(ButtonStyleId::Default, ButtonVisualState::Normal)
+                .is_none()
+        );
+    }
+
+    // `NineSliceSkin` 本身没有单元测试——它的构造需要一个真实
+    // `ll_render::atlas::Atlas`，而 `Atlas` 只能从一个真实 GPU 设备
+    // 构造（见其类型文档，没有脱离设备的构造路径），与本文件其余
+    // `NineSliceSkin` 方法（`panel`/`bar`/`day_night_bar`）此前就已经
+    // 是同样的既有空白，`button`/`textured_button` 不是本批次新引入
+    // 的例外。`NineSliceSkin::button`/`textured_button` 的实现只是
+    // 直接委托给 `FlatColorSkin`（`textured_button` 用 trait 默认
+    // 实现，未覆盖），逻辑上不需要真实 Atlas 也能核实正确性,但受限于
+    // 现有测试基础设施,这里如实标注为已知空白,不是遗漏。
 }
