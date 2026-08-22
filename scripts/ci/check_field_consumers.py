@@ -117,6 +117,14 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     ("crates/ll-world/src/terrain.rs", "struct", "TerrainDef"),
     ("crates/ll-sim/src/xp_curve.rs", "struct", "XpCurveDef"),
     ("crates/ll-world/src/entity/agent.rs", "struct", "Agent"),
+    # 伤害公式引擎批次（b08ad7c）新增的第十三张内容表，此前一直漏在
+    # TARGET_TYPES 之外——本条是字段门禁自查补齐批次新加的，见本文件
+    # 「与内容值哈希门禁互校」一节。
+    ("crates/ll-sim/src/formula.rs", "struct", "FormulaDef"),
+    # 伤害类别/抗性接线批次（fe2bbad）新增的第十四、十五张内容表，同上，
+    # 此前也漏在 TARGET_TYPES 之外。
+    ("crates/ll-mod/src/weapon_category.rs", "struct", "WeaponCategoryDef"),
+    ("crates/ll-mod/src/damage_category.rs", "struct", "DamageCategoryDef"),
 ]
 
 # 决策层文件：真正驱动模拟结算、影响玩法输出的地方。见脚本头注释
@@ -213,6 +221,15 @@ EXEMPTIONS: dict[str, str] = {
     "Agent.goals": "同 Agent.affiliations，同一处「以下六个字段 P3 可以留空」注释覆盖的字段之一，见 agent-goals-and-economy.md 第九节。",
     "Agent.subclasses": "字段文档说明容器形状（允许同时持有多个副职）与设计裁定，但未声明任何决策层消费点；副职系统的技能号段/结算消费是后续批次工作。",
     "Agent.spawned_at": "字段文档原文：供死亡记录里「存活时长」一类未来统计使用——未来时态，当前没有任何结算逻辑读取存活时长。",
+    # ---- (c) 字段门禁自查补齐批次（本次任务）新发现：三张此前漏在
+    # TARGET_TYPES 之外的内容表补齐后，扫出的死字段。见本文件「与内容
+    # 值哈希门禁互校」一节：这三张表在内容值哈希门禁（ContentTableKind
+    # 编译期穷尽 match）里早已被覆盖，字段门禁这边此前是手工清单漏项，
+    # 不是这三张表本身没做过盘点。
+    "FormulaDef.id": "命名空间标识符，同 RaceDef.id 一类——formula_for 按 ContentIndex 查表取出整个 FormulaDef 后直接使用 instructions/needs_rng，取出后不再对 .id 做任何决策层读取。",
+    "FormulaDef.needs_rng": "字段自身文档原文（crates/ll-sim/src/formula.rs）：resolve_attack 当前恒构造一条骰子流，这个字段只用于诊断/未来性能预估，不影响求值正确性，即使一条不含骰子的公式拿到随机流也不会调用 DetRng 的任何方法。",
+    "WeaponCategoryDef.default_formula": "weapon_category.rs 模块文档「本批次没有给 ItemDef 加对应字段」一节：十九节默认公式挂载链条第 3 层（武器类别默认）不在本批次范围，字段是声明先行——同一份文档已经预告了这条一旦补进 TARGET_TYPES 就会命中本门禁。",
+    "DamageCategoryDef.default_formula": "damage_category.rs 模块文档「本批次范围：注册表 + 校验，不接四层默认公式解析链条」一节：resolve_attack 仍然只用 DamageFormulaCatalog 现有的两层（显式引用 → 全局默认），四层解析链条（分项自身 → 伤害类别默认 → 武器类别默认 → 全局默认）依赖尚未落地的 DamageComponent（P6 范畴），此字段声明先行、消费留给后续批次。",
 }
 
 
@@ -320,6 +337,125 @@ def _strip_line_comments(text: str) -> str:
     return "\n".join(_LINE_COMMENT_RE.sub("", line) for line in text.splitlines())
 
 
+# ---------------------------------------------------------------------------
+# 与内容值哈希门禁互校
+#
+# `ll-mod/src/content_hash.rs` 的 `ContentTableKind` 枚举 + `classify_index`
+# 函数是编译期强制穷尽的（该模块文档「编译期强制：穷尽解构 tables」一
+# 节）——新增一张内容表，若忘了同时给 `ContentTableKind` 加判别值、给
+# `classify_index` 补分支，`cargo build` 直接不过。`TARGET_TYPES` 相反，
+# 是纯手工维护的清单，编译器管不到它——这正是本文件开头「已知局限」
+# 第 3 条自己承认的洞：`FormulaDef`/`WeaponCategoryDef`/`DamageCategoryDef`
+# 三张表就是这样连续漏过三批。
+#
+# 这条互校把内容值哈希门禁当权威来源：只要一张内容表已经进了
+# `ContentTableKind`（说明它已经被编译期强制盯上了），它对应的决策结构体
+# 就必须也出现在 `TARGET_TYPES` 里——否则字段门禁对这张表形同虚设。新增
+# 一张内容表，若只接了内容值哈希、忘了同步补 `TARGET_TYPES`，本函数会
+# 让 `check_field_consumers.py` 退出码非零，把「新增内容表」与「字段门禁
+# 免检」这两件事重新绑在一起，不再需要人记得手工同步两份清单。
+#
+# 覆盖范围的例外：`SpaceProfile` 与 `Clip` 两个判别值虽然在
+# `ContentTableKind` 里,但从未被字段门禁追踪过——不是本次任务遗漏。
+# `Clip` 是纯表现层内容（ADR 0020 甲区,`crate::clip` 模块文档），按定义
+# 就不存在"游戏结算读它"这件事,字段门禁"决策层是否消费"这条判据对它不
+# 适用,两条门禁在这张表上的分歧是预期的。`SpaceProfile` 的属性经
+# `SpaceProfileTable` 的稠密位查询被 `fov.rs`/`light.rs` 消费,不是对
+# `SpaceProfile` 结构体实例做 `.field_name` 点号访问这条路径,字段级
+# 正则天然抓不到,属于本文件头注释「已知局限」第 2 条同一类间接路径——
+# 这两个不是被本互校放过,是显式登记进下面
+# `CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE`、附理由,与
+# `EXEMPTIONS` 同一套纪律：不允许静默跳过。
+CONTENT_HASH_KIND_TO_TARGET_TYPE: dict[str, str] = {
+    "Terrain": "TerrainDef",
+    "Class": "ClassDef",
+    "Skill": "SkillDef",
+    "Subclass": "SubclassDef",
+    "Quest": "QuestNodeDef",
+    "Race": "RaceDef",
+    "Trait": "TraitDef",
+    "ResourcePool": "ResourcePoolDef",
+    "Item": "ItemDef",
+    "XpCurve": "XpCurveDef",
+    "Formula": "FormulaDef",
+    "WeaponCategory": "WeaponCategoryDef",
+    "DamageCategory": "DamageCategoryDef",
+}
+
+CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE: dict[str, str] = {
+    "Opaque": "不是一张内容表，是「不落在任何表里的纯 id 引用」判别值本身，见 ContentTableKind::Opaque 文档。",
+    "SpaceProfile": "定义结构体是 SpaceProfile（ll-world/src/space_profile.rs），不是 *Def 命名；其属性经 SpaceProfileTable 的稠密位查询被 fov.rs/light.rs 消费，不是对结构体实例做 .field_name 点号访问，字段级正则抓不到这条间接路径。内容值哈希覆盖面扩展批次落地时就没有被字段门禁认领，不是本次任务遗漏。",
+    "Clip": "纯表现层内容（ADR 0020 甲区，crate::clip 模块文档）——按定义就不存在「游戏结算读它」这件事，字段门禁的判据（决策层是否消费）对这张表不适用。内容值哈希仍然覆盖它是刻意的（哈希覆盖面判据与字段门禁判据不同，见 content_hash.rs 模块文档「哈希覆盖哪些字段」一节），两条门禁在这一张表上的分歧是预期的，不是字段门禁的洞。",
+}
+
+# 枚举判别值形如 `    Opaque = 0,`/`    Terrain = 1,`——与文件顶部
+# `ENUM_VARIANT_RE` 不同（那条要求变体名后紧跟 `{`/`(`/`,`，这里的判别值
+# 枚举永远是显式赋值的单元变体，后面跟 `= 数字,`），单独定义一条更贴合
+# 的正则，不复用 `ENUM_VARIANT_RE` 以免两种格式的匹配意图混在一起。
+CONTENT_TABLE_KIND_VARIANT_RE = re.compile(r"^ {4}(\w+)(?:\s*=\s*\d+)?,", re.MULTILINE)
+
+
+def check_content_hash_gate_cross_coverage() -> list[str]:
+    """互校主体：见本节前面的大段注释。返回错误信息列表，空列表表示通过。"""
+    content_hash_path = REPO_ROOT / "crates/ll-mod/src/content_hash.rs"
+    text = content_hash_path.read_text(encoding="utf-8")
+    found = _find_type_body(text, "enum", "ContentTableKind")
+    if found is None:
+        return [
+            "找不到 `pub enum ContentTableKind` 的定义（互校用的锚点失效，"
+            "类型可能被改名/删除/挪了文件），请更新 "
+            "scripts/ci/check_field_consumers.py 的 "
+            "check_content_hash_gate_cross_coverage。"
+        ]
+    _, body = found
+    variants = [m.group(1) for m in CONTENT_TABLE_KIND_VARIANT_RE.finditer(body)]
+    if not variants:
+        return [
+            "`ContentTableKind` 枚举体解析出 0 个变体——正则可能与实际格式"
+            "脱节，请检查 CONTENT_TABLE_KIND_VARIANT_RE。"
+        ]
+
+    target_type_names = {name for (_file, _kind, name) in TARGET_TYPES}
+    errors: list[str] = []
+    for variant in variants:
+        if variant in CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE:
+            continue
+        target_type = CONTENT_HASH_KIND_TO_TARGET_TYPE.get(variant)
+        if target_type is None:
+            errors.append(
+                f"ContentTableKind::{variant} 既不在 "
+                "CONTENT_HASH_KIND_TO_TARGET_TYPE 映射里，也不在 "
+                "CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE 豁免里——这是"
+                "内容值哈希门禁新收录了一张表，但字段门禁互校没跟上，请给"
+                " check_field_consumers.py 补一条映射或豁免。"
+            )
+            continue
+        if target_type not in target_type_names:
+            errors.append(
+                f"ContentTableKind::{variant} 对应的决策结构体 {target_type} "
+                "不在 TARGET_TYPES 里——这正是本互校要拦的情形：一张内容表"
+                "已经进了内容值哈希门禁（编译期强制覆盖），但字段门禁的手工"
+                "清单没跟上，该表的死字段会从字段门禁溜过去。请把它加进 "
+                "TARGET_TYPES。"
+            )
+
+    # 反向也检查：两份映射/豁免自己不能失效（变体改名/删除后残留的死条目，
+    # 与 EXEMPTIONS 的 stale 检查同一类纪律）。
+    for stale in sorted(set(CONTENT_HASH_KIND_TO_TARGET_TYPE) - set(variants)):
+        errors.append(
+            f"CONTENT_HASH_KIND_TO_TARGET_TYPE 里的 {stale!r} 已经不在 "
+            "ContentTableKind 的变体列表里了（枚举改名/删除），是死映射，"
+            "请清理。"
+        )
+    for stale in sorted(set(CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE) - set(variants)):
+        errors.append(
+            f"CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE 里的 {stale!r} "
+            "已经不在 ContentTableKind 的变体列表里了，是死豁免，请清理。"
+        )
+
+    return errors
+
+
 def decision_layer_text() -> str:
     files: list[Path] = []
     for pattern in DECISION_LAYER_GLOBS:
@@ -378,6 +514,17 @@ def main() -> int:
         )
         for ref in sorted(stale_exemptions):
             print(f"::error::{ref} 是死豁免条目，请从 EXEMPTIONS 里删除。")
+        exit_code = 1
+
+    cross_coverage_errors = check_content_hash_gate_cross_coverage()
+    print(
+        f"\n与内容值哈希门禁互校：ContentTableKind 覆盖的表 "
+        f"{'⊆' if not cross_coverage_errors else '⊄'} TARGET_TYPES 覆盖的表"
+        f"（{len(cross_coverage_errors)} 条不一致）。"
+    )
+    if cross_coverage_errors:
+        for msg in cross_coverage_errors:
+            print(f"::error::{msg}")
         exit_code = 1
 
     if exit_code == 0:
