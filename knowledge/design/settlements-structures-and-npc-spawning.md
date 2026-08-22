@@ -225,6 +225,15 @@ ADR 0018（每种玩法层内容类型都能从 mod 脚本注册）**天然满�
 
 **这对本设计的直接后果**：`lostland:gathering`（砍树/收获所属的类别）**绝不能**声明副职要求，否则砍树在落地当天就是死的。本文档因此规定：`recipe-category-requires-subclass!` 在采集类别上留空——**这与 `crafting-system.md`「副职闸门挂在类别上」不冲突**（空列表 = 人人可做，是该文档明写的合法取值）。
 
+> **【2026-08-22 更新】本节记录的缺口已被「副职获得机制」批次修掉**：`Effect::GrantSubclass`/
+> `Effect::RemoveSubclass` 已落地（`crates/ll-sim/src/effect.rs`），`Agent.subclasses` 的写入路径是
+> `ll_sim::subclass::grant_subclass_effects`（三条授予路径的唯一出口），使用计数触发器
+> `ItemsCrafted` 已接进 `resolve_dispatch`。**⑩「NPC 获得副职」的前置因此已经解除**，剩下的
+> 是 NPC 自己那一半（NPC 从不提交 `Intent::Craft`，使用计数对它们结构上无效，需要走
+> 「世界生成/职业注册时写死初始副职」那条路——它调同一个 `grant_subclass_effects`，不需要新出口）。
+> 5.5 里「采集类别绝不能声明副职要求」那条约束的**成因**也随之改变：不再是「授予根本不存在」，
+> 而是新核实出的死锁（获得条件与闸门指向同一类别时互相等死），见 `subclass-system.md` 八节⑤。
+
 NPC 副职本身**不在本文档范围**，前置是 `Effect::GrantSubclass` 落地，那是副职系统自己的批次。
 
 ---

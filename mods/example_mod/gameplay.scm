@@ -38,11 +38,16 @@
 ;;   register-recipe                         crates/ll-mod/src/script_recipe_api.rs
 ;;   recipe-requires-station!                crates/ll-mod/src/script_recipe_api.rs
 ;;   recipe-requires-tool!                   crates/ll-mod/src/script_recipe_api.rs
+;;   register-subclass-unlock                crates/ll-mod/src/script_subclass_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
 
-;; 一个新副职：暗影舞者。
+;; 一个新副职：暗影舞者。它的获得条件（register-subclass-unlock）写在
+;; 下面配方类别那一段里，不写在这里——那个函数要求 trigger-target
+;; 指向的配方类别**已经注册**，而 examplemod:cooking 在本文件靠后的
+;; 位置才登记。同一个文件里的顺序依赖，与 recipe-requires-station!
+;; 必须排在对应 register-recipe 之后是同一回事。
 (register-subclass "examplemod:shadowdancer" "examplemod:shadowdancer_display_name")
 
 ;; 一个新技能：冰霜箭——消耗 12 点法力，冷却 25 tick，造成 15 点伤害。
@@ -411,6 +416,26 @@
 ;; knowledge/design/food-and-cooking-system.md 五节「菜谱不设解锁门槛」
 ;; 那条裁定的直接落点：有没有闸门是纯内容决定，系统不预设立场。
 (register-recipe-category "examplemod:cooking" "examplemod:recipe_category_cooking_display_name")
+
+;; 暗影舞者的获得条件：在**烹饪**类别里做满 3 次。
+;; 签名：(register-subclass-unlock subclass-id trigger-kind trigger-target threshold)
+;; trigger-kind 目前只接受 "items-crafted"。
+;;
+;; # 为什么挂在烹饪而不是锻造——这一条不是随便挑的
+;;
+;; 锻造类别下面一行就要求 examplemod:shadowdancer 才能做。若把获得
+;; 条件也挂在锻造上，就成了「要当暗影舞者才能锻造，要锻造才能当暗影
+;; 舞者」——两边互相等，这个副职永远拿不到，而且**完全不会报错**。
+;; resolve_craft 的副职闸门是每次制作都判的，所以这个死锁是真的。
+;;
+;; 正确的形状就是本文件现在这样：**从一个不设闸门的类别里练出副职，
+;; 用它去开另一个设了闸门的类别的门。** 这两行合起来是一条完整的
+;; 玩法链路，也是 crates/ll-mod/tests/example_mod_subclass_unlock.rs
+;; 那份端到端证据的内容来源：烤三次肉 → 拿到暗影舞者 → 锻造解锁。
+;;
+;; 阈值取 3 是为了让那份端到端测试跑得快；本体那四个副职用的是
+;; 20/20/15/15 这种真实量级，见 mods/lostland/subclasses.scm。
+(register-subclass-unlock "examplemod:shadowdancer" "items-crafted" "examplemod:cooking" 3)
 
 ;; 类别二：锻造。闸在**类别**上而不是每条配方上——新增一条锻造配方
 ;; 自动继承这道闸，加一个新副职也只改这一行。

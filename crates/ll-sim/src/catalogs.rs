@@ -42,6 +42,7 @@ use crate::quest::{NoQuests, QuestCatalog};
 use crate::resource_pool::{NoResourcePools, ResourcePoolCatalog};
 use crate::skill::{NoSkills, SkillCatalog};
 use crate::skill_overview::SkillTreeCatalog;
+use crate::subclass::{NoSubclassUnlocks, SubclassUnlockCatalog};
 use crate::traits::{NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource};
 use crate::xp_curve::{FlatXpCurve, XpCurveCatalog};
 
@@ -142,6 +143,15 @@ pub struct ResolveCatalogs<'a> {
     /// 的每一处引用，换来的只有一个更贴切的名字，不改变任何行为；
     /// 一条写清楚的字段文档（这一条）足以让读者不被名字误导。
     pub xp_curves: &'a dyn XpCurveCatalog,
+    /// 副职获得条件目录——「在哪个配方类别里做满多少次就获得哪个副
+    /// 职」（副职获得机制批次新增）。
+    ///
+    /// 不接这一路（[`NoSubclassUnlocks`]）时，制作**一条计数都不
+    /// 写**、任何副职都拿不到——这正是本批次那份端到端测试的反例
+    /// 对照组：同一段场景、同一个 [`crate::turn::TurnEngine`]，只把
+    /// 这一路换成空实现，`Effect::GrantSubclass` 立刻不再产生，被副
+    /// 职闸门把守的配方类别重新变回「谁都做不了」。
+    pub subclass_unlocks: &'a dyn SubclassUnlockCatalog,
 }
 
 /// [`ResolveCatalogs::empty`] 借出的各路目录空实现的 `'static` 实例。
@@ -163,6 +173,7 @@ const NO_ITEMS: NoItems = NoItems;
 const NO_FORMULAS: NoFormulas = NoFormulas;
 const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 const NO_RECIPES: NoRecipes = NoRecipes;
+const NO_SUBCLASS_UNLOCKS: NoSubclassUnlocks = NoSubclassUnlocks;
 
 impl ResolveCatalogs<'static> {
     /// 十路全空的一束——与「一份目录都没接」在行为上完全等价
@@ -192,6 +203,7 @@ impl ResolveCatalogs<'static> {
             // 一个语义完全相同的第二个空对象。
             skill_tree: &NO_SKILLS,
             xp_curves: &FlatXpCurve::DEFAULT,
+            subclass_unlocks: &NO_SUBCLASS_UNLOCKS,
         }
     }
 }
@@ -225,5 +237,6 @@ mod tests {
                 .category_required_subclasses(any)
                 .is_empty()
         );
+        assert!(catalogs.subclass_unlocks.craft_unlocks().is_empty());
     }
 }

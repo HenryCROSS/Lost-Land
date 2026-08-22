@@ -146,6 +146,7 @@ impl RealModsHandle {
             experience: &NoExperience,
             skill_tree: &NO_SKILLS,
             xp_curves: &FlatXpCurve::DEFAULT,
+            subclass_unlocks: &ll_sim::subclass::NoSubclassUnlocks,
         }
     }
 }

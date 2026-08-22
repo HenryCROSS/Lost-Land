@@ -316,6 +316,17 @@ impl<'a> RuntimeCatalogs<'a> {
             // `resolve`——理由见该字段文档「为什么一个 `apply` 侧的
             // 目录也在这一束里」一节。
             xp_curves: &self.xp_curves,
+            // 副职获得条件这一路（副职获得机制批次）：`SubclassTable`
+            // 本就按副职索引登记了 `register-subclass-unlock` 声明的
+            // 获得条件，直接充当目录，见 `ll_mod::subclass` 里那条
+            // `impl SubclassUnlockCatalog for SubclassTable`。
+            //
+            // **这一行是「制作能长出副职」在真实游戏里唯一的接线点**：
+            // `ll-game` 全程只经 `TurnEngine` 驱动世界，漏掉这一行，
+            // `Agent::subclasses` 就会退回本批次之前那个「有闸门、没
+            // 钥匙」的状态，而全部证据仍能在集成测试里成立——与击杀
+            // 经验那次「只在测试里成立的接线」是同一类缺陷。
+            subclass_unlocks: &self.content.subclass_table,
         }
     }
 }

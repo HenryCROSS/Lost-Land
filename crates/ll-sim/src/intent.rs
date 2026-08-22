@@ -419,6 +419,37 @@ pub enum Intent {
         /// 要学的技能——指向技能表。
         skill: ContentIndex,
     },
+    /// 主动放弃一个已持有的副职（副职获得机制批次，
+    /// `subclass-system.md` 五节）。
+    ///
+    /// # 为什么放弃必须是一条玩家意图，而不只是一条内部效果
+    ///
+    /// 副职有上限（[`crate::subclass::MAX_SUBCLASSES`]），而使用计数
+    /// 达标时的授予在满员状态下会被拒绝。若玩家没有任何腾出槽位的
+    /// 手段，上限的效果就从「取舍」退化成「先到先得然后永久锁死」。
+    /// 放弃因此必须是玩家能主动做的事，也就必须有一个 `Intent`。
+    ///
+    /// # 两道闸门
+    ///
+    /// 发起者不存在、或根本没有持有这个副职时，`resolve` 产出空效果
+    /// 列表——「放弃一个我没有的副职」不该在存档里留下任何痕迹。
+    ///
+    /// # 放弃本身不设代价
+    ///
+    /// 不扣经验、不设冷却、不花回合——与加点/学技能同样是角色面板上
+    /// 的决定，不是角色在世界里做的动作（见
+    /// `crate::resolve::resolve_allocate_attribute_point` 文档「加点是
+    /// 自由动作」一节）。真实代价来自闸门语义本身：放弃的那一刻起，
+    /// 该副职把守的配方类别立刻做不了了，见 [`crate::effect::Effect::RemoveSubclass`]
+    /// 文档。
+    ///
+    /// 输入映射同 [`Intent::AllocateAttributePoint`]，见其文档。
+    AbandonSubclass {
+        /// 放弃副职的角色。
+        actor: EntityId,
+        /// 要放弃哪个副职——指向副职表。
+        subclass: ContentIndex,
+    },
 }
 
 impl Intent {
@@ -448,7 +479,8 @@ impl Intent {
             | Intent::ToggleStealth { actor }
             | Intent::Craft { actor, .. }
             | Intent::AllocateAttributePoint { actor, .. }
-            | Intent::LearnSkill { actor, .. } => actor,
+            | Intent::LearnSkill { actor, .. }
+            | Intent::AbandonSubclass { actor, .. } => actor,
         }
     }
 }

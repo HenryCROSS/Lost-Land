@@ -42,6 +42,15 @@ class-guard-display_name = 卫兵
 subclass-duelist-display_name = 剑术家
 subclass-apprentice-display_name = 学徒
 
+subclass-artisan-display_name = 工匠
+subclass-tailor-display_name = 裁缝
+subclass-alchemist-display_name = 炼金术士
+subclass-cook-display_name = 厨师
+recipe_category-forging-display_name = 锻造
+recipe_category-tailoring-display_name = 缝纫
+recipe_category-alchemy-display_name = 炼金
+recipe_category-cooking-display_name = 烹饪
+
 # 下面两条与下方 mod-dependency-version-mismatch 携带 Fluent 变量
 # （`{ $名字 }`），对应结构体字段：ModSetMismatch 的 namespace/
 # required_version/current_version，DependencyVersionMismatch 的

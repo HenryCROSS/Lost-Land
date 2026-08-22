@@ -777,4 +777,62 @@ pub enum Effect {
         /// 学会了哪个技能。
         skill: ContentIndex,
     },
+    /// 把一个副职加进 [`ll_world::entity::Agent::subclasses`]（副职获得
+    /// 机制批次）——这是该字段在本仓库里的**第一个**写入口。此前它只有
+    /// 读取者（`crate::resolve::resolve_craft` 的副职闸门）与存档重映射
+    /// （`ll_content::remap::remap_subclasses`），没有任何写入路径，于是
+    /// `RecipeCategoryDef::required_subclasses` 声明的闸门等价于「谁都
+    /// 过不去」。
+    ///
+    /// # 为什么不能塞进 [`Effect::SetScriptState`]（ADR 0023）
+    ///
+    /// `Agent::subclasses` 属 `WorldState`，不属 `Agent::script_state`
+    /// ——[`Effect::SetScriptState`] 只写后者那张表。ADR 0023 要求脚本
+    /// 状态写入必须经 `apply`，同一条纪律在这里的推论是：世界状态的这个
+    /// 字段需要**自己的**效果变体，见 `crate::subclass` 模块文档「为什么
+    /// 授予必须是独立的 Effect 变体」一节。
+    ///
+    /// # `apply` 不做任何判断
+    ///
+    /// 去重（已持有就不再加一份）与上限（[`crate::subclass::MAX_SUBCLASSES`]）
+    /// 两道闸门全部在产出侧判完（[`crate::subclass::grant_subclass_effects`]
+    /// 与 [`crate::subclass::craft_progress_effects`]，不满足就一条效果都
+    /// 不产出）——`apply` 收到这条效果时就是无条件的 `push`，与约束 C1 /
+    /// ADR 0023 一致。**这与设计文档四节「两件事都放在 `apply` 里」那句
+    /// 相反**：那句写在 `resolve_allocate_attribute_point` 落地之前，本
+    /// 仓库此后已经用「闸门在 `resolve`、`apply` 无条件执行」的形状把同
+    /// 一类问题解决了两次（加点、学技能），副职没有理由成为第三种写法。
+    GrantSubclass {
+        /// 获得副职的实体。
+        actor: EntityId,
+        /// 获得了哪个副职，指向副职表。
+        subclass: ContentIndex,
+    },
+    /// 把一个副职从 [`ll_world::entity::Agent::subclasses`] 里移除——
+    /// 与 [`Effect::GrantSubclass`] 成对（`subclass-system.md` 五节）。
+    ///
+    /// # 为什么上限存在就必须有它
+    ///
+    /// 没有放弃路径的话，玩家攒满 [`crate::subclass::MAX_SUBCLASSES`]
+    /// 之后系统就锁死了，此后再也体验不到任何新副职带来的搭配变化——
+    /// 上限想要的是「取舍」，不是「先到先得然后结束」。
+    ///
+    /// # 放弃**不**追溯已学会的技能，但制作闸门立刻失效
+    ///
+    /// 两种闸门的语义本来就不同，这不是缺陷：
+    ///
+    /// - `SkillRequirement` 闸的是「获得一个永久能力」，只在写进
+    ///   `Agent::unlocked_skills` **之前**判一次；已经学会的技能此后与
+    ///   是否仍满足条件无关（`skill-learn-requirements.md` 五节）。
+    /// - `RecipeCategoryDef::required_subclasses` 闸的是「执行一次动
+    ///   作」，`crate::resolve::resolve_craft` 第③步**每次制作都重新
+    ///   判一遍**。因此放弃工匠之后，工匠类别的配方**立刻**做不了了。
+    ///
+    /// 这同时给了放弃机制一个真实代价，不需要额外设计任何惩罚数值。
+    RemoveSubclass {
+        /// 放弃副职的实体。
+        actor: EntityId,
+        /// 放弃了哪个副职。
+        subclass: ContentIndex,
+    },
 }

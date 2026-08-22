@@ -277,6 +277,25 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.unlocked_skills.push(*skill);
             }
         }
+        Effect::GrantSubclass { actor, subclass } => {
+            // 同上：去重与上限两道闸门全在产出侧
+            // （`crate::subclass::can_grant`）。这里是
+            // `Agent::subclasses` 在本仓库里的唯一写入口之一（另一处
+            // 是下面的 `RemoveSubclass`），约束 C1。
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.subclasses.push(*subclass);
+            }
+        }
+        Effect::RemoveSubclass { actor, subclass } => {
+            // `retain` 而不是 `remove(位置)`：`Agent::subclasses` 是
+            // `Vec`，理论上不该有重复项（`GrantSubclass` 那一路已经
+            // 去重），但老存档/未来别的写入路径若留下重复项，一次
+            // `retain` 把它们一并清掉，比留下一半更接近「放弃了这个
+            // 副职」这句话的意思。
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.subclasses.retain(|held| held != subclass);
+            }
+        }
         Effect::AdjustResourcePool { actor, pool, delta } => {
             if let Some(agent) = world.actors.get_mut(*actor) {
                 let current = agent.resource_pools.entry(*pool).or_insert(0);

@@ -325,6 +325,12 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         ContentTableKind::Formula,
         ContentTableKind::DamageCategory,
         ContentTableKind::Weather,
+        // 副职获得机制批次：mods/lostland/subclasses.scm 注册了四个制作
+        // 类副职，crafting.scm 注册了四个配方类别——两张表在 lostland
+        // 命名空间下从此非空，按 DeferredButPopulated 的指引从 deferred
+        // 挪进 covered。
+        ContentTableKind::Subclass,
+        ContentTableKind::RecipeCategory,
     ],
     deferred: &[
         DeferredTable {
@@ -333,10 +339,6 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
                      SkillTable 在生产装载路径里拿到的全部条目都来自 mods/example_mod/。\
                      迁移完成后本条会被 DeferredButPopulated 主动顶掉。下面几条\
                      『理由同 Skill 一条』指的都是这一段。",
-        },
-        DeferredTable {
-            kind: ContentTableKind::Subclass,
-            reason: "本体副职尚未迁进 mods/lostland/，理由同 Skill 一条。",
         },
         DeferredTable {
             kind: ContentTableKind::Quest,
@@ -363,12 +365,13 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
             kind: ContentTableKind::Recipe,
             reason: "本体配方尚未迁进 mods/lostland/，理由同 Skill 一条——制作系统落地                     批次的真实内容证据在 mods/example_mod/gameplay.scm（四类配方各一条），                     lostland 命名空间下零条配方。本体配方要能存在，先得有本体物品                     （见 deferred 里的 Item 一条）：配方的食材与成品都指向物品表。",
         },
-        DeferredTable {
-            kind: ContentTableKind::RecipeCategory,
-            reason: "本体配方类别尚未迁进 mods/lostland/，理由同 Recipe 一条——类别与                     配方必须同批迁移，register-recipe 要求 category-id 已注册。",
-        },
     ],
     exemptions: &[
+        FieldExemption {
+            kind: ContentTableKind::RecipeCategory,
+            field: "RecipeCategoryDef::required_subclasses",
+            reason: "本体四个配方类别（mods/lostland/crafting.scm）全部**刻意**不设副职                     闸门，这不是遗漏。两条理由：①设了会造出真实的死锁——同一批次的                     mods/lostland/subclasses.scm 让四个副职各自『在对应类别里做满 N 次』                     获得，若那个类别又要求该副职才能做，就成了『要当工匠才能锻造，                     要锻造才能当工匠』，而 resolve_craft 的副职闸门是每次制作都判的，                     所以两边会真的互相等死；②烹饪本来就不该有闸门                     （food-and-cooking-system.md 五节裁定『菜谱不设解锁门槛』）。                     字段本身完全不是死的：mods/example_mod/gameplay.scm 的                     examplemod:forging 用 recipe-category-requires-subclass! 设了闸，                     crates/ll-mod/tests/example_mod_subclass_unlock.rs 有一整份端到端                     证据盯着它（拿到副职→解锁；放弃副职→立刻重新锁上）。                     本体要用上这个字段，正确形状是**第二梯队的进阶类别**（基础类别                     不设闸让玩家练出副职，进阶类别设闸把守高级配方），而那要等本体                     真的有配方内容——本体物品至今一条都没迁过来（见 deferred 里的                     Item 一条），没有物品就写不出配方。",
+        },
         FieldExemption {
             kind: ContentTableKind::Class,
             field: "ClassAttrs::traits",
@@ -1077,8 +1080,21 @@ fn inspect_subclass(auditor: &mut Auditor<'_>, index: ContentIndex) {
         .subclass
         .get(index)
         .expect("classify_index 已判定为 Subclass，get 必返回 Some");
-    // 副职当前只有一个必填字段，理由同 `inspect_class`。
     auditor.field("SubclassAttrs::display_name_key", true);
+    // 副职获得机制批次新增的第二列。没声明获得条件是**合法且常见**的
+    // （副职也可以靠任务奖励或世界生成时写死的初始副职拿到，两条路径
+    // 都还没落地），因此走 `field` + 条件 `reference`，与
+    // `inspect_recipe_category` 处理 `required_subclasses` 同一种写法：
+    // 空只是「这条字段没被这一条内容覆盖」，不是引用违规。
+    let craft_unlock = auditor.tables.subclass.craft_unlock(index).cloned();
+    auditor.field("SubclassTable::craft_unlock", craft_unlock.is_some());
+    if let Some(unlock) = craft_unlock {
+        auditor.reference(
+            "SubclassTable::craft_unlock::category",
+            unlock.category,
+            ReferenceExpectation::Table(ContentTableKind::RecipeCategory),
+        );
+    }
 }
 
 /// [`crate::quest::QuestNodeDef`] 的全部字段。

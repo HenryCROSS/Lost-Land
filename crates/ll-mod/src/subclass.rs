@@ -49,6 +49,7 @@
 use std::fmt;
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_sim::subclass::{CraftUnlockRule, SubclassUnlockCatalog};
 
 /// 单条副职声明：本体与 mod 注册副职时共用的同一个输入形状。
 ///
@@ -86,6 +87,15 @@ pub enum SubclassError {
     /// 同一个内容索引被定义了两次，理由同
     /// [`crate::class::ClassError::DuplicateDefinition`]。
     DuplicateDefinition(ContentIndex),
+    /// 往一个从未 `register-subclass` 过的索引上追加获得条件——
+    /// ADR 0017「注册期完整校验」：目标必须已存在。
+    UnknownSubclass(ContentIndex),
+    /// 同一个副职声明了两条获得条件，见
+    /// [`SubclassTable::set_craft_unlock`] 文档「一个副职只能有一条」。
+    DuplicateUnlock(ContentIndex),
+    /// 阈值为零——「做满 0 次就获得」等价于「注册即获得」，那不是
+    /// 使用计数想表达的东西，是内容作者写错了数。
+    ZeroThreshold(ContentIndex),
 }
 
 impl fmt::Display for SubclassError {
@@ -93,6 +103,23 @@ impl fmt::Display for SubclassError {
         match self {
             SubclassError::DuplicateDefinition(index) => {
                 write!(f, "副职索引 {} 被重复定义", index.get())
+            }
+            SubclassError::UnknownSubclass(index) => {
+                write!(f, "副职索引 {} 尚未注册，不能给它追加获得条件", index.get())
+            }
+            SubclassError::DuplicateUnlock(index) => {
+                write!(
+                    f,
+                    "副职索引 {} 已经声明过获得条件，一个副职只能有一条",
+                    index.get()
+                )
+            }
+            SubclassError::ZeroThreshold(index) => {
+                write!(
+                    f,
+                    "副职索引 {} 的获得条件阈值为 0，至少要 1 次",
+                    index.get()
+                )
             }
         }
     }
@@ -117,6 +144,11 @@ pub struct SubclassView<'a> {
 #[derive(Debug, Default, Clone)]
 pub struct SubclassTable {
     display_name_key: Vec<Option<NamespacedId>>,
+    /// 「做满 N 次某个配方类别就获得这个副职」——`register-subclass-unlock`
+    /// 注册后追加的第二列，见 [`SubclassTable::set_craft_unlock`] 文档。
+    /// `None` = 这个副职没有声明任何获得条件（合法：它可能靠任务奖励或
+    /// 世界生成时写死的初始副职拿到，两条路径都还没落地）。
+    craft_unlock: Vec<Option<CraftUnlockRule>>,
     defined: Vec<bool>,
 }
 
@@ -141,6 +173,7 @@ impl SubclassTable {
             let new_len = idx + 1;
             self.defined.resize(new_len, false);
             self.display_name_key.resize(new_len, None);
+            self.craft_unlock.resize(new_len, None);
         }
 
         if self.defined[idx] {
@@ -150,6 +183,68 @@ impl SubclassTable {
         self.defined[idx] = true;
         self.display_name_key[idx] = Some(attrs.display_name_key);
         Ok(())
+    }
+
+    /// 注册后追加：给一个**已注册**的副职声明它的「制作计数」获得
+    /// 条件（`register-subclass-unlock` 的写入目标）。
+    ///
+    /// # 为什么是独立函数，不是 `define` 的第三个参数
+    ///
+    /// 与已落地的 [`crate::recipe_category::RecipeCategoryTable::add_required_subclass`]
+    /// 完全同一条理由：「这个副职叫什么」与「它怎么拿到」是两件独立
+    /// 的事，混进同一个位置参数列表会在将来某天有人想「只声明副职、
+    /// 获得条件由另一个 mod 补」时变成一处隐藏耦合。副职**没有**获得
+    /// 条件是合法且常见的（任务奖励、世界生成时写死的初始副职两条
+    /// 路径都还没落地，但形状已经清楚，见 `ll_sim::subclass` 模块
+    /// 文档「唯一出口」一节）。
+    ///
+    /// # 一个副职只能有一条
+    ///
+    /// 与 `register-class-xp-curve`「一个职业只能绑一条曲线」同一条
+    /// 纪律：一个副职若有多条互相竞争的解锁路径，「我还差多少」这句
+    /// UI 文案就没法唯一地展示。重复声明在注册期直接报错
+    /// （[`SubclassError::DuplicateUnlock`]），不是静默覆盖。
+    /// # 为什么存的直接就是结算侧的 [`CraftUnlockRule`]
+    ///
+    /// 本来「表里存的形状」与「结算侧读到的形状」各有一个类型是本仓库
+    /// 的常态（`RecipeDef` 对 `RecipeRule`、`ItemDef` 对 `ItemRule`），
+    /// 理由是结算只读其中一部分字段。这里**不是**那种情形：获得条件
+    /// 一共三个字段，结算三个全要读，两个类型会逐字段一模一样。ADR 0021
+    /// 的反向那半（「拦住把同一份东西复制两遍」）在这里适用，因此这一
+    /// 列直接存 `CraftUnlockRule`，`craft_unlocks()` 只是把它们倒出来。
+    pub fn set_craft_unlock(
+        &mut self,
+        index: ContentIndex,
+        category: ContentIndex,
+        category_id: NamespacedId,
+        threshold: u32,
+    ) -> Result<(), SubclassError> {
+        if !self.is_defined(index) {
+            return Err(SubclassError::UnknownSubclass(index));
+        }
+        if threshold == 0 {
+            return Err(SubclassError::ZeroThreshold(index));
+        }
+        let idx = index.get() as usize;
+        if self.craft_unlock[idx].is_some() {
+            return Err(SubclassError::DuplicateUnlock(index));
+        }
+        self.craft_unlock[idx] = Some(CraftUnlockRule {
+            subclass: index,
+            category,
+            category_id,
+            threshold,
+        });
+        Ok(())
+    }
+
+    /// 查询一个副职声明的「制作计数」获得条件；没声明过（或索引未
+    /// 注册）时返回 `None`。
+    pub fn craft_unlock(&self, subclass: ContentIndex) -> Option<&CraftUnlockRule> {
+        if !self.is_defined(subclass) {
+            return None;
+        }
+        self.craft_unlock[subclass.get() as usize].as_ref()
     }
 
     /// 给定的副职索引当前是否已经登记过属性。
@@ -172,6 +267,28 @@ impl SubclassTable {
                 .as_ref()
                 .expect("defined 为真时 display_name_key 必已写入"),
         })
+    }
+}
+
+/// [`SubclassTable`] 直接充当结算侧的副职获得条件目录——与
+/// `impl ExperienceCatalog for RaceTable`（种族表本就登记了 `xp_reward`，
+/// 直接当经验目录用）完全同一个手法：获得条件本来就按副职索引存在这张
+/// 表里，不需要再造一个把它包起来的中间类型。
+///
+/// # 为什么是「全部倒出来」而不是「按类别查询」
+///
+/// 见 `ll_sim::subclass::SubclassUnlockCatalog::craft_unlocks` 文档：与
+/// [`crate::quest::RegisteredQuests`] 交付全部 `KillCount` 规则、由
+/// `kill_progress_effects` 自己过滤是同一条既有纪律。规则总数是「副职
+/// 数量」这个小量级（上限约束下的内容体量，见
+/// `ll_sim::subclass::MAX_SUBCLASSES` 文档），一次线性扫描比给注册表
+/// 再维护一份反向索引便宜。
+///
+/// **遍历顺序是 `ContentIndex` 升序**（列式存储的下标顺序），不依赖
+/// 任何哈希表迭代顺序——约束 C5。
+impl SubclassUnlockCatalog for SubclassTable {
+    fn craft_unlocks(&self) -> Vec<CraftUnlockRule> {
+        self.craft_unlock.iter().flatten().cloned().collect()
     }
 }
 

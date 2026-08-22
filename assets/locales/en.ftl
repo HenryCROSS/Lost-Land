@@ -36,6 +36,15 @@ class-guard-display_name = Guard
 subclass-duelist-display_name = Duelist
 subclass-apprentice-display_name = Apprentice
 
+subclass-artisan-display_name = Artisan
+subclass-tailor-display_name = Tailor
+subclass-alchemist-display_name = Alchemist
+subclass-cook-display_name = Cook
+recipe_category-forging-display_name = Forging
+recipe_category-tailoring-display_name = Tailoring
+recipe_category-alchemy-display_name = Alchemy
+recipe_category-cooking-display_name = Cooking
+
 save-mod-missing = This save requires mod { $namespace } (version { $required }), which is not loaded in the current session.
 save-mod-version-mismatch = This save requires mod { $namespace } version { $required }, but the loaded version is { $current }.
 mod-dependency-version-mismatch = Mod { $dependent } depends on { $dependency } version { $required }, but the loaded version is { $actual }.

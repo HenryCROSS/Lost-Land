@@ -118,6 +118,7 @@ pub mod resource_pool;
 pub mod rule_modifier;
 pub mod skill;
 pub mod skill_overview;
+pub mod subclass;
 pub mod timeline;
 pub mod traits;
 pub mod turn;

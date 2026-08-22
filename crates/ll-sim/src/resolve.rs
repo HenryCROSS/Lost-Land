@@ -83,6 +83,7 @@ use crate::rule_modifier::{
 };
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::skill_overview::SkillTreeCatalog;
+use crate::subclass::{NoSubclassUnlocks, SubclassUnlockCatalog, craft_progress_effects};
 use crate::timeline::action_cost;
 use crate::traits::{
     NO_TRAIT_GRANTS, NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, agent_trait_sources,
@@ -552,6 +553,7 @@ pub fn resolve_with_skills_and_traits(
         AmbientSource::NONE,
         &NoExperience,
         &NoSkills,
+        &NoSubclassUnlocks,
     )
 }
 
@@ -596,6 +598,7 @@ pub fn resolve_with_skills_traits_and_pools(
         AmbientSource::NONE,
         &NoExperience,
         &NoSkills,
+        &NoSubclassUnlocks,
     )
 }
 
@@ -638,6 +641,7 @@ pub fn resolve_with_skills_traits_pools_and_items(
         AmbientSource::NONE,
         &NoExperience,
         &NoSkills,
+        &NoSubclassUnlocks,
     )
 }
 
@@ -682,6 +686,7 @@ pub fn resolve_with_skills_traits_pools_items_and_formulas(
         AmbientSource::NONE,
         &NoExperience,
         &NoSkills,
+        &NoSubclassUnlocks,
     )
 }
 
@@ -732,6 +737,7 @@ pub fn resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
         AmbientSource::NONE,
         &NoExperience,
         &NoSkills,
+        &NoSubclassUnlocks,
     )
 }
 
@@ -786,6 +792,7 @@ pub fn resolve_with_all_catalogs(
         AmbientSource::NONE,
         &NoExperience,
         &NoSkills,
+        &NoSubclassUnlocks,
     )
 }
 
@@ -823,6 +830,7 @@ pub fn resolve_with_catalogs(
         catalogs.ambient,
         catalogs.experience,
         catalogs.skill_tree,
+        catalogs.subclass_unlocks,
     )
 }
 
@@ -872,6 +880,7 @@ pub fn resolve_with_skills_and_quests(
         AmbientSource::NONE,
         &NoExperience,
         &NoSkills,
+        &NoSubclassUnlocks,
     )
 }
 
@@ -907,6 +916,7 @@ fn resolve_dispatch(
     ambient: AmbientSource<'_>,
     experience: &dyn ExperienceCatalog,
     skill_tree: &dyn SkillTreeCatalog,
+    subclass_unlocks: &dyn SubclassUnlockCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => {
@@ -967,7 +977,22 @@ fn resolve_dispatch(
             resolve_allocate_attribute_point(world, actor, attribute)
         }
         Intent::LearnSkill { actor, skill } => resolve_learn_skill(world, actor, skill, skill_tree),
+        Intent::AbandonSubclass { actor, subclass } => {
+            resolve_abandon_subclass(world, actor, subclass)
+        }
     };
+    // 副职使用计数（副职获得机制批次）：一次**成功**的制作把对应配方
+    // 类别的累计次数推进一格，达标就产出 `Effect::GrantSubclass`。
+    //
+    // # 为什么挂在这里，而不是塞进 `resolve_craft` 内部
+    //
+    // 与 `append_quest_kill_progress`/`append_kill_experience` 同一个
+    // 位置、同一个理由：`resolve_craft` 回答的是「这次制作做不做得
+    // 成」，计数回答的是「做成了之后顺带发生什么」。两者混在一个函数
+    // 里会让那个函数同时对两件事负责，而分开之后「全部入口都会经过
+    // 这一处」这条保证由 `resolve_dispatch` 本身给出——正是击杀经验
+    // 那次「只在测试里成立的接线」的修法。
+    append_craft_progress(world, intent, &mut effects, recipes, subclass_unlocks);
     // 休息中断（`resource-pools-and-rest.md` 八节「中断怎么表达」一节）：
     // 任何非 `Wait`/`Rest` 意图,若发起者当前正在休息,追加一条不带恢复
     // 批次的 `Effect::ClearResting`——与 D&D 长休/短休规则"做别的事就要
@@ -1157,6 +1182,79 @@ fn resolve_learn_skill(
     vec![Effect::LearnSkill { actor, skill }]
 }
 
+/// [`Intent::AbandonSubclass`] 结算（副职获得机制批次）：两道闸门全过
+/// 才产出一条 [`Effect::RemoveSubclass`]，否则空列表。
+///
+/// 1. 发起者存在于世界里；
+/// 2. 它确实持有这个副职（放弃一个没有的副职不该在存档里留下痕迹）。
+///
+/// # 不产出 `Effect::ScheduleNext`
+///
+/// 与 [`resolve_allocate_attribute_point`]/[`resolve_learn_skill`] 同一
+/// 条理由（见前者文档「加点是自由动作，不花回合」一节）：放弃副职是
+/// 角色面板上的决定，不是角色在世界里做的动作。
+///
+/// # 放弃的真实代价在闸门语义里，不在这个函数里
+///
+/// 本函数不扣任何资源。放弃之后立刻发生的事是：该副职把守的配方类别
+/// **下一次制作就过不去了**（[`resolve_craft`] 第③步每次都判），而
+/// 已经通过它学会的技能不受影响。两种闸门语义的差异见
+/// [`Effect::RemoveSubclass`] 文档。
+fn resolve_abandon_subclass(
+    world: &WorldState,
+    actor: EntityId,
+    subclass: ContentIndex,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    if !agent.subclasses.contains(&subclass) {
+        return Vec::new();
+    }
+    vec![Effect::RemoveSubclass { actor, subclass }]
+}
+
+/// 副职使用计数的接线：一次**成功**的 [`Intent::Craft`] 之后，把对应
+/// 配方类别的累计制作次数推进一格，达标就追加
+/// [`Effect::GrantSubclass`]（副职获得机制批次）。
+///
+/// # 「成功」怎么判断
+///
+/// [`resolve_craft`] 的全部失败分支都返回**空** `Vec`（查不到行动者、
+/// 查不到配方、副职闸门不过、场地/工具前置不满足、食材不够），成功
+/// 时至少会产出一条 [`Effect::MergeIntoInventory`] 与一条
+/// [`Effect::ScheduleNext`]。因此在 `resolve_dispatch` 那一处、
+/// **`match` 刚返回、其余 `append_*` 都还没往里追加任何东西**的时刻，
+/// `effects.is_empty()` 恰好就是「这次制作没做成」。本函数因此必须在
+/// 那个位置调用，挪到别的 `append_*` 之后会让这个判据失效——这条位置
+/// 约束写在这里，因为它不是从函数签名能看出来的。
+///
+/// # 为什么要再查一次配方
+///
+/// 计数按**配方类别**记（不是按具体配方），而 [`Intent::Craft`] 携带
+/// 的是配方索引。`resolve_craft` 内部虽然已经查过一次，但它返回的是
+/// `Vec<Effect>`，不带出 `rule`——为了让计数拿到 `rule.category` 而给
+/// 那个函数加一个输出参数，会让「制作结算」这个职责被计数这件事污染。
+/// 一次 `recipes.recipe(...)` 是一次表查询，代价可忽略。
+fn append_craft_progress(
+    world: &WorldState,
+    intent: &Intent,
+    effects: &mut Vec<Effect>,
+    recipes: &dyn RecipeCatalog,
+    unlocks: &dyn SubclassUnlockCatalog,
+) {
+    let Intent::Craft { actor, recipe } = *intent else {
+        return;
+    };
+    if effects.is_empty() {
+        return;
+    }
+    let Some(rule) = recipes.recipe(recipe) else {
+        return;
+    };
+    effects.extend(craft_progress_effects(world, actor, rule.category, unlocks));
+}
+
 /// 资源池每回合自动恢复（`RegenRule::OnTurnStart`,
 /// `resource-pools-and-rest.md` 四节，资源池落地批次，第一批）：遍历
 /// `actor` 当前 [`effective_traits`] 命中的每一条天赋的
@@ -1312,6 +1410,7 @@ pub fn resolve_with_skills_quests_and_experience(
         AmbientSource::NONE,
         experience,
         &NoSkills,
+        &NoSubclassUnlocks,
     )
 }
 

@@ -1,13 +1,37 @@
 # 副职系统设计
 
-**落地状态**：部分落地，且**本批次核实后比冻结时前进了一大截**——`SubclassDef`/`SubclassTable`
+**落地状态**：**获得机制本批次已落地**。`SubclassDef`/`SubclassTable`
 （`crates/ll-mod/src/subclass.rs`）、`register-subclass`（`crates/ll-mod/src/script_subclass_api.rs`）、
-`Agent.subclasses: Vec<ContentIndex>`（`crates/ll-world/src/entity/agent.rs`）均已落地，且
-**`Agent.subclasses` 已经有了第一个真实的运行期消费者**：`resolve_craft`
-（`crates/ll-sim/src/resolve.rs:2340`）读 `RecipeCategoryDef.required_subclasses` 做 any-of 闸门
-判定（提交 `08cdeb0`）。仍未落地的是：`SubclassDef` 的 `traits` 字段、`SubclassUnlock`/
-`SubclassUnlockTrigger` 整套获得机制、上限与放弃机制、`skill-requires!` 那一路闸门。
-**没有任何代码路径会往 `Agent.subclasses` 里写入东西**——副职现在能被读，不能被拿到。
+`Agent.subclasses: Vec<ContentIndex>`（`crates/ll-world/src/entity/agent.rs`）、`resolve_craft`
+的 any-of 副职闸门（`08cdeb0`）此前均已落地；**本批次补上了此前完全不存在的写入路径**：
+
+- `Effect::GrantSubclass`/`Effect::RemoveSubclass`（`crates/ll-sim/src/effect.rs`）与
+  `apply` 侧的两条无条件写入分支——`Agent.subclasses` 从此真的能被写。
+- `ll_sim::subclass` 新模块：`MAX_SUBCLASSES`（当前 **3**）、`grant_subclass_effects`
+  （**三条将来的授予路径唯一的出口**，去重与上限两道闸门都在这里）、`craft_progress_effects`
+  （使用计数）、`CraftUnlockRule`/`SubclassUnlockCatalog`。
+- `Intent::AbandonSubclass` + `resolve_abandon_subclass`——上限存在就必须有的放弃路径。
+- `register-subclass-unlock`（脚本注册函数，**不是**七节建议的 `subclass-unlocks-via!`，
+  改名理由见该函数的 rustdoc：三十六个已注册脚本函数里三十三个是 `register-` 形，带 `!` 的
+  三个共享的是字面上的 `-requires-` 谓词而不是「追加」这个语义）。
+- 本体内容：`mods/lostland/subclasses.scm` 四个制作类副职（**工匠 / 裁缝 / 炼金术士 / 厨师**）
+  + `mods/lostland/crafting.scm` 四个配方类别。**炼金与厨艺按项目所有者裁定拆成两个独立副职**
+  （「药水调剂和厨艺是两个不同的方向，所以需要拆分」），推翻 `6fa7eb8` 里「调剂 = 炼金 + 厨艺
+  合并」那条。
+- 端到端证据：`crates/ll-mod/tests/example_mod_subclass_unlock.rs`（9 条，全程经 `TurnEngine`，
+  含反例守卫）。
+
+**仍未落地**：`SubclassDef.traits` 字段与 `register-subclass-trait`（副职授予天赋那一路）、
+`skill-requires!` 那一路闸门、`ItemsGathered`/`RestsTaken` 两个触发器（各自的不落地理由见
+`ll_sim::subclass::SubclassUnlockCatalog` 的 rustdoc：前者要指向的「物品类别」内容表根本不
+存在，后者今天没有任何消费者）、任务奖励与初始副职两条授予路径（**两者都不需要新的出口**，
+直接调 `grant_subclass_effects` 即可）。
+
+**本批次核实出的一处设计缺口，四节与五节都没写到**：`ItemsCrafted(类别)` 的获得条件若指向
+一个**同时被该副职把守**的类别，就构成死锁——「要当工匠才能锻造，要锻造才能当工匠」，而且
+完全不报错。正确形状是「从不设闸的类别里练出副职，用它去开另一个设了闸的类别的门」，
+`mods/example_mod/gameplay.scm` 就是这么写的。**引擎目前不拦这个**（两个注册函数各自只看得到
+自己那张表，跨表检查得放到装载后的 `content_audit` 里），已记入本文档八节⑤。
 
 **冻结于** 2026-08-22，基线提交 `08cdeb0`（`main` 分支）。
 
@@ -1046,3 +1070,25 @@ Effect::RemoveSubclass { actor: EntityId, subclass: ContentIndex }
   「这条判据管代码不管内容」的原文依据
 - `knowledge/decisions/0023-script-state-writes-go-through-apply.md`——四节
   `Effect::GrantSubclass` 必须是独立效果变体的依据
+
+### ⑤ 获得条件与副职闸门指向同一个配方类别时会死锁，引擎目前不拦
+
+**本节新增于获得机制落地批次（2026-08-22）。**
+
+`register-subclass-unlock` 让副职 S 从「在类别 C 里做满 N 次」获得，
+`recipe-category-requires-subclass!` 让类别 C 要求副职 S 才能做——两条声明各自完全合法，
+合起来是一个死锁：`resolve_craft` 的副职闸门**每次制作都判**，所以玩家永远做不了 C 里的任何
+配方，也就永远攒不到那 N 次，S 永远拿不到。**而且全程零报错、零日志**，症状是「这个副职好像
+拿不到」。
+
+**为什么本批次没有在注册期拦住它**：两个注册函数各自只持有自己那张表
+（`register-subclass-unlock` 只看得到 `SubclassTable`，`recipe-category-requires-subclass!`
+只看得到 `RecipeCategoryTable`），且两条声明的先后顺序不固定，任何一边单方面都判不了。
+唯一同时看得到两张表的地方是装载后的 `ll_mod::content_audit` 那一趟——把它做成一条新的
+`ReferenceViolation`/`RosterViolation` 是一次独立的小批次，需要动那个模块的穷尽 `match` 与
+配套测试，本批次不夹带。
+
+**在那之前，纪律靠文档与内容评审**：`mods/lostland/crafting.scm` 与
+`mods/example_mod/gameplay.scm` 两处都写明了这条，`ll_mod::content_audit::BASE_CONTENT_AUDIT`
+里 `RecipeCategoryDef::required_subclasses` 那条豁免同样记录了它——那是本体四个配方类别刻意
+不设闸门的第一条理由。

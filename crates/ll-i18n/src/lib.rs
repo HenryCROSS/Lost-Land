@@ -450,6 +450,23 @@ mod tests {
         "lostland:class.ranger.display_name",
         "lostland:subclass.duelist.display_name",
         "lostland:subclass.apprentice.display_name",
+        // 副职获得机制批次：mods/lostland/subclasses.scm 注册的四个
+        // 制作类副职，与 mods/lostland/crafting.scm 注册的四个配方
+        // 类别。前两条（剑舞者/学徒）来自 `ll_mod::subclass::
+        // materialize_base_subclasses`——那个函数**不在生产装载路径
+        // 上**（`ll_game::content::load_content` 给出的是一张空
+        // `SubclassTable::new()`），它的唯一调用方是 `ll-content` 的
+        // p5 验收 demo 与 `ll-mod` 自己的单元测试，与 classes.scm 文件
+        // 头记录的三个基础职业处境完全相同。下面八条则是真实生产
+        // 内容，走 mod 脚本注册。
+        "lostland:subclass.artisan.display_name",
+        "lostland:subclass.tailor.display_name",
+        "lostland:subclass.alchemist.display_name",
+        "lostland:subclass.cook.display_name",
+        "lostland:recipe_category.forging.display_name",
+        "lostland:recipe_category.tailoring.display_name",
+        "lostland:recipe_category.alchemy.display_name",
+        "lostland:recipe_category.cooking.display_name",
         "save-mod-missing",
         "save-mod-version-mismatch",
         "mod-dependency-version-mismatch",

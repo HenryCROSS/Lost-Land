@@ -342,7 +342,27 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 它只守「新增了表」这一类，[`ContentTableKind`] 一多出变体而
 /// `TARGET_TYPES` 没跟上，CI 立刻变红——含义是新增哈希变体与新增门禁
 /// 条目必须在同一个提交里，不能分批。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 11;
+///
+/// 版本 12（副职获得机制批次）：**老表新增字段**，不是新增表——
+/// [`crate::subclass::SubclassTable`] 多了一列「制作计数获得条件」
+/// （`register-subclass-unlock` 的写入目标），[`write_subclass_fields`]
+/// 因此从「只混入 `display_name_key`」变成「再混入这一列」。既有十九
+/// 张表的其余部分写入的字节序列逐字节不变，但**副职这一张表的每一条
+/// 目的摘要都变了**（即便它没有声明任何获得条件——`None` 也要写一个
+/// 判别字节，否则「没声明」与「声明了但恰好把三个字段写成零」会撞在
+/// 一起）。
+///
+/// 递增的理由与版本 10（`WeatherAttrs::temperature_offset`）完全相同：
+/// [`apply_value_hashes`] 现在会为每一个副职 id 折进一份此前不存在的
+/// 字段值，任何在本次改动之前写出、`generation_mods` 携带非空
+/// `content_hash` 的存档，读档时都会在 `check_mod_content` 一步被误判成
+/// `ModContentMismatch`——版本号就是让那份存档拿到「算法换了」这条
+/// 准确诊断、而不是「你的 mod 内容被改过了」这条错误诊断的东西。
+///
+/// **注册新的内容条目本身不需要动这个常量**：本批次同时往
+/// `mods/lostland/` 里注册了四个本体副职与四个配方类别，那是内容，
+/// 不是新的哈希输入。真正逼着版本号动的只有上面那一列新字段。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 12;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -746,6 +766,22 @@ fn write_subclass_fields(hasher: &mut StateHasher, table: &SubclassTable, index:
         .get(index)
         .expect("调用方已确认 is_defined，get 必返回 Some");
     hasher.write_namespaced_id(view.display_name_key);
+    // 副职获得机制批次新增的第二列。`category` 混入的是**解析后的
+    // `NamespacedId` 字符串**而不是 `ContentIndex` 的数值——与
+    // `write_recipe_fields` 处理 `category` 同一条纪律（模块文档
+    // 「`ContentIndex` 字段」一节）：数值会随 mod 集合变化重编号，
+    // 用它当哈希输入会让「内容一个字没改、只是装载顺序变了」被误判成
+    // 内容不一致。这里更省事——`CraftUnlockRule` 在注册期就把标识符
+    // 一并存下来了（理由见 `ll_sim::subclass` 模块文档「计数键」
+    // 一节），不需要回头查 `Registry`。
+    match table.craft_unlock(index) {
+        None => hasher.write_u64(0),
+        Some(unlock) => {
+            hasher.write_u64(1);
+            hasher.write_namespaced_id(&unlock.category_id);
+            hasher.write_u64(u64::from(unlock.threshold));
+        }
+    }
 }
 
 /// 混入 [`crate::race::RaceDef`] 的全部字段——`traits[].trait_id`

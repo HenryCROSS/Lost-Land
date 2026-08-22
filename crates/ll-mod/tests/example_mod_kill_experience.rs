@@ -148,6 +148,7 @@ impl RealModsHandle {
             experience,
             skill_tree: &self.skill,
             xp_curves: curves,
+            subclass_unlocks: &ll_sim::subclass::NoSubclassUnlocks,
         }
     }
 

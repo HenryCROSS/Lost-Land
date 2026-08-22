@@ -29,5 +29,12 @@
 
   // 种族：迁移自 `ll_mod::race::materialize_base_races`（已删除）。
   // 职业：目前只有卫兵一条，理由见 classes.scm 文件头。
-  entry_points: ["races.scm", "classes.scm"],
+  // 制作类别：四条，都不设副职闸门，理由见 crafting.scm 文件头。
+  // 副职：四条制作类副职 + 各自的使用计数获得条件。
+  //
+  // **顺序有意义**：subclasses.scm 里的 register-subclass-unlock 要求
+  // trigger-target 指向的配方类别**已经注册**（只 get 不 intern），
+  // 因此 crafting.scm 必须排在它前面。两者互换会在装载期报一条点名的
+  // 错误——不会静默注册出一条谁都触发不了的获得条件。
+  entry_points: ["races.scm", "classes.scm", "crafting.scm", "subclasses.scm"],
 }
