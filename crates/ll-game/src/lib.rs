@@ -309,22 +309,24 @@ pub fn run_game() {
         tracing::warn!(%error, path = %paths.config.display(), "写出默认配置失败，继续使用内存中的默认值");
     }
 
-    // 本体内容契约解析失败是一条启动期硬错误，与下面「图集为空」同一
-    // 条纪律：本体内容（当前是三个种族）现在住在 `mods/lostland/` 的
-    // 脚本里，误删/改名那个目录会让 `content.race_ids.human` 背后没有
-    // 任何真实内容。与其让玩家进到一个建不出角色的残破会话里自己猜
-    // 原因，不如在启动那一刻就点名缺了哪几条内容、该去看哪个目录。
-    // 错误文案本身（`ll_mod::base_contract::BaseContractError` 的
-    // Display）已经逐条列出缺失明细，这里补上它不知道的那一半：本次
-    // 会话的 mods_root 究竟指向哪里。
+    // 内容装载失败是一条启动期硬错误，与下面「图集为空」同一条纪律。
+    // 两种失败原因（见 `crate::content::ContentLoadError`）：本体内容
+    // 契约没解析成功——本体内容（当前是三个种族）现在住在
+    // `mods/lostland/` 的脚本里，误删/改名那个目录会让
+    // `content.race_ids.human` 背后没有任何真实内容；或者跨表引用
+    // 完整性没通过——某个 mod（也可能是本体自己）声明了一条指向不存在
+    // 内容的引用。与其让玩家进到一个建不出角色、或者某件武器算不出
+    // 伤害的残破会话里自己猜原因，不如在启动那一刻就点名。
+    // 错误文案本身已经逐条列出全部明细，这里补上它不知道的那一半：
+    // 本次会话的 mods_root 究竟指向哪里。
     let content = load_content(&paths.mods_root, &paths.assets_root).unwrap_or_else(|error| {
         tracing::error!(
             mods_root = %paths.mods_root.display(),
             %error,
-            "本体内容契约解析失败，游戏无法继续启动：请确认 mods_root 下的本体内容目录              lostland/ 完整存在且未被改名或删除"
+            "内容装载校验失败，游戏无法继续启动：请确认 mods_root 下的本体内容目录              lostland/ 完整存在且未被改名或删除，并检查已装载 mod 的跨表引用"
         );
         panic!(
-            "本体内容契约解析失败（mods_root={}）：
+            "内容装载校验失败（mods_root={}）：
 {error}",
             paths.mods_root.display()
         );

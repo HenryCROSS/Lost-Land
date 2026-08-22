@@ -25,9 +25,12 @@
 //!    ——**包括本体自己的 `mods/lostland/`**（种族已经迁进去了）。
 //! 3. 跑本体内容契约解析（[`ll_mod::race::resolve_base_races`]）：按 id
 //!    逐字段填充 Rust 侧留下的句柄结构体，缺任何一条就整批失败，见
-//!    [`ll_mod::base_contract`] 模块文档。这是 [`load_content`] 会返回
-//!    `Err` 的唯一原因。
-//! 4. 跑一次 [`ll_mod::content_hash::apply_value_hashes`] 收尾。
+//!    [`ll_mod::base_contract`] 模块文档。
+//! 4. 跑一遍装载后内容校验（[`ll_mod::content_audit::audit_content`]）：
+//!    跨表引用完整性 + 本体字段覆盖。前者是 [`load_content`] 返回 `Err`
+//!    的第二个原因，后者不阻断启动、随 [`LoadedContent::audit`] 带出去，
+//!    两者严重性为何不同见该模块文档。
+//! 5. 跑一次 [`ll_mod::content_hash::apply_value_hashes`] 收尾。
 //!
 //! 第 1 步与第 2 步的先后不能颠倒：mod 内容 intern 进同一个 `Registry`，
 //! 排在本体 Rust 注册之后才能保证号段不冲突。
@@ -46,6 +49,9 @@ use ll_mod::base_terrain::register_base_terrain;
 use ll_mod::base_xp_curve::register_base_xp_curve;
 use ll_mod::class::ClassTable;
 use ll_mod::clip::{BaseClipIds, ClipTable};
+use ll_mod::content_audit::{
+    BASE_CONTENT_AUDIT, ContentAuditReport, ReferenceIntegrityError, audit_content,
+};
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
 use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::discover::discover_mods;
@@ -172,6 +178,13 @@ pub struct LoadedContent {
     /// 生效的覆盖）打包前的最终来源，供 [`crate::app`] 喂给
     /// `ll_render::atlas_pack::pack_atlas`。
     pub asset_vfs: AssetVfs,
+    /// 本次装载的内容校验报告（装载后校验 pass 批次新增）——引用完整性
+    /// 这一半已经在 [`load_content`] 里被消费掉了（不通过就根本返回不了
+    /// 本结构体），这里留下的是**字段覆盖**那一半：它按
+    /// `ll_mod::content_audit::ContentAuditReport::field_coverage` 文档
+    /// 的裁定不阻断启动，由 `ll-game` 的门禁测试对仓库真实 `mods/`
+    /// 目录断言为空。
+    pub audit: ContentAuditReport,
 }
 
 /// 把一次装载会话的产出转成结算能直接消费的形状，供
@@ -249,11 +262,65 @@ impl<'a> RuntimeCatalogs<'a> {
 /// 理由见该方法文档「伤害类别这一路为什么仍是空实现」一节。
 const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 
+/// [`load_content`] 会失败的全部原因。
+///
+/// # 为什么是一个枚举而不是继续只返回 `BaseContractError`
+///
+/// 本体内容迁进脚本之后，「装载出来的这批内容自洽不自洽」不止一条
+/// 判据。第一条是契约解析（Rust 点名引用的那几条本体内容在不在，
+/// `ll_mod::base_contract`）；装载后校验 pass 批次补上了第二条：跨表
+/// 引用完整性（任何内容的 `ContentIndex` 字段都得指向一条真的被定义过
+/// 的条目，`ll_mod::content_audit`）。两者是**不同的失败**，读者要做的
+/// 事也不同——前者指向"本体内容目录不完整"，后者指向"某个 mod（也可能
+/// 是本体自己）写了一条指向不存在内容的引用"。合并成一个字符串会把这
+/// 个区别抹掉，因此按失败原因分成两个变体，各自的 `Display` 完整保留。
+///
+/// 字段覆盖那一半**不在**这里：它按
+/// [`ll_mod::content_audit::ContentAuditReport::field_coverage`] 文档的
+/// 裁定不阻断启动，产物挂在 [`LoadedContent::audit`] 上。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ContentLoadError {
+    /// 本体内容契约没解析成功——Rust 侧句柄结构体点名要的本体内容
+    /// 缺了至少一条，见 `ll_mod::base_contract` 模块文档。
+    BaseContract(BaseContractError),
+    /// 跨表引用完整性校验失败——至少一处 `ContentIndex` 字段指向了
+    /// 不存在的内容，见 `ll_mod::content_audit` 模块文档。
+    ReferenceIntegrity(ReferenceIntegrityError),
+}
+
+impl From<BaseContractError> for ContentLoadError {
+    fn from(error: BaseContractError) -> Self {
+        ContentLoadError::BaseContract(error)
+    }
+}
+
+impl From<ReferenceIntegrityError> for ContentLoadError {
+    fn from(error: ReferenceIntegrityError) -> Self {
+        ContentLoadError::ReferenceIntegrity(error)
+    }
+}
+
+impl std::fmt::Display for ContentLoadError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            ContentLoadError::BaseContract(error) => write!(f, "{error}"),
+            ContentLoadError::ReferenceIntegrity(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for ContentLoadError {}
+
 /// 装载全部游戏内容：先注册尚未迁进脚本的本体内容，再装载 `mods_root`
 /// 下的全部 mod（含本体自己的 `mods/lostland/`），跑一次本体内容契约
 /// 解析，最后解析 `assets_root` 下本体与全部 mod 的资产 VFS。
 ///
-/// # 返回 `Err` 的唯一原因：本体内容契约没解析成功
+/// # 返回 `Err` 的两个原因
+///
+/// 见 [`ContentLoadError`]：本体内容契约没解析成功，或跨表引用完整性
+/// 校验没通过。下面这一段讲的是前者。
+///
+/// ## 本体内容契约没解析成功
 ///
 /// 本体内容（当前是三个种族）已经搬进 `mods/lostland/*.scm`，Rust 侧
 /// 只留下 `ll_mod::race::BaseRaceIds` 这类句柄结构体。句柄的填充要靠
@@ -274,7 +341,7 @@ const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 pub fn load_content(
     mods_root: &Path,
     assets_root: &Path,
-) -> Result<LoadedContent, BaseContractError> {
+) -> Result<LoadedContent, ContentLoadError> {
     let mut registry = Registry::new();
 
     let (terrain_ids, mut terrain_table) =
@@ -339,6 +406,43 @@ pub fn load_content(
     // `apply_value_hashes` 之前（契约都不成立就没必要再算哈希）。
     let race_ids = resolve_base_races(&registry, &race_table)?;
 
+    // 全部内容表的只读引用束——装载后校验（本处）与值哈希（下面）共用
+    // 同一份，不各建一份：两处若各写一份字段清单，`ContentValueTables`
+    // 新增字段时只改一处就会静默漂移，与 `ll_mod::content_hash` 模块
+    // 文档记录过的那类漂移同源。
+    let value_tables = ContentValueTables {
+        terrain: &terrain_table,
+        class: &class_table,
+        skill: &skill_table,
+        subclass: &subclass_table,
+        quest: &quest_table,
+        race: &race_table,
+        space_profile: &space_table,
+        clip: &clip_table,
+        trait_def: &trait_table,
+        resource_pool: &resource_pool_table,
+        item: &item_table,
+        xp_curve: &xp_curve_table,
+        formula: &formula_table,
+        weapon_category: &weapon_category_table,
+        damage_category: &damage_category_table,
+    };
+
+    // 装载后校验 pass（`ll_mod::content_audit`）：契约解析只看"Rust 点名
+    // 要的那几条内容在不在"，看不见内容自身的形状。这一步把跨表引用
+    // 完整性与本体字段覆盖两件事一次走完。
+    //
+    // 必须排在 `load_all` 与契约解析之后（内容都还没装完就查引用毫无
+    // 意义），排在 `apply_value_hashes` 之前（内容都不自洽就没必要
+    // 再算哈希——与契约解析排在哈希之前是同一条理由）。
+    //
+    // 两半的严重性不同，见 `ContentLoadError` 与
+    // `ll_mod::content_audit::ContentAuditReport::field_coverage` 文档：
+    // 引用完整性在这里直接 `?` 掉（一条指向不存在内容的引用是真的会在
+    // 运行期表现成损坏），字段覆盖只随 `LoadedContent` 带出去。
+    let audit = audit_content(&registry, &value_tables, &BASE_CONTENT_AUDIT);
+    audit.reference_integrity()?;
+
     // 值哈希升级：全部内容表此刻已经装载完毕（本体 + mod），在
     // 这里跑一次性收尾步骤,把字段值折进 registry 已有的 id 摘要——
     // 见 `ll_mod::content_hash` 模块文档「为什么不能在 `intern` 内部
@@ -357,26 +461,7 @@ pub fn load_content(
     // 哪张表」的机制天然覆盖不到它，见 `ll_mod::content_hash` 模块
     // 文档「哈希覆盖哪些字段」一节「例外，且是刻意的例外」一段——这是
     // 本批次已知、显式记录的缺口，不是疏漏。
-    apply_value_hashes(
-        &mut registry,
-        &ContentValueTables {
-            terrain: &terrain_table,
-            class: &class_table,
-            skill: &skill_table,
-            subclass: &subclass_table,
-            quest: &quest_table,
-            race: &race_table,
-            space_profile: &space_table,
-            clip: &clip_table,
-            trait_def: &trait_table,
-            resource_pool: &resource_pool_table,
-            item: &item_table,
-            xp_curve: &xp_curve_table,
-            formula: &formula_table,
-            weapon_category: &weapon_category_table,
-            damage_category: &damage_category_table,
-        },
-    );
+    apply_value_hashes(&mut registry, &value_tables);
 
     let manifests = successfully_parsed_manifests(mods_root);
     let script_sources = read_script_sources(&manifests);
@@ -430,6 +515,7 @@ pub fn load_content(
         script_sources,
         report,
         asset_vfs: asset_result.vfs,
+        audit,
     })
 }
 
@@ -506,6 +592,13 @@ mod tests {
         // `Debug`（它装着整个注册表与十几张内容表，打印出来毫无用处）。
         let Err(error) = result else {
             panic!("本体内容不在场时装载必须失败");
+        };
+        // 逐变体断言而不是只看"失败了"：装载后校验 pass 批次给
+        // `load_content` 加了第二种失败原因（跨表引用完整性），空目录
+        // 这一幕必须仍然是**契约解析**失败——否则说明失败被别的检查
+        // 抢先报了，这条测试就不再守着它本来要守的那件事。
+        let ContentLoadError::BaseContract(error) = &error else {
+            panic!("空目录下必须是本体内容契约解析失败，实际是：{error}");
         };
         assert_eq!(error.required, 3);
         assert_eq!(error.missing.len(), 3);
@@ -841,5 +934,127 @@ mod tests {
 
         // Assert
         assert_eq!(opaque_ids, vec!["lostland:placeholder_race".to_string()]);
+    }
+    #[test]
+    fn 真实内容的跨表引用完整性通过且不是空转() {
+        // 装载后校验 pass 批次的门禁之一（引用完整性）。装载能返回
+        // `Ok` 本身已经蕴含"零违规"（`load_content` 直接 `?` 掉了它），
+        // 本条真正守的是**非空转**：一处引用都没检查到的校验会恒为绿、
+        // 而且绿得完全无声。谁把某个 `inspect_*` 里的 `reference` 调用
+        // 删掉、或把整张表的分派接错，`references_checked` 会掉下来，
+        // 本条变红。
+        // Arrange & Act
+        let loaded = load_content(&repo_mods_dir(), &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下内容校验必须通过");
+
+        // Assert
+        assert_eq!(loaded.audit.reference_violations, Vec::new());
+        assert!(
+            loaded.audit.references_checked >= 1,
+            "仓库真实内容里至少有一处跨表引用（mods/example_mod/gameplay.scm \
+             的 register-item-damage-formula 等），一处都没检查到说明校验空转了"
+        );
+    }
+
+    #[test]
+    fn 真实本体内容的字段覆盖不留缺口() {
+        // 装载后校验 pass 批次的门禁之二（字段覆盖）。它按
+        // `ll_mod::content_audit::ContentAuditReport::field_coverage`
+        // 文档的裁定**不阻断启动**（本体内容被玩家改过不是"游戏坏了"
+        // 的信号），严重性接在这条测试上：本体内容里新增一个从没有
+        // 任何内容赋过非默认值的字段，或者花名册/豁免清单自身失效
+        // （某张表的内容迁进 mods/lostland/ 了却还挂在 deferred 里、
+        // 某条豁免的字段其实已经被覆盖了），本条立刻变红。
+        // Arrange & Act
+        let loaded = load_content(&repo_mods_dir(), &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下内容校验必须通过");
+
+        // Assert
+        if let Err(error) = loaded.audit.field_coverage() {
+            panic!("{error}");
+        }
+        assert!(
+            loaded.audit.fields_observed >= 1,
+            "本体内容至少覆盖七张表的字段，一个字段槽都没观察到说明校验空转了"
+        );
+    }
+
+    /// 递归复制一个目录树——建"本体内容 + 一个坏 mod"这类临时 mods
+    /// 根目录时用。本 crate 不为此引入 `fs_extra` 依赖：只有测试需要，
+    /// 需求简单到手写几行就够（与 `ll_mod::test_support::tempdir` 同一
+    /// 条既有取舍）。
+    fn copy_dir_all(src: &Path, dst: &Path) {
+        std::fs::create_dir_all(dst).expect("创建目标目录应当成功");
+        for entry in std::fs::read_dir(src).expect("读取源目录应当成功") {
+            let entry = entry.expect("读取目录项应当成功");
+            let target = dst.join(entry.file_name());
+            if entry.file_type().expect("读取文件类型应当成功").is_dir() {
+                copy_dir_all(&entry.path(), &target);
+            } else {
+                std::fs::copy(entry.path(), &target).expect("复制文件应当成功");
+            }
+        }
+    }
+
+    #[test]
+    fn mod把物品公式指向一个只被intern过的id时装载整批失败() {
+        // 引用完整性这一层堵的**具体**那个洞：脚本注册 API
+        // （`register-item-damage-formula`）对目标 id 只做
+        // `Registry::get`（"这个字符串被 intern 过吗"），不做"伤害公式
+        // 表真的定义过它吗"——这正是 `ll_mod::base_contract` 模块文档
+        // 「两层判定」一节说的 `NotInterned` 与 `NotDefined` 的区别。
+        // 一个 mod 只要先用别的方式把某个 id intern 出来（这里用
+        // register-quest 的击杀目标，那个参数按设计只 intern 不定义），
+        // 就能造出一条注册期检查放行、运行期静默失效的悬空引用。
+        //
+        // 本条是这条检查的端到端证据：真实脚本、真实装载管线、真实
+        // 失败，不是只在单元测试里自证。
+        // Arrange：临时 mods 根目录 = 本体内容（契约解析要用）+ 一个
+        // 故意写坏引用的 mod。
+        let root = crate::test_support::unique_temp_path("ll-game-audit-dangling-ref");
+        std::fs::create_dir_all(&root).expect("创建测试目录应当成功");
+        copy_dir_all(&repo_mods_dir().join("lostland"), &root.join("lostland"));
+        let broken = root.join("brokenref");
+        std::fs::create_dir_all(&broken).expect("创建测试目录应当成功");
+        std::fs::write(
+            broken.join("mod.json5"),
+            "{ namespace: \"brokenref\", version: \"0.1.0\", entry_points: [\"main.scm\"] }",
+        )
+        .expect("写入清单应当成功");
+        std::fs::write(
+            broken.join("main.scm"),
+            ";; brokenref:phantom 只被击杀计数条件 intern 出来，从来没有\n\
+             ;; 任何 register-damage-formula 定义过它。\n\
+             (register-quest \"brokenref:quest\" (list) \"kill-count\" \"brokenref:phantom\" 1)\n\
+             (register-item \"brokenref:sword\" \"brokenref:sword_name\" 1 1000 1000 -1)\n\
+             (register-item-damage-formula \"brokenref:sword\" \"brokenref:phantom\")\n",
+        )
+        .expect("写入脚本应当成功");
+
+        // Act
+        let result = load_content(&root, &repo_assets_dir());
+
+        // Assert
+        let Err(error) = result else {
+            panic!("悬空引用必须让整批装载失败");
+        };
+        let ContentLoadError::ReferenceIntegrity(error) = &error else {
+            panic!("必须是引用完整性失败，实际是：{error}");
+        };
+        assert_eq!(error.violations.len(), 1);
+        assert_eq!(error.violations[0].field, "ItemAttrs::damage_formula");
+        assert_eq!(
+            error.violations[0]
+                .target_id
+                .as_ref()
+                .map(ToString::to_string),
+            Some("brokenref:phantom".to_string())
+        );
+        let text = error.to_string();
+        assert!(text.contains("brokenref:sword"), "{text}");
+        assert!(text.contains("brokenref:phantom"), "{text}");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

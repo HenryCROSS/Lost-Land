@@ -64,6 +64,15 @@
 //!   解析」完成，缺任何一条就整批失败。种族这一路的调用点是
 //!   [`race::resolve_base_races`]（原先的 `base_race` 模块随定义一并
 //!   删除），见其模块文档。
+//! - [`content_audit`] —— 装载后内容校验 pass（装载后校验 pass 批次
+//!   新增）：接在 [`base_contract`] 之后的第二、三层。契约解析只看
+//!   「Rust 点名要的那几条本体内容在不在」，本模块看内容自身的形状
+//!   ——跨表 `ContentIndex` 引用是否都指向真的被定义过的条目（对全部
+//!   已装载内容生效，是装载管线的硬失败条件），以及本体命名空间下
+//!   每个字段是否至少被一条内容设成过非默认值（与
+//!   `scripts/ci/check_field_consumers.py` 的「Rust 里有没有人读」互为
+//!   另一头，见其模块文档）。表判定复用 [`content_hash::classify_index`]
+//!   而不是另写一份等价的 if/else 链。
 //! - [`trait_def`] —— 天赋注册表（天赋系统落地批次）：
 //!   `knowledge/design/trait-system.md` 四节落地，`TraitDef` 是独立
 //!   内容类型，被种族（本批次唯一接入的所有者）通过
@@ -163,6 +172,7 @@ pub mod base_terrain;
 pub mod base_xp_curve;
 pub mod class;
 pub mod clip;
+pub mod content_audit;
 pub mod content_hash;
 pub mod damage_category;
 pub mod discover;
