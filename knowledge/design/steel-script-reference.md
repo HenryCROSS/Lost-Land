@@ -444,13 +444,20 @@ book《Collections > Hash sets》给出构造示例 `(hashset 10 20 30 30 40)`�
 (register-quest "yourmod:kill_goblins" (list) "kill-count" "lostland:goblin" 3)
 ```
 
-#### `register-race`——**11 个参数，六项属性修正 + 四项其余数值**
+#### `register-race`——**13 个位置参数，七项属性修正 + 四项其余数值**
+
+> **签名在「暗视语义改版 + 幸运 authoring」批次变过一次，是破坏性变更。**
+> 相对旧版：第 9 位新插入了 `luck-mod`（此前 mod 作者写不出种族幸运
+> 修正，是已记录的 API 缺口），其后的 `darkvision-*` 顺延到第 10 位
+> **并且改名改语义**（`darkvision-floor` 光照千分比下限 →
+> `darkvision-cells` 夜间视野格数下限）。旧脚本必须逐条更新，照旧值
+> 不改会让参数整体错位一格。
 
 ```scheme
 (register-race id display-name-key
                 strength-mod dexterity-mod constitution-mod
-                intelligence-mod willpower-mod charisma-mod
-                darkvision-floor footprint-width footprint-height
+                intelligence-mod willpower-mod charisma-mod luck-mod
+                darkvision-cells footprint-width footprint-height
                 lifespan-years)
 ```
 
@@ -458,21 +465,21 @@ book《Collections > Hash sets》给出构造示例 `(hashset 10 20 30 30 40)`�
 |---|---|---|---|
 | 1 | `id` | 字符串 | 完整命名空间标识符 |
 | 2 | `display-name-key` | 字符串 | 本地化键标识符 |
-| 3–8 | `strength-mod` … `charisma-mod` | 整数 | 六项主属性的**固定增减量**（可为负）——**不是千分比**，顺序固定为力量/敏捷/体质/智力/意志/魅力 |
-| 9 | `darkvision-floor` | 整数 | 暗视下限 |
-| 10 | `footprint-width` | 整数 | 占位格宽度，钳位到 `u8` |
-| 11 | `footprint-height` | 整数 | 占位格高度，钳位到 `u8` |
-| 12 | `lifespan-years` | 整数 | 寿命（年） |
+| 3–9 | `strength-mod` … `luck-mod` | 整数 | 七项主属性的**固定增减量**（可为负）——**不是千分比**，顺序固定为力量/敏捷/体质/智力/意志/魅力/幸运 |
+| 10 | `darkvision-cells` | 整数 | 夜间视野格数下限。`0` = **未声明**（按常人处理，落回 `DEFAULT_NIGHT_SIGHT_RADIUS`，当前为 4 格）；非 0 直接生效，**允许低于默认值**表示「夜里比常人更瞎」。负数钳到 `0` |
+| 11 | `footprint-width` | 整数 | 占位格宽度，钳位到 `u8` |
+| 12 | `footprint-height` | 整数 | 占位格高度，钳位到 `u8` |
+| 13 | `lifespan-years` | 整数 | 寿命（年） |
 
-（表格里的"位置"从 1 数到 12 是把 `id`/`display-name-key` 也计入；函数签名本身连同 `id` 共 12 个位置参数，比其余五个都长——写这个调用时强烈建议逐个数一遍位置,不要凭印象排列。）
+（表格里的"位置"从 1 数到 13 是把 `id`/`display-name-key` 也计入；函数签名本身连同 `id` 共 13 个位置参数，比其余五个都长——写这个调用时强烈建议逐个数一遍位置,不要凭印象排列。）
 
-已实测（`crates/ll-mod/src/script_race_api.rs::通过线程局部注册目标脚本能真正调用register_race`）：
+已实测（`crates/ll-mod/src/script_race_api.rs::通过线程局部注册目标脚本能真正调用register_race`，该测试逐个钉住每个参数落在哪一格）：
 
 ```scheme
-(register-race "yourmod:half_elf" "yourmod:half_elf_display_name" 0 1 0 0 0 1 0 1 1 150)
+(register-race "yourmod:half_elf" "yourmod:half_elf_display_name" 0 1 0 0 0 1 3 5 1 1 150)
 ```
 
-对照上表：力量 +0、敏捷 +1、体质 +0、智力 +0、意志 +0、魅力 +1、暗视下限 0、占位 1×1、寿命 150 年。
+对照上表：力量 +0、敏捷 +1、体质 +0、智力 +0、意志 +0、魅力 +1、幸运 +3、暗视 5 格、占位 1×1、寿命 150 年。
 
 #### 六个函数在同一份脚本里连续调用（已实测，`crates/ll-mod/src/pipeline.rs` 的装载管线测试）
 
@@ -484,7 +491,7 @@ book《Collections > Hash sets》给出构造示例 `(hashset 10 20 30 30 40)`�
 (register-subclass "gameplay:shadowdancer" "gameplay:shadowdancer_display_name")
 (register-skill "gameplay:frostbolt" "" (list) 25 "mana" 12 "deal-damage" "" 15 0)
 (register-quest "gameplay:kill_goblins" (list) "kill-count" "gameplay:goblin" 3)
-(register-race "gameplay:half_elf" "gameplay:half_elf_display_name" 0 1 0 0 0 1 0 1 1 150)
+(register-race "gameplay:half_elf" "gameplay:half_elf_display_name" 0 1 0 0 0 1 0 0 1 1 150)
 ```
 
 ### 2. 脚本状态存储：`state-set!`/`state-get!`/`entity-state-set!`/`entity-state-get!`

@@ -21,7 +21,7 @@
 - **`ClassDef`/`ClassAttrs`**（`crates/ll-mod/src/class.rs`，已落地）：`id`/`display_name_key`/`primary_attribute`，没有等级或经验曲线字段。
 - **`SubclassDef`/`SubclassAttrs`**（`crates/ll-mod/src/subclass.rs`，已落地）：`id`/`display_name_key`，同样没有。
 - **`SkillDef`**（`crates/ll-mod/src/skill.rs`）：`owning_class`/`prerequisites`/`cooldown_ticks`/`resource_cost`/`effect`，技能解锁走的是前置技能 DAG（`unlocked_skills.contains`），不是等级门槛。
-- **`RaceDef`**（`knowledge/design/race-system.md`，未落地）：`stat_modifiers`/`darkvision_floor`/`footprint`/`lifespan_years`，没有等级。
+- **`RaceDef`**（`knowledge/design/race-system.md`，未落地）：`stat_modifiers`/`darkvision_cells`/`footprint`/`lifespan_years`，没有等级。
 - **`skill-learn-requirements.md`**（2026-08-20 冻结，纯设计）第三节已经预留了一个信号，值得转述：设计"盗贼且等级 5"这类技能可学条件时，作者写道「"等级 5"属于属性阈值扩展位——本次最小集合不含它，但结构上已经留了「加一个新字段」的口子」——**这是全代码库/全设计文档里唯一一处承认"等级"这个概念将来会被用到的地方，但它本身没有定义等级是什么、怎么增长**。本文档正是补上这个缺口。
 - **全代码库搜索 `升级`/`经验值`/`leveling`/`character level`**：命中的全部是"版本升级""地形阻挡等级""难度等级""商队报价升级"这类无关用词，没有一处指向角色成长。
 

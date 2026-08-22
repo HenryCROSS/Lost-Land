@@ -275,7 +275,7 @@ mod tests {
                         charisma: 0,
                         luck: 0,
                     },
-                    darkvision_floor: 0,
+                    darkvision_cells: 0,
                     footprint: (1, 1),
                     lifespan_years: 80,
                     xp_reward: 0,

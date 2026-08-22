@@ -92,6 +92,13 @@ use ll_sim::turn::TurnEngine;
 use ll_world::entity::EntityId;
 use ll_world::fov::{VisibleSet, compute_fov};
 use ll_world::light::{ambient_light, sight_radius_at};
+
+/// 「这个调用方不知道谁在看」时传给暗视参数的取值。
+///
+/// `0` 在 [`ll_world::light::sight_radius_at`] 里被解读成**未声明**
+/// 暗视，落回 [`ll_world::light::DEFAULT_NIGHT_SIGHT_RADIUS`]——本
+/// demo 不区分种族，行为与该函数长出这个参数之前逐格相同。
+const NO_DARKVISION: u32 = 0;
 use ll_world::naming::{NamingRules, given_name};
 use ll_world::state::WorldState;
 use ll_world::terrain::BaseTerrainIds;
@@ -755,7 +762,7 @@ impl AppHandler for Demo {
         // 光照与视野半径每帧现算，绝不缓存——理由见 `ll_world::light`
         // 模块文档「光照是纯函数派生，绝不进世界状态」。
         let light = ambient_light(self.world.clock);
-        let radius = sight_radius_at(BASE_SIGHT_RADIUS, light);
+        let radius = sight_radius_at(BASE_SIGHT_RADIUS, light, NO_DARKVISION);
         // 传各个字段而非 `&self`：`self.resources` 上面已经借出一个
         // `&mut`，`player_pos_or_camera(&self.world, ..)` 这样按字段
         // 借用，编译器才能看出它与 `resources` 借用的是不相交的两块

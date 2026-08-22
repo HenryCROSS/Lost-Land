@@ -36,13 +36,13 @@
 //!     pub id: NamespacedId,
 //!     pub name_key: String,
 //!     pub stat_modifiers: BaseStats,
-//!     pub darkvision_floor: i32,
+//!     pub darkvision_cells: u32,
 //!     pub footprint: (u8, u8),
 //!     pub lifespan_years: u32,
 //! }
 //! ```
 //!
-//! 本模块四项数值字段（`stat_modifiers`/`darkvision_floor`/
+//! 本模块四项数值字段（`stat_modifiers`/`darkvision_cells`/
 //! `footprint`/`lifespan_years`）与草图完全一致——这些是设计文档反复
 //! 论证过的实质内容（见该文档二~七节）。**唯一的偏离**：草图写的
 //! `name_key: String` 换成了 `display_name_key: NamespacedId`，与
@@ -119,11 +119,22 @@ pub struct RaceDef {
     /// 六项主属性的固定增减量，创建角色时一次性叠加，此后与种族脱钩
     /// ——见模块文档「属性修正」一节与 `race-system.md` 二、三两节。
     pub stat_modifiers: BaseStats,
-    /// 暗视下限：`effective_light = max(实际光照, darkvision_floor)`，
-    /// 见 `race-system.md`「五、暗视」一节——只改变喂给视野半径计算的
-    /// 输入，不碰 FOV 算法本身（ADR 0018 归类判据第二步的又一个实例：
-    /// 自由度落在算法读的数据上，不在算法本身）。
-    pub darkvision_floor: i32,
+    /// 暗视：这个种族在夜里**至少**看得见几格，见 `race-system.md`
+    /// 「五、暗视」一节。只改变视野半径这一个输出，不碰 FOV 算法本身，
+    /// 也不改变画面亮度（ADR 0018 归类判据第二步的又一个实例：自由度
+    /// 落在算法读的数据上，不在算法本身）。
+    ///
+    /// `0` 表示**未声明**（按常人处理，落回
+    /// `ll_world::light::DEFAULT_NIGHT_SIGHT_RADIUS`），不是「声明了 0
+    /// 格」；声明值**低于**那个默认值是合法的，表示这个种族夜里比常人
+    /// 更瞎——见 `ll_world::light::sight_radius_at` 文档「为什么不是
+    /// `max(默认值, 声明值)`」一节。
+    ///
+    /// 这个字段此前的语义是「光照千分比下限」（名字是
+    /// `darkvision_floor`），在本作的光照量纲下**永远不可能生效**：
+    /// 本体矮人声明的 4 连午夜环境光 100 都抬不动。改成直接声明格数
+    /// 之后，本体矮人是 7、精灵是 6，两者在夜里真的比人类看得更远。
+    pub darkvision_cells: u32,
     /// 占位格数（宽, 高），影响碰撞与寻路——见 `race-system.md`
     /// 「六、体型」一节。当前代码库的碰撞/寻路是否已支持大于 1×1 的
     /// 占位，该文档「十二、待验证项」标注为未核实，本字段只负责声明
@@ -184,8 +195,9 @@ pub struct RaceAttrs {
     pub display_name_key: NamespacedId,
     /// 六项主属性的固定增减量。
     pub stat_modifiers: BaseStats,
-    /// 暗视下限。
-    pub darkvision_floor: i32,
+    /// 暗视：夜间视野格数下限，`0` 表示未声明——见
+    /// [`RaceDef::darkvision_cells`] 文档。
+    pub darkvision_cells: u32,
     /// 占位格数（宽, 高）。
     pub footprint: (u8, u8),
     /// 寿命（年）。
@@ -249,8 +261,9 @@ pub struct RaceView<'a> {
     pub display_name_key: &'a NamespacedId,
     /// 六项主属性的固定增减量。
     pub stat_modifiers: BaseStats,
-    /// 暗视下限。
-    pub darkvision_floor: i32,
+    /// 暗视：夜间视野格数下限，`0` 表示未声明——见
+    /// [`RaceDef::darkvision_cells`] 文档。
+    pub darkvision_cells: u32,
     /// 占位格数（宽, 高）。
     pub footprint: (u8, u8),
     /// 寿命（年）。
@@ -287,7 +300,7 @@ const ZERO_STAT_MODIFIERS: BaseStats = BaseStats {
 pub struct RaceTable {
     display_name_key: Vec<Option<NamespacedId>>,
     stat_modifiers: Vec<BaseStats>,
-    darkvision_floor: Vec<i32>,
+    darkvision_cells: Vec<u32>,
     footprint: Vec<(u8, u8)>,
     lifespan_years: Vec<u32>,
     xp_reward: Vec<i64>,
@@ -314,7 +327,7 @@ impl RaceTable {
             self.defined.resize(new_len, false);
             self.display_name_key.resize(new_len, None);
             self.stat_modifiers.resize(new_len, ZERO_STAT_MODIFIERS);
-            self.darkvision_floor.resize(new_len, 0);
+            self.darkvision_cells.resize(new_len, 0);
             self.footprint.resize(new_len, (1, 1));
             self.lifespan_years.resize(new_len, 0);
             self.xp_reward.resize(new_len, 0);
@@ -329,7 +342,7 @@ impl RaceTable {
         self.defined[idx] = true;
         self.display_name_key[idx] = Some(attrs.display_name_key);
         self.stat_modifiers[idx] = attrs.stat_modifiers;
-        self.darkvision_floor[idx] = attrs.darkvision_floor;
+        self.darkvision_cells[idx] = attrs.darkvision_cells;
         self.footprint[idx] = attrs.footprint;
         self.lifespan_years[idx] = attrs.lifespan_years;
         self.xp_reward[idx] = attrs.xp_reward;
@@ -361,7 +374,7 @@ impl RaceTable {
                 .as_ref()
                 .expect("defined 为真时 display_name_key 必已写入"),
             stat_modifiers: self.stat_modifiers[idx],
-            darkvision_floor: self.darkvision_floor[idx],
+            darkvision_cells: self.darkvision_cells[idx],
             footprint: self.footprint[idx],
             lifespan_years: self.lifespan_years[idx],
             xp_reward: self.xp_reward[idx],
@@ -482,15 +495,15 @@ impl RaceStatModifierSource for RaceTable {
 }
 
 /// `ll_sim::vision::RaceDarkvisionSource` 的真实实现——
-/// `ll_sim::vision::effective_light_for_race` 通过这个 impl 真正查到
-/// 种族声明的暗视下限，见 `ll_sim::vision` 模块文档「为什么定义在
-/// `ll-sim`」一节同一套依赖倒置手法。未注册的种族索引返回 `0`（无
-/// 暗视）——与 [`RaceStatModifierSource::race_stat_modifiers`] 文档
-/// 「查不到就是查不到」的既有纪律一致，不是 panic 或特殊分支。
+/// `ll_sim::vision::sight_radius_for_race` 通过这个 impl 真正查到
+/// 种族声明的暗视格数，见 `ll_sim::vision` 模块文档「为什么定义在
+/// `ll-sim`」一节同一套依赖倒置手法。未注册的种族索引返回 `0`（未
+/// 声明暗视，按常人处理）——与 [`RaceStatModifierSource::race_stat_modifiers`]
+/// 文档「查不到就是查不到」的既有纪律一致，不是 panic 或特殊分支。
 impl ll_sim::vision::RaceDarkvisionSource for RaceTable {
-    fn darkvision_floor(&self, race: ContentIndex) -> i32 {
+    fn darkvision_cells(&self, race: ContentIndex) -> u32 {
         self.get(race)
-            .map(|view| view.darkvision_floor)
+            .map(|view| view.darkvision_cells)
             .unwrap_or(0)
     }
 }
@@ -499,7 +512,7 @@ impl ll_sim::vision::RaceDarkvisionSource for RaceTable {
 ///
 /// # 定义搬进了脚本，这个结构体刻意留下
 ///
-/// 三个种族的**字段值**（属性修正、暗视下限、体型、寿命）现在住在
+/// 三个种族的**字段值**（属性修正、暗视格数、体型、寿命）现在住在
 /// `mods/lostland/races.scm`，不再是本文件里的 Rust 字面量。但本结构体
 /// **不能**跟着搬走：`ll_game::world::spawn_player` 里
 /// `content.race_ids.human` 这行代码的编译期安全全靠它——字段名少一个
@@ -510,11 +523,11 @@ impl ll_sim::vision::RaceDarkvisionSource for RaceTable {
 /// 缺任何一条整批失败。
 #[derive(Debug, Clone, Copy)]
 pub struct BaseRaceIds {
-    /// 人类：无属性修正，暗视下限为零（无暗视）。
+    /// 人类：无属性修正，未声明暗视（夜里按默认格数）。
     pub human: ContentIndex,
-    /// 矮人：体质 +2、力量 +1，暗视下限较高。
+    /// 矮人：体质 +2、力量 +1，暗视格数三族最高。
     pub dwarf: ContentIndex,
-    /// 精灵：敏捷 +2、智力 +1，寿命远长于人类。
+    /// 精灵：敏捷 +2、智力 +1，暗视好于常人，寿命远长于人类。
     pub elf: ContentIndex,
 }
 
@@ -586,7 +599,7 @@ mod tests {
     /// 本体数值：在 Rust 里再埋一份本体内容字面量，恰恰是本次迁移要
     /// 消除的那种「同一份内容存在两处、迟早分叉」。
     ///
-    /// 返回的两条测试种族：`sturdy`（体质 +2、力量 +1，暗视下限 4）与
+    /// 返回的两条测试种族：`sturdy`（体质 +2、力量 +1，暗视 4 格）与
     /// `nimble`（敏捷 +2，寿命 400）。
     fn sample_table() -> (Registry, ContentIndex, ContentIndex, RaceTable) {
         let mut registry = Registry::new();
@@ -596,7 +609,7 @@ mod tests {
                       table: &mut RaceTable,
                       id: &str,
                       stat_modifiers: BaseStats,
-                      darkvision_floor: i32,
+                      darkvision_cells: u32,
                       lifespan_years: u32| {
             let index = registry.intern(NamespacedId::parse(id).expect("合法标识符"));
             table
@@ -606,7 +619,7 @@ mod tests {
                         display_name_key: NamespacedId::parse("testmod:display_name")
                             .expect("合法标识符"),
                         stat_modifiers,
-                        darkvision_floor,
+                        darkvision_cells,
                         footprint: (1, 1),
                         lifespan_years,
                         xp_reward: 0,
@@ -661,7 +674,7 @@ mod tests {
                         display_name_key: NamespacedId::parse("lostland:placeholder")
                             .expect("合法标识符"),
                         stat_modifiers: ZERO_STAT_MODIFIERS,
-                        darkvision_floor: 0,
+                        darkvision_cells: 0,
                         footprint: (1, 1),
                         lifespan_years: 1,
                         xp_reward: 0,
@@ -734,7 +747,7 @@ mod tests {
                         display_name_key: NamespacedId::parse("lostland:placeholder")
                             .expect("合法标识符"),
                         stat_modifiers: ZERO_STAT_MODIFIERS,
-                        darkvision_floor: 0,
+                        darkvision_cells: 0,
                         footprint: (1, 1),
                         lifespan_years: 1,
                         xp_reward: 0,
@@ -781,7 +794,7 @@ mod tests {
                     display_name_key: NamespacedId::parse("lostland:race.human.display_name")
                         .expect("合法"),
                     stat_modifiers: ZERO_STAT_MODIFIERS,
-                    darkvision_floor: 0,
+                    darkvision_cells: 0,
                     footprint: (1, 1),
                     lifespan_years: 80,
                     xp_reward: 0,
@@ -798,7 +811,7 @@ mod tests {
                 display_name_key: NamespacedId::parse("lostland:race.human.display_name")
                     .expect("合法"),
                 stat_modifiers: ZERO_STAT_MODIFIERS,
-                darkvision_floor: 0,
+                darkvision_cells: 0,
                 footprint: (1, 1),
                 lifespan_years: 80,
                 xp_reward: 0,
@@ -853,7 +866,7 @@ mod tests {
                     display_name_key: NamespacedId::parse("yourmod:goblin_display_name")
                         .expect("合法"),
                     stat_modifiers: ZERO_STAT_MODIFIERS,
-                    darkvision_floor: 0,
+                    darkvision_cells: 0,
                     footprint: (1, 1),
                     lifespan_years: 5,
                     xp_reward: 0,
@@ -904,7 +917,7 @@ mod tests {
                     display_name_key: NamespacedId::parse("yourmod:goblin_display_name")
                         .expect("合法"),
                     stat_modifiers: ZERO_STAT_MODIFIERS,
-                    darkvision_floor: 0,
+                    darkvision_cells: 0,
                     footprint: (1, 1),
                     lifespan_years: 5,
                     xp_reward: 0,
@@ -962,7 +975,7 @@ mod tests {
                         dexterity: 1,
                         ..ZERO_STAT_MODIFIERS
                     },
-                    darkvision_floor: 0,
+                    darkvision_cells: 0,
                     footprint: (1, 1),
                     lifespan_years: 150,
                     xp_reward: 0,
@@ -1014,15 +1027,15 @@ mod tests {
     }
 
     #[test]
-    fn racedarkvisionsource查询已定义种族返回其暗视下限() {
+    fn racedarkvisionsource查询已定义种族返回其暗视格数() {
         // 直接验收 impl RaceDarkvisionSource for RaceTable：真实实现
-        // 确实把 darkvision_floor 字段透传给了 ll_sim::vision 的依赖
+        // 确实把 darkvision_cells 字段透传给了 ll_sim::vision 的依赖
         // 倒置接口，不是一个只挂名字、内部恒返回零的空壳。
         // Arrange
         let (_registry, sturdy, _nimble, table) = sample_table();
 
         // Act
-        let floor = ll_sim::vision::RaceDarkvisionSource::darkvision_floor(&table, sturdy);
+        let floor = ll_sim::vision::RaceDarkvisionSource::darkvision_cells(&table, sturdy);
 
         // Assert
         assert!(floor > 0);
@@ -1030,7 +1043,7 @@ mod tests {
 
     #[test]
     fn racedarkvisionsource查询未注册索引返回零() {
-        // 反例：未注册的索引不能返回任何非零的伪造暗视下限。
+        // 反例：未注册的索引不能返回任何非零的伪造暗视格数。
         // Arrange
         let mut interner = Interner::new();
         let never_defined =
@@ -1038,7 +1051,7 @@ mod tests {
         let table = RaceTable::new();
 
         // Act
-        let floor = ll_sim::vision::RaceDarkvisionSource::darkvision_floor(&table, never_defined);
+        let floor = ll_sim::vision::RaceDarkvisionSource::darkvision_cells(&table, never_defined);
 
         // Assert
         assert_eq!(floor, 0);

@@ -34,7 +34,7 @@ pub struct RaceDef {
     pub id: NamespacedId,
     pub name_key: String,
     pub stat_modifiers: BaseStats,      // 见二、烘焙进 BaseStats
-    pub darkvision_floor: i32,          // 见五、暗视
+    pub darkvision_cells: u32,          // 见五、暗视
     pub footprint: (u8, u8),            // 见六、体型
     pub lifespan_years: u32,            // 见七、寿命
 }
@@ -102,16 +102,50 @@ pub struct RaceDef {
 
 ## 五、暗视：接口不碰 FOV
 
+> **本节已按落地实现更正（暗视语义改版批次）。** 原稿把暗视写成
+> 「光照千分比下限」（`effective_light = max(light, 声明值)`，字段当时叫 `darkvision_floor`）。
+> 那个形态确实按原稿实现了，但在本作的光照量纲下**永远不可能生效**：
+> 本体矮人声明 4，而午夜环境光是 100（`ll_core::light::MIDNIGHT_LIGHT`），
+> 最暗的冬夜下雨也还有约 52，`max(52, 4)` 恒等于 52。更深的一层是下游
+> 还有第二个下限（`ll_world::light` 的 4 格），两个下限串在一起时后面
+> 那个把前面那个整个吃掉：基准 12 格时光照 300 只算出 3 格，仍被 4 格
+> 下限抬回 4，暗视值从 100 涨到 300 最终一格没变。项目所有者据此裁定
+> 改成**直接声明夜间视野格数**。
+
 ```rust
-/// 有效可见半径：暗视只改变「算半径的输入」，不碰 FOV 算法本身。
-fn sight_radius_at(base_radius: i32, light: i32, darkvision_floor: i32) -> i32 {
-    let effective_light = light.max(darkvision_floor);
-    // ……用 effective_light 换算出半径，具体换算公式属于视野系统，
-    // 本节只约束暗视在这条链路里的介入点。
+/// 有效可见半径：暗视直接给出「夜里至少看得见几格」，不碰 FOV 算法本身。
+/// 真实实现见 crates/ll-world/src/light.rs。
+pub fn sight_radius_at(base_radius: u32, light: LightLevel, darkvision_cells: u32) -> u32 {
+    let scaled = (u64::from(base_radius) * clamped_light) / 1000;
+    // 0 表示「未声明」，落回默认值；非 0 就直接用，高于或低于默认都算数。
+    let declared = if darkvision_cells == 0 {
+        DEFAULT_NIGHT_SIGHT_RADIUS      // 当前为 4
+    } else {
+        darkvision_cells
+    };
+    let night_floor = declared.min(base_radius).max(1);
+    (scaled as u32).max(night_floor)
 }
 ```
 
-暗视的落点是「喂给半径计算的光照输入」，`compute_fov`（`crates/ll-world/src/fov.rs`）本身**完全不感知种族、不感知暗视**——它只认一个 `origin` 和一个 `radius`。
+**不能写成 `max(DEFAULT_NIGHT_SIGHT_RADIUS, darkvision_cells)`**：那样会禁止
+「夜视比常人差」这一整类设定——任何低于默认值的声明都被默默抬回默认值，
+写它的人得不到任何提示。按当前写法一个种族声明 `2` 就真的是夜里只看得见
+两格（已发货证据：`mods/example_mod/gameplay.scm` 的 `examplemod:ooze`），
+而「没声明」这个真实存在的状态由 `0` 承担。
+
+**天气那一处的下限也必须认暗视**：`sight_radius_under_weather` 把夜间
+下限应用了两次（`sight_radius_at` 内部一次、天气乘数之后再一次），只改
+前一处的话，雾/雪会把矮人从 7 格削回默认的 4 格。
+
+**暗视只买视野格数，不买画面亮度**：画面亮度那一路
+（`ll_game::layout::effective_tint`）读的是环境光本身，与暗视无关——夜视
+好的种族在黑暗里看得**更远**，不是让整个世界对它变亮。
+
+本体取值：人类 `0`（未声明 → 默认 4 格）、精灵 `6`、矮人 `7`；白天基准
+半径是 12 格。
+
+暗视的落点是「半径换算的一个输入」，`compute_fov`（`crates/ll-world/src/fov.rs`）本身**完全不感知种族、不感知暗视**——它只认一个 `origin` 和一个 `radius`。
 
 ### 对称性论证（最容易被误解的一点，必须写完整）
 
@@ -128,7 +162,7 @@ FOV 模块文档警告的「玩家会被自己看不见的敌人攻击」，语�
 
 ### 暗视不可做成「无视黑暗」
 
-`darkvision_floor` 是一个**下限**，不是「黑暗对我不存在」。若做成无视黑暗，两个后果都不可接受：潜行玩法失衡（暗视种族对着潜行者毫无死角，潜行系统对这个种族形同虚设）；昼夜压迫感消失（黑夜作为一种环境压力,对暗视种族完全不起作用,削弱了昼夜系统本身的设计目的）。`effective_light = max(light, floor)` 这个写法保证了：即便环境光为零，暗视种族依然只能看到「地板值」对应的范围，而不是全图可见。
+`darkvision_cells` 是一个**下限**，不是「黑暗对我不存在」。若做成无视黑暗，两个后果都不可接受：潜行玩法失衡（暗视种族对着潜行者毫无死角，潜行系统对这个种族形同虚设）；昼夜压迫感消失（黑夜作为一种环境压力,对暗视种族完全不起作用,削弱了昼夜系统本身的设计目的）。`max(按光照缩放出来的半径, 声明的格数)` 这个写法保证了：即便环境光为零，暗视种族依然只能看到自己声明的那几格，而不是全图可见——本体矮人的 7 格仍然明显小于白天的 12 格，夜晚对它同样是需要谨慎的时段。
 
 ---
 

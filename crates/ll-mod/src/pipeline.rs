@@ -1183,7 +1183,7 @@ mod tests {
                 (register-subclass "gameplay:shadowdancer" "gameplay:shadowdancer_display_name")
                 (register-skill "gameplay:frostbolt" "" (list) 25 "mana" 12 "deal-damage" "" 15 0)
                 (register-quest "gameplay:kill_goblins" (list) "kill-count" "gameplay:goblin" 3)
-                (register-race "gameplay:half_elf" "gameplay:half_elf_display_name" 0 1 0 0 0 1 0 1 1 150)
+                (register-race "gameplay:half_elf" "gameplay:half_elf_display_name" 0 1 0 0 0 1 0 0 1 1 150)
                 (register-animation-clip "gameplay:slime_squish" (list "slime_0" "slime_1") 6 #t 0)
                 "#,
             ),

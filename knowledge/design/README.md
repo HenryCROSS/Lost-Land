@@ -93,7 +93,7 @@
 | `NamingRules`（命名规则：音素表 + 拼接方式） | [社会系统](society-and-affiliation.md) 提出字段位置（`CultureDef.naming`）；真正的类型定义与实现在 `crates/ll-world/src/naming.rs`（已落地） | [命名、改名与本地化](naming-and-localization.md)（多语言版本表长对齐规则、命名依据出生地文化而非种族） |
 | `Space`（`Surface`/`Interior`，统一地表与离散空间的接口） | [坐标系与空间模型](coordinate-system-and-layers.md) | 取代原本设想的单一 `(i,j,z)` 三元组；`Interior` 复用 [身份与 ID 空间](identity-and-ids.md) 的 `WorldId` 作为 `SpaceId` |
 | 区块（zone，128×128 格，世界地图的逻辑单位） | [坐标系与空间模型](coordinate-system-and-layers.md) | [世界历史生成](world-history.md)（聚落播种、势力形成的操作粒度）；与既有存储粒度 `CHUNK_SIZE=32`（`crates/ll-world/src/chunk.rs`）按 4×4 写死对齐 |
-| `SpaceProfile`（层/空间属性：环境光基准、是否露天、温度、可挖掘/可建造，注册表内容） | [坐标系与空间模型](coordinate-system-and-layers.md) | [种族系统](race-system.md)（暗视 `darkvision_floor` 的光照输入现在经由 `exposed_to_sky` 判断，接口本身不改）；走 P4 内容注册表同一套「静态声明/物化/注册期校验」模式 |
+| `SpaceProfile`（层/空间属性：环境光基准、是否露天、温度、可挖掘/可建造，注册表内容） | [坐标系与空间模型](coordinate-system-and-layers.md) | [种族系统](race-system.md)（暗视 `darkvision_cells` 的光照输入现在经由 `exposed_to_sky` 判断，接口本身不改）；走 P4 内容注册表同一套「静态声明/物化/注册期校验」模式 |
 | `TargetSpec`（`Entity`/`Tile`/`Set` 三种瞄准载荷） | [三轴战斗结算](combat-three-axis.md) | 取代 `Intent::Attack` 原本只能表达 `target: EntityId` 单体的限制 |
 | `AimShape` / `DamageSchool` / `DeliveryMode`（瞄准形状/伤害系别/投送方式三条正交轴） | [三轴战斗结算](combat-three-axis.md) | [属性系统](attribute-system.md)（`DamageSchool` 决定读取 `DerivedStats` 的哪一个字段、用哪一种 `Penetration`） |
 | `ActiveEffect`（生效中的增益/减益实例：`expires_at`/`stacks`/`applied_at`/`source`） | [增益与通用触发器](buffs-and-triggers.md) | [属性系统](attribute-system.md)（`derive_stats` 入参新增「生效增益」一项，与装备贡献同一次算出 `DerivedStats`） |

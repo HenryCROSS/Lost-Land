@@ -124,7 +124,7 @@ ll-sim 的反向依赖` 这次提交里确定归属 `ll-world` 的（详见
 `blocks_move`、`move_cost` 三个方法，没有光照透过率相关的字段或方法。
 
 **判断**：`p2-to-p3.md` 已记录此项，历轮交接清单持续复核，**截至最新一轮（P5→P6）仍是零实现**。
-建议归入 P9——`RaceDef.darkvision_floor`/`sight_radius_at`（暗视接口）同样要到 P9 才落地，光照
+建议归入 P9——`RaceDef.darkvision_cells`/`sight_radius_at`（暗视接口）同样要到 P9 才落地，光照
 透过率是 FOV 半径计算的另一个输入，与暗视系统同批设计更省一次返工。
 
 ---

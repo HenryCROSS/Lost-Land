@@ -33,7 +33,7 @@ pub struct RaceDef {
     pub id: NamespacedId,
     pub display_name_key: NamespacedId,
     pub stat_modifiers: BaseStats,   // 创建时一次性烘焙进 BaseStats，见 race-system.md 二节
-    pub darkvision_floor: i32,
+    pub darkvision_cells: u32,
     pub footprint: (u8, u8),
     pub lifespan_years: u32,
 }
@@ -327,7 +327,7 @@ pub struct RaceDef {
     pub id: NamespacedId,
     pub display_name_key: NamespacedId,
     pub stat_modifiers: BaseStats,
-    pub darkvision_floor: i32,
+    pub darkvision_cells: u32,
     pub footprint: (u8, u8),
     pub lifespan_years: u32,
     /// 新增：父种族——非 None 时表示这是一个亚种，创建时先烘焙父种族
@@ -341,7 +341,7 @@ pub struct RaceDef {
 
 **有效天赋**（六节聚合函数的直接应用）：`effective_traits(race) = traits(parent_race).unwrap_or(&[]) ∪ race.traits`——与三节①"有效技能=并集"是同一个模式的第三次复用（种族天赋并集是第一次的直接对象，这里是"父种族天赋 ∪ 子种族天赋"这个更具体的并集实例）。**不递归到祖父种族**——与 `race-system.md` 九节"混血不递归到祖父母"同一条纪律（`parent_race` 本身若也声明了 `parent_race`，注册期直接拒绝——不支持多级嵌套，亚种只有一层，与 D&D 原版"亚种不再有亚种的亚种"一致）。
 
-**为什么不新开一个 `SubraceDef` 类型**：亚种要读的字段（`stat_modifiers`/`darkvision_floor`/`footprint`/`lifespan_years`/`traits`）与基础种族**完全相同**——丘陵矮人自己也有暗视、有体型、有寿命，不存在"亚种独有、基础种族没有"的字段。新开一个类型只会复制 `RaceDef` 全部字段再加一个 `parent_race`，不如直接给 `RaceDef` 加这一个可选字段。
+**为什么不新开一个 `SubraceDef` 类型**：亚种要读的字段（`stat_modifiers`/`darkvision_cells`/`footprint`/`lifespan_years`/`traits`）与基础种族**完全相同**——丘陵矮人自己也有暗视、有体型、有寿命，不存在"亚种独有、基础种族没有"的字段。新开一个类型只会复制 `RaceDef` 全部字段再加一个 `parent_race`，不如直接给 `RaceDef` 加这一个可选字段。
 
 ---
 

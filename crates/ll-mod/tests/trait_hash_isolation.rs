@@ -115,7 +115,7 @@ fn 天赋定义不同但世界存储状态相同时哈希相同() {
             RaceAttrs {
                 display_name_key: NamespacedId::parse("lostland:race.dragonborn").unwrap(),
                 stat_modifiers: BaseStats::BASELINE,
-                darkvision_floor: 0,
+                darkvision_cells: 0,
                 footprint: (1, 1),
                 lifespan_years: 80,
                 xp_reward: 0,
@@ -157,7 +157,7 @@ fn 天赋定义不同但世界存储状态相同时哈希相同() {
             RaceAttrs {
                 display_name_key: NamespacedId::parse("lostland:race.dragonborn").unwrap(),
                 stat_modifiers: BaseStats::BASELINE,
-                darkvision_floor: 0,
+                darkvision_cells: 0,
                 footprint: (1, 1),
                 lifespan_years: 80,
                 xp_reward: 0,

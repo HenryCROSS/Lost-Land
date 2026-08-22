@@ -761,7 +761,7 @@ fn render_surface(
     // 的唯一派生点，输入只有世界种子与世界时钟，见 `ll_world::weather`
     // 模块文档。
     let weather = Weather::derive(world.seed, clock, &content.weather_table);
-    // 视野半径叠加玩家种族的暗视下限（见 `effective_sight_radius_for_race`
+    // 视野半径叠加玩家种族声明的夜间视野格数（见 `effective_sight_radius_for_race`
     // 模块文档「为什么接在这一步」一节）——玩家实体查不到（理论上不该
     // 发生，见上方 `unwrap_or(camera.center)` 同一条降级纪律）时退化到
     // 不叠加暗视的 `effective_sight_radius`，不是 panic。

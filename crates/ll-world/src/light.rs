@@ -132,35 +132,88 @@ pub fn season_light_scale(season: Season) -> i32 {
     }
 }
 
-/// 无论光照多暗都保留的视野半径下限。
+/// **未声明暗视**的生物在夜里保留的视野半径（格）——不是所有生物的
+/// 绝对下限。
 ///
 /// 原先的下限是 1，那只保证「不至于连脚下都看不见」，实测下来午夜开局
 /// 是一片黑加正中央五个格子——项目所有者的要求是「让黑夜有个最低视野
 /// 范围」。取 4 的理由：它足够看清相邻几格、能走能躲，又明显小于白天的
 /// 基准半径（12），夜晚仍然是需要谨慎的时段而不只是换了个色调。
 ///
+/// # 为什么不再叫 `MIN_SIGHT_RADIUS`
+///
+/// 暗视从「光照千分比下限」改成「夜间视野格数下限」之后，种族可以
+/// 声明一个**低于**本常量的值（例如 `2`，表示这个种族夜里几乎全瞎），
+/// 见 [`sight_radius_at`] 文档「为什么不是 `max(默认值, 声明值)`」
+/// 一节。名字若仍叫「最小视野半径」，下一个读代码的人会理所当然地
+/// 以为 4 是保底，然后被一个 2 格的种族打脸。它现在只是**未声明时的
+/// 默认值**，名字如实反映这一点。
+///
 /// 这条是**玩法规则**，不是表现层调节：视野半径决定 FOV，FOV 决定探索
 /// 记忆写入哪些格子，而探索记忆进 `WorldState::hash()`。画面亮度的下限
-/// 是另一回事，见 `ll_game::layout` 的 `MIN_VISIBLE_TINT`。
-pub const MIN_SIGHT_RADIUS: u32 = 4;
+/// 是另一回事，见 `ll_game::layout` 的 `MIN_VISIBLE_TINT`——而且暗视
+/// **只**影响本模块这一路（看多远），不影响那一路（看多清），见
+/// [`sight_radius_at`] 文档「暗视只买视野格数，不买画面亮度」一节。
+pub const DEFAULT_NIGHT_SIGHT_RADIUS: u32 = 4;
 
-/// 按光照缩放基准视野半径，下限为 [`MIN_SIGHT_RADIUS`]。
+/// 把一个种族声明的暗视格数换算成它在这一格基准半径下真正的夜间下限。
+///
+/// 抽成私有函数而不是在两个调用点各写一遍：`sight_radius_at` 与
+/// [`sight_radius_under_weather`] 必须给出**逐字节相同**的下限，否则
+/// 恶劣天气会把暗视削掉一部分（那正是这次改动要修的缺陷之一）。两处
+/// 各写一遍同一个三步表达式，是让它们将来分叉的最短路径。
+fn night_sight_floor(base_radius: u32, darkvision_cells: u32) -> u32 {
+    // 0 是「这个种族没有声明暗视」，不是「声明了 0 格」——列式存储对
+    // 未定义槽位、以及 `RaceDarkvisionSource` 对查不到的索引，都返回 0
+    // （ADR 0015「查不到就是查不到」），因此 0 必须落回默认值而不是
+    // 被当成一个真实的极端声明。
+    let declared = if darkvision_cells == 0 {
+        DEFAULT_NIGHT_SIGHT_RADIUS
+    } else {
+        darkvision_cells
+    };
+    // 夜间下限不得反过来把「基准视野本就很小」的角色**放大**，故先与
+    // `base_radius` 取小；但「永不为零」这条绝对底线始终成立——基准为
+    // 零时仍返回 1，与本模块原有契约一致。
+    declared.min(base_radius).max(1)
+}
+
+/// 按光照缩放基准视野半径，夜间下限由 `darkvision_cells` 决定。
 ///
 /// 下限存在的理由与午夜光照取 100 而非 0 相同：视野缩到零会让玩家连
 /// 自己脚下都看不见，那是卡住而不是难度。`light` 的分量在调用前会被
 /// 夹到 `0..=1000`，即便调用方传入了越界值（例如某个未来的负面效果
 /// 直接构造了 `LightLevel(-1)`），也不会产出负的或超比例的半径。
 ///
-/// 下限不随 `base_radius` 缩放——它表达的是「人在暗处也能摸到周围」这
-/// 条底线，与角色本身视力多好无关；若某天出现基准半径本就小于下限的
-/// 角色，取两者较小值，避免下限反而把视野**放大**。
-pub fn sight_radius_at(base_radius: u32, light: LightLevel) -> u32 {
+/// # `darkvision_cells` 是**视野格数**，不是光照下限
+///
+/// 这个参数此前的形态是「光照千分比下限」（`RaceDef::darkvision_floor`，
+/// 经一个 `max(实际光照, 下限)` 折进 `light`）。那个形态在本作的量纲
+/// 下**永远不可能生效**：本体矮人声明的是 4，而午夜环境光是 100
+/// （`ll_core::light::MIDNIGHT_LIGHT`），最暗的冬夜下雨也还有约 52
+/// ——`max(52, 4)` 恒等于 52，矮人的暗视等于不存在。就算把那个数字
+/// 调大，下游还有第二个下限（本模块自己的 4 格）会把它吃掉：基准 12
+/// 格时光照 300 只算出 3 格，仍旧被 4 格的下限抬回 4，暗视值从 100
+/// 涨到 300 最终一格没变。两个下限串在一起，后面那个把前面那个吃掉。
+/// 改成直接声明格数，是让这个数字与它想表达的东西（「夜里能看多远」）
+/// 之间不再隔着一层会把它整个吸收掉的换算。
+///
+/// # 为什么不是 `max(默认值, 声明值)`
+///
+/// 用「为 0 取默认、非 0 直接用」而不是 `max`：`max` 会**禁止**「夜视
+/// 比常人差」这一整类设定——任何低于 4 的声明都会被默默抬回 4，写它的
+/// 人得不到任何提示。按当前写法，一个种族声明 `2` 就真的是夜里只看得见
+/// 两格，表达力严格更强，而「没声明」这个真实存在的状态由 0 承担。
+///
+/// # 暗视只买视野格数，不买画面亮度
+///
+/// 本函数是暗视唯一的落点：它改变的只有「看多远」。「看多清」那一路
+/// （`ll_game::layout::effective_tint`）读的是环境光本身，与暗视无关
+/// ——夜视好的种族在黑暗里看得**更远**，不是让整个世界对它变亮。
+pub fn sight_radius_at(base_radius: u32, light: LightLevel, darkvision_cells: u32) -> u32 {
     let clamped_light = light.0.clamp(0, 1000) as u64;
     let scaled = (u64::from(base_radius) * clamped_light) / 1000;
-    // 夜间下限不得反过来把「基准视野本就很小」的角色**放大**，故先与
-    // `base_radius` 取小；但「永不为零」这条绝对底线始终成立——基准为
-    // 零时仍返回 1，与本函数原有契约一致。
-    let night_floor = MIN_SIGHT_RADIUS.min(base_radius).max(1);
+    let night_floor = night_sight_floor(base_radius, darkvision_cells);
     (scaled as u32).max(night_floor)
 }
 
@@ -176,17 +229,24 @@ pub fn sight_radius_at(base_radius: u32, light: LightLevel) -> u32 {
 /// 接在光照换算完成**之后**——顺序不能反过来：折进光照会让雾同时把
 /// 画面也压黑（`effective_tint` 读的是光照），那不是雾。
 ///
-/// # 下限仍然是 [`MIN_SIGHT_RADIUS`]
+/// # 夜间下限在这里**第二次**应用，两次都必须认识暗视
 ///
-/// 天气再恶劣也不会让玩家连脚下都看不见——与 `sight_radius_at` 同一条
-/// 底线，且同样先与 `base_radius` 取小，避免下限反过来把「基准视野本就
-/// 很小」的角色**放大**。这条下限是玩法规则，不是表现层调节，取值本身
-/// 不因为新增了天气而改动。
-pub fn sight_radius_under_weather(base_radius: u32, light: LightLevel, weather: Weather) -> u32 {
-    let radius = sight_radius_at(base_radius, light);
+/// 下限在本函数里被应用了两次：一次在 [`sight_radius_at`] 内部，天气
+/// 乘数算完之后又来一次。这是刻意的——雾雪吃不掉「人在暗处也能摸到
+/// 周围」这条底线。正因为是两次，两次都必须用同一个
+/// `darkvision_cells`：只在 [`sight_radius_at`] 那一处认暗视，恶劣天气
+/// 就会把矮人从 7 格削回默认的 4 格，暗视在最需要它的场合反而失效。
+/// 两处共用 `night_sight_floor` 这一个私有函数，不是各写一遍。
+pub fn sight_radius_under_weather(
+    base_radius: u32,
+    light: LightLevel,
+    weather: Weather,
+    darkvision_cells: u32,
+) -> u32 {
+    let radius = sight_radius_at(base_radius, light, darkvision_cells);
     let scale = u64::from(weather.sight_scale.clamp(0, WEATHER_SCALE_ONE) as u32);
     let scaled = (u64::from(radius) * scale) / 1000;
-    let night_floor = MIN_SIGHT_RADIUS.min(base_radius).max(1);
+    let night_floor = night_sight_floor(base_radius, darkvision_cells);
     (scaled as u32).max(night_floor)
 }
 
@@ -206,6 +266,14 @@ mod tests {
     /// 与 `ll_game::layout::MIN_VISIBLE_TINT` 同值，理由同上——那是纯
     /// 表现层常量（ADR 0020 甲区），定义在 `ll-game`。
     const PLAYER_MIN_VISIBLE_TINT: f32 = 0.4;
+
+    /// 「这个调用方不知道谁在看，也不关心暗视」的显式取值——0 表示
+    /// **未声明**，`night_sight_floor` 会把它落回
+    /// [`DEFAULT_NIGHT_SIGHT_RADIUS`]，与本函数长出暗视参数之前的行为
+    /// 逐格相同。写成具名常量而不是散落的字面量 `0`，是为了让「这里
+    /// 传 0 是因为没有观察者」与「某个种族真的声明了 0」在读代码时不
+    /// 会混淆（后者不可能出现——0 恒被解读成未声明）。
+    const NO_DARKVISION: u32 = 0;
 
     fn all_seasons() -> [Season; 4] {
         [
@@ -294,7 +362,7 @@ mod tests {
         let full_light = LightLevel(1000);
 
         // Act
-        let radius = sight_radius_at(base_radius, full_light);
+        let radius = sight_radius_at(base_radius, full_light, NO_DARKVISION);
 
         // Assert
         assert_eq!(radius, 1);
@@ -307,10 +375,10 @@ mod tests {
         let no_light = LightLevel(0);
 
         // Act
-        let radius = sight_radius_at(base_radius, no_light);
+        let radius = sight_radius_at(base_radius, no_light, NO_DARKVISION);
 
         // Assert
-        assert_eq!(radius, MIN_SIGHT_RADIUS);
+        assert_eq!(radius, DEFAULT_NIGHT_SIGHT_RADIUS);
     }
 
     #[test]
@@ -398,9 +466,14 @@ mod tests {
         let light = ambient_light_under(noon, foggy);
 
         // Act
-        let clear_radius =
-            sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, Weather::CLEAR);
-        let foggy_radius = sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, foggy);
+        let clear_radius = sight_radius_under_weather(
+            PLAYER_BASE_SIGHT_RADIUS,
+            light,
+            Weather::CLEAR,
+            NO_DARKVISION,
+        );
+        let foggy_radius =
+            sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, foggy, NO_DARKVISION);
 
         // Assert
         assert_eq!(light, ambient_light(noon), "雾不改变光照");
@@ -428,10 +501,14 @@ mod tests {
                     let tick =
                         Tick(noon_of(season).0 - 12 * TICKS_PER_HOUR + hour * TICKS_PER_HOUR);
                     let light = ambient_light_under(tick, weather);
-                    let radius =
-                        sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, weather);
+                    let radius = sight_radius_under_weather(
+                        PLAYER_BASE_SIGHT_RADIUS,
+                        light,
+                        weather,
+                        NO_DARKVISION,
+                    );
                     assert!(
-                        radius >= MIN_SIGHT_RADIUS,
+                        radius >= DEFAULT_NIGHT_SIGHT_RADIUS,
                         "季节 {season:?} 第 {hour} 小时的视野半径 {radius} 跌破夜间下限"
                     );
                 }
@@ -456,9 +533,10 @@ mod tests {
                 temperature_offset: 0,
             };
             let light = ambient_light_under(noon, weather);
-            let radius = sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, weather);
+            let radius =
+                sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, weather, NO_DARKVISION);
             assert!(
-                radius > MIN_SIGHT_RADIUS,
+                radius > DEFAULT_NIGHT_SIGHT_RADIUS,
                 "夏季正午的视野半径 {radius} 与午夜一样只剩下限"
             );
         }
@@ -490,5 +568,139 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn 声明的暗视格数在夜里真的换来更远的视野() {
+        // 这条是本次改动的**意义本身**：旧公式（暗视是光照千分比下限）
+        // 下矮人与人类的夜间视野完全相同——两者都撞在 4 格这个下游
+        // 下限上，`max(100, 4)` 连光照都没抬起来。
+        // Arrange：午夜光照（千分之一百），基准半径 12。
+        let midnight_light = LightLevel(100);
+
+        // Act
+        let dwarf = sight_radius_at(PLAYER_BASE_SIGHT_RADIUS, midnight_light, 7);
+        let human = sight_radius_at(PLAYER_BASE_SIGHT_RADIUS, midnight_light, NO_DARKVISION);
+
+        // Assert
+        assert_eq!(dwarf, 7);
+        assert_eq!(human, DEFAULT_NIGHT_SIGHT_RADIUS);
+        assert!(dwarf > human);
+    }
+
+    #[test]
+    fn 声明低于默认值的暗视格数不被抬回默认值() {
+        // 「不能写成 max(默认值, 声明值)」这条语义的可执行形式：一个
+        // 夜里几乎全瞎的种族（声明 2 格）必须真的只剩 2 格，而不是被
+        // 默默抬到 4 格——否则「夜视比常人差」这一整类设定根本无法表达。
+        // Arrange
+        let midnight_light = LightLevel(100);
+
+        // Act
+        let nearly_blind = sight_radius_at(PLAYER_BASE_SIGHT_RADIUS, midnight_light, 2);
+
+        // Assert
+        assert_eq!(nearly_blind, 2);
+        assert!(nearly_blind < DEFAULT_NIGHT_SIGHT_RADIUS);
+    }
+
+    #[test]
+    fn 未声明暗视与显式传零的行为完全一致() {
+        // 0 是「没声明」，不是「声明了 0 格」——列式存储的未定义槽位与
+        // `RaceDarkvisionSource` 查不到的索引都返回 0，两者必须落回默认。
+        // Arrange & Act
+        let radius = sight_radius_at(PLAYER_BASE_SIGHT_RADIUS, LightLevel(0), 0);
+
+        // Assert
+        assert_eq!(radius, DEFAULT_NIGHT_SIGHT_RADIUS);
+    }
+
+    #[test]
+    fn 白天暗视不起作用() {
+        // 正午满光照下 12 格远高于任何一个种族声明的暗视格数——暗视是
+        // 暗处的能力，不是无条件加成。
+        // Arrange
+        let noon_light = ambient_light(noon_of(Season::Summer));
+
+        // Act
+        let dwarf = sight_radius_at(PLAYER_BASE_SIGHT_RADIUS, noon_light, 7);
+        let human = sight_radius_at(PLAYER_BASE_SIGHT_RADIUS, noon_light, NO_DARKVISION);
+
+        // Assert
+        assert_eq!(dwarf, human);
+        assert_eq!(dwarf, PLAYER_BASE_SIGHT_RADIUS);
+    }
+
+    #[test]
+    fn 恶劣天气不把暗视削回默认值() {
+        // 守住「两处调用点都换成了暗视版本」：夜间下限在
+        // `sight_radius_under_weather` 里被应用两次，只改前一处的话，
+        // 雾/雪的 sight_scale 会把矮人从 7 格削回 4 格——暗视在最需要
+        // 它的场合失效。
+        // Arrange：本体全部天气，四季全时段。
+        let (_ids, table) = base_weather_fixture();
+        const DWARF_CELLS: u32 = 7;
+
+        // Act & Assert
+        for index in table.registered() {
+            let weather = Weather {
+                kind: Some(*index),
+                light_scale: table.light_scale(*index),
+                sight_scale: table.sight_scale(*index),
+                temperature_offset: 0,
+            };
+            for season in all_seasons() {
+                for hour in 0..24i64 {
+                    let tick =
+                        Tick(noon_of(season).0 - 12 * TICKS_PER_HOUR + hour * TICKS_PER_HOUR);
+                    let light = ambient_light_under(tick, weather);
+                    let dwarf = sight_radius_under_weather(
+                        PLAYER_BASE_SIGHT_RADIUS,
+                        light,
+                        weather,
+                        DWARF_CELLS,
+                    );
+                    assert!(
+                        dwarf >= DWARF_CELLS,
+                        "季节 {season:?} 第 {hour} 小时、天气乘数 {} 下的暗视视野 {dwarf} 跌破声明的 {DWARF_CELLS} 格",
+                        weather.sight_scale
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn 声明低于默认值的种族在恶劣天气下也不被抬回默认值() {
+        // 与上一条对称的另一半：天气那一处的下限同样必须认「声明值」，
+        // 否则一个 2 格的种族会在雾里反而**看得更远**（被抬到 4 格）。
+        // Arrange：本体雾天。
+        let (ids, table) = base_weather_fixture();
+        let fog = Weather {
+            kind: Some(ids.fog),
+            light_scale: table.light_scale(ids.fog),
+            sight_scale: table.sight_scale(ids.fog),
+            temperature_offset: 0,
+        };
+        let midnight = Tick(30 * TICKS_PER_DAY);
+        let light = ambient_light_under(midnight, fog);
+
+        // Act
+        let nearly_blind = sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, fog, 2);
+
+        // Assert
+        assert_eq!(nearly_blind, 2);
+    }
+
+    #[test]
+    fn 暗视不会把基准视野极差的生物放大() {
+        // `.min(base_radius)` 那一句在新语义下的理由不变：一个基准半径
+        // 只有 1 格的生物，即使声明了 7 格暗视，也不该在夜里比白天
+        // 看得更远。
+        // Arrange & Act
+        let radius = sight_radius_at(1, LightLevel(0), 7);
+
+        // Assert
+        assert_eq!(radius, 1);
     }
 }

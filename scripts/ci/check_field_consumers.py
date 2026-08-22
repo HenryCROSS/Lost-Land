@@ -6,7 +6,7 @@ r"""扫描一份显式列出的「内容声明结构体/规则修正枚举」清
 
 本项目最顽固的失败模式：字段被声明、被存储、被序列化、被哈希、有测试
 守着往返——却没有任何游戏逻辑读它（见 `Agent.luck`、
-`RaceDef.darkvision_floor`、`RuleModifier::Resistance` 三个已知实例）。
+`RaceDef.darkvision_cells`、`RuleModifier::Resistance` 三个已知实例）。
 `cargo` 的 `dead_code` lint 抓不到这类字段，因为它们确实「被用了」——
 写进列式存储、读出来构造 view、混入内容值哈希、在测试里断言存取往返都
 算「用了」，但没有一处是「游戏结算会不会因为这个字段的值不同而算出不
@@ -35,7 +35,7 @@ r"""扫描一份显式列出的「内容声明结构体/规则修正枚举」清
   字段名 + 单词边界）。选它是因为它天然把"结构体字面量写入"
   （`field_name: value,`，没有前导点号）和"真正读取"
   （`agent.field_name`、`self.field_name`、`view.field_name()`，有前导
-  点号）分开——`Agent.luck`/`RaceDef.darkvision_floor` 的实测证实了这一
+  点号）分开——`Agent.luck`/`RaceDef.darkvision_cells` 的实测证实了这一
   点：两者在全仓库范围内都有几十处 `field_name:` 形式的写入（测试夹具
   逐个构造实例），但决策层里一处 `.field_name` 都没有。
 - **枚举变体**（目前只有 `RuleModifier` 一例）：在决策层文件全文里正则
@@ -212,13 +212,13 @@ EXEMPTIONS: dict[str, str] = {
         "也不要换来一份看起来更绿、实际更弱的门禁。"
     ),
     # ---- (b) 已知死字段：本任务书点名的三处 ----
-    # `Agent.luck`/`RaceDef.darkvision_floor` 两条已在暗视/幸运接线批次
+    # `Agent.luck`/`RaceDef.darkvision_cells` 两条已在暗视/幸运接线批次
     # 真正接上（见 crates/ll-sim/src/vision.rs、
     # crates/ll-sim/src/resolve.rs::resolve_attack「暴击」一节、
     # crates/ll-sim/src/combat.rs::crit_chance_permille），均已从本清单
     # 移除——两个字段名在 TARGET_TYPES 覆盖的其余结构体里都不存在同名
     # 字段，不存在 RaceDef.stat_modifiers 撞上 TraitDef.stat_modifiers
-    # 那种误判风险，因此选择让决策层直接用字段真名（`.darkvision_floor`/
+    # 那种误判风险，因此选择让决策层直接用字段真名（`.darkvision_cells`/
     # `.luck`），而不是像 race_stat_modifiers 那样刻意换名保留豁免。
     #
     # 后续更新（幸运并入 AttributeKind 批次）：`Agent.luck` 字段本身已经

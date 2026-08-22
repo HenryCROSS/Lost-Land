@@ -546,7 +546,9 @@ pub struct BaseWeatherIds {
 ///    叠上最暗的冬季（季节乘数 750）之后，正午仍有 540‰，远高于午夜
 ///    的 100‰ 基准；画面亮度（`ll_game::layout::effective_tint`）因此
 ///    恒高于 `MIN_VISIBLE_TINT`（0.4），不会靠下限兜底。
-/// 2. **视野在任何天气下都不低于 `MIN_SIGHT_RADIUS`**——这条由
+/// 2. **视野在任何天气下都不低于观察者的夜间下限**（未声明暗视时是
+///    [`crate::light::DEFAULT_NIGHT_SIGHT_RADIUS`]，声明了暗视的种族
+///    是它自己声明的格数）——这条由
 ///    [`crate::light::sight_radius_under_weather`] 的下限保证，本表的
 ///    取值只需保证「夏季正午的最差天气仍明显好于夜晚」，见
 ///    `crate::light` 的组合断言。

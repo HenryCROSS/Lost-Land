@@ -139,7 +139,17 @@ fn witnessed_by(world: &WorldState, culprit_pos: TorusPos, at: Tick) -> Vec<Enti
 
 `ambient_light(tick)`/`sight_radius_at(base_radius, light)`（均在 `crates/ll-world/src/light.rs:118`/`45`）都是**只依赖 `Tick` 的纯函数**，不需要 `SpaceProfile` 注册表，可以在 `ll-sim` 内部直接调用——这与 `resolve.rs` 里 `EXPLORATION_SIGHT_RADIUS`（固定值，不接光照）是**不同的判断**：那处固定半径的理由是"记不记得某处地形与此刻多暗是两件事"（玩法语义选择），不是"技术上做不到"，其文档原文明确写着真正随光照变化的换算（`effective_ambient_light`）此刻只在 `ll-game` 的 demo 层现算，因为那条换算需要 `SpaceProfile` 表（室内/室外的额外调光），`ll-sim` 依赖顺序上拿不到——**但目击判定不需要 `SpaceProfile` 这一层，只需要纯时间驱动的 `ambient_light`，这一条在 `ll-sim` 内部可以直接调用，不受这条依赖限制**。
 
-**结论：「晚上偷东西更不容易被发现」在这条纯时间驱动的链路上成立**——光照越低，`sight_radius_at` 算出的候选者视野半径越小，2.3 的粗过滤与 FOV 两段都会更容易把候选者判定为"看不见"，越是深夜候选者能命中肇事地点的概率越低（不会低于 `MIN_SIGHT_RADIUS = 4` 这个硬下限）。
+**结论：「晚上偷东西更不容易被发现」在这条纯时间驱动的链路上成立**——光照越低，`sight_radius_at` 算出的候选者视野半径越小，2.3 的粗过滤与 FOV 两段都会更容易把候选者判定为"看不见"，越是深夜候选者能命中肇事地点的概率越低（不会低于观察者的夜间下限——未声明暗视时是 `DEFAULT_NIGHT_SIGHT_RADIUS = 4`，声明了暗视的种族是它自己声明的格数，可高可低）。
+
+> **本节 2.6 的结论已被后续批次推翻两次，按时间顺序：**
+> ①「暗视接线批次」补上了 `effective_light_for_race`，公式真的开始执行；
+> ②「暗视语义改版批次」发现那个形态在本作光照量纲下**永远不可能生效**
+> （矮人声明 4，午夜环境光 100），把暗视整体改成**夜间视野格数下限**
+> （`RaceDef.darkvision_cells`），并把 `effective_light_for_race` 连同
+> 「有效光照」这个概念一并删除。**现状是暗视真的在生效**：本体矮人夜里
+> 7 格、精灵 6 格、人类 4 格，端到端证据见
+> `crates/ll-mod/tests/base_mod_darkvision.rs`。下面这段保留原文作为
+> 当时的核实记录，其结论已不再成立。
 
 **但种族暗视不成立，需要更正项目所有者原话里的这半句**：核实结论——`RaceDef.darkvision_floor` 字段本身已落地（`crates/ll-mod/src/race.rs:107`，参与哈希与测试），字段文档写明了意图公式「`effective_light = max(实际光照, darkvision_floor)`」，但**全代码库检索确认没有任何函数名为 `effective_light`、也没有任何地方真正执行这条 `max` 运算**——`darkvision_floor` 是一个"字段就位、消费者未接线"的既有模式（与 `history.rs` 的 `VictimState.poisoned` 恒 `false` 同一类），不是"暗视已经在生效"。**若要让暗视种族在夜间维持更大的目击半径，需要新增一步：候选者的视野半径改用 `sight_radius_at(base, LightLevel(ambient_light(at).0.max(darkvision_floor)))`，这一步现在不存在，本文档只指出接线点，不假装它已经工作。**
 
@@ -335,7 +345,7 @@ pub fn record_crime(
 | **某件具体物品是否允许公共取用、不算偷**（例如任务给的物品、公共设施里的展示品） | **可配置,一档**,复用现有 `ItemDef.tags` 机制,不新开注册函数 | 见下文 |
 | **销赃时长** | **可配置,运行期参数**,不进注册表 | 见下文，与 `DEFAULT_GROUND_ITEM_MAX_AGE_TICKS` 同一先例 |
 | **NPC 目击半径基准值（`NPC_BASE_SIGHT_RADIUS`）** | **可配置,运行期参数**,不进注册表——与销赃时长同一先例，见下文 | 二节 2.3/2.6 |
-| **暗视对目击半径的加成** | 不存在,无法配置——`darkvision_floor` 字段已落地但零消费者（二节 2.6），配置一个没有被读取的字段没有意义,先接线再谈可配置 | 二节 2.6 |
+| **暗视对目击半径的加成** | ~~不存在,无法配置——`darkvision_floor` 字段已落地但零消费者~~ **已被推翻**：暗视现已改成 `RaceDef.darkvision_cells`（夜间视野格数下限）并真的在生效，见二节 2.6 顶部的更正框；NPC 目击半径这一路要不要跟着读它，仍是一个未接线的独立问题 | 二节 2.6 |
 | **后果（通缉/赏金/态度）** | 将来扩展,连挂载系统本身都未落地,现在不给档位 | 五节 5.3 |
 
 ### 「公共取用」——复用现有 `tags`，不新增注册函数
@@ -374,7 +384,7 @@ pub const DEFAULT_NPC_BASE_SIGHT_RADIUS: u32 = 12; // 与玩家渲染层 BASE_SI
 fn witnessed_by(world: &WorldState, culprit_pos: TorusPos, at: Tick, base_radius: u32) -> Vec<EntityId> { /* 见二节 2.3 */ }
 ```
 
-`base_radius` 运行期传入，`DEFAULT_NPC_BASE_SIGHT_RADIUS` 只是不需要自定义时的默认值——与销赃阈值、地面物品老化阈值同一条既有纪律，不重复论证。**种族级别的差异化（暗视加成、种族基准视野不同）不在这条参数化范围内**——那需要先把 `darkvision_floor` 接上 `effective_light` 这条缺失的一步（二节 2.6），本节的参数化只解决"这一个全局数字该怎么给"，不解决"暗视要不要生效"。
+`base_radius` 运行期传入，`DEFAULT_NPC_BASE_SIGHT_RADIUS` 只是不需要自定义时的默认值——与销赃阈值、地面物品老化阈值同一条既有纪律，不重复论证。**种族级别的差异化（暗视加成、种族基准视野不同）不在这条参数化范围内**——那需要把 NPC 目击半径这一路改用 `ll_sim::vision::sight_radius_for_race`（玩家渲染那一路已经在用；暗视本身已经生效，见二节 2.6 顶部的更正框），本节的参数化只解决"这一个全局数字该怎么给"，不解决"暗视要不要生效"。
 
 ---
 
@@ -424,7 +434,7 @@ fn witnessed_by(world: &WorldState, culprit_pos: TorusPos, at: Tick, base_radius
 | ~~空间查询（以某坐标为中心查附近实体）~~——**本轮修订已核实解除**：目击判定用 `compute_fov`（原点是参数）+ `Arena::iter_with_id` 现在就能表达，见二节 2.3。仍然真实存在、未解除的是两条更窄的缺口： | | |
 | ├ `resolve_attack` 拿不到"以目标为中心查同阵营盟友"这一条特定输入（盗贼偷袭需要的能力，非本文档范围） | 天赋系统的偷袭条件（`trait-system.md`），与本文档的目击判定是两回事 | `trait-system.md` 已核实,仍未解除 |
 | ├ 室内/建筑物的额外调光（`effective_ambient_light`/`SpaceProfile`）在 `ll-sim` 里拿不到，目击半径只按纯时间光照算，不区分"在室内还是室外" | 二节 2.6「室内更暗」这层细节表达不出来,只有昼夜这一层能表达 | `resolve.rs` 已核实同一处依赖缺口 |
-| ├ `RaceDef.darkvision_floor` 字段已落地但零消费者，`effective_light = max(实际光照, darkvision_floor)` 这条公式没有任何代码执行 | 暗视种族"晚上依然能看见"这半句玩法结论暂不成立 | 二节 2.6 已核实,需要新增一步接线 |
+| ├ ~~`RaceDef.darkvision_floor` 字段已落地但零消费者~~ **已被推翻两次**：先接线，再改语义成 `darkvision_cells`（夜间视野格数下限） | 暗视种族"晚上依然能看见"这半句玩法结论**现已成立**（矮人 7 格 / 精灵 6 格 / 人类 4 格） | 二节 2.6 顶部更正框；`crates/ll-mod/tests/base_mod_darkvision.rs` |
 | **交易系统** | 合法转移之"购买"（四节） | 不存在,无价格结算/货币接线 |
 | **对话/交互系统** | 合法转移之"赠送" | 不存在 |
 | **任务奖励发放的 `resolve`/`Effect`** | 合法转移之"任务" | `QuestNodeDef` 已落地但奖励发放机制未落地 |
