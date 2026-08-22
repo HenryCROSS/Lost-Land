@@ -346,7 +346,7 @@ pub fn load_content(
 
     let (terrain_ids, mut terrain_table) =
         register_base_terrain(&mut registry).expect("本体地形声明表内部一致，注册恒不失败");
-    let (space_ids, space_table) = register_base_space_profiles(&mut registry)
+    let (space_ids, mut space_table) = register_base_space_profiles(&mut registry)
         .expect("本体空间层属性声明表内部一致，注册恒不失败");
     register_base_placeholder_content(&mut registry);
     let (clip_ids, mut clip_table) =
@@ -391,6 +391,7 @@ pub fn load_content(
             formula: &mut formula_table,
             weapon_category: &mut weapon_category_table,
             damage_category: &mut damage_category_table,
+            space_profile: &mut space_table,
         },
     );
 

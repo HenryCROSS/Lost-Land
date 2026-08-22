@@ -67,6 +67,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
     let mut item = ll_mod::item::ItemTable::new();
     let mut formula = ll_mod::formula::FormulaTable::new();
     let mut weapon_category = ll_mod::weapon_category::WeaponCategoryTable::new();
+    let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
     let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -87,6 +88,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
             formula: &mut formula,
             weapon_category: &mut weapon_category,
             damage_category: &mut damage_category,
+            space_profile: &mut space_profile,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();

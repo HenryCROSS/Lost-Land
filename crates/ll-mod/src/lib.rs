@@ -133,6 +133,12 @@
 //! - [`script_clip_api`] —— 同一个模式在动画剪辑上的脚本绑定（动画
 //!   剪辑接线批次）：补上此前完全漏掉的第七类可注册玩法层内容——早先
 //!   的接口审计列出六种，「动画剪辑」当时不在其中。
+//! - [`script_space_profile_api`] —— 同一个模式在空间层属性上的脚本
+//!   绑定（空间层属性脚本注册批次）：补上 ADR 0018 的又一处真实缺口
+//!   ——[`base_space_profile`] 早就有本体侧的生产注册路径，
+//!   [`content_hash`] 早就把这张表收进值哈希覆盖面，唯独**脚本侧的
+//!   注册函数一直不存在**，`SpaceProfile` 六个字段只能由 Rust 写死。
+//!   判据推演见其模块文档。
 //! - [`pipeline`] —— 加载管线：串起发现→解析→拓扑排序→加载脚本→注册
 //!   内容，产出 [`load_report::LoadReport`]（Task 11/12；P5-C 批次扩展
 //!   到同时接线六种 `register-*` 函数；动画剪辑接线批次扩展到七种）。
@@ -199,6 +205,7 @@ pub mod script_quest_api;
 pub mod script_race_api;
 pub mod script_resource_pool_api;
 pub mod script_skill_api;
+pub mod script_space_profile_api;
 pub mod script_subclass_api;
 pub mod script_terrain_api;
 pub mod script_trait_api;

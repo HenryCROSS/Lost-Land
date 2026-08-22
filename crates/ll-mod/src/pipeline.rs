@@ -42,6 +42,7 @@ use std::path::Path;
 
 use ll_core::ident::NamespacedId;
 use ll_script::host::{ScriptEngine, ScriptError};
+use ll_world::space_profile::SpaceProfileTable;
 use ll_world::terrain::TerrainTable;
 
 use crate::class::ClassTable;
@@ -97,6 +98,10 @@ use crate::script_skill_api::{
     register_skill_api, set_active_target as set_active_skill_target,
     take_active_target as take_active_skill_target,
 };
+use crate::script_space_profile_api::{
+    register_space_profile_api, set_active_target as set_active_space_profile_target,
+    take_active_target as take_active_space_profile_target,
+};
 use crate::script_subclass_api::{
     register_subclass_api, set_active_target as set_active_subclass_target,
     take_active_target as take_active_subclass_target,
@@ -121,15 +126,25 @@ use crate::weapon_category::WeaponCategoryTable;
 use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 
 /// 加载管线一次装载会话内，脚本注册函数可以写入的全部内容表——地形、
-/// 职业、技能、副职、任务、种族、动画剪辑。
+/// 职业、技能、副职、任务、种族、动画剪辑、经验曲线（含绑定）、天赋、
+/// 资源池、物品、伤害公式、武器类别、伤害类别、空间层属性。
 ///
 /// 集中成一个结构体，而不是让 [`load_all`]/[`load_one_script`] 各自
-/// 接收九个独立的 `&mut` 参数：这九张表在装载管线里总是同进同出（同一
+/// 接收十六个独立的 `&mut` 参数：这些表在装载管线里总是同进同出（同一
 /// 份 mod 脚本可能在同一个文件里先后调用 `register-terrain`/
-/// `register-class`/……），拆成九个位置参数只会让调用点的参数顺序成为
-/// 易错点，结构体把「这九张表必须一起传」这条约束在类型上表达出来。
+/// `register-class`/……），拆成十六个位置参数只会让调用点的参数顺序成为
+/// 易错点，结构体把「这些表必须一起传」这条约束在类型上表达出来。
 /// `Registry` 不在这个结构体里——它走 [`crate::active_registry`] 单独
 /// 的共享目标，理由见该模块文档。
+///
+/// # 字段个数就是「mod 能注册几类玩法层内容」的唯一权威清单
+///
+/// 每新增一个字段，都对应 ADR 0018「玩法层内容都能从 mod 脚本注册」
+/// 这条要求上补掉的一处缺口。`space_profile` 是最近的一次：空间层属性
+/// 早就有 `ll-world` 侧的表、有本体侧的生产注册路径、也早就进了
+/// [`crate::content_hash`] 的值哈希覆盖面，**唯独脚本注册函数一直不
+/// 存在**，六个字段只能由 Rust 写死——这正是「声明了但从没接线」这类
+/// 缺口最典型的形态：每一环单独看都在，串起来才发现断了一节。
 pub struct GameplayTables<'a> {
     /// 地形表。
     pub terrain: &'a mut TerrainTable,
@@ -177,6 +192,17 @@ pub struct GameplayTables<'a> {
     /// `register-damage-category` 的写入目标，见 `crate::damage_category`
     /// 模块文档。
     pub damage_category: &'a mut DamageCategoryTable,
+    /// 空间层属性表（空间层属性脚本注册批次新增）——
+    /// `register-space-profile` 的写入目标，见
+    /// `crate::script_space_profile_api` 模块文档。
+    ///
+    /// 与另外十五张表的一处不同：这张表在装载会话开始**之前**通常已经
+    /// 非空（`ll_mod::base_space_profile::register_base_space_profiles`
+    /// 先注册了本体四种空间类型），mod 脚本是往里追加。这与地形表
+    /// （`register_base_terrain` 同样先跑）是同一种情形，不是本字段
+    /// 独有的例外——`SpaceProfileTable::define` 的重复定义校验保证 mod
+    /// 覆盖不掉本体已声明的那几条。
+    pub space_profile: &'a mut SpaceProfileTable,
 }
 
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
@@ -314,6 +340,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut formula = FormulaTable::new();
     let mut weapon_category = WeaponCategoryTable::new();
     let mut damage_category = DamageCategoryTable::new();
+    let mut space_profile = SpaceProfileTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -330,6 +357,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         formula: &mut formula,
         weapon_category: &mut weapon_category,
         damage_category: &mut damage_category,
+        space_profile: &mut space_profile,
     };
     for entry in &manifest.entry_points {
         if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
@@ -413,8 +441,10 @@ fn attribute_topo_error(report: &mut LoadReport, parsed: &[ModManifest], err: &M
 
 /// 加载单个脚本文件：读文件、跑 `ScriptEngine::load_source`，成功时
 /// `register-terrain`/`register-class`/`register-skill`/
-/// `register-subclass`/`register-quest`/`register-race` 的效果已经写进
-/// `registry`/`tables`。
+/// `register-subclass`/`register-quest`/`register-race`/
+/// `register-space-profile`/…… 的效果已经写进 `registry`/`tables`
+/// ——权威清单是 [`GameplayTables`] 的字段与本函数里 `register_*_api`
+/// 的调用序列，不是这段文档。
 fn load_one_script(
     manifest: &ModManifest,
     entry: &Path,
@@ -431,13 +461,13 @@ fn load_one_script(
         }),
     })?;
 
-    // 把 registry 与全部九张表整体移进各自的线程局部存储，供对应的
-    // register-* 函数在脚本求值期间写入；脚本跑完（不论成功失败）都要
-    // 原样移回——`ScriptEngine::load_source` 本身不会 panic（四道防线
-    // ①②），这里不需要 catch_unwind 之类的补救。`Registry` 走
-    // `crate::active_registry` 的共享目标（九个 register-* 函数必须
-    // 共用同一个 `Registry` 实例，理由见该模块文档），九张表各自走
-    // 自己模块的 `thread_local!`。
+    // 把 registry 与 GameplayTables 的全部各表整体移进各自的线程局部
+    // 存储，供对应的 register-* 函数在脚本求值期间写入；脚本跑完（不论
+    // 成功失败）都要原样移回——`ScriptEngine::load_source` 本身不会
+    // panic（四道防线①②），这里不需要 catch_unwind 之类的补救。
+    // `Registry` 走 `crate::active_registry` 的共享目标（全部 register-*
+    // 函数必须共用同一个 `Registry` 实例，理由见该模块文档），各张表
+    // 各自走自己模块的 `thread_local!`。
     set_active_registry(std::mem::take(registry));
     set_active_terrain_target(std::mem::take(tables.terrain));
     set_active_class_target(std::mem::take(tables.class));
@@ -456,6 +486,7 @@ fn load_one_script(
     set_active_formula_target(std::mem::take(tables.formula));
     set_active_weapon_category_target(std::mem::take(tables.weapon_category));
     set_active_damage_category_target(std::mem::take(tables.damage_category));
+    set_active_space_profile_target(std::mem::take(tables.space_profile));
 
     let mut engine = ScriptEngine::new();
     register_terrain_api(&mut engine);
@@ -472,6 +503,7 @@ fn load_one_script(
     register_damage_formula_api(&mut engine);
     register_weapon_category_api(&mut engine);
     register_damage_category_api(&mut engine);
+    register_space_profile_api(&mut engine);
     let result = engine.load_source(source.clone());
 
     *registry = take_active_registry();
@@ -491,6 +523,7 @@ fn load_one_script(
     *tables.formula = take_active_formula_target();
     *tables.weapon_category = take_active_weapon_category_target();
     *tables.damage_category = take_active_damage_category_target();
+    *tables.space_profile = take_active_space_profile_target();
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -508,13 +541,14 @@ fn load_one_script(
 /// 把 [`ScriptError`] 归到 [`LoadStage::LoadScript`] 还是
 /// [`LoadStage::Register`]。
 ///
-/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有十五个
+/// **已知简化**：本管线注册给脚本的、会产生副作用的能力现在有十六个
 /// （`register-terrain`/`register-class`/`register-skill`/
 /// `register-subclass`/`register-quest`/`register-race`/
 /// `register-animation-clip`/`register-xp-curve`/
 /// `register-class-xp-curve`/`register-race-xp-curve`/`register-trait`/
 /// `register-race-trait`/`register-resource-pool`/
-/// `register-trait-resource-pool`/`register-item`），把
+/// `register-trait-resource-pool`/`register-item`/
+/// `register-space-profile`），把
 /// `ScriptError::Runtime`（任一 `register-*` 内部校验失败时都走这一类，
 /// 见各自模块文档「返回 Result<bool, String>」一节）整体归为 Register
 /// 阶段。这会把一个与内容注册无关、纯粹是脚本自身写错的运行时错误
@@ -579,6 +613,7 @@ mod tests {
         formula: FormulaTable,
         weapon_category: WeaponCategoryTable,
         damage_category: DamageCategoryTable,
+        space_profile: SpaceProfileTable,
     }
 
     impl OwnedTables {
@@ -599,6 +634,7 @@ mod tests {
                 formula: &mut self.formula,
                 weapon_category: &mut self.weapon_category,
                 damage_category: &mut self.damage_category,
+                space_profile: &mut self.space_profile,
             }
         }
     }
@@ -670,6 +706,176 @@ mod tests {
                 .get(&NamespacedId::parse("examplemod:lava_floor").unwrap())
                 .is_some()
         );
+    }
+
+    #[test]
+    fn mod脚本能注册自定义空间层属性并与本体已注册的四种共存() {
+        // 这是「空间层属性脚本注册」这条通道的端到端验收：一个真实
+        // 落在磁盘上的 mod（mod.json5 + main.scm）经过完整的
+        // 发现→解析→拓扑排序→脚本求值→写回内容表流程，注册出一种
+        // 本体没有的空间类型。
+        //
+        // 同时验证「与本体共存」：装载会话开始前先把本体四种空间类型
+        // 注册进同一个 Registry/同一张表（生产路径 `load_content` 正是
+        // 这个顺序），确认 mod 的追加不会覆盖、也不会被覆盖。
+        // Arrange
+        let root = tempdir();
+        write_mod(
+            root.path(),
+            "spacemod",
+            r#"{
+                namespace: "spacemod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
+            Some(
+                r#"(register-space-profile "spacemod:abyss" 0 #f -40 #t #f "")
+                   (register-space-profile "spacemod:greenhouse" 900 #t 260 #f #t "spacemod:glass")"#,
+            ),
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+        let (base_ids, base_table) =
+            crate::base_space_profile::register_base_space_profiles(&mut registry)
+                .expect("本体空间层属性声明表内部一致");
+        owned.space_profile = base_table;
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert
+        assert_eq!(
+            report.entries,
+            vec![(mod_self_id("spacemod").unwrap(), LoadStatus::Loaded)]
+        );
+        let abyss = registry
+            .get(&NamespacedId::parse("spacemod:abyss").unwrap())
+            .expect("脚本注册的空间层属性应当进了 Registry");
+        assert!(owned.space_profile.is_defined(abyss));
+        assert!(!owned.space_profile.exposed_to_sky(abyss));
+        assert_eq!(owned.space_profile.ambient_light_floor(abyss), 0);
+        assert_eq!(owned.space_profile.base_temperature(abyss), -40);
+        assert!(owned.space_profile.diggable(abyss));
+        assert!(!owned.space_profile.buildable(abyss));
+
+        let greenhouse = registry
+            .get(&NamespacedId::parse("spacemod:greenhouse").unwrap())
+            .expect("第二条声明同样应当进了 Registry");
+        assert!(owned.space_profile.exposed_to_sky(greenhouse));
+        assert_eq!(
+            owned.space_profile.reverb_tag(greenhouse),
+            Some(NamespacedId::parse("spacemod:glass").unwrap()),
+            "非空 reverb-tag 应当按字面标识符存下"
+        );
+
+        // 本体四种一条都没被 mod 的追加动作破坏。
+        assert!(owned.space_profile.exposed_to_sky(base_ids.surface));
+        assert!(!owned.space_profile.exposed_to_sky(base_ids.cave));
+        assert!(!owned.space_profile.exposed_to_sky(base_ids.dungeon));
+        assert!(
+            !owned
+                .space_profile
+                .exposed_to_sky(base_ids.building_interior)
+        );
+    }
+
+    #[test]
+    fn 脚本注册的非露天空间经真实装载后环境光不随世界时钟变化() {
+        // 本测试钉住的是「脚本注册出来的层属性与 Rust 注册出来的语义
+        // 逐字相同」这件事——`ll_world::space_profile::effective_ambient_light`
+        // 那条组合规则（露天转发昼夜曲线、非露天取地板值）不知道也不
+        // 需要知道这条内容是从哪条通道进来的。这正是 ADR 0018「本体
+        // 与 mod 用同一套 API」在这张表上的可执行形式。
+        // Arrange
+        let root = tempdir();
+        write_mod(
+            root.path(),
+            "spacemod",
+            r#"{
+                namespace: "spacemod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
+            Some(r#"(register-space-profile "spacemod:abyss" 30 #f 0 #t #f "")"#),
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+        load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+        let index = registry
+            .get(&NamespacedId::parse("spacemod:abyss").unwrap())
+            .expect("脚本注册的空间层属性应当进了 Registry");
+        let profile = ll_world::space_profile::SpaceProfile {
+            id: NamespacedId::parse("spacemod:abyss").unwrap(),
+            ambient_light_floor: owned.space_profile.ambient_light_floor(index),
+            exposed_to_sky: owned.space_profile.exposed_to_sky(index),
+            base_temperature: owned.space_profile.base_temperature(index),
+            diggable: owned.space_profile.diggable(index),
+            buildable: owned.space_profile.buildable(index),
+            reverb_tag: owned.space_profile.reverb_tag(index),
+        };
+
+        // Act
+        let midnight =
+            ll_world::space_profile::effective_ambient_light(&profile, ll_core::time::Tick(0));
+        let noon = ll_world::space_profile::effective_ambient_light(
+            &profile,
+            ll_core::time::Tick(ll_core::time::TICKS_PER_DAY / 2),
+        );
+
+        // Assert
+        assert_eq!(midnight, noon);
+        assert_eq!(midnight.0, 30);
+    }
+
+    #[test]
+    fn 脚本注册的空间层属性被内容值哈希认领而不是判成无归属() {
+        // 值哈希覆盖面的回归：`classify_index` 通过
+        // `SpaceProfileTable::is_defined` 认领这条内容——若哪天有人给
+        // GameplayTables 加了 space_profile 却忘了把同一张表传给
+        // ContentValueTables，这条断言会变红（判成 Opaque）。
+        // Arrange
+        let root = tempdir();
+        write_mod(
+            root.path(),
+            "spacemod",
+            r#"{
+                namespace: "spacemod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
+            Some(r#"(register-space-profile "spacemod:abyss" 0 #f 0 #t #f "")"#),
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+        load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+        let index = registry
+            .get(&NamespacedId::parse("spacemod:abyss").unwrap())
+            .expect("脚本注册的空间层属性应当进了 Registry");
+
+        // Act
+        let kind = crate::content_hash::classify_index(
+            index,
+            &crate::content_hash::ContentValueTables {
+                terrain: &owned.terrain,
+                class: &owned.class,
+                skill: &owned.skill,
+                subclass: &owned.subclass,
+                quest: &owned.quest,
+                race: &owned.race,
+                space_profile: &owned.space_profile,
+                clip: &owned.clip,
+                trait_def: &owned.trait_def,
+                resource_pool: &owned.resource_pool,
+                item: &owned.item,
+                xp_curve: &owned.xp_curve,
+                formula: &owned.formula,
+                weapon_category: &owned.weapon_category,
+                damage_category: &owned.damage_category,
+            },
+        );
+
+        // Assert
+        assert_eq!(kind, crate::content_hash::ContentTableKind::SpaceProfile);
     }
 
     #[test]
