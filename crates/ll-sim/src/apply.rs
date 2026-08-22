@@ -1,6 +1,6 @@
 //! `apply`：把一个 [`Effect`] 落到 [`WorldState`] 上的唯一入口。
 
-use ll_world::entity::EntityId;
+use ll_world::entity::{Agent, EntityId};
 use ll_world::fov::compute_fov;
 use ll_world::script_state::ScriptStateTarget;
 use ll_world::space::Space;
@@ -256,6 +256,27 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
         Effect::GrantExperience { target, amount } => {
             grant_experience_and_level_up(world, *target, *amount, curves);
         }
+        Effect::AllocateAttributePoint { actor, attribute } => {
+            // 无条件的「减一、加一」——余额与
+            // `BaseStats::HARD_CAP` 两道闸门都在 `resolve` 侧判完
+            // （不满足就一条效果都不产出），`apply` 不做规则判断
+            // （约束 C1 / ADR 0023）。`saturating_sub` 不是在这里补
+            // 一道判断，是不允许 `u32` 下溢绕回 `u32::MAX` 这种把
+            // 「零点余额」变成「四十亿点余额」的灾难性退化。
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.unspent_attribute_points = agent.unspent_attribute_points.saturating_sub(1);
+                agent.stats = agent.stats.with_added(*attribute, 1);
+            }
+        }
+        Effect::LearnSkill { actor, skill } => {
+            // 同上：余额/重复学习/前置未满足三道闸门全在 `resolve`
+            // 侧。这里是 `Agent::unlocked_skills` 在本仓库里唯一的
+            // 写入口（约束 C1）。
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.unspent_skill_points = agent.unspent_skill_points.saturating_sub(1);
+                agent.unlocked_skills.push(*skill);
+            }
+        }
         Effect::AdjustResourcePool { actor, pool, delta } => {
             if let Some(agent) = world.actors.get_mut(*actor) {
                 let current = agent.resource_pools.entry(*pool).or_insert(0);
@@ -480,6 +501,21 @@ fn grant_experience_and_level_up(
         let consumed = agent.xp_to_next_level;
         agent.experience -= consumed;
         agent.level += 1;
+        // 升级授予点数（升级加点批次）：项目所有者裁定「升级获得属性
+        // 点技能点，然后就自己加点」——`apply` 这里只负责「发点」，
+        // 「加到哪」是玩家后续经 `Intent::AllocateAttributePoint`/
+        // `Intent::LearnSkill` 自己决定的事，本函数一个字都不猜。
+        //
+        // 就在这个循环里发、不在循环外按 `等级差 × 每级点数` 补一次：
+        // 一次性经验跨好几级时，每一级都该各自发一份点数，而循环体
+        // 本身就是「这一级发生了」的唯一准确位置。`saturating_add`
+        // 与经验那一行同一条防御性纪律，退化曲线连升上万级也不会绕回。
+        agent.unspent_attribute_points = agent
+            .unspent_attribute_points
+            .saturating_add(Agent::ATTRIBUTE_POINTS_PER_LEVEL);
+        agent.unspent_skill_points = agent
+            .unspent_skill_points
+            .saturating_add(Agent::SKILL_POINTS_PER_LEVEL);
         let curve = curves.curve_for(agent.profession, agent.race);
         agent.xp_to_next_level = eval_xp_curve(&curve, agent.level, consumed);
     }
@@ -489,7 +525,7 @@ fn grant_experience_and_level_up(
 mod tests {
     use ll_core::time::Tick;
     use ll_core::torus::TorusSize;
-    use ll_world::entity::{Agent, BaseStats};
+    use ll_world::entity::BaseStats;
     use ll_world::generate::GenParams;
     use ll_world::item::{EquipSlot, ItemStack};
     use ll_world::terrain::base_terrain_fixture;
@@ -562,6 +598,8 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         }
     }

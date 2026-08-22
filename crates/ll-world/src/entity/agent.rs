@@ -235,6 +235,15 @@ pub struct Agent {
     /// 不需要有序遍历或去重的额外开销；写入路径（学习新技能）本身应当
     /// 保证不重复插入，不依赖容器自身去重——与 `Agent::goals`/
     /// `Agent::affiliations` 同样用 `Vec` 的理由一致。
+    ///
+    /// **写入路径（升级加点批次落地）**：唯一的写入口是
+    /// `ll_sim::apply` 处理 `Effect::LearnSkill` 的那一条分支（约束
+    /// C1），效果由 `ll_sim::resolve` 结算 `Intent::LearnSkill` 产出，
+    /// 而「不重复插入」这条上文提到的责任正落在那里的第 3 道闸门
+    /// （已经学过就整条静默失败，不再扣点也不再插入）。此前这个字段
+    /// 只有读取者（`resolve_use_skill` 的解锁闸门、
+    /// `ll_sim::skill_overview` 的技能树视图），写入路径是一处真实
+    /// 缺口。
     pub unlocked_skills: Vec<ContentIndex>,
     /// 各技能的冷却到期时刻——**到期时刻，不是「剩余时长」**（关键设计
     /// 判断 4 的惰性到期判定：存一个会随时间流逝而变得过时的「还剩多少」
@@ -363,6 +372,44 @@ pub struct Agent {
     /// 同一条「不做不必要的重复计算」纪律在不同数学结构（纯函数 vs
     /// 递推）下的正确应用，不是破例——详见该字段的完整论证。
     pub xp_to_next_level: i64,
+    /// 尚未分配的属性点——升级时授予，由**玩家自己**决定加到哪一项
+    /// （项目所有者裁定原文：「升级获得属性点技能点，然后就自己加点」）。
+    ///
+    /// # 为什么必须存，而不是从等级现算
+    ///
+    /// 「等级 × 每级点数 − 已经加出去的点数」这个现算式需要「已经加
+    /// 出去多少点」这个量，而它本身不可恢复：加出去的点已经并进
+    /// [`Self::stats`]，与种族修正烘焙进去的那部分（见
+    /// `ll_sim::character::bake_race_stat_modifiers`）不可区分。因此
+    /// 未分配余额是**真正的偏离量**（[ADR 0009](../../../../knowledge/decisions/0009-derive-by-default-store-only-deviation.md)
+    /// 意义上的），必须存。
+    ///
+    /// # 为什么加点直接改 `stats`，不是第四路修正来源
+    ///
+    /// 属性修正当前有三路：种族 `stat_modifiers`（**烘焙**进 `stats`，
+    /// 不是运行期第三方）、装备 `StatBonus`、限时
+    /// [`Self::active_stat_modifiers`]（后两路在
+    /// `ll_sim::resolve::derive_stats` 里逐次叠加）。玩家加的点属于
+    /// 第一类而不是后两类：它**永久、无来源、不会过期、不会因为脱下
+    /// 什么而消失**，把它记成一条「来源是谁？」答不上来的修正，只会
+    /// 让 `derive_stats` 多一条永远不过期的特殊分支。直接落进
+    /// `stats` 与种族烘焙同路，`derive_stats` 一个字都不用改（它本就
+    /// 以 `base` 为起点再叠加另外两路），也因此天然享有
+    /// [`BaseStats::HARD_CAP`] 只约束基础值、装备可以突破这条设计。
+    pub unspent_attribute_points: u32,
+    /// 尚未分配的技能点——与 [`Self::unspent_attribute_points`] 同一
+    /// 次升级同时授予，花在「学会一个前置已满足的新技能」上，见
+    /// `ll_sim::resolve` 的 `Intent::LearnSkill` 结算。
+    ///
+    /// # 技能点与「学会技能」的关系
+    ///
+    /// 技能点是**闸门**，不是技能本身的等级：本项目的技能是离散 DAG
+    /// （`knowledge/design/level-and-experience-system.md` 二节「为什么
+    /// 不是技能各自等级」已经裁定技能不连续练级），一个技能只有「学
+    /// 会」与「没学会」两种状态（[`Self::unlocked_skills`] 是个集合，
+    /// 不是等级表）。因此一点技能点买断一个技能，学会之后这个技能不
+    /// 再消耗任何点数——不存在「往同一个技能里继续投点」这回事。
+    pub unspent_skill_points: u32,
     /// 背包（P6 第二批：背包与地面物品）——`item-system.md` 四节
     /// `ItemLocation::Inventory { holder, slot }` 在本批次的落地：`holder`
     /// 就是这个 `Agent` 自身（因此不需要在 `ItemStack` 上重复记
@@ -517,6 +564,21 @@ impl Agent {
     /// 因此和生命/法力/耐力一样先给一个非零占位，供 `ll-sim`/`ll-mod`
     /// 接线批次在真正生成角色时用查表结果覆盖。
     pub const STARTING_XP_TO_NEXT_LEVEL: i64 = 100;
+    /// 每升一级授予的属性点数。
+    ///
+    /// 常量而不是一条可注册的曲线：项目所有者的裁定只说「升级获得
+    /// 属性点技能点」，没有要求每级给的数量本身可变；给一个当前没有
+    /// 任何内容作者要求过的量提前开注册位，正是 [ADR 0021](../../../../knowledge/decisions/0021-abstraction-requires-shared-algorithm-not-symmetry.md)
+    /// 与 YAGNI 同时点名的那种投机式抽象。真有 mod 需要改它时，改法
+    /// 与 `xp_curve` 一样是新增一条注册函数，不需要先在这里预留形状。
+    pub const ATTRIBUTE_POINTS_PER_LEVEL: u32 = 2;
+    /// 每升一级授予的技能点数，理由同 [`Self::ATTRIBUTE_POINTS_PER_LEVEL`]。
+    ///
+    /// 比属性点少：技能是一次性买断的离散解锁（见
+    /// [`Self::unspent_skill_points`] 文档），一级一点让「这一级学哪
+    /// 一个」成为一次真正的取舍；属性点一级两点则让玩家能同时兼顾
+    /// 一条主线与一条副线，不至于每一级都被迫二选一。
+    pub const SKILL_POINTS_PER_LEVEL: u32 = 1;
 }
 
 #[cfg(test)]
@@ -613,6 +675,10 @@ mod tests {
             level: 5,
             experience: 250,
             xp_to_next_level: 800,
+            // 非默认值（0）——见本函数文档：新增字段若在这里取默认
+            // 值，序列化往返测试对它等于没测。
+            unspent_attribute_points: 3,
+            unspent_skill_points: 2,
             // 非默认值——本帮手的全部意义就是「每个字段都不是默认
             // 值」，否则往返测试会因为「恰好等于默认值」而掩盖真正的
             // 编解码缺陷（见本函数文档）。

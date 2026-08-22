@@ -357,6 +357,21 @@ fn remap_agent(
         level: _,
         experience: _,
         xp_to_next_level: _,
+        // 未分配的属性点/技能点（升级加点批次新增）：两者都是 u32
+        // 计数，类型里不含任何 ContentIndex——与 level/experience 同
+        // 一类「纯数值不需要重映射」字段。这里的 `_` 是**逐字段确认过
+        // 不需要重映射**，不是顺手吞掉：本文件历史上真出过一次
+        // `active_stat_modifiers` 被写成 `field: _` 而在换 mod 读档时
+        // 静默清空的事故（见模块文档「完整性如何保证」），穷尽解构 +
+        // 逐条注释就是那条防线。
+        //
+        // 特别地：**技能点不需要跟着 unlocked_skills 一起被回收**。
+        // `remap_unlocked_skills` 会丢弃「本次会话查不到的技能」，
+        // 但那不意味着当初花掉的技能点应该退回来——退点会让「换一个
+        // mod 组合读档再换回来」变成一台点数复制机（丢弃时退点、换回
+        // 时技能还在）。存档里的余额原样保留是唯一自洽的选择。
+        unspent_attribute_points: _,
+        unspent_skill_points: _,
         // 背包（P6 第二批：背包与地面物品）：每一堆的 def 指向
         // ItemDef，依赖 mod 加载顺序，必须显式重映射——见下方
         // remap_inventory。
@@ -792,6 +807,8 @@ mod tests {
             level: Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         }
     }

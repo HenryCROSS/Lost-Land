@@ -1,6 +1,14 @@
 //! 技能树 UI 数据层——给定一个 `Agent`，返回技能树当前状态的一份可
 //! 展示数据结构（P5-B 任务 8）。
 //!
+//! # 两个消费者：技能树视图与「学会一个技能」的前置判定
+//!
+//! [`SkillTreeCatalog`] 起初只服务 [`build_skill_tree_view`]。升级
+//! 加点批次落地 `Intent::LearnSkill` 之后，`crate::resolve` 的
+//! `resolve_learn_skill` 是它的第二个消费者——**刻意共用同一个目录、
+//! 同一条前置规则**（前置技能全部在已解锁集合里）：面板上显示为
+//! 「可解锁」的技能，就是那里学得会的技能，两处不会漂移。
+//!
 //! # 明确边界：不含渲染，不碰 `ll-render`/`ll-ui`
 //!
 //! `ll-ui` 完整像素控件库排在 P7（规格 §15 已明确）。本模块只交付
@@ -56,6 +64,29 @@ pub trait SkillTreeCatalog: SkillCatalog {
     /// 的语义混淆——调用方只在 `all_skills` 已经给出的索引上调用本
     /// 方法，不会撞见这个歧义）。
     fn prerequisites(&self, skill: ContentIndex) -> Vec<ContentIndex>;
+}
+
+/// 空技能树目录：一个技能都没有注册，任何技能的前置列表都是空的。
+///
+/// 复用 [`crate::skill::NoSkills`] 这个既有空对象，不另造一个
+/// `NoSkillTree`：它已经是「技能这一路没接」的那个空实现，
+/// [`SkillTreeCatalog`] 又恰好以 [`SkillCatalog`] 为超 trait——再造一
+/// 个只多两个空方法的第二个空对象，会让调用方在两个语义完全相同的
+/// 空实现之间做一次没有意义的选择（[ADR 0021](../../../../knowledge/decisions/0021-abstraction-requires-shared-algorithm-not-symmetry.md)
+/// 同一条判据的另一面：不为对称造第二个东西）。
+///
+/// **`all_skills` 返回空，不是「全部技能」**：没接目录时诚实的回答是
+/// 「我不知道有哪些技能」，而 [`build_skill_tree_view`]/
+/// `resolve_learn_skill` 在空列表上的行为（技能树全空、学任何技能都
+/// 静默失败）正是「这一路没接」应有的表现，见 ADR 0015。
+impl SkillTreeCatalog for crate::skill::NoSkills {
+    fn all_skills(&self) -> Vec<ContentIndex> {
+        Vec::new()
+    }
+
+    fn prerequisites(&self, _skill: ContentIndex) -> Vec<ContentIndex> {
+        Vec::new()
+    }
 }
 
 /// 技能树当前状态的可展示数据结构——[`build_skill_tree_view`] 的产出，
@@ -199,6 +230,8 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         }
     }

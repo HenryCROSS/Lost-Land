@@ -151,6 +151,8 @@ fn spawn_agent_with_pool(
         level,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        unspent_attribute_points: 0,
+        unspent_skill_points: 0,
         stealthed: false,
     })
 }
@@ -198,6 +200,8 @@ fn spawn_named_agent_with_pool(
         level: Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        unspent_attribute_points: 0,
+        unspent_skill_points: 0,
         stealthed: false,
     })
 }

@@ -137,7 +137,7 @@ fn 本体三个种族由本体mod脚本注册而不是任何rust函数() {
 }
 
 #[test]
-fn 人类逐字段与迁移前的硬编码声明相同() {
+fn 人类逐字段与本体races脚本的声明一致() {
     // Arrange
     let (registry, race) = load_real_mods();
     let ids = resolve_base_races(&registry, &race).expect("契约解析");
@@ -165,13 +165,18 @@ fn 人类逐字段与迁移前的硬编码声明相同() {
     assert_eq!(view.darkvision_floor, 0);
     assert_eq!(view.footprint, (1, 1));
     assert_eq!(view.lifespan_years, 80);
-    assert_eq!(view.xp_reward, 0);
+    // 击杀基准经验值——**不再是 0**：项目所有者裁定「有个最低经验
+    // 1xp，然后等级差越多给越多」，推翻了「本体三族是可玩种族不是
+    // 猎物、刻意不声明」这条旧判断，`mods/lostland/races.scm` 因此
+    // 为三族各自声明了基准值（人类 10，矮人/精灵各 12，依据见该文件
+    // 末尾注释）。本文件的三条测试是那三个数字唯一的钉子。
+    assert_eq!(view.xp_reward, 10);
     assert!(view.traits.is_empty());
     assert!(view.starting_items.is_empty());
 }
 
 #[test]
-fn 矮人逐字段与迁移前的硬编码声明相同() {
+fn 矮人逐字段与本体races脚本的声明一致() {
     // Arrange
     let (registry, race) = load_real_mods();
     let ids = resolve_base_races(&registry, &race).expect("契约解析");
@@ -199,13 +204,14 @@ fn 矮人逐字段与迁移前的硬编码声明相同() {
     assert_eq!(view.darkvision_floor, 4);
     assert_eq!(view.footprint, (1, 1));
     assert_eq!(view.lifespan_years, 250);
-    assert_eq!(view.xp_reward, 0);
+    // 见人类那条同一处注释。
+    assert_eq!(view.xp_reward, 12);
     assert!(view.traits.is_empty());
     assert!(view.starting_items.is_empty());
 }
 
 #[test]
-fn 精灵逐字段与迁移前的硬编码声明相同() {
+fn 精灵逐字段与本体races脚本的声明一致() {
     // Arrange
     let (registry, race) = load_real_mods();
     let ids = resolve_base_races(&registry, &race).expect("契约解析");
@@ -233,7 +239,8 @@ fn 精灵逐字段与迁移前的硬编码声明相同() {
     assert_eq!(view.darkvision_floor, 0);
     assert_eq!(view.footprint, (1, 1));
     assert_eq!(view.lifespan_years, 400);
-    assert_eq!(view.xp_reward, 0);
+    // 见人类那条同一处注释。
+    assert_eq!(view.xp_reward, 12);
     assert!(view.traits.is_empty());
     assert!(view.starting_items.is_empty());
 }

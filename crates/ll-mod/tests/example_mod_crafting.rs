@@ -58,12 +58,14 @@ use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::craft::{NoRecipes, RecipeCatalog};
 use ll_sim::damage_category::NoDamageCategories;
+use ll_sim::experience::NoExperience;
 use ll_sim::exposure::AmbientSource;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemStack};
 use ll_sim::quest::NoQuests;
 use ll_sim::timeline::Timeline;
 use ll_sim::turn::TurnEngine;
+use ll_sim::xp_curve::FlatXpCurve;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -110,6 +112,9 @@ impl RealModsHandle {
             damage_categories: &NoDamageCategories,
             recipes,
             ambient: AmbientSource::NONE,
+            experience: &NoExperience,
+            skill_tree: &NO_SKILLS,
+            xp_curves: &FlatXpCurve::DEFAULT,
         }
     }
 
@@ -287,6 +292,8 @@ fn spawn_agent(world: &mut WorldState, pos: (i32, i32), scene: &Scene) -> Entity
         level: Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        unspent_attribute_points: 0,
+        unspent_skill_points: 0,
         stealthed: false,
     })
 }

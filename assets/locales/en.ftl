@@ -71,6 +71,9 @@ weather-snow-display_name = Snow
 hud-character-panel-title = Character
 hud-character-level-label = Level
 hud-character-experience-label = XP
+hud-character-attribute-points-label = Attribute Points
+hud-character-skill-points-label = Skill Points
+hud-character-primary-attribute-label = Primary Attribute
 hud-character-modifiers-title = Active Modifiers
 hud-character-modifiers-empty = None
 

@@ -2,7 +2,7 @@
 //!
 //! # 为什么需要这一束，而 `resolve` 自己仍然收散参数
 //!
-//! [`crate::resolve::resolve_with_all_catalogs`] 把九份目录逐个列成
+//! [`crate::resolve::resolve_with_all_catalogs`] 把它需要的目录逐个列成
 //! 参数，那是刻意的：依赖倒置的意义就在于「这一段结算到底依赖哪几份
 //! 只读内容」写在签名上一目了然，`resolve_dispatch` 的文档已经明确
 //! 记过「不是可以合并成一个结构体的意外堆叠」。本模块**不推翻那条
@@ -11,7 +11,7 @@
 //! 本束服务的是另一件事：**把目录搬过一层调用边界**。
 //! [`crate::turn::TurnEngine`] 自己不消费任何一份目录，它只是把调用方
 //! 给的东西原样转交给 `resolve`。让 `advance_ai`/`try_player_turn`
-//! 各自多出九个参数，只会把「TurnEngine 依赖这九份内容」这个错误信号
+//! 各自多出十来个参数，只会把「TurnEngine 依赖这十来份内容」这个错误信号
 //! 写进签名（它一份都不读），并且此后每接一份新目录都要改三处签名与
 //! 全部调用点。一束引用是搬运工的正确形状：TurnEngine 的签名只说
 //! 「我需要一束结算目录，原样转交」。
@@ -34,20 +34,25 @@
 
 use crate::craft::{NoRecipes, RecipeCatalog};
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
+use crate::experience::{ExperienceCatalog, NoExperience};
 use crate::exposure::AmbientSource;
 use crate::formula::{DamageFormulaCatalog, NoFormulas};
 use crate::item::{ItemCatalog, NoItems};
 use crate::quest::{NoQuests, QuestCatalog};
 use crate::resource_pool::{NoResourcePools, ResourcePoolCatalog};
 use crate::skill::{NoSkills, SkillCatalog};
+use crate::skill_overview::SkillTreeCatalog;
 use crate::traits::{NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource};
+use crate::xp_curve::{FlatXpCurve, XpCurveCatalog};
 
 /// 一次结算需要的全部只读内容目录（借用，不持有所有权）。
 ///
-/// 字段与 [`crate::resolve::resolve_with_all_catalogs`] 的九个目录
-/// 参数一一对应、同序（`trait_defs` 是唯一一个不同名的，理由见该字段
-/// 自己的文档）——这是刻意的：想知道某个字段的语义与「不接这一路会
-/// 怎样」，读那个入口对应参数的文档即可，本类型不重复一遍。
+/// 前九个字段与 [`crate::resolve::resolve_with_all_catalogs`] 的九个
+/// 目录参数一一对应、同序（`trait_defs` 是唯一一个不同名的，理由见该
+/// 字段自己的文档）——这是刻意的：想知道某个字段的语义与「不接这一路
+/// 会怎样」，读那个入口对应参数的文档即可，本类型不重复一遍。此后陆续
+/// 追加的字段（`recipes`/`ambient`/`experience`/`skill_tree`/`xp_curves`）
+/// 在那个入口上没有对应参数，各自的文档写在本类型里。
 ///
 /// 不派生 `Debug`：字段都是 `&dyn`，那些 trait 都不要求 `Debug`
 /// （理由同 [`crate::traits::TraitSource`] 的同一条取舍）。
@@ -88,7 +93,7 @@ pub struct ResolveCatalogs<'a> {
     ///
     /// # 为什么它不是一个 `&dyn 某某Catalog`
     ///
-    /// 其余九份全是 `&'a dyn` trait 对象，因为它们背后的真实实现都在
+    /// 其余各份全是 `&'a dyn` trait 对象，因为它们背后的真实实现都在
     /// **下游**的 `ll-mod`，`ll-sim` 只能靠依赖倒置够到。温度用的两张
     /// 表（`ll_world::space_profile::SpaceProfileTable`/
     /// `ll_world::weather::WeatherTable`）定义在**上游**的 `ll-world`，
@@ -100,9 +105,46 @@ pub struct ResolveCatalogs<'a> {
     /// 它是 `Copy` 值而不是引用：内部就是两个 `Option<&'a Table>`，
     /// 再套一层引用只是多一次间接。
     pub ambient: AmbientSource<'a>,
+    /// 击杀经验目录——「杀死这个种类的**基准**经验值是多少」
+    /// （升级加点批次接进本束）。
+    ///
+    /// 不接这一路（[`NoExperience`]）时，每个种类的基准值都是 0，
+    /// 击杀仍然按 `crate::experience::MIN_KILL_XP` 产出保底的 1 点
+    /// 经验——所有者裁定「最低经验 1xp」是**公式**的一部分，不是
+    /// 「注册过的种类才有」的特权，见
+    /// [`crate::experience::kill_experience`] 文档。
+    pub experience: &'a dyn ExperienceCatalog,
+    /// 技能树目录——`Intent::LearnSkill` 的前置判定来源。
+    ///
+    /// 与 [`Self::skills`] 是两份**同一个真实实现**（`ll_mod::skill::
+    /// SkillTable` 两个 trait 都实现）的不同视角，不是两张表：拆成两
+    /// 个字段是因为 [`SkillCatalog`] 有多个只需要「查一条技能规则」
+    /// 的实现方（`NoSkills`、若干测试假目录），给它加两个必需方法会
+    /// 强迫它们全部补上用不到的实现——完整论证见
+    /// [`crate::skill_overview`] 模块文档「为什么是独立的
+    /// `SkillTreeCatalog`」一节。
+    pub skill_tree: &'a dyn SkillTreeCatalog,
+    /// 经验需求曲线目录——**这一份由 `apply` 消费，不是 `resolve`**。
+    ///
+    /// # 为什么一个 `apply` 侧的目录也在这一束里
+    ///
+    /// 本束的真实职责（见模块文档「为什么需要这一束」一节）不是
+    /// 「`resolve` 的参数表」，而是「把内容目录搬过 [`crate::turn::TurnEngine`]
+    /// 这层边界」——而 `TurnEngine::perform` 跑的是 `resolve` **和**
+    /// `apply` 两半。曲线目录若不搭这趟车，生产路径就只能永远用
+    /// [`FlatXpCurve::DEFAULT`] 那条保底曲线，`register-xp-curve`/
+    /// `register-class-xp-curve`/`register-race-xp-curve` 三个已经落
+    /// 地的注册函数在真正能跑的游戏里从来不会被读到——与本批次修掉的
+    /// 「击杀经验只在测试里成立」是同一类缺陷。
+    ///
+    /// 类型名 `ResolveCatalogs` 因此比字面意思宽了一格。不改名是权衡
+    /// 后的选择：改名要动 `ll-game`/`ll-mod`/全部 `examples/` 与测试
+    /// 的每一处引用，换来的只有一个更贴切的名字，不改变任何行为；
+    /// 一条写清楚的字段文档（这一条）足以让读者不被名字误导。
+    pub xp_curves: &'a dyn XpCurveCatalog,
 }
 
-/// [`ResolveCatalogs::empty`] 借出的九个目录空实现的 `'static` 实例。
+/// [`ResolveCatalogs::empty`] 借出的各路目录空实现的 `'static` 实例。
 /// 第十项（环境来源）不在这里：它是 `Copy` 值，空对象就是
 /// [`AmbientSource::NONE`] 这个常量本身，不需要借出引用。
 ///
@@ -111,6 +153,7 @@ pub struct ResolveCatalogs<'a> {
 /// 不需要依赖对提升规则的记忆——与 [`crate::traits::NO_TRAIT_GRANTS`]
 /// 当初被单独具名是同一条理由。
 const NO_SKILLS: NoSkills = NoSkills;
+const NO_EXPERIENCE: NoExperience = NoExperience;
 const NO_QUESTS: NoQuests = NoQuests;
 const NO_RACE_TRAIT_GRANTS: NoTraitGrants = NoTraitGrants;
 const NO_CLASS_TRAIT_GRANTS: NoTraitGrants = NoTraitGrants;
@@ -143,6 +186,12 @@ impl ResolveCatalogs<'static> {
             damage_categories: &NO_DAMAGE_CATEGORIES,
             recipes: &NO_RECIPES,
             ambient: AmbientSource::NONE,
+            experience: &NO_EXPERIENCE,
+            // 技能树这一路的空实现复用 `NoSkills`，见
+            // `crate::skill_overview` 里那条 impl 的文档：不为对称再造
+            // 一个语义完全相同的第二个空对象。
+            skill_tree: &NO_SKILLS,
+            xp_curves: &FlatXpCurve::DEFAULT,
         }
     }
 }

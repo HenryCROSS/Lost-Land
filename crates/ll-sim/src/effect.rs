@@ -737,4 +737,44 @@ pub enum Effect {
         /// 这一刻之后它的潜行状态。
         stealthed: bool,
     },
+    /// 花掉一点未分配属性点，把指定的那一项主属性加一（升级加点
+    /// 批次）——[`crate::intent::Intent::AllocateAttributePoint`] 的
+    /// 结算产物。
+    ///
+    /// # 为什么扣点与加属性是同一条效果，不是两条
+    ///
+    /// 两者必须原子成对：只应用其中一条的世界是「扣了点没加属性」或
+    /// 者「凭空加了属性」，两种都是数据损坏。拆成两条效果就得靠调用
+    /// 方永远记得同时产出、`apply` 永远按顺序应用来维持这条不变式，
+    /// 而效果列表本身不提供任何这类保证。同一条效果里做两个字段的
+    /// 写入，与 [`Effect::Kill`] 一条效果同时销毁实体并清理其残留是
+    /// 同一个范式：原子性由「它就是一条效果」这件事本身保证。
+    ///
+    /// # `apply` 不做任何判断
+    ///
+    /// 余额够不够、加完会不会越过
+    /// [`ll_world::entity::BaseStats::HARD_CAP`]，全部在 `resolve`
+    /// 侧判完（不满足就一条效果都不产出）——`apply` 收到这条效果时
+    /// 就是无条件的「减一、加一」，与约束 C1/ADR 0023 一致。
+    AllocateAttributePoint {
+        /// 加点的实体。
+        actor: EntityId,
+        /// 加到哪一项。
+        attribute: AttributeKind,
+    },
+    /// 花掉一点未分配技能点，把一个技能加进已解锁集合（升级加点
+    /// 批次）——[`crate::intent::Intent::LearnSkill`] 的结算产物，也是
+    /// [`ll_world::entity::Agent::unlocked_skills`] 在本仓库里的**第一
+    /// 个**写入口（此前它只有读取者：`resolve_use_skill` 的解锁闸门
+    /// 与 [`crate::skill_overview`] 的技能树视图）。
+    ///
+    /// 扣点与解锁同为一条效果，理由同
+    /// [`Effect::AllocateAttributePoint`]。余额、重复学习、前置未满足
+    /// 三道闸门全部在 `resolve` 侧判完。
+    LearnSkill {
+        /// 学会技能的实体。
+        actor: EntityId,
+        /// 学会了哪个技能。
+        skill: ContentIndex,
+    },
 }

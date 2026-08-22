@@ -681,6 +681,15 @@ fn draw_hud(
         level: agent.level,
         experience: agent.experience,
         xp_to_next_level: agent.xp_to_next_level,
+        unspent_attribute_points: agent.unspent_attribute_points,
+        unspent_skill_points: agent.unspent_skill_points,
+        // 职业主属性倾向——查不到职业定义时是 None，面板整行不出现，
+        // 见 `CharacterPanelData::primary_attribute` 文档。这是本仓库
+        // 里 `ClassDef::primary_attribute` 的第一个真实消费者。
+        primary_attribute: content
+            .class_table
+            .get(agent.profession)
+            .map(|view| view.primary_attribute),
         now: game_world.world.clock,
     };
 

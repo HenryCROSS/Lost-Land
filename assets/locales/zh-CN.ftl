@@ -87,6 +87,9 @@ weather-snow-display_name = 雪
 hud-character-panel-title = 角色
 hud-character-level-label = 等级
 hud-character-experience-label = 经验
+hud-character-attribute-points-label = 属性点
+hud-character-skill-points-label = 技能点
+hud-character-primary-attribute-label = 主属性
 hud-character-modifiers-title = 生效中的属性修正
 hud-character-modifiers-empty = 无
 

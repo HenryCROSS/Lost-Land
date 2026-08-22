@@ -71,7 +71,7 @@ use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
 use ll_mod::trait_def::TraitTable;
 use ll_mod::weapon_category::WeaponCategoryTable;
-use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
+use ll_mod::xp_curve::{RegistryXpCurves, XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::exposure::AmbientSource;
@@ -212,12 +212,13 @@ pub struct LoadedContent {
 ///
 /// # 为什么需要这个中间类型
 ///
-/// 九份目录里有两份不是「某张表自己就实现了 trait」：
+/// 各路目录里有四份不是「某张表自己就实现了 trait」：
 /// [`RegisteredQuests`] 要把 [`QuestTable`] 与 [`Registry`] 绑在一起，
 /// [`RegistryFormulas`] 要把 [`FormulaTable`] 与保底默认公式索引绑在
-/// 一起（各自的理由见它们自己的文档）。两者都是**借着 `LoadedContent`
+/// 一起，[`RegisteredRecipes`] 与 [`RegistryXpCurves`] 同理（各自的
+/// 理由见它们自己的文档）。四者都是**借着 `LoadedContent`
 /// 现造**的值，而 `ResolveCatalogs` 的字段是 `&dyn`——不能指向一个
-/// 函数返回时就消失的临时值。本类型就是这两个值的落脚处：调用方先
+/// 函数返回时就消失的临时值。本类型就是这四个值的落脚处：调用方先
 /// 让它活着（一个局部变量），再从它借出目录束。
 ///
 /// # 为什么目录不挂进 `WorldState`
@@ -231,6 +232,10 @@ pub struct RuntimeCatalogs<'a> {
     quests: RegisteredQuests<'a>,
     formulas: RegistryFormulas<'a>,
     recipes: RegisteredRecipes<'a>,
+    /// 经验曲线目录（升级加点批次）——第四个「不是某张表自己实现
+    /// trait」的目录：`RegistryXpCurves` 要把曲线定义表、职业/种族
+    /// 绑定表与保底默认曲线索引三样绑在一起，见其文档。
+    xp_curves: RegistryXpCurves<'a>,
 }
 
 impl<'a> RuntimeCatalogs<'a> {
@@ -253,6 +258,11 @@ impl<'a> RuntimeCatalogs<'a> {
             recipes: RegisteredRecipes {
                 recipes: &content.recipe_table,
                 categories: &content.recipe_category_table,
+            },
+            xp_curves: RegistryXpCurves {
+                curves: &content.xp_curve_table,
+                bindings: &content.xp_curve_bindings,
+                default_curve: content.default_xp_curve_id,
             },
         }
     }
@@ -291,6 +301,21 @@ impl<'a> RuntimeCatalogs<'a> {
             // `ll-game` 全程只经 `TurnEngine` 驱动世界，本方法就是那条
             // 链路的入口。
             ambient: AmbientSource::new(&self.content.space_table, &self.content.weather_table),
+            // 击杀经验这一路（升级加点批次）：`RaceTable` 本就登记了
+            // 每个种族的 `xp_reward` 基准值，直接充当经验目录，见
+            // `ll_mod::xp_curve` 里那条 `impl ExperienceCatalog for
+            // RaceTable`。这一行与下面两行合起来是「打怪升级」在真实
+            // 游戏里唯一的接线点：`ll-game` 全程只经 `TurnEngine`
+            // 驱动世界。
+            experience: &self.content.race_table,
+            // 技能树这一路：与 `skills` 是同一张 `SkillTable` 的另一个
+            // 视角（前置关系 + 全部已注册技能），见
+            // `ll_sim::catalogs::ResolveCatalogs::skill_tree` 文档。
+            skill_tree: &self.content.skill_table,
+            // 经验曲线这一路：由 `apply` 侧的升级循环消费，不是
+            // `resolve`——理由见该字段文档「为什么一个 `apply` 侧的
+            // 目录也在这一束里」一节。
+            xp_curves: &self.xp_curves,
         }
     }
 }

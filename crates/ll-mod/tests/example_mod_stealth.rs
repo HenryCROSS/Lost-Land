@@ -81,11 +81,14 @@ use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::craft::NoRecipes;
 use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::effect::Effect;
+use ll_sim::experience::NoExperience;
 use ll_sim::exposure::AmbientSource;
 use ll_sim::intent::Intent;
 use ll_sim::quest::NoQuests;
+use ll_sim::skill::NoSkills;
 use ll_sim::timeline::Timeline;
 use ll_sim::turn::TurnEngine;
+use ll_sim::xp_curve::FlatXpCurve;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -140,6 +143,9 @@ impl RealModsHandle {
             // 本文件的场景都在一个占位层属性的地表上，温度这一路没有
             // 可查的表，理由同 `turn_engine_catalogs.rs` 同一位置。
             ambient: AmbientSource::NONE,
+            experience: &NoExperience,
+            skill_tree: &NO_SKILLS,
+            xp_curves: &FlatXpCurve::DEFAULT,
         }
     }
 }
@@ -302,6 +308,8 @@ fn spawn_agent(
         level: Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        unspent_attribute_points: 0,
+        unspent_skill_points: 0,
         stealthed: false,
     })
 }
@@ -686,3 +694,8 @@ fn 非卫兵职业的实体经由turnengine一次盘查都不会发起() {
         "它照样看得见目标、照样走近——盘查分支不成立只是让 selector 落到下一条"
     );
 }
+
+/// 空技能目录常量——同时充当空技能树目录（`NoSkills` 实现了
+/// `SkillTreeCatalog`，见 `ll_sim::skill_overview` 里那条 impl 的
+/// 文档：不为对称再造第二个语义相同的空对象）。
+const NO_SKILLS: NoSkills = NoSkills;

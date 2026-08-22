@@ -33,13 +33,17 @@
 //! 本模块的字段覆盖查的是**另一头**：「**内容里有没有人写**这个字段」。
 //! 两者互相不能替代，一个字段完全可能：
 //!
-//! - 决策层读了、但没有任何一条内容给它非默认值（例如
-//!   `RaceAttrs.xp_reward`：`ll_sim::experience` 真的会用它算击杀经验，
-//!   但本体三个种族全都不声明，于是这条规则在本体内容上永远是死的）
-//!   ——脚本判"已接线"，本模块判"未覆盖"；
+//! - 决策层读了、但没有任何一条内容给它非默认值——`RaceAttrs.xp_reward`
+//!   曾是这一档的教科书例子（`ll_sim::experience` 真的会用它算击杀
+//!   经验，但本体三个种族全都不声明，于是这条规则在本体内容上永远是
+//!   死的）；项目所有者裁定「最低经验 1xp、人人都给」之后三族各自
+//!   声明了基准值，这一条已经两头都绿，豁免随之摘除。
 //! - 内容写了、但决策层没人读（例如 `ClassDef.primary_attribute`：
-//!   `mods/example_mod/gameplay.scm` 逐条声明了它，但没有任何结算逻辑
-//!   读它）——本模块判"已覆盖"，脚本判"未接线"。
+//!   `mods/example_mod/gameplay.scm` 逐条声明了它，但没有任何**结算**
+//!   逻辑读它——升级加点批次把它接进了角色面板这个**呈现层**消费者，
+//!   而所有者「玩家自己加点」的裁定正好排除了它进结算层的可能，见
+//!   `ll_ui::hud::character_panel::CharacterPanelData::primary_attribute`
+//!   文档）——本模块判"已覆盖"，脚本判"未接线"。
 //!
 //! 两条检查同时绿，才说明这个字段既有人写、也有人读。这正是本项目
 //! 反复复发那 25 处「声明了却从没接线」时缺的那一半。
@@ -377,20 +381,14 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         },
         FieldExemption {
             kind: ContentTableKind::Race,
-            field: "RaceAttrs::xp_reward",
-            reason: "本体三族是可玩种族不是猎物，「杀死它给多少经验」对它们没有意义，\
-                     mods/lostland/races.scm 因此刻意不调用 register-race-xp-reward\
-                     （该文件末尾的注释白纸黑字写着这一条）。字段本身不是死的：\
-                     mods/example_mod/gameplay.scm 的 examplemod:goblin 声明了 15 点，\
-                     ll_sim::experience 真的会读它——只是本体内容用不到。",
-        },
-        FieldExemption {
-            kind: ContentTableKind::Race,
             field: "RaceAttrs::traits",
-            reason: "本体三族当前不授予任何种族天赋，与 xp_reward 一条同源：\
-                     races.scm 刻意不调用 register-race-trait。天赋系统落地批次的\
-                     真实证据在 mods/example_mod/（examplemod:ooze 等），本体这一侧\
-                     等内容设计真的需要时再补，不为了让检查变绿硬塞一条天赋。",
+            reason: "本体三族当前不授予任何种族天赋：races.scm 刻意不调用\
+                     register-race-trait。天赋系统落地批次的真实证据在\
+                     mods/example_mod/（examplemod:ooze 等），本体这一侧等内容设计\
+                     真的需要时再补，不为了让检查变绿硬塞一条天赋。曾与\
+                     RaceAttrs::xp_reward 一条并列为「同源」，那一条已随项目所有者\
+                     裁定「最低经验 1xp、人人都给」摘除（三族现在各自声明了基准\
+                     值），本条不受影响：种族天赋没有对应的裁定。",
         },
         FieldExemption {
             kind: ContentTableKind::Race,

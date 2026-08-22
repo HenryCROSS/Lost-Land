@@ -66,7 +66,7 @@ use crate::combat::{
 use crate::craft::{NoRecipes, RecipeCatalog};
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
 use crate::effect::Effect;
-use crate::experience::ExperienceCatalog;
+use crate::experience::{ExperienceCatalog, NoExperience};
 use crate::exposure::{AmbientSource, exposure_strength_penalty, felt_temperature};
 use crate::formula::{DamageFormulaCatalog, FormulaInputs, NoFormulas, eval_formula};
 use crate::intent::{Direction, Intent};
@@ -82,6 +82,7 @@ use crate::rule_modifier::{
     agent_rule_modifiers, resistance_multiplier_permille, sneak_attack_rule,
 };
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
+use crate::skill_overview::SkillTreeCatalog;
 use crate::timeline::action_cost;
 use crate::traits::{
     NO_TRAIT_GRANTS, NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, agent_trait_sources,
@@ -549,6 +550,8 @@ pub fn resolve_with_skills_and_traits(
         &NoDamageCategories,
         &NoRecipes,
         AmbientSource::NONE,
+        &NoExperience,
+        &NoSkills,
     )
 }
 
@@ -591,6 +594,8 @@ pub fn resolve_with_skills_traits_and_pools(
         &NoDamageCategories,
         &NoRecipes,
         AmbientSource::NONE,
+        &NoExperience,
+        &NoSkills,
     )
 }
 
@@ -631,6 +636,8 @@ pub fn resolve_with_skills_traits_pools_and_items(
         &NoDamageCategories,
         &NoRecipes,
         AmbientSource::NONE,
+        &NoExperience,
+        &NoSkills,
     )
 }
 
@@ -673,6 +680,8 @@ pub fn resolve_with_skills_traits_pools_items_and_formulas(
         &NoDamageCategories,
         &NoRecipes,
         AmbientSource::NONE,
+        &NoExperience,
+        &NoSkills,
     )
 }
 
@@ -721,6 +730,8 @@ pub fn resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
         damage_categories,
         &NoRecipes,
         AmbientSource::NONE,
+        &NoExperience,
+        &NoSkills,
     )
 }
 
@@ -773,6 +784,8 @@ pub fn resolve_with_all_catalogs(
         damage_categories,
         &NoRecipes,
         AmbientSource::NONE,
+        &NoExperience,
+        &NoSkills,
     )
 }
 
@@ -808,6 +821,8 @@ pub fn resolve_with_catalogs(
         catalogs.damage_categories,
         catalogs.recipes,
         catalogs.ambient,
+        catalogs.experience,
+        catalogs.skill_tree,
     )
 }
 
@@ -855,6 +870,8 @@ pub fn resolve_with_skills_and_quests(
         &NoDamageCategories,
         &NoRecipes,
         AmbientSource::NONE,
+        &NoExperience,
+        &NoSkills,
     )
 }
 
@@ -888,6 +905,8 @@ fn resolve_dispatch(
     damage_categories: &dyn DamageCategoryCatalog,
     recipes: &dyn RecipeCatalog,
     ambient: AmbientSource<'_>,
+    experience: &dyn ExperienceCatalog,
+    skill_tree: &dyn SkillTreeCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => {
@@ -944,6 +963,10 @@ fn resolve_dispatch(
         Intent::Inspect { actor, target } => resolve_inspect(world, actor, target),
         Intent::ToggleStealth { actor } => resolve_toggle_stealth(world, actor),
         Intent::Craft { actor, recipe } => resolve_craft(world, actor, recipe, recipes, items),
+        Intent::AllocateAttributePoint { actor, attribute } => {
+            resolve_allocate_attribute_point(world, actor, attribute)
+        }
+        Intent::LearnSkill { actor, skill } => resolve_learn_skill(world, actor, skill, skill_tree),
     };
     // 休息中断（`resource-pools-and-rest.md` 八节「中断怎么表达」一节）：
     // 任何非 `Wait`/`Rest` 意图,若发起者当前正在休息,追加一条不带恢复
@@ -999,7 +1022,139 @@ fn resolve_dispatch(
     // Effect::Kill），各自独立追加,互不依赖——见 append_corpse_drop
     // 文档。不需要按 Intent 类型区分调用与否,理由同 append_kill_history。
     append_corpse_drop(world, &mut effects);
+    // 击杀经验：与击杀历史记录/死亡掉落同一个触发点（同一批
+    // `Effect::Kill`），各自独立追加，互不依赖——见
+    // `append_kill_experience` 文档。
+    //
+    // # 为什么现在挪进 `resolve_dispatch`，不再只挂在一个专用入口上
+    //
+    // 接线批次当初把它挂在 `resolve_with_skills_quests_and_experience`
+    // 这个第四层专用入口里，而生产路径（`ll-game` 全程只经
+    // `crate::turn::TurnEngine` 驱动世界）走的是
+    // `resolve_with_catalogs` → 本函数——两条路从不相交，于是**真正
+    // 能跑起来的游戏里，击杀从来没有产出过任何经验**，全部证据都止步
+    // 于集成测试直接调那个专用入口。这与 `TurnEngine` 文档记的天赋
+    // 系统那次「只在测试里成立的接线」是同一类缺陷的第三次复发，修法
+    // 同样是把它放到全部入口都会经过的那一处（本函数），而不是再补
+    // 一份只在测试里成立的证据。不传经验目录的既有入口传
+    // `&NoExperience`，与接线之前逐字等价。
+    append_kill_experience(world, &mut effects, experience);
     effects
+}
+
+/// [`Intent::AllocateAttributePoint`] 结算（升级加点批次）：三道闸门
+/// 全过才产出一条 [`Effect::AllocateAttributePoint`]，否则空列表。
+///
+/// 1. 发起者存在于世界里；
+/// 2. 未分配属性点余额大于零；
+/// 3. 目标属性当前的**基础值**尚未达到
+///    [`BaseStats::HARD_CAP`]。
+///
+/// # 为什么是「拒绝」而不是「加到上限为止」
+///
+/// 已经在上限的属性上再加一点，钳位后属性一点没变、点数却少了一
+/// 点——那是凭空吞掉玩家的点数。空效果列表意味着这次行动什么都没
+/// 发生，玩家的余额原样保留，可以改加别的属性。
+///
+/// # 为什么不产出 `Effect::ScheduleNext`：加点是自由动作，不花回合
+///
+/// 本仓库几乎每个意图都会顺带产出一条
+/// [`Effect::ScheduleNext`]（连撞墙都算一次行动，见 [`resolve_move`]
+/// 文档），本函数与 [`resolve_learn_skill`] 是**刻意的例外**：加点
+/// 与学技能是角色面板上的决定，不是角色在世界里做的动作。若它们花
+/// 掉一个回合，玩家每分配一点属性就要挨怪物一下——传统 roguelike 里
+/// 没有任何一款会因为玩家打开角色面板而让怪物白打一轮。
+///
+/// 引擎侧的后果是明确的、也是想要的：[`crate::turn::TurnEngine::perform`]
+/// 用行动者**未被改写**的 `next_action_at` 把它排回时间轴，于是这个
+/// 角色立刻又轮到自己——正是「花点数不推进时间」这句话在逐实体时间
+/// 轴上的准确表达。（AI 若反复提交这类意图会原地空转，由
+/// `advance_ai` 的 `MAX_STEPS_PER_ADVANCE` 兜底；当前没有任何 AI 会
+/// 提交它们，行为树只产出移动/攻击/等待。）
+///
+/// # 为什么比的是基础值，不是 `derive_stats` 的有效值
+///
+/// [`BaseStats::HARD_CAP`] 只约束基础值，装备与限时修正**可以突破**
+/// （`knowledge/design/attribute-system.md`「成长上限」一节，
+/// 见该常量文档）。若这里比的是有效值，一件 +5 力量的武器会让玩家
+/// 无法再往力量里加点，脱下武器又能加——加点能不能加，取决于此刻手
+/// 里拿着什么，那既不是设计要的，也会让玩家为了加点而反复穿脱装备。
+fn resolve_allocate_attribute_point(
+    world: &WorldState,
+    actor: EntityId,
+    attribute: AttributeKind,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    if agent.unspent_attribute_points == 0 {
+        return Vec::new();
+    }
+    if agent.stats.value(attribute) >= BaseStats::HARD_CAP {
+        return Vec::new();
+    }
+    vec![Effect::AllocateAttributePoint { actor, attribute }]
+}
+
+/// [`Intent::LearnSkill`] 结算（升级加点批次）：四道闸门全过才产出
+/// 一条 [`Effect::LearnSkill`]，否则空列表。
+///
+/// 1. 发起者存在于世界里；
+/// 2. 未分配技能点余额大于零；
+/// 3. 这个技能尚未解锁（重复学习不该再花一点）；
+/// 4. 这个技能已注册，且它的前置技能全部已经解锁。
+///
+/// # 第 4 道闸门为什么要「已注册」这半句
+///
+/// [`SkillTreeCatalog::prerequisites`] 对未注册的索引返回空列表
+/// （见其文档），单看前置判定，一个根本不存在的技能会「前置全部满
+/// 足」而被学会——那会把一个查不到定义的索引写进
+/// [`ll_world::entity::Agent::unlocked_skills`]，此后
+/// [`crate::skill_overview`] 与存档重映射都要处理一个指向虚空的解锁
+/// 记录。因此这里额外要求它出现在
+/// [`SkillTreeCatalog::all_skills`] 里，与 ADR 0015「查不到就是查不
+/// 到」一致。
+///
+/// # 不产出 `Effect::ScheduleNext`
+///
+/// 与 [`resolve_allocate_attribute_point`] 同一条理由（见其文档「加点
+/// 是自由动作，不花回合」一节）：学技能是角色面板上的决定，不是角色
+/// 在世界里做的动作。
+///
+/// # 前置判据与技能树面板同源
+///
+/// 用的是 [`crate::skill_overview::build_skill_tree_view`] 算
+/// 「available」那一档时同一个目录、同一条规则（前置全部在已解锁集合
+/// 里）——面板上显示为「可解锁」的技能，就是这里学得会的技能，两处
+/// 不会漂移。
+fn resolve_learn_skill(
+    world: &WorldState,
+    actor: EntityId,
+    skill: ContentIndex,
+    skill_tree: &dyn SkillTreeCatalog,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    if agent.unspent_skill_points == 0 {
+        return Vec::new();
+    }
+    if agent.unlocked_skills.contains(&skill) {
+        return Vec::new();
+    }
+    if !skill_tree.all_skills().contains(&skill) {
+        return Vec::new();
+    }
+    let unlocked: std::collections::BTreeSet<ContentIndex> =
+        agent.unlocked_skills.iter().copied().collect();
+    if !skill_tree
+        .prerequisites(skill)
+        .iter()
+        .all(|prerequisite| unlocked.contains(prerequisite))
+    {
+        return Vec::new();
+    }
+    vec![Effect::LearnSkill { actor, skill }]
 }
 
 /// 资源池每回合自动恢复（`RegenRule::OnTurnStart`,
@@ -1122,9 +1277,18 @@ fn restore_slots_from_lowest_tier(
 /// 设计文档五节核实过：`kill-and-death-events.md` 把击杀分三档，「无名
 /// 小卒之间」完全不产出 `HistoricalEvent::Kill`——若经验产出挂在那里，
 /// 绝大多数战斗击杀不会触发经验。`Effect::Kill` 由 `resolve_attack`/
-/// `resolve_use_skill` 对**每一次**击杀产出，是前者的严格超集，本函数
+/// `resolve_use_skill` 对**每一次**击杀产出，是前者的严格超集，接线
 /// 因此复用 [`append_kill_history`] 已经在扫描的同一批 `effects`，见
 /// [`append_kill_experience`]。
+///
+/// # 本入口现在只是 `resolve_dispatch` 的薄封装
+///
+/// 升级加点批次把 `append_kill_experience` 的调用挪进了
+/// `resolve_dispatch` 本身（理由见那里的注释：挂在这个专用入口上意味
+/// 着走 [`crate::turn::TurnEngine`] 的生产路径永远拿不到经验）。本
+/// 函数因此不再自己追加任何东西，只是「除经验目录外其余全接空实现」
+/// 的那一层薄封装，与 [`resolve_with_skills_and_quests`] 完全同构。
+/// 保留它是为了不破坏既有调用点。
 pub fn resolve_with_skills_quests_and_experience(
     world: &WorldState,
     intent: &Intent,
@@ -1132,16 +1296,57 @@ pub fn resolve_with_skills_quests_and_experience(
     quests: &dyn QuestCatalog,
     experience: &dyn ExperienceCatalog,
 ) -> Vec<Effect> {
-    let mut effects = resolve_with_skills_and_quests(world, intent, skills, quests);
-    append_kill_experience(world, &mut effects, experience);
-    effects
+    resolve_dispatch(
+        world,
+        intent,
+        skills,
+        quests,
+        &NO_TRAIT_GRANTS,
+        &NO_TRAIT_GRANTS,
+        &NoTraits,
+        &NoResourcePools,
+        &NoItems,
+        &NoFormulas,
+        &NoDamageCategories,
+        &NoRecipes,
+        AmbientSource::NONE,
+        experience,
+        &NoSkills,
+    )
 }
 
 /// 击杀产出经验的接线：若 `effects` 里包含 [`Effect::Kill`] 且
 /// `killer` 已知，读取（结算前仍然存在的）被击杀目标的
 /// `creature_kind`/`race`（与 [`Effect::IncrementKillCount`] 完全同一
 /// 个归并键，见 `append_kill_history` 文档），查询 `experience` 目录
-/// 该给多少经验，非零时追加一条 [`Effect::GrantExperience`]。
+/// 拿到**基准值**，再连同击杀双方的等级交给
+/// [`crate::experience::kill_experience`] 算出最终经验，追加一条
+/// [`Effect::GrantExperience`]。
+///
+/// # 无条件追加，不再有「零经验就不产出」这一档
+///
+/// 项目所有者裁定「有个最低经验 1xp」——`kill_experience` 恒返回正
+/// 数，因此每一次 `killer` 已知的击杀都恰好产出一条效果。此前那句
+/// `if amount > 0` 是「基准值就是最终值」时代的产物，现在删掉不是
+/// 放松判据，而是那个判据永远为真了。
+///
+/// # 死者的等级从哪来：`world.actors`，此刻它还活着
+///
+/// `knowledge/design/level-and-experience-system.md` 五节曾**否决**
+/// 「按死者自身 `level` 计算经验」，理由是薄层 `ThinPopulation` 没有
+/// per-instance 等级列。那条理由在本函数这里不成立，而且不是被绕开
+/// 的：[`Effect::Kill`] 的 `target` 是一个 `EntityId`，指向的是
+/// `world.actors` 这个**厚层**竞技场——薄层背景 NPC 根本不在其中，
+/// 一个薄层实体要被攻击就必须先升格成厚层 `Agent`（`ThinPopulation::
+/// promote`），升格那一刻它就有了 `level` 字段。换句话说：能被
+/// `Effect::Kill` 点名的死者，恒定是有等级的。该节的否决对「薄层不
+/// 需要升格就能被杀」这个假设是对的，但那个假设在当前代码里不成立
+/// ——`append_kill_experience` 自接线之初就在做 `world.actors.get(target)`
+/// 这次查询。设计文档该节据此更新。
+///
+/// 死者查不到（理论上不该发生：本函数在 `apply` 之前运行）时跳过这
+/// 一次击杀的经验，不猜一个默认等级。击杀者查不到时同样跳过——经验
+/// 没有收件人。
 ///
 /// # 为什么追加在末尾，不像 `RecordHistoricalEvent` 那样插在 `Kill`
 /// 之前
@@ -1169,16 +1374,13 @@ fn append_kill_experience(
                 return None;
             };
             let victim = world.actors.get(*target)?;
+            let slayer = world.actors.get(*killer)?;
             let kind = victim.creature_kind.unwrap_or(victim.race);
-            let amount = experience.xp_reward_for(kind);
-            if amount > 0 {
-                Some(Effect::GrantExperience {
-                    target: *killer,
-                    amount,
-                })
-            } else {
-                None
-            }
+            let base_reward = experience.xp_reward_for(kind);
+            Some(Effect::GrantExperience {
+                target: *killer,
+                amount: crate::experience::kill_experience(base_reward, slayer.level, victim.level),
+            })
         })
         .collect();
     effects.extend(grants);
@@ -3530,6 +3732,8 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         })
     }
@@ -3788,6 +3992,8 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         })
     }
@@ -3837,6 +4043,8 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         })
     }
@@ -4374,6 +4582,8 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         })
     }
@@ -4762,6 +4972,8 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         })
     }
@@ -5363,6 +5575,8 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         });
 
@@ -5426,6 +5640,8 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         });
 

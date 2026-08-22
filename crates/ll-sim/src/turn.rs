@@ -34,7 +34,7 @@ use ll_platform::input::InputState;
 use ll_world::entity::EntityId;
 use ll_world::state::WorldState;
 
-use crate::apply::apply;
+use crate::apply::apply_with_xp_curves;
 use crate::catalogs::ResolveCatalogs;
 use crate::effect::Effect;
 use crate::intent::{Intent, intent_from_input};
@@ -128,7 +128,16 @@ impl TurnEngine {
         let effects = resolve_with_catalogs(world, &intent, catalogs);
         for effect in &effects {
             on_effect(world, effect);
-            apply(world, effect);
+            // `apply_with_xp_curves`，不是薄封装 `apply`：后者恒用
+            // `FlatXpCurve::DEFAULT` 那条保底曲线，于是
+            // `register-xp-curve`/`register-class-xp-curve`/
+            // `register-race-xp-curve` 三个已经落地的注册函数在真正
+            // 能跑的游戏里从来不会被读到（`ll-game` 全程只经本引擎
+            // 驱动世界）——与本批次同时修掉的「击杀经验只在测试里
+            // 成立」是同一类缺陷。曲线目录随
+            // `crate::catalogs::ResolveCatalogs` 一起搬进来，见该字段
+            // 文档「为什么一个 `apply` 侧的目录也在这一束里」。
+            apply_with_xp_curves(world, effect, catalogs.xp_curves);
             if let Effect::Kill { target, .. } = effect {
                 // Timeline 与 WorldState 是两个独立的存储（见
                 // `crate::timeline` 模块文档），apply 只知道
@@ -402,6 +411,8 @@ mod tests {
             level: Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         })
     }

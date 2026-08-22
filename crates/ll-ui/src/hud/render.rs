@@ -615,6 +615,9 @@ mod tests {
             level: 1,
             experience: 0,
             xp_to_next_level: 100,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
             now: Tick(0),
         }
     }
@@ -883,10 +886,17 @@ mod tests {
 
         // Assert：昼夜滑条不产出文本行（时间数字仍然只在状态栏那一行
         // 里,见 `crate::hud::status_bar` 模块文档「昼夜滑条指针位置」
-        // 一节),四块面板的行数之和不受影响。角色面板的 11 行（幸运并入
-        // `AttributeKind` 批次之前：标题 1 + 六项属性 6 + 等级 1 + 经验
-        // 1 + 修正标题 1 + 「无」占位 1）现在多一行幸运，变成 12 行。
-        assert_eq!(frame.labels.len(), 1 + 12 + 2 + 23);
+        // 一节),四块面板的行数之和不受影响。角色面板的行数演进：11 行
+        // （标题 1 + 六项属性 6 + 等级 1 + 经验 1 + 修正标题 1 +
+        // 「无」占位 1）→ 幸运并入 `AttributeKind` 批次多一行属性 →
+        // 12 行 → 升级加点批次再多两行（属性点余额、技能点余额,两者
+        // 恒常显示即便为零,见 `character_panel` 里那段注释）→ 14 行。
+        // **主属性倾向那一行不在其中**：本用例的
+        // `sample_character_data` 把 `primary_attribute` 留成 `None`
+        // （查不到职业定义），整行不出现——这条断言同时是那个分支的
+        // 覆盖。有职业时那一行出现的证据在
+        // `crate::hud::character_panel` 的对应测试。
+        assert_eq!(frame.labels.len(), 1 + 14 + 2 + 23);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

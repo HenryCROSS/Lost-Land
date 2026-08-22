@@ -158,6 +158,28 @@ impl ActiveStatModifier {
 }
 
 impl BaseStats {
+    /// 基础属性硬上限——`knowledge/design/attribute-system.md`「成长
+    /// 上限」一节原文「基础属性**硬上限 30**；装备与临时效果**可以
+    /// 突破**」的落点。
+    ///
+    /// # 为什么常量在这里，校验不在这里
+    ///
+    /// 本类型自身刻意不做范围校验（见类型文档最后一段）——`Agent.stats`
+    /// 会被种族修正烘焙、被存档读回、被测试夹具直接构造，任何一处
+    /// 自动裁剪都会把「这个值本来是多少」悄悄改掉。但「上限是 30」
+    /// 这个**数字**必须有唯一出处，否则每个要执行这条规则的结算点
+    /// （当前是 `ll_sim::resolve` 的升级加点闸门，未来是装备/药水一类
+    /// 能否再堆基础值的判定）都会各自写一个字面 30，一次改动就地漂移
+    /// ——这正是「魔法数字」要防的那件事。常量放在数值的定义方，
+    /// 执行放在规则的定义方。
+    ///
+    /// **只约束基础值**：装备静态加成（`ll_sim::item::StatBonus`）与
+    /// 限时修正（[`crate::entity::Agent::active_stat_modifiers`]）都
+    /// 走 `ll_sim::resolve::derive_stats` 那条聚合路径，不写回
+    /// `Agent.stats`，因此天然不受本常量约束——设计文档要的「装备可以
+    /// 突破」不需要任何额外分支就成立。
+    pub const HARD_CAP: i32 = 30;
+
     /// 六项主属性均取「调整值为零」的基准点（10）——`(10 − 10) / 2 = 0`，
     /// 见 `attribute-system.md` 的调整值公式。用作背景 NPC 升格
     /// （[`crate::entity::ThinPopulation::promote`]）时的默认属性：薄层
@@ -207,6 +229,69 @@ impl BaseStats {
             willpower: self.willpower + modifiers.willpower,
             charisma: self.charisma + modifiers.charisma,
             luck: self.luck + modifiers.luck,
+        }
+    }
+
+    /// 读出七项中指定的那一项——[`AttributeKind`] 回答「哪一项」，本
+    /// 方法把那个回答兑换成真正的数值。
+    ///
+    /// 与 [`Self::add_modifiers`]「整份叠加」互补：加点、单项上限校验
+    /// 这类只关心一项的调用方不需要为了读一个数字而手写一个七分支
+    /// `match`（`ll_sim::resolve` 侧原本就要写一次，`ll_sim::apply` 侧
+    /// 还要再写一次，两处各写一遍正是同一段 `match` 漂移的经典成因）。
+    pub fn value(self, kind: AttributeKind) -> i32 {
+        match kind {
+            AttributeKind::Strength => self.strength,
+            AttributeKind::Dexterity => self.dexterity,
+            AttributeKind::Constitution => self.constitution,
+            AttributeKind::Intelligence => self.intelligence,
+            AttributeKind::Willpower => self.willpower,
+            AttributeKind::Charisma => self.charisma,
+            AttributeKind::Luck => self.luck,
+        }
+    }
+
+    /// 只把指定的那一项加上 `delta`，其余六项原样保留，返回**新值**
+    /// （不原地改写，与 [`Self::add_modifiers`] 同一条不可变纪律）。
+    ///
+    /// 与 [`Self::add_modifiers`] 的区别不是「少写几个零」：调用方
+    /// （玩家升级加点）手里只有一个 [`AttributeKind`]，构造一份「除
+    /// 这一项外全零」的 `BaseStats` 需要它自己写那个七分支 `match`
+    /// ——那正是 [`Self::value`] 文档说的漂移成因。
+    ///
+    /// 同样不做上下限裁剪，理由见 [`Self::add_modifiers`]：范围规则
+    /// 属于结算层（`ll_sim::resolve` 的加点闸门会在产出效果之前拒绝
+    /// 越过 [`Self::HARD_CAP`] 的请求），不是字段布局的不变式。
+    pub fn with_added(self, kind: AttributeKind, delta: i32) -> BaseStats {
+        match kind {
+            AttributeKind::Strength => BaseStats {
+                strength: self.strength + delta,
+                ..self
+            },
+            AttributeKind::Dexterity => BaseStats {
+                dexterity: self.dexterity + delta,
+                ..self
+            },
+            AttributeKind::Constitution => BaseStats {
+                constitution: self.constitution + delta,
+                ..self
+            },
+            AttributeKind::Intelligence => BaseStats {
+                intelligence: self.intelligence + delta,
+                ..self
+            },
+            AttributeKind::Willpower => BaseStats {
+                willpower: self.willpower + delta,
+                ..self
+            },
+            AttributeKind::Charisma => BaseStats {
+                charisma: self.charisma + delta,
+                ..self
+            },
+            AttributeKind::Luck => BaseStats {
+                luck: self.luck + delta,
+                ..self
+            },
         }
     }
 }

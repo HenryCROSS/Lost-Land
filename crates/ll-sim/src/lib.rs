@@ -38,9 +38,12 @@
 //! 只声明「给我一个职业/种族，还我一条曲线」这个接口，见该模块文档
 //! 「为什么不复用 `FormulaOp`」一节。
 //!
-//! [`experience`]：击杀产出经验值需要的「这个生物种类值多少经验」
-//! 只读接口（[`experience::ExperienceCatalog`] trait）——与 `skill`
-//! 同一套依赖倒置手法，见该模块文档。
+//! [`experience`]：击杀产出经验值需要的「这个生物种类的**基准**经验
+//! 值是多少」只读接口（[`experience::ExperienceCatalog`] trait，与
+//! `skill` 同一套依赖倒置手法），以及项目所有者裁定的那条经验公式
+//! 本身（[`experience::kill_experience`]：最低 1 点保底 + 等级差
+//! 倍率）。基准值是公式的输入，不是玩家最终拿到的数字，见该模块
+//! 文档。
 //!
 //! [`traits`]（天赋系统落地批次）：`resolve_use_skill` 门一需要读的
 //! 「这个实体有效的天赋授予了哪些技能」聚合函数（[`traits::effective_traits`]/

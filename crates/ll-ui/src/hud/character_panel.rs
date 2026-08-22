@@ -91,6 +91,27 @@ pub struct CharacterPanelData<'a> {
     pub experience: i64,
     /// 升到下一级所需的经验总量——`Agent::xp_to_next_level`。
     pub xp_to_next_level: i64,
+    /// 尚未分配的属性点——`Agent::unspent_attribute_points`。
+    pub unspent_attribute_points: u32,
+    /// 尚未分配的技能点——`Agent::unspent_skill_points`。
+    pub unspent_skill_points: u32,
+    /// 本角色所属职业的**主属性倾向**——`ll_mod::class::ClassDef::primary_attribute`。
+    ///
+    /// # 为什么它落在呈现层，而不是结算层
+    ///
+    /// 项目所有者裁定「升级获得属性点技能点，然后就自己加点」——加
+    /// 到哪一项**由玩家决定**，因此职业绑定的这一项属性**不能**驱动
+    /// 任何结算：它不自动成长、不改变加点代价、不额外发点。剩下的
+    /// 唯一诚实用途正是这个字段自己的文档从一开始就写着的那一个
+    /// （「供职业选择界面展示」）——告诉玩家「你这个职业倾向于哪一
+    /// 项」，把决定权原样留在玩家手里。点数分配落地之前这只是一句
+    /// 装饰；有了「现在有几点可以加」这一行之后，它才第一次成为一条
+    /// 真正有用处的提示。
+    ///
+    /// `None` = 查不到职业定义（没装内容表的调用方、或 `profession`
+    /// 指向一个本次会话不存在的职业）——不猜一个默认属性，见 ADR
+    /// 0015「查不到就是查不到」。
+    pub primary_attribute: Option<AttributeKind>,
     /// 当前世界时刻——判定哪些修正已过期。
     pub now: Tick,
 }
@@ -159,6 +180,27 @@ fn write_character_panel_lines(
         lines,
         format!("{xp_label} {}/{}", data.experience, data.xp_to_next_level),
     );
+
+    // 未分配点数：**恒常显示**，即便是零。只在非零时才出现的行会让
+    // 面板高度随游玩状态跳动（`build_panel` 按行数现算高度），也会让
+    // 玩家没法确认「我确实一点都没剩」与「这一行根本不存在」的区别。
+    let attribute_points_label = catalog.resolve(language, "hud-character-attribute-points-label");
+    cursor.push(
+        lines,
+        format!("{attribute_points_label} {}", data.unspent_attribute_points),
+    );
+    let skill_points_label = catalog.resolve(language, "hud-character-skill-points-label");
+    cursor.push(
+        lines,
+        format!("{skill_points_label} {}", data.unspent_skill_points),
+    );
+    // 主属性倾向：职业没查到时整行不出现——见 primary_attribute 字段
+    // 文档，这里不猜一个默认属性冒充「这个职业倾向于力量」。
+    if let Some(kind) = data.primary_attribute {
+        let primary_label = catalog.resolve(language, "hud-character-primary-attribute-label");
+        let attribute_label = catalog.resolve(language, attribute_key(kind));
+        cursor.push(lines, format!("{primary_label} {attribute_label}"));
+    }
 
     cursor.push(
         lines,
@@ -241,7 +283,7 @@ mod tests {
     use std::path::Path;
 
     fn write_fixture_catalog(dir: &Path) {
-        std::fs::write(dir.join("zh-CN.ftl"), "hud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("zh-CN.ftl"), "hud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nhud-character-attribute-points-label = 属性点\nhud-character-skill-points-label = 技能点\nhud-character-primary-attribute-label = 主属性\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\n").expect("测试用写入应当成功");
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -276,6 +318,9 @@ mod tests {
             level: 3,
             experience: 40,
             xp_to_next_level: 200,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
             now: Tick(0),
         };
 
@@ -314,6 +359,9 @@ mod tests {
             level: 1,
             experience: 0,
             xp_to_next_level: 100,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
             now: Tick(0),
         };
 
@@ -347,6 +395,9 @@ mod tests {
             level: 5,
             experience: 40,
             xp_to_next_level: 800,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
             now: Tick(0),
         };
 
@@ -360,6 +411,117 @@ mod tests {
 
         // Assert
         assert!(joined.contains("40/800"));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 把面板全部文本行拼成一整块，供下面几条断言做包含检查。
+    fn joined_lines(data: &CharacterPanelData<'_>, catalog: &Catalog) -> String {
+        character_panel_lines(data, &NoItems, catalog, "zh-CN", (0.0, 0.0), 16.0)
+            .iter()
+            .map(|line| line.text.clone())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    /// 一份除点数/主属性外全部取中性值的面板数据——下面三条测试各自
+    /// 只改它关心的那一两项。
+    fn sample_data<'a>(
+        modifiers: &'a BTreeMap<AttributeKind, BTreeMap<ContentIndex, ActiveStatModifier>>,
+        equipment: &'a BTreeMap<EquipSlot, ItemStack>,
+    ) -> CharacterPanelData<'a> {
+        CharacterPanelData {
+            base_stats: BaseStats::BASELINE,
+            active_stat_modifiers: modifiers,
+            equipment,
+            level: 5,
+            experience: 40,
+            xp_to_next_level: 800,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
+            now: Tick(0),
+        }
+    }
+
+    #[test]
+    fn 角色面板文本包含未分配的属性点与技能点余额() {
+        // 升级加点批次：项目所有者裁定「升级获得属性点技能点，然后就
+        // 自己加点」——「还有几点可以加」是玩家做那个决定时唯一需要的
+        // 数字，必须能在面板上看到。
+        // Arrange
+        let dir = temp_dir("unspent-points");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let data = CharacterPanelData {
+            unspent_attribute_points: 6,
+            unspent_skill_points: 3,
+            ..sample_data(&modifiers, &equipment)
+        };
+
+        // Act
+        let joined = joined_lines(&data, &catalog);
+
+        // Assert
+        assert!(joined.contains("属性点 6"), "实际内容：{joined}");
+        assert!(joined.contains("技能点 3"), "实际内容：{joined}");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 余额为零时两行点数仍然出现() {
+        // 恒常显示即便为零——见 `write_character_panel_lines` 里那段
+        // 注释：只在非零时出现的行会让面板高度随游玩状态跳动，也会让
+        // 玩家分不清「一点都没剩」与「这一行根本不存在」。
+        // Arrange
+        let dir = temp_dir("zero-points");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let data = sample_data(&modifiers, &equipment);
+
+        // Act
+        let joined = joined_lines(&data, &catalog);
+
+        // Assert
+        assert!(joined.contains("属性点 0"), "实际内容：{joined}");
+        assert!(joined.contains("技能点 0"), "实际内容：{joined}");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 查到职业时主属性倾向那一行出现查不到时整行消失() {
+        // `ClassDef::primary_attribute` 在本仓库里的**第一个**真实
+        // 消费者就是这一行——见 `CharacterPanelData::primary_attribute`
+        // 文档「为什么它落在呈现层，而不是结算层」一节。`None` 时不猜
+        // 一个默认属性冒充「这个职业倾向于力量」（ADR 0015）。
+        // Arrange
+        let dir = temp_dir("primary-attribute");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let without_class = sample_data(&modifiers, &equipment);
+        let with_class = CharacterPanelData {
+            primary_attribute: Some(AttributeKind::Willpower),
+            ..sample_data(&modifiers, &equipment)
+        };
+
+        // Act
+        let without = joined_lines(&without_class, &catalog);
+        let with = joined_lines(&with_class, &catalog);
+
+        // Assert
+        assert!(with.contains("主属性 意志"), "实际内容：{with}");
+        assert!(!without.contains("主属性"), "实际内容：{without}");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -392,6 +554,9 @@ mod tests {
             level: 1,
             experience: 0,
             xp_to_next_level: 100,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
             now: Tick(10),
         };
 
@@ -437,6 +602,9 @@ mod tests {
             level: 1,
             experience: 0,
             xp_to_next_level: 100,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
             now: Tick(200),
         };
 
@@ -470,6 +638,9 @@ mod tests {
             level: 1,
             experience: 0,
             xp_to_next_level: 100,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
             now: Tick(0),
         };
 
@@ -500,6 +671,9 @@ mod tests {
             level: 1,
             experience: 40,
             xp_to_next_level: 200,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
             now: Tick(0),
         };
 
@@ -525,6 +699,9 @@ mod tests {
             level: 1,
             experience: 0,
             xp_to_next_level: 100,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            primary_attribute: None,
             now: Tick(0),
         };
 

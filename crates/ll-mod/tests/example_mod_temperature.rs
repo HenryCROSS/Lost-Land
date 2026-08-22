@@ -50,13 +50,16 @@ use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::craft::NoRecipes;
 use ll_sim::damage_category::NoDamageCategories;
+use ll_sim::experience::NoExperience;
 use ll_sim::exposure::AmbientSource;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemStack};
 use ll_sim::quest::NoQuests;
 use ll_sim::resolve::derive_stats_at;
+use ll_sim::skill::NoSkills;
 use ll_sim::timeline::Timeline;
 use ll_sim::turn::TurnEngine;
+use ll_sim::xp_curve::FlatXpCurve;
 use ll_world::entity::{Agent, AttributeKind, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -117,6 +120,9 @@ impl RealModsHandle {
             damage_categories: &NoDamageCategories,
             recipes: &NoRecipes,
             ambient: AmbientSource::new(&self.space_profile, &self.weather),
+            experience: &NoExperience,
+            skill_tree: &NO_SKILLS,
+            xp_curves: &FlatXpCurve::DEFAULT,
         }
     }
 }
@@ -275,6 +281,8 @@ fn spawn_agent(
         level: Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        unspent_attribute_points: 0,
+        unspent_skill_points: 0,
         stealthed: false,
     })
 }
@@ -556,3 +564,8 @@ fn 一件保暖装备的效果严格弱于两件() {
         "两层与赤身之间必须有真实差别，否则本测试测不到任何东西"
     );
 }
+
+/// 空技能目录常量——同时充当空技能树目录（`NoSkills` 实现了
+/// `SkillTreeCatalog`，见 `ll_sim::skill_overview` 里那条 impl 的
+/// 文档：不为对称再造第二个语义相同的空对象）。
+const NO_SKILLS: NoSkills = NoSkills;

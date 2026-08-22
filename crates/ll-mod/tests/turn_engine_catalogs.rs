@@ -59,12 +59,15 @@ use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::craft::NoRecipes;
 use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::effect::Effect;
+use ll_sim::experience::NoExperience;
 use ll_sim::exposure::AmbientSource;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemStack};
 use ll_sim::quest::NoQuests;
+use ll_sim::skill::NoSkills;
 use ll_sim::timeline::Timeline;
 use ll_sim::turn::TurnEngine;
+use ll_sim::xp_curve::FlatXpCurve;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -123,6 +126,9 @@ impl RealModsHandle {
             // `ll_sim::exposure::AmbientSource::NONE`）。温度真的接进
             // 生产路径的证据在 `example_mod_temperature.rs`。
             ambient: AmbientSource::NONE,
+            experience: &NoExperience,
+            skill_tree: &NO_SKILLS,
+            xp_curves: &FlatXpCurve::DEFAULT,
         }
     }
 }
@@ -281,6 +287,8 @@ fn spawn_agent(
         level,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        unspent_attribute_points: 0,
+        unspent_skill_points: 0,
         stealthed: false,
     })
 }
@@ -528,3 +536,8 @@ fn 真实注册的职业天赋经由回合引擎在达标等级放出技能() {
         "目录束为空时同一个 3 级盗贼放不出背刺——这是接线本身的第二道守卫,实际 effects={no_catalogs:?}"
     );
 }
+
+/// 空技能目录常量——同时充当空技能树目录（`NoSkills` 实现了
+/// `SkillTreeCatalog`，见 `ll_sim::skill_overview` 里那条 impl 的
+/// 文档：不为对称再造第二个语义相同的空对象）。
+const NO_SKILLS: NoSkills = NoSkills;

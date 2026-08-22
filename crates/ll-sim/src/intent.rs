@@ -21,7 +21,7 @@
 
 use ll_core::ident::ContentIndex;
 use ll_platform::input::InputState;
-use ll_world::entity::EntityId;
+use ll_world::entity::{AttributeKind, EntityId};
 use ll_world::item::EquipSlot;
 use ll_world::space::SpaceId;
 use serde::{Deserialize, Serialize};
@@ -364,6 +364,61 @@ pub enum Intent {
         /// 要制作的配方——指向配方表。
         recipe: ContentIndex,
     },
+    /// 把一点未分配的属性点加到指定的那一项主属性上（升级加点批次）。
+    ///
+    /// # 为什么一次只加一点
+    ///
+    /// 项目所有者裁定「升级获得属性点技能点，然后就自己加点」——加点
+    /// 是玩家逐点做出的决定。一次提交一批（`{ 力量: 2, 体质: 1 }`）
+    /// 会让「余额够不够」「哪一项先撞上限」这两件事变成一次批量校验
+    /// 里的部分失败问题：加到一半撞上限时，是整批拒绝还是加到能加为
+    /// 止？两个答案都会让玩家对自己点了什么产生歧义。一次一点没有部
+    /// 分成功这一档，成功就是加了一点，失败就是一点没动。
+    ///
+    /// # 上限由结算拒绝，不由 `apply` 静默钳位
+    ///
+    /// 目标属性已经到 [`ll_world::entity::BaseStats::HARD_CAP`]、或者
+    /// 余额为零时，`resolve` 产出**空效果列表**（这次行动什么都没
+    /// 发生，也不消耗点数），而不是让 `apply` 收到效果后夹一下了事
+    /// ——静默钳位会把点数扣掉却不加属性，那是凭空吞点。
+    ///
+    /// # 输入映射：与其余九个玩法意图同一处缺口
+    ///
+    /// [`intent_from_input`] 至今只映射 `Move`/`Wait` 两个意图，
+    /// `PickUp`/`Drop`/`Equip`/`Unequip`/`Rest`/`Loot`/`Use`/`Inspect`/
+    /// `ToggleStealth`/`Craft` 全都没有绑定按键——输入映射层整体尚未
+    /// 展开，不是本变体特有的缺口。本批次落地的是「升级授予 → 加点
+    /// 结算 → 属性改变」这一整条链路，验收证据走测试里直接构造本变体
+    /// 经 [`crate::turn::TurnEngine`] 提交。
+    AllocateAttributePoint {
+        /// 加点的角色，也是点数余额的持有者。
+        actor: EntityId,
+        /// 加到哪一项。
+        attribute: AttributeKind,
+    },
+    /// 花一点未分配的技能点学会一个技能（升级加点批次）。
+    ///
+    /// # 技能点买断，不是往技能里投点
+    ///
+    /// 见 [`ll_world::entity::Agent::unspent_skill_points`] 文档：技能
+    /// 是离散 DAG，只有「学会/没学会」两种状态，一点买断一个。
+    ///
+    /// # 三道闸门，任一不过就整条静默失败
+    ///
+    /// 余额为零、技能已经学过、或前置技能未全部解锁时，`resolve`
+    /// 产出空效果列表——与 `Intent::Craft` 查不到配方时的既有处理同一
+    /// 条纪律（`crate::craft` 模块文档）。前置关系由
+    /// [`crate::skill_overview::SkillTreeCatalog::prerequisites`] 回答，
+    /// 与技能树面板算「可解锁但未解锁」用的是同一份判据、同一个目录
+    /// ——不是另写一套会漂移的前置判定。
+    ///
+    /// 输入映射同 [`Intent::AllocateAttributePoint`]，见其文档。
+    LearnSkill {
+        /// 学技能的角色，也是技能点余额的持有者。
+        actor: EntityId,
+        /// 要学的技能——指向技能表。
+        skill: ContentIndex,
+    },
 }
 
 impl Intent {
@@ -391,7 +446,9 @@ impl Intent {
             | Intent::Loot { actor }
             | Intent::Inspect { actor, .. }
             | Intent::ToggleStealth { actor }
-            | Intent::Craft { actor, .. } => actor,
+            | Intent::Craft { actor, .. }
+            | Intent::AllocateAttributePoint { actor, .. }
+            | Intent::LearnSkill { actor, .. } => actor,
         }
     }
 }

@@ -1097,6 +1097,15 @@ impl WorldState {
             hasher.write_i64(i64::from(agent.level));
             hasher.write_i64(agent.experience);
             hasher.write_i64(agent.xp_to_next_level);
+            // 未分配的属性点/技能点（升级加点批次新增）——同一条
+            // ADR 0022 纪律的又一次重演：这两个字段由 apply 侧的升级
+            // 循环授予、由加点/学技能结算消耗，是真正会被改写的世界
+            // 状态；不显式写这两行，「点数悄悄发多了/花掉了没扣」这
+            // 一类跑偏就测不出来。红/绿验证见
+            // `crates/ll-world/tests/determinism.rs`
+            // 「新增未分配点数字段后世界哈希必须变化」一节。
+            hasher.write_u64(u64::from(agent.unspent_attribute_points));
+            hasher.write_u64(u64::from(agent.unspent_skill_points));
             write_content_index_vec(&mut hasher, &agent.unlocked_skills);
             write_content_index_vec(&mut hasher, &agent.subclasses);
             hasher.write_u64(agent.skill_cooldowns.len() as u64);
@@ -1696,6 +1705,8 @@ mod tests {
             level: crate::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         });
         world.player_entity = Some(player_id);
@@ -1755,6 +1766,8 @@ mod tests {
             level,
             experience,
             xp_to_next_level,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         });
         world
@@ -1789,6 +1802,65 @@ mod tests {
 
         // Assert
         assert_ne!(hash_visible, hash_stealthed);
+    }
+
+    #[test]
+    fn 未分配属性点变化会改变世界哈希() {
+        // ADR 0022 红/绿验证：Agent::unspent_attribute_points 必须已经
+        // 手动补进 hash() 的逐字段遍历——本函数手工验证过会失败（把
+        // hash() 里新增的
+        // `hasher.write_u64(u64::from(agent.unspent_attribute_points));`
+        // 一行临时换成注释重跑，本测试会 panic：两个只差这一个字段的
+        // 世界算出同一个哈希），恢复后转绿。
+        // Arrange：两个世界只差未分配属性点这一个字段。
+        let world_none = test_world_with_one_agent(1, 0, 100);
+        let mut world_some = test_world_with_one_agent(1, 0, 100);
+        let only_agent = world_some
+            .actors
+            .iter_with_id()
+            .map(|(id, _)| id)
+            .next()
+            .expect("test_world_with_one_agent 恰好生成一个实体");
+        world_some
+            .actors
+            .get_mut(only_agent)
+            .expect("刚取到的 id 必然有效")
+            .unspent_attribute_points = 2;
+
+        // Act
+        let (hash_none, hash_some) = (world_none.hash(), world_some.hash());
+
+        // Assert
+        assert_ne!(hash_none, hash_some);
+    }
+
+    #[test]
+    fn 未分配技能点变化会改变世界哈希() {
+        // 同上一条的红/绿验证，针对
+        // `hasher.write_u64(u64::from(agent.unspent_skill_points));`
+        // 那一行——两个字段各要一条测试：只写一条时，把两行里的任意
+        // 一行删掉都可能仍然有另一条覆盖不到的字段悄悄漏出哈希，那正
+        // 是 ADR 0022 点名的「判据字段不全」。
+        // Arrange
+        let world_none = test_world_with_one_agent(1, 0, 100);
+        let mut world_some = test_world_with_one_agent(1, 0, 100);
+        let only_agent = world_some
+            .actors
+            .iter_with_id()
+            .map(|(id, _)| id)
+            .next()
+            .expect("test_world_with_one_agent 恰好生成一个实体");
+        world_some
+            .actors
+            .get_mut(only_agent)
+            .expect("刚取到的 id 必然有效")
+            .unspent_skill_points = 1;
+
+        // Act
+        let (hash_none, hash_some) = (world_none.hash(), world_some.hash());
+
+        // Assert
+        assert_ne!(hash_none, hash_some);
     }
 
     #[test]
@@ -1871,6 +1943,8 @@ mod tests {
             level: Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         });
         world
@@ -1940,6 +2014,8 @@ mod tests {
             level: Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         });
         world
@@ -2001,6 +2077,8 @@ mod tests {
             level: Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         });
         world
@@ -2072,6 +2150,8 @@ mod tests {
             level: crate::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         });
 
@@ -2371,6 +2451,8 @@ mod tests {
             level: crate::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         }
     }
@@ -2793,6 +2875,8 @@ mod tests {
             level: crate::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
             stealthed: false,
         });
 

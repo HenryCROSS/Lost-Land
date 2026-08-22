@@ -121,6 +121,8 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         level: ll_world::entity::Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+        unspent_attribute_points: 0,
+        unspent_skill_points: 0,
         stealthed: false,
     });
     // 探索记忆写入路径（`resolve_move` 追加的 `Effect::MarkExplored`）
@@ -162,6 +164,8 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         level: ll_world::entity::Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+        unspent_attribute_points: 0,
+        unspent_skill_points: 0,
         stealthed: false,
     });
 
@@ -599,7 +603,36 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
 ///    `2_074_399_753_604_184_303` 在两次独立进程里稳定复现（不是一次性
 ///    偶然值），才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 2_074_399_753_604_184_303;
+/// # 第十七次重冻的原因（升级加点批次）
+///
+/// [`ll_world::entity::Agent`] 新增两个字段
+/// （`unspent_attribute_points`/`unspent_skill_points`，未分配的属性点
+/// 与技能点，项目所有者裁定「升级获得属性点技能点，然后就自己加点」
+/// 的存储落点），`WorldState::hash()` 相应地多混入两个 `u64`，摘要
+/// 因此改变，与前十六次重冻同一条先例。
+///
+/// **本批次的其余改动对这条回放逐位无影响**——击杀经验公式
+/// （`ll_sim::experience::kill_experience`）、`resolve_dispatch` 里新
+/// 增的 `append_kill_experience` 调用、两个新意图的结算分支，全部以
+/// 「这一批效果里有 `Effect::Kill`」或「提交了那两个新意图」为前提，
+/// 而本回放的意图流里那一次 `Intent::Attack` 打不死目标、也从不提交
+/// 新意图。下面第 2 步正是为了把这句话钉成实测结论，而不是一句推理。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 改动前先在**原始工作树**上跑过一次这条测试，确认旧常量
+///    `2_074_399_753_604_184_303` 成立（基线确实是它，不是记忆）。
+/// 2. 改动后把 `state.rs` `hash()` 里新增的那**两行**
+///    （`hasher.write_u64(u64::from(agent.unspent_attribute_points));`
+///    与 `..unspent_skill_points..`）临时替换成注释重新跑，其余全部
+///    改动原样保留——摘要精确回到旧常量
+///    `2_074_399_753_604_184_303`（测试转绿）。这一步同时证明了两件
+///    事：新摘要的变化只由这两行引起；本批次在 `resolve`/`apply` 侧
+///    的全部改动没有夹带任何行为漂移。
+/// 3. 恢复那两行之后，在改动后的代码上把这条测试单独跑了两次（两次
+///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
+///    `17_832_502_802_782_915_631` 在两次独立进程里稳定复现（不是一次性
+///    偶然值），才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 17_832_502_802_782_915_631;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {
