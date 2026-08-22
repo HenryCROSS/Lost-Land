@@ -199,6 +199,7 @@ fn spawn_rogue(world: &mut WorldState, profession: ContentIndex, level: i32) -> 
         level,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        stealthed: false,
     })
 }
 

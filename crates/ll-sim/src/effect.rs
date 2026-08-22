@@ -711,4 +711,30 @@ pub enum Effect {
         /// 定义快照，先背包后装备。
         items_seen: Vec<ContentIndex>,
     },
+    /// 把一个实体的潜行状态设成一个**明确的值**（潜行与盗贼被动
+    /// 批次）——[`ll_world::entity::Agent::stealthed`] 唯一的写入口
+    /// （约束 C1）。
+    ///
+    /// # 为什么携带目标值，而不是「取反」
+    ///
+    /// 与 [`crate::intent::Intent::ToggleStealth`] 恰好相反的取舍，
+    /// 两者不矛盾：`Intent` 是「玩家想干什么」的裸请求，那一层不该
+    /// 读世界（不知道当前是开是关，因此只能说「切换」）；`Effect` 是
+    /// 已经结算完的**确定结果**，`apply` 必须是可以脱离上下文重放的
+    /// 纯赋值（ADR 0023/约束 C1：`apply` 不做规则判断）。一条「取反」
+    /// 效果的结果依赖它被应用时的世界状态，同一条效果重放两次会得到
+    /// 相反的结果——那正是效果日志/回放要防的东西。
+    ///
+    /// 两个真实生产者：
+    /// - `crate::resolve::resolve_toggle_stealth`——读一次当前状态，
+    ///   产出取反后的确定值。
+    /// - `crate::resolve::resolve_attack`——攻击者正在潜行时产出
+    ///   `stealthed: false`（攻击破除潜行，见该函数文档「潜行破除」
+    ///   一节）。
+    SetStealth {
+        /// 被改写状态的实体。
+        actor: EntityId,
+        /// 这一刻之后它的潜行状态。
+        stealthed: bool,
+    },
 }

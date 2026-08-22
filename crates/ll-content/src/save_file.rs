@@ -578,6 +578,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
         world.player_entity = Some(player);
         let content_index_map = registry
@@ -897,6 +898,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
         let content_index_map = registry
             .snapshot()
@@ -1031,6 +1033,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
         let content_index_map = registry
             .snapshot()
@@ -1092,6 +1095,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
         let content_index_map = registry
             .snapshot()

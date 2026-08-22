@@ -169,6 +169,7 @@ fn spawn_agent(
         level: Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        stealthed: false,
     })
 }
 
@@ -861,6 +862,7 @@ fn spawn_agent_with_race_and_equipment(
         level: Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        stealthed: false,
     })
 }
 

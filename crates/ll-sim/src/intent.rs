@@ -295,6 +295,38 @@ pub enum Intent {
         /// 被盘查的一方。
         target: EntityId,
     },
+    /// 切换潜行状态（潜行与盗贼被动批次）——项目所有者裁定「潜行需要
+    /// 时可切换状态的」，本变体就是那个「切换」。
+    ///
+    /// # 为什么是「切换」而不是 `Enter`/`Exit` 两个变体
+    ///
+    /// 载荷会是一个恒等于「当前状态取反」的 `bool`——调用方要么先读一次
+    /// [`ll_world::entity::Agent::stealthed`] 才能填对（那它就不是「纯
+    /// 请求」了，是把结算的一半搬进了 `Intent`），要么填错时
+    /// `resolve` 还得决定「请求进入潜行但已经在潜行」算什么。与
+    /// [`Intent::Rest`]「已经在休息时按继续休息处理」那条既有先例
+    /// 对照：那里的载荷（`target_ticks`）是真实的玩家选择，这里没有
+    /// 任何对应的选择存在。切换语义把这两个问题一起消掉。
+    ///
+    /// # 为什么消耗一个回合
+    ///
+    /// `resolve_toggle_stealth` 按 [`Intent::Wait`] 同一条基础代价
+    /// 计费（见 `crate::resolve::resolve_toggle_stealth` 文档）。不计费
+    /// 的话，玩家可以在每走一格之前开、走完立刻关，白嫖潜行的收益
+    /// （偷袭直通、盘查率下降）而完全不付潜行的代价（移动开销上升）
+    /// ——那会让本批次唯一的代价形同虚设。
+    ///
+    /// # 谁会产出这个变体
+    ///
+    /// 与 [`Intent::PickUp`]/[`Intent::Rest`]/[`Intent::Equip`] 等既有
+    /// 玩法意图完全一致：[`intent_from_input`] 目前只映射
+    /// `Move`/`Wait` 两种，本变体（和上面那六种）同样还没有绑定按键，
+    /// 面向已经知道自己要做什么的调用方（AI 策略、未来的交互层）。
+    /// 这不是本变体特有的缺口，是输入映射层整体尚未展开的既有状态。
+    ToggleStealth {
+        /// 发起者，同时是状态的承受者。
+        actor: EntityId,
+    },
 }
 
 impl Intent {
@@ -320,7 +352,8 @@ impl Intent {
             | Intent::Unequip { actor, .. }
             | Intent::Use { actor, .. }
             | Intent::Loot { actor }
-            | Intent::Inspect { actor, .. } => actor,
+            | Intent::Inspect { actor, .. }
+            | Intent::ToggleStealth { actor } => actor,
         }
     }
 }

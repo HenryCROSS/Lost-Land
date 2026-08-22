@@ -121,6 +121,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         level: ll_world::entity::Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+        stealthed: false,
     });
     // 探索记忆写入路径（`resolve_move` 追加的 `Effect::MarkExplored`）
     // 按 `player_entity` 区分「谁在动」，只给玩家标记探索——见其文档
@@ -161,6 +162,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         level: ll_world::entity::Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+        stealthed: false,
     });
 
     (world, player, enemy)
@@ -567,7 +569,37 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    （两次独立的 `cargo test` 进程），确认新摘要
 ///    `16_448_618_947_574_699_215` 在两次独立进程里稳定复现（不是
 ///    一次性偶然值），才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 16_448_618_947_574_699_215;
+///
+/// # 第十六次重冻的原因（潜行与盗贼被动批次）
+///
+/// `WorldState::hash` 新增混入了每个 `Agent` 的 `stealthed`
+/// （`bool`，紧邻上一批的 `equipment` 之后）——见
+/// `crates/ll-world/src/state.rs` `hash()` 对应位置新增的
+/// `hasher.write_u64(u64::from(agent.stealthed));` 一行。本文件
+/// `setup` 生成的 `player`/`enemy` 都不潜行，`intent_stream` 也没有
+/// 任何 `Intent::ToggleStealth`，新字段因此恒为 `false`，但新增字段
+/// 意味着喂进哈希器的字节流本身变长了（每个实体各多出一个恒为 `0` 的
+/// `u64`），摘要因此改变，与前十五次重冻同一条先例。
+///
+/// **本批次的其余改动（`resolve_move` 的潜行移动开销倍率、
+/// `resolve_attack` 的潜行直通偷袭与潜行破除）对这条回放逐位无影响**
+/// ——三者全部以 `agent.stealthed` 为真为前提，而本回放里它恒为假。
+/// 下面第 2 步正是为了把这句话钉成实测结论，而不是一句推理。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 改动前先在**原始工作树**上跑过一次这条测试，确认旧常量
+///    `16_448_618_947_574_699_215` 成立（基线确实是它，不是记忆）。
+/// 2. 改动后把 `state.rs` `hash()` 里新增的那**一行**
+///    （`hasher.write_u64(u64::from(agent.stealthed));`）临时替换成一行
+///    注释重新跑，其余全部改动原样保留——摘要精确回到旧常量
+///    `16_448_618_947_574_699_215`（测试转绿）。这一步同时证明了两件
+///    事：新摘要的变化只由这一行引起；本批次在 `resolve` 侧的三处改动
+///    没有夹带任何行为漂移。
+/// 3. 恢复那一行之后，在改动后的代码上把这条测试单独跑了两次（两次
+///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
+///    `2_074_399_753_604_184_303` 在两次独立进程里稳定复现（不是一次性
+///    偶然值），才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 2_074_399_753_604_184_303;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

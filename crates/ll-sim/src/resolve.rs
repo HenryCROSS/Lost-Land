@@ -93,6 +93,29 @@ use crate::traits::{
 /// 计费，接入那些系统时按动作类型分别替换即可。
 const BASE_ACTION_COST: u32 = 100;
 
+/// 潜行时移动开销的千分比倍率（潜行与盗贼被动批次）——`2000` = 两倍。
+///
+/// # 为什么是两倍，为什么用千分比整数
+///
+/// 千分比整数：ADR 0020 浮点分区，判定/系数一律走乙区的千分比整数，
+/// 与 [`crate::combat::CRIT_DAMAGE_MULTIPLIER_PERMILLE`]/
+/// [`crate::rule_modifier::RESISTANCE_MULTIPLIER_SCALE`] 同一套既有
+/// 惯例，不引入浮点。
+///
+/// 两倍：潜行必须有一个**玩家能感觉到**的代价，否则「一直开着潜行」
+/// 是严格占优策略，那个「可切换」的状态就退化成一次性开关、不再是一个
+/// 需要权衡的选择（所有者裁定「潜行需要时可切换状态的」——「需要时」
+/// 三个字预设了存在不需要的时候）。取两倍而不是 1.5 倍/3 倍的理由是
+/// 它同时满足三条：**整除**（`move_cost` 是整数，两倍不引入任何舍入
+/// 讨论，而 1.5 倍会）、与传统 roguelike「潜行约等于半速」的手感一致、
+/// 且在回合制里读数直观（潜行走一格 = 别人走两格的时间，敌人多一次
+/// 行动机会）。这个数字本身没有更深的推导，是一次拍板——它落在
+/// `ll-sim` 而不是内容表，与 `BASE_ACTION_COST` 同一条既有边界
+/// （`ll_world::state::WorldState` 文档「`BASE_ACTION_COST` 这类规则
+/// 常量不进 `WorldState`」）：本批次没有任何 mod 要按内容调它的真实
+/// 需求，提前开放注册通道是 YAGNI。
+const STEALTH_MOVE_COST_PERMILLE: u32 = 2000;
+
 /// 攻击方每打出一下近战攻击，自己主手已装备的武器（若带耐久）损失的
 /// 耐久点数——武器引用与穿透接线批次（P6 第六批）把耐久消耗从「防御方
 /// 全部已装备物品」收窄到「攻击方主手武器」，见 [`resolve_attack`]
@@ -909,6 +932,7 @@ fn resolve_dispatch(
         Intent::Unequip { actor, slot } => resolve_unequip(world, actor, slot, items),
         Intent::Use { actor, def } => resolve_use_item(world, actor, def, items),
         Intent::Inspect { actor, target } => resolve_inspect(world, actor, target),
+        Intent::ToggleStealth { actor } => resolve_toggle_stealth(world, actor),
     };
     // 休息中断（`resource-pools-and-rest.md` 八节「中断怎么表达」一节）：
     // 任何非 `Wait`/`Rest` 意图,若发起者当前正在休息,追加一条不带恢复
@@ -2155,6 +2179,45 @@ fn resolve_use_item(
     effects
 }
 
+/// [`Intent::ToggleStealth`] 的结算（潜行与盗贼被动批次）：读一次
+/// 发起者当前的 [`ll_world::entity::Agent::stealthed`]，产出取反后的
+/// 确定值，并按 [`BASE_ACTION_COST`] 消耗一个回合。
+///
+/// # 为什么切换本身要计费
+///
+/// 见 [`Intent::ToggleStealth`] 文档「为什么消耗一个回合」：不计费的话
+/// 「每走一格之前开、走完立刻关」可以白嫖潜行的全部收益而完全绕开
+/// 它唯一的代价（[`STEALTH_MOVE_COST_PERMILLE`] 的移动开销上升）。
+/// 计费口径与 [`resolve_wait`] 完全相同（基础代价 × 敏捷速度），不是
+/// 另起一个数字：切换姿态在时间轴上就是「这一回合我没干别的」。
+///
+/// # 为什么不检查任何前置条件
+///
+/// 没有可检查的东西：潜行不消耗资源、不要求地形、不要求技能解锁。
+/// 与 [`resolve_pick_up`]「脚下没东西就静默作废」那类需要读世界才能
+/// 判断的意图不同，本意图恒合法——唯一的失败路径是发起者根本不存在
+/// （已被同一批效果里更早的 `Effect::Kill` 收走），那一条走本文件
+/// 统一的「查不到实体就返回空效果、不消耗时间」既有降级。
+fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    vec![
+        Effect::SetStealth {
+            actor,
+            stealthed: !agent.stealthed,
+        },
+        Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        },
+    ]
+}
+
 fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
@@ -2205,7 +2268,27 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
         }];
     }
 
-    let cost = action_cost(terrain.move_cost(&world.terrain_table), speed);
+    // 潜行时移动开销上升（潜行与盗贼被动批次）——倍率与完整论证见
+    // `STEALTH_MOVE_COST_PERMILLE`。乘在**地形开销**上、`action_cost`
+    // 换算敏捷速度之前：潜行放慢的是「挪这一格本身有多费事」，敏捷高
+    // 的人潜行同样比自己不潜行时慢，两者是可以叠乘的两层，不是互相
+    // 替代。饱和乘法防止一个极端 `move_cost` 在这一步环绕
+    // （`u32::saturating_mul`，与本文件其余「内容作者填的数值一律饱和
+    // 运算」同一条既有纪律）。
+    //
+    // **只挂在这一条真的挪动了位置的分支上**：上面撞墙/开门两条分支
+    // 各自提前返回，它们按 `BASE_ACTION_COST` 计费而不是地形开销——
+    // 潜行不该让「推开一扇门」或「撞上一堵墙」也变慢，那两件事与
+    // 「悄悄挪一格」不是同一个动作。
+    let terrain_cost = terrain.move_cost(&world.terrain_table);
+    let terrain_cost = if agent.stealthed {
+        terrain_cost
+            .saturating_mul(STEALTH_MOVE_COST_PERMILLE)
+            .saturating_div(1000)
+    } else {
+        terrain_cost
+    };
+    let cost = action_cost(terrain_cost, speed);
     let mut effects = vec![
         Effect::MoveTo { actor, pos: dest },
         Effect::ScheduleNext {
@@ -2405,6 +2488,38 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 暴击放大之后、抗性乘数之前——追加的伤害仍然是这一下攻击的一部分，
 /// 应当同样受目标抗性影响，不是绕开减伤链路凭空产出的独立效果。
 ///
+/// # 潜行与偷袭（潜行与盗贼被动批次）
+///
+/// 攻击者正处于潜行状态（[`ll_world::entity::Agent::stealthed`]）时，
+/// 偷袭判定**直通**：跳过上面那次幸运掷骰，直接吃到
+/// `extra_damage`。这条连接刻意做在「已经有 `SneakAttack` 声明」的
+/// 前提之内，不是「潜行本身就能偷袭」——两层是分开的（项目所有者
+/// 「潜行和盗窃或许可以安排成盗贼主职业的一种被动技能 buff」这句话
+/// 的落地方式）：**潜行这个动作人人都能做**（`Intent::ToggleStealth`
+/// 不查任何职业/天赋），**把它变成实打实的伤害是天赋给的**（没有任何
+/// 来源声明 `RuleModifier::SneakAttack` 的角色，潜行照样不会凭空多打
+/// 一点伤害）。
+///
+/// # 潜行破除
+///
+/// 攻击者在潜行中打出这一下之后，本函数追加一条
+/// `Effect::SetStealth { stealthed: false }`——**排在伤害之后**，因此
+/// 这一下仍然吃到直通的偷袭，破除从下一次行动起才生效（经典的「一次
+/// 免费背刺」）。
+///
+/// **受伤不破除**，这是本批次一次显式的裁定而不是遗漏：本批次的潜行
+/// 不是隐身（FOV 一个字都没改，卫兵照常看得见你，见
+/// `ll_script::api::actor` 模块文档），它只影响「要不要把你当回事」
+/// 这次判定；自己动手打人是当事人主动做的一次公开动作，理应破除，而
+/// 被别人打中不是当事人能选择的事——让任意第三方（未来的范围伤害、
+/// 陷阱、掉落物）都能无代价剥掉一个角色的潜行，是一条项目所有者没有
+/// 要求、且当前没有任何反制设计（重新潜行的代价/冷却）配套的规则。
+/// 技术面也指向同一个结论：伤害的产出点不止本函数一处，把「受伤破除」
+/// 做对要么散布到每一个伤害生产者，要么把一条规则判断塞进
+/// `crate::apply`（ADR 0023/约束 C1 明确禁止 `apply` 做规则判断）。
+/// 两条理由指向同一个选择，因此本批次不做；真要做，是「潜行的反制
+/// 手段」那一批的工作，届时连同重新潜行的代价一起设计。
+///
 /// # 抗性接线（伤害类别/抗性接线批次；来源扩展见抗性多来源聚合批次）
 ///
 /// `damage-formula-mod-api.md` 二十节把抗性的挂载点定死在「减伤之后、
@@ -2576,6 +2691,18 @@ fn resolve_attack(
         traits,
         items,
     )) {
+        // 潜行直通（潜行与盗贼被动批次）：攻击者正处于潜行状态时跳过
+        // 掷骰，直接判定触发——见本函数文档「潜行与偷袭」一节。放在
+        // `Some(rule)` 之前用守卫分支表达，而不是在下面那个分支里写
+        // 一个提前 `return`：这是一个 `match` 表达式的值，提前 return
+        // 会从整个 `resolve_attack` 返回而不是从这个表达式返回。
+        //
+        // **这一支不构造那条 `DetRng` 流**（下面那支才构造），与
+        // `None` 支「没有任何来源声明偷袭时完全不构造额外的 DetRng
+        // 流」同一条既有纪律：每次判定都是现场用 `DetRng::for_entity`
+        // 新造一条流、只取一个数，不是一条跨调用累进的长流，因此
+        // 「这次没取数」不会让后续任何取数错位（约束 C3/C5）。
+        Some(rule) if attacker.stealthed => damage.saturating_add(rule.extra_damage),
         Some(rule) => {
             let mut sneak_rng = ll_core::rng::DetRng::for_entity(
                 world.seed,
@@ -2627,6 +2754,18 @@ fn resolve_attack(
         target,
         amount: damage,
     }];
+    // 潜行破除（潜行与盗贼被动批次）：攻击者自己动手打人这一下就把
+    // 潜行破掉——见本函数文档「潜行破除」一节。排在伤害之后：这一下
+    // 的伤害**已经**吃到了上面的偷袭直通，破除从下一次行动起才生效
+    // （经典的「一次免费背刺」形状）。不在潜行中时不产出这条效果，
+    // 与本函数其余「没有相关状态就不多产一条效果」的既有纪律一致
+    // （效果列表越短，`TurnEngine`/回放/呈现层要处理的东西越少）。
+    if attacker.stealthed {
+        effects.push(Effect::SetStealth {
+            actor,
+            stealthed: false,
+        });
+    }
     // 攻击方主手武器（若带耐久）每打出这一下损失一点耐久——见本函数
     // 文档「耐久消耗」一节；徒手（主手为空）或武器没有耐久概念时不
     // 产出任何效果。
@@ -3198,7 +3337,171 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         })
+    }
+
+    /// 把 `actor` 的潜行状态置为 `stealthed`——潜行相关测试的公共
+    /// Arrange 步骤。直接写字段而不是先跑一次 `Intent::ToggleStealth`：
+    /// 那会让「移动开销」这类测试的断言同时依赖切换本身是否正确，两件
+    /// 事应当各自独立验证（切换本身由
+    /// `切换潜行产出取反后的确定状态并消耗一个回合` 单独覆盖）。
+    fn set_stealthed(world: &mut WorldState, actor: EntityId, stealthed: bool) {
+        world
+            .actors
+            .get_mut(actor)
+            .expect("调用方刚生成的实体必然存在")
+            .stealthed = stealthed;
+    }
+
+    #[test]
+    fn 切换潜行产出取反后的确定状态并消耗一个回合() {
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let actor = spawn_agent(&mut world);
+
+        // Act：从「未潜行」切一次。
+        let effects = resolve(&world, &Intent::ToggleStealth { actor });
+
+        // Assert：产出确定值 true（不是「取反」这个指令本身），且排了
+        // 下一次行动（消耗了一个回合）。
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::SetStealth {
+                actor: a,
+                stealthed: true
+            } if *a == actor
+        )));
+        assert!(
+            effects.iter().any(
+                |effect| matches!(effect, Effect::ScheduleNext { actor: a, .. } if *a == actor)
+            )
+        );
+    }
+
+    #[test]
+    fn 已在潜行中再次切换产出退出潜行() {
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        set_stealthed(&mut world, actor, true);
+
+        // Act
+        let effects = resolve(&world, &Intent::ToggleStealth { actor });
+
+        // Assert
+        assert!(effects.iter().any(|effect| matches!(
+            effect,
+            Effect::SetStealth {
+                actor: a,
+                stealthed: false
+            } if *a == actor
+        )));
+    }
+
+    #[test]
+    fn 切换潜行的耗时与原地等待相同() {
+        // 「消耗一个回合」这句话的准确含义：与 Intent::Wait 逐刻相同，
+        // 不是另起一个数字，见 resolve_toggle_stealth 文档。
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let actor = spawn_agent(&mut world);
+
+        // Act
+        let toggle_at = next_action_tick(&resolve(&world, &Intent::ToggleStealth { actor }));
+        let wait_at = next_action_tick(&resolve(&world, &Intent::Wait { actor }));
+
+        // Assert
+        assert_eq!(toggle_at, wait_at);
+    }
+
+    #[test]
+    fn 潜行时移动一格比不潜行时更慢() {
+        // Arrange：两个完全相同的世界，只差潜行状态。目的地显式铺成
+        // 草地——`test_world` 用 `GenParams::default()` 生成，出生点
+        // 东侧未必可通行，不铺的话两条断言都会落进撞墙分支而恒相等
+        // （与本文件其余移动测试同一条既有做法）。
+        let (mut visible_world, ids_a) = test_world();
+        let visible = spawn_agent(&mut visible_world);
+        visible_world
+            .terrain
+            .set_terrain(east_of_spawn(&visible_world), ids_a.grass);
+        let (mut stealth_world, ids_b) = test_world();
+        let sneaker = spawn_agent(&mut stealth_world);
+        stealth_world
+            .terrain
+            .set_terrain(east_of_spawn(&stealth_world), ids_b.grass);
+        set_stealthed(&mut stealth_world, sneaker, true);
+
+        // Act
+        let open_at = next_action_tick(&resolve(
+            &visible_world,
+            &Intent::Move {
+                actor: visible,
+                dir: Direction::East,
+            },
+        ));
+        let sneak_at = next_action_tick(&resolve(
+            &stealth_world,
+            &Intent::Move {
+                actor: sneaker,
+                dir: Direction::East,
+            },
+        ));
+
+        // Assert：STEALTH_MOVE_COST_PERMILLE 是 2000（两倍），两次都从
+        // Tick(0) 起算，因此潜行那一步的下一次行动时刻应当恰好是两倍。
+        assert!(sneak_at > open_at);
+        assert_eq!(sneak_at, open_at * 2);
+    }
+
+    #[test]
+    fn 潜行不改变撞墙的耗时() {
+        // 反面覆盖 resolve_move 里「只挂在真的挪动了位置的那一条分支」
+        // 这句话：撞墙走的是 BASE_ACTION_COST，不是地形开销，潜行不该
+        // 让撞墙也变慢。
+        // Arrange：东侧摆一堵石墙。
+        let (mut visible_world, ids_a) = test_world();
+        let visible = spawn_agent(&mut visible_world);
+        let wall_a = east_of_spawn(&visible_world);
+        visible_world.terrain.set_terrain(wall_a, ids_a.wall_stone);
+
+        let (mut stealth_world, ids_b) = test_world();
+        let sneaker = spawn_agent(&mut stealth_world);
+        let wall_b = east_of_spawn(&stealth_world);
+        stealth_world.terrain.set_terrain(wall_b, ids_b.wall_stone);
+        set_stealthed(&mut stealth_world, sneaker, true);
+
+        // Act
+        let open_at = next_action_tick(&resolve(
+            &visible_world,
+            &Intent::Move {
+                actor: visible,
+                dir: Direction::East,
+            },
+        ));
+        let sneak_at = next_action_tick(&resolve(
+            &stealth_world,
+            &Intent::Move {
+                actor: sneaker,
+                dir: Direction::East,
+            },
+        ));
+
+        // Assert
+        assert_eq!(open_at, sneak_at);
+    }
+
+    /// 从一批效果里取出 `Effect::ScheduleNext` 的时刻——潜行相关的
+    /// 耗时断言反复需要这一步。
+    fn next_action_tick(effects: &[Effect]) -> i64 {
+        effects
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::ScheduleNext { at, .. } => Some(at.0),
+                _ => None,
+            })
+            .expect("这些意图都会排下一次行动")
     }
 
     /// 造一份「站在 `pos` 上」的地表空间——`current_space` 的
@@ -3256,6 +3559,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         })
     }
 
@@ -3304,6 +3608,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         })
     }
 
@@ -3840,6 +4145,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         })
     }
 
@@ -4227,6 +4533,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         })
     }
 
@@ -4445,6 +4752,135 @@ mod tests {
 
         // Assert
         assert_eq!(damage_with_sneak, damage_without_sneak + extra_damage);
+    }
+
+    #[test]
+    fn 潜行中的攻击者零幸运也必定触发偷袭() {
+        // 潜行直通（本批次）——与上一条 `偷袭触发时伤害真的更高` 恰好
+        // 互补：那一条把触发率钳在 100% 来拿到确定结果，本条把幸运压到
+        // **零**（触发率因此恒为 0‰，见
+        // `crate::combat::sneak_attack_chance_permille`），于是掷骰这条
+        // 路径**永远不可能**触发偷袭。潜行的攻击者依然吃到完整的
+        // `extra_damage`，就只能是直通那条分支给的。
+        // Arrange
+        let luck = 0;
+        let per_point = 20;
+        let extra_damage = 37;
+        let (mut world, _terrain_ids) = test_world();
+        let attacker_pos = world.size.wrap(5, 5);
+        let mut interner = ll_core::ident::Interner::new();
+        let race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:rogue").expect("合法标识符"));
+        let trait_id = interner.intern(
+            ll_core::ident::NamespacedId::parse("lostland:sneak_attack").expect("合法标识符"),
+        );
+        let attacker = spawn_agent_with_luck_and_race(&mut world, attacker_pos, luck, race);
+        let victim_pos = east_of_spawn(&world);
+        let victim = spawn_named_agent(&mut world, victim_pos, 1_000_000);
+        let race_traits = FixedSneakRaceGrant { race, trait_id };
+        let traits = FixedSneakAttackTrait {
+            trait_id,
+            luck_chance_permille_per_point: per_point,
+            extra_damage,
+        };
+
+        let attack = |world: &WorldState| -> i32 {
+            resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+                world,
+                &Intent::Attack {
+                    actor: attacker,
+                    target: victim,
+                },
+                &NoSkills,
+                &race_traits,
+                &traits,
+                &NoResourcePools,
+                &NoItems,
+                &NoFormulas,
+                &NoDamageCategories,
+            )
+            .iter()
+            .find_map(|effect| match effect {
+                Effect::Damage { amount, .. } => Some(*amount),
+                _ => None,
+            })
+            .expect("攻击必然产出一条伤害效果")
+        };
+
+        // Act
+        let damage_visible = attack(&world);
+        set_stealthed(&mut world, attacker, true);
+        let damage_stealthed = attack(&world);
+
+        // Assert：不潜行时零幸运恒不触发；潜行时精确多出 extra_damage。
+        assert_eq!(damage_stealthed, damage_visible + extra_damage);
+    }
+
+    #[test]
+    fn 潜行中发起攻击会破除潜行() {
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        let victim = spawn_named_agent(&mut world, victim_pos, 1_000_000);
+        set_stealthed(&mut world, attacker, true);
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+        );
+
+        // Assert：产出一条把攻击者潜行置假的效果，且它排在伤害之后
+        // （这一下仍然算潜行中的攻击，见 resolve_attack 文档
+        // 「潜行破除」一节）。
+        let damage_at = effects
+            .iter()
+            .position(|effect| matches!(effect, Effect::Damage { .. }))
+            .expect("攻击必然产出一条伤害效果");
+        let break_at = effects
+            .iter()
+            .position(|effect| {
+                matches!(
+                    effect,
+                    Effect::SetStealth {
+                        actor: a,
+                        stealthed: false
+                    } if *a == attacker
+                )
+            })
+            .expect("潜行中的攻击应当产出一条破除潜行的效果");
+        assert!(break_at > damage_at);
+    }
+
+    #[test]
+    fn 不在潜行中的攻击不产出破除潜行的效果() {
+        // 反面：没有相关状态时不多产一条效果，见 resolve_attack
+        // 「潜行破除」一节末尾。
+        // Arrange
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        let victim = spawn_named_agent(&mut world, victim_pos, 1_000_000);
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+        );
+
+        // Assert
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::SetStealth { .. }))
+        );
     }
 
     #[test]
@@ -4698,6 +5134,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
 
         // Act
@@ -4760,6 +5197,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
 
         // Act

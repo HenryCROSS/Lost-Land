@@ -175,6 +175,7 @@ fn spawn_agent(world: &mut WorldState, inventory: Vec<ItemStack>) -> EntityId {
         level: Agent::STARTING_LEVEL,
         experience: 0,
         xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+        stealthed: false,
     })
 }
 

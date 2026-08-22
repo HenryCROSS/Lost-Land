@@ -61,12 +61,33 @@
 ;;     内离自己最近的任意实体」,不看敌对关系（区别于 nearby-enemy）,
 ;;     隔着墙的目标不会被找到。
 
+;; 潜行（潜行与盗贼被动批次）——项目所有者裁定「潜行需要时可切换状态
+;; 的」。落在**这一行掷骰**上，不落在视野上：卫兵照常看得见潜行中的
+;; 目标（`nearby-actor-in-view` 一个字都没改，`compute_fov`/`VisibleSet`
+;; 也没有），只是「要不要把这个人当回事」这次判定的成功率降下来。
+;; 完整论证见 crates/ll-script/src/api/actor.rs 模块文档「潜行：为什么
+;; 是一次判定的减值，不是一次可见性的改写」一节。
+;;
+;; `actor-stealthed?` 是本批次新增的运行期查询 API（同一文件），接一个
+;; 目标句柄——问的是「我看到的这个人在不在潜行」，不是「我自己」。
+;;
+;; 两个概率都是这份脚本里的普通字面量，与 GUARD_INSPECT_CHANCE_PERMILLE
+;; 当初同一条可编辑性（ADR 0018：这段逻辑该不该暴露给 mod 重新定义
+;; ——盘查触发率与潜行的减免幅度显然都该）。mod 作者想让潜行完全免疫
+;; 盘查就把下面这个数改成 0，想让潜行毫无用处就改成 500，不需要动
+;; 任何 Rust 代码。
 (define GUARD_INSPECT_CHANCE_PERMILLE 500)
+(define GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED 50)
+
+(define (guard-inspect-chance target)
+  (if (actor-stealthed? target)
+      GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED
+      GUARD_INSPECT_CHANCE_PERMILLE))
 
 (define (guard-try-inspect)
   (if (self-has-profession? "lostland:guard")
       (let ([target (nearby-actor-in-view)])
-        (if (and target (rng-chance GUARD_INSPECT_CHANCE_PERMILLE))
+        (if (and target (rng-chance (guard-inspect-chance target)))
             (list 'inspect target)
             #f))
       #f))

@@ -73,6 +73,26 @@
 //! 不看敌对关系——[`is_hostile`] 的势力近似在这里不适用：卫兵要能
 //! 盘查任何看得见的单位（含友方/中立），不是只盘查敌人，见
 //! `mods/example_mod/behavior.scm` 的 `guard-try-inspect`。
+//!
+//! # 潜行：为什么是一次判定的减值，不是一次可见性的改写
+//!
+//! [`actor_stealthed`]（`actor-stealthed?`，潜行与盗贼被动批次新增）
+//! 是本模块唯一与潜行有关的东西，它**不参与** [`nearby_actor_in_view`]
+//! 的任何一步：潜行中的实体照样会被 `nearby-actor-in-view` 找到，
+//! `compute_fov`/`VisibleSet` 一个字节都没有因为潜行而改变。
+//!
+//! 被否决的替代方案是「潜行让敌人看不见你」——那要动 `ll_world::fov`
+//! 的 `compute_fov`/`VisibleSet`，代价有两层：（一）FOV 是本项目性能
+//! 与确定性最敏感的代码，它同时服务渲染（每帧）与 AI 查询；（二）
+//! 语义会变得很怪——同一格对不同观察者的可见性不同，`VisibleSet`
+//! 这个「以观察者为中心算一次」的类型就必须再多带一维「谁在看」，
+//! 而它当前的全部调用点都不需要这一维。
+//!
+//! 选中的方案把潜行放在**下一步**：守卫照常看得见你，`guard-ai-tree`
+//! 拿到目标之后要掷一次骰子决定「要不要把这个人当回事」
+//! （`rng-chance`），潜行在那次掷骰上减值。零 FOV 改动，且语义更贴近
+//! 项目所有者对卫兵的原始裁定（「有概率会来核查其他单位身上的物品」
+//! ——本来就是一次概率判定，潜行只是改了那个概率）。
 
 use std::cell::Cell;
 
@@ -140,12 +160,44 @@ const NEARBY_ENEMY_RANGE_SQ: i64 = 100;
 const NEARBY_ACTOR_VIEW_RADIUS: u32 = 12;
 
 /// 注册 `self-handle`/`nearby-enemy`/`nearby-actor-in-view`/
-/// `direction-toward` 四个行为树查询原语。
+/// `direction-toward`/`actor-stealthed?` 五个行为树查询原语。
 pub fn register(engine: &mut ScriptEngine) {
     engine.register_fn("self-handle", self_handle);
     engine.register_fn("nearby-enemy", nearby_enemy);
     engine.register_fn("nearby-actor-in-view", nearby_actor_in_view);
     engine.register_fn("direction-toward", direction_toward);
+    engine.register_fn("actor-stealthed?", actor_stealthed);
+}
+
+/// `(actor-stealthed? target)`：`target` 此刻是否正在潜行
+/// （[`ll_world::entity::Agent::stealthed`]）；句柄失效或没有活跃世界
+/// 时返回 `#f`（与本文件其余查询同一条降级纪律：宿主接线可能有 bug，
+/// 选一个确定值而不是 panic）。见模块文档「潜行：为什么是一次判定的
+/// 减值，不是一次可见性的改写」一节。
+///
+/// # 为什么落在 `ll-script` 而不是 `ll-mod`
+///
+/// 与 `direction-toward` 同一条判据（对比
+/// `ll_mod::script_behavior_api` 模块文档「为什么这一个函数单独落在
+/// `ll-mod`」）：本查询只需要读 `WorldState` 的一个 `bool` 字段，
+/// 不需要把任何命名空间字符串翻译成 `ContentIndex`，因此不需要
+/// `ll_mod::registry::Registry`，可以落在依赖方向更上游的这里。
+///
+/// # 为什么取一个目标句柄，不是零参读活跃实体
+///
+/// 唯一的调用场景（`mods/example_mod/behavior.scm` 的
+/// `guard-try-inspect`）问的是「**我看到的这个人**在不在潜行」，
+/// 不是「我自己在不在潜行」——观察者与被观察者是两个不同的实体。
+/// 与 `direction-toward` 同样接一个 [`ScriptEntityHandle`] 参数。
+fn actor_stealthed(target: ScriptEntityHandle) -> SteelVal {
+    with_active_world(SteelVal::BoolV(false), |world| {
+        SteelVal::BoolV(
+            world
+                .actors
+                .get(target.entity_id())
+                .is_some_and(|agent| agent.stealthed),
+        )
+    })
 }
 
 /// `(self-handle)`：当前决策实体自己的句柄；没有活跃实体时返回 `#f`
@@ -369,6 +421,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         })
     }
 
@@ -504,6 +557,100 @@ mod tests {
 
         // Assert
         assert_eq!(result, SteelVal::BoolV(false));
+    }
+
+    #[test]
+    fn actor_stealthed如实回答目标的潜行状态() {
+        // Arrange：两个实体，只有其中一个在潜行。
+        let mut world = test_world();
+        let visible = spawn_agent_at(&mut world, 0, 0);
+        let sneaker = spawn_agent_at(&mut world, 2, 0);
+        world
+            .actors
+            .get_mut(sneaker)
+            .expect("刚生成必然存在")
+            .stealthed = true;
+
+        // Act
+        let (visible_result, sneaker_result) = unsafe {
+            set_active_world(&world);
+            let a = actor_stealthed(ScriptEntityHandle::new(visible));
+            let b = actor_stealthed(ScriptEntityHandle::new(sneaker));
+            clear_active_world();
+            (a, b)
+        };
+
+        // Assert
+        assert_eq!(visible_result, SteelVal::BoolV(false));
+        assert_eq!(sneaker_result, SteelVal::BoolV(true));
+    }
+
+    #[test]
+    fn 潜行中的实体照样会被nearby_actor_in_view找到() {
+        // 本批次核心设计选择的可执行断言：潜行**不是**隐身，FOV 一个
+        // 字节都没改——见模块文档「潜行：为什么是一次判定的减值，不是
+        // 一次可见性的改写」一节。若哪天有人"顺手"把潜行接进
+        // nearest_visible_actor，这条测试立刻变红。
+        // Arrange
+        let mut world = test_world();
+        let me = spawn_agent_at(&mut world, 5, 5);
+        let sneaker = spawn_agent_at(&mut world, 7, 5);
+        world
+            .actors
+            .get_mut(sneaker)
+            .expect("刚生成必然存在")
+            .stealthed = true;
+        set_active_actor(me);
+
+        // Act
+        let result = unsafe {
+            set_active_world(&world);
+            let result = nearby_actor_in_view();
+            clear_active_world();
+            result
+        };
+        clear_active_actor();
+
+        // Assert：照样找得到。
+        let handle = ScriptEntityHandle::from_steelval(&result).expect("潜行不影响可见性");
+        assert_eq!(handle.entity_id(), sneaker);
+    }
+
+    #[test]
+    fn 注册后脚本能调用actor_stealthed判断目标是否潜行() {
+        // 端到端：真实脚本源码经 ScriptEngine::load_source 调用
+        // actor-stealthed?，不是直接在 Rust 里调 actor_stealthed——与
+        // `ll_mod::script_behavior_api` 的
+        // `注册后脚本能调用self_has_profession判断当前职业` 同一条既有
+        // 纪律。目标句柄由脚本自己从 nearby-actor-in-view 取，因此这条
+        // 测试同时覆盖了 behavior.scm 里真实的调用形状。
+        // Arrange
+        let mut world = test_world();
+        let me = spawn_agent_at(&mut world, 5, 5);
+        let sneaker = spawn_agent_at(&mut world, 7, 5);
+        world
+            .actors
+            .get_mut(sneaker)
+            .expect("刚生成必然存在")
+            .stealthed = true;
+        let mut engine = ScriptEngine::new();
+        register(&mut engine);
+        engine
+            .load_source("(define (probe) (actor-stealthed? (nearby-actor-in-view)))".to_string())
+            .expect("这段源码只用到本模块注册的两个原语");
+
+        // Act
+        let result = unsafe {
+            set_active_world(&world);
+            set_active_actor(me);
+            let result = engine.call_raw("probe", Vec::new());
+            clear_active_actor();
+            clear_active_world();
+            result
+        };
+
+        // Assert
+        assert_eq!(result, Ok(SteelVal::BoolV(true)));
     }
 
     #[test]

@@ -418,6 +418,17 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
             // 要不要转成一条 HistoricalEventKind::Crime——那是未来批次
             // 的工作，这里先不假装已经做了。
         }
+        // 潜行状态（潜行与盗贼被动批次）——纯赋值，不读任何其他字段、
+        // 不做任何规则判断（ADR 0023/约束 C1：该不该切换、切成什么，
+        // 已经在 `resolve` 里决定完了，见 `Effect::SetStealth` 文档
+        // 「为什么携带目标值，而不是『取反』」一节）。目标实体已经
+        // 不存在（同一批效果里更早的一条 `Effect::Kill` 收走了它）时
+        // 静默跳过，与本函数其余分支同一条既有降级纪律。
+        Effect::SetStealth { actor, stealthed } => {
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.stealthed = *stealthed;
+            }
+        }
     }
 }
 
@@ -551,6 +562,7 @@ mod tests {
             level: ll_world::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         }
     }
 
@@ -1427,5 +1439,65 @@ mod tests {
             .get(&EquipSlot::BODY)
             .expect("装备仍在槽位里");
         assert_eq!(stack.durability, Some(0));
+    }
+
+    #[test]
+    fn setstealth效果按携带的目标值赋值而不是取反() {
+        // Effect::SetStealth 文档「为什么携带目标值，而不是『取反』」
+        // 一节的可执行断言：同一条效果连续应用两次，结果必须与应用
+        // 一次相同（幂等）——若 apply 里写的是取反，第二次就会把它翻
+        // 回去，这条断言立刻变红。
+        // Arrange
+        let mut world = test_world();
+        let actor = world.actors.spawn(blank_agent(&world));
+        let effect = Effect::SetStealth {
+            actor,
+            stealthed: true,
+        };
+
+        // Act
+        apply(&mut world, &effect);
+        let after_once = world
+            .actors
+            .get(actor)
+            .expect("刚生成的实体必然存在")
+            .stealthed;
+        apply(&mut world, &effect);
+        let after_twice = world
+            .actors
+            .get(actor)
+            .expect("刚生成的实体必然存在")
+            .stealthed;
+
+        // Assert
+        assert!(after_once);
+        assert_eq!(after_once, after_twice);
+    }
+
+    #[test]
+    fn setstealth效果能把潜行关回去() {
+        // Arrange
+        let mut world = test_world();
+        let mut agent = blank_agent(&world);
+        agent.stealthed = true;
+        let actor = world.actors.spawn(agent);
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::SetStealth {
+                actor,
+                stealthed: false,
+            },
+        );
+
+        // Assert
+        assert!(
+            !world
+                .actors
+                .get(actor)
+                .expect("刚生成的实体必然存在")
+                .stealthed
+        );
     }
 }

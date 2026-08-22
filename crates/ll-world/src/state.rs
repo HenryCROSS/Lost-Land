@@ -1139,6 +1139,16 @@ impl WorldState {
                 hasher.write_u64(u64::from(slot.get()));
                 write_item_stack(&mut hasher, stack);
             }
+            // 潜行状态（潜行与盗贼被动批次）——同一条先例第 N 次重演
+            // （见本方法文档「新增字段若不在这里显式写一行……」一节）：
+            // `Intent::ToggleStealth` 真实改写这个字段，且它真的分岔
+            // 未来（移动开销、偷袭直通、卫兵盘查触发率三条消费者，见
+            // `Agent::stealthed` 字段文档）。ADR 0022「世界状态哈希必须
+            // 完整」——不完整的确定性哈希等于没有哈希，因此这一行必须
+            // 存在，本批次的黄金基准摘要也确实因此改变（见
+            // `crates/ll-sim/tests/replay.rs` 的 `EXPECTED_REPLAY_DIGEST`
+            // 文档「本次重冻的原因」一节）。
+            hasher.write_u64(u64::from(agent.stealthed));
         }
 
         write_optional_entity(&mut hasher, self.player_entity);
@@ -1686,6 +1696,7 @@ mod tests {
             level: crate::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
         world.player_entity = Some(player_id);
         let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
@@ -1744,8 +1755,40 @@ mod tests {
             level,
             experience,
             xp_to_next_level,
+            stealthed: false,
         });
         world
+    }
+
+    #[test]
+    fn 潜行状态变化会改变世界哈希() {
+        // ADR 0022 红/绿验证：Agent::stealthed 必须已经手动补进 hash()
+        // 的逐字段遍历——本函数手工验证过会失败（把 hash() 里新增的
+        // `hasher.write_u64(u64::from(agent.stealthed));` 一行临时换成
+        // 注释重跑，本测试会 panic：两个只有 stealthed 不同的世界算出
+        // 同一个哈希），恢复后转绿。这也是本批次黄金基准重冻第 2 步
+        // 用的同一条手法，见 crates/ll-sim/tests/replay.rs 的
+        // EXPECTED_REPLAY_DIGEST 文档「第十六次重冻的原因」一节。
+        // Arrange：两个世界只差潜行状态这一个字段。
+        let world_visible = test_world_with_one_agent(1, 0, 100);
+        let mut world_stealthed = test_world_with_one_agent(1, 0, 100);
+        let only_agent = world_stealthed
+            .actors
+            .iter_with_id()
+            .map(|(id, _)| id)
+            .next()
+            .expect("test_world_with_one_agent 恰好生成一个实体");
+        world_stealthed
+            .actors
+            .get_mut(only_agent)
+            .expect("刚取到的 id 必然有效")
+            .stealthed = true;
+
+        // Act
+        let (hash_visible, hash_stealthed) = (world_visible.hash(), world_stealthed.hash());
+
+        // Assert
+        assert_ne!(hash_visible, hash_stealthed);
     }
 
     #[test]
@@ -1828,6 +1871,7 @@ mod tests {
             level: Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
         world
     }
@@ -1896,6 +1940,7 @@ mod tests {
             level: Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
         world
     }
@@ -1956,6 +2001,7 @@ mod tests {
             level: Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
         world
     }
@@ -2026,6 +2072,7 @@ mod tests {
             level: crate::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
 
         // Act
@@ -2324,6 +2371,7 @@ mod tests {
             level: crate::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         }
     }
 
@@ -2745,6 +2793,7 @@ mod tests {
             level: crate::entity::Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: crate::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         });
 
         // Act

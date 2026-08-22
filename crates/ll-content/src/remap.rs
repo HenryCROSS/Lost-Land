@@ -366,6 +366,17 @@ fn remap_agent(
         // 是引擎内置的位下标常量，不依赖 mod 加载顺序，原样保留，见下方
         // remap_equipment。
         ref mut equipment,
+        // 潜行状态（潜行与盗贼被动批次）：纯 bool，不携带任何
+        // ContentIndex，不需要重映射——与 health/mana/stamina/level 同
+        // 一类「纯数值不需要重映射」字段。显式列在这里（而不是被 `..`
+        // 或一个 `_` 通配吞掉）本身就是穷尽解构要保护的那件事，也是本
+        // 文件历史上真实出过一次事故的那条防线：`active_stat_modifiers`
+        // 曾被写成 `field: _` 形态而在换 mod 读档时静默清空，见模块文档
+        // 「完整性如何保证」。这里的 `_` 是**有意的**「确认过不需要重
+        // 映射」，不是「顺手吞掉」——判据是这个字段的类型里根本不存在
+        // 任何 ContentIndex，编译器会在它某天变成携带索引的类型时让这
+        // 一行继续通过、因此这条注释就是那个提醒。
+        stealthed: _,
     } = *agent;
 
     *profession = remapper.remap_character_attribute(*profession, owner)?;
@@ -781,6 +792,7 @@ mod tests {
             level: Agent::STARTING_LEVEL,
             experience: 0,
             xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            stealthed: false,
         }
     }
 
@@ -1019,6 +1031,41 @@ mod tests {
                 delta: 3,
                 expires_at: Tick(80),
             })
+        );
+    }
+
+    #[test]
+    fn 换mod读档后潜行状态不被静默清空() {
+        // 直接针对本文件历史上真实出过的那次事故（`active_stat_modifiers`
+        // 曾在穷尽解构里被写成 `field: _` 形态,换 mod 读档时静默清空,
+        // 见模块文档「完整性如何保证」）——`Agent::stealthed` 是本批次
+        // 新增的字段,它在 `remap_agent` 里同样落在 `stealthed: _,` 这个
+        // 形状上（因为它确实不携带任何 ContentIndex）,但「确认过不需要
+        // 重映射」与「顺手吞掉」在源码上长得一模一样,只能靠这条测试
+        // 把两者区分开：真的被吞掉的话,下面这条断言会变红。
+        // Arrange：一个正在潜行的实体，外加一次真实的索引重映射
+        // （职业/种族确实换了号，走的不是"什么都没发生"那条捷径）。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        save_registry.intern(id("lostland:filler"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.stealthed = true;
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(
+            world.actors.get(entity).expect("实体应当仍存在").stealthed,
+            "潜行状态在重映射后被清空了——remap_agent 的穷尽解构把它吞掉了"
         );
     }
 
