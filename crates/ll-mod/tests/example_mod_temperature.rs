@@ -48,6 +48,7 @@ use ll_mod::trait_def::TraitTable;
 use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
+use ll_sim::craft::NoRecipes;
 use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::exposure::AmbientSource;
 use ll_sim::intent::Intent;
@@ -114,6 +115,7 @@ impl RealModsHandle {
             items: &self.item,
             formulas,
             damage_categories: &NoDamageCategories,
+            recipes: &NoRecipes,
             ambient: AmbientSource::new(&self.space_profile, &self.weather),
         }
     }
@@ -145,6 +147,8 @@ fn load_real_mods() -> RealModsHandle {
     let mut formula = FormulaTable::new();
     let mut weapon_category = WeaponCategoryTable::new();
     let mut damage_category = DamageCategoryTable::new();
+    let mut recipe_table = ll_mod::recipe::RecipeTable::new();
+    let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
         &mut registry,
@@ -166,6 +170,8 @@ fn load_real_mods() -> RealModsHandle {
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
             weather: &mut weather,
+            recipe: &mut recipe_table,
+            recipe_category: &mut recipe_category_table,
         },
     );
 

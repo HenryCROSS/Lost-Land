@@ -292,17 +292,17 @@ pub struct ContentAuditPolicy {
 
 /// 生产策略：本体内容（`lostland` 命名空间）的字段覆盖。
 ///
-/// # `covered` 当前为什么只有八张表
+/// # `covered` 当前为什么只有九张表
 ///
-/// 本体内容迁往 mod 脚本这件事只完成了第一批（种族）。其余表在
+/// 本体内容迁往 mod 脚本这件事只完成了前两批（种族、职业）。其余表在
 /// `lostland` 命名空间下的条目数如下（数据来自仓库真实 `mods/` 目录的
 /// 一次完整装载，不是估计）：地形 17、空间层属性 4、动画剪辑 2、经验
-/// 曲线 1、伤害公式 1、伤害类别 1、种族 3、天气 6——这八张有内容；职业/技能/
-/// 副职/任务/天赋/资源池/物品/武器类别八张在 `lostland` 下**一条都
-/// 没有**（它们只存在于 `mods/example_mod/`）。
+/// 曲线 1、伤害公式 1、伤害类别 1、种族 3、职业 1、天气 6——这九张有内容；
+/// 技能/副职/任务/天赋/资源池/物品/武器类别/配方/配方类别九张在
+/// `lostland` 下**一条都没有**（它们只存在于 `mods/example_mod/`）。
 ///
 /// 对空表求字段覆盖，得到的是"这张表的每个字段都没覆盖"这种与内容
-/// 本身无关的纯噪音——那不是这条检查该报的错。八张空表因此逐条登记
+/// 本身无关的纯噪音——那不是这条检查该报的错。九张空表因此逐条登记
 /// 进 [`ContentAuditPolicy::deferred`] 并写明理由，等对应内容真的迁进
 /// `mods/lostland/` 那天，[`RosterViolation::DeferredButPopulated`]
 /// 会主动提醒把它挪进 `covered`，不需要有人记得回来看这里。
@@ -354,6 +354,14 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         DeferredTable {
             kind: ContentTableKind::WeaponCategory,
             reason: "本体武器类别尚未迁进 mods/lostland/，理由同 Skill 一条。",
+        },
+        DeferredTable {
+            kind: ContentTableKind::Recipe,
+            reason: "本体配方尚未迁进 mods/lostland/，理由同 Skill 一条——制作系统落地                     批次的真实内容证据在 mods/example_mod/gameplay.scm（四类配方各一条），                     lostland 命名空间下零条配方。本体配方要能存在，先得有本体物品                     （见 deferred 里的 Item 一条）：配方的食材与成品都指向物品表。",
+        },
+        DeferredTable {
+            kind: ContentTableKind::RecipeCategory,
+            reason: "本体配方类别尚未迁进 mods/lostland/，理由同 Recipe 一条——类别与                     配方必须同批迁移，register-recipe 要求 category-id 已注册。",
         },
     ],
     exemptions: &[
@@ -629,6 +637,8 @@ fn table_label(kind: ContentTableKind) -> &'static str {
         ContentTableKind::WeaponCategory => "武器类别表",
         ContentTableKind::DamageCategory => "伤害类别表",
         ContentTableKind::Weather => "天气表",
+        ContentTableKind::Recipe => "配方表",
+        ContentTableKind::RecipeCategory => "配方类别表",
     }
 }
 
@@ -637,7 +647,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
 /// 与 [`roster_slot`] 配套：新增一个变体时，那个不带通配分支的 `match`
 /// 会编译失败，逼人回到这里补上数组元素（数组长度也会对不上），见模块
 /// 文档「表花名册」一节。
-pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 17] = [
+pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 19] = [
     ContentTableKind::Opaque,
     ContentTableKind::Terrain,
     ContentTableKind::Class,
@@ -655,6 +665,8 @@ pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 17] = [
     ContentTableKind::WeaponCategory,
     ContentTableKind::DamageCategory,
     ContentTableKind::Weather,
+    ContentTableKind::Recipe,
+    ContentTableKind::RecipeCategory,
 ];
 
 /// 给 [`ALL_CONTENT_TABLE_KINDS`] 的完备性做编译期强制：不带通配分支
@@ -682,6 +694,8 @@ fn roster_slot(kind: ContentTableKind) -> usize {
         ContentTableKind::WeaponCategory => 14,
         ContentTableKind::DamageCategory => 15,
         ContentTableKind::Weather => 16,
+        ContentTableKind::Recipe => 17,
+        ContentTableKind::RecipeCategory => 18,
     }
 }
 
@@ -969,6 +983,8 @@ fn inspect_entry(auditor: &mut Auditor<'_>, index: ContentIndex) {
         ContentTableKind::WeaponCategory => inspect_weapon_category(auditor, index),
         ContentTableKind::DamageCategory => inspect_damage_category(auditor, index),
         ContentTableKind::Weather => inspect_weather(auditor, index),
+        ContentTableKind::Recipe => inspect_recipe(auditor, index),
+        ContentTableKind::RecipeCategory => inspect_recipe_category(auditor, index),
     }
 }
 
@@ -1395,6 +1411,93 @@ fn inspect_weapon_category(auditor: &mut Auditor<'_>, index: ContentIndex) {
     );
 }
 
+/// [`crate::recipe::RecipeDef`] 的全部字段——**除 `id` 外**，理由同
+/// [`inspect_xp_curve`]。
+///
+/// 四个跨表引用各自有明确的期望表：`category` 必落在配方类别表，
+/// `ingredients[].item` 与 `product` 必落在物品表，`required_station`
+/// 必落在地形表，`required_tool` 必落在物品表。这几条正是
+/// `register-recipe` 刻意**不**做跨表校验（避免注册顺序耦合）之后，
+/// 装载完成时统一补上的那一半——见
+/// [`crate::recipe::RecipeDef::product`] 文档。
+fn inspect_recipe(auditor: &mut Auditor<'_>, index: ContentIndex) {
+    let view = auditor
+        .tables
+        .recipe
+        .get(index)
+        .expect("classify_index 已判定为 Recipe，get 必返回 Some");
+    let category = view.category;
+    let ingredients = view.ingredients.to_vec();
+    let product = view.product;
+    let product_count = view.product_count;
+    let required_station = view.required_station;
+    let required_tool = view.required_tool;
+
+    auditor.field("RecipeAttrs::display_name_key", true);
+    auditor.reference(
+        "RecipeAttrs::category",
+        category,
+        ReferenceExpectation::Table(ContentTableKind::RecipeCategory),
+    );
+    // 食材列表恒非空（RecipeTable::define 的注册期校验），因此这条
+    // 字段覆盖只要有一条配方就必然为真——留着它不是为了「有没有内容
+    // 用上它」，而是为了让花名册与字段清单一一对应，与
+    // `ItemAttrs::display_name_key` 那类恒真字段同一条处理。
+    auditor.field("RecipeAttrs::ingredients", !ingredients.is_empty());
+    for ingredient in &ingredients {
+        auditor.reference(
+            "RecipeAttrs::ingredients::item",
+            ingredient.item,
+            ReferenceExpectation::Table(ContentTableKind::Item),
+        );
+    }
+    auditor.reference(
+        "RecipeAttrs::product",
+        product,
+        ReferenceExpectation::Table(ContentTableKind::Item),
+    );
+    auditor.field("RecipeAttrs::product_count", product_count != 0);
+    auditor.optional_reference(
+        "RecipeAttrs::required_station",
+        required_station,
+        ReferenceExpectation::Table(ContentTableKind::Terrain),
+    );
+    auditor.optional_reference(
+        "RecipeAttrs::required_tool",
+        required_tool,
+        ReferenceExpectation::Table(ContentTableKind::Item),
+    );
+}
+
+/// [`crate::recipe_category::RecipeCategoryDef`] 的全部字段。
+///
+/// `required_subclasses` 为空是**合法且常见**的（不设闸门 = 人人可做，
+/// 例如烹饪类别），因此它走 `field` + 逐条 `reference`，与
+/// `inspect_race` 处理 `RaceAttrs::traits` 同一种写法：空列表只是「这
+/// 条字段没被覆盖」，不是引用违规。
+fn inspect_recipe_category(auditor: &mut Auditor<'_>, index: ContentIndex) {
+    let required_subclasses = auditor
+        .tables
+        .recipe_category
+        .get(index)
+        .expect("classify_index 已判定为 RecipeCategory，get 必返回 Some")
+        .required_subclasses
+        .clone();
+
+    auditor.field("RecipeCategoryDef::display_name_key", true);
+    auditor.field(
+        "RecipeCategoryDef::required_subclasses",
+        !required_subclasses.is_empty(),
+    );
+    for subclass in &required_subclasses {
+        auditor.reference(
+            "RecipeCategoryDef::required_subclasses",
+            *subclass,
+            ReferenceExpectation::Table(ContentTableKind::Subclass),
+        );
+    }
+}
+
 /// [`crate::damage_category::DamageCategoryDef`] 的全部字段。
 fn inspect_damage_category(auditor: &mut Auditor<'_>, index: ContentIndex) {
     let default_formula = auditor
@@ -1420,6 +1523,8 @@ mod tests {
     use crate::item::{ItemAttrs, ItemTable};
     use crate::quest::{QuestAttrs, QuestTable};
     use crate::race::{RaceAttrs, RaceTable};
+    use crate::recipe::RecipeTable;
+    use crate::recipe_category::RecipeCategoryTable;
     use crate::resource_pool::ResourcePoolTable;
     use crate::skill::SkillTable;
     use crate::subclass::SubclassTable;
@@ -1462,6 +1567,8 @@ mod tests {
         weapon_category: WeaponCategoryTable,
         damage_category: DamageCategoryTable,
         weather: WeatherTable,
+        recipe: RecipeTable,
+        recipe_category: RecipeCategoryTable,
     }
 
     impl Session {
@@ -1484,6 +1591,8 @@ mod tests {
                 weapon_category: WeaponCategoryTable::new(),
                 damage_category: DamageCategoryTable::new(),
                 weather: WeatherTable::new(),
+                recipe: RecipeTable::new(),
+                recipe_category: RecipeCategoryTable::new(),
             }
         }
 
@@ -1505,6 +1614,8 @@ mod tests {
                 weapon_category: &self.weapon_category,
                 damage_category: &self.damage_category,
                 weather: &self.weather,
+                recipe: &self.recipe,
+                recipe_category: &self.recipe_category,
             }
         }
 

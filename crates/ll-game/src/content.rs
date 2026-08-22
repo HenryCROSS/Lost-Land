@@ -63,6 +63,8 @@ use ll_mod::manifest::{ModManifest, parse_manifest};
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::{QuestTable, RegisteredQuests};
 use ll_mod::race::{BaseRaceIds, RaceTable, resolve_base_races};
+use ll_mod::recipe::{RecipeTable, RegisteredRecipes};
+use ll_mod::recipe_category::RecipeCategoryTable;
 use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::SkillTable;
@@ -158,6 +160,13 @@ pub struct LoadedContent {
     pub default_damage_category_id: ContentIndex,
     /// 伤害类别定义表。
     pub damage_category_table: DamageCategoryTable,
+    /// 配方表（制作系统批次新增）——`ll_mod::recipe::RecipeTable`。
+    /// 与 `recipe_category_table` 一起由
+    /// [`RuntimeCatalogs::new`] 包装成 `RegisteredRecipes` 借给结算。
+    pub recipe_table: RecipeTable,
+    /// 配方类别表（制作系统批次新增）——副职闸门的出处，见
+    /// `ll_mod::recipe_category` 模块文档。
+    pub recipe_category_table: RecipeCategoryTable,
     /// 本体六种天气的索引缓存（天气系统批次新增）。
     pub weather_ids: BaseWeatherIds,
     /// 天气表——`ll_world::weather::WeatherTable`。天气本身是纯派生值
@@ -221,6 +230,7 @@ pub struct RuntimeCatalogs<'a> {
     content: &'a LoadedContent,
     quests: RegisteredQuests<'a>,
     formulas: RegistryFormulas<'a>,
+    recipes: RegisteredRecipes<'a>,
 }
 
 impl<'a> RuntimeCatalogs<'a> {
@@ -235,6 +245,14 @@ impl<'a> RuntimeCatalogs<'a> {
             formulas: RegistryFormulas {
                 formulas: &content.formula_table,
                 default_formula: content.default_damage_formula_id,
+            },
+            // 配方这一路（制作系统批次）：`RecipeCatalog` 要回答的两个
+            // 问题分别落在两张表上（配方本体表与配方类别表），因此与
+            // `RegisteredQuests` 同一种情形——需要一个把两者绑在一起的
+            // 轻量借用类型，见 `ll_mod::recipe::RegisteredRecipes` 文档。
+            recipes: RegisteredRecipes {
+                recipes: &content.recipe_table,
+                categories: &content.recipe_category_table,
             },
         }
     }
@@ -264,6 +282,7 @@ impl<'a> RuntimeCatalogs<'a> {
             items: &self.content.item_table,
             formulas: &self.formulas,
             damage_categories: &NO_DAMAGE_CATEGORIES,
+            recipes: &self.recipes,
             // 温度这一路（温度系统批次）：把装载好的空间层属性表与天气
             // 表借进来，`ll_sim::exposure::AmbientSource` 随后在每次结算
             // 里按**当时**的 `world.clock` 现派生天气、按行动者所在空间
@@ -391,6 +410,8 @@ pub fn load_content(
     let mut resource_pool_table = ResourcePoolTable::new();
     let mut item_table = ItemTable::new();
     let mut weapon_category_table = WeaponCategoryTable::new();
+    let mut recipe_table = RecipeTable::new();
+    let mut recipe_category_table = RecipeCategoryTable::new();
 
     let mut report = load_all(
         mods_root,
@@ -413,6 +434,8 @@ pub fn load_content(
             damage_category: &mut damage_category_table,
             space_profile: &mut space_table,
             weather: &mut weather_table,
+            recipe: &mut recipe_table,
+            recipe_category: &mut recipe_category_table,
         },
     );
 
@@ -449,6 +472,8 @@ pub fn load_content(
         weapon_category: &weapon_category_table,
         damage_category: &damage_category_table,
         weather: &weather_table,
+        recipe: &recipe_table,
+        recipe_category: &recipe_category_table,
     };
 
     // 装载后校验 pass（`ll_mod::content_audit`）：契约解析只看"Rust 点名
@@ -534,6 +559,8 @@ pub fn load_content(
         weapon_category_table,
         default_damage_category_id,
         damage_category_table,
+        recipe_table,
+        recipe_category_table,
         weather_ids,
         weather_table,
         manifests,
@@ -939,6 +966,8 @@ mod tests {
             weapon_category: &loaded.weapon_category_table,
             damage_category: &loaded.damage_category_table,
             weather: &loaded.weather_table,
+            recipe: &loaded.recipe_table,
+            recipe_category: &loaded.recipe_category_table,
         };
 
         // Act

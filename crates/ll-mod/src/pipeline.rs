@@ -63,6 +63,8 @@ use crate::{discover, topo};
 use crate::active_registry::{set_active_registry, take_active_registry};
 use crate::damage_category::DamageCategoryTable;
 use crate::formula::FormulaTable;
+use crate::recipe::RecipeTable;
+use crate::recipe_category::RecipeCategoryTable;
 use crate::script_class_api::{
     register_class_api, set_active_target as set_active_class_target,
     take_active_target as take_active_class_target,
@@ -90,6 +92,14 @@ use crate::script_quest_api::{
 use crate::script_race_api::{
     register_race_api, set_active_target as set_active_race_target,
     take_active_target as take_active_race_target,
+};
+use crate::script_recipe_api::{
+    register_recipe_api, set_active_target as set_active_recipe_target,
+    take_active_target as take_active_recipe_target,
+};
+use crate::script_recipe_category_api::{
+    register_recipe_category_api, set_active_target as set_active_recipe_category_target,
+    take_active_target as take_active_recipe_category_target,
 };
 use crate::script_resource_pool_api::{
     register_resource_pool_api, set_active_target as set_active_resource_pool_target,
@@ -132,12 +142,13 @@ use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 
 /// 加载管线一次装载会话内，脚本注册函数可以写入的全部内容表——地形、
 /// 职业、技能、副职、任务、种族、动画剪辑、经验曲线（含绑定）、天赋、
-/// 资源池、物品、伤害公式、武器类别、伤害类别、空间层属性、天气。
+/// 资源池、物品、伤害公式、武器类别、伤害类别、空间层属性、天气、
+/// 配方、配方类别。
 ///
 /// 集中成一个结构体，而不是让 [`load_all`]/[`load_one_script`] 各自
-/// 接收十七个独立的 `&mut` 参数：这些表在装载管线里总是同进同出（同一
+/// 接收十九个独立的 `&mut` 参数：这些表在装载管线里总是同进同出（同一
 /// 份 mod 脚本可能在同一个文件里先后调用 `register-terrain`/
-/// `register-class`/……），拆成十七个位置参数只会让调用点的参数顺序成为
+/// `register-class`/……），拆成十九个位置参数只会让调用点的参数顺序成为
 /// 易错点，结构体把「这些表必须一起传」这条约束在类型上表达出来。
 /// `Registry` 不在这个结构体里——它走 [`crate::active_registry`] 单独
 /// 的共享目标，理由见该模块文档。
@@ -150,9 +161,15 @@ use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 /// [`crate::content_hash`] 的值哈希覆盖面，**唯独脚本注册函数一直不
 /// 存在**，六个字段只能由 Rust 写死——这正是「声明了但从没接线」这类
 /// 缺口最典型的形态：每一环单独看都在，串起来才发现断了一节。
-/// `weather` 是最新的一个字段（天气系统批次），与其余十六张表不同的
+/// `weather` 曾是最新的一个字段（天气系统批次），与当时其余十六张表不同的
 /// 是它从第一天起就是完整的：表、本体注册路径、脚本注册函数、值哈希、
 /// 装载后校验、真实消费者（环境光管线）在同一个批次里一起落地。
+/// `recipe`/`recipe_category` 是最新的两个字段（制作系统批次），同样
+/// 从第一天起就是完整的：两张表、脚本注册函数、值哈希（版本 11）、
+/// 装载后校验、真实消费者（`ll_sim::resolve::resolve_craft`）与真实
+/// mod 脚本证据（`mods/example_mod/gameplay.scm`）在同一个批次里一起
+/// 落地。**唯一如实存在的缺口在更上游**：`Intent::Craft` 至今没有任何
+/// 产出者（没有制作界面），见该变体自己的文档。
 pub struct GameplayTables<'a> {
     /// 地形表。
     pub terrain: &'a mut TerrainTable,
@@ -204,13 +221,24 @@ pub struct GameplayTables<'a> {
     /// `register-space-profile` 的写入目标，见
     /// `crate::script_space_profile_api` 模块文档。
     ///
-    /// 与另外十五张表的一处不同：这张表在装载会话开始**之前**通常已经
+    /// 与另外十八张表的一处不同：这张表在装载会话开始**之前**通常已经
     /// 非空（`ll_mod::base_space_profile::register_base_space_profiles`
     /// 先注册了本体四种空间类型），mod 脚本是往里追加。这与地形表
     /// （`register_base_terrain` 同样先跑）是同一种情形，不是本字段
     /// 独有的例外——`SpaceProfileTable::define` 的重复定义校验保证 mod
     /// 覆盖不掉本体已声明的那几条。
     pub space_profile: &'a mut SpaceProfileTable,
+    /// 配方表（制作系统批次新增）——`register-recipe` 的写入目标，见
+    /// `crate::recipe` 模块文档。
+    pub recipe: &'a mut RecipeTable,
+    /// 配方类别表（制作系统批次新增）——`register-recipe-category` 的
+    /// 写入目标，见 `crate::recipe_category` 模块文档。
+    ///
+    /// 与 `recipe` 分成两个字段而不是一个元组字段，理由同
+    /// `xp_curve`/`xp_curve_bindings` 那一对：两张表各自走
+    /// `std::mem::take(tables.……)` 这条既有搬运手法，不需要为这一对
+    /// 单独发明搬运方式。
+    pub recipe_category: &'a mut RecipeCategoryTable,
     /// 天气表（天气系统批次新增）——`register-weather` 的写入目标，见
     /// `crate::script_weather_api` 模块文档。
     ///
@@ -357,6 +385,8 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut weapon_category = WeaponCategoryTable::new();
     let mut damage_category = DamageCategoryTable::new();
     let mut space_profile = SpaceProfileTable::new();
+    let mut recipe = RecipeTable::new();
+    let mut recipe_category = RecipeCategoryTable::new();
     let mut weather = WeatherTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
@@ -376,6 +406,8 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         damage_category: &mut damage_category,
         space_profile: &mut space_profile,
         weather: &mut weather,
+        recipe: &mut recipe,
+        recipe_category: &mut recipe_category,
     };
     for entry in &manifest.entry_points {
         if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
@@ -505,6 +537,8 @@ fn load_one_script(
     set_active_weapon_category_target(std::mem::take(tables.weapon_category));
     set_active_damage_category_target(std::mem::take(tables.damage_category));
     set_active_space_profile_target(std::mem::take(tables.space_profile));
+    set_active_recipe_target(std::mem::take(tables.recipe));
+    set_active_recipe_category_target(std::mem::take(tables.recipe_category));
     set_active_weather_target(std::mem::take(tables.weather));
 
     let mut engine = ScriptEngine::new();
@@ -523,6 +557,8 @@ fn load_one_script(
     register_weapon_category_api(&mut engine);
     register_damage_category_api(&mut engine);
     register_space_profile_api(&mut engine);
+    register_recipe_api(&mut engine);
+    register_recipe_category_api(&mut engine);
     register_weather_api(&mut engine);
     let result = engine.load_source(source.clone());
 
@@ -544,6 +580,8 @@ fn load_one_script(
     *tables.weapon_category = take_active_weapon_category_target();
     *tables.damage_category = take_active_damage_category_target();
     *tables.space_profile = take_active_space_profile_target();
+    *tables.recipe = take_active_recipe_target();
+    *tables.recipe_category = take_active_recipe_category_target();
     *tables.weather = take_active_weather_target();
 
     result.map_err(|script_err| LoadError {
@@ -636,6 +674,8 @@ mod tests {
         damage_category: DamageCategoryTable,
         space_profile: SpaceProfileTable,
         weather: WeatherTable,
+        recipe: RecipeTable,
+        recipe_category: RecipeCategoryTable,
     }
 
     impl OwnedTables {
@@ -658,6 +698,8 @@ mod tests {
                 damage_category: &mut self.damage_category,
                 space_profile: &mut self.space_profile,
                 weather: &mut self.weather,
+                recipe: &mut self.recipe,
+                recipe_category: &mut self.recipe_category,
             }
         }
     }
@@ -899,6 +941,8 @@ mod tests {
                 weapon_category: &owned.weapon_category,
                 damage_category: &owned.damage_category,
                 weather: &owned.weather,
+                recipe: &owned.recipe,
+                recipe_category: &owned.recipe_category,
             },
         );
 

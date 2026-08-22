@@ -78,6 +78,7 @@ use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_platform::input::{GameKey, InputState};
 use ll_sim::behavior::behavior_ai_intent;
 use ll_sim::catalogs::ResolveCatalogs;
+use ll_sim::craft::NoRecipes;
 use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::effect::Effect;
 use ll_sim::exposure::AmbientSource;
@@ -135,6 +136,7 @@ impl RealModsHandle {
             items: &self.item,
             formulas,
             damage_categories: &NoDamageCategories,
+            recipes: &NoRecipes,
             // 本文件的场景都在一个占位层属性的地表上，温度这一路没有
             // 可查的表，理由同 `turn_engine_catalogs.rs` 同一位置。
             ambient: AmbientSource::NONE,
@@ -160,6 +162,8 @@ fn load_real_mods() -> RealModsHandle {
     let mut weapon_category = WeaponCategoryTable::new();
     let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
     let mut weather_table = ll_world::weather::WeatherTable::new();
+    let mut recipe_table = ll_mod::recipe::RecipeTable::new();
+    let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
     let mut damage_category = DamageCategoryTable::new();
 
     let report = load_all(
@@ -183,6 +187,8 @@ fn load_real_mods() -> RealModsHandle {
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
             weather: &mut weather_table,
+            recipe: &mut recipe_table,
+            recipe_category: &mut recipe_category_table,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").expect("合法标识符");

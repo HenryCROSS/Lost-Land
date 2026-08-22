@@ -162,6 +162,8 @@ use crate::formula::FormulaTable;
 use crate::item::ItemTable;
 use crate::quest::{QuestCondition, QuestTable};
 use crate::race::RaceTable;
+use crate::recipe::RecipeTable;
+use crate::recipe_category::RecipeCategoryTable;
 use crate::registry::Registry;
 use crate::resource_pool::ResourcePoolTable;
 use crate::skill::SkillTable;
@@ -319,7 +321,28 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 守门方式与版本 9 相同：本段文字 + `content_audit` 里同批次新增的
 /// `WeatherAttrs::temperature_offset` 花名册条目（字段覆盖率门禁会要求
 /// 真实内容覆盖它）。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 10;
+///
+/// 版本 11（制作系统批次）：新增**两张**内容表——
+/// [`ContentTableKind::Recipe`]（判别值 17）与
+/// [`ContentTableKind::RecipeCategory`]（判别值 18）。
+/// [`ContentValueTables`] 多了 `recipe`/`recipe_category` 两个字段，
+/// [`entry_value_digest`] 多了 [`write_recipe_fields`]/
+/// [`write_recipe_category_fields`] 两条分支。这是版本 4/5/8「新增
+/// 内容表」那一类，不是「老表新增字段」：本批次没有给任何一张既有表
+/// 增删字段，既有十七张表写入的字节序列逐字节不变。
+///
+/// **但版本号仍然必须递增**，理由与版本 8 完全相同：
+/// [`apply_value_hashes`] 现在会为配方与配方类别这两类 id 折进一份此前
+/// 根本不存在的字段值摘要，任何在本次改动之前写出、`generation_mods`
+/// 携带非空 `content_hash` 的存档，读档时都会在 `check_mod_content`
+/// 一步被误判成 `ModContentMismatch`。
+///
+/// 本批次是 `scripts/ci/check_field_consumers.py` 的
+/// `check_content_hash_gate_cross_coverage` **真的有事可做**的一次：
+/// 它只守「新增了表」这一类，[`ContentTableKind`] 一多出变体而
+/// `TARGET_TYPES` 没跟上，CI 立刻变红——含义是新增哈希变体与新增门禁
+/// 条目必须在同一个提交里，不能分批。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 11;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -375,6 +398,10 @@ pub enum ContentTableKind {
     DamageCategory = 15,
     /// 天气表（天气系统批次新增，定义在 `ll-world`）。
     Weather = 16,
+    /// 配方表（制作系统批次新增）。
+    Recipe = 17,
+    /// 配方类别表（制作系统批次新增）。
+    RecipeCategory = 18,
 }
 
 /// 全部内容表的只读引用集合——供 [`apply_value_hashes`]/[`classify_index`]
@@ -420,6 +447,10 @@ pub struct ContentValueTables<'a> {
     /// 天气表（天气系统批次新增，定义在 `ll-world`，理由见
     /// `ll_world::weather` 模块文档「为什么天气表定义在 `ll-world`」）。
     pub weather: &'a WeatherTable,
+    /// 配方表（制作系统批次新增）。
+    pub recipe: &'a RecipeTable,
+    /// 配方类别表（制作系统批次新增）。
+    pub recipe_category: &'a RecipeCategoryTable,
 }
 
 /// 判定一个 `ContentIndex` 归属哪张内容表——[`entry_value_digest`] 用它
@@ -469,6 +500,8 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         weapon_category,
         damage_category,
         weather,
+        recipe,
+        recipe_category,
     } = *tables;
 
     let terrain_kind = TerrainKind::from_index(index);
@@ -504,6 +537,10 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         ContentTableKind::DamageCategory
     } else if weather.is_defined(index) {
         ContentTableKind::Weather
+    } else if recipe.is_defined(index) {
+        ContentTableKind::Recipe
+    } else if recipe_category.is_defined(index) {
+        ContentTableKind::RecipeCategory
     } else {
         ContentTableKind::Opaque
     }
@@ -589,6 +626,12 @@ fn entry_value_digest(
         }
         ContentTableKind::Weather => {
             write_weather_fields(&mut hasher, tables.weather, index);
+        }
+        ContentTableKind::Recipe => {
+            write_recipe_fields(&mut hasher, tables.recipe, index, registry);
+        }
+        ContentTableKind::RecipeCategory => {
+            write_recipe_category_fields(&mut hasher, tables.recipe_category, index, registry);
         }
         ContentTableKind::Opaque => {
             // 没有字段可哈希，只哈希 id 本身（已经在函数顶部写过）——
@@ -1430,6 +1473,59 @@ fn write_damage_category_fields(
     write_optional_resolved(hasher, def.default_formula, registry);
 }
 
+/// 混入 [`crate::recipe::RecipeDef`] 的全部字段（制作系统批次新增）
+/// ——`id` 除外，理由同 [`write_xp_curve_fields`] 跳过同名字段：`id`
+/// 已经在 [`entry_value_digest`] 顶部混过一次。
+///
+/// 两处需要留意的编码细节，都是 ADR 0027「覆盖字段值，不只 id 集合」
+/// 在变长/可选字段上的具体落法：
+///
+/// 1. `ingredients` 是变长 `Vec`——**先写条数再逐条写**，与
+///    [`write_class_fields`] 处理 `traits` 逐字节同构。不写长度前缀的话
+///    `[(A,1),(B,2)]` 与 `[(A,1),(B,2),(C,3)]` 有撞哈希的可能。
+/// 2. `required_station`/`required_tool` 是 `Option<ContentIndex>`——
+///    走 [`write_optional_resolved`]，`None` 与 `Some` 因此写入不同的
+///    判别字节（`0` vs `1`），不会被混为一谈。
+fn write_recipe_fields(
+    hasher: &mut StateHasher,
+    table: &RecipeTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
+    let view = table
+        .get(index)
+        .expect("调用方已确认 classify_index 判定为 Recipe，get 必返回 Some");
+    hasher.write_namespaced_id(view.display_name_key);
+    write_optional_resolved(hasher, Some(view.category), registry);
+    hasher.write_u64(view.ingredients.len() as u64);
+    for ingredient in view.ingredients {
+        write_optional_resolved(hasher, Some(ingredient.item), registry);
+        hasher.write_u64(u64::from(ingredient.count));
+    }
+    write_optional_resolved(hasher, Some(view.product), registry);
+    hasher.write_u64(u64::from(view.product_count));
+    write_optional_resolved(hasher, view.required_station, registry);
+    write_optional_resolved(hasher, view.required_tool, registry);
+}
+
+/// 混入 [`crate::recipe_category::RecipeCategoryDef`] 的全部字段
+/// （制作系统批次新增）——`required_subclasses` 是变长 `Vec`，走
+/// [`write_resolved_content_index_slice`]（先长度、再逐条解析成
+/// `NamespacedId` 字符串），理由同 [`write_recipe_fields`] 的
+/// `ingredients` 一条。
+fn write_recipe_category_fields(
+    hasher: &mut StateHasher,
+    table: &RecipeCategoryTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
+    let def = table
+        .get(index)
+        .expect("调用方已确认 classify_index 判定为 RecipeCategory，get 必返回 Some");
+    hasher.write_namespaced_id(&def.display_name_key);
+    write_resolved_content_index_slice(hasher, &def.required_subclasses, registry);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1482,6 +1578,8 @@ mod tests {
         WeaponCategoryTable,
         DamageCategoryTable,
         WeatherTable,
+        RecipeTable,
+        RecipeCategoryTable,
     ) {
         (
             TerrainTable::new(),
@@ -1499,6 +1597,8 @@ mod tests {
             WeaponCategoryTable::new(),
             DamageCategoryTable::new(),
             WeatherTable::new(),
+            RecipeTable::new(),
+            RecipeCategoryTable::new(),
         )
     }
 
@@ -1530,6 +1630,8 @@ mod tests {
             weapon_category_a,
             damage_category_a,
             weather_a,
+            recipe_a,
+            recipe_category_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1554,6 +1656,8 @@ mod tests {
             weapon_category_b,
             damage_category_b,
             weather_b,
+            recipe_b,
+            recipe_category_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1576,6 +1680,8 @@ mod tests {
                 weapon_category: &weapon_category_a,
                 damage_category: &damage_category_a,
                 weather: &weather_a,
+                recipe: &recipe_a,
+                recipe_category: &recipe_category_a,
             },
         );
         apply_value_hashes(
@@ -1597,6 +1703,8 @@ mod tests {
                 weapon_category: &weapon_category_b,
                 damage_category: &damage_category_b,
                 weather: &weather_b,
+                recipe: &recipe_b,
+                recipe_category: &recipe_category_b,
             },
         );
 
@@ -1641,6 +1749,8 @@ mod tests {
             weapon_category_a,
             damage_category_a,
             weather_a,
+            recipe_a,
+            recipe_category_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1671,6 +1781,8 @@ mod tests {
             weapon_category_b,
             damage_category_b,
             weather_b,
+            recipe_b,
+            recipe_category_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1693,6 +1805,8 @@ mod tests {
                 weapon_category: &weapon_category_a,
                 damage_category: &damage_category_a,
                 weather: &weather_a,
+                recipe: &recipe_a,
+                recipe_category: &recipe_category_a,
             },
         );
         apply_value_hashes(
@@ -1714,6 +1828,8 @@ mod tests {
                 weapon_category: &weapon_category_b,
                 damage_category: &damage_category_b,
                 weather: &weather_b,
+                recipe: &recipe_b,
+                recipe_category: &recipe_category_b,
             },
         );
 
@@ -1757,6 +1873,8 @@ mod tests {
             weapon_category_a,
             damage_category_a,
             weather_a,
+            recipe_a,
+            recipe_category_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1783,6 +1901,8 @@ mod tests {
             weapon_category_b,
             damage_category_b,
             weather_b,
+            recipe_b,
+            recipe_category_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1805,6 +1925,8 @@ mod tests {
                 weapon_category: &weapon_category_a,
                 damage_category: &damage_category_a,
                 weather: &weather_a,
+                recipe: &recipe_a,
+                recipe_category: &recipe_category_a,
             },
         );
         apply_value_hashes(
@@ -1826,6 +1948,8 @@ mod tests {
                 weapon_category: &weapon_category_b,
                 damage_category: &damage_category_b,
                 weather: &weather_b,
+                recipe: &recipe_b,
+                recipe_category: &recipe_category_b,
             },
         );
 
@@ -1885,6 +2009,8 @@ mod tests {
             weapon_category_a,
             damage_category_a,
             weather_a,
+            recipe_a,
+            recipe_category_a,
         ) = (
             TerrainTable::new(),
             ClassTable::new(),
@@ -1901,6 +2027,8 @@ mod tests {
             WeaponCategoryTable::new(),
             DamageCategoryTable::new(),
             WeatherTable::new(),
+            RecipeTable::new(),
+            RecipeCategoryTable::new(),
         );
 
         let mut registry_b = Registry::new();
@@ -1925,6 +2053,8 @@ mod tests {
             weapon_category_b,
             damage_category_b,
             weather_b,
+            recipe_b,
+            recipe_category_b,
         ) = (
             TerrainTable::new(),
             ClassTable::new(),
@@ -1941,6 +2071,8 @@ mod tests {
             WeaponCategoryTable::new(),
             DamageCategoryTable::new(),
             WeatherTable::new(),
+            RecipeTable::new(),
+            RecipeCategoryTable::new(),
         );
 
         // Act
@@ -1963,6 +2095,8 @@ mod tests {
                 weapon_category: &weapon_category_a,
                 damage_category: &damage_category_a,
                 weather: &weather_a,
+                recipe: &recipe_a,
+                recipe_category: &recipe_category_a,
             },
         );
         apply_value_hashes(
@@ -1984,6 +2118,8 @@ mod tests {
                 weapon_category: &weapon_category_b,
                 damage_category: &damage_category_b,
                 weather: &weather_b,
+                recipe: &recipe_b,
+                recipe_category: &recipe_category_b,
             },
         );
 
@@ -2069,6 +2205,8 @@ mod tests {
                 weapon_category: &empty_forward.12,
                 damage_category: &empty_forward.13,
                 weather: &empty_forward.14,
+                recipe: &empty_forward.15,
+                recipe_category: &empty_forward.16,
             },
         );
         apply_value_hashes(
@@ -2090,6 +2228,8 @@ mod tests {
                 weapon_category: &empty_reversed.12,
                 damage_category: &empty_reversed.13,
                 weather: &empty_reversed.14,
+                recipe: &empty_reversed.15,
+                recipe_category: &empty_reversed.16,
             },
         );
 
@@ -2133,6 +2273,8 @@ mod tests {
             weapon_category_f,
             damage_category_f,
             weather_f,
+            recipe_f,
+            recipe_category_f,
         ) = empty_non_race_tables();
 
         let mut registry_reversed = Registry::new();
@@ -2161,6 +2303,8 @@ mod tests {
             weapon_category_r,
             damage_category_r,
             weather_r,
+            recipe_r,
+            recipe_category_r,
         ) = empty_non_race_tables();
 
         // Act：两边分配到的 ContentIndex 确实互相对调，证明这不是一次
@@ -2185,6 +2329,8 @@ mod tests {
                 weapon_category: &weapon_category_f,
                 damage_category: &damage_category_f,
                 weather: &weather_f,
+                recipe: &recipe_f,
+                recipe_category: &recipe_category_f,
             },
         );
         apply_value_hashes(
@@ -2206,6 +2352,8 @@ mod tests {
                 weapon_category: &weapon_category_r,
                 damage_category: &damage_category_r,
                 weather: &weather_r,
+                recipe: &recipe_r,
+                recipe_category: &recipe_category_r,
             },
         );
 
@@ -2253,6 +2401,8 @@ mod tests {
             weapon_category_before,
             damage_category_before,
             weather_before,
+            recipe_before,
+            recipe_category_before,
         ) = empty_non_race_tables();
 
         let mut registry_after = Registry::new();
@@ -2282,6 +2432,8 @@ mod tests {
             weapon_category_after,
             damage_category_after,
             weather_after,
+            recipe_after,
+            recipe_category_after,
         ) = empty_non_race_tables();
 
         // Act
@@ -2304,6 +2456,8 @@ mod tests {
                 weapon_category: &weapon_category_before,
                 damage_category: &damage_category_before,
                 weather: &weather_before,
+                recipe: &recipe_before,
+                recipe_category: &recipe_category_before,
             },
         );
         apply_value_hashes(
@@ -2325,6 +2479,8 @@ mod tests {
                 weapon_category: &weapon_category_after,
                 damage_category: &damage_category_after,
                 weather: &weather_after,
+                recipe: &recipe_after,
+                recipe_category: &recipe_category_after,
             },
         );
 
@@ -2359,6 +2515,8 @@ mod tests {
             weapon_category,
             damage_category,
             weather,
+            recipe,
+            recipe_category,
         ) = empty_non_race_tables();
         let race = RaceTable::new();
 
@@ -2382,6 +2540,8 @@ mod tests {
                 weapon_category: &weapon_category,
                 damage_category: &damage_category,
                 weather: &weather,
+                recipe: &recipe,
+                recipe_category: &recipe_category,
             },
         );
 
@@ -2412,6 +2572,8 @@ mod tests {
             weapon_category,
             damage_category,
             weather,
+            recipe,
+            recipe_category,
         ) = empty_non_race_tables();
         let race = RaceTable::new();
         let tables = ContentValueTables {
@@ -2431,6 +2593,8 @@ mod tests {
             weapon_category: &weapon_category,
             damage_category: &damage_category,
             weather: &weather,
+            recipe: &recipe,
+            recipe_category: &recipe_category,
         };
 
         // Act

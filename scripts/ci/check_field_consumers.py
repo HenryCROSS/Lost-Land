@@ -140,6 +140,14 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     # 本身，但字段同名，正则一视同仁），因此本表按正常方式进 TARGET_TYPES，
     # 不走豁免。
     ("crates/ll-world/src/weather.rs", "struct", "WeatherDef"),
+    # 制作系统批次新增的第十八、十九张内容表。与 WeaponCategory/
+    # DamageCategory 当初的情形不同——这两张表**同批次就有真实决策层
+    # 消费者**：ll_sim::resolve::resolve_craft 逐个读 category/
+    # ingredients/product/product_count/required_station/required_tool
+    # （读的是 ll_sim::craft::RecipeRule 而不是 RecipeDef 实例本身，但
+    # 字段同名，正则一视同仁，与 WeatherDef 那条同一种情形）。
+    ("crates/ll-mod/src/recipe.rs", "struct", "RecipeDef"),
+    ("crates/ll-mod/src/recipe_category.rs", "struct", "RecipeCategoryDef"),
 ]
 
 # 决策层文件：真正驱动模拟结算、影响玩法输出的地方。见脚本头注释
@@ -249,7 +257,11 @@ EXEMPTIONS: dict[str, str] = {
     "TraitDef.stat_modifiers": "天赋授予的属性修正——同 RaceDef.stat_modifiers 同一类问题：trait_def.rs 模块文档「据此聚合出角色对某个标量池的有效容量」一节只论证了容量聚合用途，六项主属性的直接修正应用尚未接入 effective_attribute 一类决策层函数。",
     "Agent.affiliations": "agent.rs 字段声明处紧邻注释原文：以下六个字段 P3 可以留空，但字段必须现在就有——见 society-and-affiliation.md 第五节，存档格式在 P5 冻结，P3 阶段不消费，只保证存档格式不用在 P8 补迁移链。",
     "Agent.goals": "同 Agent.affiliations，同一处「以下六个字段 P3 可以留空」注释覆盖的字段之一，见 agent-goals-and-economy.md 第九节。",
-    "Agent.subclasses": "字段文档说明容器形状（允许同时持有多个副职）与设计裁定，但未声明任何决策层消费点；副职系统的技能号段/结算消费是后续批次工作。",
+    # `Agent.subclasses` 曾在本清单里（理由是「未声明任何决策层消费点；
+    # 副职系统的结算消费是后续批次工作」）——制作系统批次落地的
+    # `ll_sim::resolve::resolve_craft` 副职闸门是它的**第一个**真实决策层
+    # 消费者（`agent.subclasses.contains(needed)`），本门禁当场报出
+    # 「已被接线，请从 EXEMPTIONS 里删除这一条」，据此摘除。
     "Agent.spawned_at": "字段文档原文：供死亡记录里「存活时长」一类未来统计使用——未来时态，当前没有任何结算逻辑读取存活时长。",
     # ---- (c) 字段门禁自查补齐批次（本次任务）新发现：三张此前漏在
     # TARGET_TYPES 之外的内容表补齐后，扫出的死字段。见本文件「与内容
@@ -259,6 +271,10 @@ EXEMPTIONS: dict[str, str] = {
     "FormulaDef.id": "命名空间标识符，同 RaceDef.id 一类——formula_for 按 ContentIndex 查表取出整个 FormulaDef 后直接使用 instructions/needs_rng，取出后不再对 .id 做任何决策层读取。",
     "FormulaDef.needs_rng": "字段自身文档原文（crates/ll-sim/src/formula.rs）：resolve_attack 当前恒构造一条骰子流，这个字段只用于诊断/未来性能预估，不影响求值正确性，即使一条不含骰子的公式拿到随机流也不会调用 DetRng 的任何方法。",
     "WeaponCategoryDef.default_formula": "weapon_category.rs 模块文档「本批次没有给 ItemDef 加对应字段」一节：十九节默认公式挂载链条第 3 层（武器类别默认）不在本批次范围，字段是声明先行——同一份文档已经预告了这条一旦补进 TARGET_TYPES 就会命中本门禁。",
+    "RecipeDef.id": "命名空间标识符，同 RaceDef.id/FormulaDef.id 一类——resolve_craft 按 ContentIndex 查 RecipeCatalog 取出 RecipeRule，那个最小视图刻意不含 id（见 ll_sim::craft::RecipeRule 文档），决策层不做任何 .id 读取。",
+    "RecipeDef.display_name_key": "同 RaceDef.display_name_key，指向 Fluent 本地化键，UI 展示用。制作界面（UiMode 模式栈）尚未落地，这个键当前没有 UI 消费者——但那与本门禁的判据（决策层是否消费）无关，本地化键按定义就不是玩法数值。",
+    "RecipeCategoryDef.display_name_key": "同上。配方类别是玩家会看见的分组维度（制作界面按类别分栏），比其余几条更明确地是「等 UI」而不是「永远没人读」，见 crate::recipe_category 模块文档「与那两张表的两处不同」一节。",
+    "RecipeCategoryDef.required_subclasses": "副职闸门**有真实决策层消费者**，但它经 ll_sim::craft::RecipeCatalog::category_required_subclasses 这个方法调用取出（依赖倒置：真正的字段读取 `def.required_subclasses` 发生在 ll-mod 的 impl 里，不在决策层文件），resolve_craft 拿到的是一个普通 Vec 局部变量——这正是本文件头注释「已知局限」第 2 条那类间接路径，字段级正则抓不到。与 QuestNodeDef 那几条经 QuestCatalog 方法取出的字段同一种情形。",
     "DamageCategoryDef.default_formula": "damage_category.rs 模块文档「本批次范围：注册表 + 校验，不接四层默认公式解析链条」一节：resolve_attack 仍然只用 DamageFormulaCatalog 现有的两层（显式引用 → 全局默认），四层解析链条（分项自身 → 伤害类别默认 → 武器类别默认 → 全局默认）依赖尚未落地的 DamageComponent（P6 范畴），此字段声明先行、消费留给后续批次。",
 }
 
@@ -411,6 +427,8 @@ CONTENT_HASH_KIND_TO_TARGET_TYPE: dict[str, str] = {
     "WeaponCategory": "WeaponCategoryDef",
     "DamageCategory": "DamageCategoryDef",
     "Weather": "WeatherDef",
+    "Recipe": "RecipeDef",
+    "RecipeCategory": "RecipeCategoryDef",
 }
 
 CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE: dict[str, str] = {

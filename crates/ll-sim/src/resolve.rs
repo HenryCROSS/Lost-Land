@@ -63,6 +63,7 @@ use crate::combat::{
     Penetration, apply_crit_multiplier, crit_chance_permille, damage_after_defense,
     sneak_attack_chance_permille,
 };
+use crate::craft::{NoRecipes, RecipeCatalog};
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
 use crate::effect::Effect;
 use crate::experience::ExperienceCatalog;
@@ -546,6 +547,7 @@ pub fn resolve_with_skills_and_traits(
         &NoItems,
         &NoFormulas,
         &NoDamageCategories,
+        &NoRecipes,
         AmbientSource::NONE,
     )
 }
@@ -587,6 +589,7 @@ pub fn resolve_with_skills_traits_and_pools(
         &NoItems,
         &NoFormulas,
         &NoDamageCategories,
+        &NoRecipes,
         AmbientSource::NONE,
     )
 }
@@ -626,6 +629,7 @@ pub fn resolve_with_skills_traits_pools_and_items(
         items,
         &NoFormulas,
         &NoDamageCategories,
+        &NoRecipes,
         AmbientSource::NONE,
     )
 }
@@ -667,6 +671,7 @@ pub fn resolve_with_skills_traits_pools_items_and_formulas(
         items,
         formulas,
         &NoDamageCategories,
+        &NoRecipes,
         AmbientSource::NONE,
     )
 }
@@ -714,6 +719,7 @@ pub fn resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
         items,
         formulas,
         damage_categories,
+        &NoRecipes,
         AmbientSource::NONE,
     )
 }
@@ -765,6 +771,7 @@ pub fn resolve_with_all_catalogs(
         items,
         formulas,
         damage_categories,
+        &NoRecipes,
         AmbientSource::NONE,
     )
 }
@@ -799,6 +806,7 @@ pub fn resolve_with_catalogs(
         catalogs.items,
         catalogs.formulas,
         catalogs.damage_categories,
+        catalogs.recipes,
         catalogs.ambient,
     )
 }
@@ -845,6 +853,7 @@ pub fn resolve_with_skills_and_quests(
         &NoItems,
         &NoFormulas,
         &NoDamageCategories,
+        &NoRecipes,
         AmbientSource::NONE,
     )
 }
@@ -877,6 +886,7 @@ fn resolve_dispatch(
     items: &dyn ItemCatalog,
     formulas: &dyn DamageFormulaCatalog,
     damage_categories: &dyn DamageCategoryCatalog,
+    recipes: &dyn RecipeCatalog,
     ambient: AmbientSource<'_>,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
@@ -933,6 +943,7 @@ fn resolve_dispatch(
         Intent::Use { actor, def } => resolve_use_item(world, actor, def, items),
         Intent::Inspect { actor, target } => resolve_inspect(world, actor, target),
         Intent::ToggleStealth { actor } => resolve_toggle_stealth(world, actor),
+        Intent::Craft { actor, recipe } => resolve_craft(world, actor, recipe, recipes, items),
     };
     // 休息中断（`resource-pools-and-rest.md` 八节「中断怎么表达」一节）：
     // 任何非 `Wait`/`Rest` 意图,若发起者当前正在休息,追加一条不带恢复
@@ -2246,6 +2257,158 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
             at: schedule_after(world, cost),
         },
     ]
+}
+
+/// [`Intent::Craft`] 结算（制作系统批次，`knowledge/design/crafting-system.md`
+/// 五节）：校验三道前置与食材是否齐全，齐全就逐条产出消耗效果、把成品
+/// 并进背包，并按一次普通行动计费。
+///
+/// # 判定顺序本身是设计决定
+///
+/// ```text
+/// 1. 查 agent，查不到 → 空
+/// 2. 查配方，查不到 → 空                          （ADR 0015：未注册当作没有）
+/// 3. 副职闸门：类别要求非空且与 agent.subclasses 无交集 → 空
+/// 4. 场地前置：required_station 与脚下地形不符 → 空
+/// 5. 工具前置：没有「def 匹配且耐久未归零」的已装备物品 → 空
+/// 6. 食材校验：任意一条数量不够 → 空（不消耗任何食材）
+/// 7. 逐条食材产出 Effect::ConsumeInventoryItem，重复 count 次
+/// 8. 成品并进背包（Effect::MergeIntoInventory）
+/// ```
+///
+/// 三道前置（3/4/5）排在食材校验（6）之前，是因为**前三道回答的是
+/// 「你能不能做这件事」，第四道回答的是「你现在够不够料」**。虽然本
+/// 批次不设计任何 UI，判定顺序决定了将来制作界面能拿到的失败原因的
+/// 优先级——玩家更需要先知道「我不会锻造」而不是「你缺两块铁锭」。
+///
+/// # 全程静默失败
+///
+/// 任何一步不满足都返回空 `Vec<Effect>`：不产出效果、不消耗食材、
+/// 不推进时间轴——与 [`resolve_use_skill`] 资源不足时静默不产出效果、
+/// [`resolve_drop`]/[`resolve_equip`] 查不到物品时静默无效是同一条既有
+/// 纪律。
+///
+/// # 坏掉的工具不算装着
+///
+/// 工具判定的谓词是 `def == required_tool && durability != Some(0)`，
+/// **不是只比 `def` 相等**。`item-system.md` 六节裁定「耐久归零 = 损坏
+/// 不可用」，[`derive_stats`] 遍历装备时已经对 `durability == Some(0)`
+/// 的堆直接跳过（见其文档「耐久归零」一节）——工具前置若只比 `def`，
+/// 会出现「锤子已经烂了但还能打铁」这个与既有耐久语义直接矛盾的漏洞。
+///
+/// # 约束核对
+///
+/// - C3（随机全部来自 `DetRng::for_entity`）：不涉及，本函数全程零
+///   随机。制作失败判定标为将来扩展，见设计文档九节⑤。
+/// - C5（逻辑决策不得依赖哈希表迭代顺序）：满足。第 5 步遍历的
+///   `agent.equipment` 是 `BTreeMap`（有序），第 6/7 步遍历的
+///   `recipe.ingredients`/`agent.inventory` 都是 `Vec`（保序）。
+/// - C1/C2/C4：不涉及（不新增脚本状态跨帧持有、不进时间轴队列、
+///   不改后台推进）。
+///
+/// # 已知边界（继承自 `food-and-cooking-system.md` 四节，如实重复）
+///
+/// 第 6 步只认**第一条** `def` 匹配的堆，不跨多堆合并计数：背包里两堆
+/// 各 1 个铁锭时，需要 2 个铁锭的配方会判定为「料不够」。第 8 步若
+/// `product_count` 大到需要三堆以上，[`Effect::MergeIntoInventory`] 的
+/// `resulting` 目前的「最多两条」语义装不下。两条都只在数量远超
+/// `stack_limit` 时才失真。
+///
+/// # 行动开销
+///
+/// 一次制作 = 一次普通行动，`action_cost(BASE_ACTION_COST, speed)`，
+/// 与 [`resolve_wait`]/[`resolve_use_item`] 完全相同的计费，不新增任何
+/// 常量。「打一把剑应该比切一块肉久」需要一套可中断的多回合活动机制，
+/// 引擎目前没有，做成「时间轴直接前进 2000」是一个明显错误的中间态，
+/// 见设计文档五节。
+fn resolve_craft(
+    world: &WorldState,
+    actor: EntityId,
+    recipe: ContentIndex,
+    recipes: &dyn RecipeCatalog,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
+    // ① 行动者。
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    // ② 配方。
+    let Some(rule) = recipes.recipe(recipe) else {
+        return Vec::new();
+    };
+    // ③ 副职闸门——any-of：空列表即人人可做。
+    let required_subclasses = recipes.category_required_subclasses(rule.category);
+    if !required_subclasses.is_empty()
+        && !required_subclasses
+            .iter()
+            .any(|needed| agent.subclasses.contains(needed))
+    {
+        return Vec::new();
+    }
+    // ④ 场地前置——「站在这格上」，一次 terrain_at，与 resolve_move 同款。
+    if let Some(station) = rule.required_station
+        && world.terrain_at(agent.pos).map(|kind| kind.index()) != Some(station)
+    {
+        return Vec::new();
+    }
+    // ⑤ 工具前置——装备着且耐久未归零，见本函数文档「坏掉的工具」一节。
+    if let Some(tool) = rule.required_tool
+        && !agent
+            .equipment
+            .values()
+            .any(|stack| stack.def == tool && stack.durability != Some(0))
+    {
+        return Vec::new();
+    }
+    // ⑥ 食材校验——全部齐全才继续，缺任意一条都不消耗任何东西。
+    for ingredient in &rule.ingredients {
+        let held = agent
+            .inventory
+            .iter()
+            .find(|stack| stack.def == ingredient.item)
+            .map_or(0, |stack| stack.count);
+        if held < ingredient.count {
+            return Vec::new();
+        }
+    }
+
+    // ⑦ 逐条产出消耗效果。`Effect::ConsumeInventoryItem` 恒扣一（见其
+    // 文档「为什么没有 amount 字段」），要扣 N 个就产出 N 条——与
+    // resolve_use_item 产出单条是同一个效果，只是重复次数不同。
+    let mut effects: Vec<Effect> = Vec::new();
+    for ingredient in &rule.ingredients {
+        let durability = agent
+            .inventory
+            .iter()
+            .find(|stack| stack.def == ingredient.item)
+            .and_then(|stack| stack.durability);
+        for _ in 0..ingredient.count {
+            effects.push(Effect::ConsumeInventoryItem {
+                actor,
+                def: ingredient.item,
+                durability,
+            });
+        }
+    }
+
+    // ⑧ 成品并进背包，复用 pick_up/equip/unequip 三处已经共用的那段
+    // 「找可合并的旧堆 → 算合并结果」逻辑。
+    effects.push(merge_into_inventory_effect(
+        agent,
+        actor,
+        ItemStack::new(rule.product, rule.product_count),
+        items,
+    ));
+
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    effects.push(Effect::ScheduleNext {
+        actor,
+        at: schedule_after(world, cost),
+    });
+    effects
 }
 
 fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effect> {

@@ -1,0 +1,144 @@
+//! 制作结算侧接口——[`RecipeRule`]/[`RecipeIngredient`]/[`RecipeCatalog`]，
+//! 落地 `knowledge/design/crafting-system.md` 三节的 `resolve` 侧最小
+//! 视图。
+//!
+//! # 依赖倒置：trait 在这里，实现在 `ll-mod`
+//!
+//! 真正的 `RecipeDef`/`RecipeTable`/`RecipeCategoryDef`/
+//! `RecipeCategoryTable` 定义在下游的 `ll-mod`，`ll-sim` 不能反过来
+//! 依赖它（依赖方向：`ll-core ← ll-world ← ll-sim ← ll-script ←
+//! ll-mod`）。与 [`crate::skill::SkillCatalog`]/[`crate::item::ItemCatalog`]/
+//! [`crate::quest::QuestCatalog`] 同一套既有手法：本模块只声明
+//! `crate::resolve::resolve_craft` 真正要问的两个问题——「这条配方长
+//! 什么样」与「这个类别要求哪些副职」——真正的实现在 `ll-mod` 侧补上。
+//!
+//! # 为什么 [`RecipeIngredient`] 定义在这里而不是 `ll-mod`
+//!
+//! 它同时出现在两侧：`ll-mod` 的 `RecipeDef.ingredients`（注册期存储）
+//! 与本模块的 `RecipeRule.ingredients`（结算期读取）。定义在上游、由
+//! 下游 `pub use` 回去，是 `ll_mod::trait_def` `pub use`
+//! [`crate::resource_pool::ResourcePoolGrant`] 已经确立的既有先例
+//! （见其模块文档）——反过来（定义在 `ll-mod`）会让本模块无法表达
+//! `RecipeRule.ingredients` 的类型，只能复制一份必然漂移的副本。
+//!
+//! # 为什么类别闸门是「一个方法」而不是把类别定义整条搬过来
+//!
+//! `RecipeCategoryDef` 还有一个 `display_name_key` 字段（制作界面按
+//! 类别分栏展示时的标题），而 `resolve_craft` 从不读它——与
+//! [`crate::item::ItemRule`]「只收敛 resolve 真正要读的字段」是同一条
+//! 既有纪律，不整条转发定义。
+
+use ll_core::ident::ContentIndex;
+
+/// 一条配方需要的一味食材与它的数量。
+///
+/// `count` 恒 ≥ 1（注册期校验，见 `ll_mod::recipe::RecipeTable::define`）
+/// ——数量为零的食材条目没有意义，那是「不需要这味食材」，正确的表达
+/// 是不写这一条。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RecipeIngredient {
+    /// 指向 `ItemDef` 的内容索引——要消耗哪种物品。
+    pub item: ContentIndex,
+    /// 需要的数量，恒 ≥ 1。
+    pub count: u32,
+}
+
+/// `resolve` 侧需要的一条配方定义的最小只读视图。
+///
+/// 与 `ll_mod::recipe::RecipeDef` 的差别只有一个：不含 `id` 与
+/// `display_name_key`（结算不读展示名，理由同 [`crate::item::ItemRule`]
+/// 不含 `ItemDef.display_name_key`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecipeRule {
+    /// 这条配方属于哪一类——指向配方类别表，恒必填。
+    /// `crate::resolve::resolve_craft` 拿它去问
+    /// [`RecipeCatalog::category_required_subclasses`]。
+    pub category: ContentIndex,
+    /// 需要的食材与各自数量，恒非空（注册期校验）。
+    ///
+    /// 是 `Vec` 而不是 `BTreeMap<ContentIndex, u32>`：食材校验要逐条
+    /// 遍历，`Vec` 本身保序，不依赖任何哈希表遍历顺序（约束 C5）；
+    /// 且同一味食材在一条配方里出现两次是内容作者的笔误，不是需要
+    /// 用 map 键去重来兜住的正常情形。
+    pub ingredients: Vec<RecipeIngredient>,
+    /// 产出物品，指向 `ItemDef`。
+    pub product: ContentIndex,
+    /// 产出数量，恒 ≥ 1。
+    pub product_count: u32,
+    /// 必须站在哪种地形上才能制作，指向地形表；`None` = 随地可做。
+    ///
+    /// 判定是「站在这格上」（一次
+    /// [`ll_world::state::WorldState::terrain_at`]），不是「站在旁边」
+    /// ——见设计文档六节：相邻判定会引入「多个相邻工作台算哪个」这类
+    /// 不必要的问题。
+    pub required_station: Option<ContentIndex>,
+    /// 必须装备着哪件物品才能制作，指向 `ItemDef`；`None` = 徒手可做。
+    ///
+    /// 判定是「装备着**且耐久未归零**」——见
+    /// `crate::resolve::resolve_craft` 文档「坏掉的工具不算装着」一节。
+    pub required_tool: Option<ContentIndex>,
+}
+
+/// `resolve` 依赖的最小「配方定义来源」接口，见模块文档「依赖倒置」
+/// 一节。
+pub trait RecipeCatalog {
+    /// 查询一条配方定义；未注册的索引返回 `None`（ADR 0015）。
+    fn recipe(&self, recipe: ContentIndex) -> Option<RecipeRule>;
+
+    /// 这个配方类别要求持有哪些副职才能使用——**any-of 语义**：
+    /// 返回列表非空时，行动者的 `Agent::subclasses` 只要与它有任意
+    /// 一个交集就放行。
+    ///
+    /// **空列表 = 不设闸门，人人可做**，这也是「查不到这个类别」时的
+    /// 返回值：与 [`crate::item::NoItems`]「查不到目录不该表现成内容
+    /// 异常」同一条降级方向——一个查不到的类别不应该让全部配方变得
+    /// 谁都做不了。真正拦住「配方指向一个不存在的类别」这类内容错误
+    /// 的是注册期校验（`register-recipe` 要求 `category-id` 已注册）
+    /// 与装载后的跨表引用校验（`ll_mod::content_audit`），不是结算期。
+    fn category_required_subclasses(&self, category: ContentIndex) -> Vec<ContentIndex>;
+}
+
+/// 空配方目录：查询任何配方恒返回 `None`，任何类别恒返回空闸门——
+/// 理由同 [`crate::skill::NoSkills`]。
+///
+/// 效果是 `Intent::Craft` 一律静默无效（`resolve_craft` 第 2 步查不到
+/// 配方就返回空效果）：没接目录的调用方本来就没有任何配方内容可做。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoRecipes;
+
+impl RecipeCatalog for NoRecipes {
+    fn recipe(&self, _recipe: ContentIndex) -> Option<RecipeRule> {
+        None
+    }
+
+    fn category_required_subclasses(&self, _category: ContentIndex) -> Vec<ContentIndex> {
+        Vec::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ll_core::ident::{Interner, NamespacedId};
+
+    #[test]
+    fn 空配方目录查询任意配方恒返回none() {
+        // Arrange
+        let mut interner = Interner::new();
+        let index = interner.intern(NamespacedId::parse("lostland:roast_meat_recipe").unwrap());
+
+        // Act & Assert
+        assert_eq!(NoRecipes.recipe(index), None);
+    }
+
+    #[test]
+    fn 空配方目录的类别闸门恒为空即人人可做() {
+        // 这一条守的是降级方向：空目录不该表现成「全部类别都锁死」。
+        // Arrange
+        let mut interner = Interner::new();
+        let category = interner.intern(NamespacedId::parse("lostland:forging").unwrap());
+
+        // Act & Assert
+        assert!(NoRecipes.category_required_subclasses(category).is_empty());
+    }
+}

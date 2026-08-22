@@ -99,6 +99,8 @@ fn load_real_mods() -> RealModsHandle {
     let mut weapon_category = WeaponCategoryTable::new();
     let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
     let mut weather_table = ll_world::weather::WeatherTable::new();
+    let mut recipe_table = ll_mod::recipe::RecipeTable::new();
+    let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
     let mut damage_category = DamageCategoryTable::new();
 
     let report = load_all(
@@ -122,6 +124,8 @@ fn load_real_mods() -> RealModsHandle {
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
             weather: &mut weather_table,
+            recipe: &mut recipe_table,
+            recipe_category: &mut recipe_category_table,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();

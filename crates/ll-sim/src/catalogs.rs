@@ -32,6 +32,7 @@
 //! `ll-sim` 依然不认识 `ll-mod` 的任何类型，与既有的依赖倒置模式完全
 //! 一致，本模块没有引入任何新的依赖边。
 
+use crate::craft::{NoRecipes, RecipeCatalog};
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
 use crate::exposure::AmbientSource;
 use crate::formula::{DamageFormulaCatalog, NoFormulas};
@@ -79,6 +80,9 @@ pub struct ResolveCatalogs<'a> {
     pub formulas: &'a dyn DamageFormulaCatalog,
     /// 伤害类别目录——武器没有显式声明类别时退回哪一个。
     pub damage_categories: &'a dyn DamageCategoryCatalog,
+    /// 配方目录——`Intent::Craft` 的定义来源，兼答「这条配方长什么样」
+    /// 与「这个配方类别要求哪些副职」两个问题（制作系统批次新增）。
+    pub recipes: &'a dyn RecipeCatalog,
     /// 环境来源——空间层属性表 + 天气表，温度那一路的输入（温度系统
     /// 批次新增）。
     ///
@@ -115,6 +119,7 @@ const NO_RESOURCE_POOLS: NoResourcePools = NoResourcePools;
 const NO_ITEMS: NoItems = NoItems;
 const NO_FORMULAS: NoFormulas = NoFormulas;
 const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
+const NO_RECIPES: NoRecipes = NoRecipes;
 
 impl ResolveCatalogs<'static> {
     /// 十路全空的一束——与「一份目录都没接」在行为上完全等价
@@ -136,6 +141,7 @@ impl ResolveCatalogs<'static> {
             items: &NO_ITEMS,
             formulas: &NO_FORMULAS,
             damage_categories: &NO_DAMAGE_CATEGORIES,
+            recipes: &NO_RECIPES,
             ambient: AmbientSource::NONE,
         }
     }
@@ -163,5 +169,12 @@ mod tests {
         assert!(catalogs.items.item(any).is_none());
         assert!(catalogs.quests.kill_count_quests().is_empty());
         assert_eq!(catalogs.damage_categories.default_category(), any);
+        assert!(catalogs.recipes.recipe(any).is_none());
+        assert!(
+            catalogs
+                .recipes
+                .category_required_subclasses(any)
+                .is_empty()
+        );
     }
 }

@@ -327,6 +327,43 @@ pub enum Intent {
         /// 发起者，同时是状态的承受者。
         actor: EntityId,
     },
+    /// 按一条配方制作一次（制作系统批次，`knowledge/design/crafting-system.md`
+    /// 五节）——烹饪/锻造/裁缝/炼金四类共用这一个变体，四类的差别全部
+    /// 落在配方数据上（类别/食材/场地/工具），不在意图上，见该设计文档
+    /// 二节用 ADR 0021 做的统一论证。
+    ///
+    /// # 为什么不复用 [`Intent::Use`]
+    ///
+    /// 输入不同（这里是配方索引，不是物品索引）、输出也不同（多条
+    /// 消耗加一条产出，不是单条对单条）——见
+    /// `knowledge/design/food-and-cooking-system.md` 四节。
+    ///
+    /// # 为什么只携带配方索引，不携带数量/食材来源
+    ///
+    /// 与既有 15 个变体同一条纪律：`Intent` 只记录「想做什么」，一切
+    /// 合法性判断（副职闸门/场地/工具/食材是否齐全）留给
+    /// `crate::resolve::resolve_craft` 结合当时的 `WorldState` 现算。
+    /// 「一次做几个」是将来 UI 真的提供这个选择时再加的字段，不在
+    /// 本批次预留（同 [`Intent::Use`] 不预留 `target` 的既有判断）。
+    ///
+    /// # 谁会产出这个变体——本批次的已知缺口，如实标注
+    ///
+    /// **目前没有任何产出者。** [`intent_from_input`] 不映射本变体
+    /// （它至今只映射 `Move`/`Wait`/`ToggleStealth` 三种），
+    /// `ll_script::api::intent::parse_intent` 也不识别它——制作界面
+    /// （`action-capability-and-input-context.md` 的 `UiMode` 模式栈）
+    /// 是纯设计零实现。这与 `PickUp`/`Drop`/`Equip`/`Rest`/`Loot`/`Use`
+    /// 六个既有玩法意图的处境完全相同：输入映射层整体尚未展开，不是
+    /// 本变体特有的缺口。本批次落地的是「配方注册 → 结算 → 效果」这
+    /// 一整条链路，验收证据走测试里直接构造本变体经
+    /// [`crate::turn::TurnEngine`] 提交（见
+    /// `crates/ll-mod/tests/example_mod_crafting.rs`）。
+    Craft {
+        /// 发起者，同时是食材的出处与成品的去处。
+        actor: EntityId,
+        /// 要制作的配方——指向配方表。
+        recipe: ContentIndex,
+    },
 }
 
 impl Intent {
@@ -353,7 +390,8 @@ impl Intent {
             | Intent::Use { actor, .. }
             | Intent::Loot { actor }
             | Intent::Inspect { actor, .. }
-            | Intent::ToggleStealth { actor } => actor,
+            | Intent::ToggleStealth { actor }
+            | Intent::Craft { actor, .. } => actor,
         }
     }
 }

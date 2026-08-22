@@ -74,6 +74,8 @@ fn load_real_mods() -> RealModsHandle {
     let mut formula = ll_mod::formula::FormulaTable::new();
     let mut weapon_category = ll_mod::weapon_category::WeaponCategoryTable::new();
     let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
+    let mut recipe_table = ll_mod::recipe::RecipeTable::new();
+    let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
         &mut registry,
@@ -95,6 +97,8 @@ fn load_real_mods() -> RealModsHandle {
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
             weather: &mut weather,
+            recipe: &mut recipe_table,
+            recipe_category: &mut recipe_category_table,
         },
     );
 

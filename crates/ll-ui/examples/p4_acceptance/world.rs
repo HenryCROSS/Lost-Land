@@ -109,6 +109,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut weapon_category = ll_mod::weapon_category::WeaponCategoryTable::new();
     let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
     let mut weather_table = ll_world::weather::WeatherTable::new();
+    let mut recipe_table = ll_mod::recipe::RecipeTable::new();
+    let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
     let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
 
     let mut report = load_all(
@@ -132,6 +134,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
             weather: &mut weather_table,
+            recipe: &mut recipe_table,
+            recipe_category: &mut recipe_category_table,
         },
     );
     let missing_dependency_report = load_all(
@@ -155,6 +159,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
             weather: &mut weather_table,
+            recipe: &mut recipe_table,
+            recipe_category: &mut recipe_category_table,
         },
     );
     let duplicate_namespace_report = load_all(
@@ -178,6 +184,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
             weather: &mut weather_table,
+            recipe: &mut recipe_table,
+            recipe_category: &mut recipe_category_table,
         },
     );
     report.entries.extend(missing_dependency_report.entries);

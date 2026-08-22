@@ -33,6 +33,11 @@
 ;;   register-item-damage-category          crates/ll-mod/src/script_item_api.rs
 ;;   register-item-resistance              crates/ll-mod/src/script_item_api.rs
 ;;   register-trait-sneak-attack             crates/ll-mod/src/script_trait_api.rs
+;;   register-recipe-category                crates/ll-mod/src/script_recipe_category_api.rs
+;;   recipe-category-requires-subclass!      crates/ll-mod/src/script_recipe_category_api.rs
+;;   register-recipe                         crates/ll-mod/src/script_recipe_api.rs
+;;   recipe-requires-station!                crates/ll-mod/src/script_recipe_api.rs
+;;   recipe-requires-tool!                   crates/ll-mod/src/script_recipe_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -379,3 +384,69 @@
 (register-item "examplemod:fur_cloak" "examplemod:fur_cloak_display_name" 1 5000 30000 -1)
 (register-item-equip-mask "examplemod:fur_cloak" (list "outer"))
 (register-item-stat-bonus "examplemod:fur_cloak" "insulation" 90)
+
+;; ── 制作系统（制作系统落地批次）─────────────────────────────────────
+;;
+;; 六个新注册函数的签名见宿主模块文档：
+;;   register-recipe-category            crates/ll-mod/src/script_recipe_category_api.rs
+;;   recipe-category-requires-subclass!  crates/ll-mod/src/script_recipe_category_api.rs
+;;   register-recipe                     crates/ll-mod/src/script_recipe_api.rs
+;;   recipe-requires-station!            crates/ll-mod/src/script_recipe_api.rs
+;;   recipe-requires-tool!               crates/ll-mod/src/script_recipe_api.rs
+;;
+;; 烹饪/锻造/裁缝/炼金是**同一套机制**，四类的差别全部落在数据上
+;; （类别/食材/场地/工具），见 knowledge/design/crafting-system.md 二节
+;; 用 ADR 0021 做的统一论证。下面两个类别 + 四条配方覆盖了这套机制的
+;; 全部字段组合，是 crates/ll-mod/tests/example_mod_crafting.rs 那份
+;; 端到端证据（ADR 0018）的内容来源。
+
+;; 三件新材料/食材。都不占装备槽位，因此耐久上限一律传 -1
+;; （register-item 只允许占武器槽位的物品带耐久）。
+(register-item "examplemod:raw_meat" "examplemod:raw_meat_display_name" 20 500 300 -1)
+(register-item "examplemod:roast_meat" "examplemod:roast_meat_display_name" 20 400 900 -1)
+(register-item "examplemod:iron_ingot" "examplemod:iron_ingot_display_name" 50 2000 4000 -1)
+
+;; 类别一：烹饪。**刻意不调用 recipe-category-requires-subclass!**
+;; ——空闸门就是「人人可做」，正是
+;; knowledge/design/food-and-cooking-system.md 五节「菜谱不设解锁门槛」
+;; 那条裁定的直接落点：有没有闸门是纯内容决定，系统不预设立场。
+(register-recipe-category "examplemod:cooking" "examplemod:recipe_category_cooking_display_name")
+
+;; 类别二：锻造。闸在**类别**上而不是每条配方上——新增一条锻造配方
+;; 自动继承这道闸，加一个新副职也只改这一行。
+(register-recipe-category "examplemod:forging" "examplemod:recipe_category_forging_display_name")
+(recipe-category-requires-subclass! "examplemod:forging" "examplemod:shadowdancer")
+
+;; 配方①：三条前置全不设——完全等价于食物系统九节的烤肉示例，证明
+;; 类别闸门/场地/工具三个新能力全部可选，一条都不填也能跑。
+(register-recipe "examplemod:roast_meat_recipe" "examplemod:roast_meat_recipe_display_name"
+                 "examplemod:cooking"
+                 (list "examplemod:raw_meat") (list 1)
+                 "examplemod:roast_meat" 1)
+
+;; 配方②：类别闸 + 场地 + 工具三条全开，最复杂的一条路径。
+;; 场地用 examplemod:lava_floor（mods/example_mod/terrain.scm 注册的
+;; 可通行地形）——工作台地形必须可通行，否则玩家站不上去，见
+;; crate::recipe::RecipeDef::required_station 文档「配套的内容纪律」。
+;; 工具用战锤：判定是「装备着**且耐久未归零**」，坏掉的锤子打不了铁。
+(register-recipe "examplemod:iron_sword_recipe" "examplemod:iron_sword_recipe_display_name"
+                 "examplemod:forging"
+                 (list "examplemod:iron_ingot") (list 2)
+                 "examplemod:iron_sword" 1)
+(recipe-requires-station! "examplemod:iron_sword_recipe" "examplemod:lava_floor")
+(recipe-requires-tool!    "examplemod:iron_sword_recipe" "examplemod:war_hammer")
+
+;; 配方③：**同一件成品的第二条配方**——register-recipe 刻意不校验
+;; product 唯一性（设计文档九节④：零成本的变化度），这条因此合法。
+;; 它只要场地不要工具，与②合起来证明两条前置真的互相独立。
+(register-recipe "examplemod:iron_sword_from_scrap" "examplemod:iron_sword_from_scrap_display_name"
+                 "examplemod:forging"
+                 (list "examplemod:iron_ingot" "examplemod:crude_dagger") (list 1 1)
+                 "examplemod:iron_sword" 1)
+(recipe-requires-station! "examplemod:iron_sword_from_scrap" "examplemod:lava_floor")
+
+;; 配方④：product-count 大于一——一次产出五支箭。
+(register-recipe "examplemod:arrow_batch_recipe" "examplemod:arrow_batch_recipe_display_name"
+                 "examplemod:forging"
+                 (list "examplemod:iron_ingot") (list 1)
+                 "examplemod:arrow" 5)
