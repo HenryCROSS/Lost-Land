@@ -106,6 +106,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut resource_pool = ll_mod::resource_pool::ResourcePoolTable::new();
     let mut item = ItemTable::new();
     let mut formula = ll_mod::formula::FormulaTable::new();
+    let mut weapon_category = ll_mod::weapon_category::WeaponCategoryTable::new();
+    let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
 
     let mut report = load_all(
         Path::new(PRIMARY_MODS_ROOT),
@@ -124,6 +126,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             resource_pool: &mut resource_pool,
             item: &mut item,
             formula: &mut formula,
+            weapon_category: &mut weapon_category,
+            damage_category: &mut damage_category,
         },
     );
     let missing_dependency_report = load_all(
@@ -143,6 +147,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             resource_pool: &mut resource_pool,
             item: &mut item,
             formula: &mut formula,
+            weapon_category: &mut weapon_category,
+            damage_category: &mut damage_category,
         },
     );
     let duplicate_namespace_report = load_all(
@@ -162,6 +168,8 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             resource_pool: &mut resource_pool,
             item: &mut item,
             formula: &mut formula,
+            weapon_category: &mut weapon_category,
+            damage_category: &mut damage_category,
         },
     );
     report.entries.extend(missing_dependency_report.entries);

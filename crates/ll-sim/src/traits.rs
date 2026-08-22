@@ -47,9 +47,84 @@
 //! 系统后,顺序会直接决定"最后谁的效果生效",现在就把顺序钉死成确定
 //! 的、有文档记录的规则，比将来再回头补一条纪律更省事。
 
-use ll_core::ident::ContentIndex;
+use ll_core::ident::{ContentIndex, NamespacedId};
 
 use crate::resource_pool::ResourcePoolGrant;
+
+/// 千分比乘数的分母——`RuleModifier::Resistance::multiplier_permille`
+/// 与 `resistance_multiplier_permille` 返回值共用同一把刻度尺：`1000`
+/// 表示「无抗性」（乘数 1.0），`0` 表示免疫，`500` 表示半伤，`2000`
+/// 表示双倍，与 `crate::combat` 模块「所有数值一律整数，百分比一律用
+/// 千分比」的既有惯例同一条纪律。
+pub const RESISTANCE_MULTIPLIER_SCALE: i32 = 1000;
+
+/// 天赋效果③「改变规则本身」——`knowledge/design/trait-system.md` 三节
+/// 定形的封闭枚举，走注册表第一档（声明式）。
+///
+/// 类型定义现居 `ll-sim`（伤害类别/抗性接线批次从 `ll_mod::trait_def`
+/// 挪过来）——`crate::resolve` 需要在决策层直接 `match`/引用
+/// [`RuleModifier::Resistance`] 才能把它接进伤害管线，而依赖方向
+/// （`ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod`，规格 §5）不允许
+/// `ll-sim` 反过来依赖 `ll-mod`——与 [`ResourcePoolGrant`] 当初「挪到
+/// `ll-sim`，`ll_mod::trait_def` 改为 `pub use` 复用同一份声明」是同一条
+/// 先例（见该类型在 `ll_mod::trait_def` 里的文档「类型定义现移居
+/// `ll_sim::resource_pool`」一节），本次是它在 `RuleModifier` 上的第二次
+/// 应用。
+///
+/// # 本批次接线状态
+///
+/// [`RuleModifier::Resistance`] 现在有真实的 `resolve` 侧消费者——见
+/// [`resistance_multiplier_permille`] 与
+/// `crate::resolve::resolve_attack` 文档「抗性接线」一节。其余三个变体
+/// 仍是纯声明,无消费者：
+/// - [`RuleModifier::RerollOnce`] 需要 `roll_one_die` 钩子（伤害公式
+///   引擎求值器内部的骰子取数原语），本批次不改写该求值器签名，见
+///   `trait-system.md` 三节③「重骰」一节「代价诚实标注」段落。
+/// - [`RuleModifier::Advantage`]/[`RuleModifier::Disadvantage`] 需要
+///   本项目当前不存在的判定/检定系统,见同节「占位变体」说明。
+///
+/// # 与 10% 下限的关系
+///
+/// `damage-formula-mod-api.md` 二十节「与 10% 下限的关系：不冲突，但要
+/// 如实说明『免疫』能让下限之后的结果归零」——`crate::combat::damage_after_defense`
+/// 内部的 10% 下限保证的是**减伤链路本身**不会因为防御过高被压到零以
+/// 下，抗性乘数作用在这条链路**之后**（见 `crate::resolve::resolve_attack`
+/// 文档「抗性接线」一节），下限的保证只覆盖到减伤链路那一步：免疫
+/// （乘数 0）会合法地把抗性这一步的结果打成 0，即使上一步的减后伤害
+/// 满足了 10% 下限——两者不冲突，因为它们从来不覆盖同一个问题：10%
+/// 下限回答「打不打得穿盔甲」，抗性回答「这种伤害对这个目标有没有
+/// 意义」。免疫因此产出 0 伤害，不是钳到下限伤害——那样"免疫"这个词
+/// 就名不副实了。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum RuleModifier {
+    /// 抗性：该伤害类别的伤害，在既有减伤链路算完之后再打一个千分比
+    /// 折扣——挂载点见 `damage-formula-mod-api.md` 二十节（减伤之后、
+    /// 乘数形式）。`0`=免疫，`500`=半伤，`2000`=双倍。
+    Resistance {
+        /// 伤害类别，走 `damage-formula-mod-api.md` 十七节的开放
+        /// `register-damage-category` 集合。
+        damage_category: ContentIndex,
+        /// 千分比乘数，见 [`RESISTANCE_MULTIPLIER_SCALE`]。
+        multiplier_permille: i32,
+    },
+    /// 重骰：该实体掷骰抽出 `value` 时,立即重抽一次,取新值（不再检查
+    /// 新值是否又是 `value`）。
+    RerollOnce {
+        /// 触发重骰的点数。
+        value: i32,
+    },
+    /// 优势：该实体在 `check_context` 这类判定上默认套用优势——占位
+    /// 变体，当前无消费者（本项目没有判定/检定系统）。
+    Advantage {
+        /// 判定种类的开放标识符,具体值域留给判定系统落地时定案。
+        check_context: NamespacedId,
+    },
+    /// 劣势，语义同 [`RuleModifier::Advantage`]，方向相反。
+    Disadvantage {
+        /// 判定种类的开放标识符。
+        check_context: NamespacedId,
+    },
+}
 
 /// 一条"某个所有者在什么等级授予某个天赋"的引用——种族/职业/副职/
 /// 装备/buff 的"这个所有者授予哪些天赋"字段统一用这个类型的列表，
@@ -83,6 +158,10 @@ pub struct TraitRule {
     /// `crate::resource_pool::effective_scalar_capacity` 聚合这一路
     /// 来源，见其文档。
     pub granted_resource_pools: Vec<ResourcePoolGrant>,
+    /// 这个天赋声明的规则修正——`trait-system.md` 三节③，
+    /// [`resistance_multiplier_permille`] 聚合这一路来源查抗性,见其
+    /// 文档。
+    pub rule_modifiers: Vec<RuleModifier>,
 }
 
 /// `resolve_use_skill` 依赖的最小「天赋定义来源」接口——把结算算法
@@ -187,6 +266,58 @@ pub fn granted_skills(
         }
     }
     result
+}
+
+/// 三节③「改变规则本身」的抗性一路来源——遍历 [`effective_traits`] 的
+/// 结果,收集全部 [`RuleModifier::Resistance`] 里 `damage_category` 与
+/// 参数匹配的条目,取乘数;查不到任何匹配时返回
+/// [`RESISTANCE_MULTIPLIER_SCALE`]（即乘数 1.0,等价于"没有抗性"）。
+///
+/// `crate::resolve::resolve_attack`（伤害类别/抗性接线批次）在减伤链路
+/// 算完之后调用本函数,拿到的乘数按
+/// `damage-formula-mod-api.md` 二十节挂在"减伤之后",见其文档「抗性
+/// 接线」一节。
+///
+/// # 多条命中时取哪一条：按 `trait_id`（`ContentIndex`）升序取第一条
+///
+/// `trait-system.md` 三节③「抗性：挂载点已经现成」一节原文：「按
+/// `TraitGrant` 的 `ContentIndex` 升序取第一条……不取乘积,理由是『免疫
+/// 500‰ 又免疫一次』不应该变成 25% 而不是 0%」——`effective_traits`
+/// 返回的顺序是声明顺序（去重后),不是按索引排序,因此这里显式取
+/// `trait_id.get()` 最小的一条,不依赖 `effective_traits` 的遍历顺序
+/// （约束 C5：结果必须与调用方传入的天赋声明顺序无关,只与
+/// `ContentIndex` 数值有关)。
+pub fn resistance_multiplier_permille(
+    race: ContentIndex,
+    level: i32,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    damage_category: ContentIndex,
+) -> i32 {
+    let mut best: Option<(ContentIndex, i32)> = None;
+    for trait_id in effective_traits(race, level, race_traits) {
+        let Some(rule) = traits.trait_rule(trait_id) else {
+            continue;
+        };
+        for modifier in &rule.rule_modifiers {
+            let RuleModifier::Resistance {
+                damage_category: candidate_category,
+                multiplier_permille,
+            } = modifier
+            else {
+                continue;
+            };
+            if *candidate_category != damage_category {
+                continue;
+            }
+            best = match best {
+                Some((best_id, _)) if best_id <= trait_id => best,
+                _ => Some((trait_id, *multiplier_permille)),
+            };
+        }
+    }
+    best.map(|(_, multiplier)| multiplier)
+        .unwrap_or(RESISTANCE_MULTIPLIER_SCALE)
 }
 
 #[cfg(test)]
@@ -348,5 +479,133 @@ mod tests {
 
         // Act & Assert
         assert!(source.granted_traits(race).is_empty());
+    }
+
+    #[test]
+    fn 没有任何抗性天赋时乘数恒为无抗性刻度() {
+        // Arrange
+        let mut interner = Interner::new();
+        let race = index(&mut interner, "lostland:human");
+        let fire = index(&mut interner, "lostland:fire");
+        let source = NoTraitGrants;
+        let traits = NoTraits;
+
+        // Act
+        let multiplier = resistance_multiplier_permille(race, 1, &source, &traits, fire);
+
+        // Assert
+        assert_eq!(multiplier, RESISTANCE_MULTIPLIER_SCALE);
+    }
+
+    #[test]
+    fn 有效天赋声明的抗性命中匹配类别时返回其乘数() {
+        // Arrange
+        let mut interner = Interner::new();
+        let race = index(&mut interner, "lostland:dwarf");
+        let fire = index(&mut interner, "lostland:fire");
+        let trait_id = index(&mut interner, "lostland:fire_resistance");
+        let source = FixedGrants(vec![TraitGrant {
+            trait_id,
+            unlock_level: 1,
+        }]);
+        let traits = FixedTraits(vec![(
+            trait_id,
+            TraitRule {
+                rule_modifiers: vec![RuleModifier::Resistance {
+                    damage_category: fire,
+                    multiplier_permille: 500,
+                }],
+                ..Default::default()
+            },
+        )]);
+
+        // Act
+        let multiplier = resistance_multiplier_permille(race, 1, &source, &traits, fire);
+
+        // Assert
+        assert_eq!(multiplier, 500);
+    }
+
+    #[test]
+    fn 抗性声明只对匹配的伤害类别生效不对其它类别生效() {
+        // Arrange：天赋只声明了火抗，查询冰类别应当查不到任何匹配。
+        let mut interner = Interner::new();
+        let race = index(&mut interner, "lostland:dwarf");
+        let fire = index(&mut interner, "lostland:fire");
+        let cold = index(&mut interner, "lostland:cold");
+        let trait_id = index(&mut interner, "lostland:fire_resistance");
+        let source = FixedGrants(vec![TraitGrant {
+            trait_id,
+            unlock_level: 1,
+        }]);
+        let traits = FixedTraits(vec![(
+            trait_id,
+            TraitRule {
+                rule_modifiers: vec![RuleModifier::Resistance {
+                    damage_category: fire,
+                    multiplier_permille: 500,
+                }],
+                ..Default::default()
+            },
+        )]);
+
+        // Act
+        let multiplier = resistance_multiplier_permille(race, 1, &source, &traits, cold);
+
+        // Assert
+        assert_eq!(multiplier, RESISTANCE_MULTIPLIER_SCALE);
+    }
+
+    #[test]
+    fn 多条命中时按trait_id升序取第一条而不是取乘积() {
+        // Arrange：两个天赋都声明了对同一类别的抗性，`trait_id` 更小的
+        // 那一条（`low`）应当胜出——不是把两个千分比相乘。
+        let mut interner = Interner::new();
+        let race = index(&mut interner, "lostland:dwarf");
+        let fire = index(&mut interner, "lostland:fire");
+        let low = index(&mut interner, "lostland:fire_resistance");
+        let high = index(&mut interner, "lostland:fire_immunity");
+        assert!(
+            low < high,
+            "测试前提：low 先 intern，索引恒小于后 intern 的 high"
+        );
+        let source = FixedGrants(vec![
+            TraitGrant {
+                trait_id: low,
+                unlock_level: 1,
+            },
+            TraitGrant {
+                trait_id: high,
+                unlock_level: 1,
+            },
+        ]);
+        let traits = FixedTraits(vec![
+            (
+                low,
+                TraitRule {
+                    rule_modifiers: vec![RuleModifier::Resistance {
+                        damage_category: fire,
+                        multiplier_permille: 500,
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                high,
+                TraitRule {
+                    rule_modifiers: vec![RuleModifier::Resistance {
+                        damage_category: fire,
+                        multiplier_permille: 0,
+                    }],
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        // Act
+        let multiplier = resistance_multiplier_permille(race, 1, &source, &traits, fire);
+
+        // Assert：500（low 那条），不是 0（high）也不是 0（500*0/1000）。
+        assert_eq!(multiplier, 500);
     }
 }

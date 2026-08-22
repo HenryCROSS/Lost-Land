@@ -155,6 +155,7 @@ mod tests {
                     use_effect: None,
                     penetration: Penetration::NONE,
                     damage_formula: None,
+                    damage_category: None,
                 },
             )
             .expect("测试用注册应当成功");

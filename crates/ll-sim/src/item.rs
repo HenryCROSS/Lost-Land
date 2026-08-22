@@ -125,6 +125,15 @@ pub struct ItemRule {
     /// `knowledge/design/damage-formula-mod-api.md` 十九节——本批次
     /// 没有武器类别/伤害类别，四层下探退化成两层）。
     pub damage_formula: Option<ContentIndex>,
+    /// 这件物品显式声明的伤害类别（伤害类别/抗性接线批次新增）——
+    /// `None` 表示这件物品不指定伤害类别，`resolve_attack` 退回
+    /// [`crate::damage_category::DamageCategoryCatalog::default_category`]，
+    /// 见其文档「为什么只有『默认类别』这一个方法」一节。伤害类别与
+    /// 伤害公式是两条独立的轴（`damage-formula-mod-api.md` 十七节
+    /// 「与既有 `DamageSchool` 的关系：正交，不合并」——伤害类别本身
+    /// 也与武器类别正交），因此是与 [`Self::damage_formula`] 并列的
+    /// 独立字段，不是复用同一个 `ContentIndex`。
+    pub damage_category: Option<ContentIndex>,
 }
 
 /// `resolve` 依赖的最小「物品定义来源」接口——与

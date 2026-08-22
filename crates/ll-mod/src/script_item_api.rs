@@ -87,6 +87,10 @@ pub fn register_item_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-item-use-effect", register_item_use_effect);
     engine.register_fn("register-item-penetration", register_item_penetration);
     engine.register_fn("register-item-damage-formula", register_item_damage_formula);
+    engine.register_fn(
+        "register-item-damage-category",
+        register_item_damage_category,
+    );
 }
 
 /// `(register-item id display-name-key stack-limit base-weight base-price max-durability)`。
@@ -209,6 +213,7 @@ fn do_register_item(
                 // 恒为 None——同上，真正的取值由后续
                 // register-item-damage-formula 调用写入。
                 damage_formula: None,
+                damage_category: None,
             },
         )
         .map(|()| true)
@@ -675,6 +680,65 @@ fn do_register_item_damage_formula(
 
     table
         .set_damage_formula(index, formula_index)
+        .map(|()| true)
+        .map_err(|err: ItemError| err.to_string())
+}
+
+/// `(register-item-damage-category id category-id)`——设置这件物品显式
+/// 声明的伤害类别（伤害类别/抗性接线批次新增），见
+/// [`crate::item::ItemDef::damage_category`] 文档「为什么不是
+/// `register-item` 的参数」一节。
+///
+/// - `id`：已经通过 `register-item` 注册过的完整命名空间标识符字符串
+///   ——目标必须已存在，与 [`register_item_damage_formula`] 同一条 ADR
+///   0017「注册期完整校验」纪律。
+/// - `category-id`：已经通过 `register-damage-category`
+///   （`crate::script_damage_category_api`）注册过的完整命名空间标识符
+///   字符串——与 `formula-id` 未注册即拒绝同一条纪律（本函数不
+///   `intern`，只 `get`），不允许静默创建一个指向不存在类别的悬空引用。
+///
+/// **覆盖，不是追加**——与 [`register_item_damage_formula`] 同一种"单值
+/// 覆盖"语义：一件武器只有一份显式伤害类别引用，多次调用同一个 `id`
+/// 以最后一次为准。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_item_damage_category(id: String, category_id: String) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err(
+                    "register-item-damage-category 在没有活跃物品表的窗口内被调用".to_string(),
+                );
+            };
+            do_register_item_damage_category(registry, table, &id, &category_id)
+        })
+    })
+}
+
+/// [`register_item_damage_category`] 的纯函数核心，方便单元测试不必
+/// 绕过 `thread_local!`。
+fn do_register_item_damage_category(
+    registry: &Registry,
+    table: &mut ItemTable,
+    id: &str,
+    category_id: &str,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("物品 {id:?} 尚未通过 register-item 注册"));
+    };
+    let parsed_category_id = NamespacedId::parse(category_id)
+        .map_err(|err| format!("非法内容标识符 {category_id:?}：{err}"))?;
+    let Some(category_index) = registry.get(&parsed_category_id) else {
+        return Err(format!(
+            "伤害类别 {category_id:?} 尚未通过 register-damage-category 注册"
+        ));
+    };
+
+    table
+        .set_damage_category(index, category_index)
         .map(|()| true)
         .map_err(|err: ItemError| err.to_string())
 }
@@ -1573,5 +1637,79 @@ mod tests {
                 permille: 200,
             }
         );
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_item_damage_category() {
+        // Arrange：先注册一个真实的伤害类别,再用它设置武器的显式引用。
+        use crate::damage_category::DamageCategoryTable;
+        use crate::script_damage_category_api::{
+            register_damage_category_api, set_active_target as set_active_category_target,
+            take_active_target as take_active_category_target,
+        };
+        let mut engine = ScriptEngine::new();
+        register_item_api(&mut engine);
+        register_damage_category_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(ItemTable::new());
+        set_active_category_target(DamageCategoryTable::new());
+        engine
+            .load_source(
+                r#"(register-item "yourmod:great_axe" "yourmod:item.great_axe" 1 5000 8000 120)"#
+                    .to_string(),
+            )
+            .expect("大斧基础注册应当成功");
+        engine
+            .load_source(r#"(register-damage-category "yourmod:fire" "")"#.to_string())
+            .expect("伤害类别注册应当成功");
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-item-damage-category "yourmod:great_axe" "yourmod:fire")"#.to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let _ = take_active_category_target();
+        let item_index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的物品应能查到索引");
+        let category_index = registry
+            .get(&NamespacedId::parse("yourmod:fire").unwrap())
+            .expect("刚注册的伤害类别应能查到索引");
+        assert_eq!(
+            table.get(item_index).unwrap().damage_category,
+            Some(category_index)
+        );
+    }
+
+    #[test]
+    fn 伤害类别未注册时register_item_damage_category失败而不panic() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_item_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(ItemTable::new());
+        engine
+            .load_source(
+                r#"(register-item "yourmod:great_axe" "yourmod:item.great_axe" 1 5000 8000 120)"#
+                    .to_string(),
+            )
+            .expect("大斧基础注册应当成功");
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-item-damage-category "yourmod:great_axe" "yourmod:never_registered")"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_err());
+
+        // Cleanup。
+        take_active_target();
+        crate::active_registry::take_active_registry();
     }
 }

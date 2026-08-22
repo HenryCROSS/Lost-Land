@@ -338,6 +338,7 @@ mod tests {
                     pool,
                     capacity: CapacityFormula::Fixed(20),
                 }],
+                rule_modifiers: Vec::new(),
             },
         )]);
 
@@ -370,6 +371,7 @@ mod tests {
                         (5, CapacityValue::Scalar(30)),
                     ])),
                 }],
+                rule_modifiers: Vec::new(),
             },
         )]);
 
@@ -407,6 +409,7 @@ mod tests {
                         pool,
                         capacity: CapacityFormula::Fixed(10),
                     }],
+                    rule_modifiers: Vec::new(),
                 },
             ),
             (
@@ -417,6 +420,7 @@ mod tests {
                         pool,
                         capacity: CapacityFormula::Fixed(5),
                     }],
+                    rule_modifiers: Vec::new(),
                 },
             ),
         ]);

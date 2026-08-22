@@ -245,6 +245,7 @@ fn 天赋授予的容量小于存储量时消耗判定按容量钳位而不是�
                     pool,
                     capacity: CapacityFormula::Fixed(10),
                 }],
+                rule_modifiers: Vec::new(),
             },
         )]),
     };
@@ -319,6 +320,7 @@ fn 法力不够时技能真的放不出来() {
                     pool,
                     capacity: CapacityFormula::Fixed(10),
                 }],
+                rule_modifiers: Vec::new(),
             },
         )]),
     };
@@ -382,6 +384,7 @@ fn 每回合开始时法力池按onturnstart真实回复() {
                     pool,
                     capacity: CapacityFormula::Fixed(20),
                 }],
+                rule_modifiers: Vec::new(),
             },
         )]),
     };

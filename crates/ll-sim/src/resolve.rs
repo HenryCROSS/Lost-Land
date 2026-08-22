@@ -60,6 +60,7 @@ use ll_world::state::WorldState;
 use crate::combat::{
     Penetration, apply_crit_multiplier, crit_chance_permille, damage_after_defense,
 };
+use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
 use crate::effect::Effect;
 use crate::experience::ExperienceCatalog;
 use crate::formula::{DamageFormulaCatalog, FormulaInputs, NoFormulas, eval_formula};
@@ -76,6 +77,7 @@ use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::timeline::action_cost;
 use crate::traits::{
     NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, effective_traits, granted_skills,
+    resistance_multiplier_permille,
 };
 
 /// 非位移动作（等待、攻击、开门）的基础代价，与平地移动同一基准
@@ -440,6 +442,7 @@ pub fn resolve_with_skills_and_traits(
         &NoResourcePools,
         &NoItems,
         &NoFormulas,
+        &NoDamageCategories,
     )
 }
 
@@ -478,6 +481,7 @@ pub fn resolve_with_skills_traits_and_pools(
         pools,
         &NoItems,
         &NoFormulas,
+        &NoDamageCategories,
     )
 }
 
@@ -514,6 +518,7 @@ pub fn resolve_with_skills_traits_pools_and_items(
         pools,
         items,
         &NoFormulas,
+        &NoDamageCategories,
     )
 }
 
@@ -552,6 +557,52 @@ pub fn resolve_with_skills_traits_pools_items_and_formulas(
         pools,
         items,
         formulas,
+        &NoDamageCategories,
+    )
+}
+
+/// [`resolve`] 的最完整入口：在
+/// [`resolve_with_skills_traits_pools_items_and_formulas`] 之上再额外
+/// 接收一份伤害类别目录，用于结算 [`Intent::Attack`] 时查这一下攻击
+/// 没有显式声明伤害类别时该用哪个默认类别（伤害类别/抗性接线批次
+/// 新增，见 [`resolve_attack`] 文档「抗性接线」一节）。
+///
+/// 八层入口而不是给某个既有入口加参数，理由同 [`resolve_with_skills`]
+/// 文档：不强迫仓库里已有的全部调用点都多传一份伤害类别目录——传
+/// [`NoDamageCategories`] 与"不传"在行为上完全等价（两者都让默认伤害
+/// 类别恒为 [`ContentIndex::default()`]，与任何真实注册的伤害类别都
+/// 不会撞上，见 [`NoDamageCategories`] 文档），本函数只服务真正想让
+/// "武器没声明伤害类别时退回哪个默认类别"生效的调用方
+/// （`ll_mod::damage_category` 落地对应的真实目录实现后即可接入）。
+///
+/// **本函数不改变抗性本身生不生效**——抗性查询
+/// （[`resistance_multiplier_permille`]）只要防御方的天赋声明了
+/// `RuleModifier::Resistance` 就会命中，与本函数是否接了真实的伤害
+/// 类别目录无关；本函数只影响"武器没有显式声明伤害类别"这一种情形
+/// 下退回的默认类别是哪一个。
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
+    items: &dyn ItemCatalog,
+    formulas: &dyn DamageFormulaCatalog,
+    damage_categories: &dyn DamageCategoryCatalog,
+) -> Vec<Effect> {
+    resolve_dispatch(
+        world,
+        intent,
+        skills,
+        &NoQuests,
+        race_traits,
+        traits,
+        pools,
+        items,
+        formulas,
+        damage_categories,
     )
 }
 
@@ -595,21 +646,23 @@ pub fn resolve_with_skills_and_quests(
         &NoResourcePools,
         &NoItems,
         &NoFormulas,
+        &NoDamageCategories,
     )
 }
 
 /// [`resolve_with_skills_and_quests`]/[`resolve_with_skills_and_traits`]/
 /// [`resolve_with_skills_traits_and_pools`]/
 /// [`resolve_with_skills_traits_pools_and_items`]/
-/// [`resolve_with_skills_traits_pools_items_and_formulas`] 共用的核心
-/// 分派逻辑——五个公开入口都只是"缺一份目录时传对应的 `No*` 空实现"
-/// 的薄封装，真正的 `Intent` 匹配与效果产出只写这一份，不重复。
+/// [`resolve_with_skills_traits_pools_items_and_formulas`]/
+/// [`resolve_with_skills_traits_pools_items_formulas_and_damage_categories`]
+/// 共用的核心分派逻辑——六个公开入口都只是"缺一份目录时传对应的 `No*`
+/// 空实现"的薄封装，真正的 `Intent` 匹配与效果产出只写这一份，不重复。
 ///
-/// `#[allow(clippy::too_many_arguments)]`：九个参数分别对应八种
+/// `#[allow(clippy::too_many_arguments)]`：十个参数分别对应九种
 /// 结算需要的只读依赖（技能/任务/种族天赋来源/天赋/资源池/物品/伤害
-/// 公式目录）加 `world`/`intent` 本身，拆分成多份目录正是「resolve
-/// 依赖倒置」这套手法刻意要做的事（见模块文档同一批目录的既有取舍），
-/// 不是可以合并成一个结构体的意外堆叠——与
+/// 公式/伤害类别目录）加 `world`/`intent` 本身，拆分成多份目录正是
+/// 「resolve 依赖倒置」这套手法刻意要做的事（见模块文档同一批目录的
+/// 既有取舍），不是可以合并成一个结构体的意外堆叠——与
 /// `crates/ll-sim/tests/resource_pool_resolve.rs` 的
 /// `spawn_agent_with_pool` 同一条既有先例。
 #[allow(clippy::too_many_arguments)]
@@ -623,11 +676,21 @@ fn resolve_dispatch(
     pools: &dyn ResourcePoolCatalog,
     items: &dyn ItemCatalog,
     formulas: &dyn DamageFormulaCatalog,
+    damage_categories: &dyn DamageCategoryCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => resolve_wait(world, actor, race_traits, traits, pools),
         Intent::Move { actor, dir } => resolve_move(world, actor, dir),
-        Intent::Attack { actor, target } => resolve_attack(world, actor, target, items, formulas),
+        Intent::Attack { actor, target } => resolve_attack(
+            world,
+            actor,
+            target,
+            items,
+            formulas,
+            race_traits,
+            traits,
+            damage_categories,
+        ),
         Intent::OpenDoor { actor, pos } => resolve_open_door(world, actor, pos),
         Intent::EnterSpace { actor, target } => resolve_enter_space(world, actor, target),
         Intent::ExitSpace { actor } => resolve_exit_space(world, actor),
@@ -2043,12 +2106,37 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 公式）永远不会调用这条流的任何方法,构造它本身没有可观测的副作用,
 /// 因此"要不要构造"不需要按 `needs_rng` 分支特判,见
 /// `FormulaDef::needs_rng` 文档。
+///
+/// # 抗性接线（伤害类别/抗性接线批次）
+///
+/// `damage-formula-mod-api.md` 二十节把抗性的挂载点定死在「减伤之后、
+/// 乘数形式」——本函数在 `damage_after_defense`（含暴击放大）算完之后
+/// 最后一步，用这一下的伤害类别（武器显式声明的
+/// [`crate::item::ItemRule::damage_category`]，没有声明时退回
+/// [`DamageCategoryCatalog::default_category`]）查
+/// [`resistance_multiplier_permille`]（`crate::traits`，遍历**防御方**
+/// 的有效天赋收集 `RuleModifier::Resistance`），把查到的千分比乘数乘
+/// 在伤害上——没有任何天赋声明抗性时，乘数恒为
+/// [`crate::traits::RESISTANCE_MULTIPLIER_SCALE`]（1.0），本函数因此
+/// 逐位复现接入抗性之前的既有行为，与「伤害公式接线」一节「全局默认
+/// 公式」的「行为等价」承诺是同一条纪律的第二次应用。
+///
+/// 免疫（乘数 0）能合法地把这一步的结果打成 0，即使
+/// `damage_after_defense` 内部的 10% 下限已经让上一步的 `damage` 不低于
+/// 攻击力的一成——两者不冲突：10% 下限保护的是「减伤链路本身不会因为
+/// 防御过高而系统性压制到零」，抗性回答的是「这种伤害对这个目标有没有
+/// 意义」，见 `RuleModifier::Resistance` 文档「与 10% 下限的关系」
+/// 一节完整论证。
+#[allow(clippy::too_many_arguments)]
 fn resolve_attack(
     world: &WorldState,
     actor: EntityId,
     target: EntityId,
     items: &dyn ItemCatalog,
     formulas: &dyn DamageFormulaCatalog,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    damage_categories: &dyn DamageCategoryCatalog,
 ) -> Vec<Effect> {
     let Some(attacker) = world.actors.get(actor) else {
         return Vec::new();
@@ -2152,6 +2240,39 @@ fn resolve_attack(
     } else {
         damage
     };
+
+    // 抗性（伤害类别/抗性接线批次）：`damage-formula-mod-api.md` 二十节
+    // 「减伤之后、乘数形式」——挂在减伤链路（含暴击放大，暴击与抗性都
+    // 是「减伤之后」的后续放大/折扣，二十节本身不规定二者的先后，见
+    // `RuleModifier::Resistance` 文档「抗性接线」一节）算完之后，最后
+    // 一步才把伤害类别的抗性乘数乘上去。伤害类别的来源：武器显式声明
+    // 的 `damage_category`（`weapon_rule.damage_category`），没有声明
+    // 时退回 `damage_categories.default_category()`——与
+    // `explicit_formula` 两层下探同一条既有纪律（见本函数文档「伤害
+    // 公式接线」一节），只是这里没有「显式引用但未注册」这一档要处理
+    // （`damage_category` 存的就是已经通过校验的 `ContentIndex`,见
+    // `crate::item::ItemRule::damage_category` 文档）。
+    let damage_category = weapon_rule
+        .as_ref()
+        .and_then(|rule| rule.damage_category)
+        .unwrap_or_else(|| damage_categories.default_category());
+    let resistance_multiplier = resistance_multiplier_permille(
+        defender.race,
+        defender.level,
+        race_traits,
+        traits,
+        damage_category,
+    );
+    // 千分比乘法，向零截断——与 `FormulaOp::MulPermille`/
+    // `apply_crit_multiplier` 同一条既有惯例，全程 i64 饱和运算防止
+    // 极端乘数溢出 i32（`multiplier_permille` 是内容作者填的数值，
+    // `damage-formula-mod-api.md` 十二节「运行期溢出：饱和运算」同一条
+    // 纪律）。免疫（乘数 0）会合法地把这一步打成 0，即使上一步的
+    // `damage` 满足了 10% 下限——`damage_after_defense` 的下限只保护
+    // 「减伤链路本身」，不保护抗性之后的结果，见
+    // `RuleModifier::Resistance` 文档「与 10% 下限的关系」一节。
+    let damage = ((i64::from(damage) * i64::from(resistance_multiplier)) / 1000)
+        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
 
     let mut effects = vec![Effect::Damage {
         target,
@@ -3992,6 +4113,7 @@ mod tests {
                     pool: self.pool,
                     capacity: crate::resource_pool::CapacityFormula::Fixed(self.capacity),
                 }],
+                rule_modifiers: Vec::new(),
             })
         }
     }

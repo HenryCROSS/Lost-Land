@@ -156,6 +156,7 @@ use ll_world::terrain::{TerrainKind, TerrainTable};
 
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
+use crate::damage_category::DamageCategoryTable;
 use crate::formula::FormulaTable;
 use crate::item::ItemTable;
 use crate::quest::{QuestCondition, QuestTable};
@@ -165,6 +166,7 @@ use crate::resource_pool::ResourcePoolTable;
 use crate::skill::SkillTable;
 use crate::subclass::SubclassTable;
 use crate::trait_def::{RuleModifier, TraitTable};
+use crate::weapon_category::WeaponCategoryTable;
 use crate::xp_curve::XpCurveTable;
 use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 
@@ -228,7 +230,13 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 两者都要求递增版本号，理由相同：任何在本次改动之前写出、
 /// `generation_mods` 携带非空 `content_hash` 的存档，读档时都会在
 /// `check_mod_content` 一步被误判成 `ModContentMismatch`。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 4;
+///
+/// 版本 5（伤害类别/抗性接线批次）：三处独立的字节序列变化叠在一起——
+/// （一）新增第十四张内容表 [`ContentTableKind::WeaponCategory`]；
+/// （二）新增第十五张内容表 [`ContentTableKind::DamageCategory`]；
+/// （三）[`write_item_fields`] 新增混入 `ItemDef.damage_category`——与
+/// 版本 4 「老表新增字段也会漏」同一处真实复现，理由同上一段。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 5;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -278,6 +286,10 @@ pub enum ContentTableKind {
     XpCurve = 12,
     /// 伤害公式表（伤害公式引擎批次新增）。
     Formula = 13,
+    /// 武器类别表（伤害类别/抗性接线批次新增）。
+    WeaponCategory = 14,
+    /// 伤害类别表（伤害类别/抗性接线批次新增）。
+    DamageCategory = 15,
 }
 
 /// 全部内容表的只读引用集合——供 [`apply_value_hashes`]/[`classify_index`]
@@ -316,6 +328,10 @@ pub struct ContentValueTables<'a> {
     pub xp_curve: &'a XpCurveTable,
     /// 伤害公式表（伤害公式引擎批次新增）。
     pub formula: &'a FormulaTable,
+    /// 武器类别表（伤害类别/抗性接线批次新增）。
+    pub weapon_category: &'a WeaponCategoryTable,
+    /// 伤害类别表（伤害类别/抗性接线批次新增）。
+    pub damage_category: &'a DamageCategoryTable,
 }
 
 /// 判定一个 `ContentIndex` 归属哪张内容表——[`entry_value_digest`] 用它
@@ -362,6 +378,8 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         item,
         xp_curve,
         formula,
+        weapon_category,
+        damage_category,
     } = *tables;
 
     let terrain_kind = TerrainKind::from_index(index);
@@ -391,6 +409,10 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         ContentTableKind::XpCurve
     } else if formula.get(index).is_some() {
         ContentTableKind::Formula
+    } else if weapon_category.is_defined(index) {
+        ContentTableKind::WeaponCategory
+    } else if damage_category.is_defined(index) {
+        ContentTableKind::DamageCategory
     } else {
         ContentTableKind::Opaque
     }
@@ -468,6 +490,12 @@ fn entry_value_digest(
         }
         ContentTableKind::XpCurve => write_xp_curve_fields(&mut hasher, tables.xp_curve, index),
         ContentTableKind::Formula => write_formula_fields(&mut hasher, tables.formula, index),
+        ContentTableKind::WeaponCategory => {
+            write_weapon_category_fields(&mut hasher, tables.weapon_category, index, registry);
+        }
+        ContentTableKind::DamageCategory => {
+            write_damage_category_fields(&mut hasher, tables.damage_category, index, registry);
+        }
         ContentTableKind::Opaque => {
             // 没有字段可哈希，只哈希 id 本身（已经在函数顶部写过）——
             // 与升级前的行为一致，这类内容"是否存在"仍然能被检测到,
@@ -916,7 +944,8 @@ fn write_rest_recovery_amount(hasher: &mut StateHasher, amount: RestRecoveryAmou
 }
 
 /// 混入 [`crate::item::ItemDef`] 的全部字段（内容值哈希覆盖面扩展
-/// 批次新增，伤害公式引擎批次追加 `damage_formula`）——`base_weight`/
+/// 批次新增，伤害公式引擎批次追加 `damage_formula`，伤害类别/抗性
+/// 接线批次追加 `damage_category`）——`base_weight`/
 /// `base_price` 是 `Milli` 定点整数（`pub struct Milli(pub i64)`），
 /// 按普通 `i64` 处理；`use_effect` 复用既有的 [`write_skill_effect`]
 /// （与 `SkillDef.effect` 共用同一个类型，见
@@ -967,6 +996,7 @@ fn write_item_fields(
     hasher.write_i64(i64::from(view.penetration.flat));
     hasher.write_i64(i64::from(view.penetration.permille));
     write_optional_resolved(hasher, view.damage_formula, registry);
+    write_optional_resolved(hasher, view.damage_category, registry);
 }
 
 /// 混入一个 [`SlotMask`]——直接混入底层位表示
@@ -1209,6 +1239,35 @@ fn write_formula_op(hasher: &mut StateHasher, op: &FormulaOp) {
     }
 }
 
+/// 混入 [`crate::weapon_category::WeaponCategoryDef`] 的全部字段
+/// （伤害类别/抗性接线批次新增）——`default_formula` 解析成
+/// `NamespacedId` 字符串（见模块文档「`ContentIndex` 字段」一节）。
+fn write_weapon_category_fields(
+    hasher: &mut StateHasher,
+    table: &WeaponCategoryTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
+    let def = table
+        .get(index)
+        .expect("调用方已确认 classify_index 判定为 WeaponCategory，get 必返回 Some");
+    write_optional_resolved(hasher, def.default_formula, registry);
+}
+
+/// 混入 [`crate::damage_category::DamageCategoryDef`] 的全部字段
+/// （伤害类别/抗性接线批次新增），理由同 [`write_weapon_category_fields`]。
+fn write_damage_category_fields(
+    hasher: &mut StateHasher,
+    table: &DamageCategoryTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
+    let def = table
+        .get(index)
+        .expect("调用方已确认 classify_index 判定为 DamageCategory，get 必返回 Some");
+    write_optional_resolved(hasher, def.default_formula, registry);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1258,6 +1317,8 @@ mod tests {
         ItemTable,
         XpCurveTable,
         FormulaTable,
+        WeaponCategoryTable,
+        DamageCategoryTable,
     ) {
         (
             TerrainTable::new(),
@@ -1272,6 +1333,8 @@ mod tests {
             ItemTable::new(),
             XpCurveTable::new(),
             FormulaTable::new(),
+            WeaponCategoryTable::new(),
+            DamageCategoryTable::new(),
         )
     }
 
@@ -1300,6 +1363,8 @@ mod tests {
             item_a,
             xp_a,
             formula_a,
+            weapon_category_a,
+            damage_category_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1321,6 +1386,8 @@ mod tests {
             item_b,
             xp_b,
             formula_b,
+            weapon_category_b,
+            damage_category_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1340,6 +1407,8 @@ mod tests {
                 item: &item_a,
                 xp_curve: &xp_a,
                 formula: &formula_a,
+                weapon_category: &weapon_category_a,
+                damage_category: &damage_category_a,
             },
         );
         apply_value_hashes(
@@ -1358,6 +1427,8 @@ mod tests {
                 item: &item_b,
                 xp_curve: &xp_b,
                 formula: &formula_b,
+                weapon_category: &weapon_category_b,
+                damage_category: &damage_category_b,
             },
         );
 
@@ -1399,6 +1470,8 @@ mod tests {
             item_a,
             xp_a,
             formula_a,
+            weapon_category_a,
+            damage_category_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1426,6 +1499,8 @@ mod tests {
             item_b,
             xp_b,
             formula_b,
+            weapon_category_b,
+            damage_category_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1445,6 +1520,8 @@ mod tests {
                 item: &item_a,
                 xp_curve: &xp_a,
                 formula: &formula_a,
+                weapon_category: &weapon_category_a,
+                damage_category: &damage_category_a,
             },
         );
         apply_value_hashes(
@@ -1463,6 +1540,8 @@ mod tests {
                 item: &item_b,
                 xp_curve: &xp_b,
                 formula: &formula_b,
+                weapon_category: &weapon_category_b,
+                damage_category: &damage_category_b,
             },
         );
 
@@ -1503,6 +1582,8 @@ mod tests {
             item_a,
             xp_a,
             formula_a,
+            weapon_category_a,
+            damage_category_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1526,6 +1607,8 @@ mod tests {
             item_b,
             xp_b,
             formula_b,
+            weapon_category_b,
+            damage_category_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1545,6 +1628,8 @@ mod tests {
                 item: &item_a,
                 xp_curve: &xp_a,
                 formula: &formula_a,
+                weapon_category: &weapon_category_a,
+                damage_category: &damage_category_a,
             },
         );
         apply_value_hashes(
@@ -1563,6 +1648,8 @@ mod tests {
                 item: &item_b,
                 xp_curve: &xp_b,
                 formula: &formula_b,
+                weapon_category: &weapon_category_b,
+                damage_category: &damage_category_b,
             },
         );
 
@@ -1595,6 +1682,7 @@ mod tests {
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,
+                damage_category: None,
             }
         }
 
@@ -1617,6 +1705,8 @@ mod tests {
             race_a,
             xp_a,
             formula_a,
+            weapon_category_a,
+            damage_category_a,
         ) = (
             TerrainTable::new(),
             ClassTable::new(),
@@ -1630,6 +1720,8 @@ mod tests {
             RaceTable::new(),
             XpCurveTable::new(),
             FormulaTable::new(),
+            WeaponCategoryTable::new(),
+            DamageCategoryTable::new(),
         );
 
         let mut registry_b = Registry::new();
@@ -1651,6 +1743,8 @@ mod tests {
             race_b,
             xp_b,
             formula_b,
+            weapon_category_b,
+            damage_category_b,
         ) = (
             TerrainTable::new(),
             ClassTable::new(),
@@ -1664,6 +1758,8 @@ mod tests {
             RaceTable::new(),
             XpCurveTable::new(),
             FormulaTable::new(),
+            WeaponCategoryTable::new(),
+            DamageCategoryTable::new(),
         );
 
         // Act
@@ -1683,6 +1779,8 @@ mod tests {
                 item: &item_a,
                 xp_curve: &xp_a,
                 formula: &formula_a,
+                weapon_category: &weapon_category_a,
+                damage_category: &damage_category_a,
             },
         );
         apply_value_hashes(
@@ -1701,6 +1799,8 @@ mod tests {
                 item: &item_b,
                 xp_curve: &xp_b,
                 formula: &formula_b,
+                weapon_category: &weapon_category_b,
+                damage_category: &damage_category_b,
             },
         );
 
@@ -1735,6 +1835,7 @@ mod tests {
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,
+                damage_category: None,
             }
         }
 
@@ -1781,6 +1882,8 @@ mod tests {
                 item: &item_forward,
                 xp_curve: &empty_forward.10,
                 formula: &empty_forward.11,
+                weapon_category: &empty_forward.12,
+                damage_category: &empty_forward.13,
             },
         );
         apply_value_hashes(
@@ -1799,6 +1902,8 @@ mod tests {
                 item: &item_reversed,
                 xp_curve: &empty_reversed.10,
                 formula: &empty_reversed.11,
+                weapon_category: &empty_reversed.12,
+                damage_category: &empty_reversed.13,
             },
         );
 
@@ -1839,6 +1944,8 @@ mod tests {
             item_f,
             xp_f,
             formula_f,
+            weapon_category_f,
+            damage_category_f,
         ) = empty_non_race_tables();
 
         let mut registry_reversed = Registry::new();
@@ -1864,6 +1971,8 @@ mod tests {
             item_r,
             xp_r,
             formula_r,
+            weapon_category_r,
+            damage_category_r,
         ) = empty_non_race_tables();
 
         // Act：两边分配到的 ContentIndex 确实互相对调，证明这不是一次
@@ -1885,6 +1994,8 @@ mod tests {
                 item: &item_f,
                 xp_curve: &xp_f,
                 formula: &formula_f,
+                weapon_category: &weapon_category_f,
+                damage_category: &damage_category_f,
             },
         );
         apply_value_hashes(
@@ -1903,6 +2014,8 @@ mod tests {
                 item: &item_r,
                 xp_curve: &xp_r,
                 formula: &formula_r,
+                weapon_category: &weapon_category_r,
+                damage_category: &damage_category_r,
             },
         );
 
@@ -1947,6 +2060,8 @@ mod tests {
             item_before,
             xp_before,
             formula_before,
+            weapon_category_before,
+            damage_category_before,
         ) = empty_non_race_tables();
 
         let mut registry_after = Registry::new();
@@ -1973,6 +2088,8 @@ mod tests {
             item_after,
             xp_after,
             formula_after,
+            weapon_category_after,
+            damage_category_after,
         ) = empty_non_race_tables();
 
         // Act
@@ -1992,6 +2109,8 @@ mod tests {
                 item: &item_before,
                 xp_curve: &xp_before,
                 formula: &formula_before,
+                weapon_category: &weapon_category_before,
+                damage_category: &damage_category_before,
             },
         );
         apply_value_hashes(
@@ -2010,6 +2129,8 @@ mod tests {
                 item: &item_after,
                 xp_curve: &xp_after,
                 formula: &formula_after,
+                weapon_category: &weapon_category_after,
+                damage_category: &damage_category_after,
             },
         );
 
@@ -2041,6 +2162,8 @@ mod tests {
             item,
             xp,
             formula,
+            weapon_category,
+            damage_category,
         ) = empty_non_race_tables();
         let race = RaceTable::new();
 
@@ -2061,6 +2184,8 @@ mod tests {
                 item: &item,
                 xp_curve: &xp,
                 formula: &formula,
+                weapon_category: &weapon_category,
+                damage_category: &damage_category,
             },
         );
 
@@ -2088,6 +2213,8 @@ mod tests {
             item,
             xp,
             formula,
+            weapon_category,
+            damage_category,
         ) = empty_non_race_tables();
         let race = RaceTable::new();
         let tables = ContentValueTables {
@@ -2104,6 +2231,8 @@ mod tests {
             item: &item,
             xp_curve: &xp,
             formula: &formula,
+            weapon_category: &weapon_category,
+            damage_category: &damage_category,
         };
 
         // Act

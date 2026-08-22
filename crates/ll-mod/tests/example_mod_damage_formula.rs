@@ -18,6 +18,7 @@ use std::path::Path;
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_mod::class::ClassTable;
 use ll_mod::clip::ClipTable;
+use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::formula::FormulaTable;
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadStatus;
@@ -29,6 +30,7 @@ use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
 use ll_mod::trait_def::TraitTable;
+use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::formula::{FormulaInputs, eval_formula};
 use ll_sim::item::ItemCatalog;
@@ -64,7 +66,8 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
     let mut resource_pool = ResourcePoolTable::new();
     let mut item = ItemTable::new();
     let mut formula = FormulaTable::new();
-
+    let mut weapon_category = WeaponCategoryTable::new();
+    let mut damage_category = DamageCategoryTable::new();
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
         &mut registry,
@@ -82,6 +85,8 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
             resource_pool: &mut resource_pool,
             item: &mut item,
             formula: &mut formula,
+            weapon_category: &mut weapon_category,
+            damage_category: &mut damage_category,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();

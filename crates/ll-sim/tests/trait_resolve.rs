@@ -163,6 +163,7 @@ fn 种族天赋在等级达标时授予的技能即使未解锁也能真实放�
             TraitRule {
                 granted_skills: vec![skill],
                 granted_resource_pools: Vec::new(),
+                rule_modifiers: Vec::new(),
             },
         )]),
     };
@@ -224,6 +225,7 @@ fn 种族天赋解锁等级未达标时授予的技能仍然不能使用() {
             TraitRule {
                 granted_skills: vec![skill],
                 granted_resource_pools: Vec::new(),
+                rule_modifiers: Vec::new(),
             },
         )]),
     };

@@ -106,7 +106,14 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     ("crates/ll-mod/src/quest.rs", "struct", "QuestNodeDef"),
     ("crates/ll-mod/src/resource_pool.rs", "struct", "ResourcePoolDef"),
     ("crates/ll-mod/src/trait_def.rs", "struct", "TraitDef"),
-    ("crates/ll-mod/src/trait_def.rs", "enum", "RuleModifier"),
+    # 伤害类别/抗性接线批次：RuleModifier 的定义从 ll-mod/src/trait_def.rs
+    # 挪到了 ll-sim/src/traits.rs（trait_def.rs 现在只 `pub use` 它），
+    # 理由是决策层（ll-sim）需要直接引用这个类型才能把 Resistance 接进
+    # 伤害管线，见 ll_sim::traits::RuleModifier 文档「类型定义现居
+    # ll-sim」一节。这条 TARGET_TYPES 条目跟着改指向新的定义处——巧合的
+    # 是新的定义处恰好落在决策层 glob（crates/ll-sim/src/*.rs）内，这不
+    # 影响判定逻辑：变体名字面量的匹配不区分它出现在哪个决策层文件里。
+    ("crates/ll-sim/src/traits.rs", "enum", "RuleModifier"),
     ("crates/ll-world/src/terrain.rs", "struct", "TerrainDef"),
     ("crates/ll-sim/src/xp_curve.rs", "struct", "XpCurveDef"),
     ("crates/ll-world/src/entity/agent.rs", "struct", "Agent"),
@@ -179,9 +186,15 @@ EXEMPTIONS: dict[str, str] = {
     # 单独追踪过，只通过 `Agent.stats`/各 `*Def.stat_modifiers` 这一层
     # 字段名参与扫描），`luck` 现在与它们同一个待遇，不是被本门禁放过，
     # 是从一开始就不属于本门禁的追踪粒度，与其余六项保持一致。
-    "RuleModifier::Resistance": "能从天赋声明、进内容值哈希，战斗里没人读——trait_def.rs 模块文档与枚举文档均已承认「当前没有任何 resolve 侧消费者」。预期随伤害结算的抗性乘数挂载点落地一并接线。",
-    "RuleModifier::RerollOnce": "同 RuleModifier::Resistance，trait_def.rs 文档同一处承认无消费者——需要 roll_one_die 钩子，尚未落地。",
-    "RuleModifier::Advantage": "trait_def.rs 变体文档原文「占位变体，当前无消费者（本项目没有判定/检定系统）」。",
+    # `RuleModifier::Resistance` 已在伤害类别/抗性接线批次真正接上：
+    # `ll_sim::traits::resistance_multiplier_permille` 在决策层
+    # （crates/ll-sim/src/traits.rs）里真实 `match`/解构这个变体，
+    # `crate::resolve::resolve_attack` 在减伤链路算完之后调用它把乘数
+    # 应用到伤害上——见 crates/ll-sim/tests/resistance_resolve.rs 三条
+    # 端到端测试与 mods/example_mod 的真实 mod 脚本证据。原豁免条目已
+    # 移除。
+    "RuleModifier::RerollOnce": "同 RuleModifier::Resistance 曾经的处境，现况不同——RerollOnce 仍然没有决策层消费者，需要 roll_one_die 钩子（伤害公式引擎求值器内部的骰子取数原语），尚未落地，见 ll_sim::traits::RuleModifier 文档「本批次接线状态」一节。",
+    "RuleModifier::Advantage": "ll_sim::traits::RuleModifier 变体文档原文「占位变体，当前无消费者（本项目没有判定/检定系统）」。",
     "RuleModifier::Disadvantage": "语义同 RuleModifier::Advantage，方向相反，同样没有判定系统可挂载。",
     # ---- (b) 本次核实新发现：文档看似"已接线"，实测决策层无读取 ----
     "RaceDef.stat_modifiers": "第二十处「声明了但没接线」修复批次已真正接上：ll_game::world::build_player_agent 生成角色时改为调用 ll_sim::character::bake_race_stat_modifiers，内部经 ll_sim::character::RaceStatModifierSource（真实实现 ll_mod::race::RaceTable）查到六项修正并叠加进 BaseStats——crates/ll-sim/src/character.rs、crates/ll-mod/src/race.rs 的对应测试均已覆盖端到端与真实 mod 种族两条路径。留在本清单是本脚本正则匹配的已知局限（见头注释「已知局限」第 2 条同一类问题）：该 trait 方法故意没有叫 stat_modifiers，而是叫 race_stat_modifiers——因为 ll_mod::trait_def::TraitDef 恰好也有一个同名字段 stat_modifiers（下面 TraitDef.stat_modifiers 一条，至今仍是真正的死字段），若这里用回同名方法，本脚本的全文正则会把两个不同结构体的同名字段一并误判成「已接线」。为了不把一个字段的真实接线连带污染另一个字段的状态判定，这里选择保留本条豁免（并把理由写清楚），而不是删除后制造一次假阳性。",
@@ -196,7 +209,6 @@ EXEMPTIONS: dict[str, str] = {
     "SkillDef.owning_class": "skill.rs 字段文档原文：只是一个分类/展示字段，不是命名空间隔离的边界，主职副职共享同一份技能命名空间（P5-4 裁定）。",
     "QuestNodeDef.condition": "任务结算走的是 ll-sim::quest::QuestCatalog::kill_count_quests() 返回的窄接口 QuestKillRule（依赖倒置，同 ItemDef.stack_limit 的收敛手法），不是对 QuestNodeDef 实例整体做 .condition 点号访问——真实消费路径在 ll-mod 侧把 QuestCondition 拆解、按需要的字段喂给 QuestKillRule，本脚本按字段名正则抓不到这条间接路径，见脚本头注释「已知局限」第 2 条。",
     "TraitDef.stat_modifiers": "天赋授予的属性修正——同 RaceDef.stat_modifiers 同一类问题：trait_def.rs 模块文档「据此聚合出角色对某个标量池的有效容量」一节只论证了容量聚合用途，六项主属性的直接修正应用尚未接入 effective_attribute 一类决策层函数。",
-    "TraitDef.rule_modifiers": "存放的正是本清单已收录的四个 RuleModifier 变体——变体本身在决策层没有消费者，持有它们的这个字段自然也没有，见 RuleModifier::Resistance 等四条豁免。",
     "Agent.affiliations": "agent.rs 字段声明处紧邻注释原文：以下六个字段 P3 可以留空，但字段必须现在就有——见 society-and-affiliation.md 第五节，存档格式在 P5 冻结，P3 阶段不消费，只保证存档格式不用在 P8 补迁移链。",
     "Agent.goals": "同 Agent.affiliations，同一处「以下六个字段 P3 可以留空」注释覆盖的字段之一，见 agent-goals-and-economy.md 第九节。",
     "Agent.subclasses": "字段文档说明容器形状（允许同时持有多个副职）与设计裁定，但未声明任何决策层消费点；副职系统的技能号段/结算消费是后续批次工作。",

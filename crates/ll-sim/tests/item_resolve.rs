@@ -114,6 +114,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,
+                damage_category: None,
             },
         )]),
     };

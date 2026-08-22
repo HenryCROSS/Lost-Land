@@ -121,6 +121,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     use_effect: None,
                     penetration: Penetration::NONE,
                     damage_formula: None,
+                    damage_category: None,
                 },
             ),
             (
@@ -132,6 +133,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     use_effect: None,
                     penetration: Penetration::NONE,
                     damage_formula: None,
+                    damage_category: None,
                 },
             ),
             (
@@ -145,6 +147,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     use_effect: None,
                     penetration: Penetration::NONE,
                     damage_formula: None,
+                    damage_category: None,
                 },
             ),
         ]),
@@ -405,6 +408,7 @@ fn 物品不可装备时装备意图静默无效() {
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,
+                damage_category: None,
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),

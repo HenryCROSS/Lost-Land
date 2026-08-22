@@ -185,6 +185,29 @@ pub struct ItemDef {
     /// 追加**——与 [`Self::penetration`] 同一种"单值覆盖"语义：一件
     /// 物品只有一份显式公式引用。
     pub damage_formula: Option<ContentIndex>,
+    /// 这件物品显式声明的伤害类别（伤害类别/抗性接线批次新增）——
+    /// `None`（默认值）表示这件物品不指定伤害类别，`resolve_attack`
+    /// 退回全局默认伤害类别，见
+    /// [`ll_sim::damage_category::DamageCategoryCatalog`] 文档。
+    ///
+    /// # 为什么不是 `register-item` 的参数，走 `set_damage_category` 追加
+    ///
+    /// 与 [`Self::damage_formula`] 同一条既有先例（`register-item` 的
+    /// 六参数签名不能改参数个数）——脚本层对应函数是
+    /// `register-item-damage-category`（`crate::script_item_api`），
+    /// Rust 层对应方法是 [`ItemTable::set_damage_category`]。**覆盖，
+    /// 不是追加**——一件物品只有一份显式伤害类别引用,与
+    /// [`Self::damage_formula`] 同一种"单值覆盖"语义。
+    ///
+    /// # 与武器类别、`damage_formula` 都是独立的轴
+    ///
+    /// `damage-formula-mod-api.md` 十七节「是不是同一种东西：不是」——
+    /// 伤害类别描述"造成哪种伤害"（挂公式、查抗性），与"这件物品显式
+    /// 声明哪条公式"（[`Self::damage_formula`]）、"这件武器算哪一类
+    /// 武器"（`register-weapon-category`，本批次未给 `ItemDef` 加对应
+    /// 字段,见 `crate::weapon_category` 模块文档「本批次范围」一节）
+    /// 是三件独立的事,本字段只回答第一个问题。
+    pub damage_category: Option<ContentIndex>,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -227,6 +250,12 @@ pub struct ItemAttrs {
     /// [`ItemTable::set_damage_formula`] 写入，理由同
     /// [`ItemDef::damage_formula`] 文档。
     pub damage_formula: Option<ContentIndex>,
+    /// 显式声明的伤害类别——`register-item` 注册时恒为 `None`（同上，
+    /// `do_register_item` 不接受这个参数），真正的取值由后续
+    /// `register-item-damage-category` 调用
+    /// [`ItemTable::set_damage_category`] 写入，理由同
+    /// [`ItemDef::damage_category`] 文档。
+    pub damage_category: Option<ContentIndex>,
 }
 
 /// 物品注册期可能出现的错误。
@@ -286,6 +315,8 @@ pub struct ItemView<'a> {
     pub penetration: Penetration,
     /// 显式声明的伤害公式。
     pub damage_formula: Option<ContentIndex>,
+    /// 显式声明的伤害类别。
+    pub damage_category: Option<ContentIndex>,
 }
 
 /// 物品属性的列式存储：按 [`ContentIndex`] 下标索引，与
@@ -304,6 +335,7 @@ pub struct ItemTable {
     use_effect: Vec<Option<SkillEffect>>,
     penetration: Vec<Penetration>,
     damage_formula: Vec<Option<ContentIndex>>,
+    damage_category: Vec<Option<ContentIndex>>,
     defined: Vec<bool>,
 }
 
@@ -329,6 +361,7 @@ impl ItemTable {
             self.use_effect.resize(new_len, None);
             self.penetration.resize(new_len, Penetration::NONE);
             self.damage_formula.resize(new_len, None);
+            self.damage_category.resize(new_len, None);
         }
 
         if self.defined[idx] {
@@ -346,6 +379,7 @@ impl ItemTable {
         self.use_effect[idx] = attrs.use_effect;
         self.penetration[idx] = attrs.penetration;
         self.damage_formula[idx] = attrs.damage_formula;
+        self.damage_category[idx] = attrs.damage_category;
         Ok(())
     }
 
@@ -376,6 +410,7 @@ impl ItemTable {
             use_effect: self.use_effect[idx],
             penetration: self.penetration[idx],
             damage_formula: self.damage_formula[idx],
+            damage_category: self.damage_category[idx],
         })
     }
 
@@ -484,6 +519,29 @@ impl ItemTable {
         self.damage_formula[item.get() as usize] = Some(formula);
         Ok(())
     }
+
+    /// 设置这件物品显式声明的伤害类别（伤害类别/抗性接线批次新增）——
+    /// `register-item` 的既有脚本签名不能改参数个数，理由同
+    /// [`Self::set_equip_mask`]。目标索引必须已经 `define` 过，否则
+    /// 返回 [`ItemError::NotDefined`]，同一条 ADR 0017 纪律。
+    ///
+    /// **覆盖，不是追加**——与 [`Self::set_damage_formula`] 同一种"单值
+    /// 覆盖"语义，见 [`ItemDef::damage_category`] 文档。本方法不校验
+    /// `category` 是否已经通过 `register-damage-category` 注册——与
+    /// [`Self::set_damage_formula`] 同一条既有纪律，真正的存在性校验
+    /// 交给调用方（`crate::script_item_api::register_item_damage_category`）
+    /// 在写入前完成。
+    pub fn set_damage_category(
+        &mut self,
+        item: ContentIndex,
+        category: ContentIndex,
+    ) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        self.damage_category[item.get() as usize] = Some(category);
+        Ok(())
+    }
 }
 
 /// `resolve` 侧的堆叠上限/装备占位/属性加成查询——`ll_sim::resolve::resolve_pick_up`
@@ -506,6 +564,7 @@ impl ItemCatalog for ItemTable {
             use_effect: view.use_effect,
             penetration: view.penetration,
             damage_formula: view.damage_formula,
+            damage_category: view.damage_category,
         })
     }
 }
@@ -546,6 +605,7 @@ mod tests {
                     use_effect: None,
                     penetration: Penetration::NONE,
                     damage_formula: None,
+                    damage_category: None,
                 },
             )
             .expect("首次定义应当成功");
@@ -573,6 +633,7 @@ mod tests {
             use_effect: None,
             penetration: Penetration::NONE,
             damage_formula: None,
+            damage_category: None,
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -619,6 +680,7 @@ mod tests {
                     use_effect: None,
                     penetration: Penetration::NONE,
                     damage_formula: None,
+                    damage_category: None,
                 },
             )
             .expect("首次定义应当成功");
@@ -648,6 +710,7 @@ mod tests {
                     use_effect: None,
                     penetration: Penetration::NONE,
                     damage_formula: None,
+                    damage_category: None,
                 },
             )
             .expect("首次定义应当成功");
@@ -665,6 +728,7 @@ mod tests {
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,
+                damage_category: None,
             })
         );
     }
@@ -697,6 +761,7 @@ mod tests {
             use_effect: None,
             penetration: Penetration::NONE,
             damage_formula: None,
+            damage_category: None,
         }
     }
 

@@ -93,6 +93,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                     use_effect: None,
                     penetration: Penetration::NONE,
                     damage_formula: None,
+                    damage_category: None,
                 },
             ),
             (
@@ -107,6 +108,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                     use_effect: None,
                     penetration: Penetration::NONE,
                     damage_formula: None,
+                    damage_category: None,
                 },
             ),
         ]),
@@ -626,6 +628,7 @@ fn luck_ring_item() -> (ContentIndex, FakeItems) {
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,
+                damage_category: None,
             },
         )]),
     };

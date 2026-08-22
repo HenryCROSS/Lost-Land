@@ -26,6 +26,10 @@
 ;;   register-race-starting-item           crates/ll-mod/src/script_race_api.rs
 ;;   register-damage-formula               crates/ll-mod/src/script_damage_formula_api.rs
 ;;   register-item-damage-formula          crates/ll-mod/src/script_item_api.rs
+;;   register-weapon-category               crates/ll-mod/src/script_weapon_category_api.rs
+;;   register-damage-category               crates/ll-mod/src/script_damage_category_api.rs
+;;   register-trait-resistance              crates/ll-mod/src/script_trait_api.rs
+;;   register-item-damage-category          crates/ll-mod/src/script_item_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -258,3 +262,33 @@
 (register-item "examplemod:flame_longbow" "examplemod:flame_longbow_display_name" 1 4000 60000 90)
 (register-item-equip-mask "examplemod:flame_longbow" (list "main-hand"))
 (register-item-damage-formula "examplemod:flame_longbow" "examplemod:flame_longbow_formula")
+
+;; 伤害类别/抗性接线批次：knowledge/design/damage-formula-mod-api.md
+;; 十七、二十一节与 knowledge/design/trait-system.md 三节③的真实版本
+;; ——一个新的伤害类别（酸，证明这条开放轴真的能被 mod 无限扩展，不是
+;; 只有本体注册的 lostland:physical 一个封闭值）、一件用这个类别攻击的
+;; 匕首、一个对酸有 500‰（半伤）抗性的天赋，与一个被授予这个天赋的
+;; 种族（软泥怪），四行连起来证明 register-damage-category/
+;; register-item-damage-category/register-trait-resistance 三个新脚本
+;; API 真的能被 mod 脚本调用，且真实注册的抗性声明真的能走真实
+;; resolve_attack + apply 降低伤害——ADR 0018「玩法层内容必须能从 mod
+;; 脚本注册，且要有真实 mod 脚本为证」，
+;; crates/ll-mod/tests/example_mod_resistance.rs 是那份证据。
+;;
+;; 顺带用 register-weapon-category 声明一个武器类别（匕首）——证明这个
+;; 新脚本 API 同样真的可达；本批次没有给任何武器接上武器类别字段（见
+;; crates/ll-mod/src/weapon_category.rs 模块文档「本批次没有给 ItemDef
+;; 加对应字段」一节），这里只验证注册本身成功，不代表它已经影响结算。
+(register-weapon-category "examplemod:dagger" "")
+(register-damage-category "examplemod:acid" "")
+(register-trait "examplemod:acid_hide" "examplemod:acid_hide_display_name" (list))
+(register-trait-resistance "examplemod:acid_hide" "examplemod:acid" 500)
+(register-race "examplemod:ooze" "examplemod:ooze_display_name" 0 0 0 0 0 0 0 1 1 30)
+(register-race-trait "examplemod:ooze" "examplemod:acid_hide" 1)
+(register-item "examplemod:acid_dagger" "examplemod:acid_dagger_display_name" 1 500 6000 40)
+(register-item-equip-mask "examplemod:acid_dagger" (list "main-hand"))
+(register-item-damage-category "examplemod:acid_dagger" "examplemod:acid")
+;; 复用上面已经注册过的确定性铁剑公式（+ attack-power str-mod）——本
+;; 批次不涉及公式本身的设计,只需要一条不掷骰、期望值可手算复现的公式
+;; 挂在这件新武器上,不必为它另写一条等价的公式。
+(register-item-damage-formula "examplemod:acid_dagger" "examplemod:iron_sword_formula")

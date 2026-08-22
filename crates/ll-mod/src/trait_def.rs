@@ -23,9 +23,11 @@
 //! 据此聚合出角色对某个标量池的有效容量,见该函数文档。`stat_modifiers`
 //! 走既有的 `Agent::active_stat_modifiers` 通道（该节②：「不是新机制,
 //! 是同一份数据被两种消费方式使用」,接线是另一批的工作)；
-//! `rule_modifiers` 现在仍没有任何消费者（③需要的抗性机制还是纯设计，
-//! 见该文档十节「等什么」清单第 1 项）——本模块只负责让这一类效果能
-//! 被 mod 作者以正确的形状**声明**下来,不假装它已经在游戏里生效。
+//! `rule_modifiers` 里的 [`RuleModifier::Resistance`]（伤害类别/抗性
+//! 接线批次新增）现在有真实消费者——`ll_sim::traits::resistance_multiplier_permille`
+//! 通过下方 `impl TraitCatalog for TraitTable` 读到这个字段；其余三个
+//! 变体（`RerollOnce`/`Advantage`/`Disadvantage`）仍然没有消费者,见
+//! [`RuleModifier`] 文档「本批次接线状态」一节。
 //!
 //! # `register-trait` 脚本签名为什么只暴露①，不是设计文档的完整六参数
 //!
@@ -59,47 +61,9 @@ use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 pub use ll_sim::resource_pool::{CapacityFormula, CapacityValue, ResourcePoolGrant};
+pub use ll_sim::traits::RuleModifier;
 use ll_sim::traits::{TraitCatalog, TraitRule};
 use ll_world::entity::AttributeKind;
-
-/// 三节③「改变规则本身」——封闭枚举，走注册表第一档（声明式），
-/// 理由与档位判据见 `trait-system.md` 三节③「三步判据核对」一节。
-///
-/// **当前没有任何 `resolve` 侧消费者**（见模块文档「本批次范围」
-/// 一节）——`Resistance` 需要的抗性乘数挂载点、`RerollOnce` 需要的
-/// `roll_one_die` 钩子、`Advantage`/`Disadvantage` 需要的判定系统，
-/// 三者都还是纯设计（该文档十节「等什么」清单第 1/4/5 项）。本枚举
-/// 只负责把"这个天赋声明了哪种规则修正"这份数据在注册期存下来,不
-/// 假装它已经在战斗结算里生效。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum RuleModifier {
-    /// 抗性：该伤害类别的伤害，在既有减伤链路算完之后再打一个千分比
-    /// 折扣——0=免疫，500=半伤，2000=双倍。
-    Resistance {
-        /// 伤害类别，走 `damage-formula-mod-api.md` 十七节已经开放的
-        /// `register-damage-category` 集合。
-        damage_category: ContentIndex,
-        /// 千分比乘数。
-        multiplier_permille: i32,
-    },
-    /// 重骰：该实体掷骰抽出 `value` 时,立即重抽一次,取新值（不再检查
-    /// 新值是否又是 `value`）。
-    RerollOnce {
-        /// 触发重骰的点数。
-        value: i32,
-    },
-    /// 优势：该实体在 `check_context` 这类判定上默认套用优势——占位
-    /// 变体，当前无消费者（本项目没有判定/检定系统,见模块文档）。
-    Advantage {
-        /// 判定种类的开放标识符,具体值域留给判定系统落地时定案。
-        check_context: NamespacedId,
-    },
-    /// 劣势，语义同 [`RuleModifier::Advantage`]，方向相反。
-    Disadvantage {
-        /// 判定种类的开放标识符。
-        check_context: NamespacedId,
-    },
-}
 
 /// 三节④「资源池容量」——一条"这个天赋授予多少这种资源池容量"的声明,
 /// 按 `resource-pools-and-rest.md` 三节末尾原文落地（`trait-system.md`
@@ -332,20 +296,42 @@ impl TraitTable {
         }
         Ok(())
     }
+
+    /// 追加声明「这个天赋携带一条规则修正」（伤害类别/抗性接线批次
+    /// 新增）——与 [`Self::add_resource_pool_grant`] 同一个「新增能力用
+    /// 新函数」模式：不改 `define`/`register-trait` 已有的签名，一个
+    /// 天赋可以被多次调用追加多条 [`RuleModifier`]（例如同一个天赋
+    /// 同时声明对火与冰的抗性）。**追加，不是覆盖**——理由同
+    /// [`Self::add_resource_pool_grant`]，规则修正天然是一个可以携带
+    /// 任意多条的列表。
+    pub fn add_rule_modifier(
+        &mut self,
+        trait_id: ContentIndex,
+        modifier: RuleModifier,
+    ) -> Result<(), TraitError> {
+        if !self.is_defined(trait_id) {
+            return Err(TraitError::NotDefined(trait_id));
+        }
+        self.rule_modifiers[trait_id.get() as usize].push(modifier);
+        Ok(())
+    }
 }
 
 /// `ll_sim::traits::TraitCatalog` 的真实实现——`resolve_use_skill`
 /// 门一通过这个 impl 真正查到种族天赋授予的技能，
 /// `ll_sim::resource_pool::effective_scalar_capacity` 通过同一个 impl
-/// 查到天赋授予的资源池容量声明，见 `ll_sim::traits` 模块文档「本任务
-/// 选择的解法」一节同一套依赖倒置手法。搬运 `granted_skills`/
-/// `granted_resource_pools` 两个字段——`TraitRule` 目前只声明这两个
-/// 字段，见其文档。
+/// 查到天赋授予的资源池容量声明，`ll_sim::traits::resistance_multiplier_permille`
+/// （伤害类别/抗性接线批次新增）通过同一个 impl 查到天赋声明的规则
+/// 修正，见 `ll_sim::traits` 模块文档「本任务选择的解法」一节同一套
+/// 依赖倒置手法。搬运 `granted_skills`/`granted_resource_pools`/
+/// `rule_modifiers` 三个字段——`TraitRule` 目前只声明这三个字段，见其
+/// 文档。
 impl TraitCatalog for TraitTable {
     fn trait_rule(&self, trait_id: ContentIndex) -> Option<TraitRule> {
         self.get(trait_id).map(|view| TraitRule {
             granted_skills: view.granted_skills.to_vec(),
             granted_resource_pools: view.granted_resource_pools.to_vec(),
+            rule_modifiers: view.rule_modifiers.to_vec(),
         })
     }
 }
@@ -524,6 +510,102 @@ mod tests {
         // Act
         let result =
             table.add_resource_pool_grant_tiered_level(ContentIndex::default(), pool, 1, vec![1]);
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 追加规则修正后查询能拿到完整的抗性声明() {
+        // Arrange
+        let mut registry = Registry::new();
+        let trait_id = registry.intern(NamespacedId::parse("lostland:fire_resistance").unwrap());
+        let fire = registry.intern(NamespacedId::parse("lostland:fire").unwrap());
+        let mut table = TraitTable::new();
+        table
+            .define(
+                trait_id,
+                no_effects(NamespacedId::parse("lostland:trait.fire_resistance").unwrap()),
+            )
+            .expect("首次定义应当成功");
+
+        // Act
+        table
+            .add_rule_modifier(
+                trait_id,
+                RuleModifier::Resistance {
+                    damage_category: fire,
+                    multiplier_permille: 500,
+                },
+            )
+            .expect("追加规则修正应当成功");
+
+        // Assert
+        let view = table.get(trait_id).unwrap();
+        assert_eq!(
+            view.rule_modifiers,
+            &[RuleModifier::Resistance {
+                damage_category: fire,
+                multiplier_permille: 500,
+            }]
+        );
+    }
+
+    #[test]
+    fn 多次追加规则修正累积成多条而不互相覆盖() {
+        // Arrange：同一个天赋声明对火与冰各自的抗性——追加语义,不是
+        // 单值覆盖。
+        let mut registry = Registry::new();
+        let trait_id = registry.intern(NamespacedId::parse("lostland:elemental_hide").unwrap());
+        let fire = registry.intern(NamespacedId::parse("lostland:fire").unwrap());
+        let cold = registry.intern(NamespacedId::parse("lostland:cold").unwrap());
+        let mut table = TraitTable::new();
+        table
+            .define(
+                trait_id,
+                no_effects(NamespacedId::parse("lostland:trait.elemental_hide").unwrap()),
+            )
+            .expect("首次定义应当成功");
+
+        // Act
+        table
+            .add_rule_modifier(
+                trait_id,
+                RuleModifier::Resistance {
+                    damage_category: fire,
+                    multiplier_permille: 500,
+                },
+            )
+            .expect("第一次追加应当成功");
+        table
+            .add_rule_modifier(
+                trait_id,
+                RuleModifier::Resistance {
+                    damage_category: cold,
+                    multiplier_permille: 0,
+                },
+            )
+            .expect("第二次追加应当成功");
+
+        // Assert
+        assert_eq!(table.get(trait_id).unwrap().rule_modifiers.len(), 2);
+    }
+
+    #[test]
+    fn 目标天赋尚未注册时规则修正追加返回错误而不panic() {
+        // Arrange
+        let mut registry = Registry::new();
+        let fire = registry.intern(NamespacedId::parse("lostland:fire").unwrap());
+        let mut table = TraitTable::new();
+
+        // Act
+        let result = table.add_rule_modifier(
+            ContentIndex::default(),
+            RuleModifier::Resistance {
+                damage_category: fire,
+                multiplier_permille: 500,
+            },
+        );
 
         // Assert
         assert!(result.is_err());

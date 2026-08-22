@@ -29,6 +29,7 @@ use std::path::Path;
 use ll_core::ident::ContentIndex;
 use ll_mod::asset_vfs::{self, AssetVfs};
 use ll_mod::base_clip::register_base_clips;
+use ll_mod::base_damage_category::register_base_damage_category;
 use ll_mod::base_damage_formula::register_base_damage_formula;
 use ll_mod::base_placeholder::register_base_placeholder_content;
 use ll_mod::base_race::register_base_races;
@@ -38,6 +39,7 @@ use ll_mod::base_xp_curve::register_base_xp_curve;
 use ll_mod::class::ClassTable;
 use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
+use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::discover::discover_mods;
 use ll_mod::formula::FormulaTable;
 use ll_mod::item::ItemTable;
@@ -51,6 +53,7 @@ use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
 use ll_mod::trait_def::TraitTable;
+use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
@@ -125,6 +128,17 @@ pub struct LoadedContent {
     pub default_damage_formula_id: ContentIndex,
     /// 伤害公式定义表。
     pub formula_table: FormulaTable,
+    /// 武器类别定义表（伤害类别/抗性接线批次新增）——
+    /// `ll_mod::weapon_category::WeaponCategoryTable`，本批次没有任何
+    /// `resolve` 侧消费者，见其模块文档「本批次没有给 `ItemDef` 加对应
+    /// 字段」一节。
+    pub weapon_category_table: WeaponCategoryTable,
+    /// 本体默认伤害类别索引（`lostland:physical`，伤害类别/抗性接线
+    /// 批次新增）——武器未显式声明伤害类别时的保底类别，见
+    /// `ll_mod::base_damage_category` 模块文档。
+    pub default_damage_category_id: ContentIndex,
+    /// 伤害类别定义表。
+    pub damage_category_table: DamageCategoryTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -178,6 +192,9 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     let (default_damage_formula_id, mut formula_table) =
         register_base_damage_formula(&mut |id| registry.intern(id))
             .expect("本体默认伤害公式声明内部一致，注册恒不失败");
+    let (default_damage_category_id, mut damage_category_table) =
+        register_base_damage_category(&mut |id| registry.intern(id))
+            .expect("本体默认伤害类别声明内部一致，注册恒不失败");
 
     let mut class_table = ClassTable::new();
     let mut skill_table = SkillTable::new();
@@ -187,6 +204,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     let mut trait_table = TraitTable::new();
     let mut resource_pool_table = ResourcePoolTable::new();
     let mut item_table = ItemTable::new();
+    let mut weapon_category_table = WeaponCategoryTable::new();
 
     let mut report = load_all(
         mods_root,
@@ -205,6 +223,8 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             resource_pool: &mut resource_pool_table,
             item: &mut item_table,
             formula: &mut formula_table,
+            weapon_category: &mut weapon_category_table,
+            damage_category: &mut damage_category_table,
         },
     );
 
@@ -242,6 +262,8 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             item: &item_table,
             xp_curve: &xp_curve_table,
             formula: &formula_table,
+            weapon_category: &weapon_category_table,
+            damage_category: &damage_category_table,
         },
     );
 
@@ -290,6 +312,9 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         item_table,
         default_damage_formula_id,
         formula_table,
+        weapon_category_table,
+        default_damage_category_id,
+        damage_category_table,
         manifests,
         script_sources,
         report,
@@ -532,6 +557,8 @@ mod tests {
             item: &loaded.item_table,
             xp_curve: &loaded.xp_curve_table,
             formula: &loaded.formula_table,
+            weapon_category: &loaded.weapon_category_table,
+            damage_category: &loaded.damage_category_table,
         };
 
         // Act

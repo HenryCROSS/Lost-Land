@@ -100,6 +100,7 @@ pub mod apply;
 pub mod behavior;
 pub mod character;
 pub mod combat;
+pub mod damage_category;
 pub mod effect;
 pub mod experience;
 pub mod formula;

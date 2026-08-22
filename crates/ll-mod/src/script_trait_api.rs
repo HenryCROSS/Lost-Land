@@ -23,7 +23,9 @@ use ll_script::host::ScriptEngine;
 
 use crate::active_registry::with_active_registry;
 use crate::registry::Registry;
-use crate::trait_def::{CapacityFormula, ResourcePoolGrant, TraitAttrs, TraitError, TraitTable};
+use crate::trait_def::{
+    CapacityFormula, ResourcePoolGrant, RuleModifier, TraitAttrs, TraitError, TraitTable,
+};
 
 thread_local! {
     /// 当前调用窗口内，`register-trait` 应该写入的天赋表。
@@ -53,6 +55,7 @@ pub fn register_trait_api(engine: &mut ScriptEngine) {
         "register-trait-resource-pool-by-level",
         register_trait_resource_pool_by_level,
     );
+    engine.register_fn("register-trait-resistance", register_trait_resistance);
 }
 
 /// `(register-trait id display-name-key granted-skills)`。
@@ -289,6 +292,86 @@ fn do_register_trait_resource_pool_by_level(
 
     table
         .add_resource_pool_grant_tiered_level(trait_index, pool_index, level, tiers)
+        .map(|()| true)
+        .map_err(|err: TraitError| err.to_string())
+}
+
+/// `(register-trait-resistance trait-id damage-category-id multiplier-permille)`
+/// ——追加声明「这个天赋携带对某个伤害类别的抗性」（伤害类别/抗性接线
+/// 批次新增，`knowledge/design/trait-system.md` 三节③），与
+/// [`register_trait_resource_pool`] 同一个「新增能力用新函数」模式：
+/// 不改 `register-trait` 已有的三参数签名。
+///
+/// - `trait-id`：已经通过 `register-trait` 注册过的完整命名空间标识符
+///   字符串——目标必须已存在，同 [`register_trait_resource_pool`] 一条
+///   ADR 0017「注册期完整校验」纪律。
+/// - `damage-category-id`：已经通过 `register-damage-category`
+///   （`crate::script_damage_category_api`）注册过的完整命名空间标识符
+///   字符串——与 `pool-id` 未注册即拒绝同一条纪律，不允许静默创建一个
+///   指向不存在类别的悬空抗性声明。
+/// - `multiplier-permille`：千分比乘数（`0`=免疫，`500`=半伤，
+///   `2000`=双倍），见 [`RuleModifier::Resistance`] 文档。允许为负？
+///   不允许——负的抗性乘数没有设计依据（比"负伤害"更没有意义），钳到
+///   零而不是拒绝整次调用，与本代码库其余"数值层面取舍而非拒绝"的既有
+///   纪律一致（见 `crate::script_terrain_api::do_register_terrain`
+///   对 `move_cost` 负值的处理）。
+///
+/// **追加，不是覆盖**——一个天赋可以同时声明对多个伤害类别的抗性，见
+/// [`crate::trait_def::TraitTable::add_rule_modifier`] 文档。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_trait_resistance(
+    trait_id: String,
+    damage_category_id: String,
+    multiplier_permille: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-trait-resistance 在没有活跃天赋表的窗口内被调用".to_string());
+            };
+            do_register_trait_resistance(
+                registry,
+                table,
+                &trait_id,
+                &damage_category_id,
+                multiplier_permille,
+            )
+        })
+    })
+}
+
+/// [`register_trait_resistance`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_trait_resistance(
+    registry: &Registry,
+    table: &mut TraitTable,
+    trait_id: &str,
+    damage_category_id: &str,
+    multiplier_permille: i64,
+) -> Result<bool, String> {
+    let parsed_trait_id = NamespacedId::parse(trait_id)
+        .map_err(|err| format!("非法内容标识符 {trait_id:?}：{err}"))?;
+    let Some(trait_index) = registry.get(&parsed_trait_id) else {
+        return Err(format!("天赋 {trait_id:?} 尚未通过 register-trait 注册"));
+    };
+    let parsed_category_id = NamespacedId::parse(damage_category_id)
+        .map_err(|err| format!("非法内容标识符 {damage_category_id:?}：{err}"))?;
+    let Some(category_index) = registry.get(&parsed_category_id) else {
+        return Err(format!(
+            "伤害类别 {damage_category_id:?} 尚未通过 register-damage-category 注册"
+        ));
+    };
+
+    table
+        .add_rule_modifier(
+            trait_index,
+            RuleModifier::Resistance {
+                damage_category: category_index,
+                multiplier_permille: multiplier_permille.max(0) as i32,
+            },
+        )
         .map(|()| true)
         .map_err(|err: TraitError| err.to_string())
 }
@@ -632,5 +715,112 @@ mod tests {
         let grants = &table.get(index).unwrap().granted_resource_pools;
         assert_eq!(grants.len(), 1, "两次调用应当合并进同一条授予声明");
         assert_eq!(grants[0].pool, pool);
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_trait_resistance() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        let mut registry = Registry::new();
+        let trait_index = registry.intern(NamespacedId::parse("yourmod:fire_resistance").unwrap());
+        let fire = registry.intern(NamespacedId::parse("yourmod:fire").unwrap());
+        let mut table = TraitTable::new();
+        table
+            .define(
+                trait_index,
+                TraitAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:trait.fire_resistance").unwrap(),
+                    granted_skills: Vec::new(),
+                    stat_modifiers: Vec::new(),
+                    rule_modifiers: Vec::new(),
+                    granted_resource_pools: Vec::new(),
+                },
+            )
+            .expect("先注册天赋本体");
+        crate::active_registry::set_active_registry(registry);
+        set_active_target(table);
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-trait-resistance "yourmod:fire_resistance" "yourmod:fire" 500)"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:fire_resistance").unwrap())
+            .unwrap();
+        assert_eq!(
+            table.get(index).unwrap().rule_modifiers,
+            &[RuleModifier::Resistance {
+                damage_category: fire,
+                multiplier_permille: 500,
+            }]
+        );
+    }
+
+    #[test]
+    fn 伤害类别未注册时register_trait_resistance失败而不panic() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        let mut registry = Registry::new();
+        let trait_index = registry.intern(NamespacedId::parse("yourmod:fire_resistance").unwrap());
+        let mut table = TraitTable::new();
+        table
+            .define(
+                trait_index,
+                TraitAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:trait.fire_resistance").unwrap(),
+                    granted_skills: Vec::new(),
+                    stat_modifiers: Vec::new(),
+                    rule_modifiers: Vec::new(),
+                    granted_resource_pools: Vec::new(),
+                },
+            )
+            .expect("先注册天赋本体");
+        crate::active_registry::set_active_registry(registry);
+        set_active_target(table);
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-trait-resistance "yourmod:fire_resistance" "yourmod:never_registered" 500)"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_err());
+
+        // Cleanup。
+        take_active_target();
+        crate::active_registry::take_active_registry();
+    }
+
+    #[test]
+    fn 目标天赋尚未注册时register_trait_resistance失败而不panic() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        let mut registry = Registry::new();
+        registry.intern(NamespacedId::parse("yourmod:fire").unwrap());
+        crate::active_registry::set_active_registry(registry);
+        set_active_target(TraitTable::new());
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-trait-resistance "yourmod:never_registered_trait" "yourmod:fire" 500)"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_err());
+
+        // Cleanup。
+        take_active_target();
+        crate::active_registry::take_active_registry();
     }
 }

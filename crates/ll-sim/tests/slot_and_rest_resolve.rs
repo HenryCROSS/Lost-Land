@@ -179,6 +179,7 @@ fn wizard_slots_traits(
                         CapacityValue::Tiered(vec![5, 0, 1, 1]),
                     )])),
                 }],
+                rule_modifiers: Vec::new(),
             },
         )]),
     };
@@ -385,6 +386,7 @@ fn 三环法术不能用一环位放() {
                         CapacityValue::Tiered(vec![5, 0, 0, 0]),
                     )])),
                 }],
+                rule_modifiers: Vec::new(),
             },
         )]),
     };
@@ -646,6 +648,7 @@ fn 缓慢恢复的法术位每回合真的按onturnstart回复一个已消耗档
                         CapacityValue::Tiered(vec![3, 0, 0]),
                     )])),
                 }],
+                rule_modifiers: Vec::new(),
             },
         )]),
     };
@@ -750,6 +753,7 @@ fn 休息完成后标量法力池真的回满() {
                     pool,
                     capacity: CapacityFormula::Fixed(20),
                 }],
+                rule_modifiers: Vec::new(),
             },
         )]),
     };

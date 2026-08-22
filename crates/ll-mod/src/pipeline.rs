@@ -48,6 +48,7 @@ use crate::trait_def::TraitTable;
 use crate::{discover, topo};
 
 use crate::active_registry::{set_active_registry, take_active_registry};
+use crate::damage_category::DamageCategoryTable;
 use crate::formula::FormulaTable;
 use crate::script_class_api::{
     register_class_api, set_active_target as set_active_class_target,
@@ -56,6 +57,10 @@ use crate::script_class_api::{
 use crate::script_clip_api::{
     register_clip_api, set_active_target as set_active_clip_target,
     take_active_target as take_active_clip_target,
+};
+use crate::script_damage_category_api::{
+    register_damage_category_api, set_active_target as set_active_damage_category_target,
+    take_active_target as take_active_damage_category_target,
 };
 use crate::script_damage_formula_api::{
     register_damage_formula_api, set_active_target as set_active_formula_target,
@@ -93,10 +98,15 @@ use crate::script_trait_api::{
     register_trait_api, set_active_target as set_active_trait_target,
     take_active_target as take_active_trait_target,
 };
+use crate::script_weapon_category_api::{
+    register_weapon_category_api, set_active_target as set_active_weapon_category_target,
+    take_active_target as take_active_weapon_category_target,
+};
 use crate::script_xp_curve_api::{
     register_xp_curve_api, set_active_target as set_active_xp_curve_target,
     take_active_target as take_active_xp_curve_target,
 };
+use crate::weapon_category::WeaponCategoryTable;
 use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 
 /// 加载管线一次装载会话内，脚本注册函数可以写入的全部内容表——地形、
@@ -148,6 +158,14 @@ pub struct GameplayTables<'a> {
     /// 伤害公式定义表（伤害公式引擎批次新增）——`register-damage-formula`
     /// 的写入目标，见 `crate::formula` 模块文档。
     pub formula: &'a mut FormulaTable,
+    /// 武器类别定义表（伤害类别/抗性接线批次新增）——
+    /// `register-weapon-category` 的写入目标，见 `crate::weapon_category`
+    /// 模块文档。
+    pub weapon_category: &'a mut WeaponCategoryTable,
+    /// 伤害类别定义表（伤害类别/抗性接线批次新增）——
+    /// `register-damage-category` 的写入目标，见 `crate::damage_category`
+    /// 模块文档。
+    pub damage_category: &'a mut DamageCategoryTable,
 }
 
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
@@ -277,6 +295,8 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut resource_pool = ResourcePoolTable::new();
     let mut item = ItemTable::new();
     let mut formula = FormulaTable::new();
+    let mut weapon_category = WeaponCategoryTable::new();
+    let mut damage_category = DamageCategoryTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -291,6 +311,8 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         resource_pool: &mut resource_pool,
         item: &mut item,
         formula: &mut formula,
+        weapon_category: &mut weapon_category,
+        damage_category: &mut damage_category,
     };
     for entry in &manifest.entry_points {
         if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
@@ -415,6 +437,8 @@ fn load_one_script(
     set_active_resource_pool_target(std::mem::take(tables.resource_pool));
     set_active_item_target(std::mem::take(tables.item));
     set_active_formula_target(std::mem::take(tables.formula));
+    set_active_weapon_category_target(std::mem::take(tables.weapon_category));
+    set_active_damage_category_target(std::mem::take(tables.damage_category));
 
     let mut engine = ScriptEngine::new();
     register_terrain_api(&mut engine);
@@ -429,6 +453,8 @@ fn load_one_script(
     register_resource_pool_api(&mut engine);
     register_item_api(&mut engine);
     register_damage_formula_api(&mut engine);
+    register_weapon_category_api(&mut engine);
+    register_damage_category_api(&mut engine);
     let result = engine.load_source(source.clone());
 
     *registry = take_active_registry();
@@ -446,6 +472,8 @@ fn load_one_script(
     *tables.resource_pool = take_active_resource_pool_target();
     *tables.item = take_active_item_target();
     *tables.formula = take_active_formula_target();
+    *tables.weapon_category = take_active_weapon_category_target();
+    *tables.damage_category = take_active_damage_category_target();
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -532,6 +560,8 @@ mod tests {
         resource_pool: ResourcePoolTable,
         item: ItemTable,
         formula: FormulaTable,
+        weapon_category: WeaponCategoryTable,
+        damage_category: DamageCategoryTable,
     }
 
     impl OwnedTables {
@@ -550,6 +580,8 @@ mod tests {
                 resource_pool: &mut self.resource_pool,
                 item: &mut self.item,
                 formula: &mut self.formula,
+                weapon_category: &mut self.weapon_category,
+                damage_category: &mut self.damage_category,
             }
         }
     }
