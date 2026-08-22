@@ -31,6 +31,7 @@
 ;;   register-damage-category               crates/ll-mod/src/script_damage_category_api.rs
 ;;   register-trait-resistance              crates/ll-mod/src/script_trait_api.rs
 ;;   register-item-damage-category          crates/ll-mod/src/script_item_api.rs
+;;   register-item-resistance              crates/ll-mod/src/script_item_api.rs
 ;;   register-trait-sneak-attack             crates/ll-mod/src/script_trait_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
@@ -294,6 +295,27 @@
 ;; 批次不涉及公式本身的设计,只需要一条不掷骰、期望值可手算复现的公式
 ;; 挂在这件新武器上,不必为它另写一条等价的公式。
 (register-item-damage-formula "examplemod:acid_dagger" "examplemod:iron_sword_formula")
+
+;; 抗性多来源聚合批次：项目所有者对抗性来源的裁定原话——「抗性肯定会
+;; 来自天赋，以及装备，还有各种药品，或者技能」。上面的 acid_hide 天赋
+;; 是第一路（天赋）；这里接上**第二路（装备）**——一件挂在脖子上的酸抗
+;; 护符，同样声明 500‰（半伤）对酸的抗性。两路来源写进的是同一种载荷
+;; （RuleModifier::Resistance），被同一个聚合点
+;; （ll_sim::rule_modifier::resistance_multiplier_permille）按同一条
+;; tie-break 规则消费,差别只在"这条声明存在哪张表里"。
+;;
+;; 这三行证明 register-item-resistance 这个新脚本 API 真的能被 mod 脚本
+;; 调用，且真实注册的装备抗性真的能走真实 resolve_attack + apply 降低
+;; 伤害——ADR 0018「玩法层内容必须能从 mod 脚本注册，且要有真实 mod
+;; 脚本为证」，crates/ll-mod/tests/example_mod_resistance.rs 里的
+;; `真实注册的酸抗护符装备在身上时真实降低了酸匕首造成的伤害` 是那份
+;; 证据。刻意用一个**没有 acid_hide 天赋的种族**（半精灵）来戴它,这样
+;; 降下来的那部分伤害只可能来自装备这一路,不会与天赋那一路混淆。
+;; 最后一个参数是耐久上限，-1 表示"没有耐久概念"——护符占的是脖子
+;; 槽位，不是武器槽位，register-item 的既有校验只允许武器携带耐久。
+(register-item "examplemod:acid_ward_amulet" "examplemod:acid_ward_amulet_display_name" 1 300 15000 -1)
+(register-item-equip-mask "examplemod:acid_ward_amulet" (list "neck"))
+(register-item-resistance "examplemod:acid_ward_amulet" "examplemod:acid" 500)
 
 ;; 盗贼偷袭接线批次：所有者对「盗贼偷袭」的裁定原话——「盗贼偷袭做成
 ;; 技能判定吧，通过幸运值之类的属性以及一定的随机值组合一下」。

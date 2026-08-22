@@ -59,6 +59,7 @@ use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
 use ll_sim::combat::Penetration;
 use ll_sim::item::{ItemCatalog, ItemRule, SlotMask, StatBonus};
+use ll_sim::rule_modifier::RuleModifier;
 use ll_sim::skill::SkillEffect;
 
 /// 单条物品声明：本体与 mod 注册物品时共用的同一个输入形状——
@@ -208,6 +209,33 @@ pub struct ItemDef {
     /// 字段,见 `crate::weapon_category` 模块文档「本批次范围」一节）
     /// 是三件独立的事,本字段只回答第一个问题。
     pub damage_category: Option<ContentIndex>,
+    /// 这件物品声明的规则修正（抗性多来源聚合批次新增）——落地项目
+    /// 所有者对抗性来源的裁定「抗性肯定会来自天赋，以及装备，还有
+    /// 各种药品，或者技能」里**装备**这一路。空列表（默认值）表示
+    /// 这件物品不改变任何规则；载荷形状与消费路径见
+    /// [`ll_sim::item::ItemRule::rule_modifiers`] 文档。
+    ///
+    /// # 为什么不是 `register-item` 的参数，走 `add_rule_modifier` 追加
+    ///
+    /// 与 [`Self::stat_bonuses`] 同一条既有先例（`register-item` 的六
+    /// 参数签名不能改参数个数）——脚本层对应函数是
+    /// `register-item-resistance`（`crate::script_item_api`），Rust 层
+    /// 对应方法是 [`ItemTable::add_rule_modifier`]。**追加，不是
+    /// 覆盖**：一件装备可以同时声明对多个伤害类别的抗性，语义与
+    /// [`Self::stat_bonuses`]/[`crate::trait_def::TraitDef::rule_modifiers`]
+    /// 一致，不是 [`Self::equip_mask`] 那种单值覆盖。
+    ///
+    /// # 脚本层目前只开放了抗性一个变体
+    ///
+    /// `RuleModifier` 有五个变体，本批次只给物品开放
+    /// `register-item-resistance` 一条注册入口——所有者的裁定谈的是
+    /// 抗性；其余变体在天赋那一路的现状同样是「重骰/优势/劣势没有任何
+    /// 消费者，偷袭有消费者但没有内容需求」。Rust 层的字段本身不限制
+    /// 变体（聚合点对五个变体一视同仁，见
+    /// [`ll_sim::rule_modifier::equipment_rule_modifiers`]），需要时照
+    /// `register-trait-sneak-attack` 相对 `register-trait-resistance`
+    /// 的先例再加一个注册函数即可，不改本字段形状。
+    pub rule_modifiers: Vec<RuleModifier>,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -256,6 +284,11 @@ pub struct ItemAttrs {
     /// [`ItemTable::set_damage_category`] 写入，理由同
     /// [`ItemDef::damage_category`] 文档。
     pub damage_category: Option<ContentIndex>,
+    /// 规则修正列表——`register-item` 注册时恒为空列表（同上，
+    /// `do_register_item` 不接受这个参数），真正的取值由后续
+    /// `register-item-resistance` 调用 [`ItemTable::add_rule_modifier`]
+    /// 追加写入，理由同 [`ItemDef::rule_modifiers`] 文档。
+    pub rule_modifiers: Vec<RuleModifier>,
 }
 
 /// 物品注册期可能出现的错误。
@@ -317,6 +350,8 @@ pub struct ItemView<'a> {
     pub damage_formula: Option<ContentIndex>,
     /// 显式声明的伤害类别。
     pub damage_category: Option<ContentIndex>,
+    /// 规则修正列表——借用视图，不克隆，理由同 [`Self::stat_bonuses`]。
+    pub rule_modifiers: &'a [RuleModifier],
 }
 
 /// 物品属性的列式存储：按 [`ContentIndex`] 下标索引，与
@@ -336,6 +371,7 @@ pub struct ItemTable {
     penetration: Vec<Penetration>,
     damage_formula: Vec<Option<ContentIndex>>,
     damage_category: Vec<Option<ContentIndex>>,
+    rule_modifiers: Vec<Vec<RuleModifier>>,
     defined: Vec<bool>,
 }
 
@@ -362,6 +398,7 @@ impl ItemTable {
             self.penetration.resize(new_len, Penetration::NONE);
             self.damage_formula.resize(new_len, None);
             self.damage_category.resize(new_len, None);
+            self.rule_modifiers.resize(new_len, Vec::new());
         }
 
         if self.defined[idx] {
@@ -380,6 +417,7 @@ impl ItemTable {
         self.penetration[idx] = attrs.penetration;
         self.damage_formula[idx] = attrs.damage_formula;
         self.damage_category[idx] = attrs.damage_category;
+        self.rule_modifiers[idx] = attrs.rule_modifiers;
         Ok(())
     }
 
@@ -411,6 +449,7 @@ impl ItemTable {
             penetration: self.penetration[idx],
             damage_formula: self.damage_formula[idx],
             damage_category: self.damage_category[idx],
+            rule_modifiers: &self.rule_modifiers[idx],
         })
     }
 
@@ -542,6 +581,31 @@ impl ItemTable {
         self.damage_category[item.get() as usize] = Some(category);
         Ok(())
     }
+
+    /// 追加一条规则修正（抗性多来源聚合批次新增）——`register-item` 的
+    /// 既有脚本签名不能改参数个数，理由同 [`Self::set_equip_mask`]。
+    /// 目标索引必须已经 `define` 过，否则返回 [`ItemError::NotDefined`]，
+    /// 同一条 ADR 0017 纪律。
+    ///
+    /// **追加，不是覆盖**——与 [`Self::add_stat_bonus`] 同一个模式，见
+    /// [`ItemDef::rule_modifiers`] 文档。本方法不校验
+    /// `RuleModifier::Resistance` 里的 `damage_category` 是否已经通过
+    /// `register-damage-category` 注册——与 [`Self::set_damage_category`]
+    /// 同一条既有纪律，真正的存在性校验交给调用方
+    /// （`crate::script_item_api::register_item_resistance`）在写入前
+    /// 完成，与 [`crate::trait_def::TraitTable::add_rule_modifier`] 完全
+    /// 对称。
+    pub fn add_rule_modifier(
+        &mut self,
+        item: ContentIndex,
+        modifier: RuleModifier,
+    ) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        self.rule_modifiers[item.get() as usize].push(modifier);
+        Ok(())
+    }
 }
 
 /// `resolve` 侧的堆叠上限/装备占位/属性加成查询——`ll_sim::resolve::resolve_pick_up`
@@ -565,6 +629,7 @@ impl ItemCatalog for ItemTable {
             penetration: view.penetration,
             damage_formula: view.damage_formula,
             damage_category: view.damage_category,
+            rule_modifiers: view.rule_modifiers.to_vec(),
         })
     }
 }
@@ -606,6 +671,7 @@ mod tests {
                     penetration: Penetration::NONE,
                     damage_formula: None,
                     damage_category: None,
+                    rule_modifiers: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -634,6 +700,7 @@ mod tests {
             penetration: Penetration::NONE,
             damage_formula: None,
             damage_category: None,
+            rule_modifiers: Vec::new(),
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -681,6 +748,7 @@ mod tests {
                     penetration: Penetration::NONE,
                     damage_formula: None,
                     damage_category: None,
+                    rule_modifiers: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -711,6 +779,7 @@ mod tests {
                     penetration: Penetration::NONE,
                     damage_formula: None,
                     damage_category: None,
+                    rule_modifiers: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -729,6 +798,7 @@ mod tests {
                 penetration: Penetration::NONE,
                 damage_formula: None,
                 damage_category: None,
+                rule_modifiers: Vec::new(),
             })
         );
     }
@@ -762,6 +832,7 @@ mod tests {
             penetration: Penetration::NONE,
             damage_formula: None,
             damage_category: None,
+            rule_modifiers: Vec::new(),
         }
     }
 

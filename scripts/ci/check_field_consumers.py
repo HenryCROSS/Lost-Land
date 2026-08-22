@@ -113,7 +113,13 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     # ll-sim」一节。这条 TARGET_TYPES 条目跟着改指向新的定义处——巧合的
     # 是新的定义处恰好落在决策层 glob（crates/ll-sim/src/*.rs）内，这不
     # 影响判定逻辑：变体名字面量的匹配不区分它出现在哪个决策层文件里。
-    ("crates/ll-sim/src/traits.rs", "enum", "RuleModifier"),
+    # 抗性多来源聚合批次：RuleModifier 的定义再次搬家——从
+    # ll-sim/src/traits.rs 挪到 ll-sim/src/rule_modifier.rs（traits.rs 现在
+    # 只 `pub use` 它）。理由是它已经不再是"天赋专属"的类型：装备这一路
+    # 来源同样声明它，聚合点也搬去了新模块，见 ll_sim::rule_modifier 模块
+    # 文档「为什么单独立一个模块」一节。新的定义处同样落在决策层 glob
+    # （crates/ll-sim/src/*.rs）内，判定逻辑不受影响。
+    ("crates/ll-sim/src/rule_modifier.rs", "enum", "RuleModifier"),
     ("crates/ll-world/src/terrain.rs", "struct", "TerrainDef"),
     ("crates/ll-sim/src/xp_curve.rs", "struct", "XpCurveDef"),
     ("crates/ll-world/src/entity/agent.rs", "struct", "Agent"),

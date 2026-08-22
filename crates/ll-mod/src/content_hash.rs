@@ -282,7 +282,25 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// `check_content_hash_gate_cross_coverage` 与
 /// `crates/ll-game/src/content.rs` 的覆盖率回归测试同时把守，声称与
 /// 事实之间有机器对齐，不再只靠提交信息。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 8;
+///
+/// 版本 9（抗性多来源聚合批次）：[`write_item_fields`] 新增混入
+/// `ItemDef.rule_modifiers`——先写条数，再对每条复用既有的
+/// [`write_rule_modifier`]（与 [`write_trait_fields`] 混入
+/// `TraitDef.rule_modifiers` 逐字节同构，同一个函数、同一套判别值）。
+/// 这是版本 4/5（三）/7「老表新增字段也会漏」这一类，不是「新增内容
+/// 表」：[`ContentTableKind`] 的十七个变体一个未变，[`ContentValueTables`]
+/// 的字段一个未加，因此 `check_content_hash_gate_cross_coverage` 那条
+/// 互校在本批次无事可做——**它只守「新增了表」这一类，守不住「老表
+/// 新增字段」**，本批次是那条互校覆盖面之外的情形，靠的是本段文字与
+/// `crates/ll-mod/src/content_audit.rs` 里同批次新增的
+/// `ItemAttrs::rule_modifiers` 花名册条目（字段覆盖率门禁会要求真实
+/// 内容覆盖它）两处一起把守。
+///
+/// 递增的实质理由：任何已经注册过物品的存档，其
+/// `apply_value_hashes` 折进的物品条目摘要都会因为多出「规则修正条数
+/// （0）」这一个 `u64` 而改变——即使没有任何物品声明规则修正，长度
+/// 前缀本身也是新的哈希输入，量尺确实换了。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 9;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1103,6 +1121,14 @@ fn write_item_fields(
     hasher.write_i64(i64::from(view.penetration.permille));
     write_optional_resolved(hasher, view.damage_formula, registry);
     write_optional_resolved(hasher, view.damage_category, registry);
+    // 抗性多来源聚合批次新增的 `ItemDef.rule_modifiers`——先写条数再逐条
+    // 递归，与 `write_trait_fields` 混入 `TraitDef.rule_modifiers` 完全
+    // 同构（同一个 `write_rule_modifier`、同一套变体判别值）：装备与
+    // 天赋声明的是同一种载荷，没有理由为它们各写一套编码。
+    hasher.write_u64(view.rule_modifiers.len() as u64);
+    for modifier in view.rule_modifiers {
+        write_rule_modifier(hasher, modifier, registry);
+    }
 }
 
 /// 混入一个 [`SlotMask`]——直接混入底层位表示
@@ -1803,6 +1829,7 @@ mod tests {
                 penetration: Penetration::NONE,
                 damage_formula: None,
                 damage_category: None,
+                rule_modifiers: Vec::new(),
             }
         }
 
@@ -1962,6 +1989,7 @@ mod tests {
                 penetration: Penetration::NONE,
                 damage_formula: None,
                 damage_category: None,
+                rule_modifiers: Vec::new(),
             }
         }
 

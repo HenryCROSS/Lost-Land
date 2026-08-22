@@ -9,6 +9,12 @@
 //! `crates/ll-mod/src/script_damage_category_api.rs`/
 //! `crates/ll-mod/src/script_trait_api.rs` 里的单元测试自证。
 //!
+//! 抗性多来源聚合批次追加了第二路来源（装备）的那份证据：新脚本 API
+//! `register-item-resistance` 同样真的被 `gameplay.scm` 调用，且装备
+//! 声明的抗性走的是与天赋完全同一个聚合点
+//! （`ll_sim::rule_modifier::resistance_multiplier_permille`）——见本
+//! 文件末尾两条 `酸抗护符` 测试。
+//!
 //! 与 `crates/ll-mod/tests/example_mod_weapon_reference.rs` 同一个理由
 //! 独立成文件、同一套「装载整个 `mods/` 目录，不是只挑 `example_mod`」
 //! 手法，见 `example_mod_resource_pools.rs` 模块文档。
@@ -40,6 +46,7 @@ use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemStack};
 use ll_sim::resolve::resolve_with_skills_traits_pools_items_formulas_and_damage_categories;
+use ll_sim::rule_modifier::RuleModifier;
 use ll_sim::skill::NoSkills;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
@@ -61,6 +68,8 @@ struct RealModsHandle {
     ooze_id: ContentIndex,
     half_elf_id: ContentIndex,
     acid_dagger_id: ContentIndex,
+    acid_ward_amulet_id: ContentIndex,
+    acid_id: ContentIndex,
 }
 
 fn load_real_mods() -> RealModsHandle {
@@ -128,6 +137,8 @@ fn load_real_mods() -> RealModsHandle {
         ooze_id: resolve("examplemod:ooze"),
         half_elf_id: resolve("examplemod:half_elf"),
         acid_dagger_id: resolve("examplemod:acid_dagger"),
+        acid_ward_amulet_id: resolve("examplemod:acid_ward_amulet"),
+        acid_id: resolve("examplemod:acid"),
         race,
         trait_def,
         item,
@@ -337,4 +348,120 @@ fn 真实注册的酸伤害类别与武器类别都能查到独立的内容索�
     // 独立的存储,不是同一张表的两个视图。
     assert!(!damage_category.is_defined(dagger_category));
     assert!(!weapon_category.is_defined(acid_category));
+}
+
+#[test]
+fn 真实注册的酸抗护符装备在身上时真实降低了酸匕首造成的伤害() {
+    // 抗性多来源聚合批次：项目所有者对抗性来源的裁定「抗性肯定会来自
+    // 天赋，以及装备，还有各种药品，或者技能」里**装备**这一路的那份
+    // ADR 0018 证据——`register-item-resistance` 是本批次新增的脚本
+    // API，`mods/example_mod/gameplay.scm` 真的调用了它，本测试证明这条
+    // 声明真的走完了 `ItemTable` → `ll_sim::item::ItemRule::rule_modifiers`
+    // → `ll_sim::rule_modifier::equipment_rule_modifiers` → 聚合点 →
+    // `resolve_attack` 的抗性乘数这条完整链路。
+    //
+    // 两个防御方都是**半精灵**（没有 `examplemod:acid_hide` 天赋），
+    // 唯一差别是脖子上戴没戴护符——降下来的伤害只可能来自装备这一路。
+    // Arrange
+    let handle = load_real_mods();
+    let mut world = test_world();
+    let attacker = spawn_agent(
+        &mut world,
+        handle.half_elf_id,
+        Agent::STARTING_HEALTH,
+        BTreeMap::from([(
+            EquipSlot::MAIN_HAND,
+            ItemStack::new(handle.acid_dagger_id, 1),
+        )]),
+    );
+    let bare_defender = spawn_agent(&mut world, handle.half_elf_id, 1_000, BTreeMap::new());
+    let warded_defender = spawn_agent(
+        &mut world,
+        handle.half_elf_id,
+        1_000,
+        BTreeMap::from([(
+            EquipSlot::NECK,
+            ItemStack::new(handle.acid_ward_amulet_id, 1),
+        )]),
+    );
+
+    let formulas = RegistryFormulas {
+        formulas: &handle.formula,
+        default_formula: ContentIndex::default(),
+    };
+
+    let attack = |world: &mut WorldState, defender: EntityId| {
+        let effects = resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+            world,
+            &Intent::Attack {
+                actor: attacker,
+                target: defender,
+            },
+            &NoSkills,
+            &handle.race,
+            &handle.trait_def,
+            &ll_sim::resource_pool::NoResourcePools,
+            &handle.item,
+            &formulas,
+            &NoDamageCategories,
+        );
+        for effect in &effects {
+            apply(world, effect);
+        }
+    };
+
+    // Act
+    attack(&mut world, bare_defender);
+    attack(&mut world, warded_defender);
+
+    // Assert
+    let bare_damage = 1_000
+        - world
+            .actors
+            .get(bare_defender)
+            .expect("裸防御方未死亡")
+            .health;
+    let warded_damage = 1_000
+        - world
+            .actors
+            .get(warded_defender)
+            .expect("戴护符的防御方未死亡")
+            .health;
+    assert!(
+        warded_damage < bare_damage,
+        "酸抗护符应当让戴着它的防御方受到的伤害（{warded_damage}）严格低于没戴的基准伤害（{bare_damage}）"
+    );
+    // 护符声明的是 500‰（半伤），与软泥怪那条天赋同一个数值——两路来源
+    // 走的是同一个聚合点、同一条乘法，结果因此逐点相同。
+    assert_eq!(warded_damage, bare_damage * 500 / 1000);
+}
+
+#[test]
+fn 真实注册的酸抗护符的抗性声明真的写进了物品表() {
+    // 直接验收 `register-item-resistance` 把声明写进了 `ItemTable` 的
+    // `rule_modifiers` 列，且引用的伤害类别就是同一个 `examplemod:acid`
+    // ——与上一条端到端测试互补：那条证明"能影响结算"，这条证明"存进去
+    // 的确实是那条声明本身"，两条一起排除"恰好靠别的机制降了伤害"。
+    // Arrange
+    let handle = load_real_mods();
+
+    // Act
+    let view = handle
+        .item
+        .get(handle.acid_ward_amulet_id)
+        .expect("护符应已注册");
+
+    // Assert
+    assert_eq!(view.rule_modifiers.len(), 1);
+    let RuleModifier::Resistance {
+        damage_category,
+        multiplier_permille,
+    } = &view.rule_modifiers[0]
+    else {
+        panic!("护符声明的应当是一条抗性");
+    };
+    assert_eq!(*multiplier_permille, 500);
+    // 引用的确实是脚本里写的那个伤害类别，不是别的凑巧同索引的东西
+    // ——`acid_id` 走的是同一份装载后注册表的解析结果。
+    assert_eq!(*damage_category, handle.acid_id);
 }

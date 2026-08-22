@@ -110,6 +110,7 @@ pub mod item;
 pub mod quest;
 pub mod resolve;
 pub mod resource_pool;
+pub mod rule_modifier;
 pub mod skill;
 pub mod skill_overview;
 pub mod timeline;

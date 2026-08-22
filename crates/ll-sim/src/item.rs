@@ -39,6 +39,7 @@ pub use ll_world::item::{
 };
 
 use crate::combat::Penetration;
+use crate::rule_modifier::RuleModifier;
 use crate::skill::SkillEffect;
 
 /// `resolve` 侧需要的一条物品定义的最小只读视图——堆叠上限、装备占位
@@ -134,6 +135,32 @@ pub struct ItemRule {
     /// 也与武器类别正交），因此是与 [`Self::damage_formula`] 并列的
     /// 独立字段，不是复用同一个 `ContentIndex`。
     pub damage_category: Option<ContentIndex>,
+    /// 这件物品声明的规则修正（抗性多来源聚合批次新增）——落地项目
+    /// 所有者对抗性来源的裁定「抗性肯定会来自天赋，以及装备，还有
+    /// 各种药品，或者技能」里**装备**这一路，空列表（多数物品的既有
+    /// 情形）表示这件物品不改变任何规则。
+    ///
+    /// # 为什么复用 `RuleModifier`，不为物品另开一个枚举
+    ///
+    /// ADR 0021：抽象的理由是「有算法可共享」。这里共享的是
+    /// [`crate::rule_modifier::resistance_multiplier_permille`] 那条
+    /// 「多条命中时按 `origin` 升序取第一条、不取乘积」的 tie-break
+    /// 算法——它与「这条抗性是天赋给的还是护符给的」完全无关，见该
+    /// 模块文档「ADR 0021 复核」一节。另造一个字段与 `RuleModifier`
+    /// 逐字相同、只是改了个名字的 `ItemRuleModifier`，会逼着聚合点
+    /// 为两个同构枚举各写一遍同一段 `match`，正是该 ADR 要防的重复。
+    ///
+    /// # 与 [`Self::stat_bonuses`] 的分工
+    ///
+    /// `stat_bonuses` 走 `crate::resolve::derive_stats`（**求和**：两件
+    /// 装备各加 3 点力量就是 6 点），本字段走
+    /// `crate::rule_modifier::agent_rule_modifiers`（**取一条**：两条
+    /// 500‰ 抗性还是 500‰）。两条通道的合并规则不同，因此是并列的
+    /// 独立字段，不是把抗性硬塞进 `StatTarget` 再多一个变体——后者会
+    /// 逼着 `DerivedStats` 从「七项属性 + 护甲」这个编译期定长数组，
+    /// 变成一张按开放注册的 `damage_category` 索引的动态表，代价与
+    /// 收益完全不成比例。
+    pub rule_modifiers: Vec<RuleModifier>,
 }
 
 /// `resolve` 依赖的最小「物品定义来源」接口——与

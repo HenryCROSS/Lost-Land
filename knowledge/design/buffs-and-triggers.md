@@ -381,9 +381,13 @@ for (attribute, per_source) in &agent.active_stat_modifiers {     // 按 Attribu
 - **接口占位，现在就能做，零风险**：`ActionCapability` 类型定义 + `resolve_move`/`resolve_attack` 顶部插入 `current_capability` 检查点——`current_capability` 在 `active_buffs` 字段落地之前恒返回 `ALL`，接上检查点不改变任何现有测试结果，是"先把接缝焊好，再等内容"的低成本先手棋（该文档五节结论）。
 - **真正生效**：需要某个技能效果真的能产出一条"限制了某类行动"的记录。**这一步不依赖 `TraitTable` 落地**——与六节的教训一致：`restricts: ActionCapability` 这个字段的数值可以像 `TemporaryStatModifier` 现在这样直接内联在技能/触发器定义里（"眩晕术"这个技能自己声明"施加时 `restricts = ALL`，持续 3 回合"），不需要先有一份"可被多处复用、有名字的具体天赋"才能工作——走 `TraitTable` 引用复用是更长远、更 DRY 的形态（多个不同的眩晕来源共享同一份"眩晕"定义），但不是"能不能做"的前提条件。
 
-### 7.3 抗性变化：初判需要更正——不再卡在 `AttributeKind`，卡在 `TraitTable` 零实现
+### 7.3 抗性变化：**本节已过期，抗性早已落地**（更正于抗性多来源聚合批次）
 
-**项目所有者原判**："等抗性规则 + `AttributeKind` 抗性变体"。**核实结论：方向仍然对（抗性目前确实做不了），但具体卡住的原因已经因为 `trait-system.md` 刚刚定稿而变化，需要更正**：
+> **过期声明（抗性多来源聚合批次核实并更正）**：本节此前写着「抗性仍然做不了，卡在 `TraitTable`/`TraitDef`/`effective_traits` 全体零实现」——**这条结论已经不成立**。天赋抗性早在「伤害类别/抗性接线批次」就已落地并跑通端到端：`ll_sim::traits::RuleModifier::Resistance` 是真实类型，`ll_sim::rule_modifier::resistance_multiplier_permille` 是真实函数，`ll_sim::resolve::resolve_attack` 在减伤链路之后真的乘上它，`mods/example_mod/gameplay.scm` 的 `examplemod:acid_hide`（酸抗 500‰）+ `examplemod:ooze` 种族是真实内容，`crates/ll-mod/tests/example_mod_resistance.rs` 是端到端证据。`TraitTable`/`TraitDef`/`effective_traits` 三者也早已全部存在。
+>
+> 抗性多来源聚合批次进一步接上了**第二路来源（装备）**：`ll_mod::item::ItemDef.rule_modifiers` + 脚本 API `register-item-resistance`，聚合点是 `ll_sim::rule_modifier::agent_rule_modifiers`。项目所有者对抗性来源的完整裁定是「抗性肯定会来自天赋，以及装备，还有各种药品，或者技能」四路，**目前接了前两路**；技能（缺 `SkillDef.rule_modifiers`）与药品（缺一个按 `damage_category` 分类的限时容器）两路仍未接，理由见 `agent_rule_modifiers` 文档「接第三、第四路来源时改哪里」一节。
+>
+> 下面两条是当时的原文，保留作为「阻塞点判断随基础设施推进而变化」的记录，**不再是现状**：
 
 - **`AttributeKind` 缺抗性变体这条路径已经被完全绕开，不再是阻碍**——`trait-system.md` 三节③新增的 `RuleModifier::Resistance { damage_category: ContentIndex, multiplier_permille: i32 }` 走的是声明式规则修正（一档，ADR 0016/0017），挂在 `TraitTable`（`resistance_multiplier(defender, damage_category)` 遍历 `defender` 的有效天赋，收集匹配的 `Resistance` 条目取乘数），从头到尾没有用到、也不需要 `AttributeKind` 这个类型——抗性从来就不该是"体质"这类主属性的一个变体（`damage-formula-mod-api.md` 九节早就论证过"体质"是描述性文字，不是按伤害类别分列的抗性表），`RuleModifier::Resistance` 直接按 `damage_category`（`ContentIndex`，`damage-formula-mod-api.md` 十七节已开放的注册表）分类，粒度天然匹配"火抗""冰抗"这类具体类别，不需要经过 `AttributeKind` 这一层。
 - **真正卡住的是 `TraitTable`/`TraitDef`/`effective_traits` 这一整套天赋系统本身零实现**——`trait-system.md` 自己的「落地状态」已经写明"纯设计，无实现代码，全代码库检索无 `TraitDef`/`register-trait`/`TraitTable` 任何匹配"。`RuleModifier::Resistance` 给出的是"乘数从哪来"这个此前缺失的规则**形状**，不是可以立刻运行的代码——它依赖的 `effective_traits(agent, world)`（天赋系统六节的并集算法）同样是纯设计。`damage-formula-mod-api.md` 二十节已经把挂载点定死在"减伤之后、乘数形式"，现在**规则来源**也有了形状（`RuleModifier::Resistance`），但**这条链路从"伤害类别"到"实际乘数"中间的每一环——`TraitTable` 本身、`effective_traits`、`resistance_multiplier`——都还没有一行代码**，抗性因此仍然是四类里唯一"做不了"的一类，只是阻塞点从"没有规则形状"变成了"规则形状有了，但它依赖的整套基础设施还不存在"。
@@ -400,7 +404,7 @@ for (attribute, per_source) in &agent.active_stat_modifiers {     // 按 Attribu
 
 **方向基本正确，两处需要精确化**：
 
-1. **抗性**：确实做不了，但原因已更正——不再是 `AttributeKind` 缺变体（这条路已被 `RuleModifier::Resistance` 绕开），是 `TraitTable`/`TraitDef`/`effective_traits` 全体零实现。
+1. ~~**抗性**：确实做不了，但原因已更正——不再是 `AttributeKind` 缺变体（这条路已被 `RuleModifier::Resistance` 绕开），是 `TraitTable`/`TraitDef`/`effective_traits` 全体零实现。~~ **已过期**：抗性（天赋一路）早已落地，装备一路也已接上，见 7.3 顶部的过期声明。
 2. **触发式效果不是铁板一块的"能做"**——触发器框架本体、`DealDamage` 档、以及任何愿意先接受"内联、不可复用"这个简化版本的具体触发器（含"命中时中毒"的内联版本），现在都能做；但"命中时中毒"若要求它是一份可复用的具体内容（`ApplyBuff.def` 真正指向一条 `TraitTable` 记录），就和抗性卡在完全同一个依赖上。
 3. **持续伤害、行动限制**：确认可以现在开始做，但同样是"内联版本现在能做，走注册表引用复用的版本要等 `TraitTable`"这同一个模式——六节的存储改法已经证明了这个模式本身可行（`TemporaryStatModifier` 从一开始就是这套"内联，不查注册表"路线的既有实现）。
 
@@ -412,12 +416,12 @@ for (attribute, per_source) in &agent.active_stat_modifiers {     // 按 Attribu
 
 | 顺序 | 项目 | 依赖 | 现在能不能做 | 改动面 |
 |---|---|---|---|---|
-| 0（最优先） | `active_stat_modifiers` 存储改法（六节，多来源叠加） | 无——只需要已落地的 `ActiveStatModifier`/`Effect::ApplyStatModifier`/`effective_attribute` 本身 | **能** | `ll-world`（`Agent.active_stat_modifiers` 字段形状换成双层 `BTreeMap`）；`ll-sim`（`Effect::ApplyStatModifier` 新增 `source: ContentIndex` 字段、`apply()` 里的写入逻辑改用 `merge_same_source`、`effective_attribute` 改成对内层 map 的过滤求和、`resolve_use_skill` 把已经持有的 `skill` 参数原样传入新字段，不需要新查表）；要动 `WorldState::hash()`（`state.rs:927`~`932`，多一层遍历）；**不需要存档迁移**（schema v1，迁移链已清空，六节已确认） |
+| 0（最优先） | `active_stat_modifiers` 存储改法（六节，多来源叠加） | 无——只需要已落地的 `ActiveStatModifier`/`Effect::ApplyStatModifier`/`effective_attribute` 本身 | **已落地**（抗性多来源聚合批次核实：`ll_world::entity::Agent::active_stat_modifiers` 现在就是 `BTreeMap<AttributeKind, BTreeMap<ContentIndex, ActiveStatModifier>>`，`derive_stats` 对内层逐条过滤未过期项再求和，六节裁定的「同源刷新、异源叠加」已经是运行中的代码，不再是待办） | `ll-world`（`Agent.active_stat_modifiers` 字段形状换成双层 `BTreeMap`）；`ll-sim`（`Effect::ApplyStatModifier` 新增 `source: ContentIndex` 字段、`apply()` 里的写入逻辑改用 `merge_same_source`、`effective_attribute` 改成对内层 map 的过滤求和、`resolve_use_skill` 把已经持有的 `skill` 参数原样传入新字段，不需要新查表）；要动 `WorldState::hash()`（`state.rs:927`~`932`，多一层遍历）；**不需要存档迁移**（schema v1，迁移链已清空，六节已确认） |
 | 1 | 持续伤害（7.1，DoT，走内联路线） | 架构分岔的结论（本文档 7.1 已给出：挂在既有 `on_turn_start`/`next_action_at` 调度节点上，不新开时间轴） | **能**，不卡任何未落地系统 | `ll-sim`（新 `SkillEffect`/`Effect` 变体承载"每 tick 掉多少血、持续几回合"这两个内联数值；`TurnEngine`/回合推进入口顺带检查到期该结算的 DoT，产出 `Effect::Damage`）；`ll-world`（`Agent` 新增一个专用容器，形状可以直接照抄六节"按来源做键，同源刷新"的容器纪律）；要动 `hash()`；**不需要**改 `TurnEngine` 的调度结构本身（复用既有 `next_action_at` 节点，不新增时间轴条目） |
 | 2 | 行动限制（7.2，走内联路线） | `ActionCapability` 类型（`action-capability-and-input-context.md` 已给出完整形状）——占位版本零依赖；真正生效同样走内联，不依赖 `TraitTable` | **能**，分两段：类型定义 + `resolve()` 检查点可以立刻接（零风险，恒返回 `ALL`）；某个具体技能（如"眩晕术"）真的产出限制效果，同样现在能做 | `ll-platform` 不变；`ll-sim`（`ActionCapability` 类型、`resolve_move`/`resolve_attack` 顶部检查点、新 `SkillEffect` 变体）；`ll-world`（新容器，同样照抄六节纪律）；要动 `hash()` |
 | 3 | 触发器框架本体（7.4，`TriggerDef`/队列+深度上限/`TriggerResponse::DealDamage`） | 无——`DealDamage` 档不引用任何注册表内容 | **能** | `ll-sim` 新增比 `resolve`/`apply` 更外层的一个调度层（四节已给出队列伪代码：效果进队列、`apply` 逐条消费、`resolve_triggers` 判定后续触发、深度上限截断） |
 | 4 | 触发器 `ApplyBuff` 档（7.4，"命中时附加中毒"的可复用版本） | `TraitTable`/`TraitDef`/`effective_traits`（`trait-system.md`，零实现） | **不能**，卡在这里——愿意接受内联退化版本的话可以并入第 1 项现在做 | 待 `TraitTable` 落地后另行评估，本文档不预先设计 |
-| 5 | 抗性（7.3） | `TraitTable`/`TraitDef`/`effective_traits` + `RuleModifier::Resistance`/`resistance_multiplier`（`trait-system.md` 已给出规则形状，零实现） | **不能**，与第 4 项卡在同一处——建议 `TraitTable` 一旦立项，第 4、5 两项合并成同一个实现批次一起做，避免两次分别接线同一张表 | 待 `TraitTable` 落地后另行评估 |
+| 5 | 抗性（7.3） | ~~`TraitTable`/`TraitDef`/`effective_traits` + `RuleModifier::Resistance`/`resistance_multiplier`~~ 依赖全部已满足 | **已落地**（天赋一路：伤害类别/抗性接线批次；装备一路：抗性多来源聚合批次）——所有者裁定的四路来源里还剩技能、药品两路 | 已实现：`ll_sim::rule_modifier`（聚合点 + 两个消费者）、`ll_sim::resolve::resolve_attack`（挂载点）、`ll_mod::script_trait_api::register_trait_resistance` / `ll_mod::script_item_api::register_item_resistance`（两路来源各自的注册入口）。剩余两路的具体缺口见 `agent_rule_modifiers` 文档 |
 
 **为什么 0 排在最前**：不是因为它比其余四类更"重要"，是因为它改的是**已经在跑的代码**——`active_stat_modifiers` 从六节改法落地那一刻起，就会成为第 1、2 两项"内联容器"要照抄的存储纪律范本（"按来源做键，同源刷新"）。若先做第 1、2 项、再回头改第 0 项的存储形状，等于让新写的两个容器先按旧纪律实现一遍，再跟着第 0 项返工一次——**先定好"多个修正怎么共存"这一条通用规则，后面每一类新增的效果容器都直接照抄，不需要各自重新发明一遍，也不需要事后回补**。
 

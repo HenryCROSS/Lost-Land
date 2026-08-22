@@ -180,6 +180,8 @@ pub enum RuleModifier {
 
 `damage-formula-mod-api.md` 二十节已经把抗性的挂载点定死在"减伤之后、乘数形式"，但**该文档从未回答"这个乘数从哪来"**——本节补上：`resistance_multiplier(defender, damage_category)` 遍历 `defender` 的有效天赋（六节的并集算法），收集全部 `RuleModifier::Resistance` 里 `damage_category` 匹配的条目，取乘数（多条命中时，按 `TraitGrant` 的 `ContentIndex` 升序取第一条，与 `buffs-and-triggers.md` 二节"多个增益改同一属性时结算顺序必须确定"同一条纪律——不取乘积，理由是"免疫 500‰ 又免疫一次"不应该变成 25% 而不是 0%，取第一条命中即可，不是数值设计范畴，本文档不深入）。
 
+> **落地后的更正（抗性多来源聚合批次）**：这条规则本身原样保留，但它的**作用范围已经不止天赋**。项目所有者对抗性来源的裁定是「抗性肯定会来自天赋，以及装备，还有各种药品，或者技能」四路，实现上因此把「收集候选」与「多条命中怎么取」拆成了两层：各路来源各有一个收集器（天赋走 `ll_sim::rule_modifier::trait_rule_modifiers`，装备走 `equipment_rule_modifiers`），tie-break 则由唯一的消费者 `ll_sim::rule_modifier::resistance_multiplier_permille` 执行，判据从「天赋的 `ContentIndex`」推广成「**声明这条修正的内容条目**的 `ContentIndex`」——天赋一路的行为逐位不变。跨来源使用同一把尺子时留下一个内容设计问题（同类别上天赋抗性与装备抗性谁生效，取决于谁先被 intern，而不是谁更强），已如实记录在该模块文档「跨来源 tie-break」一节，等待所有者裁定。
+
 #### 重骰：不是新的 `FormulaOp`，是骰子取数原语本身的一个可选钩子
 
 **这是本节最需要讲清楚"为什么不那样设计"的一点。** 一个自然的错误方向是：把"重掷 1"编译成伤害公式里的一个新算子，例如 `(reroll-once 1 (d 1 20))`，要求 mod 作者在**每一处**引用骰子的地方手写这个包装。**否决**：半身人幸运是种族天赋，不管半身人用哪把武器、哪个技能，都应该生效——若做成公式算子，半身人用一把没写 `reroll-once` 包装的武器就不生效，等于要求武器作者替每个可能拿到这把武器的种族预先想好所有重骰规则，本末倒置。

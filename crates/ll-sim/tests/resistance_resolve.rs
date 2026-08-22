@@ -162,6 +162,7 @@ fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
         penetration: Penetration::NONE,
         damage_formula: None,
         damage_category: Some(damage_category),
+        rule_modifiers: Vec::new(),
     }
 }
 
@@ -178,6 +179,7 @@ fn armor_rule(amount: i32) -> ItemRule {
         penetration: Penetration::NONE,
         damage_formula: None,
         damage_category: None,
+        rule_modifiers: Vec::new(),
     }
 }
 

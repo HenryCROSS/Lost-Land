@@ -102,6 +102,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                     penetration: Penetration::NONE,
                     damage_formula: None,
                     damage_category: None,
+                    rule_modifiers: Vec::new(),
                 },
             ),
             (
@@ -117,6 +118,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                     penetration: Penetration::NONE,
                     damage_formula: None,
                     damage_category: None,
+                    rule_modifiers: Vec::new(),
                 },
             ),
         ]),
@@ -637,6 +639,7 @@ fn luck_ring_item() -> (ContentIndex, FakeItems) {
                 penetration: Penetration::NONE,
                 damage_formula: None,
                 damage_category: None,
+                rule_modifiers: Vec::new(),
             },
         )]),
     };

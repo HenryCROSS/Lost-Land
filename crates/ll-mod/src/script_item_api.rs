@@ -47,6 +47,7 @@ use crate::item::{ItemAttrs, ItemError, ItemTable};
 use crate::registry::Registry;
 use ll_sim::combat::Penetration;
 use ll_sim::item::{EquipSlot, SlotMask, StatBonus, StatTarget};
+use ll_sim::rule_modifier::RuleModifier;
 use ll_sim::skill::{ResourceKind, SkillEffect};
 use ll_world::entity::AttributeKind;
 
@@ -91,6 +92,7 @@ pub fn register_item_api(engine: &mut ScriptEngine) {
         "register-item-damage-category",
         register_item_damage_category,
     );
+    engine.register_fn("register-item-resistance", register_item_resistance);
 }
 
 /// `(register-item id display-name-key stack-limit base-weight base-price max-durability)`。
@@ -214,6 +216,7 @@ fn do_register_item(
                 // register-item-damage-formula 调用写入。
                 damage_formula: None,
                 damage_category: None,
+                rule_modifiers: Vec::new(),
             },
         )
         .map(|()| true)
@@ -739,6 +742,93 @@ fn do_register_item_damage_category(
 
     table
         .set_damage_category(index, category_index)
+        .map(|()| true)
+        .map_err(|err: ItemError| err.to_string())
+}
+
+/// `(register-item-resistance id damage-category-id multiplier-permille)`
+/// ——追加声明「这件物品携带对某个伤害类别的抗性」（抗性多来源聚合
+/// 批次新增），落地项目所有者对抗性来源的裁定「抗性肯定会来自天赋，
+/// 以及装备，还有各种药品，或者技能」里**装备**这一路。与
+/// [`register_item_damage_category`] 同一个「新增能力用新函数」模式：
+/// 不改 `register-item` 已有的六参数签名。
+///
+/// # 与 `register-trait-resistance` 的关系：同一条规则，换一路来源
+///
+/// 参数形状、校验纪律、负值处理、追加语义全部与
+/// `crate::script_trait_api::register_trait_resistance` 逐条对齐——两者
+/// 写进的是**同一个** [`RuleModifier::Resistance`] 载荷，最终被**同一个**
+/// 聚合点（[`ll_sim::rule_modifier::resistance_multiplier_permille`]）
+/// 按同一条 tie-break 规则消费。差别只有「写进哪张表」（物品表 vs
+/// 天赋表）这一处，这正是 ADR 0021 说的「算法可共享才抽象」在这里成立
+/// 的原因，见该聚合点模块文档「ADR 0021 复核」一节。
+///
+/// - `id`：已经通过 `register-item` 注册过的完整命名空间标识符字符串
+///   ——目标必须已存在，同 [`register_item_damage_category`] 一条 ADR
+///   0017「注册期完整校验」纪律。
+/// - `damage-category-id`：已经通过 `register-damage-category`
+///   （`crate::script_damage_category_api`）注册过的完整命名空间标识符
+///   字符串——不允许静默创建一个指向不存在类别的悬空抗性声明。
+/// - `multiplier-permille`：千分比乘数（`0`=免疫，`500`=半伤，
+///   `2000`=双倍）。负值钳到零而不是拒绝整次调用，理由同
+///   `register-trait-resistance` 文档同一段。
+///
+/// **追加，不是覆盖**——一件装备可以同时声明对多个伤害类别的抗性，见
+/// [`crate::item::ItemTable::add_rule_modifier`] 文档。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_item_resistance(
+    id: String,
+    damage_category_id: String,
+    multiplier_permille: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-item-resistance 在没有活跃物品表的窗口内被调用".to_string());
+            };
+            do_register_item_resistance(
+                registry,
+                table,
+                &id,
+                &damage_category_id,
+                multiplier_permille,
+            )
+        })
+    })
+}
+
+/// [`register_item_resistance`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_item_resistance(
+    registry: &Registry,
+    table: &mut ItemTable,
+    id: &str,
+    damage_category_id: &str,
+    multiplier_permille: i64,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("物品 {id:?} 尚未通过 register-item 注册"));
+    };
+    let parsed_category_id = NamespacedId::parse(damage_category_id)
+        .map_err(|err| format!("非法内容标识符 {damage_category_id:?}：{err}"))?;
+    let Some(category_index) = registry.get(&parsed_category_id) else {
+        return Err(format!(
+            "伤害类别 {damage_category_id:?} 尚未通过 register-damage-category 注册"
+        ));
+    };
+
+    table
+        .add_rule_modifier(
+            index,
+            RuleModifier::Resistance {
+                damage_category: category_index,
+                multiplier_permille: multiplier_permille.max(0) as i32,
+            },
+        )
         .map(|()| true)
         .map_err(|err: ItemError| err.to_string())
 }
@@ -1711,5 +1801,181 @@ mod tests {
         // Cleanup。
         take_active_target();
         crate::active_registry::take_active_registry();
+    }
+    #[test]
+    fn 物品抗性声明写进物品表并按追加语义累积() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        let item_index = registry.intern(NamespacedId::parse("yourmod:ward_amulet").unwrap());
+        let fire = registry.intern(NamespacedId::parse("yourmod:fire").unwrap());
+        let cold = registry.intern(NamespacedId::parse("yourmod:cold").unwrap());
+        table
+            .define(
+                item_index,
+                ItemAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:item.ward_amulet").unwrap(),
+                    stack_limit: 1,
+                    base_weight: Milli::from_whole(1),
+                    base_price: Milli::from_whole(10),
+                    max_durability: None,
+                    equip_mask: SlotMask::EMPTY,
+                    stat_bonuses: Vec::new(),
+                    use_effect: None,
+                    penetration: Penetration::NONE,
+                    damage_formula: None,
+                    damage_category: None,
+                    rule_modifiers: Vec::new(),
+                },
+            )
+            .expect("首次定义必成功");
+
+        // Act
+        let first = do_register_item_resistance(
+            &registry,
+            &mut table,
+            "yourmod:ward_amulet",
+            "yourmod:fire",
+            500,
+        );
+        let second = do_register_item_resistance(
+            &registry,
+            &mut table,
+            "yourmod:ward_amulet",
+            "yourmod:cold",
+            0,
+        );
+
+        // Assert：两条各自独立存在，第二条不覆盖第一条。
+        assert_eq!(first, Ok(true));
+        assert_eq!(second, Ok(true));
+        let view = table.get(item_index).expect("已定义");
+        assert_eq!(
+            view.rule_modifiers,
+            &[
+                RuleModifier::Resistance {
+                    damage_category: fire,
+                    multiplier_permille: 500,
+                },
+                RuleModifier::Resistance {
+                    damage_category: cold,
+                    multiplier_permille: 0,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn 物品抗性声明的负乘数钳到零而不是拒绝整次调用() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        let item_index = registry.intern(NamespacedId::parse("yourmod:cursed_ring").unwrap());
+        let fire = registry.intern(NamespacedId::parse("yourmod:fire").unwrap());
+        table
+            .define(
+                item_index,
+                ItemAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:item.cursed_ring").unwrap(),
+                    stack_limit: 1,
+                    base_weight: Milli::from_whole(1),
+                    base_price: Milli::from_whole(10),
+                    max_durability: None,
+                    equip_mask: SlotMask::EMPTY,
+                    stat_bonuses: Vec::new(),
+                    use_effect: None,
+                    penetration: Penetration::NONE,
+                    damage_formula: None,
+                    damage_category: None,
+                    rule_modifiers: Vec::new(),
+                },
+            )
+            .expect("首次定义必成功");
+
+        // Act
+        let result = do_register_item_resistance(
+            &registry,
+            &mut table,
+            "yourmod:cursed_ring",
+            "yourmod:fire",
+            -300,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let view = table.get(item_index).expect("已定义");
+        assert_eq!(
+            view.rule_modifiers,
+            &[RuleModifier::Resistance {
+                damage_category: fire,
+                multiplier_permille: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn 物品抗性引用未注册的伤害类别被拒绝() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        let item_index = registry.intern(NamespacedId::parse("yourmod:ward_amulet").unwrap());
+        table
+            .define(
+                item_index,
+                ItemAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:item.ward_amulet").unwrap(),
+                    stack_limit: 1,
+                    base_weight: Milli::from_whole(1),
+                    base_price: Milli::from_whole(10),
+                    max_durability: None,
+                    equip_mask: SlotMask::EMPTY,
+                    stat_bonuses: Vec::new(),
+                    use_effect: None,
+                    penetration: Penetration::NONE,
+                    damage_formula: None,
+                    damage_category: None,
+                    rule_modifiers: Vec::new(),
+                },
+            )
+            .expect("首次定义必成功");
+
+        // Act
+        let result = do_register_item_resistance(
+            &registry,
+            &mut table,
+            "yourmod:ward_amulet",
+            "yourmod:nonexistent",
+            500,
+        );
+
+        // Assert：ADR 0017 注册期完整校验——悬空引用当场拒绝，不静默创建。
+        assert!(result.is_err());
+        assert!(
+            table
+                .get(item_index)
+                .expect("已定义")
+                .rule_modifiers
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn 给未注册的物品声明抗性被拒绝() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        registry.intern(NamespacedId::parse("yourmod:fire").unwrap());
+
+        // Act
+        let result = do_register_item_resistance(
+            &registry,
+            &mut table,
+            "yourmod:never_registered",
+            "yourmod:fire",
+            500,
+        );
+
+        // Assert
+        assert!(result.is_err());
     }
 }

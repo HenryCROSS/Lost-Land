@@ -1285,6 +1285,7 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
     let penetration = view.penetration;
     let damage_formula = view.damage_formula;
     let damage_category = view.damage_category;
+    let rule_modifiers = view.rule_modifiers.to_vec();
 
     auditor.field("ItemAttrs::display_name_key", true);
     auditor.field("ItemAttrs::stack_limit", stack_limit != 0);
@@ -1308,6 +1309,26 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
         damage_category,
         ReferenceExpectation::Table(ContentTableKind::DamageCategory),
     );
+    // 抗性多来源聚合批次新增的 `ItemDef.rule_modifiers`——与
+    // `inspect_trait` 里同名字段的处理逐行同构：先记一条字段覆盖，再对
+    // 每条 `Resistance` 校验它指向的伤害类别真的落在伤害类别表里。
+    // 两处不合并成一个帮手函数：`Auditor::field`/`Auditor::reference`
+    // 的第一个参数是**字段全名字符串**（花名册的键），两张表的键不同，
+    // 合并后仍要把这两个字符串当参数传进去，省不下任何东西，反而多一层
+    // 间接（ADR 0021：抽象的理由是算法可共享，不是形状相似）。
+    auditor.field("ItemAttrs::rule_modifiers", !rule_modifiers.is_empty());
+    for modifier in &rule_modifiers {
+        if let RuleModifier::Resistance {
+            damage_category, ..
+        } = modifier
+        {
+            auditor.reference(
+                "ItemAttrs::rule_modifiers::Resistance::damage_category",
+                *damage_category,
+                ReferenceExpectation::Table(ContentTableKind::DamageCategory),
+            );
+        }
+    }
 }
 
 /// [`ll_sim::xp_curve::XpCurveDef`] 的全部字段——**除 `id` 外**：
@@ -1540,6 +1561,7 @@ mod tests {
                         penetration: Penetration::NONE,
                         damage_formula,
                         damage_category: None,
+                        rule_modifiers: Vec::new(),
                     },
                 )
                 .expect("测试用物品定义内部自洽");

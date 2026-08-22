@@ -75,11 +75,14 @@ use crate::resource_pool::{
     NoResourcePools, RegenRule, ResourcePoolCatalog, ResourcePoolShape, RestRecoveryAmount,
     effective_scalar_capacity, effective_slot_tier_capacity,
 };
+use crate::rule_modifier::{
+    agent_rule_modifiers, resistance_multiplier_permille, sneak_attack_rule,
+};
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::timeline::action_cost;
 use crate::traits::{
     NO_TRAIT_GRANTS, NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, agent_trait_sources,
-    effective_traits, granted_skills, resistance_multiplier_permille, sneak_attack_rule,
+    effective_traits, granted_skills,
 };
 
 /// 非位移动作（等待、攻击、开门）的基础代价，与平地移动同一基准
@@ -2301,9 +2304,10 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 结算按变体读取」的既有机制，`RuleModifier::Resistance` 是现成的
 /// 先例——挂进已有机制，不新开一条平行的技能效果通道，YAGNI）。
 ///
-/// 查 [`sneak_attack_rule`]（`crate::traits`，遍历**攻击者**的有效天赋
-/// 收集 `RuleModifier::SneakAttack`，tie-break 规则同
-/// `resistance_multiplier_permille`）：没有天赋声明偷袭时返回 `None`，
+/// 查 [`sneak_attack_rule`]（`crate::rule_modifier`，消费
+/// [`agent_rule_modifiers`] 汇总出的候选列表——攻击者的有效天赋与已装备
+/// 物品两路来源，tie-break 规则同 [`resistance_multiplier_permille`]）：
+/// 没有任何来源声明偷袭时返回 `None`，
 /// 本函数完全不进入判定分支，不额外消费一条 `DetRng` 流——与「抗性
 /// 接线」一节「没有天赋声明时逐位复现既有行为」是同一条「新增判定不
 /// 改变没有相关天赋的角色的既有结果」纪律。
@@ -2317,16 +2321,17 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 暴击放大之后、抗性乘数之前——追加的伤害仍然是这一下攻击的一部分，
 /// 应当同样受目标抗性影响，不是绕开减伤链路凭空产出的独立效果。
 ///
-/// # 抗性接线（伤害类别/抗性接线批次）
+/// # 抗性接线（伤害类别/抗性接线批次；来源扩展见抗性多来源聚合批次）
 ///
 /// `damage-formula-mod-api.md` 二十节把抗性的挂载点定死在「减伤之后、
 /// 乘数形式」——本函数在 `damage_after_defense`（含暴击放大）算完之后
 /// 最后一步，用这一下的伤害类别（武器显式声明的
 /// [`crate::item::ItemRule::damage_category`]，没有声明时退回
 /// [`DamageCategoryCatalog::default_category`]）查
-/// [`resistance_multiplier_permille`]（`crate::traits`，遍历**防御方**
-/// 的有效天赋收集 `RuleModifier::Resistance`），把查到的千分比乘数乘
-/// 在伤害上——没有任何天赋声明抗性时，乘数恒为
+/// [`resistance_multiplier_permille`]（`crate::rule_modifier`，消费
+/// [`agent_rule_modifiers`] 汇总出的**防御方**候选列表：有效天赋与已
+/// 装备物品两路来源，抗性多来源聚合批次接上了后者），把查到的千分比
+/// 乘数乘在伤害上——没有任何来源声明抗性时，乘数恒为
 /// [`crate::traits::RESISTANCE_MULTIPLIER_SCALE`]（1.0），本函数因此
 /// 逐位复现接入抗性之前的既有行为，与「伤害公式接线」一节「全局默认
 /// 公式」的「行为等价」承诺是同一条纪律的第二次应用。
@@ -2471,11 +2476,13 @@ fn resolve_attack(
     // 同样会反映到偷袭触发率上，理由同暴击那一节「暴击：读取
     // attacker_derived.attribute」。
     const SNEAK_ATTACK_EVENT_TAG: u64 = 0x51EA_ACC0_0000_0000;
-    let damage = match sneak_attack_rule(
-        &agent_trait_sources(attacker, race_traits, class_traits),
-        attacker.level,
+    let damage = match sneak_attack_rule(&agent_rule_modifiers(
+        attacker,
+        race_traits,
+        class_traits,
         traits,
-    ) {
+        items,
+    )) {
         Some(rule) => {
             let mut sneak_rng = ll_core::rng::DetRng::for_entity(
                 world.seed,
@@ -2509,9 +2516,7 @@ fn resolve_attack(
         .and_then(|rule| rule.damage_category)
         .unwrap_or_else(|| damage_categories.default_category());
     let resistance_multiplier = resistance_multiplier_permille(
-        &agent_trait_sources(defender, race_traits, class_traits),
-        defender.level,
-        traits,
+        &agent_rule_modifiers(defender, race_traits, class_traits, traits, items),
         damage_category,
     );
     // 千分比乘法，向零截断——与 `FormulaOp::MulPermille`/
