@@ -56,6 +56,17 @@ season-summer-display_name = Summer
 season-autumn-display_name = Autumn
 season-winter-display_name = Winter
 
+# Weather display names — the base game's six weathers
+# (ll_world::weather::materialize_base_weathers). Weather is derived from
+# (world seed, world clock) and never stored; these keys are only the
+# display-name mapping, resolved via WeatherDef::display_name_key.
+weather-clear-display_name = Clear
+weather-overcast-display_name = Overcast
+weather-rain-display_name = Rain
+weather-wind-display_name = Wind
+weather-fog-display_name = Fog
+weather-snow-display_name = Snow
+
 hud-character-panel-title = Character
 hud-character-level-label = Level
 hud-character-experience-label = XP

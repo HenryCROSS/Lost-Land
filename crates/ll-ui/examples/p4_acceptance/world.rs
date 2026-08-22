@@ -108,6 +108,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut formula = ll_mod::formula::FormulaTable::new();
     let mut weapon_category = ll_mod::weapon_category::WeaponCategoryTable::new();
     let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
+    let mut weather_table = ll_world::weather::WeatherTable::new();
     let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
 
     let mut report = load_all(
@@ -130,6 +131,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             weapon_category: &mut weapon_category,
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
+            weather: &mut weather_table,
         },
     );
     let missing_dependency_report = load_all(
@@ -152,6 +154,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             weapon_category: &mut weapon_category,
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
+            weather: &mut weather_table,
         },
     );
     let duplicate_namespace_report = load_all(
@@ -174,6 +177,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             weapon_category: &mut weapon_category,
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
+            weather: &mut weather_table,
         },
     );
     report.entries.extend(missing_dependency_report.entries);

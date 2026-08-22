@@ -153,6 +153,7 @@ use ll_sim::xp_curve::{XpCurveCond, XpCurveOp, XpCurveOperand};
 use ll_world::entity::BaseStats;
 use ll_world::space_profile::SpaceProfileTable;
 use ll_world::terrain::{TerrainKind, TerrainTable};
+use ll_world::weather::WeatherTable;
 
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
@@ -263,7 +264,25 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 真的改了——值哈希这类「错了要很久以后才发作」的机制，声称与事实
 /// 之间需要机器来对齐，见 `scripts/ci/check_field_consumers.py` 的
 /// `check_content_hash_gate_cross_coverage`。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 7;
+///
+/// 版本 8（天气系统批次）：新增第十七张内容表
+/// [`ContentTableKind::Weather`]（判别值 16）——[`ContentValueTables`]
+/// 多了一个 `weather` 字段，[`entry_value_digest`] 多了一条
+/// [`write_weather_fields`] 分支。这是版本 4/5「新增内容表」那一类，
+/// 不是「老表新增字段」：本批次没有给任何一张既有表增删字段，既有
+/// 十六张表写入的字节序列逐字节不变。**但版本号仍然必须递增**——
+/// `apply_value_hashes` 现在会为天气这一类 id 折进一份此前根本不存在
+/// 的字段值摘要，任何在本次改动之前写出、`generation_mods` 携带非空
+/// `content_hash` 的存档，读档时都会在 `check_mod_content` 一步被误判
+/// 成 `ModContentMismatch`。
+///
+/// 本次也刻意与版本 7 那次事故对照：那一次提交信息里白纸黑字写着
+/// 「6 → 7」，代码里却仍是 6，两批之后才被 `a017647` 补上。本次的
+/// 递增由 `scripts/ci/check_field_consumers.py` 的
+/// `check_content_hash_gate_cross_coverage` 与
+/// `crates/ll-game/src/content.rs` 的覆盖率回归测试同时把守，声称与
+/// 事实之间有机器对齐，不再只靠提交信息。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 8;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -317,6 +336,8 @@ pub enum ContentTableKind {
     WeaponCategory = 14,
     /// 伤害类别表（伤害类别/抗性接线批次新增）。
     DamageCategory = 15,
+    /// 天气表（天气系统批次新增，定义在 `ll-world`）。
+    Weather = 16,
 }
 
 /// 全部内容表的只读引用集合——供 [`apply_value_hashes`]/[`classify_index`]
@@ -359,6 +380,9 @@ pub struct ContentValueTables<'a> {
     pub weapon_category: &'a WeaponCategoryTable,
     /// 伤害类别表（伤害类别/抗性接线批次新增）。
     pub damage_category: &'a DamageCategoryTable,
+    /// 天气表（天气系统批次新增，定义在 `ll-world`，理由见
+    /// `ll_world::weather` 模块文档「为什么天气表定义在 `ll-world`」）。
+    pub weather: &'a WeatherTable,
 }
 
 /// 判定一个 `ContentIndex` 归属哪张内容表——[`entry_value_digest`] 用它
@@ -407,6 +431,7 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         formula,
         weapon_category,
         damage_category,
+        weather,
     } = *tables;
 
     let terrain_kind = TerrainKind::from_index(index);
@@ -440,6 +465,8 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         ContentTableKind::WeaponCategory
     } else if damage_category.is_defined(index) {
         ContentTableKind::DamageCategory
+    } else if weather.is_defined(index) {
+        ContentTableKind::Weather
     } else {
         ContentTableKind::Opaque
     }
@@ -522,6 +549,9 @@ fn entry_value_digest(
         }
         ContentTableKind::DamageCategory => {
             write_damage_category_fields(&mut hasher, tables.damage_category, index, registry);
+        }
+        ContentTableKind::Weather => {
+            write_weather_fields(&mut hasher, tables.weather, index);
         }
         ContentTableKind::Opaque => {
             // 没有字段可哈希，只哈希 id 本身（已经在函数顶部写过）——
@@ -817,6 +847,31 @@ fn write_space_profile_fields(
             hasher.write_u64(1);
             hasher.write_namespaced_id(&tag);
         }
+    }
+}
+
+/// 混入 [`ll_world::weather::WeatherDef`] 的全部字段（天气系统批次
+/// 新增）——`display_name_key` 是字面 `NamespacedId`（不是
+/// `ContentIndex`），直接混入，不经过 `Registry::resolve`，与
+/// [`write_space_profile_fields`] 的 `reverb_tag` 同一条理由（模块文档
+/// 「`ContentIndex` 字段」一节倒数第二段）。
+///
+/// 四个季节权重**逐个**混入，不先求和：两种权重分布 `[10,0,0,0]` 与
+/// `[0,10,0,0]` 的和相同，玩法上却是「只在春天下」与「只在夏天下」两
+/// 种截然不同的内容，求和会让它们的摘要撞在一起，正是 ADR 0022/0027
+/// 「哈希覆盖字段值，不只 id 集合」这条要求想避免的那类塌缩。
+fn write_weather_fields(hasher: &mut StateHasher, table: &WeatherTable, index: ContentIndex) {
+    match table.display_name_key(index) {
+        None => hasher.write_u64(0),
+        Some(key) => {
+            hasher.write_u64(1);
+            hasher.write_namespaced_id(&key);
+        }
+    }
+    hasher.write_i64(i64::from(table.light_scale(index)));
+    hasher.write_i64(i64::from(table.sight_scale(index)));
+    for weight in table.season_weights(index) {
+        hasher.write_u64(u64::from(weight));
     }
 }
 
@@ -1352,7 +1407,7 @@ mod tests {
         }
     }
 
-    /// 空的十一张非种族表——测试只关心其中一张表时，用它填满
+    /// 空的十四张非种族表——测试只关心其中一张表时，用它填满
     /// [`ContentValueTables`] 剩余字段，避免每个测试各自重复拼一遍。
     #[allow(clippy::type_complexity)]
     fn empty_non_race_tables() -> (
@@ -1370,6 +1425,7 @@ mod tests {
         FormulaTable,
         WeaponCategoryTable,
         DamageCategoryTable,
+        WeatherTable,
     ) {
         (
             TerrainTable::new(),
@@ -1386,6 +1442,7 @@ mod tests {
             FormulaTable::new(),
             WeaponCategoryTable::new(),
             DamageCategoryTable::new(),
+            WeatherTable::new(),
         )
     }
 
@@ -1416,6 +1473,7 @@ mod tests {
             formula_a,
             weapon_category_a,
             damage_category_a,
+            weather_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1439,6 +1497,7 @@ mod tests {
             formula_b,
             weapon_category_b,
             damage_category_b,
+            weather_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1460,6 +1519,7 @@ mod tests {
                 formula: &formula_a,
                 weapon_category: &weapon_category_a,
                 damage_category: &damage_category_a,
+                weather: &weather_a,
             },
         );
         apply_value_hashes(
@@ -1480,6 +1540,7 @@ mod tests {
                 formula: &formula_b,
                 weapon_category: &weapon_category_b,
                 damage_category: &damage_category_b,
+                weather: &weather_b,
             },
         );
 
@@ -1523,6 +1584,7 @@ mod tests {
             formula_a,
             weapon_category_a,
             damage_category_a,
+            weather_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1552,6 +1614,7 @@ mod tests {
             formula_b,
             weapon_category_b,
             damage_category_b,
+            weather_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1573,6 +1636,7 @@ mod tests {
                 formula: &formula_a,
                 weapon_category: &weapon_category_a,
                 damage_category: &damage_category_a,
+                weather: &weather_a,
             },
         );
         apply_value_hashes(
@@ -1593,6 +1657,7 @@ mod tests {
                 formula: &formula_b,
                 weapon_category: &weapon_category_b,
                 damage_category: &damage_category_b,
+                weather: &weather_b,
             },
         );
 
@@ -1635,6 +1700,7 @@ mod tests {
             formula_a,
             weapon_category_a,
             damage_category_a,
+            weather_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1660,6 +1726,7 @@ mod tests {
             formula_b,
             weapon_category_b,
             damage_category_b,
+            weather_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1681,6 +1748,7 @@ mod tests {
                 formula: &formula_a,
                 weapon_category: &weapon_category_a,
                 damage_category: &damage_category_a,
+                weather: &weather_a,
             },
         );
         apply_value_hashes(
@@ -1701,6 +1769,7 @@ mod tests {
                 formula: &formula_b,
                 weapon_category: &weapon_category_b,
                 damage_category: &damage_category_b,
+                weather: &weather_b,
             },
         );
 
@@ -1758,6 +1827,7 @@ mod tests {
             formula_a,
             weapon_category_a,
             damage_category_a,
+            weather_a,
         ) = (
             TerrainTable::new(),
             ClassTable::new(),
@@ -1773,6 +1843,7 @@ mod tests {
             FormulaTable::new(),
             WeaponCategoryTable::new(),
             DamageCategoryTable::new(),
+            WeatherTable::new(),
         );
 
         let mut registry_b = Registry::new();
@@ -1796,6 +1867,7 @@ mod tests {
             formula_b,
             weapon_category_b,
             damage_category_b,
+            weather_b,
         ) = (
             TerrainTable::new(),
             ClassTable::new(),
@@ -1811,6 +1883,7 @@ mod tests {
             FormulaTable::new(),
             WeaponCategoryTable::new(),
             DamageCategoryTable::new(),
+            WeatherTable::new(),
         );
 
         // Act
@@ -1832,6 +1905,7 @@ mod tests {
                 formula: &formula_a,
                 weapon_category: &weapon_category_a,
                 damage_category: &damage_category_a,
+                weather: &weather_a,
             },
         );
         apply_value_hashes(
@@ -1852,6 +1926,7 @@ mod tests {
                 formula: &formula_b,
                 weapon_category: &weapon_category_b,
                 damage_category: &damage_category_b,
+                weather: &weather_b,
             },
         );
 
@@ -1935,6 +2010,7 @@ mod tests {
                 formula: &empty_forward.11,
                 weapon_category: &empty_forward.12,
                 damage_category: &empty_forward.13,
+                weather: &empty_forward.14,
             },
         );
         apply_value_hashes(
@@ -1955,6 +2031,7 @@ mod tests {
                 formula: &empty_reversed.11,
                 weapon_category: &empty_reversed.12,
                 damage_category: &empty_reversed.13,
+                weather: &empty_reversed.14,
             },
         );
 
@@ -1997,6 +2074,7 @@ mod tests {
             formula_f,
             weapon_category_f,
             damage_category_f,
+            weather_f,
         ) = empty_non_race_tables();
 
         let mut registry_reversed = Registry::new();
@@ -2024,6 +2102,7 @@ mod tests {
             formula_r,
             weapon_category_r,
             damage_category_r,
+            weather_r,
         ) = empty_non_race_tables();
 
         // Act：两边分配到的 ContentIndex 确实互相对调，证明这不是一次
@@ -2047,6 +2126,7 @@ mod tests {
                 formula: &formula_f,
                 weapon_category: &weapon_category_f,
                 damage_category: &damage_category_f,
+                weather: &weather_f,
             },
         );
         apply_value_hashes(
@@ -2067,6 +2147,7 @@ mod tests {
                 formula: &formula_r,
                 weapon_category: &weapon_category_r,
                 damage_category: &damage_category_r,
+                weather: &weather_r,
             },
         );
 
@@ -2113,6 +2194,7 @@ mod tests {
             formula_before,
             weapon_category_before,
             damage_category_before,
+            weather_before,
         ) = empty_non_race_tables();
 
         let mut registry_after = Registry::new();
@@ -2141,6 +2223,7 @@ mod tests {
             formula_after,
             weapon_category_after,
             damage_category_after,
+            weather_after,
         ) = empty_non_race_tables();
 
         // Act
@@ -2162,6 +2245,7 @@ mod tests {
                 formula: &formula_before,
                 weapon_category: &weapon_category_before,
                 damage_category: &damage_category_before,
+                weather: &weather_before,
             },
         );
         apply_value_hashes(
@@ -2182,6 +2266,7 @@ mod tests {
                 formula: &formula_after,
                 weapon_category: &weapon_category_after,
                 damage_category: &damage_category_after,
+                weather: &weather_after,
             },
         );
 
@@ -2215,6 +2300,7 @@ mod tests {
             formula,
             weapon_category,
             damage_category,
+            weather,
         ) = empty_non_race_tables();
         let race = RaceTable::new();
 
@@ -2237,6 +2323,7 @@ mod tests {
                 formula: &formula,
                 weapon_category: &weapon_category,
                 damage_category: &damage_category,
+                weather: &weather,
             },
         );
 
@@ -2266,6 +2353,7 @@ mod tests {
             formula,
             weapon_category,
             damage_category,
+            weather,
         ) = empty_non_race_tables();
         let race = RaceTable::new();
         let tables = ContentValueTables {
@@ -2284,6 +2372,7 @@ mod tests {
             formula: &formula,
             weapon_category: &weapon_category,
             damage_category: &damage_category,
+            weather: &weather,
         };
 
         // Act

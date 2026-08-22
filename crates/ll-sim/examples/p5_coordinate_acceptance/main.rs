@@ -373,7 +373,11 @@ impl Demo {
             let space = agent.current_space;
             let profile = self.demo_world.profile_of(space);
             let clock = self.demo_world.world.clock;
-            let light = ll_world::space_profile::effective_ambient_light(&profile, clock);
+            let light = ll_world::space_profile::effective_ambient_light(
+                &profile,
+                clock,
+                ll_world::weather::Weather::CLEAR,
+            );
             let radius = effective_sight_radius(&profile, clock);
             tracing::info!(?space, light = light.0, radius, "空间切换完成");
         }

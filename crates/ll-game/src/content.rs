@@ -46,6 +46,7 @@ use ll_mod::base_damage_formula::register_base_damage_formula;
 use ll_mod::base_placeholder::register_base_placeholder_content;
 use ll_mod::base_space_profile::register_base_space_profiles;
 use ll_mod::base_terrain::register_base_terrain;
+use ll_mod::base_weather::register_base_weathers;
 use ll_mod::base_xp_curve::register_base_xp_curve;
 use ll_mod::class::ClassTable;
 use ll_mod::clip::{BaseClipIds, ClipTable};
@@ -73,6 +74,7 @@ use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::damage_category::NoDamageCategories;
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
+use ll_world::weather::{BaseWeatherIds, WeatherTable};
 
 /// 本体自己的命名空间——「本体即 Mod」原则下，本体的资产也走
 /// `ll_mod::asset_vfs` 同一套解析（见其模块文档），需要一个固定的
@@ -155,6 +157,13 @@ pub struct LoadedContent {
     pub default_damage_category_id: ContentIndex,
     /// 伤害类别定义表。
     pub damage_category_table: DamageCategoryTable,
+    /// 本体六种天气的索引缓存（天气系统批次新增）。
+    pub weather_ids: BaseWeatherIds,
+    /// 天气表——`ll_world::weather::WeatherTable`。天气本身是纯派生值
+    /// （不进 `WorldState`，见 `ll_world::weather` 模块文档），这张表
+    /// 存的是「有哪几种天气、各自什么参数」这份**内容**，由
+    /// `crate::app` 每帧调用一次 `Weather::derive` 消费。
+    pub weather_table: WeatherTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -360,6 +369,8 @@ pub fn load_content(
     let (default_damage_category_id, mut damage_category_table) =
         register_base_damage_category(&mut |id| registry.intern(id))
             .expect("本体默认伤害类别声明内部一致，注册恒不失败");
+    let (weather_ids, mut weather_table) =
+        register_base_weathers(&mut registry).expect("本体天气声明表内部一致，注册恒不失败");
 
     let mut race_table = RaceTable::new();
     let mut class_table = ClassTable::new();
@@ -392,6 +403,7 @@ pub fn load_content(
             weapon_category: &mut weapon_category_table,
             damage_category: &mut damage_category_table,
             space_profile: &mut space_table,
+            weather: &mut weather_table,
         },
     );
 
@@ -427,6 +439,7 @@ pub fn load_content(
         formula: &formula_table,
         weapon_category: &weapon_category_table,
         damage_category: &damage_category_table,
+        weather: &weather_table,
     };
 
     // 装载后校验 pass（`ll_mod::content_audit`）：契约解析只看"Rust 点名
@@ -512,6 +525,8 @@ pub fn load_content(
         weapon_category_table,
         default_damage_category_id,
         damage_category_table,
+        weather_ids,
+        weather_table,
         manifests,
         script_sources,
         report,
@@ -914,6 +929,7 @@ mod tests {
             formula: &loaded.formula_table,
             weapon_category: &loaded.weapon_category_table,
             damage_category: &loaded.damage_category_table,
+            weather: &loaded.weather_table,
         };
 
         // Act

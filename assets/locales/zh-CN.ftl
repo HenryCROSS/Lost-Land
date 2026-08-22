@@ -58,6 +58,8 @@ mod-dependency-version-mismatch = 模组 { $dependent } 依赖 { $dependency } �
 #   - hud-inventory-*                       背包面板
 #   - hud-equipment-*                       装备面板标题与空槽位占位
 #   - equip_slot-*-display_name             EquipSlot 22 个引擎具名槽位
+#   - season-*-display_name                 Season 四季展示名
+#   - weather-*-display_name                本体六种天气展示名
 
 hud-status-time-label = 时间
 hud-status-health-label = 生命
@@ -70,6 +72,16 @@ season-spring-display_name = 春
 season-summer-display_name = 夏
 season-autumn-display_name = 秋
 season-winter-display_name = 冬
+
+# 天气展示名——本体六种天气（ll_world::weather::materialize_base_weathers）。
+# 天气由 (世界种子, 世界时钟) 纯派生，不进世界状态；这里只做展示名映射，
+# 键本身来自 WeatherDef::display_name_key，不是像四季那样写死在 UI 里。
+weather-clear-display_name = 晴
+weather-overcast-display_name = 阴
+weather-rain-display_name = 雨
+weather-wind-display_name = 大风
+weather-fog-display_name = 雾
+weather-snow-display_name = 雪
 
 hud-character-panel-title = 角色
 hud-character-level-label = 等级

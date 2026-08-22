@@ -46,7 +46,8 @@ use std::fmt;
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 
-use crate::light::{LightLevel, ambient_light};
+use crate::light::{LightLevel, ambient_light_under};
+use crate::weather::Weather;
 
 /// 一种空间类型的静态属性，本体与 mod 注册层属性时共用的同一个输入
 /// 形状——与 [`crate::terrain::TerrainDef`] 是同一个模式（本体的声明
@@ -60,9 +61,10 @@ pub struct SpaceProfile {
     /// [`crate::light::LightLevel`] 同一量纲。**仅在 `exposed_to_sky`
     /// 为假时生效**——见模块文档「与光照系统的组合」。
     pub ambient_light_floor: i32,
-    /// 是否露天：为真时受天气、昼夜、四季影响（消费方调用既有的
-    /// `crate::light::ambient_light(tick)`）；为假时环境光恒等于
-    /// `ambient_light_floor`，与世界时钟无关。
+    /// 是否露天：为真时受昼夜、四季与**天气**影响（消费方走
+    /// [`effective_ambient_light`]，天气那一层由 [`effective_weather`]
+    /// 把关）；为假时环境光恒等于 `ambient_light_floor`，与世界时钟、
+    /// 与外面在不在下雨都无关。
     pub exposed_to_sky: bool,
     /// 温度基准。
     pub base_temperature: i32,
@@ -394,30 +396,65 @@ fn define_base(
 /// 求某个空间在某一世界时刻的有效环境光——`SpaceProfile` 与既有光照
 /// 曲线（[`crate::light`]）的**组合点**，不是第二套光照实现。
 ///
-/// # 为什么不能对 `Interior` 直接调用 [`ambient_light`]
+/// # 为什么不能对 `Interior` 直接调用 [`ambient_light_under`]
 ///
-/// [`ambient_light`] 只依赖世界时钟，不知道调用它的是露天地表还是
-/// 伸手不见五指的地下城——直接对 `Interior` 调用会让地下城在正午呈现
-/// 满光照，这是纯粹的接线错误，不是设计冲突。任何消费光照的调用方
-/// 都必须先经过本函数，不能绕过去直接调用 `ambient_light(tick)`。
+/// [`ambient_light_under`] 只依赖世界时钟与天气，不知道调用它的是露天
+/// 地表还是伸手不见五指的地下城——直接对 `Interior` 调用会让地下城在
+/// 正午呈现满光照，这是纯粹的接线错误，不是设计冲突。任何消费光照的
+/// 调用方都必须先经过本函数，不能绕过去直接调用
+/// `ambient_light_under(tick, weather)`。
 ///
 /// # 不是第二个真相源
 ///
 /// [`crate::light`] 模块文档「光照是纯函数派生，绝不进世界状态」的
 /// 纪律在这里继续成立，也是 ADR 0010「白昼判定收敛为同一份真相源」
-/// 教训的直接延续：本函数不重新定义昼夜曲线的任何一段，`exposed_to_sky`
-/// 为真时原样转发给既有的 [`ambient_light`]；为假时改用
-/// `profile.ambient_light_floor`，与世界时钟完全无关——**这条地板值
-/// 路径不知道、也不需要知道时钟现在走到哪**，不存在与 [`ambient_light`]
+/// 教训的直接延续：本函数不重新定义昼夜曲线、季节缩放或天气乘数的任何
+/// 一段，`exposed_to_sky` 为真时原样转发给既有的
+/// [`ambient_light_under`]；为假时改用 `profile.ambient_light_floor`，
+/// 与世界时钟、与天气都完全无关——**这条地板值路径不知道、也不需要
+/// 知道时钟走到哪、外面在下什么**，不存在与 [`ambient_light_under`]
 /// 各自维护一份边界、彼此可能矛盾的风险。
+///
+/// # 天气（天气系统批次新增）
+///
+/// `weather` 是纯派生值（[`crate::weather::Weather::derive`]），不进
+/// 世界状态。它只在露天分支生效，且先经 [`effective_weather`] 过一道
+/// ——洞窟/地下城因此完全不受天气影响，这条语义与本函数原有的
+/// `exposed_to_sky` 判定共用同一个字段，不是新增的第二条判据。
+/// 只想要昼夜四季、不关心天气的调用方（测试、验收 demo）显式传
+/// [`crate::weather::Weather::CLEAR`]。
 ///
 /// 见 `knowledge/design/coordinate-system-and-layers.md` 七节「与既有
 /// 光照系统的组合，而非替换」。
-pub fn effective_ambient_light(profile: &SpaceProfile, tick: Tick) -> LightLevel {
+pub fn effective_ambient_light(profile: &SpaceProfile, tick: Tick, weather: Weather) -> LightLevel {
     if profile.exposed_to_sky {
-        ambient_light(tick)
+        ambient_light_under(tick, effective_weather(profile, weather))
     } else {
         LightLevel(profile.ambient_light_floor)
+    }
+}
+
+/// 天气在这个空间里**实际**是什么——非露天空间恒为
+/// [`Weather::CLEAR`]，露天空间原样透传。
+///
+/// # 为什么需要这一步，而不是让每个消费者自己判断
+///
+/// 天气有两个独立的旋钮（光照与视野，见
+/// [`crate::weather::WeatherDef::sight_scale`]），而
+/// [`effective_ambient_light`] 只吃得下光照那一个。视野那一个由
+/// `ll_game::layout::effective_sight_radius` 在另一处消费——若「洞窟不
+/// 受天气影响」这条判断在两处各写一遍，迟早出现「洞窟不会变暗但会因为
+/// 起雾而看不远」这种自相矛盾的行为。本函数是这条判断的**唯一**真相
+/// 源：两个消费者都先经过它，`exposed_to_sky` 的语义因此只定义一次。
+///
+/// 判断依据只有 `exposed_to_sky` 一个字段——与
+/// [`effective_ambient_light`] 完全一致，不引入第二条「算不算露天」的
+/// 判据（ADR 0010 的教训）。
+pub fn effective_weather(profile: &SpaceProfile, weather: Weather) -> Weather {
+    if profile.exposed_to_sky {
+        weather
+    } else {
+        Weather::CLEAR
     }
 }
 
@@ -474,8 +511,8 @@ mod tests {
         let summer_noon = Tick(30 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR);
 
         // Act
-        let midnight_light = effective_ambient_light(&profile, midnight);
-        let noon_light = effective_ambient_light(&profile, summer_noon);
+        let midnight_light = effective_ambient_light(&profile, midnight, Weather::CLEAR);
+        let noon_light = effective_ambient_light(&profile, summer_noon, Weather::CLEAR);
 
         // Assert
         assert_ne!(midnight_light.0, noon_light.0);
@@ -489,8 +526,8 @@ mod tests {
         let summer_noon = Tick(30 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR);
 
         // Act
-        let midnight_light = effective_ambient_light(&profile, midnight);
-        let noon_light = effective_ambient_light(&profile, summer_noon);
+        let midnight_light = effective_ambient_light(&profile, midnight, Weather::CLEAR);
+        let noon_light = effective_ambient_light(&profile, summer_noon, Weather::CLEAR);
 
         // Assert：两个相差极大的时刻算出同一个值，且这个值就是地板值——
         // 一次 assert_eq! 同时钉住「恒定」与「等于地板值」两条，不拆成
@@ -499,6 +536,70 @@ mod tests {
             (midnight_light.0, noon_light.0),
             (profile.ambient_light_floor, profile.ambient_light_floor)
         );
+    }
+
+    #[test]
+    fn 露天profile的有效光照随天气变化() {
+        // 天气接进光照管线这件事的直接落点：同一时刻、同一空间，换一种
+        // 天气就该换一个亮度。
+        // Arrange
+        let profile = surface_like_profile();
+        let summer_noon = Tick(30 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR);
+        let stormy = Weather {
+            kind: None,
+            light_scale: 600,
+            sight_scale: 1000,
+        };
+
+        // Act
+        let clear_light = effective_ambient_light(&profile, summer_noon, Weather::CLEAR);
+        let stormy_light = effective_ambient_light(&profile, summer_noon, stormy);
+
+        // Assert
+        assert!(stormy_light < clear_light);
+    }
+
+    #[test]
+    fn 非露天profile的有效光照不受天气影响() {
+        // 洞窟里下不下雨都一样黑——`exposed_to_sky` 的语义，天气必须
+        // 落在露天那一侧。
+        // Arrange
+        let profile = underground_like_profile();
+        let summer_noon = Tick(30 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR);
+        let stormy = Weather {
+            kind: None,
+            light_scale: 100,
+            sight_scale: 100,
+        };
+
+        // Act
+        let clear_light = effective_ambient_light(&profile, summer_noon, Weather::CLEAR);
+        let stormy_light = effective_ambient_light(&profile, summer_noon, stormy);
+
+        // Assert
+        assert_eq!(
+            (clear_light.0, stormy_light.0),
+            (profile.ambient_light_floor, profile.ambient_light_floor)
+        );
+    }
+
+    #[test]
+    fn 非露天profile把天气整个换成晴空基准() {
+        // effective_weather 是「洞窟不受天气影响」这条判断的唯一真相源
+        // ——视野那一路（ll_game::layout）也走它，两个乘数必须一起被
+        // 中和掉，否则会出现「洞窟不变暗但因为起雾看不远」的矛盾行为。
+        // Arrange
+        let outdoor = surface_like_profile();
+        let indoor = underground_like_profile();
+        let foggy = Weather {
+            kind: None,
+            light_scale: 900,
+            sight_scale: 300,
+        };
+
+        // Act & Assert
+        assert_eq!(effective_weather(&outdoor, foggy), foggy);
+        assert_eq!(effective_weather(&indoor, foggy), Weather::CLEAR);
     }
 
     #[test]

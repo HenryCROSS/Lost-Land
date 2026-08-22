@@ -3,6 +3,10 @@
 // 证明同一条能力现在覆盖职业/技能/副职/任务/种族，不只是地形。
 // animation.scm（动画剪辑接线批次新增）证明第七类内容——动画剪辑——
 // 同样能由 mod 脚本注册，不再只有本体能用 Rust 写死。
+// weather.scm（天气系统批次新增）证明天气能由 mod 脚本注册，并顺带
+// 补上 register-space-profile 一直缺的已发货脚本调用——那是十六个
+// 注册函数里唯一一个只有单元测试、没有真实 mod 脚本证据的，见该文件
+// 内部的说明。
 //
 // 清单格式是 JSON5，不是 JSON——项目所有者 2026-08-20 裁定「全用
 // json5 吧，还可以写注释方便日后维护」，这份文件里的每一条注释就是
@@ -21,5 +25,5 @@
   // 直接报错——两套引擎的能力表天生不兼容，不是一个可以事后调整的
   // 疏漏。真正加载 behavior.scm 的路径见 ScriptBehaviorSource::new
   // 文档。
-  entry_points: ["terrain.scm", "gameplay.scm", "animation.scm"],
+  entry_points: ["terrain.scm", "gameplay.scm", "animation.scm", "weather.scm"],
 }

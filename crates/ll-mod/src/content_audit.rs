@@ -138,6 +138,7 @@ use ll_sim::formula::FormulaDef;
 use ll_sim::skill::ResourceCost;
 use ll_sim::xp_curve::XpCurveDef;
 use ll_world::terrain::TerrainKind;
+use ll_world::weather::WEATHER_SCALE_ONE;
 
 use crate::content_hash::{ContentTableKind, ContentValueTables, classify_index};
 use crate::quest::QuestCondition;
@@ -291,12 +292,12 @@ pub struct ContentAuditPolicy {
 
 /// 生产策略：本体内容（`lostland` 命名空间）的字段覆盖。
 ///
-/// # `covered` 当前为什么只有七张表
+/// # `covered` 当前为什么只有八张表
 ///
 /// 本体内容迁往 mod 脚本这件事只完成了第一批（种族）。其余表在
 /// `lostland` 命名空间下的条目数如下（数据来自仓库真实 `mods/` 目录的
 /// 一次完整装载，不是估计）：地形 17、空间层属性 4、动画剪辑 2、经验
-/// 曲线 1、伤害公式 1、伤害类别 1、种族 3——这七张有内容；职业/技能/
+/// 曲线 1、伤害公式 1、伤害类别 1、种族 3、天气 6——这八张有内容；职业/技能/
 /// 副职/任务/天赋/资源池/物品/武器类别八张在 `lostland` 下**一条都
 /// 没有**（它们只存在于 `mods/example_mod/`）。
 ///
@@ -318,6 +319,7 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         ContentTableKind::XpCurve,
         ContentTableKind::Formula,
         ContentTableKind::DamageCategory,
+        ContentTableKind::Weather,
     ],
     deferred: &[
         DeferredTable {
@@ -618,6 +620,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
         ContentTableKind::Formula => "伤害公式表",
         ContentTableKind::WeaponCategory => "武器类别表",
         ContentTableKind::DamageCategory => "伤害类别表",
+        ContentTableKind::Weather => "天气表",
     }
 }
 
@@ -626,7 +629,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
 /// 与 [`roster_slot`] 配套：新增一个变体时，那个不带通配分支的 `match`
 /// 会编译失败，逼人回到这里补上数组元素（数组长度也会对不上），见模块
 /// 文档「表花名册」一节。
-pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 16] = [
+pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 17] = [
     ContentTableKind::Opaque,
     ContentTableKind::Terrain,
     ContentTableKind::Class,
@@ -643,6 +646,7 @@ pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 16] = [
     ContentTableKind::Formula,
     ContentTableKind::WeaponCategory,
     ContentTableKind::DamageCategory,
+    ContentTableKind::Weather,
 ];
 
 /// 给 [`ALL_CONTENT_TABLE_KINDS`] 的完备性做编译期强制：不带通配分支
@@ -669,6 +673,7 @@ fn roster_slot(kind: ContentTableKind) -> usize {
         ContentTableKind::Formula => 13,
         ContentTableKind::WeaponCategory => 14,
         ContentTableKind::DamageCategory => 15,
+        ContentTableKind::Weather => 16,
     }
 }
 
@@ -955,6 +960,7 @@ fn inspect_entry(auditor: &mut Auditor<'_>, index: ContentIndex) {
         ContentTableKind::Formula => inspect_formula(auditor, index),
         ContentTableKind::WeaponCategory => inspect_weapon_category(auditor, index),
         ContentTableKind::DamageCategory => inspect_damage_category(auditor, index),
+        ContentTableKind::Weather => inspect_weather(auditor, index),
     }
 }
 
@@ -1144,6 +1150,36 @@ fn inspect_space_profile(auditor: &mut Auditor<'_>, index: ContentIndex) {
     auditor.field("SpaceProfileAttrs::diggable", diggable);
     auditor.field("SpaceProfileAttrs::buildable", buildable);
     auditor.field("SpaceProfileAttrs::reverb_tag", reverb_tag.is_some());
+}
+
+/// [`ll_world::weather::WeatherDef`] 的全部字段。
+///
+/// `display_name_key` 是 [`ll_world::weather::WeatherTable::define`] 的
+/// 必填参数，类型上没有「默认值」可言，每条内容都必然给了值——如实记成
+/// 恒覆盖，与 [`inspect_class`] 对 `ClassAttrs::display_name_key` 同一条
+/// 处理（表里存成 `Option` 只是列式存储需要一个「这一格还没定义」的表示，
+/// 不代表字段可选，见该访问器文档）。
+///
+/// 两个乘数的「非默认」判据是**不等于 1000**（[`WEATHER_SCALE_ONE`]），
+/// 不是「不等于 0」：这两列的语义默认值是「不缩放」，一条把
+/// `light_scale` 填成 1000 的天气等于没有对光照做任何事，与「压根没填」
+/// 不可区分——字段覆盖检查要问的正是「有没有哪条本体内容真的用上了这个
+/// 旋钮」。
+fn inspect_weather(auditor: &mut Auditor<'_>, index: ContentIndex) {
+    let table = auditor.tables.weather;
+    auditor.field("WeatherAttrs::display_name_key", true);
+    auditor.field(
+        "WeatherAttrs::light_scale",
+        table.light_scale(index) != WEATHER_SCALE_ONE,
+    );
+    auditor.field(
+        "WeatherAttrs::sight_scale",
+        table.sight_scale(index) != WEATHER_SCALE_ONE,
+    );
+    auditor.field(
+        "WeatherAttrs::season_weights",
+        table.season_weights(index).iter().any(|w| *w != 0),
+    );
 }
 
 /// [`ll_render::anim::Clip`] 的全部字段——[`crate::clip::ClipTable`]
@@ -1359,6 +1395,7 @@ mod tests {
     use ll_world::item::SlotMask;
     use ll_world::space_profile::SpaceProfileTable;
     use ll_world::terrain::TerrainTable;
+    use ll_world::weather::WeatherTable;
 
     fn id(raw: &str) -> NamespacedId {
         NamespacedId::parse(raw).expect("测试用标识符恒合法")
@@ -1386,6 +1423,7 @@ mod tests {
         formula: FormulaTable,
         weapon_category: WeaponCategoryTable,
         damage_category: DamageCategoryTable,
+        weather: WeatherTable,
     }
 
     impl Session {
@@ -1407,6 +1445,7 @@ mod tests {
                 formula: FormulaTable::new(),
                 weapon_category: WeaponCategoryTable::new(),
                 damage_category: DamageCategoryTable::new(),
+                weather: WeatherTable::new(),
             }
         }
 
@@ -1427,6 +1466,7 @@ mod tests {
                 formula: &self.formula,
                 weapon_category: &self.weapon_category,
                 damage_category: &self.damage_category,
+                weather: &self.weather,
             }
         }
 

@@ -1,4 +1,4 @@
-//! 昼夜四季驱动的环境光照与视野半径。
+//! 昼夜、四季与天气驱动的环境光照与视野半径。
 //!
 //! # 光照是纯函数派生，绝不进世界状态
 //!
@@ -33,6 +33,8 @@
 use ll_core::light::day_curve;
 use ll_core::time::{Season, Tick};
 
+use crate::weather::{WEATHER_SCALE_ONE, Weather};
+
 /// 千分比表示的环境光照，`0..=1000`，1000 为最亮。
 ///
 /// 用千分比整数而非百分比或浮点：千分比在日出日落的两小时渐变窗口内
@@ -41,16 +43,53 @@ use ll_core::time::{Season, Tick};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct LightLevel(pub i32);
 
-/// 求某一世界时刻的环境光照。
+/// 求某一世界时刻在**晴空基准**下的环境光照——不考虑天气。
 ///
 /// 昼夜曲线（[`ll_core::light::day_curve`]）先给出未经季节缩放的基准
 /// 值，再乘以 [`season_light_scale`] 得到最终光照。两步分开是为了让
 /// 季节缩放能被单独测试与复用，而不必每次都重新构造一整天的 `Tick`。
+///
+/// 想要把天气也算进去，用 [`ambient_light_under`]——本函数等价于
+/// `ambient_light_under(tick, Weather::CLEAR)`（有单元测试钉住这条
+/// 等价关系，两者不会各自漂移）。**露天空间的生产路径不该直接调用本
+/// 函数**：它不知道调用它的是地表还是地下城，也不知道外面在不在下雨，
+/// 唯一正确的入口是 [`crate::space_profile::effective_ambient_light`]。
 pub fn ambient_light(tick: Tick) -> LightLevel {
+    ambient_light_under(tick, Weather::CLEAR)
+}
+
+/// 求某一世界时刻、某种天气下的环境光照——环境光管线的**唯一**真相源。
+///
+/// # 天气是第三个因子
+///
+/// ```text
+/// ambient_light_under(tick, weather)
+///     = day_curve(tick)                      // 昼夜，定义在 ll_core::light
+///     × season_light_scale(tick.season())    // 四季，本模块
+///     × weather.light_scale                  // 天气，crate::weather
+/// ```
+///
+/// 三个因子逐个相乘、每一步都夹回 `0..=1000`，全程整数：中间结果走
+/// `i64` 避免 `1000 × 1000` 这种量级溢出 `i32`。这里**不**为天气单独
+/// 再写一条昼夜/季节判定——ADR 0010「白昼判定收敛为同一份真相源」的
+/// 教训在这里同样成立，天气只贡献一个乘数，它不知道、也不需要知道现在
+/// 是几点、哪一季。
+///
+/// # 天气只作用于露天空间
+///
+/// 本函数本身不判断露天与否——判断在
+/// [`crate::space_profile::effective_weather`]，非露天空间在那里就已经
+/// 被换成了 [`Weather::CLEAR`]，因此洞窟里下不下雨对环境光没有任何影响
+/// （洞窟的环境光根本就不走本函数，恒等于 `ambient_light_floor`）。
+pub fn ambient_light_under(tick: Tick, weather: Weather) -> LightLevel {
     let base = day_curve(tick);
-    let scale = season_light_scale(tick.season());
+    let season = season_light_scale(tick.season());
     // i64 中间结果避免 1000 * 1000 这种量级在极端输入下溢出 i32。
-    let scaled = (i64::from(base) * i64::from(scale)) / 1000;
+    let after_season = (i64::from(base) * i64::from(season)) / 1000;
+    // 调用方即便构造了一个越界的 Weather（本 crate 的注册期校验拦得住
+    // 表里的数据，拦不住手工构造的值），也不会产出负的或超比例的光照。
+    let weather_scale = i64::from(weather.light_scale.clamp(0, WEATHER_SCALE_ONE));
+    let scaled = (after_season * weather_scale) / 1000;
     LightLevel(scaled.clamp(0, 1000) as i32)
 }
 
@@ -125,10 +164,68 @@ pub fn sight_radius_at(base_radius: u32, light: LightLevel) -> u32 {
     (scaled as u32).max(night_floor)
 }
 
+/// 在 [`sight_radius_at`] 之上再叠加天气的视野缩减。
+///
+/// # 为什么是第二个乘数，不是折进光照
+///
+/// 天气对「看多远」的影响不只来自「有多暗」：雾几乎不遮光，却让人只
+/// 看得见几步之内；阴天明显更暗，能看多远却几乎不变。若只有
+/// [`crate::weather::WeatherDef::light_scale`] 一个旋钮，这两种天气在
+/// 玩法上必然坍缩成同一种东西的强弱版本。因此
+/// [`crate::weather::WeatherDef::sight_scale`] 是**独立的第二个乘数**，
+/// 接在光照换算完成**之后**——顺序不能反过来：折进光照会让雾同时把
+/// 画面也压黑（`effective_tint` 读的是光照），那不是雾。
+///
+/// # 下限仍然是 [`MIN_SIGHT_RADIUS`]
+///
+/// 天气再恶劣也不会让玩家连脚下都看不见——与 `sight_radius_at` 同一条
+/// 底线，且同样先与 `base_radius` 取小，避免下限反过来把「基准视野本就
+/// 很小」的角色**放大**。这条下限是玩法规则，不是表现层调节，取值本身
+/// 不因为新增了天气而改动。
+pub fn sight_radius_under_weather(base_radius: u32, light: LightLevel, weather: Weather) -> u32 {
+    let radius = sight_radius_at(base_radius, light);
+    let scale = u64::from(weather.sight_scale.clamp(0, WEATHER_SCALE_ONE) as u32);
+    let scaled = (u64::from(radius) * scale) / 1000;
+    let night_floor = MIN_SIGHT_RADIUS.min(base_radius).max(1);
+    (scaled as u32).max(night_floor)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::weather::base_weather_fixture;
     use ll_core::time::{TICKS_PER_DAY, TICKS_PER_HOUR};
+
+    /// 与 `ll_game::layout::BASE_SIGHT_RADIUS` 同值——本 crate 不依赖
+    /// `ll-game`（依赖方向不允许），组合断言需要一个基准半径才能问出
+    /// 「天气会不会把视野压到不可玩」，这里复制那个取值并在此说明。
+    /// 两者若哪天分叉，本节断言的结论仍然对本 crate 成立，只是不再直接
+    /// 代表实机画面。
+    const PLAYER_BASE_SIGHT_RADIUS: u32 = 12;
+
+    /// 与 `ll_game::layout::MIN_VISIBLE_TINT` 同值，理由同上——那是纯
+    /// 表现层常量（ADR 0020 甲区），定义在 `ll-game`。
+    const PLAYER_MIN_VISIBLE_TINT: f32 = 0.4;
+
+    fn all_seasons() -> [Season; 4] {
+        [
+            Season::Spring,
+            Season::Summer,
+            Season::Autumn,
+            Season::Winter,
+        ]
+    }
+
+    /// 某一季正午的世界时刻。四季分别落在每年第 0/30/60/90 天。
+    fn noon_of(season: Season) -> Tick {
+        let day = match season {
+            Season::Spring => 0,
+            Season::Summer => 30,
+            Season::Autumn => 60,
+            Season::Winter => 90,
+        };
+        Tick(day * TICKS_PER_DAY + 12 * TICKS_PER_HOUR)
+    }
 
     #[test]
     fn 正午光照最强() {
@@ -214,5 +311,177 @@ mod tests {
 
         // Assert
         assert_eq!(radius, MIN_SIGHT_RADIUS);
+    }
+
+    #[test]
+    fn 晴空基准下的天气版光照与不带天气的版本逐位相同() {
+        // 两个函数不能各自漂移：ambient_light 现在只是 CLEAR 的特例，
+        // 这条断言把「特例」这件事钉住，而不是靠两处各写一遍公式。
+        // Arrange
+        let samples = [
+            Tick(0),
+            Tick(6 * TICKS_PER_HOUR),
+            Tick(12 * TICKS_PER_HOUR),
+            Tick(90 * TICKS_PER_DAY + 12 * TICKS_PER_HOUR),
+        ];
+
+        // Act & Assert
+        for tick in samples {
+            assert_eq!(
+                ambient_light(tick),
+                ambient_light_under(tick, Weather::CLEAR)
+            );
+        }
+    }
+
+    #[test]
+    fn 天气是环境光的第三个乘数() {
+        // 半亮的天气应当把同一时刻的光照压到大约一半——「第三个因子」
+        // 这句话的可验证形式。
+        // Arrange
+        let noon = noon_of(Season::Summer);
+        let half = Weather {
+            kind: None,
+            light_scale: 500,
+            sight_scale: 1000,
+        };
+
+        // Act
+        let clear = ambient_light_under(noon, Weather::CLEAR).0;
+        let dimmed = ambient_light_under(noon, half).0;
+
+        // Assert：整数除法可能差 1，用相等而不是范围判断反而更脆。
+        assert_eq!(dimmed, clear / 2);
+    }
+
+    #[test]
+    fn 天气乘数越界时被夹住而不是算出越界光照() {
+        // 表里的数据有注册期校验兜着，手工构造的 Weather 没有——这条
+        // 保证越界输入不会产出负的或超比例的光照。
+        // Arrange
+        let noon = noon_of(Season::Summer);
+        let absurd_low = Weather {
+            kind: None,
+            light_scale: -5000,
+            sight_scale: 1000,
+        };
+        let absurd_high = Weather {
+            kind: None,
+            light_scale: 9999,
+            sight_scale: 1000,
+        };
+
+        // Act & Assert
+        assert_eq!(ambient_light_under(noon, absurd_low).0, 0);
+        assert_eq!(
+            ambient_light_under(noon, absurd_high),
+            ambient_light(noon),
+            "超过 1000 的乘数被夹到 1000，等价于晴空"
+        );
+    }
+
+    #[test]
+    fn 天气的视野乘数独立于光照生效() {
+        // 雾：光照几乎不变，视野明显缩短——两个旋钮必须能分别拨动，
+        // 否则 sight_scale 就是多余的。
+        // Arrange
+        let noon = noon_of(Season::Summer);
+        let foggy = Weather {
+            kind: None,
+            light_scale: 1000,
+            sight_scale: 500,
+        };
+        let light = ambient_light_under(noon, foggy);
+
+        // Act
+        let clear_radius =
+            sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, Weather::CLEAR);
+        let foggy_radius = sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, foggy);
+
+        // Assert
+        assert_eq!(light, ambient_light(noon), "雾不改变光照");
+        assert!(foggy_radius < clear_radius, "雾必须真的缩短视野");
+    }
+
+    #[test]
+    fn 任何季节任何本体天气下视野都不低于夜间下限() {
+        // 组合断言：天气叠加四季叠加昼夜之后，视野半径不会被压到不可玩。
+        // 这条是新增天气之后最容易出问题的地方——两个乘数相乘，很容易
+        // 在某个组合上把玩家压成瞎子。
+        // Arrange
+        let (_ids, table) = base_weather_fixture();
+
+        // Act & Assert
+        for index in table.registered() {
+            let weather = Weather {
+                kind: Some(*index),
+                light_scale: table.light_scale(*index),
+                sight_scale: table.sight_scale(*index),
+            };
+            for season in all_seasons() {
+                for hour in 0..24i64 {
+                    let tick =
+                        Tick(noon_of(season).0 - 12 * TICKS_PER_HOUR + hour * TICKS_PER_HOUR);
+                    let light = ambient_light_under(tick, weather);
+                    let radius =
+                        sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, weather);
+                    assert!(
+                        radius >= MIN_SIGHT_RADIUS,
+                        "季节 {season:?} 第 {hour} 小时的视野半径 {radius} 跌破夜间下限"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn 夏季正午在任何本体天气下都明显好于夜间下限() {
+        // 上一条只保证「不至于瞎」；这一条保证「一天里最好的时段不会
+        // 被天气压成和午夜一样」——否则天气就成了单纯的惩罚开关。
+        // Arrange
+        let (_ids, table) = base_weather_fixture();
+        let noon = noon_of(Season::Summer);
+
+        // Act & Assert
+        for index in table.registered() {
+            let weather = Weather {
+                kind: Some(*index),
+                light_scale: table.light_scale(*index),
+                sight_scale: table.sight_scale(*index),
+            };
+            let light = ambient_light_under(noon, weather);
+            let radius = sight_radius_under_weather(PLAYER_BASE_SIGHT_RADIUS, light, weather);
+            assert!(
+                radius > MIN_SIGHT_RADIUS,
+                "夏季正午的视野半径 {radius} 与午夜一样只剩下限"
+            );
+        }
+    }
+
+    #[test]
+    fn 任何季节正午在任何本体天气下画面亮度都高于表现层下限() {
+        // 甲区（纯表现）那一侧的同一条组合检查：白天不该靠
+        // MIN_VISIBLE_TINT 兜底才看得见——那说明天气把画面压过头了。
+        // 这里直接复算 ll_game::layout::effective_tint 的换算式（本 crate
+        // 不能依赖 ll-game），只做「未经下限钳制的原始亮度」这一步。
+        // Arrange
+        let (_ids, table) = base_weather_fixture();
+
+        // Act & Assert
+        for index in table.registered() {
+            let weather = Weather {
+                kind: Some(*index),
+                light_scale: table.light_scale(*index),
+                sight_scale: table.sight_scale(*index),
+            };
+            for season in all_seasons() {
+                let light = ambient_light_under(noon_of(season), weather);
+                let raw_tint = light.0.clamp(0, 1000) as f32 / 1000.0;
+                assert!(
+                    raw_tint > PLAYER_MIN_VISIBLE_TINT,
+                    "季节 {season:?} 正午的原始亮度 {raw_tint} 未高于表现层下限"
+                );
+            }
+        }
     }
 }

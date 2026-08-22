@@ -235,6 +235,7 @@ mod tests {
     use super::*;
     use ll_core::time::Tick;
     use ll_world::space_profile::{SpaceProfile, effective_ambient_light};
+    use ll_world::weather::Weather;
 
     #[test]
     fn 合法空间层属性声明注册成功并写入表() {
@@ -445,8 +446,12 @@ mod tests {
         };
 
         // Act
-        let midnight = effective_ambient_light(&profile, Tick(0));
-        let noon = effective_ambient_light(&profile, Tick(ll_core::time::TICKS_PER_DAY / 2));
+        let midnight = effective_ambient_light(&profile, Tick(0), Weather::CLEAR);
+        let noon = effective_ambient_light(
+            &profile,
+            Tick(ll_core::time::TICKS_PER_DAY / 2),
+            Weather::CLEAR,
+        );
 
         // Assert
         assert_eq!(midnight, noon, "非露天空间的环境光不随世界时钟变化");

@@ -44,6 +44,7 @@ use ll_core::ident::NamespacedId;
 use ll_script::host::{ScriptEngine, ScriptError};
 use ll_world::space_profile::SpaceProfileTable;
 use ll_world::terrain::TerrainTable;
+use ll_world::weather::WeatherTable;
 
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
@@ -118,6 +119,10 @@ use crate::script_weapon_category_api::{
     register_weapon_category_api, set_active_target as set_active_weapon_category_target,
     take_active_target as take_active_weapon_category_target,
 };
+use crate::script_weather_api::{
+    register_weather_api, set_active_target as set_active_weather_target,
+    take_active_target as take_active_weather_target,
+};
 use crate::script_xp_curve_api::{
     register_xp_curve_api, set_active_target as set_active_xp_curve_target,
     take_active_target as take_active_xp_curve_target,
@@ -127,12 +132,12 @@ use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 
 /// 加载管线一次装载会话内，脚本注册函数可以写入的全部内容表——地形、
 /// 职业、技能、副职、任务、种族、动画剪辑、经验曲线（含绑定）、天赋、
-/// 资源池、物品、伤害公式、武器类别、伤害类别、空间层属性。
+/// 资源池、物品、伤害公式、武器类别、伤害类别、空间层属性、天气。
 ///
 /// 集中成一个结构体，而不是让 [`load_all`]/[`load_one_script`] 各自
-/// 接收十六个独立的 `&mut` 参数：这些表在装载管线里总是同进同出（同一
+/// 接收十七个独立的 `&mut` 参数：这些表在装载管线里总是同进同出（同一
 /// 份 mod 脚本可能在同一个文件里先后调用 `register-terrain`/
-/// `register-class`/……），拆成十六个位置参数只会让调用点的参数顺序成为
+/// `register-class`/……），拆成十七个位置参数只会让调用点的参数顺序成为
 /// 易错点，结构体把「这些表必须一起传」这条约束在类型上表达出来。
 /// `Registry` 不在这个结构体里——它走 [`crate::active_registry`] 单独
 /// 的共享目标，理由见该模块文档。
@@ -140,11 +145,14 @@ use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 /// # 字段个数就是「mod 能注册几类玩法层内容」的唯一权威清单
 ///
 /// 每新增一个字段，都对应 ADR 0018「玩法层内容都能从 mod 脚本注册」
-/// 这条要求上补掉的一处缺口。`space_profile` 是最近的一次：空间层属性
-/// 早就有 `ll-world` 侧的表、有本体侧的生产注册路径、也早就进了
+/// 这条要求上补掉的一处缺口。`space_profile` 曾是最近的一次：空间层
+/// 属性早就有 `ll-world` 侧的表、有本体侧的生产注册路径、也早就进了
 /// [`crate::content_hash`] 的值哈希覆盖面，**唯独脚本注册函数一直不
 /// 存在**，六个字段只能由 Rust 写死——这正是「声明了但从没接线」这类
 /// 缺口最典型的形态：每一环单独看都在，串起来才发现断了一节。
+/// `weather` 是最新的一个字段（天气系统批次），与其余十六张表不同的
+/// 是它从第一天起就是完整的：表、本体注册路径、脚本注册函数、值哈希、
+/// 装载后校验、真实消费者（环境光管线）在同一个批次里一起落地。
 pub struct GameplayTables<'a> {
     /// 地形表。
     pub terrain: &'a mut TerrainTable,
@@ -203,6 +211,14 @@ pub struct GameplayTables<'a> {
     /// 独有的例外——`SpaceProfileTable::define` 的重复定义校验保证 mod
     /// 覆盖不掉本体已声明的那几条。
     pub space_profile: &'a mut SpaceProfileTable,
+    /// 天气表（天气系统批次新增）——`register-weather` 的写入目标，见
+    /// `crate::script_weather_api` 模块文档。
+    ///
+    /// 与 `space_profile` 同一种情形：这张表在装载会话开始**之前**通常
+    /// 已经非空（`ll_mod::base_weather::register_base_weathers` 先注册了
+    /// 本体六种天气），mod 脚本是往里追加，`WeatherTable::define` 的重复
+    /// 定义校验保证 mod 覆盖不掉本体已声明的那几条。
+    pub weather: &'a mut WeatherTable,
 }
 
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
@@ -341,6 +357,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut weapon_category = WeaponCategoryTable::new();
     let mut damage_category = DamageCategoryTable::new();
     let mut space_profile = SpaceProfileTable::new();
+    let mut weather = WeatherTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -358,6 +375,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         weapon_category: &mut weapon_category,
         damage_category: &mut damage_category,
         space_profile: &mut space_profile,
+        weather: &mut weather,
     };
     for entry in &manifest.entry_points {
         if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
@@ -487,6 +505,7 @@ fn load_one_script(
     set_active_weapon_category_target(std::mem::take(tables.weapon_category));
     set_active_damage_category_target(std::mem::take(tables.damage_category));
     set_active_space_profile_target(std::mem::take(tables.space_profile));
+    set_active_weather_target(std::mem::take(tables.weather));
 
     let mut engine = ScriptEngine::new();
     register_terrain_api(&mut engine);
@@ -504,6 +523,7 @@ fn load_one_script(
     register_weapon_category_api(&mut engine);
     register_damage_category_api(&mut engine);
     register_space_profile_api(&mut engine);
+    register_weather_api(&mut engine);
     let result = engine.load_source(source.clone());
 
     *registry = take_active_registry();
@@ -524,6 +544,7 @@ fn load_one_script(
     *tables.weapon_category = take_active_weapon_category_target();
     *tables.damage_category = take_active_damage_category_target();
     *tables.space_profile = take_active_space_profile_target();
+    *tables.weather = take_active_weather_target();
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -614,6 +635,7 @@ mod tests {
         weapon_category: WeaponCategoryTable,
         damage_category: DamageCategoryTable,
         space_profile: SpaceProfileTable,
+        weather: WeatherTable,
     }
 
     impl OwnedTables {
@@ -635,6 +657,7 @@ mod tests {
                 weapon_category: &mut self.weapon_category,
                 damage_category: &mut self.damage_category,
                 space_profile: &mut self.space_profile,
+                weather: &mut self.weather,
             }
         }
     }
@@ -815,11 +838,15 @@ mod tests {
         };
 
         // Act
-        let midnight =
-            ll_world::space_profile::effective_ambient_light(&profile, ll_core::time::Tick(0));
+        let midnight = ll_world::space_profile::effective_ambient_light(
+            &profile,
+            ll_core::time::Tick(0),
+            ll_world::weather::Weather::CLEAR,
+        );
         let noon = ll_world::space_profile::effective_ambient_light(
             &profile,
             ll_core::time::Tick(ll_core::time::TICKS_PER_DAY / 2),
+            ll_world::weather::Weather::CLEAR,
         );
 
         // Assert
@@ -871,6 +898,7 @@ mod tests {
                 formula: &owned.formula,
                 weapon_category: &owned.weapon_category,
                 damage_category: &owned.damage_category,
+                weather: &owned.weather,
             },
         );
 

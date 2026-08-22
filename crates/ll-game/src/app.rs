@@ -47,6 +47,7 @@ use ll_world::overview::{ContinentField, continent_map, generate_continent_field
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
+use ll_world::weather::Weather;
 
 use crate::animation::{self, FALLBACK_SPRITE};
 use crate::content::{LoadedContent, RuntimeCatalogs};
@@ -626,11 +627,30 @@ fn draw_hud(
         return;
     };
 
+    // 状态栏里的天气：与 `render_surface` 各自派生一次，而不是从那边
+    // 传过来。两处算出来的必然是同一个值（`Weather::derive` 是纯函数，
+    // 输入只有世界种子与世界时钟，两处读的是同一个 `WorldState`），
+    // 把它拎成一个跨函数参数只会在 `draw_hud` 的参数表上再加一项，换
+    // 不来任何正确性——这正是「派生而不缓存」这条纪律的好处：不需要有
+    // 人负责保证两处看到的天气一致。
+    //
+    // `weather_name_key` 必须在 `status` 之外声明：`StatusBarData` 借用
+    // 它的字符串切片，与下面 `world_map_cells` 同一条既有写法。
+    let weather = Weather::derive(
+        game_world.world.seed,
+        game_world.world.clock,
+        &content.weather_table,
+    );
+    let weather_name_key = weather
+        .kind
+        .and_then(|kind| content.weather_table.display_name_key(kind))
+        .map(|key| key.to_string());
     let status = StatusBarData {
         clock: game_world.world.clock,
         health: agent.health,
         mana: agent.mana,
         fps,
+        weather_display_name_key: weather_name_key.as_deref(),
     };
     let character = CharacterPanelData {
         base_stats: agent.stats,
@@ -703,17 +723,28 @@ fn render_surface(
     let player_pos = player_agent.map(|agent| agent.pos).unwrap_or(camera.center);
     let profile = space_profile_of(content, world.surface_profile);
     let clock = world.clock;
+    // 天气：**每帧派生一次**，随后这一帧的每一格都复用同一个值。绝不
+    // 在逐格循环里再算——`Weather::derive` 要走一次加权遍历，虽然只有
+    // 六条内容，放进每帧上万次的逐格循环仍然是白白浪费（ADR 0016/0017
+    // 的热路径纪律）。天气不进 `WorldState`，这里是它在生产渲染路径上
+    // 的唯一派生点，输入只有世界种子与世界时钟，见 `ll_world::weather`
+    // 模块文档。
+    let weather = Weather::derive(world.seed, clock, &content.weather_table);
     // 视野半径叠加玩家种族的暗视下限（见 `effective_sight_radius_for_race`
     // 模块文档「为什么接在这一步」一节）——玩家实体查不到（理论上不该
     // 发生，见上方 `unwrap_or(camera.center)` 同一条降级纪律）时退化到
     // 不叠加暗视的 `effective_sight_radius`，不是 panic。
     let radius = match player_agent {
-        Some(agent) => {
-            effective_sight_radius_for_race(&profile, clock, agent.race, &content.race_table)
-        }
-        None => effective_sight_radius(&profile, clock),
+        Some(agent) => effective_sight_radius_for_race(
+            &profile,
+            clock,
+            weather,
+            agent.race,
+            &content.race_table,
+        ),
+        None => effective_sight_radius(&profile, clock, weather),
     };
-    let tint = effective_tint(&profile, clock);
+    let tint = effective_tint(&profile, clock, weather);
     let layout = *world.terrain.layout();
 
     let visible = compute_fov(

@@ -110,8 +110,16 @@ fn season_key(season: Season) -> &'static str {
 /// 不实现 `Eq`），只保留 `PartialEq`——这与
 /// `crate::widget::anim::AnimatedValue`（同样含 `f32` 字段、同样只派生
 /// `PartialEq`）是同一个理由。
+///
+/// # 为什么带一个生命周期参数
+///
+/// [`Self::weather_display_name_key`] 是一个借来的字符串切片——天气是
+/// **mod 可注册**的内容（`ll_world::weather`），它的本地化键不是一个
+/// 有限枚举，没有 `&'static str` 可用（季节名那种写死的 [`season_key`]
+/// 在这里行不通）。借用而不是 `String`，是为了保住本结构体的 `Copy`：
+/// 它每帧构造一次，`Copy` 让调用点不必关心所有权。
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct StatusBarData {
+pub struct StatusBarData<'a> {
     /// 世界时钟——`WorldState::clock`。
     pub clock: Tick,
     /// 当前生命值——`Agent::health`。
@@ -124,6 +132,25 @@ pub struct StatusBarData {
     /// 动画，符合「数字瞬时，条形动画」硬规则：这里既不是条形，平滑也
     /// 发生在调用点而不是 `crate::widget::anim::AnimatedValue`）。
     pub fps: f32,
+    /// 当前天气展示名的 Fluent 本地化键（天气系统批次新增），`None`
+    /// 表示这一刻没有天气（晴空基准，或世界里压根没注册任何天气）。
+    ///
+    /// # 为什么状态栏要显示天气——与季节同一条判据
+    ///
+    /// 本模块「现在显示季节」一节立过一条规矩：**如果一样东西只是显示
+    /// 出来却不影响任何东西，那这个显示就是在误导玩家**。天气过得了这
+    /// 条判据，而且链路比季节还短一截：
+    /// `ll_world::weather::Weather::derive` → `WeatherDef::light_scale`
+    /// → `ll_world::light::ambient_light_under` →
+    /// `ll_world::space_profile::effective_ambient_light` →
+    /// `ll_game::layout::effective_sight_radius`/`effective_tint`——
+    /// 前者就是玩家实机看到的视野半径，后者就是画面亮度；
+    /// `WeatherDef::sight_scale` 还在视野那一路上再乘一次。也就是说
+    /// 下雨天确实看得更近、画面更暗，不是纯换色板。
+    ///
+    /// 反过来说，**不显示**才是有害的：玩家会看到画面突然变暗、视野
+    /// 突然缩短，却没有任何线索说明为什么。
+    pub weather_display_name_key: Option<&'a str>,
 }
 
 /// 把 `clock` 换算成「第 N 天 HH:MM」——绝对天数（从世界创建那一刻
@@ -156,14 +183,21 @@ fn format_clock(clock: Tick) -> String {
 /// `fps` 按四舍五入到整数显示（`{:.0}`）——玩家关心的是「大概多少帧」，
 /// 平滑算法本身已经抹平了逐帧抖动（见 `ll_platform::fps` 模块文档），
 /// 小数位不会带来任何额外信息，只会让这行文本更拥挤。
-pub fn status_bar_text(data: &StatusBarData, catalog: &Catalog, language: &str) -> String {
+pub fn status_bar_text(data: &StatusBarData<'_>, catalog: &Catalog, language: &str) -> String {
     let time_label = catalog.resolve(language, "hud-status-time-label");
     let health_label = catalog.resolve(language, "hud-status-health-label");
     let mana_label = catalog.resolve(language, "hud-status-mana-label");
     let fps_label = catalog.resolve(language, "hud-status-fps-label");
     let season_name = catalog.resolve(language, season_key(data.clock.season()));
+    // 天气紧跟季节，共用同一对括号：两者都是「现在是什么时节/什么天」
+    // 这一类环境信息，分开成两组括号只会让这行更拥挤。没有天气时整段
+    // 退化成原先的「(季节)」，不留下一个空的分隔符。
+    let season_and_weather = match data.weather_display_name_key {
+        None => season_name,
+        Some(key) => format!("{season_name} · {}", catalog.resolve(language, key)),
+    };
     format!(
-        "{time_label} {} ({season_name})   {health_label} {}   {mana_label} {}   {fps_label} {:.0}",
+        "{time_label} {} ({season_and_weather})   {health_label} {}   {mana_label} {}   {fps_label} {:.0}",
         format_clock(data.clock),
         data.health,
         data.mana,
@@ -176,7 +210,7 @@ pub fn status_bar_text(data: &StatusBarData, catalog: &Catalog, language: &str) 
 /// 里真正被调用的入口——常驻，不需要按任何键就能看见,见模块文档
 /// 开篇。
 pub fn status_bar_panel(
-    data: &StatusBarData,
+    data: &StatusBarData<'_>,
     catalog: &Catalog,
     language: &str,
     origin: (f32, f32),
@@ -197,8 +231,8 @@ mod tests {
         // 「本行是否含诊断宏」逐行判定豁免（见其模块文档），拆成多行
         // 会让字面量单独落在一行、不再触发豁免；与 `ll_i18n::Catalog`
         // 自身测试的既有写法（`crates/ll-i18n/src/lib.rs`）保持一致。
-        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nhud-status-fps-label = 帧率\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\n").expect("测试用写入应当成功");
-        std::fs::write(dir.join("en.ftl"), "hud-status-time-label = Time\nhud-status-health-label = HP\nhud-status-mana-label = MP\nhud-status-fps-label = FPS\nseason-spring-display_name = Spring\nseason-summer-display_name = Summer\nseason-autumn-display_name = Autumn\nseason-winter-display_name = Winter\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nhud-status-fps-label = 帧率\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\nweather-rain-display_name = 雨\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("en.ftl"), "hud-status-time-label = Time\nhud-status-health-label = HP\nhud-status-mana-label = MP\nhud-status-fps-label = FPS\nseason-spring-display_name = Spring\nseason-summer-display_name = Summer\nseason-autumn-display_name = Autumn\nseason-winter-display_name = Winter\nweather-rain-display_name = Rain\n").expect("测试用写入应当成功");
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -221,6 +255,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
 
         // Act
@@ -245,6 +280,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
 
         // Act
@@ -252,6 +288,61 @@ mod tests {
 
         // Assert
         assert!(text.contains("2 08:05"));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 状态栏文本在有天气时把天气名显示在季节旁边() {
+        // 天气真的影响视野与画面亮度（见 StatusBarData::weather_display_name_key
+        // 文档），因此必须让玩家看得见——否则画面突然变暗、视野突然缩短
+        // 却没有任何线索说明为什么。
+        // Arrange
+        let dir = temp_dir("weather-shown");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let data = StatusBarData {
+            clock: Tick(0),
+            health: 100,
+            mana: 50,
+            fps: 0.0,
+            weather_display_name_key: Some("lostland:weather.rain.display_name"),
+        };
+
+        // Act
+        let text = status_bar_text(&data, &catalog, "zh-CN");
+
+        // Assert：季节与天气共用同一对括号，天气名经 catalog 解析而不是
+        // 把键名直接印出来。
+        assert!(text.contains("(春 · 雨)"), "实际文本：{text}");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 状态栏文本在没有天气时退回只显示季节() {
+        // 没有天气（晴空基准／世界里没注册任何天气）时不该留下一个空的
+        // 分隔符——「(春 · )」比不显示更糟。
+        // Arrange
+        let dir = temp_dir("weather-absent");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let data = StatusBarData {
+            clock: Tick(0),
+            health: 100,
+            mana: 50,
+            fps: 0.0,
+            weather_display_name_key: None,
+        };
+
+        // Act
+        let text = status_bar_text(&data, &catalog, "zh-CN");
+
+        // Assert
+        assert!(text.contains("(春)"), "实际文本：{text}");
+        assert!(!text.contains("·"), "没有天气时不该留下分隔符：{text}");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -268,6 +359,7 @@ mod tests {
             health: 42,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
 
         // Act
@@ -291,6 +383,7 @@ mod tests {
             health: 100,
             mana: 12,
             fps: 0.0,
+            weather_display_name_key: None,
         };
 
         // Act
@@ -314,6 +407,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
 
         // Act
@@ -338,6 +432,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
 
         // Act
@@ -361,6 +456,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
 
         // Act
@@ -420,6 +516,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
 
         // Act
@@ -443,6 +540,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 59.6,
+            weather_display_name_key: None,
         };
 
         // Act
@@ -467,6 +565,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 30.0,
+            weather_display_name_key: None,
         };
         let high_fps = StatusBarData {
             fps: 144.0,

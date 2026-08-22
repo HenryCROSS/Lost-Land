@@ -139,6 +139,11 @@
 //!   [`content_hash`] 早就把这张表收进值哈希覆盖面，唯独**脚本侧的
 //!   注册函数一直不存在**，`SpaceProfile` 六个字段只能由 Rust 写死。
 //!   判据推演见其模块文档。
+//! - [`script_weather_api`] —— 同一个模式在天气上的脚本绑定（天气系统
+//!   批次）：`register-weather`，见 [`weather`](ll_world::weather) 模块
+//!   文档。天气是第十七类可从 mod 脚本注册的玩法层内容，与空间层属性
+//!   一样在 `ll-world` 定表、在本 crate 开脚本通道；本体六种天气的生产
+//!   注册路径见 [`base_weather`]。
 //! - [`pipeline`] —— 加载管线：串起发现→解析→拓扑排序→加载脚本→注册
 //!   内容，产出 [`load_report::LoadReport`]（Task 11/12；P5-C 批次扩展
 //!   到同时接线六种 `register-*` 函数；动画剪辑接线批次扩展到七种）。
@@ -175,6 +180,7 @@ pub mod base_damage_formula;
 pub mod base_placeholder;
 pub mod base_space_profile;
 pub mod base_terrain;
+pub mod base_weather;
 pub mod base_xp_curve;
 pub mod class;
 pub mod clip;
@@ -210,6 +216,7 @@ pub mod script_subclass_api;
 pub mod script_terrain_api;
 pub mod script_trait_api;
 pub mod script_weapon_category_api;
+pub mod script_weather_api;
 pub mod script_xp_curve_api;
 pub mod skill;
 pub mod subclass;

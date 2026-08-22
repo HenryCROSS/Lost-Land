@@ -9,6 +9,7 @@ use ll_core::time::Tick;
 use ll_world::light::sight_radius_at;
 use ll_world::space_profile::{SpaceProfile, effective_ambient_light};
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
+use ll_world::weather::Weather;
 
 /// 区块边长（格）。64 是 [`ll_world::noise::CELL_SIZE`]（16）的整数倍，
 /// 也满足 `ZoneLayout` 要求的最小视口跨度（43）。
@@ -135,15 +136,26 @@ pub(crate) fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Opt
 /// 实现，只是把它的结果接到 [`sight_radius_at`]（P2 已有的呈现换算）
 /// 上——这正是「层属性生效」这条验收点的落点：地下 profile 的
 /// `ambient_light_floor` 越低，算出的视野半径越小。
+///
+/// # 为什么恒传 `Weather::CLEAR`
+///
+/// 天气系统批次给 `effective_ambient_light` 加了第三个参数。本 demo 的
+/// 验收点是**坐标系与层属性**，不是天气——让一个随机天气参与进来只会
+/// 让「地下比地表暗」这条断言多一个与验收无关的变量。显式传晴空基准
+/// 是如实声明「本 demo 不演示天气」，不是忘了接线：真实的天气消费者在
+/// `ll_game::layout`（生产渲染路径）。
 pub(crate) fn effective_sight_radius(profile: &SpaceProfile, clock: Tick) -> u32 {
-    let light = effective_ambient_light(profile, clock);
+    let light = effective_ambient_light(profile, clock, Weather::CLEAR);
     sight_radius_at(BASE_SIGHT_RADIUS, light)
 }
 
 /// 画面整体亮度调制（灰阶，不含季节色相——本 demo 的验收重点是「暗」
 /// 这件事本身，不需要 `p2_acceptance` 那一层四季色相）。
 pub(crate) fn effective_tint(profile: &SpaceProfile, clock: Tick) -> [f32; 4] {
-    let light = effective_ambient_light(profile, clock).0.clamp(0, 1000) as f32 / 1000.0;
+    let light = effective_ambient_light(profile, clock, Weather::CLEAR)
+        .0
+        .clamp(0, 1000) as f32
+        / 1000.0;
     [light, light, light, 1.0]
 }
 

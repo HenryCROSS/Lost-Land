@@ -44,6 +44,7 @@ pub mod space_profile;
 pub mod state;
 pub mod surface_store;
 pub mod terrain;
+pub mod weather;
 pub mod zone;
 
 /// 世界层的错误。

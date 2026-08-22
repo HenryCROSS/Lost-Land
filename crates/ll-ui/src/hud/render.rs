@@ -181,7 +181,7 @@ fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
 /// [`AnimatedValue`]: crate::widget::anim::AnimatedValue
 #[allow(clippy::too_many_arguments)]
 pub fn build_hud_frame(
-    status: &StatusBarData,
+    status: &StatusBarData<'_>,
     character: &CharacterPanelData<'_>,
     inventory: &[ItemStack],
     equipment: &BTreeMap<EquipSlot, ItemStack>,
@@ -508,7 +508,7 @@ pub fn render_hud(
     target: &wgpu::TextureView,
     resolution_width: u32,
     resolution_height: u32,
-    status: &StatusBarData,
+    status: &StatusBarData<'_>,
     character: &CharacterPanelData<'_>,
     inventory: &[ItemStack],
     equipment: &BTreeMap<EquipSlot, ItemStack>,
@@ -636,6 +636,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -683,6 +684,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -730,6 +732,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -808,6 +811,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -851,6 +855,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -907,6 +912,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
         build_hud_frame(
             &full_status,
@@ -931,6 +937,7 @@ mod tests {
             health: 30,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
         let frame = build_hud_frame(
             &damaged_status,
@@ -981,6 +988,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -1035,6 +1043,7 @@ mod tests {
             health: 100,
             mana: 50,
             fps: 0.0,
+            weather_display_name_key: None,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();

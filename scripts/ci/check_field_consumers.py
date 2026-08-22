@@ -125,6 +125,15 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     # 此前也漏在 TARGET_TYPES 之外。
     ("crates/ll-mod/src/weapon_category.rs", "struct", "WeaponCategoryDef"),
     ("crates/ll-mod/src/damage_category.rs", "struct", "DamageCategoryDef"),
+    # 天气系统批次新增的第十七张内容表。与 SpaceProfile（登记在
+    # CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE 里、字段门禁抓不到）
+    # 不同，WeatherDef 的两个乘数在决策层文件里有真正的 `.field_name`
+    # 点号读取（crates/ll-world/src/light.rs 的 ambient_light_under 读
+    # `weather.light_scale`、sight_radius_under_weather 读
+    # `weather.sight_scale`——读的是派生值 Weather 而不是 WeatherDef 实例
+    # 本身，但字段同名，正则一视同仁），因此本表按正常方式进 TARGET_TYPES，
+    # 不走豁免。
+    ("crates/ll-world/src/weather.rs", "struct", "WeatherDef"),
 ]
 
 # 决策层文件：真正驱动模拟结算、影响玩法输出的地方。见脚本头注释
@@ -174,6 +183,20 @@ EXEMPTIONS: dict[str, str] = {
     "SubclassDef.display_name_key": "同上。",
     "ResourcePoolDef.display_name_key": "同上。",
     "TraitDef.display_name_key": "同上。",
+    "WeatherDef.id": "同上（天气标识符）。",
+    "WeatherDef.display_name_key": "同 RaceDef.display_name_key，指向 Fluent 本地化键。与其余几条不同的是它有一个真实且已接线的 UI 消费者：ll_ui::hud::status_bar::StatusBarData::weather_display_name_key 每帧把它交给 Catalog::resolve 显示在状态栏（见 crates/ll-game/src/app.rs::draw_hud）——但那是表现层，不是本门禁定义的决策层，判据上仍归入「结构性字段」。",
+    # ---- (c) 消费者在派生层而不是决策层 glob 覆盖的文件里 ----
+    "WeatherDef.season_weights": (
+        "唯一消费者是 ll_world::weather::weather_kind_at 的加权选取（`table.season_weights(index)[slot]`）"
+        "——它决定「这一刻是什么天气」，随后那个天气才经 light.rs 影响视野与画面亮度。"
+        "这是本文件头注释「已知局限」第 2 条的多层间接：字段值先被 weather_kind_at 消化成一个 "
+        "ContentIndex，决策层文件（light.rs）读到的是派生出来的 Weather 而不是原始的权重数组，"
+        "字段名字面量因此不出现在决策层。刻意不把 crates/ll-world/src/weather.rs 加进 "
+        "DECISION_LAYER_FILES：那个文件同时也是这张表的列式存储与注册期校验所在地，"
+        "把它算作决策层会让 WeatherTable::define 里的 `attrs.season_weights` 写入被误判成「已接线」，"
+        "这张表的全部字段从此对本门禁形同虚设——宁可在这里留一条写明理由的豁免，"
+        "也不要换来一份看起来更绿、实际更弱的门禁。"
+    ),
     # ---- (b) 已知死字段：本任务书点名的三处 ----
     # `Agent.luck`/`RaceDef.darkvision_floor` 两条已在暗视/幸运接线批次
     # 真正接上（见 crates/ll-sim/src/vision.rs、
@@ -381,6 +404,7 @@ CONTENT_HASH_KIND_TO_TARGET_TYPE: dict[str, str] = {
     "Formula": "FormulaDef",
     "WeaponCategory": "WeaponCategoryDef",
     "DamageCategory": "DamageCategoryDef",
+    "Weather": "WeatherDef",
 }
 
 CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE: dict[str, str] = {

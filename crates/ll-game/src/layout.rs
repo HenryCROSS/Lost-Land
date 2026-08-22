@@ -10,9 +10,10 @@
 
 use ll_core::time::Tick;
 use ll_mod::registry::Registry;
-use ll_world::light::sight_radius_at;
-use ll_world::space_profile::{SpaceProfile, effective_ambient_light};
+use ll_world::light::sight_radius_under_weather;
+use ll_world::space_profile::{SpaceProfile, effective_ambient_light, effective_weather};
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
+use ll_world::weather::Weather;
 
 /// 地表视野基准半径（格），随光照缩放。
 pub const BASE_SIGHT_RADIUS: u32 = 12;
@@ -95,14 +96,27 @@ pub fn terrain_atlas_key(
     registry.resolve(kind.index()).map(|id| id.to_string())
 }
 
-/// 给定空间在某一世界时刻的有效光照换算出的视野半径。
+/// 给定空间在某一世界时刻、某种天气下的有效光照换算出的视野半径。
 ///
 /// 不叠加任何种族暗视——本函数留给不知道「谁在看」的调用方（例如本
 /// 文件与 `ll-sim` p5 验收 demo 里只关心「这个空间本身多亮」的测试）。
 /// 真正的玩家渲染路径需要暗视时用 [`effective_sight_radius_for_race`]。
-pub fn effective_sight_radius(profile: &SpaceProfile, clock: Tick) -> u32 {
-    let light = effective_ambient_light(profile, clock);
-    sight_radius_at(BASE_SIGHT_RADIUS, light)
+///
+/// # 天气在这里进来两次，不是重复
+///
+/// 天气有两个独立的乘数（见 `ll_world::weather::WeatherDef::sight_scale`）：
+/// `light_scale` 经 [`effective_ambient_light`] 折进光照，`sight_scale`
+/// 由 [`sight_radius_under_weather`] 在光照换算**之后**单独再乘一次。
+/// 两次都必须先过 [`effective_weather`]——那是「洞窟不受天气影响」这条
+/// 判断的唯一真相源，`effective_ambient_light` 内部也走它，两个消费者
+/// 因此不可能对同一个空间给出相反的结论。
+pub fn effective_sight_radius(profile: &SpaceProfile, clock: Tick, weather: Weather) -> u32 {
+    let light = effective_ambient_light(profile, clock, weather);
+    sight_radius_under_weather(
+        BASE_SIGHT_RADIUS,
+        light,
+        effective_weather(profile, weather),
+    )
 }
 
 /// 给定空间在某一世界时刻的有效光照，叠加某个种族的暗视下限后换算出
@@ -141,12 +155,20 @@ pub fn effective_sight_radius(profile: &SpaceProfile, clock: Tick) -> u32 {
 pub fn effective_sight_radius_for_race(
     profile: &SpaceProfile,
     clock: Tick,
+    weather: Weather,
     race: ll_core::ident::ContentIndex,
     darkvision: &dyn ll_sim::vision::RaceDarkvisionSource,
 ) -> u32 {
-    let light = effective_ambient_light(profile, clock);
+    let light = effective_ambient_light(profile, clock, weather);
     let light = ll_sim::vision::effective_light_for_race(light, race, darkvision);
-    sight_radius_at(BASE_SIGHT_RADIUS, light)
+    // 暗视抬的是**光照下限**，抬不掉「雾里看不远」这件事——雾遮挡的是
+    // 视线本身，不是亮度（`WeatherDef::sight_scale` 文档）。因此天气的
+    // 视野乘数接在暗性抬升**之后**，而不是被它一并吃掉。
+    sight_radius_under_weather(
+        BASE_SIGHT_RADIUS,
+        light,
+        effective_weather(profile, weather),
+    )
 }
 
 /// 画面整体亮度的下限——再暗的夜晚也不会低于这个值。
@@ -166,8 +188,16 @@ pub fn effective_sight_radius_for_race(
 pub const MIN_VISIBLE_TINT: f32 = 0.4;
 
 /// 画面整体亮度调制（灰阶），下限为 [`MIN_VISIBLE_TINT`]。
-pub fn effective_tint(profile: &SpaceProfile, clock: Tick) -> [f32; 4] {
-    let light = effective_ambient_light(profile, clock).0.clamp(0, 1000) as f32 / 1000.0;
+///
+/// 天气只经 `light_scale` 影响这里——`sight_scale`（雾）**不**参与画面
+/// 亮度：雾让人看不远，不让人看不清脚下这一格，把它折进色调会让雾变成
+/// 「又暗又看不远」的第二种阴天，见 `ll_world::light::sight_radius_under_weather`
+/// 文档「为什么是第二个乘数」一节。
+pub fn effective_tint(profile: &SpaceProfile, clock: Tick, weather: Weather) -> [f32; 4] {
+    let light = effective_ambient_light(profile, clock, weather)
+        .0
+        .clamp(0, 1000) as f32
+        / 1000.0;
     let light = light.max(MIN_VISIBLE_TINT);
     [light, light, light, 1.0]
 }
@@ -224,6 +254,22 @@ pub fn tile_tint(currently_visible: bool, explored: bool, tint: [f32; 4]) -> Opt
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 一个仅在测试里现造的露天地表 profile——本文件多条断言都需要
+    /// 「露天、没有地板光、其余字段无所谓」这同一个形状，抽成函数避免
+    /// 每条各拼一遍（既有的几条测试各自内联构造，改动它们不属于本批次
+    /// 范围，新增的几条用这个帮手）。
+    fn surface_profile() -> SpaceProfile {
+        SpaceProfile {
+            id: ll_core::ident::NamespacedId::parse("lostland:test_surface").expect("字面量恒合法"),
+            ambient_light_floor: 0,
+            exposed_to_sky: true,
+            base_temperature: 0,
+            diggable: true,
+            buildable: true,
+            reverb_tag: None,
+        }
+    }
 
     #[test]
     fn 本体地形直接查到带命名空间前缀的图集条目而不需要回退到registry() {
@@ -300,7 +346,7 @@ mod tests {
         };
 
         // Act
-        let radius = effective_sight_radius(&profile, Tick(0));
+        let radius = effective_sight_radius(&profile, Tick(0), Weather::CLEAR);
 
         // Assert
         assert!(radius < BASE_SIGHT_RADIUS);
@@ -351,9 +397,14 @@ mod tests {
 
         // Act
         let with_darkvision =
-            effective_sight_radius_for_race(&profile, midnight, race, &darkvision);
-        let without_darkvision =
-            effective_sight_radius_for_race(&profile, midnight, race, &no_darkvision);
+            effective_sight_radius_for_race(&profile, midnight, Weather::CLEAR, race, &darkvision);
+        let without_darkvision = effective_sight_radius_for_race(
+            &profile,
+            midnight,
+            Weather::CLEAR,
+            race,
+            &no_darkvision,
+        );
 
         // Assert
         assert!(with_darkvision > without_darkvision);
@@ -381,9 +432,10 @@ mod tests {
         let no_darkvision = FixedDarkvision(0);
 
         // Act
-        let with_darkvision = effective_sight_radius_for_race(&profile, noon, race, &darkvision);
+        let with_darkvision =
+            effective_sight_radius_for_race(&profile, noon, Weather::CLEAR, race, &darkvision);
         let without_darkvision =
-            effective_sight_radius_for_race(&profile, noon, race, &no_darkvision);
+            effective_sight_radius_for_race(&profile, noon, Weather::CLEAR, race, &no_darkvision);
 
         // Assert
         assert_eq!(with_darkvision, without_darkvision);
@@ -410,7 +462,8 @@ mod tests {
         };
 
         // Act
-        let radius = effective_sight_radius(&profile, crate::world::NEW_GAME_START_TICK);
+        let radius =
+            effective_sight_radius(&profile, crate::world::NEW_GAME_START_TICK, Weather::CLEAR);
 
         // Assert：至少要有基准半径的一半，否则开局仍然近乎瞎。
         assert!(radius >= BASE_SIGHT_RADIUS / 2);
@@ -431,7 +484,7 @@ mod tests {
         };
 
         // Act
-        let tint = effective_tint(&profile, crate::world::NEW_GAME_START_TICK);
+        let tint = effective_tint(&profile, crate::world::NEW_GAME_START_TICK, Weather::CLEAR);
 
         // Assert
         assert!(tint[0] > 0.5);
@@ -454,7 +507,7 @@ mod tests {
         };
 
         // Act
-        let tint = effective_tint(&profile, Tick(0));
+        let tint = effective_tint(&profile, Tick(0), Weather::CLEAR);
 
         // Assert
         assert!(tint[0] >= MIN_VISIBLE_TINT);
@@ -475,11 +528,118 @@ mod tests {
         };
 
         // Act
-        let midnight = effective_tint(&profile, Tick(0));
-        let noon = effective_tint(&profile, Tick(12 * ll_core::time::TICKS_PER_HOUR));
+        let midnight = effective_tint(&profile, Tick(0), Weather::CLEAR);
+        let noon = effective_tint(
+            &profile,
+            Tick(12 * ll_core::time::TICKS_PER_HOUR),
+            Weather::CLEAR,
+        );
 
         // Assert
         assert!(midnight[0] < noon[0]);
+    }
+
+    /// 生产渲染路径上的天气组合断言——`ll_world::light` 那一侧已经钉住
+    /// 了「换算本身不会把视野压到不可玩」，这里钉的是**接线**：
+    /// `effective_sight_radius`/`effective_tint` 这两个每帧被
+    /// `crate::app::render_surface` 调用的函数真的会因为天气不同而给出
+    /// 不同答案。链路断在 `ll-game` 这一节的话，上游断言全绿、玩家却
+    /// 看不出任何区别，正是本项目反复吃亏的那类缺口。
+    #[test]
+    fn 露天空间的视野半径与画面亮度都随天气变化() {
+        // Arrange：夏季正午，露天地表——排除昼夜与季节的干扰。
+        let profile = surface_profile();
+        let noon = Tick(30 * ll_core::time::TICKS_PER_DAY + 12 * ll_core::time::TICKS_PER_HOUR);
+        let (ids, table) = ll_world::weather::base_weather_fixture();
+        let foggy = Weather {
+            kind: Some(ids.fog),
+            light_scale: table.light_scale(ids.fog),
+            sight_scale: table.sight_scale(ids.fog),
+        };
+
+        // Act
+        let clear_radius = effective_sight_radius(&profile, noon, Weather::CLEAR);
+        let foggy_radius = effective_sight_radius(&profile, noon, foggy);
+        let clear_tint = effective_tint(&profile, noon, Weather::CLEAR);
+        let foggy_tint = effective_tint(&profile, noon, foggy);
+
+        // Assert
+        assert!(foggy_radius < clear_radius, "雾必须真的缩短实机视野半径");
+        assert!(foggy_tint[0] < clear_tint[0], "雾必须真的压暗画面");
+    }
+
+    #[test]
+    fn 非露天空间的视野半径与画面亮度都不随天气变化() {
+        // 「洞窟不受天气影响」这条语义在生产渲染路径上的落点——两个
+        // 乘数都必须被 effective_weather 中和掉，不能只中和一个。
+        // Arrange
+        let profile = SpaceProfile {
+            id: ll_core::ident::NamespacedId::parse("lostland:test_cave").expect("字面量恒合法"),
+            ambient_light_floor: 200,
+            exposed_to_sky: false,
+            base_temperature: 0,
+            diggable: true,
+            buildable: false,
+            reverb_tag: None,
+        };
+        let noon = Tick(30 * ll_core::time::TICKS_PER_DAY + 12 * ll_core::time::TICKS_PER_HOUR);
+        let storm = Weather {
+            kind: None,
+            light_scale: 100,
+            sight_scale: 100,
+        };
+
+        // Act & Assert
+        assert_eq!(
+            effective_sight_radius(&profile, noon, Weather::CLEAR),
+            effective_sight_radius(&profile, noon, storm)
+        );
+        assert_eq!(
+            effective_tint(&profile, noon, Weather::CLEAR),
+            effective_tint(&profile, noon, storm)
+        );
+    }
+
+    #[test]
+    fn 开局那一刻可能出现的任何天气下视野都不低于基准半径的一半() {
+        // 既有断言「开局视野至少要有基准半径的一半，否则开局仍然近乎
+        // 瞎」在加进天气之后仍须成立——这是天气最容易破坏的一条既有
+        // 保证（两个乘数相乘很容易把开局压穿；本批次实测雾的视野乘数
+        // 取 650 时开局会掉到 5，因此本体表把它改成了 700，见
+        // `ll_world::weather::materialize_base_weathers` 文档第 3 条）。
+        //
+        // 只遍历**开局那一季真的可能出现**的天气：雪在春季权重为 0，
+        // 新游戏（春季早八点）永远不会开在雪天，把它算进来是在给一个
+        // 不可能发生的组合立断言，会逼着未来的人为了让测试变绿去改一个
+        // 与开局无关的数值。
+        // Arrange
+        let profile = surface_profile();
+        let start = crate::world::NEW_GAME_START_TICK;
+        let (_ids, table) = ll_world::weather::base_weather_fixture();
+        let slot = ll_world::weather::season_slot(start.season());
+
+        // Act & Assert
+        let mut checked = 0;
+        for index in table.registered() {
+            if table.season_weights(*index)[slot] == 0 {
+                continue;
+            }
+            checked += 1;
+            let weather = Weather {
+                kind: Some(*index),
+                light_scale: table.light_scale(*index),
+                sight_scale: table.sight_scale(*index),
+            };
+            let radius = effective_sight_radius(&profile, start, weather);
+            assert!(
+                radius >= BASE_SIGHT_RADIUS / 2,
+                "开局视野半径 {radius} 低于基准半径的一半"
+            );
+        }
+        assert!(
+            checked >= 2,
+            "开局那一季只有 {checked} 种可能的天气，这条断言几乎没检查到东西"
+        );
     }
 
     #[test]
