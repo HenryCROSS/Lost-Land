@@ -249,7 +249,21 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 免于升版号的理由——那条论证本身也可能出错，递增版本号的代价（读档
 /// 分支多判一次 `ContentHashAlgorithmUpgraded`）远低于论证出错的代价
 /// （真的漏判成 `ModContentMismatch`）。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 6;
+/// 版本 7（职业授予天赋接线批次）：[`write_class_fields`] 新增混入
+/// `ClassDef.traits`——先写条数再逐条写 `(trait_id, unlock_level)`，与
+/// [`write_race_fields`] 的同名字段逐字节同构。这是版本 4「老表新增
+/// 字段也会漏」在本批次的又一次复现，但复现的方式更隐蔽：字段与哈希
+/// 覆盖确实在同一批次里一起补上了，**漏掉的是本常量自己**——提交
+/// `5f6bae5` 的信息里白纸黑字写着「6 → 7」，代码里却仍是 6，直到本次
+/// 补齐。当时没有立刻暴露，是因为职业表那时还没接进生产装载路径
+/// （`ll_game::content::load_content` 给的是空 `ClassTable`），
+/// [`write_class_fields`] 对本体内容一次都没被调用过；本体内容迁往
+/// mod 脚本之后这条路径迟早走通，届时「量尺换了」会被误判成
+/// `ModContentMismatch`。教训是：提交信息声称改了什么，不等于代码里
+/// 真的改了——值哈希这类「错了要很久以后才发作」的机制，声称与事实
+/// 之间需要机器来对齐，见 `scripts/ci/check_field_consumers.py` 的
+/// `check_content_hash_gate_cross_coverage`。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 7;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
