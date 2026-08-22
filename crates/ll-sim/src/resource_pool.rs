@@ -43,7 +43,7 @@ use std::collections::BTreeMap;
 
 use ll_core::ident::ContentIndex;
 
-use crate::traits::{TraitCatalog, TraitGrantSource, effective_traits};
+use crate::traits::{TraitCatalog, TraitSource, effective_traits};
 
 /// 一种可注册的资源池——法力、耐力、气……的共同身份里,`resolve` 真正
 /// 要读的那一半（形状），见 `resource-pools-and-rest.md` 二节。本批次
@@ -175,8 +175,8 @@ impl ResourcePoolCatalog for NoResourcePools {
 }
 
 /// 聚合一个实体当前对某个标量池的有效容量——`trait-system.md` 三节④
-/// 「聚合规则」：遍历 [`effective_traits`]（种族这一路来源，天赋系统
-/// 落地批次的既有范围裁定，见 [`crate::traits`] 模块文档），对全部
+/// 「聚合规则」：遍历 [`effective_traits`]（调用方传入的每一路天赋
+/// 来源，见 [`crate::traits`] 模块文档），对全部
 /// 命中 `pool` 的 [`ResourcePoolGrant`] **求和**（不是 `Resistance` 那种
 /// 取第一条命中的语义,理由见该节原文）。
 ///
@@ -186,14 +186,13 @@ impl ResourcePoolCatalog for NoResourcePools {
 /// `None`/报错——与 `granted_skills` 「查不到就是没有」的既有纪律
 /// 一致，形状不匹配是内容作者的声明错误，不该让引擎 panic。
 pub fn effective_scalar_capacity(
-    race: ContentIndex,
+    sources: &[TraitSource<'_>],
     level: i32,
     pool: ContentIndex,
-    race_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
 ) -> u32 {
     let mut total: u32 = 0;
-    for trait_id in effective_traits(race, level, race_traits) {
+    for trait_id in effective_traits(sources, level) {
         let Some(rule) = traits.trait_rule(trait_id) else {
             continue;
         };
@@ -240,15 +239,14 @@ fn eval_scalar_formula(formula: &CapacityFormula, level: i32) -> u32 {
 /// 一节——不是编译期拒绝这种声明,是内容作者的声明错误不该让引擎
 /// panic。
 pub fn effective_slot_tier_capacity(
-    race: ContentIndex,
+    sources: &[TraitSource<'_>],
     level: i32,
     pool: ContentIndex,
     tier: u8,
-    race_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
 ) -> u32 {
     let mut total: u32 = 0;
-    for trait_id in effective_traits(race, level, race_traits) {
+    for trait_id in effective_traits(sources, level) {
         let Some(rule) = traits.trait_rule(trait_id) else {
             continue;
         };
@@ -295,6 +293,7 @@ fn eval_tier_formula(formula: &CapacityFormula, level: i32, tier: u8) -> u32 {
 mod tests {
     use super::*;
     use crate::traits::TraitGrant;
+    use crate::traits::TraitGrantSource;
     use crate::traits::TraitRule;
     use ll_core::ident::{Interner, NamespacedId};
 
@@ -343,7 +342,8 @@ mod tests {
         )]);
 
         // Act
-        let result = effective_scalar_capacity(race, 99, pool, &source, &traits);
+        let result =
+            effective_scalar_capacity(&[TraitSource::new(race, &source)], 99, pool, &traits);
 
         // Assert
         assert_eq!(result, 20);
@@ -376,7 +376,8 @@ mod tests {
         )]);
 
         // Act：7 级没有精确命中的档位，取 <= 7 的最大已声明档位（5 级）。
-        let result = effective_scalar_capacity(race, 7, pool, &source, &traits);
+        let result =
+            effective_scalar_capacity(&[TraitSource::new(race, &source)], 7, pool, &traits);
 
         // Assert
         assert_eq!(result, 30);
@@ -426,7 +427,8 @@ mod tests {
         ]);
 
         // Act
-        let result = effective_scalar_capacity(race, 1, pool, &source, &traits);
+        let result =
+            effective_scalar_capacity(&[TraitSource::new(race, &source)], 1, pool, &traits);
 
         // Assert
         assert_eq!(result, 15);
@@ -442,7 +444,8 @@ mod tests {
         let traits = FixedTraits(Vec::new());
 
         // Act
-        let result = effective_scalar_capacity(race, 10, pool, &source, &traits);
+        let result =
+            effective_scalar_capacity(&[TraitSource::new(race, &source)], 10, pool, &traits);
 
         // Assert
         assert_eq!(result, 0);

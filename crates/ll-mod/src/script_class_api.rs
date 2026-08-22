@@ -21,6 +21,7 @@ use std::cell::RefCell;
 
 use ll_core::ident::NamespacedId;
 use ll_script::host::ScriptEngine;
+use ll_sim::traits::TraitGrant;
 use ll_world::entity::AttributeKind;
 
 use crate::active_registry::with_active_registry;
@@ -47,9 +48,10 @@ pub fn take_active_target() -> ClassTable {
     })
 }
 
-/// 把 `register-class` 注册进 `engine`。
+/// 把 `register-class`/`register-class-trait` 注册进 `engine`。
 pub fn register_class_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-class", register_class);
+    engine.register_fn("register-class-trait", register_class_trait);
 }
 
 /// `(register-class id display-name-key primary-attribute)`。
@@ -103,6 +105,79 @@ fn do_register_class(
             ClassAttrs {
                 display_name_key,
                 primary_attribute,
+                // 天赋走注册后追加的 `register-class-trait`，不挤进
+                // `register-class` 的既有签名，见 `ClassDef::traits` 文档。
+                traits: Vec::new(),
+            },
+        )
+        .map(|()| true)
+        .map_err(|err: ClassError| err.to_string())
+}
+
+/// `(register-class-trait class-id trait-id unlock-level)`——追加声明
+/// 「这个职业在某个等级授予某个天赋」（职业天赋接线批次，
+/// `knowledge/design/trait-system.md` 三节①、六节）。与
+/// `register-race-trait` 逐字对应，只是所有者从种族换成职业——两者
+/// 走的是同一个 [`ll_sim::traits::TraitGrant`] 载荷、同一段
+/// `ll_sim::traits::effective_traits` 聚合算法，见
+/// [`crate::class::ClassTable`] 的 `TraitGrantSource` impl 文档
+/// 「与 `RaceTable` 的同名 impl 复用同一个 trait」一节。
+///
+/// - `class-id`：已经通过 `register-class` 注册过的完整命名空间标识符
+///   字符串——目标必须已存在（ADR 0017「注册期完整校验」），否则报错。
+/// - `trait-id`：天赋的完整命名空间标识符字符串——**不要求**已经通过
+///   `register-trait` 注册过（只 `intern`，不跨表校验存在性，见
+///   [`crate::class::ClassTable::add_trait_grant`] 文档「不校验」一节，
+///   与 `register-race-trait` 是同一条已知简化）。
+/// - `unlock-level`：解锁所需等级，非负整数。**这是职业天赋与种族天赋
+///   在内容层面唯一的实质差异**：种族恒传 `1`（"拥有即生效"），职业
+///   可以按等级曲线传更大的值（`trait-system.md` 六节原文「职业天赋按
+///   实际设计填对应等级」）。引擎侧不为这条差异分流——校验只保证非负，
+///   不替内容作者做设计决定。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_class` 文档。
+fn register_class_trait(
+    class_id: String,
+    trait_id: String,
+    unlock_level: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-class-trait 在没有活跃职业表的窗口内被调用".to_string());
+            };
+            do_register_class_trait(registry, table, &class_id, &trait_id, unlock_level)
+        })
+    })
+}
+
+/// [`register_class_trait`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_class_trait(
+    registry: &mut Registry,
+    table: &mut ClassTable,
+    class_id: &str,
+    trait_id: &str,
+    unlock_level: i64,
+) -> Result<bool, String> {
+    let parsed_class_id = NamespacedId::parse(class_id)
+        .map_err(|err| format!("非法内容标识符 {class_id:?}：{err}"))?;
+    let Some(class_index) = registry.get(&parsed_class_id) else {
+        return Err(format!("职业 {class_id:?} 尚未通过 register-class 注册"));
+    };
+    let parsed_trait_id = NamespacedId::parse(trait_id)
+        .map_err(|err| format!("非法内容标识符 {trait_id:?}：{err}"))?;
+    if unlock_level < 0 {
+        return Err(format!("解锁等级不允许为负数：{unlock_level}"));
+    }
+    let trait_index = registry.intern(parsed_trait_id);
+    table
+        .add_trait_grant(
+            class_index,
+            TraitGrant {
+                trait_id: trait_index,
+                unlock_level: unlock_level as i32,
             },
         )
         .map(|()| true)
@@ -248,5 +323,129 @@ mod tests {
         // Cleanup：同 script_terrain_api 的既有纪律。
         take_active_target();
         crate::active_registry::take_active_registry();
+    }
+    #[test]
+    fn 合法职业天赋声明写入职业表且解锁等级原样保留() {
+        // Arrange：先注册职业，再追加天赋——`register-class-trait` 要求
+        // 目标已存在（ADR 0017）。
+        let mut registry = Registry::new();
+        let mut table = ClassTable::new();
+        do_register_class(
+            &mut registry,
+            &mut table,
+            "yourmod:rogue",
+            "yourmod:rogue_display_name",
+            "dexterity",
+        )
+        .expect("职业注册应当成功");
+
+        // Act：解锁等级刻意不是 1——职业天赋与种族天赋唯一的实质差异
+        // 就在这个字段能填大于 1 的值。
+        let result = do_register_class_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:rogue",
+            "yourmod:sneaky",
+            3,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let class_index = registry
+            .get(&NamespacedId::parse("yourmod:rogue").unwrap())
+            .expect("刚注册的职业应能查到索引");
+        let trait_index = registry
+            .get(&NamespacedId::parse("yourmod:sneaky").unwrap())
+            .expect("register-class-trait 应当 intern 出天赋索引");
+        assert_eq!(
+            table.get(class_index).expect("已注册").traits,
+            &[TraitGrant {
+                trait_id: trait_index,
+                unlock_level: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn 给尚未注册的职业追加天赋返回错误() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ClassTable::new();
+
+        // Act
+        let result = do_register_class_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:never_registered",
+            "yourmod:sneaky",
+            1,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 负数解锁等级返回错误而不是被静默截断() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ClassTable::new();
+        do_register_class(
+            &mut registry,
+            &mut table,
+            "yourmod:rogue",
+            "yourmod:rogue_display_name",
+            "dexterity",
+        )
+        .expect("职业注册应当成功");
+
+        // Act
+        let result = do_register_class_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:rogue",
+            "yourmod:sneaky",
+            -1,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_class_trait() {
+        // 端到端验证：脚本里连着写 (register-class ...) 与
+        // (register-class-trait ...)，不需要脚本作者知道 Rust 侧的
+        // Registry/ClassTable 是怎么接线的。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_class_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(ClassTable::new());
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-class "yourmod:rogue" "yourmod:rogue_display_name" "dexterity")
+               (register-class-trait "yourmod:rogue" "yourmod:sneaky" 3)"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let class_index = registry
+            .get(&NamespacedId::parse("yourmod:rogue").unwrap())
+            .expect("刚注册的职业应能查到索引");
+        let trait_index = registry
+            .get(&NamespacedId::parse("yourmod:sneaky").unwrap())
+            .expect("register-class-trait 应当 intern 出天赋索引");
+        assert_eq!(
+            table.get(class_index).expect("已注册").traits,
+            &[TraitGrant {
+                trait_id: trait_index,
+                unlock_level: 3,
+            }]
+        );
     }
 }

@@ -81,7 +81,7 @@
 //!
 //! # `ContentIndex` 字段：解析成 `NamespacedId` 字符串再混入
 //!
-//! `SkillDef.owning_class`/`prerequisites`、
+//! `SkillDef.owning_class`/`prerequisites`、`ClassDef.traits[].trait_id`、
 //! `QuestNodeDef.prerequisites`/`QuestCondition::KillCount.target_kind`、
 //! `TerrainDef.opens_into`、`RaceDef.traits[].trait_id`、
 //! `TraitDef.granted_skills`/`RuleModifier::Resistance.damage_category`/
@@ -481,7 +481,7 @@ fn entry_value_digest(
             let terrain_kind = TerrainKind::from_index(index);
             write_terrain_fields(&mut hasher, tables.terrain, terrain_kind, registry);
         }
-        ContentTableKind::Class => write_class_fields(&mut hasher, tables.class, index),
+        ContentTableKind::Class => write_class_fields(&mut hasher, tables.class, index, registry),
         ContentTableKind::Skill => {
             write_skill_fields(&mut hasher, tables.skill, index, registry);
         }
@@ -592,12 +592,28 @@ fn write_terrain_fields(
 }
 
 /// 混入 [`crate::class::ClassDef`] 的全部字段。
-fn write_class_fields(hasher: &mut StateHasher, table: &ClassTable, index: ContentIndex) {
+fn write_class_fields(
+    hasher: &mut StateHasher,
+    table: &ClassTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
     let view = table
         .get(index)
         .expect("调用方已确认 is_defined，get 必返回 Some");
     hasher.write_namespaced_id(view.display_name_key);
     hasher.write_u64(view.primary_attribute as u64);
+    // `traits`（职业天赋接线批次新增）：与 `write_race_fields` 的同名
+    // 字段逐字节同构——先写条数再逐条写 `(trait_id, unlock_level)`，
+    // `trait_id` 解析成 `NamespacedId` 字符串（`ContentIndex` 数值本身
+    // 依赖注册顺序，不是稳定的跨会话身份，见模块文档
+    // 「`ContentIndex` 字段」一节）。本字段与本函数在同一批次里一起
+    // 新增，不是又一次「老表新增字段忘了同步值哈希」的事后补救。
+    hasher.write_u64(view.traits.len() as u64);
+    for grant in view.traits {
+        write_optional_resolved(hasher, Some(grant.trait_id), registry);
+        hasher.write_i64(i64::from(grant.unlock_level));
+    }
 }
 
 /// 混入 [`crate::subclass::SubclassDef`] 的全部字段。

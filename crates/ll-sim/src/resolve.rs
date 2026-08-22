@@ -77,8 +77,8 @@ use crate::resource_pool::{
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::timeline::action_cost;
 use crate::traits::{
-    NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, effective_traits, granted_skills,
-    resistance_multiplier_permille, sneak_attack_rule,
+    NO_TRAIT_GRANTS, NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, agent_trait_sources,
+    effective_traits, granted_skills, resistance_multiplier_permille, sneak_attack_rule,
 };
 
 /// 非位移动作（等待、攻击、开门）的基础代价，与平地移动同一基准
@@ -439,6 +439,7 @@ pub fn resolve_with_skills_and_traits(
         skills,
         &NoQuests,
         race_traits,
+        &NO_TRAIT_GRANTS,
         traits,
         &NoResourcePools,
         &NoItems,
@@ -478,6 +479,7 @@ pub fn resolve_with_skills_traits_and_pools(
         skills,
         &NoQuests,
         race_traits,
+        &NO_TRAIT_GRANTS,
         traits,
         pools,
         &NoItems,
@@ -515,6 +517,7 @@ pub fn resolve_with_skills_traits_pools_and_items(
         skills,
         &NoQuests,
         race_traits,
+        &NO_TRAIT_GRANTS,
         traits,
         pools,
         items,
@@ -554,6 +557,7 @@ pub fn resolve_with_skills_traits_pools_items_and_formulas(
         skills,
         &NoQuests,
         race_traits,
+        &NO_TRAIT_GRANTS,
         traits,
         pools,
         items,
@@ -599,6 +603,57 @@ pub fn resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
         skills,
         &NoQuests,
         race_traits,
+        &NO_TRAIT_GRANTS,
+        traits,
+        pools,
+        items,
+        formulas,
+        damage_categories,
+    )
+}
+
+/// [`resolve`] 的全目录入口：在
+/// [`resolve_with_skills_traits_pools_items_formulas_and_damage_categories`]
+/// 之上再额外接收一份**职业**天赋授予来源，让
+/// `trait-system.md` 三节①「有效天赋 = 种族天赋 ∪ 职业天赋 ∪ ……」
+/// 里职业这一路真正参与结算（职业天赋接线批次新增，
+/// `ll_mod::class::ClassTable` 是这一路的真实实现）。
+///
+/// # 为什么名字不再继续拼接
+///
+/// 前八层入口按「新增了哪份目录」逐层拼接命名，到上一层
+/// （`..._formulas_and_damage_categories`）已经是 62 个字符；再拼一段
+/// `_and_class_traits` 只会得到一个没人读得完、也无法在文档里换行的
+/// 名字。这一层因此改用描述性的「全目录」命名：它是这条链条的终点，
+/// `resolve_dispatch` 当前需要的每一份只读依赖都由调用方显式给出，
+/// 没有任何一份被替换成空实现——名字要传达的正是这件事，而不是
+/// 「比上一层多了哪一个」。
+///
+/// 其余八层入口保持原签名不变（职业这一路传
+/// [`NO_TRAIT_GRANTS`]），与它们当初逐层新增目录时「不强迫既有调用点
+/// 都多传一份目录」是同一条纪律：传空来源与「这一路没接」在行为上
+/// 完全等价（`effective_traits` 对空来源现算出空集合）。
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_with_all_catalogs(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+    quests: &dyn QuestCatalog,
+    race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
+    items: &dyn ItemCatalog,
+    formulas: &dyn DamageFormulaCatalog,
+    damage_categories: &dyn DamageCategoryCatalog,
+) -> Vec<Effect> {
+    resolve_dispatch(
+        world,
+        intent,
+        skills,
+        quests,
+        race_traits,
+        class_traits,
         traits,
         pools,
         items,
@@ -643,6 +698,7 @@ pub fn resolve_with_skills_and_quests(
         skills,
         quests,
         &NoTraitGrants,
+        &NO_TRAIT_GRANTS,
         &NoTraits,
         &NoResourcePools,
         &NoItems,
@@ -673,6 +729,7 @@ fn resolve_dispatch(
     skills: &dyn SkillCatalog,
     quests: &dyn QuestCatalog,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     pools: &dyn ResourcePoolCatalog,
     items: &dyn ItemCatalog,
@@ -680,7 +737,9 @@ fn resolve_dispatch(
     damage_categories: &dyn DamageCategoryCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
-        Intent::Wait { actor } => resolve_wait(world, actor, race_traits, traits, pools),
+        Intent::Wait { actor } => {
+            resolve_wait(world, actor, race_traits, class_traits, traits, pools)
+        }
         Intent::Move { actor, dir } => resolve_move(world, actor, dir),
         Intent::Attack { actor, target } => resolve_attack(
             world,
@@ -689,6 +748,7 @@ fn resolve_dispatch(
             items,
             formulas,
             race_traits,
+            class_traits,
             traits,
             damage_categories,
         ),
@@ -699,11 +759,28 @@ fn resolve_dispatch(
             actor,
             skill,
             target,
-        } => resolve_use_skill(world, actor, skill, target, skills, race_traits, traits),
+        } => resolve_use_skill(
+            world,
+            actor,
+            skill,
+            target,
+            skills,
+            race_traits,
+            class_traits,
+            traits,
+        ),
         Intent::Rest {
             actor,
             target_ticks,
-        } => resolve_rest(world, actor, target_ticks, race_traits, traits, pools),
+        } => resolve_rest(
+            world,
+            actor,
+            target_ticks,
+            race_traits,
+            class_traits,
+            traits,
+            pools,
+        ),
         Intent::PickUp { actor } => resolve_pick_up(world, actor, items),
         Intent::Loot { actor } => resolve_loot(world, actor, items),
         Intent::Drop { actor, def } => resolve_drop(world, actor, def),
@@ -736,6 +813,7 @@ fn resolve_dispatch(
         world,
         intent.actor(),
         race_traits,
+        class_traits,
         traits,
         pools,
     ));
@@ -794,6 +872,7 @@ fn resolve_resource_pool_regen(
     world: &WorldState,
     actor: EntityId,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     pools: &dyn ResourcePoolCatalog,
 ) -> Vec<Effect> {
@@ -801,7 +880,10 @@ fn resolve_resource_pool_regen(
         return Vec::new();
     };
     let mut effects = Vec::new();
-    for trait_id in effective_traits(agent.race, agent.level, race_traits) {
+    for trait_id in effective_traits(
+        &agent_trait_sources(agent, race_traits, class_traits),
+        agent.level,
+    ) {
         let Some(rule) = traits.trait_rule(trait_id) else {
             continue;
         };
@@ -1218,6 +1300,7 @@ fn resolve_wait(
     world: &WorldState,
     actor: EntityId,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     pools: &dyn ResourcePoolCatalog,
 ) -> Vec<Effect> {
@@ -1241,6 +1324,7 @@ fn resolve_wait(
                 agent,
                 actor,
                 race_traits,
+                class_traits,
                 traits,
                 pools,
             ));
@@ -1264,6 +1348,7 @@ fn resolve_rest(
     actor: EntityId,
     target_ticks: u32,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     pools: &dyn ResourcePoolCatalog,
 ) -> Vec<Effect> {
@@ -1271,7 +1356,7 @@ fn resolve_rest(
         return Vec::new();
     };
     if agent.resting.is_some() {
-        return resolve_wait(world, actor, race_traits, traits, pools);
+        return resolve_wait(world, actor, race_traits, class_traits, traits, pools);
     }
     let cost = action_cost(
         BASE_ACTION_COST,
@@ -1307,12 +1392,16 @@ fn rest_completion_effects(
     agent: &Agent,
     actor: EntityId,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     pools: &dyn ResourcePoolCatalog,
 ) -> Vec<Effect> {
     let mut seen_pools: Vec<ContentIndex> = Vec::new();
     let mut effects = Vec::new();
-    for trait_id in effective_traits(agent.race, agent.level, race_traits) {
+    for trait_id in effective_traits(
+        &agent_trait_sources(agent, race_traits, class_traits),
+        agent.level,
+    ) {
         let Some(rule) = traits.trait_rule(trait_id) else {
             continue;
         };
@@ -1329,9 +1418,15 @@ fn rest_completion_effects(
             seen_pools.push(grant.pool);
             match pool_rule.shape {
                 ResourcePoolShape::Scalar => {
-                    if let Some(effect) =
-                        scalar_rest_effect(agent, actor, grant.pool, amount, race_traits, traits)
-                    {
+                    if let Some(effect) = scalar_rest_effect(
+                        agent,
+                        actor,
+                        grant.pool,
+                        amount,
+                        race_traits,
+                        class_traits,
+                        traits,
+                    ) {
                         effects.push(effect);
                     }
                 }
@@ -1359,12 +1454,17 @@ fn scalar_rest_effect(
     pool: ContentIndex,
     amount: RestRecoveryAmount,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
 ) -> Option<Effect> {
     let delta = match amount {
         RestRecoveryAmount::Full => {
-            let capacity =
-                effective_scalar_capacity(agent.race, agent.level, pool, race_traits, traits);
+            let capacity = effective_scalar_capacity(
+                &agent_trait_sources(agent, race_traits, class_traits),
+                agent.level,
+                pool,
+                traits,
+            );
             let current = agent.resource_pools.get(&pool).copied().unwrap_or(0);
             (i64::from(capacity) - i64::from(current)).max(0)
         }
@@ -2211,6 +2311,7 @@ fn resolve_attack(
     items: &dyn ItemCatalog,
     formulas: &dyn DamageFormulaCatalog,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     damage_categories: &dyn DamageCategoryCatalog,
 ) -> Vec<Effect> {
@@ -2336,7 +2437,11 @@ fn resolve_attack(
     // 同样会反映到偷袭触发率上，理由同暴击那一节「暴击：读取
     // attacker_derived.attribute」。
     const SNEAK_ATTACK_EVENT_TAG: u64 = 0x51EA_ACC0_0000_0000;
-    let damage = match sneak_attack_rule(attacker.race, attacker.level, race_traits, traits) {
+    let damage = match sneak_attack_rule(
+        &agent_trait_sources(attacker, race_traits, class_traits),
+        attacker.level,
+        traits,
+    ) {
         Some(rule) => {
             let mut sneak_rng = ll_core::rng::DetRng::for_entity(
                 world.seed,
@@ -2370,9 +2475,8 @@ fn resolve_attack(
         .and_then(|rule| rule.damage_category)
         .unwrap_or_else(|| damage_categories.default_category());
     let resistance_multiplier = resistance_multiplier_permille(
-        defender.race,
+        &agent_trait_sources(defender, race_traits, class_traits),
         defender.level,
-        race_traits,
         traits,
         damage_category,
     );
@@ -2591,6 +2695,15 @@ fn resolve_exit_space(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 开销可以忽略——若未来某个种族/天赋的列表规模显著增长（远超「一个
 /// 内容作者手写的静态声明」这个量级），届时再考虑缓存，本批次不为
 /// 一个尚不存在的性能问题预先设计缓存策略（YAGNI）。
+///
+/// `#[allow(clippy::too_many_arguments)]`：八个参数里有两个是同一个
+/// `TraitGrantSource` 接口的不同来源（种族/职业，见
+/// [`crate::traits::agent_trait_sources`]）——它们没有被合并成一个
+/// 结构体，理由同 [`resolve_dispatch`]（模块私有，无法作为 rustdoc
+/// 链接目标）文档同一段：所有者索引因调用点而异（同一次攻击里攻击方
+/// 与防御方各查各的），能被打包的只有「表」这一半，而只打包一半只会
+/// 换来一个既不完整也不好读的中间类型。
+#[allow(clippy::too_many_arguments)]
 fn resolve_use_skill(
     world: &WorldState,
     actor: EntityId,
@@ -2598,6 +2711,7 @@ fn resolve_use_skill(
     target: Option<EntityId>,
     skills: &dyn SkillCatalog,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
 ) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
@@ -2610,7 +2724,12 @@ fn resolve_use_skill(
     // 载具/buff 四路仍是 `granted_skills(agent.race)` 之外的空集合，
     // 见 `crate::traits` 模块文档「天赋归谁所有」一节的范围裁定）。
     if !agent.unlocked_skills.contains(&skill)
-        && !granted_skills(agent.race, agent.level, race_traits, traits).contains(&skill)
+        && !granted_skills(
+            &agent_trait_sources(agent, race_traits, class_traits),
+            agent.level,
+            traits,
+        )
+        .contains(&skill)
     {
         return Vec::new();
     }
@@ -2642,12 +2761,16 @@ fn resolve_use_skill(
             }
         }
         ResourceCost::PoolAmount(pool, amount) => {
-            if resource_pool_usable(agent, pool, race_traits, traits) < i64::from(amount) {
+            if resource_pool_usable(agent, pool, race_traits, class_traits, traits)
+                < i64::from(amount)
+            {
                 return Vec::new();
             }
         }
         ResourceCost::SlotTier(pool, min_tier) => {
-            if find_available_slot_tier(agent, pool, min_tier, race_traits, traits).is_none() {
+            if find_available_slot_tier(agent, pool, min_tier, race_traits, class_traits, traits)
+                .is_none()
+            {
                 return Vec::new();
             }
         }
@@ -2680,7 +2803,8 @@ fn resolve_use_skill(
             // 上不会发生，门四已经拦过）时静默不产出扣减，不 panic——
             // 与其余分支「防御性处理不可能到达但也不该崩溃的分支」是
             // 同一条既有纪律。
-            if let Some(tier) = find_available_slot_tier(agent, pool, min_tier, race_traits, traits)
+            if let Some(tier) =
+                find_available_slot_tier(agent, pool, min_tier, race_traits, class_traits, traits)
             {
                 effects.push(Effect::AdjustResourceSlot {
                     actor,
@@ -2807,10 +2931,16 @@ fn resource_pool_usable(
     agent: &ll_world::entity::Agent,
     pool: ContentIndex,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
 ) -> i64 {
     let stored = agent.resource_pools.get(&pool).copied().unwrap_or(0);
-    let cap = effective_scalar_capacity(agent.race, agent.level, pool, race_traits, traits);
+    let cap = effective_scalar_capacity(
+        &agent_trait_sources(agent, race_traits, class_traits),
+        agent.level,
+        pool,
+        traits,
+    );
     i64::from(stored).min(i64::from(cap)).max(0)
 }
 
@@ -2839,11 +2969,17 @@ fn find_available_slot_tier(
     pool: ContentIndex,
     min_tier: u8,
     race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
 ) -> Option<u8> {
     for tier in min_tier..=u8::MAX {
-        let capacity =
-            effective_slot_tier_capacity(agent.race, agent.level, pool, tier, race_traits, traits);
+        let capacity = effective_slot_tier_capacity(
+            &agent_trait_sources(agent, race_traits, class_traits),
+            agent.level,
+            pool,
+            tier,
+            traits,
+        );
         let spent = agent.spent_slots.get(&(pool, tier)).copied().unwrap_or(0);
         if spent < capacity {
             return Some(tier);
@@ -4530,7 +4666,7 @@ mod tests {
 
         // Act
         let agent = world.actors.get(actor).expect("刚生成必然存在");
-        let usable = resource_pool_usable(agent, pool, &race_traits, &traits);
+        let usable = resource_pool_usable(agent, pool, &race_traits, &NO_TRAIT_GRANTS, &traits);
 
         // Assert：读出来的可用量被钳位为容量（5），不是原始存储值（8）。
         assert_eq!(usable, 5);
@@ -4562,7 +4698,7 @@ mod tests {
 
         // Act：查询一次可用量（钳位只应该发生在这次读取的返回值上）。
         let agent = world.actors.get(actor).expect("刚生成必然存在");
-        let _ = resource_pool_usable(agent, pool, &race_traits, &traits);
+        let _ = resource_pool_usable(agent, pool, &race_traits, &NO_TRAIT_GRANTS, &traits);
 
         // Assert：存储值本身仍然是 8，没有被这次读取改写。
         assert_eq!(

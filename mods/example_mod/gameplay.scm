@@ -15,6 +15,7 @@
 ;;   register-race-xp-curve    crates/ll-mod/src/script_xp_curve_api.rs
 ;;   register-trait            crates/ll-mod/src/script_trait_api.rs
 ;;   register-race-trait       crates/ll-mod/src/script_race_api.rs
+;;   register-class-trait      crates/ll-mod/src/script_class_api.rs
 ;;   register-resource-pool                crates/ll-mod/src/script_resource_pool_api.rs
 ;;   register-trait-resource-pool          crates/ll-mod/src/script_trait_api.rs
 ;;   register-trait-resource-pool-by-level crates/ll-mod/src/script_trait_api.rs
@@ -311,3 +312,22 @@
 (register-trait-sneak-attack "examplemod:predatory_instinct" 20 15)
 (register-race "examplemod:footpad" "examplemod:footpad_display_name" 0 0 0 0 0 0 0 1 1 60)
 (register-race-trait "examplemod:footpad" "examplemod:predatory_instinct" 1)
+
+;; 职业天赋接线批次：`trait-system.md` 三节①五路来源公式里「职业天赋」
+;; 那一路的真实内容证据。载荷与聚合算法与上面的种族天赋完全共用
+;; （同一个 TraitGrant、同一段 effective_traits）——**唯一的实质差异
+;; 在 unlock-level**：种族天赋恒填 1（拥有即生效），职业天赋按等级
+;; 曲线填。这里填 3，于是同一个盗贼角色 2 级放不出下面这个技能、3 级
+;; 能放，证明「按等级解锁」这条只有职业才真正用得上的语义确实走通了，
+;; 而不是又一条恒填 1 的声明。
+;;
+;; 证明 register-class-trait 这个新脚本 API 真的能被 mod 脚本调用，且
+;; 真实注册的职业天赋真的能走真实 resolve_use_skill 门一（有效技能
+;; 并集）——ADR 0018「玩法层内容必须能从 mod 脚本注册，且要有真实 mod
+;; 脚本为证」，crates/ll-mod/tests/example_mod_class_traits.rs 是那份
+;; 证据，不能靠单元测试自证。
+(register-class "examplemod:rogue" "examplemod:rogue_display_name" "dexterity")
+(register-skill "examplemod:backstab" "" (list) 20 "mana" 5 "deal-damage" "" 18 0)
+(register-trait "examplemod:cutpurse_training" "examplemod:cutpurse_training_display_name"
+  (list "examplemod:backstab"))
+(register-class-trait "examplemod:rogue" "examplemod:cutpurse_training" 3)

@@ -18,25 +18,30 @@
 //! 里出现"（YAGNI），等 ②③④ 批次真正把 `resolve`/伤害公式/资源池
 //! 查询接上对应效果时，各自在这里追加需要的字段。
 //!
-//! # 天赋归谁所有：种族这一路先接，其余四路留白
+//! # 天赋归谁所有：种族、职业两路已接，其余三路留白
 //!
 //! `trait-system.md` 三节①的完整公式是「有效技能 = 已学会的 ∪
 //! 种族天赋 ∪ 职业天赋 ∪ 副职天赋 ∪ 载具天赋 ∪ buff 天赋」五路来源的
-//! 并集。本批次范围只做种族这一路（见 `crate::resolve` 模块文档
-//! 「本批次范围」一节的完整裁定）——[`TraitGrantSource`] 因此只有一个
-//! 真实实现（`ll_mod::race::RaceTable`），但 trait 本身的形状（「给一个
-//! 所有者索引，还我它授予哪些天赋」）与所有者是种族、职业、副职、载具
-//! 还是 buff 无关，未来接入其余四路时不需要改这个 trait 的签名,只需要
-//! 让对应的表也实现它,再在调用点多传一个来源（见
-//! `resolve::resolve_use_skill`——模块私有，无法作为 rustdoc 链接目标——
-//! 目前只读一路来源的诚实标注）。
+//! 并集。天赋系统落地批次只做了种族这一路；职业天赋接线批次补上职业
+//! 这一路——[`TraitGrantSource`] 现在有两个真实实现
+//! （`ll_mod::race::RaceTable`/`ll_mod::class::ClassTable`）。这条
+//! trait 的签名一个字都没有改：它的形状（「给一个所有者索引，还我它
+//! 授予哪些天赋」）本来就与所有者是种族、职业、副职、载具还是 buff
+//! 无关，接第二路来源需要的只是「让职业表也实现它」+「在调用点多传
+//! 一路来源」——后者落成 [`TraitSource`] 切片里多一个元素，见
+//! [`agent_trait_sources`]。
+//!
+//! 剩下三路（副职/载具/buff）仍然留白，理由见 [`agent_trait_sources`]
+//! 文档「其余三路为什么不在这里」一节。
 //!
 //! # 聚合顺序为什么确定（约束 C5）
 //!
 //! [`effective_traits`]/[`granted_skills`] 全程只遍历 `Vec`——
-//! `TraitGrantSource::granted_traits` 返回的顺序由实现方决定，真实实现
-//! （`RaceTable`）内部存的是 `Vec<TraitGrant>`（保留 `register-race-trait`
-//! 的调用顺序，见 `ll_mod::race` 模块文档），`TraitRule::granted_skills`
+//! `TraitGrantSource::granted_traits` 返回的顺序由实现方决定，两个真实
+//! 实现（`RaceTable`/`ClassTable`）内部存的都是 `Vec<TraitGrant>`（各自
+//! 保留 `register-race-trait`/`register-class-trait` 的调用顺序，见
+//! `ll_mod::race`/`ll_mod::class` 模块文档），多路来源之间则按
+//! [`effective_traits`] 收到的切片下标顺序，`TraitRule::granted_skills`
 //! 同理源自 `TraitDef.granted_skills: Vec<ContentIndex>`（保留
 //! `register-trait` 参数列表里的书写顺序）——两处都不触碰任何
 //! `HashMap`/`HashSet`，聚合结果的顺序完全由注册期写死的静态顺序决定,
@@ -232,23 +237,98 @@ impl TraitGrantSource for NoTraitGrants {
     }
 }
 
+/// [`NoTraitGrants`] 的 `'static` 实例——供"这一路来源还没接"的调用点
+/// 借出一个引用（`&NO_TRAIT_GRANTS`）。`NoTraitGrants` 是零大小类型，
+/// 这个常量不占任何运行期存储，存在的唯一理由是 `&dyn TraitGrantSource`
+/// 需要一个可以取地址的值，而临时值 `&NoTraitGrants` 在需要 `'static`
+/// 或跨语句借用的位置上不成立。
+pub const NO_TRAIT_GRANTS: NoTraitGrants = NoTraitGrants;
+
+/// 一路天赋来源：「谁授予」（所有者索引）+「去哪查」（授予表）。
+///
+/// `trait-system.md` 三节①的完整公式是「有效技能 = 已学会的 ∪ 种族
+/// 天赋 ∪ 职业天赋 ∪ 副职天赋 ∪ 载具天赋 ∪ buff 天赋」——五路来源
+/// 每一路都是同一个形状（一个所有者索引 + 一张回答「这个所有者授予
+/// 什么」的表），差别只在所有者取自 `Agent` 的哪个字段、表是哪一张。
+/// 把这一对打包成一个类型之后，[`effective_traits`] 一族聚合函数只需
+/// 收一个 `&[TraitSource]` 切片，接第三、第四路来源时不再需要改任何
+/// 函数签名——这正是本模块文档「天赋归谁所有」一节预告的「再在调用点
+/// 多传一个来源」，只是把「多传一个参数」落成「切片里多一个元素」。
+///
+/// 不派生 `Debug`：`grants` 是 `&dyn TraitGrantSource`，该 trait 不要求
+/// `Debug`（真实实现是各张内容表，让它们为了本类型的派生而背上一条
+/// trait bound 是本末倒置）。
+#[derive(Clone, Copy)]
+pub struct TraitSource<'a> {
+    /// 所有者索引——种族取 `Agent::race`，职业取 `Agent::profession`，
+    /// 其余三路来源各自的字段等它们接线时定案。
+    pub owner: ContentIndex,
+    /// 回答「这个所有者授予哪些天赋」的表。
+    pub grants: &'a dyn TraitGrantSource,
+}
+
+impl<'a> TraitSource<'a> {
+    /// 构造一路来源——两个字段都是必填，没有默认值可省。
+    pub fn new(owner: ContentIndex, grants: &'a dyn TraitGrantSource) -> Self {
+        Self { owner, grants }
+    }
+}
+
+/// 把一个实体身上已接线的天赋来源展开成 [`effective_traits`] 需要的
+/// 来源列表——种族（`Agent::race` × 种族表）与职业（`Agent::profession`
+/// × 职业表）两路。
+///
+/// # 为什么集中到一处
+///
+/// `crate::resolve` 里有六处独立的聚合调用（技能并集、休息恢复批次、
+/// 资源池容量、抗性、偷袭、槽位容量），每一处都要把同样的两路来源
+/// 展开一遍。若各自手写，任何一处漏写职业这一路都只会表现成「这个
+/// 分支下职业天赋悄悄不生效」——与本项目反复踩到的「声明了但没接线」
+/// 是同一类无声缺陷。集中到这个函数之后，「有哪几路来源」这件事只有
+/// 一处真相。
+///
+/// # 其余三路（副职/载具/buff）为什么不在这里
+///
+/// 它们各自的所有者字段与授予表都还不存在（`Agent::subclasses` 是一个
+/// 集合而非单值，载具/buff 连表都没有）——按 YAGNI，接线那一批再往
+/// 返回值里加元素，届时本函数的返回类型从 `[TraitSource; 2]` 变成
+/// `[TraitSource; 3]`（或 `Vec`），调用点不需要改一行。
+pub fn agent_trait_sources<'a>(
+    agent: &ll_world::entity::Agent,
+    race_grants: &'a dyn TraitGrantSource,
+    class_grants: &'a dyn TraitGrantSource,
+) -> [TraitSource<'a>; 2] {
+    [
+        TraitSource::new(agent.race, race_grants),
+        TraitSource::new(agent.profession, class_grants),
+    ]
+}
+
 /// 聚合一个实体当前有效的天赋 id 集合——`trait-system.md` 三节①公式
-/// 里"种族天赋"这一路来源，按 [`TraitGrant::unlock_level`] 过滤
-/// （`level >= unlock_level` 才算生效,见 `TraitGrant` 文档），并按
-/// 声明顺序去重（模块文档「聚合顺序为什么确定」一节）。
+/// 里"种族天赋 ∪ 职业天赋 ∪ ……"这几路来源的并集，按
+/// [`TraitGrant::unlock_level`] 过滤（`level >= unlock_level` 才算
+/// 生效,见 `TraitGrant` 文档），并按声明顺序去重（模块文档「聚合顺序
+/// 为什么确定」一节）。
 ///
-/// # 为什么参数是 `race: ContentIndex, level: i32`，不是 `&Agent`
+/// # 为什么参数是 `&[TraitSource]`，不是 `&Agent`
 ///
-/// 本函数只需要 `Agent` 两个字段（`race`/`level`），拆成两个原始
-/// 参数而不是借一个 `&Agent`：一是调用方（`resolve_use_skill`）本来
-/// 就已经从这两个字段各自取值，不需要额外借用整个结构体；二是
-/// `Agent` 的构造在测试里成本不低（`pos: TorusPos`/`current_space:
-/// Space` 都要求一个真实世界上下文才能造出合法值，见
-/// `crates/ll-sim/src/resolve.rs` 测试模块 `spawn_agent` 帮手），本
-/// 模块的单元测试因此不需要为了验证一条纯粹的整数比较逻辑而搭一个
-/// 完整世界——与 [`crate::timeline::action_cost`]/
+/// 本函数只需要「有哪几路来源」与「当前等级」，不需要借一个
+/// `&Agent`：一是调用方（`resolve_use_skill` 等）本来就已经各自取
+/// 值，不需要额外借用整个结构体；二是 `Agent` 的构造在测试里成本
+/// 不低（`pos: TorusPos`/`current_space: Space` 都要求一个真实世界
+/// 上下文才能造出合法值，见 `crates/ll-sim/src/resolve.rs` 测试模块
+/// `spawn_agent` 帮手），本模块的单元测试因此不需要为了验证一条纯粹
+/// 的整数比较逻辑而搭一个完整世界——与 [`crate::timeline::action_cost`]/
 /// `effective_speed_from_dexterity` 只取 `Agent` 的某个具体字段作为
-/// 参数，而不是整个 `&Agent`，是同一种取舍。
+/// 参数，而不是整个 `&Agent`，是同一种取舍。真正持有 `&Agent` 的
+/// 调用方用 [`agent_trait_sources`] 一步展开成本函数要的切片。
+///
+/// # 多路来源之间的顺序
+///
+/// 严格按 `sources` 切片的下标顺序遍历，每一路内部再按该来源自己
+/// 返回的 `Vec` 顺序——全程不触碰任何 `HashMap`/`HashSet`（约束
+/// C5），聚合结果只取决于调用方写死的来源顺序与注册期的声明顺序，
+/// 不随进程/平台变化，见模块文档「聚合顺序为什么确定」一节。
 ///
 /// # 为什么不缓存
 ///
@@ -257,15 +337,13 @@ impl TraitGrantSource for NoTraitGrants {
 /// 已 hash 的字段）——每次要用时现算，不缓存进 `WorldState`。调用
 /// 频率见 `resolve::resolve_use_skill`（模块私有，无法作为 rustdoc
 /// 链接目标）文档「性能」一节：与技能释放同频率,不是逐 tick 热路径。
-pub fn effective_traits(
-    race: ContentIndex,
-    level: i32,
-    race_traits: &dyn TraitGrantSource,
-) -> Vec<ContentIndex> {
+pub fn effective_traits(sources: &[TraitSource<'_>], level: i32) -> Vec<ContentIndex> {
     let mut result = Vec::new();
-    for grant in race_traits.granted_traits(race) {
-        if level >= grant.unlock_level && !result.contains(&grant.trait_id) {
-            result.push(grant.trait_id);
+    for source in sources {
+        for grant in source.grants.granted_traits(source.owner) {
+            if level >= grant.unlock_level && !result.contains(&grant.trait_id) {
+                result.push(grant.trait_id);
+            }
         }
     }
     result
@@ -275,13 +353,12 @@ pub fn effective_traits(
 /// [`effective_traits`] 的结果，收集每条天赋授予的技能，按声明顺序
 /// 去重（理由同 [`effective_traits`]）。
 pub fn granted_skills(
-    race: ContentIndex,
+    sources: &[TraitSource<'_>],
     level: i32,
-    race_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
 ) -> Vec<ContentIndex> {
     let mut result = Vec::new();
-    for trait_id in effective_traits(race, level, race_traits) {
+    for trait_id in effective_traits(sources, level) {
         let Some(rule) = traits.trait_rule(trait_id) else {
             continue;
         };
@@ -314,14 +391,13 @@ pub fn granted_skills(
 /// （约束 C5：结果必须与调用方传入的天赋声明顺序无关,只与
 /// `ContentIndex` 数值有关)。
 pub fn resistance_multiplier_permille(
-    race: ContentIndex,
+    sources: &[TraitSource<'_>],
     level: i32,
-    race_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     damage_category: ContentIndex,
 ) -> i32 {
     let mut best: Option<(ContentIndex, i32)> = None;
-    for trait_id in effective_traits(race, level, race_traits) {
+    for trait_id in effective_traits(sources, level) {
         let Some(rule) = traits.trait_rule(trait_id) else {
             continue;
         };
@@ -374,13 +450,12 @@ pub struct SneakAttackRule {
 /// `effective_traits` 遍历顺序无关的确定性规则（约束 C5），不是"谁先
 /// 在 `Vec` 里出现"这种偶然顺序。
 pub fn sneak_attack_rule(
-    race: ContentIndex,
+    sources: &[TraitSource<'_>],
     level: i32,
-    race_traits: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
 ) -> Option<SneakAttackRule> {
     let mut best: Option<(ContentIndex, SneakAttackRule)> = None;
-    for trait_id in effective_traits(race, level, race_traits) {
+    for trait_id in effective_traits(sources, level) {
         let Some(rule) = traits.trait_rule(trait_id) else {
             continue;
         };
@@ -453,7 +528,7 @@ mod tests {
         }]);
 
         // Act
-        let result = effective_traits(race, 5, &source);
+        let result = effective_traits(&[TraitSource::new(race, &source)], 5);
 
         // Assert
         assert_eq!(result, vec![trait_id]);
@@ -471,7 +546,7 @@ mod tests {
         }]);
 
         // Act
-        let result = effective_traits(race, 1, &source);
+        let result = effective_traits(&[TraitSource::new(race, &source)], 1);
 
         // Assert
         assert!(result.is_empty());
@@ -497,7 +572,7 @@ mod tests {
         )]);
 
         // Act
-        let result = granted_skills(race, 1, &source, &traits);
+        let result = granted_skills(&[TraitSource::new(race, &source)], 1, &traits);
 
         // Assert
         assert_eq!(result, vec![skill_id]);
@@ -540,7 +615,7 @@ mod tests {
         ]);
 
         // Act
-        let result = granted_skills(race, 1, &source, &traits);
+        let result = granted_skills(&[TraitSource::new(race, &source)], 1, &traits);
 
         // Assert
         assert_eq!(result, vec![skill_id]);
@@ -578,7 +653,8 @@ mod tests {
         let traits = NoTraits;
 
         // Act
-        let multiplier = resistance_multiplier_permille(race, 1, &source, &traits, fire);
+        let multiplier =
+            resistance_multiplier_permille(&[TraitSource::new(race, &source)], 1, &traits, fire);
 
         // Assert
         assert_eq!(multiplier, RESISTANCE_MULTIPLIER_SCALE);
@@ -607,7 +683,8 @@ mod tests {
         )]);
 
         // Act
-        let multiplier = resistance_multiplier_permille(race, 1, &source, &traits, fire);
+        let multiplier =
+            resistance_multiplier_permille(&[TraitSource::new(race, &source)], 1, &traits, fire);
 
         // Assert
         assert_eq!(multiplier, 500);
@@ -637,7 +714,8 @@ mod tests {
         )]);
 
         // Act
-        let multiplier = resistance_multiplier_permille(race, 1, &source, &traits, cold);
+        let multiplier =
+            resistance_multiplier_permille(&[TraitSource::new(race, &source)], 1, &traits, cold);
 
         // Assert
         assert_eq!(multiplier, RESISTANCE_MULTIPLIER_SCALE);
@@ -690,7 +768,8 @@ mod tests {
         ]);
 
         // Act
-        let multiplier = resistance_multiplier_permille(race, 1, &source, &traits, fire);
+        let multiplier =
+            resistance_multiplier_permille(&[TraitSource::new(race, &source)], 1, &traits, fire);
 
         // Assert：500（low 那条），不是 0（high）也不是 0（500*0/1000）。
         assert_eq!(multiplier, 500);
@@ -705,7 +784,7 @@ mod tests {
         let traits = NoTraits;
 
         // Act
-        let rule = sneak_attack_rule(race, 1, &source, &traits);
+        let rule = sneak_attack_rule(&[TraitSource::new(race, &source)], 1, &traits);
 
         // Assert
         assert_eq!(rule, None);
@@ -733,7 +812,7 @@ mod tests {
         )]);
 
         // Act
-        let rule = sneak_attack_rule(race, 1, &source, &traits);
+        let rule = sneak_attack_rule(&[TraitSource::new(race, &source)], 1, &traits);
 
         // Assert
         assert_eq!(
@@ -791,7 +870,7 @@ mod tests {
         ]);
 
         // Act
-        let rule = sneak_attack_rule(race, 1, &source, &traits);
+        let rule = sneak_attack_rule(&[TraitSource::new(race, &source)], 1, &traits);
 
         // Assert：low 那条（10/5），不是 high（999/999），也不是两者相加。
         assert_eq!(

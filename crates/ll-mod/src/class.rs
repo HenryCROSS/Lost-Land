@@ -43,6 +43,7 @@
 //! 不兜底）。
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_sim::traits::{TraitGrant, TraitGrantSource};
 use ll_world::entity::AttributeKind;
 use std::fmt;
 
@@ -61,6 +62,31 @@ pub struct ClassDef {
     /// 主属性倾向：六项主属性之一，供职业选择界面展示、以及后续批次
     /// 职业相关数值计算的输入。P5 阶段只是分类字段，不驱动结算逻辑。
     pub primary_attribute: AttributeKind,
+    /// 这个职业授予的天赋引用列表——`knowledge/design/trait-system.md`
+    /// 三节①「有效天赋 = 种族天赋 ∪ **职业天赋** ∪ ……」里职业这一路
+    /// 来源的声明处，与 [`crate::race::RaceDef::traits`] 是同一个类型、
+    /// 同一套语义，只是所有者从种族换成职业。
+    ///
+    /// 空列表表示这个职业不授予任何天赋（[`materialize_base_classes`]
+    /// 注册的四种本体职业目前都是空的——项目所有者已裁定「本体 = 框架，
+    /// 内容 = mod」，本体游戏内容将迁往一个本体自己的 mod 脚本目录，
+    /// 该迁移是独立批次的工作；在它之前，本模块只提供通道，不再往
+    /// `materialize_base_classes` 里新增硬编码内容）。
+    ///
+    /// **与种族天赋的唯一实质差异在 `unlock_level`**：种族/副职/装备/
+    /// buff 恒填 `1`（"拥有即生效"，这些来源本身不随等级变化），职业
+    /// 天赋则按职业自己的等级曲线填对应等级（`trait-system.md` 六节
+    /// 原文：「职业天赋按实际设计填对应等级」）——但这是**内容作者填
+    /// 什么值**的差异，不是**引擎怎么处理**的差异：
+    /// `ll_sim::traits::effective_traits` 对两路来源跑的是同一段
+    /// `level >= unlock_level` 比较，没有任何按来源分流的分支。
+    ///
+    /// 不出现在 [`ClassTable::define`] 的参数里，走注册后追加的
+    /// [`ClassTable::add_trait_grant`]（脚本入口 `register-class-trait`，
+    /// 见 [`crate::script_class_api`]）——理由同
+    /// [`crate::race::RaceTable::add_trait_grant`]：`register-class`
+    /// 的既有脚本签名不能改参数个数。
+    pub traits: Vec<TraitGrant>,
 }
 
 /// [`ClassTable::define`] 实际存进列式存储的属性子集——不含 `id`（`id`
@@ -78,6 +104,10 @@ pub struct ClassAttrs {
     pub display_name_key: NamespacedId,
     /// 主属性倾向。
     pub primary_attribute: AttributeKind,
+    /// 这个职业授予的天赋引用列表，见 [`ClassDef::traits`] 文档。
+    /// [`ClassTable::define`] 之后仍可通过
+    /// [`ClassTable::add_trait_grant`] 继续追加。
+    pub traits: Vec<TraitGrant>,
 }
 
 /// 职业注册期可能出现的错误。ADR 0017「注册期完整校验」要求这些错误
@@ -91,6 +121,11 @@ pub enum ClassError {
     /// 属性」——两个不同的 mod（或某 mod 与本体）若都尝试给同一个 `id`
     /// 定义职业，第二次必须报错，不能静默覆盖第一次的结果。
     DuplicateDefinition(ContentIndex),
+    /// 目标索引尚未 `define` 过就被 [`ClassTable::add_trait_grant`]
+    /// 这类「注册后追加」的入口引用——ADR 0017「注册期完整校验」要求
+    /// 在装载期就报出来，而不是静默把天赋挂在一个不存在的职业上。
+    /// 与 [`crate::race::RaceError::NotDefined`] 同一条纪律。
+    NotDefined(ContentIndex),
 }
 
 impl fmt::Display for ClassError {
@@ -98,6 +133,9 @@ impl fmt::Display for ClassError {
         match self {
             ClassError::DuplicateDefinition(index) => {
                 write!(f, "职业索引 {} 被重复定义", index.get())
+            }
+            ClassError::NotDefined(index) => {
+                write!(f, "职业索引 {} 尚未定义，无法追加声明", index.get())
             }
         }
     }
@@ -115,6 +153,8 @@ pub struct ClassView<'a> {
     pub display_name_key: &'a NamespacedId,
     /// 主属性倾向。
     pub primary_attribute: AttributeKind,
+    /// 这个职业授予的天赋引用列表，见 [`ClassDef::traits`] 文档。
+    pub traits: &'a [TraitGrant],
 }
 
 /// 职业属性的列式存储：按 [`ContentIndex`] 下标索引，不按内容分结构
@@ -129,6 +169,11 @@ pub struct ClassView<'a> {
 pub struct ClassTable {
     display_name_key: Vec<Option<NamespacedId>>,
     primary_attribute: Vec<AttributeKind>,
+    /// 每个职业授予的天赋引用列表——扁平列的一列，`Vec<Vec<..>>` 而不是
+    /// `HashMap<ContentIndex, Vec<..>>`：与其余各列同一个下标空间，
+    /// 遍历顺序由下标决定，不引入任何依赖哈希迭代顺序的判定（约束
+    /// C5），与 `crate::race::RaceTable` 的同名列同一条理由。
+    traits: Vec<Vec<TraitGrant>>,
     defined: Vec<bool>,
 }
 
@@ -149,6 +194,7 @@ impl ClassTable {
             let new_len = idx + 1;
             self.defined.resize(new_len, false);
             self.display_name_key.resize(new_len, None);
+            self.traits.resize(new_len, Vec::new());
             // AttributeKind 没有语义上的「默认值」，这里用 Strength
             // 只是一个占位——与 TerrainTable::move_cost 在扩容时填 0
             // 同一个理由：未定义的槽位永远被 `defined` 位图挡住，不会
@@ -164,6 +210,7 @@ impl ClassTable {
         self.defined[idx] = true;
         self.display_name_key[idx] = Some(attrs.display_name_key);
         self.primary_attribute[idx] = attrs.primary_attribute;
+        self.traits[idx] = attrs.traits;
         Ok(())
     }
 
@@ -188,7 +235,62 @@ impl ClassTable {
                 .as_ref()
                 .expect("defined 为真时 display_name_key 必已写入"),
             primary_attribute: self.primary_attribute[idx],
+            traits: &self.traits[idx],
         })
+    }
+
+    /// 追加声明「这个职业在某个等级授予某个天赋」——`register-class`
+    /// 的既有脚本签名不能改参数个数（[`ClassDef::traits`] 文档），因此
+    /// 天赋引用走这条独立的、注册后追加的路径，与
+    /// [`crate::race::RaceTable::add_trait_grant`] 是同一个模式的第二次
+    /// 应用。**追加，不是覆盖**：一个职业可以被多次调用授予多条不同的
+    /// 天赋（每次调用 push 一条 `TraitGrant`）。目标索引必须已经
+    /// `define` 过，否则返回 [`ClassError::NotDefined`]（ADR 0017
+    /// 「注册期完整校验」）。**不校验 `grant.trait_id` 是否已经在
+    /// `TraitTable` 里注册过**——与 `RaceTable::add_trait_grant` 对同一个
+    /// 字段的既有处理方式一致（只 `intern` 不跨表校验存在性，是当前
+    /// 代码库尚未建立跨表校验基础设施的已知简化，不是本次新引入的
+    /// 松懈）。
+    pub fn add_trait_grant(
+        &mut self,
+        class: ContentIndex,
+        grant: TraitGrant,
+    ) -> Result<(), ClassError> {
+        if !self.is_defined(class) {
+            return Err(ClassError::NotDefined(class));
+        }
+        self.traits[class.get() as usize].push(grant);
+        Ok(())
+    }
+}
+
+/// `ll_sim::traits::TraitGrantSource` 的真实实现——
+/// `ll_sim::traits::effective_traits` 通过这个 impl 真正查到**职业**
+/// 授予的天赋引用，是 `trait-system.md` 三节①五路来源公式里职业那一路
+/// 的落点。
+///
+/// # 与 `RaceTable` 的同名 impl 复用同一个 trait，不是各自新开一个
+///
+/// ADR 0021 的判据是「有没有一份算法要被两种类型共用」，不是「两种
+/// 类型对称所以该抽象」。这里确实有：`effective_traits` 那段「按
+/// `unlock_level` 过滤 + 按声明顺序去重」的聚合，以及
+/// `granted_skills`/`resistance_multiplier_permille`/`sneak_attack_rule`/
+/// `effective_scalar_capacity` 四个建立在它之上的查询，对种族天赋与
+/// 职业天赋**逐字节是同一段代码**——`TraitGrant` 的两个字段
+/// （`trait_id`/`unlock_level`）在两种所有者下语义完全相同，唯一的
+/// 差异是内容作者给 `unlock_level` 填什么值（种族恒填 1，职业按等级
+/// 曲线填），而那是数据差异，不是算法差异。给职业新开一个
+/// `ClassTraitGrantSource` trait 只会得到一份签名相同、实现相同、
+/// 被同一段算法以完全相同方式调用的重复声明。
+///
+/// 未注册的职业索引返回空列表——与
+/// `TraitGrantSource::granted_traits` 文档「查不到就是查不到」的既有
+/// 纪律一致，不是 panic 或特殊分支。
+impl TraitGrantSource for ClassTable {
+    fn granted_traits(&self, owner: ContentIndex) -> Vec<TraitGrant> {
+        self.get(owner)
+            .map(|view| view.traits.to_vec())
+            .unwrap_or_default()
     }
 }
 
@@ -286,6 +388,11 @@ fn define_base(
             display_name_key: NamespacedId::parse(display_name_key)
                 .expect("本体职业本地化键字面量恒合法"),
             primary_attribute,
+            // 本体职业目前不授予任何天赋——项目所有者裁定「本体 = 框架，
+            // 内容 = mod」，本体内容迁往脚本是独立批次的工作；在它之前
+            // 这里不再新增硬编码内容，mod 通过 `register-class-trait`
+            // 追加声明，见 `ClassDef::traits` 文档。
+            traits: Vec::new(),
         },
     )?;
     Ok(index)
@@ -385,6 +492,7 @@ mod tests {
                     display_name_key: NamespacedId::parse("lostland:class.warrior.display_name")
                         .expect("合法"),
                     primary_attribute: AttributeKind::Strength,
+                    traits: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -396,6 +504,7 @@ mod tests {
                 display_name_key: NamespacedId::parse("lostland:class.warrior.display_name")
                     .expect("合法"),
                 primary_attribute: AttributeKind::Intelligence,
+                traits: Vec::new(),
             },
         );
 
@@ -428,6 +537,7 @@ mod tests {
                     display_name_key: NamespacedId::parse("yourmod:necromancer_display_name")
                         .expect("合法"),
                     primary_attribute: AttributeKind::Willpower,
+                    traits: Vec::new(),
                 },
             )
             .expect("mod 职业与本体职业调用同一个公开 define 函数,理应同样成功");
@@ -439,5 +549,140 @@ mod tests {
         assert_eq!(mod_index.get(), class_ids.guard.get() + 1);
         let view = table.get(mod_index).expect("mod 职业已通过 define 登记");
         assert_eq!(view.primary_attribute, AttributeKind::Willpower);
+    }
+    #[test]
+    fn 追加天赋声明是追加而不是覆盖() {
+        // 与 RaceTable::add_trait_grant 同一条纪律：一个职业可以被多次
+        // 调用授予多条不同的天赋，后一次不覆盖前一次。
+        // Arrange
+        let mut interner = Interner::new();
+        let (ids, mut table) = base_class_fixture();
+        let first = interner.intern(NamespacedId::parse("yourmod:trait_a").expect("合法"));
+        let second = interner.intern(NamespacedId::parse("yourmod:trait_b").expect("合法"));
+
+        // Act
+        table
+            .add_trait_grant(
+                ids.warrior,
+                TraitGrant {
+                    trait_id: first,
+                    unlock_level: 1,
+                },
+            )
+            .expect("目标职业已定义，追加应当成功");
+        table
+            .add_trait_grant(
+                ids.warrior,
+                TraitGrant {
+                    trait_id: second,
+                    unlock_level: 4,
+                },
+            )
+            .expect("目标职业已定义，追加应当成功");
+
+        // Assert：两条都在，且顺序就是调用顺序（约束 C5：聚合顺序由
+        // 注册期写死的静态顺序决定）。
+        let view = table.get(ids.warrior).expect("战士已在本体注册");
+        assert_eq!(
+            view.traits,
+            &[
+                TraitGrant {
+                    trait_id: first,
+                    unlock_level: 1,
+                },
+                TraitGrant {
+                    trait_id: second,
+                    unlock_level: 4,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn 给尚未定义的职业索引追加天赋返回notdefined() {
+        // ADR 0017「注册期完整校验」：装载期就报出来，不静默把天赋挂在
+        // 一个不存在的职业上。
+        // Arrange
+        let mut interner = Interner::new();
+        let never_defined =
+            interner.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
+        let trait_id = interner.intern(NamespacedId::parse("yourmod:some_trait").expect("合法"));
+        let mut table = ClassTable::new();
+
+        // Act
+        let result = table.add_trait_grant(
+            never_defined,
+            TraitGrant {
+                trait_id,
+                unlock_level: 1,
+            },
+        );
+
+        // Assert
+        assert_eq!(result, Err(ClassError::NotDefined(never_defined)));
+    }
+
+    #[test]
+    fn 职业表作为天赋授予来源对未注册索引返回空列表() {
+        // 「查不到就是查不到」——不是 panic，也不是某种兜底默认值。
+        // Arrange
+        let mut interner = Interner::new();
+        let never_defined =
+            interner.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
+        let (_, table) = base_class_fixture();
+
+        // Act
+        let grants = TraitGrantSource::granted_traits(&table, never_defined);
+
+        // Assert
+        assert!(grants.is_empty());
+    }
+
+    #[test]
+    fn 职业表作为天赋授予来源返回追加进去的那条声明() {
+        // 这条 impl 是 `ll_sim::traits::effective_traits` 真正查到职业
+        // 天赋的唯一路径，不是一个只被测试自己调用的方法。
+        // Arrange
+        let mut interner = Interner::new();
+        let (ids, mut table) = base_class_fixture();
+        let trait_id = interner.intern(NamespacedId::parse("yourmod:sneaky").expect("合法"));
+        table
+            .add_trait_grant(
+                ids.ranger,
+                TraitGrant {
+                    trait_id,
+                    unlock_level: 3,
+                },
+            )
+            .expect("目标职业已定义，追加应当成功");
+
+        // Act
+        let grants = TraitGrantSource::granted_traits(&table, ids.ranger);
+
+        // Assert
+        assert_eq!(
+            grants,
+            vec![TraitGrant {
+                trait_id,
+                unlock_level: 3,
+            }]
+        );
+    }
+
+    #[test]
+    fn 本体注册的四种基础职业都不授予任何天赋() {
+        // 本体内容迁往脚本是独立批次的工作；materialize_base_classes
+        // 在那之前只提供通道、不堆内容——这条测试守住的是「别再往这里
+        // 加硬编码内容」，不是「职业永远不该有天赋」。
+        // Arrange
+        let (ids, table) = base_class_fixture();
+
+        // Act & Assert
+        for class in [ids.warrior, ids.mage, ids.ranger, ids.guard] {
+            assert!(
+                table.get(class).expect("本体职业已注册").traits.is_empty(),
+                "本体职业不应在 Rust 里硬编码天赋声明"
+            );
+        }
     }
 }

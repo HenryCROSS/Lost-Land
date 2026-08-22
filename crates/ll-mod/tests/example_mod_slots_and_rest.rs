@@ -343,10 +343,16 @@ fn 真实侏儒角色也真的授予了反常组合法术位() {
     // Act
     let grants = ll_sim::traits::TraitCatalog::trait_rule(
         &handle.trait_def,
-        ll_sim::traits::effective_traits(handle.gnome_id, 1, &handle.race)
-            .into_iter()
-            .next()
-            .expect("gnome 1 级应当已经命中一条天赋"),
+        ll_sim::traits::effective_traits(
+            &[ll_sim::traits::TraitSource::new(
+                handle.gnome_id,
+                &handle.race,
+            )],
+            1,
+        )
+        .into_iter()
+        .next()
+        .expect("gnome 1 级应当已经命中一条天赋"),
     )
     .expect("命中的天赋应当能查到规则")
     .granted_resource_pools;

@@ -100,7 +100,10 @@
 //!   副职/任务/种族上的脚本绑定（P5-C 缺口修补批次）：补上
 //!   [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
 //!   判定为「玩法层」、但此前只有纯 Rust 函数调用能触达、脚本完全够
-//!   不到的四类 + 种族共五类注册 API。
+//!   不到的四类 + 种族共五类注册 API。`register-class-trait`（给职业
+//!   追加天赋引用，职业天赋接线批次）挂在 [`script_class_api`]——理由
+//!   同 `register-race-trait` 挂在 [`script_race_api`]：追加对象是
+//!   `ClassTable`，不是 `TraitTable`。
 //! - [`script_trait_api`] —— 同一个模式在天赋上的脚本绑定（天赋系统
 //!   落地批次）：`register-trait`，见 [`trait_def`] 模块文档「本批次
 //!   范围」一节；`register-race-trait`（给种族追加天赋引用）挂在
