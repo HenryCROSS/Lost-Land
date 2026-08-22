@@ -314,6 +314,7 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
     covered: &[
         ContentTableKind::Terrain,
         ContentTableKind::Race,
+        ContentTableKind::Class,
         ContentTableKind::SpaceProfile,
         ContentTableKind::Clip,
         ContentTableKind::XpCurve,
@@ -323,42 +324,49 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
     ],
     deferred: &[
         DeferredTable {
-            kind: ContentTableKind::Class,
-            reason: "本体职业尚未迁进 mods/lostland/：lostland 命名空间下零条职业内容，\
-                     ClassTable 在生产装载路径里拿到的全部条目都来自 mods/example_mod/。\
-                     迁移完成后本条会被 DeferredButPopulated 主动顶掉。",
-        },
-        DeferredTable {
             kind: ContentTableKind::Skill,
-            reason: "本体技能尚未迁进 mods/lostland/，理由同 Class 一条。",
+            reason: "本体技能尚未迁进 mods/lostland/：lostland 命名空间下零条技能内容，\
+                     SkillTable 在生产装载路径里拿到的全部条目都来自 mods/example_mod/。\
+                     迁移完成后本条会被 DeferredButPopulated 主动顶掉。下面几条\
+                     『理由同 Skill 一条』指的都是这一段。",
         },
         DeferredTable {
             kind: ContentTableKind::Subclass,
-            reason: "本体副职尚未迁进 mods/lostland/，理由同 Class 一条。",
+            reason: "本体副职尚未迁进 mods/lostland/，理由同 Skill 一条。",
         },
         DeferredTable {
             kind: ContentTableKind::Quest,
-            reason: "本体任务尚未迁进 mods/lostland/，理由同 Class 一条。",
+            reason: "本体任务尚未迁进 mods/lostland/，理由同 Skill 一条。",
         },
         DeferredTable {
             kind: ContentTableKind::Trait,
-            reason: "本体天赋尚未迁进 mods/lostland/，理由同 Class 一条——本体三个种族\
+            reason: "本体天赋尚未迁进 mods/lostland/，理由同 Skill 一条——本体三个种族\
                      当前不授予任何天赋，天赋内容只存在于 mods/example_mod/。",
         },
         DeferredTable {
             kind: ContentTableKind::ResourcePool,
-            reason: "本体资源池尚未迁进 mods/lostland/，理由同 Class 一条。",
+            reason: "本体资源池尚未迁进 mods/lostland/，理由同 Skill 一条。",
         },
         DeferredTable {
             kind: ContentTableKind::Item,
-            reason: "本体物品尚未迁进 mods/lostland/，理由同 Class 一条。",
+            reason: "本体物品尚未迁进 mods/lostland/，理由同 Skill 一条。",
         },
         DeferredTable {
             kind: ContentTableKind::WeaponCategory,
-            reason: "本体武器类别尚未迁进 mods/lostland/，理由同 Class 一条。",
+            reason: "本体武器类别尚未迁进 mods/lostland/，理由同 Skill 一条。",
         },
     ],
     exemptions: &[
+        FieldExemption {
+            kind: ContentTableKind::Class,
+            field: "ClassAttrs::traits",
+            reason: "本体目前只有卫兵一条职业内容（mods/lostland/classes.scm），它不授予\
+                     任何职业天赋——与 RaceAttrs::traits 一条同源：本体内容不为了让字段\
+                     覆盖检查变绿硬塞一条天赋。字段本身不是死的：\
+                     mods/example_mod/gameplay.scm 的 examplemod:rogue 用\
+                     register-class-trait 在 3 级授予 examplemod:cutpurse_training，\
+                     ll_sim 的 effective_traits 真的会读它——只是本体内容用不到。",
+        },
         FieldExemption {
             kind: ContentTableKind::Race,
             field: "RaceAttrs::xp_reward",

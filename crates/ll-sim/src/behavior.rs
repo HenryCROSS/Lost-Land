@@ -91,6 +91,45 @@ impl BehaviorTreeSource for NoBehavior {
     }
 }
 
+/// 把一个决策来源包成 [`crate::turn::TurnEngine::advance_ai`] 要的那个
+/// 闭包——「行为树真的驱动回合推进」这条链路的唯一标准接法。
+///
+/// # 为什么需要这个适配器
+///
+/// `advance_ai` 要的是 `FnMut(&WorldState, EntityId, EntityId) -> Intent`
+/// （**恒**产出一个意图），[`BehaviorTreeSource::decide`] 返回的却是
+/// `Option<Intent>`——两者之间差的正是「AI 算不出这一回合该干什么时，
+/// 该不该补发一个 `Intent::Wait`」这个决定。[`resolve_ai_turn`] 的文档
+/// 已经把这个决定的归属写死：「那是调用方（持有时间轴的一方）的职责」
+/// ——`advance_ai` 就是持有时间轴的那一方，所以答案落在这里。
+///
+/// # 补 `Wait` 不是随手挑的默认值，是进展保证
+///
+/// 见 `advance_ai` 文档「必须保证进展（曾经的真实死循环）」一节：本
+/// 引擎每弹出一个非受控实体就必须让它的 `next_action_at` 真的往前走，
+/// 否则同一条时间轴记录会在同一个 tick 被反复弹出。若这里把 `None`
+/// 翻译成「跳过这个实体」，被跳过的实体就永远不会被重排，那正是那条
+/// 死循环的成因。`Intent::Wait` 恒产出 `Effect::ScheduleNext`（见
+/// [`crate::resolve`]），所以「算不出来就等一回合」既是语义上最诚实的
+/// 降级（规格 §10.2「降级而非崩溃」），也是唯一不破坏进展保证的降级。
+///
+/// # 第三个参数（受控实体）刻意被丢弃
+///
+/// `advance_ai` 把「谁是受控实体」一并传给决策来源，是为了让 demo 里
+/// 那种「一律朝玩家走」的固定策略能写出来。行为树不需要它：脚本要找
+/// 目标走的是 `nearby-enemy`/`nearby-actor-in-view` 这类查询 API（自己
+/// 按世界状态找），而不是由宿主指定一个特权目标——把受控实体喂进去
+/// 反而会让脚本能绕过视野判定直接盯上玩家。
+pub fn behavior_ai_intent(
+    source: &mut dyn BehaviorTreeSource,
+) -> impl FnMut(&WorldState, EntityId, EntityId) -> Intent + '_ {
+    move |world: &WorldState, actor: EntityId, _controlled: EntityId| {
+        source
+            .decide(world, actor)
+            .unwrap_or(Intent::Wait { actor })
+    }
+}
+
 /// 「AI 回合」的最小可复用组合：向 `source` 要一个意图，拿到就走既有
 /// 的 `resolve_with_skills_and_quests` 结算；拿不到（[`BehaviorTreeSource::decide`]
 /// 返回 `None`）就产出空效果——不代替调用方决定「AI 什么都不做时该不该
@@ -220,6 +259,40 @@ mod tests {
 
         // Assert
         assert!(effects.is_empty());
+    }
+
+    #[test]
+    fn 决策来源算不出意图时适配器补一个等待而不是跳过这个实体() {
+        // 这条守的是 `advance_ai` 的进展保证：跳过（或产出一个 resolve
+        // 判定为空效果的意图）会让该实体的 `next_action_at` 原地不动，
+        // 时间轴在同一 tick 空转——见 behavior_ai_intent 文档。
+        // Arrange
+        let (world, actor) = test_world();
+        let mut source = FixedDecision(None);
+
+        // Act
+        let intent = behavior_ai_intent(&mut source)(&world, actor, actor);
+
+        // Assert
+        assert_eq!(intent, Intent::Wait { actor });
+    }
+
+    #[test]
+    fn 决策来源算得出意图时适配器原样转交() {
+        // 反例：证明上一条不是「无论如何都返回 Wait」。
+        // Arrange
+        let (world, actor) = test_world();
+        let decided = Intent::Move {
+            actor,
+            dir: Direction::East,
+        };
+        let mut source = FixedDecision(Some(decided));
+
+        // Act
+        let intent = behavior_ai_intent(&mut source)(&world, actor, actor);
+
+        // Assert
+        assert_eq!(intent, decided);
     }
 
     #[test]

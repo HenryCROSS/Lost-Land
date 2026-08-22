@@ -308,16 +308,6 @@ pub struct BaseClassIds {
     pub mage: ContentIndex,
     /// 游侠：敏捷倾向。
     pub ranger: ContentIndex,
-    /// 卫兵：体质倾向（卫兵职业接线批次——项目所有者裁定「卫兵算作一种
-    /// 职业」，见 `crate::script_behavior_api`/
-    /// `crates/ll-script/src/api/actor.rs` 的盘查行为接线；`ll-sim` 侧
-    /// 消费点是 `ll_script::api::query`/本 crate
-    /// `script_behavior_api::register_profession_check_api` 暴露给行为
-    /// 树脚本的 `self-has-profession?` 查询，不是本字段本身——`primary_
-    /// attribute` 与其余三种基础职业同一条豁免，见
-    /// `scripts/ci/check_field_consumers.py` 的
-    /// `ClassDef.primary_attribute` 条目）。
-    pub guard: ContentIndex,
 }
 
 /// 本体职业注册的唯一入口：本体与 mod 共用的注册路径。
@@ -353,20 +343,11 @@ pub fn materialize_base_classes(
         "lostland:class.ranger.display_name",
         AttributeKind::Dexterity,
     )?;
-    let guard = define_base(
-        &mut table,
-        intern,
-        "lostland:guard",
-        "lostland:class.guard.display_name",
-        AttributeKind::Constitution,
-    )?;
-
     Ok((
         BaseClassIds {
             warrior,
             mage,
             ranger,
-            guard,
         },
         table,
     ))
@@ -449,20 +430,6 @@ mod tests {
     }
 
     #[test]
-    fn 卫兵的主属性倾向是体质() {
-        // 卫兵职业接线批次——项目所有者裁定「卫兵算作一种职业」，见
-        // 模块顶部 BaseClassIds::guard 字段文档。
-        // Arrange
-        let (ids, table) = base_class_fixture();
-
-        // Act
-        let view = table.get(ids.guard).expect("卫兵已在本体注册");
-
-        // Assert
-        assert_eq!(view.primary_attribute, AttributeKind::Constitution);
-    }
-
-    #[test]
     fn 未注册的内容索引查询返回none() {
         // 对齐 ADR 0015 的解析纪律：查不到就是查不到，不返回一个可能
         // 被误当成真实数据的兜底值。
@@ -542,11 +509,13 @@ mod tests {
             )
             .expect("mod 职业与本体职业调用同一个公开 define 函数,理应同样成功");
 
-        // Assert：mod 内容紧接在本体四种职业（含卫兵职业接线批次新增
-        // 的卫兵）之后分配到索引，说明两者共用同一个单调递增的号段，
-        // 没有为本体预留任何特殊区间；且 mod 注册的职业确实能通过 get
-        // 查到正确属性。
-        assert_eq!(mod_index.get(), class_ids.guard.get() + 1);
+        // Assert：mod 内容紧接在本体三种职业之后分配到索引，说明两者
+        // 共用同一个单调递增的号段，没有为本体预留任何特殊区间；且
+        // mod 注册的职业确实能通过 get 查到正确属性。
+        //
+        // 卫兵（原本的第四条）已经迁进 mods/lostland/classes.scm，不再
+        // 由本函数注册——见该文件头「为什么本文件里只有卫兵一条」。
+        assert_eq!(mod_index.get(), class_ids.ranger.get() + 1);
         let view = table.get(mod_index).expect("mod 职业已通过 define 登记");
         assert_eq!(view.primary_attribute, AttributeKind::Willpower);
     }
@@ -670,7 +639,7 @@ mod tests {
     }
 
     #[test]
-    fn 本体注册的四种基础职业都不授予任何天赋() {
+    fn 本体注册的三种基础职业都不授予任何天赋() {
         // 本体内容迁往脚本是独立批次的工作；materialize_base_classes
         // 在那之前只提供通道、不堆内容——这条测试守住的是「别再往这里
         // 加硬编码内容」，不是「职业永远不该有天赋」。
@@ -678,7 +647,7 @@ mod tests {
         let (ids, table) = base_class_fixture();
 
         // Act & Assert
-        for class in [ids.warrior, ids.mage, ids.ranger, ids.guard] {
+        for class in [ids.warrior, ids.mage, ids.ranger] {
             assert!(
                 table.get(class).expect("本体职业已注册").traits.is_empty(),
                 "本体职业不应在 Rust 里硬编码天赋声明"

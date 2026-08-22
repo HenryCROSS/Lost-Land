@@ -341,7 +341,7 @@ fn damage_dealt_via_turn_engine(
     let acted = engine.advance_ai(
         &mut world,
         defender,
-        attack_controlled,
+        &mut attack_controlled,
         catalogs,
         &mut |_, _| {},
     );
@@ -420,7 +420,7 @@ fn backstab_effects_via_turn_engine(
     engine.advance_ai(
         &mut world,
         bystander,
-        use_backstab,
+        &mut use_backstab,
         catalogs,
         &mut |_, effect| seen.push(effect.clone()),
     );

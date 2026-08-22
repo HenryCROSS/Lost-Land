@@ -1706,6 +1706,7 @@ version = "0.1.0"
 dependencies = [
  "json5",
  "ll-core",
+ "ll-platform",
  "ll-render",
  "ll-script",
  "ll-sim",

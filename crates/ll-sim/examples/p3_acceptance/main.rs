@@ -339,7 +339,7 @@ impl Demo {
             self.engine.advance_ai(
                 &mut self.world,
                 player,
-                ai_intent,
+                &mut ai_intent,
                 &EMPTY_CATALOGS,
                 &mut on_damage,
             );
@@ -371,7 +371,7 @@ impl Demo {
                 self.engine.advance_ai(
                     &mut self.world,
                     player,
-                    ai_intent,
+                    &mut ai_intent,
                     &EMPTY_CATALOGS,
                     &mut on_damage,
                 );

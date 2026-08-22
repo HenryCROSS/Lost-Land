@@ -148,10 +148,31 @@ impl TurnEngine {
     /// `ai_intent` 是「这个实体这一回合该做什么」的决策来源——本引擎
     /// 刻意不内置任何具体策略：固定策略、行为树或干脆恒 `Wait`（本体
     /// 二进制目前没有 NPC 时的占位）都由调用方决定，见模块文档「p3 的
-    /// 固定敌人 AI……仍留在该 demo 里」一节。取普通函数指针而非闭包
-    /// trait：当前两个调用方（`p3_acceptance`、`ll-game`）都不需要按
-    /// 调用方状态捕获环境，函数指针已经足够,不需要为假设中的未来需求
-    /// 引入更重的 `dyn FnMut`（YAGNI）。
+    /// 固定敌人 AI……仍留在该 demo 里」一节。
+    ///
+    /// # 为什么从 `fn` 指针放宽成 `&mut dyn FnMut`
+    ///
+    /// 这个参数原本是普通函数指针，理由记录得很明确：「当前两个调用方
+    /// （`p3_acceptance`、`ll-game`）都不需要按调用方状态捕获环境，
+    /// 函数指针已经足够，不需要为假设中的未来需求引入更重的
+    /// `dyn FnMut`（YAGNI）」。那条理由在真实的行为树决策来源出现之后
+    /// **失效了**，而且不是「假设中的未来需求」：
+    /// [`crate::behavior::BehaviorTreeSource::decide`] 需要 `&mut self`
+    /// （求值 Steel VM 本身要独占访问，见 [`crate::behavior`] 模块文档
+    /// 「为什么 `decide` 接收 `&mut dyn BehaviorTreeSource`」一节），
+    /// 一个 `fn` 指针**物理上捕获不进任何决策来源**——于是
+    /// `ll_mod::script_behavior_source::ScriptBehaviorSource` 落地之后，
+    /// 唯一能喂给本函数的东西仍然只有无状态的自由函数，行为树因此
+    /// 一次都没有经由本函数跑过。这是「接线断在最后一环」在本仓库的
+    /// 第三次同形复发（前两次：`TurnEngine` 本身只接进 demo；内容目录
+    /// 没接进 `TurnEngine`，天赋在真实游戏里从未生效，`fff73d8` 修）。
+    ///
+    /// 放宽成 `&mut dyn FnMut` 而不是泛型 `impl FnMut`：与紧邻的
+    /// `on_effect: &mut dyn FnMut(&WorldState, &Effect)` 同一种形状，
+    /// 本函数不会因为多一个决策来源就多单态化一份；既有的函数指针
+    /// 调用方只需要在实参前加一个 `&mut`（`fn` 项本身是实现了 `FnMut`
+    /// 的零尺寸类型）。把决策来源包成这个闭包的标准写法见
+    /// [`crate::behavior::behavior_ai_intent`]。
     ///
     /// `catalogs`/`on_effect` 见 [`Self::perform`] 文档。
     ///
@@ -187,7 +208,7 @@ impl TurnEngine {
         &mut self,
         world: &mut WorldState,
         controlled: EntityId,
-        ai_intent: fn(&WorldState, EntityId, EntityId) -> Intent,
+        ai_intent: &mut dyn FnMut(&WorldState, EntityId, EntityId) -> Intent,
         catalogs: &ResolveCatalogs<'_>,
         on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) -> Vec<EntityId> {
@@ -403,7 +424,7 @@ mod tests {
         input.press(GameKey::Wait);
 
         // Act
-        engine.advance_ai(&mut world, player, no_op_ai, &EMPTY, &mut |_, _| {});
+        engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
         let acted = engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
 
         // Assert
@@ -428,7 +449,7 @@ mod tests {
         // Act：记录每次结算后的时钟读数。
         let mut clocks = Vec::new();
         for _ in 0..3 {
-            engine.advance_ai(&mut world, player, no_op_ai, &EMPTY, &mut |_, _| {});
+            engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
             engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
             clocks.push(world.clock);
         }
@@ -481,7 +502,7 @@ mod tests {
 
         // Act：连续结算六次基准敏捷的等待。
         for _ in 0..6 {
-            engine.advance_ai(&mut world, player, no_op_ai, &EMPTY, &mut |_, _| {});
+            engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
             engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
         }
 
@@ -530,7 +551,7 @@ mod tests {
             acted_log.extend(engine.advance_ai(
                 &mut world,
                 player,
-                move_toward_origin,
+                &mut move_toward_origin,
                 &EMPTY,
                 &mut |_, _| {},
             ));
@@ -561,7 +582,7 @@ mod tests {
         timeline.schedule(player, Tick(0));
         timeline.schedule(victim, Tick(100));
         let mut engine = TurnEngine::new(timeline);
-        engine.advance_ai(&mut world, player, no_op_ai, &EMPTY, &mut |_, _| {});
+        engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
         let mut input = InputState::new();
         input.press(GameKey::Right);
 
@@ -612,7 +633,13 @@ mod tests {
         }
 
         // Act
-        let acted = engine.advance_ai(&mut world, player, attack_player, &EMPTY, &mut |_, _| {});
+        let acted = engine.advance_ai(
+            &mut world,
+            player,
+            &mut attack_player,
+            &EMPTY,
+            &mut |_, _| {},
+        );
 
         // Assert：受控实体应已被击杀，且结算过的实体数应远小于
         // MAX_STEPS_PER_ADVANCE（10000）。

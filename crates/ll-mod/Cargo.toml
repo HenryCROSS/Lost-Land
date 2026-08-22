@@ -72,5 +72,13 @@ ll-render = { path = "../ll-render" }
 
 [dev-dependencies]
 proptest.workspace = true
+# 行为树接线批次新增（仅测试）：`tests/example_mod_stealth.rs` 要跑
+# `ll_game::app::Demo::advance` 的那两步生产循环——`TurnEngine::advance_ai`
+# 之后紧跟一次 `TurnEngine::try_player_turn`，后者接收
+# `ll_platform::input::InputState`。依赖方向
+# `ll-platform` ← `ll-world` ← `ll-sim` ← `ll-mod`（规格 §5）：
+# `ll-platform` 是更底层的 crate（`ll-sim` 本身已经在生产代码里依赖
+# 它），本 crate 只在测试里用，不进生产依赖。
+ll-platform = { path = "../ll-platform" }
 # `steel-core` 已在等级与经验系统落地批次升级为生产依赖（见上方
 # [dependencies] 的注释），测试代码沿用同一份，不再单独声明。

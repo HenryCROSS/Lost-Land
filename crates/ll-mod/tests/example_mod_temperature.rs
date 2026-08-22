@@ -330,7 +330,7 @@ fn damage_dealt_at(
     let acted = engine.advance_ai(
         &mut world,
         defender,
-        attack_controlled,
+        &mut attack_controlled,
         &catalogs,
         &mut |_, _| {},
     );

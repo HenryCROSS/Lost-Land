@@ -58,16 +58,38 @@ use crate::layout::{
 use crate::save::save_game;
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
-/// 本体二进制目前唯一的实体是玩家——没有 NPC 可言（行为树属 P7,
-/// 见 `ll_sim::turn` 模块文档同一节），传给
-/// [`ll_sim::turn::TurnEngine::advance_ai`] 的 `ai_intent` 参数因此
-/// 恒不会被调用（时间轴里除了玩家没有别的实体会被弹出）。仍然接线
-/// 而不是干脆跳过 `advance_ai` 调用：一旦未来加入 NPC，只需要把这个
-/// 占位函数换成真正的策略，`Demo::advance` 的调用点不需要改动。
+/// 本体二进制目前唯一的实体是玩家——`crate::world::spawn_player` 是整个
+/// `ll-game` 里唯一一处 `world.actors.spawn` 调用（已 grep 核实），
+/// 传给 [`ll_sim::turn::TurnEngine::advance_ai`] 的 `ai_intent` 参数
+/// 因此恒不会被调用（时间轴里除了玩家没有别的实体会被弹出）。
 /// 恒返回 `Intent::Wait`——即使真被调用到，也不会产出任何空效果导致
 /// `ll_sim::turn` 模块文档「必须保证进展」一节描述的死循环
 /// （`Intent::Wait` 恒产出 `Effect::ScheduleNext`，见 `ll_sim::resolve`
 /// 文档）。
+///
+/// # 为什么这里**还不是** `ScriptBehaviorSource`
+///
+/// 如实记录，不是遗漏。`advance_ai` 的 `ai_intent` 原本是 `fn` 指针，
+/// 捕获不进任何需要 `&mut self` 的决策来源——这条**类型层面的**阻塞
+/// 已经在本批次解除（签名放宽成 `&mut dyn FnMut`，标准接法见
+/// `ll_sim::behavior::behavior_ai_intent`）。剩下的两条阻塞是内容层面
+/// 的，不是接线层面的，各自都需要独立批次：
+///
+/// 1. **本体二进制没有任何 NPC 生成路径**——没有生物注册表、没有刷怪
+///    表，`build_new_world` 只生成玩家一个实体。哪怕这里换成真正的
+///    行为树决策来源，`advance_ai` 也永远弹不出一个非受控实体来调用
+///    它，「接上了但恒不执行」与现状没有任何可观察差别。
+/// 2. **没有「哪个生物用哪棵行为树」的内容绑定**——
+///    `ScriptBehaviorSource::new` 要一份脚本源码与一个入口函数名，而
+///    `mods/example_mod/behavior.scm` 刻意不在 `entry_points` 里（见
+///    该文件头注释），`LoadedContent::script_sources` 因此根本读不到
+///    它。在没有绑定内容类型的前提下由 Rust 侧硬选一棵树，就是把
+///    「本体 = 框架，脚本 = 内容」这条裁定反过来写。
+///
+/// 在这两条补上之前，这里挂一个恒 `Wait` 的占位比挂一个恒不执行的
+/// `NoBehavior` 更诚实：后者会让读者以为行为树已经接通了。
+/// 行为树经由 `TurnEngine` 真实驱动结算这条链路本身已经有可执行证据，
+/// 见 `crates/ll-mod/tests/example_mod_stealth.rs`。
 fn no_npc_ai(_world: &WorldState, actor: EntityId, _player: EntityId) -> Intent {
     Intent::Wait { actor }
 }
@@ -469,7 +491,7 @@ impl Demo {
         self.engine.advance_ai(
             &mut self.game_world.world,
             player,
-            no_npc_ai,
+            &mut no_npc_ai,
             &catalogs,
             &mut |_, _| {},
         );

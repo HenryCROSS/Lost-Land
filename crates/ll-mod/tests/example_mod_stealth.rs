@@ -17,20 +17,41 @@
 //!    `VisibleSet` 一个字节都没改，潜行中的目标照样被
 //!    `nearby-actor-in-view` 找到（卫兵照常朝它走），变的只是
 //!    `rng-chance` 那一次判定。
+//! 4. **行为树真的经 [`ll_sim::turn::TurnEngine`] 驱动结算**——第 3 条
+//!    与第 4 条走的是同一段代码（[`guard_turns`]），因此不是两条独立
+//!    证据，而是同一条证据在两个维度上的断言。
 //!
-//! # 第 3 条为什么不经 `TurnEngine`
+//! # 第 3/4 条此前为什么不经 `TurnEngine`，现在为什么可以
 //!
-//! 如实记录，不是遗漏：**`ScriptBehaviorSource` 目前根本没有接进
-//! `ll-game`**——[`ll_sim::turn::TurnEngine::advance_ai`] 的 `ai_intent`
-//! 是一个**函数指针**（见其文档：「当前两个调用方都不需要按调用方状态
-//! 捕获环境」），而 `ScriptBehaviorSource::decide` 需要 `&mut self`，
-//! 捕获不进函数指针；`ll-game` 那侧传的也确实是一个恒 `Wait` 的占位
-//! 策略（`crates/ll-game/src/app.rs`）。因此「行为树经由 `TurnEngine`
-//! 生效」这条路径在本批次开始之前就不存在，本批次也不打算顺手接它
-//! （那是一次独立的、会牵动 `advance_ai` 签名的改动）。第 3 条因此沿用
-//! `example_mod_guard_inspection.rs` 既有的最高保真路径：真实脚本
-//! → `decide` → 真实 `Intent`。
-
+//! 此前不行：[`ll_sim::turn::TurnEngine::advance_ai`] 的 `ai_intent`
+//! 曾经是一个**函数指针**，而 `ScriptBehaviorSource::decide` 需要
+//! `&mut self`，捕获不进函数指针——「行为树经由 `TurnEngine` 生效」
+//! 这条路径在类型层面就不存在，本文件当时只能沿用
+//! `example_mod_guard_inspection.rs` 的「真实脚本 → `decide` → 真实
+//! `Intent`」这条较短的路径，并如实记录了降级理由。
+//!
+//! 现在可以：`ai_intent` 已经放宽成 `&mut dyn FnMut`，
+//! `ll_sim::behavior::behavior_ai_intent` 把任意
+//! `BehaviorTreeSource`（这里就是真实的 `ScriptBehaviorSource`）包成
+//! 它要的那个闭包。本文件因此升级成走完整链路：
+//!
+//! ```text
+//! 真实 behavior.scm → ScriptBehaviorSource::decide → behavior_ai_intent
+//!   → TurnEngine::advance_ai → perform → resolve → apply → WorldState
+//! ```
+//!
+//! 这条链路与 `ll_game::app::Demo::advance` 每帧跑的那一条逐字相同
+//! （`advance_ai` + `try_player_turn` 两步，本文件的
+//! [`guard_turns`] 同样两步都跑）。
+//!
+//! # 反例是什么
+//!
+//! [`非卫兵职业的实体经由turnengine一次盘查都不会发起`]：同一段代码、
+//! 同一棵真实行为树、同一个几何布局，只把卫兵的 `profession` 换成一个
+//! 不是 `lostland:guard` 的索引，`Effect::Inspect` 必须一条都不产出。
+//! 把 `mods/lostland/classes.scm` 的那条 `register-class` 删掉，或者把
+//! `behavior.scm` 里 `self-has-profession?` 那个分支摘掉，正面那条测试
+//! 立刻变红。
 use std::collections::BTreeMap;
 use std::path::Path;
 
@@ -54,9 +75,11 @@ use ll_mod::subclass::SubclassTable;
 use ll_mod::trait_def::TraitTable;
 use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
-use ll_sim::behavior::BehaviorTreeSource;
+use ll_platform::input::{GameKey, InputState};
+use ll_sim::behavior::behavior_ai_intent;
 use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::damage_category::NoDamageCategories;
+use ll_sim::effect::Effect;
 use ll_sim::exposure::AmbientSource;
 use ll_sim::intent::Intent;
 use ll_sim::quest::NoQuests;
@@ -179,15 +202,17 @@ fn load_real_mods() -> RealModsHandle {
     // `lostland:guard`：`self-has-profession?` 靠这份注册表的快照才认
     // 得出 `behavior.scm` 里写的这个字符串，因此它必须在表里。
     //
-    // **如实记录一个既有缺口**：`mods/` 下**没有任何脚本注册过这个
-    // 职业**——`behavior.scm` 引用它，但 `register-class "lostland:guard"`
-    // 在整个仓库里不存在（已 grep 核实）。既有的
-    // `example_mod_guard_inspection.rs` 用的也是「测试自己 intern 一个」
-    // 这条同样的绕法，本文件沿用它而不是顺手补一条注册：补注册属于
-    // 本体内容批次，会牵动内容哈希与 i18n 显示名，不该夹带进本批次。
-    // `Registry::intern` 对已存在的 id 返回既有索引，因此这一行在那条
-    // 注册补上之后也依然正确。
-    let guard_id = registry.intern(NamespacedId::parse("lostland:guard").expect("合法标识符"));
+    // **`get` 而不是 `intern`**——这一行本身就是一条断言：卫兵职业现在
+    // 是 `mods/lostland/classes.scm` 里一条真实注册的本体内容，装载
+    // 管线跑完之后它必须已经在注册表里。此前这里写的是 `intern`
+    // （「查不到就现造一个」），因为整个仓库里根本没有任何脚本注册过
+    // 这个职业——`behavior.scm` 引用它，`guard-try-inspect` 的第一个
+    // `if` 却恒为假，卫兵在真实游戏里永远不会盘查。换成 `get` 之后，
+    // 那条注册一旦被删掉，本文件的全部卫兵用例会立刻在这里失败并点名
+    // 原因，而不是静默退化成「测试自己造了一个，生产里没有」。
+    let guard_id = registry
+        .get(&NamespacedId::parse("lostland:guard").expect("合法标识符"))
+        .expect("lostland:guard 应当已被 mods/lostland/classes.scm 注册");
 
     RealModsHandle {
         footpad_id,
@@ -324,7 +349,7 @@ fn 切换潜行经由turnengine真的改写世界状态() {
     let acted = engine.advance_ai(
         &mut world,
         bystander,
-        toggle_stealth,
+        &mut toggle_stealth,
         &ResolveCatalogs::empty(),
         &mut |_, _| {},
     );
@@ -386,7 +411,7 @@ fn 潜行让真实盗贼天赋的偷袭直通并经由turnengine生效() {
         let acted = engine.advance_ai(
             &mut world,
             defender,
-            attack_controlled,
+            &mut attack_controlled,
             &catalogs,
             &mut |_, _| {},
         );
@@ -443,7 +468,7 @@ fn 潜行中攻击一次之后经由turnengine破除潜行() {
     engine.advance_ai(
         &mut world,
         defender,
-        attack_controlled,
+        &mut attack_controlled,
         &ResolveCatalogs::empty(),
         &mut |_, _| {},
     );
@@ -465,19 +490,55 @@ fn load_guard_behavior_source() -> String {
     std::fs::read_to_string(path).expect("仓库里应当存在真实的 behavior.scm")
 }
 
-/// 摆一个「卫兵盯着一个目标」的场景，让真实的 `guard-ai-tree` 连续
-/// 决策 `ticks` 次，返回这段窗口里卫兵各产出了多少次盘查、多少次
-/// 「看见了但没盘查」（朝目标移动）。
+/// 摆一个「卫兵盯着一个目标」的场景，用真实的 `guard-ai-tree` 经由
+/// [`TurnEngine`] 连续推进 `turns` 个卫兵回合，返回这段窗口里卫兵各
+/// 产出了多少条 `Effect::Inspect`（盘查）、多少条 `Effect::MoveTo`
+/// （看见了但没盘查，朝目标走）。
 ///
 /// 两个计数都要：只数盘查次数无法区分「潜行降低了判定成功率」与
 /// 「潜行让卫兵干脆看不见了」——后者会让移动次数也一起归零，那正是
 /// 本批次刻意**没有**采用的那条设计。
-fn guard_decisions(handle: &RealModsHandle, target_stealthed: bool, ticks: i64) -> (usize, usize) {
-    let (mut world, _terrain_ids) = test_world();
+///
+/// # 为什么两个计数加起来恒等于 `turns`
+///
+/// 卫兵每个回合恰好产出一条这两种效果之一：`guard-ai-tree` 只有两个
+/// 分支（盘查 / 走近），兜底的 `'wait` 只在 `nearby-actor-in-view`
+/// 找不到目标时才会命中。调用方据此断言「卫兵每一回合都有动作」——
+/// 若哪天潜行被改成「改视野」，潜行那一侧会整体退化成 `Intent::Wait`
+/// （既不 `Inspect` 也不 `MoveTo`），这条恒等式立刻不成立。
+///
+/// # 地形：显式铺一片草地
+///
+/// 卫兵这次会**真的移动**（不再只是「决策一次、不落地」），落脚点的
+/// 地形因此参与结算：撞墙的 `Intent::Move` 只产出 `ScheduleNext`、
+/// 不产出 `MoveTo`，会让上面那条恒等式因为一个与潜行毫无关系的原因
+/// 变红。把两人周围这一小片显式铺成草地，把「地形长什么样」这个变量
+/// 从本用例里摘掉。
+fn guard_turns(handle: &RealModsHandle, target_stealthed: bool, turns: usize) -> (usize, usize) {
+    guard_turns_with_profession(handle, handle.guard_id, target_stealthed, turns)
+}
+
+/// [`guard_turns`] 的一般形式：把卫兵的职业索引也开放成参数，供反例
+/// 用例传一个**不是** `lostland:guard` 的职业进来。
+fn guard_turns_with_profession(
+    handle: &RealModsHandle,
+    guard_profession: ContentIndex,
+    target_stealthed: bool,
+    turns: usize,
+) -> (usize, usize) {
+    let (mut world, terrain_ids) = test_world();
+    // 卫兵起点 (5,5)、目标 (8,5)，两人可能走到的范围全部铺草地。
+    for x in 0..16 {
+        for y in 0..12 {
+            world
+                .terrain
+                .set_terrain(world.size.wrap(x, y), terrain_ids.grass);
+        }
+    }
     let guard = spawn_agent(
         &mut world,
         placeholder_race(),
-        handle.guard_id,
+        guard_profession,
         (5, 5),
         Agent::STARTING_HEALTH,
     );
@@ -500,43 +561,63 @@ fn guard_decisions(handle: &RealModsHandle, target_stealthed: bool, ticks: i64) 
     )
     .expect("真实 behavior.scm 应当能通过白名单并装载成功");
 
+    let mut timeline = Timeline::new();
+    timeline.schedule(guard, Tick(0));
+    timeline.schedule(target, Tick(1));
+    let mut engine = TurnEngine::new(timeline);
+
+    // 目标当受控实体，每一轮用一次「等待」输入消费掉它自己的回合——
+    // 这与 `ll_game::app::Demo::advance` 每帧跑的两步（先
+    // `advance_ai` 结算排在玩家之前的非受控实体，再
+    // `try_player_turn` 用本帧输入结算玩家）逐字相同。
+    let mut wait_input = InputState::new();
+    wait_input.press(GameKey::Wait);
+
     let mut inspects = 0usize;
-    let mut approaches = 0usize;
-    for _ in 0..ticks {
-        match source.decide(&world, guard) {
-            Some(Intent::Inspect { .. }) => inspects += 1,
-            Some(Intent::Move { .. }) => approaches += 1,
-            _ => {}
+    let mut moves = 0usize;
+    let catalogs = ResolveCatalogs::empty();
+    for _ in 0..turns {
+        {
+            let mut ai = behavior_ai_intent(&mut source);
+            engine.advance_ai(
+                &mut world,
+                target,
+                &mut ai,
+                &catalogs,
+                &mut |_, effect| match effect {
+                    Effect::Inspect { .. } => inspects += 1,
+                    Effect::MoveTo { .. } => moves += 1,
+                    _ => {}
+                },
+            );
         }
-        // 只推进世界时钟、不真的移动卫兵——`DetRng::for_entity` 的事件
-        // 计数取世界时钟（见 `ScriptBehaviorSource::decide` 文档），推进
-        // 时钟才能让每一次决策抽到不同的随机数；不移动是为了让两次
-        // 场景的几何完全相同（理由同 `example_mod_guard_inspection.rs`
-        // 的 `decide_over_ticks`）。
-        world.advance(1);
+        engine.try_player_turn(&mut world, target, &wait_input, &catalogs, &mut |_, _| {});
     }
-    (inspects, approaches)
+    (inspects, moves)
 }
 
-/// 硬要求四：潜行显著降低卫兵的盘查率——而且**不是**靠让卫兵看不见你。
+/// 硬要求四：潜行显著降低卫兵的盘查率——而且**不是**靠让卫兵看不见你，
+/// 而且整条链路经由 [`TurnEngine`]（本体二进制驱动世界的唯一路径）。
 ///
 /// `behavior.scm` 里两个千分比是 500（不潜行）与 50（潜行），相差十倍。
-/// 400 次决策的期望值因此约 200 次 vs 约 20 次；下面只要求「潜行一侧
+/// 400 个回合的期望值因此约 200 次 vs 约 20 次；下面只要求「潜行一侧
 /// 严格少于不潜行一侧的一半」，留了极大的安全边际（这是概率断言，不是
 /// 单次结果断言，与 `resolve.rs` 里偷袭/暴击频率测试同一条既有纪律）。
 ///
-/// **反例在同一条测试里**：若有人把 `guard-inspect-chance` 那个分支从
-/// `behavior.scm` 摘掉（或把 `actor-stealthed?` 接线摘掉让它恒返回
-/// `#f`），两侧的盘查次数会落回同一个分布，第一条断言立刻变红。
+/// **反例**：见本文件模块文档「反例是什么」一节与
+/// [`非卫兵职业的实体经由turnengine一次盘查都不会发起`]。另外，若有人
+/// 把 `guard-inspect-chance` 那个分支从 `behavior.scm` 摘掉（或把
+/// `actor-stealthed?` 接线摘掉让它恒返回 `#f`），两侧的盘查次数会落回
+/// 同一个分布，第一条断言立刻变红。
 #[test]
 fn 潜行显著降低卫兵盘查率但不让卫兵看不见你() {
     // Arrange
     let handle = load_real_mods();
-    let ticks = 400;
+    let turns = 400;
 
     // Act
-    let (visible_inspects, visible_approaches) = guard_decisions(&handle, false, ticks);
-    let (stealth_inspects, stealth_approaches) = guard_decisions(&handle, true, ticks);
+    let (visible_inspects, visible_moves) = guard_turns(&handle, false, turns);
+    let (stealth_inspects, stealth_moves) = guard_turns(&handle, true, turns);
 
     // Assert 一：盘查率真的降下来了。
     assert!(
@@ -544,20 +625,58 @@ fn 潜行显著降低卫兵盘查率但不让卫兵看不见你() {
         "潜行应当显著降低盘查率：不潜行 {visible_inspects} 次，潜行 {stealth_inspects} 次"
     );
 
-    // Assert 二：卫兵**照样看得见**潜行中的目标——两侧的「决策总数」
-    // 都是满的（每一次决策要么盘查要么走近，没有落进 'wait 兜底分支）。
+    // Assert 二：盘查真的发生过——这一条钉的是「链路通了」本身。行为树
+    // 经由 TurnEngine 驱动之前，`Effect::Inspect` 在整条生产链路上是
+    // 零产出的。
+    assert!(
+        visible_inspects > 0,
+        "不潜行时卫兵应当真的发起过盘查，一次都没有说明链路断了"
+    );
+
+    // Assert 三：卫兵**照样看得见**潜行中的目标——两侧的「行动总数」
+    // 都是满的（每一回合要么盘查要么走近，没有落进 'wait 兜底分支）。
     // 若潜行是靠改 FOV 实现的，潜行那一侧会全部退化成 `Intent::Wait`，
     // 这条断言立刻变红。这正是本批次核心设计选择的可执行形式，见
     // `ll_script::api::actor` 模块文档「潜行：为什么是一次判定的减值，
     // 不是一次可见性的改写」一节。
     assert_eq!(
-        visible_inspects + visible_approaches,
-        ticks as usize,
+        visible_inspects + visible_moves,
+        turns,
         "不潜行时卫兵每一回合都应当有动作（盘查或走近）"
     );
     assert_eq!(
-        stealth_inspects + stealth_approaches,
-        ticks as usize,
+        stealth_inspects + stealth_moves,
+        turns,
         "潜行中的目标照样应当被 nearby-actor-in-view 找到——潜行不是隐身"
+    );
+}
+
+/// 反例：同一段代码、同一棵真实行为树、同一个几何布局，只把卫兵的
+/// 职业换成一个不是 `lostland:guard` 的索引——`Effect::Inspect` 必须
+/// 一条都不产出，而「看见了、走近了」照旧。
+///
+/// 这条同时是「`lostland:guard` 真的被注册了」这件事的可执行证明：
+/// `self-has-profession?` 比的是注册表快照里的字符串，正面用例传的
+/// `handle.guard_id` 来自 `registry.get("lostland:guard")`（见
+/// `load_real_mods`），本例传的是另一个索引，两者唯一的差别就是这一
+/// 条内容在不在。
+#[test]
+fn 非卫兵职业的实体经由turnengine一次盘查都不会发起() {
+    // Arrange
+    let handle = load_real_mods();
+    let turns = 400;
+
+    // Act
+    let (inspects, moves) =
+        guard_turns_with_profession(&handle, placeholder_profession(), false, turns);
+
+    // Assert
+    assert_eq!(
+        inspects, 0,
+        "不是卫兵职业的实体不该发起任何盘查，实际 {inspects} 次"
+    );
+    assert_eq!(
+        moves, turns,
+        "它照样看得见目标、照样走近——盘查分支不成立只是让 selector 落到下一条"
     );
 }

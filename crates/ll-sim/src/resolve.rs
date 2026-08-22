@@ -1831,10 +1831,30 @@ fn resolve_loot(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) ->
 /// "这一下该不该打"是同一条既有分工：决策在决定要不要产生这个
 /// `Intent` 的那一步，`resolve` 只负责把已经决定要做的事翻译成
 /// `Effect`。
+///
+/// # 盘查消耗一个回合（进展保证，不是手感取舍）
+///
+/// 本函数产出的第二条效果是 [`Effect::ScheduleNext`]，与
+/// [`resolve_toggle_stealth`]/[`resolve_move`] 完全同一种算法
+/// （`action_cost(BASE_ACTION_COST, 有效速度)`）。
+///
+/// 它此前**没有**这一条，那是一个真实缺陷，只是因为 `Intent::Inspect`
+/// 至今没有任何调用方经由 [`crate::turn::TurnEngine`] 产出过而一直没有
+/// 暴露：`TurnEngine::perform` 结算完一次行动后按 `Agent::next_action_at`
+/// 把行动者重新排回时间轴，而没有 `ScheduleNext` 就意味着这个字段原地
+/// 不动——同一条时间轴记录会在**同一个 tick** 被立刻再弹出，行为树又
+/// 因为世界时钟没变而抽到同一个随机数、作出同一个决策，直到耗尽
+/// `MAX_STEPS_PER_ADVANCE` 才放弃。这正是
+/// [`crate::turn::TurnEngine::advance_ai`] 文档「必须保证进展（曾经的
+/// 真实死循环）」一节描述的那条死循环，只是这一次的成因不在 AI 策略侧
+/// 而在 `resolve` 侧。
+///
+/// 发现它的方式就是把卫兵行为树真的接上回合引擎跑一遍——「接线断在
+/// 最后一环」这类缺陷只有在真的把线接上之后才会暴露下一环。
 fn resolve_inspect(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<Effect> {
-    if world.actors.get(actor).is_none() {
+    let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
-    }
+    };
     let Some(target_agent) = world.actors.get(target) else {
         return Vec::new();
     };
@@ -1844,11 +1864,21 @@ fn resolve_inspect(world: &WorldState, actor: EntityId, target: EntityId) -> Vec
         .map(|stack| stack.def)
         .collect();
     items_seen.extend(target_agent.equipment.values().map(|stack| stack.def));
-    vec![Effect::Inspect {
-        inspector: actor,
-        target,
-        items_seen,
-    }]
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    vec![
+        Effect::Inspect {
+            inspector: actor,
+            target,
+            items_seen,
+        },
+        Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        },
+    ]
 }
 
 /// 把 `incoming` 这一堆物品合并进 `agent` 背包，产出对应的
@@ -3490,6 +3520,42 @@ mod tests {
 
         // Assert
         assert_eq!(open_at, sneak_at);
+    }
+
+    #[test]
+    fn 盘查消耗一个回合() {
+        // 回归：`resolve_inspect` 曾经只产出一条 `Effect::Inspect`，
+        // 不产出 `Effect::ScheduleNext`——被盘查者的下一次行动时刻
+        // 原地不动，`TurnEngine::perform` 会把它重新排回**同一个
+        // tick**，`advance_ai` 因此对同一个卫兵反复空转直到耗尽
+        // `MAX_STEPS_PER_ADVANCE`。这个缺陷一直没暴露，只是因为在
+        // 行为树接进回合引擎之前，`Intent::Inspect` 从来没有经由
+        // `TurnEngine` 产出过；接上之后立刻表现为整条测试挂死。
+        // Arrange
+        let (mut world, _ids) = test_world();
+        let guard = spawn_agent(&mut world);
+        let target = spawn_agent(&mut world);
+
+        // Act
+        let effects = resolve(
+            &world,
+            &Intent::Inspect {
+                actor: guard,
+                target,
+            },
+        );
+
+        // Assert：盘查照旧产出，且下一次行动时刻严格晚于当前世界时钟。
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Inspect { .. })),
+            "盘查本身仍然要产出"
+        );
+        assert!(
+            next_action_tick(&effects) > world.clock.0,
+            "盘查必须推进发起者的下一次行动时刻，否则时间轴会在同一 tick 空转"
+        );
     }
 
     /// 从一批效果里取出 `Effect::ScheduleNext` 的时刻——潜行相关的

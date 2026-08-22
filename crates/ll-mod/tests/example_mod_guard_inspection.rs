@@ -136,6 +136,18 @@ fn spawn_agent(
 /// 装载 `guard-ai-tree` 需要的注册表——`registry` 必须先 intern
 /// `"lostland:guard"`（`self-has-profession?` 靠这份快照才认得出
 /// 这个字符串），返回可以直接赋给 `Agent.profession` 的索引。
+///
+/// # 为什么这里仍然是 `intern` 而不是 `get`
+///
+/// 卫兵职业本身现在是一条真实注册的本体内容
+/// （`mods/lostland/classes.scm`），但**本文件不装载 `mods/`**：它自建
+/// 一个空 `Registry`，只从磁盘读真实的 `behavior.scm`（ADR 0018 要的是
+/// 「行为树脚本是真的」，不是「整条装载管线跑过」）。在一个没跑过装载
+/// 管线的注册表里 `get` 必然落空，`intern` 才是这里正确的写法。
+///
+/// 「卫兵职业真的被本体内容注册过」这条断言有自己的落点：
+/// `example_mod_stealth.rs` 的 `load_real_mods` 跑完整条 `load_all`
+/// 之后用 `registry.get("lostland:guard")`，注册一旦被删就立刻变红。
 fn intern_guard_profession(registry: &mut Registry) -> ContentIndex {
     registry.intern(NamespacedId::parse("lostland:guard").expect("合法标识符"))
 }

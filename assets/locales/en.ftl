@@ -31,6 +31,7 @@ race-elf-display_name = Elf
 class-warrior-display_name = Warrior
 class-mage-display_name = Mage
 class-ranger-display_name = Ranger
+class-guard-display_name = Guard
 
 subclass-duelist-display_name = Duelist
 subclass-apprentice-display_name = Apprentice

@@ -37,6 +37,7 @@ race-elf-display_name = 精灵
 class-warrior-display_name = 战士
 class-mage-display_name = 法师
 class-ranger-display_name = 游侠
+class-guard-display_name = 卫兵
 
 subclass-duelist-display_name = 剑术家
 subclass-apprentice-display_name = 学徒

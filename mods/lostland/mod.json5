@@ -28,5 +28,6 @@
   version: "0.1.0",
 
   // 种族：迁移自 `ll_mod::race::materialize_base_races`（已删除）。
-  entry_points: ["races.scm"],
+  // 职业：目前只有卫兵一条，理由见 classes.scm 文件头。
+  entry_points: ["races.scm", "classes.scm"],
 }
