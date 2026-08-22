@@ -124,6 +124,32 @@ pub enum RuleModifier {
         /// 判定种类的开放标识符。
         check_context: NamespacedId,
     },
+    /// 偷袭（盗贼偷袭接线批次新增）——所有者对「盗贼偷袭」的裁定原话：
+    /// 「盗贼偷袭做成技能判定吧，通过幸运值之类的属性以及一定的随机值
+    /// 组合一下」。`trait-system.md` 曾判定盗贼偷袭表达不了：真实条件
+    /// 「目标旁边有我的盟友」需要一次本项目当前不存在的空间查询（`fov`/
+    /// `light` 两个决策层文件都不回答「谁站在谁旁边」这个问题）。所有者
+    /// 的裁定绕开了这条依赖——改成幸运影响的判定，不需要知道周围有谁,
+    /// 与暴击（[`crate::combat::crit_chance_permille`]）是「战斗结算里
+    /// 现成的、幸运能挂上去的判定点」同一个思路,但刻意不是暴击本身：
+    /// 暴击对**全部**攻击者恒定生效（系数写死在
+    /// [`crate::combat::LUCK_CRIT_BONUS_PERMILLE`]），偷袭是**只有声明
+    /// 了这条天赋的角色才会触发**的判定，系数由天赋声明本身携带
+    /// （`luck_chance_permille_per_point`）——不同天赋可以有不同的幸运
+    /// 敏感度,不共用暴击那个全局系数,见
+    /// [`crate::combat::sneak_attack_chance_permille`] 文档。
+    SneakAttack {
+        /// 每点有效幸运贡献的触发率加成，千分比——与
+        /// [`crate::combat::LUCK_CRIT_BONUS_PERMILLE`] 同一套"幸运→
+        /// 千分比概率"换算手法，但这里的系数是天赋自己的声明值，不是
+        /// 硬编码进 `combat.rs` 的全局常量。
+        luck_chance_permille_per_point: i32,
+        /// 触发后追加的固定伤害——挂载点见
+        /// `crate::resolve::resolve_attack` 文档「偷袭接线」一节：加在
+        /// 暴击放大之后、抗性乘数之前,与暴击、抗性同一条"减伤链路本身
+        /// 不变,后续效果各自在它的结果上再叠一层"既有纪律。
+        extra_damage: i32,
+    },
 }
 
 /// 一条"某个所有者在什么等级授予某个天赋"的引用——种族/职业/副职/
@@ -318,6 +344,67 @@ pub fn resistance_multiplier_permille(
     }
     best.map(|(_, multiplier)| multiplier)
         .unwrap_or(RESISTANCE_MULTIPLIER_SCALE)
+}
+
+/// [`sneak_attack_rule`] 的返回值——一次偷袭判定需要的两个数：幸运
+/// 敏感度（换算触发率）与触发后追加的固定伤害。两个数打包成一个小
+/// 结构体而不是元组，理由同 `crate::formula::FormulaInputs` 之类既有
+/// 惯例：调用点按字段名读取，不必记住元组位置的含义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SneakAttackRule {
+    /// 每点有效幸运贡献的触发率加成，千分比。
+    pub luck_chance_permille_per_point: i32,
+    /// 触发后追加的固定伤害。
+    pub extra_damage: i32,
+}
+
+/// 三节③「偷袭」一路来源——遍历 [`effective_traits`] 的结果，收集全部
+/// [`RuleModifier::SneakAttack`]；查不到任何声明时返回 `None`（没有
+/// 偷袭天赋，调用方——`crate::resolve::resolve_attack`——完全不进入
+/// 偷袭判定分支，不额外消费一条 `DetRng` 流，见其文档「偷袭接线」
+/// 一节）。
+///
+/// # 多条命中时取哪一条：与 [`resistance_multiplier_permille`] 同一条
+/// tie-break 纪律
+///
+/// 按 `trait_id`（[`ContentIndex`]）升序取第一条，不叠加多条偷袭天赋
+/// 的伤害/概率——理由同 [`resistance_multiplier_permille`] 文档「多条
+/// 命中时取哪一条」一节：两条偷袭天赋各自贡献一次判定会让"偷袭"变成
+/// 可以无限堆叠的加法游戏，不是设计意图；哪条生效必须是与
+/// `effective_traits` 遍历顺序无关的确定性规则（约束 C5），不是"谁先
+/// 在 `Vec` 里出现"这种偶然顺序。
+pub fn sneak_attack_rule(
+    race: ContentIndex,
+    level: i32,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+) -> Option<SneakAttackRule> {
+    let mut best: Option<(ContentIndex, SneakAttackRule)> = None;
+    for trait_id in effective_traits(race, level, race_traits) {
+        let Some(rule) = traits.trait_rule(trait_id) else {
+            continue;
+        };
+        for modifier in &rule.rule_modifiers {
+            let RuleModifier::SneakAttack {
+                luck_chance_permille_per_point,
+                extra_damage,
+            } = modifier
+            else {
+                continue;
+            };
+            best = match best {
+                Some((best_id, _)) if best_id <= trait_id => best,
+                _ => Some((
+                    trait_id,
+                    SneakAttackRule {
+                        luck_chance_permille_per_point: *luck_chance_permille_per_point,
+                        extra_damage: *extra_damage,
+                    },
+                )),
+            };
+        }
+    }
+    best.map(|(_, rule)| rule)
 }
 
 #[cfg(test)]
@@ -607,5 +694,112 @@ mod tests {
 
         // Assert：500（low 那条），不是 0（high）也不是 0（500*0/1000）。
         assert_eq!(multiplier, 500);
+    }
+
+    #[test]
+    fn 没有偷袭天赋时聚合结果为none() {
+        // Arrange
+        let mut interner = Interner::new();
+        let race = index(&mut interner, "lostland:human");
+        let source = NoTraitGrants;
+        let traits = NoTraits;
+
+        // Act
+        let rule = sneak_attack_rule(race, 1, &source, &traits);
+
+        // Assert
+        assert_eq!(rule, None);
+    }
+
+    #[test]
+    fn 有效天赋声明偷袭时聚合结果携带该天赋的系数() {
+        // Arrange
+        let mut interner = Interner::new();
+        let race = index(&mut interner, "lostland:human");
+        let trait_id = index(&mut interner, "lostland:sneak_attack");
+        let source = FixedGrants(vec![TraitGrant {
+            trait_id,
+            unlock_level: 1,
+        }]);
+        let traits = FixedTraits(vec![(
+            trait_id,
+            TraitRule {
+                rule_modifiers: vec![RuleModifier::SneakAttack {
+                    luck_chance_permille_per_point: 20,
+                    extra_damage: 8,
+                }],
+                ..Default::default()
+            },
+        )]);
+
+        // Act
+        let rule = sneak_attack_rule(race, 1, &source, &traits);
+
+        // Assert
+        assert_eq!(
+            rule,
+            Some(SneakAttackRule {
+                luck_chance_permille_per_point: 20,
+                extra_damage: 8,
+            })
+        );
+    }
+
+    #[test]
+    fn 多条偷袭天赋命中时按trait_id升序取第一条而不是叠加() {
+        // Arrange：两个天赋都声明了偷袭，`trait_id` 更小的那一条（`low`）
+        // 应当胜出——不是把两条的 extra_damage 相加。
+        let mut interner = Interner::new();
+        let race = index(&mut interner, "lostland:human");
+        let low = index(&mut interner, "lostland:sneak_attack_low");
+        let high = index(&mut interner, "lostland:sneak_attack_high");
+        assert!(
+            low < high,
+            "测试前提：low 先 intern，索引恒小于后 intern 的 high"
+        );
+        let source = FixedGrants(vec![
+            TraitGrant {
+                trait_id: low,
+                unlock_level: 1,
+            },
+            TraitGrant {
+                trait_id: high,
+                unlock_level: 1,
+            },
+        ]);
+        let traits = FixedTraits(vec![
+            (
+                low,
+                TraitRule {
+                    rule_modifiers: vec![RuleModifier::SneakAttack {
+                        luck_chance_permille_per_point: 10,
+                        extra_damage: 5,
+                    }],
+                    ..Default::default()
+                },
+            ),
+            (
+                high,
+                TraitRule {
+                    rule_modifiers: vec![RuleModifier::SneakAttack {
+                        luck_chance_permille_per_point: 999,
+                        extra_damage: 999,
+                    }],
+                    ..Default::default()
+                },
+            ),
+        ]);
+
+        // Act
+        let rule = sneak_attack_rule(race, 1, &source, &traits);
+
+        // Assert：low 那条（10/5），不是 high（999/999），也不是两者相加。
+        assert_eq!(
+            rule,
+            Some(SneakAttackRule {
+                luck_chance_permille_per_point: 10,
+                extra_damage: 5,
+            })
+        );
     }
 }

@@ -30,6 +30,7 @@
 ;;   register-damage-category               crates/ll-mod/src/script_damage_category_api.rs
 ;;   register-trait-resistance              crates/ll-mod/src/script_trait_api.rs
 ;;   register-item-damage-category          crates/ll-mod/src/script_item_api.rs
+;;   register-trait-sneak-attack             crates/ll-mod/src/script_trait_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -292,3 +293,21 @@
 ;; 批次不涉及公式本身的设计,只需要一条不掷骰、期望值可手算复现的公式
 ;; 挂在这件新武器上,不必为它另写一条等价的公式。
 (register-item-damage-formula "examplemod:acid_dagger" "examplemod:iron_sword_formula")
+
+;; 盗贼偷袭接线批次：所有者对「盗贼偷袭」的裁定原话——「盗贼偷袭做成
+;; 技能判定吧，通过幸运值之类的属性以及一定的随机值组合一下」。
+;; trait-system.md 此前判定盗贼偷袭表达不了（真实条件「目标旁边有我的
+;; 盟友」需要一次本项目不存在的空间查询），所有者的裁定绕开了这条
+;; 依赖——改成只依赖攻击者自身有效幸运的判定，落地成天赋效果
+;; RuleModifier::SneakAttack，不是技能效果（见
+;; crate::resolve::resolve_attack 文档「偷袭接线」一节的完整论证）。
+;; 一个天赋（潜行本能，每点有效幸运 20‰ 触发率加成，触发后追加 15 点
+;; 固定伤害）+ 一个新种族（迅足者，1 级即被授予这个天赋）——两行连起来
+;; 证明 register-trait-sneak-attack 这个新脚本 API 真的能被 mod 脚本
+;; 调用，且真实注册的偷袭声明真的能走真实 resolve_attack + apply 追加
+;; 伤害，不只是在单元测试里自证（ADR 0018），
+;; crates/ll-mod/tests/example_mod_sneak_attack.rs 是那份证据。
+(register-trait "examplemod:predatory_instinct" "examplemod:predatory_instinct_display_name" (list))
+(register-trait-sneak-attack "examplemod:predatory_instinct" 20 15)
+(register-race "examplemod:footpad" "examplemod:footpad_display_name" 0 0 0 0 0 0 0 1 1 60)
+(register-race-trait "examplemod:footpad" "examplemod:predatory_instinct" 1)

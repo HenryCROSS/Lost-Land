@@ -56,6 +56,7 @@ pub fn register_trait_api(engine: &mut ScriptEngine) {
         register_trait_resource_pool_by_level,
     );
     engine.register_fn("register-trait-resistance", register_trait_resistance);
+    engine.register_fn("register-trait-sneak-attack", register_trait_sneak_attack);
 }
 
 /// `(register-trait id display-name-key granted-skills)`。
@@ -370,6 +371,88 @@ fn do_register_trait_resistance(
             RuleModifier::Resistance {
                 damage_category: category_index,
                 multiplier_permille: multiplier_permille.max(0) as i32,
+            },
+        )
+        .map(|()| true)
+        .map_err(|err: TraitError| err.to_string())
+}
+
+/// `(register-trait-sneak-attack trait-id luck-chance-permille-per-point extra-damage)`
+/// ——追加声明「这个天赋携带偷袭判定」（盗贼偷袭接线批次新增，所有者
+/// 对盗贼偷袭的裁定：「做成技能判定吧，通过幸运值之类的属性以及一定的
+/// 随机值组合一下」），与 [`register_trait_resistance`] 同一个「新增
+/// 能力用新函数」模式：不改 `register-trait` 已有的三参数签名。
+///
+/// - `trait-id`：已经通过 `register-trait` 注册过的完整命名空间标识符
+///   字符串——目标必须已存在，同 [`register_trait_resistance`] 一条
+///   ADR 0017「注册期完整校验」纪律。
+/// - `luck-chance-permille-per-point`：每点有效幸运贡献的触发率加成，
+///   千分比——见 [`RuleModifier::SneakAttack`] 文档，与
+///   `crate::combat::LUCK_CRIT_BONUS_PERMILLE` 的换算手法相同,但系数由
+///   天赋自己声明,不是硬编码的全局常量。
+/// - `extra-damage`：触发后追加的固定伤害。
+///
+/// 两个数值参数都允许为负？不允许——负的触发率系数/负的追加伤害没有
+/// 设计依据，钳到零而不是拒绝整次调用，与 [`register_trait_resistance`]
+/// 对 `multiplier-permille` 负值的处理同一条既有纪律。
+///
+/// **追加，不是覆盖**——理由同 [`register_trait_resistance`] 文档
+/// 「追加，不是覆盖」一节，见
+/// [`crate::trait_def::TraitTable::add_rule_modifier`] 文档；多条偷袭
+/// 声明命中时的取舍规则（不叠加，按 `trait_id` 升序取第一条）在
+/// `resolve` 侧（`ll_sim::traits::sneak_attack_rule`）处理，不是注册期
+/// 的职责。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_trait_sneak_attack(
+    trait_id: String,
+    luck_chance_permille_per_point: i64,
+    extra_damage: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err(
+                    "register-trait-sneak-attack 在没有活跃天赋表的窗口内被调用".to_string()
+                );
+            };
+            do_register_trait_sneak_attack(
+                registry,
+                table,
+                &trait_id,
+                luck_chance_permille_per_point,
+                extra_damage,
+            )
+        })
+    })
+}
+
+/// [`register_trait_sneak_attack`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。仍然需要 `registry` 参数——`trait_id` 必须已经通过
+/// `register-trait` intern 过，与 [`do_register_trait_resistance`] 一样
+/// 要经 `registry.get` 才能把字符串换回索引，唯一的区别是本函数不需要
+/// 再跨表校验第二个引用（偷袭判定的两个数值参数都是天赋自带的裸数值，
+/// 没有需要反查的外部内容表）。
+fn do_register_trait_sneak_attack(
+    registry: &Registry,
+    table: &mut TraitTable,
+    trait_id: &str,
+    luck_chance_permille_per_point: i64,
+    extra_damage: i64,
+) -> Result<bool, String> {
+    let parsed_trait_id = NamespacedId::parse(trait_id)
+        .map_err(|err| format!("非法内容标识符 {trait_id:?}：{err}"))?;
+    let Some(trait_index) = registry.get(&parsed_trait_id) else {
+        return Err(format!("天赋 {trait_id:?} 尚未通过 register-trait 注册"));
+    };
+
+    table
+        .add_rule_modifier(
+            trait_index,
+            RuleModifier::SneakAttack {
+                luck_chance_permille_per_point: luck_chance_permille_per_point.max(0) as i32,
+                extra_damage: extra_damage.max(0) as i32,
             },
         )
         .map(|()| true)
@@ -814,6 +897,154 @@ mod tests {
         let result = engine.load_source(
             r#"(register-trait-resistance "yourmod:never_registered_trait" "yourmod:fire" 500)"#
                 .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_err());
+
+        // Cleanup。
+        take_active_target();
+        crate::active_registry::take_active_registry();
+    }
+
+    #[test]
+    fn 合法偷袭声明追加成功且数值正确() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = TraitTable::new();
+        do_register_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:sneak_attack",
+            "yourmod:sneak_attack_display_name",
+            &[],
+        )
+        .expect("先注册天赋本体");
+
+        // Act
+        let result =
+            do_register_trait_sneak_attack(&registry, &mut table, "yourmod:sneak_attack", 20, 8);
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:sneak_attack").unwrap())
+            .unwrap();
+        assert_eq!(
+            table.get(index).unwrap().rule_modifiers,
+            &[RuleModifier::SneakAttack {
+                luck_chance_permille_per_point: 20,
+                extra_damage: 8,
+            }]
+        );
+    }
+
+    #[test]
+    fn 负的偷袭数值参数被钳到零而不是拒绝调用() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = TraitTable::new();
+        do_register_trait(
+            &mut registry,
+            &mut table,
+            "yourmod:sneak_attack",
+            "yourmod:sneak_attack_display_name",
+            &[],
+        )
+        .expect("先注册天赋本体");
+
+        // Act
+        let result =
+            do_register_trait_sneak_attack(&registry, &mut table, "yourmod:sneak_attack", -5, -3);
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:sneak_attack").unwrap())
+            .unwrap();
+        assert_eq!(
+            table.get(index).unwrap().rule_modifiers,
+            &[RuleModifier::SneakAttack {
+                luck_chance_permille_per_point: 0,
+                extra_damage: 0,
+            }]
+        );
+    }
+
+    #[test]
+    fn 目标天赋尚未注册时do_register_trait_sneak_attack返回错误而不panic() {
+        // Arrange
+        let registry = Registry::new();
+        let mut table = TraitTable::new();
+
+        // Act
+        let result = do_register_trait_sneak_attack(
+            &registry,
+            &mut table,
+            "yourmod:never_registered",
+            20,
+            8,
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用register_trait_sneak_attack() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        let mut registry = Registry::new();
+        let trait_index = registry.intern(NamespacedId::parse("yourmod:sneak_attack").unwrap());
+        let mut table = TraitTable::new();
+        table
+            .define(
+                trait_index,
+                TraitAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:trait.sneak_attack").unwrap(),
+                    granted_skills: Vec::new(),
+                    stat_modifiers: Vec::new(),
+                    rule_modifiers: Vec::new(),
+                    granted_resource_pools: Vec::new(),
+                },
+            )
+            .expect("先注册天赋本体");
+        crate::active_registry::set_active_registry(registry);
+        set_active_target(table);
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-trait-sneak-attack "yourmod:sneak_attack" 20 8)"#.to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok());
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:sneak_attack").unwrap())
+            .unwrap();
+        assert_eq!(
+            table.get(index).unwrap().rule_modifiers,
+            &[RuleModifier::SneakAttack {
+                luck_chance_permille_per_point: 20,
+                extra_damage: 8,
+            }]
+        );
+    }
+
+    #[test]
+    fn 目标天赋尚未注册时register_trait_sneak_attack失败而不panic() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        crate::active_registry::set_active_registry(Registry::new());
+        set_active_target(TraitTable::new());
+
+        // Act
+        let result = engine.load_source(
+            r#"(register-trait-sneak-attack "yourmod:never_registered_trait" 20 8)"#.to_string(),
         );
 
         // Assert

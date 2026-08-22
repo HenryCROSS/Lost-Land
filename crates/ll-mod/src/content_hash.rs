@@ -236,7 +236,20 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// （二）新增第十五张内容表 [`ContentTableKind::DamageCategory`]；
 /// （三）[`write_item_fields`] 新增混入 `ItemDef.damage_category`——与
 /// 版本 4 「老表新增字段也会漏」同一处真实复现，理由同上一段。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 5;
+///
+/// 版本 6（盗贼偷袭接线批次）：[`write_rule_modifier`] 新增
+/// [`RuleModifier::SneakAttack`] 判别值 4——不新增内容表（`RuleModifier`
+/// 仍然挂在既有的 [`ContentTableKind::Trait`] 下），但它是一个新的枚举
+/// 变体，会被现有的 `TraitDef.rule_modifiers` 字段表达出来。审慎起见
+/// 与版本 5 的（一）（二）两处同一条准则对齐：`RuleModifier` 是本模块
+/// 「表判别字节」同一套机制在枚举层面的复用（`write_rule_modifier` 顶部
+/// 先写一个判别值再写变体自己的字段），新增判别值即使不改变"从未使用
+/// 过这个变体的既有内容"的哈希输出，仍然按本模块一贯的保守纪律递增
+/// 版本号，不去论证"这次改动对存量内容真的无害"这件事本身要不要成为
+/// 免于升版号的理由——那条论证本身也可能出错，递增版本号的代价（读档
+/// 分支多判一次 `ContentHashAlgorithmUpgraded`）远低于论证出错的代价
+/// （真的漏判成 `ModContentMismatch`）。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 6;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -851,6 +864,14 @@ fn write_rule_modifier(hasher: &mut StateHasher, modifier: &RuleModifier, regist
         RuleModifier::Disadvantage { check_context } => {
             hasher.write_u64(3);
             hasher.write_namespaced_id(check_context);
+        }
+        RuleModifier::SneakAttack {
+            luck_chance_permille_per_point,
+            extra_damage,
+        } => {
+            hasher.write_u64(4);
+            hasher.write_i64(i64::from(*luck_chance_permille_per_point));
+            hasher.write_i64(i64::from(*extra_damage));
         }
     }
 }

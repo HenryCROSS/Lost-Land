@@ -34,10 +34,18 @@ use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
 use ll_sim::combat::{Penetration, damage_after_defense};
+use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::effect::Effect;
+use ll_sim::formula::NoFormulas;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, StatBonus, StatTarget};
-use ll_sim::resolve::{derive_stats, resolve, resolve_with_skills_traits_pools_and_items};
+use ll_sim::resolve::{
+    derive_stats, resolve, resolve_with_skills_traits_pools_and_items,
+    resolve_with_skills_traits_pools_items_formulas_and_damage_categories,
+};
+use ll_sim::resource_pool::NoResourcePools;
+use ll_sim::skill::NoSkills;
+use ll_sim::traits::{RuleModifier, TraitCatalog, TraitGrant, TraitGrantSource, TraitRule};
 use ll_world::entity::{ActiveStatModifier, Agent, AttributeKind, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -802,4 +810,210 @@ fn 装备幸运戒指后暴击率真的更高() {
     // 率』常量」一节），unringed_crits 理应精确为 0；用一个较大的余量
     // （100）而不是直接比较 `> 0`，与既有同类频率测试的判据风格一致。
     assert!(ringed_crits > unringed_crits + 100);
+}
+
+/// 造一个占位实体，站在 `(5, 5)`，`race`/装备由调用方直接给出——理由
+/// 同 `ll_sim::resolve` 测试模块的 `spawn_agent_with_luck_and_race`：
+/// 偷袭判定测试需要种族索引与授予偷袭天赋的 [`TraitGrantSource`] 测试
+/// 替身用**同一个** `ContentIndex`，若各自在互不相干的 `Interner` 里
+/// 各 intern 一次，两边算出的数值不保证相等，因此不复用本文件已有的
+/// `spawn_agent`（它在函数体内部临时 intern 一份种族，调用方拿不到那
+/// 个索引）。
+fn spawn_agent_with_race_and_equipment(
+    world: &mut WorldState,
+    race: ContentIndex,
+    health: i32,
+    equipment: BTreeMap<EquipSlot, ItemStack>,
+) -> EntityId {
+    let mut interner = Interner::new();
+    let profession = interner.intern(NamespacedId::parse("lostland:tester").expect("合法标识符"));
+    let pos = world.size.wrap(5, 5);
+    let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+    world.actors.spawn(Agent {
+        pos,
+        stats: BaseStats::BASELINE,
+        next_action_at: Tick(0),
+        health,
+        affiliations: Vec::new(),
+        wallet: 0,
+        profession,
+        goals: Vec::new(),
+        race,
+        mana: Agent::STARTING_MANA,
+        stamina: Agent::STARTING_STAMINA,
+        resource_pools: BTreeMap::new(),
+        spent_slots: BTreeMap::new(),
+        inventory: Vec::new(),
+        equipment,
+        resting: None,
+        unlocked_skills: Vec::new(),
+        skill_cooldowns: BTreeMap::new(),
+        subclasses: Vec::new(),
+        active_stat_modifiers: BTreeMap::new(),
+        current_space: Space::surface(zone, ContentIndex::default()),
+        script_state: BTreeMap::new(),
+        creature_kind: None,
+        spawned_at: Tick(0),
+        remembered_id: None,
+        level: Agent::STARTING_LEVEL,
+        experience: 0,
+        xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+    })
+}
+
+/// 一个只认识固定种族索引的测试用天赋授予来源，专供本文件的偷袭判定
+/// 测试使用——形状同 `ll_sim::resolve` 测试模块的 `FixedSneakRaceGrant`
+/// （不跨文件复用私有测试类型，两个 crate 测试目标本就各自独立编译）。
+struct FixedSneakRaceGrant {
+    race: ContentIndex,
+    trait_id: ContentIndex,
+}
+
+impl TraitGrantSource for FixedSneakRaceGrant {
+    fn granted_traits(&self, owner: ContentIndex) -> Vec<TraitGrant> {
+        if owner == self.race {
+            vec![TraitGrant {
+                trait_id: self.trait_id,
+                unlock_level: 1,
+            }]
+        } else {
+            Vec::new()
+        }
+    }
+}
+
+/// 固定把 `trait_id` 映射到一条声明 [`RuleModifier::SneakAttack`] 的
+/// `TraitRule`——供本文件的偷袭判定测试使用。
+struct FixedSneakAttackTrait {
+    trait_id: ContentIndex,
+    luck_chance_permille_per_point: i32,
+    extra_damage: i32,
+}
+
+impl TraitCatalog for FixedSneakAttackTrait {
+    fn trait_rule(&self, trait_id: ContentIndex) -> Option<TraitRule> {
+        if trait_id != self.trait_id {
+            return None;
+        }
+        Some(TraitRule {
+            granted_skills: Vec::new(),
+            granted_resource_pools: Vec::new(),
+            rule_modifiers: vec![RuleModifier::SneakAttack {
+                luck_chance_permille_per_point: self.luck_chance_permille_per_point,
+                extra_damage: self.extra_damage,
+            }],
+        })
+    }
+}
+
+#[test]
+fn 装备幸运戒指后偷袭触发频率真的更高() {
+    // 频率断言，不是单次结果，理由同「装备幸运戒指后暴击率真的更高」
+    // ——本条是偷袭判定这一侧的对应验收：两个攻击者裸 `BaseStats.luck`
+    // 恒为 0（`BaseStats::BASELINE`），唯一差异是其中一个装备了幸运
+    // 戒指（+20 有效幸运 → 20 × 15‰ = 300‰ = 30% 触发率），另一个不
+    // 装备（0% 触发率）。`extra_damage` 取得远大于暴击单独能放大的上限
+    // （基准伤害 10，暴击最多放大到 15），`sneak_threshold` 因此只可能
+    // 被「偷袭真的触发」跨过，见 `ll_sim::resolve` 测试模块「有效幸运
+    // 更高的攻击者偷袭触发频率更高」同一条阈值设计。
+    //
+    // 手工验证过这条会红：把 `resolve_attack` 里
+    // `let sneak_chance = sneak_attack_chance_permille(effective_luck, ..);`
+    // 改成读裸 `attacker.stats.luck`（模拟"偷袭判定沿用了幸运并入
+    // `AttributeKind` 之前的写法"），两个攻击者的 `stats.luck` 都是 0
+    // （`BaseStats::BASELINE`），戒指的 +20 加成完全不参与偷袭判定，
+    // `ringed_sneaks`/`unringed_sneaks` 变得相等（都精确为 0）——完整
+    // 记录见任务报告「第 2 条怎么变红」一节。
+    // Arrange
+    let trials = 3_000i64;
+    let per_point = 15;
+    let extra_damage = 1_000;
+    let baseline_damage = damage_after_defense(BaseStats::BASELINE.strength, 0, Penetration::NONE);
+    let sneak_threshold = baseline_damage + 100;
+    let (ring, items) = luck_ring_item();
+
+    let mut interner = Interner::new();
+    let race = interner.intern(NamespacedId::parse("lostland:rogue").expect("合法标识符"));
+    let trait_id =
+        interner.intern(NamespacedId::parse("lostland:sneak_attack").expect("合法标识符"));
+    let race_traits = FixedSneakRaceGrant { race, trait_id };
+    let traits = FixedSneakAttackTrait {
+        trait_id,
+        luck_chance_permille_per_point: per_point,
+        extra_damage,
+    };
+
+    let mut ringed_world = test_world();
+    let ringed_attacker = spawn_agent_with_race_and_equipment(
+        &mut ringed_world,
+        race,
+        Agent::STARTING_HEALTH,
+        BTreeMap::from([(EquipSlot::RING_L, ItemStack::new(ring, 1))]),
+    );
+    let ringed_victim =
+        spawn_agent_with_race_and_equipment(&mut ringed_world, race, 1_000_000, BTreeMap::new());
+
+    let mut unringed_world = test_world();
+    let unringed_attacker = spawn_agent_with_race_and_equipment(
+        &mut unringed_world,
+        race,
+        Agent::STARTING_HEALTH,
+        BTreeMap::new(),
+    );
+    let unringed_victim =
+        spawn_agent_with_race_and_equipment(&mut unringed_world, race, 1_000_000, BTreeMap::new());
+
+    // Act：只挪动世界时钟取得不同的随机流，理由同「装备幸运戒指后暴击
+    // 率真的更高」。
+    let mut ringed_sneaks = 0i64;
+    let mut unringed_sneaks = 0i64;
+    for tick in 0..trials {
+        ringed_world.clock = Tick(tick);
+        let ringed_effects = resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+            &ringed_world,
+            &Intent::Attack {
+                actor: ringed_attacker,
+                target: ringed_victim,
+            },
+            &NoSkills,
+            &race_traits,
+            &traits,
+            &NoResourcePools,
+            &items,
+            &NoFormulas,
+            &NoDamageCategories,
+        );
+        if ringed_effects.iter().any(
+            |effect| matches!(effect, Effect::Damage { amount, .. } if *amount > sneak_threshold),
+        ) {
+            ringed_sneaks += 1;
+        }
+
+        unringed_world.clock = Tick(tick);
+        let unringed_effects =
+            resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+                &unringed_world,
+                &Intent::Attack {
+                    actor: unringed_attacker,
+                    target: unringed_victim,
+                },
+                &NoSkills,
+                &race_traits,
+                &traits,
+                &NoResourcePools,
+                &items,
+                &NoFormulas,
+                &NoDamageCategories,
+            );
+        if unringed_effects.iter().any(
+            |effect| matches!(effect, Effect::Damage { amount, .. } if *amount > sneak_threshold),
+        ) {
+            unringed_sneaks += 1;
+        }
+    }
+
+    // Assert：戴戒指一侧的触发次数应明显多于不戴的一侧——0 有效幸运恒
+    // 为 0% 触发率，unringed_sneaks 理应精确为 0；用一个较大的余量
+    // （100）而不是直接比较 `> 0`，与既有同类频率测试的判据风格一致。
+    assert!(ringed_sneaks > unringed_sneaks + 100);
 }

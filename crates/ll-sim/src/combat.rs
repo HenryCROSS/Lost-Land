@@ -135,6 +135,25 @@ pub fn apply_crit_multiplier(damage: i32) -> i32 {
     (i64::from(damage) * i64::from(CRIT_DAMAGE_MULTIPLIER_PERMILLE) / PERMILLE_SCALE) as i32
 }
 
+/// 给定幸运值与天赋声明的每点幸运敏感度，算出这次攻击的偷袭触发率
+/// （千分比，夹在 `0..=1000`）——盗贼偷袭接线批次新增，与
+/// [`crit_chance_permille`] 同一套"幸运→千分比概率"换算手法，唯一
+/// 区别是这里的系数不是硬编码的 [`LUCK_CRIT_BONUS_PERMILLE`]，而是由
+/// [`crate::traits::RuleModifier::SneakAttack::luck_chance_permille_per_point`]
+/// 携带——偷袭只对声明了这条天赋的角色生效，不同天赋可以有不同的幸运
+/// 敏感度，见该字段文档。
+///
+/// 纯函数——不掷骰，只把幸运换算成一个概率分子，真正的随机判定留给
+/// 调用方（`crate::resolve::resolve_attack`），理由同
+/// [`crit_chance_permille`] 文档「暴击：公式本身不碰随机数」一节。负的
+/// 幸运值/负的系数（当前没有任何来源会产出前者，天赋声明的系数理论上
+/// 可能是 mod 作者填的负数）都夹到零，不产出负的触发率——理由同
+/// [`crit_chance_permille`] 文档「`DetRng::chance` 的分子若为负……」
+/// 一节，同一个防御性理由。
+pub fn sneak_attack_chance_permille(luck: i32, luck_chance_permille_per_point: i32) -> i32 {
+    (luck.max(0) * luck_chance_permille_per_point.max(0)).clamp(0, PERMILLE_SCALE as i32)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -260,5 +279,40 @@ mod tests {
 
         // Assert
         assert!(crit_damage > damage);
+    }
+
+    #[test]
+    fn 零幸运偷袭触发率为零() {
+        // Arrange & Act
+        let chance = sneak_attack_chance_permille(0, 20);
+
+        // Assert
+        assert_eq!(chance, 0);
+    }
+
+    #[test]
+    fn 幸运越高偷袭触发率越高() {
+        // Arrange
+        let low_luck = 5;
+        let high_luck = 40;
+
+        // Act
+        let low_chance = sneak_attack_chance_permille(low_luck, 20);
+        let high_chance = sneak_attack_chance_permille(high_luck, 20);
+
+        // Assert
+        assert!(high_chance > low_chance);
+    }
+
+    #[test]
+    fn 偷袭触发率不超过千分之一千() {
+        // Arrange：幸运与系数都极高时裸乘积会远超 1000，必须夹住。
+        let extreme_luck = 10_000;
+
+        // Act
+        let chance = sneak_attack_chance_permille(extreme_luck, 999);
+
+        // Assert
+        assert_eq!(chance, PERMILLE_SCALE as i32);
     }
 }

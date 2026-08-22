@@ -59,6 +59,7 @@ use ll_world::state::WorldState;
 
 use crate::combat::{
     Penetration, apply_crit_multiplier, crit_chance_permille, damage_after_defense,
+    sneak_attack_chance_permille,
 };
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
 use crate::effect::Effect;
@@ -77,7 +78,7 @@ use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::timeline::action_cost;
 use crate::traits::{
     NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource, effective_traits, granted_skills,
-    resistance_multiplier_permille,
+    resistance_multiplier_permille, sneak_attack_rule,
 };
 
 /// 非位移动作（等待、攻击、开门）的基础代价，与平地移动同一基准
@@ -2107,6 +2108,35 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 因此"要不要构造"不需要按 `needs_rng` 分支特判,见
 /// `FormulaDef::needs_rng` 文档。
 ///
+/// # 偷袭接线（盗贼偷袭接线批次）
+///
+/// 所有者对「盗贼偷袭」的裁定原话：「盗贼偷袭做成技能判定吧，通过幸运
+/// 值之类的属性以及一定的随机值组合一下」——`trait-system.md` 此前判定
+/// 盗贼偷袭表达不了（真实条件「目标旁边有我的盟友」需要一次本项目不
+/// 存在的空间查询），所有者的裁定绕开了这条依赖，改成只依赖攻击者自身
+/// 幸运的判定。落地成 [`crate::traits::RuleModifier::SneakAttack`]——
+/// 天赋效果而不是技能效果（`crate::skill::SkillEffect` 目前只有
+/// `DealDamage` 一种变体，追加"条件触发的额外伤害"需要新增一个变体并
+/// 改写 `resolve_use_skill` 的效果解释器；`RuleModifier` 已经是「战斗
+/// 结算按变体读取」的既有机制，`RuleModifier::Resistance` 是现成的
+/// 先例——挂进已有机制，不新开一条平行的技能效果通道，YAGNI）。
+///
+/// 查 [`sneak_attack_rule`]（`crate::traits`，遍历**攻击者**的有效天赋
+/// 收集 `RuleModifier::SneakAttack`，tie-break 规则同
+/// `resistance_multiplier_permille`）：没有天赋声明偷袭时返回 `None`，
+/// 本函数完全不进入判定分支，不额外消费一条 `DetRng` 流——与「抗性
+/// 接线」一节「没有天赋声明时逐位复现既有行为」是同一条「新增判定不
+/// 改变没有相关天赋的角色的既有结果」纪律。
+///
+/// 有声明时：触发率由
+/// [`sneak_attack_chance_permille`]（`crate::combat`）把
+/// `attacker_derived.attribute(AttributeKind::Luck)`（**派生值**，同暴击
+/// 判定复用的 `effective_luck`，装备/状态效果加的幸运同样生效）与天赋
+/// 自带的敏感度系数换算成千分比，走独立的第三条 `DetRng` 流判定是否
+/// 触发；触发则把天赋声明的固定 `extra_damage` 加到伤害上。挂载点在
+/// 暴击放大之后、抗性乘数之前——追加的伤害仍然是这一下攻击的一部分，
+/// 应当同样受目标抗性影响，不是绕开减伤链路凭空产出的独立效果。
+///
 /// # 抗性接线（伤害类别/抗性接线批次）
 ///
 /// `damage-formula-mod-api.md` 二十节把抗性的挂载点定死在「减伤之后、
@@ -2239,6 +2269,43 @@ fn resolve_attack(
         apply_crit_multiplier(damage)
     } else {
         damage
+    };
+
+    // 偷袭判定（盗贼偷袭接线批次）：只有攻击者的有效天赋声明了
+    // `RuleModifier::SneakAttack` 才会进入这个分支——没有声明时
+    // `sneak_attack_rule` 返回 `None`，完全不构造额外的 `DetRng` 流,
+    // 见 `RuleModifier::SneakAttack` 文档。挂载点：暴击放大之后、抗性
+    // 乘数之前——与「抗性」一节同一条既有纪律，追加的伤害仍然是这一下
+    // 攻击的一部分,应当同样受目标对这一伤害类别的抗性影响,不是绕开
+    // 减伤链路凭空产出的独立效果。约束 C3：随机性走
+    // `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`,这里用一个与
+    // 暴击流（恒为 `world.clock.0 as u64`）、骰子流
+    // （`world.clock.0 ^ DAMAGE_FORMULA_DICE_EVENT_TAG`）都不同的第三个
+    // 固定标签构造第三条独立流,三条流的三元组两两不同,互不干扰（约束
+    // C5：本函数在偷袭判定这一步只消费这一次随机数,取数顺序天然确定,
+    // 且固定排在暴击判定之后、伤害公式骰子求值之后，与代码里出现的
+    // 先后顺序一致）。触发率读
+    // `attacker_derived.attribute(AttributeKind::Luck)`（同一个
+    // `effective_luck`，暴击判定复用的派生值）——装备/状态效果加的幸运
+    // 同样会反映到偷袭触发率上，理由同暴击那一节「暴击：读取
+    // attacker_derived.attribute」。
+    const SNEAK_ATTACK_EVENT_TAG: u64 = 0x51EA_ACC0_0000_0000;
+    let damage = match sneak_attack_rule(attacker.race, attacker.level, race_traits, traits) {
+        Some(rule) => {
+            let mut sneak_rng = ll_core::rng::DetRng::for_entity(
+                world.seed,
+                actor.as_u64(),
+                (world.clock.0 as u64) ^ SNEAK_ATTACK_EVENT_TAG,
+            );
+            let sneak_chance =
+                sneak_attack_chance_permille(effective_luck, rule.luck_chance_permille_per_point);
+            if sneak_rng.chance(sneak_chance.max(0) as u32, 1000) {
+                damage.saturating_add(rule.extra_damage)
+            } else {
+                damage
+            }
+        }
+        None => damage,
     };
 
     // 抗性（伤害类别/抗性接线批次）：`damage-formula-mod-api.md` 二十节
@@ -3794,6 +3861,276 @@ mod tests {
         // 留了很大的安全边际（期望值相差约 950 次，这里只要求多过
         // 100 次），避免二项分布的正常波动把测试变成偶发性失败。
         assert!(high_crits > low_crits + 100);
+    }
+
+    /// 造一个占位实体，站在 `pos`，除幸运外六项主属性取基准值，且
+    /// `race` 由调用方直接给出（不像 [`spawn_agent_with_luck`] 那样在
+    /// 函数体内部临时 intern 一份「反正只看数值,不看具体是哪个种族」
+    /// 的占位种族）——偷袭判定测试需要种族索引与授予偷袭天赋的
+    /// [`TraitGrantSource`] 测试替身用的是**同一个** `ContentIndex`,
+    /// 若各自在互不相干的 `Interner` 里各 intern 一次,两边算出的数值
+    /// 不保证相等（`ll_core::ident` 模块文档「不可持久化——索引依赖 mod
+    /// 加载顺序」），因此本函数把「种族索引哪来的」这个决定权交还给
+    /// 调用方,调用方在测试里只 intern 一次,两处引用同一个值。
+    fn spawn_agent_with_luck_and_race(
+        world: &mut WorldState,
+        pos: ll_core::torus::TorusPos,
+        luck: i32,
+        race: ContentIndex,
+    ) -> EntityId {
+        let mut interner = ll_core::ident::Interner::new();
+        let profession = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
+        world.actors.spawn(Agent {
+            pos,
+            stats: BaseStats {
+                luck,
+                ..BaseStats::BASELINE
+            },
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession,
+            goals: Vec::new(),
+            race,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
+            resting: None,
+            unlocked_skills: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: surface_space_at(world, pos),
+            script_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: Tick(0),
+            remembered_id: None,
+            level: ll_world::entity::Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: ll_world::entity::Agent::STARTING_XP_TO_NEXT_LEVEL,
+        })
+    }
+
+    /// 一个只认识固定种族索引的测试用天赋授予来源，专供偷袭判定测试
+    /// 使用——形状与 [`FixedRacePoolGrant`] 相同（只回答"这个种族授予
+    /// 哪条天赋引用"），但刻意不复用它：两者服务的测试意图不同（资源池
+    /// 容量钳位 vs 偷袭判定），共享同一个类型名会让两组测试的失败信息
+    /// 混在一起,不利于定位。
+    struct FixedSneakRaceGrant {
+        race: ContentIndex,
+        trait_id: ContentIndex,
+    }
+
+    impl TraitGrantSource for FixedSneakRaceGrant {
+        fn granted_traits(&self, owner: ContentIndex) -> Vec<crate::traits::TraitGrant> {
+            if owner == self.race {
+                vec![crate::traits::TraitGrant {
+                    trait_id: self.trait_id,
+                    unlock_level: 1,
+                }]
+            } else {
+                Vec::new()
+            }
+        }
+    }
+
+    /// 固定把 `trait_id` 映射到一条声明 [`crate::traits::RuleModifier::SneakAttack`]
+    /// 的 `TraitRule`——供偷袭判定测试使用。
+    struct FixedSneakAttackTrait {
+        trait_id: ContentIndex,
+        luck_chance_permille_per_point: i32,
+        extra_damage: i32,
+    }
+
+    impl TraitCatalog for FixedSneakAttackTrait {
+        fn trait_rule(&self, trait_id: ContentIndex) -> Option<crate::traits::TraitRule> {
+            if trait_id != self.trait_id {
+                return None;
+            }
+            Some(crate::traits::TraitRule {
+                granted_skills: Vec::new(),
+                granted_resource_pools: Vec::new(),
+                rule_modifiers: vec![crate::traits::RuleModifier::SneakAttack {
+                    luck_chance_permille_per_point: self.luck_chance_permille_per_point,
+                    extra_damage: self.extra_damage,
+                }],
+            })
+        }
+    }
+
+    #[test]
+    fn 有效幸运更高的攻击者偷袭触发频率更高() {
+        // 频率断言，不是单次结果——理由同「幸运更高的角色暴击命中频率
+        // 更高」：偷袭同样只改变判定的概率形状,不保证任意一次攻击必然
+        // 触发/不触发。`extra_damage` 故意取得远大于暴击单独能放大的
+        // 上限（基准伤害 10，暴击最多放大到 15，见
+        // `CRIT_DAMAGE_MULTIPLIER_PERMILLE` 文档）——`sneak_threshold`
+        // 因此只可能被「偷袭真的触发」跨过，不会被暴击单独触发,统计
+        // 频率时不需要额外剔除暴击的贡献,即使高幸运一侧的暴击也更频繁
+        // （同一个 `effective_luck` 两条判定都读）。
+        // Arrange
+        let trials = 3_000i64;
+        let low_luck = 5; // 5 × 15‰ = 75‰（7.5%）触发率。
+        let high_luck = 40; // 40 × 15‰ = 600‰（60%）触发率。
+        let per_point = 15;
+        let extra_damage = 1_000;
+        let baseline_damage =
+            damage_after_defense(BaseStats::BASELINE.strength, 0, Penetration::NONE);
+        let sneak_threshold = baseline_damage + 100;
+
+        let mut interner = ll_core::ident::Interner::new();
+        let race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:rogue").expect("合法标识符"));
+        let trait_id = interner.intern(
+            ll_core::ident::NamespacedId::parse("lostland:sneak_attack").expect("合法标识符"),
+        );
+        let race_traits = FixedSneakRaceGrant { race, trait_id };
+        let traits = FixedSneakAttackTrait {
+            trait_id,
+            luck_chance_permille_per_point: per_point,
+            extra_damage,
+        };
+
+        let (mut low_world, _low_terrain_ids) = test_world();
+        let low_attacker_pos = low_world.size.wrap(5, 5);
+        let low_attacker =
+            spawn_agent_with_luck_and_race(&mut low_world, low_attacker_pos, low_luck, race);
+        let low_victim_pos = east_of_spawn(&low_world);
+        let low_victim = spawn_named_agent(&mut low_world, low_victim_pos, 1_000_000);
+
+        let (mut high_world, _high_terrain_ids) = test_world();
+        let high_attacker_pos = high_world.size.wrap(5, 5);
+        let high_attacker =
+            spawn_agent_with_luck_and_race(&mut high_world, high_attacker_pos, high_luck, race);
+        let high_victim_pos = east_of_spawn(&high_world);
+        let high_victim = spawn_named_agent(&mut high_world, high_victim_pos, 1_000_000);
+
+        // Act：只挪动世界时钟取得不同的随机流,理由同「幸运更高的角色
+        // 暴击命中频率更高」。
+        let mut low_sneaks = 0i64;
+        let mut high_sneaks = 0i64;
+        for tick in 0..trials {
+            low_world.clock = Tick(tick);
+            let low_effects = resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+                &low_world,
+                &Intent::Attack {
+                    actor: low_attacker,
+                    target: low_victim,
+                },
+                &NoSkills,
+                &race_traits,
+                &traits,
+                &NoResourcePools,
+                &NoItems,
+                &NoFormulas,
+                &NoDamageCategories,
+            );
+            if low_effects.iter().any(
+                |effect| matches!(effect, Effect::Damage { amount, .. } if *amount > sneak_threshold),
+            ) {
+                low_sneaks += 1;
+            }
+
+            high_world.clock = Tick(tick);
+            let high_effects =
+                resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+                    &high_world,
+                    &Intent::Attack {
+                        actor: high_attacker,
+                        target: high_victim,
+                    },
+                    &NoSkills,
+                    &race_traits,
+                    &traits,
+                    &NoResourcePools,
+                    &NoItems,
+                    &NoFormulas,
+                    &NoDamageCategories,
+                );
+            if high_effects.iter().any(
+                |effect| matches!(effect, Effect::Damage { amount, .. } if *amount > sneak_threshold),
+            ) {
+                high_sneaks += 1;
+            }
+        }
+
+        // Assert：60% 触发率的一侧命中次数应远多于 7.5% 的一侧——差距
+        // 留了很大的安全边际（期望值相差约 1575 次，这里只要求多过
+        // 100 次），理由同「幸运更高的角色暴击命中频率更高」。
+        assert!(high_sneaks > low_sneaks + 100);
+    }
+
+    #[test]
+    fn 偷袭触发时伤害真的更高() {
+        // 精确数值断言，不是频率断言——利用暴击判定/伤害公式骰子的
+        // `DetRng` 三元组 `(世界种子, 实体 ID, 世界时钟)` 完全不依赖
+        // 调用方传入的 `race_traits`/`traits` 目录这一点：同一个世界、
+        // 同一个攻击者、同一个目标、同一个 `world.clock`,两次调用
+        // 之间暴击是否命中、伤害公式的骰子抽出什么值逐位相同,唯一的
+        // 差异是这次传入的天赋目录有没有声明偷袭——两次的伤害差因此
+        // 必须精确等于 `extra_damage`,不多不少（若偷袭判定读到了不该
+        // 读的东西,或者额外消费了一次随机数导致后续判定错位,这条精确
+        // 断言会立刻暴露）。幸运（50）× 每点触发率（20‰）恰好等于
+        // 1000‰,触发精确钳在 100%,不依赖 `world.clock` 取值,见
+        // `crate::combat::sneak_attack_chance_permille` 文档「夹在
+        // 0..=1000」一节。
+        // Arrange
+        let luck = 50;
+        let per_point = 20;
+        let extra_damage = 37;
+        let (mut world, _terrain_ids) = test_world();
+        let attacker_pos = world.size.wrap(5, 5);
+        let mut interner = ll_core::ident::Interner::new();
+        let race = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:rogue").expect("合法标识符"));
+        let trait_id = interner.intern(
+            ll_core::ident::NamespacedId::parse("lostland:sneak_attack").expect("合法标识符"),
+        );
+        let attacker = spawn_agent_with_luck_and_race(&mut world, attacker_pos, luck, race);
+        let victim_pos = east_of_spawn(&world);
+        let victim = spawn_named_agent(&mut world, victim_pos, 1_000_000);
+        let race_traits = FixedSneakRaceGrant { race, trait_id };
+        let traits = FixedSneakAttackTrait {
+            trait_id,
+            luck_chance_permille_per_point: per_point,
+            extra_damage,
+        };
+
+        let attack = |race_traits: &dyn TraitGrantSource, traits: &dyn TraitCatalog| -> i32 {
+            let effects = resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+                &world,
+                &Intent::Attack {
+                    actor: attacker,
+                    target: victim,
+                },
+                &NoSkills,
+                race_traits,
+                traits,
+                &NoResourcePools,
+                &NoItems,
+                &NoFormulas,
+                &NoDamageCategories,
+            );
+            effects
+                .iter()
+                .find_map(|effect| match effect {
+                    Effect::Damage { amount, .. } => Some(*amount),
+                    _ => None,
+                })
+                .expect("攻击必然产出一条伤害效果")
+        };
+
+        // Act
+        let damage_without_sneak = attack(&NoTraitGrants, &NoTraits);
+        let damage_with_sneak = attack(&race_traits, &traits);
+
+        // Assert
+        assert_eq!(damage_with_sneak, damage_without_sneak + extra_damage);
     }
 
     #[test]
