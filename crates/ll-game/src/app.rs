@@ -18,6 +18,7 @@ use ll_i18n::Catalog;
 use ll_mod::asset_vfs::AssetVfs;
 use ll_platform::config::DisplayConfig;
 use ll_platform::config::ScaleFilter;
+use ll_platform::fps::FpsCounter;
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::window::{AppHandler, FrameId, FrameOutcome, PhysicalSize, Window};
 use ll_render::anim::{AnimStateMachine, current_sprite_name};
@@ -35,12 +36,14 @@ use ll_text::TextRenderer;
 use ll_ui::hud::character_panel::CharacterPanelData;
 use ll_ui::hud::render::render_hud;
 use ll_ui::hud::status_bar::StatusBarData;
+use ll_ui::hud::world_map::WorldMapPanelData;
 use ll_ui::widget::quad::QuadRenderer;
 use ll_ui::widget::skin::NineSliceSkin;
 use ll_ui::widget::state::WidgetStateTable;
 use ll_ui::widget::textured_quad::TexturedQuadRenderer;
 use ll_world::entity::EntityId;
 use ll_world::fov::compute_fov;
+use ll_world::overview::{ContinentField, continent_map, generate_continent_field};
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
@@ -76,6 +79,15 @@ const ZOOM_STEP: f32 = 0.1;
 const PLAYER_ENTITY: u64 = 0;
 /// 地形瓦片绘制顺序号的起始偏移。
 const TERRAIN_ENTITY_BASE: u64 = 1;
+
+/// 世界地图（M 键切换）按区块下采样的倍率——喂给
+/// `ll_world::overview::continent_map` 的 `downsample` 参数。世界默认
+/// 64×48 个区块（见 `crate::world` 的 `ZONE_COUNT`），downsample=2 时
+/// 世界地图是 32×24=768 格，比 1:1 的 3072 格更适合铺进一块屏幕大小的
+/// 面板（单格不至于小到看不清是什么地形），又远没有稀疏到丢失大陆
+/// 轮廓——纯粹的表现层取舍，不影响 `continent_map` 本身「不触发按需
+/// 生成」这条只读保证（见其文档）。
+const WORLD_MAP_DOWNSAMPLE: u32 = 2;
 
 /// 把资产 VFS 已经解析完覆盖规则的精灵声明，逐个从磁盘读出图片字节，
 /// 转换成 `ll_render::atlas_pack::pack_atlas` 需要的输入。
@@ -297,6 +309,24 @@ pub struct Demo {
     /// 索引的旁表,见 `ll_ui::widget::state` 模块文档「为什么是旁表」
     /// 一节：结构上不可能污染 `WorldState`,只影响画面。
     hud_anim: WidgetStateTable,
+    /// 世界地图（M 键切换）用的粗粒度地形场——[`Demo::new`] 建局时算
+    /// 一次并长期持有，理由见
+    /// `ll_world::overview::generate_continent_field` 文档「调用方应在
+    /// 世界创建时调用一次并长期持有结果」一节：这份数据只依赖噪声种子
+    /// 与地形表（两者建局后不再变化），每帧重新生成毫无必要。**只是
+    /// `Demo` 自己的表现层缓存**，不进 `GameWorld`/`WorldState`、不参与
+    /// 存档序列化——读档后的会话会在 [`Demo::new`] 里用读到的
+    /// `game_world.noise`/`game_world.params` 重新生成同一份数据（种子
+    /// 相同则地形场逐位相同），不需要随存档往返。
+    continent_field: ContinentField,
+    /// 世界地图当前是否处于打开状态——M 键（`GameKey::Map`）切换,见
+    /// [`Demo::advance`] 里的开关逻辑与 `ll_ui::hud::world_map` 模块
+    /// 文档。纯粹的表现层 UI 状态,同样不进 `GameWorld`/`WorldState`。
+    world_map_open: bool,
+    /// 状态栏帧率读数的墙钟计数器——见 `ll_platform::fps` 模块文档「为
+    /// 什么用墙钟，不用帧计数」一节：只活在表现层，每帧调用一次
+    /// [`FpsCounter::record_frame`]，产出的浮点数只用来拼状态栏文本。
+    fps_counter: FpsCounter,
 }
 
 impl Demo {
@@ -333,6 +363,15 @@ impl Demo {
         // 接管时间轴——见 `Demo::engine` 字段文档：本引擎此后是时间轴
         // 唯一的权威持有者,`game_world.timeline` 留下的空值不再被读取。
         let engine = TurnEngine::new(std::mem::take(&mut game_world.timeline));
+        // 世界地图的粗粒度地形场——建局/读档后只算这一次，见
+        // `Demo::continent_field` 字段文档。必须在 `game_world` 被移进
+        // 下方的结构体字面量之前借出 `&game_world.world.terrain.layout()`。
+        let continent_field = generate_continent_field(
+            game_world.world.terrain.layout(),
+            &game_world.noise,
+            &game_world.params,
+            &content.terrain_ids,
+        );
         Demo {
             content,
             game_world,
@@ -349,6 +388,9 @@ impl Demo {
             catalog,
             language,
             hud_anim: WidgetStateTable::new(),
+            continent_field,
+            world_map_open: false,
+            fps_counter: FpsCounter::new(),
         }
     }
 
@@ -379,6 +421,14 @@ impl Demo {
     /// 「什么都不做但仍然让时间前进」的意图）。没有按任何方向/等待键
     /// 的这一帧,`try_player_turn` 直接返回假,时钟原地不动。
     fn advance(&mut self, input: &InputState, frame: FrameId) {
+        // 世界地图开关——一次性动作，`was_just_pressed` 而非
+        // `was_activated`：与 `GameKey::Screenshot`/`GameKey::Menu` 同一类
+        // 键（`GameKey::is_repeatable` 没有把 `Map` 收进去），长按不该
+        // 反复切换。不依赖世界时钟是否前进，因此排在 `maintain_streaming`
+        // 之前——地图是否打开与本帧是否真的推进了一次回合无关。
+        if input.was_just_pressed(GameKey::Map) {
+            self.world_map_open = !self.world_map_open;
+        }
         self.maintain_streaming();
         // 地面物品老化清理（NPC 生命周期批次）——见
         // `crate::world::cleanup_aged_ground_items` 文档「为什么挂在
@@ -523,6 +573,17 @@ impl Demo {
 /// 生成或刚读档必然存在的实体）跳过本帧 HUD 绘制并记一条警告,不
 /// panic：显示层的降级纪律与 `GpuResources::lookup`「图集条目缺失，
 /// 跳过本次绘制」一致，不能因为一次意外的查询落空就让整个游戏崩溃。
+///
+/// # 世界地图（`world_map_open`/`continent_field`）
+///
+/// `world_map_open` 为假时 [`ll_ui::hud::render::build_hud_frame`] 收到
+/// 的是 `None`，世界地图整块不参与本帧渲染——见 `ll_ui::hud::world_map`
+/// 模块文档「战争迷雾」一节与 `ll_platform::input::GameKey::Map` 文档。
+/// 为真时才现算一份 [`ll_world::overview::continent_map`] 输出：这一步
+/// 只读 `continent_field`（建局时算过一次，见 [`Demo::continent_field`]
+/// 字段文档）与 `game_world.world.exploration`（真实探索记忆），不触发
+/// 任何区块的按需生成、不修改任何世界状态——按需才算，避免地图关着的
+/// 绝大多数帧白白花这份 O(区块数) 的开销。
 #[allow(clippy::too_many_arguments)]
 fn draw_hud(
     game_world: &GameWorld,
@@ -533,6 +594,9 @@ fn draw_hud(
     view: &wgpu::TextureView,
     hud_anim: &mut WidgetStateTable,
     frame: FrameId,
+    fps: f32,
+    world_map_open: bool,
+    continent_field: &ContinentField,
 ) {
     let Some(agent) = game_world.world.actors.get(game_world.player) else {
         tracing::warn!("玩家实体查不到，本帧跳过 HUD 绘制");
@@ -543,6 +607,7 @@ fn draw_hud(
         clock: game_world.world.clock,
         health: agent.health,
         mana: agent.mana,
+        fps,
     };
     let character = CharacterPanelData {
         base_stats: agent.stats,
@@ -552,6 +617,30 @@ fn draw_hud(
         experience: agent.experience,
         xp_to_next_level: agent.xp_to_next_level,
         now: game_world.world.clock,
+    };
+
+    // 见本函数文档「世界地图」一节：`world_map_cells` 声明在 `if` 之外，
+    // 让 `world_map_data` 借用的数据在传给 `render_hud` 那一刻仍然存活。
+    let world_map_cells;
+    let world_map_data = if world_map_open {
+        let layout = *game_world.world.terrain.layout();
+        let zone_count = layout.zone_count();
+        let cols = zone_count.width().div_ceil(WORLD_MAP_DOWNSAMPLE);
+        let rows = zone_count.height().div_ceil(WORLD_MAP_DOWNSAMPLE);
+        world_map_cells = continent_map(
+            continent_field,
+            &layout,
+            &game_world.world.exploration,
+            WORLD_MAP_DOWNSAMPLE,
+        );
+        Some(WorldMapPanelData {
+            cells: &world_map_cells,
+            cols,
+            rows,
+            terrain_ids: &content.terrain_ids,
+        })
+    } else {
+        None
     };
 
     render_hud(
@@ -574,6 +663,7 @@ fn draw_hud(
         &resources.skin,
         hud_anim,
         frame.0,
+        world_map_data.as_ref(),
     );
 }
 
@@ -738,6 +828,11 @@ impl AppHandler for Demo {
     }
 
     fn on_frame(&mut self, frame: FrameId, input: &InputState) -> FrameOutcome {
+        // 墙钟采样,见 `ll_platform::fps` 模块文档「为什么用墙钟,不用
+        // 帧计数」一节——`Instant::now()` 只在这一处调用,产出的浮点数
+        // 只流向状态栏文本,不进 `self.game_world`/`WorldState`。
+        let fps = self.fps_counter.record_frame(std::time::Instant::now());
+
         if input.was_just_pressed(ll_platform::input::GameKey::Cancel) {
             return FrameOutcome::Exit;
         }
@@ -788,6 +883,9 @@ impl AppHandler for Demo {
                 &view,
                 &mut self.hud_anim,
                 frame,
+                fps,
+                self.world_map_open,
+                &self.continent_field,
             );
             resources.present_frame(surface_frame);
         }
@@ -988,5 +1086,57 @@ mod tests {
             "buff 过期后不应再计入结算——时钟真的推进到了 expires_at \
              之后，且推进结果真的被既有到期判定读到"
         );
+    }
+
+    #[test]
+    fn 世界地图新建时默认关闭() {
+        // ADR 0025 相关的验收难题第一层——程序化断言开关的初始状态,
+        // 不依赖任何合成按键。
+        // Arrange & Act
+        let demo = test_demo();
+
+        // Assert
+        assert!(!demo.world_map_open);
+    }
+
+    #[test]
+    fn 按下地图键后开关状态翻转为打开() {
+        // 程序化验证「M 键事件 → 开关状态真的翻转」——见任务书「验收
+        // 难题」一节要求的第一层。
+        // Arrange
+        let mut demo = test_demo();
+        let mut input = InputState::new();
+        input.press(GameKey::Map);
+
+        // Act
+        demo.advance(&input, FrameId(0));
+
+        // Assert
+        assert!(demo.world_map_open);
+    }
+
+    #[test]
+    fn 再次按下地图键后开关状态翻回关闭() {
+        // 与 `ll_sim::turn` 等既有测试同一个手法（见 `test_demo` 上方
+        // 「连续多次玩家等待后世界时钟真的前进」测试文档）：本测试全程
+        // 不调用 `begin_frame`/`end_frame`，`just_pressed` 因此在两次
+        // `advance` 调用之间保持置位，每次调用都会被判定为「地图键
+        // 激活」并各自触发一次翻转——恰好用来验证「开 → 关」这条翻转
+        // 本身，而不是「按住不会重复翻转」（那是 `was_just_pressed` 与
+        // 真实按键事件循环之间的既有职责划分，见
+        // `ll_platform::input::InputState` 模块文档，不是本测试要
+        // 覆盖的范围）。
+        // Arrange
+        let mut demo = test_demo();
+        let mut input = InputState::new();
+        input.press(GameKey::Map);
+        demo.advance(&input, FrameId(0));
+        assert!(demo.world_map_open, "第一次按下后应先翻转为打开");
+
+        // Act
+        demo.advance(&input, FrameId(1));
+
+        // Assert
+        assert!(!demo.world_map_open);
     }
 }

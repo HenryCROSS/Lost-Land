@@ -52,6 +52,7 @@ use super::character_panel::{self, CharacterPanelData};
 use super::equipment_panel;
 use super::inventory_panel;
 use super::status_bar::{self, StatusBarData};
+use super::world_map::{self, WorldMapPanelData};
 use crate::widget::anim::{DEFAULT_ANIM_DURATION_FRAMES, FrameTick};
 use crate::widget::bar::{bar_quads, textured_bar_quads, textured_two_layer_bar_quads};
 use crate::widget::day_night_bar::{
@@ -133,6 +134,29 @@ fn equipment_origin_x(screen_width: f32) -> f32 {
     screen_width - EQUIPMENT_RIGHT_MARGIN - EQUIPMENT_WIDTH
 }
 
+/// 世界地图面板与屏幕四边的留白比例——见 [`world_map_rect`]。取
+/// 10%：地图本身要足够大才有实际可读性（M 键切换的目的就是「看整个
+/// 世界」，不是又开一块小面板），同时四周留出的边距足以让玩家看出
+/// 这是一层覆盖在游戏画面上的浮层，而不是把整个屏幕都吃掉。
+const WORLD_MAP_MARGIN_FRACTION: f32 = 0.1;
+
+/// 世界地图面板这一帧的矩形——以屏幕为参照居中，四边各留
+/// [`WORLD_MAP_MARGIN_FRACTION`] 的屏幕尺寸,理由见该常量文档。与
+/// [`equipment_origin_x`] 同一种「按屏幕原生像素尺寸现算,不写死常量」
+/// 的取舍——窗口尺寸由 `ll_platform::window::WindowConfig` 固定给定
+/// （见 [`equipment_origin_x`] 文档同一段说明),按比例现算仍然比写死
+/// 像素常量更不容易在窗口配置调整后悄悄错位。
+fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
+    let margin_x = screen_width * WORLD_MAP_MARGIN_FRACTION;
+    let margin_y = screen_height * WORLD_MAP_MARGIN_FRACTION;
+    Rect::new(
+        margin_x,
+        margin_y,
+        (screen_width - margin_x * 2.0).max(0.0),
+        (screen_height - margin_y * 2.0).max(0.0),
+    )
+}
+
 /// 现算这一帧 HUD 需要的全部填色矩形/贴图矩形与文本行——纯函数,不
 /// 接触 GPU,是 [`render_hud`] 与本模块测试共用的核心逻辑。
 ///
@@ -142,8 +166,17 @@ fn equipment_origin_x(screen_width: f32) -> f32 {
 /// 瞬时,条形动画」一节；昼夜滑条同一条纪律的延伸见
 /// `crate::widget::day_night_bar` 模块文档「数字瞬时，指针平滑」一节。
 ///
-/// `screen_width` 是窗口原生像素宽度，只用来算装备栏的锚定坐标（见
-/// [`equipment_origin_x`]），不影响其余面板的布局。
+/// `screen_width`/`screen_height` 是窗口原生像素尺寸——前者此前就已
+/// 存在，只用来算装备栏的锚定坐标（见 [`equipment_origin_x`]）；后者
+/// 是世界地图批次新增的，只用来算世界地图面板的居中矩形（见
+/// [`world_map_rect`]），同样不影响其余面板的布局。
+///
+/// `world_map` 为 `None` 时（M 键未按下/已关闭）世界地图整块不参与本次
+/// `quads`/`textured_quads` 的产出——不是「画出来但透明」，是压根不
+/// 调用 [`world_map::world_map_frame`]，见
+/// `ll_platform::input::GameKey::Map` 文档与 `ll_game::app` 模块文档
+/// 「地图开关」一节。为 `Some` 时按其中的格子数据画出整块面板，见
+/// [`world_map::world_map_frame`]。
 ///
 /// [`AnimatedValue`]: crate::widget::anim::AnimatedValue
 #[allow(clippy::too_many_arguments)]
@@ -160,6 +193,8 @@ pub fn build_hud_frame(
     anim: &mut WidgetStateTable,
     now: FrameTick,
     screen_width: f32,
+    screen_height: f32,
+    world_map: Option<&WorldMapPanelData<'_>>,
 ) -> HudFrame {
     let mut quads = Vec::new();
     let mut textured_quads = Vec::new();
@@ -327,6 +362,17 @@ pub fn build_hud_frame(
         skin,
     );
 
+    // 世界地图：M 键切换的浮层，`None` 时整块不参与本次产出——见本
+    // 函数文档「`world_map` 为 `None` 时」一节。放在四块常驻面板之后
+    // 推入，恰好是这一帧 `quads`/`textured_quads` 里最后追加的内容，
+    // 覆盖在它们之上（同一份 wgpu draw call 按实例顺序绘制，后追加的
+    // 实例画在更上层）。
+    if let Some(world_map) = world_map {
+        let rect = world_map_rect(screen_width, screen_height);
+        let frame = world_map::world_map_frame(world_map, rect, skin);
+        quads.extend(frame.quads);
+    }
+
     HudFrame {
         quads,
         textured_quads,
@@ -448,7 +494,10 @@ fn push_day_night_bar(
 /// 之上（见 [`crate::widget::quad`] 模块文档「为什么不复用 SpriteBatch」
 /// 一节）。同一块面板/条形只会落进前两道 pass 中的一个（见
 /// [`HudFrame::textured_quads`] 文档），两道 pass 因此互不遮挡对方的
-/// 内容，先后顺序不影响最终画面。
+/// 内容，先后顺序不影响最终画面——世界地图是这条规则刻意维持的一个
+/// 例外落点：它恒只产出纯色矩形，从不产出贴图矩形，见
+/// [`world_map::world_map_frame`] 文档「为什么不用九宫格面板背景」
+/// 一节的完整论证。
 #[allow(clippy::too_many_arguments)]
 pub fn render_hud(
     quad_renderer: &mut QuadRenderer,
@@ -470,6 +519,7 @@ pub fn render_hud(
     skin: &dyn Skin,
     anim: &mut WidgetStateTable,
     now: FrameTick,
+    world_map: Option<&WorldMapPanelData<'_>>,
 ) {
     let frame = build_hud_frame(
         status,
@@ -484,6 +534,8 @@ pub fn render_hud(
         anim,
         now,
         resolution_width as f32,
+        resolution_height as f32,
+        world_map,
     );
 
     quad_renderer.render(
@@ -537,7 +589,7 @@ mod tests {
     use std::path::Path;
 
     fn write_fixture_catalog(dir: &Path) {
-        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\nhud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nhud-inventory-panel-title = 背包\nhud-inventory-empty = （空）\nhud-inventory-durability-label = 耐久\nhud-equipment-panel-title = 装备\nhud-equipment-empty-slot = （空）\nequip_slot-main_hand-display_name = 主手\nequip_slot-off_hand-display_name = 副手\nequip_slot-head-display_name = 头部\nequip_slot-face-display_name = 面部\nequip_slot-eyes-display_name = 眼部\nequip_slot-neck-display_name = 颈部\nequip_slot-body-display_name = 躯干\nequip_slot-outer-display_name = 外袍\nequip_slot-back-display_name = 背部\nequip_slot-shoulder_l-display_name = 左肩\nequip_slot-shoulder_r-display_name = 右肩\nequip_slot-arm_l-display_name = 左臂\nequip_slot-arm_r-display_name = 右臂\nequip_slot-hand_l-display_name = 左手\nequip_slot-hand_r-display_name = 右手\nequip_slot-belt-display_name = 腰带\nequip_slot-tasset-display_name = 腿甲\nequip_slot-legs-display_name = 双腿\nequip_slot-boot_l-display_name = 左靴\nequip_slot-boot_r-display_name = 右靴\nequip_slot-ring_l-display_name = 左戒指\nequip_slot-ring_r-display_name = 右戒指\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nhud-status-fps-label = 帧率\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\nhud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nhud-inventory-panel-title = 背包\nhud-inventory-empty = （空）\nhud-inventory-durability-label = 耐久\nhud-equipment-panel-title = 装备\nhud-equipment-empty-slot = （空）\nequip_slot-main_hand-display_name = 主手\nequip_slot-off_hand-display_name = 副手\nequip_slot-head-display_name = 头部\nequip_slot-face-display_name = 面部\nequip_slot-eyes-display_name = 眼部\nequip_slot-neck-display_name = 颈部\nequip_slot-body-display_name = 躯干\nequip_slot-outer-display_name = 外袍\nequip_slot-back-display_name = 背部\nequip_slot-shoulder_l-display_name = 左肩\nequip_slot-shoulder_r-display_name = 右肩\nequip_slot-arm_l-display_name = 左臂\nequip_slot-arm_r-display_name = 右臂\nequip_slot-hand_l-display_name = 左手\nequip_slot-hand_r-display_name = 右手\nequip_slot-belt-display_name = 腰带\nequip_slot-tasset-display_name = 腿甲\nequip_slot-legs-display_name = 双腿\nequip_slot-boot_l-display_name = 左靴\nequip_slot-boot_r-display_name = 右靴\nequip_slot-ring_l-display_name = 左戒指\nequip_slot-ring_r-display_name = 右戒指\n").expect("测试用写入应当成功");
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -583,6 +635,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -604,11 +657,141 @@ mod tests {
             &mut anim,
             0,
             1280.0,
+            720.0,
+            None,
         );
 
         // Assert：四块面板各 9 块背景 + 双层条 2*3 块 + 单层条 2 块 +
         // 昼夜滑条 2 块（整条背景 + 指针）。
         assert_eq!(frame.quads.len(), 4 * 9 + 2 * 3 + 2 + 2);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 世界地图为none时不产出任何世界地图矩形() {
+        // 程序化验证「地图关着不画」：与上一条测试同样的输入,唯一区别
+        // 是 world_map 传 None,矩形总数应该恰好回落到没有世界地图批次
+        // 之前的既有数字——见上一条测试的算式说明。
+        // Arrange
+        let dir = temp_dir("world-map-closed");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let status = StatusBarData {
+            clock: Tick(0),
+            health: 100,
+            mana: 50,
+            fps: 0.0,
+        };
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let character = sample_character_data(&modifiers, &equipment);
+        let item_table = ItemTable::new();
+        let mut anim = WidgetStateTable::new();
+
+        // Act
+        let frame = build_hud_frame(
+            &status,
+            &character,
+            &[],
+            &equipment,
+            &NoItems,
+            &item_table,
+            &catalog,
+            "zh-CN",
+            &FlatColorSkin,
+            &mut anim,
+            0,
+            1280.0,
+            720.0,
+            None,
+        );
+
+        // Assert
+        assert_eq!(frame.quads.len(), 4 * 9 + 2 * 3 + 2 + 2);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 世界地图为some时产出的矩形数比none时多出地图本身的矩形() {
+        // 程序化验证「地图开着真的被加入渲染帧」——这是 M 键切换验收
+        // 两层里的第一层（另一层是实机截图，见 `ll_game::app` 模块
+        // 文档），不依赖任何合成按键事件,只断言 build_hud_frame 的
+        // 纯函数产出。
+        // Arrange
+        let dir = temp_dir("world-map-open");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let status = StatusBarData {
+            clock: Tick(0),
+            health: 100,
+            mana: 50,
+            fps: 0.0,
+        };
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let character = sample_character_data(&modifiers, &equipment);
+        let item_table = ItemTable::new();
+        let mut anim = WidgetStateTable::new();
+        let (terrain_ids, _terrain_table) = ll_world::terrain::base_terrain_fixture();
+        let cells = [
+            ll_world::overview::OverviewCell {
+                terrain: terrain_ids.grass,
+                explored: true,
+            },
+            ll_world::overview::OverviewCell {
+                terrain: terrain_ids.deep_water,
+                explored: false,
+            },
+        ];
+        let world_map_data = WorldMapPanelData {
+            cells: &cells,
+            cols: 2,
+            rows: 1,
+            terrain_ids: &terrain_ids,
+        };
+
+        // Act
+        let closed_frame = build_hud_frame(
+            &status,
+            &character,
+            &[],
+            &equipment,
+            &NoItems,
+            &item_table,
+            &catalog,
+            "zh-CN",
+            &FlatColorSkin,
+            &mut anim,
+            0,
+            1280.0,
+            720.0,
+            None,
+        );
+        let open_frame = build_hud_frame(
+            &status,
+            &character,
+            &[],
+            &equipment,
+            &NoItems,
+            &item_table,
+            &catalog,
+            "zh-CN",
+            &FlatColorSkin,
+            &mut anim,
+            1,
+            1280.0,
+            720.0,
+            Some(&world_map_data),
+        );
+
+        // Assert：世界地图边框恒 4 块（见
+        // `crate::hud::world_map::border_only_quads` 文档）加上本例
+        // 2 个格子，共 6 块。
+        assert_eq!(open_frame.quads.len(), closed_frame.quads.len() + 6);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -624,6 +807,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -645,6 +829,8 @@ mod tests {
             &mut anim,
             0,
             1280.0,
+            720.0,
+            None,
         );
 
         // Assert
@@ -664,6 +850,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -685,6 +872,8 @@ mod tests {
             &mut anim,
             0,
             1280.0,
+            720.0,
+            None,
         );
 
         // Assert：昼夜滑条不产出文本行（时间数字仍然只在状态栏那一行
@@ -715,6 +904,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
         build_hud_frame(
             &full_status,
@@ -729,6 +919,8 @@ mod tests {
             &mut anim,
             0,
             1280.0,
+            720.0,
+            None,
         );
 
         // Act：紧接着下一帧,生命值已经掉到 30。
@@ -736,6 +928,7 @@ mod tests {
             clock: Tick(0),
             health: 30,
             mana: 50,
+            fps: 0.0,
         };
         let frame = build_hud_frame(
             &damaged_status,
@@ -750,6 +943,8 @@ mod tests {
             &mut anim,
             1,
             1280.0,
+            720.0,
+            None,
         );
 
         // Assert：状态栏文本行里应该已经是 30,不是 100 附近的过渡值。
@@ -783,6 +978,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -805,6 +1001,8 @@ mod tests {
             &mut anim,
             0,
             screen_width,
+            720.0,
+            None,
         );
 
         // Assert：`build_hud_frame` 按固定顺序推入面板/条形——状态栏
@@ -834,6 +1032,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -854,6 +1053,8 @@ mod tests {
             &mut anim,
             0,
             1280.0,
+            720.0,
+            None,
         );
         (frame, dir)
     }

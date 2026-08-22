@@ -96,12 +96,21 @@ fn season_key(season: Season) -> &'static str {
     }
 }
 
-/// 状态栏需要的全部输入：一次读三个来源（`world.clock`/`agent.health`/
-/// `agent.mana`），不做任何衍生计算——衍生（日/时/分换算）留给
-/// [`status_bar_text`] 内部完成，本类型只是把调用方已经有的三个值
-/// 打包传递，避免函数签名变成三个裸参数（未来若要加第四项状态量，
-/// 改这里一处即可，调用点不用跟着改参数列表）。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 状态栏需要的全部输入：一次读三个世界状态来源（`world.clock`/
+/// `agent.health`/`agent.mana`）加一个表现层专属的 `fps`，不做任何衍生
+/// 计算——衍生（日/时/分换算）留给 [`status_bar_text`] 内部完成，本
+/// 类型只是把调用方已经有的几个值打包传递，避免函数签名变成一长串裸
+/// 参数（未来若要加下一项状态量，改这里一处即可，调用点不用跟着改
+/// 参数列表）。
+///
+/// `fps` 是本结构体里唯一不来自 `WorldState` 的字段——见其文档：来自
+/// `ll_platform::fps::FpsCounter`，只活在表现层，`status_bar_text` 只是
+/// 把这个已经算好的浮点数格式化进文本，不知道、也不需要知道它是怎么
+/// 算出来的。因为混进了这个浮点字段，本结构体不再能派生 `Eq`（`f32`
+/// 不实现 `Eq`），只保留 `PartialEq`——这与
+/// `crate::widget::anim::AnimatedValue`（同样含 `f32` 字段、同样只派生
+/// `PartialEq`）是同一个理由。
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct StatusBarData {
     /// 世界时钟——`WorldState::clock`。
     pub clock: Tick,
@@ -109,6 +118,12 @@ pub struct StatusBarData {
     pub health: i32,
     /// 当前法力值——`Agent::mana`。
     pub mana: i32,
+    /// 当前显示用的平滑帧率（见 `ll_platform::fps` 模块文档「平滑算法」
+    /// 一节）——不是世界状态，纯粹的表现层读数，数字仍然瞬时显示（本
+    /// 字段本身已经是平滑过的值，`status_bar_text` 不会再对它做二次
+    /// 动画，符合「数字瞬时，条形动画」硬规则：这里既不是条形，平滑也
+    /// 发生在调用点而不是 `crate::widget::anim::AnimatedValue`）。
+    pub fps: f32,
 }
 
 /// 把 `clock` 换算成「第 N 天 HH:MM」——绝对天数（从世界创建那一刻
@@ -131,22 +146,28 @@ fn format_clock(clock: Tick) -> String {
 /// 产出状态栏这一整行的最终显示文本——纯函数，不接触 GPU，可脱离窗口
 /// 单元测试（本模块的测试就是这么做的）。
 ///
-/// 四段标签（时间/季节/生命/法力）经 `catalog` 按 `language` 解析，数值
-/// 本身用 Rust 格式化拼接，不经 Fluent 变量插值——理由见 crate 顶层
+/// 五段标签（时间/季节/生命/法力/帧率）经 `catalog` 按 `language` 解析，
+/// 数值本身用 Rust 格式化拼接，不经 Fluent 变量插值——理由见 crate 顶层
 /// 任务书「i18n」一节的既有边界：数字格式化本身不是「属性名/槽位名/
 /// 物品名」那一类需要翻译的用户可见名词。季节名（[`season_key`]）与
 /// 属性名/槽位名同一类——是一个有限枚举的展示名，因此和它们一样走
 /// `catalog.resolve`，不是数字格式化。
+///
+/// `fps` 按四舍五入到整数显示（`{:.0}`）——玩家关心的是「大概多少帧」，
+/// 平滑算法本身已经抹平了逐帧抖动（见 `ll_platform::fps` 模块文档），
+/// 小数位不会带来任何额外信息，只会让这行文本更拥挤。
 pub fn status_bar_text(data: &StatusBarData, catalog: &Catalog, language: &str) -> String {
     let time_label = catalog.resolve(language, "hud-status-time-label");
     let health_label = catalog.resolve(language, "hud-status-health-label");
     let mana_label = catalog.resolve(language, "hud-status-mana-label");
+    let fps_label = catalog.resolve(language, "hud-status-fps-label");
     let season_name = catalog.resolve(language, season_key(data.clock.season()));
     format!(
-        "{time_label} {} ({season_name})   {health_label} {}   {mana_label} {}",
+        "{time_label} {} ({season_name})   {health_label} {}   {mana_label} {}   {fps_label} {:.0}",
         format_clock(data.clock),
         data.health,
         data.mana,
+        data.fps,
     )
 }
 
@@ -176,8 +197,8 @@ mod tests {
         // 「本行是否含诊断宏」逐行判定豁免（见其模块文档），拆成多行
         // 会让字面量单独落在一行、不再触发豁免；与 `ll_i18n::Catalog`
         // 自身测试的既有写法（`crates/ll-i18n/src/lib.rs`）保持一致。
-        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\n").expect("测试用写入应当成功");
-        std::fs::write(dir.join("en.ftl"), "hud-status-time-label = Time\nhud-status-health-label = HP\nhud-status-mana-label = MP\nseason-spring-display_name = Spring\nseason-summer-display_name = Summer\nseason-autumn-display_name = Autumn\nseason-winter-display_name = Winter\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nhud-status-fps-label = 帧率\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("en.ftl"), "hud-status-time-label = Time\nhud-status-health-label = HP\nhud-status-mana-label = MP\nhud-status-fps-label = FPS\nseason-spring-display_name = Spring\nseason-summer-display_name = Summer\nseason-autumn-display_name = Autumn\nseason-winter-display_name = Winter\n").expect("测试用写入应当成功");
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -199,6 +220,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
 
         // Act
@@ -222,6 +244,7 @@ mod tests {
             clock,
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
 
         // Act
@@ -244,6 +267,7 @@ mod tests {
             clock: Tick(0),
             health: 42,
             mana: 50,
+            fps: 0.0,
         };
 
         // Act
@@ -266,6 +290,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 12,
+            fps: 0.0,
         };
 
         // Act
@@ -288,6 +313,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
 
         // Act
@@ -311,6 +337,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
 
         // Act
@@ -333,6 +360,7 @@ mod tests {
             clock: Tick(0),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
 
         // Act
@@ -391,6 +419,7 @@ mod tests {
             clock: Tick(40 * TICKS_PER_DAY),
             health: 100,
             mana: 50,
+            fps: 0.0,
         };
 
         // Act
@@ -398,6 +427,58 @@ mod tests {
 
         // Assert
         assert!(text.contains('夏'));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 状态栏文本包含四舍五入到整数的帧率() {
+        // Arrange
+        let dir = temp_dir("fps-value");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let data = StatusBarData {
+            clock: Tick(0),
+            health: 100,
+            mana: 50,
+            fps: 59.6,
+        };
+
+        // Act
+        let text = status_bar_text(&data, &catalog, "zh-CN");
+
+        // Assert：59.6 四舍五入显示为 60，不带小数位。
+        assert!(text.contains("60"));
+        assert!(!text.contains("59.6"));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 帧率不同时状态栏文本随之变化() {
+        // Arrange
+        let dir = temp_dir("fps-changes-text");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let low_fps = StatusBarData {
+            clock: Tick(0),
+            health: 100,
+            mana: 50,
+            fps: 30.0,
+        };
+        let high_fps = StatusBarData {
+            fps: 144.0,
+            ..low_fps
+        };
+
+        // Act
+        let low_text = status_bar_text(&low_fps, &catalog, "zh-CN");
+        let high_text = status_bar_text(&high_fps, &catalog, "zh-CN");
+
+        // Assert
+        assert_ne!(low_text, high_text);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

@@ -46,6 +46,7 @@ mod-dependency-version-mismatch = Mod { $dependent } depends on { $dependency } 
 hud-status-time-label = Time
 hud-status-health-label = HP
 hud-status-mana-label = MP
+hud-status-fps-label = FPS
 
 # Season display names — Tick::season() already computes the season;
 # these are only the display-name mapping (see season_key in

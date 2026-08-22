@@ -40,12 +40,24 @@
 //!
 //! 布局因此是四块面板固定分区平铺，不重叠、不遮挡地图核心视口太多——
 //! 具体坐标见 [`render::render_hud`] 与各面板模块的 `DEFAULT_*` 常量。
+//!
+//! # 世界地图（[`world_map`]）是第一个例外：M 键切换
+//!
+//! 上一节的论证只覆盖状态栏/角色面板/背包/装备栏这四块——它们不做
+//! 切换的第 1 条理由（可验证性）在世界地图这里不成立：世界地图不是
+//! 「同一份内容换个显示时机」，而是一块只有玩家主动查看才需要占据
+//! 屏幕的独立面板（长期常驻会一直遮住地图核心视口），且实机验收不再
+//! 只能靠「截一张图」，可以拆成程序化断言（切换状态真的翻转、面板真的
+//! 被加入渲染帧）与「初始状态设为已打开」的实机截图两层，见
+//! `ll_game::app` 模块文档与 `ll_platform::input::GameKey::Map` 文档
+//! ——因此世界地图选择做成 M 键切换,不进四块常驻面板的行列。
 
 pub mod character_panel;
 pub mod equipment_panel;
 pub mod inventory_panel;
 pub mod render;
 pub mod status_bar;
+pub mod world_map;
 
 use ll_core::ident::ContentIndex;
 use ll_i18n::Catalog;

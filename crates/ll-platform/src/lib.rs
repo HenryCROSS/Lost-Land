@@ -5,6 +5,7 @@
 //! 「换一个操作系统时它是否需要改」。
 
 pub mod config;
+pub mod fps;
 pub mod input;
 pub mod jobs;
 pub mod keybind;

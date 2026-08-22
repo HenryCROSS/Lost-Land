@@ -62,6 +62,7 @@ mod-dependency-version-mismatch = 模组 { $dependent } 依赖 { $dependency } �
 hud-status-time-label = 时间
 hud-status-health-label = 生命
 hud-status-mana-label = 法力
+hud-status-fps-label = 帧率
 
 # 四季展示名——Tick::season() 现成算出，这里只做展示名映射，不重算
 # 季节本身（见 crates/ll-ui/src/hud/status_bar.rs 的 season_key）。
