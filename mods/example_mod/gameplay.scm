@@ -24,6 +24,8 @@
 ;;   register-item-use-effect              crates/ll-mod/src/script_item_api.rs
 ;;   register-item-penetration             crates/ll-mod/src/script_item_api.rs
 ;;   register-race-starting-item           crates/ll-mod/src/script_race_api.rs
+;;   register-damage-formula               crates/ll-mod/src/script_damage_formula_api.rs
+;;   register-item-damage-formula          crates/ll-mod/src/script_item_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
 (register-class "examplemod:necromancer" "examplemod:necromancer_display_name" "willpower")
@@ -215,3 +217,44 @@
 (register-item "examplemod:crude_dagger" "examplemod:crude_dagger_display_name" 1 500 8000 20)
 (register-race-starting-item "examplemod:goblin" "examplemod:crude_dagger" 1)
 (register-race-starting-item "examplemod:goblin" "examplemod:arrow" 2)
+
+;; 伤害公式引擎批次：knowledge/design/damage-formula-mod-api.md 四节
+;; 「两个示例，证明这是『不同的一套规则』而不是调系数」的真实版本——
+;; 本批次公式只算「送进 damage_after_defense 的攻击力数值」（任务
+;; 硬要求一，见 crates/ll-sim/src/formula.rs 模块文档「公式只算
+;; 『攻击力』」一节），不像设计文档四节原文那样在公式内部重新实现
+;; 整条减伤链路,两条公式因此比原文示例更短,但仍然在四个维度上截然
+;; 不同,不是同一套算法调了两个系数：
+;;
+;;   examplemod:iron_sword_formula——纯物理，恒定确定：攻击力永远是
+;;     "有效力量 + 力量调整值"，同样的输入永远算出同样的结果，不含
+;;     任何随机性、不理会暴击。
+;;   examplemod:flame_longbow_formula——骰子驱动，风格截然不同：
+;;     (1) 随机性——攻击力由 1d10（暴击时 2d10，D&D 5e 真实暴击规则：
+;;         骰子数翻倍而不是最终结果乘二）决定，不是代数式；
+;;     (2) 依赖的属性不同——用敏捷调整值（远程武器），不是力量；
+;;     (3) 下限的语义不同——iron_sword_formula 没有下限（纯加法，可能
+;;         算出很小的值）,flame_longbow_formula 有一个"至少 1"的绝对
+;;         下限（"这一箭无论如何总能划出一点伤害"）；
+;;     (4) 暴击的处理点不同——iron_sword_formula 完全没有暴击概念,
+;;         flame_longbow_formula 把暴击接进了骰子数量。
+;; 与设计文档四节「示例二」同一条论证:随机性来源、依赖的输入、下限
+;; 语义、暴击处理点四个维度都不同,不是可以靠调一个系数从一条公式
+;; 得到另一条的关系。
+(register-damage-formula "examplemod:iron_sword_formula"
+  (quote (+ attack-power str-mod)))
+(register-damage-formula "examplemod:flame_longbow_formula"
+  (quote (max 1 (if (= crit 1) (+ (d 2 10) dex-mod) (+ (d 1 10) dex-mod)))))
+
+;; 铁剑（已在上面第一批注册）现在显式声明使用确定性公式——证明
+;; register-item-damage-formula 这个新脚本 API 真的能被 mod 脚本调用，
+;; 且注册出来的引用真的能走真实 resolve_attack + apply 改变结算出的
+;; 伤害——ADR 0018「玩法层内容必须能从 mod 脚本注册，且要有真实 mod
+;; 脚本为证」，crates/ll-mod/tests/example_mod_damage_formula.rs 是
+;; 那份证据。
+(register-item-damage-formula "examplemod:iron_sword" "examplemod:iron_sword_formula")
+
+;; 新武器：火焰长弓——骰子驱动公式的真实挂载对象，占用主手槽位。
+(register-item "examplemod:flame_longbow" "examplemod:flame_longbow_display_name" 1 4000 60000 90)
+(register-item-equip-mask "examplemod:flame_longbow" (list "main-hand"))
+(register-item-damage-formula "examplemod:flame_longbow" "examplemod:flame_longbow_formula")

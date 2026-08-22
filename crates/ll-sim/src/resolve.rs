@@ -62,6 +62,7 @@ use crate::combat::{
 };
 use crate::effect::Effect;
 use crate::experience::ExperienceCatalog;
+use crate::formula::{DamageFormulaCatalog, FormulaInputs, NoFormulas, eval_formula};
 use crate::intent::{Direction, Intent};
 use crate::item::{
     EquipSlot, ItemCatalog, ItemStack, NoItems, SlotMask, StatTarget, can_merge, merge_stacks,
@@ -438,6 +439,7 @@ pub fn resolve_with_skills_and_traits(
         traits,
         &NoResourcePools,
         &NoItems,
+        &NoFormulas,
     )
 }
 
@@ -475,6 +477,7 @@ pub fn resolve_with_skills_traits_and_pools(
         traits,
         pools,
         &NoItems,
+        &NoFormulas,
     )
 }
 
@@ -510,6 +513,45 @@ pub fn resolve_with_skills_traits_pools_and_items(
         traits,
         pools,
         items,
+        &NoFormulas,
+    )
+}
+
+/// [`resolve`] 的最完整入口：在
+/// [`resolve_with_skills_traits_pools_and_items`] 之上再额外接收一份
+/// 伤害公式目录，用于结算 [`Intent::Attack`] 时按武器显式声明的公式
+/// （或没有声明时的全局默认公式）算出攻击力数值（伤害公式引擎批次
+/// 新增，见 [`resolve_attack`] 文档「伤害公式接线」一节）。
+///
+/// 七层入口而不是给某个既有入口加参数，理由同 [`resolve_with_skills`]
+/// 文档：不强迫仓库里已有的全部调用点都多传一份公式目录——传
+/// [`NoFormulas`] 与"不传"在行为上完全等价（两者都让
+/// `resolve_attack` 使用同一条全局默认公式，逐行复现接入公式引擎之前
+/// 的既有行为，见 `crate::formula` 模块文档「公式只算『攻击力』」
+/// 一节与本模块「行为等价」测试），本函数只服务真正想让武器显式声明
+/// 的公式生效的调用方（`ll_mod::formula::RegistryFormulas` 现在就是
+/// 这样的真实实现）。
+#[allow(clippy::too_many_arguments)]
+pub fn resolve_with_skills_traits_pools_items_and_formulas(
+    world: &WorldState,
+    intent: &Intent,
+    skills: &dyn SkillCatalog,
+    race_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    pools: &dyn ResourcePoolCatalog,
+    items: &dyn ItemCatalog,
+    formulas: &dyn DamageFormulaCatalog,
+) -> Vec<Effect> {
+    resolve_dispatch(
+        world,
+        intent,
+        skills,
+        &NoQuests,
+        race_traits,
+        traits,
+        pools,
+        items,
+        formulas,
     )
 }
 
@@ -552,20 +594,22 @@ pub fn resolve_with_skills_and_quests(
         &NoTraits,
         &NoResourcePools,
         &NoItems,
+        &NoFormulas,
     )
 }
 
 /// [`resolve_with_skills_and_quests`]/[`resolve_with_skills_and_traits`]/
 /// [`resolve_with_skills_traits_and_pools`]/
-/// [`resolve_with_skills_traits_pools_and_items`] 共用的核心分派逻辑——
-/// 四个公开入口都只是"缺一份目录时传对应的 `No*` 空实现"的薄封装，
-/// 真正的 `Intent` 匹配与效果产出只写这一份，不重复。
+/// [`resolve_with_skills_traits_pools_and_items`]/
+/// [`resolve_with_skills_traits_pools_items_and_formulas`] 共用的核心
+/// 分派逻辑——五个公开入口都只是"缺一份目录时传对应的 `No*` 空实现"
+/// 的薄封装，真正的 `Intent` 匹配与效果产出只写这一份，不重复。
 ///
-/// `#[allow(clippy::too_many_arguments)]`：八个参数分别对应七种
-/// 结算需要的只读依赖（技能/任务/种族天赋来源/天赋/资源池/物品目录）
-/// 加 `world`/`intent` 本身，拆分成多份目录正是「resolve 依赖倒置」
-/// 这套手法刻意要做的事（见模块文档同一批目录的既有取舍），不是可以
-/// 合并成一个结构体的意外堆叠——与
+/// `#[allow(clippy::too_many_arguments)]`：九个参数分别对应八种
+/// 结算需要的只读依赖（技能/任务/种族天赋来源/天赋/资源池/物品/伤害
+/// 公式目录）加 `world`/`intent` 本身，拆分成多份目录正是「resolve
+/// 依赖倒置」这套手法刻意要做的事（见模块文档同一批目录的既有取舍），
+/// 不是可以合并成一个结构体的意外堆叠——与
 /// `crates/ll-sim/tests/resource_pool_resolve.rs` 的
 /// `spawn_agent_with_pool` 同一条既有先例。
 #[allow(clippy::too_many_arguments)]
@@ -578,11 +622,12 @@ fn resolve_dispatch(
     traits: &dyn TraitCatalog,
     pools: &dyn ResourcePoolCatalog,
     items: &dyn ItemCatalog,
+    formulas: &dyn DamageFormulaCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => resolve_wait(world, actor, race_traits, traits, pools),
         Intent::Move { actor, dir } => resolve_move(world, actor, dir),
-        Intent::Attack { actor, target } => resolve_attack(world, actor, target, items),
+        Intent::Attack { actor, target } => resolve_attack(world, actor, target, items, formulas),
         Intent::OpenDoor { actor, pos } => resolve_open_door(world, actor, pos),
         Intent::EnterSpace { actor, target } => resolve_enter_space(world, actor, target),
         Intent::ExitSpace { actor } => resolve_exit_space(world, actor),
@@ -1974,11 +2019,36 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 的确定性伤害断言或黄金基准哈希（`crates/ll-sim/tests/replay.rs`）
 /// 变成依赖随机数的赌博：即便这里确实调用了 `DetRng`，`chance(0, ..)`
 /// 恒返回 `false`，`damage` 恒等于 `damage_after_defense` 的原始结果。
+///
+/// # 伤害公式接线（伤害公式引擎批次）
+///
+/// 攻击力数值的来源从「恒读 `attacker_derived.attribute(AttributeKind::Strength)`」
+/// 改为「查 [`DamageFormulaCatalog::formula_for`]，用武器显式声明的
+/// 公式（[`crate::item::ItemRule::damage_formula`]，没有声明时退回
+/// 全局默认公式）算出一个攻击力数值」——**`damage_after_defense` 本身
+/// 不改一个字**：公式的输出只是替换了原先直接读取的那个标量，送进
+/// 这条既有减伤链路的方式完全一样，见 `crate::formula` 模块文档「公式
+/// 只算『攻击力』」一节。全局默认公式
+/// （[`crate::formula::default_attack_power_instructions`]）是单条
+/// `Ref(AttackPower)` 指令，原样把
+/// `attacker_derived.attribute(AttributeKind::Strength)` 这个输入交回
+/// 去——没有任何武器/技能声明公式时，本函数因此逐行复现接入公式引擎
+/// 之前的既有行为，是「行为等价」测试要验证的核心承诺。
+///
+/// 骰子随机流（`FormulaOp::Dice`）与暴击判定各自独立——用
+/// `world.clock.0` 异或一个不同于暴击事件计数的固定标签构造第二条
+/// `DetRng` 流（约束 C3：三元组身份不同，两条流互不干扰；约束 C5：
+/// 骰子取数顺序完全由公式编译产物的指令数组顺序决定，见
+/// `crate::formula::eval_formula` 文档）。不含骰子的公式（含全局默认
+/// 公式）永远不会调用这条流的任何方法,构造它本身没有可观测的副作用,
+/// 因此"要不要构造"不需要按 `needs_rng` 分支特判,见
+/// `FormulaDef::needs_rng` 文档。
 fn resolve_attack(
     world: &WorldState,
     actor: EntityId,
     target: EntityId,
     items: &dyn ItemCatalog,
+    formulas: &dyn DamageFormulaCatalog,
 ) -> Vec<Effect> {
     let Some(attacker) = world.actors.get(actor) else {
         return Vec::new();
@@ -2002,34 +2072,81 @@ fn resolve_attack(
         world.clock,
     );
 
-    let attack_power = attacker_derived.attribute(AttributeKind::Strength);
+    let attack_power_input = attacker_derived.attribute(AttributeKind::Strength);
     // 武器：攻击者主手槽位当前装备的物品——见本函数文档「武器引用」
     // 一节，选择乙（结算时查装备栏，不改 `Intent::Attack` 签名）。
     let weapon = attacker.equipment.get(&EquipSlot::MAIN_HAND);
     let weapon_def = weapon.map(|stack| stack.def);
-    // 穿透：查主手武器的 def 向物品目录要 penetration；已损坏的武器
-    // 不提供穿透——见本函数文档「穿透」一节。
-    let penetration = weapon
+    // 已损坏的武器既不提供穿透、也不提供显式公式引用——见本函数文档
+    // 「穿透」一节,伤害公式与穿透走同一条"损坏即失效"的既有纪律。
+    let weapon_rule = weapon
         .filter(|stack| stack.durability != Some(0))
-        .and_then(|stack| items.item(stack.def))
+        .and_then(|stack| items.item(stack.def));
+    let penetration = weapon_rule
+        .as_ref()
         .map(|rule| rule.penetration)
         .unwrap_or(Penetration::NONE);
-    let damage = damage_after_defense(attack_power, defender_derived.armor(), penetration);
+    let explicit_formula = weapon_rule.as_ref().and_then(|rule| rule.damage_formula);
+
     // 暴击判定（幸运并入 AttributeKind 批次）：读
     // `attacker_derived.attribute(AttributeKind::Luck)`——派生值，装备/
     // 状态效果加的幸运在这里生效，见本函数文档「暴击」一节。约束 C3
     // ——随机性必须走 `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`，
     // 这里用攻击者自己的实体 ID 与当前世界时钟作三元组的后两项，与
     // `ll_mod::script_behavior_source` 的 AI 决策随机流同一套取法
-    // （见其文档「C3」一节）；约束 C5——本函数在整条 `resolve_attack`
-    // 里只消费这一次随机数，取数顺序天然确定，不存在「先读了别的随机
-    // 数再读这个」的排列组合问题。
+    // （见其文档「C3」一节）；约束 C5——本函数在暴击判定这一步只消费
+    // 这一次随机数，取数顺序天然确定，不存在「先读了别的随机数再读
+    // 这个」的排列组合问题。判定挪到公式求值**之前**（此前挪到公式
+    // 求值之后）——公式的 `Crit` 操作数需要这个结果作为输入,但这
+    // 只是「谁先计算」的顺序调整,不改变这次判定本身消费哪条流、算出
+    // 什么结果,见本函数文档「伤害公式接线」一节。
     let mut crit_rng =
         ll_core::rng::DetRng::for_entity(world.seed, actor.as_u64(), world.clock.0 as u64);
     // 分母 1000：千分比运算的分母，与 `combat::crit_chance_permille`
     // 返回值同一个刻度（见该函数文档「夹在 0..=1000」）。
     let effective_luck = attacker_derived.attribute(AttributeKind::Luck);
     let is_critical = crit_rng.chance(crit_chance_permille(effective_luck).max(0) as u32, 1000);
+
+    let formula_def = formulas.formula_for(explicit_formula);
+    // 六项主属性的原始值（不是调整值）——按 `AttributeKind` 判别值
+    // 下标，供 `FormulaInputs::new` 换算成 `str-mod`~`cha-mod` 六个
+    // 操作数的调整值，见 `crate::formula::FormulaInputs` 文档。
+    let raw_attributes = [
+        attacker_derived.attribute(AttributeKind::Strength),
+        attacker_derived.attribute(AttributeKind::Dexterity),
+        attacker_derived.attribute(AttributeKind::Constitution),
+        attacker_derived.attribute(AttributeKind::Intelligence),
+        attacker_derived.attribute(AttributeKind::Willpower),
+        attacker_derived.attribute(AttributeKind::Charisma),
+        effective_luck,
+    ];
+    let formula_inputs = FormulaInputs::new(
+        i64::from(attack_power_input),
+        i64::from(defender_derived.armor()),
+        i64::from(penetration.flat),
+        i64::from(penetration.permille),
+        raw_attributes,
+        is_critical,
+    );
+    // 骰子随机流：与暴击判定各自独立的第二条 DetRng（见本函数文档
+    // 「伤害公式接线」一节）——`0xD1CE_0000_0000_0000` 只是让这条流的
+    // 事件计数与暴击那条（恒为 `world.clock.0 as u64`）不同的一个固定
+    // 标签,没有数值含义上的特殊性,只要求"与暴击那条流的三元组不同"。
+    const DAMAGE_FORMULA_DICE_EVENT_TAG: u64 = 0xD1CE_0000_0000_0000;
+    let mut dice_rng = ll_core::rng::DetRng::for_entity(
+        world.seed,
+        actor.as_u64(),
+        (world.clock.0 as u64) ^ DAMAGE_FORMULA_DICE_EVENT_TAG,
+    );
+    let attack_power_raw = eval_formula(&formula_def, &formula_inputs, &mut dice_rng);
+    // 饱和转换到 i32——公式内部全程 i64 饱和运算（见 `eval_formula`
+    // 文档），`damage_after_defense` 的入参类型是 i32,这里用饱和而不是
+    // 直接 `as i32` 截断,避免一个极端公式在这一步产出静默环绕的错误
+    // 数值（`as` 转换在数值超界时按位截断,不是钳位,那是比"公式确实
+    // 算出一个夸张的大数"更危险的第二个错误）。
+    let attack_power = attack_power_raw.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+
+    let damage = damage_after_defense(attack_power, defender_derived.armor(), penetration);
     let damage = if is_critical {
         apply_crit_multiplier(damage)
     } else {
@@ -3424,6 +3541,67 @@ mod tests {
 
         // Assert：目标生命值精确反映了「叠加修正后的力量」算出的伤害，
         // 不是裸力量值算出的那个（更低的）数字。
+        let victim_after = world.actors.get(victim).expect("生命值远高于伤害,不会死亡");
+        assert_eq!(victim_after.health, 1_000 - expected_damage);
+    }
+
+    /// 任务硬要求二「全局默认公式必须逐行复现现在的行为」的验收——不
+    /// 走 [`NoFormulas`] 这条「没接目录」的短路便利类型，而是构造一个
+    /// 真正实现 [`DamageFormulaCatalog`] 的公式目录（其 `formula_for`
+    /// 恒返回 [`crate::formula::default_attack_power_instructions`]
+    /// 这条全局默认公式——与 `ll_mod::base_damage_formula::register_base_damage_formula`
+    /// 生产环境真正注册出来的那条公式逐字同构），证明"即便真的经过公式
+    /// 求值这条代码路径，没有任何 mod 指定公式时算出的伤害仍然与接入
+    /// 公式引擎之前完全一致"，不是因为走了某条特殊的空实现快捷路径才
+    /// 凑巧相等。
+    struct DefaultOnlyFormulas;
+
+    impl DamageFormulaCatalog for DefaultOnlyFormulas {
+        fn formula_for(
+            &self,
+            _explicit: Option<ll_core::ident::ContentIndex>,
+        ) -> crate::formula::FormulaDef {
+            crate::formula::FormulaDef {
+                id: ll_core::ident::ContentIndex::default(),
+                instructions: crate::formula::default_attack_power_instructions(),
+                needs_rng: false,
+            }
+        }
+    }
+
+    #[test]
+    fn 全局默认公式接入公式引擎后伤害数值与接入前逐位相同() {
+        // Arrange：真实经过 DamageFormulaCatalog 这条代码路径（不是
+        // NoFormulas 的短路），且没有任何武器显式声明公式（NoItems 恒
+        // 让 explicit_formula 为 None）。
+        let (mut world, _terrain_ids) = test_world();
+        let attacker = spawn_agent(&mut world);
+        let victim_pos = east_of_spawn(&world);
+        let victim = spawn_named_agent(&mut world, victim_pos, 1_000);
+        // 期望伤害：接入公式引擎之前的既有实现——攻击力恒等于
+        // BaseStats::BASELINE.strength，无穿透，防御为零。
+        let expected_damage =
+            damage_after_defense(BaseStats::BASELINE.strength, 0, Penetration::NONE);
+
+        // Act
+        let effects = resolve_with_skills_traits_pools_items_and_formulas(
+            &world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+            &NoSkills,
+            &NoTraitGrants,
+            &NoTraits,
+            &NoResourcePools,
+            &NoItems,
+            &DefaultOnlyFormulas,
+        );
+        for effect in &effects {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert
         let victim_after = world.actors.get(victim).expect("生命值远高于伤害,不会死亡");
         assert_eq!(victim_after.health, 1_000 - expected_damage);
     }

@@ -48,6 +48,7 @@ use crate::trait_def::TraitTable;
 use crate::{discover, topo};
 
 use crate::active_registry::{set_active_registry, take_active_registry};
+use crate::formula::FormulaTable;
 use crate::script_class_api::{
     register_class_api, set_active_target as set_active_class_target,
     take_active_target as take_active_class_target,
@@ -55,6 +56,10 @@ use crate::script_class_api::{
 use crate::script_clip_api::{
     register_clip_api, set_active_target as set_active_clip_target,
     take_active_target as take_active_clip_target,
+};
+use crate::script_damage_formula_api::{
+    register_damage_formula_api, set_active_target as set_active_formula_target,
+    take_active_target as take_active_formula_target,
 };
 use crate::script_item_api::{
     register_item_api, set_active_target as set_active_item_target,
@@ -140,6 +145,9 @@ pub struct GameplayTables<'a> {
     /// 物品表（P6 第一批：物品基础新增）——`register-item` 的写入
     /// 目标，见 `crate::item` 模块文档。
     pub item: &'a mut ItemTable,
+    /// 伤害公式定义表（伤害公式引擎批次新增）——`register-damage-formula`
+    /// 的写入目标，见 `crate::formula` 模块文档。
+    pub formula: &'a mut FormulaTable,
 }
 
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
@@ -268,6 +276,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut trait_def = TraitTable::new();
     let mut resource_pool = ResourcePoolTable::new();
     let mut item = ItemTable::new();
+    let mut formula = FormulaTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -281,6 +290,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         trait_def: &mut trait_def,
         resource_pool: &mut resource_pool,
         item: &mut item,
+        formula: &mut formula,
     };
     for entry in &manifest.entry_points {
         if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
@@ -404,6 +414,7 @@ fn load_one_script(
     set_active_trait_target(std::mem::take(tables.trait_def));
     set_active_resource_pool_target(std::mem::take(tables.resource_pool));
     set_active_item_target(std::mem::take(tables.item));
+    set_active_formula_target(std::mem::take(tables.formula));
 
     let mut engine = ScriptEngine::new();
     register_terrain_api(&mut engine);
@@ -417,6 +428,7 @@ fn load_one_script(
     register_trait_api(&mut engine);
     register_resource_pool_api(&mut engine);
     register_item_api(&mut engine);
+    register_damage_formula_api(&mut engine);
     let result = engine.load_source(source.clone());
 
     *registry = take_active_registry();
@@ -433,6 +445,7 @@ fn load_one_script(
     *tables.trait_def = take_active_trait_target();
     *tables.resource_pool = take_active_resource_pool_target();
     *tables.item = take_active_item_target();
+    *tables.formula = take_active_formula_target();
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -518,6 +531,7 @@ mod tests {
         trait_def: TraitTable,
         resource_pool: ResourcePoolTable,
         item: ItemTable,
+        formula: FormulaTable,
     }
 
     impl OwnedTables {
@@ -535,6 +549,7 @@ mod tests {
                 trait_def: &mut self.trait_def,
                 resource_pool: &mut self.resource_pool,
                 item: &mut self.item,
+                formula: &mut self.formula,
             }
         }
     }

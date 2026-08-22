@@ -156,6 +156,7 @@ use ll_world::terrain::{TerrainKind, TerrainTable};
 
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
+use crate::formula::FormulaTable;
 use crate::item::ItemTable;
 use crate::quest::{QuestCondition, QuestTable};
 use crate::race::RaceTable;
@@ -165,6 +166,7 @@ use crate::skill::SkillTable;
 use crate::subclass::SubclassTable;
 use crate::trait_def::{RuleModifier, TraitTable};
 use crate::xp_curve::XpCurveTable;
+use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 
 /// 内容哈希算法的版本号——每当"同一份内容在旧代码与新代码下会算出不同
 /// 的摘要"就必须递增。
@@ -216,7 +218,17 @@ use crate::xp_curve::XpCurveTable;
 /// `ll_content::load_error::LoadError::ContentHashAlgorithmUpgraded` 正是
 /// 消费本常量升级信号的分支，这里只能用反引号纯文本指向，不能用
 /// intra-doc link。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 3;
+///
+/// 版本 4（伤害公式引擎批次）：两处独立的字节序列变化叠在一起——
+/// （一）新增第十三张内容表 [`ContentTableKind::Formula`]；（二）
+/// [`write_item_fields`] 新增混入 `ItemDef.damage_formula`，这正是
+/// 本模块文档「起因」一节点名的"老表新增字段也会漏"在本批次的真实
+/// 复现——上一批（内容值哈希覆盖面扩展）修的是"过去几个批次遗留的
+/// 漏哈希字段"，这一条是"新批次自己新增字段时,同一批次内当场补上"，
+/// 两者都要求递增版本号，理由相同：任何在本次改动之前写出、
+/// `generation_mods` 携带非空 `content_hash` 的存档，读档时都会在
+/// `check_mod_content` 一步被误判成 `ModContentMismatch`。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 4;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -264,6 +276,8 @@ pub enum ContentTableKind {
     /// [`crate::xp_curve::XpCurveBindings`]，见本模块文档「哈希覆盖哪些
     /// 字段」一节「例外，且是刻意的例外」一段。
     XpCurve = 12,
+    /// 伤害公式表（伤害公式引擎批次新增）。
+    Formula = 13,
 }
 
 /// 全部内容表的只读引用集合——供 [`apply_value_hashes`]/[`classify_index`]
@@ -300,6 +314,8 @@ pub struct ContentValueTables<'a> {
     /// [`crate::xp_curve::XpCurveBindings`]，理由同 [`ContentTableKind::XpCurve`]
     /// 文档。
     pub xp_curve: &'a XpCurveTable,
+    /// 伤害公式表（伤害公式引擎批次新增）。
+    pub formula: &'a FormulaTable,
 }
 
 /// 判定一个 `ContentIndex` 归属哪张内容表——[`entry_value_digest`] 用它
@@ -345,6 +361,7 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         resource_pool,
         item,
         xp_curve,
+        formula,
     } = *tables;
 
     let terrain_kind = TerrainKind::from_index(index);
@@ -372,6 +389,8 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         ContentTableKind::Item
     } else if xp_curve.get(index).is_some() {
         ContentTableKind::XpCurve
+    } else if formula.get(index).is_some() {
+        ContentTableKind::Formula
     } else {
         ContentTableKind::Opaque
     }
@@ -444,8 +463,11 @@ fn entry_value_digest(
         ContentTableKind::ResourcePool => {
             write_resource_pool_fields(&mut hasher, tables.resource_pool, index);
         }
-        ContentTableKind::Item => write_item_fields(&mut hasher, tables.item, index),
+        ContentTableKind::Item => {
+            write_item_fields(&mut hasher, tables.item, index, registry);
+        }
         ContentTableKind::XpCurve => write_xp_curve_fields(&mut hasher, tables.xp_curve, index),
+        ContentTableKind::Formula => write_formula_fields(&mut hasher, tables.formula, index),
         ContentTableKind::Opaque => {
             // 没有字段可哈希，只哈希 id 本身（已经在函数顶部写过）——
             // 与升级前的行为一致，这类内容"是否存在"仍然能被检测到,
@@ -894,16 +916,28 @@ fn write_rest_recovery_amount(hasher: &mut StateHasher, amount: RestRecoveryAmou
 }
 
 /// 混入 [`crate::item::ItemDef`] 的全部字段（内容值哈希覆盖面扩展
-/// 批次新增）——`base_weight`/`base_price` 是 `Milli` 定点整数
-/// （`pub struct Milli(pub i64)`），按普通 `i64` 处理；`use_effect`
-/// 复用既有的 [`write_skill_effect`]（与 `SkillDef.effect` 共用同一个
-/// 类型，见 [`crate::item::ItemDef::use_effect`] 文档「为什么复用
-/// `SkillEffect`」一节）。不接受 `&Registry` 参数——核实过
-/// `ItemDef` 当前没有任何 `ContentIndex` 字段（`equip_mask`/
-/// `stat_bonuses`/`use_effect`/`penetration` 均不携带），没有需要
-/// `Registry::resolve` 的字段，与其余表统一接受 `registry` 参数不同，
-/// 如实按实际需要签名，不为了"看起来一致"而假装用到。
-fn write_item_fields(hasher: &mut StateHasher, table: &ItemTable, index: ContentIndex) {
+/// 批次新增，伤害公式引擎批次追加 `damage_formula`）——`base_weight`/
+/// `base_price` 是 `Milli` 定点整数（`pub struct Milli(pub i64)`），
+/// 按普通 `i64` 处理；`use_effect` 复用既有的 [`write_skill_effect`]
+/// （与 `SkillDef.effect` 共用同一个类型，见
+/// [`crate::item::ItemDef::use_effect`] 文档「为什么复用 `SkillEffect`」
+/// 一节）。
+///
+/// # 现在接受 `&Registry` 参数——上一批「老表新增字段也会漏」的直接
+/// 教训
+///
+/// 升级前的文档曾断言"`ItemDef` 当前没有任何 `ContentIndex` 字段……
+/// 与其余表统一接受 `registry` 参数不同，如实按实际需要签名"——伤害
+/// 公式引擎批次给 `ItemDef` 新增了 `damage_formula: Option<ContentIndex>`
+/// 字段，这条断言的前提不再成立：本函数现在与其余表一样需要
+/// `Registry::resolve` 把 `ContentIndex` 换回 `NamespacedId` 字符串再
+/// 混入（模块文档「`ContentIndex` 字段」一节），不能再省略这个参数。
+fn write_item_fields(
+    hasher: &mut StateHasher,
+    table: &ItemTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
     let view = table
         .get(index)
         .expect("调用方已确认 is_defined，get 必返回 Some");
@@ -932,6 +966,7 @@ fn write_item_fields(hasher: &mut StateHasher, table: &ItemTable, index: Content
     }
     hasher.write_i64(i64::from(view.penetration.flat));
     hasher.write_i64(i64::from(view.penetration.permille));
+    write_optional_resolved(hasher, view.damage_formula, registry);
 }
 
 /// 混入一个 [`SlotMask`]——直接混入底层位表示
@@ -1055,6 +1090,125 @@ fn write_xp_curve_op(hasher: &mut StateHasher, op: &XpCurveOp) {
     }
 }
 
+/// 混入 [`ll_sim::formula::FormulaDef`] 的全部字段（伤害公式引擎批次
+/// 新增）——**除 `id` 外**，理由同 [`write_xp_curve_fields`] 对
+/// `XpCurveDef.id` 的处理（`entry_value_digest` 顶部已经写过同一个
+/// id，重复哈希只是冗余）。`needs_rng` 是编译期从 `instructions` 派生
+/// 出的布尔（`crate::script_damage_formula_api::register_damage_formula`
+/// 文档），不独立混入——它是 `instructions` 内容的纯函数，`instructions`
+/// 本身变化时它自动同步变化，不混入不会漏掉任何真实的内容差异，混入
+/// 反而是「同一份信息哈希两次」。
+fn write_formula_fields(hasher: &mut StateHasher, table: &FormulaTable, index: ContentIndex) {
+    let def = table
+        .get(index)
+        .expect("调用方已确认 classify_index 判定为 Formula，get 必返回 Some");
+    hasher.write_u64(def.instructions.len() as u64);
+    for op in &def.instructions {
+        write_formula_op(hasher, op);
+    }
+}
+
+/// 混入一个 [`FormulaOperand`]，理由同 [`write_resource_cost`]——七个
+/// 变体均不含浮点；`AttributeModifier` 携带 [`ll_world::entity::AttributeKind`]，
+/// 是一个封闭枚举（不是 `ContentIndex`），直接混入判别值,不需要经过
+/// `Registry::resolve`。
+fn write_formula_operand(hasher: &mut StateHasher, operand: &FormulaOperand) {
+    match operand {
+        FormulaOperand::Const(value) => {
+            hasher.write_u64(0);
+            hasher.write_i64(*value);
+        }
+        FormulaOperand::Local(slot) => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(*slot));
+        }
+        FormulaOperand::AttackPower => hasher.write_u64(2),
+        FormulaOperand::Defense => hasher.write_u64(3),
+        FormulaOperand::PenetrationFlat => hasher.write_u64(4),
+        FormulaOperand::PenetrationPermille => hasher.write_u64(5),
+        FormulaOperand::AttributeModifier(kind) => {
+            hasher.write_u64(6);
+            hasher.write_u64(*kind as u64);
+        }
+        FormulaOperand::Crit => hasher.write_u64(7),
+    }
+}
+
+/// 混入一个 [`FormulaCond`]，理由同 [`write_resource_cost`]。
+fn write_formula_cond(hasher: &mut StateHasher, cond: &FormulaCond) {
+    let (discriminant, a, b) = match cond {
+        FormulaCond::Lt(a, b) => (0, a, b),
+        FormulaCond::Le(a, b) => (1, a, b),
+        FormulaCond::Gt(a, b) => (2, a, b),
+        FormulaCond::Ge(a, b) => (3, a, b),
+        FormulaCond::Eq(a, b) => (4, a, b),
+        FormulaCond::Ne(a, b) => (5, a, b),
+    };
+    hasher.write_u64(discriminant);
+    write_formula_operand(hasher, a);
+    write_formula_operand(hasher, b);
+}
+
+/// 混入一个 [`FormulaOp`]，理由同 [`write_resource_cost`]。
+fn write_formula_op(hasher: &mut StateHasher, op: &FormulaOp) {
+    match op {
+        FormulaOp::Ref(operand) => {
+            hasher.write_u64(0);
+            write_formula_operand(hasher, operand);
+        }
+        FormulaOp::Add(a, b) => {
+            hasher.write_u64(1);
+            write_formula_operand(hasher, a);
+            write_formula_operand(hasher, b);
+        }
+        FormulaOp::Sub(a, b) => {
+            hasher.write_u64(2);
+            write_formula_operand(hasher, a);
+            write_formula_operand(hasher, b);
+        }
+        FormulaOp::Mul(a, b) => {
+            hasher.write_u64(3);
+            write_formula_operand(hasher, a);
+            write_formula_operand(hasher, b);
+        }
+        FormulaOp::Div(a, b) => {
+            hasher.write_u64(4);
+            write_formula_operand(hasher, a);
+            write_formula_operand(hasher, b);
+        }
+        FormulaOp::MulPermille(a, b) => {
+            hasher.write_u64(5);
+            write_formula_operand(hasher, a);
+            write_formula_operand(hasher, b);
+        }
+        FormulaOp::Min(a, b) => {
+            hasher.write_u64(6);
+            write_formula_operand(hasher, a);
+            write_formula_operand(hasher, b);
+        }
+        FormulaOp::Max(a, b) => {
+            hasher.write_u64(7);
+            write_formula_operand(hasher, a);
+            write_formula_operand(hasher, b);
+        }
+        FormulaOp::Select {
+            cond,
+            if_true,
+            if_false,
+        } => {
+            hasher.write_u64(8);
+            write_formula_cond(hasher, cond);
+            write_formula_operand(hasher, if_true);
+            write_formula_operand(hasher, if_false);
+        }
+        FormulaOp::Dice { count, sides } => {
+            hasher.write_u64(9);
+            hasher.write_u64(u64::from(*count));
+            hasher.write_u64(u64::from(*sides));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1103,6 +1257,7 @@ mod tests {
         ResourcePoolTable,
         ItemTable,
         XpCurveTable,
+        FormulaTable,
     ) {
         (
             TerrainTable::new(),
@@ -1116,6 +1271,7 @@ mod tests {
             ResourcePoolTable::new(),
             ItemTable::new(),
             XpCurveTable::new(),
+            FormulaTable::new(),
         )
     }
 
@@ -1143,6 +1299,7 @@ mod tests {
             pool_a,
             item_a,
             xp_a,
+            formula_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1163,6 +1320,7 @@ mod tests {
             pool_b,
             item_b,
             xp_b,
+            formula_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1181,6 +1339,7 @@ mod tests {
                 resource_pool: &pool_a,
                 item: &item_a,
                 xp_curve: &xp_a,
+                formula: &formula_a,
             },
         );
         apply_value_hashes(
@@ -1198,6 +1357,7 @@ mod tests {
                 resource_pool: &pool_b,
                 item: &item_b,
                 xp_curve: &xp_b,
+                formula: &formula_b,
             },
         );
 
@@ -1238,6 +1398,7 @@ mod tests {
             pool_a,
             item_a,
             xp_a,
+            formula_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1264,6 +1425,7 @@ mod tests {
             pool_b,
             item_b,
             xp_b,
+            formula_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1282,6 +1444,7 @@ mod tests {
                 resource_pool: &pool_a,
                 item: &item_a,
                 xp_curve: &xp_a,
+                formula: &formula_a,
             },
         );
         apply_value_hashes(
@@ -1299,6 +1462,7 @@ mod tests {
                 resource_pool: &pool_b,
                 item: &item_b,
                 xp_curve: &xp_b,
+                formula: &formula_b,
             },
         );
 
@@ -1338,6 +1502,7 @@ mod tests {
             pool_a,
             item_a,
             xp_a,
+            formula_a,
         ) = empty_non_race_tables();
 
         let mut registry_b = Registry::new();
@@ -1360,6 +1525,7 @@ mod tests {
             pool_b,
             item_b,
             xp_b,
+            formula_b,
         ) = empty_non_race_tables();
 
         // Act
@@ -1378,6 +1544,7 @@ mod tests {
                 resource_pool: &pool_a,
                 item: &item_a,
                 xp_curve: &xp_a,
+                formula: &formula_a,
             },
         );
         apply_value_hashes(
@@ -1395,6 +1562,7 @@ mod tests {
                 resource_pool: &pool_b,
                 item: &item_b,
                 xp_curve: &xp_b,
+                formula: &formula_b,
             },
         );
 
@@ -1426,6 +1594,7 @@ mod tests {
                 stat_bonuses: Vec::new(),
                 use_effect: None,
                 penetration: Penetration::NONE,
+                damage_formula: None,
             }
         }
 
@@ -1447,6 +1616,7 @@ mod tests {
             pool_a,
             race_a,
             xp_a,
+            formula_a,
         ) = (
             TerrainTable::new(),
             ClassTable::new(),
@@ -1459,6 +1629,7 @@ mod tests {
             ResourcePoolTable::new(),
             RaceTable::new(),
             XpCurveTable::new(),
+            FormulaTable::new(),
         );
 
         let mut registry_b = Registry::new();
@@ -1479,6 +1650,7 @@ mod tests {
             pool_b,
             race_b,
             xp_b,
+            formula_b,
         ) = (
             TerrainTable::new(),
             ClassTable::new(),
@@ -1491,6 +1663,7 @@ mod tests {
             ResourcePoolTable::new(),
             RaceTable::new(),
             XpCurveTable::new(),
+            FormulaTable::new(),
         );
 
         // Act
@@ -1509,6 +1682,7 @@ mod tests {
                 resource_pool: &pool_a,
                 item: &item_a,
                 xp_curve: &xp_a,
+                formula: &formula_a,
             },
         );
         apply_value_hashes(
@@ -1526,6 +1700,7 @@ mod tests {
                 resource_pool: &pool_b,
                 item: &item_b,
                 xp_curve: &xp_b,
+                formula: &formula_b,
             },
         );
 
@@ -1559,6 +1734,7 @@ mod tests {
                 stat_bonuses: Vec::new(),
                 use_effect: None,
                 penetration: Penetration::NONE,
+                damage_formula: None,
             }
         }
 
@@ -1604,6 +1780,7 @@ mod tests {
                 resource_pool: &empty_forward.8,
                 item: &item_forward,
                 xp_curve: &empty_forward.10,
+                formula: &empty_forward.11,
             },
         );
         apply_value_hashes(
@@ -1621,6 +1798,7 @@ mod tests {
                 resource_pool: &empty_reversed.8,
                 item: &item_reversed,
                 xp_curve: &empty_reversed.10,
+                formula: &empty_reversed.11,
             },
         );
 
@@ -1660,6 +1838,7 @@ mod tests {
             pool_f,
             item_f,
             xp_f,
+            formula_f,
         ) = empty_non_race_tables();
 
         let mut registry_reversed = Registry::new();
@@ -1684,6 +1863,7 @@ mod tests {
             pool_r,
             item_r,
             xp_r,
+            formula_r,
         ) = empty_non_race_tables();
 
         // Act：两边分配到的 ContentIndex 确实互相对调，证明这不是一次
@@ -1704,6 +1884,7 @@ mod tests {
                 resource_pool: &pool_f,
                 item: &item_f,
                 xp_curve: &xp_f,
+                formula: &formula_f,
             },
         );
         apply_value_hashes(
@@ -1721,6 +1902,7 @@ mod tests {
                 resource_pool: &pool_r,
                 item: &item_r,
                 xp_curve: &xp_r,
+                formula: &formula_r,
             },
         );
 
@@ -1764,6 +1946,7 @@ mod tests {
             pool_before,
             item_before,
             xp_before,
+            formula_before,
         ) = empty_non_race_tables();
 
         let mut registry_after = Registry::new();
@@ -1789,6 +1972,7 @@ mod tests {
             pool_after,
             item_after,
             xp_after,
+            formula_after,
         ) = empty_non_race_tables();
 
         // Act
@@ -1807,6 +1991,7 @@ mod tests {
                 resource_pool: &pool_before,
                 item: &item_before,
                 xp_curve: &xp_before,
+                formula: &formula_before,
             },
         );
         apply_value_hashes(
@@ -1824,6 +2009,7 @@ mod tests {
                 resource_pool: &pool_after,
                 item: &item_after,
                 xp_curve: &xp_after,
+                formula: &formula_after,
             },
         );
 
@@ -1842,8 +2028,20 @@ mod tests {
         // Arrange
         let mut registry = Registry::new();
         registry.intern(id("lostland:placeholder_race"));
-        let (terrain, class, skill, subclass, quest, space, clip, trait_def, pool, item, xp) =
-            empty_non_race_tables();
+        let (
+            terrain,
+            class,
+            skill,
+            subclass,
+            quest,
+            space,
+            clip,
+            trait_def,
+            pool,
+            item,
+            xp,
+            formula,
+        ) = empty_non_race_tables();
         let race = RaceTable::new();
 
         // Act
@@ -1862,6 +2060,7 @@ mod tests {
                 resource_pool: &pool,
                 item: &item,
                 xp_curve: &xp,
+                formula: &formula,
             },
         );
 
@@ -1876,8 +2075,20 @@ mod tests {
         // 接受的遗漏"，本测试确认空表集合下任意索引确实分类为 Opaque，
         // 不是别的判别值。
         // Arrange
-        let (terrain, class, skill, subclass, quest, space, clip, trait_def, pool, item, xp) =
-            empty_non_race_tables();
+        let (
+            terrain,
+            class,
+            skill,
+            subclass,
+            quest,
+            space,
+            clip,
+            trait_def,
+            pool,
+            item,
+            xp,
+            formula,
+        ) = empty_non_race_tables();
         let race = RaceTable::new();
         let tables = ContentValueTables {
             terrain: &terrain,
@@ -1892,6 +2103,7 @@ mod tests {
             resource_pool: &pool,
             item: &item,
             xp_curve: &xp,
+            formula: &formula,
         };
 
         // Act

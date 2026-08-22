@@ -29,6 +29,7 @@ use std::path::Path;
 use ll_core::ident::ContentIndex;
 use ll_mod::asset_vfs::{self, AssetVfs};
 use ll_mod::base_clip::register_base_clips;
+use ll_mod::base_damage_formula::register_base_damage_formula;
 use ll_mod::base_placeholder::register_base_placeholder_content;
 use ll_mod::base_race::register_base_races;
 use ll_mod::base_space_profile::register_base_space_profiles;
@@ -38,6 +39,7 @@ use ll_mod::class::ClassTable;
 use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
 use ll_mod::discover::discover_mods;
+use ll_mod::formula::FormulaTable;
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::{LoadReport, LoadStatus};
 use ll_mod::manifest::{ModManifest, parse_manifest};
@@ -117,6 +119,12 @@ pub struct LoadedContent {
     /// 本批次没有任何 `resolve` 侧消费者，见其模块文档「本批次范围」
     /// 一节。
     pub item_table: ItemTable,
+    /// 本体默认伤害公式索引（`lostland:default_damage_formula`，伤害
+    /// 公式引擎批次新增）——未被内容显式声明时的保底公式，见
+    /// `ll_mod::base_damage_formula` 模块文档。
+    pub default_damage_formula_id: ContentIndex,
+    /// 伤害公式定义表。
+    pub formula_table: FormulaTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -167,6 +175,9 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
     let (default_xp_curve_id, mut xp_curve_table) =
         register_base_xp_curve(&mut |id| registry.intern(id))
             .expect("本体默认经验曲线声明内部一致，注册恒不失败");
+    let (default_damage_formula_id, mut formula_table) =
+        register_base_damage_formula(&mut |id| registry.intern(id))
+            .expect("本体默认伤害公式声明内部一致，注册恒不失败");
 
     let mut class_table = ClassTable::new();
     let mut skill_table = SkillTable::new();
@@ -193,6 +204,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             trait_def: &mut trait_table,
             resource_pool: &mut resource_pool_table,
             item: &mut item_table,
+            formula: &mut formula_table,
         },
     );
 
@@ -229,6 +241,7 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
             resource_pool: &resource_pool_table,
             item: &item_table,
             xp_curve: &xp_curve_table,
+            formula: &formula_table,
         },
     );
 
@@ -275,6 +288,8 @@ pub fn load_content(mods_root: &Path, assets_root: &Path) -> LoadedContent {
         trait_table,
         resource_pool_table,
         item_table,
+        default_damage_formula_id,
+        formula_table,
         manifests,
         script_sources,
         report,
@@ -516,6 +531,7 @@ mod tests {
             resource_pool: &loaded.resource_pool_table,
             item: &loaded.item_table,
             xp_curve: &loaded.xp_curve_table,
+            formula: &loaded.formula_table,
         };
 
         // Act

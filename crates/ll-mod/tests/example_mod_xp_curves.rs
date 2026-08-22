@@ -69,6 +69,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
     let mut trait_def = TraitTable::new();
     let mut resource_pool = ll_mod::resource_pool::ResourcePoolTable::new();
     let mut item = ll_mod::item::ItemTable::new();
+    let mut formula = ll_mod::formula::FormulaTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -86,6 +87,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
             trait_def: &mut trait_def,
             resource_pool: &mut resource_pool,
             item: &mut item,
+            formula: &mut formula,
         },
     );
     // mod 自身在 LoadReport 里的标识按 `ll_mod::manifest::mod_self_id`

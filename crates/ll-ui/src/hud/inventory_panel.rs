@@ -154,6 +154,7 @@ mod tests {
                     stat_bonuses: Vec::new(),
                     use_effect: None,
                     penetration: Penetration::NONE,
+                    damage_formula: None,
                 },
             )
             .expect("测试用注册应当成功");

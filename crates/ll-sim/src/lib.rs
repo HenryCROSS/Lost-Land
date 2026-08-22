@@ -102,6 +102,7 @@ pub mod character;
 pub mod combat;
 pub mod effect;
 pub mod experience;
+pub mod formula;
 pub mod intent;
 pub mod item;
 pub mod quest;

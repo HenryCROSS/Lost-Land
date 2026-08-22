@@ -113,6 +113,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
                 stat_bonuses: Vec::new(),
                 use_effect: None,
                 penetration: Penetration::NONE,
+                damage_formula: None,
             },
         )]),
     };

@@ -86,6 +86,7 @@ pub fn register_item_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-item-stat-bonus", register_item_stat_bonus);
     engine.register_fn("register-item-use-effect", register_item_use_effect);
     engine.register_fn("register-item-penetration", register_item_penetration);
+    engine.register_fn("register-item-damage-formula", register_item_damage_formula);
 }
 
 /// `(register-item id display-name-key stack-limit base-weight base-price max-durability)`。
@@ -205,6 +206,9 @@ fn do_register_item(
                 // 恒为 Penetration::NONE——同上，真正的取值由后续
                 // register-item-penetration 调用写入。
                 penetration: Penetration::NONE,
+                // 恒为 None——同上，真正的取值由后续
+                // register-item-damage-formula 调用写入。
+                damage_formula: None,
             },
         )
         .map(|()| true)
@@ -611,6 +615,66 @@ fn do_register_item_penetration(
                 permille: permille as i32,
             },
         )
+        .map(|()| true)
+        .map_err(|err: ItemError| err.to_string())
+}
+
+/// `(register-item-damage-formula id formula-id)`——设置这件物品显式
+/// 声明的伤害公式（伤害公式引擎批次新增），见
+/// [`crate::item::ItemDef::damage_formula`] 文档「为什么不是
+/// `register-item` 的参数」一节。
+///
+/// - `id`：已经通过 `register-item` 注册过的完整命名空间标识符字符串
+///   ——目标必须已存在，与 [`register_item_penetration`] 同一条 ADR
+///   0017「注册期完整校验」纪律。
+/// - `formula-id`：已经通过 `register-damage-formula`
+///   （`crate::script_damage_formula_api`）注册过的完整命名空间标识符
+///   字符串——与 `formula-id` 未注册即拒绝同一条纪律（本函数不
+///   `intern`，只 `get`，理由同 `crate::script_xp_curve_api::resolve_registered_id`
+///   文档），不允许静默创建一个指向不存在公式的悬空引用。
+///
+/// **覆盖，不是追加**——与 [`register_item_penetration`] 同一种"单值
+/// 覆盖"语义：一件武器只有一份显式公式引用，多次调用同一个 `id` 以
+/// 最后一次为准。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_item_damage_formula(id: String, formula_id: String) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err(
+                    "register-item-damage-formula 在没有活跃物品表的窗口内被调用".to_string(),
+                );
+            };
+            do_register_item_damage_formula(registry, table, &id, &formula_id)
+        })
+    })
+}
+
+/// [`register_item_damage_formula`] 的纯函数核心，方便单元测试不必
+/// 绕过 `thread_local!`。
+fn do_register_item_damage_formula(
+    registry: &Registry,
+    table: &mut ItemTable,
+    id: &str,
+    formula_id: &str,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("物品 {id:?} 尚未通过 register-item 注册"));
+    };
+    let parsed_formula_id = NamespacedId::parse(formula_id)
+        .map_err(|err| format!("非法内容标识符 {formula_id:?}：{err}"))?;
+    let Some(formula_index) = registry.get(&parsed_formula_id) else {
+        return Err(format!(
+            "伤害公式 {formula_id:?} 尚未通过 register-damage-formula 注册"
+        ));
+    };
+
+    table
+        .set_damage_formula(index, formula_index)
         .map(|()| true)
         .map_err(|err: ItemError| err.to_string())
 }

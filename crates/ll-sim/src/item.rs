@@ -116,6 +116,15 @@ pub struct ItemRule {
     /// 什么现在也收进来了」一节。`Penetration::NONE`（多数物品的既有
     /// 默认值）表示这件物品不提供任何穿透。
     pub penetration: Penetration,
+    /// 这件物品显式声明的伤害公式（伤害公式引擎批次新增）——
+    /// `crate::resolve::resolve_attack` 用它作为
+    /// `crate::formula::DamageFormulaCatalog::formula_for` 的
+    /// `explicit` 参数；`None` 表示这件物品没有显式声明，退回全局
+    /// 默认公式（两层下探的第二层，见 `crate::formula` 模块文档
+    /// 「公式只算『攻击力』」一节与
+    /// `knowledge/design/damage-formula-mod-api.md` 十九节——本批次
+    /// 没有武器类别/伤害类别，四层下探退化成两层）。
+    pub damage_formula: Option<ContentIndex>,
 }
 
 /// `resolve` 依赖的最小「物品定义来源」接口——与

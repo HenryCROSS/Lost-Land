@@ -171,6 +171,20 @@ pub struct ItemDef {
     /// [`Self::use_effect`] 同一种"单值覆盖"语义：一件武器只有一份
     /// 穿透，不是可以累积的列表。
     pub penetration: Penetration,
+    /// 这件物品显式声明的伤害公式（伤害公式引擎批次新增）——`None`
+    /// （默认值）表示这件物品不指定公式，`resolve_attack` 退回全局
+    /// 默认公式，见 [`ll_sim::formula::DamageFormulaCatalog`] 文档。
+    ///
+    /// # 为什么不是 `register-item` 的参数，走 `set_damage_formula` 追加
+    ///
+    /// 与 [`Self::equip_mask`]/[`Self::stat_bonuses`]/[`Self::use_effect`]/
+    /// [`Self::penetration`] 同一条既有先例（`register-item` 的六参数
+    /// 签名不能改参数个数）——脚本层对应函数是
+    /// `register-item-damage-formula`（`crate::script_item_api`），Rust
+    /// 层对应方法是 [`ItemTable::set_damage_formula`]。**覆盖，不是
+    /// 追加**——与 [`Self::penetration`] 同一种"单值覆盖"语义：一件
+    /// 物品只有一份显式公式引用。
+    pub damage_formula: Option<ContentIndex>,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -207,6 +221,12 @@ pub struct ItemAttrs {
     /// `register-item-penetration` 调用 [`ItemTable::set_penetration`]
     /// 写入，理由同 [`ItemDef::penetration`] 文档。
     pub penetration: Penetration,
+    /// 显式声明的伤害公式——`register-item` 注册时恒为 `None`（同上，
+    /// `do_register_item` 不接受这个参数），真正的取值由后续
+    /// `register-item-damage-formula` 调用
+    /// [`ItemTable::set_damage_formula`] 写入，理由同
+    /// [`ItemDef::damage_formula`] 文档。
+    pub damage_formula: Option<ContentIndex>,
 }
 
 /// 物品注册期可能出现的错误。
@@ -264,6 +284,8 @@ pub struct ItemView<'a> {
     pub use_effect: Option<SkillEffect>,
     /// 穿透。
     pub penetration: Penetration,
+    /// 显式声明的伤害公式。
+    pub damage_formula: Option<ContentIndex>,
 }
 
 /// 物品属性的列式存储：按 [`ContentIndex`] 下标索引，与
@@ -281,6 +303,7 @@ pub struct ItemTable {
     stat_bonuses: Vec<Vec<StatBonus>>,
     use_effect: Vec<Option<SkillEffect>>,
     penetration: Vec<Penetration>,
+    damage_formula: Vec<Option<ContentIndex>>,
     defined: Vec<bool>,
 }
 
@@ -305,6 +328,7 @@ impl ItemTable {
             self.stat_bonuses.resize(new_len, Vec::new());
             self.use_effect.resize(new_len, None);
             self.penetration.resize(new_len, Penetration::NONE);
+            self.damage_formula.resize(new_len, None);
         }
 
         if self.defined[idx] {
@@ -321,6 +345,7 @@ impl ItemTable {
         self.stat_bonuses[idx] = attrs.stat_bonuses;
         self.use_effect[idx] = attrs.use_effect;
         self.penetration[idx] = attrs.penetration;
+        self.damage_formula[idx] = attrs.damage_formula;
         Ok(())
     }
 
@@ -350,6 +375,7 @@ impl ItemTable {
             stat_bonuses: &self.stat_bonuses[idx],
             use_effect: self.use_effect[idx],
             penetration: self.penetration[idx],
+            damage_formula: self.damage_formula[idx],
         })
     }
 
@@ -433,6 +459,31 @@ impl ItemTable {
         self.penetration[item.get() as usize] = penetration;
         Ok(())
     }
+
+    /// 设置这件物品显式声明的伤害公式（伤害公式引擎批次新增）——
+    /// `register-item` 的既有脚本签名不能改参数个数，理由同
+    /// [`Self::set_equip_mask`]。目标索引必须已经 `define` 过，否则
+    /// 返回 [`ItemError::NotDefined`]，同一条 ADR 0017 纪律。
+    ///
+    /// **覆盖，不是追加**——与 [`Self::set_penetration`] 同一种"单值
+    /// 覆盖"语义，见 [`ItemDef::damage_formula`] 文档。本方法不校验
+    /// `formula` 是否已经通过 `register-damage-formula` 注册——与
+    /// [`Self::add_stat_bonus`] 对 `StatTarget::Attribute` 不校验属性
+    /// 种类是否合法同一条既有纪律，真正的存在性校验交给调用方
+    /// （`crate::script_item_api::register_item_damage_formula`）在
+    /// 写入前完成（ADR 0017「注册期完整校验」——校验发生在脚本绑定层，
+    /// 不是本方法的职责）。
+    pub fn set_damage_formula(
+        &mut self,
+        item: ContentIndex,
+        formula: ContentIndex,
+    ) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        self.damage_formula[item.get() as usize] = Some(formula);
+        Ok(())
+    }
 }
 
 /// `resolve` 侧的堆叠上限/装备占位/属性加成查询——`ll_sim::resolve::resolve_pick_up`
@@ -454,6 +505,7 @@ impl ItemCatalog for ItemTable {
             stat_bonuses: view.stat_bonuses.to_vec(),
             use_effect: view.use_effect,
             penetration: view.penetration,
+            damage_formula: view.damage_formula,
         })
     }
 }
@@ -493,6 +545,7 @@ mod tests {
                     stat_bonuses: Vec::new(),
                     use_effect: None,
                     penetration: Penetration::NONE,
+                    damage_formula: None,
                 },
             )
             .expect("首次定义应当成功");
@@ -519,6 +572,7 @@ mod tests {
             stat_bonuses: Vec::new(),
             use_effect: None,
             penetration: Penetration::NONE,
+            damage_formula: None,
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -564,6 +618,7 @@ mod tests {
                     stat_bonuses: Vec::new(),
                     use_effect: None,
                     penetration: Penetration::NONE,
+                    damage_formula: None,
                 },
             )
             .expect("首次定义应当成功");
@@ -592,6 +647,7 @@ mod tests {
                     stat_bonuses: Vec::new(),
                     use_effect: None,
                     penetration: Penetration::NONE,
+                    damage_formula: None,
                 },
             )
             .expect("首次定义应当成功");
@@ -608,6 +664,7 @@ mod tests {
                 stat_bonuses: Vec::new(),
                 use_effect: None,
                 penetration: Penetration::NONE,
+                damage_formula: None,
             })
         );
     }
@@ -639,6 +696,7 @@ mod tests {
             stat_bonuses: Vec::new(),
             use_effect: None,
             penetration: Penetration::NONE,
+            damage_formula: None,
         }
     }
 

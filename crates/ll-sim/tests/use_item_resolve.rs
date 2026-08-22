@@ -112,6 +112,7 @@ fn potion_with_effect(effect: SkillEffect) -> (ContentIndex, FakeItems) {
                 stat_bonuses: Vec::new(),
                 use_effect: Some(effect),
                 penetration: Penetration::NONE,
+                damage_formula: None,
             },
         )]),
     };
@@ -274,6 +275,7 @@ fn 没有use_effect的物品使用后不产出任何效果() {
                 stat_bonuses: Vec::new(),
                 use_effect: None,
                 penetration: Penetration::NONE,
+                damage_formula: None,
             },
         )]),
     };
