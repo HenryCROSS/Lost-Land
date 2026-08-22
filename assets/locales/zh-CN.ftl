@@ -63,6 +63,13 @@ hud-status-time-label = 时间
 hud-status-health-label = 生命
 hud-status-mana-label = 法力
 
+# 四季展示名——Tick::season() 现成算出，这里只做展示名映射，不重算
+# 季节本身（见 crates/ll-ui/src/hud/status_bar.rs 的 season_key）。
+season-spring-display_name = 春
+season-summer-display_name = 夏
+season-autumn-display_name = 秋
+season-winter-display_name = 冬
+
 hud-character-panel-title = 角色
 hud-character-level-label = 等级
 hud-character-experience-label = 经验

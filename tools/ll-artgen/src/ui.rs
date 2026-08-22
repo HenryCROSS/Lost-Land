@@ -23,7 +23,10 @@
 //! 已填充部分,两者都不含内部九宫格切分,整张贴图按条形当前尺寸直接
 //! 拉伸即可（条形没有「角」的概念）。
 
-use crate::terrain::TerrainSpec;
+use crate::EntryRect;
+use crate::color::Hsl;
+use crate::terrain::{TerrainSpec, hash_pixel};
+use image::{Rgba, RgbaImage};
 
 /// 全部 UI 贴图的配方——复用 [`TerrainSpec`] 的形状（见模块文档
 /// 「复用地形点缀算法」一节），颜色与
@@ -72,6 +75,88 @@ pub(crate) fn ui_spec(name: &str) -> Option<&'static TerrainSpec> {
     UI_SPECS.iter().find(|spec| spec.name == name)
 }
 
+/// 昼夜滑条底图——夜（左）到昼（右）的水平渐变，点缀风格与
+/// [`crate::terrain::decorate_terrain_tile`] 一致，但这张贴图**不是**
+/// [`TerrainSpec`] 能表达的东西：`TerrainSpec` 只有一个主色 + 点缀,
+/// 整张贴图是同一种颜色；昼夜滑条恰恰需要「颜色本身随水平位置变化」,
+/// 因此不复用 `ui_spec`/`decorate_terrain_tile` 的调度路径,单独在
+/// `main.rs::draw_entry` 里按名字直接分派到本函数。
+///
+/// # 配色：深靛蓝（夜）→ 暖金（昼）
+///
+/// 与项目所有者原话「左边是黑夜图案右边是白天图案」对应——夜端选深
+/// 靛蓝（比纯黑更有层次，且与既有 UI 贴图的深色基调一致，见
+/// `UI_SPECS` 里 `ui_panel_fill` 的选色说明），昼端选暖金（与
+/// `terrain_sand`/`terrain_hill` 同一档暖色調,不是刺眼的纯白，保持
+/// 与既有地形色板的整体风格一致）。
+const DAYNIGHT_NIGHT_COLOR: (u8, u8, u8) = (18, 22, 54);
+const DAYNIGHT_DAY_COLOR: (u8, u8, u8) = (250, 202, 96);
+
+/// 点缀用的邻近色色相偏移/明度偏移，与
+/// `crate::terrain::decorate_terrain_tile` 的既有取值一致——同一套视觉
+/// 语言（稀疏点缀、约 5% 像素偏离本地基色），理由见模块文档。
+const DAYNIGHT_ANALOGOUS_HUE_SHIFT_DEG: f32 = 18.0;
+const DAYNIGHT_ANALOGOUS_LIGHTNESS_DELTA: f32 = 0.08;
+
+/// 两个 8 位 RGB 颜色之间的线性插值，`t` 钳制到 `[0.0, 1.0]`。
+fn lerp_rgb(a: (u8, u8, u8), b: (u8, u8, u8), t: f32) -> (u8, u8, u8) {
+    let t = t.clamp(0.0, 1.0);
+    let lerp_channel = |x: u8, y: u8| -> u8 {
+        (x as f32 + (y as f32 - x as f32) * t)
+            .round()
+            .clamp(0.0, 255.0) as u8
+    };
+    (
+        lerp_channel(a.0, b.0),
+        lerp_channel(a.1, b.1),
+        lerp_channel(a.2, b.2),
+    )
+}
+
+/// 给昼夜滑条底图填色并点缀，`rect` 是它在画布上的像素矩形（松散贴图
+/// 路径下画布就是这张图本身，`rect.x`/`rect.y` 恒为 0，见
+/// `main.rs::generate_loose_sprites`）。
+///
+/// 每一列（同一个 `local_x`）先按水平位置在夜色/昼色之间线性插值算出
+/// 这一列的「本地基色」，再用与 [`crate::terrain::decorate_terrain_tile`]
+/// 相同的点缀算法（邻近色 + 互补色，[`hash_pixel`] 决定像素落入哪一
+/// 桶）在本地基色上点缀——因此整张图既有从夜到昼的渐变，又保留与其余
+/// UI/地形贴图一致的点缀质感，不是一张纯粹平滑、风格突兀的渐变图。
+pub(crate) fn decorate_day_night_bar(image: &mut RgbaImage, rect: EntryRect) {
+    let tile_seed = (rect.x << 16) | rect.y;
+    // 宽度至少为 2 才有「从左到右」的渐变可言；本函数只服务已知的
+    // `ui_daynight_bar` 条目（`assets/atlas/placeholder.json` 里固定
+    // 32 像素宽），`max(2, ..)` 只是防御性下限，不代表这个尺寸是预期
+    // 输入之外的情况。
+    let denom = (rect.width.max(2) - 1) as f32;
+
+    for local_x in 0..rect.width {
+        let t = local_x as f32 / denom;
+        let base = lerp_rgb(DAYNIGHT_NIGHT_COLOR, DAYNIGHT_DAY_COLOR, t);
+        let base_hsl = Hsl::from_rgb(base.0, base.1, base.2);
+        let analogous_a = base_hsl
+            .rotated(DAYNIGHT_ANALOGOUS_HUE_SHIFT_DEG)
+            .lighten(DAYNIGHT_ANALOGOUS_LIGHTNESS_DELTA)
+            .to_rgb();
+        let analogous_b = base_hsl
+            .rotated(-DAYNIGHT_ANALOGOUS_HUE_SHIFT_DEG)
+            .lighten(-DAYNIGHT_ANALOGOUS_LIGHTNESS_DELTA)
+            .to_rgb();
+        let accent = base_hsl.rotated(180.0).to_rgb();
+
+        for local_y in 0..rect.height {
+            let bucket = hash_pixel(tile_seed, local_x, local_y) % 256;
+            let (r, g, b) = match bucket {
+                0..=4 => analogous_a,
+                5..=9 => analogous_b,
+                10..=12 => accent,
+                _ => base,
+            };
+            image.put_pixel(rect.x + local_x, rect.y + local_y, Rgba([r, g, b, 255]));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +181,90 @@ mod tests {
     fn 未知ui贴图名查不到配方() {
         // Arrange & Act & Assert
         assert!(ui_spec("ui_nonexistent").is_none());
+    }
+
+    #[test]
+    fn lerp_rgb在起点返回第一个颜色() {
+        // Arrange & Act
+        let color = lerp_rgb((10, 20, 30), (200, 210, 220), 0.0);
+
+        // Assert
+        assert_eq!(color, (10, 20, 30));
+    }
+
+    #[test]
+    fn lerp_rgb在终点返回第二个颜色() {
+        // Arrange & Act
+        let color = lerp_rgb((10, 20, 30), (200, 210, 220), 1.0);
+
+        // Assert
+        assert_eq!(color, (200, 210, 220));
+    }
+
+    #[test]
+    fn decorate_day_night_bar最左列的主色接近夜色而不是昼色() {
+        // 「主色」指点缀之外占多数的像素颜色——单独取最左列一整列的
+        // 众数颜色，避开点缀像素造成的偶然误判。
+        // Arrange
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 16,
+        };
+        let mut image = RgbaImage::new(rect.width, rect.height);
+
+        // Act
+        decorate_day_night_bar(&mut image, rect);
+        let leftmost_pixel = image.get_pixel(0, 0);
+
+        // Assert：最左列（`local_x == 0`）插值比例恒为 0，本地基色恒
+        // 等于夜色本身；取 `(0, 0)` 这一个像素不受点缀干扰的概率并不
+        // 保证为真，但夜色与昼色在红色通道上差距极大（18 对 250），
+        // 即使这一像素落进点缀桶，点缀只是邻近色/互补色的小幅旋转，
+        // 红色通道不会从 250 附近跳到接近 18。
+        assert!(leftmost_pixel.0[0] < 128);
+    }
+
+    #[test]
+    fn decorate_day_night_bar最右列的主色接近昼色而不是夜色() {
+        // 理由同上一条测试，方向相反。
+        // Arrange
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 16,
+        };
+        let mut image = RgbaImage::new(rect.width, rect.height);
+
+        // Act
+        decorate_day_night_bar(&mut image, rect);
+        let rightmost_pixel = image.get_pixel(rect.width - 1, 0);
+
+        // Assert
+        assert!(rightmost_pixel.0[0] > 128);
+    }
+
+    #[test]
+    fn decorate_day_night_bar连续两次生成产出逐位相同的像素() {
+        // 确定性——见 `main.rs` 模块文档「确定性」相关测试的同一条
+        // 纪律，本测试专门覆盖这一张新贴图。
+        // Arrange
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: 32,
+            height: 16,
+        };
+        let mut first = RgbaImage::new(rect.width, rect.height);
+        let mut second = RgbaImage::new(rect.width, rect.height);
+
+        // Act
+        decorate_day_night_bar(&mut first, rect);
+        decorate_day_night_bar(&mut second, rect);
+
+        // Assert
+        assert_eq!(first, second);
     }
 }

@@ -154,7 +154,11 @@ pub(crate) fn terrain_spec(name: &str) -> Option<&'static TerrainSpec> {
 /// JSON 布局，重新跑生成器会算出逐像素相同的点缀图案，不是每次运行
 /// 都不一样的随机噪点。算法是 SplitMix 风格的有限位混合，只要求
 /// 「确定性、分布看起来均匀」，不需要密码学强度。
-fn hash_pixel(tile_seed: u32, local_x: u32, local_y: u32) -> u32 {
+///
+/// `pub(crate)`——`ui.rs` 的 `decorate_day_night_bar`（昼夜滑条渐变贴图）
+/// 复用同一份哈希做点缀取样，不是另起一套随机源：两处都要求「同一次
+/// 生成内确定、看起来均匀分布」，没有理由维护两份算法。
+pub(crate) fn hash_pixel(tile_seed: u32, local_x: u32, local_y: u32) -> u32 {
     let mut h = tile_seed ^ local_x.wrapping_mul(0x9E37_79B1) ^ local_y.wrapping_mul(0x85EB_CA77);
     h ^= h >> 15;
     h = h.wrapping_mul(0x2C1B_3C6D);

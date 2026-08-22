@@ -263,6 +263,18 @@
         "width": 1,
         "height": 1
       }
+    },
+    {
+      "name": "ui_daynight_bar",
+      "file": "ui_daynight_bar.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
     }
   ]
 }

@@ -112,6 +112,7 @@
 
 pub mod anim;
 pub mod bar;
+pub mod day_night_bar;
 pub mod geometry;
 pub mod label;
 pub mod list;

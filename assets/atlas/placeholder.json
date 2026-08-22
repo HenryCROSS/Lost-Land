@@ -132,6 +132,12 @@
             "rect": { "x": 48, "y": 96, "width": 16, "height": 16 },
             "pivot": { "x": 0, "y": 0 },
             "footprint": { "width": 1, "height": 1 }
+        },
+        {
+            "name": "ui_daynight_bar",
+            "rect": { "x": 64, "y": 96, "width": 32, "height": 16 },
+            "pivot": { "x": 0, "y": 0 },
+            "footprint": { "width": 1, "height": 1 }
         }
     ]
 }

@@ -82,6 +82,7 @@
 use ll_render::atlas::Atlas;
 
 use super::bar::{FlatBarAppearance, TexturedBarAppearance, TexturedTwoLayerBarAppearance};
+use super::day_night_bar::{FlatDayNightBarAppearance, TexturedDayNightBarAppearance};
 use super::panel::{FlatPanelAppearance, TexturedPanelAppearance};
 
 /// 面板的语义样式名——调用点只认这个，不认具体颜色。目前只有一种
@@ -101,9 +102,28 @@ pub enum BarStyleId {
     /// 进度条——经验条目前唯一的用途，见
     /// `crate::widget::bar` 模块文档「只服务有真实分母的场景」一节。
     Progress,
-    /// 双层资源条——生命/法力这类会下降的资源用它，见
+    /// 生命条——双层资源条之一，见
     /// `crate::widget::bar::FlatTwoLayerBarAppearance` 文档。
-    HealthMana,
+    ///
+    /// 曾经与法力条共用同一个 `HealthMana` 样式名（两条外观因此恒相同,
+    /// 是「两条资源条分不清哪条是哪条」这个真实截图问题的根因）,现在
+    /// 拆成 [`Self::Health`]/[`Self::Mana`] 两个独立样式名,换皮肤时两条
+    /// 依然可以分别决定颜色,不需要在渲染调用点里现改。
+    Health,
+    /// 法力条——双层资源条之一，理由同 [`Self::Health`]。
+    Mana,
+}
+
+/// 昼夜滑条的语义样式名，理由同 [`PanelStyleId`]——目前只有一种（状态
+/// 栏下方常驻的那一条），单变体枚举是刻意的：与 [`PanelStyleId::Window`]
+/// 同一个理由，为将来可能出现的第二种昼夜条（例如某个室内场景专属的
+/// 迷你版）预留挂点，不是过度设计——[`Skin`] trait 的形状已经要求调用点
+/// 传一个样式名而不是直接问「昼夜条长什么样」，加变体不影响任何既有
+/// 调用点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DayNightBarStyleId {
+    /// 状态栏下方常驻的昼夜滑条——见 `crate::hud::render` 模块文档。
+    Clock,
 }
 
 /// 皮肤：把语义样式名解析成控件真正认识的外观数据。见模块文档
@@ -113,6 +133,8 @@ pub trait Skin {
     fn panel(&self, style: PanelStyleId) -> FlatPanelAppearance;
     /// 解析条形样式（纯色回退，恒需要实现）。
     fn bar(&self, style: BarStyleId) -> FlatBarAppearance;
+    /// 解析昼夜滑条样式（纯色回退，恒需要实现），理由同 [`Self::bar`]。
+    fn day_night_bar(&self, style: DayNightBarStyleId) -> FlatDayNightBarAppearance;
     /// 解析面板样式的真实贴图外观——默认没有,返回 `None` 即表示「用
     /// [`Self::panel`] 的纯色回退」。
     fn textured_panel(&self, _style: PanelStyleId) -> Option<TexturedPanelAppearance> {
@@ -124,6 +146,13 @@ pub trait Skin {
     }
     /// 解析双层条形样式的真实贴图外观，默认 `None`。
     fn textured_two_layer_bar(&self, _style: BarStyleId) -> Option<TexturedTwoLayerBarAppearance> {
+        None
+    }
+    /// 解析昼夜滑条样式的真实贴图外观，默认 `None`。
+    fn textured_day_night_bar(
+        &self,
+        _style: DayNightBarStyleId,
+    ) -> Option<TexturedDayNightBarAppearance> {
         None
     }
 }
@@ -143,7 +172,15 @@ impl Skin for FlatColorSkin {
 
     fn bar(&self, style: BarStyleId) -> FlatBarAppearance {
         match style {
-            BarStyleId::Progress | BarStyleId::HealthMana => FlatBarAppearance::DEFAULT,
+            BarStyleId::Progress => FlatBarAppearance::DEFAULT,
+            BarStyleId::Health => FlatBarAppearance::HEALTH,
+            BarStyleId::Mana => FlatBarAppearance::MANA,
+        }
+    }
+
+    fn day_night_bar(&self, style: DayNightBarStyleId) -> FlatDayNightBarAppearance {
+        match style {
+            DayNightBarStyleId::Clock => FlatDayNightBarAppearance::DEFAULT,
         }
     }
 }
@@ -157,6 +194,10 @@ pub struct NineSliceSkin {
     panel_fill_uv: Option<[f32; 4]>,
     bar_track_uv: Option<[f32; 4]>,
     bar_fill_uv: Option<[f32; 4]>,
+    /// 昼夜滑条底图的 UV——`ll-artgen` 新增的第五张占位 UI 贴图
+    /// （`ui_daynight_bar`），见本文件底部 [`DayNightBarStyleId`] 一节
+    /// 与 `tools/ll-artgen/src/ui.rs::decorate_day_night_bar` 文档。
+    daynight_bar_uv: Option<[f32; 4]>,
     /// 边框厚度（像素）——贴图本身是 16×16，与
     /// [`FlatPanelAppearance::DEFAULT`] 的 `2.0` 不同,选一个能让四个角
     /// 看起来像「边框」而不是「贴图被拉伸变形」的厚度。
@@ -174,6 +215,7 @@ impl NineSliceSkin {
             panel_fill_uv: atlas.uv_rect("ui_panel_fill"),
             bar_track_uv: atlas.uv_rect("ui_bar_track"),
             bar_fill_uv: atlas.uv_rect("ui_bar_fill"),
+            daynight_bar_uv: atlas.uv_rect("ui_daynight_bar"),
             border_thickness: 4.0,
         }
     }
@@ -181,9 +223,20 @@ impl NineSliceSkin {
 
 /// 不透明白——纹理采样结果原样显示，不做任何颜色调制。
 const NO_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];
-/// 余晖层调制——比立即层更暗更透明，见
-/// `crate::widget::bar::FlatTwoLayerBarAppearance` 文档。
-const AFTERGLOW_TINT: [f32; 4] = [0.75, 0.45, 0.45, 0.85];
+/// 生命条立即层调制——乘在中性偏蓝的 `ui_bar_fill` 贴图上,把它染成
+/// 暖红,与法力条的冷蓝调制拉开色相差,理由见
+/// [`BarStyleId::Health`] 文档。
+const HEALTH_FILL_TINT: [f32; 4] = [1.0, 0.45, 0.35, 1.0];
+/// 生命条余晖层调制——比 [`HEALTH_FILL_TINT`] 更暗更透明,理由同旧版
+/// `AFTERGLOW_TINT`。
+const HEALTH_AFTERGLOW_TINT: [f32; 4] = [0.75, 0.35, 0.3, 0.85];
+/// 法力条立即层调制——比原始贴图色更蓝,与生命条的暖红拉开色相差。
+const MANA_FILL_TINT: [f32; 4] = [0.45, 0.65, 1.0, 1.0];
+/// 法力条余晖层调制，理由同 [`HEALTH_AFTERGLOW_TINT`]。
+const MANA_AFTERGLOW_TINT: [f32; 4] = [0.35, 0.45, 0.75, 0.85];
+/// 昼夜滑条指针调制——不透明暖黄,在昼夜贴图的深蓝/暖橙背景上都能
+/// 保持可辨识（既不像夜晚的深蓝会隐没,也不像正午的暖橙会糊在一起）。
+const DAYNIGHT_POINTER_TINT: [f32; 4] = [1.0, 0.92, 0.55, 1.0];
 
 impl Skin for NineSliceSkin {
     fn panel(&self, style: PanelStyleId) -> FlatPanelAppearance {
@@ -193,6 +246,10 @@ impl Skin for NineSliceSkin {
 
     fn bar(&self, style: BarStyleId) -> FlatBarAppearance {
         FlatColorSkin.bar(style)
+    }
+
+    fn day_night_bar(&self, style: DayNightBarStyleId) -> FlatDayNightBarAppearance {
+        FlatColorSkin.day_night_bar(style)
     }
 
     fn textured_panel(&self, style: PanelStyleId) -> Option<TexturedPanelAppearance> {
@@ -215,20 +272,40 @@ impl Skin for NineSliceSkin {
                 track_tint: NO_TINT,
                 fill_tint: NO_TINT,
             }),
-            BarStyleId::HealthMana => None,
+            BarStyleId::Health | BarStyleId::Mana => None,
         }
     }
 
     fn textured_two_layer_bar(&self, style: BarStyleId) -> Option<TexturedTwoLayerBarAppearance> {
         match style {
-            BarStyleId::HealthMana => Some(TexturedTwoLayerBarAppearance {
+            BarStyleId::Health => Some(TexturedTwoLayerBarAppearance {
                 track_uv: self.bar_track_uv?,
                 fill_uv: self.bar_fill_uv?,
                 track_tint: NO_TINT,
-                afterglow_tint: AFTERGLOW_TINT,
-                fill_tint: NO_TINT,
+                afterglow_tint: HEALTH_AFTERGLOW_TINT,
+                fill_tint: HEALTH_FILL_TINT,
+            }),
+            BarStyleId::Mana => Some(TexturedTwoLayerBarAppearance {
+                track_uv: self.bar_track_uv?,
+                fill_uv: self.bar_fill_uv?,
+                track_tint: NO_TINT,
+                afterglow_tint: MANA_AFTERGLOW_TINT,
+                fill_tint: MANA_FILL_TINT,
             }),
             BarStyleId::Progress => None,
+        }
+    }
+
+    fn textured_day_night_bar(
+        &self,
+        style: DayNightBarStyleId,
+    ) -> Option<TexturedDayNightBarAppearance> {
+        match style {
+            DayNightBarStyleId::Clock => Some(TexturedDayNightBarAppearance {
+                track_uv: self.daynight_bar_uv?,
+                track_tint: NO_TINT,
+                pointer_color: DAYNIGHT_POINTER_TINT,
+            }),
         }
     }
 }
@@ -269,9 +346,37 @@ mod tests {
         // Act & Assert：trait 默认实现，未被覆盖。
         assert!(skin.textured_panel(PanelStyleId::Window).is_none());
         assert!(skin.textured_bar(BarStyleId::Progress).is_none());
+        assert!(skin.textured_two_layer_bar(BarStyleId::Health).is_none());
         assert!(
-            skin.textured_two_layer_bar(BarStyleId::HealthMana)
+            skin.textured_day_night_bar(DayNightBarStyleId::Clock)
                 .is_none()
         );
+    }
+
+    #[test]
+    fn flat_color_skin的生命条与法力条外观颜色不同() {
+        // 这是「两条资源条分不清哪条是哪条」问题的直接回归——见
+        // `BarStyleId::Health` 文档。
+        // Arrange
+        let skin = FlatColorSkin;
+
+        // Act
+        let health = skin.bar(BarStyleId::Health);
+        let mana = skin.bar(BarStyleId::Mana);
+
+        // Assert
+        assert_ne!(health.fill_color, mana.fill_color);
+    }
+
+    #[test]
+    fn flat_color_skin对昼夜滑条样式恒返回默认外观() {
+        // Arrange
+        let skin = FlatColorSkin;
+
+        // Act
+        let appearance = skin.day_night_bar(DayNightBarStyleId::Clock);
+
+        // Assert
+        assert_eq!(appearance, FlatDayNightBarAppearance::DEFAULT);
     }
 }

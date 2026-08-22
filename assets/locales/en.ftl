@@ -47,6 +47,14 @@ hud-status-time-label = Time
 hud-status-health-label = HP
 hud-status-mana-label = MP
 
+# Season display names — Tick::season() already computes the season;
+# these are only the display-name mapping (see season_key in
+# crates/ll-ui/src/hud/status_bar.rs).
+season-spring-display_name = Spring
+season-summer-display_name = Summer
+season-autumn-display_name = Autumn
+season-winter-display_name = Winter
+
 hud-character-panel-title = Character
 hud-character-level-label = Level
 hud-character-experience-label = XP

@@ -38,10 +38,31 @@ pub struct FlatBarAppearance {
 }
 
 impl FlatBarAppearance {
-    /// 朴素默认样式：深灰背景 + 亮色前景。
+    /// 朴素默认样式：深灰背景 + 亮色前景。经验条（唯一用
+    /// [`crate::widget::skin::BarStyleId::Progress`] 的场景）用它。
     pub const DEFAULT: FlatBarAppearance = FlatBarAppearance {
         background_color: [0.2, 0.2, 0.22, 0.8],
         fill_color: [0.4, 0.75, 0.95, 0.95],
+    };
+
+    /// 生命条样式：暖红——项目所有者反馈生命/法力两条资源条「都是浅蓝、
+    /// 都满着，分不出哪条是哪条」（P7 第一批实机截图的真实问题），核实
+    /// 结论是两条此前共用同一个 `BarStyleId::HealthMana`，因此外观恒
+    /// 相同。这里选颜色区分（而不是加文字标签）：状态栏文本本身已经写
+    /// 明「生命 X 法力 Y」，条形只是给这两个已知数字一个更快能扫到的
+    /// 视觉锚点，加标签会在已经很拥挤的条形上再叠一层文字，颜色区分
+    /// 更轻量，也是这类资源条最通行的读法（红=生命、蓝=法力）。
+    pub const HEALTH: FlatBarAppearance = FlatBarAppearance {
+        background_color: [0.18, 0.08, 0.08, 0.8],
+        fill_color: [0.85, 0.25, 0.25, 0.95],
+    };
+
+    /// 法力条样式：饱和蓝——与 [`Self::HEALTH`] 同一次修正，刻意选比旧
+    /// 版 `DEFAULT`（浅蓝偏灰）更饱和的蓝，与暖红拉开明显色相差，两条
+    /// 并排时不需要凑近看颜色数值也能分清。
+    pub const MANA: FlatBarAppearance = FlatBarAppearance {
+        background_color: [0.08, 0.1, 0.2, 0.8],
+        fill_color: [0.3, 0.55, 0.95, 0.95],
     };
 }
 

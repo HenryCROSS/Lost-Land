@@ -319,6 +319,9 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         "hero_walk_4" => sprite::decorate_hero_walk(image, rect, 8, false),
         "hero_walk_5" => sprite::decorate_hero_walk(image, rect, 5, true),
         "boss_idle_0" => sprite::decorate_boss(image, rect),
+        // 昼夜滑条底图：水平渐变,不是 `TerrainSpec` 能表达的单一主色,
+        // 单独按名字分派,见 `ui.rs::decorate_day_night_bar` 文档。
+        "ui_daynight_bar" => ui::decorate_day_night_bar(image, rect),
         _ => match terrain::terrain_spec(name).or_else(|| ui::ui_spec(name)) {
             Some(spec) => terrain::decorate_terrain_tile(image, rect, spec),
             None => {

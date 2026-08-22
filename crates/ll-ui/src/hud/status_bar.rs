@@ -15,10 +15,22 @@
 //! 落地，扩展这里显示「当前/上限」是一处局部改动，不影响本模块其余
 //! 结构。
 //!
-//! # 为什么不显示季节
+//! # 现在显示季节——核实结论：季节会真的影响玩法，不是纯装饰
 //!
-//! 任务书明确列出状态栏必须显示的三项是「时间 / 生命 / 法力」，没有
-//! 季节——保持最小范围（YAGNI），需要时再加。
+//! 此前的判断是「保持最小范围，不显示季节」；本批次所有者要求补上,
+//! 补之前先核实了一件事：**如果季节只是显示出来却不影响任何东西,那
+//! 这个显示就是误导玩家的**。核实结论——影响链路是真的接上的：
+//! [`ll_world::light::season_light_scale`]（冬 750、春秋 900、夏 1000，
+//! 千分比）被 [`ll_world::light::ambient_light`] 调用，`ambient_light`
+//! 又经 [`ll_world::space_profile::effective_ambient_light`] 被
+//! `ll_game::layout::effective_sight_radius` 调用——后者算出的半径就是
+//! 玩家实机看到的视野半径（`ll_game::app` 每帧拿它决定画多远）。也就是
+//! 说冬天视野确实比其余三季更小,不是纯换色板。这条链路上一批就已经
+//! 存在,本批次只是核实并把结论写在这里,没有新接线。
+//!
+//! 季节名走 [`season_key`]，Fluent 键在 `assets/locales/*.ftl` 的
+//! `season-*-display_name` 分组，与 [`crate::hud::character_panel`] 里
+//! `attribute_key` 同一套「按枚举变体查键」的写法。
 //!
 //! # 生命/法力条形：显示比例参照值，不是编造的上限
 //!
@@ -34,8 +46,24 @@
 //! 标注、如实记录的折中，不是编造：等衍生生命/法力上限公式真的落地，
 //! 把分母换成真实上限是这两个函数内部的局部改动，`status_bar_panel`/
 //! 调用点的接口不需要变。
+//!
+//! # 昼夜滑条指针位置：纯函数,不做动画,回绕靠取模天然成立
+//!
+//! [`day_night_pointer_fraction`] 只回答「给定一个世界时刻,指针该停在
+//! 滑条的百分之几」这一个问题——`0.0` 是当日 `00:00`（滑条最左端）,
+//! 沿一整天线性推进,趋近 `1.0` 但恒小于它（次日 `00:00` 那一刻会重新
+//! 从 `0.0` 算起,不是恰好等于 `1.0`）。**具体算法是拿 `clock.0` 对
+//! [`TICKS_PER_DAY`] 取模再除以 [`TICKS_PER_DAY`]**——这一步刻意不是
+//! 「累计经过的绝对刻度数除以某个常数」：那样算出来的分数会随游戏进行
+//! 的天数无限增长,滑条第二天就会冲出条外而不是回到左端,是这类「一天
+//! 一循环」显示最容易踩的坑（见本模块「跨天回绕」测试）。真正让指针
+//! **平滑滑动**（而不是每次世界时钟推进就瞬间跳到新位置）的动画发生
+//! 在调用点（`crate::hud::render::build_hud_frame` 经
+//! `WidgetStateTable::animate`）,本函数只产出这一帧的真实目标位置,
+//! 不知道、也不需要知道动画的存在——与 [`health_bar_fraction`] 「只算
+//! 真实比例，动画是调用点的事」同一条分工。
 
-use ll_core::time::{TICKS_PER_DAY, TICKS_PER_HOUR, TICKS_PER_MINUTE, Tick};
+use ll_core::time::{Season, TICKS_PER_DAY, TICKS_PER_HOUR, TICKS_PER_MINUTE, Tick};
 use ll_i18n::Catalog;
 use ll_world::entity::Agent;
 
@@ -49,6 +77,23 @@ pub fn health_bar_fraction(health: i32) -> f32 {
 /// 法力条的填充比例，理由同 [`health_bar_fraction`]。
 pub fn mana_bar_fraction(mana: i32) -> f32 {
     (mana as f32 / Agent::STARTING_MANA as f32).clamp(0.0, 1.0)
+}
+
+/// 昼夜滑条指针的归一化位置——见模块文档「昼夜滑条指针位置」一节。
+pub fn day_night_pointer_fraction(clock: Tick) -> f32 {
+    let ticks_into_day = clock.0.rem_euclid(TICKS_PER_DAY);
+    ticks_into_day as f32 / TICKS_PER_DAY as f32
+}
+
+/// 把 [`Season`] 变体映射到 Fluent 键，写法同
+/// `crate::hud::character_panel::attribute_key`。
+fn season_key(season: Season) -> &'static str {
+    match season {
+        Season::Spring => "lostland:season.spring.display_name",
+        Season::Summer => "lostland:season.summer.display_name",
+        Season::Autumn => "lostland:season.autumn.display_name",
+        Season::Winter => "lostland:season.winter.display_name",
+    }
 }
 
 /// 状态栏需要的全部输入：一次读三个来源（`world.clock`/`agent.health`/
@@ -86,16 +131,19 @@ fn format_clock(clock: Tick) -> String {
 /// 产出状态栏这一整行的最终显示文本——纯函数，不接触 GPU，可脱离窗口
 /// 单元测试（本模块的测试就是这么做的）。
 ///
-/// 三段标签（时间/生命/法力）经 `catalog` 按 `language` 解析，数值本身
-/// 用 Rust 格式化拼接，不经 Fluent 变量插值——理由见 crate 顶层任务书
-/// 「i18n」一节的既有边界：数字格式化本身不是「属性名/槽位名/物品名」
-/// 那一类需要翻译的用户可见名词。
+/// 四段标签（时间/季节/生命/法力）经 `catalog` 按 `language` 解析，数值
+/// 本身用 Rust 格式化拼接，不经 Fluent 变量插值——理由见 crate 顶层
+/// 任务书「i18n」一节的既有边界：数字格式化本身不是「属性名/槽位名/
+/// 物品名」那一类需要翻译的用户可见名词。季节名（[`season_key`]）与
+/// 属性名/槽位名同一类——是一个有限枚举的展示名，因此和它们一样走
+/// `catalog.resolve`，不是数字格式化。
 pub fn status_bar_text(data: &StatusBarData, catalog: &Catalog, language: &str) -> String {
     let time_label = catalog.resolve(language, "hud-status-time-label");
     let health_label = catalog.resolve(language, "hud-status-health-label");
     let mana_label = catalog.resolve(language, "hud-status-mana-label");
+    let season_name = catalog.resolve(language, season_key(data.clock.season()));
     format!(
-        "{time_label} {}   {health_label} {}   {mana_label} {}",
+        "{time_label} {} ({season_name})   {health_label} {}   {mana_label} {}",
         format_clock(data.clock),
         data.health,
         data.mana,
@@ -128,8 +176,8 @@ mod tests {
         // 「本行是否含诊断宏」逐行判定豁免（见其模块文档），拆成多行
         // 会让字面量单独落在一行、不再触发豁免；与 `ll_i18n::Catalog`
         // 自身测试的既有写法（`crates/ll-i18n/src/lib.rs`）保持一致。
-        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\n").expect("测试用写入应当成功");
-        std::fs::write(dir.join("en.ftl"), "hud-status-time-label = Time\nhud-status-health-label = HP\nhud-status-mana-label = MP\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("en.ftl"), "hud-status-time-label = Time\nhud-status-health-label = HP\nhud-status-mana-label = MP\nseason-spring-display_name = Spring\nseason-summer-display_name = Summer\nseason-autumn-display_name = Autumn\nseason-winter-display_name = Winter\n").expect("测试用写入应当成功");
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -331,5 +379,73 @@ mod tests {
 
         // Assert
         assert_eq!(fraction, 1.0);
+    }
+
+    #[test]
+    fn 状态栏文本包含当前季节名称() {
+        // Arrange：日 40 落在夏季（0..30 春、30..60 夏）。
+        let dir = temp_dir("season-name");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let data = StatusBarData {
+            clock: Tick(40 * TICKS_PER_DAY),
+            health: 100,
+            mana: 50,
+        };
+
+        // Act
+        let text = status_bar_text(&data, &catalog, "zh-CN");
+
+        // Assert
+        assert!(text.contains('夏'));
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 昼夜滑条指针在午夜时位于滑条最左端() {
+        // Arrange & Act
+        let fraction = day_night_pointer_fraction(Tick(0));
+
+        // Assert
+        assert_eq!(fraction, 0.0);
+    }
+
+    #[test]
+    fn 昼夜滑条指针在正午时位于滑条正中间() {
+        // Arrange & Act
+        let fraction = day_night_pointer_fraction(Tick(12 * TICKS_PER_HOUR));
+
+        // Assert
+        assert_eq!(fraction, 0.5);
+    }
+
+    #[test]
+    fn 昼夜滑条指针在黄昏时位于当日时刻对应的比例() {
+        // Arrange：18:00，一天的 18/24 处。
+        // Act
+        let fraction = day_night_pointer_fraction(Tick(18 * TICKS_PER_HOUR));
+
+        // Assert
+        assert_eq!(fraction, 0.75);
+    }
+
+    #[test]
+    fn 跨天回绕时指针回到滑条左端而不是继续向右冲出去() {
+        // 这条测试专门防「用绝对 tick 除以某个数」的错误实现——那样
+        // 第二天指针的分数会比前一天 23:59 那一刻更大（继续右冲），
+        // 而不是回绕到接近零。见模块文档「昼夜滑条指针位置」一节。
+        // Arrange：第 0 天 23:59，与紧接着的第 1 天 00:01。
+        let near_midnight = Tick(23 * TICKS_PER_HOUR + 59 * TICKS_PER_MINUTE);
+        let next_day_just_after_midnight = Tick(TICKS_PER_DAY + TICKS_PER_MINUTE);
+
+        // Act
+        let near_midnight_fraction = day_night_pointer_fraction(near_midnight);
+        let next_day_fraction = day_night_pointer_fraction(next_day_just_after_midnight);
+
+        // Assert：次日刚过午夜的分数应远小于前一天临近午夜的分数，
+        // 即指针回到了左端，而不是继续朝右端累加。
+        assert!(next_day_fraction < near_midnight_fraction);
     }
 }
