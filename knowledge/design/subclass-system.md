@@ -12,8 +12,9 @@
   （使用计数）、`CraftUnlockRule`/`SubclassUnlockCatalog`。
 - `Intent::AbandonSubclass` + `resolve_abandon_subclass`——上限存在就必须有的放弃路径。
 - `register-subclass-unlock`（脚本注册函数，**不是**七节建议的 `subclass-unlocks-via!`，
-  改名理由见该函数的 rustdoc：三十六个已注册脚本函数里三十三个是 `register-` 形，带 `!` 的
-  三个共享的是字面上的 `-requires-` 谓词而不是「追加」这个语义）。
+  改名理由见该函数的 rustdoc：`crates/ll-mod/src/**` 经 `register_fn` 注册的 41 个脚本函数名里
+  **36 个是 `register-` 形**，带 `!` 的只有 3 个、且它们共享的是字面上的 `-requires-` 谓词而不是
+  「追加」这个语义，另有 2 个 `?` 后缀的运行期查询函数）。
 - 本体内容：`mods/lostland/subclasses.scm` 四个制作类副职（**工匠 / 裁缝 / 炼金术士 / 厨师**）
   + `mods/lostland/crafting.scm` 四个配方类别。**炼金与厨艺按项目所有者裁定拆成两个独立副职**
   （「药水调剂和厨艺是两个不同的方向，所以需要拆分」），推翻 `6fa7eb8` 里「调剂 = 炼金 + 厨艺

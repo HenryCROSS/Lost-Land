@@ -108,9 +108,11 @@ fn do_register_subclass(
 ///
 /// # 命名为什么是 `register-` 而不是设计文档建议的 `subclass-unlocks-via!`
 ///
-/// 本批次逐条核实了 `crates/ll-mod/src/**` 里已注册的全部三十六个装载期
-/// 脚本函数名：其中三十三个是 `register-<主体>[-<附加物>]`，只有三个带
-/// `!` 后缀，而那三个（`recipe-requires-station!`/`recipe-requires-tool!`/
+/// 本批次逐条核实了 `crates/ll-mod/src/**` 里经 `register_fn` 注册的全部
+/// 脚本函数名（含本函数共 41 个）：**36 个是 `register-<主体>[-<附加物>]`**，
+/// 只有 3 个带 `!` 后缀，另外 2 个是 `?` 后缀的运行期查询
+/// （`self-has-profession?`/`skill-ready?`，不是装载期注册函数）。而那 3 个
+/// 带 `!` 的（`recipe-requires-station!`/`recipe-requires-tool!`/
 /// `recipe-category-requires-subclass!`）**共享的不是「追加」这个语义，
 /// 是字面上的 `-requires-` 这个谓词**——`!` 是那句英文短语的一部分，
 /// 不是一个通用的「就地修改」标记（`register-class-trait`/
