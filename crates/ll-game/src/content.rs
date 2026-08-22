@@ -330,8 +330,7 @@ mod tests {
     fn 空目录下装载只产出本体内容不报任何mod失败() {
         // Arrange：一个存在但不含任何 mod 子目录的空目录。资产目录
         // 也不存在——`asset_vfs::build` 应当优雅处理，不需要真的存在。
-        let dir =
-            std::env::temp_dir().join(format!("ll-game-content-test-empty-{}", std::process::id()));
+        let dir = crate::test_support::unique_temp_path("ll-game-content-test-empty");
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
 
         // Act
@@ -351,10 +350,7 @@ mod tests {
         // Registry，而不是各自只在自己的表里自说自话——用每个命名空间
         // 都能查到内容哈希来验证。
         // Arrange
-        let dir = std::env::temp_dir().join(format!(
-            "ll-game-content-test-registry-{}",
-            std::process::id()
-        ));
+        let dir = crate::test_support::unique_temp_path("ll-game-content-test-registry");
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
 
         // Act

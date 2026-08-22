@@ -648,8 +648,7 @@ mod tests {
     use super::*;
 
     fn test_content() -> LoadedContent {
-        let dir =
-            std::env::temp_dir().join(format!("ll-game-world-test-content-{}", std::process::id()));
+        let dir = crate::test_support::unique_temp_path("ll-game-world-test-content");
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
         let content = crate::content::load_content(&dir, &dir.join("assets"));
         let _ = std::fs::remove_dir_all(&dir);

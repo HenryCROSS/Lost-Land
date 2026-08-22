@@ -927,14 +927,7 @@ mod tests {
     use ll_world::entity::{ActiveStatModifier, AttributeKind};
 
     fn test_content() -> LoadedContent {
-        let dir = std::env::temp_dir().join(format!(
-            "ll-game-app-test-content-{}-{}",
-            std::process::id(),
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        ));
+        let dir = crate::test_support::unique_temp_path("ll-game-app-test-content");
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
         let content = crate::content::load_content(&dir, &dir.join("assets"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -948,10 +941,8 @@ mod tests {
         let content = test_content();
         let game_world =
             crate::world::build_new_world(&content, 1).expect("测试用布局满足全部构造前置条件");
-        let save_path = std::env::temp_dir().join(format!(
-            "ll-game-app-test-save-{}.llsave",
-            std::process::id()
-        ));
+        let save_path =
+            crate::test_support::unique_temp_path("ll-game-app-test-save").with_extension("llsave");
         Demo::new(
             content,
             game_world,

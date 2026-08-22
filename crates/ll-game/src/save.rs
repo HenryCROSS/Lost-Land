@@ -114,8 +114,7 @@ mod tests {
     use crate::world::build_new_world;
 
     fn test_content() -> LoadedContent {
-        let dir =
-            std::env::temp_dir().join(format!("ll-game-save-test-content-{}", std::process::id()));
+        let dir = crate::test_support::unique_temp_path("ll-game-save-test-content");
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
         let content = load_content(&dir, &dir.join("assets"));
         let _ = std::fs::remove_dir_all(&dir);
@@ -123,12 +122,8 @@ mod tests {
     }
 
     fn temp_save_path(name: &str) -> std::path::PathBuf {
-        let mut path = std::env::temp_dir();
-        path.push(format!(
-            "ll-game-save-roundtrip-{name}-{}.llsave",
-            std::process::id()
-        ));
-        path
+        crate::test_support::unique_temp_path(&format!("ll-game-save-roundtrip-{name}"))
+            .with_extension("llsave")
     }
 
     #[test]

@@ -20,6 +20,8 @@ pub mod app;
 pub mod content;
 pub mod layout;
 pub mod save;
+#[cfg(test)]
+mod test_support;
 pub mod world;
 
 use std::path::{Path, PathBuf};
@@ -459,8 +461,7 @@ mod tests {
         // 端到端断言：load_or_new_game 在没有存档时确实产出一个可玩
         // 世界,而不是 panic 或产出一个没有玩家的空世界。
         // Arrange
-        let base =
-            std::env::temp_dir().join(format!("ll-game-lib-test-no-save-{}", std::process::id()));
+        let base = crate::test_support::unique_temp_path("ll-game-lib-test-no-save");
         std::fs::create_dir_all(&base).expect("创建测试目录应当成功");
         let paths = GamePaths::under(&base);
         let content = load_content(&paths.mods_root, &paths.assets_root);
@@ -480,10 +481,7 @@ mod tests {
         // 发布布局：exe 旁边就有 assets/（与 mods/），第一级探测就该
         // 命中，不需要向上找。
         // Arrange
-        let exe_dir = std::env::temp_dir().join(format!(
-            "ll-game-lib-test-release-layout-{}",
-            std::process::id()
-        ));
+        let exe_dir = crate::test_support::unique_temp_path("ll-game-lib-test-release-layout");
         std::fs::create_dir_all(exe_dir.join(ASSETS_DIR_NAME)).expect("创建测试目录应当成功");
 
         // Act
@@ -501,10 +499,7 @@ mod tests {
         // 开发布局：cargo run 产出的 exe 深埋在 target/{debug,release}/
         // 下（这里用 a/b/c/ 模拟），assets/ 在最外层的 a/。
         // Arrange
-        let root = std::env::temp_dir().join(format!(
-            "ll-game-lib-test-dev-layout-{}",
-            std::process::id()
-        ));
+        let root = crate::test_support::unique_temp_path("ll-game-lib-test-dev-layout");
         let exe_dir = root.join("b").join("c");
         std::fs::create_dir_all(&exe_dir).expect("创建测试目录应当成功");
         std::fs::create_dir_all(root.join(ASSETS_DIR_NAME)).expect("创建测试目录应当成功");
@@ -527,8 +522,7 @@ mod tests {
         // std::env::temp_dir() 本身及其全部祖先目录都不含名为
         // assets 的子目录（真实开发机上的常规假设，本仓库的
         // assets/ 只存在于仓库根，不在临时目录所在的路径链上）。
-        let exe_dir =
-            std::env::temp_dir().join(format!("ll-game-lib-test-not-found-{}", std::process::id()));
+        let exe_dir = crate::test_support::unique_temp_path("ll-game-lib-test-not-found");
         std::fs::create_dir_all(&exe_dir).expect("创建测试目录应当成功");
 
         // Act
@@ -548,15 +542,10 @@ mod tests {
         // 不做任何自动探测——env 覆盖的语义是显式指定，不是"探测不到
         // 才用的兜底"。
         // Arrange
-        let exe_dir = std::env::temp_dir().join(format!(
-            "ll-game-lib-test-env-override-exe-{}",
-            std::process::id()
-        ));
+        let exe_dir = crate::test_support::unique_temp_path("ll-game-lib-test-env-override-exe");
         std::fs::create_dir_all(exe_dir.join(ASSETS_DIR_NAME)).expect("创建测试目录应当成功");
-        let override_dir = std::env::temp_dir().join(format!(
-            "ll-game-lib-test-env-override-target-{}",
-            std::process::id()
-        ));
+        let override_dir =
+            crate::test_support::unique_temp_path("ll-game-lib-test-env-override-target");
 
         // Act
         let resolved = resolve_data_dir_with(Some(override_dir.clone().into_os_string()), &exe_dir)
@@ -572,8 +561,7 @@ mod tests {
     #[test]
     fn 存档存在时读档流程读回同一个玩家实体位置() {
         // Arrange：先用 new_game + save_game 产出一份真实存档。
-        let base =
-            std::env::temp_dir().join(format!("ll-game-lib-test-with-save-{}", std::process::id()));
+        let base = crate::test_support::unique_temp_path("ll-game-lib-test-with-save");
         std::fs::create_dir_all(&base).expect("创建测试目录应当成功");
         let paths = GamePaths::under(&base);
         let content = load_content(&paths.mods_root, &paths.assets_root);

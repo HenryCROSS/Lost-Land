@@ -41,10 +41,19 @@ const STEPS: u32 = 30;
 /// 本体自带的自然内容，与 `ll-game` 其余测试同一惯例（见
 /// `crates/ll-game/src/world.rs` 测试 `test_content`）。
 fn test_content() -> LoadedContent {
+    // 进程 ID + 进程内单调递增的计数器：进程 ID 隔离不同进程，计数器
+    // 隔离同一进程内的并发调用。本文件的六条测试都调用这个帮手，而
+    // `cargo test` 默认多线程并行——只用进程 ID 的话它们会共用同一个
+    // 目录，一条测试的 `remove_dir_all` 会删掉另一条正在读的目录。
+    // （原先拼的 `line!()` 展开在这一行、对每个调用方都是同一个值，
+    // 看着像区分度、实际不区分任何东西。）计数器写法与
+    // `crates/ll-game/src/test_support.rs` 一致；集成测试看不见那个
+    // `#[cfg(test)]` 模块，因此这几行在这里重来一遍。
+    static COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let dir = std::env::temp_dir().join(format!(
-        "ll-game-fog-of-war-test-content-{}-{}",
-        std::process::id(),
-        line!()
+        "ll-game-fog-of-war-test-content-{}-{n}",
+        std::process::id()
     ));
     std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
     let content = ll_game::content::load_content(&dir, &dir.join("assets"));
