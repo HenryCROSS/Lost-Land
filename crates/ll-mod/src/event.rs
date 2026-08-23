@@ -25,9 +25,9 @@
 //!   都不构造，开销是一次对小 `Vec` 的线性扫描。
 //! - 订阅了才回调，且只回调订阅了**这一种**事件的那几个处理函数。
 //!
-//! 这条判据也决定了[`GameEventKind`]为什么只有三种：一个没有消费者
+//! 这条判据也决定了[`GameEventKind`]为什么只有两种：一个没有消费者
 //! 的事件种类是纯负担（本项目已经发现三十处「声明了但从没接线」）。
-//! 三种的选取理由见 [`GameEventKind`] 各变体文档。
+//! 两种的选取理由、以及被刻意排除的那几种，见 [`GameEventKind`] 文档。
 //!
 //! # 确定性（约束 C5）
 //!
@@ -65,32 +65,40 @@ use std::fmt;
 
 /// 一种可以被 mod 订阅的运行期事件。
 ///
-/// # 只有三种，各自为什么在这里
+/// # 只有两种，判据是什么
 ///
-/// 判据是三条同时成立：**①它真的在生产结算路径上产出**（不是只在测试
-/// 里成立）、**②它的发生频率是「每回合若干次」而不是「每帧」**（见
-/// 模块文档「为什么必须先声明才回调」一节对 326ns 的讨论）、**③它有
-/// 一个说得出口的 mod 用例**。
+/// `knowledge/design/mod-lifecycle-and-event-api.md` 二、2 节已经按
+/// 频率量级把候选事件逐条评过一遍，本枚举**照它的结论取**，不另立
+/// 一套判据：该表判为「逐条投递给全局监听器给得起」的是击杀/死亡、
+/// 任务推进、历史事件、季节切换四类（量级几十到几百条/局）。
 ///
-/// 被**刻意排除**的候选（同一条判据）：
+/// 本批次落地其中**在生产结算路径上真的会产出**的那一支——击杀，
+/// 外加它的下游 `GrantExperience`（每次击杀至多一条，与击杀同量级）。
+/// 任务推进/历史事件/季节切换三类的 `Effect` 侧接线各自还缺东西
+/// （分别是任务完成判定、世界史生成、季节派生），等它们真的在生产
+/// 路径上产出时再开，那时代价只是「本枚举 + `parse` + 宿主的 payload
+/// 构造」三处。
 ///
-/// - `Effect::MoveTo`：频率最高的一条效果（每个实体每次行动至少一条），
-///   而"谁走到哪儿了"这件事行为树自己就能查（`nearby-enemy` 等）。
+/// 被**刻意排除**的候选：
+///
+/// - **`Effect::Damage`（命中/伤害）**：设计文档那张表把它判为
+///   **逐条给不起**——`damage-formula-mod-api.md` 与
+///   `buffs-and-triggers.md` 已经各自独立论证过一次（三轴战斗与背景
+///   模拟落地后累计几十万次/局量级）。本批次的「先声明才回调」只让
+///   **没订阅的玩家**不花钱，订阅了的 mod 仍然要为每一次命中付一次
+///   跨界；那正是那两份文档判为付不起的东西。设计文档给出的正确形状
+///   是**批量投递**（该文档二、3 节的 `EventBatchHandle` + 算子代数），
+///   那是一次独立的、与「批量查询」共享形状的设计，不夹带在本批次。
+/// - `Effect::MoveTo`：频率比命中更高，而"谁走到哪儿了"这件事行为树
+///   自己就能查（`nearby-enemy` 等）。
 /// - `Effect::SetScriptState`：脚本自己写的东西再回调给脚本，是一条
 ///   现成的无限递归入口，且没有任何用例。
 /// - `Effect::ScheduleNext`/`Effect::MarkExplored` 之类的簿记效果：
 ///   它们是引擎内部推进的一部分，对 mod 没有语义。
 ///
-/// 需要更多种类时，加一个变体的代价是「本枚举 + 解析函数 + 宿主的
-/// payload 构造」三处，不大——但**加之前必须先有一个真实的 mod 用例**，
-/// 这条纪律比机制本身重要。
+/// **加变体之前必须先有一个真实的 mod 用例**，这条纪律比机制本身重要。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum GameEventKind {
-    /// 有实体受到伤害（`ll_sim::effect::Effect::Damage`）。
-    ///
-    /// 用例：给「流血」「反伤」这类被动一个观察点；给战斗日志类 mod
-    /// 一个不必自己重算伤害公式的数据来源。
-    Damaged,
     /// 有实体被杀死（`ll_sim::effect::Effect::Kill`）。
     ///
     /// 用例：赏金/声望系统、「杀满 N 个某类怪物解锁某物」这类计数。
@@ -110,7 +118,6 @@ impl GameEventKind {
     /// 新增变体时会双向编译失败。
     pub fn as_str(self) -> &'static str {
         match self {
-            GameEventKind::Damaged => "damaged",
             GameEventKind::Killed => "killed",
             GameEventKind::ExperienceGained => "experience-gained",
         }
@@ -123,7 +130,6 @@ impl GameEventKind {
     /// 注册出一条永远不会被触发的订阅（ADR 0017「注册期完整校验」）。
     pub fn parse(raw: &str) -> Option<Self> {
         Some(match raw {
-            "damaged" => GameEventKind::Damaged,
             "killed" => GameEventKind::Killed,
             "experience-gained" => GameEventKind::ExperienceGained,
             _ => return None,
@@ -131,11 +137,7 @@ impl GameEventKind {
     }
 
     /// 全部合法取值，供错误文案列举。
-    pub const ALL: [GameEventKind; 3] = [
-        GameEventKind::Damaged,
-        GameEventKind::Killed,
-        GameEventKind::ExperienceGained,
-    ];
+    pub const ALL: [GameEventKind; 2] = [GameEventKind::Killed, GameEventKind::ExperienceGained];
 }
 
 impl fmt::Display for GameEventKind {
@@ -300,8 +302,11 @@ mod tests {
 
     #[test]
     fn 未知事件种类解析失败而不是退化成某个默认值() {
+        // 用 "damaged" 当反例不是随手挑的：它是被**刻意排除**的那一条
+        // （见 GameEventKind 文档），而排除的东西必须真的解析不出来，
+        // 不能靠"没人写"来保证。
         // Arrange & Act
-        let parsed = GameEventKind::parse("moved");
+        let parsed = GameEventKind::parse("damaged");
 
         // Assert
         assert_eq!(parsed, None);
@@ -353,7 +358,11 @@ mod tests {
             .subscribe(subscription("moda", GameEventKind::Killed, "on-kill"))
             .expect("登记应当成功");
         table
-            .subscribe(subscription("moda", GameEventKind::Damaged, "on-damage"))
+            .subscribe(subscription(
+                "moda",
+                GameEventKind::ExperienceGained,
+                "on-xp",
+            ))
             .expect("登记应当成功");
 
         // Act
@@ -364,7 +373,11 @@ mod tests {
 
         // Assert
         assert_eq!(killed, vec!["on-kill"]);
-        assert!(!table.has_subscriber(GameEventKind::ExperienceGained));
+        let xp: Vec<&str> = table
+            .subscribers_of(GameEventKind::ExperienceGained)
+            .map(|s| s.handler.as_str())
+            .collect();
+        assert_eq!(xp, vec!["on-xp"]);
     }
 
     #[test]

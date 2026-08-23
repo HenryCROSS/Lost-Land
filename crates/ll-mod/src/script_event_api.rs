@@ -64,7 +64,7 @@ pub fn register_event_api(engine: &mut ScriptEngine) {
 
 /// `(on-event event-kind handler-name)`。
 ///
-/// - `event-kind`：`"damaged"`/`"killed"`/`"experience-gained"` 三选一
+/// - `event-kind`：`"killed"`/`"experience-gained"` 二选一
 ///   （见 [`GameEventKind`]）。写别的会当场报错并列出全部合法取值。
 /// - `handler-name`：本 mod 脚本里 `define` 出来的**零参**函数名。事件
 ///   数据不走参数，走 `(event-*)` 一族查询函数——理由见
@@ -149,11 +149,11 @@ mod tests {
         let mut table = EventSubscriptionTable::new();
 
         // Act
-        let result = do_on_event(&mut table, "examplemod", "moved", "on-move");
+        let result = do_on_event(&mut table, "examplemod", "damaged", "on-damage");
 
         // Assert
         let message = result.expect_err("未知事件种类必须失败");
-        assert!(message.contains("moved"));
+        assert!(message.contains("damaged"));
         assert!(message.contains("killed"));
         assert!(table.all().is_empty(), "失败的订阅不得留下任何痕迹");
     }
@@ -166,7 +166,7 @@ mod tests {
         let mut table = EventSubscriptionTable::new();
 
         // Act
-        do_on_event(&mut table, "modb", "damaged", "on-damage").expect("登记应当成功");
+        do_on_event(&mut table, "modb", "experience-gained", "on-xp").expect("登记应当成功");
 
         // Assert
         assert_eq!(table.all()[0].mod_namespace, "modb");

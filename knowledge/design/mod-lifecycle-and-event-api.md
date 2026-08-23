@@ -1,6 +1,65 @@
 # 扩充给 mod 的 Steel 脚本 API：装载期一次性 API、事件监听 API 与其余候选
 
-**冻结于** 2026-08-20。**落地状态**：纯设计，`crates/` 中无任何对应类型。核对提交 `2226469`（`main` 分支）。已核实的现状：`crates/ll-mod/src/pipeline.rs`（装载管线真实阶段划分）、`crates/ll-mod/src/topo.rs`（拓扑排序确定性总序）、`crates/ll-mod/src/registry.rs`（`Registry::intern` 允许悬空引用，无任何后续校验）、`crates/ll-script/src/host.rs`/`whitelist.rs`（能力边界、`map`/`filter`/`foldl`/`foldr` 白名单实测放行）、`crates/ll-sim/src/effect.rs`（现有 `Effect` 变体清单）、`knowledge/design/buffs-and-triggers.md` §三（既有的内容级触发器机制，本文档的事件监听 API 与它是两层不同粒度的机制，非重复设计）、`knowledge/design/script-entity-handles-and-batch-queries.md` 五节（既有的批量查询设计，纯设计未落地，本文档直接复用其形状而非重新发明）。
+**冻结于** 2026-08-20。**落地状态**：二节「事件监听 API」已**部分落地**（2026-08-23，见下方「落地记录」）；一节「装载期一次性 API」与三节「其余候选」仍是纯设计。核对提交 `2226469`（`main` 分支）。已核实的现状：`crates/ll-mod/src/pipeline.rs`（装载管线真实阶段划分）、`crates/ll-mod/src/topo.rs`（拓扑排序确定性总序）、`crates/ll-mod/src/registry.rs`（`Registry::intern` 允许悬空引用，无任何后续校验）、`crates/ll-script/src/host.rs`/`whitelist.rs`（能力边界、`map`/`filter`/`foldl`/`foldr` 白名单实测放行）、`crates/ll-sim/src/effect.rs`（现有 `Effect` 变体清单）、`knowledge/design/buffs-and-triggers.md` §三（既有的内容级触发器机制，本文档的事件监听 API 与它是两层不同粒度的机制，非重复设计）、`knowledge/design/script-entity-handles-and-batch-queries.md` 五节（既有的批量查询设计，纯设计未落地，本文档直接复用其形状而非重新发明）。
+
+
+---
+
+## 落地记录（2026-08-23，本节由实现批次追加，其余各节保持冻结原文）
+
+**落地了什么**
+
+- `ll_mod::event`（`GameEventKind`/`EventSubscription`/`EventSubscriptionTable`）、
+  `ll_mod::script_event_api`（装载期 `(on-event 事件 处理函数名)`）、
+  `ll_mod::script_event_source`（结算期分发器）、
+  `ll_script::api::event`（`event-kind`/`event-actor`/`event-target`/`event-amount` 四个零参负载查询）。
+- 事件种类**两种**：`killed`、`experience-gained`。取自二、2 节那张频率表判为
+  「逐条给得起」的那一档里、**目前真的在生产结算路径上产出**的那一支。
+  该表判为「逐条给不起」的命中/伤害（`Effect::Damage`）**没有开**——本设计
+  给出的正确形状是二、3 节的批量投递，那是一次独立的设计。
+- 回调顺序按 2.4 节的结论落地：订阅按登记顺序存进 `Vec`，登记顺序即
+  「mod 拓扑序 + 脚本内书写顺序」，分发时线性遍历，不引入任何哈希容器。
+- 监听器**能追加新效果、不能修改/否决已发生的效果**——与 2.5 节结论一致。
+  落地形状是 `ll_sim::turn::TurnEngine::perform` 的 `on_effect` 回调从
+  `-> ()` 放宽成 `-> Vec<Effect>`，反应效果由同一个 `apply` 执行。
+
+**与本设计的三处偏离，如实记录**
+
+1. **回调时机在 `apply` 之前，不是之后。** 2.5 节写「事件监听器观察到的事件，
+   定义上是 `apply` 已经把对应 `Effect` 写入世界之后才广播的通知」。实现选择
+   了**之前**：`TurnEngine::perform` 的 `on_effect` 本来就是 apply 前调用，
+   而这对 `killed` 是**必需**的——`apply` 之后被杀实体已从世界里销毁，
+   监听器再也读不到它（`TurnEngine::perform` 的既有文档就是为这条理由才把
+   `on_effect` 定在 apply 之前）。2.5 节那条不变式（不能回滚已写入的效果）
+   仍然成立，且成立得更彻底：监听器根本拿不到 `&mut WorldState`。
+2. **递归防护不是深度上限，是「反应效果不再触发一轮分发」。** 2.5 节提议复用
+   `buffs-and-triggers.md` 的 `MAX_TRIGGER_DEPTH = 8`。实现选了更强的一条：
+   反应效果直接 `apply`，不经过分发，环路因此在结构上不可能出现，不需要
+   任何计数器。代价是监听器观察不到别的监听器的反应——本批次接受这条边界。
+3. **注册形式是「事件种类 + 处理函数名字符串」，不是「事件种类 + lambda」。**
+   见下方「本设计中的两处事实错误」第一条。
+
+**本设计中的两处事实错误（实现时核实发现）**
+
+1. **2.6 节假定监听器与装载脚本跑在同一个 `ScriptEngine` 上——不成立。**
+   原文：「同一个 mod 的全部脚本代码共享同一个 `ScriptEngine`（同一份
+   `allowed_identifiers` 白名单）」。这句话对**装载期**成立，但监听器是
+   **结算期**代码，而结算期引擎是另外一个对象、另一份白名单：装载期引擎有
+   `register-*` 没有世界查询，结算期引擎反过来（`mods/example_mod/behavior.scm`
+   刻意不在 `entry_points` 里正是同一条原因）。因此：
+   - 注册时**传不了 lambda**——一个装载期引擎里的闭包在结算期引擎上毫无意义。
+     实现改为传函数名字符串，由结算期引擎按名字调用。
+   - 2.6 节那套 `IN_PRESENTATION_CONTEXT` 线程局部守卫，其论证前提
+     （「`state-set!` 两边都注册了，靠标志区分」）随之失效。真正的隔离更简单：
+     **表现类监听器就不给它注册写入通道**。本批次只落地世界状态类一种，
+     表现类连同这条守卫都没有落地。
+   - 声明与实现因此必须分居两个文件，清单新增 `event_scripts` 字段承载后者。
+2. **一节缺口 A 描述的「悬空引用无人校验」已经不成立。** 原文核对的是提交
+   `2226469`；此后 `ll_mod::content_audit`（装载后校验 pass）已经落地，
+   跨表引用完整性现在是 `ll_game::content::load_content` 的硬失败条件之一，
+   且带 `ReferenceExpectation::UntypedIdSpace` 豁免出口。一节提议的
+   `require-content!` 因此**不再需要**——它要解决的问题已经被一个不需要
+   mod 作者主动调用的机制解决了。
 
 ---
 

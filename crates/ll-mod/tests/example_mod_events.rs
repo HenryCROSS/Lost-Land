@@ -207,10 +207,11 @@ fn 真实mod脚本的事件订阅被装载管线收下() {
 
     // Assert：两条订阅都来自 mods/example_mod/gameplay.scm。
     assert!(subscriptions.has_subscriber(GameEventKind::Killed));
-    assert!(subscriptions.has_subscriber(GameEventKind::Damaged));
-    assert!(
-        !subscriptions.has_subscriber(GameEventKind::ExperienceGained),
-        "example_mod 没有订阅这一种，订阅表不得凭空多出订阅"
+    assert!(subscriptions.has_subscriber(GameEventKind::ExperienceGained));
+    assert_eq!(
+        subscriptions.all().len(),
+        2,
+        "订阅表不得凭空多出订阅，也不得漏掉 gameplay.scm 里的任何一条"
     );
     let namespaces: Vec<&str> = subscriptions
         .all()
@@ -224,8 +225,11 @@ fn 真实mod脚本的事件订阅被装载管线收下() {
 }
 
 #[test]
-fn 攻击经turnengine结算时监听器产出的写入真的落进世界() {
+fn 击杀经turnengine结算时经验监听器产出的写入真的落进世界() {
     // 这是本文件的核心验收：真实脚本 + 真实结算路径 + apply 落地。
+    // 走的是 experience-gained 那一路——击杀会同时产出 `Effect::Kill`
+    // 与 `Effect::GrantExperience`，后者落在**击杀者**身上，击杀者在
+    // 反应效果落地那一刻还活着，因此 entity 写入落得下去。
     // Arrange：**先造引擎再装载**（约束 C6，见模块文档）。
     let prepared = vec![PreparedEventEngine::new()];
     let subscriptions = load_subscriptions();
@@ -234,26 +238,14 @@ fn 攻击经turnengine结算时监听器产出的写入真的落进世界() {
 
     let mut world = test_world();
     let attacker = spawn_at(&mut world, 0, 0, Agent::STARTING_HEALTH);
-    // 受伤者必须活到反应效果落地那一刻：entity 写入落在已销毁实体上会
-    // 被 apply 静默丢弃（见 mods/example_mod/events.scm 里
-    // examplemod-on-kill 上方那段说明）。一次普攻打不死一个满血目标，
-    // 但**必须保证只打一次**——见下面时间轴那两行的注释。
-    let victim = spawn_at(&mut world, 1, 0, Agent::STARTING_HEALTH);
+    let victim = spawn_at(&mut world, 1, 0, 1);
 
     let mut timeline = ll_sim::timeline::Timeline::new();
     timeline.schedule(attacker, Tick(0));
-    // 受控实体也必须排进时间轴：`advance_ai` 的返回条件是「弹出的条目
-    // 属于受控实体」，受控实体不在队列里就会一路空转到
-    // MAX_STEPS_PER_ADVANCE（见 `ll_sim::turn` 模块文档「必须保证
-    // 进展」一节），attacker 因此会连打十几刀、把目标打死——那会让本条
-    // 测试验不到 entity 写入。
-    timeline.schedule(victim, Tick(1));
     let mut engine = TurnEngine::new(timeline);
     let catalogs = ResolveCatalogs::empty();
 
-    // Act：经生产路径结算一次攻击。`advance_ai` 会弹出 attacker，
-    // 用下面这个策略产出 `Intent::Attack`，随后弹出受控实体 victim
-    // 而返回。
+    // Act：经生产路径结算一次致命攻击。
     let mut ai = |_: &WorldState, actor: EntityId, _: EntityId| Intent::Attack {
         actor,
         target: victim,
@@ -266,28 +258,18 @@ fn 攻击经turnengine结算时监听器产出的写入真的落进世界() {
         &mut |world, effect| dispatcher.dispatch(world, effect),
     );
 
-    // Assert：受伤者必须还活着——`Effect::SetScriptState` 的 entity
-    // 写入落在一个已经被销毁的实体上会被 apply 静默丢弃（见
-    // mods/example_mod/events.scm 里 examplemod-on-kill 上方那段说明）。
-    // 这条断言把「本测试验的是伤害事件那一路」钉死，免得哪天攻击伤害
-    // 调高到一击致死时，下面那条断言变成一条查不出原因的红。
+    // Assert：经验事件的两条写入都落地了。
     assert!(
-        world.actors.get(victim).is_some(),
-        "受伤者必须在这次攻击后存活，否则本测试验不到 entity 写入"
-    );
-
-    // 伤害事件的两条写入都落地了。
-    assert!(
-        matches!(global_state(&world, "last-damage"), Some(ScriptValue::Int(n)) if n > 0),
-        "全局 last-damage 必须被 examplemod-on-damage 写入一个正数，实际是 {:?}",
-        global_state(&world, "last-damage")
+        matches!(global_state(&world, "last-experience"), Some(ScriptValue::Int(n)) if n > 0),
+        "全局 last-experience 必须被 examplemod-on-experience 写入一个正数，实际是 {:?}",
+        global_state(&world, "last-experience")
     );
     assert!(
         matches!(
-            entity_state(&world, victim, "last-damage-taken"),
+            entity_state(&world, attacker, "last-experience-gained"),
             Some(ScriptValue::Int(n)) if n > 0
         ),
-        "受伤者身上必须留下这次伤害量"
+        "击杀者身上必须留下这次获得的经验量"
     );
 }
 
@@ -299,7 +281,7 @@ fn 摘掉事件分发接线后脚本写入不再落地() {
     // Arrange
     let mut world = test_world();
     let attacker = spawn_at(&mut world, 0, 0, Agent::STARTING_HEALTH);
-    let victim = spawn_at(&mut world, 1, 0, Agent::STARTING_HEALTH);
+    let victim = spawn_at(&mut world, 1, 0, 1);
     let mut timeline = ll_sim::timeline::Timeline::new();
     timeline.schedule(attacker, Tick(0));
     let mut engine = TurnEngine::new(timeline);
@@ -315,8 +297,12 @@ fn 摘掉事件分发接线后脚本写入不再落地() {
     });
 
     // Assert
-    assert_eq!(global_state(&world, "last-damage"), None);
-    assert_eq!(entity_state(&world, victim, "last-damage-taken"), None);
+    assert_eq!(global_state(&world, "last-experience"), None);
+    assert_eq!(global_state(&world, "last-event"), None);
+    assert_eq!(
+        entity_state(&world, attacker, "last-experience-gained"),
+        None
+    );
 }
 
 #[test]
@@ -360,7 +346,7 @@ fn 没有任何订阅时分发器对任何效果都不回调脚本() {
     // Act
     let reactions = dispatcher.dispatch(
         &world,
-        &ll_sim::effect::Effect::Damage {
+        &ll_sim::effect::Effect::GrantExperience {
             target: victim,
             amount: 5,
         },
@@ -385,7 +371,7 @@ fn 一个mod的处理函数写不进别的mod的命名空间() {
     // Act
     let reactions = dispatcher.dispatch(
         &world,
-        &ll_sim::effect::Effect::Damage {
+        &ll_sim::effect::Effect::GrantExperience {
             target: victim,
             amount: 5,
         },

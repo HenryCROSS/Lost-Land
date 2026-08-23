@@ -30,8 +30,9 @@
 //! `Vec`（不分配）。宿主还可以更早一步整个跳过：订阅表为空时根本
 //! 不必建 [`ScriptEventSource`]（`ll_game::content` 就是这么做的）。
 //!
-//! 三种事件的频率都是「每回合若干次」而不是「每帧」，选取判据见
-//! [`crate::event::GameEventKind`] 文档。
+//! 两种事件的频率都是「每局几十到几百条」，选取判据（以及为什么
+//! `Effect::Damage` 被刻意排除）见 [`crate::event::GameEventKind`]
+//! 文档。
 //!
 //! # 确定性
 //!
@@ -322,15 +323,6 @@ impl ScriptEventSource {
 /// 真实 mod 用例）。
 fn payload_for(effect: &Effect) -> Option<(GameEventKind, EventPayload)> {
     match effect {
-        Effect::Damage { target, amount } => Some((
-            GameEventKind::Damaged,
-            EventPayload {
-                kind: GameEventKind::Damaged.as_str(),
-                actor: None,
-                target: Some(*target),
-                amount: i64::from(*amount),
-            },
-        )),
         Effect::Kill { target, killer, .. } => Some((
             GameEventKind::Killed,
             EventPayload {
@@ -495,18 +487,12 @@ mod tests {
     }
 
     #[test]
-    fn 三种可订阅效果各自翻译出正确的事件种类与负载() {
+    fn 两种可订阅效果各自翻译出正确的事件种类与负载() {
         // Arrange
         let target = some_entity();
         let killer = some_entity();
 
         // Act & Assert
-        let (kind, payload) = payload_for_testing(&Effect::Damage { target, amount: 12 })
-            .expect("Damage 必须是可订阅事件");
-        assert_eq!(kind, GameEventKind::Damaged);
-        assert_eq!(payload.target, Some(target));
-        assert_eq!(payload.amount, 12);
-
         let (kind, payload) = payload_for_testing(&Effect::Kill {
             target,
             killer: Some(killer),
@@ -525,18 +511,24 @@ mod tests {
 
     #[test]
     fn 未开成事件的效果翻译出none() {
-        // 「宁可少开几种」——MoveTo 是频率最高的一条效果，刻意不开，
-        // 见 `crate::event::GameEventKind` 文档。
+        // 「宁可少开几种」——`Damage` 与 `MoveTo` 都是刻意不开的，
+        // 各自的理由见 `crate::event::GameEventKind` 文档。本条守的是
+        // 「刻意排除」这件事真的成立，不是靠"没人写"。
         // Arrange
         let actor = some_entity();
-        let effect = Effect::MoveTo {
+        let moved = Effect::MoveTo {
             actor,
             pos: ll_core::torus::TorusSize::new(8, 8)
                 .expect("8x8 是合法尺寸")
                 .wrap(0, 0),
         };
+        let damaged = Effect::Damage {
+            target: actor,
+            amount: 12,
+        };
 
         // Act & Assert
-        assert!(payload_for_testing(&effect).is_none());
+        assert!(payload_for_testing(&moved).is_none());
+        assert!(payload_for_testing(&damaged).is_none());
     }
 }

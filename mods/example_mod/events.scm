@@ -55,16 +55,16 @@
               (list 'global "last-event" (event-kind)))
         (list (list 'global "last-event" (event-kind))))))
 
-;; 有人受伤时：把这一次的伤害量同时记进全局状态与受伤者身上。
+;; 有人获得经验时：把这一次的经验量同时记进全局状态与获得者身上。
 ;;
-;; 受伤者此刻**还活着**（Damage 只做减法，致死是紧随其后的另一条
-;; Kill 效果），因此这条 entity 写入落得下去。
+;; 获得者此刻**还活着**（GrantExperience 是击杀的下游，落在击杀者身上），
+;; 因此这条 entity 写入落得下去。
 ;;
 ;; 只记最后一次而不是累加，正是上面「已知边界」那一节的直接后果——
 ;; 累加要求先读回上一次的值，而结算期引擎读不到。
-(define (examplemod-on-damage)
-  (let ([victim (event-target)])
-    (if victim
-        (list (list 'global "last-damage" (event-amount))
-              (list 'entity victim "last-damage-taken" (event-amount)))
-        (list (list 'global "last-damage" (event-amount))))))
+(define (examplemod-on-experience)
+  (let ([earner (event-target)])
+    (if earner
+        (list (list 'global "last-experience" (event-amount))
+              (list 'entity earner "last-experience-gained" (event-amount)))
+        (list (list 'global "last-experience" (event-amount))))))

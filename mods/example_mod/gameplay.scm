@@ -587,8 +587,9 @@
 ;;
 ;; 签名见 crates/ll-mod/src/script_event_api.rs：
 ;;   (on-event event-kind handler-name)
-;; event-kind 三选一："damaged" / "killed" / "experience-gained"
-;; （为什么只有三种，见 ll_mod::event::GameEventKind 文档）。
+;; event-kind 二选一："killed" / "experience-gained"
+;; （为什么只有这两种、"damaged" 为什么被刻意排除，见
+;; ll_mod::event::GameEventKind 文档）。
 ;;
 ;; **声明在这里，实现在 events.scm**——两个文件，因为装载期引擎与结算期
 ;; 引擎的能力表刻意不兼容，见 mod.json5 里 event_scripts 上方的注释。
@@ -599,4 +600,4 @@
 ;; （EventSourceError::UnknownHandler），不会静默变成一条永远不触发的
 ;; 订阅——ADR 0017「注册期完整校验」在事件订阅上的落点。
 (on-event "killed" "examplemod-on-kill")
-(on-event "damaged" "examplemod-on-damage")
+(on-event "experience-gained" "examplemod-on-experience")
