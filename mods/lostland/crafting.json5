@@ -1,57 +1,112 @@
-// 本体制作内容——目前只有配方类别四条。
+// 本体制作内容——配方类别五条 + 配方九条。
 //
 // 搬家来历见 races.json5 文件头。schema 见
 // `crates/ll-mod/src/content_schema.rs` 的 `CraftingFile`。
 //
-// # 为什么这里只有类别，没有一条配方
+// # 这个文件被读两遍
 //
-// 配方要引用**物品**（食材与成品都指向 ItemDef），而本体的物品内容至今
-// 一条都没有——`ll_game::content::load_content` 交给装载管线的是一张空
-// ItemTable，真实游戏里的全部物品内容目前只存在于
-// mods/example_mod/gameplay.scm。没有物品就写不出配方，这不是本批次
-// 刻意留的坑，是内容迁移的既有进度（同一句话对本体职业也成立）。
+// 配方类别与副职**互相引用**：副职的获得条件指向一个类别
+// （subclasses.json5 的 unlock.target），类别的闸门反过来指向一个副职
+// （下面 advanced_forging 的 required_subclasses），而两边都是「只 get
+// 不 intern」。任何单一的文件先后顺序都满足不了它，因此引擎把本文件读
+// 两遍：第一遍写类别定义与配方，第二遍（在 subclasses.json5 之后）才写
+// 副职闸门。见 `ll_mod::content_schema::apply_recipe_category_subclass_gates`
+// 与 `ll_mod::content_data` 的 CONTENT_FILES。
 //
-// 将来补配方时，在本文件的顶层对象里加第二个键（schema 已经为此留了
-// 位置），不需要新开文件。
+// 本文件此前只有类别、没有一条配方，理由是「配方要引用物品，而本体
+// 一件物品都没有」。那条阻塞随 mods/lostland/items.json5 落地解除。
 //
-// 类别本身**不需要**物品，因此可以先落地——而它必须先落地，理由见
-// subclasses.json5：副职的获得条件要指向一个已注册的配方类别。
+// ── 全部九条配方都声明 requires_discovery: true ─────────────────
 //
-// # 四个类别都**不设**副职闸门，这是一条刻意的决定
+// 项目所有者裁定原话：「这个机制我希望是**一开始什么都不会，只能乱
+// 煮**，然后通过各种途径发现了制作配方。」本文件是那条裁定唯一的落点
+// ——新角色的 `known_recipes` 是空的，本体这九条一条都做不了，必须先
+// 经下面两条路径之一学会。
 //
-// 类别的 required_subclasses 字段缺省为空（人人可做）。本文件四条一次
-// 都不写它，两条理由：
+// **为什么是逐条显式声明，而不是把 schema 的默认值翻过来。**
+// `RawRecipe::requires_discovery` 的 serde 默认值保持 `false`，三条理由：
 //
-// 1. **会造出一个死锁。** subclasses.json5 让四个副职各自从「在对应
-//    类别里做满 N 次」获得。若同一个类别又要求那个副职才能做，就成了
-//    「要当工匠才能锻造，要锻造才能当工匠」——两边互相等，谁都拿不到。
-//    resolve_craft 的副职闸门是每次制作都判的（crates/ll-sim/src/resolve.rs
-//    第③步），所以这个死锁是真的，不是理论上的。装载后的内容校验现在
-//    会把这类环当场拦下（`ll_mod::content_audit` 的
-//    detect_unlock_deadlocks，装载硬失败），但本文件不设闸门是内容
-//    决定，不是因为拦不住才不敢写。
-// 2. **烹饪本来就不该有闸门。** knowledge/design/food-and-cooking-system.md
-//    五节已裁定「任何角色只要凑齐食材就能做出对应菜谱，不需要学会
-//    这一步」。
+//   1. **翻默认值会静默改掉每一个第三方 mod 的既有内容。** 一个已经
+//      写好的 mod 里所有没写这个字段的配方，会在升级引擎的那一刻从
+//      「人人会做」变成「必须先发现」，而它的作者什么都没改。数据格式
+//      的默认值一旦被内容依赖，翻转它就是一次无声的语义破坏。
+//   2. **它会当场弄坏 mods/example_mod/。** 那边的烤肉配方刻意依赖
+//      「默认 = 不需要发现」当基准（见 crafting.json5 的注释与
+//      crates/ll-mod/tests/example_mod_recipe_discovery.rs 第 3 步的
+//      守卫），翻默认值要么让那份测试红，要么逼着回头给 example_mod
+//      的四条配方补 `requires_discovery: false`——两条都是让示范内容
+//      去迁就本体的一条内容决定。
+//   3. **`false` 是 `RecipeTable` 存储层真正的默认值。**
+//      `RecipeTable::set_requires_discovery` 只有「设为真」一个方向，
+//      没有 `clear_`。让 schema 默认值与存储层默认值一致，是这两层之间
+//      唯一不需要额外解释的关系。
 //
-// 闸门这条能力本身**没有闲置**：mods/example_mod/gameplay.scm 的
-// examplemod:forging 就设了闸门（要求 examplemod:shadowdancer），并且有
-// 一份端到端测试盯着它（crates/ll-mod/tests/example_mod_subclass_unlock.rs）。
+// 「一开始什么都不会」是一条**本体内容设计**裁定，落在本体内容里；
+// 它不是一条数据格式规则，因此不落在 schema 默认值上。
 //
-// # 将来想要「进阶类别设闸门」怎么写
+// ── 学会一条配方的两条路径（都已落地） ──────────────────────────
 //
-// 正确形状是**两个类别**：一个不设闸门的基础类别负责让玩家把副职练
-// 出来，一个设闸门的进阶类别把守真正的高级配方。等本体有了真实配方
-// 内容再拆，现在拆等于凭空造四个空类别。
+//   * **乱煮**：`Intent::Experiment { actor, category }`。候选是「这个
+//     类别下 requires_discovery && 尚未学会 && 手上食材恰好齐全」的
+//     配方，掷一次骰选中一条学会。**不消耗材料，也不产出成品**，只花
+//     一个回合。见 `ll_sim::resolve::resolve_experiment` 的文档，那里
+//     逐条论证了为什么失败与成功都不吃材料。
+//   * **读书**：mods/lostland/items.json5 的 `lostland:field_cookbook`
+//     教 `lostland:roast_meat_recipe`。`resolve_read` **不查类别闸门**
+//     ——知识可以先于资格获得，两条路径因此互补而不是互为备份。
+//
+// 这两条路径覆盖得到本体全部九条配方吗？覆盖得到：乱煮对任何
+// requires_discovery 的配方都适用，只要求「手上有料」+「过得了类别
+// 闸门」，而下面五个类别里只有 advanced_forging 设了闸。
 {
   recipe_categories: [
     // 锻造：金属装备与工具。对应副职 lostland:artisan（工匠）。
+    //
+    // **不设闸门**，而且必须不设：subclasses.json5 让工匠从「在
+    // lostland:forging 里做满 20 件」获得，若这个类别反过来要求工匠，
+    // 就成了「要当工匠才能锻造，要锻造才能当工匠」。装载后的
+    // `ll_mod::content_audit::detect_unlock_deadlocks` 会把这类环当场
+    // 拦下（装载硬失败，且不只拦自环——判据是 AND/OR 可达性不动点），
+    // 但本条不设闸是内容决定，不是因为拦不住才不敢写。
     {
       id: "lostland:forging",
       display_name_key: "lostland:recipe_category.forging.display_name",
     },
 
-    // 裁缝：衣物与织物。对应副职 lostland:tailor（裁缝）。
+    // 进阶锻造：需要**工匠副职**才做得了的那一档锻造。本体唯一一个
+    // 设了闸门的类别。
+    //
+    // # 这是「设闸门」唯一正确的形状
+    //
+    // 闸门指向的副职（lostland:artisan）从**另一个不设闸的类别**
+    // （lostland:forging）练出来，因此不存在环：
+    //
+    //   forging（人人可做）→ 做满 20 件 → artisan → advanced_forging
+    //
+    // 反过来把闸门设在 forging 自己身上就是死锁。本文件此前那条
+    // 「等本体真的有配方内容再拆」的注释（以及 content_audit 里同一段
+    // 理由的字段豁免）说的正是这件事，现在本体有配方了，就按那个形状
+    // 拆开。
+    //
+    // # 闸门是 any-of，不是 all-of
+    //
+    // `required_subclasses` 是一个列表，语义是「其中**任何一个**就
+    // 开门」（见 detect_unlock_deadlocks 文档）。这里只列工匠一个，
+    // 是内容决定不是能力限制。
+    //
+    // # 放弃副职会立刻重新锁上
+    //
+    // `resolve_craft` 与 `resolve_experiment` 每次都重判这道闸门，
+    // 不是「解锁一次就永久」。玩家经 Intent::AbandonSubclass 放弃工匠，
+    // 下一刻这个类别的两条配方就既做不了、也试不出来了。
+    {
+      id: "lostland:advanced_forging",
+      display_name_key: "lostland:recipe_category.advanced_forging.display_name",
+      required_subclasses: ["lostland:artisan"],
+    },
+
+    // 裁缝：衣物与织物。对应副职 lostland:tailor（裁缝）。不设闸门，
+    // 理由同 forging（tailor 正是从这个类别练出来的）。
     // 温度系统（c12c04f）落地之后这一条有了真实的玩法压力——低温需要
     // 保暖衣物，见 knowledge/design/subclass-system.md 六节「补给循环」。
     {
@@ -60,6 +115,7 @@
     },
 
     // 炼金：药剂与试剂。对应副职 lostland:alchemist（炼金术士）。
+    // 不设闸门，理由同上。
     //
     // # 炼金与烹饪是两个独立的类别、两个独立的副职
     //
@@ -73,10 +129,183 @@
       display_name_key: "lostland:recipe_category.alchemy.display_name",
     },
 
-    // 烹饪：食物。对应副职 lostland:cook（厨师）。
+    // 烹饪：食物。对应副职 lostland:cook（厨师）。不设闸门有**第二条
+    // 独立理由**：knowledge/design/food-and-cooking-system.md 五节裁定
+    // 「任何角色只要凑齐食材就能做出对应菜谱，不需要学会这一步」。
+    //
+    // 注意这条裁定说的是**资格**（不需要副职），不是**知识**——所有者
+    // 后来那条「一开始什么都不会，只能乱煮」裁定的是知识那一维。两条
+    // 并不冲突：烹饪类别人人进得来（无闸门），但里面每一条菜谱都得先
+    // 被发现（requires_discovery）。乱煮之所以只能在这里发生，正是因为
+    // 这个类别没有闸门。
     {
       id: "lostland:cooking",
       display_name_key: "lostland:recipe_category.cooking.display_name",
+    },
+  ],
+
+  recipes: [
+    // ─────────────────────────── 烹饪 ───────────────────────────
+
+    // 烤肉：一份生肉进，一份烤肉出。**全表最基础的一条**——不要场地、
+    // 不要工具、类别不设闸门，唯一的前置就是「先知道有这么回事」。
+    // 野外食谱（items.json5）教的正是它。
+    {
+      id: "lostland:roast_meat_recipe",
+      display_name_key: "lostland:recipe.roast_meat.display_name",
+      category: "lostland:cooking",
+      ingredients: [{ item: "lostland:raw_meat", count: 1 }],
+      product: "lostland:roast_meat",
+      product_count: 1,
+      requires_discovery: true,
+    },
+
+    // 香草烤肉：**同一件成品（lostland:roast_meat）的第二条配方**。
+    // `RecipeTable` 刻意不对「成品」设唯一性约束，本条是本体侧对那条
+    // 决定的证据：多一味草药，出同样一份烤肉。
+    //
+    // 它比上面那条**更贵**（多耗一份草药）却不多出东西，这不是笔误
+    // ——两条路径的意义在于「手上有什么」而不是「哪条更划算」：没肉
+    // 的时候两条都做不了，有肉没草药时只有第一条可做。真正的取舍会
+    // 在成品分化（将来给香草烤肉更高的恢复量）时出现，那是数值批次
+    // 的事，不夹带在这里。
+    {
+      id: "lostland:herb_roast_recipe",
+      display_name_key: "lostland:recipe.herb_roast.display_name",
+      category: "lostland:cooking",
+      ingredients: [
+        { item: "lostland:raw_meat", count: 1 },
+        { item: "lostland:herb_bundle", count: 1 },
+      ],
+      product: "lostland:roast_meat",
+      product_count: 1,
+      requires_discovery: true,
+    },
+
+    // ─────────────────────────── 炼金 ───────────────────────────
+
+    // 草药汤剂：两束草药熬一瓶。炼金这一路今天只有这一条，够让
+    // lostland:alchemist 有一条真实的成长路径（在这个类别里做满 15 件）。
+    {
+      id: "lostland:herbal_draught_recipe",
+      display_name_key: "lostland:recipe.herbal_draught.display_name",
+      category: "lostland:alchemy",
+      ingredients: [{ item: "lostland:herb_bundle", count: 2 }],
+      product: "lostland:herbal_draught",
+      product_count: 1,
+      requires_discovery: true,
+    },
+
+    // ─────────────────────────── 锻造 ───────────────────────────
+
+    // 打铆钉：一块铁锭出**八颗**铆钉——`product_count > 1` 的本体证据。
+    // 八这个数没有数据支撑，取「一块锭切八份」这个直觉量级，比
+    // example_mod 的箭矢批次（一锭五支）稍多，因为铆钉更小。
+    //
+    // 要工具（铁匠锤）不要场地：敲铆钉在哪儿都能敲，但空手敲不了。
+    // required_tool 的判据是「装备着且耐久未归零」——把锤子放在背包里
+    // 不算，这正是耐久系统与制作系统的接缝。
+    {
+      id: "lostland:iron_rivet_batch",
+      display_name_key: "lostland:recipe.iron_rivet_batch.display_name",
+      category: "lostland:forging",
+      ingredients: [{ item: "lostland:iron_ingot", count: 1 }],
+      product: "lostland:iron_rivet",
+      product_count: 8,
+      required_tool: "lostland:smith_hammer",
+      requires_discovery: true,
+    },
+
+    // 打铁短剑：**要场地**（石地面）**也要工具**（铁匠锤）。
+    //
+    // 场地取 `lostland:floor_stone`——本体十七个地形里唯一说得通的
+    // 「铁匠铺地面」。这是一个**明知的将就**：真正该当场地的是炉子
+    // 或铁砧那样的家具，而家具这层东西今天在引擎里根本不存在
+    // （`required_station` 的类型是地形）。等有了家具层，本条与下面
+    // 两条进阶锻造配方的 required_station 一起改指过去即可，改的是
+    // 内容不是代码。example_mod 那边用的是自造地形
+    // examplemod:lava_floor，本体不新造地形——十七个本体地形是世界
+    // 生成真的会铺出来的东西，凭空加一个只为当场地的地形，玩家永远
+    // 走不到它上面。
+    {
+      id: "lostland:iron_shortsword_recipe",
+      display_name_key: "lostland:recipe.iron_shortsword.display_name",
+      category: "lostland:forging",
+      ingredients: [
+        { item: "lostland:iron_ingot", count: 2 },
+        { item: "lostland:leather_strip", count: 1 },
+      ],
+      product: "lostland:iron_shortsword",
+      product_count: 1,
+      required_station: "lostland:floor_stone",
+      required_tool: "lostland:smith_hammer",
+      requires_discovery: true,
+    },
+
+    // ────────────────────────── 进阶锻造 ──────────────────────────
+    // 下面两条**要工匠副职**（类别闸门），此外与上面的锻造配方同形。
+
+    // 打铁盔。
+    {
+      id: "lostland:iron_helm_recipe",
+      display_name_key: "lostland:recipe.iron_helm.display_name",
+      category: "lostland:advanced_forging",
+      ingredients: [
+        { item: "lostland:iron_ingot", count: 3 },
+        { item: "lostland:iron_rivet", count: 4 },
+        { item: "lostland:leather_strip", count: 1 },
+      ],
+      product: "lostland:iron_helm",
+      product_count: 1,
+      required_station: "lostland:floor_stone",
+      required_tool: "lostland:smith_hammer",
+      requires_discovery: true,
+    },
+
+    // 打铁胫甲。
+    {
+      id: "lostland:iron_greaves_recipe",
+      display_name_key: "lostland:recipe.iron_greaves.display_name",
+      category: "lostland:advanced_forging",
+      ingredients: [
+        { item: "lostland:iron_ingot", count: 3 },
+        { item: "lostland:iron_rivet", count: 6 },
+      ],
+      product: "lostland:iron_greaves",
+      product_count: 1,
+      required_station: "lostland:floor_stone",
+      required_tool: "lostland:smith_hammer",
+      requires_discovery: true,
+    },
+
+    // ─────────────────────────── 裁缝 ───────────────────────────
+
+    // 缝亚麻衬衣：要针（工具），不要场地——缝纫在哪儿都能缝。
+    {
+      id: "lostland:linen_shirt_recipe",
+      display_name_key: "lostland:recipe.linen_shirt.display_name",
+      category: "lostland:tailoring",
+      ingredients: [{ item: "lostland:linen_cloth", count: 3 }],
+      product: "lostland:linen_shirt",
+      product_count: 1,
+      required_tool: "lostland:bone_needle",
+      requires_discovery: true,
+    },
+
+    // 缝毛皮披风：本体保温值最高的一件衣物的来源，也是裁缝这一路真正
+    // 的目标——低温里活下去。
+    {
+      id: "lostland:fur_mantle_recipe",
+      display_name_key: "lostland:recipe.fur_mantle.display_name",
+      category: "lostland:tailoring",
+      ingredients: [
+        { item: "lostland:fur_pelt", count: 3 },
+        { item: "lostland:linen_cloth", count: 2 },
+      ],
+      product: "lostland:fur_mantle",
+      product_count: 1,
+      required_tool: "lostland:bone_needle",
+      requires_discovery: true,
     },
   ],
 }

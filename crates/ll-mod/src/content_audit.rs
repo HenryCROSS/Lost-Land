@@ -341,20 +341,21 @@ pub struct ContentAuditPolicy {
 
 /// 生产策略：本体内容（`lostland` 命名空间）的字段覆盖。
 ///
-/// # `covered` 当前为什么只有九张表
+/// # `deferred` 还剩三张表
 ///
-/// 本体内容迁往 mod 脚本这件事只完成了前两批（种族、职业）。其余表在
-/// `lostland` 命名空间下的条目数如下（数据来自仓库真实 `mods/` 目录的
-/// 一次完整装载，不是估计）：地形 17、空间层属性 4、动画剪辑 2、经验
-/// 曲线 1、伤害公式 1、伤害类别 1、种族 3、职业 1、天气 6——这九张有内容；
-/// 技能/副职/任务/天赋/资源池/物品/武器类别/配方/配方类别九张在
-/// `lostland` 下**一条都没有**（它们只存在于 `mods/example_mod/`）。
+/// 本体内容迁往 mod 数据文件这件事已经做掉绝大多数：地形、空间层属性、
+/// 动画剪辑、经验曲线、伤害公式、伤害类别、种族、职业、天气、技能、
+/// 副职、任务、配方类别、标签、**物品、配方**——十六张表在 `lostland`
+/// 命名空间下都已非空，全部登记在 [`ContentAuditPolicy::covered`]。
 ///
-/// 对空表求字段覆盖，得到的是"这张表的每个字段都没覆盖"这种与内容
-/// 本身无关的纯噪音——那不是这条检查该报的错。九张空表因此逐条登记
-/// 进 [`ContentAuditPolicy::deferred`] 并写明理由，等对应内容真的迁进
-/// `mods/lostland/` 那天，[`RosterViolation::DeferredButPopulated`]
-/// 会主动提醒把它挪进 `covered`，不需要有人记得回来看这里。
+/// 只剩天赋、资源池、武器类别三张在 `lostland` 下**一条都没有**（它们
+/// 只存在于 `mods/example_mod/`）。对空表求字段覆盖，得到的是"这张表的
+/// 每个字段都没覆盖"这种与内容本身无关的纯噪音——那不是这条检查该报的
+/// 错。三张空表因此逐条登记进 [`ContentAuditPolicy::deferred`] 并写明
+/// 理由，等对应内容真的迁进 `mods/lostland/` 那天，
+/// [`RosterViolation::DeferredButPopulated`] 会主动提醒把它挪进
+/// `covered`，不需要有人记得回来看这里——物品与配方两张表正是这么被
+/// 顶出 `deferred` 的。
 ///
 /// [`ContentTableKind::Opaque`] 两个清单里都没有，而且**必须都没有**
 /// ——它不是一张内容表，见 [`check_roster`] 里对它的处理。
@@ -390,6 +391,27 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 这与其余「本体内容尚未迁进 mods/lostland/」的表不同——标签
         // 名册本身就是本体内容,不依赖本体物品先迁过来。
         ContentTableKind::Tag,
+        // 本体物品/配方落地批次：mods/lostland/items.json5（二十四条）与
+        // crafting.json5 的 recipes 段（九条）让这两张表在 lostland 命名
+        // 空间下从此非空，按 DeferredButPopulated 的指引从 deferred 挪进
+        // covered。
+        //
+        // 这两条是同一件事的两半，必须一起挪：配方的食材与成品都指向
+        // 物品表，没有本体物品就写不出本体配方（那正是它们此前双双
+        // deferred 的理由）。
+        //
+        // 配方表**全部八个字段**都被本体内容覆盖，一条豁免都不需要：
+        // 场地（石地面）、工具（铁匠锤/骨针）、批量产出（一锭八铆钉）、
+        // 必须先发现（全部九条）各有真实的用例。
+        //
+        // 物品表覆盖了十四个字段里的十二个，剩下两个
+        // （`damage_category` / `rule_modifiers`）各写了一条豁免，理由
+        // 是同一件事：它们都要指向一个**伤害类别**，而本体今天只有
+        // `lostland:physical` 一个类别，且它正是全局默认——对唯一的、
+        // 又是默认的那一类做「显式声明」或「声明抗性」，写出来的都是
+        // 与不写等价（或该由 armor 表达）的东西。详见那两条豁免。
+        ContentTableKind::Item,
+        ContentTableKind::Recipe,
     ],
     deferred: &[
         DeferredTable {
@@ -405,23 +427,20 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
             reason: "本体资源池尚未迁进 mods/lostland/，理由同 Trait 一条。",
         },
         DeferredTable {
-            kind: ContentTableKind::Item,
-            reason: "本体物品尚未迁进 mods/lostland/，理由同 Trait 一条。",
-        },
-        DeferredTable {
             kind: ContentTableKind::WeaponCategory,
             reason: "本体武器类别尚未迁进 mods/lostland/，理由同 Trait 一条。",
-        },
-        DeferredTable {
-            kind: ContentTableKind::Recipe,
-            reason: "本体配方尚未迁进 mods/lostland/，理由同 Trait 一条——制作系统落地                     批次的真实内容证据在 mods/example_mod/crafting.json5（四类配方各一条），                     lostland 命名空间下零条配方。本体配方要能存在，先得有本体物品                     （见 deferred 里的 Item 一条）：配方的食材与成品都指向物品表。",
         },
     ],
     exemptions: &[
         FieldExemption {
-            kind: ContentTableKind::RecipeCategory,
-            field: "RecipeCategoryDef::required_subclasses",
-            reason: "本体四个配方类别（mods/lostland/crafting.json5）全部**刻意**不设副职                     闸门，这不是遗漏。两条理由：①设了会造出真实的死锁——同一批次的                     mods/lostland/subclasses.json5 让四个副职各自『在对应类别里做满 N 次』                     获得，若那个类别又要求该副职才能做，就成了『要当工匠才能锻造，                     要锻造才能当工匠』，而 resolve_craft 的副职闸门是每次制作都判的，                     所以两边会真的互相等死；②烹饪本来就不该有闸门                     （food-and-cooking-system.md 五节裁定『菜谱不设解锁门槛』）。                     字段本身完全不是死的：mods/example_mod/crafting.json5 的                     examplemod:forging 用 required_subclasses 设了闸，                     crates/ll-mod/tests/example_mod_subclass_unlock.rs 有一整份端到端                     证据盯着它（拿到副职→解锁；放弃副职→立刻重新锁上）。                     本体要用上这个字段，正确形状是**第二梯队的进阶类别**（基础类别                     不设闸让玩家练出副职，进阶类别设闸把守高级配方），而那要等本体                     真的有配方内容——本体物品至今一条都没迁过来（见 deferred 里的                     Item 一条），没有物品就写不出配方。",
+            kind: ContentTableKind::Item,
+            field: "ItemAttrs::damage_category",
+            reason: "物品的 damage_category 是「这件武器打的是**别的**伤害类别」这条覆盖，                     而本体今天只有一个伤害类别 lostland:physical，且它同时就是全局默认                     类别（ll_mod::base_damage_category 逐条论证了为什么另外两个不注册）。                     给本体唯一那件声明了公式的武器（mods/lostland/items.json5 的铁短剑）                     写上 lostland:physical，写的是一个与整条不写逐位等价的值——那不是                     覆盖，是噪音。字段本身不是死的：mods/example_mod/items.json5 的                     acid_dagger 显式声明 examplemod:acid（它自造的第二个类别），                     与 acid_ward_amulet 的抗性组成对手戏，                     crates/ll-mod/tests/example_mod_resistance.rs 有端到端证据。                     本体要用上这个字段，前置是**先有第二个本体伤害类别**，而那是一条                     独立的内容设计裁定（魔法/精神两类各自要有真实的结算后果才值得注册）。",
+        },
+        FieldExemption {
+            kind: ContentTableKind::Item,
+            field: "ItemAttrs::rule_modifiers",
+            reason: "物品当前唯一的规则修正是抗性（RuleModifier::Resistance），而抗性必须                     指向一个伤害类别——理由与上面 ItemAttrs::damage_category 一条同源，                     但结论更强：对本体唯一的、又是全局默认的那一类声明抗性，实际语义是                     「对所有伤害按比例减免」，而那正是 StatTarget::Armor 这个字段的职责。                     本体的橡木圆盾因此走 stat_bonuses 的 armor 7，不走 resistances——                     用抗性表达通用减伤会让同一件事有两个出口，日后两条求和路径必然漂移。                     字段本身不是死的：mods/example_mod/items.json5 的 acid_ward_amulet 对                     examplemod:acid 声明 500‰（半伤），那是「对某一类特别抗」的真实用例。",
         },
         FieldExemption {
             kind: ContentTableKind::Class,
@@ -447,9 +466,7 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         FieldExemption {
             kind: ContentTableKind::Race,
             field: "RaceAttrs::starting_items",
-            reason: "出生装备走 register-race-starting-item 追加指令，本体三族不声明——\
-                     理由同 traits 一条。本体物品内容本身也还没迁进 mods/lostland/\
-                     （见 deferred 里的 Item 一条），本体种族此刻没有可指的本体物品。",
+            reason: "出生装备走 RaceAttrs::starting_items，本体三族不声明——理由同 traits \n                     一条：本体内容不为了让字段覆盖检查变绿硬塞一件装备。\n                     **这条豁免此前的第二条理由已经作废**：那句写的是「本体物品内容\n                     还没迁进 mods/lostland/，本体种族此刻没有可指的本体物品」，而\n                     mods/lostland/items.json5 现在有二十四条物品，指得到了。剩下的\n                     第一条理由独立成立，因此豁免保留：三族各自该带什么出生装备是一条\n                     真正的内容设计裁定，至今没有做过，不该由「让检查变绿」代替做出。\n                     字段本身不是死的：mods/example_mod/races.json5 的哥布林带一把粗劣\n                     匕首出生，crates/ll-mod/tests/example_mod_starting_items.rs 有端到端证据。",
         },
         FieldExemption {
             kind: ContentTableKind::SpaceProfile,

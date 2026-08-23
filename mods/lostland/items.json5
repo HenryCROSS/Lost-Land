@@ -1,0 +1,414 @@
+// 本体物品名册——二十四条。
+//
+// 搬家来历见 races.json5 文件头。schema 见
+// `crates/ll-mod/src/content_schema_gear.rs` 的 `ItemFile`。
+//
+// ── 这个文件为什么现在才存在 ────────────────────────────────────
+//
+// 在此之前本体一件物品都没有：耐久、标签、保温、装备槽位、配方这五套
+// 机制的**真实内容证据全部落在 mods/example_mod/**，`lostland` 命名
+// 空间下是空表。ADR 0018（5e61f3c 修订版）要求「玩法层内容必须能从
+// mod 内容注册，且要有真实 mod 内容为证」——example_mod 证明的是
+// 「第三方 mod 做得到」，本文件证明的是「**本体自己**除了 mod 内容
+// 之外没有别的物品来源」，后者更强。
+//
+// ── 数值量级从哪来 ──────────────────────────────────────────────
+//
+// 没有任何数据支撑，是一批内容参数。取值参照两处既有事实，不是凭空拍：
+//
+//   * `base_weight` / `base_price` 都是 `Milli`（千分之一单位），量级
+//     对齐 mods/example_mod/items.json5：铁锭 2000/4000、生肉 500/300、
+//     一把成品铁剑 3000/50000。本文件的起始档装备一律略低于 example_mod
+//     的同类（本体这批是「开局能做出来的东西」，example_mod 那批是
+//     示范用的成品档）。
+//   * `stat_bonuses` 的 `armor` / `insulation` 对齐 example_mod：木盾
+//     armor 8、羊毛内衬 insulation 50、毛皮斗篷 insulation 90。属性类
+//     加成（strength/willpower/luck……）取 +1~2，因为属性本身的值域是
+//     10~30（`ll_world::entity::BaseStats`），+6 那种量级属于
+//     example_mod 战锤那类高档货，不该出现在起始档。
+//   * `max_durability` 取整数 40~200，量级同 example_mod（粗劣匕首 20、
+//     木盾 80、铁剑 100、战锤 150）。越是「一下一下敲」的工具给得越高
+//     （铁匠锤 200），越是消耗性的越低（骨针 60）。
+//
+// ── 耐久与标签怎么配对 ──────────────────────────────────────────
+//
+// 磨损通道由**标签**决定（tags.json5：armor → on-hit，weapon/tool →
+// on-use），耐久上限由**物品**声明。两者必须成对出现才有意义：
+//
+//   * 带 `lostland:armor` 且有耐久 → 挨打掉耐久（护甲、衣物）
+//   * 带 `lostland:weapon` 或 `lostland:tool` 且有耐久 → 使用掉耐久
+//   * **没有任何标签的东西不给耐久**：琥珀坠/旅人指环/野外食谱三条
+//     刻意不写 `max_durability`。给一件没有磨损通道的东西配一条耐久，
+//     等于声明一个永远不会变化的数字——那正是「声明了没人读」。
+//     反过来「可装备但没有耐久」本身是合法且想要的形状（首饰不会因为
+//     挨打而碎），本文件用这三条把它写下来。
+//
+// ── 可堆叠 vs 逐实例 ────────────────────────────────────────────
+//
+// 材料与消耗品可堆叠（`stack_limit > 1`）且**一律不带耐久**——注册期
+// 硬校验会拒绝（`content_schema_gear::define_one_item`：能堆叠暗示多份
+// 同质可以共存一格，有耐久暗示每份实例携带自己的状态，两条字面矛盾）。
+// 装备一律 `stack_limit: 1`。
+{
+  items: [
+    // ───────────────────── 材料（可堆叠，无耐久） ─────────────────────
+
+    // 铁锭：锻造这一路的基础材料，同时是 iron_rivet_batch 的唯一输入。
+    // 数值逐字取 example_mod 的同名物，两个命名空间下的「一块铁锭」
+    // 该是一样重、一样贵的东西。
+    {
+      id: "lostland:iron_ingot",
+      display_name_key: "lostland:item.iron_ingot.display_name",
+      stack_limit: 50,
+      base_weight: 2000,
+      base_price: 4000,
+    },
+
+    // 铁铆钉：iron_rivet_batch 一次出八颗（product_count > 1 的证据），
+    // 又是两条进阶锻造配方的辅料。堆叠上限 99 与 example_mod 的箭矢
+    // 同档——小、多、论把数的东西。
+    {
+      id: "lostland:iron_rivet",
+      display_name_key: "lostland:item.iron_rivet.display_name",
+      stack_limit: 99,
+      base_weight: 60,
+      base_price: 400,
+    },
+
+    // 亚麻布：裁缝这一路的基础材料。
+    {
+      id: "lostland:linen_cloth",
+      display_name_key: "lostland:item.linen_cloth.display_name",
+      stack_limit: 50,
+      base_weight: 200,
+      base_price: 600,
+    },
+
+    // 皮革条：跨类别的辅料（锻造用来缠柄，裁缝用来缝边）。
+    {
+      id: "lostland:leather_strip",
+      display_name_key: "lostland:item.leather_strip.display_name",
+      stack_limit: 50,
+      base_weight: 300,
+      base_price: 900,
+    },
+
+    // 毛皮：毛皮披风的主料。比皮革条重且贵得多——一整张皮 vs 一根条。
+    {
+      id: "lostland:fur_pelt",
+      display_name_key: "lostland:item.fur_pelt.display_name",
+      stack_limit: 20,
+      base_weight: 800,
+      base_price: 2200,
+    },
+
+    // 草药束：炼金与烹饪两个类别都用得到，是「同一味材料喂两条不同
+    // 手艺」的样本。
+    {
+      id: "lostland:herb_bundle",
+      display_name_key: "lostland:item.herb_bundle.display_name",
+      stack_limit: 20,
+      base_weight: 100,
+      base_price: 250,
+    },
+
+    // 生肉：烹饪那两条配方的输入。
+    {
+      id: "lostland:raw_meat",
+      display_name_key: "lostland:item.raw_meat.display_name",
+      stack_limit: 20,
+      base_weight: 500,
+      base_price: 300,
+    },
+
+    // ─────────────── 消耗品（可堆叠，无耐久，有使用效果） ───────────────
+
+    // 烤肉：烹饪那两条配方共同的成品，也是本体唯一一件恢复耐力的东西。
+    // 恢复量 25 取 example_mod 治疗药水（40 点法力）的六成——一份烤肉
+    // 不该顶一瓶药水。
+    {
+      id: "lostland:roast_meat",
+      display_name_key: "lostland:item.roast_meat.display_name",
+      stack_limit: 20,
+      base_weight: 400,
+      base_price: 900,
+      use_effect: { kind: "restore-resource", amount: 25, resource: "stamina" },
+    },
+
+    // 草药汤剂：炼金的成品。恢复 30 点法力，同样略低于 example_mod
+    // 那瓶 40 点的治疗药水（那是示范用的成品档，这是开局能煮出来的）。
+    {
+      id: "lostland:herbal_draught",
+      display_name_key: "lostland:item.herbal_draught.display_name",
+      stack_limit: 10,
+      base_weight: 300,
+      base_price: 1800,
+      use_effect: { kind: "restore-resource", amount: 30, resource: "mana" },
+    },
+
+    // ───────────────────────── 武器（on-use 磨损） ─────────────────────────
+
+    // 铁短剑：本体唯一一件**引用本体伤害公式**的物品。物品级公式覆盖
+    // 这条能力在此之前只有 example_mod 用得上
+    // （examplemod:iron_sword_formula / examplemod:flame_longbow_formula），
+    // 本体侧一件都没有。
+    //
+    // 引用的是 mods/lostland/damage_formulas.json5 里新写的
+    // `lostland:blade_damage_formula`，**不是**引擎注册的
+    // `lostland:default_damage_formula`——后者是「把攻击力原样交回去」，
+    // 在物品这一级填上它与整条不写逐位等价，理由见那个文件的文件头。
+    //
+    // **不声明 damage_category**：本体唯一的伤害类别 `lostland:physical`
+    // 正是全局默认类别，显式写上它同样是一处与不写等价的噪音，见
+    // content_audit 里 `ItemAttrs::damage_category` 那条字段豁免。
+    {
+      id: "lostland:iron_shortsword",
+      display_name_key: "lostland:item.iron_shortsword.display_name",
+      stack_limit: 1,
+      base_weight: 2400,
+      base_price: 40000,
+      max_durability: 120,
+      equip_slots: ["main-hand", "off-hand"],
+      damage_formula: "lostland:blade_damage_formula",
+      tags: ["lostland:weapon"],
+    },
+
+    // 战镐：同时带 weapon 与 tool 两条标签——项目所有者原话「修理锤子
+    // 也算是一种武器，也可以是带有功能性的物品」说的正是这种东西。
+    // 两条标签今天走同一个磨损通道（on-use），因此它的磨损行为与只带
+    // 一条没有区别；写两条是为了回答两个不同的问题（能打人吗 / 能干活
+    // 吗），见 tags.json5「为什么 tool 与 weapon 不合并」一节。
+    //
+    // 穿透 { flat: 2, permille: 150 }：本体唯一一处穿透声明。量级取
+    // example_mod 战锤（flat 3 / permille 100）的同一档，把固定值调低、
+    // 百分比调高——镐是靠尖端集中受力破甲的，对重甲比对轻甲更有效，
+    // 百分比穿透正是这个语义。
+    {
+      id: "lostland:iron_warpick",
+      display_name_key: "lostland:item.iron_warpick.display_name",
+      stack_limit: 1,
+      base_weight: 3200,
+      base_price: 55000,
+      max_durability: 110,
+      equip_slots: ["main-hand"],
+      penetration: { flat: 2, permille: 150 },
+      tags: ["lostland:weapon", "lostland:tool"],
+    },
+
+    // 橡木圆盾：同时带 armor 与 weapon——盾能挡也能砸，所有者原话
+    // 「有的技能像是盾击，他也会变成武器这样」。两条标签意味着它走
+    // **两条**磨损通道：持有者挨打时磨损（armor → on-hit），拿它砸人
+    // 时也磨损（weapon → on-use）。本体唯一一件双通道物品。
+    //
+    // 减伤走 `armor` 而**不是** `resistances`：抗性表达的是「对某一类
+    // 伤害特别抗」，而本体今天只有 `lostland:physical` 这一个伤害类别
+    // ——对唯一的那一类声明抗性，实际语义是「对所有伤害按比例减免」，
+    // 那正是护甲值这个字段的职责。理由的完整版见 content_audit 里
+    // `ItemAttrs::rule_modifiers` 那条字段豁免。
+    //
+    // armor 7 略低于 example_mod 木盾的 8：小圆盾比整面木盾挡得少。
+    {
+      id: "lostland:oak_buckler",
+      display_name_key: "lostland:item.oak_buckler.display_name",
+      stack_limit: 1,
+      base_weight: 3500,
+      base_price: 11000,
+      max_durability: 90,
+      equip_slots: ["off-hand"],
+      stat_bonuses: [{ target: "armor", amount: 7 }],
+      tags: ["lostland:armor", "lostland:weapon"],
+    },
+
+    // ───────────────────────── 工具（on-use 磨损） ─────────────────────────
+
+    // 铁匠锤：三条锻造配方的 required_tool。**只带 tool 不带 weapon**
+    // ——与上面的战镐正好组成对照：一把纯工具，抡起来也能打人但内容
+    // 不这么声明。耐久 200 是全表最高：它是被反复使用的那一端，不是被
+    // 消耗的那一端。
+    {
+      id: "lostland:smith_hammer",
+      display_name_key: "lostland:item.smith_hammer.display_name",
+      stack_limit: 1,
+      base_weight: 2800,
+      base_price: 25000,
+      max_durability: 200,
+      equip_slots: ["main-hand"],
+      tags: ["lostland:tool"],
+    },
+
+    // 骨针：两条裁缝配方的 required_tool。占 hand-r 槽而不是 main-hand
+    // ——这样「一手拿针一手拿布」不必和武器抢主手槽。耐久 60 偏低：
+    // 骨针是会断的。
+    {
+      id: "lostland:bone_needle",
+      display_name_key: "lostland:item.bone_needle.display_name",
+      stack_limit: 1,
+      base_weight: 20,
+      base_price: 1500,
+      max_durability: 60,
+      equip_slots: ["hand-r"],
+      tags: ["lostland:tool"],
+    },
+
+    // ───────────────────────── 护甲（on-hit 磨损） ─────────────────────────
+
+    // 铁盔：iron_helm_recipe 的成品（进阶锻造类别，要工匠副职）。
+    {
+      id: "lostland:iron_helm",
+      display_name_key: "lostland:item.iron_helm.display_name",
+      stack_limit: 1,
+      base_weight: 2200,
+      base_price: 18000,
+      max_durability: 100,
+      equip_slots: ["head"],
+      stat_bonuses: [{ target: "armor", amount: 5 }],
+      tags: ["lostland:armor"],
+    },
+
+    // 皮甲衣：**同一件东西同时给 armor 与 insulation** 的样本——皮子
+    // 既挡刀也挡风，两条加成走的是同一段求和算法
+    // （`ll_sim::item::StatTarget`），不需要两件装备分别提供。
+    {
+      id: "lostland:leather_jerkin",
+      display_name_key: "lostland:item.leather_jerkin.display_name",
+      stack_limit: 1,
+      base_weight: 3000,
+      base_price: 16000,
+      max_durability: 110,
+      equip_slots: ["body"],
+      stat_bonuses: [
+        { target: "armor", amount: 6 },
+        { target: "insulation", amount: 30 },
+      ],
+      tags: ["lostland:armor"],
+    },
+
+    // 铁胫甲：iron_greaves_recipe 的成品（进阶锻造）。
+    {
+      id: "lostland:iron_greaves",
+      display_name_key: "lostland:item.iron_greaves.display_name",
+      stack_limit: 1,
+      base_weight: 2600,
+      base_price: 15000,
+      max_durability: 100,
+      equip_slots: ["legs"],
+      stat_bonuses: [{ target: "armor", amount: 4 }],
+      tags: ["lostland:armor"],
+    },
+
+    // 皮靴：一件东西占**两个**槽位（左右靴各一），与 example_mod 战锤
+    // 「双手都能拿」是同一个字段的两种用法——那里是「二选一」，这里
+    // 是「一双」。槽位掩码本身不区分这两种语义，区别在内容设计。
+    {
+      id: "lostland:leather_boots",
+      display_name_key: "lostland:item.leather_boots.display_name",
+      stack_limit: 1,
+      base_weight: 1200,
+      base_price: 9000,
+      max_durability: 80,
+      equip_slots: ["boot-l", "boot-r"],
+      stat_bonuses: [
+        { target: "armor", amount: 2 },
+        { target: "insulation", amount: 15 },
+      ],
+      tags: ["lostland:armor"],
+    },
+
+    // ─────────────── 衣物（保温为主，同样 on-hit 磨损） ───────────────
+
+    // 亚麻衬衣：linen_shirt_recipe 的成品，全表最便宜的一件装备。
+    // 只保温、不挡刀（没有 armor 加成）——保温与护甲是两个独立的目标，
+    // 一件衣服可以只有其中一个。
+    {
+      id: "lostland:linen_shirt",
+      display_name_key: "lostland:item.linen_shirt.display_name",
+      stack_limit: 1,
+      base_weight: 500,
+      base_price: 3000,
+      max_durability: 50,
+      equip_slots: ["body"],
+      stat_bonuses: [{ target: "insulation", amount: 20 }],
+      tags: ["lostland:armor"],
+    },
+
+    // 毛皮披风：fur_mantle_recipe 的成品，占 outer 槽——与占 body 槽的
+    // 衬衣/皮甲衣**可以同时穿**，两层保温相加，这正是温度系统
+    // （c12c04f）想要的补给循环。insulation 80 略低于 example_mod 的
+    // 毛皮斗篷（90），理由同全表：本体这批是开局档。
+    {
+      id: "lostland:fur_mantle",
+      display_name_key: "lostland:item.fur_mantle.display_name",
+      stack_limit: 1,
+      base_weight: 4200,
+      base_price: 26000,
+      max_durability: 90,
+      equip_slots: ["outer"],
+      stat_bonuses: [{ target: "insulation", amount: 80 }],
+      tags: ["lostland:armor"],
+    },
+
+    // 羊毛手套：占 hand-l 与 hand-r 两个槽（一双）。注意它与骨针**抢
+    // hand-r**——戴着手套穿不了针，这条冲突是内容设计的自然结果，不是
+    // 疏漏。
+    {
+      id: "lostland:wool_gloves",
+      display_name_key: "lostland:item.wool_gloves.display_name",
+      stack_limit: 1,
+      base_weight: 250,
+      base_price: 2500,
+      max_durability: 40,
+      equip_slots: ["hand-l", "hand-r"],
+      stat_bonuses: [{ target: "insulation", amount: 12 }],
+      tags: ["lostland:armor"],
+    },
+
+    // ─────────────── 饰品（可装备，**刻意无耐久、无标签**） ───────────────
+
+    // 琥珀坠：属性加成走 `willpower`，不是 armor/insulation——
+    // `StatTarget` 的第三种取值（七个属性之一）在本体侧此前一处内容
+    // 都没有。+2 相对 10~30 的属性值域是一档明显但不夸张的加成。
+    {
+      id: "lostland:amber_pendant",
+      display_name_key: "lostland:item.amber_pendant.display_name",
+      stack_limit: 1,
+      base_weight: 120,
+      base_price: 12000,
+      equip_slots: ["neck"],
+      stat_bonuses: [{ target: "willpower", amount: 2 }],
+    },
+
+    // 旅人指环：左右手指各能戴一枚（同一件物品定义、两个槽位）。
+    // 幸运 +1——幸运在结算里影响面广，给到 +2 会比琥珀坠的 +2 意志值钱
+    // 得多，因此压到 +1。
+    {
+      id: "lostland:traveler_ring",
+      display_name_key: "lostland:item.traveler_ring.display_name",
+      stack_limit: 1,
+      base_weight: 60,
+      base_price: 20000,
+      equip_slots: ["ring-l", "ring-r"],
+      stat_bonuses: [{ target: "luck", amount: 1 }],
+    },
+
+    // ───────────────────────────── 书 ─────────────────────────────
+
+    // 野外食谱：本体唯一一件 `taught_recipes` 物品，也是「一开始什么都
+    // 不会」这条裁定的**第二条**出路——第一条是乱煮
+    // （`Intent::Experiment`），这条是读书。两条路径互补而不是互为备份：
+    // 读书不受配方类别的副职闸门约束（`resolve_read` 完全不查类别），
+    // 试做受约束。
+    //
+    // 它教的是烤肉这条最基础的配方：本体全部配方现在都要先被发现，
+    // 「新角色连烤肉都不会」是所有者要的效果，而这本书是那道门的钥匙
+    // 之一。id 拼错的症状是**这本书静默什么都不教**，注册期的配方表
+    // 查表与 content_audit 的跨表引用校验各拦一道。
+    {
+      id: "lostland:field_cookbook",
+      display_name_key: "lostland:item.field_cookbook.display_name",
+      stack_limit: 1,
+      base_weight: 600,
+      base_price: 9000,
+      taught_recipes: ["lostland:roast_meat_recipe"],
+    },
+  ],
+}
