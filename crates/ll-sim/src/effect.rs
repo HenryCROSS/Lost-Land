@@ -705,15 +705,23 @@ pub enum Effect {
     /// 消费本效果的下游逻辑才谈得上比对 `items_seen` 与各堆的
     /// `owner`、决定要不要转成一条 `HistoricalEventKind::Crime`——那是
     /// 本效果预留的挂载点，不是本批次要交付的部分。
+    ///
+    /// 「逐堆比对」这句话原先在本效果的形状上**落不了地**：
+    /// `items_seen` 曾经是 `Vec<ContentIndex>`，只记种类，两堆同种物品
+    /// 完全无法区分。槽位句柄批次把元素换成了 [`InspectedItem`]（种类 +
+    /// 位置），挂载点这才真的挂得上——但本效果仍然**只记位置，不记
+    /// 归属**，理由见 [`InspectedItem`] 文档「为什么不直接带 `Owner`」
+    /// 一节。
     Inspect {
         /// 发起盘查的一方（卫兵）。
         inspector: EntityId,
         /// 被盘查的一方。
         target: EntityId,
         /// 盘查那一刻 `target` 背包（原始顺序）与已装备物品（按
-        /// `EquipSlot` 顺序，`BTreeMap` 天然有序，不违反 C5）的物品
-        /// 定义快照，先背包后装备。
-        items_seen: Vec<ContentIndex>,
+        /// `EquipSlot` 顺序，`BTreeMap` 天然有序，不违反 C5）的**逐堆**
+        /// 快照，先背包后装备。每条记录带着「是什么」与「在哪」两半，
+        /// 见 [`InspectedItem`] 文档「为什么不是裸 `ContentIndex`」一节。
+        items_seen: Vec<InspectedItem>,
     },
     /// 把一个实体的潜行状态设成一个**明确的值**（潜行与盗贼被动
     /// 批次）——[`ll_world::entity::Agent::stealthed`] 唯一的写入口
@@ -881,4 +889,119 @@ pub enum Effect {
         /// 学会了哪条配方，指向配方表。
         recipe: ContentIndex,
     },
+}
+
+/// 「这一堆物品此刻放在这个实体身上的哪里」——[`InspectedItem`] 用来
+/// 逐堆定位的槽位句柄，`item-system.md` 四节 `ItemLocation` 里两个
+/// **随身**变体（`Inventory { holder, slot }` / `Equipped { holder, slot }`）
+/// 在引擎侧的落地。
+///
+/// # 为什么不带 `holder`
+///
+/// 设计文档的两个变体都携带 `holder: EntityId`，本类型刻意不带——
+/// 它只出现在已经点名了持有者的上下文里（[`Effect::Inspect::target`]），
+/// 再记一份就是一个必须手动维持一致的冗余字段。与
+/// [`ll_world::entity::Agent::inventory`] 文档「`holder` 就是这个
+/// `Agent` 自身，因此不需要在 `ItemStack` 上重复记一份」是同一条既有
+/// 判断。
+///
+/// # 为什么不是完整的 `ItemLocation`
+///
+/// 设计文档那个枚举还有 `Ground`/`Container` 两个变体。`Ground` 在
+/// 本仓库已经有自己的存储形状（[`ll_world::item::GroundItemStack`]，
+/// 见其文档「为什么不是完整的 `ItemLocation` 枚举」一节），`Container`
+/// 尚未落地——把它们塞进来只会造出两个当前没有任何消费者的死变体，
+/// 与那一节同一条 YAGNI 判断。本类型只回答「随身携带的东西在哪」这
+/// 一个问题，名字也照这个范围取。
+///
+/// # 装备那一半沿用「真实存储键」，不发明新东西
+///
+/// [`CarriedItemSlot::Equipped`] 携带的是
+/// [`ll_world::entity::Agent::equipment`] 的**存储键**（锚点槽位），
+/// 与 [`Effect::Equip`]/[`Effect::Unequip`]/[`Effect::AdjustEquipmentDurability`]
+/// 三条既有效果定位「哪一件装备」用的完全是同一个概念（见后者文档
+/// 「要调整的槽位（真实存储键）」一句）：横跨多槽的双手武器只存一份，
+/// 键取 `equip_mask` 的最低位。这一半是纯粹的沿用。
+///
+/// # 背包那一半为什么是下标，不是既有效果用的 `(def, durability)`
+///
+/// [`Effect::RemoveFromInventory`]/[`Effect::ConsumeInventoryItem`] 定位
+/// 背包里的一堆用的是 `(def, durability)`——那对**它们**是够用的（它们
+/// 要的是「移除一堆匹配的」，`resolve` 已经确认过存在），但对本类型
+/// 要回答的问题**不够**：它必须能把两堆分开。
+///
+/// `(def, durability)` 不是背包的唯一键，这一点有代码为证：
+/// [`ll_world::item::merge_stacks`] 在触及堆叠上限时产出的溢出堆是
+/// `ItemStack { count: total - stack_limit, ..b }`——`def` 与
+/// `durability` 与主堆**逐字相同**，只是数量不同。一支满堆的箭 + 一堆
+/// 溢出的箭因此是两条 `(def, durability)` 完全一致的记录。归属比对
+/// 拿到这样一对，判不了「哪一堆是偷的」。下标天然唯一，不依赖任何
+/// 合并不变式。
+///
+/// # 这是快照期的位置，不是跨回合的持久句柄
+///
+/// 下标只在**产出这条效果的那一刻**有效——背包是
+/// [`Vec`]，任何一次移除都会让它后面的下标整体前移。这不构成问题：
+/// [`Effect::Inspect`] 是「盘查那一刻看到了什么」的快照，消费者
+/// （当前是测试与未来的 `Owner` 比对）在同一批效果里就把它读完，
+/// 不存在把这个句柄存起来隔几个回合再用的路径。真要有那种需求，需要
+/// 的是一个稳定实例 id，不是位置——那是另一个批次的问题。
+///
+/// # 为什么下标是 `u32` 而不是设计文档写的 `u16`
+///
+/// `u16` 的上限（65535）不是物理不可达的：带耐久的物品按耐久值分堆
+/// （[`ll_world::item::can_merge`] 的判据含 `durability`），一件耐久
+/// 上限四位数的装备就能贡献上千堆。一个静默截断的下标会把两堆指成
+/// 同一堆，正是本类型要消灭的那种歧义。`u32` 的上限在
+/// `Vec<ItemStack>` 的内存占用面前物理不可达，因此这条转换不需要一条
+/// 「截断了怎么办」的错误路径。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CarriedItemSlot {
+    /// 背包（[`ll_world::entity::Agent::inventory`]）里的第几堆，
+    /// 0 起。
+    Inventory {
+        /// 下标，见 [`CarriedItemSlot`] 文档「背包那一半」一节。
+        index: u32,
+    },
+    /// 装备栏（[`ll_world::entity::Agent::equipment`]）的某个槽位，
+    /// 键是真实存储键（锚点槽位）。
+    Equipped {
+        /// 锚点槽位。
+        slot: EquipSlot,
+    },
+}
+
+/// [`Effect::Inspect::items_seen`] 的元素——盘查那一刻看到的**一堆**
+/// 物品：是什么（`def`）+ 在哪（`slot`）。
+///
+/// # 为什么不是裸 `ContentIndex`
+///
+/// 卫兵职业接线批次落地时这里是 `Vec<ContentIndex>`，只说「看到了哪
+/// 几**种**物品」，不说「看到了哪几**堆**」。背包里两堆各一把铁剑
+/// （一把自己买的、一把偷来的）在那个形状里**完全无法区分**——而
+/// [`Effect::Inspect`] 文档「为什么没有任何是否违法的判断」一节写明
+/// 的那个未来消费者要做的事，恰恰是等 `Owner` 落地后**逐堆**比对
+/// `items_seen` 与各堆的 `owner`。拿到的只有种类就判不了罪：这个形状
+/// 表达不了它自己文档里预告的那件事。带上槽位句柄之后能。
+///
+/// [`crate::rule_modifier::RuleModifier::InspectionConcealment`] 的「逐件掷骰」
+/// （`ll_sim::rule_modifier`，该变体文档「为什么是逐件掷骰」一节）本来
+/// 就是照着「逐堆比对」这个粒度选的——那一节原文「那条比对的粒度是
+/// 『单件物品』，因此本被动的粒度也必须是单件」。本类型把那条论证依赖
+/// 的粒度真正落进了类型里。
+///
+/// # 为什么不直接带 `Owner`
+///
+/// 项目所有者裁定：**不带**。守卫看到的是「你身上某个位置有一把剑」，
+/// 那把剑归谁是**后果判定**该去查的事，不该在「看见」这个效果里就
+/// 泄漏——与 [`Effect::Inspect`] 文档「为什么没有任何是否违法的判断」
+/// 一节「本效果因此只如实记录『看到了什么』，不产出任何裁定」是同一
+/// 条边界。何况 `Owner` 当前还不存在。槽位句柄恰好是这条边界上正确的
+/// 那一侧：它是「位置」，查归属要拿它去问世界，不是从这条效果里读。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InspectedItem {
+    /// 这一堆是什么物品，指向物品表。
+    pub def: ContentIndex,
+    /// 这一堆此刻在被盘查者身上的哪个位置。
+    pub slot: CarriedItemSlot,
 }

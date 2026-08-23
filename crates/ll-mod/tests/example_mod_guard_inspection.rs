@@ -23,7 +23,7 @@ use ll_core::torus::TorusSize;
 use ll_mod::native_behavior::{BehaviorRuleCatalogs, NativeBehaviorSource, NativeBehaviorTree};
 use ll_mod::registry::Registry;
 use ll_sim::behavior::BehaviorTreeSource;
-use ll_sim::effect::Effect;
+use ll_sim::effect::{CarriedItemSlot, Effect, InspectedItem};
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemStack};
 use ll_sim::resolve::resolve;
@@ -213,14 +213,37 @@ fn 视野内有目标时卫兵最终会发起盘查() {
     let effects = resolve(&world, &intent);
 
     // Assert：产出了带正确"看到了什么"快照的 Effect::Inspect。
-    assert!(effects.iter().any(|effect| matches!(
-        effect,
-        Effect::Inspect { inspector, target: t, items_seen }
-            if *inspector == guard
-                && *t == target
-                && items_seen.len() == 2
-                && items_seen.iter().all(|&def| def == sword)
-    )));
+    //
+    // 目标身上带的两堆**是同一种物品**（背包一把铁剑、主手一把铁剑）
+    // ——槽位句柄批次之前，`items_seen` 是 `Vec<ContentIndex>`，这两条
+    // 记录逐字相同、完全分不开。现在每条各带一个句柄，因此这里直接对
+    // 整份快照下逐堆断言，而不是只数个数、只比种类。
+    let items_seen = effects
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Inspect {
+                inspector,
+                target: t,
+                items_seen,
+            } if *inspector == guard && *t == target => Some(items_seen.clone()),
+            _ => None,
+        })
+        .expect("盘查必须产出一条 inspector/target 都对得上的 Effect::Inspect");
+    assert_eq!(
+        items_seen,
+        vec![
+            InspectedItem {
+                def: sword,
+                slot: CarriedItemSlot::Inventory { index: 0 },
+            },
+            InspectedItem {
+                def: sword,
+                slot: CarriedItemSlot::Equipped {
+                    slot: EquipSlot::MAIN_HAND
+                },
+            },
+        ]
+    );
 }
 
 /// 硬要求二：隔着墙的卫兵看不见玩家——即使切比雪夫距离很近，一整排

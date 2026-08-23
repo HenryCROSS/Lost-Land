@@ -15,6 +15,13 @@
 //! 3. 同一个世界种子、同一个时刻，同一次盘查的结果**逐位可重放**
 //!    （约束 C3/C5），且判定用的是**被盘查者**的流——换一个盘查者不
 //!    改变结果。
+//!
+//! 槽位句柄批次（`Effect::Inspect::items_seen` 的元素从裸
+//! `ContentIndex` 换成 `InspectedItem`）在此之上加了第 4 条：本文件的
+//! 目标身上带的**四堆全是同一种物品**（`lostland:coin`），旧形状下
+//! 那四条记录逐字相同、完全无法区分——正是槽位句柄要消灭的那个形态。
+//! 第 4 条断言它们现在各自带着不同的句柄，且顺序仍然是「先背包（原始
+//! 顺序）、后装备（`EquipSlot` 升序）」。
 
 use std::collections::BTreeMap;
 
@@ -22,7 +29,7 @@ use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_sim::combat::Penetration;
-use ll_sim::effect::Effect;
+use ll_sim::effect::{CarriedItemSlot, Effect, InspectedItem};
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, SlotMask, WearChannels};
 use ll_sim::resolve::resolve_with_skills_traits_pools_and_items;
@@ -162,7 +169,11 @@ fn plain_item_rule() -> ItemRule {
 ///
 /// `guard_x` 只影响盘查者是谁/站在哪 —— 第 3 条测试用它验证判定流取
 /// 的是**被盘查者**，不是盘查者。
-fn inspect_once(conceal_permille: Option<i32>, world_seed: u64, guard_x: i32) -> Vec<ContentIndex> {
+fn inspect_once(
+    conceal_permille: Option<i32>,
+    world_seed: u64,
+    guard_x: i32,
+) -> Vec<InspectedItem> {
     let mut interner = Interner::new();
     let mut index = |raw: &str| interner.intern(NamespacedId::parse(raw).expect("合法标识符"));
     let race = index("lostland:human");
@@ -270,6 +281,45 @@ fn 没有藏匿声明时背包与装备全部如实被看到() {
     // Assert
     assert_eq!(without_trait.len(), CARRIED_ITEMS);
     assert_eq!(zero_permille.len(), CARRIED_ITEMS);
+}
+
+/// 硬要求四（槽位句柄批次）：四堆同种物品各自带着能把它们分开的句柄。
+///
+/// 这条钉的是项目所有者裁定要修的那个具体形态——「背包 [0] 铁剑 ×1
+/// （自己买的）/ [1] 铁剑 ×1（偷来的）」在旧形状（`Vec<ContentIndex>`）
+/// 下是两条逐字相同的记录，`Owner` 落地后的逐堆归属比对拿到它们判不了
+/// 罪。本文件的夹具恰好就是这个形态的四堆版本（背包两堆 coin + 主手
+/// 副手各一堆 coin）。
+#[test]
+fn 四堆同种物品各自带着不同的槽位句柄且顺序是先背包后装备() {
+    // Act：不声明任何藏匿，四堆全部如实被看到。
+    let seen = inspect_once(None, 7, 5);
+
+    // Assert 一：四条记录的物品定义**全部相同**——证明这确实是「同种
+    // 物品的多堆」这个旧形状分不开的场景，不是靠 def 不同蒙混过关。
+    assert_eq!(seen.len(), CARRIED_ITEMS);
+    let first_def = seen[0].def;
+    assert!(
+        seen.iter().all(|item| item.def == first_def),
+        "夹具本身必须是四堆同种物品，否则这条测试证明不了任何事"
+    );
+
+    // Assert 二：四条记录的槽位句柄两两不同，且顺序是先背包（下标
+    // 升序）后装备（`EquipSlot` 升序，`BTreeMap` 天然有序，约束 C5）。
+    let slots: Vec<CarriedItemSlot> = seen.iter().map(|item| item.slot).collect();
+    assert_eq!(
+        slots,
+        vec![
+            CarriedItemSlot::Inventory { index: 0 },
+            CarriedItemSlot::Inventory { index: 1 },
+            CarriedItemSlot::Equipped {
+                slot: EquipSlot::MAIN_HAND
+            },
+            CarriedItemSlot::Equipped {
+                slot: EquipSlot::OFF_HAND
+            },
+        ]
+    );
 }
 
 /// 硬要求三：确定性重放（约束 C3/C5），且判定流取的是**被盘查者**。

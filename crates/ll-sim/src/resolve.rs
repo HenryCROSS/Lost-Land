@@ -65,7 +65,7 @@ use crate::combat::{
 };
 use crate::craft::{NoRecipes, RecipeCatalog, RecipeRule};
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
-use crate::effect::Effect;
+use crate::effect::{CarriedItemSlot, Effect, InspectedItem};
 use crate::experience::{ExperienceCatalog, NoExperience};
 use crate::exposure::{AmbientSource, exposure_strength_penalty, felt_temperature};
 use crate::formula::{DamageFormulaCatalog, FormulaInputs, NoFormulas, eval_formula};
@@ -2220,6 +2220,16 @@ fn resolve_loot(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) ->
 /// [`crate::rule_modifier::RuleModifier::InspectionConcealment`] 文档「为什么是逐件掷骰」
 /// 一节。
 ///
+/// 槽位句柄批次把 `items_seen` 的元素从裸 `ContentIndex` 换成
+/// [`crate::effect::InspectedItem`]（种类 + 位置），**这一步的粒度一个
+/// 字都没变**：`retain` 仍然是一条记录一次掷骰，一条记录仍然对应一堆
+/// 物品。取数次数因此与换形状之前逐位相同（同一份快照、同样的元素
+/// 个数、同样的顺序），既有的确定性断言与那条「出现过查到一部分的中间
+/// 结果」的端到端证据（`crates/ll-mod/tests/example_mod_rogue_passives.rs`）
+/// 都不需要跟着改。真正被这次换形状加强的是**下游**：那条被动当初就是
+/// 照着「逐堆比对归属」的粒度选的（见上述变体文档），而在旧形状里
+/// 「逐堆」根本表达不出来。
+///
 /// **约束 C3**：随机走 `DetRng::for_entity(世界种子, 实体 ID, 事件
 /// 计数)`，三元组的中间一项取 **`target`**（藏东西的那一方，判定属于
 /// 它的被动，不属于盘查者），事件计数用一个与本文件其余流都不同的
@@ -2254,12 +2264,30 @@ fn resolve_inspect(
     let Some(target_agent) = world.actors.get(target) else {
         return Vec::new();
     };
-    let mut items_seen: Vec<ContentIndex> = target_agent
+    // 每条记录带着「是什么」+「在哪」两半——背包那一半的「在哪」是
+    // 下标，装备那一半是真实存储键（锚点槽位），见
+    // `crate::effect::CarriedItemSlot` 文档。下标转 u32 不会截断：
+    // 见该类型文档「为什么下标是 `u32`」一节。
+    let mut items_seen: Vec<InspectedItem> = target_agent
         .inventory
         .iter()
-        .map(|stack| stack.def)
+        .enumerate()
+        .map(|(index, stack)| InspectedItem {
+            def: stack.def,
+            slot: CarriedItemSlot::Inventory {
+                index: index as u32,
+            },
+        })
         .collect();
-    items_seen.extend(target_agent.equipment.values().map(|stack| stack.def));
+    items_seen.extend(
+        target_agent
+            .equipment
+            .iter()
+            .map(|(slot, stack)| InspectedItem {
+                def: stack.def,
+                slot: CarriedItemSlot::Equipped { slot: *slot },
+            }),
+    );
     // 藏匿判定，见本函数文档「藏匿判定」一节。
     const INSPECT_CONCEAL_EVENT_TAG: u64 = 0x0C0A_1EA0_0000_0000;
     let conceal_permille = inspection_concealment_permille(&agent_rule_modifiers(
