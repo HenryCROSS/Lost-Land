@@ -40,6 +40,13 @@
 //! - `threadper`：与 `pureload` 同样的工作量，但每个周期独占一根新线程
 //!   ——steel-core 的 kernel 镜像是 `thread_local!` 的，换线程等于换一份
 //!   全新的 kernel，用来检验「污染是否累积在线程局部 kernel 上」。
+//! - `threadpure`：与 `pure` 同样的工作量（只构造，一次都不编译），但
+//!   每个周期独占一根新线程、构造完就让线程退出。**这一档专门用来把
+//!   「多条线程同时活着」与「多条线程先后创建销毁」分开**：它一次都
+//!   没有两条线程同时碰 Steel，却制造与 `pure` 多线程同样多的线程
+//!   创建/销毁次数（每根线程各自 bootstrap 一份 `thread_local!` 内核、
+//!   线程退出时各自析构）。对照组是同样构造总数的单线程 `pure`（一根
+//!   长存线程做完全部构造）与多线程 `pure`（若干线程同时构造）。
 //!
 //! **经本仓库组**：
 //! - `hardened`：反复 [`ll_script::ScriptEngine::new`]（毒化 + 中断看门狗）。
@@ -142,10 +149,15 @@ fn run_mode_indexed(mode: &str, cycles: usize, script: &str, thread_index: usize
         }
         return;
     }
-    if mode == "threadper" {
+    if mode == "threadper" || mode == "threadpure" {
+        let inner = if mode == "threadpure" {
+            "pure"
+        } else {
+            "pureload"
+        };
         for _ in 0..cycles {
             let owned = script.to_string();
-            std::thread::spawn(move || pure_cycle("pureload", &owned))
+            std::thread::spawn(move || pure_cycle(inner, &owned))
                 .join()
                 .expect("探针线程不应 panic");
         }
