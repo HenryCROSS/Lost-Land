@@ -73,11 +73,60 @@ const FULLY_POISONED_MODULES: [&str; 4] = [
 fn poison_module(engine: &mut Engine, module_name: &'static str) {
     if let Some(module) = engine.builtin_modules().get(module_name) {
         for name in module.names() {
-            let leaked_name: &'static str = Box::leak(name.into_boxed_str());
-            engine.register_value(leaked_name, SteelVal::Void);
+            for spelling in spellings_of(&name) {
+                engine.register_value(&spelling, SteelVal::Void);
+            }
         }
     }
     engine.register_module(BuiltInModule::new(module_name));
+}
+
+/// 全局环境里，同一个模块导出名字的**别名前缀**。
+///
+/// # 为什么每个危险名字都有第二个拼写
+///
+/// `steel-core` 0.8.2 的引导脚本 `ALL_MODULES`
+/// （`src/steel_vm/primitives.rs`，用
+/// `git show v0.8.2:crates/steel-core/src/steel_vm/primitives.rs` 读，
+/// 工作树是 0.8.3+ 不作数）把同一批模块**导入两遍**：先无前缀
+/// `(require-builtin steel/process)`，再带前缀
+/// `(require-builtin steel/process as #%prim.)`。第二遍给每个导出名字
+/// 在全局环境里额外造一个 `#%prim.<name>` 绑定——`command` 与
+/// `#%prim.command` 是**两个不同的全局名字，指向同一个原生函数**。
+///
+/// 只覆盖无前缀那一份是本项目此前的真实漏洞（实测：`(command ...)`
+/// 被白名单挡住，但
+/// `(#%prim.spawn-process (#%prim.command "cmd" ...))` 一路放行、真的
+/// 拉起了 `cmd.exe`；`#%prim.eval!` 更是能把任意源码字符串喂回 VM，
+/// 等于整套白名单不存在）。
+///
+/// 带 `as #%prim.` 的模块清单里含 `steel/process`、`steel/threads`、
+/// `steel/meta`、`steel/filesystem`——正好覆盖 [`FULLY_POISONED_MODULES`]
+/// 与 [`META_DENY_LIST`] 系列关心的全部模块。`steel/time`/`steel/random`
+/// 不在带前缀那一份里，多毒化一次也只是无害的空操作。
+///
+/// # 同步来源与防漂移
+///
+/// 这份前缀清单是全文件唯一手抄自上游的常量，同步来源就是上面点名的
+/// `ALL_MODULES` 常量里 `as ` 后面出现过的全部前缀（0.8.2 实测只有
+/// `#%prim.` 一个）。**它会不会过时由测试回答，不由人记性回答**：
+/// `alias_prefix_list_covers_every_live_alias` 那条测试直接扫描活引擎
+/// 的全局名字表，只要上游哪天多加一个别名前缀（或换掉现有的），被禁
+/// 名字就会出现第三种拼写而没被毒化，测试当场变红。
+const MODULE_ALIAS_PREFIXES: [&str; 1] = ["#%prim."];
+
+/// 把一个基础名字展开成它在全局环境里的**全部拼写**：名字本身，加上
+/// [`MODULE_ALIAS_PREFIXES`] 里每个前缀拼出来的别名。
+///
+/// 毒化与白名单排除都必须按这份完整拼写清单来做——只处理其中一种
+/// 拼写等于没做，见 [`MODULE_ALIAS_PREFIXES`] 文档。
+fn spellings_of(base: &str) -> Vec<String> {
+    let mut out = Vec::with_capacity(1 + MODULE_ALIAS_PREFIXES.len());
+    out.push(base.to_string());
+    for prefix in MODULE_ALIAS_PREFIXES {
+        out.push(format!("{prefix}{base}"));
+    }
+    out
 }
 
 /// `steel/meta`（实测 102 个导出名字）里逐项审过、确认会触达六类被禁
@@ -194,52 +243,183 @@ const META_DENY_LIST_3: [&str; 4] = [
 /// 等）保持宿主 `ALL_MODULES` 引导阶段绑定的原样，会被
 /// `compute_allowed_identifiers` 枚举进白名单。
 fn poison_meta_deny_list(engine: &mut Engine) {
-    for name in META_DENY_LIST {
-        engine.register_value(name, SteelVal::Void);
-    }
-    for name in META_DENY_LIST_2 {
-        engine.register_value(name, SteelVal::Void);
-    }
-    for name in META_DENY_LIST_3 {
-        engine.register_value(name, SteelVal::Void);
+    for name in meta_deny_list() {
+        for spelling in spellings_of(name) {
+            engine.register_value(&spelling, SteelVal::Void);
+        }
     }
 }
 
-/// 出现在脚本源码里就直接拒绝加载的字面子串。
-///
-/// **这一层已经降级成快速失败的前置优化，不再是权威防线**——权威防线是
-/// 下面的 [`crate::whitelist`] AST 白名单（见 `ScriptEngine::load_source`）。
-/// 保留这一层的原因很朴素：源码里出现 `require-builtin` 几乎总是没有
-/// 合法用途（本项目的 mod 脚本设计上不需要 `require` 任何 Steel 内置
-/// 模块），在真正调用较重的「解析 + 完整宏展开」之前就用一次字符串
-/// `contains` 拦掉，省一次编译。删掉这一层不会有任何能力重新泄漏——
-/// 白名单会独立、完整地挡住同样的东西。
-const BANNED_SOURCE_SUBSTRINGS: [&str; 2] = ["require-builtin", "(require "];
+/// [`META_DENY_LIST`] 三批常量拼成一条迭代器——三个常量只是因为 Rust
+/// 数组字面量不便按理由分组书写才拆开的，语义上是同一份清单，凡是
+/// 要遍历它的地方都该走这里，不该再手抄一遍三个循环。
+fn meta_deny_list() -> impl Iterator<Item = &'static str> {
+    META_DENY_LIST
+        .into_iter()
+        .chain(META_DENY_LIST_2)
+        .chain(META_DENY_LIST_3)
+}
 
-/// 检查源码文本是否触碰了 [`BANNED_SOURCE_SUBSTRINGS`]。
+/// mod 脚本一律不支持的加载形式，写给 mod 作者看的统一说法。
 ///
-/// 命中哪一个子串，就把它写进错误信息里,方便 mod 作者定位——不能只说
-/// 「被拒绝」,不给理由。命中位置的字节偏移量一并带出（`source.find`
-/// 恰好能给出），供调用方（Task 11 加载管理界面）换算成行号——这是
-/// 文本层前置优化仍然值得携带位置信息的原因：它和 AST 白名单一样，
-/// 拒绝时不该让 mod 作者自己去脚本里逐行找是哪一处触发的。
+/// 三处共用同一句话（源码文本前置检查、`require-builtin` 前置检查、
+/// [`DenyAllSourceModules`] 兜底后的错误翻译），是为了让 mod 作者不管
+/// 从哪条路撞上来，看到的都是同一个结论，而不是三种听起来像不同问题
+/// 的内部错误。
 ///
-/// 消息文案刻意保持简短（不到 30 字）——实测（P4 验收 demo 截图，见
+/// 文案刻意短（不到 20 字）——实测（P4 验收 demo 截图，见
 /// `.superpowers/sdd/2026-08-18-p4-script-and-mod/task-11-12-report.md`）
-/// 早期版本的完整解释性文案在加载管理界面的错误详情面板里会自动换行,
+/// 早期版本的完整解释性文案在加载管理界面的错误详情面板里会自动换行，
 /// 压住下一行文字。面板本身已经加了截断兜底
 /// （`ll_ui::load_report_view::truncate_for_panel`），但从源头把消息
 /// 写短既不依赖那道兜底，也让面板不需要截断就能完整展示。
+const REQUIRE_UNSUPPORTED_MESSAGE: &str = "mod 脚本不支持 require：能力由宿主注入";
+
+/// 源码文本层面识别 `require` 家族的**词法**检查（不是子串匹配）。
+///
+/// # 为什么不能再用 `source.contains("(require ")`
+///
+/// 曾经的实现就是两条字面子串 `"require-builtin"` 与 `"(require "`。
+/// 后者**实测可绕过**：`(require<换行>"C:/…/x.scm")`（左括号与 `require`
+/// 之间是换行而不是空格）不含那条子串，直接穿过这一层；随后
+/// `Engine::emit_fully_expanded_ast` 在展开阶段就会去读那个文件——
+/// 白名单是在展开**之后**才检查的，读盘早已发生。实测用
+/// `(require<换行>"C:/Windows/win.ini")` 触发，报错里出现了 `win.ini` 里
+/// `[fonts]` 段落的名字，说明磁盘内容确实被读进来并解析了。制表符、
+/// 两个空格、`( require ` 同理。
+///
+/// 现在的做法是扫描每一个 `(`，跳过其后的空白，取出紧接着的那个记号，
+/// 命中 `require` 或任何 `require-*`（`require-builtin`、
+/// `require-for-syntax`）就拒绝——空白怎么写都逃不掉。
+///
+/// # 这一层的定位仍然是「快速失败 + 给位置」，不是权威防线
+///
+/// 权威防线是 [`DenyAllSourceModules`]：宏展开产生的 `require`、或者
+/// 任何本函数的词法近似没覆盖到的写法，都会在真正解析模块时被那道
+/// 解析器无条件拒绝。这一层的价值是**在编译之前**就失败，并且能给出
+/// 命中位置的字节偏移量（供 Task 11 加载管理界面换算行号）——权威防线
+/// 那条路给不出这个位置。
 fn reject_dangerous_syntax(source: &str) -> Result<(), ScriptError> {
-    for banned in BANNED_SOURCE_SUBSTRINGS {
-        if let Some(byte_offset) = source.find(banned) {
+    let bytes = source.as_bytes();
+    for (open_paren, _) in source.match_indices(OPEN_PAREN_CHARS) {
+        let mut cursor = open_paren + 1;
+        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+            cursor += 1;
+        }
+        let token_start = cursor;
+        while cursor < bytes.len() && !is_token_terminator(bytes[cursor]) {
+            cursor += 1;
+        }
+        let token = &source[token_start..cursor];
+        if token == "require" || token.starts_with("require-") {
             return Err(ScriptError::ParseError(
-                format!("禁止的语法「{banned}」：mod 脚本不能 require 内置模块"),
-                Some(byte_offset as u32),
+                format!("禁止的语法「{token}」：{REQUIRE_UNSUPPORTED_MESSAGE}"),
+                Some(open_paren as u32),
             ));
         }
     }
     Ok(())
+}
+
+/// Steel 认的**三种**左括号。
+///
+/// 同步来源：`steel-parser` 0.8.2 `src/lexer.rs` 的
+/// `Some(&paren @ ('(' | '[' | '{'))` 那一支——圆括号、方括号、花括号
+/// 在 Steel 里完全等价。
+///
+/// 只扫圆括号是不够的，这不是理论担心：实测 `[require "C:/…/x.scm"]`
+/// 穿过了只认 `(` 的那版扫描，最后是靠 [`DenyAllSourceModules`] 兜住
+/// 的（错误信息里没有「禁止的语法」前缀，正是兜底那条路的特征）。
+/// 兜住了不等于该放着不管——文本层多认两种括号，mod 作者才能拿到命中
+/// 位置，而不是一条没有位置的编译错误。
+const OPEN_PAREN_CHARS: [char; 3] = ['(', '[', '{'];
+
+/// Steel 记号的结束字符：空白、三种括号的两侧、引号与注释起始——只
+/// 用来在 [`reject_dangerous_syntax`] 里切出「左括号后面的第一个
+/// 记号」，不追求与 Steel 词法器完全等价（权威判据在
+/// [`DenyAllSourceModules`]，见其文档）。
+fn is_token_terminator(byte: u8) -> bool {
+    byte.is_ascii_whitespace()
+        || matches!(
+            byte,
+            b'(' | b')' | b'[' | b']' | b'{' | b'}' | b'"' | b'\'' | b';'
+        )
+}
+
+/// `steel-core` 找不到源码模块时抛出的错误消息固定含有这个子串
+/// （`compiler/modules.rs`：
+/// `crate::throw!(Generic => "Unable to find builtin module: {:?}", module)`）。
+///
+/// [`DenyAllSourceModules`] 让**每一次** `require` 都走到这条错误上，
+/// 因此命中这个子串就唯一对应「脚本试图 require 某个东西」，可以安全
+/// 地翻译成 [`REQUIRE_UNSUPPORTED_MESSAGE`]。判断依据是消息文本、天生
+/// 比 `ErrorKind` 脆弱（未来 `steel-core` 改了措辞会静默失效），但退化
+/// 后果只是错误信息重新变得晦涩，**能力边界不受影响**——拒绝本身由
+/// [`DenyAllSourceModules`] 保证，与这条翻译无关。
+const UNRESOLVED_MODULE_MARKER: &str = "Unable to find builtin module:";
+
+/// 把 `steel-core` 的「找不到模块」内部错误翻译成 mod 作者读得懂的说法。
+///
+/// 只在装载路径（[`ScriptEngine::load_source`]）上做这次翻译：`require`
+/// 只可能在编译/展开阶段出现，运行期调用（[`ScriptEngine::call_raw`]）
+/// 不存在这条路，没必要也不该在那里多一次字符串匹配。
+fn translate_require_error(err: ScriptError) -> ScriptError {
+    let ScriptError::Runtime(ref message, offset) = err else {
+        return err;
+    };
+    if !message.contains(UNRESOLVED_MODULE_MARKER) {
+        return err;
+    }
+    ScriptError::ParseError(REQUIRE_UNSUPPORTED_MESSAGE.to_string(), offset)
+}
+
+/// 「一律拒绝」的源码模块解析器——[`ScriptEngine`] 关掉 `require`
+/// 文件系统逃逸的权威防线。
+///
+/// # 机制：`exists()` 恒真，把 FS 分支彻底挤掉
+///
+/// `steel-core` 0.8.2 解析 `(require "…")` 时（`compiler/modules.rs`
+/// 的 `parse_require`）按固定顺序问：内置模块表 → `custom_builtins`
+/// （`Engine::register_steel_module` 注册的那些）→ **本 trait 的
+/// `exists()`** → 都不认就当成文件路径，交给 `parse_from_path` 直接
+/// `std::fs::File::open`。最后那一步不看沙箱标志、不看搜索目录白名单，
+/// 绝对路径、`..` 相对路径一律照读——这正是实测能用
+/// `(require "C:/…/私密文件.scm")` 把盘上任意文件读进编译过程的原因。
+///
+/// 让 `exists()` **恒返回 `true`**，第三步就永远命中，控制权在到达文件
+/// 系统之前就被截住；随后 `resolve()` 返回 `None`，`steel-core` 抛出
+/// [`UNRESOLVED_MODULE_MARKER`] 那条错误，被 [`translate_require_error`]
+/// 翻译成 [`REQUIRE_UNSUPPORTED_MESSAGE`]。
+///
+/// # 为什么不是 `register_steel_module`，也不是 `add_search_directory`
+///
+/// `Engine::register_steel_module` 只把某个名字放进 `custom_builtins`，
+/// 让它**优先于**文件系统命中——没命中的名字照样掉进 FS 分支，关不死
+/// 这个洞。`Engine::add_search_directory` 方向恰好相反：它只会**扩大**
+/// FS 分支的搜索面，对收窄能力是负资产，本项目不使用。
+///
+/// # 本批次刻意只做「全部拒绝」这一档
+///
+/// `resolve()` 无条件返回 `None`，不做任何按名字放行的分档。mod 之间
+/// 的模块系统（`provide`/`import` 语法与跨 mod 权限）设计还没定完，是
+/// 独立的一批工作；在那之前放行任何一个名字都是在给一套还没设计完的
+/// 语义开口子。真要开的时候，`exists()` 拿到的是**原样的 key 字符串**
+/// （含绝对路径），路径校验与名字解析就写在这两个方法里，控制权是
+/// 完整的。
+struct DenyAllSourceModules;
+
+impl steel::compiler::modules::SourceModuleResolver for DenyAllSourceModules {
+    /// 恒 `None`：任何名字都不解析成源码，见类型文档「本批次刻意只做
+    /// 『全部拒绝』这一档」。
+    fn resolve(&self, _key: &str) -> Option<String> {
+        None
+    }
+
+    /// 恒 `true`：这是整道防线的机制本身，见类型文档「机制」一节——
+    /// 返回 `false` 会让 `steel-core` 继续走到文件系统分支，洞就还在。
+    fn exists(&self, _key: &str) -> bool {
+        true
+    }
 }
 
 /// 从 `engine.globals()` 拍下当前**全部**全局绑定名字的快照，减去
@@ -290,18 +470,16 @@ fn poisoned_identifiers(engine: &Engine) -> HashSet<&'static str> {
     for module_name in FULLY_POISONED_MODULES {
         if let Some(module) = engine.builtin_modules().get(module_name) {
             for name in module.names() {
-                poisoned.insert(Box::leak(name.into_boxed_str()) as &'static str);
+                for spelling in spellings_of(&name) {
+                    poisoned.insert(Box::leak(spelling.into_boxed_str()) as &'static str);
+                }
             }
         }
     }
-    for name in META_DENY_LIST {
-        poisoned.insert(name);
-    }
-    for name in META_DENY_LIST_2 {
-        poisoned.insert(name);
-    }
-    for name in META_DENY_LIST_3 {
-        poisoned.insert(name);
+    for name in meta_deny_list() {
+        for spelling in spellings_of(name) {
+            poisoned.insert(Box::leak(spelling.into_boxed_str()) as &'static str);
+        }
     }
 
     poisoned
@@ -607,6 +785,11 @@ impl ScriptEngine {
         );
         let mut engine = Engine::new_sandboxed();
 
+        // 关掉 `require` 的文件系统逃逸，见 DenyAllSourceModules 文档。
+        // 必须在任何脚本源码被编译之前注册——解析器只对注册之后的编译
+        // 生效，晚一步就等于这一份脚本没有这道防线。
+        engine.register_source_module_resolver(DenyAllSourceModules);
+
         // 顺序不能变：先拍下"毒化之前"的全局名字快照并减去要挡的名字
         // （见 compute_allowed_identifiers 文档），再真正执行毒化——
         // 毒化只改值不删符号表条目，顺序反了快照会把毒名字也收进去。
@@ -651,22 +834,27 @@ impl ScriptEngine {
 
     /// 加载并执行一段脚本源码（通常是 mod 的顶层定义）。
     ///
-    /// 四道关卡依次生效：
-    /// 1. [`reject_dangerous_syntax`]——源码文本快速失败，省一次解析。
-    /// 2. **AST 白名单**（[`crate::whitelist::check_whitelist`]）——解析并
+    /// 五道关卡依次生效：
+    /// 1. [`reject_dangerous_syntax`]——源码词法层快速失败（`require`
+    ///    家族），省一次解析，并给出命中位置。
+    /// 2. [`DenyAllSourceModules`]——`require` 的权威防线，装在引擎
+    ///    构造期，文本层的词法近似漏掉的写法（实测 `[require "…"]`
+    ///    这种方括号写法曾经漏过）也逃不掉；错误经
+    ///    [`translate_require_error`] 翻译成 mod 作者读得懂的说法。
+    /// 3. **AST 白名单**（[`crate::whitelist::check_whitelist`]）——解析并
     ///    完整展开源码（`Engine::emit_fully_expanded_ast`，宏与
     ///    `require-builtin` 均已展开），确认树上出现的每一个被引用的
     ///    标识符都在 [`Self::allowed_identifiers`] 或脚本自己的局部作用域
     ///    里，这是权威防线。
-    /// 3. **内存执行预算**（[`crate::alloc_guard`]）——真正求值前重置计数
+    /// 4. **内存执行预算**（[`crate::alloc_guard`]）——真正求值前重置计数
     ///    器、重置「超预算中断」诊断记号、把本引擎的中断通道登记为「当前
     ///    线程活跃通道」，求值结束后立刻解除登记，见
     ///    [`Self::alloc_controller`](Self) 字段文档与
     ///    [`classify_error`] 文档「`interrupt()` 通道的两个调用点」。
-    /// 4. 通过前面几关才真正 `run`，套着中断防线执行——脚本本身死循环
+    /// 5. 通过前面几关才真正 `run`，套着中断防线执行——脚本本身死循环
     ///    也会在预算耗尽后返回 `Err`。
     ///
-    /// 步骤 2 会对同一份源码重新解析一次（`run` 内部还会再解析一次）——
+    /// 步骤 3 会对同一份源码重新解析一次（`run` 内部还会再解析一次）——
     /// 这是刻意的简化：mod 加载是一次性的加载期操作，不是每帧热路径，
     /// 多付一次解析的代价（ADR 0012 实测量级 ~百微秒）换来"校验的是
     /// 真正要执行的那份展开结果"这个正确性保证，用真实脚本验证过重复
@@ -679,13 +867,14 @@ impl ScriptEngine {
         let exprs = self
             .engine
             .emit_fully_expanded_ast(&source, None)
-            .map_err(classify_error)?;
+            .map_err(classify_error)
+            .map_err(translate_require_error)?;
         check_whitelist(&exprs, &self.allowed_identifiers, &self.script_defined)?;
         // 顶层定义的名字要在**这一次装载成功之后**才对下一份脚本可见
         // ——先算好（`exprs` 马上就要被丢弃），装载失败时不并入。
         let newly_defined = top_level_defined_names(&exprs);
 
-        // 步骤 3：登记内存守卫。窗口只覆盖下面这一次 `run`——前面两步
+        // 步骤 4：登记内存守卫。窗口只覆盖下面这一次 `run`——前面两步
         // 的解析/展开分配不该算进脚本自己的预算（见 alloc_guard 模块
         // 文档「MEMORY_BUDGET 默认排除引擎构造本身」同一条精神）。
         // `reset_interrupt_reason` 必须与 `reset_alloc_counter` 一起在
@@ -713,7 +902,7 @@ impl ScriptEngine {
     /// 以 `name` 调用一个已经在脚本中定义好的函数。
     ///
     /// 每次调用都包中断防线（见结构体文档的开销说明）与内存执行预算窗口
-    /// （见 [`Self::load_source`] 步骤 3 的同一套接线），出错返回 `Err`，
+    /// （见 [`Self::load_source`] 步骤 4 的同一套接线），出错返回 `Err`，
     /// 绝不 panic。降级策略由调用方决定。
     pub fn call_raw(&mut self, name: &str, args: Vec<SteelVal>) -> Result<SteelVal, ScriptError> {
         alloc_guard::reset_alloc_counter();
@@ -1032,6 +1221,358 @@ mod tests {
 
         // Assert
         assert!(matches!(result, Err(ScriptError::ParseError(_, _))));
+    }
+
+    /// 造一个真实存在于磁盘上的 Steel 源码文件，返回它的绝对路径。
+    ///
+    /// `require` 的文件系统逃逸只有对着**真实存在**的文件才有说服力
+    /// ——对不存在的路径报「找不到文件」，证明不了任何防线在起作用。
+    fn 写一个真实的磁盘模块(标记: &str) -> std::path::PathBuf {
+        let mut path = std::env::temp_dir();
+        path.push(format!(
+            "ll_script_require_probe_{标记}_{}.scm",
+            std::process::id()
+        ));
+        std::fs::write(&path, "(provide 磁盘上的答案)\n(define 磁盘上的答案 42)\n")
+            .expect("测试自己的临时文件应当写得进临时目录");
+        path
+    }
+
+    /// 把一个路径写成能安全嵌进 Steel 字符串字面量的形式。
+    ///
+    /// Windows 的临时目录是 `C:\Users\…`，反斜杠在 Steel 字符串里是
+    /// 转义符（实测报 `Syntax Error: invalid escape 'U'`），会让测试
+    /// 在还没走到被测防线之前就先死在语法上。Steel 两种分隔符都认，
+    /// 统一换成正斜杠。
+    fn 写成steel字符串(path: &std::path::Path) -> String {
+        path.display().to_string().replace('\\', "/")
+    }
+
+    /// 一个**没有经过任何毒化**的沙箱引擎，专供防漂移测试枚举「上游
+    /// 当前真实提供了什么」。
+    ///
+    /// 不能拿 [`ScriptEngine`] 内部那个引擎来枚举：[`poison_module`]
+    /// 的第二步会用同名空模块覆盖模块注册表，之后
+    /// `builtin_modules().get("steel/process")` 拿到的是那个**空**替身
+    /// （实测导出集合为 `{}`）。用它做判据，等于拿「我们已经清空过了」
+    /// 当成「上游本来就没有」，三条防漂移测试会全部退化成恒真。
+    fn 未毒化的参照引擎() -> Engine {
+        Engine::new_sandboxed()
+    }
+
+    #[test]
+    fn 脚本无法用prim前缀别名拉起系统进程() {
+        // 这是真实发生过的逃逸：`(command ...)` 被白名单挡住，但
+        // `ALL_MODULES` 还额外做过一遍 `(require-builtin steel/process
+        // as #%prim.)`，于是同一个原生函数在全局环境里有第二个拼写
+        // `#%prim.command`/`#%prim.spawn-process`——修复前这条路一路
+        // 放行、真的拉起了 cmd.exe（见 MODULE_ALIAS_PREFIXES 文档）。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_source(
+            r#"(#%prim.spawn-process (#%prim.command "cmd" (list "/c" "echo" "should-not-run")))"#
+                .to_string(),
+        );
+
+        // Assert
+        assert!(
+            matches!(result, Err(ScriptError::ParseError(_, _))),
+            "实际拿到 {result:?}"
+        );
+    }
+
+    #[test]
+    fn 脚本无法用prim前缀别名绕过meta黑名单() {
+        // `#%prim.eval!` 是同一个洞里最狠的一种：它能把任意源码字符串
+        // 喂回 VM，等于整套白名单不存在（修复前实测能用它拉起进程）。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_source(r#"(#%prim.eval! "(+ 1 2)")"#.to_string());
+
+        // Assert
+        assert!(
+            matches!(result, Err(ScriptError::ParseError(_, _))),
+            "实际拿到 {result:?}"
+        );
+    }
+
+    #[test]
+    fn 进程模块在活引擎里确实枚举得到() {
+        // 防漂移第一层，挡的是「毒化悄悄变成空操作」这种失效方式：
+        // `poison_module`/`poisoned_identifiers` 都写成
+        // `if let Some(module) = engine.builtin_modules().get(name)`，
+        // 上游哪天改了模块名、或不再把 steel/process 放进模块注册表，
+        // `get` 返回 None，两处循环一次都不跑、测试却仍然全绿——整个
+        // 进程能力会静默地重新暴露。这里直接钉住「模块枚举得到，且
+        // 里面确实有进程原语」。
+        // Arrange
+        let 参照 = 未毒化的参照引擎();
+
+        // Act
+        let 导出名字: HashSet<String> = 参照
+            .builtin_modules()
+            .get("steel/process")
+            .expect("steel/process 必须仍在沙箱引擎的模块注册表里，否则全部毒化都成了空操作")
+            .names()
+            .into_iter()
+            .collect();
+
+        // Assert：两个哨兵名字，同步来源是 steel-core 0.8.2 的
+        // `src/primitives/process.rs` 里的 `process_module()`。
+        assert!(导出名字.contains("command"), "实际导出 {导出名字:?}");
+        assert!(导出名字.contains("spawn-process"), "实际导出 {导出名字:?}");
+    }
+
+    #[test]
+    fn 进程模块的每个导出名字连同别名拼写都不在白名单内() {
+        // 防漂移第二层，挡的是「上游新增了一个我们没见过的进程原语」：
+        // 判据不是任何手抄的名单，而是**活引擎里 steel/process 当前
+        // 真实导出的每一个名字**，逐个连同 MODULE_ALIAS_PREFIXES 的
+        // 别名拼写一起检查。升级 steel-core 之后多出来的新原语会自动
+        // 进入这条断言的覆盖范围，不需要谁记得改名单。
+        // Arrange：两个引擎都在编译任何脚本之前造齐（C6，ADR 0028）。
+        let 参照 = 未毒化的参照引擎();
+        let engine = ScriptEngine::new();
+        let 导出名字 = 参照
+            .builtin_modules()
+            .get("steel/process")
+            .expect("见「进程模块在活引擎里确实枚举得到」那条测试")
+            .names();
+
+        // Act & Assert：拼写清单在这里就地拼出来，**不复用**
+        // `spellings_of`——测试与被测实现共用同一个助手的话，助手本身
+        // 出错时两边会一起错、断言恒真（实测：把 `spellings_of` 改成
+        // 只返回裸名字，这条测试若复用它就仍然全绿）。
+        for name in 导出名字 {
+            let mut 拼写清单 = vec![name.clone()];
+            拼写清单.extend(
+                MODULE_ALIAS_PREFIXES
+                    .iter()
+                    .map(|前缀| format!("{前缀}{name}")),
+            );
+            for 拼写 in 拼写清单 {
+                assert!(
+                    !engine.allowed_identifiers.contains(拼写.as_str()),
+                    "进程原语「{拼写}」仍在白名单内——毒化漏了这个拼写"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 别名前缀清单覆盖上游当前真实存在的每一种别名拼写() {
+        // 防漂移第三层，挡的是「上游换了或新增了别名前缀」：
+        // MODULE_ALIAS_PREFIXES 是本文件唯一手抄自上游的常量，这条测试
+        // 不信任那份手抄，而是从未毒化的参照引擎上**反推**出上游当前
+        // 真实在用的前缀集合，再断言它被那份手抄覆盖住。
+        //
+        // 反推的判据是别名机制本身：`(require-builtin M as P)` 会给
+        // 模块 M 的**每一个**导出名字都造一个 `P<name>` 绑定。所以先
+        // 用某一个导出名字捞出所有「以它结尾」的全局名字得到候选前缀，
+        // 再只保留那些对模块**全部**导出名字都成立的候选——`with-`
+        // 这种恰好撞上 `with-env-var`/`env-var` 的巧合会被这一步筛掉
+        // （不存在 `with-spawn-process`），真正的别名前缀留得下来。
+        // Arrange
+        let 参照 = 未毒化的参照引擎();
+        let 全局名字: HashSet<String> = 参照
+            .globals()
+            .iter()
+            .map(|interned| interned.resolve().to_string())
+            .collect();
+
+        // Act & Assert
+        for module_name in FULLY_POISONED_MODULES {
+            let Some(module) = 参照.builtin_modules().get(module_name) else {
+                continue;
+            };
+            let 导出名字: Vec<String> = module.names();
+            let Some(探针) = 导出名字.first() else {
+                continue;
+            };
+
+            let mut 候选前缀: HashSet<String> = 全局名字
+                .iter()
+                .filter(|name| name.ends_with(探针.as_str()))
+                .map(|name| name[..name.len() - 探针.len()].to_string())
+                .collect();
+            候选前缀.retain(|前缀| {
+                导出名字
+                    .iter()
+                    .all(|名字| 全局名字.contains(&format!("{前缀}{名字}")))
+            });
+
+            for 前缀 in 候选前缀 {
+                assert!(
+                    前缀.is_empty() || MODULE_ALIAS_PREFIXES.contains(&前缀.as_str()),
+                    "模块「{module_name}」在全局环境里有一种 MODULE_ALIAS_PREFIXES \
+                     没收录的别名前缀「{前缀}」——被禁名字因此还有一种没被毒化的拼写"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 换行分隔的require不再绕过文本层检查() {
+        // 修复前 reject_dangerous_syntax 用的是字面子串 `"(require "`，
+        // 左括号与 require 之间换行就绕过去了，随后展开阶段真的会去
+        // 读盘（实测 win.ini 的 `[fonts]` 段名出现在了报错里）。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        let 真实文件 = 写一个真实的磁盘模块("newline");
+
+        // Act
+        let result = engine.load_source(format!("(require\n\"{}\")", 写成steel字符串(&真实文件)));
+
+        // Assert：断言到「是**文本层**拒绝的」这个粒度，不能只断言
+        // `ParseError`——兜底解析器最终也产出 `ParseError`，只断言类型
+        // 的话，文本层整个退回旧的字面子串匹配都测不出来（实测：那样
+        // 的变异体能让本条测试保持全绿）。「禁止的语法」这个前缀是
+        // 文本层独有的标记，兜底那条路不带；命中位置同理，只有文本层
+        // 给得出来。
+        let _ = std::fs::remove_file(&真实文件);
+        match result {
+            Err(ScriptError::ParseError(message, offset)) => {
+                assert!(
+                    message.starts_with("禁止的语法"),
+                    "期望文本层在编译前就拒绝，实际是「{message}」"
+                );
+                assert!(
+                    offset.is_some(),
+                    "文本层必须带上命中位置，供加载管理界面换算行号"
+                );
+            }
+            other => panic!("期望 ParseError，实际拿到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn require磁盘上真实存在的绝对路径被拒绝且错误信息说得清楚() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        let 真实文件 = 写一个真实的磁盘模块("abs");
+
+        // Act
+        let result = engine.load_source(format!("(require \"{}\")", 写成steel字符串(&真实文件)));
+
+        // Assert：既要拒绝，也要给 mod 作者一句读得懂的结论，而不是
+        // 「Unable to find builtin module」这种内部说法。
+        let _ = std::fs::remove_file(&真实文件);
+        match result {
+            Err(ScriptError::ParseError(message, _)) => {
+                assert!(
+                    message.contains(REQUIRE_UNSUPPORTED_MESSAGE),
+                    "错误信息没告诉 mod 作者不支持 require，实际是「{message}」"
+                );
+            }
+            other => panic!("期望 ParseError，实际拿到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn require上跳的相对路径被拒绝() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_source("(require \"../../../../secret.scm\")".to_string());
+
+        // Assert
+        match result {
+            Err(ScriptError::ParseError(message, _)) => {
+                assert!(
+                    message.contains(REQUIRE_UNSUPPORTED_MESSAGE),
+                    "实际是「{message}」"
+                );
+            }
+            other => panic!("期望 ParseError，实际拿到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 解析器兜底独立于文本检查也能拒绝磁盘上真实存在的模块() {
+        // 其余几条 require 测试走的是 `ScriptEngine::load_source`，
+        // 文本层 `reject_dangerous_syntax` 会抢先拒绝——那证明不了
+        // 权威防线 [`DenyAllSourceModules`] 有没有被真的装到引擎上。
+        // 这条测试**绕开文本层**，直接对着 `ScriptEngine` 内部那个
+        // 引擎跑 `require`，钉住「解析器确实装上了」这件事本身。
+        //
+        // 为什么值得单独钉：文本层是词法近似，实测已经漏过一次
+        // （`[require "…"]` 用方括号写就绕过了只认 `(` 的那版扫描，
+        // 全靠这道兜底接住）。兜底一旦在构造期被摘掉，那类漏网写法
+        // 会直接变成真实的任意文件读取。
+        //
+        // 对照组用**没装解析器**的裸引擎跑同一份源码：它必须成功读到
+        // 磁盘上的文件——读不到就说明这条测试根本没走到被测的那条路
+        // （比如路径拼错），断言会退化成恒真。
+        //
+        // C6（ADR 0028）：同一线程上全部引擎构造必须先于全部脚本编译
+        // ——所以两个引擎都在这里先造齐，再开始跑。
+        // Arrange
+        let mut 对照组 = Engine::new_sandboxed();
+        let mut 被测 = ScriptEngine::new();
+        let 真实文件 = 写一个真实的磁盘模块("backstop");
+        let source = format!("(require \"{}\") 磁盘上的答案", 写成steel字符串(&真实文件));
+
+        // Act
+        let 洞还在吗 = 对照组.run(source.clone());
+        let 兜底结果 = 被测.engine.run(source);
+
+        // Assert
+        let _ = std::fs::remove_file(&真实文件);
+        assert!(
+            洞还在吗.is_ok(),
+            "对照组理应读到磁盘上的模块——读不到说明这条测试没在测真正的那条路：{洞还在吗:?}"
+        );
+        let err = 兜底结果.expect_err("ScriptEngine 的引擎上必须装着 DenyAllSourceModules");
+        assert!(
+            err.to_string().contains(UNRESOLVED_MODULE_MARKER),
+            "拒绝理由应当是「解析不出这个模块」而不是别的失败，实际是「{err}」"
+        );
+    }
+
+    #[test]
+    fn 方括号写法的require也被拒绝() {
+        // Steel 三种括号等价，`[require "…"]` 与 `(require "…")` 是同一
+        // 件事——实测这种写法曾经穿过只认圆括号的文本层扫描。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        let 真实文件 = 写一个真实的磁盘模块("bracket");
+
+        // Act
+        let result = engine.load_source(format!("[require \"{}\"]", 写成steel字符串(&真实文件)));
+
+        // Assert
+        let _ = std::fs::remove_file(&真实文件);
+        match result {
+            Err(ScriptError::ParseError(message, _)) => {
+                assert!(
+                    message.contains(REQUIRE_UNSUPPORTED_MESSAGE),
+                    "实际是「{message}」"
+                );
+            }
+            other => panic!("期望 ParseError，实际拿到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 毒化别名拼写没有误伤正常脚本() {
+        // 与上面几条拒绝测试配对的「没打错人」证据：`#%prim.` 前缀下
+        // 绝大多数名字（`#%prim.hash` 等）是 struct 宏展开的底层依赖，
+        // 毒化只能命中被禁模块那一份，不能波及它们。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_source(
+            "(struct 点 (x y))\n(define 双倍 (map (lambda (n) (* 2 n)) (list 1 2 3)))".to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok(), "正常脚本被误伤：{result:?}");
     }
 
     #[test]
