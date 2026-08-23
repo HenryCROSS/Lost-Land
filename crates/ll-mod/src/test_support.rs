@@ -17,6 +17,7 @@ use crate::clip::ClipTable;
 use crate::damage_category::DamageCategoryTable;
 use crate::formula::FormulaTable;
 use crate::item::ItemTable;
+use crate::modifier_type::ModifierTypeTable;
 use crate::pipeline::GameplayTables;
 use crate::quest::QuestTable;
 use crate::race::RaceTable;
@@ -85,6 +86,7 @@ pub(crate) struct OwnedTables {
     pub(crate) weather: WeatherTable,
     pub(crate) recipe: RecipeTable,
     pub(crate) recipe_category: RecipeCategoryTable,
+    pub(crate) modifier_type: ModifierTypeTable,
 }
 
 impl OwnedTables {
@@ -110,6 +112,7 @@ impl OwnedTables {
             weather: &mut self.weather,
             recipe: &mut self.recipe,
             recipe_category: &mut self.recipe_category,
+            modifier_type: &mut self.modifier_type,
         }
     }
 }

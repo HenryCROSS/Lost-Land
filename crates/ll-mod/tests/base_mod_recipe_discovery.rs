@@ -39,6 +39,7 @@ use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::formula::FormulaTable;
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadStatus;
+use ll_mod::modifier_type::ModifierTypeTable;
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
 use ll_mod::race::RaceTable;
@@ -157,6 +158,7 @@ fn load_real_mods() -> Handle {
     let mut recipe_table = RecipeTable::new();
     let mut recipe_category_table = RecipeCategoryTable::new();
     let mut tag_table = TagTable::new();
+    let mut modifier_type_table = ModifierTypeTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -181,6 +183,7 @@ fn load_real_mods() -> Handle {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            modifier_type: &mut modifier_type_table,
             tag: &mut tag_table,
         },
     );

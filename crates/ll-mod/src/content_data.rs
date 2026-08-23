@@ -60,9 +60,10 @@ use crate::content_schema::{
     apply_skills, apply_subclasses, apply_tags,
 };
 use crate::content_schema_gear::{
-    DamageCategoryFile, DamageFormulaFile, ItemFile, ResourcePoolFile, TraitFile,
+    DamageCategoryFile, DamageFormulaFile, ItemFile, ModifierTypeFile, ResourcePoolFile, TraitFile,
     WeaponCategoryFile, XpCurveFile, apply_damage_categories, apply_damage_formulas, apply_items,
-    apply_recipes, apply_resource_pools, apply_traits, apply_weapon_categories, apply_xp_curves,
+    apply_modifier_types, apply_recipes, apply_resource_pools, apply_traits,
+    apply_weapon_categories, apply_xp_curves,
 };
 use crate::content_schema_world::{
     AnimationFile, SpaceProfileFile, TerrainFile, WeatherFile, apply_clips, apply_space_profiles,
@@ -102,6 +103,7 @@ impl std::error::Error for ContentDataError {}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContentFileKind {
     Tags,
+    ModifierTypes,
     Terrains,
     SpaceProfiles,
     Weathers,
@@ -134,6 +136,7 @@ impl ContentFileKind {
     fn file_name(self) -> &'static str {
         match self {
             ContentFileKind::Tags => "tags.json5",
+            ContentFileKind::ModifierTypes => "modifier_types.json5",
             ContentFileKind::Terrains => "terrain.json5",
             ContentFileKind::SpaceProfiles => "space_profiles.json5",
             ContentFileKind::Weathers => "weather.json5",
@@ -165,9 +168,12 @@ impl ContentFileKind {
 /// 每一条排在这个位置的理由都是一条**真实的引用方向**，逐条列在下面
 /// 的注释里。判据统一是「谁只 get 不 intern」：只 get 的那一方必须
 /// 排在被引用者之后。
-const CONTENT_FILES: [ContentFileKind; 19] = [
+const CONTENT_FILES: [ContentFileKind; 20] = [
     // 标签没有任何前置依赖，而物品会引用它（只 get 不 intern）。
     ContentFileKind::Tags,
+    // 加值类型同样没有任何前置依赖，而天赋与物品的规则修正会引用它
+    // （只 get 不 intern，见 content_schema_gear 的 required_modifier_type）。
+    ContentFileKind::ModifierTypes,
     // 地形/空间层/天气/动画剪辑四类互不引用，也不被后面任何一类
     // 「只 get」地引用（配方的场地是 intern），位置本身无约束——排在
     // 前面只是因为它们是世界的底座。
@@ -247,6 +253,10 @@ fn apply_one(
             let file: TagFile = parse(&source).map_err(fail)?;
             apply_tags(registry, tables.tag, &file.tags)
         }
+        ContentFileKind::ModifierTypes => {
+            let file: ModifierTypeFile = parse(&source).map_err(fail)?;
+            apply_modifier_types(registry, tables.modifier_type, &file.modifier_types)
+        }
         ContentFileKind::Terrains => {
             let file: TerrainFile = parse(&source).map_err(fail)?;
             apply_terrains(registry, tables.terrain, &file.terrains)
@@ -307,6 +317,7 @@ fn apply_one(
                 tables.item,
                 tables.tag,
                 tables.recipe,
+                tables.modifier_type,
                 &file.items,
             )
         }
@@ -336,7 +347,12 @@ fn apply_one(
         }
         ContentFileKind::Traits => {
             let file: TraitFile = parse(&source).map_err(fail)?;
-            apply_traits(registry, tables.trait_def, &file.traits)
+            apply_traits(
+                registry,
+                tables.trait_def,
+                tables.modifier_type,
+                &file.traits,
+            )
         }
         ContentFileKind::Quests => {
             let file: QuestFile = parse(&source).map_err(fail)?;

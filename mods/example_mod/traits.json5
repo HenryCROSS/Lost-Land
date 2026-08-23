@@ -54,10 +54,28 @@
     {
       // 酸性皮膜：天赋那一路的抗性来源，与 acid_ward_amulet（装备
       // 那一路）写进同一个 RuleModifier::Resistance。
+      //
+      // 减伤 4 点，加值类型「天生」。两个数各自的理由：
+      //
+      // - **4 点**：这条天赋此前是 500‰ 乘数（半伤）。减伤模型下没有
+      //   「半伤」这种与来伤大小无关的表达，只能挑一个点数，于是挑在
+      //   本 mod 真实酸伤量级的一半附近——酸蚀匕首走 iron_sword_formula
+      //   （攻击力 + 力量调整值），测试夹具里打出的裸伤在个位数到十位
+      //   数低段，4 点因此对小刀伤显著、对大伤害明显不够，正是 DR 想要
+      //   的战术味（见 RuleModifier::Resistance 文档「对小伤害强、对大
+      //   伤害弱」一节）。
+      // - **innate**：这是软泥怪的体质，不来自任何外物。与护符的
+      //   enhancement 分属两类，于是一只戴着护符的软泥怪两条都吃到、
+      //   点数相加（4 + 3 = 7）；而两枚同样的护符仍然只算一枚。
       id: "examplemod:acid_hide",
       display_name_key: "examplemod:acid_hide_display_name",
       rule_modifiers: [
-        { kind: "resistance", damage_category: "examplemod:acid", multiplier_permille: 500 },
+        {
+          kind: "resistance",
+          damage_category: "examplemod:acid",
+          damage_reduction: 4,
+          modifier_type: "examplemod:innate",
+        },
       ],
     },
     {
@@ -69,15 +87,26 @@
       ],
     },
     {
-      // 扒手训练：盗贼被动的两种——「不觉得可疑」（盘查意愿降到
-      // 200‰）与「查不出东西」（隐匿 800‰）。两者落在盘查链路的两环：
-      // 前者在卫兵决定要不要发起盘查那一步，后者在盘查已经发起、结算
-      // 搜出什么那一步。
+      // 扒手训练：盗贼被动的两种——「不觉得可疑」与「查不出东西」。
+      // 两者落在盘查链路的两环：前者在卫兵决定要不要发起盘查那一步，
+      // 后者在盘查已经发起、结算搜出什么那一步。
+      //
+      // 「不觉得可疑」此前是 200‰ 乘数，现在是**减 400‰ 点数**。这个
+      // 数是照着「不改变非潜行状态下的既有行为」挑的：卫兵基础盘查率
+      // GUARD_INSPECT_CHANCE_PERMILLE 是 500‰，旧模型算出 500 × 200 /
+      // 1000 = 100‰，新模型算出 500 − 400 = 100‰，逐位相同。潜行状态
+      // 那一档确实变了（基础 50‰，旧模型 10‰、新模型触底到 1‰），
+      // 那是加法模型对低基础概率更狠的必然结果，见
+      // ll_mod::native_behavior::guard_inspect_chance 文档。
+      //
+      // 两条都不声明加值类型：本 mod 里没有第二条盘查类被动，分不分类
+      // 观察不到任何差别，硬分一个类只会是噪音。它们因此落在那个共享的
+      // 未分类桶里，行为与加值类型批次之前逐位相同。
       id: "examplemod:cutpurse_training",
       display_name_key: "examplemod:cutpurse_training_display_name",
       granted_skills: ["examplemod:backstab"],
       rule_modifiers: [
-        { kind: "inspection-suspicion", multiplier_permille: 200 },
+        { kind: "inspection-suspicion", suspicion_reduction_permille: 400 },
         { kind: "inspection-concealment", conceal_permille: 800 },
       ],
     },

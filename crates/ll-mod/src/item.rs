@@ -59,7 +59,7 @@ use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
 use ll_sim::combat::Penetration;
 use ll_sim::item::{ItemCatalog, ItemRule, SlotMask, StatBonus, WearChannels};
-use ll_sim::rule_modifier::RuleModifier;
+use ll_sim::rule_modifier::TypedRuleModifier;
 use ll_sim::skill::SkillEffect;
 
 /// 单条物品声明：本体与 mod 注册物品时共用的同一个输入形状——
@@ -235,7 +235,7 @@ pub struct ItemDef {
     /// [`ll_sim::rule_modifier::equipment_rule_modifiers`]），需要时照
     /// `register-trait-sneak-attack` 相对 `register-trait-resistance`
     /// 的先例再加一个注册函数即可，不改本字段形状。
-    pub rule_modifiers: Vec<RuleModifier>,
+    pub rule_modifiers: Vec<TypedRuleModifier>,
     /// 这件物品携带的**标签**列表（耐久标签批次）——项目所有者裁定
     /// 「每个物品可以有个标签的列表，带有多个标签」的落点，空列表
     /// （默认值）表示这件物品没有任何标签。每一条都是
@@ -349,7 +349,7 @@ pub struct ItemAttrs {
     /// `do_register_item` 不接受这个参数），真正的取值由后续
     /// `register-item-resistance` 调用 [`ItemTable::add_rule_modifier`]
     /// 追加写入，理由同 [`ItemDef::rule_modifiers`] 文档。
-    pub rule_modifiers: Vec<RuleModifier>,
+    pub rule_modifiers: Vec<TypedRuleModifier>,
     /// 标签列表——`register-item` 注册时恒为空列表（`do_register_item`
     /// 不接受这个参数），真正的取值由后续 `register-item-tag` 调用
     /// [`ItemTable::add_tag`] 追加写入，理由同 [`ItemDef::tags`] 文档。
@@ -455,7 +455,7 @@ pub struct ItemView<'a> {
     /// 显式声明的伤害类别。
     pub damage_category: Option<ContentIndex>,
     /// 规则修正列表——借用视图，不克隆，理由同 [`Self::stat_bonuses`]。
-    pub rule_modifiers: &'a [RuleModifier],
+    pub rule_modifiers: &'a [TypedRuleModifier],
     /// 标签列表——借用视图，不克隆，理由同 [`Self::stat_bonuses`]。
     pub tags: &'a [ContentIndex],
     /// 可教授的配方列表（配方发现批次），见
@@ -483,7 +483,7 @@ pub struct ItemTable {
     penetration: Vec<Penetration>,
     damage_formula: Vec<Option<ContentIndex>>,
     damage_category: Vec<Option<ContentIndex>>,
-    rule_modifiers: Vec<Vec<RuleModifier>>,
+    rule_modifiers: Vec<Vec<TypedRuleModifier>>,
     tags: Vec<Vec<ContentIndex>>,
     /// 由 `tags` 折算出的派生列（不是独立声明的内容）——见
     /// [`ItemTable::add_tag`] 文档。
@@ -719,8 +719,9 @@ impl ItemTable {
     ///
     /// **追加，不是覆盖**——与 [`Self::add_stat_bonus`] 同一个模式，见
     /// [`ItemDef::rule_modifiers`] 文档。本方法不校验
-    /// `RuleModifier::Resistance` 里的 `damage_category` 是否已经通过
-    /// `register-damage-category` 注册——与 [`Self::set_damage_category`]
+    /// `RuleModifier::Resistance` 里的 `damage_category`、也不校验
+    /// `TypedRuleModifier::modifier_type` 是否已经注册——与
+    /// [`Self::set_damage_category`]
     /// 同一条既有纪律，真正的存在性校验交给调用方
     /// （`items.json5`）在写入前
     /// 完成，与 [`crate::trait_def::TraitTable::add_rule_modifier`] 完全
@@ -728,7 +729,7 @@ impl ItemTable {
     pub fn add_rule_modifier(
         &mut self,
         item: ContentIndex,
-        modifier: RuleModifier,
+        modifier: TypedRuleModifier,
     ) -> Result<(), ItemError> {
         if !self.is_defined(item) {
             return Err(ItemError::NotDefined(item));

@@ -61,7 +61,7 @@ use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 pub use ll_sim::resource_pool::{CapacityFormula, CapacityValue, ResourcePoolGrant};
-pub use ll_sim::traits::RuleModifier;
+pub use ll_sim::traits::{RuleModifier, TypedRuleModifier};
 use ll_sim::traits::{TraitCatalog, TraitRule};
 use ll_world::entity::AttributeKind;
 
@@ -95,7 +95,7 @@ pub struct TraitDef {
     /// 范围」一节。
     pub stat_modifiers: Vec<(AttributeKind, i32)>,
     /// ③改变规则本身——见 [`RuleModifier`] 文档,本批次不接线。
-    pub rule_modifiers: Vec<RuleModifier>,
+    pub rule_modifiers: Vec<TypedRuleModifier>,
     /// ④授予资源池容量——见 [`ResourcePoolGrant`] 文档,本批次不接线。
     pub granted_resource_pools: Vec<ResourcePoolGrant>,
 }
@@ -111,7 +111,7 @@ pub struct TraitAttrs {
     /// 属性修正。
     pub stat_modifiers: Vec<(AttributeKind, i32)>,
     /// 规则修正。
-    pub rule_modifiers: Vec<RuleModifier>,
+    pub rule_modifiers: Vec<TypedRuleModifier>,
     /// 授予的资源池容量。
     pub granted_resource_pools: Vec<ResourcePoolGrant>,
 }
@@ -153,7 +153,7 @@ pub struct TraitView<'a> {
     /// 属性修正。
     pub stat_modifiers: &'a [(AttributeKind, i32)],
     /// 规则修正。
-    pub rule_modifiers: &'a [RuleModifier],
+    pub rule_modifiers: &'a [TypedRuleModifier],
     /// 授予的资源池容量。
     pub granted_resource_pools: &'a [ResourcePoolGrant],
 }
@@ -166,7 +166,7 @@ pub struct TraitTable {
     display_name_key: Vec<Option<NamespacedId>>,
     granted_skills: Vec<Vec<ContentIndex>>,
     stat_modifiers: Vec<Vec<(AttributeKind, i32)>>,
-    rule_modifiers: Vec<Vec<RuleModifier>>,
+    rule_modifiers: Vec<Vec<TypedRuleModifier>>,
     granted_resource_pools: Vec<Vec<ResourcePoolGrant>>,
     defined: Vec<bool>,
 }
@@ -307,7 +307,7 @@ impl TraitTable {
     pub fn add_rule_modifier(
         &mut self,
         trait_id: ContentIndex,
-        modifier: RuleModifier,
+        modifier: TypedRuleModifier,
     ) -> Result<(), TraitError> {
         if !self.is_defined(trait_id) {
             return Err(TraitError::NotDefined(trait_id));
@@ -533,9 +533,12 @@ mod tests {
         table
             .add_rule_modifier(
                 trait_id,
-                RuleModifier::Resistance {
-                    damage_category: fire,
-                    multiplier_permille: 500,
+                TypedRuleModifier {
+                    modifier_type: None,
+                    modifier: RuleModifier::Resistance {
+                        damage_category: fire,
+                        damage_reduction: 5,
+                    },
                 },
             )
             .expect("追加规则修正应当成功");
@@ -544,9 +547,12 @@ mod tests {
         let view = table.get(trait_id).unwrap();
         assert_eq!(
             view.rule_modifiers,
-            &[RuleModifier::Resistance {
-                damage_category: fire,
-                multiplier_permille: 500,
+            &[TypedRuleModifier {
+                modifier_type: None,
+                modifier: RuleModifier::Resistance {
+                    damage_category: fire,
+                    damage_reduction: 5,
+                },
             }]
         );
     }
@@ -571,18 +577,24 @@ mod tests {
         table
             .add_rule_modifier(
                 trait_id,
-                RuleModifier::Resistance {
-                    damage_category: fire,
-                    multiplier_permille: 500,
+                TypedRuleModifier {
+                    modifier_type: None,
+                    modifier: RuleModifier::Resistance {
+                        damage_category: fire,
+                        damage_reduction: 5,
+                    },
                 },
             )
             .expect("第一次追加应当成功");
         table
             .add_rule_modifier(
                 trait_id,
-                RuleModifier::Resistance {
-                    damage_category: cold,
-                    multiplier_permille: 0,
+                TypedRuleModifier {
+                    modifier_type: None,
+                    modifier: RuleModifier::Resistance {
+                        damage_category: cold,
+                        damage_reduction: 9,
+                    },
                 },
             )
             .expect("第二次追加应当成功");
@@ -601,9 +613,12 @@ mod tests {
         // Act
         let result = table.add_rule_modifier(
             ContentIndex::default(),
-            RuleModifier::Resistance {
-                damage_category: fire,
-                multiplier_permille: 500,
+            TypedRuleModifier {
+                modifier_type: None,
+                modifier: RuleModifier::Resistance {
+                    damage_category: fire,
+                    damage_reduction: 5,
+                },
             },
         );
 

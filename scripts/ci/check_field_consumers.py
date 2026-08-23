@@ -154,6 +154,13 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     # 两条耐久磨损通道），只是那条消费路径是间接的，见下面 TagDef.wear
     # 的豁免理由。
     ("crates/ll-mod/src/tag.rs", "struct", "TagDef"),
+    # 加值类型批次新增的第二十一张内容表（ContentTableKind::ModifierType）。
+    # 这张表**一个字段都没有**（加值类型是纯身份，理由见 ll_mod::modifier_type
+    # 模块文档），因此本条进 TARGET_TYPES 之后扫描到的字段数是 0——它不是
+    # 为了让某个字段被检查而加的，是为了让 check_content_hash_gate_cross_coverage
+    # 那条互校有一个正经的落点：哪天有人给 ModifierTypeDef 加了字段，字段门禁
+    # 立刻就能看见它，不需要有人记得同时更新这份清单。
+    ("crates/ll-mod/src/modifier_type.rs", "struct", "ModifierTypeDef"),
 ]
 
 # 决策层文件：真正驱动模拟结算、影响玩法输出的地方。见脚本头注释
@@ -449,6 +456,7 @@ CONTENT_HASH_KIND_TO_TARGET_TYPE: dict[str, str] = {
     "Recipe": "RecipeDef",
     "RecipeCategory": "RecipeCategoryDef",
     "Tag": "TagDef",
+    "ModifierType": "ModifierTypeDef",
 }
 
 CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE: dict[str, str] = {

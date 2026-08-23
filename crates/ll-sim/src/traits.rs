@@ -56,7 +56,7 @@ use ll_core::ident::ContentIndex;
 
 use crate::resource_pool::ResourcePoolGrant;
 
-/// 规则修正三件套（[`RuleModifier`]/[`RESISTANCE_MULTIPLIER_SCALE`]/
+/// 规则修正三件套（[`RuleModifier`]/[`TypedRuleModifier`]/
 /// [`SneakAttackRule`]）的定义现居 [`crate::rule_modifier`]——抗性多来源
 /// 聚合批次把它们连同两个消费者一起挪了过去，理由见该模块文档「为什么
 /// 单独立一个模块」一节：规则修正的来源从「只有天赋」扩展到「天赋 +
@@ -65,7 +65,7 @@ use crate::resource_pool::ResourcePoolGrant;
 /// `ll_sim::traits::RuleModifier`）与既有测试的引用路径不必跟着改——与
 /// `ll_mod::trait_def` 当初 `pub use ll_sim::resource_pool` 的类型、
 /// `ll_sim::item` `pub use` `ll_world::item` 的类型是同一条既有先例。
-pub use crate::rule_modifier::{RESISTANCE_MULTIPLIER_SCALE, RuleModifier, SneakAttackRule};
+pub use crate::rule_modifier::{RuleModifier, SneakAttackRule, TypedRuleModifier};
 
 /// 一条"某个所有者在什么等级授予某个天赋"的引用——种族/职业/副职/
 /// 装备/buff 的"这个所有者授予哪些天赋"字段统一用这个类型的列表，
@@ -99,10 +99,12 @@ pub struct TraitRule {
     /// `crate::resource_pool::effective_scalar_capacity` 聚合这一路
     /// 来源，见其文档。
     pub granted_resource_pools: Vec<ResourcePoolGrant>,
-    /// 这个天赋声明的规则修正——`trait-system.md` 三节③，
-    /// [`crate::rule_modifier::resistance_multiplier_permille`] 聚合这一路来源查抗性,见其
-    /// 文档。
-    pub rule_modifiers: Vec<RuleModifier>,
+    /// 这个天赋声明的规则修正，**各自带着自己的加值类型**——
+    /// `trait-system.md` 三节③，
+    /// [`crate::rule_modifier::resistance_damage_reduction`] 聚合这一路
+    /// 来源查抗性，见其文档。类型的默认值（未声明 = 共享的未分类桶）
+    /// 见 [`TypedRuleModifier::modifier_type`]。
+    pub rule_modifiers: Vec<TypedRuleModifier>,
 }
 
 /// `resolve_use_skill` 依赖的最小「天赋定义来源」接口——把结算算法

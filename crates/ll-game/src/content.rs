@@ -61,6 +61,7 @@ use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::{LoadReport, LoadStatus};
 use ll_mod::manifest::{ModManifest, parse_manifest};
+use ll_mod::modifier_type::ModifierTypeTable;
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::{BaseQuestIds, QuestError, QuestTable, RegisteredQuests, resolve_base_quests};
 use ll_mod::race::{BaseRaceIds, RaceTable, resolve_base_races};
@@ -182,6 +183,9 @@ pub struct LoadedContent {
     /// `wear_channels` 派生列在注册期就是查它折算出来的，见
     /// `ll_mod::tag` 模块文档。
     pub tag_table: TagTable,
+    /// 加值类型表（加值类型批次）——规则修正合并时「同一类型取最强、
+    /// 不同类型相加」里的那个类型，见 `ll_mod::modifier_type` 模块文档。
+    pub modifier_type_table: ModifierTypeTable,
     /// 本体六种天气的索引缓存（天气系统批次新增）。
     pub weather_ids: BaseWeatherIds,
     /// 天气表——`ll_world::weather::WeatherTable`。天气本身是纯派生值
@@ -540,6 +544,7 @@ pub fn load_content(
     let mut recipe_table = RecipeTable::new();
     let mut recipe_category_table = RecipeCategoryTable::new();
     let mut tag_table = TagTable::new();
+    let mut modifier_type_table = ModifierTypeTable::new();
 
     let mut report = load_all(
         mods_root,
@@ -564,6 +569,7 @@ pub fn load_content(
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            modifier_type: &mut modifier_type_table,
             tag: &mut tag_table,
         },
     );
@@ -630,6 +636,7 @@ pub fn load_content(
         recipe: &recipe_table,
         recipe_category: &recipe_category_table,
         tag: &tag_table,
+        modifier_type: &modifier_type_table,
     };
 
     // 装载后校验 pass（`ll_mod::content_audit`）：契约解析只看"Rust 点名
@@ -726,6 +733,7 @@ pub fn load_content(
         recipe_table,
         recipe_category_table,
         tag_table,
+        modifier_type_table,
         weather_ids,
         weather_table,
         manifests,
@@ -1112,6 +1120,7 @@ mod tests {
             recipe: &loaded.recipe_table,
             recipe_category: &loaded.recipe_category_table,
             tag: &loaded.tag_table,
+            modifier_type: &loaded.modifier_type_table,
         };
 
         // Act

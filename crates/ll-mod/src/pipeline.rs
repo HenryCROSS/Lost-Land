@@ -67,6 +67,7 @@ use crate::formula::FormulaTable;
 use crate::item::ItemTable;
 use crate::load_report::{LoadError, LoadReport, LoadStage, LoadStatus, SourceLocation};
 use crate::manifest::{ModError, ModManifest, mod_self_id, parse_manifest};
+use crate::modifier_type::ModifierTypeTable;
 use crate::quest::QuestTable;
 use crate::race::RaceTable;
 use crate::recipe::RecipeTable;
@@ -166,6 +167,9 @@ pub struct GameplayTables<'a> {
     /// 本体六种天气），mod 是往里追加，`WeatherTable::define` 的重复
     /// 定义校验保证 mod 覆盖不掉本体已声明的那几条。
     pub weather: &'a mut WeatherTable,
+    /// 加值类型表（`modifier_types.json5`），见 `crate::modifier_type`
+    /// 模块文档（加值类型批次）。
+    pub modifier_type: &'a mut ModifierTypeTable,
 }
 
 /// 跑一次完整的 mod 装载会话：发现 `mods_root` 下的候选、解析、拓扑
@@ -336,6 +340,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut recipe = RecipeTable::new();
     let mut recipe_category = RecipeCategoryTable::new();
     let mut weather = WeatherTable::new();
+    let mut modifier_type = ModifierTypeTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -357,6 +362,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         weather: &mut weather,
         recipe: &mut recipe,
         recipe_category: &mut recipe_category,
+        modifier_type: &mut modifier_type,
     };
 
     match load_mod_content(&root, &manifest, &mut registry, &mut tables) {
@@ -819,6 +825,7 @@ mod tests {
                 recipe: &owned.recipe,
                 recipe_category: &owned.recipe_category,
                 tag: &owned.tag,
+                modifier_type: &owned.modifier_type,
             },
         );
 

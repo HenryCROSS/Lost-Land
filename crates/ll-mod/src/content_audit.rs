@@ -430,6 +430,10 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
             kind: ContentTableKind::WeaponCategory,
             reason: "本体武器类别尚未迁进 mods/lostland/，理由同 Trait 一条。",
         },
+        DeferredTable {
+            kind: ContentTableKind::ModifierType,
+            reason: "本体内容一条规则修正都没有声明，因此也没有任何加值类型可声明——                     lostland 命名空间下零条天赋（Trait 那一条），而物品这一路的                     ItemAttrs::rule_modifiers 有一条独立豁免（本体唯一的伤害类别                     lostland:physical 同时就是全局默认，对它声明抗性等价于 armor）。                     加值类型是**给规则修正分类**的，没有修正就没有类可分；此时往                     modifier_types.json5 里塞一份本体自己用不上的名册，正是本模块                     反复拒绝过的『为了让检查变绿硬塞一条内容』。表本身不是死的：                     mods/example_mod/modifier_types.json5 注册了 innate/enhancement 两条，                     acid_hide 天赋与 acid_ward_amulet 护符分属两类、减伤点数因此相加，                     crates/ll-mod/tests/example_mod_resistance.rs 有端到端证据。                     本体真的需要它的前置是**先有本体规则修正**（等第二个本体伤害类别                     落地，见 ItemAttrs::damage_category 那条豁免的末段）。",
+        },
     ],
     exemptions: &[
         FieldExemption {
@@ -793,6 +797,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
         ContentTableKind::WeaponCategory => "武器类别表",
         ContentTableKind::DamageCategory => "伤害类别表",
         ContentTableKind::Tag => "标签表",
+        ContentTableKind::ModifierType => "加值类型表",
         ContentTableKind::Weather => "天气表",
         ContentTableKind::Recipe => "配方表",
         ContentTableKind::RecipeCategory => "配方类别表",
@@ -804,7 +809,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
 /// 与 [`roster_slot`] 配套：新增一个变体时，那个不带通配分支的 `match`
 /// 会编译失败，逼人回到这里补上数组元素（数组长度也会对不上），见模块
 /// 文档「表花名册」一节。
-pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 20] = [
+pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 21] = [
     ContentTableKind::Opaque,
     ContentTableKind::Terrain,
     ContentTableKind::Class,
@@ -825,6 +830,7 @@ pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 20] = [
     ContentTableKind::Recipe,
     ContentTableKind::RecipeCategory,
     ContentTableKind::Tag,
+    ContentTableKind::ModifierType,
 ];
 
 /// 给 [`ALL_CONTENT_TABLE_KINDS`] 的完备性做编译期强制：不带通配分支
@@ -855,6 +861,7 @@ fn roster_slot(kind: ContentTableKind) -> usize {
         ContentTableKind::Recipe => 17,
         ContentTableKind::RecipeCategory => 18,
         ContentTableKind::Tag => 19,
+        ContentTableKind::ModifierType => 20,
     }
 }
 
@@ -1255,6 +1262,14 @@ fn inspect_entry(auditor: &mut Auditor<'_>, index: ContentIndex) {
         ContentTableKind::WeaponCategory => inspect_weapon_category(auditor, index),
         ContentTableKind::DamageCategory => inspect_damage_category(auditor, index),
         ContentTableKind::Tag => inspect_tag(auditor, index),
+        ContentTableKind::ModifierType => {
+            // 加值类型没有任何字段可观察，也没有任何跨表引用——
+            // `ModifierTypeDef` 是空结构体，理由见 `crate::modifier_type`
+            // 模块文档「为什么一个字段都没有」一节。这个空分支与
+            // `Opaque` 那个**不是**同一回事：这条内容确实落在一张表里，
+            // 花名册因此仍然会统计「这张表在本命名空间下非空」
+            // （CoveredButEmpty 那一头），只是没有字段要覆盖。
+        }
         ContentTableKind::Weather => inspect_weather(auditor, index),
         ContentTableKind::Recipe => inspect_recipe(auditor, index),
         ContentTableKind::RecipeCategory => inspect_recipe_category(auditor, index),
@@ -1554,10 +1569,24 @@ fn inspect_trait(auditor: &mut Auditor<'_>, index: ContentIndex) {
     );
     auditor.field("TraitAttrs::stat_modifiers", !stat_modifiers_empty);
     auditor.field("TraitAttrs::rule_modifiers", !rule_modifiers.is_empty());
-    for modifier in &rule_modifiers {
+    for typed in &rule_modifiers {
+        // 加值类型批次新增：每条修正各自带一个可选的加值类型，两件事
+        // 一起做——记一条字段覆盖（「内容里有没有人真的给修正分类」）,
+        // 并对声明了的那些校验它真的指向加值类型表里的一条。
+        auditor.field(
+            "TraitAttrs::rule_modifiers::modifier_type",
+            typed.modifier_type.is_some(),
+        );
+        if let Some(modifier_type) = typed.modifier_type {
+            auditor.reference(
+                "TraitAttrs::rule_modifiers::modifier_type",
+                modifier_type,
+                ReferenceExpectation::Table(ContentTableKind::ModifierType),
+            );
+        }
         if let RuleModifier::Resistance {
             damage_category, ..
-        } = modifier
+        } = &typed.modifier
         {
             auditor.reference(
                 "TraitAttrs::rule_modifiers::Resistance::damage_category",
@@ -1648,10 +1677,24 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
     // 合并后仍要把这两个字符串当参数传进去，省不下任何东西，反而多一层
     // 间接（ADR 0021：抽象的理由是算法可共享，不是形状相似）。
     auditor.field("ItemAttrs::rule_modifiers", !rule_modifiers.is_empty());
-    for modifier in &rule_modifiers {
+    for typed in &rule_modifiers {
+        // 加值类型批次新增：每条修正各自带一个可选的加值类型，两件事
+        // 一起做——记一条字段覆盖（「内容里有没有人真的给修正分类」）,
+        // 并对声明了的那些校验它真的指向加值类型表里的一条。
+        auditor.field(
+            "ItemAttrs::rule_modifiers::modifier_type",
+            typed.modifier_type.is_some(),
+        );
+        if let Some(modifier_type) = typed.modifier_type {
+            auditor.reference(
+                "ItemAttrs::rule_modifiers::modifier_type",
+                modifier_type,
+                ReferenceExpectation::Table(ContentTableKind::ModifierType),
+            );
+        }
         if let RuleModifier::Resistance {
             damage_category, ..
-        } = modifier
+        } = &typed.modifier
         {
             auditor.reference(
                 "ItemAttrs::rule_modifiers::Resistance::damage_category",
@@ -1874,6 +1917,7 @@ mod tests {
     use crate::damage_category::DamageCategoryTable;
     use crate::formula::FormulaTable;
     use crate::item::{ItemAttrs, ItemTable};
+    use crate::modifier_type::ModifierTypeTable;
     use crate::quest::{QuestAttrs, QuestTable};
     use crate::race::{RaceAttrs, RaceTable};
     use crate::recipe::RecipeTable;
@@ -1924,12 +1968,14 @@ mod tests {
         recipe: RecipeTable,
         recipe_category: RecipeCategoryTable,
         tag: TagTable,
+        modifier_type: ModifierTypeTable,
     }
 
     impl Session {
         fn new() -> Self {
             Session {
                 tag: TagTable::new(),
+                modifier_type: ModifierTypeTable::new(),
                 registry: Registry::new(),
                 terrain: TerrainTable::new(),
                 class: ClassTable::new(),
@@ -1973,6 +2019,7 @@ mod tests {
                 recipe: &self.recipe,
                 recipe_category: &self.recipe_category,
                 tag: &self.tag,
+                modifier_type: &self.modifier_type,
             }
         }
 

@@ -1,0 +1,22 @@
+// 示例 mod 的加值类型——规则修正合并时「同一类型取最强、不同类型
+// 相加」里的那个类型（D&D 3.5e / 开拓者的加值类型模型）。
+//
+// 本体（mods/lostland/）刻意一条都不注册：本体内容至今没有声明过任何
+// 规则修正，没有修正就没有类可分，见 ll_mod::content_audit 里
+// ContentTableKind::ModifierType 那条 deferred 的理由。
+{
+  modifier_types: [
+    {
+      // 天生：种族/体质带来的，不来自任何外物。acid_hide 走这一类。
+      id: "examplemod:innate",
+    },
+    {
+      // 附魔：装备上的魔法强化。acid_ward_amulet 走这一类。
+      //
+      // 与 innate 分成两类不是为了凑数：一只天生耐酸的软泥怪再戴一枚
+      // 抗酸护符，两者理应叠加（体质与附魔是两回事）；而两枚同样的
+      // 护符不该叠加。这正是加值类型模型要表达的区别。
+      id: "examplemod:enhancement",
+    },
+  ],
+}

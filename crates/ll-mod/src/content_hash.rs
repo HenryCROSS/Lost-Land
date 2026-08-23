@@ -160,6 +160,7 @@ use crate::clip::ClipTable;
 use crate::damage_category::DamageCategoryTable;
 use crate::formula::FormulaTable;
 use crate::item::ItemTable;
+use crate::modifier_type::ModifierTypeTable;
 use crate::quest::{QuestCondition, QuestTable};
 use crate::race::RaceTable;
 use crate::recipe::RecipeTable;
@@ -169,7 +170,7 @@ use crate::resource_pool::ResourcePoolTable;
 use crate::skill::SkillTable;
 use crate::subclass::SubclassTable;
 use crate::tag::TagTable;
-use crate::trait_def::{RuleModifier, TraitTable};
+use crate::trait_def::{RuleModifier, TraitTable, TypedRuleModifier};
 use crate::weapon_category::WeaponCategoryTable;
 use crate::xp_curve::XpCurveTable;
 use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
@@ -431,7 +432,47 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// `要求发现的配方与不要求发现的配方摘要不同`，以及版本 7 那次事故之后
 /// 立下的那条纪律——**提交信息声称改了，不等于代码里真的改了**，本行的
 /// 字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 15;
+///
+/// 版本 16（加值类型批次）：**新增一张内容表 + 一张老表新增哈希输入 +
+/// 两个既有变体的载荷改了含义**，三条各自都足以逼着版本号动。
+///
+/// 1. **新增第二十一张内容表** [`ContentTableKind::ModifierType`]
+///    （判别值 20）——[`ContentValueTables`] 多了 `modifier_type` 字段,
+///    [`entry_value_digest`] 多了一条分支。这是版本 4/5/8/11「新增内容
+///    表」那一类：`apply_value_hashes` 从此会为加值类型这一类 id 折进一份
+///    此前根本不存在的摘要（该分支本身不写任何字段——`ModifierTypeDef`
+///    是空结构体——但函数顶部那个 `kind as u64` 判别值与 `Opaque` 不同,
+///    足以把「已注册的加值类型」与「只被 intern 过的裸 id」区分开）。
+///    本批次因此是 `scripts/ci/check_field_consumers.py` 的
+///    `check_content_hash_gate_cross_coverage` **真的有事可做**的一次:
+///    `CONTENT_HASH_KIND_TO_TARGET_TYPE` 与 `TARGET_TYPES` 都补了
+///    `ModifierTypeDef` 一条，否则 CI 立刻变红。
+/// 2. **老表新增哈希输入**：`TraitDef.rule_modifiers` 与
+///    `ItemDef.rule_modifiers` 的元素类型从 `RuleModifier` 变成
+///    [`TypedRuleModifier`]（修正本身 + 它属于哪个加值类型），
+///    [`write_trait_fields`]/[`write_item_fields`] 因此改走
+///    [`write_typed_rule_modifier`]——**每一条规则修正前面都多了一个
+///    加值类型的缺席/存在判别字节**。这是版本 4/5（三）/7/9/10/12
+///    「老表新增字段」那一类：只有真的声明过规则修正的条目摘要会变
+///    （`rule_modifiers` 为空的条目一个字节都没多，长度前缀早就有了）,
+///    因此本次**只有 `examplemod` 命名空间的摘要变了，`lostland` 逐位
+///    不变**——本体内容至今一条规则修正都没有声明。
+/// 3. **两个既有变体的载荷改了含义**：`RuleModifier::Resistance` 的
+///    `multiplier_permille`（千分比乘数）换成了 `damage_reduction`
+///    （减伤点数），`RuleModifier::InspectionSuspicion` 的
+///    `multiplier_permille` 换成了 `suspicion_reduction_permille`。
+///    判别值 `0`/`5` 没变、写入的字节宽度也没变，但**同一段字节现在表示
+///    完全不同的规则**（500 从"半伤"变成"减 500 点"）——这正是本常量
+///    存在的理由：量尺换了，旧存档的比对必须走
+///    `ContentHashAlgorithmUpgraded` 而不是 `ModContentMismatch`。
+///
+/// 守门方式同版本 13/14/15：本段文字 + 本模块单元测试
+/// `声明了加值类型的规则修正与不声明的摘要不同`，加上 `content_audit`
+/// 里同批次新增的 `TraitAttrs::rule_modifiers::modifier_type` /
+/// `ItemAttrs::rule_modifiers::modifier_type` 两条花名册观察，以及版本 7
+/// 那次事故之后立下的那条纪律——**提交信息声称改了，不等于代码里真的
+/// 改了**，本行的字面值就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 16;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -494,6 +535,10 @@ pub enum ContentTableKind {
     /// 标签表（耐久标签批次新增）——`register-tag` 的写入目标，见
     /// [`crate::tag`] 模块文档。
     Tag = 19,
+    /// 加值类型表（加值类型批次新增）——规则修正合并时「同一类型取
+    /// 最强、不同类型相加」里的**类型**，见 [`crate::modifier_type`]
+    /// 模块文档。
+    ModifierType = 20,
 }
 
 /// 全部内容表的只读引用集合——供 [`apply_value_hashes`]/[`classify_index`]
@@ -545,6 +590,8 @@ pub struct ContentValueTables<'a> {
     pub recipe_category: &'a RecipeCategoryTable,
     /// 标签表（耐久标签批次新增）。
     pub tag: &'a TagTable,
+    /// 加值类型表（加值类型批次新增）。
+    pub modifier_type: &'a ModifierTypeTable,
 }
 
 /// 判定一个 `ContentIndex` 归属哪张内容表——[`entry_value_digest`] 用它
@@ -597,6 +644,7 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         recipe,
         recipe_category,
         tag,
+        modifier_type,
     } = *tables;
 
     let terrain_kind = TerrainKind::from_index(index);
@@ -638,6 +686,8 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         ContentTableKind::RecipeCategory
     } else if tag.is_defined(index) {
         ContentTableKind::Tag
+    } else if modifier_type.is_defined(index) {
+        ContentTableKind::ModifierType
     } else {
         ContentTableKind::Opaque
     }
@@ -732,6 +782,16 @@ fn entry_value_digest(
         }
         ContentTableKind::Tag => {
             write_tag_fields(&mut hasher, tables.tag, index);
+        }
+        ContentTableKind::ModifierType => {
+            // 加值类型没有任何字段（`ModifierTypeDef` 是空结构体，理由
+            // 见 `crate::modifier_type` 模块文档「为什么一个字段都没
+            // 有」一节），因此这里与 `Opaque` 一样只有 id 本身进哈希。
+            // **但它与 `Opaque` 仍然不同**：函数顶部已经写过的那个
+            // `kind as u64` 判别值不一样，于是「lostland:enhancement 是
+            // 一条已注册的加值类型」与「它只是一个被 intern 过、谁也
+            // 没定义的裸 id」折出的摘要不同——注册表被整个删掉这件事
+            // 因此仍然可检测。
         }
         ContentTableKind::Opaque => {
             // 没有字段可哈希，只哈希 id 本身（已经在函数顶部写过）——
@@ -1143,14 +1203,30 @@ fn write_trait_fields(
         hasher.write_i64(i64::from(*amount));
     }
     hasher.write_u64(view.rule_modifiers.len() as u64);
-    for modifier in view.rule_modifiers {
-        write_rule_modifier(hasher, modifier, registry);
+    for typed in view.rule_modifiers {
+        write_typed_rule_modifier(hasher, typed, registry);
     }
     hasher.write_u64(view.granted_resource_pools.len() as u64);
     for grant in view.granted_resource_pools {
         write_optional_resolved(hasher, Some(grant.pool), registry);
         write_capacity_formula(hasher, &grant.capacity);
     }
+}
+
+/// 混入一个 [`TypedRuleModifier`]——**先写加值类型，再写修正本身**
+/// （加值类型批次新增，见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档
+/// 「版本 16」一节）。
+///
+/// 类型走 [`write_optional_resolved`]（解析成 `NamespacedId` 字符串,
+/// 不混入 `ContentIndex` 数值本身——注册顺序不该进哈希），`None`
+/// 与「声明了某个类型」因此天然可区分：前者写的是缺席判别字节。
+fn write_typed_rule_modifier(
+    hasher: &mut StateHasher,
+    typed: &TypedRuleModifier,
+    registry: &Registry,
+) {
+    write_optional_resolved(hasher, typed.modifier_type, registry);
+    write_rule_modifier(hasher, &typed.modifier, registry);
 }
 
 /// 混入一个 [`RuleModifier`]，理由同 [`write_resource_cost`]。
@@ -1161,11 +1237,11 @@ fn write_rule_modifier(hasher: &mut StateHasher, modifier: &RuleModifier, regist
     match modifier {
         RuleModifier::Resistance {
             damage_category,
-            multiplier_permille,
+            damage_reduction,
         } => {
             hasher.write_u64(0);
             write_optional_resolved(hasher, Some(*damage_category), registry);
-            hasher.write_i64(i64::from(*multiplier_permille));
+            hasher.write_i64(i64::from(*damage_reduction));
         }
         RuleModifier::RerollOnce { value } => {
             hasher.write_u64(1);
@@ -1191,10 +1267,10 @@ fn write_rule_modifier(hasher: &mut StateHasher, modifier: &RuleModifier, regist
         // 不打乱任何已经写死的判别值，同本模块「判别值接着既有档往后
         // 编号」的一贯纪律。
         RuleModifier::InspectionSuspicion {
-            multiplier_permille,
+            suspicion_reduction_permille,
         } => {
             hasher.write_u64(5);
-            hasher.write_i64(i64::from(*multiplier_permille));
+            hasher.write_i64(i64::from(*suspicion_reduction_permille));
         }
         RuleModifier::InspectionConcealment { conceal_permille } => {
             hasher.write_u64(6);
@@ -1358,8 +1434,8 @@ fn write_item_fields(
     // 同构（同一个 `write_rule_modifier`、同一套变体判别值）：装备与
     // 天赋声明的是同一种载荷，没有理由为它们各写一套编码。
     hasher.write_u64(view.rule_modifiers.len() as u64);
-    for modifier in view.rule_modifiers {
-        write_rule_modifier(hasher, modifier, registry);
+    for typed in view.rule_modifiers {
+        write_typed_rule_modifier(hasher, typed, registry);
     }
     // 配方发现批次新增的 `ItemDef.taught_recipes`——与上面 `tags` 那条
     // 逐字同构（先条数、再逐条把 `ContentIndex` 解析回 `NamespacedId`
@@ -1858,6 +1934,7 @@ mod tests {
                 recipe: &recipe_a,
                 recipe_category: &recipe_category_a,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
         apply_value_hashes(
@@ -1882,6 +1959,7 @@ mod tests {
                 recipe: &recipe_b,
                 recipe_category: &recipe_category_b,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
 
@@ -1985,6 +2063,7 @@ mod tests {
                 recipe: &recipe_a,
                 recipe_category: &recipe_category_a,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
         apply_value_hashes(
@@ -2009,6 +2088,7 @@ mod tests {
                 recipe: &recipe_b,
                 recipe_category: &recipe_category_b,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
 
@@ -2107,6 +2187,7 @@ mod tests {
                 recipe: &recipe_a,
                 recipe_category: &recipe_category_a,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
         apply_value_hashes(
@@ -2131,6 +2212,7 @@ mod tests {
                 recipe: &recipe_b,
                 recipe_category: &recipe_category_b,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
 
@@ -2281,6 +2363,7 @@ mod tests {
                 recipe: &recipe_a,
                 recipe_category: &recipe_category_a,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
         apply_value_hashes(
@@ -2305,6 +2388,7 @@ mod tests {
                 recipe: &recipe_b,
                 recipe_category: &recipe_category_b,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
 
@@ -2395,6 +2479,7 @@ mod tests {
                 recipe: &empty_forward.15,
                 recipe_category: &empty_forward.16,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
         apply_value_hashes(
@@ -2419,6 +2504,7 @@ mod tests {
                 recipe: &empty_reversed.15,
                 recipe_category: &empty_reversed.16,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
 
@@ -2521,6 +2607,7 @@ mod tests {
                 recipe: &recipe_f,
                 recipe_category: &recipe_category_f,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
         apply_value_hashes(
@@ -2545,6 +2632,7 @@ mod tests {
                 recipe: &recipe_r,
                 recipe_category: &recipe_category_r,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
 
@@ -2650,6 +2738,7 @@ mod tests {
                 recipe: &recipe_before,
                 recipe_category: &recipe_category_before,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
         apply_value_hashes(
@@ -2674,6 +2763,7 @@ mod tests {
                 recipe: &recipe_after,
                 recipe_category: &recipe_category_after,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
 
@@ -2736,6 +2826,7 @@ mod tests {
                 recipe: &recipe,
                 recipe_category: &recipe_category,
                 tag: &TagTable::new(),
+                modifier_type: &ModifierTypeTable::new(),
             },
         );
 
@@ -2765,7 +2856,7 @@ mod tests {
 
         // Act
         let suspicion = digest(&RuleModifier::InspectionSuspicion {
-            multiplier_permille: 500,
+            suspicion_reduction_permille: 500,
         });
         let concealment = digest(&RuleModifier::InspectionConcealment {
             conceal_permille: 500,
@@ -2800,10 +2891,10 @@ mod tests {
         // Act & Assert
         assert_ne!(
             digest(&RuleModifier::InspectionSuspicion {
-                multiplier_permille: 0,
+                suspicion_reduction_permille: 0,
             }),
             digest(&RuleModifier::InspectionSuspicion {
-                multiplier_permille: 1000,
+                suspicion_reduction_permille: 1000,
             })
         );
         assert_ne!(
@@ -2814,6 +2905,50 @@ mod tests {
                 conceal_permille: 1000,
             })
         );
+    }
+
+    /// 加值类型批次新增的 `TypedRuleModifier::modifier_type` 真的进了
+    /// 摘要——见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 16」一节
+    /// 第 2 条。
+    ///
+    /// 这条守的是一个具体的失效模式：把一条抗性悄悄从「附魔」改成
+    /// 「天生」，结算结果会变（它从此不与别的附魔加值竞争、改为与天生
+    /// 加值竞争，跨类型还会相加），而存档若察觉不到内容变了，会报
+    /// 「内容没变」。
+    #[test]
+    fn 声明了加值类型的规则修正与不声明的摘要不同() {
+        // Arrange：同一条抗性，三种加值类型声明（不声明 / 甲 / 乙）。
+        let mut registry = Registry::new();
+        let acid = registry.intern(id("yourmod:acid"));
+        let enhancement = registry.intern(id("yourmod:enhancement"));
+        let alchemical = registry.intern(id("yourmod:alchemical"));
+        let modifier = RuleModifier::Resistance {
+            damage_category: acid,
+            damage_reduction: 3,
+        };
+        let digest = |modifier_type: Option<ContentIndex>| -> u64 {
+            let mut hasher = StateHasher::new();
+            write_typed_rule_modifier(
+                &mut hasher,
+                &TypedRuleModifier {
+                    modifier_type,
+                    modifier: modifier.clone(),
+                },
+                &registry,
+            );
+            hasher.finish()
+        };
+
+        // Act
+        let untyped = digest(None);
+        let as_enhancement = digest(Some(enhancement));
+        let as_alchemical = digest(Some(alchemical));
+
+        // Assert：三者两两不同——「没声明」与「声明了某个类型」要分开
+        //（缺席判别字节本身就是一段哈希输入），声明成哪个类型也要分开。
+        assert_ne!(untyped, as_enhancement);
+        assert_ne!(untyped, as_alchemical);
+        assert_ne!(as_enhancement, as_alchemical);
     }
 
     /// 配方发现批次新增的 `ItemDef.taught_recipes` 真的进了摘要——
@@ -2972,6 +3107,7 @@ mod tests {
             recipe: &recipe,
             recipe_category: &recipe_category,
             tag: &TagTable::new(),
+            modifier_type: &ModifierTypeTable::new(),
         };
 
         // Act

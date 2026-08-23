@@ -102,7 +102,11 @@
     },
     {
       // 抗酸护符：装备一路的抗性来源（另一路是天赋，见 traits.json5
-      // 的 acid_hide）。500‰ = 半伤。
+      // 的 acid_hide）。减伤 3 点，加值类型「附魔」。
+      //
+      // 比 acid_hide 的 4 点低一点：一件戴上就能换下来的护符不该比
+      // 一整层天生的皮膜更耐酸。两者类型不同，因此戴着护符的软泥怪
+      // 两条都吃到、点数相加（4 + 3 = 7）；同一类型的两条则只取最强。
       id: "examplemod:acid_ward_amulet",
       display_name_key: "examplemod:acid_ward_amulet_display_name",
       stack_limit: 1,
@@ -110,7 +114,13 @@
       base_price: 15000,
       max_durability: 60,
       equip_slots: ["neck"],
-      resistances: [{ damage_category: "examplemod:acid", multiplier_permille: 500 }],
+      resistances: [
+        {
+          damage_category: "examplemod:acid",
+          damage_reduction: 3,
+          modifier_type: "examplemod:enhancement",
+        },
+      ],
       tags: ["lostland:armor"],
     },
     {

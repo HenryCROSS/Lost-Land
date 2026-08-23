@@ -62,7 +62,7 @@ use ll_sim::ai_query::{
 use ll_sim::behavior::BehaviorTreeSource;
 use ll_sim::intent::Intent;
 use ll_sim::rule_modifier::{
-    INSPECTION_SUSPICION_SCALE, agent_rule_modifiers, inspection_suspicion_permille,
+    agent_rule_modifiers, clamp_probability_permille, inspection_suspicion_reduction_permille,
 };
 use ll_world::entity::EntityId;
 use ll_world::state::WorldState;
@@ -86,10 +86,6 @@ pub const GUARD_INSPECT_CHANCE_PERMILLE: i64 = 500;
 /// （[`nearest_visible_actor`] 一个字都没改），落下去的是「要不要把
 /// 这个人当回事」这一次判定的成功率，见 `ll_sim::ai_query::is_stealthed`。
 pub const GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED: i64 = 50;
-
-/// 「与常人无异」的盘查意愿千分比——查不到目标时的降级值，与
-/// [`ll_sim::rule_modifier::INSPECTION_SUSPICION_SCALE`] 同一个数。
-const SUSPICION_SCALE: i64 = INSPECTION_SUSPICION_SCALE as i64;
 
 /// 哥布林那棵树优先施放的技能 id。
 pub const GOBLIN_SKILL_ID: &str = "examplemod:frostbolt";
@@ -148,20 +144,20 @@ impl BehaviorRuleCatalogs {
         }
     }
 
-    /// 一个实体此刻的「盘查意愿」千分比——
-    /// [`inspection_suspicion_permille`] 在这份快照上的应用。查不到
-    /// 实体时返回 [`INSPECTION_SUSPICION_SCALE`]（与常人无异），与本
-    /// 模块其余查询同一条降级纪律。
-    pub fn suspicion_permille_of(&self, world: &WorldState, target: EntityId) -> i32 {
+    /// 一个实体此刻从盘查触发概率上**减掉多少**（千分比点数）——
+    /// [`inspection_suspicion_reduction_permille`] 在这份快照上的应用。
+    /// 查不到实体时返回 `0`（与常人无异，一点也不减），与本模块其余
+    /// 查询同一条降级纪律。
+    pub fn suspicion_reduction_permille_of(&self, world: &WorldState, target: EntityId) -> i32 {
         match world.actors.get(target) {
-            Some(agent) => inspection_suspicion_permille(&agent_rule_modifiers(
+            Some(agent) => inspection_suspicion_reduction_permille(&agent_rule_modifiers(
                 agent,
                 &self.race,
                 &self.class,
                 &self.traits,
                 &self.items,
             )),
-            None => INSPECTION_SUSPICION_SCALE,
+            None => 0,
         }
     }
 }
@@ -364,13 +360,22 @@ fn guard_try_approach(world: &WorldState, actor: EntityId) -> Option<Intent> {
     Some(approach.unwrap_or(Intent::Wait { actor }))
 }
 
-/// 这一次盘查的触发概率（千分比）：潜行与否选一个基础概率，再乘上
-/// 目标的「盘查意愿」千分比。
+/// 这一次盘查的触发概率（千分比）：潜行与否选一个基础概率，再**减掉**
+/// 目标的「盘查意愿」减点数，最后钳进两端各留一线的区间。
 ///
-/// 两者是**相乘**，不是二选一：它们回答的是不同的问题（这一刻我藏没
-/// 藏起来 vs 我这个人天生多不起眼），一个盗贼在潜行时理应两者都生效。
-/// 整数乘除、先乘后除，与本项目「百分比一律千分比、全程整数」的既有
-/// 纪律一致（ADR 0020 乙区）。
+/// 两者仍然不是二选一：它们回答的是不同的问题（这一刻我藏没藏起来 vs
+/// 我这个人天生多不起眼），一个盗贼在潜行时理应两者都生效。变的是
+/// 后者的形式——**从乘数改成减点数**（规则修正一律整数点数那次改型,
+/// 见 `ll_sim::rule_modifier::RuleModifier::InspectionSuspicion` 文档
+/// 「为什么是减点数而不是乘数」一节）。
+///
+/// 后果要如实记下：减点数对**低**基础概率更狠。潜行中基础只有
+/// `GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED`（50‰），任何一条像样的
+/// 减点数都会把它压到下界 1‰；乘数模型下同一条被动只会把它按比例缩小。
+/// 这是模型换代的真实后果，不是 bug——「两端各留一线」那条裁定保证的
+/// 是它触底之后仍然不是 0，见 [`clamp_probability_permille`]。
+///
+/// 全程整数（ADR 0020 乙区），这一版连整数除法都没有了。
 fn guard_inspect_chance(
     world: &WorldState,
     target: EntityId,
@@ -381,7 +386,11 @@ fn guard_inspect_chance(
     } else {
         GUARD_INSPECT_CHANCE_PERMILLE
     };
-    base * i64::from(catalogs.suspicion_permille_of(world, target)) / SUSPICION_SCALE
+    let reduction = i64::from(catalogs.suspicion_reduction_permille_of(world, target));
+    let reduced = base.saturating_sub(reduction);
+    i64::from(clamp_probability_permille(
+        reduced.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
+    ))
 }
 
 /// 这个实体的 `Agent.profession` 是否等于 `class`。

@@ -35,7 +35,9 @@ use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, SlotMask, WearCh
 use ll_sim::resolve::resolve_with_skills_traits_pools_and_items;
 use ll_sim::resource_pool::NoResourcePools;
 use ll_sim::skill::NoSkills;
-use ll_sim::traits::{RuleModifier, TraitCatalog, TraitGrant, TraitGrantSource, TraitRule};
+use ll_sim::traits::{
+    RuleModifier, TraitCatalog, TraitGrant, TraitGrantSource, TraitRule, TypedRuleModifier,
+};
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -213,8 +215,11 @@ fn inspect_once(
             TraitRule {
                 rule_modifiers: conceal_permille
                     .map(|permille| {
-                        vec![RuleModifier::InspectionConcealment {
-                            conceal_permille: permille,
+                        vec![TypedRuleModifier {
+                            modifier_type: None,
+                            modifier: RuleModifier::InspectionConcealment {
+                                conceal_permille: permille,
+                            },
                         }]
                     })
                     .unwrap_or_default(),

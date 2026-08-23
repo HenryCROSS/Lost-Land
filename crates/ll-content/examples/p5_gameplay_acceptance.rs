@@ -68,6 +68,7 @@ use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::formula::FormulaTable;
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadStatus;
+use ll_mod::modifier_type::ModifierTypeTable;
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::{BaseQuestIds, QuestTable, RegisteredQuests, resolve_base_quests};
 use ll_mod::quest_overview::build_quest_log_view;
@@ -172,6 +173,7 @@ fn build_content() -> Content {
     let mut recipe_category_table = RecipeCategoryTable::new();
     let mut tag_table = TagTable::new();
 
+    let mut modifier_type_table = ModifierTypeTable::new();
     let report = load_all(
         std::path::Path::new(REAL_MODS_ROOT),
         &mut registry,
@@ -195,6 +197,7 @@ fn build_content() -> Content {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            modifier_type: &mut modifier_type_table,
             tag: &mut tag_table,
         },
     );

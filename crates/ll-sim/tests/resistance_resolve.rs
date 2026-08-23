@@ -30,7 +30,9 @@ use ll_sim::item::{
 };
 use ll_sim::resolve::resolve_with_skills_traits_pools_items_formulas_and_damage_categories;
 use ll_sim::skill::NoSkills;
-use ll_sim::traits::{RuleModifier, TraitCatalog, TraitGrant, TraitGrantSource, TraitRule};
+use ll_sim::traits::{
+    RuleModifier, TraitCatalog, TraitGrant, TraitGrantSource, TraitRule, TypedRuleModifier,
+};
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -226,8 +228,17 @@ fn attack_and_apply(
 #[test]
 fn 有火抗的角色受到火伤时伤害真的更低() {
     // Arrange：攻击力恒 1000，无防御无穿透——不抗性时的裸伤害就是
-    // `damage_after_defense(1000, 0, NONE)`；防御方声明了对火（500‰半
-    // 伤）的抗性，武器造成的正是火伤。
+    // `damage_after_defense(1000, 0, NONE)` = 1000；防御方声明了对火的
+    // **400 点减伤**，武器造成的正是火伤。
+    //
+    // 期望值从 `裸伤 × 500 / 1000` 改成 `裸伤 − 400`，是抗性从千分比
+    // 乘数改成减伤点数（flat DR）这次模型换代的直接后果，不是把断言
+    // 往结果上凑：1000 − 400 = 600。400 这个点数是照着「在这条测试的
+    // 伤害量级（1000）上仍然是一次显著、但远不到免疫的减免」挑的——
+    // 太小（个位数）会让 `actual_damage < unmitigated` 这条严格不等式
+    // 退化成几乎察觉不到的差别，太大（≥1000）会撞上
+    // `MINIMUM_DAMAGE_AFTER_RESISTANCE` 那条保底、把本测试变成保底
+    // 测试（保底自己有专门的单元测试）。
     let mut world = test_world();
     let mut interner = Interner::new();
     let attacker_race = interner.intern(NamespacedId::parse("lostland:human").unwrap());
@@ -261,9 +272,12 @@ fn 有火抗的角色受到火伤时伤害真的更低() {
             TraitRule {
                 granted_skills: Vec::new(),
                 granted_resource_pools: Vec::new(),
-                rule_modifiers: vec![RuleModifier::Resistance {
-                    damage_category: fire,
-                    multiplier_permille: 500,
+                rule_modifiers: vec![TypedRuleModifier {
+                    modifier_type: None,
+                    modifier: RuleModifier::Resistance {
+                        damage_category: fire,
+                        damage_reduction: 400,
+                    },
                 }],
             },
         )]),
@@ -290,7 +304,8 @@ fn 有火抗的角色受到火伤时伤害真的更低() {
         actual_damage < unmitigated_no_resistance,
         "有火抗时受到的火伤（{actual_damage}）应当严格低于无抗性裸伤害（{unmitigated_no_resistance}）"
     );
-    assert_eq!(actual_damage, unmitigated_no_resistance * 500 / 1000);
+    assert_eq!(actual_damage, unmitigated_no_resistance - 400);
+    assert_eq!(actual_damage, 600);
 }
 
 #[test]
@@ -336,9 +351,12 @@ fn 有火抗的角色受到物理伤害时伤害不变() {
             TraitRule {
                 granted_skills: Vec::new(),
                 granted_resource_pools: Vec::new(),
-                rule_modifiers: vec![RuleModifier::Resistance {
-                    damage_category: fire,
-                    multiplier_permille: 500,
+                rule_modifiers: vec![TypedRuleModifier {
+                    modifier_type: None,
+                    modifier: RuleModifier::Resistance {
+                        damage_category: fire,
+                        damage_reduction: 400,
+                    },
                 }],
             },
         )]),
@@ -367,18 +385,20 @@ fn 有火抗的角色受到物理伤害时伤害不变() {
 fn 抗性在减伤之后而不是减伤之前生效() {
     // Arrange：攻击力恒 1000，防御方装备 +100 护甲（中等防御，既不是
     // 零也不足以触发 10% 下限——保证这条测试验的是「减伤的比例项」，
-    // 不是下限那条独立的安全网），并声明 500‰ 的火抗。
+    // 不是下限那条独立的安全网），并声明 **400 点火焰减伤**。
     //
-    // 手算两种顺序的结果：
-    //   正确顺序（先减伤再乘抗性）：
+    // 手算两种顺序的结果（抗性改成减伤点数之后重算，挂载点没变——
+    // 仍然是 `damage-formula-mod-api.md` 二十节定死的「减伤之后」）：
+    //   正确顺序（先走减伤链路，再扣减伤点数）：
     //     减后伤害 = damage_after_defense(1000, 100, NONE) = 818
-    //     最终伤害 = 818 * 500 / 1000 = 409
-    //   错误顺序（先把攻击力按抗性打对折,再送进减伤链路——即抗性介入
-    //   防御计算之前）：
-    //     打折攻击力 = 1000 * 500 / 1000 = 500
-    //     最终伤害 = damage_after_defense(500, 100, NONE) = 363
-    // 两者不同（409 ≠ 363），断言真实结果落在正确顺序那一侧，直接证明
-    // 抗性没有被错误地接在减伤链路前面。
+    //     最终伤害 = 818 − 400 = 418
+    //   错误顺序（先把减伤点数从攻击力上扣掉,再送进减伤链路——即抗性
+    //   介入防御计算之前）：
+    //     扣完的攻击力 = 1000 − 400 = 600
+    //     最终伤害 = damage_after_defense(600, 100, NONE) = 454
+    // 两者仍然不同（418 ≠ 454），断言真实结果落在正确顺序那一侧，直接
+    // 证明抗性没有被错误地接在减伤链路前面。区分度反而比乘数模型那一版
+    // 更大（36 点 vs 46 点）。
     let mut world = test_world();
     let mut interner = Interner::new();
     let attacker_race = interner.intern(NamespacedId::parse("lostland:human").unwrap());
@@ -419,17 +439,20 @@ fn 抗性在减伤之后而不是减伤之前生效() {
             TraitRule {
                 granted_skills: Vec::new(),
                 granted_resource_pools: Vec::new(),
-                rule_modifiers: vec![RuleModifier::Resistance {
-                    damage_category: fire,
-                    multiplier_permille: 500,
+                rule_modifiers: vec![TypedRuleModifier {
+                    modifier_type: None,
+                    modifier: RuleModifier::Resistance {
+                        damage_category: fire,
+                        damage_reduction: 400,
+                    },
                 }],
             },
         )]),
     };
     let formulas = ConstFormula { value: 1000 };
 
-    let correct_order_expected = damage_after_defense(1000, 100, Penetration::NONE) * 500 / 1000;
-    let wrong_order_would_be = damage_after_defense(500, 100, Penetration::NONE);
+    let correct_order_expected = damage_after_defense(1000, 100, Penetration::NONE) - 400;
+    let wrong_order_would_be = damage_after_defense(1000 - 400, 100, Penetration::NONE);
     assert_ne!(
         correct_order_expected, wrong_order_would_be,
         "测试前提：两种顺序必须给出不同的期望值，否则本测试无法区分对错"
@@ -451,5 +474,5 @@ fn 抗性在减伤之后而不是减伤之前生效() {
     let defender_after = world.actors.get(defender).expect("防御方未死亡");
     let actual_damage = 1_000 - defender_after.health;
     assert_eq!(actual_damage, correct_order_expected);
-    assert_eq!(actual_damage, 409);
+    assert_eq!(actual_damage, 418);
 }

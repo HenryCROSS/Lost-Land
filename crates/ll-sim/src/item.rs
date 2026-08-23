@@ -39,7 +39,7 @@ pub use ll_world::item::{
 };
 
 use crate::combat::Penetration;
-use crate::rule_modifier::RuleModifier;
+use crate::rule_modifier::TypedRuleModifier;
 use crate::skill::SkillEffect;
 
 /// `resolve` 侧需要的一条物品定义的最小只读视图——堆叠上限、装备占位
@@ -143,24 +143,26 @@ pub struct ItemRule {
     /// # 为什么复用 `RuleModifier`，不为物品另开一个枚举
     ///
     /// ADR 0021：抽象的理由是「有算法可共享」。这里共享的是
-    /// [`crate::rule_modifier::resistance_multiplier_permille`] 那条
-    /// 「多条命中时按 `origin` 升序取第一条、不取乘积」的 tie-break
-    /// 算法——它与「这条抗性是天赋给的还是护符给的」完全无关，见该
+    /// [`crate::rule_modifier::resistance_damage_reduction`] 那条
+    /// 「按加值类型分桶、桶内取最强、跨桶相加」的合并算法——它与
+    /// 「这条抗性是天赋给的还是护符给的」完全无关，见该
     /// 模块文档「ADR 0021 复核」一节。另造一个字段与 `RuleModifier`
     /// 逐字相同、只是改了个名字的 `ItemRuleModifier`，会逼着聚合点
     /// 为两个同构枚举各写一遍同一段 `match`，正是该 ADR 要防的重复。
     ///
     /// # 与 [`Self::stat_bonuses`] 的分工
     ///
-    /// `stat_bonuses` 走 `crate::resolve::derive_stats`（**求和**：两件
-    /// 装备各加 3 点力量就是 6 点），本字段走
-    /// `crate::rule_modifier::agent_rule_modifiers`（**取一条**：两条
-    /// 500‰ 抗性还是 500‰）。两条通道的合并规则不同，因此是并列的
+    /// `stat_bonuses` 走 `crate::resolve::derive_stats`（**无条件求和**：
+    /// 两件装备各加 3 点力量就是 6 点），本字段走
+    /// `crate::rule_modifier::agent_rule_modifiers`（**先按加值类型分桶,
+    /// 桶内取最强，再跨桶相加**：同一类型的两条 3 点减伤还是 3 点，
+    /// 不同类型的 3 点与 2 点才是 5 点）。两条通道的合并规则不同,
+    /// 因此是并列的
     /// 独立字段，不是把抗性硬塞进 `StatTarget` 再多一个变体——后者会
     /// 逼着 `DerivedStats` 从「七项属性 + 护甲」这个编译期定长数组，
     /// 变成一张按开放注册的 `damage_category` 索引的动态表，代价与
     /// 收益完全不成比例。
-    pub rule_modifiers: Vec<RuleModifier>,
+    pub rule_modifiers: Vec<TypedRuleModifier>,
     /// 这件物品的**耐久磨损通道**集合（耐久标签批次）——由它携带的
     /// 全部标签（`ItemDef.tags`）各自声明的通道在**注册期**并起来的
     /// 结果，`crate::resolve::resolve_attack`/`resolve_craft` 直接读它

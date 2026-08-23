@@ -31,6 +31,7 @@ use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadStatus;
+use ll_mod::modifier_type::ModifierTypeTable;
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
 use ll_mod::race::RaceTable;
@@ -70,6 +71,9 @@ struct RealModsHandle {
     acid_dagger_id: ContentIndex,
     acid_ward_amulet_id: ContentIndex,
     acid_id: ContentIndex,
+    /// `examplemod:enhancement`——护符那条抗性声明的加值类型
+    /// （加值类型批次）。
+    enhancement_type_id: ContentIndex,
 }
 
 fn load_real_mods() -> RealModsHandle {
@@ -95,6 +99,7 @@ fn load_real_mods() -> RealModsHandle {
     let mut tag_table = ll_mod::tag::TagTable::new();
     let mut damage_category = DamageCategoryTable::new();
 
+    let mut modifier_type_table = ModifierTypeTable::new();
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
         &mut registry,
@@ -118,6 +123,7 @@ fn load_real_mods() -> RealModsHandle {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            modifier_type: &mut modifier_type_table,
             tag: &mut tag_table,
         },
     );
@@ -145,6 +151,7 @@ fn load_real_mods() -> RealModsHandle {
         acid_dagger_id: resolve("examplemod:acid_dagger"),
         acid_ward_amulet_id: resolve("examplemod:acid_ward_amulet"),
         acid_id: resolve("examplemod:acid"),
+        enhancement_type_id: resolve("examplemod:enhancement"),
         race,
         trait_def,
         item,
@@ -290,7 +297,14 @@ fn 真实注册的软泥怪种族对酸的抗性真实降低了酸匕首造成�
         ooze_damage < baseline_damage,
         "软泥怪对酸的抗性应当让它受到的伤害（{ooze_damage}）严格低于没有抗性的基准伤害（{baseline_damage}）"
     );
-    assert_eq!(ooze_damage, baseline_damage * 500 / 1000);
+    // 软泥怪的 acid_hide 声明 4 点减伤（`mods/example_mod/traits.json5`）。
+    // 抗性从千分比乘数改成减伤点数之后，期望值也从
+    // `基准 × 500 / 1000` 改成 `基准 − 4`——这一条数字变了不是断言被
+    // 迁就，是内容与模型一起换代：酸蚀匕首在本夹具下打出 10 点基准伤害,
+    // 减掉 4 点剩 6 点（旧模型是 10 × 0.5 = 5 点）。
+    assert_eq!(baseline_damage, 10, "本夹具下酸伤基准值，两条断言共用");
+    assert_eq!(ooze_damage, baseline_damage - 4);
+    assert_eq!(ooze_damage, 6);
 }
 
 #[test]
@@ -321,6 +335,7 @@ fn 真实注册的酸伤害类别与武器类别都能查到独立的内容索�
     let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
     let mut tag_table = ll_mod::tag::TagTable::new();
     let mut damage_category = DamageCategoryTable::new();
+    let mut modifier_type_table = ModifierTypeTable::new();
 
     // Act
     load_all(
@@ -346,6 +361,7 @@ fn 真实注册的酸伤害类别与武器类别都能查到独立的内容索�
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            modifier_type: &mut modifier_type_table,
             tag: &mut tag_table,
         },
     );
@@ -364,6 +380,83 @@ fn 真实注册的酸伤害类别与武器类别都能查到独立的内容索�
     // 独立的存储,不是同一张表的两个视图。
     assert!(!damage_category.is_defined(dagger_category));
     assert!(!weapon_category.is_defined(acid_category));
+}
+
+#[test]
+fn 加值类型不同的两条抗性在真实内容上相加而不是取最强() {
+    // 加值类型批次的端到端证据，也是项目所有者那条裁定
+    // 「同一类型取最强，不同类型相加」在**真实内容**上的落点：
+    //
+    // - `examplemod:acid_hide`（软泥怪种族天赋）：4 点减伤，类型
+    //   `examplemod:innate`。
+    // - `examplemod:acid_ward_amulet`（护符）：3 点减伤，类型
+    //   `examplemod:enhancement`。
+    //
+    // 两者**类型不同**，因此一只戴着护符的软泥怪吃到 4 + 3 = 7 点减伤,
+    // 而不是取最强的 4 点。10 点基准酸伤减掉 7 点剩 3 点。
+    //
+    // 这一条与它上下两条测试构成完整的三段论：单独天赋 → 6 点伤害,
+    // 单独护符 → 7 点伤害，两者同时 → 3 点伤害。若分桶层写错成
+    // 「全体取最强」，这里会是 6；若写错成「无条件全部相加」，
+    // 上面两条单独测试的数字不会变、只有这一条能抓到——所以三条都要。
+    // Arrange
+    let handle = load_real_mods();
+    let mut world = test_world();
+    let attacker = spawn_agent(
+        &mut world,
+        handle.half_elf_id,
+        Agent::STARTING_HEALTH,
+        BTreeMap::from([(
+            EquipSlot::MAIN_HAND,
+            ItemStack::new(handle.acid_dagger_id, 1),
+        )]),
+    );
+    // 软泥怪（天生 4 点）+ 护符（附魔 3 点）。
+    let both_defender = spawn_agent(
+        &mut world,
+        handle.ooze_id,
+        1_000,
+        BTreeMap::from([(
+            EquipSlot::NECK,
+            ItemStack::new(handle.acid_ward_amulet_id, 1),
+        )]),
+    );
+
+    let formulas = RegistryFormulas {
+        formulas: &handle.formula,
+        default_formula: ContentIndex::default(),
+    };
+
+    // Act
+    let effects = resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+        &world,
+        &Intent::Attack {
+            actor: attacker,
+            target: both_defender,
+        },
+        &NoSkills,
+        &handle.race,
+        &handle.trait_def,
+        &ll_sim::resource_pool::NoResourcePools,
+        &handle.item,
+        &formulas,
+        &NoDamageCategories,
+    );
+    for effect in &effects {
+        apply(&mut world, effect);
+    }
+
+    // Assert
+    let damage = 1_000
+        - world
+            .actors
+            .get(both_defender)
+            .expect("防御方未死亡")
+            .health;
+    assert_eq!(
+        damage, 3,
+        "天生 4 点 + 附魔 3 点应当相加成 7 点减伤，10 − 7 = 3"
+    );
 }
 
 #[test]
@@ -447,9 +540,14 @@ fn 真实注册的酸抗护符装备在身上时真实降低了酸匕首造成�
         warded_damage < bare_damage,
         "酸抗护符应当让戴着它的防御方受到的伤害（{warded_damage}）严格低于没戴的基准伤害（{bare_damage}）"
     );
-    // 护符声明的是 500‰（半伤），与软泥怪那条天赋同一个数值——两路来源
-    // 走的是同一个聚合点、同一条乘法，结果因此逐点相同。
-    assert_eq!(warded_damage, bare_damage * 500 / 1000);
+    // 护符声明 3 点减伤（`mods/example_mod/items.json5`），比软泥怪那条
+    // 天赋的 4 点低一点——一件戴上就能换下来的护符不该比一整层天生的
+    // 皮膜更耐酸。10 点基准伤害减掉 3 点剩 7 点（旧模型两者同为 500‰、
+    // 结果同为 5 点，那条「两路来源结果逐点相同」的巧合随内容重新配值
+    // 一起消失，本来也不是任何一条规则的保证）。
+    assert_eq!(bare_damage, 10, "本夹具下酸伤基准值，与上一条测试同一个数");
+    assert_eq!(warded_damage, bare_damage - 3);
+    assert_eq!(warded_damage, 7);
 }
 
 #[test]
@@ -469,14 +567,23 @@ fn 真实注册的酸抗护符的抗性声明真的写进了物品表() {
 
     // Assert
     assert_eq!(view.rule_modifiers.len(), 1);
+    let typed = &view.rule_modifiers[0];
+    // 加值类型批次：护符这条抗性显式声明了「附魔」，与 acid_hide 天赋
+    // 的「天生」分属两类，因此两者点数相加而不是取最强——端到端后果由
+    // 上一条测试断言，这里只证明声明本身真的存进去了。
+    assert_eq!(
+        typed.modifier_type,
+        Some(handle.enhancement_type_id),
+        "护符的加值类型应当是 examplemod:enhancement"
+    );
     let RuleModifier::Resistance {
         damage_category,
-        multiplier_permille,
-    } = &view.rule_modifiers[0]
+        damage_reduction,
+    } = &typed.modifier
     else {
         panic!("护符声明的应当是一条抗性");
     };
-    assert_eq!(*multiplier_permille, 500);
+    assert_eq!(*damage_reduction, 3);
     // 引用的确实是脚本里写的那个伤害类别，不是别的凑巧同索引的东西
     // ——`acid_id` 走的是同一份装载后注册表的解析结果。
     assert_eq!(*damage_category, handle.acid_id);

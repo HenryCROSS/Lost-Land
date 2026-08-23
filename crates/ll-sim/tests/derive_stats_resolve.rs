@@ -47,7 +47,9 @@ use ll_sim::resolve::{
 };
 use ll_sim::resource_pool::NoResourcePools;
 use ll_sim::skill::NoSkills;
-use ll_sim::traits::{RuleModifier, TraitCatalog, TraitGrant, TraitGrantSource, TraitRule};
+use ll_sim::traits::{
+    RuleModifier, TraitCatalog, TraitGrant, TraitGrantSource, TraitRule, TypedRuleModifier,
+};
 use ll_world::entity::{ActiveStatModifier, Agent, AttributeKind, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
@@ -984,9 +986,12 @@ impl TraitCatalog for FixedSneakAttackTrait {
         Some(TraitRule {
             granted_skills: Vec::new(),
             granted_resource_pools: Vec::new(),
-            rule_modifiers: vec![RuleModifier::SneakAttack {
-                luck_chance_permille_per_point: self.luck_chance_permille_per_point,
-                extra_damage: self.extra_damage,
+            rule_modifiers: vec![TypedRuleModifier {
+                modifier_type: None,
+                modifier: RuleModifier::SneakAttack {
+                    luck_chance_permille_per_point: self.luck_chance_permille_per_point,
+                    extra_damage: self.extra_damage,
+                },
             }],
         })
     }

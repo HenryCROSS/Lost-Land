@@ -34,7 +34,7 @@ use ll_sim::item::{EquipSlot, SlotMask, StatBonus, StatTarget};
 use ll_sim::resource_pool::{
     CapacityFormula, RegenRule, ResourcePoolGrant, ResourcePoolShape, RestRecoveryAmount,
 };
-use ll_sim::rule_modifier::RuleModifier;
+use ll_sim::rule_modifier::{RuleModifier, TypedRuleModifier};
 use ll_sim::skill::SkillEffect;
 use ll_sim::xp_curve::XpCurveDef;
 use serde::Deserialize;
@@ -46,6 +46,7 @@ use crate::content_schema::{
 use crate::damage_category::{DamageCategoryDef, DamageCategoryError, DamageCategoryTable};
 use crate::formula::{FormulaError, FormulaTable};
 use crate::item::{ItemAttrs, ItemError, ItemTable};
+use crate::modifier_type::{ModifierTypeDef, ModifierTypeError, ModifierTypeTable};
 use crate::recipe::{RecipeAttrs, RecipeError, RecipeIngredient, RecipeTable};
 use crate::registry::Registry;
 use crate::resource_pool::{ResourcePoolAttrs, ResourcePoolError, ResourcePoolTable};
@@ -425,14 +426,28 @@ pub struct RawRuleModifier {
     /// `"resistance"` / `"sneak-attack"` / `"inspection-suspicion"` /
     /// `"inspection-concealment"`。
     pub kind: String,
+    /// 这条修正属于哪个**加值类型**，**必须已注册**
+    /// （`modifier_types.json5`）。整条缺席 = 不声明类型，落进那个
+    /// 共享的未分类桶，见
+    /// [`ll_sim::rule_modifier::TypedRuleModifier::modifier_type`]。
+    #[serde(default)]
+    pub modifier_type: Option<String>,
     /// `resistance` 指向的伤害类别，**必须已注册**。
     #[serde(default)]
     pub damage_category: Option<String>,
-    /// `resistance` / `inspection-suspicion` 的千分比乘数
-    /// （`0` = 免疫 / 毫不起疑，`1000` = 与常人无异）。
+    /// `resistance` 的**减伤点数**（flat DR）。正数抵挡、负数表示脆弱,
+    /// 不钳制——减伤不封顶，保底在结算侧
+    /// （[`ll_sim::rule_modifier::MINIMUM_DAMAGE_AFTER_RESISTANCE`]）。
     #[serde(default)]
-    pub multiplier_permille: Option<i64>,
-    /// `inspection-concealment` 的千分比隐匿度，钳到 0..=1000。
+    pub damage_reduction: Option<i64>,
+    /// `inspection-suspicion` 从盘查触发概率上**直接减掉**的千分比
+    /// 点数（越大越不起眼）。负值钳到零：一条「让别人更想搜你」的
+    /// 被动不是本变体要表达的东西。
+    #[serde(default)]
+    pub suspicion_reduction_permille: Option<i64>,
+    /// `inspection-concealment` 的千分比隐匿度，钳到 0..=1000
+    /// （两端各留一线由结算侧的
+    /// [`ll_sim::rule_modifier::clamp_probability_permille`] 负责）。
     #[serde(default)]
     pub conceal_permille: Option<i64>,
     /// `sneak-attack` 的每点幸运换算的千分比触发率。
@@ -444,6 +459,28 @@ pub struct RawRuleModifier {
 }
 
 impl RawRuleModifier {
+    /// 解析成一条带加值类型的规则修正。
+    ///
+    /// `modifier_type` 走 [`required_modifier_type`]：**引用一个没注册
+    /// 过的加值类型当场报错**，与 `register-recipe` 拒绝未注册配方类别
+    /// 是同一条先例。理由见 `ll_mod::modifier_type` 模块文档——分桶会让
+    /// 一个拼错的类型比正确写法**更强**（不与同类竞争、还能与别人
+    /// 相加），静默接受是最坏的选项。
+    fn resolve_typed(
+        &self,
+        registry: &Registry,
+        modifier_types: &ModifierTypeTable,
+    ) -> Result<TypedRuleModifier, String> {
+        let modifier_type = match self.modifier_type.as_deref() {
+            None => None,
+            Some(raw) => Some(required_modifier_type(registry, modifier_types, raw)?),
+        };
+        Ok(TypedRuleModifier {
+            modifier_type,
+            modifier: self.resolve(registry)?,
+        })
+    }
+
     fn resolve(&self, registry: &Registry) -> Result<RuleModifier, String> {
         let reject = |present: bool, field: &str| -> Result<(), String> {
             if present {
@@ -464,6 +501,10 @@ impl RawRuleModifier {
             "resistance" => {
                 reject(self.conceal_permille.is_some(), "conceal_permille")?;
                 reject(
+                    self.suspicion_reduction_permille.is_some(),
+                    "suspicion_reduction_permille",
+                )?;
+                reject(
                     self.luck_chance_permille_per_point.is_some(),
                     "luck_chance_permille_per_point",
                 )?;
@@ -476,13 +517,22 @@ impl RawRuleModifier {
                 })?;
                 Ok(RuleModifier::Resistance {
                     damage_category: required_id(registry, raw, "伤害类别")?,
-                    multiplier_permille: need(self.multiplier_permille, "multiplier_permille")?
-                        .max(0) as i32,
+                    // 不钳到零：负值是「脆弱」，是乘数模型里 `2000‰`
+                    // 那一档在减伤模型下的对应物，见
+                    // `RuleModifier::Resistance` 文档「负值 = 脆弱」。
+                    damage_reduction: clamp_to_i32(need(
+                        self.damage_reduction,
+                        "damage_reduction",
+                    )?),
                 })
             }
             "sneak-attack" => {
                 reject(self.damage_category.is_some(), "damage_category")?;
-                reject(self.multiplier_permille.is_some(), "multiplier_permille")?;
+                reject(self.damage_reduction.is_some(), "damage_reduction")?;
+                reject(
+                    self.suspicion_reduction_permille.is_some(),
+                    "suspicion_reduction_permille",
+                )?;
                 reject(self.conceal_permille.is_some(), "conceal_permille")?;
                 Ok(RuleModifier::SneakAttack {
                     luck_chance_permille_per_point: need(
@@ -495,6 +545,7 @@ impl RawRuleModifier {
             }
             "inspection-suspicion" => {
                 reject(self.damage_category.is_some(), "damage_category")?;
+                reject(self.damage_reduction.is_some(), "damage_reduction")?;
                 reject(self.conceal_permille.is_some(), "conceal_permille")?;
                 reject(
                     self.luck_chance_permille_per_point.is_some(),
@@ -502,13 +553,20 @@ impl RawRuleModifier {
                 )?;
                 reject(self.extra_damage.is_some(), "extra_damage")?;
                 Ok(RuleModifier::InspectionSuspicion {
-                    multiplier_permille: need(self.multiplier_permille, "multiplier_permille")?
-                        .max(0) as i32,
+                    suspicion_reduction_permille: need(
+                        self.suspicion_reduction_permille,
+                        "suspicion_reduction_permille",
+                    )?
+                    .max(0) as i32,
                 })
             }
             "inspection-concealment" => {
                 reject(self.damage_category.is_some(), "damage_category")?;
-                reject(self.multiplier_permille.is_some(), "multiplier_permille")?;
+                reject(self.damage_reduction.is_some(), "damage_reduction")?;
+                reject(
+                    self.suspicion_reduction_permille.is_some(),
+                    "suspicion_reduction_permille",
+                )?;
                 reject(
                     self.luck_chance_permille_per_point.is_some(),
                     "luck_chance_permille_per_point",
@@ -555,6 +613,7 @@ pub struct RawTrait {
 pub fn apply_traits(
     registry: &mut Registry,
     table: &mut TraitTable,
+    modifier_types: &ModifierTypeTable,
     traits: &[RawTrait],
 ) -> Applied {
     for trait_def in traits {
@@ -581,7 +640,7 @@ pub fn apply_traits(
             apply_pool_grant(registry, table, index, grant)?;
         }
         for modifier in &trait_def.rule_modifiers {
-            let resolved = modifier.resolve(registry)?;
+            let resolved = modifier.resolve_typed(registry, modifier_types)?;
             table
                 .add_rule_modifier(index, resolved)
                 .map_err(|err: TraitError| err.to_string())?;
@@ -696,8 +755,13 @@ pub struct RawPenetration {
 pub struct RawItemResistance {
     /// 伤害类别的完整标识符，**必须已注册**。
     pub damage_category: String,
-    /// 千分比乘数（`0` = 免疫，`500` = 半伤，`2000` = 双倍）。负值钳到零。
-    pub multiplier_permille: i64,
+    /// **减伤点数**（flat DR）：正数抵挡、负数表示脆弱，不钳制。语义与
+    /// [`RawRuleModifier::damage_reduction`] 逐字相同。
+    pub damage_reduction: i64,
+    /// 这条抗性属于哪个**加值类型**，**必须已注册**；缺席 = 未分类，
+    /// 语义与 [`RawRuleModifier::modifier_type`] 逐字相同。
+    #[serde(default)]
+    pub modifier_type: Option<String>,
 }
 
 /// 一条物品声明——对应此前 `register-item` 的六个位置参数外加九条
@@ -764,12 +828,13 @@ pub fn apply_items(
     table: &mut ItemTable,
     tags: &TagTable,
     recipes: &RecipeTable,
+    modifier_types: &ModifierTypeTable,
     items: &[RawItem],
 ) -> Applied {
     for item in items {
         define_one_item(registry, table, item)?;
         let index = required_id(registry, &item.id, "物品")?;
-        apply_item_extras(registry, table, tags, recipes, index, item)?;
+        apply_item_extras(registry, table, tags, recipes, modifier_types, index, item)?;
     }
     Ok(())
 }
@@ -828,6 +893,7 @@ fn apply_item_extras(
     table: &mut ItemTable,
     tags: &TagTable,
     recipes: &RecipeTable,
+    modifier_types: &ModifierTypeTable,
     index: ContentIndex,
     item: &RawItem,
 ) -> Applied {
@@ -886,12 +952,19 @@ fn apply_item_extras(
 
     for resistance in &item.resistances {
         let category = required_id(registry, &resistance.damage_category, "伤害类别")?;
+        let modifier_type = match resistance.modifier_type.as_deref() {
+            None => None,
+            Some(raw) => Some(required_modifier_type(registry, modifier_types, raw)?),
+        };
         table
             .add_rule_modifier(
                 index,
-                RuleModifier::Resistance {
-                    damage_category: category,
-                    multiplier_permille: resistance.multiplier_permille.max(0) as i32,
+                TypedRuleModifier {
+                    modifier_type,
+                    modifier: RuleModifier::Resistance {
+                        damage_category: category,
+                        damage_reduction: clamp_to_i32(resistance.damage_reduction),
+                    },
                 },
             )
             .map_err(to_err)?;
@@ -920,6 +993,79 @@ fn apply_item_extras(
     }
 
     Ok(())
+}
+
+/// `modifier_types.json5` 的顶层形状。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ModifierTypeFile {
+    /// 加值类型名册，按书写顺序注册。
+    pub modifier_types: Vec<RawModifierType>,
+}
+
+/// 一条加值类型声明——只有 id。
+///
+/// 与 `weapon_categories.json5` 那一条同一种形状（也只有 id 加一个
+/// 可选字段），理由见 `crate::modifier_type` 模块文档「为什么
+/// [`crate::modifier_type::ModifierTypeDef`] 一个字段都没有」一节：
+/// 加值类型是纯身份。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawModifierType {
+    /// 完整命名空间标识符。
+    pub id: String,
+}
+
+/// 把一批加值类型写进注册表与加值类型表。
+pub fn apply_modifier_types(
+    registry: &mut Registry,
+    table: &mut ModifierTypeTable,
+    modifier_types: &[RawModifierType],
+) -> Applied {
+    for raw in modifier_types {
+        let index = intern_id(registry, &raw.id, "加值类型标识符")?;
+        table
+            .define(index, ModifierTypeDef {})
+            .map_err(|err: ModifierTypeError| err.to_string())?;
+    }
+    Ok(())
+}
+
+/// 把一个 `i64` 声明值收进 `i32`——饱和，不回绕。
+///
+/// 内容文件里的数值一律先反序列化成 `i64`（与本模块其余
+/// `Option<i64>` 字段同一条既有惯例：json5 的整数可以写得比 `i32` 大,
+/// 反序列化阶段不该因此失败），再在这里收窄。饱和而不是 `as i32` 直接
+/// 截断：一条写成 `10_000_000_000` 的减伤点数应当是「大得挡住一切」,
+/// 不该回绕成一个负数（那会静默变成「脆弱」，方向完全相反）。
+fn clamp_to_i32(value: i64) -> i32 {
+    value.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32
+}
+
+/// 解析一个**必须已注册**的加值类型标识符。
+///
+/// 两级校验，缺一不可：
+///
+/// 1. [`required_id`]——这个 id 在 [`Registry`] 里出现过吗。
+/// 2. [`ModifierTypeTable::is_defined`]——它**真的是一个加值类型**吗,
+///    而不是恰好同名的某条天赋/物品。
+///
+/// 第二级不能省：只查 [`Registry`] 等于没查（它对任何已注册内容都返回
+/// `Some`），而这条校验拦的正是 `"lostland:enhancment"` 这类拼写错误。
+/// 与 [`RawItem::tags`]/[`RawItem::taught_recipes`] 的「是已注册 id，
+/// 但它是不是标签/配方」是同一条既有纪律。
+fn required_modifier_type(
+    registry: &Registry,
+    modifier_types: &ModifierTypeTable,
+    raw: &str,
+) -> Result<ContentIndex, String> {
+    let index = required_id(registry, raw, "加值类型")?;
+    if !modifier_types.is_defined(index) {
+        return Err(format!(
+            "{raw:?} 是一个已注册的内容标识符，但它不是加值类型（没有登记在加值类型表里）"
+        ));
+    }
+    Ok(index)
 }
 
 /// 加成目标名 → [`StatTarget`]：七个属性名，外加 `"armor"` 与
@@ -1113,16 +1259,28 @@ mod tests {
         assert_eq!(file.ingredients[1].count, 2);
     }
 
+    /// 造一条只填了 `kind` 的规则修正，其余字段由各测试自己覆盖。
+    fn bare_modifier(kind: &str) -> RawRuleModifier {
+        RawRuleModifier {
+            kind: kind.to_string(),
+            modifier_type: None,
+            damage_category: None,
+            damage_reduction: None,
+            suspicion_reduction_permille: None,
+            conceal_permille: None,
+            luck_chance_permille_per_point: None,
+            extra_damage: None,
+        }
+    }
+
     #[test]
     fn 规则修正填了与kind不搭的字段报错() {
         // Arrange：潜行偷袭却填了伤害类别。
         let modifier = RawRuleModifier {
-            kind: "sneak-attack".to_string(),
             damage_category: Some("m:acid".to_string()),
-            multiplier_permille: None,
-            conceal_permille: None,
             luck_chance_permille_per_point: Some(20),
             extra_damage: Some(15),
+            ..bare_modifier("sneak-attack")
         };
 
         // Act
@@ -1130,5 +1288,95 @@ mod tests {
 
         // Assert
         assert!(result.is_err_and(|err| err.contains("damage_category")));
+    }
+
+    #[test]
+    fn 抗性填了盘查那一条的字段同样报错() {
+        // 新字段 `suspicion_reduction_permille` 也进了逐分支的拒字段
+        // 清单——加值类型批次把两个乘数字段拆成两个同名不同义的点数
+        // 字段，拒字段清单必须跟着拆，否则「填错分支」这一类内容错误会
+        // 从此静默通过。
+        // Arrange
+        let modifier = RawRuleModifier {
+            damage_category: Some("m:acid".to_string()),
+            damage_reduction: Some(3),
+            suspicion_reduction_permille: Some(400),
+            ..bare_modifier("resistance")
+        };
+
+        // Act
+        let result = modifier.resolve(&Registry::new());
+
+        // Assert
+        assert!(result.is_err_and(|err| err.contains("suspicion_reduction_permille")));
+    }
+
+    #[test]
+    fn 引用未注册的加值类型当场报错() {
+        // 项目所有者「引用未注册的类型要当场报错」那条裁定的直接落点,
+        // 也是 `ll_mod::modifier_type` 模块文档点名的那个失效模式：一个
+        // 拼错的类型会**自成一个桶**，于是比正确写法更强（不与同类竞争、
+        // 还能与别人相加）——静默接受是最坏的选项。
+        // Arrange：类型 id 连 intern 都没有过。
+        let mut registry = Registry::new();
+        let acid = registry.intern(parse_id("m:acid", "伤害类别").unwrap());
+        let _ = acid;
+        let modifier = RawRuleModifier {
+            damage_category: Some("m:acid".to_string()),
+            damage_reduction: Some(3),
+            modifier_type: Some("m:enhancement".to_string()),
+            ..bare_modifier("resistance")
+        };
+
+        // Act
+        let result = modifier.resolve_typed(&registry, &ModifierTypeTable::new());
+
+        // Assert
+        assert!(result.is_err_and(|err| err.contains("加值类型")));
+    }
+
+    #[test]
+    fn 已注册但不是加值类型的标识符同样被拒() {
+        // 只查 Registry 等于没查——它对任何已注册内容都返回 Some。这条
+        // 反例证明 `required_modifier_type` 真的查了加值类型表本身,与
+        // `RawItem::tags`「是已注册 id,但它是不是标签」是同一条纪律。
+        // Arrange：`m:acid` 已注册（作为伤害类别），但没进加值类型表。
+        let mut registry = Registry::new();
+        registry.intern(parse_id("m:acid", "伤害类别").unwrap());
+        let modifier = RawRuleModifier {
+            damage_category: Some("m:acid".to_string()),
+            damage_reduction: Some(3),
+            modifier_type: Some("m:acid".to_string()),
+            ..bare_modifier("resistance")
+        };
+
+        // Act
+        let result = modifier.resolve_typed(&registry, &ModifierTypeTable::new());
+
+        // Assert
+        assert!(result.is_err_and(|err| err.contains("不是加值类型")));
+    }
+
+    #[test]
+    fn 不声明加值类型时解析出的类型为none() {
+        // 默认值那条承诺在解析层的落点：整条字段缺席 = `None` = 那个
+        // 共享的未分类桶，见
+        // `ll_sim::rule_modifier::TypedRuleModifier::modifier_type` 文档。
+        // Arrange
+        let mut registry = Registry::new();
+        registry.intern(parse_id("m:acid", "伤害类别").unwrap());
+        let modifier = RawRuleModifier {
+            damage_category: Some("m:acid".to_string()),
+            damage_reduction: Some(3),
+            ..bare_modifier("resistance")
+        };
+
+        // Act
+        let resolved = modifier
+            .resolve_typed(&registry, &ModifierTypeTable::new())
+            .expect("不声明类型的解析恒成功");
+
+        // Assert
+        assert_eq!(resolved.modifier_type, None);
     }
 }

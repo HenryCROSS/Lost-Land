@@ -48,6 +48,7 @@ use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadStatus;
+use ll_mod::modifier_type::ModifierTypeTable;
 use ll_mod::native_behavior::{BehaviorRuleCatalogs, NativeBehaviorSource, NativeBehaviorTree};
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
@@ -167,6 +168,7 @@ fn load_real_mods() -> RealModsHandle {
     let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
     let mut tag_table = ll_mod::tag::TagTable::new();
     let mut damage_category = DamageCategoryTable::new();
+    let mut modifier_type_table = ModifierTypeTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -191,6 +193,7 @@ fn load_real_mods() -> RealModsHandle {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            modifier_type: &mut modifier_type_table,
             tag: &mut tag_table,
         },
     );
@@ -513,9 +516,13 @@ fn guard_turns_against_rogue(
 /// 硬要求二（被动①「不觉得可疑」）：3 级盗贼显著更少被卫兵盘查，
 /// 而且**不是**靠让卫兵看不见他，整条链路经由 [`TurnEngine`]。
 ///
-/// 引擎里 `GUARD_INSPECT_CHANCE_PERMILLE` 是 500、扒手训练的
-/// 乘数是 200‰，3 级那一侧的实际触发率因此是 100‰，相差五倍。下面
-/// 只要求「3 级一侧严格少于 2 级一侧的一半」，留了很大的安全边际。
+/// 引擎里 `GUARD_INSPECT_CHANCE_PERMILLE` 是 500、扒手训练**减掉**
+/// 400‰（加值类型批次把这条被动从乘数改成了概率减点数），3 级那一侧的
+/// 实际触发率因此是 500 − 400 = 100‰，相差五倍。这个数与乘数模型那一版
+/// （500 × 200 / 1000 = 100‰）**逐位相同**——`mods/example_mod/traits.json5`
+/// 里那条声明的新值正是照着「不改变非潜行状态下的既有行为」挑的，见该
+/// 文件里 cutpurse_training 的注释。下面只要求「3 级一侧严格少于 2 级
+/// 一侧的一半」，留了很大的安全边际。
 #[test]
 fn 三级盗贼的扒手训练让卫兵不觉得可疑但仍然看得见他() {
     // Arrange

@@ -14,6 +14,7 @@ use ll_mod::class::ClassTable;
 use ll_mod::clip::ClipTable;
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadReport;
+use ll_mod::modifier_type::ModifierTypeTable;
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
 use ll_mod::race::RaceTable;
@@ -113,6 +114,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
     let mut tag_table = ll_mod::tag::TagTable::new();
     let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
+    let mut modifier_type_table = ModifierTypeTable::new();
 
     let mut report = load_all(
         Path::new(PRIMARY_MODS_ROOT),
@@ -137,6 +139,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            modifier_type: &mut modifier_type_table,
             tag: &mut tag_table,
         },
     );
@@ -163,6 +166,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            modifier_type: &mut modifier_type_table,
             tag: &mut tag_table,
         },
     );
@@ -189,6 +193,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            modifier_type: &mut modifier_type_table,
             tag: &mut tag_table,
         },
     );

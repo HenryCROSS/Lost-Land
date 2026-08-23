@@ -80,8 +80,8 @@ use crate::resource_pool::{
     effective_scalar_capacity, effective_slot_tier_capacity,
 };
 use crate::rule_modifier::{
-    agent_rule_modifiers, inspection_concealment_permille, resistance_multiplier_permille,
-    sneak_attack_rule,
+    agent_rule_modifiers, damage_after_resistance, inspection_concealment_permille,
+    resistance_damage_reduction, sneak_attack_rule,
 };
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::skill_overview::SkillTreeCatalog;
@@ -103,9 +103,13 @@ const BASE_ACTION_COST: u32 = 100;
 /// # 为什么是两倍，为什么用千分比整数
 ///
 /// 千分比整数：ADR 0020 浮点分区，判定/系数一律走乙区的千分比整数，
-/// 与 [`crate::combat::CRIT_DAMAGE_MULTIPLIER_PERMILLE`]/
-/// [`crate::rule_modifier::RESISTANCE_MULTIPLIER_SCALE`] 同一套既有
+/// 与 [`crate::combat::CRIT_DAMAGE_MULTIPLIER_PERMILLE`] 同一套既有
 /// 惯例，不引入浮点。
+///
+/// 本常量属于「按比例缩放的环境量」那一档，**刻意不随规则修正一起改成
+/// 整数点数**（加值类型批次）——理由见 `crate::rule_modifier` 模块文档
+/// 「为什么跨类型是相加，而不是相乘」一节末尾的分界线：缩放量的基数
+/// 本身在变，改成固定加减会在极值处结构性坏掉。
 ///
 /// 两倍：潜行必须有一个**玩家能感觉到**的代价，否则「一直开着潜行」
 /// 是严格占优策略，那个「可切换」的状态就退化成一次性开关、不再是一个
@@ -735,7 +739,7 @@ pub fn resolve_with_skills_traits_pools_items_and_formulas(
 /// （`ll_mod::damage_category` 落地对应的真实目录实现后即可接入）。
 ///
 /// **本函数不改变抗性本身生不生效**——抗性查询
-/// （[`resistance_multiplier_permille`]）只要防御方的天赋声明了
+/// （[`resistance_damage_reduction`]）只要防御方的天赋声明了
 /// `RuleModifier::Resistance` 就会命中，与本函数是否接了真实的伤害
 /// 类别目录无关；本函数只影响"武器没有显式声明伤害类别"这一种情形
 /// 下退回的默认类别是哪一个。
@@ -3564,7 +3568,7 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 ///
 /// 查 [`sneak_attack_rule`]（`crate::rule_modifier`，消费
 /// [`agent_rule_modifiers`] 汇总出的候选列表——攻击者的有效天赋与已装备
-/// 物品两路来源，tie-break 规则同 [`resistance_multiplier_permille`]）：
+/// 物品两路来源，合并规则同 [`resistance_damage_reduction`]）：
 /// 没有任何来源声明偷袭时返回 `None`，
 /// 本函数完全不进入判定分支，不额外消费一条 `DetRng` 流——与「抗性
 /// 接线」一节「没有天赋声明时逐位复现既有行为」是同一条「新增判定不
@@ -3613,25 +3617,31 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 ///
 /// # 抗性接线（伤害类别/抗性接线批次；来源扩展见抗性多来源聚合批次）
 ///
-/// `damage-formula-mod-api.md` 二十节把抗性的挂载点定死在「减伤之后、
-/// 乘数形式」——本函数在 `damage_after_defense`（含暴击放大）算完之后
-/// 最后一步，用这一下的伤害类别（武器显式声明的
+/// `damage-formula-mod-api.md` 二十节把抗性的挂载点定死在「减伤之后」
+/// ——本函数在 `damage_after_defense`（含暴击放大）算完之后最后一步，
+/// 用这一下的伤害类别（武器显式声明的
 /// [`crate::item::ItemRule::damage_category`]，没有声明时退回
 /// [`DamageCategoryCatalog::default_category`]）查
-/// [`resistance_multiplier_permille`]（`crate::rule_modifier`，消费
+/// [`resistance_damage_reduction`]（`crate::rule_modifier`，消费
 /// [`agent_rule_modifiers`] 汇总出的**防御方**候选列表：有效天赋与已
-/// 装备物品两路来源，抗性多来源聚合批次接上了后者），把查到的千分比
-/// 乘数乘在伤害上——没有任何来源声明抗性时，乘数恒为
-/// [`crate::traits::RESISTANCE_MULTIPLIER_SCALE`]（1.0），本函数因此
-/// 逐位复现接入抗性之前的既有行为，与「伤害公式接线」一节「全局默认
-/// 公式」的「行为等价」承诺是同一条纪律的第二次应用。
+/// 装备物品两路来源，抗性多来源聚合批次接上了后者），把查到的**减伤
+/// 点数**从伤害上扣掉（[`damage_after_resistance`]）——没有任何来源
+/// 声明抗性时点数恒为 `0`，本函数因此逐位复现接入抗性之前的既有行为,
+/// 与「伤害公式接线」一节「全局默认公式」的「行为等价」承诺是同一条
+/// 纪律的第二次应用。
 ///
-/// 免疫（乘数 0）能合法地把这一步的结果打成 0，即使
-/// `damage_after_defense` 内部的 10% 下限已经让上一步的 `damage` 不低于
-/// 攻击力的一成——两者不冲突：10% 下限保护的是「减伤链路本身不会因为
+/// 形式从该节原文的「乘数」改成了减法（flat DR），见该节末尾的更正段
+/// 与 [`crate::rule_modifier::RuleModifier::Resistance`] 文档。挂载点
+/// 一个字没变。
+///
+/// 「绝对免疫」在减伤模型下不再是一个可声明的状态：减伤不封顶，但一次
+/// 本来打得出伤害的攻击减完至少还剩
+/// [`crate::rule_modifier::MINIMUM_DAMAGE_AFTER_RESISTANCE`] 点。这条
+/// 新下限与 `damage_after_defense` 内部那条 10% 下限仍然不是同一条,
+/// 各自独立生效：10% 下限保护的是「减伤链路本身不会因为
 /// 防御过高而系统性压制到零」，抗性回答的是「这种伤害对这个目标有没有
-/// 意义」，见 `RuleModifier::Resistance` 文档「与 10% 下限的关系」
-/// 一节完整论证。
+/// 意义」，见 `MINIMUM_DAMAGE_AFTER_RESISTANCE` 文档「这条下限是新增
+/// 的，不是把 10% 下限平移过来」一节完整论证。
 #[allow(clippy::too_many_arguments)]
 fn resolve_attack(
     world: &WorldState,
@@ -3812,10 +3822,12 @@ fn resolve_attack(
     };
 
     // 抗性（伤害类别/抗性接线批次）：`damage-formula-mod-api.md` 二十节
-    // 「减伤之后、乘数形式」——挂在减伤链路（含暴击放大，暴击与抗性都
-    // 是「减伤之后」的后续放大/折扣，二十节本身不规定二者的先后，见
-    // `RuleModifier::Resistance` 文档「抗性接线」一节）算完之后，最后
-    // 一步才把伤害类别的抗性乘数乘上去。伤害类别的来源：武器显式声明
+    // 定死的挂载点是「减伤之后」——挂在减伤链路（含暴击放大，暴击与
+    // 抗性都是「减伤之后」的后续放大/折扣，二十节本身不规定二者的先后,
+    // 见 `RuleModifier::Resistance` 文档）算完之后，最后一步才把伤害
+    // 类别的**减伤点数**扣掉。形式从该节原文的「乘数」改成了减法
+    // （flat DR），见该节末尾的更正段与 `RuleModifier::Resistance` 文档
+    // 「对小伤害强、对大伤害弱」一节。伤害类别的来源：武器显式声明
     // 的 `damage_category`（`weapon_rule.damage_category`），没有声明
     // 时退回 `damage_categories.default_category()`——与
     // `explicit_formula` 两层下探同一条既有纪律（见本函数文档「伤害
@@ -3826,20 +3838,18 @@ fn resolve_attack(
         .as_ref()
         .and_then(|rule| rule.damage_category)
         .unwrap_or_else(|| damage_categories.default_category());
-    let resistance_multiplier = resistance_multiplier_permille(
+    let damage_reduction = resistance_damage_reduction(
         &agent_rule_modifiers(defender, race_traits, class_traits, traits, items),
         damage_category,
     );
-    // 千分比乘法，向零截断——与 `FormulaOp::MulPermille`/
-    // `apply_crit_multiplier` 同一条既有惯例，全程 i64 饱和运算防止
-    // 极端乘数溢出 i32（`multiplier_permille` 是内容作者填的数值，
+    // 整数减法 + 保底，全程饱和运算（点数是内容作者填的值，
     // `damage-formula-mod-api.md` 十二节「运行期溢出：饱和运算」同一条
-    // 纪律）。免疫（乘数 0）会合法地把这一步打成 0，即使上一步的
-    // `damage` 满足了 10% 下限——`damage_after_defense` 的下限只保护
-    // 「减伤链路本身」，不保护抗性之后的结果，见
-    // `RuleModifier::Resistance` 文档「与 10% 下限的关系」一节。
-    let damage = ((i64::from(damage) * i64::from(resistance_multiplier)) / 1000)
-        .clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32;
+    // 纪律）。保底的含义与边界情形见
+    // `ll_sim::rule_modifier::damage_after_resistance` 与
+    // `MINIMUM_DAMAGE_AFTER_RESISTANCE` 文档：减伤不封顶（大伤害自然
+    // 穿透），但一次本来打得出伤害的攻击减完至少还剩 1 点——「绝对
+    // 免疫」在减伤模型下不再是一个可声明的状态。
+    let damage = damage_after_resistance(damage, damage_reduction);
 
     let mut effects = vec![Effect::Damage {
         target,
@@ -5746,9 +5756,12 @@ mod tests {
             Some(crate::traits::TraitRule {
                 granted_skills: Vec::new(),
                 granted_resource_pools: Vec::new(),
-                rule_modifiers: vec![crate::traits::RuleModifier::SneakAttack {
-                    luck_chance_permille_per_point: self.luck_chance_permille_per_point,
-                    extra_damage: self.extra_damage,
+                rule_modifiers: vec![crate::traits::TypedRuleModifier {
+                    modifier_type: None,
+                    modifier: crate::traits::RuleModifier::SneakAttack {
+                        luck_chance_permille_per_point: self.luck_chance_permille_per_point,
+                        extra_damage: self.extra_damage,
+                    },
                 }],
             })
         }
