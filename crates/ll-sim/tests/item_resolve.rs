@@ -23,7 +23,7 @@ use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
 use ll_sim::combat::Penetration;
 use ll_sim::intent::Intent;
-use ll_sim::item::{ItemCatalog, ItemRule, ItemStack};
+use ll_sim::item::{ItemCatalog, ItemRule, ItemStack, WearChannels};
 use ll_sim::resolve::resolve_with_skills_traits_pools_and_items;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
@@ -111,6 +111,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
         items: BTreeMap::from([(
             arrow,
             ItemRule {
+                wear_channels: WearChannels::NONE,
                 stack_limit: 99,
                 equip_mask: ll_sim::item::SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),

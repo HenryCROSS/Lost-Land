@@ -25,7 +25,9 @@ use ll_sim::combat::{Penetration, damage_after_defense};
 use ll_sim::damage_category::{DamageCategoryCatalog, NoDamageCategories};
 use ll_sim::formula::{DamageFormulaCatalog, FormulaDef, FormulaOp, FormulaOperand};
 use ll_sim::intent::Intent;
-use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, StatBonus, StatTarget};
+use ll_sim::item::{
+    EquipSlot, ItemCatalog, ItemRule, ItemStack, StatBonus, StatTarget, WearChannels,
+};
 use ll_sim::resolve::resolve_with_skills_traits_pools_items_formulas_and_damage_categories;
 use ll_sim::skill::NoSkills;
 use ll_sim::traits::{RuleModifier, TraitCatalog, TraitGrant, TraitGrantSource, TraitRule};
@@ -158,6 +160,7 @@ fn spawn_agent(
 /// （`ConstFormula::formula_for` 不理会 `explicit` 参数，见其文档）。
 fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
     ItemRule {
+        wear_channels: WearChannels::NONE,
         stack_limit: 1,
         equip_mask: EquipSlot::MAIN_HAND.mask(),
         stat_bonuses: Vec::new(),
@@ -172,6 +175,7 @@ fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
 /// 一件只提供护甲加成的防具。
 fn armor_rule(amount: i32) -> ItemRule {
     ItemRule {
+        wear_channels: WearChannels::NONE,
         stack_limit: 1,
         equip_mask: EquipSlot::OFF_HAND.mask(),
         stat_bonuses: vec![StatBonus {

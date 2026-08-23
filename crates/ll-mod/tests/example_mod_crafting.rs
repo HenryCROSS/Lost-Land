@@ -52,6 +52,7 @@ use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
+use ll_mod::tag::TagTable;
 use ll_mod::trait_def::TraitTable;
 use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
@@ -159,6 +160,7 @@ fn load_real_mods() -> RealModsHandle {
     let mut weather_table = ll_world::weather::WeatherTable::new();
     let mut recipe_table = RecipeTable::new();
     let mut recipe_category_table = RecipeCategoryTable::new();
+    let mut tag_table = TagTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -183,6 +185,7 @@ fn load_real_mods() -> RealModsHandle {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            tag: &mut tag_table,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();
@@ -314,6 +317,21 @@ fn craft_via_turn_engine(
     recipe: ContentIndex,
     recipes: &dyn RecipeCatalog,
 ) -> Vec<ItemStack> {
+    craft_via_turn_engine_full(handle, scene, recipe, recipes).0
+}
+
+/// [`craft_via_turn_engine`] 的完整版本：除背包之外**还返回制作者结算
+/// 之后的装备栏**，供「工具磨损」那一路断言使用（耐久扩面批次）。
+///
+/// 两个入口而不是改既有那个的返回类型，理由同
+/// `ll_sim::resolve::derive_stats`/`derive_stats_at` 那一对：本文件既有
+/// 的七条制作断言一条都不看装备栏，多返回一个它们全要写 `.0` 只是噪音。
+fn craft_via_turn_engine_full(
+    handle: &RealModsHandle,
+    scene: &Scene,
+    recipe: ContentIndex,
+    recipes: &dyn RecipeCatalog,
+) -> (Vec<ItemStack>, BTreeMap<EquipSlot, ItemStack>) {
     let mut world = test_world();
     let crafter = spawn_agent(&mut world, (5, 5), scene);
     let bystander = spawn_agent(&mut world, (9, 9), &Scene::new(Vec::new()));
@@ -349,12 +367,11 @@ fn craft_via_turn_engine(
         &mut |_, _| {},
     );
 
-    world
-        .actors
-        .get(crafter)
-        .expect("制作不会杀死制作者")
-        .inventory
-        .clone()
+    let crafter_after = world.actors.get(crafter).expect("制作不会杀死制作者");
+    (
+        crafter_after.inventory.clone(),
+        crafter_after.equipment.clone(),
+    )
 }
 
 /// 背包里某种物品的总数（跨多堆求和）。
@@ -485,6 +502,112 @@ fn 不站在工作台地形上时同一条锻造配方静默不产出() {
     // Assert
     assert_eq!(count_of(&inventory, handle.iron_ingot), 5);
     assert_eq!(count_of(&inventory, handle.iron_sword), 0);
+}
+
+/// `mods/example_mod/gameplay.scm` 里 `examplemod:war_hammer` 的
+/// `register-item` 第六个参数——本文件唯一被配方点名的工具。
+const WAR_HAMMER_MAX_DURABILITY: i32 = 150;
+
+#[test]
+fn 制作一次之后被点名的工具真的掉了一点耐久() {
+    // 耐久扩面批次落地 `crafting-system.md` 九节⑩「工具因制作而磨损」
+    // ——该表当初把它标为「与所有者『只有装备武器才有耐久』的裁定直接
+    // 冲突」而推迟，那条裁定已被所有者新的裁定推翻：「修理锤子也算是
+    // 一种武器，也可以是带有功能性的物品。**只要使用就会减少耐久**。」
+    //
+    // 走的是 `TurnEngine::advance_ai` 这条生产路径（ADR 0018）。
+    // 反例（手工验证过会红）：把 `resolve_craft` 第 9 步那段
+    // `if let Some(slot) = equipped_tool { ... }` 删掉，本条立即从
+    // `Some(149)` 变回 `Some(150)` 而失败。
+    // Arrange
+    let handle = load_real_mods();
+    let mut scene = Scene::new(vec![ItemStack::new(handle.iron_ingot, 5)]);
+    scene.subclasses = vec![handle.shadowdancer];
+    scene.equipment.insert(
+        EquipSlot::MAIN_HAND,
+        ItemStack::with_durability(handle.war_hammer, 1, WAR_HAMMER_MAX_DURABILITY),
+    );
+    scene.station_underfoot = Some(handle.lava_floor);
+
+    // Act
+    let (inventory, equipment) = craft_via_turn_engine_full(
+        &handle,
+        &scene,
+        handle.iron_sword_recipe,
+        &handle.real_recipes(),
+    );
+
+    // Assert：制作确实发生了（否则「没掉耐久」会因为压根没制作而假绿），
+    // 且锤子恰好掉了一点。
+    assert_eq!(count_of(&inventory, handle.iron_sword), 1);
+    assert_eq!(
+        equipment
+            .get(&EquipSlot::MAIN_HAND)
+            .expect("锤子仍在装备栏里——耐久归零都不自动卸下，何况只掉一点")
+            .durability,
+        Some(WAR_HAMMER_MAX_DURABILITY - 1),
+    );
+}
+
+#[test]
+fn 制作没有发生时工具一点耐久都不掉() {
+    // 上一条的反例：同一套场景、同一个 `TurnEngine`，只把副职拿掉,
+    // 制作在第 3 步就静默失败。「只要使用就会减少耐久」的前提是**真的
+    // 用了**——站错地方、缺副职、缺料这类白试一次不该产生任何损失,
+    // 见 `resolve_craft` 文档「只在制作**真的发生**时磨损」一节。
+    // Arrange
+    let handle = load_real_mods();
+    let mut scene = Scene::new(vec![ItemStack::new(handle.iron_ingot, 5)]);
+    scene.equipment.insert(
+        EquipSlot::MAIN_HAND,
+        ItemStack::with_durability(handle.war_hammer, 1, WAR_HAMMER_MAX_DURABILITY),
+    );
+    scene.station_underfoot = Some(handle.lava_floor);
+
+    // Act
+    let (inventory, equipment) = craft_via_turn_engine_full(
+        &handle,
+        &scene,
+        handle.iron_sword_recipe,
+        &handle.real_recipes(),
+    );
+
+    // Assert
+    assert_eq!(count_of(&inventory, handle.iron_sword), 0);
+    assert_eq!(
+        equipment.get(&EquipSlot::MAIN_HAND).unwrap().durability,
+        Some(WAR_HAMMER_MAX_DURABILITY),
+    );
+}
+
+#[test]
+fn 没有耐久概念的工具制作后不会被凭空赋予耐久() {
+    // 第三条反例：工具堆的 `durability == None` 时「工具磨损」这一步
+    // 完全不产出效果（`equipped_tool` 恒 `None`），`None` 必须原样保持
+    // `None`——内容作者完全可以声明一件永不磨损的工具。
+    // Arrange
+    let handle = load_real_mods();
+    let mut scene = Scene::new(vec![ItemStack::new(handle.iron_ingot, 5)]);
+    scene.subclasses = vec![handle.shadowdancer];
+    scene
+        .equipment
+        .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.war_hammer, 1));
+    scene.station_underfoot = Some(handle.lava_floor);
+
+    // Act
+    let (inventory, equipment) = craft_via_turn_engine_full(
+        &handle,
+        &scene,
+        handle.iron_sword_recipe,
+        &handle.real_recipes(),
+    );
+
+    // Assert
+    assert_eq!(count_of(&inventory, handle.iron_sword), 1);
+    assert_eq!(
+        equipment.get(&EquipSlot::MAIN_HAND).unwrap().durability,
+        None
+    );
 }
 
 #[test]

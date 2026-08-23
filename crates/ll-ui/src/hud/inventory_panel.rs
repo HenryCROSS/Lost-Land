@@ -157,6 +157,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("测试用注册应当成功");

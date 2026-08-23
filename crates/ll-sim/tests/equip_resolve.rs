@@ -21,7 +21,7 @@ use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
 use ll_sim::combat::Penetration;
 use ll_sim::intent::Intent;
-use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, SlotMask};
+use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, SlotMask, WearChannels};
 use ll_sim::resolve::resolve_with_skills_traits_pools_and_items;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
@@ -118,6 +118,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
             (
                 sword,
                 ItemRule {
+                    wear_channels: WearChannels::NONE,
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND.mask(),
                     stat_bonuses: Vec::new(),
@@ -131,6 +132,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
             (
                 shield,
                 ItemRule {
+                    wear_channels: WearChannels::NONE,
                     stack_limit: 1,
                     equip_mask: EquipSlot::OFF_HAND.mask(),
                     stat_bonuses: Vec::new(),
@@ -144,6 +146,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
             (
                 greatsword,
                 ItemRule {
+                    wear_channels: WearChannels::NONE,
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND
                         .mask()
@@ -411,6 +414,7 @@ fn 物品不可装备时装备意图静默无效() {
         items: BTreeMap::from([(
             ore,
             ItemRule {
+                wear_channels: WearChannels::NONE,
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,

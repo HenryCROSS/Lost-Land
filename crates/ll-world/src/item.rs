@@ -432,6 +432,74 @@ impl SlotMask {
     }
 }
 
+/// 一件物品的**耐久磨损通道**集合（耐久标签批次）——项目所有者裁定
+/// 「每个物品可以有个标签的列表，带有多个标签」之后，「这件东西会不会
+/// 磨损、什么时候磨损」不再由它占哪个槽位回答，而由它带的标签回答。
+///
+/// # 为什么是掩码，不是枚举
+///
+/// 项目所有者原话：「有的技能像是盾击,他也会变成武器这样」——**一件
+/// 东西可以两条通道都走**（盾既挡刀又砸人）。用 `enum` 表达就得多造一个
+/// `Both` 变体，然后每处判断都要写 `matches!(x, OnHit | Both)`；掩码天然
+/// 表达"集合"，判断退化成一次 `contains`。与同文件的 [`SlotMask`] 是
+/// 同一个理由、同一套写法（那里是"一件物品占哪些槽位"，这里是"一件
+/// 物品走哪些磨损通道"），不是新发明的表示法。
+///
+/// # 为什么两条通道刻意**可以**重叠
+///
+/// 这一条明确推翻了耐久扩面批次「两组槽位刻意不重叠、没有任何一件装备
+/// 被两条规则同时收费」那个不变量——那个不变量建立在「槽位就是分类」
+/// 这个错误前提上，而项目所有者指出「副手也可能拿着武器,例如双刀,
+/// 双盾」：副手不等于盾，槽位携带不了"这是什么东西"这个信息。改按标签
+/// 之后，重叠不但可能、而且正是想要的：一面既用来砸人又用来挡刀的盾
+/// 本来就该两头磨损。当初担心的「对砍时武器两倍速报废」不受影响——
+/// 一把剑只带武器标签，进不了挨打通道。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct WearChannels(u8);
+
+impl WearChannels {
+    /// 不走任何磨损通道——没有任何标签、或标签都不声明磨损后果的
+    /// 物品的默认值。带耐久但不带任何磨损标签的物品因此永远不掉耐久,
+    /// 这是内容作者可以刻意做出的选择（传家宝、不朽神器）。
+    pub const NONE: WearChannels = WearChannels(0);
+
+    /// **挨打**通道：这件东西穿/戴在身上，主人被打中时它磨损。
+    /// 对应项目所有者裁定的「衣服要耐久，受到攻击就会减少耐久」。
+    pub const ON_HIT: WearChannels = WearChannels(1 << 0);
+
+    /// **使用**通道：这件东西被主动使用时它磨损（挥出去的武器、
+    /// 敲下去的锤子）。对应「只要使用就会减少耐久」。
+    pub const ON_USE: WearChannels = WearChannels(1 << 1);
+
+    /// 把 kebab-case 通道名解析成单通道掩码——`register-tag` 的脚本
+    /// 参数用它，未知名称返回 `None`（拒绝整次调用，不静默忽略，理由同
+    /// [`EquipSlot::from_name`]）。
+    pub fn from_name(name: &str) -> Option<WearChannels> {
+        match name {
+            "on-hit" => Some(WearChannels::ON_HIT),
+            "on-use" => Some(WearChannels::ON_USE),
+            _ => None,
+        }
+    }
+
+    /// 两个集合的并集——一件物品带多个标签时，各标签声明的通道并起来。
+    pub const fn union(self, other: WearChannels) -> WearChannels {
+        WearChannels(self.0 | other.0)
+    }
+
+    /// 是否包含 `other` 的全部通道——结算侧的唯一判据
+    /// （`contains(WearChannels::ON_HIT)`）。
+    pub const fn contains(self, other: WearChannels) -> bool {
+        self.0 & other.0 == other.0
+    }
+
+    /// 取出底层位表示——内容值哈希需要把具体取值混进摘要，理由同
+    /// [`SlotMask::bits`]。
+    pub const fn bits(self) -> u8 {
+        self.0
+    }
+}
+
 /// [`StatBonus`] 加成落在哪个量上——`ItemDef.stat_bonuses`（P6 第四批：
 /// `derive_stats` 与装备属性接进战斗）的每一条都要回答"这份加成具体
 /// 加在什么上"，本类型是这个问题的答案域。

@@ -45,6 +45,7 @@ use ll_script::host::ScriptEngine;
 use crate::active_registry::with_active_registry;
 use crate::item::{ItemAttrs, ItemError, ItemTable};
 use crate::registry::Registry;
+use crate::tag::TagTable;
 use ll_sim::combat::Penetration;
 use ll_sim::item::{EquipSlot, SlotMask, StatBonus, StatTarget};
 use ll_sim::rule_modifier::RuleModifier;
@@ -55,16 +56,6 @@ thread_local! {
     /// 当前调用窗口内，`register-item` 应该写入的物品表。
     static ACTIVE_TABLE: RefCell<Option<ItemTable>> = const { RefCell::new(None) };
 }
-
-/// 「武器」这一组的槽位——`equipment-slots.md` 槽位表里 **主手与副手
-/// 同属一组**（原文分组列首行「武器」覆盖 `MAIN_HAND`/`OFF_HAND` 两行），
-/// 与「头部」「躯干」等其余分组并列。`do_register_item_equip_mask` 用它
-/// 判断"这件物品算不算武器"（耐久与武器槽位的组合校验，见其文档「为
-/// 什么在这里校验耐久与武器槽位的组合」一节）——不是只有主手才算数,
-/// 副手同样可以是「副武器」（该槽位官方说明原文：「盾、副武器、法器」）。
-const WEAPON_GROUP_SLOTS: SlotMask = EquipSlot::MAIN_HAND
-    .mask()
-    .union(EquipSlot::OFF_HAND.mask());
 
 /// 把 `table` 设为当前调用窗口内 `register-item` 可写入的目标。
 pub fn set_active_target(table: ItemTable) {
@@ -93,6 +84,7 @@ pub fn register_item_api(engine: &mut ScriptEngine) {
         register_item_damage_category,
     );
     engine.register_fn("register-item-resistance", register_item_resistance);
+    engine.register_fn("register-item-tag", register_item_tag);
 }
 
 /// `(register-item id display-name-key stack-limit base-weight base-price max-durability)`。
@@ -217,6 +209,9 @@ fn do_register_item(
                 damage_formula: None,
                 damage_category: None,
                 rule_modifiers: Vec::new(),
+                // 恒为空列表——同上，真正的取值由后续
+                // register-item-tag 调用追加写入。
+                tags: Vec::new(),
             },
         )
         .map(|()| true)
@@ -246,48 +241,38 @@ fn do_register_item(
 /// [`crate::item::ItemTable::set_equip_mask`] 文档「覆盖，不是追加」
 /// 一节。
 ///
-/// # 为什么在这里校验耐久与武器槽位的组合（武器引用与穿透接线批次，
-/// P6 第六批）
+/// # 为什么这里**不再**校验耐久与武器槽位的组合（耐久扩面批次）
 ///
-/// 项目所有者裁定「装备武器才有耐久，其余物品我倾向于没有」——`register-item`
-/// 已经有「可堆叠物品不能携带耐久上限」这一条注册期拒绝的先例（见其
-/// 文档），本函数照办同一条纪律，只是判据换成「有耐久却不占武器槽位」。
+/// 此前本函数拒绝「声明了耐久上限、却不占用任何武器槽位」的组合，
+/// 依据是所有者当时的裁定「装备武器才有耐久，其余物品我倾向于没有」。
+/// 该裁定已被**推翻**——所有者新的两条原话：
 ///
-/// 「武器槽位」取 `equipment-slots.md` 槽位表自己的分组——**主手与副手
-/// 同属「武器」这一组**（原文「副手：盾、副武器、法器」），不是只有
-/// 主手才算武器：`mods/example_mod/gameplay.scm` 已注册的木盾
-/// （`examplemod:wooden_shield`，只占副手）本身带耐久，若把判据收窄成
-/// 「必须包含主手」会当场拒绝这份已经存在、已经通过测试的真实内容——
-/// 那不是本批次要修正的缺陷，是这件物品本就该继续合法。判据因此是
-/// 「掩码与 `MAIN_HAND | OFF_HAND` 有交集」，即
-/// [`WEAPON_GROUP_SLOTS`]。
+/// > 「衣服要耐久，受到攻击就会减少耐久。」
+/// > 「修理锤子也算是一种武器，也可以是带有功能性的物品。只要使用就
+/// > 会减少耐久。」
 ///
-/// 与 `resolve_attack` 结算时只读主手（见其文档「武器引用」一节）不是
-/// 同一个判据，两者服务不同的问题：本函数回答「这件物品的类型允不允许
-/// 有耐久」（登记时定型，主手/副手皆可），`resolve_attack` 回答「这一下
-/// 攻击具体用的是哪一件」（运行时只看主手，因为一次 `Intent::Attack`
-/// 只产出一次伤害判定，不模拟双持连击）——一个是"这类物品算不算武器"
-/// 的内容分类问题，一个是"这一下打出去用的是哪一件"的结算问题，判据
-/// 范围不必相同。
+/// 耐久的适用范围因此从「武器」扩到「武器 + 护甲/衣物 + 工具」。一旦
+/// 护甲、衣物、工具都合法地带耐久，「占不占武器槽位」就不再是任何一条
+/// 真实规则的判据——它只是当初那条已被推翻的裁定的机械翻译。继续留着
+/// 它，唯一的效果是让内容作者无法给一件 `body` 槽位的毛呢内衬填耐久,
+/// 而结算侧（[`ll_sim::resolve`] 的挨打掉甲耐久通道）已经准备好消费
+/// 这个值。
 ///
-/// 这条校验不能放进 `register-item` 本身：耐久上限（`max-durability`）
-/// 是 `register-item` 六参数签名自带的既有参数，而装备占位掩码要等到
-/// **后续**这条独立调用才会写入（见模块文档「为什么 `equip_mask` 都走
-/// 独立函数」一节）——`register-item` 执行的那一刻，这件物品的
-/// `equip_mask` 恒是默认值 `SlotMask::EMPTY`，无法据此判断"将来会不会
-/// 占武器槽位"。只有到了本函数——两个事实（`max_durability` 是否为
-/// `Some`、即将写入的掩码是否与武器槽位相交）第一次同时可查的这一
-/// 刻——才能原子地做这个判断，因此校验放在这里，不在 `register-item`。
+/// **「哪些物品该有耐久」自此是内容决策，引擎不再代替内容作者判断**
+/// ——ADR 0017「注册期完整校验」要求的是「引擎守得住的不变量在注册期
+/// 就守住」，不是「引擎替内容作者做品味判断」。这条校验删除后，仍然
+/// 留着一条**真实**的不变量，位置在 [`do_register_item`] 而不是这里：
+/// **可堆叠物品（`stack_limit > 1`）不能携带耐久上限**。那一条不是品味
+/// 判断，是两条机制字面矛盾——`ll_world::item::can_merge` 的判据是
+/// 「`def` 相同且耐久相同」，一件可堆叠物品若带耐久，每份实例几乎必然
+/// 各自独立成一格，堆叠机制名存实亡。`item-system.md` 六节「无耐久
+/// 概念的物品（材料、消耗品）用 `None`」点名的那两类正是可堆叠的那
+/// 一类，因此那条校验同时也就是这句设计原文在注册期的落点。
 ///
-/// 一件物品若声明了耐久上限，之后把占位掩码设置成与武器槽位不相交
-/// （不占主手也不占副手，包括完全不调用本函数、掩码维持默认的
-/// `SlotMask::EMPTY`——`examplemod:iron_sword` 目前正是这个状态，见
-/// `mods/example_mod/gameplay.scm`：只 `register-item` 未追加占位掩码，
-/// 因此从未触发过本函数,不受这条校验影响），即拒绝整次调用——**反例**
-/// 见 `do_register_item_equip_mask` 测试「掩码与武器槽位相交时耐久声明
-/// 注册成功」：掩码包含副手（不含主手）时同样的耐久声明放行，证明这条
-/// 校验拒绝的是"有耐久却不占任何武器槽位"这个组合本身，不是耐久上限
-/// 这个字段恒被拒绝，也不是只有主手才算数。
+/// 删除这条校验**不放宽任何存档或结算侧的假设**：结算侧从来只看
+/// `ItemStack.durability` 这个逐实例字段是不是 `Some`，从不反查
+/// 「这件物品占哪些槽位」（见 [`ll_sim::resolve::derive_stats`]
+/// 「耐久归零」一节与 `resolve_attack`「耐久消耗」一节）。
 ///
 /// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
 fn register_item_equip_mask(id: String, slot_names: Vec<String>) -> Result<bool, String> {
@@ -325,20 +310,6 @@ fn do_register_item_equip_mask(
             return Err(format!("未知的装备槽位名称 {name:?}"));
         };
         mask = mask.union(slot.mask());
-    }
-
-    // 有耐久却不占任何武器槽位（主手/副手）——两条规则字面矛盾
-    // （"有耐久"暗示"是一件会被使用、磨损的武器"，"不占任何武器槽位"
-    // 暗示"不是武器"），注册期直接拒绝，理由见本函数文档「为什么在这里
-    // 校验耐久与武器槽位的组合」一节。
-    let max_durability = table
-        .get(index)
-        .expect("上面已经用 registry.get 确认过 id 存在，index 必然已被 define 过")
-        .max_durability;
-    if max_durability.is_some() && !mask.intersects(WEAPON_GROUP_SLOTS) {
-        return Err(format!(
-            "物品 {id:?} 声明了耐久上限（{max_durability:?}），但新的装备占位掩码不占用任何武器槽位（主手/副手）——只有武器才允许携带耐久"
-        ));
     }
 
     table
@@ -842,6 +813,85 @@ fn do_register_item_resistance(
         .map_err(|err: ItemError| err.to_string())
 }
 
+/// `(register-item-tag id tag-id)`——追加声明「这件物品带有某个标签」
+/// （耐久标签批次），落地项目所有者的裁定「每个物品可以有个标签的
+/// 列表，带有多个标签」。形状照 [`register_item_resistance`]/
+/// `register-item-stat-bonus`：两个字符串参数、追加语义、目标与被引用
+/// 者都必须已注册。
+///
+/// - `id`：已经通过 `register-item` 注册过的完整命名空间标识符字符串。
+/// - `tag-id`：已经通过 `register-tag`（[`crate::script_tag_api`]）
+///   注册过的完整命名空间标识符字符串。
+///
+/// # 为什么校验「真的是个标签」，而不只是「这个 id 被 intern 过」
+///
+/// [`Registry::get`] 对**任何**已注册内容都返回 `Some`——只用它校验,
+/// 把一个物品 id 当标签传进来照样通过,这条校验就等于没写。本函数因此
+/// 多查一步 [`crate::tag::TagTable::is_defined`]。这条纪律拦的是
+/// `"lostlan:armor"` 这类拼写错误：它的症状是**标签静默不生效**（一件
+/// 甲从此再也不掉耐久,却没有任何报错）,是最难查的一类内容缺陷,与
+/// `recipe-category-requires-subclass!` 校验副职 id 同一条理由。
+///
+/// # 顺序要求：`register-tag` 必须先跑
+///
+/// 与 `register-item-damage-category` 要求伤害类别先注册、
+/// `recipe-requires-tool!` 要求工具物品先注册完全同构（ADR 0017
+/// 「注册期完整校验」）。同一个 mod 内的脚本共享同一份定义
+/// （`3bd5e98` 起作用域单位是 mod 而不是脚本文件），跨 mod 时由
+/// `mod.json5` 的依赖声明保证装载顺序。
+///
+/// **追加，不是覆盖**——重复把同一个标签挂到同一件物品上返回错误，
+/// 见 [`crate::item::ItemTable::add_tag`] 文档。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_item_tag(id: String, tag_id: String) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-item-tag 在没有活跃物品表的窗口内被调用".to_string());
+            };
+            crate::script_tag_api::with_active_tag_table(|tags| {
+                let Some(tags) = tags else {
+                    return Err("register-item-tag 在没有活跃标签表的窗口内被调用".to_string());
+                };
+                do_register_item_tag(registry, table, tags, &id, &tag_id)
+            })
+        })
+    })
+}
+
+/// [`register_item_tag`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_item_tag(
+    registry: &Registry,
+    table: &mut ItemTable,
+    tags: &TagTable,
+    id: &str,
+    tag_id: &str,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("物品 {id:?} 尚未通过 register-item 注册"));
+    };
+    let parsed_tag_id =
+        NamespacedId::parse(tag_id).map_err(|err| format!("非法内容标识符 {tag_id:?}：{err}"))?;
+    let Some(tag_index) = registry.get(&parsed_tag_id) else {
+        return Err(format!("标签 {tag_id:?} 尚未通过 register-tag 注册"));
+    };
+    let Some(tag_def) = tags.get(tag_index) else {
+        return Err(format!(
+            "{tag_id:?} 是一个已注册的内容标识符，但它不是标签（没有登记在标签表里）——register-item-tag 只接受 register-tag 注册过的 id"
+        ));
+    };
+
+    table
+        .add_tag(index, tag_index, tag_def.wear)
+        .map(|()| true)
+        .map_err(|err: ItemError| err.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1138,13 +1188,17 @@ mod tests {
     }
 
     #[test]
-    fn 有耐久的物品占位掩码不占任何武器槽位时返回错误() {
-        // 大斧声明了耐久上限（120），若把占位掩码设置成不占用任何武器
-        // 槽位（这里选头顶，随便一个非武器分组的槽位即可），两条规则
-        // 字面矛盾——见 `do_register_item_equip_mask` 文档「为什么在
-        // 这里校验耐久与武器槽位的组合」一节。
+    fn 有耐久的物品占位掩码不占任何武器槽位时照样注册成功() {
+        // 耐久扩面批次：所有者裁定「衣服要耐久」之后，「有耐久却不占
+        // 武器槽位」不再是非法组合——头顶槽位的头盔、`body` 槽位的
+        // 衣服都应当能合法携带耐久，见 `register_item_equip_mask`
+        // 文档「为什么这里**不再**校验耐久与武器槽位的组合」一节。
+        // 本批次之前这里断言的是 `result.is_err()`。
         // Arrange
         let (registry, mut table) = registry_and_table_with_great_axe();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:great_axe").unwrap())
+            .expect("刚注册的内容应能查到索引");
 
         // Act
         let result = do_register_item_equip_mask(
@@ -1155,16 +1209,45 @@ mod tests {
         );
 
         // Assert
+        assert_eq!(result, Ok(true));
+        assert_eq!(table.get(index).unwrap().equip_mask, EquipSlot::HEAD.mask());
+        assert_eq!(table.get(index).unwrap().max_durability, Some(120));
+    }
+
+    #[test]
+    fn 可堆叠物品携带耐久仍然被注册期拒绝() {
+        // 放宽武器槽位那条校验之后**仍然守住**的那条真实不变量——
+        // 它在 `do_register_item`，不在 `do_register_item_equip_mask`：
+        // 可堆叠与逐实例耐久两条机制字面矛盾（`can_merge` 的判据是
+        // 「def 相同且耐久相同」）。这条测试与上一条成对，证明本批次
+        // 放宽的是"品味判断"那一条，不是把耐久相关的注册期校验全删了。
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+
+        // Act
+        let result = do_register_item(
+            &mut registry,
+            &mut table,
+            "yourmod:iron_ingot",
+            "yourmod:iron_ingot_name",
+            50,
+            2_000,
+            4_000,
+            100,
+        );
+
+        // Assert
         assert!(result.is_err());
     }
 
     #[test]
     fn 有耐久的物品占位掩码只占副手时注册成功() {
-        // 反例，与上一条测试成对：占位掩码只包含副手（不包含主手）时
-        // 同样的耐久声明必须放行——证明这条校验拒绝的是"不占任何武器
-        // 槽位"这个组合本身，不是耐久上限恒被拒绝，也不是只有主手才
-        // 算数（`equipment-slots.md` 槽位表「武器」这一组同时覆盖主手
-        // 与副手，见 `WEAPON_GROUP_SLOTS` 文档）。
+        // 副手（「盾、副武器、法器」）同样合法——本批次之前这条是
+        // 「不占任何武器槽位即拒绝」那条校验的反例，校验删除后它退化
+        // 成一条普通的"掩码写入正确"断言，保留是因为木盾
+        // （`examplemod:wooden_shield`，只占副手、带耐久）是仓库里真实
+        // 存在的内容，值得继续有一条单元测试钉住它注册得进去。
         // Arrange
         let (registry, mut table) = registry_and_table_with_great_axe();
         let index = registry
@@ -1835,6 +1918,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("首次定义必成功");
@@ -1897,6 +1981,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("首次定义必成功");
@@ -1944,6 +2029,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("首次定义必成功");

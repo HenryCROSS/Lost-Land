@@ -156,6 +156,7 @@ fn load_real_mods() -> RealModsHandle {
     let mut damage_category = DamageCategoryTable::new();
     let mut recipe_table = ll_mod::recipe::RecipeTable::new();
     let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
+    let mut tag_table = ll_mod::tag::TagTable::new();
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
         &mut registry,
@@ -179,6 +180,7 @@ fn load_real_mods() -> RealModsHandle {
             weather: &mut weather,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            tag: &mut tag_table,
         },
     );
 
@@ -315,11 +317,29 @@ fn damage_dealt_at(
     at: Tick,
     attacker_clothes: &[(EquipSlot, ContentIndex)],
 ) -> i32 {
-    let mut world = test_world();
     let equipment: BTreeMap<EquipSlot, ItemStack> = attacker_clothes
         .iter()
         .map(|(slot, def)| (*slot, ItemStack::new(*def, 1)))
         .collect();
+    damage_dealt_wearing(handle, at, equipment, BTreeMap::new()).0
+}
+
+/// [`damage_dealt_at`] 的完整版本：攻防两方的装备都由调用方逐堆给定
+/// （因此可以带上真实的 `durability`），除伤害之外**还返回防御方结算
+/// 之后的装备栏**，供「挨打掉耐久」那一路断言使用。
+///
+/// 两个入口而不是给 `damage_dealt_at` 加参数，理由同
+/// `ll_sim::resolve::derive_stats`/`derive_stats_at` 那一对：本文件既有
+/// 的五条温度断言一件带耐久的装备都不需要，强迫它们每处都构造一个
+/// `BTreeMap<EquipSlot, ItemStack>` 只是噪音。
+fn damage_dealt_wearing(
+    handle: &RealModsHandle,
+    at: Tick,
+    attacker_equipment: BTreeMap<EquipSlot, ItemStack>,
+    defender_equipment: BTreeMap<EquipSlot, ItemStack>,
+) -> (i32, BTreeMap<EquipSlot, ItemStack>) {
+    let mut world = test_world();
+    let equipment = attacker_equipment;
     let attacker = spawn_agent(
         &mut world,
         handle,
@@ -327,7 +347,13 @@ fn damage_dealt_at(
         Agent::STARTING_HEALTH,
         equipment,
     );
-    let defender = spawn_agent(&mut world, handle, (6, 5), DEFENDER_HEALTH, BTreeMap::new());
+    let defender = spawn_agent(
+        &mut world,
+        handle,
+        (6, 5),
+        DEFENDER_HEALTH,
+        defender_equipment,
+    );
 
     let mut timeline = Timeline::new();
     timeline.schedule(attacker, at);
@@ -355,12 +381,14 @@ fn damage_dealt_at(
         "本场景应当恰好结算攻击方一次行动，实际结算序列不符"
     );
 
-    DEFENDER_HEALTH
-        - world
-            .actors
-            .get(defender)
-            .expect("防御方生命远高于单次伤害，不应死亡")
-            .health
+    let defender_after = world
+        .actors
+        .get(defender)
+        .expect("防御方生命远高于单次伤害，不应死亡");
+    (
+        DEFENDER_HEALTH - defender_after.health,
+        defender_after.equipment.clone(),
+    )
 }
 
 #[test]
@@ -563,6 +591,124 @@ fn 一件保暖装备的效果严格弱于两件() {
     assert!(
         bare < two,
         "两层与赤身之间必须有真实差别，否则本测试测不到任何东西"
+    );
+}
+
+#[test]
+fn 真实注册的两件保暖装备现在带耐久上限() {
+    // 耐久扩面批次（所有者裁定「衣服要耐久，受到攻击就会减少耐久」）：
+    // `mods/example_mod/gameplay.scm` 里这两件此前只能填 -1,注册期有
+    // 一条「只允许占武器槽位的物品携带耐久」的校验拦着。本条把放宽
+    // 之后的真实注册结果钉住——若那条校验被恢复，装载会直接失败,
+    // `load_real_mods` 里的 `LoadStatus::Success` 断言先红。
+    // Arrange
+    let handle = load_real_mods();
+
+    // Act
+    let liner = handle.item.get(handle.wool_liner_id).expect("已注册");
+    let cloak = handle.item.get(handle.fur_cloak_id).expect("已注册");
+
+    // Assert
+    assert_eq!(liner.max_durability, Some(60));
+    assert_eq!(cloak.max_durability, Some(90));
+}
+
+#[test]
+fn 穿着保暖装备的防御方经真实回合引擎挨一下之后两件衣服都掉了一点耐久() {
+    // ADR 0018 端到端证据：走的是 `ll-game` 唯一使用的那条生产链路
+    // （`TurnEngine::advance_ai` → `resolve_with_catalogs` →
+    // `resolve_attack`），不是直接调 `resolve_attack`。
+    //
+    // 反例（手工验证过会红）：把 `resolve_attack` 里「挨打」通道那段
+    // `effects.extend(defender.equipment.iter()...)` 删掉,本条立即从
+    // `Some(59)`/`Some(89)` 变回 `Some(60)`/`Some(90)` 而失败；把过滤
+    // 条件里的 `!WEAPON_GROUP_SLOTS.contains_slot(..)` 去掉本条照样绿
+    // ——那一半由下一条测试负责。
+    // Arrange
+    let handle = load_real_mods();
+    let defender_equipment = BTreeMap::from([
+        (
+            EquipSlot::BODY,
+            ItemStack::with_durability(handle.wool_liner_id, 1, 60),
+        ),
+        (
+            EquipSlot::OUTER,
+            ItemStack::with_durability(handle.fur_cloak_id, 1, 90),
+        ),
+    ]);
+
+    // Act
+    let (_, equipment_after) =
+        damage_dealt_wearing(&handle, SUMMER_NOON, BTreeMap::new(), defender_equipment);
+
+    // Assert
+    assert_eq!(
+        equipment_after
+            .get(&EquipSlot::BODY)
+            .expect("内衬仍在装备栏里——耐久归零都不自动卸下，何况只掉一点")
+            .durability,
+        Some(59),
+    );
+    assert_eq!(
+        equipment_after
+            .get(&EquipSlot::OUTER)
+            .expect("外袍仍在装备栏里")
+            .durability,
+        Some(89),
+    );
+}
+
+#[test]
+fn 耐久归零的保暖装备经真实回合引擎不再提供任何保暖() {
+    // 本批次最关键的一条：玩家最容易被坑的情形是「穿着一件破衣服，
+    // 以为还在保暖」。`derive_stats_at` 的「`durability == Some(0)` 即
+    // `continue`」跳在读取 `stat_bonuses` **之前**,因此对
+    // `StatTarget::Armor` 与 `StatTarget::Insulation` 一视同仁——这条
+    // 测试把「一视同仁」钉在真实结算结果上,而不是靠读代码相信。
+    //
+    // 手法与 `穿上两件保暖装备后冬夜的伤害回到夏日水平` 完全相同,只把
+    // 两件衣服的耐久从「没有耐久概念」换成「归零」：冬夜的力量惩罚必须
+    // 原样回来,伤害回落到赤身水平。
+    // Arrange
+    let handle = load_real_mods();
+    let broken = BTreeMap::from([
+        (
+            EquipSlot::BODY,
+            ItemStack::with_durability(handle.wool_liner_id, 1, 0),
+        ),
+        (
+            EquipSlot::OUTER,
+            ItemStack::with_durability(handle.fur_cloak_id, 1, 0),
+        ),
+    ]);
+    let intact = BTreeMap::from([
+        (
+            EquipSlot::BODY,
+            ItemStack::with_durability(handle.wool_liner_id, 1, 1),
+        ),
+        (
+            EquipSlot::OUTER,
+            ItemStack::with_durability(handle.fur_cloak_id, 1, 1),
+        ),
+    ]);
+
+    // Act
+    let bare_winter = damage_dealt_at(&handle, WINTER_MIDNIGHT, &[]);
+    let broken_winter = damage_dealt_wearing(&handle, WINTER_MIDNIGHT, broken, BTreeMap::new()).0;
+    // 反例：耐久只剩 1 点（未归零）的同两件衣服必须照常保暖——证明上面
+    // 那条断言拒绝的是「归零」这个状态本身，不是「带耐久字段的衣服一律
+    // 不保暖」。
+    let barely_alive_winter =
+        damage_dealt_wearing(&handle, WINTER_MIDNIGHT, intact, BTreeMap::new()).0;
+
+    // Assert
+    assert_eq!(
+        broken_winter, bare_winter,
+        "耐久归零的衣服必须与没穿完全等价：破衣 {broken_winter} 应当等于赤身 {bare_winter}"
+    );
+    assert!(
+        barely_alive_winter > bare_winter,
+        "只剩 1 点耐久的衣服仍然照常保暖：{barely_alive_winter} 应当高于赤身 {bare_winter}"
     );
 }
 

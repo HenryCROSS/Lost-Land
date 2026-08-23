@@ -38,7 +38,9 @@ use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::effect::Effect;
 use ll_sim::formula::NoFormulas;
 use ll_sim::intent::Intent;
-use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, StatBonus, StatTarget};
+use ll_sim::item::{
+    EquipSlot, ItemCatalog, ItemRule, ItemStack, StatBonus, StatTarget, WearChannels,
+};
 use ll_sim::resolve::{
     derive_stats, resolve, resolve_with_skills_traits_pools_and_items,
     resolve_with_skills_traits_pools_items_formulas_and_damage_categories,
@@ -92,6 +94,10 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
             (
                 gauntlets,
                 ItemRule {
+                    // 「使用」通道：这件夹具在本文件里扮演"挥出去的
+                    // 武器"，因此带 on-use、**不带** on-hit——耐久标签
+                    // 批次之后这是它会不会磨损的唯一判据。
+                    wear_channels: WearChannels::ON_USE,
                     stack_limit: 1,
                     equip_mask: EquipSlot::HAND_L.mask(),
                     stat_bonuses: vec![StatBonus {
@@ -108,6 +114,8 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
             (
                 armor,
                 ItemRule {
+                    // 「挨打」通道：这件夹具扮演"穿在身上的甲"。
+                    wear_channels: WearChannels::ON_HIT,
                     stack_limit: 1,
                     equip_mask: EquipSlot::BODY.mask(),
                     stat_bonuses: vec![StatBonus {
@@ -441,7 +449,10 @@ fn 攻击方主手武器的耐久真的减少() {
     // 形状当"武器"用，`resolve_attack` 不校验 `equip_mask` 是否真的
     // 包含主手），打出一下攻击后耐久必须精确减到 9,不是保持不变。
     // Arrange
-    let (_gauntlets, armor_def, items) = combat_items();
+    // 耐久标签批次：主手拿的必须是**带 on-use 标签**的那件夹具
+    // （护手），不能再随手拿护甲夹具充数——判据已经从"它在主手"变成
+    // "它是什么"。
+    let (gauntlets, _armor_def, items) = combat_items();
     let mut world = test_world();
     let attacker = spawn_agent(
         &mut world,
@@ -449,7 +460,7 @@ fn 攻击方主手武器的耐久真的减少() {
         Vec::new(),
         BTreeMap::from([(
             EquipSlot::MAIN_HAND,
-            ItemStack::with_durability(armor_def, 1, 10),
+            ItemStack::with_durability(gauntlets, 1, 10),
         )]),
         BTreeMap::new(),
     );
@@ -483,12 +494,13 @@ fn 攻击方主手武器的耐久真的减少() {
 }
 
 #[test]
-fn 防御方护甲的耐久不再因为挨打而减少() {
-    // 与上一条测试成对——证明 P6 第六批把耐久消耗从「防御方全部已装备
-    // 物品」收窄到「攻击方主手武器」后，防御方的护甲即便带耐久,挨打也
-    // 不再损耗,这正是「护甲等其余装备不再掉耐久」这条新规则的直接
-    // 端到端验收（P6 第五批时这里断言的是 `Some(4)`，见本文件此前
-    // 版本）。
+fn 防御方护甲的耐久因为挨打而减少() {
+    // 耐久扩面批次：项目所有者裁定「衣服要耐久，**受到攻击就会减少
+    // 耐久**」，推翻了此前「只有装备武器才有耐久」那条裁定。本测试
+    // 因此第三次改写——P6 第五批断言 `Some(4)`（全部装备挨打即掉），
+    // 第六批收窄后断言 `Some(5)`（护甲不再掉），本批次回到 `Some(4)`,
+    // 但回到的方式与第五批不同：现在只有**非武器槽位**才掉，见下一条
+    // 测试与 `resolve_attack` 文档「耐久消耗：两条通道」一节。
     // Arrange
     let (_gauntlets, armor_def, items) = combat_items();
     let mut world = test_world();
@@ -524,7 +536,63 @@ fn 防御方护甲的耐久不再因为挨打而减少() {
         .expect("生命值远高于伤害,不会死亡")
         .equipment
         .get(&EquipSlot::BODY)
-        .expect("护甲仍在装备栏里");
+        .expect("护甲仍在装备栏里——耐久归零都不自动卸下，何况只掉一点");
+    assert_eq!(stack.durability, Some(4));
+}
+
+#[test]
+fn 只带使用通道标签的装备挨打不减耐久() {
+    // 与上一条成对的反例。**耐久标签批次改写了这条的判据**：上一版
+    // 把同一件甲从 `BODY` 挪到 `OFF_HAND`，靠"副手属于武器组"来证明
+    // 不磨损；项目所有者推翻了那个判据（「副手也可能拿着武器,例如
+    // 双刀,双盾」），本版改成换**东西**而不是换槽位——同样放在
+    // `OFF_HAND`，换成只带 `ON_USE` 通道的护手夹具，耐久必须原样保持。
+    //
+    // 这条钉住的是「挨打」通道那句
+    // `rule.wear_channels.contains(WearChannels::ON_HIT)` 本身：去掉它，
+    // 本条立即从 `Some(5)` 变成 `Some(4)` 而失败。上一版那条按槽位的
+    // 断言在本版里已经不成立——同样占副手的木盾现在会磨损，证据见
+    // `ll-mod/tests/turn_engine_catalogs.rs`
+    // 「副手拿刀与副手拿盾在同一次挨打里结果相反」。
+    // Arrange
+    let (gauntlets, _armor_def, items) = combat_items();
+    let mut world = test_world();
+    let attacker = spawn_agent(
+        &mut world,
+        Agent::STARTING_HEALTH,
+        Vec::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
+    let defender = spawn_agent(
+        &mut world,
+        1_000,
+        Vec::new(),
+        BTreeMap::from([(
+            EquipSlot::OFF_HAND,
+            ItemStack::with_durability(gauntlets, 1, 5),
+        )]),
+        BTreeMap::new(),
+    );
+
+    // Act
+    resolve_and_apply(
+        &mut world,
+        &Intent::Attack {
+            actor: attacker,
+            target: defender,
+        },
+        &items,
+    );
+
+    // Assert
+    let stack = world
+        .actors
+        .get(defender)
+        .expect("生命值远高于伤害,不会死亡")
+        .equipment
+        .get(&EquipSlot::OFF_HAND)
+        .expect("副手装备仍在装备栏里");
     assert_eq!(stack.durability, Some(5));
 }
 
@@ -535,6 +603,9 @@ fn 主手物品没有耐久概念时攻击不产出耐久调整效果() {
     // 不该凭空产出一个耐久调整效果——resolve_attack 只对
     // `durability.is_some()` 的主手堆产出
     // `Effect::AdjustEquipmentDurability`,证明这条判定不是恒真。
+    // 耐久扩面批次追加：本场景的防御方装备栏是**空的**，「挨打」通道
+    // 因此同样一条效果都不产出——`assert!(!effects.iter().any(..))`
+    // 覆盖的是全部产出点，不只是「使用」通道那一条。
     // Arrange
     let (_gauntlets, armor_def, items) = combat_items();
     let mut world = test_world();
@@ -632,6 +703,7 @@ fn luck_ring_item() -> (ContentIndex, FakeItems) {
         items: BTreeMap::from([(
             ring,
             ItemRule {
+                wear_channels: WearChannels::NONE,
                 stack_limit: 1,
                 equip_mask: EquipSlot::RING_L.mask(),
                 stat_bonuses: vec![StatBonus {

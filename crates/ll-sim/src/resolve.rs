@@ -71,7 +71,8 @@ use crate::exposure::{AmbientSource, exposure_strength_penalty, felt_temperature
 use crate::formula::{DamageFormulaCatalog, FormulaInputs, NoFormulas, eval_formula};
 use crate::intent::{Direction, Intent};
 use crate::item::{
-    EquipSlot, ItemCatalog, ItemStack, NoItems, SlotMask, StatTarget, can_merge, merge_stacks,
+    EquipSlot, ItemCatalog, ItemStack, NoItems, SlotMask, StatTarget, WearChannels, can_merge,
+    merge_stacks,
 };
 use crate::quest::{NoQuests, QuestCatalog};
 use crate::resource_pool::{
@@ -119,11 +120,39 @@ const BASE_ACTION_COST: u32 = 100;
 /// 需求，提前开放注册通道是 YAGNI。
 const STEALTH_MOVE_COST_PERMILLE: u32 = 2000;
 
-/// 攻击方每打出一下近战攻击，自己主手已装备的武器（若带耐久）损失的
-/// 耐久点数——武器引用与穿透接线批次（P6 第六批）把耐久消耗从「防御方
-/// 全部已装备物品」收窄到「攻击方主手武器」，见 [`resolve_attack`]
-/// 文档「耐久消耗：为什么收窄到只有武器」一节完整论证。
-const EQUIPMENT_DURABILITY_LOSS_PER_HIT: i32 = 1;
+/// 攻击方每打出一下近战攻击，自己主手那件**带 `on-use` 标签、且带
+/// 耐久**的武器损失的耐久点数——「使用」这条通道在近战攻击上的落点，
+/// 见 [`resolve_attack`] 文档「耐久消耗：两条通道，判据是标签」一节。
+const WEAPON_DURABILITY_LOSS_PER_ATTACK: i32 = 1;
+
+/// 防御方每挨一下近战攻击，自己**每一件**带 `on-hit` 标签、且带耐久的
+/// 已装备物品（护甲/衣物）损失的耐久点数——「挨打」这条通道的落点，
+/// 见 [`resolve_attack`] 文档「耐久消耗：两条通道，判据是标签」一节。
+///
+/// # 为什么是固定值，不随伤害缩放
+///
+/// 与 [`WEAPON_DURABILITY_LOSS_PER_ATTACK`] 同一个数、同一条理由：
+/// 玩家能心算的规则才是能被规划的规则（「这件甲还能挨 40 下」比
+/// 「这件甲还能扛 800 点伤害、但要先知道对面攻击力」直观得多）。
+/// 随伤害缩放还会引出一条没人要求的耦合——护甲寿命被攻击方的力量
+/// 决定，一次高伤害就能报废整套装备，而玩家对此毫无决策空间
+/// （YAGNI：没有真实需求驱动这个平衡旋钮）。ADR 0020 乙区的整数
+/// 算术也因此保持平凡，不需要任何千分比换算。
+///
+/// 与 `WEAPON_DURABILITY_LOSS_PER_ATTACK` **刻意分成两个常量而不是
+/// 复用同一个**：它们服务两条不同的规则（使用 / 挨打），今天数值相同
+/// 是巧合不是约束，将来任一条要单独调整时不该被迫牵动另一条。**一件
+/// 两条标签都带的东西（盾）在同一次交换里可以两条都吃到**，那正是
+/// 预期行为，见 `resolve_attack` 文档「两条通道现在可以重叠」一节。
+const ARMOR_DURABILITY_LOSS_PER_HIT: i32 = 1;
+
+/// 每完成一次制作，制作者身上那件被配方点名的工具（若带耐久）损失的
+/// 耐久点数——见 [`resolve_craft`] 文档「工具磨损」一节。
+///
+/// 取值与 [`WEAPON_DURABILITY_LOSS_PER_ATTACK`] 相同、理由相同（一次
+/// 制作 = 一次普通行动 = 一点磨损，与「一次攻击 = 一点磨损」同一套
+/// 直觉），同样刻意是独立常量而非复用。
+const TOOL_DURABILITY_LOSS_PER_CRAFT: i32 = 1;
 
 /// 基准有效敏捷，对应 `BaseStats::BASELINE` 的敏捷值（10，调整值为零）。
 ///
@@ -2575,6 +2604,7 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 6. 食材校验：任意一条数量不够 → 空（不消耗任何食材）
 /// 7. 逐条食材产出 Effect::ConsumeInventoryItem，重复 count 次
 /// 8. 成品并进背包（Effect::MergeIntoInventory）
+/// 9. 工具磨损（Effect::AdjustEquipmentDurability，工具带耐久时才产出）
 /// ```
 ///
 /// 三道前置（3/4/5）排在食材校验（6）之前，是因为**前三道回答的是
@@ -2596,6 +2626,54 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 不可用」，[`derive_stats`] 遍历装备时已经对 `durability == Some(0)`
 /// 的堆直接跳过（见其文档「耐久归零」一节）——工具前置若只比 `def`，
 /// 会出现「锤子已经烂了但还能打铁」这个与既有耐久语义直接矛盾的漏洞。
+///
+/// # 工具磨损（耐久扩面批次）
+///
+/// 项目所有者原话：「修理锤子也算是一种武器，也可以是带有功能性的
+/// 物品。**只要使用就会减少耐久**。」——制作正是「使用工具」这件事在
+/// 本引擎里唯一已经落地的形态，本函数因此在第 9 步产出一条
+/// [`crate::effect::Effect::AdjustEquipmentDurability`]，让被配方点名
+/// 的那件工具损失 [`TOOL_DURABILITY_LOSS_PER_CRAFT`] 点耐久。
+///
+/// 这正是 `crafting-system.md` 九节⑩「工具因制作而磨损」——该表当时
+/// 把它标为「与所有者『只有装备武器才有耐久』的裁定直接冲突」而推迟。
+/// **那条裁定已被推翻**（见上面的原话与
+/// [`resolve_attack`] 文档「耐久消耗：两条通道」一节），⑩ 的唯一阻碍
+/// 因此消失，本批次把它落地。
+///
+/// ## 只在制作**真的发生**时磨损
+///
+/// 效果排在全部前置与食材校验之后——任何一步不满足时本函数早已
+/// `return Vec::new()`，工具一点耐久都不掉。「白试一次也磨损」既不
+/// 符合「只要使用就会减少耐久」这句话（没做成就不算用过），也会让
+/// 「站错地方点了一下制作」这种纯操作失误产生真实损失。
+///
+/// ## 两个条件缺一不可：带耐久，且带 `on-use` 标签
+///
+/// 判据与 [`resolve_attack`] 的「使用」通道逐字相同：
+/// `ItemStack.durability.is_some()` 回答「这一件还有多少耐久」，
+/// [`crate::item::ItemRule::wear_channels`] 含
+/// [`WearChannels::ON_USE`] 回答「这类东西用了会不会磨损」。内容作者
+/// 因此可以声明一件永不磨损的工具——不给它填耐久上限（`-1`），或者
+/// 给它挂一个不声明任何磨损通道的纯分类标签。「哪些物品该有耐久、
+/// 该磨损」自此完全是内容决策，见
+/// `ll_mod::script_item_api::register_item_equip_mask` 与
+/// `ll_mod::script_tag_api::register_tag` 两处文档。
+///
+/// ## 归零之后制作**失败**
+///
+/// 由第 5 步的既有谓词 `durability != Some(0)` 保证，本节不新增任何
+/// 判定：磨到零的锤子从此打不了铁，直到修理系统把它修回正数。这条
+/// 与本节的磨损产出构成一个闭环——工具会用坏，用坏了就不能用，正是
+/// 「耐久」这个词的全部含义。反例测试见
+/// `ll-mod/tests/example_mod_crafting.rs`
+/// 「耐久归零的工具装着也打不了铁」。
+///
+/// ## 为什么第 5 步改成 `find` 而不是 `any`
+///
+/// 产出效果需要工具的**存储键**（[`crate::effect::Effect::AdjustEquipmentDurability`]
+/// 按槽位定位），`any` 只回答"有没有"、拿不到键。改成 `find` 之后
+/// 判据一字未改，只是把找到的那一条留了下来。
 ///
 /// # 约束核对
 ///
@@ -2653,13 +2731,33 @@ fn resolve_craft(
         return Vec::new();
     }
     // ⑤ 工具前置——装备着且耐久未归零，见本函数文档「坏掉的工具」一节。
-    if let Some(tool) = rule.required_tool
-        && !agent
+    // 用 `find` 而不是 `any`：第 9 步磨损需要这件工具的存储键，判据本身
+    // 一字未改，见本函数文档「为什么第 5 步改成 `find`」一节。
+    // `equipment` 是 `BTreeMap`（有序），同一件工具被装在多个槽位这种
+    // 情形下取哪一条是确定的（约束 C5）。
+    let mut equipped_tool: Option<EquipSlot> = None;
+    if let Some(tool) = rule.required_tool {
+        let found = agent
             .equipment
-            .values()
-            .any(|stack| stack.def == tool && stack.durability != Some(0))
-    {
-        return Vec::new();
+            .iter()
+            .find(|(_, stack)| stack.def == tool && stack.durability != Some(0));
+        match found {
+            None => return Vec::new(),
+            // 第 9 步只对「带耐久」**且**「带 `on-use` 标签」的工具记下
+            // 槽位——两个条件缺一不可，见本函数文档「工具磨损」一节。
+            // 判据与 `resolve_attack` 的「使用」通道逐字相同：一件东西
+            // 用了会不会磨损，由它带的标签回答，不由它是工具还是武器、
+            // 挂在哪个槽位回答。
+            Some((&slot, stack)) if stack.durability.is_some() => {
+                if items
+                    .item(stack.def)
+                    .is_some_and(|tool_rule| tool_rule.wear_channels.contains(WearChannels::ON_USE))
+                {
+                    equipped_tool = Some(slot);
+                }
+            }
+            Some(_) => {}
+        }
     }
     // ⑥ 食材校验——全部齐全才继续，缺任意一条都不消耗任何东西。
     for ingredient in &rule.ingredients {
@@ -2700,6 +2798,17 @@ fn resolve_craft(
         ItemStack::new(rule.product, rule.product_count),
         items,
     ));
+
+    // ⑨ 工具磨损——制作确实发生了才走到这里，见本函数文档「工具磨损」
+    // 一节。`equipped_tool` 只在「配方点名了工具、身上确实装着一件没坏
+    // 的、且它带耐久」三条同时成立时才是 `Some`。
+    if let Some(slot) = equipped_tool {
+        effects.push(Effect::AdjustEquipmentDurability {
+            actor,
+            slot,
+            delta: -TOOL_DURABILITY_LOSS_PER_CRAFT,
+        });
+    }
 
     let cost = action_cost(
         BASE_ACTION_COST,
@@ -2871,25 +2980,100 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// ——是否致死是规则判断，必须在这里（`resolve`）做出，`apply` 只管
 /// 照数字做加减（见 [`crate::effect::Effect::Damage`] 文档）。
 ///
-/// # 耐久消耗：为什么收窄到只有武器（武器引用与穿透接线批次，P6 第六批）
+/// # 耐久消耗：两条通道，判据是标签（耐久标签批次）
 ///
-/// P6 第五批曾把"攻击时掉武器耐久"还是"被击中掉护甲耐久"选了后者
-/// （挨打的防御方所有已装备物品都掉耐久），原因是当时 `Intent::Attack`
-/// 无法把耐久损耗记到攻击方任何具体装备上——见本文件此前版本的记录。
-/// 项目所有者随后裁定「装备武器才有耐久，其余物品我倾向于没有」：一旦
-/// 「武器」这个引用已经能查到（见上方「武器引用」一节），当初选择
-/// 「被击中掉耐久」的前提（"打人这一方无法归因"）已经不成立，应当回到
-/// 更符合直觉的规则——**本函数现在改为：攻击方每打出这一下，若自己
-/// 主手已装备的武器带耐久（`ItemStack.durability.is_some()`），这件
-/// 武器损失 [`EQUIPMENT_DURABILITY_LOSS_PER_HIT`] 点耐久；防御方的
-/// 护甲/其余已装备物品不再因为挨打而损耗耐久**——耐久磨损现在只发生在
-/// 「正在被使用的武器」这一件事上，与所有者的裁定完全对应：装备武器
-/// 才有耐久，其余（包括护甲）不再有耐久这个概念本该走的路径是
-/// `register-item` 注册期本身就不该给非武器物品声明耐久上限，见
-/// `ll_mod::script_item_api::register_item_equip_mask` 文档「为什么在
-/// 这里校验耐久与武器槽位的组合」一节；本函数只负责"武器耐久确实会
-/// 随攻击减少、其余装备确实不再减少"这个结算侧的行为，不重复注册期的
-/// 校验职责。
+/// 项目所有者的裁定分两步走到今天。第一步推翻了「只有装备武器才有
+/// 耐久」：
+///
+/// > 「衣服要耐久，受到攻击就会减少耐久。」
+/// > 「修理锤子也算是一种武器，也可以是带有功能性的物品。只要使用就
+/// > 会减少耐久。」
+///
+/// 第二步推翻了本函数**上一版按槽位分类**的做法。上一版把防御方的
+/// 已装备物品按存储键分成「武器组（主手/副手）」与「其余」，只让后者
+/// 挨打掉耐久。所有者指出这个判据本身是错的：
+///
+/// > 「副手也可能拿着武器,例如双刀,双盾」
+///
+/// **副手不等于盾**——双持匕首时副手是武器，双盾时两只手都是盾。
+/// 槽位回答的是「这件东西挂在哪」，回答不了「这件东西是什么」。所有者
+/// 给出的表达方式是标签：
+///
+/// > 「每个物品可以有个标签的列表,带有多个标签」
+///
+/// 判据因此改成**按物品是什么**，不是按它在哪个槽位：
+///
+/// | 通道 | 判据 | 谁磨损 | 每次多少 |
+/// |---|---|---|---|
+/// | **使用** | 物品带 `on-use` 标签 | 攻击方**主手**的武器 | [`WEAPON_DURABILITY_LOSS_PER_ATTACK`] |
+/// | **挨打** | 物品带 `on-hit` 标签 | 防御方**每一件**已装备物品 | [`ARMOR_DURABILITY_LOSS_PER_HIT`] |
+///
+/// 「带某个标签」在结算侧读的是
+/// [`crate::item::ItemRule::wear_channels`]——由这件物品的全部标签在
+/// **注册期**折算好的位掩码（ADR 0016/0017：注册期物化、运行期查表），
+/// 不是运行期遍历标签列表现算，完整论证见该字段文档。
+///
+/// 两条通道都仍然只作用于**带耐久的堆**
+/// （`ItemStack.durability.is_some()`）：标签回答「这类东西会不会磨损」,
+/// `durability` 回答「这一件具体还有多少」，两个问题都要成立才产出
+/// 效果。徒手、或穿着没有耐久概念的物品时，本函数一条效果都不产出。
+///
+/// ## 两条通道现在**可以**重叠——这是刻意的
+///
+/// 上一版有一条「两组槽位刻意不重叠，没有任何一件装备被两条规则同时
+/// 收费」的不变量。**本批次明确推翻它**，理由是所有者原话：
+///
+/// > 「有的技能像是盾击,他也会变成武器这样」
+///
+/// 一面既用来砸人又用来挡刀的盾，两条通道都该收费——给它同时挂上
+/// 武器标签与防具标签即可（[`crate::item::ItemRule::wear_channels`]
+/// 是并集）。上一版担心的「对砍时武器以护甲两倍速报废」不受影响：
+/// 一把剑只带武器标签，压根进不了挨打通道；会两头磨损的只有内容作者
+/// **明确声明**它两头都用的东西。
+///
+/// ## 为什么全部已装备物品一起扫，不挑一件
+///
+/// 「挑一件」要么掷骰（约束 C3/C5 又多一条随机流，且给回放添一处随机
+/// 噪声），要么定一个任意的优先级顺序（"先磨外套还是先磨头盔"没有任何
+/// 设计依据）。全部各扣一点是确定性的，且与"这一下打在身上"的直觉
+/// 相容。代价是穿得越多磨损总量越大，但那是一个合理的权衡（护甲多 =
+/// 减伤多 = 维护成本高），不是需要抵消的缺陷。
+///
+/// 遍历顺序由 `equipment`（`BTreeMap`）决定，确定（约束 C5）。
+///
+/// ## 这一步为什么可以查目录
+///
+/// 判据从「读存储键」变成「查 `items.item(def).wear_channels`」，每件
+/// 已装备物品因此多一次目录查询。这与 ADR 0016/0017「结算是热路径」
+/// 不冲突：[`derive_stats_at`] 本来就对**同一批**已装备堆逐个做同样的
+/// `items.item(stack.def)` 查询（为了读 `stat_bonuses`），本函数在同一
+/// 次攻击里做的是同一量级、同一形状的事，不是新引入一类开销。真正被
+/// 该 ADR 挡在门外的是"运行期遍历标签列表再逐个查标签表"，那一步已经
+/// 在注册期做完了。
+///
+/// ## 伤害为零时照样磨损
+///
+/// 抗性免疫（乘数 0）或减伤把这一下打成 0 时，「挨打」通道**仍然**
+/// 产出效果：判据是「这一下攻击结算成立、打在了身上」，不是「实际掉了
+/// 血」。反过来做会让一条免疫天赋顺带附赠"护甲永不磨损"，那是两个
+/// 系统之间一条没人设计过的隐藏耦合。
+///
+/// ## 与击杀的先后
+///
+/// 「挨打」通道的效果排在 [`Effect::Kill`] **之前**——`apply` 按顺序
+/// 执行，`Kill` 会把实体收走（`world.actors.get_mut` 随后落空），耐久
+/// 必须先写完。这与「潜行破除排在伤害之后」是同一类"效果顺序本身是
+/// 设计决定"的既有考虑。
+///
+/// ## 归零之后
+///
+/// 本函数从不产出 [`Effect::Unequip`]：耐久归零的护甲继续占着槽位,
+/// 只是不再贡献任何加成——**护甲值与保温值一并失效**，因为
+/// [`derive_stats_at`] 的「耐久归零即 `continue`」是在读取
+/// `stat_bonuses` **之前**跳过整条堆，三个 [`StatTarget`] 变体
+/// （`Attribute`/`Armor`/`Insulation`）没有任何一个能绕过它。一件穿
+/// 破了的皮袄因此既不挡刀也不保暖，见 [`derive_stats`] 文档「耐久归零」
+/// 一节。
 ///
 /// # 暴击：读取 `attacker_derived.attribute(AttributeKind::Luck)`（幸运并入
 /// `AttributeKind` 批次）
@@ -3260,16 +3444,44 @@ fn resolve_attack(
             stealthed: false,
         });
     }
-    // 攻击方主手武器（若带耐久）每打出这一下损失一点耐久——见本函数
-    // 文档「耐久消耗」一节；徒手（主手为空）或武器没有耐久概念时不
-    // 产出任何效果。
-    effects.extend(weapon.filter(|stack| stack.durability.is_some()).map(|_| {
-        Effect::AdjustEquipmentDurability {
+    // 「使用」通道：攻击方主手那件**带 `on-use` 标签、且带耐久**的武器
+    // 每打出这一下损失一点耐久——见本函数文档「耐久消耗：两条通道，
+    // 判据是标签」一节。徒手（主手为空）、武器没有耐久概念、或这件东西
+    // 压根没被声明成"用了会磨损"的类别时，都不产出任何效果。
+    // `weapon_rule` 已经把耐久归零的武器滤掉（本函数上方「穿透」一节
+    // 同一条"损坏即失效"纪律），坏掉的武器因此也不再继续磨损。
+    let weapon_wears = weapon.is_some_and(|stack| stack.durability.is_some())
+        && weapon_rule
+            .as_ref()
+            .is_some_and(|rule| rule.wear_channels.contains(WearChannels::ON_USE));
+    if weapon_wears {
+        effects.push(Effect::AdjustEquipmentDurability {
             actor,
             slot: EquipSlot::MAIN_HAND,
-            delta: -EQUIPMENT_DURABILITY_LOSS_PER_HIT,
-        }
-    }));
+            delta: -WEAPON_DURABILITY_LOSS_PER_ATTACK,
+        });
+    }
+    // 「挨打」通道：防御方每一件**带 `on-hit` 标签、且带耐久**的已装备
+    // 物品各损失一点耐久——同上一节。判据是"这件东西是什么"（标签折算
+    // 出的 `wear_channels`），不是"它挂在哪个槽位"：副手拿的可能是盾
+    // （该磨损），也可能是副武器（不该走这条通道），槽位分不出这个差别。
+    // `equipment` 是 `BTreeMap`（有序），产出顺序因此确定（约束 C5）。
+    effects.extend(
+        defender
+            .equipment
+            .iter()
+            .filter(|(_, stack)| stack.durability.is_some())
+            .filter(|(_, stack)| {
+                items
+                    .item(stack.def)
+                    .is_some_and(|rule| rule.wear_channels.contains(WearChannels::ON_HIT))
+            })
+            .map(|(&slot, _)| Effect::AdjustEquipmentDurability {
+                actor: target,
+                slot,
+                delta: -ARMOR_DURABILITY_LOSS_PER_HIT,
+            }),
+    );
     if defender.health - damage <= 0 {
         // 近战击杀——`weapon` 现在真正指向攻击者主手已装备的物品
         // （武器引用与穿透接线批次，P6 第六批），徒手攻击（主手为空）

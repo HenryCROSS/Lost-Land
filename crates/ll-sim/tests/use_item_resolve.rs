@@ -23,7 +23,7 @@ use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
 use ll_sim::combat::Penetration;
 use ll_sim::intent::Intent;
-use ll_sim::item::{ItemCatalog, ItemRule, ItemStack, SlotMask};
+use ll_sim::item::{ItemCatalog, ItemRule, ItemStack, SlotMask, WearChannels};
 use ll_sim::resolve::resolve_with_skills_traits_pools_and_items;
 use ll_sim::skill::{ResourceKind, SkillEffect};
 use ll_world::entity::{Agent, AttributeKind, BaseStats, EntityId};
@@ -110,6 +110,7 @@ fn potion_with_effect(effect: SkillEffect) -> (ContentIndex, FakeItems) {
         items: BTreeMap::from([(
             potion,
             ItemRule {
+                wear_channels: WearChannels::NONE,
                 stack_limit: 10,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
@@ -275,6 +276,7 @@ fn 没有use_effect的物品使用后不产出任何效果() {
         items: BTreeMap::from([(
             ore,
             ItemRule {
+                wear_channels: WearChannels::NONE,
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),

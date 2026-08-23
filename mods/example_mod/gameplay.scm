@@ -243,6 +243,15 @@
 ;; 内容必须能从 mod 脚本注册，且要有真实 mod 脚本为证」，
 ;; crates/ll-mod/tests/example_mod_starting_items.rs 是那份证据。
 (register-item "examplemod:crude_dagger" "examplemod:crude_dagger_display_name" 1 500 8000 20)
+;; 耐久标签批次：粗劣匕首现在**可双持**（主手或副手都能拿）——这不是
+;; 装饰，是本批次核心裁定的验收夹具。项目所有者指出「副手也可能拿着
+;; 武器,例如双刀,双盾」，推翻了此前"副手 = 盾 = 防具"那个按槽位分类的
+;; 判据。副手拿着这把匕首（weapon 标签，只走 on-use）挨打**不掉耐久**，
+;; 副手拿着木盾（armor 标签，走 on-hit）挨打**掉耐久**——同一个槽位、
+;; 两种结果，槽位携带不了这个差别，标签可以。
+;; 证据见 crates/ll-mod/tests/turn_engine_catalogs.rs
+;; 「副手拿刀与副手拿盾在同一次挨打里结果相反」。
+(register-item-equip-mask "examplemod:crude_dagger" (list "main-hand" "off-hand"))
 (register-race-starting-item "examplemod:goblin" "examplemod:crude_dagger" 1)
 (register-race-starting-item "examplemod:goblin" "examplemod:arrow" 2)
 
@@ -340,9 +349,12 @@
 ;; `真实注册的酸抗护符装备在身上时真实降低了酸匕首造成的伤害` 是那份
 ;; 证据。刻意用一个**没有 acid_hide 天赋的种族**（半精灵）来戴它,这样
 ;; 降下来的那部分伤害只可能来自装备这一路,不会与天赋那一路混淆。
-;; 最后一个参数是耐久上限，-1 表示"没有耐久概念"——护符占的是脖子
-;; 槽位，不是武器槽位，register-item 的既有校验只允许武器携带耐久。
-(register-item "examplemod:acid_ward_amulet" "examplemod:acid_ward_amulet_display_name" 1 300 15000 -1)
+;; 最后一个参数是耐久上限。耐久扩面批次（所有者裁定「衣服要耐久，受到
+;; 攻击就会减少耐久」）之后，占非武器槽位的物品同样可以携带耐久——这里
+;; 填 60：护符占脖子槽位，属于「挨打」通道覆盖的非武器槽位，戴着它挨打
+;; 会真的磨损，磨到零之后它提供的酸抗也随之失效（derive_stats 对
+;; durability == Some(0) 的堆整条跳过，护甲/绝缘/属性加成一视同仁）。
+(register-item "examplemod:acid_ward_amulet" "examplemod:acid_ward_amulet_display_name" 1 300 15000 60)
 (register-item-equip-mask "examplemod:acid_ward_amulet" (list "neck"))
 (register-item-resistance "examplemod:acid_ward_amulet" "examplemod:acid" 500)
 
@@ -398,16 +410,63 @@
 ;; register-item-stat-bonus 的第二个参数多认识了一个目标名
 ;; "insulation"（此前只有六个属性名 + "luck" + "armor"），单位是十分之
 ;; 一摄氏度，与 ll_world::temperature::Temperature 同一量纲。
-;; 两件都传 -1（没有耐久概念）：register-item 的注册期校验只允许占用
-;; 武器槽位（主手/副手）的物品携带耐久上限，而这两件占的是 body/outer
-;; ——最初写成 60/90 时装载直接失败，是 ADR 0017「注册期完整校验」在
-;; 本批次内容上的一次真实拦截。
-(register-item "examplemod:wool_liner" "examplemod:wool_liner_display_name" 1 2000 8000 -1)
+;; 耐久扩面批次：这两件此前只能传 -1——register-item-equip-mask 当时有
+;; 一条「只允许占武器槽位的物品携带耐久」的注册期校验，写成 60/90 会让
+;; 装载直接失败。所有者裁定「衣服要耐久，受到攻击就会减少耐久」之后那条
+;; 校验已被删除（见 register_item_equip_mask 文档「为什么这里**不再**
+;; 校验耐久与武器槽位的组合」一节），这两件因此改填真实耐久上限,成为
+;; ADR 0018 意义上「衣服真的有耐久、挨打真的会掉、掉到零真的不再保暖」
+;; 的证据——crates/ll-mod/tests/example_mod_temperature.rs 三条新测试。
+;; 60/90 与各自的绝缘值（50/90）同数量级，没有更深的推导：内衬比外袍
+;; 单薄，因此更不经打。
+(register-item "examplemod:wool_liner" "examplemod:wool_liner_display_name" 1 2000 8000 60)
 (register-item-equip-mask "examplemod:wool_liner" (list "body"))
 (register-item-stat-bonus "examplemod:wool_liner" "insulation" 50)
-(register-item "examplemod:fur_cloak" "examplemod:fur_cloak_display_name" 1 5000 30000 -1)
+(register-item "examplemod:fur_cloak" "examplemod:fur_cloak_display_name" 1 5000 30000 90)
 (register-item-equip-mask "examplemod:fur_cloak" (list "outer"))
 (register-item-stat-bonus "examplemod:fur_cloak" "insulation" 90)
+
+;; ── 物品标签（耐久标签批次）─────────────────────────────────────
+;;
+;; 用到的脚本 API（Rust 侧实现位置）：
+;;   register-item-tag   crates/ll-mod/src/script_item_api.rs
+;;
+;; 标签本身注册在 mods/lostland/tags.scm（三条本体名册：armor/weapon/
+;; tool），本 mod 在 mod.json5 里声明了 dependencies: ["lostland"] 来保证
+;; 装载顺序。引用一个没注册过的标签会当场报错、整批装载失败——那正是
+;; 这条校验存在的意义：拼错标签名的症状是"标签静默不生效"（一件甲从此
+;; 再也不掉耐久却没有任何报错），是最难查的一类内容缺陷。
+;;
+;; 判据是**这件东西是什么**，不是它挂在哪个槽位：
+;;   armor  → 挨打时磨损（on-hit）
+;;   weapon → 使用时磨损（on-use）
+;;   tool   → 使用时磨损（on-use）
+;;
+;; 三处刻意的组合，各自证明一件事：
+;;
+;; ① 木盾 = armor + weapon。项目所有者原话「有的技能像是盾击,他也会
+;;    变成武器这样」——一面既用来挡刀又用来砸人的盾，两条通道都该收费。
+;;    这一条同时推翻了上一批「两条通道刻意不重叠」那个不变量，是本批次
+;;    最想被测试钉住的形状。
+;; ② 战锤 = weapon + tool。所有者原话「修理锤子也算是一种武器,也可以是
+;;    带有功能性的物品」逐字对应。它同时是 examplemod:iron_sword_recipe
+;;    的 required_tool，制作一次会掉一点耐久（on-use）。
+;; ③ 粗劣匕首 = weapon（**只有** weapon）。它可双持,副手拿着它挨打不掉
+;;    耐久——与同样占副手的木盾结果相反，这正是"按标签不按槽位"的证据。
+;;
+;; 三件保暖/护符类只挂 armor：它们穿戴在身上,挨打会磨损,但没有任何
+;; "使用"的动作可言。
+(register-item-tag "examplemod:iron_sword"        "lostland:weapon")
+(register-item-tag "examplemod:war_hammer"        "lostland:weapon")
+(register-item-tag "examplemod:war_hammer"        "lostland:tool")
+(register-item-tag "examplemod:wooden_shield"     "lostland:armor")
+(register-item-tag "examplemod:wooden_shield"     "lostland:weapon")
+(register-item-tag "examplemod:crude_dagger"      "lostland:weapon")
+(register-item-tag "examplemod:flame_longbow"     "lostland:weapon")
+(register-item-tag "examplemod:acid_dagger"       "lostland:weapon")
+(register-item-tag "examplemod:acid_ward_amulet"  "lostland:armor")
+(register-item-tag "examplemod:wool_liner"        "lostland:armor")
+(register-item-tag "examplemod:fur_cloak"         "lostland:armor")
 
 ;; ── 制作系统（制作系统落地批次）─────────────────────────────────────
 ;;

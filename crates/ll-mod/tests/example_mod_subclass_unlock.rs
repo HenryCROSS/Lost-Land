@@ -68,6 +68,7 @@ use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
+use ll_mod::tag::TagTable;
 use ll_mod::trait_def::TraitTable;
 use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
@@ -185,6 +186,7 @@ fn load_real_mods() -> RealModsHandle {
     let mut weather_table = ll_world::weather::WeatherTable::new();
     let mut recipe_table = RecipeTable::new();
     let mut recipe_category_table = RecipeCategoryTable::new();
+    let mut tag_table = TagTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -209,6 +211,7 @@ fn load_real_mods() -> RealModsHandle {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            tag: &mut tag_table,
         },
     );
     // 本体与示例 mod 都必须装上：副职获得条件来自 example_mod，本体
