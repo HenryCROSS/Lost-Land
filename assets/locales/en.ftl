@@ -41,9 +41,49 @@ subclass-tailor-display_name = Tailor
 subclass-alchemist-display_name = Alchemist
 subclass-cook-display_name = Cook
 recipe_category-forging-display_name = Forging
+recipe_category-advanced_forging-display_name = Advanced Forging
 recipe_category-tailoring-display_name = Tailoring
 recipe_category-alchemy-display_name = Alchemy
 recipe_category-cooking-display_name = Cooking
+
+# Base-game items (mods/lostland/items.json5, twenty-four entries) —
+# ll-mod ItemAttrs::display_name_key.
+item-iron_ingot-display_name = Iron Ingot
+item-iron_rivet-display_name = Iron Rivet
+item-linen_cloth-display_name = Linen Cloth
+item-leather_strip-display_name = Leather Strip
+item-fur_pelt-display_name = Fur Pelt
+item-herb_bundle-display_name = Herb Bundle
+item-raw_meat-display_name = Raw Meat
+item-roast_meat-display_name = Roast Meat
+item-herbal_draught-display_name = Herbal Draught
+item-iron_shortsword-display_name = Iron Shortsword
+item-iron_warpick-display_name = Iron Warpick
+item-oak_buckler-display_name = Oak Buckler
+item-smith_hammer-display_name = Smith's Hammer
+item-bone_needle-display_name = Bone Needle
+item-iron_helm-display_name = Iron Helm
+item-leather_jerkin-display_name = Leather Jerkin
+item-iron_greaves-display_name = Iron Greaves
+item-leather_boots-display_name = Leather Boots
+item-linen_shirt-display_name = Linen Shirt
+item-fur_mantle-display_name = Fur Mantle
+item-wool_gloves-display_name = Wool Gloves
+item-amber_pendant-display_name = Amber Pendant
+item-traveler_ring-display_name = Traveler's Ring
+item-field_cookbook-display_name = Field Cookbook
+
+# Base-game recipes (mods/lostland/crafting.json5, nine entries) —
+# ll-mod RecipeAttrs::display_name_key.
+recipe-roast_meat-display_name = Roast Meat
+recipe-herb_roast-display_name = Herb-Crusted Roast
+recipe-herbal_draught-display_name = Herbal Draught
+recipe-iron_rivet_batch-display_name = Batch of Iron Rivets
+recipe-iron_shortsword-display_name = Forge Iron Shortsword
+recipe-iron_helm-display_name = Forge Iron Helm
+recipe-iron_greaves-display_name = Forge Iron Greaves
+recipe-linen_shirt-display_name = Sew Linen Shirt
+recipe-fur_mantle-display_name = Sew Fur Mantle
 
 save-mod-missing = This save requires mod { $namespace } (version { $required }), which is not loaded in the current session.
 save-mod-version-mismatch = This save requires mod { $namespace } version { $required }, but the loaded version is { $current }.

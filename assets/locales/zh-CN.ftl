@@ -11,6 +11,9 @@
 #   - race-*-display_name                 ll-mod RaceAttrs::display_name_key（本体三个种族）
 #   - class-*-display_name                ll-mod ClassAttrs::display_name_key（本体三个职业）
 #   - subclass-*-display_name             ll-mod SubclassAttrs::display_name_key（本体两个转职）
+#   - recipe_category-*-display_name       ll-mod RecipeCategoryDef::display_name_key（本体五个配方类别）
+#   - item-*-display_name                 ll-mod ItemAttrs::display_name_key（本体二十四件物品）
+#   - recipe-*-display_name               ll-mod RecipeAttrs::display_name_key（本体九条配方）
 #   - save-mod-missing / save-mod-version-mismatch
 #                                          ll-content ModSetMismatch::message_key
 #   - mod-dependency-version-mismatch     ll-mod DependencyVersionMismatch::message_key
@@ -47,9 +50,49 @@ subclass-tailor-display_name = 裁缝
 subclass-alchemist-display_name = 炼金术士
 subclass-cook-display_name = 厨师
 recipe_category-forging-display_name = 锻造
+recipe_category-advanced_forging-display_name = 进阶锻造
 recipe_category-tailoring-display_name = 缝纫
 recipe_category-alchemy-display_name = 炼金
 recipe_category-cooking-display_name = 烹饪
+
+# 本体物品（mods/lostland/items.json5，二十四条）——
+# ll-mod ItemAttrs::display_name_key。
+item-iron_ingot-display_name = 铁锭
+item-iron_rivet-display_name = 铁铆钉
+item-linen_cloth-display_name = 亚麻布
+item-leather_strip-display_name = 皮革条
+item-fur_pelt-display_name = 毛皮
+item-herb_bundle-display_name = 草药束
+item-raw_meat-display_name = 生肉
+item-roast_meat-display_name = 烤肉
+item-herbal_draught-display_name = 草药汤剂
+item-iron_shortsword-display_name = 铁短剑
+item-iron_warpick-display_name = 战镐
+item-oak_buckler-display_name = 橡木圆盾
+item-smith_hammer-display_name = 铁匠锤
+item-bone_needle-display_name = 骨针
+item-iron_helm-display_name = 铁盔
+item-leather_jerkin-display_name = 皮甲衣
+item-iron_greaves-display_name = 铁胫甲
+item-leather_boots-display_name = 皮靴
+item-linen_shirt-display_name = 亚麻衬衣
+item-fur_mantle-display_name = 毛皮披风
+item-wool_gloves-display_name = 羊毛手套
+item-amber_pendant-display_name = 琥珀坠
+item-traveler_ring-display_name = 旅人指环
+item-field_cookbook-display_name = 野外食谱
+
+# 本体配方（mods/lostland/crafting.json5，九条）——
+# ll-mod RecipeAttrs::display_name_key。
+recipe-roast_meat-display_name = 烤肉
+recipe-herb_roast-display_name = 香草烤肉
+recipe-herbal_draught-display_name = 草药汤剂
+recipe-iron_rivet_batch-display_name = 打一批铁铆钉
+recipe-iron_shortsword-display_name = 打铁短剑
+recipe-iron_helm-display_name = 打铁盔
+recipe-iron_greaves-display_name = 打铁胫甲
+recipe-linen_shirt-display_name = 缝亚麻衬衣
+recipe-fur_mantle-display_name = 缝毛皮披风
 
 # 下面两条与下方 mod-dependency-version-mismatch 携带 Fluent 变量
 # （`{ $名字 }`），对应结构体字段：ModSetMismatch 的 namespace/

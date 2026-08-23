@@ -1,0 +1,45 @@
+// 本体伤害公式——一条。
+//
+// 搬家来历见 races.json5 文件头。schema 见
+// `crates/ll-mod/src/content_schema_gear.rs` 的 `DamageFormulaFile`；
+// 表达式语法见 `crates/ll-mod/src/content_expr.rs`。
+//
+// ── 这一条与 `lostland:default_damage_formula` 是两回事 ──────────
+//
+// 本体此前**已经**有一条伤害公式，但它不在任何内容文件里：
+// `lostland:default_damage_formula` 由引擎在 `load_all` 之前直接注册
+// （`ll_mod::base_damage_formula`），内容是单条「把攻击力原样交回去」
+// 的指令——它必须逐行复现公式引擎接入之前的行为，因此不能是别的东西。
+//
+// 也正因为它是「原样交回」，**给一件武器声明它等于什么都没声明**：
+// 伤害公式是三级下探（物品 → 类别 → 全局），物品这一级填上全局默认
+// 值，解析结果与整条不写逐位相同。那样的一条声明看着像覆盖，其实是
+// 一处噪音。
+//
+// 所以本体第一件引用公式的武器（铁短剑）引用的是下面这条**真正不同
+// 于全局默认**的公式。这才是「物品级公式覆盖」这条能力在本体侧的第一
+// 个真实用例。
+{
+  damage_formulas: [
+    {
+      // 铁短剑：攻击力 + 力量调整值，下限 1。
+      //
+      // 与全局默认（单纯的 attack-power）差在两处，两处都是刻意的：
+      //
+      //   * **加力量调整值**：`attack-power` 本身已经是力量属性值
+      //     （见 base_damage_formula 模块文档），再加一次调整值是让
+      //     「力量高」在近战里有二阶收益——这与 example_mod 的
+      //     examplemod:iron_sword_formula 取同一形状，因为它们描述的是
+      //     同一件事（一把靠挥砍的剑）。
+      //   * **下限 1**：力量低于基准时调整值为负，两项相加可能落到 0
+      //     甚至负数。一次命中打出 0 伤害在 roguelike 里读起来像 bug，
+      //     不像弱。`max` 钳在 1，与 examplemod:flame_longbow_formula
+      //     的同一处处理一致。
+      //
+      // 没有随机项（不掷骰）：随机来自命中判定与暴击那一层，武器公式
+      // 这一层保持可预测，玩家才推得出「换把剑值不值」。
+      id: "lostland:blade_damage_formula",
+      expr: ["max", 1, ["+", "attack-power", "str-mod"]],
+    },
+  ],
+}
