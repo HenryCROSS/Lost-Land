@@ -1,6 +1,6 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! `register-item-equip-mask` 这个新脚本 API 真的能被
-//! `mods/example_mod/gameplay.scm` 调用，且注册出来的双手武器（战锤，
+//! `mods/example_mod/items.json5` 调用，且注册出来的双手武器（战锤，
 //! 同时占 `main-hand`/`off-hand`）与单手装备（木盾，只占
 //! `off-hand`）真的能走
 //! `ll_sim::resolve::resolve_with_skills_traits_pools_and_items`/
@@ -121,7 +121,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/items.json5 注册"))
     };
 
     RealModsHandle {

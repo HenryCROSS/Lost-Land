@@ -65,12 +65,12 @@ use ll_world::zone::ZoneLayout;
 /// 仓库根目录下的真实 `mods/` 路径，理由同 `example_mod_items.rs`。
 const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 
-/// `mods/example_mod/gameplay.scm` 给战锤声明的力量加成——与该文件
+/// `mods/example_mod/items.json5` 给战锤声明的力量加成——与该文件
 /// `(register-item-stat-bonus "examplemod:war_hammer" "strength" 6)`
 /// 保持同步，理由同 `example_mod_combat.rs::WAR_HAMMER_STRENGTH_BONUS`。
 const WAR_HAMMER_STRENGTH_BONUS: i32 = 6;
 
-/// `mods/example_mod/gameplay.scm` 给战锤声明的穿透——与该文件
+/// `mods/example_mod/items.json5` 给战锤声明的穿透——与该文件
 /// `(register-item-penetration "examplemod:war_hammer" 3 100)` 保持
 /// 同步，断言里复用这个常量，不重复写字面量。
 const WAR_HAMMER_PENETRATION: Penetration = Penetration {
@@ -78,11 +78,11 @@ const WAR_HAMMER_PENETRATION: Penetration = Penetration {
     permille: 100,
 };
 
-/// `mods/example_mod/gameplay.scm` 给战锤声明的耐久上限——与该文件
+/// `mods/example_mod/items.json5` 给战锤声明的耐久上限——与该文件
 /// `(register-item "examplemod:war_hammer" ... 150)` 保持同步。
 const WAR_HAMMER_MAX_DURABILITY: i32 = 150;
 
-/// `mods/example_mod/gameplay.scm` 给木盾声明的护甲加成/耐久上限——
+/// `mods/example_mod/items.json5` 给木盾声明的护甲加成/耐久上限——
 /// 与该文件的 `register-item-stat-bonus`/`register-item` 调用保持同步。
 const WOODEN_SHIELD_ARMOR_BONUS: i32 = 8;
 const WOODEN_SHIELD_MAX_DURABILITY: i32 = 80;
@@ -159,7 +159,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/items.json5 注册"))
     };
 
     RealModsHandle {
@@ -303,7 +303,7 @@ fn 装备真实注册的战锤致死后击杀记录的武器字段指向战锤�
 #[test]
 fn 装备真实注册的战锤攻击护甲目标时伤害精确匹配穿透公式计算值() {
     // 端到端验证穿透真的接进了伤害结算：战锤的穿透（flat 3、千分比
-    // 100）与木盾的护甲加成（+8）都来自 mods/example_mod/gameplay.scm
+    // 100）与木盾的护甲加成（+8）都来自 mods/example_mod/items.json5
     // 真实注册的内容，期望伤害用 damage_after_defense 独立算出，不是
     // 从结算结果反推。
     // Arrange

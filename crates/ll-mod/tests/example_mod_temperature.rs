@@ -11,7 +11,7 @@
 //!    （`mods/example_mod/weather.scm` 的 `examplemod:ashfall`，取 +150
 //!    ——仓库里唯一一条**正**偏移的天气内容）。
 //! 2. `register-item-stat-bonus` 多认识的目标名 `"insulation"`
-//!    （`mods/example_mod/gameplay.scm` 的 `examplemod:wool_liner`
+//!    （`mods/example_mod/items.json5` 的 `examplemod:wool_liner`
 //!    与 `examplemod:fur_cloak`，各占一个不同的槽位）。
 //!
 //! # 本文件最关键的一条断言
@@ -599,7 +599,7 @@ fn 一件保暖装备的效果严格弱于两件() {
 #[test]
 fn 真实注册的两件保暖装备现在带耐久上限() {
     // 耐久扩面批次（所有者裁定「衣服要耐久，受到攻击就会减少耐久」）：
-    // `mods/example_mod/gameplay.scm` 里这两件此前只能填 -1,注册期有
+    // `mods/example_mod/items.json5` 里这两件此前只能填 -1,注册期有
     // 一条「只允许占武器槽位的物品携带耐久」的校验拦着。本条把放宽
     // 之后的真实注册结果钉住——若那条校验被恢复，装载会直接失败,
     // `load_real_mods` 里的 `LoadStatus::Success` 断言先红。

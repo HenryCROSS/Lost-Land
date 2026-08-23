@@ -1,0 +1,33 @@
+// 示例 mod 的资源池——搬自此前的 gameplay.scm。
+//
+// 形状（scalar / tiered-slots）与恢复节奏（none / on-turn-start /
+// on-rest-full / on-rest-amount）此前是两个裸字符串外加两个裸整数，
+// 其中「与形状不搭的那个整数」被静默忽略：`"scalar" 0` 里的 0 是档位
+// 数，标量池根本没有档位。现在填了不搭的字段会当场报错，见
+// ll_mod::content_schema_gear::RawPoolShape。
+{
+  resource_pools: [
+    {
+      // 术士的施法点：标量池，每回合开始回 2 点。
+      id: "examplemod:sorcery_points",
+      display_name_key: "examplemod:sorcery_points_display_name",
+      shape: { kind: "scalar" },
+      regen: { kind: "on-turn-start", amount: 2 },
+    },
+    {
+      // 法师的法术位：四档，休息一次全满。
+      id: "examplemod:wizard_spell_slots",
+      display_name_key: "examplemod:wizard_spell_slots_display_name",
+      shape: { kind: "tiered-slots", tier_count: 4 },
+      regen: { kind: "on-rest-full" },
+    },
+    {
+      // 德鲁伊的法术位：三档，每回合开始回一格——与法师那条形成
+      // 对照，证明同一种形状可以配不同的恢复节奏。
+      id: "examplemod:druid_slots",
+      display_name_key: "examplemod:druid_slots_display_name",
+      shape: { kind: "tiered-slots", tier_count: 3 },
+      regen: { kind: "on-turn-start", amount: 1 },
+    },
+  ],
+}

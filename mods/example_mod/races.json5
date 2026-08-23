@@ -1,0 +1,77 @@
+// 示例 mod 的种族——搬自此前的 gameplay.scm。
+//
+// `register-race` 是**十三个裸参数**（两个字符串 + 十一个整数），其中
+// 七个属性修正、暗视格数、占地宽高、寿命全是裸整数。整体错位一格
+// 之后每个数字仍然合法、不报任何错，症状是「矮人的寿命变成了暗视
+// 格数」。具名字段之后这个失败模式结构上不可能存在。
+//
+// 另外三条追加指令（-xp-reward / -trait / -starting-item）也变成了
+// 字段，不再需要把种族 id 重复写一遍。
+{
+  races: [
+    {
+      // 半精灵：手巧、讨喜、走运，暗视 6 格，用线性经验曲线。
+      id: "examplemod:half_elf",
+      display_name_key: "examplemod:half_elf_display_name",
+      stat_modifiers: { dexterity: 1, charisma: 1, luck: 1 },
+      darkvision_cells: 6,
+      lifespan_years: 150,
+      traits: [{ id: "examplemod:innate_sorcery", unlock_level: 1 }],
+      xp_curve: "examplemod:linear_xp_curve",
+    },
+    {
+      // 哥布林：一无所长、寿命五年，但杀了给 15 点击杀基准经验，
+      // 出生带一把破匕首和两支箭。行为树里那棵哥布林 AI 就是它的。
+      id: "examplemod:goblin",
+      display_name_key: "examplemod:goblin_display_name",
+      darkvision_cells: 7,
+      lifespan_years: 5,
+      xp_reward: 15,
+      starting_items: [
+        { id: "examplemod:crude_dagger", count: 1 },
+        { id: "examplemod:arrow", count: 2 },
+      ],
+    },
+    {
+      // 龙裔：天生会吐息。
+      id: "examplemod:dragonborn",
+      display_name_key: "examplemod:dragonborn_display_name",
+      lifespan_years: 80,
+      traits: [{ id: "examplemod:draconic_breath", unlock_level: 1 }],
+    },
+    {
+      // 精灵：手巧又聪明，寿命七百年，天生会奥术（四档法术位）。
+      id: "examplemod:elf",
+      display_name_key: "examplemod:elf_display_name",
+      stat_modifiers: { dexterity: 1, intelligence: 1 },
+      darkvision_cells: 6,
+      lifespan_years: 700,
+      traits: [{ id: "examplemod:arcane_casting", unlock_level: 1 }],
+    },
+    {
+      // 侏儒：与精灵同属性，但走德鲁伊那条三档法术位——两条形状相同、
+      // 恢复节奏不同的池的对照。
+      id: "examplemod:gnome",
+      display_name_key: "examplemod:gnome_display_name",
+      stat_modifiers: { dexterity: 1, intelligence: 1 },
+      darkvision_cells: 7,
+      lifespan_years: 400,
+      traits: [{ id: "examplemod:druidic_casting", unlock_level: 1 }],
+    },
+    {
+      // 软泥怪：天生半免酸伤（天赋那一路的抗性来源）。
+      id: "examplemod:ooze",
+      display_name_key: "examplemod:ooze_display_name",
+      darkvision_cells: 2,
+      lifespan_years: 30,
+      traits: [{ id: "examplemod:acid_hide", unlock_level: 1 }],
+    },
+    {
+      // 盗匪：天生会背刺。
+      id: "examplemod:footpad",
+      display_name_key: "examplemod:footpad_display_name",
+      lifespan_years: 60,
+      traits: [{ id: "examplemod:predatory_instinct", unlock_level: 1 }],
+    },
+  ],
+}

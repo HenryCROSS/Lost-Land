@@ -120,7 +120,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/resource_pools.json5 注册"))
     };
 
     RealModsHandle {

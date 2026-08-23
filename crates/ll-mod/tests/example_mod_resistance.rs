@@ -1,7 +1,7 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! 伤害类别/抗性接线批次的三条新脚本 API——`register-damage-category`/
 //! `register-trait-resistance`/`register-item-damage-category`——真的
-//! 能被 `mods/example_mod/gameplay.scm` 调用，且真实注册的抗性声明
+//! 能被 `mods/example_mod/traits.json5` 调用，且真实注册的抗性声明
 //! 真的能走真实 `resolve_attack` + `apply` 降低伤害——ADR 0018「玩法层
 //! 内容必须能从 mod 脚本注册，且要有真实 mod 脚本为证」，本文件是伤害
 //! 类别/抗性接线批次的那份证据，不能靠
@@ -137,7 +137,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/traits.json5 注册"))
     };
 
     RealModsHandle {
@@ -238,7 +238,7 @@ fn 真实注册的软泥怪种族对酸的抗性真实降低了酸匕首造成�
     );
     // 基准防御方：半精灵，没有任何对酸的抗性声明。
     let baseline_defender = spawn_agent(&mut world, handle.half_elf_id, 1_000, BTreeMap::new());
-    // 真实防御方：软泥怪，`mods/example_mod/gameplay.scm` 声明了它在
+    // 真实防御方：软泥怪，`mods/example_mod/traits.json5` 声明了它在
     // 1 级被授予 `examplemod:acid_hide`（500‰ 对酸的抗性）。
     let ooze_defender = spawn_agent(&mut world, handle.ooze_id, 1_000, BTreeMap::new());
 
@@ -373,7 +373,7 @@ fn 真实注册的酸抗护符装备在身上时真实降低了酸匕首造成�
     // 抗性多来源聚合批次：项目所有者对抗性来源的裁定「抗性肯定会来自
     // 天赋，以及装备，还有各种药品，或者技能」里**装备**这一路的那份
     // ADR 0018 证据——`register-item-resistance` 是本批次新增的脚本
-    // API，`mods/example_mod/gameplay.scm` 真的调用了它，本测试证明这条
+    // API，`mods/example_mod/traits.json5` 真的调用了它，本测试证明这条
     // 声明真的走完了 `ItemTable` → `ll_sim::item::ItemRule::rule_modifiers`
     // → `ll_sim::rule_modifier::equipment_rule_modifiers` → 聚合点 →
     // `resolve_attack` 的抗性乘数这条完整链路。

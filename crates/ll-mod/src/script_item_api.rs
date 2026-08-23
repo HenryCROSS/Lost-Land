@@ -15,7 +15,7 @@
 //! 接线，P6 第六批）
 //!
 //! `register-item` 已经是仓库里真实 mod 脚本
-//! （`mods/example_mod/gameplay.scm`）在用的六参数签名——改参数个数
+//! （迁进 `mods/example_mod/items.json5` 之前）在用的六参数签名——改参数个数
 //! 会破坏已有脚本，与 `register-race-xp-reward`/
 //! `register-trait-resource-pool` 「新增能力用新函数」同一条既有先例
 //! （见 [`crate::item::ItemDef::equip_mask`] 文档）。`register-item-equip-mask`/

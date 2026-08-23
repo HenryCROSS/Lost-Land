@@ -208,7 +208,7 @@ use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 /// `recipe`/`recipe_category` 是最新的两个字段（制作系统批次），同样
 /// 从第一天起就是完整的：两张表、脚本注册函数、值哈希（版本 11）、
 /// 装载后校验、真实消费者（`ll_sim::resolve::resolve_craft`）与真实
-/// mod 脚本证据（`mods/example_mod/gameplay.scm`）在同一个批次里一起
+/// mod 内容证据（`mods/example_mod/crafting.json5`）在同一个批次里一起
 /// 落地。**唯一如实存在的缺口在更上游**：`Intent::Craft` 至今没有任何
 /// 产出者（没有制作界面），见该变体自己的文档。
 pub struct GameplayTables<'a> {
@@ -1751,8 +1751,8 @@ mod tests {
         // 「本体与 mod 内容在 Rust 类型层面无法区分」，不能单独证明
         // 脚本可达，两类证据合起来才是完整的「玩法层 API 完备性」验收，
         // 见本模块顶部「本体内容……不经过这条管线」一节与 ADR 0018。
-        // 真实使用中的完整示例见 `mods/example_mod/gameplay.scm`/
-        // `mods/example_mod/animation.scm`。
+        // 真实使用中的完整示例见 `mods/example_mod/items.json5`/
+        // `mods/example_mod/animations.json5`。
         // Arrange
         let root = tempdir();
         write_mod(

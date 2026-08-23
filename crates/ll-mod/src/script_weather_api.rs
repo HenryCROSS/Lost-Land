@@ -129,7 +129,7 @@ pub fn register_weather_api(engine: &mut ScriptEngine) {
 /// 情的情况下发布一批「温度偏移全是 0」的天气，而那与「这种天气不影响
 /// 温度」在数据上不可区分——`content_audit` 的字段覆盖检查要问的正是
 /// 「有没有内容真的用上了这个旋钮」。仓库内唯一的既有调用点
-/// （`mods/example_mod/weather.scm`）已随本批次更新。
+/// （`mods/example_mod/weather.json5`）已随本批次更新。
 ///
 /// 返回 `Result<bool, String>`，错误处理约定见
 /// [`crate::script_terrain_api`] 同名一段。

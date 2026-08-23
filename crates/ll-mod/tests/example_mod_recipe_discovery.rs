@@ -90,7 +90,7 @@ struct RealModsHandle {
     item: ItemTable,
     recipe: RecipeTable,
     recipe_category: RecipeCategoryTable,
-    /// `mods/example_mod/gameplay.scm` 里**唯一**声明了
+    /// `mods/example_mod/crafting.json5` 里**唯一**声明了
     /// `recipe-requires-discovery!` 的那条配方。
     herb_stew_recipe: ContentIndex,
     /// 声明了 `register-item-teaches-recipe` 的那本书。
@@ -214,7 +214,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/crafting.json5 注册"))
     };
 
     RealModsHandle {
@@ -362,7 +362,7 @@ fn count_of(inventory: &[ItemStack], def: ContentIndex) -> u32 {
 #[test]
 fn 读一本真实mod注册的菜谱书经回合引擎真的学会那条配方() {
     // ADR 0018 的正向证据：书与配方都来自真实
-    // mods/example_mod/gameplay.scm，结算经由 TurnEngine::advance_ai
+    // mods/example_mod/crafting.json5，结算经由 TurnEngine::advance_ai
     // 这条生产路径发生。
     // Arrange
     let handle = load_real_mods();

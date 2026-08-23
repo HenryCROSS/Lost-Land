@@ -1,0 +1,85 @@
+// 示例 mod 的天赋——搬自此前的 gameplay.scm。
+//
+// 六条追加指令（-resource-pool / -resource-pool-by-level /
+// -resistance / -sneak-attack / -inspection-suspicion /
+// -inspection-concealment）全部变成字段。其中按等级分档的法术位授予
+// 此前是「每个等级断点一次调用」，现在是 levels 数组里的一项——合并
+// 成同一条 ByLevel 授予的逻辑仍在 TraitTable 里，没有在 schema 侧
+// 重写一遍。
+{
+  traits: [
+    {
+      // 龙息天赋：只授予一个技能，没有别的效果。
+      id: "examplemod:draconic_breath",
+      display_name_key: "examplemod:draconic_breath_display_name",
+      granted_skills: ["examplemod:breath_weapon"],
+    },
+    {
+      // 天生术法：给 20 点施法点，容量不随等级变。
+      id: "examplemod:innate_sorcery",
+      display_name_key: "examplemod:innate_sorcery_display_name",
+      resource_pools: [
+        { pool: "examplemod:sorcery_points", kind: "fixed", amount: 20 },
+      ],
+    },
+    {
+      // 奥术施法：法术位随等级开档——1 级两个一阶，5 级四个一阶三个
+      // 二阶，9 级再多两个三阶。
+      id: "examplemod:arcane_casting",
+      display_name_key: "examplemod:arcane_casting_display_name",
+      resource_pools: [
+        {
+          pool: "examplemod:wizard_spell_slots",
+          kind: "by-level",
+          levels: [
+            { level: 1, tiers: [2, 0, 0, 0] },
+            { level: 5, tiers: [4, 3, 0, 0] },
+            { level: 9, tiers: [4, 3, 2, 0] },
+          ],
+        },
+      ],
+    },
+    {
+      // 德鲁伊施法：只有一个断点，用来对照「多断点」那条。
+      id: "examplemod:druidic_casting",
+      display_name_key: "examplemod:druidic_casting_display_name",
+      resource_pools: [
+        {
+          pool: "examplemod:druid_slots",
+          kind: "by-level",
+          levels: [{ level: 1, tiers: [3, 0, 0] }],
+        },
+      ],
+    },
+    {
+      // 酸性皮膜：天赋那一路的抗性来源，与 acid_ward_amulet（装备
+      // 那一路）写进同一个 RuleModifier::Resistance。
+      id: "examplemod:acid_hide",
+      display_name_key: "examplemod:acid_hide_display_name",
+      rule_modifiers: [
+        { kind: "resistance", damage_category: "examplemod:acid", multiplier_permille: 500 },
+      ],
+    },
+    {
+      // 掠食本能：每点幸运换 20‰ 触发率，触发多打 15 点。
+      id: "examplemod:predatory_instinct",
+      display_name_key: "examplemod:predatory_instinct_display_name",
+      rule_modifiers: [
+        { kind: "sneak-attack", luck_chance_permille_per_point: 20, extra_damage: 15 },
+      ],
+    },
+    {
+      // 扒手训练：盗贼被动的两种——「不觉得可疑」（盘查意愿降到
+      // 200‰）与「查不出东西」（隐匿 800‰）。两者落在盘查链路的两环：
+      // 前者在卫兵决定要不要发起盘查那一步，后者在盘查已经发起、结算
+      // 搜出什么那一步。
+      id: "examplemod:cutpurse_training",
+      display_name_key: "examplemod:cutpurse_training_display_name",
+      granted_skills: ["examplemod:backstab"],
+      rule_modifiers: [
+        { kind: "inspection-suspicion", multiplier_permille: 200 },
+        { kind: "inspection-concealment", conceal_permille: 800 },
+      ],
+    },
+  ],
+}

@@ -22,15 +22,17 @@
 //!
 //! # 按什么顺序读：一张固定的表，钉住真实的依赖方向
 //!
-//! [`CONTENT_FILES`] 的顺序不是字母序，是**依赖序**，两条真实约束：
+//! [`CONTENT_FILES`] 的顺序不是字母序，是**依赖序**。判据统一是
+//! 「谁只 get 不 intern」：只 get 的那一方必须排在被引用者之后，否则
+//! 当场报「尚未注册」。逐条理由写在那个数组自己的注释里——每一条都是
+//! 一个真实的引用方向，不是「看起来该这样」。
 //!
-//! - 配方类别必须排在副职前面：副职获得条件的 `target` 只 get 不
-//!   intern（`apply_subclasses`）。
-//! - 职业必须排在技能前面：技能的 `owning_class` 虽然是 intern（顺序
-//!   反了不会当场报错），但装载末尾的引用完整性校验会把它判成一条
-//!   `SkillAttrs::owning_class` 违规。
+//! 有一处**环**：配方类别与副职互相引用，且两边都只 get 不 intern
+//! （副职的获得条件指向一个类别，类别的闸门指向一个副职）。任何单一
+//! 顺序都满足不了它，因此 `crafting.json5` 被读两遍，见
+//! [`crate::content_schema::apply_recipe_category_subclass_gates`]。
 //!
-//! 这两条此前写在 `mods/lostland/mod.json5` 的注释与各 `.scm` 的
+//! 这些约束此前写在 `mods/*/mod.json5` 的注释与各 `.scm` 的
 //! `(require ...)` 里——由**内容作者**负责维护。现在它们是引擎侧的一条
 //! 常量：mod 作者写不错，也改不动。
 //!
@@ -55,7 +57,17 @@ use serde::de::DeserializeOwned;
 
 use crate::content_schema::{
     ClassFile, CraftingFile, QuestFile, RaceFile, SkillFile, SubclassFile, TagFile, apply_classes,
-    apply_quests, apply_races, apply_recipe_categories, apply_skills, apply_subclasses, apply_tags,
+    apply_quests, apply_races, apply_recipe_categories, apply_recipe_category_subclass_gates,
+    apply_skills, apply_subclasses, apply_tags,
+};
+use crate::content_schema_gear::{
+    DamageCategoryFile, DamageFormulaFile, ItemFile, ResourcePoolFile, TraitFile,
+    WeaponCategoryFile, XpCurveFile, apply_damage_categories, apply_damage_formulas, apply_items,
+    apply_recipes, apply_resource_pools, apply_traits, apply_weapon_categories, apply_xp_curves,
+};
+use crate::content_schema_world::{
+    AnimationFile, SpaceProfileFile, TerrainFile, WeatherFile, apply_clips, apply_space_profiles,
+    apply_terrains, apply_weathers,
 };
 use crate::pipeline::GameplayTables;
 use crate::registry::Registry;
@@ -87,28 +99,59 @@ impl std::error::Error for ContentDataError {}
 /// 枚举而不是「文件名 → 处理函数」的表：处理函数的**类型各不相同**
 /// （每一类反序列化成不同的 `*File`），一张同构的表装不下它们，硬要
 /// 装就得引入一层 trait 对象——而那正是 ADR 0021 点名要避免的「为了
-/// 对称而抽象」。`match` 一次把七条列全，编译器负责不漏。
+/// 对称而抽象」。`match` 一次把全部列全，编译器负责不漏。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ContentFileKind {
     Tags,
+    Terrains,
+    SpaceProfiles,
+    Weathers,
+    AnimationClips,
+    ResourcePools,
+    DamageFormulas,
+    DamageCategories,
+    WeaponCategories,
+    XpCurves,
+    Crafting,
+    Subclasses,
+    /// `crafting.json5` 的**第二遍**：只写副职闸门，见
+    /// [`crate::content_schema::apply_recipe_category_subclass_gates`]
+    /// 文档「为什么要分两遍」。
+    CraftingSubclassGates,
+    Items,
     Races,
     Classes,
     Skills,
-    RecipeCategories,
-    Subclasses,
+    Traits,
     Quests,
 }
 
 impl ContentFileKind {
     /// 这一类内容在 mod 目录下的固定文件名。
+    ///
+    /// [`ContentFileKind::Crafting`] 与
+    /// [`ContentFileKind::CraftingSubclassGates`] **共用同一个文件名**
+    /// ——那是刻意的，不是笔误，见后者的文档。
     fn file_name(self) -> &'static str {
         match self {
             ContentFileKind::Tags => "tags.json5",
+            ContentFileKind::Terrains => "terrain.json5",
+            ContentFileKind::SpaceProfiles => "space_profiles.json5",
+            ContentFileKind::Weathers => "weather.json5",
+            ContentFileKind::AnimationClips => "animations.json5",
+            ContentFileKind::ResourcePools => "resource_pools.json5",
+            ContentFileKind::DamageFormulas => "damage_formulas.json5",
+            ContentFileKind::DamageCategories => "damage_categories.json5",
+            ContentFileKind::WeaponCategories => "weapon_categories.json5",
+            ContentFileKind::XpCurves => "xp_curves.json5",
+            ContentFileKind::Crafting => "crafting.json5",
+            ContentFileKind::Subclasses => "subclasses.json5",
+            ContentFileKind::CraftingSubclassGates => "crafting.json5",
+            ContentFileKind::Items => "items.json5",
             ContentFileKind::Races => "races.json5",
             ContentFileKind::Classes => "classes.json5",
             ContentFileKind::Skills => "skills.json5",
-            ContentFileKind::RecipeCategories => "crafting.json5",
-            ContentFileKind::Subclasses => "subclasses.json5",
+            ContentFileKind::Traits => "traits.json5",
             ContentFileKind::Quests => "quests.json5",
         }
     }
@@ -119,17 +162,48 @@ impl ContentFileKind {
 ///
 /// 数组长度由类型钉死：新增一类内容忘了加进来，改的是这个数字，改动
 /// 会出现在 diff 里；漏了某一类的 `file_name` 分支则编译不过。
-const CONTENT_FILES: [ContentFileKind; 7] = [
-    // 标签没有任何前置依赖，而物品会引用它（`register-item-tag` 只 get
-    // 不 intern），排第一位最省事。
+///
+/// 每一条排在这个位置的理由都是一条**真实的引用方向**，逐条列在下面
+/// 的注释里。判据统一是「谁只 get 不 intern」：只 get 的那一方必须
+/// 排在被引用者之后。
+const CONTENT_FILES: [ContentFileKind; 19] = [
+    // 标签没有任何前置依赖，而物品会引用它（只 get 不 intern）。
     ContentFileKind::Tags,
+    // 地形/空间层/天气/动画剪辑四类互不引用，也不被后面任何一类
+    // 「只 get」地引用（配方的场地是 intern），位置本身无约束——排在
+    // 前面只是因为它们是世界的底座。
+    ContentFileKind::Terrains,
+    ContentFileKind::SpaceProfiles,
+    ContentFileKind::Weathers,
+    ContentFileKind::AnimationClips,
+    // 资源池必须排在技能（施放代价的 pool/slot-tier）与天赋（授予的
+    // 池容量）前面。
+    ContentFileKind::ResourcePools,
+    // 伤害公式必须排在伤害类别/武器类别（默认公式）与物品（显式公式）
+    // 前面。
+    ContentFileKind::DamageFormulas,
+    // 伤害类别必须排在物品（伤害类别与抗性）与天赋（抗性）前面。
+    ContentFileKind::DamageCategories,
+    ContentFileKind::WeaponCategories,
+    // 经验曲线必须排在职业与种族（各自的 xp_curve 绑定）前面。
+    ContentFileKind::XpCurves,
+    // 配方类别必须排在副职（获得条件的 target）与配方（所属类别）
+    // 前面；配方与类别同住 crafting.json5，一遍读完。
+    ContentFileKind::Crafting,
+    ContentFileKind::Subclasses,
+    // 副职闸门反过来要求副职已定义——环，因此 crafting.json5 读两遍。
+    ContentFileKind::CraftingSubclassGates,
+    // 物品必须排在配方（可教授的配方只 get 不 intern）之后。
+    ContentFileKind::Items,
+    // 种族必须排在物品（出生装备只 get 不 intern）之后。
     ContentFileKind::Races,
-    // 职业必须排在技能前面。
+    // 职业必须排在技能前面（技能的 owning_class 虽是 intern，但装载
+    // 末尾的引用完整性校验会把顺序反了判成一条违规）。
     ContentFileKind::Classes,
     ContentFileKind::Skills,
-    // 配方类别必须排在副职前面。
-    ContentFileKind::RecipeCategories,
-    ContentFileKind::Subclasses,
+    // 天赋只被「intern」地引用（种族/职业的天赋授予），位置无约束；
+    // 它自己引用的资源池与伤害类别都已经在前面。
+    ContentFileKind::Traits,
     ContentFileKind::Quests,
 ];
 
@@ -174,25 +248,96 @@ fn apply_one(
             let file: TagFile = parse(&source).map_err(fail)?;
             apply_tags(registry, tables.tag, &file.tags)
         }
+        ContentFileKind::Terrains => {
+            let file: TerrainFile = parse(&source).map_err(fail)?;
+            apply_terrains(registry, tables.terrain, &file.terrains)
+        }
+        ContentFileKind::SpaceProfiles => {
+            let file: SpaceProfileFile = parse(&source).map_err(fail)?;
+            apply_space_profiles(registry, tables.space_profile, &file.space_profiles)
+        }
+        ContentFileKind::Weathers => {
+            let file: WeatherFile = parse(&source).map_err(fail)?;
+            apply_weathers(registry, tables.weather, &file.weathers)
+        }
+        ContentFileKind::AnimationClips => {
+            let file: AnimationFile = parse(&source).map_err(fail)?;
+            apply_clips(registry, tables.clip, &file.clips)
+        }
+        ContentFileKind::ResourcePools => {
+            let file: ResourcePoolFile = parse(&source).map_err(fail)?;
+            apply_resource_pools(registry, tables.resource_pool, &file.resource_pools)
+        }
+        ContentFileKind::DamageFormulas => {
+            let file: DamageFormulaFile = parse(&source).map_err(fail)?;
+            apply_damage_formulas(registry, tables.formula, &file.damage_formulas)
+        }
+        ContentFileKind::DamageCategories => {
+            let file: DamageCategoryFile = parse(&source).map_err(fail)?;
+            apply_damage_categories(registry, tables.damage_category, &file.damage_categories)
+        }
+        ContentFileKind::WeaponCategories => {
+            let file: WeaponCategoryFile = parse(&source).map_err(fail)?;
+            apply_weapon_categories(registry, tables.weapon_category, &file.weapon_categories)
+        }
+        ContentFileKind::XpCurves => {
+            let file: XpCurveFile = parse(&source).map_err(fail)?;
+            apply_xp_curves(registry, tables.xp_curve, &file.xp_curves)
+        }
+        ContentFileKind::Crafting => {
+            let file: CraftingFile = parse(&source).map_err(fail)?;
+            apply_recipe_categories(registry, tables.recipe_category, &file.recipe_categories)
+                .and_then(|()| apply_recipes(registry, tables.recipe, &file.recipes))
+        }
+        ContentFileKind::Subclasses => {
+            let file: SubclassFile = parse(&source).map_err(fail)?;
+            apply_subclasses(registry, tables.subclass, &file.subclasses)
+        }
+        ContentFileKind::CraftingSubclassGates => {
+            let file: CraftingFile = parse(&source).map_err(fail)?;
+            apply_recipe_category_subclass_gates(
+                registry,
+                tables.recipe_category,
+                &file.recipe_categories,
+            )
+        }
+        ContentFileKind::Items => {
+            let file: ItemFile = parse(&source).map_err(fail)?;
+            apply_items(
+                registry,
+                tables.item,
+                tables.tag,
+                tables.recipe,
+                &file.items,
+            )
+        }
         ContentFileKind::Races => {
             let file: RaceFile = parse(&source).map_err(fail)?;
-            apply_races(registry, tables.race, &file.races)
+            apply_races(
+                registry,
+                tables.race,
+                tables.xp_curve,
+                tables.xp_curve_bindings,
+                &file.races,
+            )
         }
         ContentFileKind::Classes => {
             let file: ClassFile = parse(&source).map_err(fail)?;
-            apply_classes(registry, tables.class, &file.classes)
+            apply_classes(
+                registry,
+                tables.class,
+                tables.xp_curve,
+                tables.xp_curve_bindings,
+                &file.classes,
+            )
         }
         ContentFileKind::Skills => {
             let file: SkillFile = parse(&source).map_err(fail)?;
             apply_skills(registry, tables.skill, &file.skills)
         }
-        ContentFileKind::RecipeCategories => {
-            let file: CraftingFile = parse(&source).map_err(fail)?;
-            apply_recipe_categories(registry, tables.recipe_category, &file.recipe_categories)
-        }
-        ContentFileKind::Subclasses => {
-            let file: SubclassFile = parse(&source).map_err(fail)?;
-            apply_subclasses(registry, tables.subclass, &file.subclasses)
+        ContentFileKind::Traits => {
+            let file: TraitFile = parse(&source).map_err(fail)?;
+            apply_traits(registry, tables.trait_def, &file.traits)
         }
         ContentFileKind::Quests => {
             let file: QuestFile = parse(&source).map_err(fail)?;

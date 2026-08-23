@@ -1,0 +1,9 @@
+// 示例 mod 的武器类别——搬自此前的 gameplay.scm。
+{
+  weapon_categories: [
+    {
+      // 匕首类：没有默认公式。
+      id: "examplemod:dagger",
+    },
+  ],
+}

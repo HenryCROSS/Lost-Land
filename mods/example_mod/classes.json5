@@ -1,0 +1,20 @@
+// 示例 mod 的职业——搬自此前的 gameplay.scm。
+{
+  classes: [
+    {
+      // 死灵法师：意志系，走递推式指数经验曲线（升级越来越慢）。
+      id: "examplemod:necromancer",
+      display_name_key: "examplemod:necromancer_display_name",
+      primary_attribute: "willpower",
+      xp_curve: "examplemod:recursive_xp_curve",
+    },
+    {
+      // 盗贼：敏捷系，3 级拿到「扒手训练」——那条天赋同时给背刺技能与
+      // 两条盘查被动，见 traits.json5。
+      id: "examplemod:rogue",
+      display_name_key: "examplemod:rogue_display_name",
+      primary_attribute: "dexterity",
+      traits: [{ id: "examplemod:cutpurse_training", unlock_level: 3 }],
+    },
+  ],
+}

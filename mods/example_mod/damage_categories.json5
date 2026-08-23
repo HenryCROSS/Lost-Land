@@ -1,0 +1,14 @@
+// 示例 mod 的伤害类别——搬自此前的 gameplay.scm。
+//
+// 此前的 `(register-damage-category "examplemod:acid" "")` 用空串表达
+// 「没有默认公式」；数据文件里换成字段缺席——空串是个容易与"忘了填"
+// 混淆的哨兵值。
+{
+  damage_categories: [
+    {
+      // 酸蚀：没有默认公式，携带它的武器各自声明（见 items.json5 的
+      // acid_dagger）。
+      id: "examplemod:acid",
+    },
+  ],
+}

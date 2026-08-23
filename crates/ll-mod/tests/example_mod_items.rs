@@ -1,5 +1,5 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
-//! `register-item` 这个新脚本 API 真的能被 `mods/example_mod/gameplay.scm`
+//! `register-item` 这个新脚本 API 真的能被 `mods/example_mod/items.json5`
 //! 调用，且注册出来的两种物品（可堆叠的箭矢、不可堆叠的铁剑）真的能
 //! 走 `ll_sim::item::merge_stacks`/`split_stack` 端到端算出正确的堆叠
 //! 结果——ADR 0018「玩法层内容必须能从 mod 脚本注册，且要有真实 mod
@@ -109,7 +109,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/items.json5 注册"))
     };
 
     RealModsHandle {

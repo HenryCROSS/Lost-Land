@@ -1,6 +1,6 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! `register-trait`/`register-race-trait` 这两个新脚本 API 真的能被
-//! `mods/example_mod/gameplay.scm` 调用，且注册出来的种族天赋真的能
+//! `mods/example_mod/traits.json5` 调用，且注册出来的种族天赋真的能
 //! 走 `ll_sim::resolve::resolve_with_skills_and_traits` 端到端放出对应
 //! 技能——ADR 0018「玩法层内容必须能从 mod 脚本注册，且要有真实 mod
 //! 脚本为证」，本文件是那份证据，不能靠单元测试自证。
@@ -115,7 +115,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/traits.json5 注册"))
     };
 
     RealModsHandle {

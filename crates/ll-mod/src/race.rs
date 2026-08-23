@@ -70,7 +70,7 @@
 //! `register-race` 现有的脚本签名——`skill-requires!`/
 //! `register-class-xp-curve` 已经立下的先例：不改既有 `register-*`
 //! 函数的参数个数，需要新能力就加新函数（会破坏真实调用它的
-//! `mods/example_mod/gameplay.scm`）。`register-race-xp-reward(id,
+//! `mods/example_mod/races.json5`）。`register-race-xp-reward(id,
 //! amount)` 是这条先例在种族经验值上的应用：先用 `register-race`
 //! 声明种族本体，再用这个新函数追加声明「杀死它给多少经验」，两次
 //! 调用不会自动同步（`register-race` 不声明经验值时默认 0），与
@@ -957,7 +957,7 @@ mod tests {
         //
         // 边界：本测试用 `define` 直接填表，不能证明 mod 脚本调得到
         // 这套 API。真正的证据在 crate::pipeline 的脚本装载测试、
-        // mods/example_mod/gameplay.scm 与 tests/base_mod_races.rs。
+        // mods/example_mod/races.json5 与 tests/base_mod_races.rs。
         // Arrange
         let (mut registry, mut table) = registry_with_all_base_races();
 

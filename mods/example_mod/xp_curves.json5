@@ -1,0 +1,25 @@
+// 示例 mod 的经验曲线——搬自此前的 gameplay.scm。
+//
+// **绑定不在这里**：`register-class-xp-curve`/`register-race-xp-curve`
+// 那两条追加指令搬成了 classes.json5 / races.json5 里的 `xp_curve`
+// 字段——"这个职业用哪条曲线"是职业的属性，写在职业那一条里比在这里
+// 再列一遍 id 更难写错。
+{
+  xp_curves: [
+    {
+      // 线性：每级多要 40 点，1→2 级要 140。
+      id: "examplemod:linear_xp_curve",
+      base_requirement: 140,
+      expr: ["+", 100, ["*", "level", 40]],
+    },
+    {
+      // 递推式指数：上一级需求的 118%，但至少多 20 点——两条里取大的
+      // 那条，保证低级时也不会几乎不涨。
+      id: "examplemod:recursive_xp_curve",
+      base_requirement: 80,
+      expr: ["max",
+             ["+", "prev-requirement", 20],
+             ["mul-permille", "prev-requirement", 1180]],
+    },
+  ],
+}

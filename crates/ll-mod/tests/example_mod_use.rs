@@ -1,6 +1,6 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! `register-item-use-effect` 这个新脚本 API 真的能被
-//! `mods/example_mod/gameplay.scm` 调用，且注册出来的消耗品（治疗药水，
+//! `mods/example_mod/items.json5` 调用，且注册出来的消耗品（治疗药水，
 //! 使用后恢复 40 点法力）真的能走
 //! `ll_sim::resolve::resolve_with_skills_traits_pools_and_items`/
 //! `ll_sim::apply::apply` 端到端产生效果——ADR 0018「玩法层内容必须能
@@ -119,7 +119,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/items.json5 注册"))
     };
 
     RealModsHandle {
@@ -231,7 +231,7 @@ fn 真实注册的治疗药水使用后恢复法力且数量减一() {
 fn 真实注册的治疗药水堆叠上限大于一且不携带耐久() {
     // 核实「可堆叠物品不该有耐久」这条注册期约束在真实内容上成立——
     // 治疗药水堆叠上限 10，且没有携带耐久上限（若两者同时声明，
-    // mods/example_mod/gameplay.scm 装载会在 register-item 这一步直接
+    // mods/example_mod/items.json5 装载会在 register-item 这一步直接
     // 失败，`load_real_mods` 已经断言过 `LoadStatus::Loaded`，本测试
     // 额外直接核实 `max_durability` 确实是 `None`，不只是"没报错"）。
     // Arrange

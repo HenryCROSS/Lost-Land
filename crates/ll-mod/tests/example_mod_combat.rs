@@ -1,6 +1,6 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! `register-item-stat-bonus` 这个新脚本 API 真的能被
-//! `mods/example_mod/gameplay.scm` 调用，且注册出来的力量加成（战锤）/
+//! `mods/example_mod/items.json5` 声明，且注册出来的力量加成（战锤）/
 //! 护甲加成（木盾）真的能走
 //! `ll_sim::resolve::resolve_with_skills_traits_pools_and_items`/
 //! `ll_sim::apply::apply` 端到端改变结算出的伤害——ADR 0018「玩法层
@@ -55,7 +55,7 @@ use std::collections::BTreeMap;
 /// 仓库根目录下的真实 `mods/` 路径，理由同 `example_mod_items.rs`。
 const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 
-/// `mods/example_mod/gameplay.scm` 给战锤声明的力量加成——与该文件
+/// `mods/example_mod/items.json5` 给战锤声明的力量加成——与该文件
 /// `(register-item-stat-bonus "examplemod:war_hammer" "strength" 6)`
 /// 保持同步,断言里复用这个常量,不重复写字面量 `6`。
 const WAR_HAMMER_STRENGTH_BONUS: i32 = 6;
@@ -132,7 +132,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/ 的内容文件注册"))
     };
 
     RealModsHandle {

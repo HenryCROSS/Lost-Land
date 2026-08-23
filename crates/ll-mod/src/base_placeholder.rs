@@ -80,7 +80,7 @@ mod tests {
         // 调用路径、共用同一个单调递增的号段——不为占位内容预留任何
         // 特殊区间。这是「结构等价」，不是「mod 脚本调得到这套 API」的
         // 证据；后者的证据在 crate::pipeline 的脚本装载测试与
-        // mods/example_mod/gameplay.scm。
+        // mods/example_mod/ 的内容文件。
         // Arrange
         let mut registry = Registry::new();
 

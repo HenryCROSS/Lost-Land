@@ -1,6 +1,6 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! `register-race-starting-item` 这个新脚本 API 真的能被
-//! `mods/example_mod/gameplay.scm` 调用，且真实注册的出生物品：
+//! `mods/example_mod/races.json5` 调用，且真实注册的出生物品：
 //!
 //! 1. 能被 [`ll_mod::race::starting_inventory`] 转换成背包物品；
 //! 2. 一旦发给一个真实存在的实体（哥布林），死亡结算真的会把它们
@@ -126,7 +126,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/races.json5 注册"))
     };
 
     RealModsHandle {

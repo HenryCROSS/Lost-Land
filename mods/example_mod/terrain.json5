@@ -1,0 +1,26 @@
+// 示例 mod 的地形——搬自此前的 terrain.scm，两条声明逐字段等价。
+//
+// `blocks_sight`/`blocks_move` 两个布尔**必填**，不带缺省：布尔的
+// 默认值恰好也是一个合法取值，漏写与「作者确实想要 false」在结果上
+// 分不出来，见 ll_mod::content_schema_world 模块文档。
+{
+  terrains: [
+    {
+      // 熔岩地面：不挡视线、不挡移动，但走过去很慢（代价 350，常规
+      // 地面是 100）。iron_sword_recipe 把它当作锻造场地，见
+      // crafting.json5 的 required_station。
+      id: "examplemod:lava_floor",
+      blocks_sight: false,
+      blocks_move: false,
+      move_cost: 350,
+    },
+    {
+      // 铺装地面：与本体草地同代价，用来证明 mod 能新增一种"普通"
+      // 地形，而不只是能新增奇观。
+      id: "examplemod:paved_floor",
+      blocks_sight: false,
+      blocks_move: false,
+      move_cost: 100,
+    },
+  ],
+}

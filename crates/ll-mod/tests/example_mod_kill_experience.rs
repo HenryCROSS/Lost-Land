@@ -6,7 +6,7 @@
 //!
 //! # 这一整条链路指的是
 //!
-//! 1. `mods/example_mod/gameplay.scm` 的 `register-race-xp-reward`
+//! 1. `mods/example_mod/races.json5` 的 `register-race-xp-reward`
 //!    声明「杀死一只哥布林的基准经验是 15」；
 //! 2. `mods/lostland/races.json5` 的同一个指令给本体三族各自声明了基准
 //!    值（项目所有者裁定「最低经验 1xp、人人都给」之后新增）；
@@ -386,7 +386,7 @@ fn kill_via_turn_engine(
 
 #[test]
 fn 同级击杀哥布林经回合引擎产出脚本声明的基准经验() {
-    // ADR 0018 的正向证据：内容来自真实 mods/example_mod/gameplay.scm
+    // ADR 0018 的正向证据：内容来自真实 mods/example_mod/races.json5
     // 的 `(register-race-xp-reward "examplemod:goblin" 15)`，结算经由
     // TurnEngine::advance_ai 这条生产路径发生。
     // Arrange
@@ -589,7 +589,7 @@ fn 属性已达硬上限时加点被拒绝且点数原样保留() {
 #[test]
 fn 玩家经回合引擎花一点技能点学会真实mod声明的技能() {
     // ADR 0018 的正向证据：`examplemod:frostbolt` 来自真实
-    // mods/example_mod/gameplay.scm 的 register-skill，前置为空。
+    // mods/example_mod/races.json5 的 register-skill，前置为空。
     // Arrange
     let handle = load_real_mods();
     assert!(

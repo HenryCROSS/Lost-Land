@@ -14,7 +14,7 @@
 //!
 //! # 内容来源（ADR 0018）
 //!
-//! 全部来自真实 `mods/example_mod/gameplay.scm`，一行都不是测试现造：
+//! 全部来自真实 `mods/example_mod/crafting.json5`，一行都不是测试现造：
 //!
 //! - `(register-subclass "examplemod:shadowdancer" …)`
 //! - `(register-recipe-category "examplemod:cooking" …)`——**不设闸门**
@@ -94,7 +94,7 @@ use ll_world::zone::ZoneLayout;
 /// 仓库根目录下的真实 `mods/` 路径，理由同 `turn_engine_catalogs.rs`。
 const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 
-/// `mods/example_mod/gameplay.scm` 里那条 `register-subclass-unlock`
+/// `mods/example_mod/crafting.json5` 里那条 `register-subclass-unlock`
 /// 声明的阈值。写成常量并在 [`阈值与真实脚本声明一致`] 里对着真实
 /// 装载出来的表核对一次——本文件其余每条断言都以它为准，脚本改了数
 /// 而测试没跟上时应该是那一条先红，不是别的条目莫名其妙地红。
@@ -391,7 +391,7 @@ fn cook_then_abandon_then_forge(handle: &RealModsHandle, abandon: bool) -> Agent
         Vec::new(),
     );
     // 锻造那条配方要求站在熔岩地板上并装备战锤，见
-    // mods/example_mod/gameplay.scm 配方②。
+    // mods/example_mod/crafting.json5 配方②。
     let pos = world.actors.get(crafter).expect("刚生成").pos;
     assert!(world.terrain_at(pos).is_some(), "脚下这一格必须已常驻");
     world.terrain.set_terrain(
@@ -522,7 +522,7 @@ fn 烤肉未达阈值时只累加计数不授予副职() {
 
 #[test]
 fn 烤肉达到阈值时经回合引擎真的授予副职() {
-    // ADR 0018 的正向证据：内容来自真实 mods/example_mod/gameplay.scm
+    // ADR 0018 的正向证据：内容来自真实 mods/example_mod/crafting.json5
     // 的 register-subclass-unlock，授予经由 TurnEngine::advance_ai
     // 这条生产路径发生。这是 Agent::subclasses 在本仓库里第一次被真
     // 正写入。

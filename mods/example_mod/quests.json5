@@ -1,0 +1,13 @@
+// 示例 mod 的任务——搬自此前的 gameplay.scm。
+{
+  quests: [
+    {
+      // 杀三只哥布林。目标类型是**开放标识符空间**——代码库至今没有
+      // 敌人类型注册表，因此只 intern 不要求已定义（这里恰好与
+      // races.json5 的 goblin 同一个 id，但那是内容作者的选择，不是
+      // schema 的要求）。
+      id: "examplemod:kill_goblins",
+      condition: { kind: "kill-count", target: "examplemod:goblin", count: 3 },
+    },
+  ],
+}

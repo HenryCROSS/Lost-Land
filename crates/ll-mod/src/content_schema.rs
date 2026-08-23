@@ -84,23 +84,32 @@ use crate::registry::Registry;
 use crate::skill::{ResourceCost, ResourceKind, SkillAttrs, SkillEffect, SkillTable};
 use crate::subclass::{SubclassAttrs, SubclassTable};
 use crate::tag::{TagDef, TagTable};
+use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 
 /// `apply_*` 系列的返回类型——错误是一句面向 mod 作者的人话，调用方
 /// （[`crate::content_data`]）负责在外面拼上文件名。
-type Applied = Result<(), String>;
+pub(crate) type Applied = Result<(), String>;
 
 /// 把一个命名空间字符串解析成 [`NamespacedId`]，失败时报出原文。
-fn parse_id(raw: &str, what: &str) -> Result<NamespacedId, String> {
+pub(crate) fn parse_id(raw: &str, what: &str) -> Result<NamespacedId, String> {
     NamespacedId::parse(raw).map_err(|err| format!("非法{what} {raw:?}：{err}"))
 }
 
 /// 解析并 intern：允许前向引用（被引用的内容可以还没定义）。
-fn intern_id(registry: &mut Registry, raw: &str, what: &str) -> Result<ContentIndex, String> {
+pub(crate) fn intern_id(
+    registry: &mut Registry,
+    raw: &str,
+    what: &str,
+) -> Result<ContentIndex, String> {
     Ok(registry.intern(parse_id(raw, what)?))
 }
 
 /// 解析并**要求已注册**：只 get 不 intern，拼错当场报错。
-fn required_id(registry: &Registry, raw: &str, what: &str) -> Result<ContentIndex, String> {
+pub(crate) fn required_id(
+    registry: &Registry,
+    raw: &str,
+    what: &str,
+) -> Result<ContentIndex, String> {
     let parsed = parse_id(raw, what)?;
     registry
         .get(&parsed)
@@ -109,7 +118,7 @@ fn required_id(registry: &Registry, raw: &str, what: &str) -> Result<ContentInde
 
 /// 六项主属性 + 幸运的名字 → [`AttributeKind`]。取值集合与此前
 /// `register-class` / `register-skill` 认的那一份逐字相同。
-fn attribute_kind_from_str(name: &str) -> Result<AttributeKind, String> {
+pub(crate) fn attribute_kind_from_str(name: &str) -> Result<AttributeKind, String> {
     Ok(match name {
         "strength" => AttributeKind::Strength,
         "dexterity" => AttributeKind::Dexterity,
@@ -310,10 +319,21 @@ pub struct RawRace {
     /// 出生装备，缺省无。
     #[serde(default)]
     pub starting_items: Vec<RawStartingItem>,
+    /// 这个种族用哪条经验曲线，**必须已注册**；整条不写表示落回默认
+    /// 曲线。对应此前的 `(register-race-xp-curve 种族 曲线)`——那条
+    /// 追加指令要把种族 id 重复写一遍，字段则不会。
+    #[serde(default)]
+    pub xp_curve: Option<String>,
 }
 
 /// 把一批种族写进注册表与种族表。
-pub fn apply_races(registry: &mut Registry, table: &mut RaceTable, races: &[RawRace]) -> Applied {
+pub fn apply_races(
+    registry: &mut Registry,
+    table: &mut RaceTable,
+    curves: &XpCurveTable,
+    bindings: &mut XpCurveBindings,
+    races: &[RawRace],
+) -> Applied {
     for race in races {
         if race.xp_reward < 0 {
             return Err(format!(
@@ -348,6 +368,13 @@ pub fn apply_races(registry: &mut Registry, table: &mut RaceTable, races: &[RawR
                 },
             )
             .map_err(|err| err.to_string())?;
+
+        if let Some(raw) = &race.xp_curve {
+            let curve = required_id(registry, raw, "经验曲线")?;
+            bindings
+                .bind_race(curves, index, curve)
+                .map_err(|err| err.to_string())?;
+        }
     }
     Ok(())
 }
@@ -376,12 +403,18 @@ pub struct RawClass {
     /// 职业天赋，缺省无。
     #[serde(default)]
     pub traits: Vec<RawTraitGrant>,
+    /// 这个职业用哪条经验曲线，**必须已注册**；整条不写表示落回默认
+    /// 曲线。理由同 [`RawRace::xp_curve`]。
+    #[serde(default)]
+    pub xp_curve: Option<String>,
 }
 
 /// 把一批职业写进注册表与职业表。
 pub fn apply_classes(
     registry: &mut Registry,
     table: &mut ClassTable,
+    curves: &XpCurveTable,
+    bindings: &mut XpCurveBindings,
     classes: &[RawClass],
 ) -> Applied {
     for class in classes {
@@ -402,6 +435,13 @@ pub fn apply_classes(
                 },
             )
             .map_err(|err| err.to_string())?;
+
+        if let Some(raw) = &class.xp_curve {
+            let curve = required_id(registry, raw, "经验曲线")?;
+            bindings
+                .bind_class(curves, index, curve)
+                .map_err(|err| err.to_string())?;
+        }
     }
     Ok(())
 }
@@ -529,7 +569,7 @@ pub struct RawSkillEffect {
 }
 
 impl RawSkillEffect {
-    fn resolve(&self) -> Result<SkillEffect, String> {
+    pub(crate) fn resolve(&self) -> Result<SkillEffect, String> {
         let reject = |present: bool, field: &str| -> Result<(), String> {
             if present {
                 Err(format!(
@@ -751,16 +791,19 @@ pub fn apply_quests(
 
 // ─────────────────────────── 配方类别 ───────────────────────────
 
-/// `crafting.json5` 的顶层形状。
+/// `crafting.json5` 的顶层形状——配方类别与配方两张名册。
 ///
-/// 目前只有配方类别一张表——配方本身（`register-recipe`）要引用**物品**，
-/// 而本体的物品内容至今一条都没有，见 `mods/lostland/crafting.json5`
-/// 文件头。将来补配方时在本结构体加第二个字段，不需要新开文件。
+/// 本体至今只写了类别（配方要引用**物品**，而本体的物品内容一条都
+/// 没有，见 `mods/lostland/crafting.json5` 文件头），`recipes` 因此
+/// 带 `#[serde(default)]`；示例 mod 两张都写。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct CraftingFile {
     /// 配方类别名册，按书写顺序注册。
     pub recipe_categories: Vec<RawRecipeCategory>,
+    /// 配方名册，按书写顺序注册，缺省无。
+    #[serde(default)]
+    pub recipes: Vec<crate::content_schema_gear::RawRecipe>,
 }
 
 /// 一条配方类别声明——对应此前的
@@ -778,7 +821,10 @@ pub struct RawRecipeCategory {
     pub required_subclasses: Vec<String>,
 }
 
-/// 把一批配方类别写进注册表与配方类别表。
+/// 把一批配方类别**定义**写进注册表与配方类别表。
+///
+/// `required_subclasses` 那一半**不在这里**——见
+/// [`apply_recipe_category_subclass_gates`]。
 pub fn apply_recipe_categories(
     registry: &mut Registry,
     table: &mut RecipeCategoryTable,
@@ -790,6 +836,37 @@ pub fn apply_recipe_categories(
         table
             .define(index, display_name_key)
             .map_err(|err| err.to_string())?;
+    }
+    Ok(())
+}
+
+/// 把配方类别的**副职闸门**写进配方类别表——`crafting.json5` 的第二
+/// 遍应用。
+///
+/// # 为什么要分两遍
+///
+/// 配方类别与副职**互相引用**，且两边都是「只 get 不 intern」：
+///
+/// - 副职的获得条件指向一个配方类别（`RawSubclassUnlock::target`）；
+/// - 配方类别的闸门指向一个副职（[`RawRecipeCategory::required_subclasses`]）。
+///
+/// 这是内容里真实存在的一处环，不是文件顺序没排好——任何单一的文件
+/// 先后顺序都满足不了它。脚本时代靠内容作者把四条 `register-*` 手工
+/// 交错着写来打破；现在由引擎侧固定的两遍应用打破，mod 作者写不错、
+/// 也改不动（顺序表在 [`crate::content_data`]）。
+///
+/// 两遍都读同一个文件。多解析一次几十行 JSON5 的代价，换掉的是一条
+/// 「作者必须知道要把哪四条声明交错着写」的隐形约束。
+pub fn apply_recipe_category_subclass_gates(
+    registry: &Registry,
+    table: &mut RecipeCategoryTable,
+    categories: &[RawRecipeCategory],
+) -> Applied {
+    for category in categories {
+        if category.required_subclasses.is_empty() {
+            continue;
+        }
+        let index = required_id(registry, &category.id, "配方类别")?;
         for raw in &category.required_subclasses {
             let subclass = required_id(registry, raw, "副职")?;
             table

@@ -1,0 +1,12 @@
+// 示例 mod 的副职——搬自此前的 gameplay.scm。
+{
+  subclasses: [
+    {
+      // 影舞者：烹饪三件就能拿到；拿到之后才解锁锻造类别
+      // （见 crafting.json5 里 forging 的 required_subclasses）。
+      id: "examplemod:shadowdancer",
+      display_name_key: "examplemod:shadowdancer_display_name",
+      unlock: { kind: "items-crafted", target: "examplemod:cooking", threshold: 3 },
+    },
+  ],
+}

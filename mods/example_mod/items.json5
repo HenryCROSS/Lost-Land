@@ -1,0 +1,189 @@
+// 示例 mod 的物品——搬自此前的 gameplay.scm。
+//
+// 脚本时代一件武器要写四到五行：一条 register-item 定义主体，外加
+// register-item-equip-mask / -stat-bonus / -penetration / -tag / ……
+// 每条都要把物品 id 重复写一遍。现在它们是同一个对象的字段——写错
+// 一个 id 就把加成挂到别的物品上这条失败模式，结构上不存在了。
+//
+// 两处哨兵值也换掉了：耐久的 `-1`（无耐久）换成字段缺席，装备槽位的
+// 空列表（不可装备）同样换成字段缺席。
+{
+  items: [
+    {
+      // 箭矢：可堆叠到 99。可堆叠的物品**不能**带耐久上限（两条规则
+      // 字面矛盾），注册期直接拒绝，见 content_schema_gear。
+      id: "examplemod:arrow",
+      display_name_key: "examplemod:arrow_display_name",
+      stack_limit: 99,
+      base_weight: 50,
+      base_price: 2000,
+    },
+    {
+      id: "examplemod:iron_sword",
+      display_name_key: "examplemod:iron_sword_display_name",
+      stack_limit: 1,
+      base_weight: 3000,
+      base_price: 50000,
+      max_durability: 100,
+      damage_formula: "examplemod:iron_sword_formula",
+      tags: ["lostland:weapon"],
+    },
+    {
+      // 战锤：双手都能拿，加力量，还能穿甲——一件把四条追加声明全用
+      // 上的样本。同时是 iron_sword_recipe 的必需工具。
+      id: "examplemod:war_hammer",
+      display_name_key: "examplemod:war_hammer_display_name",
+      stack_limit: 1,
+      base_weight: 6000,
+      base_price: 90000,
+      max_durability: 150,
+      equip_slots: ["main-hand", "off-hand"],
+      stat_bonuses: [{ target: "strength", amount: 6 }],
+      penetration: { flat: 3, permille: 100 },
+      tags: ["lostland:weapon", "lostland:tool"],
+    },
+    {
+      // 木盾：同时挂 armor 与 weapon 两个标签——盾牌能砸人，这不是
+      // 笔误。
+      id: "examplemod:wooden_shield",
+      display_name_key: "examplemod:wooden_shield_display_name",
+      stack_limit: 1,
+      base_weight: 4000,
+      base_price: 12000,
+      max_durability: 80,
+      equip_slots: ["off-hand"],
+      stat_bonuses: [{ target: "armor", amount: 8 }],
+      tags: ["lostland:armor", "lostland:weapon"],
+    },
+    {
+      // 治疗药水：可堆叠 10，用掉恢复 40 点法力。
+      id: "examplemod:healing_potion",
+      display_name_key: "examplemod:healing_potion_display_name",
+      stack_limit: 10,
+      base_weight: 200,
+      base_price: 500,
+      use_effect: { kind: "restore-resource", amount: 40, resource: "mana" },
+    },
+    {
+      // 粗劣匕首：哥布林的出生装备，也是废料打剑那条配方的材料。
+      id: "examplemod:crude_dagger",
+      display_name_key: "examplemod:crude_dagger_display_name",
+      stack_limit: 1,
+      base_weight: 500,
+      base_price: 8000,
+      max_durability: 20,
+      equip_slots: ["main-hand", "off-hand"],
+      tags: ["lostland:weapon"],
+    },
+    {
+      id: "examplemod:flame_longbow",
+      display_name_key: "examplemod:flame_longbow_display_name",
+      stack_limit: 1,
+      base_weight: 4000,
+      base_price: 60000,
+      max_durability: 90,
+      equip_slots: ["main-hand"],
+      damage_formula: "examplemod:flame_longbow_formula",
+      tags: ["lostland:weapon"],
+    },
+    {
+      // 酸蚀匕首：显式声明伤害类别，成为 acid_ward_amulet 那条抗性的
+      // 对手戏。
+      id: "examplemod:acid_dagger",
+      display_name_key: "examplemod:acid_dagger_display_name",
+      stack_limit: 1,
+      base_weight: 500,
+      base_price: 6000,
+      max_durability: 40,
+      equip_slots: ["main-hand"],
+      damage_formula: "examplemod:iron_sword_formula",
+      damage_category: "examplemod:acid",
+      tags: ["lostland:weapon"],
+    },
+    {
+      // 抗酸护符：装备一路的抗性来源（另一路是天赋，见 traits.json5
+      // 的 acid_hide）。500‰ = 半伤。
+      id: "examplemod:acid_ward_amulet",
+      display_name_key: "examplemod:acid_ward_amulet_display_name",
+      stack_limit: 1,
+      base_weight: 300,
+      base_price: 15000,
+      max_durability: 60,
+      equip_slots: ["neck"],
+      resistances: [{ damage_category: "examplemod:acid", multiplier_permille: 500 }],
+      tags: ["lostland:armor"],
+    },
+    {
+      // 羊毛内衬 + 毛皮斗篷：两层衣服比一层暖——保暖值走的是与护甲
+      // 同一段求和算法，见 ll_sim::item::StatTarget::Insulation。
+      id: "examplemod:wool_liner",
+      display_name_key: "examplemod:wool_liner_display_name",
+      stack_limit: 1,
+      base_weight: 2000,
+      base_price: 8000,
+      max_durability: 60,
+      equip_slots: ["body"],
+      stat_bonuses: [{ target: "insulation", amount: 50 }],
+      tags: ["lostland:armor"],
+    },
+    {
+      id: "examplemod:fur_cloak",
+      display_name_key: "examplemod:fur_cloak_display_name",
+      stack_limit: 1,
+      base_weight: 5000,
+      base_price: 30000,
+      max_durability: 90,
+      equip_slots: ["outer"],
+      stat_bonuses: [{ target: "insulation", amount: 90 }],
+      tags: ["lostland:armor"],
+    },
+
+    // 以下六件是制作系统的材料与成品，没有装备/战斗属性。
+    {
+      id: "examplemod:raw_meat",
+      display_name_key: "examplemod:raw_meat_display_name",
+      stack_limit: 20,
+      base_weight: 500,
+      base_price: 300,
+    },
+    {
+      id: "examplemod:roast_meat",
+      display_name_key: "examplemod:roast_meat_display_name",
+      stack_limit: 20,
+      base_weight: 400,
+      base_price: 900,
+    },
+    {
+      id: "examplemod:iron_ingot",
+      display_name_key: "examplemod:iron_ingot_display_name",
+      stack_limit: 50,
+      base_weight: 2000,
+      base_price: 4000,
+    },
+    {
+      id: "examplemod:wild_herb",
+      display_name_key: "examplemod:wild_herb_display_name",
+      stack_limit: 20,
+      base_weight: 100,
+      base_price: 200,
+    },
+    {
+      id: "examplemod:herb_stew",
+      display_name_key: "examplemod:herb_stew_display_name",
+      stack_limit: 10,
+      base_weight: 800,
+      base_price: 1500,
+    },
+    {
+      // 食谱：读它能学会草药炖菜。taught_recipes 里的 id **必须真的
+      // 是一条配方**（不只是"这个 id 被 intern 过"）——拼错的症状是
+      // 这本书静默什么都不教，正是最难查的那一类内容缺陷。
+      id: "examplemod:cookbook",
+      display_name_key: "examplemod:cookbook_display_name",
+      stack_limit: 1,
+      base_weight: 600,
+      base_price: 9000,
+      taught_recipes: ["examplemod:herb_stew_recipe"],
+    },
+  ],
+}

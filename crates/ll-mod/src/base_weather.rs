@@ -49,7 +49,7 @@ mod tests {
         //
         // 边界：本测试只证明本体与 mod 走同一条注册路径（结构等价），
         // 不能证明 mod 脚本调得到这套 API。真正的证据在 crate::pipeline
-        // 的脚本装载测试与 mods/example_mod/weather.scm。
+        // 的脚本装载测试与 mods/example_mod/weather.json5。
         // Arrange
         let mut registry = Registry::new();
 

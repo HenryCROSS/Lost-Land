@@ -52,7 +52,7 @@ mod tests {
         //
         // 边界：本测试只证明本体与 mod 走同一条注册路径（结构等价），
         // 不能证明 mod 脚本调得到这套 API。真正的证据在
-        // crate::pipeline 的脚本装载测试与 mods/example_mod/gameplay.scm。
+        // crate::pipeline 的脚本装载测试与 mods/example_mod/terrain.json5。
         // Arrange
         let mut registry = Registry::new();
 
@@ -74,7 +74,7 @@ mod tests {
         //
         // 边界：本测试只证明本体与 mod 走同一条注册路径，不能证明
         // mod 脚本调得到这套 API。真正的证据在 crate::pipeline 的
-        // 脚本装载测试与 mods/example_mod/gameplay.scm。
+        // 脚本装载测试与 mods/example_mod/terrain.json5。
         // Arrange
         let mut registry = Registry::new();
         let (_terrain_ids, _table) =

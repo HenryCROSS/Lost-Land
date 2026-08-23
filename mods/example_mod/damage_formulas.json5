@@ -1,0 +1,23 @@
+// 示例 mod 的伤害公式——搬自此前的 gameplay.scm。
+//
+// 表达式此前是 `(quote (+ attack-power str-mod))` 这样一份被 quote
+// 包住、从未被 Steel 求值的 s-表达式；现在是等价的嵌套数组：数字是
+// 字面量，字符串是符号，数组是调用。编译产出的扁平指令数组与脚本
+// 时代逐字节相同，见 ll_mod::content_expr 模块文档。
+{
+  damage_formulas: [
+    {
+      // 铁剑：纯物理，攻击力加力量调整值，没有随机。
+      id: "examplemod:iron_sword_formula",
+      expr: ["+", "attack-power", "str-mod"],
+    },
+    {
+      // 烈焰长弓：暴击时 2d10、平时 1d10，都加敏捷调整值，最低 1。
+      id: "examplemod:flame_longbow_formula",
+      expr: ["max", 1,
+             ["if", ["=", "crit", 1],
+              ["+", ["d", 2, 10], "dex-mod"],
+              ["+", ["d", 1, 10], "dex-mod"]]],
+    },
+  ],
+}

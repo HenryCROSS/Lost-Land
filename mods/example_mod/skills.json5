@@ -1,0 +1,58 @@
+// 示例 mod 的技能——搬自此前的 gameplay.scm。
+//
+// 施放代价此前是「一个字符串 + 一个整数」，且那个字符串有三种截然
+// 不同的读法：mana 是固定资源、examplemod:sorcery_points 是一个池
+// id、slot-tier:examplemod:wizard_spell_slots 是带前缀的池 id。现在
+// 是显式的 kind 分派，见 ll_mod::content_schema::RawResourceCost。
+//
+// 六条技能全部不专属职业（owning_class 字段缺席）——此前用空串表达
+// 同一件事。
+{
+  skills: [
+    {
+      // 冰霜箭：哥布林行为树里那条「技能可用就先放技能」的分支用的
+      // 就是它。
+      id: "examplemod:frostbolt",
+      cooldown_ticks: 25,
+      resource_cost: { kind: "mana", amount: 12 },
+      effect: { kind: "deal-damage", amount: 15 },
+    },
+    {
+      // 龙息：不要任何资源，只受冷却限制。
+      id: "examplemod:breath_weapon",
+      cooldown_ticks: 30,
+      resource_cost: { kind: "none" },
+      effect: { kind: "deal-damage", amount: 20 },
+    },
+    {
+      // 术士火弹：花标量池（kind = pool）——本体至今没有一条内容走
+      // 这条路径，这是它第一次被真实内容跑到。
+      id: "examplemod:sorcerer_firebolt",
+      cooldown_ticks: 10,
+      resource_cost: { kind: "pool", pool: "examplemod:sorcery_points", amount: 5 },
+      effect: { kind: "deal-damage", amount: 12 },
+    },
+    {
+      // 血弹：花血，血魔法那一路。
+      id: "examplemod:blood_bolt",
+      cooldown_ticks: 10,
+      resource_cost: { kind: "blood", amount: 15 },
+      effect: { kind: "deal-damage", amount: 30 },
+    },
+    {
+      // 火球：要一个三阶或更高的法术位（kind = slot-tier）——与 pool
+      // 同样是本体没用到、这里第一次真实跑到的路径。
+      id: "examplemod:fireball",
+      cooldown_ticks: 30,
+      resource_cost: { kind: "slot-tier", pool: "examplemod:wizard_spell_slots", min_tier: 3 },
+      effect: { kind: "deal-damage", amount: 28 },
+    },
+    {
+      // 背刺：由「扒手训练」天赋授予。
+      id: "examplemod:backstab",
+      cooldown_ticks: 20,
+      resource_cost: { kind: "mana", amount: 5 },
+      effect: { kind: "deal-damage", amount: 18 },
+    },
+  ],
+}

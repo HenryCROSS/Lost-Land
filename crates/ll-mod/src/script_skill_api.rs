@@ -193,7 +193,7 @@ fn do_register_skill(
 /// `resource-kind`/`resource-amount` 这一对参数已经用「字符串标签 +
 /// 解释规则」表达了四种资源通道（`none`/内置/血代价/开放标量池），第五
 /// 种（法术位）需要额外携带一个「哪个池」的标识符——若给
-/// `register_skill` 再加一个位置参数，既有内容（`mods/example_mod/gameplay.scm`
+/// `register_skill` 再加一个位置参数，既有内容（迁进 `mods/example_mod/skills.json5` 之前
 /// 的 `frostbolt`/`sorcerer_firebolt`/`blood_bolt`）与既有测试全部要
 /// 补一个从不使用的哨兵参数。`"slot-tier:"` 前缀把「这是哪一类资源
 /// 通道」与「具体是哪个池」编码进同一个字符串参数，`resource-amount`

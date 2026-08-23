@@ -1,7 +1,7 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! `register-xp-curve`/`register-class-xp-curve`/`register-race-xp-curve`/
 //! `register-race-xp-reward` 这四个新脚本 API 真的能被
-//! `mods/example_mod/gameplay.scm` 调用，且两条真实注册的曲线（线性/
+//! `mods/example_mod/xp_curves.json5` 调用，且两条真实注册的曲线（线性/
 //! 递推指数）在同一等级上门槛确实不同——ADR 0018「玩法层内容必须能从
 //! mod 脚本注册，且要有真实 mod 脚本为证」，本文件是那份证据，不能靠
 //! 单元测试自证。
@@ -122,7 +122,7 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/xp_curves.json5 注册"))
     };
 
     RealModsHandle {

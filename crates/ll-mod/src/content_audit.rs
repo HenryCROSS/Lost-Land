@@ -39,7 +39,7 @@
 //!   死的）；项目所有者裁定「最低经验 1xp、人人都给」之后三族各自
 //!   声明了基准值，这一条已经两头都绿，豁免随之摘除。
 //! - 内容写了、但决策层没人读（例如 `ClassDef.primary_attribute`：
-//!   `mods/example_mod/gameplay.scm` 逐条声明了它，但没有任何**结算**
+//!   `mods/example_mod/` 的内容文件逐条声明了它，但没有任何**结算**
 //!   逻辑读它——升级加点批次把它接进了角色面板这个**呈现层**消费者，
 //!   而所有者「玩家自己加点」的裁定正好排除了它进结算层的可能，见
 //!   `ll_ui::hud::character_panel::CharacterPanelData::primary_attribute`
@@ -208,7 +208,7 @@ pub struct ReferenceViolation {
 /// # 这是什么形状的错误
 ///
 /// 最短的一环是自环：`register-subclass-unlock` 让副职 S 从「在类别 C
-/// 里做满 N 次」获得，`recipe-category-requires-subclass!` 又让类别 C
+/// 里做满 N 次」获得，`required_subclasses` 又让类别 C
 /// 要求副职 S 才能做——「要当工匠才能锻造，要锻造才能当工匠」。两条
 /// 声明各自完全合法，合起来玩家永远做不了 C 里的任何配方，也就永远
 /// 攒不到那 N 次。`ll_sim::resolve::resolve_craft` 的副职闸门**每次
@@ -221,7 +221,7 @@ pub struct ReferenceViolation {
 /// # 为什么两个注册函数各自拦不住
 ///
 /// `register-subclass-unlock` 只看得到 [`crate::subclass::SubclassTable`]，
-/// `recipe-category-requires-subclass!` 只看得到
+/// `required_subclasses` 只看得到
 /// [`crate::recipe_category::RecipeCategoryTable`]，且两条声明的先后
 /// 顺序不固定——任何一边单方面都判不了。装载后的本 pass 是唯一同时
 /// 看得到两张表的地方（`knowledge/design/subclass-system.md` 八节⑤
@@ -414,14 +414,14 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         },
         DeferredTable {
             kind: ContentTableKind::Recipe,
-            reason: "本体配方尚未迁进 mods/lostland/，理由同 Trait 一条——制作系统落地                     批次的真实内容证据在 mods/example_mod/gameplay.scm（四类配方各一条），                     lostland 命名空间下零条配方。本体配方要能存在，先得有本体物品                     （见 deferred 里的 Item 一条）：配方的食材与成品都指向物品表。",
+            reason: "本体配方尚未迁进 mods/lostland/，理由同 Trait 一条——制作系统落地                     批次的真实内容证据在 mods/example_mod/crafting.json5（四类配方各一条），                     lostland 命名空间下零条配方。本体配方要能存在，先得有本体物品                     （见 deferred 里的 Item 一条）：配方的食材与成品都指向物品表。",
         },
     ],
     exemptions: &[
         FieldExemption {
             kind: ContentTableKind::RecipeCategory,
             field: "RecipeCategoryDef::required_subclasses",
-            reason: "本体四个配方类别（mods/lostland/crafting.json5）全部**刻意**不设副职                     闸门，这不是遗漏。两条理由：①设了会造出真实的死锁——同一批次的                     mods/lostland/subclasses.json5 让四个副职各自『在对应类别里做满 N 次』                     获得，若那个类别又要求该副职才能做，就成了『要当工匠才能锻造，                     要锻造才能当工匠』，而 resolve_craft 的副职闸门是每次制作都判的，                     所以两边会真的互相等死；②烹饪本来就不该有闸门                     （food-and-cooking-system.md 五节裁定『菜谱不设解锁门槛』）。                     字段本身完全不是死的：mods/example_mod/gameplay.scm 的                     examplemod:forging 用 recipe-category-requires-subclass! 设了闸，                     crates/ll-mod/tests/example_mod_subclass_unlock.rs 有一整份端到端                     证据盯着它（拿到副职→解锁；放弃副职→立刻重新锁上）。                     本体要用上这个字段，正确形状是**第二梯队的进阶类别**（基础类别                     不设闸让玩家练出副职，进阶类别设闸把守高级配方），而那要等本体                     真的有配方内容——本体物品至今一条都没迁过来（见 deferred 里的                     Item 一条），没有物品就写不出配方。",
+            reason: "本体四个配方类别（mods/lostland/crafting.json5）全部**刻意**不设副职                     闸门，这不是遗漏。两条理由：①设了会造出真实的死锁——同一批次的                     mods/lostland/subclasses.json5 让四个副职各自『在对应类别里做满 N 次』                     获得，若那个类别又要求该副职才能做，就成了『要当工匠才能锻造，                     要锻造才能当工匠』，而 resolve_craft 的副职闸门是每次制作都判的，                     所以两边会真的互相等死；②烹饪本来就不该有闸门                     （food-and-cooking-system.md 五节裁定『菜谱不设解锁门槛』）。                     字段本身完全不是死的：mods/example_mod/crafting.json5 的                     examplemod:forging 用 required_subclasses 设了闸，                     crates/ll-mod/tests/example_mod_subclass_unlock.rs 有一整份端到端                     证据盯着它（拿到副职→解锁；放弃副职→立刻重新锁上）。                     本体要用上这个字段，正确形状是**第二梯队的进阶类别**（基础类别                     不设闸让玩家练出副职，进阶类别设闸把守高级配方），而那要等本体                     真的有配方内容——本体物品至今一条都没迁过来（见 deferred 里的                     Item 一条），没有物品就写不出配方。",
         },
         FieldExemption {
             kind: ContentTableKind::Class,
@@ -429,7 +429,7 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
             reason: "本体四条职业内容（mods/lostland/classes.json5 的战士/法师/游侠/卫兵）\
                      一条都不授予职业天赋——与 RaceAttrs::traits 一条同源：本体内容\
                      不为了让字段覆盖检查变绿硬塞一条天赋。字段本身不是死的：\
-                     mods/example_mod/gameplay.scm 的 examplemod:rogue 用\
+                     mods/example_mod/classes.json5 的 examplemod:rogue 用\
                      register-class-trait 在 3 级授予 examplemod:cutpurse_training，\
                      ll_sim 的 effective_traits 真的会读它——只是本体内容用不到。",
         },
@@ -668,7 +668,7 @@ impl fmt::Display for SubclassUnlockDeadlockError {
         }
         write!(
             f,
-            "正确形状是「从不设闸的类别里练出副职，用它去开另一个设了闸的类别的门」             （`mods/example_mod/gameplay.scm` 就是这么写的）——请让这条链上至少有一个类别             不调用 `recipe-category-requires-subclass!`，或者让链上至少有一个副职改用别的             获得路径。"
+            "正确形状是「从不设闸的类别里练出副职，用它去开另一个设了闸的类别的门」             （`mods/example_mod/crafting.json5` 就是这么写的）——请让这条链上至少有一个类别             不声明 `required_subclasses`（脚本 API 那一侧对应的是 recipe-category-requires-subclass!），或者让链上至少有一个副职改用别的             获得路径。"
         )
     }
 }
@@ -1407,7 +1407,7 @@ fn inspect_race(auditor: &mut Auditor<'_>, index: ContentIndex) {
     // 幸运修正）之后，本体三族仍然全填 0，但那不构成覆盖缺口——覆盖
     // 检查的粒度是 `stat_modifiers` 这一个整体字段，矮人的力量 +1/
     // 体质 +2 已经把它覆盖住了。真正用上 `luck` 的已发货内容是
-    // `mods/example_mod/gameplay.scm` 的 `examplemod:half_elf`（幸运 +1）。
+    // `mods/example_mod/races.json5` 的 `examplemod:half_elf`（幸运 +1）。
     let has_stat_modifier = stats.strength != 0
         || stats.dexterity != 0
         || stats.constitution != 0
@@ -1992,7 +1992,7 @@ mod tests {
             index
         }
 
-        /// `recipe-category-requires-subclass!`：给类别追加一个副职闸门。
+        /// `required_subclasses`：给类别追加一个副职闸门。
         fn gate_category(&mut self, category: ContentIndex, subclass: ContentIndex) {
             self.recipe_category
                 .add_required_subclass(category, subclass)
@@ -2725,7 +2725,7 @@ mod tests {
     }
 
     /// 正确形状不该被误报：从**不设闸**的类别里练出副职，用它去开另一个
-    /// 设了闸的类别的门——`mods/example_mod/gameplay.scm` 写的就是这个。
+    /// 设了闸的类别的门——`mods/example_mod/crafting.json5` 写的就是这个。
     #[test]
     fn 从不设闸的类别练出副职再去开别的门不算死锁() {
         // Arrange：cooking 人人可做，做满若干次得到 artisan；artisan
@@ -2841,6 +2841,10 @@ mod tests {
         // Assert
         assert!(text.contains("test:artisan"), "{text}");
         assert!(text.contains("test:forging"), "{text}");
+        // 文案要点名的是**闸门是怎么声明出来的**——数据文件里的
+        // `required_subclasses` 字段，以及脚本 API 那一侧同名的那条
+        // 指令。两个名字都在，因为两条 authoring 路径此刻都还在。
+        assert!(text.contains("required_subclasses"), "{text}");
         assert!(
             text.contains("recipe-category-requires-subclass!"),
             "{text}"

@@ -1,6 +1,6 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! `register-class-trait` 这个新脚本 API 真的能被
-//! `mods/example_mod/gameplay.scm` 调用，且注册出来的**职业**天赋真的
+//! `mods/example_mod/classes.json5` 声明，且注册出来的**职业**天赋真的
 //! 能走 `ll_sim::resolve::resolve_with_all_catalogs` 端到端放出对应
 //! 技能——ADR 0018「玩法层内容必须能从 mod 脚本注册，且要有真实 mod
 //! 脚本为证」，本文件是那份证据，不能靠单元测试自证。
@@ -55,7 +55,7 @@ use ll_world::zone::ZoneLayout;
 /// 仓库根目录下的真实 `mods/` 路径，理由同 `example_mod_traits.rs`。
 const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 
-/// `mods/example_mod/gameplay.scm` 给盗贼天赋填的解锁等级——测试里
+/// `mods/example_mod/classes.json5` 给盗贼天赋填的解锁等级——测试里
 /// 用它算出「差一级」与「刚好够」两个等级，避免把 `2`/`3` 两个裸数字
 /// 散在断言里，改脚本时只需要改这一处。
 const ROGUE_TRAIT_UNLOCK_LEVEL: i32 = 3;
@@ -136,7 +136,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/ 的内容文件注册"))
     };
 
     RealModsHandle {

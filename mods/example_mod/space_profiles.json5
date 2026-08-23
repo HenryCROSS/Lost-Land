@@ -1,0 +1,21 @@
+// 示例 mod 的空间层属性——搬自此前 weather.scm 里那一条
+// register-space-profile。
+//
+// 它当初写在天气文件里，是因为那一批要顺带补上「十六个注册函数里
+// 唯一一个只有单元测试、没有真实 mod 脚本证据的」那一条。现在按内容
+// 类型各自成文件，这条历史上的搭车关系就没必要保留了。
+{
+  space_profiles: [
+    {
+      // 火山洞窟：不见天日（exposed_to_sky = false，天气与昼夜都作用
+      // 不到），但自带 90‰ 的环境光下限（岩浆的光）与 48.0℃ 的基准
+      // 温度。可挖不可建。
+      id: "examplemod:volcanic_cave",
+      ambient_light_floor: 90,
+      exposed_to_sky: false,
+      base_temperature: 480,
+      diggable: true,
+      buildable: false,
+    },
+  ],
+}

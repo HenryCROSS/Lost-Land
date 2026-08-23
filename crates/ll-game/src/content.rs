@@ -961,7 +961,7 @@ mod tests {
             loaded
                 .registry
                 .get(&NamespacedId::parse(id).expect("合法标识符"))
-                .unwrap_or_else(|| panic!("{id} 应当已被 mods/example_mod/gameplay.scm 注册"))
+                .unwrap_or_else(|| panic!("{id} 应当已被 mods/example_mod/ 的内容文件注册"))
         };
 
         // Act
@@ -1120,7 +1120,7 @@ mod tests {
     #[test]
     fn 真实mods目录装载后examplemod的动画剪辑已注册() {
         // ADR 0018「API 完备性判据要求有真实 mod 脚本为证，不能靠单元
-        // 测试自证」——本测试装载仓库真实的 mods/example_mod/animation.scm
+        // 测试自证」——本测试装载仓库真实的 mods/example_mod/animations.json5
         // （不是临时构造的测试脚本文本），断言其中的
         // `register-animation-clip` 调用确实通过完整的
         // 「发现 → 解析 → 拓扑排序 → 加载脚本 → 注册内容」链路把
@@ -1241,7 +1241,7 @@ mod tests {
         assert_eq!(loaded.audit.reference_violations, Vec::new());
         assert!(
             loaded.audit.references_checked >= 1,
-            "仓库真实内容里至少有一处跨表引用（mods/example_mod/gameplay.scm \
+            "仓库真实内容里至少有一处跨表引用（mods/example_mod/items.json5 \
              的 register-item-damage-formula 等），一处都没检查到说明校验空转了"
         );
     }
@@ -1255,7 +1255,7 @@ mod tests {
         // `ContentValueTables` 上被摘掉），报告恒为"零死锁"且完全无声。
         //
         // 仓库真实内容确实喂得出量：`mods/lostland/subclasses.json5` 的
-        // 四个本体副职各有一条制作获得条件，`mods/example_mod/gameplay.scm`
+        // 四个本体副职各有一条制作获得条件，`mods/example_mod/crafting.json5`
         // 的 shadowdancer 还有一条——而且 example_mod 那条正是「从不设闸
         // 的类别（烹饪）练出副职，用它去开设了闸的类别（锻造）的门」这个
         // 正确形状，本条同时也是"正确形状不被误报"在真实内容上的验收。
@@ -1268,7 +1268,7 @@ mod tests {
         assert!(
             loaded.audit.unlock_rules_checked >= 1,
             "仓库真实内容里至少有一条副职获得条件（mods/lostland/subclasses.json5 \
-             与 mods/example_mod/gameplay.scm 都有），一条都没看到说明检查空转了"
+             与 mods/example_mod/crafting.json5 都有），一条都没看到说明检查空转了"
         );
     }
 

@@ -1,12 +1,14 @@
-// 迷途大陆示例 mod：P4 验收 demo（task-12）用来证明 mod 能新增真实内容
-// 并走与本体完全相同的注册路径。gameplay.scm（P5-C 缺口修补批次新增）
-// 证明同一条能力现在覆盖职业/技能/副职/任务/种族，不只是地形。
-// animation.scm（动画剪辑接线批次新增）证明第七类内容——动画剪辑——
-// 同样能由 mod 脚本注册，不再只有本体能用 Rust 写死。
-// weather.scm（天气系统批次新增）证明天气能由 mod 脚本注册，并顺带
-// 补上 register-space-profile 一直缺的已发货脚本调用——那是十六个
-// 注册函数里唯一一个只有单元测试、没有真实 mod 脚本证据的，见该文件
-// 内部的说明。
+// 迷途大陆示例 mod：用来证明 mod 能新增真实内容，并走与本体完全相同
+// 的注册路径。十八类内容——地形/空间层属性/天气/动画剪辑/资源池/
+// 伤害公式/伤害类别/武器类别/经验曲线/配方类别/配方/副职/物品/种族/
+// 职业/技能/天赋/任务——各自住在同目录下一个固定文件名的 .json5 里。
+//
+// 它们此前是四个 .scm（terrain / gameplay / animation / weather，共
+// 157 行有效声明代码）。搬进数据文件之后：玩家下载即用、零虚拟机、
+// 零沙箱问题，且未知字段与缺字段两类错误都带文件名与行列位置。装载
+// 顺序由引擎侧一张固定的表决定（ll_mod::content_data::CONTENT_FILES），
+// mod 作者写不错、也改不动——此前那条「crafting 必须排在 subclasses
+// 前面」的隐形约束因此消失了。
 //
 // 清单格式是 JSON5，不是 JSON——项目所有者 2026-08-20 裁定「全用
 // json5 吧，还可以写注释方便日后维护」，这份文件里的每一条注释就是
@@ -21,17 +23,20 @@
   // 不该动，见 knowledge/design/save-and-mod-version-policy.md。
   version: "0.1.0",
 
-  // 依赖本体（耐久标签批次新增）：gameplay.scm 里的 register-item-tag
-  // 引用 lostland:armor/weapon/tool 三条标签，它们注册在
-  // mods/lostland/tags.json5。register-item-tag 只 get 不 intern（ADR 0017
+  // 依赖本体（耐久标签批次新增）：items.json5 里的 tags 字段引用
+  // lostland:armor/weapon/tool 三条标签，它们注册在
+  // mods/lostland/tags.json5。那个字段只 get 不 intern（ADR 0017
   // 「注册期完整校验」），因此 lostland **必须先装载**——这条依赖声明
   // 就是那个保证（ll_mod::topo::topo_sort 据此排序）。没有它，两个 mod
   // 的装载顺序由发现顺序决定，"examplemod" 字母序在 "lostland" 之前,
   // 标签会查不到而整批装载失败。
   dependencies: ["lostland"],
 
-  // entry_points 列的是"装载时"跑一次、注册进 Registry/六张内容表的
-  // 脚本（ll_mod::pipeline::load_all 消费）。behavior.scm 刻意不在这份
+  // entry_points 列的是"装载时"跑一次的脚本（ll_mod::pipeline::load_all
+  // 消费）。内容已经全部搬进 *.json5，这里只剩 gameplay.scm 里那两条
+  // 事件订阅声明——**内容数据文件不在这份清单里**，靠固定文件名被
+  // 发现，理由见 ll_mod::content_data 模块文档「读哪些文件」一节。
+  // behavior.scm 刻意不在这份
   // 列表里——它面向一套完全不同的运行期 ScriptEngine
   // （ll_mod::script_behavior_source::ScriptBehaviorSource），由行为树
   // 求值器按需构造，注册的是 nearby-enemy/skill-ready? 这类运行期查询
@@ -40,7 +45,7 @@
   // 直接报错——两套引擎的能力表天生不兼容，不是一个可以事后调整的
   // 疏漏。真正加载 behavior.scm 的路径见 ScriptBehaviorSource::new
   // 文档。
-  entry_points: ["terrain.scm", "gameplay.scm", "animation.scm", "weather.scm"],
+  entry_points: ["gameplay.scm"],
 
   // event_scripts 列的是"结算期"跑的脚本：运行期事件的处理函数住在
   // 这里。它与 entry_points 是两份**不可互换**的清单，理由与

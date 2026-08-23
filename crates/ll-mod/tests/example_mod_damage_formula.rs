@@ -1,6 +1,6 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! `register-damage-formula`/`register-item-damage-formula` 这两个新
-//! 脚本 API 真的能被 `mods/example_mod/gameplay.scm` 调用，且两条真实
+//! 脚本 API 真的能被 `mods/example_mod/damage_formulas.json5` 调用，且两条真实
 //! 注册的公式（`examplemod:iron_sword_formula`——确定性/
 //! `examplemod:flame_longbow_formula`——骰子驱动）确实分别挂在两件
 //! 真实注册的武器上——ADR 0018「玩法层内容必须能从 mod 脚本注册，且要
@@ -115,7 +115,9 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| {
+                panic!("{id} 应当已经被 mods/example_mod/damage_formulas.json5 注册")
+            })
     };
 
     RealModsHandle {

@@ -15,7 +15,7 @@
 //!
 //! # 内容全部是现成的，本文件一条都不新造
 //!
-//! 两条被动都挂在 `mods/example_mod/gameplay.scm` 里**已经存在**的
+//! 两条被动都挂在 `mods/example_mod/traits.json5` 里**已经存在**的
 //! `examplemod:cutpurse_training`（`examplemod:rogue` 职业 3 级解锁的
 //! 职业天赋）上，本文件从磁盘装载真实 `mods/`、从磁盘读真实
 //! `mods/example_mod/behavior.scm`，不用任何内联副本——ADR 0018
@@ -85,7 +85,7 @@ use ll_world::zone::ZoneLayout;
 /// 仓库根目录下的真实 `mods/` 路径，理由同 `example_mod_stealth.rs`。
 const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 
-/// `mods/example_mod/gameplay.scm` 里
+/// `mods/example_mod/traits.json5` 里
 /// `(register-class-trait "examplemod:rogue" "examplemod:cutpurse_training" 3)`
 /// 的第三个参数。写成常量并在两个对照场景里精确使用，而不是随手写
 /// 一个「够大的等级」：这个数字来自真实脚本，脚本改了本文件就该变红。

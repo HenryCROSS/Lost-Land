@@ -1,0 +1,15 @@
+// 示例 mod 的动画剪辑——搬自此前的 animation.scm。
+//
+// `frames` 里是**资产 VFS 的裸精灵名**，不是命名空间标识符：它们由
+// mod 的 assets/ 目录提供，见 ll_mod::asset_vfs。
+{
+  clips: [
+    {
+      id: "examplemod:slime_squish",
+      frames: ["slime_0", "slime_1"],
+      frames_per_step: 6,
+      looping: true,
+      exit_grace_frames: 0,
+    },
+  ],
+}

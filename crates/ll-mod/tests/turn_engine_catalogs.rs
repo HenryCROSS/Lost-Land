@@ -209,7 +209,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/items.json5 注册"))
     };
 
     // 背刺技能索引存进进程级 `OnceLock`：`advance_ai` 的 `ai_intent`
@@ -459,7 +459,7 @@ fn equipment_after_one_attack(
     )
 }
 
-/// `mods/example_mod/gameplay.scm` 里 `examplemod:rogue` 授予
+/// `mods/example_mod/items.json5` 里 `examplemod:rogue` 授予
 /// `examplemod:cutpurse_training` 的解锁等级——与
 /// `example_mod_class_traits.rs` 的同名常量同一个来源，故意不是 1
 /// （种族天赋恒填 1，职业这一路才真正用得上按等级解锁）。
@@ -530,7 +530,7 @@ fn backstab_effects_via_turn_engine(
     seen
 }
 
-/// 三件真实注册物品的耐久上限——与 `mods/example_mod/gameplay.scm` 的
+/// 三件真实注册物品的耐久上限——与 `mods/example_mod/items.json5` 的
 /// `register-item` 调用逐字对应，见 `RealModsHandle` 各字段文档。
 const WAR_HAMMER_MAX_DURABILITY: i32 = 150;
 const WOODEN_SHIELD_MAX_DURABILITY: i32 = 80;
@@ -798,7 +798,7 @@ fn 真实注册的抗性天赋经由回合引擎真的降低了受到的伤害()
     };
     let catalogs = handle.catalogs(&formulas);
 
-    // Act：两场景只差防御方种族——软泥怪在 `mods/example_mod/gameplay.scm`
+    // Act：两场景只差防御方种族——软泥怪在 `mods/example_mod/items.json5`
     // 里 1 级被授予 `examplemod:acid_hide`（对酸 500‰ 抗性），半精灵
     // 没有任何对酸的抗性声明。
     let baseline = damage_dealt_via_turn_engine(&handle, handle.half_elf_id, &catalogs);

@@ -1,5 +1,5 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录，证明
-//! `mods/example_mod/gameplay.scm` 里注册的配方**经由
+//! `mods/example_mod/crafting.json5` 里注册的配方**经由
 //! [`ll_sim::turn::TurnEngine`]**（本体二进制 `ll-game` 驱动世界的唯一
 //! 路径）真的产出了成品、真的消耗了食材——不是靠测试直接调
 //! `resolve_with_*` 自证。
@@ -206,7 +206,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/crafting.json5 注册"))
     };
 
     RealModsHandle {
@@ -389,7 +389,7 @@ fn count_of(inventory: &[ItemStack], def: ContentIndex) -> u32 {
 
 #[test]
 fn 无前置的烹饪配方经回合引擎真的把生肉变成烤肉() {
-    // ADR 0018 的正向证据：内容来自真实 mods/example_mod/gameplay.scm，
+    // ADR 0018 的正向证据：内容来自真实 mods/example_mod/crafting.json5，
     // 结算经由 TurnEngine::advance_ai 这条生产路径发生。
     // Arrange
     let handle = load_real_mods();
@@ -508,7 +508,7 @@ fn 不站在工作台地形上时同一条锻造配方静默不产出() {
     assert_eq!(count_of(&inventory, handle.iron_sword), 0);
 }
 
-/// `mods/example_mod/gameplay.scm` 里 `examplemod:war_hammer` 的
+/// `mods/example_mod/crafting.json5` 里 `examplemod:war_hammer` 的
 /// `register-item` 第六个参数——本文件唯一被配方点名的工具。
 const WAR_HAMMER_MAX_DURABILITY: i32 = 150;
 

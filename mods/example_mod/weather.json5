@@ -1,0 +1,18 @@
+// 示例 mod 的天气——搬自此前的 weather.scm。
+{
+  weathers: [
+    {
+      // 落灰：昏暗（光照 550‰）、视线差（400‰）、闷热（+15.0℃），
+      // 夏天最常见、冬天不出现。
+      id: "examplemod:ashfall",
+      display_name_key: "examplemod:weather.ashfall.display_name",
+      light_scale: 550,
+      sight_scale: 400,
+      temperature_offset: 150,
+      // 四季权重此前是四个裸整数 `2 8 6 0`——整体错位一格之后每个
+      // 数字仍然合法、不报任何错，症状是"灰烬改在冬天下"。具名字段
+      // 之后这个失败模式结构上不存在。
+      season_weights: { spring: 2, summer: 8, autumn: 6, winter: 0 },
+    },
+  ],
+}

@@ -74,7 +74,7 @@ const DWARF_CELLS: u32 = 7;
 /// 同上，精灵。
 const ELF_CELLS: u32 = 6;
 
-/// `mods/example_mod/gameplay.scm` 声明的软泥怪暗视格数——**低于**
+/// `mods/example_mod/races.json5` 声明的软泥怪暗视格数——**低于**
 /// [`DEFAULT_NIGHT_SIGHT_RADIUS`]，见该文件对应注释。
 const OOZE_CELLS: u32 = 2;
 
@@ -282,7 +282,7 @@ fn 正午矮人与人类视野相同() {
 #[test]
 fn 声明低于默认值的mod种族夜里真的更瞎() {
     // 「不能写成 `max(默认值, 声明值)`」这条语义在**已发货内容**上的
-    // 唯一证据：`mods/example_mod/gameplay.scm` 的软泥怪声明 2 格，
+    // 唯一证据：`mods/example_mod/races.json5` 的软泥怪声明 2 格，
     // 低于未声明时的默认 4 格。若换成 `max`，这个 2 会被默默抬回 4，
     // 「夜视比常人差」这一整类设定根本无法表达，而且写它的人得不到
     // 任何提示。

@@ -1,6 +1,6 @@
 //! 端到端验证：真实装载仓库里的 `mods/` 目录（不是临时夹具），证明
 //! 盗贼偷袭接线批次新增的脚本 API——`register-trait-sneak-attack`——
-//! 真的能被 `mods/example_mod/gameplay.scm` 调用，且真实注册的偷袭
+//! 真的能被 `mods/example_mod/traits.json5` 调用，且真实注册的偷袭
 //! 声明真的能走真实 `resolve_attack` + `apply` 追加伤害，不能靠
 //! `crates/ll-sim/src/traits.rs`/`crates/ll-sim/src/resolve.rs`/
 //! `crates/ll-mod/src/script_trait_api.rs` 里的单元测试自证——ADR 0018
@@ -146,7 +146,7 @@ fn load_real_mods() -> RealModsHandle {
     let resolve = |id: &str| {
         registry
             .get(&NamespacedId::parse(id).unwrap())
-            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/gameplay.scm 注册"))
+            .unwrap_or_else(|| panic!("{id} 应当已经被 mods/example_mod/traits.json5 注册"))
     };
 
     RealModsHandle {

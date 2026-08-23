@@ -1,0 +1,90 @@
+// 示例 mod 的配方类别与配方——搬自此前的 gameplay.scm。
+//
+// # 这个文件被读两遍
+//
+// 配方类别与副职**互相引用**：副职的获得条件指向一个类别
+// （subclasses.json5 里的 unlock.target），类别的闸门反过来指向一个
+// 副职（下面 forging 的 required_subclasses），而两边都是"只 get 不
+// intern"。这是内容里真实存在的一处环，任何单一的文件先后顺序都满足
+// 不了它。引擎因此把本文件读两遍：第一遍写类别定义与配方，第二遍
+// （在 subclasses.json5 之后）才写副职闸门。见
+// ll_mod::content_schema::apply_recipe_category_subclass_gates。
+//
+// 脚本时代这个环靠内容作者把四条 register-* 手工交错着写来打破——
+// 那是一条清单里看不出来的隐形约束，第三方作者照抄时根本不知道有
+// 这回事。
+{
+  recipe_categories: [
+    {
+      // 烹饪：人人可做。
+      id: "examplemod:cooking",
+      display_name_key: "examplemod:recipe_category_cooking_display_name",
+    },
+    {
+      // 锻造：要先拿到影舞者副职。
+      id: "examplemod:forging",
+      display_name_key: "examplemod:recipe_category_forging_display_name",
+      required_subclasses: ["examplemod:shadowdancer"],
+    },
+  ],
+
+  recipes: [
+    {
+      // 烤肉：一份生肉进，一份烤肉出。最简单的一条，用来当基准。
+      id: "examplemod:roast_meat_recipe",
+      display_name_key: "examplemod:roast_meat_recipe_display_name",
+      category: "examplemod:cooking",
+      ingredients: [{ item: "examplemod:raw_meat", count: 1 }],
+      product: "examplemod:roast_meat",
+      product_count: 1,
+    },
+    {
+      // 打铁剑：要熔岩地面当场地，还要一把战锤当工具。
+      id: "examplemod:iron_sword_recipe",
+      display_name_key: "examplemod:iron_sword_recipe_display_name",
+      category: "examplemod:forging",
+      ingredients: [{ item: "examplemod:iron_ingot", count: 2 }],
+      product: "examplemod:iron_sword",
+      product_count: 1,
+      required_station: "examplemod:lava_floor",
+      required_tool: "examplemod:war_hammer",
+    },
+    {
+      // 用废料打铁剑：同一件成品的第二条路径（少一块锭，搭一把破匕
+      // 首），证明「一件成品可以有多条配方」。
+      id: "examplemod:iron_sword_from_scrap",
+      display_name_key: "examplemod:iron_sword_from_scrap_display_name",
+      category: "examplemod:forging",
+      ingredients: [
+        { item: "examplemod:iron_ingot", count: 1 },
+        { item: "examplemod:crude_dagger", count: 1 },
+      ],
+      product: "examplemod:iron_sword",
+      product_count: 1,
+      required_station: "examplemod:lava_floor",
+    },
+    {
+      // 批量做箭：一次出五支，证明 product_count 不必是 1。
+      id: "examplemod:arrow_batch_recipe",
+      display_name_key: "examplemod:arrow_batch_recipe_display_name",
+      category: "examplemod:forging",
+      ingredients: [{ item: "examplemod:iron_ingot", count: 1 }],
+      product: "examplemod:arrow",
+      product_count: 5,
+    },
+    {
+      // 草药炖菜：**要先被发现**才能做——读食谱（items.json5 的
+      // cookbook）或试做出来，见配方发现批次。
+      id: "examplemod:herb_stew_recipe",
+      display_name_key: "examplemod:herb_stew_recipe_display_name",
+      category: "examplemod:cooking",
+      ingredients: [
+        { item: "examplemod:raw_meat", count: 1 },
+        { item: "examplemod:wild_herb", count: 1 },
+      ],
+      product: "examplemod:herb_stew",
+      product_count: 1,
+      requires_discovery: true,
+    },
+  ],
+}

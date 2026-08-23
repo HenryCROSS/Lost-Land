@@ -4,7 +4,7 @@
 //!    `ll-game` 驱动世界的唯一路径），不是靠测试直接调 `resolve` +
 //!    `apply` 自证——与 `turn_engine_catalogs.rs` 立下的那条更高的验收
 //!    标准一致，见其模块文档。
-//! 2. **潜行真的让偷袭直通**，且用的是真实 `mods/example_mod/gameplay.scm`
+//! 2. **潜行真的让偷袭直通**，且用的是真实 `mods/example_mod/traits.json5`
 //!    注册的天赋（`examplemod:footpad` 种族授予的
 //!    `examplemod:predatory_instinct`），同样经由 `TurnEngine`。反例是
 //!    同一场景下不潜行的同一个角色：它的幸运是 `0`，掷骰那条路径的
@@ -104,7 +104,7 @@ const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 /// 不触发击杀，理由同 `turn_engine_catalogs.rs::DEFENDER_HEALTH`。
 const DEFENDER_HEALTH: i32 = 1_000;
 
-/// `mods/example_mod/gameplay.scm` 里
+/// `mods/example_mod/traits.json5` 里
 /// `(register-trait-sneak-attack "examplemod:predatory_instinct" 20 15)`
 /// 的第二个参数——偷袭触发后追加的固定伤害。写成常量并在断言里精确
 /// 比对，而不是只断言「更高」：这个数字来自真实脚本，脚本改了这条
