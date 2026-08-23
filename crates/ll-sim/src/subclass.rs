@@ -14,9 +14,9 @@
 //!
 //! # 为什么授予必须是独立的 [`Effect`] 变体（ADR 0023）
 //!
-//! `Agent::subclasses` 属 `WorldState`，**不属 `Agent::script_state`**。
+//! `Agent::subclasses` 属 `WorldState`，**不属 `Agent::mod_state`**。
 //! ADR 0023「脚本状态写入必须经 `apply`」的同一条纪律在这里意味着：这
-//! 个写入不能塞进 [`Effect::SetScriptState`]（那一条只写 `script_state`
+//! 个写入不能塞进 [`Effect::SetModState`]（那一条只写 `mod_state`
 //! 那张表），必须是 [`Effect::GrantSubclass`]/[`Effect::RemoveSubclass`]
 //! 两个独立变体，由 `crate::apply::apply` 写进 `Agent::subclasses`。
 //!
@@ -38,8 +38,8 @@
 //! # 计数键：**不**照抄 `crate::quest::kill_count_key`
 //!
 //! `kill_count_key` 把 `ContentIndex::get()` 的**数值**拼进脚本状态键，
-//! 而 `crates/ll-content/src/remap.rs` 的 `remap_agent` 对 `script_state`
-//! 是 `script_state: _`（明确不参与存档重映射）。两条合起来是一处真实
+//! 而 `crates/ll-content/src/remap.rs` 的 `remap_agent` 对 `mod_state`
+//! 是 `mod_state: _`（明确不参与存档重映射）。两条合起来是一处真实
 //! 隐患：玩家增删 mod 导致索引重编号之后，那些键会静默指向别的内容。
 //! 这是击杀计数**既有**的隐患（不在本批次的修复范围内，改它要一并解决
 //! 存量存档的迁移），但新造的计数不该再抄一遍——**副职的全部计数键一
@@ -62,7 +62,7 @@
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_world::entity::{Agent, EntityId};
-use ll_world::script_state::{ScriptStateTarget, ScriptStateWrite, ScriptValue};
+use ll_world::mod_state::{ModStateValue, ModStateWrite};
 use ll_world::state::WorldState;
 
 use crate::effect::Effect;
@@ -183,10 +183,10 @@ pub fn craft_count_key(category: &NamespacedId) -> String {
 /// 读取 `agent` 当前在某个配方类别上的累计制作次数，未写入过时为 0。
 fn craft_count(agent: &Agent, category: &NamespacedId) -> i64 {
     match agent
-        .script_state
+        .mod_state
         .get(&(CRAFT_COUNT_NAMESPACE.to_string(), craft_count_key(category)))
     {
-        Some(ScriptValue::Int(n)) => *n,
+        Some(ModStateValue::Int(n)) => *n,
         _ => 0,
     }
 }
@@ -266,7 +266,7 @@ pub fn grant_subclass_effects(
 /// 1. 计数键的 `NamespacedId` 来自规则本身（见模块文档「计数键」
 ///    一节）——没有规则就没有 id，写不出键，也不该为了写一条没人读的
 ///    计数而反过来要求调用方传一份 `Registry`。
-/// 2. `Agent::script_state` 进存档。给一个谁都不关心的类别逐次写计数，
+/// 2. `Agent::mod_state` 进存档。给一个谁都不关心的类别逐次写计数，
 ///    是往每个玩家的存档里堆永远不会被读到的字节。
 ///
 /// **代价如实标注**：mod 作者事后才给某个类别加上获得条件时，玩家在
@@ -302,12 +302,12 @@ pub fn craft_progress_effects(
     // 出来，而注册期保证同一个 `ContentIndex` 只对应一个标识符），
     // 因此计数键取第一条即可，且这一批只写**一条**计数。
     let new_count = craft_count(agent, &first.category_id) + 1;
-    let mut effects = vec![Effect::SetScriptState {
-        writes: vec![ScriptStateWrite {
-            target: ScriptStateTarget::Entity(actor),
+    let mut effects = vec![Effect::SetModState {
+        writes: vec![ModStateWrite {
+            entity: actor,
             mod_namespace: CRAFT_COUNT_NAMESPACE.to_string(),
             key: craft_count_key(&first.category_id),
-            value: ScriptValue::Int(new_count),
+            value: ModStateValue::Int(new_count),
         }],
     }];
 

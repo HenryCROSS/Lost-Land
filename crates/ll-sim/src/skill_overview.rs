@@ -224,7 +224,7 @@ mod tests {
                 ll_core::torus::TorusSize::new(1, 1).unwrap().wrap(0, 0),
                 ContentIndex::default(),
             ),
-            script_state: BTreeMap::new(),
+            mod_state: BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,

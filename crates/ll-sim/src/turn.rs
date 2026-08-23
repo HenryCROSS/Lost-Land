@@ -421,7 +421,7 @@ mod tests {
                 world.terrain.layout().tile_to_zone(agent_pos).0,
                 ll_core::ident::ContentIndex::default(),
             ),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: Tick(0),
             remembered_id: None,

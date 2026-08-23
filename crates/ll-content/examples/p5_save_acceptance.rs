@@ -84,7 +84,7 @@ use ll_sim::intent::Intent;
 use ll_sim::resolve::resolve;
 use ll_world::entity::{Agent, BaseStats};
 use ll_world::generate::GenParams;
-use ll_world::script_state::{ScriptStateTarget, ScriptStateWrite, ScriptValue};
+use ll_world::mod_state::{ModStateValue, ModStateWrite};
 use ll_world::space::{Space, ZoneCoord};
 use ll_world::state::WorldState;
 use ll_world::terrain::{
@@ -167,7 +167,7 @@ fn bare_agent(pos: TorusPos, zone: ZoneCoord) -> Agent {
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
-        script_state: BTreeMap::new(),
+        mod_state: BTreeMap::new(),
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,
@@ -269,7 +269,7 @@ fn step0_world_identity_chain_link() {
 // ---------------------------------------------------------------------
 
 /// 完整调用链的核心一段：世界生成 → 游玩（真实
-/// `Intent → resolve → Effect → apply`，含脚本状态写入）→ 存档 →
+/// `Intent → resolve → Effect → apply`，含mod 状态写入）→ 存档 →
 /// 退出 → 读档 → 世界与存档前逐位一致。
 fn section_a_full_roundtrip() {
     println!("[验收 1/3] 存档 → 读档后世界逐位一致");
@@ -311,49 +311,52 @@ fn section_a_full_roundtrip() {
     let edited_pos = world.size.wrap(3, 1);
     world.terrain.set_terrain(edited_pos, terrain_ids.grass);
 
-    // 脚本状态：证明写入真的经过 apply 这条唯一入口,并且会被
+    // mod 状态：证明写入真的经过 apply 这条唯一入口,并且会被
     // WorldState::hash() 捕捉——这是本次验收纪律点 (a) 的直接验证。
-    let hash_before_script = world.hash();
-    let script_effect = Effect::SetScriptState {
+    let hash_before_mod_state = world.hash();
+    let mod_state_effect = Effect::SetModState {
         writes: vec![
-            ScriptStateWrite {
-                target: ScriptStateTarget::Global,
+            ModStateWrite {
+                entity: player,
                 mod_namespace: "lostland".to_string(),
                 key: "world_flag".to_string(),
-                value: ScriptValue::Bool(true),
+                value: ModStateValue::Bool(true),
             },
-            ScriptStateWrite {
-                target: ScriptStateTarget::Entity(player),
+            ModStateWrite {
+                entity: player,
                 mod_namespace: "lostland".to_string(),
                 key: "quest_stage".to_string(),
-                value: ScriptValue::Int(3),
+                value: ModStateValue::Int(3),
             },
         ],
     };
-    apply(&mut world, &script_effect);
-    let hash_after_script = world.hash();
+    apply(&mut world, &mod_state_effect);
+    let hash_after_mod_state = world.hash();
     assert_ne!(
-        hash_before_script, hash_after_script,
-        "脚本状态写入经 apply 之后，WorldState::hash() 必须变化——\
-         否则脚本状态就游离在确定性回归测试之外（P3 hash() 早期版本\
+        hash_before_mod_state, hash_after_mod_state,
+        "mod 状态写入经 apply 之后，WorldState::hash() 必须变化——\
+         否则mod 状态就游离在确定性回归测试之外（P3 hash() 早期版本\
          同一类缺口的重演）"
-    );
-    assert_eq!(
-        world
-            .global_script_state
-            .get(&("lostland".to_string(), "world_flag".to_string())),
-        Some(&ScriptValue::Bool(true)),
-        "全局脚本状态必须真的落到 WorldState 上，不是只改了哈希"
     );
     assert_eq!(
         world
             .actors
             .get(player)
             .expect("玩家实体应当仍存在")
-            .script_state
+            .mod_state
+            .get(&("lostland".to_string(), "world_flag".to_string())),
+        Some(&ModStateValue::Bool(true)),
+        "mod 状态必须真的落到对应 Agent 上，不是只改了哈希"
+    );
+    assert_eq!(
+        world
+            .actors
+            .get(player)
+            .expect("玩家实体应当仍存在")
+            .mod_state
             .get(&("lostland".to_string(), "quest_stage".to_string())),
-        Some(&ScriptValue::Int(3)),
-        "每实体脚本状态必须落到对应 Agent 上"
+        Some(&ModStateValue::Int(3)),
+        "每实体 mod 状态必须落到对应 Agent 上"
     );
 
     let content_index_map = snapshot_for_header(&registry);
@@ -375,14 +378,17 @@ fn section_a_full_roundtrip() {
             assert_eq!(
                 loaded_world.hash(),
                 hash_before_save,
-                "存档 → 读档后世界必须逐位一致（含实体、地形改动、脚本状态）"
+                "存档 → 读档后世界必须逐位一致（含实体、地形改动、mod 状态）"
             );
             assert_eq!(
                 loaded_world
-                    .global_script_state
+                    .actors
+                    .get(player)
+                    .expect("玩家实体读档后应当仍存在")
+                    .mod_state
                     .get(&("lostland".to_string(), "world_flag".to_string())),
-                Some(&ScriptValue::Bool(true)),
-                "脚本状态本身也必须在读档后原样还在,不能只是哈希碰巧相等"
+                Some(&ModStateValue::Bool(true)),
+                "mod 状态本身也必须在读档后原样还在,不能只是哈希碰巧相等"
             );
         }
         other => panic!("期望 Playable，实际 {other:?}"),
@@ -390,9 +396,9 @@ fn section_a_full_roundtrip() {
     let _ = std::fs::remove_file(&path);
 
     println!(
-        "  世界生成 -> 游玩(Intent/resolve/apply) -> 脚本状态写入(经 apply) -> 存档 -> 读档：哈希逐位一致"
+        "  世界生成 -> 游玩(Intent/resolve/apply) -> mod 状态写入(经 apply) -> 存档 -> 读档：哈希逐位一致"
     );
-    println!("  脚本状态写入确认被 WorldState::hash() 捕捉，且读档后原样还在\n");
+    println!("  mod 状态写入确认被 WorldState::hash() 捕捉，且读档后原样还在\n");
 }
 
 // ---------------------------------------------------------------------

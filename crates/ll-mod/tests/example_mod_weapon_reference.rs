@@ -225,7 +225,7 @@ fn spawn_agent(
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
-        script_state: BTreeMap::new(),
+        mod_state: BTreeMap::new(),
         creature_kind: None,
         spawned_at: Tick(0),
         remembered_id: remembered.then(|| WorldId::next(&mut world_id_counter)),

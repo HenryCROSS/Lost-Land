@@ -583,7 +583,7 @@ fn build_player_agent(
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(zone, content.space_ids.surface),
-        script_state: std::collections::BTreeMap::new(),
+        mod_state: std::collections::BTreeMap::new(),
         creature_kind: None,
         spawned_at: Tick(0),
         remembered_id: None,

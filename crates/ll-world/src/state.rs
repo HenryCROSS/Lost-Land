@@ -44,8 +44,8 @@ use crate::generate::{GenParams, build_zone_noise};
 use crate::history::{HistoricalEvent, HistoricalEventKind, KillCause, KillingBlow, VictimState};
 use crate::interior::{Interior, InteriorTable};
 use crate::item::{GroundItemStack, ItemStack};
+use crate::mod_state::ModStateValue;
 use crate::noise::TileableNoise;
-use crate::script_state::ScriptValue;
 use crate::space::{Space, SpaceId};
 use crate::surface_store::SurfaceStore;
 use crate::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
@@ -277,30 +277,6 @@ pub struct WorldState {
     /// 确定性回归测试里现出形状，重演本类型文档「厚层实体也参与摘要」
     /// 一节已经出现过两次的同一类判据缺口。
     pub exploration: ExplorationMemory,
-    /// 脚本状态：全局命名空间存储（`knowledge/design/script-state-storage.md`
-    /// 二、四节）——与任何具体实体无关的状态，例如教团累计声望、已解锁
-    /// 的世界级 flag。键是 `(mod_namespace, key)`；每实体存储挂在
-    /// [`crate::entity::Agent::script_state`]，见其字段文档「为什么随
-    /// `Agent` 走」一节两者存储位置分离的理由。
-    ///
-    /// # 写入路径必须经 `apply`（裁定 P5-1）
-    ///
-    /// 设计文档 8.2 节原写「直接写穿，没有中间层」，与约束 C1「`apply`
-    /// 是全局唯一能改世界的地方」字面冲突——本字段就在 `WorldState`
-    /// 里，写它就是改世界。裁定 P5-1 选择 C1 赢：`ll-script` 侧
-    /// `api::state` 模块把一次决策期间的多次 `state-set!` 调用收集成
-    /// 一批，包成一条 `ll_sim::effect::Effect::SetScriptState`，经
-    /// `resolve → apply` 既有管线写入，见该 `Effect` 变体文档。本字段
-    /// 本身不知道、也不需要知道写入者是脚本还是别的什么——它只是
-    /// `WorldState` 的一个普通字段，`apply` 对它赋值与对 `pos`/`health`
-    /// 赋值没有任何区别。
-    ///
-    /// `BTreeMap` 不是 `HashMap`：约束 C5，见设计文档五、1 节。**序列化
-    /// 走 [`crate::script_state::serde_map`]**——JSON 等基于文本的格式
-    /// 要求 map 的键必须是字符串，元组键 `(String, String)` 不满足这个
-    /// 要求，见该模块文档。
-    #[serde(with = "crate::script_state::serde_map")]
-    pub global_script_state: BTreeMap<(String, String), ScriptValue>,
     /// 地形属性表：`terrain` 网格里的 [`TerrainKind`] 值查这张表才能
     /// 问出「阻不阻挡视线」「移动代价多少」。**不参与序列化**——与
     /// `population`/`actors` 同一类已知限制（P4 阶段）：这张表本质是
@@ -448,9 +424,7 @@ pub struct WorldState {
 /// 已经真正参与序列化，见 [`WorldState`] 文档同名一节；`player_entity`
 /// 同样出现在这里（P5 任务 6）——不依赖任何注册期上下文，没有理由不
 /// 参与序列化；`surface_profile`/`terrain_table` 仍然不出现——那两处
-/// `#[serde(skip)]` 不在本批次范围内。`global_script_state` 同样出现
-/// 在这里（脚本状态存储批次）——没有任何注册期上下文依赖，是
-/// `WorldState` 的普通数据字段，见其字段文档。`exploration`
+/// `#[serde(skip)]` 不在本批次范围内。`exploration`
 /// （落地探索记忆批次）同理出现在这里，不依赖任何注册期上下文；
 /// `#[serde(default)]` 只是让本文件内部用 `serde_json::json!` 手写
 /// 局部字段的测试固件不必每条都补一份空探索记忆，不代表存在需要兼容
@@ -467,8 +441,6 @@ struct WorldStateRepr {
     player_entity: Option<EntityId>,
     #[serde(default)]
     exploration: ExplorationMemory,
-    #[serde(default, with = "crate::script_state::serde_map")]
-    global_script_state: BTreeMap<(String, String), ScriptValue>,
     /// 历史事件日志——`#[serde(default)]` 的理由与 `exploration` 一致
     /// （见其字段注释）：发布前曾经需要兼容本字段引入之前写出的存档，
     /// 走的是 `ll_content::migrations` 里当时真正注册的迁移路径（随
@@ -531,11 +503,6 @@ impl TryFrom<WorldStateRepr> for WorldState {
             actors: repr.actors,
             player_entity: repr.player_entity,
             exploration: repr.exploration,
-            // 脚本状态原样从存档搬过来——孤儿保留（设计文档七、1
-            // 节）：读档本身只做数据搬运，不做「这个 mod 还在不在当前
-            // 集合里」这类带业务判断的清理，缺失 mod 留下的命名空间
-            // 残留原样保留在这里，直到玩家显式做维护操作。
-            global_script_state: repr.global_script_state,
             terrain_table: TerrainTable::default(),
             history: repr.history,
             next_world_id: repr.next_world_id,
@@ -583,7 +550,6 @@ impl WorldState {
             actors: Arena::default(),
             player_entity: None,
             exploration: ExplorationMemory::new(),
-            global_script_state: BTreeMap::new(),
             terrain_table,
             history: Vec::new(),
             next_world_id: 0,
@@ -936,18 +902,17 @@ impl WorldState {
     /// `Vec`（先混入长度、再逐项混入，`Vec` 本身保序，不涉及
     /// `HashMap`/`HashSet` 迭代顺序，满足约束 C5）。
     ///
-    /// # `player_entity`/脚本状态也已混入（裁定 P5-9）
+    /// # `player_entity`/mod 状态也已混入（裁定 P5-9）
     ///
     /// 同一条先例、同一条纪律：`player_entity` 决定读档后相机对准谁、
-    /// 双模式存档能不能判断「玩家死了没」，全局脚本存储与每实体脚本
-    /// 存储承载 NPC 记忆/任务进度这类真正影响玩法的数据——三者只要
+    /// 双模式存档能不能判断「玩家死了没」，[`crate::entity::Agent::mod_state`]
+    /// 承载任务进度/副职解锁计数这类真正影响玩法的数据——两者只要
     /// 缺席，对应的序列化/结算缺陷就不会体现在任何黄金基准上，重演
     /// P3 阶段 `hash()` 不含实体状态、测不出战斗结算跑偏的同一类判据
-    /// 缺口。`global_script_state`/`Agent::script_state` 都是
-    /// `BTreeMap`，按键的字典序遍历，不涉及 `HashMap`/`HashSet` 迭代
-    /// 顺序（约束 C5）；字符串字段（命名空间、键、`Str`/`Ref` 值）混入
-    /// 前先写入长度，避免相邻变长字段在字节流里边界不清导致的理论
-    /// 碰撞（见 [`write_script_state`]）。
+    /// 缺口。`Agent::mod_state` 是 `BTreeMap`，按键的字典序遍历，不
+    /// 涉及 `HashMap`/`HashSet` 迭代顺序（约束 C5）；字符串字段（命名
+    /// 空间、键、`Str`/`Ref` 值）混入前先写入长度，避免相邻变长字段在
+    /// 字节流里边界不清导致的理论碰撞（见 [`write_mod_state`]）。
     ///
     /// # 职业/技能相关字段也已混入（P5-B 任务 5）
     ///
@@ -1135,7 +1100,7 @@ impl WorldState {
                     hasher.write_i64(modifier.expires_at.0);
                 }
             }
-            write_script_state(&mut hasher, &agent.script_state);
+            write_mod_state(&mut hasher, &agent.mod_state);
             write_optional_content_index(&mut hasher, agent.creature_kind);
             hasher.write_i64(agent.spawned_at.0);
             write_optional_world_id(&mut hasher, agent.remembered_id);
@@ -1174,7 +1139,6 @@ impl WorldState {
 
         write_optional_entity(&mut hasher, self.player_entity);
         self.exploration.write_hash(&mut hasher);
-        write_script_state(&mut hasher, &self.global_script_state);
 
         // 历史事件日志与 WorldId 分配计数器（击杀与死亡记录批次）——
         // 理由见 Self::history/Self::next_world_id 字段文档「参与
@@ -1434,7 +1398,7 @@ fn write_optional_entity(hasher: &mut StateHasher, entity: Option<EntityId>) {
 /// 约束 C5。每个变长字段（命名空间、键）混入前先写长度，避免相邻
 /// 字符串在字节流里边界不清导致的理论碰撞（例如 `("ab", "c")` 与
 /// `("a", "bc")` 若不带长度前缀会产出同一段字节流）。
-fn write_script_state(hasher: &mut StateHasher, state: &BTreeMap<(String, String), ScriptValue>) {
+fn write_mod_state(hasher: &mut StateHasher, state: &BTreeMap<(String, String), ModStateValue>) {
     hasher.write_u64(state.len() as u64);
     for ((namespace, key), value) in state {
         write_len_prefixed_bytes(hasher, namespace.as_bytes());
@@ -1443,41 +1407,41 @@ fn write_script_state(hasher: &mut StateHasher, state: &BTreeMap<(String, String
     }
 }
 
-/// 把一个 [`ScriptValue`] 混入哈希——[`write_script_state`] 的帮手。
+/// 把一个 [`ModStateValue`] 混入哈希——[`write_mod_state`] 的帮手。
 /// 与 [`write_space`]/[`write_affiliation`] 同一种模式：先写变体判别
 /// 字节，各变体互不混淆；`List`/`Map` 递归调用自身，天然覆盖任意嵌套
 /// 深度。
-fn write_script_value(hasher: &mut StateHasher, value: &ScriptValue) {
+fn write_script_value(hasher: &mut StateHasher, value: &ModStateValue) {
     match value {
-        ScriptValue::Int(n) => {
+        ModStateValue::Int(n) => {
             hasher.write_u64(0);
             hasher.write_i64(*n);
         }
-        ScriptValue::Bool(b) => {
+        ModStateValue::Bool(b) => {
             hasher.write_u64(1);
             hasher.write_u64(u64::from(*b));
         }
-        ScriptValue::Str(s) => {
+        ModStateValue::Str(s) => {
             hasher.write_u64(2);
             write_len_prefixed_bytes(hasher, s.as_bytes());
         }
-        ScriptValue::Ref(s) => {
+        ModStateValue::Ref(s) => {
             hasher.write_u64(3);
             write_len_prefixed_bytes(hasher, s.as_bytes());
         }
-        ScriptValue::Entity(id) => {
+        ModStateValue::Entity(id) => {
             hasher.write_u64(4);
             hasher.write_u64(u64::from(id.index()));
             hasher.write_u64(u64::from(id.generation()));
         }
-        ScriptValue::List(items) => {
+        ModStateValue::List(items) => {
             hasher.write_u64(5);
             hasher.write_u64(items.len() as u64);
             for item in items {
                 write_script_value(hasher, item);
             }
         }
-        ScriptValue::Map(map) => {
+        ModStateValue::Map(map) => {
             hasher.write_u64(6);
             hasher.write_u64(map.len() as u64);
             for (key, item) in map {
@@ -1489,7 +1453,7 @@ fn write_script_value(hasher: &mut StateHasher, value: &ScriptValue) {
 }
 
 /// 混入一段带长度前缀的字节——变长字段（字符串）的公共写法，见
-/// [`write_script_state`] 文档「避免相邻字符串边界不清」一节。
+/// [`write_mod_state`] 文档「避免相邻字符串边界不清」一节。
 fn write_len_prefixed_bytes(hasher: &mut StateHasher, bytes: &[u8]) {
     hasher.write_u64(bytes.len() as u64);
     hasher.write_bytes(bytes);
@@ -1711,7 +1675,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -1773,7 +1737,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -1989,7 +1953,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -2061,7 +2025,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -2125,7 +2089,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -2199,7 +2163,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -2406,26 +2370,7 @@ mod tests {
     }
 
     #[test]
-    fn 全局脚本状态写入后世界哈希改变() {
-        // 脚本状态影响玩法（NPC 记忆、任务进度），必须进 hash()，否则
-        // 序列化/结算缺陷不会体现在任何黄金基准上——同一条纪律见
-        // `WorldState::hash` 文档「player_entity/脚本状态也已混入」。
-        // Arrange
-        let mut world = test_world();
-        let hash_before = world.hash();
-
-        // Act
-        world.global_script_state.insert(
-            ("lostland".to_string(), "reputation".to_string()),
-            crate::script_state::ScriptValue::Int(42),
-        );
-
-        // Assert
-        assert_ne!(world.hash(), hash_before);
-    }
-
-    #[test]
-    fn 每实体脚本状态写入后世界哈希改变() {
+    fn 每实体mod状态写入后世界哈希改变() {
         // Arrange
         let mut world = test_world();
         let agent = blank_agent(&world);
@@ -2437,10 +2382,10 @@ mod tests {
             .actors
             .get_mut(id)
             .expect("刚生成的实体必然存在")
-            .script_state
+            .mod_state
             .insert(
                 ("lostland".to_string(), "cooldown".to_string()),
-                crate::script_state::ScriptValue::Int(5),
+                crate::mod_state::ModStateValue::Int(5),
             );
 
         // Assert
@@ -2448,28 +2393,38 @@ mod tests {
     }
 
     #[test]
-    fn 全局脚本状态序列化往返后保持原样() {
+    fn mod状态序列化往返后保持原样() {
         // Arrange
         let mut world = test_world();
-        world.global_script_state.insert(
-            ("lostland".to_string(), "reputation".to_string()),
-            crate::script_state::ScriptValue::List(vec![
-                crate::script_state::ScriptValue::Int(1),
-                crate::script_state::ScriptValue::Bool(true),
-                crate::script_state::ScriptValue::Str("x".into()),
-            ]),
-        );
+        let agent = blank_agent(&world);
+        let id = world.actors.spawn(agent);
+        world
+            .actors
+            .get_mut(id)
+            .expect("刚生成的实体必然存在")
+            .mod_state
+            .insert(
+                ("lostland".to_string(), "reputation".to_string()),
+                crate::mod_state::ModStateValue::List(vec![
+                    crate::mod_state::ModStateValue::Int(1),
+                    crate::mod_state::ModStateValue::Bool(true),
+                    crate::mod_state::ModStateValue::Str("x".into()),
+                ]),
+            );
 
         // Act
         let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
         let decoded: WorldState = serde_json::from_slice(&encoded).expect("往返不应失败");
 
         // Assert
-        assert_eq!(decoded.global_script_state, world.global_script_state);
+        assert_eq!(
+            decoded.actors.get(id).expect("实体应当往返存活").mod_state,
+            world.actors.get(id).expect("原世界里实体仍在").mod_state
+        );
     }
 
-    /// 供本文件末尾几条哈希/脚本状态测试复用的占位实体——字段取值不
-    /// 重要，测试只关心「多了一份脚本状态记录之后哈希是否改变」。
+    /// 供本文件末尾几条哈希/mod 状态测试复用的占位实体——字段取值不
+    /// 重要，测试只关心「多了一份 mod 状态记录之后哈希是否改变」。
     fn blank_agent(world: &WorldState) -> Agent {
         let mut interner = ll_core::ident::Interner::new();
         let profession = interner
@@ -2501,7 +2456,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
-            script_state: BTreeMap::new(),
+            mod_state: BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -2926,7 +2881,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,

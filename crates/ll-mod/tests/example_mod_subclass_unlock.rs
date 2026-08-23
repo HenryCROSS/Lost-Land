@@ -85,7 +85,7 @@ use ll_sim::turn::TurnEngine;
 use ll_sim::xp_curve::FlatXpCurve;
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
-use ll_world::script_state::ScriptValue;
+use ll_world::mod_state::ModStateValue;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::terrain::base_terrain_fixture;
@@ -300,7 +300,7 @@ fn spawn_agent(
         subclasses,
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
-        script_state: BTreeMap::new(),
+        mod_state: BTreeMap::new(),
         creature_kind: None,
         spawned_at: Tick(0),
         remembered_id: None,
@@ -471,10 +471,10 @@ fn count_of(inventory: &[ItemStack], def: ContentIndex) -> u32 {
 fn count_in(agent: &Agent, category: &str) -> i64 {
     let id = NamespacedId::parse(category).expect("测试用标识符恒合法");
     match agent
-        .script_state
+        .mod_state
         .get(&("lostland".to_string(), craft_count_key(&id)))
     {
-        Some(ScriptValue::Int(n)) => *n,
+        Some(ModStateValue::Int(n)) => *n,
         _ => 0,
     }
 }

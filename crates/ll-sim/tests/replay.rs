@@ -115,7 +115,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(player_zone, ll_core::ident::ContentIndex::default()),
-        script_state: std::collections::BTreeMap::new(),
+        mod_state: std::collections::BTreeMap::new(),
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,
@@ -159,7 +159,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(enemy_zone, ll_core::ident::ContentIndex::default()),
-        script_state: std::collections::BTreeMap::new(),
+        mod_state: std::collections::BTreeMap::new(),
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,
@@ -311,12 +311,12 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// # 第四次重冻的原因（脚本状态存储批次，裁定 P5-9）
 ///
 /// `WorldState::hash` 新混入 `player_entity`（`Option<EntityId>`）与
-/// `global_script_state`——本文件的 `setup` 从不设置 `player_entity`
+/// `Agent::mod_state`——本文件的 `setup` 从不设置 `player_entity`
 /// （恒 `None`）、也从不写脚本状态（恒空），但混入本身仍然改变字节流
-/// （`write_optional_entity` 恒写一个判别字节，`write_script_state`
+/// （`write_optional_entity` 恒写一个判别字节，`write_mod_state`
 /// 恒写一个长度字节），摘要数值随之改变，与前三次重冻同一个模式：
 /// 断言结构不变，只是 `hash()` 的输入构造方式变了。人工核验：把
-/// `write_optional_entity`/`write_script_state` 两处新增调用临时注释
+/// `write_optional_entity`/`write_mod_state` 两处新增调用临时注释
 /// 掉重新跑这条测试，摘要回到本次重冻之前的旧常量
 /// `10_420_841_280_615_735_009`。
 ///
@@ -669,7 +669,47 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
 ///    `14_636_562_673_181_379_151` 在两次独立进程里稳定复现（不是一次性
 ///    偶然值），才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 14_636_562_673_181_379_151;
+/// # 第十九次重冻的原因（mod 状态接口批次）
+///
+/// 与前十八次**方向相反**：这次是删字段，不是加字段。
+/// `WorldState::global_script_state`（已移除的 Steel 脚本系统留下的
+/// 全局键值存储）自脚本系统移除以来再无任何写入方——全仓唯一产生
+/// `ScriptStateTarget::Global` 写入的地方是一个验收样例本身，生产代码
+/// 一处都没有。字段随之删除，`WorldState::hash()` 少混入一段
+/// `write_mod_state`（本回放里该表恒为空，因此实际少混入的是一个长度
+/// `0u64`），摘要因此改变。
+///
+/// 同批次还把幸存的那张每实体表改成了新接口（`script_state` →
+/// `mod_state`、`ScriptValue` → `ModStateValue`、`ScriptStateWrite` →
+/// `ModStateWrite`、`Effect::SetScriptState` → `Effect::SetModState`，
+/// 并把只剩单变体的 `ScriptStateTarget` 折叠成 `ModStateWrite::entity`
+/// 字段）。**重命名对哈希逐位无影响**——`write_mod_state` 混入的是键
+/// 与值的内容，不是字段名或类型名，因此这部分改动不该、也确实没有
+/// 改变摘要，由下面第 2 步实测钉死。
+///
+/// 一并删除的还有整套按 mod 计算的字节配额机器
+/// （`PER_MOD_QUOTA_BYTES`/`PER_MOD_ENTITY_QUOTA_BYTES`/`entry_size`/
+/// `mod_total_bytes`/`entity_mod_bytes`/`ModStateWrite::matches`）：
+/// 它们是脚本 `state-set!` 的写入期配额判定，脚本系统移除后再无任何
+/// 判定点，全仓零调用方。这些是纯函数，不进哈希，对摘要无影响。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 改动完成后先跑一次，确认这条测试确实红了，且报出的 `right`
+///    正是旧常量 `14_636_562_673_181_379_151`（基线确实是它，不是
+///    记忆）。
+/// 2. 在 `state.rs` `hash()` 中删掉那一行的**原位置**临时插回一行
+///    等价混入（`write_mod_state(&mut hasher, &BTreeMap::new());`
+///    ——本回放从不写全局表，该字段恒为空，因此空表与原字段逐位
+///    等价），其余全部改动原样保留——摘要精确回到旧常量
+///    `14_636_562_673_181_379_151`（测试转绿）。这一步同时证明了两
+///    件事：新摘要的变化只由删掉那一行引起；本批次横跨 64 个文件的
+///    重命名、`ScriptStateTarget` 折叠、`apply` 写入分支重写、配额
+///    机器删除，没有夹带任何行为漂移。
+/// 3. 撤掉那一行之后，在改动后的代码上把这条测试单独跑了两次（两次
+///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
+///    `1_631_638_824_628_905_583` 在两次独立进程里稳定复现（不是一次性
+///    偶然值），才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 1_631_638_824_628_905_583;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

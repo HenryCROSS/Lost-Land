@@ -51,10 +51,10 @@
 //!
 //! # 写入必须经 `apply`（裁定 P5-1 / ADR 0023）
 //!
-//! [`mark_quest_completed`] 只产出一条 `ScriptStateWrite`，**不直接
+//! [`mark_quest_completed`] 只产出一条 `ModStateWrite`，**不直接
 //! 改任何 `WorldState`**——脚本状态就是 `WorldState` 的一部分（挂在
-//! `Agent::script_state`），写它就是改世界，必须经
-//! `ll_sim::effect::Effect::SetScriptState → apply` 这条唯一写入口
+//! `Agent::mod_state`），写它就是改世界，必须经
+//! `ll_sim::effect::Effect::SetModState → apply` 这条唯一写入口
 //! （约束 C1），否则"同一串 Intent 重放"复现不出任务进度。
 //!
 //! # 跨表引用：`QuestCondition::KillCount.target_kind` 无法在注册期校验
@@ -988,7 +988,7 @@ mod tests {
                 subclasses: Vec::new(),
                 active_stat_modifiers: BTreeMap::new(),
                 current_space: Space::surface(zone, ContentIndex::default()),
-                script_state: BTreeMap::new(),
+                mod_state: BTreeMap::new(),
                 creature_kind: None,
                 spawned_at: ll_core::time::Tick(0),
                 remembered_id: None,
@@ -1009,11 +1009,11 @@ mod tests {
             let quest = id("lostland:main_quest_1");
 
             // Act：mark_quest_completed 只产出数据，真正落盘经
-            // Effect::SetScriptState -> apply（裁定 P5-1）。
+            // Effect::SetModState -> apply（裁定 P5-1）。
             let write = mark_quest_completed(actor, &quest);
             apply(
                 &mut world,
-                &Effect::SetScriptState {
+                &Effect::SetModState {
                     writes: vec![write],
                 },
             );
@@ -1044,7 +1044,7 @@ mod tests {
             let quest = id("lostland:main_quest_1");
             apply(
                 &mut world,
-                &Effect::SetScriptState {
+                &Effect::SetModState {
                     writes: vec![mark_quest_completed(actor, &quest)],
                 },
             );
@@ -1073,7 +1073,7 @@ mod tests {
             // Act：只标记 quest_a 完成。
             apply(
                 &mut world,
-                &Effect::SetScriptState {
+                &Effect::SetModState {
                     writes: vec![mark_quest_completed(actor, &quest_a)],
                 },
             );

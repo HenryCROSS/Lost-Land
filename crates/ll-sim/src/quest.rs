@@ -21,8 +21,7 @@
 //!
 //! 三个基础操作本身不依赖任何 `ll-mod` 类型（只用到
 //! `ll_world::entity::{Agent, EntityId}` 与
-//! `ll_world::script_state::{ScriptStateTarget, ScriptStateWrite,
-//! ScriptValue}`，两者都在 `ll-sim` 的下游依赖 `ll-world` 里），因此
+//! `ll_world::mod_state::{ModStateValue, ModStateWrite}`，两者都在 `ll-sim` 的下游依赖 `ll-world` 里），因此
 //! 随判定逻辑一起下沉到这里是干净的——不是"为了让代码能编译才硬凑"，
 //! 是它们原本就没有理由必须待在 `ll-mod`。`ll-mod::quest` 现在
 //! `pub use` 重新导出这三个函数，保持既有调用点（包括它自己的测试）
@@ -62,7 +61,7 @@
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_world::entity::{Agent, EntityId};
-use ll_world::script_state::{ScriptStateTarget, ScriptStateWrite, ScriptValue};
+use ll_world::mod_state::{ModStateValue, ModStateWrite};
 use ll_world::state::WorldState;
 
 use crate::effect::Effect;
@@ -130,7 +129,7 @@ impl QuestCatalog for NoQuests {
 }
 
 /// 任务进度键的前缀——脚本状态存储按 `(mod_namespace, key)` 隔离
-/// （`ll_world::script_state` 模块文档），前缀避免任务进度与该 mod 存
+/// （`ll_world::mod_state` 模块文档），前缀避免任务进度与该 mod 存
 /// 的其他状态（声望、计数器等）撞键。
 const QUEST_PROGRESS_KEY_PREFIX: &str = "quest_progress:";
 
@@ -156,21 +155,21 @@ pub fn quest_progress_key(quest: &NamespacedId) -> String {
 ///
 /// **不直接改任何 `WorldState`**——本函数只产出数据：调用方（
 /// [`kill_progress_effects`]，或未来串起任务判定管线的 `resolve`）负责
-/// 把返回值包进 [`Effect::SetScriptState`] 交给
+/// 把返回值包进 [`Effect::SetModState`] 交给
 /// [`crate::apply::apply`]（约束 C1，唯一写入口）。写入的值固定是
-/// `ScriptValue::Int(1)`——"完成"是一个存在性判断（写过就是完成），
+/// `ModStateValue::Int(1)`——"完成"是一个存在性判断（写过就是完成），
 /// 不需要一个可以取多种值的状态机。
-pub fn mark_quest_completed(actor: EntityId, quest: &NamespacedId) -> ScriptStateWrite {
-    ScriptStateWrite {
-        target: ScriptStateTarget::Entity(actor),
+pub fn mark_quest_completed(actor: EntityId, quest: &NamespacedId) -> ModStateWrite {
+    ModStateWrite {
+        entity: actor,
         mod_namespace: quest.namespace().to_string(),
         key: quest_progress_key(quest),
-        value: ScriptValue::Int(1),
+        value: ModStateValue::Int(1),
     }
 }
 
 /// 查询 `agent` 是否已完成 `quest`——直接读取已提交的
-/// [`Agent::script_state`]，不经脚本调用。
+/// [`Agent::mod_state`]，不经脚本调用。
 ///
 /// # 为什么是 Rust 直接读取路径，不强制经脚本
 ///
@@ -182,9 +181,9 @@ pub fn mark_quest_completed(actor: EntityId, quest: &NamespacedId) -> ScriptStat
 pub fn is_quest_completed(agent: &Agent, quest: &NamespacedId) -> bool {
     matches!(
         agent
-            .script_state
+            .mod_state
             .get(&(quest.namespace().to_string(), quest_progress_key(quest))),
-        Some(ScriptValue::Int(1))
+        Some(ModStateValue::Int(1))
     )
 }
 
@@ -210,18 +209,18 @@ fn kill_count_key(kind: ContentIndex) -> String {
 /// 读取 `agent` 当前对 `kind` 这个种类的累计击杀数，未写入过时为 0。
 fn kill_count(agent: &Agent, kind: ContentIndex) -> i64 {
     match agent
-        .script_state
+        .mod_state
         .get(&(KILL_COUNT_NAMESPACE.to_string(), kill_count_key(kind)))
     {
-        Some(ScriptValue::Int(n)) => *n,
+        Some(ModStateValue::Int(n)) => *n,
         _ => 0,
     }
 }
 
 /// 击杀结算的核心：`actor` 击杀了一个种类为 `killed_kind` 的目标之后，
 /// 应该产出的效果——累计击杀数 +1，以及任何因此达标、且尚未完成的
-/// `KillCount` 任务的完成写入，全部打包进**一条** `Effect::SetScriptState`
-/// （与批量写入的既有纪律一致，见 [`Effect::SetScriptState`] 文档）。
+/// `KillCount` 任务的完成写入，全部打包进**一条** `Effect::SetModState`
+/// （与批量写入的既有纪律一致，见 [`Effect::SetModState`] 文档）。
 ///
 /// `actor` 不存在（已被同一批结算里更早的效果销毁）时返回空
 /// `Vec`——与本 crate `resolve`/`apply` 全部既有分支「目标不存在时
@@ -236,11 +235,11 @@ pub fn kill_progress_effects(
         return Vec::new();
     };
     let new_count = kill_count(agent, killed_kind) + 1;
-    let mut writes = vec![ScriptStateWrite {
-        target: ScriptStateTarget::Entity(actor),
+    let mut writes = vec![ModStateWrite {
+        entity: actor,
         mod_namespace: KILL_COUNT_NAMESPACE.to_string(),
         key: kill_count_key(killed_kind),
-        value: ScriptValue::Int(new_count),
+        value: ModStateValue::Int(new_count),
     }];
     for rule in quests.kill_count_quests() {
         let prerequisites_met = rule
@@ -255,7 +254,7 @@ pub fn kill_progress_effects(
             writes.push(mark_quest_completed(actor, &rule.quest));
         }
     }
-    vec![Effect::SetScriptState { writes }]
+    vec![Effect::SetModState { writes }]
 }
 
 #[cfg(test)]

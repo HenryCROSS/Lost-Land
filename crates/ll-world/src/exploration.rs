@@ -124,7 +124,7 @@ impl ZoneExploration {
 /// 键必须是字符串的格式无法直接处理 `BTreeMap<ZoneCoord, _>`，而
 /// `WorldState` 的往返测试确实用 `serde_json` 覆盖（见
 /// `crate::state` 模块文档）。因此走与
-/// [`crate::script_state::serde_map`] 相同的手法：序列化成有序
+/// [`crate::mod_state::serde_map`] 相同的手法：序列化成有序
 /// `(键, 值)` 列表，反序列化时重建 `BTreeMap`——见
 /// [`zone_map`]。
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -134,7 +134,7 @@ pub struct ExplorationMemory {
 }
 
 /// 把 `BTreeMap<ZoneCoord, ZoneExploration>` 序列化成有序条目列表——
-/// 与 [`crate::script_state::serde_map`] 同一种手法，见
+/// 与 [`crate::mod_state::serde_map`] 同一种手法，见
 /// [`ExplorationMemory`] 文档「序列化」一节。
 mod zone_map {
     use std::collections::BTreeMap;
@@ -230,7 +230,7 @@ impl ExplorationMemory {
     /// 先混入区块数，再按 `zones`（`BTreeMap`，自然按 `ZoneCoord`
     /// 排序）遍历——不依赖任何 `HashMap`/`HashSet` 迭代顺序（约束
     /// C5）。每个区块先混入坐标、再混入位图字数与逐个位图字，理由与
-    /// `state::write_script_state`（模块私有，无法作为 rustdoc 链接
+    /// `state::write_mod_state`（模块私有，无法作为 rustdoc 链接
     /// 目标）一致：变长数据混入前先写长度，避免相邻字段在字节流里
     /// 边界不清导致的理论碰撞。
     pub(crate) fn write_hash(&self, hasher: &mut StateHasher) {

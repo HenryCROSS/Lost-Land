@@ -2,7 +2,6 @@
 
 use ll_world::entity::{Agent, EntityId};
 use ll_world::fov::compute_fov;
-use ll_world::script_state::ScriptStateTarget;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
@@ -77,10 +76,10 @@ use crate::xp_curve::{FlatXpCurve, XpCurveCatalog, eval_xp_curve};
 /// 描述的「全局唯一函数」这条不变式没有被打破，只是这个函数现在多了
 /// 一个可选输入。
 pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dyn XpCurveCatalog) {
-    // 不再 `match *effect`（`Effect` 因 `SetScriptState` 携带 `Vec` 而
+    // 不再 `match *effect`（`Effect` 因 `SetModState` 携带 `Vec` 而
     // 不再是 `Copy`，见其文档）——改为按引用匹配，Copy 子字段用 `*`
-    // 显式取值，与既有全部分支的赋值写法保持一致；`SetScriptState`
-    // 携带的 `Vec`/`String`/`ScriptValue` 本身不是 `Copy`，逐条 `clone`
+    // 显式取值，与既有全部分支的赋值写法保持一致；`SetModState`
+    // 携带的 `Vec`/`String`/`ModStateValue` 本身不是 `Copy`，逐条 `clone`
     // 写入，见该分支注释。
     match effect {
         Effect::MoveTo { actor, pos } => {
@@ -207,30 +206,19 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                     .or_insert(incoming);
             }
         }
-        Effect::SetScriptState { writes } => {
-            // 逐条写入，各自落到全局或对应实体的每实体存储——实体已
-            // 不存在时静默跳过，与本函数其余分支「目标实体不存在时忽略
-            // 不报错」的既有纪律一致（见本函数文档）。这里不做任何
-            // 判断（配额、命名空间隔离全部已经在 `ll-script` 侧的
-            // `state-set!`/`entity-state-set!` 完成，进了这批 `writes`
-            // 就是已经通过校验、只等落盘的数据），符合「apply 不含任何
-            // 游戏逻辑」的纪律。
+        Effect::SetModState { writes } => {
+            // 逐条写入，各自落到对应实体的每实体存储——实体已不存在时
+            // 静默跳过，与本函数其余分支「目标实体不存在时忽略不报错」
+            // 的既有纪律一致（见本函数文档）。这里不做任何判断（命名
+            // 空间隔离由 `ModStateWrite::mod_namespace` 在产出侧固化，
+            // 进了这批 `writes` 就是只等落盘的数据），符合「apply 不含
+            // 任何游戏逻辑」的纪律。
             for write in writes {
-                match write.target {
-                    ScriptStateTarget::Global => {
-                        world.global_script_state.insert(
-                            (write.mod_namespace.clone(), write.key.clone()),
-                            write.value.clone(),
-                        );
-                    }
-                    ScriptStateTarget::Entity(entity) => {
-                        if let Some(agent) = world.actors.get_mut(entity) {
-                            agent.script_state.insert(
-                                (write.mod_namespace.clone(), write.key.clone()),
-                                write.value.clone(),
-                            );
-                        }
-                    }
+                if let Some(agent) = world.actors.get_mut(write.entity) {
+                    agent.mod_state.insert(
+                        (write.mod_namespace.clone(), write.key.clone()),
+                        write.value.clone(),
+                    );
                 }
             }
         }
@@ -624,7 +612,7 @@ mod tests {
                 zone,
                 ll_core::ident::ContentIndex::default(),
             ),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -878,44 +866,17 @@ mod tests {
     }
 
     #[test]
-    fn setscriptstate效果写入全局存储() {
-        // 裁定 P5-1 的直接验收：脚本状态写入经由 Effect::SetScriptState
-        // 走 apply 这唯一写入口落进 WorldState.global_script_state。
-        // Arrange
-        let mut world = test_world();
-        let effect = Effect::SetScriptState {
-            writes: vec![ll_world::script_state::ScriptStateWrite {
-                target: ll_world::script_state::ScriptStateTarget::Global,
-                mod_namespace: "lostland".to_string(),
-                key: "reputation".to_string(),
-                value: ll_world::script_state::ScriptValue::Int(100),
-            }],
-        };
-
-        // Act
-        apply(&mut world, &effect);
-
-        // Assert
-        assert_eq!(
-            world
-                .global_script_state
-                .get(&("lostland".to_string(), "reputation".to_string())),
-            Some(&ll_world::script_state::ScriptValue::Int(100))
-        );
-    }
-
-    #[test]
     fn setscriptstate效果写入指定实体的每实体存储() {
         // Arrange
         let mut world = test_world();
         let agent = blank_agent(&world);
         let actor = world.actors.spawn(agent);
-        let effect = Effect::SetScriptState {
-            writes: vec![ll_world::script_state::ScriptStateWrite {
-                target: ll_world::script_state::ScriptStateTarget::Entity(actor),
+        let effect = Effect::SetModState {
+            writes: vec![ll_world::mod_state::ModStateWrite {
+                entity: actor,
                 mod_namespace: "lostland".to_string(),
                 key: "cooldown".to_string(),
-                value: ll_world::script_state::ScriptValue::Int(5),
+                value: ll_world::mod_state::ModStateValue::Int(5),
             }],
         };
 
@@ -927,9 +888,9 @@ mod tests {
             .actors
             .get(actor)
             .expect("刚生成的实体必然存在")
-            .script_state
+            .mod_state
             .get(&("lostland".to_string(), "cooldown".to_string()));
-        assert_eq!(stored, Some(&ll_world::script_state::ScriptValue::Int(5)));
+        assert_eq!(stored, Some(&ll_world::mod_state::ModStateValue::Int(5)));
     }
 
     #[test]
@@ -941,12 +902,12 @@ mod tests {
         let agent = blank_agent(&world);
         let actor = world.actors.spawn(agent);
         world.actors.despawn(actor);
-        let effect = Effect::SetScriptState {
-            writes: vec![ll_world::script_state::ScriptStateWrite {
-                target: ll_world::script_state::ScriptStateTarget::Entity(actor),
+        let effect = Effect::SetModState {
+            writes: vec![ll_world::mod_state::ModStateWrite {
+                entity: actor,
                 mod_namespace: "lostland".to_string(),
                 key: "cooldown".to_string(),
-                value: ll_world::script_state::ScriptValue::Int(5),
+                value: ll_world::mod_state::ModStateValue::Int(5),
             }],
         };
 
@@ -961,19 +922,21 @@ mod tests {
         // 条都落地，不只处理第一条。
         // Arrange
         let mut world = test_world();
-        let effect = Effect::SetScriptState {
+        let agent = blank_agent(&world);
+        let actor = world.actors.spawn(agent);
+        let effect = Effect::SetModState {
             writes: vec![
-                ll_world::script_state::ScriptStateWrite {
-                    target: ll_world::script_state::ScriptStateTarget::Global,
+                ll_world::mod_state::ModStateWrite {
+                    entity: actor,
                     mod_namespace: "lostland".to_string(),
                     key: "a".to_string(),
-                    value: ll_world::script_state::ScriptValue::Int(1),
+                    value: ll_world::mod_state::ModStateValue::Int(1),
                 },
-                ll_world::script_state::ScriptStateWrite {
-                    target: ll_world::script_state::ScriptStateTarget::Global,
+                ll_world::mod_state::ModStateWrite {
+                    entity: actor,
                     mod_namespace: "lostland".to_string(),
                     key: "b".to_string(),
-                    value: ll_world::script_state::ScriptValue::Int(2),
+                    value: ll_world::mod_state::ModStateValue::Int(2),
                 },
             ],
         };
@@ -982,7 +945,10 @@ mod tests {
         apply(&mut world, &effect);
 
         // Assert
-        assert_eq!(world.global_script_state.len(), 2);
+        assert_eq!(
+            world.actors.get(actor).expect("实体仍在").mod_state.len(),
+            2
+        );
     }
 
     #[test]

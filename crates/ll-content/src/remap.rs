@@ -106,11 +106,8 @@ pub fn remap_world(
         player_entity,
         // exploration（探索记忆）不含任何 ContentIndex——是纯粹的「看
         // 没看过」位图（见 crate::exploration 模块文档），不需要跟着
-        // mod 重映射走，理由同 global_script_state（ScriptValue 里的
-        // Entity 变体虽然携带 EntityId，但 EntityId 不是 ContentIndex，
-        // 同样不需要本函数处理）。
+        // mod 重映射走。
         exploration: _,
-        global_script_state: _,
         terrain_table: _,
         // 历史事件记录（击杀与死亡记录批次新增）：`HistoricalEvent`
         // 内部的 `KillRecord`/`KillCause` 确实可能携带 `ContentIndex`
@@ -346,7 +343,22 @@ fn remap_agent(
         // 映射，见 remap_active_stat_modifiers。
         ref mut active_stat_modifiers,
         ref mut current_space,
-        script_state: _,
+        // mod 状态（ll_world::mod_state）**确实**不需要重映射，但这不是
+        // 「懒得处理」——`ModStateValue` 的七个变体逐个查过：Int/Bool/
+        // Str 是裸标量；Ref 存的是 `NamespacedId` 的**字符串**形式
+        // （`namespace:path`），正是为了不依赖 mod 加载顺序才特意不存
+        // ContentIndex（见 ll_world::mod_state::ModStateValue::Ref 文档），
+        // 读取时由当前会话重新解析；Entity 携带 EntityId，而 EntityId
+        // 是世界内实体地址，不是内容注册表索引；List/Map 只是上述变体
+        // 的递归容器，不引入新的索引类型。键的 `(mod_namespace, key)`
+        // 两段也都是字符串。全表因此不含任何 ContentIndex。
+        //
+        // 这段话必须写在这里、而不是指向别处：本文件历史上
+        // active_stat_modifiers 那次事故的形态就是 `field: _` 不带论证
+        // 地静默丢数据（见模块文档「完整性如何保证」）。若将来
+        // ModStateValue 新增了携带 ContentIndex 的变体，这里必须改成
+        // 显式重映射。
+        mod_state: _,
         // 击杀与死亡记录批次新增的三个字段——逐一显式决定：
         ref mut creature_kind,
         // 出生时刻——纯数值，不携带任何 ContentIndex，不需要重映射。
@@ -834,7 +846,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(pos_zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: Tick(0),
             remembered_id: None,

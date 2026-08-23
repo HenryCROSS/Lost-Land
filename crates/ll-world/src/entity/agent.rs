@@ -8,7 +8,7 @@ use ll_core::torus::TorusPos;
 use serde::{Deserialize, Serialize};
 
 use crate::item::{EquipSlot, ItemStack};
-use crate::script_state::ScriptValue;
+use crate::mod_state::ModStateValue;
 use crate::space::Space;
 
 use super::{ActiveStatModifier, Affiliation, AttributeKind, BaseStats, Goal};
@@ -208,8 +208,8 @@ pub struct Agent {
     /// （字典序：先比池索引，再比档位），键序天然确定。
     ///
     /// **序列化走 [`spent_slots_serde`]**——理由同
-    /// [`Self::script_state`]（JSON 等文本格式要求 map 键是字符串，元组
-    /// 键不满足，见 `crate::script_state::serde_map` 模块文档）。
+    /// [`Self::mod_state`]（JSON 等文本格式要求 map 键是字符串，元组
+    /// 键不满足，见 `crate::mod_state::serde_map` 模块文档）。
     #[serde(with = "spent_slots_serde")]
     pub spent_slots: BTreeMap<(ContentIndex, u8), u32>,
     /// 正在进行的休息会话，`None` 表示当前未在休息
@@ -275,9 +275,9 @@ pub struct Agent {
     /// # 唯一写入口是 `apply`（约束 C1 / ADR 0023）
     ///
     /// 与 [`Self::unlocked_skills`]/[`Self::subclasses`] 同一条纪律：
-    /// 这个字段属 `WorldState`，不属 [`Self::script_state`]，因此写入
+    /// 这个字段属 `WorldState`，不属 [`Self::mod_state`]，因此写入
     /// 必须走一个独立的 `Effect` 变体（`Effect::LearnRecipe`）经
-    /// `ll_sim::apply::apply` 落地，不能塞进 `Effect::SetScriptState`。
+    /// `ll_sim::apply::apply` 落地，不能塞进 `Effect::SetModState`。
     /// 产出这条效果的两条发现路径见
     /// `ll_sim::resolve::resolve_read`（读书）与
     /// `ll_sim::resolve::resolve_experiment`（试做）。
@@ -350,11 +350,11 @@ pub struct Agent {
     ///
     /// `BTreeMap` 不是 `HashMap`：约束 C5 禁止 `HashMap`/`HashSet` 的
     /// 迭代顺序参与逻辑判断，序列化/摘要遍历需要确定顺序，见设计文档
-    /// 五、1 节。**序列化走 [`crate::script_state::serde_map`]**——理由
+    /// 五、1 节。**序列化走 [`crate::mod_state::serde_map`]**——理由
     /// 见该模块文档（JSON 等文本格式要求 map 键是字符串，元组键不
     /// 满足）。
-    #[serde(with = "crate::script_state::serde_map")]
-    pub script_state: BTreeMap<(String, String), ScriptValue>,
+    #[serde(with = "crate::mod_state::serde_map")]
+    pub mod_state: BTreeMap<(String, String), ModStateValue>,
     /// 生物类型，用于击杀匹配与死因统计分类
     /// （`knowledge/design/kill-and-death-events.md` 六节）。
     ///
@@ -538,7 +538,7 @@ pub struct Agent {
 
 /// [`Agent::spent_slots`] 的自定义 serde 编码：把 `(ContentIndex, u8)`
 /// 元组键的 map 序列化成有序条目列表——理由与手法同
-/// `crate::script_state::serde_map`（JSON 等文本格式的 map 键必须是
+/// `crate::mod_state::serde_map`（JSON 等文本格式的 map 键必须是
 /// 字符串，元组键不满足；同一个模式在本 crate 内的第二次出现，不需要
 /// 抽成共享泛型工具：两处的键/值具体类型不同，各自十几行代码，提前
 /// 泛型化没有真实的第三个调用点驱动，见「ADR 0021：抽象要有真实可
@@ -708,9 +708,9 @@ mod tests {
                     },
                 )]),
             )]),
-            script_state: BTreeMap::from([(
+            mod_state: BTreeMap::from([(
                 ("lostland".to_string(), "cooldown".to_string()),
-                ScriptValue::Int(5),
+                ModStateValue::Int(5),
             )]),
             creature_kind: Some(race),
             spawned_at: Tick(10),

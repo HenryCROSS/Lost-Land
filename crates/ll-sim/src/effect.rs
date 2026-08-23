@@ -14,7 +14,7 @@ use ll_core::torus::TorusPos;
 use ll_world::entity::{AttributeKind, EntityId};
 use ll_world::history::KillCause;
 use ll_world::item::EquipSlot;
-use ll_world::script_state::ScriptStateWrite;
+use ll_world::mod_state::ModStateWrite;
 use ll_world::space::Space;
 use ll_world::terrain::TerrainKind;
 
@@ -39,7 +39,7 @@ use crate::skill::ResourceKind;
 /// 而不是现在为空气发一个变体。
 /// # 为什么不再 `Copy`（脚本状态存储批次）
 ///
-/// [`Effect::SetScriptState`] 携带一个 `Vec<ScriptStateWrite>`——`Vec`
+/// [`Effect::SetModState`] 携带一个 `Vec<ModStateWrite>`——`Vec`
 /// 不是 `Copy`，`derive(Copy)` 因此不能再成立。检查过全部既有调用点
 /// （`resolve.rs`/`apply.rs`/`ll-sim/tests/replay.rs` 等）：全部通过
 /// `&Effect` 引用或值移动使用 `Effect`，没有任何地方依赖隐式按位拷贝，
@@ -194,35 +194,30 @@ pub enum Effect {
         /// 目标空间。
         space: Space,
     },
-    /// 批量写入脚本状态（裁定 P5-1，脚本状态存储）。
+    /// 批量写入 mod 状态（裁定 P5-1）。
     ///
-    /// # 为什么脚本状态的写入也要走 `Effect`
+    /// # 为什么 mod 状态的写入也要走 `Effect`
     ///
-    /// `knowledge/design/script-state-storage.md` 8.2 节原文写「直接
-    /// 写穿，没有中间层」，与本文档开篇、约束 C1「`apply` 是唯一写
-    /// 入口」字面冲突——脚本状态存在 `WorldState` 里（
-    /// `WorldState::global_script_state`/`Agent::script_state`），那就
-    /// 是世界状态的一部分：写它就是改世界，绕开 `Effect` 流意味着
-    /// 「同一串 Intent 重放」复现不出脚本存的东西，「脚本自己的数据」
-    /// 这个类别在存档/重放的意义上并不真实存在。裁定 P5-1 选择 C1
-    /// 赢：写入必须经这条唯一入口。
+    /// mod 状态存在 `WorldState` 里（[`ll_world::entity::Agent::mod_state`]），
+    /// 那就是世界状态的一部分：写它就是改世界，绕开 `Effect` 流意味着
+    /// 「同一串 Intent 重放」复现不出这些数据，「mod 自己的数据」这个
+    /// 类别在存档/重放的意义上并不真实存在。裁定 P5-1 选择约束 C1
+    /// 「`apply` 是唯一写入口」赢：写入必须经这条唯一入口。
     ///
     /// # 为什么是一条 `Effect` 携带一批，而不是每次写入一条
     ///
-    /// 一次决策期间脚本可能连续调用多次 `state-set!`/
-    /// `entity-state-set!`——若每次调用都发一条独立 `Effect`，会为每
-    /// 次写入多付一条 `Effect` 的开销。`ll_script::api::state` 模块在
-    /// 脚本调用窗口内把写入攒进一个线程局部缓冲，调用结束后宿主取走
-    /// 整批，包成一条本变体发出，交给既有的 `resolve → apply` 管线——
-    /// `Effect` 流因此保持「每一次状态变化都经过它」的诚实，又不必为
-    /// 每次写入单独付一条 `Effect` 的开销。
-    SetScriptState {
-        /// 这条 `Effect` 携带的全部写入，保留脚本调用它们时的原始
-        /// 顺序——同一个键在批内被覆写多次时，`apply` 按顺序逐条写入，
-        /// 最终生效的是最后一条（与 `ll-script` 侧缓冲区「同一决策内
-        /// 重复写同一个键只保留最后一次」的既有语义一致，见
-        /// [`ScriptStateWrite::matches`] 文档）。
-        writes: Vec<ScriptStateWrite>,
+    /// 一次决策期间可能连续产生多条写入（例如
+    /// [`crate::quest::kill_progress_effects`] 同时写击杀计数与可能
+    /// 因此达标的任务完成标记）——若每条都发一条独立 `Effect`，会为
+    /// 每次写入多付一条 `Effect` 的开销。产出方把一次决策内的写入攒
+    /// 成一批、包成一条本变体发出，交给既有的 `resolve → apply` 管线
+    /// ——`Effect` 流因此保持「每一次状态变化都经过它」的诚实，又不必
+    /// 为每次写入单独付一条 `Effect` 的开销。
+    SetModState {
+        /// 这条 `Effect` 携带的全部写入，保留产出时的原始顺序——同一个
+        /// 键在批内被覆写多次时，`apply` 按顺序逐条写入，最终生效的是
+        /// 最后一条。
+        writes: Vec<ModStateWrite>,
     },
     /// 把某个实体的某项资源（法力/耐力）调整 `delta`（P5-B 任务 5）。
     ///
@@ -793,10 +788,10 @@ pub enum Effect {
     /// `RecipeCategoryDef::required_subclasses` 声明的闸门等价于「谁都
     /// 过不去」。
     ///
-    /// # 为什么不能塞进 [`Effect::SetScriptState`]（ADR 0023）
+    /// # 为什么不能塞进 [`Effect::SetModState`]（ADR 0023）
     ///
-    /// `Agent::subclasses` 属 `WorldState`，不属 `Agent::script_state`
-    /// ——[`Effect::SetScriptState`] 只写后者那张表。ADR 0023 要求脚本
+    /// `Agent::subclasses` 属 `WorldState`，不属 `Agent::mod_state`
+    /// ——[`Effect::SetModState`] 只写后者那张表。ADR 0023 要求脚本
     /// 状态写入必须经 `apply`，同一条纪律在这里的推论是：世界状态的这个
     /// 字段需要**自己的**效果变体，见 `crate::subclass` 模块文档「为什么
     /// 授予必须是独立的 Effect 变体」一节。
@@ -858,10 +853,10 @@ pub enum Effect {
     /// 条路径各造一个只有名字不同的效果变体，会逼 `apply` 为逐字相同的
     /// 一段 `push` 写两遍。
     ///
-    /// # 为什么不能塞进 [`Effect::SetScriptState`]（ADR 0023）
+    /// # 为什么不能塞进 [`Effect::SetModState`]（ADR 0023）
     ///
     /// 与 [`Effect::GrantSubclass`] 逐字同理：`Agent::known_recipes` 属
-    /// `WorldState`，不属 `Agent::script_state`，因此需要自己的效果变体。
+    /// `WorldState`，不属 `Agent::mod_state`，因此需要自己的效果变体。
     ///
     /// # 为什么不复用 [`Effect::LearnSkill`]
     ///

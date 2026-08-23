@@ -104,7 +104,7 @@ fn spawn_agent_with_race(world: &mut WorldState, race: ContentIndex, health: i32
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
-        script_state: BTreeMap::new(),
+        mod_state: BTreeMap::new(),
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,
@@ -257,11 +257,11 @@ fn 击杀未达阈值时计数增加但任务不完成() {
     let agent = world.actors.get(actor).expect("攻击者应仍存在");
     assert!(!is_quest_completed(agent, &quest));
     assert_eq!(
-        agent.script_state.get(&(
+        agent.mod_state.get(&(
             "lostland".to_string(),
             format!("kill_count:{}", goblin.get())
         )),
-        Some(&ll_world::script_state::ScriptValue::Int(1))
+        Some(&ll_world::mod_state::ModStateValue::Int(1))
     );
 }
 
@@ -315,7 +315,7 @@ fn 使用noquests目录时击杀不产生任何任务相关写入() {
         &NoQuests,
     );
 
-    // Assert：仍然产出 Kill/Damage/ScheduleNext,但没有 SetScriptState
+    // Assert：仍然产出 Kill/Damage/ScheduleNext,但没有 SetModState
     // ——NoQuests 不知道任何规则,kill_progress_effects 只会写入击杀
     // 计数本身，这里改为验证「不完成任何任务」这条更贴合意图的性质。
     for effect in &effects {
@@ -338,11 +338,11 @@ fn 非attack意图不触发任务进度接线() {
     let effects =
         resolve_with_skills_and_quests(&world, &Intent::Wait { actor }, &NoSkills, &catalog);
 
-    // Assert：Wait 只产出 ScheduleNext，没有 SetScriptState。
+    // Assert：Wait 只产出 ScheduleNext，没有 SetModState。
     assert!(
         !effects
             .iter()
-            .any(|effect| matches!(effect, Effect::SetScriptState { .. }))
+            .any(|effect| matches!(effect, Effect::SetModState { .. }))
     );
 }
 

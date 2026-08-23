@@ -256,7 +256,7 @@ fn spawn_combatant(
             zone,
             ll_core::ident::ContentIndex::default(),
         ),
-        script_state: std::collections::BTreeMap::new(),
+        mod_state: std::collections::BTreeMap::new(),
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,

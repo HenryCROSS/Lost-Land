@@ -229,7 +229,7 @@ impl ThinPopulation {
             current_space: Space::surface(zone, surface_profile),
             // 薄层本就不支持脚本状态存储（设计文档三、3 节：只限厚层
             // `Arena<Agent>`），升格这一刻自然是空的。
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             // 薄层不追踪生物类型（薄层 NPC 全部走 `race`，见
             // Agent::creature_kind 文档「绝大多数……不需要设置」）。
             creature_kind: None,

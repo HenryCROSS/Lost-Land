@@ -91,7 +91,7 @@ use crate::remap::remap_world;
 /// [`crate::migration::Migration`] 并注册进 `migration_chain`，这个
 /// 常量再次成为「往上加一」的那一个，不需要重新设计版本判定或
 /// 迁移执行的机制。
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 
 /// 头部 JSON 长度声明的安全上限——防御「声明长度与实际不符」类畸形
 /// 存档（规格 §14.3 fuzz 要求之一）：一个只有几十字节的文件却在长度
@@ -561,7 +561,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -853,7 +853,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -984,7 +984,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,
@@ -1049,7 +1049,7 @@ mod tests {
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
-            script_state: std::collections::BTreeMap::new(),
+            mod_state: std::collections::BTreeMap::new(),
             creature_kind: None,
             spawned_at: ll_core::time::Tick(0),
             remembered_id: None,

@@ -200,7 +200,7 @@ fn spawn_player(
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(zone, surface_profile),
-        script_state: std::collections::BTreeMap::new(),
+        mod_state: std::collections::BTreeMap::new(),
         creature_kind: None,
         spawned_at: ll_core::time::Tick(0),
         remembered_id: None,
