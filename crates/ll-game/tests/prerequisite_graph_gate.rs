@@ -10,7 +10,7 @@
 //! 「注册期完整校验」在这两张表上事实落空：**任何 mod 注册的技能/任务，
 //! 前置成环也好、指向一条谁都没注册过的条目也好，一次都没有被检查过**。
 //!
-//! 本体技能/任务迁进脚本的批次把这两条检查接到了 `load_content` 上。
+//! 本体技能/任务迁进 mod 内容的批次把这两条检查接到了 `load_content` 上。
 //! 正面证据（真实 `mods/` 目录装载出来的两张表无环）在
 //! `crates/ll-mod/tests/base_mod_class_skill_quest.rs`；本文件是 ADR
 //! 0018 要求的那一半反面证据：**造一个真的成环的 mod，装载必须整批
@@ -56,9 +56,12 @@ fn copy_dir_recursive(from: &Path, to: &Path) {
 
 /// 把真实 `mods/` 拷进一个独占临时目录，再往里加一个 mod。
 ///
+/// `content` 是 `(内容数据文件名, 文件内容)`——固定文件名的 JSON5
+/// 名册，不登记在清单里（见 `ll_mod::content_data` 模块文档）。
+///
 /// 返回临时 mods 目录路径；调用方用完自行删除（失败时刻意保留，方便
 /// 人工排查——与本仓库其余临时目录测试同一条惯例）。
-fn mods_root_with_extra(prefix: &str, namespace: &str, script: &str) -> PathBuf {
+fn mods_root_with_extra(prefix: &str, namespace: &str, content: &[(&str, &str)]) -> PathBuf {
     let root = unique_temp_dir(prefix);
     copy_dir_recursive(&repo_root().join("mods"), &root);
 
@@ -66,13 +69,12 @@ fn mods_root_with_extra(prefix: &str, namespace: &str, script: &str) -> PathBuf 
     fs::create_dir_all(&extra).expect("创建额外 mod 目录应当成功");
     fs::write(
         extra.join("mod.json5"),
-        format!(
-            "{{\n  namespace: \"{namespace}\",\n  version: \"0.1.0\",\n  \
-             entry_points: [\"content.scm\"],\n}}\n"
-        ),
+        format!("{{ namespace: \"{namespace}\", version: \"0.1.0\" }}"),
     )
     .expect("写 mod.json5 应当成功");
-    fs::write(extra.join("content.scm"), script).expect("写脚本应当成功");
+    for (name, body) in content {
+        fs::write(extra.join(name), body).expect("写内容数据文件应当成功");
+    }
     root
 }
 
@@ -82,10 +84,17 @@ fn 成环的技能前置让整批装载失败而不是静默进到游戏里() {
     let mods_root = mods_root_with_extra(
         "ll-game-cyclic-skill",
         "cyclicskills",
-        "(register-skill \"cyclicskills:a\" \"\" '(\"cyclicskills:b\") \
-         0 \"none\" 0 \"deal-damage\" \"\" 1 0)\n\
-         (register-skill \"cyclicskills:b\" \"\" '(\"cyclicskills:a\") \
-         0 \"none\" 0 \"deal-damage\" \"\" 1 0)\n",
+        &[(
+            "skills.json5",
+            r#"{ skills: [
+                { id: "cyclicskills:a", prerequisites: ["cyclicskills:b"],
+                  cooldown_ticks: 0, resource_cost: { kind: "none" },
+                  effect: { kind: "deal-damage", amount: 1 } },
+                { id: "cyclicskills:b", prerequisites: ["cyclicskills:a"],
+                  cooldown_ticks: 0, resource_cost: { kind: "none" },
+                  effect: { kind: "deal-damage", amount: 1 } },
+            ] }"#,
+        )],
     );
 
     // Act
@@ -113,10 +122,17 @@ fn 成环的任务前置让整批装载失败而不是静默进到游戏里() {
     let mods_root = mods_root_with_extra(
         "ll-game-cyclic-quest",
         "cyclicquests",
-        "(register-quest \"cyclicquests:a\" '(\"cyclicquests:b\") \
-         \"kill-count\" \"cyclicquests:target\" 1)\n\
-         (register-quest \"cyclicquests:b\" '(\"cyclicquests:a\") \
-         \"kill-count\" \"cyclicquests:target\" 1)\n",
+        &[(
+            "quests.json5",
+            r#"{ quests: [
+                { id: "cyclicquests:a", prerequisites: ["cyclicquests:b"],
+                  condition: { kind: "kill-count",
+                               target: "cyclicquests:target", count: 1 } },
+                { id: "cyclicquests:b", prerequisites: ["cyclicquests:a"],
+                  condition: { kind: "kill-count",
+                               target: "cyclicquests:target", count: 1 } },
+            ] }"#,
+        )],
     );
 
     // Act
@@ -146,8 +162,15 @@ fn 前置指向一条谁都没注册过的技能同样让整批装载失败() {
     let mods_root = mods_root_with_extra(
         "ll-game-ghost-prereq",
         "ghostprereq",
-        "(register-skill \"ghostprereq:a\" \"\" '(\"ghostprereq:never_registered\") \
-         0 \"none\" 0 \"deal-damage\" \"\" 1 0)\n",
+        &[(
+            "skills.json5",
+            r#"{ skills: [
+                { id: "ghostprereq:a",
+                  prerequisites: ["ghostprereq:never_registered"],
+                  cooldown_ticks: 0, resource_cost: { kind: "none" },
+                  effect: { kind: "deal-damage", amount: 1 } },
+            ] }"#,
+        )],
     );
 
     // Act

@@ -238,7 +238,6 @@ fn step0_world_identity_chain_link() {
         id: id("lostland:self"),
         version: "0.1.0".to_string(),
         dependencies: Vec::new(),
-        entry_points: Vec::<std::path::PathBuf>::new(),
     }];
 
     let layout = validate_size_choice(64, (1, 1)).expect("1x1/64 是合法尺寸选择");
@@ -369,7 +368,7 @@ fn section_a_full_roundtrip() {
     let current_registry = rebuild_from_header(&content_index_map)
         .expect("content_index_map 本 demo 自己产出，恒合法");
     let (_terrain_ids, current_terrain_table) = base_terrain_fixture();
-    let outcome = load_full(&path, &current_registry, &[], current_terrain_table, &[]);
+    let outcome = load_full(&path, &current_registry, &[], current_terrain_table);
 
     match outcome {
         LoadOutcome::Playable(loaded_world) => {
@@ -561,7 +560,7 @@ fn b3_player_missing_full_pipeline_readonly() {
     // current_manifests 传 &[]——uninstalledmod 确实被卸载了，manifests
     // 里找不到它，这正是要验证的场景。
     let (current_registry, terrain_table) = current_session_registry_with_terrain();
-    let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+    let outcome = load_full(&path, &current_registry, &[], terrain_table);
 
     match outcome {
         LoadOutcome::ReadOnly(read_only) => {
@@ -616,7 +615,7 @@ fn b4_npc_race_missing_full_pipeline_placeholder() {
     let (mut current_registry, terrain_table) = current_session_registry_with_terrain();
     let expected_placeholder =
         ll_mod::base_placeholder::register_base_placeholder_content(&mut current_registry);
-    let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+    let outcome = load_full(&path, &current_registry, &[], terrain_table);
 
     match outcome {
         LoadOutcome::Playable(loaded_world) => {
@@ -683,7 +682,7 @@ fn section_c_mode_downgrade() {
     let current_registry =
         rebuild_from_header(&content_index_map_from(&path)).expect("重建应当成功");
     let (_terrain_ids, terrain_table) = base_terrain_fixture();
-    let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+    let outcome = load_full(&path, &current_registry, &[], terrain_table);
     assert!(
         matches!(outcome, LoadOutcome::Playable(_)),
         "模式降级本身不应影响存档是否可玩"

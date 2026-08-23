@@ -8,7 +8,7 @@ description = "迷途大陆的游戏本体二进制：把六个验收 demo 各�
 [lints]
 workspace = true
 
-# 依赖方向规格 §5：ll-core ← … ← ll-world ← ll-sim ← ll-script ← ll-mod
+# 依赖方向规格 §5：ll-core ← … ← ll-world ← ll-sim ← ll-mod
 # ← ll-content ← ll-ui。本体二进制排在依赖链的最下游，六个上游 crate
 # 全部需要——它是唯一把它们全部串起来的地方，没有任何一个更下游的
 # crate 反过来依赖它（它本身就是这条依赖链的终点，除了未来的
@@ -23,7 +23,6 @@ ll-i18n = { path = "../ll-i18n" }
 ll-mod = { path = "../ll-mod" }
 ll-platform = { path = "../ll-platform" }
 ll-render = { path = "../ll-render" }
-ll-script = { path = "../ll-script" }
 ll-sim = { path = "../ll-sim" }
 ll-world = { path = "../ll-world" }
 # P7 第一批（只读观测 HUD：状态栏/角色面板/背包/装备栏）——本体二进制

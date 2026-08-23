@@ -192,7 +192,7 @@ impl Demo {
 
     /// 对 examplemod 触发一次一键重载演示（Task 11「单个 mod 一键
     /// 重载」的最小可行版本，见 `ll_mod::pipeline::reload_mod`
-    /// 文档）：重新解析清单、重新跑一遍脚本，把结果写进
+    /// 文档）：重新解析清单、重新读一遍它的内容数据文件，把结果写进
     /// `reload_hint` 供面板展示。
     fn reload_example_mod(&mut self) {
         let status = reload_mod(&self.demo_world.example_mod_manifest);

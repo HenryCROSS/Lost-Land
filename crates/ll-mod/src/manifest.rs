@@ -6,7 +6,7 @@
 //! 本模块用的是 TOML（理由曾是与规格 §11.1「用户设置 TOML」同一类
 //! 「给人手改的元数据」场景），迁移到 JSON5 不改变这条理由本身：仍然
 //! 不需要先起 Steel VM 就能解析出依赖关系用于拓扑排序（清单本身不该
-//! 依赖脚本求值），额外换来的是注释与尾逗号——手写清单终于能写清楚
+//! 依赖任何求值器），额外换来的是注释与尾逗号——手写清单终于能写清楚
 //! 「这个字段为什么这样填」，不必只靠外部文档。解析用 [`json5::from_str`]，
 //! 它只做解析、不提供序列化，但本模块从不需要把 [`ModManifest`] 写回
 //! 磁盘（清单永远是 mod 作者手写的输入，不是本体生成的输出），因此
@@ -48,7 +48,7 @@ use ll_core::error::CoreError;
 use ll_core::ident::NamespacedId;
 use std::collections::BTreeMap;
 use std::fmt;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 /// mod 自我标识时使用的保留路径段。
 ///
@@ -72,7 +72,7 @@ pub(crate) fn mod_self_id(namespace: &str) -> Result<NamespacedId, CoreError> {
     NamespacedId::parse(&format!("{namespace}:{MOD_SELF_PATH}"))
 }
 
-/// 一个 mod 的清单：身份、版本、依赖、脚本入口。
+/// 一个 mod 的清单：身份、版本、依赖。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModManifest {
     /// mod 自己的命名空间，按 [`MOD_SELF_PATH`] 约定包装成
@@ -89,9 +89,6 @@ pub struct ModManifest {
     /// 需要「当前发现到了哪些 mod」这个上下文，本模块解析单个清单时
     /// 拿不到（0015 分工）。
     pub dependencies: Vec<ModDependency>,
-    /// 脚本入口文件（`.scm`），已解析成相对清单所在目录的绝对/相对
-    /// 路径——调用方不需要再自己拼目录。
-    pub entry_points: Vec<PathBuf>,
 }
 
 /// 一条依赖声明：依赖哪个 mod、要求它满足什么版本约束。
@@ -238,9 +235,6 @@ struct RawManifest {
     /// 形状都接受，见 [`RawDependencies`]。
     #[serde(default)]
     dependencies: RawDependencies,
-    /// 脚本入口文件相对路径。允许缺省为空（纯数据 mod 可以没有脚本）。
-    #[serde(default)]
-    entry_points: Vec<String>,
 }
 
 /// 清单里 `dependencies` 字段的两种合法 JSON5 形状——向后兼容旧版裸命名
@@ -338,14 +332,10 @@ pub fn parse_manifest(path: &Path) -> Result<ModManifest, ModError> {
         });
     }
 
-    let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
-    let entry_points = raw.entry_points.iter().map(|p| base_dir.join(p)).collect();
-
     Ok(ModManifest {
         id,
         version: raw.version,
         dependencies,
-        entry_points,
     })
 }
 
@@ -354,6 +344,7 @@ mod tests {
     use super::*;
     use crate::test_support::tempdir;
     use std::fs;
+    use std::path::PathBuf;
 
     /// 在临时目录下写一个 [`crate::discover::MANIFEST_FILENAME`]
     /// 并返回其路径，供各测试复用。
@@ -373,7 +364,6 @@ mod tests {
                 namespace: "yourmod",
                 version: "0.1.0",
                 dependencies: ["othermod"],
-                entry_points: ["main.scm"],
             }"#,
         );
 
@@ -390,7 +380,6 @@ mod tests {
                 constraint: VersionConstraint::Any,
             }]
         );
-        assert_eq!(manifest.entry_points, vec![dir.path().join("main.scm")]);
     }
 
     #[test]
@@ -559,7 +548,7 @@ mod tests {
     }
 
     #[test]
-    fn 不含依赖与入口时缺省为空列表() {
+    fn 不含依赖时缺省为空列表() {
         // Arrange
         let dir = tempdir();
         let path = write_manifest(
@@ -568,9 +557,9 @@ mod tests {
         );
 
         // Act
-        let manifest = parse_manifest(&path).expect("依赖与入口应可缺省");
+        let manifest = parse_manifest(&path).expect("依赖应可缺省");
 
         // Assert
-        assert!(manifest.dependencies.is_empty() && manifest.entry_points.is_empty());
+        assert!(manifest.dependencies.is_empty());
     }
 }

@@ -326,22 +326,12 @@ fn run_walkthrough() {
     section1_class_and_branching_skill_tree(&content, &mut world, player);
     section2_subclass_stacking(&content, &world, player);
     section3_networked_quest_progress(&content, &mut world, player);
-    // **必须换一根线程**（约束 C6 / ADR 0028）：`load_full` 内部会调用
-    // `ll_script::host::rebuild_all_engines_after_load` 构造脚本引擎，
-    // 而本 demo 的 `build_content` 已经在当前线程上编译过 mod 脚本
-    // （它读的是真实 `mods/` 目录，见该函数文档）——「先编译、后构造」
-    // 正是 steel-core 0.8.2 偶发内存破坏的唯一已知触发条件。C6 是
-    // **每线程**的约束，新线程上一次编译都没发生过，构造因此合法。
-    //
-    // 这条约束不是本 demo 特有：任何「先装载 mod，再读一份存档」的
-    // 调用方都会撞上它，见 `ll_script::host::ScriptEngine::new` 的断言
-    // 文案本身给出的两条出路。
-    std::thread::scope(|scope| {
-        scope
-            .spawn(|| section4_save_load_roundtrip(&content, &world))
-            .join()
-            .expect("存档往返验收线程不应 panic");
-    });
+    // 此前这里必须换一根线程：`load_full` 内部会强制重建全部 Steel
+    // 引擎，而 `build_content` 已经在当前线程上编译过 mod 脚本，
+    // 「先编译、后构造」正是 steel-core 0.8.2 偶发内存破坏的唯一已知
+    // 触发条件（旧约束 C6 / ADR 0028）。脚本系统整体拆除后既没有引擎
+    // 也没有那条相邻关系，直接在本线程上跑即可。
+    section4_save_load_roundtrip(&content, &world);
 }
 
 // ---------------------------------------------------------------------
@@ -629,13 +619,7 @@ fn section4_save_load_roundtrip(content: &Content, world: &WorldState) {
     // 数值上相同,只要求全部同一批字符串都已注册（见
     // ll_content::remap 模块文档）。
     let current = build_content();
-    let outcome = load_full(
-        &path,
-        &current.registry,
-        &[],
-        current.terrain_table.clone(),
-        &[],
-    );
+    let outcome = load_full(&path, &current.registry, &[], current.terrain_table.clone());
 
     let loaded_world = match outcome {
         LoadOutcome::Playable(loaded) => loaded,

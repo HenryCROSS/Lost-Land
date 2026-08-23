@@ -1,7 +1,0 @@
-// 故意写错的 mod（P4 验收 demo）：试图 require-builtin steel/time
-// 拿到非确定性墙钟，应当被白名单拒绝而不是静默放行。
-{
-  namespace: "brokenwhitelist",
-  version: "0.1.0",
-  entry_points: ["main.scm"],
-}

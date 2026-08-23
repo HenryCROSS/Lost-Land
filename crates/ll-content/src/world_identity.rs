@@ -177,14 +177,12 @@ mod tests {
     use ll_core::ident::NamespacedId;
     use ll_mod::manifest::ModManifest;
     use ll_mod::registry::Registry;
-    use std::path::PathBuf;
 
     fn manifest(namespace: &str, version: &str) -> ModManifest {
         ModManifest {
             id: NamespacedId::parse(&format!("{namespace}:self")).expect("测试用命名空间恒合法"),
             version: version.to_string(),
             dependencies: Vec::new(),
-            entry_points: Vec::<PathBuf>::new(),
         }
     }
 

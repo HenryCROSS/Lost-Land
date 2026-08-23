@@ -205,7 +205,7 @@ fn 含实体与地形改动的世界存档读档后哈希一致() {
     let current_registry =
         rebuild_from_header(&content_index_map).expect("content_index_map 本测试自己产出，恒合法");
     let (_terrain_ids, current_terrain_table) = base_terrain_fixture();
-    let outcome = load_full(&path, &current_registry, &[], current_terrain_table, &[]);
+    let outcome = load_full(&path, &current_registry, &[], current_terrain_table);
 
     // Assert
     match outcome {
@@ -274,7 +274,7 @@ fn 存档后卸载一个曾贡献内容的mod读档后被硬门禁拒绝而不�
     // Act：当前会话完全没有装载 vanishedmod（manifests 里也找不到它——
     // 玩家把它整个卸载了，只装载了本体地形）。
     let (current_registry, terrain_table) = current_session_registry_with_terrain();
-    let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+    let outcome = load_full(&path, &current_registry, &[], terrain_table);
 
     // Assert：硬门禁拒绝，且错误信息指明了缺的是哪个 mod、要什么版本。
     match outcome {

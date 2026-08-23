@@ -2,18 +2,16 @@
 //! `register-xp-curve`/`register-class-xp-curve`/`register-race-xp-curve`/
 //! `register-race-xp-reward` 这四个新脚本 API 真的能被
 //! `mods/example_mod/xp_curves.json5` 调用，且两条真实注册的曲线（线性/
-//! 递推指数）在同一等级上门槛确实不同——ADR 0018「玩法层内容必须能从
-//! mod 脚本注册，且要有真实 mod 脚本为证」，本文件是那份证据，不能靠
-//! 单元测试自证。
+//! 递推指数）在同一等级上门槛确实不同——ADR 0018 修订版「玩法层内容
+//! 必须能由 mod 声明，且要有真实 mod 内容为证」，本文件是那份证据，
+//! 不能靠单元测试自证。
 //!
 //! # 为什么装载整个 `mods/` 目录，不是只挑 `example_mod`
 //!
-//! `mods/` 下还有 `broken_syntax`/`broken_whitelist` 两个刻意写错的
-//! mod（P4 验收 demo 遗留）——`ll_mod::pipeline::load_all` 对候选目录
-//! 逐个独立处理，一个失败不影响其他 mod（见其模块文档），本测试因此
-//! 能在装载真实全部三个 mod 的同时，只关心 `example_mod` 是否成功、
-//! 其余两个是否如预期失败，不需要为了「只测 example_mod」单独复制一份
-//! 目录。
+//! `ll_mod::pipeline::load_all` 对候选目录逐个独立处理，一个失败不影响
+//! 其他 mod（见其模块文档）；装载真实的整个 `mods/` 目录比复制一份只
+//! 含 `example_mod` 的目录更接近生产路径，也顺带覆盖了「本体 mod 与
+//! 示例 mod 共用同一个注册表」这条性质。
 
 use std::path::Path;
 
@@ -143,12 +141,12 @@ fn 真实mods目录装载后examplemod被判定为已加载而两个故意写错
     let handle = load_real_mods_and_resolve();
 
     // Assert：与 ll-game 二进制真实运行时的基线一致——loaded=2
-    // （examplemod + 本体内容 mod lostland，本体内容迁进脚本批次
-    // 起后者也是一个真实的 mod）、failed=2（broken_syntax/
-    // broken_whitelist），见 `ll_game::content` 模块 `tracing::info!`
+    // （examplemod + 本体内容 mod lostland，本体内容迁进数据文件批次
+    // 起后者也是一个真实的 mod）、failed=0（脚本系统拆除批次删掉了
+    // broken_syntax/broken_whitelist 两个脚本错误夹具），见 `ll_game::content` 模块 `tracing::info!`
     // 输出的 `loaded`/`failed` 字段。
     assert_eq!(handle.report.loaded_count(), 2);
-    assert_eq!(handle.report.failed_count(), 2);
+    assert_eq!(handle.report.failed_count(), 0);
 }
 
 #[test]

@@ -113,7 +113,7 @@ fn fresh_registry_and_terrain() -> (Registry, ll_world::terrain::TerrainTable) {
 fn assert_does_not_panic(data: &[u8]) {
     let (registry, terrain_table) = fresh_registry_and_terrain();
     let result = std::panic::catch_unwind(|| {
-        load_full_from_bytes(data, &registry, &[], terrain_table.clone(), &[])
+        load_full_from_bytes(data, &registry, &[], terrain_table.clone())
     });
     assert!(
         result.is_ok(),
@@ -229,7 +229,7 @@ fn 生成期mod集合被篡改成不存在的命名空间时不会崩溃而是�
     data.extend_from_slice(&bytes[4 + header_len..]);
 
     let (registry, terrain_table) = fresh_registry_and_terrain();
-    let outcome = load_full_from_bytes(&data, &registry, &[], terrain_table, &[]);
+    let outcome = load_full_from_bytes(&data, &registry, &[], terrain_table);
     assert!(matches!(
         outcome,
         ll_content::degrade::LoadOutcome::Rejected(_)

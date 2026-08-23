@@ -352,7 +352,6 @@ mod tests {
     use super::*;
     use crate::manifest::ModDependency;
     use crate::version_constraint::VersionConstraint;
-    use std::path::PathBuf;
 
     fn manifest(namespace: &str, dependencies: &[&str]) -> ModManifest {
         ModManifest {
@@ -365,7 +364,6 @@ mod tests {
                     constraint: VersionConstraint::Any,
                 })
                 .collect(),
-            entry_points: Vec::<PathBuf>::new(),
         }
     }
 
@@ -387,7 +385,6 @@ mod tests {
                     constraint: constraint.clone(),
                 })
                 .collect(),
-            entry_points: Vec::<PathBuf>::new(),
         }
     }
 
@@ -513,13 +510,11 @@ mod tests {
                 id: mod_self_id("dup").expect("测试用命名空间恒合法"),
                 version: "1.0.0".to_string(),
                 dependencies: Vec::new(),
-                entry_points: Vec::<PathBuf>::new(),
             },
             ModManifest {
                 id: mod_self_id("dup").expect("测试用命名空间恒合法"),
                 version: "2.0.0".to_string(),
                 dependencies: Vec::new(),
-                entry_points: Vec::<PathBuf>::new(),
             },
         ];
 

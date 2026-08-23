@@ -196,11 +196,11 @@ fn 真实mods目录装载后examplemod被判定为已加载而两个故意写错
     let handle = load_real_mods_and_resolve();
 
     // Assert：与 ll-game 二进制真实运行时的基线一致——loaded=2
-    // （examplemod + 本体内容 mod lostland，本体内容迁进脚本批次
-    // 起后者也是一个真实的 mod）、failed=2（broken_syntax/
-    // broken_whitelist）。
+    // （examplemod + 本体内容 mod lostland，本体内容迁进数据文件批次
+    // 起后者也是一个真实的 mod）、failed=0（脚本系统拆除批次删掉了
+    // broken_syntax/broken_whitelist 两个脚本错误夹具）。
     assert_eq!(handle.report.loaded_count(), 2);
-    assert_eq!(handle.report.failed_count(), 2);
+    assert_eq!(handle.report.failed_count(), 0);
 }
 
 #[test]

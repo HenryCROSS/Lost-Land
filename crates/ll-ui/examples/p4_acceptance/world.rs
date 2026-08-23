@@ -64,17 +64,17 @@ pub(crate) struct DemoWorld {
     /// examplemod 的清单路径——供「一键重载」演示使用（见
     /// `crate::main` 对 'R' 键的处理）。
     pub(crate) example_mod_manifest: std::path::PathBuf,
-    /// `mods/example_mod/gameplay.scm` 注册的亡灵法师职业的主属性倾向
-    /// ——P5-C 缺口修补批次新增，证明 `register-class` 这类玩法层脚本
-    /// 绑定在完整装载管线（不只是孤立的单元测试）里也确实生效。`None`
-    /// 表示这次没能成功注册（如实处理，理由同 `lava_kind` 字段文档）。
+    /// `mods/example_mod/classes.json5` 声明的亡灵法师职业的主属性
+    /// 倾向——P5-C 缺口修补批次新增，证明玩法层内容声明在完整装载管线
+    /// （不只是孤立的单元测试）里也确实生效。`None` 表示这次没能成功
+    /// 注册（如实处理，理由同 `lava_kind` 字段文档）。
     pub(crate) necromancer_primary_attribute: Option<ll_world::entity::AttributeKind>,
 }
 
 /// 三个 mod 根目录相对本 crate `Cargo.toml` 的路径。分成三个独立目录
 /// 的理由见各自 `mod.json5` 里的注释：拓扑排序对缺失依赖/成环/重复
-/// 命名空间是「整批中止」的，混进同一个目录会让其他示例 mod 各自的
-/// 失败原因被掩盖。
+/// 命名空间是「整批中止」的，混进同一个目录会让其他示例 mod 一起被
+/// 判失败。
 const PRIMARY_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 const MISSING_DEPENDENCY_ROOT: &str =
     concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods_missing_dependency");
@@ -83,9 +83,9 @@ const DUPLICATE_NAMESPACE_ROOT: &str = concat!(
     "/../../mods_duplicate_namespace"
 );
 
-/// 搭建演示世界：注册本体地形、跑三次装载管线（分别对应「正常 mod +
-/// 两种脚本错误」「缺失依赖」「重复命名空间」三批目录）、生成地形、
-/// 出生玩家、把熔岩地板铺在玩家出生点附近。
+/// 搭建演示世界：注册本体地形、跑三次装载管线（分别对应「正常 mod」
+/// 「缺失依赖」「重复命名空间」三批目录）、生成地形、出生玩家、把
+/// 熔岩地板铺在玩家出生点附近。
 pub(crate) fn build_demo_world() -> DemoWorld {
     let mut registry = Registry::new();
     let (terrain_ids, mut table) =
@@ -376,25 +376,27 @@ mod tests {
     }
 
     #[test]
-    fn 三种故意写错的mod全部归入失败分组() {
+    fn 故意写错的mod归入失败分组() {
         // Arrange & Act
         let demo = build_demo_world();
 
-        // Assert：brokensyntax/brokenwhitelist/brokendependency 三个
-        // 命名空间都应该能在报告里找到，且都是 Failed。
-        for namespace in ["brokensyntax", "brokenwhitelist", "brokendependency"] {
-            let status = demo
-                .report
-                .entries
-                .iter()
-                .find(|(id, _)| id.namespace() == namespace)
-                .map(|(_, status)| status)
-                .unwrap_or_else(|| panic!("报告里应当有 {namespace} 的条目"));
-            assert!(
-                matches!(status, LoadStatus::Failed(_)),
-                "{namespace} 应当归入失败分组，实际 {status:?}"
-            );
-        }
+        // Assert：brokendependency 应该能在报告里找到，且是 Failed。
+        //
+        // 此前这里还有 brokensyntax/brokenwhitelist 两个夹具（脚本语法
+        // 错误、白名单拒绝）。脚本系统整体拆除后这两类失败不再存在，
+        // 两个夹具目录连同它们的 `.scm` 一起删掉了；「加载管理界面能
+        // 展示失败条目」这件事由拓扑排序失败这一档继续担着。
+        let status = demo
+            .report
+            .entries
+            .iter()
+            .find(|(id, _)| id.namespace() == "brokendependency")
+            .map(|(_, status)| status)
+            .expect("报告里应当有 brokendependency 的条目");
+        assert!(
+            matches!(status, LoadStatus::Failed(_)),
+            "brokendependency 应当归入失败分组，实际 {status:?}"
+        );
     }
 
     #[test]

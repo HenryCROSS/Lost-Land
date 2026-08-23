@@ -4,13 +4,15 @@
 //! 本模块只定义**数据**，不做任何渲染——渲染属于 `ll-ui`（依赖方向
 //! `ll-mod` ← `ll-ui`，见工作区顶层裁定 P4-1）。放在 `ll-mod` 而不是
 //! `ll-ui` 的理由：这是加载管线（[`crate::pipeline`]）的直接产物，
-//! `ll-mod` 已经是「发现→解析→排序→加载脚本→注册」这条管线的归属
+//! `ll-mod` 已经是「发现→解析→排序→注册内容」这条管线的归属
 //! crate，报告数据的生产者与消费者不该反过来。
 //!
-//! # 规格 §10.6 的六个阶段
+//! # 规格 §10.6 的阶段划分
 //!
-//! 「加载按阶段推进（发现→解析清单→依赖拓扑排序→加载脚本→注册内容→
-//! 交叉引用校验）」——[`LoadStage`] 逐一对应。本项目当前唯一注册的
+//! 「加载按阶段推进（发现→解析清单→依赖拓扑排序→注册内容→交叉引用
+//! 校验）」——[`LoadStage`] 逐一对应。规格原文里「加载脚本」那一档随
+//! 脚本系统一起拆掉了：mod 内容现在全部是数据文件（JSON5），读文件与
+//! 写进内容表是同一步，失败一律归 [`LoadStage::Register`]。本项目当前唯一注册的
 //! 内容类型是地形（Task 8），交叉引用校验的真实体现是
 //! `ll_world::terrain::TerrainTable::validate_grid`，它天然是「整张
 //! 地图」级别的检查，不落在某一个具体 mod 头上，因此不在
@@ -21,7 +23,7 @@ use std::path::PathBuf;
 
 use ll_core::ident::NamespacedId;
 
-/// 加载管线的六个阶段（规格 §10.6）。
+/// 加载管线的五个阶段（规格 §10.6，见模块文档「阶段划分」一节）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LoadStage {
     /// 在 mod 根目录下列出候选子目录（[`crate::discover::discover_mods`]）。
@@ -31,10 +33,9 @@ pub enum LoadStage {
     /// 依赖拓扑排序，含重复命名空间/缺失依赖/成环三类失败
     /// （[`crate::topo::topo_sort`]）。
     Topo,
-    /// 求值 mod 的 `.scm` 脚本入口（`ll_script::host::ScriptEngine::load_source`）。
-    LoadScript,
-    /// 脚本内调用注册函数（如 `register-terrain`）把内容写进
-    /// [`crate::registry::Registry`]/内容表。
+    /// 读入 mod 的内容数据文件（`crate::content_data::load_mod_content_data`）
+    /// 并把内容写进 [`crate::registry::Registry`]/各张内容表。反序列化
+    /// 失败与跨表引用解析失败都归这一档。
     Register,
     /// 交叉引用校验：已加载内容之间的引用是否都能解析。见模块文档
     /// 「规格 §10.6 的六个阶段」一节——本阶段当前只有整张地图级别的
@@ -45,10 +46,10 @@ pub enum LoadStage {
 /// 错误发生的源码位置，尽力而为。
 ///
 /// `line` 是 `Option`：并非所有阶段的失败都定位得到具体行——发现阶段
-/// 失败（目录读不到）、清单 IO 错误只知道文件、脚本被中断（超时或超
-/// 内存预算，两者都没有一个能归咎的具体位置，见
-/// `ll_script::host::ScriptError` 文档）。宁可让 `line` 诚实地留空，
-/// 也不要编造一个假的行号。
+/// 失败（目录读不到）、清单 IO 错误只知道文件；内容数据文件的行列
+/// 位置目前在 `message` 文本里（`json5` 自己的 `... at line N column M`），
+/// 没有被反解析回结构。宁可让 `line` 诚实地留空，也不要编造一个假的
+/// 行号。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceLocation {
     /// 出问题的文件路径。
@@ -179,7 +180,7 @@ mod tests {
         report.push(id("good:self"), LoadStatus::Loaded);
         report.push(
             id("bad:self"),
-            LoadStatus::Failed(sample_error("bad", LoadStage::LoadScript)),
+            LoadStatus::Failed(sample_error("bad", LoadStage::Register)),
         );
 
         // Act
@@ -217,7 +218,7 @@ mod tests {
         report.push(id("stable:self"), LoadStatus::Loaded);
         report.push(
             id("flaky:self"),
-            LoadStatus::Failed(sample_error("flaky", LoadStage::LoadScript)),
+            LoadStatus::Failed(sample_error("flaky", LoadStage::Register)),
         );
 
         // Act：作者修好了脚本，重新加载 flaky，替换它的状态。

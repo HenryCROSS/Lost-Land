@@ -24,18 +24,22 @@
 //! [`load_from_header_only`] 只读取 `4 + 头部长度` 字节，不 `read_to_end`，
 //! 因此不会触发主体解压，这条性质由代码结构直接保证，不依赖约定。
 //!
-//! # 关于 VM 强制重建与 `terrain_table` 重新灌入
+//! # 关于 `terrain_table` 重新灌入
 //!
-//! [`load_full`] 的签名比计划文档「概念形状」多两个参数
-//! （`current_terrain_table`/`current_script_sources`）——这是本任务
-//! 落地过程中发现的真实缺口，如实记录：`ll-content` 不知道如何从一个
-//! `Registry` 推出一张 `TerrainTable`（那需要具体的地形定义与
-//! `materialize_base_terrain` 之类的注册期函数，属于 `ll-mod` 装载
-//! 管线的职责，不是 `ll-content` 该重新实现的事），也不持有已装载 mod
-//! 的脚本源码文本（那同样是装载管线读文件的产物）。调用方（已经跑完
-//! 一次 mod 装载、手里同时有 `Registry`/`ModManifest`/`TerrainTable`/
-//! 脚本源码的一方）把这两样一并传入，比让 `load_full` 试图自己重新
-//! 装载一遍 mod 更诚实——那不是「读档」这一步该做的事。
+//! [`load_full`] 的签名比计划文档「概念形状」多一个参数
+//! （`current_terrain_table`）——这是本任务落地过程中发现的真实缺口，
+//! 如实记录：`ll-content` 不知道如何从一个 `Registry` 推出一张
+//! `TerrainTable`（那需要具体的地形定义与 `materialize_base_terrain`
+//! 之类的注册期函数，属于 `ll-mod` 装载管线的职责，不是 `ll-content`
+//! 该重新实现的事）。调用方（已经跑完一次 mod 装载、手里同时有
+//! `Registry`/`ModManifest`/`TerrainTable` 的一方）把它传入，比让
+//! [`load_full`] 试图自己重新装载一遍 mod 更诚实——那不是「读档」这一
+//! 步该做的事。
+//!
+//! 这个签名此前还有第二个同类参数 `current_script_sources`：读档时
+//! 强制重建全部 Steel 引擎（约束 C1 修订版）需要脚本源码文本。脚本
+//! 系统整体拆除后既没有 VM 也没有源码，那个参数与它触发的重建一起
+//! 消失了。
 
 use std::fs::File;
 use std::io::{Read, Write};
@@ -260,16 +264,11 @@ fn decompress_body(compressed: &[u8]) -> Result<Vec<u8>, LoadError> {
 ///   属性表——本函数负责把它灌回读出的 `WorldState` 并调用
 ///   [`WorldState::assert_terrain_table_loaded`] 校验，但不负责生成它
 ///   （见模块文档「关于 VM 强制重建与 terrain_table 重新灌入」）。
-/// - `current_script_sources`：当前会话已装载的 `(mod 命名空间, 脚本
-///   源码)` 列表，转交
-///   [`ll_script::host::rebuild_all_engines_after_load`]——存档读入
-///   意味着世界状态被替换成另一个时间点的快照，VM 必须强制从零重建
-///   （约束 C1 修订版，见该函数文档）。
 ///
 /// 完整调用链：读头部 → schema 版本判定（必要时走迁移链）→ **mod 集合
 /// 硬门禁**（[`check_mod_set`]，决策二：mod 缺失或版本不对直接拒绝，
-/// 见其文档）→ 解压 + 反序列化主体 → **VM 强制重建**（世界即将被
-/// 替换）→ mod 内容哈希校验 → `ContentIndex` 重映射
+/// 见其文档）→ 解压 + 反序列化主体 → mod 内容哈希校验 →
+/// `ContentIndex` 重映射
 /// （[`crate::remap::remap_world`]）→ 灌回 `terrain_table` 并**显式
 /// 校验** → 汇总降级决策产出 [`LoadOutcome`]。任何一步失败都提前返回
 /// [`LoadOutcome::Rejected`]，不会把一个已知不自洽的 `WorldState`
@@ -287,7 +286,6 @@ pub fn load_full(
     current_registry: &Registry,
     current_manifests: &[ModManifest],
     current_terrain_table: TerrainTable,
-    current_script_sources: &[(String, String)],
 ) -> LoadOutcome {
     let mut file = match File::open(path) {
         Ok(file) => file,
@@ -304,7 +302,6 @@ pub fn load_full(
         current_registry,
         current_manifests,
         current_terrain_table,
-        current_script_sources,
     )
 }
 
@@ -328,7 +325,6 @@ pub fn load_full_from_bytes(
     current_registry: &Registry,
     current_manifests: &[ModManifest],
     current_terrain_table: TerrainTable,
-    current_script_sources: &[(String, String)],
 ) -> LoadOutcome {
     let mut cursor = data;
     let header = match read_header_prefix_from_slice(&mut cursor) {
@@ -367,31 +363,6 @@ pub fn load_full_from_bytes(
             return LoadOutcome::Rejected(LoadError::Corrupted(format!("存档主体解码失败：{err}")));
         }
     };
-
-    // VM 强制重建：世界状态从这一刻起就是「另一个时间点的快照」，见
-    // 本函数文档「完整调用链」。不检查返回值——单个 mod 引擎重建失败
-    // （脚本源码本身有问题）不是本函数要处理的失败类别，那属于 mod
-    // 装载管线自身的诊断范围；这里只保证「重建确实被触发」这条动作本
-    // 身发生。
-    //
-    // # 为什么要另开一根线程
-    //
-    // 读档发生在 mod 装载**之后**，调用线程早就编译过脚本了；直接在
-    // 这里构造引擎正是 ADR 0028 定位到的「先编译、后构造」相邻关系，
-    // 也会被 `ll_script::host` 的构造阶段断言当场拦下。新线程天生处在
-    // 自己的构造阶段（`thread_local!` 初值为 `false`），而且 steel-core
-    // 的内核镜像本身就是线程局部的——换线程等于拿到一份全新的、没有
-    // 被任何编译动作污染过的内核。
-    //
-    // 返回的引擎在这根线程上就地丢弃：`ScriptEngine` 内部是 `Rc`，
-    // 不是 `Send`，本来也搬不回来；而本调用点原本就没有使用它们
-    // （上面那个 `let _ =`），重建计数器 `REBUILD_COUNT` 是进程级
-    // 原子量，跨线程照样可见，「重建确实发生」这条断言不受影响。
-    std::thread::scope(|scope| {
-        scope.spawn(|| {
-            let _ = ll_script::host::rebuild_all_engines_after_load(current_script_sources);
-        });
-    });
 
     // 必须排在 check_mod_content 之前：算法版本不一致时,内容哈希数值
     // 本身就不可比较,继续跑 check_mod_content 只会把"存档写于算法升级
@@ -621,7 +592,7 @@ mod tests {
         let current_registry = crate::content_index_map::rebuild_from_header(&content_index_map)
             .expect("content_index_map 全部由本测试自己产出,恒合法");
         let (_ids, terrain_table) = base_terrain_fixture();
-        let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+        let outcome = load_full(&path, &current_registry, &[], terrain_table);
 
         // Assert
         match outcome {
@@ -640,7 +611,7 @@ mod tests {
         std::fs::write(&path, 100u32.to_le_bytes()).expect("写入测试文件应当成功");
 
         // Act
-        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default(), &[]);
+        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default());
 
         // Assert
         assert!(matches!(
@@ -659,7 +630,7 @@ mod tests {
         save_to_file(&path, &header, &test_world()).expect("写出应当成功");
 
         // Act
-        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default(), &[]);
+        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default());
 
         // Assert
         assert!(matches!(
@@ -681,7 +652,7 @@ mod tests {
         save_to_file(&path, &header, &test_world()).expect("写出应当成功");
 
         // Act
-        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default(), &[]);
+        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default());
 
         // Assert
         match outcome {
@@ -708,7 +679,7 @@ mod tests {
         save_to_file(&path, &header, &test_world()).expect("写出应当成功");
 
         // Act
-        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default(), &[]);
+        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default());
 
         // Assert
         match outcome {
@@ -747,40 +718,13 @@ mod tests {
         // Act：故意传入 TerrainTable::default()（空表）,而不是当前会话
         // 真实注册出的表——重映射本身应当成功（地形内容都能对上号），
         // 卡住的必须是 terrain_table 校验点本身。
-        let outcome = load_full(&path, &current_registry, &[], TerrainTable::default(), &[]);
+        let outcome = load_full(&path, &current_registry, &[], TerrainTable::default());
 
         // Assert
         assert!(matches!(
             outcome,
             LoadOutcome::Rejected(LoadError::Corrupted(_))
         ));
-        let _ = std::fs::remove_file(&path);
-    }
-
-    #[test]
-    fn 读档成功会触发脚本引擎强制重建计数增加() {
-        // 直接对应任务 9 的核心要求之一：rebuild_all_engines_after_load
-        // 真的接进了读档流程，用批次 D 特意留下的计数器断言，而不是
-        // 「行为看起来正常」这种弱验证。
-        // Arrange
-        let path = temp_path("vm-rebuild-count");
-        let (world, save_registry) = test_world_with_save_registry();
-        let content_index_map = save_registry
-            .snapshot()
-            .iter()
-            .map(ToString::to_string)
-            .collect::<Vec<_>>();
-        let header = sample_header(content_index_map);
-        save_to_file(&path, &header, &world).expect("写出应当成功");
-        let (current_registry, terrain_table) = current_session_registry_with_terrain();
-        let count_before = ll_script::host::rebuild_count();
-
-        // Act
-        let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
-
-        // Assert
-        assert!(matches!(outcome, LoadOutcome::Playable(_)));
-        assert!(ll_script::host::rebuild_count() > count_before);
         let _ = std::fs::remove_file(&path);
     }
 
@@ -803,7 +747,6 @@ mod tests {
             id: id("lostland:self"),
             version: "0.1.0".to_string(),
             dependencies: Vec::new(),
-            entry_points: Vec::new(),
         }];
 
         // Act
@@ -812,7 +755,6 @@ mod tests {
             &current_registry,
             &current_manifests,
             TerrainTable::default(),
-            &[],
         );
 
         // Assert
@@ -849,7 +791,6 @@ mod tests {
             id: id("lostland:self"),
             version: "0.1.0".to_string(),
             dependencies: Vec::new(),
-            entry_points: Vec::new(),
         }];
 
         // Act
@@ -858,7 +799,6 @@ mod tests {
             &current_registry,
             &current_manifests,
             TerrainTable::default(),
-            &[],
         );
 
         // Assert
@@ -940,7 +880,7 @@ mod tests {
         // Act：当前会话的 manifests 里完全没有 vanishedmod（不是像旧
         // 测试那样靠留空 generation_mods 绕过检查点，是真的卸载）。
         let (current_registry, terrain_table) = current_session_registry_with_terrain();
-        let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+        let outcome = load_full(&path, &current_registry, &[], terrain_table);
 
         // Assert：硬门禁直接拒绝，错误信息指明了是哪个 mod、要什么
         // 版本、当前是什么版本（None——完全不在场）。
@@ -988,15 +928,8 @@ mod tests {
             id: id("lostland:self"),
             version: "0.2.0".to_string(),
             dependencies: Vec::new(),
-            entry_points: Vec::new(),
         }];
-        let outcome = load_full(
-            &path,
-            &current_registry,
-            &current_manifests,
-            terrain_table,
-            &[],
-        );
+        let outcome = load_full(&path, &current_registry, &current_manifests, terrain_table);
 
         // Assert
         match outcome {
@@ -1074,7 +1007,7 @@ mod tests {
         // Act：当前会话完全没有装载 vanishedmod（但装载了地形，让重
         // 映射真正走到「找不到种族」这一步，而不是提前卡在地形上），
         // 也没有注册占位内容。
-        let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+        let outcome = load_full(&path, &current_registry, &[], terrain_table);
 
         // Assert
         assert!(matches!(outcome, LoadOutcome::ReadOnly(_)));
@@ -1141,7 +1074,7 @@ mod tests {
                 .expect("刚刚注册过占位内容，必然能查到");
 
         // Act
-        let outcome = load_full(&path, &current_registry, &[], terrain_table, &[]);
+        let outcome = load_full(&path, &current_registry, &[], terrain_table);
 
         // Assert：不是 ReadOnly，是 Playable——占位内容真的顶上了。
         match outcome {
@@ -1174,7 +1107,6 @@ mod tests {
             id: id("lostland:self"),
             version: "0.1.0".to_string(),
             dependencies: Vec::new(),
-            entry_points: Vec::new(),
         }];
         let generation = ll_mod::mod_set::GenerationModSet::capture(&registry, &manifests);
         let generation_mods = crate::world_identity::generation_mods_to_header_entries(&generation);
@@ -1195,7 +1127,7 @@ mod tests {
 
         // Act：读档一侧同样真实装载了 lostland,哈希应当对得上。
         let (current_registry, terrain_table) = current_session_registry_with_terrain();
-        let outcome = load_full(&path, &current_registry, &manifests, terrain_table, &[]);
+        let outcome = load_full(&path, &current_registry, &manifests, terrain_table);
 
         // Assert
         assert!(

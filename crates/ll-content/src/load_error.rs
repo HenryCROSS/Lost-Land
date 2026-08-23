@@ -457,7 +457,6 @@ mod tests {
             id: NamespacedId::parse(&format!("{namespace}:self")).expect("测试用命名空间恒合法"),
             version: "1.0.0".to_string(),
             dependencies: Vec::new(),
-            entry_points: Vec::new(),
         }
     }
 
@@ -746,7 +745,6 @@ mod tests {
             id: NamespacedId::parse("lostland:self").expect("测试用命名空间恒合法"),
             version: "2.0.0".to_string(),
             dependencies: Vec::new(),
-            entry_points: Vec::new(),
         }];
 
         // Act

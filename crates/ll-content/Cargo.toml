@@ -9,7 +9,7 @@ description = "迷途大陆的存档格式与内容加载层：存档头/主体�
 workspace = true
 
 [dependencies]
-# 依赖方向 ll-core ← … ← ll-world ← ll-sim ← ll-script ← ll-mod ←
+# 依赖方向 ll-core ← … ← ll-world ← ll-sim ← ll-mod ←
 # ll-content（规格 §5）：ll-content 是依赖链最上游的消费者，只读
 # ll-mod::registry::Registry（任务 2 的 ContentIndex 映射表接线）与
 # ll-core::ident（NamespacedId 解析），不得被 ll-world/ll-sim/ll-mod
@@ -26,9 +26,6 @@ ll-mod = { path = "../ll-mod" }
 ll-world = { path = "../ll-world" }
 # 任务 9 新增：读档流程需要 rebuild_all_engines_after_load/rebuild_count
 # 强制重建脚本引擎（约束 C1 修订版：VM 必须可随时从零重建）。依赖方向
-# 规格 §5：ll-script 排在 ll-mod 之前、ll-content 之后，允许直接依赖
-# （ll-mod 自己也直接依赖 ll-script，见其 Cargo.toml）。
-ll-script = { path = "../ll-script" }
 serde = { version = "1", features = ["derive"] }
 # 存档头是明文 JSON（规格 §11.2「存档列表界面只读头部」，见 header.rs
 # 模块文档）——header 与 migration 框架本身用它做序列化往返测试。
@@ -55,7 +52,7 @@ proptest.workspace = true
 # 调用 ll_sim::apply::apply/ll_sim::effect::Effect 与
 # ll_sim::intent/resolve（走一遍真实的 Intent → resolve → Effect →
 # apply 链路，而不是绕过去直接改字段）。依赖方向规格 §5 允许——
-# ll-content 已经直接依赖 ll-world 与 ll-script，两者分别排在 ll-sim
+# ll-content 已经直接依赖 ll-world，它排在 ll-sim
 # 的前后两侧，新增这一条不反转任何箭头。只在 examples/tests 里使用，
 # 放 dev-dependencies 不进入生产依赖图（不影响
 # `cargo tree -p ll-world | grep ll-sim` 这条既有验证）。

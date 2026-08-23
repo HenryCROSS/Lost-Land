@@ -195,13 +195,6 @@ pub struct LoadedContent {
     /// [`Self::report`]），与 `ll_mod::pipeline::load_all` 内部「解析
     /// 失败互不影响其他 mod」的隔离原则一致。
     pub manifests: Vec<ModManifest>,
-    /// 已成功装载的脚本源码：`(mod 命名空间, 源码文本)`。数据来源与
-    /// `load_all` 内部读取的是同一批文件——本函数在装载管线之外单独
-    /// 重新读了一遍，理由见模块顶部「加载顺序」：`load_all` 本身不
-    /// 对外暴露它读过的源码文本（那是它的内部实现细节），存档读入需要
-    /// 这份文本却不属于装载管线自身的职责，见
-    /// `ll_content::save_file::load_full` 文档。
-    pub script_sources: Vec<(String, String)>,
     /// 本次 mod 装载报告：按 mod 归类的成功/失败结果。资产覆盖冲突
     /// （见 [`asset_vfs`] 模块文档）已经并入这份报告，作为额外的
     /// [`LoadStatus::Warning`] 条目——调用方不需要另外单独处理资产
@@ -680,14 +673,13 @@ pub fn load_content(
     apply_value_hashes(&mut registry, &value_tables);
 
     let manifests = successfully_parsed_manifests(mods_root);
-    let script_sources = read_script_sources(&manifests);
 
     let asset_result = asset_vfs::build(mods_root, assets_root, BASE_NAMESPACE);
     for (mod_id, message) in asset_result.conflicts {
         // 这正是 `LoadStatus::Warning` 此前「声明了但从没被构造过」的
         // 产出路径——见 `ll_mod::load_report` 模块文档与
         // `ll_mod::asset_vfs` 模块文档「确定性」一节。追加而不是
-        // `replace`：这个 mod 本身的脚本装载结果（`Loaded`/`Failed`）
+        // `replace`：这个 mod 本身的内容装载结果（`Loaded`/`Failed`）
         // 已经有一条独立的记录，资产冲突是另一件事，两条记录并存，
         // 加载管理界面按状态分组展示时天然都能看到。
         report.push(mod_id, LoadStatus::Warning(message));
@@ -737,7 +729,6 @@ pub fn load_content(
         weather_ids,
         weather_table,
         manifests,
-        script_sources,
         report,
         asset_vfs: asset_result.vfs,
         audit,
@@ -755,35 +746,6 @@ fn successfully_parsed_manifests(mods_root: &Path) -> Vec<ModManifest> {
     discover_mods(mods_root)
         .iter()
         .filter_map(|path| parse_manifest(path).ok())
-        .collect()
-}
-
-/// 读出每个清单全部入口脚本的源码文本，供存档读入的 VM 强制重建使用。
-/// 单个文件读取失败时跳过该文件而不是让整个函数失败——脚本文件在
-/// `load_all` 真正执行时若读不到，那次装载早已经在 `report` 里记成
-/// `Failed`，这里只是尽力收集「读得到」的那些源码，不是这份数据的
-/// 权威来源。
-fn read_script_sources(manifests: &[ModManifest]) -> Vec<(String, String)> {
-    read_sources(manifests, |manifest| &manifest.entry_points)
-}
-
-/// [`read_script_sources`] 用的读取
-/// 循环——两者只差「读哪个字段」，抽出来避免两份逐字相同的代码在改
-/// 一处降级策略时漂移。
-fn read_sources(
-    manifests: &[ModManifest],
-    pick: impl Fn(&ModManifest) -> &Vec<std::path::PathBuf>,
-) -> Vec<(String, String)> {
-    manifests
-        .iter()
-        .flat_map(|manifest| {
-            let namespace = manifest.id.namespace().to_string();
-            pick(manifest).iter().filter_map(move |entry| {
-                std::fs::read_to_string(entry)
-                    .ok()
-                    .map(|source| (namespace.clone(), source))
-            })
-        })
         .collect()
 }
 
@@ -852,11 +814,9 @@ mod tests {
         // 然值得守，只是标的换了：本体内容现在**也是**一个 mod，它必须
         // 出现在装载报告里且状态是 Loaded。
         //
-        // 不断言 `failed_count() == 0`：仓库真实的 mods/ 目录里刻意
-        // 放着 broken_syntax/broken_whitelist 两个"故意坏掉"的夹具
-        // （管线容错测试的证据），它们失败是预期行为。这里逐条点名
-        // 断言"本体与 example_mod 都成功"，比一个会被无关夹具带偏的
-        // 计数更准确。
+        // 逐条点名断言"本体与 example_mod 都成功"，而不是断言
+        // `failed_count() == 0`：仓库真实的 mods/ 目录将来可能再放进
+        // 别的夹具，点名断言不会被无关条目带偏。
         // Arrange & Act
         let loaded = load_content(&repo_mods_dir(), &repo_assets_dir())
             .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
@@ -1282,37 +1242,55 @@ mod tests {
     #[test]
     fn mod把物品公式指向一个只被intern过的id时装载整批失败() {
         // 引用完整性这一层堵的**具体**那个洞：脚本注册 API
-        // （`register-item-damage-formula`）对目标 id 只做
+        // （`items.json5` 的 `damage_formula` 字段）对目标 id 只做
         // `Registry::get`（"这个字符串被 intern 过吗"），不做"伤害公式
         // 表真的定义过它吗"——这正是 `ll_mod::base_contract` 模块文档
         // 「两层判定」一节说的 `NotInterned` 与 `NotDefined` 的区别。
         // 一个 mod 只要先用别的方式把某个 id intern 出来（这里用
-        // register-quest 的击杀目标，那个参数按设计只 intern 不定义），
-        // 就能造出一条注册期检查放行、运行期静默失效的悬空引用。
+        // 任务的击杀目标，那个字段按设计只 intern 不定义），就能造出
+        // 一条注册期检查放行、运行期静默失效的悬空引用。
         //
-        // 本条是这条检查的端到端证据：真实脚本、真实装载管线、真实
-        // 失败，不是只在单元测试里自证。
+        // 本条是这条检查的端到端证据：真实内容数据文件、真实装载管线、
+        // 真实失败，不是只在单元测试里自证。
         // Arrange：临时 mods 根目录 = 本体内容（契约解析要用）+ 一个
         // 故意写坏引用的 mod。
         let root = crate::test_support::unique_temp_path("ll-game-audit-dangling-ref");
         std::fs::create_dir_all(&root).expect("创建测试目录应当成功");
         copy_dir_all(&repo_mods_dir().join("lostland"), &root.join("lostland"));
+        // phantomsource:phantom 只被击杀计数条件 intern 出来（那是一个
+        // **开放标识符空间**，见 `RawQuestCondition::target` 文档），
+        // 从来没有任何 damage_formulas.json5 定义过它。
+        //
+        // 为什么要拆成两个 mod：`ll_mod::content_data::CONTENT_FILES`
+        // 里 `items.json5` 排在 `quests.json5` **之前**，同一个 mod 里
+        // 写这两个文件的话，物品那一步会先撞上「尚未注册」而整个 mod
+        // 判 Failed，根本走不到装载后的引用完整性审计。拆成两个 mod、
+        // 靠依赖声明定序，才让 intern 真的发生在 get 之前。
+        let source = root.join("phantomsource");
+        std::fs::create_dir_all(&source).expect("创建测试目录应当成功");
+        std::fs::write(
+            source.join("mod.json5"),
+            "{ namespace: \"phantomsource\", version: \"0.1.0\" }",
+        )
+        .expect("写入清单应当成功");
+        std::fs::write(
+            source.join("quests.json5"),
+            "{ quests: [ { id: \"phantomsource:quest\", condition:              { kind: \"kill-count\", target: \"phantomsource:phantom\", count: 1 } } ] }",
+        )
+        .expect("写入任务内容文件应当成功");
+
         let broken = root.join("brokenref");
         std::fs::create_dir_all(&broken).expect("创建测试目录应当成功");
         std::fs::write(
             broken.join("mod.json5"),
-            "{ namespace: \"brokenref\", version: \"0.1.0\", entry_points: [\"main.scm\"] }",
+            "{ namespace: \"brokenref\", version: \"0.1.0\",              dependencies: [\"phantomsource\"] }",
         )
         .expect("写入清单应当成功");
         std::fs::write(
-            broken.join("main.scm"),
-            ";; brokenref:phantom 只被击杀计数条件 intern 出来，从来没有\n\
-             ;; 任何 register-damage-formula 定义过它。\n\
-             (register-quest \"brokenref:quest\" (list) \"kill-count\" \"brokenref:phantom\" 1)\n\
-             (register-item \"brokenref:sword\" \"brokenref:sword_name\" 1 1000 1000 -1)\n\
-             (register-item-damage-formula \"brokenref:sword\" \"brokenref:phantom\")\n",
+            broken.join("items.json5"),
+            "{ items: [ { id: \"brokenref:sword\", display_name_key: \"brokenref:sword_name\",              stack_limit: 1, base_weight: 1000, base_price: 1000,              damage_formula: \"phantomsource:phantom\" } ] }",
         )
-        .expect("写入脚本应当成功");
+        .expect("写入物品内容文件应当成功");
 
         // Act
         let result = load_content(&root, &repo_assets_dir());
@@ -1331,11 +1309,11 @@ mod tests {
                 .target_id
                 .as_ref()
                 .map(ToString::to_string),
-            Some("brokenref:phantom".to_string())
+            Some("phantomsource:phantom".to_string())
         );
         let text = error.to_string();
         assert!(text.contains("brokenref:sword"), "{text}");
-        assert!(text.contains("brokenref:phantom"), "{text}");
+        assert!(text.contains("phantomsource:phantom"), "{text}");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&root);

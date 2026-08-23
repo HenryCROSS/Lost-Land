@@ -103,7 +103,6 @@ pub fn load_game(path: &Path, content: &LoadedContent) -> LoadOutcome {
         &content.registry,
         &content.manifests,
         content.terrain_table.clone(),
-        &content.script_sources,
     )
 }
 

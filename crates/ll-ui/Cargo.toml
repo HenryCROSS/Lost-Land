@@ -9,10 +9,10 @@ description = "迷途大陆的游戏内 UI：本阶段（P4）范围限定为加
 workspace = true
 
 [dependencies]
-# 依赖方向 ll-core ← ll-render/ll-text ← ll-world ← ll-sim ← ll-script ←
+# 依赖方向 ll-core ← ll-render/ll-text ← ll-world ← ll-sim ←
 # ll-mod ← ll-ui（规格 §5，裁定 P4-1）：ll-ui 是依赖链最下游的消费者，
 # 本阶段只用得到 ll-mod 产出的 LoadReport 与 ll-text 的文本渲染地基，
-# 不直接依赖 ll-world/ll-sim/ll-script/ll-render——需要它们的类型时都
+# 不直接依赖 ll-world/ll-sim/ll-render——需要它们的类型时都
 # 是通过 ll-mod/ll-text 已经重新导出或转换过的形式拿到，不重复建立
 # 平行依赖。
 ll-core = { path = "../ll-core" }
@@ -56,7 +56,7 @@ tracing = "0.1"
 # 输入——此前只在 `[dev-dependencies]` 供 p4_acceptance 验收 demo 使用，
 # 现在升级为真实产品依赖。这不是新开一条依赖边——总纲设计规格 §5 的
 # 权威依赖顺序本就是 `ll-core ← ll-platform/ll-render/ll-audio ← ll-text
-# ← ll-world ← ll-sim ← ll-script ← ll-mod ← ll-content ← ll-ui`
+# ← ll-world ← ll-sim ← ll-mod ← ll-content ← ll-ui`
 # （`ll-platform` 本就排在 `ll-ui` 上游），本 crate 顶层文档「依赖方向」
 # 一节此前的表述只是 P4 阶段恰好用不到 `ll-platform` 而已，不代表这条
 # 依赖不允许存在，与上面 `ll-world`/`ll-sim` 那条注释是同一个道理。
@@ -64,14 +64,13 @@ ll-platform = { path = "../ll-platform" }
 
 [dev-dependencies]
 proptest.workspace = true
-# 仅供 p4_acceptance 验收 demo 使用：加载管理界面本身不依赖世界层/
-# 脚本层（分层约束见本 crate 顶层文档），但验收 demo 要把「mod 目录
+# 仅供 p4_acceptance 验收 demo 使用：加载管理界面本身不依赖世界层
+# （分层约束见本 crate 顶层文档），但验收 demo 要把「mod 目录
 # -> 加载管线 -> 注册表 -> 世界地形 -> 屏幕」这条完整链路真正跑起来，
 # 属于开发期验证工具而非产品代码，因此放在 dev-dependencies——不会
 # 传染给依赖 ll-ui 的下游 crate（P4 阶段 ll-ui 还没有下游）。与
 # ll-sim 的 p3_acceptance 同样的取舍，见其 Cargo.toml。
 ll-core = { path = "../ll-core", features = ["serde"] }
-ll-script = { path = "../ll-script" }
 # ll-sim/ll-world 本身已经是 [dependencies] 的真实依赖（P7 第一批新增，
 # 见上方说明），这里不再重复声明——demo 仍然只用得到 P3 验收过的
 # Move/Wait 两种 Intent，不需要时间轴/AI。

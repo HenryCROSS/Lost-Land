@@ -199,9 +199,9 @@ pub fn load_report_lines(
 /// 的长度，超出部分换成省略号。
 ///
 /// 与 [`short_path`] 缓解的是同一类真实撞见的问题（见其文档）：错误
-/// 消息本身也可能很长（`ll-script` 的 `reject_dangerous_syntax` 在
-/// 实测验收 demo 里就产出过一条中英夹杂近 60 字的解释，导致这一行
-/// 在面板宽度内换行、压住下一行文字）。按**字符数**而不是字节数截断
+/// 消息本身也可能很长（脚本时代的白名单拒绝在实测验收 demo 里产出过
+/// 一条中英夹杂近 60 字的解释，导致这一行在面板宽度内换行、压住下一
+/// 行文字；内容数据文件的 `json5` 反序列化错误同样可以很长）。按**字符数**而不是字节数截断
 /// ——`str` 按字节切片可能切在多字节字符中间导致 panic，
 /// `chars().take(n)` 不会有这个问题。这不是根治（真正的根治见
 /// [`short_path`] 文档最后一段），只是让面板在当前项目的错误消息长度
@@ -220,7 +220,7 @@ fn truncate_for_panel(text: &str) -> String {
 }
 
 /// 只取路径最后两段（通常是「mod 目录名/文件名」，如
-/// `broken_syntax/main.scm`）——**实测撞见的真实缺陷**：本地开发环境
+/// `example_mod/items.json5`）——**实测撞见的真实缺陷**：本地开发环境
 /// 的仓库路径可能很长（尤其是嵌套目录名含中文时，`cosmic-text` 按
 /// 显示宽度而不是字符数断行，中文字符更宽，更容易撞上
 /// [`DEFAULT_MAX_WIDTH`]），完整绝对路径拼上其余文字后会在面板宽度内
@@ -374,26 +374,26 @@ mod tests {
         let path = PathBuf::from("迷途大陆")
             .join("LostLand")
             .join("mods")
-            .join("broken_syntax")
-            .join("main.scm");
+            .join("example_mod")
+            .join("items.json5");
 
         // Act
         let short = short_path(&path);
 
         // Assert
-        assert_eq!(short, "broken_syntax/main.scm");
+        assert_eq!(short, "example_mod/items.json5");
     }
 
     #[test]
     fn short_path对只有一段的路径原样返回() {
         // Arrange
-        let path = PathBuf::from("main.scm");
+        let path = PathBuf::from("items.json5");
 
         // Act
         let short = short_path(&path);
 
         // Assert
-        assert_eq!(short, "main.scm");
+        assert_eq!(short, "items.json5");
     }
 
     #[test]
@@ -418,8 +418,8 @@ mod tests {
             id("bad:self"),
             LoadStatus::Failed(LoadError {
                 mod_id: id("bad:self"),
-                stage: LoadStage::LoadScript,
-                message: "缺右括号".to_string(),
+                stage: LoadStage::Register,
+                message: "缺右花括号".to_string(),
                 location: None,
             }),
         );
@@ -447,10 +447,10 @@ mod tests {
             bad_id.clone(),
             LoadStatus::Failed(LoadError {
                 mod_id: bad_id.clone(),
-                stage: LoadStage::LoadScript,
-                message: "缺右括号".to_string(),
+                stage: LoadStage::Register,
+                message: "缺右花括号".to_string(),
                 location: Some(SourceLocation {
-                    file: PathBuf::from("mods/bad/main.scm"),
+                    file: PathBuf::from("mods/bad/items.json5"),
                     line: Some(3),
                 }),
             }),
@@ -463,8 +463,8 @@ mod tests {
 
         // Assert：展开状态渲染出比折叠状态更详细的内容——原因文本、
         // 具体行号都应该出现。
-        assert!(lines.iter().any(|line| line.text.contains("缺右括号")));
-        assert!(lines.iter().any(|line| line.text.contains("main.scm:3")));
+        assert!(lines.iter().any(|line| line.text.contains("缺右花括号")));
+        assert!(lines.iter().any(|line| line.text.contains("items.json5:3")));
     }
 
     #[test]

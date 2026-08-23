@@ -93,77 +93,33 @@
 //! - [`clip`] —— 动画剪辑注册表（动画剪辑接线批次）：把
 //!   `ll_render::anim::Clip`（此前只能写死在 Rust 里的动画帧序列/节奏/
 //!   循环声明，见其模块文档起因）做成可注册内容，`ClipDef` 与 `class`/
-//!   `race` 同一个理由直接落在本 crate；`exit_grace_frames` 是否暴露给
-//!   脚本的结论见该模块文档。
+//!   `race` 同一个理由直接落在本 crate。
 //! - [`base_clip`] —— 同一个模式在动画剪辑上的生产注册入口，照
 //!   [`base_terrain`]/[`base_placeholder`]；本体行走/待机两段剪辑的唯一权威
 //!   数据来自 `ll_render::anim::base_hero_clips`（不是本模块自己另抄
 //!   一份，见其文档）。
-//! - [`active_registry`] —— 装载会话内唯一共享的活跃 `Registry`，供
-//!   全部 `register-*` 脚本注册函数在同一次脚本求值窗口内共用（P5-C
-//!   接线批次新增：此前只有 `register-terrain` 一个注册函数，`Registry`
-//!   可以整个打包进地形表自己的 `thread_local!`；补齐职业/技能/副职/
-//!   任务/种族五类注册函数后，多个注册函数必须共享同一个 `Registry`
-//!   实例才能保证 `ContentIndex` 号段不冲突，见其模块文档）。
-//! - [`script_terrain_api`] —— 把 `register-terrain` 注册进
-//!   `ll_script::host::ScriptEngine`，供 mod 脚本定义自定义地形（Task
-//!   11/12）。
-//! - [`script_class_api`]/[`script_skill_api`]/[`script_subclass_api`]/
-//!   [`script_quest_api`]/[`script_race_api`] —— 同一个模式在职业/技能/
-//!   副职/任务/种族上的脚本绑定（P5-C 缺口修补批次）：补上
-//!   [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
-//!   判定为「玩法层」、但此前只有纯 Rust 函数调用能触达、脚本完全够
-//!   不到的四类 + 种族共五类注册 API。`register-class-trait`（给职业
-//!   追加天赋引用，职业天赋接线批次）挂在 [`script_class_api`]——理由
-//!   同 `register-race-trait` 挂在 [`script_race_api`]：追加对象是
-//!   `ClassTable`，不是 `TraitTable`。
-//! - [`script_trait_api`] —— 同一个模式在天赋上的脚本绑定（天赋系统
-//!   落地批次）：`register-trait`，见 [`trait_def`] 模块文档「本批次
-//!   范围」一节；`register-race-trait`（给种族追加天赋引用）挂在
-//!   [`script_race_api`] 而不是这里——理由同 `register-race-xp-reward`
-//!   挂在同一个文件（追加对象是 `RaceTable`，不是 `TraitTable`）；
-//!   `register-trait-resource-pool`（给天赋追加资源池容量声明）同样
-//!   挂在这里——追加对象是 `TraitTable`。
-//! - [`script_resource_pool_api`] —— 同一个模式在资源池上的脚本绑定
-//!   （资源池落地批次）：`register-resource-pool`，见 [`resource_pool`]
-//!   模块文档。
-//! - [`script_item_api`] —— 同一个模式在物品上的脚本绑定：
-//!   `register-item`（P6 第一批），`register-item-equip-mask`（装备占位
-//!   掩码，P6 第三批），见 [`item`] 模块文档。
-//! - [`script_clip_api`] —— 同一个模式在动画剪辑上的脚本绑定（动画
-//!   剪辑接线批次）：补上此前完全漏掉的第七类可注册玩法层内容——早先
-//!   的接口审计列出六种，「动画剪辑」当时不在其中。
-//! - [`script_space_profile_api`] —— 同一个模式在空间层属性上的脚本
-//!   绑定（空间层属性脚本注册批次）：补上 ADR 0018 的又一处真实缺口
-//!   ——[`base_space_profile`] 早就有本体侧的生产注册路径，
-//!   [`content_hash`] 早就把这张表收进值哈希覆盖面，唯独**脚本侧的
-//!   注册函数一直不存在**，`SpaceProfile` 六个字段只能由 Rust 写死。
-//!   判据推演见其模块文档。
-//! - [`script_weather_api`] —— 同一个模式在天气上的脚本绑定（天气系统
-//!   批次）：`register-weather`，见 [`weather`](ll_world::weather) 模块
-//!   文档。天气是第十七类可从 mod 脚本注册的玩法层内容，与空间层属性
-//!   一样在 `ll-world` 定表、在本 crate 开脚本通道；本体六种天气的生产
-//!   注册路径见 [`base_weather`]。
-//! - [`pipeline`] —— 加载管线：串起发现→解析→拓扑排序→加载脚本→注册
-//!   内容，产出 [`load_report::LoadReport`]（Task 11/12；P5-C 批次扩展
-//!   到同时接线六种 `register-*` 函数；动画剪辑接线批次扩展到七种）。
+//! - [`content_data`] —— 内容数据文件（JSON5）的装载：每个 mod 目录下
+//!   那一组固定文件名的 `*.json5` 内容名册读进上面各张表。**这是 mod
+//!   声明内容的唯一通道**——Steel 脚本系统连同 `steel-core` 依赖已在
+//!   脚本系统拆除批次整体移除（起因见
+//!   [ADR 0028](../../../knowledge/decisions/0028-steel-engine-construction-memory-corruption.md)）。
+//! - [`content_schema`]/[`content_schema_gear`]/[`content_schema_world`]
+//!   —— 上述各类内容文件的 serde schema 与「写进哪张表」的落点。
+//! - [`native_behavior`] —— 行为树的引擎内 Rust 实现：
+//!   `ll_sim::behavior::BehaviorTreeSource` 的真实实现，把行为树求值
+//!   结果翻译成 `Intent`。它取代了此前那套「行为树写在 mod 的 `.scm`
+//!   里、由 Steel 求值」的实现，见其模块文档。
+//! - [`pipeline`] —— 加载管线：串起发现→解析→拓扑排序→读内容数据
+//!   文件，产出 [`load_report::LoadReport`]。
 //! - [`load_report`] —— 加载管理界面（`ll-ui`）依赖的数据形状：按 mod
 //!   归类的加载结果、失败阶段、尽力而为的源码位置（Task 11）。
-//! - [`script_behavior_api`] —— 行为树运行期查询 `skill-ready?`（规格
-//!   §10.5 接线批次）：把「这个技能现在能不能用」暴露给脚本，需要
-//!   `Registry` 把字符串 ID 解析成 `ContentIndex`，理由与内容注册函数
-//!   相同，但接线方式不同（一次性快照，不是活跃指针），见其模块文档。
-//! - [`script_behavior_source`] —— `ll_sim::behavior::BehaviorTreeSource`
-//!   的真实实现：装载行为树脚本、注册全部运行期查询 API、把求值结果
-//!   翻译成 `Intent`，是「AI 真的做出决策」这一环此前缺失的最后一块
-//!   拼图，见其模块文档「四步链路」一节。
 //!
 //! # 依赖方向
 //!
-//! 规格 §5：`ll-render` ← `ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod`
-//! ← `ll-ui`。本 crate 依赖 `ll-core`、`ll-world`（Task 8 新增，理由见
-//! [`base_terrain`] 模块文档）、`ll-script`（Task 11 新增，理由见
-//! [`pipeline`] 模块文档）、`ll-sim`（P5-B 接线批次新增：
+//! 规格 §5：`ll-render` ← `ll-world` ← `ll-sim` ← `ll-mod` ← `ll-ui`
+//! （`ll-script` 这一环已随脚本系统拆除批次整体消失）。本 crate 依赖
+//! `ll-core`、`ll-world`（Task 8 新增，理由见
+//! [`base_terrain`] 模块文档）、`ll-sim`（P5-B 接线批次新增：
 //! [`skill::SkillTable`]/[`quest::RegisteredQuests`] 需要实现
 //! `ll_sim::skill::SkillCatalog`/`ll_sim::quest::QuestCatalog` 才能真正
 //! 接入 `resolve`，见两个模块的文档）与 `ll-render`（动画剪辑接线批次
@@ -171,7 +127,6 @@
 //! `base_hero_clips`，见 [`clip`] 模块文档），不得被下游任何 crate
 //! 反向依赖。
 
-pub mod active_registry;
 pub mod asset_vfs;
 pub mod base_clip;
 pub mod base_contract;
@@ -198,7 +153,6 @@ pub mod item;
 pub mod load_report;
 pub mod manifest;
 pub mod mod_set;
-pub mod module_sources;
 pub mod native_behavior;
 pub mod pipeline;
 pub(crate) mod prereq_graph;
@@ -209,28 +163,7 @@ pub mod recipe;
 pub mod recipe_category;
 pub mod registry;
 pub mod resource_pool;
-pub mod script_behavior_api;
-pub mod script_behavior_source;
-pub mod script_class_api;
-pub mod script_clip_api;
-pub mod script_damage_category_api;
-pub mod script_damage_formula_api;
-pub mod script_item_api;
-pub mod script_quest_api;
-pub mod script_race_api;
-pub mod script_recipe_api;
-pub mod script_recipe_category_api;
-pub mod script_resource_pool_api;
-pub mod script_skill_api;
-pub mod script_space_profile_api;
-pub mod script_subclass_api;
 /// `register-tag` 的脚本绑定（耐久标签批次）。
-pub mod script_tag_api;
-pub mod script_terrain_api;
-pub mod script_trait_api;
-pub mod script_weapon_category_api;
-pub mod script_weather_api;
-pub mod script_xp_curve_api;
 pub mod skill;
 pub mod subclass;
 /// 标签定义表（耐久标签批次）。

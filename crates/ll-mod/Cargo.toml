@@ -9,9 +9,9 @@ description = "迷途大陆的 mod 框架核心：发现、清单解析、依赖
 workspace = true
 
 [dependencies]
-# 依赖方向 ll-world ← ll-sim ← ll-script ← ll-mod（规格 §5）：ll-mod 是
-# 最上游的消费者，只应依赖更底层的 crate，绝不能被 ll-world/ll-sim/
-# ll-script 反过来依赖。本批（Task 6/7/9）只依赖 ll-core
+# 依赖方向 ll-world ← ll-sim ← ll-mod（规格 §5）：ll-mod 是最上游的
+# 消费者，只应依赖更底层的 crate，绝不能被 ll-world/ll-sim 反过来
+# 依赖。本批（Task 6/7/9）只依赖 ll-core
 # （NamespacedId/ContentIndex/Interner/StateHasher）。
 ll-core = { path = "../ll-core" }
 # Task 8 新增：本体地形迁入注册表——`crate::base_terrain` 需要
@@ -21,11 +21,6 @@ ll-core = { path = "../ll-core" }
 # 违反方向（`ll-world` 本身不认识、也不依赖 `ll-mod`，见
 # `ll_world::terrain` 模块文档「与 Registry 的关系」）。
 ll-world = { path = "../ll-world" }
-# Task 11 新增：加载管线要真正跑到「加载脚本」这一步（发现→解析清单→
-# 拓扑排序→加载脚本→注册内容→交叉引用校验，规格 §10.6），需要驱动
-# `ll_script::host::ScriptEngine`。依赖方向 ll-script ← ll-mod（规格
-# §5）本就允许——`ll-script` 不认识、也不依赖 `ll-mod`。
-ll-script = { path = "../ll-script" }
 # mod 清单格式：JSON5（项目所有者 2026-08-20 裁定「全用 json5 吧,
 # 还可以写注释方便日后维护」，统一本仓库全部手写配置格式；此前的
 # TOML 假设见提交历史）。`json5` crate 只做解析，不提供序列化，但
@@ -49,23 +44,15 @@ tracing = "0.1"
 # 见 `crate::skill`/`crate::quest` 模块文档），trait 定义在 `ll-sim`，
 # 实现它必须先能看见它的类型签名，因此本 crate 现在需要在生产代码
 # （非 `#[cfg(test)]`）里 `use ll_sim::...`。依赖方向
-# ll-world ← ll-sim ← ll-script ← ll-mod（规格 §5）本就允许 `ll-mod`
+# ll-world ← ll-sim ← ll-mod（规格 §5）本就允许 `ll-mod`
 # 依赖 `ll-sim`（更下游）——`ll-sim` 不认识、也不依赖 `ll-mod`，
 # `cargo tree -p ll-world | grep ll-sim` 这条既有验证不受影响。
 ll-sim = { path = "../ll-sim" }
-# 等级与经验系统落地批次：从 [dev-dependencies] 升级为生产依赖。原先
-# 只有测试直接构造/比较 `SteelVal`（见下方历史注释），但
-# `crate::script_xp_curve_api` 的 `register-xp-curve` 需要在生产代码
-# 路径上把表达式参数声明成 `SteelVal` 类型本身（`(quote 表达式)` 交给
-# Rust 函数的就是这棵未求值的树，见该模块文档「为什么表达式参数的
-# Rust 类型是 SteelVal」一节），不能像其余 `register-*` 函数那样单靠
-# `register_fn` 的泛型自动转换绕开这个类型名。
-steel-core = "0.8.2"
 # 动画剪辑接线批次新增：`crate::clip`/`crate::base_clip` 需要
 # `ll_render::anim::Clip`（剪辑数据本身的类型）与
 # `ll_render::anim::base_hero_clips`（本体英雄行走/待机剪辑的唯一权威
 # 定义，见其文档「为什么这份内容放在机制 crate 里」）。依赖方向
-# `ll-render` ← `ll-world` ← `ll-sim` ← `ll-script` ← `ll-mod`（规格
+# `ll-render` ← `ll-world` ← `ll-sim` ← `ll-mod`（规格
 # §5）本就允许——`ll-render` 只依赖 `ll-core`/`ll-platform`，不认识、
 # 也不依赖 `ll-mod`，不构成环。
 ll-render = { path = "../ll-render" }
@@ -80,5 +67,3 @@ proptest.workspace = true
 # `ll-platform` 是更底层的 crate（`ll-sim` 本身已经在生产代码里依赖
 # 它），本 crate 只在测试里用，不进生产依赖。
 ll-platform = { path = "../ll-platform" }
-# `steel-core` 已在等级与经验系统落地批次升级为生产依赖（见上方
-# [dependencies] 的注释），测试代码沿用同一份，不再单独声明。

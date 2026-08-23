@@ -132,14 +132,12 @@ mod tests {
     use super::*;
     use crate::manifest::mod_self_id;
     use ll_core::ident::NamespacedId;
-    use std::path::PathBuf;
 
     fn manifest(namespace: &str, version: &str) -> ModManifest {
         ModManifest {
             id: mod_self_id(namespace).expect("测试用命名空间恒合法"),
             version: version.to_string(),
             dependencies: Vec::new(),
-            entry_points: Vec::<PathBuf>::new(),
         }
     }
 
