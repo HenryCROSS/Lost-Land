@@ -502,6 +502,54 @@ fn classify_error(err: SteelErr) -> ScriptError {
     }
 }
 
+// 本线程是否已经编译过脚本源码（[`ScriptEngine::load_source`] 成功
+// 与否都算——编译动作本身已经发生了）。
+//
+// # 这是「构造阶段/编译阶段」这条项目级约束的机器强制
+//
+// [ADR 0028](../../../knowledge/decisions/0028-steel-engine-construction-memory-corruption.md)
+// 实测定位：`steel-core` 0.8.2 的内存破坏**只在「先编译、后构造」这个
+// 相邻关系上出现**——只构造（16000 次）不崩、只编译（4800 次）不崩、
+// 两者交替才崩。约束因此是：
+//
+// > **同一根线程上，全部引擎构造必须发生在全部脚本编译之前。**
+//
+// 违反会 panic，不是 `debug_assert!`：这条规则的失效方式极其隐蔽——
+// 将来任何人新增一处引擎构造点，代码照常编译、测试照常绿，偶发的内存
+// 破坏会悄悄回来，而且崩在与新增点毫无关系的地方（见 ADR 0028「哪一行
+// 炸取决于坏数据先被谁碰到」）。一条点名的 panic 远好于三分之一概率的
+// 野指针。
+//
+// # 为什么是「每线程」而不是「每进程」
+//
+// `steel-core` 在**不开** `sync` 特性时（本仓库的构建，见 ADR 0028）
+// 全部引擎级状态是 `thread_local!` 的，`Engine` 内部是 `Rc`——
+// [`ScriptEngine`] 因此**不是 `Send`**，根本不可能在 A 线程构造、拿到
+// B 线程使用。「进程级构造阶段」在类型系统层面就不成立；每线程各自
+// 「先构造完再编译」才是这条约束唯一可实现、也是与实测机制对齐的
+// 形态（ADR 0028 实测：提高并行度反而压低故障率，与「跨线程相邻也
+// 危险」的方向相反）。
+//
+// 新线程天生是干净的：`thread_local!` 初值为 `false`，等于每根线程
+// 各自重新开一次构造阶段。这也是「真的需要在编译之后再造引擎」时唯一
+// 被认可的做法——换一根线程，而不是想办法把这个标记清掉。
+thread_local! {
+    static COMPILED_ON_THIS_THREAD: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// 本线程是否已经进入编译阶段（即已经调用过一次
+/// [`ScriptEngine::load_source`]）。
+///
+/// 供调用方在自己那一层做同样的编排检查——例如装载管线要先把全部引擎
+/// 造齐再逐个编译，可以用它断言「我确实还在构造阶段」。
+pub fn has_compiled_on_this_thread() -> bool {
+    COMPILED_ON_THIS_THREAD.with(std::cell::Cell::get)
+}
+
+fn mark_compiled_on_this_thread() {
+    COMPILED_ON_THIS_THREAD.with(|flag| flag.set(true));
+}
+
 /// 脚本宿主：包装一个经过能力收窄的 Steel VM 实例。
 ///
 /// 每次调用都套一层 [`InterruptHandler`]：ADR 0012 实测这层包装把单次
@@ -553,6 +601,10 @@ impl ScriptEngine {
     /// 否则清空动作本身就晚了。白名单基础集合（`poisoned_identifiers`+`compute_allowed_identifiers`）
     /// 在同一时刻构建，之后每次 [`Self::register_fn`] 都会追加新名字。
     pub fn new() -> Self {
+        assert!(
+            !has_compiled_on_this_thread(),
+            "本线程已经编译过脚本，不得再构造引擎——见              ll_script::host::COMPILED_ON_THIS_THREAD 文档与 ADR 0028：             「先编译、后构造」这个相邻关系是 steel-core 0.8.2 偶发内存             破坏的唯一已知触发条件。请把这次构造提前到本线程的构造阶段，             或者换一根新线程。"
+        );
         let mut engine = Engine::new_sandboxed();
 
         // 顺序不能变：先拍下"毒化之前"的全局名字快照并减去要挡的名字
@@ -621,6 +673,8 @@ impl ScriptEngine {
     /// 解析/重复 `define` 不会产生副作用或报错。
     pub fn load_source(&mut self, source: String) -> Result<(), ScriptError> {
         reject_dangerous_syntax(&source)?;
+
+        mark_compiled_on_this_thread();
 
         let exprs = self
             .engine

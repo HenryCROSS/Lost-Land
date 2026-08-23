@@ -497,7 +497,11 @@ mod tests {
     fn 跨mod默认读取失败state_get_foreign可以显式跨读() {
         // Arrange：mod "lostland" 写一条记录并提交进世界。
         let mut world = test_world();
+        // 两个引擎都在编译之前造齐——见 `ll_script::host` 里
+        // `COMPILED_ON_THIS_THREAD` 上方注释：同一根线程上全部构造必须
+        // 先于全部编译。
         let mut writer = ScriptEngine::new();
+        let mut reader = ScriptEngine::new();
         register(&mut writer, "lostland");
         writer
             .load_source(r#"(define (probe) (state-set! "reputation" 42))"#.to_string())
@@ -511,7 +515,6 @@ mod tests {
 
         // Act：mod "yourmod" 默认读不到（不同命名空间），但用
         // state-get-foreign 显式跨读能拿到。
-        let mut reader = ScriptEngine::new();
         register(&mut reader, "yourmod");
         reader
             .load_source(
@@ -604,12 +607,15 @@ mod tests {
         // 记录只出现在自己的命名空间下。
         // Arrange
         let mut world = test_world();
+        // 两个引擎都在编译之前造齐——见 `ll_script::host` 里
+        // `COMPILED_ON_THIS_THREAD` 上方注释：同一根线程上全部构造必须
+        // 先于全部编译。
         let mut engine_a = ScriptEngine::new();
+        let mut engine_b = ScriptEngine::new();
         register(&mut engine_a, "moda");
         engine_a
             .load_source(r#"(define (probe) (state-set! "shared-key" 1))"#.to_string())
             .unwrap();
-        let mut engine_b = ScriptEngine::new();
         register(&mut engine_b, "modb");
         engine_b
             .load_source(r#"(define (probe) (state-set! "shared-key" 2))"#.to_string())
@@ -759,14 +765,17 @@ mod tests {
         // 共享浮动总量。
         // Arrange
         let mut world = test_world();
+        // 两个引擎都在编译之前造齐——见 `ll_script::host` 里
+        // `COMPILED_ON_THIS_THREAD` 上方注释：同一根线程上全部构造必须
+        // 先于全部编译。
         let mut engine_a = ScriptEngine::new();
+        let mut engine_b = ScriptEngine::new();
         register(&mut engine_a, "moda");
         engine_a
             .load_source(r#"(define (fill big) (state-set! "big" big))"#.to_string())
             .unwrap();
         let almost_full = "x".repeat(PER_MOD_QUOTA_BYTES - 32);
 
-        let mut engine_b = ScriptEngine::new();
         register(&mut engine_b, "modb");
         engine_b
             .load_source(r#"(define (probe) (state-set! "small" 1))"#.to_string())
@@ -802,7 +811,11 @@ mod tests {
         // 这类业务判断（设计文档七、1 节）。
         // Arrange
         let mut world = test_world();
+        // 两个引擎都在编译之前造齐——见 `ll_script::host` 里
+        // `COMPILED_ON_THIS_THREAD` 上方注释：同一根线程上全部构造必须
+        // 先于全部编译。
         let mut engine = ScriptEngine::new();
+        let mut reader = ScriptEngine::new();
         register(&mut engine, "ghostmod");
         engine
             .load_source(r#"(define (probe) (state-set! "memory" 999))"#.to_string())
@@ -820,7 +833,6 @@ mod tests {
         let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
         let mut reloaded: WorldState = serde_json::from_slice(&encoded).expect("往返不应失败");
 
-        let mut reader = ScriptEngine::new();
         register(&mut reader, "someothermod");
         reader
             .load_source(r#"(define (probe) (state-get-foreign "ghostmod" "memory"))"#.to_string())

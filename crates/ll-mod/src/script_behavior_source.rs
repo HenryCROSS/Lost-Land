@@ -35,6 +35,32 @@ use crate::script_behavior_api::{
     register_profession_check_api, register_skill_ready_api, skill_index_snapshot,
 };
 
+/// 一个**只构造、尚未注册任何 API、尚未编译任何脚本**的行为树引擎。
+///
+/// 存在的唯一理由是让「构造」与「编译」在时间上分开，见
+/// [`ScriptBehaviorSource::from_prepared`] 文档。用新类型而不是直接传
+/// `ScriptEngine`，是为了让「这是一个还没被填充过的空引擎」这件事在
+/// 类型上说得出来——传错一个已经装过别的脚本的引擎，行为会静默地不对。
+pub struct PreparedBehaviorEngine(ScriptEngine);
+
+impl PreparedBehaviorEngine {
+    /// 构造一个空引擎。**必须在本线程编译任何脚本之前调用**（否则
+    /// `ScriptEngine::new` 里的断言会当场 panic，见 `ll_script::host`）。
+    pub fn new() -> Self {
+        Self(ScriptEngine::new())
+    }
+
+    fn into_engine(self) -> ScriptEngine {
+        self.0
+    }
+}
+
+impl Default for PreparedBehaviorEngine {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 /// 装载了一棵行为树、能为脚本管理的实体产出真实 [`Intent`] 的决策来源。
 pub struct ScriptBehaviorSource {
     engine: ScriptEngine,
@@ -68,7 +94,45 @@ impl ScriptBehaviorSource {
         registry: &Registry,
         world_seed: u64,
     ) -> Result<Self, ScriptError> {
-        let mut engine = ScriptEngine::new();
+        Self::from_prepared(
+            PreparedBehaviorEngine::new(),
+            source,
+            tree_entry_fn,
+            mod_namespace,
+            registry,
+            world_seed,
+        )
+    }
+
+    /// 与 [`Self::new`] 相同，但引擎由调用方在**构造阶段**预先造好
+    /// （[`PreparedBehaviorEngine::new`]）后交进来。
+    ///
+    /// # 为什么要把「造引擎」与「注册 + 编译」拆开
+    ///
+    /// 行为树引擎需要装载完毕才有的数据（`registry`、技能索引），所以
+    /// 「注册 API + 编译 `behavior.scm`」这一半天然排在 mod 装载之后；
+    /// 而 mod 装载本身就是一连串脚本编译。若引擎也在那之后才构造，就
+    /// 正好凑成 ADR 0028 定位到的「先编译、后构造」相邻关系。
+    ///
+    /// 拆开之后：`ScriptEngine::new()` 不需要任何装载期数据，可以提到
+    /// 装载之前；`register_*` 与 `load_source` 留在原位。同一根线程上
+    /// 「全部构造先于全部编译」这条约束因此可以在**调用方**那一层被
+    /// 满足，而不是逼着行为树引擎与装载期引擎合并（两者的白名单能力表
+    /// 刻意不兼容，那道隔离墙要留着，见 `mods/example_mod/mod.json5`
+    /// 里 `entry_points` 上方的注释）。
+    ///
+    /// [`Self::new`] 仍然可用，它只是「就地 prepare 一次再调本函数」
+    /// ——在本线程还没编译过任何脚本时（例如一条只构造一个行为树来源的
+    /// 测试）那样写完全合法。
+    pub fn from_prepared(
+        prepared: PreparedBehaviorEngine,
+        source: &str,
+        tree_entry_fn: impl Into<String>,
+        mod_namespace: impl Into<String>,
+        registry: &Registry,
+        world_seed: u64,
+    ) -> Result<Self, ScriptError> {
+        let mut engine = prepared.into_engine();
         ll_script::api::query::register(&mut engine);
         ll_script::api::actor::register(&mut engine);
         ll_script::api::rng::register(&mut engine);

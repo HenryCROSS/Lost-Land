@@ -914,7 +914,11 @@ mod 三_mod_api {
     fn state系列全局存储与跨mod只读查询与内容引用() {
         let world = 造一个最小世界();
 
+        // 两个引擎都在编译之前造齐——见 `ll_script::host` 里
+        // `COMPILED_ON_THIS_THREAD` 上方注释：同一根线程上全部构造必须
+        // 先于全部编译。
         let mut writer = ScriptEngine::new();
+        let mut reader = ScriptEngine::new();
         state::register(&mut writer, "lostland");
         writer
             .load_source(
@@ -941,7 +945,6 @@ mod 三_mod_api {
         // 验证「同一次调用内自己能读到自己刚写的」与「换一个命名空间
         // 默认读不到」两件事，不模拟完整的 apply 落盘流程（那属于
         // ll-sim 的职责，不是本文件要覆盖的语法示例）。
-        let mut reader = ScriptEngine::new();
         state::register(&mut reader, "someothermod");
         reader
             .load_source(r#"(define (probe) (state-get! "reputation"))"#.to_string())

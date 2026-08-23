@@ -373,7 +373,25 @@ pub fn load_full_from_bytes(
     // （脚本源码本身有问题）不是本函数要处理的失败类别，那属于 mod
     // 装载管线自身的诊断范围；这里只保证「重建确实被触发」这条动作本
     // 身发生。
-    let _ = ll_script::host::rebuild_all_engines_after_load(current_script_sources);
+    //
+    // # 为什么要另开一根线程
+    //
+    // 读档发生在 mod 装载**之后**，调用线程早就编译过脚本了；直接在
+    // 这里构造引擎正是 ADR 0028 定位到的「先编译、后构造」相邻关系，
+    // 也会被 `ll_script::host` 的构造阶段断言当场拦下。新线程天生处在
+    // 自己的构造阶段（`thread_local!` 初值为 `false`），而且 steel-core
+    // 的内核镜像本身就是线程局部的——换线程等于拿到一份全新的、没有
+    // 被任何编译动作污染过的内核。
+    //
+    // 返回的引擎在这根线程上就地丢弃：`ScriptEngine` 内部是 `Rc`，
+    // 不是 `Send`，本来也搬不回来；而本调用点原本就没有使用它们
+    // （上面那个 `let _ =`），重建计数器 `REBUILD_COUNT` 是进程级
+    // 原子量，跨线程照样可见，「重建确实发生」这条断言不受影响。
+    std::thread::scope(|scope| {
+        scope.spawn(|| {
+            let _ = ll_script::host::rebuild_all_engines_after_load(current_script_sources);
+        });
+    });
 
     // 必须排在 check_mod_content 之前：算法版本不一致时,内容哈希数值
     // 本身就不可比较,继续跑 check_mod_content 只会把"存档写于算法升级

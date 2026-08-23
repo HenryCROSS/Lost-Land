@@ -69,7 +69,7 @@ use ll_mod::quest::QuestTable;
 use ll_mod::race::RaceTable;
 use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
-use ll_mod::script_behavior_source::ScriptBehaviorSource;
+use ll_mod::script_behavior_source::{PreparedBehaviorEngine, ScriptBehaviorSource};
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
 use ll_mod::trait_def::TraitTable;
@@ -529,13 +529,22 @@ fn load_guard_behavior_source() -> String {
 /// 不产出 `MoveTo`，会让上面那条恒等式因为一个与潜行毫无关系的原因
 /// 变红。把两人周围这一小片显式铺成草地，把「地形长什么样」这个变量
 /// 从本用例里摘掉。
-fn guard_turns(handle: &RealModsHandle, target_stealthed: bool, turns: usize) -> (usize, usize) {
-    guard_turns_with_profession(handle, handle.guard_id, target_stealthed, turns)
+fn guard_turns(
+    prepared: PreparedBehaviorEngine,
+    handle: &RealModsHandle,
+    target_stealthed: bool,
+    turns: usize,
+) -> (usize, usize) {
+    guard_turns_with_profession(prepared, handle, handle.guard_id, target_stealthed, turns)
 }
 
 /// [`guard_turns`] 的一般形式：把卫兵的职业索引也开放成参数，供反例
 /// 用例传一个**不是** `lostland:guard` 的职业进来。
+/// `prepared` 是调用方在**装载真实 mods 之前**就造好的空引擎——
+/// 装载会编译一批脚本，之后这根线程上就不许再构造引擎了（见
+/// `ll_script::host` 里 `COMPILED_ON_THIS_THREAD` 上方注释与 ADR 0028）。
 fn guard_turns_with_profession(
+    prepared: PreparedBehaviorEngine,
     handle: &RealModsHandle,
     guard_profession: ContentIndex,
     target_stealthed: bool,
@@ -567,7 +576,8 @@ fn guard_turns_with_profession(
     world.actors.get_mut(target).expect("刚生成").stealthed = target_stealthed;
 
     let source_code = load_guard_behavior_source();
-    let mut source = ScriptBehaviorSource::new(
+    let mut source = ScriptBehaviorSource::from_prepared(
+        prepared,
         &source_code,
         "guard-ai-tree",
         "examplemod",
@@ -626,13 +636,17 @@ fn guard_turns_with_profession(
 /// 同一个分布，第一条断言立刻变红。
 #[test]
 fn 潜行显著降低卫兵盘查率但不让卫兵看不见你() {
-    // Arrange
+    // Arrange：两个行为树引擎都要在 load_real_mods（会编译一批脚本）
+    // 之前造好——同一根线程上全部构造必须先于全部编译，见
+    // `ll_script::host` 里 `COMPILED_ON_THIS_THREAD` 上方注释。
+    let visible_engine = PreparedBehaviorEngine::new();
+    let stealth_engine = PreparedBehaviorEngine::new();
     let handle = load_real_mods();
     let turns = 400;
 
     // Act
-    let (visible_inspects, visible_moves) = guard_turns(&handle, false, turns);
-    let (stealth_inspects, stealth_moves) = guard_turns(&handle, true, turns);
+    let (visible_inspects, visible_moves) = guard_turns(visible_engine, &handle, false, turns);
+    let (stealth_inspects, stealth_moves) = guard_turns(stealth_engine, &handle, true, turns);
 
     // Assert 一：盘查率真的降下来了。
     assert!(
@@ -677,13 +691,14 @@ fn 潜行显著降低卫兵盘查率但不让卫兵看不见你() {
 /// 条内容在不在。
 #[test]
 fn 非卫兵职业的实体经由turnengine一次盘查都不会发起() {
-    // Arrange
+    // Arrange：行为树引擎在 load_real_mods 之前造好，理由同上一条用例。
+    let prepared = PreparedBehaviorEngine::new();
     let handle = load_real_mods();
     let turns = 400;
 
     // Act
     let (inspects, moves) =
-        guard_turns_with_profession(&handle, placeholder_profession(), false, turns);
+        guard_turns_with_profession(prepared, &handle, placeholder_profession(), false, turns);
 
     // Assert
     assert_eq!(

@@ -124,16 +124,28 @@ mod tests {
     fn 相同实体相同事件计数的两次独立调用得到相同的随机序列() {
         // Arrange：模拟"两个不同时刻的独立调用"，每次都重新构造引擎，
         // 只有 world_seed/entity_id/event_counter 三元组相同。
+        //
+        // 两个引擎都在这里先造齐，再交给 `run_three_calls` 去编译——
+        // 本线程「全部构造先于全部编译」这条约束（见 `ll_script::host`
+        // 里 `COMPILED_ON_THIS_THREAD` 上方注释）要求如此，写成
+        // 「造一个跑一个」第二次构造会直接 panic。
+        let first_engine = ScriptEngine::new();
+        let second_engine = ScriptEngine::new();
+
         // Act
-        let first_sequence = run_three_calls(42, 7, 3);
-        let second_sequence = run_three_calls(42, 7, 3);
+        let first_sequence = run_three_calls(first_engine, 42, 7, 3);
+        let second_sequence = run_three_calls(second_engine, 42, 7, 3);
 
         // Assert
         assert_eq!(first_sequence, second_sequence);
     }
 
-    fn run_three_calls(world_seed: u64, entity_id: u64, event_counter: u64) -> Vec<i64> {
-        let mut engine = ScriptEngine::new();
+    fn run_three_calls(
+        mut engine: ScriptEngine,
+        world_seed: u64,
+        entity_id: u64,
+        event_counter: u64,
+    ) -> Vec<i64> {
         register(&mut engine);
         engine
             .load_source("(define (probe) (rng-next-u64))".to_string())

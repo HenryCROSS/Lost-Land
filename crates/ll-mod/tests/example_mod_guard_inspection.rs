@@ -24,7 +24,7 @@ use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_mod::registry::Registry;
-use ll_mod::script_behavior_source::ScriptBehaviorSource;
+use ll_mod::script_behavior_source::{PreparedBehaviorEngine, ScriptBehaviorSource};
 use ll_sim::behavior::BehaviorTreeSource;
 use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
@@ -323,12 +323,30 @@ fn 相同种子的两次决策序列完全相同() {
 
     let (mut world_a, guard_a) = build();
     let (mut world_b, guard_b) = build();
-    let mut source_a =
-        ScriptBehaviorSource::new(&source_code, "guard-ai-tree", "examplemod", &registry, 7)
-            .expect("真实 behavior.scm 应当能通过白名单并装载成功");
-    let mut source_b =
-        ScriptBehaviorSource::new(&source_code, "guard-ai-tree", "examplemod", &registry, 7)
-            .expect("真实 behavior.scm 应当能通过白名单并装载成功");
+    // 两个引擎都在编译之前造齐——见 `ll_script::host` 里
+    // `COMPILED_ON_THIS_THREAD` 上方注释与 ADR 0028：同一根线程上全部
+    // 引擎构造必须先于全部脚本编译，写成「造一个编一个」第二次构造会
+    // 直接 panic。
+    let prepared_a = PreparedBehaviorEngine::new();
+    let prepared_b = PreparedBehaviorEngine::new();
+    let mut source_a = ScriptBehaviorSource::from_prepared(
+        prepared_a,
+        &source_code,
+        "guard-ai-tree",
+        "examplemod",
+        &registry,
+        7,
+    )
+    .expect("真实 behavior.scm 应当能通过白名单并装载成功");
+    let mut source_b = ScriptBehaviorSource::from_prepared(
+        prepared_b,
+        &source_code,
+        "guard-ai-tree",
+        "examplemod",
+        &registry,
+        7,
+    )
+    .expect("真实 behavior.scm 应当能通过白名单并装载成功");
 
     // Act
     let sequence_a = decide_over_ticks(&mut source_a, &mut world_a, guard_a, 40);
