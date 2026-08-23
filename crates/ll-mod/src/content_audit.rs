@@ -1599,6 +1599,7 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
     let damage_category = view.damage_category;
     let rule_modifiers = view.rule_modifiers.to_vec();
     let tags = view.tags.to_vec();
+    let taught_recipes = view.taught_recipes.to_vec();
 
     auditor.field("ItemAttrs::display_name_key", true);
     auditor.field("ItemAttrs::stack_limit", stack_limit != 0);
@@ -1654,6 +1655,22 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
             "ItemAttrs::tags",
             *tag,
             ReferenceExpectation::Table(ContentTableKind::Tag),
+        );
+    }
+    // 配方发现批次新增的 `ItemDef.taught_recipes`——与上面 `tags` 那一段
+    // 逐行同构：一条字段覆盖 +（每条）一次跨表引用校验。这里的引用校验
+    // **不是**注册期校验的第二道复述，而是**唯一**一道：
+    // `ItemTable::add_taught_recipe` 刻意不做跨表校验（否则「书写在配方
+    // 前面还是后面」会变成内容作者必须记住的顺序耦合，见
+    // `crate::item::ItemDef::taught_recipes` 文档「跨表引用由谁校验」
+    // 一节），因此「一本书指向一条根本不存在的配方」这类内容错误只有
+    // 在这里才会被抓住。
+    auditor.field("ItemAttrs::taught_recipes", !taught_recipes.is_empty());
+    for recipe in &taught_recipes {
+        auditor.reference(
+            "ItemAttrs::taught_recipes",
+            *recipe,
+            ReferenceExpectation::Table(ContentTableKind::Recipe),
         );
     }
 }
@@ -1726,6 +1743,7 @@ fn inspect_recipe(auditor: &mut Auditor<'_>, index: ContentIndex) {
     let product_count = view.product_count;
     let required_station = view.required_station;
     let required_tool = view.required_tool;
+    let requires_discovery = view.requires_discovery;
 
     auditor.field("RecipeAttrs::display_name_key", true);
     auditor.reference(
@@ -1761,6 +1779,11 @@ fn inspect_recipe(auditor: &mut Auditor<'_>, index: ContentIndex) {
         required_tool,
         ReferenceExpectation::Table(ContentTableKind::Item),
     );
+    // 配方发现批次新增的 `RecipeDef.requires_discovery`——纯布尔，不是
+    // 跨表引用，因此只记一条字段覆盖。判据取「为真」而不是「被写过」：
+    // `false` 是默认值，而「默认值不算写过」是本模块既有的一贯惯例
+    // （见 `inspect_tag` 对 `TagDef::wear` 的同一条处理）。
+    auditor.field("RecipeAttrs::requires_discovery", requires_discovery);
 }
 
 /// [`crate::recipe_category::RecipeCategoryDef`] 的全部字段。
@@ -2051,6 +2074,7 @@ mod tests {
                         damage_category: None,
                         rule_modifiers: Vec::new(),
                         tags: Vec::new(),
+                        taught_recipes: Vec::new(),
                     },
                 )
                 .expect("测试用物品定义内部自洽");

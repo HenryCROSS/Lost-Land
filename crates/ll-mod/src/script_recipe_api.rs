@@ -57,10 +57,78 @@ pub fn take_active_target() -> RecipeTable {
 }
 
 /// 把三个配方注册函数注册进 `engine`。
+/// 借出当前活跃的配方表做**只读**查询——`crate::script_item_api` 的
+/// `register-item-teaches-recipe` 需要校验「这个 id 真的是一条配方」，
+/// 而配方表归本模块所有。手法与所有权论证同
+/// `crate::script_tag_api::with_active_tag_table`（`register-item-tag`
+/// 校验标签 id 时的同一处需要）：两张表各自的 `ACTIVE_TABLE` 是两个
+/// 独立的 `RefCell`，同一线程上一个 `borrow_mut()`、一个 `borrow()`
+/// 不冲突；两者都由 `crate::pipeline::compile_one_script` 在同一个窗口
+/// 里成对 `set`/`take`，生命周期完全对齐。
+pub(crate) fn with_active_recipe_table<R>(f: impl FnOnce(Option<&RecipeTable>) -> R) -> R {
+    ACTIVE_TABLE.with(|cell| f(cell.borrow().as_ref()))
+}
+
+/// 把配方相关的四个注册函数注册进 `engine`。
 pub fn register_recipe_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-recipe", register_recipe);
     engine.register_fn("recipe-requires-station!", recipe_requires_station);
     engine.register_fn("recipe-requires-tool!", recipe_requires_tool);
+    engine.register_fn("recipe-requires-discovery!", recipe_requires_discovery);
+}
+
+/// `(recipe-requires-discovery! id)`——声明这条配方**必须先被发现**才
+/// 做得出来（配方发现批次），落地项目所有者的裁定「菜谱就是通过随机
+/// 丢入东西煮获取或者阅读书籍的时候获取」。
+///
+/// - `id`：已经通过 `register-recipe` 注册过的完整命名空间标识符字符串。
+///
+/// 形状照 [`recipe_requires_station`]/[`recipe_requires_tool`] 这条既有
+/// 先例（`register-recipe` 的七参数签名不能改参数个数，会破坏仓库里已有
+/// 的真实 mod 脚本）——差别只有一个：本函数**只有一个参数**，因为它声明
+/// 的是一个布尔事实，没有「要求什么」这个宾语。
+///
+/// # 为什么没有配套的「取消发现要求」
+///
+/// 注册期声明是**加法**，不是一台可以来回拨的开关——与
+/// `recipe-requires-station!` 同样没有 `recipe-clears-station!` 是同一条
+/// 形状。「不需要发现」就是不调用本函数。
+///
+/// # 顺序要求：`register-recipe` 必须先跑
+///
+/// 与 `recipe-requires-station!`/`recipe-requires-tool!` 逐字相同
+/// （ADR 0017「注册期完整校验」）：目标配方尚未注册时整次调用失败，
+/// 不静默创建一条只有这一个字段的半成品。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn recipe_requires_discovery(id: String) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("recipe-requires-discovery! 在没有活跃配方表的窗口内被调用".to_string());
+            };
+            do_recipe_requires_discovery(registry, table, &id)
+        })
+    })
+}
+
+/// [`recipe_requires_discovery`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_recipe_requires_discovery(
+    registry: &Registry,
+    table: &mut RecipeTable,
+    id: &str,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("配方 {id:?} 尚未通过 register-recipe 注册"));
+    };
+    table
+        .set_requires_discovery(index)
+        .map(|()| true)
+        .map_err(|err: RecipeError| err.to_string())
 }
 
 /// `(register-recipe id display-name-key category-id ingredient-item-ids
@@ -323,6 +391,84 @@ mod tests {
             }
         );
         assert_eq!(view.product_count, 1);
+    }
+
+    #[test]
+    fn 声明配方需要先被发现之后配方表真的记下了这条要求() {
+        // 配方发现批次：`recipe-requires-discovery!` 经真实脚本引擎
+        // 调用，写进配方表的 requires_discovery——没有这条，
+        // resolve_craft 的第 4 道闸门在内容侧就永远没有输入。
+        // Arrange
+        let mut engine = engine_with_category();
+        engine
+            .load_source(
+                r#"(register-recipe "yourmod:stew" "yourmod:stew_display_name"
+                                    "yourmod:forging" (list "yourmod:meat") (list 1)
+                                    "yourmod:stew_bowl" 1)"#
+                    .to_string(),
+            )
+            .expect("配方注册应当成功");
+
+        // Act
+        let result =
+            engine.load_source(r#"(recipe-requires-discovery! "yourmod:stew")"#.to_string());
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let _categories = take_active_category_target();
+        let stew = registry
+            .get(&NamespacedId::parse("yourmod:stew").unwrap())
+            .expect("刚注册的配方应能查到索引");
+        assert!(table.get(stew).expect("已注册").requires_discovery);
+    }
+
+    #[test]
+    fn 没调用过发现声明的配方默认不需要发现() {
+        // 本批次对既有内容零影响这条兼容性承诺的直接验收：仓库里已有
+        // 的每一条配方都没调用过 recipe-requires-discovery!，它们必须
+        // 全部保持「人人天生会做」。
+        // Arrange
+        let mut engine = engine_with_category();
+
+        // Act
+        engine
+            .load_source(
+                r#"(register-recipe "yourmod:plain" "yourmod:plain_display_name"
+                                    "yourmod:forging" (list "yourmod:meat") (list 1)
+                                    "yourmod:plain_dish" 1)"#
+                    .to_string(),
+            )
+            .expect("配方注册应当成功");
+
+        // Assert
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let _categories = take_active_category_target();
+        let plain = registry
+            .get(&NamespacedId::parse("yourmod:plain").unwrap())
+            .expect("刚注册的配方应能查到索引");
+        assert!(!table.get(plain).expect("已注册").requires_discovery);
+    }
+
+    #[test]
+    fn 给未注册的配方声明需要发现时失败而不panic() {
+        // ADR 0017「注册期完整校验」：不静默创建一条只有这一个字段的
+        // 半成品，与 recipe-requires-station! 对未注册配方的既有处理
+        // 同一条纪律。
+        // Arrange
+        let mut engine = engine_with_category();
+
+        // Act
+        let result =
+            engine.load_source(r#"(recipe-requires-discovery! "yourmod:ghost")"#.to_string());
+
+        // Assert
+        assert!(result.is_err());
+
+        // Cleanup。
+        cleanup();
     }
 
     #[test]

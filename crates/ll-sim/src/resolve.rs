@@ -63,7 +63,7 @@ use crate::combat::{
     Penetration, apply_crit_multiplier, crit_chance_permille, damage_after_defense,
     sneak_attack_chance_permille,
 };
-use crate::craft::{NoRecipes, RecipeCatalog};
+use crate::craft::{NoRecipes, RecipeCatalog, RecipeRule};
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
 use crate::effect::Effect;
 use crate::experience::{ExperienceCatalog, NoExperience};
@@ -1017,6 +1017,10 @@ fn resolve_dispatch(
         Intent::LearnSkill { actor, skill } => resolve_learn_skill(world, actor, skill, skill_tree),
         Intent::AbandonSubclass { actor, subclass } => {
             resolve_abandon_subclass(world, actor, subclass)
+        }
+        Intent::Read { actor, def } => resolve_read(world, actor, def, items),
+        Intent::Experiment { actor, category } => {
+            resolve_experiment(world, actor, category, recipes)
         }
     };
     // 副职使用计数（副职获得机制批次）：一次**成功**的制作把对应配方
@@ -2668,18 +2672,36 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 1. 查 agent，查不到 → 空
 /// 2. 查配方，查不到 → 空                          （ADR 0015：未注册当作没有）
 /// 3. 副职闸门：类别要求非空且与 agent.subclasses 无交集 → 空
-/// 4. 场地前置：required_station 与脚下地形不符 → 空
-/// 5. 工具前置：没有「def 匹配且耐久未归零」的已装备物品 → 空
-/// 6. 食材校验：任意一条数量不够 → 空（不消耗任何食材）
-/// 7. 逐条食材产出 Effect::ConsumeInventoryItem，重复 count 次
-/// 8. 成品并进背包（Effect::MergeIntoInventory）
-/// 9. 工具磨损（Effect::AdjustEquipmentDurability，工具带耐久时才产出）
+/// 4. 已知闸门：配方声明 requires_discovery 且不在 known_recipes 里 → 空
+/// 5. 场地前置：required_station 与脚下地形不符 → 空
+/// 6. 工具前置：没有「def 匹配且耐久未归零」的已装备物品 → 空
+/// 7. 食材校验：任意一条数量不够 → 空（不消耗任何食材）
+/// 8. 逐条食材产出 Effect::ConsumeInventoryItem，重复 count 次
+/// 9. 成品并进背包（Effect::MergeIntoInventory）
+/// 10. 工具磨损（Effect::AdjustEquipmentDurability，工具带耐久时才产出）
 /// ```
 ///
-/// 三道前置（3/4/5）排在食材校验（6）之前，是因为**前三道回答的是
-/// 「你能不能做这件事」，第四道回答的是「你现在够不够料」**。虽然本
+/// 四道前置（3/4/5/6）排在食材校验（7）之前，是因为**前四道回答的是
+/// 「你能不能做这件事」，第五道回答的是「你现在够不够料」**。虽然本
 /// 批次不设计任何 UI，判定顺序决定了将来制作界面能拿到的失败原因的
 /// 优先级——玩家更需要先知道「我不会锻造」而不是「你缺两块铁锭」。
+///
+/// # 第 4 道闸门：配方发现（配方发现批次新增）
+///
+/// 项目所有者裁定「菜谱就是通过随机丢入东西煮获取或者阅读书籍的时候
+/// 获取」，本步是那句话在制作侧的执行者。它**推翻了**
+/// `food-and-cooking-system.md` 五节「菜谱全部已知、不设解锁门槛」那条
+/// 裁定（更正记录写在该文档五节末尾，原文未删）。
+///
+/// 排在副职闸门**之后**、场地/工具**之前**，与那句「能不能 vs 够不够」
+/// 的分界一致：「我不会这张图纸」和「我不是工匠」同属「你能不能做这件
+/// 事」，而它比「我不是工匠」更具体，因此排后一位——玩家已经是工匠却
+/// 做不出某条配方时，「你还没学会这张图纸」才是他真正需要的那条信息。
+///
+/// 声明 `requires_discovery == false` 的配方（既有全部内容的默认值）
+/// 完全跳过本步，本函数对它们与本批次之前逐字节等价。两条把配方写进
+/// `Agent::known_recipes` 的发现路径见 [`resolve_read`] 与
+/// [`resolve_experiment`]。
 ///
 /// # 全程静默失败
 ///
@@ -2731,14 +2753,14 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 ///
 /// ## 归零之后制作**失败**
 ///
-/// 由第 5 步的既有谓词 `durability != Some(0)` 保证，本节不新增任何
+/// 由第 6 步的既有谓词 `durability != Some(0)` 保证，本节不新增任何
 /// 判定：磨到零的锤子从此打不了铁，直到修理系统把它修回正数。这条
 /// 与本节的磨损产出构成一个闭环——工具会用坏，用坏了就不能用，正是
 /// 「耐久」这个词的全部含义。反例测试见
 /// `ll-mod/tests/example_mod_crafting.rs`
 /// 「耐久归零的工具装着也打不了铁」。
 ///
-/// ## 为什么第 5 步改成 `find` 而不是 `any`
+/// ## 为什么第 6 步改成 `find` 而不是 `any`
 ///
 /// 产出效果需要工具的**存储键**（[`crate::effect::Effect::AdjustEquipmentDurability`]
 /// 按槽位定位），`any` 只回答"有没有"、拿不到键。改成 `find` 之后
@@ -2748,16 +2770,16 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 ///
 /// - C3（随机全部来自 `DetRng::for_entity`）：不涉及，本函数全程零
 ///   随机。制作失败判定标为将来扩展，见设计文档九节⑤。
-/// - C5（逻辑决策不得依赖哈希表迭代顺序）：满足。第 5 步遍历的
-///   `agent.equipment` 是 `BTreeMap`（有序），第 6/7 步遍历的
+/// - C5（逻辑决策不得依赖哈希表迭代顺序）：满足。第 6 步遍历的
+///   `agent.equipment` 是 `BTreeMap`（有序），第 7/8 步遍历的
 ///   `recipe.ingredients`/`agent.inventory` 都是 `Vec`（保序）。
 /// - C1/C2/C4：不涉及（不新增脚本状态跨帧持有、不进时间轴队列、
 ///   不改后台推进）。
 ///
 /// # 已知边界（继承自 `food-and-cooking-system.md` 四节，如实重复）
 ///
-/// 第 6 步只认**第一条** `def` 匹配的堆，不跨多堆合并计数：背包里两堆
-/// 各 1 个铁锭时，需要 2 个铁锭的配方会判定为「料不够」。第 8 步若
+/// 第 7 步只认**第一条** `def` 匹配的堆，不跨多堆合并计数：背包里两堆
+/// 各 1 个铁锭时，需要 2 个铁锭的配方会判定为「料不够」。第 9 步若
 /// `product_count` 大到需要三堆以上，[`Effect::MergeIntoInventory`] 的
 /// `resulting` 目前的「最多两条」语义装不下。两条都只在数量远超
 /// `stack_limit` 时才失真。
@@ -2793,15 +2815,21 @@ fn resolve_craft(
     {
         return Vec::new();
     }
-    // ④ 场地前置——「站在这格上」，一次 terrain_at，与 resolve_move 同款。
+    // ④ 已知闸门（配方发现批次）——只对声明了 requires_discovery 的
+    // 配方生效，见本函数文档「第 4 道闸门」一节。默认 false 的既有配方
+    // 一律直接通过，这一步对它们是零成本的一次 bool 判断。
+    if rule.requires_discovery && !agent.known_recipes.contains(&recipe) {
+        return Vec::new();
+    }
+    // ⑤ 场地前置——「站在这格上」，一次 terrain_at，与 resolve_move 同款。
     if let Some(station) = rule.required_station
         && world.terrain_at(agent.pos).map(|kind| kind.index()) != Some(station)
     {
         return Vec::new();
     }
-    // ⑤ 工具前置——装备着且耐久未归零，见本函数文档「坏掉的工具」一节。
-    // 用 `find` 而不是 `any`：第 9 步磨损需要这件工具的存储键，判据本身
-    // 一字未改，见本函数文档「为什么第 5 步改成 `find`」一节。
+    // ⑥ 工具前置——装备着且耐久未归零，见本函数文档「坏掉的工具」一节。
+    // 用 `find` 而不是 `any`：第 10 步磨损需要这件工具的存储键，判据本身
+    // 一字未改，见本函数文档「为什么第 6 步改成 `find`」一节。
     // `equipment` 是 `BTreeMap`（有序），同一件工具被装在多个槽位这种
     // 情形下取哪一条是确定的（约束 C5）。
     let mut equipped_tool: Option<EquipSlot> = None;
@@ -2812,7 +2840,7 @@ fn resolve_craft(
             .find(|(_, stack)| stack.def == tool && stack.durability != Some(0));
         match found {
             None => return Vec::new(),
-            // 第 9 步只对「带耐久」**且**「带 `on-use` 标签」的工具记下
+            // 第 10 步只对「带耐久」**且**「带 `on-use` 标签」的工具记下
             // 槽位——两个条件缺一不可，见本函数文档「工具磨损」一节。
             // 判据与 `resolve_attack` 的「使用」通道逐字相同：一件东西
             // 用了会不会磨损，由它带的标签回答，不由它是工具还是武器、
@@ -2828,19 +2856,14 @@ fn resolve_craft(
             Some(_) => {}
         }
     }
-    // ⑥ 食材校验——全部齐全才继续，缺任意一条都不消耗任何东西。
-    for ingredient in &rule.ingredients {
-        let held = agent
-            .inventory
-            .iter()
-            .find(|stack| stack.def == ingredient.item)
-            .map_or(0, |stack| stack.count);
-        if held < ingredient.count {
-            return Vec::new();
-        }
+    // ⑦ 食材校验——全部齐全才继续，缺任意一条都不消耗任何东西。判定
+    // 与 resolve_experiment 第③步共用同一段（见 has_all_ingredients
+    // 文档：共享的不只是循环，还有「只认第一条匹配堆」那条已知边界）。
+    if !has_all_ingredients(agent, &rule) {
+        return Vec::new();
     }
 
-    // ⑦ 逐条产出消耗效果。`Effect::ConsumeInventoryItem` 恒扣一（见其
+    // ⑧ 逐条产出消耗效果。`Effect::ConsumeInventoryItem` 恒扣一（见其
     // 文档「为什么没有 amount 字段」），要扣 N 个就产出 N 条——与
     // resolve_use_item 产出单条是同一个效果，只是重复次数不同。
     let mut effects: Vec<Effect> = Vec::new();
@@ -2859,7 +2882,7 @@ fn resolve_craft(
         }
     }
 
-    // ⑧ 成品并进背包，复用 pick_up/equip/unequip 三处已经共用的那段
+    // ⑨ 成品并进背包，复用 pick_up/equip/unequip 三处已经共用的那段
     // 「找可合并的旧堆 → 算合并结果」逻辑。
     effects.push(merge_into_inventory_effect(
         agent,
@@ -2868,7 +2891,7 @@ fn resolve_craft(
         items,
     ));
 
-    // ⑨ 工具磨损——制作确实发生了才走到这里，见本函数文档「工具磨损」
+    // ⑩ 工具磨损——制作确实发生了才走到这里，见本函数文档「工具磨损」
     // 一节。`equipped_tool` 只在「配方点名了工具、身上确实装着一件没坏
     // 的、且它带耐久」三条同时成立时才是 `Some`。
     if let Some(slot) = equipped_tool {
@@ -2888,6 +2911,299 @@ fn resolve_craft(
         at: schedule_after(world, cost),
     });
     effects
+}
+
+/// [`Intent::Read`] 结算（配方发现批次）：读背包里那件东西声明教授的
+/// 全部配方里，把行动者**还不知道的那些**写进
+/// [`ll_world::entity::Agent::known_recipes`]，并按一次普通行动计费。
+///
+/// # 判定顺序
+///
+/// ```text
+/// 1. 查 agent，查不到 → 空
+/// 2. 背包里没有这一种东西 → 空
+/// 3. 查不到物品规则 → 空                （ADR 0015：未注册当作没有）
+/// 4. taught_recipes 为空（这件东西不可读）→ 空
+/// 5. 逐条过滤掉已经知道的，一条不剩 → 空（「这本书我读透了」）
+/// 6. 逐条产出 Effect::LearnRecipe，并按一次普通行动计费
+/// ```
+///
+/// # 书**不**被消耗
+///
+/// 与 [`resolve_use_item`] 最本质的一条差别（完整的逐步对照见
+/// [`Intent::Read`] 文档「为什么是新变体」一节的那张表）：本函数
+/// **一条 [`Effect::ConsumeInventoryItem`] 都不产出**。读完一本书，书
+/// 还在背上——这既是物理直觉，也让「把书传给同伴读」这件事无需任何额外
+/// 机制就能成立。
+///
+/// # 第 5 步：读透了的书不再消耗回合
+///
+/// 全部条目都已知时返回空 `Vec`，因此**连时间都不推进**。这不是「静默
+/// 吞掉一次操作」，而是与 [`resolve_pick_up`]「脚下没东西就静默作废」
+/// 完全同一条既有纪律：一次不可能产生任何结果的行动不该收费。它同时
+/// 关掉了一条真实的刷取路径——若这一步产出效果或推进时间，将来给
+/// 「阅读」挂上经验产出（见本函数文档最后一节）时，反复读同一本书就
+/// 会变成一台经验机器。
+///
+/// # 为什么效果恒施于发起者自身
+///
+/// 与 [`Intent::Use`]/[`Intent::Read`] 文档同一条范围裁定：读书的是
+/// 自己，没有「读给别人听」这个真实场景需要表达。
+///
+/// # 约束核对
+///
+/// - C1：只产出 `Vec<Effect>`，一个字节的世界状态都不写。
+/// - C3：全程零随机（与 [`resolve_experiment`] 相反，见其文档）——
+///   一本书教什么是内容作者写死的事实，没有任何可掷骰的地方。
+/// - C5：唯一遍历的两个容器是 `rule.taught_recipes` 与
+///   `agent.known_recipes`，都是 `Vec`（保序），不涉及
+///   `HashMap`/`HashSet`。
+///
+/// # 尚未挂上的第二、第三个钩子——如实标注
+///
+/// 项目所有者的裁定里，「阅读」同时是**科研经验**（「最开始设有初始
+/// 可以通过阅读获取经验」）与将来副职解锁的挂载点。本批次只落地配方
+/// 这一条，另外两条各自缺的东西写在这里，供下一批直接接上：
+///
+/// - **经验**：[`crate::effect::Effect::GrantExperience`] 早已存在、
+///   `apply` 侧的升级级联也早已落地，缺的只是「这件东西读一次值多少
+///   经验」这个**内容字段**（`ItemDef` 上还没有），以及一条防刷规则
+///   ——正确的形状是「只有第 6 步真的产出了新配方时才给经验」，这样
+///   反复读同一本书恒为零收益，且不需要任何新的逐实体「读过没有」
+///   状态。**不是**另开一条独立的「科研经验」数轴：那需要复制整台
+///   [`crate::xp_curve`] 机器（自己的等级、自己的曲线、自己的升级
+///   级联）而它们与既有那套逐字相同，正是 ADR 0021 点名要避免的抽象。
+/// - **副职解锁**：[`crate::subclass::grant_subclass_effects`] 这个
+///   共用出口已经在，缺的是 [`crate::subclass::SubclassUnlockCatalog`]
+///   上的第二种触发器（当前只有「制作计数」一种，见其文档「为什么只有
+///   制作这一种」）。
+fn resolve_read(
+    world: &WorldState,
+    actor: EntityId,
+    def: ContentIndex,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
+    // ① 行动者。
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    // ② 背包里得真的有这一种东西——与 resolve_use_item 第 2 步同款。
+    if !agent.inventory.iter().any(|stack| stack.def == def) {
+        return Vec::new();
+    }
+    // ③ 物品规则。④ 空列表 = 这件东西不可读（见 ItemRule::taught_recipes
+    // 文档「为什么『可不可读』不是一个独立的布尔字段」一节）。
+    let Some(rule) = items.item(def) else {
+        return Vec::new();
+    };
+
+    // ⑤ 只留下还不知道的。全都知道时下面的 is_empty 分支会整条作废。
+    let mut effects: Vec<Effect> = Vec::new();
+    for recipe in &rule.taught_recipes {
+        if agent.known_recipes.contains(recipe) {
+            continue;
+        }
+        // 同一本书把同一条配方写了两遍时（内容作者的笔误），这里会
+        // 产出两条 LearnRecipe，而 apply 是无条件 push——因此在产出侧
+        // 就去重，与上面那道 `known_recipes` 过滤一起，保证
+        // `known_recipes` 里不会出现重复项。
+        if effects.iter().any(
+            |effect| matches!(effect, Effect::LearnRecipe { recipe: known, .. } if known == recipe),
+        ) {
+            continue;
+        }
+        effects.push(Effect::LearnRecipe {
+            actor,
+            recipe: *recipe,
+        });
+    }
+    if effects.is_empty() {
+        return Vec::new();
+    }
+
+    // ⑥ 计费口径与 resolve_wait/resolve_use_item/resolve_craft 完全相同
+    // （基础代价 × 敏捷速度），不新增任何常量。
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    effects.push(Effect::ScheduleNext {
+        actor,
+        at: schedule_after(world, cost),
+    });
+    effects
+}
+
+/// [`Intent::Experiment`] 结算（配方发现批次）：拿行动者手头现有的材料，
+/// 在指定的配方类别里试做一次——命中某条**尚未知晓、且食材恰好齐全**的
+/// 配方就学会它，按一次普通行动计费。项目所有者裁定「菜谱就是通过
+/// **随机丢入东西煮**获取」的落点。
+///
+/// # 判定顺序
+///
+/// ```text
+/// 1. 查 agent，查不到 → 空
+/// 2. 副职闸门：类别要求非空且与 agent.subclasses 无交集 → 空
+/// 3. 列出这个类别下的全部配方，逐条筛出「候选」：
+///      requires_discovery == true          （不需要发现的配方无从「发现」）
+///      && !known_recipes.contains(recipe)  （已经知道的不必再试）
+///      && 食材全部齐全                      （手上真的有这些东西）
+/// 4. 候选为空 → 空（这次什么都没试出来，也不消耗回合）
+/// 5. 在候选里掷一次骰选中一条，产出 Effect::LearnRecipe 并计费
+/// ```
+///
+/// # 为什么失败与成功都**不消耗食材**——本函数最重要的一条设计判断
+///
+/// `crafting-system.md` 九节⑤论证过「一次吃掉材料、玩家无法通过任何
+/// 决策规避的失败只增加重复劳动」。那条论证在这里**更强**，不是更弱，
+/// 四条理由各自独立成立：
+///
+/// 1. **玩家在做决定时手上没有任何信息。** 制作失败至少还能靠「提升
+///    技能/换更好的工具」去规避；而「哪几味材料凑得成一条我还没发现的
+///    配方」这个问题，在发现之前**定义上不可知**。让不可知的判断吃掉
+///    真实资源，是纯粹的随机罚款，没有任何决策内容。
+/// 2. **发现和制作是两件事。** 本函数成功时也**不产出任何成品**——它
+///    只把一条配方写进脑子里。既然什么都没做出来，就没有什么材料「变成
+///    了别的东西」。真正的消耗留在其后每一次真实的 [`Intent::Craft`]，
+///    而那时玩家已经完全知道自己在做什么，消耗因此是有信息的代价。
+/// 3. **消耗会让这个机制被绕开而不是被使用。** 试做要吃材料的话，最优
+///    策略是囤着不试、等着捡书——一条所有者点名要的发现路径会退化成
+///    没人走的路。
+/// 4. **代价已经收过了。** 每次试做消耗一个完整回合（第 5 步的
+///    [`Effect::ScheduleNext`]），而回合在 roguelike 里是硬通货：饥饿在
+///    走、怪物在动、火把在烧。这是一条玩家能感知、也能通过「先找个安全
+///    地方再试」来管理的真实代价。
+///
+/// # 那会不会退化成「每回合按一下试做」的无脑刷？
+///
+/// 不会，而且这一点由第 3 步的筛选条件**结构性**保证，不靠数值平衡：
+/// 候选恒是「食材已经齐全的未知配方」。手上没有任何成套材料时候选为
+/// 空，试一万次也是空；把当前手头能试出来的都试出来之后，候选同样为
+/// 空。换句话说，「试做」的产出上限完全由**玩家搜集到了什么**决定，
+/// 不由他按了多少次决定——刷的是探索与搜集，不是按键。
+///
+/// # 副职闸门（第 2 步）为什么照判
+///
+/// 与 [`resolve_craft`] 第 3 步同一份判据、同一个 `RecipeCatalog` 方法：
+/// 做不了这一类的人，谈不上在这一类里试——不会打铁的人站在铁砧前把
+/// 铁锭摆来摆去，不会「发现」出一把剑。
+///
+/// **这不会造出新的死锁**：`mods/lostland/crafting.scm` 与
+/// `ll_mod::content_audit` 的 `detect_unlock_deadlocks` 已经共同保证
+/// 「用来练出某个副职的类别」不会反过来要求那个副职（那个环装载期硬
+/// 失败）。设了闸门的类别只可能是「已经有副职的人才碰得到的进阶类别」，
+/// 而这正是它该有的样子。读书那条路径**不受闸门约束**（[`resolve_read`]
+/// 完全不查类别）——知识可以先于资格获得，两条路径因此不是互相的备份，
+/// 而是两种不同的获取方式。
+///
+/// # 随机流怎么构造（约束 C3）
+///
+/// 三元组取 `(world.seed, actor.as_u64(), world.clock.0 ^ 常量标签)`，
+/// 与 [`resolve_inspect`] 的隐匿判定、[`resolve_attack`] 的骰子/偷袭两
+/// 条流手法逐字相同：世界种子 + 发起者 + 当前时刻，异或一个只用来把
+/// 这条流与同一 `(种子, 实体, 时刻)` 下其它流区分开的固定标签
+/// （`EXPERIMENT_EVENT_TAG`，没有数值含义）。**新造一条流、只取一个
+/// 数**，不是一条跨调用累进的长流，因此「这次没试成（候选为空、提前
+/// 返回）」不会让后续任何取数错位。
+///
+/// 掷骰只用来**在多个候选之间选一个**，不用来判定「成不成功」——候选
+/// 非空时必定学会一条。理由同上一节：成不成功已经由「食材齐不齐」这个
+/// 玩家完全可控的条件回答了，再叠一层概率只是把可控的事重新变成不可控。
+///
+/// 候选列表的顺序由 [`crate::craft::RecipeCatalog::recipes_in_category`]
+/// 保证按索引升序（见其文档），再经上面三条谓词过滤，全程 `Vec`，
+/// 不涉及任何 `HashMap`/`HashSet` 迭代顺序（约束 C5）。
+///
+/// # 已知边界（与 [`resolve_craft`] 第 7 步逐字相同）
+///
+/// 食材齐全的判定只认**第一条** `def` 匹配的堆，不跨多堆合并计数——
+/// 背包里两堆各 1 个铁锭时，需要 2 个的配方判定为「料不够」。两处共用
+/// 同一段判定（[`has_all_ingredients`]），因此这条边界不会在两边漂移。
+fn resolve_experiment(
+    world: &WorldState,
+    actor: EntityId,
+    category: ContentIndex,
+    recipes: &dyn RecipeCatalog,
+) -> Vec<Effect> {
+    // ① 行动者。
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    // ② 副职闸门——与 resolve_craft 第③步同一份判据、同一个方法。
+    let required_subclasses = recipes.category_required_subclasses(category);
+    if !required_subclasses.is_empty()
+        && !required_subclasses
+            .iter()
+            .any(|needed| agent.subclasses.contains(needed))
+    {
+        return Vec::new();
+    }
+    // ③ 候选筛选，三条谓词全过才算。
+    let candidates: Vec<ContentIndex> = recipes
+        .recipes_in_category(category)
+        .into_iter()
+        .filter(|index| {
+            if agent.known_recipes.contains(index) {
+                return false;
+            }
+            let Some(rule) = recipes.recipe(*index) else {
+                return false;
+            };
+            rule.requires_discovery && has_all_ingredients(agent, &rule)
+        })
+        .collect();
+    // ④ 一条都试不出来：不产出效果，也不消耗时间。
+    if candidates.is_empty() {
+        return Vec::new();
+    }
+
+    // ⑤ 掷一次骰选中一条，见本函数文档「随机流怎么构造」一节。
+    let mut rng = ll_core::rng::DetRng::for_entity(
+        world.seed,
+        actor.as_u64(),
+        (world.clock.0 as u64) ^ EXPERIMENT_EVENT_TAG,
+    );
+    let picked = candidates[rng.gen_range(candidates.len() as u64) as usize];
+
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    vec![
+        Effect::LearnRecipe {
+            actor,
+            recipe: picked,
+        },
+        Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        },
+    ]
+}
+
+/// 把 [`resolve_experiment`] 那条随机流与同一 `(种子, 实体, 时刻)` 下
+/// 其它流区分开的固定标签，没有数值含义上的特殊性——手法同
+/// [`resolve_attack`] 内部的 `DAMAGE_FORMULA_DICE_EVENT_TAG`，只要求
+/// 「与别的流的三元组不同」。
+const EXPERIMENT_EVENT_TAG: u64 = 0x0EE0_0BEE_0000_0000;
+
+/// 行动者的背包是否凑得齐这条配方的全部食材——[`resolve_craft`] 第 7 步
+/// 与 [`resolve_experiment`] 第 3 步共用的同一段判定。
+///
+/// 抽成函数的理由符合 ADR 0021「有真正可共享的算法」：两处共享的不只是
+/// 一个循环，还包括那条**已知边界**（只认第一条 `def` 匹配的堆，不跨堆
+/// 合并计数，见两个调用点各自文档）。写两遍的真正代价不是多几行，而是
+/// 那条边界会在两边各自漂移——制作说「料不够」而试做说「料够」是一个
+/// 玩家可见、且极难归因的缺陷。
+fn has_all_ingredients(agent: &Agent, rule: &RecipeRule) -> bool {
+    rule.ingredients.iter().all(|ingredient| {
+        let held = agent
+            .inventory
+            .iter()
+            .find(|stack| stack.def == ingredient.item)
+            .map_or(0, |stack| stack.count);
+        held >= ingredient.count
+    })
 }
 
 fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effect> {
@@ -4101,6 +4417,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -4361,6 +4678,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -4412,6 +4730,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -4951,6 +5270,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -5341,6 +5661,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -5944,6 +6265,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -6009,6 +6331,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),

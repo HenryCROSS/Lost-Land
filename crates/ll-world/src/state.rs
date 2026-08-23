@@ -1108,6 +1108,18 @@ impl WorldState {
             hasher.write_u64(u64::from(agent.unspent_skill_points));
             write_content_index_vec(&mut hasher, &agent.unlocked_skills);
             write_content_index_vec(&mut hasher, &agent.subclasses);
+            // 已知配方（配方发现批次新增）——ADR 0022 的同一条纪律：
+            // 这个字段由 `ll_sim::apply` 处理 `Effect::LearnRecipe` 时
+            // 改写，且它**真的改变结算**（`resolve_craft` 对声明了
+            // `requires_discovery` 的配方多判一道「会不会做」的闸门），
+            // 因此两个只有已知配方不同的世界必须算出不同的哈希，否则
+            // 「配方发现悄悄没落地/多学了一条」这一类跑偏测不出来。
+            // 编码手法与上面 `unlocked_skills`/`subclasses` 逐字相同
+            // （先混入长度、再逐项混入，`Vec` 保序，不涉及
+            // `HashMap`/`HashSet` 迭代顺序，约束 C5）。红/绿验证见
+            // `crates/ll-world/tests/determinism.rs`
+            // 「新增已知配方字段后世界哈希必须变化」一节。
+            write_content_index_vec(&mut hasher, &agent.known_recipes);
             hasher.write_u64(agent.skill_cooldowns.len() as u64);
             for (skill, until) in &agent.skill_cooldowns {
                 hasher.write_u64(u64::from(skill.get()));
@@ -1694,6 +1706,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -1755,6 +1768,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -1802,6 +1816,44 @@ mod tests {
 
         // Assert
         assert_ne!(hash_visible, hash_stealthed);
+    }
+
+    #[test]
+    fn 已知配方变化会改变世界哈希() {
+        // ADR 0022 红/绿验证：Agent::known_recipes 必须已经手动补进
+        // hash() 的逐字段遍历——本函数手工验证过会失败（把 hash() 里
+        // 新增的 `write_content_index_vec(&mut hasher,
+        // &agent.known_recipes);` 一行临时换成注释重跑，本测试会
+        // panic：两个只差这一个字段的世界算出同一个哈希），恢复后
+        // 转绿。这也是本批次黄金基准重冻第 2 步用的同一条手法，见
+        // crates/ll-sim/tests/replay.rs 的 EXPECTED_REPLAY_DIGEST
+        // 文档「第十八次重冻的原因」一节。
+        //
+        // 这个字段值得这道守卫，是因为它**真的改变结算**：
+        // `ll_sim::resolve::resolve_craft` 对声明了 requires_discovery
+        // 的配方多判一道「会不会做」的闸门，两个只差已知配方的世界从
+        // 这一刻起会走出不同的未来。
+        // Arrange：两个世界只差已知配方这一个字段。
+        let world_ignorant = test_world_with_one_agent(1, 0, 100);
+        let mut world_learned = test_world_with_one_agent(1, 0, 100);
+        let only_agent = world_learned
+            .actors
+            .iter_with_id()
+            .map(|(id, _)| id)
+            .next()
+            .expect("test_world_with_one_agent 恰好生成一个实体");
+        world_learned
+            .actors
+            .get_mut(only_agent)
+            .expect("刚取到的 id 必然有效")
+            .known_recipes
+            .push(ContentIndex::default());
+
+        // Act
+        let (hash_ignorant, hash_learned) = (world_ignorant.hash(), world_learned.hash());
+
+        // Assert
+        assert_ne!(hash_ignorant, hash_learned);
     }
 
     #[test]
@@ -1932,6 +1984,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2003,6 +2056,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2066,6 +2120,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2139,6 +2194,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2440,6 +2496,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2864,6 +2921,7 @@ mod tests {
             equipment,
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),

@@ -87,6 +87,7 @@ fn spawn_agent(
         equipment,
         resting: None,
         unlocked_skills: Vec::new(),
+        known_recipes: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
@@ -119,6 +120,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 sword,
                 ItemRule {
                     wear_channels: WearChannels::NONE,
+                    taught_recipes: Vec::new(),
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND.mask(),
                     stat_bonuses: Vec::new(),
@@ -133,6 +135,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 shield,
                 ItemRule {
                     wear_channels: WearChannels::NONE,
+                    taught_recipes: Vec::new(),
                     stack_limit: 1,
                     equip_mask: EquipSlot::OFF_HAND.mask(),
                     stat_bonuses: Vec::new(),
@@ -147,6 +150,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 greatsword,
                 ItemRule {
                     wear_channels: WearChannels::NONE,
+                    taught_recipes: Vec::new(),
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND
                         .mask()
@@ -415,6 +419,7 @@ fn 物品不可装备时装备意图静默无效() {
             ore,
             ItemRule {
                 wear_channels: WearChannels::NONE,
+                taught_recipes: Vec::new(),
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,

@@ -158,6 +158,7 @@ mod tests {
                     damage_category: None,
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
+                    taught_recipes: Vec::new(),
                 },
             )
             .expect("测试用注册应当成功");

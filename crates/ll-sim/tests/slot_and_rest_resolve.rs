@@ -139,6 +139,7 @@ fn spawn_agent(
         equipment: std::collections::BTreeMap::new(),
         resting,
         unlocked_skills: unlocked_skill.into_iter().collect(),
+        known_recipes: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),

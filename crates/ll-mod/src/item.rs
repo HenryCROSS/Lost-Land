@@ -260,6 +260,43 @@ pub struct ItemDef {
     /// 的字段级正则抓不到这条间接路径（它头注释「已知局限」第 2 条点名
     /// 的那一类），因此那份清单里有一条写明这条路径的豁免。
     pub tags: Vec<ContentIndex>,
+    /// 读这件物品一次能学到哪些配方（配方发现批次）——项目所有者裁定
+    /// 「菜谱就是……阅读书籍的时候获取」里「书籍」那一半的落点。空列表
+    /// （默认值）表示这件物品**不可读**，`ll_sim::intent::Intent::Read`
+    /// 对它静默无效。
+    ///
+    /// # 为什么挂在 `ItemDef` 上，不另开一张「书表」
+    ///
+    /// 完整论证见 [`ll_sim::item::ItemRule::taught_recipes`] 文档
+    /// 「为什么挂在物品上」一节，一句话版本：书**就是**物品（有重量、
+    /// 有价格、能捡能丢），另开一张表要付整套接线代价（`register-book`
+    /// 加 `GameplayTables` 字段加 `ContentTableKind` 变体加哈希覆盖加
+    /// 审计花名册加存档重映射），换来一张与 `ItemDef` 一一对应的表。
+    ///
+    /// # 为什么不是 `register-item` 的参数，走 `add_taught_recipe` 追加
+    ///
+    /// 与 [`Self::equip_mask`]/[`Self::stat_bonuses`]/[`Self::tags`] 同
+    /// 一条既有先例（`register-item` 的六参数签名不能改参数个数，会
+    /// 破坏仓库里已有的真实 mod 脚本，见 `crate::script_item_api` 模块
+    /// 文档）——脚本层对应函数是 `register-item-teaches-recipe`，Rust
+    /// 层对应方法是 [`ItemTable::add_taught_recipe`]。**追加，不是
+    /// 覆盖**：一本书可以教多条配方，语义与 [`Self::tags`] 一致。
+    ///
+    /// # 跨表引用由谁校验：两道，注册期一道 + 装载后一道
+    ///
+    /// 与 [`Self::tags`] 同一条形状（**不**同于 `RecipeDef::product`
+    /// 那条「只 intern 不跨表校验」）：脚本层的
+    /// `register-item-teaches-recipe` 在**注册期**就要求目标是一条真的
+    /// 登记在配方表里的配方。这道校验值得付出「书必须写在配方之后」这
+    /// 点顺序耦合，理由与 `register-item-tag` 校验标签 id 逐字相同——
+    /// 拼错一个配方 id 的症状是**这本书静默什么都不教**，是最难查的一
+    /// 类内容缺陷。
+    ///
+    /// 装载全部完成后 `crate::content_audit` 的
+    /// `ItemAttrs::taught_recipes` 引用检查是第二道独立防线（本方法
+    /// [`ItemTable::add_taught_recipe`] 自身不做跨表校验，因此绕过脚本
+    /// 层直接调用 Rust API 的路径由它兜住）。
+    pub taught_recipes: Vec<ContentIndex>,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -317,6 +354,12 @@ pub struct ItemAttrs {
     /// 不接受这个参数），真正的取值由后续 `register-item-tag` 调用
     /// [`ItemTable::add_tag`] 追加写入，理由同 [`ItemDef::tags`] 文档。
     pub tags: Vec<ContentIndex>,
+    /// 可教授的配方列表——`register-item` 注册时恒为空列表
+    /// （`do_register_item` 不接受这个参数），真正的取值由后续
+    /// `register-item-teaches-recipe` 调用
+    /// [`ItemTable::add_taught_recipe`] 追加写入，理由同
+    /// [`ItemDef::taught_recipes`] 文档。
+    pub taught_recipes: Vec<ContentIndex>,
 }
 
 /// 物品注册期可能出现的错误。
@@ -339,6 +382,14 @@ pub enum ItemError {
         /// 重复的那个标签。
         tag: ContentIndex,
     },
+    /// [`ItemTable::add_taught_recipe`] 把同一条配方重复挂到同一件物品
+    /// 上——理由与 [`ItemError::DuplicateTag`] 逐字相同。
+    DuplicateTaughtRecipe {
+        /// 被重复挂配方的物品。
+        item: ContentIndex,
+        /// 重复的那条配方。
+        recipe: ContentIndex,
+    },
 }
 
 impl fmt::Display for ItemError {
@@ -353,6 +404,14 @@ impl fmt::Display for ItemError {
                     "物品索引 {} 已经带有标签索引 {}，不能重复声明",
                     item.get(),
                     tag.get()
+                )
+            }
+            ItemError::DuplicateTaughtRecipe { item, recipe } => {
+                write!(
+                    f,
+                    "物品索引 {} 已经声明能教授配方索引 {}，不能重复声明",
+                    item.get(),
+                    recipe.get()
                 )
             }
             ItemError::NotDefined(index) => {
@@ -399,6 +458,9 @@ pub struct ItemView<'a> {
     pub rule_modifiers: &'a [RuleModifier],
     /// 标签列表——借用视图，不克隆，理由同 [`Self::stat_bonuses`]。
     pub tags: &'a [ContentIndex],
+    /// 可教授的配方列表（配方发现批次），见
+    /// [`ItemDef::taught_recipes`]。
+    pub taught_recipes: &'a [ContentIndex],
     /// 由 [`Self::tags`] 在注册期折算出的耐久磨损通道集合，见
     /// [`ItemTable::add_tag`] 文档「为什么在这里折算」一节。
     pub wear_channels: WearChannels,
@@ -426,6 +488,9 @@ pub struct ItemTable {
     /// 由 `tags` 折算出的派生列（不是独立声明的内容）——见
     /// [`ItemTable::add_tag`] 文档。
     wear_channels: Vec<WearChannels>,
+    /// 每件物品读一次能教会哪些配方（配方发现批次）——见
+    /// [`ItemDef::taught_recipes`]。
+    taught_recipes: Vec<Vec<ContentIndex>>,
     defined: Vec<bool>,
 }
 
@@ -454,6 +519,7 @@ impl ItemTable {
             self.damage_category.resize(new_len, None);
             self.rule_modifiers.resize(new_len, Vec::new());
             self.tags.resize(new_len, Vec::new());
+            self.taught_recipes.resize(new_len, Vec::new());
             self.wear_channels.resize(new_len, WearChannels::NONE);
         }
 
@@ -475,6 +541,7 @@ impl ItemTable {
         self.damage_category[idx] = attrs.damage_category;
         self.rule_modifiers[idx] = attrs.rule_modifiers;
         self.tags[idx] = attrs.tags;
+        self.taught_recipes[idx] = attrs.taught_recipes;
         // 派生列：`define` 恒写空——`attrs.tags` 在 `register-item` 那一刻
         // 恒是空列表，真正的取值由后续 `add_tag` 逐条折算。
         self.wear_channels[idx] = WearChannels::NONE;
@@ -512,6 +579,7 @@ impl ItemTable {
             rule_modifiers: &self.rule_modifiers[idx],
             tags: &self.tags[idx],
             wear_channels: self.wear_channels[idx],
+            taught_recipes: &self.taught_recipes[idx],
         })
     }
 
@@ -712,6 +780,36 @@ impl ItemTable {
         self.wear_channels[idx] = self.wear_channels[idx].union(wear);
         Ok(())
     }
+
+    /// 追加声明「读这件物品能学会某条配方」（配方发现批次）——脚本层
+    /// 对应函数是 `register-item-teaches-recipe`，见
+    /// [`ItemDef::taught_recipes`] 文档。目标物品必须已经 `define` 过
+    /// （ADR 0017），否则返回 [`ItemError::NotDefined`]。
+    ///
+    /// **追加，不是覆盖**——一本书教多条配方正是这个字段存在的意义。
+    /// 同一条配方重复挂到同一本书上返回
+    /// [`ItemError::DuplicateTaughtRecipe`]：那不是一个有意义的声明，
+    /// 只可能是内容作者复制粘贴出的笔误，注册期直接拒绝而不是静默去重
+    /// ——与 [`Self::add_tag`] 对重复标签的处理逐字同构。
+    ///
+    /// **不校验 `recipe` 是不是一条已注册的配方**：跨表强校验会让注册
+    /// 顺序产生耦合，完整性由 `crate::content_audit` 兜住，见
+    /// [`ItemDef::taught_recipes`] 文档「跨表引用由谁校验」一节。
+    pub fn add_taught_recipe(
+        &mut self,
+        item: ContentIndex,
+        recipe: ContentIndex,
+    ) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        let idx = item.get() as usize;
+        if self.taught_recipes[idx].contains(&recipe) {
+            return Err(ItemError::DuplicateTaughtRecipe { item, recipe });
+        }
+        self.taught_recipes[idx].push(recipe);
+        Ok(())
+    }
 }
 
 /// `resolve` 侧的堆叠上限/装备占位/属性加成查询——`ll_sim::resolve::resolve_pick_up`
@@ -737,6 +835,7 @@ impl ItemCatalog for ItemTable {
             damage_category: view.damage_category,
             rule_modifiers: view.rule_modifiers.to_vec(),
             wear_channels: view.wear_channels,
+            taught_recipes: view.taught_recipes.to_vec(),
         })
     }
 }
@@ -780,6 +879,7 @@ mod tests {
                     damage_category: None,
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
+                    taught_recipes: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -810,6 +910,7 @@ mod tests {
             damage_category: None,
             rule_modifiers: Vec::new(),
             tags: Vec::new(),
+            taught_recipes: Vec::new(),
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -859,6 +960,7 @@ mod tests {
                     damage_category: None,
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
+                    taught_recipes: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -891,6 +993,7 @@ mod tests {
                     damage_category: None,
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
+                    taught_recipes: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -903,6 +1006,7 @@ mod tests {
             rule,
             Some(ItemRule {
                 wear_channels: WearChannels::NONE,
+                taught_recipes: Vec::new(),
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
@@ -946,6 +1050,7 @@ mod tests {
             damage_category: None,
             rule_modifiers: Vec::new(),
             tags: Vec::new(),
+            taught_recipes: Vec::new(),
         }
     }
 

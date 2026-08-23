@@ -226,6 +226,17 @@ Intent::Craft {
 
 **为什么选"全部已知"**：项目所有者的原始要求只提到"需要食物系统、烹饪物品、菜谱"，没有提出"要有获取/解锁菜谱的进度感"这层诉求——在没有这个真实需求的情况下预先设计一套解锁机制（不论是新字段还是复用 `unlocked_skills`）都是 YAGNI。"全部已知"是唯一一个**不需要 `Agent` 新增任何字段**就能让二个验收示例成立的选项，且不排除未来加解锁——`known_recipes` 字段是纯粹的新增，加上它的那一天，`resolve_craft` 多一句"若 `RecipeDef` 声明需要解锁，检查 `agent.known_recipes.contains(recipe)`"即可，不需要回头改本节已经定形的其余部分。
 
+### ⚠ 更正记录：本节结论已被项目所有者推翻（配方发现批次）
+
+**上面"全部已知，不设解锁门槛"那条结论不再成立。以上原文一字未删，保留在这里供对照，但它描述的不是当前系统。**
+
+- **被谁推翻**：项目所有者，原话：「科研可以通过加点解锁，最开始设有初始可以通过阅读获取经验，也或者通过研究其他物品获取经验。**菜谱就是通过随机丢入东西煮获取或者阅读书籍的时候获取。**」
+- **因为什么**：本节当初选"全部已知"的**唯一**理由是"所有者没有提出解锁诉求，因此预先设计解锁是 YAGNI"。那句裁定直接提供了那个诉求——判断的前提消失了，结论随之失效。这不是本节论证有误，是它依赖的输入变了。
+- **本节哪一句仍然成立**：预留的那条演进路径**逐字兑现**了。落地方式正是本节写下的那两句：新增独立字段 `Agent.known_recipes`（**不**复用 `unlocked_skills`，理由就是本节列出的"静默的概念污染"，一字未改地采纳），并在 `resolve_craft` 多加一道"若配方声明需要发现，检查 `known_recipes.contains(recipe)`"的闸门。本节其余全部结论（食材/成品不建新类型、`Intent::Craft` 不复用 `Intent::Use`、`ConsumeInventoryItem` 不加 `amount`）继续沿用。
+- **与本节"试出来的"那一档的关系**：本节曾把它判为"没有任何现成机制可用……成本远超其余两个选项"。这条评估**当时是准确的**；配方发现批次真的把那个子系统做出来了（`Intent::Experiment` + `resolve_experiment`），代价确实落在本节预计的地方——一个新意图、一段新结算、一次 `DetRng` 掷骰。
+- **落地位置**：`Agent.known_recipes`（`crates/ll-world/src/entity/agent.rs`）、`Effect::LearnRecipe`（`crates/ll-sim/src/effect.rs`）、`Intent::Read`/`Intent::Experiment`（`crates/ll-sim/src/intent.rs`）、`resolve_read`/`resolve_experiment`/`resolve_craft` 第 4 道闸门（`crates/ll-sim/src/resolve.rs`）、`RecipeDef.requires_discovery` 与 `ItemDef.taught_recipes`（`crates/ll-mod/`）。端到端验收见 `crates/ll-mod/tests/example_mod_recipe_discovery.rs`。
+- **一并订正**：`crafting-system.md` 十四节①把这条冲突记为"待裁决"，该节已同步更新。
+
 ---
 
 ## 六、食物的效果：`use_effect` 今天能表达什么，缺什么

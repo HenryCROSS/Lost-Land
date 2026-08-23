@@ -44,6 +44,7 @@ use ll_script::host::ScriptEngine;
 
 use crate::active_registry::with_active_registry;
 use crate::item::{ItemAttrs, ItemError, ItemTable};
+use crate::recipe::RecipeTable;
 use crate::registry::Registry;
 use crate::tag::TagTable;
 use ll_sim::combat::Penetration;
@@ -85,6 +86,7 @@ pub fn register_item_api(engine: &mut ScriptEngine) {
     );
     engine.register_fn("register-item-resistance", register_item_resistance);
     engine.register_fn("register-item-tag", register_item_tag);
+    engine.register_fn("register-item-teaches-recipe", register_item_teaches_recipe);
 }
 
 /// `(register-item id display-name-key stack-limit base-weight base-price max-durability)`。
@@ -212,6 +214,7 @@ fn do_register_item(
                 // 恒为空列表——同上，真正的取值由后续
                 // register-item-tag 调用追加写入。
                 tags: Vec::new(),
+                taught_recipes: Vec::new(),
             },
         )
         .map(|()| true)
@@ -892,6 +895,85 @@ fn do_register_item_tag(
         .map_err(|err: ItemError| err.to_string())
 }
 
+/// `(register-item-teaches-recipe id recipe-id)`——追加声明「读这件物品
+/// 能学会某条配方」（配方发现批次），落地项目所有者的裁定「菜谱就是
+/// ……阅读书籍的时候获取」。形状照 [`register_item_tag`]：两个字符串
+/// 参数、追加语义、目标与被引用者都必须已注册。
+///
+/// - `id`：已经通过 `register-item` 注册过的完整命名空间标识符字符串。
+/// - `recipe-id`：已经通过 `register-recipe`
+///   （[`crate::script_recipe_api`]）注册过的完整命名空间标识符字符串。
+///
+/// # 为什么校验「真的是一条配方」，而不只是「这个 id 被 intern 过」
+///
+/// 与 [`register_item_tag`] 那一节逐字同理：[`Registry::get`] 对任何
+/// 已注册内容都返回 `Some`，只用它校验等于没写。这条校验拦的是
+/// `"examplemod:roast_meat_recipie"` 这类拼写错误——它的症状是**这本书
+/// 静默什么都不教**（读了一辈子也学不到东西，却没有任何报错），正是
+/// 最难查的那一类内容缺陷。
+///
+/// # 顺序要求：`register-recipe` 必须先跑
+///
+/// 与 `register-item-tag` 要求标签先注册、`recipe-requires-tool!` 要求
+/// 工具物品先注册完全同构（ADR 0017）。同一个 mod 内的脚本共享同一份
+/// 定义，跨 mod 时由 `mod.json5` 的依赖声明保证装载顺序。
+///
+/// **追加，不是覆盖**——重复把同一条配方挂到同一件物品上返回错误，见
+/// [`crate::item::ItemTable::add_taught_recipe`] 文档。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_item_teaches_recipe(id: String, recipe_id: String) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err(
+                    "register-item-teaches-recipe 在没有活跃物品表的窗口内被调用".to_string(),
+                );
+            };
+            crate::script_recipe_api::with_active_recipe_table(|recipes| {
+                let Some(recipes) = recipes else {
+                    return Err(
+                        "register-item-teaches-recipe 在没有活跃配方表的窗口内被调用".to_string(),
+                    );
+                };
+                do_register_item_teaches_recipe(registry, table, recipes, &id, &recipe_id)
+            })
+        })
+    })
+}
+
+/// [`register_item_teaches_recipe`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_item_teaches_recipe(
+    registry: &Registry,
+    table: &mut ItemTable,
+    recipes: &RecipeTable,
+    id: &str,
+    recipe_id: &str,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("物品 {id:?} 尚未通过 register-item 注册"));
+    };
+    let parsed_recipe_id = NamespacedId::parse(recipe_id)
+        .map_err(|err| format!("非法内容标识符 {recipe_id:?}：{err}"))?;
+    let Some(recipe_index) = registry.get(&parsed_recipe_id) else {
+        return Err(format!("配方 {recipe_id:?} 尚未通过 register-recipe 注册"));
+    };
+    if !recipes.is_defined(recipe_index) {
+        return Err(format!(
+            "{recipe_id:?} 是一个已注册的内容标识符，但它不是配方（没有登记在配方表里）——register-item-teaches-recipe 只接受 register-recipe 注册过的 id"
+        ));
+    }
+
+    table
+        .add_taught_recipe(index, recipe_index)
+        .map(|()| true)
+        .map_err(|err: ItemError| err.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1146,6 +1228,141 @@ mod tests {
 
     /// 建一张已经注册过一件不可堆叠武器（模拟大斧）的物品表 + 对应的
     /// registry——`register-item-equip-mask` 的测试共用这份前置状态。
+    /// 造一份「一本书 + 一条已注册配方」的夹具，供配方发现批次新增的
+    /// `register-item-teaches-recipe` 那组测试共用。
+    fn registry_table_and_recipes_with_cookbook() -> (Registry, ItemTable, RecipeTable) {
+        use crate::recipe::RecipeAttrs;
+        use ll_sim::craft::RecipeIngredient;
+
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        let mut recipes = RecipeTable::new();
+        do_register_item(
+            &mut registry,
+            &mut table,
+            "yourmod:cookbook",
+            "yourmod:item.cookbook",
+            1,
+            600,
+            9000,
+            -1,
+        )
+        .expect("书注册应当成功");
+        let category = registry.intern(NamespacedId::parse("yourmod:cooking").unwrap());
+        let meat = registry.intern(NamespacedId::parse("yourmod:meat").unwrap());
+        let bowl = registry.intern(NamespacedId::parse("yourmod:bowl").unwrap());
+        let stew = registry.intern(NamespacedId::parse("yourmod:stew_recipe").unwrap());
+        recipes
+            .define(
+                stew,
+                RecipeAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:recipe.stew").unwrap(),
+                    category,
+                    ingredients: vec![RecipeIngredient {
+                        item: meat,
+                        count: 1,
+                    }],
+                    product: bowl,
+                    product_count: 1,
+                },
+            )
+            .expect("配方注册应当成功");
+        (registry, table, recipes)
+    }
+
+    #[test]
+    fn 声明一本书能教的配方之后物品表真的记下了它() {
+        // Arrange
+        let (registry, mut table, recipes) = registry_table_and_recipes_with_cookbook();
+
+        // Act
+        let result = do_register_item_teaches_recipe(
+            &registry,
+            &mut table,
+            &recipes,
+            "yourmod:cookbook",
+            "yourmod:stew_recipe",
+        );
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        let book = registry
+            .get(&NamespacedId::parse("yourmod:cookbook").unwrap())
+            .expect("刚注册过");
+        let stew = registry
+            .get(&NamespacedId::parse("yourmod:stew_recipe").unwrap())
+            .expect("刚注册过");
+        assert_eq!(table.get(book).expect("已注册").taught_recipes, [stew]);
+    }
+
+    #[test]
+    fn 同一本书重复声明同一条配方被注册期拒绝() {
+        // 追加而非覆盖的语义下，重复声明没有任何意义，只可能是复制粘贴
+        // 的笔误——与 register-item-tag 对重复标签的处理同一条纪律。
+        // Arrange
+        let (registry, mut table, recipes) = registry_table_and_recipes_with_cookbook();
+        do_register_item_teaches_recipe(
+            &registry,
+            &mut table,
+            &recipes,
+            "yourmod:cookbook",
+            "yourmod:stew_recipe",
+        )
+        .expect("第一次应当成功");
+
+        // Act
+        let result = do_register_item_teaches_recipe(
+            &registry,
+            &mut table,
+            &recipes,
+            "yourmod:cookbook",
+            "yourmod:stew_recipe",
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 指向一个不是配方的已注册id时失败而不panic() {
+        // 这条守的正是 register-item-teaches-recipe 文档「为什么校验
+        // 真的是一条配方」那一节：只查 Registry::get 的话，把一个物品
+        // id 当配方传进来照样通过，症状是这本书静默什么都不教。
+        // Arrange
+        let (registry, mut table, recipes) = registry_table_and_recipes_with_cookbook();
+
+        // Act：yourmod:meat 确实被 intern 过，但它不在配方表里。
+        let result = do_register_item_teaches_recipe(
+            &registry,
+            &mut table,
+            &recipes,
+            "yourmod:cookbook",
+            "yourmod:meat",
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn 未注册的物品id声明教授配方返回错误() {
+        // ADR 0017：注册期完整校验，不静默创建半成品。
+        // Arrange
+        let (registry, mut table, recipes) = registry_table_and_recipes_with_cookbook();
+
+        // Act
+        let result = do_register_item_teaches_recipe(
+            &registry,
+            &mut table,
+            &recipes,
+            "yourmod:ghost_book",
+            "yourmod:stew_recipe",
+        );
+
+        // Assert
+        assert!(result.is_err());
+    }
+
     fn registry_and_table_with_great_axe() -> (Registry, ItemTable) {
         let mut registry = Registry::new();
         let mut table = ItemTable::new();
@@ -1919,6 +2136,7 @@ mod tests {
                     damage_category: None,
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
+                    taught_recipes: Vec::new(),
                 },
             )
             .expect("首次定义必成功");
@@ -1982,6 +2200,7 @@ mod tests {
                     damage_category: None,
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
+                    taught_recipes: Vec::new(),
                 },
             )
             .expect("首次定义必成功");
@@ -2030,6 +2249,7 @@ mod tests {
                     damage_category: None,
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
+                    taught_recipes: Vec::new(),
                 },
             )
             .expect("首次定义必成功");

@@ -106,6 +106,21 @@ pub enum ContentKind {
     /// 主职/种族），找不到当前会话内容时丢弃这一条存量并警告,与
     /// [`ContentKind::Skill`] 同一条判断。
     ResourcePool,
+    /// 已知配方（[`ll_world::entity::Agent::known_recipes`]，配方发现
+    /// 批次）——理由与 [`ContentKind::Skill`] 逐字相同：这是「这个角色
+    /// 知道怎么做哪些东西」的一条记录，不是实体本体的核心身份（核心
+    /// 身份是 [`ContentKind::CharacterAttribute`] 覆盖的主职/种族），
+    /// 找不到当前会话内容时丢弃这一条并警告，不区分归属。
+    ///
+    /// # 为什么不复用 [`ContentKind::Skill`]
+    ///
+    /// 两者的降级动作当前完全相同（无条件丢弃并警告），但这个枚举的
+    /// 作用不只是选动作，还包括**把丢了什么如实报给玩家**——
+    /// 上报给玩家的「这次读档丢了什么」按本枚举分类。把
+    /// 「你的存档里有一条配方在当前 mod 组合下不存在了」报成「有一个
+    /// 技能不存在了」是一次会误导排查方向的错误诊断，而这正是整套
+    /// 降级机制存在的理由。
+    Recipe,
 }
 
 /// 一条缺失内容记录归属于谁。
@@ -154,7 +169,8 @@ pub fn decide_degrade_action(
         | ContentKind::Skill
         | ContentKind::Subclass
         | ContentKind::KillCount
-        | ContentKind::ResourcePool => DegradeAction::DropWithWarning,
+        | ContentKind::ResourcePool
+        | ContentKind::Recipe => DegradeAction::DropWithWarning,
         ContentKind::CharacterAttribute => match owner {
             OwnerContext::Player => DegradeAction::Reject,
             OwnerContext::Npc | OwnerContext::None => match placeholder {

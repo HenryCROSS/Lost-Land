@@ -412,7 +412,26 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 摘要必须互不相同、也不同于既有五个变体），以及版本 7 那次事故
 /// 之后立下的那条纪律——**提交信息声称改了，不等于代码里真的改了**，
 /// 本行的字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 14;
+/// 版本 15（配方发现批次）：**两张老表各新增一列字段**，两条各自都足以
+/// 逼着版本号动——
+///
+/// - `ItemDef.taught_recipes`（`register-item-teaches-recipe` 的写入
+///   目标），[`write_item_fields`] 因此多混入一段「条数 + 逐条解析回
+///   `NamespacedId` 字符串」；
+/// - `RecipeDef.requires_discovery`（`recipe-requires-discovery!` 的
+///   写入目标），[`write_recipe_fields`] 因此多混入一个布尔字节。
+///
+/// 与版本 13 的 `ItemDef.tags` 逐条同构：长度前缀 `0`／布尔 `0` 也是一
+/// 段此前不存在的字节，因此**每一件物品、每一条配方**的条目摘要都变了
+/// （即便它一条配方都不教、也不要求发现）——否则「没有声明」与「声明恰
+/// 好编码成空」会撞在一起，理由同版本 12 那段 `None` 判别字节。
+///
+/// 守门方式同版本 13/14：本段文字 + 本模块单元测试
+/// `教配方的物品与不教配方的物品摘要不同` 与
+/// `要求发现的配方与不要求发现的配方摘要不同`，以及版本 7 那次事故之后
+/// 立下的那条纪律——**提交信息声称改了，不等于代码里真的改了**，本行的
+/// 字面值就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 15;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1342,6 +1361,11 @@ fn write_item_fields(
     for modifier in view.rule_modifiers {
         write_rule_modifier(hasher, modifier, registry);
     }
+    // 配方发现批次新增的 `ItemDef.taught_recipes`——与上面 `tags` 那条
+    // 逐字同构（先条数、再逐条把 `ContentIndex` 解析回 `NamespacedId`
+    // 字符串；绝不混入下标本身，下标依赖装载顺序）。长度前缀即便是 0
+    // 也要写，理由同 `max_durability` 的 `None` 判别字节。
+    write_resolved_content_index_slice(hasher, view.taught_recipes, registry);
 }
 
 /// 混入一个 [`SlotMask`]——直接混入底层位表示
@@ -1651,6 +1675,12 @@ fn write_recipe_fields(
     hasher.write_u64(u64::from(view.product_count));
     write_optional_resolved(hasher, view.required_station, registry);
     write_optional_resolved(hasher, view.required_tool, registry);
+    // 配方发现批次新增的 `RecipeDef.requires_discovery`——一个布尔，
+    // 不含 `ContentIndex`，直接混入 0/1。它**真的改变结算**
+    // （`ll_sim::resolve::resolve_craft` 因此多判一道「会不会做」的
+    // 闸门），按 ADR 0027「内容哈希覆盖字段值」必须进摘要：否则把一条
+    // 人人会做的配方悄悄改成需要发现，玩家的存档不会察觉内容变了。
+    hasher.write_u64(u64::from(view.requires_discovery));
 }
 
 /// 混入 [`crate::recipe_category::RecipeCategoryDef`] 的全部字段
@@ -2136,6 +2166,7 @@ mod tests {
                 damage_category: None,
                 rule_modifiers: Vec::new(),
                 tags: Vec::new(),
+                taught_recipes: Vec::new(),
             }
         }
 
@@ -2311,6 +2342,7 @@ mod tests {
                 damage_category: None,
                 rule_modifiers: Vec::new(),
                 tags: Vec::new(),
+                taught_recipes: Vec::new(),
             }
         }
 
@@ -2782,6 +2814,115 @@ mod tests {
                 conceal_permille: 1000,
             })
         );
+    }
+
+    /// 配方发现批次新增的 `ItemDef.taught_recipes` 真的进了摘要——
+    /// 见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 15」一节。
+    ///
+    /// 这条守的是一个具体的失效模式：把一本书悄悄改成什么都不教（或
+    /// 改成教另一条配方），存档若察觉不到内容变了，玩家读档后会拿到一
+    /// 个「我明明学过」却做不出来的角色，而校验会报「内容没变」。
+    #[test]
+    fn 教配方的物品与不教配方的物品摘要不同() {
+        // Arrange：两件除了 taught_recipes 之外逐字段相同的物品。
+        use crate::item::ItemAttrs;
+        use ll_core::scaled::Milli;
+        use ll_sim::combat::Penetration;
+        use ll_sim::item::SlotMask;
+
+        let mut registry = Registry::new();
+        let book = registry.intern(id("yourmod:book"));
+        let recipe_one = registry.intern(id("yourmod:recipe_one"));
+        let recipe_two = registry.intern(id("yourmod:recipe_two"));
+
+        let attrs = |taught: Vec<ContentIndex>| ItemAttrs {
+            display_name_key: id("yourmod:item.book"),
+            stack_limit: 1,
+            base_weight: Milli::from_whole(1),
+            base_price: Milli::from_whole(2),
+            max_durability: None,
+            equip_mask: SlotMask::EMPTY,
+            stat_bonuses: Vec::new(),
+            use_effect: None,
+            penetration: Penetration::NONE,
+            damage_formula: None,
+            damage_category: None,
+            rule_modifiers: Vec::new(),
+            tags: Vec::new(),
+            taught_recipes: taught,
+        };
+
+        let digest = |taught: Vec<ContentIndex>| -> u64 {
+            let mut table = ItemTable::new();
+            table
+                .define(book, attrs(taught))
+                .expect("测试用声明内部自洽");
+            let mut hasher = StateHasher::new();
+            write_item_fields(&mut hasher, &table, book, &registry);
+            hasher.finish()
+        };
+
+        // Act
+        let teaches_nothing = digest(Vec::new());
+        let teaches_one = digest(vec![recipe_one]);
+        let teaches_two = digest(vec![recipe_two]);
+        let teaches_both = digest(vec![recipe_one, recipe_two]);
+
+        // Assert：四种声明两两不同——空列表也要与「教一条」区分开
+        // （长度前缀 0 本身就是一段哈希输入），教哪一条也要区分开
+        // （逐条解析回 NamespacedId 字符串混入）。
+        assert_ne!(teaches_nothing, teaches_one);
+        assert_ne!(teaches_one, teaches_two);
+        assert_ne!(teaches_one, teaches_both);
+        assert_ne!(teaches_nothing, teaches_both);
+    }
+
+    /// 配方发现批次新增的 `RecipeDef.requires_discovery` 真的进了摘要
+    /// ——见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 15」一节。
+    ///
+    /// 失效模式与上一条对称：把一条人人会做的配方悄悄改成需要发现，
+    /// 存档若察觉不到，玩家读档后会突然做不出一直在做的东西，而校验
+    /// 会报「内容没变」。
+    #[test]
+    fn 要求发现的配方与不要求发现的配方摘要不同() {
+        // Arrange：两条除了 requires_discovery 之外逐字段相同的配方。
+        use crate::recipe::{RecipeAttrs, RecipeIngredient};
+
+        let mut registry = Registry::new();
+        let stew = registry.intern(id("yourmod:stew_recipe"));
+        let cooking = registry.intern(id("yourmod:cooking"));
+        let meat = registry.intern(id("yourmod:meat"));
+        let bowl = registry.intern(id("yourmod:bowl"));
+
+        let digest = |requires_discovery: bool| -> u64 {
+            let mut table = RecipeTable::new();
+            table
+                .define(
+                    stew,
+                    RecipeAttrs {
+                        display_name_key: id("yourmod:recipe.stew"),
+                        category: cooking,
+                        ingredients: vec![RecipeIngredient {
+                            item: meat,
+                            count: 1,
+                        }],
+                        product: bowl,
+                        product_count: 1,
+                    },
+                )
+                .expect("测试用声明内部自洽");
+            if requires_discovery {
+                table
+                    .set_requires_discovery(stew)
+                    .expect("刚 define 过，必然成功");
+            }
+            let mut hasher = StateHasher::new();
+            write_recipe_fields(&mut hasher, &table, stew, &registry);
+            hasher.finish()
+        };
+
+        // Act & Assert
+        assert_ne!(digest(false), digest(true));
     }
 
     #[test]

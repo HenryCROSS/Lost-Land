@@ -122,6 +122,23 @@ pub struct RecipeDef {
     /// 「坏掉的工具算不算装着」由 `ll_sim::resolve::resolve_craft` 回答
     /// （不算，见其文档），不是本字段的语义。
     pub required_tool: Option<ContentIndex>,
+
+    /// 这条配方是否必须先「发现」才做得出来（配方发现批次）——项目
+    /// 所有者裁定「菜谱就是通过随机丢入东西煮获取或者阅读书籍的时候
+    /// 获取」的落点，完整语义见 [`ll_sim::craft::RecipeRule::requires_discovery`]。
+    ///
+    /// `false`（默认值，也是既有全部内容的取值）= 人人天生会做，
+    /// `resolve_craft` 完全不看 `Agent::known_recipes`。
+    ///
+    /// # 为什么不是 `register-recipe` 的参数，走 `set_requires_discovery` 追加
+    ///
+    /// 与 [`Self::required_station`]/[`Self::required_tool`] 同一条既有
+    /// 先例（`register-recipe` 的七参数签名不能改参数个数，会破坏仓库
+    /// 里已有的真实 mod 脚本）——脚本层对应函数是
+    /// `recipe-requires-discovery!`（`crate::script_recipe_api`），
+    /// Rust 层对应方法是 [`RecipeTable::set_requires_discovery`]。
+    /// **覆盖，不是追加**：一条配方只有一个「要不要先学会」的答案。
+    pub requires_discovery: bool,
 }
 
 /// [`RecipeTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -157,6 +174,8 @@ pub struct RecipeView<'a> {
     pub required_station: Option<ContentIndex>,
     /// 工具前置。
     pub required_tool: Option<ContentIndex>,
+    /// 是否必须先发现，见 [`RecipeDef::requires_discovery`]。
+    pub requires_discovery: bool,
 }
 
 /// 配方注册期可能出现的错误。ADR 0017「注册期完整校验」要求这些错误
@@ -209,7 +228,16 @@ pub struct RecipeTable {
     product_count: Vec<u32>,
     required_station: Vec<Option<ContentIndex>>,
     required_tool: Vec<Option<ContentIndex>>,
+    /// 配方发现批次新增，见 [`RecipeDef::requires_discovery`]。
+    requires_discovery: Vec<bool>,
     defined: Vec<bool>,
+    /// 已注册配方的索引清单（配方发现批次新增）——[`Self::in_category`]
+    /// 要枚举「一共登记了哪些配方」，而列式存储只有「按下标查属性」的
+    /// 能力，没有把下标还原成 [`ContentIndex`] 的合法途径
+    /// （`ContentIndex` 刻意不提供 `from_raw`：索引只能来自
+    /// `ll_core::ident::Interner::intern`，见其文档）。与
+    /// [`crate::quest::QuestTable`] 的同名字段是同一个手法、同一个理由。
+    defined_ids: Vec<ContentIndex>,
 }
 
 impl RecipeTable {
@@ -253,6 +281,7 @@ impl RecipeTable {
             self.product_count.resize(new_len, 0);
             self.required_station.resize(new_len, None);
             self.required_tool.resize(new_len, None);
+            self.requires_discovery.resize(new_len, false);
         }
 
         if self.defined[idx] {
@@ -260,6 +289,7 @@ impl RecipeTable {
         }
 
         self.defined[idx] = true;
+        self.defined_ids.push(index);
         self.display_name_key[idx] = Some(attrs.display_name_key);
         self.category[idx] = Some(attrs.category);
         self.ingredients[idx] = attrs.ingredients;
@@ -297,6 +327,44 @@ impl RecipeTable {
         Ok(())
     }
 
+    /// 声明这条配方必须先被发现才做得出来（配方发现批次）——脚本层
+    /// 对应函数是 `recipe-requires-discovery!`，见
+    /// [`RecipeDef::requires_discovery`] 文档。**覆盖语义**，理由同
+    /// [`Self::set_required_station`]。
+    ///
+    /// 只有「设为真」这一个方向：没有 `clear_requires_discovery`，因为
+    /// 「不需要发现」就是不调用本函数（默认值），与
+    /// `recipe-requires-station!` 没有配套的「取消场地要求」是同一条
+    /// 既有形状——注册期声明是**加法**，不是一台可以来回拨的开关。
+    pub fn set_requires_discovery(&mut self, index: ContentIndex) -> Result<(), RecipeError> {
+        if !self.is_defined(index) {
+            return Err(RecipeError::UnknownRecipe(index));
+        }
+        self.requires_discovery[index.get() as usize] = true;
+        Ok(())
+    }
+
+    /// 某个类别下已注册的全部配方，按索引升序——
+    /// [`ll_sim::craft::RecipeCatalog::recipes_in_category`] 的真实
+    /// 实现，见该方法文档「为什么是『返回全部、由 `resolve` 自己筛』」
+    /// 一节。
+    ///
+    /// 一次线性扫描列式存储的 `category` 列。升序由「按下标从小到大
+    /// 遍历 `Vec`」直接保证，不依赖任何哈希容器（约束 C5）。
+    pub fn in_category(&self, category: ContentIndex) -> Vec<ContentIndex> {
+        let mut found: Vec<ContentIndex> = self
+            .defined_ids
+            .iter()
+            .copied()
+            .filter(|index| self.category[index.get() as usize] == Some(category))
+            .collect();
+        // 排序不依赖 `defined_ids` 的原始注册顺序——那是装载顺序，会随
+        // mod 集合变化（约束 C5）。手法同
+        // `crate::quest::QuestTable::defined_indices`。
+        found.sort_by_key(ContentIndex::get);
+        found
+    }
+
     /// 给定的配方索引当前是否已经登记过属性。
     pub fn is_defined(&self, recipe: ContentIndex) -> bool {
         self.defined
@@ -321,6 +389,7 @@ impl RecipeTable {
             product_count: self.product_count[idx],
             required_station: self.required_station[idx],
             required_tool: self.required_tool[idx],
+            requires_discovery: self.requires_discovery[idx],
         })
     }
 }
@@ -353,6 +422,7 @@ impl RecipeCatalog for RegisteredRecipes<'_> {
             product_count: view.product_count,
             required_station: view.required_station,
             required_tool: view.required_tool,
+            requires_discovery: view.requires_discovery,
         })
     }
 
@@ -361,6 +431,10 @@ impl RecipeCatalog for RegisteredRecipes<'_> {
             .get(category)
             .map(|def| def.required_subclasses.clone())
             .unwrap_or_default()
+    }
+
+    fn recipes_in_category(&self, category: ContentIndex) -> Vec<ContentIndex> {
+        self.recipes.in_category(category)
     }
 }
 

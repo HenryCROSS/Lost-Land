@@ -245,6 +245,43 @@ pub struct Agent {
     /// `ll_sim::skill_overview` 的技能树视图），写入路径是一处真实
     /// 缺口。
     pub unlocked_skills: Vec<ContentIndex>,
+    /// 已知配方集合（配方发现批次）——`Intent::Craft` 对**声明了需要
+    /// 发现**的配方（`ll_sim::craft::RecipeRule::requires_discovery`）
+    /// 多加的那道闸门读的就是这个字段。
+    ///
+    /// # 为什么是独立字段，不复用 [`Self::unlocked_skills`]
+    ///
+    /// `knowledge/design/food-and-cooking-system.md` 五节已经逐条核过
+    /// 这个选项并否掉了：`ContentIndex` 是贯穿全部内容类型的同一个全局
+    /// 号段，机制上确实装得下一个指向配方表的索引，但**语义上是一次
+    /// 静默的概念污染**——「已解锁的技能」这个名字与它现有的全部消费点
+    /// （`resolve_use_skill` 的解锁闸门、`ll_sim::skill_overview` 的
+    /// 技能树视图、`ll_content::remap::remap_unlocked_skills` 按
+    /// `ContentKind::Skill` 做的存档降级）都假设里面装的是技能。往里塞
+    /// 配方索引会让这三处各自多背一层「这条到底是技能还是配方」的判断，
+    /// 而 `remap` 那一处根本无从判断——它只有一个索引，没有类型标签，
+    /// 换 mod 读档时会把配方当成「查不到的技能」丢掉。独立字段没有这些
+    /// 问题，代价只是一个 `Vec`。
+    ///
+    /// # `Vec` 不是 `BTreeSet`
+    ///
+    /// 与 [`Self::unlocked_skills`] 逐字同理：查询模式是「这个
+    /// `ContentIndex` 在不在里面」（`contains`，`O(n)`，n 是玩家已知
+    /// 配方数，量级不超过几十），不需要有序遍历；「不重复插入」由写入
+    /// 路径自己保证（`ll_sim::apply` 处理
+    /// `ll_sim::effect::Effect::LearnRecipe` 时先查 `contains`），不
+    /// 依赖容器去重。
+    ///
+    /// # 唯一写入口是 `apply`（约束 C1 / ADR 0023）
+    ///
+    /// 与 [`Self::unlocked_skills`]/[`Self::subclasses`] 同一条纪律：
+    /// 这个字段属 `WorldState`，不属 [`Self::script_state`]，因此写入
+    /// 必须走一个独立的 `Effect` 变体（`Effect::LearnRecipe`）经
+    /// `ll_sim::apply::apply` 落地，不能塞进 `Effect::SetScriptState`。
+    /// 产出这条效果的两条发现路径见
+    /// `ll_sim::resolve::resolve_read`（读书）与
+    /// `ll_sim::resolve::resolve_experiment`（试做）。
+    pub known_recipes: Vec<ContentIndex>,
     /// 各技能的冷却到期时刻——**到期时刻，不是「剩余时长」**（关键设计
     /// 判断 4 的惰性到期判定：存一个会随时间流逝而变得过时的「还剩多少」
     /// 需要每帧主动递减维护，存「到期于哪一刻」则只需要在真正查询「能不
@@ -604,6 +641,8 @@ mod tests {
             interner.intern(NamespacedId::parse("lostland:power_strike").expect("合法标识符"));
         let ranger_subclass =
             interner.intern(NamespacedId::parse("lostland:ranger_subclass").expect("合法标识符"));
+        let roast_recipe =
+            interner.intern(NamespacedId::parse("lostland:roast_meat_recipe").expect("合法标识符"));
         let mut world_id_counter = 7u32;
         let zone = ll_core::torus::TorusSize::new(48, 32)
             .expect("48x32 是合法尺寸")
@@ -653,6 +692,10 @@ mod tests {
                 target_ticks: 480,
             }),
             unlocked_skills: vec![strike, power_strike],
+            // 非空——见本函数文档：新增字段若在这里取默认值（空
+            // `Vec`），序列化往返测试对它等于没测（空 `Vec` 序列化恒
+            // 等于自身）。
+            known_recipes: vec![roast_recipe],
             skill_cooldowns: BTreeMap::from([(power_strike, Tick(120))]),
             subclasses: vec![ranger_subclass],
             active_stat_modifiers: BTreeMap::from([(

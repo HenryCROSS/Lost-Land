@@ -77,6 +77,33 @@ pub struct RecipeRule {
     /// 判定是「装备着**且耐久未归零**」——见
     /// `crate::resolve::resolve_craft` 文档「坏掉的工具不算装着」一节。
     pub required_tool: Option<ContentIndex>,
+    /// 这条配方是否必须先「学会」才做得出来（配方发现批次）——项目
+    /// 所有者裁定「菜谱就是通过随机丢入东西煮获取或者阅读书籍的时候
+    /// 获取」的落点，**推翻了** `food-and-cooking-system.md` 五节
+    /// 「菜谱全部已知、不设解锁门槛」那条裁定（更正记录见该文档五节
+    /// 末尾）。
+    ///
+    /// `false`（既有内容的默认值）= 人人天生会做，`crate::resolve::resolve_craft`
+    /// 完全不看 `Agent::known_recipes`，与本字段落地之前逐字节等价；
+    /// `true` = 多一道闸门，行动者的 `Agent::known_recipes` 必须含有
+    /// 这条配方。
+    ///
+    /// # 为什么是**逐配方**的开关，不是全局一刀切
+    ///
+    /// 「烤一块肉」和「配一剂返魂药」不该共用同一条获取难度。所有者的
+    /// 裁定说的是「菜谱要靠发现」这件事必须**存在**，不是「每一条配方
+    /// 都必须先发现」——后者会让新角色连生火烤肉都做不了，而这不是任何
+    /// 一方要过的玩法。把开关做成内容数据，两种都表达得出来，且既有
+    /// 内容一个字不改就保持原状（默认 `false`）。
+    ///
+    /// # 与副职类别闸门（[`RecipeCatalog::category_required_subclasses`]）
+    /// 的分工
+    ///
+    /// 类别闸门问「你**有没有资格**做这一类」（你是不是工匠），本字段
+    /// 问「你**知不知道**这一张图纸」。两者正交，`resolve_craft` 分两步
+    /// 各判各的——`crafting-system.md` 十四节①那张表把这两件事拆开时
+    /// 用的就是这个分界，本字段是那一行「配方解锁」的落地。
+    pub requires_discovery: bool,
 }
 
 /// `resolve` 依赖的最小「配方定义来源」接口，见模块文档「依赖倒置」
@@ -96,6 +123,25 @@ pub trait RecipeCatalog {
     /// 的是注册期校验（`register-recipe` 要求 `category-id` 已注册）
     /// 与装载后的跨表引用校验（`ll_mod::content_audit`），不是结算期。
     fn category_required_subclasses(&self, category: ContentIndex) -> Vec<ContentIndex>;
+
+    /// 某个配方类别下已注册的全部配方，**按索引升序**（约束 C5：这个
+    /// 顺序会参与 `crate::resolve::resolve_experiment` 的候选筛选与
+    /// 随机抽取，必须确定）。
+    ///
+    /// # 为什么是「返回全部、由 `resolve` 自己筛」
+    ///
+    /// 与 [`crate::quest::QuestCatalog::kill_count_quests`]/
+    /// [`crate::subclass::SubclassUnlockCatalog::craft_unlocks`] 同一个
+    /// 既有手法：一个类别下的配方数是「内容作者写了几条」这个小量级，
+    /// 一次线性过滤远比给注册表维护一份「按类别 + 按食材」的反向索引
+    /// 便宜——后者要为一个每局只会触发几十次的动作，付出装载期建索引
+    /// 与运行期维护一致性的代价。
+    ///
+    /// 查不到这个类别时返回空列表（不是错误）——理由同
+    /// [`Self::category_required_subclasses`]：ADR 0015，未注册的索引
+    /// 当作「没有」，内容错误由注册期校验与 `ll_mod::content_audit`
+    /// 拦，不由结算期拦。
+    fn recipes_in_category(&self, category: ContentIndex) -> Vec<ContentIndex>;
 }
 
 /// 空配方目录：查询任何配方恒返回 `None`，任何类别恒返回空闸门——
@@ -114,6 +160,10 @@ impl RecipeCatalog for NoRecipes {
     fn category_required_subclasses(&self, _category: ContentIndex) -> Vec<ContentIndex> {
         Vec::new()
     }
+
+    fn recipes_in_category(&self, _category: ContentIndex) -> Vec<ContentIndex> {
+        Vec::new()
+    }
 }
 
 #[cfg(test)]
@@ -129,6 +179,19 @@ mod tests {
 
         // Act & Assert
         assert_eq!(NoRecipes.recipe(index), None);
+    }
+
+    #[test]
+    fn 空配方目录里任何类别都查不出配方() {
+        // 与上面两条同一条降级方向：空目录不该表现成「某个类别下有
+        // 一堆配方，只是查不到定义」——`resolve_experiment` 因此在没接
+        // 目录时恒产出空效果，而不是对着一串幽灵索引掷骰。
+        // Arrange
+        let mut interner = Interner::new();
+        let category = interner.intern(NamespacedId::parse("lostland:cooking").unwrap());
+
+        // Act & Assert
+        assert!(NoRecipes.recipes_in_category(category).is_empty());
     }
 
     #[test]

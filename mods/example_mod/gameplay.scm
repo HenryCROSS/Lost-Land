@@ -40,6 +40,8 @@
 ;;   register-recipe                         crates/ll-mod/src/script_recipe_api.rs
 ;;   recipe-requires-station!                crates/ll-mod/src/script_recipe_api.rs
 ;;   recipe-requires-tool!                   crates/ll-mod/src/script_recipe_api.rs
+;;   recipe-requires-discovery!              crates/ll-mod/src/script_recipe_api.rs
+;;   register-item-teaches-recipe            crates/ll-mod/src/script_item_api.rs
 ;;   register-subclass-unlock                crates/ll-mod/src/script_subclass_api.rs
 
 ;; 一个新职业：亡灵法师，意志向。
@@ -582,6 +584,48 @@
                  "examplemod:forging"
                  (list "examplemod:iron_ingot") (list 1)
                  "examplemod:arrow" 5)
+
+;; ── 配方发现（配方发现批次）─────────────────────────────────────────
+;;
+;; 项目所有者裁定原话：「科研可以通过加点解锁，最开始设有初始可以通过
+;; 阅读获取经验，也或者通过研究其他物品获取经验。**菜谱就是通过随机
+;; 丢入东西煮获取或者阅读书籍的时候获取。**」
+;;
+;; 这条裁定**推翻了** knowledge/design/food-and-cooking-system.md 五节
+;; 「菜谱全部已知、不设解锁门槛」——更正记录写在那份文档五节末尾，原文
+;; 未删。下面五行是那条裁定在内容里的完整落点，覆盖两条发现路径：
+;;
+;;   路径一（读书）：examplemod:cookbook 声明它教 herb_stew_recipe，
+;;                    Intent::Read 把它写进 Agent::known_recipes。
+;;   路径二（试做）：手上同时有肉和香草时提交 Intent::Experiment，
+;;                    resolve_experiment 在烹饪类别里筛出「食材齐全的
+;;                    未知配方」并掷一次骰选中一条。
+;;
+;; 两条路径都由 crates/ll-mod/tests/example_mod_recipe_discovery.rs 经
+;; TurnEngine 端到端验收（ADR 0018），并各配一条反例（不读书 / 不试做
+;; 时制作必须失败）。
+
+;; 一味新食材与一道新成品。都不占装备槽位，耐久上限一律传 -1。
+(register-item "examplemod:wild_herb" "examplemod:wild_herb_display_name" 20 100 200 -1)
+(register-item "examplemod:herb_stew" "examplemod:herb_stew_display_name" 10 800 1500 -1)
+
+;; 配方⑤：**本仓库第一条需要先发现的配方**。两味食材（肉 + 香草）——
+;; 一味的话「随机丢东西煮」这个动作就退化成「丢那一样东西」，试不出
+;; 「组合」这个意思。类别仍是不设副职闸门的烹饪，因此人人都试得。
+(register-recipe "examplemod:herb_stew_recipe" "examplemod:herb_stew_recipe_display_name"
+                 "examplemod:cooking"
+                 (list "examplemod:raw_meat" "examplemod:wild_herb") (list 1 1)
+                 "examplemod:herb_stew" 1)
+(recipe-requires-discovery! "examplemod:herb_stew_recipe")
+
+;; 一本书。它**不是**消耗品：register-item-use-effect 一次都没调用，
+;; 因此 Intent::Use 对它静默无效；读它走的是 Intent::Read，而
+;; resolve_read 不产出任何 ConsumeInventoryItem——读完书还在背上。
+;;
+;; register-item-teaches-recipe 必须排在对应 register-recipe 之后，与
+;; recipe-requires-station! 同一条顺序要求（注册期跨表校验，ADR 0017）。
+(register-item "examplemod:cookbook" "examplemod:cookbook_display_name" 1 600 9000 -1)
+(register-item-teaches-recipe "examplemod:cookbook" "examplemod:herb_stew_recipe")
 
 ;; ---------------------------------------------------------------------
 ;; 运行期事件订阅（事件监听 API 批次）

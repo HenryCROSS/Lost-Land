@@ -340,6 +340,7 @@ fn spawn_player(world: &mut WorldState, pos: TorusPos) -> EntityId {
         equipment: std::collections::BTreeMap::new(),
         resting: None,
         unlocked_skills: Vec::new(),
+        known_recipes: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),

@@ -188,6 +188,7 @@ fn spawn_agent(
         unlocked_skills,
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
+        known_recipes: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
         script_state: BTreeMap::new(),

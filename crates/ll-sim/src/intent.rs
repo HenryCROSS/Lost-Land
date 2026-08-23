@@ -349,7 +349,9 @@ pub enum Intent {
     /// # 谁会产出这个变体——本批次的已知缺口，如实标注
     ///
     /// **目前没有任何产出者。** [`intent_from_input`] 不映射本变体
-    /// （它至今只映射 `Move`/`Wait`/`ToggleStealth` 三种），
+    /// （它至今只映射 `Move`/`Wait` 两种——本行此前写的是「三种，含
+    /// `ToggleStealth`」，与该函数的实际代码不符，配方发现批次核实后
+    /// 更正），
     /// `ll_script::api::intent::parse_intent` 也不识别它——制作界面
     /// （`action-capability-and-input-context.md` 的 `UiMode` 模式栈）
     /// 是纯设计零实现。这与 `PickUp`/`Drop`/`Equip`/`Rest`/`Loot`/`Use`
@@ -450,6 +452,97 @@ pub enum Intent {
         /// 要放弃哪个副职——指向副职表。
         subclass: ContentIndex,
     },
+    /// 读背包里的一件东西（配方发现批次）——项目所有者裁定「最开始设有
+    /// 初始可以通过阅读获取经验……菜谱就是……阅读书籍的时候获取」里
+    /// 「阅读」那个动作本身。
+    ///
+    /// # 为什么是新变体，不复用 [`Intent::Use`]（ADR 0021 论证）
+    ///
+    /// ADR 0021 的判据是「有真正可共享的算法」，不是「形状相似」。逐条
+    /// 核对 `crate::resolve::resolve_use_item` 那段算法的每一步，与
+    /// 「读」需要的每一步：
+    ///
+    /// | 步骤 | `Intent::Use` | 读 |
+    /// |---|---|---|
+    /// | 找背包里那一堆 | 要 | 要 |
+    /// | 消耗一个单位 | **恒消耗** | **恒不消耗** |
+    /// | 效果来源 | `ItemRule::use_effect`（`SkillEffect`） | `ItemRule::taught_recipes` |
+    /// | 效果去向 | 伤害/资源/临时属性修正 | `Agent::known_recipes` |
+    /// | 效果承受者 | 恒是发起者 | 恒是发起者 |
+    ///
+    /// 五步里只有第一步与第五步相同，而第一步是一行 `iter().find`。
+    /// 真正的分歧在第二步：**书读完不会消失**。把它塞进 `Intent::Use`
+    /// 意味着 `resolve_use_item` 要在「消耗一个单位」这一步之前先分支
+    /// 判断「这件东西是不是书」——那正是本仓库既有变体反复拒绝过的
+    /// 「一个意图内部分支判断，让『这次到底发生了什么』在 `Intent` 层
+    /// 就变得含糊」（见 [`Intent::Loot`] 文档「为什么不是
+    /// `Intent::PickUp` 多分支一条判断」一节的同一条论证）。
+    ///
+    /// 反过来说，若某天真出现「读一次就烧掉的一次性卷轴」，那是给
+    /// `ItemRule` 加一条「读后消耗」声明，不是把两个意图合并——意图边界
+    /// 由「玩家在做哪个动作」决定，不由「结算里有几行代码碰巧一样」决定。
+    ///
+    /// # 为什么携带 `def`，不携带目标
+    ///
+    /// 与 [`Intent::Use`]/[`Intent::Drop`]/[`Intent::Equip`] 同一条纪律：
+    /// 玩家从自己背包的已知列表里选「读哪一种东西」，效果恒施于发起者
+    /// 自身（读书的是自己），没有「读给别人听」这个真实场景需要表达。
+    ///
+    /// # 谁会产出这个变体——如实标注的已知缺口
+    ///
+    /// **目前没有任何键位产出者。** [`intent_from_input`] 至今只映射
+    /// `Move`/`Wait` 两种（见其文档），`PickUp`/`Drop`/`Equip`/`Unequip`/
+    /// `Rest`/`Loot`/`Use`/`ToggleStealth`/`Craft`/`AllocateAttributePoint`/
+    /// `LearnSkill`/`AbandonSubclass` 十二个既有玩法意图同样一个都没绑
+    /// 键——输入映射层整体尚未展开，不是本变体特有的缺口。本批次落地的
+    /// 是「书声明教哪些配方 → 读 → 写进 `Agent::known_recipes` → 制作
+    /// 闸门放行」这一整条链路，验收证据走测试里直接构造本变体经
+    /// [`crate::turn::TurnEngine`] 提交（见
+    /// `crates/ll-mod/tests/example_mod_recipe_discovery.rs`）。
+    Read {
+        /// 发起者，同时是知识的去处。
+        actor: EntityId,
+        /// 要读的那一种东西——玩家从自己背包的已知列表里选。
+        def: ContentIndex,
+    },
+    /// 拿手上的材料在某个配方类别里试做一次（配方发现批次）——项目
+    /// 所有者裁定「菜谱就是通过**随机丢入东西煮**获取」的落点。
+    ///
+    /// # 为什么携带的是「类别」而不是一串食材
+    ///
+    /// 两条独立的理由，任一条单独成立：
+    ///
+    /// 1. **`Intent` 派生 `Copy`**（见本枚举的 `derive` 列表），装不下
+    ///    `Vec<ContentIndex>`。这不是可以顺手放宽的约束：`Copy` 是
+    ///    「意图流可以被廉价地记录、重放、逐条比较」这条重放能力的基础
+    ///    （见模块文档开篇）。
+    /// 2. **与既有纪律一致**。[`Intent::PickUp`] 不指定「要捡哪一种」、
+    ///    [`Intent::Loot`] 不指定「要搜刮出什么」，理由都是「发起者事先
+    ///    并不知道」。试做正是这种情形的极端版本：玩家**根本不可能知道**
+    ///    哪几味材料凑得成一条他还没发现的配方——那正是「发现」这两个字
+    ///    的全部含义。让 `Intent` 携带一串食材，等于假装玩家已经知道答案。
+    ///
+    /// 于是这条意图的语义是「我在**这一类**上折腾一下手头的东西」，
+    /// 「手头有什么」由 `crate::resolve::resolve_experiment` 结合当时
+    /// 的 `WorldState` 现算。
+    ///
+    /// # 为什么不复用 [`Intent::Craft`]
+    ///
+    /// 输入不同（这里是**类别**索引，那里是**配方**索引——而「知道是
+    /// 哪条配方」恰恰是这个动作要产出的东西，不是它的输入），输出也
+    /// 不同（这里产出一条 [`crate::effect::Effect::LearnRecipe`]，不产
+    /// 出任何成品、也不消耗任何食材，见 `resolve_experiment` 文档
+    /// 「为什么失败与成功都不消耗食材」一节）。**发现和制作是两件事。**
+    ///
+    /// # 输入映射
+    ///
+    /// 同 [`Intent::Read`]，见其文档最后一节。
+    Experiment {
+        /// 发起者，同时是材料的出处与知识的去处。
+        actor: EntityId,
+        /// 在哪一类里试——指向配方类别表。
+        category: ContentIndex,
+    },
 }
 
 impl Intent {
@@ -480,7 +573,9 @@ impl Intent {
             | Intent::Craft { actor, .. }
             | Intent::AllocateAttributePoint { actor, .. }
             | Intent::LearnSkill { actor, .. }
-            | Intent::AbandonSubclass { actor, .. } => actor,
+            | Intent::AbandonSubclass { actor, .. }
+            | Intent::Read { actor, .. }
+            | Intent::Experiment { actor, .. } => actor,
         }
     }
 }

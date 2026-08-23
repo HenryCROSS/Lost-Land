@@ -844,4 +844,46 @@ pub enum Effect {
         /// 放弃了哪个副职。
         subclass: ContentIndex,
     },
+    /// 把一条配方加进 [`ll_world::entity::Agent::known_recipes`]（配方
+    /// 发现批次）——项目所有者裁定「菜谱就是通过随机丢入东西煮获取或者
+    /// 阅读书籍的时候获取」在效果层的唯一落点。
+    ///
+    /// # 两条产出路径，一个效果变体
+    ///
+    /// `crate::resolve::resolve_read`（读一本书）与
+    /// `crate::resolve::resolve_experiment`（拿手上的材料试做）产出的
+    /// 是同一条效果——ADR 0021 的判据在这里成立且方向明确：两条路径**共
+    /// 享的是「把这条索引写进这个角色的已知配方」这段完整算法**，差别
+    /// 全在「怎么选出这条索引」，而那一步留在各自的 `resolve` 里。给两
+    /// 条路径各造一个只有名字不同的效果变体，会逼 `apply` 为逐字相同的
+    /// 一段 `push` 写两遍。
+    ///
+    /// # 为什么不能塞进 [`Effect::SetScriptState`]（ADR 0023）
+    ///
+    /// 与 [`Effect::GrantSubclass`] 逐字同理：`Agent::known_recipes` 属
+    /// `WorldState`，不属 `Agent::script_state`，因此需要自己的效果变体。
+    ///
+    /// # 为什么不复用 [`Effect::LearnSkill`]
+    ///
+    /// 目标字段不同（`known_recipes` vs `unlocked_skills`），且
+    /// `LearnSkill` 在 `apply` 里**还要扣一点技能点**
+    /// （`unspent_skill_points`），而学会一条配方不花费任何点数——复用
+    /// 会让 `apply` 那一条分支多一个「这次要不要扣点」的判断，把两件
+    /// 语义无关的事绑在一起。见
+    /// `knowledge/design/food-and-cooking-system.md` 五节「复用
+    /// `unlocked_skills` 是一次静默的概念污染」的同一条论证。
+    ///
+    /// # `apply` 不做任何判断
+    ///
+    /// 去重（已经知道就不再加一份）在产出侧判完——两个 `resolve` 都先
+    /// 过滤掉 `agent.known_recipes.contains(...)` 的条目才产出效果，不
+    /// 满足就一条效果都不产出。`apply` 收到这条效果时是无条件的
+    /// `push`，与 [`Effect::GrantSubclass`]/[`Effect::LearnSkill`] 同一
+    /// 条「闸门在 `resolve`、`apply` 无条件执行」的既有形状。
+    LearnRecipe {
+        /// 学会配方的实体。
+        actor: EntityId,
+        /// 学会了哪条配方，指向配方表。
+        recipe: ContentIndex,
+    },
 }

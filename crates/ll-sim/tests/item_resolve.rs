@@ -87,6 +87,7 @@ fn spawn_agent(world: &mut WorldState, inventory: Vec<ItemStack>) -> EntityId {
         equipment: BTreeMap::new(),
         resting: None,
         unlocked_skills: Vec::new(),
+        known_recipes: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
@@ -112,6 +113,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
             arrow,
             ItemRule {
                 wear_channels: WearChannels::NONE,
+                taught_recipes: Vec::new(),
                 stack_limit: 99,
                 equip_mask: ll_sim::item::SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),

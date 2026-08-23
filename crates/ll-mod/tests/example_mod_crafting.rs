@@ -24,8 +24,10 @@
 //! # 本文件不验收什么
 //!
 //! **玩家怎么提交一次制作。** `Intent::Craft` 目前没有任何产出者：
-//! `ll_sim::intent::intent_from_input` 只映射 `Move`/`Wait`/
-//! `ToggleStealth` 三种，制作界面（`UiMode` 模式栈）是纯设计零实现。
+//! `ll_sim::intent::intent_from_input` 只映射 `Move`/`Wait` 两种（本行
+//! 此前写的是「三种，含 `ToggleStealth`」，与该函数的实际代码不符，
+//! 配方发现批次核实后更正），制作界面（`UiMode` 模式栈）是纯设计零
+//! 实现。
 //! 这与 `PickUp`/`Drop`/`Equip`/`Rest`/`Loot`/`Use` 六个既有玩法意图
 //! 的处境完全相同——输入映射层整体尚未展开。本文件里那个「AI 策略
 //! 直接返回 `Intent::Craft`」正是设计文档八节⑦点名的最小占位提交
@@ -286,6 +288,7 @@ fn spawn_agent(world: &mut WorldState, pos: (i32, i32), scene: &Scene) -> Entity
         equipment: scene.equipment.clone(),
         resting: None,
         unlocked_skills: Vec::new(),
+        known_recipes: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: scene.subclasses.clone(),
         active_stat_modifiers: BTreeMap::new(),

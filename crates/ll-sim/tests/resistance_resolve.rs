@@ -138,6 +138,7 @@ fn spawn_agent(
         equipment,
         resting: None,
         unlocked_skills: Vec::new(),
+        known_recipes: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
@@ -161,6 +162,7 @@ fn spawn_agent(
 fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
     ItemRule {
         wear_channels: WearChannels::NONE,
+        taught_recipes: Vec::new(),
         stack_limit: 1,
         equip_mask: EquipSlot::MAIN_HAND.mask(),
         stat_bonuses: Vec::new(),
@@ -176,6 +178,7 @@ fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
 fn armor_rule(amount: i32) -> ItemRule {
     ItemRule {
         wear_channels: WearChannels::NONE,
+        taught_recipes: Vec::new(),
         stack_limit: 1,
         equip_mask: EquipSlot::OFF_HAND.mask(),
         stat_bonuses: vec![StatBonus {

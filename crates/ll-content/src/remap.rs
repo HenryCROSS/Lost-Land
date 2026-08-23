@@ -333,6 +333,12 @@ fn remap_agent(
         ref mut unlocked_skills,
         ref mut skill_cooldowns,
         ref mut subclasses,
+        // 已知配方（配方发现批次新增）：每一条都是指向 RecipeTable 的
+        // ContentIndex，依赖 mod 加载顺序，必须显式重映射——见下方
+        // remap_known_recipes。这里**不能**写成 `known_recipes: _`：
+        // 那正是本文件历史上 active_stat_modifiers 出过的那次事故的
+        // 形态（换 mod 读档时静默清空），见模块文档「完整性如何保证」。
+        ref mut known_recipes,
         // 临时属性修正外层按 AttributeKind（引擎内置的封闭枚举，不是
         // 内容注册表索引）为键，不需要重映射；但内层键是「来源」
         // （buffs-and-triggers.md 六节①，`ContentIndex`）——六节存储
@@ -402,6 +408,7 @@ fn remap_agent(
     remap_unlocked_skills(remapper, unlocked_skills)?;
     remap_skill_cooldowns(remapper, skill_cooldowns)?;
     remap_subclasses(remapper, subclasses)?;
+    remap_known_recipes(remapper, known_recipes)?;
     remap_active_stat_modifiers(remapper, active_stat_modifiers)?;
     remap_creature_kind(remapper, creature_kind, owner)?;
     remap_resource_pools(remapper, resource_pools)?;
@@ -573,6 +580,32 @@ fn remap_unlocked_skills(
         }
     }
     *unlocked_skills = kept;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的已知配方列表（配方发现批次）：找不到当前会话
+/// 内容的配方**丢弃并警告**（[`ContentKind::Recipe`]）——与
+/// [`remap_unlocked_skills`] 同一条判断：知不知道一张图纸是角色持有的
+/// 一条记录，不是它的核心身份，缺一条不等于「失去自己」。
+///
+/// # 丢弃之后不需要「退还」任何东西
+///
+/// 与 `unspent_skill_points` 那一段相反的情形：学会一条配方**不花费
+/// 任何可退还的资源**（读书不消耗书，试做不消耗食材，见
+/// `ll_sim::resolve::resolve_read`/`resolve_experiment` 文档），因此
+/// 「丢弃时该退什么」这个在技能点那里必须回答的问题在这里根本不存在。
+/// 换回原来的 mod 组合时，配方索引重新解析得到、这条记录原样回来。
+fn remap_known_recipes(
+    remapper: &mut Remapper<'_>,
+    known_recipes: &mut Vec<ContentIndex>,
+) -> Result<(), LoadError> {
+    let mut kept = Vec::with_capacity(known_recipes.len());
+    for recipe in known_recipes.drain(..) {
+        if let Some(new_recipe) = remapper.remap_droppable(recipe, ContentKind::Recipe)? {
+            kept.push(new_recipe);
+        }
+    }
+    *known_recipes = kept;
     Ok(())
 }
 
@@ -796,6 +829,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -1529,6 +1563,84 @@ mod tests {
                 .get(entity)
                 .expect("实体应当仍存在")
                 .equipment
+                .is_empty()
+        );
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
+    }
+
+    #[test]
+    fn 已知配方按字符串对号重映射到新索引() {
+        // Arrange：配方发现批次新增的 Agent::known_recipes——与已解锁
+        // 技能同一条判据。这条守的是本文件模块文档「完整性如何保证」
+        // 记的那次真实事故（active_stat_modifiers 被写成 `field: _`，
+        // 换 mod 读档时静默清空）在新字段上的重演：若 remap_agent 的
+        // 穷尽解构把 known_recipes 吞成 `_`，本测试会拿到旧索引而红。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let stew_old = save_registry.intern(id("lostland:herb_stew_recipe"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记，打乱顺序
+        let stew_new = current.intern(id("lostland:herb_stew_recipe"));
+        assert_ne!(
+            stew_old, stew_new,
+            "两边索引必须真的不同，否则这条测试等于没测"
+        );
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.known_recipes.push(stew_old);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(actions.is_empty());
+        assert_eq!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .known_recipes,
+            vec![stew_new]
+        );
+    }
+
+    #[test]
+    fn 已知配方对应的内容在当前会话找不到时整条丢弃并记录droppwithwarning() {
+        // Arrange：换掉一个 mod 之后那条配方不存在了——按
+        // ContentKind::Recipe 无条件丢弃并警告（degrade.rs 的
+        // decide_degrade_action），不是拒绝整个存档：知不知道一张图纸
+        // 不是角色的核心身份。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished = save_registry.intern(id("lostland:vanished_recipe"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.known_recipes.push(vanished);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .known_recipes
                 .is_empty()
         );
         assert_eq!(actions, vec![DegradeAction::DropWithWarning]);

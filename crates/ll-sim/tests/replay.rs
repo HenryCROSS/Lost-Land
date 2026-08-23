@@ -110,6 +110,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         equipment: std::collections::BTreeMap::new(),
         resting: None,
         unlocked_skills: Vec::new(),
+        known_recipes: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -153,6 +154,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         equipment: std::collections::BTreeMap::new(),
         resting: None,
         unlocked_skills: Vec::new(),
+        known_recipes: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -632,7 +634,42 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
 ///    `17_832_502_802_782_915_631` 在两次独立进程里稳定复现（不是一次性
 ///    偶然值），才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 17_832_502_802_782_915_631;
+/// # 第十八次重冻的原因（配方发现批次）
+///
+/// [`ll_world::entity::Agent`] 新增一个字段
+/// （`known_recipes`，已知配方集合，项目所有者裁定「菜谱就是通过随机
+/// 丢入东西煮获取或者阅读书籍的时候获取」的存储落点），
+/// `WorldState::hash()` 相应地多混入一段
+/// `write_content_index_vec`（先长度、再逐项），摘要因此改变，与前
+/// 十七次重冻同一条先例。
+///
+/// **摘要改变本身是预期内、也是必须的**：`known_recipes` 真的改变结算
+/// （`ll_sim::resolve::resolve_craft` 对声明了 `requires_discovery` 的
+/// 配方多判一道闸门），按 ADR 0022 它必须进哈希；若这次改动之后摘要
+/// **没有**变化，那才是缺陷——说明新字段根本没进哈希。
+///
+/// **本批次的其余改动对这条回放逐位无影响**——两个新意图
+/// （`Intent::Read`/`Intent::Experiment`）的结算分支、新增的
+/// `Effect::LearnRecipe` 在 `apply` 侧的分支、`resolve_craft` 新增的第
+/// 4 道闸门，全部以「提交了那两个新意图」或「这条配方声明了
+/// `requires_discovery`」为前提，而本回放的意图流从不提交新意图、也
+/// 完全不接配方目录（走 `ll_sim::craft::NoRecipes`）。下面第 2 步正是
+/// 为了把这句话钉成实测结论，而不是一句推理。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 改动完成后先跑一次，确认这条测试确实红了，且报出的 `right`
+///    正是旧常量 `17_832_502_802_782_915_631`（基线确实是它，不是记忆）。
+/// 2. 把 `state.rs` `hash()` 里新增的那**一行**
+///    （`write_content_index_vec(&mut hasher, &agent.known_recipes);`）
+///    临时替换成一行注释重新跑，其余全部改动原样保留——摘要精确回到
+///    旧常量 `17_832_502_802_782_915_631`（测试转绿）。这一步同时证明
+///    了两件事：新摘要的变化只由这一行引起；本批次在
+///    `resolve`/`apply`/`ll-mod` 侧的全部改动没有夹带任何行为漂移。
+/// 3. 恢复那一行之后，在改动后的代码上把这条测试单独跑了两次（两次
+///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
+///    `14_636_562_673_181_379_151` 在两次独立进程里稳定复现（不是一次性
+///    偶然值），才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 14_636_562_673_181_379_151;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

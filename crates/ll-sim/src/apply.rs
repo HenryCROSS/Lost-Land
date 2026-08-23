@@ -296,6 +296,19 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.subclasses.retain(|held| held != subclass);
             }
         }
+        Effect::LearnRecipe { actor, recipe } => {
+            // 同上：去重（已经知道就不产出效果）在产出侧判完
+            // （`resolve_read`/`resolve_experiment` 都先过滤
+            // `known_recipes.contains`）。这里是 `Agent::known_recipes`
+            // 在本仓库里唯一的写入口（约束 C1 / ADR 0023）。
+            //
+            // **不扣任何点数**——与上面 `LearnSkill` 的显著差别，理由见
+            // `Effect::LearnRecipe` 文档「为什么不复用 `Effect::LearnSkill`」
+            // 一节：学会一条配方不消费技能点，也不消费食材。
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.known_recipes.push(*recipe);
+            }
+        }
         Effect::AdjustResourcePool { actor, pool, delta } => {
             if let Some(agent) = world.actors.get_mut(*actor) {
                 let current = agent.resource_pools.entry(*pool).or_insert(0);
@@ -603,6 +616,7 @@ mod tests {
             equipment: std::collections::BTreeMap::new(),
             resting: None,
             unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),

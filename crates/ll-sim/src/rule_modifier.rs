@@ -615,6 +615,7 @@ mod tests {
                 .find(|(id, _)| *id == item)
                 .map(|(_, modifiers)| ItemRule {
                     wear_channels: crate::item::WearChannels::NONE,
+                    taught_recipes: Vec::new(),
                     stack_limit: 1,
                     equip_mask: SlotMask::EMPTY,
                     stat_bonuses: Vec::new(),
