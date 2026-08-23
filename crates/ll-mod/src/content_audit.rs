@@ -141,6 +141,7 @@ use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_sim::formula::FormulaDef;
 use ll_sim::item::WearChannels;
 use ll_sim::skill::ResourceCost;
+use ll_sim::subclass::{CraftUnlockRule, SubclassUnlockCatalog};
 use ll_sim::xp_curve::XpCurveDef;
 use ll_world::terrain::TerrainKind;
 use ll_world::weather::WEATHER_SCALE_ONE;
@@ -198,6 +199,49 @@ pub struct ReferenceViolation {
     /// 目标实际落在哪张表；[`ContentTableKind::Opaque`] 表示"这个 id
     /// 被 intern 过，但没有任何内容表定义它"。
     pub actual: ContentTableKind,
+}
+
+/// 一条「这个副职永远拿不到」的死锁：某个副职的获得条件要求在某个
+/// 配方类别里做满 N 次，而那个类别的副职闸门要求的副职**全都**同样
+/// 拿不到。
+///
+/// # 这是什么形状的错误
+///
+/// 最短的一环是自环：`register-subclass-unlock` 让副职 S 从「在类别 C
+/// 里做满 N 次」获得，`recipe-category-requires-subclass!` 又让类别 C
+/// 要求副职 S 才能做——「要当工匠才能锻造，要锻造才能当工匠」。两条
+/// 声明各自完全合法，合起来玩家永远做不了 C 里的任何配方，也就永远
+/// 攒不到那 N 次。`ll_sim::resolve::resolve_craft` 的副职闸门**每次
+/// 制作都判**，所以两边真的互相等死，而且全程零报错、零日志。
+///
+/// 环不止自环一种：S₁ 靠 C₁ 获得、C₁ 要求 S₂、S₂ 靠 C₂ 获得、C₂ 又
+/// 要求 S₁ 同样死锁。因此判据不是"找自环"，而是**可达性**，见
+/// [`detect_unlock_deadlocks`]。
+///
+/// # 为什么两个注册函数各自拦不住
+///
+/// `register-subclass-unlock` 只看得到 [`crate::subclass::SubclassTable`]，
+/// `recipe-category-requires-subclass!` 只看得到
+/// [`crate::recipe_category::RecipeCategoryTable`]，且两条声明的先后
+/// 顺序不固定——任何一边单方面都判不了。装载后的本 pass 是唯一同时
+/// 看得到两张表的地方（`knowledge/design/subclass-system.md` 八节⑤
+/// 记录的正是这条）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubclassUnlockDeadlock {
+    /// 永远拿不到的那个副职。
+    pub subclass: ContentIndex,
+    /// 上一字段对应的 id；`None` 表示索引在本次装载的注册表里反查不到
+    /// （理由同 [`ReferenceViolation::target_id`]）。
+    pub subclass_id: Option<NamespacedId>,
+    /// 它的获得条件要数哪个配方类别的制作次数。
+    pub category: ContentIndex,
+    /// 上一字段对应的 id——由 [`CraftUnlockRule::category_id`] 在注册期
+    /// 一次性解析好，随规则带过来，不需要反查。
+    pub category_id: NamespacedId,
+    /// 那个类别的副职闸门要求的全部副职（any-of）——环的另一半。这些
+    /// 副职**全都**拿不到，正是本条死锁成立的原因；报进错误文案，作者
+    /// 才看得出环绕在哪里。
+    pub gate: Vec<Option<NamespacedId>>,
 }
 
 /// 一个从来没有被任何一条本命名空间内容设成非默认值的字段。
@@ -439,6 +483,13 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
 pub struct ContentAuditReport {
     /// ②：引用完整性违规，按"内容注册顺序 → 字段声明顺序"排列。
     pub reference_violations: Vec<ReferenceViolation>,
+    /// ②：副职获得条件与配方类别闸门互相锁死的那些副职，按副职
+    /// `ContentIndex` 升序排列（[`SubclassUnlockCatalog::craft_unlocks`]
+    /// 的列序，确定性见模块文档「确定性」一节）。
+    ///
+    /// 归在②（阻断启动）而不是③（只在测试里断言）的理由见
+    /// [`Self::subclass_unlock_reachability`] 文档。
+    pub unlock_deadlocks: Vec<SubclassUnlockDeadlock>,
     /// ③：从没被任何一条本命名空间内容设成非默认值的字段，按"首次
     /// 观察到该字段的顺序"排列（即内容注册顺序 → 字段声明顺序）。
     pub uncovered_fields: Vec<UncoveredField>,
@@ -459,6 +510,13 @@ pub struct ContentAuditReport {
     /// 本次校验实际观察过多少个字段槽（`(表, 字段)` 去重之后），理由
     /// 同 [`Self::references_checked`]。
     pub fields_observed: usize,
+    /// 本次校验实际把多少条副职获得条件喂进了可达性判定，理由同
+    /// [`Self::references_checked`]：一条一个副职获得条件都没看到的
+    /// 死锁检查同样会**恒为绿且无声**——谁把 `craft_unlocks()` 接错、
+    /// 或者把副职表从 [`ContentValueTables`] 上摘掉，
+    /// [`detect_unlock_deadlocks`] 会一条规则都拿不到，报告仍然是"零
+    /// 死锁"。门禁测试据此断言真实内容确实喂了这条检查非零的量。
+    pub unlock_rules_checked: usize,
 }
 
 impl ContentAuditReport {
@@ -471,6 +529,34 @@ impl ContentAuditReport {
         }
         Err(ReferenceIntegrityError {
             violations: self.reference_violations.clone(),
+        })
+    }
+
+    /// ②之二：副职获得条件的可达性——同样是生产装载路径的**硬失败**
+    /// 条件。
+    ///
+    /// # 为什么归在②（阻断启动）而不是③（只在测试里断言）
+    ///
+    /// 与字段覆盖的分界线是「有没有一种**合法**的内容配置会触发它」：
+    ///
+    /// - 字段覆盖会被玩家的正当修改触发——把 `mods/lostland/races.scm`
+    ///   里矮人的暗视改回 0，`darkvision_cells` 就不再被覆盖了，可那个
+    ///   存档完全能玩。为此拒绝启动是拿一条开发纪律惩罚玩家。
+    /// - 死锁**没有**合法版本。不存在任何一份内容设计，其意图是「你得
+    ///   先有 S 才能做 C，而 S 只能靠做 C 拿到」。它和「`damage_formula`
+    ///   指向一个拼错的 id」同类：内容自身的错误，不是玩家的选择。
+    ///
+    /// 另外两条与引用完整性完全同构、与字段覆盖完全不同的性质：本检查
+    /// **对全部已装载内容一视同仁**（不受 [`ContentAuditPolicy::namespace`]
+    /// 约束），而且它的运行期症状是**静默的**——玩家只会觉得「这个副职
+    /// 好像拿不到」，没有任何日志、没有任何报错。装载那一刻响亮地报出来
+    /// （连同环绕在哪里），正是模块文档「顺带保护玩家」那条理由要的东西。
+    pub fn subclass_unlock_reachability(&self) -> Result<(), SubclassUnlockDeadlockError> {
+        if self.unlock_deadlocks.is_empty() {
+            return Ok(());
+        }
+        Err(SubclassUnlockDeadlockError {
+            deadlocks: self.unlock_deadlocks.clone(),
         })
     }
 
@@ -543,6 +629,51 @@ impl fmt::Display for ReferenceIntegrityError {
 }
 
 impl std::error::Error for ReferenceIntegrityError {}
+
+/// 副职获得条件可达性校验失败：至少有一个副职被自己那条获得条件与
+/// 配方类别的闸门锁死了。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SubclassUnlockDeadlockError {
+    /// **全部**死锁，不是第一条——理由同
+    /// [`ReferenceIntegrityError::violations`]。
+    pub deadlocks: Vec<SubclassUnlockDeadlock>,
+}
+
+impl fmt::Display for SubclassUnlockDeadlockError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(
+            f,
+            "副职获得条件校验失败：{} 个副职被自己的获得条件与配方类别的副职闸门锁死，永远拿不到。",
+            self.deadlocks.len()
+        )?;
+        for deadlock in &self.deadlocks {
+            let subclass = match &deadlock.subclass_id {
+                Some(id) => id.to_string(),
+                None => "<索引在本次装载的注册表里反查不到>".to_string(),
+            };
+            let gate = deadlock
+                .gate
+                .iter()
+                .map(|entry| match entry {
+                    Some(id) => id.to_string(),
+                    None => "<索引在本次装载的注册表里反查不到>".to_string(),
+                })
+                .collect::<Vec<_>>()
+                .join("、");
+            writeln!(
+                f,
+                "  - 副职 {} 要在类别 {} 里做满若干次才能获得，但类别 {} 的副职闸门只对 {} 开放，                 而这些副职同样一个都拿不到——环在这里。",
+                subclass, deadlock.category_id, deadlock.category_id, gate,
+            )?;
+        }
+        write!(
+            f,
+            "正确形状是「从不设闸的类别里练出副职，用它去开另一个设了闸的类别的门」             （`mods/example_mod/gameplay.scm` 就是这么写的）——请让这条链上至少有一个类别             不调用 `recipe-category-requires-subclass!`，或者让链上至少有一个副职改用别的             获得路径。"
+        )
+    }
+}
+
+impl std::error::Error for SubclassUnlockDeadlockError {}
 
 /// 字段覆盖检查失败：至少有一个字段从没被任何一条内容设成非默认值，
 /// 或花名册/豁免清单自身失效了。
@@ -896,11 +1027,124 @@ pub fn audit_content(
 
     ContentAuditReport {
         reference_violations: auditor.reference_violations,
+        unlock_deadlocks: detect_unlock_deadlocks(registry, tables),
         uncovered_fields,
         roster_violations,
         references_checked: auditor.references_checked,
         fields_observed: auditor.coverage.len(),
+        unlock_rules_checked: tables.subclass.craft_unlocks().len(),
     }
+}
+
+/// 找出全部「获得条件与副职闸门互相锁死」的副职，见
+/// [`SubclassUnlockDeadlock`]。
+///
+/// # 为什么是可达性不动点，不是"找自环"
+///
+/// 设计文档举的例子是最短的那种环（S 靠 C 获得、C 又要求 S），但同样
+/// 死锁的还有 S₁→C₁→S₂→C₂→S₁ 这类长环。而且闸门是 **any-of**：类别 C
+/// 要求 {S₁, S₂} 时，只要其中**一个**拿得到，C 就开得了——这不是一张
+/// 普通有向图上的找环问题，是一个 AND/OR 可达性问题，只有不动点算得对。
+///
+/// 两条起始事实（不动点的种子）：
+///
+/// - **不设闸的类别人人可做**（`required_subclasses` 为空），这正是
+///   `knowledge/design/food-and-cooking-system.md` 五节「菜谱全部已知
+///   不设解锁门槛」那条裁定的落点。
+/// - **没有制作计数获得条件的副职不参与本判定**——它靠别的路径拿到
+///   （任务奖励、世界生成时写死的初始副职，见 `ll_sim::subclass` 模块
+///   文档「唯一出口」一节），本 pass 观察不到那些路径，因此按「拿得到」
+///   处理。这个方向的保守选择是刻意的：**宁可漏报也不误报**，把一条
+///   正确的内容设计判成硬失败会直接拦住玩家启动游戏。
+///
+/// # 类别压根没注册怎么办
+///
+/// 按「拿得到」处理，不报死锁——那是一处**引用完整性**违规，
+/// `inspect_subclass` 的 `SubclassTable::craft_unlock::category` 那条
+/// `reference` 已经会报它。同一件事报两条错只会让作者以为有两个问题。
+///
+/// # 确定性（约束 C5）
+///
+/// 唯一的遍历对象是 [`SubclassUnlockCatalog::craft_unlocks`] 返回的
+/// `Vec`（副职表那一列的顺序，即 `ContentIndex` 升序），不遍历任何
+/// `HashMap`/`HashSet`。
+fn detect_unlock_deadlocks(
+    registry: &Registry,
+    tables: &ContentValueTables<'_>,
+) -> Vec<SubclassUnlockDeadlock> {
+    let rules = tables.subclass.craft_unlocks();
+    if rules.is_empty() {
+        return Vec::new();
+    }
+
+    // 不动点：反复把「获得条件指向的类别已经开得了」的副职标成可达，
+    // 直到某一轮没有新增。最多跑 rules.len() 轮（每轮至少新增一条，
+    // 否则提前退出），规模是「声明了制作获得条件的副职数」这个小量级。
+    let mut reachable = vec![false; rules.len()];
+    loop {
+        let mut changed = false;
+        for index in 0..rules.len() {
+            if reachable[index] {
+                continue;
+            }
+            if category_accessible(rules[index].category, &rules, &reachable, tables) {
+                reachable[index] = true;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    rules
+        .iter()
+        .zip(reachable)
+        .filter(|(_, reachable)| !reachable)
+        .map(|(rule, _)| SubclassUnlockDeadlock {
+            subclass: rule.subclass,
+            subclass_id: registry.resolve(rule.subclass).cloned(),
+            category: rule.category,
+            category_id: rule.category_id.clone(),
+            gate: tables
+                .recipe_category
+                .get(rule.category)
+                .map(|def| {
+                    def.required_subclasses
+                        .iter()
+                        .map(|subclass| registry.resolve(*subclass).cloned())
+                        .collect()
+                })
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// 在当前这一轮不动点里，`category` 这个配方类别开不开得了。
+///
+/// 三种"开得了"：类别没注册（交给引用完整性报，见
+/// [`detect_unlock_deadlocks`] 文档）、闸门为空（人人可做）、闸门要求的
+/// 副职里**至少有一个**这一轮已经判定为可达（any-of）。
+fn category_accessible(
+    category: ContentIndex,
+    rules: &[CraftUnlockRule],
+    reachable: &[bool],
+    tables: &ContentValueTables<'_>,
+) -> bool {
+    let Some(def) = tables.recipe_category.get(category) else {
+        return true;
+    };
+    if def.required_subclasses.is_empty() {
+        return true;
+    }
+    def.required_subclasses.iter().any(|subclass| {
+        match rules.iter().position(|rule| rule.subclass == *subclass) {
+            // 这个副职不靠制作计数获得——按「拿得到」处理，见
+            // `detect_unlock_deadlocks` 文档「两条起始事实」。
+            None => true,
+            Some(position) => reachable[position],
+        }
+    })
 }
 
 /// 花名册与豁免清单自身的双向检查，见模块文档「表花名册」「字段豁免」
@@ -1702,6 +1946,49 @@ mod tests {
             self.registry.intern(id(raw))
         }
 
+        /// 注册一个副职（不带获得条件）。
+        fn define_subclass(&mut self, raw: &str) -> ContentIndex {
+            let index = self.intern(raw);
+            self.subclass
+                .define(
+                    index,
+                    crate::subclass::SubclassAttrs {
+                        display_name_key: id("test:subclass_display_name"),
+                    },
+                )
+                .expect("测试用副职定义内部自洽");
+            index
+        }
+
+        /// 注册一个配方类别（默认不设闸门，人人可做）。
+        fn define_recipe_category(&mut self, raw: &str) -> ContentIndex {
+            let index = self.intern(raw);
+            self.recipe_category
+                .define(index, id("test:recipe_category_display_name"))
+                .expect("测试用配方类别定义内部自洽");
+            index
+        }
+
+        /// `recipe-category-requires-subclass!`：给类别追加一个副职闸门。
+        fn gate_category(&mut self, category: ContentIndex, subclass: ContentIndex) {
+            self.recipe_category
+                .add_required_subclass(category, subclass)
+                .expect("测试用闸门追加内部自洽");
+        }
+
+        /// `register-subclass-unlock`：让副职从「在 `category` 里做满
+        /// 若干次」获得。
+        fn unlock_by_crafting(
+            &mut self,
+            subclass: ContentIndex,
+            category: ContentIndex,
+            category_raw: &str,
+        ) {
+            self.subclass
+                .set_craft_unlock(subclass, category, id(category_raw), 5)
+                .expect("测试用获得条件内部自洽");
+        }
+
         fn define_formula(&mut self, raw: &str) -> ContentIndex {
             let index = self.intern(raw);
             self.formula
@@ -2346,5 +2633,232 @@ mod tests {
 
         // Assert
         assert_eq!(first, second);
+    }
+
+    /// 设计文档八节⑤点名的那个最短的环：「要当工匠才能锻造，要锻造
+    /// 才能当工匠」。此前**引擎完全不拦**，症状是零报错、零日志，玩家
+    /// 只觉得「这个副职好像拿不到」。
+    #[test]
+    fn 获得条件与副职闸门指向同一个类别时被判成死锁() {
+        // Arrange：副职 artisan 要在 forging 里做满若干次才能拿到，而
+        // forging 又只对 artisan 开放。
+        let mut session = Session::new();
+        let artisan = session.define_subclass("test:artisan");
+        let forging = session.define_recipe_category("test:forging");
+        session.gate_category(forging, artisan);
+        session.unlock_by_crafting(artisan, forging, "test:forging");
+
+        // Act
+        let report = session.audit(&reference_only_policy());
+
+        // Assert：引用完整性本身是干净的（两条引用都指向真的存在的
+        // 条目）——死锁是一类**新的**违规，不是引用问题。
+        assert!(report.reference_violations.is_empty());
+        assert_eq!(
+            report.unlock_deadlocks,
+            vec![SubclassUnlockDeadlock {
+                subclass: artisan,
+                subclass_id: Some(id("test:artisan")),
+                category: forging,
+                category_id: id("test:forging"),
+                gate: vec![Some(id("test:artisan"))],
+            }]
+        );
+        assert!(report.subclass_unlock_reachability().is_err());
+    }
+
+    /// 环不止自环一种：S1 靠 C1 获得、C1 要求 S2、S2 靠 C2 获得、
+    /// C2 又要求 S1——两个副职互相等死，一个自环都没有。
+    ///
+    /// 这条测试是「判据必须是可达性不动点，不是找自环」那句话的验收：
+    /// 把 [`detect_unlock_deadlocks`] 换成只查自环，本条立刻变红。
+    #[test]
+    fn 跨两个副职的长环同样被判成死锁() {
+        // Arrange
+        let mut session = Session::new();
+        let smith = session.define_subclass("test:smith");
+        let tailor = session.define_subclass("test:tailor");
+        let forging = session.define_recipe_category("test:forging");
+        let weaving = session.define_recipe_category("test:weaving");
+        // 锻造只对裁缝开放，裁缝要靠织布练出来；织布只对铁匠开放，
+        // 铁匠要靠锻造练出来。
+        session.gate_category(forging, tailor);
+        session.gate_category(weaving, smith);
+        session.unlock_by_crafting(smith, forging, "test:forging");
+        session.unlock_by_crafting(tailor, weaving, "test:weaving");
+
+        // Act
+        let report = session.audit(&reference_only_policy());
+
+        // Assert：两个副职都拿不到，两条都要报出来（一次列全，不是
+        // 撞见第一条就返回）。
+        let 报出来的副职: Vec<ContentIndex> = report
+            .unlock_deadlocks
+            .iter()
+            .map(|deadlock| deadlock.subclass)
+            .collect();
+        assert_eq!(报出来的副职, vec![smith, tailor]);
+    }
+
+    /// 正确形状不该被误报：从**不设闸**的类别里练出副职，用它去开另一个
+    /// 设了闸的类别的门——`mods/example_mod/gameplay.scm` 写的就是这个。
+    #[test]
+    fn 从不设闸的类别练出副职再去开别的门不算死锁() {
+        // Arrange：cooking 人人可做，做满若干次得到 artisan；artisan
+        // 才能碰 forging。
+        let mut session = Session::new();
+        let artisan = session.define_subclass("test:artisan");
+        let cooking = session.define_recipe_category("test:cooking");
+        let forging = session.define_recipe_category("test:forging");
+        session.gate_category(forging, artisan);
+        session.unlock_by_crafting(artisan, cooking, "test:cooking");
+
+        // Act
+        let report = session.audit(&reference_only_policy());
+
+        // Assert
+        assert!(report.unlock_deadlocks.is_empty());
+        assert!(report.subclass_unlock_reachability().is_ok());
+    }
+
+    /// 闸门是 **any-of**：类别要求 {A, B} 时只要 A 拿得到，这个类别就
+    /// 开得了，靠它解锁的 B 因此也拿得到——把闸门当成 all-of 判会在这里
+    /// 误报一条死锁。
+    #[test]
+    fn 闸门是anyof时只要有一个副职拿得到就不算死锁() {
+        // Arrange：cooking 人人可做 -> 练出 chef；forging 对
+        // {chef, smith} 任意一个开放；smith 靠 forging 练出来。
+        let mut session = Session::new();
+        let chef = session.define_subclass("test:chef");
+        let smith = session.define_subclass("test:smith");
+        let cooking = session.define_recipe_category("test:cooking");
+        let forging = session.define_recipe_category("test:forging");
+        session.gate_category(forging, chef);
+        session.gate_category(forging, smith);
+        session.unlock_by_crafting(chef, cooking, "test:cooking");
+        session.unlock_by_crafting(smith, forging, "test:forging");
+
+        // Act
+        let report = session.audit(&reference_only_policy());
+
+        // Assert
+        assert!(
+            report.unlock_deadlocks.is_empty(),
+            "实际报了 {:?}",
+            report.unlock_deadlocks
+        );
+    }
+
+    /// 没有制作获得条件的副职按「靠别的路径拿得到」处理——它可能来自
+    /// 任务奖励或世界生成时写死的初始副职，本 pass 观察不到那些路径，
+    /// 宁可漏报也不误报（误报会直接拦住玩家启动游戏）。
+    #[test]
+    fn 闸门要求的副职没有制作获得条件时不算死锁() {
+        // Arrange：forging 要求 noble，而 noble 压根没声明获得条件。
+        let mut session = Session::new();
+        let noble = session.define_subclass("test:noble");
+        let smith = session.define_subclass("test:smith");
+        let forging = session.define_recipe_category("test:forging");
+        session.gate_category(forging, noble);
+        session.unlock_by_crafting(smith, forging, "test:forging");
+
+        // Act & Assert
+        assert!(
+            session
+                .audit(&reference_only_policy())
+                .unlock_deadlocks
+                .is_empty()
+        );
+    }
+
+    /// 获得条件指向一个**从未注册**的配方类别时，只报引用完整性、不报
+    /// 死锁——同一件事报两条错只会让作者以为有两个问题。
+    #[test]
+    fn 获得条件指向未注册的类别只报引用完整性不报死锁() {
+        // Arrange
+        let mut session = Session::new();
+        let artisan = session.define_subclass("test:artisan");
+        let ghost = session.intern("test:never_defined");
+        session.unlock_by_crafting(artisan, ghost, "test:never_defined");
+
+        // Act
+        let report = session.audit(&reference_only_policy());
+
+        // Assert
+        assert!(report.unlock_deadlocks.is_empty());
+        assert!(
+            report
+                .reference_violations
+                .iter()
+                .any(|violation| violation.field == "SubclassTable::craft_unlock::category"),
+            "实际报了 {:?}",
+            report.reference_violations
+        );
+    }
+
+    /// 错误文案必须**可行动**：点名是哪个副职、哪个类别、环的另一半是
+    /// 谁，并给出正确形状。
+    #[test]
+    fn 死锁文案点名副职类别与环的另一半() {
+        // Arrange
+        let mut session = Session::new();
+        let artisan = session.define_subclass("test:artisan");
+        let forging = session.define_recipe_category("test:forging");
+        session.gate_category(forging, artisan);
+        session.unlock_by_crafting(artisan, forging, "test:forging");
+
+        // Act
+        let text = session
+            .audit(&reference_only_policy())
+            .subclass_unlock_reachability()
+            .expect_err("必须失败")
+            .to_string();
+
+        // Assert
+        assert!(text.contains("test:artisan"), "{text}");
+        assert!(text.contains("test:forging"), "{text}");
+        assert!(
+            text.contains("recipe-category-requires-subclass!"),
+            "{text}"
+        );
+    }
+
+    /// 防空转：`unlock_rules_checked` 必须如实反映喂进可达性判定的规则
+    /// 条数——理由同 [`ContentAuditReport::references_checked`]，一条
+    /// 一个副职获得条件都没看到的死锁检查会恒为绿且完全无声。
+    #[test]
+    fn 副职获得条件的检查条数如实计数() {
+        // Arrange：两条获得条件，一条正常一条不正常都不影响计数——
+        // 计的是"看了多少条"，不是"报了多少条"。
+        let mut session = Session::new();
+        let chef = session.define_subclass("test:chef");
+        let smith = session.define_subclass("test:smith");
+        let cooking = session.define_recipe_category("test:cooking");
+        let forging = session.define_recipe_category("test:forging");
+        session.gate_category(forging, smith);
+        session.unlock_by_crafting(chef, cooking, "test:cooking");
+        session.unlock_by_crafting(smith, forging, "test:forging");
+
+        // Act
+        let report = session.audit(&reference_only_policy());
+
+        // Assert：两条都被看过，其中一条（smith）是死锁。
+        assert_eq!(report.unlock_rules_checked, 2);
+        assert_eq!(report.unlock_deadlocks.len(), 1);
+    }
+
+    /// 一个副职获得条件都没有的内容，计数为零——这正是门禁测试要区分
+    /// 「真实内容确实喂了量」与「检查空转」时依赖的那一半。
+    #[test]
+    fn 没有任何副职获得条件时检查条数为零() {
+        // Arrange
+        let mut session = Session::new();
+        session.define_subclass("test:noble");
+
+        // Act & Assert
+        assert_eq!(
+            session.audit(&reference_only_policy()).unlock_rules_checked,
+            0
+        );
     }
 }

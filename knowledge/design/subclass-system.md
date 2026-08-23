@@ -31,8 +31,9 @@
 **本批次核实出的一处设计缺口，四节与五节都没写到**：`ItemsCrafted(类别)` 的获得条件若指向
 一个**同时被该副职把守**的类别，就构成死锁——「要当工匠才能锻造，要锻造才能当工匠」，而且
 完全不报错。正确形状是「从不设闸的类别里练出副职，用它去开另一个设了闸的类别的门」，
-`mods/example_mod/gameplay.scm` 就是这么写的。**引擎目前不拦这个**（两个注册函数各自只看得到
-自己那张表，跨表检查得放到装载后的 `content_audit` 里），已记入本文档八节⑤。
+`mods/example_mod/gameplay.scm` 就是这么写的。**引擎当初不拦这个**（两个注册函数各自只看得到
+自己那张表，跨表检查得放到装载后的 `content_audit` 里），已记入本文档八节⑤——
+**该节已于 2026-08-23 的堵洞批次落地拦截**，见那一节的订正框。
 
 **冻结于** 2026-08-22，基线提交 `08cdeb0`（`main` 分支）。
 
@@ -1081,7 +1082,7 @@ Effect::RemoveSubclass { actor: EntityId, subclass: ContentIndex }
 - `knowledge/decisions/0023-script-state-writes-go-through-apply.md`——四节
   `Effect::GrantSubclass` 必须是独立效果变体的依据
 
-### ⑤ 获得条件与副职闸门指向同一个配方类别时会死锁，引擎目前不拦
+### ⑤ 获得条件与副职闸门指向同一个配方类别时会死锁（已落地拦截）
 
 **本节新增于获得机制落地批次（2026-08-22）。**
 
@@ -1091,14 +1092,29 @@ Effect::RemoveSubclass { actor: EntityId, subclass: ContentIndex }
 配方，也就永远攒不到那 N 次，S 永远拿不到。**而且全程零报错、零日志**，症状是「这个副职好像
 拿不到」。
 
-**为什么本批次没有在注册期拦住它**：两个注册函数各自只持有自己那张表
+**为什么两个注册函数各自拦不住**：它们各自只持有自己那张表
 （`register-subclass-unlock` 只看得到 `SubclassTable`，`recipe-category-requires-subclass!`
 只看得到 `RecipeCategoryTable`），且两条声明的先后顺序不固定，任何一边单方面都判不了。
-唯一同时看得到两张表的地方是装载后的 `ll_mod::content_audit` 那一趟——把它做成一条新的
-`ReferenceViolation`/`RosterViolation` 是一次独立的小批次，需要动那个模块的穷尽 `match` 与
-配套测试，本批次不夹带。
+唯一同时看得到两张表的地方是装载后的 `ll_mod::content_audit` 那一趟。
 
-**在那之前，纪律靠文档与内容评审**：`mods/lostland/crafting.scm` 与
+> **【订正，堵洞批次 2026-08-23】这条已经落地拦截，不再只靠文档与内容评审。**
+>
+> `ll_mod::content_audit::detect_unlock_deadlocks` 在装载后跑一遍**可达性不动点**，产出
+> `Vec<SubclassUnlockDeadlock>`；`ContentAuditReport::subclass_unlock_reachability()` 把它
+> 变成 `ll_game::content::load_content` 的**硬失败**条件之一（与引用完整性同一档严重性，
+> 理由：死锁没有合法版本——不存在任何一份内容设计其意图是「要 S 才能做 C，而 S 只能靠做 C
+> 拿到」；而且它对全部已装载内容一视同仁，不像字段覆盖那样只看本体命名空间）。
+>
+> **判据是可达性，不是"找自环"。** 本节原文举的是最短的那种环，但 S₁→C₁→S₂→C₂→S₁ 这类
+> 长环同样死锁；而闸门是 **any-of**（类别要求 {S₁, S₂} 时只要一个拿得到就开得了），
+> 所以这不是普通有向图找环，是 AND/OR 可达性，只有不动点算得对。两条种子事实：
+> 不设闸的类别人人可做；**没有制作计数获得条件的副职按「靠别的路径拿得到」处理**
+> （任务奖励、世界生成写死的初始副职，本 pass 观察不到那些路径）——这个方向刻意保守，
+> **宁可漏报也不误报**，因为误报会直接拦住玩家启动游戏。
+>
+> 获得条件指向一个从未注册的类别时只报引用完整性、不报死锁，同一件事不报两条。
+
+**内容侧的纪律照旧**：`mods/lostland/crafting.scm` 与
 `mods/example_mod/gameplay.scm` 两处都写明了这条，`ll_mod::content_audit::BASE_CONTENT_AUDIT`
 里 `RecipeCategoryDef::required_subclasses` 那条豁免同样记录了它——那是本体四个配方类别刻意
 不设闸门的第一条理由。
