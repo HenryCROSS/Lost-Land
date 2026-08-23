@@ -40,7 +40,8 @@
 //!
 //! # 完整调用链（对照 P5-B 计划文档「自查」一节逐环打勾）
 //!
-//! `materialize_base_classes/skills/subclasses/quests`（`ll-mod`）→
+//! `mods/lostland/{classes,skills,subclasses,quests}.scm` 经
+//! `ll_mod::pipeline::load_all` + `resolve_base_*` 契约解析（`ll-mod`）→
 //! 玩家 `Agent` 直接持有 `profession`/`subclasses`/`unlocked_skills`
 //! 字段（本计划不设计"解锁"这个 Intent 的具体触发方式，见计划文档
 //! 「完整调用链」一节，本 demo 用直接赋字段模拟"升级/任务奖励解锁"）
@@ -61,12 +62,26 @@ use ll_content::save_file::{CURRENT_SCHEMA_VERSION, load_full, save_to_file};
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
-use ll_mod::class::{BaseClassIds, materialize_base_classes};
-use ll_mod::quest::{BaseQuestIds, QuestTable, RegisteredQuests, materialize_base_quests};
+use ll_mod::class::{BaseClassIds, ClassTable, resolve_base_classes};
+use ll_mod::clip::ClipTable;
+use ll_mod::damage_category::DamageCategoryTable;
+use ll_mod::formula::FormulaTable;
+use ll_mod::item::ItemTable;
+use ll_mod::load_report::LoadStatus;
+use ll_mod::pipeline::{GameplayTables, load_all};
+use ll_mod::quest::{BaseQuestIds, QuestTable, RegisteredQuests, resolve_base_quests};
 use ll_mod::quest_overview::build_quest_log_view;
+use ll_mod::race::RaceTable;
+use ll_mod::recipe::RecipeTable;
+use ll_mod::recipe_category::RecipeCategoryTable;
 use ll_mod::registry::Registry;
-use ll_mod::skill::{BaseSkillIds, SkillTable, materialize_base_skills};
-use ll_mod::subclass::{BaseSubclassIds, materialize_base_subclasses};
+use ll_mod::resource_pool::ResourcePoolTable;
+use ll_mod::skill::{BaseSkillIds, SkillTable, resolve_base_skills};
+use ll_mod::subclass::{BaseSubclassIds, SubclassTable, resolve_base_subclasses};
+use ll_mod::tag::TagTable;
+use ll_mod::trait_def::TraitTable;
+use ll_mod::weapon_category::WeaponCategoryTable;
+use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::apply::apply;
 use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
@@ -99,10 +114,18 @@ fn small_layout() -> ZoneLayout {
     ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束")
 }
 
-/// demo 用的全部内容注册表——本体地形 + 职业 + 技能 + 副职 + 任务，
-/// 共用同一个 `Registry`（本体即 Mod：与真实加载管线的顺序一致，
-/// `SkillDef.owning_class`/`QuestCondition::KillCount.target_kind`
-/// 这类跨表引用因此都指向真实存在的索引）。
+/// demo 用的全部内容注册表——本体地形（仍由 Rust 注册）+ 真实
+/// `mods/` 目录装载出来的职业/技能/副职/任务，共用同一个 `Registry`。
+///
+/// # 为什么读真实 `mods/` 目录，而不是在这里现造一份内容
+///
+/// 职业/技能/副职/任务四类内容此前由 `materialize_base_*` 四个 Rust
+/// 函数产出，本 demo 是它们**唯一**的非测试调用方。那四个函数在本体
+/// 内容迁进脚本的批次里已经删除（见 `ll_mod::class` 模块文档同名
+/// 一节），本 demo 因此改读真实内容目录——这不是权宜之计，是把这条
+/// 验收链路的起点从"Rust 字面量"换成"玩家真正会装载的那份内容"，
+/// ADR 0018 的判据（玩法层内容必须能从 mod 脚本注册，且要有真实 mod
+/// 脚本为证）在本 demo 上因此也成立了。
 struct Content {
     registry: Registry,
     terrain_ids: BaseTerrainIds,
@@ -117,22 +140,87 @@ struct Content {
     human_race: ContentIndex,
 }
 
+/// 仓库根目录下的真实 `mods/` 路径。
+const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
+
 fn build_content() -> Content {
     let mut registry = Registry::new();
-    let (terrain_ids, terrain_table) = materialize_base_terrain(&mut |raw| registry.intern(raw))
-        .expect("本体地形声明表内部一致，注册恒不失败");
-    let (class_ids, _class_table) = materialize_base_classes(&mut |raw| registry.intern(raw))
-        .expect("本体职业声明表内部一致，注册恒不失败");
-    let (skill_ids, skill_table) = materialize_base_skills(&mut |raw| registry.intern(raw))
-        .expect("本体技能声明表内部一致，注册恒不失败");
-    let (subclass_ids, _subclass_table) =
-        materialize_base_subclasses(&mut |raw| registry.intern(raw))
-            .expect("本体副职声明表内部一致，注册恒不失败");
-    let (quest_ids, quest_table) = materialize_base_quests(&mut |raw| registry.intern(raw))
-        .expect("本体任务声明表内部一致，注册恒不失败");
-    // materialize_base_quests 内部已经 intern 过 "lostland:goblin"
-    // （main_quest_1/branch_a/finale 的 target_kind）——再次 intern
-    // 同一个字符串按 Interner 的既有语义返回相同索引，不会重复注册。
+    // 地形仍由 Rust 注册（`ll_world::terrain` 尚未迁进脚本），且必须
+    // 排在 `load_all` 之前——与 `ll_game::content::load_content` 的
+    // 真实顺序一致。
+    let (terrain_ids, mut terrain_table) =
+        materialize_base_terrain(&mut |raw| registry.intern(raw))
+            .expect("本体地形声明表内部一致，注册恒不失败");
+
+    let mut class_table = ClassTable::new();
+    let mut skill_table = SkillTable::new();
+    let mut subclass_table = SubclassTable::new();
+    let mut quest_table = QuestTable::new();
+    let mut race_table = RaceTable::new();
+    let mut clip_table = ClipTable::new();
+    let mut xp_curve_table = XpCurveTable::new();
+    let mut xp_curve_bindings = XpCurveBindings::new();
+    let mut trait_table = TraitTable::new();
+    let mut resource_pool_table = ResourcePoolTable::new();
+    let mut item_table = ItemTable::new();
+    let mut formula_table = FormulaTable::new();
+    let mut weapon_category_table = WeaponCategoryTable::new();
+    let mut damage_category_table = DamageCategoryTable::new();
+    let mut space_profile_table = ll_world::space_profile::SpaceProfileTable::new();
+    let mut weather_table = ll_world::weather::WeatherTable::new();
+    let mut recipe_table = RecipeTable::new();
+    let mut recipe_category_table = RecipeCategoryTable::new();
+    let mut tag_table = TagTable::new();
+
+    let report = load_all(
+        std::path::Path::new(REAL_MODS_ROOT),
+        &mut registry,
+        &mut GameplayTables {
+            terrain: &mut terrain_table,
+            class: &mut class_table,
+            skill: &mut skill_table,
+            subclass: &mut subclass_table,
+            quest: &mut quest_table,
+            race: &mut race_table,
+            clip: &mut clip_table,
+            xp_curve: &mut xp_curve_table,
+            xp_curve_bindings: &mut xp_curve_bindings,
+            trait_def: &mut trait_table,
+            resource_pool: &mut resource_pool_table,
+            item: &mut item_table,
+            formula: &mut formula_table,
+            weapon_category: &mut weapon_category_table,
+            damage_category: &mut damage_category_table,
+            space_profile: &mut space_profile_table,
+            weather: &mut weather_table,
+            recipe: &mut recipe_table,
+            recipe_category: &mut recipe_category_table,
+            tag: &mut tag_table,
+        },
+    );
+
+    let lostland_id = id("lostland:self");
+    let status = report
+        .entries
+        .iter()
+        .find(|(id, _)| *id == lostland_id)
+        .map(|(_, status)| status);
+    assert_eq!(
+        status,
+        Some(&LoadStatus::Loaded),
+        "本体内容 mod（mods/lostland/）必须成功加载，否则下面的断言毫无意义"
+    );
+
+    let class_ids =
+        resolve_base_classes(&registry, &class_table).expect("本体职业契约必须解析成功");
+    let skill_ids = resolve_base_skills(&registry, &skill_table).expect("本体技能契约必须解析成功");
+    let subclass_ids =
+        resolve_base_subclasses(&registry, &subclass_table).expect("本体副职契约必须解析成功");
+    let quest_ids = resolve_base_quests(&registry, &quest_table).expect("本体任务契约必须解析成功");
+
+    // quests.scm 里 main_quest_1/branch_a/finale 的 target_kind 已经
+    // intern 过 "lostland:goblin"——再次 intern 同一个字符串按 Interner
+    // 的既有语义返回相同索引，不会重复注册。种族同理（races.scm）。
     let goblin_kind = registry.intern(id("lostland:goblin"));
     let human_race = registry.intern(id("lostland:human"));
 
@@ -237,7 +325,22 @@ fn run_walkthrough() {
     section1_class_and_branching_skill_tree(&content, &mut world, player);
     section2_subclass_stacking(&content, &world, player);
     section3_networked_quest_progress(&content, &mut world, player);
-    section4_save_load_roundtrip(&content, &world);
+    // **必须换一根线程**（约束 C6 / ADR 0028）：`load_full` 内部会调用
+    // `ll_script::host::rebuild_all_engines_after_load` 构造脚本引擎，
+    // 而本 demo 的 `build_content` 已经在当前线程上编译过 mod 脚本
+    // （它读的是真实 `mods/` 目录，见该函数文档）——「先编译、后构造」
+    // 正是 steel-core 0.8.2 偶发内存破坏的唯一已知触发条件。C6 是
+    // **每线程**的约束，新线程上一次编译都没发生过，构造因此合法。
+    //
+    // 这条约束不是本 demo 特有：任何「先装载 mod，再读一份存档」的
+    // 调用方都会撞上它，见 `ll_script::host::ScriptEngine::new` 的断言
+    // 文案本身给出的两条出路。
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| section4_save_load_roundtrip(&content, &world))
+            .join()
+            .expect("存档往返验收线程不应 panic");
+    });
 }
 
 // ---------------------------------------------------------------------
@@ -260,13 +363,27 @@ fn section1_class_and_branching_skill_tree(
     assert_eq!(before.unlocked, vec![content.skill_ids.strike]);
     // strike 同时解锁 power_strike/brace/focus 三条分支——"树"而不是
     // "线性序列"的直接验收：一个已解锁技能有两个以上可选后续。
-    let mut expected_available = vec![
+    //
+    // 断言的是「三条都在、combo 还不在」而不是逐位相等：本 demo 现在
+    // 装载的是**真实 `mods/` 目录**（见 `build_content` 文档），
+    // `SkillTable` 里还有 `mods/example_mod/` 注册的技能，其中无前置的
+    // 那几条同样会出现在 `available` 里。那不是缺陷，是真实内容集合的
+    // 样子；逐位相等会让这条验收在任何人给 example_mod 加一条技能时
+    // 无端变红，而它要验的性质与那件事无关。
+    for branch in [
         content.skill_ids.power_strike,
         content.skill_ids.brace,
         content.skill_ids.focus,
-    ];
-    expected_available.sort_by_key(ContentIndex::get);
-    assert_eq!(before.available, expected_available);
+    ] {
+        assert!(
+            before.available.contains(&branch),
+            "strike 已解锁时，它的三条分支都应当可选"
+        );
+    }
+    assert!(
+        !before.available.contains(&content.skill_ids.combo),
+        "combo 的两个前置都未解锁，此刻不该可选"
+    );
 
     // "升级"：同时解锁 power_strike 与 brace（模拟任务奖励/升级点数，
     // 计划文档明确本批次不设计"解锁"这个 Intent 的具体触发方式,只
@@ -393,13 +510,23 @@ fn section3_networked_quest_progress(content: &Content, world: &mut WorldState, 
     );
     println!("  击杀前 QuestLogView = {before:?}");
     assert!(before.completed.is_empty());
-    assert_eq!(
-        before.unlocked_not_completed,
-        vec![content.quest_ids.main_quest_1]
+    // 断言「起点任务可见、两条分支还不可见」而不是逐位相等：理由同
+    // section2 里对 SkillTreeView::available 的处理——本 demo 装载的是
+    // 真实 `mods/` 目录，example_mod 也注册着无前置的任务节点。
+    assert!(
+        before
+            .unlocked_not_completed
+            .contains(&content.quest_ids.main_quest_1)
     );
+    for branch in [content.quest_ids.branch_a, content.quest_ids.branch_b] {
+        assert!(
+            !before.unlocked_not_completed.contains(&branch),
+            "起点任务尚未完成，两条分支此刻都不该解锁"
+        );
+    }
 
-    // main_quest_1 要求击杀 3 个哥布林（materialize_base_quests 的
-    // 本体声明,见 ll-mod::quest 模块文档）——真实走
+    // main_quest_1 要求击杀 3 个哥布林（mods/lostland/quests.scm 的
+    // 本体声明）——真实走
     // Intent::Attack -> resolve_with_skills_and_quests -> Effect ->
     // apply,不是直接调用 mark_quest_completed 伪造。
     for i in 0..3 {
@@ -441,10 +568,20 @@ fn section3_networked_quest_progress(content: &Content, world: &mut WorldState, 
     );
     println!("  击杀 3 个哥布林后 QuestLogView = {after:?}");
     assert_eq!(after.completed, vec![content.quest_ids.main_quest_1]);
-    // 网状结构的直接验收：一个前置任务完成后,两个后续分支同时可见。
-    let mut expected_unlocked = vec![content.quest_ids.branch_a, content.quest_ids.branch_b];
-    expected_unlocked.sort_by_key(ContentIndex::get);
-    assert_eq!(after.unlocked_not_completed, expected_unlocked);
+    // 网状结构的直接验收：一个前置任务完成后,两个后续分支同时可见,
+    // 而汇聚任务 finale 仍需两者都完成,此刻不该出现。
+    for branch in [content.quest_ids.branch_a, content.quest_ids.branch_b] {
+        assert!(
+            after.unlocked_not_completed.contains(&branch),
+            "起点任务完成后,两条分支应当同时可见"
+        );
+    }
+    assert!(
+        !after
+            .unlocked_not_completed
+            .contains(&content.quest_ids.finale),
+        "两条分支都还没完成,finale 此刻不该解锁"
+    );
 
     let main_quest_id = content
         .registry

@@ -5,8 +5,7 @@
 //!
 //! 见 [`crate::skill`] 模块文档「与 `ClassTable` 同一套模式，但多一步
 //! 图校验」一节——任务节点的定义/存储/查询走完全相同的思路：私有字段 +
-//! `QuestTable::define` 注册期校验 + `materialize_base_quests` 本体
-//! 注册入口 + `base_quest_fixture` 测试夹具。任务节点比技能多出的同样
+//! `QuestTable::define` 注册期校验。任务节点比技能多出的同样
 //! 是**前置关系**，但语义更贴近"任务"本身：`QuestNodeDef.prerequisites`
 //! 描述的是"完成哪些任务节点之后，这个任务节点才能开始"，图结构本身与
 //! 技能树完全同构（都是 DAG），因此无环校验直接复用
@@ -21,7 +20,8 @@
 //! 一致（同一条纪律在两级坐标系重写批次的 `Interior.anchor`/反向索引
 //! 已经用过）。"网状"体现在两处都允许多对多：一个任务节点可以有多个
 //! 前置（多条完成路径汇聚），一个前置任务节点完成后也可以同时解锁多个
-//! 后续节点（分支）——[`base_quest_fixture`] 的本体任务同时演示这两点，
+//! 后续节点（分支）——`mods/lostland/quests.scm` 的四条本体任务同时
+//! 演示这两点，
 //! 见 [`BaseQuestIds`] 文档。
 //!
 //! # 完成条件分档（ADR 0018 三档分级在任务系统上的落点）
@@ -89,7 +89,10 @@
 
 use std::fmt;
 
-use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_core::ident::{ContentIndex, NamespacedId};
+
+use crate::base_contract::{BaseContractError, BaseContractResolver};
+use crate::registry::Registry;
 use ll_sim::quest::{QuestCatalog, QuestKillRule};
 pub use ll_sim::quest::{is_quest_completed, mark_quest_completed, quest_progress_key};
 
@@ -138,7 +141,7 @@ pub struct QuestNodeDef {
 /// [`QuestTable::define`] 实际存进列式存储的属性子集——不含 `id`，
 /// 理由同 [`crate::skill::SkillAttrs`]。**必须公开**：这是 `define`
 /// 唯一的参数类型，任何想直接调用 `define`（而不是走
-/// [`materialize_base_quests`] 那条便捷路径）的调用方——包括未来 mod
+/// 脚本 `register-quest` 那条路径）的调用方——包括未来 mod
 /// 自己的任务注册函数——都需要能构造这个类型。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QuestAttrs {
@@ -165,6 +168,18 @@ pub enum QuestError {
     },
     /// 前置关系构成环——附带环路上具体的任务节点索引（按环路顺序）。
     CyclicPrerequisites(Vec<ContentIndex>),
+}
+
+impl QuestError {
+    /// 这条错误牵涉到的全部内容索引，理由与用法见
+    /// [`crate::skill::SkillError::involved_indices`]。
+    pub fn involved_indices(&self) -> Vec<ContentIndex> {
+        match self {
+            QuestError::DuplicateDefinition(index) => vec![*index],
+            QuestError::UnregisteredPrerequisite { quest, missing } => vec![*quest, *missing],
+            QuestError::CyclicPrerequisites(cycle) => cycle.clone(),
+        }
+    }
 }
 
 impl fmt::Display for QuestError {
@@ -428,16 +443,21 @@ impl QuestCatalog for RegisteredQuests<'_> {
     }
 }
 
-/// 本体基础任务节点在当前注册表里的索引缓存。
+/// 本体基础任务节点在当前注册表里的索引缓存——**句柄，不是内容**。
 ///
-/// 构成一个**网状**（不是树状）的最小示例：`main_quest_1`（起点）同时
-/// 解锁 `branch_a`/`branch_b` 两条分支（一个前置解锁多个后续，验收
-/// "网"而不是"线性序列"）；`finale` 要求 `branch_a` 与 `branch_b` 两个
-/// 前置同时满足才能开始（两条分支在此汇聚，验收"一个任务可以有多个
-/// 前置"——这一点单靠"树"结构表达不了，节点只有一个父节点是树的定义
-/// 性质，`finale` 有两个父节点，图因此不是树）。同时演示两档完成条件：
-/// `main_quest_1`/`branch_a`/`finale` 用一档（`KillCount`），`branch_b`
-/// 用三档（`Script`）。
+/// 四条任务的字段值已经搬进 `mods/lostland/quests.scm`，本结构体只
+/// 保住使用点的编译期安全，填充由 [`resolve_base_quests`] 在装载完成后
+/// 按 id 逐字段解析完成，理由完整见 [`crate::class::BaseClassIds`] 与
+/// [`crate::base_contract`] 两处文档。
+///
+/// 这四条构成一个**网状**（不是树状）的最小示例：`main_quest_1`
+/// （起点）同时解锁 `branch_a`/`branch_b` 两条分支（一个前置解锁多个
+/// 后续，验收"网"而不是"线性序列"）；`finale` 要求 `branch_a` 与
+/// `branch_b` 两个前置同时满足才能开始（两条分支在此汇聚，验收"一个
+/// 任务可以有多个前置"——这一点单靠"树"结构表达不了，节点只有一个父
+/// 节点是树的定义性质，`finale` 有两个父节点，图因此不是树）。同时
+/// 演示两档完成条件：`main_quest_1`/`branch_a`/`finale` 用一档
+/// （`KillCount`），`branch_b` 用三档（`Script`）。
 #[derive(Debug, Clone, Copy)]
 pub struct BaseQuestIds {
     /// 起点任务：无前置。
@@ -450,101 +470,49 @@ pub struct BaseQuestIds {
     pub finale: ContentIndex,
 }
 
-/// 本体任务注册的唯一入口：本体与 mod 共用的注册路径，理由同
-/// [`crate::skill::materialize_base_skills`]。
-pub fn materialize_base_quests(
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-) -> Result<(BaseQuestIds, QuestTable), QuestError> {
-    let mut table = QuestTable::new();
+/// 本体四条基础任务的 id 字面量——[`resolve_base_quests`] 的契约清单，
+/// 理由同 [`crate::class`] 的 `BASE_CLASS_IDS`。
+const BASE_QUEST_IDS: [(&str, &str); 4] = [
+    ("BaseQuestIds::main_quest_1", "lostland:main_quest_1"),
+    ("BaseQuestIds::branch_a", "lostland:branch_a"),
+    ("BaseQuestIds::branch_b", "lostland:branch_b"),
+    ("BaseQuestIds::finale", "lostland:finale"),
+];
 
-    let goblin_kind = intern(NamespacedId::parse("lostland:goblin").expect("固定字面量恒合法"));
+/// 装载完成后解析本体任务契约：按 id 逐字段填充 [`BaseQuestIds`]，
+/// 缺任何一条就整批失败。取代原先的 `materialize_base_quests`/
+/// `base_quest_fixture`，理由同 [`crate::class::resolve_base_classes`]。
+///
+/// 与 [`crate::skill::resolve_base_skills`] 同一条纪律：环检查不在这里
+/// 跑，它是**整张表**的性质，属于装载管线（见该函数文档
+/// 「这里**不**跑 `validate_no_cycles`」一节）。
+pub fn resolve_base_quests(
+    registry: &Registry,
+    table: &QuestTable,
+) -> Result<BaseQuestIds, BaseContractError> {
+    let mut resolver = BaseContractResolver::new("本体任务", registry);
+    let mut resolved = BASE_QUEST_IDS
+        .iter()
+        .map(|(field, id)| resolver.require(field, id, |index| table.is_defined(index)));
+    let main_quest_1 = resolved.next().expect("BASE_QUEST_IDS 恒有四条");
+    let branch_a = resolved.next().expect("BASE_QUEST_IDS 恒有四条");
+    let branch_b = resolved.next().expect("BASE_QUEST_IDS 恒有四条");
+    let finale = resolved.next().expect("BASE_QUEST_IDS 恒有四条");
+    drop(resolved);
+    resolver.finish()?;
 
-    let main_quest_1 = define_quest(
-        &mut table,
-        intern,
-        "lostland:main_quest_1",
-        Vec::new(),
-        QuestCondition::KillCount {
-            target_kind: goblin_kind,
-            count: 3,
-        },
-    )?;
-    let branch_a = define_quest(
-        &mut table,
-        intern,
-        "lostland:branch_a",
-        vec![main_quest_1],
-        QuestCondition::KillCount {
-            target_kind: goblin_kind,
-            count: 5,
-        },
-    )?;
-    let branch_b = define_quest(
-        &mut table,
-        intern,
-        "lostland:branch_b",
-        vec![main_quest_1],
-        QuestCondition::Script(
-            NamespacedId::parse("lostland:branch_b_condition").expect("固定字面量恒合法"),
-        ),
-    )?;
-    let finale = define_quest(
-        &mut table,
-        intern,
-        "lostland:finale",
-        vec![branch_a, branch_b],
-        QuestCondition::KillCount {
-            target_kind: goblin_kind,
-            count: 1,
-        },
-    )?;
-
-    validate_no_cycles(&table)?;
-
-    Ok((
-        BaseQuestIds {
-            main_quest_1,
-            branch_a,
-            branch_b,
-            finale,
-        },
-        table,
-    ))
-}
-
-/// [`materialize_base_quests`] 的内部帮手：把一条声明拆开传入，换取
-/// 一次 `intern` + 一次 [`QuestTable::define`]。
-fn define_quest(
-    table: &mut QuestTable,
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-    id: &str,
-    prerequisites: Vec<ContentIndex>,
-    condition: QuestCondition,
-) -> Result<ContentIndex, QuestError> {
-    let index = intern(NamespacedId::parse(id).expect("本体任务 id 字面量恒合法"));
-    table.define(
-        index,
-        QuestAttrs {
-            prerequisites,
-            condition,
-        },
-    )?;
-    Ok(index)
-}
-
-/// 供测试使用：现造一个空 [`Interner`]，注册本体全部基础任务，返回
-/// 可用的 `(BaseQuestIds, QuestTable)`。不是生产路径，理由同
-/// [`crate::skill::base_skill_fixture`]。
-pub fn base_quest_fixture() -> (BaseQuestIds, QuestTable) {
-    let mut interner = Interner::new();
-    materialize_base_quests(&mut |id| interner.intern(id))
-        .expect("本体任务声明表内部一致（无环、前置均已注册），注册恒不失败")
+    Ok(BaseQuestIds {
+        main_quest_1,
+        branch_a,
+        branch_b,
+        finale,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::Registry;
+    use crate::base_contract::MissingReason;
 
     fn id(raw: &str) -> NamespacedId {
         NamespacedId::parse(raw).expect("测试用标识符恒合法")
@@ -560,96 +528,181 @@ mod tests {
         }
     }
 
+    /// 一张现造的、与本体内容无关的网状任务图。
+    ///
+    /// 本模块的单元测试验的是 [`QuestTable`]/[`unlocked_by`]/
+    /// [`validate_no_cycles`] 这套**机制**，不是「本体有哪几条任务」
+    /// ——后者的定义已经搬进 `mods/lostland/quests.scm`，由
+    /// `crates/ll-mod/tests/base_mod_class_skill_quest.rs` 端到端逐字段
+    /// 核对。这里用 `testmod:` 现造一张同形的图（`root` 解锁两条分支，
+    /// `merge` 汇聚它们，其中一条分支用 `Script` 档条件），理由同
+    /// [`crate::race`] 的 `sample_table`。
+    struct SampleGraph {
+        registry: Registry,
+        table: QuestTable,
+        root: ContentIndex,
+        branch_a: ContentIndex,
+        branch_b: ContentIndex,
+        merge: ContentIndex,
+    }
+
+    fn sample_graph() -> SampleGraph {
+        let mut registry = Registry::new();
+        let mut table = QuestTable::new();
+        let goblin = registry.intern(id("testmod:goblin"));
+
+        let define = |registry: &mut Registry,
+                      table: &mut QuestTable,
+                      raw: &str,
+                      prerequisites: Vec<ContentIndex>,
+                      condition: QuestCondition| {
+            let index = registry.intern(id(raw));
+            table
+                .define(
+                    index,
+                    QuestAttrs {
+                        prerequisites,
+                        condition,
+                    },
+                )
+                .expect("首次定义应当成功");
+            index
+        };
+
+        let root = define(
+            &mut registry,
+            &mut table,
+            "testmod:root",
+            Vec::new(),
+            QuestCondition::KillCount {
+                target_kind: goblin,
+                count: 3,
+            },
+        );
+        let branch_a = define(
+            &mut registry,
+            &mut table,
+            "testmod:branch_a",
+            vec![root],
+            QuestCondition::KillCount {
+                target_kind: goblin,
+                count: 5,
+            },
+        );
+        let branch_b = define(
+            &mut registry,
+            &mut table,
+            "testmod:branch_b",
+            vec![root],
+            QuestCondition::Script(id("testmod:branch_b_condition")),
+        );
+        let merge = define(
+            &mut registry,
+            &mut table,
+            "testmod:merge",
+            vec![branch_a, branch_b],
+            QuestCondition::KillCount {
+                target_kind: goblin,
+                count: 1,
+            },
+        );
+
+        SampleGraph {
+            registry,
+            table,
+            root,
+            branch_a,
+            branch_b,
+            merge,
+        }
+    }
+
+    /// 把 [`BASE_QUEST_IDS`] 四条全部注册进一张表，字段值填测试占位
+    /// 值——[`resolve_base_quests`] 成功路径的最小前置。
+    fn registry_with_all_base_quests() -> (Registry, QuestTable) {
+        let mut registry = Registry::new();
+        let mut table = QuestTable::new();
+        for (_, raw) in BASE_QUEST_IDS {
+            let index = registry.intern(id(raw));
+            table
+                .define(index, kill_count_attrs(Vec::new()))
+                .expect("首次定义应当成功");
+        }
+        (registry, table)
+    }
+
     #[test]
     fn 网状结构一个前置任务解锁多个后续任务() {
         // Arrange
-        let (ids, table) = base_quest_fixture();
+        let graph = sample_graph();
 
         // Act
-        let branches = [ids.branch_a, ids.branch_b];
-        let all_reference_main = branches
+        let branches = [graph.branch_a, graph.branch_b];
+        let all_reference_root = branches
             .iter()
-            .all(|&branch| table.get(branch).expect("已注册").prerequisites == [ids.main_quest_1]);
+            .all(|&branch| graph.table.get(branch).expect("已注册").prerequisites == [graph.root]);
 
         // Assert
-        assert!(all_reference_main);
+        assert!(all_reference_root);
     }
 
     #[test]
     fn 网状结构一个任务节点要求多个前置同时满足() {
         // Arrange
-        let (ids, table) = base_quest_fixture();
+        let graph = sample_graph();
 
         // Act
-        let view = table.get(ids.finale).expect("finale 已注册");
+        let view = graph.table.get(graph.merge).expect("merge 已注册");
 
         // Assert：两个前置都在,证明这不是一棵树（树里每个节点只有一个
         // 父节点)。
-        assert_eq!(view.prerequisites, &[ids.branch_a, ids.branch_b]);
+        assert_eq!(view.prerequisites, &[graph.branch_a, graph.branch_b]);
     }
 
     #[test]
-    fn 本体与mod注册的脚本回调型条件调用同一个公开define函数完成注册() {
-        // 结构等价断言，理由同 crate::skill 模块的等价测试。
-        //
+    fn 脚本回调型条件与击杀计数型条件走同一条define路径() {
         // 边界：本测试只证明 `QuestCondition::Script(id)` 这个数据值
-        // 能被本体与 mod 走同一条 `Registry::intern`/`define` 路径注册，
-        // 不运行任何脚本、也不证明"脚本回调"这四个字所暗示的东西——
-        // `QuestCondition::Script` 目前只是一个携带命名空间 ID 的数据
-        // 标签，真正求值它指向的脚本回调是尚未落地的能力（`unlocked_by`/
-        // 任务完成判定当前只处理 `KillCount` 变体，见本文件其余测试）。
-        // 与「十二条结构等价测试改名」同一批修正：原名字里的「脚本回调型
-        // 完成条件」容易被误读成"脚本已经能跑"，实际验证的只是数据值的
-        // 注册路径。真正的脚本可达证据在 `crate::pipeline` 的脚本装载
-        // 测试与 `mods/example_mod/gameplay.scm`。
+        // 能与 `KillCount` 走同一条 `Registry::intern`/`define` 路径
+        // 注册，不运行任何脚本、也不证明"脚本回调"这四个字所暗示的
+        // 东西——`QuestCondition::Script` 目前只是一个携带命名空间 ID
+        // 的数据标签。真正的脚本可达证据在 `crate::pipeline` 的脚本
+        // 装载测试与 `mods/lostland/quests.scm`。
         // Arrange
-        let mut registry = Registry::new();
-        let (base_ids, mut table) =
-            materialize_base_quests(&mut |id| registry.intern(id)).expect("本体任务声明表内部一致");
+        let graph = sample_graph();
 
-        // Act：mod 注册一个三档任务，前置指向本体的 finale。
-        let mod_index = registry.intern(id("yourmod:epilogue"));
-        table
-            .define(
-                mod_index,
-                QuestAttrs {
-                    prerequisites: vec![base_ids.finale],
-                    condition: QuestCondition::Script(id("yourmod:epilogue_condition")),
-                },
-            )
-            .expect("mod 任务与本体任务调用同一个公开 define 函数,理应同样成功");
+        // Act
+        let view = graph.table.get(graph.branch_b).expect("branch_b 已注册");
 
         // Assert
-        let view = table.get(mod_index).expect("mod 任务已通过 define 登记");
         assert_eq!(
             view.condition,
-            &QuestCondition::Script(id("yourmod:epilogue_condition"))
+            &QuestCondition::Script(id("testmod:branch_b_condition"))
         );
     }
 
     #[test]
     fn unlocked_by对给定已完成集合返回正确的后续节点() {
         // Arrange
-        let (ids, table) = base_quest_fixture();
+        let graph = sample_graph();
 
-        // Act：只完成 main_quest_1——两条分支都应解锁,finale 还不该
-        // 解锁（它还需要 branch_a/branch_b 都完成)。
-        let unlocked = unlocked_by(&table, &[ids.main_quest_1]);
+        // Act：只完成 root——两条分支都应解锁,merge 还不该解锁（它还
+        // 需要 branch_a/branch_b 都完成)。
+        let unlocked = unlocked_by(&graph.table, &[graph.root]);
 
         // Assert
-        assert_eq!(unlocked, vec![ids.branch_a, ids.branch_b]);
+        assert_eq!(unlocked, vec![graph.branch_a, graph.branch_b]);
     }
 
     #[test]
     fn unlocked_by在两条分支都完成后解锁汇聚任务() {
         // Arrange
-        let (ids, table) = base_quest_fixture();
+        let graph = sample_graph();
 
         // Act
-        let unlocked = unlocked_by(&table, &[ids.main_quest_1, ids.branch_a, ids.branch_b]);
+        let unlocked = unlocked_by(&graph.table, &[graph.root, graph.branch_a, graph.branch_b]);
 
         // Assert
-        assert_eq!(unlocked, vec![ids.finale]);
+        assert_eq!(unlocked, vec![graph.merge]);
     }
 
     #[test]
@@ -657,12 +710,12 @@ mod tests {
         // 验收"纯函数性质"：同一个 table/completed，多次调用不应该因为
         // 内部状态变化而产出不同结果（本函数根本不持有任何可变状态)。
         // Arrange
-        let (ids, table) = base_quest_fixture();
-        let completed = [ids.main_quest_1];
+        let graph = sample_graph();
+        let completed = [graph.root];
 
         // Act
-        let first = unlocked_by(&table, &completed);
-        let second = unlocked_by(&table, &completed);
+        let first = unlocked_by(&graph.table, &completed);
+        let second = unlocked_by(&graph.table, &completed);
 
         // Assert
         assert_eq!(first, second);
@@ -671,21 +724,21 @@ mod tests {
     #[test]
     fn unlocked_by对空的已完成集合只返回无前置的起点任务() {
         // Arrange
-        let (ids, table) = base_quest_fixture();
+        let graph = sample_graph();
 
         // Act
-        let unlocked = unlocked_by(&table, &[]);
+        let unlocked = unlocked_by(&graph.table, &[]);
 
         // Assert
-        assert_eq!(unlocked, vec![ids.main_quest_1]);
+        assert_eq!(unlocked, vec![graph.root]);
     }
 
     #[test]
     fn 任务前置关系形成环时注册失败() {
         // Arrange：a 需要 b，b 需要 a——二节点环。
-        let mut interner = Interner::new();
-        let a = interner.intern(id("yourmod:a"));
-        let b = interner.intern(id("yourmod:b"));
+        let mut registry = Registry::new();
+        let a = registry.intern(id("yourmod:a"));
+        let b = registry.intern(id("yourmod:b"));
         let mut table = QuestTable::new();
         table
             .define(a, kill_count_attrs(vec![b]))
@@ -710,9 +763,9 @@ mod tests {
     #[test]
     fn 前置引用未注册的索引时报告悬空引用而非静默通过() {
         // Arrange
-        let mut interner = Interner::new();
-        let a = interner.intern(id("yourmod:a"));
-        let ghost = interner.intern(id("yourmod:ghost"));
+        let mut registry = Registry::new();
+        let a = registry.intern(id("yourmod:a"));
+        let ghost = registry.intern(id("yourmod:ghost"));
         let mut table = QuestTable::new();
         table
             .define(a, kill_count_attrs(vec![ghost]))
@@ -734,8 +787,8 @@ mod tests {
     #[test]
     fn 重复定义同一个索引返回错误而非静默覆盖() {
         // Arrange
-        let mut interner = Interner::new();
-        let index = interner.intern(id("lostland:main_quest_1"));
+        let mut registry = Registry::new();
+        let index = registry.intern(id("testmod:root"));
         let mut table = QuestTable::new();
         table
             .define(index, kill_count_attrs(Vec::new()))
@@ -751,8 +804,8 @@ mod tests {
     #[test]
     fn 未注册的内容索引查询返回none() {
         // Arrange
-        let mut interner = Interner::new();
-        let never_defined = interner.intern(id("yourmod:never_defined"));
+        let mut registry = Registry::new();
+        let never_defined = registry.intern(id("yourmod:never_defined"));
         let table = QuestTable::new();
 
         // Act
@@ -763,44 +816,44 @@ mod tests {
     }
 
     #[test]
-    fn 本体任务与mod注册的自定义任务调用同一个公开define函数完成注册() {
-        // 结构等价断言，理由同 crate::skill 模块的等价测试。
-        //
-        // 边界：本测试只证明本体与 mod 走同一条注册路径，不能证明
-        // mod 脚本调得到这套 API。真正的证据在 crate::pipeline 的
-        // 脚本装载测试与 mods/example_mod/gameplay.scm。
+    fn 后注册的mod任务可以把先注册的任务当作前置() {
+        // 结构等价断言：本体任务与 mod 任务共享同一张表、同一套校验，
+        // 没有任何一条只对本体开放的旁路——本体任务现在也走
+        // `mods/lostland/quests.scm` 的 `register-quest`。
         // Arrange
-        let mut registry = Registry::new();
+        let mut graph = sample_graph();
 
         // Act
-        let (base_ids, mut table) =
-            materialize_base_quests(&mut |id| registry.intern(id)).expect("本体任务声明表内部一致");
-        let mod_index = registry.intern(id("yourmod:side_quest"));
-        table
+        let mod_index = graph.registry.intern(id("yourmod:side_quest"));
+        graph
+            .table
             .define(
                 mod_index,
                 QuestAttrs {
-                    prerequisites: vec![base_ids.main_quest_1],
+                    prerequisites: vec![graph.root],
                     condition: QuestCondition::KillCount {
                         target_kind: ContentIndex::default(),
                         count: 2,
                     },
                 },
             )
-            .expect("mod 任务与本体任务调用同一个公开 define 函数,理应同样成功");
+            .expect("mod 任务与先注册的任务调用同一个公开 define 函数,理应同样成功");
 
         // Assert
-        let view = table.get(mod_index).expect("mod 任务已通过 define 登记");
-        assert_eq!(view.prerequisites, &[base_ids.main_quest_1]);
+        let view = graph
+            .table
+            .get(mod_index)
+            .expect("mod 任务已通过 define 登记");
+        assert_eq!(view.prerequisites, &[graph.root]);
     }
 
     #[test]
-    fn 本体任务表通过完整dag校验() {
+    fn 网状任务图通过完整dag校验() {
         // Arrange
-        let (_ids, table) = base_quest_fixture();
+        let graph = sample_graph();
 
         // Act
-        let result = validate_no_cycles(&table);
+        let result = validate_no_cycles(&graph.table);
 
         // Assert
         assert!(result.is_ok());
@@ -814,6 +867,62 @@ mod tests {
 
         // Act & Assert
         assert_ne!(quest_progress_key(&quest_a), quest_progress_key(&quest_b));
+    }
+
+    #[test]
+    fn 四条本体任务都在时契约解析成功且返回真实索引() {
+        // Arrange
+        let (registry, table) = registry_with_all_base_quests();
+
+        // Act
+        let ids = resolve_base_quests(&registry, &table).expect("四条都在，解析应当成功");
+
+        // Assert
+        assert_eq!(
+            registry.resolve(ids.main_quest_1).map(|id| id.to_string()),
+            Some("lostland:main_quest_1".to_string())
+        );
+        assert_eq!(
+            registry.resolve(ids.finale).map(|id| id.to_string()),
+            Some("lostland:finale".to_string())
+        );
+    }
+
+    #[test]
+    fn 本体任务一条都没注册时契约解析一次列出全部四条() {
+        // Arrange
+        let registry = Registry::new();
+        let table = QuestTable::new();
+
+        // Act
+        let error = resolve_base_quests(&registry, &table).expect_err("空注册表必须解析失败");
+
+        // Assert
+        assert_eq!(error.contract, "本体任务");
+        assert_eq!(error.required, 4);
+        assert_eq!(error.missing.len(), 4);
+    }
+
+    #[test]
+    fn 任务id只被intern没被define时契约解析报notdefined() {
+        // Arrange
+        let mut registry = Registry::new();
+        for (_, raw) in BASE_QUEST_IDS {
+            registry.intern(id(raw));
+        }
+        let table = QuestTable::new();
+
+        // Act
+        let error =
+            resolve_base_quests(&registry, &table).expect_err("只 intern 未 define 必须失败");
+
+        // Assert
+        assert!(
+            error
+                .missing
+                .iter()
+                .all(|entry| entry.reason == MissingReason::NotDefined)
+        );
     }
 
     /// P5-B 任务 7：任务进度持久化——脚本状态存储接线的测试。
@@ -851,9 +960,9 @@ mod tests {
         /// `ll_world::entity::Agent` 保持同步，理由同
         /// `ll_sim::apply` 测试模块的同名帮手。
         fn blank_agent(world: &WorldState) -> Agent {
-            let mut interner = Interner::new();
-            let profession = interner.intern(id("lostland:tester"));
-            let race = interner.intern(id("lostland:human"));
+            let mut registry = Registry::new();
+            let profession = registry.intern(id("testmod:tester"));
+            let race = registry.intern(id("testmod:human"));
             let pos = world.size.wrap(0, 0);
             let (zone, _) = world.terrain.layout().tile_to_zone(pos);
             Agent {

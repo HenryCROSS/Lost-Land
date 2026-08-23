@@ -4,8 +4,14 @@
 //!
 //! 见 [`crate::class`] 模块文档「照抄 `terrain.rs`/`space_profile.rs`
 //! 已验证的模式」一节——副职的定义/存储/查询走完全相同的思路：私有
-//! 字段 + `SubclassTable::define` 注册期校验 + `materialize_base_subclasses`
-//! 本体注册入口 + `base_subclass_fixture` 测试夹具。
+//! 字段 + `SubclassTable::define` 注册期校验。
+//!
+//! # 本体两个基础副职的定义已经搬进 `mods/lostland/subclasses.scm`
+//!
+//! 本模块此前还有一对 `materialize_base_subclasses`/`base_subclass_fixture`
+//! ——与 [`crate::class`] 的那一对处境完全相同（都不在生产装载路径上，
+//! 见其模块文档同名一节），一并删除，剑舞者/学徒两条改由脚本注册。
+//! 留下来的是 [`BaseSubclassIds`] 与 [`resolve_base_subclasses`]。
 //!
 //! # 裁定 P5-4：副职与主职共享技能命名空间——为什么 `SubclassDef` 本身
 //! 不需要携带任何命名空间字段
@@ -48,8 +54,11 @@
 
 use std::fmt;
 
-use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_sim::subclass::{CraftUnlockRule, SubclassUnlockCatalog};
+
+use crate::base_contract::{BaseContractError, BaseContractResolver};
+use crate::registry::Registry;
 
 /// 单条副职声明：本体与 mod 注册副职时共用的同一个输入形状。
 ///
@@ -72,8 +81,8 @@ pub struct SubclassDef {
 /// [`SubclassTable::define`] 实际存进列式存储的属性子集——不含 `id`，
 /// 理由同 [`crate::class::ClassAttrs`]。**必须公开**：这是 `define`
 /// 唯一的参数类型，任何想直接调用 `define`（而不是走
-/// [`materialize_base_subclasses`] 那条便捷路径）的调用方——包括未来
-/// mod 自己的副职注册函数——都需要能构造这个类型。
+/// `register-subclass` 那条脚本路径）的调用方——包括未来 mod 自己的
+/// 副职注册函数——都需要能构造这个类型。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubclassAttrs {
     /// 指向 Fluent 本地化键。
@@ -292,10 +301,19 @@ impl SubclassUnlockCatalog for SubclassTable {
     }
 }
 
-/// 本体基础副职在当前注册表里的索引缓存。
+/// 本体基础副职在当前注册表里的索引缓存——**句柄，不是内容**。
 ///
-/// 只注册占位性质的少数几种基础副职——真正的副职数值平衡与内容设计
-/// 不在本任务范围（与 [`crate::class::BaseClassIds`] 同一条纪律）。
+/// 两条副职的字段值已经搬进 `mods/lostland/subclasses.scm`，本结构体
+/// 只保住使用点的编译期安全，填充由 [`resolve_base_subclasses`] 在装载
+/// 完成后按 id 逐字段解析完成，理由完整见 [`crate::class::BaseClassIds`]
+/// 与 [`crate::base_contract`] 两处文档。
+///
+/// 只有剑舞者/学徒两条——真正的副职数值平衡与内容设计不在本任务范围
+/// （与 [`crate::class::BaseClassIds`] 同一条纪律）。同一个脚本文件里
+/// 还注册着四个制作类副职（工匠/裁缝/炼金术士/厨师），它们**不进**
+/// 本结构体：Rust 侧没有任何代码按名字引用它们（它们只通过
+/// `register-subclass-unlock` 与配方类别挂钩，全程走 `ContentIndex`），
+/// 判据同 [`crate::class::BaseClassIds`] 文档「哪些内容进」一节。
 #[derive(Debug, Clone, Copy)]
 pub struct BaseSubclassIds {
     /// 剑舞者：轻装近战副职。
@@ -304,68 +322,86 @@ pub struct BaseSubclassIds {
     pub apprentice: ContentIndex,
 }
 
-/// 本体副职注册的唯一入口：本体与 mod 共用的注册路径，理由同
-/// [`crate::class::materialize_base_classes`]。
-pub fn materialize_base_subclasses(
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-) -> Result<(BaseSubclassIds, SubclassTable), SubclassError> {
-    let mut table = SubclassTable::new();
+/// 本体两个基础副职的 id 字面量——[`resolve_base_subclasses`] 的契约
+/// 清单，理由同 [`crate::class`] 的 `BASE_CLASS_IDS`。
+const BASE_SUBCLASS_IDS: [(&str, &str); 2] = [
+    ("BaseSubclassIds::duelist", "lostland:duelist"),
+    ("BaseSubclassIds::apprentice", "lostland:apprentice"),
+];
 
-    let duelist = define_base(
-        &mut table,
-        intern,
-        "lostland:duelist",
-        "lostland:subclass.duelist.display_name",
-    )?;
-    let apprentice = define_base(
-        &mut table,
-        intern,
-        "lostland:apprentice",
-        "lostland:subclass.apprentice.display_name",
-    )?;
+/// 装载完成后解析本体副职契约：按 id 逐字段填充 [`BaseSubclassIds`]，
+/// 缺任何一条就整批失败。取代原先的 `materialize_base_subclasses`/
+/// `base_subclass_fixture`，理由同 [`crate::class::resolve_base_classes`]。
+pub fn resolve_base_subclasses(
+    registry: &Registry,
+    table: &SubclassTable,
+) -> Result<BaseSubclassIds, BaseContractError> {
+    let mut resolver = BaseContractResolver::new("本体副职", registry);
+    let mut resolved = BASE_SUBCLASS_IDS
+        .iter()
+        .map(|(field, id)| resolver.require(field, id, |index| table.is_defined(index)));
+    let duelist = resolved.next().expect("BASE_SUBCLASS_IDS 恒有两条");
+    let apprentice = resolved.next().expect("BASE_SUBCLASS_IDS 恒有两条");
+    drop(resolved);
+    resolver.finish()?;
 
-    Ok((
-        BaseSubclassIds {
-            duelist,
-            apprentice,
-        },
-        table,
-    ))
-}
-
-/// [`materialize_base_subclasses`] 的内部帮手：把一条声明的字面量字段
-/// 拆开传入，换取一次 `intern` + 一次 [`SubclassTable::define`]。
-fn define_base(
-    table: &mut SubclassTable,
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-    id: &str,
-    display_name_key: &str,
-) -> Result<ContentIndex, SubclassError> {
-    let index = intern(NamespacedId::parse(id).expect("本体副职 id 字面量恒合法"));
-    table.define(
-        index,
-        SubclassAttrs {
-            display_name_key: NamespacedId::parse(display_name_key)
-                .expect("本体副职本地化键字面量恒合法"),
-        },
-    )?;
-    Ok(index)
-}
-
-/// 供测试使用：现造一个空 [`Interner`]，注册本体全部基础副职，返回
-/// 可用的 `(BaseSubclassIds, SubclassTable)`。不是生产路径，理由同
-/// [`crate::class::base_class_fixture`]。
-pub fn base_subclass_fixture() -> (BaseSubclassIds, SubclassTable) {
-    let mut interner = Interner::new();
-    materialize_base_subclasses(&mut |id| interner.intern(id))
-        .expect("本体副职声明表内部一致，注册恒不失败")
+    Ok(BaseSubclassIds {
+        duelist,
+        apprentice,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::Registry;
+    use crate::base_contract::MissingReason;
     use crate::skill::{ResourceCost, ResourceKind, SkillAttrs, SkillEffect, SkillTable};
+
+    /// 一张现造的、与本体内容无关的副职表，理由同
+    /// [`crate::class`] 测试里的 `sample_table`。
+    fn sample_table() -> (Registry, ContentIndex, ContentIndex, SubclassTable) {
+        let mut registry = Registry::new();
+        let mut table = SubclassTable::new();
+
+        let define = |registry: &mut Registry, table: &mut SubclassTable, id: &str| {
+            let index = registry.intern(NamespacedId::parse(id).expect("合法标识符"));
+            table
+                .define(
+                    index,
+                    SubclassAttrs {
+                        display_name_key: NamespacedId::parse("testmod:display_name")
+                            .expect("合法标识符"),
+                    },
+                )
+                .expect("首次定义应当成功");
+            index
+        };
+
+        let blademaster = define(&mut registry, &mut table, "testmod:blademaster");
+        let acolyte = define(&mut registry, &mut table, "testmod:acolyte");
+
+        (registry, blademaster, acolyte, table)
+    }
+
+    /// 把 [`BASE_SUBCLASS_IDS`] 两条全部注册进一张表，字段值填测试占位
+    /// 值——理由同 `crate::class` 测试里的 `registry_with_all_base_classes`。
+    fn registry_with_all_base_subclasses() -> (Registry, SubclassTable) {
+        let mut registry = Registry::new();
+        let mut table = SubclassTable::new();
+        for (_, id) in BASE_SUBCLASS_IDS {
+            let index = registry.intern(NamespacedId::parse(id).expect("合法标识符"));
+            table
+                .define(
+                    index,
+                    SubclassAttrs {
+                        display_name_key: NamespacedId::parse("testmod:display_name")
+                            .expect("合法标识符"),
+                    },
+                )
+                .expect("首次定义应当成功");
+        }
+        (registry, table)
+    }
 
     #[test]
     fn 新建的副职表查询任意索引均为未注册() {
@@ -377,55 +413,43 @@ mod tests {
     }
 
     #[test]
-    fn 剑舞者副职注册成功且可查询() {
+    fn 已定义的副职能查回它声明的显示名键() {
         // Arrange
-        let (ids, table) = base_subclass_fixture();
+        let (_registry, blademaster, _acolyte, table) = sample_table();
 
         // Act
-        let view = table.get(ids.duelist).expect("剑舞者已在本体注册");
+        let view = table.get(blademaster).expect("已定义");
 
         // Assert
         assert_eq!(
             view.display_name_key,
-            &NamespacedId::parse("lostland:subclass.duelist.display_name").expect("合法")
+            &NamespacedId::parse("testmod:display_name").expect("合法")
         );
     }
 
     #[test]
     fn 重复定义同一个索引返回错误而非静默覆盖() {
         // Arrange
-        let mut interner = Interner::new();
-        let index = interner.intern(NamespacedId::parse("lostland:duelist").expect("合法"));
-        let mut table = SubclassTable::new();
-        table
-            .define(
-                index,
-                SubclassAttrs {
-                    display_name_key: NamespacedId::parse("lostland:subclass.duelist.display_name")
-                        .expect("合法"),
-                },
-            )
-            .expect("首次定义应当成功");
+        let (_registry, blademaster, _acolyte, mut table) = sample_table();
 
         // Act
         let result = table.define(
-            index,
+            blademaster,
             SubclassAttrs {
-                display_name_key: NamespacedId::parse("lostland:subclass.other.display_name")
-                    .expect("合法"),
+                display_name_key: NamespacedId::parse("testmod:other_display_name").expect("合法"),
             },
         );
 
         // Assert
-        assert_eq!(result, Err(SubclassError::DuplicateDefinition(index)));
+        assert_eq!(result, Err(SubclassError::DuplicateDefinition(blademaster)));
     }
 
     #[test]
     fn 未注册的内容索引查询返回none() {
         // Arrange
-        let mut interner = Interner::new();
+        let mut registry = Registry::new();
         let never_defined =
-            interner.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
+            registry.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
         let table = SubclassTable::new();
 
         // Act
@@ -436,23 +460,14 @@ mod tests {
     }
 
     #[test]
-    fn 本体副职与mod注册的自定义副职调用同一个公开define函数完成注册() {
-        // 结构等价断言，理由同 crate::class/crate::skill 模块的等价
-        // 测试：本体副职与 mod 副职都只是往同一个 Registry::intern
-        // 里塞一个 NamespacedId，再用完全相同的公开
-        // SubclassTable::define 函数登记属性。
-        //
-        // 边界：本测试只证明本体与 mod 走同一条注册路径，不能证明
-        // mod 脚本调得到这套 API。真正的证据在 crate::pipeline 的
-        // 脚本装载测试与 mods/example_mod/gameplay.scm。
+    fn 本体副职与mod副职共用同一个单调递增号段没有预留区间() {
+        // 结构等价断言，理由同 crate::class 里的同名测试。
         // Arrange
-        let mut registry = Registry::new();
+        let (mut registry, _blademaster, acolyte, mut table) = sample_table();
 
         // Act
-        let (base_ids, mut table) = materialize_base_subclasses(&mut |id| registry.intern(id))
-            .expect("本体副职声明表内部一致");
-        let mod_id = NamespacedId::parse("yourmod:shadowdancer").expect("合法标识符");
-        let mod_index = registry.intern(mod_id);
+        let mod_index =
+            registry.intern(NamespacedId::parse("yourmod:shadowdancer").expect("合法标识符"));
         table
             .define(
                 mod_index,
@@ -461,11 +476,10 @@ mod tests {
                         .expect("合法"),
                 },
             )
-            .expect("mod 副职与本体副职调用同一个公开 define 函数,理应同样成功");
+            .expect("mod 副职与先注册的副职调用同一个公开 define 函数,理应同样成功");
 
-        // Assert：mod 副职紧接在本体两种副职之后分配到索引，说明两者
-        // 共用同一个单调递增的号段。
-        assert_eq!(mod_index.get(), base_ids.apprentice.get() + 1);
+        // Assert
+        assert_eq!(mod_index.get(), acolyte.get() + 1);
         let view = table.get(mod_index).expect("mod 副职已通过 define 登记");
         assert_eq!(
             view.display_name_key,
@@ -476,44 +490,99 @@ mod tests {
     #[test]
     fn 副职可以复用主职已定义的技能而不需要重新登记() {
         // 裁定 P5-4 的直接验收：技能与副职共享同一份 ContentIndex
-        // 命名空间——一个已经由主职（战士）声明的技能，副职（剑舞者）
-        // 可以直接在自己的技能列表里引用同一个索引，不需要为副职复制
-        // 一份技能定义，也不需要任何「跨命名空间引用」机制。
-        // Arrange：先注册技能表（含一个 owning_class 指向战士的技能），
-        // 再注册副职表——两者共用同一个 Registry，因此索引天然落在同
-        // 一段号空间。
-        let mut registry = Registry::new();
-        let warrior = registry.intern(NamespacedId::parse("lostland:warrior").expect("合法"));
+        // 命名空间——一个已经由主职声明的技能，副职可以直接在自己的
+        // 技能列表里引用同一个索引，不需要为副职复制一份技能定义，也
+        // 不需要任何「跨命名空间引用」机制。
+        // Arrange
+        let (mut registry, blademaster, acolyte, _table) = sample_table();
+        let bruiser = registry.intern(NamespacedId::parse("testmod:bruiser").expect("合法"));
         let mut skill_table = SkillTable::new();
-        let power_strike =
-            registry.intern(NamespacedId::parse("lostland:power_strike").expect("合法"));
+        let heavy_swing =
+            registry.intern(NamespacedId::parse("testmod:heavy_swing").expect("合法"));
         skill_table
             .define(
-                power_strike,
+                heavy_swing,
                 SkillAttrs {
-                    owning_class: Some(warrior),
+                    owning_class: Some(bruiser),
                     prerequisites: Vec::new(),
                     cooldown_ticks: 20,
                     resource_cost: ResourceCost::Amount(ResourceKind::Stamina, 10),
                     effect: SkillEffect::DealDamage { base: 12 },
                 },
             )
-            .expect("战士技能注册应当成功");
-        let (base_ids, _subclass_table) =
-            materialize_base_subclasses(&mut |id| registry.intern(id))
-                .expect("本体副职声明表内部一致");
+            .expect("主职技能注册应当成功");
 
-        // Act：剑舞者副职「复用」战士的 power_strike——这里只是证明
-        // power_strike 这个 ContentIndex 在副职注册完毕后依然能在同一张
-        // 技能表里查到、且属性不变，没有因为副职注册流程而发生任何
-        // 命名空间冲突或索引偏移。
+        // Act
         let view = skill_table
-            .get(power_strike)
-            .expect("power_strike 应当仍然可查询");
+            .get(heavy_swing)
+            .expect("heavy_swing 应当仍然可查询");
 
         // Assert
-        assert_eq!(view.owning_class, Some(warrior));
-        assert_ne!(power_strike.get(), base_ids.duelist.get());
-        assert_ne!(power_strike.get(), base_ids.apprentice.get());
+        assert_eq!(view.owning_class, Some(bruiser));
+        assert_ne!(heavy_swing.get(), blademaster.get());
+        assert_ne!(heavy_swing.get(), acolyte.get());
+    }
+
+    #[test]
+    fn 两条本体副职都在时契约解析成功且返回真实索引() {
+        // Arrange
+        let (registry, table) = registry_with_all_base_subclasses();
+
+        // Act
+        let ids = resolve_base_subclasses(&registry, &table).expect("两条都在，解析应当成功");
+
+        // Assert
+        assert_eq!(
+            registry.resolve(ids.duelist).map(|id| id.to_string()),
+            Some("lostland:duelist".to_string())
+        );
+        assert_eq!(
+            registry.resolve(ids.apprentice).map(|id| id.to_string()),
+            Some("lostland:apprentice".to_string())
+        );
+    }
+
+    #[test]
+    fn 本体副职一条都没注册时契约解析一次列出全部两条() {
+        // Arrange
+        let registry = Registry::new();
+        let table = SubclassTable::new();
+
+        // Act
+        let error = resolve_base_subclasses(&registry, &table).expect_err("空注册表必须解析失败");
+
+        // Assert
+        assert_eq!(error.contract, "本体副职");
+        assert_eq!(error.required, 2);
+        assert_eq!(
+            error
+                .missing
+                .iter()
+                .map(|entry| entry.id.to_string())
+                .collect::<Vec<_>>(),
+            vec!["lostland:duelist", "lostland:apprentice"]
+        );
+    }
+
+    #[test]
+    fn 副职id只被intern没被define时契约解析报notdefined() {
+        // Arrange
+        let mut registry = Registry::new();
+        for (_, id) in BASE_SUBCLASS_IDS {
+            registry.intern(NamespacedId::parse(id).expect("合法标识符"));
+        }
+        let table = SubclassTable::new();
+
+        // Act
+        let error =
+            resolve_base_subclasses(&registry, &table).expect_err("只 intern 未 define 必须失败");
+
+        // Assert
+        assert!(
+            error
+                .missing
+                .iter()
+                .all(|entry| entry.reason == MissingReason::NotDefined)
+        );
     }
 }

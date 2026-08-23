@@ -1,4 +1,4 @@
-;; 本体副职内容——本仓库里第一批真实的副职。
+;; 本体副职内容：六条——四条制作类 + 剑舞者/学徒。
 ;;
 ;; 签名见 crates/ll-mod/src/script_subclass_api.rs：
 ;;   (register-subclass id display-name-key)
@@ -32,6 +32,30 @@
 ;;
 ;; **注册一个拿不到的副职比不注册它更糟**：它会出现在将来的角色面板
 ;; 与存档里，而玩家永远达不到它的条件。因此上面五条一条都不注册。
+;;
+;; # 剑舞者/学徒两条是本批次迁进来的，与上面那条纪律不矛盾
+;;
+;; 这两条此前写在 `ll_mod::subclass::materialize_base_subclasses` 里，
+;; 与职业/技能/任务处境完全相同：那个函数**从来不在生产装载路径上**
+;; （详见 classes.scm 文件头同名一节），本批次按项目所有者「迁移吧」
+;; 的裁定一并搬进来。
+;;
+;; 上面那条纪律说的是「**不要往名册里新增**没有挂钩动作的副职」——
+;; 判据是「要不要造一条新内容」。这两条不是新造的，是**已经存在、
+;; 只是从没被装载过**的存量内容，把它们删掉才是内容损失。
+;;
+;; **但必须如实说清楚一件事**：这两条目前**玩家拿不到**。
+;; `Effect::GrantSubclass` 在整个 `ll-sim` 里只有一个产出点
+;; （`ll_sim::subclass` 的制作计数达标那一路），而 `register-subclass-unlock`
+;; 的 trigger-kind 至今只接受 "items-crafted"。给一个近战副职配一条
+;; 「做满 N 件东西」的获得条件是荒唐的，因此本文件**不**给它们编造
+;; 获得条件——宁可让「拿不到」是一条写下来的、可查的缺口，也不要一条
+;; 语义不对的内容。
+;;
+;; 补这个缺口的正确形状是给 `SubclassUnlockTrigger` 增开新的触发器
+;; 种类（例如「用某类武器命中 N 次」），而那要求 `ll_sim` 侧先有对应
+;; 的挂钩动作与计数——是一个独立批次，不夹带在内容迁移里。同一个
+;; 判据下，本文件仍然不给设计文档名册里那五条没有挂钩动作的副职开门。
 ;;
 ;; # 上限与放弃
 ;;
@@ -76,3 +100,14 @@
 ;; 厨师：烹饪食物。
 (register-subclass "lostland:cook" "lostland:subclass.cook.display_name")
 (register-subclass-unlock "lostland:cook" "items-crafted" "lostland:cooking" 15)
+
+;; # 以下两条来自 `materialize_base_subclasses`，见文件头同名一节
+;;
+;; 两条都**不**声明获得条件（register-subclass-unlock）——理由见文件头：
+;; 现有的唯一触发器种类 "items-crafted" 对它们语义不对。
+
+;; 剑舞者：轻装近战副职。
+(register-subclass "lostland:duelist" "lostland:subclass.duelist.display_name")
+
+;; 学徒：可搭配任意主职的通用魔法副职。
+(register-subclass "lostland:apprentice" "lostland:subclass.apprentice.display_name")

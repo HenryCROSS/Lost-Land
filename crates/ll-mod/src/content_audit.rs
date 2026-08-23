@@ -77,8 +77,8 @@
 //!
 //! # 表花名册：不允许"这张表还没有内容，所以静默跳过"
 //!
-//! 本体内容目前只迁走了种族，其余内容表在 `lostland` 命名空间下**一条
-//! 内容都没有**（职业/技能/副职/任务/天赋/资源池/物品/武器类别至今只
+//! 本体内容的迁移是分批次进行的，还有几张内容表在 `lostland` 命名
+//! 空间下**一条内容都没有**（天赋/资源池/物品/武器类别/配方至今只
 //! 存在于 `mods/example_mod/`）。对这些表求字段覆盖只会得到"全部字段
 //! 都没覆盖"这种纯噪音。
 //!
@@ -332,6 +332,14 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 挪进 covered。
         ContentTableKind::Subclass,
         ContentTableKind::RecipeCategory,
+        // 本体职业/技能/任务迁移批次：mods/lostland/ 下新增 skills.scm
+        // （五条）与 quests.scm（四条），两张表在 lostland 命名空间下
+        // 从此非空，按 DeferredButPopulated 的指引从 deferred 挪进
+        // covered。这两条内容此前只存在于 `materialize_base_skills`/
+        // `materialize_base_quests`——两个从不在生产装载路径上的函数，
+        // 见 `crate::class` 模块文档同名一节。
+        ContentTableKind::Skill,
+        ContentTableKind::Quest,
         // 耐久标签批次：mods/lostland/tags.scm 注册了三条本体标签
         // （armor/weapon/tool），三条都声明了非默认的磨损通道,因此这张
         // 表在 lostland 命名空间下一落地就是 covered,不经过 deferred。
@@ -341,36 +349,28 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
     ],
     deferred: &[
         DeferredTable {
-            kind: ContentTableKind::Skill,
-            reason: "本体技能尚未迁进 mods/lostland/：lostland 命名空间下零条技能内容，\
-                     SkillTable 在生产装载路径里拿到的全部条目都来自 mods/example_mod/。\
-                     迁移完成后本条会被 DeferredButPopulated 主动顶掉。下面几条\
-                     『理由同 Skill 一条』指的都是这一段。",
-        },
-        DeferredTable {
-            kind: ContentTableKind::Quest,
-            reason: "本体任务尚未迁进 mods/lostland/，理由同 Skill 一条。",
-        },
-        DeferredTable {
             kind: ContentTableKind::Trait,
-            reason: "本体天赋尚未迁进 mods/lostland/，理由同 Skill 一条——本体三个种族\
-                     当前不授予任何天赋，天赋内容只存在于 mods/example_mod/。",
+            reason: "本体天赋尚未迁进 mods/lostland/：lostland 命名空间下零条天赋内容，\
+                     TraitTable 在生产装载路径里拿到的全部条目都来自 mods/example_mod/\
+                     ——本体种族与职业当前都不授予任何天赋。迁移完成后本条会被\
+                     DeferredButPopulated 主动顶掉。下面几条『理由同 Trait 一条』指的\
+                     都是这一段。",
         },
         DeferredTable {
             kind: ContentTableKind::ResourcePool,
-            reason: "本体资源池尚未迁进 mods/lostland/，理由同 Skill 一条。",
+            reason: "本体资源池尚未迁进 mods/lostland/，理由同 Trait 一条。",
         },
         DeferredTable {
             kind: ContentTableKind::Item,
-            reason: "本体物品尚未迁进 mods/lostland/，理由同 Skill 一条。",
+            reason: "本体物品尚未迁进 mods/lostland/，理由同 Trait 一条。",
         },
         DeferredTable {
             kind: ContentTableKind::WeaponCategory,
-            reason: "本体武器类别尚未迁进 mods/lostland/，理由同 Skill 一条。",
+            reason: "本体武器类别尚未迁进 mods/lostland/，理由同 Trait 一条。",
         },
         DeferredTable {
             kind: ContentTableKind::Recipe,
-            reason: "本体配方尚未迁进 mods/lostland/，理由同 Skill 一条——制作系统落地                     批次的真实内容证据在 mods/example_mod/gameplay.scm（四类配方各一条），                     lostland 命名空间下零条配方。本体配方要能存在，先得有本体物品                     （见 deferred 里的 Item 一条）：配方的食材与成品都指向物品表。",
+            reason: "本体配方尚未迁进 mods/lostland/，理由同 Trait 一条——制作系统落地                     批次的真实内容证据在 mods/example_mod/gameplay.scm（四类配方各一条），                     lostland 命名空间下零条配方。本体配方要能存在，先得有本体物品                     （见 deferred 里的 Item 一条）：配方的食材与成品都指向物品表。",
         },
     ],
     exemptions: &[
@@ -382,9 +382,9 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         FieldExemption {
             kind: ContentTableKind::Class,
             field: "ClassAttrs::traits",
-            reason: "本体目前只有卫兵一条职业内容（mods/lostland/classes.scm），它不授予\
-                     任何职业天赋——与 RaceAttrs::traits 一条同源：本体内容不为了让字段\
-                     覆盖检查变绿硬塞一条天赋。字段本身不是死的：\
+            reason: "本体四条职业内容（mods/lostland/classes.scm 的战士/法师/游侠/卫兵）\
+                     一条都不授予职业天赋——与 RaceAttrs::traits 一条同源：本体内容\
+                     不为了让字段覆盖检查变绿硬塞一条天赋。字段本身不是死的：\
                      mods/example_mod/gameplay.scm 的 examplemod:rogue 用\
                      register-class-trait 在 3 级授予 examplemod:cutpurse_training，\
                      ll_sim 的 effective_traits 真的会读它——只是本体内容用不到。",

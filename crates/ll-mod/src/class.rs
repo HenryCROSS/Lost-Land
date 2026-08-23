@@ -22,6 +22,32 @@
 //! 见 `knowledge/design/class-skill-quest-system.md`「与既有架构的
 //! 接线点」一节。
 //!
+//! # 本体三个基础职业的定义已经搬进 `mods/lostland/classes.scm`
+//!
+//! 本模块此前还有一对 `materialize_base_classes`/`base_class_fixture`：
+//! 前者把战士/法师/游侠三条声明的字段值写死在 Rust 字面量里，后者是
+//! 它的测试夹具。**那个函数从来没有进过生产装载路径**——
+//! `ll_game::content::load_content` 给出的是一张空 `ClassTable::new()`，
+//! 它的唯一调用方是 `ll-content` 的 p5 验收 demo 与本模块自己的单元
+//! 测试，也就是说真实游戏里一条职业内容都没有过。项目所有者裁定
+//! 「迁移吧，工作要做好」之后，两者一并删除，三条职业改由
+//! `mods/lostland/classes.scm` 调用与任何第三方 mod 完全相同的
+//! `register-class` 注册，并第一次真正进到生产装载路径里。
+//!
+//! 留下来的是 [`BaseClassIds`]（句柄，保住使用点的编译期安全）与
+//! [`resolve_base_classes`]（装载后按 id 逐字段解析这个句柄，缺一条就
+//! 整批失败）——见 [`crate::base_contract`] 模块文档。
+//!
+//! # 哪些内容进 [`BaseClassIds`]
+//!
+//! 判据是「Rust 代码有没有按名字引用它」，不是「它是不是本体内容」。
+//! 战士/法师/游侠三条进：p5 验收链路与未来的建档界面按字段名引用它们。
+//! 卫兵（`lostland:guard`）不进：Rust 侧一行代码都没提过它，它只被
+//! `mods/example_mod/behavior.scm` 的 `self-has-profession?` 按字符串
+//! 引用。给一条没有 Rust 使用点的内容加一个句柄字段，只会造出一条
+//! 「声明了但从没接线」——本项目已经发现三十处同形缺陷。它仍然受
+//! [`crate::content_audit`] 的字段覆盖与内容值哈希两道检查覆盖。
+//!
 //! # 与 `Agent.profession` 的关系
 //!
 //! `ClassDef` 不是给 `Agent` 添加第二套「职业」概念，而是给 P3 阶段就
@@ -42,16 +68,20 @@
 //! 校验是解析」——`Registry::get` 同样是查不到就返回 `None`，不创建、
 //! 不兜底）。
 
-use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_sim::traits::{TraitGrant, TraitGrantSource};
 use ll_world::entity::AttributeKind;
 use std::fmt;
 
+use crate::base_contract::{BaseContractError, BaseContractResolver};
+use crate::registry::Registry;
+
 /// 单条职业声明：本体与 mod 注册职业时共用的同一个输入形状。
 ///
-/// 这就是「本体即 Mod」在职业层面的验收标的——[`materialize_base_classes`]
-/// 拿这个类型的值去调用外部传入的 `intern` 回调，本体的声明与未来 mod
-/// 的声明除了 `id` 里的命名空间字符串不同之外，不存在任何结构性差异。
+/// 这就是「本体即 Mod」在职业层面的验收标的——本体的声明与第三方 mod
+/// 的声明除了 `id` 里的命名空间字符串不同之外，不存在任何结构性差异，
+/// 两者走的是同一个 `register-class` 脚本入口（见
+/// [`crate::script_class_api`]）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassDef {
     /// 命名空间标识符，例如 `lostland:warrior`、`yourmod:necromancer`。
@@ -67,11 +97,11 @@ pub struct ClassDef {
     /// 来源的声明处，与 [`crate::race::RaceDef::traits`] 是同一个类型、
     /// 同一套语义，只是所有者从种族换成职业。
     ///
-    /// 空列表表示这个职业不授予任何天赋（[`materialize_base_classes`]
-    /// 注册的四种本体职业目前都是空的——项目所有者已裁定「本体 = 框架，
-    /// 内容 = mod」，本体游戏内容将迁往一个本体自己的 mod 脚本目录，
-    /// 该迁移是独立批次的工作；在它之前，本模块只提供通道，不再往
-    /// `materialize_base_classes` 里新增硬编码内容）。
+    /// 空列表表示这个职业不授予任何天赋——`mods/lostland/classes.scm`
+    /// 里四条本体职业目前都是空的，见 `ll_mod::content_audit` 里
+    /// `ClassAttrs::traits` 那条豁免：本体内容不为了让字段覆盖检查
+    /// 变绿硬塞一条天赋。字段本身不是死的，`mods/example_mod/` 的
+    /// `examplemod:rogue` 真的用了它。
     ///
     /// **与种族天赋的唯一实质差异在 `unlock_level`**：种族/副职/装备/
     /// buff 恒填 `1`（"拥有即生效"，这些来源本身不随等级变化），职业
@@ -93,8 +123,8 @@ pub struct ClassDef {
 /// 只在注册那一刻用于换取 [`ContentIndex`]，换到之后就不再需要）。
 ///
 /// **必须公开**：这是 [`ClassTable::define`] 唯一的参数类型，任何想
-/// 直接调用 `define`（而不是走 [`materialize_base_classes`] 那条便捷
-/// 路径）的调用方——包括未来 mod 自己的职业注册函数——都需要能构造这个
+/// 直接调用 `define`（而不是走 `register-class` 那条脚本路径）的
+/// 调用方——包括未来 mod 自己的职业注册函数——都需要能构造这个
 /// 类型。地形迁移时曾把等价类型写成模块私有，导致公开的 `define`
 /// 事实上无法从模块外调用（见 `ll_world::terrain::TerrainAttrs`
 /// 模块文档「必须公开」一节），这里直接吸取那次教训。
@@ -294,12 +324,22 @@ impl TraitGrantSource for ClassTable {
     }
 }
 
-/// 本体基础职业在当前注册表里的索引缓存。
+/// 本体基础职业在当前注册表里的索引缓存——**句柄，不是内容**。
 ///
-/// 只注册占位性质的少数几种基础职业——真正的职业数值平衡与内容设计
-/// 不在本任务范围（`knowledge/design/class-skill-quest-system.md`
-/// 文档开篇已声明：本文档与本任务只交付系统骨架，不交付具体职业该有
-/// 什么数值）。
+/// 三条职业的字段值（显示名键、主属性倾向）已经搬进
+/// `mods/lostland/classes.scm`，本结构体只保住**使用点的编译期安全**：
+/// `content.class_ids.warrior` 这行代码里字段没了就编译不过，没有任何
+/// 字符串拼写错误的空间。填充由 [`resolve_base_classes`] 在装载完成后
+/// 按 id 逐字段解析完成，缺任何一条整批失败。
+///
+/// 只有三条基础职业——真正的职业数值平衡与内容设计不在本任务范围
+/// （`knowledge/design/class-skill-quest-system.md` 文档开篇已声明：
+/// 本文档与本任务只交付系统骨架，不交付具体职业该有什么数值）。
+/// `lostland:guard`（卫兵）刻意**不**在本结构体里：Rust 侧没有任何
+/// 代码按名字引用它，它只被 `mods/example_mod/behavior.scm` 的
+/// `self-has-profession?` 按字符串引用，句柄结构体的存在理由（保住
+/// Rust 使用点的编译期安全）对它不成立——见模块文档「哪些内容进
+/// [`BaseClassIds`]」一节。
 #[derive(Debug, Clone, Copy)]
 pub struct BaseClassIds {
     /// 战士：力量倾向。
@@ -310,91 +350,128 @@ pub struct BaseClassIds {
     pub ranger: ContentIndex,
 }
 
-/// 本体职业注册的唯一入口：本体与 mod 共用的注册路径。
+/// 本体三个基础职业的 id 字面量——[`resolve_base_classes`] 的契约
+/// 清单，同时也是 `mods/lostland/classes.scm` 必须注册哪几条内容的
+/// 唯一权威来源。
 ///
-/// `intern` 是外部传入的解析回调（生产路径是 `|id| registry.intern(id)`
-/// ，测试路径是本模块的 [`base_class_fixture`]）——本函数只管「拿到一个
-/// 索引后，声明它的职业属性」，不关心索引从哪个具体类型来，与
-/// `ll_world::terrain::materialize_base_terrain` 同一个理由（该函数
-/// 文档「与 Registry 的关系」一节）。
-pub fn materialize_base_classes(
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-) -> Result<(BaseClassIds, ClassTable), ClassError> {
-    let mut table = ClassTable::new();
+/// 抽成常量而不是把字符串直接写在 [`resolve_base_classes`] 里，理由同
+/// [`crate::race`] 的 `BASE_RACE_IDS`：集成测试
+/// （`crates/ll-mod/tests/base_mod_class_skill_quest.rs`）要按同一份
+/// 清单核对脚本真的注册了它们，两处各写一份字面量迟早会分叉。
+const BASE_CLASS_IDS: [(&str, &str); 3] = [
+    ("BaseClassIds::warrior", "lostland:warrior"),
+    ("BaseClassIds::mage", "lostland:mage"),
+    ("BaseClassIds::ranger", "lostland:ranger"),
+];
 
-    let warrior = define_base(
-        &mut table,
-        intern,
-        "lostland:warrior",
-        "lostland:class.warrior.display_name",
-        AttributeKind::Strength,
-    )?;
-    let mage = define_base(
-        &mut table,
-        intern,
-        "lostland:mage",
-        "lostland:class.mage.display_name",
-        AttributeKind::Intelligence,
-    )?;
-    let ranger = define_base(
-        &mut table,
-        intern,
-        "lostland:ranger",
-        "lostland:class.ranger.display_name",
-        AttributeKind::Dexterity,
-    )?;
-    Ok((
-        BaseClassIds {
-            warrior,
-            mage,
-            ranger,
-        },
-        table,
-    ))
-}
-
-/// [`materialize_base_classes`] 的内部帮手：把一条声明的字面量字段
-/// 拆开传入，换取一次 `intern` + 一次 [`ClassTable::define`]。
-fn define_base(
-    table: &mut ClassTable,
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-    id: &str,
-    display_name_key: &str,
-    primary_attribute: AttributeKind,
-) -> Result<ContentIndex, ClassError> {
-    let index = intern(NamespacedId::parse(id).expect("本体职业 id 字面量恒合法"));
-    table.define(
-        index,
-        ClassAttrs {
-            display_name_key: NamespacedId::parse(display_name_key)
-                .expect("本体职业本地化键字面量恒合法"),
-            primary_attribute,
-            // 本体职业目前不授予任何天赋——项目所有者裁定「本体 = 框架，
-            // 内容 = mod」，本体内容迁往脚本是独立批次的工作；在它之前
-            // 这里不再新增硬编码内容，mod 通过 `register-class-trait`
-            // 追加声明，见 `ClassDef::traits` 文档。
-            traits: Vec::new(),
-        },
-    )?;
-    Ok(index)
-}
-
-/// 供测试使用：现造一个空 [`Interner`]，注册本体全部基础职业，返回
-/// 可用的 `(BaseClassIds, ClassTable)`。
+/// 装载完成后解析本体职业契约：按 id 逐字段填充 [`BaseClassIds`]，
+/// 缺任何一条就整批失败。
 ///
-/// **不是生产路径**——生产路径必须经过 [`crate::registry::Registry::intern`]（见模块
-/// 文档）。这个函数只是让本 crate 的单元测试不必先搭一整套 mod 加载
-/// 流程就能拿到一份内部自洽的职业表。
-pub fn base_class_fixture() -> (BaseClassIds, ClassTable) {
-    let mut interner = Interner::new();
-    materialize_base_classes(&mut |id| interner.intern(id))
-        .expect("本体职业声明表内部一致，注册恒不失败")
+/// 取代了原先的 `materialize_base_classes`/`base_class_fixture`，理由
+/// 与 [`crate::race::resolve_base_races`] 逐字相同（见其文档「这个函数
+/// 取代了原先的 `materialize_base_races`」与「失败是常态分支」两节）：
+/// 本函数**不注册任何内容**，只查询——本体职业与第三方 mod 职业现在
+/// 走的是完全相同的 `register-class` 脚本通道。
+pub fn resolve_base_classes(
+    registry: &Registry,
+    table: &ClassTable,
+) -> Result<BaseClassIds, BaseContractError> {
+    let mut resolver = BaseContractResolver::new("本体职业", registry);
+    let mut resolved = BASE_CLASS_IDS
+        .iter()
+        .map(|(field, id)| resolver.require(field, id, |index| table.is_defined(index)));
+    // 顺序与 BASE_CLASS_IDS 的声明顺序一一对应；长度由类型（`[_; 3]`）
+    // 钉死，少一条就编译不过。
+    let warrior = resolved.next().expect("BASE_CLASS_IDS 恒有三条");
+    let mage = resolved.next().expect("BASE_CLASS_IDS 恒有三条");
+    let ranger = resolved.next().expect("BASE_CLASS_IDS 恒有三条");
+    drop(resolved);
+    resolver.finish()?;
+
+    Ok(BaseClassIds {
+        warrior,
+        mage,
+        ranger,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::Registry;
+    use crate::base_contract::MissingReason;
+
+    /// 一张现造的、与本体内容无关的职业表。
+    ///
+    /// 本模块的单元测试验的是 [`ClassTable`] 这套**机制**（`define`/
+    /// `get`/追加天赋声明/[`TraitGrantSource`] 依赖倒置 impl），不是
+    /// 「本体有哪几个职业、主属性各是什么」——后者的定义已经搬进
+    /// `mods/lostland/classes.scm`，由
+    /// `crates/ll-mod/tests/base_mod_class_skill_quest.rs` 端到端逐字段
+    /// 核对。这里刻意用 `testmod:` 命名空间现造两条测试数据，理由同
+    /// [`crate::race`] 的 `sample_table`：在 Rust 里再埋一份本体内容
+    /// 字面量，恰恰是本次迁移要消除的那种「同一份内容存在两处」。
+    fn sample_table() -> (Registry, ContentIndex, ContentIndex, ClassTable) {
+        let mut registry = Registry::new();
+        let mut table = ClassTable::new();
+
+        let define = |registry: &mut Registry,
+                      table: &mut ClassTable,
+                      id: &str,
+                      primary_attribute: AttributeKind| {
+            let index = registry.intern(NamespacedId::parse(id).expect("合法标识符"));
+            table
+                .define(
+                    index,
+                    ClassAttrs {
+                        display_name_key: NamespacedId::parse("testmod:display_name")
+                            .expect("合法标识符"),
+                        primary_attribute,
+                        traits: Vec::new(),
+                    },
+                )
+                .expect("首次定义应当成功");
+            index
+        };
+
+        let bruiser = define(
+            &mut registry,
+            &mut table,
+            "testmod:bruiser",
+            AttributeKind::Strength,
+        );
+        let scholar = define(
+            &mut registry,
+            &mut table,
+            "testmod:scholar",
+            AttributeKind::Intelligence,
+        );
+
+        (registry, bruiser, scholar, table)
+    }
+
+    /// 把 [`BASE_CLASS_IDS`] 三条全部注册进一张表——[`resolve_base_classes`]
+    /// 成功路径的最小前置。**不是**本体内容的第二份定义：这里只用到
+    /// id，字段值全部填测试占位值，真实字段值只存在于
+    /// `mods/lostland/classes.scm`。
+    fn registry_with_all_base_classes() -> (Registry, ClassTable) {
+        let mut registry = Registry::new();
+        let mut table = ClassTable::new();
+        for (_, id) in BASE_CLASS_IDS {
+            let index = registry.intern(NamespacedId::parse(id).expect("合法标识符"));
+            table
+                .define(
+                    index,
+                    ClassAttrs {
+                        display_name_key: NamespacedId::parse("testmod:display_name")
+                            .expect("合法标识符"),
+                        primary_attribute: AttributeKind::Strength,
+                        traits: Vec::new(),
+                    },
+                )
+                .expect("首次定义应当成功");
+        }
+        (registry, table)
+    }
 
     #[test]
     fn 新建的职业表查询任意索引均为未注册() {
@@ -406,27 +483,19 @@ mod tests {
     }
 
     #[test]
-    fn 战士的主属性倾向是力量() {
+    fn 已定义的职业能查回它声明的主属性倾向() {
         // Arrange
-        let (ids, table) = base_class_fixture();
+        let (_registry, bruiser, scholar, table) = sample_table();
 
-        // Act
-        let view = table.get(ids.warrior).expect("战士已在本体注册");
-
-        // Assert
-        assert_eq!(view.primary_attribute, AttributeKind::Strength);
-    }
-
-    #[test]
-    fn 法师的主属性倾向是智力() {
-        // Arrange
-        let (ids, table) = base_class_fixture();
-
-        // Act
-        let view = table.get(ids.mage).expect("法师已在本体注册");
-
-        // Assert
-        assert_eq!(view.primary_attribute, AttributeKind::Intelligence);
+        // Act & Assert
+        assert_eq!(
+            table.get(bruiser).expect("已定义").primary_attribute,
+            AttributeKind::Strength
+        );
+        assert_eq!(
+            table.get(scholar).expect("已定义").primary_attribute,
+            AttributeKind::Intelligence
+        );
     }
 
     #[test]
@@ -434,9 +503,9 @@ mod tests {
         // 对齐 ADR 0015 的解析纪律：查不到就是查不到，不返回一个可能
         // 被误当成真实数据的兜底值。
         // Arrange
-        let mut interner = Interner::new();
+        let mut registry = Registry::new();
         let never_defined =
-            interner.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
+            registry.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
         let table = ClassTable::new();
 
         // Act
@@ -449,54 +518,34 @@ mod tests {
     #[test]
     fn 重复定义同一个索引返回错误而非静默覆盖() {
         // Arrange
-        let mut interner = Interner::new();
-        let index = interner.intern(NamespacedId::parse("lostland:warrior").expect("合法"));
-        let mut table = ClassTable::new();
-        table
-            .define(
-                index,
-                ClassAttrs {
-                    display_name_key: NamespacedId::parse("lostland:class.warrior.display_name")
-                        .expect("合法"),
-                    primary_attribute: AttributeKind::Strength,
-                    traits: Vec::new(),
-                },
-            )
-            .expect("首次定义应当成功");
+        let (_registry, bruiser, _scholar, mut table) = sample_table();
 
         // Act
         let result = table.define(
-            index,
+            bruiser,
             ClassAttrs {
-                display_name_key: NamespacedId::parse("lostland:class.warrior.display_name")
-                    .expect("合法"),
+                display_name_key: NamespacedId::parse("testmod:display_name").expect("合法"),
                 primary_attribute: AttributeKind::Intelligence,
                 traits: Vec::new(),
             },
         );
 
         // Assert
-        assert_eq!(result, Err(ClassError::DuplicateDefinition(index)));
+        assert_eq!(result, Err(ClassError::DuplicateDefinition(bruiser)));
     }
 
     #[test]
-    fn 本体职业与mod注册的自定义职业调用同一个公开define函数完成注册() {
+    fn 本体职业与mod职业共用同一个单调递增号段没有预留区间() {
         // 本体注册与 mod 注册除了命名空间字符串不同之外，没有任何
-        // 结构性差异——都只是往同一个 Registry::intern 里塞一个
-        // NamespacedId，再用完全相同的公开 ClassTable::define 函数
-        // 登记属性，没有任何一条只对本体开放的旁路。
-        //
-        // 边界：本测试只证明本体与 mod 走同一条注册路径（结构等价），
-        // 不能证明 mod 脚本调得到这套 API。真正的证据在
-        // crate::pipeline 的脚本装载测试与 mods/example_mod/gameplay.scm。
+        // 结构性差异——本体职业现在走 `mods/lostland/classes.scm` 的
+        // `register-class`，与任何第三方 mod 逐字节是同一条通道，这条
+        // 测试守住的是索引分配这一半：没有为本体预留任何特殊区间。
         // Arrange
-        let mut registry = Registry::new();
+        let (mut registry, _bruiser, scholar, mut table) = sample_table();
 
         // Act
-        let (class_ids, mut table) = materialize_base_classes(&mut |id| registry.intern(id))
-            .expect("本体职业声明表内部一致");
-        let mod_id = NamespacedId::parse("yourmod:necromancer").expect("合法标识符");
-        let mod_index = registry.intern(mod_id);
+        let mod_index =
+            registry.intern(NamespacedId::parse("yourmod:necromancer").expect("合法标识符"));
         table
             .define(
                 mod_index,
@@ -507,32 +556,27 @@ mod tests {
                     traits: Vec::new(),
                 },
             )
-            .expect("mod 职业与本体职业调用同一个公开 define 函数,理应同样成功");
+            .expect("mod 职业与先注册的职业调用同一个公开 define 函数,理应同样成功");
 
-        // Assert：mod 内容紧接在本体三种职业之后分配到索引，说明两者
-        // 共用同一个单调递增的号段，没有为本体预留任何特殊区间；且
-        // mod 注册的职业确实能通过 get 查到正确属性。
-        //
-        // 卫兵（原本的第四条）已经迁进 mods/lostland/classes.scm，不再
-        // 由本函数注册——见该文件头「为什么本文件里只有卫兵一条」。
-        assert_eq!(mod_index.get(), class_ids.ranger.get() + 1);
+        // Assert
+        assert_eq!(mod_index.get(), scholar.get() + 1);
         let view = table.get(mod_index).expect("mod 职业已通过 define 登记");
         assert_eq!(view.primary_attribute, AttributeKind::Willpower);
     }
+
     #[test]
     fn 追加天赋声明是追加而不是覆盖() {
         // 与 RaceTable::add_trait_grant 同一条纪律：一个职业可以被多次
         // 调用授予多条不同的天赋，后一次不覆盖前一次。
         // Arrange
-        let mut interner = Interner::new();
-        let (ids, mut table) = base_class_fixture();
-        let first = interner.intern(NamespacedId::parse("yourmod:trait_a").expect("合法"));
-        let second = interner.intern(NamespacedId::parse("yourmod:trait_b").expect("合法"));
+        let (mut registry, bruiser, _scholar, mut table) = sample_table();
+        let first = registry.intern(NamespacedId::parse("yourmod:trait_a").expect("合法"));
+        let second = registry.intern(NamespacedId::parse("yourmod:trait_b").expect("合法"));
 
         // Act
         table
             .add_trait_grant(
-                ids.warrior,
+                bruiser,
                 TraitGrant {
                     trait_id: first,
                     unlock_level: 1,
@@ -541,7 +585,7 @@ mod tests {
             .expect("目标职业已定义，追加应当成功");
         table
             .add_trait_grant(
-                ids.warrior,
+                bruiser,
                 TraitGrant {
                     trait_id: second,
                     unlock_level: 4,
@@ -551,7 +595,7 @@ mod tests {
 
         // Assert：两条都在，且顺序就是调用顺序（约束 C5：聚合顺序由
         // 注册期写死的静态顺序决定）。
-        let view = table.get(ids.warrior).expect("战士已在本体注册");
+        let view = table.get(bruiser).expect("已定义");
         assert_eq!(
             view.traits,
             &[
@@ -572,10 +616,10 @@ mod tests {
         // ADR 0017「注册期完整校验」：装载期就报出来，不静默把天赋挂在
         // 一个不存在的职业上。
         // Arrange
-        let mut interner = Interner::new();
+        let mut registry = Registry::new();
         let never_defined =
-            interner.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
-        let trait_id = interner.intern(NamespacedId::parse("yourmod:some_trait").expect("合法"));
+            registry.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
+        let trait_id = registry.intern(NamespacedId::parse("yourmod:some_trait").expect("合法"));
         let mut table = ClassTable::new();
 
         // Act
@@ -595,10 +639,9 @@ mod tests {
     fn 职业表作为天赋授予来源对未注册索引返回空列表() {
         // 「查不到就是查不到」——不是 panic，也不是某种兜底默认值。
         // Arrange
-        let mut interner = Interner::new();
+        let (mut registry, _bruiser, _scholar, table) = sample_table();
         let never_defined =
-            interner.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
-        let (_, table) = base_class_fixture();
+            registry.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
 
         // Act
         let grants = TraitGrantSource::granted_traits(&table, never_defined);
@@ -612,12 +655,11 @@ mod tests {
         // 这条 impl 是 `ll_sim::traits::effective_traits` 真正查到职业
         // 天赋的唯一路径，不是一个只被测试自己调用的方法。
         // Arrange
-        let mut interner = Interner::new();
-        let (ids, mut table) = base_class_fixture();
-        let trait_id = interner.intern(NamespacedId::parse("yourmod:sneaky").expect("合法"));
+        let (mut registry, _bruiser, scholar, mut table) = sample_table();
+        let trait_id = registry.intern(NamespacedId::parse("yourmod:sneaky").expect("合法"));
         table
             .add_trait_grant(
-                ids.ranger,
+                scholar,
                 TraitGrant {
                     trait_id,
                     unlock_level: 3,
@@ -626,7 +668,7 @@ mod tests {
             .expect("目标职业已定义，追加应当成功");
 
         // Act
-        let grants = TraitGrantSource::granted_traits(&table, ids.ranger);
+        let grants = TraitGrantSource::granted_traits(&table, scholar);
 
         // Assert
         assert_eq!(
@@ -639,19 +681,73 @@ mod tests {
     }
 
     #[test]
-    fn 本体注册的三种基础职业都不授予任何天赋() {
-        // 本体内容迁往脚本是独立批次的工作；materialize_base_classes
-        // 在那之前只提供通道、不堆内容——这条测试守住的是「别再往这里
-        // 加硬编码内容」，不是「职业永远不该有天赋」。
+    fn 三条本体职业都在时契约解析成功且返回真实索引() {
         // Arrange
-        let (ids, table) = base_class_fixture();
+        let (registry, table) = registry_with_all_base_classes();
 
-        // Act & Assert
-        for class in [ids.warrior, ids.mage, ids.ranger] {
-            assert!(
-                table.get(class).expect("本体职业已注册").traits.is_empty(),
-                "本体职业不应在 Rust 里硬编码天赋声明"
-            );
+        // Act
+        let ids = resolve_base_classes(&registry, &table).expect("三条都在，解析应当成功");
+
+        // Assert
+        assert_eq!(
+            registry.resolve(ids.warrior).map(|id| id.to_string()),
+            Some("lostland:warrior".to_string())
+        );
+        assert_eq!(
+            registry.resolve(ids.mage).map(|id| id.to_string()),
+            Some("lostland:mage".to_string())
+        );
+        assert_eq!(
+            registry.resolve(ids.ranger).map(|id| id.to_string()),
+            Some("lostland:ranger".to_string())
+        );
+    }
+
+    #[test]
+    fn 本体职业一条都没注册时契约解析一次列出全部三条() {
+        // 这正是「玩家误删 mods/lostland/」的表现——一次列全，不是
+        // 补一条重启再被告知缺下一条，见 crate::base_contract 模块文档。
+        // Arrange
+        let registry = Registry::new();
+        let table = ClassTable::new();
+
+        // Act
+        let error = resolve_base_classes(&registry, &table).expect_err("空注册表必须解析失败");
+
+        // Assert
+        assert_eq!(error.contract, "本体职业");
+        assert_eq!(error.required, 3);
+        assert_eq!(
+            error
+                .missing
+                .iter()
+                .map(|entry| entry.id.to_string())
+                .collect::<Vec<_>>(),
+            vec!["lostland:warrior", "lostland:mage", "lostland:ranger"]
+        );
+    }
+
+    #[test]
+    fn 职业id只被intern没被define时契约解析报notdefined() {
+        // 「别的脚本把这个 id 当跨表引用写了字符串，却没有人真的注册
+        // 它」——两层判定的第二层，见 crate::base_contract 模块文档。
+        // Arrange
+        let mut registry = Registry::new();
+        for (_, id) in BASE_CLASS_IDS {
+            registry.intern(NamespacedId::parse(id).expect("合法标识符"));
         }
+        let table = ClassTable::new();
+
+        // Act
+        let error =
+            resolve_base_classes(&registry, &table).expect_err("只 intern 未 define 必须失败");
+
+        // Assert
+        assert!(
+            error
+                .missing
+                .iter()
+                .all(|entry| entry.reason == MissingReason::NotDefined)
+        );
     }
 }

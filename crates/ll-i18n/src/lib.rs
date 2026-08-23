@@ -450,15 +450,18 @@ mod tests {
         "lostland:class.ranger.display_name",
         "lostland:subclass.duelist.display_name",
         "lostland:subclass.apprentice.display_name",
-        // 副职获得机制批次：mods/lostland/subclasses.scm 注册的四个
-        // 制作类副职，与 mods/lostland/crafting.scm 注册的四个配方
-        // 类别。前两条（剑舞者/学徒）来自 `ll_mod::subclass::
-        // materialize_base_subclasses`——那个函数**不在生产装载路径
-        // 上**（`ll_game::content::load_content` 给出的是一张空
-        // `SubclassTable::new()`），它的唯一调用方是 `ll-content` 的
-        // p5 验收 demo 与 `ll-mod` 自己的单元测试，与 classes.scm 文件
-        // 头记录的三个基础职业处境完全相同。下面八条则是真实生产
-        // 内容，走 mod 脚本注册。
+        // 上面十一条（三个种族、四个职业、剑舞者/学徒两个副职）现在
+        // **全部**是真实生产内容，都走 mod 脚本注册：本体职业/技能/
+        // 副职/任务迁移批次把 `materialize_base_{classes,skills,
+        // subclasses,quests}` 四个函数连同它们的测试夹具一并删除，
+        // 那四个函数此前从来不在生产装载路径上（见 `ll_mod::class`
+        // 模块文档同名一节），于是这批键此前指向的内容根本没被装载
+        // 过。下面八条（四个制作类副职 + 四个配方类别）来自副职获得
+        // 机制批次，一直就是真实生产内容。
+        //
+        // 技能与任务没有出现在本清单里，因为 `SkillAttrs`/`QuestAttrs`
+        // 根本没有 `display_name_key` 字段——那不是遗漏，是这两类内容
+        // 至今没有任何展示层需要它们的名字。
         "lostland:subclass.artisan.display_name",
         "lostland:subclass.tailor.display_name",
         "lostland:subclass.alchemist.display_name",

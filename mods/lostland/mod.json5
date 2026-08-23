@@ -28,9 +28,14 @@
   version: "0.1.0",
 
   // 种族：迁移自 `ll_mod::race::materialize_base_races`（已删除）。
-  // 职业：目前只有卫兵一条，理由见 classes.scm 文件头。
+  // 职业：四条，迁移自 `ll_mod::class::materialize_base_classes`（已删除）
+  //       + 上一批就迁进来的卫兵，见 classes.scm 文件头。
+  // 技能：五条，迁移自 `ll_mod::skill::materialize_base_skills`（已删除）。
+  // 任务：四条，迁移自 `ll_mod::quest::materialize_base_quests`（已删除）。
   // 制作类别：四条，都不设副职闸门，理由见 crafting.scm 文件头。
-  // 副职：四条制作类副职 + 各自的使用计数获得条件。
+  // 副职：四条制作类副职 + 各自的使用计数获得条件，外加迁移自
+  //       `ll_mod::subclass::materialize_base_subclasses`（已删除）的
+  //       剑舞者/学徒两条。
   //
   // **顺序有意义**：subclasses.scm 里的 register-subclass-unlock 要求
   // trigger-target 指向的配方类别**已经注册**（只 get 不 intern），
@@ -41,5 +46,16 @@
   // mod 内部没有顺序约束；跨 mod 的顺序由依赖声明保证——引用
   // lostland:armor 这类标签的 mod（当前是 examplemod）在自己的
   // mod.json5 里声明 dependencies: ["lostland"]。
-  entry_points: ["races.scm", "classes.scm", "crafting.scm", "subclasses.scm", "tags.scm"],
+  //
+  // **classes.scm 必须排在 skills.scm 前面**：四条战士技能的
+  // owning-class 指向 lostland:warrior，见 classes.scm 文件头最后一节。
+  entry_points: [
+    "races.scm",
+    "classes.scm",
+    "skills.scm",
+    "quests.scm",
+    "crafting.scm",
+    "subclasses.scm",
+    "tags.scm",
+  ],
 }

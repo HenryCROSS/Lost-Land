@@ -4,11 +4,12 @@
 //!
 //! [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
 //! 裁定「玩法层」的检验是「mod 脚本能不能注册」——`crate::class` 的
-//! `ClassTable`/`materialize_base_classes` 早就是本体与 mod 共用的同一
-//! 张表、同一条 `define` 通道（见其模块文档），但在本模块之前，唯一
-//! 能触达这条通道的是**纯 Rust 函数调用**——脚本没有任何注册函数可以
-//! 调用来登记一个新职业，这不是注册表本身的缺陷，是脚本绑定这一半
-//! 从未补上。本模块正是这一半。
+//! `crate::class` 的 `ClassTable` 早就是本体与 mod 共用的同一张表、
+//! 同一条 `define` 通道（见其模块文档），但在本模块之前，唯一能触达
+//! 这条通道的是**纯 Rust 函数调用**——脚本没有任何注册函数可以调用来
+//! 登记一个新职业，这不是注册表本身的缺陷，是脚本绑定这一半从未补上。
+//! 本模块正是这一半。本体自己的四条职业现在也走这条通道
+//! （`mods/lostland/classes.scm`），Rust 侧一条职业注册路径都不剩。
 //!
 //! # 照抄 `script_terrain_api.rs` 的模式
 //!

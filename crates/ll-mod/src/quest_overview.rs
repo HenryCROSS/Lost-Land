@@ -75,7 +75,7 @@ pub fn build_quest_log_view(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::quest::{mark_quest_completed, materialize_base_quests};
+    use crate::quest::{QuestAttrs, QuestCondition, mark_quest_completed};
     use ll_sim::apply::apply;
     use ll_sim::effect::Effect;
     use ll_world::entity::{Agent, BaseStats};
@@ -144,12 +144,51 @@ mod tests {
         }
     }
 
+    /// 一张现造的、与本体内容无关的网状任务图：`root` 解锁
+    /// `branch_a`/`branch_b` 两条分支。
+    ///
+    /// 本体那四条任务的定义已经搬进 `mods/lostland/quests.scm`，本模块
+    /// 的单元测试验的是 [`build_quest_log_view`] 这套**机制**，不是
+    /// 「本体有哪几条任务」——理由同 `crate::quest` 测试里的
+    /// `sample_graph`。
+    fn sample_graph() -> (Registry, QuestTable, [ContentIndex; 3]) {
+        let mut registry = Registry::new();
+        let mut table = QuestTable::new();
+        let parse =
+            |raw: &str| ll_core::ident::NamespacedId::parse(raw).expect("测试用标识符恒合法");
+        let goblin = registry.intern(parse("testmod:goblin"));
+
+        let define = |registry: &mut Registry,
+                      table: &mut QuestTable,
+                      raw: &str,
+                      prerequisites: Vec<ContentIndex>| {
+            let index = registry.intern(parse(raw));
+            table
+                .define(
+                    index,
+                    QuestAttrs {
+                        prerequisites,
+                        condition: QuestCondition::KillCount {
+                            target_kind: goblin,
+                            count: 1,
+                        },
+                    },
+                )
+                .expect("首次定义应当成功");
+            index
+        };
+
+        let root = define(&mut registry, &mut table, "testmod:root", Vec::new());
+        let branch_a = define(&mut registry, &mut table, "testmod:branch_a", vec![root]);
+        let branch_b = define(&mut registry, &mut table, "testmod:branch_b", vec![root]);
+
+        (registry, table, [root, branch_a, branch_b])
+    }
+
     #[test]
     fn 未完成任何任务时只有起点任务出现在unlocked_not_completed() {
         // Arrange
-        let mut registry = Registry::new();
-        let (_ids, table) =
-            materialize_base_quests(&mut |id| registry.intern(id)).expect("本体任务声明表内部一致");
+        let (registry, table, _ids) = sample_graph();
         let world = test_world();
         let agent = blank_agent(&world);
 
@@ -167,17 +206,12 @@ mod tests {
 
     #[test]
     fn 完成起点任务后两条分支同时出现在unlocked_not_completed() {
-        // Arrange：main_quest_1 完成后,branch_a/branch_b 应该同时可见
-        // ——网状结构的直接验收（一个前置解锁多个后续）。
-        let mut registry = Registry::new();
-        let (ids, table) =
-            materialize_base_quests(&mut |id| registry.intern(id)).expect("本体任务声明表内部一致");
+        // Arrange：root 完成后,branch_a/branch_b 应该同时可见——网状
+        // 结构的直接验收（一个前置解锁多个后续）。
+        let (registry, table, [root, branch_a, branch_b]) = sample_graph();
         let mut world = test_world();
         let actor = world.actors.spawn(blank_agent(&world));
-        let quest_id = registry
-            .resolve(ids.main_quest_1)
-            .expect("main_quest_1 已注册")
-            .clone();
+        let quest_id = registry.resolve(root).expect("root 已注册").clone();
         apply(
             &mut world,
             &Effect::SetScriptState {
@@ -190,11 +224,8 @@ mod tests {
         let view = build_quest_log_view(agent, &table, &registry);
 
         // Assert
-        assert_eq!(view.completed, vec![ids.main_quest_1]);
-        assert_eq!(
-            view.unlocked_not_completed,
-            vec![ids.branch_a, ids.branch_b]
-        );
+        assert_eq!(view.completed, vec![root]);
+        assert_eq!(view.unlocked_not_completed, vec![branch_a, branch_b]);
         assert_eq!(
             view.unlocked_not_completed,
             unlocked_by(&table, &view.completed)

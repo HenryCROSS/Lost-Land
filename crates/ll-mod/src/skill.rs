@@ -15,9 +15,21 @@
 //! 若允许循环前置（技能 A 需要技能 B，技能 B 需要技能 A），任何「这个
 //! 技能能否解锁」的判定都会陷入死循环，或者产出错误结果（两者互相
 //! 依赖,谁都学不到）。[`validate_no_cycles`] 因此是本模块的核心正确性
-//! 要求——[`materialize_base_skills`] 在全部本体技能定义完毕后立即
-//! 调用它,任何环路都会在加载时就报出来,而不是留到玩家点开技能树时
-//! 才表现成异常。
+//! 要求——`ll_game::content::load_content` 在**全部 mod（含本体自己的
+//! `mods/lostland/`）装载完毕之后**调用它一次，任何环路都会在加载时
+//! 就报出来，而不是留到玩家点开技能树时才表现成异常。
+//!
+//! 这条调用此前写在 `materialize_base_skills` 内部，而那个函数从来
+//! 不在生产装载路径上——于是**mod 注册的技能一次都没有被环检查覆盖
+//! 过**。本体技能迁进脚本的批次把它接到了真正的装载管线上，见
+//! `ll_game::content::load_content` 里对应的接线注释。
+//!
+//! # 本体五条基础技能的定义已经搬进 `mods/lostland/skills.scm`
+//!
+//! 本模块此前还有一对 `materialize_base_skills`/`base_skill_fixture`
+//! ——与 [`crate::class`] 的那一对处境完全相同（都不在生产装载路径上，
+//! 见其模块文档同名一节），一并删除。留下来的是 [`BaseSkillIds`] 与
+//! [`resolve_base_skills`]。
 //!
 //! # 确定性：拓扑着色遍历顺序不依赖注册顺序（约束 C5）
 //!
@@ -65,14 +77,16 @@
 
 use std::fmt;
 
-use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_core::ident::{ContentIndex, NamespacedId};
+
+use crate::base_contract::{BaseContractError, BaseContractResolver};
+use crate::registry::Registry;
 // `pub use`（不是普通 `use`）：`SkillAttrs`/`SkillDef` 的调用方（本体
 // 与未来的 mod 注册代码）需要能通过 `ll_mod::skill::ResourceCost`/
 // `ll_mod::skill::SkillEffect` 这两个既有路径构造这两个类型的值——
 // 这是任务 3 起就有的公开 API 形状，不能因为这次改成复用 `ll-sim` 的
 // 定义就让调用方被迫改成直接依赖 `ll-sim`。
 pub use ll_sim::skill::{ResourceCost, ResourceKind, SkillCatalog, SkillEffect, SkillRule};
-use ll_world::entity::AttributeKind;
 
 /// 单条技能声明：本体与 mod 注册技能时共用的同一个输入形状。
 ///
@@ -101,7 +115,7 @@ pub struct SkillDef {
 /// [`SkillTable::define`] 实际存进列式存储的属性子集——不含 `id`，与
 /// [`crate::class::ClassAttrs`] 相对 [`crate::class::ClassDef`] 同一个
 /// 理由。**必须公开**：这是 `define` 唯一的参数类型，任何想直接调用
-/// `define`（而不是走 [`materialize_base_skills`] 那条便捷路径）的
+/// `define`（而不是走脚本 `register-skill` 那条路径）的
 /// 调用方——包括未来 mod 自己的技能注册函数——都需要能构造这个类型。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkillAttrs {
@@ -137,6 +151,31 @@ pub enum SkillError {
     /// 前置关系构成环——附带环路上具体的技能索引（按环路顺序），不是
     /// "检测到环"这种无法定位的笼统提示。
     CyclicPrerequisites(Vec<ContentIndex>),
+}
+
+impl SkillError {
+    /// 这条错误牵涉到的全部内容索引，按「读者最想先看到」的顺序。
+    ///
+    /// # 为什么需要它
+    ///
+    /// [`fmt::Display`] 只能打出索引的**数值**（`SkillError` 不持有
+    /// [`crate::registry::Registry`]，也不该持有——那会让本模块反向
+    /// 依赖注册表）。可是「技能索引 32 声明的前置索引 33 未登记」这句话
+    /// 对 mod 作者近乎无用：他写的是 `"yourmod:frostbolt"`，从来没见过
+    /// 32 这个数。真正拿得到注册表的是装载管线
+    /// （`ll_game::content::load_content`），本方法就是把「哪几个索引
+    /// 该被反查成 id」这件只有本模块知道的事交出去，由那一层补上字符串
+    /// ——与 [`crate::base_contract`] 「错误里点名具体 id」是同一条纪律。
+    ///
+    /// `match` 不带通配分支：新增错误变体时这里会编译失败，逼下一个人
+    /// 决定它牵涉哪些索引，而不是静默漏掉。
+    pub fn involved_indices(&self) -> Vec<ContentIndex> {
+        match self {
+            SkillError::DuplicateDefinition(index) => vec![*index],
+            SkillError::UnregisteredPrerequisite { skill, missing } => vec![*skill, *missing],
+            SkillError::CyclicPrerequisites(cycle) => cycle.clone(),
+        }
+    }
 }
 
 impl fmt::Display for SkillError {
@@ -356,10 +395,15 @@ impl ll_sim::skill_overview::SkillTreeCatalog for SkillTable {
     }
 }
 
-/// 本体基础技能在当前注册表里的索引缓存。
+/// 本体基础技能在当前注册表里的索引缓存——**句柄，不是内容**。
 ///
-/// 构成一棵有分支的技能树（验收「树而不是线性序列」这条形状要求，见
-/// `knowledge/design/class-skill-quest-system.md` 第二节）：
+/// 五条技能的字段值已经搬进 `mods/lostland/skills.scm`，本结构体只
+/// 保住使用点的编译期安全，填充由 [`resolve_base_skills`] 在装载完成后
+/// 按 id 逐字段解析完成，理由完整见 [`crate::class::BaseClassIds`] 与
+/// [`crate::base_contract`] 两处文档。
+///
+/// 这五条构成一棵有分支的技能树（验收「树而不是线性序列」这条形状
+/// 要求，见 `knowledge/design/class-skill-quest-system.md` 第二节）：
 /// `strike`（起点）解锁 `power_strike`/`brace`/`focus` 三条分支，
 /// `combo` 同时要求 `power_strike` 与 `brace` 两个前置（分支之后再
 /// 汇聚），演示"一个技能有多个前置"与"一个前置解锁多个后续"两条要求。
@@ -379,136 +423,59 @@ pub struct BaseSkillIds {
     pub combo: ContentIndex,
 }
 
-/// 本体技能注册的唯一入口：本体与 mod 共用的注册路径，理由同
-/// [`crate::class::materialize_base_classes`]。
+/// 本体五条基础技能的 id 字面量——[`resolve_base_skills`] 的契约清单，
+/// 理由同 [`crate::class`] 的 `BASE_CLASS_IDS`。
+const BASE_SKILL_IDS: [(&str, &str); 5] = [
+    ("BaseSkillIds::strike", "lostland:strike"),
+    ("BaseSkillIds::power_strike", "lostland:power_strike"),
+    ("BaseSkillIds::brace", "lostland:brace"),
+    ("BaseSkillIds::focus", "lostland:focus"),
+    ("BaseSkillIds::combo", "lostland:combo"),
+];
+
+/// 装载完成后解析本体技能契约：按 id 逐字段填充 [`BaseSkillIds`]，
+/// 缺任何一条就整批失败。取代原先的 `materialize_base_skills`/
+/// `base_skill_fixture`，理由同 [`crate::class::resolve_base_classes`]。
 ///
-/// 通过 `intern` 回调解析 `lostland:warrior` 换回它的 [`ContentIndex`]
-/// 来设置 `owning_class`——与 `TerrainTable` 的 `opens_into` 同一种
-/// 跨内容引用手法（见 `ll_world::terrain` 模块文档）：只靠共用的
-/// `intern` 回调按命名空间字符串解析,不直接依赖
-/// [`crate::class::BaseClassIds`] 这个具体类型,`class` 与 `skill`
-/// 两个模块因此不需要互相硬编码对方的返回结构。
-pub fn materialize_base_skills(
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-) -> Result<(BaseSkillIds, SkillTable), SkillError> {
-    let mut table = SkillTable::new();
-    let warrior = intern(NamespacedId::parse("lostland:warrior").expect("固定字面量恒合法"));
+/// # 这里**不**跑 [`validate_no_cycles`]
+///
+/// 前置成环是**整张表**的性质，不是"本体那五条"的性质：一个 mod 完全
+/// 可以把自己的技能挂在本体技能之后、并在自己那一侧成环。因此环检查
+/// 属于装载管线（`ll_game::content::load_content` 在全部 mod 装载完毕
+/// 之后跑一次，覆盖本体 + 全部 mod 的合并结果），不属于本体契约解析。
+/// 迁移之前那次调用写在 `materialize_base_skills` 内部，而那个函数
+/// 不在生产装载路径上——于是 mod 注册的技能**从来没有被环检查覆盖
+/// 过**，见 `ll_game::content::load_content` 里对应的接线注释。
+pub fn resolve_base_skills(
+    registry: &Registry,
+    table: &SkillTable,
+) -> Result<BaseSkillIds, BaseContractError> {
+    let mut resolver = BaseContractResolver::new("本体技能", registry);
+    let mut resolved = BASE_SKILL_IDS
+        .iter()
+        .map(|(field, id)| resolver.require(field, id, |index| table.is_defined(index)));
+    let strike = resolved.next().expect("BASE_SKILL_IDS 恒有五条");
+    let power_strike = resolved.next().expect("BASE_SKILL_IDS 恒有五条");
+    let brace = resolved.next().expect("BASE_SKILL_IDS 恒有五条");
+    let focus = resolved.next().expect("BASE_SKILL_IDS 恒有五条");
+    let combo = resolved.next().expect("BASE_SKILL_IDS 恒有五条");
+    drop(resolved);
+    resolver.finish()?;
 
-    let strike = define_skill(
-        &mut table,
-        intern,
-        "lostland:strike",
-        Some(warrior),
-        Vec::new(),
-        0,
-        ResourceCost::None,
-        SkillEffect::DealDamage { base: 5 },
-    )?;
-    let power_strike = define_skill(
-        &mut table,
-        intern,
-        "lostland:power_strike",
-        Some(warrior),
-        vec![strike],
-        20,
-        ResourceCost::Amount(ResourceKind::Stamina, 10),
-        SkillEffect::DealDamage { base: 12 },
-    )?;
-    let brace = define_skill(
-        &mut table,
-        intern,
-        "lostland:brace",
-        Some(warrior),
-        vec![strike],
-        15,
-        ResourceCost::Amount(ResourceKind::Stamina, 5),
-        SkillEffect::TemporaryStatModifier {
-            attribute: AttributeKind::Constitution,
-            amount: 3,
-            duration_ticks: 10,
-        },
-    )?;
-    let focus = define_skill(
-        &mut table,
-        intern,
-        "lostland:focus",
-        None,
-        vec![strike],
-        10,
-        ResourceCost::None,
-        // 恢复法力——`resource` 字段是本次接线补上的（见本模块文档
-        // 「现在直接复用」一节）：`ll-sim` 那份定义此前用非结构化注释
-        // 表达「恢复的是哪种资源」，编译器管不到，接线时顺手补掉。
-        SkillEffect::RestoreResource {
-            resource: ResourceKind::Mana,
-            base: 8,
-        },
-    )?;
-    let combo = define_skill(
-        &mut table,
-        intern,
-        "lostland:combo",
-        Some(warrior),
-        vec![power_strike, brace],
-        30,
-        ResourceCost::Amount(ResourceKind::Stamina, 15),
-        SkillEffect::DealDamage { base: 20 },
-    )?;
-
-    validate_no_cycles(&table)?;
-
-    Ok((
-        BaseSkillIds {
-            strike,
-            power_strike,
-            brace,
-            focus,
-            combo,
-        },
-        table,
-    ))
-}
-
-/// [`materialize_base_skills`] 的内部帮手：把一条声明拆开传入，换取
-/// 一次 `intern` + 一次 [`SkillTable::define`]。
-#[allow(clippy::too_many_arguments)]
-fn define_skill(
-    table: &mut SkillTable,
-    intern: &mut dyn FnMut(NamespacedId) -> ContentIndex,
-    id: &str,
-    owning_class: Option<ContentIndex>,
-    prerequisites: Vec<ContentIndex>,
-    cooldown_ticks: u32,
-    resource_cost: ResourceCost,
-    effect: SkillEffect,
-) -> Result<ContentIndex, SkillError> {
-    let index = intern(NamespacedId::parse(id).expect("本体技能 id 字面量恒合法"));
-    table.define(
-        index,
-        SkillAttrs {
-            owning_class,
-            prerequisites,
-            cooldown_ticks,
-            resource_cost,
-            effect,
-        },
-    )?;
-    Ok(index)
-}
-
-/// 供测试使用：现造一个空 [`Interner`]，注册本体全部基础技能，返回
-/// 可用的 `(BaseSkillIds, SkillTable)`。不是生产路径，理由同
-/// [`crate::class::base_class_fixture`]。
-pub fn base_skill_fixture() -> (BaseSkillIds, SkillTable) {
-    let mut interner = Interner::new();
-    materialize_base_skills(&mut |id| interner.intern(id))
-        .expect("本体技能声明表内部一致（无环、前置均已注册），注册恒不失败")
+    Ok(BaseSkillIds {
+        strike,
+        power_strike,
+        brace,
+        focus,
+        combo,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::registry::Registry;
+    use crate::base_contract::MissingReason;
+    use ll_world::entity::AttributeKind;
 
     fn id(raw: &str) -> NamespacedId {
         NamespacedId::parse(raw).expect("测试用标识符恒合法")
@@ -524,55 +491,194 @@ mod tests {
         }
     }
 
+    /// 一棵现造的、与本体内容无关的分支型技能树。
+    ///
+    /// 本模块的单元测试验的是 [`SkillTable`] 与 [`validate_no_cycles`]
+    /// 这套**机制**，不是「本体有哪几条技能、数值各是多少」——后者的
+    /// 定义已经搬进 `mods/lostland/skills.scm`，由
+    /// `crates/ll-mod/tests/base_mod_class_skill_quest.rs` 端到端逐字段
+    /// 核对。这里刻意用 `testmod:` 现造一棵同形的树（`root` 解锁三条
+    /// 分支，`merge` 汇聚其中两条），理由同 [`crate::race`] 的
+    /// `sample_table`：不在 Rust 里再埋一份本体内容字面量。
+    struct SampleTree {
+        registry: Registry,
+        table: SkillTable,
+        owner: ContentIndex,
+        root: ContentIndex,
+        branch_a: ContentIndex,
+        branch_b: ContentIndex,
+        branch_free: ContentIndex,
+        merge: ContentIndex,
+    }
+
+    fn sample_tree() -> SampleTree {
+        let mut registry = Registry::new();
+        let mut table = SkillTable::new();
+        let owner = registry.intern(id("testmod:bruiser"));
+
+        let define = |registry: &mut Registry,
+                      table: &mut SkillTable,
+                      raw: &str,
+                      owning_class: Option<ContentIndex>,
+                      prerequisites: Vec<ContentIndex>,
+                      cooldown_ticks: u32,
+                      resource_cost: ResourceCost,
+                      effect: SkillEffect| {
+            let index = registry.intern(id(raw));
+            table
+                .define(
+                    index,
+                    SkillAttrs {
+                        owning_class,
+                        prerequisites,
+                        cooldown_ticks,
+                        resource_cost,
+                        effect,
+                    },
+                )
+                .expect("首次定义应当成功");
+            index
+        };
+
+        let root = define(
+            &mut registry,
+            &mut table,
+            "testmod:root",
+            Some(owner),
+            Vec::new(),
+            0,
+            ResourceCost::None,
+            SkillEffect::DealDamage { base: 5 },
+        );
+        let branch_a = define(
+            &mut registry,
+            &mut table,
+            "testmod:branch_a",
+            Some(owner),
+            vec![root],
+            20,
+            ResourceCost::Amount(ResourceKind::Stamina, 10),
+            SkillEffect::DealDamage { base: 12 },
+        );
+        let branch_b = define(
+            &mut registry,
+            &mut table,
+            "testmod:branch_b",
+            Some(owner),
+            vec![root],
+            15,
+            ResourceCost::Amount(ResourceKind::Stamina, 5),
+            SkillEffect::TemporaryStatModifier {
+                attribute: AttributeKind::Constitution,
+                amount: 3,
+                duration_ticks: 10,
+            },
+        );
+        let branch_free = define(
+            &mut registry,
+            &mut table,
+            "testmod:branch_free",
+            None,
+            vec![root],
+            10,
+            ResourceCost::None,
+            SkillEffect::RestoreResource {
+                resource: ResourceKind::Mana,
+                base: 8,
+            },
+        );
+        let merge = define(
+            &mut registry,
+            &mut table,
+            "testmod:merge",
+            Some(owner),
+            vec![branch_a, branch_b],
+            30,
+            ResourceCost::Amount(ResourceKind::Stamina, 15),
+            SkillEffect::DealDamage { base: 20 },
+        );
+
+        SampleTree {
+            registry,
+            table,
+            owner,
+            root,
+            branch_a,
+            branch_b,
+            branch_free,
+            merge,
+        }
+    }
+
+    /// 把 [`BASE_SKILL_IDS`] 五条全部注册进一张表，字段值填测试占位
+    /// 值——[`resolve_base_skills`] 成功路径的最小前置。
+    fn registry_with_all_base_skills() -> (Registry, SkillTable) {
+        let mut registry = Registry::new();
+        let mut table = SkillTable::new();
+        for (_, raw) in BASE_SKILL_IDS {
+            let index = registry.intern(id(raw));
+            table
+                .define(index, no_effect_attrs(Vec::new()))
+                .expect("首次定义应当成功");
+        }
+        (registry, table)
+    }
+
     #[test]
     fn 合法的分支型技能树注册成功() {
-        // 验收"树而不是线性序列"：strike 解锁三条分支，combo 汇聚
-        // 其中两条——见 BaseSkillIds 文档。
+        // 验收"树而不是线性序列"：root 解锁三条分支，merge 汇聚其中
+        // 两条。
         // Arrange & Act
-        let (ids, table) = base_skill_fixture();
+        let tree = sample_tree();
 
         // Assert
-        let combo_view = table.get(ids.combo).expect("combo 已注册");
-        assert_eq!(combo_view.prerequisites, &[ids.power_strike, ids.brace]);
+        let merge_view = tree.table.get(tree.merge).expect("merge 已注册");
+        assert_eq!(merge_view.prerequisites, &[tree.branch_a, tree.branch_b]);
     }
 
     #[test]
     fn 一个前置技能解锁多个后续技能() {
         // Arrange
-        let (ids, table) = base_skill_fixture();
+        let tree = sample_tree();
 
-        // Act：手动统计以 strike 为前置的技能数量——skill.rs 本身不
-        // 提供反向索引（那是 quest 模块 unlocked_by 的职责，技能树
-        // 本任务不需要），这里直接检查已知的三个分支各自都把 strike
-        // 列为前置。
-        let branches = [ids.power_strike, ids.brace, ids.focus];
-        let all_reference_strike = branches
+        // Act：手动统计以 root 为前置的技能数量——skill.rs 本身不提供
+        // 反向索引（那是 quest 模块 unlocked_by 的职责，技能树本任务
+        // 不需要），这里直接检查已知的三个分支各自都把 root 列为前置。
+        let branches = [tree.branch_a, tree.branch_b, tree.branch_free];
+        let all_reference_root = branches
             .iter()
-            .all(|&branch| table.get(branch).expect("已注册").prerequisites == [ids.strike]);
+            .all(|&branch| tree.table.get(branch).expect("已注册").prerequisites == [tree.root]);
 
         // Assert
-        assert!(all_reference_strike);
+        assert!(all_reference_root);
     }
 
     #[test]
     fn 通用技能不专属任何职业() {
         // Arrange
-        let (ids, table) = base_skill_fixture();
+        let tree = sample_tree();
 
         // Act
-        let view = table.get(ids.focus).expect("focus 已注册");
+        let view = tree
+            .table
+            .get(tree.branch_free)
+            .expect("branch_free 已注册");
 
         // Assert
         assert_eq!(view.owning_class, None);
+        assert_eq!(
+            tree.table.get(tree.root).expect("root 已注册").owning_class,
+            Some(tree.owner)
+        );
     }
 
     #[test]
     fn 技能前置关系形成环时注册失败() {
         // Arrange：a 需要 b，b 需要 c，c 需要 a——三节点环。
-        let mut interner = Interner::new();
-        let a = interner.intern(id("yourmod:a"));
-        let b = interner.intern(id("yourmod:b"));
-        let c = interner.intern(id("yourmod:c"));
+        let mut registry = Registry::new();
+        let a = registry.intern(id("yourmod:a"));
+        let b = registry.intern(id("yourmod:b"));
+        let c = registry.intern(id("yourmod:c"));
         let mut table = SkillTable::new();
         table
             .define(a, no_effect_attrs(vec![b]))
@@ -594,10 +700,10 @@ mod tests {
     #[test]
     fn 环形错误信息包含构成环的具体技能id列表() {
         // Arrange：与上一条同样的三节点环。
-        let mut interner = Interner::new();
-        let a = interner.intern(id("yourmod:a"));
-        let b = interner.intern(id("yourmod:b"));
-        let c = interner.intern(id("yourmod:c"));
+        let mut registry = Registry::new();
+        let a = registry.intern(id("yourmod:a"));
+        let b = registry.intern(id("yourmod:b"));
+        let c = registry.intern(id("yourmod:c"));
         let mut table = SkillTable::new();
         table
             .define(a, no_effect_attrs(vec![b]))
@@ -625,8 +731,8 @@ mod tests {
     #[test]
     fn 技能自身引用自己构成一节点环() {
         // Arrange：退化情形——a 的前置是它自己。
-        let mut interner = Interner::new();
-        let a = interner.intern(id("yourmod:self_ref"));
+        let mut registry = Registry::new();
+        let a = registry.intern(id("yourmod:self_ref"));
         let mut table = SkillTable::new();
         table
             .define(a, no_effect_attrs(vec![a]))
@@ -642,9 +748,9 @@ mod tests {
     #[test]
     fn 前置引用未注册的索引时报告悬空引用而非静默通过() {
         // Arrange：a 声明了一个从未 define 过的前置。
-        let mut interner = Interner::new();
-        let a = interner.intern(id("yourmod:a"));
-        let ghost = interner.intern(id("yourmod:ghost"));
+        let mut registry = Registry::new();
+        let a = registry.intern(id("yourmod:a"));
+        let ghost = registry.intern(id("yourmod:ghost"));
         let mut table = SkillTable::new();
         table
             .define(a, no_effect_attrs(vec![ghost]))
@@ -666,8 +772,8 @@ mod tests {
     #[test]
     fn 重复定义同一个索引返回错误而非静默覆盖() {
         // Arrange
-        let mut interner = Interner::new();
-        let index = interner.intern(id("lostland:strike"));
+        let mut registry = Registry::new();
+        let index = registry.intern(id("testmod:root"));
         let mut table = SkillTable::new();
         table
             .define(index, no_effect_attrs(Vec::new()))
@@ -683,8 +789,8 @@ mod tests {
     #[test]
     fn 未注册的内容索引查询返回none() {
         // Arrange
-        let mut interner = Interner::new();
-        let never_defined = interner.intern(id("yourmod:never_defined"));
+        let mut registry = Registry::new();
+        let never_defined = registry.intern(id("yourmod:never_defined"));
         let table = SkillTable::new();
 
         // Act
@@ -695,70 +801,107 @@ mod tests {
     }
 
     #[test]
-    fn 本体技能与mod注册的自定义技能调用同一个公开define函数完成注册() {
-        // 结构等价断言，理由同 crate::class 模块的等价测试：本体技能
-        // 与 mod 技能都只是往同一个 Registry::intern 里塞一个
-        // NamespacedId，再用完全相同的公开 SkillTable::define 函数
-        // 登记属性。
-        //
-        // 边界：本测试只证明本体与 mod 走同一条注册路径，不能证明
-        // mod 脚本调得到这套 API。真正的证据在 crate::pipeline 的
-        // 脚本装载测试与 mods/example_mod/gameplay.scm。
+    fn 后注册的mod技能可以把先注册的技能当作前置() {
+        // 结构等价断言：本体技能与 mod 技能共享同一张表、同一套校验，
+        // 没有任何一条只对本体开放的旁路——本体技能现在也走
+        // `mods/lostland/skills.scm` 的 `register-skill`。
         // Arrange
-        let mut registry = Registry::new();
+        let mut tree = sample_tree();
 
         // Act
-        let (base_ids, mut table) =
-            materialize_base_skills(&mut |id| registry.intern(id)).expect("本体技能声明表内部一致");
-        let mod_index = registry.intern(id("yourmod:frostbolt"));
-        table
+        let mod_index = tree.registry.intern(id("yourmod:frostbolt"));
+        tree.table
             .define(
                 mod_index,
                 SkillAttrs {
                     owning_class: None,
-                    prerequisites: vec![base_ids.strike],
+                    prerequisites: vec![tree.root],
                     cooldown_ticks: 25,
                     resource_cost: ResourceCost::Amount(ResourceKind::Mana, 12),
                     effect: SkillEffect::DealDamage { base: 15 },
                 },
             )
-            .expect("mod 技能与本体技能调用同一个公开 define 函数,理应同样成功");
+            .expect("mod 技能与先注册的技能调用同一个公开 define 函数,理应同样成功");
 
-        // Assert：mod 技能确实登记成功,且其前置（本体的 strike）能被
-        // 正常查到——证明两类内容共享同一张表、同一套校验。
-        let view = table.get(mod_index).expect("mod 技能已通过 define 登记");
-        assert_eq!(view.prerequisites, &[base_ids.strike]);
+        // Assert
+        let view = tree
+            .table
+            .get(mod_index)
+            .expect("mod 技能已通过 define 登记");
+        assert_eq!(view.prerequisites, &[tree.root]);
+        assert!(validate_no_cycles(&tree.table).is_ok());
     }
 
     #[test]
-    fn 本体技能表通过完整dag校验() {
-        // materialize_base_skills 内部已经调用过 validate_no_cycles
-        // （否则 base_skill_fixture 会直接 panic），这里额外单独
-        // 调用一次确认结果确实是 Ok，把"内部已校验过"这件事变成一条
-        // 显式断言，而不是只依赖 fixture 不 panic 这个间接证据。
+    fn 五条本体技能都在时契约解析成功且返回真实索引() {
         // Arrange
-        let (_ids, table) = base_skill_fixture();
+        let (registry, table) = registry_with_all_base_skills();
 
         // Act
-        let result = validate_no_cycles(&table);
+        let ids = resolve_base_skills(&registry, &table).expect("五条都在，解析应当成功");
 
         // Assert
-        assert!(result.is_ok());
+        assert_eq!(
+            registry.resolve(ids.strike).map(|id| id.to_string()),
+            Some("lostland:strike".to_string())
+        );
+        assert_eq!(
+            registry.resolve(ids.combo).map(|id| id.to_string()),
+            Some("lostland:combo".to_string())
+        );
     }
 
-    /// 接线批次的核心验收：本体技能表（`materialize_base_skills` 真实
-    /// 产出的 [`SkillTable`]，不是任何测试专用的假目录）直接喂给
+    #[test]
+    fn 本体技能一条都没注册时契约解析一次列出全部五条() {
+        // Arrange
+        let registry = Registry::new();
+        let table = SkillTable::new();
+
+        // Act
+        let error = resolve_base_skills(&registry, &table).expect_err("空注册表必须解析失败");
+
+        // Assert
+        assert_eq!(error.contract, "本体技能");
+        assert_eq!(error.required, 5);
+        assert_eq!(error.missing.len(), 5);
+    }
+
+    #[test]
+    fn 技能id只被intern没被define时契约解析报notdefined() {
+        // Arrange
+        let mut registry = Registry::new();
+        for (_, raw) in BASE_SKILL_IDS {
+            registry.intern(id(raw));
+        }
+        let table = SkillTable::new();
+
+        // Act
+        let error =
+            resolve_base_skills(&registry, &table).expect_err("只 intern 未 define 必须失败");
+
+        // Assert
+        assert!(
+            error
+                .missing
+                .iter()
+                .all(|entry| entry.reason == MissingReason::NotDefined)
+        );
+    }
+
+    /// 接线批次的核心验收：一张真实 [`SkillTable`] 直接喂给
     /// `ll_sim::resolve::resolve_with_skills`，走一遍与真实玩法完全
     /// 相同的 `Intent::UseSkill → resolve → Effect → apply` 链路——
     /// 证明「`SkillTable` 实现 `SkillCatalog`」不只是编译期类型对得上，
     /// 运行期真的产出正确效果、`apply` 落地后 `Agent` 状态确实改变。
+    ///
+    /// 本体那五条技能经由**真实脚本装载**跑同一条链路的证据在
+    /// `crates/ll-mod/tests/base_mod_class_skill_quest.rs`，本条只验
+    /// 机制。
     #[test]
-    fn 本体技能表接入resolve_with_skills后真实结算出伤害与冷却() {
-        // Arrange：一个 1x1 区块的最小世界 + 一个已解锁 strike 的攻击者
-        // + 一个待打的目标，两者共用同一个 Registry 与本体技能表。
-        let mut registry = Registry::new();
-        let (base_ids, table) =
-            materialize_base_skills(&mut |id| registry.intern(id)).expect("本体技能声明表内部一致");
+    fn 技能表接入resolve_with_skills后真实结算出伤害与冷却() {
+        // Arrange：一个 1x1 区块的最小世界 + 一个已解锁 root 的攻击者
+        // + 一个待打的目标，两者共用同一个 Registry 与技能表。
+        let mut tree = sample_tree();
         let zone_count = ll_core::torus::TorusSize::new(1, 1).expect("1x1 是合法尺寸");
         let layout = ll_world::zone::ZoneLayout::new(64, zone_count).expect("64 满足全部约束");
         let (terrain_ids, terrain_table) = ll_world::terrain::base_terrain_fixture();
@@ -772,8 +915,8 @@ mod tests {
         )
         .expect("测试布局满足全部构造前置条件");
 
-        let profession = registry.intern(id("lostland:tester"));
-        let race = registry.intern(id("lostland:human"));
+        let profession = tree.registry.intern(id("testmod:tester"));
+        let race = tree.registry.intern(id("testmod:human"));
         let pos = world.size.wrap(0, 0);
         let (zone, _) = world.terrain.layout().tile_to_zone(pos);
         let blank = |unlocked_skills: Vec<ContentIndex>| ll_world::entity::Agent {
@@ -809,7 +952,7 @@ mod tests {
             unspent_skill_points: 0,
             stealthed: false,
         };
-        let actor = world.actors.spawn(blank(vec![base_ids.strike]));
+        let actor = world.actors.spawn(blank(vec![tree.root]));
         let target = world.actors.spawn(blank(Vec::new()));
 
         // Act：真实结算链路——不是直接构造 Effect，是从 Intent 出发。
@@ -817,27 +960,27 @@ mod tests {
             &world,
             &ll_sim::intent::Intent::UseSkill {
                 actor,
-                skill: base_ids.strike,
+                skill: tree.root,
                 target: Some(target),
             },
-            &table,
+            &tree.table,
         );
         assert!(
             !effects.is_empty(),
-            "已解锁、无冷却、无消耗的 strike 理应产出效果"
+            "已解锁、无冷却、无消耗的 root 理应产出效果"
         );
         for effect in &effects {
             ll_sim::apply::apply(&mut world, effect);
         }
 
-        // Assert：伤害真的落到了目标身上（strike 的 base 伤害是 5，见
-        // materialize_base_skills），冷却也真的写回了施法者。
+        // Assert：伤害真的落到了目标身上（sample_tree 里 root 的 base
+        // 伤害是 5），冷却也真的写回了施法者。
         let defender = world.actors.get(target).expect("目标应仍存在");
         assert_eq!(
             defender.health,
             ll_world::entity::Agent::STARTING_HEALTH - 5
         );
         let attacker = world.actors.get(actor).expect("攻击者应仍存在");
-        assert!(attacker.skill_cooldowns.contains_key(&base_ids.strike));
+        assert!(attacker.skill_cooldowns.contains_key(&tree.root));
     }
 }

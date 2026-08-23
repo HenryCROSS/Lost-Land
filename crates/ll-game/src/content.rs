@@ -37,7 +37,7 @@
 
 use std::path::Path;
 
-use ll_core::ident::ContentIndex;
+use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_mod::asset_vfs::{self, AssetVfs};
 use ll_mod::base_clip::register_base_clips;
 use ll_mod::base_contract::BaseContractError;
@@ -48,7 +48,7 @@ use ll_mod::base_space_profile::register_base_space_profiles;
 use ll_mod::base_terrain::register_base_terrain;
 use ll_mod::base_weather::register_base_weathers;
 use ll_mod::base_xp_curve::register_base_xp_curve;
-use ll_mod::class::ClassTable;
+use ll_mod::class::{BaseClassIds, ClassTable, resolve_base_classes};
 use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::content_audit::{
     BASE_CONTENT_AUDIT, ContentAuditReport, ReferenceIntegrityError, audit_content,
@@ -61,14 +61,14 @@ use ll_mod::item::ItemTable;
 use ll_mod::load_report::{LoadReport, LoadStatus};
 use ll_mod::manifest::{ModManifest, parse_manifest};
 use ll_mod::pipeline::{GameplayTables, load_all};
-use ll_mod::quest::{QuestTable, RegisteredQuests};
+use ll_mod::quest::{BaseQuestIds, QuestError, QuestTable, RegisteredQuests, resolve_base_quests};
 use ll_mod::race::{BaseRaceIds, RaceTable, resolve_base_races};
 use ll_mod::recipe::{RecipeTable, RegisteredRecipes};
 use ll_mod::recipe_category::RecipeCategoryTable;
 use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
-use ll_mod::skill::SkillTable;
-use ll_mod::subclass::SubclassTable;
+use ll_mod::skill::{BaseSkillIds, SkillError, SkillTable, resolve_base_skills};
+use ll_mod::subclass::{BaseSubclassIds, SubclassTable, resolve_base_subclasses};
 use ll_mod::tag::TagTable;
 use ll_mod::trait_def::TraitTable;
 use ll_mod::weapon_category::WeaponCategoryTable;
@@ -107,12 +107,20 @@ pub struct LoadedContent {
     pub space_ids: BaseSpaceProfileIds,
     /// 空间层属性表。
     pub space_table: SpaceProfileTable,
+    /// 本体职业索引缓存（战士/法师/游侠）。
+    pub class_ids: BaseClassIds,
     /// 职业表。
     pub class_table: ClassTable,
+    /// 本体技能索引缓存（五条，构成一棵分支再汇聚的技能树）。
+    pub skill_ids: BaseSkillIds,
     /// 技能表。
     pub skill_table: SkillTable,
+    /// 本体副职索引缓存（剑舞者/学徒）。
+    pub subclass_ids: BaseSubclassIds,
     /// 副职表。
     pub subclass_table: SubclassTable,
+    /// 本体任务索引缓存（四条，构成一张网状任务图）。
+    pub quest_ids: BaseQuestIds,
     /// 任务表。
     pub quest_table: QuestTable,
     /// 本体动画剪辑索引缓存（行走/待机）。
@@ -365,6 +373,58 @@ pub enum ContentLoadError {
     /// 跨表引用完整性校验失败——至少一处 `ContentIndex` 字段指向了
     /// 不存在的内容，见 `ll_mod::content_audit` 模块文档。
     ReferenceIntegrity(ReferenceIntegrityError),
+    /// 技能前置关系成环，或某条前置指向一个谁都没注册过的技能。
+    ///
+    /// # 这条检查此前是一条死代码
+    ///
+    /// `ll_mod::skill::validate_no_cycles` 唯一的调用点在
+    /// `materialize_base_skills` 内部，而那个函数**从来不在生产装载
+    /// 路径上**（见 `ll_mod::class` 模块文档同名一节）——也就是说
+    /// **mod 注册的技能一次都没有被环检查覆盖过**。本体技能迁进脚本
+    /// 的批次顺手把它接到了真正的装载管线上：它是「整张表」的性质
+    /// （一个 mod 完全可以把自己的技能挂在本体技能之后再在自己那一侧
+    /// 成环），因此必须在全部 mod 装载完毕之后跑，不能塞进本体契约
+    /// 解析里。
+    ///
+    /// `involved` 是 `error` 牵涉到的那几个索引在本次装载的注册表里
+    /// 反查回来的 id——`SkillError` 自己打不出这些字符串（它不持有
+    /// `Registry`，见 `ll_mod::skill::SkillError::involved_indices`
+    /// 文档），而「技能索引 32 声明的前置索引 33 未登记」对写
+    /// `"yourmod:frostbolt"` 的 mod 作者近乎无用。反查不到的索引
+    /// 不进这份列表（理论上不可达：能出现在错误里就说明它被 intern
+    /// 过）。
+    SkillGraph {
+        /// 原始错误，保留类型以便调用方按变体分流。
+        error: SkillError,
+        /// 牵涉到的内容 id，顺序同 `error.involved_indices()`。
+        involved: Vec<NamespacedId>,
+    },
+    /// 任务前置关系成环，或某条前置指向一个谁都没注册过的任务节点。
+    /// 理由与 [`ContentLoadError::SkillGraph`] 逐字相同。
+    QuestGraph {
+        /// 原始错误。
+        error: QuestError,
+        /// 牵涉到的内容 id。
+        involved: Vec<NamespacedId>,
+    },
+}
+
+/// 把一条图校验错误牵涉到的索引反查成 id——[`ContentLoadError`] 两个
+/// 图校验变体共用，见其 `involved` 字段文档。
+fn resolve_involved(registry: &Registry, indices: &[ContentIndex]) -> Vec<NamespacedId> {
+    indices
+        .iter()
+        .filter_map(|index| registry.resolve(*index).cloned())
+        .collect()
+}
+
+/// 把 `involved` 渲染成错误文案里的那一段，空列表时返回空串。
+fn involved_suffix(involved: &[NamespacedId]) -> String {
+    if involved.is_empty() {
+        return String::new();
+    }
+    let ids: Vec<String> = involved.iter().map(ToString::to_string).collect();
+    format!("（涉及：{}）", ids.join("、"))
 }
 
 impl From<BaseContractError> for ContentLoadError {
@@ -384,6 +444,20 @@ impl std::fmt::Display for ContentLoadError {
         match self {
             ContentLoadError::BaseContract(error) => write!(f, "{error}"),
             ContentLoadError::ReferenceIntegrity(error) => write!(f, "{error}"),
+            ContentLoadError::SkillGraph { error, involved } => {
+                write!(
+                    f,
+                    "技能前置关系校验失败：{error}{}",
+                    involved_suffix(involved)
+                )
+            }
+            ContentLoadError::QuestGraph { error, involved } => {
+                write!(
+                    f,
+                    "任务前置关系校验失败：{error}{}",
+                    involved_suffix(involved)
+                )
+            }
         }
     }
 }
@@ -494,6 +568,32 @@ pub fn load_content(
     // 必须排在 `load_all` 之后（脚本还没跑，内容当然不在）、排在
     // `apply_value_hashes` 之前（契约都不成立就没必要再算哈希）。
     let race_ids = resolve_base_races(&registry, &race_table)?;
+    let class_ids = resolve_base_classes(&registry, &class_table)?;
+    let skill_ids = resolve_base_skills(&registry, &skill_table)?;
+    let subclass_ids = resolve_base_subclasses(&registry, &subclass_table)?;
+    let quest_ids = resolve_base_quests(&registry, &quest_table)?;
+
+    // 前置关系图校验：技能树与任务图都不许成环，每条前置都得指向一条
+    // 真的被定义过的条目。
+    //
+    // **必须在这里跑，不能塞进上面那四条契约解析里**：成环是「整张
+    // 表」的性质，不是「本体那几条」的性质——一个 mod 完全可以把自己的
+    // 技能挂在本体技能之后、再在自己那一侧成环。因此它排在全部 mod
+    // 装载完毕之后，看的是本体 + 全部 mod 的合并结果。
+    //
+    // 这两行接线是本批次补的：两个 `validate_no_cycles` 此前唯一的
+    // 调用点分别在 `materialize_base_skills`/`materialize_base_quests`
+    // 内部，而那两个函数从来不在生产装载路径上——于是 mod 注册的技能
+    // 与任务**一次都没有被环检查覆盖过**（ADR 0017「注册期完整校验」
+    // 在这两张表上事实落空）。见 `ContentLoadError::SkillGraph` 文档。
+    if let Err(error) = ll_mod::skill::validate_no_cycles(&skill_table) {
+        let involved = resolve_involved(&registry, &error.involved_indices());
+        return Err(ContentLoadError::SkillGraph { error, involved });
+    }
+    if let Err(error) = ll_mod::quest::validate_no_cycles(&quest_table) {
+        let involved = resolve_involved(&registry, &error.involved_indices());
+        return Err(ContentLoadError::QuestGraph { error, involved });
+    }
 
     // 全部内容表的只读引用束——装载后校验（本处）与值哈希（下面）共用
     // 同一份，不各建一份：两处若各写一份字段清单，`ContentValueTables`
@@ -587,9 +687,13 @@ pub fn load_content(
         race_table,
         space_ids,
         space_table,
+        class_ids,
         class_table,
+        skill_ids,
         skill_table,
+        subclass_ids,
         subclass_table,
+        quest_ids,
         quest_table,
         clip_ids,
         clip_table,
@@ -1034,8 +1138,26 @@ mod tests {
             .collect();
         opaque_ids.sort();
 
-        // Assert
-        assert_eq!(opaque_ids, vec!["lostland:placeholder_race".to_string()]);
+        // Assert：两条已知例外，不多不少。
+        //
+        // - `lostland:placeholder_race`：「种族未知/缺失」这个降级状态的
+        //   占位索引，刻意不定义任何 `RaceDef`，见
+        //   `ll_mod::base_placeholder` 模块文档。
+        // - `lostland:goblin`：`mods/lostland/quests.scm` 里三条
+        //   `kill-count` 任务的 `target_kind`。它指向「敌人类型」，而
+        //   代码库至今没有敌人类型注册表——这正是
+        //   `ll_mod::content_audit::ReferenceExpectation::UntypedIdSpace`
+        //   那条豁免说的情形（把它按「必须在某张内容表里已定义」检查
+        //   会把一条正确的设计判成错误），见 `ll_mod::quest` 模块文档
+        //   「跨表引用」一节。本体任务迁进脚本的批次之前，这三条任务
+        //   根本不在生产装载路径上，所以这个 id 此前也不在注册表里。
+        assert_eq!(
+            opaque_ids,
+            vec![
+                "lostland:goblin".to_string(),
+                "lostland:placeholder_race".to_string(),
+            ]
+        );
     }
     #[test]
     fn 真实内容的跨表引用完整性通过且不是空转() {
