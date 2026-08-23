@@ -3,7 +3,7 @@
 //! （抗性 [`resistance_multiplier_permille`]、偷袭 [`sneak_attack_rule`]、
 //! 盘查意愿 [`inspection_suspicion_permille`]、盘查藏匿
 //! [`inspection_concealment_permille`]），连同它们共用的那一条 tie-break
-//! （[`best_by_origin`]）。
+//! （[`strongest_by_origin`]）。
 //!
 //! # 为什么单独立一个模块：项目所有者对抗性来源的裁定
 //!
@@ -64,22 +64,48 @@
 //! `Agent::equipment` 这个 `BTreeMap<EquipSlot, _>` 的键升序，两路之间
 //! 按本函数里写死的 `extend` 顺序——全程不触碰任何 `HashMap`/`HashSet`。
 //!
-//! 更进一步：全部消费者的 tie-break **显式按 `origin` 升序**取第一条，
-//! 因此即便未来某一路来源的内部顺序发生变化，结果也不会跟着变——顺序
-//! 确定性在这里是双保险，不是只靠遍历顺序。
+//! 更进一步：全部消费者的 tie-break **强度相同时显式按 `origin` 升序**
+//! 取第一条，因此即便未来某一路来源的内部顺序发生变化，结果也不会跟着
+//! 变——顺序确定性在这里是双保险，不是只靠遍历顺序。
 //!
-//! # 跨来源 tie-break 是「按 `origin` 升序」，这一点留了个问题给内容设计
+//! # 跨来源 tie-break：先取最强，同强度才按 `origin` 升序
 //!
 //! `origin` 是内容条目自己的 [`ContentIndex`]，天赋与物品共用同一个
 //! 全局号段（`ll_core::ident::Interner`），因此「天赋给的抗性」与
-//! 「装备给的抗性」落在同一把尺子上比大小，结果确定、可复现。但这把
-//! 尺子的数值本身只反映**注册顺序**，不反映「哪一条更强」或「哪一路
-//! 来源更优先」——同一个伤害类别上同时有天赋抗性与装备抗性时，谁生效
-//! 取决于谁先被 intern。这条既有规则本来只在「天赋 vs 天赋」范围内
-//! 使用（那时两条都是同一路来源，谁赢都不涉及跨来源的优先级判断），
-//! 现在跨到了「天赋 vs 装备」，**是否应该改成「取最强的一条」或
-//! 「某一路来源优先」是内容设计范畴的裁定**，本批次不擅自更改既有
-//! 规则，如实记录在此。
+//! 「装备给的抗性」落在同一把尺子上比大小，结果确定、可复现。抗性接线
+//! 批次落地时这把尺子是**唯一**判据（按 `origin` 升序取第一条），当时
+//! 就在本节如实记录了它的问题：这把尺子的数值只反映**注册顺序**，不
+//! 反映「哪一条更强」——同一个伤害类别上同时有天赋抗性与装备抗性时，
+//! 谁生效取决于谁先被 intern，一枚平庸护符可以压过一条强天赋。
+//!
+//! **项目所有者已就此裁定：改成取最强的一条。** 本模块因此把判据分成
+//! 两级：
+//!
+//! 1. **先比强度**——由 [`strength_key`] 逐变体声明「哪边算强」，见下节。
+//! 2. **强度完全相同才比 `origin`**，仍然升序取第一条（约束 C5：结果
+//!    不得依赖切片顺序，见 [`strongest_by_origin`] 文档「约束 C5」一节）。
+//!
+//! 被这条裁定取代的是**判据的第一级**，不是「不取乘积」那条论证——
+//! `trait-system.md` 三节③原文「不取乘积，理由是『免疫 500‰ 又免疫
+//! 一次』不应该变成 25% 而不是 0%」照旧成立：本模块仍然**只挑一条**，
+//! 从不合并两条。裁定改的是「挑哪一条」，不是「挑几条」。
+//!
+//! # 「强」的方向为什么必须逐变体声明，不能写一个通用的「取最大值」
+//!
+//! 四个消费者的强弱方向**互不相同**：[`RuleModifier::Resistance`] 与
+//! [`RuleModifier::InspectionSuspicion`] 的千分比**越小越强**（`500‰`
+//! 抗性是只受一半伤害、`0` 是免疫），[`RuleModifier::SneakAttack`] 的
+//! 追加伤害与 [`RuleModifier::InspectionConcealment`] 的藏匿概率**越大
+//! 越强**。一个通用的「取最大值」会让前两个变体反过来选**最弱**的那
+//! 一条——这不是一个能靠调用点小心传对比较器来规避的问题，而是「哪天
+//! 有人加第五个变体、忘了传」的形态。
+//!
+//! 因此方向不由调用点携带，而是集中在 [`strength_key`] 一个**无通配
+//! 分支的穷尽 `match`** 里逐变体声明：新增一个变体而不声明它的方向，
+//! `cargo build` 直接不过。这与 `ll_mod::content_hash` 的
+//! `ContentTableKind`/`classify_index`「编译期强制穷尽」是同一条手法
+//! （见该模块文档「编译期强制：穷尽解构 tables」一节），只是这次强制
+//! 的对象是「比较方向」而不是「哈希覆盖面」。
 //!
 //! # 热路径（ADR 0016/0017）
 //!
@@ -402,24 +428,26 @@ pub fn agent_rule_modifiers(
 /// 算完之后调用本函数，拿到的乘数按 `damage-formula-mod-api.md` 二十节
 /// 挂在「减伤之后」，见其文档「抗性接线」一节。
 ///
-/// # 多条命中时取哪一条：按 `origin`（[`ContentIndex`]）升序取第一条
+/// # 多条命中时取哪一条：取最强（乘数最小）的一条，同强度才按 `origin` 升序
 ///
 /// `trait-system.md` 三节③「抗性：挂载点已经现成」一节原文：「按
 /// `TraitGrant` 的 `ContentIndex` 升序取第一条……不取乘积,理由是『免疫
-/// 500‰ 又免疫一次』不应该变成 25% 而不是 0%」。本函数把这条规则原样
-/// 保留，只是判据从「天赋的 `ContentIndex`」推广成「声明这条修正的
-/// 内容条目的 `ContentIndex`」——天赋一路的行为逐位不变（那时 `origin`
-/// 就是 `trait_id`），装备一路沿用同一把尺子。跨来源使用这条规则时
-/// 留下的内容设计问题见模块文档「跨来源 tie-break」一节。
+/// 500‰ 又免疫一次』不应该变成 25% 而不是 0%」。**「不取乘积」这半句
+/// 照旧**——本函数仍然只挑一条，从不合并；「按 `ContentIndex` 升序取
+/// 第一条」那半句已被项目所有者裁定取代为「取最强的一条」，完整论证
+/// 见模块文档「跨来源 tie-break」一节。
 ///
-/// 显式取 `origin` 最小的一条，**不依赖 `modifiers` 切片自身的顺序**
-/// （约束 C5：结果只与 `ContentIndex` 数值有关，与调用方按什么顺序把
-/// 各路来源拼进切片无关）。
+/// 抗性的「强」是**乘数越小越强**（`500‰` = 只受一半伤害，`0` = 免疫），
+/// 方向在 [`strength_key`] 里逐变体声明,不由本函数携带。
+///
+/// 两级判据都**不依赖 `modifiers` 切片自身的顺序**（约束 C5：结果只与
+/// 声明值与 `ContentIndex` 数值有关，与调用方按什么顺序把各路来源拼进
+/// 切片无关）。
 pub fn resistance_multiplier_permille(
     modifiers: &[RuleModifierEntry],
     damage_category: ContentIndex,
 ) -> i32 {
-    best_by_origin(modifiers, |modifier| match modifier {
+    strongest_by_origin(modifiers, |modifier| match modifier {
         RuleModifier::Resistance {
             damage_category: candidate_category,
             multiplier_permille,
@@ -429,9 +457,133 @@ pub fn resistance_multiplier_permille(
     .unwrap_or(RESISTANCE_MULTIPLIER_SCALE)
 }
 
+/// 一条规则修正的**强度比较键**——把「哪边算强」这件逐变体不同的事，
+/// 规范化成一个统一的「越大越强」的整数键，好让
+/// [`strongest_by_origin`] 只剩「取键最大的一条」这一件事要做。
+///
+/// # 为什么是两级，不是一个数
+///
+/// [`RuleModifier::SneakAttack`] 携带**两个**数（追加伤害与幸运敏感度），
+/// 两个都是「越大越强」，谁作主键见 [`strength_key`] 文档「偷袭那两个
+/// 字段」一节。其余变体只用得上第一级，第二级恒为 `0`。派生的 [`Ord`]
+/// 对元组结构体按字段声明顺序做字典序比较，正是这里要的语义。
+///
+/// # 为什么是 `i64` 而不是 `i32`
+///
+/// [`StrengthKey::smaller_is_stronger`] 要取负——`i32::MIN` 取负在
+/// `i32` 里溢出（这是一个真实可达的声明值，`multiplier_permille` 的
+/// 类型就是 `i32`，注册期不禁止负数）。先拓宽到 `i64` 再取负,值域上
+/// 不可能溢出。全程整数，不引入任何浮点（ADR 0002/0020）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct StrengthKey(i64, i64);
+
+impl StrengthKey {
+    /// 「这个变体没有声明比较方向」——恒等的键，任意两条都判定为同强度，
+    /// 于是完全退回 `origin` 升序，也就是本次裁定之前的旧行为。
+    ///
+    /// 只用于**当前没有任何消费者**的那几个变体（见 [`strength_key`]
+    /// 文档「没有消费者的变体」一节）：它们从来不会进入
+    /// [`strongest_by_origin`]（没有 `select` 会认领它们），这个值因此
+    /// 不是「随便填的默认」，而是「等真正的消费者落地时，由接线的那一批
+    /// 一并裁定方向」的诚实占位。
+    const INDISTINGUISHABLE: StrengthKey = StrengthKey(0, 0);
+
+    /// 声明「这个数越大越强」。
+    const fn larger_is_stronger(value: i32) -> Self {
+        StrengthKey(value as i64, 0)
+    }
+
+    /// 声明「这个数越小越强」——抗性/盘查意愿那两条千分比乘数
+    /// （`0` = 免疫 / 永远不会被怀疑）。取负之后与
+    /// [`StrengthKey::larger_is_stronger`] 落在同一把「越大越强」的
+    /// 尺子上，比较逻辑因此只有一份。
+    const fn smaller_is_stronger(value: i32) -> Self {
+        StrengthKey(-(value as i64), 0)
+    }
+
+    /// 追加第二级比较键（越大越强），主键相同时才用得上。
+    const fn then_larger_is_stronger(self, value: i32) -> Self {
+        StrengthKey(self.0, value as i64)
+    }
+}
+
+/// 逐变体声明「哪边算强」——本模块**唯一**回答这个问题的地方。
+///
+/// # 无通配分支：新增变体不可能忘了声明方向
+///
+/// 下面这个 `match` 刻意**没有** `_ =>` 兜底：新增一个 [`RuleModifier`]
+/// 变体而不在这里补一条，`cargo build` 直接不过。这正是项目所有者要求
+/// 「每个变体各自声明比较方向，不要靠调用点记得传对比较器」的落点——
+/// 方向不是调用点的参数，是变体自己的属性，完整论证见模块文档
+/// 「『强』的方向为什么必须逐变体声明」一节。
+///
+/// # 偷袭那两个字段
+///
+/// [`RuleModifier::SneakAttack`] 是唯一携带两个数值字段的变体。主键取
+/// `extra_damage`（项目所有者本次裁定里点名的那一个），
+/// `luck_chance_permille_per_point` 作第二级——**这是对所有者裁定的
+/// 细化，不是改写**：所有者说的「追加伤害越大越强」原样成立，第二级
+/// 只在追加伤害完全相同时才起作用，而那正是所有者那句话没有覆盖、
+/// 原本会直接掉进「谁先被 intern 谁赢」的区间。两个字段都是「越大越
+/// 强」，方向上没有歧义；刻意**不**把两者相乘成「期望额外伤害」——那
+/// 需要知道这次判定的有效幸运值（[`crate::combat::sneak_attack_chance_permille`]
+/// 的输入），聚合层拿不到，硬造一个模型只会是一条看起来精确、实则
+/// 凭空发明的规则。
+///
+/// # 没有消费者的变体
+///
+/// [`RuleModifier::RerollOnce`]/[`RuleModifier::Advantage`]/
+/// [`RuleModifier::Disadvantage`] 当前没有任何消费者（见 [`RuleModifier`]
+/// 文档「本批次接线状态」一节），也就没有任何 `select` 会认领它们，
+/// 因此永远不会真的参与一次强度比较。它们取
+/// [`StrengthKey::INDISTINGUISHABLE`]：不假装已经裁定过方向,等真正
+/// 接线的那一批连同消费者一起决定。
+///
+/// # 为什么这里用 `R` 别名而不是写全 `RuleModifier::变体名`
+///
+/// `scripts/ci/check_field_consumers.py` 这道门禁按
+/// 「决策层文件里有没有出现 `RuleModifier::变体名` 字面量」判定一个变体
+/// 是否已被游戏逻辑消费,上面三个没有消费者的变体正显式登记在它的
+/// `EXEMPTIONS` 清单里。本函数**不读它们的任何字段**（返回的是
+/// [`StrengthKey::INDISTINGUISHABLE`]），只是为了穷尽性必须点到名字；
+/// 若在这里写出 `RuleModifier::RerollOnce` 这样的字面量，那道门禁会把
+/// 三个死变体误判成「已接线」，从此对它们形同虚设。用别名 `R` 写这个
+/// `match`,与 `RaceDef.stat_modifiers` 当初刻意把 trait 方法命名成
+/// `race_stat_modifiers`（见该门禁 `EXEMPTIONS` 里那一条的理由文字）
+/// 是同一条既有纪律：不为了让门禁看起来更绿而换来一份实际更弱的门禁。
+fn strength_key(modifier: &RuleModifier) -> StrengthKey {
+    use crate::rule_modifier::RuleModifier as R;
+    match modifier {
+        // 千分比乘数，越小越强：`0` = 免疫。
+        R::Resistance {
+            multiplier_permille,
+            ..
+        } => StrengthKey::smaller_is_stronger(*multiplier_permille),
+        // 千分比乘数，越小越强：`0` = 永远不会被怀疑。
+        R::InspectionSuspicion {
+            multiplier_permille,
+        } => StrengthKey::smaller_is_stronger(*multiplier_permille),
+        // 千分比概率，越大越强：`1000` = 什么都查不出来。
+        R::InspectionConcealment { conceal_permille } => {
+            StrengthKey::larger_is_stronger(*conceal_permille)
+        }
+        // 两个字段都越大越强，主键是追加伤害，见本函数文档「偷袭那两个字段」。
+        R::SneakAttack {
+            luck_chance_permille_per_point,
+            extra_damage,
+        } => StrengthKey::larger_is_stronger(*extra_damage)
+            .then_larger_is_stronger(*luck_chance_permille_per_point),
+        // 以下三个当前没有消费者，见本函数文档「没有消费者的变体」一节。
+        R::RerollOnce { .. } | R::Advantage { .. } | R::Disadvantage { .. } => {
+            StrengthKey::INDISTINGUISHABLE
+        }
+    }
+}
+
 /// 全部消费者共用的 tie-break：在候选列表里，只看 `select` 认领的那些
-/// 条目，返回 `origin`（[`ContentIndex`]）**最小**的那一条的投影值；
-/// 一条也没有认领时返回 `None`。
+/// 条目，返回**最强**的那一条的投影值——强度由 [`strength_key`] 逐变体
+/// 声明；强度完全相同的多条之间，取 `origin`（[`ContentIndex`]）**最小**
+/// 的那一条。一条也没有认领时返回 `None`。
 ///
 /// # ADR 0021 复核：为什么这一层值得抽出来
 ///
@@ -450,6 +602,13 @@ pub fn resistance_multiplier_permille(
 /// `<=` 写成 `<`（tie 时取后一条而不是前一条）都会让那一路悄悄依赖
 /// 切片顺序，而切片顺序恰恰是约束 C5 要求结果**不得**依赖的东西。
 ///
+/// 「取最强」裁定落地之后这条理由**更强了，不是更弱**：判据从一级
+/// （`origin`）变成两级（强度 → `origin`），每一路要自己写对的东西从
+/// 「一个比较符的方向」变成「一个比较符的方向 + 这个变体的强弱方向 +
+/// 同强度时的退化规则」，四份副本各自漂移的面积恰好翻了三倍。方向本身
+/// 也没有下放给这里的调用点——它在 [`strength_key`] 那个穷尽 `match`
+/// 里逐变体声明，本函数一视同仁只比键（见该函数文档）。
+///
 /// # 为什么投影用闭包，不是让四个变体实现同一个 trait
 ///
 /// 四个消费者的返回类型互不相同（`i32`/[`SneakAttackRule`]/`i32`/
@@ -461,25 +620,33 @@ pub fn resistance_multiplier_permille(
 ///
 /// # 约束 C5
 ///
-/// 显式取 `origin` 最小的一条，**不依赖 `modifiers` 切片自身的顺序**：
-/// 严格小于才替换，因此同 `origin` 的两条（同一条天赋声明了两次）取
-/// 先出现的那一条——但那两条来自同一个内容条目，谁先谁后由该条目
-/// 自己的声明顺序决定，同样是注册期写死的确定顺序。
-fn best_by_origin<T>(
+/// 两级判据**都**与 `modifiers` 切片自身的顺序无关：先取强度键最大的，
+/// 强度相同再取 `origin` 最小的，两级都是严格比较才替换。剩下的唯一
+/// 可能「谁先出现谁赢」的情形是**强度键与 `origin` 同时相等**——那意味
+/// 着两条来自同一个内容条目、且数值逐字相同（同一条天赋把同一条修正
+/// 声明了两遍），谁赢在可观察结果上没有任何差别；即便如此，先后仍由
+/// 该条目自己的声明顺序决定，同样是注册期写死的确定顺序。
+fn strongest_by_origin<T>(
     modifiers: &[RuleModifierEntry],
     mut select: impl FnMut(&RuleModifier) -> Option<T>,
 ) -> Option<T> {
-    let mut best: Option<(ContentIndex, T)> = None;
+    let mut best: Option<(StrengthKey, ContentIndex, T)> = None;
     for entry in modifiers {
         let Some(value) = select(&entry.modifier) else {
             continue;
         };
-        best = match best {
-            Some((best_origin, _)) if best_origin <= entry.origin => best,
-            _ => Some((entry.origin, value)),
+        let key = strength_key(&entry.modifier);
+        let wins = match &best {
+            None => true,
+            Some((best_key, best_origin, _)) => {
+                key > *best_key || (key == *best_key && entry.origin < *best_origin)
+            }
         };
+        if wins {
+            best = Some((key, entry.origin, value));
+        }
     }
-    best.map(|(_, value)| value)
+    best.map(|(_, _, value)| value)
 }
 
 /// 「与常人无异」的盘查意愿刻度——[`RuleModifier::InspectionSuspicion`]
@@ -501,11 +668,13 @@ pub const INSPECTION_SUSPICION_SCALE: i32 = 1000;
 /// 聚合与 tie-break 仍然留在这里：脚本拿到的是算完的一个数。
 ///
 /// tie-break 与 [`resistance_multiplier_permille`] 同一条纪律
-/// （[`best_by_origin`]）：按 `origin` 升序取第一条，不取乘积——
-/// 「不觉得可疑 500‰ 又不觉得可疑一次」不该变成 250‰，同
-/// `trait-system.md` 三节③对「免疫两次」的原始论证。
+/// （[`strongest_by_origin`]）：取最强的一条、同强度才按 `origin` 升序，
+/// 不取乘积——「不觉得可疑 500‰ 又不觉得可疑一次」不该变成 250‰，同
+/// `trait-system.md` 三节③对「免疫两次」的原始论证。本变体的「强」与
+/// 抗性同向（**乘数越小越强**，`0` = 永远不会被怀疑），方向声明在
+/// [`strength_key`]。
 pub fn inspection_suspicion_permille(modifiers: &[RuleModifierEntry]) -> i32 {
-    best_by_origin(modifiers, |modifier| match modifier {
+    strongest_by_origin(modifiers, |modifier| match modifier {
         RuleModifier::InspectionSuspicion {
             multiplier_permille,
         } => Some(*multiplier_permille),
@@ -519,14 +688,17 @@ pub fn inspection_suspicion_permille(modifiers: &[RuleModifierEntry]) -> i32 {
 /// `0`（藏不住任何东西，等价于「没有这条被动」）。
 ///
 /// 消费点是 `crate::resolve::resolve_inspect`，见其文档「藏匿判定」
-/// 一节。tie-break 同 [`inspection_suspicion_permille`]。
+/// 一节。tie-break 同 [`inspection_suspicion_permille`]，但**方向相反**：
+/// 这是一个概率，**越大越强**（`1000` = 什么都查不出来）——正是模块
+/// 文档「『强』的方向为什么必须逐变体声明」一节点名的那个反例，方向
+/// 声明在 [`strength_key`]。
 ///
 /// # 为什么缺省是 `0` 而不是某个刻度
 ///
 /// 与抗性/盘查意愿两个**乘数**不同：这是一个**概率**，「没有这条
 /// 被动」的自然表达就是「概率为零」，不需要一把「无效果」刻度尺。
 pub fn inspection_concealment_permille(modifiers: &[RuleModifierEntry]) -> i32 {
-    best_by_origin(modifiers, |modifier| match modifier {
+    strongest_by_origin(modifiers, |modifier| match modifier {
         RuleModifier::InspectionConcealment { conceal_permille } => Some(*conceal_permille),
         _ => None,
     })
@@ -553,13 +725,17 @@ pub struct SneakAttackRule {
 /// # 多条命中时取哪一条：与 [`resistance_multiplier_permille`] 同一条
 /// tie-break 纪律
 ///
-/// 按 `origin`（[`ContentIndex`]）升序取第一条，不叠加多条偷袭声明的
-/// 伤害/概率——理由同 [`resistance_multiplier_permille`] 文档「多条
-/// 命中时取哪一条」一节：多条各自贡献一次判定会让「偷袭」变成可以无限
-/// 堆叠的加法游戏，不是设计意图；哪条生效必须是与切片顺序无关的确定性
-/// 规则（约束 C5）。
+/// 取最强的一条、同强度才按 `origin`（[`ContentIndex`]）升序，**不叠加**
+/// 多条偷袭声明的伤害/概率——理由同 [`resistance_multiplier_permille`]
+/// 文档「多条命中时取哪一条」一节：多条各自贡献一次判定会让「偷袭」
+/// 变成可以无限堆叠的加法游戏，不是设计意图；哪条生效必须是与切片顺序
+/// 无关的确定性规则（约束 C5）。
+///
+/// 偷袭的「强」是**两个数都越大越强**（追加伤害作主键，幸运敏感度作
+/// 第二级）——它是本枚举唯一携带两个数值字段的变体，取舍见
+/// [`strength_key`] 文档「偷袭那两个字段」一节。
 pub fn sneak_attack_rule(modifiers: &[RuleModifierEntry]) -> Option<SneakAttackRule> {
-    best_by_origin(modifiers, |modifier| match modifier {
+    strongest_by_origin(modifiers, |modifier| match modifier {
         RuleModifier::SneakAttack {
             luck_chance_permille_per_point,
             extra_damage,
@@ -767,9 +943,13 @@ mod tests {
     }
 
     #[test]
-    fn 多条命中时按origin升序取第一条而不是取乘积() {
-        // Arrange：两条 500‰ 若取乘积会得到 250‰，若相加会得到 1000‰，
-        // 两者都不是本项目的规则（`trait-system.md` 三节③）。
+    fn 多条命中时只挑一条而不是取乘积() {
+        // Arrange：500‰ 与 800‰ 若取乘积会得到 400‰，若相加会得到
+        // 1300‰，两者都不是本项目的规则（`trait-system.md` 三节③
+        // 「不取乘积」那半句——「取最强」裁定改的是「挑哪一条」，不是
+        // 「挑几条」，这条钉的正是没被改动的那半句）。这里两级判据恰好
+        // 同向（500‰ 既是最强的一条，origin 也更小），方向本身由
+        // `三个消费者各自的强弱方向互不相同` 单独钉。
         let mut interner = Interner::new();
         let low = index(&mut interner, "lostland:aaa_low");
         let high = index(&mut interner, "lostland:zzz_high");
@@ -795,8 +975,12 @@ mod tests {
     }
 
     #[test]
-    fn 天赋与装备两路来源的候选拼在一起时tie_break跨来源生效() {
-        // Arrange：天赋那一条先 intern（origin 更小），装备那一条更大。
+    fn 天赋与装备两路来源拼在一起时取最强的一条跨来源生效() {
+        // Arrange：天赋那一条先 intern（origin 更小）、但**更弱**
+        //（900‰ 只减一成伤），装备那一条 origin 更大、却更强（500‰
+        // 半伤）。旧规则（按 origin 升序）会选天赋那条弱的；本次裁定
+        // 之后应当选装备那条强的——这正是所有者要修的形态在两个真实
+        // 收集器之间的端到端版本。
         let mut interner = Interner::new();
         let race = index(&mut interner, "lostland:ooze");
         let trait_id = index(&mut interner, "lostland:acid_hide");
@@ -809,11 +993,11 @@ mod tests {
         let traits = FixedTraits(vec![(
             trait_id,
             TraitRule {
-                rule_modifiers: vec![resistance(acid, 500)],
+                rule_modifiers: vec![resistance(acid, 900)],
                 ..TraitRule::default()
             },
         )]);
-        let items = FixedItems(vec![(amulet, vec![resistance(acid, 900)])]);
+        let items = FixedItems(vec![(amulet, vec![resistance(acid, 500)])]);
         let equipment = BTreeMap::from([(EquipSlot::NECK, ItemStack::new(amulet, 1))]);
 
         // Act：与 `agent_rule_modifiers` 内部完全相同的拼法，只是这里不
@@ -822,8 +1006,8 @@ mod tests {
         let mut entries = trait_rule_modifiers(&[TraitSource::new(race, &grants)], 1, &traits);
         entries.extend(equipment_rule_modifiers(&equipment, &items));
 
-        // Assert：两路来源都进了候选列表，tie-break 按 origin 升序跨来源
-        // 生效——天赋那条 origin 更小，因此胜出。
+        // Assert：两路来源都进了候选列表，tie-break 跨来源生效——装备
+        // 那条更强（500‰ < 900‰，抗性越小越强），尽管它 origin 更大。
         assert_eq!(entries.len(), 2);
         assert_eq!(resistance_multiplier_permille(&entries, acid), 500);
     }
@@ -904,8 +1088,9 @@ mod tests {
     }
 
     #[test]
-    fn 多条偷袭命中时按origin升序取第一条而不是叠加() {
-        // Arrange
+    fn 多条偷袭命中时取最强的一条而不是叠加() {
+        // Arrange：origin 更大的那条追加伤害更高（999 > 5），本次裁定
+        // 之后应当由它胜出；无论如何都不该是两者相加（1004）。
         let mut interner = Interner::new();
         let low = index(&mut interner, "lostland:aaa_low");
         let high = index(&mut interner, "lostland:zzz_high");
@@ -929,12 +1114,13 @@ mod tests {
         // Act
         let rule = sneak_attack_rule(&entries);
 
-        // Assert：low 那条，不是 high，也不是两者相加。
+        // Assert：high 那条（更强），不是 low（origin 在先的那条），
+        // 也不是两者相加。
         assert_eq!(
             rule,
             Some(SneakAttackRule {
-                luck_chance_permille_per_point: 10,
-                extra_damage: 5,
+                luck_chance_permille_per_point: 999,
+                extra_damage: 999,
             })
         );
     }
@@ -1039,11 +1225,13 @@ mod tests {
     }
 
     #[test]
-    fn 多条盘查声明按origin升序取第一条而不是取乘积也不依赖切片顺序() {
-        // 这条钉的是 `best_by_origin` 那份被四个消费者共用的 tie-break：
-        // 两条 500‰ 的「不觉得可疑」不该变成 250‰（那正是
-        // trait-system.md 三节③对「免疫两次」的原始论证），且哪条胜出
-        // 与调用方按什么顺序拼切片无关（约束 C5）。
+    fn 同强度的多条盘查声明按origin升序取第一条而不是取乘积也不依赖切片顺序() {
+        // 这条钉的是 `strongest_by_origin` 那份被四个消费者共用的
+        // tie-break 的**第二级**：两条 500‰ 的「不觉得可疑」强度完全
+        // 相同，此时退回 origin 升序；结果仍然是 500‰ 而不是 250‰
+        //（那正是 trait-system.md 三节③对「免疫两次」的原始论证——
+        // 「取最强」裁定改的是「挑哪一条」，不是「挑几条」），且哪条
+        // 胜出与调用方按什么顺序拼切片无关（约束 C5）。
         // Arrange
         let mut interner = Interner::new();
         let early = index(&mut interner, "lostland:aaa_early");
@@ -1069,6 +1257,235 @@ mod tests {
         // Assert：都是 500（不是 250，也不是 1000），且两种顺序一致。
         assert_eq!(forward, 500);
         assert_eq!(backward, 500);
+    }
+
+    /// 测试用帮手：把一条修正包成候选条目，省掉四条测试里逐次写结构体
+    /// 字面量的噪音。
+    fn entry(origin: ContentIndex, modifier: RuleModifier) -> RuleModifierEntry {
+        RuleModifierEntry { origin, modifier }
+    }
+
+    #[test]
+    fn 抗性取最强的一条而不是注册顺序在先的那条() {
+        // 项目所有者裁定的直接落点，也是它要修的那个具体形态：一枚平庸
+        // 护符（先被 intern，origin 小）不该压过一条强天赋（后被 intern，
+        // origin 大）。抗性「越小越强」：200‰ 比 800‰ 强。
+        // Arrange
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let trinket = index(&mut interner, "lostland:aaa_mediocre_trinket");
+        let talent = index(&mut interner, "lostland:zzz_strong_talent");
+        assert!(
+            trinket < talent,
+            "护符必须先被 intern，才构成本条要修的形态"
+        );
+        let weak = entry(
+            trinket,
+            RuleModifier::Resistance {
+                damage_category: fire,
+                multiplier_permille: 800,
+            },
+        );
+        let strong = entry(
+            talent,
+            RuleModifier::Resistance {
+                damage_category: fire,
+                multiplier_permille: 200,
+            },
+        );
+
+        // Act：两种拼接顺序。
+        let forward = resistance_multiplier_permille(&[weak.clone(), strong.clone()], fire);
+        let backward = resistance_multiplier_permille(&[strong, weak], fire);
+
+        // Assert：都取 200‰（最强），不是 800‰（origin 在先的那条），
+        // 也不是 160‰（两者乘积）。
+        assert_eq!(forward, 200);
+        assert_eq!(backward, 200);
+    }
+
+    #[test]
+    fn 三个消费者各自的强弱方向互不相同() {
+        // 一个通用的「取最大值」会让抗性/盘查意愿反过来选最弱的那条——
+        // 这条把三个方向一次性钉住，是 `strength_key` 逐变体声明方向
+        // 这件事的可执行断言。三组都让「较强的那条」origin 在后，
+        // 于是旧规则（origin 升序）会给出与新规则相反的答案。
+        // Arrange
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let first = index(&mut interner, "lostland:aaa_first");
+        let second = index(&mut interner, "lostland:zzz_second");
+        assert!(first < second);
+
+        // Act & Assert：抗性——越小越强。
+        assert_eq!(
+            resistance_multiplier_permille(
+                &[
+                    entry(
+                        first,
+                        RuleModifier::Resistance {
+                            damage_category: fire,
+                            multiplier_permille: 900,
+                        }
+                    ),
+                    entry(
+                        second,
+                        RuleModifier::Resistance {
+                            damage_category: fire,
+                            multiplier_permille: 100,
+                        }
+                    ),
+                ],
+                fire,
+            ),
+            100,
+        );
+
+        // 盘查意愿——同样越小越强。
+        assert_eq!(
+            inspection_suspicion_permille(&[
+                entry(
+                    first,
+                    RuleModifier::InspectionSuspicion {
+                        multiplier_permille: 900,
+                    }
+                ),
+                entry(
+                    second,
+                    RuleModifier::InspectionSuspicion {
+                        multiplier_permille: 100,
+                    }
+                ),
+            ]),
+            100,
+        );
+
+        // 盘查藏匿——反过来，越大越强。
+        assert_eq!(
+            inspection_concealment_permille(&[
+                entry(
+                    first,
+                    RuleModifier::InspectionConcealment {
+                        conceal_permille: 100,
+                    }
+                ),
+                entry(
+                    second,
+                    RuleModifier::InspectionConcealment {
+                        conceal_permille: 900,
+                    }
+                ),
+            ]),
+            900,
+        );
+    }
+
+    #[test]
+    fn 偷袭取追加伤害最大的一条追加伤害相同时再比幸运敏感度() {
+        // 偷袭是唯一携带两个数值字段的变体，两级键都要钉：主键
+        // extra_damage（所有者点名的那一个），相同时才比
+        // luck_chance_permille_per_point。两组都让胜出者 origin 在后。
+        // Arrange
+        let mut interner = Interner::new();
+        let first = index(&mut interner, "lostland:aaa_first");
+        let second = index(&mut interner, "lostland:zzz_second");
+        assert!(first < second);
+        let low_damage_high_luck = entry(
+            first,
+            RuleModifier::SneakAttack {
+                luck_chance_permille_per_point: 90,
+                extra_damage: 3,
+            },
+        );
+        let high_damage_low_luck = entry(
+            second,
+            RuleModifier::SneakAttack {
+                luck_chance_permille_per_point: 10,
+                extra_damage: 7,
+            },
+        );
+
+        // Act & Assert（主键）：追加伤害更大的那条胜出，即便它幸运
+        // 敏感度更低、origin 更大。
+        assert_eq!(
+            sneak_attack_rule(&[low_damage_high_luck, high_damage_low_luck]),
+            Some(SneakAttackRule {
+                luck_chance_permille_per_point: 10,
+                extra_damage: 7,
+            }),
+        );
+
+        // Act & Assert（第二级）：追加伤害相同，改由幸运敏感度决胜——
+        // 这一档正是所有者那句「追加伤害越大越强」没有覆盖、原本会掉进
+        // 「谁先被 intern 谁赢」的区间。
+        assert_eq!(
+            sneak_attack_rule(&[
+                entry(
+                    first,
+                    RuleModifier::SneakAttack {
+                        luck_chance_permille_per_point: 10,
+                        extra_damage: 5,
+                    }
+                ),
+                entry(
+                    second,
+                    RuleModifier::SneakAttack {
+                        luck_chance_permille_per_point: 40,
+                        extra_damage: 5,
+                    }
+                ),
+            ]),
+            Some(SneakAttackRule {
+                luck_chance_permille_per_point: 40,
+                extra_damage: 5,
+            }),
+        );
+    }
+
+    #[test]
+    fn 强度完全相同时退回origin升序且与切片顺序无关() {
+        // 保住 C5 的那一条：这里直接对 `strongest_by_origin` 下断言，
+        // 而不是经某个公开消费者——四个真实消费者的投影值都由强度键
+        // 完全决定，一旦强度相同，返回值也必然相同，「哪一条胜出」在
+        // 它们身上根本不可观察。探针挑的是 `strength_key` **不看**的那
+        // 个字段：抗性的强度只由 multiplier_permille 决定，damage_category
+        // 完全不参与——于是两条乘数相同、类别不同的抗性强度键恒等，
+        // 投影出类别就能读出胜者是谁。
+        // Arrange
+        let mut interner = Interner::new();
+        let early = index(&mut interner, "lostland:aaa_early");
+        let late = index(&mut interner, "lostland:zzz_late");
+        let fire = index(&mut interner, "lostland:fire");
+        let cold = index(&mut interner, "lostland:cold");
+        assert!(early < late);
+        let early_entry = entry(
+            early,
+            RuleModifier::Resistance {
+                damage_category: fire,
+                multiplier_permille: 500,
+            },
+        );
+        let late_entry = entry(
+            late,
+            RuleModifier::Resistance {
+                damage_category: cold,
+                multiplier_permille: 500,
+            },
+        );
+        let probe = |modifier: &RuleModifier| match modifier {
+            RuleModifier::Resistance {
+                damage_category, ..
+            } => Some(*damage_category),
+            _ => None,
+        };
+
+        // Act：同样两条，两种拼接顺序。
+        let forward = strongest_by_origin(&[early_entry.clone(), late_entry.clone()], probe);
+        let backward = strongest_by_origin(&[late_entry, early_entry], probe);
+
+        // Assert：两种顺序都取 origin 小的那条（火抗那一条）。
+        assert_eq!(forward, Some(fire));
+        assert_eq!(backward, Some(fire));
     }
 
     #[test]
