@@ -979,14 +979,17 @@ mod tests {
     }
 
     #[test]
-    fn 真实mod种族half_elf生成的角色属性包含敏捷与魅力修正() {
+    fn 真实mod种族half_elf生成的角色属性包含敏捷与魅力与幸运修正() {
         // ADR 0018「API 完备性判据要求有真实 mod 脚本为证」——本测试
         // 装载仓库真实的 mods/example_mod/gameplay.scm
-        // （`register-race "examplemod:half_elf" ... 0 1 0 0 0 1 0 1 1 150`，
-        // 第 3~8 个参数是六项属性修正：力量0/敏捷1/体质0/智力0/意志0/
-        // 魅力1），断言用这个真实 mod 种族生成的角色属性确实带上了
-        // 敏捷 +1、魅力 +1，其余四项不变——不是靠临时构造的测试脚本
-        // 文本自证。
+        // （`register-race "examplemod:half_elf" ... 0 1 0 0 0 1 1 6 1 1 150`，
+        // 第 3~9 个参数是七项属性修正：力量0/敏捷1/体质0/智力0/意志0/
+        // 魅力1/幸运1），断言用这个真实 mod 种族生成的角色属性确实带上
+        // 了敏捷 +1、魅力 +1、幸运 +1，其余四项不变——不是靠临时构造的
+        // 测试脚本文本自证。
+        //
+        // 幸运那一条是 `luck-mod` 这个本批次新增参数在**已发货脚本**上
+        // 的证据：把 gameplay.scm 里那个 1 改回 0，这条测试立刻变红。
         // Arrange
         let mods_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
         let assets_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets");
@@ -1010,6 +1013,7 @@ mod tests {
             half_elf_agent.stats.charisma,
             BaseStats::BASELINE.charisma + 1
         );
+        assert_eq!(half_elf_agent.stats.luck, BaseStats::BASELINE.luck + 1);
         assert_eq!(half_elf_agent.stats.strength, BaseStats::BASELINE.strength);
         assert_eq!(
             half_elf_agent.stats.constitution,

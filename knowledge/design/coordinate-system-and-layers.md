@@ -286,11 +286,11 @@ effective_ambient_light(profile, tick) =
     否则                          → LightLevel(profile.ambient_light_floor)  // 与 tick 无关
 ```
 
-`sight_radius_at`（`light.rs`）与 `race-system.md`「暗视」一节的 `effective_light = max(light, darkvision_floor)` 同样不需要改——它们的输入本来就是「一个光照值」，不关心这个值是怎么算出来的。**唯一需要写清楚的新增纪律是：任何消费光照的调用方，必须先查 `Space.profile.exposed_to_sky`，不能对地下/室内空间直接调用 `ambient_light(tick)`**——直接调用会让地下城在正午呈现满光照，这是一个纯粹的接线错误，不是设计冲突。
+`sight_radius_at`（`light.rs`）与 `race-system.md`「暗视」一节的暗视换算同样不需要改——它们的输入本来就是「一个光照值（外加观察者声明的暗视格数）」，不关心这个光照值是怎么算出来的。（暗视此后已从「光照下限」改成「夜间视野格数下限」，见 `race-system.md` 五节的更正框；这条结论不受影响——变的是暗视那个参数的语义，不是「光照从哪来」这件事。）**唯一需要写清楚的新增纪律是：任何消费光照的调用方，必须先查 `Space.profile.exposed_to_sky`，不能对地下/室内空间直接调用 `ambient_light(tick)`**——直接调用会让地下城在正午呈现满光照，这是一个纯粹的接线错误，不是设计冲突。
 
 ### 回头核对 `race-system.md`「暗视」一节：不需要改
 
-`race-system.md` 五、暗视一节的接口设计——`darkvision_floor` 是喂给 `sight_radius_at` 的一个地板值，`compute_fov` 完全不感知种族——本来就与「光照从哪来」这件事解耦，天然兼容「光照现在可能来自 `Space.profile` 而不是全局 `ambient_light(tick)`」这个变化。**不需要修改该文档正文**；上面这条「消费方必须先查 `exposed_to_sky`」的纪律属于坐标系/空间模型这一侧的接线细节，记在本文档即可，不属于种族系统的设计范围。
+`race-system.md` 五、暗视一节的接口设计——`darkvision_cells` 是喂给 `sight_radius_at` 的一个地板值，`compute_fov` 完全不感知种族——本来就与「光照从哪来」这件事解耦，天然兼容「光照现在可能来自 `Space.profile` 而不是全局 `ambient_light(tick)`」这个变化。**不需要修改该文档正文**；上面这条「消费方必须先查 `exposed_to_sky`」的纪律属于坐标系/空间模型这一侧的接线细节，记在本文档即可，不属于种族系统的设计范围。
 
 **连锁效果值得写明**：有了地下之后，地下层 `exposed_to_sky = false`、`ambient_light_floor` 多半接近零，视野半径完全靠光源与暗视撑起来——矮人暗视从「小加成」变成「能不能下矿」的差别，火把、灯油从装饰变成真实资源压力。这是本次架构变更的一个意外收益：暗视系统在纯地表世界里本来无足轻重（白天大家都看得见），有地下空间之后才真正有了用武之地。**点光源（火把等）如何提供局部光照，本文档不展开**——这需要在 `SpaceProfile` 的地板值之上再叠一层「附近有没有光源」的查询，是独立的一块设计，留给光照/物品系统的后续批次。
 

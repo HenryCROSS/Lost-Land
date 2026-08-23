@@ -162,7 +162,7 @@ fn 人类逐字段与本体races脚本的声明一致() {
             luck: 0,
         }
     );
-    assert_eq!(view.darkvision_floor, 0);
+    assert_eq!(view.darkvision_cells, 0);
     assert_eq!(view.footprint, (1, 1));
     assert_eq!(view.lifespan_years, 80);
     // 击杀基准经验值——**不再是 0**：项目所有者裁定「有个最低经验
@@ -201,7 +201,7 @@ fn 矮人逐字段与本体races脚本的声明一致() {
             luck: 0,
         }
     );
-    assert_eq!(view.darkvision_floor, 4);
+    assert_eq!(view.darkvision_cells, 7);
     assert_eq!(view.footprint, (1, 1));
     assert_eq!(view.lifespan_years, 250);
     // 见人类那条同一处注释。
@@ -236,7 +236,7 @@ fn 精灵逐字段与本体races脚本的声明一致() {
             luck: 0,
         }
     );
-    assert_eq!(view.darkvision_floor, 0);
+    assert_eq!(view.darkvision_cells, 6);
     assert_eq!(view.footprint, (1, 1));
     assert_eq!(view.lifespan_years, 400);
     // 见人类那条同一处注释。

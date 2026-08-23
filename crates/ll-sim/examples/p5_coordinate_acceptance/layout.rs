@@ -7,6 +7,13 @@
 
 use ll_core::time::Tick;
 use ll_world::light::sight_radius_at;
+
+/// 「这个调用方不知道谁在看」时传给暗视参数的取值。
+///
+/// `0` 在 [`ll_world::light::sight_radius_at`] 里被解读成**未声明**
+/// 暗视，落回 [`ll_world::light::DEFAULT_NIGHT_SIGHT_RADIUS`]——本
+/// demo 不区分种族，行为与该函数长出这个参数之前逐格相同。
+const NO_DARKVISION: u32 = 0;
 use ll_world::space_profile::{SpaceProfile, effective_ambient_light};
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
 use ll_world::weather::Weather;
@@ -146,7 +153,7 @@ pub(crate) fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Opt
 /// `ll_game::layout`（生产渲染路径）。
 pub(crate) fn effective_sight_radius(profile: &SpaceProfile, clock: Tick) -> u32 {
     let light = effective_ambient_light(profile, clock, Weather::CLEAR);
-    sight_radius_at(BASE_SIGHT_RADIUS, light)
+    sight_radius_at(BASE_SIGHT_RADIUS, light, NO_DARKVISION)
 }
 
 /// 画面整体亮度调制（灰阶，不含季节色相——本 demo 的验收重点是「暗」

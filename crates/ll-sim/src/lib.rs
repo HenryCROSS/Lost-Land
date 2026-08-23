@@ -92,12 +92,14 @@
 //! 修正」这个最小接口，真实实现（`ll_mod::race::RaceTable`）在下游
 //! 补齐。见该模块文档「为什么放在 `ll-sim`，不是 `ll-game`」一节。
 //!
-//! [`vision`]（暗视接线批次）：把 `RaceDef::darkvision_floor` 真正
-//! 接进有效光照计算（[`vision::effective_light_for_race`]，
-//! `race-system.md`「五、暗视」一节的公式 `effective_light = max(实际
-//! 光照, darkvision_floor)`）与依赖倒置接口
+//! [`vision`]（暗视接线批次，暗视语义改版批次重写）：把
+//! `RaceDef::darkvision_cells` 真正接进视野半径计算
+//! （[`vision::sight_radius_for_race`]）与依赖倒置接口
 //! （[`vision::RaceDarkvisionSource`]）——与 `character` 同一套手法，
-//! 见该模块文档「为什么定义在 `ll-sim`」一节。
+//! 见该模块文档「为什么定义在 `ll-sim`」一节。暗视此前的形态是「光照
+//! 千分比下限」（`effective_light = max(实际光照, darkvision_floor)`），
+//! 在本作的光照量纲下永远不可能生效，已连同 `effective_light_for_race`
+//! 一并删除，理由见该模块文档「缺口是什么」一节。
 
 pub mod apply;
 pub mod behavior;

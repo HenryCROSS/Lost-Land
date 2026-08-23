@@ -56,8 +56,19 @@
 ;; 一个新任务：击杀 3 只哥布林。
 (register-quest "examplemod:kill_goblins" (list) "kill-count" "examplemod:goblin" 3)
 
-;; 一个新种族：半精灵——敏捷 +1、魅力 +1，寿命 150 年。
-(register-race "examplemod:half_elf" "examplemod:half_elf_display_name" 0 1 0 0 0 1 0 1 1 150)
+;; 一个新种族：半精灵——敏捷 +1、魅力 +1、**幸运 +1**，暗视 6 格，
+;; 寿命 150 年。
+;;
+;; 幸运那一项是 register-race 本批次新增的第九个参数（luck-mod）唯一的
+;; 真实脚本证据：BaseStats 早就有 luck 字段、决策层（暴击率，
+;; ll_sim::combat::crit_chance_permille）早就在读它，但在此之前 mod
+;; 作者写不出种族幸运修正——script_race_api.rs 把这条记为已知缺口。
+;; crates/ll-game/src/world.rs 的
+;; `真实mod种族half_elf生成的角色属性包含敏捷与魅力与幸运修正` 断言
+;; 这个 1 真的落进了角色的 BaseStats.luck。
+;;
+;; 暗视 6 格：半精灵继承精灵那一半的夜视（examplemod:elf 同样是 6）。
+(register-race "examplemod:half_elf" "examplemod:half_elf_display_name" 0 1 0 0 0 1 1 6 1 1 150)
 
 ;; 另一个新种族：哥布林——上面 "examplemod:kill_goblins" 任务点名的
 ;; 击杀目标，此前只是一个被 kill-count 匹配规则引用的裸字符串，从未
@@ -67,7 +78,7 @@
 ;; crate::race 模块文档 RaceDef::xp_reward 一节：等级与经验系统落地
 ;; 批次判断"生物值多少经验"落在种族表上，这两行就是那个判断的真实
 ;; 落地证据，不是只在单元测试里自证。
-(register-race "examplemod:goblin" "examplemod:goblin_display_name" 0 0 0 0 0 0 0 1 1 5)
+(register-race "examplemod:goblin" "examplemod:goblin_display_name" 0 0 0 0 0 0 0 7 1 1 5)
 (register-race-xp-reward "examplemod:goblin" 15)
 
 ;; 两条形状截然不同的经验曲线（等级与经验系统落地批次新增,
@@ -99,7 +110,7 @@
 (register-skill "examplemod:breath_weapon" "" (list) 30 "none" 0 "deal-damage" "" 20 0)
 (register-trait "examplemod:draconic_breath" "examplemod:draconic_breath_display_name"
   (list "examplemod:breath_weapon"))
-(register-race "examplemod:dragonborn" "examplemod:dragonborn_display_name" 0 0 0 0 0 0 0 1 1 80)
+(register-race "examplemod:dragonborn" "examplemod:dragonborn_display_name" 0 0 0 0 0 0 0 0 1 1 80)
 (register-race-trait "examplemod:dragonborn" "examplemod:draconic_breath" 1)
 
 ;; 资源池落地批次（第一批：法力池/血池）：knowledge/design/resource-pools-and-rest.md
@@ -145,7 +156,7 @@
   (list 4 3 0 0))
 (register-trait-resource-pool-by-level "examplemod:arcane_casting" "examplemod:wizard_spell_slots" 9
   (list 4 3 2 0))
-(register-race "examplemod:elf" "examplemod:elf_display_name" 0 1 0 1 0 0 0 1 1 700)
+(register-race "examplemod:elf" "examplemod:elf_display_name" 0 1 0 1 0 0 0 6 1 1 700)
 (register-race-trait "examplemod:elf" "examplemod:arcane_casting" 1)
 ;; 火球术：消耗三环位（或更高档，单向可兑换）——三环位直到 9 级断点
 ;; 才出现（见上面），因此 1~8 级的精灵法师放不出这个技能（门四会因为
@@ -165,7 +176,7 @@
 (register-trait "examplemod:druidic_casting" "examplemod:druidic_casting_display_name" (list))
 (register-trait-resource-pool-by-level "examplemod:druidic_casting" "examplemod:druid_slots" 1
   (list 3 0 0))
-(register-race "examplemod:gnome" "examplemod:gnome_display_name" 0 1 0 1 0 0 0 1 1 400)
+(register-race "examplemod:gnome" "examplemod:gnome_display_name" 0 1 0 1 0 0 0 7 1 1 400)
 (register-race-trait "examplemod:gnome" "examplemod:druidic_casting" 1)
 
 ;; P6 第一批（物品基础）：knowledge/design/item-system.md 二节「堆叠
@@ -296,7 +307,15 @@
 (register-damage-category "examplemod:acid" "")
 (register-trait "examplemod:acid_hide" "examplemod:acid_hide_display_name" (list))
 (register-trait-resistance "examplemod:acid_hide" "examplemod:acid" 500)
-(register-race "examplemod:ooze" "examplemod:ooze_display_name" 0 0 0 0 0 0 0 1 1 30)
+;; 软泥怪的暗视声明成 **2 格——低于未声明时的默认值 4**（
+;; ll_world::light::DEFAULT_NIGHT_SIGHT_RADIUS）。它没有眼睛，靠触碰
+;; 感知周围，夜里比人还瞎；这是唯一一处已发货内容证明暗视新语义**不是**
+;; `max(默认值, 声明值)`——若那样写，这个 2 会被默默抬回 4，「夜视比
+;; 常人差」这一整类设定根本无法表达（见
+;; ll_world::light::sight_radius_at 文档「为什么不是 max(默认值,
+;; 声明值)」一节）。crates/ll-mod/tests/base_mod_darkvision.rs 经真实
+;; mods/ 装载断言它在夜里就是 2 格。
+(register-race "examplemod:ooze" "examplemod:ooze_display_name" 0 0 0 0 0 0 0 2 1 1 30)
 (register-race-trait "examplemod:ooze" "examplemod:acid_hide" 1)
 (register-item "examplemod:acid_dagger" "examplemod:acid_dagger_display_name" 1 500 6000 40)
 (register-item-equip-mask "examplemod:acid_dagger" (list "main-hand"))
@@ -342,7 +361,7 @@
 ;; crates/ll-mod/tests/example_mod_sneak_attack.rs 是那份证据。
 (register-trait "examplemod:predatory_instinct" "examplemod:predatory_instinct_display_name" (list))
 (register-trait-sneak-attack "examplemod:predatory_instinct" 20 15)
-(register-race "examplemod:footpad" "examplemod:footpad_display_name" 0 0 0 0 0 0 0 1 1 60)
+(register-race "examplemod:footpad" "examplemod:footpad_display_name" 0 0 0 0 0 0 0 0 1 1 60)
 (register-race-trait "examplemod:footpad" "examplemod:predatory_instinct" 1)
 
 ;; 职业天赋接线批次：`trait-system.md` 三节①五路来源公式里「职业天赋」

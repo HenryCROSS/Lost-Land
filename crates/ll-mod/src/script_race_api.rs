@@ -1,7 +1,7 @@
 //! 把 `register-race` 注册进脚本引擎：mod 脚本借此定义自定义种族。
 //!
 //! 模式同 [`crate::script_class_api`]。种族比职业多出四个数值字段
-//! （六项属性修正 + 暗视下限 + 体型两维 + 寿命），FFI 签名因此更长，
+//! （七项属性修正 + 暗视格数 + 体型两维 + 寿命），FFI 签名因此更长，
 //! 但每个参数都是简单的整数，不需要像 [`crate::script_skill_api`] 那样
 //! 处理带标签的枚举。
 
@@ -46,37 +46,42 @@ pub fn register_race_api(engine: &mut ScriptEngine) {
 
 /// `(register-race id display-name-key
 ///                  strength-mod dexterity-mod constitution-mod
-///                  intelligence-mod willpower-mod charisma-mod
-///                  darkvision-floor footprint-width footprint-height
+///                  intelligence-mod willpower-mod charisma-mod luck-mod
+///                  darkvision-cells footprint-width footprint-height
 ///                  lifespan-years)`。
 ///
 /// - `id`：完整命名空间标识符字符串。
 /// - `display-name-key`：指向 Fluent 本地化键的完整标识符字符串。
-/// - 六个 `*-mod` 参数：六项主属性的固定增减量（可为负），见
+/// - 七个 `*-mod` 参数：七项主属性的固定增减量（可为负），见
 ///   [`crate::race`] 模块文档「属性修正」一节——**不是**千分比。
-/// - `darkvision-floor`：暗视下限。
+/// - `darkvision-cells`：夜间视野格数下限，`0` 表示未声明（按常人
+///   处理）；允许声明**低于**默认值的格数表示「夜里比常人更瞎」，见
+///   `ll_world::light::sight_radius_at` 文档。负数钳到 `0`。
 /// - `footprint-width`/`footprint-height`：占位格数，非负整数，钳位到
 ///   `u8` 范围。
 /// - `lifespan-years`：寿命（年），非负整数。
 ///
-/// # 幸运并入 `AttributeKind` 批次：本函数暂不新增 `luck-mod` 参数
+/// # 本批次一次性改了两处签名，是刻意的
 ///
-/// `BaseStats`（[`crate::race::RaceAttrs::stat_modifiers`] 的类型）新增
-/// 了 `luck` 字段之后，种族幸运加成在决策层已经自动成立——
-/// `ll_sim::character::bake_race_stat_modifiers` 复用
-/// `BaseStats::add_modifiers`，幸运与其余六项走同一条加法路径，不需要
-/// 引擎侧再改一行代码。但本函数（mod 脚本 FFI 签名）暂不新增第十三个
-/// `luck-mod` 参数：现有全部 mod 脚本调用点都是十二个位置参数，插入一个
-/// 新参数会改变其余参数的位置含义,是破坏性变更；本批次任务范围明确
-/// 要求的是「幸运并入 `AttributeKind`、能被装备/技能加成影响」两件事
-/// （见 `register-item-stat-bonus`/`register-skill` 的
-/// `attribute_kind_from_str`），不是「打通每一条内容 authoring 通道」
-/// ——YAGNI：暗视下限/体型/寿命三个字段当初也是分批通过独立的
-/// `register-race-*` 追加指令补上的先例（本函数签名本身也在多次批次里
-/// 增长过），种族幸运的 authoring 入口留给需要它的后续批次，用同一种
-/// 追加指令的模式（而不是改动本函数现有的参数顺序）落地。此刻构造的
-/// `BaseStats.luck` 恒为 `0`——种族幸运加成的机制已经打通，只是暂时
-/// 没有 mod 作者可用的赋值入口。
+/// [`crate::race`] 模块文档「与 `register-race-xp-reward` 的关系」
+/// 一节立下的先例是「不改既有 `register-*` 的参数个数，新能力走新
+/// 函数」——本批次**明确破例**，同时做了两件破坏性变更：
+///
+/// 1. 第九个参数从 `darkvision-floor`（光照千分比下限）改名成
+///    `darkvision-cells`（夜间视野格数下限）。位置没变，但**语义变了**
+///    ——同一个数字现在表达完全不同的东西，照旧值不改会让矮人从
+///    「暗视等于不存在」变成「夜里只看得见 4 格」。
+/// 2. 新增第九个位置的 `luck-mod`（挤在 `charisma-mod` 之后、暗视
+///    之前，与 `BaseStats` 的字段顺序一致），补上本函数此前记录的
+///    已知缺口：`BaseStats` 有 `luck` 字段、决策层（暴击率）真的在读
+///    它，但 mod 作者写不出种族幸运修正。
+///
+/// 破例的理由是**破坏性变更的次数**，不是它的必要性变小了：这两处
+/// 都要动本函数的签名，分两批做等于让每一个第三方种族脚本被破坏性
+/// 地改两次。先例本身要保护的正是「别反复折腾 mod 作者」，一次改完
+/// 比守着字面规则改两次更符合它。`register-race-xp-reward`/
+/// `register-race-trait`/`register-race-starting-item` 三个追加指令
+/// 不受影响，先例对它们照旧成立。
 ///
 /// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
 #[allow(clippy::too_many_arguments)]
@@ -89,7 +94,8 @@ fn register_race(
     intelligence_mod: i64,
     willpower_mod: i64,
     charisma_mod: i64,
-    darkvision_floor: i64,
+    luck_mod: i64,
+    darkvision_cells: i64,
     footprint_width: i64,
     footprint_height: i64,
     lifespan_years: i64,
@@ -112,9 +118,11 @@ fn register_race(
                     intelligence: intelligence_mod as i32,
                     willpower: willpower_mod as i32,
                     charisma: charisma_mod as i32,
-                    luck: 0,
+                    luck: luck_mod as i32,
                 },
-                darkvision_floor as i32,
+                // 负数不是「更瞎」的表达方式——「更瞎」是声明一个小的
+                // 正数（例如 2）。负数没有语义，钳到 0（未声明）。
+                darkvision_cells.clamp(0, i64::from(u32::MAX)) as u32,
                 (
                     footprint_width.max(0).min(i64::from(u8::MAX)) as u8,
                     footprint_height.max(0).min(i64::from(u8::MAX)) as u8,
@@ -134,7 +142,7 @@ fn do_register_race(
     id: &str,
     display_name_key: &str,
     stat_modifiers: BaseStats,
-    darkvision_floor: i32,
+    darkvision_cells: u32,
     footprint: (u8, u8),
     lifespan_years: u32,
 ) -> Result<bool, String> {
@@ -151,7 +159,7 @@ fn do_register_race(
             RaceAttrs {
                 display_name_key,
                 stat_modifiers,
-                darkvision_floor,
+                darkvision_cells,
                 footprint,
                 lifespan_years,
                 // register-race 的既有脚本签名不携带经验值（不能改
@@ -422,7 +430,7 @@ mod tests {
 
         // Act
         let result = engine.load_source(
-            r#"(register-race "yourmod:half_elf" "yourmod:half_elf_display_name" 0 1 0 0 0 1 0 1 1 150)"#
+            r#"(register-race "yourmod:half_elf" "yourmod:half_elf_display_name" 0 1 0 0 0 1 3 5 1 1 150)"#
                 .to_string(),
         );
 
@@ -433,7 +441,19 @@ mod tests {
         let index = registry
             .get(&NamespacedId::parse("yourmod:half_elf").unwrap())
             .expect("刚注册的内容应能查到索引");
-        assert_eq!(table.get(index).unwrap().lifespan_years, 150);
+        let view = table.get(index).unwrap();
+        assert_eq!(view.lifespan_years, 150);
+        // 本批次给签名插了一个新参数（luck-mod）又改了下一个参数的
+        // 语义（darkvision-cells）——位置参数最容易出的错就是整体错位
+        // 一格，而错位一格之后每个数字**仍然是合法取值**，不会有任何
+        // 报错。脚本里刻意把七项属性写成互不相同的形状（幸运 3）、
+        // 暗视写成又一个不同的数（5），逐个钉住它们各自落在哪一格：
+        // 少一个参数、多一个参数、或顺序写反，都会让这里变红。
+        assert_eq!(view.stat_modifiers.dexterity, 1);
+        assert_eq!(view.stat_modifiers.charisma, 1);
+        assert_eq!(view.stat_modifiers.luck, 3);
+        assert_eq!(view.darkvision_cells, 5);
+        assert_eq!(view.footprint, (1, 1));
     }
 
     #[test]
@@ -446,7 +466,7 @@ mod tests {
 
         // Act
         let result = engine.load_source(
-            r#"(register-race "Not Valid" "yourmod:x" 0 0 0 0 0 0 0 1 1 80)"#.to_string(),
+            r#"(register-race "Not Valid" "yourmod:x" 0 0 0 0 0 0 0 0 1 1 80)"#.to_string(),
         );
 
         // Assert
@@ -547,7 +567,7 @@ mod tests {
         set_active_target(RaceTable::new());
         engine
             .load_source(
-                r#"(register-race "yourmod:goblin" "yourmod:goblin_display_name" 0 0 0 0 0 0 0 1 1 20)"#
+                r#"(register-race "yourmod:goblin" "yourmod:goblin_display_name" 0 0 0 0 0 0 0 0 1 1 20)"#
                     .to_string(),
             )
             .expect("先注册种族本体");
@@ -735,7 +755,7 @@ mod tests {
         set_active_target(RaceTable::new());
         engine
             .load_source(
-                r#"(register-race "yourmod:dragonborn" "yourmod:dragonborn_display_name" 0 0 0 0 0 0 0 1 1 80)"#
+                r#"(register-race "yourmod:dragonborn" "yourmod:dragonborn_display_name" 0 0 0 0 0 0 0 0 1 1 80)"#
                     .to_string(),
             )
             .expect("先注册种族本体");
@@ -869,7 +889,7 @@ mod tests {
         set_active_target(RaceTable::new());
         engine
             .load_source(
-                r#"(register-race "yourmod:goblin" "yourmod:goblin_display_name" 0 0 0 0 0 0 0 1 1 5)"#
+                r#"(register-race "yourmod:goblin" "yourmod:goblin_display_name" 0 0 0 0 0 0 0 0 1 1 5)"#
                     .to_string(),
             )
             .expect("先注册种族本体");

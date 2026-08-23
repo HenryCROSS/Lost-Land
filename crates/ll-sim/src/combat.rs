@@ -113,7 +113,7 @@ pub const LUCK_CRIT_BONUS_PERMILLE: i32 = 5;
 /// 独立的次级属性但未给出具体倍率，也未落地任何字段承载它。本实现
 /// 取 1500‰（1.5 倍）：常见 Roguelike/RPG 默认档位，明显高于 1000‰
 /// （无暴击基准）使暴击可被玩家感知，具体数值本任务不做平衡设计，
-/// 只保证暴击命中后伤害确实变化——与 `RaceDef.darkvision_floor` 字段
+/// 只保证暴击命中后伤害确实变化——与 `RaceDef.darkvision_cells` 字段
 /// 「具体数值本任务不做平衡设计，只保证字段真的被本体使用到」同一条
 /// 纪律（见 `mods/lostland/races.scm` 对应注释）。
 pub const CRIT_DAMAGE_MULTIPLIER_PERMILLE: i32 = 1500;

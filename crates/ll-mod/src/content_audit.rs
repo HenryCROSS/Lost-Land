@@ -27,7 +27,7 @@
 //! # 与 `scripts/ci/check_field_consumers.py` 的分工：两头都要堵
 //!
 //! 那个脚本查的是「**Rust 决策层里有没有人读**这个字段」，抓的是
-//! `Agent.luck`/`RaceDef.darkvision_floor` 这类"声明了、存了、哈希了、
+//! `Agent.luck`/`RaceDef.darkvision_cells` 这类"声明了、存了、哈希了、
 //! 有往返测试，却没有任何游戏逻辑消费它"的字段。
 //!
 //! 本模块的字段覆盖查的是**另一头**：「**内容里有没有人写**这个字段」。
@@ -474,7 +474,7 @@ impl ContentAuditReport {
     /// 字段覆盖描述的是"本体内容有没有把自己声明的每个旋钮都用起来"，
     /// 这是一条**开发期不变量**，不是"游戏坏了"的信号：一个玩家把
     /// `mods/lostland/races.scm` 里矮人的暗视改回 0，本体内容就不再
-    /// 覆盖 `darkvision_floor` 了——但那个存档完全能玩，为此拒绝启动
+    /// 覆盖 `darkvision_cells` 了——但那个存档完全能玩，为此拒绝启动
     /// 是拿一条开发纪律去惩罚玩家。引用完整性则相反：一个指向不存在
     /// 条目的引用是真的会在运行期表现成"物品算不出伤害"的损坏。
     ///
@@ -1134,7 +1134,7 @@ fn inspect_race(auditor: &mut Auditor<'_>, index: ContentIndex) {
         .get(index)
         .expect("classify_index 已判定为 Race，get 必返回 Some");
     let stats = view.stat_modifiers;
-    let darkvision_floor = view.darkvision_floor;
+    let darkvision_cells = view.darkvision_cells;
     let footprint = view.footprint;
     let lifespan_years = view.lifespan_years;
     let xp_reward = view.xp_reward;
@@ -1146,6 +1146,13 @@ fn inspect_race(auditor: &mut Auditor<'_>, index: ContentIndex) {
     // 七项属性修正是一个整体字段（`BaseStats`），任一项非零即算这个
     // 字段被用上了——`BaseStats` 全零是"这个种族没有属性修正"这个
     // 完全合法的取值，正是这里要问的默认值。
+    //
+    // `luck` 这一项没有独立的花名册条目，与其余六项待遇相同：本批次给
+    // `register-race` 补上 `luck-mod` 参数（此前 mod 作者写不出种族
+    // 幸运修正）之后，本体三族仍然全填 0，但那不构成覆盖缺口——覆盖
+    // 检查的粒度是 `stat_modifiers` 这一个整体字段，矮人的力量 +1/
+    // 体质 +2 已经把它覆盖住了。真正用上 `luck` 的已发货内容是
+    // `mods/example_mod/gameplay.scm` 的 `examplemod:half_elf`（幸运 +1）。
     let has_stat_modifier = stats.strength != 0
         || stats.dexterity != 0
         || stats.constitution != 0
@@ -1154,7 +1161,10 @@ fn inspect_race(auditor: &mut Auditor<'_>, index: ContentIndex) {
         || stats.charisma != 0
         || stats.luck != 0;
     auditor.field("RaceAttrs::stat_modifiers", has_stat_modifier);
-    auditor.field("RaceAttrs::darkvision_floor", darkvision_floor != 0);
+    // `0` 是「未声明暗视」这个完全合法、且是本体人类真实取值的默认
+    // 值——非零才算这个字段真的被内容用上了。本体矮人 7 格、精灵 6 格
+    // 覆盖它。
+    auditor.field("RaceAttrs::darkvision_cells", darkvision_cells != 0);
     auditor.field("RaceAttrs::footprint", footprint != (0, 0));
     auditor.field("RaceAttrs::lifespan_years", lifespan_years != 0);
     auditor.field("RaceAttrs::xp_reward", xp_reward != 0);
@@ -1658,7 +1668,7 @@ mod tests {
             index
         }
 
-        fn define_race(&mut self, raw: &str, darkvision_floor: i32) -> ContentIndex {
+        fn define_race(&mut self, raw: &str, darkvision_cells: u32) -> ContentIndex {
             let index = self.intern(raw);
             self.race
                 .define(
@@ -1674,7 +1684,7 @@ mod tests {
                             charisma: 0,
                             luck: 0,
                         },
-                        darkvision_floor,
+                        darkvision_cells,
                         footprint: (1, 1),
                         lifespan_years: 80,
                         xp_reward: 0,
@@ -1983,12 +1993,12 @@ mod tests {
         // Act
         let report = session.audit(&race_only_policy(&[]));
 
-        // Assert：`darkvision_floor` 不在未覆盖列表里。
+        // Assert：`darkvision_cells` 不在未覆盖列表里。
         assert!(
             !report
                 .uncovered_fields
                 .iter()
-                .any(|field| field.field == "RaceAttrs::darkvision_floor"),
+                .any(|field| field.field == "RaceAttrs::darkvision_cells"),
             "{:?}",
             report.uncovered_fields
         );
@@ -2009,7 +2019,7 @@ mod tests {
         assert!(
             report.uncovered_fields.contains(&UncoveredField {
                 kind: ContentTableKind::Race,
-                field: "RaceAttrs::darkvision_floor",
+                field: "RaceAttrs::darkvision_cells",
             }),
             "{:?}",
             report.uncovered_fields
@@ -2033,7 +2043,7 @@ mod tests {
             report
                 .uncovered_fields
                 .iter()
-                .any(|field| field.field == "RaceAttrs::darkvision_floor"),
+                .any(|field| field.field == "RaceAttrs::darkvision_cells"),
             "{:?}",
             report.uncovered_fields
         );
@@ -2041,7 +2051,7 @@ mod tests {
 
     const DARKVISION_EXEMPTION: &[FieldExemption] = &[FieldExemption {
         kind: ContentTableKind::Race,
-        field: "RaceAttrs::darkvision_floor",
+        field: "RaceAttrs::darkvision_cells",
         reason: "测试用豁免：本测试里的种族刻意不声明暗视。",
     }];
 
@@ -2059,7 +2069,7 @@ mod tests {
             !report
                 .uncovered_fields
                 .iter()
-                .any(|field| field.field == "RaceAttrs::darkvision_floor"),
+                .any(|field| field.field == "RaceAttrs::darkvision_cells"),
             "{:?}",
             report.uncovered_fields
         );
@@ -2082,7 +2092,7 @@ mod tests {
                 .roster_violations
                 .contains(&RosterViolation::StaleExemption {
                     kind: ContentTableKind::Race,
-                    field: "RaceAttrs::darkvision_floor",
+                    field: "RaceAttrs::darkvision_cells",
                 }),
             "{:?}",
             report.roster_violations
@@ -2265,7 +2275,7 @@ mod tests {
 
         // Assert
         assert!(text.contains("种族表"), "{text}");
-        assert!(text.contains("RaceAttrs::darkvision_floor"), "{text}");
+        assert!(text.contains("RaceAttrs::darkvision_cells"), "{text}");
         assert!(text.contains("check_field_consumers.py"), "{text}");
     }
 

@@ -3,12 +3,18 @@
 ;;
 ;; 签名见 crates/ll-mod/src/script_race_api.rs：
 ;;   (register-race id display-name-key
-;;                  strength dexterity constitution intelligence willpower charisma
-;;                  darkvision-floor footprint-width footprint-height lifespan-years)
-;; 六个属性参数是**固定增减量**（可为负），不是千分比。
+;;                  strength dexterity constitution intelligence willpower charisma luck
+;;                  darkvision-cells footprint-width footprint-height lifespan-years)
+;; 七个属性参数是**固定增减量**（可为负），不是千分比。
+;;
+;; 本体三族的 luck 全填 0：幸运的 authoring 入口是本批次才补上的（此前
+;; script_race_api.rs 把它记为已知缺口），补上入口不等于要顺手引入一套
+;; 新的平衡设计。真正用到这个参数的已发货内容在
+;; mods/example_mod/gameplay.scm 的 examplemod:half_elf（幸运 +1）。
 ;;
 ;; 三个种族演示三种不同的修正取向：人类（无修正，种族设计里惯常的
-;; 「基准种族」）、矮人（体质向 + 暗视）、精灵（敏捷/智力向 + 长寿）。
+;; 「基准种族」）、矮人（体质向 + 暗视）、精灵（敏捷/智力向 + 长寿
+;; + 暗视）。
 ;; 具体数值不是本次迁移引入的平衡设计，是原 Rust 常量的原样搬运——
 ;; `crates/ll-mod/tests/base_mod_races.rs` 逐字段钉住它们，
 ;; `ll_mod::content_hash` 的值哈希覆盖同一批字段。
@@ -29,21 +35,32 @@
 ;; 的敌人，「杀了一个人类给多少经验」是一个真实存在、必须有答案的
 ;; 问题。
 
-;; 人类：无任何属性修正，无暗视，寿命 80 年。
+;; 暗视参数（第九个数字）此前是「光照千分比下限」，本批次改成
+;; 「**夜间视野格数下限**」——旧形态在本作的光照量纲下永远不可能生效：
+;; 矮人当时填的是 4，而午夜环境光是 100（ll_core::light::MIDNIGHT_LIGHT），
+;; 最暗的冬夜下雨也还有约 52，`max(52, 4)` 恒等于 52，矮人的暗视等于
+;; 不存在。下面三个数字因此是**新语义下重新裁定**的取值，不是旧值的
+;; 换算：0 表示未声明（按常人处理，落回 4 格默认值），非 0 就是这个
+;; 种族夜里实际看得见的格数（白天基准是 12 格）。
+;; 见 ll_world::light::sight_radius_at 与
+;; crates/ll-mod/tests/base_mod_darkvision.rs。
+
+;; 人类：无任何属性修正，未声明暗视（夜里按默认的 4 格），寿命 80 年。
 (register-race "lostland:human" "lostland:race.human.display_name"
-               0 0 0 0 0 0
+               0 0 0 0 0 0 0
                0 1 1 80)
 
-;; 矮人：力量 +1、体质 +2，暗视下限 4（明显高于全黑的 0、明显低于满
-;; 光照），寿命 250 年。
+;; 矮人：力量 +1、体质 +2，暗视 7 格（居于地下的种族，夜视三族最好，
+;; 但仍明显低于白天的 12 格），寿命 250 年。
 (register-race "lostland:dwarf" "lostland:race.dwarf.display_name"
-               1 0 2 0 0 0
-               4 1 1 250)
+               1 0 2 0 0 0 0
+               7 1 1 250)
 
-;; 精灵：敏捷 +2、智力 +1，无暗视，寿命 400 年。
+;; 精灵：敏捷 +2、智力 +1，暗视 6 格（好于常人、略逊于矮人），
+;; 寿命 400 年。
 (register-race "lostland:elf" "lostland:race.elf.display_name"
-               0 2 0 1 0 0
-               0 1 1 400)
+               0 2 0 1 0 0 0
+               6 1 1 400)
 
 ;; 击杀基准经验值——`ll_sim::experience::kill_experience` 的公式输入，
 ;; 不是玩家最终拿到的数字：最终经验 = max(1, 基准值 × 等级差倍率 /

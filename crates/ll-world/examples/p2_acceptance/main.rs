@@ -68,6 +68,13 @@ use ll_render::wgpu;
 use ll_world::fov::{VisibleSet, compute_fov};
 use ll_world::generate::{GenParams, build_zone_noise};
 use ll_world::light::{ambient_light, sight_radius_at};
+
+/// 「这个调用方不知道谁在看」时传给暗视参数的取值。
+///
+/// `0` 在 [`ll_world::light::sight_radius_at`] 里被解读成**未声明**
+/// 暗视，落回 [`ll_world::light::DEFAULT_NIGHT_SIGHT_RADIUS`]——本
+/// demo 不区分种族，行为与该函数长出这个参数之前逐格相同。
+const NO_DARKVISION: u32 = 0;
 use ll_world::overview::{ContinentField, continent_map, generate_continent_field};
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
@@ -477,7 +484,7 @@ impl AppHandler for Demo {
         // 状态」：缓存会与世界时钟失同步，表现为「白天却一片漆黑」
         // 这种极难复现的缺陷。
         let light = ambient_light(self.world.clock);
-        let radius = sight_radius_at(BASE_SIGHT_RADIUS, light);
+        let radius = sight_radius_at(BASE_SIGHT_RADIUS, light, NO_DARKVISION);
         // SurfaceWindow 假定视野范围内的区块都已经常驻——demo 世界已经
         // 在 Demo::new 里用 warm_all 整体预热过，前提成立，见其文档
         // 「前置条件与任务 14 的关系」。

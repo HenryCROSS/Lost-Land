@@ -803,7 +803,16 @@ fn write_race_fields(
         .expect("调用方已确认 is_defined，get 必返回 Some");
     hasher.write_namespaced_id(view.display_name_key);
     write_base_stats(hasher, view.stat_modifiers);
-    hasher.write_i64(i64::from(view.darkvision_floor));
+    // 刻意保持 `write_i64`（而不是随字段类型改成 `write_u64`）：暗视
+    // 从 `i32` 光照下限改成 `u32` 视野格数时，字段的**语义**变了，但
+    // 混进哈希的字节形状必须逐字节不变——同一个数值经 `i64::from` 与
+    // `u64::from` 写出的八个字节在非负区间上相同，而 `darkvision_cells`
+    // 恒非负。这让本批次不构成「新增哈希输入」，
+    // `CONTENT_HASH_ALGORITHM_VERSION` 因此不必递增（本批次改变的是
+    // 内容取值，那是 `content_hash_of("lostland")` 该变的东西，不是量
+    // 尺该变的东西——见该常量文档版本 12 末尾「注册新的内容条目本身
+    // 不需要动这个常量」一段同一条判据）。
+    hasher.write_i64(i64::from(view.darkvision_cells));
     hasher.write_u64(u64::from(view.footprint.0));
     hasher.write_u64(u64::from(view.footprint.1));
     hasher.write_u64(u64::from(view.lifespan_years));
@@ -1572,9 +1581,9 @@ mod tests {
     }
 
     /// 一份内部自洽、全部字段为固定占位值的种族属性——测试只关心
-    /// `darkvision_floor` 这一个字段是否驱动哈希变化时，用它避免每个
+    /// `darkvision_cells` 这一个字段是否驱动哈希变化时，用它避免每个
     /// 测试都重复拼一遍其余字段。
-    fn race_attrs(display_name: &str, darkvision_floor: i32) -> RaceAttrs {
+    fn race_attrs(display_name: &str, darkvision_cells: u32) -> RaceAttrs {
         RaceAttrs {
             display_name_key: id(display_name),
             stat_modifiers: BaseStats {
@@ -1586,7 +1595,7 @@ mod tests {
                 charisma: 0,
                 luck: 0,
             },
-            darkvision_floor,
+            darkvision_cells,
             footprint: (1, 1),
             lifespan_years: 80,
             xp_reward: 0,
@@ -1643,7 +1652,7 @@ mod tests {
         // 本次升级的核心验收：旧版"只追踪 id 集合"的哈希对这个场景
         // 完全无感（id 一个字符没变），值哈希必须能看见这条差异。
         // Arrange：两个 registry 各自注册同一个种族 id，唯一的差异是
-        // darkvision_floor 的取值。
+        // darkvision_cells 的取值。
         let mut registry_a = Registry::new();
         let index_a = registry_a.intern(id("yourmod:dwarf"));
         let mut race_a = RaceTable::new();
