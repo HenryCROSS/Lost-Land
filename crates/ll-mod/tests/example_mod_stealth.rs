@@ -69,6 +69,7 @@ use ll_mod::quest::QuestTable;
 use ll_mod::race::RaceTable;
 use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
+use ll_mod::script_behavior_api::BehaviorRuleCatalogs;
 use ll_mod::script_behavior_source::{PreparedBehaviorEngine, ScriptBehaviorSource};
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
@@ -584,6 +585,17 @@ fn guard_turns_with_profession(
         "guard-ai-tree",
         "examplemod",
         &handle.registry,
+        // 真实装载出来的四张表的快照——盗贼被动两分批次之后
+        // `guard-inspect-chance` 会向它们查询目标的「盘查意愿」。本文件
+        // 的目标都是占位种族/占位职业，一条 `InspectionSuspicion` 都
+        // 没有，因此本文件的既有断言逐条不受影响（那正是「没有这条被动
+        // 的人行为完全不变」这句话的可执行形式）。
+        BehaviorRuleCatalogs::snapshot(
+            &handle.race,
+            &handle.class,
+            &handle.trait_def,
+            &handle.item,
+        ),
         1,
     )
     .expect("真实 behavior.scm 应当能通过白名单并装载成功");

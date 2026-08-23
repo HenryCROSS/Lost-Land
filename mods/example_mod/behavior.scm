@@ -79,10 +79,29 @@
 (define GUARD_INSPECT_CHANCE_PERMILLE 500)
 (define GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED 50)
 
+;; 盗贼被动两分批次——项目所有者裁定「被动可以分为 2 种，不觉得可疑，
+;; 还有查不出东西」。**前一种落在这一行**：`actor-inspection-suspicion`
+;; 是本批次新增的运行期查询 API（crates/ll-mod/src/script_behavior_api.rs），
+;; 返回目标此刻的「盘查意愿」千分比乘数——1000 表示与常人无异，更小表示
+;; 卫兵更不容易起疑。它的值来自目标身上聚合出的
+;; RuleModifier::InspectionSuspicion（天赋/装备两路来源都算，走
+;; ll_sim::rule_modifier::agent_rule_modifiers 这个唯一聚合点）。
+;;
+;; **后一种（查不出东西）不在这份脚本里**：那一路是「盘查照常发起，
+;; 只是搜不出东西」，判定在 ll_sim::resolve::resolve_inspect（见
+;; RuleModifier::InspectionConcealment 文档）。两个被动分别落在链路的
+;; 两环，正是所有者「分为 2 种」这句裁定的形状。
+;;
+;; 潜行与被动①是**相乘**，不是二选一：两者回答的是不同的问题（这一刻
+;; 我藏没藏起来 vs 我这个人天生多不起眼），一个盗贼在潜行时理应两者都
+;; 生效。整数乘除，先乘后除，与本项目「百分比一律千分比、全程整数」的
+;; 既有纪律一致（ADR 0020 乙区）。
 (define (guard-inspect-chance target)
-  (if (actor-stealthed? target)
-      GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED
-      GUARD_INSPECT_CHANCE_PERMILLE))
+  (quotient (* (if (actor-stealthed? target)
+                   GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED
+                   GUARD_INSPECT_CHANCE_PERMILLE)
+               (actor-inspection-suspicion target))
+            1000))
 
 (define (guard-try-inspect)
   (if (self-has-profession? "lostland:guard")

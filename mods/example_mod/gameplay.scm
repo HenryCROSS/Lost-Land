@@ -33,6 +33,8 @@
 ;;   register-item-damage-category          crates/ll-mod/src/script_item_api.rs
 ;;   register-item-resistance              crates/ll-mod/src/script_item_api.rs
 ;;   register-trait-sneak-attack             crates/ll-mod/src/script_trait_api.rs
+;;   register-trait-inspection-suspicion     crates/ll-mod/src/script_trait_api.rs
+;;   register-trait-inspection-concealment   crates/ll-mod/src/script_trait_api.rs
 ;;   register-recipe-category                crates/ll-mod/src/script_recipe_category_api.rs
 ;;   recipe-category-requires-subclass!      crates/ll-mod/src/script_recipe_category_api.rs
 ;;   register-recipe                         crates/ll-mod/src/script_recipe_api.rs
@@ -394,6 +396,31 @@
 (register-trait "examplemod:cutpurse_training" "examplemod:cutpurse_training_display_name"
   (list "examplemod:backstab"))
 (register-class-trait "examplemod:rogue" "examplemod:cutpurse_training" 3)
+
+;; 盗贼被动两分批次：项目所有者裁定「被动可以分为 2 种，不觉得可疑，
+;; 还有查不出东西」——两种被动**都挂在上面这条已有的职业天赋上**
+;; （examplemod:cutpurse_training，盗贼职业 3 级解锁），不另造天赋、
+;; 不另造职业：那条天赋本来就叫「扒手训练」，这两条被动正是它该有的
+;; 内容，新造一条只会让同一个概念有两个真相源。
+;;
+;; ① 不觉得可疑（register-trait-inspection-suspicion）：卫兵**发起**
+;;    盘查的意愿降到两成（200‰ 乘数）。判定在**脚本侧**——
+;;    mods/example_mod/behavior.scm 的 guard-inspect-chance 通过新的
+;;    actor-inspection-suspicion 查询把它乘进那次掷骰。
+;; ② 查不出东西（register-trait-inspection-concealment）：卫兵照常
+;;    发起盘查，但身上**每一件**物品各有八成（800‰）不被看见。判定在
+;;    ll_sim::resolve::resolve_inspect（Effect::Inspect::items_seen）。
+;;
+;; 800 而不是 1000 是刻意的：1000 会让「逐件掷骰」与「一次判定决定
+;; 整份快照」这两种形状在真实内容上无法区分，而逐件正是本批次选定的
+;; 形状（理由见 RuleModifier::InspectionConcealment 文档）。
+;;
+;; 「3 级才解锁」在这里第二次派上用场：同一个盗贼 2 级没有这两条被动、
+;; 3 级才有——crates/ll-mod/tests/example_mod_rogue_passives.rs 用的正是
+;; 这一对作反例（ADR 0018「玩法层内容必须能从 mod 脚本注册，且要有真实
+;; mod 脚本为证」），不是靠单元测试自证。
+(register-trait-inspection-suspicion "examplemod:cutpurse_training" 200)
+(register-trait-inspection-concealment "examplemod:cutpurse_training" 800)
 
 ;; 温度系统批次（保暖）：knowledge 里「温度必须有真实消费者」这条要求
 ;; 的内容侧落点——两件保暖装备，各占一个**不同**的槽位（羊毛内衬占

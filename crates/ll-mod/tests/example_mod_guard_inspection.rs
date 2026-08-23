@@ -196,9 +196,20 @@ fn 视野内有目标时卫兵最终会发起盘查() {
     );
 
     let source_code = load_guard_behavior_source();
-    let mut source =
-        ScriptBehaviorSource::new(&source_code, "guard-ai-tree", "examplemod", &registry, 1)
-            .expect("真实 behavior.scm 应当能通过白名单并装载成功");
+    let mut source = ScriptBehaviorSource::new(
+        &source_code,
+        "guard-ai-tree",
+        "examplemod",
+        &registry,
+        // 本文件不装载 `mods/`（见 `intern_guard_profession` 文档），
+        // 因此也没有任何内容表可传——空快照让
+        // `actor-inspection-suspicion` 恒返回「与常人无异」，
+        // `guard-inspect-chance` 因此退回本批次之前的那个基础概率，
+        // 本文件的三条既有断言不受盗贼被动接线影响。
+        ll_mod::script_behavior_api::BehaviorRuleCatalogs::default(),
+        1,
+    )
+    .expect("真实 behavior.scm 应当能通过白名单并装载成功");
 
     // Act：推进到第一次盘查发生为止（50% 触发率，60 回合内几乎必然
     // 命中至少一次，(1/2)^60 可忽略不计）。
@@ -273,9 +284,20 @@ fn 隔墙的卫兵看不见玩家因而从不发起盘查() {
     }
 
     let source_code = load_guard_behavior_source();
-    let mut source =
-        ScriptBehaviorSource::new(&source_code, "guard-ai-tree", "examplemod", &registry, 1)
-            .expect("真实 behavior.scm 应当能通过白名单并装载成功");
+    let mut source = ScriptBehaviorSource::new(
+        &source_code,
+        "guard-ai-tree",
+        "examplemod",
+        &registry,
+        // 本文件不装载 `mods/`（见 `intern_guard_profession` 文档），
+        // 因此也没有任何内容表可传——空快照让
+        // `actor-inspection-suspicion` 恒返回「与常人无异」，
+        // `guard-inspect-chance` 因此退回本批次之前的那个基础概率，
+        // 本文件的三条既有断言不受盗贼被动接线影响。
+        ll_mod::script_behavior_api::BehaviorRuleCatalogs::default(),
+        1,
+    )
+    .expect("真实 behavior.scm 应当能通过白名单并装载成功");
 
     // Act
     let intents = decide_over_ticks(&mut source, &mut world, guard, 60);
@@ -335,6 +357,7 @@ fn 相同种子的两次决策序列完全相同() {
         "guard-ai-tree",
         "examplemod",
         &registry,
+        ll_mod::script_behavior_api::BehaviorRuleCatalogs::default(),
         7,
     )
     .expect("真实 behavior.scm 应当能通过白名单并装载成功");
@@ -344,6 +367,7 @@ fn 相同种子的两次决策序列完全相同() {
         "guard-ai-tree",
         "examplemod",
         &registry,
+        ll_mod::script_behavior_api::BehaviorRuleCatalogs::default(),
         7,
     )
     .expect("真实 behavior.scm 应当能通过白名单并装载成功");

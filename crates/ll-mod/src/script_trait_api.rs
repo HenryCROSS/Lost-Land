@@ -18,7 +18,7 @@
 
 use std::cell::RefCell;
 
-use ll_core::ident::NamespacedId;
+use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_script::host::ScriptEngine;
 
 use crate::active_registry::with_active_registry;
@@ -47,7 +47,9 @@ pub fn take_active_target() -> TraitTable {
 }
 
 /// 把 `register-trait`/`register-trait-resource-pool`/
-/// `register-trait-resource-pool-by-level` 注册进 `engine`。
+/// `register-trait-resource-pool-by-level`/`register-trait-resistance`/
+/// `register-trait-sneak-attack`/`register-trait-inspection-suspicion`/
+/// `register-trait-inspection-concealment` 注册进 `engine`。
 pub fn register_trait_api(engine: &mut ScriptEngine) {
     engine.register_fn("register-trait", register_trait);
     engine.register_fn("register-trait-resource-pool", register_trait_resource_pool);
@@ -57,6 +59,14 @@ pub fn register_trait_api(engine: &mut ScriptEngine) {
     );
     engine.register_fn("register-trait-resistance", register_trait_resistance);
     engine.register_fn("register-trait-sneak-attack", register_trait_sneak_attack);
+    engine.register_fn(
+        "register-trait-inspection-suspicion",
+        register_trait_inspection_suspicion,
+    );
+    engine.register_fn(
+        "register-trait-inspection-concealment",
+        register_trait_inspection_concealment,
+    );
 }
 
 /// `(register-trait id display-name-key granted-skills)`。
@@ -352,11 +362,7 @@ fn do_register_trait_resistance(
     damage_category_id: &str,
     multiplier_permille: i64,
 ) -> Result<bool, String> {
-    let parsed_trait_id = NamespacedId::parse(trait_id)
-        .map_err(|err| format!("非法内容标识符 {trait_id:?}：{err}"))?;
-    let Some(trait_index) = registry.get(&parsed_trait_id) else {
-        return Err(format!("天赋 {trait_id:?} 尚未通过 register-trait 注册"));
-    };
+    let trait_index = resolve_registered_trait(registry, trait_id)?;
     let parsed_category_id = NamespacedId::parse(damage_category_id)
         .map_err(|err| format!("非法内容标识符 {damage_category_id:?}：{err}"))?;
     let Some(category_index) = registry.get(&parsed_category_id) else {
@@ -441,11 +447,7 @@ fn do_register_trait_sneak_attack(
     luck_chance_permille_per_point: i64,
     extra_damage: i64,
 ) -> Result<bool, String> {
-    let parsed_trait_id = NamespacedId::parse(trait_id)
-        .map_err(|err| format!("非法内容标识符 {trait_id:?}：{err}"))?;
-    let Some(trait_index) = registry.get(&parsed_trait_id) else {
-        return Err(format!("天赋 {trait_id:?} 尚未通过 register-trait 注册"));
-    };
+    let trait_index = resolve_registered_trait(registry, trait_id)?;
 
     table
         .add_rule_modifier(
@@ -457,6 +459,143 @@ fn do_register_trait_sneak_attack(
         )
         .map(|()| true)
         .map_err(|err: TraitError| err.to_string())
+}
+
+/// `(register-trait-inspection-suspicion trait-id multiplier-permille)`
+/// ——追加声明「这个天赋让别人不那么想搜它主人的身」（盗贼被动两分
+/// 批次新增，落地项目所有者裁定里的**被动①「不觉得可疑」**），与
+/// [`register_trait_resistance`]/[`register_trait_sneak_attack`] 同一个
+/// 「新增能力用新函数」模式：不改 `register-trait` 已有的三参数签名。
+///
+/// - `trait-id`：已经通过 `register-trait` 注册过的完整命名空间标识符
+///   字符串——目标必须已存在，同 [`register_trait_resistance`] 一条
+///   ADR 0017「注册期完整校验」纪律。
+/// - `multiplier-permille`：千分比乘数（`1000` = 与常人无异，`0` =
+///   永远不会被怀疑，`500` = 只有一半的概率被盯上），见
+///   [`RuleModifier::InspectionSuspicion`] 文档。负值钳到零，同
+///   [`register_trait_resistance`] 对 `multiplier-permille` 的既有纪律
+///   （负的「盘查意愿」没有设计依据）。
+///
+/// **不在这里做上限校验**：大于 `1000` 是合法声明——「更容易被怀疑」
+/// 是一个真实可用的负面天赋/诅咒装备语义，与抗性允许 `2000`（双倍
+/// 伤害）是同一条既有取舍。
+///
+/// **追加，不是覆盖**——理由同 [`register_trait_resistance`] 文档
+/// 「追加，不是覆盖」一节；多条命中时的取舍规则（按 `origin` 升序取
+/// 第一条，不取乘积）在消费侧（`ll_sim::rule_modifier::inspection_suspicion_permille`）
+/// 处理，不是注册期的职责。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_trait_inspection_suspicion(
+    trait_id: String,
+    multiplier_permille: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err(
+                    "register-trait-inspection-suspicion 在没有活跃天赋表的窗口内被调用"
+                        .to_string(),
+                );
+            };
+            do_register_trait_inspection_suspicion(registry, table, &trait_id, multiplier_permille)
+        })
+    })
+}
+
+/// [`register_trait_inspection_suspicion`] 的纯函数核心，方便单元测试
+/// 不必绕过 `thread_local!`，理由同 [`do_register_trait_sneak_attack`]。
+fn do_register_trait_inspection_suspicion(
+    registry: &Registry,
+    table: &mut TraitTable,
+    trait_id: &str,
+    multiplier_permille: i64,
+) -> Result<bool, String> {
+    let trait_index = resolve_registered_trait(registry, trait_id)?;
+    table
+        .add_rule_modifier(
+            trait_index,
+            RuleModifier::InspectionSuspicion {
+                multiplier_permille: multiplier_permille.max(0) as i32,
+            },
+        )
+        .map(|()| true)
+        .map_err(|err: TraitError| err.to_string())
+}
+
+/// `(register-trait-inspection-concealment trait-id conceal-permille)`
+/// ——追加声明「这个天赋让搜身的人看不到它主人身上的东西」（盗贼被动
+/// 两分批次新增，落地所有者裁定里的**被动②「查不出东西」**）。
+///
+/// - `trait-id`：同 [`register_trait_inspection_suspicion`]。
+/// - `conceal-permille`：**每一件**物品各自不被看见的千分比概率
+///   （`0` = 藏不住任何东西，`1000` = 什么都查不出来），逐件掷骰的
+///   完整理由见 [`RuleModifier::InspectionConcealment`] 文档。
+///
+/// 与 [`register_trait_inspection_suspicion`] 的上限取舍**不同**：本
+/// 参数是一个**概率**，超过 `1000` 没有任何可表达的语义（不像「更容易
+/// 被怀疑」那样有真实用途），因此这里**两端都钳**（`0..=1000`）。
+/// 这不是两个函数各写各的：钳位判据由参数是「乘数」还是「概率」决定，
+/// 与 `crate::script_terrain_api::do_register_terrain` 对 `move_cost`
+/// 负值「数值层面取舍而非拒绝」是同一条既有纪律。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_trait_inspection_concealment(
+    trait_id: String,
+    conceal_permille: i64,
+) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err(
+                    "register-trait-inspection-concealment 在没有活跃天赋表的窗口内被调用"
+                        .to_string(),
+                );
+            };
+            do_register_trait_inspection_concealment(registry, table, &trait_id, conceal_permille)
+        })
+    })
+}
+
+/// [`register_trait_inspection_concealment`] 的纯函数核心，理由同上。
+fn do_register_trait_inspection_concealment(
+    registry: &Registry,
+    table: &mut TraitTable,
+    trait_id: &str,
+    conceal_permille: i64,
+) -> Result<bool, String> {
+    let trait_index = resolve_registered_trait(registry, trait_id)?;
+    table
+        .add_rule_modifier(
+            trait_index,
+            RuleModifier::InspectionConcealment {
+                conceal_permille: conceal_permille.clamp(0, 1000) as i32,
+            },
+        )
+        .map(|()| true)
+        .map_err(|err: TraitError| err.to_string())
+}
+
+/// 「把脚本给的天赋 id 字符串换回一个**已经注册过**的索引」——
+/// 本模块四个 `register-trait-*` 追加函数各自都要先做这一步（ADR 0017
+/// 「注册期完整校验」：目标天赋必须已存在，不允许静默创建一条指向
+/// 不存在天赋的悬空声明）。
+///
+/// # ADR 0021：为什么这三行值得抽出来
+///
+/// 判据是「有没有一份算法要被多个调用方共用」。有：解析 →
+/// `registry.get` → 找不到就用同一句话报错，这三步在四个追加函数里
+/// 逐字相同，且**错误信息的措辞本身就是接口的一部分**（mod 作者靠它
+/// 定位问题）——四份副本各自漂移的第一个症状就是同一类错误在不同函数
+/// 里说法不一。抽出来之前只有两个调用方，本批次要再添两个。
+fn resolve_registered_trait(registry: &Registry, trait_id: &str) -> Result<ContentIndex, String> {
+    let parsed_trait_id = NamespacedId::parse(trait_id)
+        .map_err(|err| format!("非法内容标识符 {trait_id:?}：{err}"))?;
+    registry
+        .get(&parsed_trait_id)
+        .ok_or_else(|| format!("天赋 {trait_id:?} 尚未通过 register-trait 注册"))
 }
 
 #[cfg(test)]
@@ -1053,5 +1192,171 @@ mod tests {
         // Cleanup。
         take_active_target();
         crate::active_registry::take_active_registry();
+    }
+
+    /// 帮手：造一个「注册表 + 天赋表里已有一条本体天赋」的起点，供
+    /// 下面四条盘查被动测试共用，理由同本模块其余 `do_*` 纯函数测试。
+    fn trait_fixture(raw_id: &str) -> (Registry, TraitTable, ContentIndex) {
+        let mut registry = Registry::new();
+        let index = registry.intern(NamespacedId::parse(raw_id).unwrap());
+        let mut table = TraitTable::new();
+        table
+            .define(
+                index,
+                TraitAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:trait.display").unwrap(),
+                    granted_skills: Vec::new(),
+                    stat_modifiers: Vec::new(),
+                    rule_modifiers: Vec::new(),
+                    granted_resource_pools: Vec::new(),
+                },
+            )
+            .expect("先注册天赋本体");
+        (registry, table, index)
+    }
+
+    #[test]
+    fn 合法的盘查意愿声明写进天赋表() {
+        // Arrange
+        let (registry, mut table, index) = trait_fixture("yourmod:cutpurse");
+
+        // Act
+        let result =
+            do_register_trait_inspection_suspicion(&registry, &mut table, "yourmod:cutpurse", 200);
+
+        // Assert
+        assert_eq!(result, Ok(true));
+        assert_eq!(
+            table.get(index).unwrap().rule_modifiers,
+            &[RuleModifier::InspectionSuspicion {
+                multiplier_permille: 200,
+            }]
+        );
+    }
+
+    #[test]
+    fn 盘查意愿的负值钳到零上限不设限() {
+        // 两端取舍刻意不同：负的「意愿乘数」没有设计依据（钳到零），
+        // 大于 1000 是合法声明（「更容易被怀疑」是真实可用的负面语义），
+        // 见 register_trait_inspection_suspicion 文档。
+        // Arrange
+        let (registry, mut table, index) = trait_fixture("yourmod:cursed");
+
+        // Act
+        do_register_trait_inspection_suspicion(&registry, &mut table, "yourmod:cursed", -5)
+            .expect("负值应当被钳位而不是拒绝整次调用");
+        do_register_trait_inspection_suspicion(&registry, &mut table, "yourmod:cursed", 2500)
+            .expect("大于 1000 是合法声明");
+
+        // Assert：追加，不是覆盖——两条都在。
+        assert_eq!(
+            table.get(index).unwrap().rule_modifiers,
+            &[
+                RuleModifier::InspectionSuspicion {
+                    multiplier_permille: 0,
+                },
+                RuleModifier::InspectionSuspicion {
+                    multiplier_permille: 2500,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn 盘查藏匿率两端都钳到零到一千() {
+        // 与上一条对照：藏匿率是**概率**，超过 1000 没有可表达的语义，
+        // 因此两端都钳。
+        // Arrange
+        let (registry, mut table, index) = trait_fixture("yourmod:smuggler");
+
+        // Act
+        do_register_trait_inspection_concealment(&registry, &mut table, "yourmod:smuggler", -1)
+            .expect("负值钳位");
+        do_register_trait_inspection_concealment(&registry, &mut table, "yourmod:smuggler", 9999)
+            .expect("超上限钳位");
+
+        // Assert
+        assert_eq!(
+            table.get(index).unwrap().rule_modifiers,
+            &[
+                RuleModifier::InspectionConcealment {
+                    conceal_permille: 0,
+                },
+                RuleModifier::InspectionConcealment {
+                    conceal_permille: 1000,
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn 目标天赋尚未注册时两个盘查被动注册都返回错误而不panic() {
+        // Arrange
+        let registry = Registry::new();
+        let mut table = TraitTable::new();
+
+        // Act & Assert
+        assert!(
+            do_register_trait_inspection_suspicion(
+                &registry,
+                &mut table,
+                "yourmod:never_registered",
+                200
+            )
+            .is_err()
+        );
+        assert!(
+            do_register_trait_inspection_concealment(
+                &registry,
+                &mut table,
+                "yourmod:never_registered",
+                800
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn 通过线程局部注册目标脚本能真正调用两个盘查被动注册函数() {
+        // 端到端：真实脚本源码经 ScriptEngine::load_source 调用这两个
+        // 新函数，不是直接在 Rust 里调 do_*——与
+        // `通过线程局部注册目标脚本能真正调用register_trait_sneak_attack`
+        // 同一条既有纪律。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+        register_trait_api(&mut engine);
+        let (registry, table, _) = trait_fixture("yourmod:cutpurse");
+        crate::active_registry::set_active_registry(registry);
+        set_active_target(table);
+
+        // Act
+        let result = engine.load_source(
+            concat!(
+                r#"(register-trait-inspection-suspicion "yourmod:cutpurse" 200)"#,
+                "
+",
+                r#"(register-trait-inspection-concealment "yourmod:cutpurse" 800)"#,
+            )
+            .to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok(), "{result:?}");
+        let registry = crate::active_registry::take_active_registry();
+        let table = take_active_target();
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:cutpurse").unwrap())
+            .unwrap();
+        assert_eq!(
+            table.get(index).unwrap().rule_modifiers,
+            &[
+                RuleModifier::InspectionSuspicion {
+                    multiplier_permille: 200,
+                },
+                RuleModifier::InspectionConcealment {
+                    conceal_permille: 800,
+                },
+            ]
+        );
     }
 }
