@@ -288,6 +288,7 @@ fn spawn_agent(world: &mut WorldState, pos: (i32, i32), scene: &Scene) -> Entity
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: scene.subclasses.clone(),
         active_stat_modifiers: BTreeMap::new(),

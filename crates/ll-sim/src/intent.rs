@@ -543,6 +543,61 @@ pub enum Intent {
         /// 在哪一类里试——指向配方类别表。
         category: ContentIndex,
     },
+    /// 鉴定背包里的一种未鉴定物品（未鉴定物品批次）——项目所有者裁定
+    /// 「可以加入未鉴定物品，通过鉴定获取属性和说明，同时就能获得经验」
+    /// 的落点。同时也是**开盲盒**的动作（盲盒批次），见
+    /// `crate::resolve::resolve_identify`。
+    ///
+    /// # 为什么是新变体，不复用 [`Intent::Read`]
+    ///
+    /// 两者的字段形状确实相同（`{ actor, def }`），但 ADR 0021 明确说
+    /// 抽象的理由是「有算法可共享」而**不是**形状对称。这里逐条核过，
+    /// 可共享的算法几乎为零：
+    ///
+    /// | | `Read` | `Identify` |
+    /// |---|---|---|
+    /// | 准入条件 | `ItemRule::taught_recipes` 非空 | `ItemRule::requires_identification` |
+    /// | 一次性闸门读哪个字段 | `Agent::known_recipes` | `Agent::identified_items` |
+    /// | 产出效果 | `Effect::LearnRecipe`（可能多条） | `Effect::IdentifyItem`（恰一条）+ 盲盒那一路 |
+    /// | 物品去向 | 恒留着 | 普通鉴定留着，**盲盒被消耗** |
+    ///
+    /// 四行里没有一行相同。真正共享的只有「查 agent」「背包里有没有这
+    /// 一种」「按一次普通行动计费」三段，而那三段**已经**是共享的——
+    /// 它们分别是 `world.actors.get`、一行 `iter().any`、
+    /// `action_cost`/`schedule_after`，本来就不属于任何一个意图变体。
+    /// 把两者合成一个 `Study { actor, def }` 变体的实际后果是
+    /// `resolve` 里立刻要按「这件东西是书还是未鉴定物」再分一次流——
+    /// 也就是把刚刚合并掉的那个区分原样搬到函数体里，还多背一层
+    /// 「一件既需要鉴定、又能教配方的东西该走哪条」的歧义。
+    ///
+    /// # 前置条件（技能/副职/工具）：本批次**刻意没有**
+    ///
+    /// `mods/lostland/subclasses.json5` 的副职名册里有「鉴定」这个候选
+    /// 方向，但它还没有任何实现。本批次不为它现造一个前置闸门：那会在
+    /// 副职真正落地之前先把闸门的形状（查副职？查技能？查手里的工具？）
+    /// 拍死一次，而这三者是三套不同的接线。
+    ///
+    /// **接入点写在这里**，供副职批次直接接上：闸门该加在
+    /// `crate::resolve::resolve_identify` 第 ② 步与第 ③ 步之间，判据形状
+    /// 照抄 `crate::resolve::resolve_experiment` 第 ② 步那三行（读
+    /// `RecipeCatalog::category_required_subclasses`、与
+    /// `agent.subclasses` 求交集）——那是仓库里唯一一处已经落地的副职
+    /// 闸门。
+    ///
+    /// # 输入映射
+    ///
+    /// 同 [`Intent::Read`]，见其文档最后一节：**目前没有任何键位产出
+    /// 者**，[`intent_from_input`] 至今只映射 `Move`/`Wait` 两种，十余个
+    /// 玩法意图一个都没绑键，输入映射层整体尚未展开——不是本变体特有的
+    /// 缺口。验收证据走测试里直接构造本变体经 [`crate::turn::TurnEngine`]
+    /// 提交（见 `crates/ll-mod/tests/base_mod_identification.rs`）。
+    Identify {
+        /// 发起者，同时是物品的持有者与知识（与经验）的去处。
+        actor: EntityId,
+        /// 要鉴定的那一**种**东西——粒度是种类不是某一堆，见
+        /// [`ll_world::entity::Agent::identified_items`] 文档。
+        def: ContentIndex,
+    },
 }
 
 impl Intent {
@@ -575,7 +630,8 @@ impl Intent {
             | Intent::LearnSkill { actor, .. }
             | Intent::AbandonSubclass { actor, .. }
             | Intent::Read { actor, .. }
-            | Intent::Experiment { actor, .. } => actor,
+            | Intent::Experiment { actor, .. }
+            | Intent::Identify { actor, .. } => actor,
         }
     }
 }

@@ -205,6 +205,53 @@ pub struct ItemRule {
     /// 属性，与「可装备」「有使用效果」「带哪些标签」是同一类属性，走
     /// 同一张表的同一套追加式注册函数。
     pub taught_recipes: Vec<ContentIndex>,
+    /// 这件物品需要先鉴定才认得（未鉴定物品批次）——
+    /// `crate::resolve::resolve_identify` 的准入判断读的就是它，`false`
+    /// （多数物品的既有情形）表示 `crate::intent::Intent::Identify` 对它
+    /// 静默无效。完整论证见 `ll_mod::item::ItemDef::requires_identification`。
+    ///
+    /// # 为什么这一条**是**独立的布尔，与 `taught_recipes` 不同
+    ///
+    /// [`Self::taught_recipes`] 文档「为什么『可不可读』不是一个独立的
+    /// 布尔字段」那条论证在这里**不成立**，因此这里的选择不是不一致：
+    /// 那里有一个天然的空/非空载荷（教哪些配方）可以兼职表达可读性；
+    /// 「需不需要鉴定」没有任何载荷——鉴定不产出任何列表，它揭示的正是
+    /// 物品**已有的**全部字段。硬要拿 [`Self::study_experience`] 兼职
+    /// （「经验非零 = 需要鉴定」）会立刻绑死两件本该独立的事：一件需要
+    /// 鉴定但学不到东西的破烂就无法表达了。
+    pub requires_identification: bool,
+    /// 鉴定或研读这件物品一次值多少经验——`resolve_identify` 与
+    /// `crate::resolve::resolve_read` 共用的同一个输入，`0` 表示研究它
+    /// 学不到任何东西。完整论证见 `ll_mod::item::ItemDef::study_experience`。
+    pub study_experience: i64,
+    /// 盲盒产出池（盲盒批次）——空列表（多数物品的既有情形）表示这件
+    /// 物品不是盲盒。完整论证见 `ll_mod::item::ItemDef::blind_box_pool`，
+    /// **包括其中那条「给盲盒写配方会打开经验水龙头」的警告**。
+    pub blind_box_pool: Vec<BlindBoxEntry>,
+}
+
+/// 盲盒池里的一条候选：产出哪件物品、权重多少（盲盒批次）。
+///
+/// # 为什么带权重，不是均匀抽
+///
+/// 均匀抽等于宣布「所有候选一样常见」，而盲盒这个玩法的全部意思就是
+/// 「多数时候开出普通货，偶尔开出好东西」——没有权重就没有稀有度，盒子
+/// 退化成一个换皮的随机材料袋。权重的编码与选取算法**照抄仓库里既有的
+/// 那一套**（[`ll_world::weather::weather_kind_at`] 的
+/// `WeatherDef::season_weights`：权重求和 → `DetRng::gen_range(总和)`
+/// → 沿同一顺序前缀和 walk），不另发明：那套手法已经把 C5（遍历顺序
+/// 必须确定）与「权重全为 0 怎么办」两件事都答过了。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlindBoxEntry {
+    /// 产出哪一件物品，指向物品表。**必须已注册**（注册期校验，理由同
+    /// `ll_mod::item::ItemDef::taught_recipes`「跨表引用由谁校验」：拼错一个 id 的
+    /// 症状是这个盒子静默少一档产出，是最难查的一类内容缺陷）。
+    pub item: ContentIndex,
+    /// 一次产出几个——恒 ≥ 1，注册期校验。
+    pub count: u32,
+    /// 相对权重，恒 ≥ 1（注册期校验）：0 权重的候选等于没写，与其让它
+    /// 静默永不出现，不如当场报错。
+    pub weight: u32,
 }
 
 /// `resolve` 依赖的最小「物品定义来源」接口——与

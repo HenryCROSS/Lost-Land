@@ -112,6 +112,7 @@ fn spawn_agent(world: &mut WorldState, race: ContentIndex, level: i32) -> Entity
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),

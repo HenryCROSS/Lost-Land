@@ -1,4 +1,4 @@
-//! 端到端验证：本体二十四件物品、九条配方、五个配方类别真的由
+//! 端到端验证：本体二十七件物品、九条配方、五个配方类别真的由
 //! `mods/lostland/items.json5` 与 `mods/lostland/crafting.json5` 注册，
 //! 且**逐字段**与那两个文件的声明一致。
 //!
@@ -225,15 +225,18 @@ fn 本体物品的id清单不多不少() {
         "lostland:oak_buckler",
         "lostland:raw_meat",
         "lostland:roast_meat",
+        "lostland:sealed_relic_box",
         "lostland:smith_hammer",
+        "lostland:tarnished_signet",
         "lostland:traveler_ring",
+        "lostland:unmarked_phial",
         "lostland:wool_gloves",
     ]
     .into_iter()
     .map(str::to_string)
     .collect();
     assert_eq!(actual, expected);
-    assert_eq!(actual.len(), 24);
+    assert_eq!(actual.len(), 27);
 }
 
 #[test]

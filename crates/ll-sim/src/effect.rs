@@ -889,6 +889,40 @@ pub enum Effect {
         /// 学会了哪条配方，指向配方表。
         recipe: ContentIndex,
     },
+    /// 把一个物品**种类**加进 [`ll_world::entity::Agent::identified_items`]
+    /// （未鉴定物品批次）——项目所有者裁定「通过鉴定获取属性和说明」
+    /// 在效果层唯一的落点。
+    ///
+    /// # 为什么不复用 [`Effect::LearnRecipe`]
+    ///
+    /// 目标字段不同（`identified_items` vs `known_recipes`），且两个
+    /// `ContentIndex` 指向的是**不同的表**（物品表 vs 配方表）。复用会
+    /// 让存档重映射那一侧彻底失去判断依据：`ll_content::remap` 只有一个
+    /// 索引、没有类型标签，无从知道该按 `ContentKind::Item` 还是
+    /// `ContentKind::Recipe` 去解析——这正是
+    /// [`ll_world::entity::Agent::known_recipes`] 文档「复用
+    /// `unlocked_skills` 是一次静默的概念污染」逐字相同的那条论证，
+    /// 换个方向再次成立。
+    ///
+    /// # `apply` 不做任何判断
+    ///
+    /// 与 [`Effect::LearnRecipe`] 同一条形状：去重（已经认识就不再加
+    /// 一份）在产出侧判完——`crate::resolve::resolve_identify` 先过滤掉
+    /// `agent.identified_items.contains(...)` 才产出效果，不满足就一条
+    /// 效果都不产出。`apply` 收到这条效果时是无条件的 `push`。
+    ///
+    /// # 盲盒不走这条效果
+    ///
+    /// 开盲盒**不**把盒子写进已鉴定集合（盒子被消耗了，「认识一种已经
+    /// 不在世上的东西」没有意义），它产出的是
+    /// [`Effect::ConsumeInventoryItem`] + [`Effect::MergeIntoInventory`] +
+    /// [`Effect::GrantExperience`] 三条，见 `resolve_identify` 文档。
+    IdentifyItem {
+        /// 完成鉴定的实体。
+        actor: EntityId,
+        /// 认出了哪一**种**物品，指向物品表。
+        def: ContentIndex,
+    },
 }
 
 /// 「这一堆物品此刻放在这个实体身上的哪里」——[`InspectedItem`] 用来

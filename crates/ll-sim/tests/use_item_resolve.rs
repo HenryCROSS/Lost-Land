@@ -86,6 +86,7 @@ fn spawn_agent(world: &mut WorldState, health: i32, inventory: Vec<ItemStack>) -
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
@@ -113,6 +114,9 @@ fn potion_with_effect(effect: SkillEffect) -> (ContentIndex, FakeItems) {
             ItemRule {
                 wear_channels: WearChannels::NONE,
                 taught_recipes: Vec::new(),
+                requires_identification: false,
+                study_experience: 0,
+                blind_box_pool: Vec::new(),
                 stack_limit: 10,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
@@ -280,6 +284,9 @@ fn 没有use_effect的物品使用后不产出任何效果() {
             ItemRule {
                 wear_channels: WearChannels::NONE,
                 taught_recipes: Vec::new(),
+                requires_identification: false,
+                study_experience: 0,
+                blind_box_pool: Vec::new(),
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),

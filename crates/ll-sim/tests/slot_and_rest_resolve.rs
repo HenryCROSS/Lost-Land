@@ -140,6 +140,7 @@ fn spawn_agent(
         resting,
         unlocked_skills: unlocked_skill.into_iter().collect(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),

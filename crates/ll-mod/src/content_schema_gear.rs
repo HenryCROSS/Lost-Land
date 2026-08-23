@@ -30,7 +30,7 @@ use ll_core::ident::ContentIndex;
 use ll_core::scaled::Milli;
 use ll_sim::combat::Penetration;
 use ll_sim::formula::{FormulaDef, FormulaOp};
-use ll_sim::item::{EquipSlot, SlotMask, StatBonus, StatTarget};
+use ll_sim::item::{BlindBoxEntry, EquipSlot, SlotMask, StatBonus, StatTarget};
 use ll_sim::resource_pool::{
     CapacityFormula, RegenRule, ResourcePoolGrant, ResourcePoolShape, RestRecoveryAmount,
 };
@@ -750,6 +750,32 @@ pub struct RawItem {
     /// 读这件物品能学会的配方，**必须是已注册的配方**，缺省无。
     #[serde(default)]
     pub taught_recipes: Vec<String>,
+    /// 这件物品要不要先鉴定才认得，缺省 `false`（一眼认得）。见
+    /// [`crate::item::ItemDef::requires_identification`]。
+    #[serde(default)]
+    pub requires_identification: bool,
+    /// 鉴定或研读这件物品一次给多少经验，缺省 `0`。恒非负。见
+    /// [`crate::item::ItemDef::study_experience`]。
+    #[serde(default)]
+    pub study_experience: i64,
+    /// 盲盒产出池，缺省空（这件物品不是盲盒）。非空时这件物品**必须
+    /// 同时**声明 `requires_identification: true`（否则没有任何动作能
+    /// 打开它），注册期硬校验。见
+    /// [`crate::item::ItemDef::blind_box_pool`]。
+    #[serde(default)]
+    pub blind_box_pool: Vec<RawBlindBoxEntry>,
+}
+
+/// 盲盒产出池里的一条候选——对应 [`ll_sim::item::BlindBoxEntry`]。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawBlindBoxEntry {
+    /// 产出物品的完整标识符，**必须是已注册的物品**。
+    pub item: String,
+    /// 一次产出几个，恒 ≥ 1。
+    pub count: u32,
+    /// 相对权重，恒 ≥ 1。
+    pub weight: u32,
 }
 
 /// 把一批物品写进注册表与物品表。
@@ -795,6 +821,23 @@ fn define_one_item(registry: &mut Registry, table: &mut ItemTable, item: &RawIte
     {
         return Err(format!("耐久上限 {durability} 非法（必须 >= 0）"));
     }
+    // 研究经验恒非负，与 `RaceDef::xp_reward` 的注册期校验逐字同一条
+    // 先例：负经验没有任何设计含义，只会是笔误。
+    if item.study_experience < 0 {
+        return Err(format!(
+            "研究经验 {} 非法（必须 >= 0）",
+            item.study_experience
+        ));
+    }
+    // 盲盒必须同时需要鉴定——否则这个盒子声明了一池产出却没有任何动作
+    // 能打开它，症状是「这件东西什么都不做」，正是注册期该拦下的那类
+    // 静默内容缺陷（ADR 0017）。
+    if !item.blind_box_pool.is_empty() && !item.requires_identification {
+        return Err(
+            "声明了 blind_box_pool 的物品必须同时 requires_identification: true——否则没有任何动作能打开这个盒子"
+                .to_string(),
+        );
+    }
 
     table
         .define(
@@ -817,6 +860,12 @@ fn define_one_item(registry: &mut Registry, table: &mut ItemTable, item: &RawIte
                 rule_modifiers: Vec::new(),
                 tags: Vec::new(),
                 taught_recipes: Vec::new(),
+                blind_box_pool: Vec::new(),
+                // 这两条**不**留空：它们没有任何跨表引用要校验，因此
+                // 不需要一条单独的 `set_*` 入口，见
+                // `crate::item::ItemAttrs::requires_identification`。
+                requires_identification: item.requires_identification,
+                study_experience: item.study_experience,
             },
         )
         .map_err(|err: ItemError| err.to_string())
@@ -916,6 +965,41 @@ fn apply_item_extras(
         }
         table
             .add_taught_recipe(index, recipe_index)
+            .map_err(to_err)?;
+    }
+
+    // 盲盒产出池——跨表校验与上面 `taught_recipes` 那一段逐行同构：
+    // 候选必须是一件真的登记在物品表里的物品，拼错一个 id 的症状是
+    // 「这个盒子静默少一档产出」。
+    for raw in &item.blind_box_pool {
+        let product = required_id(registry, &raw.item, "物品")?;
+        if !table.is_defined(product) {
+            return Err(format!(
+                "{:?} 是一个已注册的内容标识符，但它不是物品（没有登记在物品表里）",
+                raw.item
+            ));
+        }
+        // 一个盲盒不能开出它自己——效果顺序的硬约束，不是风格偏好：
+        // `resolve_identify` 产出的 `ConsumeInventoryItem` 与
+        // `MergeIntoInventory` 按同一对 `(def, durability)` 定位同一堆，
+        // 而后者的结果是在**消耗之前**的背包上算出来的，自产出的盒子会
+        // 让这两条效果互相抵消，症状是「开了个盒子，什么都没发生」。
+        // 拦在注册期，结算侧就不需要一条只为一种病态内容存在的分支。
+        if product == index {
+            return Err(format!(
+                "盲盒 {:?} 把自己列进了产出池——开出自己没有意义，且会让消耗与产出两条效果互相抵消",
+                item.id
+            ));
+        }
+        table
+            .add_blind_box_entry(
+                index,
+                BlindBoxEntry {
+                    item: product,
+                    count: raw.count,
+                    weight: raw.weight,
+                },
+            )
             .map_err(to_err)?;
     }
 
@@ -1031,6 +1115,129 @@ mod tests {
     use super::*;
     use ll_core::ident::NamespacedId;
 
+    /// 造一件除指定字段外全部取默认值的物品声明——三条鉴定相关注册期
+    /// 校验共用，避免每条测试各抄一遍十六个字段。
+    fn raw_item(id: &str, requires_identification: bool, study_experience: i64) -> RawItem {
+        RawItem {
+            id: id.to_string(),
+            display_name_key: format!("{id}.name"),
+            stack_limit: 1,
+            base_weight: 50,
+            base_price: 2000,
+            max_durability: None,
+            equip_slots: Vec::new(),
+            stat_bonuses: Vec::new(),
+            use_effect: None,
+            penetration: None,
+            damage_formula: None,
+            damage_category: None,
+            resistances: Vec::new(),
+            tags: Vec::new(),
+            taught_recipes: Vec::new(),
+            requires_identification,
+            study_experience,
+            blind_box_pool: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn 负数研究经验被拒绝() {
+        // ADR 0017「注册期完整校验」——负经验没有任何设计含义，只会是
+        // 笔误，与 `RaceDef::xp_reward < 0` 同一条既有先例。
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        let item = raw_item("m:relic", true, -1);
+
+        // Act
+        let result = define_one_item(&mut registry, &mut table, &item);
+
+        // Assert
+        assert!(result.is_err(), "负数研究经验必须当场报错");
+    }
+
+    #[test]
+    fn 声明了盲盒池却不需要鉴定的物品被拒绝() {
+        // 没有任何动作能打开这样一个盒子，症状是「这件东西什么都不做」
+        // ——正是注册期该拦下的那类静默内容缺陷。
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        let prize = raw_item("m:prize", false, 0);
+        define_one_item(&mut registry, &mut table, &prize).expect("普通物品应当注册成功");
+        let mut boxed = raw_item("m:box", false, 0);
+        boxed.blind_box_pool = vec![RawBlindBoxEntry {
+            item: "m:prize".to_string(),
+            count: 1,
+            weight: 1,
+        }];
+
+        // Act
+        let result = define_one_item(&mut registry, &mut table, &boxed);
+
+        // Assert
+        assert!(
+            result.is_err(),
+            "声明了 blind_box_pool 却没有 requires_identification 必须当场报错"
+        );
+    }
+
+    #[test]
+    fn 把自己列进产出池的盲盒被拒绝() {
+        // 效果顺序的硬约束——见 apply_item_extras 里那段注释与
+        // `ll_sim::resolve::resolve_identify` 文档「一个盲盒不能开出它
+        // 自己」一节。
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        let tags = TagTable::new();
+        let recipes = RecipeTable::new();
+        let mut boxed = raw_item("m:box", true, 5);
+        boxed.blind_box_pool = vec![RawBlindBoxEntry {
+            item: "m:box".to_string(),
+            count: 1,
+            weight: 1,
+        }];
+        define_one_item(&mut registry, &mut table, &boxed).expect("主体声明本身合法");
+        let index = registry
+            .get(&NamespacedId::parse("m:box").expect("合法标识符"))
+            .expect("刚注册的内容应能查到索引");
+
+        // Act
+        let result = apply_item_extras(&registry, &mut table, &tags, &recipes, index, &boxed);
+
+        // Assert
+        assert!(result.is_err(), "自产出的盲盒必须当场报错");
+    }
+
+    #[test]
+    fn 权重为零的盲盒候选被拒绝() {
+        // 「写了等于没写」的候选永远抽不中，与其静默吞掉不如当场报错。
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = ItemTable::new();
+        let tags = TagTable::new();
+        let recipes = RecipeTable::new();
+        let prize = raw_item("m:prize", false, 0);
+        define_one_item(&mut registry, &mut table, &prize).expect("普通物品应当注册成功");
+        let mut boxed = raw_item("m:box", true, 5);
+        boxed.blind_box_pool = vec![RawBlindBoxEntry {
+            item: "m:prize".to_string(),
+            count: 1,
+            weight: 0,
+        }];
+        define_one_item(&mut registry, &mut table, &boxed).expect("主体声明本身合法");
+        let index = registry
+            .get(&NamespacedId::parse("m:box").expect("合法标识符"))
+            .expect("刚注册的内容应能查到索引");
+
+        // Act
+        let result = apply_item_extras(&registry, &mut table, &tags, &recipes, index, &boxed);
+
+        // Assert
+        assert!(result.is_err(), "权重为零的候选必须当场报错");
+    }
+
     #[test]
     fn 物品的max_durability缺席表示没有耐久() {
         // 此前脚本里用 -1 这个哨兵值，数据文件换成字段缺席——本测试
@@ -1054,6 +1261,9 @@ mod tests {
             resistances: Vec::new(),
             tags: Vec::new(),
             taught_recipes: Vec::new(),
+            requires_identification: false,
+            study_experience: 0,
+            blind_box_pool: Vec::new(),
         };
 
         // Act
@@ -1087,6 +1297,9 @@ mod tests {
             resistances: Vec::new(),
             tags: Vec::new(),
             taught_recipes: Vec::new(),
+            requires_identification: false,
+            study_experience: 0,
+            blind_box_pool: Vec::new(),
         };
 
         // Act

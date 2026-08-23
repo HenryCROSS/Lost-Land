@@ -147,6 +147,7 @@ fn spawn_cook(world: &mut WorldState, ids: &Ids, subclasses: Vec<ContentIndex>) 
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses,
         active_stat_modifiers: BTreeMap::new(),

@@ -336,6 +336,11 @@ fn remap_agent(
         // 那正是本文件历史上 active_stat_modifiers 出过的那次事故的
         // 形态（换 mod 读档时静默清空），见模块文档「完整性如何保证」。
         ref mut known_recipes,
+        // 已鉴定物品种类（未鉴定物品批次新增）：每一条都是指向 ItemTable
+        // 的 ContentIndex，依赖 mod 加载顺序，必须显式重映射——见下方
+        // remap_identified_items。这里同样**不能**写成
+        // `identified_items: _`：与上面 known_recipes 逐字同理。
+        ref mut identified_items,
         // 临时属性修正外层按 AttributeKind（引擎内置的封闭枚举，不是
         // 内容注册表索引）为键，不需要重映射；但内层键是「来源」
         // （buffs-and-triggers.md 六节①，`ContentIndex`）——六节存储
@@ -421,6 +426,7 @@ fn remap_agent(
     remap_skill_cooldowns(remapper, skill_cooldowns)?;
     remap_subclasses(remapper, subclasses)?;
     remap_known_recipes(remapper, known_recipes)?;
+    remap_identified_items(remapper, identified_items)?;
     remap_active_stat_modifiers(remapper, active_stat_modifiers)?;
     remap_creature_kind(remapper, creature_kind, owner)?;
     remap_resource_pools(remapper, resource_pools)?;
@@ -618,6 +624,35 @@ fn remap_known_recipes(
         }
     }
     *known_recipes = kept;
+    Ok(())
+}
+
+/// 重映射一个 `Agent` 的已鉴定物品种类列表（未鉴定物品批次）：找不到
+/// 当前会话内容的物品**丢弃并警告**（[`ContentKind::Item`]）——与
+/// [`remap_known_recipes`] 同一条判断：认不认得一种东西是角色持有的一
+/// 条记录，不是它的核心身份，缺一条不等于「失去自己」。
+///
+/// # 丢弃之后不需要「退还」任何东西
+///
+/// 与 [`remap_known_recipes`] 同一条理由，但要注意它在这里**不是**照抄
+/// 而是重新成立的：鉴定确实产出过一次经验
+/// （`ll_sim::resolve::resolve_identify`），但那份经验早已加进
+/// `Agent::experience` 并可能已经换成了等级与点数——它不是一份「寄存在
+/// 这条记录里、随记录消失而应当退还」的资源，正如换 mod 读档不会把已经
+/// 打怪拿到的经验退回去。换回原来的 mod 组合时，物品索引重新解析得到、
+/// 这条记录原样回来，也不会因此再给一次经验（`resolve_identify` 的重复
+/// 闸门读的就是这个字段）。
+fn remap_identified_items(
+    remapper: &mut Remapper<'_>,
+    identified_items: &mut Vec<ContentIndex>,
+) -> Result<(), LoadError> {
+    let mut kept = Vec::with_capacity(identified_items.len());
+    for item in identified_items.drain(..) {
+        if let Some(new_item) = remapper.remap_droppable(item, ContentKind::Item)? {
+            kept.push(new_item);
+        }
+    }
+    *identified_items = kept;
     Ok(())
 }
 
@@ -842,6 +877,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -1621,6 +1657,83 @@ mod tests {
                 .known_recipes,
             vec![stew_new]
         );
+    }
+
+    #[test]
+    fn 已鉴定物品种类按字符串对号重映射到新索引() {
+        // Arrange：未鉴定物品批次新增的 Agent::identified_items——与
+        // known_recipes 同一条判据、同一种事故防线。若 remap_agent 的
+        // 穷尽解构把它吞成 `identified_items: _`，本测试会拿到旧索引
+        // 而红（那正是本文件模块文档「完整性如何保证」记的那次真实
+        // 事故的形态）。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let pendant_old = save_registry.intern(id("lostland:amber_pendant"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记，打乱顺序
+        let pendant_new = current.intern(id("lostland:amber_pendant"));
+        assert_ne!(
+            pendant_old, pendant_new,
+            "两边索引必须真的不同，否则这条测试等于没测"
+        );
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.identified_items.push(pendant_old);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(actions.is_empty());
+        assert_eq!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .identified_items,
+            vec![pendant_new]
+        );
+    }
+
+    #[test]
+    fn 已鉴定物品在当前会话找不到时整条丢弃并记录droppwithwarning() {
+        // Arrange：换掉一个 mod 之后那件物品不存在了——按
+        // ContentKind::Item 丢弃并警告，不是拒绝整个存档：认不认得一种
+        // 东西不是角色的核心身份，理由见 remap_identified_items 文档。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished = save_registry.intern(id("lostland:vanished_trinket"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.identified_items.push(vanished);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .identified_items
+                .is_empty()
+        );
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
     }
 
     #[test]

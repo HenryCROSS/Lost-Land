@@ -99,6 +99,9 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                     // 批次之后这是它会不会磨损的唯一判据。
                     wear_channels: WearChannels::ON_USE,
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                     stack_limit: 1,
                     equip_mask: EquipSlot::HAND_L.mask(),
                     stat_bonuses: vec![StatBonus {
@@ -118,6 +121,9 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                     // 「挨打」通道：这件夹具扮演"穿在身上的甲"。
                     wear_channels: WearChannels::ON_HIT,
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                     stack_limit: 1,
                     equip_mask: EquipSlot::BODY.mask(),
                     stat_bonuses: vec![StatBonus {
@@ -169,6 +175,7 @@ fn spawn_agent(
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers,
@@ -708,6 +715,9 @@ fn luck_ring_item() -> (ContentIndex, FakeItems) {
             ItemRule {
                 wear_channels: WearChannels::NONE,
                 taught_recipes: Vec::new(),
+                requires_identification: false,
+                study_experience: 0,
+                blind_box_pool: Vec::new(),
                 stack_limit: 1,
                 equip_mask: EquipSlot::RING_L.mask(),
                 stat_bonuses: vec![StatBonus {
@@ -930,6 +940,7 @@ fn spawn_agent_with_race_and_equipment(
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),

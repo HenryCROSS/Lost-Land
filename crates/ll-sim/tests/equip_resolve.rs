@@ -88,6 +88,7 @@ fn spawn_agent(
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
@@ -121,6 +122,9 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 ItemRule {
                     wear_channels: WearChannels::NONE,
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND.mask(),
                     stat_bonuses: Vec::new(),
@@ -136,6 +140,9 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 ItemRule {
                     wear_channels: WearChannels::NONE,
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                     stack_limit: 1,
                     equip_mask: EquipSlot::OFF_HAND.mask(),
                     stat_bonuses: Vec::new(),
@@ -151,6 +158,9 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 ItemRule {
                     wear_channels: WearChannels::NONE,
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND
                         .mask()
@@ -420,6 +430,9 @@ fn 物品不可装备时装备意图静默无效() {
             ItemRule {
                 wear_channels: WearChannels::NONE,
                 taught_recipes: Vec::new(),
+                requires_identification: false,
+                study_experience: 0,
+                blind_box_pool: Vec::new(),
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,

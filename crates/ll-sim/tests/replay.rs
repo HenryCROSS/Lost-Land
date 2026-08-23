@@ -111,6 +111,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -155,6 +156,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -709,7 +711,35 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
 ///    `1_631_638_824_628_905_583` 在两次独立进程里稳定复现（不是一次性
 ///    偶然值），才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 1_631_638_824_628_905_583;
+/// # 本次重冻的原因（未鉴定物品批次新增 `Agent::identified_items`）
+///
+/// [`ll_world::entity::Agent`] 新增了 `identified_items:
+/// Vec<ContentIndex>`（「这个角色已经认得哪些物品种类」），
+/// `WorldState::hash()` 因此在 `known_recipes` 之后多混入一段「长度 +
+/// 逐项」——**每一个 `Agent` 的摘要都变了**，即便它一件东西都没鉴定过
+/// （长度前缀 `0` 也是一段此前不存在的字节，理由同该字段在 `hash()` 里
+/// 的注释与 ADR 0022）。
+///
+/// 本回放全程没有任何 `Intent::Identify`，因此变的**只是**那段空列表
+/// 前缀，不是行为漂移——这一点由下面第 2 步实测钉死。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 改动完成后先跑一次，确认这条测试确实红了，且报出的 `right`
+///    正是旧常量 `1_631_638_824_628_905_583`（基线确实是它，不是记忆）。
+/// 2. 把 `state.rs` `hash()` 里新增的那一行
+///    （`write_content_index_vec(&mut hasher, &agent.identified_items);`）
+///    临时换成一行不混入哈希的等价读取（`let _ = &agent.identified_items;`），
+///    其余全部改动（`Agent` 新字段、`ItemDef` 三个新字段、
+///    `Intent::Identify`/`Effect::IdentifyItem`、`resolve_identify`、
+///    `resolve_read` 的经验产出、存档重映射）原样保留——摘要**精确回到
+///    旧常量** `1_631_638_824_628_905_583`（测试转绿，实测通过）。
+///    这一步同时证明两件事：新摘要的变化只由那一行引起；本批次横跨数十
+///    个文件的改动没有夹带任何行为漂移。
+/// 3. 撤掉那一行之后，在改动后的代码上把这条测试单独跑了两次（两次
+///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
+///    `13_415_522_993_411_599_503` 在两次独立进程里稳定复现（不是一次性
+///    偶然值），才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 13_415_522_993_411_599_503;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

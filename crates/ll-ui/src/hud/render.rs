@@ -41,6 +41,7 @@
 //! [`EQUIPMENT_WIDTH`]），高度各自按内容行数现算（见
 //! [`super::build_panel`]）——这条既有纪律不受本次布局调整影响。
 
+use ll_core::ident::ContentIndex;
 use ll_i18n::Catalog;
 use ll_mod::item::ItemTable;
 use ll_render::wgpu;
@@ -185,6 +186,9 @@ pub fn build_hud_frame(
     character: &CharacterPanelData<'_>,
     inventory: &[ItemStack],
     equipment: &BTreeMap<EquipSlot, ItemStack>,
+    // 观察者已经认得的物品种类——未鉴定的东西在两块物品面板上显示成
+    // 「未鉴定的物品」，见 `super::item_display_name`。
+    identified: &[ContentIndex],
     items: &dyn ItemCatalog,
     item_table: &ItemTable,
     catalog: &Catalog,
@@ -330,6 +334,7 @@ pub fn build_hud_frame(
         item_table,
         catalog,
         language,
+        identified,
         inventory_origin,
         INVENTORY_WIDTH,
     );
@@ -350,6 +355,7 @@ pub fn build_hud_frame(
         item_table,
         catalog,
         language,
+        identified,
         equipment_origin,
         EQUIPMENT_WIDTH,
     );
@@ -512,6 +518,9 @@ pub fn render_hud(
     character: &CharacterPanelData<'_>,
     inventory: &[ItemStack],
     equipment: &BTreeMap<EquipSlot, ItemStack>,
+    // 观察者已经认得的物品种类——未鉴定的东西在两块物品面板上显示成
+    // 「未鉴定的物品」，见 `super::item_display_name`。
+    identified: &[ContentIndex],
     items: &dyn ItemCatalog,
     item_table: &ItemTable,
     catalog: &Catalog,
@@ -526,6 +535,7 @@ pub fn render_hud(
         character,
         inventory,
         equipment,
+        identified,
         items,
         item_table,
         catalog,
@@ -653,6 +663,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,
@@ -701,6 +712,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,
@@ -766,6 +778,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,
@@ -782,6 +795,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,
@@ -828,6 +842,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,
@@ -872,6 +887,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,
@@ -929,6 +945,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,
@@ -954,6 +971,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,
@@ -1013,6 +1031,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,
@@ -1066,6 +1085,7 @@ mod tests {
             &character,
             &[],
             &equipment,
+            &[],
             &NoItems,
             &item_table,
             &catalog,

@@ -58,7 +58,7 @@ use std::fmt;
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
 use ll_sim::combat::Penetration;
-use ll_sim::item::{ItemCatalog, ItemRule, SlotMask, StatBonus, WearChannels};
+use ll_sim::item::{BlindBoxEntry, ItemCatalog, ItemRule, SlotMask, StatBonus, WearChannels};
 use ll_sim::rule_modifier::RuleModifier;
 use ll_sim::skill::SkillEffect;
 
@@ -297,6 +297,97 @@ pub struct ItemDef {
     /// [`ItemTable::add_taught_recipe`] 自身不做跨表校验，因此绕过脚本
     /// 层直接调用 Rust API 的路径由它兜住）。
     pub taught_recipes: Vec<ContentIndex>,
+    /// 这件物品**需要先鉴定**才认得（未鉴定物品批次）——项目所有者裁定
+    /// 「可以加入未鉴定物品，通过鉴定获取属性和说明」里「未鉴定」那一半
+    /// 的落点。`false`（默认值）表示这件东西一眼就认得，
+    /// `ll_sim::intent::Intent::Identify` 对它静默无效。
+    ///
+    /// # 为什么是内容作者逐条声明，不是「一律需要鉴定」
+    ///
+    /// 「全部物品都要鉴定」会立刻把生肉、铁锭、亚麻布这类东西一起卷进
+    /// 来——没有人需要「鉴定」一块铁锭，那不是神秘，那是杂务。判据与
+    /// [`crate::recipe::RecipeDef::requires_discovery`] 那条
+    /// **逐字同构**（本字段的命名也刻意与它对齐）：值得被「发现」的是
+    /// 少数带信息的条目，默认值必须是「不需要」，否则每加一件普通材料
+    /// 都要记得关掉它。
+    ///
+    /// # 未鉴定**不改变任何结算**
+    ///
+    /// 一把没鉴定的剑照样按真实属性打人，见
+    /// [`ll_world::entity::Agent::identified_items`] 文档
+    /// 「未鉴定不影响任何结算」一节：这个字段的全部效力是**呈现层**
+    /// （`ll_ui::hud::item_display_name` 把名字换成「未鉴定的物品」）
+    /// 加一道 `resolve_identify` 的准入判断，不进任何伤害/防御公式。
+    pub requires_identification: bool,
+    /// 鉴定或研读这件物品一次值多少经验（未鉴定物品批次）——项目所有者
+    /// 把研究类经验**收窄**成两条来源「通过未鉴定物品和书籍获取经验」
+    /// 之后，两条来源共用的就是这一个字段。`0`（默认值）表示这件东西
+    /// 研究起来学不到任何东西。恒非负，注册期硬校验（负数当场报错，
+    /// 与 [`crate::race::RaceDef::xp_reward`] 逐字同一条先例）。
+    ///
+    /// # 一个字段服务两条路径，不是两个
+    ///
+    /// `ll_sim::resolve::resolve_identify`（鉴定出一个新种类）与
+    /// `ll_sim::resolve::resolve_read`（读一本书真的教到了新配方）产出
+    /// 的是同一条 `Effect::GrantExperience`，读的也是同一个字段。给两条
+    /// 路径各开一个字段（`identify_experience` / `read_experience`）需要
+    /// 先回答「同一件东西两条路径的值凭什么不同」，而没有任何内容需求
+    /// 提出过这个区分——正是 ADR 0021 与 YAGNI 同时点名的投机式抽象。
+    /// 一本**同时**需要鉴定的书因此确实能拿两次经验，但那是两次不同的
+    /// 一次性事件（认出这是本书 / 读懂里面的配方），不是重复计费。
+    ///
+    /// # 防刷靠「一次性事件」，不靠数值
+    ///
+    /// 两条路径都只在**真的学到新东西**时才产出效果：鉴定只对
+    /// `identified_items` 里还没有的种类生效，读书只在真的教到新配方时
+    /// 才产出。重复做恒零收益，因此本字段可以放心取任意大的值，不需要
+    /// 为「刷」预留任何数值上的余地。**唯一的例外是盲盒**
+    /// （[`Self::blind_box_pool`]），见该字段文档。
+    pub study_experience: i64,
+    /// 这件物品是一个**盲盒**：鉴定它会把它消耗掉，并从这个池子里随机
+    /// 产出一件物品（盲盒批次）——项目所有者裁定「我希望能加入盲盒这种
+    /// 物品，鉴定了可以获取经验，同时会随机获得一件物品或者武器装备」
+    /// 的落点。空列表（默认值）表示这件物品**不是**盲盒。
+    ///
+    /// # 与普通鉴定的本质区别：转化，不是揭示
+    ///
+    /// | | 普通鉴定 | 盲盒 |
+    /// |---|---|---|
+    /// | 物品去向 | 留着（只是你现在认识它了） | **被消耗** |
+    /// | 产出 | 无 | **一件随机物品** |
+    /// | 性质 | 揭示 | **转化** |
+    ///
+    /// 正因如此，一个盲盒**必须同时**声明
+    /// [`Self::requires_identification`]（否则没有任何动作能打开它），
+    /// 这条由注册期硬校验（见 `content_schema_gear::define_one_item`）。
+    ///
+    /// # ⚠ 盲盒是「只有学到新东西才给经验」那条原则的**有意例外**
+    ///
+    /// 项目所有者的裁定，原话：**「开盲盒都给吧，轻松点，这是游戏」**。
+    /// 每开一个盒子给一次 [`Self::study_experience`]，不查「产出物认不
+    /// 认识」、也不查「这种盒子开过没有」。这**不是**没想到防刷，是明确
+    /// 的取舍：
+    ///
+    /// 1. 那条原则仍然完整适用于普通鉴定与读书两条路径，一个字都没改；
+    /// 2. 产出经验的**上限由「世界里有多少盒子」决定**，不由玩家按了几
+    ///    次决定——盒子目前是纯粹的世界产物：没有任何配方产出它，也没有
+    ///    交易系统能买到它。
+    ///
+    /// **⚠ 给盲盒写配方（或让它可购买）的人请读这一段**：第 2 条那个
+    /// 上限**当场消失**，盲盒会变成一台经验机器。真要那么做，需要先把
+    /// 「开盒给多少经验」重新拿去裁定，而不是默默加一条配方。这句话写
+    /// 在这里，是为了让加配方的人在写下 `product: "…blind_box"` 之前就
+    /// 看见它。
+    ///
+    /// # 为什么是「一串候选」而不是引用一张掉落表
+    ///
+    /// 另开一张「战利品表」要付整套接线代价（新 `ContentTableKind` 变体、
+    /// `ContentValueTables` 新字段、哈希覆盖、审计花名册、存档重映射），
+    /// 换来的第一个用户是一张只有几条候选的列表——判据与
+    /// [`Self::taught_recipes`]「为什么挂在物品上，不另开一张书表」逐字
+    /// 相同。等到真的出现「多个盒子共用同一张表」的内容需求时，那才是
+    /// 抽出一张表的时机（ADR 0021）。
+    pub blind_box_pool: Vec<BlindBoxEntry>,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -360,6 +451,17 @@ pub struct ItemAttrs {
     /// [`ItemTable::add_taught_recipe`] 追加写入，理由同
     /// [`ItemDef::taught_recipes`] 文档。
     pub taught_recipes: Vec<ContentIndex>,
+    /// 需要先鉴定才认得——与上面几条不同，这一条**在 `define` 那一刻
+    /// 就有真实取值**（它是纯布尔，没有跨表引用要校验，因此不需要一条
+    /// 单独的 `set_*` 入口），理由见 [`ItemDef::requires_identification`]。
+    pub requires_identification: bool,
+    /// 鉴定/研读一次值多少经验，同上：`define` 那一刻就有真实取值，
+    /// 理由见 [`ItemDef::study_experience`]。
+    pub study_experience: i64,
+    /// 盲盒产出池——`define` 注册时恒为空列表，真正的取值由后续
+    /// [`ItemTable::add_blind_box_entry`] 追加写入（它要跨表校验候选
+    /// 物品真的已注册），理由同 [`ItemDef::blind_box_pool`] 文档。
+    pub blind_box_pool: Vec<BlindBoxEntry>,
 }
 
 /// 物品注册期可能出现的错误。
@@ -390,6 +492,15 @@ pub enum ItemError {
         /// 重复的那条配方。
         recipe: ContentIndex,
     },
+    /// [`ItemTable::add_blind_box_entry`] 收到一条权重或数量为零的候选
+    /// ——「写了等于没写」，注册期拒绝而不是静默吞掉，理由同
+    /// [`ItemError::DuplicateTag`]。
+    DegenerateBlindBoxEntry {
+        /// 声明这条候选的盲盒。
+        item: ContentIndex,
+        /// 那条候选想产出的物品。
+        product: ContentIndex,
+    },
 }
 
 impl fmt::Display for ItemError {
@@ -404,6 +515,14 @@ impl fmt::Display for ItemError {
                     "物品索引 {} 已经带有标签索引 {}，不能重复声明",
                     item.get(),
                     tag.get()
+                )
+            }
+            ItemError::DegenerateBlindBoxEntry { item, product } => {
+                write!(
+                    f,
+                    "盲盒索引 {} 的产出候选（物品索引 {}）权重或数量为零，写了等于没写",
+                    item.get(),
+                    product.get()
                 )
             }
             ItemError::DuplicateTaughtRecipe { item, recipe } => {
@@ -461,6 +580,12 @@ pub struct ItemView<'a> {
     /// 可教授的配方列表（配方发现批次），见
     /// [`ItemDef::taught_recipes`]。
     pub taught_recipes: &'a [ContentIndex],
+    /// 需要先鉴定才认得，见 [`ItemDef::requires_identification`]。
+    pub requires_identification: bool,
+    /// 鉴定/研读一次值多少经验，见 [`ItemDef::study_experience`]。
+    pub study_experience: i64,
+    /// 盲盒产出池——借用视图，不克隆，理由同 [`Self::stat_bonuses`]。
+    pub blind_box_pool: &'a [BlindBoxEntry],
     /// 由 [`Self::tags`] 在注册期折算出的耐久磨损通道集合，见
     /// [`ItemTable::add_tag`] 文档「为什么在这里折算」一节。
     pub wear_channels: WearChannels,
@@ -491,6 +616,13 @@ pub struct ItemTable {
     /// 每件物品读一次能教会哪些配方（配方发现批次）——见
     /// [`ItemDef::taught_recipes`]。
     taught_recipes: Vec<Vec<ContentIndex>>,
+    /// 每件物品要不要先鉴定（未鉴定物品批次）——见
+    /// [`ItemDef::requires_identification`]。
+    requires_identification: Vec<bool>,
+    /// 每件物品鉴定/研读一次值多少经验——见 [`ItemDef::study_experience`]。
+    study_experience: Vec<i64>,
+    /// 每件盲盒的产出池（盲盒批次）——见 [`ItemDef::blind_box_pool`]。
+    blind_box_pool: Vec<Vec<BlindBoxEntry>>,
     defined: Vec<bool>,
 }
 
@@ -520,6 +652,9 @@ impl ItemTable {
             self.rule_modifiers.resize(new_len, Vec::new());
             self.tags.resize(new_len, Vec::new());
             self.taught_recipes.resize(new_len, Vec::new());
+            self.requires_identification.resize(new_len, false);
+            self.study_experience.resize(new_len, 0);
+            self.blind_box_pool.resize(new_len, Vec::new());
             self.wear_channels.resize(new_len, WearChannels::NONE);
         }
 
@@ -542,6 +677,9 @@ impl ItemTable {
         self.rule_modifiers[idx] = attrs.rule_modifiers;
         self.tags[idx] = attrs.tags;
         self.taught_recipes[idx] = attrs.taught_recipes;
+        self.requires_identification[idx] = attrs.requires_identification;
+        self.study_experience[idx] = attrs.study_experience;
+        self.blind_box_pool[idx] = attrs.blind_box_pool;
         // 派生列：`define` 恒写空——`attrs.tags` 在 `register-item` 那一刻
         // 恒是空列表，真正的取值由后续 `add_tag` 逐条折算。
         self.wear_channels[idx] = WearChannels::NONE;
@@ -580,6 +718,9 @@ impl ItemTable {
             tags: &self.tags[idx],
             wear_channels: self.wear_channels[idx],
             taught_recipes: &self.taught_recipes[idx],
+            requires_identification: self.requires_identification[idx],
+            study_experience: self.study_experience[idx],
+            blind_box_pool: &self.blind_box_pool[idx],
         })
     }
 
@@ -810,6 +951,40 @@ impl ItemTable {
         self.taught_recipes[idx].push(recipe);
         Ok(())
     }
+
+    /// 追加一条盲盒产出候选（盲盒批次）——**追加，不是覆盖**，语义同
+    /// [`Self::add_taught_recipe`]：一个盒子可以有多档产出。
+    ///
+    /// # 为什么这一条走 `add_*` 而 `requires_identification`/
+    /// `study_experience` 直接进 `define`
+    ///
+    /// 判据是「这个字段有没有需要在注册期校验的东西」，不是「它是不是
+    /// 新增的」：布尔与整数各自只需要一条本地校验（后者的非负判断在
+    /// `content_schema_gear::define_one_item` 里，与 `stack_limit >= 1`
+    /// 并排），而本方法要做两件 `define` 做不到的事——拒绝权重/数量为
+    /// 零的候选，以及（在 `apply_items` 那一层）确认候选物品真的已经
+    /// 注册过。
+    ///
+    /// 权重与数量的下限都是 `1`：权重 0 的候选永远抽不中、数量 0 的
+    /// 候选开出个空气，两者都是「写了等于没写」，与其静默吞掉不如当场
+    /// 报错（ADR 0017「注册期完整校验」）。
+    pub fn add_blind_box_entry(
+        &mut self,
+        item: ContentIndex,
+        entry: BlindBoxEntry,
+    ) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        if entry.weight == 0 || entry.count == 0 {
+            return Err(ItemError::DegenerateBlindBoxEntry {
+                item,
+                product: entry.item,
+            });
+        }
+        self.blind_box_pool[item.get() as usize].push(entry);
+        Ok(())
+    }
 }
 
 /// `resolve` 侧的堆叠上限/装备占位/属性加成查询——`ll_sim::resolve::resolve_pick_up`
@@ -836,6 +1011,9 @@ impl ItemCatalog for ItemTable {
             rule_modifiers: view.rule_modifiers.to_vec(),
             wear_channels: view.wear_channels,
             taught_recipes: view.taught_recipes.to_vec(),
+            requires_identification: view.requires_identification,
+            study_experience: view.study_experience,
+            blind_box_pool: view.blind_box_pool.to_vec(),
         })
     }
 }
@@ -880,6 +1058,9 @@ mod tests {
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -911,6 +1092,9 @@ mod tests {
             rule_modifiers: Vec::new(),
             tags: Vec::new(),
             taught_recipes: Vec::new(),
+            requires_identification: false,
+            study_experience: 0,
+            blind_box_pool: Vec::new(),
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -961,6 +1145,9 @@ mod tests {
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -994,6 +1181,9 @@ mod tests {
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -1007,6 +1197,9 @@ mod tests {
             Some(ItemRule {
                 wear_channels: WearChannels::NONE,
                 taught_recipes: Vec::new(),
+                requires_identification: false,
+                study_experience: 0,
+                blind_box_pool: Vec::new(),
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
@@ -1051,6 +1244,9 @@ mod tests {
             rule_modifiers: Vec::new(),
             tags: Vec::new(),
             taught_recipes: Vec::new(),
+            requires_identification: false,
+            study_experience: 0,
+            blind_box_pool: Vec::new(),
         }
     }
 

@@ -579,6 +579,7 @@ fn build_player_agent(
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),

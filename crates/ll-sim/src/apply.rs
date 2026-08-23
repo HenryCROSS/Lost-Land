@@ -297,6 +297,14 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.known_recipes.push(*recipe);
             }
         }
+        Effect::IdentifyItem { actor, def } => {
+            // 无条件 push——去重闸门在 resolve_identify 的产出侧，见
+            // Effect::IdentifyItem 文档「apply 不做任何判断」一节，与
+            // 紧邻的 Effect::LearnRecipe 分支逐行同构。
+            if let Some(agent) = world.actors.get_mut(*actor) {
+                agent.identified_items.push(*def);
+            }
+        }
         Effect::AdjustResourcePool { actor, pool, delta } => {
             if let Some(agent) = world.actors.get_mut(*actor) {
                 let current = agent.resource_pools.entry(*pool).or_insert(0);
@@ -605,6 +613,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),

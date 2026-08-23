@@ -27,6 +27,8 @@ use ll_i18n::Catalog;
 use ll_mod::item::ItemTable;
 use ll_world::item::{EquipSlot, ItemStack};
 
+use ll_core::ident::ContentIndex;
+
 use super::{PanelContent, build_panel, item_display_name};
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
@@ -98,6 +100,7 @@ fn write_equipment_panel_lines(
     items: &ItemTable,
     catalog: &Catalog,
     language: &str,
+    identified: &[ContentIndex],
     cursor: &mut RowCursor,
     lines: &mut Vec<Label>,
 ) {
@@ -109,7 +112,7 @@ fn write_equipment_panel_lines(
     for (slot, key) in SLOTS {
         let slot_label = catalog.resolve(language, key);
         let occupant_text = match occupant_of(slot, equipment, items) {
-            Some(stack) => item_display_name(stack.def, items, catalog, language),
+            Some(stack) => item_display_name(stack.def, items, catalog, language, identified),
             None => catalog.resolve(language, "hud-equipment-empty-slot"),
         };
         cursor.push(lines, format!("{slot_label}: {occupant_text}"));
@@ -117,39 +120,53 @@ fn write_equipment_panel_lines(
 }
 
 /// 产出装备栏面板的全部文本行。纯函数，不接触 GPU。
+#[allow(clippy::too_many_arguments)]
 pub fn equipment_panel_lines(
     equipment: &BTreeMap<EquipSlot, ItemStack>,
     items: &ItemTable,
     catalog: &Catalog,
     language: &str,
+    identified: &[ContentIndex],
     origin: (f32, f32),
     line_height: f32,
 ) -> Vec<Label> {
     let mut cursor = RowCursor::new(origin, line_height);
     let mut lines = Vec::new();
-    write_equipment_panel_lines(equipment, items, catalog, language, &mut cursor, &mut lines);
+    write_equipment_panel_lines(
+        equipment,
+        items,
+        catalog,
+        language,
+        identified,
+        &mut cursor,
+        &mut lines,
+    );
     lines
 }
 
 /// 建出装备栏面板：背景矩形 + 全部文本行,接入 [`super::build_panel`]
 /// 现算面板高度。
+#[allow(clippy::too_many_arguments)]
 pub fn equipment_panel(
     equipment: &BTreeMap<EquipSlot, ItemStack>,
     items: &ItemTable,
     catalog: &Catalog,
     language: &str,
+    identified: &[ContentIndex],
     origin: (f32, f32),
     width: f32,
 ) -> PanelContent {
     build_panel(origin, width, |cursor, lines| {
-        write_equipment_panel_lines(equipment, items, catalog, language, cursor, lines);
+        write_equipment_panel_lines(
+            equipment, items, catalog, language, identified, cursor, lines,
+        );
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+    use ll_core::ident::{Interner, NamespacedId};
     use ll_core::scaled::Milli;
     use ll_mod::item::ItemAttrs;
     use ll_sim::combat::Penetration;
@@ -198,6 +215,9 @@ mod tests {
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                 },
             )
             .expect("测试用注册应当成功");
@@ -213,7 +233,8 @@ mod tests {
         let equipment = BTreeMap::new();
 
         // Act
-        let lines = equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines =
+            equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
 
         // Assert
         assert_eq!(lines.len(), 23);
@@ -232,7 +253,8 @@ mod tests {
         let equipment = BTreeMap::new();
 
         // Act
-        let lines = equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines =
+            equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -268,7 +290,8 @@ mod tests {
         let catalog = Catalog::load_dir(&dir);
 
         // Act
-        let lines = equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines =
+            equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -310,7 +333,8 @@ mod tests {
         let catalog = Catalog::load_dir(&dir);
 
         // Act
-        let lines = equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines =
+            equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -334,7 +358,15 @@ mod tests {
         let equipment = BTreeMap::new();
 
         // Act
-        let panel = equipment_panel(&equipment, &table, &catalog, "zh-CN", (0.0, 0.0), 240.0);
+        let panel = equipment_panel(
+            &equipment,
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            (0.0, 0.0),
+            240.0,
+        );
 
         // Assert
         assert_eq!(panel.rect.width, 240.0);

@@ -792,6 +792,9 @@ mod tests {
                 .map(|(_, modifiers)| ItemRule {
                     wear_channels: crate::item::WearChannels::NONE,
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                     stack_limit: 1,
                     equip_mask: SlotMask::EMPTY,
                     stat_bonuses: Vec::new(),

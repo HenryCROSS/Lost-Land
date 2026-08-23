@@ -1019,6 +1019,7 @@ fn resolve_dispatch(
             resolve_abandon_subclass(world, actor, subclass)
         }
         Intent::Read { actor, def } => resolve_read(world, actor, def, items),
+        Intent::Identify { actor, def } => resolve_identify(world, actor, def, items),
         Intent::Experiment { actor, category } => {
             resolve_experiment(world, actor, category, recipes)
         }
@@ -2953,7 +2954,9 @@ fn resolve_craft(
 /// 3. 查不到物品规则 → 空                （ADR 0015：未注册当作没有）
 /// 4. taught_recipes 为空（这件东西不可读）→ 空
 /// 5. 逐条过滤掉已经知道的，一条不剩 → 空（「这本书我读透了」）
-/// 6. 逐条产出 Effect::LearnRecipe，并按一次普通行动计费
+/// 6. 逐条产出 Effect::LearnRecipe
+/// 7. study_experience > 0 时追加一条 Effect::GrantExperience，并按一次
+///    普通行动计费
 /// ```
 ///
 /// # 书**不**被消耗
@@ -2969,9 +2972,9 @@ fn resolve_craft(
 /// 全部条目都已知时返回空 `Vec`，因此**连时间都不推进**。这不是「静默
 /// 吞掉一次操作」，而是与 [`resolve_pick_up`]「脚下没东西就静默作废」
 /// 完全同一条既有纪律：一次不可能产生任何结果的行动不该收费。它同时
-/// 关掉了一条真实的刷取路径——若这一步产出效果或推进时间，将来给
-/// 「阅读」挂上经验产出（见本函数文档最后一节）时，反复读同一本书就
-/// 会变成一台经验机器。
+/// 关掉了一条真实的刷取路径——经验产出（第 7 步，研究经验收窄批次已经
+/// 挂上）就挂在这道闸门后面：若这一步产出效果或推进时间，反复读同一本
+/// 书就会变成一台经验机器。
 ///
 /// # 为什么效果恒施于发起者自身
 ///
@@ -2987,20 +2990,25 @@ fn resolve_craft(
 ///   `agent.known_recipes`，都是 `Vec`（保序），不涉及
 ///   `HashMap`/`HashSet`。
 ///
-/// # 尚未挂上的第二、第三个钩子——如实标注
+/// # 第二个钩子已经挂上：研读经验（研究经验收窄批次）
 ///
-/// 项目所有者的裁定里，「阅读」同时是**科研经验**（「最开始设有初始
-/// 可以通过阅读获取经验」）与将来副职解锁的挂载点。本批次只落地配方
-/// 这一条，另外两条各自缺的东西写在这里，供下一批直接接上：
+/// 项目所有者把研究类经验**收窄**成两条来源——「就收窄成通过未鉴定
+/// 物品和书籍获取经验就好了」。书籍这一条就是第 7 步：读一本书值多少
+/// 经验由内容字段 `ll_mod::item::ItemDef::study_experience` 声明
+/// （另一条来源见 [`resolve_identify`]）。
 ///
-/// - **经验**：[`crate::effect::Effect::GrantExperience`] 早已存在、
-///   `apply` 侧的升级级联也早已落地，缺的只是「这件东西读一次值多少
-///   经验」这个**内容字段**（`ItemDef` 上还没有），以及一条防刷规则
-///   ——正确的形状是「只有第 6 步真的产出了新配方时才给经验」，这样
-///   反复读同一本书恒为零收益，且不需要任何新的逐实体「读过没有」
-///   状态。**不是**另开一条独立的「科研经验」数轴：那需要复制整台
+/// 两件事值得点名：
+///
+/// - **它不是一条独立的「科研经验」数轴。** 那需要复制整台
 ///   [`crate::xp_curve`] 机器（自己的等级、自己的曲线、自己的升级
 ///   级联）而它们与既有那套逐字相同，正是 ADR 0021 点名要避免的抽象。
+///   产出的就是既有的 [`crate::effect::Effect::GrantExperience`]。
+/// - **防刷没有引入任何新的逐实体状态。** 第 5 步那道「一条不剩就整条
+///   作废」的闸门本来就在，第 7 步只是挂在它后面——真教到新配方才有
+///   产出，才谈得上经验。
+///
+/// # 尚未挂上的第三个钩子——如实标注
+///
 /// - **副职解锁**：[`crate::subclass::grant_subclass_effects`] 这个
 ///   共用出口已经在，缺的是 [`crate::subclass::SubclassUnlockCatalog`]
 ///   上的第二种触发器（当前只有「制作计数」一种，见其文档「为什么只有
@@ -3049,7 +3057,17 @@ fn resolve_read(
         return Vec::new();
     }
 
-    // ⑥ 计费口径与 resolve_wait/resolve_use_item/resolve_craft 完全相同
+    // ⑥ 研读经验（研究经验收窄批次）——**只有走到这里才给**：上面的
+    // is_empty 分支已经把「这本书我读透了」整条挡掉，因此反复读同一本
+    // 书恒零收益，不需要任何新的逐实体「读过没有」状态。
+    if rule.study_experience > 0 {
+        effects.push(Effect::GrantExperience {
+            target: actor,
+            amount: rule.study_experience,
+        });
+    }
+
+    // ⑦ 计费口径与 resolve_wait/resolve_use_item/resolve_craft 完全相同
     // （基础代价 × 敏捷速度），不新增任何常量。
     let cost = action_cost(
         BASE_ACTION_COST,
@@ -3208,6 +3226,191 @@ fn resolve_experiment(
         },
     ]
 }
+
+/// [`Intent::Identify`] 结算（未鉴定物品批次 + 盲盒批次）：鉴定背包里
+/// 的一种未鉴定物品。**两条互斥的路径**，由这件物品有没有声明盲盒池
+/// （`ItemRule::blind_box_pool`）决定：
+///
+/// | | 普通鉴定 | 盲盒 |
+/// |---|---|---|
+/// | 物品去向 | **留着**（只是你现在认识它了） | **被消耗** |
+/// | 产出 | 无 | **一件随机物品** |
+/// | 写世界状态 | `Agent::identified_items` 多一条 | 背包换了内容 |
+/// | 性质 | 揭示 | **转化** |
+///
+/// # 判定顺序
+///
+/// ```text
+/// 1. 查 agent，查不到 → 空
+/// 2. 背包里没有这一种东西 → 空
+/// 3. 查不到物品规则 → 空                     （ADR 0015：未注册当作没有）
+/// 4. requires_identification 为假 → 空       （这件东西一眼就认得）
+/// 5a. 不是盲盒：已经认识过这一种 → 空         （防刷闸门，见下）
+///     否则 → Effect::IdentifyItem [+ GrantExperience] + 计费
+/// 5b. 是盲盒：按权重抽一条 → ConsumeInventoryItem + MergeIntoInventory
+///     [+ GrantExperience] + 计费
+/// ```
+///
+/// # 防刷：普通鉴定靠「一次性事件」，不需要任何新的逐实体状态
+///
+/// 第 5a 步的闸门读的是 [`ll_world::entity::Agent::identified_items`]
+/// ——那**同时**是这条路径的产出目标。于是「认出一个新种类」天然是一次
+/// 一次性事件：第二次鉴定同一种东西恒返回空 `Vec`，既不给经验、**也不
+/// 消耗时间**（与 [`resolve_read`] 第 5 步、[`resolve_pick_up`]「脚下
+/// 没东西就静默作废」同一条既有纪律：一次不可能产生任何结果的行动不该
+/// 收费）。这条设计最值钱的性质就在这里——**它不需要任何新的逐实体
+/// 「研究过没有」状态**，`identified_items` 本来就要存。
+///
+/// # ⚠ 盲盒是那条防刷原则的**有意例外**
+///
+/// 项目所有者裁定，原话：**「开盲盒都给吧，轻松点，这是游戏」**。第 5b
+/// 步无条件给经验：不查产出物认不认识，也不查这种盒子开过没有。完整的
+/// 取舍论证与那条「⚠ 给盲盒写配方会打开经验水龙头」的警告写在
+/// `ll_mod::item::ItemDef::blind_box_pool` 文档里——写在**内容字段**上，
+/// 是为了让日后给盲盒加配方的人在写下那条配方之前就看见它。
+///
+/// **普通鉴定与读书两条路径不受这条影响，一个字都没改。**
+///
+/// # 盲盒的随机流怎么构造（约束 C3）
+///
+/// 三元组取 `(world.seed, actor.as_u64(), world.clock.0 ^ 常量标签)`，
+/// 与 [`resolve_experiment`]/[`resolve_inspect`]/[`resolve_attack`] 那
+/// 几条流手法逐字相同：**新造一条流、只取一个数**，因此上面任何一步
+/// 提前返回都不会让后续取数错位。标签是 [`BLIND_BOX_EVENT_TAG`]。
+///
+/// **没有盲盒声明时不构造流**——第 5a 步一行 `DetRng` 都不碰，与
+/// [`resolve_attack`]「没有偷袭声明就不构造流」同一条既有纪律。
+///
+/// 加权选取本身**照抄** [`ll_world::weather::weather_kind_at`]：权重
+/// 求和 → `gen_range(总和)` → 沿同一顺序前缀和 walk。不另发明，理由见
+/// [`ll_sim::item::BlindBoxEntry`](crate::item::BlindBoxEntry) 文档。
+/// 遍历的是 `Vec`（保序，约束 C5），不涉及 `HashMap`/`HashSet`。
+///
+/// # 产出物的耐久恒为 `None`
+///
+/// 与 [`resolve_craft`] 造成品那一行（`ItemStack::new(rule.product,
+/// rule.product_count)`）**逐字相同**的既有形状：本仓库当前没有任何
+/// 一条「新造出来的物品该带多少耐久」的规则，`ItemRule` 也没有携带
+/// `max_durability`。盲盒不在这里发明第二套答案——真要补，该补的是那
+/// 一条共同规则，两个产出点一起改。
+///
+/// # 一个盲盒不能开出它自己
+///
+/// 由**注册期**拒绝（`ll_mod::content_schema_gear::apply_item_extras`），
+/// 不在这里判。理由是效果顺序：`ConsumeInventoryItem` 与
+/// `MergeIntoInventory` 都按 `(def, durability)` 定位同一堆，而后者的
+/// `resulting` 是在**消耗之前**的背包上算出来的——自产出的盒子会让这
+/// 两条效果互相抵消，症状是「开了个盒子，什么都没发生」。把它拦在注册
+/// 期，这里就不需要一条只为一种病态内容存在的运行期分支。
+///
+/// # 约束核对
+///
+/// - C1：只产出 `Vec<Effect>`，一个字节的世界状态都不写。
+/// - C3：随机只有盲盒那一路，走 `DetRng::for_entity`，见上。
+/// - C5：遍历的三个容器（`agent.inventory`、`agent.identified_items`、
+///   `rule.blind_box_pool`）都是 `Vec`，保序。
+fn resolve_identify(
+    world: &WorldState,
+    actor: EntityId,
+    def: ContentIndex,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
+    // ① 行动者。
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    // ② 背包里得真的有这一种东西——与 resolve_read 第 2 步同款，但这里
+    // 还要留住这一堆本身：盲盒那一路要用它的耐久来定位被消耗的堆。
+    let Some(held) = agent.inventory.iter().find(|stack| stack.def == def) else {
+        return Vec::new();
+    };
+    let held_durability = held.durability;
+    // ③ 物品规则。
+    let Some(rule) = items.item(def) else {
+        return Vec::new();
+    };
+    // ④ 一眼就认得的东西没有可鉴定的。
+    if !rule.requires_identification {
+        return Vec::new();
+    }
+
+    // 计费口径与 resolve_read/resolve_wait/resolve_craft 完全相同
+    // （基础代价 × 敏捷速度），不新增任何常量。
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    let schedule = Effect::ScheduleNext {
+        actor,
+        at: schedule_after(world, cost),
+    };
+    let experience = (rule.study_experience > 0).then_some(Effect::GrantExperience {
+        target: actor,
+        amount: rule.study_experience,
+    });
+
+    if rule.blind_box_pool.is_empty() {
+        // ⑤a 普通鉴定：揭示，不转化。已经认识过就整条作废（防刷闸门）。
+        if agent.identified_items.contains(&def) {
+            return Vec::new();
+        }
+        let mut effects = vec![Effect::IdentifyItem { actor, def }];
+        effects.extend(experience);
+        effects.push(schedule);
+        return effects;
+    }
+
+    // ⑤b 盲盒：转化。加权抽一条，手法照抄 weather_kind_at。
+    let total: u64 = rule
+        .blind_box_pool
+        .iter()
+        .map(|entry| u64::from(entry.weight))
+        .sum();
+    // 理论不可达：注册期已经拒绝了权重为 0 的候选（`ItemError::
+    // DegenerateBlindBoxEntry`），非空池的总和必然 > 0。防御性地静默
+    // 作废而不是让 `gen_range(0)` 去 panic——同 `weather_kind_at` 对
+    // 「总和为 0」的处理立场。
+    if total == 0 {
+        return Vec::new();
+    }
+    let mut rng = ll_core::rng::DetRng::for_entity(
+        world.seed,
+        actor.as_u64(),
+        (world.clock.0 as u64) ^ BLIND_BOX_EVENT_TAG,
+    );
+    let mut roll = rng.gen_range(total);
+    let mut picked = rule.blind_box_pool[rule.blind_box_pool.len() - 1];
+    for entry in &rule.blind_box_pool {
+        let weight = u64::from(entry.weight);
+        if roll < weight {
+            picked = *entry;
+            break;
+        }
+        roll -= weight;
+    }
+
+    let mut effects = vec![
+        Effect::ConsumeInventoryItem {
+            actor,
+            def,
+            durability: held_durability,
+        },
+        merge_into_inventory_effect(
+            agent,
+            actor,
+            ItemStack::new(picked.item, picked.count),
+            items,
+        ),
+    ];
+    effects.extend(experience);
+    effects.push(schedule);
+    effects
+}
+
+/// 把 [`resolve_identify`] 盲盒那条随机流与同一 `(种子, 实体, 时刻)` 下
+/// 其它流区分开的固定标签，没有数值含义上的特殊性——手法同
+/// [`EXPERIMENT_EVENT_TAG`]，只要求「与别的流的三元组不同」。
+const BLIND_BOX_EVENT_TAG: u64 = 0x0B11_0DB0_0000_0000;
 
 /// 把 [`resolve_experiment`] 那条随机流与同一 `(种子, 实体, 时刻)` 下
 /// 其它流区分开的固定标签，没有数值含义上的特殊性——手法同
@@ -4446,6 +4649,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -4707,6 +4911,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -4759,6 +4964,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -5299,6 +5505,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -5690,6 +5897,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -6294,6 +6502,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -6360,6 +6569,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
