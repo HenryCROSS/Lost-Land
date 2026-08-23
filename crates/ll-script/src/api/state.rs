@@ -26,6 +26,22 @@
 //! 条承诺的忠实延续（原文假设直接写穿，本模块用「缓冲区优先查找」
 //! 达到同样的可观察效果，同时仍然满足 C1）。
 //!
+//! # 两个注册入口：写能力不是默认发的
+//!
+//! 上面那条链路只在宿主**真的排空缓冲区**时才成立。[`register`]
+//! （读 + 写六个函数）因此是一条**带承诺的**入口：调用它就是承诺每次
+//! 脚本调用窗口结束后调用 [`take_pending_writes`]。承诺不成立的宿主
+//! 必须改调 [`register_read_only`]（只有读的四个函数）——那条路径物理
+//! 上产生不了待写记录。
+//!
+//! 现役唯一的行为树宿主
+//! （`ll_mod::script_behavior_source::ScriptBehaviorSource`）走的正是
+//! 只读那条：它的 `decide` 返回 `Option<Intent>`，没有任何位置能放下
+//! 一批待写记录，接上写能力只会让写入永远烂在缓冲区里——**那本身就是
+//! 一次 C1 违反**（写入跨帧累积、永远到不了 `apply`，而 `state-get!`
+//! 又优先读缓冲区，于是第 1 帧的写入在第 100 帧仍然可见，存档里却
+//! 什么都没有）。两个入口的分工就是为了让这种接法在类型层面写不出来。
+//!
 //! # 配额：为什么在这里判定，不是在 `apply` 里
 //!
 //! 配额超限必须**立即**告诉脚本「这次写入没有生效」（返回失败哨兵值），
@@ -67,7 +83,9 @@ thread_local! {
 
 /// 取走并清空本次调用窗口积累的全部待写记录。
 ///
-/// 调用方（宿主的决策循环）应在每次脚本调用结束后调用本函数，把结果
+/// 调用方是**注册了写能力的那类宿主**（即调用过 [`register`] 而不是
+/// [`register_read_only`] 的宿主，见模块文档「两个注册入口」一节），
+/// 必须在每次脚本调用结束后调用本函数，把结果
 /// 包成一条 `ll_sim::effect::Effect::SetScriptState`（若非空）交给
 /// `apply`——本函数本身不知道、也不需要知道 `Effect`（`ll-script` 依赖
 /// `ll-sim`，但本模块刻意不 `use` `ll_sim::effect`，保持「脚本层只产出
@@ -93,8 +111,24 @@ struct ContentRefTag(Box<str>);
 
 impl Custom for ContentRefTag {}
 
-/// 注册 `state-set!`/`state-get!`/`entity-state-set!`/`entity-state-get!`/
-/// `state-get-foreign`/`content-ref` 六个函数进 `engine`。
+/// 注册**完整**的六个函数进 `engine`：读的四个（[`register_read_only`]）
+/// 加上写的两个（`state-set!`/`entity-state-set!`）。
+///
+/// # 调用本函数的宿主必须排空缓冲区，否则违反约束 C1
+///
+/// 写入只是攒进 [`PENDING_WRITES`]（见模块文档「写入路径必须经
+/// `apply`」一节）——**调用本函数就是承诺：每一次脚本调用窗口结束后
+/// 都会调用 [`take_pending_writes`]，把整批包成一条
+/// `ll_sim::effect::Effect::SetScriptState` 送进 `resolve → apply`。**
+///
+/// 不履行这条承诺的后果不是"写入丢失"这么温和：`PENDING_WRITES` 是
+/// 线程局部的，不排空就**跨调用窗口累积**，而 `state-get!` 又优先查
+/// 缓冲区——第 1 帧写下的值在第 100 帧仍然读得到，存档里却什么都没有。
+/// 那正是约束 C1 点名要禁的「脚本持有跨帧的隐式状态」，只不过隐式状态
+/// 这次藏在宿主侧的缓冲区里而不是 VM 内存里。
+///
+/// **没有履行这条承诺的宿主应当改调 [`register_read_only`]**——那条
+/// 路径物理上产生不了待写记录，因此不需要任何排空纪律。
 ///
 /// `mod_namespace` 由调用方（`ll-mod` 装载管线，正在为哪个 mod 构造这个
 /// `ScriptEngine` 就传哪个命名空间）固化——**不是脚本参数**，脚本没有
@@ -105,29 +139,47 @@ impl Custom for ContentRefTag {}
 /// 不需要绕道内部可变性。
 pub fn register(engine: &mut ScriptEngine, mod_namespace: impl Into<String>) {
     let namespace = mod_namespace.into();
+    register_read_only(engine, namespace.clone());
+    register_writes(engine, namespace);
+}
 
-    let ns = namespace.clone();
-    engine.register_fn("state-set!", move |key: String, value: SteelVal| -> bool {
-        try_write(ScriptStateTarget::Global, &ns, key, &value)
-    });
+/// 只注册**读**的四个函数：`state-get!`/`entity-state-get!`/
+/// `state-get-foreign`/`content-ref`。
+///
+/// # 谁该用这条路径：决策期脚本
+///
+/// 行为树是**决策**——按约束 C1，`decide` 那一层不写世界（
+/// `ll_mod::script_behavior_source::ScriptBehaviorSource::decide` 的
+/// 文档「C1：这里不写世界」一节已经把这条纪律写死：它只拿得到
+/// `&WorldState`）。给它注册写入函数并不能让它真的写成：`decide`
+/// 返回的是 `Option<Intent>`，没有任何位置能放下一批待写记录，于是
+/// 写入只会永远烂在 [`PENDING_WRITES`] 里——见 [`register`] 文档
+/// 「必须排空缓冲区」一节描述的那个后果。
+///
+/// **能力不存在，好过能力坏着。** 走本函数之后，脚本引用
+/// `state-set!` 会在 `load_source` 的白名单校验那一刻被点名拒绝
+/// （`register_fn` 是唯一把名字放进白名单的通道，见
+/// [`crate::host::ScriptEngine::register_fn`]），mod 作者当场看到
+/// 一条指名道姓的装载错误，而不是运行几百帧之后才发现存档里什么都
+/// 没有。
+///
+/// # 读为什么可以留下
+///
+/// 读不改世界，是决策期完全正当的能力，而且**读得到真东西**：脚本
+/// 状态的生产写入路径今天就存在于 Rust 侧（`ll_sim::quest` 的任务
+/// 进度、`ll_sim::subclass` 的制作计数都产出
+/// `Effect::SetScriptState` 经 `apply` 落盘），行为树用
+/// `state-get!`/`entity-state-get!` 读它们是这些数据的正当消费方式。
+///
+/// `content-ref` 归在读这一半：`state-get!` 读出一条
+/// `ScriptValue::Ref` 时，脚本需要它才能构造一个同类值来比对。
+pub fn register_read_only(engine: &mut ScriptEngine, mod_namespace: impl Into<String>) {
+    let namespace = mod_namespace.into();
 
     let ns = namespace.clone();
     engine.register_fn("state-get!", move |key: String| -> SteelVal {
         read_value(ScriptStateTarget::Global, &ns, &key)
     });
-
-    let ns = namespace.clone();
-    engine.register_fn(
-        "entity-state-set!",
-        move |handle: ScriptEntityHandle, key: String, value: SteelVal| -> bool {
-            try_write(
-                ScriptStateTarget::Entity(handle.entity_id()),
-                &ns,
-                key,
-                &value,
-            )
-        },
-    );
 
     let ns = namespace.clone();
     engine.register_fn(
@@ -153,6 +205,29 @@ pub fn register(engine: &mut ScriptEngine, mod_namespace: impl Into<String>) {
             .into_steelval()
             .unwrap_or(SteelVal::Void)
     });
+}
+
+/// 注册写的两个函数。私有：外部只有 [`register`]（带排空承诺）与
+/// [`register_read_only`]（不带写能力）两个入口，不给第三种「只注册写
+/// 不注册读」的组合——那个组合没有任何用例，暴露它只会多一种可以接错
+/// 的接法。
+fn register_writes(engine: &mut ScriptEngine, namespace: String) {
+    let ns = namespace.clone();
+    engine.register_fn("state-set!", move |key: String, value: SteelVal| -> bool {
+        try_write(ScriptStateTarget::Global, &ns, key, &value)
+    });
+
+    engine.register_fn(
+        "entity-state-set!",
+        move |handle: ScriptEntityHandle, key: String, value: SteelVal| -> bool {
+            try_write(
+                ScriptStateTarget::Entity(handle.entity_id()),
+                &namespace,
+                key,
+                &value,
+            )
+        },
+    );
 }
 
 /// 尝试把 `value` 写入 `target` 下 `mod_namespace` 的 `key`。

@@ -83,8 +83,9 @@ impl ScriptBehaviorSource {
     /// （`api::query`/`api::actor`/`api::rng`/`api::state`/`skill-ready?`），
     /// 返回一个可以立即用于 [`BehaviorTreeSource::decide`] 的实例。
     ///
-    /// `mod_namespace` 传给 `api::state::register`（脚本状态存储的
-    /// 命名空间隔离，见其模块文档）；`registry` 用于一次性解析
+    /// `mod_namespace` 传给 `api::state::register_read_only`（脚本状态
+    /// 存储的命名空间隔离，见其模块文档；为什么是只读那一半，见
+    /// [`Self::from_prepared`] 里那处调用点的注释）；`registry` 用于一次性解析
     /// `skill-ready?`/`parse_intent` 都要用到的技能字符串 →
     /// `ContentIndex` 映射（同一份映射两处复用，见
     /// [`skill_index_snapshot`] 文档）。
@@ -141,7 +142,14 @@ impl ScriptBehaviorSource {
         ll_script::api::query::register(&mut engine);
         ll_script::api::actor::register(&mut engine);
         ll_script::api::rng::register(&mut engine);
-        ll_script::api::state::register(&mut engine, mod_namespace);
+        // **只读**那一半，不是完整的 state API——见
+        // `ll_script::api::state` 模块文档「两个注册入口」一节与
+        // 本 impl 的 `decide` 文档「C1：这里不写世界」一节：写入函数
+        // 攒下的待写记录需要宿主在调用窗口结束后取走、包成
+        // `Effect::SetScriptState`，而 `decide` 返回 `Option<Intent>`，
+        // 没有任何位置能放下它们。接上写能力等于让写入永远烂在线程
+        // 局部缓冲里跨帧累积——那本身就是一次 C1 违反。
+        ll_script::api::state::register_read_only(&mut engine, mod_namespace);
         let skill_index = skill_index_snapshot(registry);
         register_skill_ready_api(&mut engine, skill_index.clone());
         // 卫兵职业接线批次：同一份快照（见 register_profession_check_api
@@ -178,6 +186,14 @@ impl BehaviorTreeSource for ScriptBehaviorSource {
     /// `&mut WorldState`，脚本查询函数同样只能读。真正的写入仍然只
     /// 发生在调用方对 [`ll_sim::resolve::resolve_with_skills_and_quests`]
     /// 产出的 `Effect` 调用 `apply` 之后，本函数只负责「决策」这一步。
+    ///
+    /// 脚本状态也一样：本实例只注册了
+    /// `ll_script::api::state::register_read_only`，行为树脚本引用
+    /// `state-set!`/`entity-state-set!` 会在装载期被白名单点名拒绝，
+    /// 因此本函数结束时**不可能**有任何待写记录残留在
+    /// `ll_script::api::state` 的线程局部缓冲里——「跨帧累积」这条
+    /// C1 违反在这条路径上物理上不成立，见本文件
+    /// `行为树跑完多帧之后脚本状态待写缓冲恒为空` 那条测试。
     ///
     /// # 为什么不直接调用 `ll_script::api::query::set_active_world`
     ///
@@ -444,6 +460,140 @@ mod tests {
                 target: player
             }
         );
+    }
+
+    /// 行为树脚本引用 `state-set!` 必须在**装载期**就被点名拒绝。
+    ///
+    /// 这是「潜伏的 C1 违反」那条洞的第一半：`state-set!` 曾经被注册
+    /// 进本类型的引擎，写入却永远到不了 `apply`（`decide` 返回
+    /// `Option<Intent>`，没有位置放待写记录），于是写入在
+    /// `ll_script::api::state::PENDING_WRITES` 里跨帧累积、`state-get!`
+    /// 又优先读缓冲区——第 1 帧写下的值第 100 帧仍然读得到，存档里却
+    /// 什么都没有。现在这条路在装载那一刻就断了：写入函数根本没注册，
+    /// 名字进不了白名单，mod 作者当场看到一条指名道姓的错误。
+    #[test]
+    fn 行为树脚本引用状态写入函数在装载期被拒绝() {
+        // Arrange
+        let registry = Registry::new();
+        const 想写状态的树: &str = r#"
+            (define (try-remember)
+              (if (state-set! "grudge" 1) 'wait #f))
+
+            (define (ai-tree)
+              (quote (selector (try-remember))))
+            "#;
+
+        // Act
+        let result = ScriptBehaviorSource::new(
+            想写状态的树,
+            "ai-tree",
+            "examplemod",
+            &registry,
+            BehaviorRuleCatalogs::default(),
+            1,
+        );
+
+        // Assert：白名单在展开后的 AST 上点名这个标识符，不是一句
+        // 笼统的"装载失败"。
+        let Err(ScriptError::ParseError(message, _)) = result else {
+            panic!("行为树引用 state-set! 必须在装载期被拒绝，实际却装载成功或报了别的错");
+        };
+        assert!(
+            message.contains("state-set!"),
+            "错误信息必须点名是哪个标识符，实际是「{message}」"
+        );
+    }
+
+    /// `entity-state-set!` 同样被挡住——两个写入函数是一对，只挡住其中
+    /// 一个等于没挡。
+    #[test]
+    fn 行为树脚本引用每实体状态写入函数同样在装载期被拒绝() {
+        // Arrange
+        let registry = Registry::new();
+        const 想写实体状态的树: &str = r#"
+            (define (try-remember)
+              (let ([enemy (nearby-enemy)])
+                (if (and enemy (entity-state-set! enemy "seen" 1)) 'wait #f)))
+
+            (define (ai-tree)
+              (quote (selector (try-remember))))
+            "#;
+
+        // Act
+        let result = ScriptBehaviorSource::new(
+            想写实体状态的树,
+            "ai-tree",
+            "examplemod",
+            &registry,
+            BehaviorRuleCatalogs::default(),
+            1,
+        );
+
+        // Assert
+        let Err(ScriptError::ParseError(message, _)) = result else {
+            panic!("行为树引用 entity-state-set! 必须在装载期被拒绝");
+        };
+        assert!(
+            message.contains("entity-state-set!"),
+            "错误信息必须点名是哪个标识符，实际是「{message}」"
+        );
+    }
+
+    /// 读那一半仍然可用，而且**跑完多帧之后待写缓冲区恒为空**——洞的
+    /// 第二半（「跨帧累积」）在这条路径上物理上不可能发生。
+    ///
+    /// 判据故意选「缓冲区里有没有东西」而不是「脚本能不能调用
+    /// `state-set!`」：后者已经由上面两条装载期测试钉住，而真正让
+    /// C1 失守的是**缓冲区跨帧不为空**这个状态本身。这条测试连跑
+    /// 多次 `decide`（每次都真的求值一棵会调 `state-get!` 的树），
+    /// 逐帧断言缓冲区仍然是空的——若哪天有人把写能力接回来又忘了
+    /// 排空，这条测试会在第一帧就变红。
+    #[test]
+    fn 行为树跑完多帧之后脚本状态待写缓冲恒为空() {
+        // Arrange：一棵真的会读脚本状态的树——证明只读那一半确实还
+        // 注册着（若连读也没注册，脚本会在装载期就被白名单拒绝，这条
+        // 测试根本跑不到断言）。
+        const 会读状态的树: &str = r#"
+            (define (try-recall)
+              (if (state-get! "grudge") 'wait #f))
+
+            (define (fallback)
+              'wait)
+
+            (define (ai-tree)
+              (quote (selector (try-recall) (fallback))))
+            "#;
+
+        let registry = Registry::new();
+        let mut world = test_world();
+        let actor = spawn_agent_at(&mut world, 5, 5, Vec::new());
+
+        assert!(
+            ll_script::api::state::take_pending_writes().is_empty(),
+            "本测试线程在开跑之前就不该有任何待写记录"
+        );
+
+        let mut source = ScriptBehaviorSource::new(
+            会读状态的树,
+            "ai-tree",
+            "examplemod",
+            &registry,
+            BehaviorRuleCatalogs::default(),
+            1,
+        )
+        .expect("只读那一半仍然注册着，这棵树应当装载成功");
+
+        // Act & Assert：连跑多帧，每帧都推进世界时钟（`decide` 用它
+        // 派生随机流），逐帧断言缓冲区仍然为空。
+        for tick in 0..8i64 {
+            world.clock = Tick(tick);
+            let intent = source.decide(&world, actor).expect("兜底分支恒产出决策");
+            assert_eq!(intent, Intent::Wait { actor });
+            assert!(
+                ll_script::api::state::take_pending_writes().is_empty(),
+                "第 {tick} 帧之后待写缓冲区不为空——写能力被接回来了却没有人排空它"
+            );
+        }
     }
 
     /// 附近没有任何目标时，行为树应当降级为移动/等待——三层 fallback
