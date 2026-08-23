@@ -196,7 +196,6 @@ fn load_real_mods() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").expect("合法标识符");
@@ -368,7 +367,7 @@ fn 切换潜行经由turnengine真的改写世界状态() {
         bystander,
         &mut toggle_stealth,
         &ResolveCatalogs::empty(),
-        &mut |_, _| Vec::new(),
+        &mut |_, _| {},
     );
 
     // Assert：真的翻转了，且真的消耗了一个回合（下一次行动被排到了
@@ -430,7 +429,7 @@ fn 潜行让真实盗贼天赋的偷袭直通并经由turnengine生效() {
             defender,
             &mut attack_controlled,
             &catalogs,
-            &mut |_, _| Vec::new(),
+            &mut |_, _| {},
         );
         assert_eq!(acted, vec![attacker], "本场景应当恰好结算攻击方一次行动");
 
@@ -487,7 +486,7 @@ fn 潜行中攻击一次之后经由turnengine破除潜行() {
         defender,
         &mut attack_controlled,
         &ResolveCatalogs::empty(),
-        &mut |_, _| Vec::new(),
+        &mut |_, _| {},
     );
 
     // Assert
@@ -596,18 +595,19 @@ fn guard_turns_with_profession(
     for _ in 0..turns {
         {
             let mut ai = behavior_ai_intent(&mut source);
-            engine.advance_ai(&mut world, target, &mut ai, &catalogs, &mut |_, effect| {
-                match effect {
+            engine.advance_ai(
+                &mut world,
+                target,
+                &mut ai,
+                &catalogs,
+                &mut |_, effect| match effect {
                     Effect::Inspect { .. } => inspects += 1,
                     Effect::MoveTo { .. } => moves += 1,
                     _ => {}
-                }
-                Vec::new()
-            });
+                },
+            );
         }
-        engine.try_player_turn(&mut world, target, &wait_input, &catalogs, &mut |_, _| {
-            Vec::new()
-        });
+        engine.try_player_turn(&mut world, target, &wait_input, &catalogs, &mut |_, _| {});
     }
     (inspects, moves)
 }

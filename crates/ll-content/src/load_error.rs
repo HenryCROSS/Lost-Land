@@ -458,7 +458,6 @@ mod tests {
             version: "1.0.0".to_string(),
             dependencies: Vec::new(),
             entry_points: Vec::new(),
-            event_scripts: Vec::new(),
         }
     }
 
@@ -748,7 +747,6 @@ mod tests {
             version: "2.0.0".to_string(),
             dependencies: Vec::new(),
             entry_points: Vec::new(),
-            event_scripts: Vec::new(),
         }];
 
         // Act

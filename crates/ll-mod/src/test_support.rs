@@ -15,7 +15,6 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
 use crate::damage_category::DamageCategoryTable;
-use crate::event::EventSubscriptionTable;
 use crate::formula::FormulaTable;
 use crate::item::ItemTable;
 use crate::pipeline::GameplayTables;
@@ -86,7 +85,6 @@ pub(crate) struct OwnedTables {
     pub(crate) weather: WeatherTable,
     pub(crate) recipe: RecipeTable,
     pub(crate) recipe_category: RecipeCategoryTable,
-    pub(crate) events: EventSubscriptionTable,
 }
 
 impl OwnedTables {
@@ -112,7 +110,6 @@ impl OwnedTables {
             weather: &mut self.weather,
             recipe: &mut self.recipe,
             recipe_category: &mut self.recipe_category,
-            events: &mut self.events,
         }
     }
 }

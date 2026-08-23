@@ -36,7 +36,7 @@
 //!    `TorusSize` 方法」「禁止 `sqrt`/`powi(2)`/`hypot`」）近似替代，
 //!    这是一个诚实的简化，不是「视野」的完整实现。
 //! 2. **「敌对」是粗略的势力比对，不是完整的关系矩阵**。见
-//!    [`is_hostile`] 文档——`knowledge/design/society-and-affiliation.md`
+//!    [`ll_sim::ai_query::is_hostile`] 文档——`knowledge/design/society-and-affiliation.md`
 //!    描述的完整声望/关系系统是 P8 才落地的范围，本模块只用
 //!    `Affiliation::kind == Faction` 是否有交集做一个能跑起来的近似。
 //!
@@ -70,7 +70,7 @@
 //! 但与二节 2.3 描述的算法结构保持一致，也符合 C5（只用 `contains`
 //! 成员测试，不遍历 `VisibleSet` 做决策）。
 //!
-//! 不看敌对关系——[`is_hostile`] 的势力近似在这里不适用：卫兵要能
+//! 不看敌对关系——[`ll_sim::ai_query::is_hostile`] 的势力近似在这里不适用：卫兵要能
 //! 盘查任何看得见的单位（含友方/中立），不是只盘查敌人，见
 //! `mods/example_mod/behavior.scm` 的 `guard-try-inspect`。
 //!
@@ -275,7 +275,7 @@ fn direction_toward(target: ScriptEntityHandle) -> SteelVal {
 ///
 /// 方向判定本身委托给 [`ll_sim::ai_query::direction_from_delta`]（唯一
 /// 一份），本函数只负责把它翻成脚本侧的符号名——那个名字要与
-/// [`crate::api::intent::direction_from_symbol`] 认的那一份逐字对应。
+/// `crate::api::intent` 里那份反向映射认的字符串逐字对应。
 fn direction_symbol(dx: i32, dy: i32) -> &'static str {
     match ll_sim::ai_query::direction_from_delta(dx, dy) {
         Direction::North => "north",

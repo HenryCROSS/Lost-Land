@@ -188,7 +188,6 @@ fn load_real_mods() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();
@@ -368,7 +367,7 @@ fn craft_via_turn_engine_full(
         bystander,
         &mut intent,
         &catalogs,
-        &mut |_, _| Vec::new(),
+        &mut |_, _| {},
     );
 
     let crafter_after = world.actors.get(crafter).expect("制作不会杀死制作者");

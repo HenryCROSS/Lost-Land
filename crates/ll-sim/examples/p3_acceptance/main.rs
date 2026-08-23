@@ -345,7 +345,6 @@ impl Demo {
                 // 纯观察者：不产出任何反应效果，见
                 // `TurnEngine::perform` 文档「为什么 on_effect 返回
                 // Vec<Effect>」一节。
-                Vec::new()
             };
             self.engine.advance_ai(
                 &mut self.world,
@@ -367,7 +366,6 @@ impl Demo {
                 // 纯观察者：不产出任何反应效果，见
                 // `TurnEngine::perform` 文档「为什么 on_effect 返回
                 // Vec<Effect>」一节。
-                Vec::new()
             };
             self.engine.try_player_turn(
                 &mut self.world,
@@ -382,7 +380,6 @@ impl Demo {
                 let popups = &mut self.popups;
                 let mut on_damage = |world: &WorldState, effect: &Effect| {
                     record_damage_popup(world, effect, popups);
-                    Vec::new()
                 };
                 self.engine.advance_ai(
                     &mut self.world,

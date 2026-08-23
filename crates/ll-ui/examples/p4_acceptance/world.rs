@@ -138,7 +138,6 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     let missing_dependency_report = load_all(
@@ -165,7 +164,6 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     let duplicate_namespace_report = load_all(
@@ -192,7 +190,6 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     report.entries.extend(missing_dependency_report.entries);

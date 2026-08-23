@@ -109,38 +109,28 @@ impl TurnEngine {
     /// `resolve_attack`），`apply` 之后该实体已从世界里销毁，`on_effect`
     /// 若想读它此刻的位置就再也读不到了。
     ///
-    /// # 为什么 `on_effect` 返回 `Vec<Effect>` 而不是 `()`
+    /// # `on_effect` 是纯观察者，返回 `()`
     ///
-    /// 事件监听 API 批次放宽的：mod 脚本可以订阅运行期事件
-    /// （`ll_mod::event`），而一个只能看不能动的监听器用处有限。放宽
-    /// 之后监听器可以产出**反应效果**——注意它产出的不是"写好的世界
-    /// 状态"，而是一批还没落地的 [`Effect`]，仍然由本函数交给同一个
-    /// `apply` 执行。约束 C1「`apply` 是全局唯一能改世界的地方」与
-    /// ADR 0023「脚本状态写入必须经 `apply`」因此都逐字成立：`on_effect`
-    /// 的签名里没有 `&mut WorldState`，监听器物理上写不了世界。
+    /// 它曾经返回 `Vec<Effect>`（**反应效果**），那是给 mod 脚本事件
+    /// 监听器用的：一个只能看不能动的监听器用处有限。脚本事件监听
+    /// 拆除之后那条通道的唯一生产者消失了（呈现层与测试一直返回空
+    /// `Vec`），签名因此收回成 `()`——留着一个恒为空的返回值，就是这个
+    /// 代码库反复踩过的「声明了但从没接线」。
     ///
-    /// 纯观察者（呈现层、测试）返回空 `Vec` 即可，与放宽之前逐字等价。
+    /// 收回**不改变任何可观察行为**：反应列表恒为空，那两个循环（攒
+    /// 反应、事后 apply 反应）跑的都是零次。
     ///
-    /// # 反应效果为什么在这一批效果全部落地**之后**才 apply
-    ///
-    /// 两个理由：
-    ///
-    /// 1. **可预测**。若插在触发它的那条效果紧后面，一次结算的效果
-    ///    序列就会变成"引擎的效果与监听器的反应交错"，而交错顺序取决
-    ///    于装了哪些 mod——同一份存档在不同 mod 集合下的中间状态序列
-    ///    因此不同。放在末尾，引擎自己那一批的顺序完全不受影响。
-    /// 2. **不会递归**。反应效果**不再触发一轮 `on_effect`**：它们直接
-    ///    `apply`，不经过分发。这让"监听器 A 的反应叫醒监听器 B、B 的
-    ///    反应又叫醒 A"这类环路在结构上不可能出现，不需要任何深度
-    ///    上限之类的补丁。代价是监听器观察不到别的监听器的反应——那正
-    ///    是本批次想要的边界。
+    /// 引擎自身真要「一条效果触发另一条」时，正确的落点是
+    /// [`crate::resolve`]（结算期就把整批效果算全，例如
+    /// `rest_completion_effects`），不是让宿主回调往里塞——那样效果
+    /// 序列会取决于宿主是谁。
     fn perform(
         &mut self,
         world: &mut WorldState,
         entry: TimelineEntry,
         intent: Intent,
         catalogs: &ResolveCatalogs<'_>,
-        on_effect: &mut dyn FnMut(&WorldState, &Effect) -> Vec<Effect>,
+        on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) {
         // 世界时钟推进——曾经在这里加过一条「只在变化时打一行」的
         // `tracing::info!` 调试日志（提交 `0ff2c9e`），因为项目所有者
@@ -152,11 +142,8 @@ impl TurnEngine {
         // UI 落地后应摘除」移除，不留任何调试期专用分支。
         world.clock = entry.at;
         let effects = resolve_with_catalogs(world, &intent, catalogs);
-        // 监听器产出的反应效果，攒到这一批全部落地之后再统一 apply，
-        // 理由见本函数文档「反应效果为什么在这一批效果全部落地之后」。
-        let mut reactions: Vec<Effect> = Vec::new();
         for effect in &effects {
-            reactions.extend(on_effect(world, effect));
+            on_effect(world, effect);
             // `apply_with_xp_curves`，不是薄封装 `apply`：后者恒用
             // `FlatXpCurve::DEFAULT` 那条保底曲线，于是
             // `register-xp-curve`/`register-class-xp-curve`/
@@ -172,13 +159,6 @@ impl TurnEngine {
                 // `crate::timeline` 模块文档），apply 只知道
                 // WorldState，清理时间轴里残留的死者行动记录是调用方
                 // （这里）的职责。
-                self.timeline.remove(*target);
-            }
-        }
-        for reaction in &reactions {
-            // 反应效果不再触发一轮 `on_effect`，见本函数文档。
-            apply_with_xp_curves(world, reaction, catalogs.xp_curves);
-            if let Effect::Kill { target, .. } = reaction {
                 self.timeline.remove(*target);
             }
         }
@@ -255,7 +235,7 @@ impl TurnEngine {
         controlled: EntityId,
         ai_intent: &mut dyn FnMut(&WorldState, EntityId, EntityId) -> Intent,
         catalogs: &ResolveCatalogs<'_>,
-        on_effect: &mut dyn FnMut(&WorldState, &Effect) -> Vec<Effect>,
+        on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) -> Vec<EntityId> {
         let mut acted = Vec::new();
         for _ in 0..MAX_STEPS_PER_ADVANCE {
@@ -307,7 +287,7 @@ impl TurnEngine {
         player: EntityId,
         input: &InputState,
         catalogs: &ResolveCatalogs<'_>,
-        on_effect: &mut dyn FnMut(&WorldState, &Effect) -> Vec<Effect>,
+        on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) -> bool {
         let Some(entry) = self.pending.filter(|entry| entry.actor == player) else {
             return false;
@@ -472,11 +452,8 @@ mod tests {
         input.press(GameKey::Wait);
 
         // Act
-        engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {
-            Vec::new()
-        });
-        let acted =
-            engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| Vec::new());
+        engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
+        let acted = engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
 
         // Assert
         assert!(acted, "本用例应能成功结算一次受控实体的等待");
@@ -500,10 +477,8 @@ mod tests {
         // Act：记录每次结算后的时钟读数。
         let mut clocks = Vec::new();
         for _ in 0..3 {
-            engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {
-                Vec::new()
-            });
-            engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| Vec::new());
+            engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
+            engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
             clocks.push(world.clock);
         }
 
@@ -555,10 +530,8 @@ mod tests {
 
         // Act：连续结算六次基准敏捷的等待。
         for _ in 0..6 {
-            engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {
-                Vec::new()
-            });
-            engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| Vec::new());
+            engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
+            engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
         }
 
         // Assert
@@ -608,10 +581,9 @@ mod tests {
                 player,
                 &mut move_toward_origin,
                 &EMPTY,
-                &mut |_, _| Vec::new(),
+                &mut |_, _| {},
             ));
-            let acted =
-                engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| Vec::new());
+            let acted = engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
             assert!(acted, "本用例中每一轮都应能成功结算一次受控实体等待");
         }
 
@@ -638,15 +610,12 @@ mod tests {
         timeline.schedule(player, Tick(0));
         timeline.schedule(victim, Tick(100));
         let mut engine = TurnEngine::new(timeline);
-        engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {
-            Vec::new()
-        });
+        engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
         let mut input = InputState::new();
         input.press(GameKey::Right);
 
         // Act
-        let acted =
-            engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| Vec::new());
+        let acted = engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {});
 
         // Assert
         assert!(acted);
@@ -697,7 +666,7 @@ mod tests {
             player,
             &mut attack_player,
             &EMPTY,
-            &mut |_, _| Vec::new(),
+            &mut |_, _| {},
         );
 
         // Assert：受控实体应已被击杀，且结算过的实体数应远小于

@@ -102,7 +102,6 @@ fn load_real_mods() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();

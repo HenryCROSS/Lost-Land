@@ -191,7 +191,6 @@ fn load_real_mods() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();
@@ -376,7 +375,7 @@ fn damage_dealt_via_turn_engine(
         defender,
         &mut attack_controlled,
         catalogs,
-        &mut |_, _| Vec::new(),
+        &mut |_, _| {},
     );
     assert_eq!(
         acted,
@@ -435,7 +434,7 @@ fn equipment_after_one_attack(
         defender,
         &mut attack_controlled,
         catalogs,
-        &mut |_, _| Vec::new(),
+        &mut |_, _| {},
     );
     assert_eq!(
         acted,
@@ -524,7 +523,6 @@ fn backstab_effects_via_turn_engine(
         catalogs,
         &mut |_, effect| {
             seen.push(effect.clone());
-            Vec::new()
         },
     );
     seen

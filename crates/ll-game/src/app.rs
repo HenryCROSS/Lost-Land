@@ -16,7 +16,6 @@ use std::sync::Arc;
 
 use ll_i18n::Catalog;
 use ll_mod::asset_vfs::AssetVfs;
-use ll_mod::script_event_source::ScriptEventSource;
 use ll_platform::config::DisplayConfig;
 use ll_platform::config::ScaleFilter;
 use ll_platform::fps::FpsCounter;
@@ -322,16 +321,6 @@ pub struct Demo {
     /// 里——`GameWorld` 只是「建世界/读档」这一步的搬运容器，不是本
     /// 引擎持续读写的地方。
     engine: TurnEngine,
-    /// 运行期事件分发器（事件监听 API 批次）——每条效果落地之前回调
-    /// 已订阅的 mod 处理函数，把它们产出的反应效果交回 `TurnEngine`
-    /// 由同一个 `apply` 执行，见 `ll_mod::script_event_source` 模块
-    /// 文档。
-    ///
-    /// `None` 表示**一条订阅都没有**：这时连引擎都不建（见
-    /// `crate::run_game` 里的接线），事件分发在结算路径上退化成一次
-    /// `Option::is_none` 判断，与本批次之前逐字等价。这是那条「没人
-    /// 订阅就一分钱都不花」承诺的最外层落点。
-    event_source: Option<ScriptEventSource>,
     resources: Option<GpuResources>,
     /// 本地化目录（P7 第一批：只读观测 HUD）——状态栏/角色面板/背包/
     /// 装备栏的全部标签、属性名、槽位名、物品名都经它解析，见
@@ -387,7 +376,6 @@ impl Demo {
         display: DisplayConfig,
         catalog: Catalog,
         language: String,
-        event_source: Option<ScriptEventSource>,
     ) -> Demo {
         let player_pos = game_world
             .world
@@ -431,7 +419,6 @@ impl Demo {
             walk_clip,
             idle_clip,
             engine,
-            event_source,
             anim: AnimStateMachine::new(idle_clip, FrameId(0)),
             resources: None,
             catalog,
@@ -508,18 +495,15 @@ impl Demo {
         // 游戏里全都是死的——同一处接线缺口的第二层。
         let runtime_catalogs = RuntimeCatalogs::new(&self.content);
         let catalogs = runtime_catalogs.as_resolve_catalogs();
-        // 本体二进制不渲染伤害飘字（`p3_acceptance` 才有,那是纯呈现层
-        // 的验收效果,见 `ll_sim::turn` 模块文档），但 `on_effect` 这条
-        // 回调**不再**是空操作：它现在是 mod 事件监听的落点。
+        // 本体二进制不渲染伤害飘字（`p3_acceptance` 才有，那是纯呈现层
+        // 的验收效果，见 `ll_sim::turn` 模块文档），因此这条回调在这里
+        // 是空操作。
         //
-        // 没有任何订阅时 `event_source` 是 `None`，闭包退化成一次
-        // `Option::is_none` 判断加一个空 `Vec`——与接线之前逐字等价，
-        // 没装 mod 的玩家不为这套机制付任何代价。
-        let event_source = &mut self.event_source;
-        let mut on_effect = |world: &WorldState, effect: &Effect| match event_source {
-            Some(source) => source.dispatch(world, effect),
-            None => Vec::new(),
-        };
+        // 它曾经是 mod 事件监听的落点；脚本系统拆除之后那条通道没有了
+        // （判据与论证见本批次提交信息）。回调本身**保留**：它是
+        // 「一条效果在呈现层意味着什么」这个问题唯一的接缝，`ll-sim`
+        // 不知道调用方在不在渲染。
+        let mut on_effect = |_world: &WorldState, _effect: &Effect| {};
         self.engine.advance_ai(
             &mut self.game_world.world,
             player,
@@ -1081,11 +1065,6 @@ mod tests {
             DisplayConfig::default(),
             Catalog::load_dir(&std::env::temp_dir().join("ll-game-app-test-empty-locales")),
             "zh-CN".to_string(),
-            // 事件分发不在本测试帮手的范围内：建它要求「全部引擎构造
-            // 先于全部脚本编译」（C6），而 `test_content()` 已经在本
-            // 线程上装载过 mod。真实接线在 `crate::run_game`，端到端
-            // 证据在 `crates/ll-mod/tests/example_mod_events.rs`。
-            None,
         )
     }
 

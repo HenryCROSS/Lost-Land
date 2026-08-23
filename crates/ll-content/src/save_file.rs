@@ -804,7 +804,6 @@ mod tests {
             version: "0.1.0".to_string(),
             dependencies: Vec::new(),
             entry_points: Vec::new(),
-            event_scripts: Vec::new(),
         }];
 
         // Act
@@ -851,7 +850,6 @@ mod tests {
             version: "0.1.0".to_string(),
             dependencies: Vec::new(),
             entry_points: Vec::new(),
-            event_scripts: Vec::new(),
         }];
 
         // Act
@@ -991,7 +989,6 @@ mod tests {
             version: "0.2.0".to_string(),
             dependencies: Vec::new(),
             entry_points: Vec::new(),
-            event_scripts: Vec::new(),
         }];
         let outcome = load_full(
             &path,
@@ -1178,7 +1175,6 @@ mod tests {
             version: "0.1.0".to_string(),
             dependencies: Vec::new(),
             entry_points: Vec::new(),
-            event_scripts: Vec::new(),
         }];
         let generation = ll_mod::mod_set::GenerationModSet::capture(&registry, &manifests);
         let generation_mods = crate::world_identity::generation_mods_to_header_entries(&generation);

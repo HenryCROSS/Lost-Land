@@ -261,8 +261,14 @@ EXEMPTIONS: dict[str, str] = {
     "SkillDef.owning_class": "skill.rs 字段文档原文：只是一个分类/展示字段，不是命名空间隔离的边界，主职副职共享同一份技能命名空间（P5-4 裁定）。",
     "QuestNodeDef.condition": "任务结算走的是 ll-sim::quest::QuestCatalog::kill_count_quests() 返回的窄接口 QuestKillRule（依赖倒置，同 ItemDef.stack_limit 的收敛手法），不是对 QuestNodeDef 实例整体做 .condition 点号访问——真实消费路径在 ll-mod 侧把 QuestCondition 拆解、按需要的字段喂给 QuestKillRule，本脚本按字段名正则抓不到这条间接路径，见脚本头注释「已知局限」第 2 条。",
     "TraitDef.stat_modifiers": "天赋授予的属性修正——同 RaceDef.stat_modifiers 同一类问题：trait_def.rs 模块文档「据此聚合出角色对某个标量池的有效容量」一节只论证了容量聚合用途，六项主属性的直接修正应用尚未接入 effective_attribute 一类决策层函数。",
-    "Agent.affiliations": "agent.rs 字段声明处紧邻注释原文：以下六个字段 P3 可以留空，但字段必须现在就有——见 society-and-affiliation.md 第五节，存档格式在 P5 冻结，P3 阶段不消费，只保证存档格式不用在 P8 补迁移链。",
-    "Agent.goals": "同 Agent.affiliations，同一处「以下六个字段 P3 可以留空」注释覆盖的字段之一，见 agent-goals-and-economy.md 第九节。",
+    # `Agent.affiliations` 曾在本清单里（理由是「P3 阶段不消费，只保证
+    # 存档格式不用在 P8 补迁移链」）——它其实一直有一个真实消费者
+    # （`is_hostile`：没有任何势力归属的实体视为对谁都敌对），只是那份
+    # 代码住在 `ll-script`，不在本脚本认的决策层路径里。行为树搬进
+    # 引擎的批次把它移到了 `ll_sim::ai_query`（同一份实现，不是复制），
+    # 本门禁当场报出「已被接线，请从 EXEMPTIONS 里删除这一条」，据此
+    # 摘除——与 `Agent.subclasses` 当初同一条流程。
+    "Agent.goals": "同一处「以下六个字段 P3 可以留空」注释覆盖的字段之一（见 agent.rs 字段声明处紧邻注释与 agent-goals-and-economy.md 第九节）：存档格式在 P5 冻结，当前阶段不消费，只保证不用在 P8 补迁移链。",
     # `Agent.subclasses` 曾在本清单里（理由是「未声明任何决策层消费点；
     # 副职系统的结算消费是后续批次工作」）——制作系统批次落地的
     # `ll_sim::resolve::resolve_craft` 副职闸门是它的**第一个**真实决策层

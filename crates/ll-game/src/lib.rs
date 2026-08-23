@@ -34,7 +34,6 @@ use ll_platform::window::{WindowConfig, run};
 
 use app::Demo;
 use content::load_content;
-use ll_mod::script_event_source::{PreparedEventEngine, ScriptEventSource};
 use world::{GameWorld, build_new_world, rebuild_timeline};
 
 /// 配置文件相对可执行文件所在目录的文件名。格式是 JSON5，不是
@@ -320,22 +319,6 @@ pub fn run_game() {
     // 伤害的残破会话里自己猜原因，不如在启动那一刻就点名。
     // 错误文案本身已经逐条列出全部明细，这里补上它不知道的那一半：
     // 本次会话的 mods_root 究竟指向哪里。
-    // 事件分发引擎必须在**这里**构造，不能等到装载之后：约束 C6 /
-    // ADR 0028 要求「同一根线程上全部引擎构造先于全部脚本编译」，而
-    // `load_content` 下一行就会编译一堆 mod 脚本。这与
-    // `ll_mod::pipeline::load_all` 内部先把 N 个装载期引擎全部造好、
-    // 再逐个编译是同一条纪律的同一种落法。
-    //
-    // 造几个：按「磁盘上发现到几个候选 mod 目录」取上界——真正需要
-    // 几个（= 有事件订阅的 mod 个数）要等装载完才知道，而那时候已经
-    // 太晚了。多造的会在 `ScriptEventSource::new` 里就地析构（C6 只
-    // 禁「编译之后再构造」，析构不受限）。
-    let prepared_event_engines: Vec<PreparedEventEngine> =
-        ll_mod::discover::discover_mods(&paths.mods_root)
-            .iter()
-            .map(|_| PreparedEventEngine::new())
-            .collect();
-
     let content = load_content(&paths.mods_root, &paths.assets_root).unwrap_or_else(|error| {
         tracing::error!(
             mods_root = %paths.mods_root.display(),
@@ -352,34 +335,9 @@ pub fn run_game() {
         registered_mods = content.report.loaded_count(),
         failed_mods = content.report.failed_count(),
         sprites = content.asset_vfs.sprites.len(),
-        event_subscriptions = content.event_subscriptions.all().len(),
         "游戏内容装载完成"
     );
 
-    // 运行期事件分发（事件监听 API 批次）。
-    //
-    // **一条订阅都没有就整个不建**：`None` 让结算路径上的事件分发退化
-    // 成一次 `Option::is_none` 判断，见 `crate::app::Demo::event_source`
-    // 字段文档。这是「没人订阅就一分钱都不花」这条性能承诺的最外层
-    // 落点，也是绝大多数玩家（没装监听事件的 mod）会走到的那一支。
-    //
-    // 建失败是一条**启动期硬错误**，与内容装载校验失败同一条纪律：
-    // 一条指向不存在处理函数的订阅，若在这里降级成"跳过这个 mod"，
-    // mod 作者只会看到"我的处理函数没被调用"，而没有任何线索。
-    let event_source = if content.event_subscriptions.is_empty() {
-        None
-    } else {
-        let source = ScriptEventSource::new(
-            prepared_event_engines,
-            &content.event_script_sources,
-            content.event_subscriptions.clone(),
-        )
-        .unwrap_or_else(|error| {
-            tracing::error!(%error, "事件监听接线失败，游戏无法继续启动");
-            panic!("事件监听接线失败：{error}");
-        });
-        Some(source)
-    };
     // 图集为空是一条启动期硬错误，不是等到每帧绘制时才暴露的降级——
     // 见 `DataDirNotFound` 文档同一个教训：根因（数据目录解析错误，或
     // assets_root 下确实没有任何精灵声明）被推迟到渲染阶段才第一次
@@ -442,7 +400,6 @@ pub fn run_game() {
         config.display,
         catalog,
         config.language.clone(),
-        event_source,
     );
 
     if let Err(error) = run(window_config, demo) {

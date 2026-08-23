@@ -119,7 +119,6 @@ fn load_real_mods() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();
@@ -348,7 +347,6 @@ fn 真实注册的酸伤害类别与武器类别都能查到独立的内容索�
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
 

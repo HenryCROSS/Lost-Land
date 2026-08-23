@@ -101,7 +101,6 @@ fn load_real_mods_and_resolve() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     // mod 自身在 LoadReport 里的标识按 `ll_mod::manifest::mod_self_id`

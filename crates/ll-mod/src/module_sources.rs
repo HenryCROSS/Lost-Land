@@ -180,7 +180,6 @@ mod tests {
                 constraint: crate::version_constraint::VersionConstraint::Any,
             }],
             entry_points: Vec::new(),
-            event_scripts: Vec::new(),
         };
         let sources = vec![
             (

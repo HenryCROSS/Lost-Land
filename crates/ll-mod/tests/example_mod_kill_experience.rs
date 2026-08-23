@@ -216,7 +216,6 @@ fn load_real_mods() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
-            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     for id in ["examplemod:self", "lostland:self"] {
@@ -368,7 +367,7 @@ fn kill_via_turn_engine(
         bystander,
         &mut intent,
         &catalogs,
-        &mut |_, _| Vec::new(),
+        &mut |_, _| {},
     );
 
     assert!(
@@ -509,7 +508,7 @@ fn submit_via_turn_engine(
         bystander,
         &mut intent,
         &catalogs,
-        &mut |_, _| Vec::new(),
+        &mut |_, _| {},
     );
     world.actors.get(actor).expect("加点不会杀死任何人").clone()
 }

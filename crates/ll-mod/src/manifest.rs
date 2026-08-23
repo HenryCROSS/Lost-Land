@@ -92,26 +92,6 @@ pub struct ModManifest {
     /// 脚本入口文件（`.scm`），已解析成相对清单所在目录的绝对/相对
     /// 路径——调用方不需要再自己拼目录。
     pub entry_points: Vec<PathBuf>,
-    /// **结算期**脚本文件（`.scm`），路径解析方式同 [`Self::entry_points`]。
-    ///
-    /// # 为什么必须是另一份清单，不能复用 `entry_points`
-    ///
-    /// 装载期引擎与结算期引擎的能力表**刻意不兼容**：前者有
-    /// `register-*` 一整套、没有任何世界查询；后者反过来。同一份
-    /// 源码因此不可能在两个引擎上都编译通过——一份写着
-    /// `(register-class ...)` 的文件喂给结算期引擎，会被白名单当场
-    /// 判成自由标识符。这不是本字段引入的限制，是那道隔离墙本来的
-    /// 样子（当年的 `mods/example_mod/behavior.scm` 之所以刻意不在
-    /// `entry_points` 里，正是同一条原因，见该文件头注释）。
-    ///
-    /// 于是事件监听天然分成两半：**声明**（`(on-event 事件 处理函数名)`）
-    /// 是装载期动作，写在 `entry_points` 的某个文件里；**实现**
-    /// （`(define (处理函数) ...)`）是结算期代码，写在本字段列出的
-    /// 文件里。见 `crate::event`/`crate::script_event_source` 两处
-    /// 模块文档。
-    ///
-    /// 允许为空（绝大多数 mod 不监听任何事件）。
-    pub event_scripts: Vec<PathBuf>,
 }
 
 /// 一条依赖声明：依赖哪个 mod、要求它满足什么版本约束。
@@ -261,10 +241,6 @@ struct RawManifest {
     /// 脚本入口文件相对路径。允许缺省为空（纯数据 mod 可以没有脚本）。
     #[serde(default)]
     entry_points: Vec<String>,
-    /// 结算期脚本文件相对路径。允许缺省为空（绝大多数 mod 不监听
-    /// 任何运行期事件），见 [`ModManifest::event_scripts`]。
-    #[serde(default)]
-    event_scripts: Vec<String>,
 }
 
 /// 清单里 `dependencies` 字段的两种合法 JSON5 形状——向后兼容旧版裸命名
@@ -364,14 +340,12 @@ pub fn parse_manifest(path: &Path) -> Result<ModManifest, ModError> {
 
     let base_dir = path.parent().unwrap_or_else(|| Path::new("."));
     let entry_points = raw.entry_points.iter().map(|p| base_dir.join(p)).collect();
-    let event_scripts = raw.event_scripts.iter().map(|p| base_dir.join(p)).collect();
 
     Ok(ModManifest {
         id,
         version: raw.version,
         dependencies,
         entry_points,
-        event_scripts,
     })
 }
 

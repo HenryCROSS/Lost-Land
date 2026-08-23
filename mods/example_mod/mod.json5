@@ -32,31 +32,13 @@
   // 标签会查不到而整批装载失败。
   dependencies: ["lostland"],
 
-  // entry_points 列的是"装载时"跑一次的脚本（ll_mod::pipeline::load_all
-  // 消费）。内容已经全部搬进 *.json5，这里只剩 gameplay.scm 里那两条
-  // 事件订阅声明——**内容数据文件不在这份清单里**，靠固定文件名被
-  // 发现，理由见 ll_mod::content_data 模块文档「读哪些文件」一节。
-  // behavior.scm 刻意不在这份
-  // 列表里——它面向一套完全不同的运行期 ScriptEngine
-  // （ll_mod::script_behavior_source::ScriptBehaviorSource），由行为树
-  // 求值器按需构造，注册的是 nearby-enemy/skill-ready? 这类运行期查询
-  // 函数，不是 register-terrain 这类装载期注册函数。把它塞进
-  // entry_points，装载管线的引擎会因为认不出这些函数名而白名单拒绝，
-  // 直接报错——两套引擎的能力表天生不兼容，不是一个可以事后调整的
-  // 疏漏。真正加载 behavior.scm 的路径见 ScriptBehaviorSource::new
-  // 文档。
-  entry_points: ["gameplay.scm"],
-
-  // event_scripts 列的是"结算期"跑的脚本：运行期事件的处理函数住在
-  // 这里。它与 entry_points 是两份**不可互换**的清单，理由与
-  // behavior.scm 不在 entry_points 里逐字相同（见上一段）——事件的
-  // **订阅声明** `(on-event ...)` 是装载期动作，写在 gameplay.scm 里；
-  // 事件的**处理实现** `(define (examplemod-on-kill) ...)` 是结算期
-  // 代码，写在这里。完整论证见
-  // ll_mod::manifest::ModManifest::event_scripts 文档。
+  // entry_points 列的是「装载时」跑一次的脚本。**本 mod 一个都没有**
+  // ——内容全部住在同目录的 *.json5 里（内容数据文件不进这份清单，靠
+  // 固定文件名被发现，见 ll_mod::content_data 模块文档「读哪些文件」
+  // 一节），行为与事件处理全部搬进了引擎。
   //
-  // behavior.scm 目前不在这份列表里：它走的是另一条运行期通道
-  // （ScriptBehaviorSource，被问"这一回合做什么"），与事件监听
-  // （被告知"刚刚发生了什么"）方向相反，两者各自有自己的引擎。
-  event_scripts: ["events.scm"],
+  // 字段留着不删：第三方 mod 目前仍然可以写装载期脚本，这条能力的
+  // 整体去留是收尾批次的事。本 mod 是「一个内容 mod 可以一行脚本都
+  // 不写」这句话的可执行证据。
+  entry_points: [],
 }
