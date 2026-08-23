@@ -8,9 +8,10 @@
 //! discover_mods(root)              -> 候选清单路径
 //!   -> parse_manifest(path)（逐个，互不影响）-> 已解析清单/Parse 阶段失败
 //!   -> topo_sort(已解析清单)         -> 加载顺序，或 Topo 阶段失败（整批中止）
+//!   -> 为每个「有脚本入口的 mod」各构造一个 ScriptEngine（全部先造齐）
 //!   -> 按顺序逐个 mod：
 //!        入口为空                   -> Loaded（纯数据 mod）
-//!        否则逐个 .scm 入口：
+//!        否则逐个 .scm 入口，共用本 mod 那一个引擎：
 //!          读文件                   -> IO 失败归入 LoadScript 阶段
 //!          ScriptEngine::load_source -> 语法错误/白名单拒绝/超时/缺参
 //!                                       归入 LoadScript 阶段；
@@ -19,6 +20,35 @@
 //!                                       `classify_script_stage` 文档，
 //!                                       这是一处已知的简化）
 //! ```
+//!
+//! # 作用域单位是 mod，不是脚本文件
+//!
+//! 同一个 mod 的全部 `entry_points` 共用**同一个** [`ScriptEngine`]：
+//! `races.scm` 里 `(define (helper) ...)` 定义的辅助函数，同一个 mod 的
+//! `classes.scm` 直接可以调用。这些文件本来就是同一个作者写的同一份
+//! 内容，拆成多个文件只是为了「本体的种族都写在哪」有个不用搜索就能
+//! 回答的答案（见 `mods/lostland/mod.json5`），不该顺带把它们变成互相
+//! 看不见的孤岛。
+//!
+//! **跨 mod 的命名空间隔离原样保住**：换一个 mod 就换一个全新引擎，
+//! mod A 的 `define` 在 mod B 的全局环境里根本不存在。两条性质各有一条
+//! 测试钉着，见本模块 `tests` 里
+//! `同一个mod的后一个脚本能调用前一个脚本定义的辅助函数` 与
+//! `跨mod的define互相不可见`。
+//!
+//! **逐文件编译这条边界保留**：同一个 mod 的多个脚本仍然是各自一次
+//! `load_source`，**不拼接成一个大编译单元**。装载管线因此始终知道
+//! 「当前这一条注册来自哪个文件」，后续批次的逐文件依赖声明与反向
+//! 校验才有立足点。多编译几次在崩溃层面没有任何代价——危险的相邻
+//! 关系是「编译 → 构造」，不是「编译 → 编译」（ADR 0028）。
+//!
+//! # 构造阶段先于编译阶段
+//!
+//! [`load_all`] 先把这一批要用的引擎**全部**构造出来，再开始编译第一
+//! 个脚本。这不是优化，是 ADR 0028 那条上游内存安全缺陷的规避条件：
+//! `steel-core` 0.8.2 只在「先编译、后构造」这个相邻关系上出问题。
+//! 违反会被 `ll_script::host::ScriptEngine::new` 里的断言当场拦下，
+//! 见该处注释。
 //!
 //! 本体内容分两半，与这条管线的关系**不一样**，这是本模块最容易被
 //! 误读的一点：
@@ -145,7 +175,7 @@ use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 /// 资源池、物品、伤害公式、武器类别、伤害类别、空间层属性、天气、
 /// 配方、配方类别。
 ///
-/// 集中成一个结构体，而不是让 [`load_all`]/[`load_one_script`] 各自
+/// 集中成一个结构体，而不是让 [`load_all`]/[`compile_one_script`] 各自
 /// 接收十九个独立的 `&mut` 参数：这些表在装载管线里总是同进同出（同一
 /// 份 mod 脚本可能在同一个文件里先后调用 `register-terrain`/
 /// `register-class`/……），拆成十九个位置参数只会让调用点的参数顺序成为
@@ -303,6 +333,25 @@ pub fn load_all(
         }
     };
 
+    // 阶段一：把这一批要用到的引擎**全部**构造出来，一个脚本都还没
+    // 编译。`order` 来自 `topo_sort`，是确定性序列（约束 C5），因此
+    // 「第几个引擎归第几个 mod」也是确定的。
+    //
+    // 构造引擎不需要任何装载期数据：清单是 JSON5，不经 Steel 编译器，
+    // 「读完清单 → 知道有几个带脚本的 mod → 造几个引擎」这个顺序成立。
+    // `register_*_api` 也在这一阶段完成——它只往符号表里塞 Rust 函数
+    // 指针，不编译任何 Steel 源码。
+    let scripted: Vec<usize> = order
+        .iter()
+        .copied()
+        .filter(|idx| !parsed[*idx].entry_points.is_empty())
+        .collect();
+    let engines: Vec<ScriptEngine> = scripted.iter().map(|_| new_load_engine()).collect();
+
+    // 阶段二：逐个 mod 编译它自己的全部入口脚本。每个引擎在它那个 mod
+    // 编译完之后就地析构——约束 C6 禁的是「编译之后再构造」，析构不受
+    // 限制，因此内存峰值只存在于装载期间的前半段。
+    let mut engines = engines.into_iter();
     for idx in order {
         let manifest = &parsed[idx];
         if manifest.entry_points.is_empty() {
@@ -312,9 +361,12 @@ pub fn load_all(
             continue;
         }
 
+        let mut engine = engines
+            .next()
+            .expect("阶段一按同一个 scripted 过滤条件造了同样多的引擎");
         let mut failure = None;
         for entry in &manifest.entry_points {
-            if let Err(err) = load_one_script(manifest, entry, registry, tables) {
+            if let Err(err) = compile_one_script(manifest, entry, &mut engine, registry, tables) {
                 failure = Some(err);
                 break;
             }
@@ -327,6 +379,38 @@ pub fn load_all(
     }
 
     report
+}
+
+/// 构造一个装载期脚本引擎，并把全部 `register-*` 注册函数挂上去。
+///
+/// **只构造、只注册，绝不编译任何脚本源码**——这是「同一根线程上全部
+/// 引擎构造必须先于全部脚本编译」这条约束（见 `ll_script::host` 里
+/// `COMPILED_ON_THIS_THREAD` 上方注释与 ADR 0028）在本管线里的落点：
+/// [`load_all`] 先把这个函数调 N 次，再开始调 [`compile_one_script`]。
+///
+/// 权威清单是本函数里 `register_*_api` 的调用序列与 [`GameplayTables`]
+/// 的字段，不是任何一段文档。
+fn new_load_engine() -> ScriptEngine {
+    let mut engine = ScriptEngine::new();
+    register_terrain_api(&mut engine);
+    register_class_api(&mut engine);
+    register_skill_api(&mut engine);
+    register_subclass_api(&mut engine);
+    register_quest_api(&mut engine);
+    register_race_api(&mut engine);
+    register_clip_api(&mut engine);
+    register_xp_curve_api(&mut engine);
+    register_trait_api(&mut engine);
+    register_resource_pool_api(&mut engine);
+    register_item_api(&mut engine);
+    register_damage_formula_api(&mut engine);
+    register_weapon_category_api(&mut engine);
+    register_damage_category_api(&mut engine);
+    register_space_profile_api(&mut engine);
+    register_recipe_api(&mut engine);
+    register_recipe_category_api(&mut engine);
+    register_weather_api(&mut engine);
+    engine
 }
 
 /// 单个 mod 的「最小可行」一键重载（简报「单个 mod 一键重载」的诚实
@@ -409,8 +493,14 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         recipe: &mut recipe,
         recipe_category: &mut recipe_category,
     };
+    // 与 `load_all` 同一条作用域规则：一个 mod 一个引擎，该 mod 的全部
+    // 入口脚本共用它。构造在全部编译之前完成（这里只有一个 mod，天然
+    // 满足）。
+    let mut engine = new_load_engine();
     for entry in &manifest.entry_points {
-        if let Err(err) = load_one_script(&manifest, entry, &mut registry, &mut tables) {
+        if let Err(err) =
+            compile_one_script(&manifest, entry, &mut engine, &mut registry, &mut tables)
+        {
             return LoadStatus::Failed(err);
         }
     }
@@ -489,15 +579,17 @@ fn attribute_topo_error(report: &mut LoadReport, parsed: &[ModManifest], err: &M
     }
 }
 
-/// 加载单个脚本文件：读文件、跑 `ScriptEngine::load_source`，成功时
+/// 在 `engine`（本 mod 专属、已经注册好全部 `register-*` 的引擎）上
+/// 编译单个脚本文件：读文件、跑 `ScriptEngine::load_source`，成功时
 /// `register-terrain`/`register-class`/`register-skill`/
 /// `register-subclass`/`register-quest`/`register-race`/
 /// `register-space-profile`/…… 的效果已经写进 `registry`/`tables`
 /// ——权威清单是 [`GameplayTables`] 的字段与本函数里 `register_*_api`
 /// 的调用序列，不是这段文档。
-fn load_one_script(
+fn compile_one_script(
     manifest: &ModManifest,
     entry: &Path,
+    engine: &mut ScriptEngine,
     registry: &mut Registry,
     tables: &mut GameplayTables,
 ) -> Result<(), LoadError> {
@@ -541,25 +633,6 @@ fn load_one_script(
     set_active_recipe_category_target(std::mem::take(tables.recipe_category));
     set_active_weather_target(std::mem::take(tables.weather));
 
-    let mut engine = ScriptEngine::new();
-    register_terrain_api(&mut engine);
-    register_class_api(&mut engine);
-    register_skill_api(&mut engine);
-    register_subclass_api(&mut engine);
-    register_quest_api(&mut engine);
-    register_race_api(&mut engine);
-    register_clip_api(&mut engine);
-    register_xp_curve_api(&mut engine);
-    register_trait_api(&mut engine);
-    register_resource_pool_api(&mut engine);
-    register_item_api(&mut engine);
-    register_damage_formula_api(&mut engine);
-    register_weapon_category_api(&mut engine);
-    register_damage_category_api(&mut engine);
-    register_space_profile_api(&mut engine);
-    register_recipe_api(&mut engine);
-    register_recipe_category_api(&mut engine);
-    register_weather_api(&mut engine);
     let result = engine.load_source(source.clone());
 
     *registry = take_active_registry();
@@ -716,6 +789,144 @@ mod tests {
         if let Some(source) = script {
             fs::write(mod_dir.join("main.scm"), source).expect("写入脚本");
         }
+    }
+
+    /// [`write_mod`] 的多脚本版本：一个 mod 目录下写入任意多个 `.scm`
+    /// 文件，供「同一个 mod 的多个入口点」相关测试使用。
+    fn write_mod_scripts(
+        root: &Path,
+        dir_name: &str,
+        manifest_json5: &str,
+        scripts: &[(&str, &str)],
+    ) {
+        let mod_dir = root.join(dir_name);
+        fs::create_dir_all(&mod_dir).expect("创建 mod 子目录");
+        fs::write(
+            mod_dir.join(crate::discover::MANIFEST_FILENAME),
+            manifest_json5,
+        )
+        .expect("写入清单");
+        for (name, source) in scripts {
+            fs::write(mod_dir.join(name), source).expect("写入脚本");
+        }
+    }
+
+    /// 作用域单位是 **mod**，不是脚本文件：同一个 mod 的多个入口点共用
+    /// 同一个 `ScriptEngine`，前一个文件里 `define` 出来的辅助函数，后一个
+    /// 文件真的能调用。
+    ///
+    /// 这一条此前不成立——每个脚本文件各拿一个全新引擎，`races.scm` 里
+    /// 的 `define` 对同一个 mod 的 `classes.scm` 不可见。
+    #[test]
+    fn 同一个mod的后一个脚本能调用前一个脚本定义的辅助函数() {
+        // Arrange
+        let root = tempdir();
+        write_mod_scripts(
+            root.path(),
+            "sharemod",
+            r#"{
+                namespace: "sharemod",
+                version: "0.1.0",
+                entry_points: ["helpers.scm", "content.scm"],
+            }"#,
+            &[
+                ("helpers.scm", r#"(define (lava-id) "sharemod:lava_floor")"#),
+                (
+                    "content.scm",
+                    r#"(register-terrain (lava-id) #f #t 4294967295 "")"#,
+                ),
+            ],
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert
+        assert_eq!(
+            report.entries,
+            vec![(mod_self_id("sharemod").unwrap(), LoadStatus::Loaded)],
+            "同一个 mod 内的辅助函数应当跨文件可见"
+        );
+        assert!(
+            registry
+                .get(&NamespacedId::parse("sharemod:lava_floor").unwrap())
+                .is_some()
+        );
+    }
+
+    /// 跨 **mod** 的命名空间隔离必须原样保住：mod A 的 `define` 绝不能被
+    /// mod B 看见。
+    ///
+    /// 隔离靠「换一个引擎」实现——每个 mod 一个全新 `ScriptEngine`，新
+    /// 引擎的全局环境里没有 A 的任何绑定，白名单的「本引擎已定义名字」
+    /// 集合也是空的。本用例让 `peeker` 显式依赖 `definer`（拓扑排序因此
+    /// 保证 `definer` 先装载，`define` 确实已经执行过），再引用它的辅助
+    /// 函数——必须失败。
+    #[test]
+    fn 跨mod的define互相不可见() {
+        // Arrange
+        let root = tempdir();
+        write_mod(
+            root.path(),
+            "definer",
+            r#"{
+                namespace: "definer",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
+            Some(
+                r#"(define (shared-id) "definer:rock")
+                   (register-terrain (shared-id) #f #t 4294967295 "")"#,
+            ),
+        );
+        write_mod(
+            root.path(),
+            "peeker",
+            r#"{
+                namespace: "peeker",
+                version: "0.1.0",
+                dependencies: ["definer"],
+                entry_points: ["main.scm"],
+            }"#,
+            Some(r#"(register-terrain (shared-id) #f #t 4294967295 "")"#),
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert：definer 装载成功（证明 `shared-id` 这个 define 真的执行
+        // 过），peeker 因为引用不到它而失败。
+        let definer = report
+            .entries
+            .iter()
+            .find(|(id, _)| *id == mod_self_id("definer").unwrap())
+            .map(|(_, status)| status)
+            .expect("definer 应当出现在报告里");
+        assert_eq!(definer, &LoadStatus::Loaded);
+
+        let peeker = report
+            .entries
+            .iter()
+            .find(|(id, _)| *id == mod_self_id("peeker").unwrap())
+            .map(|(_, status)| status)
+            .expect("peeker 应当出现在报告里");
+        match peeker {
+            LoadStatus::Failed(err) => assert!(
+                err.message.contains("shared-id"),
+                "失败原因应当点名这个跨 mod 不可见的标识符，实际：{}",
+                err.message
+            ),
+            other => panic!("跨 mod 的 define 绝不能可见，实际状态：{other:?}"),
+        }
+        assert!(
+            registry
+                .get(&NamespacedId::parse("peeker:rock").unwrap())
+                .is_none()
+        );
     }
 
     #[test]

@@ -20,7 +20,7 @@ use steel::steel_vm::interrupt::InterruptHandler;
 use steel::steel_vm::register_fn::RegisterFn;
 
 use crate::alloc_guard;
-use crate::whitelist::check_whitelist;
+use crate::whitelist::{check_whitelist, top_level_defined_names};
 
 /// 脚本失控时的中断预算：超过这个墙钟时长仍未返回就强制掐断。
 ///
@@ -534,6 +534,15 @@ pub struct ScriptEngine {
     interrupt: InterruptHandler,
     allowed_identifiers: HashSet<&'static str>,
     alloc_controller: ThreadStateController,
+    /// 本引擎上、此前已经装载成功的脚本在顶层 `define` 出来的名字。
+    ///
+    /// 存在的理由是「作用域单位是 mod，不是脚本文件」这条语义（见
+    /// `ll_mod::pipeline::load_all` 文档）：同一个 mod 的多份脚本共用
+    /// 同一个引擎，前一份的辅助函数在 Steel 的全局环境里对后一份真实
+    /// 可见，白名单必须承认这批名字，否则会把它们误判成自由引用。
+    /// 跨 mod 的隔离**不靠这个集合**，靠「换一个引擎」——新引擎的这个
+    /// 集合天然是空的。
+    script_defined: HashSet<String>,
 }
 
 impl ScriptEngine {
@@ -569,6 +578,7 @@ impl ScriptEngine {
             interrupt,
             allowed_identifiers,
             alloc_controller,
+            script_defined: HashSet::new(),
         }
     }
 
@@ -616,7 +626,10 @@ impl ScriptEngine {
             .engine
             .emit_fully_expanded_ast(&source, None)
             .map_err(classify_error)?;
-        check_whitelist(&exprs, &self.allowed_identifiers)?;
+        check_whitelist(&exprs, &self.allowed_identifiers, &self.script_defined)?;
+        // 顶层定义的名字要在**这一次装载成功之后**才对下一份脚本可见
+        // ——先算好（`exprs` 马上就要被丢弃），装载失败时不并入。
+        let newly_defined = top_level_defined_names(&exprs);
 
         // 步骤 3：登记内存守卫。窗口只覆盖下面这一次 `run`——前面两步
         // 的解析/展开分配不该算进脚本自己的预算（见 alloc_guard 模块
@@ -637,6 +650,9 @@ impl ScriptEngine {
             .map_err(classify_error);
 
         alloc_guard::clear_active_controller();
+        if result.is_ok() {
+            self.script_defined.extend(newly_defined);
+        }
         result
     }
 
@@ -697,7 +713,7 @@ static REBUILD_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 /// 表面（`api::query`/`api::state` 等）的 `register` 调用仍需调用方
 /// 自行完成，本函数只负责「丢弃旧实例、从零构造、重新跑一遍脚本源码」
 /// 这一步本身，不知道每个 mod 具体需要挂载哪些 API 表面，那是装载
-/// 管线的职责（与 `ll_mod::pipeline::load_one_script` 同一层分工）。
+/// 管线的职责（与 `ll_mod::pipeline::compile_one_script` 同一层分工）。
 ///
 /// # 存档（写盘）不需要调用本函数
 ///
@@ -710,10 +726,16 @@ pub fn rebuild_all_engines_after_load(
     sources: &[(String, String)],
 ) -> Vec<(String, Result<ScriptEngine, ScriptError>)> {
     REBUILD_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    // 先把全部引擎造齐，再逐个编译——顺序不能改成「造一个编一个」：
+    // 那正是 ADR 0028 定位到的「先编译、后构造」相邻关系，也是本线程
+    // 构造阶段/编译阶段这条约束（见 `COMPILED_ON_THIS_THREAD` 上方
+    // 注释）在本函数内部的具体落法。第二个 `ScriptEngine::new()` 会
+    // 直接 panic，不是「概率性地出问题」。
+    let mut engines: Vec<ScriptEngine> = sources.iter().map(|_| ScriptEngine::new()).collect();
     sources
         .iter()
-        .map(|(namespace, source)| {
-            let mut engine = ScriptEngine::new();
+        .zip(engines.drain(..))
+        .map(|((namespace, source), mut engine)| {
             let result = engine.load_source(source.clone());
             (namespace.clone(), result.map(|()| engine))
         })

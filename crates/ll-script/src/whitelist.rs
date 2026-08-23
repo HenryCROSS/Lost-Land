@@ -81,12 +81,70 @@ use crate::host::ScriptError;
 /// 校验一组已经完整展开的顶层表达式，确认里面出现的每一个"被引用的
 /// 标识符"都在 `allowed` 里。命中第一个不在白名单内的标识符就立刻
 /// 拒绝并在错误信息里点名，方便 mod 作者定位。
-pub fn check_whitelist(
-    exprs: &[ExprKind],
+///
+/// `predefined` 是**同一个 VM 上、此前已经装载成功的脚本在顶层
+/// `define` 出来的名字**（见 [`top_level_defined_names`]）——它们在
+/// Steel 的全局环境里是真实存在的绑定，白名单必须承认它们，否则同一个
+/// 引擎装载第二份脚本时，第二份脚本引用第一份的辅助函数会被误判成
+/// 「引用了白名单外的自由标识符」。
+///
+/// **这不放宽能力边界**：`predefined` 里的名字全部来自脚本自己写的
+/// `define`，它们的定义体在装载那一刻已经逐一过过同一道白名单；能不能
+/// 触达被禁能力，由那次校验负责，不由这里负责。跨 mod 的隔离靠**换一
+/// 个引擎**实现（每个 mod 一个 [`crate::host::ScriptEngine`]，见
+/// `ll_mod::pipeline::load_all` 文档），不靠这个集合为空。
+pub fn check_whitelist<'a>(
+    exprs: &'a [ExprKind],
     allowed: &HashSet<&'static str>,
+    predefined: &'a HashSet<String>,
 ) -> Result<(), ScriptError> {
-    let mut locals = HashSet::new();
+    let mut locals: HashSet<&'a str> = predefined.iter().map(String::as_str).collect();
     walk_sequence(exprs, allowed, &mut locals)
+}
+
+/// 收集一组已经完整展开的顶层表达式里、**顶层** `define` 出来的名字。
+///
+/// 只收「被定义的那一个名字」，不收形参：`(define (f a b) ...)` 只产出
+/// `f`。形参在展开后的树里已经被卫生宏重写成 `##a2` 这类内部记号（见
+/// [`check_reference`] 文档），把它们也收进跨脚本可见集合，等于让后一份
+/// 脚本可以自由引用一批本该只在前一份脚本函数体内部存在的名字——那是
+/// 白名单的净损失，不是本函数要提供的能力。
+///
+/// 顶层 `begin` 块（`struct` 宏在顶层展开出来的那种）里的 `define`
+/// 同样收——它在真实 Scheme 语义里就是拼接进顶层作用域的，与
+/// [`walk_sequence`] 对 `Begin` 不克隆作用域是同一条理由。
+pub fn top_level_defined_names(exprs: &[ExprKind]) -> Vec<String> {
+    let mut names = Vec::new();
+    collect_top_level_defines(exprs, &mut names);
+    names
+}
+
+fn collect_top_level_defines(exprs: &[ExprKind], into: &mut Vec<String>) {
+    for expr in exprs {
+        match expr {
+            ExprKind::Define(node) => {
+                if let Some(name) = defined_name(&node.name) {
+                    into.push(name.to_string());
+                }
+            }
+            ExprKind::Begin(node) => collect_top_level_defines(&node.exprs, into),
+            _ => {}
+        }
+    }
+}
+
+/// 一条 `define` 真正定义出来的那个名字——`(define x ...)` 取 `x`，
+/// `(define (f a b) ...)` 取列表首元素 `f`（其余是形参，不是被定义的
+/// 名字）。
+fn defined_name(name: &ExprKind) -> Option<&str> {
+    match name {
+        ExprKind::Atom(atom) => atom.ident().map(|n| n.resolve()),
+        ExprKind::List(list) => match list.args.first() {
+            Some(ExprKind::Atom(atom)) => atom.ident().map(|n| n.resolve()),
+            _ => None,
+        },
+        _ => None,
+    }
 }
 
 /// 按顺序遍历一串同层级的表达式（顶层程序，或 `begin` 块），并且**让
@@ -329,6 +387,40 @@ mod tests {
             .expect("测试用源码本身应当能通过编译")
     }
 
+    /// 跨脚本可见集合只收「被定义的那个名字」，不收形参——形参在展开
+    /// 后已经被卫生宏重写成 `##a2` 这类记号，收进去等于白白放宽白名单。
+    #[test]
+    fn 顶层定义名字只收函数名不收形参() {
+        // Arrange
+        let mut engine = Engine::new_sandboxed();
+        let exprs = expand(&mut engine, "(define (add a b) (+ a b)) (define seven 7)");
+
+        // Act
+        let names = top_level_defined_names(&exprs);
+
+        // Assert
+        assert_eq!(names, vec!["add".to_string(), "seven".to_string()]);
+    }
+
+    /// 前一份脚本 `define` 出来的名字，经 `predefined` 传进来之后，后一
+    /// 份脚本引用它不再被误判成白名单外的自由引用。
+    #[test]
+    fn 前一份脚本定义的名字对后一份脚本可见() {
+        // Arrange
+        let mut engine = Engine::new_sandboxed();
+        let exprs = expand(&mut engine, "(helper 1)");
+        let allowed: HashSet<&'static str> = HashSet::new();
+        let predefined: HashSet<String> = ["helper".to_string()].into_iter().collect();
+
+        // Act
+        let with_predefined = check_whitelist(&exprs, &allowed, &predefined);
+        let without_predefined = check_whitelist(&exprs, &allowed, &HashSet::new());
+
+        // Assert
+        assert!(with_predefined.is_ok());
+        assert!(without_predefined.is_err());
+    }
+
     #[test]
     fn 白名单内的普通计算脚本通过校验() {
         // Arrange
@@ -337,7 +429,7 @@ mod tests {
         let allowed: HashSet<&'static str> = ["+", "define", "add", "a", "b"].into_iter().collect();
 
         // Act
-        let result = check_whitelist(&exprs, &allowed);
+        let result = check_whitelist(&exprs, &allowed, &HashSet::new());
 
         // Assert
         assert!(result.is_ok());
@@ -351,7 +443,7 @@ mod tests {
         let allowed: HashSet<&'static str> = HashSet::new();
 
         // Act
-        let result = check_whitelist(&exprs, &allowed);
+        let result = check_whitelist(&exprs, &allowed, &HashSet::new());
 
         // Assert
         assert!(result.is_err());
@@ -365,7 +457,7 @@ mod tests {
         let allowed: HashSet<&'static str> = HashSet::new();
 
         // Act
-        let result = check_whitelist(&exprs, &allowed);
+        let result = check_whitelist(&exprs, &allowed, &HashSet::new());
 
         // Assert
         assert!(result.is_err());
@@ -379,7 +471,7 @@ mod tests {
         let allowed: HashSet<&'static str> = ["list"].into_iter().collect();
 
         // Act
-        let result = check_whitelist(&exprs, &allowed);
+        let result = check_whitelist(&exprs, &allowed, &HashSet::new());
 
         // Assert
         assert!(result.is_ok());
@@ -393,7 +485,7 @@ mod tests {
         let allowed: HashSet<&'static str> = HashSet::new();
 
         // Act
-        let result = check_whitelist(&exprs, &allowed);
+        let result = check_whitelist(&exprs, &allowed, &HashSet::new());
 
         // Assert
         match result {
