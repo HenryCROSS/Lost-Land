@@ -9,6 +9,7 @@
 //! 必须在构造期主动清空，见 [`ScriptEngine::new`]。
 
 use std::collections::HashSet;
+use std::sync::Arc;
 use std::time::Duration;
 
 use steel::SteelErr;
@@ -20,6 +21,7 @@ use steel::steel_vm::interrupt::InterruptHandler;
 use steel::steel_vm::register_fn::RegisterFn;
 
 use crate::alloc_guard;
+use crate::modules::{ModuleResolver, ModuleTable};
 use crate::whitelist::{check_whitelist, top_level_defined_names};
 
 /// 脚本失控时的中断预算：超过这个墙钟时长仍未返回就强制掐断。
@@ -260,12 +262,13 @@ fn meta_deny_list() -> impl Iterator<Item = &'static str> {
         .chain(META_DENY_LIST_3)
 }
 
-/// mod 脚本一律不支持的加载形式，写给 mod 作者看的统一说法。
+/// `require-builtin` 家族一律不支持，写给 mod 作者看的统一说法。
 ///
-/// 三处共用同一句话（源码文本前置检查、`require-builtin` 前置检查、
-/// [`DenyAllSourceModules`] 兜底后的错误翻译），是为了让 mod 作者不管
-/// 从哪条路撞上来，看到的都是同一个结论，而不是三种听起来像不同问题
-/// 的内部错误。
+/// **与 `(require "模块名")` 是两件不同的事**：后者从「模块系统」这一
+/// 批起是**支持**的（见 [`crate::modules`]），由 [`ModuleResolver`]
+/// 按规则解析；本条只管 `require-builtin`/`require-for-syntax` 这类
+/// **直接向 Steel 内置模块表要能力**的写法——那是能力注入，不是模块
+/// 引用，永远由宿主说了算。
 ///
 /// 文案刻意短（不到 20 字）——实测（P4 验收 demo 截图，见
 /// `.superpowers/sdd/2026-08-18-p4-script-and-mod/task-11-12-report.md`）
@@ -273,11 +276,23 @@ fn meta_deny_list() -> impl Iterator<Item = &'static str> {
 /// 压住下一行文字。面板本身已经加了截断兜底
 /// （`ll_ui::load_report_view::truncate_for_panel`），但从源头把消息
 /// 写短既不依赖那道兜底，也让面板不需要截断就能完整展示。
-const REQUIRE_UNSUPPORTED_MESSAGE: &str = "mod 脚本不支持 require：能力由宿主注入";
+pub(crate) const REQUIRE_BUILTIN_UNSUPPORTED_MESSAGE: &str =
+    "mod 脚本不支持 require-builtin：能力由宿主注入";
 
-/// 源码文本层面识别 `require` 家族的**词法**检查（不是子串匹配）。
+/// `(require …)` 里出现了字符串模块名以外的东西时的说法。
 ///
-/// # 为什么不能再用 `source.contains("(require ")`
+/// 只认 `(require "模块名" …)` 这一种写法，`(require (for-syntax "x"))`/
+/// `(only-in …)`/`(prefix-in …)` 一概拒绝。理由不是"实现不了"，是每多
+/// 认一种子形式就多一条要单独论证安全性的通路——尤其 `for-syntax` 会把
+/// 模块搬进宏展开阶段的 kernel 引擎求值，那个引擎不在本文件的能力收窄
+/// 范围内。要开这些写法得先有人证明那条路上的能力边界，不是顺手加。
+const REQUIRE_FORM_MESSAGE: &str = "只支持 (require \"模块名\") 这一种写法";
+
+/// 源码文本层面的 `require` **词法**扫描（不是子串匹配）：
+/// `require-builtin` 家族当场拒绝，`(require "模块名")` 则把模块名连同
+/// 它在源码里的字节偏移量收集出来交给调用方判权限。
+///
+/// # 为什么不能用 `source.contains("(require ")`
 ///
 /// 曾经的实现就是两条字面子串 `"require-builtin"` 与 `"(require "`。
 /// 后者**实测可绕过**：`(require<换行>"C:/…/x.scm")`（左括号与 `require`
@@ -288,56 +303,186 @@ const REQUIRE_UNSUPPORTED_MESSAGE: &str = "mod 脚本不支持 require：能力�
 /// `[fonts]` 段落的名字，说明磁盘内容确实被读进来并解析了。制表符、
 /// 两个空格、`( require ` 同理。
 ///
-/// 现在的做法是扫描每一个 `(`，跳过其后的空白，取出紧接着的那个记号，
-/// 命中 `require` 或任何 `require-*`（`require-builtin`、
-/// `require-for-syntax`）就拒绝——空白怎么写都逃不掉。
+/// 现在的做法是扫描每一个左括号（`(`/`[`/`{` 三种都认，理由见
+/// [`is_token_terminator`]），跳过
+/// 其后的空白，取出紧接着的那个记号——空白怎么写都逃不掉。
+///
+/// # 为什么要认字符串/注释/字符字面量
+///
+/// 扫描器要收集模块名，就必须知道引号从哪开始到哪结束，顺带也就知道了
+/// 「这段文本是代码还是字符串里的内容」。注释同理：一条被注释掉的
+/// `(require "旧名字")` 若照样参与权限判定，mod 作者会被一条自己已经
+/// 注释掉的语句挡住装载。
+///
+/// **`#\;` 这个特例必须认**：Steel 的字符字面量写法是 `#\<字符>`，
+/// `#\;` 是"分号这个字符"而不是注释起点。不认它就等于给出一条藏东西的
+/// 缝——`#\; (require-builtin steel/time)` 会被误当成整行注释跳过，而
+/// Steel 会照常编译后半句。同理 `#\"` 不能被当成字符串起点。
 ///
 /// # 这一层的定位仍然是「快速失败 + 给位置」，不是权威防线
 ///
-/// 权威防线是 [`DenyAllSourceModules`]：宏展开产生的 `require`、或者
-/// 任何本函数的词法近似没覆盖到的写法，都会在真正解析模块时被那道
-/// 解析器无条件拒绝。这一层的价值是**在编译之前**就失败，并且能给出
-/// 命中位置的字节偏移量（供 Task 11 加载管理界面换算行号）——权威防线
-/// 那条路给不出这个位置。
-fn reject_dangerous_syntax(source: &str) -> Result<(), ScriptError> {
+/// 权威防线是 [`ModuleResolver`]：宏展开产生的 `require`、或者任何本
+/// 函数的词法近似没覆盖到的写法，都会在真正解析模块时被那道解析器按
+/// 同一张 [`ModuleTable`] 重新判一次。这一层的价值是**在编译之前**就
+/// 失败，并且能给出命中位置的字节偏移量（供加载管理界面换算行号）
+/// ——权威防线那条路给不出这个位置。
+fn scan_require_forms(source: &str) -> Result<Vec<(String, u32)>, ScriptError> {
     let bytes = source.as_bytes();
-    for (open_paren, _) in source.match_indices(OPEN_PAREN_CHARS) {
-        let mut cursor = open_paren + 1;
-        while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
-            cursor += 1;
-        }
-        let token_start = cursor;
-        while cursor < bytes.len() && !is_token_terminator(bytes[cursor]) {
-            cursor += 1;
-        }
-        let token = &source[token_start..cursor];
-        if token == "require" || token.starts_with("require-") {
-            return Err(ScriptError::ParseError(
-                format!("禁止的语法「{token}」：{REQUIRE_UNSUPPORTED_MESSAGE}"),
-                Some(open_paren as u32),
-            ));
+    let mut found = Vec::new();
+    let mut cursor = 0usize;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b';' => cursor = skip_line_comment(bytes, cursor),
+            b'"' => cursor = skip_string_literal(bytes, cursor).1,
+            // `#\x` 字符字面量、`#|…|#` 块注释、`#;` 数据注释——见函数
+            // 文档「为什么要认字符串/注释/字符字面量」。
+            b'#' => cursor = skip_hash_form(bytes, cursor),
+            b'(' | b'[' | b'{' => {
+                let open = cursor;
+                let (token, after_token) = read_token(source, open + 1);
+                if token.starts_with("require-") {
+                    return Err(ScriptError::ParseError(
+                        format!("禁止的语法「{token}」：{REQUIRE_BUILTIN_UNSUPPORTED_MESSAGE}"),
+                        Some(open as u32),
+                    ));
+                }
+                if token == "require" {
+                    cursor = collect_require_keys(source, after_token, &mut found)?;
+                } else {
+                    cursor = open + 1;
+                }
+            }
+            _ => cursor += 1,
         }
     }
-    Ok(())
+    Ok(found)
 }
 
-/// Steel 认的**三种**左括号。
+/// 只做 [`scan_require_forms`] 的拒绝那一半，丢掉收集到的模块名。
 ///
-/// 同步来源：`steel-parser` 0.8.2 `src/lexer.rs` 的
-/// `Some(&paren @ ('(' | '[' | '{'))` 那一支——圆括号、方括号、花括号
-/// 在 Steel 里完全等价。
+/// 给 [`ModuleTable::insert`](crate::modules::ModuleTable::insert) 用：
+/// 模块源码在灌表那一刻还没有一张完整的表可以判权限（表正在建），能做
+/// 也必须做的是把 `require-builtin` 家族挡在外面——那是模块体上**唯一**
+/// 挡得住它的地方，理由见 `ModuleTable::insert` 文档。
+pub(crate) fn reject_dangerous_syntax(source: &str) -> Result<(), ScriptError> {
+    scan_require_forms(source).map(|_| ())
+}
+
+/// 从 `(require` 的记号末尾开始，收集这个 require 形式里的全部字符串
+/// 模块名，返回闭括号之后的位置。
 ///
-/// 只扫圆括号是不够的，这不是理论担心：实测 `[require "C:/…/x.scm"]`
-/// 穿过了只认 `(` 的那版扫描，最后是靠 [`DenyAllSourceModules`] 兜住
-/// 的（错误信息里没有「禁止的语法」前缀，正是兜底那条路的特征）。
-/// 兜住了不等于该放着不管——文本层多认两种括号，mod 作者才能拿到命中
-/// 位置，而不是一条没有位置的编译错误。
-const OPEN_PAREN_CHARS: [char; 3] = ['(', '[', '{'];
+/// 字符串以外的任何东西（嵌套列表、裸标识符）一律拒绝，见
+/// [`REQUIRE_FORM_MESSAGE`]。
+fn collect_require_keys(
+    source: &str,
+    from: usize,
+    found: &mut Vec<(String, u32)>,
+) -> Result<usize, ScriptError> {
+    let bytes = source.as_bytes();
+    let mut cursor = from;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b')' | b']' | b'}' => return Ok(cursor + 1),
+            b';' => cursor = skip_line_comment(bytes, cursor),
+            b'"' => {
+                let (content, after) = skip_string_literal(bytes, cursor);
+                found.push((content, cursor as u32));
+                cursor = after;
+            }
+            c if c.is_ascii_whitespace() => cursor += 1,
+            _ => {
+                return Err(ScriptError::ParseError(
+                    REQUIRE_FORM_MESSAGE.to_string(),
+                    Some(cursor as u32),
+                ));
+            }
+        }
+    }
+    // 括号没闭合：交给 Steel 的解析器去报语法错误，本层不越权。
+    Ok(cursor)
+}
+
+/// 从 `start`（一个左括号的下一个字节）开始，跳过空白后取出紧接着的
+/// 那个记号，返回记号本身与记号之后的位置。
+fn read_token(source: &str, start: usize) -> (&str, usize) {
+    let bytes = source.as_bytes();
+    let mut cursor = start;
+    while cursor < bytes.len() && bytes[cursor].is_ascii_whitespace() {
+        cursor += 1;
+    }
+    let token_start = cursor;
+    while cursor < bytes.len() && !is_token_terminator(bytes[cursor]) {
+        cursor += 1;
+    }
+    (&source[token_start..cursor], cursor)
+}
+
+/// 跳过一条 `;` 行注释，返回换行符之后的位置。
+fn skip_line_comment(bytes: &[u8], start: usize) -> usize {
+    let mut cursor = start;
+    while cursor < bytes.len() && bytes[cursor] != b'\n' {
+        cursor += 1;
+    }
+    cursor + 1
+}
+
+/// 跳过一个字符串字面量（`start` 指着开引号），返回（引号之间的原样
+/// 内容, 闭引号之后的位置）。
+///
+/// 只认 `\` 的转义**用于找到正确的闭引号**，不做反转义：模块名里出现
+/// 反斜杠本来就会被 [`crate::modules::parse_key`] 判非法，没有必要为它
+/// 实现一套转义还原。
+fn skip_string_literal(bytes: &[u8], start: usize) -> (String, usize) {
+    let mut cursor = start + 1;
+    let content_start = cursor;
+    while cursor < bytes.len() {
+        match bytes[cursor] {
+            b'\\' => cursor += 2,
+            b'"' => break,
+            _ => cursor += 1,
+        }
+    }
+    let content_end = cursor.min(bytes.len());
+    let content = String::from_utf8_lossy(&bytes[content_start..content_end]).into_owned();
+    // 正常收尾时 `cursor` 指着闭引号，越过它继续；字符串没闭合时
+    // `cursor` 已经等于 `bytes.len()`，直接停在末尾（语法错误交给
+    // Steel 的解析器报，本层不越权）。
+    (content, (content_end + 1).min(bytes.len()))
+}
+
+/// 跳过 `#` 打头的三种写法：`#\<字符>` 字符字面量、`#|…|#` 块注释、
+/// `#;` 数据注释。都不认时只前进一格，让主循环继续正常扫描。
+fn skip_hash_form(bytes: &[u8], start: usize) -> usize {
+    match bytes.get(start + 1) {
+        // `#\x`：连同被引用的那个字符一起跳过，见 scan_require_forms 文档。
+        Some(b'\\') => start + 3,
+        Some(b'|') => {
+            let mut cursor = start + 2;
+            while cursor + 1 < bytes.len() {
+                if bytes[cursor] == b'|' && bytes[cursor + 1] == b'#' {
+                    return cursor + 2;
+                }
+                cursor += 1;
+            }
+            bytes.len()
+        }
+        // `#;` 后面跟的是一个被注释掉的数据——不跳过它，继续正常扫描：
+        // 保守地把它当代码看，宁可多拒绝也不放过。
+        _ => start + 1,
+    }
+}
 
 /// Steel 记号的结束字符：空白、三种括号的两侧、引号与注释起始——只
-/// 用来在 [`reject_dangerous_syntax`] 里切出「左括号后面的第一个
-/// 记号」，不追求与 Steel 词法器完全等价（权威判据在
-/// [`DenyAllSourceModules`]，见其文档）。
+/// 用来在 [`read_token`] 里切出「左括号后面的第一个记号」，不追求与
+/// Steel 词法器完全等价（权威判据在 [`ModuleResolver`]，见
+/// [`crate::modules`] 模块文档）。
+///
+/// **三种左括号都要认**（`steel-parser` 0.8.2 `src/lexer.rs` 的
+/// `Some(&paren @ ('(' | '[' | '{'))` 那一支：圆括号、方括号、花括号在
+/// Steel 里完全等价）。只扫圆括号不是理论担心：实测
+/// `[require "C:/…/x.scm"]` 穿过了只认 `(` 的那版扫描，最后是靠解析器
+/// 兜住的——兜住了不等于该放着不管，文本层多认两种括号，mod 作者才能
+/// 拿到命中位置，而不是一条没有位置的编译错误。
 fn is_token_terminator(byte: u8) -> bool {
     byte.is_ascii_whitespace()
         || matches!(
@@ -350,76 +495,44 @@ fn is_token_terminator(byte: u8) -> bool {
 /// （`compiler/modules.rs`：
 /// `crate::throw!(Generic => "Unable to find builtin module: {:?}", module)`）。
 ///
-/// [`DenyAllSourceModules`] 让**每一次** `require` 都走到这条错误上，
-/// 因此命中这个子串就唯一对应「脚本试图 require 某个东西」，可以安全
-/// 地翻译成 [`REQUIRE_UNSUPPORTED_MESSAGE`]。判断依据是消息文本、天生
-/// 比 `ErrorKind` 脆弱（未来 `steel-core` 改了措辞会静默失效），但退化
-/// 后果只是错误信息重新变得晦涩，**能力边界不受影响**——拒绝本身由
-/// [`DenyAllSourceModules`] 保证，与这条翻译无关。
+/// [`ModuleResolver`] 让**每一次**解析不出来的 `require` 都走到这条
+/// 错误上，因此命中这个子串就唯一对应「脚本试图 require 一个本表不
+/// 给的模块」，可以安全地换成 [`ModuleTable::check`] 给出的那句理由。
+/// 判断依据是消息文本、天生比 `ErrorKind` 脆弱（未来 `steel-core` 改了
+/// 措辞会静默失效），但退化后果只是错误信息重新变得晦涩，**能力边界
+/// 不受影响**——拒绝本身由 [`ModuleResolver`] 保证，与这条翻译无关。
 const UNRESOLVED_MODULE_MARKER: &str = "Unable to find builtin module:";
 
-/// 把 `steel-core` 的「找不到模块」内部错误翻译成 mod 作者读得懂的说法。
+/// 把 `steel-core` 的「找不到模块」内部错误换成 mod 作者读得懂的说法。
+///
+/// 从消息里把模块名抠出来（`steel-core` 用 `{:?}` 打印，恒带一对双引号）
+/// 再交给 [`ModuleTable::check`] 复算一次理由——**不是**把拒绝的判断做
+/// 第二遍（判断已经由 [`ModuleResolver`] 做完了），只是把同一个判断的
+/// 说明文字取回来。抠不出模块名时退回一句通用说法，不猜。
 ///
 /// 只在装载路径（[`ScriptEngine::load_source`]）上做这次翻译：`require`
 /// 只可能在编译/展开阶段出现，运行期调用（[`ScriptEngine::call_raw`]）
 /// 不存在这条路，没必要也不该在那里多一次字符串匹配。
-fn translate_require_error(err: ScriptError) -> ScriptError {
+fn translate_require_error(err: ScriptError, modules: &ModuleTable) -> ScriptError {
     let ScriptError::Runtime(ref message, offset) = err else {
         return err;
     };
-    if !message.contains(UNRESOLVED_MODULE_MARKER) {
+    let Some(rest) = message.split_once(UNRESOLVED_MODULE_MARKER).map(|x| x.1) else {
         return err;
-    }
-    ScriptError::ParseError(REQUIRE_UNSUPPORTED_MESSAGE.to_string(), offset)
-}
-
-/// 「一律拒绝」的源码模块解析器——[`ScriptEngine`] 关掉 `require`
-/// 文件系统逃逸的权威防线。
-///
-/// # 机制：`exists()` 恒真，把 FS 分支彻底挤掉
-///
-/// `steel-core` 0.8.2 解析 `(require "…")` 时（`compiler/modules.rs`
-/// 的 `parse_require`）按固定顺序问：内置模块表 → `custom_builtins`
-/// （`Engine::register_steel_module` 注册的那些）→ **本 trait 的
-/// `exists()`** → 都不认就当成文件路径，交给 `parse_from_path` 直接
-/// `std::fs::File::open`。最后那一步不看沙箱标志、不看搜索目录白名单，
-/// 绝对路径、`..` 相对路径一律照读——这正是实测能用
-/// `(require "C:/…/私密文件.scm")` 把盘上任意文件读进编译过程的原因。
-///
-/// 让 `exists()` **恒返回 `true`**，第三步就永远命中，控制权在到达文件
-/// 系统之前就被截住；随后 `resolve()` 返回 `None`，`steel-core` 抛出
-/// [`UNRESOLVED_MODULE_MARKER`] 那条错误，被 [`translate_require_error`]
-/// 翻译成 [`REQUIRE_UNSUPPORTED_MESSAGE`]。
-///
-/// # 为什么不是 `register_steel_module`，也不是 `add_search_directory`
-///
-/// `Engine::register_steel_module` 只把某个名字放进 `custom_builtins`，
-/// 让它**优先于**文件系统命中——没命中的名字照样掉进 FS 分支，关不死
-/// 这个洞。`Engine::add_search_directory` 方向恰好相反：它只会**扩大**
-/// FS 分支的搜索面，对收窄能力是负资产，本项目不使用。
-///
-/// # 本批次刻意只做「全部拒绝」这一档
-///
-/// `resolve()` 无条件返回 `None`，不做任何按名字放行的分档。mod 之间
-/// 的模块系统（`provide`/`import` 语法与跨 mod 权限）设计还没定完，是
-/// 独立的一批工作；在那之前放行任何一个名字都是在给一套还没设计完的
-/// 语义开口子。真要开的时候，`exists()` 拿到的是**原样的 key 字符串**
-/// （含绝对路径），路径校验与名字解析就写在这两个方法里，控制权是
-/// 完整的。
-struct DenyAllSourceModules;
-
-impl steel::compiler::modules::SourceModuleResolver for DenyAllSourceModules {
-    /// 恒 `None`：任何名字都不解析成源码，见类型文档「本批次刻意只做
-    /// 『全部拒绝』这一档」。
-    fn resolve(&self, _key: &str) -> Option<String> {
-        None
-    }
-
-    /// 恒 `true`：这是整道防线的机制本身，见类型文档「机制」一节——
-    /// 返回 `false` 会让 `steel-core` 继续走到文件系统分支，洞就还在。
-    fn exists(&self, _key: &str) -> bool {
-        true
-    }
+    };
+    let key = rest
+        .split_once('"')
+        .and_then(|(_, after)| after.rsplit_once('"').map(|(inner, _)| inner));
+    let reason = match key {
+        Some(key) => match modules.check(key) {
+            // check 通过却仍然解析不出来：不该发生，如实照搬原文，不编
+            // 一句听起来更顺但不真实的解释。
+            Ok(()) => message.clone(),
+            Err(why) => why,
+        },
+        None => message.clone(),
+    };
+    ScriptError::ParseError(reason, offset)
 }
 
 /// 从 `engine.globals()` 拍下当前**全部**全局绑定名字的快照，减去
@@ -769,6 +882,52 @@ pub struct ScriptEngine {
     /// 跨 mod 的隔离**不靠这个集合**，靠「换一个引擎」——新引擎的这个
     /// 集合天然是空的。
     script_defined: HashSet<String>,
+    /// 本引擎的 `require` 能看到哪些模块、允许跨到哪些 mod，见
+    /// [`crate::modules`]。
+    ///
+    /// 用 [`Arc`] 是因为 `steel-core` 要求
+    /// [`steel::compiler::modules::SourceModuleResolver`] 是
+    /// `Send + Sync + 'static`——解析器那一份与本字段是同一张表的两个
+    /// 句柄，本字段留着是为了在
+    /// [`translate_require_error`] 里复算一次拒绝理由。
+    modules: Arc<ModuleTable>,
+    /// 专门用来「展开给白名单看」、**从不执行任何脚本**的第二台引擎；
+    /// 模块表为空时（[`Self::new`]）不需要它，恒为 `None`。
+    ///
+    /// # 为什么必须是另一台引擎（实测，不是保守起见）
+    ///
+    /// [`Self::load_source`] 刻意编译两遍：先 `emit_fully_expanded_ast`
+    /// 拿到完整展开的 AST 交给白名单，再 `run` 真正执行。**`require`
+    /// 让这两遍在同一台引擎上不再等价**：`steel-core` 0.8.2 的
+    /// `ModuleManager` 有一份 `compiled_modules` 缓存，第一遍展开时模块
+    /// 体被内联进 AST（白名单因此看得见它，这正是我们要的）**并且模块
+    /// 被记进缓存**；第二遍 `run` 命中缓存直接 `continue`，模块体不再
+    /// 出现在要执行的程序里，可要求方那句
+    /// `(define double (%proto-hash-get% __module-##mm…__%#__ …))` 照样
+    /// 生成——于是运行期报 `FreeIdentifier: __module-##mm…__%#__`。
+    /// 实测见 `crates/ll-script/examples/probe_modules.rs` 第 12 节：
+    /// 「先 emit 再 run」必失败，「直接 run」正常。
+    ///
+    /// 让展开发生在另一台引擎上，执行引擎的缓存就始终是冷的，两遍各自
+    /// 完整地做自己的事。
+    ///
+    /// # 两台引擎的展开结果为什么是同一个
+    ///
+    /// 两台都从 `Engine::new_sandboxed()` 出来、装同一个
+    /// [`ModuleResolver`]、被喂进同一批脚本源码且顺序相同（展开器走
+    /// `emit`，执行引擎走 `run` 内部那次展开），宏表与模块缓存因此同步
+    /// 演进。唯一的差别是展开器不注册宿主函数、不装中断与内存守卫
+    /// ——**实测 `emit_fully_expanded_ast` 根本不解析自由标识符**
+    /// （probe_modules.rs 第 13 节：`(根本没定义过)` 照样展开成功），
+    /// 宿主函数在不在场不影响展开结果。
+    ///
+    /// # 代价
+    ///
+    /// 用到模块系统的 mod 在装载期多一台引擎。ADR 0028 关心的是「构造
+    /// 与编译的先后」而不是引擎数量，本字段在 [`Self::with_modules`]
+    /// 里与主引擎**同时**构造，C6 不受影响；[`Self::new`] 那条路
+    /// （模块表为空，全部既有调用点）一台都不多。
+    expander: Option<Engine>,
 }
 
 impl ScriptEngine {
@@ -778,17 +937,36 @@ impl ScriptEngine {
     /// 危险模块与危险全局名字，任何脚本源码都不能在这之前被求值——
     /// 否则清空动作本身就晚了。白名单基础集合（`poisoned_identifiers`+`compute_allowed_identifiers`）
     /// 在同一时刻构建，之后每次 [`Self::register_fn`] 都会追加新名字。
+    ///
+    /// 模块表是**空的**——这个引擎上 `(require "任何东西")` 一律解析不
+    /// 出来。要让脚本能 require 同 mod / 依赖 mod 的模块，用
+    /// [`Self::with_modules`]。
     pub fn new() -> Self {
+        Self::with_modules(Arc::new(ModuleTable::empty()))
+    }
+
+    /// 与 [`Self::new`] 相同，但带一张 [`ModuleTable`]——`require` 能
+    /// 解析到的模块、允许跨到哪些 mod，全由这张表说了算，见
+    /// [`crate::modules`]。
+    pub fn with_modules(modules: Arc<ModuleTable>) -> Self {
         assert!(
             !has_compiled_on_this_thread(),
             "本线程已经编译过脚本，不得再构造引擎——见              ll_script::host::COMPILED_ON_THIS_THREAD 文档与 ADR 0028：             「先编译、后构造」这个相邻关系是 steel-core 0.8.2 偶发内存             破坏的唯一已知触发条件。请把这次构造提前到本线程的构造阶段，             或者换一根新线程。"
         );
+        // 展开器与主引擎在这里**同时**构造（C6：本线程全部引擎构造必须
+        // 先于全部脚本编译），见 `expander` 字段文档。
+        let expander = (!modules.is_empty()).then(|| {
+            let mut expander = Engine::new_sandboxed();
+            expander.register_source_module_resolver(ModuleResolver::new(Arc::clone(&modules)));
+            expander
+        });
         let mut engine = Engine::new_sandboxed();
 
-        // 关掉 `require` 的文件系统逃逸，见 DenyAllSourceModules 文档。
-        // 必须在任何脚本源码被编译之前注册——解析器只对注册之后的编译
-        // 生效，晚一步就等于这一份脚本没有这道防线。
-        engine.register_source_module_resolver(DenyAllSourceModules);
+        // 关掉 `require` 的文件系统逃逸，见 crate::modules 模块文档
+        // 「Steel 运行期永不碰盘」。必须在任何脚本源码被编译之前注册
+        // ——解析器只对注册之后的编译生效，晚一步就等于这一份脚本没有
+        // 这道防线。
+        engine.register_source_module_resolver(ModuleResolver::new(Arc::clone(&modules)));
 
         // 顺序不能变：先拍下"毒化之前"的全局名字快照并减去要挡的名字
         // （见 compute_allowed_identifiers 文档），再真正执行毒化——
@@ -814,6 +992,8 @@ impl ScriptEngine {
             allowed_identifiers,
             alloc_controller,
             script_defined: HashSet::new(),
+            modules,
+            expander,
         }
     }
 
@@ -835,12 +1015,14 @@ impl ScriptEngine {
     /// 加载并执行一段脚本源码（通常是 mod 的顶层定义）。
     ///
     /// 五道关卡依次生效：
-    /// 1. [`reject_dangerous_syntax`]——源码词法层快速失败（`require`
-    ///    家族），省一次解析，并给出命中位置。
-    /// 2. [`DenyAllSourceModules`]——`require` 的权威防线，装在引擎
-    ///    构造期，文本层的词法近似漏掉的写法（实测 `[require "…"]`
-    ///    这种方括号写法曾经漏过）也逃不掉；错误经
-    ///    [`translate_require_error`] 翻译成 mod 作者读得懂的说法。
+    /// 1. [`scan_require_forms`] + [`ModuleTable::check`]——源码词法层
+    ///    快速失败（`require-builtin` 家族当场拒绝；`(require "模块名")`
+    ///    的模块名逐个判语法与跨 mod 权限），省一次解析，并给出命中
+    ///    位置。
+    /// 2. [`ModuleResolver`]——`require` 的权威防线，装在引擎构造期，
+    ///    文本层的词法近似漏掉的写法（实测 `[require "…"]` 这种方括号
+    ///    写法曾经漏过）也逃不掉；错误经 [`translate_require_error`]
+    ///    换成 mod 作者读得懂的说法。
     /// 3. **AST 白名单**（[`crate::whitelist::check_whitelist`]）——解析并
     ///    完整展开源码（`Engine::emit_fully_expanded_ast`，宏与
     ///    `require-builtin` 均已展开），确认树上出现的每一个被引用的
@@ -860,15 +1042,23 @@ impl ScriptEngine {
     /// 真正要执行的那份展开结果"这个正确性保证，用真实脚本验证过重复
     /// 解析/重复 `define` 不会产生副作用或报错。
     pub fn load_source(&mut self, source: String) -> Result<(), ScriptError> {
-        reject_dangerous_syntax(&source)?;
+        for (key, offset) in scan_require_forms(&source)? {
+            self.modules
+                .check(&key)
+                .map_err(|why| ScriptError::ParseError(why, Some(offset)))?;
+        }
 
         mark_compiled_on_this_thread();
 
-        let exprs = self
-            .engine
-            .emit_fully_expanded_ast(&source, None)
+        // 展开在展开器上做（有模块表时），执行在主引擎上做——两遍不能
+        // 共用一台引擎，理由见 `expander` 字段文档。
+        let expanded = match self.expander.as_mut() {
+            Some(expander) => expander.emit_fully_expanded_ast(&source, None),
+            None => self.engine.emit_fully_expanded_ast(&source, None),
+        };
+        let exprs = expanded
             .map_err(classify_error)
-            .map_err(translate_require_error)?;
+            .map_err(|err| translate_require_error(err, &self.modules))?;
         check_whitelist(&exprs, &self.allowed_identifiers, &self.script_defined)?;
         // 顶层定义的名字要在**这一次装载成功之后**才对下一份脚本可见
         // ——先算好（`exprs` 马上就要被丢弃），装载失败时不并入。
@@ -1532,6 +1722,13 @@ mod tests {
         // 修复前 reject_dangerous_syntax 用的是字面子串 `"(require "`，
         // 左括号与 require 之间换行就绕过去了，随后展开阶段真的会去
         // 读盘（实测 win.ini 的 `[fonts]` 段名出现在了报错里）。
+        //
+        // 「模块系统」这一批之后 `(require "模块名")` 本身是支持的，
+        // 但模块名只能落在本 mod 的模块表里——磁盘绝对路径不在任何表
+        // 里，而且语法上就先被判成绝对路径。断言的是**文本层**判的：
+        // 兜底解析器给不出命中位置，`offset.is_some()` 是文本层独有的
+        // 特征，只断言 `ParseError` 的话，文本层整个退回旧写法也测不
+        // 出来。
         // Arrange
         let mut engine = ScriptEngine::new();
         let 真实文件 = 写一个真实的磁盘模块("newline");
@@ -1539,18 +1736,13 @@ mod tests {
         // Act
         let result = engine.load_source(format!("(require\n\"{}\")", 写成steel字符串(&真实文件)));
 
-        // Assert：断言到「是**文本层**拒绝的」这个粒度，不能只断言
-        // `ParseError`——兜底解析器最终也产出 `ParseError`，只断言类型
-        // 的话，文本层整个退回旧的字面子串匹配都测不出来（实测：那样
-        // 的变异体能让本条测试保持全绿）。「禁止的语法」这个前缀是
-        // 文本层独有的标记，兜底那条路不带；命中位置同理，只有文本层
-        // 给得出来。
+        // Assert
         let _ = std::fs::remove_file(&真实文件);
         match result {
             Err(ScriptError::ParseError(message, offset)) => {
                 assert!(
-                    message.starts_with("禁止的语法"),
-                    "期望文本层在编译前就拒绝，实际是「{message}」"
+                    message.contains("绝对路径"),
+                    "期望文本层点名「绝对路径」，实际是「{message}」"
                 );
                 assert!(
                     offset.is_some(),
@@ -1576,8 +1768,8 @@ mod tests {
         match result {
             Err(ScriptError::ParseError(message, _)) => {
                 assert!(
-                    message.contains(REQUIRE_UNSUPPORTED_MESSAGE),
-                    "错误信息没告诉 mod 作者不支持 require，实际是「{message}」"
+                    message.contains("绝对路径"),
+                    "错误信息没点名绝对路径，实际是「{message}」"
                 );
             }
             other => panic!("期望 ParseError，实际拿到 {other:?}"),
@@ -1595,10 +1787,7 @@ mod tests {
         // Assert
         match result {
             Err(ScriptError::ParseError(message, _)) => {
-                assert!(
-                    message.contains(REQUIRE_UNSUPPORTED_MESSAGE),
-                    "实际是「{message}」"
-                );
+                assert!(message.contains("上跳目录"), "实际是「{message}」");
             }
             other => panic!("期望 ParseError，实际拿到 {other:?}"),
         }
@@ -1607,10 +1796,10 @@ mod tests {
     #[test]
     fn 解析器兜底独立于文本检查也能拒绝磁盘上真实存在的模块() {
         // 其余几条 require 测试走的是 `ScriptEngine::load_source`，
-        // 文本层 `reject_dangerous_syntax` 会抢先拒绝——那证明不了
-        // 权威防线 [`DenyAllSourceModules`] 有没有被真的装到引擎上。
-        // 这条测试**绕开文本层**，直接对着 `ScriptEngine` 内部那个
-        // 引擎跑 `require`，钉住「解析器确实装上了」这件事本身。
+        // 文本层 `scan_require_forms` 会抢先拒绝——那证明不了权威防线
+        // [`ModuleResolver`] 有没有被真的装到引擎上。这条测试**绕开
+        // 文本层**，直接对着 `ScriptEngine` 内部那个引擎跑 `require`，
+        // 钉住「解析器确实装上了」这件事本身。
         //
         // 为什么值得单独钉：文本层是词法近似，实测已经漏过一次
         // （`[require "…"]` 用方括号写就绕过了只认 `(` 的那版扫描，
@@ -1639,7 +1828,7 @@ mod tests {
             洞还在吗.is_ok(),
             "对照组理应读到磁盘上的模块——读不到说明这条测试没在测真正的那条路：{洞还在吗:?}"
         );
-        let err = 兜底结果.expect_err("ScriptEngine 的引擎上必须装着 DenyAllSourceModules");
+        let err = 兜底结果.expect_err("ScriptEngine 的引擎上必须装着 ModuleResolver");
         assert!(
             err.to_string().contains(UNRESOLVED_MODULE_MARKER),
             "拒绝理由应当是「解析不出这个模块」而不是别的失败，实际是「{err}」"
@@ -1661,13 +1850,269 @@ mod tests {
         let _ = std::fs::remove_file(&真实文件);
         match result {
             Err(ScriptError::ParseError(message, _)) => {
+                assert!(message.contains("绝对路径"), "实际是「{message}」");
+            }
+            other => panic!("期望 ParseError，实际拿到 {other:?}"),
+        }
+    }
+
+    /// 造一个带模块表的引擎：本 mod 叫 `mymod`，依赖 `dep`。
+    fn 带模块表的引擎(
+        modules: Vec<(Option<&str>, &str, &str)>,
+        dependencies: &[&str],
+    ) -> ScriptEngine {
+        let mut table = ModuleTable::new(
+            "mymod",
+            dependencies.iter().map(|d| (*d).to_string()).collect(),
+        );
+        for (namespace, path, source) in modules {
+            table.insert(namespace, path, source.to_string());
+        }
+        ScriptEngine::with_modules(Arc::new(table))
+    }
+
+    #[test]
+    fn 同mod的相对require真的能用() {
+        // Arrange
+        let mut engine = 带模块表的引擎(
+            vec![(None, "helpers", "(provide 翻倍) (define (翻倍 x) (* 2 x))")],
+            &[],
+        );
+
+        // Act
+        let result =
+            engine.load_source("(require \"helpers\")\n(define 答案 (翻倍 21))".to_string());
+
+        // Assert
+        assert!(result.is_ok(), "同 mod 的 require 本该能用：{result:?}");
+        assert!(engine.has_definition("答案"));
+    }
+
+    #[test]
+    fn 同mod的子目录模块也能require() {
+        // Arrange
+        let mut engine = 带模块表的引擎(
+            vec![(None, "content/races", "(provide 兽人) (define 兽人 7)")],
+            &[],
+        );
+
+        // Act
+        let result =
+            engine.load_source("(require \"content/races\")\n(define 答案 兽人)".to_string());
+
+        // Assert
+        assert!(result.is_ok(), "实际 {result:?}");
+    }
+
+    #[test]
+    fn 跨mod带前缀的require在声明过依赖时能用() {
+        // Arrange
+        let mut engine = 带模块表的引擎(
+            vec![(Some("dep"), "helpers", "(provide 常量) (define 常量 5)")],
+            &["dep"],
+        );
+
+        // Act
+        let result =
+            engine.load_source("(require \"dep:helpers\")\n(define 答案 常量)".to_string());
+
+        // Assert
+        assert!(result.is_ok(), "实际 {result:?}");
+    }
+
+    #[test]
+    fn 跨mod未声明依赖时被拒绝且点名是依赖问题() {
+        // 这是模块系统里唯一一条**权限**判定：源码在表里也不给。
+        // Arrange
+        let mut engine = 带模块表的引擎(
+            vec![(Some("dep"), "helpers", "(provide 常量) (define 常量 5)")],
+            &[], // 刻意不声明 dep
+        );
+
+        // Act
+        let result = engine.load_source("(require \"dep:helpers\")".to_string());
+
+        // Assert
+        match result {
+            Err(ScriptError::ParseError(message, _)) => {
                 assert!(
-                    message.contains(REQUIRE_UNSUPPORTED_MESSAGE),
+                    message.contains("dependencies"),
+                    "错误信息该告诉 mod 作者去清单里补依赖，实际是「{message}」"
+                );
+            }
+            other => panic!("期望 ParseError，实际拿到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn 没写进provide的名字在编译期就不可见() {
+        // `provide` 才是导出形式（不是 `export`）；没导出的名字不是
+        // 「运行期取不到」，是编译期就报 FreeIdentifier。
+        // Arrange
+        let mut engine = 带模块表的引擎(
+            vec![(
+                None,
+                "helpers",
+                "(provide 公开) (define (公开) 1) (define (私有) 2)",
+            )],
+            &[],
+        );
+
+        // Act
+        let 公开的 = engine.load_source("(require \"helpers\")\n(define a (公开))".to_string());
+        let 私有的 = engine.load_source("(require \"helpers\")\n(define b (私有))".to_string());
+
+        // Assert
+        assert!(公开的.is_ok(), "导出的名字本该可用：{公开的:?}");
+        assert!(私有的.is_err(), "没 provide 的名字本该不可见");
+    }
+
+    #[test]
+    fn 完全没写provide的模块什么都不导出() {
+        // 不是「没写 provide 就全导出」——实测是「什么都不导出」。
+        // Arrange
+        let mut engine = 带模块表的引擎(vec![(None, "helpers", "(define (公开) 1)")], &[]);
+
+        // Act
+        let result = engine.load_source("(require \"helpers\")\n(define a (公开))".to_string());
+
+        // Assert
+        assert!(result.is_err(), "没写 provide 的模块本该什么都不导出");
+    }
+
+    #[test]
+    fn 环import干净报错不挂死() {
+        // 挂死会让整个装载卡住，没有任何错误可报——必须确认 steel-core
+        // 是报错而不是无限递归。本条测试自身跑完就是「没挂死」的证据
+        // （测试进程不会永远等下去）。
+        // Arrange
+        let mut engine = 带模块表的引擎(
+            vec![
+                (None, "a", "(require \"b\") (provide fa) (define (fa) 1)"),
+                (None, "b", "(require \"a\") (provide fb) (define (fb) 2)"),
+            ],
+            &[],
+        );
+
+        // Act
+        let result = engine.load_source("(require \"a\")\n(define x (fa))".to_string());
+
+        // Assert
+        let err = result.expect_err("环 import 必须报错");
+        let message = format!("{err:?}");
+        assert!(
+            message.contains("circular"),
+            "拒绝理由该是环依赖，实际是「{message}」"
+        );
+    }
+
+    #[test]
+    fn 模块体里的requirebuiltin被拒绝() {
+        // **这条挡的是白名单挡不住的东西**：模块体会被完整展开进要求方
+        // 的 AST（实测 probe_modules.rs 第 5 节），但
+        // `(require-builtin steel/time)` 展开成
+        // `(define ##mm…instant/now (%module-get% %-builtin-module-steel/time
+        // 'instant/now))`——`%module-get%` 与 `%-builtin-module-steel/time`
+        // 都在 `Engine::globals()` 里因而都在白名单内，被禁的
+        // `instant/now` 只出现在 quote 里不受检查。实测（同一节）没有
+        // 这道文本层检查时，模块体真的拿到了 `#<std::time::Instant>`。
+        // 唯一挡得住它的是 `ModuleTable::insert` 那次文本层检查。
+        // Arrange
+        let mut engine = 带模块表的引擎(
+            vec![(
+                None,
+                "evil",
+                "(require-builtin steel/time) (provide 现在) (define (现在) (instant/now))",
+            )],
+            &[],
+        );
+
+        // Act
+        let result = engine.load_source("(require \"evil\")\n(define t (现在))".to_string());
+
+        // Assert
+        match result {
+            Err(ScriptError::ParseError(message, _)) => {
+                assert!(message.contains("require-builtin"), "实际是「{message}」");
+            }
+            other => panic!("期望 ParseError，实际拿到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn require的forsyntax变体被拒绝() {
+        // `(require (for-syntax "x"))` 会把模块搬进宏展开阶段的 kernel
+        // 引擎求值，那个引擎不在本文件的能力收窄范围内——只认
+        // `(require "模块名")` 一种写法，其余子形式一概不开。
+        // Arrange
+        let mut engine =
+            带模块表的引擎(vec![(None, "helpers", "(provide f) (define (f) 1)")], &[]);
+
+        // Act
+        let result = engine.load_source("(require (for-syntax \"helpers\"))".to_string());
+
+        // Assert
+        match result {
+            Err(ScriptError::ParseError(message, _)) => {
+                assert!(message.contains("只支持"), "实际是「{message}」");
+            }
+            other => panic!("期望 ParseError，实际拿到 {other:?}"),
+        }
+    }
+
+    #[test]
+    fn requireforsyntax记号本身仍被当成危险语法拒绝() {
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_source("(require-for-syntax \"helpers\")".to_string());
+
+        // Assert
+        match result {
+            Err(ScriptError::ParseError(message, _)) => {
+                assert!(
+                    message.contains(REQUIRE_BUILTIN_UNSUPPORTED_MESSAGE),
                     "实际是「{message}」"
                 );
             }
             other => panic!("期望 ParseError，实际拿到 {other:?}"),
         }
+    }
+
+    #[test]
+    fn 字符字面量里的分号不会把后面的require藏起来() {
+        // `#\;` 是「分号这个字符」，不是注释起点。文本层若把它当注释
+        // 起点，`#\; (require-builtin steel/time)` 整行会被跳过，而
+        // Steel 会照常编译后半句——那是一条真实的藏东西的缝。
+        // Arrange
+        let mut engine = ScriptEngine::new();
+
+        // Act
+        let result = engine.load_source("(define c #\\;) (require-builtin steel/time)".to_string());
+
+        // Assert
+        assert!(
+            matches!(result, Err(ScriptError::ParseError(_, _))),
+            "实际拿到 {result:?}"
+        );
+    }
+
+    #[test]
+    fn 注释掉的require不参与权限判定() {
+        // 一条被注释掉的 `(require "旧名字")` 若照样判权限，mod 作者会
+        // 被自己已经注释掉的语句挡住装载。
+        // Arrange
+        let mut engine =
+            带模块表的引擎(vec![(None, "helpers", "(provide f) (define (f) 1)")], &[]);
+
+        // Act
+        let result = engine.load_source(
+            "; (require \"dep:早就删了\")\n(require \"helpers\")\n(define a (f))".to_string(),
+        );
+
+        // Assert
+        assert!(result.is_ok(), "实际 {result:?}");
     }
 
     #[test]

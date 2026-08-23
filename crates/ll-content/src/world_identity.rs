@@ -214,6 +214,43 @@ mod tests {
     }
 
     #[test]
+    fn 清单里的版本号原样进存档头且改一个字符就打不开() {
+        // 项目所有者裁决：「新版本不兼容旧版本存档就是了，版本不对就
+        // 打不开。」这条测试把那句话钉成一条可执行的断言，钉的是整条
+        // 链——`mod.json5` 的 `version` → `ModHeaderEntry.version` →
+        // `check_mod_set` 硬门禁——而不是链上任何单独一环。
+        //
+        // 为什么值得单独钉：链上每一环各自都有测试，但「改 mod.json5
+        // 的版本号会让此前的存档全部打不开」这个**后果**此前没有任何
+        // 一条测试直说。它是一颗定时炸弹还是一条有意的策略，区别只在
+        // 于有没有人把它写下来——策略见
+        // knowledge/design/save-and-mod-version-policy.md。
+        // Arrange：生成期的 mod 清单里版本是 0.1.0。
+        let mut registry = Registry::new();
+        registry.intern(id("lostland:mountain"));
+        let 生成期清单 = vec![manifest("lostland", "0.1.0")];
+        let generation = GenerationModSet::capture(&registry, &生成期清单);
+        let 存档头条目 = generation_mods_to_header_entries(&generation);
+
+        // Assert 其一：版本号原样搬进存档头，没有任何规范化。
+        assert_eq!(存档头条目[0].version, "0.1.0");
+
+        // Act & Assert 其二：清单版本没动 → 放行。
+        assert!(crate::load_error::check_mod_set(&存档头条目, &生成期清单).is_ok());
+
+        // Act & Assert 其三：只改末尾一个字符 → 硬门禁拒绝。
+        // 不做语义化版本解析，"0.1.1 是 0.1.0 的兼容升级"这种判断在这
+        // 里不存在，也不该存在。
+        let 改过版本的清单 = vec![manifest("lostland", "0.1.1")];
+        let err = crate::load_error::check_mod_set(&存档头条目, &改过版本的清单)
+            .expect_err("版本号改了就该打不开");
+        assert!(
+            matches!(err, crate::load_error::LoadError::ModSetMismatch(_)),
+            "实际是 {err:?}"
+        );
+    }
+
+    #[test]
     fn generation_mods_to_header_entries产出的条目字段与源数据逐一对应() {
         // 断链三修复的核心验证：GenerationModSet -> Vec<ModHeaderEntry>
         // 这次转换本身只是原样搬运,不丢字段、不改数值。

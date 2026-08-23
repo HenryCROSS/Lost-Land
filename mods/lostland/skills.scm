@@ -55,6 +55,14 @@
 ;; 逐字复制，不是本批次新定的平衡——真正的职业/技能数值平衡不在本
 ;; 任务范围（设计文档开篇已声明只交付系统骨架）。
 
+;; 依赖写在代码里，不写在清单顺序里：五条技能的 owning-class 都指向
+;; lostland:warrior，register-skill 对 owning-class 只 get 不 intern
+;; （ADR 0017「注册期完整校验」），所以职业必须先注册。这一句 require
+;; 就是那个保证——不管 main.scm 里怎么排，Steel 都会先把 classes 求值
+;; 完再回到这里（实测：crates/ll-script/examples/probe_modules.rs 第 11
+;; 节，模块体按依赖序求值且只求值一次）。
+(require "classes")
+
 ;; 起点技能：基础打击。无前置、无冷却、无消耗。
 (register-skill "lostland:strike" "lostland:warrior" '()
                 0 "none" 0

@@ -8,10 +8,10 @@
 ;; 通过 register-recipe-category 注册过的配方类别 id。传别的 kind 会
 ;; 当场报错并列出支持的取值，不会被静默当成制作。
 ;;
-;; **本文件必须排在 crafting.scm 之后**（见 mod.json5 的 entry_points
-;; 顺序）：register-subclass-unlock 要求 trigger-target 指向的类别已经
-;; 注册，只 get 不 intern——顺序反了会在装载期报一条点名的错误，不会
-;; 静默注册出一条谁都触发不了的获得条件。
+;; **本文件依赖 crafting.scm**：register-subclass-unlock 要求
+;; trigger-target 指向的类别已经注册，只 get 不 intern。这条依赖由本
+;; 文件下方那句 `(require "crafting")` 表达，不再是 mod.json5 里
+;; entry_points 的排序约定。
 ;;
 ;; # 为什么本体副职只有制作类这四个
 ;;
@@ -83,6 +83,14 @@
 ;; ——register-subclass-trait 这条路还没通。因此这四个副职今天的全部
 ;; 作用是「资格」：它们能被 recipe-category-requires-subclass! 引用当
 ;; 闸门（example_mod 已经这么用了）。天赋授予是下一批的事。
+
+;; 依赖写在代码里，不写在清单顺序里：register-subclass-unlock 的
+;; trigger-target 指向的配方类别必须**已经注册**（只 get 不 intern），
+;; 这一句 require 就是那个保证。此前它是 mod.json5 里
+;; entry_points 的一条排序约定——写在清单里的顺序看不出「为什么」，
+;; 改错了也只有装载期才发现；写成 require 之后，依赖就在需要它的那个
+;; 文件里，谁都改不掉。
+(require "crafting")
 
 ;; 工匠：锻造金属装备与工具。
 (register-subclass "lostland:artisan" "lostland:subclass.artisan.display_name")

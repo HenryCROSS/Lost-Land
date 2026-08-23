@@ -483,17 +483,24 @@
 ;;
 ;; 三件保暖/护符类只挂 armor：它们穿戴在身上,挨打会磨损,但没有任何
 ;; "使用"的动作可言。
-(register-item-tag "examplemod:iron_sword"        "lostland:weapon")
-(register-item-tag "examplemod:war_hammer"        "lostland:weapon")
-(register-item-tag "examplemod:war_hammer"        "lostland:tool")
-(register-item-tag "examplemod:wooden_shield"     "lostland:armor")
-(register-item-tag "examplemod:wooden_shield"     "lostland:weapon")
-(register-item-tag "examplemod:crude_dagger"      "lostland:weapon")
-(register-item-tag "examplemod:flame_longbow"     "lostland:weapon")
-(register-item-tag "examplemod:acid_dagger"       "lostland:weapon")
-(register-item-tag "examplemod:acid_ward_amulet"  "lostland:armor")
-(register-item-tag "examplemod:wool_liner"        "lostland:armor")
-(register-item-tag "examplemod:fur_cloak"         "lostland:armor")
+;; **跨 mod require 的示范**：这一行把本体 mods/lostland/ids.scm 里
+;; `provide` 出来的 `lostland-id` 拿过来用。跨 mod 必须带 mod id 前缀
+;; （`lostland:ids`），而且本 mod 得先在 mod.json5 的 dependencies 里
+;; 声明过 lostland——两个条件缺一个都会在装载期被点名拒绝。同 mod 的
+;; 文件则不带前缀，写相对本 mod 根目录的路径即可。
+(require "lostland:ids")
+
+(register-item-tag "examplemod:iron_sword"        (lostland-id "weapon"))
+(register-item-tag "examplemod:war_hammer"        (lostland-id "weapon"))
+(register-item-tag "examplemod:war_hammer"        (lostland-id "tool"))
+(register-item-tag "examplemod:wooden_shield"     (lostland-id "armor"))
+(register-item-tag "examplemod:wooden_shield"     (lostland-id "weapon"))
+(register-item-tag "examplemod:crude_dagger"      (lostland-id "weapon"))
+(register-item-tag "examplemod:flame_longbow"     (lostland-id "weapon"))
+(register-item-tag "examplemod:acid_dagger"       (lostland-id "weapon"))
+(register-item-tag "examplemod:acid_ward_amulet"  (lostland-id "armor"))
+(register-item-tag "examplemod:wool_liner"        (lostland-id "armor"))
+(register-item-tag "examplemod:fur_cloak"         (lostland-id "armor"))
 
 ;; ── 制作系统（制作系统落地批次）─────────────────────────────────────
 ;;

@@ -17,45 +17,45 @@
 // 哪些 id，而不是静默进到一个残破的游戏里。误删/改名本目录的表现是
 // 启动期一条可行动的错误，不是十分钟后某个 NPC 生成不出来。
 //
-// # 为什么按内容类型拆多个入口文件
+// # 为什么按内容类型拆多个文件，而 entry_points 只有一条
 //
-// `entry_points` 本来就是数组（见 `ll_mod::manifest::ModManifest`），
-// 拆文件不引入任何机制，只是让「本体的种族都写在哪」有一个不需要
-// 搜索就能回答的答案。后续批次迁移职业/技能/物品时各自新增一个文件，
-// 不往同一个巨型脚本里堆。
+// 拆文件是为了让「本体的种族都写在哪」有一个不需要搜索就能回答的
+// 答案。但拆成多个 `entry_points` 曾经带来一个副作用：数组顺序变成
+// 了真实约束（谁必须先注册），而清单里看不出为什么。模块系统落地
+// 之后，入口收成一条 `main.scm`，文件之间的先后由各文件自己的
+// `(require "…")` 表达——见 main.scm 文件头与下方 entry_points 上的
+// 注释。
 {
   namespace: "lostland",
+
+  // **改这个版本号 = 宣布此前用本 mod 生成的全部存档作废。**
+  // 项目所有者裁决：「新版本不兼容旧版本存档就是了，版本不对就打不
+  // 开。」`ll_content::load_error::check_mod_set` 是硬门禁，比的是这个
+  // 字符串**原样相等**，不做语义化版本解析。什么时候该动、什么时候
+  // 不该动，见 knowledge/design/save-and-mod-version-policy.md。
   version: "0.1.0",
 
-  // 种族：迁移自 `ll_mod::race::materialize_base_races`（已删除）。
-  // 职业：四条，迁移自 `ll_mod::class::materialize_base_classes`（已删除）
-  //       + 上一批就迁进来的卫兵，见 classes.scm 文件头。
-  // 技能：五条，迁移自 `ll_mod::skill::materialize_base_skills`（已删除）。
-  // 任务：四条，迁移自 `ll_mod::quest::materialize_base_quests`（已删除）。
-  // 制作类别：四条，都不设副职闸门，理由见 crafting.scm 文件头。
-  // 副职：四条制作类副职 + 各自的使用计数获得条件，外加迁移自
-  //       `ll_mod::subclass::materialize_base_subclasses`（已删除）的
-  //       剑舞者/学徒两条。
+  // 内容清单（哪一类写在哪个文件里）：
+  //   races.scm      种族，迁移自 `ll_mod::race::materialize_base_races`（已删除）
+  //   classes.scm    职业四条，迁移自 `ll_mod::class::materialize_base_classes`（已删除）
+  //                  + 上一批就迁进来的卫兵，见该文件头
+  //   skills.scm     技能五条，迁移自 `ll_mod::skill::materialize_base_skills`（已删除）
+  //   quests.scm     任务四条，迁移自 `ll_mod::quest::materialize_base_quests`（已删除）
+  //   crafting.scm   制作类别四条，都不设副职闸门，理由见该文件头
+  //   subclasses.scm 副职：四条制作类 + 各自的使用计数获得条件，外加迁移自
+  //                  `ll_mod::subclass::materialize_base_subclasses`（已删除）的
+  //                  剑舞者/学徒两条
+  //   tags.scm       标签名册
   //
-  // **顺序有意义**：subclasses.scm 里的 register-subclass-unlock 要求
-  // trigger-target 指向的配方类别**已经注册**（只 get 不 intern），
-  // 因此 crafting.scm 必须排在它前面。两者互换会在装载期报一条点名的
-  // 错误——不会静默注册出一条谁都触发不了的获得条件。
-  // 标签名册（耐久标签批次）：tags.scm 必须排在**任何** register-item-tag
-  // 之前。本 mod 目前一件物品都没注册（物品迁移是后续批次），因此本
-  // mod 内部没有顺序约束；跨 mod 的顺序由依赖声明保证——引用
-  // lostland:armor 这类标签的 mod（当前是 examplemod）在自己的
-  // mod.json5 里声明 dependencies: ["lostland"]。
+  // **entry_points 只有一条，顺序不再有语义**。此前这份数组的顺序是
+  // 真实约束（crafting 必须排在 subclasses 前、classes 必须排在 skills
+  // 前），而清单里看不出为什么、也没有任何机制阻止别人改坏它。现在那
+  // 两条约束写成了 `(require "crafting")` / `(require "classes")`，就在
+  // 需要它们的那个文件里；main.scm 里的七行 require 刻意按字母序排，
+  // 与旧的工作顺序不同——顺序若还有语义，装载当场就会失败。
   //
-  // **classes.scm 必须排在 skills.scm 前面**：四条战士技能的
-  // owning-class 指向 lostland:warrior，见 classes.scm 文件头最后一节。
-  entry_points: [
-    "races.scm",
-    "classes.scm",
-    "skills.scm",
-    "quests.scm",
-    "crafting.scm",
-    "subclasses.scm",
-    "tags.scm",
-  ],
+  // 想知道模块系统的规则（同 mod 相对路径、跨 mod 必须带 mod id 前缀
+  // 且先在 dependencies 里声明），见 `ll_script::modules` 模块文档与
+  // knowledge/design/mod-package-structure.md。
+  entry_points: ["main.scm"],
 }

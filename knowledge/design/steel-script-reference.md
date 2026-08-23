@@ -571,7 +571,8 @@ book《Collections > Hash sets》给出构造示例 `(hashset 10 20 30 30 40)`�
 | 非确定性随机（`(require-builtin steel/random)`） | 拒绝 | `(rng-next-u64)`/`(rng-gen-range lo hi)`/`(rng-chance permille)`（第三节「四」） |
 | 执行 shell 命令/拉起进程 | 拒绝，**无正当替代需求** | 无——mod 不应该、也不需要拉起系统进程 |
 | 读写文件系统 | 拒绝 | **待办**——mod 目录资源的 VFS（ADR 0019 J：规格 §5 已规划、`crates/ll-mod/src/` 目前没有 `vfs.rs`），如实告知目前没有替代品 |
-| `eval!`/`eval-string`/`load`（动态执行字符串代码） | 拒绝，**且判断为不正当**——本项目 mod 清单本身就是"按顺序加载多个入口文件"的机制，不需要脚本运行期再 `load` 别的文件；动态生成代码的正当需求走声明式内容定义（ADR 0016/0017 一/二档） | 用声明式注册函数（第三节「一」六个 `register-*`），或本项目已设计的"物化列表 + `map`/`filter`" 逃生舱模式（见 [脚本层数据句柄与批量查询](script-entity-handles-and-batch-queries.md) 5.4 节） |
+| `require-builtin` / `require-for-syntax` | 拒绝——那是向 Steel 内置模块表**直接要能力**，不是模块引用 | 宿主注册的 `register-*`/`world-*`/`rng-*` 等函数；要引用**别的脚本文件**用 `(require "模块名")`，见第六节 |
+| `eval!`/`eval-string`/`load`（动态执行字符串代码） | 拒绝，**且判断为不正当**——动态生成代码的正当需求走声明式内容定义（ADR 0016/0017 一/二档）；「把另一个文件的定义拿过来用」这个正当需求由 `(require "模块名")` 满足（第六节），不需要运行期 `load` | 用声明式注册函数（第三节「一」六个 `register-*`），或本项目已设计的"物化列表 + `map`/`filter`" 逃生舱模式（见 [脚本层数据句柄与批量查询](script-entity-handles-and-batch-queries.md) 5.4 节） |
 | `Engine::new`/`run!`（脚本内构造一个全新、不受限的引擎） | 拒绝，**判断为不正当**——VM 生命周期归宿主管，脚本不该有能力构造另一个不受限的引擎实例 | 无需替代品 |
 | 读写进程环境变量 | 拒绝，**判断为不正当** | 若确实需要可配置项，应走 mod 清单声明的配置字段，不是运行期读环境变量 |
 | 探测自己能调用哪些 API（`module->exports`） | 拒绝——**判断为"不该在这一层被满足"**（脚本不该在运行期自省自己够不着什么） | 静态 API 文档（本文档）+ 规划中的 `tools/ll-datacheck` |
@@ -648,6 +649,37 @@ let line = source[..offset as usize].matches('\n').count() + 1;
 ```
 
 已实测（`字节偏移量能换算成第几行`）：三行脚本，第三行故意留一个未闭合的括号，换算结果确实是 `3`。加载管理界面正是用这套换算逻辑做到"精确到行号"的错误定位——真正的生产实现在 `crates/ll-mod/src/pipeline.rs` 的 `line_number(source, byte_offset)`（第 390 行），按字节而非按字符扫描、越界时钳位，比这里的示例写法更谨慎，但计数原理相同（数偏移量之前出现了几个换行符）。
+
+## 六、脚本之间：`provide` / `require`
+
+**这一节的规则由 `ll_script::modules` 落地，实测依据见 `crates/ll-script/examples/probe_modules.rs`。**
+
+```scheme
+;; helpers.scm —— provide 才是导出形式（不是 export）
+(provide 翻倍)
+(define (翻倍 x) (* 2 x))
+(define (内部细节) 42)          ; 没写进 provide = 私有
+
+;; content/races.scm
+(require "helpers")             ; 同 mod，相对本 mod 根目录，不写 .scm
+(require "lostland:ids")        ; 跨 mod，必须带 mod id 前缀
+```
+
+| 规则 | 说明 |
+|---|---|
+| 路径基准 | 相对**本 mod 根目录**，不是相对当前文件 |
+| 扩展名 | **不写** `.scm`（两种拼写会编译出两个互不相干的模块实例） |
+| 导出 | `provide`。没写进去的名字在要求方**编译期**就不可见（报 `FreeIdentifier`）；**完全没写 `provide` 的模块什么都不导出** |
+| 跨 mod | 必须写 `<mod id>:路径`，且本 mod 的 `mod.json5` 里得先声明 `dependencies: ["<mod id>"]`；本 mod 的模块**不要**写自己的前缀 |
+| 传递性 | **没有**。A require B、B require C，A 看不见 C 的导出 |
+| 求值次数 | 同一个 mod 内，一个模块只求值一次；模块按 require 图求值，与 `entry_points` 的排列无关 |
+| 环 import | 干净报错（`circular dependency found during module resolution`），不挂死 |
+| 写法 | 只支持 `(require "模块名")`。`(require (for-syntax "x"))`/`only-in`/`prefix-in` 一律拒绝 |
+| 不许 | 绝对路径、`../` 上跳、`require-builtin` 家族 |
+
+**状态是共享的**：同一个 mod 的全部脚本共用一个 VM，模块顶层 `define` 出来的状态被它们共享——不要指望「我 require 一次就拿到一份新的」。跨 mod 才是真副本（对方的源码在**你的** VM 里重新编译一次），也正因为如此，**被跨 mod require 的模块不该带副作用**：它里面的 `register-*` 会以**要求方**的身份注册内容。
+
+**用它把 `entry_points` 收成一条**：依赖顺序写在需要它的那个文件里，比写在清单数组的排列里可靠得多。现货示范见 `mods/lostland/`（`entry_points: ["main.scm"]`）与 `mods/lostland/ids.scm` → `mods/example_mod/gameplay.scm`（跨 mod）。完整设计见 [mod 包结构与资产 VFS](mod-package-structure.md)「六、脚本模块系统」。
 
 ## 文档与测试如何保持同步
 
