@@ -212,6 +212,7 @@ fn load_real_mods() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
+            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     // 本体与示例 mod 都必须装上：副职获得条件来自 example_mod，本体
@@ -361,7 +362,7 @@ fn cook_n_times_via_turn_engine(
         bystander,
         &mut intent,
         &catalogs,
-        &mut |_, _| {},
+        &mut |_, _| Vec::new(),
     );
 
     world
@@ -451,7 +452,7 @@ fn cook_then_abandon_then_forge(handle: &RealModsHandle, abandon: bool) -> Agent
         bystander,
         &mut intent,
         &catalogs,
-        &mut |_, _| {},
+        &mut |_, _| Vec::new(),
     );
 
     world.actors.get(crafter).expect("制作不会杀死人").clone()
@@ -691,7 +692,7 @@ fn 放弃一个从未持有的副职不产生任何变化() {
         bystander,
         &mut intent,
         &catalogs,
-        &mut |_, _| {},
+        &mut |_, _| Vec::new(),
     );
 
     // Assert

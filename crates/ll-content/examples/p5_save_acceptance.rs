@@ -238,6 +238,7 @@ fn step0_world_identity_chain_link() {
         version: "0.1.0".to_string(),
         dependencies: Vec::new(),
         entry_points: Vec::<std::path::PathBuf>::new(),
+        event_scripts: Vec::new(),
     }];
 
     let layout = validate_size_choice(64, (1, 1)).expect("1x1/64 是合法尺寸选择");

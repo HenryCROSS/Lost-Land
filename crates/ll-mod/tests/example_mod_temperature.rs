@@ -181,6 +181,7 @@ fn load_real_mods() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
+            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
 
@@ -373,7 +374,7 @@ fn damage_dealt_wearing(
         defender,
         &mut attack_controlled,
         &catalogs,
-        &mut |_, _| {},
+        &mut |_, _| Vec::new(),
     );
     assert_eq!(
         acted,

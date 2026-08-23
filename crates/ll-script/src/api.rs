@@ -4,6 +4,7 @@
 //! 按需添加，不在这里预先造好（避免为还没有消费者的形状猜测接口）。
 
 pub mod actor;
+pub mod event;
 pub mod handle;
 pub mod intent;
 pub mod log;

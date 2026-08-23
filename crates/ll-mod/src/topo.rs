@@ -366,6 +366,7 @@ mod tests {
                 })
                 .collect(),
             entry_points: Vec::<PathBuf>::new(),
+            event_scripts: Vec::new(),
         }
     }
 
@@ -388,6 +389,7 @@ mod tests {
                 })
                 .collect(),
             entry_points: Vec::<PathBuf>::new(),
+            event_scripts: Vec::new(),
         }
     }
 
@@ -514,12 +516,14 @@ mod tests {
                 version: "1.0.0".to_string(),
                 dependencies: Vec::new(),
                 entry_points: Vec::<PathBuf>::new(),
+                event_scripts: Vec::new(),
             },
             ModManifest {
                 id: mod_self_id("dup").expect("测试用命名空间恒合法"),
                 version: "2.0.0".to_string(),
                 dependencies: Vec::new(),
                 entry_points: Vec::<PathBuf>::new(),
+                event_scripts: Vec::new(),
             },
         ];
 

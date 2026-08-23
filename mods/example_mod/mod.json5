@@ -35,4 +35,17 @@
   // 疏漏。真正加载 behavior.scm 的路径见 ScriptBehaviorSource::new
   // 文档。
   entry_points: ["terrain.scm", "gameplay.scm", "animation.scm", "weather.scm"],
+
+  // event_scripts 列的是"结算期"跑的脚本：运行期事件的处理函数住在
+  // 这里。它与 entry_points 是两份**不可互换**的清单，理由与
+  // behavior.scm 不在 entry_points 里逐字相同（见上一段）——事件的
+  // **订阅声明** `(on-event ...)` 是装载期动作，写在 gameplay.scm 里；
+  // 事件的**处理实现** `(define (examplemod-on-kill) ...)` 是结算期
+  // 代码，写在这里。完整论证见
+  // ll_mod::manifest::ModManifest::event_scripts 文档。
+  //
+  // behavior.scm 目前不在这份列表里：它走的是另一条运行期通道
+  // （ScriptBehaviorSource，被问"这一回合做什么"），与事件监听
+  // （被告知"刚刚发生了什么"）方向相反，两者各自有自己的引擎。
+  event_scripts: ["events.scm"],
 }

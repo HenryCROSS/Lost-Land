@@ -92,6 +92,7 @@ use crate::{discover, topo};
 
 use crate::active_registry::{set_active_registry, take_active_registry};
 use crate::damage_category::DamageCategoryTable;
+use crate::event::EventSubscriptionTable;
 use crate::formula::FormulaTable;
 use crate::recipe::RecipeTable;
 use crate::recipe_category::RecipeCategoryTable;
@@ -110,6 +111,10 @@ use crate::script_damage_category_api::{
 use crate::script_damage_formula_api::{
     register_damage_formula_api, set_active_target as set_active_formula_target,
     take_active_target as take_active_formula_target,
+};
+use crate::script_event_api::{
+    register_event_api, set_active_target as set_active_event_target,
+    take_active_target as take_active_event_target,
 };
 use crate::script_item_api::{
     register_item_api, set_active_target as set_active_item_target,
@@ -256,6 +261,18 @@ pub struct GameplayTables<'a> {
     /// `register-damage-category` 的写入目标，见 `crate::damage_category`
     /// 模块文档。
     pub damage_category: &'a mut DamageCategoryTable,
+    /// 运行期事件订阅表（事件监听 API 批次新增）——`on-event` 的写入
+    /// 目标，见 `crate::event` 模块文档。
+    ///
+    /// **这不是一张内容表**：它里面没有任何 `ContentIndex`，因此不进
+    /// `crate::content_hash::ContentValueTables`、不需要 `classify_index`
+    /// 认领、不进存档 remap，`CONTENT_HASH_ALGORITHM_VERSION` 也不因它
+    /// 递增。它之所以仍然住在本结构体里，是因为它的**写入通道**与
+    /// 那二十张表逐字相同（装载期脚本函数、`thread_local!` 活跃目标、
+    /// 每个 mod 一个调用窗口），走同一条路比另开一条平行路径少一份
+    /// 需要各自维护的顺序约定。完整论证见 `crate::event` 模块文档
+    /// 「这不是一张内容表」一节。
+    pub events: &'a mut EventSubscriptionTable,
     /// 空间层属性表（空间层属性脚本注册批次新增）——
     /// `register-space-profile` 的写入目标，见
     /// `crate::script_space_profile_api` 模块文档。
@@ -420,6 +437,7 @@ fn new_load_engine() -> ScriptEngine {
     register_recipe_api(&mut engine);
     register_recipe_category_api(&mut engine);
     register_weather_api(&mut engine);
+    register_event_api(&mut engine);
     engine
 }
 
@@ -483,6 +501,9 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut recipe = RecipeTable::new();
     let mut recipe_category = RecipeCategoryTable::new();
     let mut weather = WeatherTable::new();
+    // 一键重载不消费订阅表——它只回答「这个 mod 现在能不能干净地
+    // 加载」，不写回正在运行的会话（见本函数文档）。
+    let mut events = EventSubscriptionTable::new();
     let mut tables = GameplayTables {
         terrain: &mut terrain,
         class: &mut class,
@@ -504,6 +525,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         weather: &mut weather,
         recipe: &mut recipe,
         recipe_category: &mut recipe_category,
+        events: &mut events,
     };
     // 与 `load_all` 同一条作用域规则：一个 mod 一个引擎，该 mod 的全部
     // 入口脚本共用它。构造在全部编译之前完成（这里只有一个 mod，天然
@@ -645,6 +667,10 @@ fn compile_one_script(
     set_active_recipe_target(std::mem::take(tables.recipe));
     set_active_recipe_category_target(std::mem::take(tables.recipe_category));
     set_active_weather_target(std::mem::take(tables.weather));
+    // 事件订阅表比其余各表多带一份「这个窗口属于哪个 mod」——订阅方
+    // 是谁不能由脚本自己说了算，见 `crate::script_event_api` 模块文档
+    // 最后一段。
+    set_active_event_target(std::mem::take(tables.events), manifest.id.namespace());
 
     let result = engine.load_source(source.clone());
 
@@ -670,6 +696,7 @@ fn compile_one_script(
     *tables.recipe = take_active_recipe_target();
     *tables.recipe_category = take_active_recipe_category_target();
     *tables.weather = take_active_weather_target();
+    *tables.events = take_active_event_target();
 
     result.map_err(|script_err| LoadError {
         mod_id: manifest.id.clone(),
@@ -764,6 +791,7 @@ mod tests {
         weather: WeatherTable,
         recipe: RecipeTable,
         recipe_category: RecipeCategoryTable,
+        events: EventSubscriptionTable,
     }
 
     impl OwnedTables {
@@ -789,6 +817,7 @@ mod tests {
                 weather: &mut self.weather,
                 recipe: &mut self.recipe,
                 recipe_category: &mut self.recipe_category,
+                events: &mut self.events,
             }
         }
     }

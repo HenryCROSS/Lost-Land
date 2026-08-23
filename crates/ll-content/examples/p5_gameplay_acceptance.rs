@@ -196,6 +196,10 @@ fn build_content() -> Content {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
+            // 本 demo 不验事件监听（那条链路的验收在
+            // crates/ll-mod/tests/example_mod_events.rs），给一张就地丢弃
+            // 的空订阅表。
+            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
 

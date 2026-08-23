@@ -193,6 +193,7 @@ fn load_real_mods() -> RealModsHandle {
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
+            events: &mut ll_mod::event::EventSubscriptionTable::new(),
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").expect("合法标识符");
@@ -370,9 +371,12 @@ fn items_seen_per_inspection(
                 if let Effect::Inspect { items_seen, .. } = effect {
                     seen.push(items_seen.len());
                 }
+                Vec::new()
             },
         );
-        engine.try_player_turn(&mut world, rogue, &wait_input, catalogs, &mut |_, _| {});
+        engine.try_player_turn(&mut world, rogue, &wait_input, catalogs, &mut |_, _| {
+            Vec::new()
+        });
     }
     seen
 }
@@ -509,19 +513,18 @@ fn guard_turns_against_rogue(
     for _ in 0..turns {
         {
             let mut ai = behavior_ai_intent(&mut source);
-            engine.advance_ai(
-                &mut world,
-                rogue,
-                &mut ai,
-                catalogs,
-                &mut |_, effect| match effect {
+            engine.advance_ai(&mut world, rogue, &mut ai, catalogs, &mut |_, effect| {
+                match effect {
                     Effect::Inspect { .. } => inspects += 1,
                     Effect::MoveTo { .. } => moves += 1,
                     _ => {}
-                },
-            );
+                }
+                Vec::new()
+            });
         }
-        engine.try_player_turn(&mut world, rogue, &wait_input, catalogs, &mut |_, _| {});
+        engine.try_player_turn(&mut world, rogue, &wait_input, catalogs, &mut |_, _| {
+            Vec::new()
+        });
     }
     (inspects, moves)
 }

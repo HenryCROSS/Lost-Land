@@ -56,6 +56,7 @@ use ll_mod::content_audit::{
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
 use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::discover::discover_mods;
+use ll_mod::event::EventSubscriptionTable;
 use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::{LoadReport, LoadStatus};
@@ -177,6 +178,14 @@ pub struct LoadedContent {
     /// `ll_mod::recipe_category` 模块文档。
     pub recipe_category_table: RecipeCategoryTable,
 
+    /// 运行期事件订阅表（事件监听 API 批次新增）——`on-event` 的产物。
+    ///
+    /// **不是内容表**（里面没有任何 `ContentIndex`），因此不进
+    /// `ContentValueTables`、不参与内容值哈希、不进存档，见
+    /// `ll_mod::event` 模块文档「这不是一张内容表」一节。它是
+    /// `ll_mod::script_event_source::ScriptEventSource` 的唯一输入，
+    /// 由 `crate::app` 在建局时消费。
+    pub event_subscriptions: EventSubscriptionTable,
     /// 标签表（耐久标签批次）——`register-tag` 的产物，物品的
     /// `wear_channels` 派生列在注册期就是查它折算出来的，见
     /// `ll_mod::tag` 模块文档。
@@ -201,6 +210,15 @@ pub struct LoadedContent {
     /// 这份文本却不属于装载管线自身的职责，见
     /// `ll_content::save_file::load_full` 文档。
     pub script_sources: Vec<(String, String)>,
+    /// 已成功装载的**结算期**脚本源码：`(mod 命名空间, 源码文本)`，
+    /// 来自各清单的 `event_scripts` 字段。
+    ///
+    /// 与 [`Self::script_sources`] 是两份互不相同的清单，不可互换：
+    /// 装载期脚本里写着 `register-*`，结算期引擎上根本没有那些名字，
+    /// 见 `ll_mod::manifest::ModManifest::event_scripts` 文档。这份
+    /// 数据是 `ll_mod::script_event_source::ScriptEventSource::new`
+    /// 的输入之一（另一个是 [`Self::event_subscriptions`]）。
+    pub event_script_sources: Vec<(String, String)>,
     /// 本次 mod 装载报告：按 mod 归类的成功/失败结果。资产覆盖冲突
     /// （见 [`asset_vfs`] 模块文档）已经并入这份报告，作为额外的
     /// [`LoadStatus::Warning`] 条目——调用方不需要另外单独处理资产
@@ -529,6 +547,7 @@ pub fn load_content(
     let mut recipe_table = RecipeTable::new();
     let mut recipe_category_table = RecipeCategoryTable::new();
     let mut tag_table = TagTable::new();
+    let mut event_subscriptions = EventSubscriptionTable::new();
 
     let mut report = load_all(
         mods_root,
@@ -554,6 +573,7 @@ pub fn load_content(
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
             tag: &mut tag_table,
+            events: &mut event_subscriptions,
         },
     );
 
@@ -658,6 +678,7 @@ pub fn load_content(
 
     let manifests = successfully_parsed_manifests(mods_root);
     let script_sources = read_script_sources(&manifests);
+    let event_script_sources = read_event_script_sources(&manifests);
 
     let asset_result = asset_vfs::build(mods_root, assets_root, BASE_NAMESPACE);
     for (mod_id, message) in asset_result.conflicts {
@@ -711,10 +732,12 @@ pub fn load_content(
         recipe_table,
         recipe_category_table,
         tag_table,
+        event_subscriptions,
         weather_ids,
         weather_table,
         manifests,
         script_sources,
+        event_script_sources,
         report,
         asset_vfs: asset_result.vfs,
         audit,
@@ -741,11 +764,31 @@ fn successfully_parsed_manifests(mods_root: &Path) -> Vec<ModManifest> {
 /// `Failed`，这里只是尽力收集「读得到」的那些源码，不是这份数据的
 /// 权威来源。
 fn read_script_sources(manifests: &[ModManifest]) -> Vec<(String, String)> {
+    read_sources(manifests, |manifest| &manifest.entry_points)
+}
+
+/// 读出每个清单全部**结算期**脚本（`event_scripts`）的源码文本，供
+/// `ll_mod::script_event_source::ScriptEventSource` 使用。
+///
+/// 与 [`read_script_sources`] 是同一段逻辑的两个字段——它们读的是两份
+/// 互不相同、也不可互换的清单，见 `ll_mod::manifest::ModManifest::event_scripts`
+/// 文档「为什么必须是另一份清单」一节。
+fn read_event_script_sources(manifests: &[ModManifest]) -> Vec<(String, String)> {
+    read_sources(manifests, |manifest| &manifest.event_scripts)
+}
+
+/// [`read_script_sources`]/[`read_event_script_sources`] 共用的读取
+/// 循环——两者只差「读哪个字段」，抽出来避免两份逐字相同的代码在改
+/// 一处降级策略时漂移。
+fn read_sources(
+    manifests: &[ModManifest],
+    pick: impl Fn(&ModManifest) -> &Vec<std::path::PathBuf>,
+) -> Vec<(String, String)> {
     manifests
         .iter()
         .flat_map(|manifest| {
             let namespace = manifest.id.namespace().to_string();
-            manifest.entry_points.iter().filter_map(move |entry| {
+            pick(manifest).iter().filter_map(move |entry| {
                 std::fs::read_to_string(entry)
                     .ok()
                     .map(|source| (namespace.clone(), source))

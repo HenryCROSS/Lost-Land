@@ -16,6 +16,7 @@ use std::sync::Arc;
 
 use ll_i18n::Catalog;
 use ll_mod::asset_vfs::AssetVfs;
+use ll_mod::script_event_source::ScriptEventSource;
 use ll_platform::config::DisplayConfig;
 use ll_platform::config::ScaleFilter;
 use ll_platform::fps::FpsCounter;
@@ -30,6 +31,7 @@ use ll_render::gpu::GpuContext;
 use ll_render::sprite::{DrawOrder, Layer, footprint_bottom_screen_y, sprite_draw_position};
 use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
+use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
 use ll_sim::turn::TurnEngine;
 use ll_text::TextRenderer;
@@ -320,6 +322,16 @@ pub struct Demo {
     /// 里——`GameWorld` 只是「建世界/读档」这一步的搬运容器，不是本
     /// 引擎持续读写的地方。
     engine: TurnEngine,
+    /// 运行期事件分发器（事件监听 API 批次）——每条效果落地之前回调
+    /// 已订阅的 mod 处理函数，把它们产出的反应效果交回 `TurnEngine`
+    /// 由同一个 `apply` 执行，见 `ll_mod::script_event_source` 模块
+    /// 文档。
+    ///
+    /// `None` 表示**一条订阅都没有**：这时连引擎都不建（见
+    /// `crate::run_game` 里的接线），事件分发在结算路径上退化成一次
+    /// `Option::is_none` 判断，与本批次之前逐字等价。这是那条「没人
+    /// 订阅就一分钱都不花」承诺的最外层落点。
+    event_source: Option<ScriptEventSource>,
     resources: Option<GpuResources>,
     /// 本地化目录（P7 第一批：只读观测 HUD）——状态栏/角色面板/背包/
     /// 装备栏的全部标签、属性名、槽位名、物品名都经它解析，见
@@ -359,6 +371,14 @@ impl Demo {
     /// 用已经装载好的内容与已经建好（新游戏或读档得来）的世界构造
     /// 运行期状态——两者都由 [`crate::run_game`] 在事件循环启动前准备好，
     /// 本类型不负责「建世界还是读档」这个决定本身。
+    // 八个参数：全部是不同类型的具名值（内容、世界、路径、名字、
+    // 显示配置、本地化目录、语言标签、事件分发器），调用点只有两处
+    // （`crate::run_game` 与本模块的测试帮手），编译器对每一个都做
+    // 类型检查——这里没有 `register-race` 那种「13 个裸整数靠数位置」
+    // 的风险。真要收拢，正确形状是把「显示配置 + 本地化目录 + 语言」
+    // 三个表现层参数打包成一个类型，那是一次独立的重构，不夹带在
+    // 事件监听接线里。
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         content: LoadedContent,
         mut game_world: GameWorld,
@@ -367,6 +387,7 @@ impl Demo {
         display: DisplayConfig,
         catalog: Catalog,
         language: String,
+        event_source: Option<ScriptEventSource>,
     ) -> Demo {
         let player_pos = game_world
             .world
@@ -389,6 +410,7 @@ impl Demo {
         // 接管时间轴——见 `Demo::engine` 字段文档：本引擎此后是时间轴
         // 唯一的权威持有者,`game_world.timeline` 留下的空值不再被读取。
         let engine = TurnEngine::new(std::mem::take(&mut game_world.timeline));
+
         // 世界地图的粗粒度地形场——建局/读档后只算这一次，见
         // `Demo::continent_field` 字段文档。必须在 `game_world` 被移进
         // 下方的结构体字面量之前借出 `&game_world.world.terrain.layout()`。
@@ -409,6 +431,7 @@ impl Demo {
             walk_clip,
             idle_clip,
             engine,
+            event_source,
             anim: AnimStateMachine::new(idle_clip, FrameId(0)),
             resources: None,
             catalog,
@@ -486,21 +509,30 @@ impl Demo {
         let runtime_catalogs = RuntimeCatalogs::new(&self.content);
         let catalogs = runtime_catalogs.as_resolve_catalogs();
         // 本体二进制不渲染伤害飘字（`p3_acceptance` 才有,那是纯呈现层
-        // 的验收效果,见 `ll_sim::turn` 模块文档）,`on_effect` 回调没有
-        // 状态要收集，传一个空操作闭包即可。
+        // 的验收效果,见 `ll_sim::turn` 模块文档），但 `on_effect` 这条
+        // 回调**不再**是空操作：它现在是 mod 事件监听的落点。
+        //
+        // 没有任何订阅时 `event_source` 是 `None`，闭包退化成一次
+        // `Option::is_none` 判断加一个空 `Vec`——与接线之前逐字等价，
+        // 没装 mod 的玩家不为这套机制付任何代价。
+        let event_source = &mut self.event_source;
+        let mut on_effect = |world: &WorldState, effect: &Effect| match event_source {
+            Some(source) => source.dispatch(world, effect),
+            None => Vec::new(),
+        };
         self.engine.advance_ai(
             &mut self.game_world.world,
             player,
             &mut no_npc_ai,
             &catalogs,
-            &mut |_, _| {},
+            &mut on_effect,
         );
         self.engine.try_player_turn(
             &mut self.game_world.world,
             player,
             input,
             &catalogs,
-            &mut |_, _| {},
+            &mut on_effect,
         );
 
         if let Some(agent) = self.game_world.world.actors.get(player)
@@ -1049,6 +1081,11 @@ mod tests {
             DisplayConfig::default(),
             Catalog::load_dir(&std::env::temp_dir().join("ll-game-app-test-empty-locales")),
             "zh-CN".to_string(),
+            // 事件分发不在本测试帮手的范围内：建它要求「全部引擎构造
+            // 先于全部脚本编译」（C6），而 `test_content()` 已经在本
+            // 线程上装载过 mod。真实接线在 `crate::run_game`，端到端
+            // 证据在 `crates/ll-mod/tests/example_mod_events.rs`。
+            None,
         )
     }
 

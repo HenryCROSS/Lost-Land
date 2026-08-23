@@ -140,6 +140,7 @@ mod tests {
             version: version.to_string(),
             dependencies: Vec::new(),
             entry_points: Vec::<PathBuf>::new(),
+            event_scripts: Vec::new(),
         }
     }
 
