@@ -44,6 +44,8 @@
 - [0024 — 存档按可重算部分 + 偏差表达空间](decisions/0024-save-format-recomputable-vs-deviation-not-surface-vs-interior.md) — 分界是有无生成器，不是地表/室内
 - [0025 — demo 交互验收禁止合成键盘事件（SendKeys）盲注](decisions/0025-demo-interaction-verification-forbids-sendkeys.md) — 改用程序化驱动同一调用路径
 - [0026 — 账本纪律的第一次复发](decisions/0026-recurring-ledger-to-adr-discipline-lapse.md) — ADR 0013 立下三天后，又攒了 21 条未提升的裁定
+- [0028 — Steel 引擎构造期的偶发内存破坏](decisions/0028-steel-engine-construction-memory-corruption.md) — 定位到上游缺陷，逐条否决五条假说（爆栈/并发/sync/升级/畸形脚本）
+- [0029 — 构造阶段先于编译阶段（约束 C6）](decisions/0029-engine-construction-phase-precedes-compilation.md) — 机器强制的引擎构造时序，作用域单位从脚本文件升格为 mod
 
 ### 许可证
 

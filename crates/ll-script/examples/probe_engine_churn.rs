@@ -44,9 +44,17 @@
 //! **经本仓库组**：
 //! - `hardened`：反复 [`ll_script::ScriptEngine::new`]（毒化 + 中断看门狗）。
 //! - `load`：`ScriptEngine::new()` + `load_source()`，最贴近 `ll-mod`
-//!   的 `load_one_script` 真实做的事。
+//!   的 `compile_one_script` 真实做的事。
 //! - `reuse`：**只构造一次**引擎，然后反复 `load_source()`——用来区分
 //!   「反复构造」与「反复编译」哪一个是触发条件。
+//!
+//! **跨线程组**（回答「污染是不是只在同一根线程内传递」）：
+//! - `mixed`：`threads` 根线程，**0 号线程只编译**（`reuse` 的做法：构造
+//!   一次引擎，随后一直 `load_source`），**其余线程只构造**（`pure` 的
+//!   做法，从不编译）。两种单独跑都实测 0 失败（`reuse` 0/4800、`pure`
+//!   0/16000），所以这个组合里**任何一次崩溃都只能来自跨线程的相互
+//!   影响**——同一根线程内的「编译 → 构造」相邻关系在本模式下一次都
+//!   不存在。对照组是同样线程数的 `pure`。
 //!
 //! **另有一个容错模式** `tolerant`：与 `pureload` 做同样的事，但**不断言
 //! 编译成功**。真实 `.scm` 引用了 `register-race` 这类由宿主注册的函数，
@@ -105,7 +113,26 @@ fn hardened_cycle(mode: &str, script: &str) {
     std::hint::black_box(&engine);
 }
 
-fn run_mode(mode: &str, cycles: usize, script: &str) {
+/// `thread_index` 只对 `mixed` 有意义（见模块文档「跨线程组」），其余
+/// 模式忽略它。
+fn run_mode_indexed(mode: &str, cycles: usize, script: &str, thread_index: usize) {
+    if mode == "mixed" {
+        if thread_index == 0 {
+            // 编译方：只构造一次引擎，随后一直编译。这根线程自己**不**
+            // 制造任何「编译 → 构造」相邻关系（`reuse` 模式实测 0/4800）。
+            let mut engine = ll_script::ScriptEngine::new();
+            for _ in 0..cycles {
+                let result = engine.load_source(script.to_string());
+                assert!(result.is_ok(), "探针脚本应当加载成功：{result:?}");
+            }
+        } else {
+            // 构造方：只构造，从不编译（`pure` 模式实测 0/16000）。
+            for _ in 0..cycles {
+                pure_cycle("pure", script);
+            }
+        }
+        return;
+    }
     // reuse 与 threadper 的循环结构与其余模式不同，各自单独成一支。
     if mode == "reuse" {
         let mut engine = ll_script::ScriptEngine::new();
@@ -156,7 +183,7 @@ fn main() {
     };
 
     let handles: Vec<_> = (0..threads)
-        .map(|_| {
+        .map(|index| {
             let mode = mode.clone();
             let script = script.clone();
             let mut builder = std::thread::Builder::new();
@@ -164,7 +191,7 @@ fn main() {
                 builder = builder.stack_size(stack_bytes);
             }
             builder
-                .spawn(move || run_mode(&mode, cycles, &script))
+                .spawn(move || run_mode_indexed(&mode, cycles, &script, index))
                 .expect("探针线程应当能创建")
         })
         .collect();
