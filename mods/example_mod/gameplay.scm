@@ -340,9 +340,12 @@
 ;; `真实注册的酸抗护符装备在身上时真实降低了酸匕首造成的伤害` 是那份
 ;; 证据。刻意用一个**没有 acid_hide 天赋的种族**（半精灵）来戴它,这样
 ;; 降下来的那部分伤害只可能来自装备这一路,不会与天赋那一路混淆。
-;; 最后一个参数是耐久上限，-1 表示"没有耐久概念"——护符占的是脖子
-;; 槽位，不是武器槽位，register-item 的既有校验只允许武器携带耐久。
-(register-item "examplemod:acid_ward_amulet" "examplemod:acid_ward_amulet_display_name" 1 300 15000 -1)
+;; 最后一个参数是耐久上限。耐久扩面批次（所有者裁定「衣服要耐久，受到
+;; 攻击就会减少耐久」）之后，占非武器槽位的物品同样可以携带耐久——这里
+;; 填 60：护符占脖子槽位，属于「挨打」通道覆盖的非武器槽位，戴着它挨打
+;; 会真的磨损，磨到零之后它提供的酸抗也随之失效（derive_stats 对
+;; durability == Some(0) 的堆整条跳过，护甲/绝缘/属性加成一视同仁）。
+(register-item "examplemod:acid_ward_amulet" "examplemod:acid_ward_amulet_display_name" 1 300 15000 60)
 (register-item-equip-mask "examplemod:acid_ward_amulet" (list "neck"))
 (register-item-resistance "examplemod:acid_ward_amulet" "examplemod:acid" 500)
 
@@ -398,14 +401,19 @@
 ;; register-item-stat-bonus 的第二个参数多认识了一个目标名
 ;; "insulation"（此前只有六个属性名 + "luck" + "armor"），单位是十分之
 ;; 一摄氏度，与 ll_world::temperature::Temperature 同一量纲。
-;; 两件都传 -1（没有耐久概念）：register-item 的注册期校验只允许占用
-;; 武器槽位（主手/副手）的物品携带耐久上限，而这两件占的是 body/outer
-;; ——最初写成 60/90 时装载直接失败，是 ADR 0017「注册期完整校验」在
-;; 本批次内容上的一次真实拦截。
-(register-item "examplemod:wool_liner" "examplemod:wool_liner_display_name" 1 2000 8000 -1)
+;; 耐久扩面批次：这两件此前只能传 -1——register-item-equip-mask 当时有
+;; 一条「只允许占武器槽位的物品携带耐久」的注册期校验，写成 60/90 会让
+;; 装载直接失败。所有者裁定「衣服要耐久，受到攻击就会减少耐久」之后那条
+;; 校验已被删除（见 register_item_equip_mask 文档「为什么这里**不再**
+;; 校验耐久与武器槽位的组合」一节），这两件因此改填真实耐久上限,成为
+;; ADR 0018 意义上「衣服真的有耐久、挨打真的会掉、掉到零真的不再保暖」
+;; 的证据——crates/ll-mod/tests/example_mod_temperature.rs 三条新测试。
+;; 60/90 与各自的绝缘值（50/90）同数量级，没有更深的推导：内衬比外袍
+;; 单薄，因此更不经打。
+(register-item "examplemod:wool_liner" "examplemod:wool_liner_display_name" 1 2000 8000 60)
 (register-item-equip-mask "examplemod:wool_liner" (list "body"))
 (register-item-stat-bonus "examplemod:wool_liner" "insulation" 50)
-(register-item "examplemod:fur_cloak" "examplemod:fur_cloak_display_name" 1 5000 30000 -1)
+(register-item "examplemod:fur_cloak" "examplemod:fur_cloak_display_name" 1 5000 30000 90)
 (register-item-equip-mask "examplemod:fur_cloak" (list "outer"))
 (register-item-stat-bonus "examplemod:fur_cloak" "insulation" 90)
 

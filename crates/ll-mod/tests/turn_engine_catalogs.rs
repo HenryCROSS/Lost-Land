@@ -97,6 +97,13 @@ struct RealModsHandle {
     half_elf_id: ContentIndex,
     acid_dagger_id: ContentIndex,
     rogue_id: ContentIndex,
+    /// 战锤——主手 + 副手双持武器，`max-durability` 150。
+    war_hammer_id: ContentIndex,
+    /// 木盾——只占副手（武器组），`max-durability` 80。
+    wooden_shield_id: ContentIndex,
+    /// 酸抗护符——占脖子（非武器组），耐久扩面批次给它填了
+    /// `max-durability` 60。
+    acid_ward_amulet_id: ContentIndex,
 }
 
 impl RealModsHandle {
@@ -212,6 +219,9 @@ fn load_real_mods() -> RealModsHandle {
         half_elf_id: resolve("examplemod:half_elf"),
         acid_dagger_id: resolve("examplemod:acid_dagger"),
         rogue_id: resolve("examplemod:rogue"),
+        war_hammer_id: resolve("examplemod:war_hammer"),
+        wooden_shield_id: resolve("examplemod:wooden_shield"),
+        acid_ward_amulet_id: resolve("examplemod:acid_ward_amulet"),
         race,
         class,
         trait_def,
@@ -374,6 +384,73 @@ fn damage_dealt_via_turn_engine(
             .health
 }
 
+/// 跑一场「攻击方经由 `TurnEngine` 攻击防御方恰好一次」，返回
+/// **攻防双方结算之后各自的装备栏**——排期手法与
+/// [`damage_dealt_via_turn_engine`] 逐字相同（同一条「恰好只结算一次」
+/// 的理由，见其文档），只是关心的产物从伤害换成了耐久。
+fn equipment_after_one_attack(
+    handle: &RealModsHandle,
+    attacker_equipment: BTreeMap<EquipSlot, ItemStack>,
+    defender_equipment: BTreeMap<EquipSlot, ItemStack>,
+    catalogs: &ResolveCatalogs<'_>,
+) -> (
+    BTreeMap<EquipSlot, ItemStack>,
+    BTreeMap<EquipSlot, ItemStack>,
+) {
+    let mut world = test_world();
+    let attacker = spawn_agent(
+        &mut world,
+        handle.half_elf_id,
+        placeholder_profession(),
+        (5, 5),
+        Agent::STARTING_HEALTH,
+        Agent::STARTING_LEVEL,
+        attacker_equipment,
+    );
+    let defender = spawn_agent(
+        &mut world,
+        handle.half_elf_id,
+        placeholder_profession(),
+        (6, 5),
+        DEFENDER_HEALTH,
+        Agent::STARTING_LEVEL,
+        defender_equipment,
+    );
+
+    let mut timeline = Timeline::new();
+    timeline.schedule(attacker, Tick(0));
+    timeline.schedule(defender, Tick(1));
+    let mut engine = TurnEngine::new(timeline);
+
+    let acted = engine.advance_ai(
+        &mut world,
+        defender,
+        &mut attack_controlled,
+        catalogs,
+        &mut |_, _| {},
+    );
+    assert_eq!(
+        acted,
+        vec![attacker],
+        "本场景应当恰好结算攻击方一次行动，实际结算序列不符"
+    );
+
+    (
+        world
+            .actors
+            .get(attacker)
+            .expect("攻击方不会在自己的攻击里死掉")
+            .equipment
+            .clone(),
+        world
+            .actors
+            .get(defender)
+            .expect("防御方生命远高于单次伤害，不应死亡")
+            .equipment
+            .clone(),
+    )
+}
+
 /// `mods/example_mod/gameplay.scm` 里 `examplemod:rogue` 授予
 /// `examplemod:cutpurse_training` 的解锁等级——与
 /// `example_mod_class_traits.rs` 的同名常量同一个来源，故意不是 1
@@ -440,6 +517,133 @@ fn backstab_effects_via_turn_engine(
         &mut |_, effect| seen.push(effect.clone()),
     );
     seen
+}
+
+/// 三件真实注册物品的耐久上限——与 `mods/example_mod/gameplay.scm` 的
+/// `register-item` 调用逐字对应，见 `RealModsHandle` 各字段文档。
+const WAR_HAMMER_MAX_DURABILITY: i32 = 150;
+const WOODEN_SHIELD_MAX_DURABILITY: i32 = 80;
+const ACID_WARD_AMULET_MAX_DURABILITY: i32 = 60;
+
+#[test]
+fn 一次攻击经回合引擎同时扣攻击方主手武器与防御方非武器槽位的耐久() {
+    // 耐久扩面批次最核心的一条端到端断言，一次钉住「两条通道」的全部
+    // 三半（见 `ll_sim::resolve::resolve_attack` 文档「耐久消耗：两条
+    // 通道」一节），全程走 `TurnEngine::advance_ai` 这条生产路径：
+    //
+    // ① 使用通道——攻击方主手战锤 −1；
+    // ② 挨打通道——防御方脖子上的护符（非武器槽位）−1；
+    // ③ 挨打通道**跳过武器组**——防御方副手的木盾原样不动。
+    //
+    // 反例（手工验证过各自会红）：
+    // - 删掉 `resolve_attack` 里「挨打」通道那段 `effects.extend(...)`
+    //   → ② 从 59 变回 60 而失败；
+    // - 把该段过滤条件里的 `!WEAPON_GROUP_SLOTS.contains_slot(**slot)`
+    //   去掉 → ③ 从 80 变成 79 而失败；
+    // - 删掉「使用」通道那段 → ① 从 149 变回 150 而失败。
+    //
+    // 三条互不掩盖：任何一半接线掉了，本测试都恰好有一条断言变红。
+    // Arrange
+    let handle = load_real_mods();
+    // 战锤没有显式公式引用，走全局默认公式那一路——本条只关心耐久，
+    // 伤害具体是多少不进任何断言。
+    let formulas = RegistryFormulas {
+        formulas: &handle.formula,
+        default_formula: ContentIndex::default(),
+    };
+    let catalogs = handle.catalogs(&formulas);
+    let attacker_equipment = BTreeMap::from([(
+        EquipSlot::MAIN_HAND,
+        ItemStack::with_durability(handle.war_hammer_id, 1, WAR_HAMMER_MAX_DURABILITY),
+    )]);
+    let defender_equipment = BTreeMap::from([
+        (
+            EquipSlot::OFF_HAND,
+            ItemStack::with_durability(handle.wooden_shield_id, 1, WOODEN_SHIELD_MAX_DURABILITY),
+        ),
+        (
+            EquipSlot::NECK,
+            ItemStack::with_durability(
+                handle.acid_ward_amulet_id,
+                1,
+                ACID_WARD_AMULET_MAX_DURABILITY,
+            ),
+        ),
+    ]);
+
+    // Act
+    let (attacker_after, defender_after) =
+        equipment_after_one_attack(&handle, attacker_equipment, defender_equipment, &catalogs);
+
+    // Assert
+    assert_eq!(
+        attacker_after
+            .get(&EquipSlot::MAIN_HAND)
+            .expect("战锤仍在装备栏里")
+            .durability,
+        Some(WAR_HAMMER_MAX_DURABILITY - 1),
+        "①「使用」通道：攻击方主手武器每打出一下损失一点耐久"
+    );
+    assert_eq!(
+        defender_after
+            .get(&EquipSlot::NECK)
+            .expect("护符仍在装备栏里")
+            .durability,
+        Some(ACID_WARD_AMULET_MAX_DURABILITY - 1),
+        "②「挨打」通道：防御方非武器槽位的装备挨一下损失一点耐久"
+    );
+    assert_eq!(
+        defender_after
+            .get(&EquipSlot::OFF_HAND)
+            .expect("木盾仍在装备栏里")
+            .durability,
+        Some(WOODEN_SHIELD_MAX_DURABILITY),
+        "③「挨打」通道跳过整个武器组：副手的盾不因挨打而磨损"
+    );
+}
+
+#[test]
+fn 没有耐久概念的装备经回合引擎挨打也不会被凭空赋予耐久() {
+    // 上一条的反例：同一套场景、同一个 `TurnEngine`，只把两件装备换成
+    // `ItemStack::new`（`durability == None`）——「挨打」通道的判据
+    // `stack.durability.is_some()` 因此不成立，一条效果都不该产出,
+    // `None` 必须原样保持 `None`,不会变成 `Some(-1)` 或 `Some(0)`。
+    // 这条同时守住 `apply` 那一侧「没有耐久概念的物品保持 None」的
+    // 既有纪律（见 `Effect::AdjustEquipmentDurability` 的 apply 分支）。
+    // Arrange
+    let handle = load_real_mods();
+    let formulas = RegistryFormulas {
+        formulas: &handle.formula,
+        default_formula: ContentIndex::default(),
+    };
+    let catalogs = handle.catalogs(&formulas);
+
+    // Act
+    let (attacker_after, defender_after) = equipment_after_one_attack(
+        &handle,
+        BTreeMap::from([(
+            EquipSlot::MAIN_HAND,
+            ItemStack::new(handle.war_hammer_id, 1),
+        )]),
+        BTreeMap::from([(
+            EquipSlot::NECK,
+            ItemStack::new(handle.acid_ward_amulet_id, 1),
+        )]),
+        &catalogs,
+    );
+
+    // Assert
+    assert_eq!(
+        attacker_after
+            .get(&EquipSlot::MAIN_HAND)
+            .unwrap()
+            .durability,
+        None
+    );
+    assert_eq!(
+        defender_after.get(&EquipSlot::NECK).unwrap().durability,
+        None
+    );
 }
 
 #[test]

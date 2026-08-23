@@ -483,12 +483,13 @@ fn 攻击方主手武器的耐久真的减少() {
 }
 
 #[test]
-fn 防御方护甲的耐久不再因为挨打而减少() {
-    // 与上一条测试成对——证明 P6 第六批把耐久消耗从「防御方全部已装备
-    // 物品」收窄到「攻击方主手武器」后，防御方的护甲即便带耐久,挨打也
-    // 不再损耗,这正是「护甲等其余装备不再掉耐久」这条新规则的直接
-    // 端到端验收（P6 第五批时这里断言的是 `Some(4)`，见本文件此前
-    // 版本）。
+fn 防御方护甲的耐久因为挨打而减少() {
+    // 耐久扩面批次：项目所有者裁定「衣服要耐久，**受到攻击就会减少
+    // 耐久**」，推翻了此前「只有装备武器才有耐久」那条裁定。本测试
+    // 因此第三次改写——P6 第五批断言 `Some(4)`（全部装备挨打即掉），
+    // 第六批收窄后断言 `Some(5)`（护甲不再掉），本批次回到 `Some(4)`,
+    // 但回到的方式与第五批不同：现在只有**非武器槽位**才掉，见下一条
+    // 测试与 `resolve_attack` 文档「耐久消耗：两条通道」一节。
     // Arrange
     let (_gauntlets, armor_def, items) = combat_items();
     let mut world = test_world();
@@ -524,7 +525,61 @@ fn 防御方护甲的耐久不再因为挨打而减少() {
         .expect("生命值远高于伤害,不会死亡")
         .equipment
         .get(&EquipSlot::BODY)
-        .expect("护甲仍在装备栏里");
+        .expect("护甲仍在装备栏里——耐久归零都不自动卸下，何况只掉一点");
+    assert_eq!(stack.durability, Some(4));
+}
+
+#[test]
+fn 防御方武器槽位的装备不因为挨打而减少耐久() {
+    // 与上一条成对的反例：同一件带耐久的装备，只把槽位从 `BODY`
+    // （非武器组）换成 `OFF_HAND`（武器组）——「挨打」通道跳过整个
+    // 武器组，耐久必须原样保持。这条钉住的是
+    // `!WEAPON_GROUP_SLOTS.contains_slot(..)` 这半个过滤条件本身:
+    // 去掉它，本条立即从 `Some(5)` 变成 `Some(4)` 而失败。
+    //
+    // 为什么武器组留在「使用」那一侧：所有者原话点名的是「衣服」,
+    // 而手上拿着的东西由「使用」通道收费（攻击时扣主手），两组槽位
+    // 刻意不重叠，一次攻防交换里没有任何一件装备被两条规则同时收费,
+    // 见 `resolve_attack` 文档「为什么两组槽位刻意不重叠」一节。
+    // Arrange
+    let (_gauntlets, armor_def, items) = combat_items();
+    let mut world = test_world();
+    let attacker = spawn_agent(
+        &mut world,
+        Agent::STARTING_HEALTH,
+        Vec::new(),
+        BTreeMap::new(),
+        BTreeMap::new(),
+    );
+    let defender = spawn_agent(
+        &mut world,
+        1_000,
+        Vec::new(),
+        BTreeMap::from([(
+            EquipSlot::OFF_HAND,
+            ItemStack::with_durability(armor_def, 1, 5),
+        )]),
+        BTreeMap::new(),
+    );
+
+    // Act
+    resolve_and_apply(
+        &mut world,
+        &Intent::Attack {
+            actor: attacker,
+            target: defender,
+        },
+        &items,
+    );
+
+    // Assert
+    let stack = world
+        .actors
+        .get(defender)
+        .expect("生命值远高于伤害,不会死亡")
+        .equipment
+        .get(&EquipSlot::OFF_HAND)
+        .expect("副手装备仍在装备栏里");
     assert_eq!(stack.durability, Some(5));
 }
 
@@ -535,6 +590,9 @@ fn 主手物品没有耐久概念时攻击不产出耐久调整效果() {
     // 不该凭空产出一个耐久调整效果——resolve_attack 只对
     // `durability.is_some()` 的主手堆产出
     // `Effect::AdjustEquipmentDurability`,证明这条判定不是恒真。
+    // 耐久扩面批次追加：本场景的防御方装备栏是**空的**，「挨打」通道
+    // 因此同样一条效果都不产出——`assert!(!effects.iter().any(..))`
+    // 覆盖的是全部产出点，不只是「使用」通道那一条。
     // Arrange
     let (_gauntlets, armor_def, items) = combat_items();
     let mut world = test_world();
