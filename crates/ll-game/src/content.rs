@@ -51,7 +51,8 @@ use ll_mod::base_xp_curve::register_base_xp_curve;
 use ll_mod::class::ClassTable;
 use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::content_audit::{
-    BASE_CONTENT_AUDIT, ContentAuditReport, ReferenceIntegrityError, audit_content,
+    BASE_CONTENT_AUDIT, ContentAuditReport, ReferenceIntegrityError, SubclassUnlockDeadlockError,
+    audit_content,
 };
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
 use ll_mod::damage_category::DamageCategoryTable;
@@ -352,7 +353,10 @@ const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 /// 的条目，`ll_mod::content_audit`）。两者是**不同的失败**，读者要做的
 /// 事也不同——前者指向"本体内容目录不完整"，后者指向"某个 mod（也可能
 /// 是本体自己）写了一条指向不存在内容的引用"。合并成一个字符串会把这
-/// 个区别抹掉，因此按失败原因分成两个变体，各自的 `Display` 完整保留。
+/// 个区别抹掉，因此按失败原因分成各自独立的变体，各自的 `Display`
+/// 完整保留。第三个变体（副职获得条件死锁）同理：它指向的是"内容里
+/// 有一个副职被自己的获得条件锁死了"，读者要改的是 `.scm` 里那两行
+/// 声明，与前两者都不是一回事。
 ///
 /// 字段覆盖那一半**不在**这里：它按
 /// [`ll_mod::content_audit::ContentAuditReport::field_coverage`] 文档的
@@ -365,6 +369,12 @@ pub enum ContentLoadError {
     /// 跨表引用完整性校验失败——至少一处 `ContentIndex` 字段指向了
     /// 不存在的内容，见 `ll_mod::content_audit` 模块文档。
     ReferenceIntegrity(ReferenceIntegrityError),
+    /// 副职获得条件可达性校验失败——至少一个副职被自己的获得条件与
+    /// 配方类别的副职闸门锁死，永远拿不到。为什么它与引用完整性一样
+    /// 阻断启动（而字段覆盖不阻断），见
+    /// `ll_mod::content_audit::ContentAuditReport::subclass_unlock_reachability`
+    /// 文档。
+    SubclassUnlockDeadlock(SubclassUnlockDeadlockError),
 }
 
 impl From<BaseContractError> for ContentLoadError {
@@ -379,11 +389,18 @@ impl From<ReferenceIntegrityError> for ContentLoadError {
     }
 }
 
+impl From<SubclassUnlockDeadlockError> for ContentLoadError {
+    fn from(error: SubclassUnlockDeadlockError) -> Self {
+        ContentLoadError::SubclassUnlockDeadlock(error)
+    }
+}
+
 impl std::fmt::Display for ContentLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ContentLoadError::BaseContract(error) => write!(f, "{error}"),
             ContentLoadError::ReferenceIntegrity(error) => write!(f, "{error}"),
+            ContentLoadError::SubclassUnlockDeadlock(error) => write!(f, "{error}"),
         }
     }
 }
@@ -394,10 +411,11 @@ impl std::error::Error for ContentLoadError {}
 /// 下的全部 mod（含本体自己的 `mods/lostland/`），跑一次本体内容契约
 /// 解析，最后解析 `assets_root` 下本体与全部 mod 的资产 VFS。
 ///
-/// # 返回 `Err` 的两个原因
+/// # 返回 `Err` 的三个原因
 ///
-/// 见 [`ContentLoadError`]：本体内容契约没解析成功，或跨表引用完整性
-/// 校验没通过。下面这一段讲的是前者。
+/// 见 [`ContentLoadError`]：本体内容契约没解析成功、跨表引用完整性
+/// 校验没通过，或副职获得条件被配方类别的闸门锁死。下面这一段讲的是
+/// 第一个。
 ///
 /// ## 本体内容契约没解析成功
 ///
@@ -535,6 +553,11 @@ pub fn load_content(
     // 运行期表现成损坏），字段覆盖只随 `LoadedContent` 带出去。
     let audit = audit_content(&registry, &value_tables, &BASE_CONTENT_AUDIT);
     audit.reference_integrity()?;
+    // 与上一行同一档严重性（都是内容自身的错误，都对全部已装载内容
+    // 一视同仁）——理由见
+    // `ll_mod::content_audit::ContentAuditReport::subclass_unlock_reachability`
+    // 文档「为什么归在②」一节。
+    audit.subclass_unlock_reachability()?;
 
     // 值哈希升级：全部内容表此刻已经装载完毕（本体 + mod），在
     // 这里跑一次性收尾步骤,把字段值折进 registry 已有的 id 摘要——
@@ -1055,6 +1078,32 @@ mod tests {
             loaded.audit.references_checked >= 1,
             "仓库真实内容里至少有一处跨表引用（mods/example_mod/gameplay.scm \
              的 register-item-damage-formula 等），一处都没检查到说明校验空转了"
+        );
+    }
+
+    #[test]
+    fn 真实内容的副职获得条件可达且不是空转() {
+        // 装载后校验 pass 的第三条硬失败（副职获得条件死锁）。装载能
+        // 返回 `Ok` 本身已经蕴含"零死锁"（`load_content` 直接 `?` 掉了
+        // 它），本条真正守的是**非空转**：`detect_unlock_deadlocks` 若
+        // 一条获得条件都没拿到（`craft_unlocks()` 接错、副职表从
+        // `ContentValueTables` 上被摘掉），报告恒为"零死锁"且完全无声。
+        //
+        // 仓库真实内容确实喂得出量：`mods/lostland/subclasses.scm` 的
+        // 四个本体副职各有一条制作获得条件，`mods/example_mod/gameplay.scm`
+        // 的 shadowdancer 还有一条——而且 example_mod 那条正是「从不设闸
+        // 的类别（烹饪）练出副职，用它去开设了闸的类别（锻造）的门」这个
+        // 正确形状，本条同时也是"正确形状不被误报"在真实内容上的验收。
+        // Arrange & Act
+        let loaded = load_content(&repo_mods_dir(), &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下内容校验必须通过");
+
+        // Assert
+        assert_eq!(loaded.audit.unlock_deadlocks, Vec::new());
+        assert!(
+            loaded.audit.unlock_rules_checked >= 1,
+            "仓库真实内容里至少有一条副职获得条件（mods/lostland/subclasses.scm \
+             与 mods/example_mod/gameplay.scm 都有），一条都没看到说明检查空转了"
         );
     }
 
