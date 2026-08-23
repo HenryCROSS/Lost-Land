@@ -13,6 +13,12 @@
 // 这条裁定想要的效果：说明"为什么"，不是重复字段名本身的意思。
 {
   namespace: "examplemod",
+
+  // **改这个版本号 = 宣布此前用本 mod 生成的全部存档作废。**
+  // 项目所有者裁决：「新版本不兼容旧版本存档就是了，版本不对就打不
+  // 开。」`ll_content::load_error::check_mod_set` 是硬门禁，比的是这个
+  // 字符串**原样相等**，不做语义化版本解析。什么时候该动、什么时候
+  // 不该动，见 knowledge/design/save-and-mod-version-policy.md。
   version: "0.1.0",
 
   // 依赖本体（耐久标签批次新增）：gameplay.scm 里的 register-item-tag

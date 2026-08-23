@@ -9,7 +9,9 @@ pub mod alloc_guard;
 pub mod api;
 pub mod behavior;
 pub mod host;
+pub mod modules;
 pub mod whitelist;
 
 pub use alloc_guard::ScriptAllocGuard;
 pub use host::{ScriptEngine, ScriptError};
+pub use modules::ModuleTable;

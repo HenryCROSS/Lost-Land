@@ -68,7 +68,7 @@
 //! 两半共享同一个 [`crate::registry::Registry`] 与 [`GameplayTables`]
 //! 里的各张内容表。
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ll_core::ident::NamespacedId;
 use ll_script::host::{ScriptEngine, ScriptError};
@@ -81,6 +81,7 @@ use crate::clip::ClipTable;
 use crate::item::ItemTable;
 use crate::load_report::{LoadError, LoadReport, LoadStage, LoadStatus, SourceLocation};
 use crate::manifest::{ModError, ModManifest, mod_self_id, parse_manifest};
+use crate::module_sources::{ModuleSources, build_module_table, collect_module_sources};
 use crate::quest::QuestTable;
 use crate::race::RaceTable;
 use crate::registry::Registry;
@@ -330,9 +331,21 @@ pub fn load_all(
 
     let candidates = discover::discover_mods(mods_root);
     let mut parsed: Vec<ModManifest> = Vec::new();
+    // 与 `parsed` 平行的「这个 mod 的根目录」——`ModManifest` 自己不
+    // 记根目录（`entry_points` 已经是解析好的路径），而模块表要遍历
+    // 整个目录，所以在这里顺手留一份。纯数据 mod 没有入口脚本，从
+    // `entry_points` 反推不出根目录，只能来自清单路径本身。
+    let mut roots: Vec<PathBuf> = Vec::new();
     for path in &candidates {
         match parse_manifest(path) {
-            Ok(manifest) => parsed.push(manifest),
+            Ok(manifest) => {
+                parsed.push(manifest);
+                roots.push(
+                    path.parent()
+                        .map(Path::to_path_buf)
+                        .unwrap_or_else(|| PathBuf::from(".")),
+                );
+            }
             Err(err) => {
                 let mod_id = best_effort_mod_id(path);
                 report.push(
@@ -372,7 +385,22 @@ pub fn load_all(
         .copied()
         .filter(|idx| !parsed[*idx].entry_points.is_empty())
         .collect();
-    let engines: Vec<ScriptEngine> = scripted.iter().map(|_| new_load_engine()).collect();
+    // 模块表要在**构造引擎之前**备好：解析器是构造期装上去的，晚一步
+    // 这一批脚本就没有模块系统。收集是纯 IO，不碰 Steel 编译器，放在
+    // 构造阶段之前不违反 C6。
+    let sources_by_namespace: Vec<(String, ModuleSources)> = parsed
+        .iter()
+        .zip(&roots)
+        .map(|(manifest, root)| {
+            let namespace = manifest.id.namespace().to_string();
+            let sources = collect_module_sources(root, &namespace);
+            (namespace, sources)
+        })
+        .collect();
+    let engines: Vec<ScriptEngine> = scripted
+        .iter()
+        .map(|idx| new_load_engine(&parsed[*idx], &sources_by_namespace))
+        .collect();
 
     // 阶段二：逐个 mod 编译它自己的全部入口脚本。每个引擎在它那个 mod
     // 编译完之后就地析构——约束 C6 禁的是「编译之后再构造」，析构不受
@@ -416,8 +444,30 @@ pub fn load_all(
 ///
 /// 权威清单是本函数里 `register_*_api` 的调用序列与 [`GameplayTables`]
 /// 的字段，不是任何一段文档。
-fn new_load_engine() -> ScriptEngine {
-    let mut engine = ScriptEngine::new();
+/// 扫一遍 `mods_root` 下的全部 mod，收集「命名空间 → 该 mod 目录里的
+/// 全部 `.scm` 源码」。
+///
+/// 清单解析失败的目录直接跳过：它本来就装不上，它的模块也不该被别人
+/// require 到。
+fn collect_session_module_sources(mods_root: &Path) -> Vec<(String, ModuleSources)> {
+    discover::discover_mods(mods_root)
+        .into_iter()
+        .filter_map(|manifest_path| {
+            let manifest = parse_manifest(&manifest_path).ok()?;
+            let root = manifest_path.parent()?.to_path_buf();
+            let namespace = manifest.id.namespace().to_string();
+            let sources = collect_module_sources(&root, &namespace);
+            Some((namespace, sources))
+        })
+        .collect()
+}
+
+fn new_load_engine(
+    manifest: &ModManifest,
+    sources_by_namespace: &[(String, ModuleSources)],
+) -> ScriptEngine {
+    let table = build_module_table(manifest, sources_by_namespace);
+    let mut engine = ScriptEngine::with_modules(std::sync::Arc::new(table));
     register_terrain_api(&mut engine);
     register_class_api(&mut engine);
     register_skill_api(&mut engine);
@@ -530,7 +580,17 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     // 与 `load_all` 同一条作用域规则：一个 mod 一个引擎，该 mod 的全部
     // 入口脚本共用它。构造在全部编译之前完成（这里只有一个 mod，天然
     // 满足）。
-    let mut engine = new_load_engine();
+    //
+    // 模块表要覆盖本 mod **与它声明的依赖**，所以得把 mods 根目录下的
+    // 清单都扫一遍——只看本 mod 目录的话，跨 mod require 会在重载时报
+    // 「找不到模块」，而同一份 mod 走 `load_all` 却装得上，重载给出的
+    // 信号就成了假的。
+    let mods_root = manifest_path.parent().and_then(Path::parent);
+    let sources_by_namespace = match mods_root {
+        Some(root) => collect_session_module_sources(root),
+        None => Vec::new(),
+    };
+    let mut engine = new_load_engine(&manifest, &sources_by_namespace);
     for entry in &manifest.entry_points {
         if let Err(err) =
             compile_one_script(&manifest, entry, &mut engine, &mut registry, &mut tables)
@@ -899,6 +959,293 @@ mod tests {
                 .get(&NamespacedId::parse("sharemod:lava_floor").unwrap())
                 .is_some()
         );
+    }
+
+    /// 模块系统在**生产装载路径**上的六条判据（同 mod / 跨 mod 放行、
+    /// 跨 mod 拒绝、路径拒绝、未导出不可见、环 import 不挂死）各写一条。
+    ///
+    /// 与 `ll_script::host` 里那批单元测试的分工：那边钉的是引擎自己的
+    /// 行为（拿一张手工灌好的表），这边钉的是「表真的由 mod 目录与
+    /// mod.json5 生成，并真的装到了那个 mod 的引擎上」——两边都绿才
+    /// 说明这条链是通的。
+    fn 装载报告里那条失败的消息(report: &LoadReport) -> String {
+        report
+            .entries
+            .iter()
+            .find_map(|(_, status)| match status {
+                LoadStatus::Failed(err) => Some(err.message.clone()),
+                LoadStatus::Loaded | LoadStatus::Warning(_) => None,
+            })
+            .unwrap_or_else(|| format!("整批装载没有任何失败：{:?}", report.entries))
+    }
+
+    #[test]
+    fn 同mod的require在真实装载路径上能用() {
+        // Arrange
+        let root = tempdir();
+        write_mod_scripts(
+            root.path(),
+            "modmod",
+            r#"{
+                namespace: "modmod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
+            &[
+                (
+                    "helpers.scm",
+                    r#"(provide lava-id) (define (lava-id) "modmod:lava_floor")"#,
+                ),
+                (
+                    "main.scm",
+                    "(require \"helpers\")\n(register-terrain (lava-id) #f #t 4294967295 \"\")",
+                ),
+            ],
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert
+        assert_eq!(
+            report.entries,
+            vec![(mod_self_id("modmod").unwrap(), LoadStatus::Loaded)],
+            "实际 {:?}",
+            report.entries
+        );
+        assert!(
+            registry
+                .get(&NamespacedId::parse("modmod:lava_floor").unwrap())
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn 跨mod带前缀的require在声明过依赖时能用() {
+        // Arrange
+        let root = tempdir();
+        write_mod_scripts(
+            root.path(),
+            "basemod",
+            r#"{ namespace: "basemod", version: "0.1.0" }"#,
+            &[(
+                "ids.scm",
+                r#"(provide base-id) (define (base-id 名字) (string-append "usermod:" 名字))"#,
+            )],
+        );
+        write_mod_scripts(
+            root.path(),
+            "usermod",
+            r#"{
+                namespace: "usermod",
+                version: "0.1.0",
+                dependencies: ["basemod"],
+                entry_points: ["main.scm"],
+            }"#,
+            &[(
+                "main.scm",
+                "(require \"basemod:ids\")\n(register-terrain (base-id \"lava\") #f #t 4294967295 \"\")",
+            )],
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert
+        assert!(
+            report
+                .entries
+                .iter()
+                .all(|(_, status)| *status == LoadStatus::Loaded),
+            "实际 {:?}",
+            report.entries
+        );
+        assert!(
+            registry
+                .get(&NamespacedId::parse("usermod:lava").unwrap())
+                .is_some(),
+            "跨 mod 拿来的辅助函数应当真的参与了注册"
+        );
+    }
+
+    #[test]
+    fn 跨mod未声明依赖时require被拒绝并点名去补依赖() {
+        // Arrange：源码明明在盘上，差的只是 mod.json5 里那一行声明。
+        let root = tempdir();
+        write_mod_scripts(
+            root.path(),
+            "basemod",
+            r#"{ namespace: "basemod", version: "0.1.0" }"#,
+            &[("ids.scm", r#"(provide base-id) (define (base-id) "x")"#)],
+        );
+        write_mod_scripts(
+            root.path(),
+            "usermod",
+            r#"{
+                namespace: "usermod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
+            &[("main.scm", "(require \"basemod:ids\")")],
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert
+        let message = 装载报告里那条失败的消息(&report);
+        assert!(
+            message.contains("dependencies"),
+            "该告诉 mod 作者去清单里补依赖，实际是「{message}」"
+        );
+    }
+
+    #[test]
+    fn 绝对路径与上跳目录的require在真实装载路径上被拒绝() {
+        for (标记, 模块名, 关键词) in [
+            ("abs", "C:/Windows/win.ini", "绝对路径"),
+            ("up", "../../secret", "上跳目录"),
+        ] {
+            // Arrange
+            let root = tempdir();
+            write_mod_scripts(
+                root.path(),
+                标记,
+                &format!(
+                    r#"{{ namespace: "{标记}", version: "0.1.0", entry_points: ["main.scm"] }}"#
+                ),
+                &[("main.scm", &format!("(require \"{模块名}\")"))],
+            );
+            let mut registry = Registry::new();
+            let mut owned = OwnedTables::default();
+
+            // Act
+            let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+            // Assert
+            let message = 装载报告里那条失败的消息(&report);
+            assert!(
+                message.contains(关键词),
+                "「{模块名}」该被点名为{关键词}，实际是「{message}」"
+            );
+        }
+    }
+
+    #[test]
+    fn 没写进provide的名字在真实装载路径上拿不到() {
+        // Arrange
+        let root = tempdir();
+        write_mod_scripts(
+            root.path(),
+            "hidemod",
+            r#"{
+                namespace: "hidemod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
+            &[
+                (
+                    "helpers.scm",
+                    r#"(provide 公开) (define (公开) "hidemod:a") (define (私有) "hidemod:b")"#,
+                ),
+                (
+                    "main.scm",
+                    "(require \"helpers\")\n(register-terrain (私有) #f #t 4294967295 \"\")",
+                ),
+            ],
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert
+        let message = 装载报告里那条失败的消息(&report);
+        assert!(
+            message.contains("私有"),
+            "该点名那个没导出的名字，实际是「{message}」"
+        );
+        assert!(
+            registry
+                .get(&NamespacedId::parse("hidemod:b").unwrap())
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn 环import在真实装载路径上干净报错不挂死() {
+        // 本条测试跑完本身就是「没挂死」的证据——挂死的话整批测试会
+        // 一直等下去，而不是给出一条失败。
+        // Arrange
+        let root = tempdir();
+        write_mod_scripts(
+            root.path(),
+            "cyclemod",
+            r#"{
+                namespace: "cyclemod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
+            &[
+                ("a.scm", "(require \"b\")\n(provide fa)\n(define (fa) 1)"),
+                ("b.scm", "(require \"a\")\n(provide fb)\n(define (fb) 2)"),
+                ("main.scm", "(require \"a\")"),
+            ],
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert
+        let message = 装载报告里那条失败的消息(&report);
+        assert!(
+            message.contains("circular"),
+            "该报环依赖，实际是「{message}」"
+        );
+    }
+
+    #[test]
+    fn 模块源码里的requirebuiltin在真实装载路径上被拒绝() {
+        // 模块体不经过 `ScriptEngine::load_source` 的文本层检查，白名单
+        // 又拦不住它（见 `ll_script::modules::ModuleTable::insert` 文档）
+        // ——唯一挡得住的是灌表那一刻的检查。这条测试钉的就是那条链在
+        // 生产路径上真的接着。
+        // Arrange
+        let root = tempdir();
+        write_mod_scripts(
+            root.path(),
+            "evilmod",
+            r#"{
+                namespace: "evilmod",
+                version: "0.1.0",
+                entry_points: ["main.scm"],
+            }"#,
+            &[
+                (
+                    "evil.scm",
+                    "(require-builtin steel/time)\n(provide 现在)\n(define (现在) (instant/now))",
+                ),
+                ("main.scm", "(require \"evil\")\n(现在)"),
+            ],
+        );
+        let mut registry = Registry::new();
+        let mut owned = OwnedTables::default();
+
+        // Act
+        let report = load_all(root.path(), &mut registry, &mut owned.as_gameplay_tables());
+
+        // Assert
+        let message = 装载报告里那条失败的消息(&report);
+        assert!(message.contains("require-builtin"), "实际是「{message}」");
     }
 
     /// 跨 **mod** 的命名空间隔离必须原样保住：mod A 的 `define` 绝不能被

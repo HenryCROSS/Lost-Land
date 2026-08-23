@@ -234,9 +234,60 @@ mods/reskin_mod/
 
 ---
 
+## 六、脚本模块系统：`provide` / `require`
+
+**状态**：已落地（`ll_script::modules` + `ll_mod::module_sources`）。本节是把落地后的规则写给 mod 作者看。
+
+### 项目所有者要的语义
+
+> 「每个文件能够导出导入，文件之间是隔离的，同时能导入本 Mod 的东西，而导入其他 mod 的东西是需要有那个 Mod 的 id 作为域名前缀的。」
+
+### 三条规则
+
+| 写法 | 含义 |
+|------|------|
+| `(require "helpers")` | 本 mod 根目录下的 `helpers.scm` |
+| `(require "content/races")` | 本 mod 根目录下的 `content/races.scm` |
+| `(require "lostland:helpers")` | `lostland` 这个 mod 根目录下的 `helpers.scm`，**且本 mod 必须在 `mod.json5` 的 `dependencies` 里声明过 `lostland`** |
+
+- 路径**相对本 mod 根目录**，不是相对当前文件；**不写 `.scm` 扩展名**（同一份源码两种拼写会在同一个引擎里编译出两个互不相干的模块实例）。
+- 导出形式是 **`provide`**，不是 `export`。没写进 `provide` 的名字在要求方**编译期**就不可见；**完全没写 `provide` 的模块什么都不导出**——不是"默认全导出"。
+- 只支持 `(require "模块名")` 这一种写法。`(require (for-syntax "x"))` / `only-in` / `prefix-in` 一律拒绝：`for-syntax` 会把模块搬进宏展开阶段的 kernel 引擎求值，那条路上的能力边界还没有人论证过。
+- `require-builtin` / `require-for-syntax` 永远不支持——那是向 Steel 内置模块表直接要能力，不是模块引用。
+
+### 依赖顺序写在代码里，不写在 `entry_points` 里
+
+`entry_points` 是数组，装载管线按数组顺序编译，于是"谁必须排在谁前面"这条真实约束就藏进了清单，而清单里看不出为什么。有了 `require`，把依赖写在需要它的那个文件里，`entry_points` 就能收成一个入口：
+
+```scheme
+;; subclasses.scm —— register-subclass-unlock 的 trigger-target 只 get 不 intern
+(require "crafting")
+(register-subclass-unlock "lostland:artisan" "items-crafted" "lostland:forging" 20)
+```
+
+`mods/lostland/` 是这条路的现货示范：`entry_points` 已经收成 `["main.scm"]`，`main.scm` 里的七行 `require` **刻意按字母序排**（与旧的工作顺序不同）——顺序若还有语义，装载当场就会失败。
+
+模块按 `require` 图求值，且**每个模块只求值一次**（同一个 mod 内）。
+
+### 隔离到什么程度
+
+- **模块之间**：只有 `provide` 出去的名字跨得过去，且**不传递**（A require B、B require C，A 看不见 C 的导出）。
+- **同一个 mod 内**：一个模块只求值一次，它顶层 `define` 出来的状态被本 mod 的全部脚本**共享**——「每个脚本一份私有副本」依赖的是"一个脚本一个 VM"这条纪律，而当前是**一个 mod 一个 VM**。写 mod 时不能指望"我 require 一次就拿到一份新的"；要独立状态，别把状态放在模块顶层。
+- **跨 mod**：是真副本。`(require "lostland:ids")` 是把那份源码搬进**要求方**的 VM 重新编译一次，不是去对方的 VM 里取值。因此**被跨 mod require 的模块不该带副作用**——它里面的 `register-*` 会以要求方的身份注册内容。辅助函数、常量表这类纯定义才是跨 mod 模块的正确用法。`mods/lostland/ids.scm` 是这条路的现货示范，消费者是 `mods/example_mod/gameplay.scm`。
+- **`entry_points` 里的多个文件之间**：**不隔离**（它们共用同一个引擎的全局环境，前一个文件的顶层 `define` 对后一个可见）。要真正的文件隔离，就把入口收成一条，其余文件走 `require`。
+
+### 沙箱：脚本给的字符串永远不参与拼路径
+
+装载管线先遍历 mod 目录，把每一个真实存在的 `.scm` 反推成一个模块名，灌进一张内存表；脚本写的字符串只用来在这张表里查。**Steel 运行期永不碰盘**。目录上跳（`../`）与绝对路径（`C:/…`）因此不是"被识别出来挡住的"，是根本没有一条从模块名到文件系统的通路——语法层那些点名的错误（「模块名不能上跳目录」「模块名不能是绝对路径」）只是为了给 mod 作者一句准确的话。
+
+完整机制与实测依据见 `ll_script::modules` 模块文档与 `crates/ll-script/examples/probe_modules.rs`。
+
+---
+
 ## 相关文档
 
 - [身份与 ID 空间](identity-and-ids.md) —— `NamespacedId`/`ContentIndex` 字符集与不可持久化规则、存档与 mod 集合的内容哈希/生成期-当前双记录策略
+- [存档兼容策略](save-and-mod-version-policy.md) —— 本文档第五节管的是**装载期**的版本轴（这批 mod 能不能一起装起来）；改 `mod.json5` 的 `version` 会让此前的存档全部打不开，那条**读档期**的策略写在那里
 - [剧本系统设计](narrative-system.md) —— 消费本文档「入口点分类」新增的脚本分类字段（叙事声明脚本走 `scripts.content` 同一条内容注册管线）
 - [脚本状态存储](script-state-storage.md) —— `state-get-foreign` 已经示范"依赖拓扑保证被依赖 mod 总是先加载完成"这条既有性质，本文档资产覆盖顺序复用同一条性质
 - [0016 — mod 性能分档按声明方式](../decisions/0016-mod-performance-tiers-by-declaration.md) —— "代价可见，人才会去省"，本文档资产覆盖冲突警告与配额展示同一条精神
