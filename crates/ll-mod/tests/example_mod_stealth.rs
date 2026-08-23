@@ -11,12 +11,12 @@
 //!    触发率恒为 `0‰`（见 `ll_sim::combat::sneak_attack_chance_permille`），
 //!    因此**不可能**靠随机命中——两场景的伤害差只可能来自潜行直通。
 //! 3. **潜行真的让卫兵的盘查率下降，且不是靠让卫兵看不见你**——用的是
-//!    仓库里真实的 `mods/example_mod/behavior.scm`（不是内联字符串
-//!    副本），与 `example_mod_guard_inspection.rs` 同一条 ADR 0018
+//!    真实的 `ll_mod::native_behavior::NativeBehaviorTree::guard`，不是
+//!    内联一份逻辑副本，与 `example_mod_guard_inspection.rs` 同一条
 //!    纪律。这一条同时钉死本批次的核心设计选择：`compute_fov`/
 //!    `VisibleSet` 一个字节都没改，潜行中的目标照样被
-//!    `nearby-actor-in-view` 找到（卫兵照常朝它走），变的只是
-//!    `rng-chance` 那一次判定。
+//!    `ll_sim::ai_query::nearest_visible_actor` 找到（卫兵照常朝它走），
+//!    变的只是掷骰那一次判定。
 //! 4. **行为树真的经 [`ll_sim::turn::TurnEngine`] 驱动结算**——第 3 条
 //!    与第 4 条走的是同一段代码（[`guard_turns`]），因此不是两条独立
 //!    证据，而是同一条证据在两个维度上的断言。
@@ -24,19 +24,17 @@
 //! # 第 3/4 条此前为什么不经 `TurnEngine`，现在为什么可以
 //!
 //! 此前不行：[`ll_sim::turn::TurnEngine::advance_ai`] 的 `ai_intent`
-//! 曾经是一个**函数指针**，而 `ScriptBehaviorSource::decide` 需要
-//! `&mut self`，捕获不进函数指针——「行为树经由 `TurnEngine` 生效」
-//! 这条路径在类型层面就不存在，本文件当时只能沿用
-//! `example_mod_guard_inspection.rs` 的「真实脚本 → `decide` → 真实
-//! `Intent`」这条较短的路径，并如实记录了降级理由。
+//! 曾经是一个**函数指针**，而决策来源的 `decide` 需要 `&mut self`，
+//! 捕获不进函数指针——「行为树经由 `TurnEngine` 生效」这条路径在类型
+//! 层面就不存在。
 //!
 //! 现在可以：`ai_intent` 已经放宽成 `&mut dyn FnMut`，
-//! `ll_sim::behavior::behavior_ai_intent` 把任意
-//! `BehaviorTreeSource`（这里就是真实的 `ScriptBehaviorSource`）包成
-//! 它要的那个闭包。本文件因此升级成走完整链路：
+//! `ll_sim::behavior::behavior_ai_intent` 把任意 `BehaviorTreeSource`
+//! （这里就是真实的 `NativeBehaviorSource`）包成它要的那个闭包。本文件
+//! 因此走完整链路：
 //!
 //! ```text
-//! 真实 behavior.scm → ScriptBehaviorSource::decide → behavior_ai_intent
+//! NativeBehaviorSource::decide → behavior_ai_intent
 //!   → TurnEngine::advance_ai → perform → resolve → apply → WorldState
 //! ```
 //!
@@ -49,8 +47,8 @@
 //! [`非卫兵职业的实体经由turnengine一次盘查都不会发起`]：同一段代码、
 //! 同一棵真实行为树、同一个几何布局，只把卫兵的 `profession` 换成一个
 //! 不是 `lostland:guard` 的索引，`Effect::Inspect` 必须一条都不产出。
-//! 把 `mods/lostland/classes.json5` 的那条 `register-class` 删掉，或者把
-//! `behavior.scm` 里 `self-has-profession?` 那个分支摘掉，正面那条测试
+//! 把 `mods/lostland/classes.json5` 的那条卫兵职业删掉，或者把
+//! `native_behavior::guard_try_inspect` 里的职业判定摘掉，正面那条测试
 //! 立刻变红。
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -64,13 +62,12 @@ use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadStatus;
+use ll_mod::native_behavior::{BehaviorRuleCatalogs, NativeBehaviorSource, NativeBehaviorTree};
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
 use ll_mod::race::RaceTable;
 use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
-use ll_mod::script_behavior_api::BehaviorRuleCatalogs;
-use ll_mod::script_behavior_source::{PreparedBehaviorEngine, ScriptBehaviorSource};
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
 use ll_mod::trait_def::TraitTable;
@@ -217,13 +214,13 @@ fn load_real_mods() -> RealModsHandle {
         .get(&NamespacedId::parse("examplemod:footpad").expect("合法标识符"))
         .expect("examplemod:footpad 应当已被 gameplay.scm 注册");
     // `lostland:guard`：`self-has-profession?` 靠这份注册表的快照才认
-    // 得出 `behavior.scm` 里写的这个字符串，因此它必须在表里。
+    // 得出 `native_behavior` 里写的这个字符串，因此它必须在表里。
     //
     // **`get` 而不是 `intern`**——这一行本身就是一条断言：卫兵职业现在
     // 是 `mods/lostland/classes.json5` 里一条真实注册的本体内容，装载
     // 管线跑完之后它必须已经在注册表里。此前这里写的是 `intern`
     // （「查不到就现造一个」），因为整个仓库里根本没有任何脚本注册过
-    // 这个职业——`behavior.scm` 引用它，`guard-try-inspect` 的第一个
+    // 这个职业——`native_behavior` 引用它，`guard_try_inspect` 的第一个
     // `if` 却恒为假，卫兵在真实游戏里永远不会盘查。换成 `get` 之后，
     // 那条注册一旦被删掉，本文件的全部卫兵用例会立刻在这里失败并点名
     // 原因，而不是静默退化成「测试自己造了一个，生产里没有」。
@@ -500,17 +497,7 @@ fn 潜行中攻击一次之后经由turnengine破除潜行() {
     );
 }
 
-/// 仓库根目录下真实的 `mods/example_mod/behavior.scm`，理由同
-/// `example_mod_guard_inspection.rs::load_guard_behavior_source`。
-fn load_guard_behavior_source() -> String {
-    let path = Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../mods/example_mod/behavior.scm"
-    ));
-    std::fs::read_to_string(path).expect("仓库里应当存在真实的 behavior.scm")
-}
-
-/// 摆一个「卫兵盯着一个目标」的场景，用真实的 `guard-ai-tree` 经由
+/// 摆一个「卫兵盯着一个目标」的场景，用真实的卫兵行为树经由
 /// [`TurnEngine`] 连续推进 `turns` 个卫兵回合，返回这段窗口里卫兵各
 /// 产出了多少条 `Effect::Inspect`（盘查）、多少条 `Effect::MoveTo`
 /// （看见了但没盘查，朝目标走）。
@@ -521,9 +508,9 @@ fn load_guard_behavior_source() -> String {
 ///
 /// # 为什么两个计数加起来恒等于 `turns`
 ///
-/// 卫兵每个回合恰好产出一条这两种效果之一：`guard-ai-tree` 只有两个
-/// 分支（盘查 / 走近），兜底的 `'wait` 只在 `nearby-actor-in-view`
-/// 找不到目标时才会命中。调用方据此断言「卫兵每一回合都有动作」——
+/// 卫兵每个回合恰好产出一条这两种效果之一：卫兵那棵树只有两个分支
+/// （盘查 / 走近），兜底的「原地等待」只在视野内找不到目标时才会
+/// 命中。调用方据此断言「卫兵每一回合都有动作」——
 /// 若哪天潜行被改成「改视野」，潜行那一侧会整体退化成 `Intent::Wait`
 /// （既不 `Inspect` 也不 `MoveTo`），这条恒等式立刻不成立。
 ///
@@ -534,22 +521,13 @@ fn load_guard_behavior_source() -> String {
 /// 不产出 `MoveTo`，会让上面那条恒等式因为一个与潜行毫无关系的原因
 /// 变红。把两人周围这一小片显式铺成草地，把「地形长什么样」这个变量
 /// 从本用例里摘掉。
-fn guard_turns(
-    prepared: PreparedBehaviorEngine,
-    handle: &RealModsHandle,
-    target_stealthed: bool,
-    turns: usize,
-) -> (usize, usize) {
-    guard_turns_with_profession(prepared, handle, handle.guard_id, target_stealthed, turns)
+fn guard_turns(handle: &RealModsHandle, target_stealthed: bool, turns: usize) -> (usize, usize) {
+    guard_turns_with_profession(handle, handle.guard_id, target_stealthed, turns)
 }
 
 /// [`guard_turns`] 的一般形式：把卫兵的职业索引也开放成参数，供反例
 /// 用例传一个**不是** `lostland:guard` 的职业进来。
-/// `prepared` 是调用方在**装载真实 mods 之前**就造好的空引擎——
-/// 装载会编译一批脚本，之后这根线程上就不许再构造引擎了（见
-/// `ll_script::host` 里 `COMPILED_ON_THIS_THREAD` 上方注释与 ADR 0028）。
 fn guard_turns_with_profession(
-    prepared: PreparedBehaviorEngine,
     handle: &RealModsHandle,
     guard_profession: ContentIndex,
     target_stealthed: bool,
@@ -580,18 +558,17 @@ fn guard_turns_with_profession(
     );
     world.actors.get_mut(target).expect("刚生成").stealthed = target_stealthed;
 
-    let source_code = load_guard_behavior_source();
-    let mut source = ScriptBehaviorSource::from_prepared(
-        prepared,
-        &source_code,
-        "guard-ai-tree",
-        "examplemod",
-        &handle.registry,
-        // 真实装载出来的四张表的快照——盗贼被动两分批次之后
-        // `guard-inspect-chance` 会向它们查询目标的「盘查意愿」。本文件
-        // 的目标都是占位种族/占位职业，一条 `InspectionSuspicion` 都
-        // 没有，因此本文件的既有断言逐条不受影响（那正是「没有这条被动
-        // 的人行为完全不变」这句话的可执行形式）。
+    // 树认的职业**恒是** `lostland:guard`（从真实注册表里查出来），
+    // 与 `guard_profession` 参数无关——后者只决定「这个实体的职业是
+    // 什么」。反例用例正是靠这个差别成立：给实体一个别的职业，树的
+    // 职业判定就不成立。
+    let mut source = NativeBehaviorSource::new(
+        NativeBehaviorTree::guard(&handle.registry),
+        // 真实装载出来的四张表的快照——盘查概率会向它们查询目标的
+        // 「盘查意愿」。本文件的目标都是占位种族/占位职业，一条
+        // `InspectionSuspicion` 都没有，因此本文件的既有断言逐条不受
+        // 影响（那正是「没有这条被动的人行为完全不变」这句话的可执行
+        // 形式）。
         BehaviorRuleCatalogs::snapshot(
             &handle.race,
             &handle.class,
@@ -599,8 +576,7 @@ fn guard_turns_with_profession(
             &handle.item,
         ),
         1,
-    )
-    .expect("真实 behavior.scm 应当能通过白名单并装载成功");
+    );
 
     let mut timeline = Timeline::new();
     timeline.schedule(guard, Tick(0));
@@ -639,29 +615,25 @@ fn guard_turns_with_profession(
 /// 硬要求四：潜行显著降低卫兵的盘查率——而且**不是**靠让卫兵看不见你，
 /// 而且整条链路经由 [`TurnEngine`]（本体二进制驱动世界的唯一路径）。
 ///
-/// `behavior.scm` 里两个千分比是 500（不潜行）与 50（潜行），相差十倍。
+/// 引擎里两个千分比是 500（不潜行）与 50（潜行），相差十倍。
 /// 400 个回合的期望值因此约 200 次 vs 约 20 次；下面只要求「潜行一侧
 /// 严格少于不潜行一侧的一半」，留了极大的安全边际（这是概率断言，不是
 /// 单次结果断言，与 `resolve.rs` 里偷袭/暴击频率测试同一条既有纪律）。
 ///
 /// **反例**：见本文件模块文档「反例是什么」一节与
 /// [`非卫兵职业的实体经由turnengine一次盘查都不会发起`]。另外，若有人
-/// 把 `guard-inspect-chance` 那个分支从 `behavior.scm` 摘掉（或把
-/// `actor-stealthed?` 接线摘掉让它恒返回 `#f`），两侧的盘查次数会落回
-/// 同一个分布，第一条断言立刻变红。
+/// 把 `native_behavior::guard_inspect_chance` 里的潜行分支摘掉（或把
+/// `ll_sim::ai_query::is_stealthed` 接线摘掉让它恒返回 `false`），两侧
+/// 的盘查次数会落回同一个分布，第一条断言立刻变红。
 #[test]
 fn 潜行显著降低卫兵盘查率但不让卫兵看不见你() {
-    // Arrange：两个行为树引擎都要在 load_real_mods（会编译一批脚本）
-    // 之前造好——同一根线程上全部构造必须先于全部编译，见
-    // `ll_script::host` 里 `COMPILED_ON_THIS_THREAD` 上方注释。
-    let visible_engine = PreparedBehaviorEngine::new();
-    let stealth_engine = PreparedBehaviorEngine::new();
+    // Arrange
     let handle = load_real_mods();
     let turns = 400;
 
     // Act
-    let (visible_inspects, visible_moves) = guard_turns(visible_engine, &handle, false, turns);
-    let (stealth_inspects, stealth_moves) = guard_turns(stealth_engine, &handle, true, turns);
+    let (visible_inspects, visible_moves) = guard_turns(&handle, false, turns);
+    let (stealth_inspects, stealth_moves) = guard_turns(&handle, true, turns);
 
     // Assert 一：盘查率真的降下来了。
     assert!(
@@ -691,7 +663,7 @@ fn 潜行显著降低卫兵盘查率但不让卫兵看不见你() {
     assert_eq!(
         stealth_inspects + stealth_moves,
         turns,
-        "潜行中的目标照样应当被 nearby-actor-in-view 找到——潜行不是隐身"
+        "潜行中的目标照样应当被视野查询找到——潜行不是隐身"
     );
 }
 
@@ -700,20 +672,19 @@ fn 潜行显著降低卫兵盘查率但不让卫兵看不见你() {
 /// 一条都不产出，而「看见了、走近了」照旧。
 ///
 /// 这条同时是「`lostland:guard` 真的被注册了」这件事的可执行证明：
-/// `self-has-profession?` 比的是注册表快照里的字符串，正面用例传的
+/// 职业判定比的是注册表里查出来的索引，正面用例传的
 /// `handle.guard_id` 来自 `registry.get("lostland:guard")`（见
 /// `load_real_mods`），本例传的是另一个索引，两者唯一的差别就是这一
 /// 条内容在不在。
 #[test]
 fn 非卫兵职业的实体经由turnengine一次盘查都不会发起() {
-    // Arrange：行为树引擎在 load_real_mods 之前造好，理由同上一条用例。
-    let prepared = PreparedBehaviorEngine::new();
+    // Arrange
     let handle = load_real_mods();
     let turns = 400;
 
     // Act
     let (inspects, moves) =
-        guard_turns_with_profession(prepared, &handle, placeholder_profession(), false, turns);
+        guard_turns_with_profession(&handle, placeholder_profession(), false, turns);
 
     // Assert
     assert_eq!(

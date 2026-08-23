@@ -101,7 +101,7 @@ pub struct ModManifest {
     /// 源码因此不可能在两个引擎上都编译通过——一份写着
     /// `(register-class ...)` 的文件喂给结算期引擎，会被白名单当场
     /// 判成自由标识符。这不是本字段引入的限制，是那道隔离墙本来的
-    /// 样子（`mods/example_mod/behavior.scm` 之所以刻意不在
+    /// 样子（当年的 `mods/example_mod/behavior.scm` 之所以刻意不在
     /// `entry_points` 里，正是同一条原因，见该文件头注释）。
     ///
     /// 于是事件监听天然分成两半：**声明**（`(on-event 事件 处理函数名)`）

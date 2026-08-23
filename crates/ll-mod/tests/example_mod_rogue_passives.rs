@@ -17,21 +17,21 @@
 //!
 //! 两条被动都挂在 `mods/example_mod/traits.json5` 里**已经存在**的
 //! `examplemod:cutpurse_training`（`examplemod:rogue` 职业 3 级解锁的
-//! 职业天赋）上，本文件从磁盘装载真实 `mods/`、从磁盘读真实
-//! `mods/example_mod/behavior.scm`，不用任何内联副本——ADR 0018
-//! 「玩法层内容必须能从 mod 脚本注册，且要有真实 mod 脚本为证」，
-//! 与 `example_mod_stealth.rs`/`example_mod_guard_inspection.rs` 同一条
+//! 职业天赋）上，本文件从磁盘装载真实 `mods/`，并跑真实的
+//! `NativeBehaviorTree::guard`，不用任何内联副本——ADR 0018「玩法层
+//! 内容必须能从 mod 注册，且要有真实内容为证」，与
+//! `example_mod_stealth.rs`/`example_mod_guard_inspection.rs` 同一条
 //! 既有纪律。
 //!
 //! # 反例是什么：**等级**
 //!
-//! `register-class-trait "examplemod:rogue" "examplemod:cutpurse_training" 3`
-//! ——同一个盗贼，2 级没有这两条被动、3 级才有。本文件全部四条测试都
-//! 是「同一段代码、同一份内容、同一个几何布局，只把 `Agent.level` 从
-//! 3 改成 2」的对照，因此：
+//! `classes.json5` 里盗贼那条 `unlock_level: 3` ——同一个盗贼，2 级
+//! 没有这两条被动、3 级才有。本文件全部四条测试都是「同一段代码、
+//! 同一份内容、同一个几何布局，只把 `Agent.level` 从 3 改成 2」的
+//! 对照，因此：
 //!
-//! - 把 `gameplay.scm` 那两行 `register-trait-inspection-*` 删掉，
-//! - 或者把 `behavior.scm` 里 `actor-inspection-suspicion` 那一乘摘掉，
+//! - 把 `traits.json5` 那两条 `inspection-*` 规则修正删掉，
+//! - 或者把 `native_behavior::guard_inspect_chance` 里那一乘摘掉，
 //! - 或者把 `resolve_inspect` 里的藏匿判定摘掉，
 //!
 //! 三者任一都会让对应的对照塌成同一个数，测试立刻变红。
@@ -48,13 +48,12 @@ use ll_mod::damage_category::DamageCategoryTable;
 use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadStatus;
+use ll_mod::native_behavior::{BehaviorRuleCatalogs, NativeBehaviorSource, NativeBehaviorTree};
 use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::QuestTable;
 use ll_mod::race::RaceTable;
 use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
-use ll_mod::script_behavior_api::BehaviorRuleCatalogs;
-use ll_mod::script_behavior_source::{PreparedBehaviorEngine, ScriptBehaviorSource};
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
 use ll_mod::trait_def::TraitTable;
@@ -140,7 +139,7 @@ impl RealModsHandle {
 
     /// 四张内容表的快照，喂给行为树引擎——被动①要在**决策**那一步
     /// 生效，行为树因此必须查得到它，见
-    /// `ll_mod::script_behavior_api::BehaviorRuleCatalogs` 文档。
+    /// `ll_mod::native_behavior::BehaviorRuleCatalogs` 文档。
     fn behavior_catalogs(&self) -> BehaviorRuleCatalogs {
         BehaviorRuleCatalogs::snapshot(&self.race, &self.class, &self.trait_def, &self.item)
     }
@@ -441,16 +440,7 @@ fn 三级盗贼的扒手训练让盘查查不出东西且经由turnengine生效(
     const _: () = assert!(CUTPURSE_CONCEAL_PERMILLE < 1000);
 }
 
-/// 仓库根目录下真实的 `mods/example_mod/behavior.scm`。
-fn load_guard_behavior_source() -> String {
-    let path = Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../mods/example_mod/behavior.scm"
-    ));
-    std::fs::read_to_string(path).expect("仓库里应当存在真实的 behavior.scm")
-}
-
-/// 被动①的观测场景：真实 `guard-ai-tree` 经由 [`TurnEngine`] 连续
+/// 被动①的观测场景：真实的卫兵行为树经由 [`TurnEngine`] 连续
 /// 推进 `turns` 个卫兵回合，返回 (盘查次数, 移动次数)——形状与理由
 /// 完全照抄 `example_mod_stealth.rs::guard_turns_with_profession`，
 /// 唯一的变量换成了目标的**等级**（而不是它的潜行状态）。
@@ -458,7 +448,6 @@ fn load_guard_behavior_source() -> String {
 /// 两个计数都要：只数盘查次数无法区分「被动①降低了判定成功率」与
 /// 「被动①让卫兵干脆看不见你」——后者会让移动次数也一起归零。
 fn guard_turns_against_rogue(
-    prepared: PreparedBehaviorEngine,
     handle: &RealModsHandle,
     catalogs: &ResolveCatalogs<'_>,
     rogue_level: i32,
@@ -489,17 +478,11 @@ fn guard_turns_against_rogue(
         BTreeMap::new(),
     );
 
-    let source_code = load_guard_behavior_source();
-    let mut source = ScriptBehaviorSource::from_prepared(
-        prepared,
-        &source_code,
-        "guard-ai-tree",
-        "examplemod",
-        &handle.registry,
+    let mut source = NativeBehaviorSource::new(
+        NativeBehaviorTree::guard(&handle.registry),
         handle.behavior_catalogs(),
         1,
-    )
-    .expect("真实 behavior.scm 应当能通过白名单并装载成功");
+    );
 
     let mut timeline = Timeline::new();
     timeline.schedule(guard, Tick(0));
@@ -533,15 +516,12 @@ fn guard_turns_against_rogue(
 /// 硬要求二（被动①「不觉得可疑」）：3 级盗贼显著更少被卫兵盘查，
 /// 而且**不是**靠让卫兵看不见他，整条链路经由 [`TurnEngine`]。
 ///
-/// 真实脚本里 `GUARD_INSPECT_CHANCE_PERMILLE` 是 500、扒手训练的
+/// 引擎里 `GUARD_INSPECT_CHANCE_PERMILLE` 是 500、扒手训练的
 /// 乘数是 200‰，3 级那一侧的实际触发率因此是 100‰，相差五倍。下面
 /// 只要求「3 级一侧严格少于 2 级一侧的一半」，留了很大的安全边际。
 #[test]
 fn 三级盗贼的扒手训练让卫兵不觉得可疑但仍然看得见他() {
-    // Arrange：两个行为树引擎都要在 load_real_mods（会编译一批脚本）
-    // 之前造好——同一根线程上全部构造必须先于全部编译（ADR 0028）。
-    let unlocked_engine = PreparedBehaviorEngine::new();
-    let locked_engine = PreparedBehaviorEngine::new();
+    // Arrange
     let handle = load_real_mods();
     let formulas = RegistryFormulas {
         formulas: &handle.formula,
@@ -551,15 +531,10 @@ fn 三级盗贼的扒手训练让卫兵不觉得可疑但仍然看得见他() {
     let turns = 400;
 
     // Act
-    let (unlocked_inspects, unlocked_moves) = guard_turns_against_rogue(
-        unlocked_engine,
-        &handle,
-        &catalogs,
-        CUTPURSE_UNLOCK_LEVEL,
-        turns,
-    );
+    let (unlocked_inspects, unlocked_moves) =
+        guard_turns_against_rogue(&handle, &catalogs, CUTPURSE_UNLOCK_LEVEL, turns);
     let (locked_inspects, locked_moves) =
-        guard_turns_against_rogue(locked_engine, &handle, &catalogs, BELOW_UNLOCK_LEVEL, turns);
+        guard_turns_against_rogue(&handle, &catalogs, BELOW_UNLOCK_LEVEL, turns);
 
     // Assert 一：盘查率真的降下来了。
     assert!(

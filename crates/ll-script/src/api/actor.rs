@@ -98,10 +98,9 @@ use std::cell::Cell;
 
 use steel::rvals::{IntoSteelVal, SteelVal};
 
-use ll_world::entity::{AffiliationKind, Agent, EntityId};
-use ll_world::fov::compute_fov;
+use ll_sim::intent::Direction;
+use ll_world::entity::{Agent, EntityId};
 use ll_world::state::WorldState;
-use ll_world::surface_store::SurfaceWindow;
 
 use crate::api::handle::ScriptEntityHandle;
 use crate::api::query::with_active_world;
@@ -149,15 +148,18 @@ pub fn with_active_self<T: Copy>(default: T, f: impl FnOnce(&WorldState, &Agent)
     })
 }
 
-/// 「附近」的平方距离阈值——半径约 10 格（见模块文档「已知简化」）。
-const NEARBY_ENEMY_RANGE_SQ: i64 = 100;
+/// 「附近」的平方距离阈值——真实定义在
+/// [`ll_sim::ai_query::NEARBY_ENEMY_RANGE_SQ`]，本别名只是让本模块
+/// 文档里的既有引用继续解析得到，本文件自己不再读它。
+#[allow(dead_code)]
+const NEARBY_ENEMY_RANGE_SQ: i64 = ll_sim::ai_query::NEARBY_ENEMY_RANGE_SQ;
 
 /// [`nearby_actor_in_view`] 的 FOV 查询半径——与
 /// `crate::resolve::EXPLORATION_SIGHT_RADIUS`（`ll-sim`,玩家探索标记）
 /// 及设计文档 `DEFAULT_NPC_BASE_SIGHT_RADIUS` 建议值同一个量级（12），
 /// 不是巧合：这是本代码库目前对「一个前景实体大致能看多远」的既有
 /// 拍板值,本模块沿用而不是另起一个数字。
-const NEARBY_ACTOR_VIEW_RADIUS: u32 = 12;
+const NEARBY_ACTOR_VIEW_RADIUS: u32 = ll_sim::ai_query::NEARBY_ACTOR_VIEW_RADIUS;
 
 /// 注册 `self-handle`/`nearby-enemy`/`nearby-actor-in-view`/
 /// `direction-toward`/`actor-stealthed?` 五个行为树查询原语。
@@ -244,37 +246,11 @@ fn nearby_actor_in_view() -> SteelVal {
     })
 }
 
-/// 找出 `world` 中离 `self_id` 最近、且真的落在它 FOV 内的实体；范围外
-/// 或不存在时返回 `None`。两段式过滤：`world.size.chebyshev` 粗筛
-/// （`O(1)`/候选者）+ `VisibleSet::contains` 成员测试，只对活跃实体自己
-/// 的位置算一次 [`compute_fov`]——完整论证见模块文档
-/// 「`nearby-actor-in-view`：真正的 FOV 可见性」一节。
-///
-/// 候选者遍历顺序（`Arena::iter_with_id`，`Vec` 支撑的固定顺序）与
-/// 距离相等时的打破平局规则（按 `EntityId` 升序）均与 [`nearest_hostile`]
-/// 同一条既有纪律（C5）。
+/// 找出 `world` 中离 `self_id` 最近、且真的落在它 FOV 内的实体——
+/// 委托给 [`ll_sim::ai_query::nearest_visible_actor`]，本文件不再持有
+/// 第二份实现，理由见该模块文档「为什么这些函数住在 `ll-sim`」。
 fn nearest_visible_actor(world: &WorldState, self_id: EntityId, radius: u32) -> Option<EntityId> {
-    let me = world.actors.get(self_id)?;
-    let visible = compute_fov(
-        &SurfaceWindow::new(&world.terrain),
-        &world.terrain_table,
-        me.pos,
-        radius,
-    );
-    world
-        .actors
-        .iter_with_id()
-        .filter(|(id, _)| *id != self_id)
-        .filter_map(|(id, other)| {
-            let dist = world.size.chebyshev(me.pos, other.pos);
-            if dist > radius {
-                return None; // 粗筛：距离已经超出半径，FOV 不可能命中。
-            }
-            visible.contains(other.pos).then_some((dist, id))
-        })
-        // 距离相等时按 EntityId 升序打破平局——见模块文档「确定性」。
-        .min_by_key(|&(dist, id)| (dist, id))
-        .map(|(_, id)| id)
+    ll_sim::ai_query::nearest_visible_actor(world, self_id, radius)
 }
 
 /// `(direction-toward target)`：从活跃实体指向 `target` 的八向之一
@@ -295,67 +271,35 @@ fn direction_toward(target: ScriptEntityHandle) -> SteelVal {
     })
 }
 
-/// `(dx, dy)`（环面最短带符号位移）→ 八向符号名。零位移（同格）没有
-/// 明确方向，任意但稳定地退化为 `"north"`——与本文件其余查询「宿主
-/// 接线可能出现意料之外的输入时选一个确定值而不是 panic」同一条纪律。
+/// `(dx, dy)`（环面最短带符号位移）→ 八向符号名。
+///
+/// 方向判定本身委托给 [`ll_sim::ai_query::direction_from_delta`]（唯一
+/// 一份），本函数只负责把它翻成脚本侧的符号名——那个名字要与
+/// [`crate::api::intent::direction_from_symbol`] 认的那一份逐字对应。
 fn direction_symbol(dx: i32, dy: i32) -> &'static str {
-    match (dx.signum(), dy.signum()) {
-        (0, -1) | (0, 0) => "north",
-        (0, 1) => "south",
-        (-1, 0) => "west",
-        (1, 0) => "east",
-        (1, -1) => "north-east",
-        (1, 1) => "south-east",
-        (-1, 1) => "south-west",
-        (-1, -1) => "north-west",
-        // `i32::signum` 的值域恰为 {-1, 0, 1}，上面九种组合已穷尽；
-        // 保留这一分支只是让编译器确认穷尽性，不代表存在第十种输入。
-        _ => "north",
+    match ll_sim::ai_query::direction_from_delta(dx, dy) {
+        Direction::North => "north",
+        Direction::South => "south",
+        Direction::West => "west",
+        Direction::East => "east",
+        Direction::NorthEast => "north-east",
+        Direction::SouthEast => "south-east",
+        Direction::SouthWest => "south-west",
+        Direction::NorthWest => "north-west",
     }
 }
 
-/// 找出 `world` 中离 `self_id` 最近、且对它敌对的实体；范围外或不存在
-/// 时返回 `None`。
+/// 找出 `world` 中离 `self_id` 最近、且对它敌对的实体——委托给
+/// [`ll_sim::ai_query::nearest_hostile`]，理由同
+/// [`nearest_visible_actor`]。
 fn nearest_hostile(world: &WorldState, self_id: EntityId) -> Option<EntityId> {
-    let me = world.actors.get(self_id)?;
-    world
-        .actors
-        .iter_with_id()
-        .filter(|(id, _)| *id != self_id)
-        .filter(|(_, other)| is_hostile(me, other))
-        .filter_map(|(id, other)| {
-            let (dx, dy) = world.size.delta(me.pos, other.pos);
-            let dist_sq = i64::from(dx) * i64::from(dx) + i64::from(dy) * i64::from(dy);
-            (dist_sq <= NEARBY_ENEMY_RANGE_SQ).then_some((dist_sq, id))
-        })
-        // 距离相等时按 EntityId 升序打破平局——见模块文档「确定性」。
-        .min_by_key(|&(dist_sq, id)| (dist_sq, id))
-        .map(|(_, id)| id)
-}
-
-/// `b` 是否对 `a` 敌对：粗略近似，见模块文档「找到附近的目标」一节
-/// 「已知简化」第 2 条——`a` 没有任何势力归属（例如野怪）时视为对谁都
-/// 敌对；否则要求 `a`/`b` 没有任何共同的势力归属。真正的声望/关系矩阵
-/// 是 `knowledge/design/society-and-affiliation.md` 描述的 P8 范围，
-/// 本函数不是那个系统的实现。
-fn is_hostile(a: &Agent, b: &Agent) -> bool {
-    let a_factions: Vec<_> = a
-        .affiliations
-        .iter()
-        .filter(|aff| aff.kind == AffiliationKind::Faction)
-        .map(|aff| aff.org)
-        .collect();
-    if a_factions.is_empty() {
-        return true;
-    }
-    !b.affiliations
-        .iter()
-        .any(|aff| aff.kind == AffiliationKind::Faction && a_factions.contains(&aff.org))
+    ll_sim::ai_query::nearest_hostile(world, self_id)
 }
 
 #[cfg(test)]
 mod tests {
     use ll_core::time::Tick;
+    use ll_world::entity::AffiliationKind;
     use ll_world::entity::BaseStats;
     use ll_world::generate::GenParams;
     use ll_world::terrain::base_terrain_fixture;

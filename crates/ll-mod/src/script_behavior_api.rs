@@ -32,16 +32,9 @@ use std::collections::BTreeMap;
 use ll_core::ident::ContentIndex;
 use ll_script::api::handle::ScriptEntityHandle;
 use ll_script::host::ScriptEngine;
-use ll_sim::rule_modifier::{
-    INSPECTION_SUSPICION_SCALE, agent_rule_modifiers, inspection_suspicion_permille,
-};
-use ll_world::entity::EntityId;
+use ll_sim::rule_modifier::INSPECTION_SUSPICION_SCALE;
 
-use crate::class::ClassTable;
-use crate::item::ItemTable;
-use crate::race::RaceTable;
 use crate::registry::Registry;
-use crate::trait_def::TraitTable;
 
 /// 把 `registry` 里全部已注册的命名空间 ID 快照成一份「完整字符串 →
 /// `ContentIndex`」映射——键的形状与脚本里写的字面量一致
@@ -143,80 +136,7 @@ fn has_profession(class: ContentIndex) -> bool {
     ll_script::api::actor::with_active_self(false, |_world, agent| agent.profession == class)
 }
 
-/// 行为树运行期查询 `actor-inspection-suspicion` 需要的那几张内容表的
-/// **一次性快照**（盗贼被动两分批次新增）。
-///
-/// # 为什么是快照（`Clone`），不是借用
-///
-/// `ScriptEngine::register_fn` 注册的闭包要求 `'static`——借用进去的
-/// 表会把生命周期传染给整个 [`crate::script_behavior_source::ScriptBehaviorSource`]，
-/// 而它要作为 `ll_sim::behavior::BehaviorTreeSource` 被
-/// `TurnEngine::advance_ai` 的 `&mut dyn FnMut` 持有，那条链路上没有
-/// 任何一处能提供这个生命周期。
-///
-/// 快照在本模块有现成的先例与同一条正当性论证：见
-/// [`register_skill_ready_api`] 文档「为什么用一次性快照，不是活跃
-/// 指针」一节——`Registry` 与这四张表都在 mod 装载完成后就不再变化
-/// （运行期不会有新 mod 中途注册新天赋），因此「快照」与「实时读」
-/// 在语义上无差别，不存在两份真相漂移的可能。差别只在
-/// [`skill_index_snapshot`] 折叠成了一份 `BTreeMap`，而这里必须留着
-/// 整张表：本查询的答案依赖**实体运行期的状态**（种族/职业/等级/
-/// 已装备物品），折不成一份与实体无关的静态映射。
-///
-/// # 为什么打包成一个结构体，不是四个参数
-///
-/// 与 `ll_sim::catalogs::ResolveCatalogs` 同一条既有手法：这四张表
-/// 是「聚合规则修正」这一件事的完整输入，将来接第三、第四路来源
-/// （技能/药品，见 `ll_sim::rule_modifier::agent_rule_modifiers` 文档）
-/// 时只需要给本结构体加字段，不必再改一次
-/// [`register_inspection_suspicion_api`] 与它全部调用点的签名。
-#[derive(Debug, Clone, Default)]
-pub struct BehaviorRuleCatalogs {
-    /// 种族这一路天赋来源。
-    pub race: RaceTable,
-    /// 职业这一路天赋来源——`examplemod:cutpurse_training` 正是走这
-    /// 一路（`register-class-trait`，3 级解锁）。
-    pub class: ClassTable,
-    /// 天赋定义表。
-    pub traits: TraitTable,
-    /// 物品定义表——规则修正的第二路来源（装备）。
-    pub items: ItemTable,
-}
-
-impl BehaviorRuleCatalogs {
-    /// 从调用方持有的四张表各克隆一份，理由见类型文档「为什么是快照」。
-    pub fn snapshot(
-        race: &RaceTable,
-        class: &ClassTable,
-        traits: &TraitTable,
-        items: &ItemTable,
-    ) -> Self {
-        Self {
-            race: race.clone(),
-            class: class.clone(),
-            traits: traits.clone(),
-            items: items.clone(),
-        }
-    }
-
-    /// 一个实体此刻的「盘查意愿」千分比——
-    /// `ll_sim::rule_modifier::inspection_suspicion_permille` 在这份
-    /// 快照上的应用。查不到实体时返回
-    /// [`INSPECTION_SUSPICION_SCALE`]（与常人无异），与本模块其余
-    /// 查询同一条降级纪律。
-    fn suspicion_permille(&self, world: &ll_world::state::WorldState, target: EntityId) -> i32 {
-        match world.actors.get(target) {
-            Some(agent) => inspection_suspicion_permille(&agent_rule_modifiers(
-                agent,
-                &self.race,
-                &self.class,
-                &self.traits,
-                &self.items,
-            )),
-            None => INSPECTION_SUSPICION_SCALE,
-        }
-    }
-}
+pub use crate::native_behavior::BehaviorRuleCatalogs;
 
 /// 注册 `actor-inspection-suspicion` 进 `engine`（盗贼被动两分批次）。
 ///
@@ -279,7 +199,7 @@ pub fn register_inspection_suspicion_api(
             ll_script::api::actor::with_active_self(
                 i64::from(INSPECTION_SUSPICION_SCALE),
                 |world, _observer| {
-                    i64::from(catalogs.suspicion_permille(world, target.entity_id()))
+                    i64::from(catalogs.suspicion_permille_of(world, target.entity_id()))
                 },
             )
         },
@@ -297,6 +217,11 @@ mod tests {
 
     use ll_script::api::actor::{clear_active_actor, set_active_actor};
     use ll_script::api::query::with_active_world_for;
+
+    use crate::class::ClassTable;
+    use crate::item::ItemTable;
+    use crate::race::RaceTable;
+    use crate::trait_def::TraitTable;
 
     use super::*;
 
@@ -683,7 +608,7 @@ mod tests {
         let catalogs = BehaviorRuleCatalogs::default();
 
         // Act
-        let permille = catalogs.suspicion_permille(&world, actor);
+        let permille = catalogs.suspicion_permille_of(&world, actor);
 
         // Assert
         assert_eq!(permille, INSPECTION_SUSPICION_SCALE);
@@ -699,7 +624,7 @@ mod tests {
         let catalogs = suspicion_catalogs(race, 200);
 
         // Act
-        let permille = catalogs.suspicion_permille(&world, actor);
+        let permille = catalogs.suspicion_permille_of(&world, actor);
 
         // Assert
         assert_eq!(permille, 200);

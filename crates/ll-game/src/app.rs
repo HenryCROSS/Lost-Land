@@ -69,24 +69,24 @@ use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES}
 /// （`Intent::Wait` 恒产出 `Effect::ScheduleNext`，见 `ll_sim::resolve`
 /// 文档）。
 ///
-/// # 为什么这里**还不是** `ScriptBehaviorSource`
+/// # 为什么这里**还不是** `NativeBehaviorSource`
 ///
-/// 如实记录，不是遗漏。`advance_ai` 的 `ai_intent` 原本是 `fn` 指针，
-/// 捕获不进任何需要 `&mut self` 的决策来源——这条**类型层面的**阻塞
-/// 已经在本批次解除（签名放宽成 `&mut dyn FnMut`，标准接法见
-/// `ll_sim::behavior::behavior_ai_intent`）。剩下的两条阻塞是内容层面
-/// 的，不是接线层面的，各自都需要独立批次：
+/// 如实记录，不是遗漏。两条历史阻塞已经不在了：`advance_ai` 的
+/// `ai_intent` 曾是 `fn` 指针（捕获不进需要 `&mut self` 的决策来源），
+/// 签名早已放宽成 `&mut dyn FnMut`；决策来源曾要一份脚本源码与一个
+/// 入口函数名，而行为搬进引擎之后
+/// （`ll_mod::native_behavior::NativeBehaviorTree`）它只要一个枚举值。
+///
+/// 剩下的两条阻塞是**内容层面**的，不是接线层面的，各自都需要独立
+/// 批次：
 ///
 /// 1. **本体二进制没有任何 NPC 生成路径**——没有生物注册表、没有刷怪
 ///    表，`build_new_world` 只生成玩家一个实体。哪怕这里换成真正的
 ///    行为树决策来源，`advance_ai` 也永远弹不出一个非受控实体来调用
 ///    它，「接上了但恒不执行」与现状没有任何可观察差别。
-/// 2. **没有「哪个生物用哪棵行为树」的内容绑定**——
-///    `ScriptBehaviorSource::new` 要一份脚本源码与一个入口函数名，而
-///    `mods/example_mod/behavior.scm` 刻意不在 `entry_points` 里（见
-///    该文件头注释），`LoadedContent::script_sources` 因此根本读不到
-///    它。在没有绑定内容类型的前提下由 Rust 侧硬选一棵树，就是把
-///    「本体 = 框架，脚本 = 内容」这条裁定反过来写。
+/// 2. **没有「哪个生物用哪棵树」的内容绑定**——`Agent` 上没有任何字段
+///    说得出「这个生物该跑哪棵树」，两棵树目前只能由调用方硬选一棵。
+///    在没有这条绑定之前，在这里硬选一棵是在猜。
 ///
 /// 在这两条补上之前，这里挂一个恒 `Wait` 的占位比挂一个恒不执行的
 /// `NoBehavior` 更诚实：后者会让读者以为行为树已经接通了。

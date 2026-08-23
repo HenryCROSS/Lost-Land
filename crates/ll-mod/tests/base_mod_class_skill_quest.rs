@@ -208,7 +208,7 @@ fn 本体职业的主属性倾向与显示名键逐条与迁移前一致() {
 fn 卫兵职业仍然由本体mod的内容数据文件注册且主属性是体质() {
     // 卫兵不进 `BaseClassIds`（Rust 侧没有任何使用点，见
     // `ll_mod::class::BaseClassIds` 文档「哪些内容进」一节），因此它的
-    // 存在性只能靠本条按字符串核对——`mods/example_mod/behavior.scm`
+    // 存在性只能靠本条按字符串核对——`ll_mod::native_behavior`
     // 的 `(self-has-profession? "lostland:guard")` 依赖它真的在注册表里。
     // Arrange
     let loaded = load_real_mods();

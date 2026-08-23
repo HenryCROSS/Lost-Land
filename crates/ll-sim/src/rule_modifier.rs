@@ -215,13 +215,13 @@ pub enum RuleModifier {
     /// [`RuleModifier::InspectionConcealment`] 分成两个变体、而不是
     /// 合成一个的理由：「要不要发起盘查」这个决策**根本不经过
     /// `resolve`**——它整个发生在 AI 决策阶段（`guard-ai-tree` 的
-    /// `rng-chance` 那一次掷骰，见 `mods/example_mod/behavior.scm`），
+    /// 那一次掷骰，见 `ll_mod::native_behavior::guard_inspect_chance`），
     /// `Intent::Inspect` 一旦产出，`crate::resolve::resolve_inspect`
     /// 恒执行、不重新判断「该不该查」（见该函数文档「谁来判断该不该
     /// 发起这次盘查」一节）。本变体的值因此经
     /// `ll_mod::script_behavior_api` 的 `actor-inspection-suspicion`
     /// 暴露给行为树，由脚本自己决定怎么把它乘进那次掷骰的概率——
-    /// 与「盘查触发率本身就写在脚本里」（同一份 `behavior.scm` 的
+    /// 与「盘查触发率本身是一条具名常量」（同一个模块的
     /// `GUARD_INSPECT_CHANCE_PERMILLE`）是同一条可编辑性纪律。
     ///
     /// 聚合与 tie-break 仍然完全走 [`agent_rule_modifiers`]——脚本
@@ -495,7 +495,7 @@ pub const INSPECTION_SUSPICION_SCALE: i32 = 1000;
 /// [`INSPECTION_SUSPICION_SCALE`]（与常人无异）。
 ///
 /// 真正的消费点在**脚本侧**（`ll_mod::script_behavior_api` 的
-/// `actor-inspection-suspicion` → `mods/example_mod/behavior.scm` 的
+/// 「盘查意愿」查询 → `ll_mod::native_behavior` 的
 /// `guard-inspect-chance`），不是 `crate::resolve`——理由见
 /// [`RuleModifier::InspectionSuspicion`] 文档「消费者在脚本侧」一节。
 /// 聚合与 tie-break 仍然留在这里：脚本拿到的是算完的一个数。

@@ -101,6 +101,7 @@
 //! 在本作的光照量纲下永远不可能生效，已连同 `effective_light_for_race`
 //! 一并删除，理由见该模块文档「缺口是什么」一节。
 
+pub mod ai_query;
 pub mod apply;
 pub mod behavior;
 pub mod catalogs;

@@ -43,7 +43,7 @@
 //! 判据是「Rust 代码有没有按名字引用它」，不是「它是不是本体内容」。
 //! 战士/法师/游侠三条进：p5 验收链路与未来的建档界面按字段名引用它们。
 //! 卫兵（`lostland:guard`）不进：Rust 侧一行代码都没提过它，它只被
-//! `mods/example_mod/behavior.scm` 的 `self-has-profession?` 按字符串
+//! `ll_mod::native_behavior` 的卫兵那棵树按索引
 //! 引用。给一条没有 Rust 使用点的内容加一个句柄字段，只会造出一条
 //! 「声明了但从没接线」——本项目已经发现三十处同形缺陷。它仍然受
 //! [`crate::content_audit`] 的字段覆盖与内容值哈希两道检查覆盖。
@@ -336,7 +336,7 @@ impl TraitGrantSource for ClassTable {
 /// （`knowledge/design/class-skill-quest-system.md` 文档开篇已声明：
 /// 本文档与本任务只交付系统骨架，不交付具体职业该有什么数值）。
 /// `lostland:guard`（卫兵）刻意**不**在本结构体里：Rust 侧没有任何
-/// 代码按名字引用它，它只被 `mods/example_mod/behavior.scm` 的
+/// 代码按名字引用它，它只被 `ll_mod::native_behavior` 的
 /// `self-has-profession?` 按字符串引用，句柄结构体的存在理由（保住
 /// Rust 使用点的编译期安全）对它不成立——见模块文档「哪些内容进
 /// [`BaseClassIds`]」一节。
