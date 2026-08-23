@@ -1327,6 +1327,97 @@ mod tests {
         assert!(导出名字.contains("spawn-process"), "实际导出 {导出名字:?}");
     }
 
+    /// [`FULLY_POISONED_MODULES`] 里除 `steel/process` 之外那三个模块的
+    /// 同款哨兵，逐个断言「模块在未毒化的参照引擎里枚举得到，且里面
+    /// 确实有它那一类能力的原语」。
+    ///
+    /// # 为什么三个模块各写一条，不是一条循环跑完
+    ///
+    /// 哨兵名字是每个模块**各自**的同步来源（下面每条各自标注了它抄自
+    /// steel-core 0.8.2 的哪个文件），一条循环要么退化成"只断言模块非
+    /// 空"（漏掉"名字换了"这种漂移），要么得维护一张模块 → 哨兵名字的
+    /// 映射表——那张表本身就是又一处会过时的手抄。三条独立测试还有一个
+    /// 实际好处：`steel/time` 哪天出问题，红的是那一条，不是一条笼统的
+    /// "四个模块里有一个不对"。
+    ///
+    /// # 判据必须来自未毒化的参照引擎
+    ///
+    /// 见 [`未毒化的参照引擎`] 文档：拿 [`ScriptEngine`] 内部那个引擎
+    /// 枚举，得到的是 [`poison_module`] 第二步注册进去的**空替身**，
+    /// 断言会全部退化成恒真。
+    #[test]
+    fn 时间模块在活引擎里确实枚举得到() {
+        // 防漂移第一层（`steel/time`）：墙钟是非确定性的来源，一旦毒化
+        // 静默变成空操作，脚本就能读到真实时间，约束 C3 当场失守。
+        // Arrange
+        let 参照 = 未毒化的参照引擎();
+
+        // Act
+        let 导出名字: HashSet<String> = 参照
+            .builtin_modules()
+            .get("steel/time")
+            .expect("steel/time 必须仍在沙箱引擎的模块注册表里，否则全部毒化都成了空操作")
+            .names()
+            .into_iter()
+            .collect();
+
+        // Assert：两个哨兵名字，同步来源是 steel-core 0.8.2 的
+        // `src/primitives/time.rs` 里的 `time_module()`。
+        assert!(导出名字.contains("instant/now"), "实际导出 {导出名字:?}");
+        assert!(
+            导出名字.contains("duration->seconds"),
+            "实际导出 {导出名字:?}"
+        );
+    }
+
+    #[test]
+    fn 随机模块在活引擎里确实枚举得到() {
+        // 防漂移第一层（`steel/random`）：非确定性随机是约束 C3 直接
+        // 点名要挡的能力，毒化空转等于脚本能拿到线程 RNG。
+        // Arrange
+        let 参照 = 未毒化的参照引擎();
+
+        // Act
+        let 导出名字: HashSet<String> = 参照
+            .builtin_modules()
+            .get("steel/random")
+            .expect("steel/random 必须仍在沙箱引擎的模块注册表里，否则全部毒化都成了空操作")
+            .names()
+            .into_iter()
+            .collect();
+
+        // Assert：两个哨兵名字，同步来源是 steel-core 0.8.2 的
+        // `src/primitives/random.rs` 里的 `random_module()`。
+        assert!(导出名字.contains("rng->gen-usize"), "实际导出 {导出名字:?}");
+        assert!(导出名字.contains("rng->gen-range"), "实际导出 {导出名字:?}");
+    }
+
+    #[test]
+    fn 线程模块在活引擎里确实枚举得到() {
+        // 防漂移第一层（`steel/threads`）：线程能让脚本逃出
+        // `alloc_guard`/活跃世界指针这套「按线程记账」的全部纪律，
+        // 毒化空转的后果比前两个更广。
+        // Arrange
+        let 参照 = 未毒化的参照引擎();
+
+        // Act
+        let 导出名字: HashSet<String> = 参照
+            .builtin_modules()
+            .get("steel/threads")
+            .expect("steel/threads 必须仍在沙箱引擎的模块注册表里，否则全部毒化都成了空操作")
+            .names()
+            .into_iter()
+            .collect();
+
+        // Assert：两个哨兵名字，同步来源是 steel-core 0.8.2 的
+        // `src/steel_vm/vm/threads.rs` 里的 `threading_module()`。
+        assert!(
+            导出名字.contains("spawn-native-thread"),
+            "实际导出 {导出名字:?}"
+        );
+        assert!(导出名字.contains("make-channels"), "实际导出 {导出名字:?}");
+    }
+
     #[test]
     fn 进程模块的每个导出名字连同别名拼写都不在白名单内() {
         // 防漂移第二层，挡的是「上游新增了一个我们没见过的进程原语」：
