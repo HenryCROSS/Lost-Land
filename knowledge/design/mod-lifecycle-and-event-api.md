@@ -1,5 +1,18 @@
 # 扩充给 mod 的 Steel 脚本 API：装载期一次性 API、事件监听 API 与其余候选
 
+> **【2026-08-23 状态订正】本文档的前提已经不成立：Steel 脚本系统整体拆除。**
+> `crates/ll-script/`、`steel-core` 依赖与全部 `.scm` 文件均已删除；mod 内容改用
+> `mods/<id>/*.json5` 数据文件声明，玩法层**逻辑**（AI 行为树、技能结算、物品使用
+> 效果）住在引擎里的 Rust——第三方 Rust 扩展能力（注册表 / C ABI）明确推迟，不做。
+> 起因与决定见 [ADR 0028](../decisions/0028-steel-engine-construction-memory-corruption.md)
+> 与 [ADR 0018](../decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
+> 各自的 2026-08-23 订正段，以及规格 §4 的 `[2026-08-23 规格修订]`。
+>
+> **正文一字未改**，仍是冻结时的原样：它记录的是脚本时代的设计，与本订正块叠加读
+> 才是完整的演变过程。读的时候请自行把「脚本」「`register-*`」「VM」替换成
+> 「内容数据文件」「JSON5 字段」「无」。
+
+
 **冻结于** 2026-08-20。**落地状态**：二节「事件监听 API」已**部分落地**（2026-08-23，见下方「落地记录」）；一节「装载期一次性 API」与三节「其余候选」仍是纯设计。核对提交 `2226469`（`main` 分支）。已核实的现状：`crates/ll-mod/src/pipeline.rs`（装载管线真实阶段划分）、`crates/ll-mod/src/topo.rs`（拓扑排序确定性总序）、`crates/ll-mod/src/registry.rs`（`Registry::intern` 允许悬空引用，无任何后续校验）、`crates/ll-script/src/host.rs`/`whitelist.rs`（能力边界、`map`/`filter`/`foldl`/`foldr` 白名单实测放行）、`crates/ll-sim/src/effect.rs`（现有 `Effect` 变体清单）、`knowledge/design/buffs-and-triggers.md` §三（既有的内容级触发器机制，本文档的事件监听 API 与它是两层不同粒度的机制，非重复设计）、`knowledge/design/script-entity-handles-and-batch-queries.md` 五节（既有的批量查询设计，纯设计未落地，本文档直接复用其形状而非重新发明）。
 
 

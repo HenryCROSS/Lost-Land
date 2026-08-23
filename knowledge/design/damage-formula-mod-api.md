@@ -1,5 +1,18 @@
 # 伤害公式的 mod API：D&D 骰子表达式，s-表达式载体，第二档
 
+> **【2026-08-23 部分订正】通道变了，机制没变。** Steel 脚本系统整体拆除
+> （见规格 §4 的 `[2026-08-23 规格修订]`）：`register-damage-formula`/
+> `register-weapon-category`/`register-damage-category` 这些脚本函数不再存在，
+> 相应内容改由 `mods/<id>/damage_formulas.json5`、`weapon_categories.json5`、
+> `damage_categories.json5` 声明。
+>
+> 本文档的核心设计**原样存活**：骰子表达式仍是 s-表达式形态（现在写在 JSON5 的
+> 字符串/数组里，由 `ll_mod::content_expr` 解析）、装载期仍编译成扁平指令数组、
+> 运行期仍是零求值器调用（ADR 0017 第二档）。`FormulaOp`/`FormulaOperand` 指令集、
+> 默认公式四层解析链、分项相加语义都没有改动。读正文时把「脚本」「`register-*`」
+> 替换成「内容数据文件」「JSON5 字段」即可。
+
+
 **冻结于** 2026-08-20。**落地状态**：纯设计，`crates/` 中无任何对应类型。核对提交 `2226469`（`main` 分支，前三版）与 `4ade0ed`（`main` 分支，本次第四版追加，1216 测试全绿）。已核实的现状：`damage_after_defense`（`crates/ll-sim/src/combat.rs`）与调用它的唯一真实入口 `resolve_attack`（`crates/ll-sim/src/resolve.rs:462`，第四版复核为 `:495`，行号随后续提交小幅漂移，函数本身未变）——见「一、现状核实」。本文档是同一次设计任务的第四版：第一版判定「受限公式,Rust 侧构造指令」，项目所有者三次追加要求后依次改为「参考 D&D 骰子记号 + 本项目属性」「表达式载体用 s-表达式,仿照 `mods/example_mod/behavior.scm` 的既有模式」「加入武器类别与伤害类别,各自独立公式,配置后合并计算」——本文档正文直接给出修正后的结论,不逐版本重复推导过程；第四版新增内容集中在「十六」及之后的章节,一至十五节结论不变,仅在九、十一两节末尾补了指向新章节的前向指针。
 
 ---

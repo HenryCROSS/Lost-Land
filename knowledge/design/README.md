@@ -1,5 +1,21 @@
 # 设计文档总索引
 
+> **【2026-08-23 全局订正】Steel 脚本系统整体拆除。** 本目录多份文档写于脚本时代，
+> 行文里的「脚本」「`register-*`」「VM」「`.scm`」「`entry_points`」都已不存在：
+> mod 内容改用 `mods/<id>/*.json5` 数据文件声明（`ll_mod::content_data`），玩法层
+> **逻辑**住在引擎里的 Rust（例如 `ll_mod::native_behavior` 的行为树），第三方 Rust
+> 扩展能力（注册表 / C ABI）明确推迟，不做。受影响最深的六份
+> （[Steel 语法参考](steel-script-reference.md)、[脚本状态存储](script-state-storage.md)、
+> [脚本层数据句柄与批量查询](script-entity-handles-and-batch-queries.md)、
+> [mod 生命周期与事件 API](mod-lifecycle-and-event-api.md)、
+> [mod 包结构与资产 VFS](mod-package-structure.md)、
+> [伤害公式 mod API](damage-formula-mod-api.md)）各自开头带了一段状态订正。
+> 起因见 [ADR 0028](../decisions/0028-steel-engine-construction-memory-corruption.md)，
+> 取代关系见 [ADR 0018](../decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
+> 的订正段与规格 §4 的 `[2026-08-23 规格修订]`。
+>
+> 本目录各文档正文一律保持冻结原样，不逐句改写。
+
 本目录下二十份文档共同描述「迷途大陆」的物品、装备、属性、社会、经济、种族、世界历史、身份标识、命名与本地化、坐标与空间模型、脚本层数据句柄与批量查询、脚本状态存储、三轴战斗结算、增益与通用触发器、职业技能与任务、动画与视觉特效边界、击杀与死亡记录、mod 包结构与资产 VFS、剧本系统、伤害公式 mod API 二十个子系统。它们分开冻结、分次写成，彼此高度依赖但没有统一校对过——这份索引是校对结果：谁管什么、谁引用了谁、贯穿全局的原则用在哪几处、该按什么顺序读。
 
 前五份（物品、装备、属性、社会、经济）是最早冻结的一批，中间四份（种族、世界历史、身份与 ID 空间、命名与本地化）是在前五份基础上补的一批已拍板决定——它们大量引用前五份的既有结构（`Affiliation`、`Kinship`、`ContentIndex`、`BaseStats`……），几乎不新增底层机制，只是把前五份没覆盖到的角落（种族怎么算、历史怎么生成、生成物怎么引用、名字怎么本地化）填满。

@@ -1,5 +1,18 @@
 # 脚本状态存储：受认可的跨帧/跨存档持久化机制
 
+> **【2026-08-23 状态订正】本文档的前提已经不成立：Steel 脚本系统整体拆除。**
+> `crates/ll-script/`、`steel-core` 依赖与全部 `.scm` 文件均已删除；mod 内容改用
+> `mods/<id>/*.json5` 数据文件声明，玩法层**逻辑**（AI 行为树、技能结算、物品使用
+> 效果）住在引擎里的 Rust——第三方 Rust 扩展能力（注册表 / C ABI）明确推迟，不做。
+> 起因与决定见 [ADR 0028](../decisions/0028-steel-engine-construction-memory-corruption.md)
+> 与 [ADR 0018](../decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
+> 各自的 2026-08-23 订正段，以及规格 §4 的 `[2026-08-23 规格修订]`。
+>
+> **正文一字未改**，仍是冻结时的原样：它记录的是脚本时代的设计，与本订正块叠加读
+> 才是完整的演变过程。读的时候请自行把「脚本」「`register-*`」「VM」替换成
+> 「内容数据文件」「JSON5 字段」「无」。
+
+
 - **冻结时间**：2026-08-18
 - **基线提交**：`df4e5c6`（写作本文档时的 HEAD，工作区干净，496 测试全绿）
 - **状态**：**已落地**（P5 批次 D，2026-08-19）——`ScriptValue`/配额/孤儿保留/命名空间隔离/VM 强制重建均已实现，见 `crates/ll-world/src/script_state.rs`、`crates/ll-script/src/api/state.rs`、`crates/ll-script/src/host.rs::rebuild_all_engines_after_load`。落地过程中发现并修订了本文档 8.2 节「直接写穿」的表述——与规格 §4 C1 字面冲突，裁定 P5-1 改为经 `apply` 写入，本文档 8.2 节已同步更新为修订后的表述，不再是原文的错误论证。其余章节（值类型、命名空间隔离、配额数字、孤儿保留策略、VM 重建时机）按原设计原样落地，未发现其他需要修订之处。

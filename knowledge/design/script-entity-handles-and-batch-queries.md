@@ -1,5 +1,18 @@
 # 脚本层数据句柄与批量查询原语
 
+> **【2026-08-23 状态订正】本文档的前提已经不成立：Steel 脚本系统整体拆除。**
+> `crates/ll-script/`、`steel-core` 依赖与全部 `.scm` 文件均已删除；mod 内容改用
+> `mods/<id>/*.json5` 数据文件声明，玩法层**逻辑**（AI 行为树、技能结算、物品使用
+> 效果）住在引擎里的 Rust——第三方 Rust 扩展能力（注册表 / C ABI）明确推迟，不做。
+> 起因与决定见 [ADR 0028](../decisions/0028-steel-engine-construction-memory-corruption.md)
+> 与 [ADR 0018](../decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
+> 各自的 2026-08-23 订正段，以及规格 §4 的 `[2026-08-23 规格修订]`。
+>
+> **正文一字未改**，仍是冻结时的原样：它记录的是脚本时代的设计，与本订正块叠加读
+> 才是完整的演变过程。读的时候请自行把「脚本」「`register-*`」「VM」替换成
+> 「内容数据文件」「JSON5 字段」「无」。
+
+
 - **冻结时间**：2026-08-18
 - **基线提交**：`270783e`（写作本文档时的 HEAD，工作区干净，496 测试全绿）
 - **状态**（2026-08-19 复核更正——原文「纯设计，不要求本次实现」已部分过期）：**部分落地**。三、2/3 节的句柄形状与防伪造机制已随脚本状态存储批次（提交 `ac27217`）落地为 `crates/ll-script/src/api/handle.rs::ScriptEntityHandle`，模块文档明确写着「该文档整体标注『纯设计,不要求本次实现』,但本批次的脚本状态存储需要一个可以安全跨越 Steel FFI 边界的实体引用表示……因此这里按该设计文档已经给出的形状把它落地」——即句柄机制是作为脚本状态存储的前置依赖顺带落地的，不是本文档本身被认领实现。四节 `Intent::Attack` 的解禁也已落地（`crates/ll-sim/src/intent.rs` 已有 `Attack` 变体）。**五节「批量查询原语」（`filter-within-distance`/`average` 等）仍是纯设计，未落地**——已核实 `crates/ll-script/src/api/query.rs` 不含这些函数名。读者应分节看待落地状态，不能整份文档一概而论。

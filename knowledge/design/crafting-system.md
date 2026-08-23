@@ -66,7 +66,9 @@
 
 ### 四处需要补充或纠正的发现
 
-**① `mods/lostland/` 不存在。** `mods/` 下只有 `example_mod`、`broken_syntax`、`broken_whitelist`
+**① `mods/lostland/` 不存在。**〔2026-08-23 补注：本条已过期——`mods/lostland/` 后来
+建起来了，`broken_syntax`/`broken_whitelist` 两个脚本错误夹具则随脚本系统一起删除，
+当前 `mods/` 下只有 `lostland` 与 `example_mod` 两个纯数据 mod。〕 `mods/` 下只有 `example_mod`、`broken_syntax`、`broken_whitelist`
 三个目录。「本体内容搬进 `mods/lostland/` 的 Steel 脚本」这条方向本文档全程兼容（十节的注册 API
 不含任何只有 Rust 能调的东西），但在迁移真正落地之前，ADR 0018 要求的「真实 mod 脚本为证」只能
 落在 `mods/example_mod/gameplay.scm`——十一节 G 组如实记录这一点，不假装迁移已经发生。
