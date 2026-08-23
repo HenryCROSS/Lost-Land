@@ -58,7 +58,7 @@ use std::fmt;
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
 use ll_sim::combat::Penetration;
-use ll_sim::item::{ItemCatalog, ItemRule, SlotMask, StatBonus};
+use ll_sim::item::{ItemCatalog, ItemRule, SlotMask, StatBonus, WearChannels};
 use ll_sim::rule_modifier::RuleModifier;
 use ll_sim::skill::SkillEffect;
 
@@ -236,6 +236,30 @@ pub struct ItemDef {
     /// `register-trait-sneak-attack` 相对 `register-trait-resistance`
     /// 的先例再加一个注册函数即可，不改本字段形状。
     pub rule_modifiers: Vec<RuleModifier>,
+    /// 这件物品携带的**标签**列表（耐久标签批次）——项目所有者裁定
+    /// 「每个物品可以有个标签的列表，带有多个标签」的落点，空列表
+    /// （默认值）表示这件物品没有任何标签。每一条都是
+    /// [`crate::tag::TagTable`] 里已经登记过的标签索引，
+    /// `register-item-tag` 在注册期校验这一点（引用未注册的标签当场
+    /// 报错，见 `crate::script_item_api` 里该函数的文档）。
+    ///
+    /// # 为什么不是 `register-item` 的参数，走 `add_tag` 追加
+    ///
+    /// 与 [`Self::equip_mask`]/[`Self::stat_bonuses`] 同一条既有先例
+    /// （`register-item` 的六参数签名不能改参数个数）——脚本层对应函数
+    /// 是 `register-item-tag`，Rust 层对应方法是 [`ItemTable::add_tag`]。
+    /// **追加，不是覆盖**：一件物品可以带多个标签，这正是所有者原话
+    /// 里「带有多个标签」那半。
+    ///
+    /// # 决策层怎么消费它（为什么字段门禁里有一条豁免）
+    ///
+    /// 结算侧读的是 [`ItemTable::add_tag`] 在**注册期**把本列表折算出来
+    /// 的 [`ll_sim::item::ItemRule::wear_channels`]，不是本字段本身
+    /// ——ADR 0016/0017「注册期物化，运行期查表」，完整论证见
+    /// `ItemRule::wear_channels` 文档。`scripts/ci/check_field_consumers.py`
+    /// 的字段级正则抓不到这条间接路径（它头注释「已知局限」第 2 条点名
+    /// 的那一类），因此那份清单里有一条写明这条路径的豁免。
+    pub tags: Vec<ContentIndex>,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -289,6 +313,10 @@ pub struct ItemAttrs {
     /// `register-item-resistance` 调用 [`ItemTable::add_rule_modifier`]
     /// 追加写入，理由同 [`ItemDef::rule_modifiers`] 文档。
     pub rule_modifiers: Vec<RuleModifier>,
+    /// 标签列表——`register-item` 注册时恒为空列表（`do_register_item`
+    /// 不接受这个参数），真正的取值由后续 `register-item-tag` 调用
+    /// [`ItemTable::add_tag`] 追加写入，理由同 [`ItemDef::tags`] 文档。
+    pub tags: Vec<ContentIndex>,
 }
 
 /// 物品注册期可能出现的错误。
@@ -302,6 +330,15 @@ pub enum ItemError {
     /// [`crate::race::RaceError::NotDefined`]（ADR 0017「注册期完整
     /// 校验」）。
     NotDefined(ContentIndex),
+    /// [`ItemTable::add_tag`] 把同一个标签重复挂到同一件物品上——见该
+    /// 方法文档「追加，不是覆盖」一段：重复声明没有任何意义,只可能是
+    /// 复制粘贴的笔误,注册期拒绝而不是静默去重。
+    DuplicateTag {
+        /// 被重复挂标签的物品。
+        item: ContentIndex,
+        /// 重复的那个标签。
+        tag: ContentIndex,
+    },
 }
 
 impl fmt::Display for ItemError {
@@ -309,6 +346,14 @@ impl fmt::Display for ItemError {
         match self {
             ItemError::DuplicateDefinition(index) => {
                 write!(f, "物品索引 {} 被重复定义", index.get())
+            }
+            ItemError::DuplicateTag { item, tag } => {
+                write!(
+                    f,
+                    "物品索引 {} 已经带有标签索引 {}，不能重复声明",
+                    item.get(),
+                    tag.get()
+                )
             }
             ItemError::NotDefined(index) => {
                 write!(
@@ -352,6 +397,11 @@ pub struct ItemView<'a> {
     pub damage_category: Option<ContentIndex>,
     /// 规则修正列表——借用视图，不克隆，理由同 [`Self::stat_bonuses`]。
     pub rule_modifiers: &'a [RuleModifier],
+    /// 标签列表——借用视图，不克隆，理由同 [`Self::stat_bonuses`]。
+    pub tags: &'a [ContentIndex],
+    /// 由 [`Self::tags`] 在注册期折算出的耐久磨损通道集合，见
+    /// [`ItemTable::add_tag`] 文档「为什么在这里折算」一节。
+    pub wear_channels: WearChannels,
 }
 
 /// 物品属性的列式存储：按 [`ContentIndex`] 下标索引，与
@@ -372,6 +422,10 @@ pub struct ItemTable {
     damage_formula: Vec<Option<ContentIndex>>,
     damage_category: Vec<Option<ContentIndex>>,
     rule_modifiers: Vec<Vec<RuleModifier>>,
+    tags: Vec<Vec<ContentIndex>>,
+    /// 由 `tags` 折算出的派生列（不是独立声明的内容）——见
+    /// [`ItemTable::add_tag`] 文档。
+    wear_channels: Vec<WearChannels>,
     defined: Vec<bool>,
 }
 
@@ -399,6 +453,8 @@ impl ItemTable {
             self.damage_formula.resize(new_len, None);
             self.damage_category.resize(new_len, None);
             self.rule_modifiers.resize(new_len, Vec::new());
+            self.tags.resize(new_len, Vec::new());
+            self.wear_channels.resize(new_len, WearChannels::NONE);
         }
 
         if self.defined[idx] {
@@ -418,6 +474,10 @@ impl ItemTable {
         self.damage_formula[idx] = attrs.damage_formula;
         self.damage_category[idx] = attrs.damage_category;
         self.rule_modifiers[idx] = attrs.rule_modifiers;
+        self.tags[idx] = attrs.tags;
+        // 派生列：`define` 恒写空——`attrs.tags` 在 `register-item` 那一刻
+        // 恒是空列表，真正的取值由后续 `add_tag` 逐条折算。
+        self.wear_channels[idx] = WearChannels::NONE;
         Ok(())
     }
 
@@ -450,6 +510,8 @@ impl ItemTable {
             damage_formula: self.damage_formula[idx],
             damage_category: self.damage_category[idx],
             rule_modifiers: &self.rule_modifiers[idx],
+            tags: &self.tags[idx],
+            wear_channels: self.wear_channels[idx],
         })
     }
 
@@ -606,6 +668,50 @@ impl ItemTable {
         self.rule_modifiers[item.get() as usize].push(modifier);
         Ok(())
     }
+
+    /// 追加声明「这件物品带有某个标签」（耐久标签批次）——脚本层对应
+    /// 函数是 `register-item-tag`，见 [`ItemDef::tags`] 文档。目标索引
+    /// 必须已经 `define` 过（ADR 0017），否则返回
+    /// [`ItemError::NotDefined`]。
+    ///
+    /// **追加，不是覆盖**——一件物品带多个标签正是所有者裁定的形状。
+    /// 同一个标签重复挂到同一件物品上返回
+    /// [`ItemError::DuplicateTag`]：那不是一个有意义的声明，只可能是
+    /// 内容作者复制粘贴出的笔误，注册期直接拒绝而不是静默去重，与
+    /// `register-item` 拒绝矛盾配置同一条纪律。
+    ///
+    /// # 为什么在这里折算 `wear_channels`
+    ///
+    /// `wear` 参数是**调用方从标签表里查好的**这条标签自己声明的磨损
+    /// 通道（[`crate::tag::TagDef::wear`]）；本方法把它并进这件物品的
+    /// `wear_channels` 派生列。ADR 0016/0017：声明式内容在**注册期
+    /// 物化**，运行期只查表。一件物品带哪些标签、每个标签走哪条通道，
+    /// 全是装载期就固定的事实，把「遍历标签 → 逐个查标签表 → 求并集」
+    /// 搬进 `resolve_attack` 的每一次攻击 × 每一件已装备物品，正是该
+    /// ADR 要避免的事。
+    ///
+    /// 本方法**不自己查标签表**：`ItemTable` 不持有、也不该持有对
+    /// `TagTable` 的引用（两张表的生命周期在 `GameplayTables` 里是并列
+    /// 的可变借用，互相引用会立刻撞上借用检查），查表发生在
+    /// `crate::script_item_api::do_register_item_tag` —— 那里两张表
+    /// 同时在手。
+    pub fn add_tag(
+        &mut self,
+        item: ContentIndex,
+        tag: ContentIndex,
+        wear: WearChannels,
+    ) -> Result<(), ItemError> {
+        if !self.is_defined(item) {
+            return Err(ItemError::NotDefined(item));
+        }
+        let idx = item.get() as usize;
+        if self.tags[idx].contains(&tag) {
+            return Err(ItemError::DuplicateTag { item, tag });
+        }
+        self.tags[idx].push(tag);
+        self.wear_channels[idx] = self.wear_channels[idx].union(wear);
+        Ok(())
+    }
 }
 
 /// `resolve` 侧的堆叠上限/装备占位/属性加成查询——`ll_sim::resolve::resolve_pick_up`
@@ -630,6 +736,7 @@ impl ItemCatalog for ItemTable {
             damage_formula: view.damage_formula,
             damage_category: view.damage_category,
             rule_modifiers: view.rule_modifiers.to_vec(),
+            wear_channels: view.wear_channels,
         })
     }
 }
@@ -672,6 +779,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -701,6 +809,7 @@ mod tests {
             damage_formula: None,
             damage_category: None,
             rule_modifiers: Vec::new(),
+            tags: Vec::new(),
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -749,6 +858,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -780,6 +890,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("首次定义应当成功");
@@ -791,6 +902,7 @@ mod tests {
         assert_eq!(
             rule,
             Some(ItemRule {
+                wear_channels: WearChannels::NONE,
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
@@ -833,6 +945,7 @@ mod tests {
             damage_formula: None,
             damage_category: None,
             rule_modifiers: Vec::new(),
+            tags: Vec::new(),
         }
     }
 

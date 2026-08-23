@@ -35,7 +35,7 @@ use ll_core::ident::ContentIndex;
 
 pub use ll_world::item::{
     EquipSlot, GroundItemStack, ItemStack, ItemStackError, SlotMask, StatBonus, StatTarget,
-    can_merge, merge_stacks, split_stack,
+    WearChannels, can_merge, merge_stacks, split_stack,
 };
 
 use crate::combat::Penetration;
@@ -161,6 +161,27 @@ pub struct ItemRule {
     /// 变成一张按开放注册的 `damage_category` 索引的动态表，代价与
     /// 收益完全不成比例。
     pub rule_modifiers: Vec<RuleModifier>,
+    /// 这件物品的**耐久磨损通道**集合（耐久标签批次）——由它携带的
+    /// 全部标签（`ItemDef.tags`）各自声明的通道在**注册期**并起来的
+    /// 结果，`crate::resolve::resolve_attack`/`resolve_craft` 直接读它
+    /// 决定这件东西这一下要不要掉耐久。
+    ///
+    /// # 为什么这里是折算好的掩码，不是标签列表本身
+    ///
+    /// ADR 0016/0017：**声明式，注册期物化，运行期查表**。一件物品带
+    /// 哪些标签、每个标签走哪条通道，全都是装载期就固定下来的事实,
+    /// 运行期一个字都不会变。把「遍历标签 → 逐个查标签表 → 并集」这段
+    /// 纯装载期常量计算搬进 `resolve_attack` 的每一次攻击、每一件已装备
+    /// 物品，正是该 ADR 要避免的事；折算发生在
+    /// `ll_mod::item::ItemTable::add_tag` 那一刻，结算侧只剩一次
+    /// `contains`。
+    ///
+    /// 这也是本视图**刻意不含 `tags` 原始列表**的原因：`ItemRule` 是
+    /// 「`resolve` 需要什么就给什么」的最小视图（见本类型文档），而
+    /// `resolve` 需要的是"要不要掉耐久"这个答案,不是标签清单。将来
+    /// 真有系统需要按标签查询（"所有带 flammable 标签的东西"），再给
+    /// 那个系统开一条它自己需要的窄接口。
+    pub wear_channels: WearChannels,
 }
 
 /// `resolve` 依赖的最小「物品定义来源」接口——与

@@ -243,6 +243,15 @@
 ;; 内容必须能从 mod 脚本注册，且要有真实 mod 脚本为证」，
 ;; crates/ll-mod/tests/example_mod_starting_items.rs 是那份证据。
 (register-item "examplemod:crude_dagger" "examplemod:crude_dagger_display_name" 1 500 8000 20)
+;; 耐久标签批次：粗劣匕首现在**可双持**（主手或副手都能拿）——这不是
+;; 装饰，是本批次核心裁定的验收夹具。项目所有者指出「副手也可能拿着
+;; 武器,例如双刀,双盾」，推翻了此前"副手 = 盾 = 防具"那个按槽位分类的
+;; 判据。副手拿着这把匕首（weapon 标签，只走 on-use）挨打**不掉耐久**，
+;; 副手拿着木盾（armor 标签，走 on-hit）挨打**掉耐久**——同一个槽位、
+;; 两种结果，槽位携带不了这个差别，标签可以。
+;; 证据见 crates/ll-mod/tests/turn_engine_catalogs.rs
+;; 「副手拿刀与副手拿盾在同一次挨打里结果相反」。
+(register-item-equip-mask "examplemod:crude_dagger" (list "main-hand" "off-hand"))
 (register-race-starting-item "examplemod:goblin" "examplemod:crude_dagger" 1)
 (register-race-starting-item "examplemod:goblin" "examplemod:arrow" 2)
 
@@ -416,6 +425,48 @@
 (register-item "examplemod:fur_cloak" "examplemod:fur_cloak_display_name" 1 5000 30000 90)
 (register-item-equip-mask "examplemod:fur_cloak" (list "outer"))
 (register-item-stat-bonus "examplemod:fur_cloak" "insulation" 90)
+
+;; ── 物品标签（耐久标签批次）─────────────────────────────────────
+;;
+;; 用到的脚本 API（Rust 侧实现位置）：
+;;   register-item-tag   crates/ll-mod/src/script_item_api.rs
+;;
+;; 标签本身注册在 mods/lostland/tags.scm（三条本体名册：armor/weapon/
+;; tool），本 mod 在 mod.json5 里声明了 dependencies: ["lostland"] 来保证
+;; 装载顺序。引用一个没注册过的标签会当场报错、整批装载失败——那正是
+;; 这条校验存在的意义：拼错标签名的症状是"标签静默不生效"（一件甲从此
+;; 再也不掉耐久却没有任何报错），是最难查的一类内容缺陷。
+;;
+;; 判据是**这件东西是什么**，不是它挂在哪个槽位：
+;;   armor  → 挨打时磨损（on-hit）
+;;   weapon → 使用时磨损（on-use）
+;;   tool   → 使用时磨损（on-use）
+;;
+;; 三处刻意的组合，各自证明一件事：
+;;
+;; ① 木盾 = armor + weapon。项目所有者原话「有的技能像是盾击,他也会
+;;    变成武器这样」——一面既用来挡刀又用来砸人的盾，两条通道都该收费。
+;;    这一条同时推翻了上一批「两条通道刻意不重叠」那个不变量，是本批次
+;;    最想被测试钉住的形状。
+;; ② 战锤 = weapon + tool。所有者原话「修理锤子也算是一种武器,也可以是
+;;    带有功能性的物品」逐字对应。它同时是 examplemod:iron_sword_recipe
+;;    的 required_tool，制作一次会掉一点耐久（on-use）。
+;; ③ 粗劣匕首 = weapon（**只有** weapon）。它可双持,副手拿着它挨打不掉
+;;    耐久——与同样占副手的木盾结果相反，这正是"按标签不按槽位"的证据。
+;;
+;; 三件保暖/护符类只挂 armor：它们穿戴在身上,挨打会磨损,但没有任何
+;; "使用"的动作可言。
+(register-item-tag "examplemod:iron_sword"        "lostland:weapon")
+(register-item-tag "examplemod:war_hammer"        "lostland:weapon")
+(register-item-tag "examplemod:war_hammer"        "lostland:tool")
+(register-item-tag "examplemod:wooden_shield"     "lostland:armor")
+(register-item-tag "examplemod:wooden_shield"     "lostland:weapon")
+(register-item-tag "examplemod:crude_dagger"      "lostland:weapon")
+(register-item-tag "examplemod:flame_longbow"     "lostland:weapon")
+(register-item-tag "examplemod:acid_dagger"       "lostland:weapon")
+(register-item-tag "examplemod:acid_ward_amulet"  "lostland:armor")
+(register-item-tag "examplemod:wool_liner"        "lostland:armor")
+(register-item-tag "examplemod:fur_cloak"         "lostland:armor")
 
 ;; ── 制作系统（制作系统落地批次）─────────────────────────────────────
 ;;

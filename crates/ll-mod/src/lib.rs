@@ -217,6 +217,8 @@ pub mod script_resource_pool_api;
 pub mod script_skill_api;
 pub mod script_space_profile_api;
 pub mod script_subclass_api;
+/// `register-tag` 的脚本绑定（耐久标签批次）。
+pub mod script_tag_api;
 pub mod script_terrain_api;
 pub mod script_trait_api;
 pub mod script_weapon_category_api;
@@ -224,6 +226,8 @@ pub mod script_weather_api;
 pub mod script_xp_curve_api;
 pub mod skill;
 pub mod subclass;
+/// 标签定义表（耐久标签批次）。
+pub mod tag;
 #[cfg(test)]
 mod test_support;
 pub mod topo;

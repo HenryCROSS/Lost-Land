@@ -88,6 +88,7 @@ fn load_real_mods() -> RealModsHandle {
     let mut weather_table = ll_world::weather::WeatherTable::new();
     let mut recipe_table = ll_mod::recipe::RecipeTable::new();
     let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
+    let mut tag_table = ll_mod::tag::TagTable::new();
     let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -112,6 +113,7 @@ fn load_real_mods() -> RealModsHandle {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            tag: &mut tag_table,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();

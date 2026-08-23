@@ -101,9 +101,12 @@ struct RealModsHandle {
     war_hammer_id: ContentIndex,
     /// 木盾——只占副手（武器组），`max-durability` 80。
     wooden_shield_id: ContentIndex,
-    /// 酸抗护符——占脖子（非武器组），耐久扩面批次给它填了
-    /// `max-durability` 60。
+    /// 酸抗护符——占脖子，`max-durability` 60，带 `lostland:armor` 标签。
     acid_ward_amulet_id: ContentIndex,
+    /// 粗劣匕首——**可双持**（主手 + 副手），`max-durability` 20，
+    /// 只带 `lostland:weapon` 标签。本批次的关键夹具：它与木盾占同一个
+    /// 副手槽位，挨打时结果却相反。
+    crude_dagger_id: ContentIndex,
 }
 
 impl RealModsHandle {
@@ -161,6 +164,7 @@ fn load_real_mods() -> RealModsHandle {
     let mut weather_table = ll_world::weather::WeatherTable::new();
     let mut recipe_table = ll_mod::recipe::RecipeTable::new();
     let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
+    let mut tag_table = ll_mod::tag::TagTable::new();
     let mut damage_category = DamageCategoryTable::new();
 
     let report = load_all(
@@ -186,6 +190,7 @@ fn load_real_mods() -> RealModsHandle {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            tag: &mut tag_table,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();
@@ -222,6 +227,7 @@ fn load_real_mods() -> RealModsHandle {
         war_hammer_id: resolve("examplemod:war_hammer"),
         wooden_shield_id: resolve("examplemod:wooden_shield"),
         acid_ward_amulet_id: resolve("examplemod:acid_ward_amulet"),
+        crude_dagger_id: resolve("examplemod:crude_dagger"),
         race,
         class,
         trait_def,
@@ -524,25 +530,154 @@ fn backstab_effects_via_turn_engine(
 const WAR_HAMMER_MAX_DURABILITY: i32 = 150;
 const WOODEN_SHIELD_MAX_DURABILITY: i32 = 80;
 const ACID_WARD_AMULET_MAX_DURABILITY: i32 = 60;
+const CRUDE_DAGGER_MAX_DURABILITY: i32 = 20;
 
 #[test]
-fn 一次攻击经回合引擎同时扣攻击方主手武器与防御方非武器槽位的耐久() {
-    // 耐久扩面批次最核心的一条端到端断言，一次钉住「两条通道」的全部
-    // 三半（见 `ll_sim::resolve::resolve_attack` 文档「耐久消耗：两条
-    // 通道」一节），全程走 `TurnEngine::advance_ai` 这条生产路径：
+fn 副手拿刀与副手拿盾在同一次挨打里结果相反() {
+    // **本批次最核心的一条断言**，直接钉住项目所有者推翻按槽位分类的
+    // 那条裁定：
     //
-    // ① 使用通道——攻击方主手战锤 −1；
-    // ② 挨打通道——防御方脖子上的护符（非武器槽位）−1；
-    // ③ 挨打通道**跳过武器组**——防御方副手的木盾原样不动。
+    // > 「副手也可能拿着武器,例如双刀,双盾」
+    //
+    // 两个场景**唯一**的差别是副手那一件东西是什么：
+    //   - 粗劣匕首（`lostland:weapon`，只走 on-use）→ 挨打**不掉**耐久
+    //   - 木盾（`lostland:armor` + `lostland:weapon`，含 on-hit）→ 掉一点
+    //
+    // 同一个 `EquipSlot::OFF_HAND`、同样带耐久、同样挨一下,结果相反。
+    // 上一版按存储键分类的判据**表达不了这个差别**：它对整个武器组
+    // （主手 + 副手）一视同仁地跳过,两个场景都会是"不掉"。
+    //
+    // 反例（手工验证过会红）：把 `resolve_attack`「挨打」通道里那句
+    // `rule.wear_channels.contains(WearChannels::ON_HIT)` 换回按槽位判断
+    // （`!WEAPON_GROUP_SLOTS.contains_slot(slot)`），木盾那一半立即从
+    // `Some(79)` 变回 `Some(80)` 而失败。
+    // Arrange
+    let handle = load_real_mods();
+    let formulas = RegistryFormulas {
+        formulas: &handle.formula,
+        default_formula: ContentIndex::default(),
+    };
+    let catalogs = handle.catalogs(&formulas);
+
+    // Act
+    let (_, with_dagger) = equipment_after_one_attack(
+        &handle,
+        BTreeMap::new(),
+        BTreeMap::from([(
+            EquipSlot::OFF_HAND,
+            ItemStack::with_durability(handle.crude_dagger_id, 1, CRUDE_DAGGER_MAX_DURABILITY),
+        )]),
+        &catalogs,
+    );
+    let (_, with_shield) = equipment_after_one_attack(
+        &handle,
+        BTreeMap::new(),
+        BTreeMap::from([(
+            EquipSlot::OFF_HAND,
+            ItemStack::with_durability(handle.wooden_shield_id, 1, WOODEN_SHIELD_MAX_DURABILITY),
+        )]),
+        &catalogs,
+    );
+
+    // Assert
+    assert_eq!(
+        with_dagger
+            .get(&EquipSlot::OFF_HAND)
+            .expect("匕首仍在装备栏里")
+            .durability,
+        Some(CRUDE_DAGGER_MAX_DURABILITY),
+        "副手拿的是武器（只有 on-use 标签）——挨打不该磨损"
+    );
+    assert_eq!(
+        with_shield
+            .get(&EquipSlot::OFF_HAND)
+            .expect("木盾仍在装备栏里")
+            .durability,
+        Some(WOODEN_SHIELD_MAX_DURABILITY - 1),
+        "副手拿的是盾（带 on-hit 标签）——挨打该磨损"
+    );
+}
+
+#[test]
+fn 同一面盾既因为挥出去而磨损也因为挨打而磨损() {
+    // 项目所有者原话：「有的技能像是盾击,他也会变成武器这样」——
+    // `examplemod:wooden_shield` 同时带 `lostland:armor` 与
+    // `lostland:weapon` 两条标签，因此两条通道都吃得到。
+    //
+    // 这条**明确推翻**上一批「两组槽位刻意不重叠，没有任何一件装备被
+    // 两条规则同时收费」那个不变量——它建立在「槽位就是分类」这个错误
+    // 前提上。同一个 `def` 在两个场景里各掉一点：拿在攻击方主手里挥
+    // 出去掉一点（on-use），戴在防御方副手上挨打掉一点（on-hit）。
+    //
+    // 反例：把木盾的 `lostland:weapon` 标签从 gameplay.scm 删掉，
+    // 第一条断言立即从 `Some(79)` 变回 `Some(80)`；删掉
+    // `lostland:armor`，第二条同样变红。两条互不掩盖。
+    // Arrange
+    let handle = load_real_mods();
+    let formulas = RegistryFormulas {
+        formulas: &handle.formula,
+        default_formula: ContentIndex::default(),
+    };
+    let catalogs = handle.catalogs(&formulas);
+    let shield = |slot: EquipSlot| {
+        BTreeMap::from([(
+            slot,
+            ItemStack::with_durability(handle.wooden_shield_id, 1, WOODEN_SHIELD_MAX_DURABILITY),
+        )])
+    };
+
+    // Act：① 攻击方主手拿盾砸出去；② 防御方副手举盾挨一下。
+    let (bashing, _) = equipment_after_one_attack(
+        &handle,
+        shield(EquipSlot::MAIN_HAND),
+        BTreeMap::new(),
+        &catalogs,
+    );
+    let (_, blocking) = equipment_after_one_attack(
+        &handle,
+        BTreeMap::new(),
+        shield(EquipSlot::OFF_HAND),
+        &catalogs,
+    );
+
+    // Assert
+    assert_eq!(
+        bashing
+            .get(&EquipSlot::MAIN_HAND)
+            .expect("盾仍在攻击方主手")
+            .durability,
+        Some(WOODEN_SHIELD_MAX_DURABILITY - 1),
+        "「使用」通道：盾击把盾用出去了，该磨损"
+    );
+    assert_eq!(
+        blocking
+            .get(&EquipSlot::OFF_HAND)
+            .expect("盾仍在防御方副手")
+            .durability,
+        Some(WOODEN_SHIELD_MAX_DURABILITY - 1),
+        "「挨打」通道：同一面盾挡了一下，同样该磨损"
+    );
+}
+
+#[test]
+fn 一次攻击经回合引擎同时扣攻击方主手武器与防御方带防具标签的装备() {
+    // 一次钉住「两条通道」的全部三半（见
+    // `ll_sim::resolve::resolve_attack` 文档「耐久消耗：两条通道，判据
+    // 是标签」一节），全程走 `TurnEngine::advance_ai` 这条生产路径：
+    //
+    // ① 使用通道——攻击方主手战锤（`lostland:weapon`）−1；
+    // ② 挨打通道——防御方脖子上的护符（`lostland:armor`）−1；
+    // ③ 挨打通道**按标签放行/拦截**——防御方副手的匕首
+    //    （只有 `lostland:weapon`）原样不动。
+    //
+    // ③ 与上一版的差别是判据换了：上一版拦住的是"副手这个槽位"，本版
+    // 拦住的是"这件东西不带 on-hit 标签"——同样占副手的木盾现在会掉，
+    // 见 `副手拿刀与副手拿盾在同一次挨打里结果相反`。
     //
     // 反例（手工验证过各自会红）：
-    // - 删掉 `resolve_attack` 里「挨打」通道那段 `effects.extend(...)`
-    //   → ② 从 59 变回 60 而失败；
-    // - 把该段过滤条件里的 `!WEAPON_GROUP_SLOTS.contains_slot(**slot)`
-    //   去掉 → ③ 从 80 变成 79 而失败；
-    // - 删掉「使用」通道那段 → ① 从 149 变回 150 而失败。
-    //
-    // 三条互不掩盖：任何一半接线掉了，本测试都恰好有一条断言变红。
+    // - 删掉「挨打」通道那段 `effects.extend(...)` → ② 变红；
+    // - 去掉该段的 `wear_channels.contains(ON_HIT)` 过滤 → ③ 变红；
+    // - 删掉「使用」通道那段 → ① 变红。
     // Arrange
     let handle = load_real_mods();
     // 战锤没有显式公式引用，走全局默认公式那一路——本条只关心耐久，
@@ -559,7 +694,7 @@ fn 一次攻击经回合引擎同时扣攻击方主手武器与防御方非武�
     let defender_equipment = BTreeMap::from([
         (
             EquipSlot::OFF_HAND,
-            ItemStack::with_durability(handle.wooden_shield_id, 1, WOODEN_SHIELD_MAX_DURABILITY),
+            ItemStack::with_durability(handle.crude_dagger_id, 1, CRUDE_DAGGER_MAX_DURABILITY),
         ),
         (
             EquipSlot::NECK,
@@ -590,15 +725,15 @@ fn 一次攻击经回合引擎同时扣攻击方主手武器与防御方非武�
             .expect("护符仍在装备栏里")
             .durability,
         Some(ACID_WARD_AMULET_MAX_DURABILITY - 1),
-        "②「挨打」通道：防御方非武器槽位的装备挨一下损失一点耐久"
+        "②「挨打」通道：带 on-hit 标签的装备挨一下损失一点耐久"
     );
     assert_eq!(
         defender_after
             .get(&EquipSlot::OFF_HAND)
-            .expect("木盾仍在装备栏里")
+            .expect("匕首仍在装备栏里")
             .durability,
-        Some(WOODEN_SHIELD_MAX_DURABILITY),
-        "③「挨打」通道跳过整个武器组：副手的盾不因挨打而磨损"
+        Some(CRUDE_DAGGER_MAX_DURABILITY),
+        "③「挨打」通道只放行带 on-hit 标签的：副手的匕首是武器，不磨损"
     );
 }
 

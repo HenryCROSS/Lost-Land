@@ -168,6 +168,7 @@ use crate::registry::Registry;
 use crate::resource_pool::ResourcePoolTable;
 use crate::skill::SkillTable;
 use crate::subclass::SubclassTable;
+use crate::tag::TagTable;
 use crate::trait_def::{RuleModifier, TraitTable};
 use crate::weapon_category::WeaponCategoryTable;
 use crate::xp_curve::XpCurveTable;
@@ -362,7 +363,27 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// **注册新的内容条目本身不需要动这个常量**：本批次同时往
 /// `mods/lostland/` 里注册了四个本体副职与四个配方类别，那是内容，
 /// 不是新的哈希输入。真正逼着版本号动的只有上面那一列新字段。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 12;
+///
+/// 版本 13（耐久标签批次）：**同时新增一张表与一列老表字段**，两条
+/// 各自都足以逼着版本号动——
+///
+/// - 新表 [`crate::tag::TagTable`]（`register-tag` 的写入目标，
+///   [`ContentTableKind::Tag`]），[`write_tag_fields`] 混入每条标签
+///   声明的耐久磨损通道位；
+/// - 老表新增字段 `ItemDef.tags`（`register-item-tag` 的写入目标），
+///   [`write_item_fields`] 因此多混入一段「标签条数 + 逐条解析回
+///   `NamespacedId` 字符串」。
+///
+/// 后者让**每一件物品**的条目摘要都变了（即便它一个标签都没带——
+/// 长度前缀 `0` 也是一段此前不存在的字节，否则「没有标签」与「标签
+/// 列表恰好编码成空」会撞在一起，理由同版本 12 那段 `None` 判别字节）。
+///
+/// 派生列 `wear_channels`（由 `tags` 与标签表在注册期折算而来）**刻意
+/// 不混入**：它不是独立声明的内容，它的两个输入已经各自被完整覆盖
+/// （物品的 `tags` 走上面这一段，标签的 `wear` 走 `write_tag_fields`），
+/// 再混一遍只是把同一份信息数两次，见本模块文档「哈希覆盖哪些字段」
+/// 一节「覆盖的是**声明**，不是声明的推论」同一条判据。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 13;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -422,6 +443,9 @@ pub enum ContentTableKind {
     Recipe = 17,
     /// 配方类别表（制作系统批次新增）。
     RecipeCategory = 18,
+    /// 标签表（耐久标签批次新增）——`register-tag` 的写入目标，见
+    /// [`crate::tag`] 模块文档。
+    Tag = 19,
 }
 
 /// 全部内容表的只读引用集合——供 [`apply_value_hashes`]/[`classify_index`]
@@ -471,6 +495,8 @@ pub struct ContentValueTables<'a> {
     pub recipe: &'a RecipeTable,
     /// 配方类别表（制作系统批次新增）。
     pub recipe_category: &'a RecipeCategoryTable,
+    /// 标签表（耐久标签批次新增）。
+    pub tag: &'a TagTable,
 }
 
 /// 判定一个 `ContentIndex` 归属哪张内容表——[`entry_value_digest`] 用它
@@ -522,6 +548,7 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         weather,
         recipe,
         recipe_category,
+        tag,
     } = *tables;
 
     let terrain_kind = TerrainKind::from_index(index);
@@ -561,6 +588,8 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         ContentTableKind::Recipe
     } else if recipe_category.is_defined(index) {
         ContentTableKind::RecipeCategory
+    } else if tag.is_defined(index) {
+        ContentTableKind::Tag
     } else {
         ContentTableKind::Opaque
     }
@@ -653,6 +682,9 @@ fn entry_value_digest(
         ContentTableKind::RecipeCategory => {
             write_recipe_category_fields(&mut hasher, tables.recipe_category, index, registry);
         }
+        ContentTableKind::Tag => {
+            write_tag_fields(&mut hasher, tables.tag, index);
+        }
         ContentTableKind::Opaque => {
             // 没有字段可哈希，只哈希 id 本身（已经在函数顶部写过）——
             // 与升级前的行为一致，这类内容"是否存在"仍然能被检测到,
@@ -699,6 +731,24 @@ fn write_resolved_content_index_slice(
     for index in indices {
         write_optional_resolved(hasher, Some(*index), registry);
     }
+}
+
+/// 混入 [`crate::tag::TagDef`] 的全部字段（耐久标签批次新增）——
+/// 目前只有一个字段：这条标签给物品带来的耐久磨损通道集合
+/// （[`ll_sim::item::WearChannels`]），按它的底层位表示混入，与
+/// [`write_slot_mask`] 混入 `SlotMask::bits` 完全同构。
+///
+/// 不接受 `&Registry` 参数：`TagDef` 一个 `ContentIndex` 字段都没有
+/// （标签不引用任何其它内容），因此没有需要解析回 `NamespacedId` 的
+/// 东西——与 `write_item_fields` 文档记的那条教训不冲突：那里的教训是
+/// 「老表新增了 `ContentIndex` 字段就必须补上这个参数」，不是「所有
+/// `write_*_fields` 都必须先要一个 `registry`」。真给 `TagDef` 加了引用
+/// 别的内容的字段时，跟着补即可（编译器会在这里报参数不匹配）。
+fn write_tag_fields(hasher: &mut StateHasher, table: &TagTable, index: ContentIndex) {
+    let def = table
+        .get(index)
+        .expect("调用方已确认 is_defined，get 必返回 Some");
+    hasher.write_u64(u64::from(def.wear.bits()));
 }
 
 /// 把一份 [`BaseStats`] 混入哈希——七项属性（六项主属性 + 幸运，幸运
@@ -1234,6 +1284,14 @@ fn write_item_fields(
     hasher.write_i64(i64::from(view.penetration.permille));
     write_optional_resolved(hasher, view.damage_formula, registry);
     write_optional_resolved(hasher, view.damage_category, registry);
+    // 耐久标签批次新增的 `ItemDef.tags`——先写条数再逐条把 `ContentIndex`
+    // 解析回 `NamespacedId` 字符串混入（模块文档「`ContentIndex` 字段」
+    // 一节：绝不混入下标本身，下标依赖装载顺序）。长度前缀即便是 0 也要
+    // 写，理由同上面 `max_durability` 的 `None` 判别字节。
+    //
+    // 派生列 `wear_channels` 刻意不混入——见
+    // `CONTENT_HASH_ALGORITHM_VERSION` 文档「版本 13」一节。
+    write_resolved_content_index_slice(hasher, view.tags, registry);
     // 抗性多来源聚合批次新增的 `ItemDef.rule_modifiers`——先写条数再逐条
     // 递归，与 `write_trait_fields` 混入 `TraitDef.rule_modifiers` 完全
     // 同构（同一个 `write_rule_modifier`、同一套变体判别值）：装备与
@@ -1727,6 +1785,7 @@ mod tests {
                 weather: &weather_a,
                 recipe: &recipe_a,
                 recipe_category: &recipe_category_a,
+                tag: &TagTable::new(),
             },
         );
         apply_value_hashes(
@@ -1750,6 +1809,7 @@ mod tests {
                 weather: &weather_b,
                 recipe: &recipe_b,
                 recipe_category: &recipe_category_b,
+                tag: &TagTable::new(),
             },
         );
 
@@ -1852,6 +1912,7 @@ mod tests {
                 weather: &weather_a,
                 recipe: &recipe_a,
                 recipe_category: &recipe_category_a,
+                tag: &TagTable::new(),
             },
         );
         apply_value_hashes(
@@ -1875,6 +1936,7 @@ mod tests {
                 weather: &weather_b,
                 recipe: &recipe_b,
                 recipe_category: &recipe_category_b,
+                tag: &TagTable::new(),
             },
         );
 
@@ -1972,6 +2034,7 @@ mod tests {
                 weather: &weather_a,
                 recipe: &recipe_a,
                 recipe_category: &recipe_category_a,
+                tag: &TagTable::new(),
             },
         );
         apply_value_hashes(
@@ -1995,6 +2058,7 @@ mod tests {
                 weather: &weather_b,
                 recipe: &recipe_b,
                 recipe_category: &recipe_category_b,
+                tag: &TagTable::new(),
             },
         );
 
@@ -2029,6 +2093,7 @@ mod tests {
                 damage_formula: None,
                 damage_category: None,
                 rule_modifiers: Vec::new(),
+                tags: Vec::new(),
             }
         }
 
@@ -2142,6 +2207,7 @@ mod tests {
                 weather: &weather_a,
                 recipe: &recipe_a,
                 recipe_category: &recipe_category_a,
+                tag: &TagTable::new(),
             },
         );
         apply_value_hashes(
@@ -2165,6 +2231,7 @@ mod tests {
                 weather: &weather_b,
                 recipe: &recipe_b,
                 recipe_category: &recipe_category_b,
+                tag: &TagTable::new(),
             },
         );
 
@@ -2201,6 +2268,7 @@ mod tests {
                 damage_formula: None,
                 damage_category: None,
                 rule_modifiers: Vec::new(),
+                tags: Vec::new(),
             }
         }
 
@@ -2252,6 +2320,7 @@ mod tests {
                 weather: &empty_forward.14,
                 recipe: &empty_forward.15,
                 recipe_category: &empty_forward.16,
+                tag: &TagTable::new(),
             },
         );
         apply_value_hashes(
@@ -2275,6 +2344,7 @@ mod tests {
                 weather: &empty_reversed.14,
                 recipe: &empty_reversed.15,
                 recipe_category: &empty_reversed.16,
+                tag: &TagTable::new(),
             },
         );
 
@@ -2376,6 +2446,7 @@ mod tests {
                 weather: &weather_f,
                 recipe: &recipe_f,
                 recipe_category: &recipe_category_f,
+                tag: &TagTable::new(),
             },
         );
         apply_value_hashes(
@@ -2399,6 +2470,7 @@ mod tests {
                 weather: &weather_r,
                 recipe: &recipe_r,
                 recipe_category: &recipe_category_r,
+                tag: &TagTable::new(),
             },
         );
 
@@ -2503,6 +2575,7 @@ mod tests {
                 weather: &weather_before,
                 recipe: &recipe_before,
                 recipe_category: &recipe_category_before,
+                tag: &TagTable::new(),
             },
         );
         apply_value_hashes(
@@ -2526,6 +2599,7 @@ mod tests {
                 weather: &weather_after,
                 recipe: &recipe_after,
                 recipe_category: &recipe_category_after,
+                tag: &TagTable::new(),
             },
         );
 
@@ -2587,6 +2661,7 @@ mod tests {
                 weather: &weather,
                 recipe: &recipe,
                 recipe_category: &recipe_category,
+                tag: &TagTable::new(),
             },
         );
 
@@ -2640,6 +2715,7 @@ mod tests {
             weather: &weather,
             recipe: &recipe,
             recipe_category: &recipe_category,
+            tag: &TagTable::new(),
         };
 
         // Act

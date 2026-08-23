@@ -45,6 +45,7 @@ use ll_script::host::ScriptEngine;
 use crate::active_registry::with_active_registry;
 use crate::item::{ItemAttrs, ItemError, ItemTable};
 use crate::registry::Registry;
+use crate::tag::TagTable;
 use ll_sim::combat::Penetration;
 use ll_sim::item::{EquipSlot, SlotMask, StatBonus, StatTarget};
 use ll_sim::rule_modifier::RuleModifier;
@@ -83,6 +84,7 @@ pub fn register_item_api(engine: &mut ScriptEngine) {
         register_item_damage_category,
     );
     engine.register_fn("register-item-resistance", register_item_resistance);
+    engine.register_fn("register-item-tag", register_item_tag);
 }
 
 /// `(register-item id display-name-key stack-limit base-weight base-price max-durability)`。
@@ -207,6 +209,9 @@ fn do_register_item(
                 damage_formula: None,
                 damage_category: None,
                 rule_modifiers: Vec::new(),
+                // 恒为空列表——同上，真正的取值由后续
+                // register-item-tag 调用追加写入。
+                tags: Vec::new(),
             },
         )
         .map(|()| true)
@@ -804,6 +809,85 @@ fn do_register_item_resistance(
                 multiplier_permille: multiplier_permille.max(0) as i32,
             },
         )
+        .map(|()| true)
+        .map_err(|err: ItemError| err.to_string())
+}
+
+/// `(register-item-tag id tag-id)`——追加声明「这件物品带有某个标签」
+/// （耐久标签批次），落地项目所有者的裁定「每个物品可以有个标签的
+/// 列表，带有多个标签」。形状照 [`register_item_resistance`]/
+/// `register-item-stat-bonus`：两个字符串参数、追加语义、目标与被引用
+/// 者都必须已注册。
+///
+/// - `id`：已经通过 `register-item` 注册过的完整命名空间标识符字符串。
+/// - `tag-id`：已经通过 `register-tag`（[`crate::script_tag_api`]）
+///   注册过的完整命名空间标识符字符串。
+///
+/// # 为什么校验「真的是个标签」，而不只是「这个 id 被 intern 过」
+///
+/// [`Registry::get`] 对**任何**已注册内容都返回 `Some`——只用它校验,
+/// 把一个物品 id 当标签传进来照样通过,这条校验就等于没写。本函数因此
+/// 多查一步 [`crate::tag::TagTable::is_defined`]。这条纪律拦的是
+/// `"lostlan:armor"` 这类拼写错误：它的症状是**标签静默不生效**（一件
+/// 甲从此再也不掉耐久,却没有任何报错）,是最难查的一类内容缺陷,与
+/// `recipe-category-requires-subclass!` 校验副职 id 同一条理由。
+///
+/// # 顺序要求：`register-tag` 必须先跑
+///
+/// 与 `register-item-damage-category` 要求伤害类别先注册、
+/// `recipe-requires-tool!` 要求工具物品先注册完全同构（ADR 0017
+/// 「注册期完整校验」）。同一个 mod 内的脚本共享同一份定义
+/// （`3bd5e98` 起作用域单位是 mod 而不是脚本文件），跨 mod 时由
+/// `mod.json5` 的依赖声明保证装载顺序。
+///
+/// **追加，不是覆盖**——重复把同一个标签挂到同一件物品上返回错误，
+/// 见 [`crate::item::ItemTable::add_tag`] 文档。
+///
+/// 返回 `Result<bool, String>`，理由同 `register_terrain` 文档。
+fn register_item_tag(id: String, tag_id: String) -> Result<bool, String> {
+    with_active_registry(|registry| {
+        ACTIVE_TABLE.with(|cell| {
+            let mut slot = cell.borrow_mut();
+            let Some(table) = slot.as_mut() else {
+                return Err("register-item-tag 在没有活跃物品表的窗口内被调用".to_string());
+            };
+            crate::script_tag_api::with_active_tag_table(|tags| {
+                let Some(tags) = tags else {
+                    return Err("register-item-tag 在没有活跃标签表的窗口内被调用".to_string());
+                };
+                do_register_item_tag(registry, table, tags, &id, &tag_id)
+            })
+        })
+    })
+}
+
+/// [`register_item_tag`] 的纯函数核心，方便单元测试不必绕过
+/// `thread_local!`。
+fn do_register_item_tag(
+    registry: &Registry,
+    table: &mut ItemTable,
+    tags: &TagTable,
+    id: &str,
+    tag_id: &str,
+) -> Result<bool, String> {
+    let parsed_id =
+        NamespacedId::parse(id).map_err(|err| format!("非法内容标识符 {id:?}：{err}"))?;
+    let Some(index) = registry.get(&parsed_id) else {
+        return Err(format!("物品 {id:?} 尚未通过 register-item 注册"));
+    };
+    let parsed_tag_id =
+        NamespacedId::parse(tag_id).map_err(|err| format!("非法内容标识符 {tag_id:?}：{err}"))?;
+    let Some(tag_index) = registry.get(&parsed_tag_id) else {
+        return Err(format!("标签 {tag_id:?} 尚未通过 register-tag 注册"));
+    };
+    let Some(tag_def) = tags.get(tag_index) else {
+        return Err(format!(
+            "{tag_id:?} 是一个已注册的内容标识符，但它不是标签（没有登记在标签表里）——register-item-tag 只接受 register-tag 注册过的 id"
+        ));
+    };
+
+    table
+        .add_tag(index, tag_index, tag_def.wear)
         .map(|()| true)
         .map_err(|err: ItemError| err.to_string())
 }
@@ -1834,6 +1918,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("首次定义必成功");
@@ -1896,6 +1981,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("首次定义必成功");
@@ -1943,6 +2029,7 @@ mod tests {
                     damage_formula: None,
                     damage_category: None,
                     rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
                 },
             )
             .expect("首次定义必成功");

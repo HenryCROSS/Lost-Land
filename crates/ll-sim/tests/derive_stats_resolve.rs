@@ -38,7 +38,9 @@ use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::effect::Effect;
 use ll_sim::formula::NoFormulas;
 use ll_sim::intent::Intent;
-use ll_sim::item::{EquipSlot, ItemCatalog, ItemRule, ItemStack, StatBonus, StatTarget};
+use ll_sim::item::{
+    EquipSlot, ItemCatalog, ItemRule, ItemStack, StatBonus, StatTarget, WearChannels,
+};
 use ll_sim::resolve::{
     derive_stats, resolve, resolve_with_skills_traits_pools_and_items,
     resolve_with_skills_traits_pools_items_formulas_and_damage_categories,
@@ -92,6 +94,10 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
             (
                 gauntlets,
                 ItemRule {
+                    // 「使用」通道：这件夹具在本文件里扮演"挥出去的
+                    // 武器"，因此带 on-use、**不带** on-hit——耐久标签
+                    // 批次之后这是它会不会磨损的唯一判据。
+                    wear_channels: WearChannels::ON_USE,
                     stack_limit: 1,
                     equip_mask: EquipSlot::HAND_L.mask(),
                     stat_bonuses: vec![StatBonus {
@@ -108,6 +114,8 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
             (
                 armor,
                 ItemRule {
+                    // 「挨打」通道：这件夹具扮演"穿在身上的甲"。
+                    wear_channels: WearChannels::ON_HIT,
                     stack_limit: 1,
                     equip_mask: EquipSlot::BODY.mask(),
                     stat_bonuses: vec![StatBonus {
@@ -441,7 +449,10 @@ fn 攻击方主手武器的耐久真的减少() {
     // 形状当"武器"用，`resolve_attack` 不校验 `equip_mask` 是否真的
     // 包含主手），打出一下攻击后耐久必须精确减到 9,不是保持不变。
     // Arrange
-    let (_gauntlets, armor_def, items) = combat_items();
+    // 耐久标签批次：主手拿的必须是**带 on-use 标签**的那件夹具
+    // （护手），不能再随手拿护甲夹具充数——判据已经从"它在主手"变成
+    // "它是什么"。
+    let (gauntlets, _armor_def, items) = combat_items();
     let mut world = test_world();
     let attacker = spawn_agent(
         &mut world,
@@ -449,7 +460,7 @@ fn 攻击方主手武器的耐久真的减少() {
         Vec::new(),
         BTreeMap::from([(
             EquipSlot::MAIN_HAND,
-            ItemStack::with_durability(armor_def, 1, 10),
+            ItemStack::with_durability(gauntlets, 1, 10),
         )]),
         BTreeMap::new(),
     );
@@ -530,19 +541,21 @@ fn 防御方护甲的耐久因为挨打而减少() {
 }
 
 #[test]
-fn 防御方武器槽位的装备不因为挨打而减少耐久() {
-    // 与上一条成对的反例：同一件带耐久的装备，只把槽位从 `BODY`
-    // （非武器组）换成 `OFF_HAND`（武器组）——「挨打」通道跳过整个
-    // 武器组，耐久必须原样保持。这条钉住的是
-    // `!WEAPON_GROUP_SLOTS.contains_slot(..)` 这半个过滤条件本身:
-    // 去掉它，本条立即从 `Some(5)` 变成 `Some(4)` 而失败。
+fn 只带使用通道标签的装备挨打不减耐久() {
+    // 与上一条成对的反例。**耐久标签批次改写了这条的判据**：上一版
+    // 把同一件甲从 `BODY` 挪到 `OFF_HAND`，靠"副手属于武器组"来证明
+    // 不磨损；项目所有者推翻了那个判据（「副手也可能拿着武器,例如
+    // 双刀,双盾」），本版改成换**东西**而不是换槽位——同样放在
+    // `OFF_HAND`，换成只带 `ON_USE` 通道的护手夹具，耐久必须原样保持。
     //
-    // 为什么武器组留在「使用」那一侧：所有者原话点名的是「衣服」,
-    // 而手上拿着的东西由「使用」通道收费（攻击时扣主手），两组槽位
-    // 刻意不重叠，一次攻防交换里没有任何一件装备被两条规则同时收费,
-    // 见 `resolve_attack` 文档「为什么两组槽位刻意不重叠」一节。
+    // 这条钉住的是「挨打」通道那句
+    // `rule.wear_channels.contains(WearChannels::ON_HIT)` 本身：去掉它，
+    // 本条立即从 `Some(5)` 变成 `Some(4)` 而失败。上一版那条按槽位的
+    // 断言在本版里已经不成立——同样占副手的木盾现在会磨损，证据见
+    // `ll-mod/tests/turn_engine_catalogs.rs`
+    // 「副手拿刀与副手拿盾在同一次挨打里结果相反」。
     // Arrange
-    let (_gauntlets, armor_def, items) = combat_items();
+    let (gauntlets, _armor_def, items) = combat_items();
     let mut world = test_world();
     let attacker = spawn_agent(
         &mut world,
@@ -557,7 +570,7 @@ fn 防御方武器槽位的装备不因为挨打而减少耐久() {
         Vec::new(),
         BTreeMap::from([(
             EquipSlot::OFF_HAND,
-            ItemStack::with_durability(armor_def, 1, 5),
+            ItemStack::with_durability(gauntlets, 1, 5),
         )]),
         BTreeMap::new(),
     );
@@ -690,6 +703,7 @@ fn luck_ring_item() -> (ContentIndex, FakeItems) {
         items: BTreeMap::from([(
             ring,
             ItemRule {
+                wear_channels: WearChannels::NONE,
                 stack_limit: 1,
                 equip_mask: EquipSlot::RING_L.mask(),
                 stat_bonuses: vec![StatBonus {

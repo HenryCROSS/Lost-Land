@@ -147,6 +147,10 @@ use crate::script_subclass_api::{
     register_subclass_api, set_active_target as set_active_subclass_target,
     take_active_target as take_active_subclass_target,
 };
+use crate::script_tag_api::{
+    register_tag_api, set_active_target as set_active_tag_target,
+    take_active_target as take_active_tag_target,
+};
 use crate::script_terrain_api::{
     register_terrain_api, set_active_target as set_active_terrain_target,
     take_active_target as take_active_terrain_target,
@@ -167,6 +171,7 @@ use crate::script_xp_curve_api::{
     register_xp_curve_api, set_active_target as set_active_xp_curve_target,
     take_active_target as take_active_xp_curve_target,
 };
+use crate::tag::TagTable;
 use crate::weapon_category::WeaponCategoryTable;
 use crate::xp_curve::{XpCurveBindings, XpCurveTable};
 
@@ -244,6 +249,10 @@ pub struct GameplayTables<'a> {
     /// 模块文档。
     pub weapon_category: &'a mut WeaponCategoryTable,
     /// 伤害类别定义表（伤害类别/抗性接线批次新增）——
+    /// `register-tag` 的写入目标，见 `crate::tag` 模块文档（耐久标签
+    /// 批次）。
+    pub tag: &'a mut TagTable,
+
     /// `register-damage-category` 的写入目标，见 `crate::damage_category`
     /// 模块文档。
     pub damage_category: &'a mut DamageCategoryTable,
@@ -406,6 +415,7 @@ fn new_load_engine() -> ScriptEngine {
     register_damage_formula_api(&mut engine);
     register_weapon_category_api(&mut engine);
     register_damage_category_api(&mut engine);
+    register_tag_api(&mut engine);
     register_space_profile_api(&mut engine);
     register_recipe_api(&mut engine);
     register_recipe_category_api(&mut engine);
@@ -468,6 +478,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut formula = FormulaTable::new();
     let mut weapon_category = WeaponCategoryTable::new();
     let mut damage_category = DamageCategoryTable::new();
+    let mut tag = TagTable::new();
     let mut space_profile = SpaceProfileTable::new();
     let mut recipe = RecipeTable::new();
     let mut recipe_category = RecipeCategoryTable::new();
@@ -488,6 +499,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         formula: &mut formula,
         weapon_category: &mut weapon_category,
         damage_category: &mut damage_category,
+        tag: &mut tag,
         space_profile: &mut space_profile,
         weather: &mut weather,
         recipe: &mut recipe,
@@ -628,6 +640,7 @@ fn compile_one_script(
     set_active_formula_target(std::mem::take(tables.formula));
     set_active_weapon_category_target(std::mem::take(tables.weapon_category));
     set_active_damage_category_target(std::mem::take(tables.damage_category));
+    set_active_tag_target(std::mem::take(tables.tag));
     set_active_space_profile_target(std::mem::take(tables.space_profile));
     set_active_recipe_target(std::mem::take(tables.recipe));
     set_active_recipe_category_target(std::mem::take(tables.recipe_category));
@@ -652,6 +665,7 @@ fn compile_one_script(
     *tables.formula = take_active_formula_target();
     *tables.weapon_category = take_active_weapon_category_target();
     *tables.damage_category = take_active_damage_category_target();
+    *tables.tag = take_active_tag_target();
     *tables.space_profile = take_active_space_profile_target();
     *tables.recipe = take_active_recipe_target();
     *tables.recipe_category = take_active_recipe_category_target();
@@ -745,6 +759,7 @@ mod tests {
         formula: FormulaTable,
         weapon_category: WeaponCategoryTable,
         damage_category: DamageCategoryTable,
+        tag: TagTable,
         space_profile: SpaceProfileTable,
         weather: WeatherTable,
         recipe: RecipeTable,
@@ -769,6 +784,7 @@ mod tests {
                 formula: &mut self.formula,
                 weapon_category: &mut self.weapon_category,
                 damage_category: &mut self.damage_category,
+                tag: &mut self.tag,
                 space_profile: &mut self.space_profile,
                 weather: &mut self.weather,
                 recipe: &mut self.recipe,
@@ -1154,6 +1170,7 @@ mod tests {
                 weather: &owned.weather,
                 recipe: &owned.recipe,
                 recipe_category: &owned.recipe_category,
+                tag: &owned.tag,
             },
         );
 

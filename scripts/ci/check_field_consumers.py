@@ -148,6 +148,12 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     # 字段同名，正则一视同仁，与 WeatherDef 那条同一种情形）。
     ("crates/ll-mod/src/recipe.rs", "struct", "RecipeDef"),
     ("crates/ll-mod/src/recipe_category.rs", "struct", "RecipeCategoryDef"),
+    # 耐久标签批次新增的第二十张内容表（ContentTableKind::Tag）。与
+    # WeaponCategory/DamageCategory 当初的情形不同：这张表**同批次就有
+    # 真实决策层后果**（ll_sim::resolve::resolve_attack/resolve_craft 的
+    # 两条耐久磨损通道），只是那条消费路径是间接的，见下面 TagDef.wear
+    # 的豁免理由。
+    ("crates/ll-mod/src/tag.rs", "struct", "TagDef"),
 ]
 
 # 决策层文件：真正驱动模拟结算、影响玩法输出的地方。见脚本头注释
@@ -275,6 +281,13 @@ EXEMPTIONS: dict[str, str] = {
     "RecipeDef.display_name_key": "同 RaceDef.display_name_key，指向 Fluent 本地化键，UI 展示用。制作界面（UiMode 模式栈）尚未落地，这个键当前没有 UI 消费者——但那与本门禁的判据（决策层是否消费）无关，本地化键按定义就不是玩法数值。",
     "RecipeCategoryDef.display_name_key": "同上。配方类别是玩家会看见的分组维度（制作界面按类别分栏），比其余几条更明确地是「等 UI」而不是「永远没人读」，见 crate::recipe_category 模块文档「与那两张表的两处不同」一节。",
     "RecipeCategoryDef.required_subclasses": "副职闸门**有真实决策层消费者**，但它经 ll_sim::craft::RecipeCatalog::category_required_subclasses 这个方法调用取出（依赖倒置：真正的字段读取 `def.required_subclasses` 发生在 ll-mod 的 impl 里，不在决策层文件），resolve_craft 拿到的是一个普通 Vec 局部变量——这正是本文件头注释「已知局限」第 2 条那类间接路径，字段级正则抓不到。与 QuestNodeDef 那几条经 QuestCatalog 方法取出的字段同一种情形。",
+    # ---- (d) 耐久标签批次：项目所有者裁定「每个物品可以有个标签的列表，
+    # 带有多个标签」。标签在引擎侧唯一的后果是耐久磨损通道，而那条消费
+    # 路径**刻意**是「注册期折算 → 结算期查一个位掩码」，不是「结算期
+    # 遍历标签列表现算」——ADR 0016/0017「声明式，注册期物化，运行期
+    # 查表」。两条豁免记的都是这同一条间接路径的两头。
+    "ItemDef.tags": "有真实决策层消费者，但路径是间接的：ll_mod::item::ItemTable::add_tag 在**注册期**把这份标签列表折算成 ll_sim::item::ItemRule::wear_channels（一个位掩码），resolve_attack 的「挨打/使用」两条通道与 resolve_craft 的工具磨损读的都是 `.wear_channels`（决策层三处真实点号读取），不是 `.tags` 本身。折算刻意放在注册期而不是结算期：一件物品带哪些标签、每个标签走哪条通道全是装载期就固定的事实，把「遍历标签→逐个查标签表→求并集」搬进每一次攻击 × 每一件已装备物品，正是 ADR 0016/0017 要避免的事。ItemRule 也刻意不携带 tags 原始列表（它是「resolve 需要什么就给什么」的最小视图）。本脚本头注释「已知局限」第 2 条点名的那类间接路径。",
+    "TagDef.wear": "同 ItemDef.tags，是同一条间接路径的另一头：这个字段的值在注册期被 do_register_item_tag 读出来喂给 ItemTable::add_tag，折进物品的 wear_channels 派生列；决策层读到的是折算结果，从不对 TagDef 实例做 `.wear` 点号访问。与 RecipeCategoryDef.required_subclasses 那条（经 RecipeCatalog 方法取出、字段读取发生在 ll-mod 的 impl 里）是同一种情形，不是「字段没人读」。",
     "DamageCategoryDef.default_formula": "damage_category.rs 模块文档「本批次范围：注册表 + 校验，不接四层默认公式解析链条」一节：resolve_attack 仍然只用 DamageFormulaCatalog 现有的两层（显式引用 → 全局默认），四层解析链条（分项自身 → 伤害类别默认 → 武器类别默认 → 全局默认）依赖尚未落地的 DamageComponent（P6 范畴），此字段声明先行、消费留给后续批次。",
 }
 
@@ -429,6 +442,7 @@ CONTENT_HASH_KIND_TO_TARGET_TYPE: dict[str, str] = {
     "Weather": "WeatherDef",
     "Recipe": "RecipeDef",
     "RecipeCategory": "RecipeCategoryDef",
+    "Tag": "TagDef",
 }
 
 CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE: dict[str, str] = {

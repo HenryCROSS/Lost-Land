@@ -69,6 +69,7 @@ use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::SkillTable;
 use ll_mod::subclass::SubclassTable;
+use ll_mod::tag::TagTable;
 use ll_mod::trait_def::TraitTable;
 use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{RegistryXpCurves, XpCurveBindings, XpCurveTable};
@@ -167,6 +168,11 @@ pub struct LoadedContent {
     /// 配方类别表（制作系统批次新增）——副职闸门的出处，见
     /// `ll_mod::recipe_category` 模块文档。
     pub recipe_category_table: RecipeCategoryTable,
+
+    /// 标签表（耐久标签批次）——`register-tag` 的产物，物品的
+    /// `wear_channels` 派生列在注册期就是查它折算出来的，见
+    /// `ll_mod::tag` 模块文档。
+    pub tag_table: TagTable,
     /// 本体六种天气的索引缓存（天气系统批次新增）。
     pub weather_ids: BaseWeatherIds,
     /// 天气表——`ll_world::weather::WeatherTable`。天气本身是纯派生值
@@ -448,6 +454,7 @@ pub fn load_content(
     let mut weapon_category_table = WeaponCategoryTable::new();
     let mut recipe_table = RecipeTable::new();
     let mut recipe_category_table = RecipeCategoryTable::new();
+    let mut tag_table = TagTable::new();
 
     let mut report = load_all(
         mods_root,
@@ -472,6 +479,7 @@ pub fn load_content(
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            tag: &mut tag_table,
         },
     );
 
@@ -510,6 +518,7 @@ pub fn load_content(
         weather: &weather_table,
         recipe: &recipe_table,
         recipe_category: &recipe_category_table,
+        tag: &tag_table,
     };
 
     // 装载后校验 pass（`ll_mod::content_audit`）：契约解析只看"Rust 点名
@@ -597,6 +606,7 @@ pub fn load_content(
         damage_category_table,
         recipe_table,
         recipe_category_table,
+        tag_table,
         weather_ids,
         weather_table,
         manifests,
@@ -1004,6 +1014,7 @@ mod tests {
             weather: &loaded.weather_table,
             recipe: &loaded.recipe_table,
             recipe_category: &loaded.recipe_category_table,
+            tag: &loaded.tag_table,
         };
 
         // Act

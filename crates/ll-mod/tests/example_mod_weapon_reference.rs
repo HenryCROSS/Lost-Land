@@ -115,6 +115,7 @@ fn load_real_mods() -> RealModsHandle {
     let mut weather_table = ll_world::weather::WeatherTable::new();
     let mut recipe_table = ll_mod::recipe::RecipeTable::new();
     let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
+    let mut tag_table = ll_mod::tag::TagTable::new();
     let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -139,6 +140,7 @@ fn load_real_mods() -> RealModsHandle {
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
+            tag: &mut tag_table,
         },
     );
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();
@@ -389,17 +391,23 @@ fn 装备真实注册的战锤攻击后攻击方战锤的耐久真的减少() {
 }
 
 #[test]
-fn 装备真实注册的木盾的防御方挨打后木盾耐久不再减少() {
-    // 与上一条测试成对。本条最初（武器引用与穿透接线批次）证明的是
-    // 「被击中掉防御方装备耐久」这条旧规则已被整条收窄掉；耐久扩面
-    // 批次让所有者裁定的「衣服要耐久，受到攻击就会减少耐久」重新接上
-    // 「挨打」通道之后，**本条仍然成立、且换了一层含义**：木盾占的是
-    // 副手，属于武器组，而「挨打」通道刻意跳过整个武器组（手上拿着的
-    // 东西由「使用」通道收费），见 `ll_sim::resolve::resolve_attack`
-    // 文档「为什么副手（盾）留在「使用」这一侧」一节。换成一件占
-    // **非武器槽位**的装备，耐久就会真的掉——`turn_engine_catalogs.rs`
-    // 的 `一次攻击经回合引擎同时扣攻击方主手武器与防御方非武器槽位的耐久`
-    // 是那份对照。
+fn 装备真实注册的木盾的防御方挨打后木盾耐久真的减少() {
+    // 本条经历了三次改写，每一次都对应一次真实裁定，值得原样记下来：
+    //
+    // ① 武器引用与穿透接线批次：断言 `Some(80)`（不减）——当时的裁定是
+    //    「只有装备武器才有耐久」，防御方一律不掉。
+    // ② 耐久扩面批次：仍然断言 `Some(80)`，但理由换成了「木盾占副手,
+    //    属于武器组,挨打通道跳过整个武器组」——按**槽位**分类。
+    // ③ 耐久标签批次（本次）：改断言 `Some(79)`。项目所有者推翻了按
+    //    槽位分类：「副手也可能拿着武器,例如双刀,双盾」——副手不等于盾。
+    //    判据改成按**标签**：`examplemod:wooden_shield` 带
+    //    `lostland:armor`（on-hit），因此挨打真的磨损。
+    //
+    // 同样占副手、但只带 `lostland:weapon` 的粗劣匕首挨打**不**磨损,
+    // 那条对照在 `turn_engine_catalogs.rs`
+    // 「副手拿刀与副手拿盾在同一次挨打里结果相反」——那才是本次裁定的
+    // 核心证据（经 TurnEngine 生产路径）；本条是同一条规则在
+    // `resolve_and_apply` 这一层的单元级复核。
     // Arrange
     let handle = load_real_mods();
     let mut world = test_world();
@@ -432,5 +440,5 @@ fn 装备真实注册的木盾的防御方挨打后木盾耐久不再减少() {
         .equipment
         .get(&EquipSlot::OFF_HAND)
         .expect("木盾仍在装备栏里");
-    assert_eq!(shield.durability, Some(WOODEN_SHIELD_MAX_DURABILITY));
+    assert_eq!(shield.durability, Some(WOODEN_SHIELD_MAX_DURABILITY - 1));
 }

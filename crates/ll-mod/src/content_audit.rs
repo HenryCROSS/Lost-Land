@@ -139,6 +139,7 @@ use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_sim::formula::FormulaDef;
+use ll_sim::item::WearChannels;
 use ll_sim::skill::ResourceCost;
 use ll_sim::xp_curve::XpCurveDef;
 use ll_world::terrain::TerrainKind;
@@ -331,6 +332,12 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 挪进 covered。
         ContentTableKind::Subclass,
         ContentTableKind::RecipeCategory,
+        // 耐久标签批次：mods/lostland/tags.scm 注册了三条本体标签
+        // （armor/weapon/tool），三条都声明了非默认的磨损通道,因此这张
+        // 表在 lostland 命名空间下一落地就是 covered,不经过 deferred。
+        // 这与其余「本体内容尚未迁进 mods/lostland/」的表不同——标签
+        // 名册本身就是本体内容,不依赖本体物品先迁过来。
+        ContentTableKind::Tag,
     ],
     deferred: &[
         DeferredTable {
@@ -637,6 +644,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
         ContentTableKind::Formula => "伤害公式表",
         ContentTableKind::WeaponCategory => "武器类别表",
         ContentTableKind::DamageCategory => "伤害类别表",
+        ContentTableKind::Tag => "标签表",
         ContentTableKind::Weather => "天气表",
         ContentTableKind::Recipe => "配方表",
         ContentTableKind::RecipeCategory => "配方类别表",
@@ -648,7 +656,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
 /// 与 [`roster_slot`] 配套：新增一个变体时，那个不带通配分支的 `match`
 /// 会编译失败，逼人回到这里补上数组元素（数组长度也会对不上），见模块
 /// 文档「表花名册」一节。
-pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 19] = [
+pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 20] = [
     ContentTableKind::Opaque,
     ContentTableKind::Terrain,
     ContentTableKind::Class,
@@ -668,6 +676,7 @@ pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 19] = [
     ContentTableKind::Weather,
     ContentTableKind::Recipe,
     ContentTableKind::RecipeCategory,
+    ContentTableKind::Tag,
 ];
 
 /// 给 [`ALL_CONTENT_TABLE_KINDS`] 的完备性做编译期强制：不带通配分支
@@ -697,6 +706,7 @@ fn roster_slot(kind: ContentTableKind) -> usize {
         ContentTableKind::Weather => 16,
         ContentTableKind::Recipe => 17,
         ContentTableKind::RecipeCategory => 18,
+        ContentTableKind::Tag => 19,
     }
 }
 
@@ -983,6 +993,7 @@ fn inspect_entry(auditor: &mut Auditor<'_>, index: ContentIndex) {
         ContentTableKind::Formula => inspect_formula(auditor, index),
         ContentTableKind::WeaponCategory => inspect_weapon_category(auditor, index),
         ContentTableKind::DamageCategory => inspect_damage_category(auditor, index),
+        ContentTableKind::Tag => inspect_tag(auditor, index),
         ContentTableKind::Weather => inspect_weather(auditor, index),
         ContentTableKind::Recipe => inspect_recipe(auditor, index),
         ContentTableKind::RecipeCategory => inspect_recipe_category(auditor, index),
@@ -1343,6 +1354,7 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
     let damage_formula = view.damage_formula;
     let damage_category = view.damage_category;
     let rule_modifiers = view.rule_modifiers.to_vec();
+    let tags = view.tags.to_vec();
 
     auditor.field("ItemAttrs::display_name_key", true);
     auditor.field("ItemAttrs::stack_limit", stack_limit != 0);
@@ -1385,6 +1397,20 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
                 ReferenceExpectation::Table(ContentTableKind::DamageCategory),
             );
         }
+    }
+    // 耐久标签批次新增的 `ItemDef.tags`——两件事一起做：记一条字段覆盖
+    // （"内容里有没有人给物品挂标签"），并对每一条校验它真的指向标签表
+    // 里的一条标签（跨表引用校验，与上面 `damage_category` 那条同构）。
+    // 注册期 `register-item-tag` 已经拒绝了未注册的标签，本条是同一条
+    // 不变量在审计侧的第二道独立检查——两道防线的关系与
+    // `classify_index` 的编译期穷尽 match 和本模块的运行期审计相同。
+    auditor.field("ItemAttrs::tags", !tags.is_empty());
+    for tag in &tags {
+        auditor.reference(
+            "ItemAttrs::tags",
+            *tag,
+            ReferenceExpectation::Table(ContentTableKind::Tag),
+        );
     }
 }
 
@@ -1537,6 +1563,25 @@ fn inspect_damage_category(auditor: &mut Auditor<'_>, index: ContentIndex) {
     );
 }
 
+/// [`crate::tag::TagDef`] 的全部字段（耐久标签批次新增）——只有
+/// `wear` 一个，且它不是跨表引用（`WearChannels` 是引擎内置的位掩码,
+/// 不含任何 `ContentIndex`），因此只记一条字段覆盖，不记任何引用。
+///
+/// 「有人写过这个字段」的判据取 `wear != WearChannels::NONE`：一个
+/// 一条磨损通道都不声明的纯分类标签是完全合法的内容（见
+/// `register-tag` 文档「为什么**允许**空列表」一节），但它对这个字段
+/// 而言等价于"没写"——与 `ItemAttrs::penetration` 用
+/// `flat != 0 || permille != 0` 作判据、`ItemAttrs::rule_modifiers` 用
+/// `!is_empty()` 作判据是同一条既有惯例：**默认值不算写过**。
+fn inspect_tag(auditor: &mut Auditor<'_>, index: ContentIndex) {
+    let def = auditor
+        .tables
+        .tag
+        .get(index)
+        .expect("classify_index 已判定为 Tag，get 必返回 Some");
+    auditor.field("TagDef::wear", def.wear != WearChannels::NONE);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1552,6 +1597,7 @@ mod tests {
     use crate::resource_pool::ResourcePoolTable;
     use crate::skill::SkillTable;
     use crate::subclass::SubclassTable;
+    use crate::tag::TagTable;
     use crate::trait_def::TraitTable;
     use crate::weapon_category::WeaponCategoryTable;
     use crate::xp_curve::XpCurveTable;
@@ -1593,11 +1639,13 @@ mod tests {
         weather: WeatherTable,
         recipe: RecipeTable,
         recipe_category: RecipeCategoryTable,
+        tag: TagTable,
     }
 
     impl Session {
         fn new() -> Self {
             Session {
+                tag: TagTable::new(),
                 registry: Registry::new(),
                 terrain: TerrainTable::new(),
                 class: ClassTable::new(),
@@ -1640,6 +1688,7 @@ mod tests {
                 weather: &self.weather,
                 recipe: &self.recipe,
                 recipe_category: &self.recipe_category,
+                tag: &self.tag,
             }
         }
 
@@ -1714,6 +1763,7 @@ mod tests {
                         damage_formula,
                         damage_category: None,
                         rule_modifiers: Vec::new(),
+                        tags: Vec::new(),
                     },
                 )
                 .expect("测试用物品定义内部自洽");

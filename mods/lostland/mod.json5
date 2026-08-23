@@ -36,5 +36,10 @@
   // trigger-target 指向的配方类别**已经注册**（只 get 不 intern），
   // 因此 crafting.scm 必须排在它前面。两者互换会在装载期报一条点名的
   // 错误——不会静默注册出一条谁都触发不了的获得条件。
-  entry_points: ["races.scm", "classes.scm", "crafting.scm", "subclasses.scm"],
+  // 标签名册（耐久标签批次）：tags.scm 必须排在**任何** register-item-tag
+  // 之前。本 mod 目前一件物品都没注册（物品迁移是后续批次），因此本
+  // mod 内部没有顺序约束；跨 mod 的顺序由依赖声明保证——引用
+  // lostland:armor 这类标签的 mod（当前是 examplemod）在自己的
+  // mod.json5 里声明 dependencies: ["lostland"]。
+  entry_points: ["races.scm", "classes.scm", "crafting.scm", "subclasses.scm", "tags.scm"],
 }
