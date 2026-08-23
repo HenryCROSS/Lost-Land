@@ -1,0 +1,73 @@
+// 本体职业内容：四条——战士 / 法师 / 游侠 / 卫兵。
+//
+// 搬家来历见 races.json5 文件头「这份内容搬过两次家」一节，四条职业与
+// 三个种族是同一次裁定。schema 见
+// `crates/ll-mod/src/content_schema.rs`（`primary_attribute` 七选一：
+// strength / dexterity / constitution / intelligence / willpower /
+// charisma / luck）。
+//
+// # 显示名键
+//
+// 四条各自对应 assets/locales/{en,zh-CN}.ftl 里的
+// class-{warrior,mage,ranger,guard}-display_name——四条都早就在两份
+// .ftl 里，也早就挂在 `ll_i18n` 的 PRODUCTION_KEYS 覆盖检查上。
+//
+// # 本体职业不声明任何职业天赋
+//
+// 天赋走可选的 `traits` 字段，本体不写即为空，与其余本体内容同一条
+// 纪律（不为了让字段覆盖检查变绿硬塞一条天赋，见 `ll_mod::content_audit`
+// 里 `ClassAttrs::traits` 那条豁免）。字段本身不是死的：
+// mods/example_mod/gameplay.scm 的 examplemod:rogue 在 3 级授予
+// examplemod:cutpurse_training。
+//
+// # 顺序：本文件必须排在 skills.json5 之前
+//
+// skills.json5 里四条战士技能的 owning_class 指向 lostland:warrior。
+// 技能的 owning_class 是 intern（顺序反了不会当场报错），但
+// `ll_mod::content_audit` 的引用完整性校验会在装载末尾把它判成一条
+// `SkillAttrs::owning_class` 违规。
+//
+// **这条顺序现在由引擎保证，不再由内容作者维护**：装载顺序写在
+// `ll_mod::content_data` 的 CONTENT_FILES 常量里。此前它是 mod.json5 的
+// entry_points 数组顺序 + 各 .scm 的 (require ...)——两处都是内容作者
+// 改得动、也改得坏的地方。
+{
+  classes: [
+    // 战士：力量倾向。
+    {
+      id: "lostland:warrior",
+      display_name_key: "lostland:class.warrior.display_name",
+      primary_attribute: "strength",
+    },
+
+    // 法师：智力倾向。
+    {
+      id: "lostland:mage",
+      display_name_key: "lostland:class.mage.display_name",
+      primary_attribute: "intelligence",
+    },
+
+    // 游侠：敏捷倾向。
+    {
+      id: "lostland:ranger",
+      display_name_key: "lostland:class.ranger.display_name",
+      primary_attribute: "dexterity",
+    },
+
+    // 卫兵：体质倾向——项目所有者裁定「卫兵算作一种职业」。
+    //
+    // 它有一处**悬空引用**在等着它：mods/example_mod/behavior.scm 的
+    // guard-try-inspect 第一句是 `(self-has-profession? "lostland:guard")`，
+    // 而 self-has-profession? 认的是注册表快照里的字符串。这条内容不
+    // 存在于生产注册表，那个 if 就恒为假，卫兵永远不会盘查。
+    //
+    // 它刻意**不**进 `ll_mod::class::BaseClassIds`：Rust 侧一行代码都
+    // 没按名字引用过它，给一条没有 Rust 使用点的内容加一个句柄字段只
+    // 会造出一条「声明了但从没接线」，见该结构体文档「哪些内容进」。
+    {
+      id: "lostland:guard",
+      display_name_key: "lostland:class.guard.display_name",
+      primary_attribute: "constitution",
+    },
+  ],
+}

@@ -8,7 +8,7 @@
 //!
 //! 1. `mods/example_mod/gameplay.scm` 的 `register-race-xp-reward`
 //!    声明「杀死一只哥布林的基准经验是 15」；
-//! 2. `mods/lostland/races.scm` 的同一个指令给本体三族各自声明了基准
+//! 2. `mods/lostland/races.json5` 的同一个指令给本体三族各自声明了基准
 //!    值（项目所有者裁定「最低经验 1xp、人人都给」之后新增）；
 //! 3. 一次经 `TurnEngine::advance_ai` 提交的 `Intent::Attack` 打死目标，
 //!    `resolve_dispatch` 的 `append_kill_experience` 按
@@ -420,7 +420,7 @@ fn 经验目录从回合引擎摘掉后哥布林只值保底的一点经验() {
 fn 杀死本体人类同样产出经验而不是零() {
     // 项目所有者裁定「有个最低经验 1xp」推翻了「本体三族是可玩种族
     // 不是猎物、刻意不声明 xp_reward」这条旧判断——本条是那次推翻在
-    // 真实本体内容（mods/lostland/races.scm）上的端到端证据。
+    // 真实本体内容（mods/lostland/races.json5）上的端到端证据。
     // Arrange
     let handle = load_real_mods();
 

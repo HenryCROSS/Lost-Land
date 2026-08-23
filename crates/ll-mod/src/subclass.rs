@@ -6,7 +6,7 @@
 //! 已验证的模式」一节——副职的定义/存储/查询走完全相同的思路：私有
 //! 字段 + `SubclassTable::define` 注册期校验。
 //!
-//! # 本体两个基础副职的定义已经搬进 `mods/lostland/subclasses.scm`
+//! # 本体两个基础副职的定义已经搬进 `mods/lostland/subclasses.json5`
 //!
 //! 本模块此前还有一对 `materialize_base_subclasses`/`base_subclass_fixture`
 //! ——与 [`crate::class`] 的那一对处境完全相同（都不在生产装载路径上，
@@ -303,7 +303,7 @@ impl SubclassUnlockCatalog for SubclassTable {
 
 /// 本体基础副职在当前注册表里的索引缓存——**句柄，不是内容**。
 ///
-/// 两条副职的字段值已经搬进 `mods/lostland/subclasses.scm`，本结构体
+/// 两条副职的字段值已经搬进 `mods/lostland/subclasses.json5`，本结构体
 /// 只保住使用点的编译期安全，填充由 [`resolve_base_subclasses`] 在装载
 /// 完成后按 id 逐字段解析完成，理由完整见 [`crate::class::BaseClassIds`]
 /// 与 [`crate::base_contract`] 两处文档。

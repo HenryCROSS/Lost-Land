@@ -148,7 +148,7 @@ mod tests {
     /// 一张现造的、与本体内容无关的网状任务图：`root` 解锁
     /// `branch_a`/`branch_b` 两条分支。
     ///
-    /// 本体那四条任务的定义已经搬进 `mods/lostland/quests.scm`，本模块
+    /// 本体那四条任务的定义已经搬进 `mods/lostland/quests.json5`，本模块
     /// 的单元测试验的是 [`build_quest_log_view`] 这套**机制**，不是
     /// 「本体有哪几条任务」——理由同 `crate::quest` 测试里的
     /// `sample_graph`。

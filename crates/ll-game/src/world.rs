@@ -545,7 +545,7 @@ fn build_player_agent(
     // 出生携带物品（NPC 生命周期批次：NPC 带物品 → 死亡掉落 → 尸体 →
     // 老化回收，本行是「带物品」这一半在真实生产路径上唯一的接线点
     // ——见 `ll_mod::race::starting_inventory` 文档）：本体三种基础种族
-    // 当前都不声明出生物品（`mods/lostland/races.scm`
+    // 当前都不声明出生物品（`mods/lostland/races.json5`
     // 恒传 `starting_items: Vec::new()`），因此这里对本体内容是零成本
     // 的空 `Vec`；一旦某个 mod 通过 `register-race-starting-item` 给
     // 某个种族追加声明,用该种族生成的角色出生时会真实带着这些物品——

@@ -1,39 +1,29 @@
-;; 本体内容 mod 的**唯一**入口脚本。
+;; 本体内容 mod 的唯一入口脚本——**已经几乎空了**。
 ;;
-;; # 为什么 entry_points 只剩一条
+;; # 内容去哪了
 ;;
-;; `entry_points` 是一个数组，装载管线**按数组顺序**逐个编译——于是
-;; 「谁必须排在谁前面」这条真实存在的约束就被写进了清单，而清单里
-;; 看不出**为什么**。本 mod 曾经有两条这样的隐形约束：
+;; 本体的七类内容声明（种族/职业/技能/任务/副职/配方类别/标签）已经
+;; 全部搬进同目录下的 `*.json5` 数据文件。项目所有者的裁定原话是
+;; 「内容用数据文件（JSON5），行为用 Rust」「这样也能有数据驱动的方式
+;; 编写」——起因是 steel-core 0.8.2 那个查不出根因的内存破坏缺陷
+;; （ADR 0028），脚本系统整体在拆，但「玩家下载即用的 mod」不该跟着
+;; 一起丢掉。装载入口见 `ll_mod::content_data`。
 ;;
-;; - crafting.scm 必须排在 subclasses.scm 前面（`register-subclass-unlock`
-;;   的 trigger-target 只 get 不 intern）
-;; - classes.scm 必须排在 skills.scm 前面（技能的 owning-class 同理）
+;; 此前这里有七行 `(require ...)`，一行对应一个 `.scm` 内容文件。那七个
+;; 文件连同它们表达的装载顺序约束一起没了：顺序现在是
+;; `ll_mod::content_data` 里 CONTENT_FILES 这一个常量，由引擎保证，
+;; mod 作者改不动也改不坏。
 ;;
-;; 两条都只在 mod.json5 的注释里写着。注释不参与装载，改错顺序的人
-;; 得等到装载期报错才知道；更糟的是，第三方 mod 作者照抄这份清单时
-;; 根本不知道有这回事。
+;; # 那本文件为什么还在
 ;;
-;; 有了模块系统，依赖就写在**需要它的那个文件里**：skills.scm 自己
-;; `(require "classes")`，subclasses.scm 自己 `(require "crafting")`。
-;; 于是本文件里这七行的**顺序不再有意义**——刻意按字母序排（与此前
-;; entry_points 的工作顺序不同），就是为了让「顺序不再有意义」这件事
-;; 一眼可验：真依赖顺序还在起作用的话，这份排法会当场装载失败。
+;; `ids.scm` 还在——它是**跨 mod require 的示范**，
+;; `mods/example_mod/gameplay.scm` 至今 `(require "lostland:ids")` 在用
+;; 它。本文件保留一行 require 把它带进本 mod 自己的 VM，是为了让
+;; 「lostland 这个 mod 的脚本部分还剩什么」有一个不需要翻目录就能看见
+;; 的答案。
 ;;
-;; 实测依据：`crates/ll-script/examples/probe_modules.rs` 第 11 节——
-;; 主脚本故意把依赖方写在被依赖方前面，模块体仍然按 require 图求值，
-;; 且每个模块只求值一次。
-;;
-;; # 这些文件为什么不写 provide
-;;
-;; 它们是「跑一遍、把内容注册进表」的脚本，不对外提供任何名字。没写
-;; `provide` 的模块什么都不导出（实测：不是"默认全导出"），这正是想
-;; 要的效果——本文件 require 它们只为触发那次注册。
+;; 本文件与 `ids.scm` 都是**过渡状态**：脚本引擎删除是收尾批次的事，
+;; 那一批之后 lostland 会是一个纯数据 mod（清单里 entry_points 为空是
+;; 合法的，见 `ll_mod::manifest`）。
 
-(require "classes")
-(require "crafting")
-(require "quests")
-(require "races")
-(require "skills")
-(require "subclasses")
-(require "tags")
+(require "ids")

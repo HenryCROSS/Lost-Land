@@ -1209,7 +1209,7 @@ mod tests {
         // - `lostland:placeholder_race`：「种族未知/缺失」这个降级状态的
         //   占位索引，刻意不定义任何 `RaceDef`，见
         //   `ll_mod::base_placeholder` 模块文档。
-        // - `lostland:goblin`：`mods/lostland/quests.scm` 里三条
+        // - `lostland:goblin`：`mods/lostland/quests.json5` 里三条
         //   `kill-count` 任务的 `target_kind`。它指向「敌人类型」，而
         //   代码库至今没有敌人类型注册表——这正是
         //   `ll_mod::content_audit::ReferenceExpectation::UntypedIdSpace`
@@ -1254,7 +1254,7 @@ mod tests {
         // 一条获得条件都没拿到（`craft_unlocks()` 接错、副职表从
         // `ContentValueTables` 上被摘掉），报告恒为"零死锁"且完全无声。
         //
-        // 仓库真实内容确实喂得出量：`mods/lostland/subclasses.scm` 的
+        // 仓库真实内容确实喂得出量：`mods/lostland/subclasses.json5` 的
         // 四个本体副职各有一条制作获得条件，`mods/example_mod/gameplay.scm`
         // 的 shadowdancer 还有一条——而且 example_mod 那条正是「从不设闸
         // 的类别（烹饪）练出副职，用它去开设了闸的类别（锻造）的门」这个
@@ -1267,7 +1267,7 @@ mod tests {
         assert_eq!(loaded.audit.unlock_deadlocks, Vec::new());
         assert!(
             loaded.audit.unlock_rules_checked >= 1,
-            "仓库真实内容里至少有一条副职获得条件（mods/lostland/subclasses.scm \
+            "仓库真实内容里至少有一条副职获得条件（mods/lostland/subclasses.json5 \
              与 mods/example_mod/gameplay.scm 都有），一条都没看到说明检查空转了"
         );
     }

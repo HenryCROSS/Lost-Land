@@ -3088,7 +3088,7 @@ fn resolve_read(
 /// 做不了这一类的人，谈不上在这一类里试——不会打铁的人站在铁砧前把
 /// 铁锭摆来摆去，不会「发现」出一把剑。
 ///
-/// **这不会造出新的死锁**：`mods/lostland/crafting.scm` 与
+/// **这不会造出新的死锁**：`mods/lostland/crafting.json5` 与
 /// `ll_mod::content_audit` 的 `detect_unlock_deadlocks` 已经共同保证
 /// 「用来练出某个副职的类别」不会反过来要求那个副职（那个环装载期硬
 /// 失败）。设了闸门的类别只可能是「已经有副职的人才碰得到的进阶类别」，

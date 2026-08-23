@@ -1,0 +1,115 @@
+// 本体三个基础种族。
+//
+// # 这份内容搬过两次家
+//
+// 它最早硬编码在 `ll_mod::race::materialize_base_races` 里，`e8af2a8`
+// 把它搬进 `races.scm`，本批次再搬进本文件。第二次搬家的理由不是
+// 「脚本注册这条路走不通」——它走得通——而是**承载它的那台虚拟机不
+// 可靠**：steel-core 0.8.2 有一个查不出根因的内存破坏缺陷（ADR 0028），
+// 完整测试套件被它以 17–33% 的概率打断。项目所有者的裁定原话是
+// 「内容用数据文件（JSON5），行为用 Rust」「这样也能有数据驱动的方式
+// 编写」——玩家下载即用的 mod 不该跟着脚本系统一起丢掉。
+//
+// schema（字段名、取值集合、哪些引用只 intern、哪些必须已定义）见
+// `crates/ll-mod/src/content_schema.rs`。
+//
+// # 字段是具名的，这不只是好看
+//
+// 此前的 `register-race` 是 **13 个裸整数位置参数**，上一批专门为它写
+// 过一条「整体错位一格就变红」的测试——错位之后每个数字仍然合法、
+// 不报任何错，症状是矮人的寿命变成了暗视格数。现在这个失败模式结构上
+// 不存在：字段名对不上就报错，还带行列位置。
+//
+// # 数值不是本次搬家引入的平衡设计
+//
+// 逐字复制搬家前那一刻的 races.scm。判据是内容值哈希逐位不变
+// （`ll_mod::content_hash`，ADR 0027）——同样的 id、同样的字段值，
+// 换个来源哈希不该动一位。`crates/ll-mod/tests/base_mod_races.rs`
+// 另外逐字段钉住它们。
+//
+// # 暗视这个字段的语义换过一次
+//
+// 它此前是「光照千分比下限」，后来改成**夜间视野格数下限**——旧形态在
+// 本作的光照量纲下永远不可能生效：矮人当时填的是 4，而午夜环境光是
+// 100（`ll_core::light::MIDNIGHT_LIGHT`），最暗的冬夜下雨也还有约 52，
+// `max(52, 4)` 恒等于 52，矮人的暗视等于不存在。下面三个数字是新语义
+// 下裁定的取值：0 表示未声明（按常人处理，落回 4 格默认值），非 0 就是
+// 这个种族夜里实际看得见的格数（白天基准是 12 格）。见
+// `ll_world::light::sight_radius_at` 与
+// `crates/ll-mod/tests/base_mod_darkvision.rs`。
+//
+// # 显示名键
+//
+// `lostland:race.*.display_name` 三条对应 assets/locales/{en,zh-CN}.ftl
+// 里已有的条目，两次搬家都没动过任何一条。
+//
+// # 出生装备与种族天赋本体三族都不声明
+//
+// 它们是 `starting_items` / `traits` 两个可选字段，本体不写即为空。
+// 这是内容决定不是能力缺失——mods/example_mod/ 两个字段都在用。
+//
+// # 击杀经验为什么人人都有
+//
+// 「本体三族是可玩种族不是猎物、不该有击杀经验」这条旧判断被项目
+// 所有者推翻，裁定原文：「有个最低经验 1xp，然后等级差越多给越多，
+// 有个经验公式」。本作里人类山贼、矮人劫匪、精灵刺客都是会动手的
+// 敌人，「杀了一个人类给多少经验」是一个真实存在、必须有答案的问题。
+//
+// xp_reward 是 `ll_sim::experience::kill_experience` 的公式输入，不是
+// 玩家最终拿到的数字：最终经验 = max(1, 基准值 × 等级差倍率 / 100)。
+// 同级击杀时倍率恰好 100%，下面的数字就是玩家拿到的数字。
+//
+// 三个数字的依据是同一条：这三族都是**没有特殊构造的人形**，彼此的
+// 战斗价值差异应该来自等级与装备（那两样已经各自进了公式与结算），
+// 不应该由「你杀的是精灵还是人类」凭空拉开。因此三者取同一个基数
+// 10，矮人与精灵各自 +2 只反映它们相对人类多出来的那点属性修正。
+{
+  races: [
+    // 人类：无任何属性修正（种族设计里惯常的「基准种族」），未声明
+    // 暗视（夜里按默认的 4 格），寿命 80 年。
+    //
+    // stat_modifiers 整条省略即全零——这里把七个 0 写出来，是因为
+    // 「人类刻意没有任何修正」本身是一条内容决定，值得看得见。
+    {
+      id: "lostland:human",
+      display_name_key: "lostland:race.human.display_name",
+      stat_modifiers: {
+        strength: 0,
+        dexterity: 0,
+        constitution: 0,
+        intelligence: 0,
+        willpower: 0,
+        charisma: 0,
+        luck: 0,
+      },
+      darkvision_cells: 0,
+      footprint: { width: 1, height: 1 },
+      lifespan_years: 80,
+      xp_reward: 10,
+    },
+
+    // 矮人：力量 +1、体质 +2，暗视 7 格（居于地下的种族，夜视三族
+    // 最好，但仍明显低于白天的 12 格），寿命 250 年。
+    {
+      id: "lostland:dwarf",
+      display_name_key: "lostland:race.dwarf.display_name",
+      stat_modifiers: { strength: 1, constitution: 2 },
+      darkvision_cells: 7,
+      footprint: { width: 1, height: 1 },
+      lifespan_years: 250,
+      xp_reward: 12,
+    },
+
+    // 精灵：敏捷 +2、智力 +1，暗视 6 格（好于常人、略逊于矮人），
+    // 寿命 400 年。
+    {
+      id: "lostland:elf",
+      display_name_key: "lostland:race.elf.display_name",
+      stat_modifiers: { dexterity: 2, intelligence: 1 },
+      darkvision_cells: 6,
+      footprint: { width: 1, height: 1 },
+      lifespan_years: 400,
+      xp_reward: 12,
+    },
+  ],
+}

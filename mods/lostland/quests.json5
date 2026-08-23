@@ -1,0 +1,70 @@
+// 本体任务内容：四条，构成一张**网状**（不是树状）的任务图。
+//
+// 搬家来历见 races.json5 文件头。schema（condition 子对象的 kind /
+// target / count）见 `crates/ll-mod/src/content_schema.rs`。
+//
+// # 图的形状是刻意的（验收「网而不是树」）
+//
+//   main_quest_1 ──┬── branch_a ──┐
+//                  └── branch_b ──┴── finale
+//
+// - 「一个前置解锁多个后续」：main_quest_1 同时解锁两条分支。
+// - 「一个任务有多个前置」：finale 要求两条分支都完成——finale 有两个
+//   父节点，因此这张图不是树。
+//
+// 同时演示两档完成条件：三条用 kill-count（一档），branch_b 用
+// script（三档）。
+//
+// # lostland:goblin 与 lostland:branch_b_condition 是开放标识符
+//
+// 前者指向「敌人类型」，代码库至今没有敌人类型注册表——
+// `ll_mod::content_audit::ReferenceExpectation::UntypedIdSpace` 正是
+// 为这种情形留的豁免出口，把它按「必须在某张内容表里已定义」检查会把
+// 一条**正确的设计**判成错误，见 `ll_mod::quest` 模块文档「跨表引用」。
+//
+// 后者是 `QuestCondition::Script` 携带的脚本回调标识符。**必须如实说
+// 清楚**：求值它指向的回调是**尚未落地**的能力——`ll_sim` 的任务完成
+// 判定当前只处理 KillCount 变体，Script 变体目前只是一个携带命名空间
+// id 的数据标签。这条内容存在的意义是把「三档条件能被注册、能被存档、
+// 能被查询」这半条链路钉住，不是宣称脚本回调已经能跑。
+//
+// **本批次之后这条缺口的形状变了、但没有变大**：脚本系统整体在拆，
+// 「脚本回调」将来指向的会是 Rust 侧注册的具名判定函数，不是一段
+// Steel 源码。数据里携带一个 id 这件事本身不受影响。
+//
+// # 环检查
+//
+// 同 skills.json5 文件头同名一节：`ll_mod::quest::validate_no_cycles`
+// 挂在 `ll_game::content::load_content` 上，看的是全部 mod 的合并结果。
+{
+  quests: [
+    // 起点任务：击杀 3 个哥布林。无前置。
+    {
+      id: "lostland:main_quest_1",
+      prerequisites: [],
+      condition: { kind: "kill-count", target: "lostland:goblin", count: 3 },
+    },
+
+    // 分支之一（一档条件）：击杀 5 个哥布林。
+    {
+      id: "lostland:branch_a",
+      prerequisites: ["lostland:main_quest_1"],
+      condition: { kind: "kill-count", target: "lostland:goblin", count: 5 },
+    },
+
+    // 分支之二（三档条件）：脚本回调判定，见文件头对 Script 档现状的
+    // 说明。
+    {
+      id: "lostland:branch_b",
+      prerequisites: ["lostland:main_quest_1"],
+      condition: { kind: "script", target: "lostland:branch_b_condition" },
+    },
+
+    // 汇聚任务：两条分支都完成后才解锁。
+    {
+      id: "lostland:finale",
+      prerequisites: ["lostland:branch_a", "lostland:branch_b"],
+      condition: { kind: "kill-count", target: "lostland:goblin", count: 1 },
+    },
+  ],
+}

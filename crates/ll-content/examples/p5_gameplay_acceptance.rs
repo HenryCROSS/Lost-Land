@@ -222,9 +222,9 @@ fn build_content() -> Content {
         resolve_base_subclasses(&registry, &subclass_table).expect("本体副职契约必须解析成功");
     let quest_ids = resolve_base_quests(&registry, &quest_table).expect("本体任务契约必须解析成功");
 
-    // quests.scm 里 main_quest_1/branch_a/finale 的 target_kind 已经
+    // quests.json5 里 main_quest_1/branch_a/finale 的 target_kind 已经
     // intern 过 "lostland:goblin"——再次 intern 同一个字符串按 Interner
-    // 的既有语义返回相同索引，不会重复注册。种族同理（races.scm）。
+    // 的既有语义返回相同索引，不会重复注册。种族同理（races.json5）。
     let goblin_kind = registry.intern(id("lostland:goblin"));
     let human_race = registry.intern(id("lostland:human"));
 
@@ -530,7 +530,7 @@ fn section3_networked_quest_progress(content: &Content, world: &mut WorldState, 
         );
     }
 
-    // main_quest_1 要求击杀 3 个哥布林（mods/lostland/quests.scm 的
+    // main_quest_1 要求击杀 3 个哥布林（mods/lostland/quests.json5 的
     // 本体声明）——真实走
     // Intent::Attack -> resolve_with_skills_and_quests -> Effect ->
     // apply,不是直接调用 mark_quest_completed 伪造。

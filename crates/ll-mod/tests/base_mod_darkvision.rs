@@ -66,7 +66,7 @@ const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 /// 仍然对这套换算成立，只是不再直接代表实机画面。
 const PLAYER_BASE_SIGHT_RADIUS: u32 = 12;
 
-/// `mods/lostland/races.scm` 声明的矮人暗视格数。本文件断言的是「这个
+/// `mods/lostland/races.json5` 声明的矮人暗视格数。本文件断言的是「这个
 /// 数字真的变成了这么多格视野」，不是「字段里存着这个数字」（后者由
 /// `base_mod_races.rs` 钉住）。
 const DWARF_CELLS: u32 = 7;

@@ -586,7 +586,7 @@ fn 副职满员时达标被拒绝但计数照常累加() {
     // 「被拒绝时不要吞掉任何东西」——上限拒绝的是**授予**，不是计数。
     // 玩家在满员状态下继续制作，进度不会白做。
     // Arrange：先塞满 MAX_SUBCLASSES 个**别的**副职。用的是
-    // mods/lostland/subclasses.scm 真实注册的那四个制作类副职里的前
+    // mods/lostland/subclasses.json5 真实注册的那四个制作类副职里的前
     // 三个——靠 SubclassTable 的获得条件列反查索引，顺带证明本体那四
     // 条真的注册上了。
     let handle = load_real_mods();
@@ -601,7 +601,7 @@ fn 副职满员时达标被拒绝但计数照常累加() {
     assert_eq!(
         held.len(),
         MAX_SUBCLASSES,
-        "mods/lostland/subclasses.scm 至少要注册 {MAX_SUBCLASSES} 个带获得条件的副职"
+        "mods/lostland/subclasses.json5 至少要注册 {MAX_SUBCLASSES} 个带获得条件的副职"
     );
 
     // Act：满员状态下烤够阈值。

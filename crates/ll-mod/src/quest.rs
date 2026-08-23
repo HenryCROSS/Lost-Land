@@ -20,7 +20,7 @@
 //! 一致（同一条纪律在两级坐标系重写批次的 `Interior.anchor`/反向索引
 //! 已经用过）。"网状"体现在两处都允许多对多：一个任务节点可以有多个
 //! 前置（多条完成路径汇聚），一个前置任务节点完成后也可以同时解锁多个
-//! 后续节点（分支）——`mods/lostland/quests.scm` 的四条本体任务同时
+//! 后续节点（分支）——`mods/lostland/quests.json5` 的四条本体任务同时
 //! 演示这两点，
 //! 见 [`BaseQuestIds`] 文档。
 //!
@@ -445,7 +445,7 @@ impl QuestCatalog for RegisteredQuests<'_> {
 
 /// 本体基础任务节点在当前注册表里的索引缓存——**句柄，不是内容**。
 ///
-/// 四条任务的字段值已经搬进 `mods/lostland/quests.scm`，本结构体只
+/// 四条任务的字段值已经搬进 `mods/lostland/quests.json5`，本结构体只
 /// 保住使用点的编译期安全，填充由 [`resolve_base_quests`] 在装载完成后
 /// 按 id 逐字段解析完成，理由完整见 [`crate::class::BaseClassIds`] 与
 /// [`crate::base_contract`] 两处文档。
@@ -532,7 +532,7 @@ mod tests {
     ///
     /// 本模块的单元测试验的是 [`QuestTable`]/[`unlocked_by`]/
     /// [`validate_no_cycles`] 这套**机制**，不是「本体有哪几条任务」
-    /// ——后者的定义已经搬进 `mods/lostland/quests.scm`，由
+    /// ——后者的定义已经搬进 `mods/lostland/quests.json5`，由
     /// `crates/ll-mod/tests/base_mod_class_skill_quest.rs` 端到端逐字段
     /// 核对。这里用 `testmod:` 现造一张同形的图（`root` 解锁两条分支，
     /// `merge` 汇聚它们，其中一条分支用 `Script` 档条件），理由同
@@ -666,7 +666,7 @@ mod tests {
         // 注册，不运行任何脚本、也不证明"脚本回调"这四个字所暗示的
         // 东西——`QuestCondition::Script` 目前只是一个携带命名空间 ID
         // 的数据标签。真正的脚本可达证据在 `crate::pipeline` 的脚本
-        // 装载测试与 `mods/lostland/quests.scm`。
+        // 装载测试与 `mods/lostland/quests.json5`。
         // Arrange
         let graph = sample_graph();
 
@@ -819,7 +819,7 @@ mod tests {
     fn 后注册的mod任务可以把先注册的任务当作前置() {
         // 结构等价断言：本体任务与 mod 任务共享同一张表、同一套校验，
         // 没有任何一条只对本体开放的旁路——本体任务现在也走
-        // `mods/lostland/quests.scm` 的 `register-quest`。
+        // `mods/lostland/quests.json5` 的 `register-quest`。
         // Arrange
         let mut graph = sample_graph();
 

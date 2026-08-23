@@ -23,7 +23,7 @@
 
   // 依赖本体（耐久标签批次新增）：gameplay.scm 里的 register-item-tag
   // 引用 lostland:armor/weapon/tool 三条标签，它们注册在
-  // mods/lostland/tags.scm。register-item-tag 只 get 不 intern（ADR 0017
+  // mods/lostland/tags.json5。register-item-tag 只 get 不 intern（ADR 0017
   // 「注册期完整校验」），因此 lostland **必须先装载**——这条依赖声明
   // 就是那个保证（ll_mod::topo::topo_sort 据此排序）。没有它，两个 mod
   // 的装载顺序由发现顺序决定，"examplemod" 字母序在 "lostland" 之前,

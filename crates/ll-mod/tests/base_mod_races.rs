@@ -1,4 +1,4 @@
-//! 端到端验证：本体三个种族真的由 `mods/lostland/races.scm` 注册，
+//! 端到端验证：本体三个种族真的由 `mods/lostland/races.json5` 注册，
 //! 且**逐字段**与迁移前硬编码在 `ll_mod::race::materialize_base_races`
 //! 里的那份完全相同。
 //!
@@ -7,7 +7,7 @@
 //! 本体内容从 Rust 字面量搬进 mod 脚本之后，「这三个种族的数值是多少」
 //! 这件事在 Rust 侧**一行代码都不剩**——`ll_mod::race` 的单元测试因此
 //! 只能验 `RaceTable` 这套机制，验不了内容本身。若没有本文件，把
-//! `races.scm` 里矮人的体质从 2 改成 20 不会让任何一条测试变红（内容
+//! `races.json5` 里矮人的体质从 2 改成 20 不会让任何一条测试变红（内容
 //! 值哈希会变，但那是一个「变了」的信号，不是一个「应该是多少」的
 //! 断言）。
 //!
@@ -117,11 +117,17 @@ fn load_real_mods() -> (Registry, RaceTable) {
 }
 
 #[test]
-fn 本体三个种族由本体mod脚本注册而不是任何rust函数() {
-    // 这是「本体即 Mod」在种族上第一次字面意义成立的证据：把
-    // mods/lostland/ 从磁盘上拿掉，本体就没有种族——本 crate 里已经
-    // 不存在任何能凭空造出这三条内容的 Rust 函数（`resolve_base_races`
-    // 只查询、不注册）。
+fn 本体三个种族由本体mod的内容数据文件注册而不是任何rust函数() {
+    // 这是「本体即 Mod」在种族上字面意义成立的证据：把 mods/lostland/
+    // 从磁盘上拿掉，本体就没有种族——本 crate 里已经不存在任何能凭空
+    // 造出这三条内容的 Rust 函数（`resolve_base_races` 只查询、不注册）。
+    //
+    // **内容的来源换过一次**：三条种族此前由 `races.scm` 的
+    // `register-race` 注册，现在由 `races.json5` 经
+    // `ll_mod::content_data` 反序列化注册（项目所有者裁定「内容用数据
+    // 文件（JSON5），行为用 Rust」）。换来源之后本文件一条断言都不用
+    // 改——这本身就是「内容表是唯一真相、注册通道可替换」的证据，也是
+    // 内容值哈希逐位不变的直接推论。
     // Arrange
     let (registry, race) = load_real_mods();
 
@@ -170,7 +176,7 @@ fn 人类逐字段与本体races脚本的声明一致() {
     assert_eq!(view.lifespan_years, 80);
     // 击杀基准经验值——**不再是 0**：项目所有者裁定「有个最低经验
     // 1xp，然后等级差越多给越多」，推翻了「本体三族是可玩种族不是
-    // 猎物、刻意不声明」这条旧判断，`mods/lostland/races.scm` 因此
+    // 猎物、刻意不声明」这条旧判断，`mods/lostland/races.json5` 因此
     // 为三族各自声明了基准值（人类 10，矮人/精灵各 12，依据见该文件
     // 末尾注释）。本文件的三条测试是那三个数字唯一的钉子。
     assert_eq!(view.xp_reward, 10);

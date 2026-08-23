@@ -15,8 +15,8 @@
   改名理由见该函数的 rustdoc：`crates/ll-mod/src/**` 经 `register_fn` 注册的 41 个脚本函数名里
   **36 个是 `register-` 形**，带 `!` 的只有 3 个、且它们共享的是字面上的 `-requires-` 谓词而不是
   「追加」这个语义，另有 2 个 `?` 后缀的运行期查询函数）。
-- 本体内容：`mods/lostland/subclasses.scm` 四个制作类副职（**工匠 / 裁缝 / 炼金术士 / 厨师**）
-  + `mods/lostland/crafting.scm` 四个配方类别。**炼金与厨艺按项目所有者裁定拆成两个独立副职**
+- 本体内容：`mods/lostland/subclasses.json5` 四个制作类副职（**工匠 / 裁缝 / 炼金术士 / 厨师**）
+  + `mods/lostland/crafting.json5` 四个配方类别。**炼金与厨艺按项目所有者裁定拆成两个独立副职**
   （「药水调剂和厨艺是两个不同的方向，所以需要拆分」），推翻 `6fa7eb8` 里「调剂 = 炼金 + 厨艺
   合并」那条。
 - 端到端证据：`crates/ll-mod/tests/example_mod_subclass_unlock.rs`（9 条，全程经 `TurnEngine`，
@@ -514,7 +514,7 @@ vs 错位搭配的化学反应」。**错位搭配之所以有味道，前提是
    不缺第三个。**这是一条正面结论，记在这里是为了说明本节判据被完整跑过一遍，不是只挑了有缺口
    的看。**
 5. **卫兵盘查（`Intent::Inspect`/`Effect::Inspect`，`e81e03c`）没有副职挂着，且不应该有**——
-   它是主职业（`lostland:guard`，`mods/lostland/classes.scm`）的行为，与潜行同理，属于
+   它是主职业（`lostland:guard`，`mods/lostland/classes.json5`）的行为，与潜行同理，属于
    「你是谁」而不是「你怎么补给」。同样记为一条查过并排除的项。
 6. **修理仍然不存在，且现在它是无主的。** 一节最初把修理当成工匠的挂钩，第一次订正把工匠改挂到
    制作上之后，**修理这个动作就没有任何副职声称它了**。它不是一个副职缺口（工匠已经有挂钩），
@@ -1114,7 +1114,7 @@ Effect::RemoveSubclass { actor: EntityId, subclass: ContentIndex }
 >
 > 获得条件指向一个从未注册的类别时只报引用完整性、不报死锁，同一件事不报两条。
 
-**内容侧的纪律照旧**：`mods/lostland/crafting.scm` 与
+**内容侧的纪律照旧**：`mods/lostland/crafting.json5` 与
 `mods/example_mod/gameplay.scm` 两处都写明了这条，`ll_mod::content_audit::BASE_CONTENT_AUDIT`
 里 `RecipeCategoryDef::required_subclasses` 那条豁免同样记录了它——那是本体四个配方类别刻意
 不设闸门的第一条理由。

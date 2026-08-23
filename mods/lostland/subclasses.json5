@@ -1,0 +1,122 @@
+// 本体副职内容：六条——四条制作类 + 剑舞者/学徒。
+//
+// 搬家来历见 races.json5 文件头。schema（unlock 子对象）见
+// `crates/ll-mod/src/content_schema.rs`。
+//
+// unlock.kind 目前只接受 "items-crafted"，unlock.target 是一个已经在
+// crafting.json5 里注册过的配方类别 id（**只 get 不 intern**，拼错当场
+// 报错）。传别的 kind 会当场报错并列出支持的取值，不会被静默当成制作。
+//
+// **本文件依赖 crafting.json5 先装载**。这条顺序现在写在
+// `ll_mod::content_data` 的 CONTENT_FILES 常量里，由引擎保证——此前它是
+// mod.json5 里 entry_points 的排序约定加 subclasses.scm 里的
+// `(require "crafting")`，两处都是内容作者改得动、也改得坏的地方。
+//
+// # 为什么本体副职只有制作类这四个
+//
+// knowledge/design/subclass-system.md 六节的名册有九条，本文件只落其中
+// 四条。判据是**挂钩动作在代码里存不存在**，不是名册长度：
+//
+// - 制作类四个（本文件）：闸门（resolve_craft 第③步）与成长挂钩
+//   （craft_progress_effects）**都已经是真代码**。
+// - 采集：resolve_pick_up/resolve_loot 两个挂载点确实已落地，但它的
+//   触发器 ItemsGathered 要指向「物品类别」——那个内容表在代码里**根本
+//   不存在**（ItemDef 没有任何「类别」字段）。造一张物品类别表是一整个
+//   独立批次。
+// - 求生：resolve_rest 已落地，触发器不需要任何新内容表，但至今没有
+//   任何副职消费它——为一个没有消费者的触发器造变体是 ADR 0021 点名
+//   要避免的抽象。
+// - 营造/驭兽/行商/学者：分别阻塞在 Intent::Build、同伴系统、
+//   Intent::Trade、「阅读/研究」这四个尚未落地的东西上。
+//
+// **注册一个拿不到的副职比不注册它更糟**：它会出现在将来的角色面板与
+// 存档里，而玩家永远达不到它的条件。因此上面五条一条都不注册。
+//
+// # 剑舞者/学徒两条与上面那条纪律不矛盾
+//
+// 上面那条纪律说的是「**不要往名册里新增**没有挂钩动作的副职」——判据
+// 是「要不要造一条新内容」。这两条不是新造的，是本来就存在的存量内容，
+// 把它们删掉才是内容损失。
+//
+// **但必须如实说清楚一件事**：这两条目前**玩家拿不到**。
+// `Effect::GrantSubclass` 在整个 `ll-sim` 里只有一个产出点（`ll_sim::subclass`
+// 的制作计数达标那一路），而 unlock.kind 至今只接受 "items-crafted"。
+// 给一个近战副职配一条「做满 N 件东西」的获得条件是荒唐的，因此本文件
+// **不**给它们编造获得条件——宁可让「拿不到」是一条写下来的、可查的
+// 缺口，也不要一条语义不对的内容。schema 里 unlock 是可选字段，「不写」
+// 是它合法且有意的表达。
+//
+// 补这个缺口的正确形状是给 `SubclassUnlockTrigger` 增开新的触发器种类
+// （例如「用某类武器命中 N 次」），而那要求 `ll_sim` 侧先有对应的挂钩
+// 动作与计数——是一个独立批次，不夹带在内容搬运里。
+//
+// # 上限与放弃
+//
+// 一个角色最多同时持有 `ll_sim::subclass::MAX_SUBCLASSES`（当前 3）个
+// 副职。满员时使用计数达标**只拒绝授予、不吞掉计数**：进度照常累加，
+// 玩家经 Intent::AbandonSubclass 放弃一个腾出槽位之后，下一次在那个
+// 类别里制作就会当场补发（判据是「累计 >= 阈值」，不是「恰好等于」）。
+//
+// **放弃有一个立刻生效的代价**：设了副职闸门的配方类别，放弃的那一刻
+// 起就做不了了（resolve_craft 每次制作都重判）。这与技能那一路的
+// 「学会了就永远能用」相反——两种闸门的语义本来就不同，见
+// crates/ll-sim/src/effect.rs 里 Effect::RemoveSubclass 的文档。
+//
+// # 阈值为什么是这几个数
+//
+// 20 / 20 / 15 / 15：没有任何数据支撑，是四个占位数值，量级取「玩家
+// 认真做一段时间某类东西」而不是「顺手做两下」。它们是纯内容参数，改
+// 它们一行 Rust 都不用动——这正是内容走数据文件的意义。
+//
+// # 副职目前不给任何东西
+//
+// SubclassDef 只有 id 与 display_name_key 两个字段。设计文档二节说的
+// 「唯一的『给东西』字段 traits: Vec<TraitGrant>」**在代码里还不存在**。
+// 因此这四个副职今天的全部作用是「资格」：它们能被配方类别的
+// required_subclasses 引用当闸门（example_mod 已经这么用了）。
+{
+  subclasses: [
+    // 工匠：锻造金属装备与工具。
+    {
+      id: "lostland:artisan",
+      display_name_key: "lostland:subclass.artisan.display_name",
+      unlock: { kind: "items-crafted", target: "lostland:forging", threshold: 20 },
+    },
+
+    // 裁缝：缝制衣物与织物。
+    {
+      id: "lostland:tailor",
+      display_name_key: "lostland:subclass.tailor.display_name",
+      unlock: { kind: "items-crafted", target: "lostland:tailoring", threshold: 20 },
+    },
+
+    // 炼金术士：调配药剂与试剂。
+    // 与厨师是**两个独立副职**，见 crafting.json5 里那条裁定的完整记录。
+    {
+      id: "lostland:alchemist",
+      display_name_key: "lostland:subclass.alchemist.display_name",
+      unlock: { kind: "items-crafted", target: "lostland:alchemy", threshold: 15 },
+    },
+
+    // 厨师：烹饪食物。
+    {
+      id: "lostland:cook",
+      display_name_key: "lostland:subclass.cook.display_name",
+      unlock: { kind: "items-crafted", target: "lostland:cooking", threshold: 15 },
+    },
+
+    // ── 以下两条**刻意不写 unlock**，理由见文件头「剑舞者/学徒」一节 ──
+
+    // 剑舞者：轻装近战副职。
+    {
+      id: "lostland:duelist",
+      display_name_key: "lostland:subclass.duelist.display_name",
+    },
+
+    // 学徒：可搭配任意主职的通用魔法副职。
+    {
+      id: "lostland:apprentice",
+      display_name_key: "lostland:subclass.apprentice.display_name",
+    },
+  ],
+}

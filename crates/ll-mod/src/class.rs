@@ -22,7 +22,7 @@
 //! 见 `knowledge/design/class-skill-quest-system.md`「与既有架构的
 //! 接线点」一节。
 //!
-//! # 本体三个基础职业的定义已经搬进 `mods/lostland/classes.scm`
+//! # 本体三个基础职业的定义已经搬进 `mods/lostland/classes.json5`
 //!
 //! 本模块此前还有一对 `materialize_base_classes`/`base_class_fixture`：
 //! 前者把战士/法师/游侠三条声明的字段值写死在 Rust 字面量里，后者是
@@ -31,7 +31,7 @@
 //! 它的唯一调用方是 `ll-content` 的 p5 验收 demo 与本模块自己的单元
 //! 测试，也就是说真实游戏里一条职业内容都没有过。项目所有者裁定
 //! 「迁移吧，工作要做好」之后，两者一并删除，三条职业改由
-//! `mods/lostland/classes.scm` 调用与任何第三方 mod 完全相同的
+//! `mods/lostland/classes.json5` 调用与任何第三方 mod 完全相同的
 //! `register-class` 注册，并第一次真正进到生产装载路径里。
 //!
 //! 留下来的是 [`BaseClassIds`]（句柄，保住使用点的编译期安全）与
@@ -97,7 +97,7 @@ pub struct ClassDef {
     /// 来源的声明处，与 [`crate::race::RaceDef::traits`] 是同一个类型、
     /// 同一套语义，只是所有者从种族换成职业。
     ///
-    /// 空列表表示这个职业不授予任何天赋——`mods/lostland/classes.scm`
+    /// 空列表表示这个职业不授予任何天赋——`mods/lostland/classes.json5`
     /// 里四条本体职业目前都是空的，见 `ll_mod::content_audit` 里
     /// `ClassAttrs::traits` 那条豁免：本体内容不为了让字段覆盖检查
     /// 变绿硬塞一条天赋。字段本身不是死的，`mods/example_mod/` 的
@@ -327,7 +327,7 @@ impl TraitGrantSource for ClassTable {
 /// 本体基础职业在当前注册表里的索引缓存——**句柄，不是内容**。
 ///
 /// 三条职业的字段值（显示名键、主属性倾向）已经搬进
-/// `mods/lostland/classes.scm`，本结构体只保住**使用点的编译期安全**：
+/// `mods/lostland/classes.json5`，本结构体只保住**使用点的编译期安全**：
 /// `content.class_ids.warrior` 这行代码里字段没了就编译不过，没有任何
 /// 字符串拼写错误的空间。填充由 [`resolve_base_classes`] 在装载完成后
 /// 按 id 逐字段解析完成，缺任何一条整批失败。
@@ -351,7 +351,7 @@ pub struct BaseClassIds {
 }
 
 /// 本体三个基础职业的 id 字面量——[`resolve_base_classes`] 的契约
-/// 清单，同时也是 `mods/lostland/classes.scm` 必须注册哪几条内容的
+/// 清单，同时也是 `mods/lostland/classes.json5` 必须注册哪几条内容的
 /// 唯一权威来源。
 ///
 /// 抽成常量而不是把字符串直接写在 [`resolve_base_classes`] 里，理由同
@@ -405,7 +405,7 @@ mod tests {
     /// 本模块的单元测试验的是 [`ClassTable`] 这套**机制**（`define`/
     /// `get`/追加天赋声明/[`TraitGrantSource`] 依赖倒置 impl），不是
     /// 「本体有哪几个职业、主属性各是什么」——后者的定义已经搬进
-    /// `mods/lostland/classes.scm`，由
+    /// `mods/lostland/classes.json5`，由
     /// `crates/ll-mod/tests/base_mod_class_skill_quest.rs` 端到端逐字段
     /// 核对。这里刻意用 `testmod:` 命名空间现造两条测试数据，理由同
     /// [`crate::race`] 的 `sample_table`：在 Rust 里再埋一份本体内容
@@ -452,7 +452,7 @@ mod tests {
     /// 把 [`BASE_CLASS_IDS`] 三条全部注册进一张表——[`resolve_base_classes`]
     /// 成功路径的最小前置。**不是**本体内容的第二份定义：这里只用到
     /// id，字段值全部填测试占位值，真实字段值只存在于
-    /// `mods/lostland/classes.scm`。
+    /// `mods/lostland/classes.json5`。
     fn registry_with_all_base_classes() -> (Registry, ClassTable) {
         let mut registry = Registry::new();
         let mut table = ClassTable::new();
@@ -537,7 +537,7 @@ mod tests {
     #[test]
     fn 本体职业与mod职业共用同一个单调递增号段没有预留区间() {
         // 本体注册与 mod 注册除了命名空间字符串不同之外，没有任何
-        // 结构性差异——本体职业现在走 `mods/lostland/classes.scm` 的
+        // 结构性差异——本体职业现在走 `mods/lostland/classes.json5` 的
         // `register-class`，与任何第三方 mod 逐字节是同一条通道，这条
         // 测试守住的是索引分配这一半：没有为本体预留任何特殊区间。
         // Arrange

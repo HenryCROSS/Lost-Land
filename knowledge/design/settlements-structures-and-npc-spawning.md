@@ -40,7 +40,7 @@
 | **田地** | 不存在 | 无 `field`/`farmland` 地形 |
 | **床** | 不存在。但 `Agent.resting: Option<RestState>` 与 `Intent::Rest`/`Effect::BeginRest`/`ClearResting` 已落地 | `agent.rs:226`、`effect.rs:461/479` |
 | **树** | **半存在**：`forest` 地形（可通行、慢、树冠阻挡视线）已注册，`assets/sprites/terrain_forest.png` 已有贴图。但它就是所有者说的那个「方块」，且不可交互 | `terrain.rs:406-407`、`assets/sprites/manifest.json5:172` |
-| **NPC 职业** | **路已通**：`Agent.profession: ContentIndex`，`ClassDef` + `register-class`，`lostland:guard` 已进 `mods/lostland/classes.scm`，行为树 `self-has-profession?` 认它 | `agent.rs:124`、`mods/lostland/classes.scm:44` |
+| **NPC 职业** | **路已通**：`Agent.profession: ContentIndex`，`ClassDef` + `register-class`，`lostland:guard` 已进 `mods/lostland/classes.json5`，行为树 `self-has-profession?` 认它 | `agent.rs:124`、`mods/lostland/classes.json5:44` |
 | **NPC 物品与掉落** | **已存在**：`Agent.inventory`/`equipment`，死亡走 `append_corpse_drop` → `Effect::AddGroundItem { contents }` | `effect.rs:520-534` |
 | **世界历史生成** | **不存在**。`crates/ll-world/src/history.rs` 只有 `HistoricalEventKind::Kill` 一个变体，模块文档自己写明另外四个变体（含 `SettlementFounded`）「没有任何字段定案」 | `history.rs:13-27` |
 | **`StructureKind`** | **代码里根本不存在**。只出现在四份设计文档的行文里（`society-and-affiliation.md:115` 给了一份枚举草图，该文档自己标注「未落地」） | grep 全仓库 `crates/`/`mods/`/`scripts/` 零命中 |

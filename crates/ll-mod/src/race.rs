@@ -13,14 +13,14 @@
 //! （ADR 0017），本模块走同一条路径，与职业同一个理由直接落在
 //! `ll-mod`（种族定义本身不依赖任何「世界空间」概念）。
 //!
-//! # 本体三个种族的定义已经搬进 `mods/lostland/races.scm`
+//! # 本体三个种族的定义已经搬进 `mods/lostland/races.json5`
 //!
 //! 本模块此前还有一对 `materialize_base_races`/`base_race_fixture`：
 //! 前者把人类/矮人/精灵三条声明的字段值写死在 Rust 字面量里，后者是
 //! 它的测试夹具。项目所有者裁定「本体主要是把整个框架做好做完整」
 //! ——Rust 只留**能力**（注册表、契约解析、值哈希），**实例**（哪个
 //! 种族、什么数值）落在 mod 脚本——之后，两者一并删除，三个种族改由
-//! `mods/lostland/races.scm` 调用与任何第三方 mod 完全相同的
+//! `mods/lostland/races.json5` 调用与任何第三方 mod 完全相同的
 //! `register-race` 注册。
 //!
 //! 留下来的是 [`BaseRaceIds`]（句柄，保住使用点的编译期安全）与
@@ -90,7 +90,7 @@
 //! 调用方需要显式处理「这个实体的种族是占位值」这种情况，而不是期待
 //! `RaceTable` 为它兜底一份看似合法实则伪造的属性。两者共用同一个
 //! `Registry`、同一段 `ContentIndex` 号段，`lostland:placeholder_race`
-//! 与 `mods/lostland/races.scm` 注册的任何真实种族之间不存在也不可能
+//! 与 `mods/lostland/races.json5` 注册的任何真实种族之间不存在也不可能
 //! 存在命名冲突（不同的命名空间路径，`Registry::intern` 天然隔离）。
 
 use ll_core::ident::{ContentIndex, NamespacedId};
@@ -106,7 +106,7 @@ use std::fmt;
 /// 单条种族声明：本体与 mod 注册种族时共用的同一个输入形状。
 ///
 /// 这就是「本体即 Mod」在种族层面的验收标的——本体三个种族
-/// （`mods/lostland/races.scm`）与任何第三方 mod 的种族现在都经由
+/// （`mods/lostland/races.json5`）与任何第三方 mod 的种族现在都经由
 /// `register-race` 落成这同一个形状，除了 `id` 里的命名空间字符串
 /// 不同之外，不存在任何结构性差异，也不存在任何本体专属的注册通道。
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -513,7 +513,7 @@ impl ll_sim::vision::RaceDarkvisionSource for RaceTable {
 /// # 定义搬进了脚本，这个结构体刻意留下
 ///
 /// 三个种族的**字段值**（属性修正、暗视格数、体型、寿命）现在住在
-/// `mods/lostland/races.scm`，不再是本文件里的 Rust 字面量。但本结构体
+/// `mods/lostland/races.json5`，不再是本文件里的 Rust 字面量。但本结构体
 /// **不能**跟着搬走：`ll_game::world::spawn_player` 里
 /// `content.race_ids.human` 这行代码的编译期安全全靠它——字段名少一个
 /// 就编译不过，没有任何"字符串拼错了、运行到那一步才发现"的空间。
@@ -532,7 +532,7 @@ pub struct BaseRaceIds {
 }
 
 /// 本体三个基础种族的 id 字面量——[`resolve_base_races`] 的契约清单，
-/// 同时也是 `mods/lostland/races.scm` 必须注册哪几条内容的唯一权威
+/// 同时也是 `mods/lostland/races.json5` 必须注册哪几条内容的唯一权威
 /// 来源。
 ///
 /// 抽成常量而不是把字符串直接写在 [`resolve_base_races`] 里：集成测试
@@ -551,7 +551,7 @@ const BASE_RACE_IDS: [(&str, &str); 3] = [
 ///
 /// 旧函数同时干「声明三个种族的字段值」与「产出句柄结构体」两件事；
 /// 项目所有者裁定「本体 = 框架能力，内容 = mod 实例」后，前一半搬进
-/// `mods/lostland/races.scm`，本函数只保留后一半——它**不注册任何
+/// `mods/lostland/races.json5`，本函数只保留后一半——它**不注册任何
 /// 内容**，只查询：`registry` 里有没有这三个 id、`table` 里有没有它们
 /// 的定义。因此本体种族与第三方 mod 种族现在走的是**完全相同**的
 /// `register-race` 脚本通道，一条本体专属的 Rust 注册路径都不剩，
@@ -593,7 +593,7 @@ mod tests {
     ///
     /// 本模块的单元测试验的是 [`RaceTable`] 这套**机制**（`define`/
     /// `get`/追加声明/三个依赖倒置 `impl`），不是「本体有哪几个种族、
-    /// 数值各是多少」——后者的定义已经搬进 `mods/lostland/races.scm`，
+    /// 数值各是多少」——后者的定义已经搬进 `mods/lostland/races.json5`，
     /// 由 `crates/ll-mod/tests/base_mod_races.rs` 端到端逐字段核对。
     /// 这里刻意用 `testmod:` 命名空间现造两条测试数据，而不是照抄一份
     /// 本体数值：在 Rust 里再埋一份本体内容字面量，恰恰是本次迁移要
@@ -659,7 +659,7 @@ mod tests {
     }
 
     /// 造一份「本体三个种族都已注册」的注册表 + 种族表，供契约解析的
-    /// 正例测试使用——模拟 `mods/lostland/races.scm` 装载成功之后的
+    /// 正例测试使用——模拟 `mods/lostland/races.json5` 装载成功之后的
     /// 状态。字段值一律取零/占位：本函数验的是**契约解析这套机制**，
     /// 内容值的忠实性由 `tests/base_mod_races.rs` 对真实脚本负责。
     fn registry_with_all_base_races() -> (Registry, RaceTable) {

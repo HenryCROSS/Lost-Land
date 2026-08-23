@@ -460,7 +460,7 @@
 ;; 用到的脚本 API（Rust 侧实现位置）：
 ;;   register-item-tag   crates/ll-mod/src/script_item_api.rs
 ;;
-;; 标签本身注册在 mods/lostland/tags.scm（三条本体名册：armor/weapon/
+;; 标签本身注册在 mods/lostland/tags.json5（三条本体名册：armor/weapon/
 ;; tool），本 mod 在 mod.json5 里声明了 dependencies: ["lostland"] 来保证
 ;; 装载顺序。引用一个没注册过的标签会当场报错、整批装载失败——那正是
 ;; 这条校验存在的意义：拼错标签名的症状是"标签静默不生效"（一件甲从此
@@ -550,7 +550,7 @@
 ;; 那份端到端证据的内容来源：烤三次肉 → 拿到暗影舞者 → 锻造解锁。
 ;;
 ;; 阈值取 3 是为了让那份端到端测试跑得快；本体那四个副职用的是
-;; 20/20/15/15 这种真实量级，见 mods/lostland/subclasses.scm。
+;; 20/20/15/15 这种真实量级，见 mods/lostland/subclasses.json5。
 (register-subclass-unlock "examplemod:shadowdancer" "items-crafted" "examplemod:cooking" 3)
 
 ;; 类别二：锻造。闸在**类别**上而不是每条配方上——新增一条锻造配方

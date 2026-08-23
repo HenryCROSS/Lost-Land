@@ -115,7 +115,7 @@ pub const LUCK_CRIT_BONUS_PERMILLE: i32 = 5;
 /// （无暴击基准）使暴击可被玩家感知，具体数值本任务不做平衡设计，
 /// 只保证暴击命中后伤害确实变化——与 `RaceDef.darkvision_cells` 字段
 /// 「具体数值本任务不做平衡设计，只保证字段真的被本体使用到」同一条
-/// 纪律（见 `mods/lostland/races.scm` 对应注释）。
+/// 纪律（见 `mods/lostland/races.json5` 对应注释）。
 pub const CRIT_DAMAGE_MULTIPLIER_PERMILLE: i32 = 1500;
 
 /// 给定幸运值，算出这次攻击的暴击率（千分比，夹在 `0..=1000`）。

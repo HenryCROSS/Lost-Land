@@ -1,0 +1,100 @@
+// 本体技能内容：五条，构成一棵有分支、再汇聚的技能树。
+//
+// 搬家来历见 races.json5 文件头。schema（resource_cost / effect 两个
+// 子对象的 kind 取值与各自的必填字段）见
+// `crates/ll-mod/src/content_schema.rs`。
+//
+// # 树的形状是刻意的（验收「树而不是线性序列」）
+//
+// knowledge/design/class-skill-quest-system.md 第二节要求技能树能表达
+// 两件事，这五条各自是其中一件的证据：
+//
+//   strike ──┬── power_strike ──┐
+//            ├── brace ─────────┴── combo
+//            └── focus
+//
+// - 「一个前置解锁多个后续」：strike 同时解锁三条分支。
+// - 「一个技能有多个前置」：combo 要求 power_strike 与 brace 都满足
+//   ——这一点单靠"树"表达不了（树里每个节点只有一个父节点）。
+//
+// focus 刻意是通用技能（**整条不写 owning_class**），演示"不专属任何
+// 职业"这一类；其余四条属于 lostland:warrior。
+//
+// 此前脚本里用空串 "" 表达「通用技能」。空串是个容易与「忘了填」混淆
+// 的哨兵值，数据文件里换成「字段缺席」——两者在 JSON5 里是不同的东西，
+// 而两个空串不是。
+//
+// # 环检查在装载末尾跑，不在本文件这一层
+//
+// `ll_mod::skill::validate_no_cycles` 挂在 `ll_game::content::load_content`
+// 上，全部 mod 装载完毕之后跑一次，覆盖本体 + 全部 mod 的合并结果：
+// 成环是**整张表**的性质，不是本体这五条的性质。前置成环或指向一条
+// 谁都没注册过的技能，都是一条会让装载整批失败的、点名具体 id 的错误。
+//
+// # 顺序：本文件必须排在 classes.json5 之后
+//
+// 见 classes.json5 文件头最后一节——这条顺序现在由
+// `ll_mod::content_data` 的 CONTENT_FILES 常量保证。
+//
+// # 数值
+//
+// 冷却与消耗（0/20/15/10/30 与 stamina 10/5/15）是搬家前那份数值的
+// 逐字复制，不是本批次新定的平衡——真正的职业/技能数值平衡不在内容
+// 搬运的范围（设计文档开篇已声明只交付系统骨架）。
+{
+  skills: [
+    // 起点技能：基础打击。无前置、无冷却、无消耗。
+    {
+      id: "lostland:strike",
+      owning_class: "lostland:warrior",
+      prerequisites: [],
+      cooldown_ticks: 0,
+      resource_cost: { kind: "none" },
+      effect: { kind: "deal-damage", amount: 5 },
+    },
+
+    // 分支之一：强力打击，更高伤害，耗体力。
+    {
+      id: "lostland:power_strike",
+      owning_class: "lostland:warrior",
+      prerequisites: ["lostland:strike"],
+      cooldown_ticks: 20,
+      resource_cost: { kind: "stamina", amount: 10 },
+      effect: { kind: "deal-damage", amount: 12 },
+    },
+
+    // 分支之二：格挡姿态，临时提升体质 10 tick。
+    {
+      id: "lostland:brace",
+      owning_class: "lostland:warrior",
+      prerequisites: ["lostland:strike"],
+      cooldown_ticks: 15,
+      resource_cost: { kind: "stamina", amount: 5 },
+      effect: {
+        kind: "temporary-stat-modifier",
+        attribute: "constitution",
+        amount: 3,
+        duration_ticks: 10,
+      },
+    },
+
+    // 分支之三：凝神，恢复法力。**通用技能**——不写 owning_class。
+    {
+      id: "lostland:focus",
+      prerequisites: ["lostland:strike"],
+      cooldown_ticks: 10,
+      resource_cost: { kind: "none" },
+      effect: { kind: "restore-resource", resource: "mana", amount: 8 },
+    },
+
+    // 汇聚技能：连击，要求 power_strike 与 brace 两个前置同时满足。
+    {
+      id: "lostland:combo",
+      owning_class: "lostland:warrior",
+      prerequisites: ["lostland:power_strike", "lostland:brace"],
+      cooldown_ticks: 30,
+      resource_cost: { kind: "stamina", amount: 15 },
+      effect: { kind: "deal-damage", amount: 20 },
+    },
+  ],
+}

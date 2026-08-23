@@ -53,7 +53,7 @@
 //! 本体内容分两半，与这条管线的关系**不一样**，这是本模块最容易被
 //! 误读的一点：
 //!
-//! - **已迁进脚本的那一半**（当前是种族——`mods/lostland/races.scm`）
+//! - **已迁进脚本的那一半**（当前是种族——`mods/lostland/races.json5`）
 //!   走的**就是这条管线**，与任何第三方 mod 完全同一条路径，没有任何
 //!   本体专属入口。它是**强制装载**的：装载完毕后
 //!   `ll_game::content::load_content` 会用 [`crate::base_contract`] 的
@@ -89,7 +89,7 @@ use crate::resource_pool::ResourcePoolTable;
 use crate::skill::SkillTable;
 use crate::subclass::SubclassTable;
 use crate::trait_def::TraitTable;
-use crate::{discover, topo};
+use crate::{content_data, discover, topo};
 
 use crate::active_registry::{set_active_registry, take_active_registry};
 use crate::damage_category::DamageCategoryTable;
@@ -408,6 +408,46 @@ pub fn load_all(
     let mut engines = engines.into_iter();
     for idx in order {
         let manifest = &parsed[idx];
+
+        // 内容数据文件（`crate::content_data`）排在这个 mod 自己的脚本
+        // 之前：**声明先于逻辑**——同一个 mod 的行为脚本因此可以引用
+        // 它自己刚刚声明的内容，反过来不成立（数据文件里没有任何能
+        // 调用脚本的东西）。跨 mod 的先后仍然是外层这个拓扑序，与脚本
+        // 共用同一份，见 `crate::content_data` 模块文档「顺序确定性」。
+        //
+        // 一个内容文件坏了，整个 mod 判 `Failed` 并跳过它的脚本——与
+        // 「脚本编译失败就整个 mod 失败」同一档严重性：半份内容比没有
+        // 内容更难查（症状是运行期某条引用悬空，不是启动期一条错误）。
+        if let Err(err) = content_data::load_mod_content_data(&roots[idx], registry, tables) {
+            report.push(
+                manifest.id.clone(),
+                LoadStatus::Failed(LoadError {
+                    mod_id: manifest.id.clone(),
+                    stage: LoadStage::Register,
+                    message: err.message.clone(),
+                    location: Some(SourceLocation {
+                        file: err.file.clone(),
+                        // 行号在 `err.message` 里（json5 的
+                        // `... at line N column M`）。`SourceLocation::line`
+                        // 是 `Option<usize>`，要填进去得把那串文案反过来
+                        // 解析一遍——从结构化错误退化成文本再解析回结构，
+                        // 是一条只会引入分歧的路，不走。
+                        line: None,
+                    }),
+                }),
+            );
+            // 这个 mod 不跑脚本了，但**它那台引擎必须照样从迭代器里取
+            // 走**：`engines` 是按 `scripted` 过滤条件、以同一个拓扑序
+            // 造出来的，跳过一个而不消费它，后面每一个 scripted mod 都
+            // 会拿到别人的引擎（症状是「另一个 mod 的脚本报了本 mod 的
+            // 错」，极难查）。取出来立刻析构，不违反 C6（C6 禁的是编译
+            // 之后再构造，析构不受限制）。
+            if !manifest.entry_points.is_empty() {
+                drop(engines.next());
+            }
+            continue;
+        }
+
         if manifest.entry_points.is_empty() {
             // 纯数据 mod（清单允许没有脚本入口，见 manifest.rs 文档），
             // 没有脚本可跑，直接算加载成功。
@@ -821,66 +861,9 @@ fn line_number(source: &str, byte_offset: u32) -> u32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::tempdir;
+    use crate::test_support::{OwnedTables, tempdir};
     use ll_world::terrain::TerrainKind;
     use std::fs;
-
-    /// 测试帮手：现造一套全新的空内容表，供 [`GameplayTables`] 借用——
-    /// 各测试只关心地形（`register-terrain` 仍是既有场景里用得最多的
-    /// 一类），但 `load_all` 的签名要求十张表一起传，本结构体把「造出
-    /// 十个空表」这件事集中成一次调用，不必在每条测试里重复八行。
-    #[derive(Default)]
-    struct OwnedTables {
-        terrain: TerrainTable,
-        class: ClassTable,
-        skill: SkillTable,
-        subclass: SubclassTable,
-        quest: QuestTable,
-        race: RaceTable,
-        clip: ClipTable,
-        xp_curve: XpCurveTable,
-        xp_curve_bindings: XpCurveBindings,
-        trait_def: TraitTable,
-        resource_pool: ResourcePoolTable,
-        item: ItemTable,
-        formula: FormulaTable,
-        weapon_category: WeaponCategoryTable,
-        damage_category: DamageCategoryTable,
-        tag: TagTable,
-        space_profile: SpaceProfileTable,
-        weather: WeatherTable,
-        recipe: RecipeTable,
-        recipe_category: RecipeCategoryTable,
-        events: EventSubscriptionTable,
-    }
-
-    impl OwnedTables {
-        fn as_gameplay_tables(&mut self) -> GameplayTables<'_> {
-            GameplayTables {
-                terrain: &mut self.terrain,
-                class: &mut self.class,
-                skill: &mut self.skill,
-                subclass: &mut self.subclass,
-                quest: &mut self.quest,
-                race: &mut self.race,
-                clip: &mut self.clip,
-                xp_curve: &mut self.xp_curve,
-                xp_curve_bindings: &mut self.xp_curve_bindings,
-                trait_def: &mut self.trait_def,
-                resource_pool: &mut self.resource_pool,
-                item: &mut self.item,
-                formula: &mut self.formula,
-                weapon_category: &mut self.weapon_category,
-                damage_category: &mut self.damage_category,
-                tag: &mut self.tag,
-                space_profile: &mut self.space_profile,
-                weather: &mut self.weather,
-                recipe: &mut self.recipe,
-                recipe_category: &mut self.recipe_category,
-                events: &mut self.events,
-            }
-        }
-    }
 
     /// 在 `root` 下建一个候选 mod 子目录，写入清单与（可选）脚本。
     fn write_mod(root: &Path, dir_name: &str, manifest_json5: &str, script: Option<&str>) {

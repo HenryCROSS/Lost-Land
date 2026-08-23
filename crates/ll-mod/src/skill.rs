@@ -24,7 +24,7 @@
 //! 过**。本体技能迁进脚本的批次把它接到了真正的装载管线上，见
 //! `ll_game::content::load_content` 里对应的接线注释。
 //!
-//! # 本体五条基础技能的定义已经搬进 `mods/lostland/skills.scm`
+//! # 本体五条基础技能的定义已经搬进 `mods/lostland/skills.json5`
 //!
 //! 本模块此前还有一对 `materialize_base_skills`/`base_skill_fixture`
 //! ——与 [`crate::class`] 的那一对处境完全相同（都不在生产装载路径上，
@@ -397,7 +397,7 @@ impl ll_sim::skill_overview::SkillTreeCatalog for SkillTable {
 
 /// 本体基础技能在当前注册表里的索引缓存——**句柄，不是内容**。
 ///
-/// 五条技能的字段值已经搬进 `mods/lostland/skills.scm`，本结构体只
+/// 五条技能的字段值已经搬进 `mods/lostland/skills.json5`，本结构体只
 /// 保住使用点的编译期安全，填充由 [`resolve_base_skills`] 在装载完成后
 /// 按 id 逐字段解析完成，理由完整见 [`crate::class::BaseClassIds`] 与
 /// [`crate::base_contract`] 两处文档。
@@ -495,7 +495,7 @@ mod tests {
     ///
     /// 本模块的单元测试验的是 [`SkillTable`] 与 [`validate_no_cycles`]
     /// 这套**机制**，不是「本体有哪几条技能、数值各是多少」——后者的
-    /// 定义已经搬进 `mods/lostland/skills.scm`，由
+    /// 定义已经搬进 `mods/lostland/skills.json5`，由
     /// `crates/ll-mod/tests/base_mod_class_skill_quest.rs` 端到端逐字段
     /// 核对。这里刻意用 `testmod:` 现造一棵同形的树（`root` 解锁三条
     /// 分支，`merge` 汇聚其中两条），理由同 [`crate::race`] 的
@@ -804,7 +804,7 @@ mod tests {
     fn 后注册的mod技能可以把先注册的技能当作前置() {
         // 结构等价断言：本体技能与 mod 技能共享同一张表、同一套校验，
         // 没有任何一条只对本体开放的旁路——本体技能现在也走
-        // `mods/lostland/skills.scm` 的 `register-skill`。
+        // `mods/lostland/skills.json5` 的 `register-skill`。
         // Arrange
         let mut tree = sample_tree();
 

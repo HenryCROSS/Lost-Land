@@ -370,21 +370,21 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         ContentTableKind::Formula,
         ContentTableKind::DamageCategory,
         ContentTableKind::Weather,
-        // 副职获得机制批次：mods/lostland/subclasses.scm 注册了四个制作
-        // 类副职，crafting.scm 注册了四个配方类别——两张表在 lostland
+        // 副职获得机制批次：mods/lostland/subclasses.json5 注册了四个制作
+        // 类副职，crafting.json5 注册了四个配方类别——两张表在 lostland
         // 命名空间下从此非空，按 DeferredButPopulated 的指引从 deferred
         // 挪进 covered。
         ContentTableKind::Subclass,
         ContentTableKind::RecipeCategory,
-        // 本体职业/技能/任务迁移批次：mods/lostland/ 下新增 skills.scm
-        // （五条）与 quests.scm（四条），两张表在 lostland 命名空间下
+        // 本体职业/技能/任务迁移批次：mods/lostland/ 下新增 skills.json5
+        // （五条）与 quests.json5（四条），两张表在 lostland 命名空间下
         // 从此非空，按 DeferredButPopulated 的指引从 deferred 挪进
         // covered。这两条内容此前只存在于 `materialize_base_skills`/
         // `materialize_base_quests`——两个从不在生产装载路径上的函数，
         // 见 `crate::class` 模块文档同名一节。
         ContentTableKind::Skill,
         ContentTableKind::Quest,
-        // 耐久标签批次：mods/lostland/tags.scm 注册了三条本体标签
+        // 耐久标签批次：mods/lostland/tags.json5 注册了三条本体标签
         // （armor/weapon/tool），三条都声明了非默认的磨损通道,因此这张
         // 表在 lostland 命名空间下一落地就是 covered,不经过 deferred。
         // 这与其余「本体内容尚未迁进 mods/lostland/」的表不同——标签
@@ -421,12 +421,12 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         FieldExemption {
             kind: ContentTableKind::RecipeCategory,
             field: "RecipeCategoryDef::required_subclasses",
-            reason: "本体四个配方类别（mods/lostland/crafting.scm）全部**刻意**不设副职                     闸门，这不是遗漏。两条理由：①设了会造出真实的死锁——同一批次的                     mods/lostland/subclasses.scm 让四个副职各自『在对应类别里做满 N 次』                     获得，若那个类别又要求该副职才能做，就成了『要当工匠才能锻造，                     要锻造才能当工匠』，而 resolve_craft 的副职闸门是每次制作都判的，                     所以两边会真的互相等死；②烹饪本来就不该有闸门                     （food-and-cooking-system.md 五节裁定『菜谱不设解锁门槛』）。                     字段本身完全不是死的：mods/example_mod/gameplay.scm 的                     examplemod:forging 用 recipe-category-requires-subclass! 设了闸，                     crates/ll-mod/tests/example_mod_subclass_unlock.rs 有一整份端到端                     证据盯着它（拿到副职→解锁；放弃副职→立刻重新锁上）。                     本体要用上这个字段，正确形状是**第二梯队的进阶类别**（基础类别                     不设闸让玩家练出副职，进阶类别设闸把守高级配方），而那要等本体                     真的有配方内容——本体物品至今一条都没迁过来（见 deferred 里的                     Item 一条），没有物品就写不出配方。",
+            reason: "本体四个配方类别（mods/lostland/crafting.json5）全部**刻意**不设副职                     闸门，这不是遗漏。两条理由：①设了会造出真实的死锁——同一批次的                     mods/lostland/subclasses.json5 让四个副职各自『在对应类别里做满 N 次』                     获得，若那个类别又要求该副职才能做，就成了『要当工匠才能锻造，                     要锻造才能当工匠』，而 resolve_craft 的副职闸门是每次制作都判的，                     所以两边会真的互相等死；②烹饪本来就不该有闸门                     （food-and-cooking-system.md 五节裁定『菜谱不设解锁门槛』）。                     字段本身完全不是死的：mods/example_mod/gameplay.scm 的                     examplemod:forging 用 recipe-category-requires-subclass! 设了闸，                     crates/ll-mod/tests/example_mod_subclass_unlock.rs 有一整份端到端                     证据盯着它（拿到副职→解锁；放弃副职→立刻重新锁上）。                     本体要用上这个字段，正确形状是**第二梯队的进阶类别**（基础类别                     不设闸让玩家练出副职，进阶类别设闸把守高级配方），而那要等本体                     真的有配方内容——本体物品至今一条都没迁过来（见 deferred 里的                     Item 一条），没有物品就写不出配方。",
         },
         FieldExemption {
             kind: ContentTableKind::Class,
             field: "ClassAttrs::traits",
-            reason: "本体四条职业内容（mods/lostland/classes.scm 的战士/法师/游侠/卫兵）\
+            reason: "本体四条职业内容（mods/lostland/classes.json5 的战士/法师/游侠/卫兵）\
                      一条都不授予职业天赋——与 RaceAttrs::traits 一条同源：本体内容\
                      不为了让字段覆盖检查变绿硬塞一条天赋。字段本身不是死的：\
                      mods/example_mod/gameplay.scm 的 examplemod:rogue 用\
@@ -436,7 +436,7 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         FieldExemption {
             kind: ContentTableKind::Race,
             field: "RaceAttrs::traits",
-            reason: "本体三族当前不授予任何种族天赋：races.scm 刻意不调用\
+            reason: "本体三族当前不授予任何种族天赋：races.json5 刻意不写\
                      register-race-trait。天赋系统落地批次的真实证据在\
                      mods/example_mod/（examplemod:ooze 等），本体这一侧等内容设计\
                      真的需要时再补，不为了让检查变绿硬塞一条天赋。曾与\
@@ -539,7 +539,7 @@ impl ContentAuditReport {
     ///
     /// 与字段覆盖的分界线是「有没有一种**合法**的内容配置会触发它」：
     ///
-    /// - 字段覆盖会被玩家的正当修改触发——把 `mods/lostland/races.scm`
+    /// - 字段覆盖会被玩家的正当修改触发——把 `mods/lostland/races.json5`
     ///   里矮人的暗视改回 0，`darkvision_cells` 就不再被覆盖了，可那个
     ///   存档完全能玩。为此拒绝启动是拿一条开发纪律惩罚玩家。
     /// - 死锁**没有**合法版本。不存在任何一份内容设计，其意图是「你得
@@ -566,7 +566,7 @@ impl ContentAuditReport {
     ///
     /// 字段覆盖描述的是"本体内容有没有把自己声明的每个旋钮都用起来"，
     /// 这是一条**开发期不变量**，不是"游戏坏了"的信号：一个玩家把
-    /// `mods/lostland/races.scm` 里矮人的暗视改回 0，本体内容就不再
+    /// `mods/lostland/races.json5` 里矮人的暗视改回 0，本体内容就不再
     /// 覆盖 `darkvision_cells` 了——但那个存档完全能玩，为此拒绝启动
     /// 是拿一条开发纪律去惩罚玩家。引用完整性则相反：一个指向不存在
     /// 条目的引用是真的会在运行期表现成"物品算不出伤害"的损坏。

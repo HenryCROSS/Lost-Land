@@ -12,6 +12,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::class::ClassTable;
+use crate::clip::ClipTable;
+use crate::damage_category::DamageCategoryTable;
+use crate::event::EventSubscriptionTable;
+use crate::formula::FormulaTable;
+use crate::item::ItemTable;
+use crate::pipeline::GameplayTables;
+use crate::quest::QuestTable;
+use crate::race::RaceTable;
+use crate::recipe::RecipeTable;
+use crate::recipe_category::RecipeCategoryTable;
+use crate::resource_pool::ResourcePoolTable;
+use crate::skill::SkillTable;
+use crate::subclass::SubclassTable;
+use crate::tag::TagTable;
+use crate::trait_def::TraitTable;
+use crate::weapon_category::WeaponCategoryTable;
+use crate::xp_curve::{XpCurveBindings, XpCurveTable};
+use ll_world::space_profile::SpaceProfileTable;
+use ll_world::terrain::TerrainTable;
+use ll_world::weather::WeatherTable;
+
 /// 一个会在析构时自动清理的临时目录。
 pub(crate) struct TempDir(PathBuf);
 
@@ -36,4 +58,61 @@ pub(crate) fn tempdir() -> TempDir {
     let path = std::env::temp_dir().join(format!("ll-mod-test-{}-{n}", std::process::id()));
     fs::create_dir_all(&path).expect("测试临时目录创建不应失败");
     TempDir(path)
+}
+
+/// 测试帮手：现造一套全新的空内容表，供 [`crate::pipeline::GameplayTables`] 借用——
+/// 各测试只关心地形（`register-terrain` 仍是既有场景里用得最多的
+/// 一类），但 `load_all` 的签名要求十张表一起传，本结构体把「造出
+/// 十个空表」这件事集中成一次调用，不必在每条测试里重复八行。
+#[derive(Default)]
+pub(crate) struct OwnedTables {
+    pub(crate) terrain: TerrainTable,
+    pub(crate) class: ClassTable,
+    pub(crate) skill: SkillTable,
+    pub(crate) subclass: SubclassTable,
+    pub(crate) quest: QuestTable,
+    pub(crate) race: RaceTable,
+    pub(crate) clip: ClipTable,
+    pub(crate) xp_curve: XpCurveTable,
+    pub(crate) xp_curve_bindings: XpCurveBindings,
+    pub(crate) trait_def: TraitTable,
+    pub(crate) resource_pool: ResourcePoolTable,
+    pub(crate) item: ItemTable,
+    pub(crate) formula: FormulaTable,
+    pub(crate) weapon_category: WeaponCategoryTable,
+    pub(crate) damage_category: DamageCategoryTable,
+    pub(crate) tag: TagTable,
+    pub(crate) space_profile: SpaceProfileTable,
+    pub(crate) weather: WeatherTable,
+    pub(crate) recipe: RecipeTable,
+    pub(crate) recipe_category: RecipeCategoryTable,
+    pub(crate) events: EventSubscriptionTable,
+}
+
+impl OwnedTables {
+    pub(crate) fn as_gameplay_tables(&mut self) -> GameplayTables<'_> {
+        GameplayTables {
+            terrain: &mut self.terrain,
+            class: &mut self.class,
+            skill: &mut self.skill,
+            subclass: &mut self.subclass,
+            quest: &mut self.quest,
+            race: &mut self.race,
+            clip: &mut self.clip,
+            xp_curve: &mut self.xp_curve,
+            xp_curve_bindings: &mut self.xp_curve_bindings,
+            trait_def: &mut self.trait_def,
+            resource_pool: &mut self.resource_pool,
+            item: &mut self.item,
+            formula: &mut self.formula,
+            weapon_category: &mut self.weapon_category,
+            damage_category: &mut self.damage_category,
+            tag: &mut self.tag,
+            space_profile: &mut self.space_profile,
+            weather: &mut self.weather,
+            recipe: &mut self.recipe,
+            recipe_category: &mut self.recipe_category,
+            events: &mut self.events,
+        }
+    }
 }

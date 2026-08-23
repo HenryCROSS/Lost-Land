@@ -125,7 +125,7 @@ pub struct CraftUnlockRule {
 ///   造一张「物品类别表」是一整个独立批次，不是本批次顺手能做的事。
 /// - `RestsTaken` 的挂载点（`resolve_rest`）已落地且不需要任何新内容
 ///   表，但它**当前没有任何消费者**：本批次注册的四个本体副职全部是
-///   制作类（见 `mods/lostland/subclasses.scm`），求生副职不在名册里。
+///   制作类（见 `mods/lostland/subclasses.json5`），求生副职不在名册里。
 ///   为一个没有消费者的触发器造变体是 ADR 0021 点名要避免的那种抽象。
 ///
 /// 因此本 trait 现在只有一个方法、[`CraftUnlockRule`] 也不套一层只有

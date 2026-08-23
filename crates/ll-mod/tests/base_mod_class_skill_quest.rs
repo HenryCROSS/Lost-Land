@@ -7,7 +7,7 @@
 //! 理由与 `base_mod_races.rs` 逐字相同：本体内容从 Rust 字面量搬进 mod
 //! 脚本之后，「战士的主属性是什么、strike 打多少伤害」这件事在 Rust
 //! 侧**一行代码都不剩**——各模块的单元测试因此只能验注册表机制，验不了
-//! 内容本身。若没有本文件，把 `skills.scm` 里 strike 的伤害从 5 改成
+//! 内容本身。若没有本文件，把 `skills.json5` 里 strike 的伤害从 5 改成
 //! 50 不会让任何一条测试变红。
 //!
 //! 本文件把迁移前那份数值逐条钉在这里，充当迁移忠实性的**冻结基准**。
@@ -138,11 +138,11 @@ fn load_real_mods() -> Loaded {
 fn index_of(registry: &Registry, raw: &str) -> ContentIndex {
     registry
         .get(&NamespacedId::parse(raw).expect("合法标识符"))
-        .unwrap_or_else(|| panic!("{raw} 必须已被脚本注册"))
+        .unwrap_or_else(|| panic!("{raw} 必须已被本体内容数据文件注册"))
 }
 
 #[test]
-fn 本体三个基础职业由本体mod脚本注册而不是任何rust函数() {
+fn 本体三个基础职业由本体mod的内容数据文件注册而不是任何rust函数() {
     // 「本体即 Mod」在职业上第一次字面意义成立：把 mods/lostland/ 从
     // 磁盘上拿掉，本体就没有职业——本 crate 里已经不存在任何能凭空造出
     // 这几条内容的 Rust 函数（`resolve_base_classes` 只查询、不注册）。
@@ -199,13 +199,13 @@ fn 本体职业的主属性倾向与显示名键逐条与迁移前一致() {
         );
         assert!(
             view.traits.is_empty(),
-            "本体职业不授予任何职业天赋，见 classes.scm 文件头"
+            "本体职业不授予任何职业天赋，见 classes.json5 文件头"
         );
     }
 }
 
 #[test]
-fn 卫兵职业仍然由本体mod脚本注册且主属性是体质() {
+fn 卫兵职业仍然由本体mod的内容数据文件注册且主属性是体质() {
     // 卫兵不进 `BaseClassIds`（Rust 侧没有任何使用点，见
     // `ll_mod::class::BaseClassIds` 文档「哪些内容进」一节），因此它的
     // 存在性只能靠本条按字符串核对——`mods/example_mod/behavior.scm`
@@ -313,7 +313,7 @@ fn 真实mods目录装载出来的技能表无环() {
 }
 
 #[test]
-fn 本体两条基础副职由本体mod脚本注册() {
+fn 本体两条基础副职由本体mod的内容数据文件注册() {
     // Arrange
     let loaded = load_real_mods();
 
@@ -347,7 +347,7 @@ fn 本体两条基础副职由本体mod脚本注册() {
 
 #[test]
 fn 剑舞者与学徒不声明获得条件这是一条写下来的已知缺口() {
-    // 见 `mods/lostland/subclasses.scm` 文件头：`Effect::GrantSubclass`
+    // 见 `mods/lostland/subclasses.json5` 文件头：`Effect::GrantSubclass`
     // 在整个 `ll-sim` 里只有制作计数达标那一个产出点，而
     // `register-subclass-unlock` 的 trigger-kind 至今只接受
     // "items-crafted"——给一个近战/魔法副职配「做满 N 件东西」的获得
@@ -366,7 +366,7 @@ fn 剑舞者与学徒不声明获得条件这是一条写下来的已知缺口()
     for index in [ids.duelist, ids.apprentice] {
         assert!(
             loaded.subclass.craft_unlock(index).is_none(),
-            "本体这两条副职当前不声明任何获得条件，见 subclasses.scm 文件头"
+            "本体这两条副职当前不声明任何获得条件，见 subclasses.json5 文件头"
         );
     }
 }
@@ -447,21 +447,21 @@ fn 本体技能与任务的id清单不多不少就是脚本里注册的那几条
     assert_eq!(
         count_in_namespace(&|index| loaded.skill.is_defined(index)),
         5,
-        "mods/lostland/skills.scm 注册五条技能"
+        "mods/lostland/skills.json5 注册五条技能"
     );
     assert_eq!(
         count_in_namespace(&|index| loaded.quest.is_defined(index)),
         4,
-        "mods/lostland/quests.scm 注册四条任务"
+        "mods/lostland/quests.json5 注册四条任务"
     );
     assert_eq!(
         count_in_namespace(&|index| loaded.class.is_defined(index)),
         4,
-        "mods/lostland/classes.scm 注册四条职业（战士/法师/游侠/卫兵）"
+        "mods/lostland/classes.json5 注册四条职业（战士/法师/游侠/卫兵）"
     );
     assert_eq!(
         count_in_namespace(&|index| loaded.subclass.is_defined(index)),
         6,
-        "mods/lostland/subclasses.scm 注册六条副职（四条制作类 + 剑舞者/学徒）"
+        "mods/lostland/subclasses.json5 注册六条副职（四条制作类 + 剑舞者/学徒）"
     );
 }

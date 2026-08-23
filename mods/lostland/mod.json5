@@ -36,26 +36,25 @@
   version: "0.1.0",
 
   // 内容清单（哪一类写在哪个文件里）：
-  //   races.scm      种族，迁移自 `ll_mod::race::materialize_base_races`（已删除）
-  //   classes.scm    职业四条，迁移自 `ll_mod::class::materialize_base_classes`（已删除）
-  //                  + 上一批就迁进来的卫兵，见该文件头
-  //   skills.scm     技能五条，迁移自 `ll_mod::skill::materialize_base_skills`（已删除）
-  //   quests.scm     任务四条，迁移自 `ll_mod::quest::materialize_base_quests`（已删除）
-  //   crafting.scm   制作类别四条，都不设副职闸门，理由见该文件头
-  //   subclasses.scm 副职：四条制作类 + 各自的使用计数获得条件，外加迁移自
-  //                  `ll_mod::subclass::materialize_base_subclasses`（已删除）的
-  //                  剑舞者/学徒两条
-  //   tags.scm       标签名册
+  //   races.json5      种族三条
+  //   classes.json5    职业四条
+  //   skills.json5     技能五条
+  //   quests.json5     任务四条
+  //   crafting.json5   配方类别四条
+  //   subclasses.json5 副职六条
+  //   tags.json5       标签三条
   //
-  // **entry_points 只有一条，顺序不再有语义**。此前这份数组的顺序是
-  // 真实约束（crafting 必须排在 subclasses 前、classes 必须排在 skills
-  // 前），而清单里看不出为什么、也没有任何机制阻止别人改坏它。现在那
-  // 两条约束写成了 `(require "crafting")` / `(require "classes")`，就在
-  // 需要它们的那个文件里；main.scm 里的七行 require 刻意按字母序排，
-  // 与旧的工作顺序不同——顺序若还有语义，装载当场就会失败。
+  // **这七个文件不登记在本清单里**，靠固定文件名被发现——与矮人要塞的
+  // raws、RimWorld 的 defs 同一个形态。装载顺序（真实的依赖方向：配方
+  // 类别先于副职、职业先于技能）写在 `ll_mod::content_data` 的
+  // CONTENT_FILES 常量里，由引擎保证。
   //
-  // 想知道模块系统的规则（同 mod 相对路径、跨 mod 必须带 mod id 前缀
-  // 且先在 dependencies 里声明），见 `ll_script::modules` 模块文档与
-  // knowledge/design/mod-package-structure.md。
+  // 此前这两条依赖是 entry_points 数组的顺序 + 各 .scm 里的
+  // `(require ...)`——都在内容作者手上，改错了只有装载期才发现，第三方
+  // 作者照抄清单时更是根本不知道有这回事。现在内容作者写不错，也改不动。
+  //
+  // 脚本部分只剩 main.scm 与 ids.scm 两个文件（ids.scm 是跨 mod require
+  // 的示范，example_mod 在用），见 main.scm 文件头。**这是过渡状态**：
+  // 脚本引擎删除是收尾批次的事，那一批之后 entry_points 应当为空。
   entry_points: ["main.scm"],
 }

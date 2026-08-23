@@ -49,7 +49,7 @@
 //! [`非卫兵职业的实体经由turnengine一次盘查都不会发起`]：同一段代码、
 //! 同一棵真实行为树、同一个几何布局，只把卫兵的 `profession` 换成一个
 //! 不是 `lostland:guard` 的索引，`Effect::Inspect` 必须一条都不产出。
-//! 把 `mods/lostland/classes.scm` 的那条 `register-class` 删掉，或者把
+//! 把 `mods/lostland/classes.json5` 的那条 `register-class` 删掉，或者把
 //! `behavior.scm` 里 `self-has-profession?` 那个分支摘掉，正面那条测试
 //! 立刻变红。
 use std::collections::BTreeMap;
@@ -220,7 +220,7 @@ fn load_real_mods() -> RealModsHandle {
     // 得出 `behavior.scm` 里写的这个字符串，因此它必须在表里。
     //
     // **`get` 而不是 `intern`**——这一行本身就是一条断言：卫兵职业现在
-    // 是 `mods/lostland/classes.scm` 里一条真实注册的本体内容，装载
+    // 是 `mods/lostland/classes.json5` 里一条真实注册的本体内容，装载
     // 管线跑完之后它必须已经在注册表里。此前这里写的是 `intern`
     // （「查不到就现造一个」），因为整个仓库里根本没有任何脚本注册过
     // 这个职业——`behavior.scm` 引用它，`guard-try-inspect` 的第一个
@@ -229,7 +229,7 @@ fn load_real_mods() -> RealModsHandle {
     // 原因，而不是静默退化成「测试自己造了一个，生产里没有」。
     let guard_id = registry
         .get(&NamespacedId::parse("lostland:guard").expect("合法标识符"))
-        .expect("lostland:guard 应当已被 mods/lostland/classes.scm 注册");
+        .expect("lostland:guard 应当已被 mods/lostland/classes.json5 注册");
 
     RealModsHandle {
         footpad_id,
