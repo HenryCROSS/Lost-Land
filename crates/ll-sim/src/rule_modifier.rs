@@ -1,6 +1,9 @@
 //! 规则修正（[`RuleModifier`]）的**多来源聚合点**——「一个实体此刻身上
-//! 有哪些规则修正」这个问题的唯一答案处，以及在其之上的两个消费者
-//! （抗性 [`resistance_multiplier_permille`]、偷袭 [`sneak_attack_rule`]）。
+//! 有哪些规则修正」这个问题的唯一答案处，以及在其之上的四个消费者
+//! （抗性 [`resistance_multiplier_permille`]、偷袭 [`sneak_attack_rule`]、
+//! 盘查意愿 [`inspection_suspicion_permille`]、盘查藏匿
+//! [`inspection_concealment_permille`]），连同它们共用的那一条 tie-break
+//! （[`best_by_origin`]）。
 //!
 //! # 为什么单独立一个模块：项目所有者对抗性来源的裁定
 //!
@@ -13,13 +16,14 @@
 //! - **每一路来源**各有一个「收集器」，把自己那一路的声明摊平成
 //!   [`RuleModifierEntry`]（修正本身 + 它来自哪个内容条目）——天赋走
 //!   [`trait_rule_modifiers`]，装备走 [`equipment_rule_modifiers`]。
-//! - **消费者**（[`resistance_multiplier_permille`]/[`sneak_attack_rule`]）
+//! - **消费者**（[`resistance_multiplier_permille`]/[`sneak_attack_rule`]/
+//!   [`inspection_suspicion_permille`]/[`inspection_concealment_permille`]）
 //!   只收一个 `&[RuleModifierEntry]` 切片，**完全不知道有几路来源、
 //!   分别是什么**。
 //!
 //! 接第三路（技能）、第四路（药品/限时 buff）因此只需要：新写一个
 //! 收集器函数，在 [`agent_rule_modifiers`] 里多 `extend` 一次——
-//! **两个消费者的签名一个字都不用改**，它们已有的调用点也不用改。
+//! **全部消费者的签名一个字都不用改**，它们已有的调用点也不用改。
 //! 这与 `crate::traits::TraitSource` 当初把「多传一个参数」落成「切片
 //! 里多一个元素」是同一条手法，只是这次上升了一层：那一层解决的是
 //! 「天赋归谁所有」有几路，这一层解决的是「规则修正本身」有几路。
@@ -60,7 +64,7 @@
 //! `Agent::equipment` 这个 `BTreeMap<EquipSlot, _>` 的键升序，两路之间
 //! 按本函数里写死的 `extend` 顺序——全程不触碰任何 `HashMap`/`HashSet`。
 //!
-//! 更进一步：两个消费者的 tie-break **显式按 `origin` 升序**取第一条，
+//! 更进一步：全部消费者的 tie-break **显式按 `origin` 升序**取第一条，
 //! 因此即便未来某一路来源的内部顺序发生变化，结果也不会跟着变——顺序
 //! 确定性在这里是双保险，不是只靠遍历顺序。
 //!
@@ -118,8 +122,13 @@ pub const RESISTANCE_MULTIPLIER_SCALE: i32 = 1000;
 ///
 /// [`RuleModifier::Resistance`] 现在有真实的 `resolve` 侧消费者——见
 /// [`resistance_multiplier_permille`] 与
-/// `crate::resolve::resolve_attack` 文档「抗性接线」一节。其余三个变体
-/// 仍是纯声明,无消费者：
+/// `crate::resolve::resolve_attack` 文档「抗性接线」一节；
+/// [`RuleModifier::SneakAttack`] 见同一函数「偷袭接线」一节；
+/// [`RuleModifier::InspectionConcealment`] 见
+/// `crate::resolve::resolve_inspect` 文档「藏匿判定」一节；
+/// [`RuleModifier::InspectionSuspicion`] 的消费者在**脚本侧**
+/// （`ll_mod::script_behavior_api` 的 `actor-inspection-suspicion`），
+/// 理由见该变体文档。**仍然没有任何消费者的只剩下面这三个**：
 /// - [`RuleModifier::RerollOnce`] 需要 `roll_one_die` 钩子（伤害公式
 ///   引擎求值器内部的骰子取数原语），本批次不改写该求值器签名，见
 ///   `trait-system.md` 三节③「重骰」一节「代价诚实标注」段落。
@@ -193,13 +202,76 @@ pub enum RuleModifier {
         /// 不变,后续效果各自在它的结果上再叠一层"既有纪律。
         extra_damage: i32,
     },
+    /// 被动①**「不觉得可疑」**（盗贼被动两分批次）——项目所有者裁定
+    /// 原话：「被动可以分为 **2 种**，**不觉得可疑**，还有**查不出
+    /// 东西**」。本变体是前一种：**降低别人对这个实体发起盘查的
+    /// 意愿**，千分比乘数，刻度尺与 [`RESISTANCE_MULTIPLIER_SCALE`]
+    /// 共用（`1000` = 与常人无异，`0` = 永远不会被怀疑，`500` = 只有
+    /// 一半的概率被盯上）。
+    ///
+    /// # 消费者在脚本侧，不在 `resolve` 侧
+    ///
+    /// 这是本变体与本枚举其余全部变体的唯一实质差异，也是它必须与
+    /// [`RuleModifier::InspectionConcealment`] 分成两个变体、而不是
+    /// 合成一个的理由：「要不要发起盘查」这个决策**根本不经过
+    /// `resolve`**——它整个发生在 AI 决策阶段（`guard-ai-tree` 的
+    /// `rng-chance` 那一次掷骰，见 `mods/example_mod/behavior.scm`），
+    /// `Intent::Inspect` 一旦产出，`crate::resolve::resolve_inspect`
+    /// 恒执行、不重新判断「该不该查」（见该函数文档「谁来判断该不该
+    /// 发起这次盘查」一节）。本变体的值因此经
+    /// `ll_mod::script_behavior_api` 的 `actor-inspection-suspicion`
+    /// 暴露给行为树，由脚本自己决定怎么把它乘进那次掷骰的概率——
+    /// 与「盘查触发率本身就写在脚本里」（同一份 `behavior.scm` 的
+    /// `GUARD_INSPECT_CHANCE_PERMILLE`）是同一条可编辑性纪律。
+    ///
+    /// 聚合与 tie-break 仍然完全走 [`agent_rule_modifiers`]——脚本
+    /// 拿到的是本模块 [`inspection_suspicion_permille`] 算完的**一个
+    /// 数**，不是一份候选列表：多来源取哪一条这件事不下放给脚本，
+    /// 理由同本模块文档「跨来源 tie-break」一节。
+    InspectionSuspicion {
+        /// 千分比乘数，见本变体文档；与
+        /// [`RESISTANCE_MULTIPLIER_SCALE`] 同一把刻度尺。
+        multiplier_permille: i32,
+    },
+    /// 被动②**「查不出东西」**（盗贼被动两分批次）——所有者裁定里的
+    /// 后一种：盘查**照常发起**，只是搜身的人看不到你身上的东西。
+    /// `conceal_permille` 是**每一件**物品各自不被看见的千分比概率
+    /// （`0` = 藏不住任何东西，`1000` = 什么都查不出来）。
+    ///
+    /// # 为什么是逐件掷骰，不是「全藏」也不是「藏固定几件」
+    ///
+    /// 三种形状都能表达「查不出东西」，选逐件概率的理由是
+    /// [`crate::effect::Effect::Inspect`] 已经写死的那个未来消费者：
+    /// 该效果文档「为什么没有任何是否违法的判断」一节说明，等
+    /// `Owner`/`stolen_marker` 落地之后，下游要做的事是**逐堆**比对
+    /// `items_seen` 与各堆的 `owner`。那条比对的粒度是「单件物品」，
+    /// 因此本被动的粒度也必须是单件——
+    ///
+    /// - 「全藏」（一次掷骰决定整次盘查看不看得见）会让这条被动退化
+    ///   成一枚「本次犯罪是否被发现」的硬币：赃物与十件干净的杂物
+    ///   共享同一次判定，玩家带多少东西完全不影响结果，未来那条逐堆
+    ///   比对拿到的永远是「全部」或「空」两种输入。
+    /// - 「藏固定 N 件」需要回答「藏哪 N 件」，而 `items_seen` 的顺序
+    ///   （先背包原始顺序、后装备槽位升序）是一条存储顺序，不带任何
+    ///   「哪件更该被藏」的语义——按它取前 N 件是一条看起来确定、
+    ///   实则任意的规则。
+    ///
+    /// 逐件掷骰两个问题都没有：粒度对得上未来的消费者，且不需要发明
+    /// 任何「哪件更该被藏」的排序依据。代价是它消费随机数——判定走
+    /// `DetRng::for_entity`（约束 C3），取数顺序即 `items_seen` 自身
+    /// 的确定顺序（约束 C5），见
+    /// `crate::resolve::resolve_inspect` 文档「藏匿判定」一节。
+    InspectionConcealment {
+        /// 每一件物品各自不被看见的千分比概率，见本变体文档。
+        conceal_permille: i32,
+    },
 }
 
 /// 一条候选规则修正：修正本身 + **它来自哪个内容条目**。
 ///
 /// # 为什么要带 `origin`，不是裸 [`RuleModifier`] 列表
 ///
-/// 两个消费者的 tie-break 规则（`trait-system.md` 三节③「按
+/// 全部消费者的 tie-break 规则（`trait-system.md` 三节③「按
 /// `ContentIndex` 升序取第一条」）要的正是这个值——聚合之前它还能从
 /// 「第几条天赋」隐式推出来，聚合之后来源被摊平成一个列表，若不随身
 /// 带上就彻底丢了。带上之后还有第二个好处：跨来源比较有了统一的键
@@ -286,9 +358,10 @@ pub fn equipment_rule_modifiers(
 /// # 接第三、第四路来源时改哪里
 ///
 /// 只改本函数：新写一个收集器（形如 [`equipment_rule_modifiers`]），
-/// 在这里多 `extend` 一次。[`resistance_multiplier_permille`]/
-/// [`sneak_attack_rule`] 与它们在 `crate::resolve` 里的调用点都不需要
-/// 改动一个字符——这正是 `crate::traits::agent_trait_sources` 文档
+/// 在这里多 `extend` 一次。四个消费者（[`resistance_multiplier_permille`]/
+/// [`sneak_attack_rule`]/[`inspection_suspicion_permille`]/
+/// [`inspection_concealment_permille`]）与它们在 `crate::resolve`／脚本
+/// 侧的调用点都不需要改动一个字符——这正是 `crate::traits::agent_trait_sources` 文档
 /// 「其余三路为什么不在这里」所描述的那种「调用点不需要改一行」，
 /// 只是这次覆盖的是「规则修正有几路来源」这一层。
 ///
@@ -346,25 +419,118 @@ pub fn resistance_multiplier_permille(
     modifiers: &[RuleModifierEntry],
     damage_category: ContentIndex,
 ) -> i32 {
-    let mut best: Option<(ContentIndex, i32)> = None;
-    for entry in modifiers {
-        let RuleModifier::Resistance {
+    best_by_origin(modifiers, |modifier| match modifier {
+        RuleModifier::Resistance {
             damage_category: candidate_category,
             multiplier_permille,
-        } = &entry.modifier
-        else {
+        } if *candidate_category == damage_category => Some(*multiplier_permille),
+        _ => None,
+    })
+    .unwrap_or(RESISTANCE_MULTIPLIER_SCALE)
+}
+
+/// 全部消费者共用的 tie-break：在候选列表里，只看 `select` 认领的那些
+/// 条目，返回 `origin`（[`ContentIndex`]）**最小**的那一条的投影值；
+/// 一条也没有认领时返回 `None`。
+///
+/// # ADR 0021 复核：为什么这一层值得抽出来
+///
+/// ADR 0021 的判据是「有没有一份算法要被多种消费者共用」，不是对称。
+/// 这里确实有，而且是**同一段代码在本模块内被逐字重复了四次**：
+/// [`resistance_multiplier_permille`]、[`sneak_attack_rule`]、
+/// [`inspection_suspicion_permille`]、[`inspection_concealment_permille`]
+/// 四个消费者对「多条命中时取哪一条」的回答完全相同——
+/// `trait-system.md` 三节③原文「按 `ContentIndex` 升序取第一条……不取
+/// 乘积」——那条论证与「这条修正是抗性、偷袭、还是盘查减免」完全无关，
+/// 与「它来自天赋还是装备」同样无关（后者正是本模块存在的理由）。
+///
+/// 抽出来之前只有两个消费者，两份三行的循环还谈不上「一份算法」；
+/// 盗贼被动两分批次要再添两个，四份逐字相同的副本已经越过了 ADR 0021
+/// 的门槛：真正的风险不是行数，是**四份副本各自漂移**——任何一份把
+/// `<=` 写成 `<`（tie 时取后一条而不是前一条）都会让那一路悄悄依赖
+/// 切片顺序，而切片顺序恰恰是约束 C5 要求结果**不得**依赖的东西。
+///
+/// # 为什么投影用闭包，不是让四个变体实现同一个 trait
+///
+/// 四个消费者的返回类型互不相同（`i32`/[`SneakAttackRule`]/`i32`/
+/// `i32`），且各自的「认领条件」也不同（抗性还要比对
+/// `damage_category`，其余三个只看变体本身）。用一个
+/// `FnMut(&RuleModifier) -> Option<T>` 把这两件事一起交给调用方，
+/// 本函数就只剩下「取 `origin` 最小的一条」这一件事——那正是要共用的
+/// 那一份算法，不多不少。
+///
+/// # 约束 C5
+///
+/// 显式取 `origin` 最小的一条，**不依赖 `modifiers` 切片自身的顺序**：
+/// 严格小于才替换，因此同 `origin` 的两条（同一条天赋声明了两次）取
+/// 先出现的那一条——但那两条来自同一个内容条目，谁先谁后由该条目
+/// 自己的声明顺序决定，同样是注册期写死的确定顺序。
+fn best_by_origin<T>(
+    modifiers: &[RuleModifierEntry],
+    mut select: impl FnMut(&RuleModifier) -> Option<T>,
+) -> Option<T> {
+    let mut best: Option<(ContentIndex, T)> = None;
+    for entry in modifiers {
+        let Some(value) = select(&entry.modifier) else {
             continue;
         };
-        if *candidate_category != damage_category {
-            continue;
-        }
         best = match best {
             Some((best_origin, _)) if best_origin <= entry.origin => best,
-            _ => Some((entry.origin, *multiplier_permille)),
+            _ => Some((entry.origin, value)),
         };
     }
-    best.map(|(_, multiplier)| multiplier)
-        .unwrap_or(RESISTANCE_MULTIPLIER_SCALE)
+    best.map(|(_, value)| value)
+}
+
+/// 「与常人无异」的盘查意愿刻度——[`RuleModifier::InspectionSuspicion`]
+/// 与 [`inspection_suspicion_permille`] 返回值共用的分母，数值上与
+/// [`RESISTANCE_MULTIPLIER_SCALE`] 相同（都是千分比的 `1000`），但
+/// **刻意不复用同一个常量名**：两者回答的是完全不同的两个问题（「这种
+/// 伤害对我有多少意义」vs「别人有多想搜我的身」），共用一个名字只会
+/// 让将来任何一边想换刻度时误以为必须一起换。
+pub const INSPECTION_SUSPICION_SCALE: i32 = 1000;
+
+/// 被动①消费者——在 [`agent_rule_modifiers`] 汇总出的候选列表里取
+/// [`RuleModifier::InspectionSuspicion`] 的乘数；一条也没有时返回
+/// [`INSPECTION_SUSPICION_SCALE`]（与常人无异）。
+///
+/// 真正的消费点在**脚本侧**（`ll_mod::script_behavior_api` 的
+/// `actor-inspection-suspicion` → `mods/example_mod/behavior.scm` 的
+/// `guard-inspect-chance`），不是 `crate::resolve`——理由见
+/// [`RuleModifier::InspectionSuspicion`] 文档「消费者在脚本侧」一节。
+/// 聚合与 tie-break 仍然留在这里：脚本拿到的是算完的一个数。
+///
+/// tie-break 与 [`resistance_multiplier_permille`] 同一条纪律
+/// （[`best_by_origin`]）：按 `origin` 升序取第一条，不取乘积——
+/// 「不觉得可疑 500‰ 又不觉得可疑一次」不该变成 250‰，同
+/// `trait-system.md` 三节③对「免疫两次」的原始论证。
+pub fn inspection_suspicion_permille(modifiers: &[RuleModifierEntry]) -> i32 {
+    best_by_origin(modifiers, |modifier| match modifier {
+        RuleModifier::InspectionSuspicion {
+            multiplier_permille,
+        } => Some(*multiplier_permille),
+        _ => None,
+    })
+    .unwrap_or(INSPECTION_SUSPICION_SCALE)
+}
+
+/// 被动②消费者——在 [`agent_rule_modifiers`] 汇总出的候选列表里取
+/// [`RuleModifier::InspectionConcealment`] 的千分比；一条也没有时返回
+/// `0`（藏不住任何东西，等价于「没有这条被动」）。
+///
+/// 消费点是 `crate::resolve::resolve_inspect`，见其文档「藏匿判定」
+/// 一节。tie-break 同 [`inspection_suspicion_permille`]。
+///
+/// # 为什么缺省是 `0` 而不是某个刻度
+///
+/// 与抗性/盘查意愿两个**乘数**不同：这是一个**概率**，「没有这条
+/// 被动」的自然表达就是「概率为零」，不需要一把「无效果」刻度尺。
+pub fn inspection_concealment_permille(modifiers: &[RuleModifierEntry]) -> i32 {
+    best_by_origin(modifiers, |modifier| match modifier {
+        RuleModifier::InspectionConcealment { conceal_permille } => Some(*conceal_permille),
+        _ => None,
+    })
+    .unwrap_or(0)
 }
 
 /// [`sneak_attack_rule`] 的返回值——一次偷袭判定需要的两个数：幸运
@@ -393,27 +559,16 @@ pub struct SneakAttackRule {
 /// 堆叠的加法游戏，不是设计意图；哪条生效必须是与切片顺序无关的确定性
 /// 规则（约束 C5）。
 pub fn sneak_attack_rule(modifiers: &[RuleModifierEntry]) -> Option<SneakAttackRule> {
-    let mut best: Option<(ContentIndex, SneakAttackRule)> = None;
-    for entry in modifiers {
-        let RuleModifier::SneakAttack {
+    best_by_origin(modifiers, |modifier| match modifier {
+        RuleModifier::SneakAttack {
             luck_chance_permille_per_point,
             extra_damage,
-        } = &entry.modifier
-        else {
-            continue;
-        };
-        best = match best {
-            Some((best_origin, _)) if best_origin <= entry.origin => best,
-            _ => Some((
-                entry.origin,
-                SneakAttackRule {
-                    luck_chance_permille_per_point: *luck_chance_permille_per_point,
-                    extra_damage: *extra_damage,
-                },
-            )),
-        };
-    }
-    best.map(|(_, rule)| rule)
+        } => Some(SneakAttackRule {
+            luck_chance_permille_per_point: *luck_chance_permille_per_point,
+            extra_damage: *extra_damage,
+        }),
+        _ => None,
+    })
 }
 
 #[cfg(test)]
@@ -823,5 +978,119 @@ mod tests {
                 extra_damage: 4,
             })
         );
+    }
+
+    #[test]
+    fn 没有任何来源声明时两个盘查消费者各自返回自己的缺省值() {
+        // 缺省值刻意不同：意愿是**乘数**（1000 = 与常人无异），藏匿是
+        // **概率**（0 = 藏不住任何东西），见两个消费者各自的文档。
+        // Act & Assert
+        assert_eq!(
+            inspection_suspicion_permille(&[]),
+            INSPECTION_SUSPICION_SCALE
+        );
+        assert_eq!(inspection_concealment_permille(&[]), 0);
+    }
+
+    #[test]
+    fn 两个盘查规则修正各自被对应的消费者取到() {
+        // Arrange
+        let mut interner = Interner::new();
+        let training = index(&mut interner, "lostland:cutpurse_training");
+        let entries = vec![
+            RuleModifierEntry {
+                origin: training,
+                modifier: RuleModifier::InspectionSuspicion {
+                    multiplier_permille: 200,
+                },
+            },
+            RuleModifierEntry {
+                origin: training,
+                modifier: RuleModifier::InspectionConcealment {
+                    conceal_permille: 800,
+                },
+            },
+        ];
+
+        // Act & Assert：同一条天赋上的两个被动互不干扰——这正是所有者
+        // 「被动可以分为 2 种」那句裁定在聚合层的形状。
+        assert_eq!(inspection_suspicion_permille(&entries), 200);
+        assert_eq!(inspection_concealment_permille(&entries), 800);
+    }
+
+    #[test]
+    fn 两个盘查消费者不误判彼此的变体() {
+        // 反例：只声明其中一个，另一个必须落回缺省值——证明上一条不是
+        // 「随便有条规则修正就返回它的数」。
+        // Arrange
+        let mut interner = Interner::new();
+        let origin = index(&mut interner, "lostland:only_suspicion");
+        let entries = vec![RuleModifierEntry {
+            origin,
+            modifier: RuleModifier::InspectionSuspicion {
+                multiplier_permille: 0,
+            },
+        }];
+
+        // Act & Assert
+        assert_eq!(inspection_suspicion_permille(&entries), 0);
+        assert_eq!(inspection_concealment_permille(&entries), 0);
+    }
+
+    #[test]
+    fn 多条盘查声明按origin升序取第一条而不是取乘积也不依赖切片顺序() {
+        // 这条钉的是 `best_by_origin` 那份被四个消费者共用的 tie-break：
+        // 两条 500‰ 的「不觉得可疑」不该变成 250‰（那正是
+        // trait-system.md 三节③对「免疫两次」的原始论证），且哪条胜出
+        // 与调用方按什么顺序拼切片无关（约束 C5）。
+        // Arrange
+        let mut interner = Interner::new();
+        let early = index(&mut interner, "lostland:aaa_early");
+        let late = index(&mut interner, "lostland:zzz_late");
+        assert!(early < late);
+        let early_entry = RuleModifierEntry {
+            origin: early,
+            modifier: RuleModifier::InspectionSuspicion {
+                multiplier_permille: 500,
+            },
+        };
+        let late_entry = RuleModifierEntry {
+            origin: late,
+            modifier: RuleModifier::InspectionSuspicion {
+                multiplier_permille: 500,
+            },
+        };
+
+        // Act：同样两条，两种拼接顺序。
+        let forward = inspection_suspicion_permille(&[early_entry.clone(), late_entry.clone()]);
+        let backward = inspection_suspicion_permille(&[late_entry, early_entry]);
+
+        // Assert：都是 500（不是 250，也不是 1000），且两种顺序一致。
+        assert_eq!(forward, 500);
+        assert_eq!(backward, 500);
+    }
+
+    #[test]
+    fn 装备这一路也能声明盘查藏匿并被同一个消费者取到() {
+        // 「被动②只可能来自天赋」不是本模块的假设——聚合点对来源一无
+        // 所知，一件贼帽同样能声明它。这条与
+        // `装备这一路声明的抗性被收集进候选列表` 是同一条主张在新变体
+        // 上的复用。
+        // Arrange
+        let mut interner = Interner::new();
+        let cloak = index(&mut interner, "lostland:smugglers_cloak");
+        let items = FixedItems(vec![(
+            cloak,
+            vec![RuleModifier::InspectionConcealment {
+                conceal_permille: 300,
+            }],
+        )]);
+        let equipment = BTreeMap::from([(EquipSlot::OUTER, ItemStack::new(cloak, 1))]);
+
+        // Act
+        let entries = equipment_rule_modifiers(&equipment, &items);
+
+        // Assert
+        assert_eq!(inspection_concealment_permille(&entries), 300);
     }
 }

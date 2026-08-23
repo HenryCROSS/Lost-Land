@@ -37,7 +37,24 @@ impl ScriptEntityHandle {
     }
 
     /// 取出内部的 `EntityId`，供宿主侧查询/写入函数使用。
-    pub(crate) fn entity_id(&self) -> EntityId {
+    ///
+    /// # 为什么是 `pub` 而不是 `pub(crate)`（盗贼被动两分批次改）
+    ///
+    /// 落地第一天写成 `pub(crate)` 只是因为当时全部宿主侧消费者都住在
+    /// 本 crate（`crate::api::actor` 的 `direction-toward`/
+    /// `actor-stealthed?`）。`ll_mod::script_behavior_api` 的
+    /// `actor-inspection-suspicion` 是第一个**住在下游 crate** 的
+    /// 消费者——它必须住在那里，因为它要读 `ll_mod::race::RaceTable`
+    /// 这类表（见该模块文档「为什么这一个函数单独落在 `ll-mod`」
+    /// 一节），而 `ll-script` 不允许反过来依赖 `ll-mod`（规格 §5）。
+    ///
+    /// **这不削弱脚本沙箱**：真正的隔离来自
+    /// [`ScriptEntityHandle::new`] 仍然是 `pub(crate)`——脚本没有任何
+    /// 路径伪造一个句柄，也读不到内部的 `EntityId`（字段私有、
+    /// `display` 不输出数值，见类型文档）。本方法只对**宿主侧的
+    /// Rust 代码**开放，而宿主侧代码本来就持有整个 `WorldState`
+    /// 的引用，能不能把句柄换回 `EntityId` 不改变它的能力边界。
+    pub fn entity_id(&self) -> EntityId {
         self.0
     }
 }

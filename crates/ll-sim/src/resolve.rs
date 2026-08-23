@@ -80,7 +80,8 @@ use crate::resource_pool::{
     effective_scalar_capacity, effective_slot_tier_capacity,
 };
 use crate::rule_modifier::{
-    agent_rule_modifiers, resistance_multiplier_permille, sneak_attack_rule,
+    agent_rule_modifiers, inspection_concealment_permille, resistance_multiplier_permille,
+    sneak_attack_rule,
 };
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::skill_overview::SkillTreeCatalog;
@@ -999,7 +1000,15 @@ fn resolve_dispatch(
         Intent::Equip { actor, def } => resolve_equip(world, actor, def, items),
         Intent::Unequip { actor, slot } => resolve_unequip(world, actor, slot, items),
         Intent::Use { actor, def } => resolve_use_item(world, actor, def, items),
-        Intent::Inspect { actor, target } => resolve_inspect(world, actor, target),
+        Intent::Inspect { actor, target } => resolve_inspect(
+            world,
+            actor,
+            target,
+            race_traits,
+            class_traits,
+            traits,
+            items,
+        ),
         Intent::ToggleStealth { actor } => resolve_toggle_stealth(world, actor),
         Intent::Craft { actor, recipe } => resolve_craft(world, actor, recipe, recipes, items),
         Intent::AllocateAttributePoint { actor, attribute } => {
@@ -2192,7 +2201,49 @@ fn resolve_loot(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) ->
 ///
 /// 发现它的方式就是把卫兵行为树真的接上回合引擎跑一遍——「接线断在
 /// 最后一环」这类缺陷只有在真的把线接上之后才会暴露下一环。
-fn resolve_inspect(world: &WorldState, actor: EntityId, target: EntityId) -> Vec<Effect> {
+///
+/// # 藏匿判定（盗贼被动两分批次）
+///
+/// 所有者裁定「被动可以分为 **2 种**，**不觉得可疑**，还有**查不出
+/// 东西**」——后一种落在本函数：盘查照常发起、照常消耗一个回合，
+/// 只是 `items_seen` 里被藏起来的那些物品不再出现。判据是
+/// **`target` 自己**（不是盘查者）身上聚合出的
+/// [`crate::rule_modifier::RuleModifier::InspectionConcealment`]，走
+/// [`crate::rule_modifier::agent_rule_modifiers`] 这个唯一聚合点，
+/// 与 [`resolve_attack`] 读偷袭声明是同一条既有路径。
+///
+/// 逐件掷骰，不是一次判定决定整份快照——形状的完整论证见
+/// [`crate::rule_modifier::RuleModifier::InspectionConcealment`] 文档「为什么是逐件掷骰」
+/// 一节。
+///
+/// **约束 C3**：随机走 `DetRng::for_entity(世界种子, 实体 ID, 事件
+/// 计数)`，三元组的中间一项取 **`target`**（藏东西的那一方，判定属于
+/// 它的被动，不属于盘查者），事件计数用一个与本文件其余流都不同的
+/// 固定标签异或世界时钟——与 [`resolve_attack`] 里暴击/骰子/偷袭三条
+/// 流互不相同是同一套取法。
+///
+/// **约束 C5**：取数顺序就是 `items_seen` 自身的顺序（先背包原始
+/// 顺序、后装备槽位升序，两者都不触碰任何 `HashMap`）。没有任何来源
+/// 声明藏匿时（`conceal_permille <= 0`）**完全不构造这条流**，与
+/// [`resolve_attack`] 「没有声明偷袭就不构造额外 `DetRng` 流」同一条
+/// 既有纪律：每次判定都是现场造流、只取要用的那几个数,不是一条跨
+/// 调用累进的长流,因此「这次没取数」不会让后续任何取数错位。
+///
+/// # 为什么不在这里判断「盘查该不该发起」
+///
+/// 被动①（「不觉得可疑」，[`crate::rule_modifier::RuleModifier::InspectionSuspicion`]）
+/// **不在本函数**——它减的是行为树掷骰那一步，见本函数文档上一节
+/// 「谁来判断该不该发起这次盘查」与该变体自己的文档。两个被动分别
+/// 落在链路的两环，是所有者裁定「分为 2 种」的直接落地。
+fn resolve_inspect(
+    world: &WorldState,
+    actor: EntityId,
+    target: EntityId,
+    race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
@@ -2205,6 +2256,24 @@ fn resolve_inspect(world: &WorldState, actor: EntityId, target: EntityId) -> Vec
         .map(|stack| stack.def)
         .collect();
     items_seen.extend(target_agent.equipment.values().map(|stack| stack.def));
+    // 藏匿判定，见本函数文档「藏匿判定」一节。
+    const INSPECT_CONCEAL_EVENT_TAG: u64 = 0x0C0A_1EA0_0000_0000;
+    let conceal_permille = inspection_concealment_permille(&agent_rule_modifiers(
+        target_agent,
+        race_traits,
+        class_traits,
+        traits,
+        items,
+    ));
+    if conceal_permille > 0 {
+        let mut conceal_rng = ll_core::rng::DetRng::for_entity(
+            world.seed,
+            target.as_u64(),
+            (world.clock.0 as u64) ^ INSPECT_CONCEAL_EVENT_TAG,
+        );
+        // 分母 1000：千分比，与本文件其余概率判定同一把刻度尺。
+        items_seen.retain(|_| !conceal_rng.chance(conceal_permille as u32, 1000));
+    }
     let cost = action_cost(
         BASE_ACTION_COST,
         effective_speed_from_dexterity(agent.stats.dexterity),

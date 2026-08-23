@@ -32,7 +32,8 @@ use ll_world::state::WorldState;
 
 use crate::registry::Registry;
 use crate::script_behavior_api::{
-    register_profession_check_api, register_skill_ready_api, skill_index_snapshot,
+    BehaviorRuleCatalogs, register_inspection_suspicion_api, register_profession_check_api,
+    register_skill_ready_api, skill_index_snapshot,
 };
 
 /// 一个**只构造、尚未注册任何 API、尚未编译任何脚本**的行为树引擎。
@@ -92,6 +93,7 @@ impl ScriptBehaviorSource {
         tree_entry_fn: impl Into<String>,
         mod_namespace: impl Into<String>,
         registry: &Registry,
+        rule_catalogs: BehaviorRuleCatalogs,
         world_seed: u64,
     ) -> Result<Self, ScriptError> {
         Self::from_prepared(
@@ -100,6 +102,7 @@ impl ScriptBehaviorSource {
             tree_entry_fn,
             mod_namespace,
             registry,
+            rule_catalogs,
             world_seed,
         )
     }
@@ -124,12 +127,14 @@ impl ScriptBehaviorSource {
     /// [`Self::new`] 仍然可用，它只是「就地 prepare 一次再调本函数」
     /// ——在本线程还没编译过任何脚本时（例如一条只构造一个行为树来源的
     /// 测试）那样写完全合法。
+    #[allow(clippy::too_many_arguments)]
     pub fn from_prepared(
         prepared: PreparedBehaviorEngine,
         source: &str,
         tree_entry_fn: impl Into<String>,
         mod_namespace: impl Into<String>,
         registry: &Registry,
+        rule_catalogs: BehaviorRuleCatalogs,
         world_seed: u64,
     ) -> Result<Self, ScriptError> {
         let mut engine = prepared.into_engine();
@@ -143,6 +148,12 @@ impl ScriptBehaviorSource {
         // 文档「为什么复用 skill_index_snapshot」一节）再喂给
         // self-has-profession?，让行为树能判断"我是不是卫兵职业"。
         register_profession_check_api(&mut engine, skill_index.clone());
+        // 盗贼被动两分批次：被动①「不觉得可疑」要在**决策**那一步生效，
+        // 因此它的值必须让行为树看得见——见
+        // `crate::script_behavior_api::register_inspection_suspicion_api`
+        // 文档。这里传的是四张内容表的快照，不是借用：闭包要 `'static`，
+        // 理由见 `BehaviorRuleCatalogs` 类型文档。
+        register_inspection_suspicion_api(&mut engine, rule_catalogs);
         engine.load_source(source.to_string())?;
         Ok(Self {
             engine,
@@ -347,6 +358,9 @@ mod tests {
             "goblin-ai-tree",
             "examplemod",
             &registry,
+            // 哥布林那棵树不查任何规则修正，空快照即可——`actor-inspection-suspicion`
+            // 在空表上恒返回「与常人无异」，见 `BehaviorRuleCatalogs` 文档。
+            BehaviorRuleCatalogs::default(),
             1,
         )
         .expect("测试脚本应当能通过白名单并装载成功");
@@ -410,6 +424,9 @@ mod tests {
             "goblin-ai-tree",
             "examplemod",
             &registry,
+            // 哥布林那棵树不查任何规则修正，空快照即可——`actor-inspection-suspicion`
+            // 在空表上恒返回「与常人无异」，见 `BehaviorRuleCatalogs` 文档。
+            BehaviorRuleCatalogs::default(),
             1,
         )
         .expect("测试脚本应当能通过白名单并装载成功");
@@ -443,6 +460,9 @@ mod tests {
             "goblin-ai-tree",
             "examplemod",
             &registry,
+            // 哥布林那棵树不查任何规则修正，空快照即可——`actor-inspection-suspicion`
+            // 在空表上恒返回「与常人无异」，见 `BehaviorRuleCatalogs` 文档。
+            BehaviorRuleCatalogs::default(),
             1,
         )
         .expect("测试脚本应当能通过白名单并装载成功");

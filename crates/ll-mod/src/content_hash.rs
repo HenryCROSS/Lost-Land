@@ -383,7 +383,36 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// （物品的 `tags` 走上面这一段，标签的 `wear` 走 `write_tag_fields`），
 /// 再混一遍只是把同一份信息数两次，见本模块文档「哈希覆盖哪些字段」
 /// 一节「覆盖的是**声明**，不是声明的推论」同一条判据。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 13;
+///
+/// 版本 14（盗贼被动两分批次）：[`write_rule_modifier`] 新增
+/// [`RuleModifier::InspectionSuspicion`]（判别值 5）与
+/// [`RuleModifier::InspectionConcealment`]（判别值 6）——项目所有者
+/// 对盗贼被动的裁定「被动可以分为 **2 种**，**不觉得可疑**，还有
+/// **查不出东西**」的两个落点。
+///
+/// 与版本 6（`RuleModifier::SneakAttack` 判别值 4）**逐条同构**，
+/// 递增的理由因此也逐字相同：不新增内容表（[`ContentTableKind`] 的
+/// 二十个变体一个未变，[`ContentValueTables`] 的字段一个未加，
+/// `check_content_hash_gate_cross_coverage` 那条互校在本批次同样无事
+/// 可做——它只守「新增了表」），也不给任何老表新增字段（既有的
+/// `TraitDef.rule_modifiers`/`ItemDef.rule_modifiers` 两个字段一个
+/// 未动，从未使用过这两个新变体的存量内容写出的字节序列逐字节不变）。
+///
+/// **但版本号仍然必须递增**，理由与版本 6 那一段完全相同并原样适用：
+/// `RuleModifier` 是本模块「表判别字节」同一套机制在枚举层面的复用
+/// （[`write_rule_modifier`] 顶部先写一个判别值再写变体自己的字段），
+/// 新增判别值即使不改变存量内容的哈希输出，仍然按本模块一贯的保守
+/// 纪律递增，不去论证「这次改动对存量内容真的无害」这件事本身要不要
+/// 成为免于升版号的理由——那条论证本身也可能出错，递增的代价（读档
+/// 分支多判一次 `ContentHashAlgorithmUpgraded`）远低于论证出错的代价
+/// （真的漏判成 `ModContentMismatch`）。
+///
+/// 守门方式同版本 9/10：本段文字 + 本模块单元测试
+/// `新增的两个盘查规则修正变体各自混入不同的判别值`（两个新变体的
+/// 摘要必须互不相同、也不同于既有五个变体），以及版本 7 那次事故
+/// 之后立下的那条纪律——**提交信息声称改了，不等于代码里真的改了**，
+/// 本行的字面值就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 14;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1138,6 +1167,19 @@ fn write_rule_modifier(hasher: &mut StateHasher, modifier: &RuleModifier, regist
             hasher.write_u64(4);
             hasher.write_i64(i64::from(*luck_chance_permille_per_point));
             hasher.write_i64(i64::from(*extra_damage));
+        }
+        // 判别值 5/6（盗贼被动两分批次）：接着既有的 0..=4 往后编号，
+        // 不打乱任何已经写死的判别值，同本模块「判别值接着既有档往后
+        // 编号」的一贯纪律。
+        RuleModifier::InspectionSuspicion {
+            multiplier_permille,
+        } => {
+            hasher.write_u64(5);
+            hasher.write_i64(i64::from(*multiplier_permille));
+        }
+        RuleModifier::InspectionConcealment { conceal_permille } => {
+            hasher.write_u64(6);
+            hasher.write_i64(i64::from(*conceal_permille));
         }
     }
 }
@@ -2667,6 +2709,79 @@ mod tests {
 
         // Assert
         assert!(registry.content_hash_of("lostland").is_some());
+    }
+
+    /// 盗贼被动两分批次：两个新变体各自混入**互不相同**的判别值，
+    /// 也与既有五个变体互不相同——`CONTENT_HASH_ALGORITHM_VERSION`
+    /// 文档「版本 14」一节点名的那条守门断言。
+    ///
+    /// 若有人把 `InspectionSuspicion`/`InspectionConcealment` 的
+    /// `hasher.write_u64(5)`/`(6)` 写成同一个数（或复用既有的
+    /// `0..=4`），本测试立刻变红——那正是「两条不同的内容声明折出同一
+    /// 份摘要」这类事故的形式，本模块「表判别字节」机制存在的全部
+    /// 理由。
+    #[test]
+    fn 新增的两个盘查规则修正变体各自混入不同的判别值() {
+        // Arrange：同一个数值 500 喂给两个新变体，摘要仍必须不同——
+        // 差别只可能来自判别值本身。
+        let registry = Registry::new();
+        let digest = |modifier: &RuleModifier| -> u64 {
+            let mut hasher = StateHasher::new();
+            write_rule_modifier(&mut hasher, modifier, &registry);
+            hasher.finish()
+        };
+
+        // Act
+        let suspicion = digest(&RuleModifier::InspectionSuspicion {
+            multiplier_permille: 500,
+        });
+        let concealment = digest(&RuleModifier::InspectionConcealment {
+            conceal_permille: 500,
+        });
+        let reroll = digest(&RuleModifier::RerollOnce { value: 500 });
+        let sneak = digest(&RuleModifier::SneakAttack {
+            luck_chance_permille_per_point: 500,
+            extra_damage: 0,
+        });
+
+        // Assert
+        assert_ne!(suspicion, concealment);
+        assert_ne!(suspicion, reroll);
+        assert_ne!(concealment, reroll);
+        assert_ne!(suspicion, sneak);
+        assert_ne!(concealment, sneak);
+    }
+
+    /// 同一个变体、不同的数值，摘要必须不同——证明新变体混入的不只是
+    /// 判别值，字段本身也真的进了哈希（版本 9 那条「长度前缀本身也是
+    /// 新的哈希输入」同一类断言的变体级形式）。
+    #[test]
+    fn 两个盘查规则修正变体的数值字段真的进了摘要() {
+        // Arrange
+        let registry = Registry::new();
+        let digest = |modifier: &RuleModifier| -> u64 {
+            let mut hasher = StateHasher::new();
+            write_rule_modifier(&mut hasher, modifier, &registry);
+            hasher.finish()
+        };
+
+        // Act & Assert
+        assert_ne!(
+            digest(&RuleModifier::InspectionSuspicion {
+                multiplier_permille: 0,
+            }),
+            digest(&RuleModifier::InspectionSuspicion {
+                multiplier_permille: 1000,
+            })
+        );
+        assert_ne!(
+            digest(&RuleModifier::InspectionConcealment {
+                conceal_permille: 0,
+            }),
+            digest(&RuleModifier::InspectionConcealment {
+                conceal_permille: 1000,
+            })
+        );
     }
 
     #[test]
