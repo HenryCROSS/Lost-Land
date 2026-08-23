@@ -150,7 +150,7 @@ impl RecipeCategoryTable {
     ///
     /// 照抄 `skill-requires!`（`knowledge/design/skill-learn-requirements.md`
     /// 六节）与**已落地**的 `register-item-damage-category`
-    /// （[`crate::script_item_api`]）两条先例：「分类展示」与「强制
+    /// （`items.json5`）两条先例：「分类展示」与「强制
     /// 闸门」是两件独立的事，混在一起会在将来某天有人想「只分类展示、
     /// 不强制」或反过来时变成一处隐藏耦合。给一张已注册的内容表条目
     /// 追加一个可选属性，走独立函数写入同一张表，不加宽原注册函数的

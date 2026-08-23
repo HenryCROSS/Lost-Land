@@ -5,7 +5,7 @@
 //!
 //! 脚本时代这两条内容的表达式参数是 `(quote (+ attack-power str-mod))`
 //! ——一份被 `quote` 包住、从未被 Steel 求值的 `SteelVal`，由
-//! `crate::script_damage_formula_api`／`crate::script_xp_curve_api` 各自
+//! `damage_formulas.json5`／`xp_curves.json5` 各自
 //! 编译成扁平指令数组。搬进数据文件时有两种表达法：
 //!
 //! 1. **字符串**：`"(+ attack-power str-mod)"`，需要在引擎侧手写一个
@@ -28,7 +28,7 @@
 //! # 两个编译器逐字照搬，不合并
 //!
 //! [`compile_damage_formula`] 与 [`compile_xp_curve`] 分别对应
-//! `crate::script_damage_formula_api`／`crate::script_xp_curve_api` 里
+//! `damage_formulas.json5`／`xp_curves.json5` 里
 //! 那两份编译器，**逐条对齐、不合并成一份泛型实现**：两者的指令类型
 //! （[`FormulaOp`] vs [`XpCurveOp`]）、操作数类型、符号表、以及「有没有
 //! 骰子」都不同——伤害公式认 `d`／`attack-power` 一族并有指令数上限，
@@ -84,7 +84,7 @@ impl RawExpr {
 // ─────────────────────────── 伤害公式 ───────────────────────────
 
 /// 封闭的二元算子表——在递归编译任何操作数**之前**先用它确认 `op`
-/// 是不是这七个之一，理由同 `crate::script_damage_formula_api::compile_call`
+/// 是不是这七个之一，理由同 `damage_formulas.json5`
 /// 那一段：先递归会让错误信息指向一个与真正问题无关的子符号。
 const KNOWN_BINARY_OPS: [&str; 7] = ["+", "-", "*", "/", "mul-permille", "min", "max"];
 

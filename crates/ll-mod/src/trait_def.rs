@@ -33,7 +33,7 @@
 //!
 //! `trait-system.md` 四节给出的 `register-trait` 示意签名带四个效果
 //! 参数（granted-skills/stat-modifiers/rule-modifiers/
-//! granted-resource-pools）。本模块的 [`crate::script_trait_api`] 只
+//! granted-resource-pools）。本模块的 `traits.json5` 只
 //! 实现前两个位置参数（`id`/`display-name-key`）+ `granted-skills`
 //! 列表——`stat_modifiers`/`rule_modifiers` 在 Rust 结构体里已经声明好
 //! 形状（本模块），但脚本层还没有为"列表套元组"（`stat-modifiers`）与
@@ -41,7 +41,7 @@
 //! `(reroll-once ...)`）这两种 FFI 编码约定过怎么做——本代码库现有全部
 //! `register-*` 函数（`skill`/`class`/`quest`/`race`/`clip`/`xp_curve`）
 //! 都只用「扁平参数 + 字符串标签」这一种约定（见
-//! `crate::script_skill_api` 模块文档「为什么这里多出两处 FFI 转换上的
+//! `skills.json5` 模块文档「为什么这里多出两处 FFI 转换上的
 //! 麻烦」一节），没有任何一处示范过"列表里每一项本身还是一个结构"要
 //! 怎么从 `SteelVal` 转换。凭空发明一种新约定服务两个当前没有 resolve
 //! 侧消费者的字段,不是这一批的份内工作（YAGNI）——`register-race-xp-reward`
@@ -50,7 +50,7 @@
 //! 同一条先例补上。
 //!
 //! ④授予资源池容量走的正是这条「新增能力用新函数」先例——本模块新增
-//! `register-trait-resource-pool`（[`crate::script_trait_api`]），与
+//! `register-trait-resource-pool`（`traits.json5`），与
 //! `register-race-trait` 相对 `register-race` 同一个模式：追加声明
 //! 「这个天赋授予某个池多少容量」，不改 `register-trait` 已有的三参数
 //! 签名。容量公式（`fixed`/`by-level`）走扁平参数 + 字符串标签，理由
@@ -253,7 +253,7 @@ impl TraitTable {
     /// 同一件事的不同容量公式：法术位需要按等级查一张多档表
     /// （`CapacityFormula::ByLevel` + `CapacityValue::Tiered`），不是
     /// 单个 `Fixed` 数值,`register-trait-resource-pool-by-level`
-    /// （[`crate::script_trait_api`]）每调用一次追加表里的一个等级
+    /// （`traits.json5`）每调用一次追加表里的一个等级
     /// 断点,而不是每次都新开一条独立的 `ResourcePoolGrant`——若做成
     /// 后者,同一个池的多条断点会各自独立参与
     /// `effective_slot_tier_capacity` 的「跨授予来源求和」,在任意等级

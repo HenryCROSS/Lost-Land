@@ -135,7 +135,7 @@ pub struct RecipeDef {
     /// 与 [`Self::required_station`]/[`Self::required_tool`] 同一条既有
     /// 先例（`register-recipe` 的七参数签名不能改参数个数，会破坏仓库
     /// 里已有的真实 mod 脚本）——脚本层对应函数是
-    /// `recipe-requires-discovery!`（`crate::script_recipe_api`），
+    /// `recipe-requires-discovery!`（`crafting.json5`），
     /// Rust 层对应方法是 [`RecipeTable::set_requires_discovery`]。
     /// **覆盖，不是追加**：一条配方只有一个「要不要先学会」的答案。
     pub requires_discovery: bool,
@@ -256,7 +256,7 @@ impl RecipeTable {
     ///
     /// `category` 必须已注册这条校验**不在这里**——它需要
     /// [`RecipeCategoryTable`]，属于跨表校验，落在脚本注册函数
-    /// （[`crate::script_recipe_api`]）那一层，与
+    /// （`crafting.json5`）那一层，与
     /// `register-trait-resource-pool` 的 `pool-id` 存在性校验同一条
     /// 既有先例。
     pub fn define(&mut self, index: ContentIndex, attrs: RecipeAttrs) -> Result<(), RecipeError> {

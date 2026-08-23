@@ -11,7 +11,7 @@
 //!
 //! 与 [`crate::base_terrain`]/[`crate::base_placeholder`] 同一个理由：这是
 //! 「本体即 Mod」的检验点——本体剪辑注册与未来 mod 剪辑注册（经
-//! `register-animation-clip`，见 [`crate::script_clip_api`]）要走
+//! `register-animation-clip`，见 `animations.json5`）要走
 //! **完全相同**的 [`Registry::intern`] 调用。单独成模块，让
 //! [`register_base_clips`] 的实现只有唯一一行真正有意义的代码，任何人
 //! 一眼就能看出这里没有任何本体专属的特权通道。

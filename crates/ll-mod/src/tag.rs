@@ -7,7 +7,7 @@
 //! 原话点出了槽位判据错在哪：「副手也可能拿着武器,例如双刀,双盾」，
 //! 副手不等于盾，槽位携带不了这个信息。
 //!
-//! 标签本身必须**先注册**：[`crate::script_item_api`] 的
+//! 标签本身必须**先注册**：`items.json5` 的
 //! `register-item-tag` 只接受已经登记在本表里的标签，引用一个没注册过的
 //! 标签当场报错、整个 mod 装载失败（ADR 0017「注册期完整校验」）。
 //! 这条纪律拦的是 `"lostlan:armor"` 这类拼写错误——它的症状是「标签
@@ -28,7 +28,7 @@
 //! # 为什么叫 `register-tag` 而不是 `register-item-tag`
 //!
 //! `register-item-tag` 这个名字留给「**给某件物品挂上**一个标签」那半
-//! （在 [`crate::script_item_api`]，形状照 `register-item-stat-bonus`/
+//! （在 `items.json5`，形状照 `register-item-stat-bonus`/
 //! `register-item-resistance`）。两半的命名关系与
 //! `register-damage-category` / `register-item-damage-category` 完全
 //! 一致：`register-<东西>` 声明这个东西存在，`register-item-<东西>` 把它

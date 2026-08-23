@@ -28,12 +28,12 @@
 //!
 //! `default_formula` 字段按设计文档十七节的形状声明（`register-damage-category`
 //! 的第二个参数），注册期校验它若非空则必须已经通过
-//! `register-damage-formula` 注册过（见 `crate::script_damage_category_api`
+//! `register-damage-formula` 注册过（见 `damage_categories.json5`
 //! 文档）——但十九节「默认公式的挂载层级与优先级」这条完整的四层
 //! 解析链条（分项自身 → 伤害类别默认 → 武器类别默认 → 全局默认）本批次
 //! 不接线：`resolve_attack` 仍然只用
 //! `ll_sim::formula::DamageFormulaCatalog` 现有的两层（显式引用 → 全局
-//! 默认）挑公式，见 `crate::script_damage_formula_api` 模块文档「本批次
+//! 默认）挑公式，见 `damage_formulas.json5` 模块文档「本批次
 //! 排除」一节同一条 YAGNI 判断——四层解析链条服务的是"分项相加"
 //! （十八节），而分项列表本身（`DamageComponent`）依赖 `WeaponDef`/
 //! `SkillDef`（P6 范畴，见该文档二十三节前置依赖清单第 4 项），两者都

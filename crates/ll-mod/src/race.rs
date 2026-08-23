@@ -159,7 +159,7 @@ pub struct RaceDef {
     /// `register-race-xp-reward` 的关系」一节同一条先例),真正想给
     /// 种族追加天赋的 mod 作者需要额外调用
     /// [`RaceTable::add_trait_grant`]（脚本入口 `register-race-trait`,
-    /// 见 `crate::script_race_api`）。空列表表示这个种族不授予任何
+    /// 见 `races.json5`）。空列表表示这个种族不授予任何
     /// 天赋——与 `unlocked_skills` 空列表表示零解锁同一条纪律,不需要
     /// 一个独立的哨兵值。
     pub traits: Vec<TraitGrant>,
@@ -169,7 +169,7 @@ pub struct RaceDef {
     /// 参数个数，见模块文档「与 `register-race-xp-reward` 的关系」
     /// 一节同一条先例），真正想给种族声明出生物品的 mod 作者需要额外
     /// 调用 [`RaceTable::add_starting_item`]（脚本入口
-    /// `register-race-starting-item`，见 `crate::script_race_api`）。
+    /// `register-race-starting-item`，见 `races.json5`）。
     /// 空列表表示这个种族出生不带任何物品——与 `traits` 空列表表示
     /// 不授予任何天赋同一条纪律,不需要一个独立的哨兵值。
     ///
@@ -187,7 +187,7 @@ pub struct RaceDef {
 /// [`RaceTable::define`] 实际存进列式存储的属性子集——不含 `id`，理由同
 /// [`crate::class::ClassAttrs`]。**必须公开**：这是 `define` 唯一的
 /// 参数类型，任何想直接调用 `define`（而不是走 `register-race` 那条
-/// 脚本路径）的调用方——包括 `crate::script_race_api` 自己——都需要能
+/// 脚本路径）的调用方——包括 `races.json5` 自己——都需要能
 /// 构造这个类型。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RaceAttrs {

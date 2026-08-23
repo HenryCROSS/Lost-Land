@@ -81,7 +81,7 @@ use crate::registry::Registry;
 /// 这就是「本体即 Mod」在职业层面的验收标的——本体的声明与第三方 mod
 /// 的声明除了 `id` 里的命名空间字符串不同之外，不存在任何结构性差异，
 /// 两者走的是同一个 `register-class` 脚本入口（见
-/// [`crate::script_class_api`]）。
+/// `classes.json5`）。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ClassDef {
     /// 命名空间标识符，例如 `lostland:warrior`、`yourmod:necromancer`。
@@ -113,7 +113,7 @@ pub struct ClassDef {
     ///
     /// 不出现在 [`ClassTable::define`] 的参数里，走注册后追加的
     /// [`ClassTable::add_trait_grant`]（脚本入口 `register-class-trait`，
-    /// 见 [`crate::script_class_api`]）——理由同
+    /// 见 `classes.json5`）——理由同
     /// [`crate::race::RaceTable::add_trait_grant`]：`register-class`
     /// 的既有脚本签名不能改参数个数。
     pub traits: Vec<TraitGrant>,

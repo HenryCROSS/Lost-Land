@@ -163,7 +163,6 @@ pub mod recipe;
 pub mod recipe_category;
 pub mod registry;
 pub mod resource_pool;
-/// `register-tag` 的脚本绑定（耐久标签批次）。
 pub mod skill;
 pub mod subclass;
 /// 标签定义表（耐久标签批次）。

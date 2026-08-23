@@ -1693,7 +1693,7 @@ fn inspect_xp_curve(auditor: &mut Auditor<'_>, index: ContentIndex) {
 /// [`ll_sim::formula::FormulaDef`] 的全部字段——**除 `id` 与
 /// `needs_rng` 外**。`id` 的理由同 [`inspect_xp_curve`]；`needs_rng`
 /// 是编译期从 `instructions` 派生出来的布尔（见
-/// `crate::script_damage_formula_api::register_damage_formula` 文档），
+/// `damage_formulas.json5` 文档），
 /// 不是一个内容作者能独立赋值的字段，对它问"有没有内容把它设成非默认
 /// 值"没有意义——它随 `instructions` 自动变化。
 /// `content_hash::write_formula_fields` 因同一条理由跳过它。

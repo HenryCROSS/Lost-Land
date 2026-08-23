@@ -13,22 +13,13 @@ allow = [
     "Zlib",
     "Unicode-3.0",
     "OFL-1.1",
-    # 2026-08-18 项目所有者裁定加入，理由见
-    # knowledge/licenses/2026-08-18-steel-core-scan.md「甲案」一节。
-    #
+    # MPL-2.0 曾在 2026-08-18 由项目所有者裁定加入白名单，理由见
+    # knowledge/licenses/2026-08-18-steel-core-scan.md「甲案」一节：
     # steel-core（脚本引擎）默认 feature 传递依赖 im-rc/sized-chunks/
-    # bitmaps，三者均为 MPL-2.0。MPL-2.0 与规格 §3 真正要防的 GPL 是
-    # 实质不同的东西：GPL 传染到整个衍生作品、强制公开自身源码；
-    # MPL-2.0（第 3.3 节）明确允许链接进闭源程序，义务只限于
-    # 「如果你修改了 MPL 许可的源文件本身，必须以 MPL-2.0 发布那些
-    # 修改」——本项目不修改 im-rc/sized-chunks/bitmaps 的源码，只是
-    # 引用未经修改的发布版，因此义务不触发。
-    #
-    # 边界（这是加白名单时接受的代价，写清楚给后来者看）：
-    # 一旦本项目 fork 或 patch 这三个库中的任何一个（哪怕只改一行），
-    # 义务立刻生效——那次修改必须以 MPL-2.0 发布。在那之前，允许
-    # MPL-2.0 不构成对规格 §3「无 GPL、无付费」精神的违反。
-    "MPL-2.0",
+    # bitmaps 三个 MPL-2.0 库。脚本系统整体拆除后这条依赖链不存在了，
+    # 白名单里也就不再需要 MPL-2.0——重新收紧，而不是留着一条没有
+    # 消费者的豁免（留着的代价是：将来某个新依赖悄悄带进 MPL-2.0，
+    # 门禁不会响）。
 ]
 confidence-threshold = 0.9
 
@@ -37,22 +28,21 @@ multiple-versions = "warn"
 
 [advisories]
 yanked = "deny"
-# 2026-08-18 项目所有者裁定：以下 4 条是 unmaintained（仓库已归档/团队
-# 停止维护），不是已知漏洞——与上面的许可证问题性质不同，单独处理，
-# 不与许可证豁免混在一起。详见
-# knowledge/licenses/2026-08-18-steel-core-scan.md。
-# 重新评估触发条件：其中任意一条若升级成真实安全公告（RUSTSEC 的
-# advisory 类型从 unmaintained 变成 vulnerability），必须立刻从这份
-# ignore 列表移除并重新评估，不能到时候顺手继续忽略。
+# 以下这条是 unmaintained（作者停止维护），不是已知漏洞——与上面的
+# 许可证问题性质不同，单独处理，不与许可证豁免混在一起。
+# 重新评估触发条件：它若升级成真实安全公告（RUSTSEC 的 advisory 类型
+# 从 unmaintained 变成 vulnerability），必须立刻从这份 ignore 列表
+# 移除并重新评估，不能到时候顺手继续忽略。
+#
+# 此处曾另有四条（bincode/bitmaps/im-rc/sized-chunks），全部来自
+# steel-core 的依赖链，详见
+# knowledge/licenses/2026-08-18-steel-core-scan.md。脚本系统拆除后
+# 那条依赖链不存在了，四条豁免一并删除。
 ignore = [
-    "RUSTSEC-2025-0141", # bincode 1.3.3——steel-core 自身序列化依赖，团队因骚扰事件停止维护，1.3.3 被其自身认定为「完整版本」
-    "RUSTSEC-2026-0247", # bitmaps 2.1.0——im-rc 的传递依赖，仓库已归档
-    "RUSTSEC-2026-0250", # im-rc 15.1.0——steel-core 默认 feature 依赖，仓库已归档
     # 2026-08-18 追加：ttf-parser 0.25.1，经 cosmic-text → fontdb 0.23.0 传入，
     # 作者标记 unmaintained，无安全升级路径。同属 unmaintained 而非漏洞，
     # 按上述同一条纪律处理；触发条件相同。替代方案（换掉 cosmic-text）代价
     # 远大于收益——它是本项目唯一可行的 CJK 排版方案，见
     # knowledge/pipelines/text-and-font-rendering.md。
     "RUSTSEC-2026-0192", # ttf-parser 0.25.1——cosmic-text/fontdb 的字体解析依赖，作者停止维护
-    "RUSTSEC-2026-0251", # sized-chunks 0.6.5——im-rc 的传递依赖，仓库已归档
 ]

@@ -1498,7 +1498,7 @@ fn write_xp_curve_op(hasher: &mut StateHasher, op: &XpCurveOp) {
 /// 新增）——**除 `id` 外**，理由同 [`write_xp_curve_fields`] 对
 /// `XpCurveDef.id` 的处理（`entry_value_digest` 顶部已经写过同一个
 /// id，重复哈希只是冗余）。`needs_rng` 是编译期从 `instructions` 派生
-/// 出的布尔（`crate::script_damage_formula_api::register_damage_formula`
+/// 出的布尔（`damage_formulas.json5`
 /// 文档），不独立混入——它是 `instructions` 内容的纯函数，`instructions`
 /// 本身变化时它自动同步变化，不混入不会漏掉任何真实的内容差异，混入
 /// 反而是「同一份信息哈希两次」。

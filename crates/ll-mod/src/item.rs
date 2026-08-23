@@ -99,12 +99,12 @@ pub struct ItemDef {
     /// # 为什么不是 `register-item` 的参数，走 `set_equip_mask` 追加
     ///
     /// `register-item` 的脚本签名不能改参数个数（会破坏仓库里已有的
-    /// 真实 mod 脚本，见 `crate::script_item_api` 模块文档），与
+    /// 真实 mod 脚本，见 `items.json5` 模块文档），与
     /// `ItemDef.max_durability` 当初落地时定下的纪律不同：`max_durability`
     /// 恰好是 `register-item` 原有六个参数之一，本字段是全新追加的，
     /// 只能走 `register-race-xp-reward`/`register-trait-resource-pool`
     /// 那条「新增能力用新函数」的既有先例——脚本层对应函数是
-    /// `register-item-equip-mask`（`crate::script_item_api`），Rust 层
+    /// `register-item-equip-mask`（`items.json5`），Rust 层
     /// 对应方法是 [`ItemTable::set_equip_mask`]。
     pub equip_mask: SlotMask,
     /// 静态属性加成列表（P6 第四批：`derive_stats` 与装备属性接进
@@ -116,7 +116,7 @@ pub struct ItemDef {
     ///
     /// 与 [`Self::equip_mask`] 同一条既有先例（`register-item` 的六参数
     /// 签名不能改参数个数）——脚本层对应函数是
-    /// `register-item-stat-bonus`（`crate::script_item_api`），Rust 层
+    /// `register-item-stat-bonus`（`items.json5`），Rust 层
     /// 对应方法是 [`ItemTable::add_stat_bonus`]。**追加,不是覆盖**：与
     /// `equip_mask`（单值,覆盖）不同,`stat_bonuses` 是一个可以携带任意
     /// 多条加成的列表（一件装备可以同时加力量与护甲），语义上更接近
@@ -129,7 +129,7 @@ pub struct ItemDef {
     ///
     /// 与 [`Self::equip_mask`]/[`Self::stat_bonuses`] 同一条既有先例
     /// （`register-item` 的六参数签名不能改参数个数）——脚本层对应函数
-    /// 是 `register-item-use-effect`（`crate::script_item_api`），Rust
+    /// 是 `register-item-use-effect`（`items.json5`），Rust
     /// 层对应方法是 [`ItemTable::set_use_effect`]。**覆盖，不是追加**：
     /// 一件物品的使用效果是单个值,与 [`Self::equip_mask`] 同一种"单值
     /// 覆盖"语义，不像 `stat_bonuses` 那样天然是可以累积的列表。
@@ -167,7 +167,7 @@ pub struct ItemDef {
     /// 与 [`Self::equip_mask`]/[`Self::stat_bonuses`]/[`Self::use_effect`]
     /// 同一条既有先例（`register-item` 的六参数签名不能改参数个数）——
     /// 脚本层对应函数是 `register-item-penetration`
-    /// （`crate::script_item_api`），Rust 层对应方法是
+    /// （`items.json5`），Rust 层对应方法是
     /// [`ItemTable::set_penetration`]。**覆盖，不是追加**——与
     /// [`Self::use_effect`] 同一种"单值覆盖"语义：一件武器只有一份
     /// 穿透，不是可以累积的列表。
@@ -181,7 +181,7 @@ pub struct ItemDef {
     /// 与 [`Self::equip_mask`]/[`Self::stat_bonuses`]/[`Self::use_effect`]/
     /// [`Self::penetration`] 同一条既有先例（`register-item` 的六参数
     /// 签名不能改参数个数）——脚本层对应函数是
-    /// `register-item-damage-formula`（`crate::script_item_api`），Rust
+    /// `register-item-damage-formula`（`items.json5`），Rust
     /// 层对应方法是 [`ItemTable::set_damage_formula`]。**覆盖，不是
     /// 追加**——与 [`Self::penetration`] 同一种"单值覆盖"语义：一件
     /// 物品只有一份显式公式引用。
@@ -195,7 +195,7 @@ pub struct ItemDef {
     ///
     /// 与 [`Self::damage_formula`] 同一条既有先例（`register-item` 的
     /// 六参数签名不能改参数个数）——脚本层对应函数是
-    /// `register-item-damage-category`（`crate::script_item_api`），
+    /// `register-item-damage-category`（`items.json5`），
     /// Rust 层对应方法是 [`ItemTable::set_damage_category`]。**覆盖，
     /// 不是追加**——一件物品只有一份显式伤害类别引用,与
     /// [`Self::damage_formula`] 同一种"单值覆盖"语义。
@@ -219,7 +219,7 @@ pub struct ItemDef {
     ///
     /// 与 [`Self::stat_bonuses`] 同一条既有先例（`register-item` 的六
     /// 参数签名不能改参数个数）——脚本层对应函数是
-    /// `register-item-resistance`（`crate::script_item_api`），Rust 层
+    /// `register-item-resistance`（`items.json5`），Rust 层
     /// 对应方法是 [`ItemTable::add_rule_modifier`]。**追加，不是
     /// 覆盖**：一件装备可以同时声明对多个伤害类别的抗性，语义与
     /// [`Self::stat_bonuses`]/[`crate::trait_def::TraitDef::rule_modifiers`]
@@ -241,7 +241,7 @@ pub struct ItemDef {
     /// （默认值）表示这件物品没有任何标签。每一条都是
     /// [`crate::tag::TagTable`] 里已经登记过的标签索引，
     /// `register-item-tag` 在注册期校验这一点（引用未注册的标签当场
-    /// 报错，见 `crate::script_item_api` 里该函数的文档）。
+    /// 报错，见 `items.json5` 里该函数的文档）。
     ///
     /// # 为什么不是 `register-item` 的参数，走 `add_tag` 追加
     ///
@@ -277,7 +277,7 @@ pub struct ItemDef {
     ///
     /// 与 [`Self::equip_mask`]/[`Self::stat_bonuses`]/[`Self::tags`] 同
     /// 一条既有先例（`register-item` 的六参数签名不能改参数个数，会
-    /// 破坏仓库里已有的真实 mod 脚本，见 `crate::script_item_api` 模块
+    /// 破坏仓库里已有的真实 mod 脚本，见 `items.json5` 模块
     /// 文档）——脚本层对应函数是 `register-item-teaches-recipe`，Rust
     /// 层对应方法是 [`ItemTable::add_taught_recipe`]。**追加，不是
     /// 覆盖**：一本书可以教多条配方，语义与 [`Self::tags`] 一致。
@@ -674,7 +674,7 @@ impl ItemTable {
     /// `formula` 是否已经通过 `register-damage-formula` 注册——与
     /// [`Self::add_stat_bonus`] 对 `StatTarget::Attribute` 不校验属性
     /// 种类是否合法同一条既有纪律，真正的存在性校验交给调用方
-    /// （`crate::script_item_api::register_item_damage_formula`）在
+    /// （`items.json5`）在
     /// 写入前完成（ADR 0017「注册期完整校验」——校验发生在脚本绑定层，
     /// 不是本方法的职责）。
     pub fn set_damage_formula(
@@ -698,7 +698,7 @@ impl ItemTable {
     /// 覆盖"语义，见 [`ItemDef::damage_category`] 文档。本方法不校验
     /// `category` 是否已经通过 `register-damage-category` 注册——与
     /// [`Self::set_damage_formula`] 同一条既有纪律，真正的存在性校验
-    /// 交给调用方（`crate::script_item_api::register_item_damage_category`）
+    /// 交给调用方（`items.json5`）
     /// 在写入前完成。
     pub fn set_damage_category(
         &mut self,
@@ -722,7 +722,7 @@ impl ItemTable {
     /// `RuleModifier::Resistance` 里的 `damage_category` 是否已经通过
     /// `register-damage-category` 注册——与 [`Self::set_damage_category`]
     /// 同一条既有纪律，真正的存在性校验交给调用方
-    /// （`crate::script_item_api::register_item_resistance`）在写入前
+    /// （`items.json5`）在写入前
     /// 完成，与 [`crate::trait_def::TraitTable::add_rule_modifier`] 完全
     /// 对称。
     pub fn add_rule_modifier(
@@ -761,7 +761,7 @@ impl ItemTable {
     /// 本方法**不自己查标签表**：`ItemTable` 不持有、也不该持有对
     /// `TagTable` 的引用（两张表的生命周期在 `GameplayTables` 里是并列
     /// 的可变借用，互相引用会立刻撞上借用检查），查表发生在
-    /// `crate::script_item_api::do_register_item_tag` —— 那里两张表
+    /// `items.json5` —— 那里两张表
     /// 同时在手。
     pub fn add_tag(
         &mut self,
