@@ -1,4 +1,4 @@
-// 本体物品名册——二十四条。
+// 本体物品名册——二十七条。
 //
 // 搬家来历见 races.json5 文件头。schema 见
 // `crates/ll-mod/src/content_schema_gear.rs` 的 `ItemFile`。
@@ -375,6 +375,11 @@
       base_price: 12000,
       equip_slots: ["neck"],
       stat_bonuses: [{ target: "willpower", amount: 2 }],
+      // 未鉴定：一块琥珀里封着什么、值不值钱，得先看懂了才知道。
+      // **属性照常生效**——没鉴定过一样加 2 点意志，只是背包里显示成
+      // 「未鉴定的物品」，见 Agent::identified_items 文档。
+      requires_identification: true,
+      study_experience: 30,
     },
 
     // 旅人指环：左右手指各能戴一枚（同一件物品定义、两个槽位）。
@@ -388,6 +393,83 @@
       base_price: 20000,
       equip_slots: ["ring-l", "ring-r"],
       stat_bonuses: [{ target: "luck", amount: 1 }],
+      // 同琥珀坠。经验略低：一枚常见的旅人指环没有琥珀坠那么值得研究。
+      requires_identification: true,
+      study_experience: 25,
+    },
+
+    // ─────────── 未鉴定物（`requires_identification` 的其余证据） ───────────
+
+    // 蒙尘印戒：本体唯一一件**只**靠鉴定才认得出好坏的戒指。与旅人
+    // 指环同槽位、同形态，差别全在数值——正是「不鉴定就分不出这两枚
+    // 戒指哪枚好」这个玩法的直接落点。
+    {
+      id: "lostland:tarnished_signet",
+      display_name_key: "lostland:item.tarnished_signet.display_name",
+      stack_limit: 1,
+      base_weight: 70,
+      base_price: 26000,
+      equip_slots: ["ring-l", "ring-r"],
+      stat_bonuses: [{ target: "charisma", amount: 2 }],
+      requires_identification: true,
+      study_experience: 35,
+    },
+
+    // 无标小瓶：**可堆叠**的未鉴定物——鉴定的粒度是「种类」不是「某一
+    // 堆」，这一条就是那条裁定的内容证据：认出一瓶之后，背包里同种的
+    // 全部小瓶一起变得认得，此后捡到的也认得（见
+    // `Agent::identified_items` 文档「粒度是种类，不是某一堆」）。
+    //
+    // 恢复量与草药汤剂相同（30 点法力）——刻意相同：喝下去的效果与认不
+    // 认得它无关，「未鉴定不改变任何结算」这条裁定在内容层就是这么长的。
+    {
+      id: "lostland:unmarked_phial",
+      display_name_key: "lostland:item.unmarked_phial.display_name",
+      stack_limit: 10,
+      base_weight: 300,
+      base_price: 2400,
+      use_effect: { kind: "restore-resource", amount: 30, resource: "mana" },
+      requires_identification: true,
+      study_experience: 15,
+    },
+
+    // ───────────────────────── 盲盒 ─────────────────────────
+
+    // 封蜡遗物匣：本体唯一一件盲盒。项目所有者原话「我希望能加入盲盒
+    // 这种物品，鉴定了可以获取经验，同时会随机获得一件物品或者武器
+    // 装备」。
+    //
+    // 与上面那几件未鉴定物**本质不同**：普通鉴定是**揭示**（东西还在，
+    // 只是你现在认得它了），开盒是**转化**（盒子没了，换成里面那件）。
+    // 见 `ll_sim::resolve::resolve_identify` 文档开头那张对照表。
+    //
+    // 权重合计 100，一眼能读出概率：铁锭 50%、亚麻布 30%、草药束 15%、
+    // 铁短剑 5%。稀有档（那把剑）值 40000，普通档（一块铁锭 ×2）值
+    // 8000——五个百分点换五倍价值，是「多数时候开出普通货、偶尔开出好
+    // 东西」这条盲盒玩法该有的形状。
+    //
+    // **⚠ 不要给这个盒子写配方，也不要让它可购买**：开盒**每次**都给
+    // study_experience（项目所有者裁定「开盲盒都给吧，轻松点，这是
+    // 游戏」），今天无害是因为盒子只能从世界里捡到、数量有限。一旦它
+    // 可制作或可购买，经验产出的上限就没了。完整论证见
+    // `ll_mod::item::ItemDef::blind_box_pool` 文档。
+    //
+    // 20 点经验略低于同价位的未鉴定饰品（25~35）：开盒的乐趣主要在
+    // 产出物，不在「研究」本身。
+    {
+      id: "lostland:sealed_relic_box",
+      display_name_key: "lostland:item.sealed_relic_box.display_name",
+      stack_limit: 1,
+      base_weight: 1500,
+      base_price: 15000,
+      requires_identification: true,
+      study_experience: 20,
+      blind_box_pool: [
+        { item: "lostland:iron_ingot", count: 2, weight: 50 },
+        { item: "lostland:linen_cloth", count: 2, weight: 30 },
+        { item: "lostland:herb_bundle", count: 3, weight: 15 },
+        { item: "lostland:iron_shortsword", count: 1, weight: 5 },
+      ],
     },
 
     // ───────────────────────────── 书 ─────────────────────────────
@@ -409,6 +491,12 @@
       base_weight: 600,
       base_price: 9000,
       taught_recipes: ["lostland:roast_meat_recipe"],
+      // 研读经验（研究经验收窄批次）——项目所有者把研究类经验收窄成
+      // 「未鉴定物品与书籍」两条来源，这是书籍那一条在本体的唯一证据。
+      // **只有真的教到新配方那一次才给**：读第二遍恒零收益，见
+      // `ll_sim::resolve::resolve_read` 文档。它不需要鉴定（书就是书，
+      // 一眼认得），因此 requires_identification 整条不写。
+      study_experience: 40,
     },
   ],
 }

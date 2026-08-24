@@ -20,6 +20,7 @@
 //! 会让玩家的背包「少东西」而看不出原因，显示一个能定位问题的原始
 //! 索引号至少能让人发现「这里有条目对不上号」。
 
+use ll_core::ident::ContentIndex;
 use ll_i18n::Catalog;
 use ll_mod::item::ItemTable;
 use ll_world::item::ItemStack;
@@ -38,8 +39,9 @@ fn stack_line_text(
     items: &ItemTable,
     catalog: &Catalog,
     language: &str,
+    identified: &[ContentIndex],
 ) -> String {
-    let name = item_display_name(stack.def, items, catalog, language);
+    let name = item_display_name(stack.def, items, catalog, language, identified);
     let mut text = format!("{name} x{}", stack.count);
     if let Some(durability) = stack.durability {
         let label = catalog.resolve(language, "hud-inventory-durability-label");
@@ -57,6 +59,7 @@ fn write_inventory_panel_lines(
     items: &ItemTable,
     catalog: &Catalog,
     language: &str,
+    identified: &[ContentIndex],
     cursor: &mut RowCursor,
     lines: &mut Vec<Label>,
 ) {
@@ -74,7 +77,10 @@ fn write_inventory_panel_lines(
         for stack in inventory {
             cursor.push(
                 lines,
-                format!("  {}", stack_line_text(stack, items, catalog, language)),
+                format!(
+                    "  {}",
+                    stack_line_text(stack, items, catalog, language, identified)
+                ),
             );
         }
     }
@@ -87,27 +93,40 @@ pub fn inventory_panel_lines(
     items: &ItemTable,
     catalog: &Catalog,
     language: &str,
+    identified: &[ContentIndex],
     origin: (f32, f32),
     line_height: f32,
 ) -> Vec<Label> {
     let mut cursor = RowCursor::new(origin, line_height);
     let mut lines = Vec::new();
-    write_inventory_panel_lines(inventory, items, catalog, language, &mut cursor, &mut lines);
+    write_inventory_panel_lines(
+        inventory,
+        items,
+        catalog,
+        language,
+        identified,
+        &mut cursor,
+        &mut lines,
+    );
     lines
 }
 
 /// 建出背包面板：背景矩形 + 全部文本行,接入 [`super::build_panel`]
 /// 现算面板高度。
+#[allow(clippy::too_many_arguments)]
 pub fn inventory_panel(
     inventory: &[ItemStack],
     items: &ItemTable,
     catalog: &Catalog,
     language: &str,
+    identified: &[ContentIndex],
     origin: (f32, f32),
     width: f32,
 ) -> PanelContent {
     build_panel(origin, width, |cursor, lines| {
-        write_inventory_panel_lines(inventory, items, catalog, language, cursor, lines);
+        write_inventory_panel_lines(
+            inventory, items, catalog, language, identified, cursor, lines,
+        );
     })
 }
 
@@ -125,7 +144,7 @@ mod tests {
         // "lostland:item.arrow" 经 `ll_i18n::to_fluent_id` 剥离命名空间、
         // 点号换连字符后是 "item-arrow"——与 `arrow_item_table` 里
         // `display_name_key` 的取值一一对应。
-        std::fs::write(dir.join("zh-CN.ftl"), "hud-inventory-panel-title = 背包\nhud-inventory-empty = （空）\nhud-inventory-durability-label = 耐久\nitem-arrow = 箭矢\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("zh-CN.ftl"), "hud-inventory-panel-title = 背包\nhud-inventory-empty = （空）\nhud-inventory-durability-label = 耐久\nitem-arrow = 箭矢\nitem-relic = 遗物\nhud-item-unidentified = 未鉴定的物品\n").expect("测试用写入应当成功");
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -159,10 +178,109 @@ mod tests {
                     rule_modifiers: Vec::new(),
                     tags: Vec::new(),
                     taught_recipes: Vec::new(),
+                    requires_identification: false,
+                    study_experience: 0,
+                    blind_box_pool: Vec::new(),
                 },
             )
             .expect("测试用注册应当成功");
         (table, index)
+    }
+
+    /// 一件声明了 `requires_identification` 的物品，供下面两条测试
+    /// 对照——除这一条之外与 [`arrow_item_table`] 里那支箭逐字段同构。
+    fn relic_item_table() -> (ItemTable, ll_core::ident::ContentIndex) {
+        let mut interner = Interner::new();
+        let index = interner.intern(NamespacedId::parse("lostland:relic").unwrap());
+        let mut table = ItemTable::new();
+        table
+            .define(
+                index,
+                ItemAttrs {
+                    display_name_key: NamespacedId::parse("lostland:item.relic").unwrap(),
+                    stack_limit: 1,
+                    base_weight: Milli::ZERO,
+                    base_price: Milli::ZERO,
+                    max_durability: None,
+                    equip_mask: SlotMask::EMPTY,
+                    stat_bonuses: Vec::new(),
+                    use_effect: None,
+                    penetration: Penetration::NONE,
+                    damage_formula: None,
+                    damage_category: None,
+                    rule_modifiers: Vec::new(),
+                    tags: Vec::new(),
+                    taught_recipes: Vec::new(),
+                    requires_identification: true,
+                    study_experience: 10,
+                    blind_box_pool: Vec::new(),
+                },
+            )
+            .expect("测试用注册应当成功");
+        (table, index)
+    }
+
+    #[test]
+    fn 未鉴定的物品显示成未鉴定的物品而不是它的真名() {
+        // 「未鉴定不影响任何结算，只影响呈现」这条裁定在呈现层唯一的
+        // 落点，见 `super::item_display_name` 文档。
+        // Arrange
+        let dir = temp_dir("unidentified");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let (table, relic) = relic_item_table();
+
+        // Act：observer 的已鉴定列表是空的。
+        let lines = inventory_panel_lines(
+            &[ItemStack::new(relic, 1)],
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            (0.0, 0.0),
+            16.0,
+        );
+        let joined = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(joined.contains("未鉴定的物品"), "实际：{joined}");
+        assert!(!joined.contains("遗物"), "真名不该泄露：{joined}");
+    }
+
+    #[test]
+    fn 鉴定过之后同一件物品显示它的真名() {
+        // 反例的另一半：把 `identified` 从空列表换成含这条索引，同一份
+        // 输入必须给出不同的名字——若 `item_display_name` 那道判断被
+        // 摘掉，这两条测试必有一条红。
+        // Arrange
+        let dir = temp_dir("identified");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let (table, relic) = relic_item_table();
+
+        // Act
+        let lines = inventory_panel_lines(
+            &[ItemStack::new(relic, 1)],
+            &table,
+            &catalog,
+            "zh-CN",
+            &[relic],
+            (0.0, 0.0),
+            16.0,
+        );
+        let joined = lines
+            .iter()
+            .map(|l| l.text.as_str())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Assert
+        assert!(joined.contains("遗物"), "实际：{joined}");
+        assert!(!joined.contains("未鉴定的物品"), "实际：{joined}");
     }
 
     #[test]
@@ -174,7 +292,7 @@ mod tests {
         let (table, _) = arrow_item_table();
 
         // Act
-        let lines = inventory_panel_lines(&[], &table, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines = inventory_panel_lines(&[], &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -198,7 +316,8 @@ mod tests {
         let inventory = vec![ItemStack::new(index, 3)];
 
         // Act
-        let lines = inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines =
+            inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -222,7 +341,8 @@ mod tests {
         let inventory = vec![ItemStack::with_durability(index, 1, 37)];
 
         // Act
-        let lines = inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines =
+            inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -246,7 +366,8 @@ mod tests {
         let inventory = vec![ItemStack::new(index, 1)];
 
         // Act
-        let lines = inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines =
+            inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -272,7 +393,8 @@ mod tests {
         let inventory = vec![ItemStack::new(unknown, 1)];
 
         // Act
-        let lines = inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines =
+            inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -295,7 +417,7 @@ mod tests {
         let (table, _) = arrow_item_table();
 
         // Act
-        let panel = inventory_panel(&[], &table, &catalog, "zh-CN", (0.0, 0.0), 220.0);
+        let panel = inventory_panel(&[], &table, &catalog, "zh-CN", &[], (0.0, 0.0), 220.0);
 
         // Assert
         assert_eq!(panel.rect.width, 220.0);

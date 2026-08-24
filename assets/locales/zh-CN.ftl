@@ -81,6 +81,9 @@ item-wool_gloves-display_name = 羊毛手套
 item-amber_pendant-display_name = 琥珀坠
 item-traveler_ring-display_name = 旅人指环
 item-field_cookbook-display_name = 野外食谱
+item-tarnished_signet-display_name = 蒙尘印戒
+item-unmarked_phial-display_name = 无标小瓶
+item-sealed_relic_box-display_name = 封蜡遗物匣
 
 # 本体配方（mods/lostland/crafting.json5，九条）——
 # ll-mod RecipeAttrs::display_name_key。
@@ -156,6 +159,7 @@ attribute-luck-display_name = 幸运
 hud-inventory-panel-title = 背包
 hud-inventory-empty = （空）
 hud-inventory-durability-label = 耐久
+hud-item-unidentified = 未鉴定的物品
 
 hud-equipment-panel-title = 装备
 hud-equipment-empty-slot = （空）

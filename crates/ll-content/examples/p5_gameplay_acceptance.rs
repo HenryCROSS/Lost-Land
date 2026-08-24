@@ -282,6 +282,7 @@ fn bare_agent(world: &WorldState, pos: TorusPos) -> Agent {
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),

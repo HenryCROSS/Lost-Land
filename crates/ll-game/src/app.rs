@@ -746,6 +746,9 @@ fn draw_hud(
         &character,
         &agent.inventory,
         &agent.equipment,
+        // 观察者是玩家自己——未鉴定的东西在背包/装备两块面板上显示成
+        // 「未鉴定的物品」，见 `ll_ui::hud::item_display_name`。
+        &agent.identified_items,
         &content.item_table,
         &content.item_table,
         catalog,

@@ -1646,6 +1646,9 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
     let rule_modifiers = view.rule_modifiers.to_vec();
     let tags = view.tags.to_vec();
     let taught_recipes = view.taught_recipes.to_vec();
+    let requires_identification = view.requires_identification;
+    let study_experience = view.study_experience;
+    let blind_box_pool = view.blind_box_pool.to_vec();
 
     auditor.field("ItemAttrs::display_name_key", true);
     auditor.field("ItemAttrs::stack_limit", stack_limit != 0);
@@ -1731,6 +1734,27 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
             "ItemAttrs::taught_recipes",
             *recipe,
             ReferenceExpectation::Table(ContentTableKind::Recipe),
+        );
+    }
+    // 未鉴定物品批次新增的两列——纯值，没有跨表引用，因此只记字段覆盖
+    // （「内容里有没有人真的用上它」），与上面 `penetration` 那条同一
+    // 形状。
+    auditor.field(
+        "ItemAttrs::requires_identification",
+        requires_identification,
+    );
+    auditor.field("ItemAttrs::study_experience", study_experience != 0);
+    // 盲盒批次新增的 `ItemDef.blind_box_pool`——与上面 `taught_recipes`
+    // 那一段逐行同构：一条字段覆盖 +（每条）一次跨表引用校验。这里的
+    // 引用校验是注册期那道（`apply_item_extras` 要求候选物品已注册）的
+    // 第二道独立防线，因此**绕过数据文件直接调用 Rust API** 的路径也被
+    // 兜住，与 `tags` 那一段同一条立场。
+    auditor.field("ItemAttrs::blind_box_pool", !blind_box_pool.is_empty());
+    for entry in &blind_box_pool {
+        auditor.reference(
+            "ItemAttrs::blind_box_pool",
+            entry.item,
+            ReferenceExpectation::Table(ContentTableKind::Item),
         );
     }
 }
@@ -2139,6 +2163,9 @@ mod tests {
                         rule_modifiers: Vec::new(),
                         tags: Vec::new(),
                         taught_recipes: Vec::new(),
+                        requires_identification: false,
+                        study_experience: 0,
+                        blind_box_pool: Vec::new(),
                     },
                 )
                 .expect("测试用物品定义内部自洽");

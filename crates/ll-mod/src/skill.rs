@@ -940,6 +940,7 @@ mod tests {
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
             mod_state: std::collections::BTreeMap::new(),

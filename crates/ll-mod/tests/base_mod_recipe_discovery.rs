@@ -274,6 +274,7 @@ fn spawn_agent(
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes,
+        identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses,
         active_stat_modifiers: BTreeMap::new(),

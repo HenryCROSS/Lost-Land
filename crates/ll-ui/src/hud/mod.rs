@@ -117,14 +117,40 @@ pub(crate) fn build_panel(
 /// 查一件物品的显示名——[`inventory_panel`]/[`equipment_panel`] 共用，
 /// 查不到定义时退化成 `#<索引>`（见 [`inventory_panel`] 模块文档「查不
 /// 到物品定义时怎么办」一节），不 panic、不悄悄跳过。
+///
+/// # 未鉴定的东西显示成什么（未鉴定物品批次）
+///
+/// `identified` 是**观察者**已经认得的物品种类列表
+/// （[`ll_world::entity::Agent::identified_items`]）。一件声明了
+/// `requires_identification` 而又不在这个列表里的东西，名字换成
+/// `hud-item-unidentified`——「未鉴定不影响任何结算，只影响呈现」这条
+/// 裁定的**唯一**落点就在这个函数里（见该字段文档）。
+///
+/// 参数是「观察者认得哪些」而不是「玩家认得哪些」：同一件物品在两个
+/// 不同角色的面板上本就该显示成不同的名字，把它做成全局状态会在有随从
+/// 面板的那一天立刻塌掉。
+///
+/// # 为什么只有一句笼统的「未鉴定的物品」，不是「一把未知的剑」
+///
+/// 分门别类的说法（剑/药水/卷轴）需要内容作者再声明一条「这属于哪个
+/// 外观类别」的字段，而那个字段今天没有任何别的消费者——YAGNI 与
+/// ADR 0021 同时指向「先不加」。真要加，加法是 `ItemDef` 上一条指向
+/// 本地化键的 `unidentified_name_key`，本函数改成「有就用它、没有就
+/// 退回这句笼统的」，不需要改这里的任何调用点。
 pub(crate) fn item_display_name(
     def: ContentIndex,
     items: &ItemTable,
     catalog: &Catalog,
     language: &str,
+    identified: &[ContentIndex],
 ) -> String {
     match items.get(def) {
-        Some(view) => catalog.resolve(language, &view.display_name_key.to_string()),
+        Some(view) => {
+            if view.requires_identification && !identified.contains(&def) {
+                return catalog.resolve(language, "hud-item-unidentified");
+            }
+            catalog.resolve(language, &view.display_name_key.to_string())
+        }
         None => format!("#{}", def.get()),
     }
 }

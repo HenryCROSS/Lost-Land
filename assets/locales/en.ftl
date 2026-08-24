@@ -72,6 +72,9 @@ item-wool_gloves-display_name = Wool Gloves
 item-amber_pendant-display_name = Amber Pendant
 item-traveler_ring-display_name = Traveler's Ring
 item-field_cookbook-display_name = Field Cookbook
+item-tarnished_signet-display_name = Tarnished Signet
+item-unmarked_phial-display_name = Unmarked Phial
+item-sealed_relic_box-display_name = Sealed Relic Box
 
 # Base-game recipes (mods/lostland/crafting.json5, nine entries) —
 # ll-mod RecipeAttrs::display_name_key.
@@ -137,6 +140,7 @@ attribute-luck-display_name = Luck
 hud-inventory-panel-title = Inventory
 hud-inventory-empty = (empty)
 hud-inventory-durability-label = Durability
+hud-item-unidentified = an unidentified item
 
 hud-equipment-panel-title = Equipment
 hud-equipment-empty-slot = (empty)

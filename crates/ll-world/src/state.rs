@@ -1085,6 +1085,16 @@ impl WorldState {
             // `crates/ll-world/tests/determinism.rs`
             // 「新增已知配方字段后世界哈希必须变化」一节。
             write_content_index_vec(&mut hasher, &agent.known_recipes);
+            // 已鉴定物品种类（未鉴定物品批次新增）——ADR 0022 的同一条
+            // 纪律，且这里**不能**用「反正不改结算所以不必混入」来省掉：
+            // 这个字段由 `ll_sim::apply` 处理 `Effect::IdentifyItem` 时
+            // 改写，是货真价实的世界状态，而 ADR 0022 要的是「世界哈希
+            // 覆盖全部会被改写的世界状态」，不是「覆盖全部会影响战斗
+            // 数值的世界状态」。不混入的后果是「鉴定悄悄没落地/多认了
+            // 一种」这一类跑偏在重放摘要上完全看不出来。编码手法与上面
+            // `known_recipes` 逐字相同（先混入长度、再逐项混入，`Vec`
+            // 保序，不涉及 `HashMap`/`HashSet` 迭代顺序，约束 C5）。
+            write_content_index_vec(&mut hasher, &agent.identified_items);
             hasher.write_u64(agent.skill_cooldowns.len() as u64);
             for (skill, until) in &agent.skill_cooldowns {
                 hasher.write_u64(u64::from(skill.get()));
@@ -1671,6 +1681,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -1733,6 +1744,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -1949,6 +1961,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2021,6 +2034,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2085,6 +2099,7 @@ mod tests {
             resting,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2159,6 +2174,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2452,6 +2468,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
@@ -2877,6 +2894,7 @@ mod tests {
             resting: None,
             unlocked_skills: Vec::new(),
             known_recipes: Vec::new(),
+            identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),

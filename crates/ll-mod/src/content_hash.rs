@@ -472,7 +472,38 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// `ItemAttrs::rule_modifiers::modifier_type` 两条花名册观察，以及版本 7
 /// 那次事故之后立下的那条纪律——**提交信息声称改了，不等于代码里真的
 /// 改了**，本行的字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 16;
+///
+/// ---
+///
+/// 版本 16（未鉴定物品批次 + 研究经验收窄 + 盲盒批次）：**同一张老表
+/// 新增三列字段**，任一条单独都足以逼着版本号动——
+///
+/// - `ItemDef.requires_identification`（布尔），[`write_item_fields`]
+///   因此多混入一个 0/1 字节位；
+/// - `ItemDef.study_experience`（`i64`），多混入一个整数；
+/// - `ItemDef.blind_box_pool`（列表），多混入一段「条数 + 逐条(产出物
+///   解析回 `NamespacedId` 字符串, 数量, 权重)」。
+///
+/// 与版本 15 的 `ItemDef.taught_recipes` 逐条同构：布尔 `0`／整数 `0`
+/// ／长度前缀 `0` 也都是一段此前不存在的字节，因此**每一件物品**的条目
+/// 摘要都变了（即便它一眼就认得、研究不值经验、也不是盲盒）——否则
+/// 「没有声明」与「声明恰好编码成空」会撞在一起，理由同版本 12 那段
+/// `None` 判别字节。
+///
+/// `ContentTableKind` 的二十个变体一个未变、`ContentValueTables` 的
+/// 字段一个未加，因此 `check_content_hash_gate_cross_coverage` 那条互校
+/// 在本批次同样无事可做（它只守「新增了表」）。
+///
+/// 守门方式同版本 13/14/15：本段文字 + 本模块单元测试
+/// `需要鉴定的物品与不需要鉴定的物品摘要不同`、
+/// `研究经验不同的物品摘要不同` 与 `盲盒池不同的物品摘要不同`，以及
+/// 版本 7 那次事故之后立下的那条纪律——**提交信息声称改了，不等于代码
+/// 里真的改了**，本行的字面值就是唯一权威。
+///
+/// **版本 17**：上面两段所述的两批改动最终合并落地在同一个版本号上——
+/// 加值类型那批与未鉴定/盲盒那批各自独立开发时都写成 16，合并时两批的
+/// 哈希输入同时存在，因此实际的量尺是两者之和，版本号必须是 17。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 17;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1442,6 +1473,26 @@ fn write_item_fields(
     // 字符串；绝不混入下标本身，下标依赖装载顺序）。长度前缀即便是 0
     // 也要写，理由同 `max_durability` 的 `None` 判别字节。
     write_resolved_content_index_slice(hasher, view.taught_recipes, registry);
+    // 未鉴定物品批次新增的 `ItemDef.requires_identification` 与
+    // `ItemDef.study_experience`——布尔混成 0/1 一个字节位（手法同
+    // `write_recipe_fields` 的 `requires_discovery`），经验值按普通
+    // `i64`。两条即便取默认值（`false` / `0`）也照写，理由同上面
+    // `max_durability` 的 `None` 判别字节：「没有声明」与「声明成默认
+    // 值」在值哈希里必须是同一段字节（它们本来就是同一件事），但这一
+    // 段本身此前**不存在**，因此每一件物品的条目摘要都会变——那正是
+    // `CONTENT_HASH_ALGORITHM_VERSION` 必须递增到 16 的原因。
+    hasher.write_u64(u64::from(view.requires_identification));
+    hasher.write_i64(view.study_experience);
+    // 盲盒批次新增的 `ItemDef.blind_box_pool`——先写条数，再逐条把产出
+    // 物的 `ContentIndex` 解析回 `NamespacedId` 字符串（绝不混入下标
+    // 本身，下标依赖装载顺序），后接数量与权重两个整数。长度前缀即便
+    // 是 0 也要写，理由同上。
+    hasher.write_u64(view.blind_box_pool.len() as u64);
+    for entry in view.blind_box_pool {
+        write_optional_resolved(hasher, Some(entry.item), registry);
+        hasher.write_u64(u64::from(entry.count));
+        hasher.write_u64(u64::from(entry.weight));
+    }
 }
 
 /// 混入一个 [`SlotMask`]——直接混入底层位表示
@@ -2249,6 +2300,9 @@ mod tests {
                 rule_modifiers: Vec::new(),
                 tags: Vec::new(),
                 taught_recipes: Vec::new(),
+                requires_identification: false,
+                study_experience: 0,
+                blind_box_pool: Vec::new(),
             }
         }
 
@@ -2427,6 +2481,9 @@ mod tests {
                 rule_modifiers: Vec::new(),
                 tags: Vec::new(),
                 taught_recipes: Vec::new(),
+                requires_identification: false,
+                study_experience: 0,
+                blind_box_pool: Vec::new(),
             }
         }
 
@@ -2985,6 +3042,9 @@ mod tests {
             rule_modifiers: Vec::new(),
             tags: Vec::new(),
             taught_recipes: taught,
+            requires_identification: false,
+            study_experience: 0,
+            blind_box_pool: Vec::new(),
         };
 
         let digest = |taught: Vec<ContentIndex>| -> u64 {
@@ -3010,6 +3070,89 @@ mod tests {
         assert_ne!(teaches_one, teaches_two);
         assert_ne!(teaches_one, teaches_both);
         assert_ne!(teaches_nothing, teaches_both);
+    }
+
+    /// 未鉴定物品批次与盲盒批次新增的三列 `ItemDef` 字段真的各自进了
+    /// 摘要——见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 16」一节。
+    ///
+    /// 三条各守一个具体的失效模式：
+    ///
+    /// - `requires_identification`：把一件东西悄悄改成「不用鉴定」，
+    ///   存档若察觉不到，玩家读档后会发现自己「早就认得」一件本该先
+    ///   鉴定的东西。
+    /// - `study_experience`：把经验值悄悄改掉，是一次静默的数值平衡
+    ///   改动，正是 ADR 0022/0027 要求值哈希覆盖的那一类。
+    /// - `blind_box_pool`：把盒子的产出档位或权重悄悄改掉——这是最难
+    ///   察觉的一类（玩家只会觉得「今天手气不好」）。
+    #[test]
+    fn 鉴定相关三列字段各自都进了物品摘要() {
+        // Arrange：一件基准物品，逐列改一处再比。
+        use crate::item::ItemAttrs;
+        use ll_core::scaled::Milli;
+        use ll_sim::combat::Penetration;
+        use ll_sim::item::{BlindBoxEntry, SlotMask};
+
+        let mut registry = Registry::new();
+        let thing = registry.intern(id("yourmod:thing"));
+        let prize_one = registry.intern(id("yourmod:prize_one"));
+        let prize_two = registry.intern(id("yourmod:prize_two"));
+
+        let digest = |requires: bool, xp: i64, pool: Vec<BlindBoxEntry>| -> u64 {
+            let mut table = ItemTable::new();
+            table
+                .define(
+                    thing,
+                    ItemAttrs {
+                        display_name_key: id("yourmod:item.thing"),
+                        stack_limit: 1,
+                        base_weight: Milli::from_whole(1),
+                        base_price: Milli::from_whole(2),
+                        max_durability: None,
+                        equip_mask: SlotMask::EMPTY,
+                        stat_bonuses: Vec::new(),
+                        use_effect: None,
+                        penetration: Penetration::NONE,
+                        damage_formula: None,
+                        damage_category: None,
+                        rule_modifiers: Vec::new(),
+                        tags: Vec::new(),
+                        taught_recipes: Vec::new(),
+                        requires_identification: requires,
+                        study_experience: xp,
+                        blind_box_pool: pool,
+                    },
+                )
+                .expect("测试用声明内部自洽");
+            let mut hasher = StateHasher::new();
+            write_item_fields(&mut hasher, &table, thing, &registry);
+            hasher.finish()
+        };
+        let entry = |item: ContentIndex, count: u32, weight: u32| BlindBoxEntry {
+            item,
+            count,
+            weight,
+        };
+
+        // Act
+        let baseline = digest(false, 0, Vec::new());
+
+        // Assert：三列各自单独改动都必须改变摘要，盲盒池的三个分量
+        // （产出物 / 数量 / 权重）也要各自可分辨。
+        assert_ne!(baseline, digest(true, 0, Vec::new()));
+        assert_ne!(baseline, digest(false, 1, Vec::new()));
+        assert_ne!(baseline, digest(false, 0, vec![entry(prize_one, 1, 1)]));
+        assert_ne!(
+            digest(false, 0, vec![entry(prize_one, 1, 1)]),
+            digest(false, 0, vec![entry(prize_two, 1, 1)])
+        );
+        assert_ne!(
+            digest(false, 0, vec![entry(prize_one, 1, 1)]),
+            digest(false, 0, vec![entry(prize_one, 2, 1)])
+        );
+        assert_ne!(
+            digest(false, 0, vec![entry(prize_one, 1, 1)]),
+            digest(false, 0, vec![entry(prize_one, 1, 2)])
+        );
     }
 
     /// 配方发现批次新增的 `RecipeDef.requires_discovery` 真的进了摘要

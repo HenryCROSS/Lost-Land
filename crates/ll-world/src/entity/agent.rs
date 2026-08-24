@@ -282,6 +282,55 @@ pub struct Agent {
     /// `ll_sim::resolve::resolve_read`（读书）与
     /// `ll_sim::resolve::resolve_experiment`（试做）。
     pub known_recipes: Vec<ContentIndex>,
+    /// 已经鉴定出来的**物品种类**集合（未鉴定物品批次）——项目所有者
+    /// 裁定「可以加入未鉴定物品，通过鉴定获取属性和说明，同时就能获得
+    /// 经验」在世界状态层唯一的落点。每一条都是指向物品表的
+    /// [`ContentIndex`]。
+    ///
+    /// # 粒度是**种类**，不是某一堆
+    ///
+    /// 「认出了铁短剑这个种类」而不是「认出了我背包第三格这一堆」。三条
+    /// 独立的理由：
+    ///
+    /// 1. **这是传统 roguelike 的既定形状**：认出一种药水之后，此后遇到
+    ///    的同种药水一律认得——那正是「鉴定」这个词在这个类型里的含义。
+    /// 2. **逐堆记录需要一个背包里根本不存在的稳定实例身份。** 背包是
+    ///    `Vec<ItemStack>`，堆会合并（[`crate::item::merge_stacks`]）、
+    ///    会溢出、会因数量减到零而整条消失，下标随时前移；
+    ///    `ll_sim::effect::InspectedItem` 文档「这是快照期的位置，不是
+    ///    跨回合的持久句柄」已经把这条讲透。逐堆鉴定要先造出稳定实例
+    ///    id，那是另一整个批次的问题。
+    /// 3. **本字段的形状与 [`Self::known_recipes`] 逐字同构**，两者回答
+    ///    的是同一类问题（「这个角色认识哪些内容条目」）。
+    ///
+    /// # 未鉴定**不影响任何结算**
+    ///
+    /// 一把没鉴定过的剑照样按它真实的属性打人：`ll_sim::resolve` 的战斗、
+    /// 装备、使用三条路径**都不查本字段**（唯一的读取者是
+    /// `ll_sim::resolve::resolve_identify` 自己的重复闸门，以及呈现层
+    /// `ll_ui::hud::item_display_name`）。「不知道它是什么」是**玩家**
+    /// 的认知状态，不是物品的物理状态——把它做成属性开关会立刻引出
+    /// 「未鉴定的护甲挡不挡刀」这类没有正确答案的问题，也会让同一件
+    /// 装备在两个角色身上有两套数值。因此世界状态只记「谁认识哪些
+    /// 种类」，呈现层据此把名字换成「未鉴定的物品」。
+    ///
+    /// # `Vec` 不是 `BTreeSet`
+    ///
+    /// 与 [`Self::known_recipes`]/[`Self::unlocked_skills`] 逐字同理，
+    /// 且这条论证在这里**照样成立**（不是照抄）：查询模式同样是「这个
+    /// `ContentIndex` 在不在里面」（`contains`，`O(n)`）；n 的量级同样
+    /// 有界——它的上限是「内容里声明了 `requires_identification` 的物品
+    /// 种类数」，而那是一个由内容作者写死的、与玩家行为无关的常数
+    /// （本体当前 3 条）。「不重复插入」同样由写入路径自己保证
+    /// （`resolve_identify` 先查 `contains`，已经认识就整条静默失败）。
+    ///
+    /// # 唯一写入口是 `apply`（约束 C1 / ADR 0023）
+    ///
+    /// 与 [`Self::known_recipes`] 同一条纪律：本字段属 `WorldState`，
+    /// 不属 [`Self::mod_state`]，因此写入必须走一个独立的 `Effect` 变体
+    /// （`ll_sim::effect::Effect::IdentifyItem`）经 `ll_sim::apply::apply`
+    /// 落地，不能塞进 `Effect::SetModState`。
+    pub identified_items: Vec<ContentIndex>,
     /// 各技能的冷却到期时刻——**到期时刻，不是「剩余时长」**（关键设计
     /// 判断 4 的惰性到期判定：存一个会随时间流逝而变得过时的「还剩多少」
     /// 需要每帧主动递减维护，存「到期于哪一刻」则只需要在真正查询「能不
@@ -643,6 +692,8 @@ mod tests {
             interner.intern(NamespacedId::parse("lostland:ranger_subclass").expect("合法标识符"));
         let roast_recipe =
             interner.intern(NamespacedId::parse("lostland:roast_meat_recipe").expect("合法标识符"));
+        let amber_pendant =
+            interner.intern(NamespacedId::parse("lostland:amber_pendant").expect("合法标识符"));
         let mut world_id_counter = 7u32;
         let zone = ll_core::torus::TorusSize::new(48, 32)
             .expect("48x32 是合法尺寸")
@@ -696,6 +747,9 @@ mod tests {
             // `Vec`），序列化往返测试对它等于没测（空 `Vec` 序列化恒
             // 等于自身）。
             known_recipes: vec![roast_recipe],
+            // 非空——理由同上一行：未鉴定物品批次新增的字段若在这里
+            // 取默认值（空 `Vec`），序列化往返测试对它等于没测。
+            identified_items: vec![amber_pendant],
             skill_cooldowns: BTreeMap::from([(power_strike, Tick(120))]),
             subclasses: vec![ranger_subclass],
             active_stat_modifiers: BTreeMap::from([(
