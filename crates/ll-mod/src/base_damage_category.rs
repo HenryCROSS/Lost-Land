@@ -5,18 +5,37 @@
 //! 这一个索引，见 [`ll_sim::damage_category::DamageCategoryCatalog`]
 //! 文档。
 //!
-//! # 为什么只注册一个（`lostland:physical`），不是三个
+//! # 为什么这里只注册一个（`lostland:physical`），不是三个
 //!
 //! 十九节原文的三个本体默认类别（`lostland:physical`/`lostland:magic`/
 //! `lostland:spirit`）分别对应 `DamageSchool` 的三个变体——但
 //! `DamageSchool` 本身在当前代码库里还不存在（`crates/ll-world/src/item.rs`
 //! 「为什么不是只有 `AttributeKind` 一种取值」一节已核实：`resolve_attack`
 //! 本批次仍是纯物理近战占位实现，三轴战斗结算本身是后续批次的工作）。
-//! 本批次因此只注册与当前唯一存在的战斗形态（纯物理近战）对应的一个
+//! 本模块因此只注册与当前唯一存在的战斗形态（纯物理近战）对应的一个
 //! 默认类别，不预先注册另外两个没有任何路径能产出"魔法伤害"/"精神
 //! 伤害"的死类别——`DamageSchool` 真正落地时，照本模块的先例各加一个
 //! 即可，与 `ll_world::item::StatTarget` 文档「为什么不现在就加魔抗/
 //! 意志抗性两个变体」同一条 YAGNI 判断。
+//!
+//! 上面这段论证**至今一字未改地成立**，但它论证的是「魔法/精神这两个
+//! 特定类别不注册」，不是「本体只能有一个伤害类别」。本体的第二个
+//! 伤害类别 `lostland:fire` 已经落地——它走的是**内容数据文件**那条
+//! 通道（`mods/lostland/damage_categories.json5`），不在本模块里，
+//! 因为它不需要引擎在 `load_all` 之前就知道它：
+//!
+//! * 本模块注册的这一个之所以必须走 Rust 侧，是因为它同时是
+//!   [`ll_sim::damage_category::DamageCategoryCatalog::default_category`]
+//!   ——「没有任何声明时退回哪一类」这个问题必须在任何 mod 装载之前
+//!   就有答案（同 [`crate::base_damage_formula`]）。
+//! * `lostland:fire` 没有这条约束：它只是一个普通类别，与
+//!   `mods/example_mod/damage_categories.json5` 的 `examplemod:acid`
+//!   走同一条路径、同一套校验，没有任何本体专属通道。这正是「本体即
+//!   Mod」想要的形状——本模块的存在是**默认值**这个语义的代价，不是
+//!   本体内容的入口。
+//!
+//! 换句话说：本模块里永远只会有「全局默认」那一个；本体想加第几个
+//! 伤害类别，都加在内容数据文件里。
 //!
 //! # 为什么走与 [`crate::base_damage_formula`] 完全相同的模式
 //!

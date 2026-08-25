@@ -1,4 +1,4 @@
-// 本体物品名册——二十七条。
+// 本体物品名册——二十九条（本批次新增锻炉烙铁与锻炉围裙两条）。
 //
 // 搬家来历见 races.json5 文件头。schema 见
 // `crates/ll-mod/src/content_schema_gear.rs` 的 `ItemFile`。
@@ -219,6 +219,40 @@
       tags: ["lostland:armor", "lostland:weapon"],
     },
 
+    // 锻炉烙铁：本体唯一一件**显式声明伤害类别**的武器——打的是
+    // `lostland:fire`，不是全局默认的 `lostland:physical`。第二个本体
+    // 伤害类别落地之前，这个字段在本体侧写不出有意义的值，
+    // content_audit 为此挂过一条字段豁免；那条豁免随本条内容摘除，
+    // 理由见 mods/lostland/damage_categories.json5 文件头。
+    //
+    // 它与铁短剑正好组成**正交的两半**，这正是想写下来的事：
+    //
+    //   * 铁短剑：声明 `damage_formula`，不声明 `damage_category`；
+    //   * 锻炉烙铁：声明 `damage_category`，不声明 `damage_formula`。
+    //
+    // 「伤害公式」与「伤害类别」是两条互不相干的轴
+    // （`damage-formula-mod-api.md` 十七节「正交，不合并」）：烙铁不写
+    // 公式就沿三级下探落到全局默认（把攻击力原样交回去），这对一件
+    // 「靠烧不靠挥」的东西恰好合适——它的特别之处在**挡不挡得住**，
+    // 不在**打多少**。
+    //
+    // 数值：耐久 70 低于铁短剑的 120（烧红的铁反复淬冷会脆）；价格
+    // 21000 约为铁短剑的一半——它不吃 str-mod 那条二阶收益，纯论
+    // 伤害是把弱兵器，贵的是「有些东西只有火打得动」这件事。
+    // 只带 weapon 一条标签：它不是任何配方的 required_tool，与铁匠锤
+    // 「只带 tool 不带 weapon」正好对称。
+    {
+      id: "lostland:forge_brand",
+      display_name_key: "lostland:item.forge_brand.display_name",
+      stack_limit: 1,
+      base_weight: 2600,
+      base_price: 21000,
+      max_durability: 70,
+      equip_slots: ["main-hand"],
+      damage_category: "lostland:fire",
+      tags: ["lostland:weapon"],
+    },
+
     // ───────────────────────── 工具（on-use 磨损） ─────────────────────────
 
     // 铁匠锤：三条锻造配方的 required_tool。**只带 tool 不带 weapon**
@@ -344,6 +378,44 @@
       max_durability: 90,
       equip_slots: ["outer"],
       stat_bonuses: [{ target: "insulation", amount: 80 }],
+      tags: ["lostland:armor"],
+    },
+
+    // 锻炉围裙：本体唯一一件**声明抗性**的物品（`resistances`，落进
+    // `ItemAttrs::rule_modifiers`）。content_audit 为这条字段挂过一条
+    // 豁免，理由是「对本体唯一的、又是全局默认的那一类声明抗性，语义
+    // 等同于 armor」——`lostland:fire` 落地之后那条理由不再适用，豁免
+    // 随本条内容摘除。
+    //
+    // **这才是抗性该被用来表达的东西**：不是「挨打少掉血」（那是
+    // armor 的职责，橡木圆盾走的就是那条），而是「对某一类特别抗」。
+    // 一件浸过盐水的厚皮围裙对火星有用，对刀子没用——它因此 armor 只
+    // 有 2（聊胜于无），对火却有 6 点减伤。
+    //
+    // ── 加值类型（`modifier_type`）刻意不声明 ──────────────────
+    //
+    // 不声明 = 落进「未分类桶」，行为与加值类型这套机制落地之前逐位
+    // 相同（`ll_sim::rule_modifier` 模块文档「加值类型」一节：未声明
+    // 类型的全部进同一个共享桶，桶内取最强）。本体至今没有一份加值
+    // 类型名册（modifier_types.json5），而**造一份是一条独立的内容
+    // 设计裁定**——加值类型是给规则修正分类的，一条修正凑不出一套
+    // 分类学。等本体真有几条来源不同的抗性需要区分「叠不叠加」时，
+    // 那份名册才有内容可写。示例 mod 已经把这条路走通了
+    // （mods/example_mod/modifier_types.json5 的 innate/enhancement，
+    // crates/ll-mod/tests/example_mod_resistance.rs 有端到端证据）。
+    //
+    // 槽位是 outer，与毛皮披风（insulation 80）**互斥**——这是刻意的
+    // 取舍：出门是穿暖和的还是穿防火的，一次只能选一样。
+    {
+      id: "lostland:forge_apron",
+      display_name_key: "lostland:item.forge_apron.display_name",
+      stack_limit: 1,
+      base_weight: 3800,
+      base_price: 19000,
+      max_durability: 85,
+      equip_slots: ["outer"],
+      stat_bonuses: [{ target: "armor", amount: 2 }],
+      resistances: [{ damage_category: "lostland:fire", damage_reduction: 6 }],
       tags: ["lostland:armor"],
     },
 

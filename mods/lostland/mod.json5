@@ -36,11 +36,16 @@
   version: "0.1.0",
 
   // 内容清单（哪一类写在哪个文件里）：
-  //   races.json5      种族三条
-  //   classes.json5    职业四条
-  //   skills.json5     技能五条
-  //   quests.json5     任务四条
-  //   crafting.json5   配方类别四条
-  //   subclasses.json5 副职六条
-  //   tags.json5       标签三条
+  //   races.json5             种族三条（各带一套出生装备）
+  //   classes.json5           职业四条
+  //   skills.json5            技能五条
+  //   quests.json5            任务四条
+  //   crafting.json5          配方类别四条 + 配方九条
+  //   subclasses.json5        副职六条
+  //   tags.json5              标签三条
+  //   items.json5             物品二十九条
+  //   damage_formulas.json5   伤害公式一条
+  //   damage_categories.json5 伤害类别一条（lostland:fire；全局默认的
+  //                           lostland:physical 由引擎注册，见
+  //                           ll_mod::base_damage_category）
 }

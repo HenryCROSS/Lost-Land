@@ -404,12 +404,16 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 场地（石地面）、工具（铁匠锤/骨针）、批量产出（一锭八铆钉）、
         // 必须先发现（全部九条）各有真实的用例。
         //
-        // 物品表覆盖了十四个字段里的十二个，剩下两个
-        // （`damage_category` / `rule_modifiers`）各写了一条豁免，理由
-        // 是同一件事：它们都要指向一个**伤害类别**，而本体今天只有
-        // `lostland:physical` 一个类别，且它正是全局默认——对唯一的、
-        // 又是默认的那一类做「显式声明」或「声明抗性」，写出来的都是
-        // 与不写等价（或该由 armor 表达）的东西。详见那两条豁免。
+        // 物品表现在**全部字段都被本体内容覆盖，一条豁免都不需要**。
+        // 最后两条（`damage_category` / `rule_modifiers`）此前各挂一条
+        // 豁免，理由是同一件事：它们都要指向一个**伤害类别**，而本体
+        // 当时只有 `lostland:physical` 一个，且它正是全局默认——对唯一
+        // 的、又是默认的那一类做「显式声明」或「声明抗性」，写出来的
+        // 都是与不写等价（或该由 armor 表达）的东西。两条豁免写明的
+        // 解除条件都是同一句「先有第二个本体伤害类别」，
+        // `mods/lostland/damage_categories.json5`（`lostland:fire`）
+        // 就是那个前置：锻炉烙铁打火伤覆盖第一条，锻炉围裙对火声明
+        // 6 点减伤覆盖第二条，两条豁免随之摘除。
         ContentTableKind::Item,
         ContentTableKind::Recipe,
     ],
@@ -432,19 +436,14 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         },
         DeferredTable {
             kind: ContentTableKind::ModifierType,
-            reason: "本体内容一条规则修正都没有声明，因此也没有任何加值类型可声明——                     lostland 命名空间下零条天赋（Trait 那一条），而物品这一路的                     ItemAttrs::rule_modifiers 有一条独立豁免（本体唯一的伤害类别                     lostland:physical 同时就是全局默认，对它声明抗性等价于 armor）。                     加值类型是**给规则修正分类**的，没有修正就没有类可分；此时往                     modifier_types.json5 里塞一份本体自己用不上的名册，正是本模块                     反复拒绝过的『为了让检查变绿硬塞一条内容』。表本身不是死的：                     mods/example_mod/modifier_types.json5 注册了 innate/enhancement 两条，                     acid_hide 天赋与 acid_ward_amulet 护符分属两类、减伤点数因此相加，                     crates/ll-mod/tests/example_mod_resistance.rs 有端到端证据。                     本体真的需要它的前置是**先有本体规则修正**（等第二个本体伤害类别                     落地，见 ItemAttrs::damage_category 那条豁免的末段）。",
+            reason: "本体内容有了第一条规则修正（mods/lostland/items.json5 的锻炉围裙对                      lostland:fire 声明 6 点减伤），但它**刻意不声明加值类型**——不声明                      即落进「未分类桶」，行为与加值类型这套机制落地之前逐位相同，见                      ll_sim::rule_modifier 模块文档「加值类型」一节。这条豁免此前写的是                      「本体一条规则修正都没有声明，因此没有类可分」，那句话已随锻炉围裙                      作废；替代它的理由更窄，但独立成立：**造一份本体加值类型名册是一条                      独立的内容设计裁定**。加值类型回答的是「两条抗性该叠加还是取最强」,                      而本体今天只有一条抗性——一条修正凑不出一套分类学，此时往                      modifier_types.json5 里塞一份名册,写的是一份没有任何两条内容会去                      比较的分类,正是本模块反复拒绝过的『为了让检查变绿硬塞一条内容』。                      解除条件因此从「先有本体规则修正」（已满足）改成「本体真的有两条                      来源不同、需要区分叠不叠加的规则修正」。表本身不是死的：                      mods/example_mod/modifier_types.json5 注册了 innate/enhancement 两条,                      acid_hide 天赋与 acid_ward_amulet 护符分属两类、减伤点数因此相加,                      crates/ll-mod/tests/example_mod_resistance.rs 有端到端证据。",
         },
     ],
     exemptions: &[
         FieldExemption {
             kind: ContentTableKind::Item,
-            field: "ItemAttrs::damage_category",
-            reason: "物品的 damage_category 是「这件武器打的是**别的**伤害类别」这条覆盖，                     而本体今天只有一个伤害类别 lostland:physical，且它同时就是全局默认                     类别（ll_mod::base_damage_category 逐条论证了为什么另外两个不注册）。                     给本体唯一那件声明了公式的武器（mods/lostland/items.json5 的铁短剑）                     写上 lostland:physical，写的是一个与整条不写逐位等价的值——那不是                     覆盖，是噪音。字段本身不是死的：mods/example_mod/items.json5 的                     acid_dagger 显式声明 examplemod:acid（它自造的第二个类别），                     与 acid_ward_amulet 的抗性组成对手戏，                     crates/ll-mod/tests/example_mod_resistance.rs 有端到端证据。                     本体要用上这个字段，前置是**先有第二个本体伤害类别**，而那是一条                     独立的内容设计裁定（魔法/精神两类各自要有真实的结算后果才值得注册）。",
-        },
-        FieldExemption {
-            kind: ContentTableKind::Item,
-            field: "ItemAttrs::rule_modifiers",
-            reason: "物品当前唯一的规则修正是抗性（RuleModifier::Resistance），而抗性必须                     指向一个伤害类别——理由与上面 ItemAttrs::damage_category 一条同源，                     但结论更强：对本体唯一的、又是全局默认的那一类声明抗性，实际语义是                     「对所有伤害按比例减免」，而那正是 StatTarget::Armor 这个字段的职责。                     本体的橡木圆盾因此走 stat_bonuses 的 armor 7，不走 resistances——                     用抗性表达通用减伤会让同一件事有两个出口，日后两条求和路径必然漂移。                     字段本身不是死的：mods/example_mod/items.json5 的 acid_ward_amulet 对                     examplemod:acid 声明 500‰（半伤），那是「对某一类特别抗」的真实用例。",
+            field: "ItemAttrs::rule_modifiers::modifier_type",
+            reason: "本体唯一一条规则修正（mods/lostland/items.json5 的锻炉围裙对                      lostland:fire 声明 6 点减伤）**刻意不声明加值类型**——不声明即落进                      「未分类桶」，行为与加值类型这套机制落地之前逐位相同，见                      ll_sim::rule_modifier 模块文档「加值类型」一节（未声明类型的全部                      进同一个共享桶，桶内取最强）。要给它填一个类型，本体得先有一份                      modifier_types.json5，而那是一条**独立的内容设计裁定**：加值类型                      回答的是「两条抗性该叠加还是取最强」，本体今天只有一条抗性——                      一条修正凑不出一套分类学，此时造一份名册写的是一份没有任何两条                      内容会去比较的分类。与 ContentTableKind::ModifierType 那条                      deferred 是同一件事的两头，解除条件相同：本体真的有两条来源不同、                      需要区分叠不叠加的规则修正。字段本身不是死的：                      mods/example_mod/items.json5 的 acid_ward_amulet 声明                      examplemod:enhancement，与 acid_hide 天赋的 examplemod:innate                      分属两桶、减伤点数因此相加，crates/ll-mod/tests/example_mod_resistance.rs                      有端到端证据。",
         },
         FieldExemption {
             kind: ContentTableKind::Class,
@@ -485,10 +484,7 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         FieldExemption {
             kind: ContentTableKind::DamageCategory,
             field: "DamageCategoryDef::default_formula",
-            reason: "「类别默认公式」是伤害公式三级下探（物品 → 类别 → 全局）的中间\
-                     一级，本体唯一的伤害类别 lostland:physical 刻意不声明它，\
-                     让它继续下探到全局默认公式——None 就是这里想要的语义，\
-                     见 crate::damage_category 模块文档「本批次范围」一节。",
+            reason: "「类别默认公式」是伤害公式三级下探（物品 → 类别 → 全局）的中间一级,                      本体两个伤害类别都刻意不声明它。lostland:physical 不声明是让它继续                      下探到全局默认公式——None 就是这里想要的语义，见                      crate::damage_category 模块文档「本批次范围」一节。lostland:fire                      不声明的理由不同：本体只有一件火伤武器（锻炉烙铁），在类别这一级                      定公式等于把一件武器的算法写在错误的层级上，真要给它专属公式，                      物品级的 damage_formula 才是它的位置（铁短剑就是那么写的）。                      解除条件是本体出现第二件火伤武器，且两者确实该共用同一条算法。                      字段本身不是死的：mods/example_mod 的 examplemod:acid 走的正是                      「类别不声明、携带它的武器各自声明」的另一半对照。",
         },
     ],
 };

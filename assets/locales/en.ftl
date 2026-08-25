@@ -46,7 +46,7 @@ recipe_category-tailoring-display_name = Tailoring
 recipe_category-alchemy-display_name = Alchemy
 recipe_category-cooking-display_name = Cooking
 
-# Base-game items (mods/lostland/items.json5, twenty-four entries) —
+# Base-game items (mods/lostland/items.json5, twenty-nine entries) —
 # ll-mod ItemAttrs::display_name_key.
 item-iron_ingot-display_name = Iron Ingot
 item-iron_rivet-display_name = Iron Rivet
@@ -60,6 +60,7 @@ item-herbal_draught-display_name = Herbal Draught
 item-iron_shortsword-display_name = Iron Shortsword
 item-iron_warpick-display_name = Iron Warpick
 item-oak_buckler-display_name = Oak Buckler
+item-forge_brand-display_name = Forge Brand
 item-smith_hammer-display_name = Smith's Hammer
 item-bone_needle-display_name = Bone Needle
 item-iron_helm-display_name = Iron Helm
@@ -68,6 +69,7 @@ item-iron_greaves-display_name = Iron Greaves
 item-leather_boots-display_name = Leather Boots
 item-linen_shirt-display_name = Linen Shirt
 item-fur_mantle-display_name = Fur Mantle
+item-forge_apron-display_name = Forge Apron
 item-wool_gloves-display_name = Wool Gloves
 item-amber_pendant-display_name = Amber Pendant
 item-traveler_ring-display_name = Traveler's Ring
