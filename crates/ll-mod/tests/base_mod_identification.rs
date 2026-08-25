@@ -624,6 +624,53 @@ fn 开一个盲盒会消耗盒子换来池子里的一件东西并拿到经验()
 }
 
 #[test]
+fn 开盒产出的东西带着它自己那条定义声明的满耐久() {
+    // 「新造出来的物品带多少耐久」这条共同规则在**盲盒**这一路的端到端
+    // 证据（`ll_world::item::ItemStack::freshly_made`）：此前这一行是
+    // `ItemStack::new(...)`，开出来的铁短剑耐久恒为 None——永不磨损。
+    //
+    // 断言不写死开出哪一档（那是随机的，四档权重 50/30/15/5），改成
+    // 对**背包里的每一堆**逐条核对「这堆的耐久 == 它那条定义声明的
+    // 上限」——四档里三档是可堆叠材料（恒 None）、一档是铁短剑
+    // （Some(120)），无论抽中哪一档这条断言都成立，且都是真断言。
+    // Arrange
+    let handle = load_real_mods();
+
+    // Act
+    let outcome = act_via_turn_engine(
+        &handle,
+        vec![ItemStack::new(handle.sealed_relic_box, 1)],
+        Vec::new(),
+        Vec::new(),
+        |actor| Intent::Identify {
+            actor,
+            def: handle.sealed_relic_box,
+        },
+    );
+
+    // Assert
+    assert!(!outcome.inventory.is_empty(), "开盒必然产出一堆东西");
+    for stack in &outcome.inventory {
+        let expected = ItemCatalog::item(&handle.item, stack.def)
+            .expect("产出物必然是已注册的物品")
+            .max_durability;
+        assert_eq!(
+            stack.durability, expected,
+            "产出物 {:?} 的耐久应当等于它的耐久上限",
+            stack.def
+        );
+    }
+    // 并且这条断言在铁短剑那一档上确实是非平凡的：本体铁短剑声明了
+    // 耐久上限，若开出的是它，上面那条比的就是 Some(120) 而不是 None。
+    assert_eq!(
+        ItemCatalog::item(&handle.item, handle.iron_shortsword)
+            .expect("铁短剑已注册")
+            .max_durability,
+        Some(120)
+    );
+}
+
+#[test]
 fn 开盒不把盒子写进已鉴定种类() {
     // 盒子被消耗了，「认识一种已经不在世上的东西」没有意义——见
     // Effect::IdentifyItem 文档「盲盒不走这条效果」一节。

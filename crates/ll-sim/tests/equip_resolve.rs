@@ -121,6 +121,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 sword,
                 ItemRule {
                     wear_channels: WearChannels::NONE,
+                    max_durability: None,
                     taught_recipes: Vec::new(),
                     requires_identification: false,
                     study_experience: 0,
@@ -139,6 +140,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 shield,
                 ItemRule {
                     wear_channels: WearChannels::NONE,
+                    max_durability: None,
                     taught_recipes: Vec::new(),
                     requires_identification: false,
                     study_experience: 0,
@@ -157,6 +159,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                 greatsword,
                 ItemRule {
                     wear_channels: WearChannels::NONE,
+                    max_durability: None,
                     taught_recipes: Vec::new(),
                     requires_identification: false,
                     study_experience: 0,
@@ -429,6 +432,7 @@ fn 物品不可装备时装备意图静默无效() {
             ore,
             ItemRule {
                 wear_channels: WearChannels::NONE,
+                max_durability: None,
                 taught_recipes: Vec::new(),
                 requires_identification: false,
                 study_experience: 0,

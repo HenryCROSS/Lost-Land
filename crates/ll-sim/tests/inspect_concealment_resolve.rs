@@ -154,6 +154,7 @@ fn spawn_agent(
 fn plain_item_rule() -> ItemRule {
     ItemRule {
         wear_channels: WearChannels::NONE,
+        max_durability: None,
         taught_recipes: Vec::new(),
         requires_identification: false,
         study_experience: 0,

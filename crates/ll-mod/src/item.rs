@@ -1011,6 +1011,7 @@ impl ItemCatalog for ItemTable {
             damage_category: view.damage_category,
             rule_modifiers: view.rule_modifiers.to_vec(),
             wear_channels: view.wear_channels,
+            max_durability: view.max_durability,
             taught_recipes: view.taught_recipes.to_vec(),
             requires_identification: view.requires_identification,
             study_experience: view.study_experience,
@@ -1197,6 +1198,7 @@ mod tests {
             rule,
             Some(ItemRule {
                 wear_channels: WearChannels::NONE,
+                max_durability: None,
                 taught_recipes: Vec::new(),
                 requires_identification: false,
                 study_experience: 0,

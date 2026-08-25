@@ -454,6 +454,47 @@ fn 三条前置全开的锻造配方在全部满足时产出铁剑() {
 }
 
 #[test]
+fn 刚打出来的剑是满耐久而不是没有耐久概念() {
+    // 「新造出来的物品带多少耐久」这条共同规则在**制作**这一路的端到端
+    // 证据（`ll_world::item::ItemStack::freshly_made`）：此前这一行是
+    // `ItemStack::new(...)`，打出来的剑耐久恒为 None——它此后永远不会
+    // 磨损，「武器会坏所以要反复找工匠」这条设计在工匠自己造的装备上
+    // 直接落空。同一条规则的另外两个产出点（盲盒、出生装备）各有自己的
+    // 端到端证据，见 example_mod_starting_items.rs 与
+    // base_mod_items_and_crafting.rs。
+    // Arrange
+    let handle = load_real_mods();
+    let mut scene = Scene::new(vec![ItemStack::new(handle.iron_ingot, 5)]);
+    scene.subclasses = vec![handle.shadowdancer];
+    scene
+        .equipment
+        .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.war_hammer, 1));
+    scene.station_underfoot = Some(handle.lava_floor);
+
+    // Act
+    let inventory = craft_via_turn_engine(
+        &handle,
+        &scene,
+        handle.iron_sword_recipe,
+        &handle.real_recipes(),
+    );
+
+    // Assert：mods/example_mod/items.json5 的 examplemod:iron_sword
+    // 声明 max_durability: 100，刚打出来的这一把就该是 Some(100)。
+    let sword = inventory
+        .iter()
+        .find(|stack| stack.def == handle.iron_sword)
+        .expect("上一条断言已经证明剑真的产出了");
+    assert_eq!(sword.durability, Some(100));
+    // 反面：同一次结算里剩下的铁锭是可堆叠材料，仍然没有耐久概念。
+    let ingot = inventory
+        .iter()
+        .find(|stack| stack.def == handle.iron_ingot)
+        .expect("还剩三块铁锭");
+    assert_eq!(ingot.durability, None);
+}
+
+#[test]
 fn 缺少副职时同一条锻造配方静默不产出() {
     // 副职闸门的反例：其余两条前置照旧满足，只把副职拿掉。
     // Arrange

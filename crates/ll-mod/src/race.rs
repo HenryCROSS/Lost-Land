@@ -98,6 +98,7 @@ use ll_sim::character::RaceStatModifierSource;
 
 use crate::base_contract::{BaseContractError, BaseContractResolver};
 use crate::registry::Registry;
+use ll_sim::item::ItemCatalog;
 use ll_sim::traits::{TraitGrant, TraitGrantSource};
 use ll_world::entity::BaseStats;
 use ll_world::item::ItemStack;
@@ -175,12 +176,13 @@ pub struct RaceDef {
     ///
     /// 元素是 `(物品定义, 数量)`——只声明"带什么、带多少"这两个不依赖
     /// 任何运行期上下文就能确定的量,不声明耐久：出生装备恒是"全新"
-    /// 状态（`ItemStack::new` 的 `durability: None`，见
-    /// [`Self::starting_items`] 唯一的消费者
-    /// [`starting_inventory`] 的实现),真要支持"某个种族天生带着一把
-    /// 半磨损的祖传武器"这类设计,是该场景真正落地时再给这里加字段,
-    /// 不在本批次预留（YAGNI，同一条纪律见模块文档「`Owner` 本批次
-    /// 仍然不落地」一节）。
+    /// 状态，即**满耐久**（[`ItemStack::freshly_made`]，见
+    /// [`Self::starting_items`] 唯一的消费者 [`starting_inventory`]
+    /// 的实现——那里此前写的是 `ItemStack::new`，把"全新"错误地落成了
+    /// "没有耐久概念"）,真要支持"某个种族天生带着一把半磨损的祖传
+    /// 武器"这类设计,是该场景真正落地时再给这里加字段,不在本批次
+    /// 预留（YAGNI，同一条纪律见模块文档「`Owner` 本批次仍然不落地」
+    /// 一节）。
     pub starting_items: Vec<(ContentIndex, u32)>,
 }
 
@@ -452,17 +454,44 @@ impl RaceTable {
 /// （例如 `ll_game::world::spawn_player`）在拿到某个实体的种族之后
 /// 调用。
 ///
-/// 每一条 `(def, count)` 独立算成一个 `ItemStack::new(def, count)`
-/// ——不做任何堆叠合并（同一次出生声明两次同种物品，就会在背包里得到
-/// 两条独立的堆，而不是自动合并成一条）：合并需要查 `ItemDef.stack_limit`
-/// （`ItemCatalog`），把这层规则塞进一个不持有任何目录引用的纯转换
-/// 函数会让签名平白多出一个通常用不到的依赖——mod 作者只要不重复声明
-/// 同一种出生物品就不会遇到这个情况，属于内容作者自己该避免的重复
-/// 声明，不是引擎需要替其兜底的场景。
-pub fn starting_inventory(view: &RaceView<'_>) -> Vec<ItemStack> {
+/// 每一条 `(def, count)` 独立算成一个
+/// [`ItemStack::freshly_made`]——出生装备与制作成品、盲盒产出是同一
+/// 类东西（**刚拿到手的新东西**），走同一条共同规则：耐久等于该物品
+/// 定义声明的上限，没有耐久概念的仍是 `None`。这一行此前是
+/// `ItemStack::new(def, count)`（恒 `None`），与另外两个产出点犯的是
+/// 同一个错，见该构造器文档。
+///
+/// # `items` 参数是这条规则带来的
+///
+/// 耐久上限只有物品表知道，本函数因此从「纯转换」变成需要一份物品
+/// 目录。收的是 [`ItemCatalog`] 这个最小接口而不是 `&ItemTable`
+/// ——与 `ll_sim::resolve` 全线同一套依赖倒置手法，调用方手里已经有
+/// 一张 `ItemTable`（它实现了这个 trait）时直接传引用即可。
+/// **查不到定义的 `def` 退化成没有耐久**（`ItemCatalog::item` 返回
+/// `None`），与 `ll_sim::item::NoItems` 的既有立场一致：查不到目录
+/// 本身意味着调用方没提供真实注册表，不该表现成"这件出生装备耐久
+/// 异常"。真正拼错 id 的情形由**注册期**的跨表引用校验拦下
+/// （`crate::content_data` 的 `CONTENT_FILES` 把种族排在物品之后，
+/// 正是为了让出生装备的引用能"只 get 不 intern"地校验）。
+///
+/// # 仍然不做堆叠合并
+///
+/// 同一次出生声明两次同种物品，仍然得到两条独立的堆而不是自动合并
+/// 成一条。合并需要查 `stack_limit`——本函数现在确实拿得到它了，但
+/// 这条既有取舍不变：mod 作者只要不重复声明同一种出生物品就不会遇到
+/// 这个情况，属于内容作者自己该避免的重复声明，不是引擎需要替其兜底
+/// 的场景。真要改，那是一条独立的裁定，不该顺着"反正目录已经传进来
+/// 了"这条理由被顺手做掉。
+pub fn starting_inventory(view: &RaceView<'_>, items: &dyn ItemCatalog) -> Vec<ItemStack> {
     view.starting_items
         .iter()
-        .map(|&(def, count)| ItemStack::new(def, count))
+        .map(|&(def, count)| {
+            ItemStack::freshly_made(
+                def,
+                count,
+                items.item(def).and_then(|rule| rule.max_durability),
+            )
+        })
         .collect()
 }
 
@@ -935,14 +964,101 @@ mod tests {
             .add_starting_item(race_index, torch, 2)
             .expect("追加出生物品应当成功");
 
-        // Act
+        // Act：不给物品目录（NoItems 对任何索引恒返回 None）——查不到
+        // 定义就查不到耐久上限，退化成「没有耐久概念」，见
+        // starting_inventory 文档「`items` 参数是这条规则带来的」一节。
         let view = table.get(race_index).expect("刚注册的种族应能查到属性");
-        let inventory = starting_inventory(&view);
+        let inventory = starting_inventory(&view, &ll_sim::item::NoItems);
 
         // Assert
         assert_eq!(
             inventory,
             vec![ItemStack::new(dagger, 1), ItemStack::new(torch, 2)]
+        );
+    }
+
+    #[test]
+    fn 出生装备带满耐久而不是没有耐久概念() {
+        // 「新造出来的物品带多少耐久」这条共同规则在出生装备这一路的
+        // 落点：声明了 max_durability 的物品出生时耐久等于上限，没有
+        // 声明的仍是 None。此前这里恒是 None——出生就拿到一件永不磨损
+        // 的装备，见 ItemStack::freshly_made 文档。
+        // Arrange
+        use crate::item::{ItemAttrs, ItemTable};
+        use ll_core::scaled::Milli;
+        use ll_sim::combat::Penetration;
+        use ll_world::item::SlotMask;
+
+        let mut interner = Interner::new();
+        let needle = interner.intern(NamespacedId::parse("yourmod:bone_needle").unwrap());
+        let cloth = interner.intern(NamespacedId::parse("yourmod:linen_cloth").unwrap());
+        let mut items = ItemTable::new();
+        let mut define_item = |index, stack_limit, max_durability| {
+            items
+                .define(
+                    index,
+                    ItemAttrs {
+                        display_name_key: NamespacedId::parse("yourmod:whatever").unwrap(),
+                        stack_limit,
+                        base_weight: Milli::from_whole(1),
+                        base_price: Milli::from_whole(1),
+                        max_durability,
+                        equip_mask: SlotMask::EMPTY,
+                        stat_bonuses: Vec::new(),
+                        use_effect: None,
+                        penetration: Penetration::NONE,
+                        damage_formula: None,
+                        damage_category: None,
+                        rule_modifiers: Vec::new(),
+                        tags: Vec::new(),
+                        taught_recipes: Vec::new(),
+                        requires_identification: false,
+                        study_experience: 0,
+                        blind_box_pool: Vec::new(),
+                    },
+                )
+                .expect("首次定义应当成功");
+        };
+        // 带耐久的必然不可堆叠（注册期硬校验），可堆叠的必然无耐久。
+        define_item(needle, 1, Some(60));
+        define_item(cloth, 50, None);
+
+        let race_index = interner.intern(NamespacedId::parse("yourmod:elf").unwrap());
+        let mut table = RaceTable::new();
+        table
+            .define(
+                race_index,
+                RaceAttrs {
+                    display_name_key: NamespacedId::parse("yourmod:elf_display_name")
+                        .expect("合法"),
+                    stat_modifiers: ZERO_STAT_MODIFIERS,
+                    darkvision_cells: 0,
+                    footprint: (1, 1),
+                    lifespan_years: 400,
+                    xp_reward: 0,
+                    traits: Vec::new(),
+                    starting_items: Vec::new(),
+                },
+            )
+            .expect("先注册种族本体");
+        table
+            .add_starting_item(race_index, needle, 1)
+            .expect("追加出生物品应当成功");
+        table
+            .add_starting_item(race_index, cloth, 2)
+            .expect("追加出生物品应当成功");
+
+        // Act
+        let view = table.get(race_index).expect("刚注册的种族应能查到属性");
+        let inventory = starting_inventory(&view, &items);
+
+        // Assert：骨针满耐久 60，亚麻布仍然没有耐久概念。
+        assert_eq!(
+            inventory,
+            vec![
+                ItemStack::with_durability(needle, 1, 60),
+                ItemStack::new(cloth, 2),
+            ]
         );
     }
 

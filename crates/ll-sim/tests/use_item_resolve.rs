@@ -113,6 +113,7 @@ fn potion_with_effect(effect: SkillEffect) -> (ContentIndex, FakeItems) {
             potion,
             ItemRule {
                 wear_channels: WearChannels::NONE,
+                max_durability: None,
                 taught_recipes: Vec::new(),
                 requires_identification: false,
                 study_experience: 0,
@@ -283,6 +284,7 @@ fn 没有use_effect的物品使用后不产出任何效果() {
             ore,
             ItemRule {
                 wear_channels: WearChannels::NONE,
+                max_durability: None,
                 taught_recipes: Vec::new(),
                 requires_identification: false,
                 study_experience: 0,

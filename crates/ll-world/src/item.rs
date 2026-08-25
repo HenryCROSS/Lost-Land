@@ -115,6 +115,53 @@ impl ItemStack {
             durability: Some(durability),
         }
     }
+
+    /// **新造出来的物品带多少耐久**这条规则的唯一出口：一件刚被造出来
+    /// 的东西是全新的，耐久等于它的定义所声明的上限
+    /// （`ll_mod::item::ItemDef::max_durability`，本 crate 不能引用它，
+    /// 依赖方向不允许，这里只能点名），没有声明上限的（材料、消耗品）
+    /// 恒是 `None`——即「这类东西没有耐久概念」。
+    ///
+    /// # 为什么需要这一条，而不是各产出点各写各的
+    ///
+    /// 此前本仓库的每一个产出点都直接调 [`Self::new`]，于是**造出来的
+    /// 铁短剑耐久是 `None` 而不是 120**：那把剑此后永远不会磨损，
+    /// 「武器会坏所以要反复找工匠」这条设计在工匠自己造的装备上直接
+    /// 落空。缺的不是某一个产出点的一行代码，是这条**共同规则**本身
+    /// 没有落点——三个产出点（制作 `ll_sim::resolve::resolve_craft`、
+    /// 盲盒 `ll_sim::resolve::resolve_identify`、出生装备
+    /// `ll_mod::race::starting_inventory`）各自独立回答同一个问题，
+    /// 迟早会给出三个不同的答案。本构造器是那个唯一答案。
+    ///
+    /// # 与既有耐久纪律的一致性
+    ///
+    /// - **可堆叠物品不能带耐久**：[`can_merge`] 的判据是「`def` 相同
+    ///   **且**耐久相同」，一件带耐久的东西若还能堆叠，两份磨损程度
+    ///   不同的实例就会分裂成两堆、或被静默合并成一堆。这条不变式由
+    ///   **注册期**保证（`ll_mod::content_schema_gear` 的
+    ///   `define_one_item` 直接拒绝 `stack_limit > 1` 且声明了
+    ///   `max_durability` 的物品），因此凡是 `max_durability` 为 `Some`
+    ///   的物品必然 `stack_limit == 1`，本构造器不需要、也不应该在
+    ///   运行期再判一次。
+    /// - **耐久归零的装备仍占槽位但不贡献加成**（`ll_sim::resolve`
+    ///   的 `derive_stats` 跳过 `durability == Some(0)` 的堆）：新造的
+    ///   东西恒是满耐久，`Some(0)` 只能由磨损产生，两条规则不冲突。
+    ///
+    /// # 为什么不是 `new` 直接改签名
+    ///
+    /// [`Self::new`] 还有一批真正「这东西没有耐久概念」的调用点，与
+    /// 「这东西刚被造出来」不是同一件事——最清楚的例子是
+    /// `ll_sim::resolve` 造尸体那一行：尸体这件"容器"本身没有耐久概念,
+    /// 与它装着的死者装备各自的耐久无关。把两种语义挤进一个构造器,
+    /// 读代码的人就再也分不出某一处的 `None` 是「查不到定义」还是
+    /// 「刻意没有耐久」。
+    pub const fn freshly_made(def: ContentIndex, count: u32, max_durability: Option<i32>) -> Self {
+        ItemStack {
+            def,
+            count,
+            durability: max_durability,
+        }
+    }
 }
 
 /// 世界某个位置上的一堆地面物品（`item-system.md` 四节
