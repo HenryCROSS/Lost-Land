@@ -124,6 +124,10 @@ impl RealModsHandle {
             quests: &NoQuests,
             race_traits: &self.race,
             class_traits: &self.class,
+            // 副职天赋那一路接空实现：本文件的实体 `subclasses` 恒为空,
+            // 接真实副职表与接空实现逐位等价。那一路真的接进生产路径的
+            // 证据在 `example_mod_subclass_traits.rs`。
+            subclass_traits: &ll_sim::traits::NoTraitGrants,
             trait_defs: &self.trait_def,
             pools: &self.resource_pool,
             items: &self.item,
@@ -142,7 +146,15 @@ impl RealModsHandle {
     /// 生效，行为树因此必须查得到它，见
     /// `ll_mod::native_behavior::BehaviorRuleCatalogs` 文档。
     fn behavior_catalogs(&self) -> BehaviorRuleCatalogs {
-        BehaviorRuleCatalogs::snapshot(&self.race, &self.class, &self.trait_def, &self.item)
+        // 副职那一路：本文件的实体 `subclasses` 恒为空，一张空表与真实
+        // 副职表在这里逐位等价。
+        BehaviorRuleCatalogs::snapshot(
+            &self.race,
+            &self.class,
+            &SubclassTable::new(),
+            &self.trait_def,
+            &self.item,
+        )
     }
 }
 

@@ -299,6 +299,20 @@ impl<'a> RuntimeCatalogs<'a> {
             quests: &self.quests,
             race_traits: &self.content.race_table,
             class_traits: &self.content.class_table,
+            // 副职天赋这一路（副职天赋接线批次，项目所有者裁定
+            // 「副职……带有技能的」）：`SubclassTable` 本就按副职索引
+            // 登记了 `subclasses.json5` 声明的 `traits`，直接充当授予
+            // 来源，见 `ll_mod::subclass` 里那条
+            // `impl TraitGrantSource for SubclassTable`。
+            //
+            // **这一行是「副职真的给东西」在真实游戏里唯一的接线点**：
+            // 与上面 `subclass_unlocks` 那一行同一条纪律——漏掉它，
+            // 副职就退回「只是资格、不给任何东西」的状态，而全部证据
+            // 仍能在集成测试里成立。同一张表在这一束里出现两次是**刻意
+            // 的**：它回答的是两个不相干的问题（「怎么拿到这个副职」与
+            // 「拿到之后给什么」），分成两个字段而不是让一个 trait 兼
+            // 两职，理由同 `skills`/`skill_tree` 那一对。
+            subclass_traits: &self.content.subclass_table,
             trait_defs: &self.content.trait_table,
             pools: &self.content.resource_pool_table,
             items: &self.content.item_table,

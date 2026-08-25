@@ -562,7 +562,7 @@ pub fn equipment_rule_modifiers(
 /// [`sneak_attack_rule`]/[`inspection_suspicion_reduction_permille`]/
 /// [`inspection_concealment_permille`]）与它们在 `crate::resolve`／脚本
 /// 侧的调用点都不需要改动一个字符——这正是 `crate::traits::agent_trait_sources` 文档
-/// 「其余三路为什么不在这里」所描述的那种「调用点不需要改一行」，
+/// 「其余两路为什么不在这里」所描述的那种「调用点不需要改一行」，
 /// 只是这次覆盖的是「规则修正有几路来源」这一层。
 ///
 /// 尚未接线的两路，以及各自真正缺的东西：
@@ -581,11 +581,12 @@ pub fn agent_rule_modifiers(
     agent: &Agent,
     race_grants: &dyn TraitGrantSource,
     class_grants: &dyn TraitGrantSource,
+    subclass_grants: &dyn TraitGrantSource,
     traits: &dyn TraitCatalog,
     items: &dyn ItemCatalog,
 ) -> Vec<RuleModifierEntry> {
     let mut result = trait_rule_modifiers(
-        &agent_trait_sources(agent, race_grants, class_grants),
+        &agent_trait_sources(agent, race_grants, class_grants, subclass_grants),
         agent.level,
         traits,
     );

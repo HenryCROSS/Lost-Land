@@ -71,6 +71,7 @@ use crate::class::ClassTable;
 use crate::item::ItemTable;
 use crate::race::RaceTable;
 use crate::registry::Registry;
+use crate::subclass::SubclassTable;
 use crate::trait_def::TraitTable;
 
 /// 卫兵发起一次盘查的基础概率（千分比）。
@@ -111,10 +112,12 @@ pub const GUARD_PROFESSION_ID: &str = "lostland:guard";
 ///
 /// # 为什么打包成一个结构体，不是四个参数
 ///
-/// 与 `ll_sim::catalogs::ResolveCatalogs` 同一条既有手法：这四张表是
-/// 「聚合规则修正」这一件事的完整输入，将来接第三、第四路来源
-/// （技能/药品，见 `ll_sim::rule_modifier::agent_rule_modifiers` 文档）
-/// 时只需要给本结构体加字段，不必改全部调用点的签名。
+/// 与 `ll_sim::catalogs::ResolveCatalogs` 同一条既有手法：这几张表是
+/// 「聚合规则修正」这一件事的完整输入，接新一路来源时只需要给本结构体
+/// 加字段，不必改全部调用点的签名——副职天赋接线批次新增
+/// [`BehaviorRuleCatalogs::subclass`] 就是这条预言的第一次兑现（本结构
+/// 体多一个字段，`suspicion_reduction_permille_of` 多传一个参数，
+/// `BehaviorRuleCatalogs::default()` 那批调用点一个字都没改）。
 #[derive(Debug, Clone, Default)]
 pub struct BehaviorRuleCatalogs {
     /// 种族这一路天赋来源。
@@ -122,6 +125,10 @@ pub struct BehaviorRuleCatalogs {
     /// 职业这一路天赋来源——`examplemod:cutpurse_training` 正是走这
     /// 一路（`mods/example_mod/classes.json5` 的盗贼，3 级解锁）。
     pub class: ClassTable,
+    /// 副职这一路天赋来源（副职天赋接线批次新增）——所有者逐个取
+    /// `Agent::subclasses`，见
+    /// `ll_sim::traits::agent_trait_sources` 文档。
+    pub subclass: SubclassTable,
     /// 天赋定义表。
     pub traits: TraitTable,
     /// 物品定义表——规则修正的第二路来源（装备）。
@@ -133,12 +140,14 @@ impl BehaviorRuleCatalogs {
     pub fn snapshot(
         race: &RaceTable,
         class: &ClassTable,
+        subclass: &SubclassTable,
         traits: &TraitTable,
         items: &ItemTable,
     ) -> Self {
         Self {
             race: race.clone(),
             class: class.clone(),
+            subclass: subclass.clone(),
             traits: traits.clone(),
             items: items.clone(),
         }
@@ -154,6 +163,7 @@ impl BehaviorRuleCatalogs {
                 agent,
                 &self.race,
                 &self.class,
+                &self.subclass,
                 &self.traits,
                 &self.items,
             )),

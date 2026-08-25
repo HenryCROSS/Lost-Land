@@ -67,6 +67,20 @@ pub struct ResolveCatalogs<'a> {
     pub race_traits: &'a dyn TraitGrantSource,
     /// 职业天赋授予来源（所有者取 `Agent::profession`）。
     pub class_traits: &'a dyn TraitGrantSource,
+    /// 副职天赋授予来源（所有者逐个取 `Agent::subclasses` 的元素，
+    /// 副职天赋接线批次新增）。
+    ///
+    /// 与前两路的唯一差异是**一路来源展开成多个** [`crate::traits::TraitSource`]
+    /// ——`Agent::subclasses` 是 `Vec` 而不是单值，见
+    /// [`crate::traits::agent_trait_sources`] 文档「返回类型为什么不再
+    /// 是定长数组」一节。本字段本身与前两路同型：一份
+    /// [`TraitGrantSource`]，真实实现是 `ll_mod::subclass::SubclassTable`。
+    ///
+    /// 不接这一路（[`NoTraitGrants`]）时，副职退回本批次之前那个
+    /// 「只是资格、不给任何东西」的状态——`Effect::GrantSubclass` 照常
+    /// 产出、`required_subclasses` 闸门照常放行，但副职声明的天赋一条
+    /// 都不生效。
+    pub subclass_traits: &'a dyn TraitGrantSource,
     /// 天赋定义目录——授予技能/资源池容量/规则修正都从这里查。
     ///
     /// 字段名是 `trait_defs` 而不是与 `resolve_with_all_catalogs` 的
@@ -167,6 +181,7 @@ const NO_EXPERIENCE: NoExperience = NoExperience;
 const NO_QUESTS: NoQuests = NoQuests;
 const NO_RACE_TRAIT_GRANTS: NoTraitGrants = NoTraitGrants;
 const NO_CLASS_TRAIT_GRANTS: NoTraitGrants = NoTraitGrants;
+const NO_SUBCLASS_TRAIT_GRANTS: NoTraitGrants = NoTraitGrants;
 const NO_TRAITS: NoTraits = NoTraits;
 const NO_RESOURCE_POOLS: NoResourcePools = NoResourcePools;
 const NO_ITEMS: NoItems = NoItems;
@@ -190,6 +205,7 @@ impl ResolveCatalogs<'static> {
             quests: &NO_QUESTS,
             race_traits: &NO_RACE_TRAIT_GRANTS,
             class_traits: &NO_CLASS_TRAIT_GRANTS,
+            subclass_traits: &NO_SUBCLASS_TRAIT_GRANTS,
             trait_defs: &NO_TRAITS,
             pools: &NO_RESOURCE_POOLS,
             items: &NO_ITEMS,
@@ -226,6 +242,7 @@ mod tests {
         assert!(catalogs.trait_defs.trait_rule(any).is_none());
         assert!(catalogs.race_traits.granted_traits(any).is_empty());
         assert!(catalogs.class_traits.granted_traits(any).is_empty());
+        assert!(catalogs.subclass_traits.granted_traits(any).is_empty());
         assert!(catalogs.pools.resource_pool(any).is_none());
         assert!(catalogs.items.item(any).is_none());
         assert!(catalogs.quests.kill_count_quests().is_empty());

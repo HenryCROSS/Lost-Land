@@ -457,6 +457,11 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
                      ll_sim 的 effective_traits 真的会读它——只是本体内容用不到。",
         },
         FieldExemption {
+            kind: ContentTableKind::Subclass,
+            field: "SubclassAttrs::traits",
+            reason: "项目所有者裁定「副职……带有技能的」推翻了 subclass-system.md 二节                     「副职不给数值」那条，落地成 SubclassDef::traits 这个字段——**机制这一侧                     已经全部接通**（SubclassTable 的 TraitGrantSource impl、                     ll_sim::traits::agent_trait_sources 的第三路来源、ll_game::content 的                     ResolveCatalogs::subclass_traits 生产接线，端到端证据在                     crates/ll-mod/tests/example_mod_subclass_traits.rs：                     mods/example_mod/subclasses.json5 的影舞者授予 examplemod:shadow_dance,                     真实 resolve 放得出 examplemod:shadow_strike，含「副职来源换成空实现就                     放不出」的反例断言）。**本体这一侧不覆盖，是因为它卡在一条还没做过的内容                     设计裁定上**：lostland 命名空间下**零条天赋内容**（Trait 那条 deferred                     条目就是这件事），而本体六条副职里四条是制作类（工匠/裁缝/炼金术士/厨师），                     SkillEffect 当前只有 deal-damage / temporary-stat-modifier /                     restore-resource 三种形状，**没有任何一种能表达『会打铁』**。给工匠塞一个                     伤害技能只是为了让本条变绿，正是本模块反复拒绝过的『硬塞一条内容』。                     本体要用上这个字段，前置是**项目所有者定下四个制作副职各自该给什么**                     （很可能还要先给 SkillEffect 增开制作向的变体），那是一条独立的内容设计                     裁定，不该由字段覆盖检查代做。与 ClassAttrs::traits / RaceAttrs::traits                     两条同源，但多一层：那两条只是「本体没写」，本条是「本体今天写不出语义                     对的内容」。",
+        },
+        FieldExemption {
             kind: ContentTableKind::Race,
             field: "RaceAttrs::traits",
             reason: "本体三族当前不授予任何种族天赋：races.json5 刻意不写\
@@ -1362,12 +1367,22 @@ fn inspect_resource_cost(auditor: &mut Auditor<'_>, field: &'static str, cost: R
 
 /// [`crate::subclass::SubclassDef`] 的全部字段。
 fn inspect_subclass(auditor: &mut Auditor<'_>, index: ContentIndex) {
-    let _view = auditor
+    let view = auditor
         .tables
         .subclass
         .get(index)
         .expect("classify_index 已判定为 Subclass，get 必返回 Some");
+    let trait_ids: Vec<ContentIndex> = view.traits.iter().map(|grant| grant.trait_id).collect();
     auditor.field("SubclassAttrs::display_name_key", true);
+    // 副职天赋接线批次新增的一列，写法与 `inspect_class` 处理
+    // `ClassAttrs::traits` 逐字同构：空列表只是「这条字段没被这一条
+    // 内容覆盖」，不是引用违规；非空时每一条都必须指向一个**已定义**
+    // 的天赋。
+    auditor.slice_reference(
+        "SubclassAttrs::traits",
+        &trait_ids,
+        ReferenceExpectation::Table(ContentTableKind::Trait),
+    );
     // 副职获得机制批次新增的第二列。没声明获得条件是**合法且常见**的
     // （副职也可以靠任务奖励或世界生成时写死的初始副职拿到，两条路径
     // 都还没落地），因此走 `field` + 条件 `reference`，与
@@ -2065,6 +2080,7 @@ mod tests {
                     index,
                     crate::subclass::SubclassAttrs {
                         display_name_key: id("test:subclass_display_name"),
+                        traits: Vec::new(),
                     },
                 )
                 .expect("测试用副职定义内部自洽");

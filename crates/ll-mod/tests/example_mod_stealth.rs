@@ -133,6 +133,10 @@ impl RealModsHandle {
             quests: &NoQuests,
             race_traits: &self.race,
             class_traits: &self.class,
+            // 副职天赋那一路接空实现：本文件的实体 `subclasses` 恒为空,
+            // 接真实副职表与接空实现逐位等价。那一路真的接进生产路径的
+            // 证据在 `example_mod_subclass_traits.rs`。
+            subclass_traits: &ll_sim::traits::NoTraitGrants,
             trait_defs: &self.trait_def,
             pools: &self.resource_pool,
             items: &self.item,
@@ -575,6 +579,9 @@ fn guard_turns_with_profession(
         BehaviorRuleCatalogs::snapshot(
             &handle.race,
             &handle.class,
+            // 副职那一路：本文件的实体 `subclasses` 恒为空，一张空表与
+            // 真实副职表在这里逐位等价。
+            &SubclassTable::new(),
             &handle.trait_def,
             &handle.item,
         ),

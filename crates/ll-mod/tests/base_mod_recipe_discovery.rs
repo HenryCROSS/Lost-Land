@@ -77,6 +77,7 @@ const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 const NO_SKILLS: ll_sim::skill::NoSkills = ll_sim::skill::NoSkills;
 const NO_RACE_TRAITS: ll_sim::traits::NoTraitGrants = ll_sim::traits::NoTraitGrants;
 const NO_CLASS_TRAITS: ll_sim::traits::NoTraitGrants = ll_sim::traits::NoTraitGrants;
+const NO_SUBCLASS_TRAITS: ll_sim::traits::NoTraitGrants = ll_sim::traits::NoTraitGrants;
 const NO_TRAITS: ll_sim::traits::NoTraits = ll_sim::traits::NoTraits;
 const NO_POOLS: ll_sim::resource_pool::NoResourcePools = ll_sim::resource_pool::NoResourcePools;
 const NO_FORMULAS: ll_sim::formula::NoFormulas = ll_sim::formula::NoFormulas;
@@ -114,6 +115,7 @@ impl Handle {
             quests: &NoQuests,
             race_traits: &NO_RACE_TRAITS,
             class_traits: &NO_CLASS_TRAITS,
+            subclass_traits: &NO_SUBCLASS_TRAITS,
             trait_defs: &NO_TRAITS,
             pools: &NO_POOLS,
             items,

@@ -1,12 +1,32 @@
 // 示例 mod 的副职——搬自此前的 gameplay.scm。
+//
+// # traits 字段：副职「给东西」的唯一出口
+//
+// 项目所有者裁定「副职……带有技能的」推翻了 subclass-system.md 二节
+// 「副职不给数值」那条。落点是 SubclassDef.traits——与 ClassDef.traits/
+// RaceDef.traits 完全同一个形状、同一段消费算法
+// （ll_sim::traits::effective_traits），副职本身仍然零存储数值，真正的
+// 效果载荷在 traits.json5 里。
+//
+// unlock 与 traits 两个字段**互不相干**：前者回答「怎么拿到这个副职」，
+// 后者回答「拿到之后给什么」，两条都可以单独不写。本体
+// mods/lostland/subclasses.json5 的六条今天全部只写前者，理由见那个文件
+// 的文件头。
 {
   subclasses: [
     {
       // 影舞者：烹饪三件就能拿到；拿到之后才解锁锻造类别
       // （见 crafting.json5 里 forging 的 required_subclasses）。
+      //
+      // 拿到之后还会**立刻**获得 examplemod:shadow_dance 天赋授予的
+      // 背刺技能——unlock_level 填 1（「拥有即生效」，种族/副职/装备/
+      // buff 的既有惯例，见 ll_sim::traits::TraitGrant 文档）。这是
+      // 仓库里唯一一条走 SubclassDef.traits 的真实内容，端到端证据在
+      // crates/ll-mod/tests/example_mod_subclass_traits.rs。
       id: "examplemod:shadowdancer",
       display_name_key: "examplemod:shadowdancer_display_name",
       unlock: { kind: "items-crafted", target: "examplemod:cooking", threshold: 3 },
+      traits: [{ id: "examplemod:shadow_dance", unlock_level: 1 }],
     },
   ],
 }

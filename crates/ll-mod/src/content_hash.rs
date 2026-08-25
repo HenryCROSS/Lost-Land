@@ -503,7 +503,35 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// **版本 17**：上面两段所述的两批改动最终合并落地在同一个版本号上——
 /// 加值类型那批与未鉴定/盲盒那批各自独立开发时都写成 16，合并时两批的
 /// 哈希输入同时存在，因此实际的量尺是两者之和，版本号必须是 17。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 17;
+///
+/// ---
+///
+/// 版本 18（副职天赋接线批次）：**一张老表新增一列字段**——
+/// `SubclassDef.traits`（项目所有者裁定「副职……带有技能的」的落点，
+/// 见 `crate::subclass::SubclassDef::traits`），[`write_subclass_fields`]
+/// 因此多混入一段「条数 + 逐条 (天赋解析回 `NamespacedId` 字符串,
+/// 解锁等级)」，与 `write_class_fields`/`write_race_fields` 的同名字段
+/// 逐字节同构。
+///
+/// 与版本 15 的 `ItemDef.taught_recipes` 逐条同构：长度前缀 `0` 也是一段
+/// 此前不存在的字节，因此**每一个副职**的条目摘要都变了（即便它一条
+/// 天赋都不授予）——否则「没有声明」与「声明恰好编码成空」会撞在一起,
+/// 理由同版本 12 那段 `None` 判别字节。本体六条副职与 example_mod 那条
+/// 的摘要因此全部改变。
+///
+/// `ContentTableKind` 的二十一个变体一个未变、[`ContentValueTables`] 的
+/// 字段一个未加（副职表本来就在里面），因此
+/// `scripts/ci/check_field_consumers.py` 的
+/// `check_content_hash_gate_cross_coverage` 那条互校在本批次无事可做
+/// （它只守「新增了表」）。
+///
+/// 守门方式同版本 13/14/15：本段文字 + 本模块单元测试
+/// `授予天赋的副职与不授予天赋的副职摘要不同` 与
+/// `副职天赋解锁等级不同则摘要不同`，加上 `content_audit` 里同批次新增
+/// 的 `SubclassAttrs::traits` 花名册观察与跨表引用检查，以及版本 7 那次
+/// 事故之后立下的那条纪律——**提交信息声称改了，不等于代码里真的
+/// 改了**，本行的字面值就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 18;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -778,7 +806,9 @@ fn entry_value_digest(
         ContentTableKind::Skill => {
             write_skill_fields(&mut hasher, tables.skill, index, registry);
         }
-        ContentTableKind::Subclass => write_subclass_fields(&mut hasher, tables.subclass, index),
+        ContentTableKind::Subclass => {
+            write_subclass_fields(&mut hasher, tables.subclass, index, registry)
+        }
         ContentTableKind::Quest => write_quest_fields(&mut hasher, tables.quest, index, registry),
         ContentTableKind::Race => write_race_fields(&mut hasher, tables.race, index, registry),
         ContentTableKind::SpaceProfile => {
@@ -949,12 +979,30 @@ fn write_class_fields(
     }
 }
 
-/// 混入 [`crate::subclass::SubclassDef`] 的全部字段。
-fn write_subclass_fields(hasher: &mut StateHasher, table: &SubclassTable, index: ContentIndex) {
+/// 混入 [`crate::subclass::SubclassDef`] 的全部字段——`traits[].trait_id`
+/// 解析成 `NamespacedId` 字符串。
+fn write_subclass_fields(
+    hasher: &mut StateHasher,
+    table: &SubclassTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
     let view = table
         .get(index)
         .expect("调用方已确认 is_defined，get 必返回 Some");
     hasher.write_namespaced_id(view.display_name_key);
+    // `traits`（副职天赋接线批次新增）：与 `write_class_fields`/
+    // `write_race_fields` 的同名字段逐字节同构——先写条数再逐条写
+    // `(trait_id, unlock_level)`，`trait_id` 解析成 `NamespacedId`
+    // 字符串（`ContentIndex` 数值本身依赖注册顺序，不是稳定的跨会话
+    // 身份，见模块文档「`ContentIndex` 字段」一节）。长度前缀 `0` 也是
+    // 一段此前不存在的字节，因此**每一个副职**的条目摘要都变了（即便
+    // 它一条天赋都不授予）——理由同版本 15 那段。
+    hasher.write_u64(view.traits.len() as u64);
+    for grant in view.traits {
+        write_optional_resolved(hasher, Some(grant.trait_id), registry);
+        hasher.write_i64(i64::from(grant.unlock_level));
+    }
     // 副职获得机制批次新增的第二列。`category` 混入的是**解析后的
     // `NamespacedId` 字符串**而不是 `ContentIndex` 的数值——与
     // `write_recipe_fields` 处理 `category` 同一条纪律（模块文档
@@ -3201,6 +3249,84 @@ mod tests {
 
         // Act & Assert
         assert_ne!(digest(false), digest(true));
+    }
+
+    /// 副职天赋接线批次：`CONTENT_HASH_ALGORITHM_VERSION` 文档
+    /// 「版本 18」一节点名的两条守门断言之一——授予天赋与不授予天赋
+    /// 的同一个副职必须折出不同的摘要。若有人给
+    /// `SubclassAttrs` 加了 `traits` 却忘了同步
+    /// [`write_subclass_fields`]（那正是版本 15 之前 `RaceAttrs` 真实
+    /// 发生过的漂移），本条立刻变红。
+    #[test]
+    fn 授予天赋的副职与不授予天赋的副职摘要不同() {
+        // Arrange：两条除了 traits 之外逐字段相同的副职。
+        use crate::subclass::SubclassAttrs;
+        use ll_sim::traits::TraitGrant;
+
+        let mut registry = Registry::new();
+        let artisan = registry.intern(id("yourmod:artisan"));
+        let lore = registry.intern(id("yourmod:smithing_lore"));
+
+        let digest = |traits: Vec<TraitGrant>| -> u64 {
+            let mut table = SubclassTable::new();
+            table
+                .define(
+                    artisan,
+                    SubclassAttrs {
+                        display_name_key: id("yourmod:subclass.artisan"),
+                        traits,
+                    },
+                )
+                .expect("测试用声明内部自洽");
+            let mut hasher = StateHasher::new();
+            write_subclass_fields(&mut hasher, &table, artisan, &registry);
+            hasher.finish()
+        };
+
+        // Act & Assert
+        assert_ne!(
+            digest(Vec::new()),
+            digest(vec![TraitGrant {
+                trait_id: lore,
+                unlock_level: 1,
+            }])
+        );
+    }
+
+    /// 版本 18 的第二条守门断言：`unlock_level` 真的进了哈希输入——
+    /// 只写 `trait_id`、漏写等级的话，「1 级就给」与「10 级才给」这两份
+    /// 语义完全不同的内容会折出同一份摘要。
+    #[test]
+    fn 副职天赋解锁等级不同则摘要不同() {
+        // Arrange
+        use crate::subclass::SubclassAttrs;
+        use ll_sim::traits::TraitGrant;
+
+        let mut registry = Registry::new();
+        let artisan = registry.intern(id("yourmod:artisan"));
+        let lore = registry.intern(id("yourmod:smithing_lore"));
+
+        let digest = |unlock_level: i32| -> u64 {
+            let mut table = SubclassTable::new();
+            table
+                .define(
+                    artisan,
+                    SubclassAttrs {
+                        display_name_key: id("yourmod:subclass.artisan"),
+                        traits: vec![TraitGrant {
+                            trait_id: lore,
+                            unlock_level,
+                        }],
+                    },
+                )
+                .expect("测试用声明内部自洽");
+            let mut hasher = StateHasher::new();
+            write_subclass_fields(&mut hasher, &table, artisan, &registry);
+            hasher.finish()
+        };
+
+        // Act & Assert
+        assert_ne!(digest(1), digest(10));
     }
 
     #[test]

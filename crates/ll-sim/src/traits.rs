@@ -18,29 +18,39 @@
 //! 里出现"（YAGNI），等 ②③④ 批次真正把 `resolve`/伤害公式/资源池
 //! 查询接上对应效果时，各自在这里追加需要的字段。
 //!
-//! # 天赋归谁所有：种族、职业两路已接，其余三路留白
+//! # 天赋归谁所有：种族、职业、副职三路已接，其余两路留白
 //!
 //! `trait-system.md` 三节①的完整公式是「有效技能 = 已学会的 ∪
 //! 种族天赋 ∪ 职业天赋 ∪ 副职天赋 ∪ 载具天赋 ∪ buff 天赋」五路来源的
 //! 并集。天赋系统落地批次只做了种族这一路；职业天赋接线批次补上职业
-//! 这一路——[`TraitGrantSource`] 现在有两个真实实现
-//! （`ll_mod::race::RaceTable`/`ll_mod::class::ClassTable`）。这条
-//! trait 的签名一个字都没有改：它的形状（「给一个所有者索引，还我它
-//! 授予哪些天赋」）本来就与所有者是种族、职业、副职、载具还是 buff
-//! 无关，接第二路来源需要的只是「让职业表也实现它」+「在调用点多传
-//! 一路来源」——后者落成 [`TraitSource`] 切片里多一个元素，见
-//! [`agent_trait_sources`]。
+//! 这一路；副职天赋接线批次（项目所有者裁定「副职……带有技能的」）
+//! 补上副职这一路——[`TraitGrantSource`] 现在有三个真实实现
+//! （`ll_mod::race::RaceTable`/`ll_mod::class::ClassTable`/
+//! `ll_mod::subclass::SubclassTable`）。这条 trait 的签名一个字都没有
+//! 改：它的形状（「给一个所有者索引，还我它授予哪些天赋」）本来就与
+//! 所有者是种族、职业、副职、载具还是 buff 无关，接后续来源需要的只是
+//! 「让那张表也实现它」+「在调用点多传一路来源」——后者落成
+//! [`TraitSource`] 切片里多一个元素，见 [`agent_trait_sources`]。
 //!
-//! 剩下三路（副职/载具/buff）仍然留白，理由见 [`agent_trait_sources`]
-//! 文档「其余三路为什么不在这里」一节。
+//! **副职这一路是三路里唯一一个「一路来源展开成多个元素」的**：
+//! `Agent::race`/`Agent::profession` 是单值，`Agent::subclasses` 是
+//! `Vec`，持有 N 个副职就展开 N 个 [`TraitSource`]（每个的 `owner` 是
+//! 各自的副职索引、`grants` 是同一张副职表）。这正是
+//! [`agent_trait_sources`] 的返回类型从定长数组变成 `Vec` 的唯一原因，
+//! 见该函数文档「返回类型为什么不再是定长数组」一节。**聚合算法本身
+//! 一行都没有为副职分流**（ADR 0021 复核结论见同一节）。
+//!
+//! 剩下两路（载具/buff）仍然留白，理由见 [`agent_trait_sources`]
+//! 文档「其余两路为什么不在这里」一节。
 //!
 //! # 聚合顺序为什么确定（约束 C5）
 //!
 //! [`effective_traits`]/[`granted_skills`] 全程只遍历 `Vec`——
-//! `TraitGrantSource::granted_traits` 返回的顺序由实现方决定，两个真实
-//! 实现（`RaceTable`/`ClassTable`）内部存的都是 `Vec<TraitGrant>`（各自
-//! 保留 `register-race-trait`/`register-class-trait` 的调用顺序，见
-//! `ll_mod::race`/`ll_mod::class` 模块文档），多路来源之间则按
+//! `TraitGrantSource::granted_traits` 返回的顺序由实现方决定，三个真实
+//! 实现（`RaceTable`/`ClassTable`/`SubclassTable`）内部存的都是
+//! `Vec<TraitGrant>`（各自保留内容文件里 `traits` 数组的书写顺序，见
+//! `ll_mod::race`/`ll_mod::class`/`ll_mod::subclass` 模块文档），多路
+//! 来源之间则按
 //! [`effective_traits`] 收到的切片下标顺序，`TraitRule::granted_skills`
 //! 同理源自 `TraitDef.granted_skills: Vec<ContentIndex>`（保留
 //! `register-trait` 参数列表里的书写顺序）——两处都不触碰任何
@@ -173,7 +183,9 @@ pub const NO_TRAIT_GRANTS: NoTraitGrants = NoTraitGrants;
 #[derive(Clone, Copy)]
 pub struct TraitSource<'a> {
     /// 所有者索引——种族取 `Agent::race`，职业取 `Agent::profession`，
-    /// 其余三路来源各自的字段等它们接线时定案。
+    /// 副职逐个取 `Agent::subclasses` 的元素（一个角色因此展开出多路,
+    /// 见 [`agent_trait_sources`]），其余两路（载具/buff）来源各自的
+    /// 字段等它们接线时定案。
     pub owner: ContentIndex,
     /// 回答「这个所有者授予哪些天赋」的表。
     pub grants: &'a dyn TraitGrantSource,
@@ -187,33 +199,73 @@ impl<'a> TraitSource<'a> {
 }
 
 /// 把一个实体身上已接线的天赋来源展开成 [`effective_traits`] 需要的
-/// 来源列表——种族（`Agent::race` × 种族表）与职业（`Agent::profession`
-/// × 职业表）两路。
+/// 来源列表——种族（`Agent::race` × 种族表）、职业
+/// （`Agent::profession` × 职业表）与副职（`Agent::subclasses` 逐个
+/// × 副职表）三路。
 ///
 /// # 为什么集中到一处
 ///
 /// `crate::resolve` 里有六处独立的聚合调用（技能并集、休息恢复批次、
-/// 资源池容量、抗性、偷袭、槽位容量），每一处都要把同样的两路来源
-/// 展开一遍。若各自手写，任何一处漏写职业这一路都只会表现成「这个
-/// 分支下职业天赋悄悄不生效」——与本项目反复踩到的「声明了但没接线」
+/// 资源池容量、抗性、偷袭、槽位容量），每一处都要把同样的几路来源
+/// 展开一遍。若各自手写，任何一处漏写某一路都只会表现成「这个
+/// 分支下那一路天赋悄悄不生效」——与本项目反复踩到的「声明了但没接线」
 /// 是同一类无声缺陷。集中到这个函数之后，「有哪几路来源」这件事只有
 /// 一处真相。
 ///
-/// # 其余三路（副职/载具/buff）为什么不在这里
+/// # 返回类型为什么不再是定长数组（副职这一路的唯一结构差异）
 ///
-/// 它们各自的所有者字段与授予表都还不存在（`Agent::subclasses` 是一个
-/// 集合而非单值，载具/buff 连表都没有）——按 YAGNI，接线那一批再往
-/// 返回值里加元素，届时本函数的返回类型从 `[TraitSource; 2]` 变成
-/// `[TraitSource; 3]`（或 `Vec`），调用点不需要改一行。
+/// 种族与职业是 `Agent` 上的**单值**字段，一路对应一个
+/// [`TraitSource`]；`Agent::subclasses` 是 `Vec`，持有 N 个副职就要
+/// 展开 N 个来源（`owner` 各是自己的副职索引，`grants` 是同一张副职
+/// 表）。长度因此是 `2 + 副职数`，编译期不是常数——本函数的返回类型
+/// 随之从 `[TraitSource; 2]` 变成 `Vec<TraitSource>`，这正是本模块
+/// 文档与 `knowledge/design/subclass-system.md` 二节都预告过的那一步。
+/// 长度仍然是小常数量级，因为 `crate::subclass::MAX_SUBCLASSES` 给
+/// 副职数封了顶（那条常量的文档把「让本函数的返回值保持在小常数量级」
+/// 列为上限存在的两条独立理由之一）。
+///
+/// **ADR 0021 复核：副职与种族/职业共用同一段算法，因此不新开任何
+/// 抽象。** 判据是「有没有一份算法要被多种类型共用」：
+/// [`effective_traits`] 的 `level >= unlock_level` 过滤与按声明顺序
+/// 去重、以及建立在它之上的 [`granted_skills`]／
+/// `crate::resource_pool::effective_scalar_capacity`／
+/// `crate::rule_modifier::trait_rule_modifiers`，对三种所有者**逐字节
+/// 是同一段代码**——本次接线没有给任何聚合函数加一个 `match 来源种类`
+/// 分支，[`TraitSource`]／[`TraitGrantSource`] 的签名一个字都没改。
+/// 唯一的差异发生在**展开**这一步（单值 vs 集合），而展开本来就只在
+/// 本函数这一处，不构成第二段算法。反向那半（「拦住把同一份算法复制
+/// 三遍」）同样成立：若不集中在这里展开，六处聚合调用点各自要记得
+/// 遍历一遍 `agent.subclasses`。
+///
+/// # 副职的 `unlock_level` 不在这里做任何特殊处理
+///
+/// `TraitGrant::unlock_level` 的文档写着「种族/副职/装备/buff 恒填
+/// `1`」——那是**内容侧的惯例**，不是本函数或 [`effective_traits`] 强制
+/// 的不变量，与种族那一路的处置逐字一致（`ll_mod::race` 同样不校验）。
+/// 内容作者若给某条副职天赋填了大于 1 的值，语义是「持有这个副职、且
+/// 角色等级到了才生效」——一个合理且可用的表达，没有理由在这里堵死。
+///
+/// # 其余两路（载具/buff）为什么不在这里
+///
+/// 它们各自的所有者字段与授予表都还不存在（载具/buff 连表都没有）
+/// ——按 YAGNI，接线那一批再往返回值里加元素，届时只是这个 `Vec` 多
+/// `push` 一次，调用点不需要改一行。
 pub fn agent_trait_sources<'a>(
     agent: &ll_world::entity::Agent,
     race_grants: &'a dyn TraitGrantSource,
     class_grants: &'a dyn TraitGrantSource,
-) -> [TraitSource<'a>; 2] {
-    [
-        TraitSource::new(agent.race, race_grants),
-        TraitSource::new(agent.profession, class_grants),
-    ]
+    subclass_grants: &'a dyn TraitGrantSource,
+) -> Vec<TraitSource<'a>> {
+    let mut sources = Vec::with_capacity(2 + agent.subclasses.len());
+    sources.push(TraitSource::new(agent.race, race_grants));
+    sources.push(TraitSource::new(agent.profession, class_grants));
+    // 顺序：`Agent::subclasses` 自己的 `Vec` 顺序（由
+    // `Effect::GrantSubclass` 的 `push` 顺序决定，进存档、可确定复现）
+    // ——约束 C5，不触碰任何 `HashMap`/`HashSet`。
+    for subclass in &agent.subclasses {
+        sources.push(TraitSource::new(*subclass, subclass_grants));
+    }
+    sources
 }
 
 /// 聚合一个实体当前有效的天赋 id 集合——`trait-system.md` 三节①公式
@@ -431,6 +483,122 @@ mod tests {
 
         // Act & Assert
         assert_eq!(catalog.trait_rule(trait_id), None);
+    }
+
+    /// 测试用天赋授予来源：**按 owner 分流**的固定映射——副职那一路
+    /// 的聚合与种族/职业的实质差异是「同一张表被当作多路来源、每路
+    /// 的 owner 不同」，`FixedGrants` 忽略 owner 的做法证明不了这件事。
+    struct PerOwnerGrants(Vec<(ContentIndex, Vec<TraitGrant>)>);
+    impl TraitGrantSource for PerOwnerGrants {
+        fn granted_traits(&self, owner: ContentIndex) -> Vec<TraitGrant> {
+            self.0
+                .iter()
+                .find(|(id, _)| *id == owner)
+                .map(|(_, grants)| grants.clone())
+                .unwrap_or_default()
+        }
+    }
+
+    #[test]
+    fn 同一张表被当作多路来源时每个所有者各自的天赋都进并集() {
+        // 副职那一路的结构：一张 `SubclassTable`、N 个 owner。
+        // Arrange
+        let mut interner = Interner::new();
+        let artisan = index(&mut interner, "lostland:artisan");
+        let cook = index(&mut interner, "lostland:cook");
+        let smithing = index(&mut interner, "lostland:smithing_lore");
+        let seasoning = index(&mut interner, "lostland:seasoning_lore");
+        let table = PerOwnerGrants(vec![
+            (
+                artisan,
+                vec![TraitGrant {
+                    trait_id: smithing,
+                    unlock_level: 1,
+                }],
+            ),
+            (
+                cook,
+                vec![TraitGrant {
+                    trait_id: seasoning,
+                    unlock_level: 1,
+                }],
+            ),
+        ]);
+
+        // Act
+        let result = effective_traits(
+            &[
+                TraitSource::new(artisan, &table),
+                TraitSource::new(cook, &table),
+            ],
+            1,
+        );
+
+        // Assert
+        assert_eq!(result, vec![smithing, seasoning]);
+    }
+
+    #[test]
+    fn 未被持有的副职即使在表里声明了天赋也不进并集() {
+        // 反例：把上一条里的 `cook` 那一路来源撤掉，它声明的天赋必须
+        // 立刻查不到——证明进并集的依据是「这一路来源在不在切片里」
+        // （即「角色持不持有这个副职」），不是「表里有没有登记」。
+        // Arrange
+        let mut interner = Interner::new();
+        let artisan = index(&mut interner, "lostland:artisan");
+        let cook = index(&mut interner, "lostland:cook");
+        let smithing = index(&mut interner, "lostland:smithing_lore");
+        let seasoning = index(&mut interner, "lostland:seasoning_lore");
+        let table = PerOwnerGrants(vec![
+            (
+                artisan,
+                vec![TraitGrant {
+                    trait_id: smithing,
+                    unlock_level: 1,
+                }],
+            ),
+            (
+                cook,
+                vec![TraitGrant {
+                    trait_id: seasoning,
+                    unlock_level: 1,
+                }],
+            ),
+        ]);
+
+        // Act
+        let result = effective_traits(&[TraitSource::new(artisan, &table)], 1);
+
+        // Assert
+        assert_eq!(result, vec![smithing]);
+    }
+
+    #[test]
+    fn 副职天赋的解锁等级大于一时同样按等级过滤() {
+        // `TraitGrant::unlock_level` 的「种族/副职恒填 1」是内容惯例,
+        // 不是聚合侧强制的不变量——见 `agent_trait_sources` 文档
+        // 「副职的 `unlock_level` 不在这里做任何特殊处理」一节。本条
+        // 守的就是「没有为副职分流出一条无视等级的分支」。
+        // Arrange
+        let mut interner = Interner::new();
+        let artisan = index(&mut interner, "lostland:artisan");
+        let masterwork = index(&mut interner, "lostland:masterwork");
+        let table = PerOwnerGrants(vec![(
+            artisan,
+            vec![TraitGrant {
+                trait_id: masterwork,
+                unlock_level: 4,
+            }],
+        )]);
+        let sources = [TraitSource::new(artisan, &table)];
+
+        // Act
+        let below = effective_traits(&sources, 3);
+        let at = effective_traits(&sources, 4);
+
+        // Assert
+        assert!(below.is_empty(), "差一级不该生效，实际 {below:?}");
+        assert_eq!(at, vec![masterwork]);
     }
 
     #[test]

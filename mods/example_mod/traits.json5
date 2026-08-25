@@ -87,6 +87,22 @@
       ],
     },
     {
+      // 影舞：**副职**授予的天赋——本仓库里唯一一条挂在
+      // SubclassDef.traits 上的天赋，端到端证据见
+      // crates/ll-mod/tests/example_mod_subclass_traits.rs。
+      //
+      // 只授予一个技能、没有别的效果，与龙息那条同形。授予的是既有的
+      // examplemod:backstab（不新造技能）——「影舞者」与背刺在题材上
+      // 本来就是一回事，而复用一条已存在的技能正是「主职与副职共享同一
+      // 份技能命名空间」这条裁定（ll_mod::subclass 模块文档「裁定
+      // P5-4」一节）的真实用例：同一个技能既能由职业天赋授予（盗贼的
+      // 扒手训练，3 级），也能由副职天赋授予（本条，拥有即生效），
+      // 不需要复制一份技能定义，也不需要任何跨命名空间引用机制。
+      id: "examplemod:shadow_dance",
+      display_name_key: "examplemod:shadow_dance_display_name",
+      granted_skills: ["examplemod:backstab"],
+    },
+    {
       // 扒手训练：盗贼被动的两种——「不觉得可疑」与「查不出东西」。
       // 两者落在盘查链路的两环：前者在卫兵决定要不要发起盘查那一步，
       // 后者在盘查已经发起、结算搜出什么那一步。

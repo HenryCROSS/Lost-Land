@@ -918,6 +918,15 @@ pub struct RawSubclass {
     /// 语义不对的获得条件），见 `mods/lostland/subclasses.json5` 文件头。
     #[serde(default)]
     pub unlock: Option<RawSubclassUnlock>,
+    /// 副职天赋，缺省无——`SubclassDef.traits`，与 [`RawClass::traits`]/
+    /// [`RawRace::traits`] 共用同一个 [`RawTraitGrant`] 形状与同一段
+    /// 解析。天赋表可以后到（`resolve` 走 `intern_id`），与职业那一路
+    /// 完全一致：`CONTENT_FILES` 里 `Subclasses` 排在 `Traits` 之前。
+    ///
+    /// **与 `unlock` 并存、互不相干**：`unlock` 回答「怎么拿到这个副
+    /// 职」，`traits` 回答「拿到之后给什么」。两条都可以单独不写。
+    #[serde(default)]
+    pub traits: Vec<RawTraitGrant>,
 }
 
 /// 副职获得条件当前唯一支持的触发器种类。
@@ -936,8 +945,18 @@ pub fn apply_subclasses(
     for subclass in subclasses {
         let index = intern_id(registry, &subclass.id, "副职标识符")?;
         let display_name_key = parse_id(&subclass.display_name_key, "本地化键标识符")?;
+        let mut traits = Vec::with_capacity(subclass.traits.len());
+        for grant in &subclass.traits {
+            traits.push(grant.resolve(registry)?);
+        }
         table
-            .define(index, SubclassAttrs { display_name_key })
+            .define(
+                index,
+                SubclassAttrs {
+                    display_name_key,
+                    traits,
+                },
+            )
             .map_err(|err| err.to_string())?;
 
         let Some(unlock) = &subclass.unlock else {
@@ -1035,6 +1054,7 @@ mod tests {
                 target: "m:frogingg".to_string(),
                 threshold: 20,
             }),
+            traits: Vec::new(),
         }];
 
         // Act
@@ -1042,6 +1062,68 @@ mod tests {
 
         // Assert
         assert!(result.is_err_and(|err| err.contains("m:frogingg")));
+    }
+
+    #[test]
+    fn 副职的traits字段被解析进副职表且天赋表可以后到() {
+        // 副职天赋接线批次：`traits` 与 `unlock` 并存、互不相干,
+        // 且天赋 id 走 `intern_id`（`CONTENT_FILES` 里 Subclasses 排在
+        // Traits 之前，天赋表此刻还是空的）。
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = SubclassTable::new();
+        let subclasses = [RawSubclass {
+            id: "m:shadowdancer".to_string(),
+            display_name_key: "m:shadowdancer.name".to_string(),
+            unlock: None,
+            traits: vec![RawTraitGrant {
+                id: "m:shadow_dance".to_string(),
+                unlock_level: 1,
+            }],
+        }];
+
+        // Act
+        apply_subclasses(&mut registry, &mut table, &subclasses).expect("解析应当成功");
+
+        // Assert
+        let index = registry
+            .get(&NamespacedId::parse("m:shadowdancer").expect("合法"))
+            .expect("副职应当已注册");
+        let shadow_dance = registry
+            .get(&NamespacedId::parse("m:shadow_dance").expect("合法"))
+            .expect("天赋 id 应当被 intern 出来");
+        let view = table.get(index).expect("已定义");
+        assert_eq!(
+            view.traits,
+            &[ll_sim::traits::TraitGrant {
+                trait_id: shadow_dance,
+                unlock_level: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn 副职天赋的解锁等级为负时报错() {
+        // 与职业/种族那两路共用同一段 `RawTraitGrant::resolve` 校验——
+        // 本条守的是「副职这一路真的走了那段校验」，不是又抄了一份。
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = SubclassTable::new();
+        let subclasses = [RawSubclass {
+            id: "m:shadowdancer".to_string(),
+            display_name_key: "m:shadowdancer.name".to_string(),
+            unlock: None,
+            traits: vec![RawTraitGrant {
+                id: "m:shadow_dance".to_string(),
+                unlock_level: -1,
+            }],
+        }];
+
+        // Act
+        let result = apply_subclasses(&mut registry, &mut table, &subclasses);
+
+        // Assert
+        assert!(result.is_err_and(|err| err.contains("-1")));
     }
 
     #[test]

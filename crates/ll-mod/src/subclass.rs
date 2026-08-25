@@ -40,10 +40,41 @@
 //!    或者技能本身是 `owning_class: None` 的通用技能），不需要命名空间
 //!    层面的物理隔离来保证。
 //!
-//! 因此 `SubclassDef` 本身只需要 `id`/`display_name_key` 两个字段，与
+//! 因此 `SubclassDef` 不需要任何命名空间字段，与
 //! [`crate::class::ClassDef`] 去掉 `primary_attribute` 后的形状几乎
 //! 一致——副职复用主职已有的技能，或者技能声明 `owning_class` 指向某个
 //! 副职，两种用法都直接可行，不需要额外的命名空间字段承载这条关系。
+//!
+//! **本节此前写的是「只需要 `id`/`display_name_key` 两个字段」，那半句
+//! 已经过期**：项目所有者裁定「副职……带有技能的」之后，本类型多了
+//! [`SubclassDef::traits`] 这第三个字段，见下一节。裁定推翻的是设计
+//! 文档二节「副职不给数值」那条，**没有**推翻本节的命名空间共享裁定
+//! ——恰恰相反，`traits` 指向的是与主职共享同一个 `ContentIndex` 号段
+//! 的天赋表，正是共享命名空间让这条引用不需要任何跨号段机制。
+//!
+//! # 副职授予天赋：走的是 `agent_trait_sources` 预留的第三路
+//!
+//! `ll_sim::traits` 模块文档「天赋归谁所有」一节自天赋系统落地起就
+//! 写着「五路来源……副职天赋……」，`ll_sim::traits::agent_trait_sources`
+//! 更曾有一整节标题叫「其余三路（副职/载具/buff）为什么不在这里」
+//! （本批次接线之后那一节已经改名为「其余两路（载具/buff）」——副职
+//! 正是从那份留白里划走的一路）。
+//! 本表因此**不新开任何 trait**：它实现既有的
+//! `ll_sim::traits::TraitGrantSource`（与 `RaceTable`/`ClassTable`
+//! 同一个），`agent_trait_sources` 里多展开几路来源即可。ADR 0021 的
+//! 完整复核结论记在 `agent_trait_sources` 文档「ADR 0021 复核」一节:
+//! 三种所有者共用逐字节相同的聚合算法，唯一的结构差异（单值 vs
+//! `Vec`）只发生在展开那一步，不构成第二段算法。
+//!
+//! # 为什么没有 `add_trait_grant`
+//!
+//! [`crate::class::ClassTable`] 有一个注册后追加的
+//! `add_trait_grant`，那是**脚本时代的遗留形状**——它的文档原文写着
+//! 「`register-class` 的既有脚本签名不能改参数个数」。脚本系统已经
+//! 拆除，副职天赋的唯一注册路径是 `subclasses.json5` 的 `traits`
+//! 数组，`crate::content_schema::apply_subclasses` 一次性把整份列表
+//! 交给 [`SubclassTable::define`]。为一条不存在的调用方预留追加入口
+//! 正是 ADR 0021 点名要避免的抽象，因此不造。
 //!
 //! **这条裁定推翻了实施计划文档给出的保守默认**（`docs/superpowers/plans/2026-08-19-p5-gameplay-systems.md`
 //! 任务 1 撰写时给出的保守默认是「不共享」，标注为待裁定）——项目所有者
@@ -56,6 +87,7 @@ use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_sim::subclass::{CraftUnlockRule, SubclassUnlockCatalog};
+use ll_sim::traits::{TraitGrant, TraitGrantSource};
 
 use crate::base_contract::{BaseContractError, BaseContractResolver};
 use crate::registry::Registry;
@@ -76,6 +108,22 @@ pub struct SubclassDef {
     /// 指向 Fluent 本地化键，不存字面字符串——与 [`crate::class::ClassDef`]
     /// 同一条纪律：本地化是独立系统的职责，不是内容注册表的。
     pub display_name_key: NamespacedId,
+    /// 这个副职授予的天赋引用列表，与 [`crate::class::ClassDef::traits`]/
+    /// [`crate::race::RaceDef::traits`] 是同一个类型、同一段消费算法
+    /// （`ll_sim::traits::effective_traits`），见本模块文档「副职授予
+    /// 天赋」一节。
+    ///
+    /// **这是副职唯一的「给东西」字段**（`subclass-system.md` 三节）：
+    /// 副职本身零存储数值，真正的效果载荷（技能/属性修正/规则修正/
+    /// 资源池）全部在 `TraitTable` 里，本字段只是一份引用列表。空列表
+    /// 表示这个副职纯粹作为资格闸门存在（例如只靠
+    /// [`crate::recipe_category::RecipeCategoryDef`] 的
+    /// `required_subclasses` 起作用的制作类副职）——空是合法且常见的。
+    ///
+    /// `TraitGrant::unlock_level` 的取值不在注册期校验，理由见
+    /// `ll_sim::traits::agent_trait_sources` 文档「副职的 `unlock_level`
+    /// 不在这里做任何特殊处理」一节，与种族那一路的处置逐字一致。
+    pub traits: Vec<TraitGrant>,
 }
 
 /// [`SubclassTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -87,6 +135,8 @@ pub struct SubclassDef {
 pub struct SubclassAttrs {
     /// 指向 Fluent 本地化键。
     pub display_name_key: NamespacedId,
+    /// 这个副职授予的天赋引用列表，见 [`SubclassDef::traits`] 文档。
+    pub traits: Vec<TraitGrant>,
 }
 
 /// 副职注册期可能出现的错误。ADR 0017「注册期完整校验」要求这些错误
@@ -141,6 +191,8 @@ impl std::error::Error for SubclassError {}
 pub struct SubclassView<'a> {
     /// 指向 Fluent 本地化键。
     pub display_name_key: &'a NamespacedId,
+    /// 这个副职授予的天赋引用列表，见 [`SubclassDef::traits`] 文档。
+    pub traits: &'a [TraitGrant],
 }
 
 /// 副职属性的列式存储：按 [`ContentIndex`] 下标索引，不按内容分结构
@@ -153,6 +205,10 @@ pub struct SubclassView<'a> {
 #[derive(Debug, Default, Clone)]
 pub struct SubclassTable {
     display_name_key: Vec<Option<NamespacedId>>,
+    /// 每个副职授予的天赋引用列表——副职天赋接线批次新增的一列，
+    /// 见 [`SubclassDef::traits`]。空列表与「这个副职不授予任何天赋」
+    /// 是同一件事，因此不需要 `Option` 包一层。
+    traits: Vec<Vec<TraitGrant>>,
     /// 「做满 N 次某个配方类别就获得这个副职」——`register-subclass-unlock`
     /// 注册后追加的第二列，见 [`SubclassTable::set_craft_unlock`] 文档。
     /// `None` = 这个副职没有声明任何获得条件（合法：它可能靠任务奖励或
@@ -182,6 +238,7 @@ impl SubclassTable {
             let new_len = idx + 1;
             self.defined.resize(new_len, false);
             self.display_name_key.resize(new_len, None);
+            self.traits.resize(new_len, Vec::new());
             self.craft_unlock.resize(new_len, None);
         }
 
@@ -191,6 +248,7 @@ impl SubclassTable {
 
         self.defined[idx] = true;
         self.display_name_key[idx] = Some(attrs.display_name_key);
+        self.traits[idx] = attrs.traits;
         Ok(())
     }
 
@@ -275,7 +333,29 @@ impl SubclassTable {
             display_name_key: self.display_name_key[idx]
                 .as_ref()
                 .expect("defined 为真时 display_name_key 必已写入"),
+            traits: &self.traits[idx],
         })
+    }
+}
+
+/// `ll_sim::traits::TraitGrantSource` 的第三个真实实现——
+/// `ll_sim::traits::effective_traits` 通过这个 impl 真正查到**副职**
+/// 授予的天赋，与 `impl TraitGrantSource for RaceTable`/`for ClassTable`
+/// 是同一条依赖倒置路径（`ll-sim` 定义 trait，`ll-mod` 提供实现）。
+///
+/// ADR 0021 复核结论见 `ll_sim::traits::agent_trait_sources` 文档
+/// 「ADR 0021 复核」一节：三种所有者共用逐字节相同的聚合算法，因此复用
+/// 既有 trait，不新开 `SubclassTraitGrantSource` 这类只会得到一份签名
+/// 相同、实现相同、调用点相同的空壳。
+///
+/// 未注册的索引返回空列表——`get` 已经对未注册索引返回 `None`，这里
+/// 顺着它走，是 `TraitGrantSource::granted_traits` 文档「查不到就是查
+/// 不到」的既有纪律。
+impl TraitGrantSource for SubclassTable {
+    fn granted_traits(&self, owner: ContentIndex) -> Vec<TraitGrant> {
+        self.get(owner)
+            .map(|view| view.traits.to_vec())
+            .unwrap_or_default()
     }
 }
 
@@ -371,6 +451,7 @@ mod tests {
                     SubclassAttrs {
                         display_name_key: NamespacedId::parse("testmod:display_name")
                             .expect("合法标识符"),
+                        traits: Vec::new(),
                     },
                 )
                 .expect("首次定义应当成功");
@@ -396,6 +477,7 @@ mod tests {
                     SubclassAttrs {
                         display_name_key: NamespacedId::parse("testmod:display_name")
                             .expect("合法标识符"),
+                        traits: Vec::new(),
                     },
                 )
                 .expect("首次定义应当成功");
@@ -437,6 +519,7 @@ mod tests {
             blademaster,
             SubclassAttrs {
                 display_name_key: NamespacedId::parse("testmod:other_display_name").expect("合法"),
+                traits: Vec::new(),
             },
         );
 
@@ -474,6 +557,7 @@ mod tests {
                 SubclassAttrs {
                     display_name_key: NamespacedId::parse("yourmod:shadowdancer_display_name")
                         .expect("合法"),
+                    traits: Vec::new(),
                 },
             )
             .expect("mod 副职与先注册的副职调用同一个公开 define 函数,理应同样成功");
@@ -485,6 +569,106 @@ mod tests {
             view.display_name_key,
             &NamespacedId::parse("yourmod:shadowdancer_display_name").expect("合法")
         );
+    }
+
+    #[test]
+    fn 已定义的副职能查回它声明的天赋引用列表() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = SubclassTable::new();
+        let artisan = registry.intern(NamespacedId::parse("testmod:artisan").expect("合法"));
+        let smithing_lore =
+            registry.intern(NamespacedId::parse("testmod:smithing_lore").expect("合法"));
+        table
+            .define(
+                artisan,
+                SubclassAttrs {
+                    display_name_key: NamespacedId::parse("testmod:display_name").expect("合法"),
+                    traits: vec![TraitGrant {
+                        trait_id: smithing_lore,
+                        unlock_level: 1,
+                    }],
+                },
+            )
+            .expect("首次定义应当成功");
+
+        // Act
+        let view = table.get(artisan).expect("已定义");
+
+        // Assert
+        assert_eq!(
+            view.traits,
+            &[TraitGrant {
+                trait_id: smithing_lore,
+                unlock_level: 1,
+            }]
+        );
+    }
+
+    #[test]
+    fn 不声明天赋的副职查回空列表而不是报错() {
+        // 空列表是合法且常见的：制作类副职靠 required_subclasses 当
+        // 闸门就已经有完整玩法效果，不必授予任何天赋。
+        // Arrange
+        let (_registry, blademaster, _acolyte, table) = sample_table();
+
+        // Act
+        let view = table.get(blademaster).expect("已定义");
+
+        // Assert
+        assert!(view.traits.is_empty());
+    }
+
+    #[test]
+    fn 副职表作为天赋授予来源能查到它声明的天赋() {
+        // 这条 impl 是 `ll_sim::traits::effective_traits` 真正查到副职
+        // 天赋的那一环——`agent_trait_sources` 预留的第三路来源。
+        // Arrange
+        let mut registry = Registry::new();
+        let mut table = SubclassTable::new();
+        let artisan = registry.intern(NamespacedId::parse("testmod:artisan").expect("合法"));
+        let smithing_lore =
+            registry.intern(NamespacedId::parse("testmod:smithing_lore").expect("合法"));
+        table
+            .define(
+                artisan,
+                SubclassAttrs {
+                    display_name_key: NamespacedId::parse("testmod:display_name").expect("合法"),
+                    traits: vec![TraitGrant {
+                        trait_id: smithing_lore,
+                        unlock_level: 2,
+                    }],
+                },
+            )
+            .expect("首次定义应当成功");
+
+        // Act
+        let grants = TraitGrantSource::granted_traits(&table, artisan);
+
+        // Assert
+        assert_eq!(
+            grants,
+            vec![TraitGrant {
+                trait_id: smithing_lore,
+                unlock_level: 2,
+            }]
+        );
+    }
+
+    #[test]
+    fn 未注册的副职索引作为天赋来源查询返回空列表() {
+        // 「查不到就是查不到」——与 RaceTable/ClassTable 同一条纪律。
+        // Arrange
+        let mut registry = Registry::new();
+        let never_defined =
+            registry.intern(NamespacedId::parse("yourmod:never_defined").expect("合法标识符"));
+        let table = SubclassTable::new();
+
+        // Act
+        let grants = TraitGrantSource::granted_traits(&table, never_defined);
+
+        // Assert
+        assert!(grants.is_empty());
     }
 
     #[test]
