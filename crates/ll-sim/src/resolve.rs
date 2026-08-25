@@ -5563,7 +5563,9 @@ mod tests {
         assert!(world.actors.get(victim).is_none());
         // 历史事件真的被写入了,不是只在效果列表里飘过。
         assert_eq!(world.history.len(), 1);
-        let ll_world::history::HistoricalEventKind::Kill(record) = &world.history[0].kind;
+        let ll_world::history::HistoricalEventKind::Kill(record) = &world.history[0].kind else {
+            panic!("战斗结算写进 WorldState::history 的必须是一条击杀记录");
+        };
         // 致死手段精确到「近战」——不是笼统的"被杀"。
         assert!(matches!(
             record.cause,

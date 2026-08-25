@@ -670,6 +670,8 @@ fn 具名角色血魔法自尽后产出完整历史事件且killer与victim相�
     // Assert：完整记录真的写进了 world.history,killer 与 victim 解析出
     // 同一个 WorldId（自尽,不是被别人杀）。
     assert_eq!(world.history.len(), 1);
-    let HistoricalEventKind::Kill(record) = &world.history[0].kind;
+    let HistoricalEventKind::Kill(record) = &world.history[0].kind else {
+        panic!("这条历史事件必须是一条击杀记录");
+    };
     assert_eq!(record.killer, Some(record.victim));
 }

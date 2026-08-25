@@ -6,16 +6,15 @@
 //! [`crate::content::LoadedContent`] 的真实装载结果，不是测试用的
 //! `*_fixture` 便捷函数——本体二进制走的是与 mod 完全相同的注册通道。
 
-use std::collections::VecDeque;
-
 use ll_core::time::Tick;
-use ll_core::torus::{TorusPos, TorusSize};
+use ll_core::torus::TorusPos;
 use ll_sim::timeline::Timeline;
-use ll_world::chunk::ChunkGrid;
+use ll_world::chronicle::{ChronicleParams, WorldChronicle};
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::{
     GenParams, build_zone_noise, generate_zone_window, zone_representative_terrain,
 };
+use ll_world::land::largest_walkable_component;
 use ll_world::noise::TileableNoise;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
@@ -225,6 +224,35 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
         spawn,
     )?;
     world.surface_profile = content.space_ids.surface;
+
+    // 世界历史：玩家进入之前，这块大陆已经跑过三百年兴衰。据点、废墟
+    // 就是那段历史留在地形上的痕迹，见 `ll_world::chronicle` 模块文档。
+    //
+    // 顺序上必须排在 `WorldState::new` 之后（它才是噪声与地形表真正
+    // 就位的地方），因此出生邻域的那几个区块是先生成、后补铺的——
+    // `install_chronicle` 会把它们重新生成一遍再铺，与后续流式加载进来
+    // 的区块走完全同一条路径，见该方法文档。
+    let chronicle = std::sync::Arc::new(WorldChronicle::generate(
+        &layout,
+        &noise,
+        &params,
+        &content.terrain_ids,
+        &content.terrain_table,
+        ChronicleParams::default(),
+    ));
+    tracing::info!(
+        seed,
+        epochs = chronicle.epochs(),
+        events = chronicle.events().len(),
+        settlements = chronicle.sites().len(),
+        "世界历史生成完成"
+    );
+    // 编年史分配掉的 WorldId 不能被游戏内的击杀记录再发一次——历史
+    // 事件与据点用的是同一个号码空间（`identity-and-ids.md`）。
+    world.next_world_id = world.next_world_id.max(chronicle.next_world_id());
+    world
+        .terrain
+        .install_chronicle(chronicle, &noise, &params, &content.terrain_ids);
     // 新游戏从早晨开始，而不是 `Tick(0)`（午夜）。
     //
     // 三条各自正确的规则叠在一起会让午夜开局变成纯黑屏：午夜环境光是
@@ -351,7 +379,8 @@ fn carve_spawn_clearing(
 ///    区块直接跳过，不生成整个区块窗口。
 /// 3. 预筛通过的区块才用 [`generate_zone_window`] 生成完整的
 ///    `ZONE_SPAN × ZONE_SPAN` 窗口，对窗口内全部格做连通域分析（见
-///    [`largest_walkable_component_start`]），取窗口内最大的连通可行走
+///    [`ll_world::land::largest_walkable_component`]——与据点选址**共用
+///    同一份算法**，见该模块文档），取窗口内最大的连通可行走
 ///    分量——分析范围只在单个区块窗口内部，不跨区块边界，见该函数
 ///    文档。
 /// 4. 该分量格数 ≥ [`MIN_SPAWN_LAND_AREA`] 时,取分量内光栅序意义上
@@ -401,98 +430,25 @@ fn find_spawn_site(
 
             let window = generate_zone_window(noise, params, layout, zone, terrain_ids)
                 .expect("layout 已在 build_zone_layout 中校验过，区块窗口恒能生成");
-            let Some((local, area)) =
-                largest_walkable_component_start(&window, layout.local_size(), table)
-            else {
+            let Some(component) = largest_walkable_component(
+                &window,
+                layout.local_size(),
+                table,
+                MIN_SPAWN_LAND_AREA,
+            ) else {
                 continue;
             };
 
-            let world_x = zone.x() * span as i32 + local.x();
-            let world_y = zone.y() * span as i32 + local.y();
-            return Some((layout.tile_size().wrap(world_x, world_y), area));
+            // 出生点取分量的 `start`（光栅序最先那一格），不是 `center`
+            // ——这是本函数一开始就在用的语义，换成 `center` 会让同一个
+            // 种子的玩家出生点漂移，见 `LandComponent::start` 文档。
+            let world_x = zone.x() * span as i32 + component.start.x();
+            let world_y = zone.y() * span as i32 + component.start.y();
+            return Some((layout.tile_size().wrap(world_x, world_y), component.area));
         }
     }
 
     None
-}
-
-/// 在一个已生成的区块窗口内做连通域分析（BFS），返回**格数最大**的
-/// 连通可行走分量里、按光栅序最先访问到的那一格（区块内局部坐标）与
-/// 该分量的格数——供 [`find_spawn_site`] 换算成世界坐标。分量格数不足
-/// [`MIN_SPAWN_LAND_AREA`] 时返回 `None`。
-///
-/// 区块内部坐标不做环绕：本函数只关心「这个区块窗口内部,连通到一起
-/// 的陆地有多大」，不把窗口一条边界的移动接到本窗口另一条边界（那会
-/// 把两个本不相邻的世界坐标误判成相邻）——跨区块的连通性判断留给
-/// 「换一个区块继续搜」这一层，不在这里假装两者相邻。
-fn largest_walkable_component_start(
-    window: &ChunkGrid,
-    local_size: TorusSize,
-    table: &TerrainTable,
-) -> Option<(TorusPos, usize)> {
-    debug_assert_eq!(
-        local_size.width(),
-        local_size.height(),
-        "区块窗口的局部坐标系恒为正方形,见 ZoneLayout::local_size 文档"
-    );
-    let span = local_size.width() as i32;
-
-    let mut visited = vec![false; (span * span) as usize];
-    let mut best_size = 0usize;
-    let mut best_start: Option<(i32, i32)> = None;
-
-    for start_y in 0..span {
-        for start_x in 0..span {
-            let start_idx = (start_y * span + start_x) as usize;
-            if visited[start_idx] {
-                continue;
-            }
-            visited[start_idx] = true;
-            if window
-                .terrain_at(local_size.wrap(start_x, start_y))
-                .blocks_move(table)
-            {
-                continue;
-            }
-
-            // 广度优先收集这个连通分量,邻居固定按上、右、下、左的顺序
-            // 入队——不依赖任何哈希容器的迭代顺序（约束 C5）。
-            let mut queue = VecDeque::new();
-            let mut size = 0usize;
-            queue.push_back((start_x, start_y));
-            while let Some((x, y)) = queue.pop_front() {
-                size += 1;
-                for (nx, ny) in [(x, y - 1), (x + 1, y), (x, y + 1), (x - 1, y)] {
-                    if nx < 0 || ny < 0 || nx >= span || ny >= span {
-                        continue;
-                    }
-                    let n_idx = (ny * span + nx) as usize;
-                    if visited[n_idx] {
-                        continue;
-                    }
-                    visited[n_idx] = true;
-                    if window
-                        .terrain_at(local_size.wrap(nx, ny))
-                        .blocks_move(table)
-                    {
-                        continue;
-                    }
-                    queue.push_back((nx, ny));
-                }
-            }
-
-            if size > best_size {
-                best_size = size;
-                best_start = Some((start_x, start_y));
-            }
-        }
-    }
-
-    let (best_x, best_y) = best_start?;
-    if best_size < MIN_SPAWN_LAND_AREA {
-        return None;
-    }
-    Some((local_size.wrap(best_x, best_y), best_size))
 }
 
 /// 生成玩家单位，写入 `world.actors`，`current_space` 取地表。
@@ -650,6 +606,8 @@ pub fn cleanup_aged_ground_items(world: &mut WorldState) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ll_core::torus::TorusSize;
+    use std::collections::VecDeque;
 
     fn test_content() -> LoadedContent {
         let dir = crate::test_support::unique_temp_path("ll-game-world-test-content");
@@ -889,7 +847,7 @@ mod tests {
     /// 用 `Vec<TorusPos>` 线性查找记录已访问坐标，不用 `HashSet`——
     /// 这不是热路径（只在测试里跑一次，`cap` 通常只有几千），换取的是
     /// 不必为「区块内局部坐标」之外的、跨越任意区块边界的世界坐标
-    /// 另外设计一套下标方案；`largest_walkable_component_start`（生产
+    /// 另外设计一套下标方案；`ll_world::land::largest_walkable_component`（生产
     /// 路径）仍然用数组下标,这里的取舍只服务测试代码本身。
     fn flood_fill_walkable_area(world: &WorldState, start: TorusPos, cap: usize) -> usize {
         let mut visited: Vec<TorusPos> = vec![start];
@@ -923,6 +881,112 @@ mod tests {
         }
 
         visited.len()
+    }
+
+    /// 本批次（世界历史生成）的核心验收：**历史真的改变了世界当前的
+    /// 样子**，不是只产出了一份谁也不看的事件日志。
+    ///
+    /// 断言链条完整走一遍：编年史里有据点 → 据点所在区块流式加载进来
+    /// → 那个区块的地形里真的立着建筑（墙/地板），而这些地形在纯噪声
+    /// 生成的世界里绝不可能出现（`terrain_at_coord` 只产出八种自然
+    /// 地形，见 `ll_world::generate`）。
+    #[test]
+    fn 历史生成的据点真的立在世界地形里() {
+        // Arrange
+        let content = test_content();
+        let game_world = build_new_world(&content, 20260825).expect("默认布局满足全部前置条件");
+        let site = *game_world
+            .world
+            .terrain
+            .chronicle()
+            .expect("新游戏必然装上了编年史")
+            .sites()
+            .first()
+            .expect("三百年历史里至少建起过一座据点");
+
+        // Act：把据点所在区块流式加载进来。
+        let mut world = game_world.world;
+        let span = world.terrain.layout().zone_span() as i32;
+        let mut building_tiles = 0usize;
+        for dy in 0..span {
+            for dx in 0..span {
+                let pos = world
+                    .size
+                    .wrap(site.zone.x() * span + dx, site.zone.y() * span + dy);
+                let kind = world.terrain.terrain_at(
+                    &game_world.noise,
+                    &game_world.params,
+                    &content.terrain_ids,
+                    pos,
+                    Tick(0),
+                );
+                if kind == content.terrain_ids.wall_wood
+                    || kind == content.terrain_ids.wall_stone
+                    || kind == content.terrain_ids.floor_wood
+                    || kind == content.terrain_ids.floor_stone
+                {
+                    building_tiles += 1;
+                }
+            }
+        }
+
+        // Assert：一栋 5×5 的屋子就有 25 格，据点至少有一栋。
+        assert!(
+            building_tiles >= 25,
+            "据点 {:?} 所在区块只有 {building_tiles} 格建筑地形，历史没有真的落到地形上",
+            site.id
+        );
+    }
+
+    /// 同一个种子建两次世界，据点与历史事件必须逐字段相同——确定性
+    /// （约束 C3）在**整条启动路径**上的验收，不只是编年史模块内部。
+    #[test]
+    fn 同一种子两次建世界产出相同的据点与历史() {
+        // Arrange
+        let content = test_content();
+
+        // Act
+        let first = build_new_world(&content, 4242).expect("默认布局满足全部前置条件");
+        let second = build_new_world(&content, 4242).expect("默认布局满足全部前置条件");
+
+        // Assert
+        let a = first.world.terrain.chronicle().expect("必然装上了编年史");
+        let b = second.world.terrain.chronicle().expect("必然装上了编年史");
+        assert_eq!(a.next_world_id(), b.next_world_id());
+        assert_eq!(a.sites().len(), b.sites().len());
+        for (x, y) in a.sites().iter().zip(b.sites()) {
+            assert_eq!(x, y, "同一种子的据点出现分歧");
+        }
+        assert_eq!(a.events().len(), b.events().len());
+        for (x, y) in a.events().iter().zip(b.events()) {
+            assert_eq!(x, y, "同一种子的历史事件出现分歧");
+        }
+        // 世界哈希覆盖了地形本身——据点已经铺进出生邻域的话，这条
+        // 断言同时守住了「铺设结果逐格相同」。
+        assert_eq!(first.world.hash(), second.world.hash());
+    }
+
+    /// 编年史分配掉的 `WorldId` 不会被游戏内的击杀记录再发一次。
+    #[test]
+    fn 世界id计数器越过了编年史已经分配掉的号段() {
+        // Arrange
+        let content = test_content();
+        let game_world = build_new_world(&content, 20260825).expect("默认布局满足全部前置条件");
+
+        // Act
+        let reserved = game_world
+            .world
+            .terrain
+            .chronicle()
+            .expect("必然装上了编年史")
+            .next_world_id();
+
+        // Assert
+        assert!(
+            game_world.world.next_world_id >= reserved,
+            "WorldState 的计数器 {} 低于编年史已经分配到的 {reserved}，两者会撞号",
+            game_world.world.next_world_id
+        );
     }
 
     /// 测试帮手：借 `build_new_world` 建一局真实世界（内部会用

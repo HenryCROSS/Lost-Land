@@ -1236,10 +1236,19 @@ fn write_optional_world_id(hasher: &mut StateHasher, id: Option<WorldId>) {
 }
 
 /// 把一条 [`HistoricalEvent`] 混入哈希——[`WorldState::hash`] 的帮手
-/// （击杀与死亡记录批次）。`kind` 目前只有一个变体（[`crate::history`]
-/// 模块文档「为什么只有 Kill 一个 kind 变体」），但仍然先写一个判别
-/// 字节——未来新增变体时,这个判别字节让新旧变体产出的哈希天然不会
-/// 因为字段布局恰好雷同而碰撞,不需要等到第二个变体出现时才回头补。
+/// （击杀与死亡记录批次）。每个变体先写一个判别字节，让不同变体产出
+/// 的哈希不会因为字段布局恰好雷同而碰撞——这条预留在世界历史生成
+/// 批次新增两个变体时直接生效，不需要回头补。
+///
+/// # 据点事件为什么也在这里
+///
+/// [`HistoricalEventKind::SettlementFounded`]/`SettlementAbandoned`
+/// 由 [`crate::chronicle`] 在世界生成期产出，**默认不进 `WorldState`**
+/// （ADR 0009：整份编年史是种子的纯函数，读档时重新派生）。但
+/// `WorldState::history` 是一个 `Vec<HistoricalEvent>`，类型上完全
+///容得下它们——若将来「历史偏差」需要把某几条真的存进去（例如玩家
+/// 亲手烧掉一座村子），这里的分支已经就位，不会因为漏了一条而让那次
+/// 改动悄悄不进哈希。
 fn write_historical_event(hasher: &mut StateHasher, event: &HistoricalEvent) {
     hasher.write_u64(u64::from(event.id.get()));
     hasher.write_i64(event.at.0);
@@ -1255,6 +1264,20 @@ fn write_historical_event(hasher: &mut StateHasher, event: &HistoricalEvent) {
             hasher.write_i64(i64::from(record.killing_blow.remaining_health));
             hasher.write_u64(u64::from(record.victim_state.poisoned));
             hasher.write_u64(u64::from(record.victim_state.surrounded));
+        }
+        HistoricalEventKind::SettlementFounded(record) => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(record.site.get()));
+            hasher.write_u64(u64::from(record.epoch));
+            hasher.write_u64(u64::from(record.initial_population));
+            hasher.write_u64(u64::from(record.land_area));
+        }
+        HistoricalEventKind::SettlementAbandoned(record) => {
+            hasher.write_u64(2);
+            hasher.write_u64(u64::from(record.site.get()));
+            hasher.write_u64(u64::from(record.epoch));
+            hasher.write_u64(u64::from(record.peak_population));
+            hasher.write_u64(u64::from(record.epochs_inhabited));
         }
     }
 }

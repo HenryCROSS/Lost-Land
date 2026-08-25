@@ -294,7 +294,9 @@ fn 装备真实注册的战锤致死后击杀记录的武器字段指向战锤�
 
     // Assert
     assert_eq!(world.history.len(), 1, "致死一击必须留下唯一一条历史事件");
-    let HistoricalEventKind::Kill(record) = &world.history[0].kind;
+    let HistoricalEventKind::Kill(record) = &world.history[0].kind else {
+        panic!("这条历史事件必须是一条击杀记录");
+    };
     assert_eq!(
         record.cause,
         KillCause::Melee {
