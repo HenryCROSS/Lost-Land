@@ -1100,6 +1100,7 @@ mod tests {
                 .find(|(id, _)| *id == item)
                 .map(|(_, modifiers)| ItemRule {
                     wear_channels: crate::item::WearChannels::NONE,
+                    max_durability: None,
                     taught_recipes: Vec::new(),
                     requires_identification: false,
                     study_experience: 0,

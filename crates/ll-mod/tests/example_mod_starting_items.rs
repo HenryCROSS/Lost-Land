@@ -253,13 +253,17 @@ fn 真实哥布林出生物品转换成对应的两条物品堆() {
         .expect("哥布林应当已被真实注册");
 
     // Act
-    let inventory = starting_inventory(&view);
+    let inventory = starting_inventory(&view, &handle.item);
 
-    // Assert
+    // Assert：粗劣匕首出生就是**满耐久 20**（mods/example_mod/items.json5
+    // 声明的 max_durability），不是「没有耐久概念」——「新造出来的物品
+    // 带多少耐久」这条共同规则在出生装备这一路的端到端证据，见
+    // `ll_world::item::ItemStack::freshly_made`。箭矢可堆叠、没有耐久
+    // 上限，因此仍然是 None（可堆叠物品不能带耐久，注册期硬校验）。
     assert_eq!(
         inventory,
         vec![
-            ItemStack::new(handle.crude_dagger_id, 1),
+            ItemStack::with_durability(handle.crude_dagger_id, 1, 20),
             ItemStack::new(handle.arrow_id, 2),
         ]
     );
@@ -278,7 +282,7 @@ fn 携带出生物品的哥布林被杀死后背包物品完整进入尸体() {
         .race
         .get(handle.goblin_id)
         .expect("哥布林应当已被真实注册");
-    let loadout = starting_inventory(&view);
+    let loadout = starting_inventory(&view, &handle.item);
     let victim = spawn_agent(
         &mut world,
         handle.goblin_id,
@@ -421,7 +425,7 @@ fn 普通拾取跳过尸体不吞掉其战利品() {
         .race
         .get(handle.goblin_id)
         .expect("哥布林应当已被真实注册");
-    let loadout = starting_inventory(&view);
+    let loadout = starting_inventory(&view, &handle.item);
     let victim = spawn_agent(
         &mut world,
         handle.goblin_id,
@@ -475,7 +479,7 @@ fn 搜刮尸体后战利品进入背包且尸体从地面消失() {
         .race
         .get(handle.goblin_id)
         .expect("哥布林应当已被真实注册");
-    let loadout = starting_inventory(&view);
+    let loadout = starting_inventory(&view, &handle.item);
     let victim = spawn_agent(
         &mut world,
         handle.goblin_id,

@@ -210,6 +210,8 @@ fn 本体物品的id清单不多不少() {
         "lostland:amber_pendant",
         "lostland:bone_needle",
         "lostland:field_cookbook",
+        "lostland:forge_apron",
+        "lostland:forge_brand",
         "lostland:fur_mantle",
         "lostland:fur_pelt",
         "lostland:herb_bundle",
@@ -239,7 +241,7 @@ fn 本体物品的id清单不多不少() {
     .map(str::to_string)
     .collect();
     assert_eq!(actual, expected);
-    assert_eq!(actual.len(), 27);
+    assert_eq!(actual.len(), 29);
 }
 
 #[test]

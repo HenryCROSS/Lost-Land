@@ -114,6 +114,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
             arrow,
             ItemRule {
                 wear_channels: WearChannels::NONE,
+                max_durability: None,
                 taught_recipes: Vec::new(),
                 requires_identification: false,
                 study_experience: 0,

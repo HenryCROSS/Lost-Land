@@ -165,6 +165,7 @@ fn spawn_agent(
 fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
     ItemRule {
         wear_channels: WearChannels::NONE,
+        max_durability: None,
         taught_recipes: Vec::new(),
         requires_identification: false,
         study_experience: 0,
@@ -184,6 +185,7 @@ fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
 fn armor_rule(amount: i32) -> ItemRule {
     ItemRule {
         wear_channels: WearChannels::NONE,
+        max_durability: None,
         taught_recipes: Vec::new(),
         requires_identification: false,
         study_experience: 0,

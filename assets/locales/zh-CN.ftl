@@ -55,7 +55,7 @@ recipe_category-tailoring-display_name = 缝纫
 recipe_category-alchemy-display_name = 炼金
 recipe_category-cooking-display_name = 烹饪
 
-# 本体物品（mods/lostland/items.json5，二十四条）——
+# 本体物品（mods/lostland/items.json5，二十九条）——
 # ll-mod ItemAttrs::display_name_key。
 item-iron_ingot-display_name = 铁锭
 item-iron_rivet-display_name = 铁铆钉
@@ -69,6 +69,7 @@ item-herbal_draught-display_name = 草药汤剂
 item-iron_shortsword-display_name = 铁短剑
 item-iron_warpick-display_name = 战镐
 item-oak_buckler-display_name = 橡木圆盾
+item-forge_brand-display_name = 锻炉烙铁
 item-smith_hammer-display_name = 铁匠锤
 item-bone_needle-display_name = 骨针
 item-iron_helm-display_name = 铁盔
@@ -77,6 +78,7 @@ item-iron_greaves-display_name = 铁胫甲
 item-leather_boots-display_name = 皮靴
 item-linen_shirt-display_name = 亚麻衬衣
 item-fur_mantle-display_name = 毛皮披风
+item-forge_apron-display_name = 锻炉围裙
 item-wool_gloves-display_name = 羊毛手套
 item-amber_pendant-display_name = 琥珀坠
 item-traveler_ring-display_name = 旅人指环

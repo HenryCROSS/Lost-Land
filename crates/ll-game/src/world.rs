@@ -500,16 +500,19 @@ fn build_player_agent(
 ) -> Agent {
     // 出生携带物品（NPC 生命周期批次：NPC 带物品 → 死亡掉落 → 尸体 →
     // 老化回收，本行是「带物品」这一半在真实生产路径上唯一的接线点
-    // ——见 `ll_mod::race::starting_inventory` 文档）：本体三种基础种族
-    // 当前都不声明出生物品（`mods/lostland/races.json5`
-    // 恒传 `starting_items: Vec::new()`），因此这里对本体内容是零成本
-    // 的空 `Vec`；一旦某个 mod 通过 `register-race-starting-item` 给
-    // 某个种族追加声明,用该种族生成的角色出生时会真实带着这些物品——
-    // 不需要再改这一行代码。
+    // ——见 `ll_mod::race::starting_inventory` 文档）：本体三族现在各自
+    // 声明了一套开局装备（`mods/lostland/races.json5` 的
+    // `starting_items`），因此这条路径对本体内容不再是空 `Vec`；
+    // 第三方 mod 通过 `register-race-starting-item` 追加的声明走的是
+    // 同一行代码。
+    //
+    // `item_table` 传进去是为了给每件出生装备定耐久初值（满耐久，见
+    // `ItemStack::freshly_made`）——出生装备与制作成品、盲盒产出是同
+    // 一类东西，共用同一条「新造出来的物品带多少耐久」的规则。
     let starting_items = content
         .race_table
         .get(race)
-        .map(|view| ll_mod::race::starting_inventory(&view))
+        .map(|view| ll_mod::race::starting_inventory(&view, &content.item_table))
         .unwrap_or_default();
     let stats =
         ll_sim::character::bake_race_stat_modifiers(BaseStats::BASELINE, race, &content.race_table);
@@ -1027,6 +1030,53 @@ mod tests {
             BaseStats::BASELINE.constitution + 2
         );
         assert_eq!(dwarf_agent.stats.strength, BaseStats::BASELINE.strength + 1);
+    }
+
+    #[test]
+    fn 三个本体种族生成的角色出生时背包里真的有各自那套开局装备() {
+        // 出生装备这条接线在**真实生产路径**上的端到端证据：
+        // mods/lostland/races.json5 给三族各写了一套 starting_items，
+        // build_player_agent（spawn_player 实际的生成逻辑）必须把它们
+        // 原样放进背包。此前三族这个字段全空，这条路径对本体内容是
+        // 一条从没被走过的死代码。
+        //
+        // 断言比的是「多少堆、每堆多少件」这个形状而不是具体 id 列表
+        // ——逐条 id 的裁定由 ll-mod/tests/base_mod_races.rs 钉住
+        // （那里能直接拿到 Registry 反查 id），本条只负责证明
+        // 「声明真的流到了 Agent::inventory」，不重复钉同一份内容。
+        // Arrange
+        let content = test_content();
+        let (pos, zone) = spawn_pos_and_zone(&content);
+
+        for (race, expected_stacks) in [
+            (content.race_ids.human, 2),
+            (content.race_ids.dwarf, 3),
+            (content.race_ids.elf, 4),
+        ] {
+            // Act
+            let agent = build_player_agent(pos, zone, &content, race, Tick(0));
+
+            // Assert：进的是背包，不是装备栏——出生装备是「行囊里有
+            // 什么」，玩家自己决定穿哪件（见 races.json5「语义」一节）。
+            assert_eq!(agent.inventory.len(), expected_stacks);
+            assert!(agent.equipment.is_empty());
+            // 每一堆都是**全新**的：耐久等于它那条定义声明的上限
+            // （`ItemStack::freshly_made`），不是 None。三套里各有一件
+            // 声明了耐久上限的东西（衬衣 50 / 手套 40 / 骨针 60）。
+            for stack in &agent.inventory {
+                let expected = ll_sim::item::ItemCatalog::item(&content.item_table, stack.def)
+                    .expect("出生装备必然是已注册的物品")
+                    .max_durability;
+                assert_eq!(stack.durability, expected);
+            }
+            assert!(
+                agent
+                    .inventory
+                    .iter()
+                    .any(|stack| stack.durability.is_some()),
+                "三族各自那套开局装备里都该有一件会磨损的东西"
+            );
+        }
     }
 
     #[test]

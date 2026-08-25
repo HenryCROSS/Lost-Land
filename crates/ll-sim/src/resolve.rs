@@ -2857,6 +2857,28 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 按槽位定位），`any` 只回答"有没有"、拿不到键。改成 `find` 之后
 /// 判据一字未改，只是把找到的那一条留了下来。
 ///
+/// # 成品的耐久（第 9 步）
+///
+/// 成品是**刚造出来的**，耐久等于它那条定义声明的上限——走
+/// [`ItemStack::freshly_made`] 那条共同规则，与盲盒产出
+/// （[`resolve_identify`]）用的是同一个构造器。没有耐久概念的成品
+/// （烤肉、铁铆钉这类材料/消耗品）仍然是 `None`，因为它们的
+/// `max_durability` 本来就是 `None`。
+///
+/// 这一行此前是 `ItemStack::new(rule.product, rule.product_count)`
+/// ——恒 `None`：工匠打出来的铁短剑耐久是"没有耐久概念"而不是 120，
+/// 从此永不磨损。那是一条真实缺陷，不是设计，完整论证见
+/// [`ItemStack::freshly_made`] 文档。
+///
+/// **`product_count > 1` 且成品带耐久**是一个内容层面的病态组合（一堆
+/// `count` 为 N 的装备共用一份耐久）。本函数**不新增**运行期分支拦它,
+/// 理由是这条组合的病态与耐久无关：改动之前它同样产出一堆 `count` 为
+/// N、`stack_limit` 却是 1 的装备（带耐久的物品必然 `stack_limit == 1`,
+/// 注册期硬校验），只是那时耐久恰好是 `None`。本改动没有让它更坏,也
+/// 没有资格在这里替内容作者做「一次只能造一件装备」这条裁定。本体九条
+/// 配方里没有这种组合——唯一 `product_count > 1` 的 `iron_rivet_batch`
+/// 产的是可堆叠、无耐久的铁铆钉。
+///
 /// # 约束核对
 ///
 /// - C3（随机全部来自 `DetRng::for_entity`）：不涉及，本函数全程零
@@ -2974,11 +2996,16 @@ fn resolve_craft(
     }
 
     // ⑨ 成品并进背包，复用 pick_up/equip/unequip 三处已经共用的那段
-    // 「找可合并的旧堆 → 算合并结果」逻辑。
+    // 「找可合并的旧堆 → 算合并结果」逻辑。成品是**刚造出来的**，耐久
+    // 走 `ItemStack::freshly_made` 那条共同规则（满耐久；没有耐久概念
+    // 的成品仍是 `None`），见本函数文档「成品的耐久」一节。
+    // 查不到成品定义时按「没有耐久概念」处理，与本函数其余
+    // `items.item(...)` 查询同一条「查不到就是查不到」纪律（ADR 0015）。
+    let product_max_durability = items.item(rule.product).and_then(|def| def.max_durability);
     effects.push(merge_into_inventory_effect(
         agent,
         actor,
-        ItemStack::new(rule.product, rule.product_count),
+        ItemStack::freshly_made(rule.product, rule.product_count, product_max_durability),
         items,
     ));
 
@@ -3348,13 +3375,15 @@ fn resolve_experiment(
 /// [`ll_sim::item::BlindBoxEntry`](crate::item::BlindBoxEntry) 文档。
 /// 遍历的是 `Vec`（保序，约束 C5），不涉及 `HashMap`/`HashSet`。
 ///
-/// # 产出物的耐久恒为 `None`
+/// # 产出物的耐久
 ///
-/// 与 [`resolve_craft`] 造成品那一行（`ItemStack::new(rule.product,
-/// rule.product_count)`）**逐字相同**的既有形状：本仓库当前没有任何
-/// 一条「新造出来的物品该带多少耐久」的规则，`ItemRule` 也没有携带
-/// `max_durability`。盲盒不在这里发明第二套答案——真要补，该补的是那
-/// 一条共同规则，两个产出点一起改。
+/// 开出来的东西是**新的**：耐久等于产出物那条定义声明的上限，走
+/// [`ItemStack::freshly_made`] 那条共同规则——与 [`resolve_craft`]
+/// 造成品那一行**逐字相同**。盲盒刻意不在这里发明第二套答案。
+///
+/// 本节此前记录的是这条规则**还不存在**时的形状（两个产出点都恒把
+/// 耐久设成 `None`，于是开出来的铁短剑永远不会磨损）；那条缺陷已随
+/// [`ItemStack::freshly_made`] 落地一并修掉，见该构造器文档。
 ///
 /// # 一个盲盒不能开出它自己
 ///
@@ -3460,7 +3489,13 @@ fn resolve_identify(
         merge_into_inventory_effect(
             agent,
             actor,
-            ItemStack::new(picked.item, picked.count),
+            // 开出来的东西与制作出来的东西一样是"新的"，走同一条共同
+            // 规则，见本函数文档「产出物的耐久」一节。
+            ItemStack::freshly_made(
+                picked.item,
+                picked.count,
+                items.item(picked.item).and_then(|def| def.max_durability),
+            ),
             items,
         ),
     ];

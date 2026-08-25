@@ -24,12 +24,18 @@
 //! 上限」这个最小接口，真正的实现（`ll_mod::item::ItemTable`）在
 //! `ll-mod` 侧补上 `impl ItemCatalog for ItemTable`。
 //!
-//! 只收敛 `stack_limit` 一个字段——`resolve_pick_up`/`resolve_drop`
+//! 落地时只收敛 `stack_limit` 一个字段——`resolve_pick_up`/`resolve_drop`
 //! 不需要 `base_weight`/`base_price`/`max_durability` 中的任何一个（
 //! 负重与耐久扣减都是后续批次的工作，见 `ll_world::item` 模块文档
 //! 「`Owner` 本批次仍然不落地」一节同一条 YAGNI 判断），与
 //! `crate::skill::SkillRule` 只收敛 `resolve_use_skill` 真正要读的
 //! 字段是同一个理由。
+//!
+//! **`max_durability` 后来被这条判据自己请了进来**（新造物品耐久批次）：
+//! `resolve_craft`/`resolve_identify` 造成品时要回答「这件刚造出来的
+//! 东西带多少耐久」，答案只能来自成品那条定义的耐久上限——这正是
+//! 「`resolve` 真正要读的字段才收进来」，不是判据松动。`base_weight`/
+//! `base_price` 照旧不收：负重与经济系统至今没有任何结算消费者。
 
 use ll_core::ident::ContentIndex;
 
@@ -184,6 +190,29 @@ pub struct ItemRule {
     /// 真有系统需要按标签查询（"所有带 flammable 标签的东西"），再给
     /// 那个系统开一条它自己需要的窄接口。
     pub wear_channels: WearChannels,
+    /// 这件物品的**耐久上限**（新造物品耐久批次）——`None` 表示这类
+    /// 东西没有耐久概念（材料、消耗品、饰品）。完整语义见
+    /// `ll_mod::item::ItemDef::max_durability`。
+    ///
+    /// # 唯一的用途：给刚造出来的物品定初值
+    ///
+    /// [`crate::resolve`] 的三个产出点里的两个（制作 `resolve_craft`、
+    /// 盲盒 `resolve_identify`）把它交给
+    /// [`ItemStack::freshly_made`]，第三个（出生装备）在 `ll-mod` 侧走
+    /// 同一个构造器。磨损扣减本身**不读它**——扣减走
+    /// `crate::effect::Effect::AdjustEquipmentDurability` 直接改
+    /// `ItemStack::durability`，上限只在「造出来的那一刻」被用到一次。
+    ///
+    /// # 为什么与 [`Self::wear_channels`] 是两个字段
+    ///
+    /// 它们回答两个不同的问题：`wear_channels` 是「这类东西**会不会**
+    /// 磨损」（由标签决定，注册期折算成掩码），本字段是「这一件**有
+    /// 多少**耐久」（由物品自己声明）。两者可以合法地一有一无：
+    /// `mods/lostland/items.json5` 的琥珀坠可装备、无标签、无耐久，
+    /// 而一件带标签却不声明耐久上限的东西表示「会用到磨损通道但没有
+    /// 耐久可掉」——`resolve_attack` 既有的
+    /// `stack.durability.is_some()` 判据本来就把它当成不磨损处理。
+    pub max_durability: Option<i32>,
     /// 读这件东西能学到哪些配方（配方发现批次）——
     /// `crate::resolve::resolve_read` 唯一的输入，空列表（多数物品的
     /// 既有情形）表示这件东西**不可读**（`Intent::Read` 对它静默无效）。

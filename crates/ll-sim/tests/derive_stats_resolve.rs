@@ -100,6 +100,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                     // 武器"，因此带 on-use、**不带** on-hit——耐久标签
                     // 批次之后这是它会不会磨损的唯一判据。
                     wear_channels: WearChannels::ON_USE,
+                    max_durability: None,
                     taught_recipes: Vec::new(),
                     requires_identification: false,
                     study_experience: 0,
@@ -122,6 +123,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                 ItemRule {
                     // 「挨打」通道：这件夹具扮演"穿在身上的甲"。
                     wear_channels: WearChannels::ON_HIT,
+                    max_durability: None,
                     taught_recipes: Vec::new(),
                     requires_identification: false,
                     study_experience: 0,
@@ -716,6 +718,7 @@ fn luck_ring_item() -> (ContentIndex, FakeItems) {
             ring,
             ItemRule {
                 wear_channels: WearChannels::NONE,
+                max_durability: None,
                 taught_recipes: Vec::new(),
                 requires_identification: false,
                 study_experience: 0,
