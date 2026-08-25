@@ -468,11 +468,6 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
                      值），本条不受影响：种族天赋没有对应的裁定。",
         },
         FieldExemption {
-            kind: ContentTableKind::Race,
-            field: "RaceAttrs::starting_items",
-            reason: "出生装备走 RaceAttrs::starting_items，本体三族不声明——理由同 traits \n                     一条：本体内容不为了让字段覆盖检查变绿硬塞一件装备。\n                     **这条豁免此前的第二条理由已经作废**：那句写的是「本体物品内容\n                     还没迁进 mods/lostland/，本体种族此刻没有可指的本体物品」，而\n                     mods/lostland/items.json5 现在有二十四条物品，指得到了。剩下的\n                     第一条理由独立成立，因此豁免保留：三族各自该带什么出生装备是一条\n                     真正的内容设计裁定，至今没有做过，不该由「让检查变绿」代替做出。\n                     字段本身不是死的：mods/example_mod/races.json5 的哥布林带一把粗劣\n                     匕首出生，crates/ll-mod/tests/example_mod_starting_items.rs 有端到端证据。",
-        },
-        FieldExemption {
             kind: ContentTableKind::SpaceProfile,
             field: "SpaceProfileAttrs::reverb_tag",
             reason: "混响标签是给未来的音频层留的开放标识符，本体四种空间层属性\

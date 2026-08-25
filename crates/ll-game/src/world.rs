@@ -969,6 +969,53 @@ mod tests {
     }
 
     #[test]
+    fn 三个本体种族生成的角色出生时背包里真的有各自那套开局装备() {
+        // 出生装备这条接线在**真实生产路径**上的端到端证据：
+        // mods/lostland/races.json5 给三族各写了一套 starting_items，
+        // build_player_agent（spawn_player 实际的生成逻辑）必须把它们
+        // 原样放进背包。此前三族这个字段全空，这条路径对本体内容是
+        // 一条从没被走过的死代码。
+        //
+        // 断言比的是「多少堆、每堆多少件」这个形状而不是具体 id 列表
+        // ——逐条 id 的裁定由 ll-mod/tests/base_mod_races.rs 钉住
+        // （那里能直接拿到 Registry 反查 id），本条只负责证明
+        // 「声明真的流到了 Agent::inventory」，不重复钉同一份内容。
+        // Arrange
+        let content = test_content();
+        let (pos, zone) = spawn_pos_and_zone(&content);
+
+        for (race, expected_stacks) in [
+            (content.race_ids.human, 2),
+            (content.race_ids.dwarf, 3),
+            (content.race_ids.elf, 4),
+        ] {
+            // Act
+            let agent = build_player_agent(pos, zone, &content, race, Tick(0));
+
+            // Assert：进的是背包，不是装备栏——出生装备是「行囊里有
+            // 什么」，玩家自己决定穿哪件（见 races.json5「语义」一节）。
+            assert_eq!(agent.inventory.len(), expected_stacks);
+            assert!(agent.equipment.is_empty());
+            // 每一堆都是**全新**的：耐久等于它那条定义声明的上限
+            // （`ItemStack::freshly_made`），不是 None。三套里各有一件
+            // 声明了耐久上限的东西（衬衣 50 / 手套 40 / 骨针 60）。
+            for stack in &agent.inventory {
+                let expected = ll_sim::item::ItemCatalog::item(&content.item_table, stack.def)
+                    .expect("出生装备必然是已注册的物品")
+                    .max_durability;
+                assert_eq!(stack.durability, expected);
+            }
+            assert!(
+                agent
+                    .inventory
+                    .iter()
+                    .any(|stack| stack.durability.is_some()),
+                "三族各自那套开局装备里都该有一件会磨损的东西"
+            );
+        }
+    }
+
+    #[test]
     fn 修正为零的人类种族生成的角色属性等于基线() {
         // 反例：证明上一条测试不是「无论如何都加点什么」——零修正的
         // 人类种族，生成结果的 stats 必须原样等于基线。

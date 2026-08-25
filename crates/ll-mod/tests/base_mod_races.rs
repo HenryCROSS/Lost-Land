@@ -147,6 +147,26 @@ fn 本体三个种族由本体mod的内容数据文件注册而不是任何rust�
     assert_eq!(resolve(ids.elf), Some("lostland:elf".to_string()));
 }
 
+/// 把一份 `starting_items`（`(ContentIndex, u32)` 列表）翻成
+/// `("完整 id", 件数)` 列表，便于逐条钉住"本体三族各带什么"这条内容
+/// 裁定——直接比 `ContentIndex` 会把断言绑死在注册顺序上，那正是
+/// `ll_mod::content_hash` 模块文档「`ContentIndex` 字段」一节反复说
+/// 的那件事：号本身没有内容含义，id 才有。
+fn named_loadout(registry: &Registry, view: &ll_mod::race::RaceView<'_>) -> Vec<(String, u32)> {
+    view.starting_items
+        .iter()
+        .map(|&(def, count)| {
+            (
+                registry
+                    .resolve(def)
+                    .expect("出生装备的物品索引必然已注册")
+                    .to_string(),
+                count,
+            )
+        })
+        .collect()
+}
+
 #[test]
 fn 人类逐字段与本体races脚本的声明一致() {
     // Arrange
@@ -183,7 +203,15 @@ fn 人类逐字段与本体races脚本的声明一致() {
     // 末尾注释）。本文件的三条测试是那三个数字唯一的钉子。
     assert_eq!(view.xp_reward, 10);
     assert!(view.traits.is_empty());
-    assert!(view.starting_items.is_empty());
+    // 出生装备（内容裁定：续航型，合计 base_price 5700）——理由逐条
+    // 写在 mods/lostland/races.json5 的「出生装备」一节。
+    assert_eq!(
+        named_loadout(&registry, &view),
+        vec![
+            ("lostland:linen_shirt".to_string(), 1),
+            ("lostland:roast_meat".to_string(), 3),
+        ]
+    );
 }
 
 #[test]
@@ -218,7 +246,15 @@ fn 矮人逐字段与本体races脚本的声明一致() {
     // 见人类那条同一处注释。
     assert_eq!(view.xp_reward, 12);
     assert!(view.traits.is_empty());
-    assert!(view.starting_items.is_empty());
+    // 出生装备（内容裁定：抗寒型，合计 base_price 5600）。
+    assert_eq!(
+        named_loadout(&registry, &view),
+        vec![
+            ("lostland:wool_gloves".to_string(), 1),
+            ("lostland:fur_pelt".to_string(), 1),
+            ("lostland:roast_meat".to_string(), 1),
+        ]
+    );
 }
 
 #[test]
@@ -253,7 +289,16 @@ fn 精灵逐字段与本体races脚本的声明一致() {
     // 见人类那条同一处注释。
     assert_eq!(view.xp_reward, 12);
     assert!(view.traits.is_empty());
-    assert!(view.starting_items.is_empty());
+    // 出生装备（内容裁定：手上功夫型，合计 base_price 5250）。
+    assert_eq!(
+        named_loadout(&registry, &view),
+        vec![
+            ("lostland:bone_needle".to_string(), 1),
+            ("lostland:linen_cloth".to_string(), 2),
+            ("lostland:herbal_draught".to_string(), 1),
+            ("lostland:herb_bundle".to_string(), 3),
+        ]
+    );
 }
 
 #[test]
