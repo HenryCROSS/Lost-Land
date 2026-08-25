@@ -212,8 +212,16 @@ fn load_or_new_game(paths: &GamePaths, content: &content::LoadedContent) -> Game
     }
 
     match save::load_game(&paths.save, content) {
-        LoadOutcome::Playable(world) => {
+        LoadOutcome::Playable(mut world) => {
             let player = world.player_entity.expect("可游玩的存档必然记录了玩家实体");
+            // 编年史与 noise 同一类「按种子随时能重新派生」的运行期数据，
+            // 不随 `WorldState` 序列化（ADR 0009，见
+            // `ll_world::surface_store::SurfaceStore` 的 `chronicle`
+            // 字段文档）。这里只 `attach`，不 `install`——存档里的常驻
+            // 区块早就带着据点，而且可能已经被玩家改过，绝不能重铺。
+            world
+                .terrain
+                .attach_chronicle(std::sync::Arc::new(rebuild_chronicle(content)));
             tracing::info!(path = %paths.save.display(), "读档成功，继续游玩");
             // 时间轴与 noise 同一类「运行期派生数据」，不随
             // `WorldState` 序列化——按每个存活实体已持久化的
@@ -263,6 +271,27 @@ fn rebuild_noise() -> ll_world::noise::TileableNoise {
     let layout = world::build_zone_layout().expect("默认区块布局满足全部构造前置条件");
     ll_world::generate::build_zone_noise(&layout, &default_params())
         .expect("默认区块布局满足全部构造前置条件")
+}
+
+/// 读档成功后重新派生世界编年史——与 [`rebuild_noise`] 同一条纪律，
+/// 见 `ll_world::chronicle` 模块文档「为什么编年史不进存档」。
+///
+/// 与 `rebuild_noise` 不同的是本函数需要 `LoadedContent`：判断「哪个
+/// 区块能住人」要读地形属性表（`blocks_move`），而地形索引依赖当前
+/// 会话的注册结果。
+fn rebuild_chronicle(content: &content::LoadedContent) -> ll_world::chronicle::WorldChronicle {
+    let layout = world::build_zone_layout().expect("默认区块布局满足全部构造前置条件");
+    let params = default_params();
+    let noise = ll_world::generate::build_zone_noise(&layout, &params)
+        .expect("默认区块布局满足全部构造前置条件");
+    ll_world::chronicle::WorldChronicle::generate(
+        &layout,
+        &noise,
+        &params,
+        &content.terrain_ids,
+        &content.terrain_table,
+        ll_world::chronicle::ChronicleParams::default(),
+    )
 }
 
 /// 用 `catalog` 把 `title_key` 解析成 `language` 下的真实显示文本。

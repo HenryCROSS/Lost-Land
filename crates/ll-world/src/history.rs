@@ -9,19 +9,22 @@
 //! （规格 §5 依赖顺序），若把这些类型定义在 `ll-sim`，`ll-world` 的
 //! `WorldState` 就没有地方引用它们——依赖方向不允许反过来。
 //!
-//! # 为什么只有 `Kill` 一个 `kind` 变体
+//! # 变体是怎么长出来的
 //!
-//! 设计文档给出的信封草图还列了 `SettlementFounded`/`War`/
-//! `DynastyChange`/`Rename` 四个变体，但那四个都属于[世界历史生成]
-//! （P7，仍是纯设计）与[命名、改名与本地化]的范围，此刻没有任何字段
-//! 定案、也没有任何生产代码会构造它们——本批次只落地"击杀与死亡记录"
-//! 这一件事（P3 已经落地的战斗结算需要它），提前给四个连字段都不存在
-//! 的变体占位是纯粹的投机性设计（YAGNI），也会在 `ll-content::remap`/
-//! `WorldState::hash` 的穷尽匹配里凭空多出四条永远走不到的分支。等
-//! 那四个系统真正定案字段时，再各自扩展这个枚举——`HistoricalEventKind`
-//! 是一个 `enum`，新增变体本就会让所有既有的穷尽 `match`（`remap`/
-//! `hash`）在编译期报错，逼着那时的实现者显式处理，这正是本仓库一贯
-//! 依赖的机制，不需要提前预留。
+//! 本模块最初只有 `Kill` 一个变体，当时的取舍写在这里：设计文档的
+//! 信封草图还列了 `SettlementFounded`/`War`/`DynastyChange`/`Rename`
+//! 四个，但那四个都还没有任何字段定案、也没有任何生产代码会构造它们，
+//! 提前占位是投机性设计（YAGNI），并且会在 `ll-content::remap`/
+//! `WorldState::hash` 的穷尽匹配里凭空多出永远走不到的分支。**留下的
+//! 机制是「等系统真正落地时再扩展这个枚举」**——`enum` 新增变体会让
+//! 全部既有穷尽 `match` 在编译期报错，逼着那时的实现者显式处理。
+//!
+//! **世界历史生成批次正是那一次落地**：[`crate::chronicle`] 交付了一个
+//! 真的会跑的历史推演器，`SettlementFounded`/`SettlementAbandoned` 两个
+//! 变体因此有了确定的字段与真实的构造点（前者还真的改变了世界当前的
+//! 地形，见 [`crate::settlement::stamp_settlement`]）。`War`/
+//! `DynastyChange`/`Rename` 仍然没有——它们的系统仍然不存在，同一条
+//! YAGNI 判据继续对它们成立。
 //!
 //! [世界历史生成]: ../../../knowledge/design/world-history.md
 //! [命名、改名与本地化]: ../../../knowledge/design/naming-and-localization.md
@@ -75,11 +78,63 @@ pub struct HistoricalEvent {
     pub kind: HistoricalEventKind,
 }
 
-/// 历史事件的具体种类——本批次只交付 [`Self::Kill`]，见模块文档。
+/// 历史事件的具体种类。
+///
+/// # 三个变体各自的来源
+///
+/// - [`Self::Kill`]：游戏内的战斗结算（`ll_sim::resolve`），经
+///   [`crate::state::WorldState::record_kill`] 落进
+///   `WorldState::history`，随存档走。
+/// - [`Self::SettlementFounded`] / [`Self::SettlementAbandoned`]：
+///   **世界历史生成**（[`crate::chronicle`]），产生于玩家进入之前，
+///   **不进存档**——整份编年史是种子的纯函数，读档时重新派生（ADR
+///   0009「默认派生，只存偏差」）。
+///
+/// 两类事件共用同一个信封，是因为它们是同一件事的两端：「这个世界上
+/// 发生过什么」。传说浏览之类的消费方将来只需要遍历一份合并视图，不
+/// 需要认识两套类型。
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum HistoricalEventKind {
     /// 一次击杀/死亡。
     Kill(KillRecord),
+    /// 某地建立了一座据点。
+    SettlementFounded(SettlementFoundedRecord),
+    /// 某座据点被遗弃，留下废墟。
+    SettlementAbandoned(SettlementAbandonedRecord),
+}
+
+/// 一次据点建立——[`crate::chronicle`] 的推演在某个纪元把一处空地变成
+/// 了定居点。
+///
+/// 事件信封上的 `location` 就是据点锚点，`at` 是该纪元的（负数）时刻，
+/// 因此这里不重复记录位置与时间。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettlementFoundedRecord {
+    /// 这座据点的永久标识——与
+    /// [`crate::settlement::SettlementSite::id`] 是同一个号。
+    pub site: WorldId,
+    /// 第几个纪元。
+    pub epoch: u32,
+    /// 建立时有多少人。
+    pub initial_population: u32,
+    /// 选址时该区块的最大连通可行走陆地面积（格）——「为什么这里能住
+    /// 人」的那条判据的取值。
+    pub land_area: u32,
+}
+
+/// 一次据点遗弃——人口归零，此处此后只剩废墟。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettlementAbandonedRecord {
+    /// 被遗弃的那座据点，与建立事件里的
+    /// [`SettlementFoundedRecord::site`] 是同一个号。
+    pub site: WorldId,
+    /// 第几个纪元。
+    pub epoch: u32,
+    /// 它存在期间达到过的最高人口——废墟规模由它决定（见
+    /// [`crate::settlement::SettlementSite::peak_population`]）。
+    pub peak_population: u32,
+    /// 从建立到遗弃经历了多少个纪元。
+    pub epochs_inhabited: u32,
 }
 
 /// 一条击杀记录——"怎么杀的"必须能表达到武器/技能/环境这一级，是本

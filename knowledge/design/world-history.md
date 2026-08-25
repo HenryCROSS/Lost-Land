@@ -2,7 +2,20 @@
 
 **冻结于** 2026-08-17。**实现阶段** 独立一个阶段,体量上约在 P7 位置(存档格式 P5 冻结之后；[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P6 顺移为 P7)。但**三件事必须提前做**（见「阶段归属」一节）。
 
-**落地状态**：纯设计,尚无代码。已核实：`crates/` 中没有历史生成器、`Settlement` 结构、势力形成逻辑或事件日志的任何实现。地形生成（本文档流程第一步）已实现,详见[决策 0005](../decisions/0005-torus-topology-and-integer-noise.md)与 `crates/ll-world/src/terrain.rs`,本文档在此基础上叠加。
+**落地状态**：**部分落地（2026-08-25，`wt-world` 批次）**。本文档描述的完整形态（500 年 × 500 聚落、王朝继承、联姻、政变、一万五千名历史人物）仍是纯设计；但**一个最小可用的历史生成器已经落地并接线**：
+
+| 本文档的东西 | 现状 |
+|---|---|
+| 历史生成器 | **已落地**：`crates/ll-world/src/chronicle.rs`（`WorldChronicle::generate`）。12 个纪元 × 300 年，事件只有「据点建立」「据点遗弃」两类 |
+| `Settlement` 结构 | **已落地**：`crates/ll-world/src/settlement.rs` 的 `SettlementSite`（最终快照）。**不是**本文档设想的那个带经济/文化归属聚合量的完整版 |
+| 事件日志 | **已落地**：`HistoricalEventKind::SettlementFounded`/`SettlementAbandoned`（`crates/ll-world/src/history.rs`）。注意 `history.rs` 从「击杀与死亡记录」批次起就有 251 行，本文档旧版「事件日志毫无实现」那句对**事件类型**从来不成立，只对**生成器**成立 |
+| 势力形成逻辑 | **仍不存在** |
+| 历史真的塑造世界 | **已落地**：据点与废墟由 `stamp_settlement` 直接写进 `ChunkGrid`（墙/门/窗/地板全部是既有地形），玩家在地图上看到的就是历史的结果 |
+| NPC | **仍不存在**：据点是空房子。缺一张「据点模板 → 职业名册」内容表与世界生成期的 `Agent` 构造路径 |
+
+以下原文保留，作为完整形态的目标描述。
+
+地形生成（本文档流程第一步）已实现,详见[决策 0005](../decisions/0005-torus-topology-and-integer-noise.md)与 `crates/ll-world/src/terrain.rs`,本文档在此基础上叠加。
 
 所有数值一律整数,比例用千分比（见[0002](../decisions/0002-integer-only-world-state.md)）。
 

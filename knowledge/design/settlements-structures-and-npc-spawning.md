@@ -2,6 +2,17 @@
 
 **冻结于** 2026-08-22。**基线提交** `6fa7eb8`（`main`）。
 
+> **【2026-08-25 更新：本文档冻结于脚本时代，多处已过时】**
+>
+> 1. **脚本系统整个拆除了。** 全仓库零 `*.scm` 文件，内容改走 JSON5（`mods/lostland/*.json5`）。本文档里全部 `(register-... )` Scheme 片段、`ClassBehaviorBindings` 里那套「行为树入口函数名」、六节 6.5 关于「跨脚本边界 326ns」的性能论证，**都要按 JSON5 + Rust 重新表述**。结论（不新建 `StructureKind`、职业走 `ClassDef`、据点选址是纯派生、构成用 `DetRng::for_entity`）**全部仍然成立**，只有载体变了。
+> 2. **`CONTENT_HASH_ALGORITHM_VERSION` 已经是 17**，不是八节写的 11。
+> 3. **世界历史生成不再是「不存在」。** `crates/ll-world/src/chronicle.rs` 已落地一个最小可用的历史生成器（12 纪元 × 300 年，据点建立/遗弃两类事件），并且**真的把据点与废墟写进了地形**。七节「历史在后、派生在先」那个两步顺序因此已经被**跳过第一步直接做成了第二步的雏形**：据点不是「先纯派生、等历史落地再套偏差」，而是一开始就由历史推演产出。7.2 的接口形状（派生函数不变、外面套偏差层）对**将来的存档偏差**仍然成立。
+> 4. **六节 6.4「选址必须与 `find_spawn_site` 共用连通域分析」已经照做**：那段算法提到了 `crates/ll-world/src/land.rs`（`largest_walkable_component`），`ll-game` 侧的私有副本已删除，出生点选址与据点选址各调一次、阈值不同。
+> 5. **十一节⑥「`Effect::SpawnActor`」仍然不存在**（全仓库只有 `ll-sim/src/subclass.rs` 一句注释提到这个名字）。
+> 6. 六节 6.3 的 `SettlementTemplateTable`、6.1 的职业→行为绑定、NPC 生成本身，**全部仍未落地**。
+>
+> 以下原文保留。
+
 **落地状态**：纯设计。本文档描述的三个新接线点（`RecipeDef.station_becomes`、`ClassBehaviorBindings`、`SettlementTemplateTable`）与「据点生成器」本身**均未落地**，全部为本文档新提出。但本文档所依赖的**底座绝大部分已经落地**——这正是本设计能收得这么窄的原因，逐条核实见二节。
 
 **并发声明**：核实时工作区存在未提交的杂项（`config.json5`、若干 `*.png`、`save.llsave`、`scripts/ci/__pycache__/`），与本文档无关；另有其他并行工作可能未提交。本文档的一切 grep 结论均以 `6fa7eb8` 的已提交树为准，读者若在更晚的提交上复核，请重跑而不是相信本文档的行号。

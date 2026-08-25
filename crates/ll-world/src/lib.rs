@@ -26,6 +26,7 @@
 use core::fmt;
 
 pub mod bounded_grid;
+pub mod chronicle;
 pub mod chunk;
 pub mod entity;
 pub mod exploration;
@@ -34,11 +35,13 @@ pub mod generate;
 pub mod history;
 pub mod interior;
 pub mod item;
+pub mod land;
 pub mod light;
 pub mod mod_state;
 pub mod naming;
 pub mod noise;
 pub mod overview;
+pub mod settlement;
 pub mod space;
 pub mod space_profile;
 pub mod state;

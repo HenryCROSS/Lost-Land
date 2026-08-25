@@ -30,12 +30,14 @@
 
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::hash::Hash;
+use std::sync::Arc;
 
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use serde::de::Error as _;
 use serde::{Deserialize, Serialize, Serializer};
 
+use crate::chronicle::WorldChronicle;
 use crate::chunk::ChunkGrid;
 use crate::fov::SightGrid;
 use crate::generate::generate_zone_window;
@@ -175,6 +177,25 @@ pub struct SurfaceStore {
     resident: HashMap<ZoneCoord, ChunkGrid>,
     clock: RecencyClock<ZoneCoord>,
     resident_cap: usize,
+    /// 世界编年史——区块首次物化时，据点会跟着地形一起铺进去，见
+    /// [`SurfaceStore::admit`]。
+    ///
+    /// # 为什么是 `Option`，为什么不参与序列化
+    ///
+    /// **不参与序列化**：编年史是种子的纯函数（ADR 0009「默认派生，
+    /// 只存偏差」），与 `TileableNoise` 同一类运行期派生数据，读档后
+    /// 由调用方重新派生并 [`SurfaceStore::attach_chronicle`] 装回来
+    /// （`ll_game::rebuild_chronicle` 与既有的 `rebuild_noise` 是同一
+    /// 条路）。手写的 [`SurfaceStoreData`] 里没有这个字段，Serialize
+    /// 与 Deserialize 两侧因此天然对称——不会重演 `current_interior`
+    /// 那次「只有一侧写、postcard 按声明顺序解码错位」的缺陷（见
+    /// `crate::state::WorldState::current_interior` 字段文档）。
+    ///
+    /// **是 `Option`**：绝大多数调用方（单元测试、验收 demo、mod 集成
+    /// 测试）不关心据点，`None` 表示「这个世界没有历史」，区块照常只
+    /// 生成地形。这让新增本字段对既有全部 `SurfaceStore::new` 调用点
+    /// 零改动，也让世界哈希的黄金基准不受影响。
+    chronicle: Option<Arc<WorldChronicle>>,
 }
 
 impl SurfaceStore {
@@ -187,7 +208,85 @@ impl SurfaceStore {
             resident: HashMap::new(),
             clock: RecencyClock::new(),
             resident_cap,
+            chronicle: None,
         }
+    }
+
+    /// 装上一份世界编年史：**此后**才生成的区块会带上据点，已经常驻
+    /// 的区块原样不动。
+    ///
+    /// 这是**读档**路径要的那一个：存档里的常驻区块早就带着据点（它们
+    /// 是上次会话生成并存下来的），而且可能已经被玩家改过（拆了一堵
+    /// 墙），绝不能重铺。需要连已常驻区块一起重铺的新游戏路径见
+    /// [`Self::install_chronicle`]。
+    pub fn attach_chronicle(&mut self, chronicle: Arc<WorldChronicle>) {
+        self.chronicle = Some(chronicle);
+    }
+
+    /// 装上一份世界编年史，并把**已经常驻**的区块全部重新生成一遍，
+    /// 让它们也带上据点。
+    ///
+    /// # 只应在新游戏构建期调用
+    ///
+    /// 「重新生成」意味着丢弃这些区块上的一切改写。`WorldState::new`
+    /// 会先预热出生邻域的若干区块，而编年史此刻还没算出来（它需要的
+    /// 噪声/地形表与 `WorldState::new` 是同一批输入，但构造顺序上排在
+    /// 后面）——这几个区块是唯一需要补铺的。那一刻世界上还没有任何
+    /// 玩家改动可丢，重新生成是安全的。读档路径请用
+    /// [`Self::attach_chronicle`]。
+    ///
+    /// 重新生成而不是「在已有窗口上补铺一次」是刻意的：
+    /// [`crate::settlement::stamp_settlement`] 会读地形判断哪块地能盖
+    /// 房，对已铺过的窗口再铺一次不等价（见该函数文档「前置条件」）。
+    /// 先回到干净的基线，再走与 [`Self::admit`] **完全同一条**铺设
+    /// 路径，是让两条路径产出逐格相同结果的唯一省事办法。
+    pub fn install_chronicle(
+        &mut self,
+        chronicle: Arc<WorldChronicle>,
+        noise: &TileableNoise,
+        params: &crate::generate::GenParams,
+        terrain_ids: &BaseTerrainIds,
+    ) {
+        self.chronicle = Some(chronicle);
+        for zone in self.resident_zones() {
+            let grid = self.generate_and_stamp(noise, params, terrain_ids, zone);
+            self.resident.insert(zone, grid);
+        }
+    }
+
+    /// 生成一个区块窗口，并把该区块上的据点（若有）铺进去——
+    /// [`Self::admit`] 与 [`Self::install_chronicle`] 共用的那一段，
+    /// 保证两条路径产出逐格相同的结果。
+    fn generate_and_stamp(
+        &self,
+        noise: &TileableNoise,
+        params: &crate::generate::GenParams,
+        terrain_ids: &BaseTerrainIds,
+        zone: ZoneCoord,
+    ) -> ChunkGrid {
+        let mut grid = generate_zone_window(noise, params, &self.layout, zone, terrain_ids)
+            .expect("ZoneLayout 构造时已校验区块边长满足 ChunkGrid 的最小视口跨度，生成不应失败");
+        if let Some(chronicle) = &self.chronicle
+            && let Some(site) = chronicle.site_in_zone(zone)
+        {
+            let span = self.layout.zone_span() as i32;
+            crate::settlement::stamp_settlement(
+                &mut grid,
+                self.layout.local_size(),
+                (zone.x() * span, zone.y() * span),
+                site,
+                terrain_ids,
+                chronicle.terrain_table(),
+                params.seed,
+            );
+        }
+        grid
+    }
+
+    /// 当前装着的世界编年史，未装则为 `None`——供「传说浏览」这类只读
+    /// 消费方查询据点与历史事件，不需要自己再跑一遍推演。
+    pub fn chronicle(&self) -> Option<&WorldChronicle> {
+        self.chronicle.as_deref()
     }
 
     /// 本存储使用的区块布局。
@@ -278,8 +377,7 @@ impl SurfaceStore {
             }
         }
 
-        let grid = generate_zone_window(noise, params, &self.layout, zone, terrain_ids)
-            .expect("ZoneLayout 构造时已校验区块边长满足 ChunkGrid 的最小视口跨度，生成不应失败");
+        let grid = self.generate_and_stamp(noise, params, terrain_ids, zone);
         self.resident.insert(zone, grid);
         self.clock.touch(zone, at_tick);
     }
@@ -617,6 +715,9 @@ impl<'de> Deserialize<'de> for SurfaceStore {
             resident,
             clock: data.clock,
             resident_cap: data.resident_cap,
+            // 编年史不进存档（见字段文档）：读档后由调用方重新派生并
+            // `attach_chronicle` 装回来。
+            chronicle: None,
         })
     }
 }
