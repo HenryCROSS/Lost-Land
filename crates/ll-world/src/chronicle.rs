@@ -129,6 +129,25 @@ pub struct ChronicleParams {
     /// 一个区块要被视为「能住人」，其最大连通可行走陆地至少要有多少
     /// 格。取值理由见 [`ChronicleParams::default`]。
     pub min_settlement_land_area: usize,
+    /// 两座据点的锚点之间至少要隔多少格（环面切比雪夫距离）。
+    ///
+    /// # 为什么需要这条规则
+    ///
+    /// 「一个区块至多一座据点」这条既有约束**不等于**据点之间有距离：
+    /// 相邻的两个区块可以各有一座，两个锚点最近能挨到 1 格——地上看
+    /// 到的是连成一片的两个村子，而不是两个地方。项目所有者的裁决
+    /// 「据点与据点之间你需要设定好距离」点的正是这一条。
+    ///
+    /// # 它同时是勘察预算的减压阀
+    ///
+    /// 判定「这个区块整个落在某座已接受据点的禁区内」只需要几次整数
+    /// 比较（[`zone_fully_excluded`]），而完整的连通域分析要生成
+    /// 2304 格窗口再跑一遍 BFS。禁区内的区块因此**既不做分析、也不
+    /// 计入 `survey_zone_budget`**——这就是把预算抬到扫完全世界之后，
+    /// 耗时反而回落的原因（实测见 [`ChronicleParams::default`]）。
+    ///
+    /// 取 0 表示不做间距筛选（此时行为与本字段引入之前完全一致）。
+    pub min_settlement_spacing: u32,
 }
 
 impl Default for ChronicleParams {
@@ -146,17 +165,34 @@ impl Default for ChronicleParams {
     ///   |---|---|---|---|
     ///   | 48 | 15~16ms | 43~45 | `zone_y ∈ [0, 1]` |
     ///   | 480 | 158~161ms | 437~450 | `zone_y ∈ [0, 12]` |
-    ///   | 4800 | 707~827ms | 2024~2391 | `zone_y ∈ [0, 47]`（全世界） |
+    ///   | 4800 | 787~950ms | 2024~2391 | `zone_y ∈ [0, 47]`（全世界） |
     ///
     ///   只有 4800 这一档真的铺满了整个世界，另外两档都只是把「挤在
     ///   一角」这个毛病挪到了「挤在上面几行」。**代价是编年史生成从
-    ///   16ms 涨到 0.7~0.8 秒**——这是一次性的建档路径（读档不重跑
+    ///   16ms 涨到 0.8~0.95 秒**——这是一次性的建档路径（读档不重跑
     ///   连通域分析，见模块文档「为什么编年史不进存档」下的
     ///   `rebuild_chronicle`），不在每帧路径上，但它确实是一次真实的
     ///   开局等待。另一条同时成立的观察：2000 座据点铺在 3072 个区块
     ///   上，等于**几乎每一个可住区块都有一座村子**，相邻两个区块各
     ///   一座、实际上连成一片。这条要靠据点之间的最小间距来解，不是
     ///   靠把预算调回去。
+    ///
+    ///   **最小间距（[`ChronicleParams::min_settlement_spacing`]）落地
+    ///   之后，上表最后一行被下表取代**（同样是 release、本体默认
+    ///   布局、同样三个种子，预算恒为 4800，只变间距）：
+    ///
+    ///   | 间距 | 编年史耗时 | 据点数 | 覆盖到的区块行 |
+    ///   |---|---|---|---|
+    ///   | 0（不筛） | 787~950ms | 2024~2391 | `zone_y ∈ [0, 47]` |
+    ///   | 144（默认） | 110~178ms | 232~268 | `zone_y ∈ [0, 45]` |
+    ///
+    ///   耗时回落到 480 档以下、覆盖面却是全世界，据点数落在两百多座
+    ///   这个「一片大陆上的文明」的量级。整条 `build_new_world` 实测
+    ///   160ms（其中 `WorldState::new` 含出生邻域预热 10~14ms、
+    ///   `SurfaceStore::install_chronicle` 10~12ms，其余是编年史与出生
+    ///   点搜索）——对照改动前的 31ms。**测量环境如实标注**：同一台机器
+    ///   上另有并行编译在跑，逐次抖动可达 3 倍，上表取的是各配置五次
+    ///   重复的最小值，跨多轮再取最小/最大作为区间。
     ///
     ///   顺带纠正一条旧记录：本文档此前写着「真要再快，第一步是让编
     ///   年史的勘察与 `find_spawn_site` 共用同一次区块窗口生成（两者
@@ -169,11 +205,32 @@ impl Default for ChronicleParams {
     ///   出生点的阈值管的是「玩家开局能不能走得开」，据点的阈值管的是
     ///   「一小撮人能不能在这活下来」，后者理应更宽松一点；但仍远大于
     ///   一小片碎礁石，不会让村子建在孤岛上。
+    /// - **间距 144 格**（= 3 个区块边长）：三条各自独立的理由指向同一
+    ///   个量级。
+    ///   1. **两座据点不能长到互相咬合。** 一座据点的外廓半径上界是
+    ///      [`crate::settlement::MAX_FOOTPRINT_RADIUS`]（由
+    ///      [`crate::settlement::MAX_BUILDINGS`] 与建筑间距推出）。
+    ///      144 必须大于它的两倍，否则两座都长满时会互相压进对方的
+    ///      街区；有多少富余就是有多少荒野隔着——那段荒野要宽到走
+    ///      过去得花时间，不会让人误以为是同一座村子。
+    ///   2. **锚点所在的区块之间至少隔着一整个区块。** 区块边长 48，
+    ///      锚点间距 ≥ 144 意味着两者的区块坐标至少差 2（`⌈144/48⌉ - 1
+    ///      = 2`），中间那一整个区块必然是野地。
+    ///   3. **世界仍然装得下一片文明，而不是几座孤城。** 本体世界
+    ///      3072×2304 格，间距 144 的理论容量约 21×16 ≈ 340 座；扣掉
+    ///      水域与不合格陆地，实际落到百来座的量级——与
+    ///      `world-history.md` 设想的「几百个聚落」同一个数量级，而
+    ///      不是把它压成十几座。
+    ///
+    ///   这三条都是**几何**理由，不是「调着好看」。要改它，改的是
+    ///   上面某一条的前提（据点上界变了、区块边长变了、想要的聚落
+    ///   密度变了），不是这个数字本身。
     fn default() -> Self {
         ChronicleParams {
             epochs: 12,
             survey_zone_budget: 4800,
             min_settlement_land_area: 400,
+            min_settlement_spacing: 3 * 48,
         }
     }
 }
@@ -206,15 +263,8 @@ impl WorldChronicle {
         table: &TerrainTable,
         chronicle_params: ChronicleParams,
     ) -> WorldChronicle {
-        let candidates = survey_habitable_zones(
-            layout,
-            noise,
-            params,
-            terrain_ids,
-            table,
-            chronicle_params.survey_zone_budget,
-            chronicle_params.min_settlement_land_area,
-        );
+        let candidates =
+            survey_habitable_zones(layout, noise, params, terrain_ids, table, chronicle_params);
         let mut run = EpochRun::new(candidates, chronicle_params.epochs, params.seed);
         run.simulate();
         let sites = run.final_sites();
@@ -303,8 +353,25 @@ struct Candidate {
 ///
 /// 1. 廉价预筛：只采样区块左上角一点，代表点不可通行（多半是水）就
 ///    跳过，不生成整窗。跑遍全部区块，代价是每区块一次 O(1) 噪声采样。
-/// 2. 通过预筛的才生成整个区块窗口做连通域分析，并计入 `budget`。
+/// 2. **间距禁区预筛**（本函数独有，`find_spawn_site` 没有对应物）：
+///    整个落在某座已接受据点禁区内的区块直接跳过，见
+///    [`zone_fully_excluded`]。这一级同样是几次整数比较，且**不计入
+///    `budget`**。
+/// 3. 通过前两级的才生成整个区块窗口做连通域分析，并计入 `budget`。
 ///    预算耗尽即停止——本函数不含任何无界循环。
+/// 4. 分析出的锚点若离某座已接受据点不足 `min_spacing`，本区块不产出
+///    候选点。这一级的代价已经花掉了（要先算出锚点才能量距离），因此
+///    它照常计入 `budget`——第 2 级存在的意义正是让绝大多数被间距挡
+///    掉的区块根本走不到这里。
+///
+/// # 间距筛选的确定性（约束 C5）
+///
+/// 「先来先得」的贪心：区块按光栅序遍历，先被接受的候选点占住自己
+/// 周围的禁区，后来者让路。遍历顺序、已接受集合（一个 `Vec`，按接受
+/// 顺序追加）、比较运算（整数切比雪夫距离）三者都与任何
+/// `HashMap`/`HashSet` 的迭代顺序无关，同一个种子恒产出同一批候选点，
+/// 且顺序恒为区块光栅序（[`WorldChronicle::site_in_zone`] 的二分依赖
+/// 这一点）。
 ///
 /// # 预算耗尽即停，因此预算必须大到扫得完整个世界
 ///
@@ -330,12 +397,15 @@ fn survey_habitable_zones(
     params: &GenParams,
     terrain_ids: &BaseTerrainIds,
     table: &TerrainTable,
-    budget: usize,
-    min_land_area: usize,
+    chronicle_params: ChronicleParams,
 ) -> Vec<Candidate> {
+    let budget = chronicle_params.survey_zone_budget;
+    let min_land_area = chronicle_params.min_settlement_land_area;
+    let min_spacing = chronicle_params.min_settlement_spacing;
     let zone_count = layout.zone_count();
     let span = layout.zone_span();
-    let mut candidates = Vec::new();
+    let tile_size = layout.tile_size();
+    let mut candidates: Vec<Candidate> = Vec::new();
     let mut fully_inspected = 0usize;
 
     for zone_y in 0..zone_count.height() as i32 {
@@ -347,6 +417,9 @@ fn survey_habitable_zones(
             if zone_representative_terrain(noise, params, layout, zone, terrain_ids)
                 .blocks_move(table)
             {
+                continue;
+            }
+            if zone_fully_excluded(layout, zone, &candidates, min_spacing) {
                 continue;
             }
             fully_inspected += 1;
@@ -364,15 +437,86 @@ fn survey_habitable_zones(
             // `LandComponent::center` 文档。
             let world_x = zone.x() * span as i32 + component.center.x();
             let world_y = zone.y() * span as i32 + component.center.y();
+            let anchor = tile_size.wrap(world_x, world_y);
+            if candidates
+                .iter()
+                .any(|taken| tile_size.chebyshev(taken.anchor, anchor) < min_spacing)
+            {
+                continue;
+            }
             candidates.push(Candidate {
                 zone,
-                anchor: layout.tile_size().wrap(world_x, world_y),
+                anchor,
                 land_area: component.area as u32,
             });
         }
     }
 
     candidates
+}
+
+/// 这个区块**整个**落在某座已接受据点的间距禁区里吗——是的话，它不
+/// 可能产出任何合格锚点，连通域分析可以整个跳过。
+///
+/// # 为什么是「整个落在」而不是「中心落在」
+///
+/// 判据必须是**保守**的：只要区块里还剩一格可能满足间距，就不能跳过
+/// 它，否则会漏掉本该存在的据点，而且漏法依赖遍历顺序，说不清。
+/// 「整个落在禁区内」是这条保守性的精确表述。
+///
+/// # 环面上的区间包含判定
+///
+/// 切比雪夫距离是两个轴向环面距离的较大者，因此「区块整个落在以锚点
+/// 为中心、半径 `min_spacing - 1` 的方形禁区内」等价于「两个轴的区块
+/// 坐标区间各自整个落在对应的环面区间内」——两个一维问题，见
+/// [`interval_within_ring`]。不走「量四个角的距离取最大」那条：环面上
+/// 一个区间的距离最大值不一定落在端点上（可能落在内部的对跖点），那
+/// 条捷径在世界够大时恰好成立，但它成立的前提没写在任何地方，是一颗
+/// 会在有人调小世界尺寸时才炸的雷。
+fn zone_fully_excluded(
+    layout: &ZoneLayout,
+    zone: ZoneCoord,
+    taken: &[Candidate],
+    min_spacing: u32,
+) -> bool {
+    if min_spacing == 0 {
+        return false;
+    }
+    let span = layout.zone_span();
+    let tile_size = layout.tile_size();
+    let radius = min_spacing - 1;
+    let origin_x = zone.x() * span as i32;
+    let origin_y = zone.y() * span as i32;
+    taken.iter().any(|candidate| {
+        interval_within_ring(
+            tile_size.width(),
+            candidate.anchor.x(),
+            radius,
+            origin_x,
+            span,
+        ) && interval_within_ring(
+            tile_size.height(),
+            candidate.anchor.y(),
+            radius,
+            origin_y,
+            span,
+        )
+    })
+}
+
+/// 长度为 `len`、起点为 `lo` 的整数区间，是否整个落在环（周长 `size`）
+/// 上以 `center` 为中心、半径 `radius` 的闭区间内。
+///
+/// 全程整数、无分支依赖浮点：把禁区的起点挪到原点，量一次区块起点相
+/// 对它的环面偏移，再看区块尾端有没有越过禁区宽度。
+fn interval_within_ring(size: u32, center: i32, radius: u32, lo: i32, len: u32) -> bool {
+    let width = 2 * u64::from(radius) + 1;
+    if width >= u64::from(size) {
+        return true;
+    }
+    let start = center - radius as i32;
+    let offset = u64::from((lo - start).rem_euclid(size as i32) as u32);
+    offset + u64::from(len) <= width
 }
 
 /// 一个候选点在推演过程中的状态。
@@ -649,14 +793,26 @@ mod tests {
     use crate::terrain::base_terrain_fixture;
     use ll_core::torus::TorusSize;
 
-    /// 测试用世界：8×8 个区块、区块边长 48。比本体默认小得多，但足够
-    /// 让噪声产出成片的陆地与水域。
+    /// 测试用世界：16×16 个区块、区块边长 48（768×768 格）。比本体默认
+    /// 的 64×48 小得多，但足够让噪声产出成片的陆地与水域。
+    ///
+    /// **为什么不能更小。** 默认最小间距是 144 格
+    /// （[`ChronicleParams::min_settlement_spacing`]），世界每个轴至少要
+    /// 装得下几个间距，间距筛选才是在「筛」而不是在「只留一座」——
+    /// 768 / 144 ≈ 5.3，两个轴合起来的理论容量二十几座，与本体世界
+    /// 两百多座是同一个性质的小号样本。此前这里是 8×8（384 格），
+    /// 每轴只有 2.67 个间距，间距一落地就会把候选点压到个位数，
+    /// `不同种子产出不同的编年史` 这类比规模的断言会退化成掷硬币。
     fn test_layout() -> ZoneLayout {
-        let zone_count = TorusSize::new(8, 8).expect("8x8 合法");
+        let zone_count = TorusSize::new(16, 16).expect("16x16 合法");
         ZoneLayout::new(48, zone_count).expect("48 满足全部对齐与跨度约束")
     }
 
     fn chronicle_for(seed: u64) -> WorldChronicle {
+        chronicle_with(seed, ChronicleParams::default())
+    }
+
+    fn chronicle_with(seed: u64, chronicle_params: ChronicleParams) -> WorldChronicle {
         let layout = test_layout();
         let params = GenParams {
             seed,
@@ -664,14 +820,22 @@ mod tests {
         };
         let noise = crate::generate::build_zone_noise(&layout, &params).expect("布局合法");
         let (ids, table) = base_terrain_fixture();
-        WorldChronicle::generate(
-            &layout,
-            &noise,
-            &params,
-            &ids,
-            &table,
-            ChronicleParams::default(),
-        )
+        WorldChronicle::generate(&layout, &noise, &params, &ids, &table, chronicle_params)
+    }
+
+    /// 一部编年史里挨得最近的两座据点相距多少格（环面切比雪夫）。
+    /// 少于两座时返回 `None`。
+    fn closest_pair_distance(chronicle: &WorldChronicle) -> Option<u32> {
+        let tile_size = test_layout().tile_size();
+        let sites = chronicle.sites();
+        let mut closest: Option<u32> = None;
+        for (index, a) in sites.iter().enumerate() {
+            for b in sites.iter().skip(index + 1) {
+                let distance = tile_size.chebyshev(a.anchor, b.anchor);
+                closest = Some(closest.map_or(distance, |best: u32| best.min(distance)));
+            }
+        }
+        closest
     }
 
     #[test]
@@ -787,6 +951,127 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn 任意两座据点之间不短于设定的最小间距() {
+        // Arrange
+        let spacing = ChronicleParams::default().min_settlement_spacing;
+
+        // Act & Assert：多个种子，避免只在某一张地形上碰巧成立。
+        for seed in [1u64, 2, 0xC0FF_EE12] {
+            let chronicle = chronicle_for(seed);
+            assert!(
+                chronicle.sites().len() >= 2,
+                "种子 {seed} 只产出了 {} 座据点，这条断言测不到间距",
+                chronicle.sites().len()
+            );
+            let closest = closest_pair_distance(&chronicle).expect("至少两座");
+            assert!(
+                closest >= spacing,
+                "种子 {seed} 有两座据点只隔 {closest} 格，低于最小间距 {spacing}"
+            );
+        }
+    }
+
+    /// 间距规则真的在筛：关掉它，同一张地形上立刻出现挨在一起的据点。
+    /// 没有这条对照，上面那条断言可能只是「这张地形本来就稀疏」。
+    #[test]
+    fn 关掉间距筛选后同一张地形上立刻出现挨在一起的据点() {
+        // Arrange
+        let spacing = ChronicleParams::default().min_settlement_spacing;
+        let without = ChronicleParams {
+            min_settlement_spacing: 0,
+            ..ChronicleParams::default()
+        };
+
+        // Act
+        let filtered = chronicle_for(0xC0FF_EE12);
+        let unfiltered = chronicle_with(0xC0FF_EE12, without);
+
+        // Assert
+        assert!(
+            unfiltered.sites().len() > filtered.sites().len(),
+            "关掉间距筛选之后据点数没有变多，筛选没在起作用"
+        );
+        let closest = closest_pair_distance(&unfiltered).expect("至少两座");
+        assert!(
+            closest < spacing,
+            "不筛的世界里最近两座据点也隔了 {closest} 格，这张地形本来就稀疏，对照不成立"
+        );
+    }
+
+    /// 间距筛选不得依赖任何迭代顺序（约束 C5）——同一种子跑两次，
+    /// 被筛掉与被留下的必须完全一致。上面那条「逐字段相同」覆盖的是
+    /// 整部编年史，这条把镜头对准候选点集合本身。
+    #[test]
+    fn 间距筛选两次给出完全相同的候选点集合() {
+        // Arrange
+        let layout = test_layout();
+        let params = GenParams {
+            seed: 0xC0FF_EE12,
+            ..GenParams::default()
+        };
+        let noise = crate::generate::build_zone_noise(&layout, &params).expect("布局合法");
+        let (ids, table) = base_terrain_fixture();
+        let defaults = ChronicleParams::default();
+        let survey = || survey_habitable_zones(&layout, &noise, &params, &ids, &table, defaults);
+
+        // Act
+        let first = survey();
+        let second = survey();
+
+        // Assert
+        assert_eq!(first, second);
+        assert!(first.len() >= 2, "候选点太少，这条断言测不到什么");
+    }
+
+    #[test]
+    fn 环面区间包含判定在跨越接缝时仍然正确() {
+        // Arrange：周长 100 的环，中心 5、半径 10 的禁区是 [95, 15]，
+        // 跨越接缝。
+        let size = 100u32;
+
+        // Act & Assert
+        assert!(
+            interval_within_ring(size, 5, 10, 96, 4),
+            "[96,99] 应在禁区内"
+        );
+        assert!(
+            interval_within_ring(size, 5, 10, 0, 16),
+            "[0,15] 应在禁区内"
+        );
+        assert!(
+            !interval_within_ring(size, 5, 10, 0, 17),
+            "[0,16] 越过了禁区右端"
+        );
+        assert!(
+            !interval_within_ring(size, 5, 10, 94, 4),
+            "[94,97] 的 94 在禁区之外"
+        );
+        // 禁区宽度覆盖整个环时恒为真。
+        assert!(interval_within_ring(size, 5, 60, 0, 100));
+    }
+
+    #[test]
+    fn 整个落在禁区内的区块不做连通域分析也不计预算() {
+        // Arrange：把预算压到 1。若禁区跳过没有生效，第二个可住区块
+        // 会耗尽预算、扫描立刻停止，据点数会掉到个位数。
+        let tight = ChronicleParams {
+            survey_zone_budget: 1,
+            ..ChronicleParams::default()
+        };
+        let loose = ChronicleParams::default();
+
+        // Act
+        let with_tight_budget = chronicle_with(0xC0FF_EE12, tight);
+        let with_loose_budget = chronicle_with(0xC0FF_EE12, loose);
+
+        // Assert：预算 1 只允许一次完整分析，因此最多留下一座据点的
+        // 候选；而放开预算能留下多座——两者不等，正说明预算确实只被
+        // 「真的做了分析」的区块消耗，禁区内的区块没有偷偷计数。
+        assert!(with_tight_budget.sites().len() <= 1);
+        assert!(with_loose_budget.sites().len() > with_tight_budget.sites().len());
     }
 
     #[test]

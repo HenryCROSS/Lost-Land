@@ -58,6 +58,36 @@ const BUILDING_SPACING: i32 = BUILDING_SPAN + 1;
 /// 见 [`stamp_settlement`] 文档「为什么不跨区块」。
 pub const MAX_BUILDINGS: u32 = 24;
 
+/// 一座据点外廓的半径上界（格）：从锚点到最外那一圈建筑外墙的切比
+/// 雪夫距离。
+///
+/// **由 [`MAX_BUILDINGS`]、[`BUILDING_SPACING`]、[`BUILDING_SPAN`] 三者
+/// 推出，不是一个可以独立调的数值**——改上面任何一个，这个常量跟着
+/// 变。消费者是 [`crate::chronicle::ChronicleParams::min_settlement_spacing`]
+/// （据点最小间距必须大于它的两倍，否则两座长满的据点会互相压进对方
+/// 的街区）。
+pub const MAX_FOOTPRINT_RADIUS: i32 =
+    max_ring(MAX_BUILDINGS) * BUILDING_SPACING + BUILDING_SPAN / 2;
+
+/// 铺 `count` 栋建筑时，[`spiral_offset`] 用到的最外一圈方环半径
+/// （单位是「第几圈」，不是格）。
+///
+/// 与 [`spiral_offset`] 内部那段环容量计算是同一条公式（半径 `r` 为止
+/// 累计容纳 `(2r+1)^2` 栋），刻意写成 `const fn` 让
+/// [`MAX_FOOTPRINT_RADIUS`] 在编译期就跟着 [`MAX_BUILDINGS`] 走，不需
+/// 要有人记得手工同步一个魔数。
+const fn max_ring(count: u32) -> i32 {
+    if count <= 1 {
+        return 0;
+    }
+    let last = count - 1;
+    let mut ring = 0i32;
+    while ((2 * ring + 1) * (2 * ring + 1)) as u32 <= last {
+        ring += 1;
+    }
+    ring
+}
+
 /// 一座据点此刻的状态——历史推演跑完之后的结论。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SettlementStatus {
