@@ -394,6 +394,16 @@ pub const CONCEALMENT_CHECK: CheckContext = CheckContext {
     path: "concealment",
 };
 
+/// 暴击判定：攻击者（想打在要害上）主动，被攻击者（想不被打在要害
+/// 上）被动，**每一下攻击各判一次**。
+///
+/// 消费点在 `crate::resolve::resolve_attack`。基准偏移与幸运怎么进
+/// 式子见 `crate::combat::CRIT_BASE_CHECK_MODIFIER`。
+pub const CRITICAL_CHECK: CheckContext = CheckContext {
+    namespace: "lostland",
+    path: "critical",
+};
+
 #[cfg(test)]
 mod tests {
     use super::*;

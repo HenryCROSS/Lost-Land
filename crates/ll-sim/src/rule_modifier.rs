@@ -361,9 +361,10 @@ pub enum RuleModifier {
     /// 优势：该实体在 `check_context` 这类判定上掷两轮取较大
     /// （[`crate::check::RollBias::Advantage`]）。
     ///
-    /// `check_context` 是开放标识符，引擎当前认得两个：
-    /// [`crate::check::INSPECTION_CHECK`]（盘查）与
-    /// [`crate::check::CONCEALMENT_CHECK`]（藏匿）。指向别的标识符不是
+    /// `check_context` 是开放标识符，引擎当前认得三个：
+    /// [`crate::check::INSPECTION_CHECK`]（盘查）、
+    /// [`crate::check::CONCEALMENT_CHECK`]（藏匿）与
+    /// [`crate::check::CRITICAL_CHECK`]（暴击）。指向别的标识符不是
     /// 错误，只是当前没有判定会认领它——判定种类是一个会随系统长出来
     /// 的开放集合，装载期不该把还没写的判定判成非法。
     Advantage {
@@ -383,19 +384,19 @@ pub enum RuleModifier {
     /// 「目标旁边有我的盟友」需要一次本项目当前不存在的空间查询（`fov`/
     /// `light` 两个决策层文件都不回答「谁站在谁旁边」这个问题）。所有者
     /// 的裁定绕开了这条依赖——改成幸运影响的判定，不需要知道周围有谁,
-    /// 与暴击（[`crate::combat::crit_chance_permille`]）是「战斗结算里
+    /// 与暴击（[`crate::combat::crit_attacker_modifier`]）是「战斗结算里
     /// 现成的、幸运能挂上去的判定点」同一个思路,但刻意不是暴击本身：
-    /// 暴击对**全部**攻击者恒定生效（系数写死在
-    /// [`crate::combat::LUCK_CRIT_BONUS_PERMILLE`]），偷袭是**只有声明
+    /// 暴击对**全部**攻击者恒定生效（基准偏移写死在
+    /// [`crate::combat::CRIT_BASE_CHECK_MODIFIER`]），偷袭是**只有声明
     /// 了这条天赋的角色才会触发**的判定，系数由天赋声明本身携带
     /// （`luck_chance_permille_per_point`）——不同天赋可以有不同的幸运
     /// 敏感度,不共用暴击那个全局系数,见
     /// [`crate::combat::sneak_attack_chance_permille`] 文档。
     SneakAttack {
-        /// 每点有效幸运贡献的触发率加成，千分比——与
-        /// [`crate::combat::LUCK_CRIT_BONUS_PERMILLE`] 同一套"幸运→
-        /// 千分比概率"换算手法，但这里的系数是天赋自己的声明值，不是
-        /// 硬编码进 `combat.rs` 的全局常量。
+        /// 每点有效幸运贡献的触发率加成，千分比——暴击此前同一套
+        /// "幸运→千分比概率"换算手法（暴击已迁进对抗判定，见
+        /// [`crate::combat::CRIT_BASE_CHECK_MODIFIER`]），但这里的系数
+        /// 是天赋自己的声明值，不是硬编码进 `combat.rs` 的全局常量。
         luck_chance_permille_per_point: i32,
         /// 触发后追加的固定伤害——挂载点见
         /// `crate::resolve::resolve_attack` 文档「偷袭接线」一节：加在

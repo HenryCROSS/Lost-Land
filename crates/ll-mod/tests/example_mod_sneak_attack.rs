@@ -15,7 +15,7 @@
 //! 抗性测试（`example_mod_resistance.rs`）能断言精确倍率，因为两组
 //! 防御方的攻击者幸运恒为零（`BaseStats::BASELINE.luck == 0`），暴击
 //! 判定天然不介入。本文件的两个攻击者一个幸运为零、一个幸运为
-//! `LUCKY_LUCK`——后者的有效幸运同时影响暴击判定（`crate::combat::crit_chance_permille`）
+//! `LUCKY_LUCK`——后者的有效幸运同时影响暴击判定（`ll_sim::combat::crit_attacker_modifier`）
 //! 与偷袭判定（两者复用同一个 `effective_luck`，见
 //! `resolve_attack` 文档「偷袭接线」一节），因此不能排除这次攻击碰巧
 //! 也暴击的可能——但暴击只会让伤害进一步变大，不会把它压回基准以下,

@@ -59,9 +59,9 @@ use ll_world::state::WorldState;
 use ll_world::temperature::Temperature;
 
 use crate::catalogs::ResolveCatalogs;
-use crate::check::{CHECK_DICE, CONCEALMENT_CHECK, CheckSide, opposed_check};
+use crate::check::{CHECK_DICE, CONCEALMENT_CHECK, CRITICAL_CHECK, CheckSide, opposed_check};
 use crate::combat::{
-    Penetration, apply_crit_multiplier, crit_chance_permille, damage_after_defense,
+    Penetration, apply_crit_multiplier, crit_attacker_modifier, damage_after_defense,
     sneak_attack_chance_permille,
 };
 use crate::craft::{NoRecipes, RecipeCatalog, RecipeRule};
@@ -3954,7 +3954,8 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 正是「战斗结算里现成的、幸运能挂上去的判定点」（`combat.rs` 已有
 /// `damage_after_defense` 这条主干，暴击只是在它算出的伤害上再判一次
 /// 是否放大，不需要新开一条结算路径）。幸运通过
-/// [`crate::combat::crit_chance_permille`] 换算成千分比暴击率，输入是
+/// [`crate::combat::crit_attacker_modifier`] 换算成一次对抗判定里攻击
+/// 者那一侧的骰子点数修正，输入是
 /// `attacker_derived.attribute(AttributeKind::Luck)`——**派生值，不是裸
 /// `attacker.stats.luck`**：幸运并入 `AttributeKind` 批次之前，幸运是
 /// `Agent` 上不受装备/状态效果影响的独立字段，暴击只能读裸值；并入之后
@@ -3976,12 +3977,43 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 一处消费随机数，前面的攻击力/护甲/穿透/伤害计算全部是纯算术，不
 /// 存在「先掷了别的骰子再掷这个」的顺序歧义。
 ///
-/// 零幸运（本仓库全部现存测试夹具的默认值）换算出的暴击率精确为零
-/// （见 [`crate::combat::crit_chance_permille`] 文档「没有独立的
-/// 『基础暴击率』常量」一节）——这保证了本次接线不会让任何一条既有
-/// 的确定性伤害断言或黄金基准哈希（`crates/ll-sim/tests/replay.rs`）
-/// 变成依赖随机数的赌博：即便这里确实调用了 `DetRng`，`chance(0, ..)`
-/// 恒返回 `false`，`damage` 恒等于 `damage_after_defense` 的原始结果。
+/// # 暴击换成对抗判定（判定系统迁移批次）
+///
+/// 掷的不再是一枚「幸运 × 5‰」的硬币，而是一次**对抗判定**
+/// （[`crate::check::opposed_check`]，`3d20 + 修正` 双方各一轮）：
+///
+/// ```text
+/// 攻击者（主动）：暴击基准偏移 −23 + 自己的幸运点数
+/// 被攻击者（被动）：自己的幸运点数
+/// ```
+///
+/// 主动方**严格大于**被动方才算暴击。基准（双方幸运都取
+/// `BaseStats::BASELINE.luck` = 0）暴击率因此是 `4.84%`——项目所有者
+/// 裁定的 5% 基准在 `3d20` 这把钟形骰上最接近的那一格，完整推导（含
+/// 三格精确组合数与「为什么钟形骰上写不出恰好 5%」）见
+/// [`crate::combat::CRIT_BASE_CHECK_MODIFIER`] 文档。
+///
+/// **被攻击者的幸运真的参与**，不是一侧摆设：旧模型里被打的人是谁
+/// 完全不影响这一下会不会暴击，那正是 [`crate::check`] 模块文档拿来
+/// 论证盘查判定该换形状的同一条毛病（「一个眼神再好的卫兵与一个瞎子
+/// 查同一个人，查到的东西逐位相同」）。幸运既然「改变随机判定的
+/// 形状」，被人打在要害上也是一次针对你的随机判定。
+///
+/// **这条改动影响每一次攻击**：零幸运不再等于零暴击率（旧模型的
+/// `chance(0, ..)` 恒假），因此黄金基准
+/// （`crates/ll-sim/tests/replay.rs`）与既有确定性伤害断言都可能变，
+/// 变没变、为什么变，逐条写在那个常量的文档与本批次提交信息里。
+/// 这次判定消费的抽取次数也从 `1` 变成 `2M = 6`（含优劣势时 `4M`、
+/// 含重掷时更多）——**不会让任何后续取数错位**：这条流是现场用
+/// `DetRng::for_entity` 新造的、只服务这一次判定，伤害公式骰子流与
+/// 偷袭流各有各的三元组（见下面两节），三条流互不相干。
+///
+/// 优劣势与重掷同样接上了：攻防两侧各按
+/// [`crate::check::CRITICAL_CHECK`] 查
+/// [`crate::rule_modifier::check_roll_bias`] 与
+/// [`crate::rule_modifier::check_reroll_value`]，与盘查/藏匿两处判定
+/// 逐字同构。没有任何来源声明这三条时两侧都是
+/// [`crate::check::RollBias::Normal`] + 不重掷，取数次数恒为 `2M`。
 ///
 /// # 伤害公式接线（伤害公式引擎批次）
 ///
@@ -4156,24 +4188,58 @@ fn resolve_attack(
         .unwrap_or(Penetration::NONE);
     let explicit_formula = weapon_rule.as_ref().and_then(|rule| rule.damage_formula);
 
-    // 暴击判定（幸运并入 AttributeKind 批次）：读
-    // `attacker_derived.attribute(AttributeKind::Luck)`——派生值，装备/
-    // 状态效果加的幸运在这里生效，见本函数文档「暴击」一节。约束 C3
-    // ——随机性必须走 `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`，
-    // 这里用攻击者自己的实体 ID 与当前世界时钟作三元组的后两项，与
+    // 攻防双方的规则修正各聚合**一次**，本函数下游全部消费者共用同一
+    // 份候选列表——暴击判定的优劣势/重掷、偷袭声明、抗性与易伤读的都是
+    // 同一个实体、同一时刻的同一批声明，聚合多次只会多走几遍完全相同
+    // 的遍历（`agent_rule_modifiers` 是纯函数,见其文档「热路径」一节）。
+    let attacker_modifiers = agent_rule_modifiers(
+        attacker,
+        race_traits,
+        class_traits,
+        subclass_traits,
+        traits,
+        items,
+    );
+    let defender_modifiers = agent_rule_modifiers(
+        defender,
+        race_traits,
+        class_traits,
+        subclass_traits,
+        traits,
+        items,
+    );
+
+    // 暴击判定（幸运并入 AttributeKind 批次；判定系统迁移批次换成
+    // 对抗判定）：两侧的幸运都读 `attribute(AttributeKind::Luck)`——
+    // 派生值，装备/状态效果加的幸运在这里生效，见本函数文档「暴击」
+    // 一节。约束 C3——随机性必须走
+    // `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`，这里用攻击者
+    // 自己的实体 ID 与当前世界时钟作三元组的后两项，与
     // `ll_mod::script_behavior_source` 的 AI 决策随机流同一套取法
-    // （见其文档「C3」一节）；约束 C5——本函数在暴击判定这一步只消费
-    // 这一次随机数，取数顺序天然确定，不存在「先读了别的随机数再读
-    // 这个」的排列组合问题。判定挪到公式求值**之前**（此前挪到公式
+    // （见其文档「C3」一节）；约束 C5——这条流是现场构造、只服务这
+    // 一次判定，取数顺序由 `opposed_check` 的固定程序顺序定死（先主动
+    // 方 M 颗、后被动方 M 颗，见 `crate::check` 模块文档「取数纪律」），
+    // 不存在排列组合问题。判定挪到公式求值**之前**（此前挪到公式
     // 求值之后）——公式的 `Crit` 操作数需要这个结果作为输入,但这
     // 只是「谁先计算」的顺序调整,不改变这次判定本身消费哪条流、算出
     // 什么结果,见本函数文档「伤害公式接线」一节。
     let mut crit_rng =
         ll_core::rng::DetRng::for_entity(world.seed, actor.as_u64(), world.clock.0 as u64);
-    // 分母 1000：千分比运算的分母，与 `combat::crit_chance_permille`
-    // 返回值同一个刻度（见该函数文档「夹在 0..=1000」）。
     let effective_luck = attacker_derived.attribute(AttributeKind::Luck);
-    let is_critical = crit_rng.chance(crit_chance_permille(effective_luck).max(0) as u32, 1000);
+    let crit_active = CheckSide {
+        modifier: crit_attacker_modifier(effective_luck),
+        bias: check_roll_bias(&attacker_modifiers, CRITICAL_CHECK),
+        reroll_on: check_reroll_value(&attacker_modifiers),
+    };
+    let crit_passive = CheckSide {
+        // 被攻击者一侧只有它自己的幸运，没有基准偏移——见
+        // `crate::combat::crit_attacker_modifier` 文档。
+        modifier: i64::from(defender_derived.attribute(AttributeKind::Luck)),
+        bias: check_roll_bias(&defender_modifiers, CRITICAL_CHECK),
+        reroll_on: check_reroll_value(&defender_modifiers),
+    };
+    let is_critical =
+        opposed_check(&CHECK_DICE, &crit_active, &crit_passive, &mut crit_rng).active_wins();
 
     let formula_def = formulas.formula_for(explicit_formula);
     // 六项主属性的原始值（不是调整值）——按 `AttributeKind` 判别值
@@ -4240,14 +4306,7 @@ fn resolve_attack(
     // 同样会反映到偷袭触发率上，理由同暴击那一节「暴击：读取
     // attacker_derived.attribute」。
     const SNEAK_ATTACK_EVENT_TAG: u64 = 0x51EA_ACC0_0000_0000;
-    let damage = match sneak_attack_rule(&agent_rule_modifiers(
-        attacker,
-        race_traits,
-        class_traits,
-        subclass_traits,
-        traits,
-        items,
-    )) {
+    let damage = match sneak_attack_rule(&attacker_modifiers) {
         // 潜行直通（潜行与盗贼被动批次）：攻击者正处于潜行状态时跳过
         // 掷骰，直接判定触发——见本函数文档「潜行与偷袭」一节。放在
         // `Some(rule)` 之前用守卫分支表达，而不是在下面那个分支里写
@@ -4294,18 +4353,9 @@ fn resolve_attack(
         .as_ref()
         .and_then(|rule| rule.damage_category)
         .unwrap_or_else(|| damage_categories.default_category());
-    // 防御方的规则修正只聚合**一次**，减伤与易伤两个消费者共用同一份
-    // 候选列表——两者读的是同一个实体、同一时刻的同一批声明，聚合两次
-    // 只会多走一遍完全相同的遍历（`agent_rule_modifiers` 是纯函数,
-    // 见其文档「热路径」一节）。
-    let defender_modifiers = agent_rule_modifiers(
-        defender,
-        race_traits,
-        class_traits,
-        subclass_traits,
-        traits,
-        items,
-    );
+    // 防御方的规则修正在本函数顶部已经聚合过**一次**，暴击判定的
+    // 优劣势/重掷、减伤、易伤三个消费者共用同一份候选列表，理由见
+    // 那一处注释。
     let damage_reduction = resistance_damage_reduction(&defender_modifiers, damage_category);
     // 易伤（易伤与减伤对称批次）：与减伤**各自独立聚合**，在下面那条
     // 算式里一减一加。拆成两个量的理由见
@@ -6104,8 +6154,11 @@ mod tests {
         // 统计两侧「伤害超过零暴击基准值」的次数。
         // Arrange
         let trials = 3_000i64;
-        let low_luck = 5; // 5 × 5‰ = 25‰（2.5%）暴击率。
-        let high_luck = 100; // 100 × 5‰ = 500‰（50%）暴击率。
+        // 两个幸运值代进对抗判定（被攻击者幸运取基准 0，因此净差就是
+        // 攻击者一侧的修正）：见 `crate::combat::CRIT_BASE_CHECK_MODIFIER`
+        // 文档「幸运怎么进式子」那张表。
+        let low_luck = 5; // −23 + 5 = −18 → 9.77% 暴击率。
+        let high_luck = 100; // −23 + 100 = 77，钳到上限 28 → 97.51%。
         let baseline_damage =
             damage_after_defense(BaseStats::BASELINE.strength, 0, Penetration::NONE);
 
@@ -6156,10 +6209,16 @@ mod tests {
             }
         }
 
-        // Assert：50% 暴击率的一侧命中次数应远多于 2.5% 的一侧——差距
-        // 留了很大的安全边际（期望值相差约 950 次，这里只要求多过
-        // 100 次），避免二项分布的正常波动把测试变成偶发性失败。
+        // Assert：97.51% 暴击率的一侧命中次数应远多于 9.77% 的一侧——
+        // 差距留了很大的安全边际（3000 次试验上期望值相差约 2630 次，
+        // 这里只要求多过 100 次），避免二项分布的正常波动把测试变成
+        // 偶发性失败。
         assert!(high_crits > low_crits + 100);
+        // 两端都不是绝对：高幸运那一侧仍然打得出非暴击，低幸运那一侧
+        // 仍然打得出暴击。这是「不允许绝对」在暴击这条链路上的可观察
+        // 证据——旧的概率模型里幸运 200 以上是**必定**暴击。
+        assert!(high_crits < trials, "顶格幸运也不该次次暴击");
+        assert!(low_crits > 0, "低幸运也不该一次都暴不出来");
     }
 
     /// 造一个占位实体，站在 `pos`，除幸运外六项主属性取基准值，且
