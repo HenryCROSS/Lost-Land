@@ -68,34 +68,36 @@
 // 认真做一段时间某类东西」而不是「顺手做两下」。它们是纯内容参数，改
 // 它们一行 Rust 都不用动——这正是内容走数据文件的意义。
 //
-// # 副职「给东西」的字段已经存在了，但本体这六条今天仍然不给
+// # 四条制作副职给什么：每次制作多产出一件
 //
-// **上面这句话此前写的是「副职目前不给任何东西：SubclassDef 只有 id 与
-// display_name_key 两个字段」——那已经过期。** 项目所有者裁定「副职……
-// 带有技能的」推翻了 subclass-system.md 二节「副职不给数值」那条，
-// SubclassDef 现在有第三个字段 traits: Vec<TraitGrant>（副职天赋接线
-// 批次），schema 侧就是本文件可以写的 traits 数组，形状与 classes.json5/
-// races.json5 的同名字段完全一致，真实用例见
-// mods/example_mod/subclasses.json5 的影舞者。
+// **这一节此前写的是「本体这六条今天仍然一条 traits 都不写……没有语义
+// 对的技能可给」——那条阻塞已经解除，而且它当初问错了地方。**
 //
-// **本体这六条今天仍然一条 traits 都不写**，理由不是「机制没做好」，是
-// 一条还没做过的内容设计裁定：
+// 那份阻塞报告把问题定位在 SkillEffect 上（「三种形状没有一种能表达
+// 会打铁」）。定位是错的：「会打铁」不是玩家按下去会发生什么的**动作**
+// ——玩家已经有 Intent::Craft 了；它是「**当我制作时，结算方式不一样**」,
+// 也就是一条**被动**。本仓库既有词汇里这叫 RuleModifier（天赋效果③
+// 「改变规则本身」），与「当我挨打时减伤链路多减几点」是同一种句式、
+// 同一条通道、同一套聚合算法。**SkillEffect 因此一个新变体都不需要。**
 //
-// - lostland 命名空间下**零条天赋内容**（本目录没有 traits.json5，
-//   crates/ll-mod/src/content_audit.rs 的 Trait deferred 条目记的就是这件
-//   事），要给本体副职配天赋得先开这个头；
-// - 更要命的是**没有语义对的技能可给**：本体六条里四条是制作类（工匠/
-//   裁缝/炼金术士/厨师），而 SkillEffect 当前只有 deal-damage /
-//   temporary-stat-modifier / restore-resource 三种形状，**没有任何一种能
-//   表达「会打铁」**。给工匠塞一个伤害技能只是为了让字段覆盖检查变绿，
-//   正是本仓库反复拒绝过的「硬塞一条内容」。
+// 落地形状是 RuleModifier::CraftYield { category, bonus_product_count }：
+// 四条制作副职各授予一条只带这一条修正、指向自己那个配方类别的天赋
+// （mods/lostland/traits.json5）。完整设计与四视角自检见
+// knowledge/design/crafting-subclass-rewards.md。
 //
-// 因此这六条今天的作用仍然只有「资格」：被配方类别的 required_subclasses
-// 引用当闸门（example_mod 已经这么用了）。补这个缺口的正确形状是**项目
-// 所有者先定下四个制作副职各自该给什么**（很可能还要先给 SkillEffect
-// 增开制作向的变体），那是一个独立批次。这条缺口在
-// crates/ll-mod/src/content_audit.rs 的 SubclassAttrs::traits 豁免条目里
-// 有一份可查的登记，不是无人知晓的遗漏。
+// 闭环因此成立，而且挂钩的动作与被奖励的动作是**同一个动作**：
+//
+//   在 lostland:forging 里做满 20 件 → 得到工匠 → 此后每件锻造品多出一件
+//
+// 这正是「副职成长挂钩玩家本来就在做的动作」那条既有原则第一次完整
+// 闭合——此前只有前半段（做够 N 次给副职），后半段是空的。
+//
+// # 剩下两条（剑舞者/学徒）仍然不给
+//
+// 不是遗漏，是同一条纪律的另一面：它们的奖励该是什么，取决于近战/施法
+// 那两个轴上还没做过的内容设计裁定，而本批次的授权范围只覆盖制作类
+// 四条（设计文档零节「本文档明确不回答」）。宁可空着，也不为了让字段
+// 覆盖检查变绿硬塞一条。
 {
   subclasses: [
     // 工匠：锻造金属装备与工具。
@@ -103,6 +105,7 @@
       id: "lostland:artisan",
       display_name_key: "lostland:subclass.artisan.display_name",
       unlock: { kind: "items-crafted", target: "lostland:forging", threshold: 20 },
+      traits: [{ id: "lostland:forging_mastery", unlock_level: 1 }],
     },
 
     // 裁缝：缝制衣物与织物。
@@ -110,6 +113,7 @@
       id: "lostland:tailor",
       display_name_key: "lostland:subclass.tailor.display_name",
       unlock: { kind: "items-crafted", target: "lostland:tailoring", threshold: 20 },
+      traits: [{ id: "lostland:tailoring_mastery", unlock_level: 1 }],
     },
 
     // 炼金术士：调配药剂与试剂。
@@ -118,6 +122,7 @@
       id: "lostland:alchemist",
       display_name_key: "lostland:subclass.alchemist.display_name",
       unlock: { kind: "items-crafted", target: "lostland:alchemy", threshold: 15 },
+      traits: [{ id: "lostland:alchemy_mastery", unlock_level: 1 }],
     },
 
     // 厨师：烹饪食物。
@@ -125,6 +130,7 @@
       id: "lostland:cook",
       display_name_key: "lostland:subclass.cook.display_name",
       unlock: { kind: "items-crafted", target: "lostland:cooking", threshold: 15 },
+      traits: [{ id: "lostland:cooking_mastery", unlock_level: 1 }],
     },
 
     // ── 以下两条**刻意不写 unlock**，理由见文件头「剑舞者/学徒」一节 ──

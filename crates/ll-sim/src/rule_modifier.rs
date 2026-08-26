@@ -190,6 +190,23 @@ use crate::traits::{
 /// 问题」那半句原样成立，变的只是后一条问题的答案。
 pub const MINIMUM_DAMAGE_AFTER_RESISTANCE: i32 = 1;
 
+/// 一次成功制作**至少**产出多少件——[`RuleModifier::CraftYield`] 的
+/// 加成算完之后的下限，形状与理由照
+/// [`MINIMUM_DAMAGE_AFTER_RESISTANCE`]，落实在 [`craft_product_count`]。
+///
+/// # 它做两件事，第二件比第一件重要
+///
+/// 1. **兜住负值**。`bonus_product_count` 允许为负（「手艺生疏」这类
+///    负面天赋），与抗性允许负值表示「脆弱」是同一条先例；负得比配方
+///    自己的产出数还多时，结果钳在这里。
+/// 2. **把一条既有玩法裁定机制化**。产出恒 ≥ 1 意味着「消耗了材料却
+///    什么都没拿到」在机制层面**不可能**发生——而那正是
+///    `crafting-system.md` 九节⑤在玩法上否决过的「制作失败」（原文：
+///    一次吃掉材料、什么都不给、玩家无法通过任何决策规避的失败，是
+///    纯粹的挫败感）。因此**即使将来把字段收成无符号数**，这条常量
+///    仍然要留：它守的不只是负数。
+pub const MINIMUM_CRAFT_PRODUCT_COUNT: u32 = 1;
+
 /// 概率类规则修正在两端各自留出的余量（千分比）——项目所有者「两端
 /// 各留一线，永远不会必定成功也永远不会必定失败」这条裁定的落点。
 ///
@@ -249,7 +266,9 @@ pub fn clamp_probability_permille(permille: i32) -> i32 {
 /// `crate::resolve::resolve_inspect` 文档「藏匿判定」一节；
 /// [`RuleModifier::InspectionSuspicion`] 的消费者在**脚本侧**
 /// （`ll_mod::script_behavior_api` 的 `actor-inspection-suspicion`），
-/// 理由见该变体文档。**仍然没有任何消费者的只剩下面这三个**：
+/// 理由见该变体文档；[`RuleModifier::CraftYield`]（制作类副职奖励批次
+/// 新增）见 [`craft_yield_bonus`] 与 `crate::resolve::resolve_craft`
+/// 文档「产出加成接线」一节。**仍然没有任何消费者的只剩下面这三个**：
 /// - [`RuleModifier::RerollOnce`] 需要 `roll_one_die` 钩子（伤害公式
 ///   引擎求值器内部的骰子取数原语），本批次不改写该求值器签名，见
 ///   `trait-system.md` 三节③「重骰」一节「代价诚实标注」段落。
@@ -426,6 +445,52 @@ pub enum RuleModifier {
         /// 每一件物品各自不被看见的千分比概率，见本变体文档。
         conceal_permille: i32,
     },
+    /// 制作产出加成（制作类副职奖励批次，
+    /// `knowledge/design/crafting-subclass-rewards.md`）——在 `category`
+    /// 这一类配方上，每一次**成功**制作的产出数量额外增加
+    /// `bonus_product_count` 件。
+    ///
+    /// # 为什么是一条规则修正，而不是一个 `SkillEffect`
+    ///
+    /// 「会打铁」不是玩家按下去会发生什么的**动作**——玩家已经有
+    /// [`crate::intent::Intent::Craft`] 这个动作了。「会打铁」是「**当我
+    /// 制作时，结算方式不一样**」，而这正是本枚举的定位。硬做成
+    /// [`crate::skill::SkillEffect`] 会具体错在三处：那个枚举的消费者是
+    /// `crate::resolve::resolve_use_skill`（入口是
+    /// [`crate::intent::Intent::UseSkill`]，玩家得先主动施放一次「打铁
+    /// 精通」才能去打铁，这不是被动）；[`crate::skill::SkillRule`] 强制
+    /// 携带冷却时间与资源消耗（一条「我会打铁」要冷却与法力是把身份属性
+    /// 硬塞进技能框子）；而唯一形状对得上的
+    /// [`crate::skill::SkillEffect::TemporaryStatModifier`] 作用在六维
+    /// 主属性上，制作产出不是主属性。完整论证见设计文档二节。
+    ///
+    /// # 为什么必须按配方类别键控
+    ///
+    /// 一个铁匠不该因为会打铁就烧得一手好菜。与
+    /// [`RuleModifier::Resistance`] 按伤害类别键控是同一个理由的既有
+    /// 先例：两者都是「一个开放集合的某一个成员」，不是新概念。一条
+    /// **全局**的制作精通还会与配方类别的副职闸门
+    /// （[`crate::craft::RecipeCatalog::category_required_subclasses`]）
+    /// 直接打架——那道闸门按类别分，奖励却不分。
+    ///
+    /// # 负值 = 手艺生疏
+    ///
+    /// 与 [`RuleModifier::Resistance`] 的「负值 = 脆弱」是同一条先例、
+    /// 同一个理由：负面天赋（「手艺生疏」「诅咒的铁砧」）是内容作者
+    /// 应当能表达的东西，静默禁掉它是一次不声明的能力退化。产出因此
+    /// 由消费侧的 [`craft_product_count`] 保底在
+    /// [`MINIMUM_CRAFT_PRODUCT_COUNT`] 件——那条保底不是防御性编程，
+    /// 它同时是 `crafting-system.md` 九节⑤「不做制作失败」那条玩法
+    /// 裁定的机制化，见该常量文档。
+    CraftYield {
+        /// 配方类别，指向配方类别表（`crafting.json5` 的
+        /// `recipe_categories`），与 [`crate::craft::RecipeRule::category`]
+        /// 是同一个号段。
+        category: ContentIndex,
+        /// 每次成功制作额外产出的件数。可为负，见本变体文档「负值 =
+        /// 手艺生疏」。
+        bonus_product_count: i32,
+    },
 }
 
 /// 一条候选规则修正：修正本身 + **它来自哪个内容条目**。
@@ -457,7 +522,7 @@ pub struct RuleModifierEntry {
 ///
 /// 「这条修正属于哪个加值类型」与「这条修正是什么」是两个正交的问题：
 /// 同一条抗性可以是附魔给的，也可以是药水给的；同一个加值类型底下可以
-/// 同时有抗性和偷袭。塞进变体要给七个变体各加一个同名字段，而且每加
+/// 同时有抗性和偷袭。塞进变体要给八个变体各加一个同名字段，而且每加
 /// 一个新变体就得记得再加一次——正是 [`strength_key`] 文档「无通配分支」
 /// 那一节要避免的那种「靠人记得」。
 ///
@@ -631,6 +696,71 @@ pub fn resistance_damage_reduction(
     .unwrap_or(0)
 }
 
+/// 制作产出加成消费者——在 [`agent_rule_modifiers`] 汇总出的候选列表里,
+/// 取 `category` 匹配的 [`RuleModifier::CraftYield`] 的**额外产出件数**;
+/// 一条也没命中时返回 `0`（没有加成，按配方声明的件数产出）。
+///
+/// `crate::resolve::resolve_craft` 在全部前置与食材校验都通过之后、
+/// 产出成品那一步（第 9 步）调用本函数，把结果交给
+/// [`craft_product_count`] 算出最终件数。
+///
+/// # 多条命中时怎么合：同类型取最强，不同类型相加
+///
+/// 与 [`resistance_damage_reduction`] 逐字同构，走同一个
+/// [`merged_across_types`]，一行算法都没有新写：
+///
+/// 1. **同一个加值类型**（含「都没声明类型」这个共享桶）内部取最强
+///    ——本变体的「强」是**多产出的件数越大越强**，方向逐变体声明在
+///    [`strength_key`]。两条同类型的「+1 锻造产出」不会叠成 +2。
+/// 2. **不同加值类型之间相加**——声明在 [`cross_type_merge`]。天赋
+///    给的 +1 与附魔铁砧给的 +1 合起来是 +2。
+///
+/// 判据**不依赖 `modifiers` 切片自身的顺序**（约束 C5），理由与抗性
+/// 那一条完全相同：桶内两级比较只与声明值和 `ContentIndex` 有关，
+/// 跨桶是整数加法。
+///
+/// # 装备那一路是白拿的
+///
+/// [`agent_rule_modifiers`] 同时汇聚天赋路与装备路
+/// （[`equipment_rule_modifiers`]），因此「大师级铁砧锤」这件**装备**
+/// 携带同一条修正一行代码都不用加——与
+/// [`RuleModifier::Resistance`] 已经同时走这两路是同一件事。
+pub fn craft_yield_bonus(modifiers: &[RuleModifierEntry], category: ContentIndex) -> i32 {
+    merged_across_types(modifiers, |modifier| match modifier {
+        RuleModifier::CraftYield {
+            category: candidate_category,
+            bonus_product_count,
+        } if *candidate_category == category => Some(*bonus_product_count),
+        _ => None,
+    })
+    .unwrap_or(0)
+}
+
+/// 把一条配方声明的产出件数与 [`craft_yield_bonus`] 算出的加成合起来，
+/// 并落实 [`MINIMUM_CRAFT_PRODUCT_COUNT`] 这条保底。
+///
+/// # 为什么中间量走 `i64`
+///
+/// 两端的类型不一样：`declared` 是 `u32`（[`crate::craft::RecipeRule::product_count`]
+/// 恒 ≥ 1），`bonus` 是 `i32`（可正可负）。两者都是内容作者填的值，
+/// 注册期不禁止极端值，因此没有一个 32 位类型同时装得下
+/// `u32::MAX + i32::MAX` 与 `0 + i32::MIN`。`i64` 一次装下全部组合，
+/// 之后只剩两次钳制——下限是本模块的保底常量，上限是 `u32::MAX`
+/// （堆的 `count` 字段本身的值域）。全程整数，没有除法、没有浮点
+/// （ADR 0020）。
+///
+/// # 与 [`damage_after_resistance`] 的一处刻意差异
+///
+/// 那一条对「本来就打不出伤害」的攻击原样返回（保底不该凭空造出伤害）；
+/// 本条**没有**对应的短路，因为不存在「本来就产出 0 件」的配方——
+/// `product_count` 注册期恒 ≥ 1，保底因此永远只在加成把它压下去时才
+/// 起作用。
+pub fn craft_product_count(declared: u32, bonus: i32) -> u32 {
+    let raw = i64::from(declared).saturating_add(i64::from(bonus));
+    let floored = raw.max(i64::from(MINIMUM_CRAFT_PRODUCT_COUNT));
+    u32::try_from(floored).unwrap_or(u32::MAX)
+}
+
 /// 把一次攻击已经算好的伤害，按 `damage_reduction` 点减伤扣掉，并落实
 /// [`MINIMUM_DAMAGE_AFTER_RESISTANCE`] 这条保底。
 ///
@@ -759,6 +889,16 @@ fn strength_key(modifier: &RuleModifier) -> StrengthKey {
             extra_damage,
         } => StrengthKey::larger_is_stronger(*extra_damage)
             .then_larger_is_stronger(*luck_chance_permille_per_point),
+        // 额外产出件数，越大越强：一炉出得越多越好。**刻意写全名而不用
+        // `R` 别名**——本变体有真实消费者（`craft_yield_bonus` →
+        // `crate::resolve::resolve_craft` 第 9 步），
+        // `scripts/ci/check_field_consumers.py` 该判它绿，不该进那份
+        // `EXEMPTIONS`。别名纪律只适用于下面那三个死变体，见本函数文档
+        // 最后一节。
+        RuleModifier::CraftYield {
+            bonus_product_count,
+            ..
+        } => StrengthKey::larger_is_stronger(*bonus_product_count),
         // 以下三个当前没有消费者，见本函数文档「没有消费者的变体」一节。
         R::RerollOnce { .. } | R::Advantage { .. } | R::Disadvantage { .. } => {
             StrengthKey::INDISTINGUISHABLE
@@ -819,6 +959,10 @@ fn cross_type_merge(modifier: &RuleModifier) -> CrossTypeMerge {
         R::InspectionConcealment { .. } => CrossTypeMerge::Add,
         // 追加伤害与幸运敏感度两个字段各自相加，见 `AddAcrossTypes for SneakAttackRule`。
         R::SneakAttack { .. } => CrossTypeMerge::Add,
+        // 额外产出件数：天赋 +1、附魔铁砧 +1，合起来 +2。全程整数加法，
+        // 没有整数除法、没有截断、没有顺序依赖（约束 C5）。写全名的
+        // 理由同 `strength_key` 里那一条：本变体有真实消费者。
+        RuleModifier::CraftYield { .. } => CrossTypeMerge::Add,
         // 以下三个当前没有消费者，见 `CrossTypeMerge::Undecided` 文档。
         R::RerollOnce { .. } | R::Advantage { .. } | R::Disadvantage { .. } => {
             CrossTypeMerge::Undecided
@@ -2122,5 +2266,196 @@ mod tests {
         for damage in [1, 7, 100, 9_999] {
             assert_eq!(damage_after_resistance(damage, 0), damage);
         }
+    }
+
+    // ── 制作产出加成（制作类副职奖励批次）──────────────────────────
+
+    #[test]
+    fn 制作产出加成只对匹配的配方类别生效不对其它类别生效() {
+        // 「一个铁匠不该因为会打铁就烧得一手好菜」——本变体必须按配方
+        // 类别键控那条论证的可执行版本。
+        // Arrange
+        let mut interner = Interner::new();
+        let forging = index(&mut interner, "lostland:forging");
+        let cooking = index(&mut interner, "lostland:cooking");
+        let mastery = index(&mut interner, "lostland:forging_mastery");
+        let entries = vec![entry(
+            mastery,
+            RuleModifier::CraftYield {
+                category: forging,
+                bonus_product_count: 1,
+            },
+        )];
+
+        // Act & Assert
+        assert_eq!(craft_yield_bonus(&entries, forging), 1);
+        assert_eq!(craft_yield_bonus(&entries, cooking), 0);
+    }
+
+    #[test]
+    fn 没有任何制作产出加成时返回零() {
+        // 缺省值就是「按配方声明的件数产出」，`craft_product_count(n, 0)
+        // == n`，因此不带这条天赋的角色与本批次之前逐位相同。
+        // Arrange
+        let mut interner = Interner::new();
+        let forging = index(&mut interner, "lostland:forging");
+
+        // Act & Assert
+        assert_eq!(craft_yield_bonus(&[], forging), 0);
+    }
+
+    #[test]
+    fn 同一加值类型的两条制作产出加成取最强而不是相加() {
+        // 桶内取最强，与抗性同一条规则、同一段代码（`merged_across_types`）。
+        // Arrange
+        let mut interner = Interner::new();
+        let forging = index(&mut interner, "lostland:forging");
+        let enhancement = index(&mut interner, "lostland:enhancement");
+        let anvil = index(&mut interner, "lostland:masterwork_anvil");
+        let hammer = index(&mut interner, "lostland:masterwork_hammer");
+        let entries = vec![
+            typed_entry(
+                anvil,
+                enhancement,
+                RuleModifier::CraftYield {
+                    category: forging,
+                    bonus_product_count: 2,
+                },
+            ),
+            typed_entry(
+                hammer,
+                enhancement,
+                RuleModifier::CraftYield {
+                    category: forging,
+                    bonus_product_count: 1,
+                },
+            ),
+        ];
+
+        // Act & Assert
+        assert_eq!(craft_yield_bonus(&entries, forging), 2);
+    }
+
+    #[test]
+    fn 不同加值类型的制作产出加成相加() {
+        // 跨桶相加：天赋给的 +1 与附魔铁砧给的 +1 合起来 +2。
+        // Arrange
+        let mut interner = Interner::new();
+        let forging = index(&mut interner, "lostland:forging");
+        let innate = index(&mut interner, "lostland:innate");
+        let enhancement = index(&mut interner, "lostland:enhancement");
+        let mastery = index(&mut interner, "lostland:forging_mastery");
+        let anvil = index(&mut interner, "lostland:masterwork_anvil");
+        let entries = vec![
+            typed_entry(
+                mastery,
+                innate,
+                RuleModifier::CraftYield {
+                    category: forging,
+                    bonus_product_count: 1,
+                },
+            ),
+            typed_entry(
+                anvil,
+                enhancement,
+                RuleModifier::CraftYield {
+                    category: forging,
+                    bonus_product_count: 1,
+                },
+            ),
+        ];
+
+        // Act & Assert
+        assert_eq!(craft_yield_bonus(&entries, forging), 2);
+    }
+
+    #[test]
+    fn 制作产出加成的结果与切片顺序无关() {
+        // 约束 C5：两条同类型 + 一条另一类型，正序与逆序必须逐位相同。
+        // Arrange
+        let mut interner = Interner::new();
+        let forging = index(&mut interner, "lostland:forging");
+        let innate = index(&mut interner, "lostland:innate");
+        let enhancement = index(&mut interner, "lostland:enhancement");
+        let a = index(&mut interner, "lostland:a");
+        let b = index(&mut interner, "lostland:b");
+        let c = index(&mut interner, "lostland:c");
+        let make = |origin, kind, bonus| {
+            typed_entry(
+                origin,
+                kind,
+                RuleModifier::CraftYield {
+                    category: forging,
+                    bonus_product_count: bonus,
+                },
+            )
+        };
+        let mut forward = vec![
+            make(a, innate, 1),
+            make(b, enhancement, 3),
+            make(c, enhancement, 2),
+        ];
+
+        // Act
+        let ordered = craft_yield_bonus(&forward, forging);
+        forward.reverse();
+        let reversed = craft_yield_bonus(&forward, forging);
+
+        // Assert
+        assert_eq!(ordered, 4);
+        assert_eq!(ordered, reversed);
+    }
+
+    #[test]
+    fn 负的制作产出加成合法但产出保底一件() {
+        // 项目所有者裁定「允许为负，但产出保底 1 件」——照 `Resistance`
+        // 允许「脆弱」的先例。选择器如实返回负数（它只负责聚合），
+        // 保底落在 `craft_product_count`。
+        // Arrange
+        let mut interner = Interner::new();
+        let forging = index(&mut interner, "lostland:forging");
+        let cursed = index(&mut interner, "lostland:cursed_anvil");
+        let entries = vec![entry(
+            cursed,
+            RuleModifier::CraftYield {
+                category: forging,
+                bonus_product_count: -5,
+            },
+        )];
+
+        // Act
+        let bonus = craft_yield_bonus(&entries, forging);
+
+        // Assert
+        assert_eq!(bonus, -5);
+        assert_eq!(craft_product_count(1, bonus), MINIMUM_CRAFT_PRODUCT_COUNT);
+        assert_eq!(craft_product_count(8, bonus), 3);
+    }
+
+    #[test]
+    fn 制作件数保底恰好是一件而不是零件() {
+        // 「消耗了材料却什么都没拿到」在机制层面不可能发生——
+        // `crafting-system.md` 九节⑤那条玩法裁定的机制化。
+        // Act & Assert
+        assert_eq!(craft_product_count(1, -1), MINIMUM_CRAFT_PRODUCT_COUNT);
+        assert_eq!(
+            craft_product_count(1, i32::MIN),
+            MINIMUM_CRAFT_PRODUCT_COUNT
+        );
+        assert_eq!(MINIMUM_CRAFT_PRODUCT_COUNT, 1);
+    }
+
+    #[test]
+    fn 制作件数在两端极值上都不溢出() {
+        // 声明值与加成都是内容作者填的，注册期不禁止极端值——中间量走
+        // `i64`，两端各钳一次（ADR 0020：全整数，无浮点无除法）。
+        // Act & Assert
+        assert_eq!(craft_product_count(u32::MAX, 1), u32::MAX);
+        assert_eq!(craft_product_count(u32::MAX, i32::MAX), u32::MAX);
+        assert_eq!(
+            craft_product_count(0, i32::MIN),
+            MINIMUM_CRAFT_PRODUCT_COUNT
+        );
+        assert_eq!(craft_product_count(7, 0), 7);
     }
 }

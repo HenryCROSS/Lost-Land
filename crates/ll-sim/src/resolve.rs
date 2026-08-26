@@ -80,8 +80,8 @@ use crate::resource_pool::{
     effective_scalar_capacity, effective_slot_tier_capacity,
 };
 use crate::rule_modifier::{
-    agent_rule_modifiers, damage_after_resistance, inspection_concealment_permille,
-    resistance_damage_reduction, sneak_attack_rule,
+    agent_rule_modifiers, craft_product_count, craft_yield_bonus, damage_after_resistance,
+    inspection_concealment_permille, resistance_damage_reduction, sneak_attack_rule,
 };
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::skill_overview::SkillTreeCatalog;
@@ -1038,7 +1038,17 @@ fn resolve_dispatch(
             items,
         ),
         Intent::ToggleStealth { actor } => resolve_toggle_stealth(world, actor),
-        Intent::Craft { actor, recipe } => resolve_craft(world, actor, recipe, recipes, items),
+        Intent::Craft { actor, recipe } => resolve_craft(
+            world,
+            actor,
+            recipe,
+            recipes,
+            items,
+            race_traits,
+            class_traits,
+            subclass_traits,
+            traits,
+        ),
         Intent::AllocateAttributePoint { actor, attribute } => {
             resolve_allocate_attribute_point(world, actor, attribute)
         }
@@ -2879,10 +2889,47 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 配方里没有这种组合——唯一 `product_count > 1` 的 `iron_rivet_batch`
 /// 产的是可堆叠、无耐久的铁铆钉。
 ///
+/// # 产出加成接线（制作类副职奖励批次）
+///
+/// 第 9 步的件数不是配方声明的 `product_count`，而是它经
+/// [`crate::rule_modifier::craft_yield_bonus`] 加成、再经
+/// [`crate::rule_modifier::craft_product_count`] 保底之后的结果。这是
+/// 四条制作类副职（工匠/裁缝/炼金术士/厨师）「拿到之后给什么」的唯一
+/// 落点，完整设计见 `knowledge/design/crafting-subclass-rewards.md`。
+///
+/// 闭环因此成立：**做够 N 件锻造品 → 得到工匠副职**（第 3 步的闸门与
+/// [`crate::subclass::craft_progress_effects`] 那条既有计数）**→ 此后
+/// 每件锻造品多出一件**。挂钩的动作与被奖励的动作是同一个动作。
+///
+/// ## 加成来自哪四路
+///
+/// 本函数多出的四个 `&dyn` 参数就是为这一步取的，它们**不是新增依赖**
+/// ——`resolve_dispatch` 的参数表里本来就有这一组（`resolve_attack`/
+/// `resolve_inspect` 已经各接一份），本步只是把它们再往下传一层。
+/// [`crate::rule_modifier::agent_rule_modifiers`] 把种族/职业/副职三路
+/// 天赋与**装备**汇成一份候选，因此「大师级铁砧锤」这件装备携带同一条
+/// 修正是白拿的。
+///
+/// ## 对不带这条天赋的行动者逐位不变
+///
+/// 一条也没命中时 `craft_yield_bonus` 返回 `0`，而
+/// `craft_product_count(n, 0) == n`——本步对既有内容与既有存档的可观察
+/// 结果一个字节都没变。
+///
+/// ## 产出恒 ≥ 1
+///
+/// [`crate::rule_modifier::MINIMUM_CRAFT_PRODUCT_COUNT`]。加成允许为负
+/// （「手艺生疏」这类负面天赋，与抗性允许「脆弱」同一条先例），但
+/// 「消耗了材料却什么都没拿到」在机制层面不可能发生——那正是本函数
+/// 「全程静默失败」一节之外、`crafting-system.md` 九节⑤在玩法上否决过
+/// 的「制作失败」。
+///
 /// # 约束核对
 ///
 /// - C3（随机全部来自 `DetRng::for_entity`）：不涉及，本函数全程零
-///   随机。制作失败判定标为将来扩展，见设计文档九节⑤。
+///   随机。产出加成接线**没有引入第一次掷骰**——`craft_yield_bonus`
+///   是一次纯查表聚合，随机流的取数顺序完全不受影响。制作失败判定
+///   标为将来扩展，见设计文档九节⑤。
 /// - C5（逻辑决策不得依赖哈希表迭代顺序）：满足。第 6 步遍历的
 ///   `agent.equipment` 是 `BTreeMap`（有序），第 7/8 步遍历的
 ///   `recipe.ingredients`/`agent.inventory` 都是 `Vec`（保序）。
@@ -2904,12 +2951,17 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 常量。「打一把剑应该比切一块肉久」需要一套可中断的多回合活动机制，
 /// 引擎目前没有，做成「时间轴直接前进 2000」是一个明显错误的中间态，
 /// 见设计文档五节。
+#[allow(clippy::too_many_arguments)]
 fn resolve_craft(
     world: &WorldState,
     actor: EntityId,
     recipe: ContentIndex,
     recipes: &dyn RecipeCatalog,
     items: &dyn ItemCatalog,
+    race_traits: &dyn TraitGrantSource,
+    class_traits: &dyn TraitGrantSource,
+    subclass_traits: &dyn TraitGrantSource,
+    traits: &dyn TraitCatalog,
 ) -> Vec<Effect> {
     // ① 行动者。
     let Some(agent) = world.actors.get(actor) else {
@@ -3001,11 +3053,31 @@ fn resolve_craft(
     // 的成品仍是 `None`），见本函数文档「成品的耐久」一节。
     // 查不到成品定义时按「没有耐久概念」处理，与本函数其余
     // `items.item(...)` 查询同一条「查不到就是查不到」纪律（ADR 0015）。
+    //
+    // 件数不再直接取 `rule.product_count`：制作类副职（工匠/裁缝/炼金
+    // 术士/厨师）的天赋走 `RuleModifier::CraftYield` 在这里加成，见本
+    // 函数文档「产出加成接线」一节。一条也没命中时 `craft_yield_bonus`
+    // 返回 0，`craft_product_count(n, 0) == n`，对不带这条天赋的行动者
+    // 与本批次之前逐位相同。
     let product_max_durability = items.item(rule.product).and_then(|def| def.max_durability);
+    let product_count = craft_product_count(
+        rule.product_count,
+        craft_yield_bonus(
+            &agent_rule_modifiers(
+                agent,
+                race_traits,
+                class_traits,
+                subclass_traits,
+                traits,
+                items,
+            ),
+            rule.category,
+        ),
+    );
     effects.push(merge_into_inventory_effect(
         agent,
         actor,
-        ItemStack::freshly_made(rule.product, rule.product_count, product_max_durability),
+        ItemStack::freshly_made(rule.product, product_count, product_max_durability),
         items,
     ));
 

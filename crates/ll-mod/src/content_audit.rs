@@ -416,23 +416,36 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 6 点减伤覆盖第二条，两条豁免随之摘除。
         ContentTableKind::Item,
         ContentTableKind::Recipe,
+        // 制作类副职奖励批次：mods/lostland/traits.json5（**新文件**，四条
+        // 制作精通）让天赋表在 lostland 命名空间下从此非空，按
+        // DeferredButPopulated 的指引从 deferred 挪进 covered。
+        //
+        // 触发点是一条内容设计裁定，不是内容搬家：此前那条 deferred 的
+        // 阻塞原因是「本体六条副职里四条是制作类，而 SkillEffect 三种形状
+        // 没有一种能表达『会打铁』」——那个定位问错了地方。会打铁是一条
+        // **被动**（当我制作时结算方式不一样），本仓库既有词汇里它叫
+        // RuleModifier，落地成 RuleModifier::CraftYield，完整设计见
+        // knowledge/design/crafting-subclass-rewards.md。
+        //
+        // 这张表**不是全部字段都被本体内容覆盖**，四条字段各挂一条豁免
+        // （granted_skills / stat_modifiers / rule_modifiers::modifier_type /
+        // granted_resource_pools），逐条理由见下面的 exemptions。
+        ContentTableKind::Trait,
     ],
     deferred: &[
         DeferredTable {
-            kind: ContentTableKind::Trait,
-            reason: "本体天赋尚未迁进 mods/lostland/：lostland 命名空间下零条天赋内容，\
-                     TraitTable 在生产装载路径里拿到的全部条目都来自 mods/example_mod/\
-                     ——本体种族与职业当前都不授予任何天赋。迁移完成后本条会被\
-                     DeferredButPopulated 主动顶掉。下面几条『理由同 Trait 一条』指的\
-                     都是这一段。",
-        },
-        DeferredTable {
             kind: ContentTableKind::ResourcePool,
-            reason: "本体资源池尚未迁进 mods/lostland/，理由同 Trait 一条。",
+            reason: "本体资源池尚未迁进 mods/lostland/：lostland 命名空间下零条资源池\
+                     内容，ResourcePoolTable 在生产装载路径里拿到的全部条目都来自\
+                     mods/example_mod/。（这条理由此前写作『理由同 Trait 一条』，而\
+                     Trait 那条已随 mods/lostland/traits.json5 落地挪进 covered，\
+                     因此在这里展开成完整的一句，不留悬空引用。）",
         },
         DeferredTable {
             kind: ContentTableKind::WeaponCategory,
-            reason: "本体武器类别尚未迁进 mods/lostland/，理由同 Trait 一条。",
+            reason: "本体武器类别尚未迁进 mods/lostland/：lostland 命名空间下零条武器\
+                     类别内容，全部条目都来自 mods/example_mod/。理由与来历同上面\
+                     ResourcePool 一条。",
         },
         DeferredTable {
             kind: ContentTableKind::ModifierType,
@@ -456,9 +469,24 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
                      ll_sim 的 effective_traits 真的会读它——只是本体内容用不到。",
         },
         FieldExemption {
-            kind: ContentTableKind::Subclass,
-            field: "SubclassAttrs::traits",
-            reason: "项目所有者裁定「副职……带有技能的」推翻了 subclass-system.md 二节                     「副职不给数值」那条，落地成 SubclassDef::traits 这个字段——**机制这一侧                     已经全部接通**（SubclassTable 的 TraitGrantSource impl、                     ll_sim::traits::agent_trait_sources 的第三路来源、ll_game::content 的                     ResolveCatalogs::subclass_traits 生产接线，端到端证据在                     crates/ll-mod/tests/example_mod_subclass_traits.rs：                     mods/example_mod/subclasses.json5 的影舞者授予 examplemod:shadow_dance,                     真实 resolve 放得出 examplemod:shadow_strike，含「副职来源换成空实现就                     放不出」的反例断言）。**本体这一侧不覆盖，是因为它卡在一条还没做过的内容                     设计裁定上**：lostland 命名空间下**零条天赋内容**（Trait 那条 deferred                     条目就是这件事），而本体六条副职里四条是制作类（工匠/裁缝/炼金术士/厨师），                     SkillEffect 当前只有 deal-damage / temporary-stat-modifier /                     restore-resource 三种形状，**没有任何一种能表达『会打铁』**。给工匠塞一个                     伤害技能只是为了让本条变绿，正是本模块反复拒绝过的『硬塞一条内容』。                     本体要用上这个字段，前置是**项目所有者定下四个制作副职各自该给什么**                     （很可能还要先给 SkillEffect 增开制作向的变体），那是一条独立的内容设计                     裁定，不该由字段覆盖检查代做。与 ClassAttrs::traits / RaceAttrs::traits                     两条同源，但多一层：那两条只是「本体没写」，本条是「本体今天写不出语义                     对的内容」。",
+            kind: ContentTableKind::Trait,
+            field: "TraitAttrs::granted_skills",
+            reason: "本体四条天赋（mods/lostland/traits.json5 的锻造/缝纫/炼金/烹饪精通）                     一条技能都不授予，**而这正是本批次的核心结论**：制作类副职要的东西                     不是一个主动技能。SkillEffect 的消费者是 resolve_use_skill、入口是                     Intent::UseSkill——玩家得先主动施放一次『打铁精通』才能去打铁，那不是                     被动；SkillRule 还强制携带冷却时间与资源消耗。给工匠塞一个技能只为了                     让本条变绿，正是本模块反复拒绝过的『硬塞一条内容』，完整论证见                      knowledge/design/crafting-subclass-rewards.md 二节。字段本身不是死的：                     mods/example_mod/traits.json5 的 examplemod:draconic_breath 授予                     examplemod:breath_weapon，ll_sim::traits::granted_skills 真的会读它,                     端到端证据在 crates/ll-mod/tests/example_mod_subclass_traits.rs。                     解除条件：本体真的需要一条主动技能形状的天赋（例如给剑舞者/学徒                     配奖励时），那是一条独立的内容设计裁定。",
+        },
+        FieldExemption {
+            kind: ContentTableKind::Trait,
+            field: "TraitAttrs::stat_modifiers",
+            reason: "本体四条天赋一条主属性修正都不写。给制作副职配一条 +1 力量正是项目                     所有者说的『还是只是一个数字』，而且**跨轴**——用主属性奖励制作行为,                     与用伤害技能奖励制作行为是同一类错误的轻量版（设计文档六节⑧）。                     字段本身不是死的：mods/example_mod/traits.json5 有真实用例，                     ll_sim::traits 的属性汇总真的会读它。解除条件同 granted_skills 一条。",
+        },
+        FieldExemption {
+            kind: ContentTableKind::Trait,
+            field: "TraitAttrs::rule_modifiers::modifier_type",
+            reason: "本体四条制作精通**刻意不声明加值类型**——不声明即落进那个共享的                     『未分类桶』，桶内取最强，行为与加值类型这套机制落地之前逐位相同                     （见 ll_sim::rule_modifier 模块文档「加值类型」一节）。理由与                     ItemAttrs::rule_modifiers::modifier_type 那条**同源且更强**：四条                     精通各指一个不同的配方类别，**永远不会有两条同时命中同一次制作**,                     因此连『该叠加还是取最强』这个问题都不会被问到——此时往                     modifier_types.json5 里塞一份名册，写的是一份没有任何两条内容会去                     比较的分类。解除条件与那一条相同：本体真的有两条来源不同、需要区分                     叠不叠加的规则修正。字段本身不是死的：mods/example_mod/traits.json5                     的 acid_hide 声明 examplemod:innate，与护符的 examplemod:enhancement                     分属两桶、减伤点数因此相加，端到端证据在                     crates/ll-mod/tests/example_mod_resistance.rs。",
+        },
+        FieldExemption {
+            kind: ContentTableKind::Trait,
+            field: "TraitAttrs::granted_resource_pools",
+            reason: "本体四条天赋一个资源池都不授予——本体至今**零条资源池内容**                     （ContentTableKind::ResourcePool 那条 deferred 就是这件事），                     一条指向空表的授予写不出来。这条豁免因此不是内容决定，是那条                     deferred 的直接后果：本体资源池迁进 mods/lostland/ 的那一批                     应当连同本条一起重新评估。字段本身不是死的：                     mods/example_mod/traits.json5 的 innate_sorcery/arcane_casting                     两条各有 fixed 与 by-level 的真实用例。",
         },
         FieldExemption {
             kind: ContentTableKind::Race,
@@ -1598,6 +1626,18 @@ fn inspect_trait(auditor: &mut Auditor<'_>, index: ContentIndex) {
                 "TraitAttrs::rule_modifiers::Resistance::damage_category",
                 *damage_category,
                 ReferenceExpectation::Table(ContentTableKind::DamageCategory),
+            );
+        }
+        // 制作类副职奖励批次：与上面那条 `Resistance::damage_category`
+        // 同一个形状、同一个理由——变体自己携带的 `ContentIndex` 也要
+        // 校验它真的指向该指的那张表。装载期的 `required_id` 只保证
+        // 「这个 id 注册过」，保证不了「它是一个**配方类别**」（同一个
+        // 号段里还有物品、天赋、技能）。
+        if let RuleModifier::CraftYield { category, .. } = &typed.modifier {
+            auditor.reference(
+                "TraitAttrs::rule_modifiers::CraftYield::category",
+                *category,
+                ReferenceExpectation::Table(ContentTableKind::RecipeCategory),
             );
         }
     }
