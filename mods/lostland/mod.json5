@@ -40,8 +40,9 @@
   //   classes.json5           职业四条
   //   skills.json5            技能五条
   //   quests.json5            任务四条
-  //   crafting.json5          配方类别四条 + 配方九条
-  //   subclasses.json5        副职六条
+  //   crafting.json5          配方类别五条 + 配方九条
+  //   subclasses.json5        副职六条（四条制作类各授予一条精通天赋）
+  //   traits.json5            天赋四条（制作精通，对应四条制作副职）
   //   tags.json5              标签三条
   //   items.json5             物品二十九条
   //   damage_formulas.json5   伤害公式一条

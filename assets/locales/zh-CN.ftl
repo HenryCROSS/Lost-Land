@@ -11,6 +11,7 @@
 #   - race-*-display_name                 ll-mod RaceAttrs::display_name_key（本体三个种族）
 #   - class-*-display_name                ll-mod ClassAttrs::display_name_key（本体三个职业）
 #   - subclass-*-display_name             ll-mod SubclassAttrs::display_name_key（本体两个转职）
+#   - trait-*-display_name                ll-mod TraitAttrs::display_name_key（本体四条制作精通）
 #   - recipe_category-*-display_name       ll-mod RecipeCategoryDef::display_name_key（本体五个配方类别）
 #   - item-*-display_name                 ll-mod ItemAttrs::display_name_key（本体二十四件物品）
 #   - recipe-*-display_name               ll-mod RecipeAttrs::display_name_key（本体九条配方）
@@ -54,6 +55,13 @@ recipe_category-advanced_forging-display_name = 进阶锻造
 recipe_category-tailoring-display_name = 缝纫
 recipe_category-alchemy-display_name = 炼金
 recipe_category-cooking-display_name = 烹饪
+
+# 本体天赋（mods/lostland/traits.json5，四条制作精通）——
+# ll-mod TraitAttrs::display_name_key。
+trait-forging_mastery-display_name = 锻造精通
+trait-tailoring_mastery-display_name = 缝纫精通
+trait-alchemy_mastery-display_name = 炼金精通
+trait-cooking_mastery-display_name = 烹饪精通
 
 # 本体物品（mods/lostland/items.json5，二十九条）——
 # ll-mod ItemAttrs::display_name_key。

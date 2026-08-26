@@ -531,7 +531,38 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 的 `SubclassAttrs::traits` 花名册观察与跨表引用检查，以及版本 7 那次
 /// 事故之后立下的那条纪律——**提交信息声称改了，不等于代码里真的
 /// 改了**，本行的字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 18;
+///
+/// ---
+///
+/// 版本 19（制作类副职奖励批次）：**一个被哈希的封闭枚举新增一个变体**
+/// ——[`ll_sim::rule_modifier::RuleModifier::CraftYield`]，
+/// [`write_rule_modifier`] 因此多一条判别值 `7` 的分支（配方类别解析回
+/// 完整 `NamespacedId` 字符串 + 额外产出件数）。
+///
+/// 与此前每一次「新增列」的版本推进**不同**，这一次的量尺变化是
+/// **局部的**：既有七个变体的编码一个字节都没动（判别值 0..=6 原样
+/// 保留，这是本模块「判别值接着既有档往后编号」那条纪律的收益），因此
+/// 只有**真的声明了这条新修正**的天赋/物品条目摘要会变，既有内容的
+/// 逐条摘要全部不变。
+///
+/// **那为什么还要动版本号**：ADR 0022/0027 的义务不是「摘要变了才动」,
+/// 是「**哈希输入的量尺变了就得动**」。判别值 `7` 从此有了含义，一份
+/// 老引擎与一份新引擎对同一条内容能算出不同的结果（老引擎根本解析不出
+/// 这条修正），版本号正是用来让这种差异**当场可见**而不是伪装成内容
+/// 变更。此外本批次同时新增了 `mods/lostland/traits.json5`（四条制作
+/// 精通天赋）并给四条本体副职各挂一条 `traits`——那是**内容变更**，
+/// 走内容哈希本身，与本版本号是两件事。
+///
+/// `ContentTableKind` 的二十一个变体一个未变、[`ContentValueTables`] 的
+/// 字段一个未加，因此 `check_content_hash_gate_cross_coverage` 那条互校
+/// 在本批次同样无事可做（它只守「新增了表」）。
+///
+/// 守门方式同版本 13/14/15/18：本段文字 + 本模块单元测试
+/// `制作产出加成的摘要与其余变体都不同` 与
+/// `制作产出加成件数不同则摘要不同`，以及版本 7 那次事故之后立下的
+/// 那条纪律——**提交信息声称改了，不等于代码里真的改了**，本行的
+/// 字面值就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 19;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1354,6 +1385,19 @@ fn write_rule_modifier(hasher: &mut StateHasher, modifier: &RuleModifier, regist
         RuleModifier::InspectionConcealment { conceal_permille } => {
             hasher.write_u64(6);
             hasher.write_i64(i64::from(*conceal_permille));
+        }
+        // 判别值 7（制作类副职奖励批次）：接着既有的 0..=6 往后编号,
+        // 不打乱任何已经写死的判别值。`category` 指向配方类别表,
+        // 与 `Resistance.damage_category` 同一条处理——解析回完整
+        // `NamespacedId` 字符串再混入，不混 `ContentIndex` 数值本身
+        // （ADR 0027 + 本模块「`ContentIndex` 字段」一节）。
+        RuleModifier::CraftYield {
+            category,
+            bonus_product_count,
+        } => {
+            hasher.write_u64(7);
+            write_optional_resolved(hasher, Some(*category), registry);
+            hasher.write_i64(i64::from(*bonus_product_count));
         }
     }
 }
@@ -2978,6 +3022,80 @@ mod tests {
         assert_ne!(concealment, reroll);
         assert_ne!(suspicion, sneak);
         assert_ne!(concealment, sneak);
+    }
+
+    /// 制作类副职奖励批次：新变体 `CraftYield` 混入的判别值 `7` 与既有
+    /// 七个变体互不相同——`CONTENT_HASH_ALGORITHM_VERSION` 文档「版本 19」
+    /// 一节点名的两条守门断言之一。
+    ///
+    /// 若有人把 `hasher.write_u64(7)` 写成既有的 `0..=6` 之一，本测试
+    /// 立刻变红。
+    #[test]
+    fn 制作产出加成的摘要与其余变体都不同() {
+        // Arrange：同一个数值、同一个 `ContentIndex` 喂给带索引的两个
+        // 变体，摘要仍必须不同——差别只可能来自判别值本身。
+        let registry = Registry::new();
+        let digest = |modifier: &RuleModifier| -> u64 {
+            let mut hasher = StateHasher::new();
+            write_rule_modifier(&mut hasher, modifier, &registry);
+            hasher.finish()
+        };
+        let category = ContentIndex::default();
+
+        // Act
+        let craft_yield = digest(&RuleModifier::CraftYield {
+            category,
+            bonus_product_count: 4,
+        });
+        let others = [
+            digest(&RuleModifier::Resistance {
+                damage_category: category,
+                damage_reduction: 4,
+            }),
+            digest(&RuleModifier::RerollOnce { value: 4 }),
+            digest(&RuleModifier::SneakAttack {
+                luck_chance_permille_per_point: 4,
+                extra_damage: 4,
+            }),
+            digest(&RuleModifier::InspectionSuspicion {
+                suspicion_reduction_permille: 4,
+            }),
+            digest(&RuleModifier::InspectionConcealment {
+                conceal_permille: 4,
+            }),
+        ];
+
+        // Assert
+        for other in others {
+            assert_ne!(craft_yield, other);
+        }
+    }
+
+    /// 制作类副职奖励批次的第二条守门断言：`bonus_product_count` 真的
+    /// 进了摘要，不是只混了判别值与配方类别。**负值与正值也必须可分**
+    /// ——本字段刻意允许为负（「手艺生疏」），若哪天有人在这里写
+    /// `unsigned_abs()` 之类，本条会变红。
+    #[test]
+    fn 制作产出加成件数不同则摘要不同() {
+        // Arrange
+        let registry = Registry::new();
+        let digest = |bonus: i32| -> u64 {
+            let mut hasher = StateHasher::new();
+            write_rule_modifier(
+                &mut hasher,
+                &RuleModifier::CraftYield {
+                    category: ContentIndex::default(),
+                    bonus_product_count: bonus,
+                },
+                &registry,
+            );
+            hasher.finish()
+        };
+
+        // Act & Assert
+        assert_ne!(digest(1), digest(2));
+        assert_ne!(digest(1), digest(-1));
+        assert_ne!(digest(0), digest(1));
     }
 
     /// 同一个变体、不同的数值，摘要必须不同——证明新变体混入的不只是

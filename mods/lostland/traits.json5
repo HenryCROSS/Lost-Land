@@ -1,0 +1,114 @@
+// 本体天赋内容：四条制作精通，四条制作类副职各一条。
+//
+// # 这个文件为什么直到今天才存在
+//
+// lostland 命名空间下此前**零条天赋内容**（crates/ll-mod/src/content_audit.rs
+// 的 ContentTableKind::Trait deferred 条目记的就是这件事）。开这个头的
+// 触发点是一条内容设计裁定，不是机制补齐：subclasses.json5 文件头此前
+// 写着「**没有语义对的技能可给**」——本体六条副职里四条是制作类，而
+// SkillEffect 只有 deal-damage / temporary-stat-modifier / restore-resource
+// 三种形状，没有任何一种能表达「会打铁」。
+//
+// **那条阻塞报告问错了地方**：「会打铁」不是玩家按下去会发生什么的
+// 动作（玩家已经有 Intent::Craft 了），是「当我制作时，结算方式不一样」
+// ——一条**被动**，本仓库既有词汇里它叫 RuleModifier。完整论证见
+// knowledge/design/crafting-subclass-rewards.md 二节。
+//
+// # 四条天赋各自长什么样
+//
+// 一条修正、一个配方类别、一个件数（工匠那条两个类别，见该条注释）。
+// **同构是刻意的**：
+// 四条副职的差异全部在「**能做什么**」（配方类别的 required_subclasses
+// 闸门 + 各自的配方），不在「奖励是什么」。把差异塞进奖励反而会掩盖
+// 一件更重要的事——副职的价值主要来自它开的门，不是它给的数。
+// 四条各配一条不同的奖励意味着四个新 RuleModifier 变体，那是 YAGNI
+// 明令禁止的「顺手设计整套副职奖励框架」（设计文档六节⑩）。
+//
+// # bonus_product_count 为什么四条都是 1
+//
+// **这是占位数值**，与 subclasses.json5 里那四个阈值（20/20/15/15）
+// 同一性质：没有任何数据支撑，是纯内容参数，改它一行 Rust 都不用动。
+// 项目所有者已裁定「四条副职的数值先随便定一个能用的，以后再调」。
+//
+// 量级为什么取 1 而不是更大：本体九条配方里八条的 product_count 是 1，
+// +1 因此就是**产能翻倍**——同样的材料、同样的时间，出货量 ×2。这是
+// 玩家在背包里、在钱包里立刻能数出来的差别，不是面板上多一行字。
+// 再大就越过「翻倍」这个天然的量级台阶了。
+//
+// # 为什么不声明 modifier_type
+//
+// 不声明即落进那个共享的「未分类桶」，桶内取最强，行为与加值类型这套
+// 机制落地之前逐位相同（见 ll_sim::rule_modifier 模块文档「加值类型」
+// 一节）。本体至今没有 modifier_types.json5，理由记在 content_audit.rs
+// 的 ContentTableKind::ModifierType deferred 条目里：**一条修正凑不出
+// 一套分类学**。四条制作精通互不重叠（各指一个类别，永远不会有两条
+// 同时命中同一次制作），因此它们同样没有给出「本体需要一份加值类型
+// 名册」的理由——解除条件仍然是那一条：本体真的有两条来源不同、需要
+// 区分叠不叠加的规则修正。
+//
+// # 负数是合法的，只是本体没用
+//
+// bonus_product_count 允许为负（「手艺生疏」「诅咒的铁砧」这类负面
+// 天赋），与 Resistance 的 damage_reduction 允许负值表示「脆弱」是
+// 同一条先例。产出保底 1 件由结算侧的
+// ll_sim::rule_modifier::MINIMUM_CRAFT_PRODUCT_COUNT 兜住——「消耗了
+// 材料却什么都没拿到」在机制层面不可能发生，那正是 crafting-system.md
+// 九节⑤在玩法上否决过的「制作失败」。
+//
+// # 装载顺序
+//
+// 本文件依赖 crafting.json5 先装载（recipe_category **只 get 不
+// intern**，拼错当场报错）。这条顺序由 ll_mod::content_data 的
+// CONTENT_FILES 常量保证——Crafting 排在 Traits 之前，内容作者写不错
+// 也改不动。
+//
+// schema 见 crates/ll-mod/src/content_schema_gear.rs 的 RawTrait /
+// RawRuleModifier。
+{
+  traits: [
+    // 工匠：锻造金属装备与工具。
+    //
+    // **四条里唯一带两条修正的一条**，因为本体的锻造分成两个类别：
+    // lostland:forging（人人可做，工匠正是从这里练出来的）与
+    // lostland:advanced_forging（**要工匠副职才进得来**）。一条 CraftYield
+    // 只键控一个类别（见 RuleModifier::CraftYield 文档「为什么必须按
+    // 配方类别键控」），只写 forging 会得到一个荒唐的结果——大师铁匠在
+    // 自己的专属那一档反而没有加成。两条各指一个类别，永远不会同时命中
+    // 同一次制作，因此也不涉及任何合并。
+    {
+      id: "lostland:forging_mastery",
+      display_name_key: "lostland:trait.forging_mastery.display_name",
+      rule_modifiers: [
+        { kind: "craft-yield", recipe_category: "lostland:forging", bonus_product_count: 1 },
+        { kind: "craft-yield", recipe_category: "lostland:advanced_forging", bonus_product_count: 1 },
+      ],
+    },
+
+    // 裁缝：缝制衣物与织物。
+    {
+      id: "lostland:tailoring_mastery",
+      display_name_key: "lostland:trait.tailoring_mastery.display_name",
+      rule_modifiers: [
+        { kind: "craft-yield", recipe_category: "lostland:tailoring", bonus_product_count: 1 },
+      ],
+    },
+
+    // 炼金术士：调配药剂与试剂。
+    {
+      id: "lostland:alchemy_mastery",
+      display_name_key: "lostland:trait.alchemy_mastery.display_name",
+      rule_modifiers: [
+        { kind: "craft-yield", recipe_category: "lostland:alchemy", bonus_product_count: 1 },
+      ],
+    },
+
+    // 厨师：烹饪食物。
+    {
+      id: "lostland:cooking_mastery",
+      display_name_key: "lostland:trait.cooking_mastery.display_name",
+      rule_modifiers: [
+        { kind: "craft-yield", recipe_category: "lostland:cooking", bonus_product_count: 1 },
+      ],
+    },
+  ],
+}

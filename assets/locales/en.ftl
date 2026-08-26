@@ -46,6 +46,13 @@ recipe_category-tailoring-display_name = Tailoring
 recipe_category-alchemy-display_name = Alchemy
 recipe_category-cooking-display_name = Cooking
 
+# Base traits (mods/lostland/traits.json5, four crafting masteries) --
+# ll-mod TraitAttrs::display_name_key.
+trait-forging_mastery-display_name = Forging Mastery
+trait-tailoring_mastery-display_name = Tailoring Mastery
+trait-alchemy_mastery-display_name = Alchemy Mastery
+trait-cooking_mastery-display_name = Cooking Mastery
+
 # Base-game items (mods/lostland/items.json5, twenty-nine entries) —
 # ll-mod ItemAttrs::display_name_key.
 item-iron_ingot-display_name = Iron Ingot

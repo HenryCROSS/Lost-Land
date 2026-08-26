@@ -424,7 +424,7 @@ pub struct RawPoolLevel {
 #[serde(deny_unknown_fields)]
 pub struct RawRuleModifier {
     /// `"resistance"` / `"sneak-attack"` / `"inspection-suspicion"` /
-    /// `"inspection-concealment"`。
+    /// `"inspection-concealment"` / `"craft-yield"`。
     pub kind: String,
     /// 这条修正属于哪个**加值类型**，**必须已注册**
     /// （`modifier_types.json5`）。整条缺席 = 不声明类型，落进那个
@@ -456,6 +456,18 @@ pub struct RawRuleModifier {
     /// `sneak-attack` 的额外伤害。
     #[serde(default)]
     pub extra_damage: Option<i64>,
+    /// `craft-yield` 指向的**配方类别**，**必须已注册**
+    /// （`crafting.json5` 的 `recipe_categories`；`CONTENT_FILES` 把
+    /// `Crafting` 排在 `Traits` 之前，因此这里只 get 不 intern，拼错
+    /// 当场报错）。
+    #[serde(default)]
+    pub recipe_category: Option<String>,
+    /// `craft-yield` 每次成功制作额外产出的件数。**可为负**（「手艺
+    /// 生疏」这类负面天赋），与 `damage_reduction` 允许负值表示「脆弱」
+    /// 是同一条先例，因此**不钳到零**；产出保底在结算侧
+    /// （[`ll_sim::rule_modifier::MINIMUM_CRAFT_PRODUCT_COUNT`]）。
+    #[serde(default)]
+    pub bonus_product_count: Option<i64>,
 }
 
 impl RawRuleModifier {
@@ -509,6 +521,8 @@ impl RawRuleModifier {
                     "luck_chance_permille_per_point",
                 )?;
                 reject(self.extra_damage.is_some(), "extra_damage")?;
+                reject(self.recipe_category.is_some(), "recipe_category")?;
+                reject(self.bonus_product_count.is_some(), "bonus_product_count")?;
                 let raw = self.damage_category.as_deref().ok_or_else(|| {
                     format!(
                         "规则修正 kind {:?} 缺少必填字段 \"damage_category\"",
@@ -534,6 +548,8 @@ impl RawRuleModifier {
                     "suspicion_reduction_permille",
                 )?;
                 reject(self.conceal_permille.is_some(), "conceal_permille")?;
+                reject(self.recipe_category.is_some(), "recipe_category")?;
+                reject(self.bonus_product_count.is_some(), "bonus_product_count")?;
                 Ok(RuleModifier::SneakAttack {
                     luck_chance_permille_per_point: need(
                         self.luck_chance_permille_per_point,
@@ -552,6 +568,8 @@ impl RawRuleModifier {
                     "luck_chance_permille_per_point",
                 )?;
                 reject(self.extra_damage.is_some(), "extra_damage")?;
+                reject(self.recipe_category.is_some(), "recipe_category")?;
+                reject(self.bonus_product_count.is_some(), "bonus_product_count")?;
                 Ok(RuleModifier::InspectionSuspicion {
                     suspicion_reduction_permille: need(
                         self.suspicion_reduction_permille,
@@ -572,14 +590,53 @@ impl RawRuleModifier {
                     "luck_chance_permille_per_point",
                 )?;
                 reject(self.extra_damage.is_some(), "extra_damage")?;
+                reject(self.recipe_category.is_some(), "recipe_category")?;
+                reject(self.bonus_product_count.is_some(), "bonus_product_count")?;
                 Ok(RuleModifier::InspectionConcealment {
                     conceal_permille: need(self.conceal_permille, "conceal_permille")?
                         .clamp(0, 1000) as i32,
                 })
             }
+            // 制作产出加成（制作类副职奖励批次）。三个具名字段、零位置
+            // 参数，与上面四条同形——mod 作者要学的新概念只有一个 kind
+            // 取值。`recipe_category` 走 `required_id`「只 get 不 intern，
+            // 拼错当场报错」，与同一位作者在 subclasses.json5 里写
+            // `unlock.target` 时已经要写的**是同一个 id、同一套报错**,
+            // 不是第二样要学的东西。
+            "craft-yield" => {
+                reject(self.damage_category.is_some(), "damage_category")?;
+                reject(self.damage_reduction.is_some(), "damage_reduction")?;
+                reject(
+                    self.suspicion_reduction_permille.is_some(),
+                    "suspicion_reduction_permille",
+                )?;
+                reject(self.conceal_permille.is_some(), "conceal_permille")?;
+                reject(
+                    self.luck_chance_permille_per_point.is_some(),
+                    "luck_chance_permille_per_point",
+                )?;
+                reject(self.extra_damage.is_some(), "extra_damage")?;
+                let raw = self.recipe_category.as_deref().ok_or_else(|| {
+                    format!(
+                        "规则修正 kind {:?} 缺少必填字段 \"recipe_category\"",
+                        self.kind
+                    )
+                })?;
+                Ok(RuleModifier::CraftYield {
+                    category: required_id(registry, raw, "配方类别")?,
+                    // 不钳到零：负值是「手艺生疏」，与
+                    // `RuleModifier::Resistance` 的「负值 = 脆弱」同一条
+                    // 先例。产出保底在结算侧，见
+                    // `ll_sim::rule_modifier::MINIMUM_CRAFT_PRODUCT_COUNT`。
+                    bonus_product_count: clamp_to_i32(need(
+                        self.bonus_product_count,
+                        "bonus_product_count",
+                    )?),
+                })
+            }
             other => Err(format!(
                 "未知的规则修正 kind {other:?}（只认 resistance/sneak-attack/\
-                 inspection-suspicion/inspection-concealment）"
+                 inspection-suspicion/inspection-concealment/craft-yield）"
             )),
         }
     }
@@ -1499,6 +1556,8 @@ mod tests {
             conceal_permille: None,
             luck_chance_permille_per_point: None,
             extra_damage: None,
+            recipe_category: None,
+            bonus_product_count: None,
         }
     }
 
@@ -1607,5 +1666,136 @@ mod tests {
 
         // Assert
         assert_eq!(resolved.modifier_type, None);
+    }
+
+    // ── craft-yield（制作类副职奖励批次）───────────────────────────
+
+    #[test]
+    fn 制作产出加成解析出配方类别与件数() {
+        // Arrange：配方类别先注册（CONTENT_FILES 保证 Crafting 排在
+        // Traits 之前，因此这里只 get 不 intern 是安全的）。
+        let mut registry = Registry::new();
+        let forging = registry.intern(parse_id("m:forging", "配方类别").unwrap());
+        let modifier = RawRuleModifier {
+            recipe_category: Some("m:forging".to_string()),
+            bonus_product_count: Some(1),
+            ..bare_modifier("craft-yield")
+        };
+
+        // Act
+        let resolved = modifier.resolve(&registry).expect("合法声明");
+
+        // Assert
+        assert_eq!(
+            resolved,
+            RuleModifier::CraftYield {
+                category: forging,
+                bonus_product_count: 1,
+            }
+        );
+    }
+
+    #[test]
+    fn 制作产出加成允许为负不被钳到零() {
+        // 项目所有者裁定「允许为负，做成负面天赋」——照 `Resistance`
+        // 允许「脆弱」的先例。保底在结算侧
+        // （`ll_sim::rule_modifier::MINIMUM_CRAFT_PRODUCT_COUNT`），
+        // 不在这里，若哪天有人在解析层补一个 `.max(0)`，本条会变红。
+        // Arrange
+        let mut registry = Registry::new();
+        registry.intern(parse_id("m:forging", "配方类别").unwrap());
+        let modifier = RawRuleModifier {
+            recipe_category: Some("m:forging".to_string()),
+            bonus_product_count: Some(-2),
+            ..bare_modifier("craft-yield")
+        };
+
+        // Act
+        let resolved = modifier.resolve(&registry).expect("负值同样合法");
+
+        // Assert
+        assert!(matches!(
+            resolved,
+            RuleModifier::CraftYield {
+                bonus_product_count: -2,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn 制作产出加成引用未注册的配方类别当场报错() {
+        // 「只 get 不 intern，拼错当场报错」——与 subclasses.json5 的
+        // unlock.target 同一套报错，不是第二样要学的东西。
+        // Arrange：类别 id 连 intern 都没有过。
+        let modifier = RawRuleModifier {
+            recipe_category: Some("m:frging".to_string()),
+            bonus_product_count: Some(1),
+            ..bare_modifier("craft-yield")
+        };
+
+        // Act
+        let result = modifier.resolve(&Registry::new());
+
+        // Assert
+        assert!(result.is_err_and(|err| err.contains("配方类别")));
+    }
+
+    #[test]
+    fn 制作产出加成填了与kind不搭的字段报错() {
+        // Arrange：制作加成却填了伤害类别。
+        let mut registry = Registry::new();
+        registry.intern(parse_id("m:forging", "配方类别").unwrap());
+        let modifier = RawRuleModifier {
+            recipe_category: Some("m:forging".to_string()),
+            bonus_product_count: Some(1),
+            damage_category: Some("m:acid".to_string()),
+            ..bare_modifier("craft-yield")
+        };
+
+        // Act
+        let result = modifier.resolve(&registry);
+
+        // Assert
+        assert!(result.is_err_and(|err| err.contains("damage_category")));
+    }
+
+    #[test]
+    fn 其余四个kind都不接受制作产出加成的两个字段() {
+        // 上一条的对偶：新增字段必须被既有四个分支逐条拒掉，否则
+        // 「填了但没生效」会静默通过——这正是每个分支先 reject 再取值
+        // 那套写法要防的东西。
+        // Arrange
+        let mut registry = Registry::new();
+        registry.intern(parse_id("m:acid", "伤害类别").unwrap());
+
+        // Act & Assert
+        for kind in [
+            "resistance",
+            "sneak-attack",
+            "inspection-suspicion",
+            "inspection-concealment",
+        ] {
+            let modifier = RawRuleModifier {
+                recipe_category: Some("m:forging".to_string()),
+                ..bare_modifier(kind)
+            };
+            assert!(
+                modifier
+                    .resolve(&registry)
+                    .is_err_and(|err| err.contains("recipe_category")),
+                "{kind} 必须拒绝 recipe_category"
+            );
+            let modifier = RawRuleModifier {
+                bonus_product_count: Some(1),
+                ..bare_modifier(kind)
+            };
+            assert!(
+                modifier
+                    .resolve(&registry)
+                    .is_err_and(|err| err.contains("bonus_product_count")),
+                "{kind} 必须拒绝 bonus_product_count"
+            );
+        }
     }
 }
