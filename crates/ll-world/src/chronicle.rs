@@ -92,7 +92,7 @@ use crate::noise::TileableNoise;
 use crate::resource::{
     ResourceContext, ResourceKind, ResourceSurvey, ResourceTable, survey_resources,
 };
-use crate::settlement::{MAX_BUILDINGS, SettlementSite, SettlementStatus};
+use crate::settlement::{MAX_BUILDINGS, SITE_RESOURCE_SLOTS, SettlementSite, SettlementStatus};
 use crate::space::ZoneCoord;
 use crate::terrain::{BaseTerrainIds, TerrainTable};
 use crate::zone::ZoneLayout;
@@ -1043,6 +1043,47 @@ impl EpochRun {
         best.map(|(kind, _)| kind)
     }
 
+    /// 这处候选点最突出的那几种资源——[`SettlementSite::resource_profile`]
+    /// 的产地，见该字段文档「为什么是『点数 × 吸引力』而不是纯点数」。
+    ///
+    /// 排序键是 `资源点数 × ResourceAttrs::settlement_draw`（与
+    /// [`Self::resource_draw_bonus`] 逐项相同的那个乘积，只是这里不求和
+    /// 而是排名）。并列时取 [`ResourceTable::registered`] 顺序最先的
+    /// （`>` 而非 `>=`，与 [`Self::dominant_exhaustible`] 同一条不依赖
+    /// 任何迭代顺序的写法，约束 C5）；`counts()` 本身就按注册顺序排列，
+    /// 因此整个函数不含任何哈希容器。
+    ///
+    /// 乘积为 0 的资源**不入榜**：`settlement_draw` 为 0 的资源等于
+    /// 「有它跟没它一样」，把它排进画像只会让下游误以为这地方靠它吃饭。
+    fn resource_profile(&self, index: usize) -> [Option<ResourceKind>; SITE_RESOURCE_SLOTS] {
+        let mut top: [Option<(ResourceKind, u32)>; SITE_RESOURCE_SLOTS] =
+            [None; SITE_RESOURCE_SLOTS];
+        for count in self.candidates[index].survey.counts() {
+            let score = count
+                .nodes
+                .saturating_mul(self.resources.settlement_draw(count.kind));
+            if score == 0 {
+                continue;
+            }
+            // 插入排序：名次只有两三个，插入排序比排一整个 Vec 更直白，
+            // 也不需要额外分配。
+            let mut carried = Some((count.kind, score));
+            for slot in top.iter_mut() {
+                let Some(entry) = carried else {
+                    break;
+                };
+                match *slot {
+                    Some((_, held)) if held >= entry.1 => {}
+                    _ => {
+                        carried = *slot;
+                        *slot = Some(entry);
+                    }
+                }
+            }
+        }
+        top.map(|entry| entry.map(|(kind, _)| kind))
+    }
+
     /// 逐纪元推演。每个纪元内部按候选点光栅序处理，纪元末尾重算两项
     /// 跨据点聚合量（世界总人口、首邑）供**下一个**纪元使用——聚合在
     /// 纪元边界上计算，本纪元内部读到的恒是上一纪元的定局，因此处理
@@ -1410,6 +1451,7 @@ impl EpochRun {
                     peak_population: state.peak_population,
                     building_count: (1 + state.population / RESIDENTS_PER_BUILDING)
                         .min(MAX_BUILDINGS),
+                    resource_profile: self.resource_profile(index),
                 });
             } else if let Some(ruin) = state.last_ruin {
                 sites.push(SettlementSite {
@@ -1423,6 +1465,10 @@ impl EpochRun {
                     peak_population: ruin.peak_population,
                     building_count: (ruin.peak_population / PEAK_RESIDENTS_PER_RUIN_BUILDING)
                         .clamp(1, MAX_BUILDINGS),
+                    // 废墟照样带画像：它记录的是**这片地上有什么**，与
+                    // 「还有没有人住」无关。将来的废墟叙事（这里曾经是
+                    // 一座矿城）要的正是这一条。
+                    resource_profile: self.resource_profile(index),
                 });
             }
         }

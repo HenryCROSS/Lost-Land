@@ -165,6 +165,7 @@ pub mod recipe;
 pub mod recipe_category;
 pub mod registry;
 pub mod resource_pool;
+pub mod roster;
 pub mod skill;
 pub mod subclass;
 /// 标签定义表（耐久标签批次）。

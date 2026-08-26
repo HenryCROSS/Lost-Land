@@ -301,6 +301,22 @@ impl SurfaceStore {
         self.chronicle.as_deref()
     }
 
+    /// 当前装着的世界编年史的一份**共享句柄**（`Arc` 克隆），未装则为
+    /// `None`。
+    ///
+    /// # 为什么与 [`Self::chronicle`] 并存，不是重复
+    ///
+    /// [`Self::chronicle`] 返回的引用借着 `self`，因而借着整个
+    /// `WorldState::terrain`——想在读编年史的同时改 `WorldState::actors`
+    /// （NPC 物化路径要做的正是这件事）就会撞上借用检查器。克隆一个
+    /// `Arc` 是一次引用计数递增，编年史本身不复制，代价可忽略。
+    ///
+    /// 两个方法各自服务一种访问模式：只读查询（传说浏览）用前者，需要
+    /// 同时改世界的用后者。
+    pub fn chronicle_handle(&self) -> Option<Arc<WorldChronicle>> {
+        self.chronicle.clone()
+    }
+
     /// 本存储使用的区块布局。
     pub fn layout(&self) -> &ZoneLayout {
         &self.layout

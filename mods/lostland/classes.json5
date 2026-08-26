@@ -1,4 +1,5 @@
-// 本体职业内容：四条——战士 / 法师 / 游侠 / 卫兵。
+// 本体职业内容：十条——四条冒险者职业（战士 / 法师 / 游侠 / 卫兵）
+// 加六条**据点职业**（据点管理者 / 民兵 / 农夫 / 猎户 / 屠夫 / 铁匠）。
 //
 // 搬家来历见 races.json5 文件头「这份内容搬过两次家」一节，四条职业与
 // 三个种族是同一次裁定。schema 见
@@ -6,11 +7,29 @@
 // strength / dexterity / constitution / intelligence / willpower /
 // charisma / luck）。
 //
+// ── 据点职业是内容，不是新类型 ────────────────────────────────────
+//
+// 项目所有者点名的那几个职业（「猎户，屠夫，农夫，据点管理者，民兵，
+// 守卫等等」）与冒险者职业**是同一个东西**——
+// `knowledge/design/settlements-structures-and-npc-spawning.md` 已经裁定
+// NPC 职业走 `ClassDef`，不建平行类型。因此它们就写在这个文件里，与战士
+// 法师游侠共用同一条注册通道、同一张 `ClassTable`、同一份内容哈希。
+//
+// 谁读它们：`crates/ll-mod/src/roster.rs`（据点名册派生）按
+// `SETTLEMENT_CLASS_IDS` 这份清单逐条查表。查不到的那一条不参与抽取
+// （ADR 0015「查不到就是查不到」），不 panic——所以第三方 mod 把本体
+// 换掉也不会崩，只是那座村子里没有铁匠。
+//
+// 铁匠（lostland:blacksmith）不在所有者点名的那份清单里，是本批次按
+// 「据点的资源应当影响职业分布」补的：四种资源里铁矿是唯一有明确职业
+// 对应物的一种，没有铁匠这条内容，「守着铁矿的据点」在名册上与别处
+// 毫无差别。
+//
 // # 显示名键
 //
-// 四条各自对应 assets/locales/{en,zh-CN}.ftl 里的
-// class-{warrior,mage,ranger,guard}-display_name——四条都早就在两份
-// .ftl 里，也早就挂在 `ll_i18n` 的 PRODUCTION_KEYS 覆盖检查上。
+// 十条各自对应 assets/locales/{en,zh-CN}.ftl 里的
+// class-*-display_name。前四条早就在两份 .ftl 里；六条据点职业随本批次
+// 一并补进两份 .ftl 与 `ll_i18n` 的 PRODUCTION_KEYS 覆盖检查。
 //
 // # 本体职业不声明任何职业天赋
 //
@@ -68,6 +87,52 @@
       id: "lostland:guard",
       display_name_key: "lostland:class.guard.display_name",
       primary_attribute: "constitution",
+    },
+
+    // ── 据点职业六条 ──────────────────────────────────────────────
+
+    // 据点管理者：每座还有人住的据点恰好一位（名册序号 0）。
+    // 魅力倾向——他的工作是让一村子人听他的。
+    {
+      id: "lostland:steward",
+      display_name_key: "lostland:class.steward.display_name",
+      primary_attribute: "charisma",
+    },
+
+    // 民兵：平时务农、战时拿起矛的那一类。力量倾向，但不是战士——
+    // 差别在于民兵是据点名册抽得出来的常住人口，战士是玩家可选的职业。
+    {
+      id: "lostland:militia",
+      display_name_key: "lostland:class.militia.display_name",
+      primary_attribute: "strength",
+    },
+
+    // 农夫：良田据点的主力。体质倾向——那是一份把人晒黑的活。
+    {
+      id: "lostland:farmer",
+      display_name_key: "lostland:class.farmer.display_name",
+      primary_attribute: "constitution",
+    },
+
+    // 猎户：林地据点的主力。敏捷倾向。
+    {
+      id: "lostland:hunter",
+      display_name_key: "lostland:class.hunter.display_name",
+      primary_attribute: "dexterity",
+    },
+
+    // 屠夫：无资源亲和——屠夫跟着人走，不跟着地走。力量倾向。
+    {
+      id: "lostland:butcher",
+      display_name_key: "lostland:class.butcher.display_name",
+      primary_attribute: "strength",
+    },
+
+    // 铁匠：铁矿据点的主力。力量倾向。
+    {
+      id: "lostland:blacksmith",
+      display_name_key: "lostland:class.blacksmith.display_name",
+      primary_attribute: "strength",
     },
   ],
 }

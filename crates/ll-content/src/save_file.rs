@@ -575,6 +575,22 @@ mod tests {
             stealthed: false,
         });
         world.player_entity = Some(player);
+        // 已物化据点集合（NPC 生成批次）：**必须设成非默认值**，否则这条
+        // 往返判据对这个新字段是空转——空 `Vec` 序列化恒等于自身，读回
+        // 一个同样空的 `Vec` 也能让哈希对上，掩盖真正的编解码缺陷（与
+        // `ll_world::entity::agent` 的 `fully_populated_agent` 夹具同一条
+        // 纪律）。两个 id 刻意**乱序**写入，同时锁住写入口自己保证有序
+        // 这条性质。
+        let mut site_counter = 41u32;
+        let first_site = ll_core::ident::WorldId::next(&mut site_counter);
+        let second_site = ll_core::ident::WorldId::next(&mut site_counter);
+        assert!(world.mark_settlement_materialized(second_site));
+        assert!(world.mark_settlement_materialized(first_site));
+        assert!(
+            !world.mark_settlement_materialized(first_site),
+            "同一座据点标第二次应当返回 false（写入口自己去重）"
+        );
+        assert!(world.settlement_is_materialized(first_site));
         let content_index_map = registry
             .snapshot()
             .iter()
@@ -600,6 +616,11 @@ mod tests {
         match outcome {
             LoadOutcome::Playable(loaded_world) => {
                 assert_eq!(loaded_world.hash(), hash_before);
+                // 哈希相等已经间接覆盖了这一条，但直接断言一次：读档后
+                // 「这座据点已经物化过」必须仍然为真——它为假的后果是玩家
+                // 读档之后每座走过的村子都会重新生成一批 NPC。
+                assert!(loaded_world.settlement_is_materialized(first_site));
+                assert!(loaded_world.settlement_is_materialized(second_site));
             }
             other => panic!("期望 Playable，实际 {other:?}"),
         }

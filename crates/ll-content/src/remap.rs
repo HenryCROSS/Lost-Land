@@ -140,6 +140,21 @@ pub fn remap_world(
         // 是纯数值，不含 ContentIndex，随 def 一起保留或丢弃。见下方
         // remap_ground_items。
         ref mut ground_items,
+        // 已物化据点集合（NPC 生成批次）：元素是 `WorldId`，**不是**
+        // `ContentIndex`。`ll_core::ident::WorldId` 模块文档写明它的构造
+        // 过程本身稳定、永不复用，不依赖 mod 加载顺序——与本函数上方
+        // `next_world_id`、以及 `remap_affiliations` 对 `OrgRef::Instance`
+        // 的既有处理同一个理由，因此不需要重映射。
+        //
+        // 这里的 `_` 是**逐字段确认过不需要重映射**，不是顺手吞掉：本文件
+        // 历史上真出过一次 `active_stat_modifiers` 被写成 `field: _` 而在
+        // 换 mod 读档时静默清空的事故（见模块文档「完整性如何保证」），
+        // 而这一次静默清空的后果会更难察觉——集合被清空之后，玩家换一次
+        // mod 读档，全部走过的据点都会**重新生成一批 NPC**，把杀掉的人
+        // 原样复活。判据是这个字段的元素类型里根本不含 `ContentIndex`，
+        // 编译器会在它某天变成携带索引的类型时让这一行继续通过、因此这条
+        // 注释就是那个提醒。
+        materialized_settlements: _,
     } = *world;
 
     terrain.try_remap_resident_terrain(|kind| -> Result<TerrainKind, LoadError> {

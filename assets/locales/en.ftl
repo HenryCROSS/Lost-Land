@@ -32,6 +32,12 @@ class-warrior-display_name = Warrior
 class-mage-display_name = Mage
 class-ranger-display_name = Ranger
 class-guard-display_name = Guard
+class-steward-display_name = Steward
+class-militia-display_name = Militia
+class-farmer-display_name = Farmer
+class-hunter-display_name = Hunter
+class-butcher-display_name = Butcher
+class-blacksmith-display_name = Blacksmith
 
 subclass-duelist-display_name = Duelist
 subclass-apprentice-display_name = Apprentice

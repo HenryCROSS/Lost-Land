@@ -102,6 +102,7 @@ use ll_core::rng::DetRng;
 use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::chunk::ChunkGrid;
+use crate::resource::ResourceKind;
 use crate::space::ZoneCoord;
 use crate::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
 use crate::zone::ZoneLayout;
@@ -219,7 +220,41 @@ pub struct SettlementSite {
     pub peak_population: u32,
     /// 实际要铺的建筑栋数，已按 [`MAX_BUILDINGS`] 截断。
     pub building_count: u32,
+    /// 这座据点**靠什么吃饭**：领地里最突出的两种资源，按
+    /// `资源点数 × ResourceAttrs::settlement_draw` 降序排列，不足两种
+    /// 时后面补 `None`（`[0]` 为 `None` 意味着领地里一种注册资源都
+    /// 没数到）。
+    ///
+    /// # 为什么是「点数 × 吸引力」而不是纯点数
+    ///
+    /// 纯点数会被地形分布压成一个常数答案：本体四种资源里良田长在草地
+    /// （最普遍的可住地形，`abundance` 120‰）、水源长在浅水（300‰），
+    /// 而铁矿长在山地且只有 60‰——按纯点数排，几乎每座据点的第一名都是
+    /// 良田或水源，「矿城」这种形态在名册里根本不会出现。乘上
+    /// `settlement_draw`（铁矿 5、木材 2、良田/水源 1，见
+    /// `mods/lostland/resources.json5`）之后，排序问的才是「这地方**因为
+    /// 什么**才有人来」——那正是历史推演自己选址时用的同一把尺子
+    /// （[`crate::chronicle`] 的 `resource_draw_bonus`）。
+    ///
+    /// # 为什么是定长数组，不是 `Vec`
+    ///
+    /// [`SettlementSite`] 是 `Copy` 的，被逐座复制进
+    /// [`crate::chronicle::WorldChronicle::sites`] 又被逐座读出；换成
+    /// `Vec` 会让这个类型失去 `Copy`，牵连全部既有调用点，换来的只是
+    /// 「能记住第三、第四名」——而下游（NPC 名册的职业分布）问的是
+    /// 「主业是什么、副业是什么」，第三名之后不改变任何决定。
+    ///
+    /// # 谁读它
+    ///
+    /// `ll_mod::roster` 的职业/种族分布：守着铁矿的据点要有铁匠，守着
+    /// 良田的要有农夫（项目所有者裁定「据点的资源应当影响职业分布」的
+    /// 落点）。
+    pub resource_profile: [Option<ResourceKind>; SITE_RESOURCE_SLOTS],
 }
+
+/// [`SettlementSite::resource_profile`] 记几名——见该字段文档「为什么是
+/// 定长数组」。
+pub const SITE_RESOURCE_SLOTS: usize = 2;
 
 /// 一栋建筑外廓的格数——[`house_tiles`]/[`ruin_tiles`] 产出的定长
 /// 数组长度。
@@ -552,6 +587,9 @@ mod tests {
             population: 12,
             peak_population: 12,
             building_count,
+            // 本模块只验「往网格里铺地形」，铺法不读资源画像；给一份
+            // 空画像是最诚实的夹具（不假装这里数到了什么）。
+            resource_profile: [None; SITE_RESOURCE_SLOTS],
         }
     }
 
