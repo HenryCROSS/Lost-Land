@@ -156,6 +156,7 @@ fn spawn_rogue(world: &mut WorldState, profession: ContentIndex, level: i32) -> 
         identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
+        subclasses_ever_granted: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
         mod_state: BTreeMap::new(),

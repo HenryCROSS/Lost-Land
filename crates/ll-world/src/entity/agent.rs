@@ -359,6 +359,63 @@ pub struct Agent {
     /// 「至少一个」副职（复数），不是恰好一个——具体上限（若有）留给
     /// 后续内容设计批次决定，本字段的容器形状本身不设上限。
     pub subclasses: Vec<ContentIndex>,
+    /// **曾经**获得过哪些副职——「获得副职发一批点数」这件事的去重
+    /// 账本，只增不减（[`Self::subclasses`] 会因放弃而缩短，这一份
+    /// 不会）。
+    ///
+    /// # 为什么必须有这个字段：没有它，副职就是一台点数复制机
+    ///
+    /// 「获得副职时发一批属性点/技能点」这条奖励与 `ll_sim::subclass`
+    /// 已经落地的两条语义放在一起会出问题，而且那条路径是**设计上明确
+    /// 支持、玩家真的走得通**的：
+    ///
+    /// 1. 满员时被拒绝的是**授予**，不是**计数**——制作计数照常累加
+    ///    （见 `ll_sim::subclass::grant_subclass_effects` 文档「上限超出
+    ///    时是拒绝，而且不吞掉任何东西」一节）。
+    /// 2. 达标判据是「累计次数 **>=** 阈值」而不是「== 阈值」，因此经
+    ///    `ll_sim::effect::Effect::RemoveSubclass` 放弃掉一个副职腾出
+    ///    槽位之后，**下一次**在那个类别里制作就会当场重新授予。
+    ///
+    /// 两条合起来：「放弃 → 再制作一次 → 重新获得」是一条正常玩法路径。
+    /// 若发点无条件跟着 `Effect::GrantSubclass` 走，玩家只要反复「放弃
+    /// 再做一次」就能无限刷属性点——一个 20 次阈值的副职第一次要做 20
+    /// 件，此后每一次只要 1 件。这不是理论风险，是上面两条既有语义的
+    /// 直接推论。
+    ///
+    /// # 为什么是 `Agent` 的字段，而不是塞进 [`Self::mod_state`]
+    ///
+    /// `mod_state` 能避开给 `Agent` 加字段，但
+    /// `ll_content::remap::remap_agent` 对它是 `mod_state: _`
+    /// （**明确不参与存档重映射**）。把去重账本记在那里，等于把击杀
+    /// 计数那一处既有隐患（玩家增删 mod 导致 `ContentIndex` 重编号之
+    /// 后，键静默指向别的内容）再抄一遍，而这一次的后果是**发点发错
+    /// 或漏发**。本字段是一份货真价实的 `Vec<ContentIndex>`，与
+    /// [`Self::subclasses`] 走同一条重映射帮手
+    /// （`ll_content::remap::remap_subclasses`），不需要任何字符串键。
+    ///
+    /// # 放弃**不**从这份账本里删除，这是全部意义所在
+    ///
+    /// `ll_sim::apply` 处理 `Effect::RemoveSubclass` 时只动
+    /// [`Self::subclasses`]，一个字都不动这里。玩家因此可以任意次
+    /// 「放弃 → 重新赚回」——副职本身照常回来、把守的配方类别照常重新
+    /// 解锁，只是**点数一辈子每个副职只发一次**。
+    ///
+    /// # 一处如实标注的边界：mod 被卸载再装回来
+    ///
+    /// `remap_subclasses` 对解析不到的索引直接丢弃，本字段与
+    /// [`Self::subclasses`] 同进同退。因此玩家卸掉一个 mod、存盘、再
+    /// 把它装回来，那个 mod 的副职可以再发一次点。这与
+    /// `remap_subclasses` 自身「内容变更不追溯」的既有语义一致，代价
+    /// 有界（每次真实的卸载/重装最多一次），且修它需要一套「记住已
+    /// 卸载内容的完整标识符」的存量机制——那是独立批次，不在这里顺手
+    /// 造半个。
+    ///
+    /// `Vec` 而不是 `BTreeSet`：与 [`Self::subclasses`]/
+    /// [`Self::unlocked_skills`]/[`Self::known_recipes`] 同一种容器、
+    /// 同一条理由（元素数量的量级是「一辈子获得过几个副职」，线性
+    /// `contains` 足够，且 `Vec` 保序天然满足约束 C5 与
+    /// `WorldState::hash` 的确定性遍历要求）。
+    pub subclasses_ever_granted: Vec<ContentIndex>,
     /// 正在生效的临时属性修正，外层按 [`AttributeKind`] 索引（匹配
     /// `effective_attribute` 的真实访问模式：一次查询要问的始终是
     /// 「这一项属性现在有哪些修正在生效」），内层按「来源」——施加这条
@@ -690,6 +747,10 @@ mod tests {
             interner.intern(NamespacedId::parse("lostland:power_strike").expect("合法标识符"));
         let ranger_subclass =
             interner.intern(NamespacedId::parse("lostland:ranger_subclass").expect("合法标识符"));
+        // 一个「曾经获得过、后来放弃了」的副职——只出现在
+        // `subclasses_ever_granted` 里，不在 `subclasses` 里。
+        let abandoned_subclass = interner
+            .intern(NamespacedId::parse("lostland:abandoned_subclass").expect("合法标识符"));
         let roast_recipe =
             interner.intern(NamespacedId::parse("lostland:roast_meat_recipe").expect("合法标识符"));
         let amber_pendant =
@@ -752,6 +813,14 @@ mod tests {
             identified_items: vec![amber_pendant],
             skill_cooldowns: BTreeMap::from([(power_strike, Tick(120))]),
             subclasses: vec![ranger_subclass],
+            // 非空，**而且刻意与上一行不相等**——见本函数文档：新增
+            // 字段若在这里取默认值（空 `Vec`），序列化往返测试对它等于
+            // 没测。取「比 `subclasses` 多一条」还额外守住一件事：这两
+            // 个字段的载荷类型完全相同（`Vec<ContentIndex>`），若往返
+            // 或存档重映射把它们写串了、或拿同一份填了两处，只有当两者
+            // 取值不同时才测得出来。语义上这也是真实形状：账本记的是
+            // 「曾经获得过的」，放弃过一个之后它就比当前持有的多一条。
+            subclasses_ever_granted: vec![ranger_subclass, abandoned_subclass],
             active_stat_modifiers: BTreeMap::from([(
                 AttributeKind::Constitution,
                 BTreeMap::from([(

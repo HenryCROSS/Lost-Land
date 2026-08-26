@@ -804,16 +804,29 @@ pub enum Effect {
     /// 字段需要**自己的**效果变体，见 `crate::subclass` 模块文档「为什么
     /// 授予必须是独立的 Effect 变体」一节。
     ///
-    /// # `apply` 不做任何判断
+    /// # 两道闸门在产出侧，发点那一步在 `apply` 侧
     ///
     /// 去重（已持有就不再加一份）与上限（[`crate::subclass::MAX_SUBCLASSES`]）
     /// 两道闸门全部在产出侧判完（[`crate::subclass::grant_subclass_effects`]
     /// 与 [`crate::subclass::craft_progress_effects`]，不满足就一条效果都
-    /// 不产出）——`apply` 收到这条效果时就是无条件的 `push`，与约束 C1 /
-    /// ADR 0023 一致。**这与设计文档四节「两件事都放在 `apply` 里」那句
-    /// 相反**：那句写在 `resolve_allocate_attribute_point` 落地之前，本
-    /// 仓库此后已经用「闸门在 `resolve`、`apply` 无条件执行」的形状把同
-    /// 一类问题解决了两次（加点、学技能），副职没有理由成为第三种写法。
+    /// 不产出）——`apply` 收到这条效果时对 `Agent::subclasses` 就是无条件
+    /// 的 `push`，与约束 C1 / ADR 0023 一致。**这与设计文档四节「两件事
+    /// 都放在 `apply` 里」那句相反**：那句写在
+    /// `resolve_allocate_attribute_point` 落地之前，本仓库此后已经用
+    /// 「闸门在 `resolve`、`apply` 无条件执行」的形状把同一类问题解决了
+    /// 两次（加点、学技能），副职没有理由成为第三种写法。
+    ///
+    /// **副职发点批次给这条效果追加了第二个后果，它有一个判断，而且那个
+    /// 判断刻意留在 `apply`**：第一次获得某个副职时还要发一批属性点/技能
+    /// 点（[`crate::subclass::SUBCLASS_ATTRIBUTE_POINTS`]/
+    /// [`crate::subclass::SUBCLASS_SKILL_POINTS`]），「是不是第一次」查的
+    /// 是 [`ll_world::entity::Agent::subclasses_ever_granted`] 这份只增不
+    /// 减的账本。它不放在产出侧的完整理由见 `crate::apply` 的
+    /// `grant_first_time_subclass_points` 文档，一句话是：这条效果有三条
+    /// 预定的产出路径，把「该不该发点」做成效果字段等于要求每一条都记得
+    /// 算对它，而放在 `apply` 里则「账本里有它 ⟺ 已经发过点」这条不变式
+    /// 由一段原子代码独自维护。同文件的 [`Effect::GrantExperience`] 早就
+    /// 是同一种形状（升了几级、发几点全由 `apply` 自己算）。
     GrantSubclass {
         /// 获得副职的实体。
         actor: EntityId,

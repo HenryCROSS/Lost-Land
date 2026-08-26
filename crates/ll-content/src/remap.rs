@@ -330,6 +330,14 @@ fn remap_agent(
         ref mut unlocked_skills,
         ref mut skill_cooldowns,
         ref mut subclasses,
+        // 「曾经获得过哪些副职」的去重账本（副职发点批次新增）：与上
+        // 一行同一种载荷（指向 SubclassTable 的 ContentIndex），因此
+        // 走同一条帮手、同一条丢弃语义。这里**不能**写成
+        // `subclasses_ever_granted: _`——那正是本文件历史上
+        // active_stat_modifiers 出过的那次事故的形态（换 mod 读档时
+        // 静默清空），而这一次静默清空的后果是玩家换一次 mod 就能把
+        // 全部副职的点数再领一遍，见该字段文档「一处如实标注的边界」。
+        ref mut subclasses_ever_granted,
         // 已知配方（配方发现批次新增）：每一条都是指向 RecipeTable 的
         // ContentIndex，依赖 mod 加载顺序，必须显式重映射——见下方
         // remap_known_recipes。这里**不能**写成 `known_recipes: _`：
@@ -425,6 +433,7 @@ fn remap_agent(
     remap_unlocked_skills(remapper, unlocked_skills)?;
     remap_skill_cooldowns(remapper, skill_cooldowns)?;
     remap_subclasses(remapper, subclasses)?;
+    remap_subclasses(remapper, subclasses_ever_granted)?;
     remap_known_recipes(remapper, known_recipes)?;
     remap_identified_items(remapper, identified_items)?;
     remap_active_stat_modifiers(remapper, active_stat_modifiers)?;
@@ -880,6 +889,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(pos_zone, ContentIndex::default()),
             mod_state: std::collections::BTreeMap::new(),
@@ -1657,6 +1667,91 @@ mod tests {
                 .known_recipes,
             vec![stew_new]
         );
+    }
+
+    #[test]
+    fn 曾经获得过的副职账本按字符串对号重映射到新索引() {
+        // Arrange：副职发点批次新增的 Agent::subclasses_ever_granted
+        // ——与 subclasses/known_recipes/identified_items 同一条判据、
+        // 同一种事故防线，但后果比它们都重：若 remap_agent 的穷尽解构
+        // 把它吞成 `subclasses_ever_granted: _`（静默清空），玩家换一
+        // 次 mod 读档之后全部副职的点数都能再领一遍——那正是这个字段
+        // 被造出来要防的事。本测试刻意让新旧索引不同，吞掉就会红。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let artisan_old = save_registry.intern(id("lostland:artisan"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+
+        let mut current = current_session_registry_with_terrain();
+        current.intern(id("lostland:miner")); // 抢先登记，打乱顺序
+        let artisan_new = current.intern(id("lostland:artisan"));
+        assert_ne!(
+            artisan_old, artisan_new,
+            "两边索引必须真的不同，否则这条测试等于没测"
+        );
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        // **刻意只写账本、不写 subclasses**：这正是「曾经获得过、后来
+        // 放弃了」的真实形状，同时保证本测试测的是账本自己那一次
+        // remap 调用，而不是碰巧被 subclasses 那一次覆盖到。
+        agent.subclasses_ever_granted.push(artisan_old);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(actions.is_empty());
+        let after = world.actors.get(entity).expect("实体应当仍存在");
+        assert_eq!(after.subclasses_ever_granted, vec![artisan_new]);
+        assert!(
+            after.subclasses.is_empty(),
+            "账本与当前持有是两个独立字段，重映射不该把其中一份灌进另一份"
+        );
+    }
+
+    #[test]
+    fn 曾经获得过的副职在当前会话找不到时整条丢弃并记录droppwithwarning() {
+        // Arrange：卸掉一个 mod 之后那个副职不存在了——与
+        // remap_subclasses 对 subclasses 的处置完全相同（按
+        // ContentKind::Subclass 丢弃并警告，不是拒绝整个存档）。
+        //
+        // 这条丢弃有一个如实标注的后果：那个 mod 装回来之后，它的副职
+        // 可以再发一次点。见 Agent::subclasses_ever_granted 文档
+        // 「一处如实标注的边界」——代价有界，且与 remap_subclasses 自身
+        // 「内容变更不追溯」的既有语义一致。本测试把这条语义钉下来，
+        // 免得将来有人以为它是缺陷而顺手改成 Reject。
+        let (mut world, mut save_registry) = test_world_with_save_registry();
+        let vanished = save_registry.intern(id("lostland:vanished_subclass"));
+        let old_ids: Vec<String> = save_registry
+            .snapshot()
+            .iter()
+            .map(ToString::to_string)
+            .collect();
+        let current = current_session_registry_with_terrain();
+
+        let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
+        let mut agent = bare_agent(zone);
+        agent.subclasses_ever_granted.push(vanished);
+        let entity = world.actors.spawn(agent);
+
+        // Act
+        let actions = remap_world(&mut world, &old_ids, &current, None).expect("应当成功");
+
+        // Assert
+        assert!(
+            world
+                .actors
+                .get(entity)
+                .expect("实体应当仍存在")
+                .subclasses_ever_granted
+                .is_empty()
+        );
+        assert_eq!(actions, vec![DegradeAction::DropWithWarning]);
     }
 
     #[test]

@@ -649,7 +649,7 @@ vs 错位搭配的化学反应」。**错位搭配之所以有味道，前提是
    `crates/ll-sim/src/traits.rs` 的 `agent_trait_sources` 文档）。三节那个「最小形状」代码块里
    已经写着的 `traits` 字段，从「新增（待落地）」变成了「已落地」。
 
-2. **「给点数」——尚未落地，且它才是真正推翻红线的那一半。** 属性点/技能点是**纯数值资源**，
+2. **「给点数」——已落地（副职发点批次），且它才是真正推翻红线的那一半。** 属性点/技能点是**纯数值资源**，
    不经 `TraitTable` 兑现（`TraitDef` 的四类效果——授予技能/属性修正/规则修正/资源池——没有一类是
    「发一批可自由分配的点数」，而且天赋是**纯派生、每次现算**的，发点数是**一次性写入世界状态**，
    两者的时间语义根本不同）。因此这一半只能落成副职系统自己的一条新机制，本节的红线在这一点上确实
@@ -665,6 +665,39 @@ vs 错位搭配的化学反应」。**错位搭配之所以有味道，前提是
    防它需要「这个副职**曾经**发过点没有」这份**新的持久化状态**（`Agent.subclasses` 只记「现在
    持有什么」，放弃时那条记录就没了），而 `Agent` 加字段会改 `WorldState::hash()`、牵动黄金基准
    重冻与存档 remap——是一个独立批次的量级，不夹带在天赋接线里。
+
+   **【落地记录 · 副职发点批次】上面这个「必须先答的问题」已经答完，答案逐条如下。**
+
+   - **上面那条复制机推导经复核成立，不是理论风险。** 实测把去重判断从
+     `crates/ll-sim/src/apply.rs` 的 `grant_first_time_subclass_points` 里整个删掉之后，
+     `crates/ll-mod/tests/example_mod_subclass_unlock.rs` 的
+     `放弃副职再重新获得不会第二次发点` 是**唯一**变红的那一条（其余 14 条全绿），
+     报出的账本是 `[ContentIndex(140), ContentIndex(140)]`——同一个副职被记了两遍、
+     点数也发了两份。「设计上明确支持的路径 + 无条件发点 = 复制机」这条推导因此有实测背书。
+   - **那份新的持久化状态叫 `Agent::subclasses_ever_granted`（`Vec<ContentIndex>`，只增不减）。**
+     刻意**不**复用 `Agent::mod_state`：后者在 `crates/ll-content/src/remap.rs` 的 `remap_agent`
+     里是 `mod_state: _`（不参与存档重映射），把去重账本记在那里等于把击杀计数那处既有隐患
+     再抄一遍，而这一次静默清空的后果是玩家换一次 mod 就能把全部副职的点数再领一遍。
+     账本走与 `subclasses` 完全相同的 `remap_subclasses` 帮手。
+   - **「是不是第一次」这个判断放在 `apply`，不放在产出侧。** 与同文件
+     `grant_experience_and_level_up`（升级发点）同构、同一种货币；理由更强一层是
+     `Effect::GrantSubclass` 有三条预定产出路径，把「该不该发点」做成效果字段等于要求每一条
+     都记得算对它。完整论证在 `crates/ll-sim/src/apply.rs` 的
+     `grant_first_time_subclass_points` 文档。
+   - **发多少：`ll_sim::subclass::SUBCLASS_ATTRIBUTE_POINTS = 1` +
+     `SUBCLASS_SKILL_POINTS = 1`，均为占位值**（项目所有者原话「你自己先做一份，以后我再改」）。
+     量级刻意低于一级（升级是 2 属性点 + 1 技能点）：副职的**主要**奖励是
+     `SubclassDef::traits`，点数是附赠，定成整整一级会让天赋那半被盖过去。
+   - **是引擎常量，不是 `SubclassDef` 上的内容字段**，判据与
+     `Agent::ATTRIBUTE_POINTS_PER_LEVEL` 逐字相同（ADR 0021 / YAGNI）：本体六条副职之间的差异
+     载体是 `traits`（已经内容可声明），不是点数；且内容字段一旦落地就要进内容值哈希、要递增
+     `CONTENT_HASH_ALGORITHM_VERSION`，**撤掉它比加上它贵得多**，而将来真要按副职区分时补一个
+     `Option<…>` 回落到常量是机械改写。因此本批次**没有**动
+     `CONTENT_HASH_ALGORITHM_VERSION`（仍是 21）——没有新增任何内容字段。
+   - **一处如实标注的边界**：`remap_subclasses` 对解析不到的索引直接丢弃，账本与 `subclasses`
+     同进同退，因此「卸掉一个 mod、存盘、再装回来」可以让那个 mod 的副职再发一次点。这与
+     `remap_subclasses` 自身「内容变更不追溯」的既有语义一致，代价有界（每次真实卸载/重装最多
+     一次），修它需要一套「记住已卸载内容完整标识符」的存量机制，是独立批次。
 
 **这次订正没有推翻的东西**（逐条点名，免得下一个人读到「红线被推翻了」就以为整节作废）：
 

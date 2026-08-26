@@ -226,6 +226,7 @@ impl ThinPopulation {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, surface_profile),
             // 薄层本就不支持脚本状态存储（设计文档三、3 节：只限厚层

@@ -66,7 +66,10 @@ use ll_sim::exposure::AmbientSource;
 use ll_sim::intent::Intent;
 use ll_sim::item::ItemStack;
 use ll_sim::quest::NoQuests;
-use ll_sim::subclass::{MAX_SUBCLASSES, NoSubclassUnlocks, SubclassUnlockCatalog, craft_count_key};
+use ll_sim::subclass::{
+    MAX_SUBCLASSES, NoSubclassUnlocks, SUBCLASS_ATTRIBUTE_POINTS, SUBCLASS_SKILL_POINTS,
+    SubclassUnlockCatalog, craft_count_key,
+};
 use ll_sim::timeline::Timeline;
 use ll_sim::turn::TurnEngine;
 use ll_sim::xp_curve::FlatXpCurve;
@@ -250,6 +253,7 @@ fn spawn_agent(
         identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses,
+        subclasses_ever_granted: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
         mod_state: BTreeMap::new(),
@@ -650,4 +654,243 @@ fn 放弃一个从未持有的副职不产生任何变化() {
     // Assert
     let after = world.actors.get(actor).expect("放弃副职不会杀死任何人");
     assert!(after.subclasses.is_empty());
+}
+
+/// 跑一场「烤够阈值拿到副职 → 放弃它 → 再烤一次重新拿回来」，返回最后
+/// 那一刻制作者的 `Agent`。
+///
+/// # 这个场景为什么必须存在
+///
+/// 它是 [`ll_world::entity::Agent::subclasses_ever_granted`] 那个字段
+/// 存在的全部理由，而且**是一条设计上明确支持、玩家真的走得通的路径**
+/// （不是刻意构造的病态输入）：`ll_sim::subclass` 的达标判据是
+/// 「累计次数 **>=** 阈值」，且满员被拒绝时计数照常累加——因此放弃腾
+/// 出槽位之后，只要在同一个类别里**再做一件**就会当场补发。
+///
+/// `abandon` 为 `false` 时跳过放弃那一步（副职一直拿着），用来给
+/// 「多烤的那一次没有让计数以外的任何东西变化」提供对照。
+fn cook_abandon_then_cook_again(handle: &RealModsHandle, abandon: bool) -> Agent {
+    let mut world = test_world();
+    let crafter = spawn_agent(
+        &mut world,
+        (5, 5),
+        vec![ItemStack::new(handle.raw_meat, COOKING_THRESHOLD + 5)],
+        Vec::new(),
+    );
+    let bystander = spawn_agent(&mut world, (9, 9), Vec::new(), Vec::new());
+
+    let mut timeline = Timeline::new();
+    timeline.schedule(crafter, Tick(0));
+    timeline.schedule(bystander, Tick(1_000_000));
+    let mut engine = TurnEngine::new(timeline);
+
+    let recipes = handle.real_recipes();
+    let catalogs = handle.catalogs(&recipes, &handle.subclass);
+    // 阶段机：烤够阈值 → （可选）放弃 → 再烤一次 → 之后一律等待。
+    let mut cooked = 0_u32;
+    let mut abandoned = !abandon;
+    let mut cooked_again = false;
+    let mut intent = |_world: &WorldState, actor: EntityId, _controlled: EntityId| {
+        if actor != crafter {
+            return Intent::Wait { actor };
+        }
+        if cooked < COOKING_THRESHOLD {
+            cooked += 1;
+            return Intent::Craft {
+                actor,
+                recipe: handle.roast_meat_recipe,
+            };
+        }
+        if !abandoned {
+            abandoned = true;
+            return Intent::AbandonSubclass {
+                actor,
+                subclass: handle.shadowdancer,
+            };
+        }
+        if !cooked_again {
+            cooked_again = true;
+            return Intent::Craft {
+                actor,
+                recipe: handle.roast_meat_recipe,
+            };
+        }
+        Intent::Wait { actor }
+    };
+    engine.advance_ai(
+        &mut world,
+        bystander,
+        &mut intent,
+        &catalogs,
+        &mut |_, _| {},
+    );
+
+    world.actors.get(crafter).expect("烤肉不会杀死人").clone()
+}
+
+#[test]
+fn 获得副职时一次性发一批属性点与技能点() {
+    // 项目所有者裁定「那副职还是给点数好了」的正向验收，全程经
+    // TurnEngine、内容全部来自真实 mods/。
+    //
+    // 这里能直接读余额而不必扣掉别的来源，是因为本文件的目录束把经验
+    // 那一路接成了 NoExperience：制作不产经验、不升级，因此两个
+    // unspent_* 余额在这一场里**只可能**由副职授予改写。
+    // Arrange
+    let handle = load_real_mods();
+
+    // Act：恰好烤够阈值。
+    let after =
+        cook_n_times_via_turn_engine(&handle, &handle.subclass, COOKING_THRESHOLD, Vec::new());
+
+    // Assert：副职到手，两种点数各发了一份。
+    assert_eq!(after.subclasses, vec![handle.shadowdancer]);
+    assert_eq!(
+        after.subclasses_ever_granted,
+        vec![handle.shadowdancer],
+        "账本必须记下这一次授予，否则放弃再赚回时会二次发点"
+    );
+    assert_eq!(
+        after.unspent_attribute_points, SUBCLASS_ATTRIBUTE_POINTS,
+        "获得副职应当发属性点"
+    );
+    assert_eq!(
+        after.unspent_skill_points, SUBCLASS_SKILL_POINTS,
+        "获得副职应当发技能点"
+    );
+}
+
+#[test]
+fn 未达阈值时一个点都不发() {
+    // 反例①：证明上一条的断言不是恒真——同一段场景少烤一次，副职拿不
+    // 到，点数一个不发。谁把 apply 里 grant_first_time_subclass_points
+    // 的余额写入改成无条件执行，这一条会立刻变红。
+    // Arrange
+    let handle = load_real_mods();
+
+    // Act
+    let after =
+        cook_n_times_via_turn_engine(&handle, &handle.subclass, COOKING_THRESHOLD - 1, Vec::new());
+
+    // Assert
+    assert!(after.subclasses.is_empty());
+    assert!(after.subclasses_ever_granted.is_empty());
+    assert_eq!(after.unspent_attribute_points, 0);
+    assert_eq!(after.unspent_skill_points, 0);
+}
+
+#[test]
+fn 获得条件目录摘掉后连点数也一起没有() {
+    // 反例②：与既有的
+    // `获得条件目录从回合引擎摘掉后烤再多次肉也拿不到副职` 同一个手法
+    // （只把 subclass_unlocks 换成 NoSubclassUnlocks），补上点数这一维。
+    // 谁把这一路从 TurnEngine 上摘掉，正向那条测试会拿到与本条一样的
+    // 结果而变红。
+    // Arrange
+    let handle = load_real_mods();
+
+    // Act：烤足够多次，但获得条件目录是空的。
+    let after = cook_n_times_via_turn_engine(
+        &handle,
+        &NoSubclassUnlocks,
+        COOKING_THRESHOLD + 3,
+        Vec::new(),
+    );
+
+    // Assert
+    assert!(after.subclasses.is_empty());
+    assert!(after.subclasses_ever_granted.is_empty());
+    assert_eq!(after.unspent_attribute_points, 0);
+    assert_eq!(after.unspent_skill_points, 0);
+}
+
+#[test]
+fn 放弃副职再重新获得不会第二次发点() {
+    // **本批次存在的理由，也是唯一一条不能删的测试。**
+    //
+    // 「放弃 → 再制作一次 → 重新获得」是设计上明确支持的路径（判据是
+    // 累计 >= 阈值、满员被拒时计数照常累加）。若发点无条件跟着
+    // Effect::GrantSubclass 走，玩家反复走这条路就能无限刷点：第一次
+    // 要做满阈值件，此后每一次只要一件。
+    //
+    // 这一条同时是 Agent::subclasses_ever_granted 的行为规格：把 apply
+    // 里那句 subclasses_ever_granted.contains 换成 subclasses.contains
+    // （放弃时会被清掉的那一份），或者干脆把整个判断删掉，这一条立刻
+    // 变红，而上面的正向测试仍然是绿的。
+    // Arrange
+    let handle = load_real_mods();
+
+    // Act：烤够 → 放弃 → 再烤一次。
+    let after = cook_abandon_then_cook_again(&handle, true);
+
+    // Assert：副职**确实**重新回到手上（这条路径没被堵死，堵死它是另
+    // 一种缺陷），账本仍然只有一条，点数仍然只有一份。
+    assert_eq!(
+        after.subclasses,
+        vec![handle.shadowdancer],
+        "放弃之后再做一件就该重新拿回副职——这条路径是设计支持的，不该被本批次堵死"
+    );
+    assert_eq!(
+        after.subclasses_ever_granted,
+        vec![handle.shadowdancer],
+        "账本只增不减，且同一个副职只记一次"
+    );
+    assert_eq!(
+        after.unspent_attribute_points, SUBCLASS_ATTRIBUTE_POINTS,
+        "第二次获得同一个副职不该再发一份属性点"
+    );
+    assert_eq!(
+        after.unspent_skill_points, SUBCLASS_SKILL_POINTS,
+        "第二次获得同一个副职不该再发一份技能点"
+    );
+    // 计数确实多走了一格——证明「第二次制作真的发生了」，上面几条不是
+    // 因为那一次制作压根没执行才碰巧成立的。
+    assert_eq!(
+        count_in(&after, "examplemod:cooking"),
+        i64::from(COOKING_THRESHOLD) + 1
+    );
+}
+
+#[test]
+fn 不放弃时多做一件同样不会第二次发点() {
+    // 对照组：`can_grant` 的去重那一道（已持有就不再产出效果）本来就
+    // 挡住了这条路，但把它与上一条放在一起才说得清「防重复发点的是账
+    // 本，不是去重」——两条路径的结果必须相同。
+    // Arrange
+    let handle = load_real_mods();
+
+    // Act：烤够 → **不**放弃 → 再烤一次。
+    let after = cook_abandon_then_cook_again(&handle, false);
+
+    // Assert
+    assert_eq!(after.subclasses, vec![handle.shadowdancer]);
+    assert_eq!(after.subclasses_ever_granted, vec![handle.shadowdancer]);
+    assert_eq!(after.unspent_attribute_points, SUBCLASS_ATTRIBUTE_POINTS);
+    assert_eq!(after.unspent_skill_points, SUBCLASS_SKILL_POINTS);
+}
+
+#[test]
+fn 满员被拒绝时不发点账本也不记() {
+    // 上限那一道闸门与发点的交接：满员时 `can_grant` 一条效果都不产出，
+    // 因此账本不该被写、点数不该被发（计数照常累加，那是既有语义，由
+    // 既有的 `已经满员时达标只拒绝授予不吞掉计数` 那条测试守着）。
+    // Arrange：开局就装满 MAX_SUBCLASSES 个别的副职。
+    let handle = load_real_mods();
+    let mut interner = Interner::new();
+    let held: Vec<ContentIndex> = (0..MAX_SUBCLASSES)
+        .map(|n| interner.intern(NamespacedId::parse(&format!("lostland:held_{n}")).expect("合法")))
+        .collect();
+
+    // Act
+    let after =
+        cook_n_times_via_turn_engine(&handle, &handle.subclass, COOKING_THRESHOLD, held.clone());
+
+    // Assert
+    assert_eq!(after.subclasses, held, "满员时不该挤进第四个副职");
+    assert!(
+        after.subclasses_ever_granted.is_empty(),
+        "被拒绝的授予不该在账本里留下痕迹，否则将来腾出槽位真的拿到时就发不出点了"
+    );
+    assert_eq!(after.unspent_attribute_points, 0);
+    assert_eq!(after.unspent_skill_points, 0);
 }

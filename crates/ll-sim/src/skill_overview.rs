@@ -220,6 +220,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: BTreeMap::new(),
             current_space: ll_world::space::Space::surface(
                 ll_core::torus::TorusSize::new(1, 1).unwrap().wrap(0, 0),

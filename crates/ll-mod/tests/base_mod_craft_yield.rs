@@ -294,6 +294,7 @@ fn spawn_agent(world: &mut WorldState, pos: (i32, i32), attempt: &Attempt) -> En
         identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: attempt.subclasses.clone(),
+        subclasses_ever_granted: attempt.subclasses.clone(),
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
         mod_state: BTreeMap::new(),

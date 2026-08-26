@@ -199,6 +199,7 @@ fn spawn_player(
         identified_items: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
+        subclasses_ever_granted: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(zone, surface_profile),
         mod_state: std::collections::BTreeMap::new(),

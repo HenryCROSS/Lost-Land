@@ -115,6 +115,7 @@ fn spawn_agent(world: &mut WorldState, race: ContentIndex, level: i32) -> Entity
         identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: Vec::new(),
+        subclasses_ever_granted: Vec::new(),
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
         mod_state: BTreeMap::new(),
