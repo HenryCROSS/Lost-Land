@@ -423,8 +423,8 @@ pub struct RawPoolLevel {
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawRuleModifier {
-    /// `"resistance"` / `"sneak-attack"` / `"inspection-suspicion"` /
-    /// `"inspection-concealment"`。
+    /// `"resistance"` / `"vulnerability"` / `"sneak-attack"` /
+    /// `"inspection-suspicion"` / `"inspection-concealment"`。
     pub kind: String,
     /// 这条修正属于哪个**加值类型**，**必须已注册**
     /// （`modifier_types.json5`）。整条缺席 = 不声明类型，落进那个
@@ -432,14 +432,20 @@ pub struct RawRuleModifier {
     /// [`ll_sim::rule_modifier::TypedRuleModifier::modifier_type`]。
     #[serde(default)]
     pub modifier_type: Option<String>,
-    /// `resistance` 指向的伤害类别，**必须已注册**。
+    /// `resistance` / `vulnerability` 指向的伤害类别，**必须已注册**。
     #[serde(default)]
     pub damage_category: Option<String>,
-    /// `resistance` 的**减伤点数**（flat DR）。正数抵挡、负数表示脆弱,
-    /// 不钳制——减伤不封顶，保底在结算侧
+    /// `resistance` 的**减伤点数**（flat DR）。**负值钳到零**——脆弱
+    /// 改由 `kind: "vulnerability"` 表达，理由见
+    /// [`ll_sim::rule_modifier::RuleModifier::Resistance`] 文档「脆弱
+    /// **不**用负减伤表达」一节。上不封顶：减伤不封顶，保底在结算侧
     /// （[`ll_sim::rule_modifier::MINIMUM_DAMAGE_AFTER_RESISTANCE`]）。
     #[serde(default)]
     pub damage_reduction: Option<i64>,
+    /// `vulnerability` 的**追加伤害点数**，与 `damage_reduction` 逐字
+    /// 对称：负值同样钳到零（负的易伤就是减伤），上不封顶。
+    #[serde(default)]
+    pub damage_increase: Option<i64>,
     /// `inspection-suspicion` 从盘查触发概率上**直接减掉**的千分比
     /// 点数（越大越不起眼）。负值钳到零：一条「让别人更想搜你」的
     /// 被动不是本变体要表达的东西。
@@ -499,6 +505,7 @@ impl RawRuleModifier {
         // ——这条检查替代了 serde 内部标签枚举给不了的那一半。
         match self.kind.as_str() {
             "resistance" => {
+                reject(self.damage_increase.is_some(), "damage_increase")?;
                 reject(self.conceal_permille.is_some(), "conceal_permille")?;
                 reject(
                     self.suspicion_reduction_permille.is_some(),
@@ -523,12 +530,38 @@ impl RawRuleModifier {
                     damage_reduction: clamp_to_i32(need(
                         self.damage_reduction,
                         "damage_reduction",
-                    )?),
+                    )?)
+                    .max(0),
+                })
+            }
+            "vulnerability" => {
+                reject(self.damage_reduction.is_some(), "damage_reduction")?;
+                reject(self.conceal_permille.is_some(), "conceal_permille")?;
+                reject(
+                    self.suspicion_reduction_permille.is_some(),
+                    "suspicion_reduction_permille",
+                )?;
+                reject(
+                    self.luck_chance_permille_per_point.is_some(),
+                    "luck_chance_permille_per_point",
+                )?;
+                reject(self.extra_damage.is_some(), "extra_damage")?;
+                let raw = self.damage_category.as_deref().ok_or_else(|| {
+                    format!(
+                        "规则修正 kind {:?} 缺少必填字段 \"damage_category\"",
+                        self.kind
+                    )
+                })?;
+                Ok(RuleModifier::Vulnerability {
+                    damage_category: required_id(registry, raw, "伤害类别")?,
+                    damage_increase: clamp_to_i32(need(self.damage_increase, "damage_increase")?)
+                        .max(0),
                 })
             }
             "sneak-attack" => {
                 reject(self.damage_category.is_some(), "damage_category")?;
                 reject(self.damage_reduction.is_some(), "damage_reduction")?;
+                reject(self.damage_increase.is_some(), "damage_increase")?;
                 reject(
                     self.suspicion_reduction_permille.is_some(),
                     "suspicion_reduction_permille",
@@ -546,6 +579,7 @@ impl RawRuleModifier {
             "inspection-suspicion" => {
                 reject(self.damage_category.is_some(), "damage_category")?;
                 reject(self.damage_reduction.is_some(), "damage_reduction")?;
+                reject(self.damage_increase.is_some(), "damage_increase")?;
                 reject(self.conceal_permille.is_some(), "conceal_permille")?;
                 reject(
                     self.luck_chance_permille_per_point.is_some(),
@@ -563,6 +597,7 @@ impl RawRuleModifier {
             "inspection-concealment" => {
                 reject(self.damage_category.is_some(), "damage_category")?;
                 reject(self.damage_reduction.is_some(), "damage_reduction")?;
+                reject(self.damage_increase.is_some(), "damage_increase")?;
                 reject(
                     self.suspicion_reduction_permille.is_some(),
                     "suspicion_reduction_permille",
@@ -578,8 +613,8 @@ impl RawRuleModifier {
                 })
             }
             other => Err(format!(
-                "未知的规则修正 kind {other:?}（只认 resistance/sneak-attack/\
-                 inspection-suspicion/inspection-concealment）"
+                "未知的规则修正 kind {other:?}（只认 resistance/vulnerability/\
+                 sneak-attack/inspection-suspicion/inspection-concealment）"
             )),
         }
     }
@@ -755,8 +790,17 @@ pub struct RawPenetration {
 pub struct RawItemResistance {
     /// 伤害类别的完整标识符，**必须已注册**。
     pub damage_category: String,
-    /// **减伤点数**（flat DR）：正数抵挡、负数表示脆弱，不钳制。语义与
+    /// **减伤点数**（flat DR）：**负值钳到零**，上不封顶。语义与
     /// [`RawRuleModifier::damage_reduction`] 逐字相同。
+    ///
+    /// 脆弱同样不由负值表达（见该字段文档）。物品侧当前**还没有**对应
+    /// 的 `vulnerabilities` 字段：引擎侧的
+    /// [`ll_sim::rule_modifier::RuleModifier::Vulnerability`] 与来源
+    /// 无关（`equipment_rule_modifiers` 照单全收），缺的只是这一层
+    /// 数据 schema。等真有一件「诅咒护符」要写时补一个与本结构逐字
+    /// 同构的 `RawItemVulnerability` 即可，全部消费者一个字不用改——
+    /// 本批次不预先造一个没有任何内容使用的字段，那正是
+    /// `scripts/ci/check_field_consumers.py` 要挡的东西。
     pub damage_reduction: i64,
     /// 这条抗性属于哪个**加值类型**，**必须已注册**；缺席 = 未分类，
     /// 语义与 [`RawRuleModifier::modifier_type`] 逐字相同。
@@ -1012,7 +1056,7 @@ fn apply_item_extras(
                     modifier_type,
                     modifier: RuleModifier::Resistance {
                         damage_category: category,
-                        damage_reduction: clamp_to_i32(resistance.damage_reduction),
+                        damage_reduction: clamp_to_i32(resistance.damage_reduction).max(0),
                     },
                 },
             )
@@ -1495,6 +1539,7 @@ mod tests {
             modifier_type: None,
             damage_category: None,
             damage_reduction: None,
+            damage_increase: None,
             suspicion_reduction_permille: None,
             conceal_permille: None,
             luck_chance_permille_per_point: None,

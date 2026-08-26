@@ -1590,15 +1590,25 @@ fn inspect_trait(auditor: &mut Auditor<'_>, index: ContentIndex) {
                 ReferenceExpectation::Table(ContentTableKind::ModifierType),
             );
         }
-        if let RuleModifier::Resistance {
-            damage_category, ..
-        } = &typed.modifier
-        {
-            auditor.reference(
+        // 抗性与易伤各带一个伤害类别引用，两条各自登记——花名册的键
+        // 是字段全名字符串，两个变体是两条不同的字段路径,合并成一条
+        // 会把「本体/示例里到底有没有人声明过易伤」这个观察抹掉。
+        match &typed.modifier {
+            RuleModifier::Resistance {
+                damage_category, ..
+            } => auditor.reference(
                 "TraitAttrs::rule_modifiers::Resistance::damage_category",
                 *damage_category,
                 ReferenceExpectation::Table(ContentTableKind::DamageCategory),
-            );
+            ),
+            RuleModifier::Vulnerability {
+                damage_category, ..
+            } => auditor.reference(
+                "TraitAttrs::rule_modifiers::Vulnerability::damage_category",
+                *damage_category,
+                ReferenceExpectation::Table(ContentTableKind::DamageCategory),
+            ),
+            _ => {}
         }
     }
     auditor.slice_reference(
@@ -1701,15 +1711,25 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
                 ReferenceExpectation::Table(ContentTableKind::ModifierType),
             );
         }
-        if let RuleModifier::Resistance {
-            damage_category, ..
-        } = &typed.modifier
-        {
-            auditor.reference(
+        // 抗性与易伤各带一个伤害类别引用，两条各自登记——花名册的键
+        // 是字段全名字符串，两个变体是两条不同的字段路径,合并成一条
+        // 会把「本体/示例里到底有没有人声明过易伤」这个观察抹掉。
+        match &typed.modifier {
+            RuleModifier::Resistance {
+                damage_category, ..
+            } => auditor.reference(
                 "ItemAttrs::rule_modifiers::Resistance::damage_category",
                 *damage_category,
                 ReferenceExpectation::Table(ContentTableKind::DamageCategory),
-            );
+            ),
+            RuleModifier::Vulnerability {
+                damage_category, ..
+            } => auditor.reference(
+                "ItemAttrs::rule_modifiers::Vulnerability::damage_category",
+                *damage_category,
+                ReferenceExpectation::Table(ContentTableKind::DamageCategory),
+            ),
+            _ => {}
         }
     }
     // 耐久标签批次新增的 `ItemDef.tags`——两件事一起做：记一条字段覆盖

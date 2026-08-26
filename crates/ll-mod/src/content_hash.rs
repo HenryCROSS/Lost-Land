@@ -531,7 +531,44 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 的 `SubclassAttrs::traits` 花名册观察与跨表引用检查，以及版本 7 那次
 /// 事故之后立下的那条纪律——**提交信息声称改了，不等于代码里真的
 /// 改了**，本行的字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 18;
+///
+/// ---
+///
+/// 版本 19（易伤与减伤对称批次）：**一个既有字段的合法值域收窄，外加
+/// 一个新的枚举变体**——两条各自都足以逼着版本号动。
+///
+/// 1. **值域收窄（这一条才是必须的）**：`RuleModifier::Resistance`
+///    与 `RawItemResistance` 的 `damage_reduction` 此前允许负数,负数
+///    表示「脆弱」；现在装载期一律 `.max(0)`。同一份 mod 数据里的
+///    `damage_reduction: -5` 此前哈希进 `-5`、行为是「多挨 5 点」,
+///    现在哈希进 `0`、行为是「什么也不做」——**同一段字节表示的规则
+///    变了**，与版本 18 文档「两个既有变体的载荷改了含义」那一条是
+///    完全同一类，理由也完全相同：量尺换了，旧存档的比对必须走
+///    `ContentHashAlgorithmUpgraded` 而不是 `ModContentMismatch`。
+/// 2. **新增变体**：[`write_rule_modifier`] 多一个判别值 `7`
+///    （`RuleModifier::Vulnerability`）。这一条**单独看不改任何既有
+///    摘要**（没有声明易伤的条目一个字节都没多，判别值是逐条写的,
+///    不是表头），但它是（一）那条收窄的配套——脆弱从此有正规写法。
+///
+/// **本仓库现有内容里没有任何一条负 `damage_reduction`**（`lostland`
+/// 的 `forge_apron` 是 `6`、`example_mod` 的 `acid_hide` 是 `4`、
+/// `acid_ward_amulet` 是 `3`），因此（一）对**现有**摘要逐位无影响；
+/// 真正改变摘要的是同批次给 `examplemod:acid_hide` 新增的那条
+/// `kind: "vulnerability"` 声明（走判别值 `7` 那段新字节）——只有
+/// `examplemod` 命名空间的摘要变了，`lostland` 逐位不变。版本号动的
+/// 理由是（一）那条**量尺变更**，不是这一条内容新增。
+///
+/// `ContentTableKind` 的二十一个变体一个未变、[`ContentValueTables`]
+/// 的字段一个未加，因此
+/// `scripts/ci/check_field_consumers.py` 的
+/// `check_content_hash_gate_cross_coverage` 那条互校在本批次无事可做
+/// （它只守「新增了表」）。
+///
+/// 守门方式同版本 13/14/15：本段文字 + 本模块单元测试
+/// `易伤与同数值的减伤摘要不同`，以及版本 7 那次事故之后立下的那条
+/// 纪律——**提交信息声称改了，不等于代码里真的改了**，本行的字面值
+/// 就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 19;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1354,6 +1391,21 @@ fn write_rule_modifier(hasher: &mut StateHasher, modifier: &RuleModifier, regist
         RuleModifier::InspectionConcealment { conceal_permille } => {
             hasher.write_u64(6);
             hasher.write_i64(i64::from(*conceal_permille));
+        }
+        // 判别值 7（易伤与减伤对称批次）：接着既有的 0..=6 往后编号,
+        // 不打乱任何已经写死的判别值，同本模块「判别值接着既有档往后
+        // 编号」的一贯纪律。写入的两个字段与判别值 0（`Resistance`）
+        // 逐字同构——**判别值本身就是两者的唯一区分**，这也正是它必须
+        // 是一个独立变体而不是负减伤的哈希侧后果：`减伤 -4` 与
+        // `易伤 4` 此前会编码成同一条规则的两个数值，现在是两条不同
+        // 的规则。
+        RuleModifier::Vulnerability {
+            damage_category,
+            damage_increase,
+        } => {
+            hasher.write_u64(7);
+            write_optional_resolved(hasher, Some(*damage_category), registry);
+            hasher.write_i64(i64::from(*damage_increase));
         }
     }
 }
@@ -3054,6 +3106,54 @@ mod tests {
         assert_ne!(untyped, as_enhancement);
         assert_ne!(untyped, as_alchemical);
         assert_ne!(as_enhancement, as_alchemical);
+    }
+
+    /// 易伤与减伤在摘要里必须分得开——见
+    /// [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 19」一节。
+    ///
+    /// 这条守的是一个具体的失效模式：`Vulnerability` 写入的两个字段与
+    /// `Resistance` 逐字同构（伤害类别 + 一个 `i64`），**判别值是两者
+    /// 唯一的区分**。忘了写判别值、或两个变体误用同一个判别值，一件
+    /// 「抗火 4」的围裙与一件「怕火 4」的围裙就会摘要相同，存档校验会
+    /// 报「内容没变」，玩家读档后拿到一件行为完全相反的装备。
+    #[test]
+    fn 易伤与同数值的减伤摘要不同() {
+        // Arrange：同一个伤害类别、同一个点数、同一个加值类型。
+        let mut registry = Registry::new();
+        let fire = registry.intern(id("yourmod:fire"));
+        let innate = registry.intern(id("yourmod:innate"));
+        let digest = |modifier: RuleModifier| -> u64 {
+            let mut hasher = StateHasher::new();
+            write_typed_rule_modifier(
+                &mut hasher,
+                &TypedRuleModifier {
+                    modifier_type: Some(innate),
+                    modifier,
+                },
+                &registry,
+            );
+            hasher.finish()
+        };
+
+        // Act
+        let as_resistance = digest(RuleModifier::Resistance {
+            damage_category: fire,
+            damage_reduction: 4,
+        });
+        let as_vulnerability = digest(RuleModifier::Vulnerability {
+            damage_category: fire,
+            damage_increase: 4,
+        });
+        // 同一个变体、不同点数：确认这两个字段本身也真的进了摘要,
+        // 否则上面那条断言可能只是判别值在起作用。
+        let stronger_vulnerability = digest(RuleModifier::Vulnerability {
+            damage_category: fire,
+            damage_increase: 6,
+        });
+
+        // Assert
+        assert_ne!(as_resistance, as_vulnerability);
+        assert_ne!(as_vulnerability, stronger_vulnerability);
     }
 
     /// 配方发现批次新增的 `ItemDef.taught_recipes` 真的进了摘要——

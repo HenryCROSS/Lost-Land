@@ -81,7 +81,7 @@ use crate::resource_pool::{
 };
 use crate::rule_modifier::{
     agent_rule_modifiers, damage_after_resistance, inspection_concealment_permille,
-    resistance_damage_reduction, sneak_attack_rule,
+    resistance_damage_reduction, sneak_attack_rule, vulnerability_damage_increase,
 };
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::skill_overview::SkillTreeCatalog;
@@ -4136,25 +4136,35 @@ fn resolve_attack(
         .as_ref()
         .and_then(|rule| rule.damage_category)
         .unwrap_or_else(|| damage_categories.default_category());
-    let damage_reduction = resistance_damage_reduction(
-        &agent_rule_modifiers(
-            defender,
-            race_traits,
-            class_traits,
-            subclass_traits,
-            traits,
-            items,
-        ),
-        damage_category,
+    // 防御方的规则修正只聚合**一次**，减伤与易伤两个消费者共用同一份
+    // 候选列表——两者读的是同一个实体、同一时刻的同一批声明，聚合两次
+    // 只会多走一遍完全相同的遍历（`agent_rule_modifiers` 是纯函数,
+    // 见其文档「热路径」一节）。
+    let defender_modifiers = agent_rule_modifiers(
+        defender,
+        race_traits,
+        class_traits,
+        subclass_traits,
+        traits,
+        items,
     );
-    // 整数减法 + 保底，全程饱和运算（点数是内容作者填的值，
+    let damage_reduction = resistance_damage_reduction(&defender_modifiers, damage_category);
+    // 易伤（易伤与减伤对称批次）：与减伤**各自独立聚合**，在下面那条
+    // 算式里一减一加。拆成两个量的理由见
+    // `ll_sim::rule_modifier::RuleModifier::Resistance` 文档「脆弱
+    // **不**用负减伤表达」一节——同一个桶里「取最强」会让负减伤被正
+    // 减伤静默吃掉。
+    let damage_increase = vulnerability_damage_increase(&defender_modifiers, damage_category);
+    // 整数加减 + 保底，全程饱和运算（点数是内容作者填的值，
     // `damage-formula-mod-api.md` 十二节「运行期溢出：饱和运算」同一条
     // 纪律）。保底的含义与边界情形见
     // `ll_sim::rule_modifier::damage_after_resistance` 与
     // `MINIMUM_DAMAGE_AFTER_RESISTANCE` 文档：减伤不封顶（大伤害自然
     // 穿透），但一次本来打得出伤害的攻击减完至少还剩 1 点——「绝对
-    // 免疫」在减伤模型下不再是一个可声明的状态。
-    let damage = damage_after_resistance(damage, damage_reduction);
+    // 免疫」在减伤模型下不再是一个可声明的状态。净额一次算完再钳一次,
+    // 不是「减完钳一次再加易伤」，理由见该函数文档「为什么是一条算式
+    // 一次钳」一节。
+    let damage = damage_after_resistance(damage, damage_reduction, damage_increase);
 
     let mut effects = vec![Effect::Damage {
         target,

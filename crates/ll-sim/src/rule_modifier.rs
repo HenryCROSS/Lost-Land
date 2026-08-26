@@ -1,6 +1,7 @@
 //! 规则修正（[`RuleModifier`]）的**多来源聚合点**——「一个实体此刻身上
-//! 有哪些规则修正」这个问题的唯一答案处，以及在其之上的四个消费者
-//! （抗性 [`resistance_damage_reduction`]、偷袭 [`sneak_attack_rule`]、
+//! 有哪些规则修正」这个问题的唯一答案处，以及在其之上的五个消费者
+//! （抗性 [`resistance_damage_reduction`]、易伤
+//! [`vulnerability_damage_increase`]、偷袭 [`sneak_attack_rule`]、
 //! 盘查意愿 [`inspection_suspicion_reduction_permille`]、盘查藏匿
 //! [`inspection_concealment_permille`]），连同它们共用的那一条 tie-break
 //! （[`merged_across_types`]）。
@@ -131,8 +132,9 @@
 //! # 「强」的方向为什么必须逐变体声明，不能写一个通用的「取最大值」
 //!
 //! 强弱方向是**变体自己的属性**，不是调用点的参数。改成整数点数之后
-//! 四个变体恰好都是「越大越强」（减伤点数、概率减点数、藏匿概率、
-//! 追加伤害），但这是这一版模型的**结果**，不是可以依赖的前提——乘数
+//! 五个变体恰好都是「越大越强」（减伤点数、追加伤害点数、概率减点数、
+//! 藏匿概率、偷袭追加伤害），但这是这一版模型的**结果**，不是可以
+//! 依赖的前提——乘数
 //! 模型下抗性与盘查意愿都是「越小越强」，一个通用的「取最大值」会让
 //! 它们反过来选**最弱**的那一条。真正的风险形态是「哪天有人加第五个
 //! 变体、忘了传对比较器」。
@@ -290,19 +292,67 @@ pub enum RuleModifier {
     /// 要防的正是后者）。乘数模型两个问题都有。合并方式逐变体声明在
     /// [`cross_type_merge`]。
     ///
-    /// # 负值 = 脆弱
+    /// # 脆弱**不**用负减伤表达，它是独立的一个变体
     ///
-    /// 减伤点数不禁止负数：`-5` 表示「这类伤害对我多打 5 点」，是乘数
-    /// 模型里 `2000‰`（双倍）那一档的表达方式在新模型下的对应物。刻意
-    /// 保留它，是因为旧模型能表达脆弱，静默丢掉这个能力会是一次不声明
-    /// 的退化。
+    /// 本变体此前不禁止负数，`-5` 就是「这类伤害对我多打 5 点」。那条
+    /// 表达方式已经**撤销**，理由不是风格，是一个可复现的错误结果：
+    /// 桶内的合并规则是「取最强」，而本变体的「强」由 [`strength_key`]
+    /// 声明成**减伤点数越大越强**。于是同一个桶里 `+3` 与 `-5` 相遇时
+    /// 取的是 `+3`——**脆弱被静默丢掉**。而「没声明加值类型的全部落进
+    /// 同一个共享桶」是本模块刻意选的默认值（见
+    /// [`TypedRuleModifier::modifier_type`]），因此任何一条不分类的
+    /// 抗性都会吃掉同一个伤害类别上全部不分类的脆弱声明。
+    ///
+    /// 把符号翻过来（改成「越小越强」）救不了这件事，只会把方向反过来
+    /// 再吃掉抗性：一个量既要在正半轴上「越大越强」又要在负半轴上
+    /// 「越小越强」，本来就不该是同一个量。脆弱因此独立成
+    /// [`RuleModifier::Vulnerability`]：两个量各自取最强、各自跨类型
+    /// 相加，最后在 [`damage_after_resistance`] 里一减一加，谁也吃不掉谁。
     Resistance {
         /// 伤害类别，走 `damage-formula-mod-api.md` 十七节的开放
         /// `register-damage-category` 集合。
         damage_category: ContentIndex,
-        /// 减伤点数：正数抵挡、负数放大，见本变体文档。减完的保底见
-        /// [`MINIMUM_DAMAGE_AFTER_RESISTANCE`]。
+        /// 减伤点数，**恒非负**（装载期钳到零，见
+        /// `ll_mod::content_schema_gear::RawRuleModifier`）。减完的保底见
+        /// [`MINIMUM_DAMAGE_AFTER_RESISTANCE`]；反方向见
+        /// [`RuleModifier::Vulnerability`]。
         damage_reduction: i32,
+    },
+    /// 易伤：该伤害类别的伤害，在减伤扣完之后**再加上**一个固定点数
+    /// ——[`RuleModifier::Resistance`] 的对称量，同一条「整数点数、
+    /// 加减法」的形状，方向相反。
+    ///
+    /// # 为什么是独立变体而不是负减伤
+    ///
+    /// 完整论证见 [`RuleModifier::Resistance`] 文档「脆弱**不**用负
+    /// 减伤表达」一节：一个量不可能在正负两个半轴上同时满足「取最强」。
+    /// 拆成两个量之后每个量都只在非负半轴上活动，「越大越强」对两者
+    /// 各自成立、彼此不干扰。
+    ///
+    /// # 与减伤的对称性是完整的
+    ///
+    /// 同一条 DR 论证原样适用于本变体，只是方向反过来：易伤 5 点对
+    /// 12 点来伤是多挨 42%，对 50 点只多挨 10%——**对小伤害强、对大
+    /// 伤害弱**。乘数模型里的 `2000‰`（双倍）做不到这件事，它对 12 点
+    /// 与 50 点一视同仁地翻倍。这与本模块把抗性从乘数换成点数时给出的
+    /// 理由是同一条，因此两个方向应当用同一种形状表达。
+    ///
+    /// 合并规则也完整对称：同一加值类型内取最强（易伤越大越强），跨
+    /// 加值类型相加，声明在 [`strength_key`] 与 [`cross_type_merge`]。
+    ///
+    /// # 它减不穿保底
+    ///
+    /// 易伤只往上加，[`MINIMUM_DAMAGE_AFTER_RESISTANCE`] 那条保底因此
+    /// 与它无关；真正与它有关的是**净额一次算完再钳**，见
+    /// [`damage_after_resistance`] 文档「为什么是一条算式一次钳」一节。
+    Vulnerability {
+        /// 伤害类别，与 [`RuleModifier::Resistance::damage_category`]
+        /// 同一张开放注册表。
+        damage_category: ContentIndex,
+        /// 追加伤害点数，**恒非负**（装载期钳到零，理由同
+        /// [`RuleModifier::Resistance::damage_reduction`]：负的易伤就是
+        /// 减伤，两个变体各自只在非负半轴上活动，才谈得上「取最强」）。
+        damage_increase: i32,
     },
     /// 重骰：该实体掷骰抽出 `value` 时,立即重抽一次,取新值（不再检查
     /// 新值是否又是 `value`）。
@@ -558,8 +608,9 @@ pub fn equipment_rule_modifiers(
 /// # 接第三、第四路来源时改哪里
 ///
 /// 只改本函数：新写一个收集器（形如 [`equipment_rule_modifiers`]），
-/// 在这里多 `extend` 一次。四个消费者（[`resistance_damage_reduction`]/
-/// [`sneak_attack_rule`]/[`inspection_suspicion_reduction_permille`]/
+/// 在这里多 `extend` 一次。五个消费者（[`resistance_damage_reduction`]/
+/// [`vulnerability_damage_increase`]/[`sneak_attack_rule`]/
+/// [`inspection_suspicion_reduction_permille`]/
 /// [`inspection_concealment_permille`]）与它们在 `crate::resolve`／脚本
 /// 侧的调用点都不需要改动一个字符——这正是 `crate::traits::agent_trait_sources` 文档
 /// 「其余两路为什么不在这里」所描述的那种「调用点不需要改一行」，
@@ -631,8 +682,53 @@ pub fn resistance_damage_reduction(
     .unwrap_or(0)
 }
 
-/// 把一次攻击已经算好的伤害，按 `damage_reduction` 点减伤扣掉，并落实
-/// [`MINIMUM_DAMAGE_AFTER_RESISTANCE`] 这条保底。
+/// 易伤消费者——在 [`agent_rule_modifiers`] 汇总出的候选列表里，取
+/// `damage_category` 匹配的 [`RuleModifier::Vulnerability`] 的**追加
+/// 伤害点数**；一条也没命中时返回 `0`（不额外多挨一点）。
+///
+/// 与 [`resistance_damage_reduction`] 逐字同构：同一个
+/// [`merged_across_types`]、同一套「同类型取最强、跨类型相加」，只是
+/// 认领的变体与方向相反。两者**各自独立聚合**，这正是拆成两个变体要
+/// 买到的东西——它们不在同一个桶里争「谁更强」，因此谁也吃不掉谁，见
+/// [`RuleModifier::Resistance`] 文档「脆弱**不**用负减伤表达」一节。
+pub fn vulnerability_damage_increase(
+    modifiers: &[RuleModifierEntry],
+    damage_category: ContentIndex,
+) -> i32 {
+    merged_across_types(modifiers, |modifier| match modifier {
+        RuleModifier::Vulnerability {
+            damage_category: candidate_category,
+            damage_increase,
+        } if *candidate_category == damage_category => Some(*damage_increase),
+        _ => None,
+    })
+    .unwrap_or(0)
+}
+
+/// 把一次攻击已经算好的伤害，减掉 `damage_reduction` 点减伤、加上
+/// `damage_increase` 点易伤，并落实 [`MINIMUM_DAMAGE_AFTER_RESISTANCE`]
+/// 这条保底：
+///
+/// ```text
+/// 结果 = max(1, 伤害 − 减伤 + 易伤)
+/// ```
+///
+/// # 为什么是一条算式一次钳，不是「先减完钳一次、再加易伤」
+///
+/// 两种写法在「减伤远大于来伤、同时又有易伤」这一格上给出完全不同的
+/// 答案，必须明确裁定，不能靠代码顺序偶然决定：来伤 10、减伤 100、
+/// 易伤 50——
+///
+/// - **一条算式一次钳**（本实现）：`max(1, 10 − 100 + 50) = 1`。
+/// - 先钳后加：`max(1, 10 − 100) + 50 = 51`，比**没有任何抗性**时的
+///   10 点还高出四倍。
+///
+/// 后者显然错：一件让目标「特别抗火」的装备不该因为目标同时「有点
+/// 怕火」而把它挨的火伤放大。根因是那条保底把一个负得很深的中间值
+/// 抬回 1，于是丢掉了「减伤还有多少富余」这个信息，易伤便加在了一个
+/// 被人为抬高过的基数上。净额一次算完就没有这个中间值可丢——这也正是
+/// 全整数加减法相对乘数链的一个具体好处：`a − b + c` 只有一个答案,
+/// 不存在「先算哪一步」。
 ///
 /// # 为什么保底只对「本来就打得出伤害」的那一下生效
 ///
@@ -640,12 +736,16 @@ pub fn resistance_damage_reduction(
 /// 「凭空造出一点伤害」。一次本来就打不出伤害的攻击（例如攻击力为零
 /// 的占位公式）不该因为目标碰巧声明过抗性而反倒开始掉血——那会让本条
 /// 保底变成一个隐蔽的伤害来源。
-pub fn damage_after_resistance(damage: i32, damage_reduction: i32) -> i32 {
+///
+/// 这条提前返回同样覆盖易伤：一次打不出伤害的攻击不会因为目标怕火
+/// 就开始打得出伤害。易伤是**放大既有伤害**的量，不是伤害来源。
+pub fn damage_after_resistance(damage: i32, damage_reduction: i32, damage_increase: i32) -> i32 {
     if damage <= 0 {
         return damage;
     }
     damage
         .saturating_sub(damage_reduction)
+        .saturating_add(damage_increase)
         .max(MINIMUM_DAMAGE_AFTER_RESISTANCE)
 }
 
@@ -745,6 +845,13 @@ fn strength_key(modifier: &RuleModifier) -> StrengthKey {
         R::Resistance {
             damage_reduction, ..
         } => StrengthKey::larger_is_stronger(*damage_reduction),
+        // 追加伤害点数，越大越强：**「强」指这条修正本身有多强,不是
+        // 它对谁有利**。易伤 6 比易伤 4 更强地表达了「怕火」这件事,
+        // 于是同一个加值类型里取 6——与「两条免疫不叠成四分之一伤害」
+        // 是同一条纪律的另一半，见 `merged_across_types` 文档。
+        R::Vulnerability {
+            damage_increase, ..
+        } => StrengthKey::larger_is_stronger(*damage_increase),
         // 概率减点数，越大越强：从盘查触发率上减掉得越多越不起眼。
         R::InspectionSuspicion {
             suspicion_reduction_permille,
@@ -813,6 +920,8 @@ fn cross_type_merge(modifier: &RuleModifier) -> CrossTypeMerge {
     match modifier {
         // 减伤点数：附魔 3 点 + 炼金 2 点 = 5 点。
         R::Resistance { .. } => CrossTypeMerge::Add,
+        // 追加伤害点数：与减伤逐字对称，诅咒 3 点 + 天生 4 点 = 7 点。
+        R::Vulnerability { .. } => CrossTypeMerge::Add,
         // 概率减点数：两个类型各减 100‰ 就是减 200‰，钳制在消费者那一侧。
         R::InspectionSuspicion { .. } => CrossTypeMerge::Add,
         // 逐件藏匿概率：同上，相加后钳进两端各留一线的区间。
@@ -2090,17 +2199,47 @@ mod tests {
         // 「不允许绝对免疫」那条裁定的直接落点，见
         // `MINIMUM_DAMAGE_AFTER_RESISTANCE` 文档。
         // Act & Assert
-        assert_eq!(damage_after_resistance(10, 3), 7);
+        assert_eq!(damage_after_resistance(10, 3, 0), 7);
         assert_eq!(
-            damage_after_resistance(10, 10),
+            damage_after_resistance(10, 10, 0),
             MINIMUM_DAMAGE_AFTER_RESISTANCE
         );
         assert_eq!(
-            damage_after_resistance(10, 9_999),
+            damage_after_resistance(10, 9_999, 0),
             MINIMUM_DAMAGE_AFTER_RESISTANCE
         );
-        // 负减伤 = 脆弱：多挨 5 点。
-        assert_eq!(damage_after_resistance(10, -5), 15);
+    }
+
+    #[test]
+    fn 易伤把伤害加回去且与减伤方向严格对称() {
+        // 易伤是减伤的对称量：同一个点数，一个减一个加，见
+        // `RuleModifier::Vulnerability` 文档。
+        // Act & Assert
+        // 只有易伤：10 + 5 = 15（此前用 `damage_reduction: -5` 表达的
+        // 那一格，现在有了正规写法，数值逐位相同）。
+        assert_eq!(damage_after_resistance(10, 0, 5), 15);
+        // 减伤与易伤同时在场：净额 10 − 3 + 5 = 12。两者互不吞噬——
+        // 这正是拆成两个变体买到的东西。
+        assert_eq!(damage_after_resistance(10, 3, 5), 12);
+        // 严格对称：同一个点数一减一加抵消回原值。
+        for point in [1, 4, 7, 1_000] {
+            assert_eq!(damage_after_resistance(50, point, point), 50);
+        }
+    }
+
+    #[test]
+    fn 净额一次算完再钳而不是减完先钳再加易伤() {
+        // 见 `damage_after_resistance` 文档「为什么是一条算式一次钳」
+        // 一节：来伤 10、减伤 100、易伤 50。
+        // - 一条算式一次钳（本实现）：max(1, 10 − 100 + 50) = 1。
+        // - 先钳后加（错的那种）：max(1, 10 − 100) + 50 = 51,比完全
+        //   没有抗性时的 10 点还高四倍。
+        // Act
+        let damage = damage_after_resistance(10, 100, 50);
+
+        // Assert
+        assert_eq!(damage, MINIMUM_DAMAGE_AFTER_RESISTANCE);
+        assert_ne!(damage, 51);
     }
 
     #[test]
@@ -2109,18 +2248,136 @@ mod tests {
         // 见 `damage_after_resistance` 文档「为什么保底只对本来就打得出
         // 伤害的那一下生效」一节。
         // Act & Assert
-        assert_eq!(damage_after_resistance(0, 3), 0);
-        assert_eq!(damage_after_resistance(0, 0), 0);
-        assert_eq!(damage_after_resistance(-2, 3), -2);
+        assert_eq!(damage_after_resistance(0, 3, 0), 0);
+        assert_eq!(damage_after_resistance(0, 0, 0), 0);
+        assert_eq!(damage_after_resistance(-2, 3, 0), -2);
+        // 易伤同样不是伤害来源：一次打不出伤害的攻击不会因为目标怕火
+        // 就开始打得出伤害。
+        assert_eq!(damage_after_resistance(0, 0, 5), 0);
+        assert_eq!(damage_after_resistance(-2, 0, 5), -2);
     }
 
     #[test]
     fn 没有任何抗性声明时伤害逐位不变() {
         // 分桶层与减伤模型对「没有任何抗性声明」这条最常见的路径必须是
-        // 恒等变换：减伤 0 点、保底不介入。
+        // 恒等变换：减伤 0 点、易伤 0 点、保底不介入。
         // Act & Assert
         for damage in [1, 7, 100, 9_999] {
-            assert_eq!(damage_after_resistance(damage, 0), damage);
+            assert_eq!(damage_after_resistance(damage, 0, 0), damage);
         }
+    }
+
+    // ===================== 易伤聚合 =====================
+
+    /// 造一条易伤候选，理由同本模块其余测试帮手。
+    fn vuln_entry(
+        origin: ContentIndex,
+        modifier_type: Option<ContentIndex>,
+        damage_category: ContentIndex,
+        damage_increase: i32,
+    ) -> RuleModifierEntry {
+        RuleModifierEntry {
+            origin,
+            modifier_type,
+            modifier: RuleModifier::Vulnerability {
+                damage_category,
+                damage_increase,
+            },
+        }
+    }
+
+    /// 造一条抗性候选——与 [`vuln_entry`] 成对，好让「一抗一怕落在
+    /// 同一个桶」那条守门测试读起来是对称的。
+    fn res_entry(
+        origin: ContentIndex,
+        modifier_type: Option<ContentIndex>,
+        damage_category: ContentIndex,
+        damage_reduction: i32,
+    ) -> RuleModifierEntry {
+        RuleModifierEntry {
+            origin,
+            modifier_type,
+            modifier: resistance(damage_category, damage_reduction),
+        }
+    }
+
+    #[test]
+    fn 同一个加值类型里的两条易伤取最强() {
+        // 桶内规则与抗性逐字相同：不叠加，取最强的那一条。
+        // Arrange
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let innate = index(&mut interner, "examplemod:innate");
+        let first = index(&mut interner, "test:a");
+        let second = index(&mut interner, "test:b");
+        let modifiers = vec![
+            vuln_entry(first, Some(innate), fire, 4),
+            vuln_entry(second, Some(innate), fire, 6),
+        ];
+
+        // Act & Assert
+        assert_eq!(vulnerability_damage_increase(&modifiers, fire), 6);
+    }
+
+    #[test]
+    fn 不同加值类型的两条易伤相加() {
+        // 跨桶规则与抗性逐字相同：相加。
+        // Arrange
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let innate = index(&mut interner, "examplemod:innate");
+        let curse = index(&mut interner, "test:curse");
+        let first = index(&mut interner, "test:a");
+        let second = index(&mut interner, "test:b");
+        let modifiers = vec![
+            vuln_entry(first, Some(innate), fire, 4),
+            vuln_entry(second, Some(curse), fire, 3),
+        ];
+
+        // Act & Assert
+        assert_eq!(vulnerability_damage_increase(&modifiers, fire), 7);
+    }
+
+    #[test]
+    fn 易伤只认自己那个伤害类别() {
+        // Arrange
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let acid = index(&mut interner, "examplemod:acid");
+        let origin = index(&mut interner, "test:a");
+        let modifiers = vec![vuln_entry(origin, None, fire, 4)];
+
+        // Act & Assert
+        assert_eq!(vulnerability_damage_increase(&modifiers, fire), 4);
+        assert_eq!(vulnerability_damage_increase(&modifiers, acid), 0);
+    }
+
+    #[test]
+    fn 同一个未分类桶里的减伤不再吞掉易伤() {
+        // 本批次修掉的那条真实错误结果的守门测试：负减伤表达脆弱时,
+        // 「同类型取最强」会让 `-5` 被同桶的 `+3` 静默吃掉,而**不声明
+        // 加值类型的全部落进同一个共享桶**是本模块刻意选的默认值,
+        // 因此这不是一个边角情形。完整论证见
+        // `RuleModifier::Resistance` 文档「脆弱**不**用负减伤表达」。
+        // Arrange：两条都不声明类型，同一个伤害类别，一抗一怕。
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let armor = index(&mut interner, "test:armor");
+        let flesh = index(&mut interner, "test:flesh");
+        let modifiers = vec![
+            res_entry(armor, None, fire, 3),
+            vuln_entry(flesh, None, fire, 5),
+        ];
+
+        // Act
+        let reduction = resistance_damage_reduction(&modifiers, fire);
+        let increase = vulnerability_damage_increase(&modifiers, fire);
+
+        // Assert：两条都活着，各自被自己的消费者认领。
+        assert_eq!(reduction, 3);
+        assert_eq!(increase, 5);
+        // 净额：来伤 10 − 3 + 5 = 12。旧模型（负减伤 `-5` 与 `+3` 同桶
+        // 取最强）在这里会算出 10 − 3 = 7,脆弱整条消失。
+        assert_eq!(damage_after_resistance(10, reduction, increase), 12);
     }
 }
