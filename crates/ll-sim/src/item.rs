@@ -37,6 +37,8 @@
 //! 「`resolve` 真正要读的字段才收进来」，不是判据松动。`base_weight`/
 //! `base_price` 照旧不收：负重与经济系统至今没有任何结算消费者。
 
+use std::collections::BTreeMap;
+
 use ll_core::ident::ContentIndex;
 
 pub use ll_world::item::{
@@ -313,6 +315,98 @@ impl ItemCatalog for NoItems {
     }
 }
 
+/// 一件物品登记的装备占位掩码；**查不到定义按 [`SlotMask::EMPTY`]
+/// 处理**（视为不占用任何槽位）。
+///
+/// 抽成函数是因为这一句「查目录 → 取掩码 → 查不到当空」在
+/// [`crate::resolve`] 的装备/卸下两条路径与 [`outfit_from_inventory`]
+/// 里各出现一次，而那个 `map_or` 的**兜底方向**是一条被反复论证过的
+/// 裁定（见 `resolve_equip` 文档「占位冲突」一节：老物品的冲突判定
+/// 退化不应该无端阻塞新物品的装备），不该散成三处各写一遍。
+pub fn equip_mask_of(def: ContentIndex, items: &dyn ItemCatalog) -> SlotMask {
+    items
+        .item(def)
+        .map_or(SlotMask::EMPTY, |rule| rule.equip_mask)
+}
+
+/// `equipment` 里与 `new_mask` **占位冲突**的全部锚点槽位，按槽位升序
+/// （`BTreeMap` 的遍历序，确定性见约束 C5）。
+///
+/// 「一条规则覆盖所有特例」（`knowledge/design/equipment-slots.md`）：
+/// 双手武器、全身甲、连体装的冲突判定全部就是这一个掩码相交测试，没有
+/// 任何逐类特例。[`crate::resolve`] 的 `resolve_equip` 与
+/// [`outfit_from_inventory`] 共用本函数，因此「什么算冲突」在仓库里
+/// 只有一个定义。
+pub fn conflicting_anchors(
+    equipment: &BTreeMap<EquipSlot, ItemStack>,
+    new_mask: SlotMask,
+    items: &dyn ItemCatalog,
+) -> Vec<EquipSlot> {
+    equipment
+        .iter()
+        .filter(|(_, stack)| equip_mask_of(stack.def, items).intersects(new_mask))
+        .map(|(anchor, _)| *anchor)
+        .collect()
+}
+
+/// 把一份**刚生成出来的**背包按装备规则拆成「穿在身上的」与「留在
+/// 背包里的」两半——世界生成期给新角色穿上出生装备的唯一入口，供
+/// `ll_game::world::build_player_agent` 消费。
+///
+/// # 三条裁定（世界生成没有「玩家刚刚请求装备哪一件」这个输入）
+///
+/// **哪些该穿：`equip_mask` 非空的就穿。** 不另发明一个「出生时要不要
+/// 穿上」的内容字段：`equip_mask` 本身就是内容作者写下的「这件东西是
+/// 穿戴在身上的」，再要求写第二遍等于把同一件事声明两次，两处迟早
+/// 分叉。这也正是 [`crate::resolve`] 的 `resolve_equip` 用的同一道闸门
+/// （掩码为空即静默不装备）。
+///
+/// **槽位冲突：先到先得，后来者留在背包，不报错。** 与 `resolve_equip`
+/// 的「后来者顶掉先来者」**刻意相反**，因为两者的输入不是一回事：
+/// `resolve_equip` 服务的是一次**玩家请求**（「现在给我换上这件」），
+/// 顶掉旧的正是玩家要的；世界生成没有任何请求，只有一份列表。若照搬
+/// 顶替语义，内容作者写下的列表顺序就变成了一条**倒过来读**的优先级
+/// （最后一件赢），而人读一份清单默认是从上往下的优先级。先到先得让
+/// 列表顺序就是优先级顺序。
+///
+/// 也不报错：两件抢同一个槽位是**合法内容**（行囊里多带一件披风换洗
+/// 完全正常），装载期拒绝它等于禁止一个种族携带两件同槽位衣物。
+///
+/// **穿上的不再留在背包。** 与 `resolve_equip` 逐字一致（那边是
+/// `RemoveFromInventory` + `Equip` 一对效果）——两处都留一份就是凭空
+/// 复制了一件物品。
+///
+/// # 整堆搬运，不拆堆
+///
+/// 一条 `count > 1` 的堆若可装备，整堆进槽位，与 `resolve_equip` 的
+/// `Effect::Equip { stack }` 逐字一致（那里搬的也是整条堆）。本函数不
+/// 在世界生成期发明一套「装一件、剩下的留背包」的拆堆规则——那会是一条
+/// 只在这里成立的语义。本体全部可装备物品的 `stack_limit` 都是 1，
+/// 这条差别今天在本体内容上不可观察。
+pub fn outfit_from_inventory(
+    inventory: Vec<ItemStack>,
+    items: &dyn ItemCatalog,
+) -> (BTreeMap<EquipSlot, ItemStack>, Vec<ItemStack>) {
+    let mut equipment: BTreeMap<EquipSlot, ItemStack> = BTreeMap::new();
+    let mut carried = Vec::new();
+
+    for stack in inventory {
+        let mask = equip_mask_of(stack.def, items);
+        let Some(anchor) = mask.anchor_slot() else {
+            // 掩码为空（不可装备）或查不到定义——留在背包。
+            carried.push(stack);
+            continue;
+        };
+        if conflicting_anchors(&equipment, mask, items).is_empty() {
+            equipment.insert(anchor, stack);
+        } else {
+            carried.push(stack);
+        }
+    }
+
+    (equipment, carried)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -326,5 +420,116 @@ mod tests {
 
         // Act & Assert
         assert_eq!(NoItems.item(index), None);
+    }
+
+    /// 一份最小物品目录：只回答堆叠上限与装备掩码，其余字段取默认。
+    struct MaskCatalog(BTreeMap<ContentIndex, SlotMask>);
+
+    impl ItemCatalog for MaskCatalog {
+        fn item(&self, item: ContentIndex) -> Option<ItemRule> {
+            self.0.get(&item).map(|mask| ItemRule {
+                stack_limit: 1,
+                equip_mask: *mask,
+                stat_bonuses: Vec::new(),
+                use_effect: None,
+                penetration: Penetration::NONE,
+                max_durability: None,
+                wear_channels: WearChannels::default(),
+                damage_formula: None,
+                damage_category: None,
+                rule_modifiers: Vec::new(),
+                requires_identification: false,
+                study_experience: 0,
+                blind_box_pool: Vec::new(),
+                taught_recipes: Vec::new(),
+            })
+        }
+    }
+
+    fn outfit_fixture() -> (MaskCatalog, ContentIndex, ContentIndex, ContentIndex) {
+        let mut interner = Interner::new();
+        let mut id = |raw: &str| interner.intern(NamespacedId::parse(raw).unwrap());
+        let apron = id("lostland:forge_apron");
+        let mantle = id("lostland:fur_mantle");
+        let meat = id("lostland:roast_meat");
+        let catalog = MaskCatalog(BTreeMap::from([
+            (apron, EquipSlot::OUTER.mask()),
+            (mantle, EquipSlot::OUTER.mask()),
+            (meat, SlotMask::EMPTY),
+        ]));
+        (catalog, apron, mantle, meat)
+    }
+
+    #[test]
+    fn 出生装备里可装备的穿上不可装备的留在背包() {
+        // Arrange
+        let (catalog, apron, _mantle, meat) = outfit_fixture();
+        let inventory = vec![ItemStack::new(apron, 1), ItemStack::new(meat, 3)];
+
+        // Act
+        let (equipment, carried) = outfit_from_inventory(inventory, &catalog);
+
+        // Assert：穿上的那件**不再**留在背包（两处都留就是凭空复制了
+        // 一件物品，与 resolve_equip 的 RemoveFromInventory + Equip 一致）。
+        assert_eq!(equipment.len(), 1);
+        assert_eq!(equipment[&EquipSlot::OUTER].def, apron);
+        assert_eq!(carried.len(), 1);
+        assert_eq!(carried[0].def, meat);
+    }
+
+    #[test]
+    fn 两件抢同一槽位时先到先得后来者留在背包() {
+        // Arrange：围裙与毛皮披风都占 outer。
+        let (catalog, apron, mantle, _meat) = outfit_fixture();
+
+        // Act
+        let (equipment, carried) = outfit_from_inventory(
+            vec![ItemStack::new(apron, 1), ItemStack::new(mantle, 1)],
+            &catalog,
+        );
+
+        // Assert：列表顺序就是优先级顺序——**不是** resolve_equip 的
+        // 「后来者顶掉先来者」，理由见 outfit_from_inventory 文档。
+        assert_eq!(equipment[&EquipSlot::OUTER].def, apron);
+        assert_eq!(
+            carried.iter().map(|s| s.def).collect::<Vec<_>>(),
+            vec![mantle]
+        );
+    }
+
+    #[test]
+    fn 同一份出生装备换个顺序穿上的就是另一件() {
+        // Arrange：上一条的反面——先到先得这条裁定必须是**可观察**的，
+        // 否则它与「后来者顶掉」在本体内容上区分不出来。
+        let (catalog, apron, mantle, _meat) = outfit_fixture();
+
+        // Act
+        let (equipment, carried) = outfit_from_inventory(
+            vec![ItemStack::new(mantle, 1), ItemStack::new(apron, 1)],
+            &catalog,
+        );
+
+        // Assert
+        assert_eq!(equipment[&EquipSlot::OUTER].def, mantle);
+        assert_eq!(
+            carried.iter().map(|s| s.def).collect::<Vec<_>>(),
+            vec![apron]
+        );
+    }
+
+    #[test]
+    fn 查不到定义的物品留在背包不当作可装备() {
+        // Arrange：与 resolve_equip 的同一条纪律——「新物品必须证明
+        // 自己能装备」，查不到规则就没有任何证据。
+        let mut interner = Interner::new();
+        let unknown = interner.intern(NamespacedId::parse("yourmod:unknown").unwrap());
+
+        // Act
+        let (equipment, carried) =
+            outfit_from_inventory(vec![ItemStack::new(unknown, 1)], &NoItems);
+
+        // Assert
+        assert!(equipment.is_empty());
+        assert_eq!(carried.len(), 1);
     }
 }

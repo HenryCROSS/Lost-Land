@@ -71,8 +71,8 @@ use crate::exposure::{AmbientSource, exposure_strength_penalty, felt_temperature
 use crate::formula::{DamageFormulaCatalog, FormulaInputs, NoFormulas, eval_formula};
 use crate::intent::{Direction, Intent};
 use crate::item::{
-    EquipSlot, ItemCatalog, ItemStack, NoItems, SlotMask, StatTarget, WearChannels, can_merge,
-    merge_stacks,
+    EquipSlot, ItemCatalog, ItemStack, NoItems, StatTarget, WearChannels, can_merge,
+    conflicting_anchors, equip_mask_of, merge_stacks,
 };
 use crate::quest::{NoQuests, QuestCatalog};
 use crate::resource_pool::{
@@ -2523,30 +2523,28 @@ fn resolve_equip(
         return Vec::new();
     };
     let new_mask = rule.equip_mask;
-    if new_mask == SlotMask::EMPTY {
-        return Vec::new();
-    }
     let Some(anchor) = new_mask.anchor_slot() else {
+        // 空掩码（不可装备）——`anchor_slot` 对 `SlotMask::EMPTY`
+        // 返回 `None`，两道门合成一道。
         return Vec::new();
     };
 
     let mut effects = Vec::new();
-    for (&existing_anchor, &existing_stack) in &agent.equipment {
-        let existing_mask = items
-            .item(existing_stack.def)
-            .map_or(SlotMask::EMPTY, |rule| rule.equip_mask);
-        if existing_mask.intersects(new_mask) {
-            effects.push(Effect::Unequip {
-                actor,
-                slot: existing_anchor,
-            });
-            effects.push(merge_into_inventory_effect(
-                agent,
-                actor,
-                existing_stack,
-                items,
-            ));
-        }
+    // 「什么算占位冲突」只有一个定义，与世界生成期的
+    // `ll_sim::item::outfit_from_inventory` 共用，见
+    // `crate::item::conflicting_anchors` 文档。
+    for existing_anchor in conflicting_anchors(&agent.equipment, new_mask, items) {
+        let existing_stack = agent.equipment[&existing_anchor];
+        effects.push(Effect::Unequip {
+            actor,
+            slot: existing_anchor,
+        });
+        effects.push(merge_into_inventory_effect(
+            agent,
+            actor,
+            existing_stack,
+            items,
+        ));
     }
 
     effects.push(Effect::RemoveFromInventory {
@@ -2593,12 +2591,10 @@ fn resolve_unequip(
         return Vec::new();
     };
 
-    let found = agent.equipment.iter().find(|(_, stack)| {
-        items
-            .item(stack.def)
-            .map_or(SlotMask::EMPTY, |rule| rule.equip_mask)
-            .contains_slot(slot)
-    });
+    let found = agent
+        .equipment
+        .iter()
+        .find(|(_, stack)| equip_mask_of(stack.def, items).contains_slot(slot));
     let Some((&anchor, &stack)) = found else {
         return Vec::new();
     };

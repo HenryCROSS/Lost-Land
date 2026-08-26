@@ -503,8 +503,7 @@ fn build_player_agent(
     // ——见 `ll_mod::race::starting_inventory` 文档）：本体三族现在各自
     // 声明了一套开局装备（`mods/lostland/races.json5` 的
     // `starting_items`），因此这条路径对本体内容不再是空 `Vec`；
-    // 第三方 mod 通过 `register-race-starting-item` 追加的声明走的是
-    // 同一行代码。
+    // 第三方 mod 通过种族数据文件追加的声明走的是同一行代码。
     //
     // `item_table` 传进去是为了给每件出生装备定耐久初值（满耐久，见
     // `ItemStack::freshly_made`）——出生装备与制作成品、盲盒产出是同
@@ -514,6 +513,17 @@ fn build_player_agent(
         .get(race)
         .map(|view| ll_mod::race::starting_inventory(&view, &content.item_table))
         .unwrap_or_default();
+    // 出生装备自动穿戴（项目所有者裁定「加入」）：`starting_items` 此前
+    // 只进 `Agent::inventory`，`equipment` 恒为空——新角色带着一件衣服
+    // 站在雪地里，得自己先翻背包穿上。
+    //
+    // **不在世界生成期另造一套装备逻辑**：`ll_sim::item::outfit_from_inventory`
+    // 与 `resolve_equip` 共用同一个占位冲突定义
+    // （`ll_sim::item::conflicting_anchors`）与同一道「可不可装备」的闸门
+    // （`equip_mask` 非空）。三条与 `resolve_equip` 不同的裁定（先到
+    // 先得、不报错、穿上的不留背包）逐条论证见该函数文档。
+    let (equipment, inventory) =
+        ll_sim::item::outfit_from_inventory(starting_items, &content.item_table);
     let stats =
         ll_sim::character::bake_race_stat_modifiers(BaseStats::BASELINE, race, &content.race_table);
     Agent {
@@ -533,8 +543,8 @@ fn build_player_agent(
         stamina: Agent::STARTING_STAMINA,
         resource_pools: std::collections::BTreeMap::new(),
         spent_slots: std::collections::BTreeMap::new(),
-        inventory: starting_items,
-        equipment: std::collections::BTreeMap::new(),
+        inventory,
+        equipment,
         resting: None,
         unlocked_skills: Vec::new(),
         known_recipes: Vec::new(),
@@ -1033,22 +1043,27 @@ mod tests {
     }
 
     #[test]
-    fn 三个本体种族生成的角色出生时背包里真的有各自那套开局装备() {
+    fn 三个本体种族生成的角色出生时穿着各自那套开局装备() {
         // 出生装备这条接线在**真实生产路径**上的端到端证据：
         // mods/lostland/races.json5 给三族各写了一套 starting_items，
         // build_player_agent（spawn_player 实际的生成逻辑）必须把它们
-        // 原样放进背包。此前三族这个字段全空，这条路径对本体内容是
-        // 一条从没被走过的死代码。
+        // 一件不落地交出来，且**可装备的那件已经穿在身上**（出生装备
+        // 自动穿戴批次，项目所有者裁定「加入」）。
         //
-        // 断言比的是「多少堆、每堆多少件」这个形状而不是具体 id 列表
+        // 断言比的是「多少堆、穿了几件」这个形状而不是具体 id 列表
         // ——逐条 id 的裁定由 ll-mod/tests/base_mod_races.rs 钉住
         // （那里能直接拿到 Registry 反查 id），本条只负责证明
-        // 「声明真的流到了 Agent::inventory」，不重复钉同一份内容。
+        // 「声明真的流到了 Agent 的两个字段」，不重复钉同一份内容。
         // Arrange
         let content = test_content();
         let (pos, zone) = spawn_pos_and_zone(&content);
 
-        for (race, expected_stacks) in [
+        // 三族各自那套里恰好各有一件可装备物：人类的亚麻衬衣（body）、
+        // 矮人的羊毛手套（hand-l + hand-r 一双）、精灵的骨针（hand-r）。
+        // 三套都没有两件抢同一槽位的东西，因此「先到先得」这条裁定在
+        // 本体内容上不可观察——它的可观察证据在
+        // `ll_sim::item` 的单元测试里（那里能自由构造冲突的两件）。
+        for (race, total_stacks) in [
             (content.race_ids.human, 2),
             (content.race_ids.dwarf, 3),
             (content.race_ids.elf, 4),
@@ -1056,14 +1071,16 @@ mod tests {
             // Act
             let agent = build_player_agent(pos, zone, &content, race, Tick(0));
 
-            // Assert：进的是背包，不是装备栏——出生装备是「行囊里有
-            // 什么」，玩家自己决定穿哪件（见 races.json5「语义」一节）。
-            assert_eq!(agent.inventory.len(), expected_stacks);
-            assert!(agent.equipment.is_empty());
+            // Assert：一件穿在身上，其余留在背包——两处加起来仍是原本
+            // 那几堆，一件都没多也没少（穿上的**不**在背包里重复留一份，
+            // 见 `ll_sim::item::outfit_from_inventory` 文档）。
+            assert_eq!(agent.equipment.len(), 1, "每族恰好有一件可装备物");
+            assert_eq!(agent.inventory.len(), total_stacks - 1);
             // 每一堆都是**全新**的：耐久等于它那条定义声明的上限
-            // （`ItemStack::freshly_made`），不是 None。三套里各有一件
-            // 声明了耐久上限的东西（衬衣 50 / 手套 40 / 骨针 60）。
-            for stack in &agent.inventory {
+            // （`ItemStack::freshly_made`），不是 None。三族穿上的那件
+            // 恰好就是各自那套里会磨损的东西（衬衣 50 / 手套 40 /
+            // 骨针 60）。
+            for stack in agent.inventory.iter().chain(agent.equipment.values()) {
                 let expected = ll_sim::item::ItemCatalog::item(&content.item_table, stack.def)
                     .expect("出生装备必然是已注册的物品")
                     .max_durability;
@@ -1071,10 +1088,10 @@ mod tests {
             }
             assert!(
                 agent
-                    .inventory
-                    .iter()
-                    .any(|stack| stack.durability.is_some()),
-                "三族各自那套开局装备里都该有一件会磨损的东西"
+                    .equipment
+                    .values()
+                    .all(|stack| stack.durability.is_some()),
+                "三族穿上的那件都该是会磨损的东西"
             );
         }
     }
