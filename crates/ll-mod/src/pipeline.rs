@@ -56,6 +56,7 @@
 use std::path::{Path, PathBuf};
 
 use ll_core::ident::NamespacedId;
+use ll_world::resource::ResourceTable;
 use ll_world::space_profile::SpaceProfileTable;
 use ll_world::terrain::TerrainTable;
 use ll_world::weather::WeatherTable;
@@ -101,6 +102,13 @@ use crate::{content_data, discover, topo};
 pub struct GameplayTables<'a> {
     /// 地形表（`terrain.json5`）。
     pub terrain: &'a mut TerrainTable,
+    /// 资源表（`resources.json5`），见 `ll_world::resource` 模块文档。
+    ///
+    /// 与 `terrain`/`space_profile`/`weather` 同属「写进 `ll-world` 的
+    /// 表」那一族；与它们不同的是这张表在装载会话开始之前是**空的**
+    /// ——资源没有「本体注册入口」这一层，本体四种资源与任何 mod 的
+    /// 资源走的是完全相同的 `resources.json5` 通道。
+    pub resource: &'a mut ResourceTable,
     /// 职业表（`classes.json5`）。
     pub class: &'a mut ClassTable,
     /// 技能表（`skills.json5`）。
@@ -339,6 +347,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut space_profile = SpaceProfileTable::new();
     let mut recipe = RecipeTable::new();
     let mut recipe_category = RecipeCategoryTable::new();
+    let mut resource = ResourceTable::new();
     let mut weather = WeatherTable::new();
     let mut modifier_type = ModifierTypeTable::new();
     let mut tables = GameplayTables {
@@ -359,6 +368,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         damage_category: &mut damage_category,
         tag: &mut tag,
         space_profile: &mut space_profile,
+        resource: &mut resource,
         weather: &mut weather,
         recipe: &mut recipe,
         recipe_category: &mut recipe_category,
@@ -821,6 +831,7 @@ mod tests {
                 formula: &owned.formula,
                 weapon_category: &owned.weapon_category,
                 damage_category: &owned.damage_category,
+                resource: &owned.resource,
                 weather: &owned.weather,
                 recipe: &owned.recipe,
                 recipe_category: &owned.recipe_category,

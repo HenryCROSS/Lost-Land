@@ -52,6 +52,7 @@
 use std::path::Path;
 
 use ll_core::ident::ContentIndex;
+use ll_world::resource::ResourceTable;
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 use ll_world::weather::{BaseWeatherIds, WeatherTable};
@@ -149,6 +150,8 @@ pub struct LoadSession {
     pub damage_category: DamageCategoryTable,
     /// 空间层属性表。
     pub space_profile: SpaceProfileTable,
+    /// 资源表（`resources.json5`），见 `ll_world::resource` 模块文档。
+    pub resource: ResourceTable,
     /// 天气表。
     pub weather: WeatherTable,
     /// 配方表。
@@ -230,6 +233,7 @@ impl LoadSession {
             weapon_category: WeaponCategoryTable::new(),
             damage_category,
             space_profile,
+            resource: ResourceTable::new(),
             weather,
             recipe: RecipeTable::new(),
             recipe_category: RecipeCategoryTable::new(),
@@ -239,7 +243,7 @@ impl LoadSession {
     }
 
     /// 装载 `mods_root` 下的全部 mod（含本体的 `mods/lostland/`）——
-    /// 直接转调 [`crate::pipeline::load_all`]，只是把「二十一张表怎么
+    /// 直接转调 [`crate::pipeline::load_all`]，只是把「二十二张表怎么
     /// 拼成一个 [`GameplayTables`]」这份清单收在一处。
     ///
     /// 可以对同一个会话调用多次（例如先装一个目录再装另一个），语义
@@ -265,6 +269,7 @@ impl LoadSession {
             weapon_category,
             damage_category,
             space_profile,
+            resource,
             weather,
             recipe,
             recipe_category,
@@ -293,6 +298,7 @@ impl LoadSession {
                 weapon_category,
                 damage_category,
                 space_profile,
+                resource,
                 weather,
                 recipe,
                 recipe_category,

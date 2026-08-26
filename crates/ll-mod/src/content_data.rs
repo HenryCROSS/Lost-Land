@@ -66,8 +66,8 @@ use crate::content_schema_gear::{
     apply_weapon_categories, apply_xp_curves,
 };
 use crate::content_schema_world::{
-    AnimationFile, SpaceProfileFile, TerrainFile, WeatherFile, apply_clips, apply_space_profiles,
-    apply_terrains, apply_weathers,
+    AnimationFile, ResourceFile, SpaceProfileFile, TerrainFile, WeatherFile, apply_clips,
+    apply_resources, apply_space_profiles, apply_terrains, apply_weathers,
 };
 use crate::pipeline::GameplayTables;
 use crate::registry::Registry;
@@ -105,6 +105,7 @@ enum ContentFileKind {
     Tags,
     ModifierTypes,
     Terrains,
+    Resources,
     SpaceProfiles,
     Weathers,
     AnimationClips,
@@ -138,6 +139,7 @@ impl ContentFileKind {
             ContentFileKind::Tags => "tags.json5",
             ContentFileKind::ModifierTypes => "modifier_types.json5",
             ContentFileKind::Terrains => "terrain.json5",
+            ContentFileKind::Resources => "resources.json5",
             ContentFileKind::SpaceProfiles => "space_profiles.json5",
             ContentFileKind::Weathers => "weather.json5",
             ContentFileKind::AnimationClips => "animations.json5",
@@ -168,7 +170,7 @@ impl ContentFileKind {
 /// 每一条排在这个位置的理由都是一条**真实的引用方向**，逐条列在下面
 /// 的注释里。判据统一是「谁只 get 不 intern」：只 get 的那一方必须
 /// 排在被引用者之后。
-const CONTENT_FILES: [ContentFileKind; 20] = [
+const CONTENT_FILES: [ContentFileKind; 21] = [
     // 标签没有任何前置依赖，而物品会引用它（只 get 不 intern）。
     ContentFileKind::Tags,
     // 加值类型同样没有任何前置依赖，而天赋与物品的规则修正会引用它
@@ -178,6 +180,11 @@ const CONTENT_FILES: [ContentFileKind; 20] = [
     // 「只 get」地引用（配方的场地是 intern），位置本身无约束——排在
     // 前面只是因为它们是世界的底座。
     ContentFileKind::Terrains,
+    // 资源引用地形（`source_terrain`），必须排在地形之后——不是因为
+    // 注册表会拒绝（`intern` 对谁先提到一个 id 一视同仁），而是因为
+    // 「资源长在一种从没被声明过的地形上」这条内容错误只有在地形先
+    // 装载完之后才可能被后续消费发现，顺序颠倒会让症状漂到更远的地方。
+    ContentFileKind::Resources,
     ContentFileKind::SpaceProfiles,
     ContentFileKind::Weathers,
     ContentFileKind::AnimationClips,
@@ -260,6 +267,10 @@ fn apply_one(
         ContentFileKind::Terrains => {
             let file: TerrainFile = parse(&source).map_err(fail)?;
             apply_terrains(registry, tables.terrain, &file.terrains)
+        }
+        ContentFileKind::Resources => {
+            let file: ResourceFile = parse(&source).map_err(fail)?;
+            apply_resources(registry, tables.resource, &file.resources)
         }
         ContentFileKind::SpaceProfiles => {
             let file: SpaceProfileFile = parse(&source).map_err(fail)?;

@@ -277,8 +277,8 @@ fn rebuild_noise() -> ll_world::noise::TileableNoise {
 /// 见 `ll_world::chronicle` 模块文档「为什么编年史不进存档」。
 ///
 /// 与 `rebuild_noise` 不同的是本函数需要 `LoadedContent`：判断「哪个
-/// 区块能住人」要读地形属性表（`blocks_move`），而地形索引依赖当前
-/// 会话的注册结果。
+/// 区块能住人」要读地形属性表（`blocks_move`）、「这里有什么资源」要读
+/// 资源表，而两者的索引都依赖当前会话的注册结果。
 fn rebuild_chronicle(content: &content::LoadedContent) -> ll_world::chronicle::WorldChronicle {
     let layout = world::build_zone_layout().expect("默认区块布局满足全部构造前置条件");
     let params = default_params();
@@ -290,6 +290,7 @@ fn rebuild_chronicle(content: &content::LoadedContent) -> ll_world::chronicle::W
         &params,
         &content.terrain_ids,
         &content.terrain_table,
+        &content.resource_table,
         ll_world::chronicle::ChronicleParams::default(),
     )
 }

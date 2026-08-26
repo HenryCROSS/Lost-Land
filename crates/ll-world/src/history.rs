@@ -23,8 +23,16 @@
 //! 真的会跑的历史推演器，`SettlementFounded`/`SettlementAbandoned` 两个
 //! 变体因此有了确定的字段与真实的构造点（前者还真的改变了世界当前的
 //! 地形，见 [`crate::settlement::stamp_settlement`]）。`War`/
-//! `DynastyChange`/`Rename` 仍然没有——它们的系统仍然不存在，同一条
-//! YAGNI 判据继续对它们成立。
+//! `DynastyChange`/`Rename` 仍然**不是事件变体**——同一条 YAGNI 判据
+//! 继续对它们成立。
+//!
+//! **战争的落点在别处**：据点覆灭原因批次给
+//! [`SettlementAbandonedRecord`] 加了一个 [`SettlementDemise`] 字段，
+//! 「被谁打没的」是 [`SettlementDemise::War`] 携带的攻方据点号，不是
+//! 一个独立的 `War` 事件。这不是把战争塞进错误的位置：本批次真正发生
+//! 的事就是「某座据点在某个纪元没了」，攻方是它的**原因**。一场需要
+//! 独立记载的战争（宣战、战役、和约）是另一套系统，那时候再加事件
+//! 变体，与本模块「等系统真正落地时再扩展这个枚举」的既有纪律一致。
 //!
 //! [世界历史生成]: ../../../knowledge/design/world-history.md
 //! [命名、改名与本地化]: ../../../knowledge/design/naming-and-localization.md
@@ -122,7 +130,7 @@ pub struct SettlementFoundedRecord {
     pub land_area: u32,
 }
 
-/// 一次据点遗弃——人口归零，此处此后只剩废墟。
+/// 一次据点遗弃——此处此后只剩废墟。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SettlementAbandonedRecord {
     /// 被遗弃的那座据点，与建立事件里的
@@ -135,6 +143,52 @@ pub struct SettlementAbandonedRecord {
     pub peak_population: u32,
     /// 从建立到遗弃经历了多少个纪元。
     pub epochs_inhabited: u32,
+    /// **为什么**没了。见 [`SettlementDemise`]。
+    pub cause: SettlementDemise,
+}
+
+/// 一座据点是怎么没的——项目所有者点名的那三种原因，加上原本唯一的
+/// 那一种。
+///
+/// > 「历史计算的时候可能有的据点已经**覆灭**了，又有**新的据点出现**，
+/// > 这些可能是因为**资源**，可能是**打仗**，也可能是**疾病**」
+///
+/// # 为什么是一个枚举，而不是几个布尔标记
+///
+/// 一座据点只会以一种方式覆灭——这是互斥的，不是可叠加的。枚举把这条
+/// 互斥性写进类型，也让消费方（将来的传说浏览）的 `match` 由编译器
+/// 保证穷尽：再加一种死法时，忘了处理的地方会直接编译不过。
+///
+/// # 为什么它进了序列化与哈希，尽管编年史不进存档
+///
+/// 因为它住在 [`HistoricalEventKind`] 这个**共用信封**里，而信封的另
+/// 一个变体（[`HistoricalEventKind::Kill`]）确实随 `WorldState::history`
+/// 进存档。类型层面的可序列化是信封的性质，不是本枚举自己要求的——
+/// 与 `SettlementFoundedRecord` 从落地起就是这个情形，本枚举只是跟着
+/// 同一条既有安排走。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SettlementDemise {
+    /// 人口自然凋零到零——迁出、歉收、老去，没有一件特定的事故。
+    /// 这是本枚举出现之前**唯一**的一种遗弃原因。
+    Depopulation,
+    /// 赖以立足的可枯竭资源被采光了（[`crate::resource`] 的
+    /// `exhaustible`）。矿脉一空，靠它吃饭的人就散了。
+    ResourceExhausted {
+        /// 采光的是哪一种资源——展示层由
+        /// [`crate::resource::ResourceTable::display_name_key`] 取名字。
+        resource: ContentIndex,
+    },
+    /// 被另一座据点攻灭。
+    War {
+        /// 攻方那座据点的永久标识——「谁灭的」这条因果必须能顺着号码
+        /// 查回去，否则编年史里只剩一句「它被打没了」。
+        aggressor: WorldId,
+    },
+    /// 瘟疫。
+    Plague {
+        /// 这一场疫病夺走了多少人。
+        dead: u32,
+    },
 }
 
 /// 一条击杀记录——"怎么杀的"必须能表达到武器/技能/环境这一级，是本

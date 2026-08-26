@@ -41,6 +41,7 @@ pub mod mod_state;
 pub mod naming;
 pub mod noise;
 pub mod overview;
+pub mod resource;
 pub mod settlement;
 pub mod space;
 pub mod space_profile;

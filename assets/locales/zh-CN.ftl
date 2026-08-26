@@ -126,6 +126,7 @@ mod-dependency-version-mismatch = 模组 { $dependent } 依赖 { $dependency } �
 #   - equip_slot-*-display_name             EquipSlot 22 个引擎具名槽位
 #   - season-*-display_name                 Season 四季展示名
 #   - weather-*-display_name                本体六种天气展示名
+#   - resource-*-display_name               本体四种资源展示名
 
 hud-status-time-label = 时间
 hud-status-health-label = 生命
@@ -148,6 +149,16 @@ weather-rain-display_name = 雨
 weather-wind-display_name = 大风
 weather-fog-display_name = 雾
 weather-snow-display_name = 雪
+
+# 资源展示名——本体四种资源（mods/lostland/resources.json5）。
+# 资源点由 (世界种子, 瓦片坐标) 纯派生，不进世界状态；这里只做展示名
+# 映射，键本身来自 ResourceAttrs::display_name_key。一座死于资源枯竭的
+# 据点，编年史要说出的正是这里的名字
+# （ll_world::history::SettlementDemise::ResourceExhausted）。
+resource-farmland-display_name = 良田
+resource-timber-display_name = 木材
+resource-iron_vein-display_name = 铁矿
+resource-fresh_water-display_name = 水源
 
 hud-character-panel-title = 角色
 hud-character-level-label = 等级

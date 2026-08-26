@@ -151,6 +151,7 @@ use ll_sim::resource_pool::{
 use ll_sim::skill::{ResourceCost, SkillEffect};
 use ll_sim::xp_curve::{XpCurveCond, XpCurveOp, XpCurveOperand};
 use ll_world::entity::BaseStats;
+use ll_world::resource::{ResourceKind, ResourceTable};
 use ll_world::space_profile::SpaceProfileTable;
 use ll_world::terrain::{TerrainKind, TerrainTable};
 use ll_world::weather::WeatherTable;
@@ -658,9 +659,25 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 ///
 /// `ContentTableKind` 的变体一个未变、[`ContentValueTables`] 的字段
 /// 一个未加，因此 `scripts/ci/check_field_consumers.py` 的
-/// `check_content_hash_gate_cross_coverage` 那条互校在本批次同样无事
-/// 可做。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 21;
+/// `check_content_hash_gate_cross_coverage` 那条互校在版本 21 那一批
+/// 同样无事可做。
+///
+/// # 版本 22（资源点批次）
+///
+/// **新增一张内容表**：[`ContentTableKind::Resource`]（判别值 21）——
+/// [`ContentValueTables`] 多了一个 `resource` 字段，[`entry_value_digest`]
+/// 多了一条 [`write_resource_fields`] 分支。这是版本 4/5/16「新增内容
+/// 表」那一类：既有内容的摘要一个字节都没变，但**同一套内容在新旧两
+/// 版算法下的哈希不同**（新表的条目此前落在
+/// [`ContentTableKind::Opaque`] 一侧、只混 id 不混字段值），因此必须
+/// 递增。
+///
+/// 与版本 21 那一批不同，这次 `check_content_hash_gate_cross_coverage`
+/// **确实有事可做**：`scripts/ci/check_field_consumers.py` 的
+/// `CONTENT_HASH_KIND_TO_TARGET_TYPE` 与 `TARGET_TYPES` 同批次各补了
+/// 一条（`Resource` → `ResourceAttrs`），否则那条互校会当场把门禁
+/// 变红——这正是它存在的意义。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 22;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -727,6 +744,9 @@ pub enum ContentTableKind {
     /// 最强、不同类型相加」里的**类型**，见 [`crate::modifier_type`]
     /// 模块文档。
     ModifierType = 20,
+    /// 资源表（资源点批次新增，定义在 `ll-world`）——见
+    /// [`ll_world::resource`] 模块文档。
+    Resource = 21,
 }
 
 /// 全部内容表的只读引用集合——供 [`apply_value_hashes`]/[`classify_index`]
@@ -780,6 +800,10 @@ pub struct ContentValueTables<'a> {
     pub tag: &'a TagTable,
     /// 加值类型表（加值类型批次新增）。
     pub modifier_type: &'a ModifierTypeTable,
+    /// 资源表（资源点批次新增，定义在 `ll-world`，理由与天气表逐字
+    /// 相同：唯一的强制消费者 `ll_world::chronicle` 就在那个 crate，
+    /// 把表放进下游的 `ll-mod` 会要求 `ll-world` 反向依赖它）。
+    pub resource: &'a ResourceTable,
 }
 
 /// 判定一个 `ContentIndex` 归属哪张内容表——[`entry_value_digest`] 用它
@@ -833,6 +857,7 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         recipe_category,
         tag,
         modifier_type,
+        resource,
     } = *tables;
 
     let terrain_kind = TerrainKind::from_index(index);
@@ -876,6 +901,8 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         ContentTableKind::Tag
     } else if modifier_type.is_defined(index) {
         ContentTableKind::ModifierType
+    } else if resource.is_defined(index) {
+        ContentTableKind::Resource
     } else {
         ContentTableKind::Opaque
     }
@@ -972,6 +999,9 @@ fn entry_value_digest(
         }
         ContentTableKind::Tag => {
             write_tag_fields(&mut hasher, tables.tag, index);
+        }
+        ContentTableKind::Resource => {
+            write_resource_fields(&mut hasher, tables.resource, index, registry);
         }
         ContentTableKind::ModifierType => {
             // 加值类型没有任何字段（`ModifierTypeDef` 是空结构体，理由
@@ -1370,6 +1400,46 @@ fn write_weather_fields(hasher: &mut StateHasher, table: &WeatherTable, index: C
     for weight in table.season_weights(index) {
         hasher.write_u64(u64::from(weight));
     }
+}
+
+/// 混入 [`ll_world::resource::ResourceAttrs`] 的全部字段（资源点批次
+/// 新增）。
+///
+/// `display_name_key` 是字面 `NamespacedId`，直接混入；
+/// `source_terrain` 是 `ContentIndex`，**必须经 `Registry::resolve`
+/// 换成命名空间字符串**再混入——索引本身依赖 mod 装载顺序，把它当成
+/// 哈希输入会让「同一批内容、装载顺序不同」产出不同的哈希，那是本
+/// 模块「`ContentIndex` 字段」一节点名的那类错误。解析不出来时混入一个
+/// 与任何合法 id 都不可能相等的判别字节（`0`），与其余几处同一条
+/// 兜底纪律。
+fn write_resource_fields(
+    hasher: &mut StateHasher,
+    table: &ResourceTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
+    let kind = ResourceKind::from_index(index);
+    match table.display_name_key(kind) {
+        None => hasher.write_u64(0),
+        Some(key) => {
+            hasher.write_u64(1);
+            hasher.write_namespaced_id(&key);
+        }
+    }
+    match table
+        .source_terrain(kind)
+        .and_then(|terrain| registry.resolve(terrain.index()))
+    {
+        None => hasher.write_u64(0),
+        Some(id) => {
+            hasher.write_u64(1);
+            hasher.write_namespaced_id(id);
+        }
+    }
+    hasher.write_u64(u64::from(table.abundance(kind)));
+    hasher.write_u64(u64::from(table.residents_supported(kind)));
+    hasher.write_u64(u64::from(table.settlement_draw(kind)));
+    hasher.write_u64(u64::from(table.exhaustible(kind)));
 }
 
 /// 混入一段 [`ll_render::anim::Clip`] 的全部字段（内容值哈希覆盖面
@@ -2217,6 +2287,7 @@ mod tests {
                 recipe_category: &recipe_category_a,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
         apply_value_hashes(
@@ -2242,6 +2313,7 @@ mod tests {
                 recipe_category: &recipe_category_b,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
 
@@ -2346,6 +2418,7 @@ mod tests {
                 recipe_category: &recipe_category_a,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
         apply_value_hashes(
@@ -2371,6 +2444,7 @@ mod tests {
                 recipe_category: &recipe_category_b,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
 
@@ -2470,6 +2544,7 @@ mod tests {
                 recipe_category: &recipe_category_a,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
         apply_value_hashes(
@@ -2495,6 +2570,7 @@ mod tests {
                 recipe_category: &recipe_category_b,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
 
@@ -2649,6 +2725,7 @@ mod tests {
                 recipe_category: &recipe_category_a,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
         apply_value_hashes(
@@ -2674,6 +2751,7 @@ mod tests {
                 recipe_category: &recipe_category_b,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
 
@@ -2768,6 +2846,7 @@ mod tests {
                 recipe_category: &empty_forward.16,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
         apply_value_hashes(
@@ -2793,6 +2872,7 @@ mod tests {
                 recipe_category: &empty_reversed.16,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
 
@@ -2896,6 +2976,7 @@ mod tests {
                 recipe_category: &recipe_category_f,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
         apply_value_hashes(
@@ -2921,6 +3002,7 @@ mod tests {
                 recipe_category: &recipe_category_r,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
 
@@ -3027,6 +3109,7 @@ mod tests {
                 recipe_category: &recipe_category_before,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
         apply_value_hashes(
@@ -3052,6 +3135,7 @@ mod tests {
                 recipe_category: &recipe_category_after,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
 
@@ -3115,6 +3199,7 @@ mod tests {
                 recipe_category: &recipe_category,
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
+                resource: &ResourceTable::new(),
             },
         );
 
@@ -3690,6 +3775,7 @@ mod tests {
             recipe_category: &recipe_category,
             tag: &TagTable::new(),
             modifier_type: &ModifierTypeTable::new(),
+            resource: &ResourceTable::new(),
         };
 
         // Act

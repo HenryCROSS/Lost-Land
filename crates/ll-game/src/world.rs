@@ -238,6 +238,7 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
         &params,
         &content.terrain_ids,
         &content.terrain_table,
+        &content.resource_table,
         ChronicleParams::default(),
     ));
     tracing::info!(
@@ -977,6 +978,49 @@ mod tests {
         // 世界哈希覆盖了地形本身——据点已经铺进出生邻域的话，这条
         // 断言同时守住了「铺设结果逐格相同」。
         assert_eq!(first.world.hash(), second.world.hash());
+    }
+
+    /// **跨区块据点真的出现了**——项目所有者裁决「要」的那一条，在
+    /// 本体默认世界（不是测试用的小世界）上的验收。
+    ///
+    /// # 为什么这条测试必须在这里，而不在 `ll_world::chronicle` 里
+    ///
+    /// 「据点会不会跨出自己那一格区块」取决于**本体默认布局的区块边长**
+    /// （48）与**本体资源名册**给出的承载力——两者都只有在真实
+    /// `LoadedContent` + `build_zone_layout` 这条生产路径上才成立。
+    /// `ll-world` 的单元测试用的是自己拼的小世界与夹具资源表，它能验收
+    /// 「机制在」，验收不了「本体默认参数下真的发生」——而上一批次留下
+    /// 的正是这个缺口：机制在、测试全绿、实测跨区块据点数为 0。
+    ///
+    /// 实测（release，三个种子）：每个世界 21~29 座据点跨区块，最多的
+    /// 一座覆盖 8 个区块。这里只断言「至少一座」——具体数字是玩法数值
+    /// 调整的结果，钉死它会让每次调参都要改测试；而「至少一座」是那条
+    /// 裁决本身，它不该因为调参而失效。
+    #[test]
+    fn 本体默认世界里真的存在跨区块的据点() {
+        // Arrange
+        let content = test_content();
+        let layout = build_zone_layout().expect("默认布局满足全部前置条件");
+        let game_world = build_new_world(&content, 4242).expect("默认布局满足全部前置条件");
+        let chronicle = game_world
+            .world
+            .terrain
+            .chronicle()
+            .expect("必然装上了编年史");
+
+        // Act
+        let crossing = chronicle
+            .sites()
+            .iter()
+            .filter(|site| ll_world::settlement::footprint_zones(site, &layout).len() > 1)
+            .count();
+
+        // Assert
+        assert!(
+            crossing > 0,
+            "{} 座据点里一座都没有跨出自己那一格区块——据点规模又缩回去了，             见 ll_world::settlement 模块文档「实测」一节",
+            chronicle.sites().len()
+        );
     }
 
     /// 编年史分配掉的 `WorldId` 不会被游戏内的击杀记录再发一次。
