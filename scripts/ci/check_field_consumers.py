@@ -161,6 +161,13 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     # 那条互校有一个正经的落点：哪天有人给 ModifierTypeDef 加了字段，字段门禁
     # 立刻就能看见它，不需要有人记得同时更新这份清单。
     ("crates/ll-mod/src/modifier_type.rs", "struct", "ModifierTypeDef"),
+    # 资源点批次新增的第二十二张内容表（ContentTableKind::Resource）。
+    # 声明结构体叫 ResourceAttrs 而不是 *Def：这张表没有「本体注册入口」
+    # 那一层（本体四种资源与任何 mod 的资源走同一份 resources.json5），
+    # 因此不需要一个带 id 的 *Def 声明形状——凭空造一个只为了对上命名
+    # 惯例的空壳结构体，正是 ADR 0021 拦的那件事。SpaceProfile 那条
+    # 豁免记录的是同一类命名分歧，区别只在这张表**能**被字段门禁抓到。
+    ("crates/ll-world/src/resource.rs", "struct", "ResourceAttrs"),
 ]
 
 # 决策层文件：真正驱动模拟结算、影响玩法输出的地方。见脚本头注释
@@ -296,6 +303,29 @@ EXEMPTIONS: dict[str, str] = {
     # 不是这三张表本身没做过盘点。
     "FormulaDef.id": "命名空间标识符，同 RaceDef.id 一类——formula_for 按 ContentIndex 查表取出整个 FormulaDef 后直接使用 instructions/needs_rng，取出后不再对 .id 做任何决策层读取。",
     "FormulaDef.needs_rng": "字段自身文档原文（crates/ll-sim/src/formula.rs）：resolve_attack 当前恒构造一条骰子流，这个字段只用于诊断/未来性能预估，不影响求值正确性，即使一条不含骰子的公式拿到随机流也不会调用 DetRng 的任何方法。",
+    # ── 资源点批次新增的六条 ──────────────────────────────────────
+    #
+    # 六条**全部**挂豁免，理由是同一条结构性事实，不是六次各自的疏漏：
+    # 这张表的真实消费者是 `ll_world::chronicle`（据点选址/规模/覆灭
+    # 推演）与 `ll_world::resource`（资源点判定本身），两者都不在
+    # DECISION_LAYER_GLOBS/FILES 里。
+    #
+    # **为什么不干脆把 chronicle.rs 加进 DECISION_LAYER_FILES**（那是
+    # 先试过的做法）：chronicle.rs 里到处是 `site.id`/`state.id`，而
+    # `.id` 正是本文件头注释「已知局限」第 2 条说的字段名撞车——加进去
+    # 会让十三条 `*Def.id` 豁免同时被误判成「已接线」，把一道真的在起
+    # 作用的检查换成一堆假绿。用豁免 + 逐条写清间接路径，是本文件
+    # 已经为 SpaceProfile 选过的同一条路。
+    #
+    # 解除条件：字段门禁的判据哪天扩展到「世界生成期推演」这一层
+    # （那需要先解决 `.id` 这类字段名撞车，例如改成类型感知匹配），
+    # 这六条应当一起摘掉重新评估。
+    "ResourceAttrs.display_name_key": "同 RaceDef.display_name_key，指向 Fluent 本地化键。它有一个已经存在的接线目标——SettlementDemise::ResourceExhausted 携带资源的 ContentIndex，传说浏览要靠这个键把它变成「铁矿」两个字——但传说浏览 UI 尚未落地，与 RecipeDef.display_name_key 是同一种「等 UI」而不是「永远没人读」。",
+    "ResourceAttrs.source_terrain": "本文件头注释「已知局限」第 2 条的多层间接：真实消费者是 ll_world::resource::resource_node_at 的第一道筛（地形不对就没有这种资源），而那是同 crate 的 resource.rs——它是这张表的列式存储所在地，按本门禁的判据属于存储层，不在 DECISION_LAYER_FILES 里。决策层（chronicle.rs）读到的是 survey_resources 已经数好的处数，不再出现 .source_terrain 字面量。",
+    "ResourceAttrs.abundance": "理由同 ResourceAttrs.source_terrain：真实消费者是 resource_node_at 的第二道筛（按丰度掷一次由种子与坐标完全确定的骰子），同样落在存储层文件 resource.rs 里。ll_world::resource 的单元测试「丰度越高的资源在同一片源地形上出现得越多」直接验收这个字段真的在改变输出。",
+    "ResourceAttrs.residents_supported": "真实消费者是 ll_world::chronicle 的 EpochRun::capacity（一片领地能养活多少人 → 据点长多大 → 铺几栋房子），见本节开头那段说明为什么 chronicle.rs 进不了 DECISION_LAYER_FILES。ll_world::chronicle 的单元测试「资源丰富的世界据点规模明显更大」直接验收这个字段真的在改变输出。",
+    "ResourceAttrs.settlement_draw": "真实消费者是 ll_world::chronicle 的 EpochRun::resource_draw_bonus（守着铁矿的地方更容易建城），同上。",
+    "ResourceAttrs.exhaustible": "真实消费者是 ll_world::chronicle 的 EpochRun::capacity / exhaustible_reserve / dominant_exhaustible 三处（资源枯竭这条覆灭原因的全部来源），同上。ll_world::chronicle 的单元测试「推演里真的出现过资源枯竭导致的覆灭」直接验收它。",
     "WeaponCategoryDef.default_formula": "weapon_category.rs 模块文档「本批次没有给 ItemDef 加对应字段」一节：十九节默认公式挂载链条第 3 层（武器类别默认）不在本批次范围，字段是声明先行——同一份文档已经预告了这条一旦补进 TARGET_TYPES 就会命中本门禁。",
     "RecipeDef.id": "命名空间标识符，同 RaceDef.id/FormulaDef.id 一类——resolve_craft 按 ContentIndex 查 RecipeCatalog 取出 RecipeRule，那个最小视图刻意不含 id（见 ll_sim::craft::RecipeRule 文档），决策层不做任何 .id 读取。",
     "RecipeDef.display_name_key": "同 RaceDef.display_name_key，指向 Fluent 本地化键，UI 展示用。制作界面（UiMode 模式栈）尚未落地，这个键当前没有 UI 消费者——但那与本门禁的判据（决策层是否消费）无关，本地化键按定义就不是玩法数值。",
@@ -464,6 +494,7 @@ CONTENT_HASH_KIND_TO_TARGET_TYPE: dict[str, str] = {
     "RecipeCategory": "RecipeCategoryDef",
     "Tag": "TagDef",
     "ModifierType": "ModifierTypeDef",
+    "Resource": "ResourceAttrs",
 }
 
 CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE: dict[str, str] = {

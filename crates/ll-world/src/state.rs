@@ -41,7 +41,9 @@ use crate::chunk::ChunkGrid;
 use crate::entity::{Affiliation, Agent, Arena, EntityId, Goal, OrgRef, ThinPopulation};
 use crate::exploration::ExplorationMemory;
 use crate::generate::{GenParams, build_zone_noise};
-use crate::history::{HistoricalEvent, HistoricalEventKind, KillCause, KillingBlow, VictimState};
+use crate::history::{
+    HistoricalEvent, HistoricalEventKind, KillCause, KillingBlow, SettlementDemise, VictimState,
+};
 use crate::interior::{Interior, InteriorTable};
 use crate::item::{GroundItemStack, ItemStack};
 use crate::mod_state::ModStateValue;
@@ -1289,6 +1291,28 @@ fn write_historical_event(hasher: &mut StateHasher, event: &HistoricalEvent) {
             hasher.write_u64(u64::from(record.epoch));
             hasher.write_u64(u64::from(record.peak_population));
             hasher.write_u64(u64::from(record.epochs_inhabited));
+            write_settlement_demise(hasher, &record.cause);
+        }
+    }
+}
+
+/// 把一条 [`SettlementDemise`] 混入哈希——[`write_historical_event`] 的
+/// 帮手，与 [`write_kill_cause`] 同一种模式：先写变体判别字节，各变体
+/// 互不混淆。
+fn write_settlement_demise(hasher: &mut StateHasher, cause: &SettlementDemise) {
+    match *cause {
+        SettlementDemise::Depopulation => hasher.write_u64(0),
+        SettlementDemise::ResourceExhausted { resource } => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(resource.get()));
+        }
+        SettlementDemise::War { aggressor } => {
+            hasher.write_u64(2);
+            hasher.write_u64(u64::from(aggressor.get()));
+        }
+        SettlementDemise::Plague { dead } => {
+            hasher.write_u64(3);
+            hasher.write_u64(u64::from(dead));
         }
     }
 }

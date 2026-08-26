@@ -30,6 +30,7 @@ use crate::tag::TagTable;
 use crate::trait_def::TraitTable;
 use crate::weapon_category::WeaponCategoryTable;
 use crate::xp_curve::{XpCurveBindings, XpCurveTable};
+use ll_world::resource::ResourceTable;
 use ll_world::space_profile::SpaceProfileTable;
 use ll_world::terrain::TerrainTable;
 use ll_world::weather::WeatherTable;
@@ -83,6 +84,7 @@ pub(crate) struct OwnedTables {
     pub(crate) damage_category: DamageCategoryTable,
     pub(crate) tag: TagTable,
     pub(crate) space_profile: SpaceProfileTable,
+    pub(crate) resource: ResourceTable,
     pub(crate) weather: WeatherTable,
     pub(crate) recipe: RecipeTable,
     pub(crate) recipe_category: RecipeCategoryTable,
@@ -109,6 +111,7 @@ impl OwnedTables {
             damage_category: &mut self.damage_category,
             tag: &mut self.tag,
             space_profile: &mut self.space_profile,
+            resource: &mut self.resource,
             weather: &mut self.weather,
             recipe: &mut self.recipe,
             recipe_category: &mut self.recipe_category,

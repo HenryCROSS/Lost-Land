@@ -80,14 +80,18 @@
 use ll_core::ident::WorldId;
 use ll_core::rng::DetRng;
 use ll_core::time::{DAYS_PER_SEASON, SEASONS_PER_YEAR, TICKS_PER_DAY, Tick};
-use ll_core::torus::TorusPos;
+use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::generate::{GenParams, generate_zone_window, zone_representative_terrain};
 use crate::history::{
-    HistoricalEvent, HistoricalEventKind, SettlementAbandonedRecord, SettlementFoundedRecord,
+    HistoricalEvent, HistoricalEventKind, SettlementAbandonedRecord, SettlementDemise,
+    SettlementFoundedRecord,
 };
 use crate::land::largest_walkable_component;
 use crate::noise::TileableNoise;
+use crate::resource::{
+    ResourceContext, ResourceKind, ResourceSurvey, ResourceTable, survey_resources,
+};
 use crate::settlement::{MAX_BUILDINGS, SettlementSite, SettlementStatus};
 use crate::space::ZoneCoord;
 use crate::terrain::{BaseTerrainIds, TerrainTable};
@@ -97,6 +101,19 @@ use crate::zone::ZoneLayout;
 /// [`crate::settlement::SETTLEMENT_LAYOUT_STREAM_ID`]（建筑铺法）
 /// 分开，理由见后者文档。
 pub const CHRONICLE_STREAM_ID: u64 = 0x0043_4852_4F4E_0001;
+
+/// 战争判定所用的随机流编号——与 [`CHRONICLE_STREAM_ID`]（一座据点
+/// 自己的兴衰）分开。
+///
+/// # 为什么必须是另一条流，而不是同一条流上多掷一次
+///
+/// 战争是**跨据点**的：一次判定同时决定两座据点的命运。把它掷在
+/// 「这座据点第几个纪元」那条流上，等于让攻方的一次内政掷骰与它的
+/// 对外战争共用取值序列——改动增长模型（多掷一次骰子）会连带改掉
+/// 全世界的战争史，两件本该正交的事就此耦合。同一条理由已经让建筑
+/// 铺法（[`crate::settlement::SETTLEMENT_LAYOUT_STREAM_ID`]）与历史
+/// 推演分家。
+pub const CHRONICLE_WAR_STREAM_ID: u64 = 0x0043_4852_5741_0001;
 
 /// 一个纪元有多少年。取 25：12 个纪元合计 300 年，量级上与
 /// `world-history.md` 设想的「几百年」一致，同时让每个纪元的兴衰在
@@ -148,6 +165,19 @@ pub struct ChronicleParams {
     ///
     /// 取 0 表示不做间距筛选（此时行为与本字段引入之前完全一致）。
     pub min_settlement_spacing: u32,
+    /// 勘察一处候选点的领地资源时，每隔多少格采一个样。
+    ///
+    /// 领地是一片 `min_settlement_spacing` 见方的地
+    /// （[`territory_radius`]），逐格勘察要为两万格各算一次四层倍频
+    /// 噪声；采样把它压到三百多次，代价是估计量的方差——而下游要的
+    /// 本来就是「这地方富不富」这个量级的判断，见
+    /// [`crate::resource::survey_resources`] 文档。
+    ///
+    /// 取 8：144 / 8 = 18，每轴十八九个采样点，够让「这片地是山还是
+    /// 沼泽」这条差别稳定地体现出来，又不至于让勘察成为建档路径上的
+    /// 新瓶颈（实测见 [`ChronicleParams::default`]）。必须为正，
+    /// 否则 [`crate::resource::survey_resources`] 会 panic。
+    pub resource_sample_stride: i32,
 }
 
 impl Default for ChronicleParams {
@@ -231,6 +261,7 @@ impl Default for ChronicleParams {
             survey_zone_budget: 4800,
             min_settlement_land_area: 400,
             min_settlement_spacing: 3 * 48,
+            resource_sample_stride: 8,
         }
     }
 }
@@ -269,19 +300,40 @@ impl WorldChronicle {
     /// 从种子与地形跑出一部世界史。
     ///
     /// `params.seed` 是随机流的种子；`noise`/`terrain_ids`/`table` 用来
-    /// 判断哪些区块能住人。整个函数是纯函数：同一组输入恒产出逐字段
-    /// 相同的结果。
+    /// 判断哪些区块能住人；`resources` 是当前会话注册的资源种类表
+    /// （[`crate::resource`]），决定每处候选点周边有什么、因此决定
+    /// 「这里值不值得建城」与「这里能养活多少人」。整个函数是纯函数：
+    /// 同一组输入恒产出逐字段相同的结果。
+    ///
+    /// 传一张**空**的资源表是合法的：那等于「这个世界没有资源这一层」，
+    /// 选址与承载力退回到只看陆地面积——不会 panic，也不会静默变成
+    /// 别的行为，见本模块测试 `空资源表下仍然产出据点`。
     pub fn generate(
         layout: &ZoneLayout,
         noise: &TileableNoise,
         params: &GenParams,
         terrain_ids: &BaseTerrainIds,
         table: &TerrainTable,
+        resources: &ResourceTable,
         chronicle_params: ChronicleParams,
     ) -> WorldChronicle {
-        let candidates =
-            survey_habitable_zones(layout, noise, params, terrain_ids, table, chronicle_params);
-        let mut run = EpochRun::new(candidates, chronicle_params.epochs, params.seed);
+        let candidates = survey_habitable_zones(
+            layout,
+            noise,
+            params,
+            terrain_ids,
+            table,
+            resources,
+            chronicle_params,
+        );
+        let mut run = EpochRun::new(
+            candidates,
+            chronicle_params.epochs,
+            params.seed,
+            layout.tile_size(),
+            war_range(chronicle_params),
+            resources.clone(),
+        );
         run.simulate();
         let sites = run.final_sites();
         let zone_index = build_zone_index(&sites, layout);
@@ -398,12 +450,46 @@ fn raster_key(zone: ZoneCoord) -> (i32, i32) {
     (zone.y(), zone.x())
 }
 
-/// 一个「能住人」的候选点：区块 + 锚点 + 该区块最大连通陆地面积。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 一个「能住人」的候选点：区块 + 锚点 + 两份规模判据。
+///
+/// **两份陆地面积是两回事，不要合并。** `land_area` 是**锚点所在那一个
+/// 区块窗口**里最大连通可行走分量的格数——它回答的是「这里是不是一块
+/// 连得开的实地」，是选址的门槛判据，也是
+/// [`SettlementFoundedRecord::land_area`] 这个既有字段的语义。
+/// `survey` 里那份 [`ResourceSurvey::land_area`] 是**整片领地**
+/// （[`territory_radius`] 见方）的采样估计——它回答的是「这片地能养活
+/// 多少人」，是承载力判据。
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Candidate {
     zone: ZoneCoord,
     anchor: TorusPos,
     land_area: u32,
+    /// 领地资源勘察结果，见 [`crate::resource::survey_resources`]。
+    survey: ResourceSurvey,
+}
+
+/// 一处据点的**领地**半径（格）：到最近的可能邻居的一半路。
+///
+/// 由 [`ChronicleParams::min_settlement_spacing`] 推出，不是一个可以
+/// 独立调的数值——两座据点至少隔着 `min_settlement_spacing`，各自往外
+/// 圈一半就恰好不重叠，「这片地归谁」因此没有歧义。间距为 0（不筛）
+/// 时退回一个区块边长的一半，让领地至少是一个可算的东西。
+fn territory_radius(params: ChronicleParams, zone_span: u32) -> i32 {
+    let from_spacing = params.min_settlement_spacing / 2;
+    let fallback = zone_span / 2;
+    from_spacing.max(fallback) as i32
+}
+
+/// 一座据点能打到多远（格，环面切比雪夫）。
+///
+/// 同样由最小间距推出：邻居至少在 `min_settlement_spacing` 之外，
+/// 本值取它的 [`WAR_RANGE_IN_SPACINGS`] 倍，也就是「隔着两三片荒野的
+/// 邻居仍然够得着，隔着半个大陆的够不着」。写成派生量而不是一个独立
+/// 常量，是为了让「世界变稀疏时战争也跟着变稀疏」自动成立。
+fn war_range(params: ChronicleParams) -> u32 {
+    params
+        .min_settlement_spacing
+        .saturating_mul(WAR_RANGE_IN_SPACINGS)
 }
 
 /// 按区块光栅序扫描全世界，收集「能住人」的候选点。
@@ -457,6 +543,7 @@ fn survey_habitable_zones(
     params: &GenParams,
     terrain_ids: &BaseTerrainIds,
     table: &TerrainTable,
+    resources: &ResourceTable,
     chronicle_params: ChronicleParams,
 ) -> Vec<Candidate> {
     let budget = chronicle_params.survey_zone_budget;
@@ -465,6 +552,16 @@ fn survey_habitable_zones(
     let zone_count = layout.zone_count();
     let span = layout.zone_span();
     let tile_size = layout.tile_size();
+    let territory = territory_radius(chronicle_params, span);
+    let resource_ctx = ResourceContext {
+        seed: params.seed,
+        noise,
+        params,
+        terrain_ids,
+        terrain_table: table,
+        resources,
+        tile_size,
+    };
     let mut candidates: Vec<Candidate> = Vec::new();
     let mut fully_inspected = 0usize;
 
@@ -504,10 +601,20 @@ fn survey_habitable_zones(
             {
                 continue;
             }
+            // 领地资源勘察只对**已经通过全部筛选**的锚点做一次——
+            // 它是本函数里第二贵的一步（三百多次噪声采样），绝不能
+            // 落在每个被间距挡掉的区块上。
+            let survey = survey_resources(
+                &resource_ctx,
+                anchor,
+                territory,
+                chronicle_params.resource_sample_stride,
+            );
             candidates.push(Candidate {
                 zone,
                 anchor,
                 land_area: component.area as u32,
+                survey,
             });
         }
     }
@@ -587,6 +694,17 @@ struct SiteState {
     population: u32,
     founded_epoch: u32,
     peak_population: u32,
+    /// 这一茬定居点累计从可枯竭资源里采走了多少——每纪元按当时的人口
+    /// 累加（人越多挖得越快）。与储量
+    /// （[`EpochRun::exhaustible_reserve`]）比较，越过就是采光了。
+    ///
+    /// **随「这一茬」清零**：重新拓荒是另一批人重新开采，而剩下的储量
+    /// 由勘察结果决定、不随时间恢复——这条在
+    /// [`EpochRun::try_found`] 里体现为把它重置为上一茬的值而不是 0，
+    /// 见那里的注释。
+    extracted: u32,
+    /// 这一茬定居点赖以立足的可枯竭资源已经采光了吗。
+    depleted: bool,
     /// 最近一次被遗弃的纪元——用于「此处现在是废墟」这个最终状态。
     /// 从未被住过时为 `None`。
     last_ruin: Option<RuinRecord>,
@@ -608,6 +726,16 @@ struct EpochRun {
     events: Vec<HistoricalEvent>,
     epochs: u32,
     seed: u64,
+    /// 世界瓦片尺寸——战争配对要量环面切比雪夫距离。
+    tile_size: TorusSize,
+    /// 一座据点能打到多远，见 [`war_range`]。
+    war_range: u32,
+    /// 当前会话注册的资源种类表。持有一份克隆而不是借用：`EpochRun`
+    /// 在 [`WorldChronicle::generate`] 里跨越整段推演存活，借用会把
+    /// 调用方的生命周期钉在这上面，而这张表本身很小（每种资源一条
+    /// 定长记录），克隆开销可忽略——与 `WorldChronicle::table`
+    /// （地形表）的既有取舍逐字相同。
+    resources: ResourceTable,
     next_world_id: u32,
 }
 
@@ -631,28 +759,200 @@ const INITIAL_POPULATION_MIN: u32 = 3;
 const INITIAL_POPULATION_SPREAD: u64 = 4;
 /// 每纪元人口变动的随机跨度：掷 `[0, SPREAD)` 再减
 /// [`GROWTH_BIAS`]，得到 `[-2, +2]`。
+///
+/// **这一项只是噪声，不是增长本身**——它的期望是 0。真正让据点长大的
+/// 是 [`GROWTH_RATE_DIVISOR`] 那条与承载力挂钩的自然增长，见那里的
+/// 文档「为什么必须有这一条」。
 const GROWTH_SPREAD: u64 = 5;
 /// 见 [`GROWTH_SPREAD`]。
 const GROWTH_BIAS: i32 = 2;
 /// 上一纪元人口最多的那座据点在本纪元额外获得的增长——首邑聚集效应，
 /// 与人口压力一样是跨据点的耦合，不是独立掷骰。
 const CAPITAL_GROWTH_BONUS: i32 = 1;
-/// 每个居民需要多少格连通陆地养活；人口超过 `土地 / 本值` 之后增长
-/// 额外减一（承载力）。
-const TILES_PER_RESIDENT: u32 = 120;
+/// 承载力还有富余时，一个纪元自然增长掉多少分之一的现有人口。
+///
+/// # 为什么必须有这一条（本批次修掉的一个真实缺陷）
+///
+/// 此前每纪元的人口变动**只有** `[-2, +2]` 那一项噪声，期望是 0——
+/// 也就是说人口是一条零漂移的随机游走，它不朝任何地方长，只是随机
+/// 抖动直到某次抖到 0 就没了。承载力在这套模型里从来没有真正咬合过
+/// （实测：把承载力上界从 19 抬到 50 之后，平均建筑数**一栋都没变**，
+/// 仍然是 3.3）。「据点有大有小」在那种模型下只能是掷骰的结果，
+/// 与这片地是富是贫毫无关系。
+///
+/// 换成按比例增长之后，人口是一条**朝承载力收敛**的曲线：一座五人的
+/// 营地一个纪元多一两个人，一座五十人的镇子多十来个，直到抵住这片地
+/// 能养活的上限为止。「守着水源与良田的地方长成城、光秃秃的高地只够
+/// 一个营地」这句话从此是数值上成立的，不是一句说明。
+///
+/// # 取值是玩法裁定，不是人口学
+///
+/// 取 3（每纪元三分之一，一个纪元 25 年，合每年约 1.2%）。这**高于**
+/// 前工业时代的真实人口增长率（那是每年千分之几的量级），是刻意的：
+/// 整部编年史只有 300 年，按真实速率一座村子三百年后仍然是一座村子，
+/// 「据点有大有小」与「跨区块据点要真的出现」两条裁决都落不了地。
+///
+/// 这个数字是实测挑出来的，不是估的（release，本体默认布局，三个种子）：
+///
+/// | 每纪元增长 | 人口中位 | 平均建筑 | 跨区块据点 |
+/// |---|---|---|---|
+/// | 0（此前：零漂移随机游走） | — | 3.3 | **0** |
+/// | 四分之一 | 19 | 12.5~12.9 | 2~3 |
+/// | 三分之一（本值） | 31~33 | 20.2~21.6 | **21~29** |
+///
+/// 中间那一档虽然已经让「跨区块」从不可能变成可能，但一个世界里只有
+/// 两三座、玩家几乎撞不上；本值让约一成的据点真的跨出自己那一格区块，
+/// 同时人口中位数（三十出头）与最大值（一百七十余）之间仍有五倍以上
+/// 的差距——大小分化没有被抹平。
+const GROWTH_RATE_DIVISOR: u32 = 3;
+
+/// 每个居民需要多少格领地养活；人口超过承载力之后增长额外减一。
+///
+/// # 为什么从 120 抬到这个值：口径换了，不是数值调优
+///
+/// 承载力此前按**一个区块窗口**（至多 48×48 = 2304 格）的陆地面积算，
+/// 于是上界恒在 19 上下、建筑数平均只有 3.3 栋——那是旧的「据点绝不
+/// 跨区块」约束留下的痕迹，而据点现在实际拥有的是一片
+/// [`territory_radius`] 见方的领地（默认 144×144 = 20736 格）。分母跟着
+/// 分子一起换：口径放大约九倍，本常量随之放大约三倍，净效果是据点规模
+/// 上界抬高约三倍——项目所有者裁决的「有的据点有大有小」与「跨界据点
+/// 要真的出现」两条都落在这里。
+///
+/// 400 这个具体取值的推导：一片全是陆地的默认领地约两万格，承载力
+/// 上界因此约 50 人、约 26 栋建筑，外廓半径 20 格
+/// （[`crate::settlement::MAX_FOOTPRINT_RADIUS`] 的推导同一条公式）——
+/// 大于「锚点到区块边界」的典型距离，因此长得开的据点**真的会**跨出
+/// 自己那一格区块；而它仍然远小于据点最小间距的一半（72），两座长满
+/// 的据点不会互相压进对方的街区。
+const TILES_PER_RESIDENT: u32 = 400;
+
+/// 资源对承载力的贡献上限（人）——防止一片资源极密的领地把据点撑到
+/// 建筑数上界之外去。
+///
+/// 取 [`MAX_BUILDINGS`] × [`RESIDENTS_PER_BUILDING`]：正好是「建筑数
+/// 恰好用满上界」所需的人口，再多的人口一栋房子都换不出来，是这条
+/// 上限唯一有意义的位置。
+const MAX_RESOURCE_CAPACITY: u32 = MAX_BUILDINGS * RESIDENTS_PER_BUILDING;
+
+/// 资源吸引力每多少「分」给拓荒概率加一分（分子，配
+/// [`FOUND_DENOMINATOR`]）。「分」是
+/// `Σ 资源点数 × ResourceAttrs::settlement_draw`。
+const DRAW_SCORE_PER_FOUND_BONUS: u32 = 20;
+
+/// 资源吸引力对建立概率的加分上限——与
+/// [`MAX_FERTILITY_BONUS`]/[`MAX_PRESSURE_BONUS`] 同一个量级，让「守着
+/// 铁矿」是一条**显著但不压倒**的理由：三者全满时分子是
+/// `3 + 6 + 6 + 8 = 23`，仍然不到分母 64 的一半，拓荒始终是件不确定的事。
+const MAX_RESOURCE_DRAW_BONUS: u32 = 8;
+
+/// 每一处可枯竭资源点能被采走多少「人·纪元」。
+///
+/// 采出速度按人口算（人越多挖得越快），因此这个数的量纲是「人 × 纪元」：
+/// 40 意味着一处矿脉够四十个人挖一个纪元，或者十个人挖四个纪元。取这个
+/// 量级是为了让枯竭在 12 个纪元的推演里**真的发生在一部分据点身上**，
+/// 而不是永远够用（那等于没这条规则）或者第二个纪元就全空（那等于
+/// 世界上没有矿业城市）。
+const EXTRACTION_PER_NODE: u32 = 40;
+
+/// 资源采光那一刻，有多大比例的人离开——分母。取 3：矿一空先走掉三分
+/// 之一，剩下的人还得再撑几个纪元才散干净（见
+/// [`DEPLETION_DECLINE_DIVISOR`]），不是由这条规则直接判死。
+const DEPLETION_EXODUS_DIVISOR: u32 = 3;
+
+/// 已经枯竭的据点每纪元流失掉多少分之一的人口。
+///
+/// # 为什么枯竭之后不能只是「承载力变小」
+///
+/// 这是本批次第二个必须写下来的模型缺陷。只把可枯竭资源那部分承载力
+/// 摘掉的话，据点会**收敛到一个更小的规模然后稳住**——矿业城市变成
+/// 农业村，永远不会真的没。那在现实里也不算错（很多矿镇正是这么活到
+/// 今天的），但它意味着「资源枯竭」永远不会成为一条**覆灭**原因，
+/// 而项目所有者点名要的正是覆灭。
+///
+/// 落地形状是：矿一空，这个地方就没有理由再留人——自然增长整条关掉，
+/// 改成按比例外流。取 3（每纪元走三分之一）让一座三十人的矿镇在五六
+/// 个纪元里散干净，而不是拖过整部编年史。
+const DEPLETION_DECLINE_DIVISOR: u32 = 3;
+
+/// 已经枯竭的据点每纪元至少流失多少人——[`DEPLETION_DECLINE_DIVISOR`]
+/// 按比例算到个位数时会退化成 0，这条保证最后那几户人也会走完。
+const MIN_DEPLETION_DECLINE: i32 = 2;
+
+/// 瘟疫爆发概率：每多少居民给分子加一分（配
+/// [`PLAGUE_DENOMINATOR`]）。人挤人才有大疫，一个十几人的村子几乎不会
+/// 被单独记上一笔。
+const RESIDENTS_PER_PLAGUE_RISK: u32 = 8;
+
+/// 瘟疫爆发概率的分子上限。
+const MAX_PLAGUE_RISK: u32 = 8;
+
+/// 瘟疫爆发概率的分母。
+const PLAGUE_DENOMINATOR: u32 = 512;
+
+/// 一场瘟疫**至少**带走多少分之一的人口。
+///
+/// 取 2：黑死病一类的大疫在单个村镇的致死率就是这个量级。它同时决定
+/// 了「疫病能不能灭掉一座据点」——致死率若只有一两成，瘟疫就只是一次
+/// 人口回调，永远不会成为一条覆灭原因；取一半起步，则大约有一半的
+/// 爆发会把整座据点带走，另一半留下一个元气大伤的幸存者聚落。
+const PLAGUE_MIN_LETHALITY_DIVISOR: u32 = 2;
+
+/// 一场瘟疫过后，幸存者少于多少人就干脆散了。
+///
+/// 没有这一条，瘟疫**几乎不可能**成为一条覆灭原因：致死率再高，只要
+/// 掷骰没恰好取到最大值就总会剩下人，而剩下的人在下一个纪元又开始
+/// 按比例增长——实测三个种子、七百多座据点，一次死于瘟疫的都没有。
+/// 而「一场大疫之后只剩两三户人家，于是那几户也走了」正是村庄被疫病
+/// 抹掉的真实过程：直接死绝反而是少数。取 3 与
+/// [`INITIAL_POPULATION_MIN`] 同一个量级——低于「一伙人能开拓一处
+/// 新地方」所需的人数，这地方就维持不下去了。
+const PLAGUE_ABANDON_FLOOR: u32 = 3;
+
+/// 一座据点要有多少人才出得起兵。低于此数的据点既不发动战争，也不会
+/// **被**当作值得打的目标（打一个五户人家的营地不是战争，是劫掠——
+/// 那是另一套系统）。
+const WAR_MIN_POPULATION: u32 = 12;
+
+/// 攻方人口要是守方的多少倍才动手。取 2：势均力敌的两座城互相耗着，
+/// 只有明显的强弱差才会变成一次吞并——这让战争成为「大城吃小城」这条
+/// 可读的因果，而不是随机对撞。
+const WAR_DOMINANCE_RATIO: u32 = 2;
+
+/// 满足全部前置条件之后，一个纪元里真的开战的概率分子。
+const WAR_NUMERATOR: u32 = 1;
+
+/// 见 [`WAR_NUMERATOR`]。
+const WAR_DENOMINATOR: u32 = 8;
+
+/// 攻方能打多远，单位是「几个最小间距」，见 [`war_range`]。
+const WAR_RANGE_IN_SPACINGS: u32 = 3;
+
+/// 攻灭一座据点后，守方有多少人被并进攻方——分母。取 2：一半的人被
+/// 掳走或投降，另一半死了或散了。这条让战争**真的在世界人口上留下
+/// 痕迹**（吞并不是零和的），不是一次纯粹的删除。
+const WAR_SPOILS_DIVISOR: u32 = 2;
 /// 每多少居民对应一栋建筑。
 const RESIDENTS_PER_BUILDING: u32 = 2;
 /// 一处废墟按历史峰值人口每多少人留下一栋残破建筑。
 const PEAK_RESIDENTS_PER_RUIN_BUILDING: u32 = 3;
 
 impl EpochRun {
-    fn new(candidates: Vec<Candidate>, epochs: u32, seed: u64) -> EpochRun {
+    fn new(
+        candidates: Vec<Candidate>,
+        epochs: u32,
+        seed: u64,
+        tile_size: TorusSize,
+        war_range: u32,
+        resources: ResourceTable,
+    ) -> EpochRun {
         let states = vec![
             SiteState {
                 id: None,
                 population: 0,
                 founded_epoch: 0,
                 peak_population: 0,
+                extracted: 0,
+                depleted: false,
                 last_ruin: None,
             };
             candidates.len()
@@ -663,8 +963,84 @@ impl EpochRun {
             events: Vec::new(),
             epochs,
             seed,
+            tile_size,
+            war_range,
+            resources,
             next_world_id: 0,
         }
+    }
+
+    /// 这处候选点的资源给拓荒概率加多少分，见
+    /// [`DRAW_SCORE_PER_FOUND_BONUS`]。
+    fn resource_draw_bonus(&self, index: usize) -> u32 {
+        let mut score = 0u32;
+        for count in self.candidates[index].survey.counts() {
+            score = score.saturating_add(
+                count
+                    .nodes
+                    .saturating_mul(self.resources.settlement_draw(count.kind)),
+            );
+        }
+        (score / DRAW_SCORE_PER_FOUND_BONUS).min(MAX_RESOURCE_DRAW_BONUS)
+    }
+
+    /// 这处候选点当前能养活多少人。
+    ///
+    /// 两项相加：领地陆地面积换算出的基础承载力，加上各种资源点的
+    /// 贡献。已经枯竭（[`SiteState::depleted`]）时，可枯竭资源那部分
+    /// **不再计入**——这正是「矿采光了，城养不起这么多人了」这条因果
+    /// 在数值上的落点。
+    fn capacity(&self, index: usize) -> u32 {
+        let candidate = &self.candidates[index];
+        let depleted = self.states[index].depleted;
+        let mut capacity = candidate.survey.land_area() / TILES_PER_RESIDENT;
+        let mut from_resources = 0u32;
+        for count in candidate.survey.counts() {
+            if depleted && self.resources.exhaustible(count.kind) {
+                continue;
+            }
+            from_resources = from_resources.saturating_add(
+                count
+                    .nodes
+                    .saturating_mul(self.resources.residents_supported(count.kind)),
+            );
+        }
+        capacity = capacity.saturating_add(from_resources.min(MAX_RESOURCE_CAPACITY));
+        capacity
+    }
+
+    /// 这处候选点的可枯竭资源总储量（「人·纪元」，见
+    /// [`EXTRACTION_PER_NODE`]）。全是可再生资源时为 0——那样的据点
+    /// 永远不会因枯竭而衰败。
+    fn exhaustible_reserve(&self, index: usize) -> u32 {
+        let mut reserve = 0u32;
+        for count in self.candidates[index].survey.counts() {
+            if !self.resources.exhaustible(count.kind) {
+                continue;
+            }
+            reserve = reserve.saturating_add(count.nodes.saturating_mul(EXTRACTION_PER_NODE));
+        }
+        reserve
+    }
+
+    /// 这处候选点最主要的那种可枯竭资源——枯竭事件要指名道姓说出「死于
+    /// **哪一种**资源枯竭」。
+    ///
+    /// 「最主要」取资源点数最多的那一种；并列时取
+    /// [`ResourceTable::registered`] 顺序最先的（`>` 而非 `>=`，不依赖
+    /// 任何迭代顺序，约束 C5）。
+    fn dominant_exhaustible(&self, index: usize) -> Option<ResourceKind> {
+        let mut best: Option<(ResourceKind, u32)> = None;
+        for count in self.candidates[index].survey.counts() {
+            if !self.resources.exhaustible(count.kind) {
+                continue;
+            }
+            match best {
+                Some((_, top)) if count.nodes <= top => {}
+                _ => best = Some((count.kind, count.nodes)),
+            }
+        }
+        best.map(|(kind, _)| kind)
     }
 
     /// 逐纪元推演。每个纪元内部按候选点光栅序处理，纪元末尾重算两项
@@ -688,9 +1064,156 @@ impl EpochRun {
                     self.advance_settled(index, epoch, capital == Some(index), &mut rng);
                 }
             }
+            self.wage_wars(epoch);
             world_population = self.states.iter().map(|state| state.population).sum();
             capital = self.pick_capital();
         }
+    }
+
+    /// 本纪元的战争：在**内政推演跑完之后**，按候选点光栅序让每一座
+    /// 够强的据点找一次架打。
+    ///
+    /// # 为什么单独一趟，而不是塞进 [`Self::advance_settled`]
+    ///
+    /// 战争是**跨据点**的：它同时改写两座据点的状态。塞进逐座推进的
+    /// 那趟里，一座据点会在「自己这一纪元还没过完」的时候被邻居抹掉，
+    /// 于是「这一纪元的人口」这个量在同一趟里对不同据点意义不同。分成
+    /// 两趟之后语义是清楚的：**先各自过日子，再互相打**。
+    ///
+    /// # 确定性（约束 C5）
+    ///
+    /// 攻方按候选点光栅序遍历；守方取「本纪元结束时仍有人住、且在射程
+    /// 内、离得最近」的那一座，并列时取光栅序最先的（`<` 而非 `<=`）；
+    /// 每次开战判定用一条由 `(种子, [`CHRONICLE_WAR_STREAM_ID`],
+    /// 攻方序号 × 纪元数 + 纪元号)` 完全确定的流。三者都与任何
+    /// `HashMap`/`HashSet` 的迭代顺序无关。
+    ///
+    /// 一座据点在本纪元里被攻灭之后人口即为 0，因此它此后既不会再作为
+    /// 攻方出场，也不会再被别人当作目标——「同一个纪元被打两次」不可能
+    /// 发生，不需要额外的已处理标记。
+    fn wage_wars(&mut self, epoch: u32) {
+        if self.war_range == 0 {
+            return;
+        }
+        for attacker in 0..self.candidates.len() {
+            if self.states[attacker].population < WAR_MIN_POPULATION {
+                continue;
+            }
+            let Some(defender) = self.nearest_rival(attacker) else {
+                continue;
+            };
+            if self.states[attacker].population
+                <= self.states[defender].population * WAR_DOMINANCE_RATIO
+            {
+                continue;
+            }
+            let mut rng = DetRng::for_entity(
+                self.seed,
+                CHRONICLE_WAR_STREAM_ID,
+                attacker as u64 * u64::from(self.epochs) + u64::from(epoch),
+            );
+            if !rng.chance(WAR_NUMERATOR, WAR_DENOMINATOR) {
+                continue;
+            }
+            self.conquer(attacker, defender, epoch);
+        }
+    }
+
+    /// 离 `attacker` 最近、仍有人住、且值得打（人口不低于
+    /// [`WAR_MIN_POPULATION`]）的另一座据点，射程之内。
+    fn nearest_rival(&self, attacker: usize) -> Option<usize> {
+        let origin = self.candidates[attacker].anchor;
+        let mut best: Option<(usize, u32)> = None;
+        for (index, state) in self.states.iter().enumerate() {
+            if index == attacker || state.population < WAR_MIN_POPULATION {
+                continue;
+            }
+            let distance = self
+                .tile_size
+                .chebyshev(origin, self.candidates[index].anchor);
+            if distance > self.war_range {
+                continue;
+            }
+            match best {
+                Some((_, closest)) if distance >= closest => {}
+                _ => best = Some((index, distance)),
+            }
+        }
+        best.map(|(index, _)| index)
+    }
+
+    /// `attacker` 攻灭 `defender`：守方就此成为废墟，一半人口被并进
+    /// 攻方（[`WAR_SPOILS_DIVISOR`]）。
+    fn conquer(&mut self, attacker: usize, defender: usize, epoch: u32) {
+        let spoils = self.states[defender].population / WAR_SPOILS_DIVISOR;
+        let aggressor = self.states[attacker]
+            .id
+            .expect("人口非零的据点必然在建立时分配过 WorldId");
+        self.abandon(
+            defender,
+            epoch,
+            SettlementDemise::War { aggressor },
+            self.states[defender].population,
+        );
+        let grown = self.states[attacker].population.saturating_add(spoils);
+        self.states[attacker].population = grown;
+        self.states[attacker].peak_population = self.states[attacker].peak_population.max(grown);
+    }
+
+    /// 把 `index` 这座据点变成废墟：清空人口、记下这一茬的墓志铭、
+    /// 追加一条 [`HistoricalEventKind::SettlementAbandoned`] 事件。
+    ///
+    /// 全部四种覆灭原因走同一条出口——「怎么没的」是参数，「没了之后
+    /// 状态怎么变」只有一份实现。此前遗弃只有一种原因，这段逻辑内联在
+    /// [`Self::advance_settled`] 里；三种新原因落地时把它抽出来，正是
+    /// ADR 0021 的另一半（**有一份算法要被四处共用**）。
+    ///
+    /// `final_population` 是「归零之前那一刻有多少人」——事件本身记的是
+    /// 历史峰值，这个参数只用来让调用方把「这一场疫病死了多少人」这类
+    /// 载荷算对，不写进状态。
+    fn abandon(
+        &mut self,
+        index: usize,
+        epoch: u32,
+        cause: SettlementDemise,
+        final_population: u32,
+    ) {
+        debug_assert!(
+            final_population > 0 || matches!(cause, SettlementDemise::Depopulation),
+            "只有自然凋零才允许在人口已经是 0 的情况下走到这里"
+        );
+        let state = self.states[index];
+        let site_id = state.id.expect("人口非零的据点必然在建立时分配过 WorldId");
+        let event_id = WorldId::next(&mut self.next_world_id);
+        self.states[index] = SiteState {
+            id: None,
+            population: 0,
+            founded_epoch: state.founded_epoch,
+            peak_population: 0,
+            // 采掘进度与枯竭标记**不随这一茬清零**：矿是这片地的属性，
+            // 不是这批人的。下一批人来重新拓荒时接手的是同一个已经被
+            // 挖过的矿脉，见 SiteState::extracted 文档。
+            extracted: state.extracted,
+            depleted: state.depleted,
+            last_ruin: Some(RuinRecord {
+                id: site_id,
+                founded_epoch: state.founded_epoch,
+                abandoned_epoch: epoch,
+                peak_population: state.peak_population,
+            }),
+        };
+        self.events.push(HistoricalEvent {
+            id: event_id,
+            at: epoch_tick(epoch, self.epochs),
+            location: self.candidates[index].anchor,
+            kind: HistoricalEventKind::SettlementAbandoned(SettlementAbandonedRecord {
+                site: site_id,
+                epoch,
+                peak_population: state.peak_population,
+                epochs_inhabited: epoch - state.founded_epoch,
+                cause,
+            }),
+        });
     }
 
     /// 上一纪元人口最多的候选点下标；并列时取光栅序最先的那个（`>`
@@ -710,12 +1233,19 @@ impl EpochRun {
     }
 
     /// 一处空地在本纪元有没有被拓荒。
+    ///
+    /// 四条加分互相独立地推高同一个概率分子：土地肥沃（本区块的连通
+    /// 陆地）、世界人口压力（上一纪元的跨据点耦合）、**资源吸引力**
+    /// （本批次新增，见 [`Self::resource_draw_bonus`]），加上一个基础分。
+    /// 「守着铁矿的地方更容易建城」就是第三条。
     fn try_found(&mut self, index: usize, epoch: u32, world_population: u32, rng: &mut DetRng) {
-        let candidate = self.candidates[index];
-        let fertility = (candidate.land_area / TILES_PER_FERTILITY_BONUS).min(MAX_FERTILITY_BONUS);
+        let land_area = self.candidates[index].land_area;
+        let anchor = self.candidates[index].anchor;
+        let fertility = (land_area / TILES_PER_FERTILITY_BONUS).min(MAX_FERTILITY_BONUS);
         let pressure = (world_population / POPULATION_PER_PRESSURE_BONUS).min(MAX_PRESSURE_BONUS);
+        let draw = self.resource_draw_bonus(index);
         if !rng.chance(
-            FOUND_BASE_NUMERATOR + fertility + pressure,
+            FOUND_BASE_NUMERATOR + fertility + pressure + draw,
             FOUND_DENOMINATOR,
         ) {
             return;
@@ -724,76 +1254,139 @@ impl EpochRun {
         let population = INITIAL_POPULATION_MIN + rng.gen_range(INITIAL_POPULATION_SPREAD) as u32;
         let site_id = WorldId::next(&mut self.next_world_id);
         let event_id = WorldId::next(&mut self.next_world_id);
+        let previous = self.states[index];
         self.states[index] = SiteState {
             id: Some(site_id),
             population,
             founded_epoch: epoch,
             peak_population: population,
-            last_ruin: self.states[index].last_ruin,
+            // 接手上一茬挖剩的矿：储量是这片地的属性，不随「换了一批
+            // 人」恢复。一处已经被挖空的矿脉旁边可以再建村子，但那座
+            // 村子从第一天起就没有矿业可依。
+            extracted: previous.extracted,
+            depleted: previous.depleted,
+            last_ruin: previous.last_ruin,
         };
         self.events.push(HistoricalEvent {
             id: event_id,
             at: epoch_tick(epoch, self.epochs),
-            location: candidate.anchor,
+            location: anchor,
             kind: HistoricalEventKind::SettlementFounded(SettlementFoundedRecord {
                 site: site_id,
                 epoch,
                 initial_population: population,
-                land_area: candidate.land_area,
+                land_area,
             }),
         });
     }
 
     /// 一座有人住的据点在本纪元的兴衰。人口归零即被遗弃，留下废墟。
+    ///
+    /// 一个纪元里依次发生四件事，顺序是刻意的：
+    ///
+    /// 1. **开采**：按当时的人口消耗可枯竭资源的储量；刚好在本纪元采光
+    ///    的，此刻走人一批（[`DEPLETION_EXODUS_DIVISOR`]），承载力里
+    ///    属于那种资源的部分从此不再计入。
+    /// 2. **增长**：既有的随机涨落 + 首邑加成 + 承载力惩罚。
+    /// 3. **瘟疫**：人越密越容易爆发，爆发就随机带走一批人。
+    /// 4. **结算**：人口归零就是覆灭，死因取决于上面哪一步把它推到零。
+    ///
+    /// 战争不在这里——它是跨据点的，单独一趟，见 [`Self::wage_wars`]。
     fn advance_settled(&mut self, index: usize, epoch: u32, is_capital: bool, rng: &mut DetRng) {
-        let candidate = self.candidates[index];
-        let state = self.states[index];
-        let capacity = candidate.land_area / TILES_PER_RESIDENT;
+        // ① 开采与枯竭。
+        let just_depleted = self.extract(index);
 
+        let state = self.states[index];
+        let capacity = self.capacity(index);
+
+        // ② 增长：噪声（期望 0）+ 与承载力挂钩的自然增长 + 首邑加成。
         let mut delta = rng.gen_range(GROWTH_SPREAD) as i32 - GROWTH_BIAS;
         if is_capital {
             delta += CAPITAL_GROWTH_BONUS;
         }
-        if state.population > capacity {
+        if state.depleted {
+            // 矿一空，这地方就没有理由再留人：自然增长整条关掉，改成
+            // 按比例外流，见 DEPLETION_DECLINE_DIVISOR 文档。
+            delta -=
+                ((state.population / DEPLETION_DECLINE_DIVISOR) as i32).max(MIN_DEPLETION_DECLINE);
+        } else if state.population < capacity {
+            // 按比例增长，且不越过这片地能养活的上限——见
+            // GROWTH_RATE_DIVISOR 文档「为什么必须有这一条」。至少 +1：
+            // 一座三五个人的据点若按比例算成 0，就永远迈不出第一步。
+            let room = capacity - state.population;
+            delta += (state.population / GROWTH_RATE_DIVISOR).max(1).min(room) as i32;
+        } else if state.population > capacity {
             delta -= 1;
         }
+        let mut population = state.population.saturating_add_signed(delta);
 
-        let population = state.population.saturating_add_signed(delta);
+        // ③ 瘟疫：分子随人口密度上升，爆发一次带走 1..=当前人口 的人。
+        let risk = (population / RESIDENTS_PER_PLAGUE_RISK).min(MAX_PLAGUE_RISK);
+        let mut plague_dead = 0u32;
+        if population > 0 && rng.chance(risk, PLAGUE_DENOMINATOR) {
+            // 致死率从「一半」起跳，掷骰只决定它有多接近「全灭」——
+            // 见 PLAGUE_MIN_LETHALITY_DIVISOR 文档。
+            let floor = population / PLAGUE_MIN_LETHALITY_DIVISOR;
+            plague_dead = floor + 1 + rng.gen_range(u64::from(population - floor)) as u32;
+            population = population.saturating_sub(plague_dead);
+            if population < PLAGUE_ABANDON_FLOOR {
+                // 剩下的那两三户也走了，见 PLAGUE_ABANDON_FLOOR 文档。
+                plague_dead = plague_dead.saturating_add(population);
+                population = 0;
+            }
+        }
+
         let peak = state.peak_population.max(population);
         if population > 0 {
             self.states[index] = SiteState {
                 population,
                 peak_population: peak,
-                ..state
+                ..self.states[index]
             };
             return;
         }
 
-        let site_id = state.id.expect("人口非零的据点必然在建立时分配过 WorldId");
-        let event_id = WorldId::next(&mut self.next_world_id);
-        self.states[index] = SiteState {
-            id: None,
-            population: 0,
-            founded_epoch: state.founded_epoch,
-            peak_population: 0,
-            last_ruin: Some(RuinRecord {
-                id: site_id,
-                founded_epoch: state.founded_epoch,
-                abandoned_epoch: epoch,
-                peak_population: state.peak_population,
-            }),
+        // ④ 结算：死因取上面最后一个把人口推到零的原因。判定顺序就是
+        //    发生顺序的逆序——瘟疫是压垮它的最后一根稻草时算瘟疫，
+        //    没有瘟疫而这一纪元刚好采光时算枯竭，其余都是自然凋零。
+        let cause = if plague_dead > 0 {
+            SettlementDemise::Plague { dead: plague_dead }
+        } else if just_depleted || self.states[index].depleted {
+            match self.dominant_exhaustible(index) {
+                Some(kind) => SettlementDemise::ResourceExhausted {
+                    resource: kind.index(),
+                },
+                // 已经标记枯竭却找不到可枯竭资源，只可能是内容表在推演
+                // 中途被换过（生产路径不会发生）。退回自然凋零而不是
+                // panic：一条说不清来源的死因不值得让整个建世界失败。
+                None => SettlementDemise::Depopulation,
+            }
+        } else {
+            SettlementDemise::Depopulation
         };
-        self.events.push(HistoricalEvent {
-            id: event_id,
-            at: epoch_tick(epoch, self.epochs),
-            location: candidate.anchor,
-            kind: HistoricalEventKind::SettlementAbandoned(SettlementAbandonedRecord {
-                site: site_id,
-                epoch,
-                peak_population: state.peak_population,
-                epochs_inhabited: epoch - state.founded_epoch,
-            }),
-        });
+        self.abandon(index, epoch, cause, state.population);
+    }
+
+    /// 本纪元的开采：把当时的人口累加进 [`SiteState::extracted`]，越过
+    /// 储量就把这一茬标记为枯竭并让一批人离开。
+    ///
+    /// 返回「**本纪元**刚好采光了吗」——调用方用它区分「这一纪元矿没
+    /// 了」与「早就没了、只是还没死透」，两者的死因归属不同。
+    fn extract(&mut self, index: usize) -> bool {
+        let reserve = self.exhaustible_reserve(index);
+        if reserve == 0 || self.states[index].depleted {
+            return false;
+        }
+        let population = self.states[index].population;
+        let extracted = self.states[index].extracted.saturating_add(population);
+        self.states[index].extracted = extracted;
+        if extracted <= reserve {
+            return false;
+        }
+        self.states[index].depleted = true;
+        let leaving = population / DEPLETION_EXODUS_DIVISOR;
+        self.states[index].population = population.saturating_sub(leaving);
+        true
     }
 
     /// 推演结束后的最终快照：仍有人住的是村子，最近一次被遗弃且此后
@@ -804,7 +1397,7 @@ impl EpochRun {
     fn final_sites(&self) -> Vec<SettlementSite> {
         let mut sites = Vec::new();
         for (index, state) in self.states.iter().enumerate() {
-            let candidate = self.candidates[index];
+            let candidate = &self.candidates[index];
             if let Some(id) = state.id {
                 sites.push(SettlementSite {
                     id,
@@ -880,7 +1473,25 @@ mod tests {
         };
         let noise = crate::generate::build_zone_noise(&layout, &params).expect("布局合法");
         let (ids, table) = base_terrain_fixture();
-        WorldChronicle::generate(&layout, &noise, &params, &ids, &table, chronicle_params)
+        let (_kinds, resources) = test_resources(&ids);
+        WorldChronicle::generate(
+            &layout,
+            &noise,
+            &params,
+            &ids,
+            &table,
+            &resources,
+            chronicle_params,
+        )
+    }
+
+    /// 测试用资源表：本体那四种（[`crate::resource::base_resource_fixture`]），
+    /// 取值与 `mods/lostland/resources.json5` 一致。
+    fn test_resources(
+        ids: &crate::terrain::BaseTerrainIds,
+    ) -> (Vec<crate::resource::ResourceKind>, ResourceTable) {
+        let mut interner = ll_core::ident::Interner::new();
+        crate::resource::base_resource_fixture(&mut interner, ids)
     }
 
     /// 一部编年史里挨得最近的两座据点相距多少格（环面切比雪夫）。
@@ -1074,8 +1685,10 @@ mod tests {
         };
         let noise = crate::generate::build_zone_noise(&layout, &params).expect("布局合法");
         let (ids, table) = base_terrain_fixture();
+        let (_kinds, resources) = test_resources(&ids);
         let defaults = ChronicleParams::default();
-        let survey = || survey_habitable_zones(&layout, &noise, &params, &ids, &table, defaults);
+        let survey =
+            || survey_habitable_zones(&layout, &noise, &params, &ids, &table, &resources, defaults);
 
         // Act
         let first = survey();
@@ -1192,6 +1805,199 @@ mod tests {
                 site.id
             );
         }
+    }
+
+    /// 资源真的在改变结果：同一张地形、同一个种子，换一张空资源表
+    /// 之后据点规模必然缩水（少了资源那部分承载力）。
+    ///
+    /// 没有这条对照，「选址与规模考虑了资源」只是一句说明——它可能整条
+    /// 接错了地方而没有任何断言会红。
+    #[test]
+    fn 资源丰富的世界据点规模明显更大() {
+        // Arrange
+        let layout = test_layout();
+        let params = GenParams {
+            seed: 0xC0FF_EE12,
+            ..GenParams::default()
+        };
+        let noise = crate::generate::build_zone_noise(&layout, &params).expect("布局合法");
+        let (ids, table) = base_terrain_fixture();
+        let (_kinds, resources) = test_resources(&ids);
+        let empty = ResourceTable::new();
+        let defaults = ChronicleParams::default();
+
+        // Act
+        let with_resources =
+            WorldChronicle::generate(&layout, &noise, &params, &ids, &table, &resources, defaults);
+        let without =
+            WorldChronicle::generate(&layout, &noise, &params, &ids, &table, &empty, defaults);
+
+        // Assert
+        let buildings = |chronicle: &WorldChronicle| -> u64 {
+            chronicle
+                .sites()
+                .iter()
+                .map(|site| u64::from(site.building_count))
+                .sum()
+        };
+        let rich = buildings(&with_resources);
+        let poor = buildings(&without);
+        assert!(
+            rich > poor,
+            "有资源的世界总建筑数 {rich} 不多于没资源的 {poor}，资源没有接进承载力"
+        );
+    }
+
+    /// 空资源表是合法输入：那等于「这个世界没有资源这一层」，选址与
+    /// 承载力退回到只看陆地面积，不 panic、也不静默变成别的行为。
+    #[test]
+    fn 空资源表下仍然产出据点() {
+        // Arrange
+        let layout = test_layout();
+        let params = GenParams {
+            seed: 0xC0FF_EE12,
+            ..GenParams::default()
+        };
+        let noise = crate::generate::build_zone_noise(&layout, &params).expect("布局合法");
+        let (ids, table) = base_terrain_fixture();
+        let empty = ResourceTable::new();
+
+        // Act
+        let chronicle = WorldChronicle::generate(
+            &layout,
+            &noise,
+            &params,
+            &ids,
+            &table,
+            &empty,
+            ChronicleParams::default(),
+        );
+
+        // Assert
+        assert!(!chronicle.sites().is_empty());
+        assert!(!chronicle.events().is_empty());
+    }
+
+    /// 三种新覆灭原因**真的会发生**——项目所有者点名的「资源 / 打仗 /
+    /// 疾病」三条，各自至少在这批种子里出现过一次。
+    ///
+    /// # 为什么是「四十八个种子合起来至少各一次」而不是「每个种子各一次」
+    ///
+    /// 三者都是低概率事件，而测试世界（16×16 个区块）只有本体默认世界
+    /// （64×48）的十二分之一大：本体世界一局里瘟疫覆灭一两次，按比例
+    /// 折算到测试世界就是每十几局才有一次。逐种子断言会让这条测试变成
+    /// 掷硬币；把种子数开到四十八、合起来断言，仍然能抓住「某条原因整条
+    /// 接错了、永远走不到」这个真正要防的缺陷——那才是这条测试的靶子。
+    ///
+    /// 四十八局 16×16 的推演在 debug 下合计不到一秒，代价可以接受。
+    #[test]
+    fn 推演里三种新覆灭原因都真的发生过() {
+        // Arrange
+        let mut saw_resource = false;
+        let mut saw_war = false;
+        let mut saw_plague = false;
+
+        // Act
+        for seed in 1..=48u64 {
+            for event in chronicle_for(seed).events() {
+                let HistoricalEventKind::SettlementAbandoned(record) = &event.kind else {
+                    continue;
+                };
+                match record.cause {
+                    SettlementDemise::Depopulation => {}
+                    SettlementDemise::ResourceExhausted { .. } => saw_resource = true,
+                    SettlementDemise::War { .. } => saw_war = true,
+                    SettlementDemise::Plague { .. } => saw_plague = true,
+                }
+            }
+        }
+
+        // Assert
+        assert!(saw_resource, "四十八个种子里一次资源枯竭导致的覆灭都没有");
+        assert!(saw_war, "四十八个种子里一次战争导致的覆灭都没有");
+        assert!(saw_plague, "四十八个种子里一次瘟疫导致的覆灭都没有");
+    }
+
+    /// 战争事件记下的攻方必须是**另一座真实存在过的据点**——「谁灭的」
+    /// 这条因果要能顺着号码查回去，否则编年史里只剩一句「它被打没了」。
+    #[test]
+    fn 战争覆灭记下的攻方是另一座真实据点() {
+        // Arrange：把全部被分配过的据点号收进一个集合（含已经变成废墟
+        // 的——攻方后来自己也可能覆灭）。
+        let chronicle = chronicle_for(2);
+        let mut known: Vec<WorldId> = Vec::new();
+        for event in chronicle.events() {
+            if let HistoricalEventKind::SettlementFounded(record) = &event.kind {
+                known.push(record.site);
+            }
+        }
+
+        // Act & Assert
+        let mut checked = 0usize;
+        for event in chronicle.events() {
+            let HistoricalEventKind::SettlementAbandoned(record) = &event.kind else {
+                continue;
+            };
+            let SettlementDemise::War { aggressor } = record.cause else {
+                continue;
+            };
+            checked += 1;
+            assert_ne!(aggressor, record.site, "一座据点把自己打没了");
+            assert!(
+                known.contains(&aggressor),
+                "攻方 {aggressor:?} 不是任何一座建立过的据点"
+            );
+        }
+        assert!(checked > 0, "这个种子里没有战争，这条断言测不到什么");
+    }
+
+    /// 资源枯竭的覆灭必须指名道姓说出**哪一种**资源，而且那种资源必须
+    /// 真的是可枯竭的。
+    #[test]
+    fn 枯竭覆灭指向一种真的可枯竭的资源() {
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let (_kinds, resources) = test_resources(&ids);
+
+        // Act & Assert
+        let mut checked = 0usize;
+        for seed in [1u64, 2, 3, 7, 0xC0FF_EE12] {
+            for event in chronicle_for(seed).events() {
+                let HistoricalEventKind::SettlementAbandoned(record) = &event.kind else {
+                    continue;
+                };
+                let SettlementDemise::ResourceExhausted { resource } = record.cause else {
+                    continue;
+                };
+                checked += 1;
+                let kind = crate::resource::ResourceKind::from_index(resource);
+                assert!(
+                    resources.is_defined(resource),
+                    "枯竭事件指向一个没注册过的资源索引"
+                );
+                assert!(
+                    resources.exhaustible(kind),
+                    "枯竭事件指向一种根本不会枯竭的资源"
+                );
+            }
+        }
+        assert!(checked > 0, "五个种子里一次枯竭都没有，这条断言测不到什么");
+    }
+
+    /// 领地口径的承载力真的比旧的「一个区块窗口」口径宽——`territory_radius`
+    /// 由最小间距推出，不是一个可以独立调的数值。
+    #[test]
+    fn 领地半径由最小间距推出且不小于半个区块() {
+        // Arrange & Act & Assert
+        let defaults = ChronicleParams::default();
+        assert_eq!(territory_radius(defaults, 48), 72);
+
+        // 间距为 0（不筛）时退回半个区块，领地仍然是一个可算的东西。
+        let unfiltered = ChronicleParams {
+            min_settlement_spacing: 0,
+            ..defaults
+        };
+        assert_eq!(territory_radius(unfiltered, 48), 24);
     }
 
     #[test]

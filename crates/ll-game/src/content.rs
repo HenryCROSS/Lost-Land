@@ -69,6 +69,7 @@ use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{RegistryXpCurves, XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::exposure::AmbientSource;
+use ll_world::resource::ResourceTable;
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 use ll_world::weather::{BaseWeatherIds, WeatherTable};
@@ -186,6 +187,13 @@ pub struct LoadedContent {
     /// 存的是「有哪几种天气、各自什么参数」这份**内容**，由
     /// `crate::app` 每帧调用一次 `Weather::derive` 消费。
     pub weather_table: WeatherTable,
+    /// 资源表（资源点批次新增）——`ll_world::resource::ResourceTable`。
+    /// 与天气表同一种性质：资源分布本身是纯派生值（不进 `WorldState`，
+    /// 见 `ll_world::resource` 模块文档），这张表存的是「有哪几种资源、
+    /// 各自长在什么地形上、多密」这份**内容**，由
+    /// `ll_world::chronicle::WorldChronicle::generate` 在建档与读档
+    /// 重新派生时各消费一次。
+    pub resource_table: ResourceTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -568,6 +576,7 @@ pub fn load_content(
         damage_category: damage_category_table,
         space_profile: space_table,
         weather: weather_table,
+        resource: resource_table,
         recipe: recipe_table,
         recipe_category: recipe_category_table,
         tag: tag_table,
@@ -633,6 +642,7 @@ pub fn load_content(
         weapon_category: &weapon_category_table,
         damage_category: &damage_category_table,
         weather: &weather_table,
+        resource: &resource_table,
         recipe: &recipe_table,
         recipe_category: &recipe_category_table,
         tag: &tag_table,
@@ -736,6 +746,7 @@ pub fn load_content(
         modifier_type_table,
         weather_ids,
         weather_table,
+        resource_table,
         manifests,
         report,
         asset_vfs: asset_result.vfs,
@@ -1132,6 +1143,7 @@ mod tests {
             weapon_category: &loaded.weapon_category_table,
             damage_category: &loaded.damage_category_table,
             weather: &loaded.weather_table,
+            resource: &loaded.resource_table,
             recipe: &loaded.recipe_table,
             recipe_category: &loaded.recipe_category_table,
             tag: &loaded.tag_table,

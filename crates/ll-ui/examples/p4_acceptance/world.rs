@@ -110,6 +110,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
     let mut weapon_category = ll_mod::weapon_category::WeaponCategoryTable::new();
     let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
     let mut weather_table = ll_world::weather::WeatherTable::new();
+    let mut resource_table = ll_world::resource::ResourceTable::new();
     let mut recipe_table = ll_mod::recipe::RecipeTable::new();
     let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
     let mut tag_table = ll_mod::tag::TagTable::new();
@@ -136,6 +137,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             weapon_category: &mut weapon_category,
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
+            resource: &mut resource_table,
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
@@ -163,6 +165,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             weapon_category: &mut weapon_category,
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
+            resource: &mut resource_table,
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,
@@ -190,6 +193,7 @@ pub(crate) fn build_demo_world() -> DemoWorld {
             weapon_category: &mut weapon_category,
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
+            resource: &mut resource_table,
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,

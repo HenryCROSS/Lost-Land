@@ -50,4 +50,7 @@
   //                           lostland:physical 由引擎注册，见
   //                           ll_mod::base_damage_category）
   //   modifier_types.json5    加值类型一条（lostland:gear）
+  //   resources.json5         资源四条（良田/木材/铁矿/水源），据点
+  //                           选址、规模与覆灭原因的输入，见
+  //                           ll_world::resource 模块文档
 }

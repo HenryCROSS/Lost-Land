@@ -447,6 +447,19 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // （granted_skills / stat_modifiers / rule_modifiers::modifier_type /
         // granted_resource_pools），逐条理由见下面的 exemptions。
         ContentTableKind::Trait,
+        // 资源点批次：mods/lostland/resources.json5（**新文件**，四条
+        // 资源）让资源表在 lostland 命名空间下一落地就非空，与标签表
+        // 当初一样不经过 deferred——资源名册本身就是本体内容，不依赖
+        // 任何别的表先迁过来（它只引用地形，而地形一直是引擎注册的
+        // 本体内容）。
+        //
+        // 这张表**全部六个字段都被本体那四条覆盖，一条豁免都不需要**：
+        // display_name_key / source_terrain / abundance 是必填参数，
+        // residents_supported / settlement_draw 四条全都非零，而
+        // exhaustible 由 lostland:iron_vein 那条唯一的 true 覆盖——
+        // 「本体名册里必须有一种会枯竭的资源」这条内容设计要求因此
+        // 有了一道机器检查：把 iron_vein 改成不枯竭，本门禁立刻变红。
+        ContentTableKind::Resource,
     ],
     deferred: &[
         DeferredTable {
@@ -832,6 +845,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
         ContentTableKind::Weather => "天气表",
         ContentTableKind::Recipe => "配方表",
         ContentTableKind::RecipeCategory => "配方类别表",
+        ContentTableKind::Resource => "资源表",
     }
 }
 
@@ -840,7 +854,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
 /// 与 [`roster_slot`] 配套：新增一个变体时，那个不带通配分支的 `match`
 /// 会编译失败，逼人回到这里补上数组元素（数组长度也会对不上），见模块
 /// 文档「表花名册」一节。
-pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 21] = [
+pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 22] = [
     ContentTableKind::Opaque,
     ContentTableKind::Terrain,
     ContentTableKind::Class,
@@ -862,6 +876,7 @@ pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 21] = [
     ContentTableKind::RecipeCategory,
     ContentTableKind::Tag,
     ContentTableKind::ModifierType,
+    ContentTableKind::Resource,
 ];
 
 /// 给 [`ALL_CONTENT_TABLE_KINDS`] 的完备性做编译期强制：不带通配分支
@@ -893,6 +908,7 @@ fn roster_slot(kind: ContentTableKind) -> usize {
         ContentTableKind::RecipeCategory => 18,
         ContentTableKind::Tag => 19,
         ContentTableKind::ModifierType => 20,
+        ContentTableKind::Resource => 21,
     }
 }
 
@@ -1302,6 +1318,7 @@ fn inspect_entry(auditor: &mut Auditor<'_>, index: ContentIndex) {
             // （CoveredButEmpty 那一头），只是没有字段要覆盖。
         }
         ContentTableKind::Weather => inspect_weather(auditor, index),
+        ContentTableKind::Resource => inspect_resource(auditor, index),
         ContentTableKind::Recipe => inspect_recipe(auditor, index),
         ContentTableKind::RecipeCategory => inspect_recipe_category(auditor, index),
     }
@@ -1565,6 +1582,36 @@ fn inspect_weather(auditor: &mut Auditor<'_>, index: ContentIndex) {
         "WeatherAttrs::season_weights",
         table.season_weights(index).iter().any(|w| *w != 0),
     );
+}
+
+/// [`ll_world::resource::ResourceAttrs`] 的全部字段（资源点批次新增）。
+///
+/// `display_name_key` 与 `source_terrain` 是**必填**参数
+/// （`ResourceTable::define` 的入参，不是 `Option`），任何一条真实注册
+/// 出来的资源都有值，因此恒记为已覆盖——与
+/// [`inspect_weather`] 的 `display_name_key` 同一条既有处理。
+///
+/// 三个数值列的「非默认」判据各不相同，都跟着各自的语义默认值走：
+/// `abundance` 已经由注册期校验保证 ≥ 1（没有「等于没填」这个取值），
+/// 恒记为已覆盖；`residents_supported`/`settlement_draw` 的语义默认值
+/// 是 0（「这种资源不贡献承载力/不吸引拓荒」），因此判据是**不等于
+/// 0**。`exhaustible` 的默认值是 `false`，判据是**为真**——与
+/// `SpaceProfileAttrs` 那几个布尔列同一条处理。
+fn inspect_resource(auditor: &mut Auditor<'_>, index: ContentIndex) {
+    let kind = ll_world::resource::ResourceKind::from_index(index);
+    let table = auditor.tables.resource;
+    auditor.field("ResourceAttrs::display_name_key", true);
+    auditor.field("ResourceAttrs::source_terrain", true);
+    auditor.field("ResourceAttrs::abundance", true);
+    auditor.field(
+        "ResourceAttrs::residents_supported",
+        table.residents_supported(kind) != 0,
+    );
+    auditor.field(
+        "ResourceAttrs::settlement_draw",
+        table.settlement_draw(kind) != 0,
+    );
+    auditor.field("ResourceAttrs::exhaustible", table.exhaustible(kind));
 }
 
 /// [`ll_render::anim::Clip`] 的全部字段——[`crate::clip::ClipTable`]
@@ -2062,6 +2109,7 @@ mod tests {
         weapon_category: WeaponCategoryTable,
         damage_category: DamageCategoryTable,
         weather: WeatherTable,
+        resource: ll_world::resource::ResourceTable,
         recipe: RecipeTable,
         recipe_category: RecipeCategoryTable,
         tag: TagTable,
@@ -2090,6 +2138,7 @@ mod tests {
                 weapon_category: WeaponCategoryTable::new(),
                 damage_category: DamageCategoryTable::new(),
                 weather: WeatherTable::new(),
+                resource: ll_world::resource::ResourceTable::new(),
                 recipe: RecipeTable::new(),
                 recipe_category: RecipeCategoryTable::new(),
             }
@@ -2117,6 +2166,7 @@ mod tests {
                 recipe_category: &self.recipe_category,
                 tag: &self.tag,
                 modifier_type: &self.modifier_type,
+                resource: &self.resource,
             }
         }
 

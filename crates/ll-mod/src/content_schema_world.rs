@@ -1,5 +1,5 @@
-//! 内容数据文件 schema 的**世界侧**四类：地形、空间层属性、天气、
-//! 动画剪辑。
+//! 内容数据文件 schema 的**世界侧**五类：地形、资源、空间层属性、
+//! 天气、动画剪辑。
 //!
 //! 与 [`crate::content_schema`] 同一套形状（`Raw*` + `apply_*` +
 //! `deny_unknown_fields` + 两阶段解析），拆成独立模块只是因为
@@ -16,6 +16,7 @@
 //! 形突然不挡视线了」，而没有任何报错。数值字段同理，除非缺省值本身
 //! 有明确语义（见各字段文档）。
 
+use ll_world::resource::{ResourceAttrs, ResourceError, ResourceTable};
 use ll_world::space_profile::{SpaceProfileAttrs, SpaceProfileError, SpaceProfileTable};
 use ll_world::terrain::{TerrainAttrs, TerrainError, TerrainKind, TerrainTable};
 use ll_world::weather::{WeatherAttrs, WeatherError, WeatherTable};
@@ -85,6 +86,78 @@ pub fn apply_terrains(
                 },
             )
             .map_err(|err: TerrainError| err.to_string())?;
+    }
+    Ok(())
+}
+
+// ───────────────────────────── 资源 ─────────────────────────────
+
+/// `resources.json5` 的顶层形状。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ResourceFile {
+    /// 资源名册，按书写顺序注册。
+    pub resources: Vec<RawResource>,
+}
+
+/// 一条资源种类声明，见 [`ll_world::resource`] 模块文档。
+///
+/// 与 [`RawTerrain`] 同一条纪律：数值与布尔字段全部必填，不带
+/// `#[serde(default)]`——漏写一个 `exhaustible` 的症状是「这座矿业城市
+/// 永远不会衰败」，而没有任何报错。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawResource {
+    /// 完整命名空间标识符，例如 `lostland:iron_vein`。
+    pub id: String,
+    /// 展示名的 Fluent 本地化键。
+    pub display_name_key: String,
+    /// 这种资源长在哪种地形上（完整命名空间标识符，必须是一条已经
+    /// 注册过的地形——`resources.json5` 排在 `terrain.json5` 之后装载
+    /// 正是为了这一条，见 `crate::content_data` 的 `CONTENT_FILES`）。
+    pub source_terrain: String,
+    /// 源地形上每格出现一处资源点的概率，千分比（`1..=1000`）。
+    pub abundance: i64,
+    /// 每处资源点额外养活多少居民。
+    pub residents_supported: i64,
+    /// 每处资源点给拓荒概率加多少分。
+    pub settlement_draw: i64,
+    /// 这种资源会不会被采光。
+    pub exhaustible: bool,
+}
+
+/// 把一批资源写进注册表与资源表。
+pub fn apply_resources(
+    registry: &mut Registry,
+    table: &mut ResourceTable,
+    resources: &[RawResource],
+) -> Applied {
+    for resource in resources {
+        let index = intern_id(registry, &resource.id, "资源标识符")?;
+        let display_name_key = parse_id(&resource.display_name_key, "资源展示名键")?;
+        // 源地形走 `intern` 而不是「只 get」：与 `RawTerrain::opens_into`
+        // 完全同一种处理——注册表本身不区分「谁先提到这个 id」，真正的
+        // 校验（这条地形有没有被 `terrain.json5` 声明过）由地形表的
+        // `is_defined` 在消费侧回答，见 `ll_world::resource::resource_node_at`
+        // 的地形比较。
+        let source_terrain = TerrainKind::from_index(intern_id(
+            registry,
+            &resource.source_terrain,
+            "资源源地形标识符",
+        )?);
+        table
+            .define(
+                index,
+                ResourceAttrs {
+                    display_name_key,
+                    source_terrain,
+                    abundance: resource.abundance.clamp(0, i64::from(u32::MAX)) as u32,
+                    residents_supported: resource.residents_supported.max(0) as u32,
+                    settlement_draw: resource.settlement_draw.max(0) as u32,
+                    exhaustible: resource.exhaustible,
+                },
+            )
+            .map_err(|err: ResourceError| err.to_string())?;
     }
     Ok(())
 }

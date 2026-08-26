@@ -1,0 +1,91 @@
+// 本体资源名册——一块地上「有什么可拿」的那一层，决定文明会在哪里
+// 立足、能长多大、又因为什么衰败。
+//
+// schema 见 `crates/ll-mod/src/content_schema_world.rs` 的
+// `ResourceFile`；派生算法与每个字段的消费者见
+// `crates/ll-world/src/resource.rs` 模块文档。
+//
+// ── 为什么只有四条 ────────────────────────────────────────────────
+//
+// 项目所有者点名的正是这四样：「铁矿 / 木材 / 良田 / 水源」。加多不难
+// （多写一条 JSON5 就是一种新资源），但每多一条都必须回答「据点生成
+// 真的会读它吗」——不会读的那条就是又一个 `SpaceProfile.diggable`：
+// 声明了、进了哈希、进了审计，没有任何玩法后果。
+//
+// 这四条各自在推演里承担一件**不同**的事，缺一件就少一种世界形态：
+//
+//   良田  最常见（草地是最普遍的可住地形），但每一处只养活三个人，
+//         也不特别吸引人来（settlement_draw 最低）——农业村是常态，
+//         不是奇观。
+//   木材  建筑材料，中等吸引力、最低承载——林地村庄多而不大。
+//   铁矿  吸引力最高（settlement_draw 5）、单处承载也最高（8），
+//         且**唯一可枯竭**：先撑起一座矿城，再在矿采光的那一刻把它
+//         抽空。「矿业城市因为矿采光而覆灭」这条因果链的全部来源。
+//   水源  三项都居中——它是那种「有就好办、没有也活得下去」的东西。
+//
+// ── 数值取值的口径 ────────────────────────────────────────────────
+//
+// abundance 是**源地形每一格出现一处资源点的千分比概率**。它决定
+// 「资源点」真的是点而不是「整片山都是矿」：铁矿 60‰ 意味着一片山地
+// 里大约十六格才有一处矿脉，而水源 300‰ 意味着浅水边几乎处处能取水。
+//
+// residents_supported / settlement_draw 是「每一处资源点」的贡献，
+// 会被据点领地（默认 144×144 格）里数到的处数乘起来。因此一片资源
+// 密集的领地与一片贫瘠的领地之间是数量级的差别，而不是几个百分点
+// ——「有的据点有大有小」就落在这里。
+{
+  resources: [
+    // 良田：草地。人口的地板。
+    {
+      id: "lostland:farmland",
+      display_name_key: "lostland:resource.farmland.display_name",
+      source_terrain: "lostland:grass",
+      abundance: 120,
+      residents_supported: 3,
+      settlement_draw: 1,
+      // 可再生：一块地年复一年地种，不会「用完」。轮作与地力衰退是
+      // 另一套系统，不在本批次（真要做，那也不是 exhaustible 这条
+      // 一次性开关能表达的）。
+      exhaustible: false,
+    },
+    // 木材：森林。盖房子的东西。
+    {
+      id: "lostland:timber",
+      display_name_key: "lostland:resource.timber.display_name",
+      source_terrain: "lostland:forest",
+      abundance: 200,
+      residents_supported: 1,
+      settlement_draw: 2,
+      // 可再生：树会重新长。砍秃一片林子需要「林地会变成草地」这条
+      // 地形转换真的接线（见 settlements-structures-and-npc-spawning.md
+      // 三节 3.4 的 `station_becomes`），那时候再谈枯竭。
+      exhaustible: false,
+    },
+    // 铁矿：山地。财富的来源，也是本名册里唯一会耗尽的东西。
+    {
+      id: "lostland:iron_vein",
+      display_name_key: "lostland:resource.iron_vein.display_name",
+      source_terrain: "lostland:mountain",
+      abundance: 60,
+      // 承载力**最高**：一座矿城的人口就是靠矿养的，粮食可以从别处
+      // 运来。这个数字大，恰恰是「矿采光之后这座城站不住」的前提——
+      // 它撑起来的那部分人口在枯竭的一瞬间失去依托。
+      residents_supported: 8,
+      settlement_draw: 5,
+      // **本名册唯一的 true。** 矿脉挖完就没了，这是「资源枯竭」这条
+      // 覆灭原因（ll_world::history::SettlementDemise::ResourceExhausted）
+      // 在内容侧的全部来源。
+      exhaustible: true,
+    },
+    // 水源：浅水。
+    {
+      id: "lostland:fresh_water",
+      display_name_key: "lostland:resource.fresh_water.display_name",
+      source_terrain: "lostland:shallow_water",
+      abundance: 300,
+      residents_supported: 2,
+      settlement_draw: 3,
+      exhaustible: false,
+    },
+  ],
+}
