@@ -9,7 +9,7 @@
 //! 「东西接缝」「南北接缝」两条测试，直接比对生成结果，而不是依赖
 //! 噪声层那条测试。
 
-use ll_core::torus::TorusSize;
+use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
@@ -193,6 +193,33 @@ pub fn generate_zone_window(
     }
 
     Ok(grid)
+}
+
+/// 求一个世界瓦片坐标上的**基础地形**——据点、玩家改动等任何后续
+/// 写入都还没发生的那一层。
+///
+/// 与 [`generate_zone_window`] 用的是同一个 [`terrain_at_coord`]，因此
+/// 「窗口里第 (lx, ly) 格」与「本函数在对应世界坐标上」的结果恒相同，
+/// 不存在两份阈值逻辑。
+///
+/// # 为什么需要一个「按世界坐标」的入口
+///
+/// [`crate::settlement::stamp_settlement`] 铺一栋**横跨区块**的建筑时，
+/// 要判断这块 5×5 的地能不能盖房，而其中一部分格子根本不在当前窗口
+/// 里。它不能去读邻区块（那要么触发一次隐式加载、要么撞上
+/// `SurfaceStore::set_terrain` 那类常驻契约），但它可以直接问噪声
+/// ——地形本来就是坐标的纯函数，这个问题不需要任何区块常驻。
+///
+/// 接受已经环绕过的 [`TorusPos`] 而不是裸坐标：调用方拿到的是世界
+/// 瓦片坐标，环绕由 `TorusSize::wrap` 统一负责，本函数不再重复一遍
+/// 环面语义。
+pub fn terrain_at_tile(
+    noise: &TileableNoise,
+    params: &GenParams,
+    pos: TorusPos,
+    terrain_ids: &BaseTerrainIds,
+) -> TerrainKind {
+    terrain_at_coord(noise, params, pos.x(), pos.y(), terrain_ids)
 }
 
 /// 区块级粗粒度采样：只取该区块**左上角一点**的地形，不生成整个区块

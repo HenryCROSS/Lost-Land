@@ -254,9 +254,19 @@ impl SurfaceStore {
         }
     }
 
-    /// 生成一个区块窗口，并把该区块上的据点（若有）铺进去——
-    /// [`Self::admit`] 与 [`Self::install_chronicle`] 共用的那一段，
-    /// 保证两条路径产出逐格相同的结果。
+    /// 生成一个区块窗口，并把**覆盖到**这个区块的据点（可能不止一座、
+    /// 也可能是邻区块那座据点伸过来的半条街）各自落在本窗口内的那部分
+    /// 铺进去——[`Self::admit`] 与 [`Self::install_chronicle`] 共用的
+    /// 那一段，保证两条路径产出逐格相同的结果。
+    ///
+    /// # 惰性铺设：本方法一次也不往别的区块写
+    ///
+    /// 据点可以横跨区块（见 [`crate::settlement`] 模块文档）。跨出去的
+    /// 那部分**不在这里补写到邻区块**——邻区块自己被物化时会走同一条
+    /// 路，问出同一座据点、铺出自己那一半。写入全程走
+    /// `ChunkGrid::set_terrain`（本方法刚生成、尚未插进 `resident` 的
+    /// 那一份），从不经过 [`Self::set_terrain`]，因此后者「写未常驻
+    /// 区块就 panic」的契约在这条路径上不生效。
     fn generate_and_stamp(
         &self,
         noise: &TileableNoise,
@@ -266,19 +276,21 @@ impl SurfaceStore {
     ) -> ChunkGrid {
         let mut grid = generate_zone_window(noise, params, &self.layout, zone, terrain_ids)
             .expect("ZoneLayout 构造时已校验区块边长满足 ChunkGrid 的最小视口跨度，生成不应失败");
-        if let Some(chronicle) = &self.chronicle
-            && let Some(site) = chronicle.site_in_zone(zone)
-        {
-            let span = self.layout.zone_span() as i32;
-            crate::settlement::stamp_settlement(
-                &mut grid,
-                self.layout.local_size(),
-                (zone.x() * span, zone.y() * span),
-                site,
-                terrain_ids,
-                chronicle.terrain_table(),
-                params.seed,
-            );
+        if let Some(chronicle) = &self.chronicle {
+            // 「这块地能不能盖房」读的是基础地形（噪声的纯函数），不是
+            // 本窗口——一栋跨区块的建筑必须在它覆盖到的每个区块里得出
+            // 同一个答案，见 `crate::settlement::StampContext::base_terrain`。
+            let base_terrain =
+                |pos: TorusPos| crate::generate::terrain_at_tile(noise, params, pos, terrain_ids);
+            let context = crate::settlement::StampContext {
+                ids: terrain_ids,
+                table: chronicle.terrain_table(),
+                world_seed: params.seed,
+                base_terrain: &base_terrain,
+            };
+            for site in chronicle.sites_touching_zone(zone) {
+                crate::settlement::stamp_settlement(&mut grid, &self.layout, zone, site, &context);
+            }
         }
         grid
     }
