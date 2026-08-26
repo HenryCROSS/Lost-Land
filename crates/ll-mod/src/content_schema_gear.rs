@@ -26,8 +26,9 @@
 //! 里的配方等**跨表引用**仍然是字符串，由 `apply_*` 查表解析——这正是
 //! 两阶段解析的分工，见 [`crate::content_schema`] 模块文档。
 
-use ll_core::ident::ContentIndex;
+use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
+use ll_sim::check::CHECK_DICE;
 use ll_sim::combat::Penetration;
 use ll_sim::formula::{FormulaDef, FormulaOp};
 use ll_sim::item::{BlindBoxEntry, EquipSlot, SlotMask, StatBonus, StatTarget};
@@ -424,7 +425,8 @@ pub struct RawPoolLevel {
 #[serde(deny_unknown_fields)]
 pub struct RawRuleModifier {
     /// `"resistance"` / `"vulnerability"` / `"sneak-attack"` /
-    /// `"inspection-suspicion"` / `"inspection-concealment"`。
+    /// `"inspection-suspicion"` / `"inspection-concealment"` /
+    /// `"advantage"` / `"disadvantage"` / `"reroll-once"`。
     pub kind: String,
     /// 这条修正属于哪个**加值类型**，**必须已注册**
     /// （`modifier_types.json5`）。整条缺席 = 不声明类型，落进那个
@@ -446,16 +448,35 @@ pub struct RawRuleModifier {
     /// 对称：负值同样钳到零（负的易伤就是减伤），上不封顶。
     #[serde(default)]
     pub damage_increase: Option<i64>,
-    /// `inspection-suspicion` 从盘查触发概率上**直接减掉**的千分比
+    /// `inspection-suspicion` 加在**被盘查者那一侧**掷出点数上的整数
     /// 点数（越大越不起眼）。负值钳到零：一条「让别人更想搜你」的
-    /// 被动不是本变体要表达的东西。
+    /// 被动不是本变体要表达的东西。上界见
+    /// [`RawRuleModifier::checked_check_modifier`]。
     #[serde(default)]
-    pub suspicion_reduction_permille: Option<i64>,
-    /// `inspection-concealment` 的千分比隐匿度，钳到 0..=1000
-    /// （两端各留一线由结算侧的
-    /// [`ll_sim::rule_modifier::clamp_probability_permille`] 负责）。
+    pub inconspicuous_modifier: Option<i64>,
+    /// `inspection-concealment` 加在**藏东西那一方**掷出点数上的整数
+    /// 点数（越大越藏得住）。同上：负值钳到零，上界见
+    /// [`RawRuleModifier::checked_check_modifier`]。
     #[serde(default)]
-    pub conceal_permille: Option<i64>,
+    pub concealment_modifier: Option<i64>,
+    /// `advantage` / `disadvantage` 指向的**判定种类**开放标识符，
+    /// 例如 `lostland:inspection`。
+    ///
+    /// 刻意**不**校验它是不是引擎当前认得的那两个之一：判定种类是一个
+    /// 会随系统长出来的开放集合，装载期把「还没写的判定」判成非法，
+    /// 只会逼着内容作者等引擎——与 `damage_category` 那种「必须已注册」
+    /// 的封闭集合不是一回事。写错了的后果是那条声明不被任何判定认领，
+    /// 与不写等价。
+    #[serde(default)]
+    pub check_context: Option<String>,
+    /// `reroll-once` 触发重掷的**面值**，必须落在 `1..=N`
+    /// （`N` = [`ll_sim::check::CHECK_DICE`] 的面数）。
+    ///
+    /// 这一条与 `check_context` 相反，是**封闭**的：面值的合法集合由
+    /// 骰子本身完全确定，写一个掷不出来的数就是笔误，静默接受等于让
+    /// 一条声明永远不生效。
+    #[serde(default)]
+    pub reroll_value: Option<i64>,
     /// `sneak-attack` 的每点幸运换算的千分比触发率。
     #[serde(default)]
     pub luck_chance_permille_per_point: Option<i64>,
@@ -487,35 +508,101 @@ impl RawRuleModifier {
         })
     }
 
-    fn resolve(&self, registry: &Registry) -> Result<RuleModifier, String> {
-        let reject = |present: bool, field: &str| -> Result<(), String> {
-            if present {
-                Err(format!(
+    /// 这条声明**除了** `allowed` 里列出的以外，一个字段都不许出现。
+    ///
+    /// 逐分支手写 `reject(...)` 的写法随本批次一起撤掉：字段从 6 个涨到
+    /// 10 个之后，那种写法要求每个分支各记住 9 条否定，新增一个字段就要
+    /// 在**每一个**分支里补一行——漏一行的后果是静默接受一条不该接受的
+    /// 声明，而且不会有任何测试告诉你。反过来写（列出这个 kind 认哪几个
+    /// 字段）新增字段时**什么都不用改**，且漏写的后果是「合法的写法被
+    /// 拒了」这种一眼可见的失败，不是静默放行。
+    fn only(&self, allowed: &[&str]) -> Result<(), String> {
+        // 顺序固定成字段声明顺序，与任何 HashMap 无关（约束 C5）——
+        // 报错文本因此对同一份内容恒定，不会两次装载报出不同的字段名。
+        let present: [(&str, bool); 9] = [
+            ("damage_category", self.damage_category.is_some()),
+            ("damage_reduction", self.damage_reduction.is_some()),
+            ("damage_increase", self.damage_increase.is_some()),
+            (
+                "inconspicuous_modifier",
+                self.inconspicuous_modifier.is_some(),
+            ),
+            ("concealment_modifier", self.concealment_modifier.is_some()),
+            ("check_context", self.check_context.is_some()),
+            ("reroll_value", self.reroll_value.is_some()),
+            (
+                "luck_chance_permille_per_point",
+                self.luck_chance_permille_per_point.is_some(),
+            ),
+            ("extra_damage", self.extra_damage.is_some()),
+        ];
+        for (field, is_present) in present {
+            if is_present && !allowed.contains(&field) {
+                return Err(format!(
                     "规则修正 kind {:?} 不接受字段 {field:?}",
                     self.kind
-                ))
-            } else {
-                Ok(())
+                ));
             }
-        };
+        }
+        Ok(())
+    }
+
+    /// 一个**判定修正**字段的取值校验：不超过 [`CHECK_DICE`] 允许的
+    /// 修正上限；负值钳到零。
+    ///
+    /// # 上限为什么必须相对于 M 和 N，不是一个绝对数字
+    ///
+    /// d20 之所以「逼着修正保持在 ±1..±10」，是因为那是**相对 20** 的
+    /// 量级。`N` 一旦可配，一条 `+400` 在 `N = 1000` 上仍然温和、在
+    /// `N = 20` 上却能压垮一切——绝对上限在两种骰子上表达的根本不是
+    /// 同一件事。因此这里校验的是
+    /// [`ll_sim::check::CheckDice::max_modifier`]，一个由 `M`/`N` 推出来
+    /// 的值（`(M*(N-1) - 1) / 2`，`3d20` 下是 `28`，`1d20` 下正好是
+    /// 传统的 `9`）。
+    ///
+    /// # 为什么上限恰好取 `L`，不是「`L` 的几分之几」
+    ///
+    /// 因为 `L` 是这条声明**可能被观察到**的最大值：运行期聚合完之后
+    /// 还要过一遍 [`ll_sim::check::CheckDice::clamp_modifier`]，写
+    /// `L + 1` 与写 `L` 在任何一局游戏里产出逐位相同的结果。装载期这道
+    /// 闸门要拒的正是这种「写了但永远不可能生效」的数——它不是一条口味
+    /// 判断（那样任何分母都是随手取的），是一条**可证伪**的规则：找到
+    /// 一个能让 `L + 1` 与 `L` 表现不同的局面，这道闸门就该放宽。
+    ///
+    /// 负值钳到零而不是报错：与 `damage_reduction`/`damage_increase`
+    /// 同一条既有纪律（反方向要用反方向的变体表达，不是给这个字段填
+    /// 负数）。
+    fn checked_check_modifier(&self, value: i64, field: &str) -> Result<i32, String> {
+        let limit = CHECK_DICE.max_modifier();
+        if value > limit {
+            return Err(format!(
+                "规则修正 kind {:?} 的 {field:?} = {value} 超过判定修正上限 {limit}\
+                 （判定用 {}d{}，跨度 {}，上限是它的一半，见 ll_sim::check）",
+                self.kind,
+                CHECK_DICE.count(),
+                CHECK_DICE.sides(),
+                CHECK_DICE.spread(),
+            ));
+        }
+        Ok(clamp_to_i32(value).max(0))
+    }
+
+    fn resolve(&self, registry: &Registry) -> Result<RuleModifier, String> {
         let need = |value: Option<i64>, field: &str| -> Result<i64, String> {
             value.ok_or_else(|| format!("规则修正 kind {:?} 缺少必填字段 {field:?}", self.kind))
         };
-        // 每个分支先把「与 kind 不搭的字段」逐条拒掉，再取自己要的
-        // ——这条检查替代了 serde 内部标签枚举给不了的那一半。
+        let need_id = |field: &str| -> Result<NamespacedId, String> {
+            let raw = self
+                .check_context
+                .as_deref()
+                .ok_or_else(|| format!("规则修正 kind {:?} 缺少必填字段 {field:?}", self.kind))?;
+            NamespacedId::parse(raw).map_err(|err| format!("{field} {raw:?} 不是合法标识符：{err}"))
+        };
+        // 每个分支先声明「这个 kind 认哪几个字段」，其余一律拒掉——这条
+        // 检查替代了 serde 内部标签枚举给不了的那一半，见 [`Self::only`]。
         match self.kind.as_str() {
             "resistance" => {
-                reject(self.damage_increase.is_some(), "damage_increase")?;
-                reject(self.conceal_permille.is_some(), "conceal_permille")?;
-                reject(
-                    self.suspicion_reduction_permille.is_some(),
-                    "suspicion_reduction_permille",
-                )?;
-                reject(
-                    self.luck_chance_permille_per_point.is_some(),
-                    "luck_chance_permille_per_point",
-                )?;
-                reject(self.extra_damage.is_some(), "extra_damage")?;
+                self.only(&["damage_category", "damage_reduction"])?;
                 let raw = self.damage_category.as_deref().ok_or_else(|| {
                     format!(
                         "规则修正 kind {:?} 缺少必填字段 \"damage_category\"",
@@ -524,9 +611,9 @@ impl RawRuleModifier {
                 })?;
                 Ok(RuleModifier::Resistance {
                     damage_category: required_id(registry, raw, "伤害类别")?,
-                    // 不钳到零：负值是「脆弱」，是乘数模型里 `2000‰`
-                    // 那一档在减伤模型下的对应物，见
-                    // `RuleModifier::Resistance` 文档「负值 = 脆弱」。
+                    // 钳到零：负的减伤是「脆弱」，改由 kind
+                    // `vulnerability` 表达，见 `RuleModifier::Resistance`
+                    // 文档「脆弱**不**用负减伤表达」一节。
                     damage_reduction: clamp_to_i32(need(
                         self.damage_reduction,
                         "damage_reduction",
@@ -535,17 +622,7 @@ impl RawRuleModifier {
                 })
             }
             "vulnerability" => {
-                reject(self.damage_reduction.is_some(), "damage_reduction")?;
-                reject(self.conceal_permille.is_some(), "conceal_permille")?;
-                reject(
-                    self.suspicion_reduction_permille.is_some(),
-                    "suspicion_reduction_permille",
-                )?;
-                reject(
-                    self.luck_chance_permille_per_point.is_some(),
-                    "luck_chance_permille_per_point",
-                )?;
-                reject(self.extra_damage.is_some(), "extra_damage")?;
+                self.only(&["damage_category", "damage_increase"])?;
                 let raw = self.damage_category.as_deref().ok_or_else(|| {
                     format!(
                         "规则修正 kind {:?} 缺少必填字段 \"damage_category\"",
@@ -559,14 +636,7 @@ impl RawRuleModifier {
                 })
             }
             "sneak-attack" => {
-                reject(self.damage_category.is_some(), "damage_category")?;
-                reject(self.damage_reduction.is_some(), "damage_reduction")?;
-                reject(self.damage_increase.is_some(), "damage_increase")?;
-                reject(
-                    self.suspicion_reduction_permille.is_some(),
-                    "suspicion_reduction_permille",
-                )?;
-                reject(self.conceal_permille.is_some(), "conceal_permille")?;
+                self.only(&["luck_chance_permille_per_point", "extra_damage"])?;
                 Ok(RuleModifier::SneakAttack {
                     luck_chance_permille_per_point: need(
                         self.luck_chance_permille_per_point,
@@ -577,44 +647,58 @@ impl RawRuleModifier {
                 })
             }
             "inspection-suspicion" => {
-                reject(self.damage_category.is_some(), "damage_category")?;
-                reject(self.damage_reduction.is_some(), "damage_reduction")?;
-                reject(self.damage_increase.is_some(), "damage_increase")?;
-                reject(self.conceal_permille.is_some(), "conceal_permille")?;
-                reject(
-                    self.luck_chance_permille_per_point.is_some(),
-                    "luck_chance_permille_per_point",
-                )?;
-                reject(self.extra_damage.is_some(), "extra_damage")?;
+                self.only(&["inconspicuous_modifier"])?;
                 Ok(RuleModifier::InspectionSuspicion {
-                    suspicion_reduction_permille: need(
-                        self.suspicion_reduction_permille,
-                        "suspicion_reduction_permille",
-                    )?
-                    .max(0) as i32,
+                    inconspicuous_modifier: self.checked_check_modifier(
+                        need(self.inconspicuous_modifier, "inconspicuous_modifier")?,
+                        "inconspicuous_modifier",
+                    )?,
                 })
             }
             "inspection-concealment" => {
-                reject(self.damage_category.is_some(), "damage_category")?;
-                reject(self.damage_reduction.is_some(), "damage_reduction")?;
-                reject(self.damage_increase.is_some(), "damage_increase")?;
-                reject(
-                    self.suspicion_reduction_permille.is_some(),
-                    "suspicion_reduction_permille",
-                )?;
-                reject(
-                    self.luck_chance_permille_per_point.is_some(),
-                    "luck_chance_permille_per_point",
-                )?;
-                reject(self.extra_damage.is_some(), "extra_damage")?;
+                self.only(&["concealment_modifier"])?;
                 Ok(RuleModifier::InspectionConcealment {
-                    conceal_permille: need(self.conceal_permille, "conceal_permille")?
-                        .clamp(0, 1000) as i32,
+                    concealment_modifier: self.checked_check_modifier(
+                        need(self.concealment_modifier, "concealment_modifier")?,
+                        "concealment_modifier",
+                    )?,
+                })
+            }
+            "advantage" => {
+                self.only(&["check_context"])?;
+                Ok(RuleModifier::Advantage {
+                    check_context: need_id("check_context")?,
+                })
+            }
+            "disadvantage" => {
+                self.only(&["check_context"])?;
+                Ok(RuleModifier::Disadvantage {
+                    check_context: need_id("check_context")?,
+                })
+            }
+            "reroll-once" => {
+                self.only(&["reroll_value"])?;
+                let value = need(self.reroll_value, "reroll_value")?;
+                // 面值的合法集合由骰子完全确定，见 `reroll_value` 字段
+                // 文档「这一条与 check_context 相反，是封闭的」。
+                if value < 1 || value > i64::from(CHECK_DICE.sides()) {
+                    return Err(format!(
+                        "规则修正 kind {:?} 的 \"reroll_value\" = {value} 掷不出来\
+                         （判定用 {}d{}，面值只可能是 1..={}）",
+                        self.kind,
+                        CHECK_DICE.count(),
+                        CHECK_DICE.sides(),
+                        CHECK_DICE.sides(),
+                    ));
+                }
+                Ok(RuleModifier::RerollOnce {
+                    value: clamp_to_i32(value),
                 })
             }
             other => Err(format!(
                 "未知的规则修正 kind {other:?}（只认 resistance/vulnerability/\
-                 sneak-attack/inspection-suspicion/inspection-concealment）"
+                 sneak-attack/inspection-suspicion/inspection-concealment/\
+                 advantage/disadvantage/reroll-once）"
             )),
         }
     }
@@ -1540,8 +1624,10 @@ mod tests {
             damage_category: None,
             damage_reduction: None,
             damage_increase: None,
-            suspicion_reduction_permille: None,
-            conceal_permille: None,
+            inconspicuous_modifier: None,
+            concealment_modifier: None,
+            check_context: None,
+            reroll_value: None,
             luck_chance_permille_per_point: None,
             extra_damage: None,
         }
@@ -1566,7 +1652,7 @@ mod tests {
 
     #[test]
     fn 抗性填了盘查那一条的字段同样报错() {
-        // 新字段 `suspicion_reduction_permille` 也进了逐分支的拒字段
+        // 新字段 `inconspicuous_modifier` 也进了逐分支的拒字段
         // 清单——加值类型批次把两个乘数字段拆成两个同名不同义的点数
         // 字段，拒字段清单必须跟着拆，否则「填错分支」这一类内容错误会
         // 从此静默通过。
@@ -1574,7 +1660,7 @@ mod tests {
         let modifier = RawRuleModifier {
             damage_category: Some("m:acid".to_string()),
             damage_reduction: Some(3),
-            suspicion_reduction_permille: Some(400),
+            inconspicuous_modifier: Some(9),
             ..bare_modifier("resistance")
         };
 
@@ -1582,7 +1668,123 @@ mod tests {
         let result = modifier.resolve(&Registry::new());
 
         // Assert
-        assert!(result.is_err_and(|err| err.contains("suspicion_reduction_permille")));
+        assert!(result.is_err_and(|err| err.contains("inconspicuous_modifier")));
+    }
+
+    #[test]
+    fn 判定修正超过上限时装载期报错() {
+        // 上限必须**相对于 M 和 N**，不是一个绝对数字——见
+        // `RawRuleModifier::checked_check_modifier` 文档。这条测试因此
+        // 不写死 `28`，而是从 `CHECK_DICE` 现算，换一把骰子时它跟着变。
+        // Arrange
+        let registry = Registry::new();
+        let limit = CHECK_DICE.max_modifier();
+        let raw = RawRuleModifier {
+            kind: "inspection-suspicion".to_owned(),
+            inconspicuous_modifier: Some(limit + 1),
+            ..blank_rule_modifier("inspection-suspicion")
+        };
+
+        // Act
+        let result = raw.resolve(&registry);
+
+        // Assert：报错文本里带上限本身，作者不必去翻源码。
+        assert!(
+            result
+                .as_ref()
+                .is_err_and(|err| err.contains(&limit.to_string())),
+            "{result:?}"
+        );
+
+        // 反例：恰好等于上限是合法的——上限是「可能被观察到的最大值」,
+        // 不是「危险值」。
+        let at_limit = RawRuleModifier {
+            kind: "inspection-suspicion".to_owned(),
+            inconspicuous_modifier: Some(limit),
+            ..blank_rule_modifier("inspection-suspicion")
+        };
+        assert_eq!(
+            at_limit.resolve(&registry),
+            Ok(RuleModifier::InspectionSuspicion {
+                inconspicuous_modifier: limit as i32,
+            })
+        );
+    }
+
+    #[test]
+    fn 掷不出来的重掷面值在装载期被拒() {
+        // `reroll_value` 与 `check_context` 相反，是**封闭**集合：合法
+        // 面值由骰子完全确定，写一个掷不出来的数就是笔误。
+        // Arrange
+        let registry = Registry::new();
+        let sides = i64::from(CHECK_DICE.sides());
+
+        // Act & Assert：0 与 N+1 都掷不出来。
+        for bad in [0, sides + 1] {
+            let raw = RawRuleModifier {
+                kind: "reroll-once".to_owned(),
+                reroll_value: Some(bad),
+                ..blank_rule_modifier("reroll-once")
+            };
+            assert!(raw.resolve(&registry).is_err(), "面值 {bad} 不该被接受");
+        }
+
+        // 反例：两端的合法面值都收。
+        for good in [1, sides] {
+            let raw = RawRuleModifier {
+                kind: "reroll-once".to_owned(),
+                reroll_value: Some(good),
+                ..blank_rule_modifier("reroll-once")
+            };
+            assert_eq!(
+                raw.resolve(&registry),
+                Ok(RuleModifier::RerollOnce { value: good as i32 })
+            );
+        }
+    }
+
+    #[test]
+    fn 优势的判定种类是开放标识符不必已注册() {
+        // 与 `damage_category`（必须已注册）刻意不同：判定种类是一个会
+        // 随系统长出来的开放集合，装载期把「还没写的判定」判成非法，
+        // 只会逼着内容作者等引擎。见 `RawRuleModifier::check_context`。
+        // Arrange
+        let registry = Registry::new();
+        let unregistered = RawRuleModifier {
+            kind: "advantage".to_owned(),
+            check_context: Some("somemod:a_check_that_does_not_exist_yet".to_owned()),
+            ..blank_rule_modifier("advantage")
+        };
+
+        // Act & Assert 一：格式合法但从未注册、引擎也不认得 —— 照收。
+        let result = unregistered.resolve(&registry);
+        assert!(result.is_ok(), "{result:?}");
+
+        // Assert 二：但**不是合法标识符**仍然报错——开放不等于不校验。
+        let malformed = RawRuleModifier {
+            kind: "advantage".to_owned(),
+            check_context: Some("no_colon_here".to_owned()),
+            ..blank_rule_modifier("advantage")
+        };
+        assert!(malformed.resolve(&registry).is_err());
+    }
+
+    /// 一条各字段全空的原始规则修正——新增字段时只改这一处，不必在
+    /// 每条测试里各补一行 `None`。
+    fn blank_rule_modifier(kind: &str) -> RawRuleModifier {
+        RawRuleModifier {
+            kind: kind.to_owned(),
+            modifier_type: None,
+            damage_category: None,
+            damage_reduction: None,
+            damage_increase: None,
+            inconspicuous_modifier: None,
+            concealment_modifier: None,
+            check_context: None,
+            reroll_value: None,
+            luck_chance_permille_per_point: None,
+            extra_damage: None,
+        }
     }
 
     #[test]

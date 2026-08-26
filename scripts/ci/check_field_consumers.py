@@ -251,9 +251,16 @@ EXEMPTIONS: dict[str, str] = {
     # 应用到伤害上——见 crates/ll-sim/tests/resistance_resolve.rs 三条
     # 端到端测试与 mods/example_mod 的真实 mod 脚本证据。原豁免条目已
     # 移除。
-    "RuleModifier::RerollOnce": "同 RuleModifier::Resistance 曾经的处境，现况不同——RerollOnce 仍然没有决策层消费者，需要 roll_one_die 钩子（伤害公式引擎求值器内部的骰子取数原语），尚未落地，见 ll_sim::traits::RuleModifier 文档「本批次接线状态」一节。 规则修正 tie-break「取最强」裁定落地后，ll_sim::rule_modifier::strength_key 有一个无通配分支的穷尽 match 会点到这个变体的名字（穷尽性是那条裁定的强制手段：新增变体必须声明强弱方向，否则编译不过），但它**不读这个变体的任何字段**，返回的是 StrengthKey::INDISTINGUISHABLE。那个 match 因此刻意用 `use RuleModifier as R` 别名书写，不让 `RuleModifier::变体名` 字面量出现在决策层，免得本门禁把三个死变体误判成「已接线」——同 RaceDef.stat_modifiers 那条刻意换名的纪律。",
-    "RuleModifier::Advantage": "ll_sim::traits::RuleModifier 变体文档原文「占位变体，当前无消费者（本项目没有判定/检定系统）」。 规则修正 tie-break「取最强」裁定落地后，ll_sim::rule_modifier::strength_key 有一个无通配分支的穷尽 match 会点到这个变体的名字（穷尽性是那条裁定的强制手段：新增变体必须声明强弱方向，否则编译不过），但它**不读这个变体的任何字段**，返回的是 StrengthKey::INDISTINGUISHABLE。那个 match 因此刻意用 `use RuleModifier as R` 别名书写，不让 `RuleModifier::变体名` 字面量出现在决策层，免得本门禁把三个死变体误判成「已接线」——同 RaceDef.stat_modifiers 那条刻意换名的纪律。",
-    "RuleModifier::Disadvantage": "语义同 RuleModifier::Advantage，方向相反，同样没有判定系统可挂载。 规则修正 tie-break「取最强」裁定落地后，ll_sim::rule_modifier::strength_key 有一个无通配分支的穷尽 match 会点到这个变体的名字（穷尽性是那条裁定的强制手段：新增变体必须声明强弱方向，否则编译不过），但它**不读这个变体的任何字段**，返回的是 StrengthKey::INDISTINGUISHABLE。那个 match 因此刻意用 `use RuleModifier as R` 别名书写，不让 `RuleModifier::变体名` 字面量出现在决策层，免得本门禁把三个死变体误判成「已接线」——同 RaceDef.stat_modifiers 那条刻意换名的纪律。",
+    # 判定系统落地批次：RuleModifier::RerollOnce / Advantage / Disadvantage
+    # 三条豁免已移除。三者曾以「本项目没有判定/检定系统」为由挂了很久,
+    # 现在有了：ll_sim::check 的对抗判定,消费者是
+    # ll_sim::rule_modifier::check_roll_bias（优势/劣势）与
+    # check_reroll_value（重掷）,两处都写全名字面量。真实落点是
+    # ll_mod::native_behavior 的卫兵盘查判定与
+    # ll_sim::resolve::resolve_inspect 的逐件藏匿判定；端到端证据见
+    # crates/ll-mod/tests/example_mod_rogue_passives.rs 与
+    # mods/example_mod/traits.json5 里 examplemod:cutpurse_training 的
+    # kind: "advantage" 声明。
     # ---- (b) 本次核实新发现：文档看似"已接线"，实测决策层无读取 ----
     "RaceDef.stat_modifiers": "第二十处「声明了但没接线」修复批次已真正接上：ll_game::world::build_player_agent 生成角色时改为调用 ll_sim::character::bake_race_stat_modifiers，内部经 ll_sim::character::RaceStatModifierSource（真实实现 ll_mod::race::RaceTable）查到六项修正并叠加进 BaseStats——crates/ll-sim/src/character.rs、crates/ll-mod/src/race.rs 的对应测试均已覆盖端到端与真实 mod 种族两条路径。留在本清单是本脚本正则匹配的已知局限（见头注释「已知局限」第 2 条同一类问题）：该 trait 方法故意没有叫 stat_modifiers，而是叫 race_stat_modifiers——因为 ll_mod::trait_def::TraitDef 恰好也有一个同名字段 stat_modifiers（下面 TraitDef.stat_modifiers 一条，至今仍是真正的死字段），若这里用回同名方法，本脚本的全文正则会把两个不同结构体的同名字段一并误判成「已接线」。为了不把一个字段的真实接线连带污染另一个字段的状态判定，这里选择保留本条豁免（并把理由写清楚），而不是删除后制造一次假阳性。",
     "RaceDef.xp_reward": "杀死该种族/生物的**基准**经验值（升级加点批次重新定义：它是 ll_sim::experience::kill_experience 这条公式的输入，不再是玩家最终拿到的数字）。真实消费路径已经接通、且已经跑在生产链路上：ll_mod::xp_curve 的 `impl ExperienceCatalog for RaceTable` 读 `view.xp_reward`，ll_game::content::RuntimeCatalogs::as_resolve_catalogs 把 RaceTable 作为 experience 目录交给 TurnEngine，resolve_dispatch 的 append_kill_experience 每次击杀都会查它。留在本清单是本脚本头注释「已知局限」第 2 条那类多层间接：决策层（crates/ll-sim/src）拿到的是一个 i64 参数（`base_reward`），不是对 RaceDef 实例做 `.xp_reward` 点号访问——依赖倒置的必然结果，ll-sim 根本不认识 RaceDef 这个类型。端到端证据见 crates/ll-mod/tests/example_mod_kill_experience.rs（真实 mods/ 目录 + TurnEngine，含把 experience 目录换成空实现就变红的反例）。",

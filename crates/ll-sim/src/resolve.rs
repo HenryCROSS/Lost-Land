@@ -59,6 +59,7 @@ use ll_world::state::WorldState;
 use ll_world::temperature::Temperature;
 
 use crate::catalogs::ResolveCatalogs;
+use crate::check::{CHECK_DICE, CONCEALMENT_CHECK, CheckSide, opposed_check};
 use crate::combat::{
     Penetration, apply_crit_multiplier, crit_chance_permille, damage_after_defense,
     sneak_attack_chance_permille,
@@ -68,7 +69,9 @@ use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
 use crate::effect::{CarriedItemSlot, Effect, InspectedItem};
 use crate::experience::{ExperienceCatalog, NoExperience};
 use crate::exposure::{AmbientSource, exposure_strength_penalty, felt_temperature};
-use crate::formula::{DamageFormulaCatalog, FormulaInputs, NoFormulas, eval_formula};
+use crate::formula::{
+    DamageFormulaCatalog, FormulaInputs, NoFormulas, attribute_modifier, eval_formula,
+};
 use crate::intent::{Direction, Intent};
 use crate::item::{
     EquipSlot, ItemCatalog, ItemStack, NoItems, SlotMask, StatTarget, WearChannels, can_merge,
@@ -80,8 +83,9 @@ use crate::resource_pool::{
     effective_scalar_capacity, effective_slot_tier_capacity,
 };
 use crate::rule_modifier::{
-    agent_rule_modifiers, damage_after_resistance, inspection_concealment_permille,
-    resistance_damage_reduction, sneak_attack_rule, vulnerability_damage_increase,
+    agent_rule_modifiers, check_reroll_value, check_roll_bias, concealment_check_modifier,
+    damage_after_resistance, resistance_damage_reduction, sneak_attack_rule,
+    vulnerability_damage_increase,
 };
 use crate::skill::{NoSkills, ResourceCost, SkillCatalog, SkillEffect};
 use crate::skill_overview::SkillTreeCatalog;
@@ -2276,13 +2280,46 @@ fn resolve_loot(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) ->
 /// [`crate::rule_modifier::RuleModifier::InspectionConcealment`] 文档「为什么是逐件掷骰」
 /// 一节。
 ///
+/// # 换成对抗判定（判定系统落地批次）
+///
+/// 每一件物品掷的不再是一次「藏匿千分比」的硬币，而是一次**对抗
+/// 判定**（[`crate::check::opposed_check`]，`3d20 + 修正` 双方各一轮）：
+///
+/// ```text
+/// 盘查者（主动）：意志调整值            察觉
+/// 被盘查者（被动）：敏捷调整值 + 藏匿修正   隐蔽
+/// ```
+///
+/// 主动方赢下这一件，这一件才留在 `items_seen` 里。
+///
+/// **「察觉 = 意志调整值、隐蔽 = 敏捷调整值」是项目所有者的裁定**，
+/// 不是本函数发明的映射；本仓库没有独立的感知属性，
+/// [`ll_world::entity::AttributeKind::Willpower`] 是六项里承担 D&D
+/// 「感知」概念的那一项（见其字段文档与
+/// [`crate::formula::FormulaOperand::AttributeModifier`] 对 `wis-mod`
+/// 的同一条说明）。调整值公式 `(属性 − 10) / 2` 复用
+/// [`crate::formula::attribute_modifier`]，零新增字段、零存档影响。
+///
+/// 换掉的是什么：旧形状里搜身的人是谁完全不影响结果——一个眼神再好
+/// 的卫兵与一个瞎子查同一个人，查到的东西逐位相同。对抗判定把盘查者
+/// 放回了式子里。
+///
+/// 数值后果（`3d20`，双方属性均为基准 10 因而两侧调整值均为 0，
+/// 天赋声明 9 点即半颗骰子）：这一件被藏住的概率从旧值 `800‰` 变成
+/// `745‰`（主动方赢面 `255‰`）——同一档，但不再是一个与任何人无关的
+/// 常数。旧的 `800‰` 本身是概率模型时代的自由参数，本批次不逐字复刻
+/// 它，改用骰子量尺上有内在依据的「半颗骰子」，见
+/// [`crate::check::CheckDice::half_die`]。
+///
 /// 槽位句柄批次把 `items_seen` 的元素从裸 `ContentIndex` 换成
 /// [`crate::effect::InspectedItem`]（种类 + 位置），**这一步的粒度一个
 /// 字都没变**：`retain` 仍然是一条记录一次掷骰，一条记录仍然对应一堆
 /// 物品。取数次数因此与换形状之前逐位相同（同一份快照、同样的元素
 /// 个数、同样的顺序），既有的确定性断言与那条「出现过查到一部分的中间
 /// 结果」的端到端证据（`crates/ll-mod/tests/example_mod_rogue_passives.rs`）
-/// 都不需要跟着改。真正被这次换形状加强的是**下游**：那条被动当初就是
+/// 都不需要跟着改（换成对抗判定之后取数**次数**变了——每件从 1 次
+/// 变成 `2M` 次——但取数的**粒度与顺序**仍然逐字相同：一条记录一次
+/// 判定，顺序仍是快照自身的顺序）。真正被这次换形状加强的是**下游**：那条被动当初就是
 /// 照着「逐堆比对归属」的粒度选的（见上述变体文档），而在旧形状里
 /// 「逐堆」根本表达不出来。
 ///
@@ -2294,7 +2331,8 @@ fn resolve_loot(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) ->
 ///
 /// **约束 C5**：取数顺序就是 `items_seen` 自身的顺序（先背包原始
 /// 顺序、后装备槽位升序，两者都不触碰任何 `HashMap`）。没有任何来源
-/// 声明藏匿时（`conceal_permille <= 0`）**完全不构造这条流**，与
+/// 声明藏匿时（`concealment_check_modifier` 返回 `None`）**完全不构造
+/// 这条流**，与
 /// [`resolve_attack`] 「没有声明偷袭就不构造额外 `DetRng` 流」同一条
 /// 既有纪律：每次判定都是现场造流、只取要用的那几个数,不是一条跨
 /// 调用累进的长流,因此「这次没取数」不会让后续任何取数错位。
@@ -2352,22 +2390,74 @@ fn resolve_inspect(
     );
     // 藏匿判定，见本函数文档「藏匿判定」一节。
     const INSPECT_CONCEAL_EVENT_TAG: u64 = 0x0C0A_1EA0_0000_0000;
-    let conceal_permille = inspection_concealment_permille(&agent_rule_modifiers(
+    let target_modifiers = agent_rule_modifiers(
         target_agent,
         race_traits,
         class_traits,
         subclass_traits,
         traits,
         items,
-    ));
-    if conceal_permille > 0 {
+    );
+    // 一条也没有声明 → 完全跳过判定，一次抽取都不消耗（约束 C3），见
+    // `concealment_check_modifier` 文档「缺省与声明 0」。显式声明成
+    // `0` 是另一回事：判定照常发生，只是这一路贡献 0 点。
+    if let Some(concealment) = concealment_check_modifier(&target_modifiers) {
+        // 双方的属性调整值走 `derive_stats`（**派生值**，装备与状态
+        // 效果加的属性在这里生效），不是裸 `BaseStats`——与
+        // `resolve_attack` 读 `attacker_derived.attribute(..)` 同一条
+        // 既有纪律。
+        //
+        // 用不带环境温度的 `derive_stats`（内部代入
+        // `Temperature::TEMPERATE_BASELINE`）而不是 `derive_stats_at`：
+        // 本函数没有 `ambient` 参数，而温度**只**惩罚力量一项
+        // （`derive_stats_at` 里那一行 `attributes[Strength] -= penalty`），
+        // 对本判定读的意志/敏捷两项逐位无影响。这不是将就，是这两项
+        // 上两个函数确实等价。
+        let inspector_derived = derive_stats(
+            agent.stats,
+            &agent.active_stat_modifiers,
+            &agent.equipment,
+            items,
+            world.clock,
+        );
+        let target_derived = derive_stats(
+            target_agent.stats,
+            &target_agent.active_stat_modifiers,
+            &target_agent.equipment,
+            items,
+            world.clock,
+        );
+        let inspector_modifiers = agent_rule_modifiers(
+            agent,
+            race_traits,
+            class_traits,
+            subclass_traits,
+            traits,
+            items,
+        );
+        // 察觉 = 意志调整值，隐蔽 = 敏捷调整值（项目所有者裁定）。
+        let active = CheckSide {
+            modifier: attribute_modifier(inspector_derived.attribute(AttributeKind::Willpower)),
+            bias: check_roll_bias(&inspector_modifiers, CONCEALMENT_CHECK),
+            reroll_on: check_reroll_value(&inspector_modifiers),
+        };
+        let passive = CheckSide {
+            modifier: attribute_modifier(target_derived.attribute(AttributeKind::Dexterity))
+                .saturating_add(i64::from(concealment)),
+            bias: check_roll_bias(&target_modifiers, CONCEALMENT_CHECK),
+            reroll_on: check_reroll_value(&target_modifiers),
+        };
         let mut conceal_rng = ll_core::rng::DetRng::for_entity(
             world.seed,
             target.as_u64(),
             (world.clock.0 as u64) ^ INSPECT_CONCEAL_EVENT_TAG,
         );
-        // 分母 1000：千分比，与本文件其余概率判定同一把刻度尺。
-        items_seen.retain(|_| !conceal_rng.chance(conceal_permille as u32, 1000));
+        // 逐件一次对抗判定：搜身的人赢下这一件才看得见它。取数顺序
+        // 就是 `items_seen` 自身的顺序，每件消耗 `2M`（含优劣势时
+        // `4M`、含重掷时更多）个抽取，见 `crate::check` 模块文档。
+        items_seen.retain(|_| {
+            opposed_check(&CHECK_DICE, &active, &passive, &mut conceal_rng).active_wins()
+        });
     }
     let cost = action_cost(
         BASE_ACTION_COST,
