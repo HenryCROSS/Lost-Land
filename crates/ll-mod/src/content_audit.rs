@@ -345,8 +345,9 @@ pub struct ContentAuditPolicy {
 ///
 /// 本体内容迁往 mod 数据文件这件事已经做掉绝大多数：地形、空间层属性、
 /// 动画剪辑、经验曲线、伤害公式、伤害类别、种族、职业、天气、技能、
-/// 副职、任务、配方类别、标签、**物品、配方**——十六张表在 `lostland`
-/// 命名空间下都已非空，全部登记在 [`ContentAuditPolicy::covered`]。
+/// 副职、任务、配方类别、标签、物品、配方、**加值类型**——十七张表在
+/// `lostland` 命名空间下都已非空，全部登记在
+/// [`ContentAuditPolicy::covered`]。
 ///
 /// 只剩天赋、资源池、武器类别三张在 `lostland` 下**一条都没有**（它们
 /// 只存在于 `mods/example_mod/`）。对空表求字段覆盖，得到的是"这张表的
@@ -354,8 +355,8 @@ pub struct ContentAuditPolicy {
 /// 错。三张空表因此逐条登记进 [`ContentAuditPolicy::deferred`] 并写明
 /// 理由，等对应内容真的迁进 `mods/lostland/` 那天，
 /// [`RosterViolation::DeferredButPopulated`] 会主动提醒把它挪进
-/// `covered`，不需要有人记得回来看这里——物品与配方两张表正是这么被
-/// 顶出 `deferred` 的。
+/// `covered`，不需要有人记得回来看这里——物品、配方与加值类型三张表
+/// 正是这么被顶出 `deferred` 的。
 ///
 /// [`ContentTableKind::Opaque`] 两个清单里都没有，而且**必须都没有**
 /// ——它不是一张内容表，见 [`check_roster`] 里对它的处理。
@@ -416,6 +417,21 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 6 点减伤覆盖第二条，两条豁免随之摘除。
         ContentTableKind::Item,
         ContentTableKind::Recipe,
+        // 本体加值类型名册批次：项目所有者裁定「加入」，
+        // mods/lostland/modifier_types.json5 注册了 lostland:gear 一条，
+        // 这张表在 lostland 命名空间下从此非空，按 DeferredButPopulated
+        // 的指引从 deferred 挪进 covered。
+        //
+        // 它一落地就是 covered、不经过 deferred 的中间态是刻意的：
+        // ModifierTypeDef **一个字段都没有**（加值类型是纯身份，见
+        // crate::modifier_type 模块文档），因此这张表的「字段覆盖」恒为
+        // 空集，deferred 与 covered 的区别在它身上只剩「这张表在本体侧
+        // 有没有内容」这一条——而它现在有了。
+        //
+        // 同批次摘掉的还有 ItemAttrs::rule_modifiers::modifier_type 那条
+        // 字段豁免：本体唯一一条规则修正（锻炉围裙对 lostland:fire 的
+        // 6 点减伤）现在声明了 lostland:gear，字段真的被本体内容覆盖。
+        ContentTableKind::ModifierType,
     ],
     deferred: &[
         DeferredTable {
@@ -434,17 +450,8 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
             kind: ContentTableKind::WeaponCategory,
             reason: "本体武器类别尚未迁进 mods/lostland/，理由同 Trait 一条。",
         },
-        DeferredTable {
-            kind: ContentTableKind::ModifierType,
-            reason: "本体内容有了第一条规则修正（mods/lostland/items.json5 的锻炉围裙对                      lostland:fire 声明 6 点减伤），但它**刻意不声明加值类型**——不声明                      即落进「未分类桶」，行为与加值类型这套机制落地之前逐位相同，见                      ll_sim::rule_modifier 模块文档「加值类型」一节。这条豁免此前写的是                      「本体一条规则修正都没有声明，因此没有类可分」，那句话已随锻炉围裙                      作废；替代它的理由更窄，但独立成立：**造一份本体加值类型名册是一条                      独立的内容设计裁定**。加值类型回答的是「两条抗性该叠加还是取最强」,                      而本体今天只有一条抗性——一条修正凑不出一套分类学，此时往                      modifier_types.json5 里塞一份名册,写的是一份没有任何两条内容会去                      比较的分类,正是本模块反复拒绝过的『为了让检查变绿硬塞一条内容』。                      解除条件因此从「先有本体规则修正」（已满足）改成「本体真的有两条                      来源不同、需要区分叠不叠加的规则修正」。表本身不是死的：                      mods/example_mod/modifier_types.json5 注册了 innate/enhancement 两条,                      acid_hide 天赋与 acid_ward_amulet 护符分属两类、减伤点数因此相加,                      crates/ll-mod/tests/example_mod_resistance.rs 有端到端证据。",
-        },
     ],
     exemptions: &[
-        FieldExemption {
-            kind: ContentTableKind::Item,
-            field: "ItemAttrs::rule_modifiers::modifier_type",
-            reason: "本体唯一一条规则修正（mods/lostland/items.json5 的锻炉围裙对                      lostland:fire 声明 6 点减伤）**刻意不声明加值类型**——不声明即落进                      「未分类桶」，行为与加值类型这套机制落地之前逐位相同，见                      ll_sim::rule_modifier 模块文档「加值类型」一节（未声明类型的全部                      进同一个共享桶，桶内取最强）。要给它填一个类型，本体得先有一份                      modifier_types.json5，而那是一条**独立的内容设计裁定**：加值类型                      回答的是「两条抗性该叠加还是取最强」，本体今天只有一条抗性——                      一条修正凑不出一套分类学，此时造一份名册写的是一份没有任何两条                      内容会去比较的分类。与 ContentTableKind::ModifierType 那条                      deferred 是同一件事的两头，解除条件相同：本体真的有两条来源不同、                      需要区分叠不叠加的规则修正。字段本身不是死的：                      mods/example_mod/items.json5 的 acid_ward_amulet 声明                      examplemod:enhancement，与 acid_hide 天赋的 examplemod:innate                      分属两桶、减伤点数因此相加，crates/ll-mod/tests/example_mod_resistance.rs                      有端到端证据。",
-        },
         FieldExemption {
             kind: ContentTableKind::Class,
             field: "ClassAttrs::traits",

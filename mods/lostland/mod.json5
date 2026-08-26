@@ -48,4 +48,5 @@
   //   damage_categories.json5 伤害类别一条（lostland:fire；全局默认的
   //                           lostland:physical 由引擎注册，见
   //                           ll_mod::base_damage_category）
+  //   modifier_types.json5    加值类型一条（lostland:gear）
 }

@@ -392,17 +392,18 @@
     // 一件浸过盐水的厚皮围裙对火星有用，对刀子没用——它因此 armor 只
     // 有 2（聊胜于无），对火却有 6 点减伤。
     //
-    // ── 加值类型（`modifier_type`）刻意不声明 ──────────────────
+    // ── 加值类型（`modifier_type`）：lostland:gear ──────────────────
     //
-    // 不声明 = 落进「未分类桶」，行为与加值类型这套机制落地之前逐位
-    // 相同（`ll_sim::rule_modifier` 模块文档「加值类型」一节：未声明
-    // 类型的全部进同一个共享桶，桶内取最强）。本体至今没有一份加值
-    // 类型名册（modifier_types.json5），而**造一份是一条独立的内容
-    // 设计裁定**——加值类型是给规则修正分类的，一条修正凑不出一套
-    // 分类学。等本体真有几条来源不同的抗性需要区分「叠不叠加」时，
-    // 那份名册才有内容可写。示例 mod 已经把这条路走通了
-    // （mods/example_mod/modifier_types.json5 的 innate/enhancement，
-    // crates/ll-mod/tests/example_mod_resistance.rs 有端到端证据）。
+    // 这条抗性此前**刻意不声明**加值类型，理由是「本体没有名册，而造
+    // 一份是一条独立的内容设计裁定」。项目所有者已经做掉那条裁定
+    // （mods/lostland/modifier_types.json5，见其文件头），本条随之
+    // 归类。
+    //
+    // 归类不是形式主义：不声明 ≠ 自成一桶，而是落进**未分类共享桶**
+    // （`ll_sim::rule_modifier` 模块文档「加值类型」一节：未声明类型的
+    // 全部进同一个桶，桶内取最强）。也就是说，此前任何一个 mod 写的、
+    // 同样没声明类型的火抗，都在与这 6 点**互相竞争**——mod 的 +3 不会
+    // 与它相加，而是被它静默吃掉。声明 gear 之后本条有了自己的桶。
     //
     // 槽位是 outer，与毛皮披风（insulation 80）**互斥**——这是刻意的
     // 取舍：出门是穿暖和的还是穿防火的，一次只能选一样。
@@ -415,7 +416,13 @@
       max_durability: 85,
       equip_slots: ["outer"],
       stat_bonuses: [{ target: "armor", amount: 2 }],
-      resistances: [{ damage_category: "lostland:fire", damage_reduction: 6 }],
+      resistances: [
+        {
+          damage_category: "lostland:fire",
+          damage_reduction: 6,
+          modifier_type: "lostland:gear",
+        },
+      ],
       tags: ["lostland:armor"],
     },
 

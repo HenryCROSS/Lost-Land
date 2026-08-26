@@ -10,8 +10,9 @@
 //! 1. **武器这一路**：`lostland:forge_brand`（锻炉烙铁）声明
 //!    `damage_category: "lostland:fire"`，真的存进了物品表；
 //! 2. **抗性这一路**：`lostland:forge_apron`（锻炉围裙）声明对
-//!    `lostland:fire` 的 6 点减伤，真的存进了物品表，且**刻意没有**
-//!    加值类型（未分类桶，见 content_audit 里那条字段豁免）；
+//!    `lostland:fire` 的 6 点减伤，真的存进了物品表，且归在本体加值
+//!    类型 `lostland:gear` 下（本体加值类型名册批次：此前是未分类
+//!    共享桶，见 `mods/lostland/modifier_types.json5` 文件头）；
 //! 3. **两者合起来真的改变结算**：穿着围裙挨烙铁打，伤害正好少 6 点；
 //!    而同一件围裙挨**铁短剑**（不声明伤害类别，走全局默认那一类）打
 //!    时那 6 点一点都不减——这一条是整个文件的重点：如果新类别挡起来
@@ -68,6 +69,9 @@ struct RealModsHandle {
     forge_apron_id: ContentIndex,
     /// `lostland:fire`——本体第二个伤害类别。
     fire_id: ContentIndex,
+    /// `lostland:gear`——本体加值类型名册里唯一的一条，围裙那条抗性
+    /// 归的就是这一类。
+    gear_type_id: ContentIndex,
 }
 
 fn load_real_mods() -> RealModsHandle {
@@ -104,6 +108,7 @@ fn load_real_mods() -> RealModsHandle {
         forge_brand_id: resolve("lostland:forge_brand"),
         iron_shortsword_id: resolve("lostland:iron_shortsword"),
         forge_apron_id: resolve("lostland:forge_apron"),
+        gear_type_id: resolve("lostland:gear"),
         fire_id: resolve("lostland:fire"),
         race,
         trait_def,
@@ -205,7 +210,7 @@ fn 锻炉烙铁声明的伤害类别真的是本体第二个类别() {
 }
 
 #[test]
-fn 锻炉围裙的抗性声明真的写进了物品表且刻意没有加值类型() {
+fn 锻炉围裙的抗性声明真的写进了物品表且归在本体加值类型下() {
     // 「对某一类特别抗」这条覆盖在本体侧的第一份证据——
     // ItemAttrs::rule_modifiers 那条字段豁免摘除的直接依据。
     // Arrange
@@ -220,11 +225,12 @@ fn 锻炉围裙的抗性声明真的写进了物品表且刻意没有加值类�
     // Assert
     assert_eq!(apron.rule_modifiers.len(), 1);
     let typed = &apron.rule_modifiers[0];
-    // 刻意不声明加值类型 = 落进未分类桶，行为与加值类型机制落地之前
-    // 逐位相同。造一份本体加值类型名册是一条独立的内容设计裁定，见
+    // 加值类型这一条此前是 `None`（未分类共享桶），随本体加值类型名册
+    // （mods/lostland/modifier_types.json5）落地改成 lostland:gear，
     // ll_mod::content_audit 里 ItemAttrs::rule_modifiers::modifier_type
-    // 那条字段豁免。
-    assert_eq!(typed.modifier_type, None);
+    // 那条字段豁免同批摘除。断言的是**具体等于 lostland:gear**，不是
+    // 「非 None」——「未分类」与「归错类」在结算里是两种不同的错。
+    assert_eq!(typed.modifier_type, Some(handle.gear_type_id));
     let RuleModifier::Resistance {
         damage_category,
         damage_reduction,
