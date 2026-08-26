@@ -16,21 +16,12 @@
 use std::path::Path;
 
 use ll_core::ident::NamespacedId;
-use ll_mod::class::ClassTable;
-use ll_mod::clip::ClipTable;
 use ll_mod::load_report::LoadStatus;
-use ll_mod::modifier_type::ModifierTypeTable;
-use ll_mod::pipeline::{GameplayTables, load_all};
-use ll_mod::quest::QuestTable;
+use ll_mod::load_session::LoadSession;
 use ll_mod::race::RaceTable;
-use ll_mod::registry::Registry;
-use ll_mod::skill::SkillTable;
-use ll_mod::subclass::SubclassTable;
-use ll_mod::trait_def::TraitTable;
 use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::experience::ExperienceCatalog;
 use ll_sim::xp_curve::eval_xp_curve;
-use ll_world::terrain::TerrainTable;
 
 /// 仓库根目录下的真实 `mods/` 路径——与
 /// `crates/ll-ui/examples/p4_acceptance/world.rs` 的 `PRIMARY_MODS_ROOT`
@@ -55,55 +46,15 @@ struct RealModsHandle {
 }
 
 fn load_real_mods_and_resolve() -> RealModsHandle {
-    let mut registry = Registry::new();
-    let mut terrain = TerrainTable::new();
-    let mut class = ClassTable::new();
-    let mut skill = SkillTable::new();
-    let mut subclass = SubclassTable::new();
-    let mut quest = QuestTable::new();
-    let mut race = RaceTable::new();
-    let mut clip = ClipTable::new();
-    let mut xp_curve = XpCurveTable::new();
-    let mut bindings = XpCurveBindings::new();
-    let mut trait_def = TraitTable::new();
-    let mut resource_pool = ll_mod::resource_pool::ResourcePoolTable::new();
-    let mut item = ll_mod::item::ItemTable::new();
-    let mut formula = ll_mod::formula::FormulaTable::new();
-    let mut weapon_category = ll_mod::weapon_category::WeaponCategoryTable::new();
-    let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
-    let mut weather_table = ll_world::weather::WeatherTable::new();
-    let mut recipe_table = ll_mod::recipe::RecipeTable::new();
-    let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
-    let mut tag_table = ll_mod::tag::TagTable::new();
-    let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
-    let mut modifier_type_table = ModifierTypeTable::new();
-    let report = load_all(
-        Path::new(REAL_MODS_ROOT),
-        &mut registry,
-        &mut GameplayTables {
-            terrain: &mut terrain,
-            class: &mut class,
-            skill: &mut skill,
-            subclass: &mut subclass,
-            quest: &mut quest,
-            race: &mut race,
-            clip: &mut clip,
-            xp_curve: &mut xp_curve,
-            xp_curve_bindings: &mut bindings,
-            trait_def: &mut trait_def,
-            resource_pool: &mut resource_pool,
-            item: &mut item,
-            formula: &mut formula,
-            weapon_category: &mut weapon_category,
-            damage_category: &mut damage_category,
-            space_profile: &mut space_profile,
-            weather: &mut weather_table,
-            recipe: &mut recipe_table,
-            recipe_category: &mut recipe_category_table,
-            modifier_type: &mut modifier_type_table,
-            tag: &mut tag_table,
-        },
-    );
+    let mut session = LoadSession::with_engine_registrations();
+    let report = session.load_all(Path::new(REAL_MODS_ROOT));
+    let LoadSession {
+        registry,
+        race,
+        xp_curve,
+        xp_curve_bindings: bindings,
+        ..
+    } = session;
     // mod 自身在 LoadReport 里的标识按 `ll_mod::manifest::mod_self_id`
     // 的既有约定包装成 "<namespace>:self"（该函数是 crate 私有的，这里
     // 按其文档记录的约定原样构造，不需要它对外公开）。

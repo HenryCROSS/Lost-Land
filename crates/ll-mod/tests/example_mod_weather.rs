@@ -22,18 +22,8 @@ use std::path::Path;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::time::{TICKS_PER_DAY, Tick};
-use ll_mod::class::ClassTable;
-use ll_mod::clip::ClipTable;
 use ll_mod::load_report::LoadStatus;
-use ll_mod::modifier_type::ModifierTypeTable;
-use ll_mod::pipeline::{GameplayTables, load_all};
-use ll_mod::quest::QuestTable;
-use ll_mod::race::RaceTable;
-use ll_mod::registry::Registry;
-use ll_mod::skill::SkillTable;
-use ll_mod::subclass::SubclassTable;
-use ll_mod::trait_def::TraitTable;
-use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
+use ll_mod::load_session::LoadSession;
 use ll_world::space_profile::SpaceProfileTable;
 use ll_world::weather::{WEATHER_PERIOD_TICKS, Weather, WeatherTable};
 
@@ -49,63 +39,18 @@ struct RealModsHandle {
 }
 
 fn load_real_mods() -> RealModsHandle {
-    let mut registry = Registry::new();
-    // 本体天气与本体空间层属性都先走生产注册路径，与
-    // `ll_game::content::load_content` 的顺序一致——mod 脚本是往这两张
-    // 已经非空的表里**追加**，这正是本测试要验的「同一条通道」。
-    let (_base_weather_ids, mut weather) =
-        ll_mod::base_weather::register_base_weathers(&mut registry)
-            .expect("本体天气声明表内部一致");
-    let (_base_space_ids, mut space_profile) =
-        ll_mod::base_space_profile::register_base_space_profiles(&mut registry)
-            .expect("本体空间层属性声明表内部一致");
-
-    let mut terrain = ll_world::terrain::TerrainTable::new();
-    let mut class = ClassTable::new();
-    let mut skill = SkillTable::new();
-    let mut subclass = SubclassTable::new();
-    let mut quest = QuestTable::new();
-    let mut race = RaceTable::new();
-    let mut clip = ClipTable::new();
-    let mut xp_curve = XpCurveTable::new();
-    let mut xp_curve_bindings = XpCurveBindings::new();
-    let mut trait_def = TraitTable::new();
-    let mut resource_pool = ll_mod::resource_pool::ResourcePoolTable::new();
-    let mut item = ll_mod::item::ItemTable::new();
-    let mut formula = ll_mod::formula::FormulaTable::new();
-    let mut weapon_category = ll_mod::weapon_category::WeaponCategoryTable::new();
-    let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
-    let mut recipe_table = ll_mod::recipe::RecipeTable::new();
-    let mut recipe_category_table = ll_mod::recipe_category::RecipeCategoryTable::new();
-    let mut tag_table = ll_mod::tag::TagTable::new();
-    let mut modifier_type_table = ModifierTypeTable::new();
-    let report = load_all(
-        Path::new(REAL_MODS_ROOT),
-        &mut registry,
-        &mut GameplayTables {
-            terrain: &mut terrain,
-            class: &mut class,
-            skill: &mut skill,
-            subclass: &mut subclass,
-            quest: &mut quest,
-            race: &mut race,
-            clip: &mut clip,
-            xp_curve: &mut xp_curve,
-            xp_curve_bindings: &mut xp_curve_bindings,
-            trait_def: &mut trait_def,
-            resource_pool: &mut resource_pool,
-            item: &mut item,
-            formula: &mut formula,
-            weapon_category: &mut weapon_category,
-            damage_category: &mut damage_category,
-            space_profile: &mut space_profile,
-            weather: &mut weather,
-            recipe: &mut recipe_table,
-            recipe_category: &mut recipe_category_table,
-            modifier_type: &mut modifier_type_table,
-            tag: &mut tag_table,
-        },
-    );
+    // 本体天气与本体空间层属性都由 `LoadSession` 在 `load_all` 之前
+    // 注册（与 `ll_game::content::load_content` 字面上同一段代码）——
+    // mod 内容文件是往这两张已经非空的表里**追加**，这正是本测试要验
+    // 的「同一条通道」。
+    let mut session = LoadSession::with_engine_registrations();
+    let report = session.load_all(Path::new(REAL_MODS_ROOT));
+    let LoadSession {
+        registry,
+        space_profile,
+        weather,
+        ..
+    } = session;
 
     let examplemod_id = NamespacedId::parse("examplemod:self").unwrap();
     let examplemod_status = report

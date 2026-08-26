@@ -39,15 +39,7 @@ use std::path::Path;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_mod::asset_vfs::{self, AssetVfs};
-use ll_mod::base_clip::register_base_clips;
 use ll_mod::base_contract::BaseContractError;
-use ll_mod::base_damage_category::register_base_damage_category;
-use ll_mod::base_damage_formula::register_base_damage_formula;
-use ll_mod::base_placeholder::register_base_placeholder_content;
-use ll_mod::base_space_profile::register_base_space_profiles;
-use ll_mod::base_terrain::register_base_terrain;
-use ll_mod::base_weather::register_base_weathers;
-use ll_mod::base_xp_curve::register_base_xp_curve;
 use ll_mod::class::{BaseClassIds, ClassTable, resolve_base_classes};
 use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::content_audit::{
@@ -60,9 +52,9 @@ use ll_mod::discover::discover_mods;
 use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
 use ll_mod::load_report::{LoadReport, LoadStatus};
+use ll_mod::load_session::LoadSession;
 use ll_mod::manifest::{ModManifest, parse_manifest};
 use ll_mod::modifier_type::ModifierTypeTable;
-use ll_mod::pipeline::{GameplayTables, load_all};
 use ll_mod::quest::{BaseQuestIds, QuestError, QuestTable, RegisteredQuests, resolve_base_quests};
 use ll_mod::race::{BaseRaceIds, RaceTable, resolve_base_races};
 use ll_mod::recipe::{RecipeTable, RegisteredRecipes};
@@ -540,69 +532,47 @@ pub fn load_content(
     mods_root: &Path,
     assets_root: &Path,
 ) -> Result<LoadedContent, ContentLoadError> {
-    let mut registry = Registry::new();
-
-    let (terrain_ids, mut terrain_table) =
-        register_base_terrain(&mut registry).expect("本体地形声明表内部一致，注册恒不失败");
-    let (space_ids, mut space_table) = register_base_space_profiles(&mut registry)
-        .expect("本体空间层属性声明表内部一致，注册恒不失败");
-    register_base_placeholder_content(&mut registry);
-    let (clip_ids, mut clip_table) =
-        register_base_clips(&mut registry).expect("本体剪辑声明表内部一致，注册恒不失败");
-    let (default_xp_curve_id, mut xp_curve_table) =
-        register_base_xp_curve(&mut |id| registry.intern(id))
-            .expect("本体默认经验曲线声明内部一致，注册恒不失败");
-    let (default_damage_formula_id, mut formula_table) =
-        register_base_damage_formula(&mut |id| registry.intern(id))
-            .expect("本体默认伤害公式声明内部一致，注册恒不失败");
-    let (default_damage_category_id, mut damage_category_table) =
-        register_base_damage_category(&mut |id| registry.intern(id))
-            .expect("本体默认伤害类别声明内部一致，注册恒不失败");
-    let (weather_ids, mut weather_table) =
-        register_base_weathers(&mut registry).expect("本体天气声明表内部一致，注册恒不失败");
-
-    let mut race_table = RaceTable::new();
-    let mut class_table = ClassTable::new();
-    let mut skill_table = SkillTable::new();
-    let mut subclass_table = SubclassTable::new();
-    let mut quest_table = QuestTable::new();
-    let mut xp_curve_bindings = XpCurveBindings::new();
-    let mut trait_table = TraitTable::new();
-    let mut resource_pool_table = ResourcePoolTable::new();
-    let mut item_table = ItemTable::new();
-    let mut weapon_category_table = WeaponCategoryTable::new();
-    let mut recipe_table = RecipeTable::new();
-    let mut recipe_category_table = RecipeCategoryTable::new();
-    let mut tag_table = TagTable::new();
-    let mut modifier_type_table = ModifierTypeTable::new();
-
-    let mut report = load_all(
-        mods_root,
-        &mut registry,
-        &mut GameplayTables {
-            terrain: &mut terrain_table,
-            class: &mut class_table,
-            skill: &mut skill_table,
-            subclass: &mut subclass_table,
-            quest: &mut quest_table,
-            race: &mut race_table,
-            clip: &mut clip_table,
-            xp_curve: &mut xp_curve_table,
-            xp_curve_bindings: &mut xp_curve_bindings,
-            trait_def: &mut trait_table,
-            resource_pool: &mut resource_pool_table,
-            item: &mut item_table,
-            formula: &mut formula_table,
-            weapon_category: &mut weapon_category_table,
-            damage_category: &mut damage_category_table,
-            space_profile: &mut space_table,
-            weather: &mut weather_table,
-            recipe: &mut recipe_table,
-            recipe_category: &mut recipe_category_table,
-            modifier_type: &mut modifier_type_table,
-            tag: &mut tag_table,
-        },
-    );
+    // 引擎侧注册 + mod 装载：整段收在 `ll_mod::load_session::LoadSession`
+    // 里，**生产路径与 `crates/ll-mod/tests/` 下的全部集成测试字面上跑
+    // 的是同一段代码**。此前这两侧各写各的：测试只调 `load_all`、不跑
+    // 上面那八条引擎注册，于是测试里的世界与真实游戏里的世界不是同一个
+    // ——内容数据文件一旦引用引擎注册的本体内容（例如
+    // `lostland:default_damage_formula`），真实游戏装得上、测试装不上。
+    // 见该模块文档「起因」一节。
+    let mut session = LoadSession::with_engine_registrations();
+    let mut report = session.load_all(mods_root);
+    let LoadSession {
+        mut registry,
+        terrain_ids,
+        space_ids,
+        clip_ids,
+        weather_ids,
+        default_xp_curve_id,
+        default_damage_formula_id,
+        default_damage_category_id,
+        placeholder_race_id: _,
+        terrain: terrain_table,
+        class: class_table,
+        skill: skill_table,
+        subclass: subclass_table,
+        quest: quest_table,
+        race: race_table,
+        clip: clip_table,
+        xp_curve: xp_curve_table,
+        xp_curve_bindings,
+        trait_def: trait_table,
+        resource_pool: resource_pool_table,
+        item: item_table,
+        formula: formula_table,
+        weapon_category: weapon_category_table,
+        damage_category: damage_category_table,
+        space_profile: space_table,
+        weather: weather_table,
+        recipe: recipe_table,
+        recipe_category: recipe_category_table,
+        tag: tag_table,
+        modifier_type: modifier_type_table,
+    } = session;
 
     // 本体内容契约解析：`mods/lostland/` 里的本体内容此刻应当已经
     // 装载完毕（它与任何第三方 mod 走同一条 `load_all` 路径）。这一步
@@ -773,7 +743,7 @@ pub fn load_content(
     })
 }
 
-/// 重新走一遍「发现 → 解析」两步（与 [`load_all`] 内部完全相同的两个
+/// 重新走一遍「发现 → 解析」两步（与 [`ll_mod::pipeline::load_all`] 内部完全相同的两个
 /// 公开函数），只取成功解析的清单——不重新实现任何解析逻辑，只是
 /// `load_all` 没有对外暴露它内部产出的 `Vec<ModManifest>`（那是装载
 /// 管线的内部状态，见 `ll_mod::pipeline::load_all` 文档），而存档头

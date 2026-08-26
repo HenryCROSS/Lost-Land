@@ -30,31 +30,16 @@ use std::path::Path;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::scaled::Milli;
-use ll_mod::class::ClassTable;
-use ll_mod::clip::ClipTable;
-use ll_mod::damage_category::DamageCategoryTable;
-use ll_mod::formula::FormulaTable;
 use ll_mod::item::{ItemTable, ItemView};
 use ll_mod::load_report::LoadStatus;
-use ll_mod::modifier_type::ModifierTypeTable;
-use ll_mod::pipeline::{GameplayTables, load_all};
-use ll_mod::quest::QuestTable;
-use ll_mod::race::RaceTable;
+use ll_mod::load_session::LoadSession;
 use ll_mod::recipe::{RecipeTable, RecipeView};
 use ll_mod::recipe_category::RecipeCategoryTable;
 use ll_mod::registry::Registry;
-use ll_mod::resource_pool::ResourcePoolTable;
-use ll_mod::skill::SkillTable;
-use ll_mod::subclass::SubclassTable;
-use ll_mod::tag::TagTable;
-use ll_mod::trait_def::TraitTable;
-use ll_mod::weapon_category::WeaponCategoryTable;
-use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_sim::item::{EquipSlot, SlotMask, StatBonus, StatTarget};
 use ll_sim::skill::{ResourceKind, SkillEffect};
 
 use ll_world::item::WearChannels;
-use ll_world::terrain::TerrainTable;
 
 /// 仓库根目录下的真实 `mods/` 路径，理由同 `base_mod_races.rs`。
 const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
@@ -70,55 +55,15 @@ struct Loaded {
 /// 装载真实 `mods/` 目录一次，理由（为什么不只装 `mods/lostland/`）同
 /// `base_mod_races.rs`：真实装载路径就是整目录装载。
 fn load_real_mods() -> Loaded {
-    let mut registry = Registry::new();
-    let mut terrain = TerrainTable::new();
-    let mut class = ClassTable::new();
-    let mut skill = SkillTable::new();
-    let mut subclass = SubclassTable::new();
-    let mut quest = QuestTable::new();
-    let mut race = RaceTable::new();
-    let mut clip = ClipTable::new();
-    let mut xp_curve = XpCurveTable::new();
-    let mut xp_curve_bindings = XpCurveBindings::new();
-    let mut trait_def = TraitTable::new();
-    let mut resource_pool = ResourcePoolTable::new();
-    let mut item = ItemTable::new();
-    let mut formula = FormulaTable::new();
-    let mut weapon_category = WeaponCategoryTable::new();
-    let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
-    let mut weather = ll_world::weather::WeatherTable::new();
-    let mut recipe = RecipeTable::new();
-    let mut recipe_category = RecipeCategoryTable::new();
-    let mut tag = TagTable::new();
-    let mut damage_category = DamageCategoryTable::new();
-    let mut modifier_type = ModifierTypeTable::new();
-    let report = load_all(
-        Path::new(REAL_MODS_ROOT),
-        &mut registry,
-        &mut GameplayTables {
-            terrain: &mut terrain,
-            class: &mut class,
-            skill: &mut skill,
-            subclass: &mut subclass,
-            quest: &mut quest,
-            race: &mut race,
-            clip: &mut clip,
-            xp_curve: &mut xp_curve,
-            xp_curve_bindings: &mut xp_curve_bindings,
-            trait_def: &mut trait_def,
-            resource_pool: &mut resource_pool,
-            item: &mut item,
-            formula: &mut formula,
-            weapon_category: &mut weapon_category,
-            damage_category: &mut damage_category,
-            space_profile: &mut space_profile,
-            weather: &mut weather,
-            recipe: &mut recipe,
-            recipe_category: &mut recipe_category,
-            modifier_type: &mut modifier_type,
-            tag: &mut tag,
-        },
-    );
+    let mut session = LoadSession::with_engine_registrations();
+    let report = session.load_all(Path::new(REAL_MODS_ROOT));
+    let LoadSession {
+        registry,
+        item,
+        recipe,
+        recipe_category,
+        ..
+    } = session;
 
     let lostland_id = NamespacedId::parse("lostland:self").expect("合法标识符");
     let status = report

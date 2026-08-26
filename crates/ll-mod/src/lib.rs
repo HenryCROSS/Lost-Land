@@ -151,6 +151,7 @@ pub mod discover;
 pub mod formula;
 pub mod item;
 pub mod load_report;
+pub mod load_session;
 pub mod manifest;
 pub mod mod_set;
 pub mod modifier_type;

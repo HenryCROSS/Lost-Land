@@ -62,27 +62,14 @@ use ll_content::save_file::{CURRENT_SCHEMA_VERSION, load_full, save_to_file};
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
-use ll_mod::class::{BaseClassIds, ClassTable, resolve_base_classes};
-use ll_mod::clip::ClipTable;
-use ll_mod::damage_category::DamageCategoryTable;
-use ll_mod::formula::FormulaTable;
-use ll_mod::item::ItemTable;
+use ll_mod::class::{BaseClassIds, resolve_base_classes};
 use ll_mod::load_report::LoadStatus;
-use ll_mod::modifier_type::ModifierTypeTable;
-use ll_mod::pipeline::{GameplayTables, load_all};
+use ll_mod::load_session::LoadSession;
 use ll_mod::quest::{BaseQuestIds, QuestTable, RegisteredQuests, resolve_base_quests};
 use ll_mod::quest_overview::build_quest_log_view;
-use ll_mod::race::RaceTable;
-use ll_mod::recipe::RecipeTable;
-use ll_mod::recipe_category::RecipeCategoryTable;
 use ll_mod::registry::Registry;
-use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::{BaseSkillIds, SkillTable, resolve_base_skills};
-use ll_mod::subclass::{BaseSubclassIds, SubclassTable, resolve_base_subclasses};
-use ll_mod::tag::TagTable;
-use ll_mod::trait_def::TraitTable;
-use ll_mod::weapon_category::WeaponCategoryTable;
-use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
+use ll_mod::subclass::{BaseSubclassIds, resolve_base_subclasses};
 use ll_sim::apply::apply;
 use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
@@ -93,7 +80,7 @@ use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
-use ll_world::terrain::{BaseTerrainIds, TerrainTable, materialize_base_terrain};
+use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 use ll_world::zone::ZoneLayout;
 
 fn main() {
@@ -145,62 +132,37 @@ struct Content {
 const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 
 fn build_content() -> Content {
-    let mut registry = Registry::new();
-    // 地形仍由 Rust 注册（`ll_world::terrain` 尚未迁进脚本），且必须
-    // 排在 `load_all` 之前——与 `ll_game::content::load_content` 的
-    // 真实顺序一致。
-    let (terrain_ids, mut terrain_table) =
-        materialize_base_terrain(&mut |raw| registry.intern(raw))
-            .expect("本体地形声明表内部一致，注册恒不失败");
-
-    let mut class_table = ClassTable::new();
-    let mut skill_table = SkillTable::new();
-    let mut subclass_table = SubclassTable::new();
-    let mut quest_table = QuestTable::new();
-    let mut race_table = RaceTable::new();
-    let mut clip_table = ClipTable::new();
-    let mut xp_curve_table = XpCurveTable::new();
-    let mut xp_curve_bindings = XpCurveBindings::new();
-    let mut trait_table = TraitTable::new();
-    let mut resource_pool_table = ResourcePoolTable::new();
-    let mut item_table = ItemTable::new();
-    let mut formula_table = FormulaTable::new();
-    let mut weapon_category_table = WeaponCategoryTable::new();
-    let mut damage_category_table = DamageCategoryTable::new();
-    let mut space_profile_table = ll_world::space_profile::SpaceProfileTable::new();
-    let mut weather_table = ll_world::weather::WeatherTable::new();
-    let mut recipe_table = RecipeTable::new();
-    let mut recipe_category_table = RecipeCategoryTable::new();
-    let mut tag_table = TagTable::new();
-
-    let mut modifier_type_table = ModifierTypeTable::new();
-    let report = load_all(
-        std::path::Path::new(REAL_MODS_ROOT),
-        &mut registry,
-        &mut GameplayTables {
-            terrain: &mut terrain_table,
-            class: &mut class_table,
-            skill: &mut skill_table,
-            subclass: &mut subclass_table,
-            quest: &mut quest_table,
-            race: &mut race_table,
-            clip: &mut clip_table,
-            xp_curve: &mut xp_curve_table,
-            xp_curve_bindings: &mut xp_curve_bindings,
-            trait_def: &mut trait_table,
-            resource_pool: &mut resource_pool_table,
-            item: &mut item_table,
-            formula: &mut formula_table,
-            weapon_category: &mut weapon_category_table,
-            damage_category: &mut damage_category_table,
-            space_profile: &mut space_profile_table,
-            weather: &mut weather_table,
-            recipe: &mut recipe_table,
-            recipe_category: &mut recipe_category_table,
-            modifier_type: &mut modifier_type_table,
-            tag: &mut tag_table,
-        },
-    );
+    // 引擎侧注册（地形在内）+ mod 装载整段走
+    // `ll_mod::load_session::LoadSession`——与
+    // `ll_game::content::load_content` 字面上同一段代码，见该模块文档。
+    let mut session = LoadSession::with_engine_registrations();
+    let report = session.load_all(std::path::Path::new(REAL_MODS_ROOT));
+    let LoadSession {
+        mut registry,
+        terrain_ids,
+        terrain: terrain_table,
+        class: class_table,
+        skill: skill_table,
+        subclass: subclass_table,
+        quest: quest_table,
+        race: _race_table,
+        clip: _clip_table,
+        xp_curve: _xp_curve_table,
+        xp_curve_bindings: _,
+        trait_def: _trait_table,
+        resource_pool: _resource_pool_table,
+        item: _item_table,
+        formula: _formula_table,
+        weapon_category: _weapon_category_table,
+        damage_category: _damage_category_table,
+        space_profile: _space_profile_table,
+        weather: _weather_table,
+        recipe: _recipe_table,
+        recipe_category: _recipe_category_table,
+        tag: _tag_table,
+        modifier_type: _modifier_type_table,
+        ..
+    } = session;
 
     let lostland_id = id("lostland:self");
     let status = report

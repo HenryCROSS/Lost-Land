@@ -55,26 +55,10 @@ use std::path::Path;
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
-use ll_mod::base_xp_curve::register_base_xp_curve;
-use ll_mod::class::ClassTable;
-use ll_mod::clip::ClipTable;
-use ll_mod::damage_category::DamageCategoryTable;
-use ll_mod::formula::FormulaTable;
-use ll_mod::item::ItemTable;
 use ll_mod::load_report::LoadStatus;
-use ll_mod::modifier_type::ModifierTypeTable;
-use ll_mod::pipeline::{GameplayTables, load_all};
-use ll_mod::quest::QuestTable;
+use ll_mod::load_session::LoadSession;
 use ll_mod::race::RaceTable;
-use ll_mod::recipe::RecipeTable;
-use ll_mod::recipe_category::RecipeCategoryTable;
-use ll_mod::registry::Registry;
-use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::SkillTable;
-use ll_mod::subclass::SubclassTable;
-use ll_mod::tag::TagTable;
-use ll_mod::trait_def::TraitTable;
-use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{RegistryXpCurves, XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::craft::NoRecipes;
@@ -168,61 +152,17 @@ impl RealModsHandle {
 }
 
 fn load_real_mods() -> RealModsHandle {
-    let mut registry = Registry::new();
-    let mut terrain = ll_world::terrain::TerrainTable::new();
-    let mut class = ClassTable::new();
-    let mut skill = SkillTable::new();
-    let mut subclass = SubclassTable::new();
-    let mut quest = QuestTable::new();
-    let mut race = RaceTable::new();
-    let mut clip = ClipTable::new();
-    // 本体默认曲线不经脚本管线注册（`ll_mod::base_xp_curve` 模块文档
-    // 「本体注册向来不经过脚本管线」），必须与本体二进制
-    // （`ll_game::content` 装载函数）同一个顺序：先注册本体默认曲线拿到
-    // 那张表，再让 `load_all` 往同一张表里追加 mod 声明的曲线。
-    let (default_xp_curve, mut xp_curve) = register_base_xp_curve(&mut |id| registry.intern(id))
-        .expect("本体默认经验曲线声明内部一致，注册恒不失败");
-    let mut xp_curve_bindings = XpCurveBindings::new();
-    let mut trait_def = TraitTable::new();
-    let mut resource_pool = ResourcePoolTable::new();
-    let mut item = ItemTable::new();
-    let mut formula = FormulaTable::new();
-    let mut weapon_category = WeaponCategoryTable::new();
-    let mut damage_category = DamageCategoryTable::new();
-    let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
-    let mut weather_table = ll_world::weather::WeatherTable::new();
-    let mut recipe_table = RecipeTable::new();
-    let mut recipe_category_table = RecipeCategoryTable::new();
-    let mut tag_table = TagTable::new();
-    let mut modifier_type_table = ModifierTypeTable::new();
-
-    let report = load_all(
-        Path::new(REAL_MODS_ROOT),
-        &mut registry,
-        &mut GameplayTables {
-            terrain: &mut terrain,
-            class: &mut class,
-            skill: &mut skill,
-            subclass: &mut subclass,
-            quest: &mut quest,
-            race: &mut race,
-            clip: &mut clip,
-            xp_curve: &mut xp_curve,
-            xp_curve_bindings: &mut xp_curve_bindings,
-            trait_def: &mut trait_def,
-            resource_pool: &mut resource_pool,
-            item: &mut item,
-            formula: &mut formula,
-            weapon_category: &mut weapon_category,
-            damage_category: &mut damage_category,
-            space_profile: &mut space_profile,
-            weather: &mut weather_table,
-            recipe: &mut recipe_table,
-            recipe_category: &mut recipe_category_table,
-            modifier_type: &mut modifier_type_table,
-            tag: &mut tag_table,
-        },
-    );
+    let mut session = LoadSession::with_engine_registrations();
+    let report = session.load_all(Path::new(REAL_MODS_ROOT));
+    let LoadSession {
+        registry,
+        default_xp_curve_id: default_xp_curve,
+        skill,
+        race,
+        xp_curve,
+        xp_curve_bindings,
+        ..
+    } = session;
     for id in ["examplemod:self", "lostland:self"] {
         let parsed = NamespacedId::parse(id).unwrap();
         let status = report
