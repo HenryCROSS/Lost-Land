@@ -9,7 +9,7 @@
 #   - window-title                        ll-platform WindowConfig::title_key
 #   - keybind-action-*                    ll-platform GameKey::display_name_key
 #   - race-*-display_name                 ll-mod RaceAttrs::display_name_key（本体三个种族）
-#   - class-*-display_name                ll-mod ClassAttrs::display_name_key（本体三个职业）
+#   - class-*-display_name                ll-mod ClassAttrs::display_name_key（本体十条职业）
 #   - subclass-*-display_name             ll-mod SubclassAttrs::display_name_key（本体两个转职）
 #   - trait-*-display_name                ll-mod TraitAttrs::display_name_key（本体四条制作精通）
 #   - recipe_category-*-display_name       ll-mod RecipeCategoryDef::display_name_key（本体五个配方类别）
@@ -42,6 +42,12 @@ class-warrior-display_name = 战士
 class-mage-display_name = 法师
 class-ranger-display_name = 游侠
 class-guard-display_name = 卫兵
+class-steward-display_name = 据点管理者
+class-militia-display_name = 民兵
+class-farmer-display_name = 农夫
+class-hunter-display_name = 猎户
+class-butcher-display_name = 屠夫
+class-blacksmith-display_name = 铁匠
 
 subclass-duelist-display_name = 剑术家
 subclass-apprentice-display_name = 学徒

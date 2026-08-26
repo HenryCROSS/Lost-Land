@@ -16,6 +16,8 @@ use std::sync::Arc;
 
 use ll_i18n::Catalog;
 use ll_mod::asset_vfs::AssetVfs;
+use ll_mod::native_behavior::{BehaviorRuleCatalogs, NativeBehaviorSource, NativeBehaviorTree};
+use ll_mod::roster::SettlementRoles;
 use ll_platform::config::DisplayConfig;
 use ll_platform::config::ScaleFilter;
 use ll_platform::fps::FpsCounter;
@@ -31,7 +33,6 @@ use ll_render::sprite::{DrawOrder, Layer, footprint_bottom_screen_y, sprite_draw
 use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::effect::Effect;
-use ll_sim::intent::Intent;
 use ll_sim::turn::TurnEngine;
 use ll_text::TextRenderer;
 use ll_ui::hud::character_panel::CharacterPanelData;
@@ -42,7 +43,6 @@ use ll_ui::widget::quad::QuadRenderer;
 use ll_ui::widget::skin::NineSliceSkin;
 use ll_ui::widget::state::WidgetStateTable;
 use ll_ui::widget::textured_quad::TexturedQuadRenderer;
-use ll_world::entity::EntityId;
 use ll_world::fov::compute_fov;
 use ll_world::overview::{ContinentField, continent_map, generate_continent_field};
 use ll_world::space::Space;
@@ -59,40 +59,52 @@ use crate::layout::{
 use crate::save::save_game;
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
-/// 本体二进制目前唯一的实体是玩家——`crate::world::spawn_player` 是整个
-/// `ll-game` 里唯一一处 `world.actors.spawn` 调用（已 grep 核实），
-/// 传给 [`ll_sim::turn::TurnEngine::advance_ai`] 的 `ai_intent` 参数
-/// 因此恒不会被调用（时间轴里除了玩家没有别的实体会被弹出）。
-/// 恒返回 `Intent::Wait`——即使真被调用到，也不会产出任何空效果导致
-/// `ll_sim::turn` 模块文档「必须保证进展」一节描述的死循环
-/// （`Intent::Wait` 恒产出 `Effect::ScheduleNext`，见 `ll_sim::resolve`
-/// 文档）。
+/// 本体二进制的 NPC 决策来源：引擎自带的**卫兵**那棵行为树
+/// （[`NativeBehaviorTree::guard`]）。
 ///
-/// # 为什么这里**还不是** `NativeBehaviorSource`
+/// # 这里此前是一个恒 `Wait` 的占位，为什么现在不是了
 ///
-/// 如实记录，不是遗漏。两条历史阻塞已经不在了：`advance_ai` 的
-/// `ai_intent` 曾是 `fn` 指针（捕获不进需要 `&mut self` 的决策来源），
-/// 签名早已放宽成 `&mut dyn FnMut`；决策来源曾要一份脚本源码与一个
-/// 入口函数名，而行为搬进引擎之后
-/// （`ll_mod::native_behavior::NativeBehaviorTree`）它只要一个枚举值。
+/// 那个占位（`no_npc_ai`）的文档如实记着两条**内容层面**的阻塞：
 ///
-/// 剩下的两条阻塞是**内容层面**的，不是接线层面的，各自都需要独立
-/// 批次：
+/// 1. 「本体二进制没有任何 NPC 生成路径」——NPC 生成批次落地之后不再
+///    成立：[`crate::world::materialize_nearby_settlements`] 会在玩家
+///    走近一座据点时把那座据点的名册物化成真正的 `Agent`。
+/// 2. 「没有『哪个生物用哪棵树』的内容绑定」——**这一条仍然成立**，
+///    因此这里仍然是「硬选一棵」，只是选的那一棵现在有真实理由。
 ///
-/// 1. **本体二进制没有任何 NPC 生成路径**——没有生物注册表、没有刷怪
-///    表，`build_new_world` 只生成玩家一个实体。哪怕这里换成真正的
-///    行为树决策来源，`advance_ai` 也永远弹不出一个非受控实体来调用
-///    它，「接上了但恒不执行」与现状没有任何可观察差别。
-/// 2. **没有「哪个生物用哪棵树」的内容绑定**——`Agent` 上没有任何字段
-///    说得出「这个生物该跑哪棵树」，两棵树目前只能由调用方硬选一棵。
-///    在没有这条绑定之前，在这里硬选一棵是在猜。
+/// # 为什么硬选卫兵那棵，而不是哥布林那棵
 ///
-/// 在这两条补上之前，这里挂一个恒 `Wait` 的占位比挂一个恒不执行的
-/// `NoBehavior` 更诚实：后者会让读者以为行为树已经接通了。
-/// 行为树经由 `TurnEngine` 真实驱动结算这条链路本身已经有可执行证据，
-/// 见 `crates/ll-mod/tests/example_mod_stealth.rs`。
-fn no_npc_ai(_world: &WorldState, actor: EntityId, _player: EntityId) -> Intent {
-    Intent::Wait { actor }
+/// 卫兵那棵树的形状恰好是「一棵通用的据点居民树」：
+///
+/// - 分支一（盘查）**自带职业闸门**——`guard_tick` 第一句就问「这个实体
+///   是不是 `lostland:guard`」，不是守卫的居民（农夫、铁匠……）自动落到
+///   下一支。这条闸门此前是一条真实的悬空引用（没有任何路径生成过带这个
+///   职业的实体），本批次让它第一次真的可能成立。
+/// - 分支二（兜底，恒成立）是「看得见人就走近一步，否则原地等待」——
+///   对一个村民来说，这是一个不出戏的默认行为。
+///
+/// 哥布林那棵树则是「见人就放技能、放不了就近战」，套在农夫身上会让
+/// 整座村子见到玩家就动手。两棵之间没有第三个选项：`NativeBehaviorTree`
+/// 是个只有两条的封闭枚举（第三方加不了新的，见其类型文档）。
+///
+/// # 已知缺口，如实标注
+///
+/// 一整座村子的居民都会朝玩家走过来——这是分支二的直接后果，不是缺陷
+/// 修不了，而是「按职业选一棵树」这条内容绑定还不存在。真正的解法是给
+/// `ClassDef` 加一条行为绑定（`settlements-structures-and-npc-spawning.md`
+/// 六节 6.1 的 `ClassBehaviorBindings`），那是独立一批的工作。
+fn npc_behavior_source(content: &LoadedContent, world_seed: u64) -> NativeBehaviorSource {
+    NativeBehaviorSource::new(
+        NativeBehaviorTree::guard(&content.registry),
+        BehaviorRuleCatalogs::snapshot(
+            &content.race_table,
+            &content.class_table,
+            &content.subclass_table,
+            &content.trait_table,
+            &content.item_table,
+        ),
+        world_seed,
+    )
 }
 
 /// 每次「放大/缩小」动作激活时，缩放倍率的调整步长。
@@ -350,6 +362,17 @@ pub struct Demo {
     /// [`Demo::advance`] 里的开关逻辑与 `ll_ui::hud::world_map` 模块
     /// 文档。纯粹的表现层 UI 状态,同样不进 `GameWorld`/`WorldState`。
     world_map_open: bool,
+    /// NPC 决策来源——引擎自带的行为树，见 [`npc_behavior_source`] 文档。
+    ///
+    /// 做成字段而不是每帧现造：[`NativeBehaviorSource`] 持有一份**内容表
+    /// 快照**（`BehaviorRuleCatalogs`，五张表的克隆，见其类型文档「为什么
+    /// 是快照」），每帧克隆五张表是一笔白付的开销；而内容表在装载之后不再
+    /// 变化，快照一次就够。
+    npc_ai: NativeBehaviorSource,
+    /// 据点职业名册解析结果——[`crate::world::materialize_nearby_settlements`]
+    /// 每次物化都要用，同样只在建局/读档后解析一次（`SettlementRoles::resolve`
+    /// 只是几次注册表查询，但它的输入——注册表——装载后不再变化）。
+    settlement_roles: SettlementRoles,
     /// 状态栏帧率读数的墙钟计数器——见 `ll_platform::fps` 模块文档「为
     /// 什么用墙钟，不用帧计数」一节：只活在表现层，每帧调用一次
     /// [`FpsCounter::record_frame`]，产出的浮点数只用来拼状态栏文本。
@@ -408,6 +431,8 @@ impl Demo {
             &game_world.params,
             &content.terrain_ids,
         );
+        let npc_ai = npc_behavior_source(&content, game_world.world.seed);
+        let settlement_roles = SettlementRoles::resolve(&content.registry, &content.class_table);
         Demo {
             content,
             game_world,
@@ -426,6 +451,8 @@ impl Demo {
             hud_anim: WidgetStateTable::new(),
             continent_field,
             world_map_open: false,
+            npc_ai,
+            settlement_roles,
             fps_counter: FpsCounter::new(),
         }
     }
@@ -448,7 +475,8 @@ impl Demo {
     ///
     /// 现在改由 [`TurnEngine::advance_ai`]/[`TurnEngine::try_player_turn`]
     /// 驱动：先结算排在玩家之前的非受控实体回合（本体二进制目前没有
-    /// NPC,这一步恒是空操作,见 [`no_npc_ai`] 文档),再尝试用本帧输入
+    /// NPC——NPC 生成批次之后**不再恒是空操作**，见
+    /// [`npc_behavior_source`] 文档),再尝试用本帧输入
     /// 结算玩家一次行动——`try_player_turn` 内部才会真正
     /// `world.clock = entry.at`。**这是本仓库回合制的核心手感：玩家不
     /// 行动,时间就不走**（详见 `ll_sim::timeline` 模块文档「为什么不是
@@ -504,13 +532,19 @@ impl Demo {
         // 「一条效果在呈现层意味着什么」这个问题唯一的接缝，`ll-sim`
         // 不知道调用方在不在渲染。
         let mut on_effect = |_world: &WorldState, _effect: &Effect| {};
+        // 行为树真的驱动回合推进这条链路的唯一标准接法，见
+        // `ll_sim::behavior::behavior_ai_intent` 文档。`self.npc_ai` 与
+        // `self.game_world.world` 是同一个 `self` 上的两个不同字段，
+        // 借用检查器分得开，不需要把决策来源搬出去。
+        let mut ai_intent = ll_sim::behavior::behavior_ai_intent(&mut self.npc_ai);
         self.engine.advance_ai(
             &mut self.game_world.world,
             player,
-            &mut no_npc_ai,
+            &mut ai_intent,
             &catalogs,
             &mut on_effect,
         );
+        drop(ai_intent);
         self.engine.try_player_turn(
             &mut self.game_world.world,
             player,
@@ -565,6 +599,20 @@ impl Demo {
             STREAM_RADIUS_ZONES,
             clock,
         );
+        // NPC 物化——**必须排在流式加载之后**：物化要读地形判断「这一格
+        // 能不能站人」，读的正是上一行刚刚装进来的那些区块（见
+        // `crate::world::materialize_nearby_settlements` 文档「时机」一节）。
+        let spawned = crate::world::materialize_nearby_settlements(
+            &mut self.game_world.world,
+            &self.content,
+            &self.settlement_roles,
+        );
+        // 新出现的实体要自己排进时间轴——`rebuild_timeline` 那条整条重建
+        // 的路径在这里用不了（会丢掉 `TurnEngine::pending`），见
+        // `ll_sim::turn::TurnEngine::schedule` 文档。
+        for actor in spawned {
+            self.engine.schedule(actor, clock);
+        }
     }
 
     /// 退出前存档——`on_exit` 恰好调用一次（`ll_platform::window`

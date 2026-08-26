@@ -14,6 +14,7 @@
 //! **绝不允许「测试挂了就把期望值改成实际值」**——那等于删掉这道防线。
 //! 与 `crates/ll-core/tests/determinism.rs` 保持同一条规矩。
 
+use ll_core::ident::WorldId;
 use ll_core::torus::TorusSize;
 use ll_world::chunk::ChunkGrid;
 use ll_world::generate::GenParams;
@@ -177,7 +178,26 @@ use ll_world::zone::ZoneLayout;
 // 检查，是核实过的真实结论。**同一批次里 `crates/ll-sim/tests/replay.rs`
 // 的 `EXPECTED_REPLAY_DIGEST` 确实重冻了**（那个回放真的生成实体），
 // 两者一变一不变正是「顶层字段 vs `Agent` 字段」这条区别的又一次体现。
-const EXPECTED_WORLD_DIGEST: u64 = 13_774_070_666_589_385_121;
+//
+// # NPC 生成批次：这一次**重冻了**，而且必须重冻
+//
+// `WorldState::hash` 新增混入了顶层字段 `materialized_settlements`
+// （已物化 NPC 的据点 id 集合，见其字段文档「参与 hash()」一节）。与上面
+// 那几条「没有重冻」的记录**方向相反**，理由正是同一条区别的另一面：这次
+// 新增的是 `WorldState` 的**顶层**字段，混入代码在 `for agent in
+// self.actors.iter()` 循环体之外、每次调用 `hash()` 都会执行——哪怕集合是
+// 空的，也会往哈希器里多写一个长度 `0`，摘要必然改变。
+//
+// 人工核验（真实执行，不是推断）：把新增的那三行混入代码**临时**包进
+// `if false { .. }` 再跑一次本文件，`固定种子的四十八乘四十八世界摘要
+// 跨平台稳定` 当场恢复通过、摘要与旧常量
+// `13_774_070_666_589_385_121` 逐位相同；恢复那三行后摘要稳定落在下面这
+// 个新值上。也就是说这次差异**只**来自这一处新增输入，不掺杂任何其他
+// 行为漂移——这正是本文件顶部「有意修改了算法或常量」那一条允许的重冻，
+// 不是「测试挂了就把期望值改成实际值」。
+//
+// 旧值（NPC 生成批次之前）：13_774_070_666_589_385_121
+const EXPECTED_WORLD_DIGEST: u64 = 13_932_142_645_965_877_185;
 
 // # 等级与经验系统落地批次：本次没有重冻，如实记录为什么不可能变
 //
@@ -306,6 +326,41 @@ fn 推进时钟会改变世界哈希() {
 
     // Assert
     assert_ne!(world.hash(), hash_before);
+}
+
+#[test]
+fn 标记一座据点已物化会改变世界哈希() {
+    // 这是「新字段真的进了 hash()」这条性质的红/绿验证——ADR 0022
+    // 「世界状态哈希必须完整」要的正是它：不完整的确定性哈希等于没有
+    // 哈希，而「据点物化过没有」若测不出来，本批次要防的那条缺陷
+    // （区块重载又生成一批 NPC）就没有任何自动化兜底。
+    // Arrange
+    let (terrain_ids, terrain_table) = base_terrain_fixture();
+    let layout = test_layout();
+    let spawn = layout.tile_size().wrap(0, 0);
+    let mut world = WorldState::new(
+        layout,
+        &GenParams::default(),
+        &terrain_ids,
+        terrain_table,
+        spawn,
+    )
+    .expect("测试布局满足全部构造前置条件");
+    let hash_before = world.hash();
+    let mut counter = 0u32;
+    let site = WorldId::next(&mut counter);
+
+    // Act
+    assert!(world.mark_settlement_materialized(site), "首次标记应当为真");
+
+    // Assert
+    assert_ne!(world.hash(), hash_before);
+    assert!(world.settlement_is_materialized(site));
+    // 标第二次不改变任何东西——写入口自己去重（见字段文档
+    // 「`Vec` 不是 `BTreeSet`」一节）。
+    let hash_after_first = world.hash();
+    assert!(!world.mark_settlement_materialized(site));
+    assert_eq!(world.hash(), hash_after_first);
 }
 
 /// 世界尺寸下限常量（43×25）从渲染层 `Camera::visible_tiles` 的跨度

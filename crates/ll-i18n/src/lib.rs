@@ -448,6 +448,19 @@ mod tests {
         "lostland:class.warrior.display_name",
         "lostland:class.mage.display_name",
         "lostland:class.ranger.display_name",
+        // 卫兵 + 六条据点职业（NPC 生成批次）：`mods/lostland/classes.json5`
+        // 现在注册十条职业，前三条以外的七条此前只在 .ftl 里有译文而不在
+        // 本清单上，因此「新增一条职业内容却忘了补 .ftl」这类遗漏对它们
+        // 一直测不出来。据点名册（`ll_mod::roster`）真的会把这七条职业挂
+        // 在生成出来的 NPC 身上，展示层随时会去取它们的名字，本批次把它们
+        // 一并收进这道覆盖检查。
+        "lostland:class.guard.display_name",
+        "lostland:class.steward.display_name",
+        "lostland:class.militia.display_name",
+        "lostland:class.farmer.display_name",
+        "lostland:class.hunter.display_name",
+        "lostland:class.butcher.display_name",
+        "lostland:class.blacksmith.display_name",
         "lostland:subclass.duelist.display_name",
         "lostland:subclass.apprentice.display_name",
         // 上面十一条（三个种族、四个职业、剑舞者/学徒两个副职）现在

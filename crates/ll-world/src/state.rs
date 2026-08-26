@@ -413,6 +413,41 @@ pub struct WorldState {
     /// 重演"新字段只加了，没人测过它是否被正确覆盖"的既有判据缺口（见
     /// [`Self::hash`] 文档同名历史记录）。
     pub ground_items: Vec<GroundItemStack>,
+    /// 已经**物化过 NPC** 的据点 id，按升序排列、去重（NPC 生成批次）。
+    ///
+    /// # 这是「默认派生，只存偏差」在 NPC 上的那份偏差（ADR 0009）
+    ///
+    /// 一座据点住着谁，是种子的纯函数（`ll_mod::roster::settlement_roster`）
+    /// ——玩家从没走近过的村子在世界状态里一个字节都不占。但玩家真的走进
+    /// 去的那一刻，那份名册会被物化成一批 `Agent` 进 [`Self::actors`]，
+    /// 从此归玩家改变（被杀、被抢、走开）。
+    ///
+    /// **这个字段回答的是唯一一个派生答不上来的问题：这座据点该不该再
+    /// 生成一批人。** 没有它，区块被淘汰再加载时会照着同一份名册重来
+    /// 一遍，把玩家杀掉的人原样复活——那正是本批次要解决的那个缺陷。
+    ///
+    /// # 为什么是「据点 id 集合」而不是一份逐 NPC 的偏差表
+    ///
+    /// 逐 NPC 偏差表要先回答「派生出来的那个人与存档里那个 `Agent` 之间
+    /// 的稳定身份是什么」——`Agent` 上没有这样的字段，加一个就是又一次
+    /// `hash()` 改动 + 存档 remap，而加了之后换来的能力与本字段完全相同。
+    /// 完整论证见 `ll_mod::roster` 模块文档二节。
+    ///
+    /// # `Vec` 不是 `BTreeSet`
+    ///
+    /// 与 [`crate::entity::Agent::unlocked_skills`] 同一条既有理由：查询
+    /// 模式是「这个 id 在不在里面」，元素数量的量级是「玩家这一局走进过
+    /// 几座村子」（个位到几十），线性 `contains` 足够；`Vec` 保序，不涉及
+    /// `HashMap`/`HashSet` 迭代顺序（约束 C5）。「不重复插入」由唯一写入口
+    /// [`Self::mark_settlement_materialized`] 自己保证。
+    ///
+    /// # 参与 `hash()`（ADR 0022）与序列化
+    ///
+    /// 与 [`Self::ground_items`]/[`Self::kill_counts`] 同一条纪律：它真的
+    /// 分岔未来（同一个世界，这座据点物化过与没物化过，此后走向完全不同
+    /// 的两批实体），缺席 `hash()` 就测不出「重复生成」这条缺陷本身有没有
+    /// 回潮。
+    pub materialized_settlements: Vec<WorldId>,
 }
 
 /// [`WorldState`] 反序列化的中转表示。
@@ -464,6 +499,12 @@ struct WorldStateRepr {
     /// `serde_json::json!` 手写局部字段的测试固件。
     #[serde(default)]
     ground_items: Vec<GroundItemStack>,
+    /// 已物化 NPC 的据点 id——`#[serde(default)]` 的理由与
+    /// `history`/`next_world_id`/`kill_counts`/`ground_items` 一致，这里的
+    /// 默认值只服务本文件内部用 `serde_json::json!` 手写局部字段的测试
+    /// 固件。
+    #[serde(default)]
+    materialized_settlements: Vec<WorldId>,
 }
 
 impl TryFrom<WorldStateRepr> for WorldState {
@@ -510,6 +551,7 @@ impl TryFrom<WorldStateRepr> for WorldState {
             next_world_id: repr.next_world_id,
             kill_counts: repr.kill_counts,
             ground_items: repr.ground_items,
+            materialized_settlements: repr.materialized_settlements,
         })
     }
 }
@@ -557,7 +599,42 @@ impl WorldState {
             next_world_id: 0,
             kill_counts: BTreeMap::new(),
             ground_items: Vec::new(),
+            materialized_settlements: Vec::new(),
         })
+    }
+
+    /// 这座据点的 NPC 已经物化过了吗——[`Self::materialized_settlements`]
+    /// 唯一的查询入口。
+    pub fn settlement_is_materialized(&self, site: WorldId) -> bool {
+        self.materialized_settlements.binary_search(&site).is_ok()
+    }
+
+    /// 把一座据点记成「已物化」，返回**这一次是否真的是第一次**。
+    ///
+    /// [`Self::materialized_settlements`] 唯一的写入口：它自己保证有序
+    /// 与不重复（见该字段文档「`Vec` 不是 `BTreeSet`」一节），调用方不
+    /// 需要、也不应当直接 `push`。
+    ///
+    /// # 与 ADR 0023「状态写入经 `apply`」的关系
+    ///
+    /// 这条写入**不经 `Effect`**，与 [`Self::terrain`] 的流式加载
+    /// （`stream_neighborhood`）属于同一类：它不是任何一个实体的一次
+    /// 行动的结果，而是「世界的哪一部分此刻被装进了内存」这条装载纪律
+    /// 的一部分。ADR 0023 管的是**结算**产生的状态变化（谁打了谁、谁
+    /// 捡了什么），流式装载从来不在它的范围内——`SurfaceStore::admit`
+    /// 每加载一个区块就改写 `terrain`，也没有走 `Effect`。
+    ///
+    /// 判据是「这次改写会不会因为回放同一串 `Effect` 而重现」：地形流式
+    /// 加载与本字段都不会（它们由玩家走到哪里决定，不由行动序列决定），
+    /// 因此都不属于 `apply` 的管辖范围。
+    pub fn mark_settlement_materialized(&mut self, site: WorldId) -> bool {
+        match self.materialized_settlements.binary_search(&site) {
+            Ok(_) => false,
+            Err(at) => {
+                self.materialized_settlements.insert(at, site);
+                true
+            }
+        }
     }
 
     /// 推进世界时钟 `ticks` 格。
@@ -1202,6 +1279,17 @@ impl WorldState {
             for content_stack in &item.contents {
                 write_item_stack(&mut hasher, content_stack);
             }
+        }
+
+        // 已物化据点集合（NPC 生成批次）——同一条先例第八次重演，理由
+        // 见 Self::materialized_settlements 文档「参与 hash()」一节：同一
+        // 个世界里「这座据点物化过」与「没物化过」此后走向完全不同的两批
+        // 实体，缺席 hash() 就测不出「区块重载又生成一批 NPC」这条缺陷
+        // 有没有回潮。`Vec` 有序去重，不涉及 HashMap/HashSet 迭代顺序
+        // （约束 C5）。
+        hasher.write_u64(self.materialized_settlements.len() as u64);
+        for site in &self.materialized_settlements {
+            hasher.write_u64(u64::from(site.get()));
         }
 
         hasher.finish()

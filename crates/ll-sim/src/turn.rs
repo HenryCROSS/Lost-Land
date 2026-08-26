@@ -30,6 +30,7 @@
 //! 只有这一份实现，`p3_acceptance` 与 `ll-game` 都调用它,不是各自抄
 //! 一份。
 
+use ll_core::time::Tick;
 use ll_platform::input::InputState;
 use ll_world::entity::EntityId;
 use ll_world::state::WorldState;
@@ -79,6 +80,25 @@ impl TurnEngine {
             timeline,
             pending: None,
         }
+    }
+
+    /// 把一个**新出现的**实体排进时间轴。
+    ///
+    /// # 为什么需要它：`rebuild_timeline` 在这里用不了
+    ///
+    /// `ll-game` 建局与读档时都是「按全部存活实体的
+    /// `Agent::next_action_at` 整条重建时间轴」（见其
+    /// `rebuild_timeline` 文档）。但 NPC 生成批次之后，实体会在**游玩
+    /// 途中**出现（玩家走近一座据点，那座据点的 NPC 被物化）——那一刻
+    /// 整条重建会丢掉 [`Self::pending`]：一条「已弹出、等待被消费」的
+    /// 记录若被重建覆盖，玩家会凭空跳过一次行动，正是 `pending` 这个
+    /// 字段本身要防的那个缺陷（见本类型文档「为什么需要 `pending`」）。
+    ///
+    /// 因此新实体走这条增量入口，不重建。调用方负责传一个不早于当前
+    /// 世界时钟的 `at`（物化路径传的就是 `world.clock`），否则这个实体
+    /// 会在下一次 `advance_ai` 里把时钟往回拨。
+    pub fn schedule(&mut self, actor: EntityId, at: Tick) {
+        self.timeline.schedule(actor, at);
     }
 
     /// 结算并应用一个实体的一次行动：设定世界时钟为该实体计划行动的

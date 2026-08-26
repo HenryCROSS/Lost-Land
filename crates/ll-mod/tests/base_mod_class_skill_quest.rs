@@ -408,8 +408,8 @@ fn 本体技能与任务的id清单不多不少就是脚本里注册的那几条
     );
     assert_eq!(
         count_in_namespace(&|index| loaded.class.is_defined(index)),
-        4,
-        "mods/lostland/classes.json5 注册四条职业（战士/法师/游侠/卫兵）"
+        10,
+        "mods/lostland/classes.json5 注册十条职业（战士/法师/游侠/卫兵 +          据点管理者/民兵/农夫/猎户/屠夫/铁匠）"
     );
     assert_eq!(
         count_in_namespace(&|index| loaded.subclass.is_defined(index)),
