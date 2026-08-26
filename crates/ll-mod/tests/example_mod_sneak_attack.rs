@@ -10,19 +10,22 @@
 //! 与 `crates/ll-mod/tests/example_mod_resistance.rs` 同一套「装载整个
 //! `mods/` 目录，不是只挑 `example_mod`」手法，见该文件模块文档。
 //!
-//! # 为什么只断言严格更高，不像抗性那样断言精确数值
+//! # 为什么断言的是频率，不像抗性那样断言精确数值
 //!
 //! 抗性测试（`example_mod_resistance.rs`）能断言精确倍率，因为两组
-//! 防御方的攻击者幸运恒为零（`BaseStats::BASELINE.luck == 0`），暴击
-//! 判定天然不介入。本文件的两个攻击者一个幸运为零、一个幸运为
-//! `LUCKY_LUCK`——后者的有效幸运同时影响暴击判定（`ll_sim::combat::crit_attacker_modifier`）
-//! 与偷袭判定（两者复用同一个 `effective_luck`，见
-//! `resolve_attack` 文档「偷袭接线」一节），因此不能排除这次攻击碰巧
-//! 也暴击的可能——但暴击只会让伤害进一步变大，不会把它压回基准以下,
-//! 严格更高这条断言在两种情形下都成立，不需要靠精确数值排除暴击这一
-//! 变量,与 `crates/ll-sim/src/resolve.rs` 的
-//! `幸运更高的角色暴击命中频率更高` 测试选用频率断言而非单次数值的
-//! 理由同源。
+//! 防御方的攻击者幸运恒为零，而抗性本身不掷骰。偷袭掷骰：判定系统
+//! 迁移批次之后它是一次 `3d20` 对抗判定
+//! （`ll_sim::combat::sneak_attacker_modifier`），幸运越高修正越大、
+//! 触发越频繁，但**两端都不封顶**——顶格幸运也打得出不触发的那一下，
+//! 零幸运也打得出触发的那一下。单次采样因此测不出「幸运更高更容易
+//! 偷袭」这条效果，只有频率能，理由与 `crates/ll-sim/src/resolve.rs`
+//! 的 `幸运更高的角色暴击命中频率更高` 同源。
+//!
+//! 「这一下有没有触发偷袭」不靠猜：基准伤害是
+//! `damage_after_defense(10, 0, NONE) = 10`，这一下即便暴击也只到
+//! `apply_crit_multiplier(10) = 15`，而偷袭追加的是 `15` 点——因此
+//! 「伤害超过没偷袭时的最大可能值」这个阈值只可能被偷袭跨过，暴击
+//! 单独跨不过去。两个常量都由本文件从 `ll_sim::combat` 现算，不写死。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -36,8 +39,9 @@ use ll_mod::load_report::LoadStatus;
 use ll_mod::load_session::LoadSession;
 use ll_mod::race::RaceTable;
 use ll_mod::trait_def::TraitTable;
-use ll_sim::apply::apply;
+use ll_sim::combat::{Penetration, apply_crit_multiplier, damage_after_defense};
 use ll_sim::damage_category::NoDamageCategories;
+use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
 use ll_sim::item::EquipSlot;
 use ll_sim::resolve::resolve_with_skills_traits_pools_items_formulas_and_damage_categories;
@@ -52,13 +56,13 @@ use ll_world::zone::ZoneLayout;
 /// 仓库根目录下的真实 `mods/` 路径，理由同 `example_mod_resistance.rs`。
 const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 
-/// 攻击者的幸运值——与 `gameplay.scm` 里
-/// `examplemod:predatory_instinct` 声明的每点幸运 20‰ 相乘恰好等于
-/// 1000（`50 × 20 = 1000`），换算出的偷袭触发率精确钳在千分之一千
-/// （100%），这次攻击是否触发偷袭因此不依赖 `DetRng` 抽到的具体值——
-/// 与 `crate::combat::sneak_attack_chance_permille` 文档「夹在
-/// `0..=1000`」一节同一个边界，选最大边界值消灭本测试对 `world.clock`
-/// 取值的依赖。
+/// 「幸运充足」那一侧的幸运值。
+///
+/// 代进偷袭判定：`50（幸运） + 9（examplemod:predatory_instinct 声明的
+/// sneak_modifier，半颗骰子）= 59`，越过修正上限 `28` 被钳回上限，对
+/// 一个基准目标是 `97.51%` 的触发率。对照的零幸运一侧只有那半颗骰子，
+/// `72.18%`。两个数都不是 0 也不是 1——这正是本文件改用频率断言的
+/// 原因，见模块文档。
 const LUCKY_LUCK: i32 = 50;
 
 /// 装载真实 `mods/` 目录一次，返回全部断言需要的表与已经解析好的
@@ -179,32 +183,28 @@ fn spawn_agent_with_luck(
 }
 
 #[test]
-fn 真实注册的迅足者种族在幸运充足时偷袭追加的伤害真实生效() {
+fn 真实注册的迅足者种族幸运越高偷袭触发越频繁且两端都不封顶() {
     // 手工验证过这条会红：把 `resolve_attack` 里偷袭判定那一段整段
-    // 去掉（等价于攻击者没有声明这条天赋），两个攻击者会打出完全相同
-    // 的基准伤害，`sneak_damage > baseline_damage` 立即失败——
-    // `crates/ll-sim/src/resolve.rs` 的统计频率测试与本文件的目标一致：
-    // 前者验证判定本身受幸运影响、走 DetRng；本文件验证真实注册的 mod
-    // 天赋走的是同一条真实链路，不是只在单元测试里自证。
+    // 去掉（等价于攻击者没有声明这条天赋），两个攻击者的触发次数都变成
+    // 0，第一条断言立即失败——`crates/ll-sim/src/resolve.rs` 的统计
+    // 频率测试与本文件的目标一致：前者验证判定本身受幸运影响、走
+    // DetRng；本文件验证真实注册的 mod 天赋走的是同一条真实链路，不是
+    // 只在单元测试里自证。
     // Arrange
     let handle = load_real_mods();
     let mut world = test_world();
-    // 基准攻击者：迅足者种族（已被授予偷袭天赋），但幸运为零——有效
-    // 幸运为零时 sneak_attack_chance_permille 恒返回零，判定分支虽然
-    // 进入（种族确实声明了这条天赋）但恒不触发,是「声明了但这次判定
-    // 没中」与「压根没有声明」两种情形的第一种。
+    // 两个攻击者只差幸运一项：一个零幸运、一个 LUCKY_LUCK。两个都是
+    // 迅足者（种族授予了偷袭天赋），因此「有没有声明」这一路完全相同。
     let baseline_attacker =
         spawn_agent_with_luck(&mut world, handle.footpad_id, Agent::STARTING_HEALTH, 0);
-    let baseline_defender = spawn_agent_with_luck(&mut world, handle.footpad_id, 1_000, 0);
-    // 幸运充足的攻击者：同一个种族，幸运恰好让触发率钳在 100%（见
-    // LUCKY_LUCK 文档）。
+    let baseline_defender = spawn_agent_with_luck(&mut world, handle.footpad_id, 1_000_000, 0);
     let sneak_attacker = spawn_agent_with_luck(
         &mut world,
         handle.footpad_id,
         Agent::STARTING_HEALTH,
         LUCKY_LUCK,
     );
-    let sneak_defender = spawn_agent_with_luck(&mut world, handle.footpad_id, 1_000, 0);
+    let sneak_defender = spawn_agent_with_luck(&mut world, handle.footpad_id, 1_000_000, 0);
 
     let formulas = RegistryFormulas {
         formulas: &handle.formula,
@@ -214,8 +214,16 @@ fn 真实注册的迅足者种族在幸运充足时偷袭追加的伤害真实�
         default_formula: ContentIndex::default(),
     };
 
-    let attack = |world: &mut WorldState, attacker: EntityId, defender: EntityId| {
-        let effects = resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+    // 没偷袭时这一下最多打出多少：基准伤害走完整条减伤链路，再让暴击
+    // 放大到顶。两个数都现算，不写死，见模块文档。
+    let no_sneak_ceiling = apply_crit_multiplier(damage_after_defense(
+        BaseStats::BASELINE.strength,
+        0,
+        Penetration::NONE,
+    ));
+
+    let damage = |world: &WorldState, attacker: EntityId, defender: EntityId| -> i32 {
+        resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
             world,
             &Intent::Attack {
                 actor: attacker,
@@ -228,32 +236,41 @@ fn 真实注册的迅足者种族在幸运充足时偷袭追加的伤害真实�
             &handle.item,
             &formulas,
             &NoDamageCategories,
-        );
-        for effect in &effects {
-            apply(world, effect);
-        }
+        )
+        .iter()
+        .find_map(|effect| match effect {
+            Effect::Damage { amount, .. } => Some(*amount),
+            _ => None,
+        })
+        .expect("攻击必然产出一条伤害效果")
     };
 
-    // Act
-    attack(&mut world, baseline_attacker, baseline_defender);
-    attack(&mut world, sneak_attacker, sneak_defender);
+    // Act：只挪动世界时钟取得不同的随机流，不 `apply` 任何效果——每轮
+    // 都在同一份满血目标上独立重打一次。本条因此仍是**确定性**测试。
+    let trials = 400i64;
+    let mut baseline_sneaks = 0i64;
+    let mut lucky_sneaks = 0i64;
+    for tick in 0..trials {
+        world.clock = Tick(tick);
+        if damage(&world, baseline_attacker, baseline_defender) > no_sneak_ceiling {
+            baseline_sneaks += 1;
+        }
+        if damage(&world, sneak_attacker, sneak_defender) > no_sneak_ceiling {
+            lucky_sneaks += 1;
+        }
+    }
 
-    // Assert：幸运充足、偷袭必然触发的一侧造成的伤害严格更高——见本
-    // 文件模块文档「为什么只断言严格更高」一节。
-    let baseline_health = world
-        .actors
-        .get(baseline_defender)
-        .expect("基准防御方未死亡")
-        .health;
-    let sneak_health = world
-        .actors
-        .get(sneak_defender)
-        .expect("偷袭防御方未死亡")
-        .health;
-    let baseline_damage = 1_000 - baseline_health;
-    let sneak_damage = 1_000 - sneak_health;
+    // Assert
     assert!(
-        sneak_damage > baseline_damage,
-        "偷袭必然触发的攻击者应当打出严格更高的伤害（{sneak_damage} 应大于 {baseline_damage}）"
+        lucky_sneaks > baseline_sneaks,
+        "幸运更高的一侧触发次数应当严格更多（{lucky_sneaks} 应大于 {baseline_sneaks}）"
+    );
+    assert!(
+        lucky_sneaks < trials,
+        "顶格修正也不该必定触发（{lucky_sneaks} / 共 {trials} 轮）"
+    );
+    assert!(
+        baseline_sneaks > 0,
+        "零幸运也不该一次都触发不了（共 {trials} 轮）"
     );
 }

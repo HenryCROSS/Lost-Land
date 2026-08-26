@@ -239,8 +239,9 @@ impl CheckDice {
 ///
 /// # 为什么是引擎常量而不是内容声明
 ///
-/// 与它并肩的那些数——盘查的基础意愿、暴击的每点幸运加成、暴击伤害
-/// 倍率——今天全部是引擎常量，没有一个走内容声明。把骰子单独做成
+/// 与它并肩的那些数——盘查的基础意愿、暴击的基准偏移、暴击伤害
+/// 倍率、潜行给偷袭的那一整颗骰子——今天全部是引擎常量，没有一个走
+/// 内容声明。把骰子单独做成
 /// 内容可配，只会造出「一个内容可配的 `N` 紧挨着一堆写死的基数」这种
 /// 半截形状。内容负责声明的是**修正**（`RuleModifier`，已经有完整
 /// 通道），引擎负责量尺。真要把量尺也交出去，那是一次独立的内容
@@ -402,6 +403,22 @@ pub const CONCEALMENT_CHECK: CheckContext = CheckContext {
 pub const CRITICAL_CHECK: CheckContext = CheckContext {
     namespace: "lostland",
     path: "critical",
+};
+
+/// 偷袭判定：攻击者（隐蔽，想打在对方没防备的地方）主动，被攻击者
+/// （察觉）被动，**每一下攻击各判一次**，且只对声明了
+/// [`crate::rule_modifier::RuleModifier::SneakAttack`] 的攻击者发生。
+///
+/// 与 [`CONCEALMENT_CHECK`] 是同一对角色的**攻守互换**：那边隐蔽方在
+/// 被动位（藏东西的人只要不输就藏住了），这边隐蔽方在主动位（偷袭的
+/// 人要改变现状，必须真的赢过去）。两边的「察觉 = 意志调整值」是同一条
+/// 所有者裁定。
+///
+/// 消费点在 `crate::resolve::resolve_attack`。潜行怎么进式子见
+/// `crate::combat::STEALTH_SNEAK_MODIFIER`。
+pub const SNEAK_ATTACK_CHECK: CheckContext = CheckContext {
+    namespace: "lostland",
+    path: "sneak-attack",
 };
 
 #[cfg(test)]

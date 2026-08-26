@@ -195,24 +195,72 @@ pub fn apply_crit_multiplier(damage: i32) -> i32 {
     (i64::from(damage) * i64::from(CRIT_DAMAGE_MULTIPLIER_PERMILLE) / PERMILLE_SCALE) as i32
 }
 
-/// 给定幸运值与天赋声明的每点幸运敏感度，算出这次攻击的偷袭触发率
-/// （千分比，夹在 `0..=1000`）——盗贼偷袭接线批次新增，与
-/// 暴击此前同一套"幸运→千分比概率"换算手法（判定系统迁移批次之后
-/// 暴击已经改成对抗判定，见 [`crit_attacker_modifier`]，这里是仅存的
-/// 那一处概率模型），唯一区别是这里的系数不是硬编码的，而是由
-/// [`crate::traits::RuleModifier::SneakAttack::luck_chance_permille_per_point`]
-/// 携带——偷袭只对声明了这条天赋的角色生效，不同天赋可以有不同的幸运
-/// 敏感度，见该字段文档。
+/// 潜行给**偷袭判定**的修正：一整颗骰子的跨度
+/// （[`crate::check::CheckDice::whole_die`]，`3d20` 下是 `19` 点）。
 ///
-/// 纯函数——不掷骰，只把幸运换算成一个概率分子，真正的随机判定留给
-/// 调用方（`crate::resolve::resolve_attack`），理由同本模块文档
-/// 「暴击：公式本身不碰随机数」一节。负的
-/// 幸运值/负的系数（当前没有任何来源会产出前者，天赋声明的系数理论上
-/// 可能是 mod 作者填的负数）都夹到零，不产出负的触发率——`DetRng::chance`
-/// 的分子若为负会在 `as u32` 转换时环绕成一个巨大的正数，那是比
-/// 「零触发率」危险得多的隐性缺陷。
-pub fn sneak_attack_chance_permille(luck: i32, luck_chance_permille_per_point: i32) -> i32 {
-    (luck.max(0) * luck_chance_permille_per_point.max(0)).clamp(0, PERMILLE_SCALE as i32)
+/// # 为什么是一整颗骰子，为什么不是「直通」
+///
+/// 潜行此前在偷袭这条链路上是一个**直通**：`resolve_attack` 里那条
+/// `Some(rule) if attacker.stealthed =>` 守卫分支跳过掷骰，直接吃到
+/// 追加伤害——潜行时偷袭**必定**触发，与项目所有者「不允许绝对」这条
+/// 红线直接冲突。所有者裁定改成一次判定，原话是「就算是概率最小都
+/// 可以」：要保住「潜行时偷袭很容易触发」这个玩法效果，只要它不是
+/// 100%。
+///
+/// 定价沿用 [`crate::check`] 已经立好的那把尺子，不另发明数字：潜行是
+/// **主动做出的强效果**，值一整颗骰子（`whole_die`）——与
+/// `RuleModifier::InspectionSuspicion` 在盘查判定里给潜行定的价逐字
+/// 相同，判定系统落地批次就是这么定的（「潜行不再换基数，它是隐蔽方
+/// 的一个修正」）。
+///
+/// # 「很容易触发但不是 100%」落到具体数字
+///
+/// [`crate::check::CHECK_DICE`] 文档「为什么是 3 颗」那一节算过一次
+/// 同一道题：`潜行（一整颗 19）+ 一条被动天赋（半颗 9）= 28`，恰好
+/// 等于修正上限 `L`，**不触发钳制**。代进对抗判定（被攻击者取基准，
+/// 意志调整值 0）：
+///
+/// ```text
+/// 潜行 + 半颗骰的天赋 → delta = 28 → 97.51%
+/// 只有半颗骰的天赋     → delta =  9 → 72.18%
+/// ```
+///
+/// 上面那一档就是所有者要的「概率最小的失败」：`2.49%` 打不出偷袭。
+/// **它不是本批次钳出来的**，是 `|a − p| <= 2L <= S − 1 < S` 这条推导
+/// 的直接后果——见 [`crate::check`] 模块文档「不允许绝对」一节。哪怕
+/// 内容作者把 `sneak_modifier` 填成 `L`，两侧净修正差顶天 `2L = 56`，
+/// 仍然赢不满（`63_999_993 / 64_000_000`）。
+pub const STEALTH_SNEAK_MODIFIER: i64 = crate::check::CHECK_DICE.whole_die();
+
+/// 偷袭判定里**攻击者那一侧**的净修正：`幸运点数 + 天赋声明的修正 +
+/// （潜行时再加 [`STEALTH_SNEAK_MODIFIER`]）`。
+///
+/// 三项各自的出处：
+///
+/// - **幸运点数**——所有者对盗贼偷袭的裁定原话「通过幸运值之类的属性
+///   以及一定的随机值组合一下」。换算与暴击那一侧逐字相同（一点幸运
+///   换一点修正，理由见 [`CRIT_BASE_CHECK_MODIFIER`] 文档「幸运怎么进
+///   式子」），不再另发明一套「每点幸运换多少千分比」的系数——那套
+///   系数存在的唯一理由是旧的概率模型，判定系统里同一个属性在两处用
+///   两把尺子只会让内容作者看到的数字失去可比性。
+/// - **天赋声明的修正**——[`crate::rule_modifier::RuleModifier::SneakAttack`]
+///   的 `sneak_modifier` 字段，装载期已校验不超过 `L`。偷袭只对声明了
+///   这条天赋的角色生效，不同天赋可以有不同的强度。
+/// - **潜行**——见 [`STEALTH_SNEAK_MODIFIER`]。
+///
+/// 被攻击者那一侧是它的**意志调整值**（察觉），由调用点直接读，
+/// 不经本函数：那一侧没有任何需要组合的项。
+///
+/// 纯函数——不掷骰，只把三项加起来，真正的随机判定留给调用方
+/// （`crate::resolve::resolve_attack`），见模块文档「暴击：公式本身
+/// 不碰随机数」一节同一条边界。饱和运算；越界由
+/// [`crate::check::CheckDice::clamp_modifier`] 统一兜底，不在这里重复
+/// 钳，理由同 [`crit_attacker_modifier`]。
+pub fn sneak_attacker_modifier(luck: i32, sneak_modifier: i32, stealthed: bool) -> i64 {
+    let stealth = if stealthed { STEALTH_SNEAK_MODIFIER } else { 0 };
+    i64::from(luck)
+        .saturating_add(i64::from(sneak_modifier))
+        .saturating_add(stealth)
 }
 
 #[cfg(test)]
@@ -421,37 +469,52 @@ mod tests {
     }
 
     #[test]
-    fn 零幸运偷袭触发率为零() {
+    fn 潜行给偷袭判定加一整颗骰子的修正() {
         // Arrange & Act
-        let chance = sneak_attack_chance_permille(0, 20);
+        let plain = sneak_attacker_modifier(0, 9, false);
+        let sneaking = sneak_attacker_modifier(0, 9, true);
 
-        // Assert
-        assert_eq!(chance, 0);
+        // Assert：差额恰好是一整颗骰子的跨度，见 STEALTH_SNEAK_MODIFIER。
+        assert_eq!(plain, 9);
+        assert_eq!(sneaking - plain, crate::check::CHECK_DICE.whole_die());
+        // 潜行 + 半颗骰的天赋恰好等于修正上限，不触发钳制——CHECK_DICE
+        // 文档「为什么是 3 颗」那一节算的就是这道题。
+        assert_eq!(sneaking, crate::check::CHECK_DICE.max_modifier());
     }
 
     #[test]
-    fn 幸运越高偷袭触发率越高() {
+    fn 潜行时的偷袭很容易触发但不是必定触发() {
+        // 所有者裁定原话「就算是概率最小都可以」——本条把那个「最小」
+        // 数出来：潜行 + 半颗骰的天赋对一个基准目标是 97.51%，剩下的
+        // 2.49% 不是钳出来的，是修正上限推导的直接后果。
         // Arrange
-        let low_luck = 5;
-        let high_luck = 40;
+        let stealthed = sneak_attacker_modifier(0, 9, true);
+        let alert_defender = 0; // 意志调整值取基准。
 
         // Act
-        let low_chance = sneak_attack_chance_permille(low_luck, 20);
-        let high_chance = sneak_attack_chance_permille(high_luck, 20);
+        let (wins, total) = active_win_count(stealthed - alert_defender);
 
         // Assert
-        assert!(high_chance > low_chance);
+        assert_eq!(total, 64_000_000);
+        assert_eq!(wins, 62_406_870);
+        assert!(wins < total, "潜行也不该是必定触发");
+
+        // 顶格也赢不满：内容作者把 sneak_modifier 填到上限、目标顶格
+        // 倒霉，仍然留着一线。
+        let limit = crate::check::CHECK_DICE.max_modifier();
+        let (extreme_wins, extreme_total) = active_win_count(2 * limit);
+        assert!(extreme_wins < extreme_total);
     }
 
     #[test]
-    fn 偷袭触发率不超过千分之一千() {
-        // Arrange：幸运与系数都极高时裸乘积会远超 1000，必须夹住。
-        let extreme_luck = 10_000;
-
-        // Act
-        let chance = sneak_attack_chance_permille(extreme_luck, 999);
+    fn 幸运越高偷袭判定的修正越大() {
+        // Arrange & Act
+        let low = sneak_attacker_modifier(5, 9, false);
+        let high = sneak_attacker_modifier(40, 9, false);
 
         // Assert
-        assert_eq!(chance, PERMILLE_SCALE as i32);
+        assert!(high > low);
+        assert_eq!(low, 14);
+        assert_eq!(high, 49);
     }
 }

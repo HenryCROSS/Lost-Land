@@ -988,7 +988,7 @@ impl TraitGrantSource for FixedSneakRaceGrant {
 /// `TraitRule`——供本文件的偷袭判定测试使用。
 struct FixedSneakAttackTrait {
     trait_id: ContentIndex,
-    luck_chance_permille_per_point: i32,
+    sneak_modifier: i32,
     extra_damage: i32,
 }
 
@@ -1003,7 +1003,7 @@ impl TraitCatalog for FixedSneakAttackTrait {
             rule_modifiers: vec![TypedRuleModifier {
                 modifier_type: None,
                 modifier: RuleModifier::SneakAttack {
-                    luck_chance_permille_per_point: self.luck_chance_permille_per_point,
+                    sneak_modifier: self.sneak_modifier,
                     extra_damage: self.extra_damage,
                 },
             }],
@@ -1016,22 +1016,25 @@ fn 装备幸运戒指后偷袭触发频率真的更高() {
     // 频率断言，不是单次结果，理由同「装备幸运戒指后暴击率真的更高」
     // ——本条是偷袭判定这一侧的对应验收：两个攻击者裸 `BaseStats.luck`
     // 恒为 0（`BaseStats::BASELINE`），唯一差异是其中一个装备了幸运
-    // 戒指（+20 有效幸运 → 20 × 15‰ = 300‰ = 30% 触发率），另一个不
-    // 装备（0% 触发率）。`extra_damage` 取得远大于暴击单独能放大的上限
+    // 戒指（+20 有效幸运 → 偷袭判定净差 +20 → 91.42% 触发率），另一个
+    // 不装备（净差 0 → 48.62%）。天赋自己那一路的修正取 0，好让这条
+    // 测试只观察幸运那一路的贡献，理由同 `ll_sim::resolve` 测试模块
+    // 「有效幸运更高的攻击者偷袭触发频率更高」。
+    // `extra_damage` 取得远大于暴击单独能放大的上限
     // （基准伤害 10，暴击最多放大到 15），`sneak_threshold` 因此只可能
     // 被「偷袭真的触发」跨过，见 `ll_sim::resolve` 测试模块「有效幸运
     // 更高的攻击者偷袭触发频率更高」同一条阈值设计。
     //
     // 手工验证过这条会红：把 `resolve_attack` 里
-    // `let sneak_chance = sneak_attack_chance_permille(effective_luck, ..);`
-    // 改成读裸 `attacker.stats.luck`（模拟"偷袭判定沿用了幸运并入
+    // `sneak_attacker_modifier(effective_luck, ..)` 的第一个实参改成读裸
+    // `attacker.stats.luck`（模拟"偷袭判定沿用了幸运并入
     // `AttributeKind` 之前的写法"），两个攻击者的 `stats.luck` 都是 0
     // （`BaseStats::BASELINE`），戒指的 +20 加成完全不参与偷袭判定，
-    // `ringed_sneaks`/`unringed_sneaks` 变得相等（都精确为 0）——完整
-    // 记录见任务报告「第 2 条怎么变红」一节。
+    // `ringed_sneaks`/`unringed_sneaks` 变得相等——完整记录见任务报告
+    // 「第 2 条怎么变红」一节。
     // Arrange
     let trials = 3_000i64;
-    let per_point = 15;
+    let per_point = 0;
     let extra_damage = 1_000;
     let baseline_damage = damage_after_defense(BaseStats::BASELINE.strength, 0, Penetration::NONE);
     let sneak_threshold = baseline_damage + 100;
@@ -1044,7 +1047,7 @@ fn 装备幸运戒指后偷袭触发频率真的更高() {
     let race_traits = FixedSneakRaceGrant { race, trait_id };
     let traits = FixedSneakAttackTrait {
         trait_id,
-        luck_chance_permille_per_point: per_point,
+        sneak_modifier: per_point,
         extra_damage,
     };
 
@@ -1117,8 +1120,11 @@ fn 装备幸运戒指后偷袭触发频率真的更高() {
         }
     }
 
-    // Assert：戴戒指一侧的触发次数应明显多于不戴的一侧——0 有效幸运恒
-    // 为 0% 触发率，unringed_sneaks 理应精确为 0；用一个较大的余量
-    // （100）而不是直接比较 `> 0`，与既有同类频率测试的判据风格一致。
+    // Assert：戴戒指一侧的触发次数应明显多于不戴的一侧（3000 轮上
+    // 期望值相差约 1284 次）；用一个较大的余量（100）而不是直接比较
+    // `>`，与既有同类频率测试的判据风格一致。
     assert!(ringed_sneaks > unringed_sneaks + 100);
+    // 两端都不封顶：戴戒指也不是必定触发，不戴也不是必定不触发。
+    assert!(ringed_sneaks < trials, "顶格修正也不该次次触发");
+    assert!(unringed_sneaks > 0, "零有效幸运也不该一次都触发不了");
 }

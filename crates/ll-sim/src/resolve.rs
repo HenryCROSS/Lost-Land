@@ -59,10 +59,12 @@ use ll_world::state::WorldState;
 use ll_world::temperature::Temperature;
 
 use crate::catalogs::ResolveCatalogs;
-use crate::check::{CHECK_DICE, CONCEALMENT_CHECK, CRITICAL_CHECK, CheckSide, opposed_check};
+use crate::check::{
+    CHECK_DICE, CONCEALMENT_CHECK, CRITICAL_CHECK, CheckSide, SNEAK_ATTACK_CHECK, opposed_check,
+};
 use crate::combat::{
     Penetration, apply_crit_multiplier, crit_attacker_modifier, damage_after_defense,
-    sneak_attack_chance_permille,
+    sneak_attacker_modifier,
 };
 use crate::craft::{NoRecipes, RecipeCatalog, RecipeRule};
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
@@ -4060,21 +4062,41 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 /// 接线」一节「没有天赋声明时逐位复现既有行为」是同一条「新增判定不
 /// 改变没有相关天赋的角色的既有结果」纪律。
 ///
-/// 有声明时：触发率由
-/// [`sneak_attack_chance_permille`]（`crate::combat`）把
-/// `attacker_derived.attribute(AttributeKind::Luck)`（**派生值**，同暴击
-/// 判定复用的 `effective_luck`，装备/状态效果加的幸运同样生效）与天赋
-/// 自带的敏感度系数换算成千分比，走独立的第三条 `DetRng` 流判定是否
-/// 触发；触发则把天赋声明的固定 `extra_damage` 加到伤害上。挂载点在
-/// 暴击放大之后、抗性乘数之前——追加的伤害仍然是这一下攻击的一部分，
-/// 应当同样受目标抗性影响，不是绕开减伤链路凭空产出的独立效果。
+/// 有声明时走一次**对抗判定**（判定系统迁移批次；此前是一枚
+/// 「幸运 × 每点敏感度‰」的硬币）：
 ///
-/// # 潜行与偷袭（潜行与盗贼被动批次）
+/// ```text
+/// 攻击者（主动，隐蔽）：幸运点数 + 天赋声明的 sneak_modifier
+///                       +（潜行时再加一整颗骰子 19）
+/// 被攻击者（被动，察觉）：意志调整值
+/// ```
+///
+/// 攻击者**严格大于**才触发，触发则把天赋声明的固定 `extra_damage`
+/// 加到伤害上。三项修正各自的出处见
+/// [`crate::combat::sneak_attacker_modifier`]；「察觉 = 意志调整值」
+/// 与藏匿判定（[`resolve_inspect`]）里盘查者那一侧是同一条所有者裁定，
+/// 攻守位置互换的理由见 [`crate::check::SNEAK_ATTACK_CHECK`]。判定走
+/// 独立的第三条 `DetRng` 流。挂载点在暴击放大之后、抗性乘数之前——
+/// 追加的伤害仍然是这一下攻击的一部分，应当同样受目标抗性影响，不是
+/// 绕开减伤链路凭空产出的独立效果。
+///
+/// # 潜行与偷袭（潜行与盗贼被动批次；判定系统迁移批次去掉「必定」）
 ///
 /// 攻击者正处于潜行状态（[`ll_world::entity::Agent::stealthed`]）时，
-/// 偷袭判定**直通**：跳过上面那次幸运掷骰，直接吃到
-/// `extra_damage`。这条连接刻意做在「已经有 `SneakAttack` 声明」的
-/// 前提之内，不是「潜行本身就能偷袭」——两层是分开的（项目所有者
+/// 偷袭判定此前**直通**——跳过掷骰，直接吃到 `extra_damage`。那是一条
+/// 「必定成功」，与项目所有者「不允许绝对」这条红线直接冲突。所有者
+/// 裁定改成一次判定，原话是「就算是概率最小都可以」。
+///
+/// 落地方式是**把潜行从一条分支变成一个修正**（一整颗骰子，见
+/// [`crate::combat::STEALTH_SNEAK_MODIFIER`]），与判定系统落地批次对
+/// 盘查判定做的事逐字相同（「潜行不再换基数，它是隐蔽方的一个修正」）。
+/// 玩法效果保住了——潜行 + 一条半颗骰子的被动天赋对基准目标是
+/// `97.51%`；剩下的 `2.49%` **不是另加的钳制**，是修正上限
+/// `|a − p| <= 2L <= S − 1 < S` 的直接后果，见 [`crate::check`] 模块
+/// 文档「不允许绝对」一节。
+///
+/// 这条连接仍然刻意做在「已经有 `SneakAttack` 声明」的前提之内，不是
+/// 「潜行本身就能偷袭」——两层是分开的（项目所有者
 /// 「潜行和盗窃或许可以安排成盗贼主职业的一种被动技能 buff」这句话
 /// 的落地方式）：**潜行这个动作人人都能做**（`Intent::ToggleStealth`
 /// 不查任何职业/天赋），**把它变成实打实的伤害是天赋给的**（没有任何
@@ -4085,8 +4107,8 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 ///
 /// 攻击者在潜行中打出这一下之后，本函数追加一条
 /// `Effect::SetStealth { stealthed: false }`——**排在伤害之后**，因此
-/// 这一下仍然吃到直通的偷袭，破除从下一次行动起才生效（经典的「一次
-/// 免费背刺」）。
+/// 这一下仍然吃到潜行给的那一整颗骰子修正，破除从下一次行动起才生效
+/// （经典的「一次免费背刺」，只是不再保证一定刺得中）。
 ///
 /// **受伤不破除**，这是本批次一次显式的裁定而不是遗漏：本批次的潜行
 /// 不是隐身（FOV 一个字都没改，卫兵照常看得见你，见
@@ -4287,47 +4309,54 @@ fn resolve_attack(
         damage
     };
 
-    // 偷袭判定（盗贼偷袭接线批次）：只有攻击者的有效天赋声明了
-    // `RuleModifier::SneakAttack` 才会进入这个分支——没有声明时
-    // `sneak_attack_rule` 返回 `None`，完全不构造额外的 `DetRng` 流,
-    // 见 `RuleModifier::SneakAttack` 文档。挂载点：暴击放大之后、抗性
-    // 乘数之前——与「抗性」一节同一条既有纪律，追加的伤害仍然是这一下
-    // 攻击的一部分,应当同样受目标对这一伤害类别的抗性影响,不是绕开
-    // 减伤链路凭空产出的独立效果。约束 C3：随机性走
+    // 偷袭判定（盗贼偷袭接线批次；判定系统迁移批次换成对抗判定）：
+    // 只有攻击者的有效天赋声明了 `RuleModifier::SneakAttack` 才会进入
+    // 这个分支——没有声明时 `sneak_attack_rule` 返回 `None`，完全不构造
+    // 额外的 `DetRng` 流,见 `RuleModifier::SneakAttack` 文档。挂载点：
+    // 暴击放大之后、抗性乘数之前——与「抗性」一节同一条既有纪律，追加
+    // 的伤害仍然是这一下攻击的一部分,应当同样受目标对这一伤害类别的
+    // 抗性影响,不是绕开减伤链路凭空产出的独立效果。约束 C3：随机性走
     // `DetRng::for_entity(世界种子, 实体 ID, 事件计数)`,这里用一个与
     // 暴击流（恒为 `world.clock.0 as u64`）、骰子流
     // （`world.clock.0 ^ DAMAGE_FORMULA_DICE_EVENT_TAG`）都不同的第三个
     // 固定标签构造第三条独立流,三条流的三元组两两不同,互不干扰（约束
-    // C5：本函数在偷袭判定这一步只消费这一次随机数,取数顺序天然确定,
-    // 且固定排在暴击判定之后、伤害公式骰子求值之后，与代码里出现的
-    // 先后顺序一致）。触发率读
+    // C5：这条流现场构造、只服务这一次判定，取数顺序由 `opposed_check`
+    // 的固定程序顺序定死,且固定排在暴击判定之后、伤害公式骰子求值
+    // 之后，与代码里出现的先后顺序一致）。攻击者一侧读
     // `attacker_derived.attribute(AttributeKind::Luck)`（同一个
     // `effective_luck`，暴击判定复用的派生值）——装备/状态效果加的幸运
-    // 同样会反映到偷袭触发率上，理由同暴击那一节「暴击：读取
+    // 同样会反映到偷袭上，理由同暴击那一节「暴击：读取
     // attacker_derived.attribute」。
     const SNEAK_ATTACK_EVENT_TAG: u64 = 0x51EA_ACC0_0000_0000;
     let damage = match sneak_attack_rule(&attacker_modifiers) {
-        // 潜行直通（潜行与盗贼被动批次）：攻击者正处于潜行状态时跳过
-        // 掷骰，直接判定触发——见本函数文档「潜行与偷袭」一节。放在
-        // `Some(rule)` 之前用守卫分支表达，而不是在下面那个分支里写
-        // 一个提前 `return`：这是一个 `match` 表达式的值，提前 return
-        // 会从整个 `resolve_attack` 返回而不是从这个表达式返回。
-        //
-        // **这一支不构造那条 `DetRng` 流**（下面那支才构造），与
-        // `None` 支「没有任何来源声明偷袭时完全不构造额外的 DetRng
-        // 流」同一条既有纪律：每次判定都是现场用 `DetRng::for_entity`
-        // 新造一条流、只取一个数，不是一条跨调用累进的长流，因此
-        // 「这次没取数」不会让后续任何取数错位（约束 C3/C5）。
-        Some(rule) if attacker.stealthed => damage.saturating_add(rule.extra_damage),
         Some(rule) => {
             let mut sneak_rng = ll_core::rng::DetRng::for_entity(
                 world.seed,
                 actor.as_u64(),
                 (world.clock.0 as u64) ^ SNEAK_ATTACK_EVENT_TAG,
             );
-            let sneak_chance =
-                sneak_attack_chance_permille(effective_luck, rule.luck_chance_permille_per_point);
-            if sneak_rng.chance(sneak_chance.max(0) as u32, 1000) {
+            // 潜行不再是一条直通的守卫分支（那是「必定成功」，与所有者
+            // 「不允许绝对」冲突），它是攻击者这一侧的一个修正——一整颗
+            // 骰子，见 `crate::combat::STEALTH_SNEAK_MODIFIER`。
+            let active = CheckSide {
+                modifier: sneak_attacker_modifier(
+                    effective_luck,
+                    rule.sneak_modifier,
+                    attacker.stealthed,
+                ),
+                bias: check_roll_bias(&attacker_modifiers, SNEAK_ATTACK_CHECK),
+                reroll_on: check_reroll_value(&attacker_modifiers),
+            };
+            // 察觉 = 意志调整值——与藏匿判定（`resolve_inspect`）里
+            // 盘查者那一侧是同一条所有者裁定，同一个属性、同一道
+            // `attribute_modifier` 换算。攻守位置互换了（这里隐蔽方
+            // 主动），见 `crate::check::SNEAK_ATTACK_CHECK` 文档。
+            let passive = CheckSide {
+                modifier: attribute_modifier(defender_derived.attribute(AttributeKind::Willpower)),
+                bias: check_roll_bias(&defender_modifiers, SNEAK_ATTACK_CHECK),
+                reroll_on: check_reroll_value(&defender_modifiers),
+            };
+            if opposed_check(&CHECK_DICE, &active, &passive, &mut sneak_rng).active_wins() {
                 damage.saturating_add(rule.extra_damage)
             } else {
                 damage
@@ -6306,7 +6335,7 @@ mod tests {
     /// 的 `TraitRule`——供偷袭判定测试使用。
     struct FixedSneakAttackTrait {
         trait_id: ContentIndex,
-        luck_chance_permille_per_point: i32,
+        sneak_modifier: i32,
         extra_damage: i32,
     }
 
@@ -6321,7 +6350,7 @@ mod tests {
                 rule_modifiers: vec![crate::traits::TypedRuleModifier {
                     modifier_type: None,
                     modifier: crate::traits::RuleModifier::SneakAttack {
-                        luck_chance_permille_per_point: self.luck_chance_permille_per_point,
+                        sneak_modifier: self.sneak_modifier,
                         extra_damage: self.extra_damage,
                     },
                 }],
@@ -6339,11 +6368,15 @@ mod tests {
         // 因此只可能被「偷袭真的触发」跨过，不会被暴击单独触发,统计
         // 频率时不需要额外剔除暴击的贡献,即使高幸运一侧的暴击也更频繁
         // （同一个 `effective_luck` 两条判定都读）。
-        // Arrange
+        // Arrange：天赋自己那一路的修正取 0（显式声明成 0 是合法的，
+        // 与「一条也没声明」不是一回事，见 `concealment_check_modifier`
+        // 文档同名一节），好让这条测试**只**观察幸运那一路的贡献。
+        // 被攻击者的意志取基准（察觉修正 0），因此净差就等于攻击者的
+        // 幸运点数。
         let trials = 3_000i64;
-        let low_luck = 5; // 5 × 15‰ = 75‰（7.5%）触发率。
-        let high_luck = 40; // 40 × 15‰ = 600‰（60%）触发率。
-        let per_point = 15;
+        let low_luck = 5; // 净差 +5 → 62.20% 触发率。
+        let high_luck = 40; // 净差 +40，钳到上限 28 → 97.51% 触发率。
+        let per_point = 0;
         let extra_damage = 1_000;
         let baseline_damage =
             damage_after_defense(BaseStats::BASELINE.strength, 0, Penetration::NONE);
@@ -6358,7 +6391,7 @@ mod tests {
         let race_traits = FixedSneakRaceGrant { race, trait_id };
         let traits = FixedSneakAttackTrait {
             trait_id,
-            luck_chance_permille_per_point: per_point,
+            sneak_modifier: per_point,
             extra_damage,
         };
 
@@ -6425,14 +6458,18 @@ mod tests {
             }
         }
 
-        // Assert：60% 触发率的一侧命中次数应远多于 7.5% 的一侧——差距
-        // 留了很大的安全边际（期望值相差约 1575 次，这里只要求多过
-        // 100 次），理由同「幸运更高的角色暴击命中频率更高」。
+        // Assert：97.51% 触发率的一侧命中次数应远多于 62.20% 的一侧
+        // ——差距留了很大的安全边际（3000 次上期望值相差约 1059 次，
+        // 这里只要求多过 100 次），理由同「幸运更高的角色暴击命中频率
+        // 更高」。
         assert!(high_sneaks > low_sneaks + 100);
+        // 两端都不封顶：高的那一侧不是必定触发，低的那一侧也打得出。
+        assert!(high_sneaks < trials, "顶格修正也不该次次触发");
+        assert!(low_sneaks > 0, "低幸运也不该一次都触发不了");
     }
 
     #[test]
-    fn 偷袭触发时伤害真的更高() {
+    fn 偷袭触发时伤害恰好高出一份追加伤害且两端都不封顶() {
         // 精确数值断言，不是频率断言——利用暴击判定/伤害公式骰子的
         // `DetRng` 三元组 `(世界种子, 实体 ID, 世界时钟)` 完全不依赖
         // 调用方传入的 `race_traits`/`traits` 目录这一点：同一个世界、
@@ -6441,11 +6478,16 @@ mod tests {
         // 差异是这次传入的天赋目录有没有声明偷袭——两次的伤害差因此
         // 必须精确等于 `extra_damage`,不多不少（若偷袭判定读到了不该
         // 读的东西,或者额外消费了一次随机数导致后续判定错位,这条精确
-        // 断言会立刻暴露）。幸运（50）× 每点触发率（20‰）恰好等于
-        // 1000‰,触发精确钳在 100%,不依赖 `world.clock` 取值,见
-        // `crate::combat::sneak_attack_chance_permille` 文档「夹在
-        // 0..=1000」一节。
+        // 断言会立刻暴露）。
+        //
+        // 「这一轮到底触发没触发」不靠猜:同一个时钟下带天赋与不带天赋
+        // 各打一次,差值只可能是 0 或恰好一份 `extra_damage`。本条逐轮
+        // 断言这条不变式,并统计触发次数——判定系统迁移之后触发不再
+        // 钳得住 100%（幸运 50 + 天赋 20 = 70 越过上限被钳回 28，对
+        // 基准目标是 97.51%），因此断言从「精确等式」改成「不变式 +
+        // 两端不封顶」。
         // Arrange
+        let trials = 400i64;
         let luck = 50;
         let per_point = 20;
         let extra_damage = 37;
@@ -6463,13 +6505,16 @@ mod tests {
         let race_traits = FixedSneakRaceGrant { race, trait_id };
         let traits = FixedSneakAttackTrait {
             trait_id,
-            luck_chance_permille_per_point: per_point,
+            sneak_modifier: per_point,
             extra_damage,
         };
 
-        let attack = |race_traits: &dyn TraitGrantSource, traits: &dyn TraitCatalog| -> i32 {
+        let attack = |world: &WorldState,
+                      race_traits: &dyn TraitGrantSource,
+                      traits: &dyn TraitCatalog|
+         -> i32 {
             let effects = resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
-                &world,
+                world,
                 &Intent::Attack {
                     actor: attacker,
                     target: victim,
@@ -6491,25 +6536,58 @@ mod tests {
                 .expect("攻击必然产出一条伤害效果")
         };
 
-        // Act
-        let damage_without_sneak = attack(&NoTraitGrants, &NoTraits);
-        let damage_with_sneak = attack(&race_traits, &traits);
+        // Act：只挪动世界时钟取得不同的随机流，不 `apply` 任何效果。
+        let mut sneaks = 0i64;
+        for tick in 0..trials {
+            world.clock = Tick(tick);
+            let damage_without_sneak = attack(&world, &NoTraitGrants, &NoTraits);
+            let damage_with_sneak = attack(&world, &race_traits, &traits);
 
-        // Assert
-        assert_eq!(damage_with_sneak, damage_without_sneak + extra_damage);
+            // 不变式：带天赋那一场只可能与不带天赋的那一场相等，或者
+            // 恰好高出一份 extra_damage——不多不少。
+            let gap = damage_with_sneak - damage_without_sneak;
+            assert!(
+                gap == 0 || gap == extra_damage,
+                "偷袭要么不触发、要么恰好追加 {extra_damage} 点，实得 {gap}"
+            );
+            if gap == extra_damage {
+                sneaks += 1;
+            }
+        }
+
+        // Assert：两端都不封顶。97.51% 的触发率在 400 轮上期望约 390 次
+        // 触发、约 10 次落空，两条断言各留了足够的余量。
+        assert!(
+            sneaks > trials / 2,
+            "顶格修正的偷袭应当频繁触发（{sneaks} / {trials}）"
+        );
+        assert!(
+            sneaks < trials,
+            "顶格修正也不该必定触发（{sneaks} / {trials}）"
+        );
     }
 
     #[test]
-    fn 潜行中的攻击者零幸运也必定触发偷袭() {
-        // 潜行直通（本批次）——与上一条 `偷袭触发时伤害真的更高` 恰好
-        // 互补：那一条把触发率钳在 100% 来拿到确定结果，本条把幸运压到
-        // **零**（触发率因此恒为 0‰，见
-        // `crate::combat::sneak_attack_chance_permille`），于是掷骰这条
-        // 路径**永远不可能**触发偷袭。潜行的攻击者依然吃到完整的
-        // `extra_damage`，就只能是直通那条分支给的。
+    fn 潜行把偷袭触发率抬到很高但仍然不是必定触发() {
+        // 本条钉死的是本批次去掉的那条「必定成功」。潜行此前是偷袭
+        // 判定的一条**直通**（`Some(rule) if attacker.stealthed`），
+        // 与项目所有者「不允许绝对」直接冲突；现在它是判定里的一个
+        // 修正（一整颗骰子，见 `crate::combat::STEALTH_SNEAK_MODIFIER`）。
+        //
+        // 天赋自己那一路的修正取**半颗骰子** 9——`CHECK_DICE` 文档
+        // 「为什么是 3 颗」算的就是这道题：`19 + 9 = 28` 恰好等于修正
+        // 上限，不触发钳制，对一个基准目标是 `97.51%`。不潜行时只剩
+        // 那半颗骰子，`72.18%`。两个数都不是 0 也不是 1。
+        //
+        // 「有没有触发」不靠猜伤害数值：同一个世界、同一个时钟各打两
+        // 次，一次带天赋目录、一次喂 `NoTraits`——后者就是这一下去掉
+        // 偷袭之后的基准（暴击流与骰子流的三元组都只含
+        // `(种子, 实体, 时钟)`，两次逐位相同），差值只可能是 0 或恰好
+        // 一份 `extra_damage`。
         // Arrange
+        let trials = 400i64;
         let luck = 0;
-        let per_point = 20;
+        let half_die = CHECK_DICE.half_die() as i32;
         let extra_damage = 37;
         let (mut world, _terrain_ids) = test_world();
         let attacker_pos = world.size.wrap(5, 5);
@@ -6525,11 +6603,14 @@ mod tests {
         let race_traits = FixedSneakRaceGrant { race, trait_id };
         let traits = FixedSneakAttackTrait {
             trait_id,
-            luck_chance_permille_per_point: per_point,
+            sneak_modifier: half_die,
             extra_damage,
         };
 
-        let attack = |world: &WorldState| -> i32 {
+        let attack = |world: &WorldState,
+                      race_traits: &dyn TraitGrantSource,
+                      traits: &dyn TraitCatalog|
+         -> i32 {
             resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
                 world,
                 &Intent::Attack {
@@ -6537,8 +6618,8 @@ mod tests {
                     target: victim,
                 },
                 &NoSkills,
-                &race_traits,
-                &traits,
+                race_traits,
+                traits,
                 &NoResourcePools,
                 &NoItems,
                 &NoFormulas,
@@ -6552,13 +6633,49 @@ mod tests {
             .expect("攻击必然产出一条伤害效果")
         };
 
-        // Act
-        let damage_visible = attack(&world);
-        set_stealthed(&mut world, attacker, true);
-        let damage_stealthed = attack(&world);
+        // Act：只挪动世界时钟取得不同的随机流，理由同「幸运更高的角色
+        // 暴击命中频率更高」。本条因此仍然是**确定性**测试：同一份代码
+        // 永远给出同一批结果。
+        let mut visible_hits = 0i64;
+        let mut stealth_hits = 0i64;
+        for tick in 0..trials {
+            world.clock = Tick(tick);
+            let baseline = attack(&world, &NoTraitGrants, &NoTraits);
 
-        // Assert：不潜行时零幸运恒不触发；潜行时精确多出 extra_damage。
-        assert_eq!(damage_stealthed, damage_visible + extra_damage);
+            set_stealthed(&mut world, attacker, false);
+            let visible = attack(&world, &race_traits, &traits);
+            set_stealthed(&mut world, attacker, true);
+            let stealthed = attack(&world, &race_traits, &traits);
+
+            for (damage, label) in [(visible, "不潜行"), (stealthed, "潜行")] {
+                let gap = damage - baseline;
+                assert!(
+                    gap == 0 || gap == extra_damage,
+                    "{label}那一场与基准场共用同一条暴击流，伤害差只可能是 0 或                      {extra_damage}，实得 {gap}"
+                );
+            }
+            assert!(stealthed >= visible, "潜行只加修正，不该让偷袭更难触发");
+            if visible > baseline {
+                visible_hits += 1;
+            }
+            if stealthed > baseline {
+                stealth_hits += 1;
+            }
+        }
+
+        // Assert
+        assert!(
+            stealth_hits > visible_hits,
+            "潜行那一侧触发次数应当严格更多（潜行 {stealth_hits} / 不潜行 {visible_hits}）"
+        );
+        assert!(
+            stealth_hits < trials,
+            "潜行也不该必定触发——这正是本批次去掉的那条「必定成功」             （潜行 {stealth_hits} / 共 {trials} 轮）"
+        );
+        assert!(
+            visible_hits > 0 && visible_hits < trials,
+            "不潜行那一侧两端都不该封顶（{visible_hits} / 共 {trials} 轮）"
+        );
     }
 
     #[test]

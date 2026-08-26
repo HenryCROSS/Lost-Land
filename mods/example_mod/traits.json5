@@ -110,11 +110,16 @@
       ],
     },
     {
-      // 掠食本能：每点幸运换 20‰ 触发率，触发多打 15 点。
+      // 掠食本能：偷袭判定上加半颗骰子（9 点，见
+      // ll_sim::check::CheckDice::half_die「给被动天赋定价用的单位」），
+      // 触发多打 15 点。潜行时还会再加一整颗骰子，两条加起来恰好等于
+      // 修正上限 28，不触发钳制——见 ll_sim::combat::STEALTH_SNEAK_MODIFIER。
+      // 本条此前写的是 luck_chance_permille_per_point: 20（每点幸运换
+      // 20‰ 触发率），偷袭迁进对抗判定后量尺换了，字段随之改名。
       id: "examplemod:predatory_instinct",
       display_name_key: "examplemod:predatory_instinct_display_name",
       rule_modifiers: [
-        { kind: "sneak-attack", luck_chance_permille_per_point: 20, extra_damage: 15 },
+        { kind: "sneak-attack", sneak_modifier: 9, extra_damage: 15 },
       ],
     },
     {

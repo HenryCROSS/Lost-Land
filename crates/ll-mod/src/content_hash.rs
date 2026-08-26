@@ -660,7 +660,34 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 一个未加，因此 `scripts/ci/check_field_consumers.py` 的
 /// `check_content_hash_gate_cross_coverage` 那条互校在本批次同样无事
 /// 可做。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 21;
+///
+/// ## ③ 偷袭迁进判定系统批次
+///
+/// **一个既有变体的载荷改了含义**，与版本 21 的 ①/② 两条、以及版本
+/// 18/19 是完全同一类。`RuleModifier::SneakAttack` 的第一个载荷此前是
+/// `luck_chance_permille_per_point`（「每点有效幸运换算的千分比触发
+/// 率」），现在是 `sneak_modifier`（「加给偷袭者那一侧的骰子点数」）：
+/// 同一段字节 `20` 此前表示「每点幸运 +2%，幸运 50 就钳在必定触发」，
+/// 现在表示「加 20 点，而 20 落在修正上限 28 之内是一条合法声明」。
+/// **量尺换了**——摘要必须跟着变，否则两份语义完全不同的内容会算出
+/// 同一个摘要。
+///
+/// 判别值 `4` **一个字未改**，字段个数与写入顺序也没变（先修正、后
+/// 追加伤害），因此这次改的确实只有「同一段字节表示什么」这一件事。
+///
+/// 同批次 `ll_sim` 侧新增的两个判定种类标识符
+/// （`lostland:critical`/`lostland:sneak-attack`）**不改任何既有摘要**：
+/// `advantage`/`disadvantage` 的载荷是内容作者自己写的开放标识符，
+/// 引擎认得几个与哈希无关，没有声明它们的条目一个字节都没多。
+///
+/// `ContentTableKind` 的变体一个未变、[`ContentValueTables`] 的字段
+/// 一个未加，因此 `scripts/ci/check_field_consumers.py` 的
+/// `check_content_hash_gate_cross_coverage` 那条互校在本批次同样无事
+/// 可做。守门方式同版本 13/14/15/21：本段文字 + 本模块单元测试
+/// `偷袭修正与同数值的其余判定修正摘要不同`，以及版本 7 那次事故之后
+/// 立下的那条纪律——**提交信息声称改了，不等于代码里真的改了**，下面
+/// 这一行的字面值就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 22;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1464,11 +1491,11 @@ fn write_rule_modifier(hasher: &mut StateHasher, modifier: &RuleModifier, regist
             hasher.write_namespaced_id(check_context);
         }
         RuleModifier::SneakAttack {
-            luck_chance_permille_per_point,
+            sneak_modifier,
             extra_damage,
         } => {
             hasher.write_u64(4);
-            hasher.write_i64(i64::from(*luck_chance_permille_per_point));
+            hasher.write_i64(i64::from(*sneak_modifier));
             hasher.write_i64(i64::from(*extra_damage));
         }
         // 判别值 5/6（盗贼被动两分批次）：接着既有的 0..=4 往后编号，
@@ -3151,7 +3178,7 @@ mod tests {
         });
         let reroll = digest(&RuleModifier::RerollOnce { value: 500 });
         let sneak = digest(&RuleModifier::SneakAttack {
-            luck_chance_permille_per_point: 500,
+            sneak_modifier: 500,
             extra_damage: 0,
         });
 
@@ -3193,7 +3220,7 @@ mod tests {
             }),
             digest(&RuleModifier::RerollOnce { value: 4 }),
             digest(&RuleModifier::SneakAttack {
-                luck_chance_permille_per_point: 4,
+                sneak_modifier: 4,
                 extra_damage: 4,
             }),
             digest(&RuleModifier::InspectionSuspicion {
@@ -3275,6 +3302,59 @@ mod tests {
                 concealment_modifier: 1000,
             })
         );
+    }
+
+    /// 偷袭迁进判定系统批次：`SneakAttack` 的第一个载荷改了含义
+    /// （每点幸运的千分比触发率 → 加给偷袭者的骰子点数），
+    /// [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「③ 偷袭迁进判定系统
+    /// 批次」一节点名的那条守门断言。
+    ///
+    /// 本条守两件事：那个载荷**真的进了摘要**（否则改含义时摘要不变，
+    /// 两份语义不同的内容会撞成同一份），以及它**没有与其余三条判定
+    /// 修正撞车**（同一个点数喂给四个变体，摘要必须两两不同——差别
+    /// 只可能来自判别值）。
+    #[test]
+    fn 偷袭修正与同数值的其余判定修正摘要不同() {
+        // Arrange
+        let registry = Registry::new();
+        let digest = |modifier: &RuleModifier| -> u64 {
+            let mut hasher = StateHasher::new();
+            write_rule_modifier(&mut hasher, modifier, &registry);
+            hasher.finish()
+        };
+
+        // Act & Assert：同一个变体、不同的点数 → 摘要不同。
+        assert_ne!(
+            digest(&RuleModifier::SneakAttack {
+                sneak_modifier: 9,
+                extra_damage: 15,
+            }),
+            digest(&RuleModifier::SneakAttack {
+                sneak_modifier: 19,
+                extra_damage: 15,
+            })
+        );
+
+        // 同一个点数、不同的变体 → 摘要仍必须两两不同。
+        let point = 9;
+        let same_point = [
+            digest(&RuleModifier::SneakAttack {
+                sneak_modifier: point,
+                extra_damage: 0,
+            }),
+            digest(&RuleModifier::InspectionSuspicion {
+                inconspicuous_modifier: point,
+            }),
+            digest(&RuleModifier::InspectionConcealment {
+                concealment_modifier: point,
+            }),
+            digest(&RuleModifier::RerollOnce { value: point }),
+        ];
+        for (left_at, left) in same_point.iter().enumerate() {
+            for right in &same_point[left_at + 1..] {
+                assert_ne!(left, right);
+            }
+        }
     }
 
     /// 加值类型批次新增的 `TypedRuleModifier::modifier_type` 真的进了

@@ -4,12 +4,14 @@
 //!    `ll-game` 驱动世界的唯一路径），不是靠测试直接调 `resolve` +
 //!    `apply` 自证——与 `turn_engine_catalogs.rs` 立下的那条更高的验收
 //!    标准一致，见其模块文档。
-//! 2. **潜行真的让偷袭直通**，且用的是真实 `mods/example_mod/traits.json5`
-//!    注册的天赋（`examplemod:footpad` 种族授予的
-//!    `examplemod:predatory_instinct`），同样经由 `TurnEngine`。反例是
-//!    同一场景下不潜行的同一个角色：它的幸运是 `0`，掷骰那条路径的
-//!    触发率恒为 `0‰`（见 `ll_sim::combat::sneak_attack_chance_permille`），
-//!    因此**不可能**靠随机命中——两场景的伤害差只可能来自潜行直通。
+//! 2. **潜行真的让偷袭更容易得手，但不是必定得手**，且用的是真实
+//!    `mods/example_mod/traits.json5` 注册的天赋（`examplemod:footpad`
+//!    种族授予的 `examplemod:predatory_instinct`），同样经由
+//!    `TurnEngine`。潜行此前是偷袭判定的一条**直通**（必定触发），
+//!    项目所有者裁定去掉那条「必定」，潜行改成判定里的一个修正
+//!    （见 `ll_sim::combat::STEALTH_SNEAK_MODIFIER`），因此本条从
+//!    「单次精确等式」改成「频率 + 两端不封顶」，论证见那条测试的
+//!    函数文档。
 //! 3. **潜行真的让卫兵的盘查率下降，且不是靠让卫兵看不见你**——用的是
 //!    真实的 `ll_mod::native_behavior::NativeBehaviorTree::guard`，不是
 //!    内联一份逻辑副本，与 `example_mod_guard_inspection.rs` 同一条
@@ -346,16 +348,44 @@ fn 切换潜行经由turnengine真的改写世界状态() {
     );
 }
 
-/// 硬要求二：潜行让真实注册的盗贼系天赋偷袭直通——经由 `TurnEngine`，
-/// 内容来自真实 `mods/`。
+/// 硬要求二：潜行让真实注册的盗贼系天赋**更容易**偷袭得手，但**不是
+/// 必定**——经由 `TurnEngine`，内容来自真实 `mods/`。
 ///
-/// 反例内建在同一条测试里：不潜行的那一场用的是**同一个种族、同一份
-/// 天赋、同一个幸运值（0）**，掷骰路径的触发率恒为 `0‰`，因此绝不可能
-/// 命中；两场的伤害差只可能来自潜行直通。若有人把
-/// `resolve_attack` 里那条 `Some(rule) if attacker.stealthed` 守卫分支
-/// 摘掉，两场伤害立刻相等，本测试变红。
+/// # 这条测试为什么从「精确等式」变成「频率 + 两端不封顶」
+///
+/// 潜行此前是偷袭判定的一条**直通**（`resolve_attack` 里那句
+/// `Some(rule) if attacker.stealthed =>` 跳过掷骰），因此一次采样就能
+/// 断出精确等式。那是一条「必定成功」，与项目所有者「不允许绝对」直接
+/// 冲突；所有者裁定改成一次判定（原话「就算是概率最小都可以」），潜行
+/// 从一条分支变成一个修正（一整颗骰子，见
+/// `ll_sim::combat::STEALTH_SNEAK_MODIFIER`）。单次采样从此测不出这条
+/// 效果，只有频率能。
+///
+/// # 「这一下到底有没有触发偷袭」怎么读出来
+///
+/// 不靠猜伤害数值，也不靠减去暴击：每一轮试验并排跑**三场**，第三场
+/// 用的是一个**同样布局、同样生成顺序、只把攻击者换成不带偷袭天赋的
+/// 占位种族**的世界。生成顺序相同 → 两个世界里攻击者/防御方拿到的
+/// `EntityId` 逐位相同 → 暴击流与伤害公式骰子流
+/// （三元组都只含 `(种子, 实体, 时钟)`）也逐位相同。于是第三场的伤害
+/// 就是**这一下攻击去掉偷袭之后的基准**，「有没有触发」= 「有没有比
+/// 基准高」，与暴击是否命中完全解耦。
+///
+/// 偷袭流的三元组同样不含 `stealthed`，因此潜行那一场与不潜行那一场
+/// 掷出的点数也逐位相同，唯一的差别是加在上面的修正——这让下面
+/// 「潜行不该让偷袭更难触发」那条单调性断言成为一条真正的不变式，
+/// 而不是一句统计上的期望。
+///
+/// # 三条断言各钉死什么
+///
+/// 1. `潜行那一侧严格更多` —— 潜行确实有用（把
+///    `STEALTH_SNEAK_MODIFIER` 改成 `0`，本条立刻红）。
+/// 2. `潜行那一侧没有全中` —— **本批次的核心**：潜行不再是「必定
+///    成功」（把那条守卫分支加回去，本条立刻红）。
+/// 3. `不潜行那一侧两端都不封顶` —— 反面：偷袭本身也没有变成必定不
+///    触发或必定触发。
 #[test]
-fn 潜行让真实盗贼天赋的偷袭直通并经由turnengine生效() {
+fn 潜行让真实盗贼天赋更容易偷袭得手但不是必定得手() {
     // Arrange
     let handle = load_real_mods();
     let formulas = RegistryFormulas {
@@ -367,11 +397,17 @@ fn 潜行让真实盗贼天赋的偷袭直通并经由turnengine生效() {
     };
     let catalogs = handle.catalogs(&formulas);
 
-    let damage_dealt = |stealthed: bool| -> i32 {
+    // 两套世界各只造一次，逐轮试验只重置那几个会被这一下攻击改到的
+    // 字段——每轮重造 64×64 的世界会把本条测试拖慢两个数量级，而这条
+    // 测试要的只是「换一条随机流再打一次」。
+    //
+    // 两套世界的**生成顺序必须一致**（先攻击者、后防御方），
+    // `EntityId` 才会逐位对上，见本函数文档。
+    let scenario = |attacker_race: ContentIndex| -> (WorldState, EntityId, EntityId) {
         let (mut world, _terrain_ids) = test_world();
         let attacker = spawn_agent(
             &mut world,
-            handle.footpad_id,
+            attacker_race,
             placeholder_profession(),
             (5, 5),
             Agent::STARTING_HEALTH,
@@ -383,38 +419,107 @@ fn 潜行让真实盗贼天赋的偷袭直通并经由turnengine生效() {
             (6, 5),
             DEFENDER_HEALTH,
         );
-        world.actors.get_mut(attacker).expect("刚生成").stealthed = stealthed;
+        (world, attacker, defender)
+    };
+    let (mut rogue_world, rogue_attacker, rogue_defender) = scenario(handle.footpad_id);
+    let (mut plain_world, plain_attacker, plain_defender) = scenario(placeholder_race());
+    assert_eq!(
+        (rogue_attacker, rogue_defender),
+        (plain_attacker, plain_defender),
+        "两套世界的生成顺序相同，实体标识必须逐位对上"
+    );
 
+    // 一轮试验里打一下，返回防御方掉了多少血。
+    let strike = |world: &mut WorldState, seed: u64, stealthed: bool| -> i32 {
+        world.seed = seed;
+        world.clock = Tick(0);
+        {
+            let agent = world.actors.get_mut(rogue_attacker).expect("刚生成");
+            agent.stealthed = stealthed;
+            agent.health = Agent::STARTING_HEALTH;
+            agent.stamina = Agent::STARTING_STAMINA;
+            agent.next_action_at = Tick(0);
+        }
+        {
+            let agent = world.actors.get_mut(rogue_defender).expect("刚生成");
+            agent.health = DEFENDER_HEALTH;
+            agent.stamina = Agent::STARTING_STAMINA;
+            agent.next_action_at = Tick(1);
+        }
         let mut timeline = Timeline::new();
-        timeline.schedule(attacker, Tick(0));
-        timeline.schedule(defender, Tick(1));
+        timeline.schedule(rogue_attacker, Tick(0));
+        timeline.schedule(rogue_defender, Tick(1));
         let mut engine = TurnEngine::new(timeline);
         let acted = engine.advance_ai(
-            &mut world,
-            defender,
+            world,
+            rogue_defender,
             &mut attack_controlled,
             &catalogs,
             &mut |_, _| {},
         );
-        assert_eq!(acted, vec![attacker], "本场景应当恰好结算攻击方一次行动");
+        assert_eq!(
+            acted,
+            vec![rogue_attacker],
+            "本场景应当恰好结算攻击方一次行动"
+        );
 
         DEFENDER_HEALTH
             - world
                 .actors
-                .get(defender)
+                .get(rogue_defender)
                 .expect("防御方生命远高于单次伤害，不应死亡")
                 .health
     };
 
-    // Act
-    let visible_damage = damage_dealt(false);
-    let stealth_damage = damage_dealt(true);
+    // 试验轮数：潜行那一侧每轮约 2.49% 打不出偷袭（见
+    // `ll_sim::combat::STEALTH_SNEAK_MODIFIER` 文档那张表），400 轮上
+    // 期望约 10 次落空——足够让断言 2 有话可说，又不至于慢。种子逐轮
+    // 递增，因此本条测试**是确定性的**：同一份代码永远给出同一批结果，
+    // 不是一条会偶发变红的统计测试。
+    let trials = 400u64;
+    let mut stealth_hits = 0i32;
+    let mut visible_hits = 0i32;
 
-    // Assert：精确多出真实脚本声明的那个数，不多不少。
-    assert_eq!(
-        stealth_damage,
-        visible_damage + PREDATORY_INSTINCT_EXTRA_DAMAGE,
-        "潜行中的 footpad 应当精确多打出 gameplay.scm 声明的 {PREDATORY_INSTINCT_EXTRA_DAMAGE} 点偷袭伤害"
+    // Act
+    for trial in 0..trials {
+        let seed = 20_260_825 + trial;
+        // 基准场：同一条暴击流与骰子流，只是攻击者没有偷袭天赋。
+        // 潜行与否对它毫无影响（没有天赋就没有偷袭判定），取不潜行。
+        let baseline = strike(&mut plain_world, seed, false);
+        let visible = strike(&mut rogue_world, seed, false);
+        let stealthed = strike(&mut rogue_world, seed, true);
+
+        assert!(
+            stealthed >= visible,
+            "潜行只加修正、不减修正，不该让偷袭更难触发"
+        );
+        for (damage, label) in [(visible, "不潜行"), (stealthed, "潜行")] {
+            let gap = damage - baseline;
+            assert!(
+                gap == 0 || gap == PREDATORY_INSTINCT_EXTRA_DAMAGE,
+                "{label}那一场与基准场共用同一条暴击流，伤害差只可能是 0 或                  {PREDATORY_INSTINCT_EXTRA_DAMAGE}，实得 {gap}"
+            );
+        }
+        if visible > baseline {
+            visible_hits += 1;
+        }
+        if stealthed > baseline {
+            stealth_hits += 1;
+        }
+    }
+
+    // Assert
+    assert!(
+        stealth_hits > visible_hits,
+        "潜行那一侧触发次数应当严格更多（潜行 {stealth_hits} / 不潜行 {visible_hits}）"
+    );
+    assert!(
+        stealth_hits < trials as i32,
+        "潜行也不该必定触发——这正是本批次去掉的那条「必定成功」         （潜行 {stealth_hits} / 共 {trials} 轮）"
+    );
+    assert!(
+        visible_hits > 0 && visible_hits < trials as i32,
+        "不潜行那一侧两端都不该封顶（{visible_hits} / 共 {trials} 轮）"
     );
 }
 

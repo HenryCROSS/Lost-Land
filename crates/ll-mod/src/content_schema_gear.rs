@@ -478,9 +478,19 @@ pub struct RawRuleModifier {
     /// 一条声明永远不生效。
     #[serde(default)]
     pub reroll_value: Option<i64>,
-    /// `sneak-attack` 的每点幸运换算的千分比触发率。
+    /// `sneak-attack` 加在**偷袭者那一侧**掷出点数上的整数点数
+    /// （越大越容易偷袭得手）。负值钳到零：一条「让你更难偷袭」的
+    /// 被动不是本变体要表达的东西。上界见
+    /// [`RawRuleModifier::checked_check_modifier`]。
+    ///
+    /// 本字段此前是 `luck_chance_permille_per_point`（每点幸运换算的
+    /// 千分比触发率）。判定系统迁移批次把偷袭从概率模型换成对抗判定，
+    /// **量尺变了**——同一段字节 `20` 此前表示「每点幸运 +2%」，现在
+    /// 表示「加 20 点」，与 `inspection-suspicion`/`inspection-concealment`
+    /// 那两条在判定系统落地批次里经历的是同一件事，
+    /// `CONTENT_HASH_ALGORITHM_VERSION` 因此递增，见该常量文档。
     #[serde(default)]
-    pub luck_chance_permille_per_point: Option<i64>,
+    pub sneak_modifier: Option<i64>,
     /// `sneak-attack` 的额外伤害。
     #[serde(default)]
     pub extra_damage: Option<i64>,
@@ -548,10 +558,7 @@ impl RawRuleModifier {
             ("concealment_modifier", self.concealment_modifier.is_some()),
             ("check_context", self.check_context.is_some()),
             ("reroll_value", self.reroll_value.is_some()),
-            (
-                "luck_chance_permille_per_point",
-                self.luck_chance_permille_per_point.is_some(),
-            ),
+            ("sneak_modifier", self.sneak_modifier.is_some()),
             ("extra_damage", self.extra_damage.is_some()),
             ("recipe_category", self.recipe_category.is_some()),
             ("bonus_product_count", self.bonus_product_count.is_some()),
@@ -656,13 +663,15 @@ impl RawRuleModifier {
                 })
             }
             "sneak-attack" => {
-                self.only(&["luck_chance_permille_per_point", "extra_damage"])?;
+                self.only(&["sneak_modifier", "extra_damage"])?;
                 Ok(RuleModifier::SneakAttack {
-                    luck_chance_permille_per_point: need(
-                        self.luck_chance_permille_per_point,
-                        "luck_chance_permille_per_point",
-                    )?
-                    .max(0) as i32,
+                    // 判定修正，与 inspection-suspicion/inspection-concealment
+                    // 过同一道闸门：上界是这把骰子推出来的 L，不是一个
+                    // 绝对数字，见 `checked_check_modifier`。
+                    sneak_modifier: self.checked_check_modifier(
+                        need(self.sneak_modifier, "sneak_modifier")?,
+                        "sneak_modifier",
+                    )?,
                     extra_damage: need(self.extra_damage, "extra_damage")?.max(0) as i32,
                 })
             }
@@ -1674,7 +1683,7 @@ mod tests {
             concealment_modifier: None,
             check_context: None,
             reroll_value: None,
-            luck_chance_permille_per_point: None,
+            sneak_modifier: None,
             extra_damage: None,
             recipe_category: None,
             bonus_product_count: None,
@@ -1686,7 +1695,7 @@ mod tests {
         // Arrange：潜行偷袭却填了伤害类别。
         let modifier = RawRuleModifier {
             damage_category: Some("m:acid".to_string()),
-            luck_chance_permille_per_point: Some(20),
+            sneak_modifier: Some(20),
             extra_damage: Some(15),
             ..bare_modifier("sneak-attack")
         };
@@ -1830,7 +1839,7 @@ mod tests {
             concealment_modifier: None,
             check_context: None,
             reroll_value: None,
-            luck_chance_permille_per_point: None,
+            sneak_modifier: None,
             extra_damage: None,
             recipe_category: None,
             bonus_product_count: None,

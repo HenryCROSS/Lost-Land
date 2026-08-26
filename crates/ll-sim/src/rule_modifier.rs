@@ -388,16 +388,23 @@ pub enum RuleModifier {
     /// 现成的、幸运能挂上去的判定点」同一个思路,但刻意不是暴击本身：
     /// 暴击对**全部**攻击者恒定生效（基准偏移写死在
     /// [`crate::combat::CRIT_BASE_CHECK_MODIFIER`]），偷袭是**只有声明
-    /// 了这条天赋的角色才会触发**的判定，系数由天赋声明本身携带
-    /// （`luck_chance_permille_per_point`）——不同天赋可以有不同的幸运
-    /// 敏感度,不共用暴击那个全局系数,见
-    /// [`crate::combat::sneak_attack_chance_permille`] 文档。
+    /// 了这条天赋的角色才会触发**的判定，强度由天赋声明本身携带
+    /// （`sneak_modifier`）——不同天赋可以有不同的强度,
+    /// 不共用暴击那个全局偏移,见
+    /// [`crate::combat::sneak_attacker_modifier`] 文档。
     SneakAttack {
-        /// 每点有效幸运贡献的触发率加成，千分比——暴击此前同一套
-        /// "幸运→千分比概率"换算手法（暴击已迁进对抗判定，见
-        /// [`crate::combat::CRIT_BASE_CHECK_MODIFIER`]），但这里的系数
-        /// 是天赋自己的声明值，不是硬编码进 `combat.rs` 的全局常量。
-        luck_chance_permille_per_point: i32,
+        /// 加在**偷袭者那一侧**掷出点数上的整数点数（越大越容易
+        /// 得手）——与 [`RuleModifier::InspectionConcealment`] 同一把
+        /// 尺子，装载期已校验不超过修正上限 `L`
+        /// （[`crate::check::CheckDice::max_modifier`]），跨来源相加
+        /// 之后的总和由 [`crate::check::CheckDice::clamp_modifier`]
+        /// 在判定那一刻再兜一次。
+        ///
+        /// 本字段此前是 `luck_chance_permille_per_point`（每点有效幸运
+        /// 贡献的触发率加成，千分比）。偷袭迁进对抗判定之后**量尺
+        /// 换了**，`ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION`
+        /// 随之递增，见该常量文档「③ 偷袭迁进判定系统批次」一节。
+        sneak_modifier: i32,
         /// 触发后追加的固定伤害——挂载点见
         /// `crate::resolve::resolve_attack` 文档「偷袭接线」一节：加在
         /// 暴击放大之后、抗性乘数之前,与暴击、抗性同一条"减伤链路本身
@@ -899,7 +906,7 @@ pub fn damage_after_resistance(damage: i32, damage_reduction: i32, damage_increa
 ///
 /// # 为什么是两级，不是一个数
 ///
-/// [`RuleModifier::SneakAttack`] 携带**两个**数（追加伤害与幸运敏感度），
+/// [`RuleModifier::SneakAttack`] 携带**两个**数（追加伤害与判定修正），
 /// 两个都是「越大越强」，谁作主键见 [`strength_key`] 文档「偷袭那两个
 /// 字段」一节。其余变体只用得上第一级，第二级恒为 `0`。派生的 [`Ord`]
 /// 对元组结构体按字段声明顺序做字典序比较，正是这里要的语义。
@@ -967,14 +974,16 @@ impl StrengthKey {
 ///
 /// [`RuleModifier::SneakAttack`] 是唯一携带两个数值字段的变体。主键取
 /// `extra_damage`（项目所有者本次裁定里点名的那一个），
-/// `luck_chance_permille_per_point` 作第二级——**这是对所有者裁定的
+/// `sneak_modifier` 作第二级——**这是对所有者裁定的
 /// 细化，不是改写**：所有者说的「追加伤害越大越强」原样成立，第二级
 /// 只在追加伤害完全相同时才起作用，而那正是所有者那句话没有覆盖、
 /// 原本会直接掉进「谁先被 intern 谁赢」的区间。两个字段都是「越大越
 /// 强」，方向上没有歧义；刻意**不**把两者相乘成「期望额外伤害」——那
-/// 需要知道这次判定的有效幸运值（[`crate::combat::sneak_attack_chance_permille`]
-/// 的输入），聚合层拿不到，硬造一个模型只会是一条看起来精确、实则
-/// 凭空发明的规则。
+/// 需要知道这次判定的有效幸运值、对手的察觉、双方有没有优劣势
+/// （[`crate::combat::sneak_attacker_modifier`] 的输入只是其中一项），
+/// 聚合层一样都拿不到，硬造一个模型只会是一条看起来精确、实则凭空
+/// 发明的规则。判定系统迁移之后这条论证只增不减：修正到触发率的换算
+/// 是钟形的，「多一点修正值多少触发率」本身就依赖当前的净差。
 ///
 /// # 优势/劣势为什么不比强弱
 ///
@@ -1020,10 +1029,11 @@ fn strength_key(modifier: &RuleModifier) -> StrengthKey {
         } => StrengthKey::larger_is_stronger(*concealment_modifier),
         // 两个字段都越大越强，主键是追加伤害，见本函数文档「偷袭那两个字段」。
         R::SneakAttack {
-            luck_chance_permille_per_point,
+            sneak_modifier,
             extra_damage,
-        } => StrengthKey::larger_is_stronger(*extra_damage)
-            .then_larger_is_stronger(*luck_chance_permille_per_point),
+        } => {
+            StrengthKey::larger_is_stronger(*extra_damage).then_larger_is_stronger(*sneak_modifier)
+        }
         // 额外产出件数，越大越强：一炉出得越多越好。**刻意写全名而不用
         // `R` 别名**——本变体有真实消费者（`craft_yield_bonus` →
         // `crate::resolve::resolve_craft` 第 9 步），
@@ -1098,7 +1108,7 @@ fn cross_type_merge(modifier: &RuleModifier) -> CrossTypeMerge {
         R::InspectionSuspicion { .. } => CrossTypeMerge::Add,
         // 逐件藏匿修正点数：同上，相加后钳进 ±L。
         R::InspectionConcealment { .. } => CrossTypeMerge::Add,
-        // 追加伤害与幸运敏感度两个字段各自相加，见 `AddAcrossTypes for SneakAttackRule`。
+        // 追加伤害与判定修正两个字段各自相加，见 `AddAcrossTypes for SneakAttackRule`。
         R::SneakAttack { .. } => CrossTypeMerge::Add,
         // 额外产出件数：天赋 +1、附魔铁砧 +1，合起来 +2。全程整数加法，
         // 没有整数除法、没有截断、没有顺序依赖（约束 C5）。写全名的
@@ -1137,16 +1147,19 @@ impl AddAcrossTypes for i32 {
 }
 
 impl AddAcrossTypes for SneakAttackRule {
-    /// 两个字段**各自**相加：追加伤害加追加伤害，幸运敏感度加幸运
-    /// 敏感度。刻意不相乘、不取其中一个作主——两个字段回答的是不同的
-    /// 问题（触发之后打多少 / 多容易触发），没有一个把另一个吸收掉的
+    /// 两个字段**各自**相加：追加伤害加追加伤害，判定修正加判定修正。
+    /// 刻意不相乘、不取其中一个作主——两个字段回答的是不同的问题
+    /// （触发之后打多少 / 多容易触发），没有一个把另一个吸收掉的
     /// 自然方式，见 [`strength_key`] 文档「偷袭那两个字段」一节同一条
     /// 论证的另一面。
+    ///
+    /// 相加的结果**可能越过修正上限 `L`**，这是对的：装载期只校验
+    /// 单条声明，跨来源相加之后的总和由
+    /// [`crate::check::CheckDice::clamp_modifier`] 在判定那一刻兜底，
+    /// 见该函数文档「这是『不允许绝对』的运行期执行点」一节。
     fn add_across_types(self, other: Self) -> Self {
         SneakAttackRule {
-            luck_chance_permille_per_point: self
-                .luck_chance_permille_per_point
-                .saturating_add(other.luck_chance_permille_per_point),
+            sneak_modifier: self.sneak_modifier.saturating_add(other.sneak_modifier),
             extra_damage: self.extra_damage.saturating_add(other.extra_damage),
         }
     }
@@ -1356,14 +1369,14 @@ pub fn concealment_check_modifier(modifiers: &[RuleModifierEntry]) -> Option<i32
     })
 }
 
-/// [`sneak_attack_rule`] 的返回值——一次偷袭判定需要的两个数：幸运
-/// 敏感度（换算触发率）与触发后追加的固定伤害。两个数打包成一个小
+/// [`sneak_attack_rule`] 的返回值——一次偷袭判定需要的两个数：加给
+/// 偷袭者那一侧的判定修正与触发后追加的固定伤害。两个数打包成一个小
 /// 结构体而不是元组，理由同 `crate::formula::FormulaInputs` 之类既有
 /// 惯例：调用点按字段名读取，不必记住元组位置的含义。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SneakAttackRule {
-    /// 每点有效幸运贡献的触发率加成，千分比。
-    pub luck_chance_permille_per_point: i32,
+    /// 加在偷袭者那一侧掷出点数上的整数点数。
+    pub sneak_modifier: i32,
     /// 触发后追加的固定伤害。
     pub extra_damage: i32,
 }
@@ -1382,16 +1395,16 @@ pub struct SneakAttackRule {
 /// 变成可以无限堆叠的加法游戏，不是设计意图；哪条生效必须是与切片顺序
 /// 无关的确定性规则（约束 C5）。
 ///
-/// 偷袭的「强」是**两个数都越大越强**（追加伤害作主键，幸运敏感度作
+/// 偷袭的「强」是**两个数都越大越强**（追加伤害作主键，判定修正作
 /// 第二级）——它是本枚举唯一携带两个数值字段的变体，取舍见
 /// [`strength_key`] 文档「偷袭那两个字段」一节。
 pub fn sneak_attack_rule(modifiers: &[RuleModifierEntry]) -> Option<SneakAttackRule> {
     merged_across_types(modifiers, |modifier| match modifier {
         RuleModifier::SneakAttack {
-            luck_chance_permille_per_point,
+            sneak_modifier,
             extra_damage,
         } => Some(SneakAttackRule {
-            luck_chance_permille_per_point: *luck_chance_permille_per_point,
+            sneak_modifier: *sneak_modifier,
             extra_damage: *extra_damage,
         }),
         _ => None,
@@ -1728,7 +1741,7 @@ mod tests {
         let items = FixedItems(vec![(
             dagger,
             vec![untyped(RuleModifier::SneakAttack {
-                luck_chance_permille_per_point: 12,
+                sneak_modifier: 12,
                 extra_damage: 7,
             })],
         )]);
@@ -1741,7 +1754,7 @@ mod tests {
         assert_eq!(
             sneak_attack_rule(&entries),
             Some(SneakAttackRule {
-                luck_chance_permille_per_point: 12,
+                sneak_modifier: 12,
                 extra_damage: 7,
             })
         );
@@ -1759,14 +1772,14 @@ mod tests {
             entry(
                 high,
                 RuleModifier::SneakAttack {
-                    luck_chance_permille_per_point: 999,
+                    sneak_modifier: 999,
                     extra_damage: 999,
                 },
             ),
             entry(
                 low,
                 RuleModifier::SneakAttack {
-                    luck_chance_permille_per_point: 10,
+                    sneak_modifier: 10,
                     extra_damage: 5,
                 },
             ),
@@ -1780,7 +1793,7 @@ mod tests {
         assert_eq!(
             rule,
             Some(SneakAttackRule {
-                luck_chance_permille_per_point: 999,
+                sneak_modifier: 999,
                 extra_damage: 999,
             })
         );
@@ -1803,7 +1816,7 @@ mod tests {
             entry(
                 dagger,
                 RuleModifier::SneakAttack {
-                    luck_chance_permille_per_point: 3,
+                    sneak_modifier: 3,
                     extra_damage: 4,
                 },
             ),
@@ -1816,7 +1829,7 @@ mod tests {
         assert_eq!(
             sneak_attack_rule(&entries),
             Some(SneakAttackRule {
-                luck_chance_permille_per_point: 3,
+                sneak_modifier: 3,
                 extra_damage: 4,
             })
         );
@@ -2122,10 +2135,10 @@ mod tests {
     }
 
     #[test]
-    fn 偷袭取追加伤害最大的一条追加伤害相同时再比幸运敏感度() {
+    fn 偷袭取追加伤害最大的一条追加伤害相同时再比判定修正() {
         // 偷袭是唯一携带两个数值字段的变体，两级键都要钉：主键
         // extra_damage（所有者点名的那一个），相同时才比
-        // luck_chance_permille_per_point。两组都让胜出者 origin 在后。
+        // sneak_modifier。两组都让胜出者 origin 在后。
         // Arrange
         let mut interner = Interner::new();
         let first = index(&mut interner, "lostland:aaa_first");
@@ -2134,29 +2147,29 @@ mod tests {
         let low_damage_high_luck = entry(
             first,
             RuleModifier::SneakAttack {
-                luck_chance_permille_per_point: 90,
+                sneak_modifier: 90,
                 extra_damage: 3,
             },
         );
         let high_damage_low_luck = entry(
             second,
             RuleModifier::SneakAttack {
-                luck_chance_permille_per_point: 10,
+                sneak_modifier: 10,
                 extra_damage: 7,
             },
         );
 
         // Act & Assert（主键）：追加伤害更大的那条胜出，即便它幸运
-        // 敏感度更低、origin 更大。
+        // 判定修正更低、origin 更大。
         assert_eq!(
             sneak_attack_rule(&[low_damage_high_luck, high_damage_low_luck]),
             Some(SneakAttackRule {
-                luck_chance_permille_per_point: 10,
+                sneak_modifier: 10,
                 extra_damage: 7,
             }),
         );
 
-        // Act & Assert（第二级）：追加伤害相同，改由幸运敏感度决胜——
+        // Act & Assert（第二级）：追加伤害相同，改由判定修正决胜——
         // 这一档正是所有者那句「追加伤害越大越强」没有覆盖、原本会掉进
         // 「谁先被 intern 谁赢」的区间。
         assert_eq!(
@@ -2164,20 +2177,20 @@ mod tests {
                 entry(
                     first,
                     RuleModifier::SneakAttack {
-                        luck_chance_permille_per_point: 10,
+                        sneak_modifier: 10,
                         extra_damage: 5,
                     }
                 ),
                 entry(
                     second,
                     RuleModifier::SneakAttack {
-                        luck_chance_permille_per_point: 40,
+                        sneak_modifier: 40,
                         extra_damage: 5,
                     }
                 ),
             ]),
             Some(SneakAttackRule {
-                luck_chance_permille_per_point: 40,
+                sneak_modifier: 40,
                 extra_damage: 5,
             }),
         );
@@ -2322,20 +2335,20 @@ mod tests {
                 entry(
                     a,
                     RuleModifier::SneakAttack {
-                        luck_chance_permille_per_point: 20,
+                        sneak_modifier: 20,
                         extra_damage: 5,
                     }
                 ),
                 entry(
                     b,
                     RuleModifier::SneakAttack {
-                        luck_chance_permille_per_point: 10,
+                        sneak_modifier: 10,
                         extra_damage: 7,
                     }
                 ),
             ]),
             Some(SneakAttackRule {
-                luck_chance_permille_per_point: 10,
+                sneak_modifier: 10,
                 extra_damage: 7,
             }),
         );
@@ -2433,7 +2446,7 @@ mod tests {
                 talent,
                 innate,
                 RuleModifier::SneakAttack {
-                    luck_chance_permille_per_point: 20,
+                    sneak_modifier: 20,
                     extra_damage: 15,
                 },
             ),
@@ -2441,7 +2454,7 @@ mod tests {
                 dagger,
                 enhancement,
                 RuleModifier::SneakAttack {
-                    luck_chance_permille_per_point: 5,
+                    sneak_modifier: 5,
                     extra_damage: 4,
                 },
             ),
@@ -2454,7 +2467,7 @@ mod tests {
         assert_eq!(
             rule,
             Some(SneakAttackRule {
-                luck_chance_permille_per_point: 25,
+                sneak_modifier: 25,
                 extra_damage: 19,
             })
         );
