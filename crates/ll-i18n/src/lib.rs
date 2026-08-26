@@ -43,8 +43,19 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use fluent::{FluentArgs, FluentBundle, FluentResource};
+use fluent::{FluentBundle, FluentResource};
 use unic_langid::LanguageIdentifier;
+
+/// Fluent 的实参表，[`Catalog::resolve_with_args`] 的入参类型。
+///
+/// **必须重新导出**：`resolve_with_args` 从一开始就是 `pub`，但它的
+/// 参数类型此前只在本 crate 内部 `use`，crate 外没有任何合法途径构造
+/// 一个 `FluentArgs`——那个方法因此是「公开但调不动」的。第一个真实
+/// 调用方（`ll_ui::hud::character_panel` 的规则修正行）出现时补上这条
+/// 导出，而不是让下游各自再声明一份 `fluent` 依赖：多一份独立的版本
+/// 声明就多一个「同名不同类型」的漂移风险点，理由与 `ll-ui` 走
+/// `ll-render` 重新导出的 `wgpu` 一致。
+pub use fluent::FluentArgs;
 
 /// 一个语言的完整消息集合：`语言标签 → FluentBundle`。
 ///

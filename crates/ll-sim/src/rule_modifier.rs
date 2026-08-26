@@ -1146,6 +1146,26 @@ impl AddAcrossTypes for i32 {
     }
 }
 
+/// 面板呈现用的数值向量（[`rule_modifier_displays`] 的 `T`）：逐位相加。
+///
+/// 同一次合并里的全部条目来自**同一个变体**（认领判据是文案键相同，
+/// 而文案键与变体一一对应），因此两个向量的长度与含义逐位对齐——第
+/// `i` 位在两边指的是同一个字段。偷袭那两个数因此与
+/// [`AddAcrossTypes for SneakAttackRule`](AddAcrossTypes) 算出同样的
+/// 结果，只是这里不必为每个变体各写一个结构体。
+///
+/// 长度真的不齐时按较短的那个截断（`zip` 的语义）而不是 panic：这只
+/// 可能出于本模块内部的编程错误，而面板少显示一个数远好过让整个进程
+/// 在绘制 HUD 时崩掉。
+impl AddAcrossTypes for Vec<i32> {
+    fn add_across_types(self, other: Self) -> Self {
+        self.into_iter()
+            .zip(other)
+            .map(|(left, right)| left.saturating_add(right))
+            .collect()
+    }
+}
+
 impl AddAcrossTypes for SneakAttackRule {
     /// 两个字段**各自**相加：追加伤害加追加伤害，判定修正加判定修正。
     /// 刻意不相乘、不取其中一个作主——两个字段回答的是不同的问题
@@ -1409,6 +1429,376 @@ pub fn sneak_attack_rule(modifiers: &[RuleModifierEntry]) -> Option<SneakAttackR
         }),
         _ => None,
     })
+}
+
+/// 一条规则修正在角色面板上的呈现数据——**合并之后**的一行，不是一条
+/// 原始声明。
+///
+/// # 为什么面板拿到的是合并值
+///
+/// 玩家问面板的问题是「我现在每次多产出几件」「这一刀我少挨几点」，
+/// 这两个问题只有合并值答得上。逐条列原始声明会**主动误导**：制作
+/// 精通天赋 `+1` 与附魔铁砧 `+1` 分两行读成「两次 +1」，而实际生效的
+/// 是 `+2`（跨加值类型相加，见 [`CrossTypeMerge::Add`]）；反过来两枚
+/// 同款护符各写 `+1`、同属一个加值类型时实际只生效 `+1`（桶内取最强，
+/// 见 [`strength_key`]），逐条列会读成 `+2`。两个方向都错，而且错得
+/// 与合并规则本身有关，不是显示精度问题。
+///
+/// 合并值走的是**既有**那条路径（[`merged_across_types`]），与
+/// [`resistance_damage_reduction`]、[`craft_yield_bonus`] 等结算消费者
+/// 同一个函数，不另算一遍——面板上的数与结算时用的数因此不可能分叉。
+///
+/// # 纯合并值丢掉的那件事由 `source_count` 补回来
+///
+/// 只显示 `+1` 的话，戴两枚同款护符的玩家无从知道第二枚为什么没生效。
+/// [`Self::source_count`] 是**合并前**落进这一行的原始声明条数，于是
+/// 那种情况显示成「产出 +1（2 项来源）」：数字仍然是真实生效的那个，
+/// 而「有两条声明、只算出 +1」这件事本身可见。这里刻意**不**列来源
+/// 明细（哪件装备、哪条天赋）——那会把一行变成一段，也会让面板高度
+/// 随装备变化剧烈跳动（`ll_ui::hud::build_panel` 按行数现算高度）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuleModifierDisplay {
+    /// 修正种类的文案键，逐变体声明在 [`display_shape`]。
+    ///
+    /// 是 `&'static str` 常量而不是文案本身：规格 §11.3 要求用户可见
+    /// 文本一律走 `.ftl`，本层不认识任何一种自然语言。
+    pub name_key: &'static str,
+    /// 主语的文案键（抗性/易伤的伤害类别、制作产出的配方类别、优劣势
+    /// 的判定种类），`None` 表示这个变体没有主语。
+    ///
+    /// 键由主语所属的开放注册表名与主语标识符拼成，形状与内容表自己
+    /// 声明的 `display_name_key` 一致——例如配方类别 `lostland:forging`
+    /// 拼出 `lostland:recipe_category.forging.display_name`，与
+    /// `mods/lostland/crafting.json5` 里那条 `display_name_key` 逐字
+    /// 相同。伤害类别与判定种类两处**没有**声明显示名字段（见
+    /// `ll_mod::damage_category::DamageCategoryDef`），同一条拼法让它们
+    /// 也有键可查，而不必为了显示一行字去改内容 schema。
+    pub subject_key: Option<String>,
+    /// 数值实参，按 `.ftl` 消息里 `{ $名 }` 的变量名成对给出。
+    ///
+    /// **空表是合法值**，表示这条修正没有数值可显示（优势/劣势只有
+    /// 「有没有」，见 [`RuleModifier::Advantage`]）。用「名字→值」的
+    /// 序列而不是固定字段，是为了让呈现层一个 `match` 都不需要写：
+    /// 它只是把每一对塞进 Fluent 实参表，元数（偷袭两个、抗性一个、
+    /// 优势零个）由本层声明，将来第十个变体带三个数也不必改呈现层。
+    pub amounts: Vec<(&'static str, i64)>,
+    /// 合并**前**落进这一行的原始声明条数，恒 `>= 1`。语义见本结构体
+    /// 文档「纯合并值丢掉的那件事」一节。
+    pub source_count: usize,
+}
+
+/// 主语的原始形式——[`display_shape`] 的内部返回形状，不对外。
+///
+/// 两个变体的区别只是「主语在枚举里是索引还是标识符」：抗性/易伤/
+/// 制作产出的主语是 [`ContentIndex`]（内容表里的东西），优势/劣势的
+/// 主语是 [`NamespacedId`]（判定种类是开放标识符，没有对应的内容表，
+/// 见 [`RuleModifier::Advantage`] 文档）。两者拼文案键的方式相同，
+/// 只是拿到标识符的路径不同。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DisplaySubject<'a> {
+    /// 内容索引形式的主语，`registry` 是它所属的开放注册表名。
+    Content {
+        registry: &'static str,
+        index: ContentIndex,
+    },
+    /// 已经是标识符形式的主语，`registry` 同上。
+    Id {
+        registry: &'static str,
+        id: &'a NamespacedId,
+    },
+}
+
+/// 一条原始声明在面板上的形状——[`display_shape`] 的返回值。
+struct DisplayShape<'a> {
+    /// 见 [`RuleModifierDisplay::name_key`]。
+    name_key: &'static str,
+    /// 主语的原始形式，`None` 表示这个变体没有主语。
+    subject: Option<DisplaySubject<'a>>,
+    /// 这一条声明自己的数值（合并之前），名字与
+    /// [`RuleModifierDisplay::amounts`] 同一套。
+    amounts: Vec<(&'static str, i32)>,
+}
+
+/// 抗性一行的文案键。
+pub const RESISTANCE_NAME_KEY: &str = "rule-modifier-resistance";
+/// 易伤一行的文案键。
+pub const VULNERABILITY_NAME_KEY: &str = "rule-modifier-vulnerability";
+/// 重掷一行的文案键。
+pub const REROLL_ONCE_NAME_KEY: &str = "rule-modifier-reroll_once";
+/// 优势一行的文案键。
+pub const ADVANTAGE_NAME_KEY: &str = "rule-modifier-advantage";
+/// 劣势一行的文案键。
+pub const DISADVANTAGE_NAME_KEY: &str = "rule-modifier-disadvantage";
+/// 偷袭一行的文案键。
+pub const SNEAK_ATTACK_NAME_KEY: &str = "rule-modifier-sneak_attack";
+/// 盘查减免一行的文案键。
+pub const INSPECTION_SUSPICION_NAME_KEY: &str = "rule-modifier-inspection_suspicion";
+/// 藏匿一行的文案键。
+pub const INSPECTION_CONCEALMENT_NAME_KEY: &str = "rule-modifier-inspection_concealment";
+/// 制作产出一行的文案键。
+pub const CRAFT_YIELD_NAME_KEY: &str = "rule-modifier-craft_yield";
+
+/// 单数值变体的 Fluent 实参名。
+const AMOUNT_ARG: &str = "amount";
+/// 偷袭第二个数值（追加伤害）的 Fluent 实参名。
+const EXTRA_ARG: &str = "extra";
+
+/// 伤害类别在文案键里的注册表段名。
+const DAMAGE_CATEGORY_REGISTRY: &str = "damage_category";
+/// 配方类别在文案键里的注册表段名——与 `mods/lostland/crafting.json5`
+/// 里 `display_name_key` 的中段逐字相同。
+const RECIPE_CATEGORY_REGISTRY: &str = "recipe_category";
+/// 判定种类在文案键里的注册表段名。
+const CHECK_CONTEXT_REGISTRY: &str = "check_context";
+
+/// 逐变体声明「这条修正在面板上长什么样」——本模块**第三个**逐变体
+/// 穷尽 `match`，与 [`strength_key`]、[`cross_type_merge`] 并列，同一
+/// 条纪律：**没有通配分支**。
+///
+/// # 为什么是第三条并列声明而不是新抽象
+///
+/// 三个函数回答的是同一个枚举上三个互不相干的问题——「同一个桶里谁更
+/// 强」「跨桶怎么合」「玩家看到什么」。它们之间**没有可共享的算法**，
+/// 只有形状上的对称（都是逐变体穷尽），按 ADR 0021
+/// （`knowledge/decisions/0021-abstraction-requires-shared-algorithm-not-symmetry.md`）
+/// 这恰恰是不该抽象的情形：把三者塞进一个「变体元数据表」trait 只会让
+/// 每个问题的答案离它的理由更远，换不来任何一行共享逻辑。
+///
+/// # 新增第十个变体要改哪里
+///
+/// Rust 侧**一处**：本函数。不补分支编译不过（无通配分支），与
+/// [`strength_key`]/[`cross_type_merge`] 是同一条保证。另外要在
+/// `assets/locales/zh-CN.ftl` 与 `assets/locales/en.ftl` 各补一条新
+/// `name_key` 的文案——文案本来就不该出现在 Rust 里（规格 §11.3）。
+/// 呈现层（`ll_ui::hud::character_panel`）**零改动**：它只是逐行查表
+/// 加格式化，一个 `match` 都没有。
+///
+/// # 九个变体全部要显示
+///
+/// 三个曾经的死变体（[`RuleModifier::RerollOnce`]、
+/// [`RuleModifier::Advantage`]、[`RuleModifier::Disadvantage`]）在判定
+/// 系统落地时已经全部接上消费者（[`check_reroll_value`]、
+/// [`check_roll_bias`]），因此本函数**没有**「返回空表示不显示」这条
+/// 通道：一条修正只要在实体身上生效，玩家就该看得见。主语 `None` 只
+/// 表示这个变体的语义里没有主语（盘查减免与藏匿是实体自身的属性，不
+/// 针对某一类东西），不是「没接线」的标记。
+fn display_shape(modifier: &RuleModifier) -> DisplayShape<'_> {
+    use crate::rule_modifier::RuleModifier as R;
+    match modifier {
+        // 减伤点数，主语是伤害类别。
+        R::Resistance {
+            damage_category,
+            damage_reduction,
+        } => DisplayShape {
+            name_key: RESISTANCE_NAME_KEY,
+            subject: Some(DisplaySubject::Content {
+                registry: DAMAGE_CATEGORY_REGISTRY,
+                index: *damage_category,
+            }),
+            amounts: vec![(AMOUNT_ARG, *damage_reduction)],
+        },
+        // 追加伤害点数，与减伤逐字对称。
+        R::Vulnerability {
+            damage_category,
+            damage_increase,
+        } => DisplayShape {
+            name_key: VULNERABILITY_NAME_KEY,
+            subject: Some(DisplaySubject::Content {
+                registry: DAMAGE_CATEGORY_REGISTRY,
+                index: *damage_category,
+            }),
+            amounts: vec![(AMOUNT_ARG, *damage_increase)],
+        },
+        // 重掷面值：这里的数不是「加了多少」而是「掷出几点会重掷」,
+        // 单位差别由 `.ftl` 文案表达，不由本层再加一个单位枚举——
+        // 呈现层看到的都是「一个数」，怎么念是文案的事。
+        R::RerollOnce { value } => DisplayShape {
+            name_key: REROLL_ONCE_NAME_KEY,
+            subject: None,
+            amounts: vec![(AMOUNT_ARG, *value)],
+        },
+        // 优势没有数值，只有「在哪类判定上有」——`amounts` 空表。
+        R::Advantage { check_context } => DisplayShape {
+            name_key: ADVANTAGE_NAME_KEY,
+            subject: Some(DisplaySubject::Id {
+                registry: CHECK_CONTEXT_REGISTRY,
+                id: check_context,
+            }),
+            amounts: Vec::new(),
+        },
+        // 劣势，与优势逐字对称。
+        R::Disadvantage { check_context } => DisplayShape {
+            name_key: DISADVANTAGE_NAME_KEY,
+            subject: Some(DisplaySubject::Id {
+                registry: CHECK_CONTEXT_REGISTRY,
+                id: check_context,
+            }),
+            amounts: Vec::new(),
+        },
+        // 偷袭是本枚举唯一带两个数的变体，两个数各自跨类型相加
+        // （`AddAcrossTypes for SneakAttackRule`），这里的两项实参与
+        // 那条合并规则一一对应。
+        R::SneakAttack {
+            sneak_modifier,
+            extra_damage,
+        } => DisplayShape {
+            name_key: SNEAK_ATTACK_NAME_KEY,
+            subject: None,
+            amounts: vec![(AMOUNT_ARG, *sneak_modifier), (EXTRA_ARG, *extra_damage)],
+        },
+        // 盘查减免：加在隐蔽方那一侧，没有主语。
+        R::InspectionSuspicion {
+            inconspicuous_modifier,
+        } => DisplayShape {
+            name_key: INSPECTION_SUSPICION_NAME_KEY,
+            subject: None,
+            amounts: vec![(AMOUNT_ARG, *inconspicuous_modifier)],
+        },
+        // 逐件藏匿修正：同上，没有主语。
+        R::InspectionConcealment {
+            concealment_modifier,
+        } => DisplayShape {
+            name_key: INSPECTION_CONCEALMENT_NAME_KEY,
+            subject: None,
+            amounts: vec![(AMOUNT_ARG, *concealment_modifier)],
+        },
+        // 额外产出件数，主语是配方类别。**刻意写全名而不用 `R` 别名**,
+        // 理由同 `strength_key` 里那一条：本变体有真实消费者,
+        // `scripts/ci/check_field_consumers.py` 不该被别名遮住。
+        RuleModifier::CraftYield {
+            category,
+            bonus_product_count,
+        } => DisplayShape {
+            name_key: CRAFT_YIELD_NAME_KEY,
+            subject: Some(DisplaySubject::Content {
+                registry: RECIPE_CATEGORY_REGISTRY,
+                index: *category,
+            }),
+            amounts: vec![(AMOUNT_ARG, *bonus_product_count)],
+        },
+    }
+}
+
+/// 把一个主语拼成文案键：`命名空间:注册表.路径.display_name`。
+///
+/// 返回 `None` 只可能是索引在 `resolve_id` 里查不到——那意味着这条修正
+/// 引用了一个不存在的内容索引，装载期本不该放过。此时调用方跳过整行，
+/// 而不是显示一个半截的主语。
+fn subject_key(
+    subject: DisplaySubject<'_>,
+    resolve_id: &dyn Fn(ContentIndex) -> Option<NamespacedId>,
+) -> Option<String> {
+    let (registry, id) = match subject {
+        DisplaySubject::Content { registry, index } => (registry, resolve_id(index)?),
+        DisplaySubject::Id { registry, id } => (registry, id.clone()),
+    };
+    Some(format!(
+        "{}:{registry}.{}.display_name",
+        id.namespace(),
+        id.path()
+    ))
+}
+
+/// 一行的身份：文案键 + 主语键。同一个变体、同一个主语的全部声明合成
+/// 一行。
+type DisplayRowKey = (&'static str, Option<String>);
+
+/// 把一份规则修正清单折叠成角色面板要显示的若干行。
+///
+/// `resolve_id` 把内容索引还原成标识符（本体里就是
+/// `ll_mod::registry::Registry::resolve`）——本层不持有注册表，用回调
+/// 跨这条边界是本仓库的既有写法，见
+/// `ll_mod::base_damage_category::register_base_damage_category`。
+///
+/// # 行的顺序是确定的
+///
+/// 结果按（文案键，主语键）字典序排列。这两者都是编译期常量或内容
+/// 标识符派生出来的字符串，与获得顺序、装载顺序、`ContentIndex` 的
+/// 数值都无关——同一套修正在任何一次运行里都排成同样的顺序（约束 C1
+/// 那条确定性在呈现层的对应物）。按获得顺序排也是确定的，但那会让
+/// 「先捡到哪件装备」决定面板行序，玩家看不出规律。
+///
+/// # 每一行的数值怎么来
+///
+/// 走 [`merged_across_types`]，与 [`resistance_damage_reduction`]、
+/// [`craft_yield_bonus`] 等结算消费者同一个函数：桶内取最强
+/// （[`strength_key`]）、跨桶按 [`cross_type_merge`] 合并。面板因此
+/// 不可能与结算算出不同的数。
+///
+/// 认领同一行的判据是「文案键相同且主语键相同」；文案键与变体一一
+/// 对应（[`display_shape`] 逐变体各给一个常量），所以这等价于
+/// [`merged_across_types`] 文档要求的「同一个 `select` 只认领同一个
+/// 变体」。
+///
+/// # 复杂度
+///
+/// 分组一趟、每组再扫一遍全表，即 `O(行数 × 声明数)`。一个实体身上的
+/// 规则修正是十几条的量级（天赋 + 装备），面板每帧重建一次也远谈不上
+/// 热点；换来的是数值与结算共用同一条合并链路，不必把
+/// [`merged_across_types`] 拆开重写一个批量版本。
+pub fn rule_modifier_displays(
+    modifiers: &[RuleModifierEntry],
+    resolve_id: &dyn Fn(ContentIndex) -> Option<NamespacedId>,
+) -> Vec<RuleModifierDisplay> {
+    // 第一趟：分组、数原始声明条数、记下这一组的实参名。实参名逐变体
+    // 固定，同一组每条都一样，取第一条的即可。
+    let mut rows: BTreeMap<DisplayRowKey, (Vec<&'static str>, usize)> = BTreeMap::new();
+    for entry in modifiers {
+        let shape = display_shape(&entry.modifier);
+        let key = match shape.subject {
+            None => None,
+            Some(subject) => {
+                let Some(resolved) = subject_key(subject, resolve_id) else {
+                    tracing::warn!(
+                        name_key = shape.name_key,
+                        "规则修正的主语索引查不到标识符，本行跳过" // i18n-exempt：面向开发者的诊断信息，不是玩家会看到的文本
+                    );
+                    continue;
+                };
+                Some(resolved)
+            }
+        };
+        let names: Vec<&'static str> = shape.amounts.iter().map(|(name, _)| *name).collect();
+        let slot = rows.entry((shape.name_key, key)).or_insert((names, 0));
+        slot.1 += 1;
+    }
+
+    // 第二趟：每一行各走一次既有的合并链路。
+    rows.into_iter()
+        .map(|((name_key, row_subject_key), (names, source_count))| {
+            let merged = merged_across_types(modifiers, |modifier| {
+                let shape = display_shape(modifier);
+                if shape.name_key != name_key {
+                    return None;
+                }
+                let candidate = match shape.subject {
+                    None => None,
+                    Some(subject) => subject_key(subject, resolve_id),
+                };
+                if candidate != row_subject_key {
+                    return None;
+                }
+                Some(
+                    shape
+                        .amounts
+                        .into_iter()
+                        .map(|(_, value)| value)
+                        .collect::<Vec<i32>>(),
+                )
+            })
+            .expect("这一行是从某条真实声明来的，合并必然认领到它");
+            RuleModifierDisplay {
+                name_key,
+                subject_key: row_subject_key,
+                amounts: names
+                    .into_iter()
+                    .zip(merged)
+                    .map(|(name, value)| (name, i64::from(value)))
+                    .collect(),
+                source_count,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2909,5 +3299,349 @@ mod tests {
         // 净额：来伤 10 − 3 + 5 = 12。旧模型（负减伤 `-5` 与 `+3` 同桶
         // 取最强）在这里会算出 10 − 3 = 7,脆弱整条消失。
         assert_eq!(damage_after_resistance(10, reduction, increase), 12);
+    }
+
+    /// 测试用帮手：把 `Interner` 包成 `rule_modifier_displays` 要的
+    /// 还原回调——本体里这一层是 `ll_mod::registry::Registry::resolve`。
+    fn resolver(interner: &Interner) -> impl Fn(ContentIndex) -> Option<NamespacedId> + '_ {
+        |index| interner.resolve(index).cloned()
+    }
+
+    /// 测试用帮手：取某一行的某个数值实参。
+    fn amount_of(display: &RuleModifierDisplay, name: &str) -> Option<i64> {
+        display
+            .amounts
+            .iter()
+            .find(|(key, _)| *key == name)
+            .map(|(_, value)| *value)
+    }
+
+    #[test]
+    fn 九个变体每一个都产出一行面板数据() {
+        // Arrange：一条修正一个变体，九条全上——这条测试是
+        // `display_shape` 那个无通配 match「每个变体都真的能显示」的
+        // 机器检查。第十个变体加进来时它不会自动变红（新变体没被这里
+        // 构造），但 `display_shape` 会编译不过，那才是第一道防线。
+        let mut interner = Interner::new();
+        let source = index(&mut interner, "testmod:source");
+        let fire = index(&mut interner, "lostland:fire");
+        let forging = index(&mut interner, "lostland:forging");
+        let inspection = NamespacedId::parse("lostland:inspection").expect("测试用标识符恒合法");
+        let critical = NamespacedId::parse("lostland:critical").expect("测试用标识符恒合法");
+        let modifiers = vec![
+            entry(source, resistance(fire, 3)),
+            entry(
+                source,
+                RuleModifier::Vulnerability {
+                    damage_category: fire,
+                    damage_increase: 4,
+                },
+            ),
+            entry(source, RuleModifier::RerollOnce { value: 1 }),
+            entry(
+                source,
+                RuleModifier::Advantage {
+                    check_context: inspection.clone(),
+                },
+            ),
+            entry(
+                source,
+                RuleModifier::Disadvantage {
+                    check_context: critical,
+                },
+            ),
+            entry(
+                source,
+                RuleModifier::SneakAttack {
+                    sneak_modifier: 9,
+                    extra_damage: 15,
+                },
+            ),
+            entry(
+                source,
+                RuleModifier::InspectionSuspicion {
+                    inconspicuous_modifier: 5,
+                },
+            ),
+            entry(
+                source,
+                RuleModifier::InspectionConcealment {
+                    concealment_modifier: 6,
+                },
+            ),
+            entry(
+                source,
+                RuleModifier::CraftYield {
+                    category: forging,
+                    bonus_product_count: 1,
+                },
+            ),
+        ];
+
+        // Act
+        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+
+        // Assert：九行，且文案键两两不同——文案键就是「哪个变体」的
+        // 身份，撞车会让两个变体在面板上合成一行。
+        assert_eq!(displays.len(), 9);
+        let mut keys: Vec<&str> = displays.iter().map(|display| display.name_key).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        assert_eq!(keys.len(), 9);
+    }
+
+    #[test]
+    fn 跨加值类型相加的合并值上面板而不是两条原始声明() {
+        // Arrange：天赋 +1（无类型桶）与附魔 +1（enhancement 桶）——
+        // 结算算出的是 +2，面板要说的也必须是 +2，不是两行 +1。
+        let mut interner = Interner::new();
+        let trait_source = index(&mut interner, "testmod:mastery");
+        let anvil = index(&mut interner, "testmod:anvil");
+        let enhancement = index(&mut interner, "testmod:enhancement");
+        let forging = index(&mut interner, "lostland:forging");
+        let craft = |bonus| RuleModifier::CraftYield {
+            category: forging,
+            bonus_product_count: bonus,
+        };
+        let modifiers = vec![
+            entry(trait_source, craft(1)),
+            typed_entry(anvil, enhancement, craft(1)),
+        ];
+
+        // Act
+        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+
+        // Assert
+        assert_eq!(displays.len(), 1);
+        assert_eq!(displays[0].name_key, CRAFT_YIELD_NAME_KEY);
+        assert_eq!(amount_of(&displays[0], "amount"), Some(2));
+        assert_eq!(displays[0].source_count, 2);
+        // 与结算走的是同一条链路，两个数必然相等——这条断言是那句话的
+        // 机器检查，不是重复。
+        assert_eq!(
+            i64::from(craft_yield_bonus(&modifiers, forging)),
+            amount_of(&displays[0], "amount").expect("这一行恒有 amount 实参")
+        );
+    }
+
+    #[test]
+    fn 同一加值类型取最强时来源计数仍然数出两条() {
+        // Arrange：两枚同款护符，同属 gear 桶，各 +1——实际只生效 +1。
+        // 纯合并值会让玩家以为第二枚坏了；来源计数把「有两条声明」这
+        // 件事显式说出来，见 `RuleModifierDisplay` 文档。
+        let mut interner = Interner::new();
+        let left = index(&mut interner, "testmod:amulet_a");
+        let right = index(&mut interner, "testmod:amulet_b");
+        let gear = index(&mut interner, "lostland:gear");
+        let fire = index(&mut interner, "lostland:fire");
+        let modifiers = vec![
+            typed_entry(left, gear, resistance(fire, 1)),
+            typed_entry(right, gear, resistance(fire, 1)),
+        ];
+
+        // Act
+        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+
+        // Assert
+        assert_eq!(displays.len(), 1);
+        assert_eq!(amount_of(&displays[0], "amount"), Some(1));
+        assert_eq!(displays[0].source_count, 2);
+    }
+
+    #[test]
+    fn 主语键与内容表自己声明的显示名键逐字相同() {
+        // Arrange：`mods/lostland/crafting.json5` 里锻造那条写的是
+        // `display_name_key: "lostland:recipe_category.forging.display_name"`
+        // ——本层拼出来的必须与它一字不差，否则面板查的是另一条不存在
+        // 的键，玩家看到的是键名本身。
+        let mut interner = Interner::new();
+        let source = index(&mut interner, "testmod:source");
+        let forging = index(&mut interner, "lostland:forging");
+        let fire = index(&mut interner, "lostland:fire");
+        let modifiers = vec![
+            entry(
+                source,
+                RuleModifier::CraftYield {
+                    category: forging,
+                    bonus_product_count: 1,
+                },
+            ),
+            entry(source, resistance(fire, 2)),
+        ];
+
+        // Act
+        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+
+        // Assert
+        let craft = displays
+            .iter()
+            .find(|display| display.name_key == CRAFT_YIELD_NAME_KEY)
+            .expect("制作产出那一行必然在");
+        assert_eq!(
+            craft.subject_key.as_deref(),
+            Some("lostland:recipe_category.forging.display_name")
+        );
+        let resist = displays
+            .iter()
+            .find(|display| display.name_key == RESISTANCE_NAME_KEY)
+            .expect("抗性那一行必然在");
+        assert_eq!(
+            resist.subject_key.as_deref(),
+            Some("lostland:damage_category.fire.display_name")
+        );
+    }
+
+    #[test]
+    fn 优势有主语但没有数值实参() {
+        // Arrange：优劣势只有「有没有」，`amounts` 恒空——呈现层因此
+        // 一个数都不会往那条消息里填。
+        let mut interner = Interner::new();
+        let source = index(&mut interner, "testmod:source");
+        let inspection = NamespacedId::parse("lostland:inspection").expect("测试用标识符恒合法");
+        let modifiers = vec![entry(
+            source,
+            RuleModifier::Advantage {
+                check_context: inspection,
+            },
+        )];
+
+        // Act
+        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+
+        // Assert
+        assert_eq!(displays.len(), 1);
+        assert_eq!(displays[0].name_key, ADVANTAGE_NAME_KEY);
+        assert!(displays[0].amounts.is_empty());
+        assert_eq!(
+            displays[0].subject_key.as_deref(),
+            Some("lostland:check_context.inspection.display_name")
+        );
+    }
+
+    #[test]
+    fn 偷袭两个数各自跨类型相加与结算一致() {
+        // Arrange
+        let mut interner = Interner::new();
+        let trait_source = index(&mut interner, "testmod:instinct");
+        let dagger = index(&mut interner, "testmod:dagger");
+        let gear = index(&mut interner, "lostland:gear");
+        let modifiers = vec![
+            entry(
+                trait_source,
+                RuleModifier::SneakAttack {
+                    sneak_modifier: 9,
+                    extra_damage: 15,
+                },
+            ),
+            typed_entry(
+                dagger,
+                gear,
+                RuleModifier::SneakAttack {
+                    sneak_modifier: 2,
+                    extra_damage: 3,
+                },
+            ),
+        ];
+
+        // Act
+        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+        let rule = sneak_attack_rule(&modifiers).expect("有声明就有规则");
+
+        // Assert
+        assert_eq!(displays.len(), 1);
+        assert_eq!(amount_of(&displays[0], "amount"), Some(11));
+        assert_eq!(amount_of(&displays[0], "extra"), Some(18));
+        assert_eq!(i64::from(rule.sneak_modifier), 11);
+        assert_eq!(i64::from(rule.extra_damage), 18);
+    }
+
+    #[test]
+    fn 同一个变体的不同主语分成两行() {
+        // Arrange：火抗与物理抗是两件事，不该合成一行。
+        let mut interner = Interner::new();
+        let source = index(&mut interner, "testmod:source");
+        let fire = index(&mut interner, "lostland:fire");
+        let physical = index(&mut interner, "lostland:physical");
+        let modifiers = vec![
+            entry(source, resistance(fire, 3)),
+            entry(source, resistance(physical, 2)),
+        ];
+
+        // Act
+        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+
+        // Assert
+        assert_eq!(displays.len(), 2);
+        for display in &displays {
+            assert_eq!(display.source_count, 1);
+        }
+    }
+
+    #[test]
+    fn 行序不随声明先后改变() {
+        // Arrange：同一套修正，两种获得顺序——面板行序必须一样，见
+        // `rule_modifier_displays` 文档「行的顺序是确定的」。
+        let mut interner = Interner::new();
+        let source = index(&mut interner, "testmod:source");
+        let fire = index(&mut interner, "lostland:fire");
+        let forging = index(&mut interner, "lostland:forging");
+        let craft = RuleModifier::CraftYield {
+            category: forging,
+            bonus_product_count: 1,
+        };
+        let forward = vec![
+            entry(source, resistance(fire, 3)),
+            entry(source, craft.clone()),
+        ];
+        let backward = vec![entry(source, craft), entry(source, resistance(fire, 3))];
+
+        // Act
+        let left = rule_modifier_displays(&forward, &resolver(&interner));
+        let right = rule_modifier_displays(&backward, &resolver(&interner));
+
+        // Assert
+        assert_eq!(left, right);
+    }
+
+    #[test]
+    fn 主语索引查不到标识符时整行跳过() {
+        // Arrange：模拟一个还原不出标识符的索引——装载期本不该放过，
+        // 真出现时面板宁可少一行，也不显示一个半截的主语。
+        let mut interner = Interner::new();
+        let source = index(&mut interner, "testmod:source");
+        let fire = index(&mut interner, "lostland:fire");
+        let orphan = index(&mut interner, "testmod:orphan");
+        let modifiers = vec![
+            entry(source, resistance(fire, 3)),
+            entry(source, resistance(orphan, 99)),
+        ];
+
+        // Act：还原回调对 `orphan` 交白卷，其余照常。
+        let displays = rule_modifier_displays(&modifiers, &|index| {
+            if index == orphan {
+                None
+            } else {
+                interner.resolve(index).cloned()
+            }
+        });
+
+        // Assert
+        assert_eq!(displays.len(), 1);
+        assert_eq!(
+            displays[0].subject_key.as_deref(),
+            Some("lostland:damage_category.fire.display_name")
+        );
+    }
+
+    #[test]
+    fn 一条修正都没有时一行都不产出() {
+        // Arrange
+        let interner = Interner::new();
+
+        // Act
+        let displays = rule_modifier_displays(&[], &resolver(&interner));
+
+        // Assert：空表——「无」那一行是呈现层的事，不是本层的事。
+        assert!(displays.is_empty());
     }
 }

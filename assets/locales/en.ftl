@@ -149,6 +149,33 @@ hud-character-primary-attribute-label = Primary Attribute
 hud-character-modifiers-title = Active Modifiers
 hud-character-modifiers-empty = None
 
+# Rule modifiers (ll_sim::rule_modifier) — the "Active Rule Modifiers"
+# section of the character panel. See assets/locales/zh-CN.ftl for the
+# source-field mapping and the argument list of every message below.
+hud-character-rule-modifiers-title = Active Rule Modifiers
+hud-character-rule-modifiers-empty = None
+hud-character-rule-modifier-sources = { $sources ->
+    [1] { "" }
+   *[other] { " " }({ $sources } sources)
+}
+
+rule-modifier-resistance = { $subject } Resistance { $amount } dmg reduction
+rule-modifier-vulnerability = { $subject } Vulnerability +{ $amount } dmg taken
+rule-modifier-reroll_once = Reroll a roll of { $amount } once
+rule-modifier-advantage = Advantage on { $subject }
+rule-modifier-disadvantage = Disadvantage on { $subject }
+rule-modifier-sneak_attack = Sneak Attack check +{ $amount }, damage +{ $extra }
+rule-modifier-inspection_suspicion = Inconspicuous +{ $amount }
+rule-modifier-inspection_concealment = Concealment +{ $amount }
+rule-modifier-craft_yield = { $subject } yield +{ $amount }
+
+damage_category-physical-display_name = Physical
+damage_category-fire-display_name = Fire
+
+check_context-inspection-display_name = Inspection
+check_context-concealment-display_name = Concealment
+check_context-critical-display_name = Critical
+
 attribute-strength-display_name = Strength
 attribute-dexterity-display_name = Dexterity
 attribute-constitution-display_name = Constitution

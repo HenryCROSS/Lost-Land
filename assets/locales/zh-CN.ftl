@@ -120,6 +120,9 @@ mod-dependency-version-mismatch = 模组 { $dependent } 依赖 { $dependency } �
 # 面板/背包/装备栏」。来源分组：
 #   - hud-status-*                          状态栏（时间/生命/法力，常驻）
 #   - hud-character-*                       角色面板（等级/经验/生效中的修正）
+#   - rule-modifier-*                       ll-sim RuleModifier 九个变体的展示文案
+#   - damage_category-*-display_name        伤害类别展示名（表本身不声明键，见下）
+#   - check_context-*-display_name          判定种类展示名（同上）
 #   - attribute-*-display_name              AttributeKind 六项主属性名
 #   - hud-inventory-*                       背包面板
 #   - hud-equipment-*                       装备面板标题与空槽位占位
@@ -168,6 +171,51 @@ hud-character-skill-points-label = 技能点
 hud-character-primary-attribute-label = 主属性
 hud-character-modifiers-title = 生效中的属性修正
 hud-character-modifiers-empty = 无
+
+# 规则修正（ll_sim::rule_modifier）——角色面板「生效中的规则修正」一段。
+# 每条消息对应枚举的一个变体，键名由 `RuleModifier` 那边的 *_NAME_KEY
+# 常量声明（rule-modifier-*）；实参 $subject（主语显示名，没有主语的
+# 变体传空串）、$amount 与 $extra（数值）由
+# `ll_sim::rule_modifier::display_shape` 逐变体给出。新增第十个变体时，
+# 这里与 en.ftl 各补一条，Rust 侧只改 display_shape 一处。
+#
+# 数值一律是**合并之后**的（同加值类型取最强、跨类型相加），行尾的
+# 来源计数说的是合并前有几条声明——见 RuleModifierDisplay 文档。
+hud-character-rule-modifiers-title = 生效中的规则修正
+hud-character-rule-modifiers-empty = 无
+# 只有一条来源时不出现——满屏「（1 项来源）」只是噪声。这个分支写在
+# 这里而不是 Rust 里：哪些数量该怎么念是语言的事。
+hud-character-rule-modifier-sources = { $sources ->
+    [1] { "" }
+   *[other] （{ $sources } 项来源）
+}
+
+rule-modifier-resistance = { $subject }抗性 减伤 { $amount }
+rule-modifier-vulnerability = { $subject }易伤 增伤 { $amount }
+rule-modifier-reroll_once = 重掷 掷出 { $amount } 时重掷一次
+rule-modifier-advantage = 优势 { $subject }
+rule-modifier-disadvantage = 劣势 { $subject }
+rule-modifier-sneak_attack = 偷袭 判定 +{ $amount } 伤害 +{ $extra }
+rule-modifier-inspection_suspicion = 盘查减免 +{ $amount }
+rule-modifier-inspection_concealment = 藏匿 +{ $amount }
+rule-modifier-craft_yield = { $subject }产出 +{ $amount }
+
+# 伤害类别展示名——本体两种（mods/lostland/damage_categories.json5 的
+# lostland:fire 与 ll_mod::base_damage_category 的 lostland:physical）。
+# 伤害类别表本身**不声明** display_name_key（DamageCategoryDef 只有
+# default_formula 一个字段），键按
+# `命名空间:damage_category.路径.display_name` 的约定由
+# `ll_sim::rule_modifier::subject_key` 现拼——与配方类别自己声明出来的
+# 键形状逐字相同，mod 补自己那份 .ftl 即可。
+damage_category-physical-display_name = 物理
+damage_category-fire-display_name = 火焰
+
+# 判定种类展示名——引擎当前认得三种（ll_sim::check 的 INSPECTION_CHECK
+# / CONCEALMENT_CHECK / CRITICAL_CHECK）。同样没有对应的内容表，键走
+# 与伤害类别同一条约定。
+check_context-inspection-display_name = 盘查
+check_context-concealment-display_name = 藏匿
+check_context-critical-display_name = 暴击
 
 attribute-strength-display_name = 力量
 attribute-dexterity-display_name = 敏捷

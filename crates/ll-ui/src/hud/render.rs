@@ -599,7 +599,7 @@ mod tests {
     use std::path::Path;
 
     fn write_fixture_catalog(dir: &Path) {
-        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nhud-status-fps-label = 帧率\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\nhud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\nhud-inventory-panel-title = 背包\nhud-inventory-empty = （空）\nhud-inventory-durability-label = 耐久\nhud-equipment-panel-title = 装备\nhud-equipment-empty-slot = （空）\nequip_slot-main_hand-display_name = 主手\nequip_slot-off_hand-display_name = 副手\nequip_slot-head-display_name = 头部\nequip_slot-face-display_name = 面部\nequip_slot-eyes-display_name = 眼部\nequip_slot-neck-display_name = 颈部\nequip_slot-body-display_name = 躯干\nequip_slot-outer-display_name = 外袍\nequip_slot-back-display_name = 背部\nequip_slot-shoulder_l-display_name = 左肩\nequip_slot-shoulder_r-display_name = 右肩\nequip_slot-arm_l-display_name = 左臂\nequip_slot-arm_r-display_name = 右臂\nequip_slot-hand_l-display_name = 左手\nequip_slot-hand_r-display_name = 右手\nequip_slot-belt-display_name = 腰带\nequip_slot-tasset-display_name = 腿甲\nequip_slot-legs-display_name = 双腿\nequip_slot-boot_l-display_name = 左靴\nequip_slot-boot_r-display_name = 右靴\nequip_slot-ring_l-display_name = 左戒指\nequip_slot-ring_r-display_name = 右戒指\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nhud-status-fps-label = 帧率\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\nhud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nhud-character-rule-modifiers-title = 生效中的规则修正\nhud-character-rule-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\nhud-inventory-panel-title = 背包\nhud-inventory-empty = （空）\nhud-inventory-durability-label = 耐久\nhud-equipment-panel-title = 装备\nhud-equipment-empty-slot = （空）\nequip_slot-main_hand-display_name = 主手\nequip_slot-off_hand-display_name = 副手\nequip_slot-head-display_name = 头部\nequip_slot-face-display_name = 面部\nequip_slot-eyes-display_name = 眼部\nequip_slot-neck-display_name = 颈部\nequip_slot-body-display_name = 躯干\nequip_slot-outer-display_name = 外袍\nequip_slot-back-display_name = 背部\nequip_slot-shoulder_l-display_name = 左肩\nequip_slot-shoulder_r-display_name = 右肩\nequip_slot-arm_l-display_name = 左臂\nequip_slot-arm_r-display_name = 右臂\nequip_slot-hand_l-display_name = 左手\nequip_slot-hand_r-display_name = 右手\nequip_slot-belt-display_name = 腰带\nequip_slot-tasset-display_name = 腿甲\nequip_slot-legs-display_name = 双腿\nequip_slot-boot_l-display_name = 左靴\nequip_slot-boot_r-display_name = 右靴\nequip_slot-ring_l-display_name = 左戒指\nequip_slot-ring_r-display_name = 右戒指\n").expect("测试用写入应当成功");
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -629,6 +629,10 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(0),
+            // 规则修正：本文件的测试只关心几何（面板块数、条形块数），
+            // 不关心面板里写了什么字，空切片就够——非空的渲染由
+            // `character_panel` 自己的测试覆盖。
+            rule_modifiers: &[],
         }
     }
 
@@ -906,13 +910,17 @@ mod tests {
         // （标题 1 + 六项属性 6 + 等级 1 + 经验 1 + 修正标题 1 +
         // 「无」占位 1）→ 幸运并入 `AttributeKind` 批次多一行属性 →
         // 12 行 → 升级加点批次再多两行（属性点余额、技能点余额,两者
-        // 恒常显示即便为零,见 `character_panel` 里那段注释）→ 14 行。
+        // 恒常显示即便为零,见 `character_panel` 里那段注释）→ 14 行
+        // → 规则修正批次再多两行（段落标题 + 「无」占位,同样恒常显示,
+        // 理由同上）→ 16 行。本用例的 `sample_character_data` 把
+        // `rule_modifiers` 留成空切片,因此这里数到的是「无」那一行,
+        // 不是九条修正各一行。
         // **主属性倾向那一行不在其中**：本用例的
         // `sample_character_data` 把 `primary_attribute` 留成 `None`
         // （查不到职业定义），整行不出现——这条断言同时是那个分支的
         // 覆盖。有职业时那一行出现的证据在
         // `crate::hud::character_panel` 的对应测试。
-        assert_eq!(frame.labels.len(), 1 + 14 + 2 + 23);
+        assert_eq!(frame.labels.len(), 1 + 16 + 2 + 23);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

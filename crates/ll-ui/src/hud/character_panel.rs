@@ -29,14 +29,30 @@
 //! 文档「惰性到期判定」一节）重新汇总一遍——三行代码的重复，换来不需要
 //! `ll-sim` 公开一个专为 UI 服务的中间量访问器，属于 ADR 0021「只有算法
 //! 真正可共享时才抽象」判断下更划算的一侧。
+//!
+//! # 「规则修正」那一段本模块一个 `match` 都没有
+//!
+//! 抗性/易伤/偷袭/盘查减免/藏匿/制作产出加成/优势/劣势/重掷九个变体
+//! 此前**一条都不显示**——玩家拿到了却看不见。现在它们走
+//! [`ll_sim::rule_modifier::rule_modifier_displays`]：那边逐变体穷尽
+//! 声明每一条长什么样（文案键、主语键、若干个数值实参），本模块只是
+//! 把每一行的实参塞进 Fluent 实参表再查一次 `.ftl`。因此**新增第十个
+//! 变体时本模块零改动**——它根本不认识任何一个变体的名字。
+//!
+//! 数值是**合并之后**的（同加值类型取最强、跨类型相加，走结算用的
+//! 同一条链路），不是逐条原始声明——理由见
+//! [`ll_sim::rule_modifier::RuleModifierDisplay`] 文档：逐条列会把
+//! 「天赋 +1、附魔 +1」读成两次 +1，而实际生效的是 +2，面板会主动
+//! 误导。合并值丢掉的「同类型取最强」可见性由每行末尾的来源计数补回。
 
 use std::collections::BTreeMap;
 
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
-use ll_i18n::Catalog;
+use ll_i18n::{Catalog, FluentArgs};
 use ll_sim::item::ItemCatalog;
 use ll_sim::resolve::derive_stats;
+use ll_sim::rule_modifier::RuleModifierDisplay;
 use ll_world::entity::{ActiveStatModifier, AttributeKind, BaseStats};
 use ll_world::item::{EquipSlot, ItemStack};
 
@@ -73,6 +89,23 @@ fn attribute_key(kind: AttributeKind) -> &'static str {
         AttributeKind::Luck => "lostland:attribute.luck.display_name",
     }
 }
+
+/// 规则修正段落标题的文案键。
+const RULE_MODIFIERS_TITLE_KEY: &str = "hud-character-rule-modifiers-title";
+/// 一条规则修正都没有时那一行的文案键。
+const RULE_MODIFIERS_EMPTY_KEY: &str = "hud-character-rule-modifiers-empty";
+/// 行尾来源计数的文案键——**只有一条来源时按约定展开成空串**，
+/// 「（1 项来源）」满屏挂着只是噪声。这个「1 与其余不同」的分支写在
+/// `.ftl` 的 Fluent selector 里而不是这里：哪些数量该怎么念是语言的
+/// 事（有的语言还要区分双数），不是呈现代码的事。
+const RULE_MODIFIER_SOURCES_KEY: &str = "hud-character-rule-modifier-sources";
+/// 来源计数消息里的 Fluent 实参名。
+const SOURCES_ARG: &str = "sources";
+/// 主语在每条规则修正消息里的 Fluent 实参名。
+///
+/// **恒定传入**（没有主语的变体传空串），这样 `.ftl` 那边每条消息各自
+/// 决定要不要引用 `{ $subject }`，本模块不必知道谁有主语。
+const SUBJECT_ARG: &str = "subject";
 
 /// 角色面板需要的全部输入——一次读五个来源，理由与
 /// [`super::status_bar::StatusBarData`] 一致：打包成一个结构体，未来
@@ -114,6 +147,18 @@ pub struct CharacterPanelData<'a> {
     pub primary_attribute: Option<AttributeKind>,
     /// 当前世界时刻——判定哪些修正已过期。
     pub now: Tick,
+    /// 本角色身上生效中的**规则修正**（抗性/易伤/偷袭/盘查减免/藏匿/
+    /// 制作产出加成/优势/劣势/重掷），已经按加值类型规则合并好。
+    ///
+    /// 由装配点（`ll_game::app::draw_hud`）调用
+    /// [`ll_sim::rule_modifier::rule_modifier_displays`] 现算——那里
+    /// `LoadedContent` 在作用域内，天赋表/物品表/种族职业转职三张授予
+    /// 表与内容注册表都够得着，本模块够不着其中任何一张。
+    ///
+    /// 空切片 = 这个角色一条规则修正都没有，面板显示一行「无」。与
+    /// 上面「生效中的属性修正」同一条纪律：段落**恒常显示**，不因为
+    /// 空就整段消失（面板高度按行数现算，段落时有时无会让高度跳动）。
+    pub rule_modifiers: &'a [RuleModifierDisplay],
 }
 
 /// 按 [`CharacterPanelData::active_stat_modifiers`] 与 `now` 求出每项
@@ -222,6 +267,70 @@ fn write_character_panel_lines(
             cursor.push(lines, format!("  {label} {sign}{delta}"));
         }
     }
+
+    write_rule_modifier_lines(data.rule_modifiers, catalog, language, cursor, lines);
+}
+
+/// 写出「规则修正」一段：一个标题行 + 每条修正一行（一条都没有时写
+/// 一行「无」）。
+///
+/// 本函数**没有任何 `match`**：每一行长什么样全部由
+/// [`ll_sim::rule_modifier::RuleModifierDisplay`] 携带的文案键与实参
+/// 决定，见本模块文档同名一节。
+fn write_rule_modifier_lines(
+    displays: &[RuleModifierDisplay],
+    catalog: &Catalog,
+    language: &str,
+    cursor: &mut RowCursor,
+    lines: &mut Vec<Label>,
+) {
+    cursor.push(lines, catalog.resolve(language, RULE_MODIFIERS_TITLE_KEY));
+    if displays.is_empty() {
+        cursor.push(
+            lines,
+            format!("  {}", catalog.resolve(language, RULE_MODIFIERS_EMPTY_KEY)),
+        );
+        return;
+    }
+    for display in displays {
+        cursor.push(
+            lines,
+            format!("  {}", rule_modifier_line(display, catalog, language)),
+        );
+    }
+}
+
+/// 把一条修正渲染成一行：主体（种类 + 主语 + 数值）后面接来源计数。
+///
+/// 主语先被解析成显示文本再作为实参传进主体消息——`subject_key` 是
+/// 「`命名空间:注册表.路径.display_name`」形状的**另一个**文案键，
+/// 两级查表：先查主语的名字，再把名字填进这条修正的句子里。没有主语
+/// 的变体传空串，那些消息本来就不引用 `{ $subject }`。
+fn rule_modifier_line(display: &RuleModifierDisplay, catalog: &Catalog, language: &str) -> String {
+    let subject = display
+        .subject_key
+        .as_deref()
+        .map(|key| catalog.resolve(language, key))
+        .unwrap_or_default();
+
+    let mut args = FluentArgs::new();
+    args.set(SUBJECT_ARG, subject);
+    for (name, value) in &display.amounts {
+        args.set(*name, *value);
+    }
+    let body = catalog.resolve_with_args(language, display.name_key, Some(&args));
+
+    let mut source_args = FluentArgs::new();
+    // `source_count` 是 usize；Fluent 的数值实参走 i64，条数不可能溢出
+    // （它是一份 Vec 里的条目数），转不过去时退回 0 让 selector 走
+    // 「其余」分支，而不是在绘制 HUD 时 panic。
+    source_args.set(
+        SOURCES_ARG,
+        i64::try_from(display.source_count).unwrap_or(0),
+    );
+    let suffix = catalog.resolve_with_args(language, RULE_MODIFIER_SOURCES_KEY, Some(&source_args));
+
+    format!("{body}{suffix}")
 }
 
 /// 产出角色面板的全部文本行：标题、七项有效属性、等级、经验、生效中
@@ -283,7 +392,7 @@ mod tests {
     use std::path::Path;
 
     fn write_fixture_catalog(dir: &Path) {
-        std::fs::write(dir.join("zh-CN.ftl"), "hud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nhud-character-attribute-points-label = 属性点\nhud-character-skill-points-label = 技能点\nhud-character-primary-attribute-label = 主属性\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("zh-CN.ftl"), "hud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nhud-character-rule-modifiers-title = 生效中的规则修正\nhud-character-rule-modifiers-empty = 无\nhud-character-attribute-points-label = 属性点\nhud-character-skill-points-label = 技能点\nhud-character-primary-attribute-label = 主属性\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\n").expect("测试用写入应当成功");
     }
 
     fn temp_dir(name: &str) -> std::path::PathBuf {
@@ -322,6 +431,7 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(0),
+            rule_modifiers: &[],
         };
 
         // Act
@@ -363,6 +473,7 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(0),
+            rule_modifiers: &[],
         };
 
         // Act
@@ -399,6 +510,7 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(0),
+            rule_modifiers: &[],
         };
 
         // Act
@@ -442,6 +554,7 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(0),
+            rule_modifiers: &[],
         }
     }
 
@@ -558,6 +671,7 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(10),
+            rule_modifiers: &[],
         };
 
         // Act
@@ -606,6 +720,7 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(200),
+            rule_modifiers: &[],
         };
 
         // Act
@@ -642,6 +757,7 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(0),
+            rule_modifiers: &[],
         };
 
         // Act
@@ -675,6 +791,7 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(0),
+            rule_modifiers: &[],
         };
 
         // Act
@@ -703,6 +820,7 @@ mod tests {
             unspent_skill_points: 0,
             primary_attribute: None,
             now: Tick(0),
+            rule_modifiers: &[],
         };
 
         // Act
@@ -713,5 +831,167 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 仓库根目录下真实的 `assets/locales/`——`ll-ui` 位于
+    /// `crates/ll-ui`，向上两级到根。规则修正那一段刻意**不**用临时
+    /// fixture：这一段要证明的正是「九个变体各自那条文案真的存在于
+    /// 本体的 `.ftl` 里」，fixture 自己写一份键就把这件事测没了（漏
+    /// 一条真实文案照样绿）。理由与 `ll_game::tests::real_locales_dir`
+    /// 那条既有写法一致。
+    fn real_locales_dir() -> std::path::PathBuf {
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("..")
+            .join("..")
+            .join("assets")
+            .join("locales")
+    }
+
+    /// 与 [`joined_lines`] 同一件事，只是语言可选——规则修正那一段
+    /// 要在中英两份 `.ftl` 上各查一遍。
+    fn joined_lines_in(data: &CharacterPanelData<'_>, language: &str, catalog: &Catalog) -> String {
+        character_panel_lines(data, &NoItems, catalog, language, (0.0, 0.0), 16.0)
+            .iter()
+            .map(|line| line.text.clone())
+            .collect::<Vec<_>>()
+            .join(
+                "
+",
+            )
+    }
+
+    /// 测试用帮手：九个变体各来一条，走真实的
+    /// [`ll_sim::rule_modifier::rule_modifier_displays`] 折成面板行。
+    fn all_variant_displays() -> Vec<RuleModifierDisplay> {
+        use ll_core::ident::{Interner, NamespacedId};
+        use ll_sim::rule_modifier::{RuleModifier, RuleModifierEntry, rule_modifier_displays};
+
+        let mut interner = Interner::new();
+        let mut intern =
+            |raw: &str| interner.intern(NamespacedId::parse(raw).expect("测试用标识符恒合法"));
+        let source = intern("lostland:forge_apron");
+        let fire = intern("lostland:fire");
+        let physical = intern("lostland:physical");
+        let forging = intern("lostland:forging");
+        let inspection = NamespacedId::parse("lostland:inspection").expect("测试用标识符恒合法");
+        let critical = NamespacedId::parse("lostland:critical").expect("测试用标识符恒合法");
+        let entry = |modifier| RuleModifierEntry {
+            origin: source,
+            modifier_type: None,
+            modifier,
+        };
+        let modifiers = vec![
+            entry(RuleModifier::Resistance {
+                damage_category: fire,
+                damage_reduction: 6,
+            }),
+            entry(RuleModifier::Vulnerability {
+                damage_category: physical,
+                damage_increase: 4,
+            }),
+            entry(RuleModifier::RerollOnce { value: 1 }),
+            entry(RuleModifier::Advantage {
+                check_context: inspection,
+            }),
+            entry(RuleModifier::Disadvantage {
+                check_context: critical,
+            }),
+            entry(RuleModifier::SneakAttack {
+                sneak_modifier: 9,
+                extra_damage: 15,
+            }),
+            entry(RuleModifier::InspectionSuspicion {
+                inconspicuous_modifier: 5,
+            }),
+            entry(RuleModifier::InspectionConcealment {
+                concealment_modifier: 6,
+            }),
+            entry(RuleModifier::CraftYield {
+                category: forging,
+                bonus_product_count: 1,
+            }),
+        ];
+        rule_modifier_displays(&modifiers, &|index| interner.resolve(index).cloned())
+    }
+
+    #[test]
+    fn 九个变体在真实本地化文件里各有一条文案且都不退回键名() {
+        // Arrange：`Catalog::resolve` 查不到键时**回退到键名本身**（见
+        // 其文档），所以「渲染结果里还看得见键名」就是「这条文案漏了」
+        // 的信号。中英两份 `.ftl` 各查一遍——只补中文那份是本仓库最容易
+        // 犯的漂移。
+        let catalog = Catalog::load_dir(&real_locales_dir());
+        let displays = all_variant_displays();
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let mut data = sample_data(&modifiers, &equipment);
+        data.rule_modifiers = &displays;
+
+        for language in ["zh-CN", "en"] {
+            // Act
+            let text = joined_lines_in(&data, language, &catalog);
+
+            // Assert
+            assert_eq!(displays.len(), 9, "九个变体应当各折出一行");
+            assert!(
+                !text.contains("rule-modifier-"),
+                "{language}: 有修正文案退回了键名本身：\n{text}" // i18n-exempt：面向开发者的诊断信息，不是玩家会看到的文本
+            );
+            assert!(
+                !text.contains("display_name"),
+                "{language}: 有主语名退回了键名本身：\n{text}" // i18n-exempt：面向开发者的诊断信息，不是玩家会看到的文本
+            );
+        }
+    }
+
+    #[test]
+    fn 只有一条来源时行尾不挂来源计数多条时才挂() {
+        // Arrange：`锻造产出 +2（2 项来源）` 是这次的折中——数字是真实
+        // 生效的合并值，「有几条声明」另行说明，见
+        // `ll_sim::rule_modifier::RuleModifierDisplay` 文档。
+        let catalog = Catalog::load_dir(&real_locales_dir());
+        let single = vec![RuleModifierDisplay {
+            name_key: ll_sim::rule_modifier::CRAFT_YIELD_NAME_KEY,
+            subject_key: Some("lostland:recipe_category.forging.display_name".to_string()),
+            amounts: vec![("amount", 1)],
+            source_count: 1,
+        }];
+        let merged = vec![RuleModifierDisplay {
+            name_key: ll_sim::rule_modifier::CRAFT_YIELD_NAME_KEY,
+            subject_key: Some("lostland:recipe_category.forging.display_name".to_string()),
+            amounts: vec![("amount", 2)],
+            source_count: 2,
+        }];
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let mut data = sample_data(&modifiers, &equipment);
+
+        // Act
+        data.rule_modifiers = &single;
+        let single_text = joined_lines(&data, &catalog);
+        data.rule_modifiers = &merged;
+        let merged_text = joined_lines(&data, &catalog);
+
+        // Assert
+        assert!(single_text.contains("锻造产出 +1"), "{single_text}");
+        assert!(!single_text.contains("项来源"), "{single_text}");
+        assert!(merged_text.contains("锻造产出 +2"), "{merged_text}");
+        assert!(merged_text.contains("2 项来源"), "{merged_text}");
+    }
+
+    #[test]
+    fn 一条规则修正都没有时那一段仍然出现并写着无() {
+        // Arrange：段落恒常显示，与「生效中的属性修正」同一条纪律——
+        // 面板高度按行数现算，段落时有时无会让高度跳动。
+        let catalog = Catalog::load_dir(&real_locales_dir());
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let data = sample_data(&modifiers, &equipment);
+
+        // Act
+        let text = joined_lines(&data, &catalog);
+
+        // Assert
+        assert!(text.contains("生效中的规则修正"), "{text}");
     }
 }

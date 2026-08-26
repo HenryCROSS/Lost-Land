@@ -32,6 +32,7 @@ use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
+use ll_sim::rule_modifier::{agent_rule_modifiers, rule_modifier_displays};
 use ll_sim::turn::TurnEngine;
 use ll_text::TextRenderer;
 use ll_ui::hud::character_panel::CharacterPanelData;
@@ -690,6 +691,27 @@ fn draw_hud(
         fps,
         weather_display_name_key: weather_name_key.as_deref(),
     };
+    // 规则修正（抗性/易伤/偷袭/盘查减免/藏匿/制作产出加成/优势/劣势/
+    // 重掷）——**这里是唯一的装配点**：`agent_rule_modifiers` 要同时
+    // 拿到种族/职业/副职三张授予表、天赋表与物品表，`rule_modifier_displays`
+    // 还要把内容索引还原成标识符才能拼出主语的文案键，这五张表加注册表
+    // 只在本函数里同时够得着（`content: &LoadedContent`）。面板层拿到的
+    // 是已经按加值类型规则合并好的成品行，见
+    // `ll_ui::hud::character_panel::CharacterPanelData::rule_modifiers`。
+    //
+    // 每帧现算一次，与上面天气「派生而不缓存」同一条纪律：修正来自
+    // 天赋与**当前装备**，缓存就得有人负责在换装/损坏时让它失效。
+    let rule_modifiers = rule_modifier_displays(
+        &agent_rule_modifiers(
+            agent,
+            &content.race_table,
+            &content.class_table,
+            &content.subclass_table,
+            &content.trait_table,
+            &content.item_table,
+        ),
+        &|index| content.registry.resolve(index).cloned(),
+    );
     let character = CharacterPanelData {
         base_stats: agent.stats,
         active_stat_modifiers: &agent.active_stat_modifiers,
@@ -707,6 +729,7 @@ fn draw_hud(
             .get(agent.profession)
             .map(|view| view.primary_attribute),
         now: game_world.world.clock,
+        rule_modifiers: &rule_modifiers,
     };
 
     // 见本函数文档「世界地图」一节：`world_map_cells` 声明在 `if` 之外，
