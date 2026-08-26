@@ -240,6 +240,7 @@ fn spawn_agent(world: &mut WorldState, pos: (i32, i32), scene: &Scene) -> Entity
         identified_items: Vec::new(),
         skill_cooldowns: BTreeMap::new(),
         subclasses: scene.subclasses.clone(),
+        subclasses_ever_granted: scene.subclasses.clone(),
         active_stat_modifiers: BTreeMap::new(),
         current_space: Space::surface(zone, ContentIndex::default()),
         mod_state: BTreeMap::new(),

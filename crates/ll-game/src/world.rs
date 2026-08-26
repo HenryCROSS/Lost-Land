@@ -551,6 +551,7 @@ fn build_player_agent(
         identified_items: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
+        subclasses_ever_granted: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(zone, content.space_ids.surface),
         mod_state: std::collections::BTreeMap::new(),

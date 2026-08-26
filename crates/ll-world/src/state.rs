@@ -1073,6 +1073,17 @@ impl WorldState {
             hasher.write_u64(u64::from(agent.unspent_skill_points));
             write_content_index_vec(&mut hasher, &agent.unlocked_skills);
             write_content_index_vec(&mut hasher, &agent.subclasses);
+            // 「曾经获得过哪些副职」这份去重账本（副职发点批次新增）
+            // ——ADR 0022 的同一条纪律，而且这里**尤其**不能省：这个
+            // 字段由 `ll_sim::apply` 处理 `Effect::GrantSubclass` 时
+            // 改写，且它**真的改变结算**（它决定这次授予要不要发一批
+            // 属性点/技能点，见
+            // `Agent::subclasses_ever_granted` 文档）。不混入的后果
+            // 正是这个字段被造出来要防的那件事在重放摘要上完全看不
+            // 出来：「点数被重复发了/该发没发」。编码手法与紧邻上一行
+            // 的 `subclasses` 逐字相同（先混入长度、再逐项混入，`Vec`
+            // 保序，不涉及 `HashMap`/`HashSet` 迭代顺序，约束 C5）。
+            write_content_index_vec(&mut hasher, &agent.subclasses_ever_granted);
             // 已知配方（配方发现批次新增）——ADR 0022 的同一条纪律：
             // 这个字段由 `ll_sim::apply` 处理 `Effect::LearnRecipe` 时
             // 改写，且它**真的改变结算**（`resolve_craft` 对声明了
@@ -1707,6 +1718,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             mod_state: std::collections::BTreeMap::new(),
@@ -1770,6 +1782,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             mod_state: std::collections::BTreeMap::new(),
@@ -1987,6 +2000,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             mod_state: std::collections::BTreeMap::new(),
@@ -2060,6 +2074,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             mod_state: std::collections::BTreeMap::new(),
@@ -2125,6 +2140,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             mod_state: std::collections::BTreeMap::new(),
@@ -2200,6 +2216,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             mod_state: std::collections::BTreeMap::new(),
@@ -2494,6 +2511,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             mod_state: BTreeMap::new(),
@@ -2920,6 +2938,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: Space::surface(zone, ContentIndex::default()),
             mod_state: std::collections::BTreeMap::new(),

@@ -1,5 +1,6 @@
 //! `apply`：把一个 [`Effect`] 落到 [`WorldState`] 上的唯一入口。
 
+use ll_core::ident::ContentIndex;
 use ll_world::entity::{Agent, EntityId};
 use ll_world::fov::compute_fov;
 use ll_world::space::Space;
@@ -7,6 +8,7 @@ use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
 
 use crate::effect::Effect;
+use crate::subclass::{SUBCLASS_ATTRIBUTE_POINTS, SUBCLASS_SKILL_POINTS};
 use crate::xp_curve::{FlatXpCurve, XpCurveCatalog, eval_xp_curve};
 
 /// 把一个 [`Effect`] 应用到世界状态，这是全局唯一允许改动
@@ -266,12 +268,13 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
             }
         }
         Effect::GrantSubclass { actor, subclass } => {
-            // 同上：去重与上限两道闸门全在产出侧
+            // 去重与上限两道闸门全在产出侧
             // （`crate::subclass::can_grant`）。这里是
             // `Agent::subclasses` 在本仓库里的唯一写入口之一（另一处
             // 是下面的 `RemoveSubclass`），约束 C1。
             if let Some(agent) = world.actors.get_mut(*actor) {
                 agent.subclasses.push(*subclass);
+                grant_first_time_subclass_points(agent, *subclass);
             }
         }
         Effect::RemoveSubclass { actor, subclass } => {
@@ -488,6 +491,58 @@ pub fn apply(world: &mut WorldState, effect: &Effect) {
     apply_with_xp_curves(world, effect, &FlatXpCurve::DEFAULT);
 }
 
+/// 第一次获得某个副职时一次性发一批点数——项目所有者裁定「那副职还是
+/// 给点数好了」在 `apply` 侧的唯一落点。
+///
+/// # 「第一次」由 `Agent::subclasses_ever_granted` 定义，不是由
+/// `Agent::subclasses` 定义
+///
+/// 这两者的差别就是本函数存在的理由：`subclasses` 记「现在持有什么」，
+/// 放弃时条目就没了；账本只增不减。若这里改判 `subclasses.contains`，
+/// 「放弃 → 再制作一次 → 重新获得」这条**设计上明确支持**的路径
+/// （见 [`ll_world::entity::Agent::subclasses_ever_granted`] 文档
+/// 完整推导）会变成一台点数复制机。
+///
+/// # 为什么这个判断在 `apply`，而不是在产出侧
+///
+/// 与同文件 [`grant_experience_and_level_up`] 完全同构，而且是同一种
+/// 货币：升级发点也是 `apply` 自己数出「升了几级」再按
+/// `Agent::ATTRIBUTE_POINTS_PER_LEVEL` 发的，`resolve` 侧一个数都不
+/// 算。理由在这里更强一层——`Effect::GrantSubclass` 有**三条**预定的
+/// 产出路径（使用计数、任务奖励、世界生成时的初始副职，见
+/// `crate::subclass` 模块文档「唯一出口」一节），当前已经有两处构造点
+/// （`crate::subclass::grant_subclass_effects` 与
+/// `crate::subclass::craft_progress_effects`）。把「这次该不该发点」
+/// 做成效果的一个字段，等于要求**每一条**现在与将来的产出路径都记得
+/// 正确地算一遍它；放在这里，则「账本里有它 ⟺ 已经为它发过点」这条
+/// 不变式由一段**原子的、三行的**代码独自维护，任何一条产出路径都
+/// 伪造不出第二次发点。这不违反约束 C1/ADR 0023：写入仍然只发生在
+/// `apply`、仍然由一条 `Effect` 驱动。
+///
+/// # 这里**不能**改判 `Agent::subclasses`，不只是语义问题
+///
+/// 除了「放弃时会被清掉」这条语义理由，还有一条机械理由：本函数在
+/// 上面那条 `subclasses.push` **之后**被调用，此刻 `subclasses` 必然
+/// 已经包含 `subclass`，改判它会让这个分支恒真、一次点都发不出去。
+/// 实测（把判据临时换成 `subclasses.contains` 跑
+/// `example_mod_subclass_unlock`）：正向那条
+/// `获得副职时一次性发一批属性点与技能点` 会连同两条防重复测试一起
+/// 变红。
+///
+/// `saturating_add` 与升级那一路同一条防御性纪律。
+fn grant_first_time_subclass_points(agent: &mut Agent, subclass: ContentIndex) {
+    if agent.subclasses_ever_granted.contains(&subclass) {
+        return;
+    }
+    agent.subclasses_ever_granted.push(subclass);
+    agent.unspent_attribute_points = agent
+        .unspent_attribute_points
+        .saturating_add(SUBCLASS_ATTRIBUTE_POINTS);
+    agent.unspent_skill_points = agent
+        .unspent_skill_points
+        .saturating_add(SUBCLASS_SKILL_POINTS);
+}
+
 /// [`Effect::GrantExperience`] 的完整落地逻辑：加经验、循环判定升级、
 /// 每次升级增量重算 `xp_to_next_level`——设计文档六节裁定「升级判定
 /// 整段放进 apply 一次算完」，本函数就是那一整段。
@@ -616,6 +671,7 @@ mod tests {
             identified_items: Vec::new(),
             skill_cooldowns: std::collections::BTreeMap::new(),
             subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
             active_stat_modifiers: std::collections::BTreeMap::new(),
             current_space: ll_world::space::Space::surface(
                 zone,

@@ -164,6 +164,19 @@ use ll_world::zone::ZoneLayout;
 /// 3. 撤掉那一行之后，把这条测试单独跑了两次（两次**独立的
 ///    `cargo test` 进程**），确认新摘要 `13_774_070_666_589_385_121`
 ///    稳定复现，才把它写进下面的常量。
+// # 副职发点批次：同样没有重冻，同一条理由
+//
+// `WorldState::hash` 新增混入的 `Agent::subclasses_ever_granted`
+// （`Vec<ContentIndex>`，「曾经获得过哪些副职」的发点去重账本）与上面
+// 两批一样只在 `for agent in self.actors.iter()` 循环体内被读取——本文件
+// 的测试世界没有任何 `actors.spawn` 调用，循环体一次也不会执行，新字段
+// 不会被喂进哈希器。人工核验（真实执行）：本次改动落地后跑了
+// `cargo test -p ll-world --test determinism`，8 条全绿，
+// `固定种子的四十八乘四十八世界摘要跨平台稳定` 的摘要与改动前的
+// `EXPECTED_WORLD_DIGEST` 逐位相同，因此常量本身不需要更新——这不是漏
+// 检查，是核实过的真实结论。**同一批次里 `crates/ll-sim/tests/replay.rs`
+// 的 `EXPECTED_REPLAY_DIGEST` 确实重冻了**（那个回放真的生成实体），
+// 两者一变一不变正是「顶层字段 vs `Agent` 字段」这条区别的又一次体现。
 const EXPECTED_WORLD_DIGEST: u64 = 13_774_070_666_589_385_121;
 
 // # 等级与经验系统落地批次：本次没有重冻，如实记录为什么不可能变

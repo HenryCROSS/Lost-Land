@@ -114,6 +114,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         identified_items: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
+        subclasses_ever_granted: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(player_zone, ll_core::ident::ContentIndex::default()),
         mod_state: std::collections::BTreeMap::new(),
@@ -159,6 +160,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         identified_items: Vec::new(),
         skill_cooldowns: std::collections::BTreeMap::new(),
         subclasses: Vec::new(),
+        subclasses_ever_granted: Vec::new(),
         active_stat_modifiers: std::collections::BTreeMap::new(),
         current_space: Space::surface(enemy_zone, ll_core::ident::ContentIndex::default()),
         mod_state: std::collections::BTreeMap::new(),
@@ -739,7 +741,38 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
 ///    `13_415_522_993_411_599_503` 在两次独立进程里稳定复现（不是一次性
 ///    偶然值），才把它写进下面的常量。
-const EXPECTED_REPLAY_DIGEST: u64 = 13_415_522_993_411_599_503;
+/// # 本次重冻的原因（副职发点批次新增 `Agent::subclasses_ever_granted`）
+///
+/// [`ll_world::entity::Agent`] 新增了 `subclasses_ever_granted:
+/// Vec<ContentIndex>`（「这个角色**曾经**获得过哪些副职」，发点去重
+/// 账本），`WorldState::hash()` 因此在 `subclasses` 之后多混入一段
+/// 「长度 + 逐项」——**每一个 `Agent` 的摘要都变了**，即便它一个副职
+/// 都没拿到过（长度前缀 `0` 也是一段此前不存在的字节，理由同该字段在
+/// `hash()` 里的注释与 ADR 0022）。
+///
+/// 本回放全程没有任何 `Intent::Craft`（`intent_stream` 只有
+/// `Move`/`Wait`/`Attack`/`OpenDoor`），因此没有任何副职被授予、也没
+/// 有任何点数被发出，变的**只是**那段空列表前缀，不是行为漂移——这
+/// 一点由下面第 2 步实测钉死。
+///
+/// 人工核验（真实执行，非由脚本自动回填）：
+/// 1. 改动完成后先跑一次，确认这条测试确实红了，且报出的 `right`
+///    正是旧常量 `13_415_522_993_411_599_503`（基线确实是它，不是
+///    记忆）。实测 `left: 8248219424168966831`。
+/// 2. 把 `state.rs` `hash()` 里新增的那一行
+///    （`write_content_index_vec(&mut hasher, &agent.subclasses_ever_granted);`）
+///    临时换成一行不混入哈希的等价读取
+///    （`let _ = &agent.subclasses_ever_granted;`），其余全部改动
+///    （`Agent` 新字段、`ll_sim::subclass` 两个点数常量、`apply` 的
+///    `grant_first_time_subclass_points`、存档重映射、83 处夹具字面量）
+///    原样保留——摘要**精确回到旧常量** `13_415_522_993_411_599_503`
+///    （测试转绿，实测通过）。这一步同时证明两件事：新摘要的变化只由
+///    那一行引起；本批次横跨 60 个文件的改动没有夹带任何行为漂移。
+/// 3. 撤掉那一行之后，在改动后的代码上把这条测试单独跑了两次（两次
+///    **独立的 `cargo test` 进程**，不是同一进程内跑两遍），确认新摘要
+///    `8_248_219_424_168_966_831` 在两次独立进程里稳定复现（不是一次性
+///    偶然值），才把它写进下面的常量。
+const EXPECTED_REPLAY_DIGEST: u64 = 8_248_219_424_168_966_831;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {
