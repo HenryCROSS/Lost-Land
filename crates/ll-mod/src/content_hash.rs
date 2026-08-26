@@ -460,7 +460,8 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 3. **两个既有变体的载荷改了含义**：`RuleModifier::Resistance` 的
 ///    `multiplier_permille`（千分比乘数）换成了 `damage_reduction`
 ///    （减伤点数），`RuleModifier::InspectionSuspicion` 的
-///    `multiplier_permille` 换成了 `suspicion_reduction_permille`。
+///    `multiplier_permille` 换成了当时的 `suspicion_reduction_permille`
+///    （判定系统落地批次再次改名成 `inconspicuous_modifier`）。
 ///    判别值 `0`/`5` 没变、写入的字节宽度也没变，但**同一段字节现在表示
 ///    完全不同的规则**（500 从"半伤"变成"减 500 点"）——这正是本常量
 ///    存在的理由：量尺换了，旧存档的比对必须走
@@ -562,7 +563,104 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// `制作产出加成件数不同则摘要不同`，以及版本 7 那次事故之后立下的
 /// 那条纪律——**提交信息声称改了，不等于代码里真的改了**，本行的
 /// 字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 19;
+///
+/// ---
+///
+/// 版本 21（`wt-dice` 合并批次）：**本次递增是合并本身造成的，不是任何
+/// 一批改动单独造成的**。
+///
+/// `main` 上已发布的版本 19（上一节，制作类副职奖励）与 `wt-dice` 分支
+/// 上的版本 19/20（下面①②）是**两把互不相同的量尺**——各自只含自己
+/// 那一批哈希输入。合并之后三批输入**同时存在**，得到的是第三把尺子,
+/// 与两者都不同：
+///
+/// - 沿用 `19` 会让它同时指代「只有 `CraftYield`」与「三批都有」两把
+///   尺子，正是版本 7 那次事故的形状。
+/// - 沿用 `20` 同样不行：`wt-dice` 的 20 里**没有** `CraftYield` 那条
+///   判别值，一份按它算出来的摘要与本版本算出来的不同。
+///
+/// 因此取 `21`。**跳过 20 不是浪费**：这个字段是一个单调标记，它要回答
+/// 的问题是「你那份存档的量尺是不是我这一把」，不是「一共改过几次」。
+///
+/// 合并之后判别值的**最终分配**（[`write_rule_modifier`]，九个变体
+/// 九个值，互不相同）：`Resistance` = 0、`RerollOnce` = 1、
+/// `Advantage` = 2、`Disadvantage` = 3、`SneakAttack` = 4、
+/// `InspectionSuspicion` = 5、`InspectionConcealment` = 6、
+/// `CraftYield` = 7、`Vulnerability` = 8。既有的 `0..=6` **一个字节都
+/// 没动**——这正是本模块「判别值接着既有档往后编号」那条纪律要买的
+/// 东西：两个分支各自往后加一条，合并时只需要给后到的那一条挪号
+/// （`Vulnerability` 7 → 8，理由见 [`write_rule_modifier`] 里那段
+/// 注释），既有内容的逐条摘要因此不受合并影响。
+///
+/// 下面①②是 `wt-dice` 带进来的两批改动原文，编号按合并后的事实订正
+/// （分支上的「版本 19/20」在 `main` 上从未存在过，它们的量尺变更一并
+/// 由本版本 21 表达）。
+///
+/// ## ① 易伤与减伤对称批次（分支上曾编作 19）
+///
+/// **一个既有字段的合法值域收窄，外加
+/// 一个新的枚举变体**——两条各自都足以逼着版本号动。
+///
+/// 1. **值域收窄（这一条才是必须的）**：`RuleModifier::Resistance`
+///    与 `RawItemResistance` 的 `damage_reduction` 此前允许负数,负数
+///    表示「脆弱」；现在装载期一律 `.max(0)`。同一份 mod 数据里的
+///    `damage_reduction: -5` 此前哈希进 `-5`、行为是「多挨 5 点」,
+///    现在哈希进 `0`、行为是「什么也不做」——**同一段字节表示的规则
+///    变了**，与版本 18 文档「两个既有变体的载荷改了含义」那一条是
+///    完全同一类，理由也完全相同：量尺换了，旧存档的比对必须走
+///    `ContentHashAlgorithmUpgraded` 而不是 `ModContentMismatch`。
+/// 2. **新增变体**：[`write_rule_modifier`] 多一个判别值
+///    （`RuleModifier::Vulnerability`，当时取 `7`，判定系统落地批次
+///    因与 `CraftYield` 撞车改成 `8`）。这一条**单独看不改任何既有
+///    摘要**（没有声明易伤的条目一个字节都没多，判别值是逐条写的,
+///    不是表头），但它是（一）那条收窄的配套——脆弱从此有正规写法。
+///
+/// **本仓库现有内容里没有任何一条负 `damage_reduction`**（`lostland`
+/// 的 `forge_apron` 是 `6`、`example_mod` 的 `acid_hide` 是 `4`、
+/// `acid_ward_amulet` 是 `3`），因此（一）对**现有**摘要逐位无影响；
+/// 真正改变摘要的是同批次给 `examplemod:acid_hide` 新增的那条
+/// `kind: "vulnerability"` 声明（走那段新判别值字节）——只有
+/// `examplemod` 命名空间的摘要变了，`lostland` 逐位不变。版本号动的
+/// 理由是（一）那条**量尺变更**，不是这一条内容新增。
+///
+/// `ContentTableKind` 的二十一个变体一个未变、[`ContentValueTables`]
+/// 的字段一个未加，因此
+/// `scripts/ci/check_field_consumers.py` 的
+/// `check_content_hash_gate_cross_coverage` 那条互校在本批次无事可做
+/// （它只守「新增了表」）。
+///
+/// 守门方式同版本 13/14/15：本段文字 + 本模块单元测试
+/// `易伤与同数值的减伤摘要不同`，以及版本 7 那次事故之后立下的那条
+/// 纪律——**提交信息声称改了，不等于代码里真的改了**，本行的字面值
+/// 就是唯一权威。
+///
+/// ## ② 判定系统落地批次（分支上曾编作 20）
+///
+/// 两条各自独立的理由，任一条单独成立都足以要求递增：
+///
+/// 1. **两个既有变体的载荷改了含义。**
+///    `RuleModifier::InspectionSuspicion` 的载荷此前是「从盘查触发
+///    概率上减掉的千分比点数」，现在是「在对抗判定里加给隐蔽方的骰子
+///    点数」；`InspectionConcealment` 的载荷此前是「每件物品不被看见
+///    的千分比概率」，现在是「加给藏东西那一方的骰子点数」。同一段
+///    字节（`400`）此前表示「减 40 个百分点」，现在表示「加 400 点，
+///    而 400 已经越过修正上限 28 会被装载期拒掉」——**量尺换了**，与
+///    版本 18/19 那两条是完全同一类。
+/// 2. **一个既有变体的判别值改了。** `RuleModifier::Vulnerability`
+///    从 `7` 改成 `8`，因为 `main` 上合入的 `CraftYield` 已经占了 `7`
+///    ——完整论证见 [`write_rule_modifier`] 里那一段注释。
+///
+/// 同批次新增的三个 `kind`（`advantage`/`disadvantage`/`reroll-once`）
+/// **单独看不改任何既有摘要**：它们走的是本来就已经写死的判别值
+/// `1`/`2`/`3`（那三个变体从一开始就在 `write_rule_modifier` 里），
+/// 本批次只是让内容第一次写得出它们。没有声明它们的条目一个字节都
+/// 没多。
+///
+/// `ContentTableKind` 的变体一个未变、[`ContentValueTables`] 的字段
+/// 一个未加，因此 `scripts/ci/check_field_consumers.py` 的
+/// `check_content_hash_gate_cross_coverage` 那条互校在本批次同样无事
+/// 可做。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 21;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1376,15 +1474,56 @@ fn write_rule_modifier(hasher: &mut StateHasher, modifier: &RuleModifier, regist
         // 判别值 5/6（盗贼被动两分批次）：接着既有的 0..=4 往后编号，
         // 不打乱任何已经写死的判别值，同本模块「判别值接着既有档往后
         // 编号」的一贯纪律。
+        //
+        // 判定系统落地批次**只改了载荷的含义，没有改判别值**：同一段
+        // 字节此前表示「从触发概率上减掉 400‰」，现在表示「在判定里给
+        // 隐蔽方加 400 点」——同一个量纲换代，与同一次合并里收窄
+        // `damage_reduction` 值域（版本 21 ①）是同一类，因此该由
+        // `CONTENT_HASH_ALGORITHM_VERSION` 递增来表达，不该靠挪判别值
+        // 冒充（挪判别值会让「同一条内容在新旧两版下算出不同摘要」这件
+        // 事发生两次，一次来自版本号一次来自判别值，反而看不清是哪一次
+        // 改动引起的）。
         RuleModifier::InspectionSuspicion {
-            suspicion_reduction_permille,
+            inconspicuous_modifier,
         } => {
             hasher.write_u64(5);
-            hasher.write_i64(i64::from(*suspicion_reduction_permille));
+            hasher.write_i64(i64::from(*inconspicuous_modifier));
         }
-        RuleModifier::InspectionConcealment { conceal_permille } => {
+        RuleModifier::InspectionConcealment {
+            concealment_modifier,
+        } => {
             hasher.write_u64(6);
-            hasher.write_i64(i64::from(*conceal_permille));
+            hasher.write_i64(i64::from(*concealment_modifier));
+        }
+        // 判别值 8（易伤与减伤对称批次新增，取 7；本批次改成 8）。
+        // 写入的两个字段与判别值 0（`Resistance`）逐字同构——**判别值
+        // 本身就是两者的唯一区分**，这也正是它必须是一个独立变体而不是
+        // 负减伤的哈希侧后果：`减伤 -4` 与 `易伤 4` 此前会编码成同一条
+        // 规则的两个数值，现在是两条不同的规则。
+        //
+        // # 为什么改号
+        //
+        // 与本变体自身无关，是一次**撞车**：本变体在分支 `wt-dice` 上
+        // 取了 7，而同一时间 `main` 合入的 `wt-craftyield` 给
+        // `RuleModifier` 加的 `CraftYield` 也取了 7。两个判别值必须
+        // 互不相同——相同的话，一条「易伤 4 点」与一条「产出加成 4」
+        // 会编码成逐位相同的字节，内容摘要再也分不开它们，而分开它们
+        // 正是判别值存在的全部理由。
+        //
+        // 改的是本变体而不是 `CraftYield`：后者已经在 `main` 上，改它
+        // 要动一条已经发布的编号；本变体还在分支上没合，改它只动本分支
+        // 自己。「后到的那个让路」是唯一不牵动别人的选择。
+        //
+        // 代价如实记下：`examplemod:acid_hide` 声明了易伤，它的条目
+        // 摘要因此改变。这是正当变化——它记录的正是「这条规则的编码
+        // 变了」。
+        RuleModifier::Vulnerability {
+            damage_category,
+            damage_increase,
+        } => {
+            hasher.write_u64(8);
+            write_optional_resolved(hasher, Some(*damage_category), registry);
+            hasher.write_i64(i64::from(*damage_increase));
         }
         // 判别值 7（制作类副职奖励批次）：接着既有的 0..=6 往后编号,
         // 不打乱任何已经写死的判别值。`category` 指向配方类别表,
@@ -3005,10 +3144,10 @@ mod tests {
 
         // Act
         let suspicion = digest(&RuleModifier::InspectionSuspicion {
-            suspicion_reduction_permille: 500,
+            inconspicuous_modifier: 500,
         });
         let concealment = digest(&RuleModifier::InspectionConcealment {
-            conceal_permille: 500,
+            concealment_modifier: 500,
         });
         let reroll = digest(&RuleModifier::RerollOnce { value: 500 });
         let sneak = digest(&RuleModifier::SneakAttack {
@@ -3058,10 +3197,18 @@ mod tests {
                 extra_damage: 4,
             }),
             digest(&RuleModifier::InspectionSuspicion {
-                suspicion_reduction_permille: 4,
+                inconspicuous_modifier: 4,
             }),
             digest(&RuleModifier::InspectionConcealment {
-                conceal_permille: 4,
+                concealment_modifier: 4,
+            }),
+            // 合并批次补进对照组：`Vulnerability` 与本变体在两个分支上
+            // 各自取了判别值 `7`，合并时后到的那个挪到 `8`。两者的载荷
+            // 又恰好同构（一个 `ContentIndex` + 一个 `i32`），因此**只
+            // 有判别值把它们分开**——挪号若哪天被改回去，这一条会红。
+            digest(&RuleModifier::Vulnerability {
+                damage_category: category,
+                damage_increase: 4,
             }),
         ];
 
@@ -3114,18 +3261,18 @@ mod tests {
         // Act & Assert
         assert_ne!(
             digest(&RuleModifier::InspectionSuspicion {
-                suspicion_reduction_permille: 0,
+                inconspicuous_modifier: 0,
             }),
             digest(&RuleModifier::InspectionSuspicion {
-                suspicion_reduction_permille: 1000,
+                inconspicuous_modifier: 1000,
             })
         );
         assert_ne!(
             digest(&RuleModifier::InspectionConcealment {
-                conceal_permille: 0,
+                concealment_modifier: 0,
             }),
             digest(&RuleModifier::InspectionConcealment {
-                conceal_permille: 1000,
+                concealment_modifier: 1000,
             })
         );
     }
@@ -3172,6 +3319,54 @@ mod tests {
         assert_ne!(untyped, as_enhancement);
         assert_ne!(untyped, as_alchemical);
         assert_ne!(as_enhancement, as_alchemical);
+    }
+
+    /// 易伤与减伤在摘要里必须分得开——见
+    /// [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 19」一节。
+    ///
+    /// 这条守的是一个具体的失效模式：`Vulnerability` 写入的两个字段与
+    /// `Resistance` 逐字同构（伤害类别 + 一个 `i64`），**判别值是两者
+    /// 唯一的区分**。忘了写判别值、或两个变体误用同一个判别值，一件
+    /// 「抗火 4」的围裙与一件「怕火 4」的围裙就会摘要相同，存档校验会
+    /// 报「内容没变」，玩家读档后拿到一件行为完全相反的装备。
+    #[test]
+    fn 易伤与同数值的减伤摘要不同() {
+        // Arrange：同一个伤害类别、同一个点数、同一个加值类型。
+        let mut registry = Registry::new();
+        let fire = registry.intern(id("yourmod:fire"));
+        let innate = registry.intern(id("yourmod:innate"));
+        let digest = |modifier: RuleModifier| -> u64 {
+            let mut hasher = StateHasher::new();
+            write_typed_rule_modifier(
+                &mut hasher,
+                &TypedRuleModifier {
+                    modifier_type: Some(innate),
+                    modifier,
+                },
+                &registry,
+            );
+            hasher.finish()
+        };
+
+        // Act
+        let as_resistance = digest(RuleModifier::Resistance {
+            damage_category: fire,
+            damage_reduction: 4,
+        });
+        let as_vulnerability = digest(RuleModifier::Vulnerability {
+            damage_category: fire,
+            damage_increase: 4,
+        });
+        // 同一个变体、不同点数：确认这两个字段本身也真的进了摘要,
+        // 否则上面那条断言可能只是判别值在起作用。
+        let stronger_vulnerability = digest(RuleModifier::Vulnerability {
+            damage_category: fire,
+            damage_increase: 6,
+        });
+
+        // Assert
+        assert_ne!(as_resistance, as_vulnerability);
+        assert_ne!(as_vulnerability, stronger_vulnerability);
     }
 
     /// 配方发现批次新增的 `ItemDef.taught_recipes` 真的进了摘要——

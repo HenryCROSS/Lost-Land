@@ -57,6 +57,7 @@ use ll_mod::trait_def::TraitTable;
 use ll_platform::input::{GameKey, InputState};
 use ll_sim::behavior::behavior_ai_intent;
 use ll_sim::catalogs::ResolveCatalogs;
+use ll_sim::check::{CHECK_DICE, CONCEALMENT_CHECK, INSPECTION_CHECK, RollBias};
 use ll_sim::craft::NoRecipes;
 use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::effect::Effect;
@@ -65,6 +66,9 @@ use ll_sim::exposure::AmbientSource;
 use ll_sim::intent::Intent;
 use ll_sim::item::{EquipSlot, ItemStack};
 use ll_sim::quest::NoQuests;
+use ll_sim::rule_modifier::{
+    RuleModifierEntry, check_roll_bias, concealment_check_modifier, inconspicuous_check_modifier,
+};
 use ll_sim::skill::NoSkills;
 use ll_sim::timeline::Timeline;
 use ll_sim::turn::TurnEngine;
@@ -88,9 +92,13 @@ const CUTPURSE_UNLOCK_LEVEL: i32 = 3;
 /// 解锁前的等级——恰好差一级，本文件全部反例的构造方式。
 const BELOW_UNLOCK_LEVEL: i32 = CUTPURSE_UNLOCK_LEVEL - 1;
 
-/// `(register-trait-inspection-concealment "examplemod:cutpurse_training" 800)`
-/// 的第二个参数，同上：来自真实脚本的数字。
-const CUTPURSE_CONCEAL_PERMILLE: i32 = 800;
+/// `mods/example_mod/traits.json5` 里 `examplemod:cutpurse_training` 那条
+/// `kind: "inspection-concealment"` 的 `concealment_modifier`，同上：
+/// 来自真实内容的数字。
+///
+/// 判定系统落地批次把它从千分比 `800` 换成了**判定修正点数** `9`
+/// （半颗骰子，见 `ll_sim::check::CheckDice::half_die`）。
+const CUTPURSE_CONCEALMENT_MODIFIER: i64 = 9;
 
 /// 装载真实 `mods/` 一次，返回本文件断言需要的表与索引——形状照抄
 /// `example_mod_stealth.rs::RealModsHandle`，只是多解析两个索引
@@ -107,6 +115,7 @@ struct RealModsHandle {
     rogue_id: ContentIndex,
     guard_id: ContentIndex,
     sword_id: ContentIndex,
+    cutpurse_id: ContentIndex,
 }
 
 impl RealModsHandle {
@@ -189,11 +198,13 @@ fn load_real_mods() -> RealModsHandle {
     let rogue_id = lookup("examplemod:rogue");
     let guard_id = lookup("lostland:guard");
     let sword_id = lookup("examplemod:iron_sword");
+    let cutpurse_id = lookup("examplemod:cutpurse_training");
 
     RealModsHandle {
         rogue_id,
         guard_id,
         sword_id,
+        cutpurse_id,
         registry,
         race,
         class,
@@ -379,10 +390,16 @@ fn 三级盗贼的扒手训练让盘查查不出东西且经由turnengine生效(
         "2 级盗贼没有扒手训练，每次盘查都应当看到全部 {carried} 件：{locked:?}"
     );
 
-    // Assert 三：有这条被动时，看到的总件数显著更少。真实脚本声明
-    // 800‰，期望值因此是 20%——下面只要求「不到一半」，留了极大的
-    // 安全边际（概率断言，不是单次结果断言，与 `example_mod_stealth.rs`
-    // 的盘查率断言同一条既有纪律）。
+    // Assert 三：有这条被动时，看到的总件数显著更少。真实内容声明
+    // 9 点判定修正，双方属性都是基准 10（两侧调整值 0），因此单件被
+    // 看到的概率是 `3d20` 净差 −9 时的精确值 255‰——期望值约 25%。
+    // 下面只要求「不到一半」，留了很大的安全边际（概率断言，不是单次
+    // 结果断言，与 `example_mod_stealth.rs` 的盘查率断言同一条既有
+    // 纪律）。
+    //
+    // 旧模型下这个数是 200‰（藏匿率 800‰ 的补）。同一档，但换成对抗
+    // 判定之后它不再是一个与人无关的常数：搜身的人的意志调整值现在
+    // 进了式子。
     let unlocked_total: usize = unlocked.iter().sum();
     let locked_total: usize = locked.iter().sum();
     assert_eq!(locked_total, turns * carried);
@@ -395,18 +412,24 @@ fn 三级盗贼的扒手训练让盘查查不出东西且经由turnengine生效(
     // 是后者，每次的件数只可能是 0 或 4；这里要求真的出现过「查到了
     // 一部分」的中间结果。这条钉的是
     // `RuleModifier::InspectionConcealment` 文档「为什么是逐件掷骰」
-    // 一节选定的那个形状本身。200 次盘查里一次中间结果都不出现的概率
-    // 可忽略不计（单次出现中间结果的概率约 41%）。
+    // 一节选定的那个形状本身。这么多次盘查里一次中间结果都不出现的
+    // 概率可忽略不计（单件被看到 255‰，四件里「既非全见也非全藏」
+    // 的概率约 72%）。
     assert!(
         unlocked.iter().any(|&count| count > 0 && count < carried),
         "逐件掷骰应当出现过「查到了一部分」的结果：{unlocked:?}"
     );
-    // 上一条断言的前提：真实脚本声明的藏匿率若是 1000‰，逐件与整份
-    // 两种形状就无法区分了。写成 `const` 块而不是运行期 `assert!`
-    // ——两边都是常量，clippy::assertions_on_constants 要求它在编译期
-    // 判定，语义上也确实该在编译期判定（真实脚本改成 1000 时，这条
-    // 测试文件应当直接编译不过，而不是等到跑起来才说话）。
-    const _: () = assert!(CUTPURSE_CONCEAL_PERMILLE < 1000);
+    // 上一条断言的前提：真实内容声明的藏匿修正若顶到上限，逐件与整份
+    // 两种形状就几乎无法区分了（顶格时单件被看到只有 21‰，四件全藏的
+    // 概率高达 92%，中间结果稀少）。写成 `const` 块而不是运行期
+    // `assert!`——两边都是常量，clippy::assertions_on_constants 要求它
+    // 在编译期判定，语义上也确实该在编译期判定（真实内容改成顶格时，
+    // 这条测试文件应当直接编译不过，而不是等到跑起来才说话）。
+    //
+    // 注意这条前提**换了依据**：旧模型里 `1000‰` 是「绝对藏住」，
+    // 因此非它不可；新模型里根本没有绝对，顶格也只是「很难查到」，
+    // 所以这里挡的是「统计上区分不开」，不是「逻辑上区分不开」。
+    const _: () = assert!(CUTPURSE_CONCEALMENT_MODIFIER < CHECK_DICE.max_modifier());
 }
 
 /// 被动①的观测场景：真实的卫兵行为树经由 [`TurnEngine`] 连续
@@ -486,13 +509,20 @@ fn guard_turns_against_rogue(
 /// 硬要求二（被动①「不觉得可疑」）：3 级盗贼显著更少被卫兵盘查，
 /// 而且**不是**靠让卫兵看不见他，整条链路经由 [`TurnEngine`]。
 ///
-/// 引擎里 `GUARD_INSPECT_CHANCE_PERMILLE` 是 500、扒手训练**减掉**
-/// 400‰（加值类型批次把这条被动从乘数改成了概率减点数），3 级那一侧的
-/// 实际触发率因此是 500 − 400 = 100‰，相差五倍。这个数与乘数模型那一版
-/// （500 × 200 / 1000 = 100‰）**逐位相同**——`mods/example_mod/traits.json5`
-/// 里那条声明的新值正是照着「不改变非潜行状态下的既有行为」挑的，见该
-/// 文件里 cutpurse_training 的注释。下面只要求「3 级一侧严格少于 2 级
-/// 一侧的一半」，留了很大的安全边际。
+/// 判定系统落地批次把这条链路换成了**对抗判定**（`3d20`，卫兵的意志
+/// 调整值 vs 目标的敏捷调整值 + 各路修正）。两侧属性都是基准 10，因此：
+///
+/// - **2 级**（没有这条被动）：净差 0 → 卫兵赢面 486‰。旧模型是写死的
+///   500‰，几乎逐字对上——两个势均力敌的人各掷一轮同样的骰子，赢面本来
+///   就该接近一半。
+/// - **3 级**（有扒手训练）：目标那一侧拿到 `inconspicuous_modifier: 9`
+///   **外加**一条 `kind: "advantage"`（`check_context:
+///   "lostland:inspection"`，本仓库第一条真实的优势声明），赢面降到
+///   一成出头。
+///
+/// 旧模型下 3 级那一侧是 `500 − 400 = 100‰`。同一档，但这一次它是
+/// 两个修正在骰子上真的算出来的，不是从一个写死的基数上减出来的。
+/// 下面只要求「3 级一侧严格少于 2 级一侧的一半」，留了很大的安全边际。
 #[test]
 fn 三级盗贼的扒手训练让卫兵不觉得可疑但仍然看得见他() {
     // Arrange
@@ -573,4 +603,57 @@ fn 同一条天赋上的两个被动同时生效时盘查仍然照常结算() {
     );
     // 每次看到的件数恒在 0..=4，不会因为被动②而变成负数或超出携带量。
     assert!(seen.iter().all(|&count| count <= 4));
+}
+
+/// 判定系统落地批次的接线证据：`RuleModifier::Advantage` 那条声明真的
+/// 从 `mods/example_mod/traits.json5` 走到了消费者。
+///
+/// 这条与本文件其余测试互补。上面那条「三级盗贼……不觉得可疑」是**概率
+/// 断言**——它会因为修正点数、优势、或者两者任意一个生效而变绿，因此
+/// 单独看它证明不了「优势这一路真的接上了」。本条直接在真实装载出来的
+/// 天赋表上问消费者要答案，把那一路单独钉死。
+///
+/// 三个变体（`RerollOnce`/`Advantage`/`Disadvantage`）此前一直挂在
+/// `scripts/ci/check_field_consumers.py` 的豁免清单里，理由是「本项目
+/// 没有判定/检定系统」。本批次把那三条豁免删了，本测试是删除的凭据。
+#[test]
+fn 扒手训练在盘查判定上真的拿到优势而在藏匿判定上没有() {
+    // Arrange：装载真实 `mods/`，取扒手训练那条天赋的规则修正列表。
+    let handle = load_real_mods();
+    let rule = ll_sim::traits::TraitCatalog::trait_rule(&handle.trait_def, handle.cutpurse_id)
+        .expect("examplemod:cutpurse_training 必须真的被装载出来");
+    let entries: Vec<RuleModifierEntry> = rule
+        .rule_modifiers
+        .iter()
+        .map(|typed| RuleModifierEntry {
+            modifier_type: typed.modifier_type,
+            origin: handle.cutpurse_id,
+            modifier: typed.modifier.clone(),
+        })
+        .collect();
+
+    // Act & Assert 一：盘查判定拿到优势。
+    assert_eq!(
+        check_roll_bias(&entries, INSPECTION_CHECK),
+        RollBias::Advantage,
+        "traits.json5 里那条 kind: \"advantage\" 没有走到消费者：{entries:?}"
+    );
+
+    // Assert 二：藏匿判定**没有**优势——两环是两条独立的被动，这条
+    // 反例同时证明上一条不是「`check_roll_bias` 恒返回优势」。
+    assert_eq!(
+        check_roll_bias(&entries, CONCEALMENT_CHECK),
+        RollBias::Normal
+    );
+
+    // Assert 三：另外两条被动的点数也是内容里那两个真实的数——本文件
+    // 上方那个 `const` 与 traits.json5 若漂移，这里立刻变红。
+    assert_eq!(
+        concealment_check_modifier(&entries),
+        Some(CUTPURSE_CONCEALMENT_MODIFIER as i32)
+    );
+    assert_eq!(
+        i64::from(inconspicuous_check_modifier(&entries)),
+        CHECK_DICE.half_die()
+    );
 }

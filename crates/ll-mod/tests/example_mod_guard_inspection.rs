@@ -191,8 +191,11 @@ fn 视野内有目标时卫兵最终会发起盘查() {
         1,
     );
 
-    // Act：推进到第一次盘查发生为止（50% 触发率，60 回合内几乎必然
-    // 命中至少一次，(1/2)^60 可忽略不计）。
+    // Act：推进到第一次盘查发生为止。双方都是基准属性、都没有任何
+    // 规则修正，因此这是一次净差为 0 的对抗判定——卫兵赢面 486‰
+    // （`3d20` 的精确值，平局归被动方，见
+    // `ll_sim::check::CheckOutcome::active_wins`）。60 回合内一次都不
+    // 命中的概率约 0.514^60，可忽略不计。
     let intents = decide_over_ticks(&mut source, &mut world, guard, 60);
     let inspect_intent = intents
         .into_iter()

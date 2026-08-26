@@ -60,10 +60,15 @@ use ll_sim::ai_query::{
     nearest_visible_actor,
 };
 use ll_sim::behavior::BehaviorTreeSource;
+use ll_sim::check::{CHECK_DICE, CheckSide, INSPECTION_CHECK, opposed_check};
+use ll_sim::formula::attribute_modifier;
 use ll_sim::intent::Intent;
+use ll_sim::resolve::derive_stats;
 use ll_sim::rule_modifier::{
-    agent_rule_modifiers, clamp_probability_permille, inspection_suspicion_reduction_permille,
+    RuleModifierEntry, agent_rule_modifiers, check_reroll_value, check_roll_bias,
+    inconspicuous_check_modifier,
 };
+use ll_world::entity::AttributeKind;
 use ll_world::entity::EntityId;
 use ll_world::state::WorldState;
 
@@ -74,19 +79,39 @@ use crate::registry::Registry;
 use crate::subclass::SubclassTable;
 use crate::trait_def::TraitTable;
 
-/// 卫兵发起一次盘查的基础概率（千分比）。
+/// 目标处于潜行状态时，**加在被盘查者那一侧**的判定修正点数（负值
+/// 减在主动方赢面上，因为它是加在被动方的点数上）。
 ///
-/// 此前是 `behavior.scm` 里的 `GUARD_INSPECT_CHANCE_PERMILLE`。搬进
-/// Rust 之后它仍然是**一个具名常量**，不是散在判定表达式里的字面量：
-/// 调这个数字仍然只要改一处，只是改完要重编译。
-pub const GUARD_INSPECT_CHANCE_PERMILLE: i64 = 500;
-
-/// 目标处于潜行状态时，卫兵发起盘查的概率（千分比）。
+/// 取一整颗骰子的跨度（[`ll_sim::check::CheckDice::whole_die`]，
+/// `3d20` 下是 `19`）。
 ///
-/// 潜行**不改可见性**——卫兵照常看得见潜行中的目标
-/// （[`nearest_visible_actor`] 一个字都没改），落下去的是「要不要把
-/// 这个人当回事」这一次判定的成功率，见 `ll_sim::ai_query::is_stealthed`。
-pub const GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED: i64 = 50;
+/// # 这个常量替掉了什么
+///
+/// 此前这里是**两个**常量：`GUARD_INSPECT_CHANCE_PERMILLE`（500‰）与
+/// `GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED`（50‰）。潜行的作用是在
+/// 两个基数之间二选一——一个 10× 的**乘法档**，而同时作用在结果上的
+/// 「不起眼」被动是一个**加法量**。两个量不在同一把尺子上，后果是同
+/// 一条被动在两个档上的效果差一个数量级（`−400‰` 从 `500‰` 上减是
+/// 砍掉八成，从 `50‰` 上减直接触底被钳在 `1‰`）。完整论证见
+/// `ll_sim::check` 模块文档「这个模块治的是什么病」一节。
+///
+/// 换成对抗判定之后潜行不再换基数，它与「不起眼」一样是隐蔽方的
+/// **一个修正**，两者直接相加。旧的两个基数因此一起消失：判定的
+/// 「基数」现在是双方各掷一轮 `MdN`，不是一个写死的概率。
+///
+/// # 为什么是一整颗骰子
+///
+/// 需要一个**有内在依据**的档位，不是照着旧的 `50‰` 拟合出来的数。
+/// 「一整颗骰子」是这把尺子上唯一自明的大单位；被动天赋取它的一半
+/// （[`ll_sim::check::CheckDice::half_die`]），于是「主动藏起来」严格
+/// 强于「天生不起眼」，而两者叠加恰好顶到修正上限
+/// （`19 + 9 = 28 = L`）不触发钳制，见 `ll_sim::check::CHECK_DICE`
+/// 文档「为什么是 3 颗」。
+///
+/// 潜行**仍然不改可见性**——卫兵照常看得见潜行中的目标
+/// （[`nearest_visible_actor`] 一个字都没改），落下去的仍然是「要不要
+/// 把这个人当回事」这一次判定，见 `ll_sim::ai_query::is_stealthed`。
+pub const GUARD_INSPECT_STEALTH_MODIFIER: i64 = CHECK_DICE.whole_die();
 
 /// 哥布林那棵树优先施放的技能 id。
 pub const GOBLIN_SKILL_ID: &str = "examplemod:frostbolt";
@@ -116,7 +141,7 @@ pub const GUARD_PROFESSION_ID: &str = "lostland:guard";
 /// 「聚合规则修正」这一件事的完整输入，接新一路来源时只需要给本结构体
 /// 加字段，不必改全部调用点的签名——副职天赋接线批次新增
 /// [`BehaviorRuleCatalogs::subclass`] 就是这条预言的第一次兑现（本结构
-/// 体多一个字段，`suspicion_reduction_permille_of` 多传一个参数，
+/// 体多一个字段，当时的 `suspicion_reduction_permille_of` 多传一个参数，
 /// `BehaviorRuleCatalogs::default()` 那批调用点一个字都没改）。
 #[derive(Debug, Clone, Default)]
 pub struct BehaviorRuleCatalogs {
@@ -153,20 +178,58 @@ impl BehaviorRuleCatalogs {
         }
     }
 
-    /// 一个实体此刻从盘查触发概率上**减掉多少**（千分比点数）——
-    /// [`inspection_suspicion_reduction_permille`] 在这份快照上的应用。
-    /// 查不到实体时返回 `0`（与常人无异，一点也不减），与本模块其余
-    /// 查询同一条降级纪律。
-    pub fn suspicion_reduction_permille_of(&self, world: &WorldState, target: EntityId) -> i32 {
+    /// 一个实体此刻的规则修正候选列表——[`agent_rule_modifiers`] 在
+    /// 这份快照上的应用。查不到实体时返回空列表，与本模块其余查询
+    /// 同一条降级纪律。
+    ///
+    /// 返回整份列表而不是某一个算好的数：盘查判定要从同一份列表里读
+    /// **三样**东西（不起眼修正、优劣势、重掷面值），聚合一次读三遍
+    /// 比聚合三遍便宜，也保证三者读的是同一时刻的同一批声明。
+    pub fn rule_modifiers_of(
+        &self,
+        world: &WorldState,
+        target: EntityId,
+    ) -> Vec<RuleModifierEntry> {
         match world.actors.get(target) {
-            Some(agent) => inspection_suspicion_reduction_permille(&agent_rule_modifiers(
+            Some(agent) => agent_rule_modifiers(
                 agent,
                 &self.race,
                 &self.class,
                 &self.subclass,
                 &self.traits,
                 &self.items,
-            )),
+            ),
+            None => Vec::new(),
+        }
+    }
+
+    /// 一个实体此刻某一项属性的**派生**调整值 `(属性 − 10) / 2`——
+    /// 装备与状态效果加的属性在这里生效，与
+    /// `ll_sim::resolve::resolve_attack` 读
+    /// `attacker_derived.attribute(..)` 是同一条既有纪律。
+    ///
+    /// 用不带环境温度的 [`derive_stats`]（内部代入中性温度）：行为树
+    /// 这一层拿不到 `AmbientSource`，而温度**只**惩罚力量一项，对本
+    /// 模块要读的意志/敏捷两项逐位无影响。
+    ///
+    /// 查不到实体时返回 `0`（等同基准属性 10）。
+    fn attribute_modifier_of(
+        &self,
+        world: &WorldState,
+        entity: EntityId,
+        kind: AttributeKind,
+    ) -> i64 {
+        match world.actors.get(entity) {
+            Some(agent) => attribute_modifier(
+                derive_stats(
+                    agent.stats,
+                    &agent.active_stat_modifiers,
+                    &agent.equipment,
+                    &self.items,
+                    world.clock,
+                )
+                .attribute(kind),
+            ),
             None => 0,
         }
     }
@@ -340,12 +403,18 @@ fn guard_tick(
         .or_else(|| guard_try_approach(world, actor))
 }
 
-/// 分支一：**是卫兵职业**、视野内有目标、且这一次掷骰命中 → 盘查。
+/// 分支一：**是卫兵职业**、视野内有目标、且这一次对抗判定卫兵赢 →
+/// 盘查。
 ///
 /// 三个条件的求值顺序与脚本时代 `guard-try-inspect` 逐字相同，而这
-/// 不只是风格问题：`rng.chance` 只在前两个条件都成立时才被调用，随机
-/// 流因此只在「真的要判一次」时才前进一格。顺序改了，同一颗种子下的
-/// 决策序列就变了。
+/// 不只是风格问题：判定只在前两个条件都成立时才发生，随机流因此只在
+/// 「真的要判一次」时才前进。顺序改了，同一颗种子下的决策序列就变了。
+///
+/// **取数次数变了**：此前是一次 `rng.chance`（一个抽取），现在是一次
+/// `2M` 抽取的对抗判定（`3d20` 双方各一轮 = 6 个；任一方有优劣势时
+/// 那一方翻倍，有重掷时命中面值再多取）。这一条对确定性无害——这条
+/// 流是 `decide` 开头现造的、只服务这一次决策的流，不是跨调用累进的
+/// 长流，「这次多取了几个」不会让别处错位。
 fn guard_try_inspect(
     world: &WorldState,
     actor: EntityId,
@@ -357,8 +426,7 @@ fn guard_try_inspect(
         return None;
     }
     let target = nearest_visible_actor(world, actor, NEARBY_ACTOR_VIEW_RADIUS)?;
-    let chance = guard_inspect_chance(world, target, catalogs);
-    rng.chance(chance.max(0) as u32, 1000)
+    guard_inspection_check(world, actor, target, catalogs, rng)
         .then_some(Intent::Inspect { actor, target })
 }
 
@@ -370,37 +438,74 @@ fn guard_try_approach(world: &WorldState, actor: EntityId) -> Option<Intent> {
     Some(approach.unwrap_or(Intent::Wait { actor }))
 }
 
-/// 这一次盘查的触发概率（千分比）：潜行与否选一个基础概率，再**减掉**
-/// 目标的「盘查意愿」减点数，最后钳进两端各留一线的区间。
+/// 这一次盘查的**对抗判定**：卫兵（察觉）主动，目标（隐蔽）被动，
+/// 卫兵赢就发起盘查。
 ///
-/// 两者仍然不是二选一：它们回答的是不同的问题（这一刻我藏没藏起来 vs
-/// 我这个人天生多不起眼），一个盗贼在潜行时理应两者都生效。变的是
-/// 后者的形式——**从乘数改成减点数**（规则修正一律整数点数那次改型,
-/// 见 `ll_sim::rule_modifier::RuleModifier::InspectionSuspicion` 文档
-/// 「为什么是减点数而不是乘数」一节）。
+/// ```text
+/// 卫兵（主动）：意志调整值
+/// 目标（被动）：敏捷调整值 + 潜行修正 + 不起眼修正
+/// ```
 ///
-/// 后果要如实记下：减点数对**低**基础概率更狠。潜行中基础只有
-/// `GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED`（50‰），任何一条像样的
-/// 减点数都会把它压到下界 1‰；乘数模型下同一条被动只会把它按比例缩小。
-/// 这是模型换代的真实后果，不是 bug——「两端各留一线」那条裁定保证的
-/// 是它触底之后仍然不是 0，见 [`clamp_probability_permille`]。
+/// 「察觉 = 意志调整值、隐蔽 = 敏捷调整值」是项目所有者的裁定；本
+/// 仓库没有独立的感知属性，`AttributeKind::Willpower` 是六项里承担
+/// D&D「感知」概念的那一项。调整值公式 `(属性 − 10) / 2` 复用
+/// `ll_sim::formula::attribute_modifier`，零新增字段、零存档影响。
 ///
-/// 全程整数（ADR 0020 乙区），这一版连整数除法都没有了。
-fn guard_inspect_chance(
+/// # 潜行与「不起眼」仍然不是二选一
+///
+/// 它们回答的是不同的问题（这一刻我藏没藏起来 vs 我这个人天生多不
+/// 起眼），一个盗贼在潜行时理应两者都生效。变的是**它们终于在同一把
+/// 尺子上**：此前潜行换基数（乘法档）、不起眼减概率（加法量），现在
+/// 两者都是加在被动方点数上的整数，直接相加。
+///
+/// # 数值换算（`3d20`，双方属性均为基准 10 因而两侧调整值均为 0）
+///
+/// | 情形 | 旧模型 | 新模型 |
+/// | --- | --- | --- |
+/// | 常态 | `500‰` | `486‰` |
+/// | 仅潜行 | `50‰` | `86‰` |
+/// | 仅「不起眼」天赋（9 点） | `100‰` | `255‰` |
+/// | 潜行 + 天赋（28 点，恰好顶到上限） | `1‰`（触底） | `21‰` |
+///
+/// 常态那一档几乎逐字对上（`486‰` vs `500‰`）——这不是巧合：两个势均
+/// 力敌的人各掷一轮同样的骰子，赢面本来就该是接近一半，旧的 `500‰`
+/// 当初写的就是这个意思。真正变的是另外三档，而它们变的方向正是本次
+/// 改型要的：旧模型里「潜行 + 天赋」触底被钳在 `1‰`，那个 `1‰` 不是
+/// 设计，是旧模型那条「两端各留一线」的概率兜底留下的痕迹；新模型
+/// 给出 `21‰`，一个由两个修正真正算出来的数。那条概率兜底
+/// （`clamp_probability_permille`）随本批次一并删除——它的最后一个
+/// 消费者就是这里，而「不允许绝对」现在由
+/// `ll_sim::check::CheckDice::max_modifier` 的推导保证。
+///
+/// 全程整数（ADR 0020 乙区），一次整数除法都没有。
+fn guard_inspection_check(
     world: &WorldState,
+    actor: EntityId,
     target: EntityId,
     catalogs: &BehaviorRuleCatalogs,
-) -> i64 {
-    let base = if is_stealthed(world, target) {
-        GUARD_INSPECT_CHANCE_PERMILLE_STEALTHED
+    rng: &mut DetRng,
+) -> bool {
+    let guard_modifiers = catalogs.rule_modifiers_of(world, actor);
+    let target_modifiers = catalogs.rule_modifiers_of(world, target);
+    let stealth = if is_stealthed(world, target) {
+        GUARD_INSPECT_STEALTH_MODIFIER
     } else {
-        GUARD_INSPECT_CHANCE_PERMILLE
+        0
     };
-    let reduction = i64::from(catalogs.suspicion_reduction_permille_of(world, target));
-    let reduced = base.saturating_sub(reduction);
-    i64::from(clamp_probability_permille(
-        reduced.clamp(i64::from(i32::MIN), i64::from(i32::MAX)) as i32,
-    ))
+    let active = CheckSide {
+        modifier: catalogs.attribute_modifier_of(world, actor, AttributeKind::Willpower),
+        bias: check_roll_bias(&guard_modifiers, INSPECTION_CHECK),
+        reroll_on: check_reroll_value(&guard_modifiers),
+    };
+    let passive = CheckSide {
+        modifier: catalogs
+            .attribute_modifier_of(world, target, AttributeKind::Dexterity)
+            .saturating_add(stealth)
+            .saturating_add(i64::from(inconspicuous_check_modifier(&target_modifiers))),
+        bias: check_roll_bias(&target_modifiers, INSPECTION_CHECK),
+        reroll_on: check_reroll_value(&target_modifiers),
+    };
+    opposed_check(&CHECK_DICE, &active, &passive, rng).active_wins()
 }
 
 /// 这个实体的 `Agent.profession` 是否等于 `class`。

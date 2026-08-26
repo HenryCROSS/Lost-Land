@@ -1,8 +1,9 @@
 //! 规则修正（[`RuleModifier`]）的**多来源聚合点**——「一个实体此刻身上
-//! 有哪些规则修正」这个问题的唯一答案处，以及在其之上的四个消费者
-//! （抗性 [`resistance_damage_reduction`]、偷袭 [`sneak_attack_rule`]、
-//! 盘查意愿 [`inspection_suspicion_reduction_permille`]、盘查藏匿
-//! [`inspection_concealment_permille`]），连同它们共用的那一条 tie-break
+//! 有哪些规则修正」这个问题的唯一答案处，以及在其之上的五个消费者
+//! （抗性 [`resistance_damage_reduction`]、易伤
+//! [`vulnerability_damage_increase`]、偷袭 [`sneak_attack_rule`]、
+//! 盘查意愿 [`inconspicuous_check_modifier`]、盘查藏匿
+//! [`concealment_check_modifier`]），连同它们共用的那一条 tie-break
 //! （[`merged_across_types`]）。
 //!
 //! # 为什么单独立一个模块：项目所有者对抗性来源的裁定
@@ -17,7 +18,7 @@
 //!   [`RuleModifierEntry`]（修正本身 + 它来自哪个内容条目）——天赋走
 //!   [`trait_rule_modifiers`]，装备走 [`equipment_rule_modifiers`]。
 //! - **消费者**（[`resistance_damage_reduction`]/[`sneak_attack_rule`]/
-//!   [`inspection_suspicion_reduction_permille`]/[`inspection_concealment_permille`]）
+//!   [`inconspicuous_check_modifier`]/[`concealment_check_modifier`]）
 //!   只收一个 `&[RuleModifierEntry]` 切片，**完全不知道有几路来源、
 //!   分别是什么**。
 //!
@@ -131,8 +132,9 @@
 //! # 「强」的方向为什么必须逐变体声明，不能写一个通用的「取最大值」
 //!
 //! 强弱方向是**变体自己的属性**，不是调用点的参数。改成整数点数之后
-//! 四个变体恰好都是「越大越强」（减伤点数、概率减点数、藏匿概率、
-//! 追加伤害），但这是这一版模型的**结果**，不是可以依赖的前提——乘数
+//! 五个变体恰好都是「越大越强」（减伤点数、追加伤害点数、概率减点数、
+//! 藏匿概率、偷袭追加伤害），但这是这一版模型的**结果**，不是可以
+//! 依赖的前提——乘数
 //! 模型下抗性与盘查意愿都是「越小越强」，一个通用的「取最大值」会让
 //! 它们反过来选**最弱**的那一条。真正的风险形态是「哪天有人加第五个
 //! 变体、忘了传对比较器」。
@@ -155,6 +157,7 @@
 
 use std::collections::{BTreeMap, btree_map};
 
+use crate::check::{CheckContext, RollBias};
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_world::entity::Agent;
 
@@ -207,42 +210,6 @@ pub const MINIMUM_DAMAGE_AFTER_RESISTANCE: i32 = 1;
 ///    仍然要留：它守的不只是负数。
 pub const MINIMUM_CRAFT_PRODUCT_COUNT: u32 = 1;
 
-/// 概率类规则修正在两端各自留出的余量（千分比）——项目所有者「两端
-/// 各留一线，永远不会必定成功也永远不会必定失败」这条裁定的落点。
-///
-/// # 为什么是 1‰，不是更大的数
-///
-/// 三条理由，都指向同一个最小值：
-///
-/// 1. **它是这把尺子上最小的非零值**。「留一线」字面上就是留一线,
-///    多留一分都是在替内容作者决定「你最多只能藏到 99%」，而所有者
-///    的裁定只要求排除**必定**，没有要求压低上限。
-/// 2. **它不扰动任何一条合法声明**。落在 `1..=999` 的声明值原样通过,
-///    只有恰好取到 `0` / `1000` 两个绝对端点的才被拨回一格——受影响的
-///    正好是、且只是裁定要排除的那两个值。
-/// 3. **判定分母本来就是 1000**（`DetRng::chance(n, 1000)`，见
-///    `crate::resolve::resolve_inspect` 与
-///    `ll_mod::native_behavior::guard_inspect_chance`）。1‰ 是这把尺子
-///    能表达的最小非零概率,不需要为了留余量去换一把更细的刻度。
-pub const PROBABILITY_MARGIN_PERMILLE: i32 = 1;
-
-/// 把一个千分比概率钳进 `[PROBABILITY_MARGIN_PERMILLE, 1000 −
-/// PROBABILITY_MARGIN_PERMILLE]`——见 [`PROBABILITY_MARGIN_PERMILLE`]。
-///
-/// # 「没有这条被动」不走这里
-///
-/// 本函数只钳**已经有人声明**的概率。「一条也没声明」这件事由各消费者
-/// 自己的缺省值表达（[`inspection_concealment_permille`] 返回 `0`,
-/// 调用方据此完全跳过判定、一次随机数都不消耗），那个 `0` 不是「概率
-/// 为零」而是「这条规则不在场」，因此不该被钳成 1‰。两者的区别见
-/// [`inspection_concealment_permille`] 文档「缺省 0 与声明 0」一节。
-pub fn clamp_probability_permille(permille: i32) -> i32 {
-    permille.clamp(
-        PROBABILITY_MARGIN_PERMILLE,
-        1000 - PROBABILITY_MARGIN_PERMILLE,
-    )
-}
-
 /// 天赋效果③「改变规则本身」——`knowledge/design/trait-system.md` 三节
 /// 定形的封闭枚举，走注册表第一档（声明式）。
 ///
@@ -264,16 +231,21 @@ pub fn clamp_probability_permille(permille: i32) -> i32 {
 /// [`RuleModifier::SneakAttack`] 见同一函数「偷袭接线」一节；
 /// [`RuleModifier::InspectionConcealment`] 见
 /// `crate::resolve::resolve_inspect` 文档「藏匿判定」一节；
-/// [`RuleModifier::InspectionSuspicion`] 的消费者在**脚本侧**
-/// （`ll_mod::script_behavior_api` 的 `actor-inspection-suspicion`），
-/// 理由见该变体文档；[`RuleModifier::CraftYield`]（制作类副职奖励批次
-/// 新增）见 [`craft_yield_bonus`] 与 `crate::resolve::resolve_craft`
-/// 文档「产出加成接线」一节。**仍然没有任何消费者的只剩下面这三个**：
-/// - [`RuleModifier::RerollOnce`] 需要 `roll_one_die` 钩子（伤害公式
-///   引擎求值器内部的骰子取数原语），本批次不改写该求值器签名，见
-///   `trait-system.md` 三节③「重骰」一节「代价诚实标注」段落。
-/// - [`RuleModifier::Advantage`]/[`RuleModifier::Disadvantage`] 需要
-///   本项目当前不存在的判定/检定系统,见同节「占位变体」说明。
+/// [`RuleModifier::InspectionSuspicion`] 的消费者在 **AI 决策侧**
+/// （`ll_mod::native_behavior` 的卫兵行为树），理由见该变体文档；
+/// [`RuleModifier::CraftYield`]（制作类副职奖励批次新增）见
+/// [`craft_yield_bonus`] 与 `crate::resolve::resolve_craft` 文档
+/// 「产出加成接线」一节。
+///
+/// **本枚举从此没有任何一个死变体**——判定系统落地批次接上了最后三个：
+/// - [`RuleModifier::Advantage`]/[`RuleModifier::Disadvantage`] 等的
+///   就是这套判定系统。消费者 [`check_roll_bias`]，落到
+///   [`crate::check::RollBias`]：优势掷两轮取较大，劣势取较小，两者
+///   同时存在时互相抵消。
+/// - [`RuleModifier::RerollOnce`] 此前挂在「伤害公式求值器内部的
+///   `roll_one_die` 钩子」上等着，那个钩子至今没有落地——但它等错了
+///   地方：重掷是**判定**的原语，不是伤害公式的原语。消费者
+///   [`check_reroll_value`]，落到 [`crate::check::CheckSide::reroll_on`]。
 ///
 /// # 与 10% 下限的关系
 ///
@@ -309,33 +281,98 @@ pub enum RuleModifier {
     /// 要防的正是后者）。乘数模型两个问题都有。合并方式逐变体声明在
     /// [`cross_type_merge`]。
     ///
-    /// # 负值 = 脆弱
+    /// # 脆弱**不**用负减伤表达，它是独立的一个变体
     ///
-    /// 减伤点数不禁止负数：`-5` 表示「这类伤害对我多打 5 点」，是乘数
-    /// 模型里 `2000‰`（双倍）那一档的表达方式在新模型下的对应物。刻意
-    /// 保留它，是因为旧模型能表达脆弱，静默丢掉这个能力会是一次不声明
-    /// 的退化。
+    /// 本变体此前不禁止负数，`-5` 就是「这类伤害对我多打 5 点」。那条
+    /// 表达方式已经**撤销**，理由不是风格，是一个可复现的错误结果：
+    /// 桶内的合并规则是「取最强」，而本变体的「强」由 [`strength_key`]
+    /// 声明成**减伤点数越大越强**。于是同一个桶里 `+3` 与 `-5` 相遇时
+    /// 取的是 `+3`——**脆弱被静默丢掉**。而「没声明加值类型的全部落进
+    /// 同一个共享桶」是本模块刻意选的默认值（见
+    /// [`TypedRuleModifier::modifier_type`]），因此任何一条不分类的
+    /// 抗性都会吃掉同一个伤害类别上全部不分类的脆弱声明。
+    ///
+    /// 把符号翻过来（改成「越小越强」）救不了这件事，只会把方向反过来
+    /// 再吃掉抗性：一个量既要在正半轴上「越大越强」又要在负半轴上
+    /// 「越小越强」，本来就不该是同一个量。脆弱因此独立成
+    /// [`RuleModifier::Vulnerability`]：两个量各自取最强、各自跨类型
+    /// 相加，最后在 [`damage_after_resistance`] 里一减一加，谁也吃不掉谁。
     Resistance {
         /// 伤害类别，走 `damage-formula-mod-api.md` 十七节的开放
         /// `register-damage-category` 集合。
         damage_category: ContentIndex,
-        /// 减伤点数：正数抵挡、负数放大，见本变体文档。减完的保底见
-        /// [`MINIMUM_DAMAGE_AFTER_RESISTANCE`]。
+        /// 减伤点数，**恒非负**（装载期钳到零，见
+        /// `ll_mod::content_schema_gear::RawRuleModifier`）。减完的保底见
+        /// [`MINIMUM_DAMAGE_AFTER_RESISTANCE`]；反方向见
+        /// [`RuleModifier::Vulnerability`]。
         damage_reduction: i32,
     },
-    /// 重骰：该实体掷骰抽出 `value` 时,立即重抽一次,取新值（不再检查
-    /// 新值是否又是 `value`）。
+    /// 易伤：该伤害类别的伤害，在减伤扣完之后**再加上**一个固定点数
+    /// ——[`RuleModifier::Resistance`] 的对称量，同一条「整数点数、
+    /// 加减法」的形状，方向相反。
+    ///
+    /// # 为什么是独立变体而不是负减伤
+    ///
+    /// 完整论证见 [`RuleModifier::Resistance`] 文档「脆弱**不**用负
+    /// 减伤表达」一节：一个量不可能在正负两个半轴上同时满足「取最强」。
+    /// 拆成两个量之后每个量都只在非负半轴上活动，「越大越强」对两者
+    /// 各自成立、彼此不干扰。
+    ///
+    /// # 与减伤的对称性是完整的
+    ///
+    /// 同一条 DR 论证原样适用于本变体，只是方向反过来：易伤 5 点对
+    /// 12 点来伤是多挨 42%，对 50 点只多挨 10%——**对小伤害强、对大
+    /// 伤害弱**。乘数模型里的 `2000‰`（双倍）做不到这件事，它对 12 点
+    /// 与 50 点一视同仁地翻倍。这与本模块把抗性从乘数换成点数时给出的
+    /// 理由是同一条，因此两个方向应当用同一种形状表达。
+    ///
+    /// 合并规则也完整对称：同一加值类型内取最强（易伤越大越强），跨
+    /// 加值类型相加，声明在 [`strength_key`] 与 [`cross_type_merge`]。
+    ///
+    /// # 它减不穿保底
+    ///
+    /// 易伤只往上加，[`MINIMUM_DAMAGE_AFTER_RESISTANCE`] 那条保底因此
+    /// 与它无关；真正与它有关的是**净额一次算完再钳**，见
+    /// [`damage_after_resistance`] 文档「为什么是一条算式一次钳」一节。
+    Vulnerability {
+        /// 伤害类别，与 [`RuleModifier::Resistance::damage_category`]
+        /// 同一张开放注册表。
+        damage_category: ContentIndex,
+        /// 追加伤害点数，**恒非负**（装载期钳到零，理由同
+        /// [`RuleModifier::Resistance::damage_reduction`]：负的易伤就是
+        /// 减伤，两个变体各自只在非负半轴上活动，才谈得上「取最强」）。
+        damage_increase: i32,
+    },
+    /// 重骰：该实体判定掷骰掷出 `value` 面时,立即重掷那一颗,取新值
+    /// （不再检查新值是否又是 `value` —— 「一次」是硬边界，反复重掷
+    /// 需要无界迭代，那是 [`crate::check`] 模块文档「边界」一节不肯
+    /// 让出的线）。
+    ///
+    /// 对**全部**判定生效，不分 `check_context`：它描述的是「这个人
+    /// 掷骰的手气」，不是「这个人擅长哪件事」——后者是修正点数的职责。
+    ///
+    /// `value` 的合法范围是 `1..=N`（`N` = [`crate::check::CHECK_DICE`]
+    /// 的面数），装载期校验；写一个掷不出来的面值等于什么也没声明，
+    /// 那是内容作者的笔误，不该静默通过。
     RerollOnce {
-        /// 触发重骰的点数。
+        /// 触发重掷的面值。
         value: i32,
     },
-    /// 优势：该实体在 `check_context` 这类判定上默认套用优势——占位
-    /// 变体，当前无消费者（本项目没有判定/检定系统）。
+    /// 优势：该实体在 `check_context` 这类判定上掷两轮取较大
+    /// （[`crate::check::RollBias::Advantage`]）。
+    ///
+    /// `check_context` 是开放标识符，引擎当前认得两个：
+    /// [`crate::check::INSPECTION_CHECK`]（盘查）与
+    /// [`crate::check::CONCEALMENT_CHECK`]（藏匿）。指向别的标识符不是
+    /// 错误，只是当前没有判定会认领它——判定种类是一个会随系统长出来
+    /// 的开放集合，装载期不该把还没写的判定判成非法。
     Advantage {
-        /// 判定种类的开放标识符,具体值域留给判定系统落地时定案。
+        /// 判定种类的开放标识符。
         check_context: NamespacedId,
     },
-    /// 劣势，语义同 [`RuleModifier::Advantage`]，方向相反。
+    /// 劣势，语义同 [`RuleModifier::Advantage`]，方向相反（掷两轮取
+    /// 较小）。同一次判定上同时存在优势与劣势时**互相抵消**，见
+    /// [`check_roll_bias`]。
     Disadvantage {
         /// 判定种类的开放标识符。
         check_context: NamespacedId,
@@ -372,19 +409,23 @@ pub enum RuleModifier {
     /// 意愿**，从那一次判定的触发概率上**直接减掉**一个千分比点数
     /// （`0` = 与常人无异，`400` = 触发概率减 40 个百分点）。
     ///
-    /// # 为什么是减点数而不是乘数
+    /// # 换成判定修正（判定系统落地批次）
     ///
-    /// 与 [`RuleModifier::Resistance`] 同一次改型、同一条理由：加法
-    /// 可交换可结合，跨加值类型合并因此既不引入整数除法（没有舍入
-    /// 方向要裁定），也不依赖合并顺序（约束 C5）。合并方式声明在
-    /// [`cross_type_merge`]。
+    /// 此前这个字段是**从触发概率上减掉的千分比点数**。那个形状有一个
+    /// 可复现的病，上一版文档自己记了下来：`400` 从 `500‰`（常态）上
+    /// 减掉是砍掉八成，从 `50‰`（潜行中）上减掉则直接触底被
+    /// 概率钳制的下界 `1‰`。同一条被动在两个档上差一个数量级，
+    /// **而那两个档本身是一个 10× 的乘法档**。
     ///
-    /// 代价要如实说明，它与抗性那一条**方向相反**：减伤点数对小伤害
-    /// 强、对大伤害弱；概率减点数则是**对低基础概率强、对高基础概率
-    /// 弱**——`400` 从 `500‰` 上减掉是砍掉八成，从 `50‰`（潜行中的
-    /// 基础盘查率）上减掉则直接触底，被
-    /// [`clamp_probability_permille`] 钳在 `1‰`。乘数模型下后者是
-    /// `50 × 600 / 1000 = 30‰`。这是模型换代的真实后果，不是 bug。
+    /// 病根不在「减点数」这一半，在「基数是乘法档」那一半。对均匀骰,
+    /// 「把修正加在掷出的数上」与「把修正加在概率上」本来就是同一个
+    /// 运算（[`crate::check`] 模块文档给了式子），所以换写法救不了它。
+    /// 真正的修法是把那个乘法档消掉：潜行不再换基数，它与本变体一样
+    /// 是**隐蔽方的一个修正**，两者在同一把尺子上相加。本字段的量纲
+    /// 因此从千分比改成**骰子点数**。
+    ///
+    /// 跨加值类型仍然相加（[`cross_type_merge`]），理由不变：加法可
+    /// 交换可结合，既不引入整数除法，也不依赖合并顺序（约束 C5）。
     ///
     /// # 消费者在 AI 决策侧，不在 `resolve` 侧
     ///
@@ -398,25 +439,40 @@ pub enum RuleModifier {
     /// 查」（见该函数文档「谁来判断该不该发起这次盘查」一节）。
     ///
     /// 聚合与 tie-break 仍然完全走 [`agent_rule_modifiers`]——行为树
-    /// 拿到的是本模块 [`inspection_suspicion_reduction_permille`] 算完
-    /// 的**一个数**，不是一份候选列表：多来源取哪一条这件事不下放给
-    /// 行为树，理由同本模块文档「跨来源 tie-break」一节。
+    /// 拿到的是本模块 [`inconspicuous_check_modifier`] 算完的**一个
+    /// 数**，不是一份候选列表：多来源取哪一条这件事不下放给行为树,
+    /// 理由同本模块文档「跨来源 tie-break」一节。
     InspectionSuspicion {
-        /// **从盘查触发概率上直接减掉**的千分比点数（越大越不起眼,
-        /// `0` = 与常人无异）。是一个加法量，不是乘数——见本变体文档
-        /// 「为什么是减点数而不是乘数」一节。
-        suspicion_reduction_permille: i32,
+        /// **加在被盘查者那一侧掷出的点数上**的整数点数（越大越不
+        /// 起眼，`0` = 与常人无异）。量纲是骰子点数，不是千分比——
+        /// 见本变体文档「换成判定修正」一节。
+        ///
+        /// 装载期校验它落在 `±CHECK_DICE.max_modifier()` 内
+        /// （`ll_mod::content_schema_gear::RawRuleModifier`），运行期
+        /// 聚合后再钳一次（[`crate::check::CheckDice::clamp_modifier`]）。
+        inconspicuous_modifier: i32,
     },
     /// 被动②**「查不出东西」**（盗贼被动两分批次）——所有者裁定里的
     /// 后一种：盘查**照常发起**，只是搜身的人看不到你身上的东西。
-    /// `conceal_permille` 是**每一件**物品各自不被看见的千分比概率。
+    /// `concealment_modifier` 是**每一件**物品各判一次的判定修正点数。
     ///
-    /// 它是一个**加法量**：多个加值类型各自的藏匿点数直接相加，再由
-    /// [`clamp_probability_permille`] 钳进两端各留一线的区间——`1000`
-    /// 因此不是「什么都查不出来」而是「钳到 `999‰`」，绝对成功与绝对
-    /// 失败都不可达，见 [`PROBABILITY_MARGIN_PERMILLE`]。`0` 保留
-    /// 「没有这条被动」这个特殊含义，见
-    /// [`inspection_concealment_permille`] 文档「缺省 0 与声明 0」。
+    /// # 换成判定修正（判定系统落地批次）
+    ///
+    /// 此前 `conceal_permille` 是「每一件物品各自不被看见的千分比
+    /// 概率」，一个与任何人无关的常数：搜身的人是谁、眼神好不好，
+    /// 对结果一点影响都没有。改成对抗判定之后它变成**藏东西那一方
+    /// 的一个修正**，与搜身者的察觉在同一把尺子上比大小，见
+    /// [`crate::check`]。
+    ///
+    /// 它仍然是一个**加法量**：多个加值类型各自的点数直接相加
+    /// （[`cross_type_merge`]），再由
+    /// [`crate::check::CheckDice::clamp_modifier`] 钳进 `±L`。绝对
+    /// 藏住与绝对藏不住都不可达，但这一次不是靠在概率上钳一个下界,
+    /// 而是由修正上限**证明**的，见 [`crate::check`] 模块文档
+    /// 「不允许绝对」一节。
+    ///
+    /// 「一条也没有声明」仍然是一个与 `0` 不同的特殊状态，见
+    /// [`concealment_check_modifier`] 文档「缺省与声明 0」。
     ///
     /// # 为什么是逐件掷骰，不是「全藏」也不是「藏固定几件」
     ///
@@ -440,10 +496,17 @@ pub enum RuleModifier {
     /// 任何「哪件更该被藏」的排序依据。代价是它消费随机数——判定走
     /// `DetRng::for_entity`（约束 C3），取数顺序即 `items_seen` 自身
     /// 的确定顺序（约束 C5），见
-    /// `crate::resolve::resolve_inspect` 文档「藏匿判定」一节。
+    /// `crate::resolve::resolve_inspect` 文档「藏匿判定」一节。改成
+    /// 对抗判定之后这份代价变大了（每件物品从 1 次抽取变成 `2M` 次,
+    /// 主动被动各掷一轮 `MdN`），粒度的论证一个字没变。
     InspectionConcealment {
-        /// 每一件物品各自不被看见的千分比概率，见本变体文档。
-        conceal_permille: i32,
+        /// **加在藏东西那一方掷出的点数上**的整数点数（越大越藏得住），
+        /// 每一件物品各判一次，见本变体文档。
+        ///
+        /// 装载期校验它落在 `±CHECK_DICE.max_modifier()` 内，运行期
+        /// 聚合后再钳一次，同
+        /// [`RuleModifier::InspectionSuspicion::inconspicuous_modifier`]。
+        concealment_modifier: i32,
     },
     /// 制作产出加成（制作类副职奖励批次，
     /// `knowledge/design/crafting-subclass-rewards.md`）——在 `category`
@@ -623,9 +686,10 @@ pub fn equipment_rule_modifiers(
 /// # 接第三、第四路来源时改哪里
 ///
 /// 只改本函数：新写一个收集器（形如 [`equipment_rule_modifiers`]），
-/// 在这里多 `extend` 一次。四个消费者（[`resistance_damage_reduction`]/
-/// [`sneak_attack_rule`]/[`inspection_suspicion_reduction_permille`]/
-/// [`inspection_concealment_permille`]）与它们在 `crate::resolve`／脚本
+/// 在这里多 `extend` 一次。五个消费者（[`resistance_damage_reduction`]/
+/// [`vulnerability_damage_increase`]/[`sneak_attack_rule`]/
+/// [`inconspicuous_check_modifier`]/
+/// [`concealment_check_modifier`]）与它们在 `crate::resolve`／AI 决策
 /// 侧的调用点都不需要改动一个字符——这正是 `crate::traits::agent_trait_sources` 文档
 /// 「其余两路为什么不在这里」所描述的那种「调用点不需要改一行」，
 /// 只是这次覆盖的是「规则修正有几路来源」这一层。
@@ -736,6 +800,29 @@ pub fn craft_yield_bonus(modifiers: &[RuleModifierEntry], category: ContentIndex
     .unwrap_or(0)
 }
 
+/// 易伤消费者——在 [`agent_rule_modifiers`] 汇总出的候选列表里，取
+/// `damage_category` 匹配的 [`RuleModifier::Vulnerability`] 的**追加
+/// 伤害点数**；一条也没命中时返回 `0`（不额外多挨一点）。
+///
+/// 与 [`resistance_damage_reduction`] 逐字同构：同一个
+/// [`merged_across_types`]、同一套「同类型取最强、跨类型相加」，只是
+/// 认领的变体与方向相反。两者**各自独立聚合**，这正是拆成两个变体要
+/// 买到的东西——它们不在同一个桶里争「谁更强」，因此谁也吃不掉谁，见
+/// [`RuleModifier::Resistance`] 文档「脆弱**不**用负减伤表达」一节。
+pub fn vulnerability_damage_increase(
+    modifiers: &[RuleModifierEntry],
+    damage_category: ContentIndex,
+) -> i32 {
+    merged_across_types(modifiers, |modifier| match modifier {
+        RuleModifier::Vulnerability {
+            damage_category: candidate_category,
+            damage_increase,
+        } if *candidate_category == damage_category => Some(*damage_increase),
+        _ => None,
+    })
+    .unwrap_or(0)
+}
+
 /// 把一条配方声明的产出件数与 [`craft_yield_bonus`] 算出的加成合起来，
 /// 并落实 [`MINIMUM_CRAFT_PRODUCT_COUNT`] 这条保底。
 ///
@@ -761,8 +848,30 @@ pub fn craft_product_count(declared: u32, bonus: i32) -> u32 {
     u32::try_from(floored).unwrap_or(u32::MAX)
 }
 
-/// 把一次攻击已经算好的伤害，按 `damage_reduction` 点减伤扣掉，并落实
-/// [`MINIMUM_DAMAGE_AFTER_RESISTANCE`] 这条保底。
+/// 把一次攻击已经算好的伤害，减掉 `damage_reduction` 点减伤、加上
+/// `damage_increase` 点易伤，并落实 [`MINIMUM_DAMAGE_AFTER_RESISTANCE`]
+/// 这条保底：
+///
+/// ```text
+/// 结果 = max(1, 伤害 − 减伤 + 易伤)
+/// ```
+///
+/// # 为什么是一条算式一次钳，不是「先减完钳一次、再加易伤」
+///
+/// 两种写法在「减伤远大于来伤、同时又有易伤」这一格上给出完全不同的
+/// 答案，必须明确裁定，不能靠代码顺序偶然决定：来伤 10、减伤 100、
+/// 易伤 50——
+///
+/// - **一条算式一次钳**（本实现）：`max(1, 10 − 100 + 50) = 1`。
+/// - 先钳后加：`max(1, 10 − 100) + 50 = 51`，比**没有任何抗性**时的
+///   10 点还高出四倍。
+///
+/// 后者显然错：一件让目标「特别抗火」的装备不该因为目标同时「有点
+/// 怕火」而把它挨的火伤放大。根因是那条保底把一个负得很深的中间值
+/// 抬回 1，于是丢掉了「减伤还有多少富余」这个信息，易伤便加在了一个
+/// 被人为抬高过的基数上。净额一次算完就没有这个中间值可丢——这也正是
+/// 全整数加减法相对乘数链的一个具体好处：`a − b + c` 只有一个答案,
+/// 不存在「先算哪一步」。
 ///
 /// # 为什么保底只对「本来就打得出伤害」的那一下生效
 ///
@@ -770,12 +879,16 @@ pub fn craft_product_count(declared: u32, bonus: i32) -> u32 {
 /// 「凭空造出一点伤害」。一次本来就打不出伤害的攻击（例如攻击力为零
 /// 的占位公式）不该因为目标碰巧声明过抗性而反倒开始掉血——那会让本条
 /// 保底变成一个隐蔽的伤害来源。
-pub fn damage_after_resistance(damage: i32, damage_reduction: i32) -> i32 {
+///
+/// 这条提前返回同样覆盖易伤：一次打不出伤害的攻击不会因为目标怕火
+/// 就开始打得出伤害。易伤是**放大既有伤害**的量，不是伤害来源。
+pub fn damage_after_resistance(damage: i32, damage_reduction: i32, damage_increase: i32) -> i32 {
     if damage <= 0 {
         return damage;
     }
     damage
         .saturating_sub(damage_reduction)
+        .saturating_add(damage_increase)
         .max(MINIMUM_DAMAGE_AFTER_RESISTANCE)
 }
 
@@ -818,6 +931,21 @@ impl StrengthKey {
         StrengthKey(value as i64, 0)
     }
 
+    /// 声明「这个数越**小**越强」——判定系统落地批次重新引入。
+    ///
+    /// 上一段文档说「比较键不再需要取负」，那句话在当时成立：那一批
+    /// 全部有消费者的变体都是「点数越大效果越强」。
+    /// [`RuleModifier::RerollOnce`] 接线后不再成立——重掷的是**掷出的
+    /// 面值**，而重掷一个 `1` 是好事，重掷一个 `20` 是灾难，所以
+    /// 「面值越小，这条重掷声明越强」。取负而不是让调用点传比较器，
+    /// 仍然是本模块「方向是变体自己的属性」那条纪律。
+    ///
+    /// `value as i64` 先扩宽再取负：`i32::MIN` 直接取负会溢出，扩宽
+    /// 之后不会。
+    const fn smaller_is_stronger(value: i32) -> Self {
+        StrengthKey(-(value as i64), 0)
+    }
+
     /// 追加第二级比较键（越大越强），主键相同时才用得上。
     const fn then_larger_is_stronger(self, value: i32) -> Self {
         StrengthKey(self.0, value as i64)
@@ -847,27 +975,26 @@ impl StrengthKey {
 /// 的输入），聚合层拿不到，硬造一个模型只会是一条看起来精确、实则
 /// 凭空发明的规则。
 ///
-/// # 没有消费者的变体
+/// # 优势/劣势为什么不比强弱
 ///
-/// [`RuleModifier::RerollOnce`]/[`RuleModifier::Advantage`]/
-/// [`RuleModifier::Disadvantage`] 当前没有任何消费者（见 [`RuleModifier`]
-/// 文档「本批次接线状态」一节），也就没有任何 `select` 会认领它们，
-/// 因此永远不会真的参与一次强度比较。它们取
-/// [`StrengthKey::INDISTINGUISHABLE`]：不假装已经裁定过方向,等真正
-/// 接线的那一批连同消费者一起决定。
+/// [`RuleModifier::Advantage`]/[`RuleModifier::Disadvantage`] 接线之后
+/// 仍然取 [`StrengthKey::INDISTINGUISHABLE`]，但理由变了：不再是
+/// 「还没有消费者」，而是**它们的消费者不比强弱**。
+/// [`check_roll_bias`] 问的是存在性（有没有人声明了优势 / 有没有人
+/// 声明了劣势），两条优势与一条优势的结果逐位相同，因此没有一个
+/// 「更强的优势」可言，也就没有方向要裁定。它们不进
+/// [`merged_across_types`]。
 ///
 /// # 为什么这里用 `R` 别名而不是写全 `RuleModifier::变体名`
 ///
 /// `scripts/ci/check_field_consumers.py` 这道门禁按
 /// 「决策层文件里有没有出现 `RuleModifier::变体名` 字面量」判定一个变体
-/// 是否已被游戏逻辑消费,上面三个没有消费者的变体正显式登记在它的
-/// `EXEMPTIONS` 清单里。本函数**不读它们的任何字段**（返回的是
-/// [`StrengthKey::INDISTINGUISHABLE`]），只是为了穷尽性必须点到名字；
-/// 若在这里写出 `RuleModifier::RerollOnce` 这样的字面量，那道门禁会把
-/// 三个死变体误判成「已接线」，从此对它们形同虚设。用别名 `R` 写这个
-/// `match`,与 `RaceDef.stat_modifiers` 当初刻意把 trait 方法命名成
-/// `race_stat_modifiers`（见该门禁 `EXEMPTIONS` 里那一条的理由文字）
-/// 是同一条既有纪律：不为了让门禁看起来更绿而换来一份实际更弱的门禁。
+/// 是否已被游戏逻辑消费。本函数对优势/劣势**不读它们的任何字段**，
+/// 只是为了穷尽性必须点到名字——若在这里写出字面量，就等于用一次
+/// 「点名」冒充一次「消费」。真正的消费在 [`check_roll_bias`] 与
+/// [`check_reroll_value`]，那两处写的是全名。别名 `R` 因此保留：不为了
+/// 让门禁看起来更绿而换来一份实际更弱的门禁，与
+/// `RaceDef.stat_modifiers` 当初刻意换名是同一条既有纪律。
 fn strength_key(modifier: &RuleModifier) -> StrengthKey {
     use crate::rule_modifier::RuleModifier as R;
     match modifier {
@@ -875,14 +1002,21 @@ fn strength_key(modifier: &RuleModifier) -> StrengthKey {
         R::Resistance {
             damage_reduction, ..
         } => StrengthKey::larger_is_stronger(*damage_reduction),
-        // 概率减点数，越大越强：从盘查触发率上减掉得越多越不起眼。
+        // 追加伤害点数，越大越强：**「强」指这条修正本身有多强,不是
+        // 它对谁有利**。易伤 6 比易伤 4 更强地表达了「怕火」这件事,
+        // 于是同一个加值类型里取 6——与「两条免疫不叠成四分之一伤害」
+        // 是同一条纪律的另一半，见 `merged_across_types` 文档。
+        R::Vulnerability {
+            damage_increase, ..
+        } => StrengthKey::larger_is_stronger(*damage_increase),
+        // 判定修正点数，越大越强：加在隐蔽方那一侧的点数越多越不起眼。
         R::InspectionSuspicion {
-            suspicion_reduction_permille,
-        } => StrengthKey::larger_is_stronger(*suspicion_reduction_permille),
-        // 千分比概率，越大越强：`1000` = 什么都查不出来。
-        R::InspectionConcealment { conceal_permille } => {
-            StrengthKey::larger_is_stronger(*conceal_permille)
-        }
+            inconspicuous_modifier,
+        } => StrengthKey::larger_is_stronger(*inconspicuous_modifier),
+        // 判定修正点数，越大越强：藏东西那一侧加得越多越藏得住。
+        R::InspectionConcealment {
+            concealment_modifier,
+        } => StrengthKey::larger_is_stronger(*concealment_modifier),
         // 两个字段都越大越强，主键是追加伤害，见本函数文档「偷袭那两个字段」。
         R::SneakAttack {
             luck_chance_permille_per_point,
@@ -892,17 +1026,19 @@ fn strength_key(modifier: &RuleModifier) -> StrengthKey {
         // 额外产出件数，越大越强：一炉出得越多越好。**刻意写全名而不用
         // `R` 别名**——本变体有真实消费者（`craft_yield_bonus` →
         // `crate::resolve::resolve_craft` 第 9 步），
-        // `scripts/ci/check_field_consumers.py` 该判它绿，不该进那份
-        // `EXEMPTIONS`。别名纪律只适用于下面那三个死变体，见本函数文档
-        // 最后一节。
+        // `scripts/ci/check_field_consumers.py` 该判它绿，不该被别名遮住。
+        // 别名纪律只适用于下面优势/劣势那两条「只为穷尽性点名、不读任何
+        // 字段」的分支，见本函数文档最后一节。
         RuleModifier::CraftYield {
             bonus_product_count,
             ..
         } => StrengthKey::larger_is_stronger(*bonus_product_count),
-        // 以下三个当前没有消费者，见本函数文档「没有消费者的变体」一节。
-        R::RerollOnce { .. } | R::Advantage { .. } | R::Disadvantage { .. } => {
-            StrengthKey::INDISTINGUISHABLE
-        }
+        // 重掷的**面值**越小越强：重掷一个 1 是好事，重掷一个 20 是
+        // 灾难。这是本枚举唯一一个「越小越强」的量，方向声明见
+        // `StrengthKey::smaller_is_stronger`。
+        R::RerollOnce { value } => StrengthKey::smaller_is_stronger(*value),
+        // 优劣势不比强弱，见本函数文档「优势/劣势为什么不比强弱」一节。
+        R::Advantage { .. } | R::Disadvantage { .. } => StrengthKey::INDISTINGUISHABLE,
     }
 }
 
@@ -929,17 +1065,19 @@ enum CrossTypeMerge {
     ///   `a×(b×c)/1000/1000` 可以差 1），那正是约束 C5 要防的东西——
     ///   一条结果取决于遍历顺序的规则。
     Add,
-    /// **不裁定**：当前没有任何消费者的那几个变体（见 [`strength_key`]
-    /// 文档「没有消费者的变体」一节）。
+    /// **只取最强的一条**：跨加值类型也不相加，全体比一次强弱。
     ///
-    /// 它们既没有 `select` 会认领，也就永远走不到跨类型合并这一步；
-    /// 这个值因此不是「随便填的默认」，而是「等真正的消费者落地时，
-    /// 由接线的那一批连同强弱方向一起裁定」的诚实占位——与
-    /// [`StrengthKey::INDISTINGUISHABLE`] 是同一条纪律的两半。
+    /// 给的是那些**加起来没有意义**的量。当前只有
+    /// [`RuleModifier::RerollOnce`]：它的载荷是一个**面值**，把
+    /// 「重掷 1」与「重掷 5」加成「重掷 6」是把两个坐标当成了两段
+    /// 长度，纯属胡说。真要同时支持多个重掷面值，需要一个面值集合
+    /// 加一套「一颗骰最多重掷几次」的规则，是另一个批次的设计问题；
+    /// 在那之前取最强的一条（面值最小的那条）是唯一不发明规则的选择。
     ///
-    /// 落到行为上：不分桶，退回「全体取最强」，也就是本批次之前的
-    /// 旧行为。
-    Undecided,
+    /// 判定系统落地批次之前这个变体叫 `Undecided`，含义是「还没有
+    /// 消费者，等接线的那一批裁定」。三个死变体接线之后不再有「还没
+    /// 裁定」的量，名字随之改成它实际做的事。
+    StrongestOnly,
 }
 
 /// 逐变体声明跨加值类型的合并方式——无通配分支的穷尽 `match`，新增
@@ -953,9 +1091,11 @@ fn cross_type_merge(modifier: &RuleModifier) -> CrossTypeMerge {
     match modifier {
         // 减伤点数：附魔 3 点 + 炼金 2 点 = 5 点。
         R::Resistance { .. } => CrossTypeMerge::Add,
-        // 概率减点数：两个类型各减 100‰ 就是减 200‰，钳制在消费者那一侧。
+        // 追加伤害点数：与减伤逐字对称，诅咒 3 点 + 天生 4 点 = 7 点。
+        R::Vulnerability { .. } => CrossTypeMerge::Add,
+        // 判定修正点数：两个类型各 5 点就是 10 点，钳制在消费者那一侧。
         R::InspectionSuspicion { .. } => CrossTypeMerge::Add,
-        // 逐件藏匿概率：同上，相加后钳进两端各留一线的区间。
+        // 逐件藏匿修正点数：同上，相加后钳进 ±L。
         R::InspectionConcealment { .. } => CrossTypeMerge::Add,
         // 追加伤害与幸运敏感度两个字段各自相加，见 `AddAcrossTypes for SneakAttackRule`。
         R::SneakAttack { .. } => CrossTypeMerge::Add,
@@ -963,10 +1103,11 @@ fn cross_type_merge(modifier: &RuleModifier) -> CrossTypeMerge {
         // 没有整数除法、没有截断、没有顺序依赖（约束 C5）。写全名的
         // 理由同 `strength_key` 里那一条：本变体有真实消费者。
         RuleModifier::CraftYield { .. } => CrossTypeMerge::Add,
-        // 以下三个当前没有消费者，见 `CrossTypeMerge::Undecided` 文档。
-        R::RerollOnce { .. } | R::Advantage { .. } | R::Disadvantage { .. } => {
-            CrossTypeMerge::Undecided
-        }
+        // 重掷面值加不得，见 `CrossTypeMerge::StrongestOnly` 文档。
+        R::RerollOnce { .. } => CrossTypeMerge::StrongestOnly,
+        // 优劣势不走这条链路（消费者是存在性判断，不是聚合），这里
+        // 只是穷尽性必须点到名字，见 `strength_key` 文档同名一节。
+        R::Advantage { .. } | R::Disadvantage { .. } => CrossTypeMerge::StrongestOnly,
     }
 }
 
@@ -1036,7 +1177,7 @@ impl AddAcrossTypes for SneakAttackRule {
 /// 桶内两级判据都是严格比较才替换，只与声明值和 `ContentIndex` 有关。
 /// 跨桶是整数加法，可交换可结合，顺序在数学上就无关。桶本身还是走
 /// `BTreeMap`（按 `Option<ContentIndex>` 升序）——加法虽然不需要这条
-/// 保证，但 [`CrossTypeMerge::Undecided`] 那一支要在桶之间再比一次
+/// 保证，但 [`CrossTypeMerge::StrongestOnly`] 那一支要在桶之间再比一次
 /// 强弱，而且这里不该留一个「今天恰好不需要确定顺序」的隐患。
 ///
 /// 剩下的唯一可能「谁先出现谁赢」的情形是**同一个桶里强度键与 `origin`
@@ -1083,8 +1224,8 @@ fn merged_across_types<T: AddAcrossTypes>(
         CrossTypeMerge::Add => Some(winners.fold(first.2, |accumulated, (_, _, value)| {
             accumulated.add_across_types(value)
         })),
-        // 不裁定：不合并，退回「全体取最强」——与分桶之前逐位相同。
-        CrossTypeMerge::Undecided => {
+        // 只取最强：不合并，全体再比一次强弱。
+        CrossTypeMerge::StrongestOnly => {
             let mut best = first;
             for (key, origin, value) in winners {
                 if key > best.0 || (key == best.0 && origin < best.1) {
@@ -1097,65 +1238,121 @@ fn merged_across_types<T: AddAcrossTypes>(
 }
 
 /// 被动①消费者——在 [`agent_rule_modifiers`] 汇总出的候选列表里取
-/// [`RuleModifier::InspectionSuspicion`] 的**概率减点数**（千分比）；
-/// 一条也没有时返回 `0`（与常人无异，一点也不减）。
+/// [`RuleModifier::InspectionSuspicion`] 的**判定修正点数**；一条也
+/// 没有时返回 `0`（与常人无异，一点也不加）。
 ///
-/// 真正的消费点在 **AI 决策侧**（`ll_mod::native_behavior` 的
-/// `guard_inspect_chance`），不是 `crate::resolve`——理由见
+/// 真正的消费点在 **AI 决策侧**（`ll_mod::native_behavior` 的卫兵
+/// 行为树），不是 `crate::resolve`——理由见
 /// [`RuleModifier::InspectionSuspicion`] 文档「消费者在 AI 决策侧」
 /// 一节。聚合仍然留在这里：行为树拿到的是算完的一个数。
 ///
-/// # 本函数不钳制，钳制在调用点
+/// # 本函数不钳制，钳制在判定里
 ///
-/// 返回的是**要减掉多少**，不是**减完剩多少**——被减的那个基础概率
-/// （潜行与否两档，见 `ll_mod::native_behavior::GUARD_INSPECT_CHANCE_PERMILLE`）
-/// 本函数看不见。两端各留一线那条裁定因此落在调用点：调用方减完之后
-/// 过一遍 [`clamp_probability_permille`]。
+/// 返回的只是这一路来源的贡献，调用方还要把属性调整值、潜行加成加
+/// 上去，那个**总和**才是要钳的东西。钳制因此统一落在
+/// [`crate::check::opposed_check`] 内部
+/// （[`crate::check::CheckDice::clamp_modifier`]），不在这里。
+///
+/// # 缺省 0 与声明 0：这里刻意**不**区分
+///
+/// 与 [`concealment_check_modifier`] 相反（见其文档同名一节）：盘查
+/// 判定**恒发生**——卫兵要不要拦下一个人，与这个人有没有「不起眼」
+/// 这条被动无关。没有声明就是「这一路贡献 0 点」，不是「跳过判定」，
+/// 因此不需要 `Option` 那一档。
 ///
 /// 合并规则同 [`resistance_damage_reduction`]（[`merged_across_types`]）：
-/// 同类型取最强、跨类型相加。本变体的「强」是**减得越多越强**，方向
+/// 同类型取最强、跨类型相加。本变体的「强」是**加得越多越强**，方向
 /// 声明在 [`strength_key`]。
-pub fn inspection_suspicion_reduction_permille(modifiers: &[RuleModifierEntry]) -> i32 {
+pub fn inconspicuous_check_modifier(modifiers: &[RuleModifierEntry]) -> i32 {
     merged_across_types(modifiers, |modifier| match modifier {
         RuleModifier::InspectionSuspicion {
-            suspicion_reduction_permille,
-        } => Some(*suspicion_reduction_permille),
+            inconspicuous_modifier,
+        } => Some(*inconspicuous_modifier),
         _ => None,
     })
     .unwrap_or(0)
 }
 
+/// 优势/劣势消费者——这个实体在 `context` 这类判定上的掷骰偏向。
+///
+/// # 抵消，不叠加，不计数
+///
+/// 同时声明了优势与劣势 → [`crate::check::RollBias::Normal`]，与
+/// D&D 5e 同一条规则。理由不是致敬：**它让结果与来源条数无关**。
+/// 「三条优势对一条劣势」若按条数净算，结果就取决于聚合出来的候选
+/// 列表里各有几条，而那份列表的长度依赖于天赋/装备的枚举路径——正是
+/// 约束 C5 要防的那类隐性顺序/计数依赖。存在性判断没有这个问题。
+///
+/// 因此本函数**不走** [`merged_across_types`]：那套「分桶 → 桶内取
+/// 最强 → 跨桶合并」是为「有大小的量」准备的，而优势没有大小。加值
+/// 类型（`modifier_type`）对它同样没有意义——两条不同类型的优势与
+/// 两条同类型的优势，结果一样。
+pub fn check_roll_bias(modifiers: &[RuleModifierEntry], context: CheckContext) -> RollBias {
+    let mut has_advantage = false;
+    let mut has_disadvantage = false;
+    for entry in modifiers {
+        match &entry.modifier {
+            RuleModifier::Advantage { check_context } if context.matches(check_context) => {
+                has_advantage = true;
+            }
+            RuleModifier::Disadvantage { check_context } if context.matches(check_context) => {
+                has_disadvantage = true;
+            }
+            _ => {}
+        }
+    }
+    match (has_advantage, has_disadvantage) {
+        (true, false) => RollBias::Advantage,
+        (false, true) => RollBias::Disadvantage,
+        // 两者都有 → 抵消；两者都无 → 本来就没有偏向。
+        (true, true) | (false, false) => RollBias::Normal,
+    }
+}
+
+/// 重掷消费者——这个实体判定掷骰时，掷出哪个面值要重掷一次；一条也
+/// 没有声明时返回 `None`（不重掷，一个随机数都不多取）。
+///
+/// 与优势/劣势不同，重掷**有大小**（面值越小越强，见 [`strength_key`]），
+/// 因此照常走 [`merged_across_types`]：同类型取最强、跨类型也取最强
+/// （[`CrossTypeMerge::StrongestOnly`]，理由见该变体文档）。
+///
+/// 不分 `check_context`：见 [`RuleModifier::RerollOnce`] 文档。
+pub fn check_reroll_value(modifiers: &[RuleModifierEntry]) -> Option<i32> {
+    merged_across_types(modifiers, |modifier| match modifier {
+        RuleModifier::RerollOnce { value } => Some(*value),
+        _ => None,
+    })
+}
+
 /// 被动②消费者——在 [`agent_rule_modifiers`] 汇总出的候选列表里取
-/// [`RuleModifier::InspectionConcealment`] 的逐件藏匿千分比概率；
-/// 一条也没有时返回 `0`。
+/// [`RuleModifier::InspectionConcealment`] 的逐件藏匿判定修正点数；
+/// 一条也没有时返回 `None`。
 ///
 /// 消费点是 `crate::resolve::resolve_inspect`，见其文档「藏匿判定」
 /// 一节。合并规则同 [`resistance_damage_reduction`]：同类型取最强、
-/// 跨类型相加；本变体的「强」是**概率越大越强**（藏得越严实）。
+/// 跨类型相加；本变体的「强」是**点数越大越强**（藏得越严实）。
 ///
-/// # 缺省 0 与声明 0：两个不同的意思，刻意不合并
+/// # 缺省与声明 0：两个不同的意思，用 `Option` 而不是 `0` 区分
 ///
-/// - **一条也没有声明** → 返回 `0`，含义是「**这条被动不在场**」。
+/// - **一条也没有声明** → `None`，含义是「**这条被动不在场**」。
 ///   调用方据此完全跳过藏匿判定，一次随机数都不消耗（约束 C3：不该
-///   为一条不存在的规则空转一次确定性随机流）。
-/// - **声明了，合并结果落在两端** → 走 [`clamp_probability_permille`]，
-///   钳进 `1..=999`。绝对藏住与绝对藏不住都不可达,见
-///   [`PROBABILITY_MARGIN_PERMILLE`]。
+///   为一条不存在的规则空转一次确定性随机流）。这一档不能省：藏匿
+///   判定是**逐件**的，一次盘查跳过的是 `2M × 件数` 次抽取，不是一次。
+/// - **显式声明成 `0`** → `Some(0)`，含义是「你有这条被动，只是它一
+///   点忙也帮不上」。判定照常发生（并因此照常消耗随机数），只是这一
+///   路贡献 0 点，胜负交给双方的属性调整值。
 ///
-/// 也就是说 `0` 这个返回值只可能来自前一种情形。一个显式声明成 `0`
-/// 的内容条目会得到 `1‰`——「你声明了这条被动，只是弱到几乎没用」，
-/// 与「你根本没有这条被动」是两回事,后者连骰都不掷。
-///
-/// 跨类型相加还有一个直接后果：两个类型各 `800‰` 相加是 `1600‰`，
-/// 钳成 `999‰`。乘数模型下同样两条会算成 `1 − 0.2 × 0.2 = 960‰`。
-/// 加法在高位更容易触顶，这是模型换代的真实后果。
-pub fn inspection_concealment_permille(modifiers: &[RuleModifierEntry]) -> i32 {
+/// 旧实现用返回值 `0` 兼表两件事，靠「显式 0 会被概率钳制抬成 `1‰`」
+/// 这条副作用把它们分开——那条兜底随概率模型一起走了（`两端各留一线`
+/// 现在由 [`crate::check::CheckDice::max_modifier`] 的推导保证，不再靠
+/// 在结果上钳一个下界），`Option` 是同一个区分的直说法。
+pub fn concealment_check_modifier(modifiers: &[RuleModifierEntry]) -> Option<i32> {
     merged_across_types(modifiers, |modifier| match modifier {
-        RuleModifier::InspectionConcealment { conceal_permille } => Some(*conceal_permille),
+        RuleModifier::InspectionConcealment {
+            concealment_modifier,
+        } => Some(*concealment_modifier),
         _ => None,
     })
-    .map(clamp_probability_permille)
-    .unwrap_or(0)
 }
 
 /// [`sneak_attack_rule`] 的返回值——一次偷袭判定需要的两个数：幸运
@@ -1203,6 +1400,7 @@ pub fn sneak_attack_rule(modifiers: &[RuleModifierEntry]) -> Option<SneakAttackR
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::check::{CONCEALMENT_CHECK, INSPECTION_CHECK};
     use crate::item::{ItemRule, SlotMask};
     use crate::traits::{NoTraitGrants, NoTraits, TraitGrant, TraitRule};
     use ll_core::ident::{Interner, NamespacedId};
@@ -1624,14 +1822,128 @@ mod tests {
     }
 
     #[test]
-    fn 没有任何来源声明时两个盘查消费者各自返回自己的缺省值() {
-        // 两个缺省值现在同为 `0`，但含义仍然不同：意愿的 `0` 是「一点
-        // 也不减」，藏匿的 `0` 是「这条被动不在场」（调用方据此完全跳过
-        // 判定，见 `inspection_concealment_permille` 文档「缺省 0 与
-        // 声明 0」一节）。
+    fn 优势与劣势同时声明时互相抵消() {
+        // 这条钉的是 `check_roll_bias` 文档「抵消，不叠加，不计数」
+        // 那一节：抵消不是致敬 D&D，是它让结果与来源条数无关，因而与
+        // 聚合顺序无关（约束 C5）。
+        // Arrange
+        let mut interner = Interner::new();
+        let a = index(&mut interner, "lostland:a");
+        let b = index(&mut interner, "lostland:b");
+        let c = index(&mut interner, "lostland:c");
+        let advantage = |origin| {
+            entry(
+                origin,
+                RuleModifier::Advantage {
+                    check_context: NamespacedId::parse("lostland:inspection")
+                        .expect("测试用标识符恒合法"),
+                },
+            )
+        };
+        let disadvantage = |origin| {
+            entry(
+                origin,
+                RuleModifier::Disadvantage {
+                    check_context: NamespacedId::parse("lostland:inspection")
+                        .expect("测试用标识符恒合法"),
+                },
+            )
+        };
+
         // Act & Assert
-        assert_eq!(inspection_suspicion_reduction_permille(&[]), 0);
-        assert_eq!(inspection_concealment_permille(&[]), 0);
+        assert_eq!(check_roll_bias(&[], INSPECTION_CHECK), RollBias::Normal);
+        assert_eq!(
+            check_roll_bias(&[advantage(a)], INSPECTION_CHECK),
+            RollBias::Advantage
+        );
+        assert_eq!(
+            check_roll_bias(&[disadvantage(a)], INSPECTION_CHECK),
+            RollBias::Disadvantage
+        );
+        // 三条优势 + 一条劣势 → 抵消，不是「优势净胜两条」。
+        assert_eq!(
+            check_roll_bias(
+                &[advantage(a), advantage(b), advantage(c), disadvantage(a)],
+                INSPECTION_CHECK
+            ),
+            RollBias::Normal
+        );
+        // 两种拼接顺序结果一致。
+        assert_eq!(
+            check_roll_bias(&[advantage(a), disadvantage(b)], INSPECTION_CHECK),
+            check_roll_bias(&[disadvantage(b), advantage(a)], INSPECTION_CHECK)
+        );
+    }
+
+    #[test]
+    fn 优势只对声明的那一类判定生效() {
+        // Arrange
+        let mut interner = Interner::new();
+        let origin = index(&mut interner, "lostland:cutpurse_training");
+        let entries = vec![entry(
+            origin,
+            RuleModifier::Advantage {
+                check_context: NamespacedId::parse("lostland:inspection")
+                    .expect("测试用标识符恒合法"),
+            },
+        )];
+
+        // Act & Assert：盘查有优势，藏匿没有——两环是两条独立的判定。
+        assert_eq!(
+            check_roll_bias(&entries, INSPECTION_CHECK),
+            RollBias::Advantage
+        );
+        assert_eq!(
+            check_roll_bias(&entries, CONCEALMENT_CHECK),
+            RollBias::Normal
+        );
+    }
+
+    #[test]
+    fn 重掷取面值最小的一条且跨加值类型也只取最强() {
+        // 重掷是本枚举唯一「越小越强」的量：重掷一个 1 是好事，重掷
+        // 一个 20 是灾难。跨类型**不相加**（面值加不得），见
+        // `CrossTypeMerge::StrongestOnly` 文档。
+        // Arrange
+        let mut interner = Interner::new();
+        let innate = index(&mut interner, "lostland:innate");
+        let enhancement = index(&mut interner, "lostland:enhancement");
+        let a = index(&mut interner, "lostland:a");
+        let b = index(&mut interner, "lostland:b");
+
+        // Act & Assert：一条也没有 → None，一次随机数都不多取。
+        assert_eq!(check_reroll_value(&[]), None);
+
+        // 同一个（未分类）桶里取面值更小的那条。
+        assert_eq!(
+            check_reroll_value(&[
+                entry(a, RuleModifier::RerollOnce { value: 5 }),
+                entry(b, RuleModifier::RerollOnce { value: 2 }),
+            ]),
+            Some(2)
+        );
+
+        // 跨加值类型：取 2，不是 5 + 2 = 7 这种把面值当长度加的胡说。
+        assert_eq!(
+            check_reroll_value(&[
+                typed_entry(a, innate, RuleModifier::RerollOnce { value: 5 }),
+                typed_entry(b, enhancement, RuleModifier::RerollOnce { value: 2 }),
+            ]),
+            Some(2)
+        );
+    }
+
+    #[test]
+    fn 没有任何来源声明时两个盘查消费者各自返回自己的缺省值() {
+        // 两个缺省值的**类型**不同，而这正是它们含义不同的落点：意愿
+        // 的 `0` 是「这一路贡献 0 点」（盘查判定照常发生），藏匿的
+        // `None` 是「这条被动不在场」（调用方据此完全跳过逐件判定，
+        // 一次随机数都不消耗）。判定系统落地批次把后者从「返回 0，靠
+        // 概率钳制把显式 0 抬成 1‰ 来区分」改成了直说的 `Option`，见
+        // `concealment_check_modifier` 文档「缺省与声明 0」一节。
+        // Act & Assert
+        assert_eq!(inconspicuous_check_modifier(&[]), 0);
+        assert_eq!(concealment_check_modifier(&[]), None);
     }
 
     #[test]
@@ -1643,21 +1955,24 @@ mod tests {
             entry(
                 training,
                 RuleModifier::InspectionSuspicion {
-                    suspicion_reduction_permille: 400,
+                    inconspicuous_modifier: 9,
                 },
             ),
             entry(
                 training,
                 RuleModifier::InspectionConcealment {
-                    conceal_permille: 800,
+                    concealment_modifier: 9,
                 },
             ),
         ];
 
         // Act & Assert：同一条天赋上的两个被动互不干扰——这正是所有者
-        // 「被动可以分为 2 种」那句裁定在聚合层的形状。
-        assert_eq!(inspection_suspicion_reduction_permille(&entries), 400);
-        assert_eq!(inspection_concealment_permille(&entries), 800);
+        // 「被动可以分为 2 种」那句裁定在聚合层的形状。两个 9 取的是
+        // `mods/example_mod/traits.json5` 里扒手训练的真实声明值（半颗
+        // 骰子，见 `crate::check::CheckDice::half_die`），不再是旧模型
+        // 的千分比 400/800。
+        assert_eq!(inconspicuous_check_modifier(&entries), 9);
+        assert_eq!(concealment_check_modifier(&entries), Some(9));
     }
 
     #[test]
@@ -1670,13 +1985,13 @@ mod tests {
         let entries = vec![entry(
             origin,
             RuleModifier::InspectionSuspicion {
-                suspicion_reduction_permille: 250,
+                inconspicuous_modifier: 250,
             },
         )];
 
         // Act & Assert
-        assert_eq!(inspection_suspicion_reduction_permille(&entries), 250);
-        assert_eq!(inspection_concealment_permille(&entries), 0);
+        assert_eq!(inconspicuous_check_modifier(&entries), 250);
+        assert_eq!(concealment_check_modifier(&entries), None);
     }
 
     #[test]
@@ -1694,20 +2009,19 @@ mod tests {
         let early_entry = entry(
             early,
             RuleModifier::InspectionSuspicion {
-                suspicion_reduction_permille: 300,
+                inconspicuous_modifier: 300,
             },
         );
         let late_entry = entry(
             late,
             RuleModifier::InspectionSuspicion {
-                suspicion_reduction_permille: 300,
+                inconspicuous_modifier: 300,
             },
         );
 
         // Act：同样两条，两种拼接顺序。
-        let forward =
-            inspection_suspicion_reduction_permille(&[early_entry.clone(), late_entry.clone()]);
-        let backward = inspection_suspicion_reduction_permille(&[late_entry, early_entry]);
+        let forward = inconspicuous_check_modifier(&[early_entry.clone(), late_entry.clone()]);
+        let backward = inconspicuous_check_modifier(&[late_entry, early_entry]);
 
         // Assert：都是 300（不是 600，也不是 0），且两种顺序一致。
         assert_eq!(forward, 300);
@@ -1769,17 +2083,17 @@ mod tests {
 
         // 盘查意愿——概率减点数越大越强。
         assert_eq!(
-            inspection_suspicion_reduction_permille(&[
+            inconspicuous_check_modifier(&[
                 entry(
                     first,
                     RuleModifier::InspectionSuspicion {
-                        suspicion_reduction_permille: 100,
+                        inconspicuous_modifier: 100,
                     }
                 ),
                 entry(
                     second,
                     RuleModifier::InspectionSuspicion {
-                        suspicion_reduction_permille: 900,
+                        inconspicuous_modifier: 900,
                     }
                 ),
             ]),
@@ -1788,21 +2102,21 @@ mod tests {
 
         // 盘查藏匿——藏匿概率越大越强。
         assert_eq!(
-            inspection_concealment_permille(&[
+            concealment_check_modifier(&[
                 entry(
                     first,
                     RuleModifier::InspectionConcealment {
-                        conceal_permille: 100,
+                        concealment_modifier: 100,
                     }
                 ),
                 entry(
                     second,
                     RuleModifier::InspectionConcealment {
-                        conceal_permille: 900,
+                        concealment_modifier: 900,
                     }
                 ),
             ]),
-            900,
+            Some(900),
         );
     }
 
@@ -1922,7 +2236,7 @@ mod tests {
         let items = FixedItems(vec![(
             cloak,
             vec![untyped(RuleModifier::InspectionConcealment {
-                conceal_permille: 300,
+                concealment_modifier: 300,
             })],
         )]);
         let equipment = BTreeMap::from([(EquipSlot::OUTER, ItemStack::new(cloak, 1))]);
@@ -1931,7 +2245,7 @@ mod tests {
         let entries = equipment_rule_modifiers(&equipment, &items);
 
         // Assert
-        assert_eq!(inspection_concealment_permille(&entries), 300);
+        assert_eq!(concealment_check_modifier(&entries), Some(300));
     }
 
     // ===================== 加值类型（分桶）=====================
@@ -1965,40 +2279,40 @@ mod tests {
 
         // （盘查意愿）：取最强 400，不是相加的 700。
         assert_eq!(
-            inspection_suspicion_reduction_permille(&[
+            inconspicuous_check_modifier(&[
                 entry(
                     a,
                     RuleModifier::InspectionSuspicion {
-                        suspicion_reduction_permille: 300,
+                        inconspicuous_modifier: 300,
                     }
                 ),
                 entry(
                     b,
                     RuleModifier::InspectionSuspicion {
-                        suspicion_reduction_permille: 400,
+                        inconspicuous_modifier: 400,
                     }
                 ),
             ]),
             400,
         );
 
-        // （盘查藏匿）：取最强 800，不是相加后钳顶的 999。
+        // （盘查藏匿）：取最强 800，不是相加的 1500。
         assert_eq!(
-            inspection_concealment_permille(&[
+            concealment_check_modifier(&[
                 entry(
                     a,
                     RuleModifier::InspectionConcealment {
-                        conceal_permille: 700,
+                        concealment_modifier: 700,
                     }
                 ),
                 entry(
                     b,
                     RuleModifier::InspectionConcealment {
-                        conceal_permille: 800,
+                        concealment_modifier: 800,
                     }
                 ),
             ]),
-            800,
+            Some(800),
         );
 
         // （偷袭）：取最强那一条整体，不是两条各字段相加的 (30, 12)。
@@ -2161,70 +2475,46 @@ mod tests {
                 hide,
                 innate,
                 RuleModifier::InspectionConcealment {
-                    conceal_permille: 800,
+                    concealment_modifier: 800,
                 },
             ),
             typed_entry(
                 cloak,
                 enhancement,
                 RuleModifier::InspectionConcealment {
-                    conceal_permille: 800,
+                    concealment_modifier: 800,
                 },
             ),
         ];
 
-        // Act & Assert
-        assert_eq!(
-            inspection_concealment_permille(&entries),
-            1000 - PROBABILITY_MARGIN_PERMILLE
-        );
+        // Act & Assert：两个加值类型直接相加，**这里不钳**——钳制在
+        // 判定里（`CheckDice::clamp_modifier`），聚合层如实交出总和。
+        // 旧实现在这里就把 `800 + 800` 钳成了 `999‰`，那是概率模型时代
+        // 「值域就是 0..=1000」留下的；判定修正没有那个天然上界，钳制
+        // 的依据是骰子跨度，而聚合层看不见是哪把骰子。
+        assert_eq!(concealment_check_modifier(&entries), Some(1600));
     }
 
     #[test]
-    fn 显式声明的零藏匿被钳到下界而不是当成没有这条被动() {
-        // 「缺省 0」与「声明 0」是两个不同的意思，见
-        // `inspection_concealment_permille` 文档同名一节：前者返回 0
-        //（调用方完全跳过判定，一次随机数都不消耗），后者是一条真的
-        // 存在、只是弱到几乎没用的被动，被钳到 1‰。
+    fn 显式声明的零藏匿与根本没有这条被动是两回事() {
+        // 「缺省」与「声明 0」是两个不同的意思，见
+        // `concealment_check_modifier` 文档同名一节：前者返回 `None`
+        //（调用方完全跳过判定，一次随机数都不消耗），后者返回
+        // `Some(0)`——一条真的存在、只是一点忙也帮不上的被动，判定照常
+        // 发生（并因此照常消耗随机数），胜负交给双方的属性调整值。
         // Arrange
         let mut interner = Interner::new();
         let origin = index(&mut interner, "lostland:threadbare_cloak");
         let entries = vec![entry(
             origin,
             RuleModifier::InspectionConcealment {
-                conceal_permille: 0,
+                concealment_modifier: 0,
             },
         )];
 
         // Act & Assert
-        assert_eq!(
-            inspection_concealment_permille(&entries),
-            PROBABILITY_MARGIN_PERMILLE
-        );
-        assert_eq!(inspection_concealment_permille(&[]), 0);
-    }
-
-    #[test]
-    fn 概率钳制两端各留一线() {
-        // 直接对钳制函数下断言：两个绝对端点都不可达，中间的合法值原样
-        // 通过（证明这不是一条"把所有值都往中间挤"的规则）。
-        // Act & Assert
-        assert_eq!(clamp_probability_permille(0), PROBABILITY_MARGIN_PERMILLE);
-        assert_eq!(
-            clamp_probability_permille(1000),
-            1000 - PROBABILITY_MARGIN_PERMILLE
-        );
-        assert_eq!(
-            clamp_probability_permille(-5_000),
-            PROBABILITY_MARGIN_PERMILLE
-        );
-        assert_eq!(
-            clamp_probability_permille(5_000),
-            1000 - PROBABILITY_MARGIN_PERMILLE
-        );
-        assert_eq!(clamp_probability_permille(1), 1);
-        assert_eq!(clamp_probability_permille(500), 500);
-        assert_eq!(clamp_probability_permille(999), 999);
+        assert_eq!(concealment_check_modifier(&entries), Some(0));
+        assert_eq!(concealment_check_modifier(&[]), None);
     }
 
     // ===================== 减伤保底 =====================
@@ -2234,17 +2524,47 @@ mod tests {
         // 「不允许绝对免疫」那条裁定的直接落点，见
         // `MINIMUM_DAMAGE_AFTER_RESISTANCE` 文档。
         // Act & Assert
-        assert_eq!(damage_after_resistance(10, 3), 7);
+        assert_eq!(damage_after_resistance(10, 3, 0), 7);
         assert_eq!(
-            damage_after_resistance(10, 10),
+            damage_after_resistance(10, 10, 0),
             MINIMUM_DAMAGE_AFTER_RESISTANCE
         );
         assert_eq!(
-            damage_after_resistance(10, 9_999),
+            damage_after_resistance(10, 9_999, 0),
             MINIMUM_DAMAGE_AFTER_RESISTANCE
         );
-        // 负减伤 = 脆弱：多挨 5 点。
-        assert_eq!(damage_after_resistance(10, -5), 15);
+    }
+
+    #[test]
+    fn 易伤把伤害加回去且与减伤方向严格对称() {
+        // 易伤是减伤的对称量：同一个点数，一个减一个加，见
+        // `RuleModifier::Vulnerability` 文档。
+        // Act & Assert
+        // 只有易伤：10 + 5 = 15（此前用 `damage_reduction: -5` 表达的
+        // 那一格，现在有了正规写法，数值逐位相同）。
+        assert_eq!(damage_after_resistance(10, 0, 5), 15);
+        // 减伤与易伤同时在场：净额 10 − 3 + 5 = 12。两者互不吞噬——
+        // 这正是拆成两个变体买到的东西。
+        assert_eq!(damage_after_resistance(10, 3, 5), 12);
+        // 严格对称：同一个点数一减一加抵消回原值。
+        for point in [1, 4, 7, 1_000] {
+            assert_eq!(damage_after_resistance(50, point, point), 50);
+        }
+    }
+
+    #[test]
+    fn 净额一次算完再钳而不是减完先钳再加易伤() {
+        // 见 `damage_after_resistance` 文档「为什么是一条算式一次钳」
+        // 一节：来伤 10、减伤 100、易伤 50。
+        // - 一条算式一次钳（本实现）：max(1, 10 − 100 + 50) = 1。
+        // - 先钳后加（错的那种）：max(1, 10 − 100) + 50 = 51,比完全
+        //   没有抗性时的 10 点还高四倍。
+        // Act
+        let damage = damage_after_resistance(10, 100, 50);
+
+        // Assert
+        assert_eq!(damage, MINIMUM_DAMAGE_AFTER_RESISTANCE);
+        assert_ne!(damage, 51);
     }
 
     #[test]
@@ -2253,18 +2573,22 @@ mod tests {
         // 见 `damage_after_resistance` 文档「为什么保底只对本来就打得出
         // 伤害的那一下生效」一节。
         // Act & Assert
-        assert_eq!(damage_after_resistance(0, 3), 0);
-        assert_eq!(damage_after_resistance(0, 0), 0);
-        assert_eq!(damage_after_resistance(-2, 3), -2);
+        assert_eq!(damage_after_resistance(0, 3, 0), 0);
+        assert_eq!(damage_after_resistance(0, 0, 0), 0);
+        assert_eq!(damage_after_resistance(-2, 3, 0), -2);
+        // 易伤同样不是伤害来源：一次打不出伤害的攻击不会因为目标怕火
+        // 就开始打得出伤害。
+        assert_eq!(damage_after_resistance(0, 0, 5), 0);
+        assert_eq!(damage_after_resistance(-2, 0, 5), -2);
     }
 
     #[test]
     fn 没有任何抗性声明时伤害逐位不变() {
         // 分桶层与减伤模型对「没有任何抗性声明」这条最常见的路径必须是
-        // 恒等变换：减伤 0 点、保底不介入。
+        // 恒等变换：减伤 0 点、易伤 0 点、保底不介入。
         // Act & Assert
         for damage in [1, 7, 100, 9_999] {
-            assert_eq!(damage_after_resistance(damage, 0), damage);
+            assert_eq!(damage_after_resistance(damage, 0, 0), damage);
         }
     }
 
@@ -2457,5 +2781,119 @@ mod tests {
             MINIMUM_CRAFT_PRODUCT_COUNT
         );
         assert_eq!(craft_product_count(7, 0), 7);
+    }
+
+    // ===================== 易伤聚合 =====================
+
+    /// 造一条易伤候选，理由同本模块其余测试帮手。
+    fn vuln_entry(
+        origin: ContentIndex,
+        modifier_type: Option<ContentIndex>,
+        damage_category: ContentIndex,
+        damage_increase: i32,
+    ) -> RuleModifierEntry {
+        RuleModifierEntry {
+            origin,
+            modifier_type,
+            modifier: RuleModifier::Vulnerability {
+                damage_category,
+                damage_increase,
+            },
+        }
+    }
+
+    /// 造一条抗性候选——与 [`vuln_entry`] 成对，好让「一抗一怕落在
+    /// 同一个桶」那条守门测试读起来是对称的。
+    fn res_entry(
+        origin: ContentIndex,
+        modifier_type: Option<ContentIndex>,
+        damage_category: ContentIndex,
+        damage_reduction: i32,
+    ) -> RuleModifierEntry {
+        RuleModifierEntry {
+            origin,
+            modifier_type,
+            modifier: resistance(damage_category, damage_reduction),
+        }
+    }
+
+    #[test]
+    fn 同一个加值类型里的两条易伤取最强() {
+        // 桶内规则与抗性逐字相同：不叠加，取最强的那一条。
+        // Arrange
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let innate = index(&mut interner, "examplemod:innate");
+        let first = index(&mut interner, "test:a");
+        let second = index(&mut interner, "test:b");
+        let modifiers = vec![
+            vuln_entry(first, Some(innate), fire, 4),
+            vuln_entry(second, Some(innate), fire, 6),
+        ];
+
+        // Act & Assert
+        assert_eq!(vulnerability_damage_increase(&modifiers, fire), 6);
+    }
+
+    #[test]
+    fn 不同加值类型的两条易伤相加() {
+        // 跨桶规则与抗性逐字相同：相加。
+        // Arrange
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let innate = index(&mut interner, "examplemod:innate");
+        let curse = index(&mut interner, "test:curse");
+        let first = index(&mut interner, "test:a");
+        let second = index(&mut interner, "test:b");
+        let modifiers = vec![
+            vuln_entry(first, Some(innate), fire, 4),
+            vuln_entry(second, Some(curse), fire, 3),
+        ];
+
+        // Act & Assert
+        assert_eq!(vulnerability_damage_increase(&modifiers, fire), 7);
+    }
+
+    #[test]
+    fn 易伤只认自己那个伤害类别() {
+        // Arrange
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let acid = index(&mut interner, "examplemod:acid");
+        let origin = index(&mut interner, "test:a");
+        let modifiers = vec![vuln_entry(origin, None, fire, 4)];
+
+        // Act & Assert
+        assert_eq!(vulnerability_damage_increase(&modifiers, fire), 4);
+        assert_eq!(vulnerability_damage_increase(&modifiers, acid), 0);
+    }
+
+    #[test]
+    fn 同一个未分类桶里的减伤不再吞掉易伤() {
+        // 本批次修掉的那条真实错误结果的守门测试：负减伤表达脆弱时,
+        // 「同类型取最强」会让 `-5` 被同桶的 `+3` 静默吃掉,而**不声明
+        // 加值类型的全部落进同一个共享桶**是本模块刻意选的默认值,
+        // 因此这不是一个边角情形。完整论证见
+        // `RuleModifier::Resistance` 文档「脆弱**不**用负减伤表达」。
+        // Arrange：两条都不声明类型，同一个伤害类别，一抗一怕。
+        let mut interner = Interner::new();
+        let fire = index(&mut interner, "lostland:fire");
+        let armor = index(&mut interner, "test:armor");
+        let flesh = index(&mut interner, "test:flesh");
+        let modifiers = vec![
+            res_entry(armor, None, fire, 3),
+            vuln_entry(flesh, None, fire, 5),
+        ];
+
+        // Act
+        let reduction = resistance_damage_reduction(&modifiers, fire);
+        let increase = vulnerability_damage_increase(&modifiers, fire);
+
+        // Assert：两条都活着，各自被自己的消费者认领。
+        assert_eq!(reduction, 3);
+        assert_eq!(increase, 5);
+        // 净额：来伤 10 − 3 + 5 = 12。旧模型（负减伤 `-5` 与 `+3` 同桶
+        // 取最强）在这里会算出 10 − 3 = 7,脆弱整条消失。
+        assert_eq!(damage_after_resistance(10, reduction, increase), 12);
     }
 }

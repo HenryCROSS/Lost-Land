@@ -63,6 +63,15 @@ struct RealModsHandle {
     /// `examplemod:enhancement`——护符那条抗性声明的加值类型
     /// （加值类型批次）。
     enhancement_type_id: ContentIndex,
+    /// `lostland:forge_brand`——**本体**那把声明 `lostland:fire` 的
+    /// 武器（易伤与减伤对称批次）。跨命名空间取它而不是在 example_mod
+    /// 里新造一把火武器：软泥怪那条易伤声明的就是 `lostland:fire`,
+    /// 用本体现成的火武器才是同一条链路的端到端证据。
+    forge_brand_id: ContentIndex,
+    /// `lostland:fire`——软泥怪那条易伤指向的伤害类别。
+    fire_id: ContentIndex,
+    /// `examplemod:acid_hide`——同时声明抗酸与怕火的那条天赋。
+    acid_hide_id: ContentIndex,
 }
 
 fn load_real_mods() -> RealModsHandle {
@@ -101,6 +110,9 @@ fn load_real_mods() -> RealModsHandle {
         acid_ward_amulet_id: resolve("examplemod:acid_ward_amulet"),
         acid_id: resolve("examplemod:acid"),
         enhancement_type_id: resolve("examplemod:enhancement"),
+        forge_brand_id: resolve("lostland:forge_brand"),
+        fire_id: resolve("lostland:fire"),
+        acid_hide_id: resolve("examplemod:acid_hide"),
         race,
         trait_def,
         item,
@@ -496,4 +508,123 @@ fn 真实注册的酸抗护符的抗性声明真的写进了物品表() {
     // 引用的确实是脚本里写的那个伤害类别，不是别的凑巧同索引的东西
     // ——`acid_id` 走的是同一份装载后注册表的解析结果。
     assert_eq!(*damage_category, handle.acid_id);
+}
+
+#[test]
+fn 软泥怪对火的易伤真实提高了锻炉烙铁造成的伤害() {
+    // 易伤与减伤对称批次的端到端证据：`mods/example_mod/traits.json5`
+    // 的 `examplemod:acid_hide` 新增了一条
+    // `kind: "vulnerability", damage_category: "lostland:fire",
+    //  damage_increase: 4`，它必须走**真实**的 mod 装载 → 真实
+    // `agent_rule_modifiers` 聚合 → 真实 `resolve_attack` →
+    // `damage_after_resistance` 这条链路真的把伤害加上去。
+    //
+    // 与同文件「软泥怪对酸的抗性」那条互为镜像：同一个防御方、同一条
+    // 天赋，一个方向减、一个方向加。
+    // Arrange
+    let handle = load_real_mods();
+    let mut world = test_world();
+    let attacker = spawn_agent(
+        &mut world,
+        handle.half_elf_id,
+        Agent::STARTING_HEALTH,
+        BTreeMap::from([(
+            EquipSlot::MAIN_HAND,
+            ItemStack::new(handle.forge_brand_id, 1),
+        )]),
+    );
+    // 基准防御方：半精灵，对火既不抗也不怕。
+    let baseline_defender = spawn_agent(&mut world, handle.half_elf_id, 1_000, BTreeMap::new());
+    // 真实防御方：软泥怪，1 级被授予 `examplemod:acid_hide`。
+    let ooze_defender = spawn_agent(&mut world, handle.ooze_id, 1_000, BTreeMap::new());
+
+    let formulas = RegistryFormulas {
+        formulas: &handle.formula,
+        default_formula: ContentIndex::default(),
+    };
+    let attack = |world: &mut WorldState, defender: EntityId| {
+        let effects = resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
+            world,
+            &Intent::Attack {
+                actor: attacker,
+                target: defender,
+            },
+            &NoSkills,
+            &handle.race,
+            &handle.trait_def,
+            &ll_sim::resource_pool::NoResourcePools,
+            &handle.item,
+            &formulas,
+            &NoDamageCategories,
+        );
+        for effect in &effects {
+            apply(world, effect);
+        }
+    };
+
+    // Act
+    attack(&mut world, baseline_defender);
+    attack(&mut world, ooze_defender);
+
+    // Assert
+    let baseline_damage = 1_000
+        - world
+            .actors
+            .get(baseline_defender)
+            .expect("基准防御方未死亡")
+            .health;
+    let ooze_damage = 1_000
+        - world
+            .actors
+            .get(ooze_defender)
+            .expect("软泥怪防御方未死亡")
+            .health;
+    // 这条才是本测试的主张：**正好多挨 4 点**，与内容里那个 4 逐字
+    // 对应。不是「更高就行」——那样把 4 改成 400 测试也照样绿。
+    assert_eq!(
+        ooze_damage,
+        baseline_damage + 4,
+        "软泥怪对火的易伤应当让它正好多挨 4 点（基准 {baseline_damage}，实得 {ooze_damage}）"
+    );
+    // 基准值 10：与 `crates/ll-mod/tests/base_mod_fire_damage.rs` 的
+    // `fire_bare` 同一个数——同一把锻炉烙铁、同一份 `BaseStats::BASELINE`
+    // 攻击方、同一个不穿护甲的防御方，两份夹具本来就该给出同一个裸伤。
+    assert_eq!(baseline_damage, 10, "本夹具下火伤基准值");
+    assert_eq!(ooze_damage, 14);
+}
+
+#[test]
+fn 软泥怪的易伤声明真的写进了天赋表且与抗性各占一条() {
+    // 直接验收数据层：同一条天赋上一抗一怕**两条并存**，谁也没有把
+    // 谁挤掉。这条守的是装载层，与上一条守的结算层互补。
+    // Arrange
+    let handle = load_real_mods();
+
+    // Act
+    let view = handle
+        .trait_def
+        .get(handle.acid_hide_id)
+        .expect("acid_hide 应已注册");
+    let modifiers: Vec<&RuleModifier> = view
+        .rule_modifiers
+        .iter()
+        .map(|typed| &typed.modifier)
+        .collect();
+
+    // Assert：两条，一条抗酸 4、一条怕火 4。
+    assert_eq!(modifiers.len(), 2, "抗性与易伤必须各占一条，不是二选一");
+    assert!(modifiers.iter().any(|modifier| matches!(
+        modifier,
+        RuleModifier::Resistance {
+            damage_category,
+            damage_reduction: 4,
+        } if *damage_category == handle.acid_id
+    )));
+    assert!(modifiers.iter().any(|modifier| matches!(
+        modifier,
+        RuleModifier::Vulnerability {
+            damage_category,
+            damage_increase: 4,
+        } if *damage_category == handle.fire_id
+    )));
 }

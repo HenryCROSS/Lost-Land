@@ -25,9 +25,12 @@
 //! 是同一份数据被两种消费方式使用」,接线是另一批的工作)；
 //! `rule_modifiers` 里的 [`RuleModifier::Resistance`]（伤害类别/抗性
 //! 接线批次新增）现在有真实消费者——`ll_sim::traits::resistance_multiplier_permille`
-//! 通过下方 `impl TraitCatalog for TraitTable` 读到这个字段；其余三个
-//! 变体（`RerollOnce`/`Advantage`/`Disadvantage`）仍然没有消费者,见
-//! [`RuleModifier`] 文档「本批次接线状态」一节。
+//! 通过下方 `impl TraitCatalog for TraitTable` 读到这个字段；此前一直
+//! 没有消费者的另外三个变体（`RerollOnce`/`Advantage`/`Disadvantage`）
+//! 在判定系统落地批次一并接上了——消费者是
+//! `ll_sim::rule_modifier::check_roll_bias`/`check_reroll_value`，落点
+//! 是 `ll_sim::check` 的对抗判定，见 [`RuleModifier`] 文档「本批次
+//! 接线状态」一节。本枚举从此没有死变体。
 //!
 //! # `register-trait` 脚本签名为什么只暴露①，不是设计文档的完整六参数
 //!

@@ -8,10 +8,18 @@
 //! **纯 Rust 结算侧**的三条边界，真实 mod 脚本 + `TurnEngine` 那条端到端
 //! 证据在 `crates/ll-mod/tests/example_mod_rogue_passives.rs`：
 //!
-//! 1. `1000‰`：什么都查不出来（`items_seen` 为空），且盘查本身照常
-//!    发生、照常消耗一个回合。
-//! 2. `0‰`（以及压根没有这条被动）：背包与装备全部如实被看到——反例，
-//!    证明第 1 条不是「盘查从来就看不到东西」。
+//! 1. **顶格的藏匿修正也藏不绝**：判定系统落地批次把这一条从
+//!    「`1000‰` → `items_seen` 恒为空」改成了它的反面。旧断言在新模型
+//!    下**不可能成立**，而这正是「不允许绝对」那条裁定要的结果：修正
+//!    上限 `L` 的推导（`ll_sim::check` 模块文档「不允许绝对」一节）保证
+//!    双方在任何合法修正下都还有赢面。本条因此断言两件事：顶格修正下
+//!    **既存在一件都藏不住的种子，也存在真的藏住东西的种子**——前者
+//!    钉死「没有绝对」，后者钉死「这条被动真的有用」。盘查本身照常
+//!    发生、照常消耗一个回合这一半不变。
+//! 2. **压根没有这条被动**：背包与装备全部如实被看到，一次随机数都不
+//!    消耗——反例，证明第 1 条不是「盘查从来就看不到东西」。这一档与
+//!    「显式声明 0」是两回事，后者判定照常发生（见
+//!    `ll_sim::rule_modifier::concealment_check_modifier` 文档）。
 //! 3. 同一个世界种子、同一个时刻，同一次盘查的结果**逐位可重放**
 //!    （约束 C3/C5），且判定用的是**被盘查者**的流——换一个盘查者不
 //!    改变结果。
@@ -28,6 +36,7 @@ use std::collections::BTreeMap;
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
+use ll_sim::check::CHECK_DICE;
 use ll_sim::combat::Penetration;
 use ll_sim::effect::{CarriedItemSlot, Effect, InspectedItem};
 use ll_sim::intent::Intent;
@@ -177,7 +186,7 @@ fn plain_item_rule() -> ItemRule {
 /// `guard_x` 只影响盘查者是谁/站在哪 —— 第 3 条测试用它验证判定流取
 /// 的是**被盘查者**，不是盘查者。
 fn inspect_once(
-    conceal_permille: Option<i32>,
+    concealment_modifier: Option<i32>,
     world_seed: u64,
     guard_x: i32,
 ) -> Vec<InspectedItem> {
@@ -203,7 +212,7 @@ fn inspect_once(
     );
     let guard = spawn_agent(&mut world, race, guard_x, Vec::new(), BTreeMap::new());
 
-    let grants = match conceal_permille {
+    let grants = match concealment_modifier {
         Some(_) => vec![TraitGrant {
             trait_id,
             unlock_level: 1,
@@ -218,12 +227,12 @@ fn inspect_once(
         traits: BTreeMap::from([(
             trait_id,
             TraitRule {
-                rule_modifiers: conceal_permille
-                    .map(|permille| {
+                rule_modifiers: concealment_modifier
+                    .map(|points| {
                         vec![TypedRuleModifier {
                             modifier_type: None,
                             modifier: RuleModifier::InspectionConcealment {
-                                conceal_permille: permille,
+                                concealment_modifier: points,
                             },
                         }]
                     })
@@ -266,31 +275,95 @@ fn inspect_once(
         .expect("盘查必须照常产出 Effect::Inspect，即使一件东西都没查到")
 }
 
-/// 硬要求一：`1000‰` 时什么都查不出来。
+/// 硬要求一：顶格的藏匿修正**也藏不绝**，但确实藏得住东西。
+///
+/// 用的是 `CHECK_DICE.max_modifier()`（`3d20` 下是 28）——比它更大的
+/// 声明在装载期就会被拒（`ll_mod::content_schema_gear` 的
+/// `checked_check_modifier`），运行期还会再被
+/// `CheckDice::clamp_modifier` 钳回来，所以这就是这条被动能达到的
+/// **上限**。
 #[test]
-fn 藏匿率满档时盘查照常发生但一件东西都看不到() {
-    // Act
-    let seen = inspect_once(Some(1000), 7, 5);
+fn 顶格藏匿既藏不绝也确实藏得住() {
+    // Arrange
+    let cap = i32::try_from(CHECK_DICE.max_modifier()).expect("28 落在 i32 内");
 
-    // Assert
+    // Act：扫一批种子，数出「一件都没藏住」与「至少藏住一件」各出现
+    // 过没有。扫种子而不是断言某一个种子的结果，是因为要证明的是两个
+    // 结果**都可能**，那本来就是一句关于分布的话。
+    //
+    // 断言的粒度是**单件**，不是「四件全被看到」：藏匿是逐件判定，
+    // 顶格修正下单件被看到的概率约 21‰（`3d20` 净差 −28 的精确值），
+    // 四件同时被看到是 21‰ 的四次方，约两千万分之一——那不是「绝对
+    // 藏住」，只是小到扫不出来。要证的命题本来就是单件那一条：
+    // **存在一件东西被看见**。
+    let mut saw_something = false;
+    let mut hid_something = false;
+    for seed in 0..64u64 {
+        let seen = inspect_once(Some(cap), seed, 5);
+        if !seen.is_empty() {
+            saw_something = true;
+        }
+        if seen.len() < CARRIED_ITEMS {
+            hid_something = true;
+        }
+    }
+
+    // Assert 一：没有绝对——顶格修正下仍然存在被看见的东西。
     assert!(
-        seen.is_empty(),
-        "1000‰ 藏匿应当让 items_seen 为空，实际看到 {} 件",
-        seen.len()
+        saw_something,
+        "顶格藏匿下 64 个种子里一件东西都没被看见过，绝对性可能回来了"
     );
+    // Assert 二：这条被动真的有用——否则上一条断言用一个「藏匿完全
+    // 不起作用」的实现也能通过。
+    assert!(hid_something, "顶格藏匿一件东西都没藏住过，说明修正没接上");
 }
 
-/// 硬要求二（反例）：没有这条被动、以及显式声明 `0‰` 时，背包与装备
-/// 全部如实被看到——证明上一条不是「盘查本来就看不到东西」。
+/// 硬要求二（反例）：没有这条被动时背包与装备全部如实被看到——证明
+/// 上一条不是「盘查本来就看不到东西」。
+///
+/// 这一档**一次随机数都不消耗**（`concealment_check_modifier` 返回
+/// `None`，调用方整段跳过），因此它对任何种子都成立，可以逐字断言。
+/// 显式声明 `0` 是另一回事：判定照常发生，结果随种子变，不能这么断言。
 #[test]
 fn 没有藏匿声明时背包与装备全部如实被看到() {
     // Act
     let without_trait = inspect_once(None, 7, 5);
-    let zero_permille = inspect_once(Some(0), 7, 5);
 
     // Assert
     assert_eq!(without_trait.len(), CARRIED_ITEMS);
-    assert_eq!(zero_permille.len(), CARRIED_ITEMS);
+
+    // 换 32 个种子仍然全看到：证明这一档确实没有掷骰，不是恰好掷赢了。
+    for seed in 0..32u64 {
+        assert_eq!(
+            inspect_once(None, seed, 5).len(),
+            CARRIED_ITEMS,
+            "没有藏匿声明时不该有任何判定，种子 {seed} 却改变了结果"
+        );
+    }
+}
+
+/// 显式声明 `0` 与压根没有声明是两回事：前者判定照常发生（并因此消耗
+/// 随机数、结果随种子变），后者整段跳过。
+///
+/// 这条钉的是 `ll_sim::rule_modifier::concealment_check_modifier` 文档
+/// 「缺省与声明 0」那一节在**全链路**上的可观测差别——聚合层的
+/// `None` vs `Some(0)` 若在 `resolve` 侧被同等对待，这条测试就会红。
+#[test]
+fn 显式声明零藏匿仍然掷骰而没有声明整段跳过() {
+    // Act：同一批种子，两档各跑一遍。
+    let mut zero_varies = false;
+    for seed in 0..64u64 {
+        if inspect_once(Some(0), seed, 5).len() != CARRIED_ITEMS {
+            zero_varies = true;
+        }
+    }
+
+    // Assert：声明 0 的那一档存在「没全看到」的种子（判定真的发生了），
+    // 而上一条测试已经证明没有声明的那一档恒是全看到。
+    assert!(
+        zero_varies,
+        "显式声明 0 的藏匿在 64 个种子里结果恒定，说明判定被整段跳过了"
+    );
 }
 
 /// 硬要求四（槽位句柄批次）：四堆同种物品各自带着能把它们分开的句柄。
@@ -335,9 +408,10 @@ fn 四堆同种物品各自带着不同的槽位句柄且顺序是先背包后�
 /// 硬要求三：确定性重放（约束 C3/C5），且判定流取的是**被盘查者**。
 #[test]
 fn 藏匿判定可重放且判定流属于被盘查者而不是盘查者() {
-    // Arrange & Act：同一个种子跑两遍必须逐位相同。
-    let first = inspect_once(Some(500), 12345, 5);
-    let second = inspect_once(Some(500), 12345, 5);
+    // Arrange & Act：同一个种子跑两遍必须逐位相同。修正取 9（半颗
+    // 骰子，扒手训练的真实声明值）。
+    let first = inspect_once(Some(9), 12345, 5);
+    let second = inspect_once(Some(9), 12345, 5);
 
     // Assert 一：可重放。
     assert_eq!(first, second);
@@ -345,7 +419,11 @@ fn 藏匿判定可重放且判定流属于被盘查者而不是盘查者() {
     // Act：只换盘查者的位置（`EntityId` 不变，因为生成顺序没变），
     // 结果必须不变——`DetRng::for_entity` 的三元组里那一项取的是
     // `target`，不是 `actor`。
-    let other_guard = inspect_once(Some(500), 12345, 9);
+    //
+    // 注意换成对抗判定之后盘查者**确实**进了式子（他的意志调整值是
+    // 主动方修正），但进的是修正，不是随机流的身份；这里换的只是位置,
+    // 属性一个字没变，因此结果仍然必须逐位相同。
+    let other_guard = inspect_once(Some(9), 12345, 9);
 
     // Assert 二
     assert_eq!(first, other_guard);
@@ -354,7 +432,7 @@ fn 藏匿判定可重放且判定流属于被盘查者而不是盘查者() {
     // 这句话没有证据（一个恒定返回同一份快照的实现也能通过上面两条）。
     let mut differing = 0;
     for seed in 0..32u64 {
-        if inspect_once(Some(500), seed, 5) != first {
+        if inspect_once(Some(9), seed, 5) != first {
             differing += 1;
         }
     }

@@ -106,6 +106,7 @@ pub mod apply;
 pub mod behavior;
 pub mod catalogs;
 pub mod character;
+pub mod check;
 pub mod combat;
 pub mod craft;
 pub mod damage_category;

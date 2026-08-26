@@ -76,6 +76,37 @@
           damage_reduction: 4,
           modifier_type: "examplemod:innate",
         },
+        // 怕火：本仓库第一条 `kind: "vulnerability"` 声明，也是易伤与
+        // 减伤对称批次的端到端证据（crates/ll-mod/tests/
+        // example_mod_resistance.rs 的「软泥怪对火易伤」两条）。
+        //
+        // ── 为什么是 4 ──────────────────────────────────────────
+        // 与同一条天赋的抗酸点数**逐字相同**。这不是平衡调参，是一条
+        // 可复述、可核对的内容规则：同一具躯体，耐得住多少酸就同样
+        // 怕多少火。挑任何别的数都需要一条独立论证，而这条天赋里没有
+        // 任何东西能支持那样一条论证——「酸对它比火更无害」是一句可以
+        // 说，但本 mod 至今没有任何设定支持的话。
+        //
+        // 刻意**不**写成 `damage_reduction: -4`：那条写法已经撤销，
+        // 理由见 ll_sim::rule_modifier::RuleModifier::Resistance 文档
+        // 「脆弱**不**用负减伤表达」一节——同一个加值类型桶里「取最强」
+        // 会让 -4 被同桶的任何一条正减伤静默吃掉。
+        //
+        // ── 为什么是 lostland:fire，不是自己注册一个火类别 ────────
+        // 本体 04f5aa3 已经注册了 lostland:fire，example_mod 也已经
+        // 声明依赖本体（见 mod.json5）。跨命名空间引用一条已注册的
+        // 伤害类别，顺便证明易伤与抗性一样吃得下跨 mod 的类别引用。
+        //
+        // ── innate ────────────────────────────────────────────────
+        // 与抗酸那条同类型：都是这具躯体自带的。它们**不会**互相争
+        // 「同类型取最强」——两个消费者各自聚合各自的变体，见
+        // ll_sim::rule_modifier::vulnerability_damage_increase 文档。
+        {
+          kind: "vulnerability",
+          damage_category: "lostland:fire",
+          damage_increase: 4,
+          modifier_type: "examplemod:innate",
+        },
       ],
     },
     {
@@ -107,13 +138,33 @@
       // 两者落在盘查链路的两环：前者在卫兵决定要不要发起盘查那一步，
       // 后者在盘查已经发起、结算搜出什么那一步。
       //
-      // 「不觉得可疑」此前是 200‰ 乘数，现在是**减 400‰ 点数**。这个
-      // 数是照着「不改变非潜行状态下的既有行为」挑的：卫兵基础盘查率
-      // GUARD_INSPECT_CHANCE_PERMILLE 是 500‰，旧模型算出 500 × 200 /
-      // 1000 = 100‰，新模型算出 500 − 400 = 100‰，逐位相同。潜行状态
-      // 那一档确实变了（基础 50‰，旧模型 10‰、新模型触底到 1‰），
-      // 那是加法模型对低基础概率更狠的必然结果，见
-      // ll_mod::native_behavior::guard_inspect_chance 文档。
+      // 判定系统落地批次把两条都换成了**判定修正点数**（此前一条是
+      // 「减 400‰ 触发率」、一条是「800‰ 逐件藏匿概率」）。两个数字
+      // 都不再是概率，而是加在**隐蔽那一方掷出的点数上**的整数——
+      // 判定用 3d20，见 ll_sim::check。
+      //
+      // 两条都取 9，理由是同一条：**半颗骰子的跨度**（(N−1)/2，N=20
+      // 时是 9，见 ll_sim::check::CheckDice::half_die）。不是拟合出来
+      // 的数——
+      //
+      //   * 需要一个有内在依据的档位，而这把尺子上自明的单位只有
+      //     「一整颗骰子」（19）和「半颗」（9）；
+      //   * 「一整颗」已经被**主动潜行**占了
+      //     （ll_mod::native_behavior::GUARD_INSPECT_STEALTH_MODIFIER）。
+      //     一条天生的被动不该与「此刻真的藏起来了」等价，取它的一半
+      //     是唯一有理由的选择；
+      //   * 两者叠加恰好是 28 = 修正上限，不触发钳制。再大一点，潜行
+      //     就会把天赋吃掉大半——那正是旧模型「乘法档吃掉加法量」的
+      //     同一个病换个地方犯。
+      //
+      // 数值后果如实记下（双方属性均为基准 10，两侧调整值均为 0）：
+      //
+      //   * 盘查触发率：常态 500‰ → 486‰（几乎逐字不变），仅天赋
+      //     100‰ → 255‰（弱了），潜行 + 天赋 1‰ → 21‰（强了）。
+      //     旧模型那个 1‰ 不是设计，是概率钳制的兜底留下的痕迹。
+      //   * 逐件藏匿：800‰ → 745‰（同一档），且**搜身的人是谁**第一次
+      //     开始影响结果——旧模型下眼神再好的卫兵与瞎子查同一个人，
+      //     查到的东西逐位相同。
       //
       // 两条都不声明加值类型：本 mod 里没有第二条盘查类被动，分不分类
       // 观察不到任何差别，硬分一个类只会是噪音。它们因此落在那个共享的
@@ -122,8 +173,17 @@
       display_name_key: "examplemod:cutpurse_training_display_name",
       granted_skills: ["examplemod:backstab"],
       rule_modifiers: [
-        { kind: "inspection-suspicion", suspicion_reduction_permille: 400 },
-        { kind: "inspection-concealment", conceal_permille: 800 },
+        { kind: "inspection-suspicion", inconspicuous_modifier: 9 },
+        { kind: "inspection-concealment", concealment_modifier: 9 },
+        // 优势：扒手训练教的是「被拦下之后怎么应付」，落在**盘查**
+        // 判定上，与上面那条 inconspicuous_modifier 同一环。这是
+        // RuleModifier::Advantage 在本仓库的第一条真实内容声明——该
+        // 变体自落地起就没有消费者，等的正是这套判定系统。
+        //
+        // 刻意不同时给藏匿判定优势：那会让同一条天赋在盘查链路的两环
+        // 上都拿到优势，强得没有道理，也让「两环是两条独立被动」这条
+        // 设计意图看不出来。
+        { kind: "advantage", check_context: "lostland:inspection" },
       ],
     },
   ],
