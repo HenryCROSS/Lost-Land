@@ -1,6 +1,12 @@
 # 制作类副职该给玩家什么：一个 `RuleModifier` 变体，四个副职共用
 
-> **落地状态**：纯设计，零实现。本文档提出的 `RuleModifier::CraftYield` 变体、
+> **落地状态：已全部落地**（提交 `c838518`，分支 `wt-craftyield`）。下文
+> 的「纯设计，零实现」一节已作废，保留原文只为记录当时的判断。落地时
+> 发现的三处偏差记在**五节末尾的「落地实测订正」**里——五节那张十二项
+> 清单**漏了一项**（`content_audit.rs`），且第 7/8 两项的文件名已随文件
+> 拆分漂移。
+>
+> 原文：纯设计，零实现。本文档提出的 `RuleModifier::CraftYield` 变体、
 > `craft_yield_bonus` 选择器、`resolve_craft` 第⑨步的接线，**一行都还没写**。
 > 本文档不改 `crates/**`、不改 `mods/**`。
 >
@@ -546,6 +552,45 @@ ADR 0021 要拦的是「为了对称而抽出一层没有内容的接口」—�
 
 **第二个消费者**：来源侧两个（天赋路 + 装备路，后者白拿）；
 内容侧四个（四条副职）；算法侧共用 `merged_across_types`（已有 4 个用户）。
+
+### 落地实测订正（`c838518`，写于落地之后）
+
+上面那张清单按提交 `7db7a63` 写成，落地时逐项复核，**三处与实际不符**：
+
+| # | 文档写的 | 实际 |
+|---|---|---|
+| 7/8 | `content_hash.rs` / `content_schema.rs` | 哈希那条对；schema 那条的规则修正解析已随文件拆分搬到 **`content_schema_gear.rs`**（`RawRuleModifier`），`content_schema.rs` 里没有它 |
+| — | 版本号「当前 17」（协调者转述） | 落地时实际是 **18**（副职天赋接线批次已推过一次），本批次推到 **19** |
+| **13** | **整项漏了** | **`crates/ll-mod/src/content_audit.rs` 必须同批次改**，见下 |
+
+**漏掉的第 13 项，是本次落地唯一一处「不改就当场变红」的地方**——
+`mods/lostland/traits.json5` 一落地，`content_audit` 的三道双向检查同时
+触发（`ll-game` 的 `真实本体内容的字段覆盖不留缺口` 一次报出六条）：
+
+1. `ContentTableKind::Trait` 报 **`DeferredButPopulated`**——本体天赋表
+   从此非空，必须从 `deferred` 挪进 `covered`；
+2. `SubclassAttrs::traits` 报 **`StaleExemption`**——那条豁免正是本批次
+   要解除的东西，必须摘掉；
+3. 天赋表进 `covered` 之后，`inspect_trait` 观察的**四个字段**
+   （`granted_skills` / `stat_modifiers` / `rule_modifiers::modifier_type` /
+   `granted_resource_pools`）本体一条都没覆盖，四条豁免各要写明理由。
+
+外加一项**本可以不做、但同形**：照 `Resistance::damage_category` 的
+先例，给 `CraftYield::category` 补一条跨表引用校验（装载期的
+`required_id` 只保证「这个 id 注册过」，保证不了「它是一个配方类别」）。
+
+**这一项漏掉的成因值得记下来**：四节 D 组把存档/哈希/确定性逐条核过，
+但 `content_audit` 不属于那三类里的任何一类——它守的是「**本体内容有
+没有真的用上这个字段**」，是第四条正交的门禁轴。「新增一份本体内容
+文件」这个动作会同时惊动它的**三种**检查，而三节 3.6 只把这件事描述成
+「约四十行内容数据」。
+
+**另一处内容侧的实测订正**：3.6 示意的「四条同形」在本体上不成立——
+工匠那条要带**两条**修正。本体的锻造分成 `lostland:forging`（人人可做,
+工匠正是从这里练出来的）与 `lostland:advanced_forging`（**要工匠副职才
+进得来**）两个类别，只写前者会得到一个荒唐的结果：大师铁匠在自己的
+专属那一档反而没有加成。这不推翻 3.1「必须按类别键控」那条论证，恰恰
+是它的直接后果。
 
 ---
 
