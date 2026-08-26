@@ -40,12 +40,24 @@ pub trait DamageCategoryCatalog {
 
 /// 空伤害类别目录：默认类别恒为 [`ContentIndex::default()`]——理由同
 /// [`crate::formula::NoFormulas`]：调用方没有接好真正的
-/// `RegistryDamageCategories`（多数只测试移动/开门这类不涉及内容注册表
-/// 的既有测试场景）时的保底实现。`ContentIndex::default()` 与任何真实
-/// 注册的伤害类别都不会撞上（`Registry::intern` 从 1 开始分配，见
-/// `ll_core::ident` 模块文档），因此这个哨兵值在
-/// `resistance_multiplier_permille` 眼里就是"查不到任何匹配的抗性"，
-/// 不会误触发某个真实类别的抗性声明。
+/// `ll_mod::damage_category::RegistryDamageCategories`（多数只测试移动/
+/// 开门这类不涉及内容注册表的既有测试场景）时的保底实现。
+///
+/// # 这个值**不是**一个保留哨兵——此前这里写错了
+///
+/// 本段原文是「`ContentIndex::default()` 与任何真实注册的伤害类别都不会
+/// 撞上（`Registry::intern` 从 1 开始分配）」。**那句话是错的**：
+/// [`ll_core::ident::Interner::intern`] 分配的索引就是插入顺序下标，
+/// 从 **0** 开始，`ContentIndex::default()` 因此正是**第一个被 intern
+/// 的那条内容**（见 `ll_core::ident::ContentIndex::default` 文档原文
+/// 「索引 `0` 在不同会话、不同 mod 组合下可能对应完全不同的内容」）。
+///
+/// 它在实践中仍然表现成"查不到任何匹配的抗性"，但靠的是另一件事：
+/// 生产装载路径（`ll_game::content::load_content`）最先 intern 的是
+/// **本体地形**（`register_base_terrain`），伤害类别排在它之后，因此
+/// 没有任何伤害类别拿得到索引 0。这是一条**依赖装载顺序**的保证，
+/// 不是类型层面的保证——真正的修复不是加固这个空实现，而是让生产路径
+/// 根本不用它，那正是 `RegistryDamageCategories` 落地要做的事。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct NoDamageCategories;
 

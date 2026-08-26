@@ -55,7 +55,7 @@ use ll_mod::content_audit::{
     audit_content,
 };
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
-use ll_mod::damage_category::DamageCategoryTable;
+use ll_mod::damage_category::{DamageCategoryTable, RegistryDamageCategories};
 use ll_mod::discover::discover_mods;
 use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
@@ -76,7 +76,6 @@ use ll_mod::trait_def::TraitTable;
 use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{RegistryXpCurves, XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
-use ll_sim::damage_category::NoDamageCategories;
 use ll_sim::exposure::AmbientSource;
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
@@ -167,7 +166,9 @@ pub struct LoadedContent {
     pub weapon_category_table: WeaponCategoryTable,
     /// 本体默认伤害类别索引（`lostland:physical`，伤害类别/抗性接线
     /// 批次新增）——武器未显式声明伤害类别时的保底类别，见
-    /// `ll_mod::base_damage_category` 模块文档。
+    /// `ll_mod::base_damage_category` 模块文档。由
+    /// [`RuntimeCatalogs::new`] 包装成 `RegistryDamageCategories`
+    /// 借给结算。
     pub default_damage_category_id: ContentIndex,
     /// 伤害类别定义表。
     pub damage_category_table: DamageCategoryTable,
@@ -224,13 +225,15 @@ pub struct LoadedContent {
 ///
 /// # 为什么需要这个中间类型
 ///
-/// 各路目录里有四份不是「某张表自己就实现了 trait」：
+/// 各路目录里有五份不是「某张表自己就实现了 trait」：
 /// [`RegisteredQuests`] 要把 [`QuestTable`] 与 [`Registry`] 绑在一起，
 /// [`RegistryFormulas`] 要把 [`FormulaTable`] 与保底默认公式索引绑在
-/// 一起，[`RegisteredRecipes`] 与 [`RegistryXpCurves`] 同理（各自的
-/// 理由见它们自己的文档）。四者都是**借着 `LoadedContent`
+/// 一起，[`RegistryDamageCategories`] 要把「哪一类是全局默认伤害类别」
+/// 这个**不在任何表里**的答案包起来，[`RegisteredRecipes`] 与
+/// [`RegistryXpCurves`] 同理（各自的理由见它们自己的文档）。五者都是
+/// **借着 `LoadedContent`
 /// 现造**的值，而 `ResolveCatalogs` 的字段是 `&dyn`——不能指向一个
-/// 函数返回时就消失的临时值。本类型就是这四个值的落脚处：调用方先
+/// 函数返回时就消失的临时值。本类型就是这五个值的落脚处：调用方先
 /// 让它活着（一个局部变量），再从它借出目录束。
 ///
 /// # 为什么目录不挂进 `WorldState`
@@ -243,6 +246,11 @@ pub struct RuntimeCatalogs<'a> {
     content: &'a LoadedContent,
     quests: RegisteredQuests<'a>,
     formulas: RegistryFormulas<'a>,
+    /// 伤害类别目录（伤害类别/抗性接线批次留下的缺口，本批次补上）
+    /// ——把 `default_damage_category_id` 包成一个真实的
+    /// `DamageCategoryCatalog`，见
+    /// `ll_mod::damage_category::RegistryDamageCategories` 文档。
+    damage_categories: RegistryDamageCategories,
     recipes: RegisteredRecipes<'a>,
     /// 经验曲线目录（升级加点批次）——第四个「不是某张表自己实现
     /// trait」的目录：`RegistryXpCurves` 要把曲线定义表、职业/种族
@@ -263,6 +271,13 @@ impl<'a> RuntimeCatalogs<'a> {
                 formulas: &content.formula_table,
                 default_formula: content.default_damage_formula_id,
             },
+            // 伤害类别这一路（本批次补上的缺口）：「哪一类是全局默认」
+            // 不在 `damage_category_table` 里——它是
+            // `register_base_damage_category` 在任何 mod 装载之前定下的
+            // 另一件事，见 `RegistryDamageCategories` 文档。
+            damage_categories: RegistryDamageCategories {
+                default_category: content.default_damage_category_id,
+            },
             // 配方这一路（制作系统批次）：`RecipeCatalog` 要回答的两个
             // 问题分别落在两张表上（配方本体表与配方类别表），因此与
             // `RegisteredQuests` 同一种情形——需要一个把两者绑在一起的
@@ -281,18 +296,23 @@ impl<'a> RuntimeCatalogs<'a> {
 
     /// 借出交给 [`ll_sim::turn::TurnEngine`] 的目录束。
     ///
-    /// # 伤害类别这一路为什么仍是空实现
+    /// # 伤害类别这一路此前是空实现，现在不是了
     ///
-    /// [`ll_sim::damage_category::DamageCategoryCatalog`] 目前在
-    /// `ll-mod` 侧**还没有任何真实实现**（仓库里唯一的实现是 `ll-sim`
-    /// 自己的 `NoDamageCategories`），`LoadedContent::damage_category_table`
-    /// 与 `default_damage_category_id` 还没有对应的目录类型可以包装。
-    /// 这一路只影响「武器没有显式声明伤害类别时退回哪个默认类别」，
-    /// **不影响抗性生不生效**（防御方天赋声明了 `RuleModifier::Resistance`
-    /// 就会命中，见
+    /// [`ll_sim::damage_category::DamageCategoryCatalog`] 此前在
+    /// `ll-mod` 侧没有任何真实实现，这一行借出的是 `ll-sim` 自己的
+    /// `NoDamageCategories`——后果是**不显式声明 `damage_category` 的
+    /// 武器退回的是 `ContentIndex::default()` 这个哨兵值，不是引擎
+    /// 注册的 `lostland:physical`**：引擎注册的「全局默认类别」在真实
+    /// 游戏里从来没被当默认用过。今天本体没有任何内容对
+    /// `lostland:physical` 声明抗性，所以看不出症状；但**任何 mod 对
+    /// 它声明抗性都会静默失效**，因为默认武器算出来的类别根本不是它。
+    ///
+    /// [`RegistryDamageCategories`] 补上了那个实现，本方法这一行随之
+    /// 换成真实目录。这一路只影响「武器没有显式声明伤害类别时退回
+    /// 哪个默认类别」，**不改变抗性机制本身生不生效**（显式声明了
+    /// 类别的武器一直走的是自己那条，见
     /// `ll_sim::resolve::resolve_with_skills_traits_pools_items_formulas_and_damage_categories`
-    /// 文档「本函数不改变抗性本身生不生效」一节）。等 `ll-mod` 侧补上
-    /// 那个实现，只需要改本方法这一行。
+    /// 文档「本函数不改变抗性本身生不生效」一节）。
     pub fn as_resolve_catalogs(&self) -> ResolveCatalogs<'_> {
         ResolveCatalogs {
             skills: &self.content.skill_table,
@@ -317,7 +337,7 @@ impl<'a> RuntimeCatalogs<'a> {
             pools: &self.content.resource_pool_table,
             items: &self.content.item_table,
             formulas: &self.formulas,
-            damage_categories: &NO_DAMAGE_CATEGORIES,
+            damage_categories: &self.damage_categories,
             recipes: &self.recipes,
             // 温度这一路（温度系统批次）：把装载好的空间层属性表与天气
             // 表借进来，`ll_sim::exposure::AmbientSource` 随后在每次结算
@@ -356,10 +376,6 @@ impl<'a> RuntimeCatalogs<'a> {
         }
     }
 }
-
-/// [`RuntimeCatalogs::as_resolve_catalogs`] 借出的伤害类别空实现实例，
-/// 理由见该方法文档「伤害类别这一路为什么仍是空实现」一节。
-const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 
 /// [`load_content`] 会失败的全部原因。
 ///
@@ -972,6 +988,21 @@ mod tests {
                 .id,
             index("examplemod:iron_sword_formula"),
             "公式目录必须是真实 RegistryFormulas"
+        );
+        // 伤害类别这一路：断言的是**具体等于 lostland:physical**，
+        // 不是「非默认值」——这一条此前恒返回 `ContentIndex::default()`
+        // （空实现 `NoDamageCategories`），引擎注册的全局默认类别在
+        // 真实游戏里从来没被当默认用过，见
+        // `RuntimeCatalogs::as_resolve_catalogs` 文档同名一节。
+        assert_eq!(
+            catalogs.damage_categories.default_category(),
+            index(ll_mod::base_damage_category::DEFAULT_DAMAGE_CATEGORY_ID),
+            "伤害类别目录必须是真实 RegistryDamageCategories"
+        );
+        assert_ne!(
+            catalogs.damage_categories.default_category(),
+            ContentIndex::default(),
+            "全局默认伤害类别不该是空实现的哨兵值"
         );
     }
 

@@ -47,6 +47,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use ll_core::ident::ContentIndex;
+use ll_sim::damage_category::DamageCategoryCatalog;
 
 /// 伤害类别的注册表条目——「物理」「火」「冰」这一类。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,6 +113,57 @@ impl DamageCategoryTable {
     /// [`crate::content_hash::classify_index`] 判定表归属。
     pub fn is_defined(&self, index: ContentIndex) -> bool {
         self.entries.contains_key(&index)
+    }
+}
+
+/// `ll_sim::resolve::resolve_attack` 消费的真实伤害类别目录：把
+/// [`crate::base_damage_category::register_base_damage_category`] 产出的
+/// **全局默认伤害类别索引**包成一个
+/// [`DamageCategoryCatalog`]。
+///
+/// # 为什么不是 `impl DamageCategoryCatalog for DamageCategoryTable`
+///
+/// 因为答案不在表里。[`DamageCategoryTable`] 知道的是「有哪几类」
+/// （`register-damage-category` 的落点，本体与 mod 共用同一条
+/// [`DamageCategoryTable::define`]）；而本 trait 唯一要回答的是「**没有
+/// 任何声明时退回哪一类**」——那是引擎在任何 mod 装载之前就定下的另一
+/// 件事（见 [`crate::base_damage_category`] 模块文档）。让存储表凭空多
+/// 出一个 mod 永远不该写、也写不出的「我是默认」字段，是把装载会话的
+/// 产物塞进存储层，这条边界与 `FormulaTable`/[`crate::formula::RegistryFormulas`]
+/// 的划法一致。
+///
+/// # 为什么不像 [`crate::formula::RegistryFormulas`] 那样也拿着表
+///
+/// 那是本类型与它唯一的形状差别，理由是**目前没有一个方法需要读表**：
+/// `RegistryFormulas` 拿着 `FormulaTable` 是因为
+/// [`ll_sim::formula::DamageFormulaCatalog::formula_for`] 要**从表里取出
+/// 一条 `FormulaDef` 返回**；[`DamageCategoryCatalog::default_category`]
+/// 返回的只是一个索引，一次查表都不需要。多挂一个从不被读的
+/// `&DamageCategoryTable` 字段，正是本仓库反复拒绝的「声明了没人读」
+/// ——`scripts/ci/check_field_consumers.py` 存在的理由就是这个。
+///
+/// 这不是永久结论：`damage-formula-mod-api.md` 十九节那条四层默认公式
+/// 下探链条（分项 → **伤害类别默认** → 武器类别默认 → 全局默认）真正
+/// 落地时，本 trait 会多出一个「这一类的默认公式是什么」的方法，那时
+/// 表才第一次有人读，照 `RegistryFormulas` 的先例加一个字段即可——
+/// 生产侧的构造点只有 `ll_game::content::RuntimeCatalogs::new` 一处。
+///
+/// # 名字不是新起的
+///
+/// [`ll_sim::damage_category::NoDamageCategories`] 的文档早就点名了
+/// 「调用方没有接好真正的 `RegistryDamageCategories`」——本类型就是那句
+/// 话一直缺席的那一半：在此之前**仓库里唯一的实现是那个空实现**，
+/// 于是引擎注册的全局默认类别在真实游戏里从来没被当默认用过。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RegistryDamageCategories {
+    /// 引擎注册的全局默认伤害类别索引（本体是 `lostland:physical`，见
+    /// [`crate::base_damage_category::DEFAULT_DAMAGE_CATEGORY_ID`]）。
+    pub default_category: ContentIndex,
+}
+
+impl DamageCategoryCatalog for RegistryDamageCategories {
+    fn default_category(&self) -> ContentIndex {
+        self.default_category
     }
 }
 
@@ -183,5 +235,26 @@ mod tests {
         // Act & Assert
         assert_eq!(table.get(never_defined), None);
         assert!(!table.is_defined(never_defined));
+    }
+
+    #[test]
+    fn 真实伤害类别目录返回引擎注册的全局默认类别() {
+        // Arrange
+        let mut interner = Interner::new();
+        // 先 intern 一条别的内容，把索引 0 占掉——`ContentIndex::default()`
+        // **不是**保留哨兵，它就是第一个被 intern 的东西（见
+        // `ll_core::ident::ContentIndex::default` 文档），这一行确保下面
+        // 那条 `assert_ne!` 断的是真事。
+        let _first = index(&mut interner, "lostland:grass");
+        let physical = index(&mut interner, "lostland:physical");
+        let catalog = RegistryDamageCategories {
+            default_category: physical,
+        };
+
+        // Act & Assert：这一条是「不显式声明 damage_category 的武器退回
+        // lostland:physical」这句承诺的最小验收——此前生产路径接的是空
+        // 实现 NoDamageCategories，返回的是 ContentIndex::default()。
+        assert_eq!(catalog.default_category(), physical);
+        assert_ne!(catalog.default_category(), ContentIndex::default());
     }
 }

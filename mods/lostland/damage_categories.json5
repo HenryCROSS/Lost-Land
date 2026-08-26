@@ -18,6 +18,15 @@
 // `ll_mod::content_audit` 为此写过两条字段豁免，两条的解除条件都是
 // 同一句话：**先有第二个本体伤害类别**。本文件就是那个前置。
 //
+// 更正：上面第二条（「对 lostland:physical 声明抗性 = 对所有伤害减免」）
+// 在写下它的时候其实**还不成立**——`DamageCategoryCatalog` 当时在
+// `ll-mod` 侧一个真实实现都没有，生产装载路径接的是空实现
+// `NoDamageCategories`，不显式声明类别的武器退回的是
+// `ContentIndex::default()` 而不是 `lostland:physical`，所以对
+// `lostland:physical` 声明的抗性**一条都不会命中**。
+// `ll_mod::damage_category::RegistryDamageCategories` 落地之后那句话才
+// 真的成立。
+//
 // ── 为什么是火，不是魔法/精神 ────────────────────────────────────
 //
 // `base_damage_category` 模块文档逐条论证过为什么当时只注册一个：
