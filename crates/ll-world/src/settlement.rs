@@ -21,6 +21,74 @@
 //! 存档 remap、内容哈希这五样；为「建筑」另起一个类型要把这五样各自
 //! 重写一遍，换来零新增能力——ADR 0021 判据在这里给出的是「不建」。
 //! 本模块因此只是一段**往 `ChunkGrid` 写地形**的纯函数。
+//!
+//! # 据点可以横跨区块：全局推演 + 惰性铺设
+//!
+//! 项目所有者的裁决：「据点可能会横跨几个区块，因为后续的 NPC 也需要
+//! 自己发展，自己制作自己的建筑，放置家具等。」这推翻了上一批次的一
+//! 条硬约束（「建筑绝不跨区块」）。
+//!
+//! **落地形状是「历史算一次，地形按需铺」**：
+//!
+//! - [`crate::chronicle`] 的纪元推演照旧是**全局**的一次性计算，跨据点
+//!   耦合（世界总人口、首邑、承载力）原样保留——它算的是「哪里有多大
+//!   的据点」，不碰地形写入。
+//! - [`stamp_settlement`] 变成**按区块惰性求值**：每个区块被物化时，
+//!   问「有哪些据点覆盖到我」（[`crate::chronicle::WorldChronicle::sites_touching_zone`]），
+//!   只把**落在自己这一格窗口内**的那部分建筑写下来，其余部分留给
+//!   邻区块自己被物化时铺。
+//!
+//! 两者没有张力：全局的是推演，惰性的是铺设。
+//!
+//! # 它怎么和 `SurfaceStore::set_terrain` 的 panic 契约共存：根本不碰它
+//!
+//! 上一批次给出的「不跨区块」理由是：往未常驻的邻区块写入会撞上
+//! `SurfaceStore::set_terrain` 的 panic 契约。**核实结论：那条契约在
+//! 本模块这条路径上从来就不生效。** `stamp_settlement` 写的是调用方
+//! 递进来的那一个 [`ChunkGrid`]（`SurfaceStore::generate_and_stamp`
+//! 里刚生成、尚未插进 `resident` 的那一份），用的是
+//! `ChunkGrid::set_terrain`，与 `SurfaceStore::set_terrain`（按世界瓦片
+//! 坐标查区块、未常驻则 panic）是两个不同的函数。惰性铺设因此**一次
+//! 都不会往别的区块写**：邻区块的那一半是在**它自己**被生成时、由
+//! 它自己的窗口写下的。
+//!
+//! # 那真正的难点在哪：能不能盖房的判定必须与「谁在铺」无关
+//!
+//! [`plot_is_clear`] 决定一块 5×5 的地能不能盖房。上一批次读的是**当前
+//! 窗口的地形**——一栋跨界的房子在 A 区块能读到自己的左半边、在 B 区块
+//! 只能读到右半边，两边可能给出相反的答案，地上就会出现半栋房子。
+//!
+//! 解法是把这个判定改成读**基础地形**（噪声的纯函数，
+//! [`crate::generate::terrain_at_tile`]），它对任意世界瓦片坐标都有
+//! 定义、与「此刻哪个区块常驻」完全无关，因此 A、B 两边算出的答案
+//! 必然一致。这不改变任何既有结果：上一批次读窗口读到的也正是这份
+//! 基础地形（窗口就是它生成出来的），唯一的差别是**读得到跨界的
+//! 那一半**。
+//!
+//! 「读到自己刚铺的墙就跳过」那条副作用随之消失，但它本来就是空转：
+//! 建筑按 [`BUILDING_SPACING`]（6）的方格排布、外廓 [`BUILDING_SPAN`]
+//! （5），两栋建筑在几何上不可能重叠；不同据点之间又隔着
+//! [`crate::chronicle::ChronicleParams::min_settlement_spacing`]，远
+//! 大于两倍的 [`MAX_FOOTPRINT_RADIUS`]。
+//!
+//! # 如实标注：本体默认世界里**当前一座据点都没有真的跨界**
+//!
+//! 机制在、测试守着（本模块的「跨区块」那一组，含跨环面接缝的一条），
+//! 但**本体默认参数下实测跨区块据点数为 0**（三个种子，共 740 座据点，
+//! 最多覆盖区块数恒为 1）。原因不在铺设这一侧，在**据点还太小**：
+//!
+//! - [`crate::chronicle`] 的人口模型给出的建筑数平均只有 3.3 栋，
+//!   落在第 1 圈方环之内，外廓半径 8 格；
+//! - 锚点取的是 `LandComponent::center`（该区块最大连通陆地里离窗口
+//!   正中最近的那一格），本就偏向窗口中心，离 48 格边界远大于 8。
+//!
+//! 也就是说：**「据点能跨区块」这条能力是真的，「据点会跨区块」这件事
+//! 还没发生。** 项目所有者给这条裁决的理由是「后续的 NPC 也需要自己
+//! 发展，自己制作自己的建筑」——按那个理由，本批次要交付的正是「形状
+//! 容得下据点范围变大」，而不是现在就把村子撑大。要让今天的世界里就
+//! 出现跨界的据点，得动人口模型（承载力当前按**一个区块窗口**的陆地
+//! 面积算，那本身也是旧的单区块约束留下的痕迹）——那是一次玩法数值
+//! 裁决，不在本批次自作主张。
 
 use ll_core::ident::WorldId;
 use ll_core::rng::DetRng;
@@ -28,7 +96,8 @@ use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::chunk::ChunkGrid;
 use crate::space::ZoneCoord;
-use crate::terrain::{BaseTerrainIds, TerrainTable};
+use crate::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
+use crate::zone::ZoneLayout;
 
 /// 据点建筑铺设所用的随机流编号——与
 /// [`crate::chronicle::CHRONICLE_STREAM_ID`]（历史推演）分开，两者
@@ -52,11 +121,26 @@ const BUILDING_SPACING: i32 = BUILDING_SPAN + 1;
 /// 一座据点最多铺多少栋建筑——[`SettlementSite::building_count`] 的
 /// 上界。
 ///
-/// 取 24：按 [`BUILDING_SPACING`] 螺旋排布，24 栋恰好落在以锚点为中心
-/// 约 5×5 栋的范围内（半径约 15 格），仍然稳稳装进一个 48×48 的区块
-/// 窗口，不会溢出到邻区块——**建筑绝不跨区块写入**是本模块的硬约束，
-/// 见 [`stamp_settlement`] 文档「为什么不跨区块」。
-pub const MAX_BUILDINGS: u32 = 24;
+/// # 旧理由已经失效，新理由是别的
+///
+/// 上一批次取 24 的理由是「24 栋恰好装进一个 48×48 的区块窗口，不会
+/// 溢出到邻区块」。**建筑现在可以跨区块**（见模块文档），那条几何
+/// 约束不再是上界的来源。
+///
+/// 现在真正决定一座据点多大的是**人口**：
+/// [`crate::chronicle`] 的 `final_sites` 取
+/// `1 + 人口 / RESIDENTS_PER_BUILDING`，而人口被承载力
+/// （`land_area / TILES_PER_RESIDENT`，一个区块窗口最多 2304 格）压在
+/// 二十上下。**实测本体默认世界的平均建筑数只有 3.3 栋**，也就是说
+/// 这个常量当前根本咬不到，它只是一道防止「某天有人调大承载力、据点
+/// 悄悄膨胀成横跨半个世界」的护栏（见模块文档「如实标注」一节）。
+///
+/// 取 80 而不是继续留 24：80 恰好用满以锚点为中心第 4 圈方环
+/// （`(2×4+1)² = 81` 个格位）的前 80 个，[`MAX_FOOTPRINT_RADIUS`] 因此
+/// 是 26 格——仍然远小于据点最小间距的一半
+/// （[`crate::chronicle::ChronicleParams::min_settlement_spacing`] 默认
+/// 144），两座长满的据点不会互相压进对方的街区。
+pub const MAX_BUILDINGS: u32 = 80;
 
 /// 一座据点外廓的半径上界（格）：从锚点到最外那一圈建筑外墙的切比
 /// 雪夫距离。
@@ -125,91 +209,191 @@ pub struct SettlementSite {
     pub building_count: u32,
 }
 
-/// 把一座据点铺进它所在区块的地形窗口。
+/// 一栋建筑外廓的格数——[`house_tiles`]/[`ruin_tiles`] 产出的定长
+/// 数组长度。
+const BUILDING_TILES: usize = (BUILDING_SPAN * BUILDING_SPAN) as usize;
+
+/// [`stamp_settlement`] 需要的、与「铺哪一个区块」无关的那一组输入。
+///
+/// 打包成一个结构体而不是继续往参数表上加：铺设入口现在还要一份
+/// 「基础地形查询」（见 `base_terrain` 字段），散着传会撞上
+/// `clippy::too_many_arguments`，更重要的是这四项**恒一起出现**，
+/// 拆开传只会让调用点更容易漏配。
+pub struct StampContext<'a> {
+    /// 本体基础地形的内容索引。
+    pub ids: &'a BaseTerrainIds,
+    /// 地形属性表——`blocks_move` 判定用。
+    pub table: &'a TerrainTable,
+    /// 世界种子，喂给 [`SETTLEMENT_LAYOUT_STREAM_ID`] 的随机流。
+    pub world_seed: u64,
+    /// **基础地形**（据点还没铺上去之前，噪声算出来的那一层）在任意
+    /// 世界瓦片坐标处的值。
+    ///
+    /// # 为什么不是「读当前窗口」
+    ///
+    /// 见模块文档「那真正的难点在哪」：一栋跨区块的建筑要在它覆盖到
+    /// 的**每一个**区块里得出同一个「能不能盖」的答案，而当前窗口只
+    /// 看得见自己那一格。生产实现是
+    /// [`crate::generate::terrain_at_tile`]（噪声的纯函数）；测试可以
+    /// 递一个常量闭包。
+    pub base_terrain: &'a dyn Fn(TorusPos) -> TerrainKind,
+}
+
+/// 把一座据点落在 `zone` 这一格窗口内的那部分铺进 `grid`。
+///
+/// 据点可以横跨多个区块：本函数只写**属于 `zone` 的那些格**，跨出去
+/// 的部分留给邻区块自己被物化时铺（见模块文档「全局推演 + 惰性铺设」）。
+/// 因此它一次也不往别的区块写，`SurfaceStore::set_terrain` 的 panic
+/// 契约在这条路径上不生效。
 ///
 /// # 前置条件：`grid` 必须是刚生成、未经改写的窗口
 ///
-/// 本函数会读 `grid` 判断「这块地能不能盖房」（水面、山体、以及**已经
-/// 铺好的前一栋房子**都会让当前这栋被跳过），因此它**不是幂等的**：
-/// 对同一个窗口连铺两次，第二次会因为读到第一次写下的墙而跳过全部
-/// 建筑。调用方（[`crate::surface_store::SurfaceStore`]）的契约是
-/// 「区块每次生成之后紧接着铺一次」——重铺时先重新生成窗口，不在已
-/// 铺过的窗口上再铺。这条契约写在 `SurfaceStore::admit` 与
-/// `SurfaceStore::install_chronicle` 两处调用点上。
+/// 本函数**不是幂等的**，但不幂等的来源与上一批次不同了。它现在不再
+/// 读 `grid`（「能不能盖房」改读 `ctx.base_terrain`），因此对同一个
+/// 干净窗口连铺两次会得到同一个结果；真正的问题是对一个**玩家改过
+/// 的**窗口重铺会抹掉那些改动。调用方
+/// （[`crate::surface_store::SurfaceStore`]）的契约因此不变：
 ///
-/// # 为什么不跨区块
+/// - `SurfaceStore::admit`：区块每次生成之后紧接着铺一次。
+/// - `SurfaceStore::install_chronicle`：**先重新生成、再铺**，只允许
+///   在新游戏构建期调用。
+/// - `SurfaceStore::attach_chronicle`：读档路径，**只挂不铺**——存档里
+///   的常驻区块可能已经被玩家拆过墙，重铺会把那些改动抹掉。
 ///
-/// 区块是流式加载的：铺设时邻区块可能根本不常驻，往它写入要么 panic
-/// （`SurfaceStore::set_terrain` 的既有契约），要么偷偷触发一次生成
-/// （该方法文档明确拒绝的隐式加载）。把一座据点整个约束在它自己的
-/// 区块窗口内，是让「据点按需派生」与「区块按需加载」这两件事互不
-/// 干涉的唯一省事办法——代价是据点规模有上界（[`MAX_BUILDINGS`]），
-/// 而这个上界远大于最小可用形状需要的九间屋。
+/// 这两个名字相近、语义相反的方法是这一带代码最容易用错的地方，改动
+/// 前请先读它们各自的文档。
 pub fn stamp_settlement(
     grid: &mut ChunkGrid,
-    local_size: TorusSize,
-    zone_origin: (i32, i32),
+    layout: &ZoneLayout,
+    zone: ZoneCoord,
     site: &SettlementSite,
-    ids: &BaseTerrainIds,
-    table: &TerrainTable,
-    world_seed: u64,
+    ctx: &StampContext<'_>,
 ) {
-    let anchor_x = site.anchor.x() - zone_origin.0;
-    let anchor_y = site.anchor.y() - zone_origin.1;
-    let span = local_size.width() as i32;
-
+    let tile_size = layout.tile_size();
     for building in 0..site.building_count.min(MAX_BUILDINGS) {
-        let (ox, oy) = spiral_offset(building);
-        // 建筑外廓左上角（局部坐标）。锚点是这栋屋子的中心。
-        let left = anchor_x + ox * BUILDING_SPACING - BUILDING_SPAN / 2;
-        let top = anchor_y + oy * BUILDING_SPACING - BUILDING_SPAN / 2;
-        if !fits_in_window(left, top, span) {
+        let (left, top) = building_origin(site, building);
+        // 先问「这栋房子跟本区块有没有关系」：绝大多数建筑与绝大多数
+        // 区块无关，这一问是几次整数比较，挡在较贵的地形判定前面。
+        if !footprint_touches_zone(layout, zone, left, top) {
             continue;
         }
-        if !plot_is_clear(grid, local_size, table, left, top) {
+        if !plot_is_clear(ctx, tile_size, left, top) {
             continue;
         }
 
         let mut rng = DetRng::for_entity(
-            world_seed,
+            ctx.world_seed,
             SETTLEMENT_LAYOUT_STREAM_ID,
             u64::from(site.id.get()) * u64::from(MAX_BUILDINGS) + u64::from(building),
         );
-        match site.status {
-            SettlementStatus::Inhabited => {
-                raise_house(grid, local_size, ids, left, top, &mut rng);
+        let tiles = match site.status {
+            SettlementStatus::Inhabited => house_tiles(ctx.ids, &mut rng),
+            SettlementStatus::Ruined => ruin_tiles(ctx.ids, &mut rng),
+        };
+        write_footprint(grid, layout, zone, (left, top), &tiles);
+    }
+}
+
+/// 这座据点的建筑覆盖到哪些区块——按区块光栅序去重后返回。
+///
+/// [`crate::chronicle::WorldChronicle`] 在推演结束时用它建一份「区块 →
+/// 覆盖到该区块的据点」索引，让 `SurfaceStore` 在每个区块首次物化时
+/// 只需一次二分就问出「有哪些据点铺到我这里」（那是流式加载路径上的
+/// 热点，见 [`crate::chronicle::WorldChronicle::sites_touching_zone`]）。
+///
+/// 结果**逐栋建筑精确算出**，不是「按半径圈一个方块」的保守估计：
+/// 保守估计会让邻区块白跑一遍 `stamp_settlement`（虽然铺不出任何东西，
+/// 但要把每栋建筑都判一遍），而精确算一次的代价是
+/// `building_count × 25` 次整数换算，只在建档时发生一次。
+///
+/// 全程只用 `Vec` + 排序去重，不碰任何 `HashSet`（约束 C5）。
+pub fn footprint_zones(site: &SettlementSite, layout: &ZoneLayout) -> Vec<ZoneCoord> {
+    let tile_size = layout.tile_size();
+    let mut zones = Vec::new();
+    for building in 0..site.building_count.min(MAX_BUILDINGS) {
+        let (left, top) = building_origin(site, building);
+        for dy in 0..BUILDING_SPAN {
+            for dx in 0..BUILDING_SPAN {
+                let pos = tile_size.wrap(left + dx, top + dy);
+                zones.push(layout.tile_to_zone(pos).0);
             }
-            SettlementStatus::Ruined => {
-                raise_ruin(grid, local_size, ids, left, top, &mut rng);
+        }
+    }
+    zones.sort_by_key(|zone| (zone.y(), zone.x()));
+    zones.dedup();
+    zones
+}
+
+/// 第 `building` 栋建筑外廓左上角的**世界瓦片**坐标（未环绕的原始
+/// 整数，调用方按需 `wrap`）。锚点是第 0 栋的中心。
+fn building_origin(site: &SettlementSite, building: u32) -> (i32, i32) {
+    let (ox, oy) = spiral_offset(building);
+    (
+        site.anchor.x() + ox * BUILDING_SPACING - BUILDING_SPAN / 2,
+        site.anchor.y() + oy * BUILDING_SPACING - BUILDING_SPAN / 2,
+    )
+}
+
+/// 这栋建筑的 5×5 外廓有没有任何一格落在 `zone` 里。
+///
+/// 逐格问 [`ZoneLayout::tile_to_zone`]，不做「按坐标区间算区块号」的
+/// 捷径：外廓只有 25 格，而捷径要自己处理环面接缝，两处各写一份换算
+/// 正是本仓库反复付过代价的那类分歧。
+fn footprint_touches_zone(layout: &ZoneLayout, zone: ZoneCoord, left: i32, top: i32) -> bool {
+    let tile_size = layout.tile_size();
+    for dy in 0..BUILDING_SPAN {
+        for dx in 0..BUILDING_SPAN {
+            let pos = tile_size.wrap(left + dx, top + dy);
+            if layout.tile_to_zone(pos).0 == zone {
+                return true;
             }
+        }
+    }
+    false
+}
+
+/// 把一栋建筑的 25 格写进 `grid`，**跳过不属于 `zone` 的那些格**。
+///
+/// `tiles` 按 `dy * BUILDING_SPAN + dx` 的行主序排列，与
+/// [`house_tiles`]/[`ruin_tiles`] 的产出顺序一致。
+fn write_footprint(
+    grid: &mut ChunkGrid,
+    layout: &ZoneLayout,
+    zone: ZoneCoord,
+    origin: (i32, i32),
+    tiles: &[TerrainKind; BUILDING_TILES],
+) {
+    let tile_size = layout.tile_size();
+    let (left, top) = origin;
+    for dy in 0..BUILDING_SPAN {
+        for dx in 0..BUILDING_SPAN {
+            let pos = tile_size.wrap(left + dx, top + dy);
+            let (owner, local) = layout.tile_to_zone(pos);
+            if owner != zone {
+                continue;
+            }
+            grid.set_terrain(local, tiles[(dy * BUILDING_SPAN + dx) as usize]);
         }
     }
 }
 
-/// 一栋 5×5 的房子完整落在窗口内吗——不做环绕，见 [`stamp_settlement`]
-/// 「为什么不跨区块」。
-fn fits_in_window(left: i32, top: i32, span: i32) -> bool {
-    left >= 0 && top >= 0 && left + BUILDING_SPAN <= span && top + BUILDING_SPAN <= span
-}
-
-/// 这块 5×5 的地能不能盖房：25 格全部可通行才算能。
+/// 这块 5×5 的地能不能盖房：25 格的**基础地形**全部可通行才算能。
 ///
-/// 水面、山体因此被排除；**已经铺好的前一栋房子**也会让这块地不合格
-/// （墙 `blocks_move`），这正是建筑之间不重叠的机制，不需要另记一份
-/// 已占用格的集合。
-fn plot_is_clear(
-    grid: &ChunkGrid,
-    local_size: TorusSize,
-    table: &TerrainTable,
-    left: i32,
-    top: i32,
-) -> bool {
+/// 水面、山体因此被排除。判定只读基础地形，不读任何已经铺下去的东西
+/// ——这正是它对「谁在铺、铺到第几个区块」完全无关的原因，见模块文档
+/// 「那真正的难点在哪」。
+///
+/// 上一批次靠「读到自己刚铺的墙就跳过」来保证建筑之间不重叠，那条
+/// 副作用现在没有了，**但它本来就是空转**：建筑按 [`BUILDING_SPACING`]
+/// （6）的方格排布而外廓只有 [`BUILDING_SPAN`]（5）宽，两栋在几何上
+/// 不可能重叠；不同据点之间又隔着据点最小间距，远大于两倍的
+/// [`MAX_FOOTPRINT_RADIUS`]。本模块测试 `螺旋偏移前二十五个互不重复`
+/// 与 `同一份输入铺两次逐格相同` 守着这条。
+fn plot_is_clear(ctx: &StampContext<'_>, tile_size: TorusSize, left: i32, top: i32) -> bool {
     for dy in 0..BUILDING_SPAN {
         for dx in 0..BUILDING_SPAN {
-            if grid
-                .terrain_at(local_size.wrap(left + dx, top + dy))
-                .blocks_move(table)
-            {
+            let pos = tile_size.wrap(left + dx, top + dy);
+            if (ctx.base_terrain)(pos).blocks_move(ctx.table) {
                 return false;
             }
         }
@@ -217,24 +401,19 @@ fn plot_is_clear(
     true
 }
 
-/// 铺一栋有人住的屋子：一圈木墙 + 中间木地板 + 一扇门 + 一扇窗。
-fn raise_house(
-    grid: &mut ChunkGrid,
-    local_size: TorusSize,
-    ids: &BaseTerrainIds,
-    left: i32,
-    top: i32,
-    rng: &mut DetRng,
-) {
+/// 一栋有人住的屋子的 25 格：一圈木墙 + 中间木地板 + 一扇门 + 一扇窗。
+///
+/// 产出一个定长数组而不是直接写进网格：跨区块的建筑要被**多个**区块
+/// 各写一部分，而每一格是什么必须与「哪个区块在写」无关。先把整栋算
+/// 出来、再由调用方挑自己那一部分写下去，是让这条性质显而易见的写法
+/// ——也顺带保证了随机流的消耗次数与顺序不随裁剪而变。
+fn house_tiles(ids: &BaseTerrainIds, rng: &mut DetRng) -> [TerrainKind; BUILDING_TILES] {
+    let mut tiles = [ids.floor_wood; BUILDING_TILES];
     for dy in 0..BUILDING_SPAN {
         for dx in 0..BUILDING_SPAN {
-            let on_edge = dx == 0 || dy == 0 || dx == BUILDING_SPAN - 1 || dy == BUILDING_SPAN - 1;
-            let kind = if on_edge {
-                ids.wall_wood
-            } else {
-                ids.floor_wood
-            };
-            grid.set_terrain(local_size.wrap(left + dx, top + dy), kind);
+            if on_edge(dx, dy) {
+                tiles[(dy * BUILDING_SPAN + dx) as usize] = ids.wall_wood;
+            }
         }
     }
 
@@ -243,37 +422,39 @@ fn raise_house(
     let door_side = rng.gen_range(4) as usize;
     let window_side = (door_side + 1 + rng.gen_range(3) as usize) % 4;
     let (dx, dy) = edge_midpoint(door_side);
-    grid.set_terrain(local_size.wrap(left + dx, top + dy), ids.door_closed);
+    tiles[(dy * BUILDING_SPAN + dx) as usize] = ids.door_closed;
     let (wx, wy) = edge_midpoint(window_side);
-    grid.set_terrain(local_size.wrap(left + wx, top + wy), ids.window);
+    tiles[(wy * BUILDING_SPAN + wx) as usize] = ids.window;
+    tiles
 }
 
-/// 铺一处废墟：石墙，没有门窗，且每堵墙都有塌掉的可能——塌掉的那格
-/// 变回草地。
+/// 一处废墟的 25 格：石墙，没有门窗，且每堵墙都有塌掉的可能——塌掉的
+/// 那格变回草地。
 ///
 /// 塌掉的概率不随机到「整栋都没了」：只掷外圈那 16 格，中间的地板
-/// 原样保留（石地板是废墟仍然认得出是建筑的那部分）。
-fn raise_ruin(
-    grid: &mut ChunkGrid,
-    local_size: TorusSize,
-    ids: &BaseTerrainIds,
-    left: i32,
-    top: i32,
-    rng: &mut DetRng,
-) {
+/// 原样保留（石地板是废墟仍然认得出是建筑的那部分）。掷骰顺序恒为
+/// `(dy, dx)` 行主序，与裁剪无关，见 [`house_tiles`] 文档。
+fn ruin_tiles(ids: &BaseTerrainIds, rng: &mut DetRng) -> [TerrainKind; BUILDING_TILES] {
+    let mut tiles = [ids.floor_stone; BUILDING_TILES];
     for dy in 0..BUILDING_SPAN {
         for dx in 0..BUILDING_SPAN {
-            let on_edge = dx == 0 || dy == 0 || dx == BUILDING_SPAN - 1 || dy == BUILDING_SPAN - 1;
-            let kind = if !on_edge {
-                ids.floor_stone
-            } else if rng.chance(RUIN_COLLAPSE_NUMERATOR, RUIN_COLLAPSE_DENOMINATOR) {
-                ids.grass
-            } else {
-                ids.wall_stone
-            };
-            grid.set_terrain(local_size.wrap(left + dx, top + dy), kind);
+            if !on_edge(dx, dy) {
+                continue;
+            }
+            tiles[(dy * BUILDING_SPAN + dx) as usize] =
+                if rng.chance(RUIN_COLLAPSE_NUMERATOR, RUIN_COLLAPSE_DENOMINATOR) {
+                    ids.grass
+                } else {
+                    ids.wall_stone
+                };
         }
     }
+    tiles
+}
+
+/// 外廓局部坐标 `(dx, dy)` 落在 5×5 的那一圈墙上吗。
+fn on_edge(dx: i32, dy: i32) -> bool {
+    dx == 0 || dy == 0 || dx == BUILDING_SPAN - 1 || dy == BUILDING_SPAN - 1
 }
 
 /// 废墟外圈每一格塌掉的概率分子（配 [`RUIN_COLLAPSE_DENOMINATOR`]）：
@@ -336,12 +517,23 @@ mod tests {
     use super::*;
     use crate::terrain::base_terrain_fixture;
 
-    fn site(status: SettlementStatus, building_count: u32) -> SettlementSite {
+    /// 测试用区块布局：3×3 个区块、边长 48（144×144 格）。**必须多于
+    /// 一个区块**——本模块要验的正是「据点横跨区块」，一个区块的世界
+    /// 里根本没有边界可跨。
+    fn test_layout() -> ZoneLayout {
+        let zone_count = TorusSize::new(3, 3).expect("3x3 合法");
+        ZoneLayout::new(48, zone_count).expect("48 满足全部对齐与跨度约束")
+    }
+
+    /// 锚点落在给定世界瓦片坐标的一座据点。
+    fn site_at(status: SettlementStatus, building_count: u32, at: (i32, i32)) -> SettlementSite {
+        let layout = test_layout();
         let mut counter = 0u32;
+        let anchor = layout.tile_size().wrap(at.0, at.1);
         SettlementSite {
             id: WorldId::next(&mut counter),
-            zone: TorusSize::new(64, 48).expect("合法").wrap(0, 0),
-            anchor: TorusSize::new(3072, 2304).expect("合法").wrap(24, 24),
+            zone: layout.tile_to_zone(anchor).0,
+            anchor,
             status,
             founded_epoch: 0,
             abandoned_epoch: None,
@@ -351,72 +543,105 @@ mod tests {
         }
     }
 
-    fn blank_window(ids: &BaseTerrainIds) -> (ChunkGrid, TorusSize) {
+    /// 一座锚点稳稳落在 (1,1) 号区块正中的据点——不跨界。
+    fn site(status: SettlementStatus, building_count: u32) -> SettlementSite {
+        site_at(status, building_count, (48 + 24, 48 + 24))
+    }
+
+    fn blank_window(ids: &BaseTerrainIds) -> ChunkGrid {
         let size = TorusSize::new(48, 48).expect("48x48 合法");
-        let grid = ChunkGrid::new(size, ids.grass).expect("48 满足视口跨度");
-        (grid, size)
+        ChunkGrid::new(size, ids.grass).expect("48 满足视口跨度")
+    }
+
+    /// 数一个窗口里某种地形有多少格。
+    fn count_of(grid: &ChunkGrid, kind: TerrainKind) -> usize {
+        let size = grid.world();
+        let mut found = 0;
+        for y in 0..size.height() as i32 {
+            for x in 0..size.width() as i32 {
+                if grid.terrain_at(size.wrap(x, y)) == kind {
+                    found += 1;
+                }
+            }
+        }
+        found
     }
 
     #[test]
     fn 有人住的据点铺出的每栋屋子都恰有一扇门() {
         // Arrange
         let (ids, table) = base_terrain_fixture();
-        let (mut grid, size) = blank_window(&ids);
+        let layout = test_layout();
+        let mut grid = blank_window(&ids);
         let site = site(SettlementStatus::Inhabited, 9);
+        let grass = |_: TorusPos| ids.grass;
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 7,
+            base_terrain: &grass,
+        };
 
         // Act
-        stamp_settlement(&mut grid, size, (0, 0), &site, &ids, &table, 7);
+        stamp_settlement(&mut grid, &layout, site.zone, &site, &ctx);
 
         // Assert
-        let mut doors = 0;
-        for y in 0..48 {
-            for x in 0..48 {
-                if grid.terrain_at(size.wrap(x, y)) == ids.door_closed {
-                    doors += 1;
-                }
-            }
-        }
-        assert_eq!(doors, 9, "九栋屋子应该恰好九扇门");
+        assert_eq!(
+            count_of(&grid, ids.door_closed),
+            9,
+            "九栋屋子应该恰好九扇门"
+        );
     }
 
     #[test]
     fn 废墟不铺门也不铺窗() {
         // Arrange
         let (ids, table) = base_terrain_fixture();
-        let (mut grid, size) = blank_window(&ids);
+        let layout = test_layout();
+        let mut grid = blank_window(&ids);
         let site = site(SettlementStatus::Ruined, 6);
+        let grass = |_: TorusPos| ids.grass;
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 7,
+            base_terrain: &grass,
+        };
 
         // Act
-        stamp_settlement(&mut grid, size, (0, 0), &site, &ids, &table, 7);
+        stamp_settlement(&mut grid, &layout, site.zone, &site, &ctx);
 
         // Assert
-        let mut stone_walls = 0;
-        for y in 0..48 {
-            for x in 0..48 {
-                let kind = grid.terrain_at(size.wrap(x, y));
-                assert_ne!(kind, ids.door_closed);
-                assert_ne!(kind, ids.window);
-                if kind == ids.wall_stone {
-                    stone_walls += 1;
-                }
-            }
-        }
-        assert!(stone_walls > 0, "废墟至少要留下几堵石墙");
+        assert_eq!(count_of(&grid, ids.door_closed), 0);
+        assert_eq!(count_of(&grid, ids.window), 0);
+        assert!(
+            count_of(&grid, ids.wall_stone) > 0,
+            "废墟至少要留下几堵石墙"
+        );
     }
 
     #[test]
     fn 同一份输入铺两次逐格相同() {
         // Arrange
         let (ids, table) = base_terrain_fixture();
+        let layout = test_layout();
         let site = site(SettlementStatus::Inhabited, 12);
-        let (mut first, size) = blank_window(&ids);
-        let (mut second, _) = blank_window(&ids);
+        let grass = |_: TorusPos| ids.grass;
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 99,
+            base_terrain: &grass,
+        };
+        let mut first = blank_window(&ids);
+        let mut second = blank_window(&ids);
 
         // Act
-        stamp_settlement(&mut first, size, (0, 0), &site, &ids, &table, 99);
-        stamp_settlement(&mut second, size, (0, 0), &site, &ids, &table, 99);
+        stamp_settlement(&mut first, &layout, site.zone, &site, &ctx);
+        stamp_settlement(&mut second, &layout, site.zone, &site, &ctx);
 
         // Assert
+        let size = first.world();
         for y in 0..48 {
             for x in 0..48 {
                 assert_eq!(
@@ -428,28 +653,77 @@ mod tests {
         }
     }
 
+    /// 铺设已经不读窗口了（地基判定改读基础地形），因此对**同一个干净
+    /// 窗口**连铺两次也必须逐格相同——上一批次这里会因为读到自己刚铺
+    /// 的墙而跳过全部建筑。这条守的是「不幂等的来源变了」这个事实本身，
+    /// 见 [`stamp_settlement`] 文档「前置条件」。
     #[test]
-    fn 建筑不会铺到水面上() {
-        // Arrange：把窗口右半边全改成深水。
+    fn 对同一个窗口连铺两次与铺一次结果相同() {
+        // Arrange
         let (ids, table) = base_terrain_fixture();
-        let (mut grid, size) = blank_window(&ids);
+        let layout = test_layout();
+        let site = site(SettlementStatus::Inhabited, 12);
+        let grass = |_: TorusPos| ids.grass;
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 99,
+            base_terrain: &grass,
+        };
+        let mut once = blank_window(&ids);
+        let mut twice = blank_window(&ids);
+
+        // Act
+        stamp_settlement(&mut once, &layout, site.zone, &site, &ctx);
+        stamp_settlement(&mut twice, &layout, site.zone, &site, &ctx);
+        stamp_settlement(&mut twice, &layout, site.zone, &site, &ctx);
+
+        // Assert
+        let size = once.world();
         for y in 0..48 {
-            for x in 24..48 {
-                grid.set_terrain(size.wrap(x, y), ids.deep_water);
+            for x in 0..48 {
+                assert_eq!(
+                    once.terrain_at(size.wrap(x, y)),
+                    twice.terrain_at(size.wrap(x, y)),
+                    "({x}, {y}) 连铺两次与铺一次不同"
+                );
             }
         }
+    }
+
+    #[test]
+    fn 建筑不会铺到水面上() {
+        // Arrange：把世界坐标 x >= 72 的基础地形当成深水，它对应
+        // (1,1) 号区块窗口的右半边。
+        let (ids, table) = base_terrain_fixture();
+        let layout = test_layout();
+        let mut grid = blank_window(&ids);
+        let water_right = |pos: TorusPos| {
+            if pos.x() >= 72 {
+                ids.deep_water
+            } else {
+                ids.grass
+            }
+        };
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 3,
+            base_terrain: &water_right,
+        };
         let site = site(SettlementStatus::Inhabited, MAX_BUILDINGS);
 
         // Act
-        stamp_settlement(&mut grid, size, (0, 0), &site, &ids, &table, 3);
+        stamp_settlement(&mut grid, &layout, site.zone, &site, &ctx);
 
-        // Assert
+        // Assert：窗口局部 x >= 24 对应世界 x >= 72，一格都不该被写。
+        let size = grid.world();
         for y in 0..48 {
             for x in 24..48 {
                 assert_eq!(
                     grid.terrain_at(size.wrap(x, y)),
-                    ids.deep_water,
-                    "({x}, {y}) 本该仍是水"
+                    ids.grass,
+                    "({x}, {y}) 落在水上，本不该盖房"
                 );
             }
         }
@@ -465,6 +739,246 @@ mod tests {
             for b in offsets.iter().skip(i + 1) {
                 assert_ne!(a, b, "螺旋偏移出现重复：{a:?}");
             }
+        }
+    }
+
+    /// [`MAX_FOOTPRINT_RADIUS`] 是据点最小间距那条几何论证的前提，
+    /// 它必须真的是上界：铺满 [`MAX_BUILDINGS`] 栋时没有任何一格伸出
+    /// 这个半径。
+    #[test]
+    fn 外廓半径上界真的是上界() {
+        // Arrange
+        let site = site(SettlementStatus::Inhabited, MAX_BUILDINGS);
+        let anchor_x = site.anchor.x();
+        let anchor_y = site.anchor.y();
+
+        // Act & Assert
+        for building in 0..MAX_BUILDINGS {
+            let (left, top) = building_origin(&site, building);
+            let far_x = (left - anchor_x)
+                .abs()
+                .max((left + BUILDING_SPAN - 1 - anchor_x).abs());
+            let far_y = (top - anchor_y)
+                .abs()
+                .max((top + BUILDING_SPAN - 1 - anchor_y).abs());
+            assert!(
+                far_x <= MAX_FOOTPRINT_RADIUS && far_y <= MAX_FOOTPRINT_RADIUS,
+                "第 {building} 栋伸到了 ({far_x}, {far_y})，超过外廓半径上界 {MAX_FOOTPRINT_RADIUS}"
+            );
+        }
+    }
+
+    // ---- 跨区块 ----
+
+    /// 锚点贴着区块边界时，据点确实横跨两个区块，且**两边的建筑加起来
+    /// 与不跨界时一样多**——跨界不再让外圈那些房子凭空消失（上一批次
+    /// 的 `fits_in_window` 会把它们整栋跳过）。
+    #[test]
+    fn 锚点贴着边界时据点真的横跨两个区块() {
+        // Arrange：锚点放在 (0,0) 号区块的右边缘，据点必然伸进 (1,0)。
+        let (ids, table) = base_terrain_fixture();
+        let layout = test_layout();
+        let site = site_at(SettlementStatus::Inhabited, 9, (46, 24));
+        let grass = |_: TorusPos| ids.grass;
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 11,
+            base_terrain: &grass,
+        };
+        let zone_count = layout.zone_count();
+
+        // Act
+        let mut left_zone = blank_window(&ids);
+        let mut right_zone = blank_window(&ids);
+        stamp_settlement(&mut left_zone, &layout, zone_count.wrap(0, 0), &site, &ctx);
+        stamp_settlement(&mut right_zone, &layout, zone_count.wrap(1, 0), &site, &ctx);
+
+        // Assert：两个区块各铺到了东西，两边的门加起来恰好九扇。
+        assert!(count_of(&left_zone, ids.wall_wood) > 0, "左区块什么都没铺");
+        assert!(count_of(&right_zone, ids.wall_wood) > 0, "右区块什么都没铺");
+        assert_eq!(
+            count_of(&left_zone, ids.door_closed) + count_of(&right_zone, ids.door_closed),
+            9,
+            "跨界之后门的总数变了，说明有房子被整栋丢掉或重复铺了"
+        );
+    }
+
+    /// 跨界的**那一栋**房子在两个区块里拼起来正好是完整的 5×5——
+    /// 一边铺左半、另一边铺右半，没有缺口也没有重叠。
+    #[test]
+    fn 跨界的那一栋房子在两个区块里拼起来是完整的() {
+        // Arrange：只铺一栋，锚点让它正好骑在 x = 48 这条界上。
+        let (ids, table) = base_terrain_fixture();
+        let layout = test_layout();
+        let site = site_at(SettlementStatus::Inhabited, 1, (48, 24));
+        let grass = |_: TorusPos| ids.grass;
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 5,
+            base_terrain: &grass,
+        };
+        let zone_count = layout.zone_count();
+
+        // Act
+        let mut left_zone = blank_window(&ids);
+        let mut right_zone = blank_window(&ids);
+        stamp_settlement(&mut left_zone, &layout, zone_count.wrap(0, 0), &site, &ctx);
+        stamp_settlement(&mut right_zone, &layout, zone_count.wrap(1, 0), &site, &ctx);
+
+        // Assert：外廓左上角在世界 (46, 22)，两个区块各承担 x = 46..47
+        // 与 x = 48..50 这两段，25 格没有一格该留成草地。
+        let size = left_zone.world();
+        let mut written = 0;
+        for dy in 0..BUILDING_SPAN {
+            for dx in 0..BUILDING_SPAN {
+                let world_x = 46 + dx;
+                let world_y = 22 + dy;
+                let (grid, local_x) = if world_x < 48 {
+                    (&left_zone, world_x)
+                } else {
+                    (&right_zone, world_x - 48)
+                };
+                if grid.terrain_at(size.wrap(local_x, world_y)) != ids.grass {
+                    written += 1;
+                }
+            }
+        }
+        assert_eq!(written, 25, "跨界的房子有 {} 格没被铺", 25 - written);
+    }
+
+    /// 「这块地能不能盖房」的判定必须与「谁在铺」无关：把跨界那栋房子
+    /// 右半边的基础地形改成水，**两个区块都不该铺它**——若判定还在读
+    /// 各自的窗口，左区块看不见右边的水，就会铺出半栋房子。
+    #[test]
+    fn 跨界房子的地基判定在两个区块里给出同一个答案() {
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+        let layout = test_layout();
+        let site = site_at(SettlementStatus::Inhabited, 1, (48, 24));
+        let water_right = |pos: TorusPos| {
+            if pos.x() >= 48 {
+                ids.deep_water
+            } else {
+                ids.grass
+            }
+        };
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 5,
+            base_terrain: &water_right,
+        };
+        let zone_count = layout.zone_count();
+
+        // Act
+        let mut left_zone = blank_window(&ids);
+        let mut right_zone = blank_window(&ids);
+        stamp_settlement(&mut left_zone, &layout, zone_count.wrap(0, 0), &site, &ctx);
+        stamp_settlement(&mut right_zone, &layout, zone_count.wrap(1, 0), &site, &ctx);
+
+        // Assert
+        assert_eq!(
+            count_of(&left_zone, ids.wall_wood),
+            0,
+            "左区块铺出了半栋房子"
+        );
+        assert_eq!(count_of(&right_zone, ids.wall_wood), 0);
+    }
+
+    /// 据点横跨环面接缝（世界坐标 0 那条线）时同样成立。
+    #[test]
+    fn 据点跨越环面接缝时两侧仍然拼得完整() {
+        // Arrange：锚点放在世界左边缘，据点向左伸出去会绕到最右边。
+        let (ids, table) = base_terrain_fixture();
+        let layout = test_layout();
+        let site = site_at(SettlementStatus::Inhabited, 9, (1, 24));
+        let grass = |_: TorusPos| ids.grass;
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 13,
+            base_terrain: &grass,
+        };
+        let zone_count = layout.zone_count();
+
+        // Act：世界是 3×3 个区块，左邻居是 x = 2 那一列。
+        let mut first_zone = blank_window(&ids);
+        let mut wrapped_zone = blank_window(&ids);
+        stamp_settlement(&mut first_zone, &layout, zone_count.wrap(0, 0), &site, &ctx);
+        stamp_settlement(
+            &mut wrapped_zone,
+            &layout,
+            zone_count.wrap(2, 0),
+            &site,
+            &ctx,
+        );
+
+        // Assert
+        assert!(
+            count_of(&wrapped_zone, ids.wall_wood) > 0,
+            "接缝另一侧什么都没铺"
+        );
+        assert_eq!(
+            count_of(&first_zone, ids.door_closed) + count_of(&wrapped_zone, ids.door_closed),
+            9,
+            "跨接缝之后门的总数变了"
+        );
+    }
+
+    #[test]
+    fn 覆盖区块清单与实际铺到东西的区块一致() {
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+        let layout = test_layout();
+        let site = site_at(SettlementStatus::Inhabited, 9, (46, 46));
+        let grass = |_: TorusPos| ids.grass;
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 17,
+            base_terrain: &grass,
+        };
+
+        // Act
+        let zones = footprint_zones(&site, &layout);
+
+        // Assert：清单之外的区块一格都铺不出来。
+        let zone_count = layout.zone_count();
+        for zone_y in 0..3 {
+            for zone_x in 0..3 {
+                let zone = zone_count.wrap(zone_x, zone_y);
+                let mut grid = blank_window(&ids);
+                stamp_settlement(&mut grid, &layout, zone, &site, &ctx);
+                let touched = count_of(&grid, ids.grass) < 48 * 48;
+                assert_eq!(
+                    zones.contains(&zone),
+                    touched,
+                    "区块 {zone:?} 的覆盖清单与实际铺设结果不符"
+                );
+            }
+        }
+        assert!(zones.len() > 1, "这座据点本该横跨多个区块");
+    }
+
+    #[test]
+    fn 覆盖区块清单按光栅序排列且不重复() {
+        // Arrange
+        let layout = test_layout();
+        let site = site_at(SettlementStatus::Inhabited, MAX_BUILDINGS, (46, 46));
+
+        // Act
+        let zones = footprint_zones(&site, &layout);
+
+        // Assert
+        let mut previous: Option<(i32, i32)> = None;
+        for zone in &zones {
+            let key = (zone.y(), zone.x());
+            if let Some(prev) = previous {
+                assert!(prev < key, "覆盖清单没有按光栅序排列或出现重复");
+            }
+            previous = Some(key);
         }
     }
 }

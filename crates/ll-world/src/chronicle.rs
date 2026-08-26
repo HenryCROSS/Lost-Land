@@ -244,6 +244,22 @@ impl Default for ChronicleParams {
 pub struct WorldChronicle {
     events: Vec<HistoricalEvent>,
     sites: Vec<SettlementSite>,
+    /// 「哪个区块被哪座据点覆盖到」的倒排索引：`(区块光栅序键, sites
+    /// 下标)`，按键升序排好，供 [`Self::sites_touching_zone`] 二分。
+    ///
+    /// # 为什么需要它，为什么不现算
+    ///
+    /// 据点可以横跨区块（见 [`crate::settlement`] 模块文档），因此
+    /// 「这个区块上有什么要铺」不再等于「哪座据点的锚点在这个区块」。
+    /// 每个区块首次物化时都要问一次这个问题（`SurfaceStore::admit`，
+    /// 流式加载路径上的热点），现算意味着每次都要遍历全部据点、把每座
+    /// 的每栋建筑都换算一遍坐标——本体世界两百多座据点，那是每加载一个
+    /// 区块几千次整数运算。建档时算一次、此后二分，是把这笔账付在
+    /// 一次性路径上。
+    ///
+    /// **一座据点在这里可能出现多次**（它覆盖到几个区块就有几条），
+    /// 这正是它与 `sites`（一座一条）的区别。
+    zone_index: Vec<((i32, i32), u32)>,
     next_world_id: u32,
     epochs: u32,
     table: TerrainTable,
@@ -268,10 +284,12 @@ impl WorldChronicle {
         let mut run = EpochRun::new(candidates, chronicle_params.epochs, params.seed);
         run.simulate();
         let sites = run.final_sites();
+        let zone_index = build_zone_index(&sites, layout);
         WorldChronicle {
             next_world_id: run.next_world_id,
             events: run.events,
             sites,
+            zone_index,
             epochs: chronicle_params.epochs,
             table: table.clone(),
         }
@@ -286,6 +304,7 @@ impl WorldChronicle {
         WorldChronicle {
             events: Vec::new(),
             sites: Vec::new(),
+            zone_index: Vec::new(),
             next_world_id: 0,
             epochs: 0,
             table,
@@ -319,10 +338,16 @@ impl WorldChronicle {
         &self.table
     }
 
-    /// 查这个区块上有没有据点。`sites` 按区块光栅序排好，这里走二分，
-    /// 不做线性扫描——本方法在**每个区块首次物化时**都会被调用一次
-    /// （见 `crate::surface_store::SurfaceStore::admit`），是流式加载
-    /// 路径上的热点。
+    /// 查**锚点**落在这个区块的那座据点。`sites` 按区块光栅序排好，
+    /// 这里走二分，不做线性扫描。
+    ///
+    /// # 这不是「区块上要铺什么」的问题
+    ///
+    /// 据点可以横跨区块（见 [`crate::settlement`] 模块文档），一个区块
+    /// 上可能有邻居据点的半条街，也可能自己没有锚点却要铺东西。铺设
+    /// 路径要问的是 [`Self::sites_touching_zone`]，不是本方法。本方法
+    /// 回答的是「这个区块是谁的中心」，供只关心据点归属的消费方
+    /// （传说浏览、测试）使用。
     pub fn site_in_zone(&self, zone: ZoneCoord) -> Option<&SettlementSite> {
         let key = raster_key(zone);
         self.sites
@@ -330,6 +355,41 @@ impl WorldChronicle {
             .ok()
             .map(|index| &self.sites[index])
     }
+
+    /// 有哪些据点的建筑覆盖到这个区块——按据点的区块光栅序返回。
+    ///
+    /// 这是**铺设路径**要问的那个问题：每个区块首次物化时调用一次
+    /// （见 `crate::surface_store::SurfaceStore::admit`），是流式加载
+    /// 路径上的热点，因此走的是一次二分 + 一段连续切片，不遍历据点表。
+    ///
+    /// 返回值可能为空（绝大多数区块），也可能有多座（一个区块同时被
+    /// 两座据点的边缘扫到——最小间距保证它们的建筑不会重叠，但没有
+    /// 也不需要保证它们的**外廓**不共用区块）。
+    pub fn sites_touching_zone(&self, zone: ZoneCoord) -> impl Iterator<Item = &SettlementSite> {
+        let key = raster_key(zone);
+        let start = self.zone_index.partition_point(|(at, _)| *at < key);
+        self.zone_index[start..]
+            .iter()
+            .take_while(move |(at, _)| *at == key)
+            .map(|(_, position)| &self.sites[*position as usize])
+    }
+}
+
+/// 建一份「区块 → 覆盖到该区块的据点」倒排索引，见
+/// [`WorldChronicle::zone_index`] 字段文档。
+///
+/// 排序键是区块光栅序（[`raster_key`]），并列时按 `sites` 下标——
+/// 也就是据点自身的光栅序，因此同一个区块上的多座据点恒按同一个顺序
+/// 铺（约束 C5）。全程只用 `Vec` + `sort`，不碰任何哈希容器。
+fn build_zone_index(sites: &[SettlementSite], layout: &ZoneLayout) -> Vec<((i32, i32), u32)> {
+    let mut index = Vec::new();
+    for (position, site) in sites.iter().enumerate() {
+        for zone in crate::settlement::footprint_zones(site, layout) {
+            index.push((raster_key(zone), position as u32));
+        }
+    }
+    index.sort_unstable();
+    index
 }
 
 /// 区块坐标的光栅序排序键——`sites` 的排序与二分都用它，保证「排序」
@@ -1072,6 +1132,66 @@ mod tests {
         // 「真的做了分析」的区块消耗，禁区内的区块没有偷偷计数。
         assert!(with_tight_budget.sites().len() <= 1);
         assert!(with_loose_budget.sites().len() > with_tight_budget.sites().len());
+    }
+
+    /// 倒排索引与逐栋建筑算出的覆盖清单必须一致——
+    /// 是流式加载路径上唯一的「这个区块要铺什么」真相源，它一旦漏掉
+    /// 某个区块，那半条街就永远不会出现在地上。
+    #[test]
+    fn 覆盖索引与逐栋建筑算出的清单一致() {
+        // Arrange
+        let layout = test_layout();
+        let chronicle = chronicle_for(0xC0FF_EE12);
+        assert!(
+            !chronicle.sites().is_empty(),
+            "没有据点，这条断言测不到什么"
+        );
+
+        // Act & Assert：每座据点覆盖到的每个区块，都要能从索引里查回它。
+        for site in chronicle.sites() {
+            for zone in crate::settlement::footprint_zones(site, &layout) {
+                assert!(
+                    chronicle
+                        .sites_touching_zone(zone)
+                        .any(|found| found.id == site.id),
+                    "据点 {:?} 铺到了区块 {zone:?}，索引却查不到它",
+                    site.id
+                );
+            }
+        }
+
+        // 反向：索引查出来的据点，必然真的覆盖到那个区块。
+        let zone_count = layout.zone_count();
+        for zone_y in 0..zone_count.height() as i32 {
+            for zone_x in 0..zone_count.width() as i32 {
+                let zone = zone_count.wrap(zone_x, zone_y);
+                for site in chronicle.sites_touching_zone(zone) {
+                    assert!(
+                        crate::settlement::footprint_zones(site, &layout).contains(&zone),
+                        "索引说据点 {:?} 铺到了区块 {zone:?}，实际没有",
+                        site.id
+                    );
+                }
+            }
+        }
+    }
+
+    /// 锚点所在的区块必然在覆盖清单里——第 0 栋建筑就在锚点上。
+    #[test]
+    fn 每座据点至少覆盖自己锚点所在的区块() {
+        // Arrange
+        let chronicle = chronicle_for(0xC0FF_EE12);
+
+        // Act & Assert
+        for site in chronicle.sites() {
+            assert!(
+                chronicle
+                    .sites_touching_zone(site.zone)
+                    .any(|found| found.id == site.id),
+                "据点 {:?} 查不到自己的锚点区块",
+                site.id
+            );
+        }
     }
 
     #[test]
