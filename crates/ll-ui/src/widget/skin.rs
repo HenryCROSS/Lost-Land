@@ -73,11 +73,33 @@
 //! 名字与文件，`pack_atlas` 就会把它打进图集，覆盖机制按名字/相对
 //! 路径匹配，与这张图是地形瓦片、角色精灵、还是 UI 边框无关（同一条
 //! 机制已经在验收测试里覆盖了 `example_mod` 覆盖本体 `terrain_dirt.png`
-//! 的场景）。[`NineSliceSkin`] 现在引用的四张贴图名
-//! （`ui_panel_border` 等）就是普通的图集条目名——任何 mod 只需要在
+//! 的场景）。[`NineSliceSkin`] 现在引用的那几张贴图名
+//! （[`REQUIRED_SPRITE_KEYS`]）就是普通的图集条目名——任何 mod 只需要在
 //! `assets/overrides/lostland/sprites/ui_panel_border.png` 放一张同名
 //! 覆盖图，下次运行期打包就会用它，不需要为「UI 用途」新增任何一条
 //! 特殊机制,这条路径与世界贴图共用同一套代码,不是分别维护的两条。
+//!
+//! # 曾经的缺陷：这里查的是裸名字，图集里存的是完整命名空间 ID
+//!
+//! [`REQUIRED_SPRITE_KEYS`] 现在带 `lostland:` 前缀。此前这五个查找键
+//! 写的是裸名字（`"ui_panel_border"`），而运行期图集打包器
+//! （`ll_render::atlas_pack::pack_atlas`）用的条目名恒等于精灵的完整
+//! 命名空间 ID（见 `ll_mod::asset_vfs::ResolvedSprite::atlas_name`
+//! 文档），真实图集里只有 `lostland:ui_panel_border`——于是
+//! [`Atlas::uv_rect`] 五次全部返回 `None`，五个 `textured_*` 方法里的
+//! `?` 全部短路，`crate::hud::render` 每一帧都静默退回 [`FlatColorSkin`]
+//! 的纯色外观。
+//!
+//! 这条缺陷**不会打任何日志**：`uv_rect` 返回 `None` 是本模块设计上的
+//! 正常降级路径（「这张皮肤没有这个贴图」），它分辨不出「本来就没有」
+//! 与「有资产但名字对不上」。画面上因此仍然有面板、有血条、有昼夜滑
+//! 条，只是全部是纯色的——「看起来在工作」正是它躲过此前每一轮验收的
+//! 原因。守住它的现在是 `crates/ll-game/tests/atlas_coverage.rs`：那条
+//! 测试用真实 `assets/` 打出真实图集，断言本常量里每一个键都查得到、
+//! 且对应矩形里有不透明像素。
+//!
+//! 注意与「本来就没有资产」区分：`Skin::textured_button` 恒返回 `None`
+//! 是**有意的**（本体确实没有按钮贴图），不在这条缺陷范围内。
 
 use ll_render::atlas::Atlas;
 
@@ -266,16 +288,66 @@ impl NineSliceSkin {
     /// `None`（调用方回退到 [`FlatColorSkin`] 的纯色外观），不会
     /// panic,也不会让整块面板凭空消失。
     pub fn new(atlas: &Atlas) -> NineSliceSkin {
+        NineSliceSkin::from_uv_lookup(|name| atlas.uv_rect(name))
+    }
+
+    /// [`Self::new`] 的**不依赖 GPU** 的形态：查 UV 这一步由调用方给
+    /// 的闭包完成，本函数只负责「拿哪几个键去查、查出来放进哪个字段」。
+    ///
+    /// # 为什么要有这一层
+    ///
+    /// [`Atlas`] 持有 `wgpu::TextureView`，没有真实 GPU 设备就构造不
+    /// 出来——于是「五张 UI 贴图到底有没有查到」这件事此前**没有任何
+    /// 脱离窗口的验证途径**，正是模块文档「曾经的缺陷」那一节记的裸
+    /// 名字问题能一路躲过验收的结构性原因：唯一能发现它的地方是人眼
+    /// 看着一个开着的窗口，而 [ADR
+    /// 0025](../../../../knowledge/decisions/0025-demo-interaction-verification-forbids-sendkeys.md)
+    /// 又禁止用合成按键自动化那种验收。
+    ///
+    /// 抽出来的是「键 → 字段」这一段映射本身（[`Self::new`] 现在就是
+    /// 它的一行适配器，不是第二份实现）。真实用例见
+    /// `crates/ll-game/tests/atlas_coverage.rs`：那里用真实 `assets/`
+    /// 打出来的图集元数据当查表源，断言五个 `textured_*` 全部返回
+    /// `Some`。
+    pub fn from_uv_lookup(lookup: impl Fn(&str) -> Option<[f32; 4]>) -> NineSliceSkin {
         NineSliceSkin {
-            panel_border_uv: atlas.uv_rect("ui_panel_border"),
-            panel_fill_uv: atlas.uv_rect("ui_panel_fill"),
-            bar_track_uv: atlas.uv_rect("ui_bar_track"),
-            bar_fill_uv: atlas.uv_rect("ui_bar_fill"),
-            daynight_bar_uv: atlas.uv_rect("ui_daynight_bar"),
+            panel_border_uv: lookup(PANEL_BORDER_KEY),
+            panel_fill_uv: lookup(PANEL_FILL_KEY),
+            bar_track_uv: lookup(BAR_TRACK_KEY),
+            bar_fill_uv: lookup(BAR_FILL_KEY),
+            daynight_bar_uv: lookup(DAYNIGHT_BAR_KEY),
             border_thickness: 4.0,
         }
     }
 }
+
+/// 九宫格面板边框贴图的图集键。
+pub const PANEL_BORDER_KEY: &str = "lostland:ui_panel_border";
+/// 九宫格面板填充贴图的图集键。
+pub const PANEL_FILL_KEY: &str = "lostland:ui_panel_fill";
+/// 条形底槽贴图的图集键。
+pub const BAR_TRACK_KEY: &str = "lostland:ui_bar_track";
+/// 条形填充贴图的图集键。
+pub const BAR_FILL_KEY: &str = "lostland:ui_bar_fill";
+/// 昼夜滑条底图的图集键。
+pub const DAYNIGHT_BAR_KEY: &str = "lostland:ui_daynight_bar";
+
+/// [`NineSliceSkin`] 需要、且本体**确实提供**了资产的全部图集键。
+///
+/// 公开出来只有一个目的：让 `crates/ll-game/tests/atlas_coverage.rs`
+/// 能拿真实图集逐个核对，而不是在测试里重抄一份字符串字面量——重抄
+/// 一份的话，改名时两边分叉，测试会继续绿着而画面已经退回纯色，正是
+/// 模块文档「曾经的缺陷」一节记的那种失效方式。
+///
+/// **不包含**按钮等「本体本来就没有资产」的贴图：那些恒走纯色路径是
+/// 有意的，不是缺陷，见模块文档末尾。
+pub const REQUIRED_SPRITE_KEYS: [&str; 5] = [
+    PANEL_BORDER_KEY,
+    PANEL_FILL_KEY,
+    BAR_TRACK_KEY,
+    BAR_FILL_KEY,
+    DAYNIGHT_BAR_KEY,
+];
 
 /// 不透明白——纹理采样结果原样显示，不做任何颜色调制。
 const NO_TINT: [f32; 4] = [1.0, 1.0, 1.0, 1.0];

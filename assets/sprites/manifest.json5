@@ -323,6 +323,114 @@
         "width": 1,
         "height": 1
       }
+    },
+    {
+      "name": "terrain_floor_wood",
+      "file": "terrain_floor_wood.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_floor_stone",
+      "file": "terrain_floor_stone.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_wall_wood",
+      "file": "terrain_wall_wood.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_wall_stone",
+      "file": "terrain_wall_stone.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_door_closed",
+      "file": "terrain_door_closed.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_door_open",
+      "file": "terrain_door_open.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_window",
+      "file": "terrain_window.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_stairs_up",
+      "file": "terrain_stairs_up.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_stairs_down",
+      "file": "terrain_stairs_down.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
     }
   ]
 }
