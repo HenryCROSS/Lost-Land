@@ -181,6 +181,29 @@
 
 ---
 
+10. **一次无法复现的 `SurfaceWindow` panic（2026-08-27 追记，批次 1 期间观察到）。**
+   `example_mod_rogue_passives` 的 `三级盗贼…` 用例在某一次 `run_all.sh` 中 panic
+   在 `crates/ll-world/src/surface_store.rs:638`：「`SurfaceWindow` 假定视野范围内
+   的区块都已经常驻，`TorusPos { x: 7, y: 7 }` 所属区块尚未加载」。
+
+   **此后无法复现**：该二进制单独跑 50 次、`example_mod_stealth` 50 次、
+   `cargo test --workspace` 4 次、完整 `run_all.sh` 2 次，全绿。
+
+   **为什么它值得记一笔而不是当成偶发**：该用例的世界是
+   `TorusSize::new(1, 1)`（`crates/ll-mod/tests/example_mod_rogue_passives.rs:220`），
+   **整个世界只有一个区块**，`(7,7)` 与 spawn 点同属那一个。这条 panic 的字面含义
+   因此是「唯一的那个区块当时不常驻」——按现有代码不该可达。批次 1 的改动
+   （`c02ffe4`）完全没有触碰视野、`SurfaceStore` 或常驻集合维护，它**不是**那批
+   引入的；但那批确实改过这个测试文件，不能就此排除交互。
+
+   与 C5 的关系值得警惕：`docs/architecture/03-invariants.md` 的 C5 一节写着这类
+   问题「往往要等到几百 tick 之后、甚至换一次进程或平台才会暴露」，且「没有一个
+   明确的『第一次出错的地方』可供定位」。**症状形状吻合。** 下一个碰
+   `SurfaceStore` 常驻集合维护的人请优先复核 `evict_candidate` 与
+   `resident_zones` 的调用时序。
+
+---
+
 ## 六、怎么跑起来看
 
 ```bash
