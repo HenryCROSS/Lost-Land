@@ -2,6 +2,13 @@
 
 **冻结于** 2026-08-17。**实现阶段** 主体在 P9（世界历史生成产出种族分布；[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P8 顺移为 P9），但**字段形状必须在 P3 建 `Agent`/`ThinPopulation` 时就定**——与归属、钱包同样的理由：P3 加零成本，P5 存档格式冻结后再加要写迁移链。
 
+> **【2026-08-26 复核：以下「落地状态」已严重过期，正文原样保留，更正见文末】** 最要紧的一条：
+> **`RaceDef` 已经落地**（`crates/ll-mod/src/race.rs`），暗视接口、`footprint`、寿命字段一并落地——
+> 下面那句「以上均**未落地**」不再成立。逐节复核与证据见
+> [2026-08-26 三份文档落地状态复核](../audit/2026-08-26-society-race-conflicts-reverification.md)，
+> 摘要见本文档末尾「⚠ 落地状态复核更正（2026-08-26）」。另：本文档**完全没有覆盖「怪物种族」**，
+> 那是一处整节级别的空白，不是遗漏一句话。
+
 **落地状态**：部分落地，且落地方式与本文档「存储」一节的设计有一处未对齐的实现债务，去代码核实结果如下：
 
 - `Agent.race: ContentIndex`（`crates/ll-world/src/entity/agent.rs`）与 `Agent.luck: i32`（同文件）已落地。字段本身的形状——「种族是内容，走注册表索引，不是封闭本体枚举」——与本文档「核心形状」一节的结论一致，字段文档甚至已经预写了「未来将驱动的东西」（基础属性种族修正、专属装备槽位、随从招募同族/异族筛选、剧情分支解锁），逐条对应本文档后续各节。
@@ -339,3 +346,101 @@ Caves of Qud 用属性、社会关系、任务分支承载「种族感」，而�
 - [世界历史生成](world-history.md) —— 种族分布场、`birth_settlement` 的产出来源
 - [身份与 ID 空间](identity-and-ids.md) —— `ContentIndex` 为何适合种族而不适合势力/家族这类实例
 - [总纲设计规格](../../docs/superpowers/specs/2026-08-16-lostland-design.md)
+
+---
+
+## ⚠ 落地状态复核更正（2026-08-26）
+
+**本节只追加，不删改任何原文。** 完整逐节表格与 grep 证据在
+[2026-08-26 三份文档落地状态复核](../audit/2026-08-26-society-race-conflicts-reverification.md)。
+基线 `main` HEAD `a9f6691`。
+
+### 一、`RaceDef` 已经落地——开头「落地状态」那句话已经过期
+
+`crates/ll-mod/src/race.rs` 的 `RaceDef` 实际字段：
+
+```text
+id / display_name_key / stat_modifiers / darkvision_cells / footprint / lifespan_years
+/ xp_reward / traits / starting_items
+```
+
+一节草图里的六项**全部在**，另多出三项（后续批次加的）。**唯一偏离**：`name_key: String`
+落成 `display_name_key: NamespacedId`，理由是本地化惯例（注册表只存指向 Fluent 键的标识符），
+该模块文档已说明。同批落地的还有暗视接口 `sight_radius_at`（`crates/ll-world/src/light.rs`）、
+`footprint` 字段、寿命字段。[天赋系统](trait-system.md) 一节早已如实指出过这处不一致，
+本节是这份文档自己的跟进。
+
+**仍未落地的**：混血注册路径、`race_affinity`、`birth_settlement` 列。
+
+### 二、五节「暗视」：本文与代码一致，只有一处证据引用失效
+
+`sight_radius_at(base_radius, light, darkvision_cells)` 与本节所写逐字符合，
+对称性论证、「暗视不可做成无视黑暗」两段**原样成立**。
+
+失效的只有那句「已发货证据：`mods/example_mod/gameplay.scm` 的 `examplemod:ooze`」——
+脚本系统整体拆除后该文件不存在了（ADR
+[0028](../decisions/0028-steel-engine-construction-memory-corruption.md)）。
+**等价证据现在是 `mods/example_mod/races.json5` 里的 `examplemod:ooze`。**
+
+### 三、六节「体型」与十二节「待验证项 ①」：可以结案了——不支持，且字段无人读
+
+`footprint: (u8, u8)` 字段确实落地了，但**三样能力一样都没接线**：无多格碰撞、无体型移动代价、
+无负重耦合。全仓库对 `footprint` 的引用只有三处，全部是「定义它 / 哈希它 / 审计它」
+（`race.rs`、`content_hash.rs`、`content_audit.rs`），**没有任何碰撞或寻路代码读它**。
+
+因此十二节待验证项 ① 可以结案：**当前寻路与碰撞不支持大于 1×1 的实体占位。**
+待验证项 ②（大型精灵跨环面接缝的贴图位移）**仍未验证**，且因为字段无消费者，暂时不可能触发。
+
+`lifespan_years` 同样是零消费者。这两个字段各自有完整的一节设计论证，不是错误——但按本仓库
+自己的纪律（「加特质前必须先回答它接在哪个已有机制上」），它们已经在「声明了、存了、哈希了、
+审计了、没有玩法后果」这个状态上停留了若干批次。
+
+### 四、八节「存储」：实现债务仍然准确，但**还债成本现在接近零**
+
+`ThinPopulation.race` 确实还是显式存储列、`promote()` 原样复制、没有 `birth_settlement` 列——
+债务框里写的全对。**但补一条框里没有的事实：薄层在生产代码里从来没有被写入过一次**，
+`ThinPopulation::spawn` 的全部调用点都在测试里（`WorldState.population` 恒为空）。
+
+所以「需要一次迁移」在今天不是迁移，是**改一个还没有任何真实数据的类型**。
+**这条债务现在还的代价接近零，往后每拖一批只会更贵**，且 `birth_settlement` 是聚落种族权重表的前置、
+权重表又是文化选址的前置——建议在 `CultureDef` 那一批顺手还掉。
+
+### 五、十节「种族偏见」：前提悬空，但那条硬约束反而更要紧了
+
+`race_affinity` 要挂的 `CultureDef` **完全不存在**（全仓库 `CultureDef` 只出现在
+`crates/ll-world/src/naming.rs` 的一句注释里），`race_affinity` 本身零命中。
+
+**但本节那条硬约束（种族绝不可成为职业声望表的第三个维度，必须乘法分解）今天变得比冻结时更要紧**：
+职业分布已经真的在按资源算了（`ll_mod::roster` 的 `commoner_weights` 按资源大类调权重），
+下一批往里加种族维度时正好会撞上这条。**落地时守住它。**
+
+### 六、本文档没有覆盖「怪物种族」——这是一处整节级别的空白
+
+逐条核实：
+
+- 八节「存储」、十节「种族偏见」、十二节「待验证项」**全部预设种族出生在聚落里**
+  （`birth_settlement` + 聚落种族权重表）。没有任何一节谈过「不住在聚落里的种族」或「天生敌对的种族」。
+- `RaceDef` 的九个字段里**没有一个能表达「这个种族住哪儿、跟谁不对付」**——全是个体数值，
+  没有选址亲和、没有资源偏好、没有敌对关系。
+- 内容侧已经有怪物种族（`mods/example_mod/races.json5` 的 `examplemod:goblin`/`ooze`/`footpad`），
+  **但世界上没有任何地方生成它们**：`Effect::SpawnActor` 不存在，世界生成期只经
+  `ll_mod::roster` 造据点居民。
+- **建立者种族的资源亲和是 Rust 硬编码的三元数组**：`roster.rs` 的 `race_weights` 返回
+  `[WeightedSlot; 3]`，按 `SETTLEMENT_RACE_IDS = ["lostland:human", "lostland:dwarf", "lostland:elf"]`
+  解析，规则写死为「食物→人类、金属→矮人、木材→精灵」。**第三方 mod 加一个种族，
+  它拿不到任何选址亲和，一座据点都不会属于它。** 对照同一个模块里职业亲和已经做到的
+  「按资源大类挂规则、加一条 JSON5 就有对口职业」——**种族这一侧还停在职业那一侧改造之前的形态。**
+
+**结论**：怪物种族要能参与选址，需要**把种族的资源/地形亲和从 Rust 硬编码搬到内容声明上**
+（`RaceDef` 新增字段，或由 `CultureDef` 承担）。**这是需要新写的设计，不是核实既有设计**，
+排期与前置见复核文档六节「第二批」。
+
+### 七、一处跨 crate 的架构事实，下一批一定会撞上
+
+**种族是内容（`ll-mod`），而选址与历史推演在 `ll-world`，后者拿不到注册表。**
+这正是 `ll_mod::roster::settlement_founder_race` 之所以是一个 `pub fn` 而不是
+`SettlementSite` 的一个字段的原因（该函数文档已完整记录这条推理）。
+
+**破法已有先例**：`TerrainTable`、`ResourceTable` 都是**类型定义在 `ll-world`、
+数据由 `ll-mod` 装载器填、注入进世界生成**。种族亲和表、文化表、敌对表都应当走同一条路，
+而不是把内容注册表倒灌进 `ll-world`。

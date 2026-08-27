@@ -2,6 +2,8 @@
 
 **冻结于** 2026-08-17。**实现阶段** P9（智能体经济与人口；[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P8 顺移为 P9）为主，但**归属字段必须在 P3 建实体时就预留**，否则 P9 落地要改遍所有实体与存档。
 
+> **【2026-08-26 复核：以下「落地状态」与三节已过期，正文原样保留，更正见文末】** 逐节复核结果与证据在 [2026-08-26 三份文档落地状态复核](../audit/2026-08-26-society-race-conflicts-reverification.md)，本文档末尾「⚠ 落地状态复核更正（2026-08-26）」一节给出摘要。三处最要紧的：`Affiliation.org` 的类型已经变了；`StructureKind` 不是「未落地」而是**已被否决**；宗教一节里「通过 Steel 脚本定义」的载体已随脚本系统整体拆除而失效（结论不失效）。
+
 **落地状态**：部分落地。`Affiliation`/`AffiliationKind`（`crates/ll-world/src/entity/affiliation.rs`）与 `Agent.affiliations`/`wallet`/`profession` 字段（`crates/ll-world/src/entity/agent.rs`）已落地；`NamingRules`（`crates/ll-world/src/naming.rs`）已落地，但只是 `CultureDef.naming` 这一个子字段，完整 `CultureDef` 未落地。关系派生基线、`Kinship`、`Traits`、`StructureKind`、宗教戒律系统、LOD 组织聚合均**未落地**，仍是纯设计。
 
 所有数值一律整数，比例用千分比（见 [0002](../decisions/0002-integer-only-world-state.md)）。
@@ -489,3 +491,102 @@ pub struct Agent {
 - [物品系统](item-system.md) — `Owner::Faction` 的语义由本文档提供
 - [属性系统](attribute-system.md) — 魅力影响招募与议价，与归属声望叠加
 - [总纲设计规格](../../docs/superpowers/specs/2026-08-16-lostland-design.md)
+
+---
+
+## ⚠ 落地状态复核更正（2026-08-26）
+
+**本节只追加，不删改任何原文。** 完整逐节表格、grep 证据、下一批的前置清单与建议顺序在
+[2026-08-26 三份文档落地状态复核](../audit/2026-08-26-society-race-conflicts-reverification.md)。
+基线 `main` HEAD `a9f6691`。
+
+### 一、开头「落地状态」一段的三处更正
+
+1. **`Affiliation.org` 的类型变了。** 不再是 `ContentIndex`，而是
+   `OrgRef`（两变体：`Def(ContentIndex)` / `Instance(WorldId)`）。`Culture`/`Profession` 恒走 `Def`，
+   `Faction`/`Religion`/`Guild`/`Family` 恒走 `Instance`，判据是 [身份与 ID 空间](identity-and-ids.md)
+   的「mod 定义种类，世界生成造个体」。**一节里那段 `Affiliation` 结构体代码已经不是代码里的样子**
+   （`crates/ll-world/src/entity/affiliation.rs`）。六个 `AffiliationKind` 变体一字未改。
+2. **`StructureKind` 不是「未落地」，是已被否决。** 见下面第三条。
+3. `Kinship`、`Traits`、关系派生基线、宗教戒律系统、LOD 组织聚合仍未落地——**这五条原文说得准确**。
+   `NamingRules` 确实已落地，但**唯一消费者是 `ll-sim/examples/p3_acceptance` 这个 demo**，生产路径零调用，
+   NPC 至今没有名字。
+
+### 二、整套归属体系今天没有生产者
+
+生产路径上唯二构造 `Agent` 的地方（`ll_game::world::build_player_agent`、
+`ll_mod::roster::build_npc_agent`）都写死 `affiliations: Vec::new()`、`wallet: 0`；
+`ThinPopulation::spawn` 在生产代码里一次都没被调用过。因此：
+
+- 一节「直接回报」的五条（偷窃判定、交易价格、任务接取权、行为树条件、战争结盟）**一条都没接线**；
+- 六个 `AffiliationKind` 变体里**只有 `Faction` 被读过一次**——`ll_sim::ai_query::is_hostile`
+  （→ `nearest_hostile` → 哥布林行为树），且因为 `affiliations` 恒空，它**恒走「无势力 → 对谁都敌对」那条退化分支**；
+- `OrgInstance` 类型已落地（`crates/ll-world/src/entity/org.rs`）但**全仓库零构造点**。
+
+### 三、三节「地图结构层」：`StructureKind` 已被 ADR 0021 判据否决
+
+墙、门、窗、地板**已经全部是地形**（`crates/ll-world/src/terrain.rs` 的 `BaseTerrainIds`），
+地形层已经写好按格存储、FOV 遮挡、寻路代价、存档 remap、内容哈希五样；为「建筑」另起一个类型
+要把这五样各自重写一遍，换来零新增能力——
+[0021](../decisions/0021-abstraction-requires-shared-algorithm-not-symmetry.md) 在这里给出的是「不建」。
+见 `crates/ll-world/src/settlement.rs` 模块文档「为什么不新建 `StructureKind`」，
+以及 [据点、结构物与 NPC 生成](settlements-structures-and-npc-spawning.md) 十节。
+
+**同一节的另外两条**：
+
+- 「道路是经济的骨架」**仍是纯设计**（无 `Road`、无最小生成树、无商队）。但「城市自然分化出大小」
+  这件事**已经由别的路径实现了**——承载力来自领地资源点，人口按比例增长撞承载力封顶。
+  **正反馈的来源是资源，不是道路。**
+- 「资源点决定聚落的经济性格」**已经兑现了一半**：`SettlementSite::resource_profile`
+  取领地里 `资源点数 × settlement_draw` 最高的两种，`ll_mod::roster` 按它调职业与建立者种族的权重。
+  **「文化偏好 × 周边资源点」里「周边资源点」那一半在了，「文化偏好」那一半是空的**——
+  因为 `CultureDef` 完全不存在。
+
+### 四、二节 `CultureDef`：六个字段只落地了一个
+
+`naming` 落成独立类型 `NamingRules`；`building_materials`、`site_terrain`、`economy_weights`、
+`social_structure`、`religion_affinity` 五项**类型都不存在**（`EconomyKind`、`SocialStructure`
+全仓库零命中）。[种族系统](race-system.md) 十节追加的 `race_affinity` 同样不存在。
+
+**每个字段今天各有一处等着它的硬编码**（这也是下一批最容易验收的地方）：
+
+| 字段 | 今天写死在哪 |
+|---|---|
+| `building_materials` | `settlement.rs`：有人住一律木墙、废墟一律石墙 |
+| `site_terrain` | `chronicle.rs` 的 `try_found`：四条加分里没有文化项 |
+| `economy_weights` | `SettlementSite::resource_profile` 的排序里没有文化项 |
+| `naming` | 只有 demo 在用 |
+
+**另外**：四之三「职业声望是局部的」要求「每个 `CultureDef` 带一张职业声望表」，
+但二节的结构体定义里**没有这个字段**——这是本文档自身的一处不完整，落地时要么补字段、要么明确它是另一张表。
+
+### 五、四节「宗教」：只有载体失效，结论全部成立
+
+「戒律不是文本描述，是行为树能查询的条件。**通过 Steel 脚本定义**，与技能效果走同一套注册通道」——
+后半句已随脚本系统整体拆除而失效（ADR [0028](../decisions/0028-steel-engine-construction-memory-corruption.md)：
+全仓库无 `*.scm`、无 `steel` 依赖）。**今天的等价写法**是「戒律是 `mods/<id>/*.json5` 的一份数据表，
+判定在引擎里用 Rust 写」。
+
+本节其余论证——戒律是可查询条件、神殿是经济节点、宗教关系独立于政治边界、信仰强度是廉价标量、
+传播机制全部复用已有系统、新宗教必须能在游玩中诞生——**一条都不需要改写**。
+
+### 六、六节「LOD 兼容性」：仍然成立，且已被一次真实落地间接验证
+
+`ll_mod::roster` 走的正是「被记住 / 被模拟」这条轴：一座玩家没走近过的村子，人口、职业、种族随时可现算
+（**被记住**，零存储），只有真的被物化过的据点才进 `WorldState::actors`
+（**被模拟**，`WorldState::materialized_settlements` 记的就是这条边界）。距离确实只是「谁当前该被模拟」
+的一个近似信号，不决定谁该被记住。
+
+### 七、五节「必须在 P3 就预留的字段」：已兑现，判断被证实
+
+`affiliations`/`wallet`/`profession` 三个字段确实在 `crates/ll-world/src/entity/agent.rs`，
+且已进 `WorldState::hash` 与存档 remap。**这是本文档唯一一处被完整验证为「当时那么做省下了迁移链」的判断。**
+
+### 八、下一批要用这份文档时，先看这三处
+
+1. 四之三「关系派生基线」**缺的不是算法，是「有组织可归属」这件事本身**——完整前置清单见复核文档四之一。
+2. 「部落复用 `SettlementSite`」已由项目所有者裁定为**是同一种东西**，ADR 0021 判据支持（七处算法要共用）。
+   其推论（编年史哪些白拿、战争配对判据要不要改成「敌对才打」、`SettlementSite` 上哪些字段是文明专属的）
+   见复核文档四之四。
+3. **「战争认敌对」会把关系派生基线从锦上添花变成世界生成的硬前置**，因而改变下一批的优先级；
+   顺序建议见复核文档六节。
