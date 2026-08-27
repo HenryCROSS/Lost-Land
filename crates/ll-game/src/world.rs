@@ -183,15 +183,24 @@ pub fn rebuild_timeline(world: &WorldState) -> Timeline {
 }
 
 /// 建立一局新游戏：区块布局 → 噪声 → 世界状态 → 出生点铺地 → 玩家
-/// 实体。`seed` 决定地形具体分布——不同种子产出不同世界,同一种子加
-/// 同一批内容必然复现同一个世界（世界身份三要素之一,见
+/// 实体。`params.seed` 决定地形具体分布——不同种子产出不同世界,同一
+/// 种子加同一批内容必然复现同一个世界（世界身份三要素之一,见
 /// `ll_content::world_identity` 模块文档）。
-pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, WorldError> {
+///
+/// # 为什么参数是整个 [`GenParams`]，不再只是一个 `seed`
+///
+/// `params.shape`（[`ll_world::generate::TerrainShape`]）决定这个世界
+/// 是大陆、群岛还是山地——它与种子一样是玩家在建档那一刻做出的、事后
+/// 无法从任何其它数据反推的选择。此前本函数只接收 `seed`、形态部分
+/// 硬取 `GenParams::default()`，于是那三个形态字段虽然在类型上可调，
+/// 却没有任何生产路径能真正调到它们。把整个 `GenParams` 收进签名，
+/// 「玩家选了什么」与「世界怎么生成」之间就只剩这一条通路，
+/// [`WorldState::terrain_shape`] 再把它一路带进存档。
+pub fn build_new_world(
+    content: &LoadedContent,
+    params: GenParams,
+) -> Result<GameWorld, WorldError> {
     let layout = build_zone_layout()?;
-    let params = GenParams {
-        seed,
-        ..GenParams::default()
-    };
     let noise = build_zone_noise(&layout, &params)?;
 
     // 出生点必须落在真实、连得开的陆地上——不能再像旧版那样把它硬
@@ -245,7 +254,7 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
         ChronicleParams::default(),
     ));
     tracing::info!(
-        seed,
+        seed = params.seed,
         epochs = chronicle.epochs(),
         events = chronicle.events().len(),
         settlements = chronicle.sites().len(),
@@ -273,7 +282,7 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
 
     if located_spawn.is_some() {
         tracing::info!(
-            seed,
+            seed = params.seed,
             spawn_x = spawn.x(),
             spawn_y = spawn.y(),
             connected_land_area = spawn_land_area,
@@ -282,7 +291,7 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
         );
     } else {
         tracing::warn!(
-            seed,
+            seed = params.seed,
             spawn_x = spawn.x(),
             spawn_y = spawn.y(),
             max_zones_inspected = MAX_SPAWN_SEARCH_ZONES,
@@ -835,7 +844,14 @@ mod tests {
     fn 出生点在世界建成后立刻可站立() {
         // Arrange & Act
         let content = test_content();
-        let game_world = build_new_world(&content, 1).expect("测试用布局满足全部前置条件");
+        let game_world = build_new_world(
+            &content,
+            GenParams {
+                seed: 1,
+                ..GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
 
         // Assert
         let pos = game_world
@@ -864,7 +880,14 @@ mod tests {
         use ll_core::ident::{Interner, NamespacedId};
         use ll_world::item::{GroundItemStack, ItemStack};
         let content = test_content();
-        let mut game_world = build_new_world(&content, 1).expect("测试用布局满足全部前置条件");
+        let mut game_world = build_new_world(
+            &content,
+            GenParams {
+                seed: 1,
+                ..GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
         let mut interner = Interner::new();
         let arrow = interner.intern(NamespacedId::parse("lostland:arrow").expect("合法标识符"));
         let pos = game_world.world.size.wrap(0, 0);
@@ -903,7 +926,14 @@ mod tests {
         // 永远收不到写入,见 build_new_world 文档。
         // Arrange & Act
         let content = test_content();
-        let game_world = build_new_world(&content, 1).expect("测试用布局满足全部前置条件");
+        let game_world = build_new_world(
+            &content,
+            GenParams {
+                seed: 1,
+                ..GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
 
         // Assert
         assert_eq!(game_world.world.player_entity, Some(game_world.player));
@@ -951,8 +981,22 @@ mod tests {
         let content = test_content();
 
         // Act
-        let first = build_new_world(&content, 42).expect("测试用布局满足全部前置条件");
-        let second = build_new_world(&content, 42).expect("测试用布局满足全部前置条件");
+        let first = build_new_world(
+            &content,
+            GenParams {
+                seed: 42,
+                ..GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
+        let second = build_new_world(
+            &content,
+            GenParams {
+                seed: 42,
+                ..GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
 
         // Assert
         assert_eq!(first.world.terrain_at(first.world.size.wrap(10, 10)), {
@@ -970,8 +1014,22 @@ mod tests {
         let content = test_content();
 
         // Act
-        let first = build_new_world(&content, 42).expect("测试用布局满足全部前置条件");
-        let second = build_new_world(&content, 42).expect("测试用布局满足全部前置条件");
+        let first = build_new_world(
+            &content,
+            GenParams {
+                seed: 42,
+                ..GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
+        let second = build_new_world(
+            &content,
+            GenParams {
+                seed: 42,
+                ..GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
         let first_pos = first
             .world
             .actors
@@ -1003,8 +1061,10 @@ mod tests {
         let layout = ZoneLayout::new(48, zone_count).expect("48 满足全部对齐与跨度约束");
         let params = GenParams {
             seed: 5,
-            sea_level: 100_000,
-            ..GenParams::default()
+            shape: ll_world::generate::TerrainShape {
+                sea_level: 100_000,
+                ..ll_world::generate::TerrainShape::default()
+            },
         };
         let noise = build_zone_noise(&layout, &params).expect("布局满足生成入口的约束");
 
@@ -1031,7 +1091,14 @@ mod tests {
         // 会在出生点落在水域的种子上失败,已手工验证过（见任务报告）。
         // Arrange
         let content = test_content();
-        let game_world = build_new_world(&content, 1).expect("测试用布局满足全部前置条件");
+        let game_world = build_new_world(
+            &content,
+            GenParams {
+                seed: 1,
+                ..GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
         let spawn = game_world
             .world
             .actors
@@ -1103,7 +1170,14 @@ mod tests {
     fn 历史生成的据点真的立在世界地形里() {
         // Arrange
         let content = test_content();
-        let game_world = build_new_world(&content, 20260825).expect("默认布局满足全部前置条件");
+        let game_world = build_new_world(
+            &content,
+            GenParams {
+                seed: 20260825,
+                ..GenParams::default()
+            },
+        )
+        .expect("默认布局满足全部前置条件");
         let site = *game_world
             .world
             .terrain
@@ -1155,8 +1229,22 @@ mod tests {
         let content = test_content();
 
         // Act
-        let first = build_new_world(&content, 4242).expect("默认布局满足全部前置条件");
-        let second = build_new_world(&content, 4242).expect("默认布局满足全部前置条件");
+        let first = build_new_world(
+            &content,
+            GenParams {
+                seed: 4242,
+                ..GenParams::default()
+            },
+        )
+        .expect("默认布局满足全部前置条件");
+        let second = build_new_world(
+            &content,
+            GenParams {
+                seed: 4242,
+                ..GenParams::default()
+            },
+        )
+        .expect("默认布局满足全部前置条件");
 
         // Assert
         let a = first.world.terrain.chronicle().expect("必然装上了编年史");
@@ -1196,7 +1284,14 @@ mod tests {
         // Arrange
         let content = test_content();
         let layout = build_zone_layout().expect("默认布局满足全部前置条件");
-        let game_world = build_new_world(&content, 4242).expect("默认布局满足全部前置条件");
+        let game_world = build_new_world(
+            &content,
+            GenParams {
+                seed: 4242,
+                ..GenParams::default()
+            },
+        )
+        .expect("默认布局满足全部前置条件");
         let chronicle = game_world
             .world
             .terrain
@@ -1223,7 +1318,14 @@ mod tests {
     fn 世界id计数器越过了编年史已经分配掉的号段() {
         // Arrange
         let content = test_content();
-        let game_world = build_new_world(&content, 20260825).expect("默认布局满足全部前置条件");
+        let game_world = build_new_world(
+            &content,
+            GenParams {
+                seed: 20260825,
+                ..GenParams::default()
+            },
+        )
+        .expect("默认布局满足全部前置条件");
 
         // Act
         let reserved = game_world
@@ -1247,7 +1349,14 @@ mod tests {
     /// `build_player_agent` 换一个种族后属性是否正确，不是出生点选址
     /// 算法本身，复用已验证过的坐标而不是手搭一对可能非法的坐标。
     fn spawn_pos_and_zone(content: &LoadedContent) -> (TorusPos, ll_world::space::ZoneCoord) {
-        let game_world = build_new_world(content, 1).expect("测试用布局满足全部前置条件");
+        let game_world = build_new_world(
+            content,
+            GenParams {
+                seed: 1,
+                ..GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
         let agent = game_world
             .world
             .actors

@@ -141,7 +141,14 @@ struct WalkedAway {
 
 fn walk_away_from_spawn() -> WalkedAway {
     let content = test_content();
-    let mut game_world = build_new_world(&content, 7).expect("测试用默认布局满足全部前置条件");
+    let mut game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: 7,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("测试用默认布局满足全部前置条件");
     let spawn = game_world
         .world
         .actors
@@ -238,7 +245,14 @@ fn 玩家离开出生点后出生点不再落在当前视野内() {
 fn 从未走近的坐标不在当前视野内() {
     // Arrange
     let content = test_content();
-    let game_world = build_new_world(&content, 7).expect("测试用默认布局满足全部前置条件");
+    let game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: 7,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("测试用默认布局满足全部前置条件");
     let far_away: TorusPos = game_world.world.size.wrap(2000, 1500);
     let player_pos = game_world
         .world
@@ -259,7 +273,14 @@ fn 从未走近的坐标也未被标记探索() {
     // 对应「从未探索」那一层——渲染时完全不画，交给清屏黑背景表现。
     // Arrange
     let content = test_content();
-    let game_world = build_new_world(&content, 7).expect("测试用默认布局满足全部前置条件");
+    let game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: 7,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("测试用默认布局满足全部前置条件");
     let layout = *game_world.world.terrain.layout();
     let far_away: TorusPos = game_world.world.size.wrap(2000, 1500);
 

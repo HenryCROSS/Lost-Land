@@ -134,7 +134,14 @@ mod tests {
         // 判据（与 ll_content::save_file 自己的同名测试同一个理由）。
         // Arrange
         let content = test_content();
-        let game_world = build_new_world(&content, 7).expect("测试用布局满足全部前置条件");
+        let game_world = build_new_world(
+            &content,
+            ll_world::generate::GenParams {
+                seed: 7,
+                ..ll_world::generate::GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
         let hash_before = game_world.world.hash();
         let path = temp_save_path("hash-roundtrip");
 
@@ -171,7 +178,14 @@ mod tests {
         // 一节强调头部必须能独立于主体被读出,种子首当其冲。
         // Arrange
         let content = test_content();
-        let game_world = build_new_world(&content, 123).expect("测试用布局满足全部前置条件");
+        let game_world = build_new_world(
+            &content,
+            ll_world::generate::GenParams {
+                seed: 123,
+                ..ll_world::generate::GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部前置条件");
         let path = temp_save_path("seed-in-header");
         save_game(
             &path,

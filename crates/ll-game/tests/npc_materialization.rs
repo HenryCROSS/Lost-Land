@@ -65,7 +65,14 @@ fn world_at_a_living_settlement() -> (
     ll_world::settlement::SettlementSite,
 ) {
     let content = test_content();
-    let mut game_world = build_new_world(&content, SEED).expect("建世界应当成功");
+    let mut game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: SEED,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("建世界应当成功");
     let roles = SettlementRoles::resolve(
         &content.registry,
         &content.class_table,
@@ -218,7 +225,14 @@ fn 未探索区域的据点不物化任何实体但名册随时算得出来() {
     // 这类问题随时可以由派生函数当场回答。
     // Arrange
     let content = test_content();
-    let game_world = build_new_world(&content, SEED).expect("建世界应当成功");
+    let game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: SEED,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("建世界应当成功");
     let roles = SettlementRoles::resolve(
         &content.registry,
         &content.class_table,

@@ -40,7 +40,7 @@ use crate::WorldError;
 use crate::chunk::ChunkGrid;
 use crate::entity::{Affiliation, Agent, Arena, EntityId, Goal, OrgRef, ThinPopulation};
 use crate::exploration::ExplorationMemory;
-use crate::generate::{GenParams, build_zone_noise};
+use crate::generate::{GenParams, TerrainShape, build_zone_noise};
 use crate::history::{
     HistoricalEvent, HistoricalEventKind, KillCause, KillingBlow, SettlementDemise, VictimState,
 };
@@ -99,6 +99,29 @@ const SPAWN_WARM_RADIUS: i32 = 2;
 pub struct WorldState {
     /// 生成本世界地形所用的种子。
     pub seed: u64,
+    /// 生成本世界地形所用的**形态参数**（海平面、山地阈值、倍频层数、
+    /// 大陆尺度缩减档位），见 [`TerrainShape`]。
+    ///
+    /// # 为什么它必须进存档
+    ///
+    /// 与 `seed` 是同一件事的两半：`seed` 决定「噪声场长什么样」，本
+    /// 字段决定「那张噪声场被切成什么地形」。流式生成意味着世界的绝大
+    /// 部分**在读档那一刻还不存在**——玩家走过去时才由
+    /// [`Self::terrain_at_streaming`] 现算。若形态参数不进存档、读档后
+    /// 退回默认值，同一个群岛存档重开之后，已常驻的那几块区块还是群岛，
+    /// 玩家再往前走一步生成出来的却是默认海平面的大陆：**同一张地图会
+    /// 在玩家脚下裂成两种地形**。这不是「少存一点无所谓」的派生数据，
+    /// 是 ADR 0009 意义上真正不可派生的玩家选择，见 [`TerrainShape`]
+    /// 文档「为什么它必须进存档」一节。
+    ///
+    /// # `#[serde(default)]` 的含义
+    ///
+    /// 与 `exploration`/`history`/`kill_counts` 那批同一条理由（见
+    /// [`WorldStateRepr`] 里对应字段的注释）：只服务本文件内部用
+    /// `serde_json::json!` 手写局部字段的测试固件。发布前唯一存在过的
+    /// 真实存档都是用默认形态生成的，退回 [`TerrainShape::default`]
+    /// 恰好就是它们的原值。
+    pub terrain_shape: TerrainShape,
     /// 当前世界时钟。全世界只有这一个时钟，见 `ll_core::time` 的说明。
     pub clock: Tick,
     /// 世界瓦片级尺寸——派生自 `terrain.layout().tile_size()`，见本类型
@@ -469,6 +492,10 @@ pub struct WorldState {
 #[derive(Deserialize)]
 struct WorldStateRepr {
     seed: u64,
+    /// 地形形态参数——`#[serde(default)]` 的理由见
+    /// [`WorldState::terrain_shape`] 字段文档同名一节。
+    #[serde(default)]
+    terrain_shape: TerrainShape,
     clock: Tick,
     size: TorusSize,
     terrain: SurfaceStore,
@@ -527,6 +554,7 @@ impl TryFrom<WorldStateRepr> for WorldState {
         }
         Ok(WorldState {
             seed: repr.seed,
+            terrain_shape: repr.terrain_shape,
             clock: repr.clock,
             size: repr.size,
             terrain: repr.terrain,
@@ -584,6 +612,7 @@ impl WorldState {
         warm_spawn_neighborhood(&mut terrain, &noise, params, terrain_ids, spawn);
         Ok(WorldState {
             seed: params.seed,
+            terrain_shape: params.shape,
             clock: Tick(0),
             size: layout.tile_size(),
             terrain,
@@ -601,6 +630,26 @@ impl WorldState {
             ground_items: Vec::new(),
             materialized_settlements: Vec::new(),
         })
+    }
+
+    /// 重建生成这个世界所用的 [`GenParams`]——种子与形态参数在
+    /// [`WorldState`] 里分成两个字段存放（理由见 [`Self::terrain_shape`]
+    /// 字段文档），但下游（`build_zone_noise`、编年史生成、流式加载）
+    /// 要的是合起来的那一个结构。
+    ///
+    /// # 为什么读档后必须走这里，而不是重新取一份默认值
+    ///
+    /// 这正是本方法存在的全部理由。读档路径此前重建噪声源时取的是
+    /// 「本体默认种子 + 默认形态」而不是存档里真正记着的那一组——种子
+    /// 恰好一直等于默认值，缺陷因此从未显形。玩家一旦能自己选种子或
+    /// 形态，那条路径就会在读档后用另一套参数继续流式生成，玩家往前
+    /// 走一步地形就换一张图。任何需要「这个世界当初是怎么生成的」的
+    /// 调用方都应当问这个方法，不要自己拼。
+    pub fn gen_params(&self) -> GenParams {
+        GenParams {
+            seed: self.seed,
+            shape: self.terrain_shape,
+        }
     }
 
     /// 这座据点的 NPC 已经物化过了吗——[`Self::materialized_settlements`]
@@ -1090,6 +1139,13 @@ impl WorldState {
     pub fn hash(&self) -> u64 {
         let mut hasher = StateHasher::new();
         hasher.write_u64(self.seed);
+        // 地形形态参数（世界生成参数落地批次）：它与 `seed` 一样是
+        // 「这张地图是哪张地图」的组成部分，同一个种子换一组形态参数
+        // 就是另一个世界。若哈希对它视而不见，「形态参数没有正确随存档
+        // 往返」这条缺陷不会被任何确定性回归测出来——而那条缺陷的表现
+        // 恰恰是最难察觉的一种：已常驻的区块看起来一切正常，只有玩家
+        // 走到未生成区域时地形才悄悄换了一套阈值。
+        write_terrain_shape(&mut hasher, self.terrain_shape);
         hasher.write_i64(self.clock.0);
         hasher.write_u64(u64::from(self.size.width()));
         hasher.write_u64(u64::from(self.size.height()));
@@ -1491,6 +1547,19 @@ fn write_kill_cause(hasher: &mut StateHasher, cause: &KillCause) {
 /// 省略 `z`/`floor` 这类当前批次「恒定」或「预留」的字段：即便它们
 /// 现在不变，混入的代价接近零，却能在未来这些字段真的开始变化时立刻
 /// 被这条哈希覆盖，不需要那时再回来找哪里漏掉了一处摘要。
+/// 把地形形态参数混入世界摘要——四个字段全部混入，一个不省。
+///
+/// 与 [`write_space`] 文档末段同一条纪律：`continent_shrink` 目前
+/// 只有本体四档预设在用、多数世界取 0，但混入它的代价接近零，却能在
+/// 未来任何人新增一档预设、或把它接进开局界面时立刻被这条哈希覆盖，
+/// 不需要那时再回来找哪里漏掉了一处摘要。
+fn write_terrain_shape(hasher: &mut StateHasher, shape: TerrainShape) {
+    hasher.write_i64(i64::from(shape.sea_level));
+    hasher.write_i64(i64::from(shape.mountain_level));
+    hasher.write_u64(u64::from(shape.octaves));
+    hasher.write_u64(u64::from(shape.continent_shrink));
+}
+
 fn write_space(hasher: &mut StateHasher, space: Space) {
     match space {
         Space::Surface { zone, z, profile } => {

@@ -333,3 +333,17 @@ equip_slot-boot_r-display_name = 右靴
 equip_slot-ring_l-display_name = 左戒指
 equip_slot-ring_r-display_name = 右戒指
 equip_slot-unknown-display_name = 未知槽位
+
+# 地形形态预设（世界生成参数落地批次）：
+#   - worldgen-preset-*-display_name / -description
+#     ll-content world_identity::TERRAIN_PRESETS（本体四档地形预设）
+# 说明文字里的百分比是「标准」尺寸（96×64 区块）下十个种子的实测均值，
+# 数据来源见 docs/worldgen-tuning.md。
+worldgen-preset-continent-display_name = 大陆
+worldgen-preset-continent-description = 一整块连绵的大陆，海洋只在边缘。水域约占三成七，山地稀少。
+worldgen-preset-archipelago-display_name = 群岛
+worldgen-preset-archipelago-description = 汪洋之中散落着数百座岛屿，没有哪一座称得上大陆。水域约占七成三。
+worldgen-preset-highland-display_name = 山地
+worldgen-preset-highland-description = 陆地为主的高原世界，群山连绵。山地约占两成四，水域仅两成五。
+worldgen-preset-inland-display_name = 内陆
+worldgen-preset-inland-description = 几乎不见海洋的内陆世界，水域仅约一成六，渔猎让位给农牧。

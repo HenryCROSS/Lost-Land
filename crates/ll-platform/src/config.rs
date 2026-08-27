@@ -24,13 +24,34 @@
 //!
 //! # 硬约束：配置不是世界状态
 //!
-//! [`GameConfig`] 只装用户偏好，绝不能进
+//! [`GameConfig`] 里的**运行期偏好**——[`GameConfig::bindings`]、
+//! [`GameConfig::display`]、[`GameConfig::language`]——绝不能进
 //! `ll_world::state::WorldState`、不参与 `WorldState::hash()`、不影响
-//! 确定性重放——这与 [`crate::keybind`] 模块文档「持久化」一节的约束
+//! 确定性重放，这与 [`crate::keybind`] 模块文档「持久化」一节的约束
 //! 完全一致（本模块正是那条约束描述的「未来的配置系统」）。`ll-platform`
 //! 从未、也不应该反向依赖 `ll-world`/`ll-sim`，这条依赖方向本身就是
 //! 「配置不可能不小心变成世界状态」的结构性保证：`ll-world` 里的任何
 //! 类型物理上进不了这个 crate。
+//!
+//! # 一个类别不同的字段：[`GameConfig::new_game`]（建档期初值）
+//!
+//! 世界生成参数落地批次新增的 [`NewGameConfig`] 是**另一类东西**，
+//! 这里把区别写清楚，免得它被当成上一节那条约束的破例。
+//!
+//! - 运行期偏好回答「同一个世界，我想怎么玩它」：改按键、改语言、改
+//!   滤波，随时可改，改完立即生效，对世界本身零影响。
+//! - [`NewGameConfig`] 回答「我接下来要建的那个**新**世界长什么样」。
+//!   它只在**没有存档、真的要新建世界的那一刻**被读一次；世界一旦建
+//!   成，这组数值就被 `ll_world::state::WorldState::terrain_shape`
+//!   接管、随存档一起持久化，此后读档路径**再也不会回头看这个文件**。
+//!
+//! 真正需要守住的那条不变式因此完好无损：**改配置文件不会改变任何
+//! 一个已经存在的存档的重放结果**。`ll_game` 侧有一条测试
+//! （`改动新游戏配置不影响已存在存档读回后的世界摘要`）直接钉死它。
+//!
+//! 依赖方向也没有松动：本类型只装 `String`/`Option<u64>`/`Option<i32>`
+//! 这类原始值，不引用 `ll-world` 的任何类型；「这个字符串对应哪一组
+//! 地形阈值」由 `ll_game` 在两个 crate 都能看见的地方解析。
 //!
 //! # 损坏时的退化策略
 //!
@@ -83,6 +104,11 @@ pub struct GameConfig {
     /// 用 `String` 与它的实际形状一致，不需要在这两层之间来回转换。
     #[serde(default = "default_language")]
     pub language: String,
+    /// 新建世界时使用的地形形态与种子，见 [`NewGameConfig`]。**只在
+    /// 真的要新建世界的那一刻读一次**，与上面三个运行期偏好类别不同，
+    /// 见模块文档「一个类别不同的字段」一节。
+    #[serde(default)]
+    pub new_game: NewGameConfig,
 }
 
 impl Default for GameConfig {
@@ -91,6 +117,85 @@ impl Default for GameConfig {
             bindings: KeyBindings::default_bindings(),
             display: DisplayConfig::default(),
             language: default_language(),
+            new_game: NewGameConfig::default(),
+        }
+    }
+}
+
+/// 新建世界时的地形形态与种子选择。
+///
+/// # 为什么是「预设名 + 可选逐项覆盖」两层
+///
+/// 项目所有者的原话是「这些应该都作为可调节参数」，同时又要「先做一份
+/// 预设，以后我再调」。两层正好各答一半：
+///
+/// - [`Self::terrain_preset`] 给绝大多数人一个能直接用的名字（大陆 /
+///   群岛 / 山地 / 内陆），不需要知道任何一个阈值是什么意思。
+/// - 四个 `Option` 覆盖字段给想自己调的人一条**逐项**的通路：只写想
+///   改的那一项，其余仍取预设值。要的正是「都作为可调节参数」。
+///
+/// # 为什么覆盖字段是 `Option` 而不是直接给默认数值
+///
+/// 直接给数值就分不清「玩家真的想要海平面 400」与「玩家没写这一项」。
+/// 分不清就没法做「预设打底、逐项覆盖」——只能整组一起给或整组一起
+/// 不给。`Option` 让「没写」成为一个可判断的状态。
+///
+/// # 依赖方向
+///
+/// 本类型刻意只用原始类型，不引用 `ll_world::generate::TerrainShape`
+/// ——`ll-platform` 不依赖 `ll-world`，见模块文档。把这几个值解析成
+/// 真正的形态参数（含取值范围校验）是 `ll_game` 的事。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NewGameConfig {
+    /// 地形形态预设的稳定标识，取值见
+    /// `ll_content::world_identity::TERRAIN_PRESETS` 的 `id` 字段
+    /// （`continent` / `archipelago` / `highland` / `inland`）。
+    ///
+    /// 存标识而不是译名：译名会随语言与文案修订变化，标识不会——玩家
+    /// 把中文界面切成英文之后，配置文件不该突然失效。
+    #[serde(default = "default_terrain_preset")]
+    pub terrain_preset: String,
+    /// 世界种子。留空（或写 `null`）表示用本体的固定默认种子。
+    ///
+    /// 不做成「留空即随机」：本项目的确定性纪律要求「同一份构建反复
+    /// 运行产出同一个世界」是默认行为，随机开局是一条独立的能力，应当
+    /// 由未来真正的开局界面用一个显式选项提供，而不是靠一个空字段隐式
+    /// 触发。
+    #[serde(default)]
+    pub seed: Option<u64>,
+    /// 覆盖预设的海平面（千分比）。
+    #[serde(default)]
+    pub sea_level: Option<i32>,
+    /// 覆盖预设的山地阈值（千分比）。
+    #[serde(default)]
+    pub mountain_level: Option<i32>,
+    /// 覆盖预设的噪声倍频层数。
+    #[serde(default)]
+    pub octaves: Option<u32>,
+    /// 覆盖预设的大陆尺度缩减档位。
+    #[serde(default)]
+    pub continent_shrink: Option<u32>,
+}
+
+/// [`NewGameConfig::terrain_preset`] 的默认值——与
+/// `ll_content::world_identity::DEFAULT_TERRAIN_PRESET_ID` 保持一致。
+///
+/// 这里写字面量而不是引用那个常量，理由与本类型「依赖方向」一节相同：
+/// `ll-platform` 不依赖 `ll-content`。两处必须同步，`ll_game` 侧有一条
+/// 测试（`配置默认预设标识在预设表里查得到`）钉死它们不会分叉。
+fn default_terrain_preset() -> String {
+    "continent".to_string()
+}
+
+impl Default for NewGameConfig {
+    fn default() -> Self {
+        NewGameConfig {
+            terrain_preset: default_terrain_preset(),
+            seed: None,
+            sea_level: None,
+            mountain_level: None,
+            octaves: None,
+            continent_shrink: None,
         }
     }
 }
