@@ -46,6 +46,7 @@ mod color;
 mod sprite;
 mod terrain;
 mod ui;
+mod world_marks;
 
 use image::RgbaImage;
 use serde::{Deserialize, Serialize};
@@ -319,6 +320,14 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         "hero_walk_4" => sprite::decorate_hero_walk(image, rect, 8, false),
         "hero_walk_5" => sprite::decorate_hero_walk(image, rect, 5, true),
         "boss_idle_0" => sprite::decorate_boss(image, rect),
+        // 世界内容记号（地面物品堆/通用家具/通用 NPC）与一张内容自带
+        // 的家具贴图（锻炉），见 `world_marks.rs` 模块文档。`forge` 与
+        // 前三张的地位不同：前三张是引擎的兜底记号，`forge` 只是本体
+        // 内容顺手带的一张图，删掉它锻炉会自动退回通用家具记号。
+        "ground_pile" => world_marks::decorate_ground_pile(image, rect),
+        "furniture_placed" => world_marks::decorate_furniture_placed(image, rect),
+        "npc_idle_0" => world_marks::decorate_npc(image, rect),
+        "forge" => world_marks::decorate_forge(image, rect),
         // 昼夜滑条底图：水平渐变,不是 `TerrainSpec` 能表达的单一主色,
         // 单独按名字分派,见 `ui.rs::decorate_day_night_bar` 文档。
         "ui_daynight_bar" => ui::decorate_day_night_bar(image, rect),

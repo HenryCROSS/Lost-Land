@@ -31,7 +31,7 @@ const BOSS_EYE: (u8, u8, u8) = (20, 20, 20);
 const BOSS_CHEST_MARK: (u8, u8, u8) = (60, 220, 210);
 
 /// 在 `rect` 描述的矩形内填一种纯色，是本模块全部绘制函数的公共底子。
-fn fill_rect(image: &mut RgbaImage, rect: EntryRect, color: (u8, u8, u8)) {
+pub(crate) fn fill_rect(image: &mut RgbaImage, rect: EntryRect, color: (u8, u8, u8)) {
     for local_y in 0..rect.height {
         for local_x in 0..rect.width {
             image.put_pixel(
@@ -45,7 +45,7 @@ fn fill_rect(image: &mut RgbaImage, rect: EntryRect, color: (u8, u8, u8)) {
 
 /// 在精灵矩形内、相对精灵左上角偏移 `(dx, dy)` 处画一块 `w×h` 的纯色
 /// 小块。
-fn paint_patch(
+pub(crate) fn paint_patch(
     image: &mut RgbaImage,
     origin: EntryRect,
     dx: u32,
@@ -161,7 +161,7 @@ pub(crate) fn decorate_boss(image: &mut RgbaImage, rect: EntryRect) {
 /// 以 `(center_dx, center_dy)`（相对精灵左上角）为中心、`radius` 为半径
 /// 画一个曼哈顿距离菱形——比矩形更能读出「这是个标志，不是身体轮廓的
 /// 一部分」，同时仍然是硬边缘的整像素填色，不引入任何抗锯齿或渐变。
-fn paint_diamond(
+pub(crate) fn paint_diamond(
     image: &mut RgbaImage,
     rect: EntryRect,
     center_dx: i32,

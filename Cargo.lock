@@ -1270,6 +1270,7 @@ dependencies = [
 name = "ll-game"
 version = "0.1.0"
 dependencies = [
+ "image",
  "ll-content",
  "ll-core",
  "ll-i18n",

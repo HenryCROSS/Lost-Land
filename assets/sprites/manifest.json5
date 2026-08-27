@@ -217,6 +217,54 @@
       }
     },
     {
+      "name": "ground_pile",
+      "file": "ground_pile.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "furniture_placed",
+      "file": "furniture_placed.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "forge",
+      "file": "forge.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "npc_idle_0",
+      "file": "npc_idle_0.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
       "name": "ui_panel_border",
       "file": "ui_panel_border.png",
       "pivot": {
