@@ -195,5 +195,27 @@
       base_price: 9000,
       taught_recipes: ["examplemod:herb_stew_recipe"],
     },
+    {
+      // 便携铁砧：mod 侧的**家具**样本（`furniture: true`）——两条锻造
+      // 配方的 required_station 指着它。
+      //
+      // 它的存在本身就是「本体即 Mod」在家具这一层的验收：本体的
+      // lostland:forge 与这一条除了命名空间之外没有任何结构性差异，
+      // 走的是同一个 furniture 字段、同一条放置前置、同一套老化豁免。
+      //
+      // 此前这两条配方的场地是自造地形 examplemod:lava_floor——家具层
+      // 落地后 required_station 指的是物品不是地形，因此改指本条。
+      // lava_floor 本身留着不动：它仍然是「mod 能新增一种走得很慢的
+      // 奇观地形」这件事的样本，只是不再兼任工作台。
+      //
+      // 比本体锻炉轻得多（12000 对 100000）也贵得多：它是**便携**的
+      // 那一档，背着走得动正是它的卖点。
+      id: "examplemod:portable_anvil",
+      display_name_key: "examplemod:portable_anvil_display_name",
+      stack_limit: 1,
+      base_weight: 12000,
+      base_price: 60000,
+      furniture: true,
+    },
   ],
 }

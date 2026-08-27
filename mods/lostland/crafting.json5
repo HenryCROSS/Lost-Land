@@ -216,17 +216,30 @@
       requires_discovery: true,
     },
 
-    // 打铁短剑：**要场地**（石地面）**也要工具**（铁匠锤）。
+    // 砌锻炉：本体唯一一条产出**家具**的配方，也是三条锻造配方能开工
+    // 的前提——先有炉子，才谈得上打铁。
     //
-    // 场地取 `lostland:floor_stone`——本体十七个地形里唯一说得通的
-    // 「铁匠铺地面」。这是一个**明知的将就**：真正该当场地的是炉子
-    // 或铁砧那样的家具，而家具这层东西今天在引擎里根本不存在
-    // （`required_station` 的类型是地形）。等有了家具层，本条与下面
-    // 两条进阶锻造配方的 required_station 一起改指过去即可，改的是
-    // 内容不是代码。example_mod 那边用的是自造地形
-    // examplemod:lava_floor，本体不新造地形——十七个本体地形是世界
-    // 生成真的会铺出来的东西，凭空加一个只为当场地的地形，玩家永远
-    // 走不到它上面。
+    // 刻意**不要场地**（自己不能要求自己）、**不要工具**（砌炉子是垒
+    // 石头，不是敲铁），且 requires_discovery 为假——它必须是这条链上
+    // 唯一一件人人天生会做的东西，否则整条锻造路会锁死在「要先学会
+    // 造炉子，而学会造炉子要读一本还没有的书」上。
+    {
+      id: "lostland:forge_recipe",
+      display_name_key: "lostland:recipe.forge.display_name",
+      category: "lostland:forging",
+      ingredients: [{ item: "lostland:iron_ingot", count: 6 }],
+      product: "lostland:forge",
+      product_count: 1,
+    },
+
+    // 打铁短剑：**要场地**（锻炉）**也要工具**（铁匠锤）。
+    //
+    // 场地取 `lostland:forge`——家具层落地之后，`required_station` 指
+    // 的是一件**摆在脚下那一格的家具**，不再是脚下的地形。本条与下面
+    // 两条此前一起将就着指 `lostland:floor_stone`（原注释逐字写着那是
+    // 「一个明知的将就……等有了家具层，一起改指过去即可，改的是内容不
+    // 是代码」）——这次兑现的就是那句话，三条配方各改一行，引擎侧那半
+    // 由家具层批次一并落地。
     {
       id: "lostland:iron_shortsword_recipe",
       display_name_key: "lostland:recipe.iron_shortsword.display_name",
@@ -237,7 +250,7 @@
       ],
       product: "lostland:iron_shortsword",
       product_count: 1,
-      required_station: "lostland:floor_stone",
+      required_station: "lostland:forge",
       required_tool: "lostland:smith_hammer",
       requires_discovery: true,
     },
@@ -257,7 +270,7 @@
       ],
       product: "lostland:iron_helm",
       product_count: 1,
-      required_station: "lostland:floor_stone",
+      required_station: "lostland:forge",
       required_tool: "lostland:smith_hammer",
       requires_discovery: true,
     },
@@ -273,7 +286,7 @@
       ],
       product: "lostland:iron_greaves",
       product_count: 1,
-      required_station: "lostland:floor_stone",
+      required_station: "lostland:forge",
       required_tool: "lostland:smith_hammer",
       requires_discovery: true,
     },

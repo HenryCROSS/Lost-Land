@@ -155,6 +155,7 @@ fn 本体物品的id清单不多不少() {
         "lostland:amber_pendant",
         "lostland:bone_needle",
         "lostland:field_cookbook",
+        "lostland:forge",
         "lostland:forge_apron",
         "lostland:forge_brand",
         "lostland:fur_mantle",
@@ -186,7 +187,7 @@ fn 本体物品的id清单不多不少() {
     .map(str::to_string)
     .collect();
     assert_eq!(actual, expected);
-    assert_eq!(actual.len(), 29);
+    assert_eq!(actual.len(), 30);
 }
 
 #[test]
@@ -200,6 +201,7 @@ fn 本体配方与类别的id清单不多不少() {
 
     // Assert
     let expected_recipes: BTreeSet<String> = [
+        "lostland:forge_recipe",
         "lostland:fur_mantle_recipe",
         "lostland:herb_roast_recipe",
         "lostland:herbal_draught_recipe",
@@ -214,7 +216,7 @@ fn 本体配方与类别的id清单不多不少() {
     .map(str::to_string)
     .collect();
     assert_eq!(recipes, expected_recipes);
-    assert_eq!(recipes.len(), 9);
+    assert_eq!(recipes.len(), 10);
 
     let expected_categories: BTreeSet<String> = [
         "lostland:advanced_forging",
@@ -543,24 +545,42 @@ fn 野外食谱教的是真的存在的那条烤肉配方() {
 
 // ─────────────────────────── 配方逐字段 ───────────────────────────
 
+/// 本体配方一律要先发现，**唯一的例外是砌锻炉**（家具层批次）。
+///
+/// 项目所有者裁定「一开始什么都不会，只能乱煮」在本体内容侧唯一的
+/// 落点。**这条断言比逐条写十次更值钱**：它对将来新增的配方同样
+/// 生效——有人加一条不写 requires_discovery 的本体配方，本条立刻红。
+///
+/// `lostland:forge_recipe` 是名单里唯一被排除的一条，理由写在
+/// `crafting.json5` 那条配方上方：整条锻造路的场地前置都指着锻炉，
+/// 而锻炉本身要靠这条配方造出来。它若也要先发现，锻造这一路会锁死在
+/// 「要先学会造炉子，而学会造炉子要读一本还没有的书」上。例外写死在
+/// 这里而不是放宽断言：将来再多一条「天生就会」的配方，必须有人回到
+/// 这条测试、把它明确加进这份名单并写下理由。
 #[test]
-fn 本体全部九条配方都必须先被发现() {
-    // 项目所有者裁定「一开始什么都不会，只能乱煮」在本体内容侧唯一的
-    // 落点。**这条断言比逐条写九次更值钱**：它对将来新增的配方同样
-    // 生效——有人加一条不写 requires_discovery 的本体配方，本条立刻红。
+fn 本体配方除砌锻炉外都必须先被发现() {
     // Arrange
     let loaded = load_real_mods();
+    const 天生就会: [&str; 1] = ["lostland:forge_recipe"];
 
     // Act
     let ids = loaded.ids_in("lostland", |index| loaded.recipe.is_defined(index));
 
     // Assert
-    assert_eq!(ids.len(), 9);
+    assert_eq!(ids.len(), 10);
     for id in &ids {
-        assert!(
-            loaded.recipe_view(id).requires_discovery,
-            "{id} 必须声明 requires_discovery——本体不存在天生就会的配方"
-        );
+        let requires_discovery = loaded.recipe_view(id).requires_discovery;
+        if 天生就会.contains(&id.as_str()) {
+            assert!(
+                !requires_discovery,
+                "{id} 在「天生就会」名单里，不该声明 requires_discovery"
+            );
+        } else {
+            assert!(
+                requires_discovery,
+                "{id} 必须声明 requires_discovery——本体只有砌锻炉一条是天生就会的"
+            );
+        }
     }
 }
 
@@ -654,8 +674,16 @@ fn 打铁短剑既要场地也要工具() {
     assert_eq!(view.category, loaded.index("lostland:forging"));
     assert_eq!(
         view.required_station,
-        Some(loaded.index("lostland:floor_stone")),
-        "场地指向的是本体十七个地形之一，不是为当场地凭空造出来的地形"
+        Some(loaded.index("lostland:forge")),
+        "场地指向的是一件家具（ItemDef.furniture），不是地形——家具层批次         把此前将就着指石地面的那三条一起改了过来"
+    );
+    assert!(
+        loaded
+            .item
+            .get(loaded.index("lostland:forge"))
+            .expect("锻炉必须登记在物品表里")
+            .furniture,
+        "当场地的那件物品必须真的是家具，否则场地前置永远满足不了"
     );
     assert_eq!(
         view.required_tool,
@@ -756,7 +784,7 @@ fn 进阶锻造那两条配方都落在设了闸门的类别里() {
         assert_eq!(view.category, advanced, "{id}");
         assert_eq!(
             view.required_station,
-            Some(loaded.index("lostland:floor_stone")),
+            Some(loaded.index("lostland:forge")),
             "{id}"
         );
         assert_eq!(

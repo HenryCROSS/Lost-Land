@@ -69,7 +69,7 @@ trait-tailoring_mastery-display_name = 缝纫精通
 trait-alchemy_mastery-display_name = 炼金精通
 trait-cooking_mastery-display_name = 烹饪精通
 
-# 本体物品（mods/lostland/items.json5，二十九条）——
+# 本体物品（mods/lostland/items.json5，三十条）——
 # ll-mod ItemAttrs::display_name_key。
 item-iron_ingot-display_name = 铁锭
 item-iron_rivet-display_name = 铁铆钉
@@ -100,8 +100,9 @@ item-field_cookbook-display_name = 野外食谱
 item-tarnished_signet-display_name = 蒙尘印戒
 item-unmarked_phial-display_name = 无标小瓶
 item-sealed_relic_box-display_name = 封蜡遗物匣
+item-forge-display_name = 锻炉
 
-# 本体配方（mods/lostland/crafting.json5，九条）——
+# 本体配方（mods/lostland/crafting.json5，十条）——
 # ll-mod RecipeAttrs::display_name_key。
 recipe-roast_meat-display_name = 烤肉
 recipe-herb_roast-display_name = 香草烤肉
@@ -112,6 +113,7 @@ recipe-iron_helm-display_name = 打铁盔
 recipe-iron_greaves-display_name = 打铁胫甲
 recipe-linen_shirt-display_name = 缝亚麻衬衣
 recipe-fur_mantle-display_name = 缝毛皮披风
+recipe-forge-display_name = 砌锻炉
 
 # 下面两条与下方 mod-dependency-version-mismatch 携带 Fluent 变量
 # （`{ $名字 }`），对应结构体字段：ModSetMismatch 的 namespace/

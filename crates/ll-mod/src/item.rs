@@ -388,6 +388,45 @@ pub struct ItemDef {
     /// 相同。等到真的出现「多个盒子共用同一张表」的内容需求时，那才是
     /// 抽出一张表的时机（ADR 0021）。
     pub blind_box_pool: Vec<BlindBoxEntry>,
+    /// 这件物品放到地上之后是一件**家具**（家具层批次）——项目所有者
+    /// 裁定「家具也应该算是一种可以放在地形上的可交互物品」的落点。
+    /// `false`（默认值）是绝大多数物品：丢在地上就是一堆躺着的东西，
+    /// 会按 [`ll_world::state::WorldState::cleanup_aged_ground_items`]
+    /// 老化回收，也不妨碍同一格上再放别的。
+    ///
+    /// `true` 让同一件物品在**放到地上那一刻**多出三条后果，全部落在
+    /// 已有的地面物品那条路上（[`ll_world::item::GroundItemStack`]），
+    /// 不新增任何世界状态字段：
+    ///
+    /// 1. **占住这一格**：一格只放得下一件家具，
+    ///    `ll_sim::resolve::resolve_drop` 的放置前置会拒绝第二件。
+    /// 2. **不随时间消失**：老化回收按本字段豁免，见
+    ///    [`ll_world::state::WorldState::cleanup_aged_ground_items`] 的
+    ///    `is_permanent` 参数——一座锻炉不该在三十个游戏日后自己烂掉。
+    /// 3. **能被配方当场地引用**：
+    ///    [`crate::recipe::RecipeDef::required_station`] 指向的正是一件
+    ///    带本标志的物品，`ll_sim::resolve::resolve_craft` 的场地前置
+    ///    因此变成「脚下这一格摆着这件家具吗」。
+    ///
+    /// # 为什么是 `ItemDef` 上的一个布尔，不是一张新的「家具表」
+    ///
+    /// ADR 0021：抽象的理由是「有算法要共用」，不是「看起来该有自己
+    /// 的表」。家具与普通物品共用的算法是**全部**——放置走
+    /// `Intent::Drop`、取回走 `Intent::PickUp`、存档走
+    /// `WorldState::ground_items`、重映射走 `ll_content::remap`、
+    /// 哈希走 `WorldState::hash`。另起一张表要把这五条各复制一份，
+    /// 换回来的只是「家具有自己的名字」这点观感。所有者的原话本身
+    /// 就是「家具**也算是**一种可以放在地形上的可交互物品」——它是
+    /// 物品的一个取值，不是物品之外的第二种东西。
+    ///
+    /// # 注册期硬校验：家具必须 `stack_limit == 1`
+    ///
+    /// 一格上摆的是「一座锻炉」，不是「一摞锻炉」。可堆叠的家具会让
+    /// 「这一格被占了吗」这个判据立刻退化成「被占了几层」，而没有任何
+    /// 玩法需要那个问题的答案。见
+    /// `crate::content_schema_gear::define_one_item` 的校验，判据形状与
+    /// 「可堆叠物品不能带耐久」那条既有校验逐字同构。
+    pub furniture: bool,
 }
 
 /// [`ItemTable::define`] 实际存进列式存储的属性子集——不含 `id`，
@@ -462,6 +501,11 @@ pub struct ItemAttrs {
     /// [`ItemTable::add_blind_box_entry`] 追加写入（它要跨表校验候选
     /// 物品真的已注册），理由同 [`ItemDef::blind_box_pool`] 文档。
     pub blind_box_pool: Vec<BlindBoxEntry>,
+    /// 放到地上是不是一件家具——与 `requires_identification` 同一档：
+    /// `define` 那一刻就有真实取值（纯布尔，没有跨表引用要校验，
+    /// 因此不需要一条单独的 `set_*` 入口），理由见
+    /// [`ItemDef::furniture`]。
+    pub furniture: bool,
 }
 
 /// 物品注册期可能出现的错误。
@@ -586,6 +630,8 @@ pub struct ItemView<'a> {
     pub study_experience: i64,
     /// 盲盒产出池——借用视图，不克隆，理由同 [`Self::stat_bonuses`]。
     pub blind_box_pool: &'a [BlindBoxEntry],
+    /// 放到地上是不是一件家具，见 [`ItemDef::furniture`]。
+    pub furniture: bool,
     /// 由 [`Self::tags`] 在注册期折算出的耐久磨损通道集合，见
     /// [`ItemTable::add_tag`] 文档「为什么在这里折算」一节。
     pub wear_channels: WearChannels,
@@ -623,6 +669,9 @@ pub struct ItemTable {
     study_experience: Vec<i64>,
     /// 每件盲盒的产出池（盲盒批次）——见 [`ItemDef::blind_box_pool`]。
     blind_box_pool: Vec<Vec<BlindBoxEntry>>,
+    /// 每件物品放到地上是不是家具（家具层批次）——见
+    /// [`ItemDef::furniture`]。
+    furniture: Vec<bool>,
     defined: Vec<bool>,
 }
 
@@ -655,6 +704,7 @@ impl ItemTable {
             self.requires_identification.resize(new_len, false);
             self.study_experience.resize(new_len, 0);
             self.blind_box_pool.resize(new_len, Vec::new());
+            self.furniture.resize(new_len, false);
             self.wear_channels.resize(new_len, WearChannels::NONE);
         }
 
@@ -680,6 +730,7 @@ impl ItemTable {
         self.requires_identification[idx] = attrs.requires_identification;
         self.study_experience[idx] = attrs.study_experience;
         self.blind_box_pool[idx] = attrs.blind_box_pool;
+        self.furniture[idx] = attrs.furniture;
         // 派生列：`define` 恒写空——`attrs.tags` 在 `register-item` 那一刻
         // 恒是空列表，真正的取值由后续 `add_tag` 逐条折算。
         self.wear_channels[idx] = WearChannels::NONE;
@@ -721,6 +772,7 @@ impl ItemTable {
             requires_identification: self.requires_identification[idx],
             study_experience: self.study_experience[idx],
             blind_box_pool: &self.blind_box_pool[idx],
+            furniture: self.furniture[idx],
         })
     }
 
@@ -1016,6 +1068,7 @@ impl ItemCatalog for ItemTable {
             requires_identification: view.requires_identification,
             study_experience: view.study_experience,
             blind_box_pool: view.blind_box_pool.to_vec(),
+            furniture: view.furniture,
         })
     }
 }
@@ -1063,6 +1116,7 @@ mod tests {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                 },
             )
             .expect("首次定义应当成功");
@@ -1097,6 +1151,7 @@ mod tests {
             requires_identification: false,
             study_experience: 0,
             blind_box_pool: Vec::new(),
+            furniture: false,
         };
         table.define(index, attrs()).expect("首次定义应当成功");
 
@@ -1150,6 +1205,7 @@ mod tests {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                 },
             )
             .expect("首次定义应当成功");
@@ -1186,6 +1242,7 @@ mod tests {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                 },
             )
             .expect("首次定义应当成功");
@@ -1203,6 +1260,7 @@ mod tests {
                 requires_identification: false,
                 study_experience: 0,
                 blind_box_pool: Vec::new(),
+                furniture: false,
                 stack_limit: 99,
                 equip_mask: SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),
@@ -1250,6 +1308,7 @@ mod tests {
             requires_identification: false,
             study_experience: 0,
             blind_box_pool: Vec::new(),
+            furniture: false,
         }
     }
 

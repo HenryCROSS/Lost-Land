@@ -120,6 +120,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
                 requires_identification: false,
                 study_experience: 0,
                 blind_box_pool: Vec::new(),
+                furniture: false,
                 stack_limit: 99,
                 equip_mask: ll_sim::item::SlotMask::EMPTY,
                 stat_bonuses: Vec::new(),

@@ -122,6 +122,9 @@ ADR 0021 的判据只有一条：**有没有一份算法要被多种类型真正
 2. **「铁剑要在铁砧上打，烤肉在火堆上」** ——不成立。这是**同一个判定喂不同的数据**：
    `world.terrain_at(agent.pos) == recipe.required_station`。铁砧与火堆都是 `TerrainKind` 的一个取值，
    不是两种判定方式。
+   （**家具层批次更正**：判定换成了「脚下那一格摆着的那件**家具**是不是它」，铁砧与火堆都是
+   一件 `furniture: true` 的 `ItemDef`。本条论证的**结论**一字未变——仍然是同一个判定喂不同的
+   数据，只是喂进去的东西从地形换成了家具。更正记录见六节末尾。）
 3. **「衣服能穿，药水能喝」** ——不成立。`equip_mask` 与 `use_effect` 都是成品 `ItemDef` 上的字段，
    `resolve_craft` 从头到尾**不读它们中的任何一个**。做出来之后怎么用，是 `resolve_equip`/
    `resolve_use_item` 的事，那两条路径早就落地且早就对所有物品一视同仁。
@@ -183,6 +186,8 @@ pub struct RecipeDef {
 
     /// 必须站在哪种地形上才能制作，指向 TerrainDef。None = 随地可做。
     /// 六节论证为什么现在就加这个字段（推翻食物系统四节的 YAGNI 判断）。
+    /// **家具层批次更正**：改指 ItemDef（一件 furniture: true 的家具），
+    /// 判定改成 furniture_at(agent.pos)，见六节末尾。
     pub required_station: Option<ContentIndex>,
 
     /// 必须装备着哪件物品才能制作，指向 ItemDef。None = 徒手可做。
@@ -349,6 +354,7 @@ Intent::Craft {
    agent.subclasses 与之无交集 → 空                        （七节）
 4. 场地前置：required_station 为 Some(t) 且
    world.terrain_at(agent.pos) != Some(t) → 空             （六节）
+   （家具层批次更正：判据改为 furniture_at(agent.pos) != Some(t)，见六节末尾）
 5. 工具前置：required_tool 为 Some(i) 且
    agent.equipment 里没有一件"def == i 且耐久未归零"的装备 → 空  （六节）
 6. 食材校验：逐条在 agent.inventory 里找 def 匹配的堆，
@@ -434,6 +440,33 @@ roguelike 里明显错误的行为。**要么做对（需要一套可中断活�
 `resolve_move` 完全同款。相邻判定虽然也能做（上表已核实），但它引入「多个相邻工作台算哪个」
 这类不必要的问题。配套的内容纪律：**工作台地形必须是可通行的**（「锻造间地面」「灶台旁」，
 而不是一个挡路的铁砧方块），否则玩家站不上去。这条纪律写给内容设计，不是系统限制。
+
+### 更正（家具层批次）：场地 = **家具**，不是地形
+
+项目所有者裁定「家具也应该算是一种可以放在地形上的可交互物品」。**本节「场地 = 一种地形」
+那半条结论因此被推翻**，原文保留在上面不删。
+
+改的是什么：
+
+- `RecipeDef.required_station` 指向一件 **`furniture: true` 的 `ItemDef`**，不再指向 `TerrainDef`。
+- `resolve_craft` 第 5 步的判据从 `terrain_at(agent.pos)` 换成 `furniture_at(agent.pos)`——
+  脚下那一格的 `WorldState::ground_items` 里摆着的那件家具是不是它。
+- 家具本身是一件普通物品：背得动、丢得下（丢 = 放置）、捡得起，走的是既有的
+  `Intent::Drop`/`Intent::PickUp`/`GroundItemStack` 这一整条路，**没有新增任何世界状态字段**。
+
+**没改的是什么**（本节其余结论逐条仍然成立）：
+
+- 「站在这格上」而不是「站在旁边」——理由（多个相邻工作台算哪个）一字未变。
+- 「场地不可携带 vs 工具可携带」这对互补设计——家具靠**重量**表达不可携带（本体锻炉
+  100 单位重），而不是靠「它不是物品」。这比原来的地形方案更好：「便携铁砧」这类东西现在
+  表达得出来（见 `mods/example_mod/items.json5`），而地形方案里它无法存在。
+- 上面那条「工作台地形必须是可通行的」内容纪律**升级成了引擎强制**：家具放不到
+  `blocks_move` 的格子上（`resolve_drop` 的放置前置），因此「玩家站不上去的工作台」在结构上
+  不再可能出现。
+
+为什么原来的方案撑不住：`mods/lostland/crafting.json5` 里三条锻造配方当时只能拿
+`lostland:floor_stone`（石地面）将就当铁匠铺，那条注释逐字写着「这是一个**明知的将就**：真正
+该当场地的是炉子或铁砧那样的家具」。本节的原方案不是错在论证，是错在当时**没有可指的东西**。
 
 ### 工具为什么是「装备着」而不是「背包里有」
 
@@ -606,7 +639,7 @@ pub struct CraftUnlockRule {
 | 选项 | 代价 | 为什么值得现在做 |
 |---|---|---|
 | ① **配方类别** `category` | 一张 `BTreeMap` 表 + 一个必填字段 | 七节副职闸门与八节成长计数**唯一**的挂载点。没有它，项目所有者点名的两个副职无处安放——这是本次任务的直接需求，不是预留 |
-| ② **场地前置** `required_station` | 一个 `Option` 字段 + 一次 `terrain_at` | 六节已论证：统一决定本身产生的需求。缺了它，四类制作在系统里只剩「食材不同」这一个差别 |
+| ② **场地前置** `required_station` | 一个 `Option` 字段 + 一次 `terrain_at`（家具层批次已改为 `furniture_at`，见六节末尾） | 六节已论证：统一决定本身产生的需求。缺了它，四类制作在系统里只剩「食材不同」这一个差别 |
 | ③ **工具前置** `required_tool` | 一个 `Option` 字段 + 一次 `equipment` 查找 | 项目所有者点名要「工具」；且是采矿/种植将来的接入点，形状现在定错将来要么跟着错要么两套并存 |
 | ④ **同一成品允许多条配方** | **零**——不加任何字段，只是**不**在 `product` 上加唯一性约束 | 白拿的变化度：铁剑可以有「铁锭×2」和「废铁×3 + 木炭」两条路，粗铁匠与精铁匠的配方可以产出同一件东西。代价真的是零，只需要在 `RecipeTable::define` 里**不写**那条约束，并在文档里说明这是刻意的 |
 
@@ -679,7 +712,7 @@ pub struct CraftUnlockRule {
 - `recipe-category-requires-subclass!` 的两个参数都必须已注册（跨表存在性校验，同
   `subclass-grants-trait!`）。
 - `product-id`/食材 `item-id`/`station`/`tool` **只校验索引已 intern，不跨表校验是不是一件真物品/
-  真地形**——理由同 `food-and-cooking-system.md` 三节：跨表强校验会让注册顺序产生不必要的耦合，
+  真地形**（家具层批次后 `station` 指的也是一件真物品）——理由同 `food-and-cooking-system.md` 三节：跨表强校验会让注册顺序产生不必要的耦合，
   与 `TraitTable`/`ItemTable` 目前互相不做这类校验一致。
 - **`product` 不做唯一性校验**（九节④，刻意）。
 

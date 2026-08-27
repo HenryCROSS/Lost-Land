@@ -1759,6 +1759,7 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
     let requires_identification = view.requires_identification;
     let study_experience = view.study_experience;
     let blind_box_pool = view.blind_box_pool.to_vec();
+    let furniture = view.furniture;
 
     auditor.field("ItemAttrs::display_name_key", true);
     auditor.field("ItemAttrs::stack_limit", stack_limit != 0);
@@ -1877,6 +1878,12 @@ fn inspect_item(auditor: &mut Auditor<'_>, index: ContentIndex) {
             ReferenceExpectation::Table(ContentTableKind::Item),
         );
     }
+    // 家具层批次新增的 `ItemDef.furniture`——纯布尔，不是跨表引用，
+    // 因此只记一条字段覆盖。判据取「为真」而不是「被写过」：`false`
+    // 是默认值，「默认值不算写过」是本模块既有的一贯惯例（见
+    // `inspect_tag` 对 `TagDef::wear`、`inspect_recipe` 对
+    // `RecipeAttrs::requires_discovery` 的同一条处理）。
+    auditor.field("ItemAttrs::furniture", furniture);
 }
 
 /// [`ll_sim::xp_curve::XpCurveDef`] 的全部字段——**除 `id` 外**：
@@ -1973,11 +1980,21 @@ fn inspect_recipe(auditor: &mut Auditor<'_>, index: ContentIndex) {
         ReferenceExpectation::Table(ContentTableKind::Item),
     );
     auditor.field("RecipeAttrs::product_count", product_count != 0);
+    // 家具层批次：`required_station` 的期望表由**地形**改成**物品**——
+    // 场地现在是一件摆在脚下那一格的家具（`ItemDef::furniture`），不再
+    // 是脚下的地形。这道校验只管「落在物品表里」；「而且必须是家具」
+    // 那一半紧跟在下面单独一条，理由见 `inspect_recipe` 文档。
     auditor.optional_reference(
         "RecipeAttrs::required_station",
         required_station,
-        ReferenceExpectation::Table(ContentTableKind::Terrain),
+        ReferenceExpectation::Table(ContentTableKind::Item),
     );
+    // 「而且必须是**家具**」那一半不在本模块：[`ReferenceViolation`] 的
+    // 形状（expected/actual 各是一个 `ContentTableKind`）表达得了「落错
+    // 表」，表达不了「表对了但标志不对」。真正兜住它的是结算侧——
+    // `ll_sim::resolve::resolve_craft` 要求脚下那一格摆着的东西
+    // **本身带 `ItemRule::furniture`**，指向一件普通物品的配方因此永远
+    // 做不出来，内容作者第一次试做就会撞见。
     auditor.optional_reference(
         "RecipeAttrs::required_tool",
         required_tool,
@@ -2290,6 +2307,7 @@ mod tests {
                         requires_identification: false,
                         study_experience: 0,
                         blind_box_pool: Vec::new(),
+                        furniture: false,
                     },
                 )
                 .expect("测试用物品定义内部自洽");

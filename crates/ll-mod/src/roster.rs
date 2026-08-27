@@ -861,6 +861,7 @@ mod tests {
                 requires_identification: false,
                 study_experience: 0,
                 blind_box_pool: Vec::new(),
+                furniture: false,
                 taught_recipes: Vec::new(),
             })
         }

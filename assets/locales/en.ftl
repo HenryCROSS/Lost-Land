@@ -59,7 +59,7 @@ trait-tailoring_mastery-display_name = Tailoring Mastery
 trait-alchemy_mastery-display_name = Alchemy Mastery
 trait-cooking_mastery-display_name = Cooking Mastery
 
-# Base-game items (mods/lostland/items.json5, twenty-nine entries) —
+# Base-game items (mods/lostland/items.json5, thirty entries) —
 # ll-mod ItemAttrs::display_name_key.
 item-iron_ingot-display_name = Iron Ingot
 item-iron_rivet-display_name = Iron Rivet
@@ -90,8 +90,9 @@ item-field_cookbook-display_name = Field Cookbook
 item-tarnished_signet-display_name = Tarnished Signet
 item-unmarked_phial-display_name = Unmarked Phial
 item-sealed_relic_box-display_name = Sealed Relic Box
+item-forge-display_name = Forge
 
-# Base-game recipes (mods/lostland/crafting.json5, nine entries) —
+# Base-game recipes (mods/lostland/crafting.json5, ten entries) —
 # ll-mod RecipeAttrs::display_name_key.
 recipe-roast_meat-display_name = Roast Meat
 recipe-herb_roast-display_name = Herb-Crusted Roast
@@ -102,6 +103,7 @@ recipe-iron_helm-display_name = Forge Iron Helm
 recipe-iron_greaves-display_name = Forge Iron Greaves
 recipe-linen_shirt-display_name = Sew Linen Shirt
 recipe-fur_mantle-display_name = Sew Fur Mantle
+recipe-forge-display_name = Build a Forge
 
 save-mod-missing = This save requires mod { $namespace } (version { $required }), which is not loaded in the current session.
 save-mod-version-mismatch = This save requires mod { $namespace } version { $required }, but the loaded version is { $current }.

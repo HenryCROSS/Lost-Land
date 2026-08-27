@@ -218,6 +218,7 @@ mod tests {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                 },
             )
             .expect("测试用注册应当成功");

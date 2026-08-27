@@ -89,7 +89,28 @@ pub struct RecipeDef {
     /// 预付复杂度。
     pub product_count: u32,
 
-    /// 必须站在哪种地形上才能制作，指向地形表；`None` = 随地可做。
+    /// 必须站在哪件**家具**上才能制作，指向物品表（一件
+    /// [`crate::item::ItemDef::furniture`] 为真的物品）；`None` = 随地
+    /// 可做。
+    ///
+    /// # 家具层批次：从地形改指家具
+    ///
+    /// 本字段此前指向**地形表**（「必须站在哪种地形上」）。项目所有者
+    /// 裁定「家具也应该算是一种可以放在地形上的可交互物品」之后，
+    /// 场地改成「脚下那一格摆着的那件家具」——判定见
+    /// `ll_sim::resolve::resolve_craft` 第 5 步（`furniture_at`，此前是
+    /// `terrain_at`）。
+    ///
+    /// 推着这次改动的是本体内容里一处**明知的将就**：三条锻造配方当时
+    /// 只能拿 `lostland:floor_stone`（石地面）冒充铁匠铺，
+    /// `mods/lostland/crafting.json5` 的注释逐字写着「真正该当场地的是
+    /// 炉子或铁砧那样的家具」。设计文档的更正记录见
+    /// `knowledge/design/crafting-system.md` 六节末尾。
+    ///
+    /// **必须真的是家具**：`furniture_at` 只认带标志的那一条，指向一件
+    /// 普通物品的配方会变成永远做不出来。这一条由结算侧兜住而不是
+    /// `crate::content_audit`——见 `inspect_recipe` 里的注释（引用违规
+    /// 那个类型表达得了「落错表」，表达不了「表对了但标志不对」）。
     ///
     /// # 为什么现在就有这个字段
     ///
@@ -100,11 +121,13 @@ pub struct RecipeDef {
     /// 那不是四类制作，那是一类制作贴了四个标签。铁砧/织机/炼金台
     /// 恰恰是让四类在玩法上真的不同的东西。
     ///
-    /// # 配套的内容纪律：工作台地形必须可通行
+    /// # 「工作台必须站得上去」现在是引擎强制的
     ///
-    /// 判定是「站在这格上」，因此工作台应当是「锻造间地面」「灶台旁」
-    /// 这类可站立的地形，而不是一个挡路的铁砧方块，否则玩家站不上去。
-    /// 这条纪律写给内容设计，不是系统限制。
+    /// 判定仍然是「站在这格上」。此前这条只能是一句写给内容设计的
+    /// 纪律（「工作台地形必须可通行，别把它做成一个挡路的铁砧方块」）；
+    /// 家具层落地后它成了**结构上不可能违反**的事：家具放不到
+    /// `blocks_move` 的格子上（`ll_sim::resolve::resolve_drop` 的放置
+    /// 前置），因此「玩家站不上去的工作台」摆都摆不出来。
     pub required_station: Option<ContentIndex>,
 
     /// 必须装备着哪件物品才能制作，指向 [`crate::item::ItemTable`]；
@@ -300,7 +323,8 @@ impl RecipeTable {
 
     /// 给一条已注册的配方设置场地前置——**覆盖，不是追加**（一条配方
     /// 只有一个场地），与 `ItemTable::set_damage_category` 同一种单值
-    /// 覆盖语义。
+    /// 覆盖语义。`station` 指向的是一件家具，见
+    /// [`RecipeDef::required_station`]。
     pub fn set_required_station(
         &mut self,
         index: ContentIndex,
@@ -593,7 +617,7 @@ mod tests {
         let forging = index(&mut interner, "lostland:forging");
         let ingot = index(&mut interner, "lostland:iron_ingot");
         let sword = index(&mut interner, "lostland:iron_sword");
-        let forge_floor = index(&mut interner, "lostland:forge_floor");
+        let forge_station = index(&mut interner, "lostland:forge");
         let hammer = index(&mut interner, "lostland:smithing_hammer");
         let recipe = index(&mut interner, "lostland:iron_sword_recipe");
         let never_defined = index(&mut interner, "yourmod:never_defined");
@@ -604,16 +628,16 @@ mod tests {
 
         // Act
         table
-            .set_required_station(recipe, forge_floor)
+            .set_required_station(recipe, forge_station)
             .expect("设置场地应当成功");
         table
             .set_required_tool(recipe, hammer)
             .expect("设置工具应当成功");
-        let orphan = table.set_required_station(never_defined, forge_floor);
+        let orphan = table.set_required_station(never_defined, forge_station);
 
         // Assert
         let view = table.get(recipe).expect("已定义");
-        assert_eq!(view.required_station, Some(forge_floor));
+        assert_eq!(view.required_station, Some(forge_station));
         assert_eq!(view.required_tool, Some(hammer));
         assert_eq!(orphan, Err(RecipeError::UnknownRecipe(never_defined)));
     }

@@ -171,6 +171,7 @@ fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
         requires_identification: false,
         study_experience: 0,
         blind_box_pool: Vec::new(),
+        furniture: false,
         stack_limit: 1,
         equip_mask: EquipSlot::MAIN_HAND.mask(),
         stat_bonuses: Vec::new(),
@@ -191,6 +192,7 @@ fn armor_rule(amount: i32) -> ItemRule {
         requires_identification: false,
         study_experience: 0,
         blind_box_pool: Vec::new(),
+        furniture: false,
         stack_limit: 1,
         equip_mask: EquipSlot::OFF_HAND.mask(),
         stat_bonuses: vec![StatBonus {

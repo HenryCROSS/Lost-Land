@@ -105,6 +105,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                     stack_limit: 1,
                     equip_mask: EquipSlot::HAND_L.mask(),
                     stat_bonuses: vec![StatBonus {
@@ -128,6 +129,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                     stack_limit: 1,
                     equip_mask: EquipSlot::BODY.mask(),
                     stat_bonuses: vec![StatBonus {
@@ -724,6 +726,7 @@ fn luck_ring_item() -> (ContentIndex, FakeItems) {
                 requires_identification: false,
                 study_experience: 0,
                 blind_box_pool: Vec::new(),
+                furniture: false,
                 stack_limit: 1,
                 equip_mask: EquipSlot::RING_L.mask(),
                 stat_bonuses: vec![StatBonus {
