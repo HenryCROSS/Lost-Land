@@ -654,6 +654,178 @@ impl KeyBindings {
             .iter()
             .filter(move |binding| binding.action == action)
     }
+
+    /// 把**这份表里完全没有出现过的动作**补上它们的内置默认绑定，返回
+    /// 补齐后的新表；`self` 不被修改（`coding-style.md` 不可变性一节）。
+    ///
+    /// # 要修的缺陷
+    ///
+    /// [`crate::config::load_or_default`] 此前是整份 `json5::from_str`
+    /// 反序列化——磁盘上那份 `bindings` 列表**整体替换**默认表。于是
+    /// 「输入接线」批次之后新增的每一条默认绑定（`Interact`/`Inventory`/
+    /// `Craft`/`PickUp`/`Drop`/`Equip`/`Use`/`Place`，以及整张
+    /// [`DEFAULT_MENU_BINDINGS`]）对**已经有配置文件的玩家**永久不可达：
+    /// 他们的文件是新键出现之前写出的，里面一条都没有，加载后也不会被
+    /// 补上。症状是静默的——不报错，玩家只看到「按了没反应」。
+    ///
+    /// 这条缺陷会随每次新增按键复发，所以修的是加载语义本身（合并而非
+    /// 整体替换），不是补那八个键。
+    ///
+    /// # 合并规则（逐条，且刻意选择了哪一边）
+    ///
+    /// 遍历顺序固定为 [`DEFAULT_BINDINGS`] 后接 [`DEFAULT_MENU_BINDINGS`]
+    /// 的声明顺序，查表全部用线性扫描——**不使用任何
+    /// `HashMap`/`HashSet`**，同一份配置文件两次加载因此得到逐条同序、
+    /// 逐位相同的结果（C5）。
+    ///
+    /// 1. **磁盘上已经有这个动作在这个上下文下的绑定** → 整条默认值
+    ///    跳过，文件说了算。「玩家把 `Inventory` 从 `I` 改绑到 `J`」
+    ///    因此不会又被塞回一个 `I`——合并的粒度是 `(动作, 上下文)`，
+    ///    不是键位槽。
+    ///
+    ///    带上上下文是必须的，不是对称的装饰：`Up` 在 `Gameplay` 下
+    ///    有绑定，不代表它在 `InputContext::Menu` 下也有。只按动作判，
+    ///    整张 [`DEFAULT_MENU_BINDINGS`] 会被误判成「已经有了」而永远
+    ///    补不进去——那正是本方法要修的同一条缺陷换了个上下文（`旧配置
+    ///    加载后菜单上下文的默认绑定也补上了` 那条测试实测抓到过）。
+    /// 2. **动作在 `unbound_actions` 里** → 跳过。这是「玩家刻意解绑」
+    ///    与「文件写出时还没有这个动作」唯一能被区分开的地方，见
+    ///    [`crate::config::GameConfig::unbound_actions`] 文档。
+    /// 3. **默认键位槽 `(键, 修饰键, 上下文)` 空着** → 补进去。
+    /// 4. **默认键位槽被别的动作占着** → 只有在「占位的那个动作在同一
+    ///    上下文下还有别的键」时才抢占（把占位的那一条移除、补进默认
+    ///    值），否则放弃补这一条。两种情况都记一条 `warn` 日志——
+    ///    这条缺陷的真正危害是**静默**，抢占与放弃都不能悄悄发生。
+    ///
+    ///    抢占这条规则是有代价的、也是刻意选的：所有者机器上那份配置
+    ///    把 `Space` 绑给 `Confirm`（那是「输入接线」批次之前的旧默认
+    ///    值），而现在 `Space` 的默认动作是 `Interact`。不抢占，
+    ///    `Interact` 就一个键都没有，玩家按空格依然没反应——正是这次
+    ///    要修的症状；抢占则丢掉一条玩家磁盘上确实存在的绑定。选了
+    ///    抢占，但用「绝不让任何一个动作因合并而变成零键位」这条守卫
+    ///    兜住下限（`Confirm` 还有 `Enter`）。
+    ///
+    /// 滚轮表按同一套规则走，但**没有第 4 条抢占**：滚轮只有两个方向，
+    /// 抢占等于直接废掉一个方向上玩家的选择，而目前不存在「只能由滚轮
+    /// 触发」的动作，抢占换不来任何可达性。滚轮的「这个动作已经有绑定
+    /// 了吗」只看滚轮表自己——按键表里有 `ZoomIn` 不代表玩家有滚轮
+    /// 缩放，把两张表混在一起判断会让「`wheel_bindings` 字段引入之前
+    /// 写出的配置文件永远拿不到滚轮缩放」变成同一条缺陷的第二个实例。
+    pub fn fill_missing_defaults(&self, unbound_actions: &[GameKey]) -> KeyBindings {
+        let merged = self.merged_key_bindings(unbound_actions);
+        let mut table = match KeyBindings::from_bindings(merged) {
+            Ok(table) => table,
+            Err(conflict) => {
+                // 按构造不可达（每一条补进去的默认值都先确认过槽位空闲
+                // 或刚被腾空）。真发生了也绝不 panic，退回未合并的原表
+                // ——与 `crate::config` 模块文档「损坏时的退化策略」
+                // 同一条纪律。
+                tracing::error!(%conflict, "合并默认键位后仍然出现冲突，保留配置文件里的原表");
+                return self.clone();
+            }
+        };
+        self.fill_missing_wheel_defaults(&mut table, unbound_actions);
+        table
+    }
+
+    /// [`Self::fill_missing_defaults`] 的按键那一半：返回「文件里原有的
+    /// 绑定 + 补上的默认绑定」这张平表，规则见那个方法的文档。
+    fn merged_key_bindings(&self, unbound_actions: &[GameKey]) -> Vec<KeyBinding> {
+        let mut merged: Vec<KeyBinding> = self.bindings.clone();
+        for candidate in DEFAULT_BINDINGS
+            .iter()
+            .chain(DEFAULT_MENU_BINDINGS.iter())
+            .copied()
+        {
+            let already_bound = self
+                .bindings
+                .iter()
+                .any(|b| b.action == candidate.action && b.context == candidate.context);
+            if already_bound || unbound_actions.contains(&candidate.action) {
+                continue;
+            }
+            claim_default_slot(&mut merged, candidate);
+        }
+        merged
+    }
+
+    /// [`Self::fill_missing_defaults`] 的滚轮那一半。
+    ///
+    /// `table` 进来时滚轮那半是空的（[`Self::from_bindings`] 只接受按键
+    /// 绑定），所以先把磁盘上原有的滚轮绑定原样搬过来，再补默认值——
+    /// 漏了搬运这一步，合并会把玩家已有的滚轮绑定全部吃掉（`合并对已经
+    /// 完整的配置是恒等的` 那条测试实测抓到过）。
+    fn fill_missing_wheel_defaults(&self, table: &mut KeyBindings, unbound_actions: &[GameKey]) {
+        for binding in self.wheel_bindings.iter().copied() {
+            if let Err(conflict) = table.try_bind_wheel(binding) {
+                tracing::error!(%conflict, "搬运配置文件里原有的滚轮绑定时出现冲突，该条被丢弃");
+            }
+        }
+        for candidate in DEFAULT_WHEEL_BINDINGS.iter().copied() {
+            let already_bound = self
+                .wheel_bindings
+                .iter()
+                .any(|b| b.action == candidate.action && b.context == candidate.context);
+            if already_bound || unbound_actions.contains(&candidate.action) {
+                continue;
+            }
+            if let Err(conflict) = table.try_bind_wheel(candidate) {
+                tracing::warn!(
+                    %conflict,
+                    "配置文件里没有这个动作的滚轮绑定，默认滚轮方向又被别的动作占着，该动作本次没有拿到滚轮绑定"
+                );
+            }
+        }
+    }
+}
+
+/// 把一条默认绑定 `candidate` 补进 `merged`——[`KeyBindings::fill_missing_defaults`]
+/// 文档里第 3、4 两条规则的落点。
+///
+/// 槽位 `(键, 修饰键, 上下文)` 空着就直接追加；被别的动作占着时，只有在
+/// 「占位的那个动作在同一上下文下还有别的键」时才抢占，否则放弃补这一条。
+/// 两种非平凡分支都记一条 `warn`——这条缺陷的真正危害是**静默**，抢占与
+/// 放弃都不能悄悄发生。
+fn claim_default_slot(merged: &mut Vec<KeyBinding>, candidate: KeyBinding) {
+    let occupied_at = merged.iter().position(|b| {
+        b.key == candidate.key
+            && b.modifiers == candidate.modifiers
+            && b.context == candidate.context
+    });
+    let Some(index) = occupied_at else {
+        merged.push(candidate);
+        return;
+    };
+    let occupant = merged[index];
+    if occupant.action == candidate.action {
+        // 两条内置默认值撞同一个槽位——内置表自身冲突，
+        // `default_bindings()` 的 expect 早就该拦下，这里不可能走到；
+        // 即便走到，重复补一条也没有意义。
+        return;
+    }
+    let occupant_keys_left = merged
+        .iter()
+        .filter(|b| b.action == occupant.action && b.context == candidate.context)
+        .count();
+    if occupant_keys_left < 2 {
+        tracing::warn!(
+            action = ?candidate.action,
+            key = ?candidate.key,
+            context = ?candidate.context,
+            blocking_action = ?occupant.action,
+            "配置文件里没有这个动作的绑定，默认键位又被另一个只剩这一个键的动作占着，该动作本次没有拿到键位"
+        );
+        return;
+    }
+    tracing::warn!(
+        action = ?candidate.action,
+        key = ?candidate.key,
+        context = ?candidate.context,
+        displaced_action = ?occupant.action,
+        "配置文件里没有这个动作的绑定，补默认键位时抢占了另一个动作的同一个键（被抢的动作在同一上下文下还有别的键）"
+    );
+    merged.remove(index);
+    merged.push(candidate);
 }
 
 /// [`KeyBindings`] 反序列化的中转表示：字段公开、不带任何不变式。
@@ -662,23 +834,128 @@ impl KeyBindings {
 /// 的模式，反序列化先落地成这个无校验的结构，再经
 /// [`TryFrom`] 委托给 [`KeyBindings::from_bindings`]，使冲突校验对
 /// 反序列化路径同样生效。
+///
+/// # 为什么两张表都改成「宽容行」
+///
+/// 配置文件是用户可编辑的明文，且会跨版本长期存活。旧版本写出的文件
+/// 里完全可能有一个现在已经不存在的动作名（或键名、上下文名）——若
+/// 直接把行反序列化成 [`KeyBinding`]，serde 会因为「未知枚举变体」让
+/// **整份配置**解析失败，[`crate::config::load_or_default`] 于是退回
+/// 全默认，把玩家的全部自定义一次性抹掉。那是比「少认识一行」严重得
+/// 多的后果，因此这里逐行宽容：认不出来的那一行记一条 `warn` 后丢弃，
+/// 其余行照常生效。
 #[derive(Deserialize)]
 struct KeyBindingsRepr {
-    bindings: Vec<KeyBinding>,
+    bindings: Vec<LenientKeyBinding>,
     /// `#[serde(default)]`：旧版本（本字段引入之前）写出的配置文件不含
     /// 这个键，读回时应当退回空列表而不是解析失败——与 `GameConfig`
     /// 一贯的「新增字段用 `#[serde(default = ...)]` 兜底旧配置文件」
     /// 模式一致（见 `crate::config` 模块文档）。
     #[serde(default)]
-    wheel_bindings: Vec<WheelBinding>,
+    wheel_bindings: Vec<LenientWheelBinding>,
+}
+
+/// 把一个纯字符串解析成某个**无字段枚举**的变体；认不出来时返回
+/// `None` 而不是错误。
+///
+/// [`KeyCode`]/[`InputContext`]/[`GameKey`]/[`WheelDirection`] 全部是
+/// 无字段枚举，serde 把它们编码成裸字符串，因此可以统一走
+/// `StrDeserializer` 这一条路——不需要为四个类型各写一遍
+/// 「字符串 → 变体」的对照表（那份对照表会与枚举定义分叉，正是
+/// [ADR 0021](../../../knowledge/decisions/0021-abstraction-requires-shared-algorithm-not-symmetry.md)
+/// 说的「同一段逻辑抄几遍」）。
+fn parse_unit_variant<T: serde::de::DeserializeOwned>(raw: &str) -> Option<T> {
+    use serde::de::IntoDeserializer;
+    let deserializer: serde::de::value::StrDeserializer<'_, serde::de::value::Error> =
+        raw.into_deserializer();
+    T::deserialize(deserializer).ok()
+}
+
+/// 一行按键绑定的宽容中转表示，见 [`KeyBindingsRepr`] 文档。
+#[derive(Deserialize)]
+struct LenientKeyBinding {
+    key: String,
+    /// `#[serde(default)]`：手改配置的玩家没写修饰键时按「不按任何
+    /// 修饰键」处理，比让整行报废更符合意图。
+    #[serde(default)]
+    modifiers: Modifiers,
+    context: String,
+    action: String,
+}
+
+impl LenientKeyBinding {
+    fn into_binding(self) -> Option<KeyBinding> {
+        match (
+            parse_unit_variant::<KeyCode>(&self.key),
+            parse_unit_variant::<InputContext>(&self.context),
+            parse_unit_variant::<GameKey>(&self.action),
+        ) {
+            (Some(key), Some(context), Some(action)) => Some(KeyBinding {
+                key,
+                modifiers: self.modifiers,
+                context,
+                action,
+            }),
+            _ => {
+                tracing::warn!(
+                    key = %self.key,
+                    context = %self.context,
+                    action = %self.action,
+                    "配置文件里有一条无法识别的按键绑定（键名/上下文/动作名不是本版本认识的取值），已丢弃这一行，其余绑定照常生效"
+                );
+                None
+            }
+        }
+    }
+}
+
+/// 一行滚轮绑定的宽容中转表示，理由同 [`LenientKeyBinding`]。
+#[derive(Deserialize)]
+struct LenientWheelBinding {
+    direction: String,
+    context: String,
+    action: String,
+}
+
+impl LenientWheelBinding {
+    fn into_binding(self) -> Option<WheelBinding> {
+        match (
+            parse_unit_variant::<WheelDirection>(&self.direction),
+            parse_unit_variant::<InputContext>(&self.context),
+            parse_unit_variant::<GameKey>(&self.action),
+        ) {
+            (Some(direction), Some(context), Some(action)) => Some(WheelBinding {
+                direction,
+                context,
+                action,
+            }),
+            _ => {
+                tracing::warn!(
+                    direction = %self.direction,
+                    context = %self.context,
+                    action = %self.action,
+                    "配置文件里有一条无法识别的滚轮绑定，已丢弃这一行，其余绑定照常生效"
+                );
+                None
+            }
+        }
+    }
 }
 
 impl TryFrom<KeyBindingsRepr> for KeyBindings {
     type Error = BindConflict;
 
     fn try_from(raw: KeyBindingsRepr) -> Result<Self, Self::Error> {
-        let mut table = KeyBindings::from_bindings(raw.bindings)?;
-        for binding in raw.wheel_bindings {
+        let mut table = KeyBindings::from_bindings(
+            raw.bindings
+                .into_iter()
+                .filter_map(LenientKeyBinding::into_binding),
+        )?;
+        for binding in raw
+            .wheel_bindings
+            .into_iter()
+            .filter_map(LenientWheelBinding::into_binding)
+        {
             table.try_bind_wheel(binding)?;
         }
         Ok(table)
@@ -1246,5 +1523,85 @@ mod tests {
 
         // Assert
         assert!(result.is_err());
+    }
+
+    /// 一份「只有旧动作」的绑定表，形状照抄项目所有者机器上那份
+    /// `config.json5`（写于「输入接线」批次之前）：12 个动作、17 条
+    /// 绑定、全部在 `Gameplay` 上下文下、空格绑给 `Confirm`。
+    fn 旧版本绑定表() -> KeyBindings {
+        KeyBindings::from_bindings([
+            KeyBinding::gameplay(KeyCode::ArrowUp, GameKey::Up),
+            KeyBinding::gameplay(KeyCode::KeyW, GameKey::Up),
+            KeyBinding::gameplay(KeyCode::ArrowDown, GameKey::Down),
+            KeyBinding::gameplay(KeyCode::KeyS, GameKey::Down),
+            KeyBinding::gameplay(KeyCode::ArrowLeft, GameKey::Left),
+            KeyBinding::gameplay(KeyCode::KeyA, GameKey::Left),
+            KeyBinding::gameplay(KeyCode::ArrowRight, GameKey::Right),
+            KeyBinding::gameplay(KeyCode::KeyD, GameKey::Right),
+            KeyBinding::gameplay(KeyCode::Enter, GameKey::Confirm),
+            KeyBinding::gameplay(KeyCode::Space, GameKey::Confirm),
+            KeyBinding::gameplay(KeyCode::Escape, GameKey::Cancel),
+            KeyBinding::gameplay(KeyCode::Tab, GameKey::Menu),
+            KeyBinding::gameplay(KeyCode::KeyM, GameKey::Map),
+            KeyBinding::gameplay(KeyCode::Period, GameKey::Wait),
+            KeyBinding::gameplay(KeyCode::F2, GameKey::Screenshot),
+            KeyBinding::gameplay(KeyCode::Equal, GameKey::ZoomIn),
+            KeyBinding::gameplay(KeyCode::Minus, GameKey::ZoomOut),
+        ])
+        .expect("夹具本身不该自相冲突")
+    }
+
+    #[test]
+    fn 合并默认键位不会让任何一个原有动作变成零键位() {
+        // 抢占那条规则唯一的下限守卫，作为一条**性质**来验证（不是举
+        // 一个例子）：合并前每个 `(动作, 上下文)` 只要有过键位，合并后
+        // 就必须还有键位。
+        //
+        // 反例（已实跑验证会红）：把 `occupant_keys_left >= 2` 那条
+        // 守卫拿掉改成无条件抢占，`(Confirm, Gameplay)` 那一项会在
+        // 「原表里只有空格一个确认键」的夹具下掉到 0。
+        // Arrange：把回车删掉，`Confirm` 在 Gameplay 下只剩空格——正是
+        // 抢占会踩到的那一格。
+        let before = KeyBindings::from_bindings(
+            旧版本绑定表()
+                .bindings()
+                .iter()
+                .copied()
+                .filter(|binding| binding.key != KeyCode::Enter),
+        )
+        .expect("夹具本身不该自相冲突");
+
+        // Act
+        let after = before.fill_missing_defaults(&[]);
+
+        // Assert
+        for binding in before.bindings() {
+            let 合并后还剩 = after
+                .bindings()
+                .iter()
+                .filter(|b| b.action == binding.action && b.context == binding.context)
+                .count();
+            assert!(
+                合并后还剩 >= 1,
+                "动作 {:?}（上下文 {:?}）在合并前有键位，合并后却一个都不剩",
+                binding.action,
+                binding.context
+            );
+        }
+    }
+
+    #[test]
+    fn 对内置默认表做合并是恒等的() {
+        // 幂等：默认表本身已经完整，合并不该多补也不该少一条，否则
+        // 「每次加载都跑一遍合并」会让绑定表随加载次数漂移。
+        // Arrange
+        let table = KeyBindings::default_bindings();
+
+        // Act
+        let merged = table.fill_missing_defaults(&[]);
+
+        // Assert
+        assert_eq!(merged.bindings(), table.bindings());
+        assert_eq!(merged.wheel_bindings(), table.wheel_bindings());
     }
 }
