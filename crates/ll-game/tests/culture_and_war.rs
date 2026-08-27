@@ -428,7 +428,14 @@ fn 据点被同族占领而不是被摧毁() {
     // 摧毁』……只是归属变了」。
     // Arrange
     let content = test_content();
-    let game_world = build_new_world(&content, SEED).expect("默认布局满足全部前置条件");
+    let game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: SEED,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("默认布局满足全部前置条件");
     let chronicle = game_world
         .world
         .terrain
@@ -519,7 +526,14 @@ fn 被占领的据点在地上仍然是活的() {
     // 构成一对可以直接对照的证据：**废墟一扇门都没有，被占领的城有门。**
     // Arrange
     let content = test_content();
-    let mut game_world = build_new_world(&content, SEED).expect("默认布局满足全部前置条件");
+    let mut game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: SEED,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("默认布局满足全部前置条件");
     let (record, site) = {
         let chronicle = game_world
             .world

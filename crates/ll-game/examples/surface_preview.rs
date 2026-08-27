@@ -63,7 +63,14 @@ fn repo_root() -> PathBuf {
 fn main() {
     let content =
         load_content(&repo_root().join("mods"), &repo_root().join("assets")).expect("装载真实内容");
-    let mut world = build_new_world(&content, 20260826).expect("建世界");
+    let mut world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: 20260826,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("建世界");
     let atlas = pack_atlas(&load_sprite_sources(&content.asset_vfs));
 
     arrange_scene(&mut world, &content);

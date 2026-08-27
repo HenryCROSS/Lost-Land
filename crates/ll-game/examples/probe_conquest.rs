@@ -53,7 +53,13 @@ fn main() {
 
     println!("种子\t战争\t毁灭\t占领\t同族占\t同族毁\t异族占\t异族毁\t查不到\t存活\t废墟\t活人口");
     for seed in seeds {
-        let world = match ll_game::world::build_new_world(&loaded, seed) {
+        let world = match ll_game::world::build_new_world(
+            &loaded,
+            ll_world::generate::GenParams {
+                seed,
+                ..ll_world::generate::GenParams::default()
+            },
+        ) {
             Ok(world) => world,
             Err(err) => {
                 eprintln!("种子 {seed} 建档失败：{err:?}");

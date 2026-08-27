@@ -73,7 +73,14 @@ fn repo_assets() -> PathBuf {
 /// 是同一个世界（NPC 是否物化、物化在哪，取决于种子）。
 fn real_world() -> (LoadedContent, GameWorld) {
     let content = load_content(&repo_mods(), &repo_assets()).expect("真实 mods/ 应当装得起来");
-    let world = build_new_world(&content, 20260826).expect("默认参数应当建得出世界");
+    let world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: 20260826,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("默认参数应当建得出世界");
     (content, world)
 }
 
