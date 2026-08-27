@@ -42,16 +42,64 @@
 //! `RaceDef.xp_reward` 早期状态是同一条既有纪律——先把形状定下来，接
 //! 消费者留给挂载链条真正落地的批次，不假装它已经在装载期之外的任何
 //! 地方生效。
+//!
+//! # 显示名字段：从「呈现层现拼键」改成真字段
+//!
+//! 本表此前**只有** `default_formula` 一个字段。角色面板的规则修正一段
+//! （`ll_ui::hud::character_panel`）落地时要显示「火焰抗性 6」，其中
+//! 「火焰」两个字没有字段可查，于是那一批用了一条约定拼键
+//! （`命名空间:damage_category.路径.display_name`），并在当时就写下代价：
+//! **mod 作者漏在 `locales/` 里补这条键，看到的是键名本身**——因为没有
+//! 任何一处会告诉他这条键该存在。
+//!
+//! 现在 [`DamageCategoryDef::display_name_key`] 是一个真字段：漏写在
+//! 装载期当场报错（serde 缺必填字段），而不是等到玩家打开面板。呈现层
+//! 因此也不再拼键，改成读这个字段——见
+//! `ll_sim::rule_modifier::rule_modifier_displays` 的 `subject_name_key`
+//! 回调。
+//!
+//! 与它并列的 [`crate::weapon_category::WeaponCategoryDef`] **没有**跟着
+//! 加：武器类别至今一个 UI 落点都没有，为了对称给它加一个没人读的字段，
+//! 正是本仓库反复拒绝的「声明了没人读」。
 
 use std::collections::BTreeMap;
 use std::fmt;
 
-use ll_core::ident::ContentIndex;
+use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_sim::damage_category::DamageCategoryCatalog;
 
 /// 伤害类别的注册表条目——「物理」「火」「冰」这一类。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// **不是 `Copy`**：`display_name_key` 是 [`NamespacedId`]（内部持一个
+/// `String`），与 [`crate::recipe_category::RecipeCategoryDef`] 同样只
+/// 派生 `Clone`。这条差别是随显示名字段一起来的，没有别处依赖过本类型
+/// 的 `Copy`。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DamageCategoryDef {
+    /// 指向 Fluent 本地化键，不存字面字符串——与
+    /// [`crate::recipe_category::RecipeCategoryDef::display_name_key`]
+    /// 同一条纪律，形状也逐字相同（`命名空间:damage_category.路径.display_name`
+    /// 是本体两条的写法，但**这只是本体的约定，不是本字段的格式要求**：
+    /// 内容作者写什么键，呈现层就查什么键）。
+    ///
+    /// # 为什么它现在存在，而 `WeaponCategoryDef` 仍然没有
+    ///
+    /// [`crate::recipe_category`] 模块文档「与那两张表的两处不同」一节
+    /// 当初写下「武器/伤害类别至今没有任何 UI 落点，所以它们没有这个
+    /// 字段」——**这句话对伤害类别已经不成立**：角色面板的规则修正一段
+    /// 要显示「火焰抗性 6」，其中「火焰」两个字就是本字段。武器类别
+    /// 至今仍然没有任何 UI 落点，因此那一半照旧不加。
+    ///
+    /// # 为什么是必填，不是 `Option`
+    ///
+    /// 本仓库全部十来处 `display_name_key` 都是必填的 [`NamespacedId`]
+    /// （`ItemDef`/`RaceDef`/`ClassDef`/`RecipeDef`/`RecipeCategoryDef`
+    /// …），照最一致的那个做。代价与收益是同一件事：mod 作者**漏写
+    /// 字段会在装载期当场报错**，而不是等到玩家打开角色面板才看见一行
+    /// 键名——这正是本字段替换掉「呈现层按约定现拼键」那条旧做法要买
+    /// 到的东西。
+    pub display_name_key: NamespacedId,
+
     /// 这个伤害类别没有被具体分项覆盖时使用的默认公式（十九节，本批次
     /// 不接线，见模块文档「本批次范围」一节）——`None` 表示不声明类别
     /// 默认，继续下探到全局默认。
@@ -176,6 +224,20 @@ mod tests {
         interner.intern(NamespacedId::parse(raw).expect("测试用标识符恒合法"))
     }
 
+    fn key(raw: &str) -> NamespacedId {
+        NamespacedId::parse(raw).expect("测试用标识符恒合法")
+    }
+
+    /// 一条内部自洽的伤害类别定义——测试不关心显示名时用它，避免每处
+    /// 都重复拼一遍必填的 `display_name_key`（同
+    /// [`crate::recipe_category`] 测试里的 `key` 辅助函数）。
+    fn def(display_name: &str) -> DamageCategoryDef {
+        DamageCategoryDef {
+            display_name_key: key(display_name),
+            default_formula: None,
+        }
+    }
+
     #[test]
     fn 定义后可以查到同一条伤害类别() {
         // Arrange
@@ -185,16 +247,14 @@ mod tests {
 
         // Act
         table
-            .define(
-                index,
-                DamageCategoryDef {
-                    default_formula: None,
-                },
-            )
+            .define(index, def("lostland:damage_category.fire.display_name"))
             .expect("首次定义应当成功");
 
         // Assert
-        assert!(table.get(index).is_some());
+        assert_eq!(
+            table.get(index).map(|def| def.display_name_key.to_string()),
+            Some("lostland:damage_category.fire.display_name".to_string())
+        );
         assert!(table.is_defined(index));
     }
 
@@ -205,21 +265,11 @@ mod tests {
         let index = index(&mut interner, "lostland:physical");
         let mut table = DamageCategoryTable::new();
         table
-            .define(
-                index,
-                DamageCategoryDef {
-                    default_formula: None,
-                },
-            )
+            .define(index, def("lostland:damage_category.physical.display_name"))
             .expect("首次定义应当成功");
 
         // Act
-        let result = table.define(
-            index,
-            DamageCategoryDef {
-                default_formula: None,
-            },
-        );
+        let result = table.define(index, def("lostland:damage_category.physical.display_name"));
 
         // Assert
         assert_eq!(result, Err(DamageCategoryError::DuplicateDefinition(index)));

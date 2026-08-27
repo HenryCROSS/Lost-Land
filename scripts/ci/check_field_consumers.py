@@ -338,6 +338,7 @@ EXEMPTIONS: dict[str, str] = {
     # 查表」。两条豁免记的都是这同一条间接路径的两头。
     "ItemDef.tags": "有真实决策层消费者，但路径是间接的：ll_mod::item::ItemTable::add_tag 在**注册期**把这份标签列表折算成 ll_sim::item::ItemRule::wear_channels（一个位掩码），resolve_attack 的「挨打/使用」两条通道与 resolve_craft 的工具磨损读的都是 `.wear_channels`（决策层三处真实点号读取），不是 `.tags` 本身。折算刻意放在注册期而不是结算期：一件物品带哪些标签、每个标签走哪条通道全是装载期就固定的事实，把「遍历标签→逐个查标签表→求并集」搬进每一次攻击 × 每一件已装备物品，正是 ADR 0016/0017 要避免的事。ItemRule 也刻意不携带 tags 原始列表（它是「resolve 需要什么就给什么」的最小视图）。本脚本头注释「已知局限」第 2 条点名的那类间接路径。",
     "TagDef.wear": "同 ItemDef.tags，是同一条间接路径的另一头：这个字段的值在注册期被 do_register_item_tag 读出来喂给 ItemTable::add_tag，折进物品的 wear_channels 派生列；决策层读到的是折算结果，从不对 TagDef 实例做 `.wear` 点号访问。与 RecipeCategoryDef.required_subclasses 那条（经 RecipeCatalog 方法取出、字段读取发生在 ll-mod 的 impl 里）是同一种情形，不是「字段没人读」。",
+    "DamageCategoryDef.display_name_key": "同 WeatherDef.display_name_key：指向 Fluent 本地化键，且有一个真实且已接线的消费者——角色面板的规则修正一段（ll_ui::hud::character_panel）把「火焰抗性 6」里的「火焰」两个字从这个键查出来，装配点在 crates/ll-game/src/app.rs::draw_hud 传给 ll_sim::rule_modifier::rule_modifier_displays 的 subject_name_key 回调。那是表现层不是本门禁定义的决策层，判据上归入「结构性字段」；同时这也是本文件头注释「已知局限」第 2 条那类间接路径（决策层看到的是回调返回的 NamespacedId 局部变量，不会对 DamageCategoryDef 实例做 `.display_name_key` 点号访问）。",
     "DamageCategoryDef.default_formula": "damage_category.rs 模块文档「本批次范围：注册表 + 校验，不接四层默认公式解析链条」一节：resolve_attack 仍然只用 DamageFormulaCatalog 现有的两层（显式引用 → 全局默认），四层解析链条（分项自身 → 伤害类别默认 → 武器类别默认 → 全局默认）依赖尚未落地的 DamageComponent（P6 范畴），此字段声明先行、消费留给后续批次。",
 }
 

@@ -256,7 +256,7 @@ pub fn apply_damage_formulas(
 #[serde(deny_unknown_fields)]
 pub struct DamageCategoryFile {
     /// 伤害类别名册，按书写顺序注册。
-    pub damage_categories: Vec<RawCategory>,
+    pub damage_categories: Vec<RawDamageCategory>,
 }
 
 /// `weapon_categories.json5` 的顶层形状。
@@ -264,14 +264,25 @@ pub struct DamageCategoryFile {
 #[serde(deny_unknown_fields)]
 pub struct WeaponCategoryFile {
     /// 武器类别名册，按书写顺序注册。
-    pub weapon_categories: Vec<RawCategory>,
+    pub weapon_categories: Vec<RawWeaponCategory>,
 }
 
-/// 一条伤害类别或武器类别声明——两者的字段形状逐字相同（id + 可选的
-/// 默认公式），共用一个结构体；写进哪张表由调用的 `apply_*` 决定。
+/// 一条武器类别声明。
+///
+/// # 为什么不再与伤害类别共用一个结构体
+///
+/// 两者此前「字段形状逐字相同（id + 可选的默认公式）」，于是共用
+/// `RawCategory` 一个类型。伤害类别加上必填的 `display_name_key`
+/// （[`ll_mod::damage_category::DamageCategoryDef`] 模块文档「显示名
+/// 字段」一节）之后这句话不再成立：合用一个结构体只剩两条路——把新
+/// 字段做成 `Option` 好让武器类别不填（那就退回了「漏填看到键名」那
+/// 条被替换掉的旧代价），或者逼武器类别也填一个没人读的键。两条都比
+/// 拆成两个结构体差，于是拆。
+///
+/// [`ll_mod::damage_category::DamageCategoryDef`]: crate::damage_category::DamageCategoryDef
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RawCategory {
+pub struct RawWeaponCategory {
     /// 完整命名空间标识符。
     pub id: String,
     /// 这个类别的默认伤害公式，**必须已注册**。整条不写表示没有默认
@@ -280,13 +291,33 @@ pub struct RawCategory {
     pub default_formula: Option<String>,
 }
 
-impl RawCategory {
-    /// 解析可选的默认公式引用——只 get 不 intern，拼错当场报错。
-    fn resolve_default_formula(&self, registry: &Registry) -> Result<Option<ContentIndex>, String> {
-        match self.default_formula.as_deref() {
-            None => Ok(None),
-            Some(raw) => Ok(Some(required_id(registry, raw, "伤害公式")?)),
-        }
+/// 一条伤害类别声明——比 [`RawWeaponCategory`] 多一个必填的
+/// `display_name_key`，理由见后者的文档。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawDamageCategory {
+    /// 完整命名空间标识符。
+    pub id: String,
+    /// 显示名的 Fluent 本地化键，**必填**——落进
+    /// [`crate::damage_category::DamageCategoryDef::display_name_key`]。
+    /// 漏写这一条在这里当场报错（serde 缺必填字段），这正是它替换掉
+    /// 「呈现层按约定现拼键」要买到的东西。
+    pub display_name_key: String,
+    /// 同 [`RawWeaponCategory::default_formula`]。
+    #[serde(default)]
+    pub default_formula: Option<String>,
+}
+
+/// 解析一条可选的默认公式引用——只 get 不 intern，拼错当场报错。
+/// 两个 `Raw*Category` 共用它，这是拆结构体之后仅剩的那点共享逻辑
+/// （ADR 0021：可共享的是算法，不是形状上的对称）。
+fn resolve_default_formula(
+    registry: &Registry,
+    default_formula: Option<&str>,
+) -> Result<Option<ContentIndex>, String> {
+    match default_formula {
+        None => Ok(None),
+        Some(raw) => Ok(Some(required_id(registry, raw, "伤害公式")?)),
     }
 }
 
@@ -294,13 +325,21 @@ impl RawCategory {
 pub fn apply_damage_categories(
     registry: &mut Registry,
     table: &mut DamageCategoryTable,
-    categories: &[RawCategory],
+    categories: &[RawDamageCategory],
 ) -> Applied {
     for category in categories {
-        let default_formula = category.resolve_default_formula(registry)?;
+        let default_formula =
+            resolve_default_formula(registry, category.default_formula.as_deref())?;
+        let display_name_key = parse_id(&category.display_name_key, "本地化键标识符")?;
         let index = intern_id(registry, &category.id, "伤害类别标识符")?;
         table
-            .define(index, DamageCategoryDef { default_formula })
+            .define(
+                index,
+                DamageCategoryDef {
+                    display_name_key,
+                    default_formula,
+                },
+            )
             .map_err(|err: DamageCategoryError| err.to_string())?;
     }
     Ok(())
@@ -310,10 +349,11 @@ pub fn apply_damage_categories(
 pub fn apply_weapon_categories(
     registry: &mut Registry,
     table: &mut WeaponCategoryTable,
-    categories: &[RawCategory],
+    categories: &[RawWeaponCategory],
 ) -> Applied {
     for category in categories {
-        let default_formula = category.resolve_default_formula(registry)?;
+        let default_formula =
+            resolve_default_formula(registry, category.default_formula.as_deref())?;
         let index = intern_id(registry, &category.id, "武器类别标识符")?;
         table
             .define(index, WeaponCategoryDef { default_formula })
@@ -1443,6 +1483,35 @@ pub fn apply_recipes(
 mod tests {
     use super::*;
     use ll_core::ident::NamespacedId;
+
+    #[test]
+    fn 伤害类别的显示名键原样落进表里不被任何约定改写() {
+        // Arrange：键的形状完全由内容作者决定——这一条刻意**不**长成
+        // 本体那副 `命名空间:注册表.路径.display_name` 的样子，装载层
+        // 不该把它改写成任何别的东西。
+        let mut registry = Registry::new();
+        let mut table = DamageCategoryTable::new();
+        let raw = vec![RawDamageCategory {
+            id: "yourmod:acid".to_string(),
+            display_name_key: "yourmod:acid_is_called_this".to_string(),
+            default_formula: None,
+        }];
+
+        // Act
+        apply_damage_categories(&mut registry, &mut table, &raw).expect("这条声明合法");
+
+        // Assert
+        let index = registry
+            .get(&NamespacedId::parse("yourmod:acid").expect("合法标识符"))
+            .expect("注册过就查得到");
+        assert_eq!(
+            table
+                .get(index)
+                .map(|def| def.display_name_key.to_string())
+                .as_deref(),
+            Some("yourmod:acid_is_called_this")
+        );
+    }
 
     /// 造一件除指定字段外全部取默认值的物品声明——三条鉴定相关注册期
     /// 校验共用，避免每条测试各抄一遍十六个字段。

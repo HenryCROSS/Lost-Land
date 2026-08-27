@@ -53,6 +53,16 @@ use crate::damage_category::{DamageCategoryDef, DamageCategoryError, DamageCateg
 /// 本体默认伤害类别的完整命名空间标识符。
 pub const DEFAULT_DAMAGE_CATEGORY_ID: &str = "lostland:physical";
 
+/// 本体默认伤害类别的显示名文案键——与
+/// [`crate::base_weather::register_base_weathers`] 里那几条一样写成字面
+/// 量：引擎侧注册的内容同样要填
+/// [`DamageCategoryDef::display_name_key`]（必填字段），没有本体专属的
+/// 豁免通道。对应的文案在 `assets/locales/*.ftl` 的
+/// `damage_category-physical-display_name`（点号在查表时换成连字符，见
+/// `ll_i18n::to_fluent_id`）。
+pub const DEFAULT_DAMAGE_CATEGORY_DISPLAY_NAME_KEY: &str =
+    "lostland:damage_category.physical.display_name";
+
 /// 本体默认伤害类别注册的唯一入口：`intern` 是外部传入的解析回调，
 /// 理由同 [`crate::base_xp_curve::register_base_xp_curve`] 文档。
 pub fn register_base_damage_category(
@@ -65,6 +75,8 @@ pub fn register_base_damage_category(
     table.define(
         index,
         DamageCategoryDef {
+            display_name_key: NamespacedId::parse(DEFAULT_DAMAGE_CATEGORY_DISPLAY_NAME_KEY)
+                .expect("本体默认类别显示名键字面量恒合法"),
             default_formula: None,
         },
     )?;
@@ -90,6 +102,14 @@ mod tests {
         assert_eq!(
             registry.resolve(index).map(ToString::to_string),
             Some(DEFAULT_DAMAGE_CATEGORY_ID.to_string())
+        );
+        // 显示名键与其余伤害类别走同一个必填字段，引擎侧注册没有豁免。
+        assert_eq!(
+            table
+                .get(index)
+                .map(|def| def.display_name_key.to_string())
+                .as_deref(),
+            Some(DEFAULT_DAMAGE_CATEGORY_DISPLAY_NAME_KEY)
         );
     }
 }

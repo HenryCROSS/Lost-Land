@@ -448,6 +448,25 @@ mod tests {
     }
 
     #[test]
+    fn 伤害类别漏写显示名键在装载期当场失败() {
+        // Arrange & Act：`display_name_key` 是必填的（见
+        // `crate::damage_category` 模块文档「显示名字段」一节）。这条
+        // 断言守的正是那条字段换掉「呈现层按约定现拼键」买到的东西：
+        // 漏写在**这里**报错，而不是等玩家打开角色面板看见一行键名。
+        let (_registry, _dir, result) = load_from(&[(
+            "damage_categories.json5",
+            r#"{ damage_categories: [ { id: "m:acid" } ] }"#,
+        )]);
+
+        // Assert
+        assert!(
+            result.is_err_and(|err| err.message.contains("display_name_key")
+                && err.file.ends_with("damage_categories.json5")),
+            "缺必填字段应当点名字段与文件"
+        );
+    }
+
+    #[test]
     fn 内容文件坏了整个mod失败并点名文件() {
         // Arrange & Act
         let (_registry, dir, result) = load_from(&[("tags.json5", "{ tags: [ { id: 3 } ] }")]);

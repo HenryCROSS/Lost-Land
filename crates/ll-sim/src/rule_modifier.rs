@@ -141,11 +141,48 @@
 //!
 //! 因此方向不由调用点携带，而是集中在 [`strength_key`] 一个**无通配
 //! 分支的穷尽 `match`** 里逐变体声明：新增一个变体而不声明它的方向，
-//! `cargo build` 直接不过。[`cross_type_merge`] 用完全相同的手法声明
-//! 跨类型的合并方式。这与 `ll_mod::content_hash` 的
+//! `cargo build` 直接不过。这与 `ll_mod::content_hash` 的
 //! `ContentTableKind`/`classify_index`「编译期强制穷尽」是同一条手法
 //! （见该模块文档「编译期强制：穷尽解构 tables」一节），只是这次强制
-//! 的对象是「比较方向」与「合并方式」而不是「哈希覆盖面」。
+//! 的对象不是「哈希覆盖面」。
+//!
+//! # 新增一个 `RuleModifier` 变体要改哪三处
+//!
+//! 同一条手法在本模块用了**三次**，三个函数各回答同一个枚举上一个
+//! 互不相干的问题，全部是无通配分支的穷尽 `match`：
+//!
+//! | 函数 | 回答的问题 | 不补分支的后果 |
+//! |---|---|---|
+//! | [`strength_key`] | 同一个加值类型的桶里，哪一条算强？ | 编译不过 |
+//! | [`cross_type_merge`] | 跨加值类型时，几条怎么合成一条？ | 编译不过 |
+//! | [`display_shape`] | 玩家在角色面板上看到什么？ | 编译不过 |
+//!
+//! **这三处必须留在同一个文件里。** 它们之间没有任何可共享的算法，只
+//! 有形状上的对称——按 ADR 0021 这恰恰是不该抽象成「变体元数据表」的
+//! 情形（见 [`display_shape`] 文档同名一节）。它们唯一共有的东西是
+//! 「新增变体时三处都要补」这条纪律，而那条纪律的可见性完全来自
+//! **它们在一起**：拆到三个文件里，编译器仍然会挡住，但下一个人要读
+//! 三个文件才知道自己该改几处。这也是本文件行数远超编码规范 800 行
+//! 上限却不拆的第一条理由（第二条见下节）。
+//!
+//! `display_shape` 之外还要在 `assets/locales/{zh-CN,en}.ftl` 各补一条
+//! 文案——文案本来就不该出现在 Rust 里（规格 §11.3）。呈现层
+//! （`ll_ui::hud::character_panel`）**零改动**：它逐行查表加格式化，一个
+//! `match` 都没有。
+//!
+//! # 为什么这个文件这么长
+//!
+//! 3700 余行里**只有约 550 行是正文代码**：其余是约 1200 行的文档注释
+//! （本模块的每一条裁定都连着它的理由）与约 1900 行的测试。按正文代码
+//! 量排，本文件在 `crates/**/src` 里排不进前五——`ll_sim::resolve`
+//! （约 2260 行正文代码）、`ll_mod::content_audit`（约 1260）、
+//! `ll_mod::content_hash`（约 1000）、`ll_mod::content_schema_gear`
+//! （约 990）、`ll_world::chronicle`（约 730）都在它前面，且同样把
+//! `#[cfg(test)] mod tests` 留在原文件里（本仓库没有一处例外）。
+//!
+//! 换句话说：这个文件长是因为它解释得多、测得多，不是因为它做得多。
+//! 真要按行数拆，能搬走的只有测试模块，而那既没有仓库先例、也不减少
+//! 任何一处认知负担——只是把字节挪到隔壁文件。
 //!
 //! # 热路径（ADR 0016/0017）
 //!
@@ -1466,13 +1503,21 @@ pub struct RuleModifierDisplay {
     /// 主语的文案键（抗性/易伤的伤害类别、制作产出的配方类别、优劣势
     /// 的判定种类），`None` 表示这个变体没有主语。
     ///
-    /// 键由主语所属的开放注册表名与主语标识符拼成，形状与内容表自己
-    /// 声明的 `display_name_key` 一致——例如配方类别 `lostland:forging`
-    /// 拼出 `lostland:recipe_category.forging.display_name`，与
-    /// `mods/lostland/crafting.json5` 里那条 `display_name_key` 逐字
-    /// 相同。伤害类别与判定种类两处**没有**声明显示名字段（见
-    /// `ll_mod::damage_category::DamageCategoryDef`），同一条拼法让它们
-    /// 也有键可查，而不必为了显示一行字去改内容 schema。
+    /// # 内容表里的主语读字段，判定种类拼键
+    ///
+    /// 伤害类别与配方类别都有自己的内容表，两张表各自声明了一个真正的
+    /// `display_name_key` 字段（`ll_mod::damage_category::DamageCategoryDef`
+    /// 与 `ll_mod::recipe_category::RecipeCategoryDef`）——本字段直接
+    /// 装的就是内容作者写进去的那个键，**本层不拼、不猜**。装配点用
+    /// [`rule_modifier_displays`] 的 `subject_name_key` 回调跨过
+    /// 「`ll-sim` 不认识内容表」这条依赖边界。
+    ///
+    /// 判定种类（[`RuleModifier::Advantage`]/[`RuleModifier::Disadvantage`]
+    /// 的 `check_context`）是**唯一**仍然按
+    /// `命名空间:check_context.路径.display_name` 现拼的一处，理由不是
+    /// 省事而是没有别的答案：判定种类不是内容，是引擎侧的开放标识符
+    /// （`ll_sim::check::CheckContext` 那三条 `&'static str` 常量），
+    /// 没有一张表可以读，见 [`subject_key`] 文档。
     pub subject_key: Option<String>,
     /// 数值实参，按 `.ftl` 消息里 `{ $名 }` 的变量名成对给出。
     ///
@@ -1489,23 +1534,40 @@ pub struct RuleModifierDisplay {
 
 /// 主语的原始形式——[`display_shape`] 的内部返回形状，不对外。
 ///
-/// 两个变体的区别只是「主语在枚举里是索引还是标识符」：抗性/易伤/
-/// 制作产出的主语是 [`ContentIndex`]（内容表里的东西），优势/劣势的
-/// 主语是 [`NamespacedId`]（判定种类是开放标识符，没有对应的内容表，
-/// 见 [`RuleModifier::Advantage`] 文档）。两者拼文案键的方式相同，
-/// 只是拿到标识符的路径不同。
+/// 两个变体的区别是「主语背后有没有一张内容表」，不只是「索引还是
+/// 标识符」：
+///
+/// * [`Self::Content`] 的主语在内容表里，那张表自己声明了
+///   `display_name_key`——文案键**读出来**，走
+///   [`rule_modifier_displays`] 的 `subject_name_key` 回调。
+/// * [`Self::Id`] 的主语是判定种类，引擎侧的开放标识符，没有表可读
+///   ——文案键只能**拼出来**，见 [`subject_key`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum DisplaySubject<'a> {
-    /// 内容索引形式的主语，`registry` 是它所属的开放注册表名。
+    /// 内容表里的主语——`registry` 说的是「去哪张表读」。
     Content {
-        registry: &'static str,
+        registry: SubjectRegistry,
         index: ContentIndex,
     },
-    /// 已经是标识符形式的主语，`registry` 同上。
+    /// 判定种类，`registry` 是拼文案键时用的注册表段名。
     Id {
         registry: &'static str,
         id: &'a NamespacedId,
     },
+}
+
+/// 一个主语所属的内容表——[`rule_modifier_displays`] 的
+/// `subject_name_key` 回调靠它决定去哪张表读 `display_name_key`。
+///
+/// 只有两个变体，因为只有两个变体的主语在内容表里（抗性/易伤指伤害
+/// 类别，制作产出指配方类别）。判定种类**刻意不在这里**：它没有表，
+/// 加一个查不到东西的变体只会让回调多一条永远返回 `None` 的分支。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubjectRegistry {
+    /// `ll_mod::damage_category::DamageCategoryTable`。
+    DamageCategory,
+    /// `ll_mod::recipe_category::RecipeCategoryTable`。
+    RecipeCategory,
 }
 
 /// 一条原始声明在面板上的形状——[`display_shape`] 的返回值。
@@ -1543,12 +1605,10 @@ const AMOUNT_ARG: &str = "amount";
 /// 偷袭第二个数值（追加伤害）的 Fluent 实参名。
 const EXTRA_ARG: &str = "extra";
 
-/// 伤害类别在文案键里的注册表段名。
-const DAMAGE_CATEGORY_REGISTRY: &str = "damage_category";
-/// 配方类别在文案键里的注册表段名——与 `mods/lostland/crafting.json5`
-/// 里 `display_name_key` 的中段逐字相同。
-const RECIPE_CATEGORY_REGISTRY: &str = "recipe_category";
-/// 判定种类在文案键里的注册表段名。
+/// 判定种类在文案键里的注册表段名——本模块**唯一**剩下的一条拼键约定，
+/// 理由见 [`subject_key`]。伤害类别与配方类别此前也各有一条同类常量，
+/// 两张表都声明了真正的 `display_name_key` 字段之后它们被删掉了：那两
+/// 处现在读字段，不拼键。
 const CHECK_CONTEXT_REGISTRY: &str = "check_context";
 
 /// 逐变体声明「这条修正在面板上长什么样」——本模块**第三个**逐变体
@@ -1592,7 +1652,7 @@ fn display_shape(modifier: &RuleModifier) -> DisplayShape<'_> {
         } => DisplayShape {
             name_key: RESISTANCE_NAME_KEY,
             subject: Some(DisplaySubject::Content {
-                registry: DAMAGE_CATEGORY_REGISTRY,
+                registry: SubjectRegistry::DamageCategory,
                 index: *damage_category,
             }),
             amounts: vec![(AMOUNT_ARG, *damage_reduction)],
@@ -1604,7 +1664,7 @@ fn display_shape(modifier: &RuleModifier) -> DisplayShape<'_> {
         } => DisplayShape {
             name_key: VULNERABILITY_NAME_KEY,
             subject: Some(DisplaySubject::Content {
-                registry: DAMAGE_CATEGORY_REGISTRY,
+                registry: SubjectRegistry::DamageCategory,
                 index: *damage_category,
             }),
             amounts: vec![(AMOUNT_ARG, *damage_increase)],
@@ -1671,7 +1731,7 @@ fn display_shape(modifier: &RuleModifier) -> DisplayShape<'_> {
         } => DisplayShape {
             name_key: CRAFT_YIELD_NAME_KEY,
             subject: Some(DisplaySubject::Content {
-                registry: RECIPE_CATEGORY_REGISTRY,
+                registry: SubjectRegistry::RecipeCategory,
                 index: *category,
             }),
             amounts: vec![(AMOUNT_ARG, *bonus_product_count)],
@@ -1679,24 +1739,38 @@ fn display_shape(modifier: &RuleModifier) -> DisplayShape<'_> {
     }
 }
 
-/// 把一个主语拼成文案键：`命名空间:注册表.路径.display_name`。
+/// 求一个主语的文案键。
 ///
-/// 返回 `None` 只可能是索引在 `resolve_id` 里查不到——那意味着这条修正
-/// 引用了一个不存在的内容索引，装载期本不该放过。此时调用方跳过整行，
-/// 而不是显示一个半截的主语。
+/// # 两条来路，不是两种拼法
+///
+/// * [`DisplaySubject::Content`]：**读**内容表声明的
+///   `display_name_key`，`subject_name_key` 回调负责跨过依赖边界去查
+///   那张表。本层对键长什么样没有任何要求——内容作者写
+///   `examplemod:damage_category_acid_display_name` 也好、写
+///   `examplemod:酸.名` 也好，原样交给 `Catalog::resolve`。
+/// * [`DisplaySubject::Id`]：**拼** `命名空间:check_context.路径.display_name`。
+///   判定种类是引擎侧的开放标识符（`crate::check::CheckContext`），
+///   没有内容表可读，而内容作者可以在 `check_context` 字段里写任何
+///   标识符（[`RuleModifier::Advantage`] 文档：「指向别的标识符不是
+///   错误」），所以这里除了按约定拼一条键没有别的答案。这条约定的
+///   代价照旧：`.ftl` 里漏了这条键，面板上显示的是键名本身。
+///
+/// 返回 `None` 表示这一行没有可显示的主语——内容索引查不到定义（装载期
+/// 本不该放过）。此时调用方跳过整行，而不是显示一个半截的主语。
 fn subject_key(
     subject: DisplaySubject<'_>,
-    resolve_id: &dyn Fn(ContentIndex) -> Option<NamespacedId>,
+    subject_name_key: &dyn Fn(SubjectRegistry, ContentIndex) -> Option<NamespacedId>,
 ) -> Option<String> {
-    let (registry, id) = match subject {
-        DisplaySubject::Content { registry, index } => (registry, resolve_id(index)?),
-        DisplaySubject::Id { registry, id } => (registry, id.clone()),
-    };
-    Some(format!(
-        "{}:{registry}.{}.display_name",
-        id.namespace(),
-        id.path()
-    ))
+    match subject {
+        DisplaySubject::Content { registry, index } => {
+            Some(subject_name_key(registry, index)?.to_string())
+        }
+        DisplaySubject::Id { registry, id } => Some(format!(
+            "{}:{registry}.{}.display_name",
+            id.namespace(),
+            id.path()
+        )),
+    }
 }
 
 /// 一行的身份：文案键 + 主语键。同一个变体、同一个主语的全部声明合成
@@ -1705,10 +1779,19 @@ type DisplayRowKey = (&'static str, Option<String>);
 
 /// 把一份规则修正清单折叠成角色面板要显示的若干行。
 ///
-/// `resolve_id` 把内容索引还原成标识符（本体里就是
-/// `ll_mod::registry::Registry::resolve`）——本层不持有注册表，用回调
-/// 跨这条边界是本仓库的既有写法，见
+/// `subject_name_key` 回答「这张表的这一条，显示名文案键是什么」——本体
+/// 里就是从 `ll_mod::damage_category::DamageCategoryTable` /
+/// `ll_mod::recipe_category::RecipeCategoryTable` 里取出那条内容自己
+/// 声明的 `display_name_key`。本层不持有内容表，用回调跨这条依赖边界
+/// 是本仓库的既有写法，见
 /// `ll_mod::base_damage_category::register_base_damage_category`。
+///
+/// 它**替代**了此前那个 `resolve_id: Fn(ContentIndex) -> NamespacedId`
+/// 回调：那一版拿索引还原出的是内容**自己的 id**（`lostland:fire`），
+/// 再按约定拼成一条文案键。约定拼键的代价写在
+/// `ll_mod::damage_category` 模块文档里——mod 作者没有任何提示知道该在
+/// `locales/` 补哪条键，漏了就在面板上看到键名本身。现在键是内容表里
+/// 的真字段，漏写在装载期就报错。
 ///
 /// # 行的顺序是确定的
 ///
@@ -1738,7 +1821,7 @@ type DisplayRowKey = (&'static str, Option<String>);
 /// [`merged_across_types`] 拆开重写一个批量版本。
 pub fn rule_modifier_displays(
     modifiers: &[RuleModifierEntry],
-    resolve_id: &dyn Fn(ContentIndex) -> Option<NamespacedId>,
+    subject_name_key: &dyn Fn(SubjectRegistry, ContentIndex) -> Option<NamespacedId>,
 ) -> Vec<RuleModifierDisplay> {
     // 第一趟：分组、数原始声明条数、记下这一组的实参名。实参名逐变体
     // 固定，同一组每条都一样，取第一条的即可。
@@ -1748,10 +1831,10 @@ pub fn rule_modifier_displays(
         let key = match shape.subject {
             None => None,
             Some(subject) => {
-                let Some(resolved) = subject_key(subject, resolve_id) else {
+                let Some(resolved) = subject_key(subject, subject_name_key) else {
                     tracing::warn!(
                         name_key = shape.name_key,
-                        "规则修正的主语索引查不到标识符，本行跳过" // i18n-exempt：面向开发者的诊断信息，不是玩家会看到的文本
+                        "规则修正的主语索引在内容表里查不到显示名键，本行跳过" // i18n-exempt：面向开发者的诊断信息，不是玩家会看到的文本
                     );
                     continue;
                 };
@@ -1773,7 +1856,7 @@ pub fn rule_modifier_displays(
                 }
                 let candidate = match shape.subject {
                     None => None,
-                    Some(subject) => subject_key(subject, resolve_id),
+                    Some(subject) => subject_key(subject, subject_name_key),
                 };
                 if candidate != row_subject_key {
                     return None;
@@ -3301,10 +3384,31 @@ mod tests {
         assert_eq!(damage_after_resistance(10, reduction, increase), 12);
     }
 
-    /// 测试用帮手：把 `Interner` 包成 `rule_modifier_displays` 要的
-    /// 还原回调——本体里这一层是 `ll_mod::registry::Registry::resolve`。
-    fn resolver(interner: &Interner) -> impl Fn(ContentIndex) -> Option<NamespacedId> + '_ {
-        |index| interner.resolve(index).cloned()
+    /// 测试用帮手：把 `Interner` 包成 [`rule_modifier_displays`] 要的
+    /// 显示名键回调。
+    ///
+    /// **这是夹具，不是生产规则。** 真实装载路径里这个回调从内容表里
+    /// **读** `display_name_key` 字段（`ll_mod::damage_category::DamageCategoryDef`
+    /// 与 `ll_mod::recipe_category::RecipeCategoryDef`，装配点在
+    /// `ll_game::app::draw_hud`）。单元测试里没有内容表，于是照
+    /// `mods/lostland` 那几条**实际声明**的键的形状现造一条同形的键
+    /// ——下面各条断言里的期望值因此与真实内容逐字相同。
+    fn name_keys(
+        interner: &Interner,
+    ) -> impl Fn(SubjectRegistry, ContentIndex) -> Option<NamespacedId> + '_ {
+        |registry, index| {
+            let id = interner.resolve(index)?;
+            let table = match registry {
+                SubjectRegistry::DamageCategory => "damage_category",
+                SubjectRegistry::RecipeCategory => "recipe_category",
+            };
+            NamespacedId::parse(&format!(
+                "{}:{table}.{}.display_name",
+                id.namespace(),
+                id.path()
+            ))
+            .ok()
+        }
     }
 
     /// 测试用帮手：取某一行的某个数值实参。
@@ -3379,7 +3483,7 @@ mod tests {
         ];
 
         // Act
-        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+        let displays = rule_modifier_displays(&modifiers, &name_keys(&interner));
 
         // Assert：九行，且文案键两两不同——文案键就是「哪个变体」的
         // 身份，撞车会让两个变体在面板上合成一行。
@@ -3409,7 +3513,7 @@ mod tests {
         ];
 
         // Act
-        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+        let displays = rule_modifier_displays(&modifiers, &name_keys(&interner));
 
         // Assert
         assert_eq!(displays.len(), 1);
@@ -3440,7 +3544,7 @@ mod tests {
         ];
 
         // Act
-        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+        let displays = rule_modifier_displays(&modifiers, &name_keys(&interner));
 
         // Assert
         assert_eq!(displays.len(), 1);
@@ -3451,9 +3555,10 @@ mod tests {
     #[test]
     fn 主语键与内容表自己声明的显示名键逐字相同() {
         // Arrange：`mods/lostland/crafting.json5` 里锻造那条写的是
-        // `display_name_key: "lostland:recipe_category.forging.display_name"`
-        // ——本层拼出来的必须与它一字不差，否则面板查的是另一条不存在
-        // 的键，玩家看到的是键名本身。
+        // `display_name_key: "lostland:recipe_category.forging.display_name"`，
+        // `mods/lostland/damage_categories.json5` 里火那条写的是
+        // `"lostland:damage_category.fire.display_name"`——面板拿到的必须
+        // 就是这两条，否则查的是另一条不存在的键，玩家看到键名本身。
         let mut interner = Interner::new();
         let source = index(&mut interner, "testmod:source");
         let forging = index(&mut interner, "lostland:forging");
@@ -3470,7 +3575,7 @@ mod tests {
         ];
 
         // Act
-        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+        let displays = rule_modifier_displays(&modifiers, &name_keys(&interner));
 
         // Assert
         let craft = displays
@@ -3506,7 +3611,7 @@ mod tests {
         )];
 
         // Act
-        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+        let displays = rule_modifier_displays(&modifiers, &name_keys(&interner));
 
         // Assert
         assert_eq!(displays.len(), 1);
@@ -3544,7 +3649,7 @@ mod tests {
         ];
 
         // Act
-        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+        let displays = rule_modifier_displays(&modifiers, &name_keys(&interner));
         let rule = sneak_attack_rule(&modifiers).expect("有声明就有规则");
 
         // Assert
@@ -3568,7 +3673,7 @@ mod tests {
         ];
 
         // Act
-        let displays = rule_modifier_displays(&modifiers, &resolver(&interner));
+        let displays = rule_modifier_displays(&modifiers, &name_keys(&interner));
 
         // Assert
         assert_eq!(displays.len(), 2);
@@ -3596,8 +3701,8 @@ mod tests {
         let backward = vec![entry(source, craft), entry(source, resistance(fire, 3))];
 
         // Act
-        let left = rule_modifier_displays(&forward, &resolver(&interner));
-        let right = rule_modifier_displays(&backward, &resolver(&interner));
+        let left = rule_modifier_displays(&forward, &name_keys(&interner));
+        let right = rule_modifier_displays(&backward, &name_keys(&interner));
 
         // Assert
         assert_eq!(left, right);
@@ -3616,12 +3721,14 @@ mod tests {
             entry(source, resistance(orphan, 99)),
         ];
 
-        // Act：还原回调对 `orphan` 交白卷，其余照常。
-        let displays = rule_modifier_displays(&modifiers, &|index| {
+        // Act：回调对 `orphan` 交白卷（模拟「这条索引在内容表里查不到
+        // 定义」），其余照常。
+        let lookup = name_keys(&interner);
+        let displays = rule_modifier_displays(&modifiers, &|registry, index| {
             if index == orphan {
                 None
             } else {
-                interner.resolve(index).cloned()
+                lookup(registry, index)
             }
         });
 
@@ -3634,12 +3741,66 @@ mod tests {
     }
 
     #[test]
+    fn 主语键完全由内容决定不受任何拼键约定约束() {
+        // Arrange：本仓库本体的键碰巧都长成
+        // `命名空间:注册表.路径.display_name`，那只是本体的写法。本测试
+        // 的回调返回一条**刻意不按那个形状**的键——这正是「读字段」与
+        // 「按约定现拼」的可观测差别：旧实现会从 `yourmod:acid` 拼出
+        // `yourmod:damage_category.acid.display_name`，与内容作者真正
+        // 声明的键对不上，面板于是显示键名本身。
+        let mut interner = Interner::new();
+        let source = index(&mut interner, "yourmod:vial");
+        let acid = index(&mut interner, "yourmod:acid");
+        let declared = "yourmod:acid_is_called_this";
+        let modifiers = vec![entry(source, resistance(acid, 4))];
+
+        // Act
+        let displays = rule_modifier_displays(&modifiers, &|registry, index| {
+            assert_eq!(registry, SubjectRegistry::DamageCategory);
+            assert_eq!(index, acid);
+            Some(NamespacedId::parse(declared).expect("测试用标识符恒合法"))
+        });
+
+        // Assert
+        assert_eq!(displays.len(), 1);
+        assert_eq!(displays[0].subject_key.as_deref(), Some(declared));
+    }
+
+    #[test]
+    fn 判定种类没有内容表因此仍然按约定拼键() {
+        // Arrange：优势/劣势的 `check_context` 是引擎侧的开放标识符
+        // （`crate::check::CheckContext`），内容作者可以写任何标识符，
+        // 没有一张表能读——这是本模块仅剩的一处拼键，见 `subject_key`
+        // 文档。回调在这条路径上**一次都不会被调用**。
+        let mut interner = Interner::new();
+        let source = index(&mut interner, "testmod:cloak");
+        let modifiers = vec![entry(
+            source,
+            RuleModifier::Advantage {
+                check_context: NamespacedId::parse("yourmod:haggling").expect("测试用标识符恒合法"),
+            },
+        )];
+
+        // Act
+        let displays = rule_modifier_displays(&modifiers, &|_registry, _index| {
+            panic!("判定种类不查内容表")
+        });
+
+        // Assert
+        assert_eq!(displays.len(), 1);
+        assert_eq!(
+            displays[0].subject_key.as_deref(),
+            Some("yourmod:check_context.haggling.display_name")
+        );
+    }
+
+    #[test]
     fn 一条修正都没有时一行都不产出() {
         // Arrange
         let interner = Interner::new();
 
         // Act
-        let displays = rule_modifier_displays(&[], &resolver(&interner));
+        let displays = rule_modifier_displays(&[], &name_keys(&interner));
 
         // Assert：空表——「无」那一行是呈现层的事，不是本层的事。
         assert!(displays.is_empty());

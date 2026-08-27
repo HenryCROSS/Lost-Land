@@ -732,7 +732,28 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// `资源大类不同的两条资源摘要不同`，以及版本 7 那次事故之后立下的
 /// 那条纪律——**提交信息声称改了，不等于代码里真的改了**，下面这一行
 /// 的字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 24;
+///
+/// ---
+///
+/// # 版本 24（伤害类别显示名字段）
+///
+/// **既有表新增一个字段**：[`crate::damage_category::DamageCategoryDef`]
+/// 多了 `display_name_key`，[`write_damage_category_fields`] 因此多混入
+/// 一条 `NamespacedId`。这是版本 9/13 那一类（不是「新增一张表」）：
+/// **同一份内容在新旧两版算法下的摘要不同**，因为伤害类别的字节流从
+/// 「一个 optional 公式引用」变成「一条本地化键 + 一个 optional 公式
+/// 引用」。按 ADR 0027 必须递增。
+///
+/// 这一批不新增内容表，`check_content_hash_gate_cross_coverage` 那条
+/// 互校无事可做（`CONTENT_HASH_KIND_TO_TARGET_TYPE` 里
+/// `DamageCategory` → `DamageCategoryDef` 早已存在）；
+/// `scripts/ci/check_field_consumers.py` 侧新增的是一条 `EXEMPTIONS`
+/// （新字段的消费者在呈现层而非决策层，同 `WeatherDef.display_name_key`）。
+///
+/// **版本 25**：上面两批（资源大类字段、伤害类别显示名字段）各自
+/// 独立开发时都写成 24，合并后两批的哈希输入同时存在，量尺与任一
+/// 单批都不同，因此必须是 25。版本号是单调标记不是计数器。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 25;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -2125,6 +2146,13 @@ fn write_weapon_category_fields(
 
 /// 混入 [`crate::damage_category::DamageCategoryDef`] 的全部字段
 /// （伤害类别/抗性接线批次新增），理由同 [`write_weapon_category_fields`]。
+///
+/// `display_name_key` 是**版本 24 新增的哈希输入**（此前本表只有
+/// `default_formula` 一个字段）——写法与
+/// [`write_recipe_category_fields`] 逐字相同：字面 `NamespacedId`，
+/// 不经 `registry` 解析，直接混入。它进摘要的理由同本文件顶部
+/// 「`display_name_key` 也混入」那条既有判断：本地化键换了值，玩家看到
+/// 的名字就换了，那是内容真的变了。
 fn write_damage_category_fields(
     hasher: &mut StateHasher,
     table: &DamageCategoryTable,
@@ -2134,6 +2162,7 @@ fn write_damage_category_fields(
     let def = table
         .get(index)
         .expect("调用方已确认 classify_index 判定为 DamageCategory，get 必返回 Some");
+    hasher.write_namespaced_id(&def.display_name_key);
     write_optional_resolved(hasher, def.default_formula, registry);
 }
 

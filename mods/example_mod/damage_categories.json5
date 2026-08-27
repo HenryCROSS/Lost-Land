@@ -9,6 +9,11 @@
       // 酸蚀：没有默认公式，携带它的武器各自声明（见 items.json5 的
       // acid_dagger）。
       id: "examplemod:acid",
+      // 显示名键是必填的（见 crates/ll-mod/src/damage_category.rs 模块
+      // 文档「显示名字段」一节）。键名照本 mod 其余几处的扁平写法
+      // （crafting.json5 的 recipe_category_*_display_name）——形状由内容
+      // 作者自己定，引擎只把它原样交给 Catalog::resolve。
+      display_name_key: "examplemod:damage_category_acid_display_name",
     },
   ],
 }

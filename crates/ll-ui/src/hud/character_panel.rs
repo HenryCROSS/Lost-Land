@@ -863,7 +863,7 @@ mod tests {
     /// 测试用帮手：九个变体各来一条，走真实的
     /// [`ll_sim::rule_modifier::rule_modifier_displays`] 折成面板行。
     fn all_variant_displays() -> Vec<RuleModifierDisplay> {
-        use ll_core::ident::{Interner, NamespacedId};
+        use ll_core::ident::{ContentIndex, Interner, NamespacedId};
         use ll_sim::rule_modifier::{RuleModifier, RuleModifierEntry, rule_modifier_displays};
 
         let mut interner = Interner::new();
@@ -911,7 +911,26 @@ mod tests {
                 bonus_product_count: 1,
             }),
         ];
-        rule_modifier_displays(&modifiers, &|index| interner.resolve(index).cloned())
+        // 主语的显示名文案键：真实装载路径里它是内容表里的字段（见
+        // `ll_mod::damage_category::DamageCategoryDef::display_name_key`
+        // 与 `ll_mod::recipe_category::RecipeCategoryDef::display_name_key`）,
+        // 装配点在 `ll_game::app::draw_hud`。这里逐条写死成 `mods/lostland`
+        // 实际声明的那三条键——下面那条断言要验的正是「这些键在真实
+        // `.ftl` 里都查得到」，键写错了断言就没有意义。
+        //
+        // 回调忽略 `registry`：本测试的三个索引来自同一个 `Interner`，
+        // 彼此互不相同，一张表就够；生产实现按表分流，见 `draw_hud`。
+        let name_keys: BTreeMap<ContentIndex, NamespacedId> = [
+            (fire, "lostland:damage_category.fire.display_name"),
+            (physical, "lostland:damage_category.physical.display_name"),
+            (forging, "lostland:recipe_category.forging.display_name"),
+        ]
+        .into_iter()
+        .map(|(index, raw)| (index, NamespacedId::parse(raw).expect("测试用标识符恒合法")))
+        .collect();
+        rule_modifier_displays(&modifiers, &|_registry, index| {
+            name_keys.get(&index).cloned()
+        })
     }
 
     #[test]
