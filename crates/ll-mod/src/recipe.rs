@@ -389,6 +389,24 @@ impl RecipeTable {
         found
     }
 
+    /// 已注册的**全部**配方，按索引升序（约束 C5）。
+    ///
+    /// 与 [`Self::in_category`] 同一个手法、同一条排序理由，只是不带
+    /// 类别过滤。存在的理由是制作菜单要列出「一共有哪些配方可选」——
+    /// 那块菜单不按类别分页（本体一共十来条配方，分页只会多一层要按
+    /// 的键），因此需要一条不带类别参数的枚举入口。
+    ///
+    /// **排序键是 `ContentIndex` 而不是注册顺序**：后者是装载顺序,会
+    /// 随 mod 集合与装载次序变化,把它端到玩家眼前意味着"换一个 mod
+    /// 顺序,菜单第三条就变成别的东西",正是约束 C5 要防的那类不确定
+    /// 顺序（这里落在**显示顺序**上,不是逻辑判断,但玩家按的是"第几
+    /// 条",显示顺序在这一刻就是逻辑输入）。
+    pub fn defined_indices(&self) -> Vec<ContentIndex> {
+        let mut found = self.defined_ids.clone();
+        found.sort_by_key(ContentIndex::get);
+        found
+    }
+
     /// 给定的配方索引当前是否已经登记过属性。
     pub fn is_defined(&self, recipe: ContentIndex) -> bool {
         self.defined

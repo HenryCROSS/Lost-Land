@@ -230,6 +230,52 @@ pub struct GroundItemStack {
     /// 尸体内容物是真正影响玩法（搜刮）的数据，缺席 `hash()` 会重演
     /// "新字段只加了，没人测过它是否被正确覆盖"的既有判据缺口。
     pub contents: Vec<ItemStack>,
+    /// 这一堆是**放置**在这里的，还是**躺**在这里的。
+    ///
+    /// # 项目所有者的裁定
+    ///
+    /// > 家具如果是放置在那个地方，那物品就无法被丢在那，但是如果家具
+    /// > 作为一个物品而不是放置状态，就会和其他物品被丢在同一个地方
+    ///
+    /// 也就是说「家具」有两种状态，而这两种状态是**同一件东西的两种
+    /// 摆法**，不是两种东西：
+    ///
+    /// - `placed == true`：立起来了。它**独占这一格**——别的东西丢不
+    ///   进来（`ll_sim::resolve` 的 `resolve_drop`/`resolve_place` 的
+    ///   前置），也不会随时间老化（见
+    ///   [`crate::state::WorldState::cleanup_aged_ground_items`]），并且
+    ///   可以当制作配方的场地（`resolve_craft` 第 ⑤ 步）。
+    /// - `placed == false`：就是一堆普通地面物品，和铁锭、箭矢一样，
+    ///   可以和别的东西堆在同一格，会老化，当不了场地。
+    ///
+    /// # 为什么必须进世界状态，不能像 `permanent` 那样从内容派生
+    ///
+    /// ADR 0009「默认派生，只存偏差」拦下过一个 `permanent: bool` 字段
+    /// （见 `cleanup_aged_ground_items` 文档里那一段），理由是「永不
+    /// 老化」永远等于 `ItemDef.furniture`，存副本只会制造第二真相源。
+    ///
+    /// **本字段不适用那条理由**：同一件炉子躺着还是立着，是玩家在某个
+    /// 时刻做出的选择，不是它的定义决定的——`ItemDef.furniture` 只回答
+    /// 「这东西**能不能**被放置」，回答不了「它**现在**放没放」。一个
+    /// 派生不出来的量必须存，因此它进世界状态、进存档、进 `hash()`、进
+    /// `ll_content::remap`，与 `contents` 同一条纪律。
+    ///
+    /// # 为什么是 `bool` 而不是「放置朝向/放置者」之类更富的结构
+    ///
+    /// 今天没有任何消费者需要朝向或放置者（YAGNI）。真需要时，把它换成
+    /// 一个 `Option<Placement>` 结构体是一次局部改动：全部读取点都只问
+    /// 「放没放」这一个问题。
+    ///
+    /// # 为什么不是给 `WorldState` 开第二张「已放置家具」表
+    ///
+    /// 那张表会把地面物品的每一样机制都逼着抄第二遍——拾取、序列化、
+    /// `hash()`、`remap`、坐标归一化。ADR 0021 这条是双向的：它拦「看
+    /// 起来该对称就抽象」，同样拦「把同一个算法抄两遍」。一格至多一件
+    /// 放置物这条不变式因此由结算层维持（`resolve_place` 的前置），不
+    /// 由存储结构强制——与 `ItemStack::count` 恒 ≥ 1 由容器维持、不由
+    /// 类型强制是同一条既有取舍。
+    #[serde(default)]
+    pub placed: bool,
 }
 
 /// 单个装备槽位——[`SlotMask`] 的一个具体位，也是
@@ -984,6 +1030,7 @@ mod tests {
             stack: ItemStack::new(arrow_def, 5),
             dropped_at: Tick(123),
             contents: Vec::new(),
+            placed: false,
         };
 
         // Act
@@ -1012,6 +1059,7 @@ mod tests {
                 ItemStack::new(sword_def, 1),
                 ItemStack::with_durability(sword_def, 1, 30),
             ],
+            placed: false,
         };
 
         // Act

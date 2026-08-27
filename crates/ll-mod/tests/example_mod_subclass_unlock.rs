@@ -345,9 +345,11 @@ fn cook_then_abandon_then_forge(handle: &RealModsHandle, abandon: bool) -> Agent
         ],
         Vec::new(),
     );
-    // 锻造那条配方要求脚下摆着便携铁砧并装备战锤，见
+    // 锻造那条配方要求脚下**立着**便携铁砧并装备战锤，见
     // mods/example_mod/crafting.json5 配方②。家具层批次前这里刷的是
-    // 熔岩地板——场地现在是一件摆在地上的家具，不是地形。
+    // 熔岩地板（场地曾经是地形）；家具放置状态批次之后，场地是一件
+    // `placed: true` 的地面物品——躺着的同一件东西当不了场地，见
+    // `ll_sim::resolve` 的 `resolve_craft` 文档「场地是脚下立着的那一件」。
     let pos = world.actors.get(crafter).expect("刚生成").pos;
     assert!(world.terrain_at(pos).is_some(), "脚下这一格必须已常驻");
     world.ground_items.push(ll_world::item::GroundItemStack {
@@ -355,6 +357,7 @@ fn cook_then_abandon_then_forge(handle: &RealModsHandle, abandon: bool) -> Agent
         stack: ItemStack::new(handle.portable_anvil, 1),
         dropped_at: world.clock,
         contents: Vec::new(),
+        placed: true,
     });
     {
         let agent = world.actors.get_mut(crafter).expect("刚生成");

@@ -157,24 +157,94 @@ pub enum Intent {
         /// 目标持续的 tick 数。
         target_ticks: u32,
     },
-    /// 拾取脚下地面上的一堆物品（P6 第二批：背包与地面物品）。
+    /// 拾取脚下地面上**指定的那一堆**物品（P6 第二批：背包与地面
+    /// 物品；家具放置状态批次给它加上了 `def`）。
     ///
-    /// # 为什么不指定要捡哪一种（对比 `Intent::Drop` 的 `def`）
+    /// # 为什么带 `def`（此前是 `PickUp { actor }`）
     ///
-    /// 与 [`Intent::OpenDoor`]/[`Intent::EnterSpace`] 同一条纪律：只携带
-    /// 「想干什么」这条裸请求,不做任何合法性判断——脚下有没有东西、
-    /// 捡起来之后要不要跟背包已有的堆合并,全部留给 `resolve`
-    /// （`crate::resolve::resolve_pick_up`）结合 `WorldState` 现算。
-    /// 不要求调用方指定 `def` 是刻意的：捡东西的人事先并不知道地上
-    /// 那堆到底是什么（不像 `Intent::Drop`——玩家丢东西时看的是自己
-    /// 背包里已知的物品列表）。若同一格恰好有多堆不同种类的物品,
-    /// `resolve_pick_up` 按 [`ll_world::state::WorldState::ground_items`]
-    /// 的存储顺序取第一条——多堆选择 UI 不在本批次范围内,与
-    /// `Intent::EnterSpace` 「同一格多入口的选择 UI 不在本次重写范围内」
-    /// 同一条既有先例。
+    /// 本变体最初刻意**不**指定捡哪一种，理由写的是「捡东西的人事先并
+    /// 不知道地上那堆到底是什么」，由 `resolve_pick_up` 取脚下第一条非
+    /// 容器堆，并注明「多堆选择 UI 不在本批次范围内」。
+    ///
+    /// 项目所有者的裁定推翻了它：
+    ///
+    /// > 玩家互动的时候应该是显示一个列表让玩家选择捡起哪个，而 npc 则
+    /// > 是根据他需要的捡起来
+    ///
+    /// 玩家看列表选，NPC 按需要挑——**两侧都由发起者指定捡哪一个**，
+    /// 没有任何一侧需要「引擎替我挑第一条」。于是这里回到与
+    /// [`Intent::EnterSpace`] 的 `target`、[`Intent::Drop`] 的 `def` 完全
+    /// 一致的形状：`Intent` 只携带「想干什么、对哪一个」，合法性判断
+    /// （脚下有没有这一堆、是不是容器、捡起来要不要合并）仍然全部留给
+    /// `resolve`（[`crate::resolve`] 的 `resolve_pick_up`）。
+    ///
+    /// 列表本身由持有菜单的那一层建（`ll_game::player_action`），顺序
+    /// 确定（约束 C5）——同一个存档同一格，两次打开列表的顺序必须一致，
+    /// 否则回放与存档一致性都会碎。
+    ///
+    /// # 键位产出者
+    ///
+    /// 拾取键（`ll_platform::input::GameKey::PickUp`）：脚下只有一堆时
+    /// 直接提交，有多堆时先弹一块选择菜单，见 `ll_game::player_action`
+    /// 模块文档。
+    ///
+    /// # NPC 那一侧还没有实现，如实标注
+    ///
+    /// 本仓库今天没有任何 NPC 拾取行为（引擎自带的行为树只产出
+    /// `Move`/`Wait`/`Attack`/`UseSkill`/`Inspect`）。新形状让「按自己
+    /// 的需要挑」这件事**表达得出来**，但那条判断逻辑本身还不存在。
     PickUp {
         /// 发起者，捡到它自己的背包里。
         actor: EntityId,
+        /// 从哪一格上捡，未经归一化——见模块文档「为什么 `pos` 用裸
+        /// 元组」一节。
+        ///
+        /// # 为什么不再恒是「脚下」
+        ///
+        /// 项目所有者定的交互形状是「按空格 → 扫一圈 → 选一格 → 选这
+        /// 格上的哪一样」，那一圈包含相邻格；若拾取仍然只认脚下，方向
+        /// 列表里选中一个相邻格之后能做的事就是零，整条交互是死的。
+        ///
+        /// 够得着的范围由 `crate::resolve` 判（`INTERACT_REACH`，切比
+        /// 雪夫距离 1，即「伸手够得着的一圈」），不由本变体校验——与
+        /// `Intent` 一贯「只携带裸请求，不做合法性判断」的纪律一致。
+        pos: (i32, i32),
+        /// 要捡那一格上哪一种东西——由发起者（玩家的选择菜单 / NPC 的
+        /// 判断逻辑）给出，见本变体文档「为什么带 `def`」一节。
+        def: ContentIndex,
+    },
+    /// 把背包里的某件可放置物**立**在脚下这一格（家具放置状态批次）。
+    ///
+    /// # 为什么这是一个独立的意图，不是「丢一件家具」
+    ///
+    /// 家具层那一批把两者合成了一条：丢一件带 `ItemDef.furniture` 的
+    /// 东西就等于放置它。项目所有者的裁定推翻了这个形状：
+    ///
+    /// > 家具如果是放置在那个地方，那物品就无法被丢在那，但是如果家具
+    /// > 作为一个物品而不是放置状态，就会和其他物品被丢在同一个地方
+    ///
+    /// 关键在后半句：**一件没被放置的家具就是普通物品**。既然同一件
+    /// 东西可以躺着也可以立着，「躺着还是立着」就不可能由它的定义决定
+    /// ——只能由玩家这一次想做哪个动作决定。两个动作，两个意图。
+    ///
+    /// 这不违反 ADR 0021：本变体与 [`Intent::Drop`] 共用的那部分（从
+    /// 背包里摘一堆、往地上放一条）本来就在共用同一组 `Effect`
+    /// （`RemoveFromInventory` + `AddGroundItem`），没有任何算法被复制；
+    /// 分开的是**前置判定**，而那两套前置本就不同（丢只问这格立没立着
+    /// 东西，放置还要问这东西能不能立、这层能不能建、这地形挡不挡）。
+    ///
+    /// # 键位产出者
+    ///
+    /// 背包菜单里的放置键（`ll_platform::input::GameKey::Place`），见
+    /// `ll_game::player_action` 模块文档。
+    Place {
+        /// 发起者，从它的背包里取。
+        actor: EntityId,
+        /// 要立起来的那一种东西，指向内容注册表。能不能立由
+        /// `ll_mod::item::ItemDef::furniture` 回答，**不由本变体校验**
+        /// ——与 `Intent` 一贯「只携带裸请求，不做合法性判断」的纪律
+        /// 一致，判定在 `crate::resolve` 的 `resolve_place`。
+        def: ContentIndex,
     },
     /// 把背包里的某种物品整堆丢在脚下（P6 第二批：背包与地面物品）。
     ///
@@ -271,6 +341,9 @@ pub enum Intent {
     Loot {
         /// 发起者，搜刮到它自己的背包里。
         actor: EntityId,
+        /// 从哪一格上搜刮，未经归一化——理由与够得着的范围同
+        /// [`Intent::PickUp`] 的 `pos` 字段文档。
+        pos: (i32, i32),
     },
     /// 盘查：`actor` 检查 `target` 此刻背包与已装备的物品（卫兵职业
     /// 接线批次，见 `crate::resolve::resolve_inspect` 文档）。
@@ -318,11 +391,12 @@ pub enum Intent {
     ///
     /// # 谁会产出这个变体
     ///
-    /// 与 [`Intent::PickUp`]/[`Intent::Rest`]/[`Intent::Equip`] 等既有
-    /// 玩法意图完全一致：[`intent_from_input`] 目前只映射
-    /// `Move`/`Wait` 两种，本变体（和上面那六种）同样还没有绑定按键，
-    /// 面向已经知道自己要做什么的调用方（AI 策略、未来的交互层）。
-    /// 这不是本变体特有的缺口，是输入映射层整体尚未展开的既有状态。
+    /// **本变体仍然没有键位产出者。** 输入接线批次把物品链那六个
+    /// （`PickUp`/`Drop`/`Equip`/`Unequip`/`Use`/`Craft`）接上了键
+    /// （见 [`intent_from_input`] 文档「六个玩法意图的产出者在哪」
+    /// 一节），本变体不在那一批里——潜行是战斗/感知那条线上的东西，
+    /// 与背包菜单不是同一块界面，硬塞进去只会让那块菜单变成杂物间。
+    /// 当前面向已经知道自己要做什么的调用方（AI 策略、未来的交互层）。
     ToggleStealth {
         /// 发起者，同时是状态的承受者。
         actor: EntityId,
@@ -346,20 +420,19 @@ pub enum Intent {
     /// 「一次做几个」是将来 UI 真的提供这个选择时再加的字段，不在
     /// 本批次预留（同 [`Intent::Use`] 不预留 `target` 的既有判断）。
     ///
-    /// # 谁会产出这个变体——本批次的已知缺口，如实标注
+    /// # 谁会产出这个变体
     ///
-    /// **目前没有任何产出者。** [`intent_from_input`] 不映射本变体
-    /// （它至今只映射 `Move`/`Wait` 两种——本行此前写的是「三种，含
-    /// `ToggleStealth`」，与该函数的实际代码不符，配方发现批次核实后
-    /// 更正），
-    /// `ll_script::api::intent::parse_intent` 也不识别它——制作界面
-    /// （`action-capability-and-input-context.md` 的 `UiMode` 模式栈）
-    /// 是纯设计零实现。这与 `PickUp`/`Drop`/`Equip`/`Rest`/`Loot`/`Use`
-    /// 六个既有玩法意图的处境完全相同：输入映射层整体尚未展开，不是
-    /// 本变体特有的缺口。本批次落地的是「配方注册 → 结算 → 效果」这
-    /// 一整条链路，验收证据走测试里直接构造本变体经
-    /// [`crate::turn::TurnEngine`] 提交（见
-    /// `crates/ll-mod/tests/example_mod_crafting.rs`）。
+    /// **制作菜单**（`ll_platform::input::GameKey::Craft` 打开，方向键
+    /// 选一条配方，确认键提交），见 `ll_game::player_action` 模块文档。
+    /// 这条接线是输入接线批次落地的——在那之前本变体**一个产出者都
+    /// 没有**，制作系统在真实游玩中完全不可达，验收证据只能走测试里
+    /// 直接构造本变体经 [`crate::turn::TurnEngine`] 提交（见
+    /// `crates/ll-mod/tests/example_mod_crafting.rs`，那条测试仍在，
+    /// 它验的是结算这一半）。现在从按键出发的端到端证据在
+    /// `ll_game::app` 的测试模块里。
+    ///
+    /// 「选哪一条配方」为什么必须由菜单而不是 [`intent_from_input`]
+    /// 决定，见该函数文档「六个玩法意图的产出者在哪」一节。
     Craft {
         /// 发起者，同时是食材的出处与成品的去处。
         actor: EntityId,
@@ -384,14 +457,16 @@ pub enum Intent {
     /// 发生，也不消耗点数），而不是让 `apply` 收到效果后夹一下了事
     /// ——静默钳位会把点数扣掉却不加属性，那是凭空吞点。
     ///
-    /// # 输入映射：与其余九个玩法意图同一处缺口
+    /// # 输入映射：仍然没有键位产出者
     ///
-    /// [`intent_from_input`] 至今只映射 `Move`/`Wait` 两个意图，
-    /// `PickUp`/`Drop`/`Equip`/`Unequip`/`Rest`/`Loot`/`Use`/`Inspect`/
-    /// `ToggleStealth`/`Craft` 全都没有绑定按键——输入映射层整体尚未
-    /// 展开，不是本变体特有的缺口。本批次落地的是「升级授予 → 加点
-    /// 结算 → 属性改变」这一整条链路，验收证据走测试里直接构造本变体
-    /// 经 [`crate::turn::TurnEngine`] 提交。
+    /// 输入接线批次接上的是物品链那六个
+    /// （`PickUp`/`Drop`/`Equip`/`Unequip`/`Use`/`Craft`，见
+    /// [`intent_from_input`] 文档「六个玩法意图的产出者在哪」一节），
+    /// 本变体不在其中：加点要的是一块角色面板上的交互（六项属性各一
+    /// 行、还剩几点），与背包/制作那两块列表不是同一种界面。**这仍是
+    /// 一处真实的缺口**，如实标注。本批次之前落地的是「升级授予 →
+    /// 加点结算 → 属性改变」这一整条链路，验收证据走测试里直接构造本
+    /// 变体经 [`crate::turn::TurnEngine`] 提交。
     AllocateAttributePoint {
         /// 加点的角色，也是点数余额的持有者。
         actor: EntityId,
@@ -490,11 +565,15 @@ pub enum Intent {
     ///
     /// # 谁会产出这个变体——如实标注的已知缺口
     ///
-    /// **目前没有任何键位产出者。** [`intent_from_input`] 至今只映射
-    /// `Move`/`Wait` 两种（见其文档），`PickUp`/`Drop`/`Equip`/`Unequip`/
-    /// `Rest`/`Loot`/`Use`/`ToggleStealth`/`Craft`/`AllocateAttributePoint`/
-    /// `LearnSkill`/`AbandonSubclass` 十二个既有玩法意图同样一个都没绑
-    /// 键——输入映射层整体尚未展开，不是本变体特有的缺口。本批次落地的
+    /// **目前没有任何键位产出者。** 输入接线批次接上的是物品链那六个
+    /// （`PickUp`/`Drop`/`Equip`/`Unequip`/`Use`/`Craft`，见
+    /// [`intent_from_input`] 文档「六个玩法意图的产出者在哪」一节）；
+    /// 本变体与 `Rest`/`Loot`/`Inspect`/`ToggleStealth`/
+    /// `AllocateAttributePoint`/`LearnSkill`/`AbandonSubclass`/
+    /// `Experiment`/`Identify` 一样**仍然没有绑键**，如实标注。
+    /// 接法是现成的：背包菜单已经是「选中背包里的一堆再对它做点什么」
+    /// 这个形状（`ll_game::player_action::InventoryEntry`），读书只需要
+    /// 在那块菜单上多一个键。本批次落地的
     /// 是「书声明教哪些配方 → 读 → 写进 `Agent::known_recipes` → 制作
     /// 闸门放行」这一整条链路，验收证据走测试里直接构造本变体经
     /// [`crate::turn::TurnEngine`] 提交（见
@@ -587,9 +666,9 @@ pub enum Intent {
     /// # 输入映射
     ///
     /// 同 [`Intent::Read`]，见其文档最后一节：**目前没有任何键位产出
-    /// 者**，[`intent_from_input`] 至今只映射 `Move`/`Wait` 两种，十余个
-    /// 玩法意图一个都没绑键，输入映射层整体尚未展开——不是本变体特有的
-    /// 缺口。验收证据走测试里直接构造本变体经 [`crate::turn::TurnEngine`]
+    /// 者**。输入接线批次接的是物品链那六个，本变体不在其中，如实标注
+    /// ——接法同样现成（背包菜单上多一个键）。
+    /// 验收证据走测试里直接构造本变体经 [`crate::turn::TurnEngine`]
     /// 提交（见 `crates/ll-mod/tests/base_mod_identification.rs`）。
     Identify {
         /// 发起者，同时是物品的持有者与知识（与经验）的去处。
@@ -617,12 +696,13 @@ impl Intent {
             | Intent::ExitSpace { actor }
             | Intent::UseSkill { actor, .. }
             | Intent::Rest { actor, .. }
-            | Intent::PickUp { actor }
+            | Intent::PickUp { actor, .. }
+            | Intent::Place { actor, .. }
             | Intent::Drop { actor, .. }
             | Intent::Equip { actor, .. }
             | Intent::Unequip { actor, .. }
             | Intent::Use { actor, .. }
-            | Intent::Loot { actor }
+            | Intent::Loot { actor, .. }
             | Intent::Inspect { actor, .. }
             | Intent::ToggleStealth { actor }
             | Intent::Craft { actor, .. }
@@ -643,6 +723,29 @@ impl Intent {
 /// 属于读世界之后才能判断的事，是 `resolve`（批次 C）从一次
 /// `Intent::Move` 结合世界状态推导出来的，不是输入层能单独决定的——
 /// 见批次 B 的分工：本层只管「按了什么键」，不读 `WorldState`。
+///
+/// # 六个玩法意图的产出者在哪
+///
+/// 物品链那六个——`PickUp`/`Drop`/`Equip`/`Unequip`/`Use`/`Craft`——
+/// **不由本函数产出**，产出者是 `ll_game::player_action`（见其模块
+/// 文档）。这不是遗漏，是同一条分工的必然结果：
+///
+/// - 六个里有五个**要带参数**（`Craft { recipe }`、`Drop { def }`、
+///   `Equip { def }`、`Unequip { slot }`、`Use { def }`）。「选哪一条」
+///   要求玩家先看见一张列表，而那张列表的内容来自背包与配方表——本
+///   函数按设计读不到它们，读到了就违反上一段那条分工。
+/// - 唯一不带参数的 `PickUp` 也放在那边：把它单独留在这里，「六个键的
+///   处理」就会散在两个 crate 里，而它们是同一块输入的六个分支。
+///
+/// 那一层提交意图的通道是 [`crate::turn::TurnEngine::try_player_intent`]
+/// ——本函数仍然是 `Move`/`Wait` 的唯一产出者，
+/// [`crate::turn::TurnEngine::try_player_turn`] 内部照旧调它。
+///
+/// 剩下那些**仍然没有任何键位产出者**的变体（`Rest`/`Loot`/`Inspect`/
+/// `ToggleStealth`/`AllocateAttributePoint`/`LearnSkill`/
+/// `AbandonSubclass`/`Read`/`Experiment`/`Identify`/`EnterSpace`/
+/// `ExitSpace`）各自在自己的变体文档里如实标注，本函数不重复列举
+/// ——那份清单每接一个就要改一次，放在一处必然过期。
 ///
 /// 四个方向键按住的组合决定八向：例如同时按住上与右得到东北。若上下
 /// 或左右两个相反方向同时被按住，视为无方向输入（两者抵消，不猜测
@@ -924,7 +1027,14 @@ mod tests {
     #[test]
     fn pickup意图序列化往返后与原值相等() {
         // Arrange
-        let original = Intent::PickUp { actor: entity() };
+        let mut interner = ll_core::ident::Interner::new();
+        let def = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        let original = Intent::PickUp {
+            actor: entity(),
+            pos: (3, 4),
+            def,
+        };
 
         // Act
         let json = serde_json::to_string(&original).expect("Intent 全字段均可序列化");
@@ -957,7 +1067,14 @@ mod tests {
     fn actor方法对pickup意图返回发起者字段() {
         // Arrange
         let actor = entity();
-        let intent = Intent::PickUp { actor };
+        let mut interner = ll_core::ident::Interner::new();
+        let def = interner
+            .intern(ll_core::ident::NamespacedId::parse("lostland:arrow").expect("合法标识符"));
+        let intent = Intent::PickUp {
+            actor,
+            pos: (0, 0),
+            def,
+        };
 
         // Act & Assert
         assert_eq!(intent.actor(), actor);

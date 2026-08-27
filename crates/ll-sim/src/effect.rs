@@ -526,6 +526,17 @@ pub enum Effect {
         /// `inventory` + `equipment` 全部物品，见
         /// [`ll_world::item::GroundItemStack::contents`] 文档。
         contents: Vec<ItemStack>,
+        /// 这一堆是**立起来**的还是**躺着**的，见
+        /// [`ll_world::item::GroundItemStack::placed`] 文档。
+        ///
+        /// 只有 `crate::resolve` 的 `resolve_place`（`Intent::Place`）
+        /// 产出 `true`；普通丢弃、尸体、盲盒溢出等其余产出点全是
+        /// `false`。**做成本变体的一个字段，不是新开一个
+        /// `Effect::PlaceGroundItem` 变体**：`apply` 侧要做的机械操作
+        /// 逐字相同（往 `world.ground_items` 追加一条），差别只在追加
+        /// 的那条数据上的一个位——与尸体复用同一个变体是同一条理由，
+        /// 见本变体文档「为什么复用同一个变体」一节。
+        placed: bool,
     },
     /// 把物品写进某实体的背包，可能同时替换掉背包里已有的同种可堆叠
     /// 堆（`crate::resolve::resolve_pick_up` 的产出者）。

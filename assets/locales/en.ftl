@@ -23,6 +23,14 @@ keybind-action-wait = Wait
 keybind-action-screenshot = Screenshot
 keybind-action-zoom_in = Zoom In
 keybind-action-zoom_out = Zoom Out
+keybind-action-inventory = Inventory
+keybind-action-craft = Craft
+keybind-action-pick_up = Pick Up
+keybind-action-drop = Drop
+keybind-action-equip = Equip
+keybind-action-use = Use
+keybind-action-place = Place
+keybind-action-interact = Interact
 
 race-human-display_name = Human
 race-dwarf-display_name = Dwarf
@@ -215,6 +223,41 @@ hud-item-unidentified = an unidentified item
 
 hud-equipment-panel-title = Equipment
 hud-equipment-empty-slot = (empty)
+
+hud-inventory-menu-title = Inventory (up/down to select)
+hud-inventory-menu-empty = Nothing here
+hud-inventory-menu-hint = E equip/unequip  U use  X drop  P place  Esc close
+hud-inventory-menu-equipped-label = worn
+hud-craft-menu-title = Crafting (up/down to select)
+hud-craft-menu-empty = No recipes
+hud-craft-menu-hint = Enter craft  Esc close
+hud-craft-station-label = Station
+hud-craft-tool-label = Tool
+
+hud-interact-menu-title = Underfoot (up/down to select)
+hud-interact-menu-empty = Nothing here
+hud-interact-menu-hint = Enter confirm  G take  Esc close
+hud-interact-action-work = work here
+hud-interact-action-loot = loot
+hud-interact-action-take = take
+hud-interact-direction-title = Interact with (up/down to select)
+hud-interact-direction-prompt = Nothing nearby
+hud-interact-direction-hint = Enter confirm  Esc close
+hud-interact-direction-more = and more
+
+hud-direction-here = Underfoot
+hud-direction-north = North
+hud-direction-north_east = Northeast
+hud-direction-east = East
+hud-direction-south_east = Southeast
+hud-direction-south = South
+hud-direction-south_west = Southwest
+hud-direction-west = West
+hud-direction-north_west = Northwest
+
+hud-feedback-no-selection = Nothing to act on
+hud-feedback-nothing-happened = That had no effect
+hud-feedback-nothing-nearby = Nothing nearby to interact with
 
 equip_slot-main_hand-display_name = Main Hand
 equip_slot-off_hand-display_name = Off Hand

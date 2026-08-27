@@ -295,12 +295,16 @@ fn craft_via_turn_engine_full(
     let bystander = spawn_agent(&mut world, (9, 9), &Scene::new(Vec::new()));
 
     if let Some(station) = scene.station_underfoot {
-        // 家具层批次：工作台是**摆在脚下那一格的一件家具**，不再是刷
-        // 一块工作台地形。这里直接往 `ground_items` 里放一堆——与玩家
-        // 走 `Intent::Drop` 放置产出的是同一个
-        // `GroundItemStack`（`resolve_drop` 的放置前置在
-        // `furniture_placement.rs` 有自己的端到端证据，本文件只关心
-        // 「摆着了之后制作认不认」）。
+        // 家具放置状态批次：工作台是**立在脚下那一格上**的一件东西
+        // （`placed: true`），不再只是「一件带 furniture 标志的地面
+        // 物品」。这里直接往 `ground_items` 里放一条立着的——与玩家走
+        // `Intent::Place` 产出的是同一个 `GroundItemStack`（放置的四道
+        // 前置在 `furniture_placement.rs` 有自己的端到端证据，本文件只
+        // 关心「立着了之后制作认不认」）。
+        //
+        // `placed: true` 不是可以省略的细节：躺在脚下、没立起来的同一件
+        // 东西当不了场地，那正是 `furniture_placement.rs` 里
+        // 「脚下的锻炉只是躺着时锻造配方静默不产出」那条反例。
         let pos = world.actors.get(crafter).expect("刚生成").pos;
         assert!(
             world.terrain_at(pos).is_some(),
@@ -311,6 +315,7 @@ fn craft_via_turn_engine_full(
             stack: ItemStack::new(station, 1),
             dropped_at: world.clock,
             contents: Vec::new(),
+            placed: true,
         });
     }
 

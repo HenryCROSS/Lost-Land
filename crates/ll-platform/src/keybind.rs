@@ -381,7 +381,14 @@ const DEFAULT_BINDINGS: &[KeyBinding] = &[
     KeyBinding::gameplay(KeyCode::ArrowRight, GameKey::Right),
     KeyBinding::gameplay(KeyCode::KeyD, GameKey::Right),
     KeyBinding::gameplay(KeyCode::Enter, GameKey::Confirm),
-    KeyBinding::gameplay(KeyCode::Space, GameKey::Confirm),
+    // 空格此前是确认键的第二个绑定。项目所有者把它定成了**交互键**
+    // （「按空格可以与最近的东西做交互」，见 [`GameKey::Interact`]
+    // 文档），因此这里把空格从确认挪到交互；确认仍然有回车。
+    //
+    // 两者不能共用同一个物理键：交互键在游戏内主流程按下，确认键在
+    // 交互列表**里**按下选中的那一行，同一帧同时激活会让「打开列表」
+    // 与「在列表里确认」撞在一起。
+    KeyBinding::gameplay(KeyCode::Space, GameKey::Interact),
     KeyBinding::gameplay(KeyCode::Escape, GameKey::Cancel),
     KeyBinding::gameplay(KeyCode::Tab, GameKey::Menu),
     KeyBinding::gameplay(KeyCode::KeyM, GameKey::Map),
@@ -393,6 +400,22 @@ const DEFAULT_BINDINGS: &[KeyBinding] = &[
     // 的落点。
     KeyBinding::gameplay(KeyCode::Equal, GameKey::ZoomIn),
     KeyBinding::gameplay(KeyCode::Minus, GameKey::ZoomOut),
+    // 物品链那六个键——见 [`GameKey::Inventory`] 文档「这一组六个键
+    // 为什么存在」一节。字母全部避开 WASD（那四个已经是移动键，见本表
+    // 开头的双绑说明），取传统 Roguelike 的既有习惯：`g` 捡东西
+    // （get）、`i` 背包（inventory）、`e` 装备（equip）、`u` 使用
+    // （use）；`c` 制作（craft）与 `x` 丢弃各取其首字母/近音——`d`
+    // 已经被右移占用，丢弃因此落在 `x`（"扔掉"，与多数带背包的
+    // Roguelike 一致）。
+    KeyBinding::gameplay(KeyCode::KeyI, GameKey::Inventory),
+    KeyBinding::gameplay(KeyCode::KeyC, GameKey::Craft),
+    KeyBinding::gameplay(KeyCode::KeyG, GameKey::PickUp),
+    KeyBinding::gameplay(KeyCode::KeyX, GameKey::Drop),
+    KeyBinding::gameplay(KeyCode::KeyE, GameKey::Equip),
+    KeyBinding::gameplay(KeyCode::KeyU, GameKey::Use),
+    // 放置（`p` = place）——与丢弃分开的两个动作，见
+    // `ll_sim::intent::Intent::Place` 文档。
+    KeyBinding::gameplay(KeyCode::KeyP, GameKey::Place),
 ];
 
 /// `InputContext::Menu` 下的默认键位表：与 [`DEFAULT_BINDINGS`] 用

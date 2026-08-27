@@ -135,6 +135,13 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
     (arrow, items)
 }
 
+/// 行动者脚下那一格的裸坐标—— 现在要点名从哪一格捡
+/// （见其文档「够得着的范围」一节），本文件全部用例捡的都是脚下。
+fn pick_pos(world: &WorldState, actor: EntityId) -> (i32, i32) {
+    let pos = world.actors.get(actor).expect("行动者还在").pos;
+    (pos.x(), pos.y())
+}
+
 #[test]
 fn 拾取地面物品后背包里有了地面上没了() {
     // Arrange
@@ -147,12 +154,17 @@ fn 拾取地面物品后背包里有了地面上没了() {
         stack: ItemStack::new(arrow, 5),
         dropped_at: Tick(0),
         contents: Vec::new(),
+        placed: false,
     });
 
     // Act
     let effects = resolve_with_skills_traits_pools_and_items(
         &world,
-        &Intent::PickUp { actor },
+        &Intent::PickUp {
+            actor,
+            pos: pick_pos(&world, actor),
+            def: arrow,
+        },
         &ll_sim::skill::NoSkills,
         &ll_sim::traits::NoTraitGrants,
         &ll_sim::traits::NoTraits,
@@ -203,6 +215,7 @@ fn 丢弃背包物品后地面上有了背包里没了且dropped_at为当前世�
             stack: ItemStack::new(arrow, 5),
             dropped_at: Tick(123),
             contents: Vec::new(),
+            placed: false,
         }]
     );
 }
@@ -224,12 +237,17 @@ fn 拾取时与背包已有同种堆合并而非新开一堆() {
         stack: ItemStack::new(arrow, 15),
         dropped_at: Tick(0),
         contents: Vec::new(),
+        placed: false,
     });
 
     // Act
     let effects = resolve_with_skills_traits_pools_and_items(
         &world,
-        &Intent::PickUp { actor },
+        &Intent::PickUp {
+            actor,
+            pos: pick_pos(&world, actor),
+            def: arrow,
+        },
         &ll_sim::skill::NoSkills,
         &ll_sim::traits::NoTraitGrants,
         &ll_sim::traits::NoTraits,
@@ -260,12 +278,17 @@ fn 拾取时合并超过堆叠上限产出主堆与溢出堆两条() {
         stack: ItemStack::new(arrow, 15),
         dropped_at: Tick(0),
         contents: Vec::new(),
+        placed: false,
     });
 
     // Act
     let effects = resolve_with_skills_traits_pools_and_items(
         &world,
-        &Intent::PickUp { actor },
+        &Intent::PickUp {
+            actor,
+            pos: pick_pos(&world, actor),
+            def: arrow,
+        },
         &ll_sim::skill::NoSkills,
         &ll_sim::traits::NoTraitGrants,
         &ll_sim::traits::NoTraits,
@@ -296,12 +319,17 @@ fn 拾取时背包为空直接把地面堆搬进背包() {
         stack: ItemStack::with_durability(arrow, 1, 50),
         dropped_at: Tick(0),
         contents: Vec::new(),
+        placed: false,
     });
 
     // Act
     let effects = resolve_with_skills_traits_pools_and_items(
         &world,
-        &Intent::PickUp { actor },
+        &Intent::PickUp {
+            actor,
+            pos: pick_pos(&world, actor),
+            def: arrow,
+        },
         &ll_sim::skill::NoSkills,
         &ll_sim::traits::NoTraitGrants,
         &ll_sim::traits::NoTraits,
@@ -319,17 +347,107 @@ fn 拾取时背包为空直接把地面堆搬进背包() {
     );
 }
 
+/// 把一堆箭放在离行动者 `(dx, dy)` 的那一格上，返回那一格的裸坐标。
+fn arrow_at_offset(
+    world: &mut WorldState,
+    actor: EntityId,
+    arrow: ContentIndex,
+    dx: i32,
+    dy: i32,
+) -> (i32, i32) {
+    let origin = world.actors.get(actor).expect("行动者还在").pos;
+    let pos = world.size.wrap(origin.x() + dx, origin.y() + dy);
+    world.ground_items.push(GroundItemStack {
+        pos,
+        stack: ItemStack::new(arrow, 5),
+        dropped_at: Tick(0),
+        contents: Vec::new(),
+        placed: false,
+    });
+    (pos.x(), pos.y())
+}
+
+/// 跑一次拾取结算并把效果应用上去。
+fn pick_up_at(
+    world: &mut WorldState,
+    actor: EntityId,
+    pos: (i32, i32),
+    def: ContentIndex,
+    items: &dyn ItemCatalog,
+) -> usize {
+    let effects = resolve_with_skills_traits_pools_and_items(
+        world,
+        &Intent::PickUp { actor, pos, def },
+        &ll_sim::skill::NoSkills,
+        &ll_sim::traits::NoTraitGrants,
+        &ll_sim::traits::NoTraits,
+        &ll_sim::resource_pool::NoResourcePools,
+        items,
+    );
+    let count = effects.len();
+    for effect in &effects {
+        apply(world, effect);
+    }
+    count
+}
+
+#[test]
+fn 斜对角那一格上的东西够得着() {
+    // `INTERACT_REACH`（切比雪夫 1）的正向证据，且**取对角线**：范围
+    // 若只认正交四邻，本条会红。判据取切比雪夫而不是曼哈顿正是因为
+    // 移动本身是八向的，见 `resolve_pick_up` 文档「够得着的范围」一节。
+    // Arrange
+    let mut world = test_world();
+    let (arrow, items) = arrow_index();
+    let actor = spawn_agent(&mut world, Vec::new());
+    let pos = arrow_at_offset(&mut world, actor, arrow, 1, 1);
+
+    // Act
+    pick_up_at(&mut world, actor, pos, arrow, &items);
+
+    // Assert
+    assert_eq!(
+        world.actors.get(actor).unwrap().inventory,
+        vec![ItemStack::new(arrow, 5)]
+    );
+    assert!(world.ground_items.is_empty());
+}
+
+#[test]
+fn 隔两格的东西够不着拾取意图静默无效() {
+    // 上一条的反例：同一个意图，只把东西挪远一格（切比雪夫 2），就什么
+    // 都不该发生。没有这一条，无法排除「够得着判定其实没生效，隔多远
+    // 都能捡」。
+    // Arrange
+    let mut world = test_world();
+    let (arrow, items) = arrow_index();
+    let actor = spawn_agent(&mut world, Vec::new());
+    let pos = arrow_at_offset(&mut world, actor, arrow, 2, 0);
+
+    // Act
+    let effect_count = pick_up_at(&mut world, actor, pos, arrow, &items);
+
+    // Assert：一条效果都没有，东西还在地上。
+    assert_eq!(effect_count, 0);
+    assert!(world.actors.get(actor).unwrap().inventory.is_empty());
+    assert_eq!(world.ground_items.len(), 1);
+}
+
 #[test]
 fn 脚下没有地面物品时拾取意图静默无效() {
     // Arrange
     let mut world = test_world();
-    let (_arrow, items) = arrow_index();
+    let (arrow, items) = arrow_index();
     let actor = spawn_agent(&mut world, Vec::new());
 
     // Act
     let effects = resolve_with_skills_traits_pools_and_items(
         &world,
-        &Intent::PickUp { actor },
+        &Intent::PickUp {
+            actor,
+            pos: pick_pos(&world, actor),
+            def: arrow,
+        },
         &ll_sim::skill::NoSkills,
         &ll_sim::traits::NoTraitGrants,
         &ll_sim::traits::NoTraits,

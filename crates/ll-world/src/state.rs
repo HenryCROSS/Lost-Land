@@ -699,33 +699,50 @@ impl WorldState {
     /// 惰性追赶系统本身的调用方职责，不在本批次范围内（本批次只交付
     /// 这个可独立调用、可独立测试的清理机制本身）。
     ///
-    /// # `is_permanent`：哪些地面物品**永不**老化（家具层批次）
+    /// # 哪些地面物品**永不**老化：立起来的那些
     ///
-    /// 回调，不是字段、不是常量：本 crate 不知道「家具」是什么——
-    /// `ItemDef.furniture` 定义在下游的 `ll-mod`，`ll-world` 不能反向
-    /// 依赖它（依赖方向，规格 §5：`ll-world` ← `ll-sim` ← `ll-mod`），
-    /// 与本方法上面「阈值为什么是参数」完全同一条判断：**引擎只跑
-    /// 算法，判据由内容给**。调用方（生产路径是 `ll_game::world`）拿
-    /// 自己手上的物品表折算出这个谓词传进来。
+    /// 判据是 [`crate::item::GroundItemStack::placed`]——**放置状态**，
+    /// 不是物品定义上的 `ItemDef.furniture` 标志。
     ///
-    /// 为什么不是给 [`crate::item::GroundItemStack`] 加一个
-    /// `permanent: bool` 字段：那是把一个**能从内容算出来**的量存进世界
-    /// 状态，ADR 0009「能派生的不进存档」直接拦下——同一件家具的
-    /// 「永不老化」永远等于它的 `ItemDef.furniture`，存一份副本只会
-    /// 制造一个读档后可能与内容表对不上的第二真相源。
+    /// # 这里此前是一个 `is_permanent: &dyn Fn(ContentIndex) -> bool` 回调
     ///
-    /// 谓词恒返回 `false` 时，本方法与家具层落地之前**逐位等价**。
-    pub fn cleanup_aged_ground_items(
-        &mut self,
-        max_age_ticks: i64,
-        is_permanent: &dyn Fn(ContentIndex) -> bool,
-    ) -> usize {
+    /// 家具层那一批传的是回调，理由记得很清楚：本 crate 不知道「家具」
+    /// 是什么（`ItemDef.furniture` 住在下游的 `ll-mod`，依赖方向不允许
+    /// 反向引用），所以判据得由拿得到物品表的调用方折算出来传进来。
+    ///
+    /// **放置状态落地之后那条理由不再成立**：会不会老化现在取决于这一
+    /// 堆自己身上的一个位，本 crate 完全看得见，不需要任何下游知识。
+    /// 回调因此收掉——留着一个恒等价于「读一个本地字段」的回调参数，
+    /// 就是这个代码库反复踩过的多余间接层（ADR 0021 双向的另一侧）。
+    ///
+    /// 语义也随之更正，这不只是重构：一座**躺在地上没立起来**的炉子
+    /// 此前因为 `ItemDef.furniture` 为真而永不老化——它那时和别的地面
+    /// 物品没有任何区别，却享受着永久豁免。现在它照常老化，只有真正
+    /// 立在那里的才不老化。
+    pub fn cleanup_aged_ground_items(&mut self, max_age_ticks: i64) -> usize {
         let now = self.clock.0;
         let before = self.ground_items.len();
-        self.ground_items.retain(|item| {
-            is_permanent(item.stack.def) || now.saturating_sub(item.dropped_at.0) < max_age_ticks
-        });
+        self.ground_items
+            .retain(|item| item.placed || now.saturating_sub(item.dropped_at.0) < max_age_ticks);
         before - self.ground_items.len()
+    }
+
+    /// 这一格上**立着**的那一堆（`None` 表示这格没有放置物）。
+    ///
+    /// 「立着的」= [`Self::ground_items`] 里坐标相同、
+    /// [`crate::item::GroundItemStack::placed`] 为真的第一条。
+    /// `ground_items` 是 `Vec`（有序），同一格真出现两件放置物时取哪
+    /// 一条是确定的（约束 C5）——而正常路径下这不会发生，放置前置
+    /// （`ll_sim::resolve` 的 `resolve_place`）就是为了让它不发生。
+    ///
+    /// 放在本 crate 而不是 `ll-sim`：三个消费者（放置前置、丢弃前置、
+    /// 制作的场地前置）问的是同一个问题，而这个问题只读
+    /// `WorldState` 自己的字段，不需要任何内容表——留在 `ll-sim` 会让
+    /// 三处各自写一遍同样的 `iter().find()`（ADR 0021）。
+    pub fn placed_at(&self, pos: TorusPos) -> Option<&crate::item::GroundItemStack> {
+        self.ground_items
+            .iter()
+            .find(|item| item.pos == pos && item.placed)
     }
 
     /// 只读地形查询：假定该坐标所属区块已经常驻，不触发按需生成。
@@ -1301,6 +1318,12 @@ impl WorldState {
             for content_stack in &item.contents {
                 write_item_stack(&mut hasher, content_stack);
             }
+            // 放置状态（家具放置状态批次新增，`GroundItemStack::placed`
+            // 字段文档「为什么必须进世界状态」一节）——它决定这一格能
+            // 不能再丢东西、这一堆会不会老化、它当不当得了制作场地，
+            // 三条都是真实玩法差异，缺席 hash() 就是又一次「新字段只加
+            // 了，没人测过是否被覆盖」。
+            hasher.write_u64(u64::from(item.placed));
         }
 
         // 已物化据点集合（NPC 生成批次）——同一条先例第八次重演，理由
@@ -3015,6 +3038,7 @@ mod tests {
             stack: ItemStack::new(arrow, 12),
             dropped_at: Tick(200),
             contents: Vec::new(),
+            placed: false,
         });
 
         // Act
@@ -3114,12 +3138,13 @@ mod tests {
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
             contents: Vec::new(),
+            placed: false,
         });
         world.advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS + 1);
 
         // Act
-        let removed = world
-            .cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS, &|_| false);
+        let removed =
+            world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS);
 
         // Assert
         assert_eq!(removed, 1);
@@ -3141,12 +3166,13 @@ mod tests {
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
             contents: Vec::new(),
+            placed: false,
         });
         world.advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS - 1);
 
         // Act
-        let removed = world
-            .cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS, &|_| false);
+        let removed =
+            world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS);
 
         // Assert
         assert_eq!(removed, 0);
@@ -3168,6 +3194,7 @@ mod tests {
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
             contents: Vec::new(),
+            placed: false,
         });
         world_a.advance(100);
         let mut world_b = test_world();
@@ -3176,12 +3203,13 @@ mod tests {
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
             contents: Vec::new(),
+            placed: false,
         });
         world_b.advance(100);
 
         // Act
-        let removed_with_short_threshold = world_a.cleanup_aged_ground_items(50, &|_| false);
-        let removed_with_long_threshold = world_b.cleanup_aged_ground_items(200, &|_| false);
+        let removed_with_short_threshold = world_a.cleanup_aged_ground_items(50);
+        let removed_with_long_threshold = world_b.cleanup_aged_ground_items(200);
 
         // Assert
         assert_eq!(removed_with_short_threshold, 1);
@@ -3203,6 +3231,7 @@ mod tests {
             stack: ItemStack::new(arrow, 1),
             dropped_at: Tick(0),
             contents: Vec::new(),
+            placed: false,
         });
 
         // Act & Assert

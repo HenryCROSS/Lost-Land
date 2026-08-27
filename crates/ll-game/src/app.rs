@@ -34,7 +34,7 @@ use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::effect::Effect;
 use ll_sim::rule_modifier::{SubjectRegistry, agent_rule_modifiers, rule_modifier_displays};
-use ll_sim::turn::TurnEngine;
+use ll_sim::turn::{PlayerTurnOutcome, TurnEngine};
 use ll_text::TextRenderer;
 use ll_ui::hud::character_panel::CharacterPanelData;
 use ll_ui::hud::render::render_hud;
@@ -57,6 +57,7 @@ use crate::layout::{
     effective_sight_radius, effective_sight_radius_for_race, effective_tint, terrain_atlas_key,
     tile_tint,
 };
+use crate::player_action::{Feedback, PlayerCommand, PlayerMenu, player_command};
 use crate::save::save_game;
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
@@ -359,6 +360,23 @@ pub struct Demo {
     /// `game_world.noise`/`game_world.params` 重新生成同一份数据（种子
     /// 相同则地形场逐位相同），不需要随存档往返。
     continent_field: ContinentField,
+    /// 玩家菜单（背包 / 制作）当前的状态与光标位置——I 键与 C 键切换，
+    /// 见 [`crate::player_action`] 模块文档。与 `world_map_open` 同一条
+    /// 纪律：纯表现层状态，不进 `GameWorld`/`WorldState`、不进存档、
+    /// 不参与回放，该模块文档「菜单状态算不算跨帧隐式状态（约束 C1）」
+    /// 一节给了完整的三条判据。
+    menu: PlayerMenu,
+    /// 上一次玩家操作留下的反馈（`None` 表示没有话要说）——它是
+    /// 「静默作废对玩家不成立」这条的落点，见
+    /// `ll_sim::turn::PlayerTurnOutcome` 文档。
+    ///
+    /// # 为什么留到下一次操作，不做成定时淡出
+    ///
+    /// 定时淡出要一个墙钟或帧计数器，也就要回答「暂停时算不算」「掉帧
+    /// 时补不补」这类与本批次无关的问题。留到下一次操作是更简单也更
+    /// 诚实的语义：屏幕上那句话恒等于「你最近这一下按出了什么结果」，
+    /// 玩家再按一次它就被换掉。
+    feedback: Option<Feedback>,
     /// 世界地图当前是否处于打开状态——M 键（`GameKey::Map`）切换,见
     /// [`Demo::advance`] 里的开关逻辑与 `ll_ui::hud::world_map` 模块
     /// 文档。纯粹的表现层 UI 状态,同样不进 `GameWorld`/`WorldState`。
@@ -456,6 +474,8 @@ impl Demo {
             language,
             hud_anim: WidgetStateTable::new(),
             continent_field,
+            menu: PlayerMenu::default(),
+            feedback: None,
             world_map_open: false,
             npc_ai,
             settlement_roles,
@@ -504,7 +524,7 @@ impl Demo {
         // `crate::world::cleanup_aged_ground_items` 文档「为什么挂在
         // 这里」一节：与 `maintain_streaming` 并列，是当前代码库里
         // 已经存在、每帧真正跑一遍的位置。
-        crate::world::cleanup_aged_ground_items(&mut self.game_world.world, &self.content);
+        crate::world::cleanup_aged_ground_items(&mut self.game_world.world);
         self.update_zoom(input);
         animation::update_player_animation(
             &mut self.anim,
@@ -551,13 +571,45 @@ impl Demo {
             &mut on_effect,
         );
         drop(ai_intent);
-        self.engine.try_player_turn(
-            &mut self.game_world.world,
-            player,
+        // 玩家这一回合提交什么，由 `crate::player_action` 决定——它是
+        // 物品链那六个意图（`PickUp`/`Drop`/`Equip`/`Unequip`/`Use`/
+        // `Craft`）唯一的键位产出者，见该模块文档「这个模块补的是哪条
+        // 断线」一节。此前这里调的是 `TurnEngine::try_player_turn`，
+        // 它内部只认 `intent_from_input` 的 `Move`/`Wait` 两种，于是
+        // 那六个意图在真实游戏里一个都提交不出来。
+        //
+        // 查不到玩家实体时跳过（与 `draw_hud` 同一条降级纪律）：菜单
+        // 要读它的背包与装备。
+        let command = player_command(
+            &mut self.menu,
             input,
-            &catalogs,
-            &mut on_effect,
+            &self.game_world.world,
+            player,
+            &self.content.recipe_table,
         );
+        match command {
+            PlayerCommand::Idle => {}
+            PlayerCommand::Rejected(feedback) => self.feedback = Some(feedback),
+            PlayerCommand::Submit(intent) => {
+                let outcome = self.engine.try_player_intent(
+                    &mut self.game_world.world,
+                    player,
+                    intent,
+                    &catalogs,
+                    &mut on_effect,
+                );
+                // 「按了键但屏幕纹丝不动」这一刻必须说话，见
+                // `Demo::feedback` 字段文档与
+                // `ll_sim::turn::PlayerTurnOutcome` 文档。还没轮到玩家
+                // （`NotYet`）不算按空——这次输入压根没被消费，下一帧
+                // 原样重试，说话反而是噪音。
+                self.feedback = match outcome {
+                    PlayerTurnOutcome::Nothing => Some(Feedback::NothingHappened),
+                    PlayerTurnOutcome::Acted => None,
+                    PlayerTurnOutcome::NotYet => self.feedback,
+                };
+            }
+        }
 
         if let Some(agent) = self.game_world.world.actors.get(player)
             && matches!(agent.current_space, Space::Surface { .. })
@@ -713,6 +765,9 @@ fn draw_hud(
     fps: f32,
     world_map_open: bool,
     continent_field: &ContinentField,
+    // 玩家菜单与反馈行，见 `Demo::menu`/`Demo::feedback` 字段文档。
+    menu: PlayerMenu,
+    feedback: Option<Feedback>,
 ) {
     let Some(agent) = game_world.world.actors.get(game_world.player) else {
         tracing::warn!("玩家实体查不到，本帧跳过 HUD 绘制");
@@ -822,6 +877,21 @@ fn draw_hud(
         None
     };
 
+    // 菜单这一帧的行：与 `player_command` 各自独立重建一次，理由见
+    // `crate::player_action::menu_rows` 文档。`menu_rows` 必须在
+    // `menu_data` 之前声明——后者借用前者产出的字符串。
+    let menu_rows = crate::player_action::menu_rows(
+        menu,
+        &game_world.world,
+        game_world.player,
+        &content.recipe_table,
+        &content.item_table,
+        catalog,
+        language,
+    );
+    let menu_data = crate::player_action::menu_data(menu, &menu_rows);
+    let feedback_text = feedback.map(|feedback| catalog.resolve(language, feedback.i18n_key()));
+
     render_hud(
         &mut resources.quad_renderer,
         &mut resources.textured_quad_renderer,
@@ -846,6 +916,8 @@ fn draw_hud(
         hud_anim,
         frame.0,
         world_map_data.as_ref(),
+        menu_data.as_ref(),
+        feedback_text.as_deref(),
     );
 }
 
@@ -1032,7 +1104,10 @@ impl AppHandler for Demo {
         // 只流向状态栏文本,不进 `self.game_world`/`WorldState`。
         let fps = self.fps_counter.record_frame(std::time::Instant::now());
 
-        if input.was_just_pressed(ll_platform::input::GameKey::Cancel) {
+        // 菜单开着时取消键归菜单用（关掉它），不退出游戏——否则玩家
+        // 想关个背包会直接退出整局，见 `crate::player_action` 里
+        // `player_command` 第 ② 步的同一段说明。
+        if !self.menu.is_open() && input.was_just_pressed(ll_platform::input::GameKey::Cancel) {
             return FrameOutcome::Exit;
         }
 
@@ -1085,6 +1160,8 @@ impl AppHandler for Demo {
                 fps,
                 self.world_map_open,
                 &self.continent_field,
+                self.menu,
+                self.feedback,
             );
             resources.present_frame(surface_frame);
         }
@@ -1118,12 +1195,15 @@ mod tests {
     //! 恢复后两条都转绿。
 
     use super::*;
-    use ll_core::ident::ContentIndex;
+    use crate::player_action::{InventoryEntry, inventory_entries};
+    use ll_core::ident::{ContentIndex, NamespacedId};
     use ll_core::time::Tick;
+    use ll_core::torus::TorusPos;
     use ll_platform::input::GameKey;
     use ll_sim::item::NoItems;
     use ll_sim::resolve::derive_stats;
     use ll_world::entity::{ActiveStatModifier, AttributeKind};
+    use ll_world::item::ItemStack;
 
     fn test_content() -> LoadedContent {
         let dir = crate::test_support::unique_temp_path("ll-game-app-test-content");
@@ -1335,5 +1415,801 @@ mod tests {
 
         // Assert
         assert!(!demo.world_map_open);
+    }
+    // ───────────────────── 输入接线批次：物品链六个意图 ─────────────────────
+    //
+    // 下面这一组的共同点：**Act 一律只有按键**。它们要证明的不是
+    // 「`resolve_craft` 会扣食材」（那条早就有测试，走 AI 策略直接返回
+    // 意图这条最小提交路径），而是「玩家在真实游戏里按得出来」——本
+    // 批次全部的价值就在这一句上，证据因此必须从输入侧出发。
+    //
+    // 全程跑在 `test_demo` 建出的真实 `Demo` 上：真实 `mods/` 内容
+    // （与 `crates/ll-mod/tests/furniture_placement.rs` 同一份 `mods/`）、
+    // 真实 `build_new_world`、真实 `TurnEngine`。Arrange 里只摆「玩家
+    // 身上有什么」（背包、已知配方、脚下地形），一次都不直接构造
+    // `Intent`、不直接调 `resolve`/`apply`。
+
+    /// 按内容 id 取索引——真实注册表，查不到直接 panic（说明 `mods/`
+    /// 里那条内容被改名或删了，应当立刻显形）。
+    fn content_index(demo: &Demo, id: &str) -> ContentIndex {
+        demo.content
+            .registry
+            .get(&NamespacedId::parse(id).expect("测试里的字面量恒合法"))
+            .unwrap_or_else(|| panic!("{id} 应当已被 mods/lostland/ 注册"))
+    }
+
+    /// 跑一帧，本帧按住 `keys` 里的每个键。
+    ///
+    /// 每次都新建 `InputState`：`was_just_pressed` 因此在这一帧恰好置位
+    /// 一次，与真实事件循环里「按下 → 下一帧清标志」的时序等价，且不
+    /// 依赖 `begin_frame`/`end_frame`——与本模块既有的地图开关测试同一
+    /// 个手法。
+    fn frame(demo: &mut Demo, at: u64, keys: &[GameKey]) {
+        let mut input = InputState::new();
+        for key in keys {
+            input.press(*key);
+        }
+        demo.advance(&input, FrameId(at));
+    }
+
+    /// 把光标从第 0 行按到第 `row` 行——每帧一次「下」。
+    fn move_cursor_to(demo: &mut Demo, at: &mut u64, row: usize) {
+        for _ in 0..row {
+            frame(demo, *at, &[GameKey::Down]);
+            *at += 1;
+        }
+    }
+
+    /// 背包里这一种东西一共有几个（一件都没有时是 0）。
+    ///
+    /// **把全部同种堆加起来，不是只看第一条**：同一种东西在背包里完全
+    /// 可能占着不止一堆（出生装备里已经有一份、测试又塞了一份，两者不
+    /// 会自动合并——合并只发生在 `merge_into_inventory_effect` 那条路径
+    /// 上）。只看第一条会在第一堆被吃空、`apply` 把它移除之后突然"变
+    /// 多"，那是一次真实踩到的假失败。
+    fn carried(demo: &Demo, def: ContentIndex) -> u32 {
+        demo.game_world
+            .world
+            .actors
+            .get(demo.game_world.player)
+            .expect("玩家仍存在")
+            .inventory
+            .iter()
+            .filter(|stack| stack.def == def)
+            .map(|stack| stack.count)
+            .sum()
+    }
+
+    /// 玩家脚下那一格摆着的全部地面物品定义。
+    fn ground_defs_underfoot(demo: &Demo) -> Vec<ContentIndex> {
+        let pos = demo
+            .game_world
+            .world
+            .actors
+            .get(demo.game_world.player)
+            .expect("玩家仍存在")
+            .pos;
+        demo.game_world
+            .world
+            .ground_items
+            .iter()
+            .filter(|ground| ground.pos == pos)
+            .map(|ground| ground.stack.def)
+            .collect()
+    }
+
+    /// 把玩家脚下那一格改成草地。
+    ///
+    /// **不是可有可无的布景**：`build_new_world` 生成出来的出生格是什么
+    /// 地形取决于噪声，完全可能是深水（`blocks_move` 为真），那会让
+    /// `can_place_furniture` 的第 ② 道前置不成立，于是「放得下」与
+    /// 「放不下」两侧同时因为一个与被测逻辑无关的原因落到同一侧——
+    /// `crates/ll-mod/tests/furniture_placement.rs` 的
+    /// `Scene::terrain_underfoot` 字段文档记的是同一个坑。
+    fn clear_terrain_underfoot(demo: &mut Demo) {
+        let pos = demo
+            .game_world
+            .world
+            .actors
+            .get(demo.game_world.player)
+            .expect("玩家仍存在")
+            .pos;
+        let grass = demo.content.terrain_ids.grass;
+        demo.game_world.world.terrain.set_terrain(pos, grass);
+    }
+
+    /// 玩家背包/装备菜单里，第一条指着 `def` 的行是第几行。
+    fn inventory_row_of(demo: &Demo, def: ContentIndex) -> usize {
+        let agent = demo
+            .game_world
+            .world
+            .actors
+            .get(demo.game_world.player)
+            .expect("玩家仍存在");
+        inventory_entries(agent)
+            .iter()
+            .position(|entry| match entry {
+                InventoryEntry::Carried { def: candidate } => *candidate == def,
+                InventoryEntry::Equipped { def: candidate, .. } => *candidate == def,
+            })
+            .expect("这一行应当在菜单里")
+    }
+
+    /// 制作菜单里这条配方是第几行。
+    fn craft_row_of(demo: &Demo, recipe: ContentIndex) -> usize {
+        crate::player_action::craft_entries(&demo.content.recipe_table)
+            .iter()
+            .position(|candidate| *candidate == recipe)
+            .expect("这条配方应当在菜单里")
+    }
+
+    /// [`arrange_smith`] 摆出来的那一组内容索引。
+    struct SmithFixture {
+        iron_ingot: ContentIndex,
+        leather_strip: ContentIndex,
+        smith_hammer: ContentIndex,
+        forge: ContentIndex,
+        iron_shortsword: ContentIndex,
+        forge_recipe: ContentIndex,
+        iron_shortsword_recipe: ContentIndex,
+    }
+
+    /// 玩家此刻站在哪一格。
+    fn player_pos(demo: &Demo) -> TorusPos {
+        demo.game_world
+            .world
+            .actors
+            .get(demo.game_world.player)
+            .expect("玩家仍存在")
+            .pos
+    }
+
+    /// 直接往玩家脚下这一格摆一堆东西（Arrange 用，不经按键）。
+    fn put_on_ground(demo: &mut Demo, def: ContentIndex, placed: bool) {
+        let pos = player_pos(demo);
+        let clock = demo.game_world.world.clock;
+        demo.game_world
+            .world
+            .ground_items
+            .push(ll_world::item::GroundItemStack {
+                pos,
+                stack: ItemStack::new(def, 1),
+                dropped_at: clock,
+                contents: Vec::new(),
+                placed,
+            });
+    }
+
+    /// 按键把铁匠锤装上——多条用例共用的一段 Arrange，**仍然全程按键**
+    /// （不是直接写 `agent.equipment`）：它在别的用例里是 Arrange，在
+    /// 「按装备键…」那条里是被验证的 Act，两处走同一条路才谈得上一致。
+    fn equip_hammer_by_keys(demo: &mut Demo, at: &mut u64, fixture: &SmithFixture) {
+        frame(demo, *at, &[GameKey::Inventory]);
+        *at += 1;
+        let row = inventory_row_of(demo, fixture.smith_hammer);
+        move_cursor_to(demo, at, row);
+        frame(demo, *at, &[GameKey::Equip]);
+        *at += 1;
+        frame(demo, *at, &[GameKey::Inventory]);
+        *at += 1;
+    }
+
+    /// 按键砌出一座锻炉（进背包，还没立起来）。
+    fn craft_forge_by_keys(demo: &mut Demo, at: &mut u64, fixture: &SmithFixture) {
+        frame(demo, *at, &[GameKey::Craft]);
+        *at += 1;
+        let row = craft_row_of(demo, fixture.forge_recipe);
+        move_cursor_to(demo, at, row);
+        frame(demo, *at, &[GameKey::Confirm]);
+        *at += 1;
+        frame(demo, *at, &[GameKey::Craft]);
+        *at += 1;
+    }
+
+    /// 按键把背包里的锻炉立在脚下。
+    fn place_forge_by_keys(demo: &mut Demo, at: &mut u64, fixture: &SmithFixture) {
+        frame(demo, *at, &[GameKey::Inventory]);
+        *at += 1;
+        let row = inventory_row_of(demo, fixture.forge);
+        move_cursor_to(demo, at, row);
+        frame(demo, *at, &[GameKey::Place]);
+        *at += 1;
+        frame(demo, *at, &[GameKey::Inventory]);
+        *at += 1;
+    }
+
+    /// 摆好「能打铁的玩家」：背包里 8 块铁锭 + 1 条皮革 + 1 把铁匠锤，
+    /// 已知打铁短剑那条配方（它 `requires_discovery: true`），脚下是草地。
+    ///
+    /// 8 块铁锭 = 砌锻炉 6 块 + 打短剑 2 块，正好是整条链的用量。
+    fn arrange_smith(demo: &mut Demo) -> SmithFixture {
+        let fixture = SmithFixture {
+            iron_ingot: content_index(demo, "lostland:iron_ingot"),
+            leather_strip: content_index(demo, "lostland:leather_strip"),
+            smith_hammer: content_index(demo, "lostland:smith_hammer"),
+            forge: content_index(demo, "lostland:forge"),
+            iron_shortsword: content_index(demo, "lostland:iron_shortsword"),
+            forge_recipe: content_index(demo, "lostland:forge_recipe"),
+            iron_shortsword_recipe: content_index(demo, "lostland:iron_shortsword_recipe"),
+        };
+        let hammer_durability = demo
+            .content
+            .item_table
+            .get(fixture.smith_hammer)
+            .and_then(|view| view.max_durability);
+        let player = demo.game_world.player;
+        let agent = demo
+            .game_world
+            .world
+            .actors
+            .get_mut(player)
+            .expect("玩家刚建局，必然存在");
+        agent.inventory.push(ItemStack::new(fixture.iron_ingot, 8));
+        agent
+            .inventory
+            .push(ItemStack::new(fixture.leather_strip, 1));
+        agent.inventory.push(ItemStack::freshly_made(
+            fixture.smith_hammer,
+            1,
+            hammer_durability,
+        ));
+        agent.known_recipes.push(fixture.iron_shortsword_recipe);
+        clear_terrain_underfoot(demo);
+        fixture
+    }
+
+    #[test]
+    fn 全程只按键就能砌炉子立起来再打出一把铁短剑且铁锭真的被扣掉() {
+        // 本批次的验收线本身。Act 里没有任何一次手工构造的 `Intent`：
+        // 从开背包、选锤子、按装备键，到砌炉子、按放置键立起来、走到
+        // 它上面按空格交互、在制作菜单里选配方按确认——全部经由
+        // `crate::player_action::player_command` →
+        // `TurnEngine::try_player_intent`，与玩家真的坐在键盘前一模一样。
+        // Arrange
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+        assert_eq!(
+            carried(&demo, fixture.iron_ingot),
+            8,
+            "Arrange 应当摆了 8 块铁锭"
+        );
+        let mut at = 0u64;
+
+        // Act ①：开背包 → 光标移到铁匠锤 → 按装备键。
+        frame(&mut demo, at, &[GameKey::Inventory]);
+        at += 1;
+        let hammer_row = inventory_row_of(&demo, fixture.smith_hammer);
+        move_cursor_to(&mut demo, &mut at, hammer_row);
+        frame(&mut demo, at, &[GameKey::Equip]);
+        at += 1;
+        frame(&mut demo, at, &[GameKey::Inventory]);
+        at += 1;
+        assert!(
+            demo.game_world
+                .world
+                .actors
+                .get(demo.game_world.player)
+                .expect("玩家仍存在")
+                .equipment
+                .values()
+                .any(|stack| stack.def == fixture.smith_hammer),
+            "按装备键之后铁匠锤应当真的穿在身上——打铁短剑的 required_tool"
+        );
+
+        // Act ②：开制作菜单 → 光标移到「砌锻炉」→ 确认。
+        frame(&mut demo, at, &[GameKey::Craft]);
+        at += 1;
+        let forge_recipe_row = craft_row_of(&demo, fixture.forge_recipe);
+        move_cursor_to(&mut demo, &mut at, forge_recipe_row);
+        frame(&mut demo, at, &[GameKey::Confirm]);
+        at += 1;
+        assert_eq!(
+            carried(&demo, fixture.forge),
+            1,
+            "按确认之后背包里应当多出一座锻炉"
+        );
+        assert_eq!(
+            carried(&demo, fixture.iron_ingot),
+            2,
+            "砌锻炉吃掉 6 块铁锭，应当只剩 2 块"
+        );
+
+        // Act ③：关制作菜单 → 开背包 → 光标移到锻炉 → 按**放置**键。
+        // 按丢弃键在这里是不够的——丢下去的炉子是躺着的，当不了场地，
+        // 见 `ll_sim::intent::Intent::Place` 文档。
+        frame(&mut demo, at, &[GameKey::Craft]);
+        at += 1;
+        frame(&mut demo, at, &[GameKey::Inventory]);
+        at += 1;
+        let forge_row = inventory_row_of(&demo, fixture.forge);
+        move_cursor_to(&mut demo, &mut at, forge_row);
+        frame(&mut demo, at, &[GameKey::Place]);
+        at += 1;
+        let player_pos = player_pos(&demo);
+        assert_eq!(
+            demo.game_world
+                .world
+                .placed_at(player_pos)
+                .map(|ground| ground.stack.def),
+            Some(fixture.forge),
+            "按放置键之后锻炉应当**立**在脚下这一格上"
+        );
+        assert_eq!(carried(&demo, fixture.forge), 0, "锻炉应当已经离开背包");
+
+        // Act ④：关背包 → 按**空格**与脚下的炉子交互 → 在交互列表里
+        // 按确认（那一行的主交互是「在此开工」，会换开制作菜单）→
+        // 光标移到「打铁短剑」→ 确认。
+        frame(&mut demo, at, &[GameKey::Inventory]);
+        at += 1;
+        frame(&mut demo, at, &[GameKey::Interact]);
+        at += 1;
+        assert!(
+            matches!(demo.menu, PlayerMenu::Interact { .. }),
+            "脚下立着炉子，按空格应当开出交互列表，实际是 {:?}",
+            demo.menu
+        );
+        frame(&mut demo, at, &[GameKey::Confirm]);
+        at += 1;
+        assert!(
+            matches!(demo.menu, PlayerMenu::Craft { .. }),
+            "对着立着的炉子按确认应当换开制作菜单，实际是 {:?}",
+            demo.menu
+        );
+        let sword_row = craft_row_of(&demo, fixture.iron_shortsword_recipe);
+        move_cursor_to(&mut demo, &mut at, sword_row);
+        frame(&mut demo, at, &[GameKey::Confirm]);
+
+        // Assert：剑真的造出来了，两味食材真的被扣掉。
+        assert_eq!(
+            carried(&demo, fixture.iron_shortsword),
+            1,
+            "按确认之后背包里应当多出一把铁短剑"
+        );
+        assert_eq!(
+            carried(&demo, fixture.iron_ingot),
+            0,
+            "打短剑再吃掉 2 块铁锭，8 块应当一块不剩"
+        );
+        assert_eq!(
+            carried(&demo, fixture.leather_strip),
+            0,
+            "打短剑吃掉那一条皮革"
+        );
+    }
+
+    #[test]
+    fn 按丢弃键放下的炉子是躺着的当不了场地() {
+        // 上一条的反例，也是「丢弃与放置是两个动作」这条裁定在输入侧的
+        // 直接后果：同样的按键序列，只把放置键换成丢弃键，制作就做不出
+        // 来。没有这一条，无法排除「其实丢弃也照样能立起来」。
+        // Arrange：按键砌一座炉子出来，然后**丢**在脚下。
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+        let mut at = 0u64;
+        equip_hammer_by_keys(&mut demo, &mut at, &fixture);
+        craft_forge_by_keys(&mut demo, &mut at, &fixture);
+        frame(&mut demo, at, &[GameKey::Inventory]);
+        at += 1;
+        let forge_row = inventory_row_of(&demo, fixture.forge);
+        move_cursor_to(&mut demo, &mut at, forge_row);
+        frame(&mut demo, at, &[GameKey::Drop]);
+        at += 1;
+        frame(&mut demo, at, &[GameKey::Inventory]);
+        at += 1;
+        let player_pos = player_pos(&demo);
+        assert!(
+            ground_defs_underfoot(&demo).contains(&fixture.forge),
+            "Arrange：炉子确实落在了脚下"
+        );
+        assert!(
+            demo.game_world.world.placed_at(player_pos).is_none(),
+            "Arrange：但它是躺着的，不是立着的"
+        );
+
+        // Act：开制作菜单选打铁短剑，按确认。
+        frame(&mut demo, at, &[GameKey::Craft]);
+        at += 1;
+        let sword_row = craft_row_of(&demo, fixture.iron_shortsword_recipe);
+        move_cursor_to(&mut demo, &mut at, sword_row);
+        frame(&mut demo, at, &[GameKey::Confirm]);
+
+        // Assert：一把剑都没有，食材一块没少。
+        assert_eq!(carried(&demo, fixture.iron_shortsword), 0);
+        assert_eq!(
+            carried(&demo, fixture.iron_ingot),
+            2,
+            "静默失败不消耗任何东西"
+        );
+    }
+
+    #[test]
+    fn 按空格开出的交互列表里按捡起键能把立着的炉子收回背包() {
+        // 「摆下去还能收回来」这条闭环的出口。
+        // Arrange：按键把炉子立起来。
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+        let mut at = 0u64;
+        craft_forge_by_keys(&mut demo, &mut at, &fixture);
+        place_forge_by_keys(&mut demo, &mut at, &fixture);
+        let player_pos = player_pos(&demo);
+        assert!(
+            demo.game_world.world.placed_at(player_pos).is_some(),
+            "Arrange 应当已经把锻炉立在脚下"
+        );
+
+        // Act：空格开列表 → 按捡起键。
+        frame(&mut demo, at, &[GameKey::Interact]);
+        at += 1;
+        frame(&mut demo, at, &[GameKey::PickUp]);
+
+        // Assert
+        assert_eq!(
+            carried(&demo, fixture.forge),
+            1,
+            "按捡起键之后锻炉应当回到背包"
+        );
+        assert!(
+            !ground_defs_underfoot(&demo).contains(&fixture.forge),
+            "锻炉应当已经离开地面"
+        );
+    }
+
+    #[test]
+    fn 脚下只有一样东西时按空格也照样弹列表() {
+        // 所有者原话「无论是一个还是 N 个，交互的时候都统一以列表显示」
+        // ——这一条守的正是那句话：不许有「只有一件就直接捡走」的捷径。
+        // 没有它，实现随时可能为了「体贴」加回那条捷径，从而造出两条
+        // 拾取路径。
+        // Arrange：脚下恰好一堆铁锭。
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+        put_on_ground(&mut demo, fixture.iron_ingot, false);
+        let carried_before = carried(&demo, fixture.iron_ingot);
+
+        // Act：按一次空格。
+        frame(&mut demo, 0, &[GameKey::Interact]);
+
+        // Assert：列表开着，东西**还在地上**——没有被直接捡走。
+        assert!(
+            matches!(demo.menu, PlayerMenu::Interact { .. }),
+            "只有一样东西时也必须弹列表，实际是 {:?}",
+            demo.menu
+        );
+        assert_eq!(
+            carried(&demo, fixture.iron_ingot),
+            carried_before,
+            "开列表这一步不该捡走任何东西"
+        );
+        assert!(ground_defs_underfoot(&demo).contains(&fixture.iron_ingot));
+    }
+
+    #[test]
+    fn 附近什么都没有时按空格给出提示而不是静默作废() {
+        // 所有者那张表的第 0 行：范围内一格有东西的都没有 → 一句话。
+        // Arrange：确认脚下与相邻八格全空。
+        let mut demo = test_demo();
+        assert!(
+            crate::player_action::interact_tiles(&demo.game_world.world, player_pos(&demo))
+                .is_empty(),
+            "Arrange 假设出生点周围没有任何地面物品"
+        );
+
+        // Act
+        frame(&mut demo, 0, &[GameKey::Interact]);
+
+        // Assert
+        assert_eq!(demo.menu, PlayerMenu::Closed, "什么都没有时不该开出菜单");
+        assert_eq!(demo.feedback, Some(Feedback::NothingNearby));
+    }
+
+    #[test]
+    fn 范围内两格有东西时按空格先弹方向列表() {
+        // 所有者那张表的第「2 以上」行：先选和哪一格交互。
+        // Arrange：脚下一堆铁锭，正东相邻格再一堆。
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+        put_on_ground(&mut demo, fixture.iron_ingot, false);
+        let here = player_pos(&demo);
+        let east = demo.game_world.world.size.wrap(here.x() + 1, here.y());
+        let clock = demo.game_world.world.clock;
+        demo.game_world
+            .world
+            .ground_items
+            .push(ll_world::item::GroundItemStack {
+                pos: east,
+                stack: ItemStack::new(fixture.leather_strip, 1),
+                dropped_at: clock,
+                contents: Vec::new(),
+                placed: false,
+            });
+
+        // Act
+        frame(&mut demo, 0, &[GameKey::Interact]);
+
+        // Assert：开的是方向列表，不是物品列表。
+        assert!(
+            matches!(demo.menu, PlayerMenu::InteractDirection { .. }),
+            "两格有东西时应当先弹方向列表，实际是 {:?}",
+            demo.menu
+        );
+
+        // 再按确认：选中第一行（脚下），进那一格的物品列表——**不**捡走
+        // 任何东西（所有者原话「不是捡走，只是打开交互列表」）。
+        let carried_before = carried(&demo, fixture.iron_ingot);
+        frame(&mut demo, 1, &[GameKey::Confirm]);
+        assert_eq!(
+            demo.menu,
+            PlayerMenu::Interact {
+                pos: here,
+                cursor: 0
+            },
+            "选完方向应当进那一格的物品列表"
+        );
+        assert_eq!(
+            carried(&demo, fixture.iron_ingot),
+            carried_before,
+            "选方向这一步不该捡走任何东西"
+        );
+    }
+
+    #[test]
+    fn 隔一格也能从方向列表里把东西捡过来() {
+        // 「够得着的范围」那条规则的正向证据：范围是脚下加相邻八格
+        // （切比雪夫 1），因为移动本身是八向的。这里取**斜后方**那一格
+        // ——若范围只认正交四邻，本条会红。
+        // Arrange：脚下空着，西北相邻格上一堆皮革。
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+        let here = player_pos(&demo);
+        let north_west = demo.game_world.world.size.wrap(here.x() - 1, here.y() - 1);
+        let clock = demo.game_world.world.clock;
+        demo.game_world
+            .world
+            .ground_items
+            .push(ll_world::item::GroundItemStack {
+                pos: north_west,
+                stack: ItemStack::new(fixture.leather_strip, 2),
+                dropped_at: clock,
+                contents: Vec::new(),
+                placed: false,
+            });
+        let carried_before = carried(&demo, fixture.leather_strip);
+
+        // Act：只有一格有东西 → 直接进那一格的物品列表 → 按确认捡起。
+        frame(&mut demo, 0, &[GameKey::Interact]);
+        assert_eq!(
+            demo.menu,
+            PlayerMenu::Interact {
+                pos: north_west,
+                cursor: 0
+            },
+            "只有一格有东西时应当跳过方向列表，直接开那一格的物品列表"
+        );
+        frame(&mut demo, 1, &[GameKey::Confirm]);
+
+        // Assert：斜后方那一格上的东西真的到了背包里。
+        assert_eq!(carried(&demo, fixture.leather_strip), carried_before + 2);
+        assert!(
+            demo.game_world
+                .world
+                .ground_items
+                .iter()
+                .all(|ground| ground.pos != north_west)
+        );
+    }
+
+    #[test]
+    fn 够不着的两格之外按拾取意图静默无效() {
+        // 上一条的反例：把同一堆东西挪到切比雪夫距离 2，一样的意图就
+        // 什么都不发生。没有这一条，无法排除「够得着判定其实没生效，
+        // 隔多远都能捡」。
+        // Arrange
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+        let here = player_pos(&demo);
+        let far = demo.game_world.world.size.wrap(here.x() + 2, here.y());
+        let clock = demo.game_world.world.clock;
+        demo.game_world
+            .world
+            .ground_items
+            .push(ll_world::item::GroundItemStack {
+                pos: far,
+                stack: ItemStack::new(fixture.leather_strip, 2),
+                dropped_at: clock,
+                contents: Vec::new(),
+                placed: false,
+            });
+        let carried_before = carried(&demo, fixture.leather_strip);
+
+        // Act：按空格——那一格在范围外，因此扫不到任何候选格。
+        frame(&mut demo, 0, &[GameKey::Interact]);
+
+        // Assert
+        assert_eq!(demo.menu, PlayerMenu::Closed);
+        assert_eq!(demo.feedback, Some(Feedback::NothingNearby));
+        assert_eq!(carried(&demo, fixture.leather_strip), carried_before);
+    }
+
+    #[test]
+    fn 这一格立着东西时按丢弃键丢不下去并给出反馈() {
+        // 「静默作废对 AI 可以，对玩家不行」这条的落点，见
+        // `ll_sim::turn::PlayerTurnOutcome` 文档；同时守所有者那条
+        // 「家具如果是放置在那个地方，那物品就无法被丢在那」。
+        // Arrange：脚下立着一座炉子，背包里有铁锭。
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+        put_on_ground(&mut demo, fixture.forge, true);
+        let carried_before = carried(&demo, fixture.iron_ingot);
+        let mut at = 0u64;
+
+        // Act：开背包 → 移到铁锭 → 按丢弃键。
+        frame(&mut demo, at, &[GameKey::Inventory]);
+        at += 1;
+        let ingot_row = inventory_row_of(&demo, fixture.iron_ingot);
+        move_cursor_to(&mut demo, &mut at, ingot_row);
+        frame(&mut demo, at, &[GameKey::Drop]);
+
+        // Assert：一块都没丢出去，而且玩家被告知了。
+        assert_eq!(carried(&demo, fixture.iron_ingot), carried_before);
+        assert_eq!(
+            demo.feedback,
+            Some(Feedback::NothingHappened),
+            "按了键却什么都没发生时，必须有一句话告诉玩家"
+        );
+    }
+
+    #[test]
+    fn 菜单开着时方向键只移动光标不移动角色() {
+        // 守 `player_command` 里「菜单开着时不走回落分支」这条顺序——
+        // 顺序反过来的话，玩家在菜单里挑东西的同时角色会在地图上一路
+        // 走动。
+        // Arrange
+        let mut demo = test_demo();
+        arrange_smith(&mut demo);
+        frame(&mut demo, 0, &[GameKey::Inventory]);
+        let pos_before = player_pos(&demo);
+        let clock_before = demo.game_world.world.clock;
+
+        // Act：菜单开着，连按三次「下」。
+        for at in 1..4u64 {
+            frame(&mut demo, at, &[GameKey::Down]);
+        }
+
+        // Assert：角色没动，时钟也没走（移动会消耗一次回合）。
+        assert_eq!(player_pos(&demo), pos_before);
+        assert_eq!(demo.game_world.world.clock, clock_before);
+        assert!(demo.menu.is_open(), "菜单应当仍然开着");
+    }
+
+    #[test]
+    fn 菜单开着时取消键只关菜单不退出游戏() {
+        // 守 `on_frame` 里那道 `!self.menu.is_open()` 闸门：没有它，玩家
+        // 想关个背包会直接退出整局。
+        //
+        // 本条**必须**走 `AppHandler::on_frame`（不是像其余几条那样直接
+        // 调 `advance`）：退不退出这个决定就做在 `on_frame` 里，`advance`
+        // 根本看不见它。`on_frame` 在 `resources` 为 `None` 时会在渲染
+        // 那一步提前返回 `Continue`（见其实现），因此脱离 GPU 也能跑。
+        // Arrange
+        let mut demo = test_demo();
+        let mut open_inventory = InputState::new();
+        open_inventory.press(GameKey::Inventory);
+        assert_eq!(
+            demo.on_frame(FrameId(0), &open_inventory),
+            FrameOutcome::Continue
+        );
+        assert!(demo.menu.is_open(), "Arrange 应当把背包菜单打开");
+
+        // Act
+        let mut cancel = InputState::new();
+        cancel.press(GameKey::Cancel);
+        let outcome = demo.on_frame(FrameId(1), &cancel);
+
+        // Assert：没退出，菜单关了。
+        assert_eq!(outcome, FrameOutcome::Continue, "不该退出整局");
+        assert!(!demo.menu.is_open(), "取消键应当把菜单关掉");
+
+        // 再按一次（菜单已经关着）才是真正的退出——这一半保证上面那道
+        // 闸门没有把退出功能整个关死。
+        let mut cancel_again = InputState::new();
+        cancel_again.press(GameKey::Cancel);
+        assert_eq!(
+            demo.on_frame(FrameId(2), &cancel_again),
+            FrameOutcome::Exit,
+            "菜单关着时取消键仍应退出"
+        );
+    }
+
+    #[test]
+    fn 不开制作菜单时按确认键不会制作任何东西() {
+        // 反例守卫：证明上面那条锻造测试真正依赖的是「开菜单 + 选中
+        // 那一行」，不是「按了确认键就会造东西」。
+        // Arrange
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+
+        // Act：菜单全关着，连按三次确认。
+        for at in 0..3u64 {
+            frame(&mut demo, at, &[GameKey::Confirm]);
+        }
+
+        // Assert
+        assert_eq!(carried(&demo, fixture.forge), 0);
+        assert_eq!(
+            carried(&demo, fixture.iron_ingot),
+            8,
+            "一块铁锭都不该被吃掉"
+        );
+    }
+
+    #[test]
+    fn 按装备键再按一次就把它卸回背包() {
+        // `Intent::Unequip` 的键位产出者——背包菜单里落在「已装备」那
+        // 一段的行，见 `crate::player_action` 模块文档「为什么装备与
+        // 卸下共用一个键」一节。
+        // Arrange：先按键把锤子装上。
+        let mut demo = test_demo();
+        let fixture = arrange_smith(&mut demo);
+        let mut at = 0u64;
+        equip_hammer_by_keys(&mut demo, &mut at, &fixture);
+        assert_eq!(
+            carried(&demo, fixture.smith_hammer),
+            0,
+            "Arrange 之后锤子应当已经不在背包里"
+        );
+
+        // Act：开背包、光标归零后移到「已装备」那一段的锤子上，再按一
+        // 次装备键。
+        frame(&mut demo, at, &[GameKey::Inventory]);
+        at += 1;
+        let equipped_row = inventory_row_of(&demo, fixture.smith_hammer);
+        move_cursor_to(&mut demo, &mut at, equipped_row);
+        frame(&mut demo, at, &[GameKey::Equip]);
+
+        // Assert
+        assert_eq!(
+            carried(&demo, fixture.smith_hammer),
+            1,
+            "再按一次装备键应当把它卸回背包"
+        );
+        assert!(
+            demo.game_world
+                .world
+                .actors
+                .get(demo.game_world.player)
+                .expect("玩家仍存在")
+                .equipment
+                .values()
+                .all(|stack| stack.def != fixture.smith_hammer),
+            "装备栏里不该还留着这把锤子"
+        );
+    }
+
+    #[test]
+    fn 按使用键能吃掉背包里的一份烤肉() {
+        // `Intent::Use` 的键位产出者。
+        // Arrange
+        let mut demo = test_demo();
+        let roast = content_index(&demo, "lostland:roast_meat");
+        let player = demo.game_world.player;
+        demo.game_world
+            .world
+            .actors
+            .get_mut(player)
+            .expect("玩家刚建局")
+            .inventory
+            .push(ItemStack::new(roast, 2));
+        let before = carried(&demo, roast);
+        let mut at = 0u64;
+
+        // Act：开背包 → 移到烤肉 → 按使用键。
+        frame(&mut demo, at, &[GameKey::Inventory]);
+        at += 1;
+        let row = inventory_row_of(&demo, roast);
+        move_cursor_to(&mut demo, &mut at, row);
+        frame(&mut demo, at, &[GameKey::Use]);
+
+        // Assert：恰好少一份——不是「变少了」，是「少了一份」。
+        assert_eq!(carried(&demo, roast), before - 1);
     }
 }

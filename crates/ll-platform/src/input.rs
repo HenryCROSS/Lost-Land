@@ -61,6 +61,52 @@ pub enum GameKey {
     ZoomIn,
     /// 缩小画面（拉远视角），理由同 `ZoomIn`。
     ZoomOut,
+    /// 打开/关闭背包菜单（可选中一条，见 `ll_game::player_action`）。
+    ///
+    /// # 这一组六个键为什么存在
+    ///
+    /// `ll_sim::intent::Intent` 的二十三个变体里，物品链那六个
+    /// （`PickUp`/`Drop`/`Equip`/`Unequip`/`Use`/`Craft`）此前**一个都
+    /// 没有键位产出者**：引擎侧的结算、效果、测试全都齐全，玩家在真实
+    /// 游戏里却一个都按不出来。本组键就是补上那条断线，见
+    /// `ll_sim::intent::intent_from_input` 文档「六个玩法意图的产出者
+    /// 在哪」一节。
+    Inventory,
+    /// 打开/关闭制作菜单（选一条配方，见 `Inventory` 文档同一节）。
+    Craft,
+    /// 捡起脚下的东西（`ll_sim::intent::Intent::PickUp`）。
+    PickUp,
+    /// 丢下背包菜单里选中的那一堆（`ll_sim::intent::Intent::Drop`）。
+    ///
+    /// **丢弃不是放置**——把一件家具丢在脚下，它是躺着的一堆普通物品；
+    /// 立起来要按 [`GameKey::Place`]。两个动作分开是项目所有者的裁定，
+    /// 完整论证见 `ll_sim::intent::Intent::Place` 文档。
+    Drop,
+    /// 装备/卸下背包菜单里选中的那一条——落在背包段就是装备
+    /// （`Intent::Equip`），落在装备段就是卸下（`Intent::Unequip`），
+    /// 见 `ll_game::player_action` 模块文档「为什么装备与卸下共用一个
+    /// 键」一节。
+    Equip,
+    /// 使用背包菜单里选中的那一堆（`ll_sim::intent::Intent::Use`）。
+    Use,
+    /// 把背包菜单里选中的那一件**立**在脚下（`ll_sim::intent::Intent::Place`）。
+    Place,
+    /// 与最近的东西交互——项目所有者定的形状：
+    ///
+    /// > 按空格可以与最近的东西做交互，例如地上的物品，如果地上没有就
+    /// > 空格加上 wasd 选择交互的方向。这些都可以修改键位的。
+    ///
+    /// 「最近的东西」= **脚下这一格优先**，脚下什么都没有时由玩家再按
+    /// 一个方向键指出要和哪一格交互；不是「在半径 N 内搜一个最近的
+    /// 目标」——半径搜索会造出「玩家不知道自己要和哪个东西交互」的歧义，
+    /// 指方向没有这个问题。
+    ///
+    /// 「这些都可以修改键位的」这一句由本枚举的存在本身满足：本键与其余
+    /// 每一个动作一样只是一个**抽象动作**，它绑在哪个物理键上由
+    /// `crate::keybind::KeyBindings` 决定（默认空格，见
+    /// `crate::keybind::DEFAULT_BINDINGS`），玩家可以在 `config.json5`
+    /// 里改。输入处理层从不比对键码。
+    Interact,
 }
 
 /// 全部动作键，顺序必须与 [`GameKey`] 的变体声明顺序一致。
@@ -83,10 +129,18 @@ const ALL_KEYS: [GameKey; KEY_COUNT] = [
     GameKey::Screenshot,
     GameKey::ZoomIn,
     GameKey::ZoomOut,
+    GameKey::Inventory,
+    GameKey::Craft,
+    GameKey::PickUp,
+    GameKey::Drop,
+    GameKey::Equip,
+    GameKey::Use,
+    GameKey::Place,
+    GameKey::Interact,
 ];
 
 /// 动作键总数，用于状态数组定长。
-const KEY_COUNT: usize = 12;
+const KEY_COUNT: usize = 20;
 
 impl GameKey {
     /// 在状态数组中的下标。
@@ -109,6 +163,12 @@ impl GameKey {
     /// [`InputState::begin_frame`] 的自动重复计时——滚一格就只触发
     /// 一次，多滚才多触发，这与滚轮天然的「离散步进」手感一致；只有
     /// **按键**长按缩放键时才会经这条自动重复机制连续触发。
+    ///
+    /// 物品链那几个键（`Inventory`/`Craft`/`PickUp`/`Drop`/`Place`/
+    /// `Equip`/`Use`）与确认/取消同一侧：**不参与**自动重复。它们每一次激活
+    /// 要么翻转一块菜单、要么提交一次真正消耗回合的
+    /// `ll_sim::intent::Intent`，长按反复触发会把整背包一路丢光、把
+    /// 食材一路烧完，正是上一段点名要防的那类问题。
     pub const fn is_repeatable(self) -> bool {
         matches!(
             self,
@@ -146,6 +206,14 @@ impl GameKey {
             GameKey::Screenshot => "lostland:keybind.action.screenshot",
             GameKey::ZoomIn => "lostland:keybind.action.zoom_in",
             GameKey::ZoomOut => "lostland:keybind.action.zoom_out",
+            GameKey::Inventory => "lostland:keybind.action.inventory",
+            GameKey::Craft => "lostland:keybind.action.craft",
+            GameKey::PickUp => "lostland:keybind.action.pick_up",
+            GameKey::Drop => "lostland:keybind.action.drop",
+            GameKey::Equip => "lostland:keybind.action.equip",
+            GameKey::Use => "lostland:keybind.action.use",
+            GameKey::Place => "lostland:keybind.action.place",
+            GameKey::Interact => "lostland:keybind.action.interact",
         };
         NamespacedId::parse(raw).expect("硬编码的 i18n 键必然是合法的命名空间标识符")
     }
@@ -632,6 +700,14 @@ mod tests {
                 GameKey::Screenshot => 9,
                 GameKey::ZoomIn => 10,
                 GameKey::ZoomOut => 11,
+                GameKey::Inventory => 12,
+                GameKey::Craft => 13,
+                GameKey::PickUp => 14,
+                GameKey::Drop => 15,
+                GameKey::Equip => 16,
+                GameKey::Use => 17,
+                GameKey::Place => 18,
+                GameKey::Interact => 19,
             };
             assert_eq!(key.index(), expected_index);
             seen[key.index()] = true;
