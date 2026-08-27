@@ -7,8 +7,10 @@
   terrains: [
     {
       // 熔岩地面：不挡视线、不挡移动，但走过去很慢（代价 350，常规
-      // 地面是 100）。iron_sword_recipe 把它当作锻造场地，见
-      // crafting.json5 的 required_station。
+      // 地面是 100）。**不再兼任锻造场地**——家具层落地后
+      // required_station 指的是一件家具（examplemod:portable_anvil），
+      // 不是地形。本条留着的理由是它本来就成立的那一条：证明 mod 能
+      // 新增一种走得很慢的奇观地形。
       id: "examplemod:lava_floor",
       blocks_sight: false,
       blocks_move: false,

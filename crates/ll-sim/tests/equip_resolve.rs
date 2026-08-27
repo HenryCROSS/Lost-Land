@@ -127,6 +127,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND.mask(),
                     stat_bonuses: Vec::new(),
@@ -146,6 +147,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                     stack_limit: 1,
                     equip_mask: EquipSlot::OFF_HAND.mask(),
                     stat_bonuses: Vec::new(),
@@ -165,6 +167,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                     stack_limit: 1,
                     equip_mask: EquipSlot::MAIN_HAND
                         .mask()
@@ -438,6 +441,7 @@ fn 物品不可装备时装备意图静默无效() {
                 requires_identification: false,
                 study_experience: 0,
                 blind_box_pool: Vec::new(),
+                furniture: false,
                 use_effect: None,
                 penetration: Penetration::NONE,
                 damage_formula: None,

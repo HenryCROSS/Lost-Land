@@ -222,6 +222,43 @@ impl<'a> AmbientSource<'a> {
         let weather = Weather::derive(world.seed, world.clock, weathers);
         profiles.effective_temperature(index, world.clock, weather)
     }
+
+    /// 这个空间**允不允许建造**——
+    /// [`SpaceProfile::buildable`](ll_world::space_profile::SpaceProfile::buildable)
+    /// 在结算侧的唯一消费者（家具层批次）。
+    ///
+    /// # 为什么挂在本类型上，而不是给 `resolve` 再加一个目录参数
+    ///
+    /// 本类型已经是 `resolve` 手上**唯一**那份 `SpaceProfileTable` 的
+    /// 持有者（见类型文档），而 `resolve` 的参数表已经长到要靠六层
+    /// 入口函数来控制扩散。再造一个只转发同一张表的 `BuildCatalog`
+    /// trait，是 ADR 0021 明确拦下的那种「没有任何算法被共用的对称
+    /// 抽象」——本方法与 [`Self::temperature_in`] 读的是同一张表、同一
+    /// 个 `profile` 索引、同一条「查不到就降级」的纪律。
+    ///
+    /// 类型名里的「Ambient」因此确实比它现在承载的东西窄了一点：它实
+    /// 际是「层属性 + 天气这两张表在结算侧的入口」。**不改名**——改名
+    /// 会波及全部构造点与文档，换来的只是称呼上的贴切，而本方法与
+    /// 温度那条路共享的是实打实的同一份数据。
+    ///
+    /// # 两条降级都返回 `true`（允许建造）
+    ///
+    /// 没有内容表（[`AmbientSource::NONE`]）、或索引查不到（占位
+    /// `ContentIndex::default()`，见 [`Self::temperature_in`] 同一节）
+    /// 时一律放行——与温度那条「退回中性值」同一个方向：一份没装载层
+    /// 属性表的世界不该因此**多**出一条建造禁令。禁令必须来自真实的
+    /// 内容声明，否则本体三种非露天空间与全部测试夹具会一起变成不可
+    /// 建造，那不是保守，那是把功能关掉。
+    pub fn buildable_in(&self, space: &Space) -> bool {
+        let Some(profiles) = self.profiles else {
+            return true;
+        };
+        let index = space_profile_index(space);
+        if !profiles.is_defined(index) {
+            return true;
+        }
+        profiles.buildable(index)
+    }
 }
 
 /// 一个 [`Space`] 的层属性索引——两个变体的 `profile` 字段是同一个

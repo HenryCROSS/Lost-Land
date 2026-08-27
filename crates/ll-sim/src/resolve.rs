@@ -52,6 +52,7 @@
 
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
+use ll_core::torus::TorusPos;
 use ll_world::entity::{ActiveStatModifier, Agent, AttributeKind, BaseStats, EntityId};
 use ll_world::history::KillCause;
 use ll_world::space::{Space, SpaceId};
@@ -656,8 +657,10 @@ pub fn resolve_with_skills_traits_and_pools(
 /// 服务真正想让拾取时自动合并生效的调用方（`ll_mod::item::ItemTable`
 /// 现在就是这样的真实实现）。
 ///
-/// [`Intent::Drop`] 不消费 `items` 参数——丢弃不需要查堆叠上限，见
-/// [`resolve_drop`] 文档。
+/// [`Intent::Drop`] 从家具层批次起也消费 `items`——不是为了堆叠上限
+/// （丢弃仍然不查它），是为了问「这件东西是不是家具」，见
+/// [`resolve_drop`] 文档。传 [`NoItems`] 时它恒答「不是」，放置前置
+/// 因此整条不生效，与家具层落地之前逐位等价。
 pub fn resolve_with_skills_traits_pools_and_items(
     world: &WorldState,
     intent: &Intent,
@@ -1029,7 +1032,7 @@ fn resolve_dispatch(
         ),
         Intent::PickUp { actor } => resolve_pick_up(world, actor, items),
         Intent::Loot { actor } => resolve_loot(world, actor, items),
-        Intent::Drop { actor, def } => resolve_drop(world, actor, def),
+        Intent::Drop { actor, def } => resolve_drop(world, actor, def, items, ambient),
         Intent::Equip { actor, def } => resolve_equip(world, actor, def, items),
         Intent::Unequip { actor, slot } => resolve_unequip(world, actor, slot, items),
         Intent::Use { actor, def } => resolve_use_item(world, actor, def, items),
@@ -2549,17 +2552,69 @@ fn merge_into_inventory_effect(
 /// 里第一条匹配 `def` 的整堆丢在其当前脚下（见 `Intent::Drop` 文档
 /// 「为什么是整堆」一节）。
 ///
-/// # 静默无效的两种情形
+/// # 丢一件**家具**就是「放置」（家具层批次）
 ///
-/// `actor` 不存在，或背包里没有匹配 `def` 的堆——与 [`resolve_pick_up`]
-/// 同一条纪律。
-fn resolve_drop(world: &WorldState, actor: EntityId, def: ContentIndex) -> Vec<Effect> {
+/// 项目所有者裁定「家具也应该算是一种可以放在地形上的可交互物品」。
+/// 一件带 [`crate::item::ItemRule::furniture`] 的物品放到地上，与一堆
+/// 铁锭放到地上走的是**同一条路**（同一个 `Effect::AddGroundItem`、
+/// 同一个 [`ll_world::item::GroundItemStack`]、同一份存档字段）——
+/// ADR 0021：家具与普通地面物品之间没有任何一段算法需要被复制，
+/// 因此不为「放置」另开一个 `Intent`/一条结算路径。
+///
+/// 差别只有一处，就在这里：家具**要先问这一格放得下吗**，三道前置
+/// 逐条判，任一不成立整条意图静默作废：
+///
+/// 1. **这个空间允不允许建造**——
+///    [`crate::exposure::AmbientSource::buildable_in`]，本体地表与建筑
+///    内部为真、洞窟与地下城为假。这是 `SpaceProfile::buildable`
+///    落地至今**第一个**真实玩法消费者。
+/// 2. **脚下这一格有没有被地形占着**——判据是地形自己声明的
+///    `TerrainDef::blocks_move`。所有者原话「有些地方上已经有物品了，
+///    例如墙啊，之类的乱七八糟，应该就没办法再放置其他东西了」：一堵
+///    墙就是那一格上**已经有的那件东西**。本体十七个地形里命中的正是
+///    木墙/石墙/关着的门/窗/深水这五种。
+///    **不是**一张写死在引擎里的地形黑名单——`blocks_move` 是内容
+///    （`terrain.json5`）逐条声明的字段，任何 mod 新增的地形自带答案。
+/// 3. **这一格是不是已经摆了一件家具**——一格一件，理由同
+///    `ll_mod::item::ItemDef::furniture`「家具必须 `stack_limit == 1`」
+///    那条注册期校验：一格上放的是一件家具，不是一摞。**普通物品不
+///    受这条限制**，锻炉那一格照样能丢铁锭。
+///
+/// `def` 不是家具时，以上三条一条都不判，本函数与家具层落地之前
+/// **逐位等价**。
+///
+/// # 为什么普通丢弃**不**受地形占用那一条约束
+///
+/// 「丢」是东西从手里掉在脚下，而脚下那一格是行动者站得住的格子；
+/// 「放置」是主动占住一格。两者在所有者那句话里的位置不同——他说的是
+/// 「没办法再**放置**其他东西」。真正会长期占住一格的只有家具，把同
+/// 一道闸门加到普通丢弃上，唯一可观察的后果是「站在被地形占着的异常
+/// 格上（例如被 `stamp_settlement` 事后铺上墙的那一格）连东西都丢不
+/// 掉」，那是给一个异常状态再加一条死锁，不是玩法。这条分界是本批次
+/// 的判断，不是所有者的原话——报告里已按需要裁定的事项列出。
+///
+/// # 静默无效的情形
+///
+/// `actor` 不存在、背包里没有匹配 `def` 的堆——与 [`resolve_pick_up`]
+/// 同一条纪律；家具再加上面三道放置前置。
+fn resolve_drop(
+    world: &WorldState,
+    actor: EntityId,
+    def: ContentIndex,
+    items: &dyn ItemCatalog,
+    ambient: AmbientSource<'_>,
+) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
     let Some(stack) = agent.inventory.iter().find(|stack| stack.def == def) else {
         return Vec::new();
     };
+    if items.item(def).is_some_and(|rule| rule.furniture)
+        && !can_place_furniture(world, agent.pos, &agent.current_space, items, ambient)
+    {
+        return Vec::new();
+    }
 
     vec![
         Effect::RemoveFromInventory {
@@ -2576,6 +2631,62 @@ fn resolve_drop(world: &WorldState, actor: EntityId, def: ContentIndex) -> Vec<E
             contents: Vec::new(),
         },
     ]
+}
+
+/// 这一格摆得下一件家具吗（家具层批次）——[`resolve_drop`] 放置前置的
+/// 三道判定，抽成函数是因为它同时是
+/// [`crate::craft::RecipeRule::required_station`] 那条场地前置的镜像：
+/// 一条判「摆得下吗」，一条判「摆着的是不是它」，两者必须对同一个
+/// 「一格一件家具」的前提取一致的口径。
+///
+/// 逐条理由见 [`resolve_drop`] 文档「丢一件家具就是放置」一节。
+fn can_place_furniture(
+    world: &WorldState,
+    pos: TorusPos,
+    space: &Space,
+    items: &dyn ItemCatalog,
+    ambient: AmbientSource<'_>,
+) -> bool {
+    // ① 这个空间允不允许建造。
+    if !ambient.buildable_in(space) {
+        return false;
+    }
+    // ② 脚下这一格有没有被地形占着。查不到地形（区块没常驻）按「没被
+    // 占着」处理——与 `resolve` 一贯对查不到内容的降级方向一致，且
+    // 这条路径上 `terrain_at` 返回 `None` 意味着行动者站在一格还没
+    // 生成的地形上，那本身是别处的问题。
+    if world
+        .terrain_at(pos)
+        .is_some_and(|kind| world.terrain_table.blocks_move(kind))
+    {
+        return false;
+    }
+    // ③ 这一格是不是已经摆了一件家具。
+    furniture_at(world, pos, items).is_none()
+}
+
+/// 这一格上摆着的那件家具（家具层批次）——`None` 表示这格没有家具。
+///
+/// 「摆着的」= [`ll_world::state::WorldState::ground_items`] 里坐标相同、
+/// 且 [`crate::item::ItemRule::furniture`] 为真的第一条。`ground_items`
+/// 是 `Vec`（有序），同一格上真出现两件家具时取哪一条是确定的
+/// （约束 C5）——而正常路径下这不会发生，[`can_place_furniture`] 的第
+/// 三条前置就是为了让它不发生。
+fn furniture_at(
+    world: &WorldState,
+    pos: TorusPos,
+    items: &dyn ItemCatalog,
+) -> Option<ContentIndex> {
+    world
+        .ground_items
+        .iter()
+        .find(|ground| {
+            ground.pos == pos
+                && items
+                    .item(ground.stack.def)
+                    .is_some_and(|rule| rule.furniture)
+        })
+        .map(|ground| ground.stack.def)
 }
 
 /// [`Intent::Equip`] 结算（装备栏位批次，P6 第三批）：把 `actor` 背包
@@ -2862,7 +2973,7 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 2. 查配方，查不到 → 空                          （ADR 0015：未注册当作没有）
 /// 3. 副职闸门：类别要求非空且与 agent.subclasses 无交集 → 空
 /// 4. 已知闸门：配方声明 requires_discovery 且不在 known_recipes 里 → 空
-/// 5. 场地前置：required_station 与脚下地形不符 → 空
+/// 5. 场地前置：required_station 与脚下**摆着的那件家具**不符 → 空
 /// 6. 工具前置：没有「def 匹配且耐久未归零」的已装备物品 → 空
 /// 7. 食材校验：任意一条数量不够 → 空（不消耗任何食材）
 /// 8. 逐条食材产出 Effect::ConsumeInventoryItem，重复 count 次
@@ -2891,6 +3002,26 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 完全跳过本步，本函数对它们与本批次之前逐字节等价。两条把配方写进
 /// `Agent::known_recipes` 的发现路径见 [`resolve_read`] 与
 /// [`resolve_experiment`]。
+///
+/// # 场地是脚下**摆着的那件家具**（家具层批次）
+///
+/// 第 5 步此前问的是「脚下的**地形**是不是 `required_station`」，本体
+/// 因此只能拿 `lostland:floor_stone` 将就当铁匠铺地面——`crafting.json5`
+/// 里逐字写着那是「一个**明知的将就**：真正该当场地的是炉子或铁砧那样
+/// 的家具」。家具层落地后这条将就没有存在理由了：
+/// [`crate::craft::RecipeRule::required_station`] 现在指向一件
+/// **带 [`crate::item::ItemRule::furniture`] 的物品**，判定是
+/// [`furniture_at`]——脚下那一格的 `ground_items` 里摆着的那件家具是不
+/// 是它。
+///
+/// 判定仍然是「**站在这格上**」，不是「站在旁边」——`crafting-system.md`
+/// 六节那条理由（相邻判定会引入「多个相邻工作台算哪个」这类不必要的
+/// 问题）一字未改，换掉的只是「这格上的什么东西回答这个问题」。
+///
+/// 一件**不带** `furniture` 的普通物品当不了场地：[`furniture_at`] 只
+/// 认带标志的那一条，因此「把一堆铁锭丢在脚下就能开工」不成立。指向
+/// 普通物品的配方会变成永远做不出来——这是刻意的，见
+/// `ll_mod::content_audit::inspect_recipe` 里那段注释。
 ///
 /// # 全程静默失败
 ///
@@ -3074,9 +3205,10 @@ fn resolve_craft(
     if rule.requires_discovery && !agent.known_recipes.contains(&recipe) {
         return Vec::new();
     }
-    // ⑤ 场地前置——「站在这格上」，一次 terrain_at，与 resolve_move 同款。
+    // ⑤ 场地前置——「站在这格上」，一次 furniture_at（家具层批次把它从
+    // terrain_at 换过来，见本函数文档「场地是脚下摆着的那件家具」一节）。
     if let Some(station) = rule.required_station
-        && world.terrain_at(agent.pos).map(|kind| kind.index()) != Some(station)
+        && furniture_at(world, agent.pos, items) != Some(station)
     {
         return Vec::new();
     }

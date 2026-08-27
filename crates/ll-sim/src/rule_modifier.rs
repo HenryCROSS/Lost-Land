@@ -1934,6 +1934,7 @@ mod tests {
                     requires_identification: false,
                     study_experience: 0,
                     blind_box_pool: Vec::new(),
+                    furniture: false,
                     stack_limit: 1,
                     equip_mask: SlotMask::EMPTY,
                     stat_bonuses: Vec::new(),

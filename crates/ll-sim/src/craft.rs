@@ -65,12 +65,18 @@ pub struct RecipeRule {
     pub product: ContentIndex,
     /// 产出数量，恒 ≥ 1。
     pub product_count: u32,
-    /// 必须站在哪种地形上才能制作，指向地形表；`None` = 随地可做。
+    /// 必须站在哪件**家具**上才能制作，指向物品表（一件
+    /// [`crate::item::ItemRule::furniture`] 为真的物品）；`None` = 随地
+    /// 可做。
     ///
-    /// 判定是「站在这格上」（一次
-    /// [`ll_world::state::WorldState::terrain_at`]），不是「站在旁边」
-    /// ——见设计文档六节：相邻判定会引入「多个相邻工作台算哪个」这类
-    /// 不必要的问题。
+    /// 判定是「站在这格上」（脚下那一格的
+    /// [`ll_world::state::WorldState::ground_items`] 里摆着的那件家具是
+    /// 不是它），不是「站在旁边」——见设计文档六节：相邻判定会引入
+    /// 「多个相邻工作台算哪个」这类不必要的问题。
+    ///
+    /// 家具层批次之前本字段指向**地形表**、判定走
+    /// [`ll_world::state::WorldState::terrain_at`]，完整的更正理由见
+    /// `ll_mod::recipe::RecipeDef::required_station` 文档。
     pub required_station: Option<ContentIndex>,
     /// 必须装备着哪件物品才能制作，指向 `ItemDef`；`None` = 徒手可做。
     ///

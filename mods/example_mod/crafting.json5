@@ -39,19 +39,21 @@
       product_count: 1,
     },
     {
-      // 打铁剑：要熔岩地面当场地，还要一把战锤当工具。
+      // 打铁剑：要便携铁砧当场地（家具层批次前是熔岩地面——场地现在
+      // 指的是摆在脚下那一格的家具，不是脚下的地形），还要一把战锤
+      // 当工具。
       id: "examplemod:iron_sword_recipe",
       display_name_key: "examplemod:iron_sword_recipe_display_name",
       category: "examplemod:forging",
       ingredients: [{ item: "examplemod:iron_ingot", count: 2 }],
       product: "examplemod:iron_sword",
       product_count: 1,
-      required_station: "examplemod:lava_floor",
+      required_station: "examplemod:portable_anvil",
       required_tool: "examplemod:war_hammer",
     },
     {
       // 用废料打铁剑：同一件成品的第二条路径（少一块锭，搭一把破匕
-      // 首），证明「一件成品可以有多条配方」。
+      // 首），证明「一件成品可以有多条配方」。场地同上，也是铁砧。
       id: "examplemod:iron_sword_from_scrap",
       display_name_key: "examplemod:iron_sword_from_scrap_display_name",
       category: "examplemod:forging",
@@ -61,7 +63,7 @@
       ],
       product: "examplemod:iron_sword",
       product_count: 1,
-      required_station: "examplemod:lava_floor",
+      required_station: "examplemod:portable_anvil",
     },
     {
       // 批量做箭：一次出五支，证明 product_count 不必是 1。

@@ -261,6 +261,22 @@ pub struct ItemRule {
     /// 物品不是盲盒。完整论证见 `ll_mod::item::ItemDef::blind_box_pool`，
     /// **包括其中那条「给盲盒写配方会打开经验水龙头」的警告**。
     pub blind_box_pool: Vec<BlindBoxEntry>,
+    /// 这件物品放到地上之后是不是一件**家具**（家具层批次）——完整
+    /// 论证见 `ll_mod::item::ItemDef::furniture`，本字段是结算侧那一半。
+    ///
+    /// 两个消费者，都在 [`crate::resolve`]：
+    ///
+    /// - `resolve_drop` 的放置前置——为真时这次「丢弃」是一次**放置**，
+    ///   要先问「这一格放得下吗」（层可建造、地形没占着、还没摆过第二
+    ///   件家具），三条任一不成立就静默无效。
+    /// - `resolve_craft` 的场地前置——脚下那一格摆着的家具就是
+    ///   [`crate::craft::RecipeRule::required_station`] 要的东西。
+    ///
+    /// 第三条后果（不随时间老化回收）不在结算层，在
+    /// `ll_world::state::WorldState::cleanup_aged_ground_items` 的
+    /// `is_permanent` 参数上——那条不是任何一次 `Intent` 的后果，是系统
+    /// 级被动演化，见该方法文档。
+    pub furniture: bool,
 }
 
 /// 盲盒池里的一条候选：产出哪件物品、权重多少（盲盒批次）。
@@ -458,6 +474,7 @@ mod tests {
                 requires_identification: false,
                 study_experience: 0,
                 blind_box_pool: Vec::new(),
+                furniture: false,
                 taught_recipes: Vec::new(),
             })
         }

@@ -112,7 +112,7 @@ struct RealModsHandle {
     iron_ingot: ContentIndex,
     iron_sword: ContentIndex,
     war_hammer: ContentIndex,
-    lava_floor: ContentIndex,
+    portable_anvil: ContentIndex,
     shadowdancer: ContentIndex,
     cooking: ContentIndex,
 }
@@ -195,7 +195,7 @@ fn load_real_mods() -> RealModsHandle {
         iron_ingot: resolve("examplemod:iron_ingot"),
         iron_sword: resolve("examplemod:iron_sword"),
         war_hammer: resolve("examplemod:war_hammer"),
-        lava_floor: resolve("examplemod:lava_floor"),
+        portable_anvil: resolve("examplemod:portable_anvil"),
         shadowdancer: resolve("examplemod:shadowdancer"),
         cooking: resolve("examplemod:cooking"),
         item,
@@ -345,14 +345,17 @@ fn cook_then_abandon_then_forge(handle: &RealModsHandle, abandon: bool) -> Agent
         ],
         Vec::new(),
     );
-    // 锻造那条配方要求站在熔岩地板上并装备战锤，见
-    // mods/example_mod/crafting.json5 配方②。
+    // 锻造那条配方要求脚下摆着便携铁砧并装备战锤，见
+    // mods/example_mod/crafting.json5 配方②。家具层批次前这里刷的是
+    // 熔岩地板——场地现在是一件摆在地上的家具，不是地形。
     let pos = world.actors.get(crafter).expect("刚生成").pos;
     assert!(world.terrain_at(pos).is_some(), "脚下这一格必须已常驻");
-    world.terrain.set_terrain(
+    world.ground_items.push(ll_world::item::GroundItemStack {
         pos,
-        ll_world::terrain::TerrainKind::from_index(handle.lava_floor),
-    );
+        stack: ItemStack::new(handle.portable_anvil, 1),
+        dropped_at: world.clock,
+        contents: Vec::new(),
+    });
     {
         let agent = world.actors.get_mut(crafter).expect("刚生成");
         agent

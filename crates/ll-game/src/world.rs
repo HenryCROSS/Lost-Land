@@ -788,8 +788,23 @@ pub fn cloned_terrain_table(content: &LoadedContent) -> TerrainTable {
 /// 真实的、每帧都会被调用的生产入口"这一件事,不去动"世界时钟该如何
 /// 推进"这个更大的、独立的问题——一旦时钟推进被接上,地面物品就会在
 /// 真实游玩里按预期老化,不需要再改这里一行代码。
-pub fn cleanup_aged_ground_items(world: &mut WorldState) -> usize {
-    world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS)
+///
+/// # `content` 参数：家具不老化（家具层批次）
+///
+/// [`WorldState::cleanup_aged_ground_items`] 的 `is_permanent` 谓词由
+/// 这里折算——`ll-world` 不知道「家具」是什么（见该方法文档），本函数
+/// 是生产路径上唯一一处**同时**拿得到世界与物品表的地方，因此谓词在
+/// 这里成形：一堆地面物品的 `ItemDef.furniture` 为真，它就永不老化。
+/// 查不到这条物品规则（内容表里没有这个索引）时按「不是家具」处理，
+/// 与 `ll_sim::resolve` 对未注册物品一贯的降级方向一致：一个查不到的
+/// 索引不该因为查不到就获得「永不消失」这项特权。
+pub fn cleanup_aged_ground_items(world: &mut WorldState, content: &LoadedContent) -> usize {
+    world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS, &|def| {
+        content
+            .item_table
+            .get(def)
+            .is_some_and(|item| item.furniture)
+    })
 }
 
 #[cfg(test)]
@@ -869,7 +884,7 @@ mod tests {
         });
 
         // Act
-        let removed = cleanup_aged_ground_items(&mut game_world.world);
+        let removed = cleanup_aged_ground_items(&mut game_world.world, &content);
 
         // Assert：老化的一条被清掉,同一时刻新丢的一条（dropped_at 恰好
         // 等于清理前的 clock,推进后未超阈值）保留。

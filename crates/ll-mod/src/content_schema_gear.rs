@@ -1051,6 +1051,11 @@ pub struct RawItem {
     /// [`crate::item::ItemDef::blind_box_pool`]。
     #[serde(default)]
     pub blind_box_pool: Vec<RawBlindBoxEntry>,
+    /// 放到地上是不是一件**家具**，缺省 `false`（放到地上就是一堆躺着
+    /// 的东西）。为真时必须同时 `stack_limit: 1`（注册期硬校验）。见
+    /// [`crate::item::ItemDef::furniture`]。
+    #[serde(default)]
+    pub furniture: bool,
 }
 
 /// 盲盒产出池里的一条候选——对应 [`ll_sim::item::BlindBoxEntry`]。
@@ -1126,6 +1131,17 @@ fn define_one_item(registry: &mut Registry, table: &mut ItemTable, item: &RawIte
                 .to_string(),
         );
     }
+    // 家具不可堆叠——一格上摆的是「一座锻炉」，不是「一摞锻炉」。判据
+    // 形状与上面「可堆叠物品不能带耐久」那条逐字同构：两条规则字面
+    // 矛盾时在注册期直接拒绝（ADR 0017），而不是让「这一格被占了吗」
+    // 这个放置判据在运行期退化成「被占了几层」。见
+    // `crate::item::ItemDef::furniture`「注册期硬校验」一节。
+    if item.furniture && item.stack_limit > 1 {
+        return Err(format!(
+            "家具（furniture: true）不能可堆叠（堆叠上限 {}）——一格上摆的是一件家具，不是一摞家具",
+            item.stack_limit
+        ));
+    }
 
     table
         .define(
@@ -1149,6 +1165,9 @@ fn define_one_item(registry: &mut Registry, table: &mut ItemTable, item: &RawIte
                 tags: Vec::new(),
                 taught_recipes: Vec::new(),
                 blind_box_pool: Vec::new(),
+                // 与下面两条同一档：纯布尔，没有跨表引用要校验，因此
+                // 不需要一条单独的 `set_*` 入口。
+                furniture: item.furniture,
                 // 这两条**不**留空：它们没有任何跨表引用要校验，因此
                 // 不需要一条单独的 `set_*` 入口，见
                 // `crate::item::ItemAttrs::requires_identification`。
@@ -1535,6 +1554,7 @@ mod tests {
             requires_identification,
             study_experience,
             blind_box_pool: Vec::new(),
+            furniture: false,
         }
     }
 
@@ -1678,6 +1698,7 @@ mod tests {
             requires_identification: false,
             study_experience: 0,
             blind_box_pool: Vec::new(),
+            furniture: false,
         };
 
         // Act
@@ -1714,6 +1735,7 @@ mod tests {
             requires_identification: false,
             study_experience: 0,
             blind_box_pool: Vec::new(),
+            furniture: false,
         };
 
         // Act

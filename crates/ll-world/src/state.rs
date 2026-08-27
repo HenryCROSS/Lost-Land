@@ -698,11 +698,33 @@ impl WorldState {
     /// 真正把它接到"玩家靠近远景区域时顺带扫一次"这条触发路径上是
     /// 惰性追赶系统本身的调用方职责，不在本批次范围内（本批次只交付
     /// 这个可独立调用、可独立测试的清理机制本身）。
-    pub fn cleanup_aged_ground_items(&mut self, max_age_ticks: i64) -> usize {
+    ///
+    /// # `is_permanent`：哪些地面物品**永不**老化（家具层批次）
+    ///
+    /// 回调，不是字段、不是常量：本 crate 不知道「家具」是什么——
+    /// `ItemDef.furniture` 定义在下游的 `ll-mod`，`ll-world` 不能反向
+    /// 依赖它（依赖方向，规格 §5：`ll-world` ← `ll-sim` ← `ll-mod`），
+    /// 与本方法上面「阈值为什么是参数」完全同一条判断：**引擎只跑
+    /// 算法，判据由内容给**。调用方（生产路径是 `ll_game::world`）拿
+    /// 自己手上的物品表折算出这个谓词传进来。
+    ///
+    /// 为什么不是给 [`crate::item::GroundItemStack`] 加一个
+    /// `permanent: bool` 字段：那是把一个**能从内容算出来**的量存进世界
+    /// 状态，ADR 0009「能派生的不进存档」直接拦下——同一件家具的
+    /// 「永不老化」永远等于它的 `ItemDef.furniture`，存一份副本只会
+    /// 制造一个读档后可能与内容表对不上的第二真相源。
+    ///
+    /// 谓词恒返回 `false` 时，本方法与家具层落地之前**逐位等价**。
+    pub fn cleanup_aged_ground_items(
+        &mut self,
+        max_age_ticks: i64,
+        is_permanent: &dyn Fn(ContentIndex) -> bool,
+    ) -> usize {
         let now = self.clock.0;
         let before = self.ground_items.len();
-        self.ground_items
-            .retain(|item| now.saturating_sub(item.dropped_at.0) < max_age_ticks);
+        self.ground_items.retain(|item| {
+            is_permanent(item.stack.def) || now.saturating_sub(item.dropped_at.0) < max_age_ticks
+        });
         before - self.ground_items.len()
     }
 
@@ -3096,8 +3118,8 @@ mod tests {
         world.advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS + 1);
 
         // Act
-        let removed =
-            world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS);
+        let removed = world
+            .cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS, &|_| false);
 
         // Assert
         assert_eq!(removed, 1);
@@ -3123,8 +3145,8 @@ mod tests {
         world.advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS - 1);
 
         // Act
-        let removed =
-            world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS);
+        let removed = world
+            .cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS, &|_| false);
 
         // Assert
         assert_eq!(removed, 0);
@@ -3158,8 +3180,8 @@ mod tests {
         world_b.advance(100);
 
         // Act
-        let removed_with_short_threshold = world_a.cleanup_aged_ground_items(50);
-        let removed_with_long_threshold = world_b.cleanup_aged_ground_items(200);
+        let removed_with_short_threshold = world_a.cleanup_aged_ground_items(50, &|_| false);
+        let removed_with_long_threshold = world_b.cleanup_aged_ground_items(200, &|_| false);
 
         // Assert
         assert_eq!(removed_with_short_threshold, 1);

@@ -753,7 +753,32 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// **版本 25**：上面两批（资源大类字段、伤害类别显示名字段）各自
 /// 独立开发时都写成 24，合并后两批的哈希输入同时存在，量尺与任一
 /// 单批都不同，因此必须是 25。版本号是单调标记不是计数器。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 25;
+///
+/// ---
+///
+/// # 版本 24（家具层批次）
+///
+/// **既有表多了一个字段**：[`write_item_fields`] 末尾多混入一个
+/// `ItemDef.furniture` 布尔。这是版本 16「既有表多字段」那一类，**不是**
+/// 新增内容表：`ContentTableKind` 一个变体都没加，[`ContentValueTables`]
+/// 与 [`entry_value_digest`] 的分支表一字未改。每一件物品（包括
+/// `furniture: false` 的绝大多数）的条目摘要都因为多出的这一个字节位而
+/// 改变，因此必须递增。
+///
+/// `check_content_hash_gate_cross_coverage` 那条互校本批次**无事可做**
+/// ——它检查的是「`ContentTableKind` 的每个变体都在
+/// `scripts/ci/check_field_consumers.py` 的 `CONTENT_HASH_KIND_TO_TARGET_TYPE`
+/// 与 `TARGET_TYPES` 里有落点」，而 `Item` → `ItemDef` 这一条早就在，
+/// 新字段落在同一个已登记的类型里。`ItemDef.furniture` 在决策层
+/// （`ll_sim::resolve::resolve_drop`/`resolve_craft` 读
+/// `ll_sim::item::ItemRule::furniture`，字段同名）有真实读取点，字段
+/// 门禁因此也直接绿。
+///
+/// **版本 26**：上面这批（家具标志字段）独立开发时写成 24，而主干此时
+/// 已经因为资源大类与伤害类别显示名两批走到 25。合并后三批的哈希输入
+/// 同时存在，量尺与任何一批单独存在时都不同，因此必须是 26。版本号是
+/// 单调标记不是计数器，跳号无害。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 26;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1882,6 +1907,13 @@ fn write_item_fields(
         hasher.write_u64(u64::from(entry.count));
         hasher.write_u64(u64::from(entry.weight));
     }
+    // 家具层批次新增的 `ItemDef.furniture`——布尔混成 0/1 一个字节位
+    // （手法同上面 `requires_identification`）。取默认值 `false` 的
+    // 物品也照写，理由同上：「没有声明」与「声明成 false」在值哈希里
+    // 必须是同一段字节，但这一段本身此前**不存在**，因此每一件物品的
+    // 条目摘要都会变——那正是 `CONTENT_HASH_ALGORITHM_VERSION` 必须
+    // 递增到 24 的原因。
+    hasher.write_u64(u64::from(view.furniture));
 }
 
 /// 混入一个 [`SlotMask`]——直接混入底层位表示
@@ -2706,6 +2738,7 @@ mod tests {
                 requires_identification: false,
                 study_experience: 0,
                 blind_box_pool: Vec::new(),
+                furniture: false,
             }
         }
 
@@ -2889,6 +2922,7 @@ mod tests {
                 requires_identification: false,
                 study_experience: 0,
                 blind_box_pool: Vec::new(),
+                furniture: false,
             }
         }
 
@@ -3640,6 +3674,7 @@ mod tests {
             requires_identification: false,
             study_experience: 0,
             blind_box_pool: Vec::new(),
+            furniture: false,
         };
 
         let digest = |taught: Vec<ContentIndex>| -> u64 {
@@ -3715,6 +3750,7 @@ mod tests {
                         requires_identification: requires,
                         study_experience: xp,
                         blind_box_pool: pool,
+                        furniture: false,
                     },
                 )
                 .expect("测试用声明内部自洽");
@@ -3748,6 +3784,59 @@ mod tests {
             digest(false, 0, vec![entry(prize_one, 1, 1)]),
             digest(false, 0, vec![entry(prize_one, 1, 2)])
         );
+    }
+
+    /// 家具层批次新增的 `ItemDef.furniture` 真的进了物品摘要——见
+    /// [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 24」一节。
+    ///
+    /// 守的失效模式与上面三条同形：把一件家具悄悄改成普通物品（或反
+    /// 过来），存档若察觉不到，玩家读档后会发现自己摆在营地里的锻炉
+    /// 三十个游戏日后自己没了，而版本校验会报「内容没变」。
+    #[test]
+    fn 家具标志进了物品摘要() {
+        // Arrange：两件除了 furniture 之外逐字段相同的物品。
+        use crate::item::ItemAttrs;
+        use ll_core::scaled::Milli;
+        use ll_sim::combat::Penetration;
+        use ll_sim::item::SlotMask;
+
+        let mut registry = Registry::new();
+        let thing = registry.intern(id("yourmod:thing"));
+
+        let digest = |furniture: bool| -> u64 {
+            let mut table = ItemTable::new();
+            table
+                .define(
+                    thing,
+                    ItemAttrs {
+                        display_name_key: id("yourmod:item.thing"),
+                        stack_limit: 1,
+                        base_weight: Milli::from_whole(1),
+                        base_price: Milli::from_whole(2),
+                        max_durability: None,
+                        equip_mask: SlotMask::EMPTY,
+                        stat_bonuses: Vec::new(),
+                        use_effect: None,
+                        penetration: Penetration::NONE,
+                        damage_formula: None,
+                        damage_category: None,
+                        rule_modifiers: Vec::new(),
+                        tags: Vec::new(),
+                        taught_recipes: Vec::new(),
+                        requires_identification: false,
+                        study_experience: 0,
+                        blind_box_pool: Vec::new(),
+                        furniture,
+                    },
+                )
+                .expect("测试用声明内部自洽");
+            let mut hasher = StateHasher::new();
+            write_item_fields(&mut hasher, &table, thing, &registry);
+            hasher.finish()
+        };
+
+        // Act & Assert
+        assert_ne!(digest(false), digest(true));
     }
 
     /// 配方发现批次新增的 `RecipeDef.requires_discovery` 真的进了摘要

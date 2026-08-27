@@ -79,8 +79,12 @@ struct RealModsHandle {
     iron_sword: ContentIndex,
     arrow: ContentIndex,
     war_hammer: ContentIndex,
-    lava_floor: ContentIndex,
-    paved_floor: ContentIndex,
+    /// 家具层批次：两条锻造配方的 required_station 现在指着它（一件
+    /// **家具物品**），不再是 lava_floor 那种地形。
+    portable_anvil: ContentIndex,
+    /// 反例用的另一件家具——「摆着的家具不是配方要的那一件」。本体的
+    /// 锻炉与 example_mod 的铁砧是两件不同的家具，正好当这个反例。
+    forge: ContentIndex,
     shadowdancer: ContentIndex,
 }
 
@@ -167,8 +171,8 @@ fn load_real_mods() -> RealModsHandle {
         iron_sword: resolve("examplemod:iron_sword"),
         arrow: resolve("examplemod:arrow"),
         war_hammer: resolve("examplemod:war_hammer"),
-        lava_floor: resolve("examplemod:lava_floor"),
-        paved_floor: resolve("examplemod:paved_floor"),
+        portable_anvil: resolve("examplemod:portable_anvil"),
+        forge: resolve("lostland:forge"),
         shadowdancer: resolve("examplemod:shadowdancer"),
         item,
         recipe: recipe_table,
@@ -291,16 +295,23 @@ fn craft_via_turn_engine_full(
     let bystander = spawn_agent(&mut world, (9, 9), &Scene::new(Vec::new()));
 
     if let Some(station) = scene.station_underfoot {
+        // 家具层批次：工作台是**摆在脚下那一格的一件家具**，不再是刷
+        // 一块工作台地形。这里直接往 `ground_items` 里放一堆——与玩家
+        // 走 `Intent::Drop` 放置产出的是同一个
+        // `GroundItemStack`（`resolve_drop` 的放置前置在
+        // `furniture_placement.rs` 有自己的端到端证据，本文件只关心
+        // 「摆着了之后制作认不认」）。
         let pos = world.actors.get(crafter).expect("刚生成").pos;
-        // 先读一次保证该区块常驻（`set_terrain` 对未常驻区块 panic，
-        // 见其文档），再写入工作台地形。
         assert!(
             world.terrain_at(pos).is_some(),
             "制作者脚下这一格必须已常驻"
         );
-        world
-            .terrain
-            .set_terrain(pos, ll_world::terrain::TerrainKind::from_index(station));
+        world.ground_items.push(ll_world::item::GroundItemStack {
+            pos,
+            stack: ItemStack::new(station, 1),
+            dropped_at: world.clock,
+            contents: Vec::new(),
+        });
     }
 
     let mut timeline = Timeline::new();
@@ -385,7 +396,7 @@ fn 三条前置全开的锻造配方在全部满足时产出铁剑() {
     scene
         .equipment
         .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.war_hammer, 1));
-    scene.station_underfoot = Some(handle.lava_floor);
+    scene.station_underfoot = Some(handle.portable_anvil);
 
     // Act
     let inventory = craft_via_turn_engine(
@@ -416,7 +427,7 @@ fn 刚打出来的剑是满耐久而不是没有耐久概念() {
     scene
         .equipment
         .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.war_hammer, 1));
-    scene.station_underfoot = Some(handle.lava_floor);
+    scene.station_underfoot = Some(handle.portable_anvil);
 
     // Act
     let inventory = craft_via_turn_engine(
@@ -450,7 +461,7 @@ fn 缺少副职时同一条锻造配方静默不产出() {
     scene
         .equipment
         .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.war_hammer, 1));
-    scene.station_underfoot = Some(handle.lava_floor);
+    scene.station_underfoot = Some(handle.portable_anvil);
 
     // Act
     let inventory = craft_via_turn_engine(
@@ -466,8 +477,8 @@ fn 缺少副职时同一条锻造配方静默不产出() {
 }
 
 #[test]
-fn 不站在工作台地形上时同一条锻造配方静默不产出() {
-    // 场地前置的反例：副职与工具都有，只是站错了地方。
+fn 脚下摆的不是配方要的那件家具时同一条锻造配方静默不产出() {
+    // 场地前置的反例：副职与工具都有，只是脚下摆着的是**另一件**家具。
     // Arrange
     let handle = load_real_mods();
     let mut scene = Scene::new(vec![ItemStack::new(handle.iron_ingot, 5)]);
@@ -475,15 +486,13 @@ fn 不站在工作台地形上时同一条锻造配方静默不产出() {
     scene
         .equipment
         .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.war_hammer, 1));
-    // 显式站在一块**确定不是**工作台的地面上，而不是「不写就算了」：
-    // 本文件的测试世界由 `base_terrain_fixture()` 建成，它的地形索引
-    // 来自一个与 `mods/` 装载会话不同的 interner，脚下那一格的天然
-    // 地形索引与 examplemod:lava_floor 是否相等纯属巧合——不写就等于
-    // 让这条反例的成立与否取决于两个 interner 的编号是否撞车。
-    scene.station_underfoot = Some(handle.paved_floor);
+    // 显式摆一件**确定不是**这条配方要的家具，而不是「不写就算了」：
+    // 「脚下什么都没摆」与「脚下摆着别的东西」是两条不同的失败路径，
+    // 后者才真正证明 `furniture_at` 比的是**这一件**，不是「有没有」。
+    scene.station_underfoot = Some(handle.forge);
     assert_ne!(
-        handle.paved_floor, handle.lava_floor,
-        "铺石地面与熔岩地板必须是两条不同的注册地形，否则本反例无意义"
+        handle.forge, handle.portable_anvil,
+        "本体锻炉与示例铁砧必须是两件不同的家具，否则本反例无意义"
     );
 
     // Act
@@ -522,7 +531,7 @@ fn 制作一次之后被点名的工具真的掉了一点耐久() {
         EquipSlot::MAIN_HAND,
         ItemStack::with_durability(handle.war_hammer, 1, WAR_HAMMER_MAX_DURABILITY),
     );
-    scene.station_underfoot = Some(handle.lava_floor);
+    scene.station_underfoot = Some(handle.portable_anvil);
 
     // Act
     let (inventory, equipment) = craft_via_turn_engine_full(
@@ -557,7 +566,7 @@ fn 制作没有发生时工具一点耐久都不掉() {
         EquipSlot::MAIN_HAND,
         ItemStack::with_durability(handle.war_hammer, 1, WAR_HAMMER_MAX_DURABILITY),
     );
-    scene.station_underfoot = Some(handle.lava_floor);
+    scene.station_underfoot = Some(handle.portable_anvil);
 
     // Act
     let (inventory, equipment) = craft_via_turn_engine_full(
@@ -587,7 +596,7 @@ fn 没有耐久概念的工具制作后不会被凭空赋予耐久() {
     scene
         .equipment
         .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.war_hammer, 1));
-    scene.station_underfoot = Some(handle.lava_floor);
+    scene.station_underfoot = Some(handle.portable_anvil);
 
     // Act
     let (inventory, equipment) = craft_via_turn_engine_full(
@@ -618,7 +627,7 @@ fn 耐久归零的工具装着也打不了铁() {
         EquipSlot::MAIN_HAND,
         ItemStack::with_durability(handle.war_hammer, 1, 0),
     );
-    scene.station_underfoot = Some(handle.lava_floor);
+    scene.station_underfoot = Some(handle.portable_anvil);
 
     // Act
     let inventory = craft_via_turn_engine(
@@ -643,7 +652,7 @@ fn 食材不足时不消耗任何食材也不产出() {
     scene
         .equipment
         .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.war_hammer, 1));
-    scene.station_underfoot = Some(handle.lava_floor);
+    scene.station_underfoot = Some(handle.portable_anvil);
 
     // Act：这条配方要两块铁锭，只有一块。
     let inventory = craft_via_turn_engine(
