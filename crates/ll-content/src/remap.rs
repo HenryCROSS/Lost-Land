@@ -95,6 +95,10 @@ pub fn remap_world(
     // 穷尽解构：见模块文档「完整性如何保证」——新增字段在这里编译失败。
     let WorldState {
         seed: _,
+        // 地形形态参数（世界生成参数落地批次）：四个纯整数，不含任何
+        // ContentIndex，也不依赖 mod 加载顺序——与 seed 同一类，不需要
+        // 跟着重映射走。
+        terrain_shape: _,
         clock: _,
         size: _,
         ref mut terrain,

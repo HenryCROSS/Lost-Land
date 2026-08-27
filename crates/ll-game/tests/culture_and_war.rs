@@ -124,7 +124,14 @@ fn find_war(
 fn 矮人矿城被哥布林部落攻灭() {
     // Arrange
     let content = test_content();
-    let game_world = build_new_world(&content, SEED).expect("默认布局满足全部前置条件");
+    let game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: SEED,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("默认布局满足全部前置条件");
     let chronicle = game_world
         .world
         .terrain
@@ -186,7 +193,14 @@ fn 矮人矿城被哥布林部落攻灭() {
 fn 被攻灭的矿城在地上真的是一片石头废墟() {
     // Arrange
     let content = test_content();
-    let mut game_world = build_new_world(&content, SEED).expect("默认布局满足全部前置条件");
+    let mut game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: SEED,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("默认布局满足全部前置条件");
     let (_, victim) = {
         let chronicle = game_world
             .world
@@ -269,7 +283,14 @@ fn 被攻灭的矿城在地上真的是一片石头废墟() {
 fn 哥布林营地与矮人矿城用的不是同一种建材() {
     // Arrange
     let content = test_content();
-    let mut game_world = build_new_world(&content, SEED).expect("默认布局满足全部前置条件");
+    let mut game_world = build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: SEED,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("默认布局满足全部前置条件");
     let pick = |id: &str| -> SettlementSite {
         let chronicle = game_world
             .world

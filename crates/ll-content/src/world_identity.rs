@@ -27,6 +27,7 @@
 use ll_core::torus::TorusSize;
 use ll_mod::mod_set::GenerationModSet;
 use ll_world::WorldError;
+use ll_world::generate::TerrainShape;
 use ll_world::zone::ZoneLayout;
 
 use crate::header::ModHeaderEntry;
@@ -87,6 +88,144 @@ pub const RECOMMENDED_PRESETS: &[SizePreset] = &[
         zone_count: (192, 128),
     },
 ];
+
+/// 一档推荐的**地形形态**预设：稳定标识 + 两个 Fluent 键 + 一组
+/// [`TerrainShape`]。
+///
+/// # 为什么是 Rust 常量，不是 JSON5 内容（这是本批次的一处判断，不是
+/// 所有者原话）
+///
+/// 本项目的架构是「JSON5 内容 + Rust 行为」，一张只有整数的表看起来
+/// 天然属于内容侧。三条理由让它留在 Rust：
+///
+/// 1. **它与既有的尺寸预设表是同一件东西。**[`RECOMMENDED_PRESETS`]
+///    （地图尺寸预设，玩家在同一个开局界面上做的同一类选择）从落地
+///    起就是本文件里的 Rust 常量。把地形形态预设做成内容，会让开局
+///    界面上并排的两组选项来自两套完全不同的机制。
+/// 2. **这些数值的正当性由引擎自己的实测测试背书。**
+///    `crates/ll-content/tests/terrain_presets.rs` 直接断言「群岛预设的
+///    水域比例必须显著高于大陆预设」这类性质。那条测试住在 `ll-world`，
+///    而 `ll-world` 不能反向依赖 `ll-mod`/`ll-content`——预设一旦搬进
+///    JSON5，测试就只能把同一批数字再抄一遍，凭空造出一处必须手工保持
+///    同步的重复（`crates/ll-world/tests/noise_presets.rs` 模块文档已经
+///    如实记录过一次同样的重复，那是被依赖方向逼出来的，不该主动再造
+///    第二处）。
+/// 3. **做成内容要付的代价与收益不成比例。**那意味着一套新的 JSON5
+///    schema、一个注册期加载器，以及
+///    `ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION` 递增——
+///    换来的只是「第三方 mod 能加一档地形预设」。而 mod 真正想改地形
+///    时要的是自己的生成算法，不是往一张四整数表里再加一行。
+///
+/// 这条判断随时可以推翻：真有 mod 需要声明自己的地形预设时，把这张表
+/// 搬进内容侧是一次机械改动，届时再付那套代价也不迟（YAGNI）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TerrainPreset {
+    /// 稳定标识——玩家在配置文件里写的就是这个字符串，永远不随译文变化。
+    pub id: &'static str,
+    /// 供 UI/日志展示的名字，走 Fluent（`assets/locales/*.ftl`）。
+    pub display_name_key: &'static str,
+    /// 一句话说明这档预设是什么样的世界，同样走 Fluent。
+    pub description_key: &'static str,
+    /// 这档预设对应的地形形态参数。
+    pub shape: TerrainShape,
+}
+
+/// [`TERRAIN_PRESETS`] 里默认那一档的标识——找不到玩家指定的标识时
+/// 退回到它，也是配置文件缺省时的取值。
+///
+/// 它对应的 [`TerrainShape`] 必须与 [`TerrainShape::default`] **逐位
+/// 相同**：两条黄金基准（`crates/ll-world/tests/determinism.rs` 的
+/// `EXPECTED_WORLD_DIGEST`、`crates/ll-sim/tests/replay.rs` 的
+/// `EXPECTED_REPLAY_DIGEST`）固定的正是那张地图，
+/// `crates/ll-content/src/world_identity.rs` 的测试
+/// `大陆预设与地形形态默认值逐位相同` 把这条约束钉死。
+pub const DEFAULT_TERRAIN_PRESET_ID: &str = "continent";
+
+/// 四档推荐地形形态预设：大陆 / 群岛 / 山地 / 内陆。
+///
+/// # 数值从哪来（全部实测，不是拍脑袋）
+///
+/// 每一档的数值都在本体「标准」尺寸（96×64 区块 = 4608×3072 格）下实测过
+/// 水域比例、深水比例、山地比例、独立陆块数、最大陆块占全部陆地的比例、
+/// 海岸线占陆地的比例六项（「大陆」那一档取十个种子的均值，其余三档取
+/// 五个种子——种子数按行不同，完整数据与调参过程见
+/// `knowledge/design/worldgen-parameters.md`）。名字与实测数据必须对得上——
+/// `crates/ll-content/tests/terrain_presets.rs` 逐条断言这件事。
+///
+/// | 预设 | 水域 | 深水 | 山地 | 独立陆块 | 最大陆块占陆地 |
+/// |---|---|---|---|---|---|
+/// | 大陆（10 种子） | 37.3% | 25.5% | 3.0% | 9.4 | 98.9% |
+/// | 群岛（5 种子） | 72.6% | 60.2% | 1.6% | 251.6 | 8.2% |
+/// | 山地（5 种子） | 25.0% | 15.9% | 24.4% | 6.2 | 98.7% |
+/// | 内陆（5 种子） | 15.9% | 9.0% | 3.0% | 3.8 | 99.8% |
+///
+/// # 为什么「群岛」必须同时动 `continent_shrink`
+///
+/// 光把海平面调高**得不到群岛**，得到的是「一块被淹得只剩边角的大陆」：
+/// 实测 `sea_level = 600`（水域 82.2%）时，最大的那一块陆地仍占全部
+/// 陆地的 40.3%。原因是噪声的大陆尺度由世界尺寸自动推导，与阈值无关，
+/// 抬高海平面只是把同一批大陆的低处淹掉，不会把它们切碎。真正把陆地
+/// 切成群岛的是 [`TerrainShape::continent_shrink`]（见
+/// `ll_world::noise::TileableNoise::shrink_continents`）——实测它把独立
+/// 陆块数从 10.8 抬到 88.2（缩两档）而水域比例几乎不动（35.5% →
+/// 37.1%），这正是「碎」与「淹」两件事被拆开的证据。
+pub const TERRAIN_PRESETS: &[TerrainPreset] = &[
+    TerrainPreset {
+        id: DEFAULT_TERRAIN_PRESET_ID,
+        display_name_key: "lostland:worldgen.preset.continent.display_name",
+        description_key: "lostland:worldgen.preset.continent.description",
+        // 必须与 TerrainShape::default() 逐位相同，见
+        // DEFAULT_TERRAIN_PRESET_ID 文档。
+        shape: TerrainShape {
+            sea_level: 400,
+            mountain_level: 750,
+            octaves: 4,
+            continent_shrink: 0,
+        },
+    },
+    TerrainPreset {
+        id: "archipelago",
+        display_name_key: "lostland:worldgen.preset.archipelago.display_name",
+        description_key: "lostland:worldgen.preset.archipelago.description",
+        shape: TerrainShape {
+            sea_level: 540,
+            mountain_level: 780,
+            octaves: 4,
+            continent_shrink: 2,
+        },
+    },
+    TerrainPreset {
+        id: "highland",
+        display_name_key: "lostland:worldgen.preset.highland.display_name",
+        description_key: "lostland:worldgen.preset.highland.description",
+        shape: TerrainShape {
+            sea_level: 350,
+            mountain_level: 620,
+            octaves: 4,
+            continent_shrink: 0,
+        },
+    },
+    TerrainPreset {
+        id: "inland",
+        display_name_key: "lostland:worldgen.preset.inland.display_name",
+        description_key: "lostland:worldgen.preset.inland.description",
+        shape: TerrainShape {
+            sea_level: 300,
+            mountain_level: 760,
+            octaves: 4,
+            continent_shrink: 0,
+        },
+    },
+];
+
+/// 按稳定标识查一档地形形态预设；标识不认识时返回 [`None`]，由调用方
+/// 决定是记日志退回默认还是报错——本函数不替调用方做那个决定。
+///
+/// 线性扫描而非 `HashMap`：四条记录，且约束 C5 明令逻辑判断不得依赖
+/// 哈希容器迭代顺序，这里连引入的理由都没有。
+pub fn terrain_preset(id: &str) -> Option<&'static TerrainPreset> {
+    TERRAIN_PRESETS.iter().find(|preset| preset.id == id)
+}
 
 /// 校验一组尺寸选择是否能构造出合法的 [`ZoneLayout`]。
 ///

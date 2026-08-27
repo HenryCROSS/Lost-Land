@@ -282,3 +282,17 @@ equip_slot-boot_r-display_name = Right Boot
 equip_slot-ring_l-display_name = Left Ring
 equip_slot-ring_r-display_name = Right Ring
 equip_slot-unknown-display_name = Unknown Slot
+
+# Terrain shape presets (world generation parameters batch):
+#   - worldgen-preset-*-display_name / -description
+#     ll-content world_identity::TERRAIN_PRESETS (the four base presets)
+# Percentages below are measured means over ten seeds at the "standard"
+# world size (96x64 zones); see docs/worldgen-tuning.md for the raw data.
+worldgen-preset-continent-display_name = Continent
+worldgen-preset-continent-description = One unbroken landmass with ocean only at its edges. Roughly 37% water, very little mountain.
+worldgen-preset-archipelago-display_name = Archipelago
+worldgen-preset-archipelago-description = Hundreds of islands scattered across open ocean, none of them a continent. Roughly 73% water.
+worldgen-preset-highland-display_name = Highland
+worldgen-preset-highland-description = A land-dominated world of unbroken ranges. Roughly 24% mountain and only 25% water.
+worldgen-preset-inland-display_name = Inland
+worldgen-preset-inland-description = An inland world that barely sees the sea: roughly 16% water, farming and herding in place of fishing.

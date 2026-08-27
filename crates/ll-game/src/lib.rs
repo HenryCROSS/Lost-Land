@@ -25,6 +25,7 @@ pub mod surface_draw;
 #[cfg(test)]
 mod test_support;
 pub mod world;
+pub mod worldgen;
 
 use std::path::{Path, PathBuf};
 
@@ -61,11 +62,6 @@ const ASSETS_DIR_NAME: &str = "assets";
 /// `lostland`）的这一份就放在资产根目录下，与任何 mod 的 `locales/`
 /// 是同一套查找规则,不需要另开一条特殊路径。
 const LOCALES_DIR_NAME: &str = "locales";
-
-/// 新游戏使用的默认地形种子——本体目前没有开局选择种子的界面（P7），
-/// 固定用一个值保证「同一份构建反复运行产出同一个世界」，便于开发期
-/// 复现问题；未来开局界面接入后，这里应换成玩家输入或随机数。
-const DEFAULT_SEED: u64 = 20_260_820;
 
 /// 运行期用到的全部文件系统路径，集中一处方便测试与未来的命令行参数
 /// 覆盖。
@@ -207,10 +203,14 @@ fn resolve_data_dir_with(
 
 /// 装载内容 → 建世界或读档：存档存在就读档，读档失败/降级为只读时
 /// 记日志退回新游戏，从不 panic——存档损坏不该让玩家彻底玩不了。
-fn load_or_new_game(paths: &GamePaths, content: &content::LoadedContent) -> GameWorld {
+fn load_or_new_game(
+    paths: &GamePaths,
+    content: &content::LoadedContent,
+    new_game_config: &ll_platform::config::NewGameConfig,
+) -> GameWorld {
     if !paths.save.exists() {
         tracing::info!(path = %paths.save.display(), "未找到存档，开始新游戏");
-        return new_game(content);
+        return new_game(content, new_game_config);
     }
 
     match save::load_game(&paths.save, content) {
@@ -223,7 +223,10 @@ fn load_or_new_game(paths: &GamePaths, content: &content::LoadedContent) -> Game
             // 区块早就带着据点，而且可能已经被玩家改过，绝不能重铺。
             world
                 .terrain
-                .attach_chronicle(std::sync::Arc::new(rebuild_chronicle(content)));
+                .attach_chronicle(std::sync::Arc::new(rebuild_chronicle(
+                    content,
+                    &world.gen_params(),
+                )));
             tracing::info!(path = %paths.save.display(), "读档成功，继续游玩");
             // 时间轴与 noise 同一类「运行期派生数据」，不随
             // `WorldState` 序列化——按每个存活实体已持久化的
@@ -231,10 +234,16 @@ fn load_or_new_game(paths: &GamePaths, content: &content::LoadedContent) -> Game
             // `crate::world::rebuild_timeline` 文档「为什么时间轴不进
             // 存档」一节。
             let timeline = rebuild_timeline(&world);
+            // 生成参数取**存档里记着的那一组**，不是配置文件里的、更
+            // 不是一份默认值——见 `WorldState::gen_params` 文档「为什么
+            // 读档后必须走这里」一节：读档路径此前重建噪声源时取的是
+            // 本体默认种子加默认形态，玩家一旦能自己选，往前走一步地形
+            // 就会换一张图。
+            let params = world.gen_params();
             GameWorld {
                 world,
-                noise: rebuild_noise(),
-                params: default_params(),
+                noise: rebuild_noise(&params),
+                params,
                 player,
                 timeline,
             }
@@ -244,24 +253,23 @@ fn load_or_new_game(paths: &GamePaths, content: &content::LoadedContent) -> Game
                 path = %paths.save.display(),
                 "存档因缺失内容降级为只读，本体二进制暂不支持只读模式游玩，改为开始新游戏"
             );
-            new_game(content)
+            new_game(content, new_game_config)
         }
         LoadOutcome::Rejected(error) => {
             tracing::error!(?error, path = %paths.save.display(), "存档读取失败，开始新游戏");
-            new_game(content)
+            new_game(content, new_game_config)
         }
     }
 }
 
-fn new_game(content: &content::LoadedContent) -> GameWorld {
-    build_new_world(content, DEFAULT_SEED).expect("默认区块布局满足全部构造前置条件")
-}
-
-fn default_params() -> ll_world::generate::GenParams {
-    ll_world::generate::GenParams {
-        seed: DEFAULT_SEED,
-        ..ll_world::generate::GenParams::default()
-    }
+/// 按玩家的新游戏配置建一局新世界——`config.json5` 的
+/// `new_game` 段在这里、也只在这里，真正变成一张地图。
+fn new_game(
+    content: &content::LoadedContent,
+    new_game_config: &ll_platform::config::NewGameConfig,
+) -> GameWorld {
+    let params = worldgen::resolve_gen_params(new_game_config);
+    build_new_world(content, params).expect("默认区块布局满足全部构造前置条件")
 }
 
 /// 读档成功后重建噪声源——`WorldState` 反序列化不携带 `TileableNoise`
@@ -269,10 +277,9 @@ fn default_params() -> ll_world::generate::GenParams {
 /// 派生出的派生数据，见 `ll_world::state::WorldState::terrain_at_streaming`
 /// 文档同一取舍），流式加载继续需要它。噪声只依赖布局与种子,不需要
 /// 已装载的内容,故不接收 `LoadedContent` 参数。
-fn rebuild_noise() -> ll_world::noise::TileableNoise {
+fn rebuild_noise(params: &ll_world::generate::GenParams) -> ll_world::noise::TileableNoise {
     let layout = world::build_zone_layout().expect("默认区块布局满足全部构造前置条件");
-    ll_world::generate::build_zone_noise(&layout, &default_params())
-        .expect("默认区块布局满足全部构造前置条件")
+    ll_world::generate::build_zone_noise(&layout, params).expect("默认区块布局满足全部构造前置条件")
 }
 
 /// 读档成功后重新派生世界编年史——与 [`rebuild_noise`] 同一条纪律，
@@ -281,16 +288,18 @@ fn rebuild_noise() -> ll_world::noise::TileableNoise {
 /// 与 `rebuild_noise` 不同的是本函数需要 `LoadedContent`：判断「哪个
 /// 区块能住人」要读地形属性表（`blocks_move`）、「这里有什么资源」要读
 /// 资源表，而两者的索引都依赖当前会话的注册结果。
-fn rebuild_chronicle(content: &content::LoadedContent) -> ll_world::chronicle::WorldChronicle {
+fn rebuild_chronicle(
+    content: &content::LoadedContent,
+    params: &ll_world::generate::GenParams,
+) -> ll_world::chronicle::WorldChronicle {
     let layout = world::build_zone_layout().expect("默认区块布局满足全部构造前置条件");
-    let params = default_params();
-    let noise = ll_world::generate::build_zone_noise(&layout, &params)
+    let noise = ll_world::generate::build_zone_noise(&layout, params)
         .expect("默认区块布局满足全部构造前置条件");
     ll_world::chronicle::WorldChronicle::generate(
         &ll_world::chronicle::ChronicleInput {
             layout: &layout,
             noise: &noise,
-            params: &params,
+            params,
             terrain_ids: &content.terrain_ids,
             terrain_table: &content.terrain_table,
             resources: &content.resource_table,
@@ -396,7 +405,7 @@ pub fn run_game() {
         );
     }
 
-    let game_world = load_or_new_game(&paths, &content);
+    let game_world = load_or_new_game(&paths, &content, &config.new_game);
     tracing::info!(
         seed = game_world.world.seed,
         clock = game_world.world.clock.0,
@@ -528,7 +537,11 @@ mod tests {
             .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
 
         // Act
-        let game_world = load_or_new_game(&paths, &content);
+        let game_world = load_or_new_game(
+            &paths,
+            &content,
+            &ll_platform::config::NewGameConfig::default(),
+        );
 
         // Assert
         assert!(game_world.world.actors.get(game_world.player).is_some());
@@ -627,7 +640,7 @@ mod tests {
         let paths = GamePaths::under(&base);
         let content = load_content(&crate::test_support::repo_mods_dir(), &paths.assets_root)
             .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
-        let original = new_game(&content);
+        let original = new_game(&content, &ll_platform::config::NewGameConfig::default());
         let original_pos = original
             .world
             .actors
@@ -645,7 +658,11 @@ mod tests {
         .expect("写出应当成功");
 
         // Act
-        let reloaded = load_or_new_game(&paths, &content);
+        let reloaded = load_or_new_game(
+            &paths,
+            &content,
+            &ll_platform::config::NewGameConfig::default(),
+        );
 
         // Assert
         let reloaded_pos = reloaded
@@ -655,6 +672,93 @@ mod tests {
             .expect("读档后玩家实体应当仍存在")
             .pos;
         assert_eq!(reloaded_pos, original_pos);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn 改动新游戏配置不影响已存在存档读回后的世界摘要() {
+        // `ll_platform::config` 模块文档「一个类别不同的字段」一节承诺
+        // 的那条不变式：`new_game` 段是**建档期初值**，世界一旦建成就
+        // 由存档接管，此后改配置文件不会改变任何一个已存在存档的重放
+        // 结果。这条测试是那个承诺的唯一保证。
+        //
+        // 反例（已实跑验证会红）：把 `load_or_new_game` 读档分支里的
+        // `world.gen_params()` 换回配置解析结果
+        // （`worldgen::resolve_gen_params(new_game_config)`），
+        // 第二条断言当场红——两次读回来的 `params` 会跟着配置一起变。
+        // Arrange：用**默认**配置建一份存档。
+        let base = crate::test_support::unique_temp_path("ll-game-lib-test-config-isolation");
+        std::fs::create_dir_all(&base).expect("创建测试目录应当成功");
+        let paths = GamePaths::under(&base);
+        let content = load_content(&crate::test_support::repo_mods_dir(), &paths.assets_root)
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
+        let default_config = ll_platform::config::NewGameConfig::default();
+        let original = new_game(&content, &default_config);
+        save::save_game(
+            &paths.save,
+            &content,
+            &original,
+            "测试旅人",
+            "出生地",
+            ll_content::mode::SaveMode::Permadeath,
+        )
+        .expect("写出应当成功");
+        let hash_before = original.world.hash();
+        let params_before = original.world.gen_params();
+
+        // Act：把配置改成完全不同的一档（群岛 + 另一个种子），再读同一
+        // 份存档。
+        let changed_config = ll_platform::config::NewGameConfig {
+            terrain_preset: "archipelago".to_string(),
+            seed: Some(999_999),
+            ..ll_platform::config::NewGameConfig::default()
+        };
+        assert_ne!(
+            worldgen::resolve_gen_params(&changed_config),
+            worldgen::resolve_gen_params(&default_config),
+            "两份配置必须真的解析出不同的参数，否则这条测试什么也没验证"
+        );
+        let reloaded = load_or_new_game(&paths, &content, &changed_config);
+
+        // Assert
+        assert_eq!(reloaded.world.hash(), hash_before);
+        assert_eq!(reloaded.params, params_before);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn 没有存档时新游戏真的按配置里的预设建世界() {
+        // 另一半：配置在**该起作用**的时候必须真的起作用——否则「接线」
+        // 只是把参数搬进了一个没人读的字段。
+        // Arrange
+        let base = crate::test_support::unique_temp_path("ll-game-lib-test-config-applies");
+        std::fs::create_dir_all(&base).expect("创建测试目录应当成功");
+        let paths = GamePaths::under(&base);
+        let content = load_content(&crate::test_support::repo_mods_dir(), &paths.assets_root)
+            .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
+        let config = ll_platform::config::NewGameConfig {
+            terrain_preset: "archipelago".to_string(),
+            ..ll_platform::config::NewGameConfig::default()
+        };
+        let expected_shape = ll_content::world_identity::terrain_preset("archipelago")
+            .expect("预设表里有群岛这一档")
+            .shape;
+
+        // Act：paths.save 不存在，走的是新游戏分支。
+        let game_world = load_or_new_game(&paths, &content, &config);
+
+        // Assert
+        assert_eq!(game_world.world.terrain_shape, expected_shape);
+        assert_eq!(game_world.params.shape, expected_shape);
+        assert_ne!(
+            expected_shape,
+            ll_world::generate::TerrainShape::default(),
+            "群岛预设与默认形态必须真的不同，否则这条测试什么也没验证"
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&base);

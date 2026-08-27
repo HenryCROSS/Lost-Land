@@ -18,31 +18,152 @@ use crate::space::ZoneCoord;
 use crate::terrain::{BaseTerrainIds, TerrainKind};
 use crate::zone::ZoneLayout;
 
-/// 地形生成参数。
+/// 地形**形态**参数：同一个种子下，这组数值决定世界长什么样——水陆
+/// 比例、山地多少、陆地碎成几块。
 ///
-/// 高度阈值取 [`TileableNoise`] 输出区间同一套千分比整数，全程无浮点。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct GenParams {
-    /// 噪声与地形生成的种子，决定整张世界地形的具体分布。
-    pub seed: u64,
-    /// 深水与浅水的分界高度（千分比）。
+/// 全部取 [`TileableNoise`] 输出区间同一套千分比整数，全程无浮点
+/// （[ADR 0020](../../../knowledge/decisions/0020-scripts-may-use-floats-internally-boundary-type-gated.md)
+/// 乙区：这些数值直接流进世界状态，必须是量化整数）。
+///
+/// # 为什么与 `seed` 分成两个类型
+///
+/// 不是为了对称（[ADR 0021](../../../knowledge/decisions/0021-abstraction-requires-shared-algorithm-not-symmetry.md)
+/// 明令禁止那种理由），是因为存档里这两半的归属**本来就不同**：
+/// `seed` 早就作为 `ll_world::state::WorldState::seed` 单独持久化了，
+/// 而形态参数此前根本没进存档。把形态参数聚成一个类型，
+/// `WorldState` 就只需要新增**一个**字段（
+/// `ll_world::state::WorldState::terrain_shape`）承接它，
+/// 不必把种子再存第二遍、也不必把四个散字段各自铺进存档结构与
+/// `remap` 的穷尽解构里。
+///
+/// # 为什么它必须进存档（ADR 0009「默认派生，只存偏差」）
+///
+/// ADR 0009 的规则是「能派生的不进存档」。形态参数**不可派生**——它是
+/// 玩家在建档那一刻做出的选择，世界建成之后没有任何其它数据能反推出
+/// 「玩家当初选的是海平面 400 还是 620」（地形本身是这组参数的函数，
+/// 反过来不成立：不同参数组合可能在已常驻的那几块区块上产出相同地形）。
+/// 它与 `seed`、世界尺寸、生成期 mod 集合同属
+/// `ll_content::world_identity` 描述的「缺一，世界都复现不出来」那一
+/// 类，因此进存档是正当的，不是对 ADR 0009 的例外。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TerrainShape {
+    /// 深水与浅水的分界高度（千分比）。**水陆比例的主旋钮**：噪声高度
+    /// 分布集中在 300～700 之间（见 `knowledge/design/worldgen-parameters.md` 实测直方
+    /// 图），这个值每上调 50，全图水域比例约上升 11 个百分点；调到 200
+    /// 以下或 700 以上旋钮会饱和（几乎全陆 / 几乎全水）。
     pub sea_level: i32,
-    /// 丘陵与山地的分界高度（千分比）。
+    /// 丘陵与山地的分界高度（千分比）。**山地比例的主旋钮**，且与
+    /// [`Self::sea_level`] 正交——实测调这个值不改变水陆比例一个百分点。
     pub mountain_level: i32,
-    /// 噪声倍频叠加层数，层数越多地形起伏的细节越丰富。
+    /// 噪声倍频叠加层数，层数越多地形起伏的细节越丰富。**地形破碎程度
+    /// 的旋钮**：层数越多，高度分布越向中位数收拢（多层平均的必然结果），
+    /// 于是极端高度变少（山地占比从 1 层的 19% 掉到 8 层的 2.6%）、
+    /// 海岸线越曲折、独立陆块越多。
     pub octaves: u32,
+    /// 大陆尺度缩减档位：每 +1 档，噪声最粗一层的格子边长减半，也就是
+    /// 「一块大陆」的典型尺寸减半。见
+    /// [`TileableNoise::shrink_continents`]——**这是「群岛」形态唯一
+    /// 真正需要的旋钮**，原有三个阈值旋钮表达不了它。
+    pub continent_shrink: u32,
 }
 
-impl Default for GenParams {
-    /// 默认阈值：海平面 400、山地起点 750、四层倍频。
+impl Default for TerrainShape {
+    /// 默认形态：海平面 400、山地起点 750、四层倍频、不缩减大陆尺度。
+    ///
+    /// 这四个值必须**逐位**保持不变——它们是
+    /// `crates/ll-world/tests/determinism.rs` 的 `EXPECTED_WORLD_DIGEST`
+    /// 与 `crates/ll-sim/tests/replay.rs` 的 `EXPECTED_REPLAY_DIGEST`
+    /// 两条黄金基准所固定的那张地图。
     fn default() -> Self {
-        GenParams {
-            seed: 0,
+        TerrainShape {
             sea_level: 400,
             mountain_level: 750,
             octaves: 4,
+            continent_shrink: 0,
         }
     }
+}
+
+/// [`TerrainShape`] 各字段的合法取值范围——越界即拒绝，见
+/// [`TerrainShape::validate`]。
+///
+/// 越界值不会让生成 panic（阈值链只是让某些地形带变空，
+/// `shrink_continents` 自己在 1 处饱和），但会静默产出一张没人想要的
+/// 地图——玩家手改配置写错一个零，应该看到一条明确的拒绝日志，而不是
+/// 开出一个全是深水的世界还以为是自己运气差。
+impl TerrainShape {
+    /// 高度千分比的取值上界（含），与 [`TileableNoise`] 输出区间一致。
+    pub const HEIGHT_MAX: i32 = 1000;
+    /// [`Self::mountain_level`] 至少要比 [`Self::sea_level`] 高出多少
+    /// ——阈值链里从海平面到山地之间铺了浅水(+50)/沙地(+100)与
+    /// 草地/森林/丘陵三段（`mountain_level - 150` 起算），少于 150 这
+    /// 几段就会互相穿插，地形带的先后顺序不再成立。
+    pub const MIN_LEVEL_GAP: i32 = 150;
+    /// 倍频层数的合法区间（含）。上界取 12：振幅每层减半，第 11 层起
+    /// 振幅整数除法归零、[`TileableNoise::octaves`] 自己就会提前跳出，
+    /// 再大的值只是无效声明。
+    pub const OCTAVES_RANGE: std::ops::RangeInclusive<u32> = 1..=12;
+    /// 大陆尺度缩减档位的上界（含）。取 8：本体最大预设尺寸下自动推导
+    /// 出的 `coarse_scale` 也不过 32（五档），8 档足以让任何尺寸都饱和
+    /// 到 1，再大没有额外效果。
+    pub const MAX_CONTINENT_SHRINK: u32 = 8;
+
+    /// 校验这组形态参数是否落在合法区间；不合法时返回一句可直接写进
+    /// 日志的中文原因。
+    ///
+    /// 这是系统边界上的输入校验（玩家手写的配置文件是不可信输入）：
+    /// 调用方（`ll_game` 的配置解析）应当在拒绝时记一条日志并退回
+    /// [`Self::default`]，与 `ll_platform::config::load_or_default`
+    /// 对损坏配置的处理同一条纪律——绝不 panic。
+    pub fn validate(&self) -> Result<(), String> {
+        if !(0..=Self::HEIGHT_MAX).contains(&self.sea_level) {
+            return Err(format!(
+                "海平面 {} 超出合法区间 0..={}",
+                self.sea_level,
+                Self::HEIGHT_MAX
+            ));
+        }
+        if !(0..=Self::HEIGHT_MAX).contains(&self.mountain_level) {
+            return Err(format!(
+                "山地阈值 {} 超出合法区间 0..={}",
+                self.mountain_level,
+                Self::HEIGHT_MAX
+            ));
+        }
+        if self.mountain_level - self.sea_level < Self::MIN_LEVEL_GAP {
+            return Err(format!(
+                "山地阈值 {} 与海平面 {} 的差不足 {}，地形带会互相穿插",
+                self.mountain_level,
+                self.sea_level,
+                Self::MIN_LEVEL_GAP
+            ));
+        }
+        if !Self::OCTAVES_RANGE.contains(&self.octaves) {
+            return Err(format!(
+                "倍频层数 {} 超出合法区间 {}..={}",
+                self.octaves,
+                Self::OCTAVES_RANGE.start(),
+                Self::OCTAVES_RANGE.end()
+            ));
+        }
+        if self.continent_shrink > Self::MAX_CONTINENT_SHRINK {
+            return Err(format!(
+                "大陆尺度缩减档位 {} 超出合法区间 0..={}",
+                self.continent_shrink,
+                Self::MAX_CONTINENT_SHRINK
+            ));
+        }
+        Ok(())
+    }
+}
+
+/// 地形生成参数：种子 + 形态。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct GenParams {
+    /// 噪声与地形生成的种子，决定整张世界地形的具体分布。
+    pub seed: u64,
+    /// 地形形态参数，见 [`TerrainShape`]。
+    pub shape: TerrainShape,
 }
 
 /// 生成一整张环面地形。
@@ -97,7 +218,8 @@ fn build_noise(world: TorusSize, params: &GenParams) -> Result<TileableNoise, Wo
     let period_x = world.width() / cell_size;
     let period_y = world.height() / cell_size;
     Ok(TileableNoise::new(params.seed, period_x, period_y)
-        .expect("宽高已校验为 CELL_SIZE 的整数倍，且 TorusSize 保证宽高非零，周期不可能为零"))
+        .expect("宽高已校验为 CELL_SIZE 的整数倍，且 TorusSize 保证宽高非零，周期不可能为零")
+        .shrink_continents(params.shape.continent_shrink))
 }
 
 /// 在给定的（未经环面环绕的）坐标处求出对应地形。
@@ -113,7 +235,7 @@ fn terrain_at_coord(
     y: i32,
     terrain_ids: &BaseTerrainIds,
 ) -> TerrainKind {
-    let height = noise.octaves(x, y, params.octaves);
+    let height = noise.octaves(x, y, params.shape.octaves);
     height_to_terrain(height, params, terrain_ids)
 }
 
@@ -122,19 +244,20 @@ fn terrain_at_coord(
 /// 阈值全部取自 [`GenParams`] 的千分比整数，与 [`TileableNoise`] 的
 /// 输出区间保持一致，全程无浮点。
 fn height_to_terrain(height: i32, params: &GenParams, terrain_ids: &BaseTerrainIds) -> TerrainKind {
-    if height < params.sea_level {
+    let shape = &params.shape;
+    if height < shape.sea_level {
         terrain_ids.deep_water
-    } else if height < params.sea_level + 50 {
+    } else if height < shape.sea_level + 50 {
         terrain_ids.shallow_water
-    } else if height < params.sea_level + 100 {
+    } else if height < shape.sea_level + 100 {
         terrain_ids.sand
-    } else if height < params.mountain_level - 150 {
+    } else if height < shape.mountain_level - 150 {
         terrain_ids.grass
-    } else if height < params.mountain_level - 50 {
+    } else if height < shape.mountain_level - 50 {
         terrain_ids.forest
-    } else if height < params.mountain_level {
+    } else if height < shape.mountain_level {
         terrain_ids.hill
-    } else if height < params.mountain_level + 100 {
+    } else if height < shape.mountain_level + 100 {
         terrain_ids.mountain
     } else {
         terrain_ids.snow
@@ -396,13 +519,17 @@ mod tests {
         let world = test_world();
         let low_sea = GenParams {
             seed: 7,
-            sea_level: 400,
-            ..GenParams::default()
+            shape: TerrainShape {
+                sea_level: 400,
+                ..TerrainShape::default()
+            },
         };
         let high_sea = GenParams {
             seed: 7,
-            sea_level: 700,
-            ..GenParams::default()
+            shape: TerrainShape {
+                sea_level: 700,
+                ..TerrainShape::default()
+            },
         };
 
         // Act

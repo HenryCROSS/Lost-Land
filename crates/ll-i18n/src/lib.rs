@@ -500,6 +500,20 @@ mod tests {
         "lostland:recipe_category.tailoring.display_name",
         "lostland:recipe_category.alchemy.display_name",
         "lostland:recipe_category.cooking.display_name",
+        // 四档地形形态预设的名字与说明（世界生成参数落地批次）：
+        // `ll_content::world_identity::TERRAIN_PRESETS` 的
+        // `display_name_key`/`description_key`。它们是玩家在建档时真正
+        // 会看到的文案（当前经日志与配置文件说明，P7 开局界面落地后经
+        // 界面），与上面那批内容名字同一条纪律：新增一档预设却忘了补
+        // .ftl，必须在这里红。
+        "lostland:worldgen.preset.continent.display_name",
+        "lostland:worldgen.preset.continent.description",
+        "lostland:worldgen.preset.archipelago.display_name",
+        "lostland:worldgen.preset.archipelago.description",
+        "lostland:worldgen.preset.highland.display_name",
+        "lostland:worldgen.preset.highland.description",
+        "lostland:worldgen.preset.inland.display_name",
+        "lostland:worldgen.preset.inland.description",
         "save-mod-missing",
         "save-mod-version-mismatch",
         "mod-dependency-version-mismatch",

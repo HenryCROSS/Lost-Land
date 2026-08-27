@@ -1314,8 +1314,14 @@ mod tests {
     /// 脱离真实窗口直接在单元测试里构造并调用私有的 `advance`。
     fn test_demo() -> Demo {
         let content = test_content();
-        let game_world =
-            crate::world::build_new_world(&content, 1).expect("测试用布局满足全部构造前置条件");
+        let game_world = crate::world::build_new_world(
+            &content,
+            ll_world::generate::GenParams {
+                seed: 1,
+                ..ll_world::generate::GenParams::default()
+            },
+        )
+        .expect("测试用布局满足全部构造前置条件");
         let save_path =
             crate::test_support::unique_temp_path("ll-game-app-test-save").with_extension("llsave");
         Demo::new(
