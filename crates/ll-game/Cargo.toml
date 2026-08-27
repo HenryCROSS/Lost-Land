@@ -40,3 +40,7 @@ tracing = "0.1"
 
 [dev-dependencies]
 proptest.workspace = true
+# 仅供 `examples/surface_preview.rs`（地表内容渲染的可视化验收产物）
+# 把真实图集的像素拼成一张可以直接看的 PNG。版本与 features 与
+# `ll-render` 的那份一致，避免同一个 crate 在工作区里被解析成两份。
+image = { version = "0.25", default-features = false, features = ["png"] }

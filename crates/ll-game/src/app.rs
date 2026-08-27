@@ -59,6 +59,7 @@ use crate::layout::{
 };
 use crate::player_action::{Feedback, PlayerCommand, PlayerMenu, player_command};
 use crate::save::save_game;
+use crate::surface_draw::{PLAYER_ENTITY, SurfaceDraw, TERRAIN_ENTITY_BASE, surface_draws};
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
 /// 本体二进制的 NPC 决策来源：**按职业选行为树**。
@@ -116,11 +117,6 @@ fn npc_behavior_source(content: &LoadedContent, world_seed: u64) -> NativeBehavi
 /// `Zoom::new`/`MIN_SAFE_ZOOM`/`MAX_SAFE_ZOOM` 的钳制。
 const ZOOM_STEP: f32 = 0.1;
 
-/// 玩家标记在绘制顺序里固定的实体号。
-const PLAYER_ENTITY: u64 = 0;
-/// 地形瓦片绘制顺序号的起始偏移。
-const TERRAIN_ENTITY_BASE: u64 = 1;
-
 /// 世界地图（M 键切换）按区块下采样的倍率——喂给
 /// `ll_world::overview::continent_map` 的 `downsample` 参数。世界默认
 /// 64×48 个区块（见 `crate::world` 的 `ZONE_COUNT`），downsample=2 时
@@ -138,7 +134,17 @@ const WORLD_MAP_DOWNSAMPLE: u32 = 2;
 /// 「读到了字节但解码失败」这一层已经做了同样的降级（见其模块文档
 /// 「打包失败必须优雅」一节），这里补的是更前一步「连字节都读不到」
 /// 的同一条降级路径。
-fn load_sprite_sources(vfs: &AssetVfs) -> Vec<SpriteSource> {
+///
+/// # 为什么是 `pub`
+///
+/// `crates/ll-game/tests/surface_render.rs`（地表内容渲染的端到端验收）
+/// 要在没有 GPU 的进程里，用**与真实游戏完全同一段代码**把真实
+/// `assets/` + `mods/` 打成图集，再去问「这个图集键真的对应一张画了
+/// 东西的图吗」。若那条验收自己另写一份读盘逻辑，它验的就不再是生产
+/// 路径——ADR 0018 要的正是「经真实内容、走真实路径」的证据。本函数
+/// 本身与 GPU 无关（只读文件、拼结构体），公开它不会把任何 GPU 状态
+/// 泄漏出去。
+pub fn load_sprite_sources(vfs: &AssetVfs) -> Vec<SpriteSource> {
     vfs.sprites
         .iter()
         .filter_map(|sprite| match std::fs::read(&sprite.source_file) {
@@ -294,6 +300,35 @@ impl GpuResources {
                 None
             }
         }
+    }
+
+    /// 按 `names` 给出的优先级取**第一个真的在图集里**的条目。
+    ///
+    /// # 为什么不能直接对每个候选调用 [`Self::lookup`]
+    ///
+    /// [`Self::lookup`] 查不到时会打一条 `error!` 日志——那对「就这一个
+    /// 名字，查不到就是缺图」的既有调用方是对的，但对本方法是错的：
+    /// 「内容没有自带贴图，退回通用记号」是**预期内的正常路径**（绝大
+    /// 多数家具与种族都不会自带图），不是缺陷。用 `lookup` 逐个试会让
+    /// 每一帧、每一个 NPC 都刷一条 error 日志，日志本身随即失去信噪比。
+    /// 因此前面的候选走不打日志的探测，只有最后一个候选（兜底记号）
+    /// 走 [`Self::lookup`]——兜底记号缺席才真的是缺陷，那条 error 该打。
+    fn lookup_first<'a, 'n>(
+        &'a self,
+        names: impl Iterator<Item = &'n str>,
+    ) -> Option<(&'a AtlasEntry, [f32; 4])> {
+        let mut names = names.peekable();
+        while let Some(name) = names.next() {
+            if names.peek().is_none() {
+                return self.lookup(name);
+            }
+            if self.atlas.metadata().lookup(name).is_some()
+                && let Some(uv) = self.atlas.uv_rect(name)
+            {
+                return self.atlas.metadata().lookup(name).map(|entry| (entry, uv));
+            }
+        }
+        None
     }
 }
 
@@ -998,8 +1033,62 @@ fn render_surface(
         );
     }
 
+    // 地面物品堆 / 放置家具 / NPC——地形与玩家之外的三类世界内容，见
+    // `crate::surface_draw` 模块文档「这个模块补的是哪个洞」。三类共用
+    // 同一个 push 帮手，绘制层序由各自指令里的 `layer` 决定（地形
+    // → 地面物品/家具 → NPC → 玩家）。
+    for draw in surface_draws(world, &content.registry, game_world.player) {
+        // **只画当前视野内的**，不画「记得那里曾经有东西」：迷雾记忆
+        // （`ll_world::exploration`）记的是地形，不是物品与人——地形不会
+        // 自己跑掉，物品与 NPC 会。把它们也按记忆画出来，等于让玩家隔着
+        // 迷雾看见一堆早就被人捡走的东西。这条是本批次的判断，不是所有者
+        // 的裁定；真要做「上次见到时那里有东西」的记忆层，需要先有一份
+        // 存进 `WorldState` 的观察记录，不是渲染层能自己变出来的。
+        if !visible.contains(draw.pos) {
+            continue;
+        }
+        push_surface_draw(&draw, camera, tint, zoom, resources);
+    }
+
     let (px, py) = camera.world_to_screen(player_pos);
     push_player_marker(px, py, sprite_name, tint, zoom, resources);
+}
+
+/// 把一条 [`SurfaceDraw`] 变成一个精灵实例推进批次。
+///
+/// 三类世界内容（地面物品堆、放置家具、NPC）共用这一个消费点——这正是
+/// `crate::surface_draw` 模块文档里「不许把同一段查图逻辑抄三遍」那条
+/// 抽象理由的落点：查图次序（内容自带键 → 通用记号）在
+/// [`SurfaceDraw::keys`]，锚点/缩放/绘制顺序换算在这里，两处各只有一份。
+///
+/// 查不到任何图集条目时**跳过**而不是 panic：兜底记号缺席已经由
+/// [`GpuResources::lookup_first`] 打了 error 日志，画面上少一个记号远好于
+/// 让整局游戏崩掉（与 [`push_player_marker`] 同一条降级纪律）。
+fn push_surface_draw(
+    draw: &SurfaceDraw,
+    camera: &Camera,
+    tint: [f32; 4],
+    zoom: Zoom,
+    resources: &mut GpuResources,
+) {
+    let Some((entry, uv)) = resources.lookup_first(draw.keys()) else {
+        return;
+    };
+    let (sx, sy) = camera.world_to_screen(draw.pos);
+    let footprint = entry.footprint;
+    // 锚点换算与 zoom 后处理的次序与 `push_player_marker` 逐字一致，
+    // 理由见那边的注释。
+    let [ax, ay] = sprite_draw_position((sx, sy), footprint, entry.pivot);
+    let order = DrawOrder::new(
+        draw.layer,
+        footprint_bottom_screen_y(sy, footprint.height),
+        draw.entity,
+    );
+    let [zx, zy] = apply_zoom([ax, ay], zoom);
+    resources.batch.push(
+        order,
+        sprite_instance(zx, zy, entry.sprite_size(), uv, tint, zoom),
+    );
 }
 
 /// 空间的完整 [`ll_world::space_profile::SpaceProfile`]——`Space` 本身

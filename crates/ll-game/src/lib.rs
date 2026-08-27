@@ -21,6 +21,7 @@ pub mod content;
 pub mod layout;
 pub mod player_action;
 pub mod save;
+pub mod surface_draw;
 #[cfg(test)]
 mod test_support;
 pub mod world;
