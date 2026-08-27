@@ -30,7 +30,10 @@ use ll_core::time::Tick;
 use ll_game::content::LoadedContent;
 use ll_game::world::build_new_world;
 use ll_mod::roster::{SettlementRoles, settlement_founder_race};
-use ll_world::history::{HistoricalEventKind, SettlementDemise};
+use ll_world::culture::{CultureKind, CultureTable, founder_race};
+use ll_world::history::{
+    HistoricalEvent, HistoricalEventKind, SettlementConqueredRecord, SettlementDemise,
+};
 use ll_world::settlement::{SettlementSite, SettlementStatus};
 
 /// 本文件用的世界种子。三个独立种子（20260826 / 7 / 99）实测都满足
@@ -342,4 +345,254 @@ fn 哥布林营地与矮人矿城用的不是同一种建材() {
     // `return fallback;`（也就是回到文化落地之前的硬编码），本条的
     // 第二句断言当场红：矿城退回木墙，`hold_stone` 变成 0。恢复后
     // 重新跑通。
+}
+
+/// 找出一次「**同族**占领、归属真的换了、而且那座城活到了最后」的易主
+/// ——返回 `(易主记录, 最终快照里的那座城)`。
+///
+/// 三条筛选各有各的作用，缺一条本文件的验收线就咬不住：
+///
+/// 1. **同族**：项目所有者的方向是「同种族的话更倾向于占领」。种族取
+///    [`founder_race`]，与 `ll_world::chronicle` 判定时用的是同一个
+///    函数、同一条随机流，也与名册那一侧
+///    （[`settlement_founder_race`]）是同一个答案。
+/// 2. **归属真的换了**（`former_culture != new_culture`）：绝大多数
+///    战争发生在同文化的两座据点之间，那种易主在地上看不出区别，拿它
+///    当证据的话「占了但没换主子」这个改坏版本照样能过。
+/// 3. **活到了最后**：验收线要求那座据点在地上仍然是活的。一座被占领
+///    之后又在更晚的纪元被别人铲平的城，最终快照里是废墟——那不是本条
+///    要展示的东西。
+fn find_conquest(
+    sites: &[SettlementSite],
+    events: &[HistoricalEvent],
+    cultures: &CultureTable,
+    seed: u64,
+) -> Option<(SettlementConqueredRecord, SettlementSite)> {
+    for event in events {
+        let HistoricalEventKind::SettlementConquered(record) = &event.kind else {
+            continue;
+        };
+        if record.former_culture == record.new_culture {
+            continue;
+        }
+        let victim_race = founder_race(
+            cultures,
+            Some(CultureKind::from_index(record.former_culture)),
+            record.site,
+            seed,
+        );
+        let conqueror_race = founder_race(
+            cultures,
+            Some(CultureKind::from_index(record.new_culture)),
+            record.conqueror,
+            seed,
+        );
+        if victim_race.is_none() || victim_race != conqueror_race {
+            continue;
+        }
+        let Some(site) = sites
+            .iter()
+            .find(|site| site.id == record.site && site.status == SettlementStatus::Inhabited)
+        else {
+            continue;
+        };
+        return Some((*record, *site));
+    }
+    None
+}
+
+#[test]
+fn 据点被同族占领而不是被摧毁() {
+    // 验收线的前半句，逐字：「编年史里能读出『某据点被同族占领而非
+    // 摧毁』……只是归属变了」。
+    // Arrange
+    let content = test_content();
+    let game_world = build_new_world(&content, SEED).expect("默认布局满足全部前置条件");
+    let chronicle = game_world
+        .world
+        .terrain
+        .chronicle()
+        .expect("新游戏必然装上了编年史");
+    let roles = SettlementRoles::resolve(
+        &content.registry,
+        &content.class_table,
+        &content.resource_table,
+        &content.culture_table,
+    );
+
+    // Act
+    let found = find_conquest(
+        chronicle.sites(),
+        chronicle.events(),
+        chronicle.culture_table(),
+        game_world.world.seed,
+    );
+
+    // Assert：① 这样一次易主真的发生过。
+    let (record, site) = found.expect(
+        "三百年历史里应当至少出现一次「某据点被同族占领、归属换了、\
+         而且那座城活到了最后」——这是项目所有者给本批次定的验收线",
+    );
+
+    // ② 它**不是**一条覆灭事件：编年史里查不到这座城的任何遗弃记录。
+    assert!(
+        !chronicle.events().iter().any(|event| matches!(
+            &event.kind,
+            HistoricalEventKind::SettlementAbandoned(abandoned) if abandoned.site == record.site
+        )),
+        "被占领的据点不该同时有一条「被遗弃」记录——占领与毁灭是两种结局"
+    );
+
+    // ③ 归属真的变了：最终快照里它信的是**占领方**那一份文化，而不是
+    //    易主之前那一份。
+    assert_eq!(
+        site.culture.map(|culture| culture.index()),
+        Some(record.new_culture),
+        "被占领的据点，文化必须已经换成占领方的那一份"
+    );
+    assert_ne!(
+        site.culture.map(|culture| culture.index()),
+        Some(record.former_culture),
+        "它不该还信着易主之前那一份"
+    );
+
+    // ④ 它仍然是同一座城，不是原地重建的另一座：建立纪元没被改写，
+    //    也没有遗弃纪元。
+    assert!(
+        site.founded_epoch <= record.epoch,
+        "同一座城换了主子，不是旧城没了新城建起来了：建立纪元 {} 不该晚于易主纪元 {}",
+        site.founded_epoch,
+        record.epoch
+    );
+    assert_eq!(
+        site.abandoned_epoch, None,
+        "被占领不是被遗弃：最终快照里它不该带遗弃纪元"
+    );
+
+    // ⑤ 「同族」这个词在**名册那一侧**也成立：两座据点的建立者种族
+    //    是同一个。这一条与 `矮人矿城被哥布林部落攻灭` 的 ② 是同一种
+    //    手法——文化只是个索引，真正让这句话成立的是种族那一侧。
+    let conqueror = chronicle
+        .sites()
+        .iter()
+        .find(|other| other.id == record.conqueror)
+        .expect("占领方应当仍在最终快照里");
+    assert_eq!(
+        settlement_founder_race(&site, &roles, game_world.world.seed),
+        settlement_founder_race(conqueror, &roles, game_world.world.seed),
+        "「同族占领」要求攻守双方的建立者种族真的是同一个"
+    );
+
+    // # 故意改坏的反例（人工核验，真实执行）
+    //
+    // 把 `ll_world::chronicle` 的 `SAME_RACE_OCCUPATION_NUMERATOR` 从 6
+    // 改成 0（也就是同族战争也一律铲平），本条当场红：`find_conquest`
+    // 返回 `None`，`expect` 炸在验收线那句话上。恢复后重新跑通。
+}
+
+#[test]
+fn 被占领的据点在地上仍然是活的() {
+    // 验收线的后半句，逐字：「那座据点在地上仍然是活的（有门、有人、
+    // 不是废墟）」。手法与 `被攻灭的矿城在地上真的是一片石头废墟` 逐字
+    // 相同——把那座城所在的区块流式加载进来，逐格数地形。两条测试因此
+    // 构成一对可以直接对照的证据：**废墟一扇门都没有，被占领的城有门。**
+    // Arrange
+    let content = test_content();
+    let mut game_world = build_new_world(&content, SEED).expect("默认布局满足全部前置条件");
+    let (record, site) = {
+        let chronicle = game_world
+            .world
+            .terrain
+            .chronicle()
+            .expect("新游戏必然装上了编年史");
+        find_conquest(
+            chronicle.sites(),
+            chronicle.events(),
+            chronicle.culture_table(),
+            game_world.world.seed,
+        )
+        .expect("见上一条测试")
+    };
+
+    // Act
+    let clock = game_world.world.clock;
+    game_world.world.terrain.stream_neighborhood(
+        &game_world.noise,
+        &game_world.params,
+        &content.terrain_ids,
+        site.anchor,
+        ll_game::world::STREAM_RADIUS_ZONES,
+        clock,
+    );
+    let span = game_world.world.terrain.layout().zone_span() as i32;
+    let expected_wall = content
+        .culture_table
+        .wall_terrain(CultureKind::from_index(record.new_culture))
+        .expect("本体六条文化都声明了 wall_terrain");
+    let (mut walls, mut doors, mut windows, mut new_master_walls) =
+        (0usize, 0usize, 0usize, 0usize);
+    for dy in 0..span {
+        for dx in 0..span {
+            let pos = game_world
+                .world
+                .size
+                .wrap(site.zone.x() * span + dx, site.zone.y() * span + dy);
+            let kind = game_world.world.terrain.terrain_at(
+                &game_world.noise,
+                &game_world.params,
+                &content.terrain_ids,
+                pos,
+                Tick(0),
+            );
+            if kind == expected_wall {
+                new_master_walls += 1;
+            }
+            if kind == content.terrain_ids.wall_stone || kind == content.terrain_ids.wall_wood {
+                walls += 1;
+            } else if kind == content.terrain_ids.door_closed {
+                doors += 1;
+            } else if kind == content.terrain_ids.window {
+                windows += 1;
+            }
+        }
+    }
+
+    // Assert：① 有门。有人住的屋子恒有一扇门，废墟一扇都没有
+    //         （`ll_world::settlement` 的 `house_tiles`/`ruin_tiles`）
+    //         ——这是「活的」与「废墟」在地上唯一无歧义的那条判据，也
+    //         正是 `被攻灭的矿城在地上真的是一片石头废墟` 断言 `doors
+    //         == 0` 的那一条，反过来读。
+    assert!(
+        doors > 0,
+        "被同族占领的据点所在区块一扇门都数不到（墙 {walls} 格、窗 {windows} 扇），\
+         它在地上是废墟而不是一座活着的城"
+    );
+    // ② 有窗、有墙：确认读到的真的是一片屋子，不是一格孤零零的门。
+    assert!(windows > 0, "有人住的屋子恒有一扇窗，实测 {windows} 扇");
+    assert!(walls >= 10, "只数到 {walls} 格墙，据点没有真的落到地形上");
+    // ③ 有人，且状态就是「有人住」。
+    assert!(
+        site.population > 0,
+        "被占领的据点必须还有人，实测 {} 人",
+        site.population
+    );
+    assert_eq!(
+        site.status,
+        SettlementStatus::Inhabited,
+        "它必须仍然是「有人住」这个状态，而不是废墟"
+    );
+    // ④ 归属换了这件事在**建材**上也落到了地形：这座城现在铺的是
+    //    **占领方**那份文化的墙。两份文化恰好用同一种建材时这一条与
+    //    ②重合，因此不断言「与旧的不同」——那是内容决定的，不是本批次
+    //    能保证的性质。
+    assert!(
+        new_master_walls >= 10,
+        "占领之后这座城应当按新主子那份文化的建材铺，实测只有 {new_master_walls} 格"
+    );
+
+    // # 故意改坏的反例（人工核验，真实执行）
+    //
+    // 把 `ll_world::chronicle::EpochRun::occupy` 的函数体换成一句
+    // `self.conquer(attacker, defender, epoch);`（也就是退回「占领其实
+    // 也是铲平」），本条当场红。恢复后重新跑通。
 }

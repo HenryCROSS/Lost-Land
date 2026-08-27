@@ -1426,6 +1426,15 @@ fn write_historical_event(hasher: &mut StateHasher, event: &HistoricalEvent) {
             hasher.write_u64(u64::from(record.epochs_inhabited));
             write_settlement_demise(hasher, &record.cause);
         }
+        HistoricalEventKind::SettlementConquered(record) => {
+            hasher.write_u64(3);
+            hasher.write_u64(u64::from(record.site.get()));
+            hasher.write_u64(u64::from(record.epoch));
+            hasher.write_u64(u64::from(record.conqueror.get()));
+            hasher.write_u64(u64::from(record.former_culture.get()));
+            hasher.write_u64(u64::from(record.new_culture.get()));
+            hasher.write_u64(u64::from(record.survivors));
+        }
     }
 }
 

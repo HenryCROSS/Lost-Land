@@ -60,7 +60,8 @@
 
 use std::fmt;
 
-use ll_core::ident::{ContentIndex, NamespacedId};
+use ll_core::ident::{ContentIndex, NamespacedId, WorldId};
+use ll_core::rng::DetRng;
 
 use crate::resource::ResourceCategory;
 use crate::terrain::TerrainKind;
@@ -379,6 +380,80 @@ impl CultureTable {
             })
             .unwrap_or(0)
     }
+}
+
+/// 建立者种族抽取所用的随机流编号。
+///
+/// # 为什么这个常量从 `ll-mod` 搬到了这里
+///
+/// 它此前叫 `ll_mod::roster::FOUNDER_RACE_STREAM_ID`，与那一侧的
+/// `settlement_founder_race` 一起住在名册模块里。**占领批次把「谁建的」
+/// 这个问题变成了世界生成期的判据**：[`crate::chronicle`] 的战争结算
+/// 要问「攻守双方是不是同一个种族」才能决定这一仗是占领还是毁灭，而
+/// 它在 `ll-world` 里、拿不到 `ll-mod`（依赖方向反了）。
+///
+/// 两条出路：在 `ll-world` 里另写一份「同族判定」，或者把这一份算法
+/// 搬下来让两边共用。前者就是 ADR 0021 明令拦下的那种重复——同一个
+/// 问题两份实现，一旦权重表的解释方式变了就会分叉，而分叉的表现是
+/// 「编年史说这是同族战争，名册里却是两个种族」。因此搬下来：
+/// [`founder_race`] 是唯一实现，`ll_mod::roster::settlement_founder_race`
+/// 现在只是它的一层薄封装（保留旧签名，调用点一个字没改）。
+///
+/// **取值一个字节都没变**，因此同一颗种子抽出的建立者种族与搬迁之前
+/// 逐位相同——这条由 `ll-mod` 侧既有的名册测试守着。
+pub const FOUNDER_RACE_STREAM_ID: u64 = 0x004E_5043_5F46_0001;
+
+/// 这座据点的**建立者种族**——`(世界种子, 据点 id, 这座据点信的文化)`
+/// 的纯函数，同一组入参恒产出同一个答案（约束 C3）。
+///
+/// 抽取按 [`CultureAttrs::founder_races`] 的**声明顺序**线性扫描加权
+/// 命中，不碰任何哈希容器（约束 C5）。
+///
+/// # 三种返回 `None` 的情形，都不是错误
+///
+/// 1. 据点没有文化（`culture` 为 `None`）——空文化表的世界。
+/// 2. 这条文化没被定义（索引越界）——递进来的表与产出这份据点快照的
+///    不是同一张。
+/// 3. 候选名单里全部权重都是 0——注册期校验
+///    （[`CultureError::NoFounderRace`]）挡掉了正常路径上的这一种，
+///    留着分支是因为类型上仍然表达得出来。
+///
+/// 三种都**一个随机数都不取**：空抽取不该悄悄推进随机流（判据与
+/// `ll_mod::roster` 的 `pick` 逐字相同，这条正是搬迁必须保持逐位相同
+/// 的那个细节）。
+///
+/// # 谁读它
+///
+/// - [`crate::chronicle`] 的战争结算：同族倾向占领、异族倾向毁灭。
+/// - `ll_mod::roster::settlement_founder_race`：整座据点的主体人口。
+///
+/// 两个消费者读的是**同一个**答案，这正是它搬到这一层的理由。
+pub fn founder_race(
+    cultures: &CultureTable,
+    culture: Option<CultureKind>,
+    site: WorldId,
+    world_seed: u64,
+) -> Option<ContentIndex> {
+    let slots = match culture {
+        Some(kind) => cultures.founder_races(kind),
+        None => &[],
+    };
+    let total: u64 = slots.iter().map(|(_, weight)| u64::from(*weight)).sum();
+    if total == 0 {
+        return None;
+    }
+    let mut rng = DetRng::for_entity(world_seed, FOUNDER_RACE_STREAM_ID, u64::from(site.get()));
+    let mut roll = rng.gen_range(total);
+    for (race, weight) in slots {
+        let weight = u64::from(*weight);
+        if roll < weight {
+            return Some(*race);
+        }
+        roll -= weight;
+    }
+    // 理论不可达（`roll < total` 而循环恰好减掉了全部权重之和）。退回
+    // 第一个候选而不是 panic，规格 §10.2「降级而非崩溃」。
+    slots.first().map(|(race, _)| *race)
 }
 
 /// 单元测试用的一张小文化表：两种互相敌对的文化。
