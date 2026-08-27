@@ -7,6 +7,14 @@
 //! ——`p5_coordinate_acceptance` 是 `ll-sim` 的一个 `examples/` 目录，
 //! 不是可供下游 crate 依赖的库 API，见 Cargo 对 `examples/` 的可见性
 //! 规则），保持逻辑一致但物理上各自独立。
+//!
+//! 「逻辑一致」曾经短暂地不成立：据点建筑地形补图那一批只改了本文件的
+//! [`terrain_entry_name`]，p5 那份仍按更早的借用关系画石地板/石墙，
+//! 两张表就此分叉。项目所有者的裁定是统一（原话「第三条的话先统一了
+//! 吧，避免以后有什么问题」），p5 那张表已经改回与本文件同一张贴图。
+//! 恢复的方向是**把 p5 对齐到本文件**而不是反过来：本文件是生产渲染
+//! 路径，p5 是验收 demo。守住这条一致性的是 p5 自己的
+//! `十种地形两两不共用同一个图集条目`——任何一支改回借用它立刻变红。
 
 use ll_core::time::Tick;
 use ll_mod::registry::Registry;
@@ -58,13 +66,14 @@ pub const BASE_SIGHT_RADIUS: u32 = 12;
 /// `terrain_dirt` 糊在一起——所有者的验收方式是「走进据点看一眼」，
 /// 木/石地板必须一眼可分。这是本批次的判断，不是所有者原话。
 ///
+/// `p5_coordinate_acceptance` 里的同一处借用也已经解除，理由见本模块
+/// 文档开头「逻辑一致曾经短暂地不成立」一段。
+///
 /// `terrain_dirt` 本身**没有**因此变成孤儿图：
 /// `crates/ll-render/examples/p1_acceptance` 拿它铺棋盘格、
-/// `crates/ll-sim/examples/p5_coordinate_acceptance` 仍按旧的借用关系
-/// 用它画石地板、`crates/ll-game/src/content.rs` 的 mod 资产覆盖验收
-/// 拿它当被覆盖的目标，三处都还在用。那两个 `examples/` 是各自冻结了
-/// 截图基准的独立 demo，不随本表改动——它们的注释已经写明「本 demo 不
-/// 新增美术资产、石地板借用 terrain_dirt」，那句话对它们自己依然成立。
+/// `crates/ll-game/src/content.rs` 的 mod 资产覆盖验收拿它当被覆盖的
+/// 目标，两处都还在用。这两处**不是**借用——那里的 `terrain_dirt` 就是
+/// 泥土本身，与「拿泥土冒充石地板」是两回事，不在这次统一的范围内。
 pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'static str> {
     if kind == ids.deep_water {
         Some("lostland:terrain_deep_water")

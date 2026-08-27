@@ -142,11 +142,13 @@ UV 换算是 `(像素坐标 ± 半纹素) / 图片尺寸`，采样器固定
 它们是那一格的底层地形，留透明会露出清屏背景。
 
 `floor_stone`/`wall_stone` 借用 `terrain_dirt`/`terrain_mountain` 的
-关系随本批解除（`ll_game::layout::terrain_entry_name`）。`terrain_dirt`
-**没有**因此变成孤儿图：`crates/ll-render/examples/p1_acceptance` 拿它
-铺棋盘格、`crates/ll-sim/examples/p5_coordinate_acceptance` 仍按旧借用
-关系用它画石地板、`crates/ll-game/src/content.rs` 的 mod 资产覆盖验收
-拿它当被覆盖目标，三处都还在用。
+关系已在生产渲染路径（`ll_game::layout::terrain_entry_name`）与
+`crates/ll-sim/examples/p5_coordinate_acceptance` 两处**全部**解除——
+后者一度还留着旧借用，所有者裁定统一（「第三条的话先统一了吧，避免
+以后有什么问题」）。`terrain_dirt` **没有**因此变成孤儿图：
+`crates/ll-render/examples/p1_acceptance` 拿它铺棋盘格、
+`crates/ll-game/src/content.rs` 的 mod 资产覆盖验收拿它当被覆盖目标，
+两处都还在用——那两处的 `terrain_dirt` 就是泥土本身，不是借用。
 
 ## 待办
 

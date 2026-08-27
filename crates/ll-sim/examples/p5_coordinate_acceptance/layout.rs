@@ -106,9 +106,34 @@ pub(crate) const MINIMAP_CELL_PX: i32 = 12;
 pub(crate) const MINIMAP_MARGIN_PX: i32 = 4;
 
 /// 把地形种类映射到图集条目名——覆盖本 demo 用到的地表自然地形，
-/// 以及 Interior 楼层用到的地板/墙（复用既有图集条目，本 demo 不新增
-/// 美术资产：石地板借用 `terrain_dirt`、石墙借用 `terrain_mountain`，
-/// 两者原本就有的图案恰好分别对应「地面」「阻挡」的直觉）。
+/// 以及 Interior 楼层用到的地板/墙。
+///
+/// # 与 `ll_game::layout::terrain_entry_name` 的关系：**一致**
+///
+/// 本表与生产渲染路径那张表是同一套换算的两份独立实现（理由见本模块
+/// 文档「保持逻辑一致但物理上各自独立」一节）——**一致是被守住的性质，
+/// 不是巧合**：两处对同一种地形选出的贴图必须是同一张。
+///
+/// 这条一致性曾经破过一次。据点建筑地形补图那一批给
+/// `floor_stone`/`wall_stone` 各画了专属贴图
+/// （`terrain_floor_stone`/`terrain_wall_stone`），只改了生产路径那张
+/// 表；本表仍按更早的**借用**关系走——石地板借 `terrain_dirt`、石墙借
+/// `terrain_mountain`。两张表就此分叉，且分叉被写进注释当成「对本 demo
+/// 依然成立」。项目所有者的裁定是**统一**，原话「第三条的话先统一了吧,
+/// 避免以后有什么问题」——即不留一处记录在案、却会持续漂移的偏差。
+/// 本表因此改回与生产路径同一张贴图，借用关系随之解除。
+///
+/// 注意**不是**所有 `terrain_dirt` 的用法都叫借用：
+/// `crates/ll-render/examples/p1_acceptance` 拿它铺棋盘格、
+/// `ll_game::content` 的 mod 资产覆盖验收拿它当被覆盖目标，那两处
+/// `terrain_dirt` 就是泥土本身，不在这次统一的范围内。
+///
+/// 条目名在本 demo 里是**裸名字**（`terrain_floor_stone` 而非
+/// `lostland:terrain_floor_stone`）：本 demo 直接
+/// `include_bytes!` 遗留共享画布 `assets/atlas/placeholder.png` 与它的
+/// `placeholder.json`，那份元数据里的条目名从来就是裸名字；生产路径走
+/// 的是运行期打包的资产 VFS，条目名是完整命名空间 ID。两套字符串空间
+/// 的差别与本次统一无关，不要顺手一起改——改了这个 demo 立刻查不到图。
 pub(crate) fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'static str> {
     if kind == ids.deep_water {
         Some("terrain_deep_water")
@@ -127,9 +152,9 @@ pub(crate) fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Opt
     } else if kind == ids.snow {
         Some("terrain_snow")
     } else if kind == ids.floor_stone {
-        Some("terrain_dirt")
+        Some("terrain_floor_stone")
     } else if kind == ids.wall_stone {
-        Some("terrain_mountain")
+        Some("terrain_wall_stone")
     } else {
         None
     }
@@ -203,26 +228,95 @@ mod tests {
         }
     }
 
+    /// 本 demo 会画到的十种地形，与 [`terrain_entry_name`] 里返回
+    /// `Some` 的那十支逐条对应。顺序固定（数组字面量，不经任何哈希
+    /// 容器），符合约束 C5。
+    fn demo_terrains(ids: &ll_world::terrain::BaseTerrainIds) -> [(&'static str, TerrainKind); 10] {
+        [
+            ("deep_water", ids.deep_water),
+            ("shallow_water", ids.shallow_water),
+            ("sand", ids.sand),
+            ("grass", ids.grass),
+            ("forest", ids.forest),
+            ("hill", ids.hill),
+            ("mountain", ids.mountain),
+            ("snow", ids.snow),
+            ("floor_stone", ids.floor_stone),
+            ("wall_stone", ids.wall_stone),
+        ]
+    }
+
     #[test]
     fn 全部自然地形与interior地板墙都能查到图集条目() {
         // Arrange
         let (ids, _table) = ll_world::terrain::base_terrain_fixture();
-        let kinds = [
-            ids.deep_water,
-            ids.shallow_water,
-            ids.sand,
-            ids.grass,
-            ids.forest,
-            ids.hill,
-            ids.mountain,
-            ids.snow,
-            ids.floor_stone,
-            ids.wall_stone,
-        ];
 
         // Act & Assert
-        for kind in kinds {
-            assert!(terrain_entry_name(kind, &ids).is_some());
+        for (label, kind) in demo_terrains(&ids) {
+            assert!(
+                terrain_entry_name(kind, &ids).is_some(),
+                "地形 {label} 算不出图集条目名"
+            );
+        }
+    }
+
+    #[test]
+    fn 十种地形两两不共用同一个图集条目() {
+        // 「查得到条目」不等于「看得出区别」：本表此前让 `floor_stone`
+        // 借 `terrain_dirt`、`wall_stone` 借 `terrain_mountain`，两条
+        // 查找都成功，屏幕上却分不出哪格是山、哪格是石墙。所有者裁定
+        // 统一到生产路径那张表之后，借用关系解除——这条测试就是那次
+        // 统一的可执行版本：把任何一支改回借用，它立刻变红。
+        //
+        // 反例（本次开发实跑）：把 `wall_stone` 那支改回
+        // `Some("terrain_mountain")`，本条报「wall_stone 与 mountain
+        // 共用同一个图集条目」。
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+        let named: Vec<(&str, &str)> = demo_terrains(&ids)
+            .into_iter()
+            .map(|(label, kind)| {
+                (
+                    label,
+                    terrain_entry_name(kind, &ids).expect("上一条已经保证全部是 Some"),
+                )
+            })
+            .collect();
+
+        // Act & Assert
+        for (i, (label_a, name_a)) in named.iter().enumerate() {
+            for (label_b, name_b) in &named[i + 1..] {
+                assert_ne!(
+                    name_a, name_b,
+                    "地形 {label_a} 与 {label_b} 共用同一个图集条目 {name_a}——                     屏幕上分不出这两种地形"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 十种地形的图集条目在遗留共享画布的元数据里都存在() {
+        // 上一条只证明「十个名字互不相同」，不证明「这些名字在本 demo
+        // 真正 include_bytes! 的那份元数据里查得到」——改成一个不存在
+        // 的名字同样能通过上一条。本 demo 装的是遗留共享画布
+        // `assets/atlas/placeholder.json`（条目名是**裸名字**），因此
+        // 直接对着那份 JSON 文本核对。
+        //
+        // 反例（本次开发实跑）：把 `floor_stone` 那支改成
+        // `Some("terrain_floor_stone_typo")`，本条报「条目名 …_typo 不在
+        // placeholder.json 里」。
+        // Arrange
+        let atlas_json = include_str!("../../../../assets/atlas/placeholder.json");
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+
+        // Act & Assert
+        for (label, kind) in demo_terrains(&ids) {
+            let name = terrain_entry_name(kind, &ids).expect("上一条已经保证全部是 Some");
+            let needle = format!("\"name\": \"{name}\"");
+            assert!(
+                atlas_json.contains(&needle),
+                "地形 {label} 查的条目名 {name} 不在 placeholder.json 里——                 本 demo 跑起来这一格画不出来"
+            );
         }
     }
 
