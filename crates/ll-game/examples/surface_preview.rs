@@ -160,7 +160,7 @@ fn main() {
     upscale(&canvas, ZOOM).save(&out).expect("写 PNG");
     println!("已写出 {}", out.display());
     println!("图中应当看得见：琥珀色的地面物品堆、紫罗兰的通用家具记号、");
-    println!("带火口的锻炉、紫红色的 NPC、以及钢蓝色的玩家。");
+    println!("带火口的锻炉、一个矮人铁匠与一个人类渔夫、以及钢蓝色的玩家。");
 }
 
 /// 摆一个能把四类记号一次看全的场景。
@@ -187,9 +187,31 @@ fn arrange_scene(world: &mut GameWorld, content: &LoadedContent) {
     drop_item(world, content, px + 2, py + 2, "lostland:iron_ingot", true);
 
     // 两个 NPC：一个在玩家上方、一个在下方，用来看 ENTITY 层的前后遮挡。
-    for (dx, dy) in [(0, -2), (1, 2)] {
+    // 两人**刻意取不同的种族与职业**：矮人铁匠与哥布林渔夫。这不是为了
+    // 好看——「所有 NPC 长得一模一样」正是所有者报的现象，这张预览图如果
+    // 只摆两个同族同职业的人，恰好会把那个现象重新藏起来。
+    for ((dx, dy), race, profession) in [
+        (
+            (0, -2),
+            content.race_ids.dwarf,
+            content.registry.get(
+                &ll_core::ident::NamespacedId::parse("lostland:blacksmith").expect("字面量合法"),
+            ),
+        ),
+        (
+            (1, 2),
+            content.race_ids.human,
+            content
+                .registry
+                .get(&ll_core::ident::NamespacedId::parse("lostland:fisher").expect("字面量合法")),
+        ),
+    ] {
         let mut npc = player.clone();
         npc.pos = world.world.size.wrap(px + dx, py + dy);
+        npc.race = race;
+        if let Some(profession) = profession {
+            npc.profession = profession;
+        }
         world.world.actors.spawn(npc);
     }
 }

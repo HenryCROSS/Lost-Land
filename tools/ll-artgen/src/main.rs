@@ -44,6 +44,7 @@
 
 mod building;
 mod color;
+mod npc;
 mod sprite;
 mod terrain;
 mod ui;
@@ -97,6 +98,64 @@ struct AtlasJson {
     entries: Vec<AtlasEntryJson>,
 }
 
+/// 一条**只进松散贴图树、不进遗留共享画布**的条目。
+///
+/// # 为什么需要这么一类条目
+///
+/// [`generate_loose_sprites`] 与 [`generate_legacy_shared_atlas`] 此前
+/// 共用同一份来源 `placeholder.json`：往那份 JSON 里加一条，两边同时
+/// 多一张图。但遗留共享画布是五个更早批次验收 demo 的**冻结像素基准**，
+/// 而 `ll-game` 本体二进制早就不读它了——NPC 的种族身子与职业挂件只有
+/// 运行期图集用得到，把它们塞进那张共享画布只会把画布撑大、把五个
+/// demo 的基准卷进来，徒增一层「这次变红到底是因为哪个改动」的纠缠。
+///
+/// 因此新增内容走这一条平行清单：画布尺寸仍是 96×144，`placeholder.json`
+/// 一个字没动，五个 demo 的基准物理上不可能受影响。
+#[derive(Debug, Clone, Copy)]
+struct LooseOnlyEntry {
+    /// 图集条目名（也是文件名的主干）。必须与内容 id 的本地名逐字一致，
+    /// 见 [`npc`] 模块文档。
+    name: &'static str,
+    /// 画布宽。
+    width: u32,
+    /// 画布高。
+    height: u32,
+    /// 锚点。
+    pivot: Pivot,
+    /// 逻辑占地格数。
+    footprint: Footprint,
+}
+
+/// 站立单位那一档的锚点：脚落在格子里、头探出格子顶部，与 `hero_*`/
+/// `npc_idle_0` 完全一致（见 `assets/atlas/placeholder.json`）。
+const STANDING_PIVOT: Pivot = Pivot { x: 8, y: 24 };
+
+/// 站立单位那一档的占地格数，理由同 [`STANDING_PIVOT`]。
+const STANDING_FOOTPRINT: Footprint = Footprint {
+    width: 1,
+    height: 1,
+};
+
+/// 本体新增的松散贴图：四个种族的身子 + 十三个职业的挂件。
+///
+/// 顺序固定（先按 [`npc::race_bodies`] 再按 [`npc::profession_badges`]，
+/// 两者都是数组字面量），符合约束 C5。
+fn loose_only_entries() -> Vec<LooseOnlyEntry> {
+    let names = npc::race_bodies()
+        .iter()
+        .map(|(name, _)| *name)
+        .chain(npc::profession_badges().iter().map(|(name, _)| *name));
+    names
+        .map(|name| LooseOnlyEntry {
+            name,
+            width: npc::NPC_WIDTH,
+            height: npc::NPC_HEIGHT,
+            pivot: STANDING_PIVOT,
+            footprint: STANDING_FOOTPRINT,
+        })
+        .collect()
+}
+
 /// 松散贴图清单里的一条条目——`ll_mod::asset_vfs` 期望的形状，
 /// **不含 `rect`**：摆到图集哪个位置由运行期打包器决定，源清单不需要
 /// 也不应该知道。
@@ -145,6 +204,12 @@ fn main() {
 ///    验证「同路径覆盖」在真实 mod 目录布局下也能被资产 VFS 正确解析
 ///    （见 `ll_mod::asset_vfs` 模块文档），不只是测试夹具里的临时目录
 ///    场景。
+/// 3. **mod 自带种族身子与职业挂件**——`half_elf.png` 与
+///    `necromancer.png`，与 `races.json5`/`classes.json5` 里
+///    `examplemod:half_elf`/`examplemod:necromancer` 同名。这一条证明
+///    「加第 10 个种族只要加数据加图」：这两样内容是示例 mod 自己声明
+///    的，本体的 Rust 一个字都没为它们写过，渲染层照样把它们画出来。
+///    钉住它的是 `crates/ll-game/tests/npc_appearance.rs`。
 fn generate_mod_demo_assets(mod_assets_dir: &Path) {
     let sprites_dir = mod_assets_dir.join("sprites");
     std::fs::create_dir_all(&sprites_dir)
@@ -162,20 +227,56 @@ fn generate_mod_demo_assets(mod_assets_dir: &Path) {
         .save(sprites_dir.join("lava_floor.png"))
         .expect("写入 lava_floor.png 不应失败");
 
+    // mod 自带的种族身子与职业挂件——与本体那两套走同一段绘制代码
+    // （`npc.rs`），只是配方来自示例 mod 自己那两行。
+    let npc_rect = EntryRect {
+        x: 0,
+        y: 0,
+        width: npc::NPC_WIDTH,
+        height: npc::NPC_HEIGHT,
+    };
+    let (race_name, race_spec) = npc::example_mod_race();
+    let mut race_image = RgbaImage::new(npc_rect.width, npc_rect.height);
+    npc::draw_race_body(&mut race_image, npc_rect, race_spec);
+    race_image
+        .save(sprites_dir.join(format!("{race_name}.png")))
+        .expect("写入 mod 种族身子不应失败");
+
+    let (badge_name, badge_spec) = npc::example_mod_badge();
+    let mut badge_image = RgbaImage::new(npc_rect.width, npc_rect.height);
+    npc::draw_profession_badge(&mut badge_image, npc_rect, badge_spec);
+    badge_image
+        .save(sprites_dir.join(format!("{badge_name}.png")))
+        .expect("写入 mod 职业挂件不应失败");
+
     let manifest = SpriteManifestOut {
-        entries: vec![SpriteManifestEntryOut {
-            name: "lava_floor".to_string(),
-            file: "lava_floor.png".to_string(),
-            // 与本体 `terrain_dirt`（可通行的普通地板）同一档摆放参数
-            // ——熔岩地板本身可通行（见 `terrain.scm` 的
-            // `register-terrain` 调用），视觉呈现自然也该走同一类
-            // 「铺满整格的地面纹理」而非站立单位的锚点/占地设定。
-            pivot: Pivot { x: 0, y: 0 },
-            footprint: Footprint {
-                width: 1,
-                height: 1,
+        entries: vec![
+            SpriteManifestEntryOut {
+                name: "lava_floor".to_string(),
+                file: "lava_floor.png".to_string(),
+                // 与本体 `terrain_dirt`（可通行的普通地板）同一档摆放
+                // 参数——熔岩地板本身可通行（见 `terrain.json5` 的
+                // 地形声明），视觉呈现自然也该走同一类「铺满整格的地面
+                // 纹理」而非站立单位的锚点/占地设定。
+                pivot: Pivot { x: 0, y: 0 },
+                footprint: Footprint {
+                    width: 1,
+                    height: 1,
+                },
             },
-        }],
+            SpriteManifestEntryOut {
+                name: race_name.to_string(),
+                file: format!("{race_name}.png"),
+                pivot: STANDING_PIVOT,
+                footprint: STANDING_FOOTPRINT,
+            },
+            SpriteManifestEntryOut {
+                name: badge_name.to_string(),
+                file: format!("{badge_name}.png"),
+                pivot: STANDING_PIVOT,
+                footprint: STANDING_FOOTPRINT,
+            },
+        ],
     };
     let manifest_json = serde_json::to_string_pretty(&manifest).expect("序列化清单不应失败");
     std::fs::write(sprites_dir.join("manifest.json5"), manifest_json)
@@ -244,13 +345,39 @@ fn generate_loose_sprites(atlas: &AtlasJson, sprites_dir: &Path) -> usize {
         });
     }
 
+    // 只进松散贴图树的那一批，见 `LooseOnlyEntry` 文档。
+    for entry in loose_only_entries() {
+        let local_rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: entry.width,
+            height: entry.height,
+        };
+        let mut image = RgbaImage::new(entry.width, entry.height);
+        draw_entry(&mut image, entry.name, local_rect);
+
+        let file_name = format!("{}.png", entry.name);
+        let png_path = sprites_dir.join(&file_name);
+        image
+            .save(&png_path)
+            .unwrap_or_else(|error| panic!("写入 {} 失败：{error}", png_path.display()));
+
+        entries.push(SpriteManifestEntryOut {
+            name: entry.name.to_string(),
+            file: file_name,
+            pivot: entry.pivot,
+            footprint: entry.footprint,
+        });
+    }
+
+    let count = entries.len();
     let manifest = SpriteManifestOut { entries };
     let manifest_json = serde_json::to_string_pretty(&manifest).expect("序列化清单不应失败");
     let manifest_path = sprites_dir.join("manifest.json5");
     std::fs::write(&manifest_path, manifest_json)
         .unwrap_or_else(|error| panic!("写入 {} 失败：{error}", manifest_path.display()));
 
-    atlas.entries.len()
+    count
 }
 
 /// 重新生成遗留的共享画布 `assets/atlas/placeholder.png`——理由见模块
@@ -357,11 +484,15 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         "terrain_window" => building::decorate_window(image, rect),
         "terrain_stairs_up" => building::decorate_stairs_up(image, rect),
         "terrain_stairs_down" => building::decorate_stairs_down(image, rect),
+        // NPC 的种族身子与职业挂件（`npc.rs`）。这两套图**不在**
+        // `placeholder.json` 里，只走 `loose_only_entries()` 那条平行
+        // 清单，因此不会撑大遗留共享画布，见 `LooseOnlyEntry` 文档。
+        _ if npc::draw_named(image, name, rect) => {}
         _ => match terrain::terrain_spec(name).or_else(|| ui::ui_spec(name)) {
             Some(spec) => terrain::decorate_terrain_tile(image, rect, spec),
             None => {
                 panic!(
-                    "不知道如何绘制条目 '{name}'：请在 sprite.rs、terrain.rs、building.rs 或 ui.rs 里补一份画法"
+                    "不知道如何绘制条目 '{name}'：请在 sprite.rs、terrain.rs、building.rs、npc.rs 或 ui.rs 里补一份画法"
                 )
             }
         },
@@ -475,7 +606,15 @@ mod tests {
     }
 
     #[test]
-    fn 松散贴图生成的条目数与源json一致() {
+    fn 松散贴图等于源json条目加上只进松散树的那一批() {
+        // 松散贴图树的内容 = `placeholder.json` 的全部条目 +
+        // `loose_only_entries()`，后者刻意**不**进遗留共享画布，见
+        // `LooseOnlyEntry` 文档。这条同时钉住两侧：漏掉哪一侧数量都对
+        // 不上。
+        //
+        // 反例（本次开发实跑）：把 `generate_loose_sprites` 里追加
+        // `loose_only_entries()` 的那个循环删掉，本条报 left: 1,
+        // right: 18。
         // Arrange
         let atlas = AtlasJson {
             entries: vec![AtlasEntryJson {
@@ -502,9 +641,16 @@ mod tests {
         let count = generate_loose_sprites(&atlas, &out_dir);
 
         // Assert
-        assert_eq!(count, 1);
+        assert_eq!(count, 1 + loose_only_entries().len());
         assert!(out_dir.join("hero_idle_0.png").exists());
         assert!(out_dir.join("manifest.json5").exists());
+        for entry in loose_only_entries() {
+            assert!(
+                out_dir.join(format!("{}.png", entry.name)).exists(),
+                "只进松散树的条目 {} 没被写出来",
+                entry.name
+            );
+        }
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&out_dir);

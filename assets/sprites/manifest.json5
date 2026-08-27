@@ -431,6 +431,210 @@
         "width": 1,
         "height": 1
       }
+    },
+    {
+      "name": "human",
+      "file": "human.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "dwarf",
+      "file": "dwarf.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "elf",
+      "file": "elf.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "goblin",
+      "file": "goblin.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "warrior",
+      "file": "warrior.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "mage",
+      "file": "mage.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "ranger",
+      "file": "ranger.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "guard",
+      "file": "guard.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "steward",
+      "file": "steward.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "militia",
+      "file": "militia.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "farmer",
+      "file": "farmer.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "hunter",
+      "file": "hunter.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "butcher",
+      "file": "butcher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "blacksmith",
+      "file": "blacksmith.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "fisher",
+      "file": "fisher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "shepherd",
+      "file": "shepherd.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "mason",
+      "file": "mason.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
     }
   ]
 }

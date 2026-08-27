@@ -29,15 +29,46 @@
 //! 内容 id 分支**。规矩是两级：
 //!
 //! 1. 先拿这条内容在 [`Registry`] 里的**完整命名空间 ID** 当图集键去查
-//!    （家具查物品 ID，NPC 查种族 ID）。这不是本模块发明的新约定——
+//!    （家具查物品 ID，NPC 的身子查种族 ID、挂件查职业 ID）。这不是本
+//!    模块发明的新约定——
 //!    `ll_mod::asset_vfs::ResolvedSprite::atlas_name` 规定「任何精灵的
 //!    图集条目名恒等于它的完整命名空间 ID」，`crate::layout::terrain_atlas_key`
 //!    的 mod 地形回退路径用的就是同一条约定。**内容因此已经有办法声明
 //!    自己的精灵键了：往自己的 `assets/sprites/` 里放一张与本地名同名的
-//!    图即可**，不需要在 `items.json5`/`races.json5` 里新增字段，
-//!    也就不需要动 `CONTENT_HASH_ALGORITHM_VERSION`。
+//!    图即可**，不需要在 `items.json5`/`races.json5`/`classes.json5` 里
+//!    新增字段，也就不需要动 `CONTENT_HASH_ALGORITHM_VERSION`。
 //! 2. 查不到就退化到一张通用记号（[`PLACED_FURNITURE_SPRITE`]/
-//!    [`NPC_SPRITE`]）。
+//!    [`NPC_SPRITE`]），或者——当这一层本来就是可选的叠加层时——
+//!    **什么都不画**（[`SurfaceDraw::fallback_key`] 为 `None`）。
+//!
+//! # NPC 为什么是两条指令而不是一张「种族×职业」的图
+//!
+//! 所有者要求「npc 根据职业种族做出区别」。本体现有 4 个种族 × 13 个
+//! 职业 = 52 种组合，所有者已说还要再加 5 个种族（9 × 13 = 117）——
+//! 逐个组合备一张图，加第 10 个种族要补 13 张，加第 14 个职业要补 9 张，
+//! 是乘法级的负担。
+//!
+//! 本模块因此把一个 NPC 拆成**两条绘制指令、两张图**：
+//!
+//! - **身子**：查种族 ID（`lostland:dwarf`），查不到退回 [`NPC_SPRITE`]。
+//!   决定体型、肤色、耳朵、胡子这些「他是什么」的东西。
+//! - **挂件**：查职业 ID（`lostland:blacksmith`），**查不到就不画**。
+//!   一张四周透明、只在胸口有图案的同尺寸贴图，叠在身子上，决定「他
+//!   干什么」。
+//!
+//! 于是资产量从 `种族数 × 职业数` 降到 `种族数 + 职业数`：加第 10 个
+//! 种族只要多一张身子图，加第 14 个职业只要多一张挂件图，**另一侧一张
+//! 都不用补，引擎一行都不用改**。
+//!
+//! 这条抽象的正当理由仍然是 ADR 0021 说的「有算法要共用」而不是「看起来
+//! 该对称」：身子与挂件共用同一条「优先键 → 兜底」的查图次序、同一套
+//! 锚点/缩放换算、同一个消费点（`render_surface` 里的 `push_surface_draw`）。
+//! 它同时也是那条纪律的**另一侧**——把同一张人形抄 52 遍同样没有正当
+//! 理由，因为那 52 份之间没有任何算法差异，只有一个查表键的差异。
+//!
+//! 「身子按种族、挂件按职业」这条分工是本批次的判断，不是所有者原话；
+//! 所有者只说了「根据职业种族做出区别」。真要改成「职业也换体型」或者
+//! 「装备也画上去」，是往这条规则上再加层，不是推翻它。
 //!
 //! 抽象在这里的正当理由是**有算法要共用**（ADR 0021）：三类内容共用
 //! 同一条「优先键 → 兜底键」的查图次序与同一条确定性排序规则，写成
@@ -111,6 +142,17 @@ pub const PLACED_FURNITURE_SPRITE: &str = "lostland:furniture_placed";
 /// NPC 查不到种族自带贴图时的通用记号。
 pub const NPC_SPRITE: &str = "lostland:npc_idle_0";
 
+/// NPC 职业挂件绘制顺序号的起始偏移（[`Layer::ENTITY`] 层）。
+///
+/// 取 `1 << 63` 的理由与 [`PLACED_FURNITURE_ENTITY_BASE`] 逐字相同
+/// （号段起点必须是编译期常量），另外还多担一件事：**挂件必须画在身子
+/// 之上**。同层同脚底纵坐标时 [`ll_render::sprite::DrawOrder`] 比的正是
+/// 这个号，号大的后画、后画的盖在上面；身子的号是
+/// `NPC_ENTITY_BASE + 槽位下标`，槽位下标上限远低于 `2^60`（见
+/// [`PLACED_FURNITURE_ENTITY_BASE`] 的同一段推导），因此任何挂件的号都
+/// 严格大于任何身子的号。
+pub const NPC_BADGE_ENTITY_BASE: u64 = 1 << 63;
+
 /// 一条地表内容的绘制指令。
 ///
 /// 刻意**不含屏幕坐标、不含 tint、不含 zoom**：那些要么依赖相机、要么
@@ -129,8 +171,12 @@ pub struct SurfaceDraw {
     /// 内容自己声明的图集键——内容的完整命名空间 ID。`None` 表示这类
     /// 内容**不允许**被内容覆盖（目前只有地面物品堆，见模块文档）。
     pub preferred_key: Option<String>,
-    /// 优先键查不到时的通用记号。
-    pub fallback_key: &'static str,
+    /// 优先键查不到时的通用记号。`None` 表示这一层**本来就是可选的**
+    /// ——查不到就整条指令不画，而不是退到某张兜底图。目前只有 NPC 的
+    /// 职业挂件是这一种：没有为某个职业准备挂件贴图是正常状态（mod 新
+    /// 注册一个职业时的默认状态就是这样），画一张「通用职业记号」反而
+    /// 会让所有没画过的职业看起来是同一个职业。
+    pub fallback_key: Option<&'static str>,
 }
 
 impl SurfaceDraw {
@@ -143,7 +189,7 @@ impl SurfaceDraw {
         self.preferred_key
             .as_deref()
             .into_iter()
-            .chain(std::iter::once(self.fallback_key))
+            .chain(self.fallback_key)
     }
 }
 
@@ -193,7 +239,7 @@ pub fn ground_pile_draws(world: &WorldState) -> Vec<SurfaceDraw> {
             // 恒定 `None`：所有者裁定「统一用一个团」，内容不得为
             // 「地上躺着的东西」声明自己的样子。
             preferred_key: None,
-            fallback_key: GROUND_PILE_SPRITE,
+            fallback_key: Some(GROUND_PILE_SPRITE),
         })
         .collect()
 }
@@ -210,31 +256,59 @@ pub fn placed_furniture_draws(world: &WorldState, registry: &Registry) -> Vec<Su
             layer: Layer::DECOR,
             entity: PLACED_FURNITURE_ENTITY_BASE + index as u64,
             preferred_key: registry.resolve(ground.stack.def).map(|id| id.to_string()),
-            fallback_key: PLACED_FURNITURE_SPRITE,
+            fallback_key: Some(PLACED_FURNITURE_SPRITE),
         })
         .collect()
 }
 
-/// 除玩家之外的每个存活角色产出一条指令，优先用这个角色**种族**自己的
-/// 贴图。
+/// 除玩家之外的每个存活角色产出**两条**指令：先身子（查种族 ID，兜底
+/// [`NPC_SPRITE`]），再职业挂件（查职业 ID，查不到就不画）。
 ///
-/// # 为什么按种族而不是职业/文化
+/// 为什么是两条而不是一张「种族×职业」的合成图，见模块文档
+/// 「NPC 为什么是两条指令」一节。
 ///
-/// 种族是 `ll_world::entity::Agent` 上唯一一个「决定这东西长什么样」的
-/// 字段——职业、副职、文化决定的是它会什么、属于谁，不是它的外形。
-/// 这条选择是本批次的判断，不是所有者的裁定；真要按装备/职业改外形，
-/// 是换一条更细的规则，不是推翻这一条。
+/// # 两个字段各自的真相源
+///
+/// 身子查的是 `ll_world::entity::Agent::race`，挂件查的是
+/// `Agent::profession`——后者是所有者裁定的职业唯一真相源。两者都已经
+/// 在 `Agent` 上，本函数不需要任何新的数据通路：`WorldState::actors`
+/// 里的 `Agent` 本来就是整只结构体，渲染层拿得到 `race` 就同样拿得到
+/// `profession`。
+///
+/// # 引擎里没有任何一处按种族/职业 id 分支
+///
+/// 两条指令的键都只是「把 [`ContentIndex`] 翻回它注册时的完整命名空间
+/// 字符串」（[`Registry::resolve`]），没有 `match "lostland:dwarf"` 这
+/// 种东西。新增一个种族或职业，本文件一个字都不用改——内容声明它，
+/// 往自己的 `assets/sprites/` 里放一张同名图，就画出来了。
+///
+/// [`ContentIndex`]: ll_core::ident::ContentIndex
+/// [`Registry::resolve`]: ll_mod::registry::Registry::resolve
 pub fn npc_draws(world: &WorldState, registry: &Registry, player: EntityId) -> Vec<SurfaceDraw> {
     world
         .actors
         .iter_with_id()
         .filter(|(id, _)| *id != player)
-        .map(|(id, agent)| SurfaceDraw {
-            pos: agent.pos,
-            layer: Layer::ENTITY,
-            entity: NPC_ENTITY_BASE + id.index() as u64,
-            preferred_key: registry.resolve(agent.race).map(|id| id.to_string()),
-            fallback_key: NPC_SPRITE,
+        .flat_map(|(id, agent)| {
+            let slot = id.index() as u64;
+            [
+                SurfaceDraw {
+                    pos: agent.pos,
+                    layer: Layer::ENTITY,
+                    entity: NPC_ENTITY_BASE + slot,
+                    preferred_key: registry.resolve(agent.race).map(|id| id.to_string()),
+                    fallback_key: Some(NPC_SPRITE),
+                },
+                SurfaceDraw {
+                    pos: agent.pos,
+                    layer: Layer::ENTITY,
+                    entity: NPC_BADGE_ENTITY_BASE + slot,
+                    preferred_key: registry.resolve(agent.profession).map(|id| id.to_string()),
+                    // 没有挂件贴图就不画这一层，见 `fallback_key` 字段
+                    // 文档。
+                    fallback_key: None,
+                },
+            ]
         })
         .collect()
 }

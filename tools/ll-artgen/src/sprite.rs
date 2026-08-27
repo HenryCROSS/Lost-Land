@@ -146,7 +146,19 @@ pub(crate) fn decorate_hero_walk(
     paint_chest_cross(image, rect, HERO_MARK);
 }
 
-/// 画 `boss_idle_0`：红色主体 + 面甲（位置与既有像素一致）+ 新增的
+/// 画 `boss_idle_0`。
+///
+/// # 这张图现在的身份是测试夹具，不是待接线的内容
+///
+/// `ll-game` 本体二进制一处都不消费 `boss_idle_0`，只有
+/// `crates/ll-render/examples/p1_acceptance` 与
+/// `crates/ll-sim/examples/p3_acceptance` 在用（后者的冻结截图基准里
+/// 真的画着它，它还是唯一一个 2×2 占地的条目，p3 靠它验「footprint 从
+/// 图集条目读取」）。项目所有者的裁定是「现在应该不太需要 boss 这
+/// 东西」——处置是**留图但不再当作待办**，理由见
+/// `assets/atlas/README.md` 的同名一节。
+///
+/// 红色主体 + 面甲（位置与既有像素一致）+ 新增的
 /// 面甲内暗色眼部 + 新增的胸口菱形警示标志。boss 的 2×2 占地格让它的
 /// 画布是玩家的四倍面积，标志因此也画得比玩家的十字更大、更居中——
 /// 「更醒目」直接体现在标志本身的像素占比上，不是靠加更多颜色。

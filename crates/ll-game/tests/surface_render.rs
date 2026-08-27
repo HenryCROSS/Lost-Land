@@ -49,8 +49,8 @@ use ll_core::time::Tick;
 use ll_game::app::load_sprite_sources;
 use ll_game::content::{LoadedContent, load_content};
 use ll_game::surface_draw::{
-    GROUND_PILE_SPRITE, NPC_ENTITY_BASE, NPC_SPRITE, PLACED_FURNITURE_SPRITE, ground_pile_draws,
-    npc_draws, placed_furniture_draws, surface_draws,
+    GROUND_PILE_SPRITE, NPC_BADGE_ENTITY_BASE, NPC_ENTITY_BASE, NPC_SPRITE,
+    PLACED_FURNITURE_SPRITE, ground_pile_draws, npc_draws, placed_furniture_draws, surface_draws,
 };
 use ll_game::world::{GameWorld, build_new_world};
 use ll_render::atlas_pack::{PackedAtlas, pack_atlas};
@@ -276,21 +276,97 @@ fn 玩家不会被当成npc再画一遍() {
     // 任何 NPC 指令的序号都不可能等于 `PLAYER_ENTITY`）。本次开发中，
     // 这条断言的第一版正是那句废话——把 `npc_draws` 的过滤删掉之后它
     // 依然是绿的，反例跑出来才发现，见本文件头「每条断言的反例是什么」。
-    let player_slot = NPC_ENTITY_BASE + u64::from(world.player.index());
+    let player_body = NPC_ENTITY_BASE + u64::from(world.player.index());
+    let player_badge = NPC_BADGE_ENTITY_BASE + u64::from(world.player.index());
     assert!(
-        draws.iter().all(|draw| draw.entity != player_slot),
-        "玩家所在的 Arena 槽位不该产出 NPC 绘制指令"
+        draws
+            .iter()
+            .all(|draw| draw.entity != player_body && draw.entity != player_badge),
+        "玩家所在的 Arena 槽位不该产出 NPC 绘制指令（身子与挂件两条都不该有）"
     );
+    // 每个 NPC 两条指令（身子 + 职业挂件，见 `surface_draw` 模块文档
+    // 「NPC 为什么是两条指令」）。
     assert_eq!(
         draws.len(),
-        world.world.actors.len() - 1,
-        "NPC 指令数应当恰好比存活角色数少一条（少的那条是玩家）"
+        (world.world.actors.len() - 1) * 2,
+        "NPC 指令数应当恰好是「存活角色数减玩家」的两倍"
+    );
+}
+
+#[test]
+fn npc的身子查种族挂件查职业且挂件画在身子之上() {
+    // 这条是「按职业种族做出区别」那条要求在**接线**方向上的落点：
+    // 两条指令各查各的键，且顺序保证挂件盖在身子上而不是被身子盖住。
+    //
+    // 反例（本次开发实跑）：把 `npc_draws` 里挂件那条的 `preferred_key`
+    // 也改成查 `agent.race`，本条报「挂件查的键不是职业 ID」。
+    // Arrange
+    let (content, mut world) = real_world();
+    let (px, py) = player_pos(&world);
+    let mut neighbour = world
+        .world
+        .actors
+        .get(world.player)
+        .expect("玩家存在")
+        .clone();
+    neighbour.pos = world.world.size.wrap(px + 1, py);
+    let race_id = content
+        .registry
+        .resolve(neighbour.race)
+        .expect("种族已注册")
+        .to_string();
+    let profession_id = content
+        .registry
+        .resolve(neighbour.profession)
+        .expect("职业已注册")
+        .to_string();
+    world.world.actors.spawn(neighbour);
+
+    // Act
+    let draws = npc_draws(&world.world, &content.registry, world.player);
+    let here = world.world.size.wrap(px + 1, py);
+    let mine: Vec<_> = draws.iter().filter(|draw| draw.pos == here).collect();
+
+    // Assert
+    assert_eq!(mine.len(), 2, "一个 NPC 应当恰好产出身子与挂件两条指令");
+    assert_eq!(
+        mine[0].preferred_key.as_deref(),
+        Some(race_id.as_str()),
+        "身子查的键应当是种族 ID"
+    );
+    assert_eq!(
+        mine[0].keys().last(),
+        Some(NPC_SPRITE),
+        "身子查不到种族贴图时应当退回通用记号"
+    );
+    assert_eq!(
+        mine[1].preferred_key.as_deref(),
+        Some(profession_id.as_str()),
+        "挂件查的键应当是职业 ID"
+    );
+    assert_eq!(
+        mine[1].keys().count(),
+        1,
+        "挂件没有兜底键——没画过的职业就是不带挂件，而不是全体退到同一张         「通用职业记号」（那会让所有没画过的职业看起来是同一个职业）"
+    );
+    assert_eq!(mine[0].layer, mine[1].layer, "两条指令必须同层才谈得上遮挡");
+    assert!(
+        mine[1].entity > mine[0].entity,
+        "挂件的绘制序号必须大于身子的——同层同脚底纵坐标时号大的后画、后画的盖在上面"
     );
 }
 
 #[test]
 fn npc的种族查不到自带贴图时退回通用记号且那张记号真的有画() {
-    // Arrange：本体三个种族目前都没有自带贴图，因此全部走兜底。
+    // Arrange：本体四个种族现在**都有**自带身子贴图了（见
+    // `tools/ll-artgen/src/npc.rs`），因此这条得挑一个真的没图的种族
+    // 才验得到兜底路径。`examplemod:dragonborn` 是示例 mod 声明的种族，
+    // 示例 mod 只给 `half_elf` 画了图——这正是「mod 注册了种族但没带
+    // 贴图」这个必然会发生的常态。
+    //
+    // 反例（本次开发实跑）：给 `mods/example_mod/assets/sprites/` 也放
+    // 一张 `dragonborn.png`，本条报 chosen 是 `examplemod:dragonborn`
+    // 而不是通用记号——正好说明它验的是兜底那一支。
     let (content, mut world) = real_world();
     let atlas = real_atlas(&content);
     let (px, py) = player_pos(&world);
@@ -303,6 +379,10 @@ fn npc的种族查不到自带贴图时退回通用记号且那张记号真的�
         .expect("玩家存在")
         .clone();
     neighbour.pos = world.world.size.wrap(px + 1, py);
+    neighbour.race = content
+        .registry
+        .get(&NamespacedId::parse("examplemod:dragonborn").expect("字面量合法"))
+        .expect("示例 mod 声明了龙裔，真实 mods/ 里装得到");
     let neighbour_id = world.world.actors.spawn(neighbour);
 
     // Act
