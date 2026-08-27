@@ -146,6 +146,51 @@ pub fn is_hostile(a: &Agent, b: &Agent) -> bool {
         .any(|aff| aff.kind == AffiliationKind::Faction && a_factions.contains(&aff.org))
 }
 
+/// 两个实体之间是否存在**已声明的**对立关系——[`crate::turn`] 把一次
+/// 「走进对方那一格」路由成攻击还是互换位置，问的是这个问题。
+///
+/// # 为什么不能直接用 [`is_hostile`]
+///
+/// [`is_hostile`] 回答的是另一个问题：「野怪该扑向谁」。它的兜底是
+/// 「自己没有任何势力归属 → 对谁都敌对」，对一头怪物是对的，但
+/// [`Agent::affiliations`] 至今**没有任何生产者**（两条 `Agent` 构造
+/// 路径都写死 `Vec::new()`，`ll_world::entity::affiliation` 模块文档
+/// 已如实标注这件事），于是在真正能跑的游戏里 `is_hostile` 对**每一
+/// 对**实体都返回真：玩家、农夫、铁匠彼此全是敌人。
+///
+/// 拿它当撞格路由的判据，后果是所有者实机看到的那一幕——走向一个
+/// 农夫就把他砍了；若再把同一条路由接到 AI 那一侧，一整座村子会在
+/// 随机游走互相撞上时当场械斗。
+///
+/// # 判据本身
+///
+/// 「敌对」是一种**被声明出来的**关系，不是「没说不是敌人就是敌人」。
+/// 因此：双方都没有任何势力归属时，他们之间不存在任何已声明的对立，
+/// **不敌对**；只要有一方声明了势力归属，就回到 [`is_hostile`] 那条
+/// 既有判据去算（同势力即友、不同势力即敌）。
+///
+/// # 这不是把同一个概念抄成两份（ADR 0021）
+///
+/// 两个函数回答的是两个不同的问题，答案本来就该不同：「一头怪物这一
+/// 回合该扑向谁」（[`is_hostile`]）与「我走进你这一格意味着什么」
+/// （本函数）。野怪照常经自己的行为树直接产出 [`crate::intent::Intent::Attack`]
+/// ——它不需要、也从不经过撞格路由，因此本函数的收紧不会让任何怪物
+/// 变温顺。真正的声望/关系矩阵落地（P8，
+/// `knowledge/design/society-and-affiliation.md`）之后，两者都应当改
+/// 去查那张矩阵，届时它们大概率会合并；在那之前把它们强行合成一个，
+/// 只会让其中一个问题拿到错误答案，正是 ADR 0021 反面那一半警告的事。
+pub fn declared_hostile(a: &Agent, b: &Agent) -> bool {
+    (has_faction(a) || has_faction(b)) && is_hostile(a, b)
+}
+
+/// 这个实体有没有声明过任何 [`AffiliationKind::Faction`] 归属。
+fn has_faction(agent: &Agent) -> bool {
+    agent
+        .affiliations
+        .iter()
+        .any(|aff| aff.kind == AffiliationKind::Faction)
+}
+
 /// 一个实体此刻在不在潜行。
 ///
 /// 潜行**不改可见性**：卫兵照常看得见潜行中的目标
@@ -180,5 +225,122 @@ mod tests {
         assert_eq!(direction_from_delta(3, 5), Direction::SouthEast);
         assert_eq!(direction_from_delta(-1, 7), Direction::SouthWest);
         assert_eq!(direction_from_delta(-9, -1), Direction::NorthWest);
+    }
+
+    /// 造一个除 `affiliations` 之外全取默认值的 `Agent`——本组用例只读
+    /// 这一个字段，其余字段填什么都不影响
+    /// [`is_hostile`]/[`declared_hostile`] 的返回值（两者的实现只遍历
+    /// `affiliations`）。
+    fn agent_with_factions(factions: &[u32]) -> Agent {
+        let size = ll_core::torus::TorusSize::new(64, 64).expect("64x64 是合法尺寸");
+        let index = ll_core::ident::ContentIndex::default();
+        Agent {
+            pos: size.wrap(0, 0),
+            stats: ll_world::entity::BaseStats::BASELINE,
+            next_action_at: ll_core::time::Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: factions
+                .iter()
+                .map(|id| ll_world::entity::Affiliation {
+                    kind: AffiliationKind::Faction,
+                    org: ll_world::entity::OrgRef::Instance(ll_core::ident::WorldId::next(&mut {
+                        *id
+                    })),
+                    standing: 0,
+                })
+                .collect(),
+            wallet: 0,
+            profession: index,
+            goals: Vec::new(),
+            race: index,
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
+            resting: None,
+            unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
+            identified_items: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: ll_world::space::Space::surface(size.wrap(0, 0), index),
+            mod_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
+            level: Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            stealthed: false,
+        }
+    }
+
+    #[test]
+    fn 两个都没有势力归属的实体之间没有已声明的敌对关系() {
+        // 这是本体内容下**每一对**实体的真实形态：`Agent::affiliations`
+        // 至今没有任何生产者，见 `declared_hostile` 文档。
+        // Arrange
+        let a = agent_with_factions(&[]);
+        let b = agent_with_factions(&[]);
+
+        // Act & Assert
+        assert!(!declared_hostile(&a, &b));
+        assert!(!declared_hostile(&b, &a));
+    }
+
+    #[test]
+    fn is_hostile在双方都没有势力归属时恒为真() {
+        // **这条不是在夸奖 `is_hostile`，是把它今天的退化形态钉住**：
+        // 它是「野怪该扑向谁」的判据，兜底是「自己没归属就对谁都敌对」，
+        // 于是在当前内容下对每一对实体都返回真。撞格路由**不能**用它，
+        // 理由与替代判据见 `declared_hostile` 文档。这条一旦变红，说明
+        // 势力归属终于有生产者了（或者兜底改了），届时应当重新审视
+        // `declared_hostile` 是否还需要单独存在。
+        // Arrange
+        let a = agent_with_factions(&[]);
+        let b = agent_with_factions(&[]);
+
+        // Act & Assert
+        assert!(is_hostile(&a, &b));
+    }
+
+    #[test]
+    fn 分属不同势力的两人已声明敌对() {
+        // Arrange
+        let a = agent_with_factions(&[1]);
+        let b = agent_with_factions(&[2]);
+
+        // Act & Assert
+        assert!(declared_hostile(&a, &b));
+    }
+
+    #[test]
+    fn 同属一个势力的两人不敌对() {
+        // Arrange
+        let a = agent_with_factions(&[7]);
+        let b = agent_with_factions(&[7]);
+
+        // Act & Assert
+        assert!(!declared_hostile(&a, &b));
+    }
+
+    #[test]
+    fn 只有一方声明了势力时仍然按既有判据算成敌对() {
+        // 有归属的一方与一个「谁都不属于」的流浪者之间存在一条真实的
+        // 单向声明：这个流浪者不在我的势力里。这一支保留 `is_hostile`
+        // 的既有语义不变。
+        // Arrange
+        let affiliated = agent_with_factions(&[3]);
+        let drifter = agent_with_factions(&[]);
+
+        // Act & Assert
+        assert!(declared_hostile(&affiliated, &drifter));
+        assert!(declared_hostile(&drifter, &affiliated));
     }
 }

@@ -24,6 +24,15 @@
 //! 只会引入一段没有测试覆盖的行为。需要「撞人即攻击」的手感时，请把
 //! 这条判定和它的打靶规则一起补上，而不是只加派生这一半。
 //!
+//! 那条判定与打靶规则**现在补上了，但仍然不在本文件**：它住在
+//! `crate::turn` 的 `route_move_into_occupant`——目的地站着别人时，按
+//! [`crate::ai_query::declared_hostile`] 改判成 [`Intent::Attack`]
+//! （敌对）或 [`Intent::Swap`]（非敌对，所有者裁定「非敌对就互换位置」）。
+//! 分层没有变：**本文件仍然不从 `Intent::Move` 派生任何针对实体的
+//! 动作**，`resolve_move` 一个字都没改；它只是多了一条结算已经路由好的
+//! [`Intent::Swap`] 的函数（[`resolve_swap`]），与 `resolve_attack` 是
+//! 同一个位置的两个兄弟。
+//!
 //! # `Interior` 内部移动的范围边界（任务 12）
 //!
 //! `Intent::Move` 在 `agent.current_space` 是 `Space::Interior` 时**不
@@ -986,6 +995,7 @@ fn resolve_dispatch(
             pools,
         ),
         Intent::Move { actor, dir } => resolve_move(world, actor, dir),
+        Intent::Swap { actor, with } => resolve_swap(world, actor, with),
         Intent::Attack { actor, target } => resolve_attack(
             world,
             actor,
@@ -4048,6 +4058,84 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
     // 天然不会为「原地不动」重复标记同一批格子，这正是避免每帧全量
     // 重写探索位图的做法（见 `Effect::MarkExplored` 文档「何时才触发」
     // 一节）。
+    if world.player_entity == Some(actor) {
+        effects.push(Effect::MarkExplored {
+            origin: dest,
+            radius: EXPLORATION_SIGHT_RADIUS,
+        });
+    }
+    effects
+}
+
+/// 与相邻格上的另一个实体互换位置。
+///
+/// # 谁产出这个意图
+///
+/// 只有 `crate::turn` 的撞格路由：一次 [`Intent::Move`] 的目的地站着
+/// 一个**非敌对**实体时，「走过去」的含义是「和他换位置」（项目所有者
+/// 裁定）。敌对时那条路由产出的是 [`Intent::Attack`]，走
+/// [`resolve_attack`]。
+///
+/// # 三道前置
+///
+/// 1. 两个实体都还活着（`world.actors` 里查得到）。
+/// 2. 不是自己和自己换（路由那一层已经排除了，这里仍然防御一次——
+///    自己和自己换位置是一次零变化的世界写入，没有任何规则依据）。
+/// 3. 两者相邻（切比雪夫距离恰好 1）。互换位置是**一步移动**的另一种
+///    结果，不是一次瞬移；路由那一层只会从一次单格 `Move` 产出它，
+///    这道前置守的是将来别处直接构造 `Intent::Swap` 的调用方。
+///
+/// 三道任一不成立就静默作废（空 `Vec`），与本模块其余结算函数同一条
+/// 既有纪律。非受控实体走到这里时空 `Vec` 不会造成死循环——
+/// `crate::turn::TurnEngine::perform` 的进展保证兜住了，见该方法文档。
+///
+/// # 为什么不查目的地地形，也不按地形开销计费
+///
+/// 目的地那一格**站着一个人**，这件事本身就是「这格站得住」的证明——
+/// 再去查一次地形既多余，又会凭空多出一条「地形所属区块尚未常驻 →
+/// 返回空 `Vec`」的路径，而那正是本批次修掉的那个死循环的来源
+/// （见 `crate::turn::TurnEngine::perform` 文档「进展保证」一节）。
+///
+/// 计费取 [`BASE_ACTION_COST`]，与撞墙、开门两条分支同一个口径：那两条
+/// 同样是「这一步没按地形走完一格」的动作。互换位置是两个人贴着身子
+/// 侧过去，不是踩过那一格的地表，按目的地地形开销计费反而说不通。
+///
+/// # 探索标记
+///
+/// 玩家真的换到了新的一格，因此与 [`resolve_move`] 那条真的挪了位置的
+/// 分支一样追加 [`Effect::MarkExplored`]——少了它，玩家会发现「换位置
+/// 走过去」的那一格周围没被点亮，而正常走过去就会。
+///
+/// # 只重排发起者
+///
+/// 被换位的那一方**不消耗自己的回合**：他没有做出任何决定，是被挪过去
+/// 的。这与传统 roguelike 的换位手感一致，也是本函数只产出一条针对
+/// `actor` 的 [`Effect::ScheduleNext`] 的原因。
+fn resolve_swap(world: &WorldState, actor: EntityId, with: EntityId) -> Vec<Effect> {
+    if actor == with {
+        return Vec::new();
+    }
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let Some(other) = world.actors.get(with) else {
+        return Vec::new();
+    };
+    if world.size.chebyshev(agent.pos, other.pos) != 1 {
+        return Vec::new();
+    }
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    let dest = other.pos;
+    let mut effects = vec![
+        Effect::SwapPositions { a: actor, b: with },
+        Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        },
+    ];
     if world.player_entity == Some(actor) {
         effects.push(Effect::MarkExplored {
             origin: dest,

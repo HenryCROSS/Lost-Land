@@ -88,6 +88,25 @@ pub enum Intent {
         /// 目标。
         target: EntityId,
     },
+    /// 与相邻格上的另一个实体**互换位置**。
+    ///
+    /// # 谁产出它
+    ///
+    /// 没有任何按键、也没有任何行为树直接产出这个意图——它只由
+    /// `crate::turn` 的 `route_move_into_occupant` 从一次 [`Intent::Move`]
+    /// 路由出来：目的地那一格站着一个**非敌对**的实体时，「走过去」的
+    /// 含义就是「和他换个位置」（所有者裁定）。敌对时路由成
+    /// [`Intent::Attack`]，那条路由本来就存在。
+    ///
+    /// 与 `Attack` 同一个形状（两个 `EntityId`，不带方向）：路由那一层
+    /// 已经把「哪个方向上站着谁」解析成了确切的实体，结算层不需要再
+    /// 解析一次方向。
+    Swap {
+        /// 发起者——**主动**走过去的那个。
+        actor: EntityId,
+        /// 被换到发起者原位置上的那个。
+        with: EntityId,
+    },
     /// 原地等待一回合。
     Wait {
         /// 等待者。
@@ -690,6 +709,7 @@ impl Intent {
         match *self {
             Intent::Move { actor, .. }
             | Intent::Attack { actor, .. }
+            | Intent::Swap { actor, .. }
             | Intent::Wait { actor }
             | Intent::OpenDoor { actor, .. }
             | Intent::EnterSpace { actor, .. }

@@ -281,14 +281,28 @@ fn act_via_turn_engine(
     let mut engine = TurnEngine::new(timeline);
 
     let catalogs = handle.catalogs(items, recipes);
-    let mut intent = |_world: &WorldState, actor: EntityId, _controlled: EntityId| intent_of(actor);
-    engine.advance_ai(
-        &mut world,
-        bystander,
-        &mut intent,
-        &catalogs,
-        &mut |_, _| {},
-    );
+    // 主角当**受控实体**：`advance_ai` 一弹出它那一条就立刻返回（把它
+    // 留在 `pending` 里），随后 `try_player_intent` 消费掉这一条。旁观者
+    // 排在 `Tick(1)`，因此这一步一个人都不会被结算。
+    //
+    // # 为什么走玩家那条入口，不再走 `advance_ai` 那条非受控路径
+    //
+    // 本文件验的这几个意图（`Identify`/`Read`/`Experiment`/`Craft`）在
+    // 真实游戏里**全部**由玩家从菜单提交，走的是
+    // `ll_game::player_action::player_command` → `TurnEngine::try_player_intent`
+    // 这一条，不是 AI 那条——此前用 `advance_ai` 只是「把一个意图推进
+    // 引擎」的便利写法，并不是这些意图真实的产生地。
+    //
+    // 换过来还有一个必须换的理由：AI 那条路现在带着**进展保证**（结算
+    // 为空时补一次「等待」，让非受控实体的时钟无论如何都往前走，见
+    // `ll_sim::turn::TurnEngine::perform` 文档「进展保证」一节），于是
+    // 「白做一次、时钟原地不动」在那条路上按设计不可能发生。本文件几条
+    // 「静默作废不消耗回合」的断言问的正是这件事，它们属于玩家那条路，
+    // 也只有在玩家那条路上才有意义。
+    let mut no_ai =
+        |_world: &WorldState, actor: EntityId, _controlled: EntityId| Intent::Wait { actor };
+    engine.advance_ai(&mut world, hero, &mut no_ai, &catalogs, &mut |_, _| {});
+    engine.try_player_intent(&mut world, hero, intent_of(hero), &catalogs, &mut |_, _| {});
 
     let after = world.actors.get(hero).expect("这些动作都不会杀死主角");
     Outcome {

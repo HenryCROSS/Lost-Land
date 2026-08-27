@@ -43,12 +43,24 @@ use crate::resolve::resolve_with_catalogs;
 use crate::timeline::{Timeline, TimelineEntry};
 
 /// [`TurnEngine::advance_ai`] 单次调用最多结算的非受控实体回合数，超过
-/// 就放弃本次推进——防止「某次行动不产生 `Effect::ScheduleNext`」这类
-/// 未预见的缺陷冻结整条推进路径。
+/// 就放弃本次推进。
 ///
-/// 取值远大于当前任何真实场景会用到的实体数：`p3_acceptance` 固定 3
-/// 个敌人,本体二进制目前甚至没有 NPC——正常运行中不会触发,只有真的
-/// 出现死循环级缺陷时才会被这道防线截住。
+/// 取值远大于当前任何真实场景会用到的实体数（本体一座据点物化十几个
+/// NPC，全世界同时常驻的也远不到这个量级），正常运行中不会触发。
+///
+/// # 这道防线**不是**死循环的解药——那是一条被实机证伪的旧说法
+///
+/// 本常量的文档原本写着它能「防止某次行动不产生 `Effect::ScheduleNext`
+/// 这类未预见的缺陷冻结整条推进路径」。**它防不住。** 放弃本次推进时，
+/// 卡住的那个实体仍然以原来的 `next_action_at` 留在时间轴上，下一帧
+/// `advance_ai` 会从同一个状态重跑同一段空转、再放弃一次——每帧刷一条
+/// ERROR，而受控实体永远轮不到，玩家完全无法行动。所有者实机撞上的
+/// 正是这个结果（见 [`TurnEngine::perform`] 文档「进展保证」一节）。
+///
+/// 真正的解药是那条进展保证：非受控实体的每一次行动，无论结算出什么，
+/// 都必须让它的时钟往前走。本常量退回它唯一还成立的用途——**限制单次
+/// 调用的时长**，让一个含有大量实体、或者未来某条真的能无限产出有效
+/// 行动的规则，不至于把一帧拖到无限长。
 const MAX_STEPS_PER_ADVANCE: u32 = 10_000;
 
 /// 回合引擎：包一层 [`Timeline`]，额外持有「已经弹出、但还没配上
@@ -154,11 +166,61 @@ impl TurnEngine {
     /// 反应都没有，玩家会以为游戏卡死。反馈本身怎么呈现是调用方的事
     /// （`ll-sim` 不知道调用方在不在渲染，同 `on_effect` 文档），本层
     /// 只负责把这个事实交出去，见 [`PlayerTurnOutcome::Nothing`]。
+    ///
+    /// # 进展保证（`guarantee_progress`）
+    ///
+    /// `resolve` 判定「这一步什么都不发生」时返回空 `Vec`，其中**不含**
+    /// `Effect::ScheduleNext`——于是这个实体的 `Agent::next_action_at`
+    /// 一个 tick 都不动，而本方法末尾又照 `next_action_at` 把它重新排回
+    /// 时间轴，下一次 `pop_next` 弹出的还是它、还是同一个 `entry.at`。
+    /// AI 的决策来源只依赖世界状态（[`crate::behavior::BehaviorTreeSource`]
+    /// 的签名就是 `&WorldState`）与一条按 `(种子, 实体号, 世界时钟)`
+    /// 派生的确定性随机流（约束 C3），三个输入这一轮全都没变，因此它
+    /// **必然**产出与上一轮逐字相同的意图、逐字相同的空结算——这不是
+    /// 「大概率会重复」，是确定性系统里的**死循环**。
+    ///
+    /// 这不是假设的风险，是所有者实机撞上的缺陷：一个站在流式加载边界
+    /// 上的平民朝东南方向游走，目的地那一格所属区块尚未常驻，
+    /// `crate::resolve` 的 `resolve_move` 因此返回空 `Vec`（那里有一段
+    /// 明确的注释论证「查不到地形，无法判断这一步本该耗时多久，静默作废
+    /// 更安全」）——于是 [`Self::advance_ai`] 每帧空转满
+    /// [`MAX_STEPS_PER_ADVANCE`] 步都轮不到玩家，玩家完全无法移动。
+    ///
+    /// 修法是这条保证，不是把上限调高：**一次失败的行动也必须推进那个
+    /// 实体的时钟**。任何一条会返回空 `Vec` 的结算路径（当前至少还有
+    /// 「实体在 `Interior` 内」「食材不齐」「脚下没东西可捡」若干条），
+    /// 只要落到非受控实体头上，都是同一个死循环的另一个入口；逐条去修
+    /// 那些结算函数治不了根——每加一条新意图就多一个入口。
+    ///
+    /// # 补的为什么是「等待」的结算，不是一个凭空造的 `ScheduleNext`
+    ///
+    /// 「这一回合什么都没做」在本 crate 里已经有一个名字，就是
+    /// [`Intent::Wait`]，而「它该耗多久」这条规则已经写在
+    /// `crate::resolve` 的 `resolve_wait` 里（基础行动开销按敏捷折算）。
+    /// 这里重新走一次那条结算，等于复用同一条规则，不新增常量、不新增
+    /// 公开接口、也不让本模块知道任何具体的时间数字——本引擎是调度者，
+    /// 不是结算规则的实现者（见本方法文档开头）。这也与
+    /// [`crate::behavior::behavior_ai_intent`] 早就定下的那条降级完全
+    /// 一致：AI 算不出这一回合该干什么就补一个 `Wait`。本保证补的是它
+    /// 覆盖不到的另一半——**算得出来、但算出来的那个意图结算为空**。
+    ///
+    /// `resolve_wait` 在实体不存在时同样返回空 `Vec`；那种情形下
+    /// 时间轴末尾的 `world.actors.get(entry.actor)` 也查不到人，本来
+    /// 就不会重新排期，不构成死循环。
+    ///
+    /// # 为什么受控实体不走这条保证
+    ///
+    /// 玩家按了一个什么都没发生的键（背包里没有那件东西、这格不能放
+    /// 家具……）**不该被判成消耗了一回合**——那正是
+    /// [`PlayerTurnOutcome::Nothing`] 存在的理由：这次输入没有改变世界
+    /// 一个字节，下一帧仍然轮到玩家，他重新按一个有意义的键即可。玩家
+    /// 那条路不存在死循环，因为下一轮的输入不是世界状态的函数，是人。
     fn perform(
         &mut self,
         world: &mut WorldState,
         entry: TimelineEntry,
         intent: Intent,
+        guarantee_progress: bool,
         catalogs: &ResolveCatalogs<'_>,
         on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) -> usize {
@@ -171,7 +233,13 @@ impl TurnEngine {
         // 需要靠日志刷屏确认时钟活着，该日志已按代码注释原文「P7 时间
         // UI 落地后应摘除」移除，不留任何调试期专用分支。
         world.clock = entry.at;
-        let effects = resolve_with_catalogs(world, &intent, catalogs);
+        let mut effects = resolve_with_catalogs(world, &intent, catalogs);
+        // 进展保证（`guarantee_progress`）：这一步什么都没发生时，补一次
+        // 「等待」的结算，让这个实体的时钟无论如何都往前走。判据与代价
+        // 的完整论证见本方法文档「进展保证」一节。
+        if effects.is_empty() && guarantee_progress {
+            effects = resolve_with_catalogs(world, &Intent::Wait { actor: entry.actor }, catalogs);
+        }
         for effect in &effects {
             on_effect(world, effect);
             // `apply_with_xp_curves`，不是薄封装 `apply`：后者恒用
@@ -237,17 +305,25 @@ impl TurnEngine {
     ///
     /// # 必须保证进展（曾经的真实死循环）
     ///
-    /// 若某次改动让 `ai_intent` 产出一个 `resolve` 会判定为空效果的
-    /// `Intent`（例如撞墙的 `Move`），[`Self::perform`] 就不会产出
-    /// `Effect::ScheduleNext`，该实体的 `next_action_at` 原地不动，
-    /// 重新排入时间轴后会在**同一个 tick** 被立刻弹出，陷入死循环——
-    /// 这不是假设的风险：`p3_acceptance` 的固定策略 AI 曾经因为快速
-    /// 敌人朝玩家方向的下一格恰好是深水而真实卡死过，单元测试跑了一
-    /// 分钟没结束才被发现（该 demo 已经在 `ai_intent` 自己那一层修好
-    /// 根因）。[`MAX_STEPS_PER_ADVANCE`] 是修好根因之外的第二道防线：
-    /// 即使某次改动又引入了同一类缺陷，单次最多空转这么多步就会放弃，
-    /// 把已经死循环的那个实体的 `pending` 状态原样交还给下一次调用，
-    /// 而不是冻结整条推进路径。
+    /// `ai_intent` 完全可能产出一个 `resolve` 判定为空效果的 `Intent`
+    /// （撞进未加载区块的 `Move`、`Interior` 里的 `Move`、食材不齐的
+    /// `Craft`……）。空效果里没有 `Effect::ScheduleNext`，该实体的
+    /// `next_action_at` 原地不动，重新排入时间轴后会在**同一个 tick**
+    /// 被立刻弹出，而决策的三个输入（世界状态、`(种子, 实体号, 世界
+    /// 时钟)` 派生的随机流、行为树本身）一个都没变，于是它必然重复
+    /// 同一个决定——死循环。
+    ///
+    /// 这不是假设的风险，出现过两次：`p3_acceptance` 的固定策略 AI 曾
+    /// 因为快速敌人朝玩家方向的下一格恰好是深水而卡死（该 demo 已在
+    /// `ai_intent` 自己那一层修了自己那一处）；本体二进制则因为流式
+    /// 加载边界上的平民朝未常驻区块游走而卡死，玩家完全无法移动。
+    ///
+    /// 两次都说明「在决策来源那一层逐个避开会返回空效果的意图」治不了
+    /// 根——决策来源不可能穷举结算侧全部的静默拒绝条件。根因修在
+    /// [`Self::perform`] 的进展保证里：本函数结算的每一个非受控实体，
+    /// 无论 `resolve` 判定了什么，时钟都必然往前走，见该方法文档
+    /// 「进展保证」一节。[`MAX_STEPS_PER_ADVANCE`] 不是这条保证的替代
+    /// 品，见其自身文档。
     ///
     /// # 受控实体死亡必须在循环内部逐次核查，不能只在入口查一次
     ///
@@ -288,8 +364,13 @@ impl TurnEngine {
             if entry.actor == controlled {
                 return acted;
             }
-            let intent = ai_intent(world, entry.actor, controlled);
-            self.perform(world, entry, intent, catalogs, on_effect);
+            let raw = ai_intent(world, entry.actor, controlled);
+            // 撞格路由对 NPC 同样生效（所有者裁定读作双向，见
+            // [`route_move_into_occupant`] 文档）。
+            let intent = route_move_into_occupant(world, raw);
+            // `true`：非受控实体这条路必须保证进展，见 [`Self::perform`]
+            // 文档「进展保证」一节与本方法文档「必须保证进展」一节。
+            self.perform(world, entry, intent, true, catalogs, on_effect);
             acted.push(entry.actor);
             self.pending = None;
         }
@@ -304,8 +385,8 @@ impl TurnEngine {
     /// 它的回合、或本帧没有任何方向/等待键激活时，不消费这次回合，
     /// 返回假。
     ///
-    /// 撞进另一个存活实体所在格的 `Move` 会被就地路由成 `Attack`（撞人
-    /// 即攻击，传统 roguelike 手感,见 [`route_move_to_attack`]）；
+    /// 撞进另一个存活实体所在格的 `Move` 会被就地路由成 `Attack`（敌对）
+    /// 或 [`Intent::Swap`]（非敌对），见 [`route_move_into_occupant`]；
     /// `resolve` 刻意不做这个派生（见其模块文档），因为「同一格多个
     /// 实体时打谁」这类规则需要调用方按自己的场景决定。
     ///
@@ -344,7 +425,7 @@ impl TurnEngine {
     /// 于是分工是：本 crate 提供「提交一个意图当作玩家这一回合」的
     /// 通道，选择本身由持有菜单的那一层完成。[`Self::try_player_turn`]
     /// 现在就是本方法加上一次 `intent_from_input`，两条路径共用同一段
-    /// 「查 `pending` → 撞人即攻击路由 → `perform`」逻辑，不是各抄
+    /// 「查 `pending` → 撞格路由 → `perform`」逻辑，不是各抄
     /// 一遍（ADR 0021）。
     ///
     /// 返回值见 [`PlayerTurnOutcome`]：三态而不是 `bool`,因为玩家那条
@@ -361,9 +442,12 @@ impl TurnEngine {
         let Some(entry) = self.pending.filter(|entry| entry.actor == player) else {
             return PlayerTurnOutcome::NotYet;
         };
-        let routed = route_move_to_attack(world, intent);
+        let routed = route_move_into_occupant(world, intent);
         self.pending = None;
-        if self.perform(world, entry, routed, catalogs, on_effect) == 0 {
+        // `false`：受控实体这条路**刻意不保证进展**，见 [`Self::perform`]
+        // 文档「为什么受控实体不走这条保证」一节——玩家白按一次不该被
+        // 判成消耗了一回合。
+        if self.perform(world, entry, routed, false, catalogs, on_effect) == 0 {
             PlayerTurnOutcome::Nothing
         } else {
             PlayerTurnOutcome::Acted
@@ -421,15 +505,42 @@ pub enum PlayerTurnOutcome {
     Acted,
 }
 
-/// 把一个原始意图路由成最终意图：若一次 [`Intent::Move`] 的目的地站着
-/// 别的存活实体，改判为 [`Intent::Attack`]；否则原样放行。
+/// 把一个原始意图路由成最终意图：一次 [`Intent::Move`] 的目的地站着
+/// 别的存活实体时，按双方是否**已声明敌对**
+/// （[`ll_sim_declared_hostile`](crate::ai_query::declared_hostile)）
+/// 改判为 [`Intent::Attack`] 或 [`Intent::Swap`]；目的地空着就原样放行。
+///
+/// # 两条分支各自的裁定来源
+///
+/// 项目所有者的原话：「当角色与NPC非敌对的时候，移动向NPC的位置时，
+/// 是和NPC互换位置，而敌对NPC则是对敌对NPC攻击。」敌对那一半此前就
+/// 存在（撞人即攻击，传统 roguelike 手感），只是**无条件**成立——于是
+/// 走向一个农夫就是砍他。非敌对那一半是本批次新增的
+/// [`Intent::Swap`]。
+///
+/// 判据用 [`crate::ai_query::declared_hostile`] 而不是
+/// [`crate::ai_query::is_hostile`]，理由见前者文档：后者在当前内容下
+/// 对每一对实体都返回真，拿它当判据等于这条裁定一个字都没落地。
+///
+/// # 玩家与 NPC 走同一条路由
+///
+/// 所有者说的是「角色与NPC」，本实现读作双向都成立：
+/// [`TurnEngine::advance_ai`] 与 [`TurnEngine::try_player_intent`] 调
+/// 的是同一个本函数。两个 NPC 因此不再互相穿过对方所在格
+/// （`resolve_move` 本身不做占位检查，`crate::resolve` 那一层刻意不
+/// 决定「同一格多个实体时打谁」），而是换位。
+///
+/// 会不会出现两个 NPC 无限互换？会互换，但**不是死循环**：每一次
+/// 互换都产出 `Effect::ScheduleNext`，发起者的时钟照常前进，世界时间
+/// 一直在走，这与本模块真正要防的「时钟原地不动」是两回事。
 ///
 /// 直接在 `world.actors` 上查找目标格——不需要调用方另外维护一份
 /// 「全部实体」的列表（`p3_acceptance` 曾经为此单独传一个
 /// `&[Combatant]` 参数，纯属多余：[`ll_world::entity::Arena::iter_with_id`]
 /// 已经能给出同样的信息，且同样不依赖任何哈希容器迭代顺序,满足约束
-/// C5）。当前世界规则里每格至多站一个单位，「有就是它」不存在歧义。
-fn route_move_to_attack(world: &WorldState, raw: Intent) -> Intent {
+/// C5）。同一格站着多于一个单位时取遍历序第一个——`iter_with_id` 的
+/// 顺序由 `Vec` 支撑，固定且与哈希无关（C5）。
+fn route_move_into_occupant(world: &WorldState, raw: Intent) -> Intent {
     let Intent::Move { actor, dir } = raw else {
         return raw;
     };
@@ -438,14 +549,20 @@ fn route_move_to_attack(world: &WorldState, raw: Intent) -> Intent {
     };
     let (dx, dy) = dir.delta();
     let dest = world.size.wrap(agent.pos.x() + dx, agent.pos.y() + dy);
-    let target = world
+    let occupant = world
         .actors
         .iter_with_id()
-        .find(|(id, other)| *id != actor && other.pos == dest)
-        .map(|(id, _)| id);
-    match target {
-        Some(target) => Intent::Attack { actor, target },
-        None => raw,
+        .find(|(id, other)| *id != actor && other.pos == dest);
+    let Some((target, other)) = occupant else {
+        return raw;
+    };
+    if crate::ai_query::declared_hostile(agent, other) {
+        Intent::Attack { actor, target }
+    } else {
+        Intent::Swap {
+            actor,
+            with: target,
+        }
     }
 }
 
@@ -708,6 +825,11 @@ mod tests {
             .stats
             .strength = 9999;
         let victim = spawn_at(&mut world, (6, 5), 10);
+        // 撞格路由只把**已声明敌对**的一对判成攻击（所有者裁定，见
+        // `route_move_into_occupant`）——本用例要的正是那一支，因此
+        // 两人分属不同势力。
+        join_faction(&mut world, player, 1);
+        join_faction(&mut world, victim, 2);
         let mut timeline = Timeline::new();
         timeline.schedule(player, Tick(0));
         timeline.schedule(victim, Tick(100));
@@ -781,19 +903,34 @@ mod tests {
         );
     }
 
+    /// 给一个实体挂一条势力归属——[`crate::ai_query::declared_hostile`]
+    /// 只在至少一方声明过势力时才可能判敌对，见其文档。
+    fn join_faction(world: &mut WorldState, actor: EntityId, faction: u32) {
+        let agent = world.actors.get_mut(actor).expect("实体刚生成");
+        agent.affiliations.push(ll_world::entity::Affiliation {
+            kind: ll_world::entity::AffiliationKind::Faction,
+            org: ll_world::entity::OrgRef::Instance(ll_core::ident::WorldId::next(&mut {
+                faction
+            })),
+            standing: 0,
+        });
+    }
+
     #[test]
-    fn 移动到实体所在格被路由成攻击() {
-        // Arrange
+    fn 移动到已声明敌对的实体所在格被路由成攻击() {
+        // Arrange：两人分属不同势力，因此是已声明的敌对关系。
         let mut world = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
         let enemy = spawn_at(&mut world, (6, 5), 10);
+        join_faction(&mut world, player, 1);
+        join_faction(&mut world, enemy, 2);
         let raw = Intent::Move {
             actor: player,
             dir: crate::intent::Direction::East,
         };
 
         // Act
-        let routed = route_move_to_attack(&world, raw);
+        let routed = route_move_into_occupant(&world, raw);
 
         // Assert
         assert!(matches!(
@@ -803,7 +940,55 @@ mod tests {
     }
 
     #[test]
-    fn 移动到空地不被路由成攻击() {
+    fn 移动到非敌对实体所在格被路由成互换位置() {
+        // 所有者裁定：「当角色与NPC非敌对的时候，移动向NPC的位置时，
+        // 是和NPC互换位置」。两人都没有任何势力归属——这正是当前内容
+        // 下每一个实体的真实形态，见 `declared_hostile` 文档。
+        // Arrange
+        let mut world = test_world();
+        let player = spawn_at(&mut world, (5, 5), 10);
+        let neighbour = spawn_at(&mut world, (6, 5), 10);
+        let raw = Intent::Move {
+            actor: player,
+            dir: crate::intent::Direction::East,
+        };
+
+        // Act
+        let routed = route_move_into_occupant(&world, raw);
+
+        // Assert
+        assert_eq!(
+            routed,
+            Intent::Swap {
+                actor: player,
+                with: neighbour
+            }
+        );
+    }
+
+    #[test]
+    fn 同一势力的两人撞格互换而不是互相攻击() {
+        // 反例，守的是「已声明势力」这一半不会反过来把队友判成敌人。
+        // Arrange
+        let mut world = test_world();
+        let player = spawn_at(&mut world, (5, 5), 10);
+        let ally = spawn_at(&mut world, (6, 5), 10);
+        join_faction(&mut world, player, 7);
+        join_faction(&mut world, ally, 7);
+        let raw = Intent::Move {
+            actor: player,
+            dir: crate::intent::Direction::East,
+        };
+
+        // Act
+        let routed = route_move_into_occupant(&world, raw);
+
+        // Assert
+        assert!(matches!(routed, Intent::Swap { .. }));
+    }
+
+    #[test]
+    fn 移动到空地不被路由() {
         // Arrange
         let mut world = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
@@ -813,9 +998,160 @@ mod tests {
         };
 
         // Act
-        let routed = route_move_to_attack(&world, raw);
+        let routed = route_move_into_occupant(&world, raw);
 
         // Assert
         assert!(matches!(routed, Intent::Move { .. }));
+    }
+
+    #[test]
+    fn 玩家与非敌对实体互换位置后两人的坐标真的对调了() {
+        // 这一条测的是路由之后的整条链路（route → resolve → apply），
+        // 不只是路由本身返回了什么。
+        // Arrange
+        let mut world = test_world();
+        let player = spawn_at(&mut world, (5, 5), 10);
+        let neighbour = spawn_at(&mut world, (6, 5), 10);
+        world.player_entity = Some(player);
+        let player_before = world.actors.get(player).expect("刚生成").pos;
+        let neighbour_before = world.actors.get(neighbour).expect("刚生成").pos;
+        let mut timeline = Timeline::new();
+        timeline.schedule(player, Tick(0));
+        let mut engine = TurnEngine::new(timeline);
+        engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
+
+        // Act
+        let outcome = engine.try_player_intent(
+            &mut world,
+            player,
+            Intent::Move {
+                actor: player,
+                dir: crate::intent::Direction::East,
+            },
+            &EMPTY,
+            &mut |_, _| {},
+        );
+
+        // Assert
+        assert_eq!(outcome, PlayerTurnOutcome::Acted);
+        assert_eq!(
+            world.actors.get(player).expect("玩家还在").pos,
+            neighbour_before
+        );
+        assert_eq!(
+            world.actors.get(neighbour).expect("邻居还在").pos,
+            player_before
+        );
+    }
+
+    /// 一个恒产出「结算为空」意图的 AI：实体被挪进 `Interior` 之后，
+    /// `crate::resolve` 的 `resolve_move` 会直接返回空 `Vec`（Interior
+    /// 内部漫游不在范围内），因此这个意图**确定地**一条效果都不产出。
+    ///
+    /// 这是所有者实机撞上的那类意图的一个可复现替身：真实触发点是
+    /// 「目的地所属区块尚未常驻」，同样返回空 `Vec`，同样不带
+    /// `Effect::ScheduleNext`。真实触发点本身的端到端复现在
+    /// `crates/ll-game/tests/ai_stall.rs`。
+    fn always_futile_move(world: &WorldState, actor: EntityId, _controlled: EntityId) -> Intent {
+        let _ = world;
+        Intent::Move {
+            actor,
+            dir: crate::intent::Direction::East,
+        }
+    }
+
+    /// 把一个实体挪进 `Interior`——它的 `Intent::Move` 从此恒结算为空。
+    fn move_into_interior(world: &mut WorldState, actor: EntityId) {
+        let anchor = world.size.wrap(0, 0);
+        world
+            .actors
+            .get_mut(actor)
+            .expect("实体刚生成")
+            .current_space = ll_world::space::Space::Interior {
+            id: ll_core::ident::WorldId::next(&mut 1),
+            floor: 0,
+            anchor,
+            profile: ll_core::ident::ContentIndex::default(),
+        };
+    }
+
+    #[test]
+    fn 结算为空的ai行动仍然推进该实体的时钟并让出回合给玩家() {
+        // 回归测试：修复前，这个 NPC 的 next_action_at 原地不动，
+        // advance_ai 会在同一 tick 上反复弹出它直到耗尽
+        // MAX_STEPS_PER_ADVANCE（10000）都轮不到玩家——每帧刷一条
+        // ERROR，玩家完全无法行动。
+        // Arrange
+        let mut world = test_world();
+        let player = spawn_at(&mut world, (5, 5), 10);
+        let stuck = spawn_at(&mut world, (20, 20), 10);
+        move_into_interior(&mut world, stuck);
+        let stuck_at_before = world.actors.get(stuck).expect("刚生成").next_action_at;
+        let mut timeline = Timeline::new();
+        timeline.schedule(stuck, Tick(0));
+        timeline.schedule(player, Tick(1));
+        let mut engine = TurnEngine::new(timeline);
+
+        // Act
+        let acted = engine.advance_ai(
+            &mut world,
+            player,
+            &mut always_futile_move,
+            &EMPTY,
+            &mut |_, _| {},
+        );
+
+        // Assert：卡住的那个只被结算了一次，且它的时钟真的往前走了。
+        assert_eq!(acted, vec![stuck], "空转的 NPC 应当只被结算一次");
+        let stuck_at_after = world.actors.get(stuck).expect("还在").next_action_at;
+        assert!(
+            stuck_at_after > stuck_at_before,
+            "结算为空的行动仍必须推进该实体的时钟：{} → {}",
+            stuck_at_before.0,
+            stuck_at_after.0
+        );
+        // 且轮次真的让给了玩家——这是所有者那条验收线的机器版本。
+        let mut input = InputState::new();
+        input.press(GameKey::Wait);
+        assert!(
+            engine.try_player_turn(&mut world, player, &input, &EMPTY, &mut |_, _| {}),
+            "玩家必须能在下一步拿到自己的回合"
+        );
+    }
+
+    #[test]
+    fn 玩家提交一个结算为空的意图时不消耗回合() {
+        // 反例，守的是上一条那条进展保证**没有**被顺手套到玩家身上：
+        // 玩家白按一次仍应是 Nothing（世界一个字节没变，下一帧还轮到
+        // 他），而不是被补一次「等待」消耗掉一回合。
+        // Arrange
+        let mut world = test_world();
+        let player = spawn_at(&mut world, (5, 5), 10);
+        move_into_interior(&mut world, player);
+        let before = world.actors.get(player).expect("刚生成").next_action_at;
+        let mut timeline = Timeline::new();
+        timeline.schedule(player, Tick(0));
+        let mut engine = TurnEngine::new(timeline);
+        engine.advance_ai(&mut world, player, &mut no_op_ai, &EMPTY, &mut |_, _| {});
+
+        // Act
+        let outcome = engine.try_player_intent(
+            &mut world,
+            player,
+            Intent::Move {
+                actor: player,
+                dir: crate::intent::Direction::East,
+            },
+            &EMPTY,
+            &mut |_, _| {},
+        );
+
+        // Assert
+        assert_eq!(outcome, PlayerTurnOutcome::Nothing);
+        assert_eq!(
+            world.actors.get(player).expect("玩家还在").next_action_at,
+            before,
+            "玩家白按一次不该被判成消耗了一回合"
+        );
     }
 }

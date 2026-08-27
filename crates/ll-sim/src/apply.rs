@@ -89,6 +89,28 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.pos = *pos;
             }
         }
+        Effect::SwapPositions { a, b } => {
+            // 先把两个位置都读出来再写回去——`Arena` 一次只借得出一个
+            // `&mut Agent`，而且「读完再写」本身就是对调唯一正确的顺序
+            // （先写一个再读另一个会读到刚写进去的值）。
+            //
+            // 任一方不存在就整条不做：对调是两个实体之间的关系，少一
+            // 半就不是对调了，把剩下那一半挪到一个空位上没有任何规则
+            // 依据。这与本函数其余分支「查不到实体就是无操作」同一条
+            // 既有降级纪律。
+            let Some(a_pos) = world.actors.get(*a).map(|agent| agent.pos) else {
+                return;
+            };
+            let Some(b_pos) = world.actors.get(*b).map(|agent| agent.pos) else {
+                return;
+            };
+            if let Some(agent) = world.actors.get_mut(*a) {
+                agent.pos = b_pos;
+            }
+            if let Some(agent) = world.actors.get_mut(*b) {
+                agent.pos = a_pos;
+            }
+        }
         Effect::Damage { target, amount } => {
             if let Some(agent) = world.actors.get_mut(*target) {
                 agent.health -= amount;

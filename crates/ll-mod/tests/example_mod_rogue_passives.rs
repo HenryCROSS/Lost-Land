@@ -497,7 +497,15 @@ fn guard_turns_against_rogue(
                 catalogs,
                 &mut |_, effect| match effect {
                     Effect::Inspect { .. } => inspects += 1,
-                    Effect::MoveTo { .. } => moves += 1,
+                    // `MoveTo` 与 `SwapPositions` 在这里是同一件事：
+                    // 「卫兵看见了目标，朝它挪了一步」。目标就站在旁边
+                    // 那一格时，那一步的 `Intent::Move` 会被
+                    // `ll_sim::turn` 的撞格路由改判成 `Intent::Swap`
+                    // （双方都没有已声明的敌对关系，所有者裁定：非敌对
+                    // 就换位置），产出的效果因此是 `SwapPositions`。
+                    // 本函数数的是「这一回合卫兵有没有动作」，两种效果
+                    // 都算，漏掉后者会把「换了个位置」误判成「呆着没动」。
+                    Effect::MoveTo { .. } | Effect::SwapPositions { .. } => moves += 1,
                     _ => {}
                 },
             );
