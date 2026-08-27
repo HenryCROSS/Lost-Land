@@ -113,6 +113,104 @@ impl ResourceKind {
     }
 }
 
+/// 资源的**大类**——项目所有者定死的五个，具体种类可扩展。
+///
+/// # 为什么是两层，两层各自答什么
+///
+/// 项目所有者的裁决：
+///
+/// > 「资源就分 4 大类：食物、木材、金属、石材。基于这四大类再做细分。
+/// > 也就是说世界上的资源不会就几种。」
+/// > 「对，也要加入水」——水是第五类。
+///
+/// 两层回答的是两个不同的问题，缺一层就得在另一层上重复自己：
+///
+/// - **大类是聚合判据**：「这座据点守着金属」决定它有没有铁匠，不该
+///   关心那是铁还是铜。消费者是 `ll_mod::roster` 的职业/种族亲和表
+///   （[`ResourceTable::category`] 的唯一真实读者）——它按大类挂规则，
+///   于是第三方 mod 加一条 `mymod:copper_vein`（金属）就**自动**让守着
+///   铜矿的据点长出铁匠，一行 Rust 都不用改。这正是这一层的全部价值。
+/// - **具体种类是内容与风味**：铁矿会枯竭而花岗岩不会、良田养三个人而
+///   矿脉养八个——[`ResourceAttrs`] 的四个数值字段全部长在**具体种类**
+///   这一行上，选址与承载力因此**本来就是按具体种类算的**，加一种资源
+///   同样一行 Rust 都不用改。
+///
+/// **一处对协调者判断的修正，证据在此**：协调者倾向「选址与承载力改成
+/// 按大类算，否则每加一种矿都要改选址权重表」。核实结论是**那张权重表
+/// 不存在**——`ll_world::chronicle` 的 `EpochRun::capacity` /
+/// `resource_draw_bonus` 读的是 [`ResourceAttrs::residents_supported`] /
+/// [`ResourceAttrs::settlement_draw`]，两者都是内容行上的数字，代码里
+/// 没有任何一处按资源 id 分派。真正把具体种类写死在 Rust 里的是**名册
+/// 亲和表**（`ll_mod::roster` 此前那句
+/// `[(self.farmland, 0), (self.timber, 1), (self.iron, 4)]`），本批次改
+/// 掉的正是它。改选址反而会**丢信息**：良田与铁矿同属不同大类没错，但
+/// 同属金属的铁矿与铜矿完全可以有不同的承载力，按大类算就表达不了。
+///
+/// # 为什么是枚举，不是又一张内容表
+///
+/// 大类由项目所有者定死五个，第三方**加不了新的**（加了也没有任何
+/// 代码会读它）。ADR 0021 的判据在这里给出的是「不建表」：一张表要
+/// 换来的是「运行期能多出第六个大类」，而那个能力没有任何设计需要它，
+/// 代价却是又一条 `ContentIndex`、又一路哈希覆盖、又一处引用完整性
+/// 校验。枚举则由编译器保证 `match` 一次列全。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ResourceCategory {
+    /// 食物——良田、牧场、果园、猎场……
+    Food,
+    /// 木材。
+    Timber,
+    /// 金属——铁、铜、锡……
+    Metal,
+    /// 石材——花岗岩、石灰岩……
+    Stone,
+    /// 水——淡水、渔场。
+    ///
+    /// 项目所有者追加的第五类。**没有拆成「渔场归食物 + 宜居水源另
+    /// 算」**：一条河既能捕鱼、又能喝、又能灌溉，是同一样东西的三个
+    /// 用途，不是三样东西；而「宜居判据」那一面在代码里当前根本不存在
+    /// （`grep requires_fresh_water` 全仓库零命中），为它拆出第二个概念
+    /// 就是又一个声明了没人读的东西。
+    Water,
+}
+
+impl ResourceCategory {
+    /// 全部五个大类，**固定顺序**——遍历唯一允许的来源（约束 C5）。
+    pub const ALL: [ResourceCategory; 5] = [
+        ResourceCategory::Food,
+        ResourceCategory::Timber,
+        ResourceCategory::Metal,
+        ResourceCategory::Stone,
+        ResourceCategory::Water,
+    ];
+
+    /// 内容文件里写的那个字面量（`resources.json5` 的 `category` 字段），
+    /// 也是混进内容值哈希的那个字符串（ADR 0027：哈希混字符串不混判别
+    /// 数值，改动枚举顺序不该被误判成内容变了）。
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            ResourceCategory::Food => "food",
+            ResourceCategory::Timber => "timber",
+            ResourceCategory::Metal => "metal",
+            ResourceCategory::Stone => "stone",
+            ResourceCategory::Water => "water",
+        }
+    }
+
+    /// 从内容文件里的字面量解析；不认识的写法返回 `None`，由装载期当场
+    /// 报错点名（ADR 0017「注册期完整校验」）。
+    pub fn parse(raw: &str) -> Option<ResourceCategory> {
+        ResourceCategory::ALL
+            .into_iter()
+            .find(|category| category.as_str() == raw)
+    }
+}
+
+impl fmt::Display for ResourceCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
 /// 一条资源种类声明——本体与 mod 注册资源时共用的同一个输入形状
 /// （「本体即 Mod」，ADR 0018）。
 ///
@@ -126,6 +224,25 @@ pub struct ResourceAttrs {
     /// （[`crate::history::SettlementDemise::ResourceExhausted`]），
     /// 呈现层由这个键取名字。
     pub display_name_key: NamespacedId,
+    /// 这种资源属于哪个**大类**——[`ResourceCategory`]。
+    ///
+    /// **谁读它**：`ll_mod::roster::SettlementRoles::affinity_rules`
+    /// ——据点名册的职业与种族亲和全部按大类挂规则（守着金属的据点长
+    /// 铁匠、守着水的长渔夫），因此第三方 mod 新增一种金属矿不需要改
+    /// 任何 Rust 代码就能拿到对口职业。见 [`ResourceCategory`] 文档
+    /// 「两层各自答什么」一节。
+    ///
+    /// **一处如实标注**：`scripts/ci/check_field_consumers.py` 判定本
+    /// 字段「已接线」是一次**误判**——它在决策层全文正则搜
+    /// `\.category`，命中的是 `ll_sim::resolve` 里 `RecipeRule::category`
+    /// 的读取，与本字段无关。真实消费者仍然是上面写的那个
+    /// （`ll_mod::roster`，按本脚本的判据属于存储层，进不了
+    /// `DECISION_LAYER_FILES`），与
+    /// `ResourceAttrs::residents_supported`/`settlement_draw` 那两条
+    /// 已豁免字段是同一种处境。**不给它补一条豁免**：那个脚本会把
+    /// 「已被判定为已接线、却又出现在豁免清单里」当成一条 stale 豁免
+    /// 直接把门禁变红（`stale_because_wired`）。
+    pub category: ResourceCategory,
     /// 这种资源长在哪种地形上。
     ///
     /// **谁读它**：[`resource_node_at`] 的第一道筛——地形不对，这一格
@@ -199,6 +316,7 @@ impl std::error::Error for ResourceError {}
 #[derive(Debug, Default, Clone)]
 pub struct ResourceTable {
     display_name_key: Vec<Option<NamespacedId>>,
+    category: Vec<Option<ResourceCategory>>,
     source_terrain: Vec<Option<TerrainKind>>,
     abundance: Vec<u32>,
     residents_supported: Vec<u32>,
@@ -238,6 +356,7 @@ impl ResourceTable {
             let new_len = idx + 1;
             self.defined.resize(new_len, false);
             self.display_name_key.resize(new_len, None);
+            self.category.resize(new_len, None);
             self.source_terrain.resize(new_len, None);
             self.abundance.resize(new_len, 0);
             self.residents_supported.resize(new_len, 0);
@@ -251,6 +370,7 @@ impl ResourceTable {
 
         self.defined[idx] = true;
         self.display_name_key[idx] = Some(attrs.display_name_key);
+        self.category[idx] = Some(attrs.category);
         self.source_terrain[idx] = Some(attrs.source_terrain);
         self.abundance[idx] = attrs.abundance;
         self.residents_supported[idx] = attrs.residents_supported;
@@ -281,6 +401,15 @@ impl ResourceTable {
         self.display_name_key
             .get(kind.index().get() as usize)
             .cloned()
+            .flatten()
+    }
+
+    /// 这种资源属于哪个大类。未登记索引返回 `None`（不属于任何大类
+    /// ——安全侧：坏数据不该凭空拿到某个大类的职业亲和）。
+    pub fn category(&self, kind: ResourceKind) -> Option<ResourceCategory> {
+        self.category
+            .get(kind.index().get() as usize)
+            .copied()
             .flatten()
     }
 
@@ -518,38 +647,103 @@ pub fn survey_resources(
     }
 }
 
-/// 测试/demo 用的资源表夹具：本体四种资源，配 [`BaseTerrainIds`] 里
+/// 测试/demo 用的资源表夹具：本体七种资源，配 [`BaseTerrainIds`] 里
 /// 已经注册好的地形索引。
 ///
 /// 与 [`crate::terrain::base_terrain_fixture`]/
 /// [`crate::weather::base_weather_fixture`] 同一条既有惯例：让不关心
 /// 内容装载的测试不必为了拿一张表而跑一遍 mod 管线。
 ///
-/// **取值与 `mods/lostland/resources.json5` 保持一致是刻意的**，但两处
+/// **取值与 `mods/lostland/resources.json5` 大体一致是刻意的**，但两处
 /// 不是同一个真相源——生产路径读的恒是内容文件（资源表没有「本体注册
-/// 入口」这一层，本体四种资源与任何 mod 的资源走完全相同的
+/// 入口」这一层，本体七种资源与任何 mod 的资源走完全相同的
 /// `resources.json5` 通道），本夹具只服务测试与 demo。
+///
+/// **一处先于本批次就存在的不一致，如实标注不顺手改**：
+/// `lostland:iron_vein` 的 `residents_supported` 在内容文件里是 `8`，
+/// 在本夹具里是 `1`。两者服务不同的消费者（内容文件喂生产世界，本夹具
+/// 只喂 `crate::chronicle` 的单元测试），改动它会连带改掉那批测试的
+/// 断言基准，与本批次要做的事无关，因此原样保留并记在这里。
 pub fn base_resource_fixture(
     interner: &mut ll_core::ident::Interner,
     terrain_ids: &BaseTerrainIds,
 ) -> (Vec<ResourceKind>, ResourceTable) {
     let mut table = ResourceTable::new();
     let mut kinds = Vec::new();
-    let declarations: [(&str, TerrainKind, u32, u32, u32, bool); 4] = [
-        ("lostland:farmland", terrain_ids.grass, 120, 3, 1, false),
-        ("lostland:timber", terrain_ids.forest, 200, 1, 2, false),
-        ("lostland:iron_vein", terrain_ids.mountain, 60, 1, 5, true),
+    let declarations: [(&str, ResourceCategory, TerrainKind, u32, u32, u32, bool); 7] = [
+        (
+            "lostland:farmland",
+            ResourceCategory::Food,
+            terrain_ids.grass,
+            120,
+            3,
+            1,
+            false,
+        ),
+        (
+            "lostland:pasture",
+            ResourceCategory::Food,
+            terrain_ids.grass,
+            110,
+            2,
+            1,
+            false,
+        ),
+        (
+            "lostland:timber",
+            ResourceCategory::Timber,
+            terrain_ids.forest,
+            200,
+            1,
+            2,
+            false,
+        ),
+        (
+            "lostland:iron_vein",
+            ResourceCategory::Metal,
+            terrain_ids.mountain,
+            60,
+            1,
+            5,
+            true,
+        ),
+        (
+            "lostland:granite",
+            ResourceCategory::Stone,
+            terrain_ids.mountain,
+            100,
+            1,
+            3,
+            false,
+        ),
         (
             "lostland:fresh_water",
+            ResourceCategory::Water,
             terrain_ids.shallow_water,
             300,
             2,
             3,
             false,
         ),
+        (
+            "lostland:fishery",
+            ResourceCategory::Water,
+            terrain_ids.deep_water,
+            150,
+            2,
+            2,
+            false,
+        ),
     ];
-    for (id, source_terrain, abundance, residents_supported, settlement_draw, exhaustible) in
-        declarations
+    for (
+        id,
+        category,
+        source_terrain,
+        abundance,
+        residents_supported,
+        settlement_draw,
+        exhaustible,
+    ) in declarations
     {
         let index = interner.intern(NamespacedId::parse(id).expect("夹具用标识符恒合法"));
         let name_key = NamespacedId::parse(&format!("{id}_name")).expect("夹具用标识符恒合法");
@@ -558,6 +752,7 @@ pub fn base_resource_fixture(
                 index,
                 ResourceAttrs {
                     display_name_key: name_key,
+                    category,
                     source_terrain,
                     abundance,
                     residents_supported,
@@ -680,6 +875,7 @@ mod tests {
         );
         let attrs = |abundance| ResourceAttrs {
             display_name_key: NamespacedId::parse("test:name").expect("合法"),
+            category: ResourceCategory::Food,
             source_terrain: ids.grass,
             abundance,
             residents_supported: 1,
@@ -762,6 +958,7 @@ mod tests {
             index,
             ResourceAttrs {
                 display_name_key: NamespacedId::parse("test:name").expect("合法"),
+                category: ResourceCategory::Food,
                 source_terrain: ids.grass,
                 abundance: 0,
                 residents_supported: 1,
@@ -783,6 +980,7 @@ mod tests {
         let mut table = ResourceTable::new();
         let attrs = ResourceAttrs {
             display_name_key: NamespacedId::parse("test:name").expect("合法"),
+            category: ResourceCategory::Food,
             source_terrain: ids.grass,
             abundance: 100,
             residents_supported: 1,

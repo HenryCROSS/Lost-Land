@@ -40,6 +40,7 @@ use std::path::Path;
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
+use ll_mod::behavior_binding::ClassBehaviorBindings;
 use ll_mod::class::ClassTable;
 use ll_mod::clip::ClipTable;
 use ll_mod::damage_category::DamageCategoryTable;
@@ -166,6 +167,7 @@ fn load_real_mods() -> Handle {
     let mut clip = ClipTable::new();
     let mut xp_curve = XpCurveTable::new();
     let mut xp_curve_bindings = XpCurveBindings::new();
+    let mut class_behavior_bindings = ClassBehaviorBindings::new();
     let mut trait_def = TraitTable::new();
     let mut resource_pool = ResourcePoolTable::new();
     let mut item = ItemTable::new();
@@ -193,6 +195,7 @@ fn load_real_mods() -> Handle {
             clip: &mut clip,
             xp_curve: &mut xp_curve,
             xp_curve_bindings: &mut xp_curve_bindings,
+            class_behavior_bindings: &mut class_behavior_bindings,
             trait_def: &mut trait_def,
             resource_pool: &mut resource_pool,
             item: &mut item,

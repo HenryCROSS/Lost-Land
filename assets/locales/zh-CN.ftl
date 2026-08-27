@@ -9,7 +9,7 @@
 #   - window-title                        ll-platform WindowConfig::title_key
 #   - keybind-action-*                    ll-platform GameKey::display_name_key
 #   - race-*-display_name                 ll-mod RaceAttrs::display_name_key（本体三个种族）
-#   - class-*-display_name                ll-mod ClassAttrs::display_name_key（本体十条职业）
+#   - class-*-display_name                ll-mod ClassAttrs::display_name_key（本体十三条职业）
 #   - subclass-*-display_name             ll-mod SubclassAttrs::display_name_key（本体两个转职）
 #   - trait-*-display_name                ll-mod TraitAttrs::display_name_key（本体四条制作精通）
 #   - recipe_category-*-display_name       ll-mod RecipeCategoryDef::display_name_key（本体五个配方类别）
@@ -48,6 +48,9 @@ class-farmer-display_name = 农夫
 class-hunter-display_name = 猎户
 class-butcher-display_name = 屠夫
 class-blacksmith-display_name = 铁匠
+class-fisher-display_name = 渔夫
+class-shepherd-display_name = 牧羊人
+class-mason-display_name = 石匠
 
 subclass-duelist-display_name = 剑术家
 subclass-apprentice-display_name = 学徒
@@ -135,7 +138,7 @@ mod-dependency-version-mismatch = 模组 { $dependent } 依赖 { $dependency } �
 #   - equip_slot-*-display_name             EquipSlot 22 个引擎具名槽位
 #   - season-*-display_name                 Season 四季展示名
 #   - weather-*-display_name                本体六种天气展示名
-#   - resource-*-display_name               本体四种资源展示名
+#   - resource-*-display_name               本体七种资源展示名
 
 hud-status-time-label = 时间
 hud-status-health-label = 生命
@@ -159,15 +162,18 @@ weather-wind-display_name = 大风
 weather-fog-display_name = 雾
 weather-snow-display_name = 雪
 
-# 资源展示名——本体四种资源（mods/lostland/resources.json5）。
+# 资源展示名——本体七种资源（mods/lostland/resources.json5）。
 # 资源点由 (世界种子, 瓦片坐标) 纯派生，不进世界状态；这里只做展示名
 # 映射，键本身来自 ResourceAttrs::display_name_key。一座死于资源枯竭的
 # 据点，编年史要说出的正是这里的名字
 # （ll_world::history::SettlementDemise::ResourceExhausted）。
 resource-farmland-display_name = 良田
+resource-pasture-display_name = 牧场
 resource-timber-display_name = 木材
 resource-iron_vein-display_name = 铁矿
+resource-granite-display_name = 花岗岩
 resource-fresh_water-display_name = 水源
+resource-fishery-display_name = 渔场
 
 hud-character-panel-title = 角色
 hud-character-level-label = 等级

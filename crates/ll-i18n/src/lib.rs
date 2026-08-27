@@ -472,6 +472,12 @@ mod tests {
         "lostland:class.hunter.display_name",
         "lostland:class.butcher.display_name",
         "lostland:class.blacksmith.display_name",
+        // 渔夫 / 牧羊人 / 石匠（按职业选行为树 + 资源两层分类批次）：
+        // 三条新据点职业，理由与上面七条逐字相同——据点名册真的会把
+        // 它们挂在生成出来的 NPC 身上。
+        "lostland:class.fisher.display_name",
+        "lostland:class.shepherd.display_name",
+        "lostland:class.mason.display_name",
         "lostland:subclass.duelist.display_name",
         "lostland:subclass.apprentice.display_name",
         // 上面十一条（三个种族、四个职业、剑舞者/学徒两个副职）现在

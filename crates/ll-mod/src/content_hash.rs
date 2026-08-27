@@ -713,7 +713,26 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// **版本 23**：上面两批（偷袭载荷改含义、资源点新表）各自独立开发时
 /// 都写成 22，合并后两批的哈希输入同时存在，量尺与任一单批都不同，
 /// 因此必须是 23。版本号是单调标记不是计数器，跳号无害。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 23;
+///
+/// # 版本 24（资源两层分类批次）
+///
+/// **已覆盖的表多了一个字段**：[`ll_world::resource::ResourceAttrs`]
+/// 新增 `category`（五个大类之一），[`write_resource_fields`] 因此多混
+/// 一段字符串。这是版本 9/12「补齐已覆盖表的漏字段」那一类：**同一套
+/// 内容在新旧两版算法下的摘要不同**（旧版根本没读这个字段），因此必须
+/// 递增。
+///
+/// `check_content_hash_gate_cross_coverage` 这次**无事可做**：
+/// `Resource` → `ResourceAttrs` 那条映射在版本 22 就补齐了，本批次只是
+/// 往已在 `TARGET_TYPES` 里的结构体上加字段，`scripts/ci/
+/// check_field_consumers.py` 会自动扫到它并要求一个决策层消费者——那个
+/// 消费者是 `ll_mod::roster` 的名册亲和表，见该字段文档「谁读它」。
+///
+/// 守门方式同版本 13/14/15/21/23 那几批：本段文字 + 本模块单元测试
+/// `资源大类不同的两条资源摘要不同`，以及版本 7 那次事故之后立下的
+/// 那条纪律——**提交信息声称改了，不等于代码里真的改了**，下面这一行
+/// 的字面值就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 24;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1470,6 +1489,18 @@ fn write_resource_fields(
         Some(id) => {
             hasher.write_u64(1);
             hasher.write_namespaced_id(id);
+        }
+    }
+    // 大类（资源两层分类批次新增）：混的是内容文件里写的那个**字符串**
+    // （`ResourceCategory::as_str`），不是枚举的判别数值——与本模块对
+    // `ContentIndex` 的处理同一条道理（ADR 0027「哈希混字符串不混会
+    // 漂移的整数」）：将来在枚举中间插一个大类不该被误判成「全世界的
+    // 资源都变了」。
+    match table.category(kind) {
+        None => hasher.write_u64(0),
+        Some(category) => {
+            hasher.write_u64(1);
+            hasher.write_len_prefixed_bytes(category.as_str().as_bytes());
         }
     }
     hasher.write_u64(u64::from(table.abundance(kind)));
@@ -3872,5 +3903,61 @@ mod tests {
 
         // Assert
         assert_eq!(kind, ContentTableKind::Opaque);
+    }
+    /// 资源的大类真的进了摘要：同一条资源、只换 `category`，摘要必须
+    /// 不同（版本 24 守门，见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档
+    /// 「版本 24」一节）。
+    ///
+    /// 五个大类两两比对而不是只比其中两个：本函数混的是
+    /// `ResourceCategory::as_str` 的字符串，两个大类的字面量若不慎写
+    /// 重（复制粘贴改漏一处），只比两个是发现不了的。
+    #[test]
+    fn 资源大类不同的两条资源摘要不同() {
+        // Arrange
+        let mut interner = ll_core::ident::Interner::new();
+        let index =
+            interner.intern(ll_core::ident::NamespacedId::parse("test:ore").expect("合法标识符"));
+        let registry = Registry::new();
+        let digest = |category: ll_world::resource::ResourceCategory| -> u64 {
+            let mut table = ll_world::resource::ResourceTable::new();
+            table
+                .define(
+                    index,
+                    ll_world::resource::ResourceAttrs {
+                        display_name_key: ll_core::ident::NamespacedId::parse("test:name")
+                            .expect("合法标识符"),
+                        category,
+                        source_terrain: ll_world::terrain::TerrainKind::from_index(
+                            ContentIndex::default(),
+                        ),
+                        abundance: 100,
+                        residents_supported: 1,
+                        settlement_draw: 1,
+                        exhaustible: false,
+                    },
+                )
+                .expect("声明自洽");
+            let mut hasher = StateHasher::new();
+            write_resource_fields(&mut hasher, &table, index, &registry);
+            hasher.finish()
+        };
+
+        // Act
+        let digests: Vec<u64> = ll_world::resource::ResourceCategory::ALL
+            .into_iter()
+            .map(digest)
+            .collect();
+
+        // Assert：五个两两不同。
+        let categories = ll_world::resource::ResourceCategory::ALL;
+        for left in 0..digests.len() {
+            for right in (left + 1)..digests.len() {
+                assert_ne!(
+                    digests[left], digests[right],
+                    "大类 {} 与 {} 的摘要撞了",
+                    categories[left], categories[right]
+                );
+            }
+        }
     }
 }

@@ -349,6 +349,7 @@ fn apply_one(
                 tables.class,
                 tables.xp_curve,
                 tables.xp_curve_bindings,
+                tables.class_behavior_bindings,
                 &file.classes,
             )
         }

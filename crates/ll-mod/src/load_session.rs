@@ -65,6 +65,7 @@ use crate::base_space_profile::register_base_space_profiles;
 use crate::base_terrain::register_base_terrain;
 use crate::base_weather::register_base_weathers;
 use crate::base_xp_curve::register_base_xp_curve;
+use crate::behavior_binding::ClassBehaviorBindings;
 use crate::class::ClassTable;
 use crate::clip::{BaseClipIds, ClipTable};
 use crate::damage_category::DamageCategoryTable;
@@ -136,6 +137,8 @@ pub struct LoadSession {
     pub xp_curve: XpCurveTable,
     /// 职业/种族 → 经验曲线绑定表。
     pub xp_curve_bindings: XpCurveBindings,
+    /// 职业 → 行为原型绑定表（`crate::behavior_binding`）。
+    pub class_behavior_bindings: ClassBehaviorBindings,
     /// 天赋表。
     pub trait_def: TraitTable,
     /// 资源池表。
@@ -226,6 +229,7 @@ impl LoadSession {
             clip,
             xp_curve,
             xp_curve_bindings: XpCurveBindings::new(),
+            class_behavior_bindings: ClassBehaviorBindings::new(),
             trait_def: TraitTable::new(),
             resource_pool: ResourcePoolTable::new(),
             item: ItemTable::new(),
@@ -262,6 +266,7 @@ impl LoadSession {
             clip,
             xp_curve,
             xp_curve_bindings,
+            class_behavior_bindings,
             trait_def,
             resource_pool,
             item,
@@ -291,6 +296,7 @@ impl LoadSession {
                 clip,
                 xp_curve,
                 xp_curve_bindings,
+                class_behavior_bindings,
                 trait_def,
                 resource_pool,
                 item,

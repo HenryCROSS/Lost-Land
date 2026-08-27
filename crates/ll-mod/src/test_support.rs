@@ -12,6 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::behavior_binding::ClassBehaviorBindings;
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
 use crate::damage_category::DamageCategoryTable;
@@ -76,6 +77,7 @@ pub(crate) struct OwnedTables {
     pub(crate) clip: ClipTable,
     pub(crate) xp_curve: XpCurveTable,
     pub(crate) xp_curve_bindings: XpCurveBindings,
+    pub(crate) class_behavior_bindings: ClassBehaviorBindings,
     pub(crate) trait_def: TraitTable,
     pub(crate) resource_pool: ResourcePoolTable,
     pub(crate) item: ItemTable,
@@ -103,6 +105,7 @@ impl OwnedTables {
             clip: &mut self.clip,
             xp_curve: &mut self.xp_curve,
             xp_curve_bindings: &mut self.xp_curve_bindings,
+            class_behavior_bindings: &mut self.class_behavior_bindings,
             trait_def: &mut self.trait_def,
             resource_pool: &mut self.resource_pool,
             item: &mut self.item,

@@ -9,7 +9,11 @@
 > 3. **世界历史生成不再是「不存在」。** `crates/ll-world/src/chronicle.rs` 已落地一个最小可用的历史生成器（12 纪元 × 300 年，据点建立/遗弃两类事件），并且**真的把据点与废墟写进了地形**。七节「历史在后、派生在先」那个两步顺序因此已经被**跳过第一步直接做成了第二步的雏形**：据点不是「先纯派生、等历史落地再套偏差」，而是一开始就由历史推演产出。7.2 的接口形状（派生函数不变、外面套偏差层）对**将来的存档偏差**仍然成立。
 > 4. **六节 6.4「选址必须与 `find_spawn_site` 共用连通域分析」已经照做**：那段算法提到了 `crates/ll-world/src/land.rs`（`largest_walkable_component`），`ll-game` 侧的私有副本已删除，出生点选址与据点选址各调一次、阈值不同。
 > 5. **十一节⑥「`Effect::SpawnActor`」仍然不存在**（全仓库只有 `ll-sim/src/subclass.rs` 一句注释提到这个名字）。
-> 6. 六节 6.3 的 `SettlementTemplateTable`、6.1 的职业→行为绑定、NPC 生成本身，**全部仍未落地**。
+> 6. 六节 6.3 的 `SettlementTemplateTable` **仍未落地**。**6.1 的职业→行为绑定与 NPC 生成本身已经落地**：NPC 生成走 `crates/ll-mod/src/roster.rs`（名册纯派生 + 按据点物化）+ `ll_game::world::materialize_nearby_settlements`；职业→行为绑定走 `crates/ll-mod/src/behavior_binding.rs`（`ClassBehaviorBindings`，形状确如 6.1 所述照抄 `XpCurveBindings`），内容侧入口是 `mods/lostland/classes.json5` 每条职业上的一个 `behavior` 字段（`townsfolk` / `sentry` / `beast` 三个**行为原型**，不是 6.1 写的「行为树入口函数名」——脚本没了，树是 Rust 写的封闭枚举）。
+>
+> 7. **资源已经从扁平四条改成「五大类 + 具体种类」两层**（项目所有者裁定：食物 / 木材 / 金属 / 石材 / 水）。本体七条具体种类：良田、牧场、木材、铁矿、花岗岩、水源、渔场。职业随之从十条增至十三条（新增渔夫 / 牧羊人 / 石匠）。据点名册的职业与种族亲和**按大类**挂规则（唯一的例外是牧场按具体种类，因为它与良田同属食物却要抬不同职业）。
+>
+> 8. **据点有了「建立者种族」**（`ll_mod::roster::settlement_founder_race`）：种族不再逐个居民独立抽，而是先按资源抽出这座据点是谁开的，其余居民以他为主 + 20% 外来者。
 >
 > 以下原文保留。
 

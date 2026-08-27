@@ -137,6 +137,7 @@ pub mod base_space_profile;
 pub mod base_terrain;
 pub mod base_weather;
 pub mod base_xp_curve;
+pub mod behavior_binding;
 pub mod class;
 pub mod clip;
 pub mod content_audit;

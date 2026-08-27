@@ -77,6 +77,7 @@ use ll_sim::traits::TraitGrant;
 use ll_world::entity::{AttributeKind, BaseStats};
 use serde::Deserialize;
 
+use crate::behavior_binding::{BehaviorArchetype, ClassBehaviorBindings};
 use crate::class::{ClassAttrs, ClassTable};
 use crate::quest::{QuestAttrs, QuestCondition, QuestTable};
 use crate::race::{RaceAttrs, RaceTable};
@@ -408,6 +409,23 @@ pub struct RawClass {
     /// 曲线。理由同 [`RawRace::xp_curve`]。
     #[serde(default)]
     pub xp_curve: Option<String>,
+    /// 这个职业的 NPC 用哪个**行为原型**（`townsfolk` / `sentry` /
+    /// `beast`，见 [`crate::behavior_binding::BehaviorArchetype`]）。
+    ///
+    /// 整条不写表示**不绑定**——那样的职业落到决策来源的兜底树上
+    /// （生产接线里是平民那棵，见
+    /// `crate::native_behavior::NativeBehaviorSource`）。
+    /// 玩家可选的冒险者职业（战士/法师/游侠）就是这一档：玩家不由行为
+    /// 树驱动，给它们绑一棵树是一条没有消费者的声明。
+    ///
+    /// 写法不认识（拼错、或误写成职业名）时**装载期当场报错点名**，不
+    /// 静默落回某个默认原型，见
+    /// [`crate::behavior_binding::BehaviorArchetype::parse`] 文档。
+    ///
+    /// 形状与 [`Self::xp_curve`] 逐字同构：一个长在职业自己那一行上的
+    /// 可选字段，写进一张**不产生新 `ContentIndex`** 的旁表。
+    #[serde(default)]
+    pub behavior: Option<String>,
 }
 
 /// 把一批职业写进注册表与职业表。
@@ -416,6 +434,7 @@ pub fn apply_classes(
     table: &mut ClassTable,
     curves: &XpCurveTable,
     bindings: &mut XpCurveBindings,
+    behaviors: &mut ClassBehaviorBindings,
     classes: &[RawClass],
 ) -> Applied {
     for class in classes {
@@ -442,6 +461,16 @@ pub fn apply_classes(
             bindings
                 .bind_class(curves, index, curve)
                 .map_err(|err| err.to_string())?;
+        }
+
+        if let Some(raw) = &class.behavior {
+            let archetype = BehaviorArchetype::parse(raw).ok_or_else(|| {
+                format!(
+                    "职业 {:?} 的行为原型 {:?} 不是 townsfolk / sentry / beast 之一",
+                    class.id, raw
+                )
+            })?;
+            behaviors.bind_class(index, archetype);
         }
     }
     Ok(())

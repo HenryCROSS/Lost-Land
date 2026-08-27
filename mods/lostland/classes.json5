@@ -1,5 +1,6 @@
-// 本体职业内容：十条——四条冒险者职业（战士 / 法师 / 游侠 / 卫兵）
-// 加六条**据点职业**（据点管理者 / 民兵 / 农夫 / 猎户 / 屠夫 / 铁匠）。
+// 本体职业内容：十三条——四条冒险者职业（战士 / 法师 / 游侠 / 卫兵）
+// 加九条**据点职业**（据点管理者 / 民兵 / 农夫 / 猎户 / 屠夫 / 铁匠 /
+// 渔夫 / 牧羊人 / 石匠）。
 //
 // 搬家来历见 races.json5 文件头「这份内容搬过两次家」一节，四条职业与
 // 三个种族是同一次裁定。schema 见
@@ -20,10 +21,39 @@
 // （ADR 0015「查不到就是查不到」），不 panic——所以第三方 mod 把本体
 // 换掉也不会崩，只是那座村子里没有铁匠。
 //
-// 铁匠（lostland:blacksmith）不在所有者点名的那份清单里，是本批次按
-// 「据点的资源应当影响职业分布」补的：四种资源里铁矿是唯一有明确职业
-// 对应物的一种，没有铁匠这条内容，「守着铁矿的据点」在名册上与别处
-// 毫无差别。
+// 铁匠（lostland:blacksmith）不在所有者点名的那份清单里，是 NPC 生成
+// 批次按「据点的资源应当影响职业分布」补的：没有铁匠这条内容，「守着
+// 铁矿的据点」在名册上与别处毫无差别。
+//
+// ── 本批次新增三条，各自填哪个空 ──────────────────────────────────
+//
+// 渔夫（fisher）   项目所有者点名。上一批实测**近一半据点（116/242）
+//                  的主资源是水源**，而水源当时不改变职业分布，因为
+//                  没有对口职业——这三条里它填的是最大的那个空。
+// 牧羊人（shepherd）项目所有者点名。对口新增的「牧场」资源；此前草地
+//                  只出良田，全大陆的草原据点在名册上一模一样。
+// 石匠（mason）    项目所有者裁定「加入石匠也没问题，某些物品例如艺术
+//                  品可以通过石头，例如某一些建材也是」。对口新增的
+//                  「花岗岩」资源（石材大类的第一条内容行）。
+//                  **如实标注**：石匠的产出内容（艺术品、石制建材）
+//                  **当前不存在**——那是配方与物品的事。这条职业先立
+//                  在名册里（据点资源分布已经真的会抽到它），等那批
+//                  内容落地再接产出。
+//
+// ── behavior：这个职业的 NPC 用哪棵行为树 ─────────────────────────
+//
+// 三选一：townsfolk（平民型，不主动接近任何人）/ sentry（守卫型，走向
+// 视野内的人；卫兵还会盘查）/ beast（野兽型，见敌就打）。落点是
+// `ll_mod::behavior_binding::ClassBehaviorBindings`——一张**不产生新
+// ContentIndex** 的旁表，形状照抄 `xp_curve` 那条绑定。
+//
+// **不写这个字段 = 不绑定**，那样的职业落到决策来源的兜底树上（生产
+// 接线里是平民那棵）。战士/法师/游侠三条冒险者职业刻意不写：玩家不由
+// 行为树驱动，给它们绑一棵是一条没有消费者的声明。
+//
+// 这个字段解掉的是一条**真实缺陷**：NPC 生成批次落地后，整座村子的
+// 居民（农夫、屠夫、猎户……）全都跑卫兵那棵树，因此全都会朝玩家走
+// 过来。
 //
 // # 显示名键
 //
@@ -87,6 +117,9 @@
       id: "lostland:guard",
       display_name_key: "lostland:class.guard.display_name",
       primary_attribute: "constitution",
+      // 守卫型：走向视野内最近的人。盘查那一支**只有这条职业**过得去
+      // （行为树内部还有一道职业闸门），民兵走同一棵树但不盘查。
+      behavior: "sentry",
     },
 
     // ── 据点职业六条 ──────────────────────────────────────────────
@@ -97,6 +130,7 @@
       id: "lostland:steward",
       display_name_key: "lostland:class.steward.display_name",
       primary_attribute: "charisma",
+      behavior: "townsfolk",
     },
 
     // 民兵：平时务农、战时拿起矛的那一类。力量倾向，但不是战士——
@@ -105,6 +139,9 @@
       id: "lostland:militia",
       display_name_key: "lostland:class.militia.display_name",
       primary_attribute: "strength",
+      // 守卫型，与卫兵同一棵树——「平时务农、战时拿起矛」在行为上就是
+      // 「会走过来看看你是谁」。盘查是卫兵的职务，民兵不做。
+      behavior: "sentry",
     },
 
     // 农夫：良田据点的主力。体质倾向——那是一份把人晒黑的活。
@@ -112,6 +149,7 @@
       id: "lostland:farmer",
       display_name_key: "lostland:class.farmer.display_name",
       primary_attribute: "constitution",
+      behavior: "townsfolk",
     },
 
     // 猎户：林地据点的主力。敏捷倾向。
@@ -119,6 +157,7 @@
       id: "lostland:hunter",
       display_name_key: "lostland:class.hunter.display_name",
       primary_attribute: "dexterity",
+      behavior: "townsfolk",
     },
 
     // 屠夫：无资源亲和——屠夫跟着人走，不跟着地走。力量倾向。
@@ -126,6 +165,7 @@
       id: "lostland:butcher",
       display_name_key: "lostland:class.butcher.display_name",
       primary_attribute: "strength",
+      behavior: "townsfolk",
     },
 
     // 铁匠：铁矿据点的主力。力量倾向。
@@ -133,6 +173,39 @@
       id: "lostland:blacksmith",
       display_name_key: "lostland:class.blacksmith.display_name",
       primary_attribute: "strength",
+      behavior: "townsfolk",
+    },
+
+    // ── 本批次新增三条 ────────────────────────────────────────────
+
+    // 渔夫：水类资源（淡水 / 渔场）据点的主力。敏捷倾向——收网这活
+    // 讲手上功夫。
+    {
+      id: "lostland:fisher",
+      display_name_key: "lostland:class.fisher.display_name",
+      primary_attribute: "dexterity",
+      behavior: "townsfolk",
+    },
+
+    // 牧羊人：牧场据点的主力。感知/意志倾向——一整天看着一群羊不走
+    // 丢，靠的是留神。本仓库没有独立的感知属性，willpower 是六项里
+    // 承担 D&D「感知」概念的那一项（与卫兵盘查用同一条既有对应）。
+    {
+      id: "lostland:shepherd",
+      display_name_key: "lostland:class.shepherd.display_name",
+      primary_attribute: "willpower",
+      behavior: "townsfolk",
+    },
+
+    // 石匠：石材据点（花岗岩）的主力。力量倾向。
+    //
+    // 产出内容（艺术品、石制建材）尚未存在，见文件头「本批次新增三条」
+    // 一节的如实标注。
+    {
+      id: "lostland:mason",
+      display_name_key: "lostland:class.mason.display_name",
+      primary_attribute: "strength",
+      behavior: "townsfolk",
     },
   ],
 }

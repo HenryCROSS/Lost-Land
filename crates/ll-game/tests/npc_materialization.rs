@@ -66,7 +66,11 @@ fn world_at_a_living_settlement() -> (
 ) {
     let content = test_content();
     let mut game_world = build_new_world(&content, SEED).expect("建世界应当成功");
-    let roles = SettlementRoles::resolve(&content.registry, &content.class_table);
+    let roles = SettlementRoles::resolve(
+        &content.registry,
+        &content.class_table,
+        &content.resource_table,
+    );
 
     let site = {
         let chronicle = game_world
@@ -214,7 +218,11 @@ fn 未探索区域的据点不物化任何实体但名册随时算得出来() {
     // Arrange
     let content = test_content();
     let game_world = build_new_world(&content, SEED).expect("建世界应当成功");
-    let roles = SettlementRoles::resolve(&content.registry, &content.class_table);
+    let roles = SettlementRoles::resolve(
+        &content.registry,
+        &content.class_table,
+        &content.resource_table,
+    );
     let chronicle = game_world
         .world
         .terrain

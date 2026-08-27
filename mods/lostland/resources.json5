@@ -5,14 +5,32 @@
 // `ResourceFile`；派生算法与每个字段的消费者见
 // `crates/ll-world/src/resource.rs` 模块文档。
 //
-// ── 为什么只有四条 ────────────────────────────────────────────────
+// ── 两层：大类 + 具体种类 ─────────────────────────────────────────
 //
-// 项目所有者点名的正是这四样：「铁矿 / 木材 / 良田 / 水源」。加多不难
-// （多写一条 JSON5 就是一种新资源），但每多一条都必须回答「据点生成
-// 真的会读它吗」——不会读的那条就是又一个 `SpaceProfile.diggable`：
-// 声明了、进了哈希、进了审计，没有任何玩法后果。
+// 项目所有者的裁决：
 //
-// 这四条各自在推演里承担一件**不同**的事，缺一件就少一种世界形态：
+//   「资源就分 4 大类：食物、木材、金属、石材。基于这四大类再做细分。
+//    也就是说世界上的资源不会就几种。」
+//   「对，也要加入水」——水是第五类。
+//
+// 因此每条资源多了一个必填的 `category`，五选一：
+// food / timber / metal / stone / water。**大类由引擎定死五个**
+// （`ll_world::resource::ResourceCategory`），具体种类可扩展——
+// **加一条 JSON5 就是一种新资源，一行 Rust 都不用改**。
+//
+// 两层各自的用途（完整论证见 `ResourceCategory` 类型文档）：
+//
+//   大类      聚合判据。据点名册按它挂职业亲和：守着「金属」的据点长
+//             铁匠，不关心那是铁还是铜。于是第三方 mod 写一条
+//             `mymod:copper_vein`（metal）就自动有铁匠。
+//   具体种类  风味与数值。承载力/吸引力/枯竭与否全部长在这一行上，
+//             选址与承载力**本来就是按具体种类算的**。
+//
+// ── 为什么是这七条 ────────────────────────────────────────────────
+//
+// 每多一条都必须回答「据点生成真的会读它吗」——不会读的那条就是又一个
+// `SpaceProfile.diggable`：声明了、进了哈希、进了审计，没有任何玩法
+// 后果。七条各自在推演里承担一件**不同**的事，缺一件就少一种世界形态：
 //
 //   良田  最常见（草地是最普遍的可住地形），但每一处只养活三个人，
 //         也不特别吸引人来（settlement_draw 最低）——农业村是常态，
@@ -22,6 +40,18 @@
 //         且**唯一可枯竭**：先撑起一座矿城，再在矿采光的那一刻把它
 //         抽空。「矿业城市因为矿采光而覆灭」这条因果链的全部来源。
 //   水源  三项都居中——它是那种「有就好办、没有也活得下去」的东西。
+//
+// 本批次新增三条，各自填的空写在自己那条上：
+//
+//   牧场    草地上的第二种资源。此前草地只出良田，于是全大陆的草原
+//           据点在名册上一模一样；牧场是牧羊人（所有者点名）的对口
+//           资源，也让草原据点分出「种田的」与「放牧的」两种。
+//   花岗岩  石材大类此前**零条内容行**——那会让 `category` 的
+//           `stone` 变成一个没有任何据点守着的空档。花岗岩长在山地上，
+//           于是山城同时守着金属与石材，石匠因此在名册上真的抽得出来。
+//   渔场    深水。淡水（浅水）与渔场（深水）的区别是「内河据点」与
+//           「沿海据点」的区别：此前深水对据点毫无贡献，一座建在海边
+//           的城与一座建在荒原上的城拿到同一份承载力。
 //
 // ── 数值取值的口径 ────────────────────────────────────────────────
 //
@@ -39,6 +69,7 @@
     {
       id: "lostland:farmland",
       display_name_key: "lostland:resource.farmland.display_name",
+      category: "food",
       source_terrain: "lostland:grass",
       abundance: 120,
       residents_supported: 3,
@@ -48,10 +79,39 @@
       // 一次性开关能表达的）。
       exhaustible: false,
     },
+    // 牧场：同样长在草地上——草地上的第二种资源，也是「牧羊人」这条
+    // 职业的对口资源。
+    //
+    // 与良田同源地形但**独立掷骰**（资源点判定的随机流按资源索引分开，
+    // 见 ll_world::resource 模块文档），因此一片草原上哪几格是田、哪
+    // 几格是牧场互不关联，不会出现「有田的地方必然也有牧场」。
+    //
+    // 丰度略低于良田（110‰ vs 120‰）、单处只养活两个人：种田比放牧
+    // 养活的人多。
+    //
+    // **两个数字为什么贴得这么近，是实测调出来的**：资源画像的排名键是
+    // `资源点数 × settlement_draw`（`ll_world::chronicle::resource_profile`），
+    // 良田与牧场同源地形、`settlement_draw` 也同为 1，于是排名完全由丰度
+    // 决定——第一版给牧场 90‰，实测 235 座活据点里**一座以牧场为主资源
+    // 的都没有**（良田恒胜），牧羊人因此永远只能吃第二名的加成。贴到
+    // 110‰ 之后两者的差距落进采样噪声的量级，同一片草原上谁排第一真的
+    // 会换，草原据点这才分得出「种田的」与「放牧的」两种。
+    {
+      id: "lostland:pasture",
+      display_name_key: "lostland:resource.pasture.display_name",
+      category: "food",
+      source_terrain: "lostland:grass",
+      abundance: 110,
+      residents_supported: 2,
+      settlement_draw: 1,
+      // 可再生：草会重新长。过牧与草场退化是另一套系统，同 farmland。
+      exhaustible: false,
+    },
     // 木材：森林。盖房子的东西。
     {
       id: "lostland:timber",
       display_name_key: "lostland:resource.timber.display_name",
+      category: "timber",
       source_terrain: "lostland:forest",
       abundance: 200,
       residents_supported: 1,
@@ -65,6 +125,7 @@
     {
       id: "lostland:iron_vein",
       display_name_key: "lostland:resource.iron_vein.display_name",
+      category: "metal",
       source_terrain: "lostland:mountain",
       abundance: 60,
       // 承载力**最高**：一座矿城的人口就是靠矿养的，粮食可以从别处
@@ -77,14 +138,54 @@
       // 在内容侧的全部来源。
       exhaustible: true,
     },
-    // 水源：浅水。
+    // 花岗岩：山地。石材大类的第一条内容行。
+    //
+    // 与铁矿同源地形、独立掷骰（同良田/牧场那一对）：一座山城可以同时
+    // 守着矿脉与石场，也可以只守着其中一样。
+    //
+    // 不可枯竭：石头挖不完，这与矿脉恰成对照——矿采光了城就衰败，采石场
+    // 不会。承载力只有 1：采石养活不了多少人。
+    //
+    // **吸引力 3 与丰度 100‰ 同样是实测调出来的**，理由与牧场那条一样：
+    // 排名键是 `点数 × 吸引力`，铁矿是 `60‰ × 5 = 300`，第一版的花岗岩
+    // 是 `80‰ × 2 = 160`，实测**一座以石材为主资源的据点都没有**。调到
+    // `100‰ × 3 = 300` 与铁矿打平，山城这才分得出「矿城」与「石城」两
+    // 种——而这正是石匠这条职业要立得住的前提。
+    {
+      id: "lostland:granite",
+      display_name_key: "lostland:resource.granite.display_name",
+      category: "stone",
+      source_terrain: "lostland:mountain",
+      abundance: 100,
+      residents_supported: 1,
+      settlement_draw: 3,
+      exhaustible: false,
+    },
+    // 水源：浅水。**水是第五个大类**，不是食物的一个细分——一条河同时
+    // 是饮水、灌溉与渔获，是同一样东西的三个用途。
     {
       id: "lostland:fresh_water",
       display_name_key: "lostland:resource.fresh_water.display_name",
+      category: "water",
       source_terrain: "lostland:shallow_water",
       abundance: 300,
       residents_supported: 2,
       settlement_draw: 3,
+      exhaustible: false,
+    },
+    // 渔场：深水。水类的第二条——沿海据点与内河据点的区别就在这里。
+    //
+    // 丰度 150‰ 远低于淡水的 300‰：近岸处处能取水，能下网的渔场则稀疏
+    // 得多。承载力与淡水持平（2），吸引力略低（2 vs 3）——人先要喝水，
+    // 才谈得上捕鱼。
+    {
+      id: "lostland:fishery",
+      display_name_key: "lostland:resource.fishery.display_name",
+      category: "water",
+      source_terrain: "lostland:deep_water",
+      abundance: 150,
+      residents_supported: 2,
+      settlement_draw: 2,
       exhaustible: false,
     },
   ],

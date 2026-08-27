@@ -1,4 +1,4 @@
-//! 引擎自带的行为树——用 Rust 写的两棵 AI：哥布林与卫兵。
+//! 引擎自带的行为树——用 Rust 写的三棵 AI：哥布林、卫兵、平民。
 //!
 //! # 为什么是 Rust，不是脚本、也不是 JSON5
 //!
@@ -62,7 +62,7 @@ use ll_sim::ai_query::{
 use ll_sim::behavior::BehaviorTreeSource;
 use ll_sim::check::{CHECK_DICE, CheckSide, INSPECTION_CHECK, opposed_check};
 use ll_sim::formula::attribute_modifier;
-use ll_sim::intent::Intent;
+use ll_sim::intent::{Direction, Intent};
 use ll_sim::resolve::derive_stats;
 use ll_sim::rule_modifier::{
     RuleModifierEntry, agent_rule_modifiers, check_reroll_value, check_roll_bias,
@@ -72,6 +72,7 @@ use ll_world::entity::AttributeKind;
 use ll_world::entity::EntityId;
 use ll_world::state::WorldState;
 
+use crate::behavior_binding::{BehaviorArchetype, ClassBehaviorBindings};
 use crate::class::ClassTable;
 use crate::item::ItemTable;
 use crate::race::RaceTable;
@@ -118,6 +119,41 @@ pub const GOBLIN_SKILL_ID: &str = "examplemod:frostbolt";
 
 /// 卫兵那棵树认的职业 id。
 pub const GUARD_PROFESSION_ID: &str = "lostland:guard";
+
+/// 平民那棵树每回合**真的挪一步**的概率（千分比）。
+///
+/// # 取值为什么是这个
+///
+/// 平民要的是「看起来在过日子」，不是「在村里跑来跑去」。250‰ 意味着
+/// 平均四回合动一次——玩家站着看一会儿能看出人在动，而一个人从原地
+/// 随机游走开的速度是 `√(0.25 n)` 格，几百回合也只漂出十几格。
+///
+/// # 为什么不是「在据点范围内游荡」
+///
+/// 那需要这个 NPC 知道自己家在哪。`Agent` 上**没有**这样的字段
+/// （[`crate::roster::NpcProfile::home`] 是**派生身份**上的字段，物化
+/// 成 `Agent` 时并不随行），加一个就是一次 `WorldState::hash()` 改动
+/// 外加一次存档 remap——而本批次要解的是「农夫朝玩家走过来」，不是
+/// 「农夫待在村里」。用一个低概率的随机游走把漂移压到可忽略，是**不
+/// 动存档格式**就能拿到的最强近似；真要拴住他们，落点是给 `Agent` 加
+/// 一个归属字段，那是独立一批的工作，如实标注在此。
+pub const TOWNSFOLK_WANDER_PERMILLE: u32 = 250;
+
+/// [`TOWNSFOLK_WANDER_PERMILLE`] 的分母。
+const PERMILLE_SCALE: u32 = 1000;
+
+/// 平民随机游走可选的八个方向，**固定顺序**——本模块唯一的方向表，
+/// 抽取靠下标而不是任何容器的迭代顺序（约束 C5）。
+const WANDER_DIRECTIONS: [Direction; 8] = [
+    Direction::North,
+    Direction::South,
+    Direction::West,
+    Direction::East,
+    Direction::NorthEast,
+    Direction::SouthEast,
+    Direction::SouthWest,
+    Direction::NorthWest,
+];
 
 /// 卫兵那棵树查「盘查意愿」需要的那四张内容表的**一次性快照**。
 ///
@@ -235,10 +271,17 @@ impl BehaviorRuleCatalogs {
     }
 }
 
-/// 引擎自带的两棵行为树。
+/// 引擎自带的三棵行为树。
 ///
-/// 枚举而不是 trait 对象：一共两棵，且**第三方加不了新的**（那要改
+/// 枚举而不是 trait 对象：一共三棵，且**第三方加不了新的**（那要改
 /// 引擎源码）。`match` 一次列全，编译器负责不漏。
+///
+/// 与 [`BehaviorArchetype`] 是**一一对应**的两个枚举，各自答不同的
+/// 问题：`BehaviorArchetype` 是内容作者在 `classes.json5` 里写得出来
+/// 的那个词（一个不需要知道注册表存在的名字），`NativeBehaviorTree`
+/// 是那个词在这一局注册表下**解析完毕**的样子（哥布林那棵树的技能
+/// 索引、卫兵那棵树的职业索引都已经查好）。两者之间的桥是
+/// [`NativeBehaviorTree::for_archetype`]。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeBehaviorTree {
     /// 哥布林：附近有敌人就优先放技能，技能不可用就近战，都不行就
@@ -251,10 +294,28 @@ pub enum NativeBehaviorTree {
     },
     /// 卫兵：按概率盘查视野内最近的目标，否则走近一步或原地等待。
     Guard {
-        /// 这棵树只对这个职业的实体生效；注册表里查不到时为 `None`，
-        /// 盘查那一支恒不成立。
+        /// **盘查**那一支只对这个职业的实体生效；注册表里查不到时为
+        /// `None`，盘查那一支恒不成立。
+        ///
+        /// 这道闸门在按职业选树之后**仍然留着，而且它现在有了第二个
+        /// 意义**：绑到守卫型原型的不止卫兵一条，民兵也是。留着这道
+        /// 闸门等于说「巡逻谁都会，**盘查是卫兵的职务**」——民兵会走
+        /// 向陌生人，但不会开口查你。摘掉它则会让民兵也掷盘查判定，
+        /// 那是一次没有内容依据的扩权，而且会改掉既有种子下的决策
+        /// 序列。
         profession: Option<ContentIndex>,
     },
+    /// 平民：低概率往随机方向挪一步，否则原地等待。
+    ///
+    /// **不查任何目标**——这棵树连一次 [`nearest_visible_actor`] /
+    /// [`nearest_hostile`] 都不调用，因此在类型层面就不可能朝谁走过去。
+    /// 这不是「概率很低所以基本不会」，是**产出的 `Intent` 与世界上有
+    /// 谁、他们在哪，逐位无关**：见本模块单元测试
+    /// `平民的决策与玩家站在哪里逐位无关`。
+    ///
+    /// 没有携带任何字段：它不引用任何内容（不问职业、不问技能），因此
+    /// 也没有「注册表里查不到」这种降级情形。
+    Townsfolk,
 }
 
 impl NativeBehaviorTree {
@@ -271,6 +332,32 @@ impl NativeBehaviorTree {
             profession: lookup(registry, GUARD_PROFESSION_ID),
         }
     }
+
+    /// 平民那棵树——不引用任何内容，因此不需要注册表。
+    pub fn townsfolk() -> Self {
+        NativeBehaviorTree::Townsfolk
+    }
+
+    /// 一个行为原型在这一局注册表下解析出来的那棵树。
+    ///
+    /// `match` 一次列全三个原型，新增原型忘了接线会编译不过。
+    pub fn for_archetype(archetype: BehaviorArchetype, registry: &Registry) -> Self {
+        match archetype {
+            BehaviorArchetype::Townsfolk => NativeBehaviorTree::townsfolk(),
+            BehaviorArchetype::Sentry => NativeBehaviorTree::guard(registry),
+            BehaviorArchetype::Beast => NativeBehaviorTree::goblin(registry),
+        }
+    }
+}
+
+/// [`BehaviorArchetype`] 在 [`NativeBehaviorSource::archetype_trees`]
+/// 里的下标——定长数组代替任何 map 容器（约束 C5）。
+fn archetype_slot(archetype: BehaviorArchetype) -> usize {
+    match archetype {
+        BehaviorArchetype::Townsfolk => 0,
+        BehaviorArchetype::Sentry => 1,
+        BehaviorArchetype::Beast => 2,
+    }
 }
 
 /// 查一个已知字符串对应的内容索引；没注册就是 `None`（不 intern——
@@ -286,7 +373,24 @@ fn lookup(registry: &Registry, id: &str) -> Option<ContentIndex> {
 /// `ScriptEngine`（因此没有「构造必须先于编译」那条 ADR 0028 规避
 /// 条件，也没有 `PreparedBehaviorEngine`），也没有脚本状态读写通道。
 pub struct NativeBehaviorSource {
-    tree: NativeBehaviorTree,
+    /// 查不到职业绑定时跑的那棵树。
+    ///
+    /// **不是「默认行为」的委婉说法，是一条真实的降级路径**：一个实体
+    /// 的 `profession` 没有任何绑定（第三方 mod 的新职业没写 `behavior`
+    /// 字段、或者这个实体压根没有职业——`ContentIndex::default()`）时，
+    /// 决策必须仍然产得出来。生产接线把它设成**平民**那棵树，理由见
+    /// `ll_game::app::npc_behavior_source` 文档「兜底为什么是平民」。
+    fallback: NativeBehaviorTree,
+    /// 职业 → 行为原型的内容绑定，见 [`ClassBehaviorBindings`]。
+    bindings: ClassBehaviorBindings,
+    /// 三个原型各自**已解析**的那棵树，按 [`archetype_slot`] 的下标
+    /// 排列。
+    ///
+    /// 构造时解析一次而不是每回合现解析：解析要查注册表
+    /// （`NamespacedId::parse` + 一次哈希查找），而 `decide` 是每回合
+    /// 每实体都要走的热路径（ADR 0016/0017）。一个定长三元数组的查表
+    /// 是一次下标寻址。
+    archetype_trees: [NativeBehaviorTree; 3],
     /// 聚合规则修正要的四张内容表快照——卫兵那棵树查目标的「盘查
     /// 意愿」，见 [`BehaviorRuleCatalogs`]。
     catalogs: BehaviorRuleCatalogs,
@@ -295,12 +399,60 @@ pub struct NativeBehaviorSource {
 }
 
 impl NativeBehaviorSource {
-    /// 造一个跑 `tree` 的决策来源。
+    /// 造一个**恒跑同一棵树**的决策来源——没有任何职业绑定。
+    ///
+    /// 保留这个构造函数是因为它仍然有真实用途：只想验证某一棵树本身的
+    /// 测试（`crates/ll-mod/tests/example_mod_guard_inspection.rs` 一类）
+    /// 不需要也不该被内容绑定这一层影响。行为与按职业选树落地之前**逐
+    /// 字相同**。
     pub fn new(tree: NativeBehaviorTree, catalogs: BehaviorRuleCatalogs, world_seed: u64) -> Self {
         Self {
-            tree,
+            fallback: tree,
+            bindings: ClassBehaviorBindings::new(),
+            // 绑定表为空时这三棵永远不会被查到，填未解析的形态即可——
+            // 真正会被用到的那条路径恒经 `with_class_bindings`。
+            archetype_trees: [
+                NativeBehaviorTree::Townsfolk,
+                NativeBehaviorTree::Guard { profession: None },
+                NativeBehaviorTree::Goblin { skill: None },
+            ],
             catalogs,
             world_seed,
+        }
+    }
+
+    /// 接上职业 → 行为原型的内容绑定，并**一次性**把三个原型解析成树。
+    ///
+    /// 消费型 builder（`self` 按值进出）而不是 `&mut self` setter：本
+    /// 类型在生产路径上是「造好就一直用」的字段
+    /// （`ll_game::app::Demo::npc_ai`），没有任何调用点需要中途换绑定。
+    pub fn with_class_bindings(
+        mut self,
+        bindings: ClassBehaviorBindings,
+        registry: &Registry,
+    ) -> Self {
+        for archetype in BehaviorArchetype::ALL {
+            self.archetype_trees[archetype_slot(archetype)] =
+                NativeBehaviorTree::for_archetype(archetype, registry);
+        }
+        self.bindings = bindings;
+        self
+    }
+
+    /// 这个实体这一回合该跑哪棵树。
+    ///
+    /// 查不到实体、查不到职业绑定，都退回 [`Self::fallback`]——AI 选不
+    /// 出树不是异常（规格 §10.2「降级而非崩溃」）。
+    ///
+    /// **只读世界**（`&WorldState`，ADR 0023 / C1），且不遍历任何容器：
+    /// 一次 `actors.get` + 一次 `BTreeMap::get` + 一次数组下标。
+    fn tree_for(&self, world: &WorldState, actor: EntityId) -> NativeBehaviorTree {
+        let Some(agent) = world.actors.get(actor) else {
+            return self.fallback;
+        };
+        match self.bindings.archetype(agent.profession) {
+            Some(archetype) => self.archetype_trees[archetype_slot(archetype)],
+            None => self.fallback,
         }
     }
 }
@@ -317,11 +469,15 @@ impl BehaviorTreeSource for NativeBehaviorSource {
     /// 的派生方式。
     fn decide(&mut self, world: &WorldState, actor: EntityId) -> Option<Intent> {
         let mut rng = DetRng::for_entity(self.world_seed, actor.as_u64(), world.clock.0 as u64);
-        match self.tree {
+        // 选树在派生随机流**之后**：`DetRng::for_entity` 的三元组只依赖
+        // (种子, 实体号, 世界时钟)，与选中哪棵树无关，因此同一实体在同
+        // 一时刻拿到的流恒是同一条——换绑定不会让别处的随机流错位。
+        match self.tree_for(world, actor) {
             NativeBehaviorTree::Goblin { skill } => goblin_tick(world, actor, skill),
             NativeBehaviorTree::Guard { profession } => {
                 guard_tick(world, actor, profession, &self.catalogs, &mut rng)
             }
+            NativeBehaviorTree::Townsfolk => townsfolk_tick(actor, &mut rng),
         }
     }
 }
@@ -386,6 +542,42 @@ fn skill_ready(world: &WorldState, actor: EntityId, skill: ContentIndex) -> bool
                 .skill_cooldowns
                 .get(&skill)
                 .is_some_and(|until| until.0 > world.clock.0)
+    })
+}
+
+// ──────────────────────────── 平民那棵树 ────────────────────────────
+
+/// 平民 tick：掷一次 [`TOWNSFOLK_WANDER_PERMILLE`]，命中就往
+/// [`WANDER_DIRECTIONS`] 里随机挑一个方向挪一步，否则原地等待。
+///
+/// # 签名里没有 `world`，这是本函数最重要的一件事
+///
+/// 别的两棵树都要 `&WorldState` 才能找目标；这一棵**拿不到世界**，
+/// 因此它在类型层面就不可能读出玩家在哪、朝谁走过去。本批次要修的
+/// 缺陷（「整座村子的居民都朝玩家走过来」）在这里不是被一条 if 挡住
+/// 的，是**根本表达不出来**。
+///
+/// # 掷骰次数是固定的一次或两次
+///
+/// 不游走时取一个数（那次 `chance`），游走时取两个（`chance` +
+/// 方向）。取数次数随分支变化对确定性无害，理由与
+/// [`guard_try_inspect`] 文档末段逐字相同：这条流是 `decide` 开头现造
+/// 的、只服务这一次决策的流，不是跨调用累进的长流。
+///
+/// # 恒返回 `Some`
+///
+/// 与另外两棵树的兜底分支同一条纪律：`Intent::Wait` 恒产出
+/// `Effect::ScheduleNext`，是唯一不破坏 `advance_ai` 进展保证的降级
+/// （见 `ll_sim::behavior::behavior_ai_intent` 文档「补 `Wait` 不是
+/// 随手挑的默认值」一节）。
+fn townsfolk_tick(actor: EntityId, rng: &mut DetRng) -> Option<Intent> {
+    if !rng.chance(TOWNSFOLK_WANDER_PERMILLE, PERMILLE_SCALE) {
+        return Some(Intent::Wait { actor });
+    }
+    let slot = rng.gen_range(WANDER_DIRECTIONS.len() as u64) as usize;
+    Some(Intent::Move {
+        actor,
+        dir: WANDER_DIRECTIONS[slot],
     })
 }
 
@@ -743,6 +935,135 @@ mod tests {
         assert!(
             hidden < open / 3,
             "潜行目标的盘查次数应当显著低于非潜行（{hidden} vs {open}）"
+        );
+    }
+    #[test]
+    fn 平民的决策与世界上有谁在哪里逐位无关() {
+        // Arrange：两个世界唯一的差别是**旁边有没有另一个实体、他站在
+        // 哪**。平民那棵树拿不到 `&WorldState`（见 `townsfolk_tick`
+        // 文档），因此两串决策必须逐位相同——这比「没有靠近」更强：
+        // 它证明的是别人的位置根本没有进入这棵树的输入。
+        let decisions = |neighbour: Option<(i32, i32)>| {
+            let mut world = test_world();
+            let actor = spawn_agent_at(&mut world, 5, 5, Vec::new());
+            if let Some((x, y)) = neighbour {
+                spawn_agent_at(&mut world, x, y, Vec::new());
+            }
+            let mut source = NativeBehaviorSource::new(
+                NativeBehaviorTree::townsfolk(),
+                BehaviorRuleCatalogs::default(),
+                7,
+            );
+            (0..64i64)
+                .map(|tick| {
+                    world.clock = Tick(tick);
+                    source.decide(&world, actor)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        // Act
+        let alone = decisions(None);
+        let east = decisions(Some((6, 5)));
+        let far = decisions(Some((5, 12)));
+
+        // Assert
+        assert_eq!(alone, east, "旁边站个人不应当改变平民的决策");
+        assert_eq!(alone, far, "那个人站远一点同样不应当改变平民的决策");
+        // 顺带守住「他确实在动，不是一律 Wait」——一棵恒等待的树也能
+        // 通过上面两条，但那不是本批次要的行为。
+        assert!(
+            alone
+                .iter()
+                .any(|intent| matches!(intent, Some(Intent::Move { .. }))),
+            "六十四回合里平民应当至少挪过一步"
+        );
+        assert!(
+            alone
+                .iter()
+                .any(|intent| matches!(intent, Some(Intent::Wait { .. }))),
+            "六十四回合里平民应当至少原地待过一回合"
+        );
+    }
+
+    #[test]
+    fn 按职业绑定给不同职业发不同的树() {
+        // Arrange：一个世界、两个实体，职业不同、绑定不同。
+        let mut registry = Registry::new();
+        let guard_class =
+            registry.intern(NamespacedId::parse(GUARD_PROFESSION_ID).expect("合法标识符"));
+        let farmer_class =
+            registry.intern(NamespacedId::parse("lostland:farmer").expect("合法标识符"));
+        let mut bindings = ClassBehaviorBindings::new();
+        bindings.bind_class(guard_class, BehaviorArchetype::Sentry);
+        bindings.bind_class(farmer_class, BehaviorArchetype::Townsfolk);
+
+        let mut world = test_world();
+        let guard = spawn_agent_at(&mut world, 5, 5, Vec::new());
+        let farmer = spawn_agent_at(&mut world, 5, 6, Vec::new());
+        // 目标站在两人的视野内——守卫那棵树因此有得可走。
+        spawn_agent_at(&mut world, 9, 5, Vec::new());
+        world.actors.get_mut(guard).expect("刚生成").profession = guard_class;
+        world.actors.get_mut(farmer).expect("刚生成").profession = farmer_class;
+
+        let mut source = NativeBehaviorSource::new(
+            NativeBehaviorTree::townsfolk(),
+            BehaviorRuleCatalogs::default(),
+            11,
+        )
+        .with_class_bindings(bindings, &registry);
+
+        // Act：卫兵在视野里看得见人，兜底分支恒产出一次朝他走的 Move；
+        // 农夫**绝大多数回合原地等待**，且他的 Move 方向与目标无关。
+        let mut guard_moves = 0usize;
+        let mut farmer_waits = 0usize;
+        for tick in 0..64i64 {
+            world.clock = Tick(tick);
+            if matches!(
+                source.decide(&world, guard),
+                Some(Intent::Move { .. }) | Some(Intent::Inspect { .. })
+            ) {
+                guard_moves += 1;
+            }
+            if matches!(source.decide(&world, farmer), Some(Intent::Wait { .. })) {
+                farmer_waits += 1;
+            }
+        }
+
+        // Assert
+        assert_eq!(
+            guard_moves, 64,
+            "视野内有人时守卫型每回合都该有所动作（走过去或盘查）"
+        );
+        assert!(
+            farmer_waits > 32,
+            "平民型多数回合应当原地等待，实际 {farmer_waits}/64"
+        );
+    }
+
+    #[test]
+    fn 没有绑定的职业落到兜底那棵树() {
+        // Arrange：绑定表里一条都没有（第三方 mod 的新职业没写
+        // behavior 字段），兜底给野兽那棵树——若 `tree_for` 的降级
+        // 路径断了，下面这条会红。
+        let registry = Registry::new();
+        let mut world = test_world();
+        let actor = spawn_agent_at(&mut world, 5, 5, Vec::new());
+        spawn_agent_at(&mut world, 6, 5, Vec::new());
+        let mut source = NativeBehaviorSource::new(
+            NativeBehaviorTree::goblin(&registry),
+            BehaviorRuleCatalogs::default(),
+            13,
+        )
+        .with_class_bindings(ClassBehaviorBindings::new(), &registry);
+
+        // Act
+        let intent = source.decide(&world, actor);
+
+        // Assert：哥布林那棵树见到敌对目标就近战（技能没注册，降级）。
+        assert!(
+            matches!(intent, Some(Intent::Attack { .. })),
+            "没有绑定时应当跑兜底那棵树，实际 {intent:?}"
         );
     }
 }

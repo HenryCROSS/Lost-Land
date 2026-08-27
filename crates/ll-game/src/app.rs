@@ -60,43 +60,42 @@ use crate::layout::{
 use crate::save::save_game;
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
-/// 本体二进制的 NPC 决策来源：引擎自带的**卫兵**那棵行为树
-/// （[`NativeBehaviorTree::guard`]）。
+/// 本体二进制的 NPC 决策来源：**按职业选行为树**。
 ///
-/// # 这里此前是一个恒 `Wait` 的占位，为什么现在不是了
+/// # 这里此前是什么，为什么必须改
 ///
-/// 那个占位（`no_npc_ai`）的文档如实记着两条**内容层面**的阻塞：
+/// NPC 生成批次落地时，这里硬选了**卫兵那棵树**发给全部物化出来的
+/// NPC，当时的文档如实记着代价：「一整座村子的居民都会朝玩家走过来
+/// ——这是分支二的直接后果，不是缺陷修不了，而是『按职业选一棵树』这
+/// 条内容绑定还不存在。」
 ///
-/// 1. 「本体二进制没有任何 NPC 生成路径」——NPC 生成批次落地之后不再
-///    成立：[`crate::world::materialize_nearby_settlements`] 会在玩家
-///    走近一座据点时把那座据点的名册物化成真正的 `Agent`。
-/// 2. 「没有『哪个生物用哪棵树』的内容绑定」——**这一条仍然成立**，
-///    因此这里仍然是「硬选一棵」，只是选的那一棵现在有真实理由。
+/// 那条内容绑定现在存在了：[`ll_mod::behavior_binding::ClassBehaviorBindings`]
+/// ——`mods/lostland/classes.json5` 每条职业上的一个 `behavior` 字段，
+/// 落进一张**不产生新 `ContentIndex`** 的旁表（形状照抄
+/// `XpCurveBindings`）。本函数把它交给决策来源，于是：
 ///
-/// # 为什么硬选卫兵那棵，而不是哥布林那棵
+/// - 卫兵 / 民兵 → 守卫型（走向视野内的人；盘查仍只有卫兵做）
+/// - 据点管理者 / 农夫 / 猎户 / 屠夫 / 铁匠 / 渔夫 / 牧羊人 / 石匠
+///   → 平民型（**连一次目标查询都不做**，因此不可能朝玩家走过来）
 ///
-/// 卫兵那棵树的形状恰好是「一棵通用的据点居民树」：
+/// # 兜底为什么是平民，不是卫兵
 ///
-/// - 分支一（盘查）**自带职业闸门**——`guard_tick` 第一句就问「这个实体
-///   是不是 `lostland:guard`」，不是守卫的居民（农夫、铁匠……）自动落到
-///   下一支。这条闸门此前是一条真实的悬空引用（没有任何路径生成过带这个
-///   职业的实体），本批次让它第一次真的可能成立。
-/// - 分支二（兜底，恒成立）是「看得见人就走近一步，否则原地等待」——
-///   对一个村民来说，这是一个不出戏的默认行为。
+/// 没有绑定的职业（第三方 mod 的新职业没写 `behavior`、或者实体压根
+/// 没有职业）落在
+/// [`NativeBehaviorSource::fallback`](ll_mod::native_behavior::NativeBehaviorSource)
+/// 上。选平民那棵：**兜底应当是伤害最小的那一个**。选错成平民的代价
+/// 是「这个 NPC 站着不动」，选错成卫兵的代价正是本批次要修的那个缺陷
+/// ——一个没写绑定的 mod 职业会让整座村子重新朝玩家走过来。
 ///
-/// 哥布林那棵树则是「见人就放技能、放不了就近战」，套在农夫身上会让
-/// 整座村子见到玩家就动手。两棵之间没有第三个选项：`NativeBehaviorTree`
-/// 是个只有两条的封闭枚举（第三方加不了新的，见其类型文档）。
+/// # 哥布林那棵树在生产路径上仍然没有调用点
 ///
-/// # 已知缺口，如实标注
-///
-/// 一整座村子的居民都会朝玩家走过来——这是分支二的直接后果，不是缺陷
-/// 修不了，而是「按职业选一棵树」这条内容绑定还不存在。真正的解法是给
-/// `ClassDef` 加一条行为绑定（`settlements-structures-and-npc-spawning.md`
-/// 六节 6.1 的 `ClassBehaviorBindings`），那是独立一批的工作。
+/// 野兽型原型已经接好（`behavior: "beast"` 就能绑上去），但本体内容
+/// 里**没有任何一条职业绑它**——本体至今不生成怪物，`examplemod:frostbolt`
+/// 那条技能也只在示例 mod 里。如实标注：这一支在生产装载下恒不成立，
+/// 它的证据在 `crates/ll-mod/tests/` 那批用示例 mod 的集成测试里。
 fn npc_behavior_source(content: &LoadedContent, world_seed: u64) -> NativeBehaviorSource {
     NativeBehaviorSource::new(
-        NativeBehaviorTree::guard(&content.registry),
+        NativeBehaviorTree::townsfolk(),
         BehaviorRuleCatalogs::snapshot(
             &content.race_table,
             &content.class_table,
@@ -106,6 +105,7 @@ fn npc_behavior_source(content: &LoadedContent, world_seed: u64) -> NativeBehavi
         ),
         world_seed,
     )
+    .with_class_bindings(content.class_behavior_bindings.clone(), &content.registry)
 }
 
 /// 每次「放大/缩小」动作激活时，缩放倍率的调整步长。
@@ -433,7 +433,11 @@ impl Demo {
             &content.terrain_ids,
         );
         let npc_ai = npc_behavior_source(&content, game_world.world.seed);
-        let settlement_roles = SettlementRoles::resolve(&content.registry, &content.class_table);
+        let settlement_roles = SettlementRoles::resolve(
+            &content.registry,
+            &content.class_table,
+            &content.resource_table,
+        );
         Demo {
             content,
             game_world,

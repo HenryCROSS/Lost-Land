@@ -40,6 +40,7 @@ use std::path::Path;
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_mod::asset_vfs::{self, AssetVfs};
 use ll_mod::base_contract::BaseContractError;
+use ll_mod::behavior_binding::ClassBehaviorBindings;
 use ll_mod::class::{BaseClassIds, ClassTable, resolve_base_classes};
 use ll_mod::clip::{BaseClipIds, ClipTable};
 use ll_mod::content_audit::{
@@ -130,6 +131,10 @@ pub struct LoadedContent {
     pub xp_curve_table: XpCurveTable,
     /// 职业/种族 → 经验曲线的绑定表。
     pub xp_curve_bindings: XpCurveBindings,
+    /// 职业 → 行为原型的绑定表（按职业选行为树批次新增）——
+    /// `crate::app::npc_behavior_source` 靠它决定物化出来的每个 NPC
+    /// 跑哪棵行为树，见 `ll_mod::behavior_binding` 模块文档。
+    pub class_behavior_bindings: ClassBehaviorBindings,
     /// 天赋表（天赋系统落地批次新增）——`ll_mod::trait_def::TraitTable`
     /// 实现 `ll_sim::traits::TraitCatalog`，与 `race_table`（实现
     /// `ll_sim::traits::TraitGrantSource`）一起供
@@ -568,6 +573,7 @@ pub fn load_content(
         clip: clip_table,
         xp_curve: xp_curve_table,
         xp_curve_bindings,
+        class_behavior_bindings,
         trait_def: trait_table,
         resource_pool: resource_pool_table,
         item: item_table,
@@ -682,7 +688,8 @@ pub fn load_content(
     // `ContentValueTables` 现在覆盖十二张表（内容值哈希覆盖面扩展批次：
     // 新增天赋/资源池/物品/动画剪辑/空间层属性/经验曲线六张,详见
     // `ll_mod::content_hash` 模块文档「起因」一节）——仍不含
-    // `xp_curve_bindings`：那是一张只做 id → id 映射、自己不持有任何
+    // `xp_curve_bindings` 与 `class_behavior_bindings`：那是两张只做
+    // id → id（或 id → 枚举）映射、自己不持有任何
     // `ContentIndex` 条目的绑定表，`classify_index` 那套「按 id 归属
     // 哪张表」的机制天然覆盖不到它，见 `ll_mod::content_hash` 模块
     // 文档「哈希覆盖哪些字段」一节「例外，且是刻意的例外」一段——这是
@@ -732,6 +739,7 @@ pub fn load_content(
         default_xp_curve_id,
         xp_curve_table,
         xp_curve_bindings,
+        class_behavior_bindings,
         trait_table,
         resource_pool_table,
         item_table,

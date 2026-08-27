@@ -16,7 +16,7 @@
 //! 形突然不挡视线了」，而没有任何报错。数值字段同理，除非缺省值本身
 //! 有明确语义（见各字段文档）。
 
-use ll_world::resource::{ResourceAttrs, ResourceError, ResourceTable};
+use ll_world::resource::{ResourceAttrs, ResourceCategory, ResourceError, ResourceTable};
 use ll_world::space_profile::{SpaceProfileAttrs, SpaceProfileError, SpaceProfileTable};
 use ll_world::terrain::{TerrainAttrs, TerrainError, TerrainKind, TerrainTable};
 use ll_world::weather::{WeatherAttrs, WeatherError, WeatherTable};
@@ -112,6 +112,13 @@ pub struct RawResource {
     pub id: String,
     /// 展示名的 Fluent 本地化键。
     pub display_name_key: String,
+    /// 这种资源属于哪个大类，五选一：`food` / `timber` / `metal` /
+    /// `stone` / `water`（[`ll_world::resource::ResourceCategory`]）。
+    ///
+    /// **必填**，与本结构体其余字段同一条纪律：给一个默认值（比如
+    /// 「不写就算食物」）的症状是「守着铜矿的据点长出了农夫」，而没有
+    /// 任何报错。
+    pub category: String,
     /// 这种资源长在哪种地形上（完整命名空间标识符，必须是一条已经
     /// 注册过的地形——`resources.json5` 排在 `terrain.json5` 之后装载
     /// 正是为了这一条，见 `crate::content_data` 的 `CONTENT_FILES`）。
@@ -135,6 +142,12 @@ pub fn apply_resources(
     for resource in resources {
         let index = intern_id(registry, &resource.id, "资源标识符")?;
         let display_name_key = parse_id(&resource.display_name_key, "资源展示名键")?;
+        let category = ResourceCategory::parse(&resource.category).ok_or_else(|| {
+            format!(
+                "资源 {:?} 的大类 {:?} 不是 food / timber / metal / stone / water 之一",
+                resource.id, resource.category
+            )
+        })?;
         // 源地形走 `intern` 而不是「只 get」：与 `RawTerrain::opens_into`
         // 完全同一种处理——注册表本身不区分「谁先提到这个 id」，真正的
         // 校验（这条地形有没有被 `terrain.json5` 声明过）由地形表的
@@ -150,6 +163,7 @@ pub fn apply_resources(
                 index,
                 ResourceAttrs {
                     display_name_key,
+                    category,
                     source_terrain,
                     abundance: resource.abundance.clamp(0, i64::from(u32::MAX)) as u32,
                     residents_supported: resource.residents_supported.max(0) as u32,

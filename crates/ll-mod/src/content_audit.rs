@@ -1586,7 +1586,7 @@ fn inspect_weather(auditor: &mut Auditor<'_>, index: ContentIndex) {
 
 /// [`ll_world::resource::ResourceAttrs`] 的全部字段（资源点批次新增）。
 ///
-/// `display_name_key` 与 `source_terrain` 是**必填**参数
+/// `display_name_key`、`category` 与 `source_terrain` 是**必填**参数
 /// （`ResourceTable::define` 的入参，不是 `Option`），任何一条真实注册
 /// 出来的资源都有值，因此恒记为已覆盖——与
 /// [`inspect_weather`] 的 `display_name_key` 同一条既有处理。
@@ -1601,6 +1601,10 @@ fn inspect_resource(auditor: &mut Auditor<'_>, index: ContentIndex) {
     let kind = ll_world::resource::ResourceKind::from_index(index);
     let table = auditor.tables.resource;
     auditor.field("ResourceAttrs::display_name_key", true);
+    // 大类同样是 `define` 的必填入参（`ResourceCategory` 没有「未填」
+    // 这个取值，装载期解析不出来就当场报错），因此恒记为已覆盖，理由
+    // 与 `display_name_key`/`source_terrain` 逐字相同。
+    auditor.field("ResourceAttrs::category", true);
     auditor.field("ResourceAttrs::source_terrain", true);
     auditor.field("ResourceAttrs::abundance", true);
     auditor.field(

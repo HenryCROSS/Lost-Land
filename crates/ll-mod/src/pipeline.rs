@@ -61,6 +61,7 @@ use ll_world::space_profile::SpaceProfileTable;
 use ll_world::terrain::TerrainTable;
 use ll_world::weather::WeatherTable;
 
+use crate::behavior_binding::ClassBehaviorBindings;
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
 use crate::damage_category::DamageCategoryTable;
@@ -131,6 +132,10 @@ pub struct GameplayTables<'a> {
     /// 元组字段，是为了和其余各表同样走 `std::mem::take` 这条既有搬运
     /// 手法，不需要为这一对表单独发明搬运方式。
     pub xp_curve_bindings: &'a mut XpCurveBindings,
+    /// 职业 → 行为原型的绑定表——由 `classes.json5` 里的 `behavior`
+    /// 字段写入。与 `xp_curve_bindings` 同一条手法、同一条理由，见
+    /// `crate::behavior_binding` 模块文档「形状」一节。
+    pub class_behavior_bindings: &'a mut ClassBehaviorBindings,
     /// 天赋表（`traits.json5`），见 `crate::trait_def` 模块文档。
     pub trait_def: &'a mut TraitTable,
     /// 资源池表（`resource_pools.json5`），见 `crate::resource_pool`
@@ -337,6 +342,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut clip = ClipTable::new();
     let mut xp_curve = XpCurveTable::new();
     let mut xp_curve_bindings = XpCurveBindings::new();
+    let mut class_behavior_bindings = ClassBehaviorBindings::new();
     let mut trait_def = TraitTable::new();
     let mut resource_pool = ResourcePoolTable::new();
     let mut item = ItemTable::new();
@@ -360,6 +366,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         clip: &mut clip,
         xp_curve: &mut xp_curve,
         xp_curve_bindings: &mut xp_curve_bindings,
+        class_behavior_bindings: &mut class_behavior_bindings,
         trait_def: &mut trait_def,
         resource_pool: &mut resource_pool,
         item: &mut item,

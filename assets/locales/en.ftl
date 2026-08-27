@@ -38,6 +38,9 @@ class-farmer-display_name = Farmer
 class-hunter-display_name = Hunter
 class-butcher-display_name = Butcher
 class-blacksmith-display_name = Blacksmith
+class-fisher-display_name = Fisher
+class-shepherd-display_name = Shepherd
+class-mason-display_name = Mason
 
 subclass-duelist-display_name = Duelist
 subclass-apprentice-display_name = Apprentice
@@ -135,16 +138,19 @@ weather-wind-display_name = Wind
 weather-fog-display_name = Fog
 weather-snow-display_name = Snow
 
-# Resource display names — the base game's four resources
+# Resource display names — the base game's seven resources
 # (mods/lostland/resources.json5). Resource nodes are derived from
 # (world seed, tile) and never stored; these keys are only the
 # display-name mapping, resolved via ResourceAttrs::display_name_key.
 # A settlement that dies of resource exhaustion names the resource here
 # (ll_world::history::SettlementDemise::ResourceExhausted).
 resource-farmland-display_name = Farmland
+resource-pasture-display_name = Pasture
 resource-timber-display_name = Timber
 resource-iron_vein-display_name = Iron Vein
+resource-granite-display_name = Granite
 resource-fresh_water-display_name = Fresh Water
+resource-fishery-display_name = Fishery
 
 hud-character-panel-title = Character
 hud-character-level-label = Level

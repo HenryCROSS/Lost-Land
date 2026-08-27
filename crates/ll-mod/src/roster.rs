@@ -50,6 +50,29 @@
 //! 之后不会有新人搬进来，因为「搬进来」需要的是一套据点的运行期演化，而
 //! 那是独立一批的工作，不是这一批顺手做半个。
 //!
+//! # 二之二、每座据点长得不一样：建立者种族
+//!
+//! 项目所有者：「设计上每个聚居地应该都不太一样吧？还有种族的分配
+//! 什么的」。
+//!
+//! 此前种族是**逐个居民**按权重抽的，资源只把权重挪一点——后果是全大陆
+//! 的村子都混居，一座「矮人多一点」的村与一座「精灵多一点」的村，差别
+//! 只在统计上，玩家走进去看不出来。现在先由
+//! [`settlement_founder_race`] 抽一次**建立者种族**，其余居民默认随它，
+//! 只有 [`OUTSIDER_PERMILLE`] 的人是外来者。
+//!
+//! 实测（种子 20260826，235 座活据点、4422 人）：
+//!
+//! | 建立者种族 | 据点数 | 占比 |
+//! |---|---|---|
+//! | 精灵 | 101 | 43.0% |
+//! | 人类 | 68 | 28.9% |
+//! | 矮人 | 66 | 28.1% |
+//!
+//! 建立者种族在全部名册里占 **87.7%**（期望值 `80% + 20%/3 ≈ 86.7%`，
+//! 对得上）。一座典型的 24 人据点长这样：**17 精灵 / 4 矮人 / 3 人类**
+//! ——一眼看得出这是精灵开的，但不清一色。
+//!
 //! # 三、职业是 `ClassDef`，不是一套平行类型
 //!
 //! `knowledge/design/settlements-structures-and-npc-spawning.md` 已经裁定
@@ -84,7 +107,7 @@ use ll_core::torus::TorusPos;
 use ll_sim::item::{ItemCatalog, equip_mask_of, outfit_from_inventory};
 use ll_world::entity::{Agent, BaseStats};
 use ll_world::item::{EquipSlot, ItemStack};
-use ll_world::resource::ResourceKind;
+use ll_world::resource::{ResourceCategory, ResourceKind, ResourceTable};
 use ll_world::settlement::{SettlementSite, SettlementStatus};
 use ll_world::space::{Space, ZoneCoord};
 
@@ -135,6 +158,54 @@ const PRIMARY_RESOURCE_BONUS: u32 = 9;
 /// 上真的分得开。
 const SECONDARY_RESOURCE_BONUS: u32 = 3;
 
+/// 「普通居民」权重表有几档。
+const COMMONER_SLOTS: usize = 8;
+
+/// 农夫在 [`SettlementRoles::commoner_weights`] 权重表里的下标。
+const FARMER_SLOT: usize = 0;
+/// 猎户的下标。
+const HUNTER_SLOT: usize = 1;
+/// 铁匠的下标。
+const BLACKSMITH_SLOT: usize = 4;
+/// 渔夫的下标。
+const FISHER_SLOT: usize = 5;
+/// 牧羊人的下标。
+const SHEPHERD_SLOT: usize = 6;
+/// 石匠的下标。
+const MASON_SLOT: usize = 7;
+
+/// 建立者种族派生所用的随机流编号——与名册成员那条流
+/// （[`ROSTER_STREAM_ID`]）分开。
+///
+/// **必须分开，不能挤进同一条流**：名册成员的流键是
+/// `据点 id × MAX_ROSTER + 序号`，那个键空间已经被 `0..MAX_ROSTER` 占满，
+/// 再往上加一个「建立者」槽位就会撞进下一座据点的 0 号成员——那正是
+/// [`roster_rng`] 文档里那条「互不重叠」保证要防的事。
+pub const FOUNDER_RACE_STREAM_ID: u64 = 0x004E_5043_5F46_0001;
+
+/// 名册里每个居民**不是**建立者种族的概率（千分比）。
+///
+/// # 取值为什么是这个
+///
+/// 项目所有者的关切是「每个聚居地应该都不太一样吧？还有种族的分配
+/// 什么的」。此前逐个居民独立抽种族的做法，后果是**处处混居、只是
+/// 比例不同**——差异只存在于统计上，玩家走进去感受不到。
+///
+/// 200‰ 意味着一座 24 人的据点里大约 5 个外来者：
+///
+/// - 走进一座矮人矿城，二十个人里十九个是矮人的**那一眼**是有的
+///   （建立者种族占八成）；
+/// - 但那五个外来者让它不至于清一色——一座只有一个种族的城会让世界
+///   变得死板，这是协调者与所有者都点名不要的。
+///
+/// 再高（比如 400‰）建立者种族就压不住场面，回到「只是比例不同」；
+/// 再低（比如 50‰）二十人的村子里期望只有一个外来者，与清一色没有
+/// 可察觉的差别。
+pub const OUTSIDER_PERMILLE: u32 = 200;
+
+/// [`OUTSIDER_PERMILLE`] 的分母。
+const PERMILLE_SCALE: u32 = 1000;
+
 /// 一条「可抽取的档位」：内容索引 + 权重。
 ///
 /// 权重为 0 或索引为 `None` 的档位不参与抽取——前者是取值的选择，后者是
@@ -151,7 +222,7 @@ struct WeightedSlot {
 /// 抽成常量而不是把字符串散在 [`SettlementRoles::resolve`] 里，理由同
 /// [`crate::class`] 的 `BASE_CLASS_IDS`：集成测试要按同一份清单核对内容
 /// 真的注册了它们，两处各写一份字面量迟早会分叉。
-pub const SETTLEMENT_CLASS_IDS: [&str; 7] = [
+pub const SETTLEMENT_CLASS_IDS: [&str; 10] = [
     "lostland:steward",
     "lostland:guard",
     "lostland:militia",
@@ -159,17 +230,49 @@ pub const SETTLEMENT_CLASS_IDS: [&str; 7] = [
     "lostland:hunter",
     "lostland:butcher",
     "lostland:blacksmith",
+    "lostland:fisher",
+    "lostland:shepherd",
+    "lostland:mason",
 ];
 
-/// 本模块按名字引用的那几条资源内容（`mods/lostland/resources.json5`）。
+/// 本模块按名字引用的那条资源内容（`mods/lostland/resources.json5`）。
 ///
-/// **水源不在其中**，见 [`SettlementRoles::commoner_weights`] 文档末尾
-/// 那条如实标注。
-pub const SETTLEMENT_RESOURCE_IDS: [&str; 3] =
-    ["lostland:farmland", "lostland:timber", "lostland:iron_vein"];
+/// # 只剩一条了，这正是资源两层分类要换来的东西
+///
+/// 此前这里是三条（良田/木材/铁矿），因为名册亲和表按**具体种类**挂
+/// 规则，每一条对口职业都要在 Rust 里按名字认一种资源。资源分出大类
+/// 之后，亲和改挂在**大类**上（食物→农夫、金属→铁匠、水→渔夫……），
+/// 于是第三方 mod 写一条 `mymod:copper_vein`（metal）就自动有铁匠，
+/// Rust 一个字都不用改。
+///
+/// 剩下的这一条是唯一一处**大类不够用**的地方：良田与牧场同属食物，
+/// 却要分别抬农夫与牧羊人。按具体种类认它，是这张表存在的全部理由。
+pub const SETTLEMENT_RESOURCE_IDS: [&str; 1] = ["lostland:pasture"];
 
 /// 本模块按名字引用的那几条种族内容（`mods/lostland/races.json5`）。
 pub const SETTLEMENT_RACE_IDS: [&str; 3] = ["lostland:human", "lostland:dwarf", "lostland:elf"];
+
+/// 一条资源亲和规则：这处资源命中什么，就给哪一档加权重。
+///
+/// # 为什么是两个变体，不是一律按大类
+///
+/// 大类是常态：守着**金属**的据点该有铁匠，是铁是铜无所谓——这一条让
+/// 第三方 mod 新增一种矿不需要改任何 Rust 代码就拿到对口职业，是资源
+/// 分出大类这一层的全部价值兑现的地方。
+///
+/// 但大类不总够用：良田与牧场同属**食物**，却要分别抬农夫与牧羊人。
+/// 硬要只用大类，就得把「食物」再拆一层，那等于把两层变三层，为一条
+/// 例外重建整套分类。[`AffinityRule::Kind`] 是那条例外的最小表达，
+/// 且它**优先于**大类规则（见 [`SettlementRoles::apply_affinity`]）。
+///
+/// `Copy` 且不含任何容器：规则表是调用点写死的定长切片。
+#[derive(Debug, Clone, Copy)]
+enum AffinityRule {
+    /// 按具体种类命中——`None`（那条资源内容没装载）恒不命中。
+    Kind(Option<ResourceKind>, usize),
+    /// 按大类命中。
+    Category(ResourceCategory, usize),
+}
 
 /// 本模块认得的那几条据点职业，以及它们各自与哪种资源相配。
 ///
@@ -195,15 +298,35 @@ pub struct SettlementRoles {
     pub hunter: Option<ContentIndex>,
     /// 屠夫——无资源亲和：屠夫跟着人走，不跟着地走。
     pub butcher: Option<ContentIndex>,
-    /// 铁匠——与铁矿相配。
+    /// 铁匠——与**金属**大类相配。
     pub blacksmith: Option<ContentIndex>,
+    /// 渔夫——与**水**大类相配（淡水与渔场都算）。项目所有者点名。
+    ///
+    /// 这一条填的是上一批实测出来的最大那个空：242 座活据点里 116 座
+    /// 的主资源是水源，而当时水源不改变职业分布，因为没有对口职业。
+    pub fisher: Option<ContentIndex>,
+    /// 牧羊人——与**牧场**这一条具体种类相配（不是整个食物大类，
+    /// 见 [`SETTLEMENT_RESOURCE_IDS`] 文档）。项目所有者点名。
+    pub shepherd: Option<ContentIndex>,
+    /// 石匠——与**石材**大类相配。项目所有者裁定「加入石匠也没问题，
+    /// 某些物品例如艺术品可以通过石头，例如某一些建材也是」。
+    ///
+    /// **如实标注**：那两样产出内容当前都不存在，见
+    /// `mods/lostland/classes.json5` 里这条职业的注释。
+    pub mason: Option<ContentIndex>,
 
-    /// 良田的资源索引，查不到时为 `None`（那一条亲和恒不成立）。
-    farmland: Option<ResourceKind>,
-    /// 木材的资源索引。
-    timber: Option<ResourceKind>,
-    /// 铁矿的资源索引。
-    iron: Option<ResourceKind>,
+    /// 牧场的资源索引，查不到时为 `None`（那一条按种类的亲和恒不成
+    /// 立，牧场落回它所属的食物大类，因而抬农夫）。
+    pasture: Option<ResourceKind>,
+    /// 资源表快照——亲和规则要按大类分派，而
+    /// [`SettlementSite::resource_profile`] 给的是具体种类，两者之间
+    /// 差的正是这张表的 [`ResourceTable::category`] 查询。
+    ///
+    /// 快照（`Clone`）而不是借用，理由与
+    /// [`crate::native_behavior::BehaviorRuleCatalogs`] 逐字相同：
+    /// 内容表在装载完成后不再变化，而本结构体要被物化路径长期持有，
+    /// 那条链路上没有任何一处能提供借用所需的生命周期。
+    resources: ResourceTable,
 
     /// 本体三族的索引，按 `[人类, 矮人, 精灵]` 排列。
     races: [Option<ContentIndex>; 3],
@@ -220,10 +343,16 @@ impl SettlementRoles {
     /// `classes` 用来做一次「这个索引真的是一条职业吗」的确认：注册表
     /// 里存在同名标识符不等于它被定义成了职业（`ContentIndex` 是全局
     /// 号段，地形/物品/技能共用同一个 `Interner`）。
-    pub fn resolve(registry: &Registry, classes: &ClassTable) -> Self {
+    pub fn resolve(registry: &Registry, classes: &ClassTable, resources: &ResourceTable) -> Self {
         let class_of = |id: &str| -> Option<ContentIndex> {
             let index = lookup(registry, id)?;
             classes.is_defined(index).then_some(index)
+        };
+        let resource_of = |id: &str| -> Option<ResourceKind> {
+            let index = lookup(registry, id)?;
+            resources
+                .is_defined(index)
+                .then(|| ResourceKind::from_index(index))
         };
         SettlementRoles {
             steward: class_of(SETTLEMENT_CLASS_IDS[0]),
@@ -233,9 +362,11 @@ impl SettlementRoles {
             hunter: class_of(SETTLEMENT_CLASS_IDS[4]),
             butcher: class_of(SETTLEMENT_CLASS_IDS[5]),
             blacksmith: class_of(SETTLEMENT_CLASS_IDS[6]),
-            farmland: lookup(registry, SETTLEMENT_RESOURCE_IDS[0]).map(ResourceKind::from_index),
-            timber: lookup(registry, SETTLEMENT_RESOURCE_IDS[1]).map(ResourceKind::from_index),
-            iron: lookup(registry, SETTLEMENT_RESOURCE_IDS[2]).map(ResourceKind::from_index),
+            fisher: class_of(SETTLEMENT_CLASS_IDS[7]),
+            shepherd: class_of(SETTLEMENT_CLASS_IDS[8]),
+            mason: class_of(SETTLEMENT_CLASS_IDS[9]),
+            pasture: resource_of(SETTLEMENT_RESOURCE_IDS[0]),
+            resources: resources.clone(),
             races: [
                 lookup(registry, SETTLEMENT_RACE_IDS[0]),
                 lookup(registry, SETTLEMENT_RACE_IDS[1]),
@@ -249,38 +380,52 @@ impl SettlementRoles {
     /// # 基础权重与资源加成怎么定
     ///
     /// 基础权重回答的是「一座什么资源都不突出的村子里，这几种人各占
-    /// 多少」：农夫最多（谁都得吃饭）、猎户次之、民兵再次、屠夫与铁匠
-    /// 各一份（一座村子有一个就够了）。
+    /// 多少」：农夫最多（谁都得吃饭）、猎户与渔夫次之（打猎捕鱼是两条
+    /// 到处都有的副业）、民兵再次，屠夫/铁匠/牧羊人/石匠各一份（一座
+    /// 村子有一个就够了）。
     ///
     /// 资源加成回答的是项目所有者要的那条：「守着铁矿的据点该有铁匠，
     /// 守着良田的该有农夫」。加成挂在
     /// [`SettlementSite::resource_profile`] 的两个名次上，第一名
     /// [`PRIMARY_RESOURCE_BONUS`]（9）、第二名
-    /// [`SECONDARY_RESOURCE_BONUS`]（3）——**第一名的加成大于全部基础
-    /// 权重之和（12）的一半**，这是「矿城真的以铁匠为主」而不是「矿城里
-    /// 铁匠稍微多一点」的来源。
+    /// [`SECONDARY_RESOURCE_BONUS`]（3）。
     ///
-    /// 水源（`lostland:fresh_water`）**不出现在这里，这是如实标注不是
-    /// 遗漏**：本批次没有渔夫/水匠这类职业，硬把水源挂到某个现有职业上
-    /// （挂给屠夫？挂给农夫？）只会是一次没有内容依据的编造。水源因此
-    /// 当前不改变职业分布——真要它有后果，落点是新增一条职业内容，不是
-    /// 在这里改一个数。
+    /// # 亲和挂在**大类**上，只有一条例外
     ///
-    /// **这条留白比听起来大，实测数据在此**（种子 20260826，本体默认
-    /// 布局，242 座还有人住的据点，按第一名资源分组的职业占比）：
+    /// 见 [`AffinityRule`]。挂大类换来的是「第三方 mod 加一种铜矿就
+    /// 自动有铁匠」；唯一按具体种类认的是牧场（良田与牧场同属食物，
+    /// 却要分别抬农夫与牧羊人）。
     ///
-    /// | 主资源 | 据点数 | 农夫 | 猎户 | 铁匠 |
-    /// |---|---|---|---|---|
-    /// | 良田 | 10 | **44.4%** | 19.7% | 4.5% |
-    /// | 木材 | 104 | 23.9% | **40.4%** | 4.3% |
-    /// | 铁矿 | 12 | 13.6% | 19.3% | **36.4%** |
-    /// | 水源 | 116 | 34.5% | 21.6% | 5.4% |
+    /// # 水源那条留白已经补上了——实测数字在此
     ///
-    /// 前三行是「资源真的改变了职业分布」的直接证据（各自的对口职业
-    /// 都跳到四成上下）。第四行是这条留白的代价：**近一半的据点主资源
-    /// 是水源**，它们拿到的是没有任何倾向的基础分布。要不要为此新增一条
-    /// 渔夫职业，是内容裁定，不是代码问题。
-    fn commoner_weights(&self, site: &SettlementSite) -> [WeightedSlot; 5] {
+    /// 上一批如实标注过：水源当时不改变职业分布，因为没有对口职业，
+    /// 而**近一半据点（116/242）的主资源正是水源**。渔夫这条职业加上
+    /// 之后，水成了第五个大类、[`Self::fisher`] 是它的对口职业。
+    ///
+    /// 种子 20260826、本体默认布局，**235 座还有人住的据点、4422 人**
+    /// （据点数与上一批的 242 不同：新增三种资源改变了选址与承载力）。
+    /// 下表按第一名资源分组，只列各组占比最高的那条职业与对口职业：
+    ///
+    /// | 主资源（大类） | 据点数 | 名册人数 | 占比最高的职业 |
+    /// |---|---|---|---|
+    /// | 良田（食物） | 7 | 121 | **农夫 47.1%** |
+    /// | 牧场（食物） | 3 | 41 | **牧羊人 31.7%**（农夫 26.8%） |
+    /// | 木材（木材） | 95 | 1816 | **猎户 32.7%** |
+    /// | 铁矿（金属） | 10 | 210 | **铁匠 25.2%** |
+    /// | 花岗岩（石材） | 3 | 47 | **石匠 23.4%** |
+    /// | 水源（水） | 104 | 1925 | **渔夫 36.0%** |
+    /// | 渔场（水） | 13 | 262 | **渔夫 41.6%** |
+    ///
+    /// **七种资源各自都真的当过第一名，且每一组的头名恰好是它的对口
+    /// 职业**——这是「大类 + 一条按种类的例外」这套规则真的在改变输出
+    /// 的直接证据。水那两条合起来 117 座（**全大陆 49.8%**），正是上
+    /// 一批那半张空白表的位置。
+    ///
+    /// 牧场与花岗岩各自只有 3 座：它们与同源地形上的对手（良田 / 铁矿）
+    /// 排名贴得很近，谁当第一名由采样噪声决定，见
+    /// `mods/lostland/resources.json5` 里那两条的注释——第一版给的数值
+    /// 让它们**一座都排不上第一名**，是实测之后调回来的。
+    fn commoner_weights(&self, site: &SettlementSite) -> [WeightedSlot; COMMONER_SLOTS] {
         let mut slots = [
             WeightedSlot {
                 content: self.farmer,
@@ -302,23 +447,45 @@ impl SettlementRoles {
                 content: self.blacksmith,
                 weight: 1,
             },
+            WeightedSlot {
+                content: self.fisher,
+                weight: 3,
+            },
+            WeightedSlot {
+                content: self.shepherd,
+                weight: 1,
+            },
+            WeightedSlot {
+                content: self.mason,
+                weight: 1,
+            },
         ];
-        // 逐档比对而不是查一张「资源 → 职业」的表：档位只有五个、亲和
-        // 只有三条，一张表反而要多维护一份下标对应关系，而任何 map 容器
-        // 都会把约束 C5 拖进来。
         self.apply_affinity(
             site,
             &mut slots,
-            [(self.farmland, 0), (self.timber, 1), (self.iron, 4)],
+            &[
+                // 唯一一条按具体种类的规则，理由见 SETTLEMENT_RESOURCE_IDS。
+                AffinityRule::Kind(self.pasture, SHEPHERD_SLOT),
+                AffinityRule::Category(ResourceCategory::Food, FARMER_SLOT),
+                AffinityRule::Category(ResourceCategory::Timber, HUNTER_SLOT),
+                AffinityRule::Category(ResourceCategory::Metal, BLACKSMITH_SLOT),
+                AffinityRule::Category(ResourceCategory::Stone, MASON_SLOT),
+                AffinityRule::Category(ResourceCategory::Water, FISHER_SLOT),
+            ],
         );
         slots
     }
 
-    /// 种族权重：与职业同一套「基础 + 资源亲和」手法。
+    /// 种族权重：与职业同一套「基础 + 资源亲和」手法，但它**只用来抽
+    /// 一次**——抽这座据点的**建立者种族**，不是逐个居民各抽一次。
     ///
-    /// 铁矿抬矮人、木材抬精灵、良田抬人类——刻板，但正是刻板才让玩家
+    /// 金属抬矮人、木材抬精灵、食物抬人类——刻板，但正是刻板才让玩家
     /// 走进一座矿城时**看得出来**这是一座矿城。基础权重三族相同：一座
     /// 什么都不突出的村子不该有种族倾向。
+    ///
+    /// **水与石材刻意没有种族亲和**：本体三族里没有哪一族与「靠水吃
+    /// 水」或「采石」有既有的设定联系，硬挂一条只会是编造。它们的据点
+    /// 因此拿到三族均等的建立者分布，这是一个诚实的答案，不是遗漏。
     fn race_weights(&self, site: &SettlementSite) -> [WeightedSlot; 3] {
         let mut slots = [
             WeightedSlot {
@@ -337,35 +504,55 @@ impl SettlementRoles {
         self.apply_affinity(
             site,
             &mut slots,
-            [(self.farmland, 0), (self.iron, 1), (self.timber, 2)],
+            &[
+                AffinityRule::Category(ResourceCategory::Food, 0),
+                AffinityRule::Category(ResourceCategory::Metal, 1),
+                AffinityRule::Category(ResourceCategory::Timber, 2),
+            ],
         );
         slots
     }
 
     /// 把资源画像的两个名次折算成权重加成，写进 `slots`。
     ///
-    /// `affinity` 是「哪种资源抬第几档」的对应表，定长三条、按下标遍历，
-    /// 不涉及任何哈希容器（约束 C5）。
+    /// 每处资源**至多命中一条规则**：先扫一遍按具体种类的规则，命中就
+    /// 用它并且**不再看大类**（这正是「牧场抬牧羊人而不是抬农夫」的落
+    /// 点）；一条都没命中才回落到按大类的规则。
+    ///
+    /// 规则表是调用点写死的定长切片，按下标顺序扫描，不涉及任何哈希
+    /// 容器（约束 C5）。
     fn apply_affinity(
         &self,
         site: &SettlementSite,
         slots: &mut [WeightedSlot],
-        affinity: [(Option<ResourceKind>, usize); 3],
+        rules: &[AffinityRule],
     ) {
-        let _ = self;
         for (rank, entry) in site.resource_profile.iter().enumerate() {
-            if entry.is_none() {
+            let Some(kind) = *entry else {
                 continue;
-            }
+            };
             let bonus = if rank == 0 {
                 PRIMARY_RESOURCE_BONUS
             } else {
                 SECONDARY_RESOURCE_BONUS
             };
-            for (kind, slot) in affinity {
-                if kind.is_some() && kind == *entry {
-                    slots[slot].weight = slots[slot].weight.saturating_add(bonus);
-                }
+            let category = self.resources.category(kind);
+            let by_kind = rules.iter().find_map(|rule| match rule {
+                AffinityRule::Kind(Some(wanted), slot) if *wanted == kind => Some(*slot),
+                _ => None,
+            });
+            let target = by_kind.or_else(|| {
+                rules.iter().find_map(|rule| match rule {
+                    AffinityRule::Category(wanted, slot) if Some(*wanted) == category => {
+                        Some(*slot)
+                    }
+                    _ => None,
+                })
+            });
+            if let Some(slot) = target
+                && let Some(entry) = slots.get_mut(slot)
+            {
+                entry.weight = entry.weight.saturating_add(bonus);
             }
         }
     }
@@ -428,12 +615,24 @@ pub fn settlement_roster(
     let commoners = roles.commoner_weights(site);
     let races = roles.race_weights(site);
 
+    let founder = settlement_founder_race(site, roles, world_seed);
+
     let mut roster = Vec::with_capacity(residents as usize);
     for index in 0..residents {
         let mut rng = roster_rng(world_seed, site.id, index);
         // 抽取顺序（先种族后职业）本身是这条流的一部分：调换顺序会让
         // 同一颗种子产出另一份名册。改动这里等于改动世界，不是重构。
-        let race = pick(&races, &mut rng).unwrap_or_default();
+        //
+        // 种族这一步不再是「每人独立按权重抽一次」——那样每座村子都
+        // 混居、只是比例不同。现在是「默认随建立者，掷一次
+        // OUTSIDER_PERMILLE 决定这个人是不是外来者」，外来者才去按权重
+        // 抽。资源对种族的影响因此整个上移到了建立者那一次抽取上：
+        // 铁矿抬的不再是「多几个矮人」，而是「这座城是矮人开的」。
+        let race = if rng.chance(OUTSIDER_PERMILLE, PERMILLE_SCALE) {
+            pick(&races, &mut rng).unwrap_or(founder)
+        } else {
+            founder
+        };
         let profession = if index == STEWARD_INDEX {
             roles.steward
         } else if index <= guards {
@@ -449,6 +648,45 @@ pub fn settlement_roster(
         });
     }
     roster
+}
+
+/// 这座据点的**建立者种族**——同一 `(world_seed, site.id)` 恒产出同一
+/// 个答案的纯函数。
+///
+/// # 为什么这件事要提到据点这一层
+///
+/// 项目所有者：「设计上每个聚居地应该都不太一样吧？还有种族的分配
+/// 什么的」。此前种族是**逐个居民**按权重抽的，资源只是把权重挪一点
+/// ——后果是全大陆的村子都混居，一座「矮人多一点」的村与一座「精灵多
+/// 一点」的村，差别只在统计上，玩家走进去看不出来。
+///
+/// 建立者种族把资源的影响从「多几个矮人」变成「这座城是矮人开的」：
+/// 抽一次，一整座据点的主体人口都随它（外来者比例见
+/// [`OUTSIDER_PERMILLE`]）。
+///
+/// # 为什么它是一个函数，不是 `SettlementSite` 上的一个字段
+///
+/// **核实结论，与协调者的建议不同**：协调者建议「让它挂在
+/// `SettlementSite` 上而不是藏在名册函数内部」，以便将来接上按种族
+/// 的建材/布局/命名。挂不上去，理由是依赖方向——`SettlementSite` 住在
+/// `ll-world`，而**种族是内容**（`ll-mod` 的 `RaceTable` + 注册表），
+/// `ll-world` 既拿不到注册表、也没有一份候选种族名单可抽。硬挂就要把
+/// 种族内容倒灌进 `ll-world`，那是一次比本批次大得多的依赖方向改动。
+///
+/// **但形状上的口留住了，而且比字段更好接**：本函数是 `pub`，签名只
+/// 要 `(&SettlementSite, &SettlementRoles, u64)` 三样，将来铺房子那边
+/// 要知道「这座据点是谁建的」，调它一次即可——不需要 `SettlementSite`
+/// 多一个字段，也就不需要动 `WorldState::hash()` 与存档 remap。
+///
+/// 全部种族内容都没装载时返回 `ContentIndex::default()`（「尚无种族」
+/// 的既有诚实表达，ADR 0015）。
+pub fn settlement_founder_race(
+    site: &SettlementSite,
+    roles: &SettlementRoles,
+    world_seed: u64,
+) -> ContentIndex {
+    let mut rng = DetRng::for_entity(world_seed, FOUNDER_RACE_STREAM_ID, u64::from(site.id.get()));
+    pick(&roles.race_weights(site), &mut rng).unwrap_or_default()
 }
 
 /// 名册第 `index` 号那一位专属的随机流（C3）。
@@ -656,11 +894,24 @@ mod tests {
 
     use super::*;
 
-    /// 一张现造的、与本体内容无关的角色扮演表：七条职业、三个种族、
-    /// 三种资源，全部用真实的本体 id 字符串（[`SettlementRoles::resolve`]
-    /// 认的正是它们），但由测试自己注册——本 crate 的单元测试不装载
-    /// 本体内容文件，那是 `crates/ll-mod/tests/` 的集成测试的事。
-    fn sample_roles() -> (SettlementRoles, Registry, [ContentIndex; 3]) {
+    /// 本单元测试里现造的那批资源：id 与大类，下标即
+    /// [`sample_roles`] 返回的那个数组的下标。
+    ///
+    /// 用真实的本体 id 字符串（`SettlementRoles::resolve` 按名字认牧场
+    /// 那一条），但由测试自己注册——本 crate 的单元测试不装载本体内容
+    /// 文件，那是 `crates/ll-mod/tests/` 的集成测试的事。
+    const SAMPLE_RESOURCES: [(&str, ResourceCategory); 6] = [
+        ("lostland:farmland", ResourceCategory::Food),
+        ("lostland:pasture", ResourceCategory::Food),
+        ("lostland:timber", ResourceCategory::Timber),
+        ("lostland:iron_vein", ResourceCategory::Metal),
+        ("lostland:granite", ResourceCategory::Stone),
+        ("lostland:fresh_water", ResourceCategory::Water),
+    ];
+
+    /// 一张现造的、与本体内容无关的角色扮演表：十条职业、三个种族、
+    /// 六种资源（见 [`SAMPLE_RESOURCES`]）。
+    fn sample_roles() -> (SettlementRoles, Registry, [ResourceKind; 6]) {
         let mut registry = Registry::new();
         let mut classes = ClassTable::new();
         for id in SETTLEMENT_CLASS_IDS {
@@ -679,12 +930,30 @@ mod tests {
         for id in SETTLEMENT_RACE_IDS {
             registry.intern(NamespacedId::parse(id).expect("合法标识符"));
         }
-        let mut resources = [ContentIndex::default(); 3];
-        for (slot, id) in SETTLEMENT_RESOURCE_IDS.iter().enumerate() {
-            resources[slot] = registry.intern(NamespacedId::parse(id).expect("合法标识符"));
+        let mut table = ResourceTable::new();
+        let mut kinds = [ResourceKind::from_index(ContentIndex::default()); 6];
+        for (slot, (id, category)) in SAMPLE_RESOURCES.iter().enumerate() {
+            let index = registry.intern(NamespacedId::parse(id).expect("合法标识符"));
+            table
+                .define(
+                    index,
+                    ll_world::resource::ResourceAttrs {
+                        display_name_key: NamespacedId::parse("lostland:x").expect("合法标识符"),
+                        category: *category,
+                        source_terrain: ll_world::terrain::TerrainKind::from_index(
+                            ContentIndex::default(),
+                        ),
+                        abundance: 100,
+                        residents_supported: 1,
+                        settlement_draw: 1,
+                        exhaustible: false,
+                    },
+                )
+                .expect("首次定义");
+            kinds[slot] = ResourceKind::from_index(index);
         }
-        let roles = SettlementRoles::resolve(&registry, &classes);
-        (roles, registry, resources)
+        let roles = SettlementRoles::resolve(&registry, &classes, &table);
+        (roles, registry, kinds)
     }
 
     /// 一座人口 `population`、资源画像为 `profile` 的据点。
@@ -793,8 +1062,8 @@ mod tests {
     fn 守着铁矿的据点铁匠比守着良田的多() {
         // Arrange
         let (roles, _registry, resources) = sample_roles();
-        let farmland = ResourceKind::from_index(resources[0]);
-        let iron = ResourceKind::from_index(resources[2]);
+        let farmland = resources[0];
+        let iron = resources[3];
         let mining = site(24, [Some(iron), None]);
         let farming = site(24, [Some(farmland), None]);
 
@@ -815,6 +1084,107 @@ mod tests {
         );
     }
 
+    #[test]
+    fn 守着水的据点渔夫比守着良田的多() {
+        // Arrange：**这一条守的是资源大类那一层真的通了**——水这个大类
+        // 是本批次新加的，渔夫是它的对口职业，而上一批实测「近一半据点
+        // 的主资源是水源」时它们都还不存在。
+        let (roles, _registry, resources) = sample_roles();
+        let farmland = resources[0];
+        let water = resources[5];
+        let riverside = site(24, [Some(water), None]);
+        let farming = site(24, [Some(farmland), None]);
+
+        // Act
+        let riverside_fishers = count_of(&settlement_roster(&riverside, &roles, 77), roles.fisher);
+        let farming_fishers = count_of(&settlement_roster(&farming, &roles, 77), roles.fisher);
+
+        // Assert
+        assert!(
+            riverside_fishers > farming_fishers,
+            "临水据点的渔夫 {riverside_fishers} 应多于农业村的 {farming_fishers}"
+        );
+    }
+
+    #[test]
+    fn 牧场抬的是牧羊人而不是同属食物大类的农夫() {
+        // Arrange：**这一条守的是「按具体种类的规则优先于按大类的规则」**
+        // ——牧场与良田同属食物大类，若那条优先级断了，牧场就会去抬农夫，
+        // 牧羊人永远抽不出来。
+        let (roles, _registry, resources) = sample_roles();
+        let farmland = resources[0];
+        let pasture = resources[1];
+        let grazing = site(24, [Some(pasture), None]);
+        let farming = site(24, [Some(farmland), None]);
+
+        // Act
+        let grazing_shepherds = count_of(&settlement_roster(&grazing, &roles, 55), roles.shepherd);
+        let farming_shepherds = count_of(&settlement_roster(&farming, &roles, 55), roles.shepherd);
+        let grazing_farmers = count_of(&settlement_roster(&grazing, &roles, 55), roles.farmer);
+        let farming_farmers = count_of(&settlement_roster(&farming, &roles, 55), roles.farmer);
+
+        // Assert
+        assert!(
+            grazing_shepherds > farming_shepherds,
+            "牧场据点的牧羊人 {grazing_shepherds} 应多于良田据点的 {farming_shepherds}"
+        );
+        assert!(
+            farming_farmers > grazing_farmers,
+            "良田据点的农夫 {farming_farmers} 应多于牧场据点的 {grazing_farmers}             （牧场的加成不该落到农夫头上）"
+        );
+    }
+
+    #[test]
+    fn 守着石材的据点石匠比无资源的据点多() {
+        // Arrange：石材大类此前一条内容行都没有（因此石匠也没有对口
+        // 资源）。花岗岩是它的第一条，本条守住那条 `Category(Stone)`
+        // 规则真的接上了。
+        let (roles, _registry, resources) = sample_roles();
+        let granite = resources[4];
+        let quarry = site(24, [Some(granite), None]);
+        let plain = site(24, [None; SITE_RESOURCE_SLOTS]);
+
+        // Act
+        let quarry_masons = count_of(&settlement_roster(&quarry, &roles, 31), roles.mason);
+        let plain_masons = count_of(&settlement_roster(&plain, &roles, 31), roles.mason);
+
+        // Assert
+        assert!(
+            quarry_masons > plain_masons,
+            "石场据点的石匠 {quarry_masons} 应多于无资源据点的 {plain_masons}"
+        );
+    }
+
+    #[test]
+    fn 建立者种族是种子与据点的纯函数且名册以它为主() {
+        // Arrange
+        let (roles, _registry, resources) = sample_roles();
+        let iron = resources[3];
+        let mining = site(24, [Some(iron), None]);
+
+        // Act
+        let founder_a = settlement_founder_race(&mining, &roles, 4242);
+        let founder_b = settlement_founder_race(&mining, &roles, 4242);
+        let roster = settlement_roster(&mining, &roles, 4242);
+        let same_as_founder = roster.iter().filter(|npc| npc.race == founder_a).count();
+
+        // Assert
+        assert_eq!(
+            founder_a, founder_b,
+            "同一 (种子, 据点) 必须恒产出同一个建立者种族"
+        );
+        assert!(
+            same_as_founder * 2 > roster.len(),
+            "名册应当以建立者种族为主，实际 {same_as_founder}/{}",
+            roster.len()
+        );
+        assert!(
+            same_as_founder < roster.len(),
+            "名册不该清一色——外来少数族裔必须存在，实际 {same_as_founder}/{}",
+            roster.len()
+        );
+    }
+
     fn count_of(roster: &[NpcProfile], class: Option<ContentIndex>) -> usize {
         roster
             .iter()
@@ -827,7 +1197,7 @@ mod tests {
         // Arrange：空注册表 + 空职业表——第三方 mod 组合掉本体的情形。
         let registry = Registry::new();
         let classes = ClassTable::new();
-        let roles = SettlementRoles::resolve(&registry, &classes);
+        let roles = SettlementRoles::resolve(&registry, &classes, &ResourceTable::new());
         let village = site(6, [None; SITE_RESOURCE_SLOTS]);
 
         // Act
