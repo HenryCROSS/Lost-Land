@@ -24,6 +24,18 @@
 //! 里每一个 NPC 与玩家都是这个形态，见
 //! `ll_world::entity::affiliation` 模块文档。
 //!
+//! # 互换只对玩家开——NPC 撞上非敌对目标是一次失败的移动
+//!
+//! 项目所有者随后补了一条裁定：**玩家优先度高于 NPC，只有玩家可以
+//! 互换位置**，推翻了上一批「角色与NPC 双向都成立」的读法。互换是一次
+//! 让路，被换的一方没有做出任何决定却被挪走了，而「谁有资格要求别人
+//! 给自己让路」在本作里不是对称的。
+//!
+//! 本文件因此有三条用例，不是两条：玩家撞非敌对（互换）、玩家撞敌对
+//! （攻击）、**NPC 撞非敌对（挪不动，但仍消耗一次行动）**。第三条同时
+//! 是「每格至多站一人」这条不变式在生产路径上的验收——那条规则此前只
+//! 写在注释里，`ll_sim::resolve::resolve_move` 里一行占位检查都没有。
+//!
 //! # ADR 0025：不启动窗口，不盲注输入
 //!
 //! 同 `ai_stall.rs`：直接提交 `Intent::Move`，不模拟键盘。
@@ -208,4 +220,109 @@ fn 走向已声明敌对的邻居仍然是攻击() {
             agent.health
         );
     }
+}
+
+/// 让 `mover` 朝西提交一次移动并由 `TurnEngine` 结算——`Demo::advance`
+/// 每帧那两步里的**前一步**（`advance_ai` 结算排在玩家之前的非受控
+/// 实体）的最小等价物。返回这一步产出的效果条数。
+///
+/// 与 [`player_steps_east`] 的差别只有一处：这一次动的是**非受控
+/// 实体**，走的是 `advance_ai` 那条路，不是 `try_player_intent`。
+fn npc_steps_west(
+    game_world: &mut ll_game::world::GameWorld,
+    content: &LoadedContent,
+    mover: EntityId,
+) -> usize {
+    let player = game_world.player;
+    let clock = game_world.world.clock;
+    let mut timeline = Timeline::new();
+    timeline.schedule(mover, clock);
+    // 玩家排在更晚：`advance_ai` 会先结算 `mover`，轮到玩家时立即返回。
+    timeline.schedule(player, ll_core::time::Tick(clock.0 + 10_000));
+    let mut engine = TurnEngine::new(timeline);
+    let runtime = RuntimeCatalogs::new(content);
+    let catalogs = runtime.as_resolve_catalogs();
+    let mut effects_seen = 0usize;
+    engine.advance_ai(
+        &mut game_world.world,
+        player,
+        &mut |_world: &WorldState, actor: EntityId, _controlled: EntityId| Intent::Move {
+            actor,
+            dir: Direction::West,
+        },
+        &catalogs,
+        &mut |_world: &WorldState, _effect: &ll_sim::effect::Effect| effects_seen += 1,
+    );
+    effects_seen
+}
+
+#[test]
+fn npc走向非敌对的玩家挪不动但仍然消耗一次行动() {
+    // 所有者裁定「玩家优先度高于NPC，只有玩家可以互换位置」在生产路径
+    // 上的验收，同时也是「每格至多站一人」这条不变式的验收：邻居朝
+    // 玩家走一步，**两个人的坐标都不该变**（既没互换，也没摞在一起）。
+    //
+    // 上一批的实现在这里会把两人换位；再上一批（占位检查落地之前）
+    // 会让邻居直接站到玩家那一格上——两种旧行为下这条都会红。
+    // Arrange
+    let (mut game_world, content, neighbour) = world_with_neighbour();
+    let player = game_world.player;
+    let player_before = game_world.world.actors.get(player).expect("玩家在").pos;
+    let neighbour_before = game_world.world.actors.get(neighbour).expect("邻居在").pos;
+    let neighbour_clock_before = game_world
+        .world
+        .actors
+        .get(neighbour)
+        .expect("邻居在")
+        .next_action_at;
+
+    // Act
+    let effects_seen = npc_steps_west(&mut game_world, &content, neighbour);
+
+    // Assert 一：谁都没动。
+    assert_eq!(
+        game_world.world.actors.get(player).expect("玩家还在").pos,
+        player_before,
+        "玩家没有做出任何决定，不该被 NPC 推开——互换只对玩家开"
+    );
+    assert_eq!(
+        game_world
+            .world
+            .actors
+            .get(neighbour)
+            .expect("邻居还在")
+            .pos,
+        neighbour_before,
+        "目的地站着人，这一步不该落地——每格至多站一人"
+    );
+
+    // Assert 二：这一步仍然消耗了一次行动（与撞墙同一个口径），且是
+    // 它**自己**产出的效果，不是被 `perform` 的进展保证补跑一次
+    // `Intent::Wait` 兜出来的。
+    assert!(
+        game_world
+            .world
+            .actors
+            .get(neighbour)
+            .expect("邻居还在")
+            .next_action_at
+            .0
+            > neighbour_clock_before.0,
+        "撞人仍然消耗一次行动，NPC 不该因为前面站了人就白赚一回合"
+    );
+    assert!(
+        effects_seen > 0,
+        "这一步必须自己产出 ScheduleNext，不能靠进展保证兜底"
+    );
+
+    // Assert 三：谁都没掉血——挪不动不是打了一架。
+    assert_eq!(
+        game_world
+            .world
+            .actors
+            .get(player)
+            .expect("玩家还在")
+            .health,
+        ll_world::entity::Agent::STARTING_HEALTH
+    );
 }

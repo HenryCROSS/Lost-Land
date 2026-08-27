@@ -591,7 +591,55 @@ fn 潜行中攻击一次之后经由turnengine破除潜行() {
 /// 不产出 `MoveTo`，会让上面那条恒等式因为一个与潜行毫无关系的原因
 /// 变红。把两人周围这一小片显式铺成草地，把「地形长什么样」这个变量
 /// 从本用例里摘掉。
-fn guard_turns(handle: &RealModsHandle, target_stealthed: bool, turns: usize) -> (usize, usize) {
+/// 一段卫兵回合的**三态**计数：这一回合卫兵要么盘查了、要么真的挪了
+/// 一格、要么撞在目标身上没挪成。
+///
+/// # 为什么是三态而不是两个数字
+///
+/// 本文件此前只数两个数（盘查次数、移动次数），断言是
+/// `inspects + moves == turns`——「卫兵每一回合都有动作，没有落进
+/// `Intent::Wait` 兜底分支」。项目所有者随后裁定「玩家优先度高于NPC，
+/// 只有玩家可以互换位置」，卫兵（NPC）贴身之后朝目标迈的那一步不再
+/// 换位、也挪不动（目的地站着人，`resolve_move` 的占位检查判成一次
+/// 失败的移动），于是那条恒等式的左边开始小于 `turns`。
+///
+/// **修法不是把恒等式放松成不等式**——那等于把这批改动唯一可观测的
+/// 后果从测试里抹掉。修法是把新出现的那一态显式数出来：三个数之和
+/// 仍然恒等于 `turns`，而「卫兵这一回合到底干了什么」的分辨率比改动
+/// 之前更高，不是更低。
+#[derive(Debug, Clone, Copy)]
+struct GuardTally {
+    /// 产出了 `Effect::Inspect` 的回合数。
+    inspects: usize,
+    /// 产出了 `Effect::MoveTo` 的回合数——卫兵真的挪了一格。
+    moves: usize,
+    /// 行为树要求走一步、但那一步没挪成的回合数（目的地站着目标本
+    /// 人）。本批次之前这一态**不存在**：那时候同一步会被路由成互换
+    /// 位置，稳稳产出一条 `SwapPositions`。
+    blocked: usize,
+    /// 产出了 `Effect::SwapPositions` 的回合数。**恒应为 0**——卫兵是
+    /// NPC，而项目所有者裁定「只有玩家可以互换位置」。
+    ///
+    /// 单独数它、而不是让它悄悄并进 [`Self::blocked`]，是 ADR 0018 反例
+    /// 验证抓出来的一处不足：`blocked` 是 `走一步的意图数 − MoveTo 数`
+    /// 算出来的，一次互换既不产 `MoveTo` 也不消耗那个意图，会被**误记
+    /// 成一次「撞住了」**。于是「把互换那一支重新对 NPC 打开」这个改坏
+    /// 方式不会让任何断言变红。这一个字段就是那条反例的钉子。
+    swaps: usize,
+    /// 既不是盘查也不是移动的意图数（`Intent::Wait` 兜底分支等）。
+    /// 恒应为 0——它一旦非零，说明卫兵已经看不见目标了，而本文件全部
+    /// 用例的前提都是「卫兵照样看得见」。
+    other_intents: usize,
+}
+
+impl GuardTally {
+    /// 三态之和——应当恒等于跑过的回合数。
+    fn accounted(&self) -> usize {
+        self.inspects + self.moves + self.blocked
+    }
+}
+
+fn guard_turns(handle: &RealModsHandle, target_stealthed: bool, turns: usize) -> GuardTally {
     guard_turns_with_profession(handle, handle.guard_id, target_stealthed, turns)
 }
 
@@ -602,7 +650,7 @@ fn guard_turns_with_profession(
     guard_profession: ContentIndex,
     target_stealthed: bool,
     turns: usize,
-) -> (usize, usize) {
+) -> GuardTally {
     let (mut world, terrain_ids) = test_world();
     // 卫兵起点 (5,5)、目标 (8,5)，两人可能走到的范围全部铺草地。
     for x in 0..16 {
@@ -665,10 +713,22 @@ fn guard_turns_with_profession(
 
     let mut inspects = 0usize;
     let mut moves = 0usize;
+    let mut swaps = 0usize;
+    let mut move_intents = 0usize;
+    let mut other_intents = 0usize;
     let catalogs = ResolveCatalogs::empty();
     for _ in 0..turns {
         {
-            let mut ai = behavior_ai_intent(&mut source);
+            let mut decide = behavior_ai_intent(&mut source);
+            let mut ai = |world: &WorldState, actor: EntityId, controlled: EntityId| {
+                let intent = decide(world, actor, controlled);
+                match intent {
+                    Intent::Move { .. } => move_intents += 1,
+                    Intent::Inspect { .. } => {}
+                    _ => other_intents += 1,
+                }
+                intent
+            };
             engine.advance_ai(
                 &mut world,
                 target,
@@ -676,22 +736,33 @@ fn guard_turns_with_profession(
                 &catalogs,
                 &mut |_, effect| match effect {
                     Effect::Inspect { .. } => inspects += 1,
-                    // `MoveTo` 与 `SwapPositions` 在这里是同一件事：
-                    // 「卫兵看见了目标，朝它挪了一步」。目标就站在旁边
-                    // 那一格时，那一步的 `Intent::Move` 会被
-                    // `ll_sim::turn` 的撞格路由改判成 `Intent::Swap`
-                    // （双方都没有已声明的敌对关系，所有者裁定：非敌对
-                    // 就换位置），产出的效果因此是 `SwapPositions`。
-                    // 本函数数的是「这一回合卫兵有没有动作」，两种效果
-                    // 都算，漏掉后者会把「换了个位置」误判成「呆着没动」。
-                    Effect::MoveTo { .. } | Effect::SwapPositions { .. } => moves += 1,
+                    // 只数 `MoveTo`：卫兵**真的挪了一格**。
+                    //
+                    // 这里此前还数 `SwapPositions`——那时候非敌对撞格
+                    // 对 NPC 也路由成互换。项目所有者随后裁定「玩家优先
+                    // 度高于NPC，只有玩家可以互换位置」，卫兵（NPC）撞上
+                    // 贴身的非敌对目标不再产出任何 `SwapPositions`，那条
+                    // 分支在本文件里已经**不可能**被走到；留着它会让读者
+                    // 以为还有一条活着的路径。第三态（撞上了、没挪成）由
+                    // 下面 `move_intents - moves` 数出来。
+                    Effect::MoveTo { .. } => moves += 1,
+                    // 见 `GuardTally::swaps` 文档：这一支在裁定「只有
+                    // 玩家可以互换位置」之后**应当永不触发**，数它就是
+                    // 为了断言它是 0。
+                    Effect::SwapPositions { .. } => swaps += 1,
                     _ => {}
                 },
             );
         }
         engine.try_player_turn(&mut world, target, &wait_input, &catalogs, &mut |_, _| {});
     }
-    (inspects, moves)
+    GuardTally {
+        inspects,
+        moves,
+        blocked: move_intents - moves,
+        swaps,
+        other_intents,
+    }
 }
 
 /// 硬要求四：潜行显著降低卫兵的盘查率——而且**不是**靠让卫兵看不见你，
@@ -717,39 +788,65 @@ fn 潜行显著降低卫兵盘查率但不让卫兵看不见你() {
     let turns = 400;
 
     // Act
-    let (visible_inspects, visible_moves) = guard_turns(&handle, false, turns);
-    let (stealth_inspects, stealth_moves) = guard_turns(&handle, true, turns);
+    let visible = guard_turns(&handle, false, turns);
+    let stealth = guard_turns(&handle, true, turns);
 
     // Assert 一：盘查率真的降下来了。
     assert!(
-        stealth_inspects * 2 < visible_inspects,
-        "潜行应当显著降低盘查率：不潜行 {visible_inspects} 次，潜行 {stealth_inspects} 次"
+        stealth.inspects * 2 < visible.inspects,
+        "潜行应当显著降低盘查率：不潜行 {} 次，潜行 {} 次",
+        visible.inspects,
+        stealth.inspects
     );
 
     // Assert 二：盘查真的发生过——这一条钉的是「链路通了」本身。行为树
     // 经由 TurnEngine 驱动之前，`Effect::Inspect` 在整条生产链路上是
     // 零产出的。
     assert!(
-        visible_inspects > 0,
+        visible.inspects > 0,
         "不潜行时卫兵应当真的发起过盘查，一次都没有说明链路断了"
     );
 
-    // Assert 三：卫兵**照样看得见**潜行中的目标——两侧的「行动总数」
-    // 都是满的（每一回合要么盘查要么走近，没有落进 'wait 兜底分支）。
-    // 若潜行是靠改 FOV 实现的，潜行那一侧会全部退化成 `Intent::Wait`，
-    // 这条断言立刻变红。这正是本批次核心设计选择的可执行形式，见
-    // `ll_script::api::actor` 模块文档「潜行：为什么是一次判定的减值，
-    // 不是一次可见性的改写」一节。
+    // Assert 三：卫兵**照样看得见**潜行中的目标——两侧的三态之和都是
+    // 满的（每一回合要么盘查、要么真的挪了一格、要么撞在目标身上没挪
+    // 成，没有落进 'wait 兜底分支）。若潜行是靠改 FOV 实现的，潜行那
+    // 一侧会全部退化成 `Intent::Wait`，`other_intents` 立刻非零。这正
+    // 是本批次核心设计选择的可执行形式，见 `ll_script::api::actor`
+    // 模块文档「潜行：为什么是一次判定的减值，不是一次可见性的改写」
+    // 一节。
     assert_eq!(
-        visible_inspects + visible_moves,
-        turns,
-        "不潜行时卫兵每一回合都应当有动作（盘查或走近）"
+        visible.other_intents, 0,
+        "不潜行时卫兵每一回合都应当有动作（盘查或走近）：{visible:?}"
     );
     assert_eq!(
-        stealth_inspects + stealth_moves,
+        visible.accounted(),
         turns,
-        "潜行中的目标照样应当被视野查询找到——潜行不是隐身"
+        "三态之和应当恰好是回合数：{visible:?}"
     );
+    assert_eq!(
+        stealth.other_intents, 0,
+        "潜行中的目标照样应当被视野查询找到——潜行不是隐身：{stealth:?}"
+    );
+    assert_eq!(
+        stealth.accounted(),
+        turns,
+        "三态之和应当恰好是回合数：{stealth:?}"
+    );
+
+    // Assert 四：第三态真的出现过——项目所有者裁定「玩家优先度高于
+    // NPC，只有玩家可以互换位置」之后，卫兵贴身之后每一次「走近」都
+    // 撞在目标身上挪不动。本批次之前同一步被路由成互换位置，
+    // `blocked` 恒为 0。见 `GuardTally` 文档。
+    assert!(
+        visible.blocked > 0 && stealth.blocked > 0,
+        "卫兵贴身后每一次走近都该撞在目标身上挪不动：不潜行 {visible:?}，潜行 {stealth:?}"
+    );
+
+    // Assert 五：卫兵一次都没有和目标换过位置——见 `GuardTally::swaps`
+    // 文档。这条与上一条是一对：`blocked` 说「有一态出现了」，`swaps`
+    // 说「出现的不是互换」。
+    assert_eq!(visible.swaps, 0, "卫兵是 NPC，不该互换位置：{visible:?}");
+    assert_eq!(stealth.swaps, 0, "同上：{stealth:?}");
 }
 
 /// 反例：同一段代码、同一棵真实行为树、同一个几何布局，只把卫兵的
@@ -768,18 +865,27 @@ fn 非卫兵职业的实体经由turnengine一次盘查都不会发起() {
     let turns = 400;
 
     // Act
-    let (inspects, moves) =
-        guard_turns_with_profession(&handle, placeholder_profession(), false, turns);
+    let tally = guard_turns_with_profession(&handle, placeholder_profession(), false, turns);
 
     // Assert
     assert_eq!(
-        inspects, 0,
-        "不是卫兵职业的实体不该发起任何盘查，实际 {inspects} 次"
+        tally.inspects, 0,
+        "不是卫兵职业的实体不该发起任何盘查：{tally:?}"
     );
+    // 它照样看得见目标、照样每一回合都要求走近——盘查分支不成立只是让
+    // selector 落到下一条。**但「走近」不等于「挪动了」**：贴身之后
+    // 每一次走近都撞在目标身上挪不动（所有者裁定「只有玩家可以互换
+    // 位置」）。此前这里写的是 `moves == turns`，那在互换还对 NPC 开着
+    // 的年代才成立；现在恒等式落在三态之和上，而 `blocked > 0` 把新
+    // 出现的那一态钉住。
+    assert_eq!(tally.other_intents, 0, "每一回合都该有动作：{tally:?}");
     assert_eq!(
-        moves, turns,
-        "它照样看得见目标、照样走近——盘查分支不成立只是让 selector 落到下一条"
+        tally.accounted(),
+        turns,
+        "三态之和应当恰好是回合数：{tally:?}"
     );
+    assert!(tally.blocked > 0, "贴身之后应当撞得动不了：{tally:?}");
+    assert_eq!(tally.swaps, 0, "它是 NPC，不该互换位置：{tally:?}");
 }
 
 /// 空技能目录常量——同时充当空技能树目录（`NoSkills` 实现了

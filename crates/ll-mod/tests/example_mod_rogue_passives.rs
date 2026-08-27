@@ -440,12 +440,60 @@ fn 三级盗贼的扒手训练让盘查查不出东西且经由turnengine生效(
 ///
 /// 两个计数都要：只数盘查次数无法区分「被动①降低了判定成功率」与
 /// 「被动①让卫兵干脆看不见你」——后者会让移动次数也一起归零。
+/// 一段卫兵回合的**三态**计数：这一回合卫兵要么盘查了、要么真的挪了
+/// 一格、要么撞在目标身上没挪成。
+///
+/// # 为什么是三态而不是两个数字
+///
+/// 本文件此前只数两个数（盘查次数、移动次数），断言是
+/// `inspects + moves == turns`——「卫兵每一回合都有动作，没有落进
+/// `Intent::Wait` 兜底分支」。项目所有者随后裁定「玩家优先度高于NPC，
+/// 只有玩家可以互换位置」，卫兵（NPC）贴身之后朝目标迈的那一步不再
+/// 换位、也挪不动（目的地站着人，`resolve_move` 的占位检查判成一次
+/// 失败的移动），于是那条恒等式的左边开始小于 `turns`。
+///
+/// **修法不是把恒等式放松成不等式**——那等于把这批改动唯一可观测的
+/// 后果从测试里抹掉。修法是把新出现的那一态显式数出来：三个数之和
+/// 仍然恒等于 `turns`，而「卫兵这一回合到底干了什么」的分辨率比改动
+/// 之前更高，不是更低。
+#[derive(Debug, Clone, Copy)]
+struct GuardTally {
+    /// 产出了 `Effect::Inspect` 的回合数。
+    inspects: usize,
+    /// 产出了 `Effect::MoveTo` 的回合数——卫兵真的挪了一格。
+    moves: usize,
+    /// 行为树要求走一步、但那一步没挪成的回合数（目的地站着目标本
+    /// 人）。本批次之前这一态**不存在**：那时候同一步会被路由成互换
+    /// 位置，稳稳产出一条 `SwapPositions`。
+    blocked: usize,
+    /// 产出了 `Effect::SwapPositions` 的回合数。**恒应为 0**——卫兵是
+    /// NPC，而项目所有者裁定「只有玩家可以互换位置」。
+    ///
+    /// 单独数它、而不是让它悄悄并进 [`Self::blocked`]，是 ADR 0018 反例
+    /// 验证抓出来的一处不足：`blocked` 是 `走一步的意图数 − MoveTo 数`
+    /// 算出来的，一次互换既不产 `MoveTo` 也不消耗那个意图，会被**误记
+    /// 成一次「撞住了」**。于是「把互换那一支重新对 NPC 打开」这个改坏
+    /// 方式不会让任何断言变红。这一个字段就是那条反例的钉子。
+    swaps: usize,
+    /// 既不是盘查也不是移动的意图数（`Intent::Wait` 兜底分支等）。
+    /// 恒应为 0——它一旦非零，说明卫兵已经看不见目标了，而本文件全部
+    /// 用例的前提都是「卫兵照样看得见」。
+    other_intents: usize,
+}
+
+impl GuardTally {
+    /// 三态之和——应当恒等于跑过的回合数。
+    fn accounted(&self) -> usize {
+        self.inspects + self.moves + self.blocked
+    }
+}
+
 fn guard_turns_against_rogue(
     handle: &RealModsHandle,
     catalogs: &ResolveCatalogs<'_>,
     rogue_level: i32,
     turns: usize,
-) -> (usize, usize) {
+) -> GuardTally {
     let (mut world, terrain_ids) = test_world();
     for x in 0..16 {
         for y in 0..12 {
@@ -487,9 +535,21 @@ fn guard_turns_against_rogue(
 
     let mut inspects = 0usize;
     let mut moves = 0usize;
+    let mut swaps = 0usize;
+    let mut move_intents = 0usize;
+    let mut other_intents = 0usize;
     for _ in 0..turns {
         {
-            let mut ai = behavior_ai_intent(&mut source);
+            let mut decide = behavior_ai_intent(&mut source);
+            let mut ai = |world: &WorldState, actor: EntityId, controlled: EntityId| {
+                let intent = decide(world, actor, controlled);
+                match intent {
+                    Intent::Move { .. } => move_intents += 1,
+                    Intent::Inspect { .. } => {}
+                    _ => other_intents += 1,
+                }
+                intent
+            };
             engine.advance_ai(
                 &mut world,
                 rogue,
@@ -497,22 +557,33 @@ fn guard_turns_against_rogue(
                 catalogs,
                 &mut |_, effect| match effect {
                     Effect::Inspect { .. } => inspects += 1,
-                    // `MoveTo` 与 `SwapPositions` 在这里是同一件事：
-                    // 「卫兵看见了目标，朝它挪了一步」。目标就站在旁边
-                    // 那一格时，那一步的 `Intent::Move` 会被
-                    // `ll_sim::turn` 的撞格路由改判成 `Intent::Swap`
-                    // （双方都没有已声明的敌对关系，所有者裁定：非敌对
-                    // 就换位置），产出的效果因此是 `SwapPositions`。
-                    // 本函数数的是「这一回合卫兵有没有动作」，两种效果
-                    // 都算，漏掉后者会把「换了个位置」误判成「呆着没动」。
-                    Effect::MoveTo { .. } | Effect::SwapPositions { .. } => moves += 1,
+                    // 只数 `MoveTo`：卫兵**真的挪了一格**。
+                    //
+                    // 这里此前还数 `SwapPositions`——那时候非敌对撞格
+                    // 对 NPC 也路由成互换。项目所有者随后裁定「玩家优先
+                    // 度高于NPC，只有玩家可以互换位置」，卫兵（NPC）撞上
+                    // 贴身的非敌对目标不再产出任何 `SwapPositions`，那条
+                    // 分支在本文件里已经**不可能**被走到；留着它会让读者
+                    // 以为还有一条活着的路径。第三态（撞上了、没挪成）由
+                    // 下面 `move_intents - moves` 数出来。
+                    Effect::MoveTo { .. } => moves += 1,
+                    // 见 `GuardTally::swaps` 文档：这一支在裁定「只有
+                    // 玩家可以互换位置」之后**应当永不触发**，数它就是
+                    // 为了断言它是 0。
+                    Effect::SwapPositions { .. } => swaps += 1,
                     _ => {}
                 },
             );
         }
         engine.try_player_turn(&mut world, rogue, &wait_input, catalogs, &mut |_, _| {});
     }
-    (inspects, moves)
+    GuardTally {
+        inspects,
+        moves,
+        blocked: move_intents - moves,
+        swaps,
+        other_intents,
+    }
 }
 
 /// 硬要求二（被动①「不觉得可疑」）：3 级盗贼显著更少被卫兵盘查，
@@ -544,38 +615,67 @@ fn 三级盗贼的扒手训练让卫兵不觉得可疑但仍然看得见他() {
     let turns = 400;
 
     // Act
-    let (unlocked_inspects, unlocked_moves) =
-        guard_turns_against_rogue(&handle, &catalogs, CUTPURSE_UNLOCK_LEVEL, turns);
-    let (locked_inspects, locked_moves) =
-        guard_turns_against_rogue(&handle, &catalogs, BELOW_UNLOCK_LEVEL, turns);
+    let unlocked = guard_turns_against_rogue(&handle, &catalogs, CUTPURSE_UNLOCK_LEVEL, turns);
+    let locked = guard_turns_against_rogue(&handle, &catalogs, BELOW_UNLOCK_LEVEL, turns);
 
     // Assert 一：盘查率真的降下来了。
     assert!(
-        unlocked_inspects * 2 < locked_inspects,
-        "3 级盗贼应当显著更少被盘查：3 级 {unlocked_inspects} 次，2 级 {locked_inspects} 次"
+        unlocked.inspects * 2 < locked.inspects,
+        "3 级盗贼应当显著更少被盘查：3 级 {} 次，2 级 {} 次",
+        unlocked.inspects,
+        locked.inspects
     );
 
     // Assert 二：反例侧真的被盘查过——这一条钉的是「链路通了」本身。
     assert!(
-        locked_inspects > 0,
+        locked.inspects > 0,
         "2 级盗贼没有这条被动，400 回合内应当真的被盘查过，一次都没有说明链路断了"
     );
 
-    // Assert 三：卫兵**照样看得见**他——两侧的「行动总数」都是满的
-    // （每一回合要么盘查要么走近，没有落进 'wait 兜底分支）。若被动①
-    // 被误接成「改视野」，3 级那一侧会整体退化成 `Intent::Wait`，这条
-    // 断言立刻变红。与 `example_mod_stealth.rs` 对潜行的同一条断言
-    // 同一个用意。
+    // Assert 三：卫兵**照样看得见**他——两侧的三态之和都是满的（每一
+    // 回合要么盘查、要么真的挪了一格、要么撞在目标身上没挪成，没有落
+    // 进 'wait 兜底分支）。若被动①被误接成「改视野」，3 级那一侧会
+    // 整体退化成 `Intent::Wait`，`other_intents` 立刻非零、`accounted`
+    // 立刻小于 `turns`，这两条断言一起变红。与
+    // `example_mod_stealth.rs` 对潜行的同一条断言同一个用意。
     assert_eq!(
-        unlocked_inspects + unlocked_moves,
-        turns,
-        "3 级盗贼照样应当被 nearby-actor-in-view 找到——「不觉得可疑」不是隐身"
+        unlocked.other_intents, 0,
+        "3 级盗贼照样应当被 nearby-actor-in-view 找到——「不觉得可疑」不是隐身：{unlocked:?}"
     );
     assert_eq!(
-        locked_inspects + locked_moves,
+        unlocked.accounted(),
         turns,
-        "2 级盗贼每一回合都应当被卫兵盘查或走近"
+        "三态之和应当恰好是回合数：{unlocked:?}"
     );
+    assert_eq!(
+        locked.other_intents, 0,
+        "2 级盗贼每一回合都应当被卫兵盘查或走近：{locked:?}"
+    );
+    assert_eq!(
+        locked.accounted(),
+        turns,
+        "三态之和应当恰好是回合数：{locked:?}"
+    );
+
+    // Assert 四：第三态**真的出现过**——这是项目所有者裁定「只有玩家
+    // 可以互换位置」在本文件里唯一可观测的后果。卫兵三步之内就贴到
+    // 目标身边，此后每一次「走近」都撞在目标身上挪不动；本批次之前
+    // 同一步会被路由成互换位置，`blocked` 恒为 0。这条断言一旦变红，
+    // 说明 NPC 又能推开别人了。
+    assert!(
+        unlocked.blocked > 0 && locked.blocked > 0,
+        "卫兵贴身后每一次走近都该撞在目标身上挪不动：3 级 {unlocked:?}，2 级 {locked:?}"
+    );
+
+    // Assert 五：卫兵一次都没有和目标换过位置。互换是一次让路，而
+    // 被让路的那一方（这里是受控实体）没有做出任何决定——所有者裁定
+    // 只有玩家有资格要求别人让路。这条一旦变红，说明 NPC 又能推开
+    // 别人了。
+    assert_eq!(
+        unlocked.swaps, 0,
+        "卫兵是 NPC，不该产出任何 SwapPositions：{unlocked:?}"
+    );
+    assert_eq!(locked.swaps, 0, "同上：{locked:?}");
 }
 
 /// 硬要求三：两个被动**互不干涉**——被动①只改盘查次数、不改每次

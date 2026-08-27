@@ -365,8 +365,9 @@ impl TurnEngine {
                 return acted;
             }
             let raw = ai_intent(world, entry.actor, controlled);
-            // 撞格路由对 NPC 同样生效（所有者裁定读作双向，见
-            // [`route_move_into_occupant`] 文档）。
+            // 撞格路由对 NPC 同样生效，但**互换那一支只对玩家开**
+            // ——见 [`route_move_into_occupant`] 文档「玩家优先度高于
+            // NPC」一节。
             let intent = route_move_into_occupant(world, raw);
             // `true`：非受控实体这条路必须保证进展，见 [`Self::perform`]
             // 文档「进展保证」一节与本方法文档「必须保证进展」一节。
@@ -386,7 +387,8 @@ impl TurnEngine {
     /// 返回假。
     ///
     /// 撞进另一个存活实体所在格的 `Move` 会被就地路由成 `Attack`（敌对）
-    /// 或 [`Intent::Swap`]（非敌对），见 [`route_move_into_occupant`]；
+    /// 或 [`Intent::Swap`]（非敌对；**只有受控实体走得到互换这一支**），
+    /// 见 [`route_move_into_occupant`]；
     /// `resolve` 刻意不做这个派生（见其模块文档），因为「同一格多个
     /// 实体时打谁」这类规则需要调用方按自己的场景决定。
     ///
@@ -508,38 +510,60 @@ pub enum PlayerTurnOutcome {
 /// 把一个原始意图路由成最终意图：一次 [`Intent::Move`] 的目的地站着
 /// 别的存活实体时，按双方是否**已声明敌对**
 /// （[`ll_sim_declared_hostile`](crate::ai_query::declared_hostile)）
-/// 改判为 [`Intent::Attack`] 或 [`Intent::Swap`]；目的地空着就原样放行。
+/// 以及**发起者是不是受控实体**，改判为 [`Intent::Attack`] 或
+/// [`Intent::Swap`]；目的地空着就原样放行。
 ///
-/// # 两条分支各自的裁定来源
+/// # 三条分支
+///
+/// | 目的地 | 发起者 | 结果 |
+/// |---|---|---|
+/// | 空着 | 任意 | 原样 [`Intent::Move`] |
+/// | 站着已声明敌对的实体 | 任意 | [`Intent::Attack`] |
+/// | 站着非敌对实体 | **受控实体** | [`Intent::Swap`] |
+/// | 站着非敌对实体 | 非受控实体 | 原样 [`Intent::Move`]（随后由
+///   [`crate::resolve`] 的占位检查判成一次失败的移动） |
+///
+/// # 敌对那一支的裁定来源
 ///
 /// 项目所有者的原话：「当角色与NPC非敌对的时候，移动向NPC的位置时，
 /// 是和NPC互换位置，而敌对NPC则是对敌对NPC攻击。」敌对那一半此前就
 /// 存在（撞人即攻击，传统 roguelike 手感），只是**无条件**成立——于是
-/// 走向一个农夫就是砍他。非敌对那一半是本批次新增的
-/// [`Intent::Swap`]。
+/// 走向一个农夫就是砍他。
 ///
 /// 判据用 [`crate::ai_query::declared_hostile`] 而不是
 /// [`crate::ai_query::is_hostile`]，理由见前者文档：后者在当前内容下
 /// 对每一对实体都返回真，拿它当判据等于这条裁定一个字都没落地。
 ///
-/// # 玩家与 NPC 走同一条路由
+/// # 玩家优先度高于 NPC：**只有玩家可以互换位置**
 ///
-/// 所有者说的是「角色与NPC」，本实现读作双向都成立：
-/// [`TurnEngine::advance_ai`] 与 [`TurnEngine::try_player_intent`] 调
-/// 的是同一个本函数。两个 NPC 因此不再互相穿过对方所在格
-/// （`resolve_move` 本身不做占位检查，`crate::resolve` 那一层刻意不
-/// 决定「同一格多个实体时打谁」），而是换位。
+/// **这一段推翻了本函数此前的实现。** 上一批把所有者那句「角色与NPC」
+/// 读作双向都成立，于是两个非敌对 NPC 撞上也互换位置。项目所有者随后
+/// 明确裁定：**玩家优先度高于 NPC，只有玩家可以互换位置**。互换是一次
+/// 让路——被换的一方没有做出任何决定却被挪走了（见
+/// [`crate::resolve`] 的 `resolve_swap` 文档「只重排发起者」一节），
+/// 而「谁有资格要求别人给自己让路」这件事在本作里不是对称的。
 ///
-/// 会不会出现两个 NPC 无限互换？会互换，但**不是死循环**：每一次
-/// 互换都产出 `Effect::ScheduleNext`，发起者的时钟照常前进，世界时间
-/// 一直在走，这与本模块真正要防的「时钟原地不动」是两回事。
+/// NPC 撞上非敌对目标因此**不再互换**，而是原样放行成
+/// [`Intent::Move`]，交给 `resolve_move` 的占位检查判成一次失败的移动：
+/// 不产 `Effect::MoveTo`，但仍产 `Effect::ScheduleNext`——与撞墙完全
+/// 同一个口径。这一条不会造成死循环（效果非空 ⇒ 不触发
+/// [`TurnEngine::perform`] 的进展保证），但它确实带来一个**已知的、
+/// 尚未裁定的副作用**：`crate::ai_query::direction_toward` 任何距离都
+/// 返回方向、从不因「已相邻」停手，因此贴身跟着非敌对目标的 NPC 会
+/// 每回合撞一次、失败一次、消耗一次行动。要不要给「靠近」加一条「已
+/// 相邻就不再挪」是一条独立的、尚未裁定的问题，本批次不做。
 ///
-/// 直接在 `world.actors` 上查找目标格——不需要调用方另外维护一份
-/// 「全部实体」的列表（`p3_acceptance` 曾经为此单独传一个
-/// `&[Combatant]` 参数，纯属多余：[`ll_world::entity::Arena::iter_with_id`]
-/// 已经能给出同样的信息，且同样不依赖任何哈希容器迭代顺序,满足约束
-/// C5）。同一格站着多于一个单位时取遍历序第一个——`iter_with_id` 的
-/// 顺序由 `Vec` 支撑，固定且与哈希无关（C5）。
+/// 「是不是受控实体」的判据用 `world.player_entity == Some(actor)`
+/// ——`crate::resolve` 里判 `Effect::MarkExplored` 该不该追加用的就是
+/// 这一个比较（`resolve_move`/`resolve_swap` 各一处），不新开第二套
+/// 「谁是受控实体」的表示法。
+///
+/// # 查找目标格的那段代码在 `crate::resolve` 里
+///
+/// [`crate::resolve::step_destination`]/[`crate::resolve::occupant_at`]
+/// ——与 `resolve_move` 的占位检查**共用同一份实现**，理由见后者文档
+/// 「为什么必须只有这一份实现」一节：两处问的是同一个问题，答案必须
+/// 逐字一致，各写一遍会让平局打破规则各自漂移。
 fn route_move_into_occupant(world: &WorldState, raw: Intent) -> Intent {
     let Intent::Move { actor, dir } = raw else {
         return raw;
@@ -547,23 +571,22 @@ fn route_move_into_occupant(world: &WorldState, raw: Intent) -> Intent {
     let Some(agent) = world.actors.get(actor) else {
         return raw;
     };
-    let (dx, dy) = dir.delta();
-    let dest = world.size.wrap(agent.pos.x() + dx, agent.pos.y() + dy);
-    let occupant = world
-        .actors
-        .iter_with_id()
-        .find(|(id, other)| *id != actor && other.pos == dest);
-    let Some((target, other)) = occupant else {
+    let dest = crate::resolve::step_destination(world, agent.pos, dir);
+    let Some((target, other)) = crate::resolve::occupant_at(world, dest, actor) else {
         return raw;
     };
     if crate::ai_query::declared_hostile(agent, other) {
-        Intent::Attack { actor, target }
-    } else {
-        Intent::Swap {
+        return Intent::Attack { actor, target };
+    }
+    if world.player_entity == Some(actor) {
+        return Intent::Swap {
             actor,
             with: target,
-        }
+        };
     }
+    // 非受控实体撞上非敌对实体：原样放行，由 `resolve_move` 的占位
+    // 检查判成一次失败的移动——见本函数文档「玩家优先度高于 NPC」一节。
+    raw
 }
 
 #[cfg(test)]
@@ -940,14 +963,20 @@ mod tests {
     }
 
     #[test]
-    fn 移动到非敌对实体所在格被路由成互换位置() {
+    fn 受控实体移动到非敌对实体所在格被路由成互换位置() {
         // 所有者裁定：「当角色与NPC非敌对的时候，移动向NPC的位置时，
         // 是和NPC互换位置」。两人都没有任何势力归属——这正是当前内容
         // 下每一个实体的真实形态，见 `declared_hostile` 文档。
+        //
+        // **`world.player_entity` 这一行是断言的一部分，不是布景**：
+        // 互换那一支现在只对受控实体开（所有者裁定「玩家优先度高于
+        // NPC」），见 `route_move_into_occupant` 文档。删掉它这条会
+        // 立刻变红——下面那条 NPC 用例正是它的对照组。
         // Arrange
         let mut world = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
         let neighbour = spawn_at(&mut world, (6, 5), 10);
+        world.player_entity = Some(player);
         let raw = Intent::Move {
             actor: player,
             dir: crate::intent::Direction::East,
@@ -967,8 +996,41 @@ mod tests {
     }
 
     #[test]
-    fn 同一势力的两人撞格互换而不是互相攻击() {
+    fn 非受控实体移动到非敌对实体所在格不互换而是原样放行成移动() {
+        // 所有者裁定「玩家优先度高于NPC，只有玩家可以互换位置」，
+        // 推翻了上一批「双向都成立」的读法。**互换是一次让路**，被换的
+        // 一方没有做出任何决定却被挪走了（见 `resolve_swap` 文档「只
+        // 重排发起者」一节），而「谁有资格要求别人给自己让路」在本作里
+        // 不是对称的。
+        //
+        // 与上面那条受控实体用例逐字段相同,唯一的差别是 `player_entity`
+        // 指向另一个人——这一条与那一条构成同一个场景的正反两例。
+        // Arrange
+        let mut world = test_world();
+        let npc = spawn_at(&mut world, (5, 5), 10);
+        let neighbour = spawn_at(&mut world, (6, 5), 10);
+        world.player_entity = Some(neighbour);
+        let raw = Intent::Move {
+            actor: npc,
+            dir: crate::intent::Direction::East,
+        };
+
+        // Act
+        let routed = route_move_into_occupant(&world, raw);
+
+        // Assert：原样放行，交给 `resolve_move` 的占位检查判成失败。
+        assert_eq!(routed, raw);
+    }
+
+    #[test]
+    fn 同一势力的两人撞格不互相攻击而是由发起者身份决定后果() {
         // 反例，守的是「已声明势力」这一半不会反过来把队友判成敌人。
+        //
+        // 本条在裁定「只有玩家可以互换位置」之后拆成了两半：同一对
+        // 队友，受控实体撞过去是互换、非受控实体撞过去是原样放行——
+        // **两半都不是 `Attack`**，那才是本条真正守的东西。只断言
+        // 「不是 Attack」会把这条放松成一句几乎恒真的话，因此这里逐
+        // 分支钉住它到底路由成了什么。
         // Arrange
         let mut world = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);
@@ -980,11 +1042,85 @@ mod tests {
             dir: crate::intent::Direction::East,
         };
 
-        // Act
-        let routed = route_move_into_occupant(&world, raw);
+        // Act：先以受控实体的身份走一次，再以非受控实体的身份走一次。
+        world.player_entity = Some(player);
+        let routed_as_player = route_move_into_occupant(&world, raw);
+        world.player_entity = Some(ally);
+        let routed_as_npc = route_move_into_occupant(&world, raw);
 
         // Assert
-        assert!(matches!(routed, Intent::Swap { .. }));
+        assert_eq!(
+            routed_as_player,
+            Intent::Swap {
+                actor: player,
+                with: ally
+            }
+        );
+        assert_eq!(routed_as_npc, raw);
+    }
+
+    #[test]
+    fn 非受控实体撞上非敌对实体经turnengine结算后不移动但时钟仍前进() {
+        // 裁定「只有玩家可以互换位置」的**可观测后果**，走的是完整
+        // 链路（route → resolve → apply），不只是路由返回了什么：
+        //
+        // - 两人的坐标都没变（既没互换，也没摞在一起）；
+        // - 撞人的那一个 `next_action_at` 真的前进了——与撞墙同一个
+        //   口径，NPC 不会因为前面站了人就白赚一回合。
+        //
+        // 时钟这一半不是顺带：若占位检查退化成返回空 `Vec`，
+        // `TurnEngine::perform` 的进展保证会补跑一次 `Intent::Wait`,
+        // 时钟照样前进、坐标照样不变——本条的**前两个**断言在那种实现
+        // 下仍然全绿。真正把两者分开的是第三个断言：这一步必须自己
+        // 产出效果,不能靠进展保证兜底。
+        // Arrange
+        let mut world = test_world();
+        let npc = spawn_at(&mut world, (5, 5), 10);
+        let neighbour = spawn_at(&mut world, (6, 5), 10);
+        // 受控实体是第三个人，站在远处、永远轮不到它挪动——`advance_ai`
+        // 需要一个「不是 npc」的受控实体才肯结算 npc 那一条。
+        let controlled = spawn_at(&mut world, (20, 20), 10);
+        world.player_entity = Some(controlled);
+        let npc_before = world.actors.get(npc).expect("刚生成").pos;
+        let neighbour_before = world.actors.get(neighbour).expect("刚生成").pos;
+
+        let mut timeline = Timeline::new();
+        timeline.schedule(npc, Tick(0));
+        timeline.schedule(controlled, Tick(TICKS_PER_MINUTE));
+        let mut engine = TurnEngine::new(timeline);
+        let mut effects_seen = 0usize;
+
+        // Act：npc 朝东撞上 neighbour。
+        engine.advance_ai(
+            &mut world,
+            controlled,
+            &mut |_, actor, _| Intent::Move {
+                actor,
+                dir: crate::intent::Direction::East,
+            },
+            &EMPTY,
+            &mut |_, _| effects_seen += 1,
+        );
+
+        // Assert
+        assert_eq!(
+            world.actors.get(npc).expect("还在").pos,
+            npc_before,
+            "非受控实体撞上非敌对实体不该挪动"
+        );
+        assert_eq!(
+            world.actors.get(neighbour).expect("还在").pos,
+            neighbour_before,
+            "被撞的一方更不该被挪走——互换只对受控实体开"
+        );
+        assert!(
+            world.actors.get(npc).expect("还在").next_action_at.0 > 0,
+            "撞人仍然消耗一次行动，与撞墙同一个口径"
+        );
+        assert!(
+            effects_seen > 0,
+            "这一步必须自己产出 ScheduleNext,不能靠 perform 的进展保证兜底"
+        );
     }
 
     #[test]
@@ -1007,7 +1143,9 @@ mod tests {
     #[test]
     fn 玩家与非敌对实体互换位置后两人的坐标真的对调了() {
         // 这一条测的是路由之后的整条链路（route → resolve → apply），
-        // 不只是路由本身返回了什么。
+        // 不只是路由本身返回了什么。裁定「只有玩家可以互换位置」只
+        // 收紧了 NPC 那一侧，玩家这一侧一个字没改——本条就是那句话的
+        // 可执行形式，它一旦变红说明收紧收过头了。
         // Arrange
         let mut world = test_world();
         let player = spawn_at(&mut world, (5, 5), 10);

@@ -2107,37 +2107,6 @@ fn tiered_slot_rest_effects(
     effects
 }
 
-/// 朝某方向移动一格：按目的地的地形分三种情形处理。
-///
-/// - 目的地是一格「撞入即开」的地形（[`ll_world::terrain::TerrainTable::opens_into`]
-///   有值，例如关着的门）：产生把该格改写成 `opens_into` 目标地形的
-///   效果，而不是移动效果——门挡住了这一步，但「撞门」本身是有意义的
-///   动作，不该像撞墙一样什么都不发生。**这条规则是任何地形都能声明的
-///   属性，不是只对某个硬编码地形 ID 生效的特判**——见
-///   `ll_world::terrain` 模块文档「`opens_into`」一节：这正是本次迁移
-///   撞见并修掉的一处 API 洞，mod 现在可以给自己的地形也声明同样的
-///   行为。
-/// - 目的地完全不可通行（墙、窗等）：**不产生 `Effect::MoveTo`，但仍
-///   产生 `Effect::ScheduleNext`**——项目所有者决策：撞墙本身也是一次
-///   真实的行动尝试（伸手推了一下、发现推不开），应当消耗时间，只是
-///   位置不变；耗时按 [`BASE_ACTION_COST`] 计费，不查地形的 `move_cost`
-///   （那是「走完整段距离」的代价，撞墙这一步根本没有走完，用它定价
-///   不成立，见 [`resolve_wait`] 同样按基准代价计费的理由）。
-/// - 目的地可通行：产生移动效果，行动耗时按该地形的分级 `move_cost`
-///   计算——浅水、山地这类「过得去但更慢」的地形因此耗时更长；若移动的
-///   是玩家自己，额外追加一条 [`Effect::MarkExplored`]（见其文档），
-///   把探索记忆的写入接到这唯一的移动落点。
-///
-/// # 为什么只有玩家移动才追加 `MarkExplored`
-///
-/// 本函数同时服务玩家与 NPC——`actor` 是任意实体。[`WorldState::exploration`]
-/// 却只代表玩家一个人的视角（见其字段文档「为什么按角色只存一份」）。
-/// 若不加区分地让每个 NPC 的移动都追加一条 `MarkExplored`，游荡的怪物
-/// 会替玩家「看见」它们自己路过的地方——那是把探索记忆的语义换成了
-/// 「世界上任意实体去过哪」，与「玩家亲眼见过哪」是两个不同的东西，
-/// 后者才是战争迷雾要回答的问题。这里用 `world.player_entity ==
-/// Some(actor)` 这一个比较收住范围，不需要改 `Intent`/`Effect` 的
-/// 形状去区分「谁在动」。
 /// 「伸手够得着」的范围：切比雪夫距离 1，即脚下加相邻八格。
 ///
 /// # 这个数字从哪来
@@ -3973,6 +3942,127 @@ fn has_all_ingredients(agent: &Agent, rule: &RecipeRule) -> bool {
     })
 }
 
+/// 从 `from` 朝 `dir` 迈一格落在哪——环面绕回由
+/// [`ll_core::torus::TorusSize::wrap`] 负责（跨接缝时裸加减会算出界外
+/// 坐标）。
+///
+/// 抽成函数与 [`occupant_at`] 是同一条理由，见那里。
+pub(crate) fn step_destination(world: &WorldState, from: TorusPos, dir: Direction) -> TorusPos {
+    let (dx, dy) = dir.delta();
+    world.size.wrap(from.x() + dx, from.y() + dy)
+}
+
+/// `pos` 这一格上站着谁（`mover` 自己不算），没有就是 `None`。
+///
+/// # 为什么必须只有这一份实现
+///
+/// 两处消费它：[`resolve_move`] 的占位检查与
+/// `crate::turn::route_move_into_occupant` 的撞格路由。这两处问的是
+/// **同一个问题**——「我要迈进的那一格上站着谁」——而它们的答案必须
+/// 逐字一致：路由据此决定这一步是攻击、互换还是原样放行，占位检查据此
+/// 决定这一步能不能落地。两边各写一遍的真正代价不是多几行，是那条
+/// **平局打破规则**（同一格站着多于一个单位时取谁）会各自漂移，症状是
+/// 「路由认为 A 挡路、占位检查认为 B 挡路」这种玩家可见却极难归因的
+/// 不一致。
+///
+/// 直接在 `world.actors` 上查找，不要求调用方另外维护一份「全部实体」
+/// 的列表（`p3_acceptance` 曾经为此单独传一个 `&[Combatant]` 参数，纯属
+/// 多余）。同一格站着多于一个单位时取遍历序第一个——
+/// [`ll_world::entity::Arena::iter_with_id`] 的顺序由 `Vec` 支撑，固定
+/// 且与任何哈希容器的迭代顺序无关（约束 C5）。
+///
+/// 返回 `(id, &Agent)` 而不是只返回 id：撞格路由紧接着就要拿那个
+/// `Agent` 去问 `crate::ai_query::declared_hostile`，返回 id 会逼它再查
+/// 一次同一张表，而「两次查找之间表没变」这件事需要读者自己去确认。
+pub(crate) fn occupant_at(
+    world: &WorldState,
+    pos: TorusPos,
+    mover: EntityId,
+) -> Option<(EntityId, &Agent)> {
+    world
+        .actors
+        .iter_with_id()
+        .find(|(id, other)| *id != mover && other.pos == pos)
+}
+
+/// 朝某方向移动一格：按目的地的地形与是否有人站着分四种情形处理。
+///
+/// - 目的地是一格「撞入即开」的地形（[`ll_world::terrain::TerrainTable::opens_into`]
+///   有值，例如关着的门）：产生把该格改写成 `opens_into` 目标地形的
+///   效果，而不是移动效果——门挡住了这一步，但「撞门」本身是有意义的
+///   动作，不该像撞墙一样什么都不发生。**这条规则是任何地形都能声明的
+///   属性，不是只对某个硬编码地形 ID 生效的特判**——见
+///   `ll_world::terrain` 模块文档「`opens_into`」一节：这正是本次迁移
+///   撞见并修掉的一处 API 洞，mod 现在可以给自己的地形也声明同样的
+///   行为。
+/// - 目的地完全不可通行（墙、窗等）：**不产生 `Effect::MoveTo`，但仍
+///   产生 `Effect::ScheduleNext`**——项目所有者决策：撞墙本身也是一次
+///   真实的行动尝试（伸手推了一下、发现推不开），应当消耗时间，只是
+///   位置不变；耗时按 [`BASE_ACTION_COST`] 计费，不查地形的 `move_cost`
+///   （那是「走完整段距离」的代价，撞墙这一步根本没有走完，用它定价
+///   不成立，见 [`resolve_wait`] 同样按基准代价计费的理由）。
+/// - **目的地站着另一个存活实体**：与撞墙同一个口径——不产生
+///   `Effect::MoveTo`，仍产生 `Effect::ScheduleNext`。见下面「每格至多
+///   站一人」一节。
+/// - 目的地可通行且空着：产生移动效果，行动耗时按该地形的分级
+///   `move_cost` 计算——浅水、山地这类「过得去但更慢」的地形因此耗时
+///   更长；若移动的是玩家自己，额外追加一条
+///   [`Effect::MarkExplored`]（见其文档），把探索记忆的写入接到这唯一
+///   的移动落点。
+///
+/// # 「每格至多站一人」：本函数是这条不变式**唯一**被强制的地方
+///
+/// 这条规则此前只写在注释里（`ll_game::world::place_roster` 与
+/// `crate::turn` 的撞格路由各有一句），**在本批次之前一行代码都没有
+/// 强制它**：本函数一行占位检查都没有，两个非敌对 NPC 因此可以直接
+/// 摞在同一格上。项目所有者裁定把它升级成真正被强制的不变式，落点就
+/// 是这里——移动是实体改变位置的主要路径，堵住它就堵住了绝大多数
+/// 违反。
+///
+/// **作用域必须说清楚：它只在移动路径上强制，不是全局强制。**
+/// [`resolve_exit_space`] 自行构造 `Effect::MoveTo` 回锚点、不查占位，
+/// 仍然造得出两人同格——那处缺口是记录在案的、等待一条独立裁定的
+/// 剩余缺口，见该函数文档。任何人在别处读到「每格至多站一人」时，读到
+/// 的都应该是这条带作用域的说法，不是一句会被 `resolve_exit_space`
+/// 当场证伪的全称断言。
+///
+/// # 为什么排在开门分支**之前**
+///
+/// 不变式的字面意思不区分目的地是门还是平地。若占位检查排在开门分支
+/// 之后，「门那一格站着人」会走成：先把门推开、消耗一回合 → 下一回合
+/// 才发现人挡着——一个要两回合才识破的怪异结果。
+///
+/// 排在 `terrain_at` 那条「目的地区块尚未常驻 → 静默作废」分支**之后**：
+/// 那条是项目所有者明确裁定不改的既有行为，顺序不动。
+///
+/// # 为什么不过滤 `current_space`
+///
+/// 进了 `Interior` 的 Agent 其 `pos` 仍指向地表锚点格（见下面那条
+/// `Space::Surface` 前置守的不变式），因此会「幽灵占用」那一格。这是
+/// **既有行为**——`ll_game::world::place_roster` 的 `occupied` 集合同样
+/// 不过滤，`crate::turn` 的撞格路由也不过滤。本函数保持一致，不在这里
+/// 引入第二套「谁算占着这一格」的判据：两套判据必然漂移，而漂移的表现
+/// 是「路由说 A 挡路、占位检查说没人挡路」这种极难归因的不一致。
+///
+/// # 撞到人为什么仍然消耗一次行动
+///
+/// 与撞墙同一条既有裁定：这是一次真实的行动尝试。更要紧的是效果非空
+/// ⇒ 不触发 [`crate::turn::TurnEngine::perform`] 的进展保证去补跑一次
+/// `Intent::Wait`，因此不存在「撞人这一步被计费两次」的可能；反过来，
+/// 若这里返回空 `Vec`，非受控实体那条路会被进展保证兜住（不至于死
+/// 循环），但受控实体那条路会白按一次——而「前面站着人」是一个玩家
+/// 完全看得见的、确定的结果，不是白按。
+///
+/// # 为什么只有玩家移动才追加 `MarkExplored`
+///
+/// 本函数同时服务玩家与 NPC——`actor` 是任意实体。[`WorldState::exploration`]
+/// 却只代表玩家一个人的视角（见其字段文档「为什么按角色只存一份」）。
+/// 若不加区分地让每个 NPC 的移动都追加一条 `MarkExplored`，游荡的怪物
+/// 会替玩家「看见」它们自己路过的地方——那是把探索记忆的语义换成了
+/// 「世界上任意实体去过哪」，与「玩家亲眼见过哪」是两个不同的东西，
+/// 后者才是战争迷雾要回答的问题。这里用 `world.player_entity ==
+/// Some(actor)` 这一个比较收住范围，不需要改 `Intent`/`Effect` 的
+/// 形状去区分「谁在动」。
 fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
@@ -3983,8 +4073,7 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
     if !matches!(agent.current_space, Space::Surface { .. }) {
         return Vec::new();
     }
-    let (dx, dy) = dir.delta();
-    let dest = world.size.wrap(agent.pos.x() + dx, agent.pos.y() + dy);
+    let dest = step_destination(world, agent.pos, dir);
     // resolve 必须是纯函数（C1），不能触发 SurfaceStore 的按需生成——
     // 见 WorldState::terrain_at 文档「resolve 只读、加载收窄到……」。
     // 目的地所属区块尚未常驻时（真正的邻域缓冲维护接线是设计文档
@@ -3998,6 +4087,20 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
         return Vec::new();
     };
     let speed = effective_speed_from_dexterity(agent.stats.dexterity);
+
+    // 「每格至多站一人」——见本函数文档同名一节。排在开门分支之前：
+    // 不变式不区分目的地是门还是平地，排在后面会让「门上站着人」变成
+    // 两回合才识破的怪事。
+    if occupant_at(world, dest, actor).is_some() {
+        // 与撞墙同一个口径：位置不变（不产生 `Effect::MoveTo`），但仍
+        // 推进时间轴，按 `BASE_ACTION_COST` 计费而不是目的地地形的
+        // `move_cost`——这一步根本没有走完那一格。
+        let cost = action_cost(BASE_ACTION_COST, speed);
+        return vec![Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        }];
+    }
 
     if let Some(open_kind) = terrain.opens_into(&world.terrain_table) {
         let cost = action_cost(BASE_ACTION_COST, speed);
@@ -4949,6 +5052,26 @@ fn entry_floor(interior: &ll_world::interior::Interior) -> Option<i16> {
 /// 显式写入让这条不变式不依赖调用方是否恰好遵守了另一条完全不同的
 /// 规则（`resolve_move` 对 `Interior` 静默无效），两条防线互相独立更
 /// 安全。
+///
+/// # 已知缺口：本函数**不查锚点上有没有人**（记录在案，等一条裁定）
+///
+/// [`resolve_move`] 现在强制「每格至多站一人」（见其文档同名一节），
+/// 但本函数自行构造 `Effect::MoveTo { pos: anchor }`，**不经过那条
+/// 检查**：锚点那一格上站着别人时，退出建筑会造出两人同格。这条
+/// 不变式因此只在**移动路径**上强制，不是全局强制——`resolve_move`
+/// 的文档也是这么写的，任何人不得把它读成一句全称断言。
+///
+/// 本批次刻意不堵它，因为堵它必须先回答一个还没有答案的设计问题：
+/// **退出时锚点站着人，人去哪？** 三条候选（挤不出去、把对方挪到旁边
+/// 一格、把自己挪到旁边一格）各自蕴含不同的玩法后果，而其中「把 NPC
+/// 随机挪到旁边一格」与项目所有者给出的另一条附带设计输入（作弊传送
+/// 时如何安置挡路的 NPC）是同一个尚未落地的机制。在那条机制落地之前
+/// 就地拍一个，等于把一条本该统一的规则先分叉成两份。
+///
+/// 本文件的 `退出建筑时锚点被占会造出两人同格这条缺口仍然存在` 钉住了**当前
+/// 行为**（不是当前的正确行为，是当前的实际行为）——将来真正堵这个
+/// 缺口的人会立刻看到自己改动了什么,而不是在一片全绿里悄悄换掉一条
+/// 语义。
 fn resolve_exit_space(world: &WorldState, actor: EntityId) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
@@ -5405,6 +5528,15 @@ mod tests {
             unspent_skill_points: 0,
             stealthed: false,
         })
+    }
+
+    /// 在 `pos` 上再造一个占位实体——占位不变式的用例需要「目的地那
+    /// 一格站着别人」这个场景，而 [`spawn_agent`] 恒生成在 `(5, 5)`。
+    /// 除位置外与 [`spawn_agent`] 逐字段相同。
+    fn spawn_agent_at(world: &mut WorldState, pos: ll_core::torus::TorusPos) -> EntityId {
+        let existing = spawn_agent(world);
+        world.actors.get_mut(existing).expect("刚生成必然存在").pos = pos;
+        existing
     }
 
     /// 把 `actor` 的潜行状态置为 `stealthed`——潜行相关测试的公共
@@ -5869,6 +6001,142 @@ mod tests {
         let grass_cost = schedule_next_at(&grass_effects).0 - grass_world.clock.0;
         let water_cost = schedule_next_at(&water_effects).0 - water_world.clock.0;
         assert!(water_cost > grass_cost);
+    }
+
+    #[test]
+    fn 目的地站着别的实体时移动不产出moveto但仍推进时钟() {
+        // 「每格至多站一人」这条不变式本身（项目所有者裁定：从一句只
+        // 写在注释里的说法升级成真正被强制的规则）。本批次之前
+        // `resolve_move` 里**一行占位检查都没有**，这条断言的左半在
+        // 那时候是假的：两个实体可以直接摞在同一格上。
+        //
+        // 右半（仍然产出 `ScheduleNext`）同样是断言的一部分，不是顺带
+        // ——与撞墙同一个口径。若这里退化成空 `Vec`，非受控实体那条路
+        // 会被 `TurnEngine` 的进展保证兜住（不至于死循环），但受控实体
+        // 那条路会把「前面站着人」这个确定结果报成「这一步白按了」。
+        // Arrange
+        let (mut world, terrain_ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let dest = east_of_spawn(&world);
+        // **这一行是断言的一部分**：`test_world` 的地形来自世界生成，
+        // 目的地那一格可能天生就不可通行，那样「不产出 MoveTo」靠的会是
+        // 撞墙分支而不是占位检查，摘掉占位检查这条照样绿（ADR 0018 反例
+        // 验证抓出来的一处假绿）。显式铺成草地，把「地形挡不挡路」这个
+        // 变量从本用例里摘掉。
+        world.terrain.set_terrain(dest, terrain_ids.grass);
+        let blocker = spawn_agent_at(&mut world, dest);
+        let intent = Intent::Move {
+            actor,
+            dir: Direction::East,
+        };
+
+        // Act
+        let effects = resolve(&world, &intent);
+
+        // Assert
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::MoveTo { .. })),
+            "目的地站着 {blocker:?}，这一步不该产出任何 MoveTo：{effects:?}"
+        );
+        assert!(schedule_next_at(&effects).0 > world.clock.0);
+    }
+
+    #[test]
+    fn 目的地是关着的门且门上站着人时判成撞人而不是开门() {
+        // 占位检查排在开门分支**之前**这条顺序的证据。反过来排的话，
+        // 「门那一格站着人」会先把门推开、消耗一回合，下一回合才发现
+        // 人挡着——一个要两回合才识破的怪异结果，而不变式的字面意思
+        // 根本不区分目的地是门还是平地。
+        //
+        // 这条同时守住一件更要紧的事：`Effect::SetTerrain` 是一次**真
+        // 实的世界写入**。顺序排错的话，一个被人堵死的门口会在每一次
+        // 徒劳的撞击里被反复改写成「开着」。
+        // Arrange
+        let (mut world, terrain_ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let door = east_of_spawn(&world);
+        world.terrain.set_terrain(door, terrain_ids.door_closed);
+        let blocker = spawn_agent_at(&mut world, door);
+        let intent = Intent::Move {
+            actor,
+            dir: Direction::East,
+        };
+
+        // Act
+        let effects = resolve(&world, &intent);
+
+        // Assert
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::SetTerrain { .. })),
+            "门上站着 {blocker:?}，这一步不该开门：{effects:?}"
+        );
+        assert!(
+            !effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::MoveTo { .. }))
+        );
+        assert!(schedule_next_at(&effects).0 > world.clock.0);
+    }
+
+    #[test]
+    fn 退出建筑时锚点被占会造出两人同格这条缺口仍然存在() {
+        // **这条钉的是当前行为，不是当前的正确行为。**
+        //
+        // `resolve_move` 现在强制「每格至多站一人」，但
+        // `resolve_exit_space` 自行构造 `Effect::MoveTo { pos: anchor }`、
+        // 不走那条检查，因此仍然造得出两人同格——这是本批次刻意不堵的
+        // 一处剩余缺口，理由见 `resolve_exit_space` 文档「已知缺口」
+        // 一节（堵它必须先裁定「退出时锚点有人，人去哪」，而那条与
+        // 作弊传送时如何安置挡路 NPC 是同一个尚未落地的机制）。
+        //
+        // 这条断言的用处是：将来真正堵这个缺口的人会立刻看到自己改动
+        // 了什么，而不是在一片全绿里悄悄换掉一条语义。**它变红不代表
+        // 出了缺陷，代表缺口被堵上了**——届时请把它改写成新行为的
+        // 断言，不要删掉。
+        // Arrange：actor 进了建筑，另一个人随后站到锚点上。
+        let (mut world, _ids) = test_world();
+        let actor = spawn_agent(&mut world);
+        let anchor = world.actors.get(actor).expect("刚生成必然存在").pos;
+        let interior_id = insert_interior_at(&mut world, anchor);
+        for effect in &resolve(
+            &world,
+            &Intent::EnterSpace {
+                actor,
+                target: interior_id,
+            },
+        ) {
+            crate::apply::apply(&mut world, effect);
+        }
+        let squatter = spawn_agent_at(&mut world, anchor);
+
+        // Act
+        for effect in &resolve(&world, &Intent::ExitSpace { actor }) {
+            crate::apply::apply(&mut world, effect);
+        }
+
+        // Assert 一：退出**真的发生了**——`current_space` 回到了地表。
+        //
+        // 这一条不是布景。少了它，本用例在「`resolve_exit_space` 学会
+        // 查占位、锚点有人就静默作废」的那个实现下**照样全绿**：那时
+        // 谁都没动，两人的 `pos` 仍然都等于 `anchor`（进 Interior 的
+        // 一方 `pos` 从进去起就没变过）。ADR 0018 反例验证抓出来的一处
+        // 假绿——这条钉子若钉不住「缺口被堵上」这件事，它就没有存在的
+        // 意义。
+        assert!(
+            matches!(
+                world.actors.get(actor).expect("还在").current_space,
+                Space::Surface { .. }
+            ),
+            "退出应当真的把 current_space 换回地表"
+        );
+
+        // Assert 二：于是两个人此刻站在同一格上。
+        assert_eq!(world.actors.get(actor).expect("还在").pos, anchor);
+        assert_eq!(world.actors.get(squatter).expect("还在").pos, anchor);
     }
 
     #[test]
