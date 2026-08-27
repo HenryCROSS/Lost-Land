@@ -2020,6 +2020,11 @@ fn inspect_recipe_category(auditor: &mut Auditor<'_>, index: ContentIndex) {
 }
 
 /// [`crate::damage_category::DamageCategoryDef`] 的全部字段。
+///
+/// `display_name_key` 是**必填**参数（`register-damage-category` 写不出
+/// 一条没有显示名的类别），因此覆盖率恒为真——与
+/// [`inspect_recipe_category`] 对 `RecipeCategoryDef::display_name_key`
+/// 同一条既有处理。
 fn inspect_damage_category(auditor: &mut Auditor<'_>, index: ContentIndex) {
     let default_formula = auditor
         .tables
@@ -2027,6 +2032,7 @@ fn inspect_damage_category(auditor: &mut Auditor<'_>, index: ContentIndex) {
         .get(index)
         .expect("classify_index 已判定为 DamageCategory，get 必返回 Some")
         .default_formula;
+    auditor.field("DamageCategoryDef::display_name_key", true);
     auditor.optional_reference(
         "DamageCategoryDef::default_formula",
         default_formula,

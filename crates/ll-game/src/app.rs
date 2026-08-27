@@ -33,7 +33,7 @@ use ll_render::sprite::{DrawOrder, Layer, footprint_bottom_screen_y, sprite_draw
 use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::effect::Effect;
-use ll_sim::rule_modifier::{agent_rule_modifiers, rule_modifier_displays};
+use ll_sim::rule_modifier::{SubjectRegistry, agent_rule_modifiers, rule_modifier_displays};
 use ll_sim::turn::TurnEngine;
 use ll_text::TextRenderer;
 use ll_ui::hud::character_panel::CharacterPanelData;
@@ -742,8 +742,8 @@ fn draw_hud(
     // 规则修正（抗性/易伤/偷袭/盘查减免/藏匿/制作产出加成/优势/劣势/
     // 重掷）——**这里是唯一的装配点**：`agent_rule_modifiers` 要同时
     // 拿到种族/职业/副职三张授予表、天赋表与物品表，`rule_modifier_displays`
-    // 还要把内容索引还原成标识符才能拼出主语的文案键，这五张表加注册表
-    // 只在本函数里同时够得着（`content: &LoadedContent`）。面板层拿到的
+    // 还要从伤害类别表/配方类别表里读出主语的 `display_name_key`，这七张
+    // 表只在本函数里同时够得着（`content: &LoadedContent`）。面板层拿到的
     // 是已经按加值类型规则合并好的成品行，见
     // `ll_ui::hud::character_panel::CharacterPanelData::rule_modifiers`。
     //
@@ -758,7 +758,20 @@ fn draw_hud(
             &content.trait_table,
             &content.item_table,
         ),
-        &|index| content.registry.resolve(index).cloned(),
+        // 主语的显示名文案键：**读内容表声明的字段**，不按约定拼键
+        // （旧做法与它的代价见 `ll_mod::damage_category` 模块文档
+        // 「显示名字段」一节）。两张表在这里都够得着，这也正是本函数
+        // 是唯一装配点的原因之一。
+        &|registry, index| match registry {
+            SubjectRegistry::DamageCategory => content
+                .damage_category_table
+                .get(index)
+                .map(|def| def.display_name_key.clone()),
+            SubjectRegistry::RecipeCategory => content
+                .recipe_category_table
+                .get(index)
+                .map(|def| def.display_name_key.clone()),
+        },
     );
     let character = CharacterPanelData {
         base_stats: agent.stats,

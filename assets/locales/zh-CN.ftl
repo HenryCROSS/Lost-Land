@@ -127,8 +127,8 @@ mod-dependency-version-mismatch = 模组 { $dependent } 依赖 { $dependency } �
 #   - hud-status-*                          状态栏（时间/生命/法力，常驻）
 #   - hud-character-*                       角色面板（等级/经验/生效中的修正）
 #   - rule-modifier-*                       ll-sim RuleModifier 九个变体的展示文案
-#   - damage_category-*-display_name        伤害类别展示名（表本身不声明键，见下）
-#   - check_context-*-display_name          判定种类展示名（同上）
+#   - damage_category-*-display_name        ll-mod DamageCategoryDef::display_name_key（本体两个伤害类别）
+#   - check_context-*-display_name          判定种类展示名（引擎侧开放标识符，无内容表，见下）
 #   - attribute-*-display_name              AttributeKind 六项主属性名
 #   - hud-inventory-*                       背包面板
 #   - hud-equipment-*                       装备面板标题与空槽位占位
@@ -208,17 +208,19 @@ rule-modifier-craft_yield = { $subject }产出 +{ $amount }
 
 # 伤害类别展示名——本体两种（mods/lostland/damage_categories.json5 的
 # lostland:fire 与 ll_mod::base_damage_category 的 lostland:physical）。
-# 伤害类别表本身**不声明** display_name_key（DamageCategoryDef 只有
-# default_formula 一个字段），键按
-# `命名空间:damage_category.路径.display_name` 的约定由
-# `ll_sim::rule_modifier::subject_key` 现拼——与配方类别自己声明出来的
-# 键形状逐字相同，mod 补自己那份 .ftl 即可。
+# 下面这两条键**不是**约定拼出来的：DamageCategoryDef 有一个必填的
+# display_name_key 字段，那两处内容各自逐字声明了这里的键，呈现层读的
+# 就是它（见 crates/ll-mod/src/damage_category.rs 模块文档「显示名字段」
+# 一节）。mod 想叫什么名字，写自己的键、补自己那份 .ftl 即可。
 damage_category-physical-display_name = 物理
 damage_category-fire-display_name = 火焰
 
 # 判定种类展示名——引擎当前认得三种（ll_sim::check 的 INSPECTION_CHECK
-# / CONCEALMENT_CHECK / CRITICAL_CHECK）。同样没有对应的内容表，键走
-# 与伤害类别同一条约定。
+# / CONCEALMENT_CHECK / CRITICAL_CHECK）。这三条与上面两条不同：判定
+# 种类是引擎侧的开放标识符，**没有内容表**可以声明显示名，键按
+# `命名空间:check_context.路径.display_name` 由
+# ll_sim::rule_modifier::subject_key 现拼——那是本仓库仅剩的一处拼键，
+# 理由与代价见该函数文档。
 check_context-inspection-display_name = 盘查
 check_context-concealment-display_name = 藏匿
 check_context-critical-display_name = 暴击

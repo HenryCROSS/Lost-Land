@@ -54,6 +54,15 @@
 //      如果一个新类别挡起来与物理一模一样，那它就只是换了个名字的
 //      物理，不值得注册。
 //
+// ── `display_name_key` 是必填的 ────────────────────────────────
+//
+// 这条键此前**不存在**：面板要显示「火焰」两个字时，呈现层按
+// `命名空间:damage_category.路径.display_name` 现拼一条键去查
+// `.ftl`。代价是 mod 作者没有任何提示知道该补这条文案，漏了就在面板上
+// 看到键名本身。现在它是 `DamageCategoryDef` 的真字段，这里漏写在装载
+// 期当场报错，见 `crates/ll-mod/src/damage_category.rs` 模块文档
+// 「显示名字段」一节。
+//
 // ── 为什么不声明 `default_formula` ──────────────────────────────
 //
 // 「类别默认公式」是伤害公式三级下探（物品 → 类别 → 全局）的中间
@@ -69,6 +78,10 @@
     {
       // 火：本体第二个伤害类别，也是第一个**不是**全局默认的那个。
       id: "lostland:fire",
+      // 角色面板的规则修正一段显示「火焰抗性 6」时，「火焰」两个字就
+      // 是这条键查出来的（assets/locales/*.ftl 的
+      // damage_category-fire-display_name，点号在查表时换成连字符）。
+      display_name_key: "lostland:damage_category.fire.display_name",
     },
   ],
 }
