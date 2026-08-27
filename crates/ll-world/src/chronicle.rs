@@ -87,8 +87,8 @@ use crate::generate::{
     GenParams, generate_zone_window, terrain_at_tile, zone_representative_terrain,
 };
 use crate::history::{
-    HistoricalEvent, HistoricalEventKind, SettlementAbandonedRecord, SettlementDemise,
-    SettlementFoundedRecord,
+    HistoricalEvent, HistoricalEventKind, SettlementAbandonedRecord, SettlementConqueredRecord,
+    SettlementDemise, SettlementFoundedRecord,
 };
 use crate::land::largest_walkable_component;
 use crate::noise::TileableNoise;
@@ -1042,6 +1042,56 @@ const WAR_RANGE_IN_SPACINGS: u32 = 3;
 /// 掳走或投降，另一半死了或散了。这条让战争**真的在世界人口上留下
 /// 痕迹**（吞并不是零和的），不是一次纯粹的删除。
 const WAR_SPOILS_DIVISOR: u32 = 2;
+
+/// 一场战争以**占领**（而不是毁灭）收场的概率分母，见
+/// [`SAME_RACE_OCCUPATION_NUMERATOR`]。
+const OCCUPATION_DENOMINATOR: u32 = 8;
+
+/// 攻守双方**同族**时，这一仗以占领收场的概率分子（6/8 = 75%）。
+///
+/// # 这条判据的来源
+///
+/// 项目所有者，逐字：「同种族的话更倾向于占领而不是毁灭」。上一批实测
+/// 报告给出的背景是：开启文化后战争从 25/18/15 场涨到 35/43/25 场，而
+/// 存活据点从 235/238/243 掉到 231/225/238——**因为当时战争只有一种
+/// 结局**（[`SettlementDemise`] 四个变体全是「这座据点没了」），于是
+/// 「战争变多」必然等于「据点被灭得更多」。缺的那样东西就是占领。
+///
+/// # 为什么是「倾向」而不是「必然」
+///
+/// 所有者说的是「更倾向」。同族之间也有屠城，异族之间也有留下来收税
+/// 的征服者；把任何一侧写成 0 或 1 都是在把一句概率判断读成一条规则。
+/// 6/8 与 [`CROSS_RACE_OCCUPATION_NUMERATOR`] 的 1/8 相差六倍，足够让
+/// 「同族相攻多半是换个主子」在三百年里稳定成型（实测见本批次报告的
+/// 对照表），又都留着另一侧的可能。
+///
+/// # 为什么分母复用 8
+///
+/// 与 [`WAR_DENOMINATOR`] 相同不是巧合，也不是耦合：战争的「打不打」
+/// 与「怎么收场」是同一次结算里的两掷，让它们共用一个可读的分母，
+/// 报告里「1/8 概率开战，其中同族 6/8 占领」念得出来。两者互不引用，
+/// 改一个不牵动另一个。
+const SAME_RACE_OCCUPATION_NUMERATOR: u32 = 6;
+
+/// 攻守双方**异族**时，这一仗以占领收场的概率分子（1/8 = 12.5%）。
+///
+/// 不是 0：一个哥布林部落偶尔也会把打下来的矿城占着不走。但七成八的
+/// 异族战争仍以毁灭收场——上一批的验收线「异族攻灭产出真废墟」因此
+/// 一个字都没被削弱（本批次的端到端验收仍然找得到「矮人矿城被哥布林
+/// 部落攻灭」并逐格数出石墙）。
+const CROSS_RACE_OCCUPATION_NUMERATOR: u32 = 1;
+
+/// 一次占领让守方损失掉多少分之一的人口。
+///
+/// 取 4（四分之一）。与毁灭那一侧的 [`WAR_SPOILS_DIVISOR`] 对照着读：
+/// 铲平一座城，世界上少掉它一半的人（另一半被掳进攻方）；占领一座城
+/// 只少掉四分之一，剩下的人原地继续过日子、继续按承载力增长。**这是
+/// 「战争多了不等于世界被打空」在数值上成立的地方**。
+///
+/// 它同时保证守方不会被占成空城：能当目标的据点人口恒 ≥
+/// [`WAR_MIN_POPULATION`]（12），四分之一损失之后至少还剩 9 人。
+const OCCUPATION_CASUALTY_DIVISOR: u32 = 4;
+
 /// 每多少居民对应一栋建筑。
 /// 抽文化时每份文化的**基础权重**：谁也不占优时大家机会均等。
 ///
@@ -1426,8 +1476,61 @@ impl EpochRun {
             if !rng.chance(WAR_NUMERATOR + hostility, WAR_DENOMINATOR) {
                 continue;
             }
-            self.conquer(attacker, defender, epoch);
+            // 打不打已经定了，剩下的是**怎么收场**：占领还是毁灭。
+            // 这一掷取自同一条流的下一个数，不新开一条——`rng` 是
+            // 每 (攻方, 纪元) 由 `DetRng::for_entity` 现造、用完即弃
+            // 的，在开战判定之后多取一个数不影响任何别的判定（同一条
+            // 观察记在 `全表敌意为零时战争结果与空文化表逐位相同` 的
+            // 「另一处试过但不成立的改坏」一节里）。ADR 0021 拦的正是
+            // 「为了对称再开一条流」这种加法。
+            let occupied = match self.occupation_numerator(attacker, defender) {
+                Some(numerator) => rng.chance(numerator, OCCUPATION_DENOMINATOR),
+                None => false,
+            };
+            if occupied {
+                self.occupy(attacker, defender, epoch);
+            } else {
+                self.conquer(attacker, defender, epoch);
+            }
         }
+    }
+
+    /// 这一仗以**占领**收场的概率分子；`None` 表示这个世界里没有
+    /// 「归属」可换，只可能毁灭。
+    ///
+    /// # 判据只有一条：攻守双方是不是同一个种族
+    ///
+    /// 项目所有者：「同种族的话更倾向于占领而不是毁灭」。种族取的是
+    /// [`crate::culture::founder_race`] ——**与 `ll_mod::roster` 给
+    /// 这座据点排名册时用的是同一个函数、同一条随机流**，因此编年史
+    /// 里说「这是一场同族战争」时，名册那一侧点开两座城看到的确实是
+    /// 同一个种族。那个函数本来住在 `ll-mod`，为了这一条判据搬到了
+    /// `ll-world`（理由见
+    /// [`crate::culture::FOUNDER_RACE_STREAM_ID`]）。
+    ///
+    /// # 为什么「没有文化」等于「只可能毁灭」
+    ///
+    /// 占领改掉的是守方的文化（见 [`Self::occupy`]）。一个没有文化
+    /// 这一层的世界（空文化表）里没有任何东西可以易主，「占领」在那里
+    /// 无从表达。返回 `None` 让那样的世界**逐位退回本批次之前的行为**
+    /// ——这既是 ADR 0015「查不到就是查不到」的既有表达，也是「把改动
+    /// 关掉能精确回到旧值」这条纪律在本批次的落点，见本模块测试
+    /// `空文化表下战争仍然只有毁灭一种结局`。
+    fn occupation_numerator(&self, attacker: usize, defender: usize) -> Option<u32> {
+        let attacker_race = self.founder_race_of(attacker)?;
+        let defender_race = self.founder_race_of(defender)?;
+        Some(if attacker_race == defender_race {
+            SAME_RACE_OCCUPATION_NUMERATOR
+        } else {
+            CROSS_RACE_OCCUPATION_NUMERATOR
+        })
+    }
+
+    /// 这座据点**现在**由哪一族当家——文化决定种族，因此它会随占领
+    /// 一起变（见 [`Self::occupy`]）。无人居住或没有文化时为 `None`。
+    fn founder_race_of(&self, index: usize) -> Option<ll_core::ident::ContentIndex> {
+        let state = &self.states[index];
+        crate::culture::founder_race(&self.cultures, state.culture, state.id?, self.seed)
     }
 
     /// `attacker` 这一纪元打谁：射程内、仍有人住、且值得打（人口不低于
@@ -1480,8 +1583,80 @@ impl EpochRun {
         best.map(|(index, _, _)| index)
     }
 
+    /// `attacker` **占领** `defender`：守方活下来，换了主子。
+    ///
+    /// # 换掉的是文化，这是本批次的实现判断
+    ///
+    /// 项目所有者只说了「同种族的话更倾向于占领而不是毁灭」，没有说
+    /// 「占领换掉的是什么」。这里的选择是**文化**，理由是它是当前世界
+    /// 模型里唯一一个说得出三个真实消费者的归属属性：
+    ///
+    /// | 换文化之后，哪里跟着变 | 在哪一行 |
+    /// |---|---|
+    /// | 这座城用什么建材盖房 | [`crate::settlement`] 的 `wall_terrain` |
+    /// | 这座城住的是哪一族 | [`crate::culture::founder_race`] |
+    /// | 这座城此后跟谁不对付 | [`Self::hostility_between`] |
+    ///
+    /// 另造一个 `faction: WorldId` 字段则一个消费者都没有——那正是本
+    /// 仓库已经数出三十一处的「声明了但从没接线」。
+    ///
+    /// # 不变的那些，同样是判断
+    ///
+    /// - **`id` 不变**：同一座城换了主子，不是旧城没了新城建起来了。
+    ///   编年史因此读得出「建于第 2 纪元、第 6 纪元易主、至今仍有人住」。
+    /// - **`founded_epoch` 不变**：它没有被重建过。
+    /// - **`peak_population` 不变**：一座城的历史峰值不因易主而改写。
+    /// - **`extracted` / `depleted` 不变**：矿是这片地的属性，不是这批
+    ///   人的（判据与 [`Self::abandon`] 里那一条逐字相同）。
+    ///
+    /// # 攻方一个人都没多
+    ///
+    /// 与毁灭那一侧（[`WAR_SPOILS_DIVISOR`]，守方一半人被掳进攻方）
+    /// 刻意不同：占领得到的是一座城，不是一批人——人还在原地，只是
+    /// 换了主子。这条让占领在世界人口上是**保住人**而不是搬运人。
+    fn occupy(&mut self, attacker: usize, defender: usize, epoch: u32) {
+        let conqueror = self.states[attacker]
+            .id
+            .expect("人口非零的据点必然在建立时分配过 WorldId");
+        let site_id = self.states[defender]
+            .id
+            .expect("人口非零的据点必然在建立时分配过 WorldId");
+        let (Some(former), Some(new)) =
+            (self.states[defender].culture, self.states[attacker].culture)
+        else {
+            unreachable!("occupation_numerator 已经保证两侧都有文化");
+        };
+        let before = self.states[defender].population;
+        let survivors = before - before / OCCUPATION_CASUALTY_DIVISOR;
+        debug_assert!(
+            survivors > 0,
+            "被占领的据点必须活下来——人被打光的城是毁灭，不是占领"
+        );
+        self.states[defender].population = survivors;
+        self.states[defender].culture = Some(new);
+
+        let event_id = WorldId::next(&mut self.next_world_id);
+        self.events.push(HistoricalEvent {
+            id: event_id,
+            at: epoch_tick(epoch, self.epochs),
+            location: self.candidates[defender].anchor,
+            kind: HistoricalEventKind::SettlementConquered(SettlementConqueredRecord {
+                site: site_id,
+                epoch,
+                conqueror,
+                former_culture: former.index(),
+                new_culture: new.index(),
+                survivors,
+            }),
+        });
+    }
+
     /// `attacker` 攻灭 `defender`：守方就此成为废墟，一半人口被并进
     /// 攻方（[`WAR_SPOILS_DIVISOR`]）。
+    ///
+    /// 这是战争的**另一种**结局，见 [`Self::occupy`]。两者共用
+    /// [`Self::wage_wars`] 那一整套配对与闸门，分岔只发生在最后一掷
+    /// 之后——不存在两条平行的战争管线（ADR 0021）。
     fn conquer(&mut self, attacker: usize, defender: usize, epoch: u32) {
         let spoils = self.states[defender].population / WAR_SPOILS_DIVISOR;
         let aggressor = self.states[attacker]
@@ -1872,12 +2047,31 @@ mod tests {
         ids: &crate::terrain::BaseTerrainIds,
         hostility: u32,
     ) -> (CultureTable, [CultureKind; 2]) {
+        test_cultures_with_races(ids, hostility, true)
+    }
+
+    /// 与 [`test_cultures`] 相同，外加一个「两条文化是不是同一个建立者
+    /// 种族」的开关——占领批次靠它把「同族 / 异族」这一个变量单独隔离
+    /// 出来（`同族更倾向占领异族更倾向毁灭`）。
+    ///
+    /// `same_race == true` 时两条都用 `test:folk`（与本开关引入之前的
+    /// 行为逐字相同，因此既有测试一个字都不用改）；为 `false` 时部落那
+    /// 一条换成 `test:otherfolk`。**权重结构两边完全一样**（各一条、
+    /// 权重 10），所以 `crate::culture::founder_race` 消耗的随机数也
+    /// 一样——两个世界的差别只有「这两条是不是同一族」。
+    fn test_cultures_with_races(
+        ids: &crate::terrain::BaseTerrainIds,
+        hostility: u32,
+        same_race: bool,
+    ) -> (CultureTable, [CultureKind; 2]) {
         use ll_core::ident::{Interner, NamespacedId};
         let mut interner = Interner::new();
         let mut table = CultureTable::new();
         let mining = interner.intern(NamespacedId::parse("test:mining_hold").expect("合法"));
         let tribe = interner.intern(NamespacedId::parse("test:warband").expect("合法"));
         let race = interner.intern(NamespacedId::parse("test:folk").expect("合法"));
+        let other_race = interner.intern(NamespacedId::parse("test:otherfolk").expect("合法"));
+        let tribe_race = if same_race { race } else { other_race };
         table
             .define(
                 mining,
@@ -1901,7 +2095,7 @@ mod tests {
                     economy: crate::resource::ResourceCategory::Timber,
                     home_terrain: ids.hill,
                     wall_terrain: ids.wall_wood,
-                    founder_races: vec![(race, 10)],
+                    founder_races: vec![(tribe_race, 10)],
                     hostility: vec![(mining, hostility)],
                 },
             )
@@ -1954,81 +2148,334 @@ mod tests {
             .count()
     }
 
-    /// 这部编年史里全部战争覆灭事件的可比对摘要。
-    fn war_events(chronicle: &WorldChronicle) -> Vec<(Tick, WorldId, u32, SettlementDemise)> {
+    /// 这部编年史里发生过几场战争——两种结局都算。**这才是「打了几
+    /// 仗」**；[`war_demises`] 只数其中以毁灭收场的那一半。
+    fn wars(chronicle: &WorldChronicle) -> usize {
+        war_demises(chronicle) + conquests(chronicle).len()
+    }
+
+    /// 这部编年史里全部易主事件的可比对摘要。
+    fn conquests(chronicle: &WorldChronicle) -> Vec<&SettlementConqueredRecord> {
         chronicle
             .events()
             .iter()
             .filter_map(|event| match &event.kind {
-                HistoricalEventKind::SettlementAbandoned(record) => matches!(
-                    record.cause,
-                    SettlementDemise::War { .. }
-                )
-                .then_some((event.at, record.site, record.epoch, record.cause)),
+                HistoricalEventKind::SettlementConquered(record) => Some(record),
                 _ => None,
             })
             .collect()
     }
 
     #[test]
-    fn 全表敌意为零时战争结果与空文化表逐位相同() {
-        // 这条守的是本批次最重要的一条兼容性性质：**文化只经「敌意」
-        // 这一个通道影响战争**。左边的世界没有文化这一层，右边的世界
-        // 每座据点都有文化（建材、名册都受影响），但两条文化互不敌对
-        // ——两边的战争史必须逐条相同。
+    fn 空文化表下战争仍然只有毁灭一种结局() {
+        // 这条守的是「把改动关掉能精确回到旧行为」：占领改掉的是守方的
+        // **文化**，而一个没有文化这一层的世界里没有东西可以易主，因此
+        // 那样的世界里每一场战争都只能以毁灭收场——与占领落地之前逐位
+        // 相同的行为（见 `EpochRun::occupation_numerator` 文档）。
         //
-        // 它同时是「把改动关掉能精确回到旧行为」这条纪律在单元测试里
-        // 的落点：空文化表就是改动关掉的那个状态。
-        // Arrange
-        let (ids, _table) = base_terrain_fixture();
-        let (peaceful, _kinds) = test_cultures(&ids, 0);
-
-        // Act
+        // 它取代了此前那条 `全表敌意为零时战争结果与空文化表逐位相同`。
+        // **那条性质被本批次真正推翻了，不是测试写坏了**：它断言的是
+        // 「文化只经敌意这一个通道影响战争」，而占领是第二条通道——同一
+        // 场战争，有文化的世界里可能以易主收场，没文化的世界里只能是
+        // 废墟。留着它等于要求本批次不生效。
+        // Arrange & Act
         let without = chronicle_with_cultures(0xC0FF_EE12, &CultureTable::new());
-        let with = chronicle_with_cultures(0xC0FF_EE12, &peaceful);
 
-        // Assert：先确认右边真的有文化（否则这条测试是空转）。
-        assert!(
-            with.sites().iter().any(|site| site.culture.is_some()),
-            "右边的世界必须真的抽出了文化，否则本条比较毫无意义"
-        );
+        // Assert
         assert!(
             without.sites().iter().all(|site| site.culture.is_none()),
             "空文化表下不该有任何据点带文化"
         );
-        assert_eq!(
-            war_events(&without),
-            war_events(&with),
-            "敌意为零时，有没有文化这一层不该改变任何一场战争"
+        assert!(
+            war_demises(&without) > 0,
+            "本条要有意义，前提是这个世界真的打过仗"
+        );
+        assert!(
+            conquests(&without).is_empty(),
+            "没有文化这一层的世界里不该出现任何一次易主，实测 {} 次",
+            conquests(&without).len()
         );
 
         // # 故意改坏的反例（人工核验，真实执行）
         //
-        // 在 `wage_wars` 里把敌意那一行改成
-        // `hostility + u32::from(self.states[attacker].culture.is_some())`
-        // ——也就是让「有没有文化」本身也能改变开战概率——本条当场红：
-        // 左边 3 场战争、右边 6 场。恢复后重新跑通。
-        //
-        // **另一处试过但不成立的改坏**，一并记下来免得后人重走：把
-        // `try_found` 里的 `pick_culture(index, &mut culture_rng)` 改成
-        // 复用主 `rng`，本条**不会**红。原因是 `rng` 每个 (据点, 纪元)
-        // 由 `DetRng::for_entity` 现造、用完即弃，在 `try_found` 末尾
-        // 多取一个数不影响任何别的判定。这不是测试太弱，是那处改动
-        // 真的没有可观测后果。
+        // 把 `occupation_numerator` 里两句 `?` 之后的分支改成「查不到
+        // 种族就当作同族」（即 `let a = self.founder_race_of(attacker);
+        // let d = self.founder_race_of(defender); Some(if a == d { ... })`
+        // ——注意 `None == None` 为真），本条当场红：空文化表的世界里
+        // 冒出 6 次易主。恢复后重新跑通。
+    }
+
+    /// 一个只用来问 [`EpochRun::occupation_numerator`] 的最小推演器：
+    /// 借用测试世界真实勘察出来的前两处候选点（那两处的资源画像与本条
+    /// 无关，但 `Candidate` 拿不到别的构造路径），把 0 号与 1 号两座
+    /// 据点的文化按参数摆好，其余状态一概不动。
+    fn two_site_run(
+        cultures: &CultureTable,
+        first: Option<CultureKind>,
+        second: Option<CultureKind>,
+    ) -> EpochRun {
+        let layout = test_layout();
+        let params = GenParams {
+            seed: 0xC0FF_EE12,
+            ..GenParams::default()
+        };
+        let noise = crate::generate::build_zone_noise(&layout, &params).expect("布局合法");
+        let (ids, table) = base_terrain_fixture();
+        let (_kinds, resources) = test_resources(&ids);
+        let chronicle_params = ChronicleParams::default();
+        let mut candidates = survey_habitable_zones(
+            &layout,
+            &noise,
+            &params,
+            &ids,
+            &table,
+            &resources,
+            chronicle_params,
+        );
+        assert!(
+            candidates.len() >= 2,
+            "测试世界至少要勘察出两处候选点，实测 {}",
+            candidates.len()
+        );
+        candidates.truncate(2);
+        let mut run = EpochRun::new(
+            candidates,
+            chronicle_params.epochs,
+            params.seed,
+            layout.tile_size(),
+            NeighbourRanges {
+                war: war_range(chronicle_params),
+                culture: culture_neighbor_range(chronicle_params),
+            },
+            resources,
+            cultures.clone(),
+        );
+        for (index, culture) in [first, second].into_iter().enumerate() {
+            run.states[index].id = Some(WorldId::next(&mut run.next_world_id));
+            run.states[index].population = WAR_MIN_POPULATION;
+            run.states[index].culture = culture;
+        }
+        run
     }
 
     #[test]
-    fn 敌意抬高了战争导致的覆灭次数() {
+    fn 结局判据只看双方是不是同一个建立者种族() {
+        // 这是「旋钮真的接上了」那条断言，且不靠统计——直接问
+        // `occupation_numerator` 三种输入下给什么。上面那条
+        // `同族更倾向占领异族更倾向毁灭` 数的是它在三百年推演里涌现出
+        // 来的后果，两条各守一半。
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let (kin, [kin_mining, kin_tribe]) = test_cultures_with_races(&ids, 0, true);
+        let (strangers, [far_mining, far_tribe]) = test_cultures_with_races(&ids, 0, false);
+
+        // Act & Assert：① 同族——两条文化的建立者种族是同一个。
+        let same = two_site_run(&kin, Some(kin_tribe), Some(kin_mining));
+        assert_eq!(
+            same.occupation_numerator(0, 1),
+            Some(SAME_RACE_OCCUPATION_NUMERATOR),
+            "同族的两座据点，这一仗应当**更倾向**以占领收场"
+        );
+
+        // ② 异族——两条文化的建立者种族不同。
+        let cross = two_site_run(&strangers, Some(far_tribe), Some(far_mining));
+        assert_eq!(
+            cross.occupation_numerator(0, 1),
+            Some(CROSS_RACE_OCCUPATION_NUMERATOR),
+            "异族的两座据点，这一仗应当**更倾向**以毁灭收场"
+        );
+        const {
+            assert!(
+                SAME_RACE_OCCUPATION_NUMERATOR > CROSS_RACE_OCCUPATION_NUMERATOR,
+                "项目所有者的方向：同种族更倾向占领"
+            )
+        };
+
+        // ③ 没有文化这一层——没有东西可以易主，只可能毁灭。
+        let void = two_site_run(&CultureTable::new(), None, None);
+        assert_eq!(
+            void.occupation_numerator(0, 1),
+            None,
+            "空文化表下不该有任何占领倾向，哪怕 None == None"
+        );
+        let half = two_site_run(&kin, Some(kin_tribe), None);
+        assert_eq!(
+            half.occupation_numerator(0, 1),
+            None,
+            "只有一侧有文化时同样无从表达「易主」"
+        );
+
+        // # 故意改坏的反例（人工核验，真实执行）
+        //
+        // 把 `occupation_numerator` 里的 `attacker_race == defender_race`
+        // 改成 `!=`，①②两条当场红（6 与 1 对调）。把两个 `?` 改成
+        // `unwrap_or_default()`，③的第一句当场红（空文化表下返回
+        // `Some(6)`）。逐个恢复后重新跑通。
+    }
+
+    #[test]
+    fn 同族更倾向占领异族更倾向毁灭() {
+        // 这条守的是项目所有者给本批次定的方向，逐字：「同种族的话更
+        // 倾向于占领而不是毁灭」。
+        //
+        // 两张表**只差一个数**：两条文化的 `founder_races` 里那个种族
+        // 的内容索引是不是同一个。权重结构完全一样（各一条、权重 10），
+        // 因此 `founder_race` 消耗的随机数一模一样，抽出的建立者种族
+        // 在两边恒是各自表里的那唯一一条——差别只有「这两条是不是同一
+        // 族」。文化抽取、敌意、建材、人口曲线一个字节都没变。
+        // Arrange：一个 16×16 的测试世界一颗种子只打三五仗，样本太小
+        // 会让本条的结论落在噪声里。二十四颗种子合起来数，是「小号样
+        // 本」这条既有取舍（见 `test_layout` 文档）在统计上的对应做法。
+        //
+        // **这条数的是涌现出来的后果，不是判据本身**：判据由
+        // `结局判据只看双方是不是同一个建立者种族` 直接问
+        // `occupation_numerator` 守着。两边的比例都不会精确等于
+        // 6/8 与 1/8——异族那张表里绝大多数战争其实发生在**同文化**的
+        // 两座据点之间（文化靠邻居加分连成片，邻居多半跟自己同族），
+        // 而同文化必然同族。实测二十四颗种子：同族表 29/41 场以占领
+        // 收场，异族表 18/42 场，其中那 18 场里只有 1 场真的跨文化。
+        let (ids, _table) = base_terrain_fixture();
+        let (kin, _) = test_cultures_with_races(&ids, 0, true);
+        let (strangers, _) = test_cultures_with_races(&ids, 0, false);
+        let seeds: Vec<u64> = (0..24u64).map(|n| 0xC0FF_EE12 + n).collect();
+
+        // Act
+        let mut same_occupied = 0usize;
+        let mut same_wars = 0usize;
+        let mut cross_occupied = 0usize;
+        let mut cross_wars = 0usize;
+        for seed in seeds {
+            let same = chronicle_with_cultures(seed, &kin);
+            let cross = chronicle_with_cultures(seed, &strangers);
+            same_occupied += conquests(&same).len();
+            same_wars += wars(&same);
+            cross_occupied += conquests(&cross).len();
+            cross_wars += wars(&cross);
+        }
+
+        // Assert
+        assert!(
+            same_wars > 0 && cross_wars > 0,
+            "两边都要真的打过仗，否则本条是空转：同族 {same_wars} 场、异族 {cross_wars} 场"
+        );
+        // 交叉相乘比较两个比例，不引入浮点（ADR 0020）。
+        assert!(
+            same_occupied * cross_wars > cross_occupied * same_wars,
+            "同族战争以占领收场的比例必须明显高于异族：             同族 {same_occupied}/{same_wars}，异族 {cross_occupied}/{cross_wars}"
+        );
+
+        // # 故意改坏的反例（人工核验，真实执行）
+        //
+        // 把 `occupation_numerator` 的两个分子都改成
+        // `SAME_RACE_OCCUPATION_NUMERATOR`（即种族不再改变结局），本条
+        // 当场红：两边的占领比例落到同一个量级、不等式不再成立。恢复后
+        // 重新跑通。
+    }
+
+    #[test]
+    fn 被占领的据点活下来且换了主子() {
+        // 验收线的单元测试版：据点**不死**，换主人。端到端那一半（那座
+        // 城在地上仍然有门有人）在 `crates/ll-game/tests/culture_and_war.rs`。
+        //
+        // # 为什么要专挑「换掉的文化真的和原来那份不同」的那一次
+        //
+        // 本条第一版只断言「被占领的据点仍然有人住、且文化等于记录里的
+        // `new_culture`」——那条**故意改坏也不会红**：绝大多数战争发生
+        // 在同文化的两座据点之间（文化靠邻居加分连成片），此时
+        // `former_culture == new_culture`，于是「占了但没换主子」这个
+        // 改坏版本照样满足断言。挑一次真的换了文化的占领，这条才咬得住。
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let (kin, _) = test_cultures_with_races(&ids, 0, true);
+
+        // Act：扫种子直到找到一次「文化真的换了、而且那座城活到了最后」
+        // 的占领。一颗种子上这样的事件是稀有的（十六格见方的测试世界
+        // 一共才打三五仗），扫一批是把「小号样本」这条既有取舍补齐。
+        let mut checked = 0usize;
+        let mut witness = None;
+        for seed in (0..24u64).map(|n| 0xC0FF_EE12 + n) {
+            let chronicle = chronicle_with_cultures(seed, &kin);
+            for record in conquests(&chronicle) {
+                checked += 1;
+                assert!(
+                    record.survivors > 0,
+                    "被占领的据点必须活下来——人被打光的城是毁灭，不是占领"
+                );
+                assert_ne!(record.conqueror, record.site, "一座城不能占领自己");
+                assert!(
+                    chronicle.events().iter().any(|event| matches!(
+                        &event.kind,
+                        HistoricalEventKind::SettlementFounded(founded)
+                            if founded.site == record.conqueror
+                    )),
+                    "占领方必须是编年史里真的建立过的一座据点"
+                );
+                if record.former_culture == record.new_culture {
+                    continue;
+                }
+                let alive = chronicle.sites().iter().find(|site| {
+                    site.id == record.site && site.status == SettlementStatus::Inhabited
+                });
+                if let Some(site) = alive {
+                    witness = Some((*record, *site));
+                    break;
+                }
+            }
+            if witness.is_some() {
+                break;
+            }
+        }
+
+        // Assert
+        assert!(checked > 0, "本条要有意义，前提是这批世界真的出现过易主");
+        let (record, site) = witness.expect(
+            "应当至少有一次「归属真的换了、而且那座城活到了最后」的占领——             这是本批次验收线的前半句",
+        );
+        assert_eq!(
+            site.culture.map(CultureKind::index),
+            Some(record.new_culture),
+            "活下来的那座城，文化必须已经换成占领方的那一份"
+        );
+        assert_ne!(
+            site.culture.map(CultureKind::index),
+            Some(record.former_culture),
+            "它不该还信着易主之前那一份"
+        );
+        assert!(site.population > 0, "它必须还有人");
+        assert_eq!(
+            site.abandoned_epoch, None,
+            "被占领**不是**被遗弃：最终快照里它不该带遗弃纪元"
+        );
+        assert!(
+            site.founded_epoch <= record.epoch,
+            "它的建立纪元不该被易主改写——同一座城换了主子，不是重建"
+        );
+
+        // # 故意改坏的反例（人工核验，真实执行）
+        //
+        // 把 `EpochRun::occupy` 里的 `self.states[defender].culture =
+        // Some(new);` 那一行删掉（也就是「占了但没换主子」），本条当场
+        // 红：`witness` 找不到任何一次。恢复后重新跑通。
+        //
+        // 另一处：把 `occupy` 里的 `survivors` 改成 `0`，第一条断言当场
+        // 红。恢复后重新跑通。
+    }
+
+    #[test]
+    fn 敌意抬高了开战次数() {
         // Arrange：两张表只差一个数——「部落 → 矿业」的敌意分。
         let (ids, _table) = base_terrain_fixture();
         let (peaceful, _) = test_cultures(&ids, 0);
         let (hostile, _) = test_cultures(&ids, crate::culture::MAX_HOSTILITY);
 
         // Act：同一颗种子跑两遍。
-        let calm = war_demises(&chronicle_with_cultures(0xC0FF_EE12, &peaceful));
-        let bloody = war_demises(&chronicle_with_cultures(0xC0FF_EE12, &hostile));
+        let calm = wars(&chronicle_with_cultures(0xC0FF_EE12, &peaceful));
+        let bloody = wars(&chronicle_with_cultures(0xC0FF_EE12, &hostile));
 
-        // Assert
+        // Assert：数的是**开战次数**（两种结局都算），不是其中以毁灭
+        // 收场的那一半——占领落地之后，只数覆灭会把「敌意抬高了开战
+        // 概率」与「这些仗怎么收场」两件事混在一个数里，本条就不再是
+        // 在测敌意了。
         assert!(
             bloody > calm,
             "敌意应当抬高开战概率：平和 {calm} 场，敌对 {bloody} 场"

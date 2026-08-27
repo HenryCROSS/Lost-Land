@@ -182,7 +182,11 @@ const MASON_SLOT: usize = 7;
 /// `据点 id × MAX_ROSTER + 序号`，那个键空间已经被 `0..MAX_ROSTER` 占满，
 /// 再往上加一个「建立者」槽位就会撞进下一座据点的 0 号成员——那正是
 /// [`roster_rng`] 文档里那条「互不重叠」保证要防的事。
-pub const FOUNDER_RACE_STREAM_ID: u64 = 0x004E_5043_5F46_0001;
+///
+/// **本常量现在住在 `ll-world`**（[`ll_world::culture::FOUNDER_RACE_STREAM_ID`]），
+/// 这里只是重新导出，取值一个字节没变。搬迁的理由见那一侧的文档：
+/// 世界生成期的战争结算也要问「谁建的」，而它在 `ll-world` 里。
+pub use ll_world::culture::FOUNDER_RACE_STREAM_ID;
 
 /// 名册里每个居民**不是**建立者种族的概率（千分比）。
 ///
@@ -698,8 +702,8 @@ pub fn settlement_founder_race(
     roles: &SettlementRoles,
     world_seed: u64,
 ) -> ContentIndex {
-    let mut rng = DetRng::for_entity(world_seed, FOUNDER_RACE_STREAM_ID, u64::from(site.id.get()));
-    pick(&roles.founder_slots(site), &mut rng).unwrap_or_default()
+    ll_world::culture::founder_race(&roles.cultures, site.culture, site.id, world_seed)
+        .unwrap_or_default()
 }
 
 /// 名册第 `index` 号那一位专属的随机流（C3）。

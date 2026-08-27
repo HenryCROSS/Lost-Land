@@ -29,10 +29,17 @@
 //! **战争的落点在别处**：据点覆灭原因批次给
 //! [`SettlementAbandonedRecord`] 加了一个 [`SettlementDemise`] 字段，
 //! 「被谁打没的」是 [`SettlementDemise::War`] 携带的攻方据点号，不是
-//! 一个独立的 `War` 事件。这不是把战争塞进错误的位置：本批次真正发生
+//! 一个独立的 `War` 事件。这不是把战争塞进错误的位置：那一批次真正发生
 //! 的事就是「某座据点在某个纪元没了」，攻方是它的**原因**。一场需要
 //! 独立记载的战争（宣战、战役、和约）是另一套系统，那时候再加事件
 //! 变体，与本模块「等系统真正落地时再扩展这个枚举」的既有纪律一致。
+//!
+//! **占领批次是那条纪律第三次生效**：项目所有者裁定「同种族的话更倾向
+//! 于占领而不是毁灭」，于是战争第一次有了「据点不死」的结局。那个结局
+//! 无论如何塞不进 [`SettlementDemise`]（那个枚举回答的是「怎么没的」），
+//! 因此新增了 [`HistoricalEventKind::SettlementConquered`]。仍然**没有**
+//! 加 `War`/`DynastyChange`/`Rename` 三个占位变体——同一条 YAGNI 判据
+//! 对它们继续成立。
 //!
 //! [世界历史生成]: ../../../knowledge/design/world-history.md
 //! [命名、改名与本地化]: ../../../knowledge/design/naming-and-localization.md
@@ -88,15 +95,25 @@ pub struct HistoricalEvent {
 
 /// 历史事件的具体种类。
 ///
-/// # 三个变体各自的来源
+/// # 四个变体各自的来源
 ///
 /// - [`Self::Kill`]：游戏内的战斗结算（`ll_sim::resolve`），经
 ///   [`crate::state::WorldState::record_kill`] 落进
 ///   `WorldState::history`，随存档走。
-/// - [`Self::SettlementFounded`] / [`Self::SettlementAbandoned`]：
-///   **世界历史生成**（[`crate::chronicle`]），产生于玩家进入之前，
+/// - [`Self::SettlementFounded`] / [`Self::SettlementAbandoned`] /
+///   [`Self::SettlementConquered`]：**世界历史生成**
+///   （[`crate::chronicle`]），产生于玩家进入之前，
 ///   **不进存档**——整份编年史是种子的纯函数，读档时重新派生（ADR
 ///   0009「默认派生，只存偏差」）。
+///
+/// # 「没了」与「易主」是两个变体，不是一个变体的两种载荷
+///
+/// 一场战争现在有两种结局。铲平走 [`Self::SettlementAbandoned`]
+/// （载荷里的 [`SettlementDemise::War`] 说明是谁打的），占领走
+/// [`Self::SettlementConquered`]。分成两个变体的理由见
+/// [`SettlementConqueredRecord`] 文档：被占领的据点**没有没**，它还
+/// 有人、还有门、还在长，把它塞进「遗弃」那条记录会让每一个既有消费
+/// 方都读错。
 ///
 /// 两类事件共用同一个信封，是因为它们是同一件事的两端：「这个世界上
 /// 发生过什么」。传说浏览之类的消费方将来只需要遍历一份合并视图，不
@@ -109,6 +126,8 @@ pub enum HistoricalEventKind {
     SettlementFounded(SettlementFoundedRecord),
     /// 某座据点被遗弃，留下废墟。
     SettlementAbandoned(SettlementAbandonedRecord),
+    /// 某座据点**易主**——被打下来了，但没被铲平。
+    SettlementConquered(SettlementConqueredRecord),
 }
 
 /// 一次据点建立——[`crate::chronicle`] 的推演在某个纪元把一处空地变成
@@ -145,6 +164,73 @@ pub struct SettlementAbandonedRecord {
     pub epochs_inhabited: u32,
     /// **为什么**没了。见 [`SettlementDemise`]。
     pub cause: SettlementDemise,
+}
+
+/// 一次据点易主——打赢的一方没有铲平这座城，只是换了主子。
+///
+/// # 为什么这是一个**事件变体**，而不是 [`SettlementDemise`] 的第五种
+///
+/// [`SettlementDemise`] 的四个变体回答的是同一个问题：「这座据点是
+/// 怎么**没**的」。占领的据点没有没——它还有人、还有门、还在长。把它
+/// 塞进那个枚举，等于让 `SettlementAbandonedRecord` 携带一种「其实没
+/// 被遗弃」的遗弃原因，那条穷尽 `match` 的每一个既有消费方都会立刻
+/// 读错（`crate::state::write_historical_event` 会把一座活着的城混进
+/// 「废墟」那一档，[`crate::chronicle`] 的 `final_sites` 会把它铺成
+/// 废墟）。
+///
+/// 这正是 [`HistoricalEventKind`] 模块文档留的那句话第二次生效：
+/// 「等系统真正落地时再扩展这个枚举」。第一次是世界历史生成把
+/// `SettlementFounded`/`SettlementAbandoned` 加进来；本次是占领。
+///
+/// # 事件信封上的 `location` 是**被占领那座**据点的锚点
+///
+/// 与 [`SettlementAbandonedRecord`] 一致：事件说的是这座城身上发生了
+/// 什么，攻方是它的原因、不是它的地点。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SettlementConqueredRecord {
+    /// 被占领的那座据点。**它的 `WorldId` 不变**——同一座城换了主子，
+    /// 不是旧城没了、新城建起来了。因此它与更早那条
+    /// [`SettlementFoundedRecord::site`] 是同一个号，顺着号码能读出
+    /// 「这座城建于第 2 纪元、第 6 纪元易主、至今仍有人住」。
+    pub site: WorldId,
+    /// 第几个纪元。
+    pub epoch: u32,
+    /// 打下它的那座据点的永久标识——「被谁占的」这条因果必须能顺着
+    /// 号码查回去，判据与 [`SettlementDemise::War`] 携带的那个
+    /// `aggressor` 逐字相同。
+    pub conqueror: WorldId,
+    /// 易主**之前**这座据点信的文化。
+    ///
+    /// # 为什么记文化，而不是记一个「势力号」
+    ///
+    /// 「归属」这件事在当前的世界模型里就是文化：
+    /// [`crate::settlement::SettlementSite::culture`] 是**唯一**一个
+    /// 同时决定「用什么建材盖房」（[`crate::settlement`] 的
+    /// `wall_terrain`）、「住的是哪一族」
+    /// （[`crate::culture::founder_race`]）、「跟谁不对付」
+    /// （[`crate::chronicle`] 的 `hostility_between`）的属性。占领改
+    /// 掉它，三处消费者立刻跟着变——这是「归属真的换了」能在地上被
+    /// 看见的那条通路。
+    ///
+    /// 另造一个 `faction: WorldId` 字段会是本仓库已经数出三十一处的
+    /// 那种「声明了但没接线」：今天没有任何一行游戏逻辑会读它。
+    ///
+    /// 不是 `Option`：占领**要求**攻守双方都有文化，没有文化这一层的
+    /// 世界里没有东西可以易主，那样的战争恒以毁灭收场。这条不变量由
+    /// [`crate::chronicle`] 的 `occupation_numerator` 守着。
+    pub former_culture: ContentIndex,
+    /// 易主**之后**这座据点信的文化——也就是攻方的那一份。
+    ///
+    /// 与 `former_culture` **可以相同**：两座同文化的城互相吞并时，
+    /// 换的是主子而不是信仰。那种情形下这条记录仍然成立（这座城此后
+    /// 属于 `conqueror`），只是在地上看不出区别。
+    pub new_culture: ContentIndex,
+    /// 易主之后这座据点还剩多少人——恒 `> 0`（一座人被打光的城是
+    /// 毁灭，不是占领）。
+    ///
+    /// **谁读它**：端到端验收要拿它对上「那座城在地上仍然是活的」，
+    /// 见 `crates/ll-game/tests/culture_and_war.rs`。
+    pub survivors: u32,
 }
 
 /// 一座据点是怎么没的——项目所有者点名的那三种原因，加上原本唯一的
