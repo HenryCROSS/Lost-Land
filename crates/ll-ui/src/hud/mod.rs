@@ -41,6 +41,19 @@
 //! 布局因此是四块面板固定分区平铺，不重叠、不遮挡地图核心视口太多——
 //! 具体坐标见 [`render::render_hud`] 与各面板模块的 `DEFAULT_*` 常量。
 //!
+//! # 动作菜单（[`action_menu`]）是「只读」的第二个例外，也是唯一一个
+//! **能写世界状态**的例外
+//!
+//! 上一节那条「只读，不做任何交互」在本 crate 内部仍然成立——
+//! [`action_menu`] 自己一个字节的世界状态都不写，它产出的仍然只是
+//! [`crate::widget::label::Label`]。变的是**它画的东西有选中态**：光标
+//! 落在第几行由调用方（`ll-game`）持有，玩家据此提交的
+//! `ll_sim::intent::Intent` 经 `ll_sim::turn::TurnEngine` 改变世界。
+//!
+//! 换句话说，写世界的仍然是结算层，HUD 只是第一次开始**显示一个选择**。
+//! 这条分界必须守住：本 crate 一旦自己去改 `WorldState`，「呈现层不写
+//! 世界」这条纪律就没有任何结构性保障了。
+//!
 //! # 世界地图（[`world_map`]）是第一个例外：M 键切换
 //!
 //! 上一节的论证只覆盖状态栏/角色面板/背包/装备栏这四块——它们不做
@@ -52,6 +65,7 @@
 //! `ll_game::app` 模块文档与 `ll_platform::input::GameKey::Map` 文档
 //! ——因此世界地图选择做成 M 键切换,不进四块常驻面板的行列。
 
+pub mod action_menu;
 pub mod character_panel;
 pub mod equipment_panel;
 pub mod inventory_panel;
@@ -137,7 +151,7 @@ pub(crate) fn build_panel(
 /// ADR 0021 同时指向「先不加」。真要加，加法是 `ItemDef` 上一条指向
 /// 本地化键的 `unidentified_name_key`，本函数改成「有就用它、没有就
 /// 退回这句笼统的」，不需要改这里的任何调用点。
-pub(crate) fn item_display_name(
+pub fn item_display_name(
     def: ContentIndex,
     items: &ItemTable,
     catalog: &Catalog,

@@ -33,6 +33,14 @@ keybind-action-wait = 等待
 keybind-action-screenshot = 截图
 keybind-action-zoom_in = 放大
 keybind-action-zoom_out = 缩小
+keybind-action-inventory = 背包
+keybind-action-craft = 制作
+keybind-action-pick_up = 拾取
+keybind-action-drop = 丢弃
+keybind-action-equip = 装备
+keybind-action-use = 使用
+keybind-action-place = 放置
+keybind-action-interact = 交互
 
 race-human-display_name = 人类
 race-dwarf-display_name = 矮人
@@ -137,6 +145,8 @@ mod-dependency-version-mismatch = 模组 { $dependent } 依赖 { $dependency } �
 #   - attribute-*-display_name              AttributeKind 六项主属性名
 #   - hud-inventory-*                       背包面板
 #   - hud-equipment-*                       装备面板标题与空槽位占位
+#   - hud-inventory-menu-* / hud-craft-*    背包/制作菜单（ll-game player_action）
+#   - hud-feedback-*                        操作反馈行（ll-game player_action::Feedback）
 #   - equip_slot-*-display_name             EquipSlot 22 个引擎具名槽位
 #   - season-*-display_name                 Season 四季展示名
 #   - weather-*-display_name                本体六种天气展示名
@@ -248,6 +258,47 @@ hud-item-unidentified = 未鉴定的物品
 
 hud-equipment-panel-title = 装备
 hud-equipment-empty-slot = （空）
+
+# 背包菜单（I 键）与制作菜单（C 键）——ll_game::player_action 的
+# menu_data，经 ll_ui::hud::action_menu 画出。
+hud-inventory-menu-title = 背包（上下选择）
+hud-inventory-menu-empty = 空空如也
+hud-inventory-menu-hint = 装备/卸下=E　使用=U　丢弃=X　放置=P　关闭=Esc
+hud-inventory-menu-equipped-label = 已装备
+hud-craft-menu-title = 制作（上下选择）
+hud-craft-menu-empty = 没有任何配方
+hud-craft-menu-hint = 制作=Enter　关闭=Esc
+hud-craft-station-label = 场地
+hud-craft-tool-label = 工具
+
+# 交互菜单（空格键）——ll_game::player_action 的 InteractTarget。
+hud-interact-menu-title = 脚下（上下选择）
+hud-interact-menu-empty = 什么都没有
+hud-interact-menu-hint = 确认=Enter　捡起=G　关闭=Esc
+hud-interact-action-work = 在此开工
+hud-interact-action-loot = 搜刮
+hud-interact-action-take = 捡起
+hud-interact-direction-title = 和哪边的东西交互（上下选择）
+hud-interact-direction-prompt = 附近什么都没有
+hud-interact-direction-hint = 确认=Enter　关闭=Esc
+hud-interact-direction-more = 等
+
+# 方向名——ll_game::player_action::direction_key，方向列表每一行的前缀。
+hud-direction-here = 脚下
+hud-direction-north = 北
+hud-direction-north_east = 东北
+hud-direction-east = 东
+hud-direction-south_east = 东南
+hud-direction-south = 南
+hud-direction-south_west = 西南
+hud-direction-west = 西
+hud-direction-north_west = 西北
+
+# 操作反馈行——ll_game::player_action::Feedback，见
+# ll_sim::turn::PlayerTurnOutcome 文档「静默作废对玩家不成立」。
+hud-feedback-no-selection = 没有可操作的条目
+hud-feedback-nothing-happened = 这一下没有起作用
+hud-feedback-nothing-nearby = 附近没有可交互的东西
 
 equip_slot-main_hand-display_name = 主手
 equip_slot-off_hand-display_name = 副手

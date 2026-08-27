@@ -49,6 +49,7 @@ use ll_sim::item::ItemCatalog;
 use ll_text::TextRenderer;
 use ll_world::item::{EquipSlot, ItemStack};
 
+use super::action_menu::{self, ActionMenuData};
 use super::character_panel::{self, CharacterPanelData};
 use super::equipment_panel;
 use super::inventory_panel;
@@ -93,6 +94,14 @@ const DAY_NIGHT_BAR_HEIGHT: f32 = 14.0;
 /// 昼夜滑条宽度（像素）——与生命/法力条并排后的总宽对齐，让状态栏下方
 /// 这一整块（资源条 + 昼夜滑条）左右边界看起来是同一列。
 const DAY_NIGHT_BAR_WIDTH: f32 = RESOURCE_BAR_WIDTH * 2.0 + PANEL_GAP;
+/// 动作菜单面板宽度——比背包/装备两列宽一些：它的行要同时容下配方名
+/// 与食材清单（见 `ll_game::player_action` 的排版），照 220 会频繁截断。
+const ACTION_MENU_WIDTH: f32 = 360.0;
+/// 反馈行面板宽度——一句话的宽度，见 [`build_hud_frame`] 的 `feedback`
+/// 参数文档。
+const FEEDBACK_WIDTH: f32 = 420.0;
+/// 反馈行面板与窗口下边缘的留白（像素）。
+const FEEDBACK_BOTTOM_MARGIN: f32 = 48.0;
 /// 装备栏与窗口右边缘的留白（像素）——见模块文档「装备放在屏幕右边」
 /// 一节，与 [`SCREEN_MARGIN`] 取同一个值，让装备栏与状态栏在视觉上
 /// 是对称锚定在屏幕两侧的一对。
@@ -179,6 +188,19 @@ fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
 /// 「地图开关」一节。为 `Some` 时按其中的格子数据画出整块面板，见
 /// [`world_map::world_map_frame`]。
 ///
+/// `menu` 为 `None` 时（没有任何动作菜单打开）那块面板整块不参与本次
+/// 产出，与 `world_map` 同一条纪律。为 `Some` 时按
+/// [`super::action_menu::action_menu_panel`] 画在屏幕正中偏右——不与
+/// 左侧那一列常驻面板重叠，玩家挑东西时仍看得见自己的属性与背包。
+///
+/// `feedback` 是一句**已经解析好**的反馈文字（`None` 表示这一帧没有
+/// 反馈要说）。它存在的唯一理由是：`ll_sim::resolve` 判定「这一步什么
+/// 都不发生」时静默返回空效果——对 AI 无所谓，对玩家不行，按了键屏幕
+/// 纹丝不动会被当成游戏卡死，见 `ll_sim::turn::PlayerTurnOutcome` 文档。
+/// 收的是**已解析的字符串**而不是 Fluent 键：这一句可能需要参数
+/// （「背包里没有这一种东西」之类未来的细化），参数注入是调用方的事,
+/// 本层不该为此再引一套参数表。
+///
 /// [`AnimatedValue`]: crate::widget::anim::AnimatedValue
 #[allow(clippy::too_many_arguments)]
 pub fn build_hud_frame(
@@ -199,6 +221,8 @@ pub fn build_hud_frame(
     screen_width: f32,
     screen_height: f32,
     world_map: Option<&WorldMapPanelData<'_>>,
+    menu: Option<&ActionMenuData<'_>>,
+    feedback: Option<&str>,
 ) -> HudFrame {
     let mut quads = Vec::new();
     let mut textured_quads = Vec::new();
@@ -379,6 +403,47 @@ pub fn build_hud_frame(
         quads.extend(frame.quads);
     }
 
+    // 动作菜单：与世界地图同一条「`None` 就整块不产出」的纪律，见本
+    // 函数文档。画在世界地图之后——两者理论上可以同时打开，此时菜单
+    // 该压在地图之上（玩家正在选东西，地图只是背景）。
+    if let Some(menu) = menu {
+        let origin = (
+            (screen_width - ACTION_MENU_WIDTH) * 0.5,
+            SCREEN_MARGIN + PANEL_GAP,
+        );
+        let panel =
+            action_menu::action_menu_panel(menu, catalog, language, origin, ACTION_MENU_WIDTH);
+        push_panel(
+            &mut quads,
+            &mut textured_quads,
+            &mut labels,
+            &panel.rect,
+            panel.labels,
+            skin,
+        );
+    }
+
+    // 反馈行：最后推入，压在所有东西之上——它要说的正是「你刚才那一下
+    // 没起作用」，被任何面板挡住就等于没说。
+    if let Some(text) = feedback {
+        let panel = super::build_panel(
+            (
+                (screen_width - FEEDBACK_WIDTH) * 0.5,
+                (screen_height - FEEDBACK_BOTTOM_MARGIN).max(0.0),
+            ),
+            FEEDBACK_WIDTH,
+            |cursor, lines| cursor.push(lines, text.to_string()),
+        );
+        push_panel(
+            &mut quads,
+            &mut textured_quads,
+            &mut labels,
+            &panel.rect,
+            panel.labels,
+            skin,
+        );
+    }
+
     HudFrame {
         quads,
         textured_quads,
@@ -529,6 +594,9 @@ pub fn render_hud(
     anim: &mut WidgetStateTable,
     now: FrameTick,
     world_map: Option<&WorldMapPanelData<'_>>,
+    // `menu`/`feedback` 见 `build_hud_frame` 同名参数文档。
+    menu: Option<&ActionMenuData<'_>>,
+    feedback: Option<&str>,
 ) {
     let frame = build_hud_frame(
         status,
@@ -546,6 +614,8 @@ pub fn render_hud(
         resolution_width as f32,
         resolution_height as f32,
         world_map,
+        menu,
+        feedback,
     );
 
     quad_renderer.render(
@@ -678,6 +748,8 @@ mod tests {
             1280.0,
             720.0,
             None,
+            None,
+            None,
         );
 
         // Assert：四块面板各 9 块背景 + 双层条 2*3 块 + 单层条 2 块 +
@@ -726,6 +798,8 @@ mod tests {
             0,
             1280.0,
             720.0,
+            None,
+            None,
             None,
         );
 
@@ -793,6 +867,8 @@ mod tests {
             1280.0,
             720.0,
             None,
+            None,
+            None,
         );
         let open_frame = build_hud_frame(
             &status,
@@ -810,6 +886,8 @@ mod tests {
             1280.0,
             720.0,
             Some(&world_map_data),
+            None,
+            None,
         );
 
         // Assert：世界地图边框恒 4 块（见
@@ -857,6 +935,8 @@ mod tests {
             1280.0,
             720.0,
             None,
+            None,
+            None,
         );
 
         // Assert
@@ -901,6 +981,8 @@ mod tests {
             0,
             1280.0,
             720.0,
+            None,
+            None,
             None,
         );
 
@@ -964,6 +1046,8 @@ mod tests {
             1280.0,
             720.0,
             None,
+            None,
+            None,
         );
 
         // Act：紧接着下一帧,生命值已经掉到 30。
@@ -989,6 +1073,8 @@ mod tests {
             1,
             1280.0,
             720.0,
+            None,
+            None,
             None,
         );
 
@@ -1050,6 +1136,8 @@ mod tests {
             screen_width,
             720.0,
             None,
+            None,
+            None,
         );
 
         // Assert：`build_hud_frame` 按固定顺序推入面板/条形——状态栏
@@ -1103,6 +1191,8 @@ mod tests {
             0,
             1280.0,
             720.0,
+            None,
+            None,
             None,
         );
         (frame, dir)

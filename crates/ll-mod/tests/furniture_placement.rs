@@ -15,20 +15,34 @@
 //! 不是 `Effect`/走 `apply`」一节），因此没有经 `TurnEngine` 的路径可走，
 //! 与 `ll_game::world` 里那条既有测试同一处境。
 //!
+//! # 家具放置状态批次改了什么
+//!
+//! 项目所有者裁定「放置」与「丢弃」是两个动作，而「立着还是躺着」是
+//! **每个地面实例上的状态**，不是物品定义上的标志（完整原话与论证见
+//! `ll_world::item::GroundItemStack::placed` 与
+//! `ll_sim::intent::Intent::Place` 两处文档）。本文件因此从「丢一件家具
+//! 就是放置」改成分别验两条路径：
+//!
+//! - `Intent::Place` → 地上多出一堆 `placed == true` 的东西，四道前置。
+//! - `Intent::Drop` → 地上多出一堆 `placed == false` 的东西，一道前置
+//!   （这一格立没立着东西）。
+//!
 //! # 反例守卫
 //!
-//! 正向那条（放下去 → 地上多了一堆 → 制作认它当场地）单独成立时，
-//! 无法排除「其实什么前置都没判，丢什么都能丢、站哪儿都能做」。四条
-//! 反例各守一条前置：
+//! 正向那条（立起来 → 地上多了一堆立着的 → 制作认它当场地）单独成立
+//! 时，无法排除「其实什么前置都没判」。反例各守一条前置：
 //!
-//! - [`层不允许建造时家具放不下去`]——`SpaceProfile::buildable`。
-//! - [`脚下地形挡路时家具放不下去`]——`TerrainDef::blocks_move`。
-//! - [`这一格已经有一件家具时放不下第二件`]——一格一件。
-//! - [`脚下没摆家具时锻造配方静默不产出`]——场地前置本身。
+//! - [`层不允许建造时家具立不起来`]——`SpaceProfile::buildable`。
+//! - [`脚下地形挡路时家具立不起来`]——`TerrainDef::blocks_move`。
+//! - [`这一格已经立着东西时立不下第二件`]——一格至多一件放置物。
+//! - [`不是家具的东西立不起来`]——`ItemDef::furniture` 那一道。
+//! - [`脚下没立着东西时锻造配方静默不产出`]——场地前置本身。
+//! - [`脚下的锻炉只是躺着时锻造配方静默不产出`]——场地前置认的是
+//!   **放置状态**，不是「这格上有没有一件带 furniture 标志的东西」。
 //!
-//! 外加两条把「家具」与「普通物品」分开的对照：
-//! [`普通物品不受放置前置约束`] 与
-//! [`老化回收清掉普通物品但留下家具`]。
+//! 外加把两种状态分开的对照：[`这一格立着东西时连普通物品也丢不下去`]、
+//! [`这一格只躺着别的东西时普通物品照样丢得下去`]、
+//! [`丢下去的锻炉是躺着的立着的才不老化`]。
 
 use std::collections::BTreeMap;
 use std::path::Path;
@@ -214,8 +228,13 @@ struct Scene {
     /// 这一格，「放得下」与「放不下」两侧的测试会同时因为一个与被测
     /// 逻辑无关的原因而落到同一侧，反例因此变成空跑。
     terrain_underfoot: ContentIndex,
-    /// `Some` 时先在行动者脚下那一格摆上这件东西（一堆地面物品）。
-    already_on_ground: Option<ContentIndex>,
+    /// 先在行动者脚下那一格摆上这些东西——`(定义, 是不是立着的)`。
+    ///
+    /// 带上「立没立着」这一位是家具放置状态批次的要求：同一件炉子躺着
+    /// 还是立着是两种不同的世界状态（见
+    /// `ll_world::item::GroundItemStack::placed` 文档），而本文件的反例
+    /// 恰恰要分别摆出这两种。
+    already_on_ground: Vec<(ContentIndex, bool)>,
 }
 
 impl Scene {
@@ -226,7 +245,7 @@ impl Scene {
             known_recipes: Vec::new(),
             profile: handle.surface_profile,
             terrain_underfoot: base_terrain_fixture().0.grass.index(),
-            already_on_ground: None,
+            already_on_ground: Vec::new(),
         }
     }
 }
@@ -304,12 +323,13 @@ fn act_via_turn_engine(
     world
         .terrain
         .set_terrain(pos, TerrainKind::from_index(scene.terrain_underfoot));
-    if let Some(def) = scene.already_on_ground {
+    for (def, placed) in &scene.already_on_ground {
         world.ground_items.push(ll_world::item::GroundItemStack {
             pos,
-            stack: ItemStack::new(def, 1),
+            stack: ItemStack::new(*def, 1),
             dropped_at: world.clock,
             contents: Vec::new(),
+            placed: *placed,
         });
     }
 
@@ -375,9 +395,43 @@ fn 锻炉是一件家具而不是普通物品() {
 }
 
 #[test]
-fn 把锻炉丢在脚下就是把它放置在这一格上() {
-    // 正向主干：经 TurnEngine 提交一次 Intent::Drop，背包里的锻炉进到
-    // 地面物品里、坐标就是行动者脚下那一格。
+fn 把锻炉立在脚下这一格上() {
+    // 正向主干：经 TurnEngine 提交一次 Intent::Place，背包里的锻炉进到
+    // 地面物品里、坐标就是行动者脚下那一格，且它是**立着**的。
+    // Arrange
+    let handle = load_real_mods();
+    let scene = Scene::new(&handle, vec![ItemStack::new(handle.forge, 1)]);
+
+    // Act
+    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Place {
+        actor,
+        def: handle.forge,
+    });
+
+    // Assert
+    assert_eq!(ground_defs_at(&world, actor), vec![handle.forge]);
+    let pos = world.actors.get(actor).expect("放置不会杀死行动者").pos;
+    assert_eq!(
+        world.placed_at(pos).map(|ground| ground.stack.def),
+        Some(handle.forge),
+        "立起来的那一堆 placed 必须为真——否则它当不了场地、也挡不住别人往这格丢东西"
+    );
+    let inventory = &world
+        .actors
+        .get(actor)
+        .expect("放置不会杀死行动者")
+        .inventory;
+    assert_eq!(count_of(inventory, handle.forge), 0, "锻炉已经不在背包里");
+}
+
+#[test]
+fn 丢下去的锻炉是躺着的不是立着的() {
+    // 所有者裁定的后半句：「如果家具作为一个物品而不是放置状态，就会
+    // 和其他物品被丢在同一个地方」。同一件锻炉，走 Drop 而不是 Place，
+    // 落地的必须是一堆**普通地面物品**。
+    //
+    // 这条是本批次改动的核心反例：家具层那一批把 Drop 当 Place 用，
+    // 那时这条断言会红（丢下去的炉子会是立着的）。
     // Arrange
     let handle = load_real_mods();
     let scene = Scene::new(&handle, vec![ItemStack::new(handle.forge, 1)]);
@@ -388,19 +442,18 @@ fn 把锻炉丢在脚下就是把它放置在这一格上() {
         def: handle.forge,
     });
 
-    // Assert
+    // Assert：东西在地上，但它没立起来。
     assert_eq!(ground_defs_at(&world, actor), vec![handle.forge]);
-    let inventory = &world
-        .actors
-        .get(actor)
-        .expect("放置不会杀死行动者")
-        .inventory;
-    assert_eq!(count_of(inventory, handle.forge), 0, "锻炉已经不在背包里");
+    let pos = world.actors.get(actor).expect("行动者还在").pos;
+    assert!(
+        world.placed_at(pos).is_none(),
+        "丢下去的东西不该是立着的——立起来要按放置键走 Intent::Place"
+    );
 }
 
 #[test]
-fn 脚下摆着锻炉时经回合引擎真的打出铁短剑() {
-    // Arrange：食材、工具、已知配方、脚下的锻炉四条全给齐。
+fn 脚下立着锻炉时经回合引擎真的打出铁短剑() {
+    // Arrange：食材、工具、已知配方、脚下**立着**的锻炉四条全给齐。
     let handle = load_real_mods();
     let mut scene = Scene::new(
         &handle,
@@ -413,7 +466,7 @@ fn 脚下摆着锻炉时经回合引擎真的打出铁短剑() {
         .equipment
         .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.smith_hammer, 1));
     scene.known_recipes = vec![handle.iron_shortsword_recipe];
-    scene.already_on_ground = Some(handle.forge);
+    scene.already_on_ground = vec![(handle.forge, true)];
 
     // Act
     let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Craft {
@@ -456,10 +509,35 @@ fn 砌锻炉这条配方经回合引擎真的产出一座锻炉() {
     assert_eq!(count_of(inventory, handle.iron_ingot), 0);
 }
 
+#[test]
+fn 立起来的锻炉可以再被捡回背包() {
+    // 「摆下去还能收回来」这条闭环的出口——放置状态不影响能不能捡，
+    // 见 `ll_sim::resolve` 的 `resolve_pick_up` 文档。
+    // Arrange
+    let handle = load_real_mods();
+    let mut scene = Scene::new(&handle, Vec::new());
+    scene.already_on_ground = vec![(handle.forge, true)];
+
+    // Act
+    // 站在炉子那一格上捡它——`Intent::PickUp` 现在点名从哪一格捡
+    // （见其 `pos` 字段文档「够得着的范围」一节）。`act_via_turn_engine`
+    // 把行动者生成在 (5, 5)，场景预先摆的东西也在同一格。
+    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::PickUp {
+        actor,
+        pos: (5, 5),
+        def: handle.forge,
+    });
+
+    // Assert
+    assert!(ground_defs_at(&world, actor).is_empty(), "地上不该还有炉子");
+    let inventory = &world.actors.get(actor).expect("行动者还在").inventory;
+    assert_eq!(count_of(inventory, handle.forge), 1);
+}
+
 // ─────────────────────────── 反例 ───────────────────────────
 
 #[test]
-fn 层不允许建造时家具放不下去() {
+fn 层不允许建造时家具立不起来() {
     // SpaceProfile::buildable 的反例——本体 lostland:dungeon 声明
     // buildable: false。这是这个字段落地至今第一个真实玩法后果，没有
     // 这一条它仍然是一个「声明了没人读」的死字段。
@@ -477,7 +555,7 @@ fn 层不允许建造时家具放不下去() {
     );
 
     // Act
-    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Drop {
+    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Place {
         actor,
         def: handle.forge,
     });
@@ -489,7 +567,7 @@ fn 层不允许建造时家具放不下去() {
 }
 
 #[test]
-fn 脚下地形挡路时家具放不下去() {
+fn 脚下地形挡路时家具立不起来() {
     // TerrainDef::blocks_move 的反例——所有者原话「有些地方上已经有
     // 物品了，例如墙啊……应该就没办法再放置其他东西了」：石墙就是那
     // 一格上已经有的那件东西。
@@ -504,7 +582,7 @@ fn 脚下地形挡路时家具放不下去() {
     scene.terrain_underfoot = terrain_ids.wall_stone.index();
 
     // Act
-    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Drop {
+    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Place {
         actor,
         def: handle.forge,
     });
@@ -516,28 +594,49 @@ fn 脚下地形挡路时家具放不下去() {
 }
 
 #[test]
-fn 这一格已经有一件家具时放不下第二件() {
-    // 一格一件——与「家具必须 stack_limit: 1」那条注册期校验守的是
-    // 同一件事的两半。
+fn 这一格已经立着东西时立不下第二件() {
+    // 一格至多一件放置物——与「家具必须 stack_limit: 1」那条注册期
+    // 校验守的是同一件事的两半。
     // Arrange
     let handle = load_real_mods();
     let mut scene = Scene::new(&handle, vec![ItemStack::new(handle.forge, 1)]);
-    scene.already_on_ground = Some(handle.forge);
+    scene.already_on_ground = vec![(handle.forge, true)];
 
     // Act
-    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Drop {
+    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Place {
         actor,
         def: handle.forge,
     });
 
-    // Assert：地上仍然只有场景预先摆的那一件。
+    // Assert：地上仍然只有场景预先立的那一件。
     assert_eq!(ground_defs_at(&world, actor), vec![handle.forge]);
     let inventory = &world.actors.get(actor).expect("行动者还在").inventory;
     assert_eq!(count_of(inventory, handle.forge), 1);
 }
 
 #[test]
-fn 脚下没摆家具时锻造配方静默不产出() {
+fn 不是家具的东西立不起来() {
+    // `resolve_place` 第 ① 道前置：`ItemDef::furniture` 回答的是「这东西
+    // **能不能**被放置」。铁锭不能，因此按放置键对它一点反应都没有。
+    // 没有这一条，无法排除「放置其实什么都不问，什么都能立」。
+    // Arrange
+    let handle = load_real_mods();
+    let scene = Scene::new(&handle, vec![ItemStack::new(handle.iron_ingot, 3)]);
+
+    // Act
+    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Place {
+        actor,
+        def: handle.iron_ingot,
+    });
+
+    // Assert：地上什么都没有，铁锭还在背包里。
+    assert!(ground_defs_at(&world, actor).is_empty());
+    let inventory = &world.actors.get(actor).expect("行动者还在").inventory;
+    assert_eq!(count_of(inventory, handle.iron_ingot), 3);
+}
+
+#[test]
+fn 脚下没立着东西时锻造配方静默不产出() {
     // 场地前置本身的反例：食材、工具、已知配方三条都满足，只是脚下
     // 空着。
     // Arrange
@@ -566,17 +665,55 @@ fn 脚下没摆家具时锻造配方静默不产出() {
     assert_eq!(count_of(inventory, handle.iron_ingot), 2);
 }
 
-// ────────────────────── 家具 vs 普通物品的分界 ──────────────────────
+#[test]
+fn 脚下的锻炉只是躺着时锻造配方静默不产出() {
+    // 家具放置状态批次最关键的一条反例：场地前置认的是**放置状态**，
+    // 不是「这一格上有没有一件带 furniture 标志的东西」。
+    //
+    // 与上一条的唯一差别是脚下这一格上确实有一座锻炉，只是它躺着。
+    // 把 `resolve_craft` 第 ⑤ 步换回旧判据（找一件带 furniture 标志的
+    // 地面物品），本条立刻变红。
+    // Arrange
+    let handle = load_real_mods();
+    let mut scene = Scene::new(
+        &handle,
+        vec![
+            ItemStack::new(handle.iron_ingot, 2),
+            ItemStack::new(handle.leather_strip, 1),
+        ],
+    );
+    scene
+        .equipment
+        .insert(EquipSlot::MAIN_HAND, ItemStack::new(handle.smith_hammer, 1));
+    scene.known_recipes = vec![handle.iron_shortsword_recipe];
+    scene.already_on_ground = vec![(handle.forge, false)];
+
+    // Act
+    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Craft {
+        actor,
+        recipe: handle.iron_shortsword_recipe,
+    });
+
+    // Assert
+    let inventory = &world.actors.get(actor).expect("行动者还在").inventory;
+    assert_eq!(count_of(inventory, handle.iron_shortsword), 0);
+    assert_eq!(count_of(inventory, handle.iron_ingot), 2);
+}
+
+// ────────────────────── 立着 vs 躺着的分界 ──────────────────────
 
 #[test]
-fn 普通物品不受放置前置约束() {
-    // 对照组：同一段场景（脚下已经摆着一件家具、层照样是地表），丢的
-    // 换成一堆铁锭——普通丢弃一条前置都不判，照样落地。没有这一条，
-    // 上面三条反例无法排除「放置前置其实把所有丢弃都拦了」。
+fn 这一格立着东西时连普通物品也丢不下去() {
+    // 所有者原话的前半句：「家具如果是放置在那个地方，那物品就无法被
+    // 丢在那」，另加一句「普通物品和第一点应该是一样的」——**受约束的
+    // 是这一格立着东西这个事实，与手里丢的是什么无关**。
+    //
+    // 家具层那一批的规则恰好相反（普通物品完全不受约束，锻炉那一格
+    // 照样能丢铁锭），本条就是那条旧规则的反例。
     // Arrange
     let handle = load_real_mods();
     let mut scene = Scene::new(&handle, vec![ItemStack::new(handle.iron_ingot, 3)]);
-    scene.already_on_ground = Some(handle.forge);
+    scene.already_on_ground = vec![(handle.forge, true)];
 
     // Act
     let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Drop {
@@ -584,7 +721,28 @@ fn 普通物品不受放置前置约束() {
         def: handle.iron_ingot,
     });
 
-    // Assert：锻炉那一格上现在有两堆——原来的锻炉，加上刚丢下的铁锭。
+    // Assert：地上仍然只有那座立着的炉子，铁锭还在背包里。
+    assert_eq!(ground_defs_at(&world, actor), vec![handle.forge]);
+    let inventory = &world.actors.get(actor).expect("行动者还在").inventory;
+    assert_eq!(count_of(inventory, handle.iron_ingot), 3);
+}
+
+#[test]
+fn 这一格只躺着别的东西时普通物品照样丢得下去() {
+    // 上一条的对照组：拦住丢弃的是「立着」这一位，不是「这格上已经有
+    // 东西」。没有这一条，无法排除「其实是只要这格上有东西就丢不了」。
+    // Arrange
+    let handle = load_real_mods();
+    let mut scene = Scene::new(&handle, vec![ItemStack::new(handle.iron_ingot, 3)]);
+    scene.already_on_ground = vec![(handle.forge, false)];
+
+    // Act
+    let (world, actor) = act_via_turn_engine(&handle, &scene, |actor| Intent::Drop {
+        actor,
+        def: handle.iron_ingot,
+    });
+
+    // Assert：两堆并存。
     let mut defs = ground_defs_at(&world, actor);
     defs.sort_by_key(|def| def.get());
     let mut expected = vec![handle.forge, handle.iron_ingot];
@@ -593,43 +751,51 @@ fn 普通物品不受放置前置约束() {
 }
 
 #[test]
-fn 老化回收清掉普通物品但留下家具() {
-    // `WorldState::cleanup_aged_ground_items` 的 `is_permanent` 那一半。
+fn 丢下去的锻炉是躺着的立着的才不老化() {
+    // `WorldState::cleanup_aged_ground_items` 的「哪些永不老化」那一半。
+    //
+    // 判据从 `ItemDef.furniture`（内容标志）换成了 `placed`（实例状态）
+    // ——**这是一次语义更正，不只是重构**：一座躺在地上没立起来的炉子
+    // 此前也享受永久豁免，现在照常老化。场景里因此摆三堆：立着的炉子、
+    // 躺着的炉子、一堆铁锭，只有第一堆该留下。
     //
     // 这一条不经 `TurnEngine`：老化回收不是任何一次 `Intent` 的后果，
     // 是系统级被动演化（见该方法文档「为什么不是 `Effect`/走 `apply`」
     // 一节），没有经引擎的路径可走。生产调用点是
     // `ll_game::world::cleanup_aged_ground_items`，它在
-    // `ll_game::app::Demo::advance` 每帧真跑一遍，并且正是在那里把本
-    // 测试用的这个谓词按 `ItemDef.furniture` 折算出来。
+    // `ll_game::app::Demo::advance` 每帧真跑一遍。
     // Arrange
     let handle = load_real_mods();
     let mut world = test_world();
-    let pos = world.size.wrap(3, 3);
-    for def in [handle.forge, handle.iron_ingot] {
+    let standing = world.size.wrap(3, 3);
+    let lying = world.size.wrap(5, 3);
+    let ingot_pos = world.size.wrap(7, 3);
+    for (pos, def, placed) in [
+        (standing, handle.forge, true),
+        (lying, handle.forge, false),
+        (ingot_pos, handle.iron_ingot, false),
+    ] {
         world.ground_items.push(ll_world::item::GroundItemStack {
             pos,
             stack: ItemStack::new(def, 1),
             dropped_at: world.clock,
             contents: Vec::new(),
+            placed,
         });
     }
     world.advance(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS + 1);
 
-    // Act：谓词与 `ll_game::world::cleanup_aged_ground_items` 逐字相同。
-    let removed = world
-        .cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS, &|def| {
-            handle.item.get(def).is_some_and(|item| item.furniture)
-        });
+    // Act
+    let removed = world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS);
 
-    // Assert：铁锭被清掉，锻炉留下。
-    assert_eq!(removed, 1);
+    // Assert：躺着的两堆都被清掉，只剩立着的那一座。
+    assert_eq!(removed, 2);
     assert_eq!(
         world
             .ground_items
             .iter()
-            .map(|ground| ground.stack.def)
+            .map(|ground| (ground.pos, ground.stack.def))
             .collect::<Vec<_>>(),
-        vec![handle.forge]
+        vec![(standing, handle.forge)]
     );
 }

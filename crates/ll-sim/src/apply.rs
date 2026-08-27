@@ -374,12 +374,14 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
             stack,
             dropped_at,
             contents,
+            placed,
         } => {
             world.ground_items.push(ll_world::item::GroundItemStack {
                 pos: *pos,
                 stack: *stack,
                 dropped_at: *dropped_at,
                 contents: contents.clone(),
+                placed: *placed,
             });
         }
         Effect::MergeIntoInventory {

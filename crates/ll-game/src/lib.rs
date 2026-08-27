@@ -19,6 +19,7 @@ pub mod animation;
 pub mod app;
 pub mod content;
 pub mod layout;
+pub mod player_action;
 pub mod save;
 #[cfg(test)]
 mod test_support;

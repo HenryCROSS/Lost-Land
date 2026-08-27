@@ -1903,6 +1903,7 @@ mod tests {
             stack: ItemStack::with_durability(sword_old, 1, 90),
             dropped_at: Tick(50),
             contents: Vec::new(),
+            placed: false,
         });
 
         // Act
@@ -1917,6 +1918,7 @@ mod tests {
                 stack: ItemStack::with_durability(sword_new, 1, 90),
                 dropped_at: Tick(50),
                 contents: Vec::new(),
+                placed: false,
             }]
         );
     }
@@ -1949,6 +1951,7 @@ mod tests {
             stack: ItemStack::new(corpse_old, 1),
             dropped_at: Tick(50),
             contents: vec![ItemStack::new(sword_old, 1)],
+            placed: false,
         });
 
         // Act
@@ -1963,6 +1966,7 @@ mod tests {
                 stack: ItemStack::new(corpse_new, 1),
                 dropped_at: Tick(50),
                 contents: vec![ItemStack::new(sword_new, 1)],
+                placed: false,
             }]
         );
     }
@@ -1994,6 +1998,7 @@ mod tests {
             stack: ItemStack::new(corpse_old, 1),
             dropped_at: Tick(0),
             contents: vec![ItemStack::new(vanished, 1), ItemStack::new(sword_old, 1)],
+            placed: false,
         });
 
         // Act
@@ -2008,6 +2013,7 @@ mod tests {
                 stack: ItemStack::new(corpse_new, 1),
                 dropped_at: Tick(0),
                 contents: vec![ItemStack::new(sword_new, 1)],
+                placed: false,
             }]
         );
     }
@@ -2029,6 +2035,7 @@ mod tests {
             stack: ItemStack::new(vanished, 1),
             dropped_at: Tick(0),
             contents: Vec::new(),
+            placed: false,
         });
 
         // Act

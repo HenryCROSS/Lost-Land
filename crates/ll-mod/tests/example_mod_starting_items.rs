@@ -407,10 +407,19 @@ fn 普通拾取跳过尸体不吞掉其战利品() {
     );
     assert_eq!(world.ground_items.len(), 1, "前置条件：尸体已经产出");
 
-    // Act：攻击者站在尸体所在格,尝试普通拾取。
+    // Act：攻击者站在尸体所在格,点名要捡那具尸体本身
+    // （`Intent::PickUp` 现在带 `def`，见其文档「为什么带 `def`」一节
+    // ——点名之后这条反例反而更强：不是「引擎恰好没挑中尸体」，是
+    // 「明确要求捡它也捡不走」）。
+    let corpse_def = world.ground_items[0].stack.def;
+    let corpse_pos = world.ground_items[0].pos;
     resolve_and_apply(
         &mut world,
-        &Intent::PickUp { actor: attacker },
+        &Intent::PickUp {
+            actor: attacker,
+            pos: (corpse_pos.x(), corpse_pos.y()),
+            def: corpse_def,
+        },
         &handle.item,
     );
 
@@ -462,7 +471,15 @@ fn 搜刮尸体后战利品进入背包且尸体从地面消失() {
     assert_eq!(world.ground_items.len(), 1, "前置条件：尸体已经产出");
 
     // Act
-    resolve_and_apply(&mut world, &Intent::Loot { actor: attacker }, &handle.item);
+    let corpse_pos = world.ground_items[0].pos;
+    resolve_and_apply(
+        &mut world,
+        &Intent::Loot {
+            actor: attacker,
+            pos: (corpse_pos.x(), corpse_pos.y()),
+        },
+        &handle.item,
+    );
 
     // Assert：尸体从地面消失,战利品原样进了攻击者背包。
     assert!(world.ground_items.is_empty());

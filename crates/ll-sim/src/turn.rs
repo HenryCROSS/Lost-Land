@@ -144,6 +144,16 @@ impl TurnEngine {
     /// [`crate::resolve`]（结算期就把整批效果算全，例如
     /// `rest_completion_effects`），不是让宿主回调往里塞——那样效果
     /// 序列会取决于宿主是谁。
+    /// # 返回值：这次结算产出了几条效果
+    ///
+    /// `resolve` 判定「这一步什么都不发生」时返回空 `Vec`（撞墙、脚下
+    /// 没东西可捡、食材不齐……见 `crate::resolve` 模块文档），本方法把
+    /// 这个长度原样交出去。**这是调用方唯一能分辨「提交了但白提交」的
+    /// 途径**，而分不分得出来对 AI 与对玩家的意义完全不同：AI 那条路
+    /// 不在乎（下一步重新决策即可），玩家那条路在乎——按了键屏幕上一点
+    /// 反应都没有，玩家会以为游戏卡死。反馈本身怎么呈现是调用方的事
+    /// （`ll-sim` 不知道调用方在不在渲染，同 `on_effect` 文档），本层
+    /// 只负责把这个事实交出去，见 [`PlayerTurnOutcome::Nothing`]。
     fn perform(
         &mut self,
         world: &mut WorldState,
@@ -151,7 +161,7 @@ impl TurnEngine {
         intent: Intent,
         catalogs: &ResolveCatalogs<'_>,
         on_effect: &mut dyn FnMut(&WorldState, &Effect),
-    ) {
+    ) -> usize {
         // 世界时钟推进——曾经在这里加过一条「只在变化时打一行」的
         // `tracing::info!` 调试日志（提交 `0ff2c9e`），因为项目所有者
         // 当时无法确认时钟到底走没走（ADR 0025 禁止合成按键，测试证明
@@ -185,6 +195,7 @@ impl TurnEngine {
         if let Some(agent) = world.actors.get(entry.actor) {
             self.timeline.schedule(entry.actor, agent.next_action_at);
         }
+        effects.len()
     }
 
     /// 反复弹出并结算「非受控」实体（通常是 AI）的行动，直到轮到受控
@@ -309,16 +320,54 @@ impl TurnEngine {
         catalogs: &ResolveCatalogs<'_>,
         on_effect: &mut dyn FnMut(&WorldState, &Effect),
     ) -> bool {
-        let Some(entry) = self.pending.filter(|entry| entry.actor == player) else {
-            return false;
-        };
         let Some(raw) = intent_from_input(player, input) else {
             return false;
         };
-        let intent = route_move_to_attack(world, raw);
+        !matches!(
+            self.try_player_intent(world, player, raw, catalogs, on_effect),
+            PlayerTurnOutcome::NotYet
+        )
+    }
+
+    /// 用一个**已经选好的**意图结算受控实体的一次行动。
+    ///
+    /// # 为什么需要这条入口，[`Self::try_player_turn`] 不够
+    ///
+    /// [`crate::intent::intent_from_input`] 按设计不读 `WorldState`
+    /// （见其文档与 `crate::intent` 模块文档「本层只管『按了什么键』」
+    /// 一节），因此它产得出 `Move`/`Wait`/`PickUp`/`ToggleStealth` 这类
+    /// **不需要参数**的意图，产不出 `Craft { recipe }`/`Drop { def }`
+    /// 这类**要先选一条**的意图——「选哪一条」是一次真实的玩法选择，
+    /// 得由一块看得见背包/配方列表的菜单来做，而那块菜单住在
+    /// `ll-game`/`ll-ui`，不在本 crate。
+    ///
+    /// 于是分工是：本 crate 提供「提交一个意图当作玩家这一回合」的
+    /// 通道，选择本身由持有菜单的那一层完成。[`Self::try_player_turn`]
+    /// 现在就是本方法加上一次 `intent_from_input`，两条路径共用同一段
+    /// 「查 `pending` → 撞人即攻击路由 → `perform`」逻辑，不是各抄
+    /// 一遍（ADR 0021）。
+    ///
+    /// 返回值见 [`PlayerTurnOutcome`]：三态而不是 `bool`,因为玩家那条
+    /// 路要分得出「还没轮到我」与「轮到了但这一步白按了」——后者需要
+    /// 给玩家一句反馈，见 [`Self::perform`] 文档「返回值」一节。
+    pub fn try_player_intent(
+        &mut self,
+        world: &mut WorldState,
+        player: EntityId,
+        intent: Intent,
+        catalogs: &ResolveCatalogs<'_>,
+        on_effect: &mut dyn FnMut(&WorldState, &Effect),
+    ) -> PlayerTurnOutcome {
+        let Some(entry) = self.pending.filter(|entry| entry.actor == player) else {
+            return PlayerTurnOutcome::NotYet;
+        };
+        let routed = route_move_to_attack(world, intent);
         self.pending = None;
-        self.perform(world, entry, intent, catalogs, on_effect);
-        true
+        if self.perform(world, entry, routed, catalogs, on_effect) == 0 {
+            PlayerTurnOutcome::Nothing
+        } else {
+            PlayerTurnOutcome::Acted
+        }
     }
 
     /// 预览接下来 `count` 条待行动记录（含当前 `pending`）——只读不
@@ -339,6 +388,37 @@ impl TurnEngine {
         }
         preview
     }
+}
+
+/// [`TurnEngine::try_player_intent`] 的三种结果。
+///
+/// # 为什么不是 `bool`
+///
+/// 「没轮到玩家」与「轮到了、也提交了，但结算判定这一步什么都不发生」
+/// 对调用方是两件完全不同的事：前者根本没有消费这次输入（下一帧原样
+/// 重试即可），后者已经消费掉了，且**玩家看不出任何变化**。把两者压
+/// 成同一个 `false` 正是「静默作废」对玩家不成立的根源——放置家具的
+/// 三道前置（层可建造 / 地形不挡路 / 这格还没家具，见
+/// `crate::resolve` 的 `resolve_drop` 文档）任一不成立时整条静默作废，
+/// 玩家按了键屏幕纹丝不动，只会以为游戏卡了。
+///
+/// **本枚举不解释「为什么什么都没发生」**，只报告「确实什么都没发生」。
+/// 把理由也带出来需要让 `crate::resolve` 的每一条静默返回点各自携带
+/// 一个原因码——那是一次独立的、波及二十多个结算函数的改造，且当前
+/// 唯一的消费者只需要「有没有反应」这一位信息。真要做，加法是给
+/// `resolve` 系列换一个 `Result<Vec<Effect>, Blocked>` 形状的返回值,
+/// 与本枚举无关。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PlayerTurnOutcome {
+    /// 还没轮到这个实体（`pending` 是别人，或时间轴已空）——这次输入
+    /// **没有**被消费。
+    NotYet,
+    /// 轮到了、意图也提交了，但 `resolve` 一条效果都没产出：这一步
+    /// 白按了，且世界状态一个字节都没变（连 `Effect::ScheduleNext`
+    /// 都没有，因此下一帧仍然轮到同一个实体）。
+    Nothing,
+    /// 真的发生了：至少一条效果被 `apply`。
+    Acted,
 }
 
 /// 把一个原始意图路由成最终意图：若一次 [`Intent::Move`] 的目的地站着

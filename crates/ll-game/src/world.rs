@@ -789,22 +789,22 @@ pub fn cloned_terrain_table(content: &LoadedContent) -> TerrainTable {
 /// 推进"这个更大的、独立的问题——一旦时钟推进被接上,地面物品就会在
 /// 真实游玩里按预期老化,不需要再改这里一行代码。
 ///
-/// # `content` 参数：家具不老化（家具层批次）
+/// # 这里此前多一个 `content` 参数，用来折算「哪些不老化」
 ///
-/// [`WorldState::cleanup_aged_ground_items`] 的 `is_permanent` 谓词由
-/// 这里折算——`ll-world` 不知道「家具」是什么（见该方法文档），本函数
-/// 是生产路径上唯一一处**同时**拿得到世界与物品表的地方，因此谓词在
-/// 这里成形：一堆地面物品的 `ItemDef.furniture` 为真，它就永不老化。
-/// 查不到这条物品规则（内容表里没有这个索引）时按「不是家具」处理，
-/// 与 `ll_sim::resolve` 对未注册物品一贯的降级方向一致：一个查不到的
-/// 索引不该因为查不到就获得「永不消失」这项特权。
-pub fn cleanup_aged_ground_items(world: &mut WorldState, content: &LoadedContent) -> usize {
-    world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS, &|def| {
-        content
-            .item_table
-            .get(def)
-            .is_some_and(|item| item.furniture)
-    })
+/// 家具层那一批要给 [`WorldState::cleanup_aged_ground_items`] 传一个
+/// `is_permanent` 谓词——`ll-world` 不知道「家具」是什么
+/// （`ItemDef.furniture` 住在下游的 `ll-mod`），所以判据只能由本函数
+/// （生产路径上唯一同时拿得到世界与物品表的地方）折算出来传进去。
+///
+/// **家具放置状态落地之后那条理由消失了**：会不会老化现在取决于这一堆
+/// 自己身上的 `GroundItemStack::placed`，`ll-world` 完全看得见，谓词
+/// 因此在那一侧一并收掉（见该方法文档）。本函数随之不再需要 `content`。
+///
+/// 语义也随之更正：一座**躺在地上没立起来**的炉子此前因为
+/// `ItemDef.furniture` 为真而永不老化，现在照常老化——只有真正立在那里
+/// 的才不老化。
+pub fn cleanup_aged_ground_items(world: &mut WorldState) -> usize {
+    world.cleanup_aged_ground_items(WorldState::DEFAULT_GROUND_ITEM_MAX_AGE_TICKS)
 }
 
 #[cfg(test)]
@@ -871,6 +871,7 @@ mod tests {
             stack: ItemStack::new(arrow, 1),
             dropped_at: stale_dropped_at,
             contents: Vec::new(),
+            placed: false,
         });
         game_world
             .world
@@ -881,10 +882,11 @@ mod tests {
             stack: ItemStack::new(arrow, 1),
             dropped_at: game_world.world.clock,
             contents: Vec::new(),
+            placed: false,
         });
 
         // Act
-        let removed = cleanup_aged_ground_items(&mut game_world.world, &content);
+        let removed = cleanup_aged_ground_items(&mut game_world.world);
 
         // Assert：老化的一条被清掉,同一时刻新丢的一条（dropped_at 恰好
         // 等于清理前的 clock,推进后未超阈值）保留。

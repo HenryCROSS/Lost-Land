@@ -1030,9 +1030,10 @@ fn resolve_dispatch(
             traits,
             pools,
         ),
-        Intent::PickUp { actor } => resolve_pick_up(world, actor, items),
-        Intent::Loot { actor } => resolve_loot(world, actor, items),
-        Intent::Drop { actor, def } => resolve_drop(world, actor, def, items, ambient),
+        Intent::PickUp { actor, pos, def } => resolve_pick_up(world, actor, pos, def, items),
+        Intent::Loot { actor, pos } => resolve_loot(world, actor, pos, items),
+        Intent::Drop { actor, def } => resolve_drop(world, actor, def),
+        Intent::Place { actor, def } => resolve_place(world, actor, def, items, ambient),
         Intent::Equip { actor, def } => resolve_equip(world, actor, def, items),
         Intent::Unequip { actor, slot } => resolve_unequip(world, actor, slot, items),
         Intent::Use { actor, def } => resolve_use_item(world, actor, def, items),
@@ -1815,6 +1816,10 @@ fn append_corpse_drop(world: &WorldState, effects: &mut Vec<Effect>) {
                 stack: ItemStack::new(corpse_def, 1),
                 dropped_at: world.clock,
                 contents: loot,
+                // 尸体是**躺**在地上的，不是被谁立起来的——它照常老化
+                // （见 WorldState::cleanup_aged_ground_items），也挡不住
+                // 别人往这一格丢东西。
+                placed: false,
             })
         })
         .collect();
@@ -2123,18 +2128,81 @@ fn tiered_slot_rest_effects(
 /// 后者才是战争迷雾要回答的问题。这里用 `world.player_entity ==
 /// Some(actor)` 这一个比较收住范围，不需要改 `Intent`/`Effect` 的
 /// 形状去区分「谁在动」。
+/// 「伸手够得着」的范围：切比雪夫距离 1，即脚下加相邻八格。
+///
+/// # 这个数字从哪来
+///
+/// 项目所有者定的交互形状是「按空格 → 扫一圈 → 选一格 → 选这格上的
+/// 哪一样」。那一圈就是本常量：**与移动的方向数一致**（[`Direction`]
+/// 是八向，含四条对角线），一个「伸手够得着的一圈」若只认正交四向，
+/// 玩家会遇到「斜前方那堆东西看得见、走一步就到，却伸手够不着」这种
+/// 毫无道理的不一致。
+///
+/// 不做成内容字段：它不是「某件东西有多远能够到」这种随内容变化的量，
+/// 是「一个人伸手能够到多远」这条全局规则，本仓库今天也没有任何需要
+/// 它变化的场景（YAGNI）。真要变（长柄工具？），加法是给
+/// `ll_mod::item::ItemDef` 加一条 `reach`，本常量退化成默认值。
+const INTERACT_REACH: u32 = 1;
+
+/// `origin` 伸手够不够得着 `target`。
+///
+/// 用 [`ll_core::torus::TorusSize::chebyshev`]，不是自己减坐标：世界是
+/// 环面，跨接缝时裸减法会算出一个绕整圈的巨大距离。切比雪夫而不是曼
+/// 哈顿/欧氏：八向移动一步的代价相同，"够得着"的形状因此是一个正方形
+/// 邻域，不是菱形也不是圆。
+fn within_reach(world: &WorldState, origin: TorusPos, target: TorusPos) -> bool {
+    world.size.chebyshev(origin, target) <= INTERACT_REACH
+}
+
 /// [`Intent::PickUp`] 结算（P6 第二批：背包与地面物品）：捡起 `actor`
-/// 脚下的第一堆**非容器**地面物品（见 `Intent::PickUp` 文档「为什么不
-/// 指定要捡哪一种」一节），若背包已有可合并的同种堆（[`can_merge`]），
-/// 一并算出合并结果。
+/// 脚下那一堆 `def` 的**非容器**地面物品，若背包已有可合并的同种堆
+/// （[`can_merge`]），一并算出合并结果。
+///
+/// # 为什么带 `def`（本批次改的形状）
+///
+/// 本变体此前是 `PickUp { actor }`——不指定捡哪一种，由本函数取「脚下
+/// 第一条非容器堆」。理由当时写的是「捡东西的人事先并不知道地上那堆
+/// 到底是什么」，且「多堆选择 UI 不在本批次范围内」。
+///
+/// 项目所有者的裁定推翻了它：
+///
+/// > 玩家互动的时候应该是显示一个列表让玩家选择捡起哪个，而 npc 则是
+/// > 根据他需要的捡起来
+///
+/// 两侧都要求「由发起者指定捡哪一个」，本函数因此不再替任何人做这个
+/// 选择——与 [`Intent::EnterSpace`] 的 `target`「同一格多入口时选哪一个
+/// 不该由 `resolve` 替玩家决定，那是一个真实的玩法选择」是同一条既有
+/// 纪律的第二次落地。玩家那一侧的列表由 `ll_game::player_action` 建出
+/// （顺序确定，见该模块文档）；NPC 那一侧今天还没有任何拾取行为，
+/// 新形状只是把「按自己的需要挑」这件事变得**表达得出来**，如实标注。
+///
+/// # 够得着的范围（本批次新增的 `pos`）
+///
+/// 项目所有者定的交互形状是「按空格 → 扫一圈 → 选一格 → 选这格上的
+/// 哪一样」，那一圈包含相邻格。若拾取仍然只认脚下，方向列表里选中一个
+/// 相邻格之后能做的事就是零，整条交互是死的。
+///
+/// 范围是 [`INTERACT_REACH`]（切比雪夫距离 1，即脚下加相邻八格）——
+/// **与移动的方向数一致**：[`Direction`] 是八向（含四条对角线），一个
+/// 「伸手够得着的一圈」若只认正交四向，玩家会遇到「斜前方那堆东西看得
+/// 见、走一步就到，却伸手够不着」这种毫无道理的不一致。
+///
+/// 距离用 [`ll_core::torus::TorusSize::chebyshev`]，不是自己减坐标：
+/// 世界是环面，跨接缝时裸减法会算出一个绕整圈的巨大距离。
+///
+/// # 放置状态不影响能不能捡
+///
+/// 立着的炉子照样捡得走（`placed` 为真的那一堆和别的一样进这个函数）
+/// ——这是「摆下去还能收回来」这条闭环的唯一出口。移除之后那一格自然
+/// 就不再有放置物，`resolve_drop` 的闸门随之放行。
 ///
 /// # 静默无效的三种情形
 ///
-/// `actor` 不存在，脚下没有任何地面物品，或脚下只有容器（尸体，见下
-/// 「为什么跳过容器」一节）——与 `resolve_attack`/`resolve_open_door`
-/// 目标不存在时的既有纪律一致（见模块文档开篇「目标实体……若已不在
-/// `world.actors` 中……一律返回空 `Vec`」），不是错误，只是这一步什么都
-/// 不发生。
+/// `actor` 不存在，脚下没有 `def` 这一堆，或脚下这一堆 `def` 是容器
+/// （尸体，见下「为什么跳过容器」一节）——与 `resolve_attack`/
+/// `resolve_open_door` 目标不存在时的既有纪律一致（见模块文档开篇
+/// 「目标实体……若已不在 `world.actors` 中……一律返回空 `Vec`」），不是
+/// 错误，只是这一步什么都不发生。
 ///
 /// # 为什么跳过容器（NPC 死亡掉落批次）
 ///
@@ -2148,20 +2216,38 @@ fn tiered_slot_rest_effects(
 /// 字段文档「`resolve_pick_up` 用这条判据把尸体排除在普通拾取目标
 /// 之外」一节相互印证。
 ///
+/// # 同一格同一个 `def` 有两堆时取哪一条
+///
+/// 取 [`ll_world::state::WorldState::ground_items`] 存储顺序里的第一条
+/// （`Vec` 保序，约束 C5）。这与 [`Effect::RemoveGroundItem`] 按
+/// `(pos, def)` 定位的既有边界是同一条（见其文档）：两堆同 `def` 的东西
+/// 摞在一格上时，「捡的是哪一堆」与「移除的是哪一堆」由同一个规则回答，
+/// 因此不会出现「读了 A、删了 B」的错配。
+///
 /// # 为什么合并结果由这里算好，`apply` 只做替换
 ///
 /// 见 [`Effect::MergeIntoInventory`] 文档「为什么合并结果由 `resolve`
 /// 算好」一节：`stack_limit` 查不到（`items` 没有这个 `def` 的记录）
 /// 时按「不限量」处理（`u32::MAX`），理由见 [`NoItems`] 文档——没有
 /// 真实的物品注册表可查不该表现成"这件物品异常地不能堆叠"。
-fn resolve_pick_up(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) -> Vec<Effect> {
+fn resolve_pick_up(
+    world: &WorldState,
+    actor: EntityId,
+    pos: (i32, i32),
+    def: ContentIndex,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
+    let target = world.size.wrap(pos.0, pos.1);
+    if !within_reach(world, agent.pos, target) {
+        return Vec::new();
+    }
     let Some(ground) = world
         .ground_items
         .iter()
-        .find(|item| item.pos == agent.pos && item.contents.is_empty())
+        .find(|item| item.pos == target && item.stack.def == def && item.contents.is_empty())
     else {
         return Vec::new();
     };
@@ -2210,14 +2296,23 @@ fn resolve_pick_up(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog)
 /// 与 [`merge_into_inventory_effect`] 文档「已知限制」一节同一条既有
 /// 局限：每条内容物各自基于同一份背包快照判断"有没有可合并的旧堆"，
 /// 不产生数据错误（数量守恒），只是可能错过一次本可以做的合并。
-fn resolve_loot(world: &WorldState, actor: EntityId, items: &dyn ItemCatalog) -> Vec<Effect> {
+fn resolve_loot(
+    world: &WorldState,
+    actor: EntityId,
+    pos: (i32, i32),
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
+    let target = world.size.wrap(pos.0, pos.1);
+    if !within_reach(world, agent.pos, target) {
+        return Vec::new();
+    }
     let Some(container) = world
         .ground_items
         .iter()
-        .find(|item| item.pos == agent.pos && !item.contents.is_empty())
+        .find(|item| item.pos == target && !item.contents.is_empty())
     else {
         return Vec::new();
     };
@@ -2552,67 +2647,51 @@ fn merge_into_inventory_effect(
 /// 里第一条匹配 `def` 的整堆丢在其当前脚下（见 `Intent::Drop` 文档
 /// 「为什么是整堆」一节）。
 ///
-/// # 丢一件**家具**就是「放置」（家具层批次）
+/// # 丢弃与放置是两个动作（家具放置状态批次推翻了此前的形状）
 ///
-/// 项目所有者裁定「家具也应该算是一种可以放在地形上的可交互物品」。
-/// 一件带 [`crate::item::ItemRule::furniture`] 的物品放到地上，与一堆
-/// 铁锭放到地上走的是**同一条路**（同一个 `Effect::AddGroundItem`、
-/// 同一个 [`ll_world::item::GroundItemStack`]、同一份存档字段）——
-/// ADR 0021：家具与普通地面物品之间没有任何一段算法需要被复制，
-/// 因此不为「放置」另开一个 `Intent`/一条结算路径。
+/// 家具层那一批把两者合成了一条：「丢一件家具就是放置它」，于是
+/// `resolve_drop` 内部按 `ItemDef.furniture` 分叉，家具走三道放置前置、
+/// 别的东西不走。项目所有者的裁定推翻了这个形状：
 ///
-/// 差别只有一处，就在这里：家具**要先问这一格放得下吗**，三道前置
-/// 逐条判，任一不成立整条意图静默作废：
+/// > 家具如果是放置在那个地方，那物品就无法被丢在那，但是如果家具作为
+/// > 一个物品而不是放置状态，就会和其他物品被丢在同一个地方
 ///
-/// 1. **这个空间允不允许建造**——
-///    [`crate::exposure::AmbientSource::buildable_in`]，本体地表与建筑
-///    内部为真、洞窟与地下城为假。这是 `SpaceProfile::buildable`
-///    落地至今**第一个**真实玩法消费者。
-/// 2. **脚下这一格有没有被地形占着**——判据是地形自己声明的
-///    `TerrainDef::blocks_move`。所有者原话「有些地方上已经有物品了，
-///    例如墙啊，之类的乱七八糟，应该就没办法再放置其他东西了」：一堵
-///    墙就是那一格上**已经有的那件东西**。本体十七个地形里命中的正是
-///    木墙/石墙/关着的门/窗/深水这五种。
-///    **不是**一张写死在引擎里的地形黑名单——`blocks_move` 是内容
-///    （`terrain.json5`）逐条声明的字段，任何 mod 新增的地形自带答案。
-/// 3. **这一格是不是已经摆了一件家具**——一格一件，理由同
-///    `ll_mod::item::ItemDef::furniture`「家具必须 `stack_limit == 1`」
-///    那条注册期校验：一格上放的是一件家具，不是一摞。**普通物品不
-///    受这条限制**，锻炉那一格照样能丢铁锭。
+/// 也就是说「是不是家具」根本不是分叉点——**一件没被放置的家具就是
+/// 普通物品**，丢它和丢一堆铁锭没有任何区别。真正的分叉点是玩家想做
+/// 哪个动作：丢（[`Intent::Drop`]，本函数）还是放置
+/// （[`Intent::Place`]，[`resolve_place`]）。
 ///
-/// `def` 不是家具时，以上三条一条都不判，本函数与家具层落地之前
-/// **逐位等价**。
+/// 本函数因此**不再问这件东西是不是家具**，只保留一道与东西无关的
+/// 前置：
 ///
-/// # 为什么普通丢弃**不**受地形占用那一条约束
+/// - **这一格已经立着一件放置物时，什么都丢不下去**
+///   （[`ll_world::state::WorldState::placed_at`]）。所有者原话的前半
+///   句：「那物品就无法被丢在那」。判据是那一格上**已经立着东西**这个
+///   事实，与手里丢的是什么无关——所有者另有一句「普通物品和第一点应
+///   该是一样的」把这条明确成了通用规则，不是家具专属。
 ///
-/// 「丢」是东西从手里掉在脚下，而脚下那一格是行动者站得住的格子；
-/// 「放置」是主动占住一格。两者在所有者那句话里的位置不同——他说的是
-/// 「没办法再**放置**其他东西」。真正会长期占住一格的只有家具，把同
-/// 一道闸门加到普通丢弃上，唯一可观察的后果是「站在被地形占着的异常
-/// 格上（例如被 `stamp_settlement` 事后铺上墙的那一格）连东西都丢不
-/// 掉」，那是给一个异常状态再加一条死锁，不是玩法。这条分界是本批次
-/// 的判断，不是所有者的原话——报告里已按需要裁定的事项列出。
+/// # 已知边界：只有 `Drop`/`Place` 两条路径认这道闸门
+///
+/// 尸体掉落（`append_corpse_drop`）与盲盒溢出等其余
+/// `Effect::AddGroundItem` 产出点**不**判这一格立没立着东西——一个 NPC
+/// 恰好死在锻炉那一格上，尸体照样会摞上去。如实标注为已知边界：把闸门
+/// 铺到那些路径上需要它们各自能拿到 `WorldState` 并决定「放不下时尸体
+/// 去哪」（挤到旁边一格？直接蒸发？），那是一次独立的裁定，不夹带在
+/// 本批次里。
 ///
 /// # 静默无效的情形
 ///
-/// `actor` 不存在、背包里没有匹配 `def` 的堆——与 [`resolve_pick_up`]
-/// 同一条纪律；家具再加上面三道放置前置。
-fn resolve_drop(
-    world: &WorldState,
-    actor: EntityId,
-    def: ContentIndex,
-    items: &dyn ItemCatalog,
-    ambient: AmbientSource<'_>,
-) -> Vec<Effect> {
+/// `actor` 不存在、背包里没有匹配 `def` 的堆、这一格已经立着一件放置
+/// 物——与 [`resolve_pick_up`] 同一条「静默无效，不是错误」纪律。玩家
+/// 那一侧看得见反馈，见 `crate::turn::PlayerTurnOutcome`。
+fn resolve_drop(world: &WorldState, actor: EntityId, def: ContentIndex) -> Vec<Effect> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
     let Some(stack) = agent.inventory.iter().find(|stack| stack.def == def) else {
         return Vec::new();
     };
-    if items.item(def).is_some_and(|rule| rule.furniture)
-        && !can_place_furniture(world, agent.pos, &agent.current_space, items, ambient)
-    {
+    if world.placed_at(agent.pos).is_some() {
         return Vec::new();
     }
 
@@ -2629,64 +2708,114 @@ fn resolve_drop(
             // 普通丢弃恒不带容器内容物——contents 非空是尸体专属的
             // 判据，见 GroundItemStack::contents 文档。
             contents: Vec::new(),
+            // 丢下去的东西是**躺着**的，不是立起来的——立起来走
+            // `Intent::Place`，见本函数文档「丢弃与放置是两个动作」。
+            placed: false,
         },
     ]
 }
 
-/// 这一格摆得下一件家具吗（家具层批次）——[`resolve_drop`] 放置前置的
-/// 三道判定，抽成函数是因为它同时是
-/// [`crate::craft::RecipeRule::required_station`] 那条场地前置的镜像：
-/// 一条判「摆得下吗」，一条判「摆着的是不是它」，两者必须对同一个
-/// 「一格一件家具」的前提取一致的口径。
+/// [`Intent::Place`] 结算（家具放置状态批次）：把 `actor` 背包里第一条
+/// 匹配 `def` 的整堆**立**在其当前脚下——地面上多出一条
+/// [`ll_world::item::GroundItemStack`]，且它的
+/// [`placed`](ll_world::item::GroundItemStack::placed) 为真。
 ///
-/// 逐条理由见 [`resolve_drop`] 文档「丢一件家具就是放置」一节。
-fn can_place_furniture(
+/// 与 [`resolve_drop`] 的分工见该函数文档「丢弃与放置是两个动作」一节。
+///
+/// # 四道前置，任一不成立整条意图静默作废
+///
+/// 1. **这件东西可不可以被放置**——[`crate::item::ItemRule::furniture`]。
+///    这是 `ItemDef.furniture` 在新形状下的确切含义：它回答「**能不能**
+///    立起来」，回答不了「**现在**立没立」（那是实例状态，见
+///    `GroundItemStack::placed` 文档）。查不到物品规则时按「不能放置」
+///    处理——与 [`resolve_equip`] 对查不到规则时拒绝装备同一条保守方向：
+///    放置会产生持久世界状态变化，必须要求内容明确声明。
+/// 2. **这个空间允不允许建造**——
+///    [`crate::exposure::AmbientSource::buildable_in`]，本体地表与建筑
+///    内部为真、洞窟与地下城为假。这是 `SpaceProfile::buildable`
+///    落地至今第一个真实玩法消费者。
+/// 3. **脚下这一格有没有被地形占着**——判据是地形自己声明的
+///    `TerrainDef::blocks_move`。所有者原话「有些地方上已经有物品了，
+///    例如墙啊，之类的乱七八糟，应该就没办法再放置其他东西了」：一堵
+///    墙就是那一格上已经有的那件东西。**不是**一张写死在引擎里的地形
+///    黑名单——`blocks_move` 是内容（`terrain.json5`）逐条声明的字段，
+///    任何 mod 新增的地形自带答案。查不到地形（区块没常驻）按「没被占
+///    着」处理，与 `resolve` 一贯对查不到内容的降级方向一致。
+/// 4. **这一格是不是已经立着一件东西**——一格至多一件放置物，与
+///    [`resolve_drop`] 那道闸门是同一个查询
+///    （[`ll_world::state::WorldState::placed_at`]），不是两份判据。
+///
+/// # 为什么不检查这一格上躺着的普通物品
+///
+/// 立一座炉子在一堆铁锭上面，物理上没什么荒谬的（炉子占的是这一格的
+/// 「设施位」，铁锭还散在地上）。真要禁止，代价是玩家得先把脚下清干净
+/// 才能放东西，而「清干净」本身要靠一次次拾取——那是给一个没有玩法收益
+/// 的规则配一套繁琐操作。所有者的原话只约束了反方向（**立着的**挡住
+/// 丢弃），本函数不额外发明第二条。
+fn resolve_place(
+    world: &WorldState,
+    actor: EntityId,
+    def: ContentIndex,
+    items: &dyn ItemCatalog,
+    ambient: AmbientSource<'_>,
+) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let Some(stack) = agent.inventory.iter().find(|stack| stack.def == def) else {
+        return Vec::new();
+    };
+    // ① 这件东西可不可以被放置。
+    if !items.item(def).is_some_and(|rule| rule.furniture) {
+        return Vec::new();
+    }
+    if !can_place_at(world, agent.pos, &agent.current_space, ambient) {
+        return Vec::new();
+    }
+
+    vec![
+        Effect::RemoveFromInventory {
+            actor,
+            def,
+            durability: stack.durability,
+        },
+        Effect::AddGroundItem {
+            pos: agent.pos,
+            stack: *stack,
+            dropped_at: world.clock,
+            contents: Vec::new(),
+            placed: true,
+        },
+    ]
+}
+
+/// 这一格立得下东西吗——[`resolve_place`] 的第 ②③④ 道前置。
+///
+/// 抽成函数而不是内联：它同时是「已经立着的是不是它」那条场地前置
+/// （`resolve_craft` 第 ⑤ 步经
+/// [`ll_world::state::WorldState::placed_at`]）的镜像，两者必须对同一个
+/// 「一格至多一件放置物」的前提取一致的口径。第 ① 道前置（这件东西可
+/// 不可以被放置）留在 `resolve_place` 里：它问的是**物品**，不是**格子**，
+/// 与本函数的三条不是同一类判断。
+fn can_place_at(
     world: &WorldState,
     pos: TorusPos,
     space: &Space,
-    items: &dyn ItemCatalog,
     ambient: AmbientSource<'_>,
 ) -> bool {
-    // ① 这个空间允不允许建造。
+    // ② 这个空间允不允许建造。
     if !ambient.buildable_in(space) {
         return false;
     }
-    // ② 脚下这一格有没有被地形占着。查不到地形（区块没常驻）按「没被
-    // 占着」处理——与 `resolve` 一贯对查不到内容的降级方向一致，且
-    // 这条路径上 `terrain_at` 返回 `None` 意味着行动者站在一格还没
-    // 生成的地形上，那本身是别处的问题。
+    // ③ 脚下这一格有没有被地形占着。
     if world
         .terrain_at(pos)
         .is_some_and(|kind| world.terrain_table.blocks_move(kind))
     {
         return false;
     }
-    // ③ 这一格是不是已经摆了一件家具。
-    furniture_at(world, pos, items).is_none()
-}
-
-/// 这一格上摆着的那件家具（家具层批次）——`None` 表示这格没有家具。
-///
-/// 「摆着的」= [`ll_world::state::WorldState::ground_items`] 里坐标相同、
-/// 且 [`crate::item::ItemRule::furniture`] 为真的第一条。`ground_items`
-/// 是 `Vec`（有序），同一格上真出现两件家具时取哪一条是确定的
-/// （约束 C5）——而正常路径下这不会发生，[`can_place_furniture`] 的第
-/// 三条前置就是为了让它不发生。
-fn furniture_at(
-    world: &WorldState,
-    pos: TorusPos,
-    items: &dyn ItemCatalog,
-) -> Option<ContentIndex> {
-    world
-        .ground_items
-        .iter()
-        .find(|ground| {
-            ground.pos == pos
-                && items
-                    .item(ground.stack.def)
-                    .is_some_and(|rule| rule.furniture)
-        })
-        .map(|ground| ground.stack.def)
+    // ④ 这一格是不是已经立着一件东西。
+    world.placed_at(pos).is_none()
 }
 
 /// [`Intent::Equip`] 结算（装备栏位批次，P6 第三批）：把 `actor` 背包
@@ -3010,18 +3139,25 @@ fn resolve_toggle_stealth(world: &WorldState, actor: EntityId) -> Vec<Effect> {
 /// 里逐字写着那是「一个**明知的将就**：真正该当场地的是炉子或铁砧那样
 /// 的家具」。家具层落地后这条将就没有存在理由了：
 /// [`crate::craft::RecipeRule::required_station`] 现在指向一件
-/// **带 [`crate::item::ItemRule::furniture`] 的物品**，判定是
-/// [`furniture_at`]——脚下那一格的 `ground_items` 里摆着的那件家具是不
-/// 是它。
+/// **可以被放置的物品**（`ItemDef.furniture`），判定是
+/// [`ll_world::state::WorldState::placed_at`]——脚下那一格**立着**的那
+/// 一堆是不是它。
 ///
 /// 判定仍然是「**站在这格上**」，不是「站在旁边」——`crafting-system.md`
 /// 六节那条理由（相邻判定会引入「多个相邻工作台算哪个」这类不必要的
 /// 问题）一字未改，换掉的只是「这格上的什么东西回答这个问题」。
 ///
-/// 一件**不带** `furniture` 的普通物品当不了场地：[`furniture_at`] 只
-/// 认带标志的那一条，因此「把一堆铁锭丢在脚下就能开工」不成立。指向
-/// 普通物品的配方会变成永远做不出来——这是刻意的，见
-/// `ll_mod::content_audit::inspect_recipe` 里那段注释。
+/// 判据从「这一格上有没有一件带 `furniture` 标志的物品」换成了「这一格
+/// 上**立着**的那一件是不是它」（家具放置状态批次）——一件躺在脚下、
+/// 没有被放置的炉子**当不了场地**，必须先 [`Intent::Place`] 立起来。
+/// 这正是所有者那条裁定在制作侧的直接后果：放置与否是两种不同的状态，
+/// 只有立起来的那种才是「设施」。
+///
+/// 「把一堆铁锭丢在脚下就能开工」同样不成立：铁锭 `placed` 恒为假
+/// （[`resolve_drop`] 只产出躺着的堆），且它连 `furniture` 都没有，
+/// [`resolve_place`] 第 ① 道前置就拦住了。指向普通物品的配方会变成永远
+/// 做不出来——这是刻意的，见 `ll_mod::content_audit::inspect_recipe`
+/// 里那段注释。
 ///
 /// # 全程静默失败
 ///
@@ -3205,10 +3341,11 @@ fn resolve_craft(
     if rule.requires_discovery && !agent.known_recipes.contains(&recipe) {
         return Vec::new();
     }
-    // ⑤ 场地前置——「站在这格上」，一次 furniture_at（家具层批次把它从
-    // terrain_at 换过来，见本函数文档「场地是脚下摆着的那件家具」一节）。
+    // ⑤ 场地前置——「站在这格上」，一次 `WorldState::placed_at`（家具
+    // 放置状态批次把它从 furniture_at 换过来，见本函数文档「场地是脚下
+    // **立着**的那一件」一节）。
     if let Some(station) = rule.required_station
-        && furniture_at(world, agent.pos, items) != Some(station)
+        && world.placed_at(agent.pos).map(|ground| ground.stack.def) != Some(station)
     {
         return Vec::new();
     }
