@@ -18,7 +18,8 @@ use ll_world::weather::Weather;
 /// 地表视野基准半径（格），随光照缩放。
 pub const BASE_SIGHT_RADIUS: u32 = 12;
 
-/// 把地形种类映射到图集条目名——覆盖本体注册的全部自然地形。
+/// 把地形种类映射到图集条目名——覆盖本体 `define_base` 注册的**全部
+/// 17 种**地形，一种不漏。
 ///
 /// 返回值带 `lostland:` 前缀：图集条目名统一用完整命名空间字符串（见
 /// `ll_mod::asset_vfs::ResolvedSprite::atlas_name` 文档），这张表本身
@@ -30,6 +31,40 @@ pub const BASE_SIGHT_RADIUS: u32 = 12;
 /// 的图集条目名却是 `lostland:terrain_grass`）——图集条目名描述的是
 /// 「贴图长什么样」，注册 ID 描述的是「这是哪种地形」，两者是两套独立
 /// 的字符串空间，只是恰好共享同一个本体命名空间前缀。
+///
+/// # 「一种不漏」这条为什么要单独写出来
+///
+/// 这张表此前只覆盖 10 种：8 种自然地形，加上 `floor_stone`/`wall_stone`
+/// **借用** `terrain_dirt`/`terrain_mountain` 两张自然地形图。剩下 7 种
+/// 建筑地形（`floor_wood`/`wall_wood`/`door_closed`/`door_open`/
+/// `window`/`stairs_up`/`stairs_down`）在这里返回 `None`，落到
+/// [`terrain_atlas_key`] 的 [`Registry`] 回退路径上，拿注册 ID
+/// （`lostland:wall_wood`）当图集键去查——那条回退路径本来是给 mod 地形
+/// 用的，本体地形的注册 ID 与图集条目名根本不是同一个字符串空间（见上
+/// 一段），必然查不到。后果是玩家一走进据点，每帧每格刷一条「图集条目
+/// 缺失，跳过本次绘制」的 ERROR，据点/建筑/室内一格都画不出来。
+///
+/// 守住「一种不漏」的是本文件的
+/// `全部十七种本体地形都能查到图集条目` 与
+/// `crates/ll-game/tests/atlas_coverage.rs`：前者钉这张表返回 `Some`，
+/// 后者钉那个字符串在真实图集里查得到、且对应矩形里真的有像素。此前
+/// 只有一条覆盖 8 种自然地形的测试，缺口正落在它的盲区里。
+///
+/// # 两处「借用」已经解除
+///
+/// `floor_stone`/`wall_stone` 现在各有专属贴图
+/// （`terrain_floor_stone`/`terrain_wall_stone`），不再借用泥土/山体。
+/// 理由是木质建筑地形一并有了图之后，暖褐的木地板会和同样暖褐的
+/// `terrain_dirt` 糊在一起——所有者的验收方式是「走进据点看一眼」，
+/// 木/石地板必须一眼可分。这是本批次的判断，不是所有者原话。
+///
+/// `terrain_dirt` 本身**没有**因此变成孤儿图：
+/// `crates/ll-render/examples/p1_acceptance` 拿它铺棋盘格、
+/// `crates/ll-sim/examples/p5_coordinate_acceptance` 仍按旧的借用关系
+/// 用它画石地板、`crates/ll-game/src/content.rs` 的 mod 资产覆盖验收
+/// 拿它当被覆盖的目标，三处都还在用。那两个 `examples/` 是各自冻结了
+/// 截图基准的独立 demo，不随本表改动——它们的注释已经写明「本 demo 不
+/// 新增美术资产、石地板借用 terrain_dirt」，那句话对它们自己依然成立。
 pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'static str> {
     if kind == ids.deep_water {
         Some("lostland:terrain_deep_water")
@@ -47,10 +82,24 @@ pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'s
         Some("lostland:terrain_mountain")
     } else if kind == ids.snow {
         Some("lostland:terrain_snow")
+    } else if kind == ids.floor_wood {
+        Some("lostland:terrain_floor_wood")
     } else if kind == ids.floor_stone {
-        Some("lostland:terrain_dirt")
+        Some("lostland:terrain_floor_stone")
+    } else if kind == ids.wall_wood {
+        Some("lostland:terrain_wall_wood")
     } else if kind == ids.wall_stone {
-        Some("lostland:terrain_mountain")
+        Some("lostland:terrain_wall_stone")
+    } else if kind == ids.door_closed {
+        Some("lostland:terrain_door_closed")
+    } else if kind == ids.door_open {
+        Some("lostland:terrain_door_open")
+    } else if kind == ids.window {
+        Some("lostland:terrain_window")
+    } else if kind == ids.stairs_up {
+        Some("lostland:terrain_stairs_up")
+    } else if kind == ids.stairs_down {
+        Some("lostland:terrain_stairs_down")
     } else {
         None
     }
@@ -342,11 +391,14 @@ mod tests {
         assert_eq!(key.as_deref(), Some("examplemod:lava_floor"));
     }
 
-    #[test]
-    fn 全部自然地形都能查到图集条目() {
-        // Arrange
-        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
-        let kinds = [
+    /// `define_base` 注册的全部 17 种本体地形，与
+    /// `ll_world::terrain` 里那张注册表逐条对应。
+    ///
+    /// 写成一张具名表而不是就地展开，是因为下面两条测试都要遍历它：
+    /// 一条断言「每种都查得到条目名」，一条断言「17 种查出来的名字
+    /// 两两不同」。
+    fn all_base_kinds(ids: &BaseTerrainIds) -> [TerrainKind; 17] {
+        [
             ids.deep_water,
             ids.shallow_water,
             ids.sand,
@@ -355,12 +407,58 @@ mod tests {
             ids.hill,
             ids.mountain,
             ids.snow,
-        ];
+            ids.floor_wood,
+            ids.floor_stone,
+            ids.wall_wood,
+            ids.wall_stone,
+            ids.door_closed,
+            ids.door_open,
+            ids.window,
+            ids.stairs_up,
+            ids.stairs_down,
+        ]
+    }
+
+    #[test]
+    fn 全部十七种本体地形都能查到图集条目() {
+        // 此前这条只覆盖 8 种自然地形，7 种建筑地形整个落在盲区里——
+        // 见 `terrain_entry_name` 文档「一种不漏」一节。
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
 
         // Act & Assert
-        for kind in kinds {
-            assert!(terrain_entry_name(kind, &ids).is_some());
+        for kind in all_base_kinds(&ids) {
+            assert!(
+                terrain_entry_name(kind, &ids).is_some(),
+                "地形索引 {:?} 查不到图集条目名",
+                kind.index()
+            );
         }
+    }
+
+    #[test]
+    fn 十七种本体地形的图集条目名两两不同() {
+        // 「都查得到」不等于「查到的不是同一张图」：此前 `wall_stone`
+        // 与 `mountain` 就共用 `terrain_mountain`，两条都是 Some，屏幕
+        // 上却分不出哪格是山、哪格是石墙。这条钉的是那种失效方式。
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+
+        // Act
+        let names: Vec<&str> = all_base_kinds(&ids)
+            .into_iter()
+            .map(|kind| terrain_entry_name(kind, &ids).expect("上一条测试已保证恒为 Some"))
+            .collect();
+
+        // Assert：BTreeSet 而非 HashSet——约束 C5 禁止逻辑依赖哈希
+        // 容器迭代顺序，这里虽然只数个数，仍统一用有序容器。
+        let unique: std::collections::BTreeSet<&str> = names.iter().copied().collect();
+        assert_eq!(
+            unique.len(),
+            names.len(),
+            "17 种地形只查出 {} 个不同的图集条目名：{names:?}",
+            unique.len()
+        );
     }
 
     #[test]

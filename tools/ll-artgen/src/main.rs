@@ -42,6 +42,7 @@
 //! 像素。两个生成函数共用同一批像素绘制逻辑（`sprite.rs`/`terrain.rs`），
 //! 不是两份独立实现。
 
+mod building;
 mod color;
 mod sprite;
 mod terrain;
@@ -263,21 +264,32 @@ fn generate_legacy_shared_atlas(atlas: &AtlasJson, atlas_dir: &Path) {
         .map(|entry| (entry.name.as_str(), entry.rect))
         .collect();
     let (canvas_width, canvas_height) = canvas_size(&entries);
-    // 96×112：96×96（合并资产 VFS 后的既有布局，见下方历史注释）再往下
-    // 多出一整行（y 96..112，高 16），装 HUD 皮肤层的四张占位 UI 贴图
-    // （`ui_panel_border`/`ui_panel_fill`/`ui_bar_track`/`ui_bar_fill`，
-    // 见 `assets/atlas/placeholder.json` 与 `ui.rs`）——这四张贴图的
-    // `rect.x`/`rect.y` 全部落在新增的这一整行里,不touch 任何既有条目
-    // 的矩形（项目所有者硬要求「别动图集里既有条目的矩形」）。
+    // 96×144：96×112（上一批的既有布局，见下方历史注释）再往下多出两
+    // 整行（y 112..144，各高 16），装据点建筑那九张地形贴图
+    // （`terrain_floor_wood`/`terrain_floor_stone`/`terrain_wall_wood`/
+    // `terrain_wall_stone`/`terrain_door_closed`/`terrain_door_open`/
+    // `terrain_window`/`terrain_stairs_up`/`terrain_stairs_down`，见
+    // `assets/atlas/placeholder.json` 与 `building.rs`）——这九张的
+    // `rect.x`/`rect.y` 全部落在新增的两整行里，**既有条目的矩形一个
+    // 都没动**（项目所有者硬要求「别动图集里既有条目的矩形」）。
     //
-    // 历史：96×96 是比合并资产 VFS 前的 96×72 多出一整行（y 72..96），
-    // 装当时新增的 4 张走路过渡帧（`hero_walk_2..5`，每张 16×24）——这
-    // 些帧只在遗留共享画布这条路径里需要摆坐标，松散贴图路径
-    // （`generate_loose_sprites`）不关心 `rect.x`/`rect.y`，各自的独立
-    // 画布互不影响。
+    // 画布长高会不会让五个遗留 demo 的冻结截图基准变红：不会。UV 换算
+    // 是 `(像素坐标 ± 半纹素) / 图片尺寸`（见
+    // `ll_render::atlas::normalized_uv_rect`），采样器固定
+    // `FilterMode::Nearest`——分子分母同步变化，既有条目命中的纹素中心
+    // 逐个不变，渲染结果逐像素相同。会变红的只有「既有条目的 rect 被
+    // 挪动」，那正是上面那条硬要求拦的事。
+    //
+    // 历史：96×112 是比 96×96 多出一整行（y 96..112），装 HUD 皮肤层的
+    // 四张占位 UI 贴图（`ui_panel_border`/`ui_panel_fill`/`ui_bar_track`/
+    // `ui_bar_fill`，见 `ui.rs`）；96×96 又是比合并资产 VFS 前的 96×72
+    // 多出一整行（y 72..96），装当时新增的 4 张走路过渡帧
+    // （`hero_walk_2..5`，每张 16×24）——这些帧只在遗留共享画布这条路径
+    // 里需要摆坐标，松散贴图路径（`generate_loose_sprites`）不关心
+    // `rect.x`/`rect.y`，各自的独立画布互不影响。
     assert_eq!(
         (canvas_width, canvas_height),
-        (96, 112),
+        (96, 144),
         "画布尺寸与已知布局不符，placeholder.json 的条目矩形可能被意外改动"
     );
 
@@ -331,11 +343,25 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         // 昼夜滑条底图：水平渐变,不是 `TerrainSpec` 能表达的单一主色,
         // 单独按名字分派,见 `ui.rs::decorate_day_night_bar` 文档。
         "ui_daynight_bar" => ui::decorate_day_night_bar(image, rect),
+        // 据点建筑地形（墙/地板/门/窗/楼梯）：与自然地形不同，这九张
+        // 靠**结构图案**而非「主色 + 稀疏点缀」表达自己是什么（门要有
+        // 门板与把手、窗要有窗棂、楼梯要有阶梯条带），`TerrainSpec` 那
+        // 套单一主色配方表达不了，因此各有专属画法，见 `building.rs`
+        // 模块文档。
+        "terrain_floor_wood" => building::decorate_floor_wood(image, rect),
+        "terrain_floor_stone" => building::decorate_floor_stone(image, rect),
+        "terrain_wall_wood" => building::decorate_wall_wood(image, rect),
+        "terrain_wall_stone" => building::decorate_wall_stone(image, rect),
+        "terrain_door_closed" => building::decorate_door_closed(image, rect),
+        "terrain_door_open" => building::decorate_door_open(image, rect),
+        "terrain_window" => building::decorate_window(image, rect),
+        "terrain_stairs_up" => building::decorate_stairs_up(image, rect),
+        "terrain_stairs_down" => building::decorate_stairs_down(image, rect),
         _ => match terrain::terrain_spec(name).or_else(|| ui::ui_spec(name)) {
             Some(spec) => terrain::decorate_terrain_tile(image, rect, spec),
             None => {
                 panic!(
-                    "不知道如何绘制条目 '{name}'：请在 sprite.rs、terrain.rs 或 ui.rs 里补一份画法"
+                    "不知道如何绘制条目 '{name}'：请在 sprite.rs、terrain.rs、building.rs 或 ui.rs 里补一份画法"
                 )
             }
         },
@@ -404,7 +430,7 @@ mod tests {
     }
 
     #[test]
-    fn 真实图集json解析后能算出已知的96乘112画布() {
+    fn 真实图集json解析后能算出已知的96乘144画布() {
         // 用仓库里真实的 placeholder.json 验证解析与尺寸推导没有脱节——
         // 这条测试会随仓库内容变化，一旦布局被意外改动就会在这里先
         // 炸掉，而不是留到跑生成器时才被 assert_eq! 抓住。112（不是
@@ -424,7 +450,7 @@ mod tests {
         let size = canvas_size(&entries);
 
         // Assert
-        assert_eq!(size, (96, 112));
+        assert_eq!(size, (96, 144));
     }
 
     #[test]
