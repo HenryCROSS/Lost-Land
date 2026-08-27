@@ -2,7 +2,20 @@
 
 **冻结于** 2026-08-17。**实现阶段** P6（物品与装备，[2026-08-18 规格修订] 新插入阶段，插在 P5 与原 P6 之间——本文档此前误标为 P5，但规格 §15 原 P5「玩法系统」的交付物清单从未真正包含物品/装备，这正是本轮插入新阶段要修正的认领缺口），但**类型布局必须在 P2 建 `WorldState` 前定稿**。
 
-**落地状态**：纯设计。`crates/` 中尚未找到 `ItemDef`、`ItemStack`、`Owner`、`ItemLocation`、`Quality`、`StatBonus` 等类型（已核实：全代码库检索无匹配）。本文档全部内容仍待 P6 实现验证（P2 只要求类型布局在概念上定稿，不要求落地；P5 从未实现物品系统，见 `knowledge/handoff/p5-to-p6.md` 相关文档一节）。
+**落地状态**（**[2026-08-26 阶段清算更正——原文「纯设计」已严重过期]**）：**大部分已落地。** P6 六个批次把本文档的主体实现完毕，逐条核实与提交号见 [P6/P7/P8 阶段清算](../audit/2026-08-26-phase-reckoning-p6-p8.md) 二节。
+
+| 本文档的类型 | 落地情况 | 位置 |
+|---|---|---|
+| `ItemStack`（实例）与堆叠/合并规则 | ✅ | `crates/ll-world/src/item.rs:84`，`can_merge`/`merge_stacks`/`split_stack` 在 `:754`/`:786`/`:821` |
+| `ItemDef`（类型定义）与注册表 | ✅ | `crates/ll-mod/src/item.rs`（1347 行）；本体二十四件物品在 `mods/lostland/items.json5` |
+| `StatBonus` | ✅ | `crates/ll-world/src/item.rs:699`（配套 `StatTarget` 在 `:625`） |
+| 地面物品与 `dropped_at` 老化 | ✅ | `GroundItemStack` 在 `crates/ll-world/src/item.rs:200`；老化回收 `cleanup_aged_ground_items` |
+| 耐久 | ✅ 且超出本文档范围 | `ItemStack::durability`；磨损通道 `WearChannels` 在 `:551`（挨打/使用两条），判据走物品标签注册表 |
+| **`Owner`（归属）** | ❌ **零实现，但属于显式拒绝** | `crates/ll-world/src/item.rs:31-57` 整段模块文档写明了拒绝理由（三个消费场景全不存在）、最小形状、以及落地时必须同批改 `can_merge`。完整设计另见 [物品归属与犯罪判定系统](ownership-and-crime-detection.md)。**拒绝的前提已在 P7 期间变化**（卫兵盘查与 FOV 目击判定都已落地），需要一次新裁定 |
+| `ItemLocation` | ⚠️ 未落地成类型 | 「在背包 / 在地面 / 在装备栏」三种位置分别由 `Agent::inventory`、`WorldState::ground_items`、`Agent::equipment` 三个容器表达，没有一个统一的 `ItemLocation` 枚举——这是实现对设计的一处简化，不是遗漏 |
+| `Quality` | ❌ 零实现 | P6 第一批与 `owner`/`modifiers` 一并按 YAGNI 排除，理由同上 |
+
+**读代码请以上述文件为准，不要按本文档字面细节反推实现。**
 
 所有数值一律整数（见 [0002 世界状态一律用整数](../decisions/0002-integer-only-world-state.md)）。需要小数的量用 `Milli`（千分之一为单位）。
 

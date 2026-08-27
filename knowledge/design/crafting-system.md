@@ -1,11 +1,20 @@
 # 制作系统：一套机制、四类配方、两条前置
 
-**落地状态**：纯设计，零实现。全代码库检索（`crates/**`/`mods/**`）确认 `RecipeDef`/`RecipeTable`/
-`RecipeCategoryDef`/`register-recipe`/`Intent::Craft`/`resolve_craft` **无任何匹配**——
-`food-and-cooking-system.md` 三/四/七节给出的形状至今没有一行代码。本文档要建在其上的地基
-（`ItemDef`/`ItemStack`/`Agent.inventory`/`Agent.equipment`/`Effect::ConsumeInventoryItem`/
-`Effect::MergeIntoInventory`/`WorldState::terrain_at`/`Agent.script_state`/`kill_progress_effects`/
-`WeaponCategoryTable` 与 `DamageCategoryTable` 两张类别表）**全部已实装**，逐项核实见一节。
+**落地状态**（**[2026-08-26 阶段清算更正——原文「纯设计，零实现」已过期]**）：**主体已落地。**
+提交 `08cdeb0`（`feat: 制作系统落地——两张内容表、Intent::Craft 与副职闸门接进回合引擎`）落地了
+`RecipeDef`/`RecipeTable`（`crates/ll-mod/src/recipe.rs`）、`RecipeCategoryDef`
+（`crates/ll-mod/src/recipe_category.rs`）、`Intent::Craft`（`crates/ll-sim/src/intent.rs:436`）与
+`resolve_craft`（`crates/ll-sim/src/craft.rs`、`resolve.rs`）；本体九条配方在 `mods/lostland/crafting.json5`
+（提交 `2a36fcf`），配方发现（读书与试做两条路径）在 `e3f00c1`，制作类副职奖励 `RuleModifier::CraftYield`
+在 `c838518`，锻造场地从地形改指炉子（家具批次）在 `dc7d0d9`。
+
+**注意载体已变**：原文提到的 `register-recipe` 这类 Steel 注册函数**不再存在**——脚本系统整体拆除
+（ADR [0028](../decisions/0028-steel-engine-construction-memory-corruption.md)），内容改走
+`mods/<id>/*.json5`。`Agent.script_state` 也已改名 `mod_state`（提交 `2661a27`）。**载体失效，本文档的机制结论不失效。**
+
+本文档要建在其上的地基（`ItemDef`/`ItemStack`/`Agent.inventory`/`Agent.equipment`/`Effect::ConsumeInventoryItem`/
+`Effect::MergeIntoInventory`/`WorldState::terrain_at`/`kill_progress_effects`/`WeaponCategoryTable` 与
+`DamageCategoryTable` 两张类别表）当时已实装，逐项核实见一节，那部分仍然准确。
 
 **冻结于** 2026-08-22，基线提交 `e81e03c`（`main` 分支，卫兵盘查批次之后）。
 

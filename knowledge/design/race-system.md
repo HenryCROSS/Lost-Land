@@ -8,6 +8,11 @@
 > [2026-08-26 三份文档落地状态复核](../audit/2026-08-26-society-race-conflicts-reverification.md)，
 > 摘要见本文档末尾「⚠ 落地状态复核更正（2026-08-26）」。另：本文档**完全没有覆盖「怪物种族」**，
 > 那是一处整节级别的空白，不是遗漏一句话。
+>
+> **【2026-08-26 跟进：那份复核本身也有三处过期了，其中两处是好消息】** 文化批次（提交 `4aec07e`）在同一天晚些时候落地。
+> 见本文档最末「⚠ 跟进更正（2026-08-26，文化批次之后）」一节。**最要紧的一条**：
+> **八节「存储」的实现债务已经还清**——薄层的 `race` 列已删除，种族改由「出生聚落 + 文化的建立者种族权重」现算派生，
+> 正是本文档八节原本的设计。下面「落地状态」里那句「落地方式与本文档『存储』一节的设计有一处未对齐的实现债务」**已不再成立**。
 
 **落地状态**：部分落地，且落地方式与本文档「存储」一节的设计有一处未对齐的实现债务，去代码核实结果如下：
 
@@ -444,3 +449,59 @@ id / display_name_key / stat_modifiers / darkvision_cells / footprint / lifespan
 **破法已有先例**：`TerrainTable`、`ResourceTable` 都是**类型定义在 `ll-world`、
 数据由 `ll-mod` 装载器填、注入进世界生成**。种族亲和表、文化表、敌对表都应当走同一条路，
 而不是把内容注册表倒灌进 `ll-world`。
+
+---
+
+## ⚠ 跟进更正（2026-08-26，文化批次之后）
+
+**上面那一节写于同一天更早的时候，基线 `a9f6691`；提交 `4aec07e`（`feat: 文化定义 + 关系派生基线 + 敌对战争`）落地后，它有三处过期了，其中两处是「债务已经还清」。** 本节只追加，不删改。基线 `ed1584f`。完整逐条核实见
+[P6/P7/P8 阶段清算](../audit/2026-08-26-phase-reckoning-p6-p8.md)。
+
+### 1. 八节「存储」的实现债务：**已经还清了**
+
+上一节四写着「`ThinPopulation.race` 确实还是显式存储列……债务框里写的全对」，并建议「在 `CultureDef` 那一批顺手还掉」。**那一批照做了。**
+
+`crates/ll-world/src/entity/thin.rs` 今天的字段是七列，**没有 `race`**：
+
+```text
+generation   settlement   profession   family
+wallet_rebase   wallet_delta   rebase_at
+```
+
+模块文档 `:42-62` 记录了还债的完整推理，与本文档八节的设计逐条对上：
+
+- **为什么当时不修**：「权重表还没落地」。**那条理由现在没有了**——权重表落地了，而且落在内容里（`crates/ll-world/src/culture.rs` 的 `CultureAttrs::founder_races`，由 `ll_mod::roster::settlement_founder_race` 按它抽一次）。
+- **零列现算怎么实现**：`promote()` 改为由调用方递一个 `race` 参数进来，与 `at`/`zone`/`surface_profile` 三个参数同一条既有理由——薄层不持有注册表、也不持有文化表。
+- **判据**：**能派生的不进存档**（ADR [0009](../decisions/0009-derive-by-default-store-only-deviation.md)）。
+- **代价**：零。薄层在生产路径上从来没有被写入过一次，`population` 也不参与那条链路。上一节四预判的「现在还的代价接近零」被证实了。
+
+**本文档八节的「实现债务框」应当被视为已结案。**
+
+### 2. `birth_settlement`：不是「新增一列」，是**认定 `settlement` 就是它**——这一步值得所有者确认一次
+
+还债时的推理是：「`settlement` 那一列本来就是『出生聚落』——`birth_settlement` 不需要新增，它一直在」（`thin.rs:54`）。
+
+**但本文档八节把两者设计成不同的东西**：`birth_settlement` 终身不变，`settlement` 随迁徙变化。今天没有迁徙系统，两者确实是同一件事；**迁徙一旦落地，这个等号就断了，而那时薄层里可能已经有真实数据。**
+
+**如实标注为一处待确认的语义合并**，不是缺陷：现在拆成两列的代价仍然接近零（薄层生产中仍无写入），拖到迁徙落地之后就要付迁移代价。已列入
+[P6/P7/P8 阶段清算](../audit/2026-08-26-phase-reckoning-p6-p8.md) 七节待所有者裁定项。
+
+### 3. 六节「建立者种族的资源亲和是 Rust 硬编码的三元数组」：**已经不成立**
+
+上一节六写着「`roster.rs` 的 `race_weights` 返回 `[WeightedSlot; 3]`，按 `SETTLEMENT_RACE_IDS = ["lostland:human", "lostland:dwarf", "lostland:elf"]` 解析，规则写死为『食物→人类、金属→矮人、木材→精灵』。**第三方 mod 加一个种族，它拿不到任何选址亲和，一座据点都不会属于它。**」
+
+**那个三元数组已经删掉了**（`crates/ll-mod/src/roster.rs:335` 保留了一段「在此之前，本模块有一个 `SETTLEMENT_RACE_IDS: [&str; 3] = ...`」的历史注记）。今天建立者种族由**文化**决定：一座据点的文化（`SettlementSite::culture`）带一份 `CultureAttrs::founder_races: Vec<(ContentIndex, u32)>`，`settlement_founder_race`（`roster.rs:696`）按它加权抽一次。
+
+**第三方 mod 现在拿得到据点了**——加一份 `cultures.json5` 条目并在 `founder_races` 里列上自己的种族即可。上一节六指出的「种族这一侧还停在职业那一侧改造之前的形态」这个不对称，**已经消除**。
+
+### 4. 五节「`race_affinity` 要挂的 `CultureDef` 完全不存在」：部分不成立
+
+文化表存在了（`crates/ll-world/src/culture.rs`），但**类型不叫 `CultureDef`**，是 `CultureKind`/`CultureAttrs`/`CultureTable` 三个（走 `TerrainKind`/`TerrainAttrs`/`TerrainTable` 的既有形状）。本文档十节的 `race_affinity` 在代码里拆成了两个字段：`founder_races`（正向亲和，驱动建立者种族）与 `hostility`（负向，驱动战争配对）。`culture.rs:177` 明确写着 `hostility` **不做任何对称化**，判据引的正是本文档十节。
+
+**五节那条硬约束（种族绝不可成为职业声望表的第三个维度，必须乘法分解）仍然成立，且仍未被违反**——文化批次的抽取路径「一个字节的种族数据都不读」，反而是从另一个方向绕开了这个风险。
+
+### 5. 三节（`footprint`/`lifespan_years` 零消费者）与六节（怪物种族是整节级空白）：**完全没有变**
+
+- 两个字段仍然零消费者，仍然挂在 `scripts/ci/check_field_consumers.py` 的豁免清单里（`:216`/`:217`），各带一条写明理由的豁免。**这是第二次提出「接线还是摘掉」这个问题**，见
+  [P6/P7/P8 阶段清算](../audit/2026-08-26-phase-reckoning-p6-p8.md) 七节第 2 条。
+- 怪物种族仍然没有任何一节覆盖。**世界上仍然没有地方生成它们**：`Effect::SpawnActor` 不存在，世界生成期只经 `ll_mod::roster` 造据点居民。文化批次让哥布林**理论上**能建部落了（只要给它配一份文化并在 `founder_races` 里列上），但 `mods/lostland/cultures.json5` 里有没有这样一份文化、以及部落该长什么样，仍属复核文档六节「第二批」，未动。

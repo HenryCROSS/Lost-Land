@@ -2,7 +2,14 @@
 
 **冻结于** 2026-08-17。**实现阶段** P6（物品与装备，[2026-08-18 规格修订] 新插入阶段，插在 P5 与原 P6 之间——本文档此前误标为 P5「玩法系统」，但该阶段交付物清单从未真正包含装备，这正是本轮插入新阶段要修正的认领缺口），但**类型布局必须在 P2 建 `WorldState` 前定稿**。
 
-**落地状态**：纯设计。`crates/` 中尚未找到 `SlotMask` 或本文档定义的任何槽位类型（已核实：全代码库检索无匹配）。
+**落地状态**（**[2026-08-26 阶段清算更正——原文「纯设计」已过期]**）：**已完整落地**（P6 第三批，提交 `b92f587`）。逐条核实见 [P6/P7/P8 阶段清算](../audit/2026-08-26-phase-reckoning-p6-p8.md) 二节。
+
+- `EquipSlot` 与**全部 22 个槽位常量**：`crates/ll-world/src/item.rs:305-347`，`ENGINE_SLOT_COUNT: u8 = 22` 在 `:352`——本文档定义的 22 个一个不少。
+- `SlotMask`：同文件 `:464`。`MOD_RESERVED_BITS = 32 - 22`（`:472`）给 mod 自定义槽位留了 10 位，`mod_bit`/`union`/`intersects`/`contains_slot`/`anchor_slot` 均已实现。
+- 占位冲突结算与 `Intent::Equip`/`Unequip`：`crates/ll-sim/src/item.rs` 的 `equip_mask_of`（`:342`）/`conflicting_anchors`（`:356`）/`outfit_from_inventory`（`:419`），意图定义在 `crates/ll-sim/src/intent.rs:278`/`:296`，两者都已接到真实键位。
+- 装备属性接进战斗：`derive_stats`/`derive_stats_at`（`crates/ll-sim/src/resolve.rs:399`/`:442`），耐久归零的装备不贡献加成（`:483`）。
+
+**读代码请以上述文件为准，不要按本文档字面细节反推实现。**
 
 ## 一条规则覆盖所有特例
 

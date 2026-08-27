@@ -3,6 +3,8 @@
 **冻结于** 2026-08-17。**实现阶段** P9（智能体经济与人口；[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P8 顺移为 P9）为主，但**归属字段必须在 P3 建实体时就预留**，否则 P9 落地要改遍所有实体与存档。
 
 > **【2026-08-26 复核：以下「落地状态」与三节已过期，正文原样保留，更正见文末】** 逐节复核结果与证据在 [2026-08-26 三份文档落地状态复核](../audit/2026-08-26-society-race-conflicts-reverification.md)，本文档末尾「⚠ 落地状态复核更正（2026-08-26）」一节给出摘要。三处最要紧的：`Affiliation.org` 的类型已经变了；`StructureKind` 不是「未落地」而是**已被否决**；宗教一节里「通过 Steel 脚本定义」的载体已随脚本系统整体拆除而失效（结论不失效）。
+>
+> **【2026-08-26 跟进：那份复核本身也有四处过期了】** 文化批次（提交 `4aec07e`）在同一天晚些时候落地，推翻了复核更正段的四条。见本文档最末「⚠ 跟进更正（2026-08-26，文化批次之后）」一节。**两条最要紧的**：`AffiliationKind` 现在是**五个**变体（`Profession` 已删除，一节正文与下面「落地状态」里的「六类」说法已过期）；文化已经有真正的内容表，但**类型不叫 `CultureDef`**，是 `CultureKind`/`CultureAttrs`/`CultureTable` 三个。
 
 **落地状态**：部分落地。`Affiliation`/`AffiliationKind`（`crates/ll-world/src/entity/affiliation.rs`）与 `Agent.affiliations`/`wallet`/`profession` 字段（`crates/ll-world/src/entity/agent.rs`）已落地；`NamingRules`（`crates/ll-world/src/naming.rs`）已落地，但只是 `CultureDef.naming` 这一个子字段，完整 `CultureDef` 未落地。关系派生基线、`Kinship`、`Traits`、`StructureKind`、宗教戒律系统、LOD 组织聚合均**未落地**，仍是纯设计。
 
@@ -590,3 +592,67 @@ pub struct Agent {
    见复核文档四之四。
 3. **「战争认敌对」会把关系派生基线从锦上添花变成世界生成的硬前置**，因而改变下一批的优先级；
    顺序建议见复核文档六节。
+
+---
+
+## ⚠ 跟进更正（2026-08-26，文化批次之后）
+
+**上面那一节写于同一天更早的时候，基线 `a9f6691`；提交 `4aec07e`（`feat: 文化定义 + 关系派生基线 + 敌对战争`）落地后，它自己也有四处过期了。** 本节只追加，不删改。基线 `ed1584f`。完整逐条核实见
+[P6/P7/P8 阶段清算](../audit/2026-08-26-phase-reckoning-p6-p8.md)。
+
+### 1. `AffiliationKind` 现在是**五个**变体，不是六个——`Profession` 已删除
+
+上一节一、1 写着「六个 `AffiliationKind` 变体一字未改」，一节正文与
+[总索引](README.md) 也都写着「势力/宗教/行会/文化/家族/**职业**六类共用一个数据结构」。**今天是五个**：
+
+```text
+Faction   Religion   Guild   Culture   Family
+```
+
+`crates/ll-world/src/entity/affiliation.rs` 模块文档记录了删除过程与一处**裁定无法字面照办**的情况：项目所有者的裁定是「`Profession` 改名为 `Guild`」，理由是「一个铁匠可以不加入铁匠行会——从属关系表达的是行会成员身份」；但 `Guild` **本来就已经存在**（自 P3 起六个变体里的第三个，一字未改），改名会撞出两个同名变体。**按裁定的意图，正确动作是删掉 `Profession`**——所有者要的那件事已经由现成的 `Guild` 表达了。
+
+删除**不是一次存档迁移**：`Profession` 从未被构造过。
+
+**顺带解决了一个挂了四轮没等到裁定的问题**：`Agent.profession` 与 `AffiliationKind::Profession` 在描述同一件事、要不要合并——今天的答案是「从属关系里不再有职业这一类，职业只由 `Agent.profession` 表达」，但这个答案是**删除的副产品，不是一次裁定**。若这不是所要的结果，需要主动推翻。
+
+### 2. 四节说「`CultureDef` 六个字段只落地了一个」——今天落地了四个，但**类型不叫 `CultureDef`**
+
+文化走的是 `TerrainTable`/`ResourceTable` 那条既有路线：**类型定义在 `ll-world`，数据由 `ll-mod` 从 `mods/lostland/cultures.json5` 装载，整张表注入世界生成**。因此代码里的名字是三个，不是一个：
+
+| 本文档里的名字 | 代码里的名字 | 位置 |
+|---|---|---|
+| （文化的身份） | `CultureKind`（`ContentIndex` 新类型） | `crates/ll-world/src/culture.rs:72` |
+| `CultureDef` 的字段载荷 | `CultureAttrs` | `crates/ll-world/src/culture.rs:98` |
+| （注册表） | `CultureTable` | `crates/ll-world/src/culture.rs:232` |
+
+`CultureAttrs` 的实际字段与本文档二节草图的对应关系：
+
+| 本文档字段 | 落地情况 | 代码字段 | 真实消费者 |
+|---|---|---|---|
+| `building_materials` | ✅ 落地，但只有墙 | `wall_terrain` | `settlement.rs` 的 `house_tiles`/`ruin_tiles`（`:502`）。**地板仍恒为木地板**，代码注释写明「地板不影响可玩性」 |
+| `site_terrain` | ✅ 落地 | `home_terrain` | `chronicle.rs` 的 `EpochRun::culture_weights` |
+| `economy_weights` | ⚠️ 落地成**单值**而非权重表 | `economy: ResourceCategory` | 同上 |
+| `naming` | ❌ **仍未落地** | — | `NamingRules` 的唯一消费者仍是 `ll-sim/examples/p3_acceptance` 这个 demo。**NPC 至今没有名字**，`Agent` 连 `name` 字段都没有 |
+| `social_structure` | ❌ 未落地 | — | — |
+| `religion_affinity` | ❌ 未落地 | — | — |
+| `race_affinity`（[种族系统](race-system.md) 十节追加） | ✅ 落地，但拆成了两个字段 | `founder_races: Vec<(ContentIndex, u32)>` 与 `hostility: Vec<(ContentIndex, u32)>` | `ll_mod::roster::settlement_founder_race`；`chronicle::wage_wars`/`pick_target` |
+| 职业声望表（四之三要求、二节结构体漏了的那个） | ❌ 未落地 | — | 本文档自身那处不完整**仍然存在** |
+
+另外两条：
+
+- **文化在拓荒那一刻按「资源 + 地形 + 邻近据点 + 一点随机」抽一次，一个字节的种族数据都不读**（所有者裁定）。这与本文档设想的「种族 → 文化」方向相反，随机走独立的 `CHRONICLE_CULTURE_STREAM_ID`（约束 C3）。
+- **文化不进存档**（ADR [0009](../decisions/0009-derive-by-default-store-only-deviation.md)），随编年史重新派生。
+
+### 3. 三节「文化偏好那一半是空的」已经不成立
+
+上一节三、末尾写着「『文化偏好 × 周边资源点』里『文化偏好』那一半是空的——因为 `CultureDef` 完全不存在」。**今天两半都在了**：`SettlementSite::culture`（`crates/ll-world/src/settlement.rs:276`）带着文化，建材、选址加分、经济画像、建立者种族四条都读它。
+
+**「战争认敌对」也落地了**：敌意是既有 1/8 掷骰的**加分项**，人口阈值与优势比两条闸门一字未动；`nearest_rival` 改名 `pick_target`，排序键加上敌意这一维，全表敌意为 0 时退化成与旧行为逐位相同的「最近优先」。
+
+### 4. 二节「整套归属体系今天没有生产者」——**这一条完全没有变**
+
+`affiliations: Vec::new()`/`wallet: 0` 仍然硬编码在两条唯一生产路径（`crates/ll-game/src/world.rs:544-545`、`crates/ll-mod/src/roster.rs:802-803`）；`OrgInstance`（`crates/ll-world/src/entity/org.rs:21`）仍然零生产构造点；`is_hostile` 仍然恒走「无势力 → 对谁都敌对」那条退化分支。
+
+**文化批次让「文化」这一类有了内容表与据点级的生产者，但个体级的 `Affiliation` 一条都没有产出过。** `affiliation.rs` 的 `Culture` 变体文档已经如实写下这一点：「这一类现在有了真正的内容表与真正的生产者……**但个体级的 `Affiliation` 仍然没有生产者**……如实标注，不假装已接线。」
+
+复核文档六节的三批拆分里，**第三批「世界生成期造 `OrgInstance`，给 `Agent`/名册真的填 `Affiliation`」仍未动**——那是让整套归属体系第一次有生产者的那一步，也是 P8（随从/指令/派工）的硬前置，见 [P7 → P8 交接清单](../handoff/p7-to-p8.md) 四节。
