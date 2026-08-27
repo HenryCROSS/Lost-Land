@@ -1,12 +1,36 @@
-//! 归属：势力 / 宗教 / 行会 / 文化 / 家族 / 职业共用的一个结构。
+//! 归属：势力 / 宗教 / 行会 / 文化 / 家族共用的一个结构。
 //!
 //! 完整语义冻结在 `knowledge/design/society-and-affiliation.md` 第一
-//! 节：这六类归属向游戏逻辑提出的问题完全相同——「这个实体属于谁」
+//! 节：这几类归属向游戏逻辑提出的问题完全相同——「这个实体属于谁」
 //! 「关系好到什么程度」——分成多套并行结构就要写多遍偷窃判定、多遍
 //! 交易折扣、多遍行为树条件。实现阶段是 P8，本任务只建 P3 建
 //! [`crate::entity::Agent`] 时必须已经存在的字段布局，理由同
 //! [`crate::entity::Goal`]：归属字段必须在 P3 建实体时就预留，否则 P8
 //! 落地要改遍所有实体与存档。
+//!
+//! # `Profession` 这个变体已经删掉了（文化批次）
+//!
+//! 项目所有者的裁定：
+//!
+//! > 「`Agent.profession` 是职业的唯一真相源。`AffiliationKind::
+//! > Profession` 改名为 `Guild`。一个铁匠可以不加入铁匠行会——从属
+//! > 关系表达的是行会成员身份，不是职业本身。」
+//!
+//! **裁定的意图照办，但「改名为 `Guild`」这一步在代码里做不到：
+//! [`AffiliationKind::Guild`] 本来就已经存在**（六个变体里的第三个，
+//! 一字未改地存在于本文件自 P3 起的每一个版本里）。把 `Profession`
+//! 改名成 `Guild` 会撞出两个同名变体。
+//!
+//! 按裁定的**意图**，正确动作是**删掉 `Profession`**：所有者要的
+//! 「从属关系表达的是行会成员身份」这件事，已经由现成的 `Guild` 变体
+//! 表达着；而「这个人干哪一行」由 `Agent.profession: ContentIndex`
+//! 单列表达。两者从此不重叠，`settlements-structures-and-npc-spawning.md`
+//! 十二节 1 挂了很久的那条「职业到底有几个真相源」就此结案：**一个**。
+//!
+//! 删掉是安全的，不是一次存档迁移：`Profession` 这个变体**从未被构造
+//! 过一次**（全仓库零构造点），而生产路径上两条 `Agent` 构造路径的
+//! `affiliations` 至今都写死 `Vec::new()`，因此没有任何存档里可能出现
+//! 这个变体名。
 
 use ll_core::ident::{ContentIndex, WorldId};
 
@@ -24,17 +48,20 @@ pub enum AffiliationKind {
     Guild,
     /// 文化：与生俱来，不索取任何东西，只塑造偏好。mod 装载时确定的
     /// 类型，走 [`OrgRef::Def`]。
+    ///
+    /// 这一类现在有了真正的内容表（[`crate::culture::CultureTable`]）
+    /// 与真正的生产者（据点的文化，见
+    /// [`crate::settlement::SettlementSite::culture`]）——但**个体级
+    /// 的 `Affiliation` 仍然没有生产者**：两条 `Agent` 构造路径的
+    /// `affiliations` 至今写死 `Vec::new()`。如实标注，不假装已接线。
     Culture,
     /// 家族：血缘与姻亲。与生俱来，可因联姻扩展。世界生成期间造出来
     /// 的实例，走 [`OrgRef::Instance`]。
     Family,
-    /// 职业：你实际在干什么。`standing` 在此表示熟练度 / 资历。mod
-    /// 装载时确定的类型，走 [`OrgRef::Def`]。
-    Profession,
 }
 
 /// 归属指向的具体组织——类型还是实例，由 [`AffiliationKind`] 决定
-/// （`Culture`/`Profession` 恒为 `Def`，其余恒为 `Instance`）。
+/// （`Culture` 恒为 `Def`，其余恒为 `Instance`）。
 ///
 /// 判据冻结在 `knowledge/design/identity-and-ids.md` 二：**mod 定义
 /// 「种类」，世界生成造「个体」。** 用枚举而不是给 [`Affiliation`] 拆
@@ -45,8 +72,9 @@ pub enum AffiliationKind {
 /// 什么形状的方向，未裁定具体到枚举还是双字段。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum OrgRef {
-    /// 类型：文化、职业——mod 装载时确定，集合封闭、数量小，走
-    /// [`ContentIndex`]。
+    /// 类型：文化——mod 装载时确定，集合封闭、数量小，走
+    /// [`ContentIndex`]。（`Profession` 曾经也走这一支，随文化批次
+    /// 删掉，见 [`AffiliationKind`] 文档。）
     Def(ContentIndex),
     /// 实例：势力、宗教、行会、家族——世界生成期间造出来的具体个体，
     /// 数量随世界规模增长，走 [`WorldId`]。

@@ -70,6 +70,7 @@ fn world_at_a_living_settlement() -> (
         &content.registry,
         &content.class_table,
         &content.resource_table,
+        &content.culture_table,
     );
 
     let site = {
@@ -222,6 +223,7 @@ fn 未探索区域的据点不物化任何实体但名册随时算得出来() {
         &content.registry,
         &content.class_table,
         &content.resource_table,
+        &content.culture_table,
     );
     let chronicle = game_world
         .world

@@ -1,0 +1,157 @@
+// 本体文化名册——一座据点**信什么、怎么建、谁来建、跟谁不对付**的
+// 那一层。
+//
+// schema 见 `crates/ll-mod/src/content_schema_world.rs` 的 `CultureFile`；
+// 抽取算法与每个字段的消费者见 `crates/ll-world/src/culture.rs` 模块
+// 文档。
+//
+// ── 项目所有者的裁决 ──────────────────────────────────────────────
+//
+//   「文化由据点建立时决定，不看种族。选择依据是资源 + 地形 + 邻近
+//    据点 + 一点随机。建立者种族给权重但不锁死。」
+//   「一个哥布林营地和一座矮人矿城是同一种东西。」
+//   「每个聚居地可能组成势力，每个聚居地存在一种文化信仰。」
+//
+// 「一种文化信仰」落地成 `SettlementSite.culture`：每座据点恰好一份，
+// 拓荒那一刻抽出来。抽取一个字节的种族数据都不读；种族反过来由文化的
+// `founder_races` 给出——方向与所有者原话相反，完整理由记在
+// `CultureAttrs::founder_races` 的字段文档里（一句话：反过来要求先有
+// 种族再有文化，而建立者种族住在 `ll-mod`、抽取发生在 `ll-world`，
+// 那需要往世界生成里再注入第二张表，表面积翻倍而表达力不增）。
+//
+// ── 为什么是这六条 ────────────────────────────────────────────────
+//
+// 每一条都必须回答「它在世界生成里真的会被抽中吗、抽中之后世界哪里
+// 不一样」。判据与 `resources.json5` 那七条逐字相同。六条各自占住
+// **一个资源大类 + 一种地形**的组合，于是五个大类全部有对口文化，
+// 「这地方靠什么吃饭」这个已经落地的量真的在改变文化分布：
+//
+//   农庄    食物 × 草地。最常见的一档（草地是最普遍的可住地形）。
+//   矿邑    金属 × 山地。验收线里那座「矮人矿城」。
+//   林居    木材 × 森林。
+//   渔港    水   × 沙地。沙地是海岸线，与「靠水吃饭」配成一对。
+//   石砦    石材 × 丘陵。石材大类此前在文化这一侧是空的。
+//   部落    木材 × 丘陵。**唯一声明敌对的一条**，见下。
+//
+// 部落与林居同属木材大类、地形却不同（丘陵 vs 森林）——这是刻意的：
+// 两者在同一片林地上竞争，谁扎下根由地形与邻居决定，于是「哥布林的
+// 地界」与「精灵的地界」会长成互相咬合的两片，而不是各占半个大陆。
+//
+// ── 敌对：有向，且只有一条 ────────────────────────────────────────
+//
+// 敌意是开战概率的**加分项**（分母 8），不是开战的必要条件：人口阈值
+// (12) 与优势比 (2×) 两条闸门一个字都没动。全表敌意为 0 时战争行为与
+// 文化落地之前逐位相同。
+//
+// 只给部落这一条声明敌对，理由是**克制**：本体六条文化两两之间有三十
+// 对关系，凭空写满三十条就是三十条没有来路的内容。哥布林与文明不共戴
+// 天是这套设定里唯一不需要额外解释的一条。
+//
+// 不对称是刻意的（`CultureAttrs::hostility` 文档「刻意允许不对称」）：
+// 部落对矿邑 6，矿邑对部落只有 3——哥布林主动来劫掠，矮人只是有时候
+// 出兵清剿。
+{
+  cultures: [
+    // 农庄：食物 × 草地。人类为主，三族都可能。
+    {
+      id: "lostland:farmstead",
+      display_name_key: "lostland:culture.farmstead.display_name",
+      economy: "food",
+      home_terrain: "lostland:grass",
+      // 木墙：平原上木料比石料好取。
+      wall_terrain: "lostland:wall_wood",
+      // 「给权重但不锁死」：矮人开的农庄、精灵开的农庄都出得来，只是
+      // 少见。三条合计 12，人类占八成。
+      founder_races: [
+        { race: "lostland:human", weight: 8 },
+        { race: "lostland:dwarf", weight: 2 },
+        { race: "lostland:elf", weight: 2 },
+      ],
+    },
+
+    // 矿邑：金属 × 山地。验收线里的「矮人矿城」就是这一条。
+    {
+      id: "lostland:mining_hold",
+      display_name_key: "lostland:culture.mining_hold.display_name",
+      economy: "metal",
+      home_terrain: "lostland:mountain",
+      // 石墙：这是「矮人矿城在地上看得出来是矮人矿城」的落点——铺设
+      // 路径直接用它，见 `ll_world::settlement::house_tiles`。
+      wall_terrain: "lostland:wall_stone",
+      founder_races: [
+        { race: "lostland:dwarf", weight: 8 },
+        { race: "lostland:human", weight: 3 },
+      ],
+      // 矮人对哥布林只有 3：出兵清剿，不是不共戴天。
+      hostility: [
+        { culture: "lostland:goblin_warband", hostility: 3 },
+      ],
+    },
+
+    // 林居：木材 × 森林。
+    {
+      id: "lostland:forest_kin",
+      display_name_key: "lostland:culture.forest_kin.display_name",
+      economy: "timber",
+      home_terrain: "lostland:forest",
+      wall_terrain: "lostland:wall_wood",
+      founder_races: [
+        { race: "lostland:elf", weight: 8 },
+        { race: "lostland:human", weight: 3 },
+      ],
+    },
+
+    // 渔港：水 × 沙地。沙地是海岸线那一圈可住地形。
+    {
+      id: "lostland:harbour",
+      display_name_key: "lostland:culture.harbour.display_name",
+      economy: "water",
+      home_terrain: "lostland:sand",
+      wall_terrain: "lostland:wall_wood",
+      founder_races: [
+        { race: "lostland:human", weight: 7 },
+        { race: "lostland:elf", weight: 3 },
+      ],
+    },
+
+    // 石砦：石材 × 丘陵。
+    {
+      id: "lostland:stonecutters",
+      display_name_key: "lostland:culture.stonecutters.display_name",
+      economy: "stone",
+      home_terrain: "lostland:hill",
+      wall_terrain: "lostland:wall_stone",
+      founder_races: [
+        { race: "lostland:dwarf", weight: 6 },
+        { race: "lostland:human", weight: 4 },
+      ],
+    },
+
+    // 部落：木材 × 丘陵。哥布林专属，唯一一条主动敌对的文化。
+    //
+    // 建立者只有哥布林一族：部落这个形态在本体设定里没有别的种族会
+    // 采用。这不是「锁死」的反例——锁死指的是「种族决定文化」，而这里
+    // 是一份**只有一个候选**的权重表，加一条 `{ race: "mymod:orc",
+    // weight: 5 }` 就多一个候选，一行 Rust 都不用改。
+    {
+      id: "lostland:goblin_warband",
+      display_name_key: "lostland:culture.goblin_warband.display_name",
+      economy: "timber",
+      home_terrain: "lostland:hill",
+      // 木墙：营地是木头搭的。与矿邑的石墙一对照，废墟在地上也分得
+      // 出来是谁的——见 `ll_world::settlement::ruin_tiles`。
+      wall_terrain: "lostland:wall_wood",
+      founder_races: [
+        { race: "lostland:goblin", weight: 10 },
+      ],
+      // 对矿邑 6（分子 1+6=7，分母 8）：够强的哥布林部落遇上矿邑几乎
+      // 必打。对农庄 4、石砦 4：也劫掠，但没那么执着。对林居与渔港
+      // 不声明——精灵住得深、渔港太远，是内容决定不是遗漏。
+      hostility: [
+        { culture: "lostland:mining_hold", hostility: 6 },
+        { culture: "lostland:farmstead", hostility: 4 },
+        { culture: "lostland:stonecutters", hostility: 4 },
+      ],
+    },
+  ],
+}

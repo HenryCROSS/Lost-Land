@@ -27,6 +27,7 @@ keybind-action-zoom_out = Zoom Out
 race-human-display_name = Human
 race-dwarf-display_name = Dwarf
 race-elf-display_name = Elf
+race-goblin-display_name = Goblin
 
 class-warrior-display_name = Warrior
 class-mage-display_name = Mage
@@ -153,6 +154,15 @@ resource-iron_vein-display_name = Iron Vein
 resource-granite-display_name = Granite
 resource-fresh_water-display_name = Fresh Water
 resource-fishery-display_name = Fishery
+
+# Cultures (culture batch) — exactly one per settlement; see
+# crates/ll-world/src/culture.rs and mods/lostland/cultures.json5.
+culture-farmstead-display_name = Farmstead
+culture-mining_hold-display_name = Mining Hold
+culture-forest_kin-display_name = Forest Kin
+culture-harbour-display_name = Harbour
+culture-stonecutters-display_name = Stonecutters
+culture-goblin_warband-display_name = Goblin Warband
 
 hud-character-panel-title = Character
 hud-character-level-label = Level

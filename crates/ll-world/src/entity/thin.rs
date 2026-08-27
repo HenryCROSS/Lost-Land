@@ -39,24 +39,34 @@ const DAILY_INCOME: i64 = 10;
 /// 因此都可以直接派生，不需要额外的解析上下文。真正把索引解析回
 /// `NamespacedId` 字符串、核对当前会话是否仍注册着这条内容，是存档
 /// 主体读写管线（任务 9）拿到注册表之后才能做的独立步骤。
+/// # `race` 列已经还掉了（文化批次）
+///
+/// 这里曾经有第八列 `race: Vec<ContentIndex>`，带着一条明写的实现
+/// 债务：`knowledge/design/race-system.md` 八节的设计是薄层**零列**
+/// ——种族该由「出生聚落 + 聚落种族权重表」现算派生，不该单独存一列；
+/// 当时不修的理由是「权重表还没落地」。
+///
+/// **那条理由现在没有了。** 权重表落地了，而且落在内容里：一座据点的
+/// 文化（[`crate::settlement::SettlementSite::culture`]）带着一份
+/// [`crate::culture::CultureAttrs::founder_races`]，
+/// `ll_mod::roster::settlement_founder_race` 按它抽一次就是这座据点的
+/// 主体种族。而 `settlement` 那一列本来就是「出生聚落」——
+/// `birth_settlement` 不需要新增，它一直在。
+///
+/// 于是这一列被删掉：**能派生的不进存档**（ADR 0009）。
+/// [`Self::promote`] 改为由调用方递一个 `race` 进来，与 `at`/`zone`/
+/// `surface_profile` 三个参数同一条既有理由——薄层不持有注册表、也不
+/// 持有文化表，那份上下文只有持有 `WorldState` 与内容表的一方才有。
+///
+/// 这次改动**不触发任何存档迁移**：薄层在生产路径上从来没有被写入过
+/// 一次（`spawn` 的全部调用点都在测试里），且 `population` 不参与
+/// [`crate::state::WorldState::hash`]——两条黄金基准都因此逐位不变，
+/// 已实测。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ThinPopulation {
     generation: Vec<u32>,
     settlement: Vec<u16>,
     profession: Vec<ContentIndex>,
-    /// 种族，指向注册表。与 `profession` 同一模式——见
-    /// [`crate::entity::Agent::race`] 文档。
-    ///
-    /// **已知实现债务，本阶段（P3）裁定不修**：`knowledge/design/race-system.md`
-    /// 的设计是薄层**零列**——种族应由 `birth_settlement` 与聚落种族
-    /// 权重表现算派生，不该在薄层单独存一列。这一列之所以还在，是因为
-    /// `birth_settlement` 字段与聚落种族权重表都还没有落地（两者都属于
-    /// 世界生成阶段），且此列存的 `ContentIndex` 本就不可持久化（见本
-    /// 类型文档「不派生 serde」一节），薄层在 P3 也尚未被真正填充。要
-    /// 修必须与 `birth_settlement`、聚落种族权重表一起引入，不是这一列
-    /// 单独能改完的事。写在这里而不是只写在设计文档里，是为了让改这个
-    /// 结构体的人无需先去翻设计文档就能看见这条债务。
-    race: Vec<ContentIndex>,
     family: Vec<FamilyId>,
     /// 钱包的基准值。重定基准时刷新。
     wallet_rebase: Vec<i64>,
@@ -74,8 +84,6 @@ pub struct ThinSlot {
     pub settlement: u16,
     /// 当前职业，指向注册表。
     pub profession: ContentIndex,
-    /// 种族，指向注册表。
-    pub race: ContentIndex,
     /// 所属家族编号。
     pub family: FamilyId,
     /// 钱包的基准值。重定基准时刷新。
@@ -86,6 +94,26 @@ pub struct ThinSlot {
     pub rebase_at: Tick,
 }
 
+/// 升格一个薄层 NPC 所需的、**薄层自己拿不到**的那一组上下文。
+///
+/// 打包成结构体而不是继续往参数表上加，理由与
+/// [`crate::settlement::StampContext`] 逐字相同：这四项恒一起出现，
+/// 散着传只会让调用点更容易漏配，也会撞上
+/// `clippy::too_many_arguments`（`race` 从列改成参数正是压垮那条闸门
+/// 的第八个参数）。
+#[derive(Debug, Clone, Copy)]
+pub struct PromotionContext {
+    /// 升格后落在哪一格——通常是该 NPC 所属聚落的位置。
+    pub at: TorusPos,
+    /// 升格后 `Agent::current_space` 的区块坐标。
+    pub zone: crate::space::ZoneCoord,
+    /// 地表层属性的内容索引。
+    pub surface_profile: ContentIndex,
+    /// 种族——由调用方按 `ThinSlot::settlement` 那座据点的文化派生，
+    /// 见 [`ThinPopulation`] 文档「`race` 列已经还掉了」。
+    pub race: ContentIndex,
+}
+
 impl ThinPopulation {
     /// 建一个空的薄层人口。
     pub fn new() -> Self {
@@ -93,7 +121,6 @@ impl ThinPopulation {
             generation: Vec::new(),
             settlement: Vec::new(),
             profession: Vec::new(),
-            race: Vec::new(),
             family: Vec::new(),
             wallet_rebase: Vec::new(),
             wallet_delta: Vec::new(),
@@ -106,14 +133,16 @@ impl ThinPopulation {
     /// `wallet_baseline` 是钱包公式的起点（见 [`Self::wallet_of`]），
     /// `now` 同时作为 `rebase_at` 的初始值。
     ///
-    /// **八个列必须在这一处、且只在这一处一起 push**——分散到多处各自
+    /// **七个列必须在这一处、且只在这一处一起 push**——分散到多处各自
     /// push 正是列式存储最容易出的错：某一列忘了同步，各列长度就此
     /// 错位，后续任何按下标读取都会读到别的 NPC 的数据。
+    ///
+    /// **没有 `race` 参数**：种族由 `settlement` 现算派生，见本类型
+    /// 文档「`race` 列已经还掉了」一节。
     pub fn spawn(
         &mut self,
         settlement: u16,
         profession: ContentIndex,
-        race: ContentIndex,
         family: FamilyId,
         wallet_baseline: i64,
         now: Tick,
@@ -122,7 +151,6 @@ impl ThinPopulation {
         self.generation.push(0);
         self.settlement.push(settlement);
         self.profession.push(profession);
-        self.race.push(race);
         self.family.push(family);
         self.wallet_rebase.push(wallet_baseline);
         self.wallet_delta.push(0);
@@ -146,7 +174,6 @@ impl ThinPopulation {
         Some(ThinSlot {
             settlement: self.settlement[index],
             profession: self.profession[index],
-            race: self.race[index],
             family: self.family[index],
             wallet_rebase: self.wallet_rebase[index],
             wallet_delta: self.wallet_delta[index],
@@ -188,20 +215,30 @@ impl ThinPopulation {
     /// 薄层的公式挂钩；调用方需要自行决定何时（以及是否）通过
     /// [`Self::rebase`] 把它交还给薄层。
     ///
-    /// `zone`/`surface_profile` 由调用方提供，用于构造升格后
+    /// `zone`/`surface_profile`/`race` 由调用方提供，用于构造升格后
     /// `Agent::current_space` 的初始值（恒为 `Space::Surface`——薄层
     /// NPC 只在地表活动，见 [`crate::entity::Agent::current_space`]
-    /// 文档）：薄层本身不持有 `ZoneLayout`/层属性注册表，这两样上下文
-    /// 只有调用方（持有 `WorldState` 的一方）才有。
+    /// 文档）与 `Agent::race`：薄层本身不持有 `ZoneLayout`/层属性
+    /// 注册表/文化表，这三样上下文只有调用方（持有 `WorldState` 与
+    /// 内容表的一方）才有。
+    ///
+    /// `race` 从参数进来而不是从列里读，是文化批次还掉的那笔债——
+    /// 调用方按 `ThinSlot::settlement` 查那座据点的文化、再按文化抽
+    /// 建立者种族（`ll_mod::roster::settlement_founder_race`），与
+    /// 名册派生走的是同一条路。见本类型文档「`race` 列已经还掉了」。
     pub fn promote(
         &self,
         id: EntityId,
-        at: TorusPos,
         seed: u64,
         now: Tick,
-        zone: crate::space::ZoneCoord,
-        surface_profile: ContentIndex,
+        ctx: PromotionContext,
     ) -> Option<Agent> {
+        let PromotionContext {
+            at,
+            zone,
+            surface_profile,
+            race,
+        } = ctx;
         let index = self.index_of(id)?;
         let wallet = self.wallet_of(id, seed, now)?;
         Some(Agent {
@@ -213,7 +250,7 @@ impl ThinPopulation {
             wallet,
             profession: self.profession[index],
             goals: Vec::new(),
-            race: self.race[index],
+            race,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,
             resource_pools: std::collections::BTreeMap::new(),
@@ -271,11 +308,13 @@ impl ThinPopulation {
         true
     }
 
-    /// 把 `profession`/`race` 两列的 `ContentIndex` 原地重映射——存档
-    /// 读入后的重映射步骤（`ll-content` 任务 9）需要，两列走同一条规则
-    /// （薄层 NPC 恒是 [`crate::entity::Agent::race`] 文档同一种「角色
-    /// 属性」，且薄层不追踪玩家，见 [`ThinPopulation`] 模块文档），因此
-    /// 一个闭包足够，不必对两列各暴露一个方法。
+    /// 把 `profession` 列的 `ContentIndex` 原地重映射——存档读入后的
+    /// 重映射步骤（`ll-content` 任务 9）需要。
+    ///
+    /// 曾经是**两**列（`profession` 与 `race`）。`race` 列随文化批次
+    /// 删掉了（见 [`ThinPopulation`] 文档「`race` 列已经还掉了」），
+    /// 因此这里少了一趟——**能派生的东西不需要重映射**，这正是
+    /// ADR 0009 那条原则顺手省下来的成本之一。
     ///
     /// 泛型的错误类型 `E`——本 crate 不知道、也不该知道调用方（`ll-content`）
     /// 会怎么报错，只负责在闭包报错时立即中止并把错误原样透传，不吞掉
@@ -285,9 +324,6 @@ impl ThinPopulation {
         mut remap: impl FnMut(ContentIndex) -> Result<ContentIndex, E>,
     ) -> Result<(), E> {
         for slot in &mut self.profession {
-            *slot = remap(*slot)?;
-        }
-        for slot in &mut self.race {
             *slot = remap(*slot)?;
         }
         Ok(())
@@ -351,8 +387,8 @@ mod tests {
         // 只是长度凑巧相等。
         // Arrange
         let mut original = ThinPopulation::new();
-        let first = original.spawn(1, farmer(), human(), FamilyId(10), 500, Tick(0));
-        let second = original.spawn(2, farmer(), human(), FamilyId(20), 800, Tick(5));
+        let first = original.spawn(1, farmer(), FamilyId(10), 500, Tick(0));
+        let second = original.spawn(2, farmer(), FamilyId(20), 800, Tick(5));
 
         // Act
         let encoded = serde_json::to_string(&original).expect("全部列均已可派生序列化");
@@ -371,7 +407,7 @@ mod tests {
         let mut population = ThinPopulation::new();
 
         // Act
-        let id = population.spawn(1, farmer(), human(), FamilyId(1), 100, Tick(0));
+        let id = population.spawn(1, farmer(), FamilyId(1), 100, Tick(0));
 
         // Assert
         assert!(population.get_slot(id).is_some());
@@ -385,7 +421,7 @@ mod tests {
 
         // Act
         for _ in 0..5 {
-            population.spawn(1, farmer(), human(), FamilyId(1), 0, Tick(0));
+            population.spawn(1, farmer(), FamilyId(1), 0, Tick(0));
         }
 
         // Assert
@@ -393,7 +429,6 @@ mod tests {
             population.generation.len(),
             population.settlement.len(),
             population.profession.len(),
-            population.race.len(),
             population.family.len(),
             population.wallet_rebase.len(),
             population.wallet_delta.len(),
@@ -406,7 +441,7 @@ mod tests {
     fn 世代不符的标识取不到槽位() {
         // Arrange
         let mut population = ThinPopulation::new();
-        let id = population.spawn(1, farmer(), human(), FamilyId(1), 0, Tick(0));
+        let id = population.spawn(1, farmer(), FamilyId(1), 0, Tick(0));
         let stale = EntityId::new(id.index(), id.generation() + 1);
 
         // Act & Assert
@@ -418,7 +453,7 @@ mod tests {
         // Arrange：同一时刻查询（elapsed 为零），公式贡献恒为零，
         // 于是钱包值必然等于基准值加偏移量。
         let mut population = ThinPopulation::new();
-        let id = population.spawn(1, farmer(), human(), FamilyId(1), 1000, Tick(0));
+        let id = population.spawn(1, farmer(), FamilyId(1), 1000, Tick(0));
 
         // Act
         population.batch_update_wallets(50);
@@ -434,7 +469,7 @@ mod tests {
     fn 重定基准后偏移归零而钱包值不变() {
         // Arrange
         let mut population = ThinPopulation::new();
-        let id = population.spawn(1, farmer(), human(), FamilyId(1), 1000, Tick(0));
+        let id = population.spawn(1, farmer(), FamilyId(1), 1000, Tick(0));
         population.batch_update_wallets(200);
         let before = population
             .wallet_of(id, 42, Tick(3 * TICKS_PER_DAY))
@@ -457,13 +492,13 @@ mod tests {
         // Arrange
         let mut population = ThinPopulation::new();
         let profession = farmer();
-        let id = population.spawn(1, profession, human(), FamilyId(1), 500, Tick(0));
+        let id = population.spawn(1, profession, FamilyId(1), 500, Tick(0));
         let world = ll_core::torus::TorusSize::new(16, 16).expect("常量非零");
         let at = world.wrap(3, 3);
 
         // Act
         let agent = population
-            .promote(id, at, 42, Tick(0), zone_fixture(), ContentIndex::default())
+            .promote(id, 42, Tick(0), promotion_context(at, human()))
             .expect("有效标识必然能升格");
 
         // Assert
@@ -471,17 +506,21 @@ mod tests {
     }
 
     #[test]
-    fn 升格后的agent携带薄层记录的种族() {
+    fn 升格后的agent携带调用方递进来的种族() {
+        // 文化批次之前这条测试叫「携带**薄层记录的**种族」，读的是已经
+        // 删掉的 `race` 列。现在种族由调用方派生后递进来（据点 →
+        // 文化 → 建立者种族），本条守的是「递进来的那个值真的落到了
+        // `Agent::race` 上」，不是「薄层存了它」。
         // Arrange
         let mut population = ThinPopulation::new();
         let race = human();
-        let id = population.spawn(1, farmer(), race, FamilyId(1), 500, Tick(0));
+        let id = population.spawn(1, farmer(), FamilyId(1), 500, Tick(0));
         let world = ll_core::torus::TorusSize::new(16, 16).expect("常量非零");
         let at = world.wrap(3, 3);
 
         // Act
         let agent = population
-            .promote(id, at, 42, Tick(0), zone_fixture(), ContentIndex::default())
+            .promote(id, 42, Tick(0), promotion_context(at, race))
             .expect("有效标识必然能升格");
 
         // Assert
@@ -498,15 +537,24 @@ mod tests {
         // Act
         let agent = population.promote(
             bogus,
-            world.wrap(0, 0),
             42,
             Tick(0),
-            zone_fixture(),
-            ContentIndex::default(),
+            promotion_context(world.wrap(0, 0), human()),
         );
 
         // Assert
         assert!(agent.is_none());
+    }
+
+    /// 测试用升格上下文：升格相关测试只关心落点与种族，另外两样取一个
+    /// 合法占位值。
+    fn promotion_context(at: TorusPos, race: ContentIndex) -> PromotionContext {
+        PromotionContext {
+            at,
+            zone: zone_fixture(),
+            surface_profile: ContentIndex::default(),
+            race,
+        }
     }
 
     /// 测试用区块坐标：升格相关测试不关心具体落在哪个区块，只需要一个

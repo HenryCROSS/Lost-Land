@@ -66,8 +66,9 @@ use crate::content_schema_gear::{
     apply_weapon_categories, apply_xp_curves,
 };
 use crate::content_schema_world::{
-    AnimationFile, ResourceFile, SpaceProfileFile, TerrainFile, WeatherFile, apply_clips,
-    apply_resources, apply_space_profiles, apply_terrains, apply_weathers,
+    AnimationFile, CultureFile, ResourceFile, SpaceProfileFile, TerrainFile, WeatherFile,
+    apply_clips, apply_cultures, apply_resources, apply_space_profiles, apply_terrains,
+    apply_weathers,
 };
 use crate::pipeline::GameplayTables;
 use crate::registry::Registry;
@@ -122,6 +123,8 @@ enum ContentFileKind {
     CraftingSubclassGates,
     Items,
     Races,
+    /// 文化（`cultures.json5`），见 `ll_world::culture` 模块文档。
+    Cultures,
     Classes,
     Skills,
     Traits,
@@ -153,6 +156,7 @@ impl ContentFileKind {
             ContentFileKind::CraftingSubclassGates => "crafting.json5",
             ContentFileKind::Items => "items.json5",
             ContentFileKind::Races => "races.json5",
+            ContentFileKind::Cultures => "cultures.json5",
             ContentFileKind::Classes => "classes.json5",
             ContentFileKind::Skills => "skills.json5",
             ContentFileKind::Traits => "traits.json5",
@@ -170,7 +174,7 @@ impl ContentFileKind {
 /// 每一条排在这个位置的理由都是一条**真实的引用方向**，逐条列在下面
 /// 的注释里。判据统一是「谁只 get 不 intern」：只 get 的那一方必须
 /// 排在被引用者之后。
-const CONTENT_FILES: [ContentFileKind; 21] = [
+const CONTENT_FILES: [ContentFileKind; 22] = [
     // 标签没有任何前置依赖，而物品会引用它（只 get 不 intern）。
     ContentFileKind::Tags,
     // 加值类型同样没有任何前置依赖，而天赋与物品的规则修正会引用它
@@ -209,6 +213,16 @@ const CONTENT_FILES: [ContentFileKind; 21] = [
     ContentFileKind::Items,
     // 种族必须排在物品（出生装备只 get 不 intern）之后。
     ContentFileKind::Races,
+    // 文化必须排在种族之后：`founder_races` 指的是一条已经声明过的
+    // 种族。判据与资源→地形那一条逐字相同——注册表本身不拒绝「谁先
+    // 提到一个 id」（引用走 intern），但「一份文化的建立者是一个从没
+    // 被声明过的种族」这条内容错误只有在种族先装载完之后才可能被后续
+    // 消费发现，顺序颠倒会让症状漂到更远的地方。
+    //
+    // 文化引用的另外两样（地形、别的文化）分别在更前面与同一个文件里，
+    // 都不需要额外排序：同一个文件里两份互相敌对的文化无论怎么排都有
+    // 一方先提到另一方，因此敌对目标走 intern，见 apply_cultures 文档。
+    ContentFileKind::Cultures,
     // 职业必须排在技能前面（技能的 owning_class 虽是 intern，但装载
     // 末尾的引用完整性校验会把顺序反了判成一条违规）。
     ContentFileKind::Classes,
@@ -320,6 +334,10 @@ fn apply_one(
                 tables.recipe_category,
                 &file.recipe_categories,
             )
+        }
+        ContentFileKind::Cultures => {
+            let file: CultureFile = parse(&source).map_err(fail)?;
+            apply_cultures(registry, tables.culture, &file.cultures)
         }
         ContentFileKind::Items => {
             let file: ItemFile = parse(&source).map_err(fail)?;

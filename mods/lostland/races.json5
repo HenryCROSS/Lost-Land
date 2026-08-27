@@ -203,5 +203,42 @@
         { id: "lostland:herb_bundle", count: 3 },
       ],
     },
+
+    // 哥布林：力量 -1、敏捷 +1、体质 -1，暗视 9 格（三族之外夜视最好
+    // 的一支，住在丘陵林地的背阴处），寿命 40 年。
+    //
+    // # 为什么本体名册要多这一条
+    //
+    // 文化批次之前，「能建立据点的种族」是 `ll_mod::roster` 里写死的
+    // 三元数组 `[人类, 矮人, 精灵]`——世界上因此只有文明，没有别的
+    // 东西。项目所有者的裁定是「一个哥布林营地和一座矮人矿城是同一种
+    // 东西」：两者复用同一套 `SettlementSite`、同一套纪元推演、同一套
+    // 铺设算法，差别全部由文化（`mods/lostland/cultures.json5` 的
+    // `lostland:goblin_warband`）表达。这条种族是那份文化的建立者。
+    //
+    // # 数值取的是「弱而多」那一档
+    //
+    // 力量与体质各 -1、敏捷 +1：单个哥布林打不过一个矮人卫兵，靠的是
+    // 人多。寿命 40 年是全表最短的，配合承载力公式意味着哥布林营地
+    // 长得快也散得快。`xp_reward` 6 低于三族（10~12）——它是本体名册
+    // 里第一条「打了不太划算」的可遭遇种族。
+    //
+    // # 出生装备
+    //
+    // 只有一份烤肉（900）——全表最寒酸的开局，与「营地」这个形态一致。
+    // 刻意不给武器：本体的武器物品全部属于文明那一侧的配方产物，凭空
+    // 给哥布林一把会是一条没有来路的内容。
+    {
+      id: "lostland:goblin",
+      display_name_key: "lostland:race.goblin.display_name",
+      stat_modifiers: { strength: -1, dexterity: 1, constitution: -1 },
+      darkvision_cells: 9,
+      footprint: { width: 1, height: 1 },
+      lifespan_years: 40,
+      xp_reward: 6,
+      starting_items: [
+        { id: "lostland:roast_meat", count: 1 },
+      ],
+    },
   ],
 }

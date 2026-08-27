@@ -150,6 +150,7 @@ use ll_sim::resource_pool::{
 };
 use ll_sim::skill::{ResourceCost, SkillEffect};
 use ll_sim::xp_curve::{XpCurveCond, XpCurveOp, XpCurveOperand};
+use ll_world::culture::{CultureKind, CultureTable};
 use ll_world::entity::BaseStats;
 use ll_world::resource::{ResourceKind, ResourceTable};
 use ll_world::space_profile::SpaceProfileTable;
@@ -778,7 +779,30 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// 已经因为资源大类与伤害类别显示名两批走到 25。合并后三批的哈希输入
 /// 同时存在，量尺与任何一批单独存在时都不同，因此必须是 26。版本号是
 /// 单调标记不是计数器，跳号无害。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 26;
+///
+/// ---
+///
+/// # 版本 27（文化批次）
+///
+/// **新增一张内容表**：[`ContentTableKind::Culture`]（判别值 22）——
+/// [`ContentValueTables`] 多了一个 `culture` 字段，[`entry_value_digest`]
+/// 多了一条 [`write_culture_fields`] 分支。这是版本 4/5/16/22
+/// 「**新增内容表**」那一类，不是「已有表加字段」那一类：既有内容的
+/// 字段摘要一个字节都没变，但**同一套内容在新旧两版算法下的哈希不同**
+/// ——`lostland:mining_hold` 这类条目此前落在
+/// [`ContentTableKind::Opaque`] 一侧（只混 id、不混字段值），现在混的
+/// 是完整字段流。按 ADR 0027 必须递增。
+///
+/// 与版本 22（资源点批次）一样，这次 `check_content_hash_gate_cross_coverage`
+/// **确实有事可做**：`scripts/ci/check_field_consumers.py` 的
+/// `CONTENT_HASH_KIND_TO_TARGET_TYPE` 与 `TARGET_TYPES` 各补了一条
+/// （`Culture` → `CultureAttrs`），否则那条互校会当场把门禁变红。
+///
+/// 守门方式同前几批：本段文字 + 本模块单元测试
+/// `建材不同的两条文化摘要不同`，以及版本 7 那次事故之后立下的那条
+/// 纪律——**提交信息声称改了，不等于代码里真的改了**，下面这一行的
+/// 字面值就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 27;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -848,6 +872,9 @@ pub enum ContentTableKind {
     /// 资源表（资源点批次新增，定义在 `ll-world`）——见
     /// [`ll_world::resource`] 模块文档。
     Resource = 21,
+    /// 文化表（文化批次新增，定义在 `ll-world`）——见
+    /// [`ll_world::culture`] 模块文档。
+    Culture = 22,
 }
 
 /// 全部内容表的只读引用集合——供 [`apply_value_hashes`]/[`classify_index`]
@@ -905,6 +932,10 @@ pub struct ContentValueTables<'a> {
     /// 相同：唯一的强制消费者 `ll_world::chronicle` 就在那个 crate，
     /// 把表放进下游的 `ll-mod` 会要求 `ll-world` 反向依赖它）。
     pub resource: &'a ResourceTable,
+    /// 文化表（文化批次新增，定义在 `ll-world`，理由与资源表逐字
+    /// 相同：强制消费者 `ll_world::chronicle`/`ll_world::settlement`
+    /// 就在那个 crate）。
+    pub culture: &'a CultureTable,
 }
 
 /// 判定一个 `ContentIndex` 归属哪张内容表——[`entry_value_digest`] 用它
@@ -959,6 +990,7 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         tag,
         modifier_type,
         resource,
+        culture,
     } = *tables;
 
     let terrain_kind = TerrainKind::from_index(index);
@@ -1004,6 +1036,8 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         ContentTableKind::ModifierType
     } else if resource.is_defined(index) {
         ContentTableKind::Resource
+    } else if culture.is_defined(index) {
+        ContentTableKind::Culture
     } else {
         ContentTableKind::Opaque
     }
@@ -1103,6 +1137,9 @@ fn entry_value_digest(
         }
         ContentTableKind::Resource => {
             write_resource_fields(&mut hasher, tables.resource, index, registry);
+        }
+        ContentTableKind::Culture => {
+            write_culture_fields(&mut hasher, tables.culture, index, registry);
         }
         ContentTableKind::ModifierType => {
             // 加值类型没有任何字段（`ModifierTypeDef` 是空结构体，理由
@@ -1553,6 +1590,84 @@ fn write_resource_fields(
     hasher.write_u64(u64::from(table.residents_supported(kind)));
     hasher.write_u64(u64::from(table.settlement_draw(kind)));
     hasher.write_u64(u64::from(table.exhaustible(kind)));
+}
+
+/// 混入 [`ll_world::culture::CultureAttrs`] 的全部字段（文化批次
+/// 新增）。
+///
+/// 三类字段三种处理，判据全部是本模块「`ContentIndex` 字段」一节那条
+/// ——**会随装载顺序漂移的整数一律先换回命名空间字符串**：
+///
+/// - `display_name_key` 是字面 `NamespacedId`，直接混；
+/// - `economy` 混的是内容文件里写的那个**字符串**
+///   （`ResourceCategory::as_str`），不是枚举判别值，与
+///   [`write_resource_fields`] 的同名处理逐字相同；
+/// - `home_terrain`/`wall_terrain`/`founder_races[].race`/
+///   `hostility[].culture` 都是 `ContentIndex`，一律经
+///   `Registry::resolve` 换成 id 再混。解析不出来时混一个与任何合法
+///   id 都不可能相等的判别字节（`0`）。
+///
+/// 两个列表**先混长度再逐项混**，顺序取声明顺序——那是内容文件里的
+/// 书写顺序，不来自任何哈希容器（约束 C5）。刻意**不排序**：调换
+/// `founder_races` 里两条的先后会改变加权抽取的取值序列，也就是改变
+/// 世界，那本来就该被算成一次内容改动。
+fn write_culture_fields(
+    hasher: &mut StateHasher,
+    table: &CultureTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
+    let kind = CultureKind::from_index(index);
+    match table.display_name_key(kind) {
+        None => hasher.write_u64(0),
+        Some(key) => {
+            hasher.write_u64(1);
+            hasher.write_namespaced_id(&key);
+        }
+    }
+    match table.economy(kind) {
+        None => hasher.write_u64(0),
+        Some(economy) => {
+            hasher.write_u64(1);
+            hasher.write_len_prefixed_bytes(economy.as_str().as_bytes());
+        }
+    }
+    for terrain in [table.home_terrain(kind), table.wall_terrain(kind)] {
+        match terrain.and_then(|terrain| registry.resolve(terrain.index())) {
+            None => hasher.write_u64(0),
+            Some(id) => {
+                hasher.write_u64(1);
+                hasher.write_namespaced_id(id);
+            }
+        }
+    }
+    let founders = table.founder_races(kind);
+    hasher.write_u64(founders.len() as u64);
+    for (race, weight) in founders {
+        match registry.resolve(*race) {
+            None => hasher.write_u64(0),
+            Some(id) => {
+                hasher.write_u64(1);
+                hasher.write_namespaced_id(id);
+            }
+        }
+        hasher.write_u64(u64::from(*weight));
+    }
+    // 敌对表按注册顺序逐条查，不能直接拿一个 `&[..]`——`CultureTable`
+    // 只暴露 `hostility(攻, 守)` 这个查询（它是有向表的正确形状），
+    // 因此这里遍历全表、把这一行完整地混进去。条数由 `registered()`
+    // 定死，与哈希容器无关。
+    hasher.write_u64(table.registered().len() as u64);
+    for target in table.registered() {
+        match registry.resolve(target.index()) {
+            None => hasher.write_u64(0),
+            Some(id) => {
+                hasher.write_u64(1);
+                hasher.write_namespaced_id(id);
+            }
+        }
+        hasher.write_u64(u64::from(table.hostility(Some(kind), Some(*target))));
+    }
 }
 
 /// 混入一段 [`ll_render::anim::Clip`] 的全部字段（内容值哈希覆盖面
@@ -2416,6 +2531,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
         apply_value_hashes(
@@ -2442,6 +2558,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
 
@@ -2547,6 +2664,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
         apply_value_hashes(
@@ -2573,6 +2691,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
 
@@ -2673,6 +2792,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
         apply_value_hashes(
@@ -2699,6 +2819,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
 
@@ -2855,6 +2976,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
         apply_value_hashes(
@@ -2881,6 +3003,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
 
@@ -2977,6 +3100,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
         apply_value_hashes(
@@ -3003,6 +3127,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
 
@@ -3107,6 +3232,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
         apply_value_hashes(
@@ -3133,6 +3259,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
 
@@ -3240,6 +3367,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
         apply_value_hashes(
@@ -3266,6 +3394,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
 
@@ -3330,6 +3459,7 @@ mod tests {
                 tag: &TagTable::new(),
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
+                culture: &CultureTable::new(),
             },
         );
 
@@ -4014,6 +4144,7 @@ mod tests {
             tag: &TagTable::new(),
             modifier_type: &ModifierTypeTable::new(),
             resource: &ResourceTable::new(),
+            culture: &CultureTable::new(),
         };
 
         // Act

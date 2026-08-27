@@ -177,6 +177,7 @@ fn load_real_mods() -> Handle {
     let mut space_profile = ll_world::space_profile::SpaceProfileTable::new();
     let mut weather_table = ll_world::weather::WeatherTable::new();
     let mut resource_table = ll_world::resource::ResourceTable::new();
+    let mut culture_table = ll_world::culture::CultureTable::new();
     let mut recipe_table = RecipeTable::new();
     let mut recipe_category_table = RecipeCategoryTable::new();
     let mut tag_table = TagTable::new();
@@ -204,6 +205,7 @@ fn load_real_mods() -> Handle {
             damage_category: &mut damage_category,
             space_profile: &mut space_profile,
             resource: &mut resource_table,
+            culture: &mut culture_table,
             weather: &mut weather_table,
             recipe: &mut recipe_table,
             recipe_category: &mut recipe_category_table,

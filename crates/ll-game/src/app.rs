@@ -437,6 +437,7 @@ impl Demo {
             &content.registry,
             &content.class_table,
             &content.resource_table,
+            &content.culture_table,
         );
         Demo {
             content,

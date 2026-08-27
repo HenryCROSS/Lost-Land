@@ -9,7 +9,7 @@
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use ll_sim::timeline::Timeline;
-use ll_world::chronicle::{ChronicleParams, WorldChronicle};
+use ll_world::chronicle::{ChronicleInput, ChronicleParams, WorldChronicle};
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::{
     GenParams, build_zone_noise, generate_zone_window, zone_representative_terrain,
@@ -233,12 +233,15 @@ pub fn build_new_world(content: &LoadedContent, seed: u64) -> Result<GameWorld, 
     // `install_chronicle` 会把它们重新生成一遍再铺，与后续流式加载进来
     // 的区块走完全同一条路径，见该方法文档。
     let chronicle = std::sync::Arc::new(WorldChronicle::generate(
-        &layout,
-        &noise,
-        &params,
-        &content.terrain_ids,
-        &content.terrain_table,
-        &content.resource_table,
+        &ChronicleInput {
+            layout: &layout,
+            noise: &noise,
+            params: &params,
+            terrain_ids: &content.terrain_ids,
+            terrain_table: &content.terrain_table,
+            resources: &content.resource_table,
+            cultures: &content.culture_table,
+        },
         ChronicleParams::default(),
     ));
     tracing::info!(

@@ -105,6 +105,7 @@ use ll_core::rng::DetRng;
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use ll_sim::item::{ItemCatalog, equip_mask_of, outfit_from_inventory};
+use ll_world::culture::CultureTable;
 use ll_world::entity::{Agent, BaseStats};
 use ll_world::item::{EquipSlot, ItemStack};
 use ll_world::resource::{ResourceCategory, ResourceKind, ResourceTable};
@@ -249,9 +250,6 @@ pub const SETTLEMENT_CLASS_IDS: [&str; 10] = [
 /// 却要分别抬农夫与牧羊人。按具体种类认它，是这张表存在的全部理由。
 pub const SETTLEMENT_RESOURCE_IDS: [&str; 1] = ["lostland:pasture"];
 
-/// 本模块按名字引用的那几条种族内容（`mods/lostland/races.json5`）。
-pub const SETTLEMENT_RACE_IDS: [&str; 3] = ["lostland:human", "lostland:dwarf", "lostland:elf"];
-
 /// 一条资源亲和规则：这处资源命中什么，就给哪一档加权重。
 ///
 /// # 为什么是两个变体，不是一律按大类
@@ -328,8 +326,27 @@ pub struct SettlementRoles {
     /// 那条链路上没有任何一处能提供借用所需的生命周期。
     resources: ResourceTable,
 
-    /// 本体三族的索引，按 `[人类, 矮人, 精灵]` 排列。
-    races: [Option<ContentIndex>; 3],
+    /// 文化表快照——建立者种族现在从**据点的文化**里抽
+    /// （[`ll_world::culture::CultureAttrs::founder_races`]），不再走
+    /// 本模块里写死的种族名单。
+    ///
+    /// # 这一步偿还的是一笔点过名的债
+    ///
+    /// 在此之前，本模块有一个 `SETTLEMENT_RACE_IDS: [&str; 3] =
+    /// ["lostland:human", "lostland:dwarf", "lostland:elf"]` 和一份
+    /// 写死的资源亲和（食物→人类、金属→矮人、木材→精灵）。后果是
+    /// **第三方 mod 加一个种族拿不到任何选址亲和，一座据点都不会属于
+    /// 它**——与同一个模块里职业亲和已经做到的「按大类挂规则、加一条
+    /// JSON5 就有对口职业」形成刺眼的对照。现在种族这一侧也是纯内容：
+    /// 加一条 `cultures.json5` 就有自己的据点。
+    ///
+    /// 资源对种族的影响没有消失，只是改走了一层：资源决定**文化**
+    /// （`ll_world::chronicle` 的 `culture_weights`），文化决定
+    /// **建立者种族**。「守着铁矿的地方是矮人开的城」这条因果链一节
+    /// 未断，但中间那一环现在是可被内容替换的。
+    ///
+    /// 快照（`Clone`）而不是借用，理由同上面的 `resources`。
+    cultures: CultureTable,
 }
 
 impl SettlementRoles {
@@ -343,7 +360,12 @@ impl SettlementRoles {
     /// `classes` 用来做一次「这个索引真的是一条职业吗」的确认：注册表
     /// 里存在同名标识符不等于它被定义成了职业（`ContentIndex` 是全局
     /// 号段，地形/物品/技能共用同一个 `Interner`）。
-    pub fn resolve(registry: &Registry, classes: &ClassTable, resources: &ResourceTable) -> Self {
+    pub fn resolve(
+        registry: &Registry,
+        classes: &ClassTable,
+        resources: &ResourceTable,
+        cultures: &CultureTable,
+    ) -> Self {
         let class_of = |id: &str| -> Option<ContentIndex> {
             let index = lookup(registry, id)?;
             classes.is_defined(index).then_some(index)
@@ -367,11 +389,7 @@ impl SettlementRoles {
             mason: class_of(SETTLEMENT_CLASS_IDS[9]),
             pasture: resource_of(SETTLEMENT_RESOURCE_IDS[0]),
             resources: resources.clone(),
-            races: [
-                lookup(registry, SETTLEMENT_RACE_IDS[0]),
-                lookup(registry, SETTLEMENT_RACE_IDS[1]),
-                lookup(registry, SETTLEMENT_RACE_IDS[2]),
-            ],
+            cultures: cultures.clone(),
         }
     }
 
@@ -476,41 +494,30 @@ impl SettlementRoles {
         slots
     }
 
-    /// 种族权重：与职业同一套「基础 + 资源亲和」手法，但它**只用来抽
-    /// 一次**——抽这座据点的**建立者种族**，不是逐个居民各抽一次。
+    /// 这座据点的**建立者种族候选档位**——由它的**文化**给出，不再由
+    /// 本模块的资源亲和给出。
     ///
-    /// 金属抬矮人、木材抬精灵、食物抬人类——刻板，但正是刻板才让玩家
-    /// 走进一座矿城时**看得出来**这是一座矿城。基础权重三族相同：一座
-    /// 什么都不突出的村子不该有种族倾向。
+    /// 文化本身是按「资源 + 地形 + 邻近据点 + 一点随机」抽出来的
+    /// （`ll_world::chronicle` 的 `culture_weights`），因此「守着铁矿
+    /// 的地方长出矿业文化、矿业文化由矮人建立」这条链没有断——断掉的
+    /// 只是本模块里那份写死的三族名单，见 [`SettlementRoles::cultures`]
+    /// 字段文档。
     ///
-    /// **水与石材刻意没有种族亲和**：本体三族里没有哪一族与「靠水吃
-    /// 水」或「采石」有既有的设定联系，硬挂一条只会是编造。它们的据点
-    /// 因此拿到三族均等的建立者分布，这是一个诚实的答案，不是遗漏。
-    fn race_weights(&self, site: &SettlementSite) -> [WeightedSlot; 3] {
-        let mut slots = [
-            WeightedSlot {
-                content: self.races[0],
-                weight: 4,
-            },
-            WeightedSlot {
-                content: self.races[1],
-                weight: 4,
-            },
-            WeightedSlot {
-                content: self.races[2],
-                weight: 4,
-            },
-        ];
-        self.apply_affinity(
-            site,
-            &mut slots,
-            &[
-                AffinityRule::Category(ResourceCategory::Food, 0),
-                AffinityRule::Category(ResourceCategory::Metal, 1),
-                AffinityRule::Category(ResourceCategory::Timber, 2),
-            ],
-        );
-        slots
+    /// 没有文化（一条文化内容都没装载、或者据点快照来自旧路径）时返回
+    /// 空 `Vec`，[`pick`] 对空档位表返回 `None` 且**一个随机数都不取**
+    /// ——退化路径不推进随机流。
+    fn founder_slots(&self, site: &SettlementSite) -> Vec<WeightedSlot> {
+        let Some(culture) = site.culture else {
+            return Vec::new();
+        };
+        self.cultures
+            .founder_races(culture)
+            .iter()
+            .map(|(race, weight)| WeightedSlot {
+                content: Some(*race),
+                weight: *weight,
+            })
+            .collect()
     }
 
     /// 把资源画像的两个名次折算成权重加成，写进 `slots`。
@@ -613,7 +620,7 @@ pub fn settlement_roster(
     }
     let guards = 1 + residents / RESIDENTS_PER_GUARD;
     let commoners = roles.commoner_weights(site);
-    let races = roles.race_weights(site);
+    let founder_races = roles.founder_slots(site);
 
     let founder = settlement_founder_race(site, roles, world_seed);
 
@@ -628,8 +635,14 @@ pub fn settlement_roster(
         // OUTSIDER_PERMILLE 决定这个人是不是外来者」，外来者才去按权重
         // 抽。资源对种族的影响因此整个上移到了建立者那一次抽取上：
         // 铁矿抬的不再是「多几个矮人」，而是「这座城是矮人开的」。
+        //
+        // 外来者抽的是**同一份**权重表（这座据点的文化的
+        // `founder_races`），不是「全世界所有种族」——一份只列了一个
+        // 种族的文化因此产出清一色的名册。那是内容决定不是退化：一个
+        // 哥布林营地里不该住着矮人。多族文化（本体六条里有五条）照样
+        // 出得来少数派。
         let race = if rng.chance(OUTSIDER_PERMILLE, PERMILLE_SCALE) {
-            pick(&races, &mut rng).unwrap_or(founder)
+            pick(&founder_races, &mut rng).unwrap_or(founder)
         } else {
             founder
         };
@@ -664,29 +677,29 @@ pub fn settlement_roster(
 /// 抽一次，一整座据点的主体人口都随它（外来者比例见
 /// [`OUTSIDER_PERMILLE`]）。
 ///
-/// # 为什么它是一个函数，不是 `SettlementSite` 上的一个字段
+/// # 它仍然是一个函数，但候选名单换了来源
 ///
-/// **核实结论，与协调者的建议不同**：协调者建议「让它挂在
-/// `SettlementSite` 上而不是藏在名册函数内部」，以便将来接上按种族
-/// 的建材/布局/命名。挂不上去，理由是依赖方向——`SettlementSite` 住在
-/// `ll-world`，而**种族是内容**（`ll-mod` 的 `RaceTable` + 注册表），
-/// `ll-world` 既拿不到注册表、也没有一份候选种族名单可抽。硬挂就要把
-/// 种族内容倒灌进 `ll-world`，那是一次比本批次大得多的依赖方向改动。
+/// 本函数此前的文档记录过一条判断：「建立者种族之所以不是
+/// `SettlementSite` 的字段，是因为 `ll-world` 既拿不到注册表、也没有
+/// 一份候选种族名单可抽」。**那条判断的后半句已经不成立了**：
+/// [`SettlementSite::culture`] 现在是 `ll-world` 侧的一个字段，而
+/// 文化自带一份 [`ll_world::culture::CultureAttrs::founder_races`]
+/// 候选名单——那份名单本身仍然是**内容**，只是走了
+/// `TerrainTable`/`ResourceTable` 那条「类型在 `ll-world`、数据由
+/// `ll-mod` 填、注入世界生成」的既有路，没有把注册表倒灌进 `ll-world`。
 ///
-/// **但形状上的口留住了，而且比字段更好接**：本函数是 `pub`，签名只
-/// 要 `(&SettlementSite, &SettlementRoles, u64)` 三样，将来铺房子那边
-/// 要知道「这座据点是谁建的」，调它一次即可——不需要 `SettlementSite`
-/// 多一个字段，也就不需要动 `WorldState::hash()` 与存档 remap。
+/// 前半句仍然成立，因此本函数保持是一个 `pub fn` 而不是又一个字段：
+/// 「谁建的」是「信什么」的一个纯函数结果，两处都存等于两个真相源。
 ///
-/// 全部种族内容都没装载时返回 `ContentIndex::default()`（「尚无种族」
-/// 的既有诚实表达，ADR 0015）。
+/// 据点没有文化、或文化的候选名单里一条种族都没装载时返回
+/// `ContentIndex::default()`（「尚无种族」的既有诚实表达，ADR 0015）。
 pub fn settlement_founder_race(
     site: &SettlementSite,
     roles: &SettlementRoles,
     world_seed: u64,
 ) -> ContentIndex {
     let mut rng = DetRng::for_entity(world_seed, FOUNDER_RACE_STREAM_ID, u64::from(site.id.get()));
-    pick(&roles.race_weights(site), &mut rng).unwrap_or_default()
+    pick(&roles.founder_slots(site), &mut rng).unwrap_or_default()
 }
 
 /// 名册第 `index` 号那一位专属的随机流（C3）。
@@ -882,6 +895,7 @@ mod tests {
     use ll_core::ident::Interner;
     use ll_core::torus::TorusSize;
     use ll_sim::item::ItemRule;
+    use ll_world::culture::CultureKind;
     use ll_world::item::SlotMask;
     use ll_world::settlement::SITE_RESOURCE_SLOTS;
     use ll_world::zone::ZoneLayout;
@@ -911,7 +925,43 @@ mod tests {
 
     /// 一张现造的、与本体内容无关的角色扮演表：十条职业、三个种族、
     /// 六种资源（见 [`SAMPLE_RESOURCES`]）。
-    fn sample_roles() -> (SettlementRoles, Registry, [ResourceKind; 6]) {
+    /// 夹具文化名册：三条，各自的**主**建立者种族不同，但每条都留了
+    /// 少数派档位——外来者比例（[`OUTSIDER_PERMILLE`]）抽的正是同一份
+    /// 权重表，一条只有单一种族的文化会产出清一色的名册（本体的
+    /// `lostland:goblin_warband` 就是那样，且那是刻意的）。
+    const SAMPLE_CULTURES: [(&str, [(&str, u32); 3]); 3] = [
+        (
+            "test:farmfolk",
+            [
+                ("lostland:human", 8),
+                ("lostland:dwarf", 2),
+                ("lostland:elf", 2),
+            ],
+        ),
+        (
+            "test:minefolk",
+            [
+                ("lostland:dwarf", 8),
+                ("lostland:human", 3),
+                ("lostland:elf", 1),
+            ],
+        ),
+        (
+            "test:woodfolk",
+            [
+                ("lostland:elf", 8),
+                ("lostland:human", 3),
+                ("lostland:dwarf", 1),
+            ],
+        ),
+    ];
+
+    fn sample_roles() -> (
+        SettlementRoles,
+        Registry,
+        [ResourceKind; 6],
+        [CultureKind; 3],
+    ) {
         let mut registry = Registry::new();
         let mut classes = ClassTable::new();
         for id in SETTLEMENT_CLASS_IDS {
@@ -927,9 +977,7 @@ mod tests {
                 )
                 .expect("首次定义");
         }
-        for id in SETTLEMENT_RACE_IDS {
-            registry.intern(NamespacedId::parse(id).expect("合法标识符"));
-        }
+
         let mut table = ResourceTable::new();
         let mut kinds = [ResourceKind::from_index(ContentIndex::default()); 6];
         for (slot, (id, category)) in SAMPLE_RESOURCES.iter().enumerate() {
@@ -952,8 +1000,40 @@ mod tests {
                 .expect("首次定义");
             kinds[slot] = ResourceKind::from_index(index);
         }
-        let roles = SettlementRoles::resolve(&registry, &classes, &table);
-        (roles, registry, kinds)
+        let mut cultures = ll_world::culture::CultureTable::new();
+        let mut culture_kinds = [CultureKind::from_index(ContentIndex::default()); 3];
+        for (slot, (culture_id, founders)) in SAMPLE_CULTURES.iter().enumerate() {
+            let founder_races = founders
+                .iter()
+                .map(|(race_id, weight)| {
+                    (
+                        registry.intern(NamespacedId::parse(race_id).expect("合法标识符")),
+                        *weight,
+                    )
+                })
+                .collect::<Vec<_>>();
+            let index = registry.intern(NamespacedId::parse(culture_id).expect("合法标识符"));
+            cultures
+                .define(
+                    index,
+                    ll_world::culture::CultureAttrs {
+                        display_name_key: NamespacedId::parse("lostland:x").expect("合法标识符"),
+                        economy: ResourceCategory::Food,
+                        home_terrain: ll_world::terrain::TerrainKind::from_index(
+                            ContentIndex::default(),
+                        ),
+                        wall_terrain: ll_world::terrain::TerrainKind::from_index(
+                            ContentIndex::default(),
+                        ),
+                        founder_races,
+                        hostility: Vec::new(),
+                    },
+                )
+                .expect("首次定义");
+            culture_kinds[slot] = CultureKind::from_index(index);
+        }
+        let roles = SettlementRoles::resolve(&registry, &classes, &table, &cultures);
+        (roles, registry, kinds, culture_kinds)
     }
 
     /// 一座人口 `population`、资源画像为 `profile` 的据点。
@@ -976,13 +1056,27 @@ mod tests {
             peak_population: population,
             building_count: 1 + population / 4,
             resource_profile: profile,
+            culture: None,
+        }
+    }
+
+    /// 与 [`site`] 相同，但带上一份文化——建立者种族现在由文化给出，
+    /// 因此凡是关心种族的用例都要走这一条。
+    fn site_with_culture(
+        population: u32,
+        profile: [Option<ResourceKind>; SITE_RESOURCE_SLOTS],
+        culture: CultureKind,
+    ) -> SettlementSite {
+        SettlementSite {
+            culture: Some(culture),
+            ..site(population, profile)
         }
     }
 
     #[test]
     fn 同一颗种子同一座据点派生出逐位相同的名册() {
         // Arrange
-        let (roles, _registry, _resources) = sample_roles();
+        let (roles, _registry, _resources, _cultures) = sample_roles();
         let site = site(20, [None; SITE_RESOURCE_SLOTS]);
 
         // Act
@@ -997,7 +1091,7 @@ mod tests {
     #[test]
     fn 换一颗种子名册就不同() {
         // Arrange
-        let (roles, _registry, _resources) = sample_roles();
+        let (roles, _registry, _resources, _cultures) = sample_roles();
         let site = site(24, [None; SITE_RESOURCE_SLOTS]);
 
         // Act
@@ -1011,7 +1105,7 @@ mod tests {
     #[test]
     fn 废墟派生出空名册() {
         // Arrange
-        let (roles, _registry, _resources) = sample_roles();
+        let (roles, _registry, _resources, _cultures) = sample_roles();
         let mut ruin = site(0, [None; SITE_RESOURCE_SLOTS]);
         ruin.status = SettlementStatus::Ruined;
         ruin.peak_population = 90;
@@ -1026,7 +1120,7 @@ mod tests {
     #[test]
     fn 名册长度被max_roster截断而人口本身不变() {
         // Arrange
-        let (roles, _registry, _resources) = sample_roles();
+        let (roles, _registry, _resources, _cultures) = sample_roles();
         let big = site(175, [None; SITE_RESOURCE_SLOTS]);
 
         // Act
@@ -1040,7 +1134,7 @@ mod tests {
     #[test]
     fn 每座还有人住的据点恰好一位据点管理者() {
         // Arrange
-        let (roles, _registry, _resources) = sample_roles();
+        let (roles, _registry, _resources, _cultures) = sample_roles();
         let village = site(15, [None; SITE_RESOURCE_SLOTS]);
 
         // Act
@@ -1061,7 +1155,7 @@ mod tests {
     #[test]
     fn 守着铁矿的据点铁匠比守着良田的多() {
         // Arrange
-        let (roles, _registry, resources) = sample_roles();
+        let (roles, _registry, resources, _cultures) = sample_roles();
         let farmland = resources[0];
         let iron = resources[3];
         let mining = site(24, [Some(iron), None]);
@@ -1089,7 +1183,7 @@ mod tests {
         // Arrange：**这一条守的是资源大类那一层真的通了**——水这个大类
         // 是本批次新加的，渔夫是它的对口职业，而上一批实测「近一半据点
         // 的主资源是水源」时它们都还不存在。
-        let (roles, _registry, resources) = sample_roles();
+        let (roles, _registry, resources, _cultures) = sample_roles();
         let farmland = resources[0];
         let water = resources[5];
         let riverside = site(24, [Some(water), None]);
@@ -1111,7 +1205,7 @@ mod tests {
         // Arrange：**这一条守的是「按具体种类的规则优先于按大类的规则」**
         // ——牧场与良田同属食物大类，若那条优先级断了，牧场就会去抬农夫，
         // 牧羊人永远抽不出来。
-        let (roles, _registry, resources) = sample_roles();
+        let (roles, _registry, resources, _cultures) = sample_roles();
         let farmland = resources[0];
         let pasture = resources[1];
         let grazing = site(24, [Some(pasture), None]);
@@ -1139,7 +1233,7 @@ mod tests {
         // Arrange：石材大类此前一条内容行都没有（因此石匠也没有对口
         // 资源）。花岗岩是它的第一条，本条守住那条 `Category(Stone)`
         // 规则真的接上了。
-        let (roles, _registry, resources) = sample_roles();
+        let (roles, _registry, resources, _cultures) = sample_roles();
         let granite = resources[4];
         let quarry = site(24, [Some(granite), None]);
         let plain = site(24, [None; SITE_RESOURCE_SLOTS]);
@@ -1158,9 +1252,12 @@ mod tests {
     #[test]
     fn 建立者种族是种子与据点的纯函数且名册以它为主() {
         // Arrange
-        let (roles, _registry, resources) = sample_roles();
+        let (roles, _registry, resources, cultures) = sample_roles();
         let iron = resources[3];
-        let mining = site(24, [Some(iron), None]);
+        // 建立者种族现在由**文化**给出，因此这条用例必须走带文化的
+        // 那个夹具——`site` 造出来的据点 `culture: None`，那是「一条
+        // 文化内容都没装载」那条退化路径，另有用例守着。
+        let mining = site_with_culture(24, [Some(iron), None], cultures[1]);
 
         // Act
         let founder_a = settlement_founder_race(&mining, &roles, 4242);
@@ -1185,6 +1282,68 @@ mod tests {
         );
     }
 
+    #[test]
+    fn 没有文化的据点名册仍然产出但种族是占位索引() {
+        // Arrange：一条文化都没装载（或据点快照来自空文化表的世界）。
+        let (roles, _registry, _resources, _cultures) = sample_roles();
+        let site = site(12, [None; SITE_RESOURCE_SLOTS]);
+
+        // Act
+        let founder = settlement_founder_race(&site, &roles, 99);
+        let roster = settlement_roster(&site, &roles, 99);
+
+        // Assert：降级而非崩溃（规格 §10.2）——名册照样有人，只是
+        // 种族退回「尚无种族」的占位索引（ADR 0015）。
+        assert_eq!(founder, ContentIndex::default());
+        assert_eq!(roster.len(), 12);
+        assert!(roster.iter().all(|npc| npc.race == ContentIndex::default()));
+    }
+
+    #[test]
+    fn 单一建立者种族的文化产出清一色的名册() {
+        // Arrange：本体的 lostland:goblin_warband 就是这个形状——一个
+        // 哥布林营地里不该住着矮人，这是内容决定，不是退化。
+        let mut registry = Registry::new();
+        let goblin = registry.intern(NamespacedId::parse("test:goblin").expect("合法标识符"));
+        let index = registry.intern(NamespacedId::parse("test:warband").expect("合法标识符"));
+        let mut cultures = ll_world::culture::CultureTable::new();
+        cultures
+            .define(
+                index,
+                ll_world::culture::CultureAttrs {
+                    display_name_key: NamespacedId::parse("test:x").expect("合法标识符"),
+                    economy: ResourceCategory::Timber,
+                    home_terrain: ll_world::terrain::TerrainKind::from_index(
+                        ContentIndex::default(),
+                    ),
+                    wall_terrain: ll_world::terrain::TerrainKind::from_index(
+                        ContentIndex::default(),
+                    ),
+                    founder_races: vec![(goblin, 10)],
+                    hostility: Vec::new(),
+                },
+            )
+            .expect("首次定义");
+        let roles = SettlementRoles::resolve(
+            &registry,
+            &ClassTable::new(),
+            &ResourceTable::new(),
+            &cultures,
+        );
+        let camp = site_with_culture(
+            20,
+            [None; SITE_RESOURCE_SLOTS],
+            CultureKind::from_index(index),
+        );
+
+        // Act
+        let roster = settlement_roster(&camp, &roles, 77);
+
+        // Assert
+        assert_eq!(roster.len(), 20);
+        assert!(roster.iter().all(|npc| npc.race == goblin));
+    }
+
     fn count_of(roster: &[NpcProfile], class: Option<ContentIndex>) -> usize {
         roster
             .iter()
@@ -1197,7 +1356,12 @@ mod tests {
         // Arrange：空注册表 + 空职业表——第三方 mod 组合掉本体的情形。
         let registry = Registry::new();
         let classes = ClassTable::new();
-        let roles = SettlementRoles::resolve(&registry, &classes, &ResourceTable::new());
+        let roles = SettlementRoles::resolve(
+            &registry,
+            &classes,
+            &ResourceTable::new(),
+            &CultureTable::new(),
+        );
         let village = site(6, [None; SITE_RESOURCE_SLOTS]);
 
         // Act
@@ -1240,7 +1404,7 @@ mod tests {
     #[test]
     fn 非武装职业把手部装备留在背包而武装职业穿上() {
         // Arrange
-        let (roles, _registry, _resources) = sample_roles();
+        let (roles, _registry, _resources, _cultures) = sample_roles();
         let mut interner = Interner::new();
         let sword = interner.intern(NamespacedId::parse("testmod:sword").expect("合法标识符"));
         let shirt = interner.intern(NamespacedId::parse("testmod:shirt").expect("合法标识符"));

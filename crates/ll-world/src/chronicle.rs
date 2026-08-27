@@ -82,7 +82,10 @@ use ll_core::rng::DetRng;
 use ll_core::time::{DAYS_PER_SEASON, SEASONS_PER_YEAR, TICKS_PER_DAY, Tick};
 use ll_core::torus::{TorusPos, TorusSize};
 
-use crate::generate::{GenParams, generate_zone_window, zone_representative_terrain};
+use crate::culture::{CultureKind, CultureTable};
+use crate::generate::{
+    GenParams, generate_zone_window, terrain_at_tile, zone_representative_terrain,
+};
 use crate::history::{
     HistoricalEvent, HistoricalEventKind, SettlementAbandonedRecord, SettlementDemise,
     SettlementFoundedRecord,
@@ -94,7 +97,7 @@ use crate::resource::{
 };
 use crate::settlement::{MAX_BUILDINGS, SITE_RESOURCE_SLOTS, SettlementSite, SettlementStatus};
 use crate::space::ZoneCoord;
-use crate::terrain::{BaseTerrainIds, TerrainTable};
+use crate::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
 use crate::zone::ZoneLayout;
 
 /// 历史推演所用的随机流编号——与
@@ -114,6 +117,12 @@ pub const CHRONICLE_STREAM_ID: u64 = 0x0043_4852_4F4E_0001;
 /// 铺法（[`crate::settlement::SETTLEMENT_LAYOUT_STREAM_ID`]）与历史
 /// 推演分家。
 pub const CHRONICLE_WAR_STREAM_ID: u64 = 0x0043_4852_5741_0001;
+
+/// 文化抽取所用的随机流基编号——与历史推演
+/// （[`CHRONICLE_STREAM_ID`]）、战争（[`CHRONICLE_WAR_STREAM_ID`]）
+/// 分开，三者互不干扰：给某座据点换一份文化不会连带改掉它的人口曲线
+/// 或战争掷骰（约束 C3）。
+pub const CHRONICLE_CULTURE_STREAM_ID: u64 = 0x0043_4852_4355_0001;
 
 /// 一个纪元有多少年。取 25：12 个纪元合计 300 年，量级上与
 /// `world-history.md` 设想的「几百年」一致，同时让每个纪元的兴衰在
@@ -294,6 +303,39 @@ pub struct WorldChronicle {
     next_world_id: u32,
     epochs: u32,
     table: TerrainTable,
+    /// 推演时用的那张文化表的快照——[`crate::settlement::SettlementSite::culture`]
+    /// 只是一个索引，把它翻译成「用哪种墙」需要这张表，而铺设发生在
+    /// `SurfaceStore` 里、离世界生成很远。与 `table`（地形表）**逐字
+    /// 同一条取舍**：跟着编年史一起走，调用方就不需要再从别处凑一张
+    /// 可能已经对不上号的表。
+    cultures: CultureTable,
+}
+
+/// 一次历史推演要读的全部**世界形状**输入——除可调参数
+/// （[`ChronicleParams`]）之外的那一整组。
+///
+/// 打包成结构体而不是继续往参数表上加，理由与
+/// [`crate::settlement::StampContext`]、`ll_mod::roster::MaterializeContext`
+/// 逐字相同：这七项**恒一起出现**，散着传只会让调用点更容易漏配，
+/// 也会撞上 `clippy::too_many_arguments`（文化表落地正是压垮那条闸门
+/// 的第八个参数）。
+pub struct ChronicleInput<'a> {
+    /// 区块布局。
+    pub layout: &'a ZoneLayout,
+    /// 地形噪声。
+    pub noise: &'a TileableNoise,
+    /// 世界生成参数——`params.seed` 同时是全部随机流的种子。
+    pub params: &'a GenParams,
+    /// 本体基础地形的内容索引。
+    pub terrain_ids: &'a BaseTerrainIds,
+    /// 地形属性表——判断哪些区块能住人。
+    pub terrain_table: &'a TerrainTable,
+    /// 当前会话注册的资源种类表（[`crate::resource`]），决定每处候选点
+    /// 周边有什么、因此决定「这里值不值得建城」与「这里能养活多少人」。
+    pub resources: &'a ResourceTable,
+    /// 当前会话注册的文化表（[`crate::culture`]），决定每座据点信什么、
+    /// 用什么盖房、跟谁不对付。
+    pub cultures: &'a CultureTable,
 }
 
 impl WorldChronicle {
@@ -305,18 +347,24 @@ impl WorldChronicle {
     /// 「这里值不值得建城」与「这里能养活多少人」。整个函数是纯函数：
     /// 同一组输入恒产出逐字段相同的结果。
     ///
-    /// 传一张**空**的资源表是合法的：那等于「这个世界没有资源这一层」，
-    /// 选址与承载力退回到只看陆地面积——不会 panic，也不会静默变成
-    /// 别的行为，见本模块测试 `空资源表下仍然产出据点`。
+    /// 传一张**空**的资源表或空的文化表都是合法的：那分别等于「这个
+    /// 世界没有资源这一层」与「没有文化这一层」——选址与承载力退回到
+    /// 只看陆地面积、建材退回引擎默认、战争敌意恒为 0，都不会 panic，
+    /// 也不会静默变成别的行为，见本模块测试 `空资源表下仍然产出据点`
+    /// 与 `全表敌意为零时战争结果与空文化表逐位相同`。
     pub fn generate(
-        layout: &ZoneLayout,
-        noise: &TileableNoise,
-        params: &GenParams,
-        terrain_ids: &BaseTerrainIds,
-        table: &TerrainTable,
-        resources: &ResourceTable,
+        input: &ChronicleInput<'_>,
         chronicle_params: ChronicleParams,
     ) -> WorldChronicle {
+        let ChronicleInput {
+            layout,
+            noise,
+            params,
+            terrain_ids,
+            terrain_table: table,
+            resources,
+            cultures,
+        } = *input;
         let candidates = survey_habitable_zones(
             layout,
             noise,
@@ -331,8 +379,12 @@ impl WorldChronicle {
             chronicle_params.epochs,
             params.seed,
             layout.tile_size(),
-            war_range(chronicle_params),
+            NeighbourRanges {
+                war: war_range(chronicle_params),
+                culture: culture_neighbor_range(chronicle_params),
+            },
             resources.clone(),
+            cultures.clone(),
         );
         run.simulate();
         let sites = run.final_sites();
@@ -344,6 +396,7 @@ impl WorldChronicle {
             zone_index,
             epochs: chronicle_params.epochs,
             table: table.clone(),
+            cultures: cultures.clone(),
         }
     }
 
@@ -360,6 +413,8 @@ impl WorldChronicle {
             next_world_id: 0,
             epochs: 0,
             table,
+            // 没有据点就没有文化可查；空表的语义见 `CultureTable::new`。
+            cultures: CultureTable::new(),
         }
     }
 
@@ -388,6 +443,13 @@ impl WorldChronicle {
     /// 判断某个区块能不能盖房时用的地形表快照。
     pub fn terrain_table(&self) -> &TerrainTable {
         &self.table
+    }
+
+    /// 推演时用的那张文化表快照——铺设路径要靠它把
+    /// [`crate::settlement::SettlementSite::culture`] 翻译成建材，见
+    /// [`crate::settlement::StampContext::cultures`]。
+    pub fn culture_table(&self) -> &CultureTable {
+        &self.cultures
     }
 
     /// 查**锚点**落在这个区块的那座据点。`sites` 按区块光栅序排好，
@@ -464,6 +526,13 @@ struct Candidate {
     zone: ZoneCoord,
     anchor: TorusPos,
     land_area: u32,
+    /// 锚点那一格的**基础地形**（噪声算出来的那一层，还没铺任何房子）。
+    ///
+    /// 只为文化抽取的「地形」那一项存在（`EpochRun::culture_weights`）
+    /// ——项目所有者定的四条依据里的第二条。存下来而不是每次现算：
+    /// 一处候选点在整段推演里可能被反复拓荒，而 `terrain_at_tile` 是
+    /// 四层倍频噪声，勘察那一趟本来就已经把这一格算过一次了。
+    anchor_terrain: TerrainKind,
     /// 领地资源勘察结果，见 [`crate::resource::survey_resources`]。
     survey: ResourceSurvey,
 }
@@ -490,6 +559,19 @@ fn war_range(params: ChronicleParams) -> u32 {
     params
         .min_settlement_spacing
         .saturating_mul(WAR_RANGE_IN_SPACINGS)
+}
+
+/// 抽文化时「邻近据点」算到多远（格，环面切比雪夫）。
+///
+/// 与 [`war_range`] 同一种推法（由最小间距推出，不是一个可以独立调的
+/// 数值），但**刻意用一个更小的倍数**：打得到的地方不等于文化会扩散
+/// 过去的地方。取 [`CULTURE_NEIGHBOR_RANGE_IN_SPACINGS`]（2）意味着
+/// 「隔着最多一座据点的距离」，本体默认间距下是 288 格——走过去要花
+/// 时间，但仍在同一片地方。
+fn culture_neighbor_range(params: ChronicleParams) -> u32 {
+    params
+        .min_settlement_spacing
+        .saturating_mul(CULTURE_NEIGHBOR_RANGE_IN_SPACINGS)
 }
 
 /// 按区块光栅序扫描全世界，收集「能住人」的候选点。
@@ -614,6 +696,7 @@ fn survey_habitable_zones(
                 zone,
                 anchor,
                 land_area: component.area as u32,
+                anchor_terrain: terrain_at_tile(noise, params, anchor, terrain_ids),
                 survey,
             });
         }
@@ -708,6 +791,18 @@ struct SiteState {
     /// 最近一次被遗弃的纪元——用于「此处现在是废墟」这个最终状态。
     /// 从未被住过时为 `None`。
     last_ruin: Option<RuinRecord>,
+    /// 这一茬人信的那份文化，见 [`crate::culture`]。
+    ///
+    /// **随「这一茬」重抽，不随地块继承**：与 `extracted`/`depleted`
+    /// （矿是这片地的属性）方向相反——文化是**这批人**的属性，一座
+    /// 矿城废弃之后在原地重新扎营的可能是另一族另一种文化。「哥布林
+    /// 在人类矿城的废墟上重新扎营」这句话之所以说得通，正是因为这一
+    /// 条与那一条分开。
+    ///
+    /// 覆灭时**不清零**：废墟的建材要照着最后住在这里的那批人来铺
+    /// （见 [`crate::settlement`] 的 `ruin_tiles`），清零会让全大陆的废墟
+    /// 又长得一模一样。
+    culture: Option<CultureKind>,
 }
 
 /// 一处废墟的最终快照所需的三项。
@@ -719,6 +814,19 @@ struct RuinRecord {
     peak_population: u32,
 }
 
+/// 两条「多远算邻居」的射程，都由
+/// [`ChronicleParams::min_settlement_spacing`] 推出，不是可以独立调的
+/// 数值。合成一个结构体而不是 `EpochRun` 上的两个平列字段：它们同源、
+/// 恒一起构造，且拆开传会把 `EpochRun::new` 顶过
+/// `clippy::too_many_arguments`。
+#[derive(Debug, Clone, Copy)]
+struct NeighbourRanges {
+    /// 一座据点能打到多远，见 [`war_range`]。
+    war: u32,
+    /// 抽文化时「邻近据点」算到多远，见 [`culture_neighbor_range`]。
+    culture: u32,
+}
+
 /// 一次纪元推演的全部可变状态。
 struct EpochRun {
     candidates: Vec<Candidate>,
@@ -728,14 +836,17 @@ struct EpochRun {
     seed: u64,
     /// 世界瓦片尺寸——战争配对要量环面切比雪夫距离。
     tile_size: TorusSize,
-    /// 一座据点能打到多远，见 [`war_range`]。
-    war_range: u32,
+    /// 两条由最小据点间距推出来的射程，见 [`NeighbourRanges`]。
+    ranges: NeighbourRanges,
     /// 当前会话注册的资源种类表。持有一份克隆而不是借用：`EpochRun`
     /// 在 [`WorldChronicle::generate`] 里跨越整段推演存活，借用会把
     /// 调用方的生命周期钉在这上面，而这张表本身很小（每种资源一条
     /// 定长记录），克隆开销可忽略——与 `WorldChronicle::table`
     /// （地形表）的既有取舍逐字相同。
     resources: ResourceTable,
+    /// 当前会话注册的文化表（[`crate::culture`]）。持有一份克隆，理由
+    /// 与 `resources` 逐字相同。
+    cultures: CultureTable,
     next_world_id: u32,
 }
 
@@ -932,6 +1043,41 @@ const WAR_RANGE_IN_SPACINGS: u32 = 3;
 /// 痕迹**（吞并不是零和的），不是一次纯粹的删除。
 const WAR_SPOILS_DIVISOR: u32 = 2;
 /// 每多少居民对应一栋建筑。
+/// 抽文化时每份文化的**基础权重**：谁也不占优时大家机会均等。
+///
+/// 取 4 而不是 1：三条加分项（资源 9 / 3、地形 5、邻居 6 每座）要能
+/// 把某一份文化抬到明显占优，同时基础分又要大到「一点随机」这一项真
+/// 的还在——项目所有者定的四条依据里的第四条。基础 4 意味着一份什么
+/// 都不占的文化在一份满分文化面前仍有大约六分之一的机会。
+const CULTURE_BASE_WEIGHT: u32 = 4;
+/// 资源画像**第一名**命中文化的 [`crate::culture::CultureAttrs::economy`]
+/// 时加多少分。取值与 `ll_mod::roster` 的 `PRIMARY_RESOURCE_BONUS`
+/// 相同（9），理由也相同：一处据点「因为什么才有人来」这件事应当是
+/// 抽取里最重的一项。
+const CULTURE_PRIMARY_RESOURCE_BONUS: u32 = 9;
+/// 资源画像**第二名**命中时加多少分。
+const CULTURE_SECONDARY_RESOURCE_BONUS: u32 = 3;
+/// 锚点地形命中文化的 [`crate::culture::CultureAttrs::home_terrain`]
+/// 时加多少分。
+///
+/// 比资源第一名低：一块地「出什么」比它「长什么样」更能决定谁来住
+/// ——守着铁矿的丘陵仍然会长出矿业文化，而不是丘陵文化。
+const CULTURE_TERRAIN_BONUS: u32 = 5;
+/// 射程内每有一座**同文化**的邻居据点加多少分。
+///
+/// 文化会连成片而不是每座村子各信各的：邻居项是本抽取里唯一带正反馈
+/// 的一项，一族站住脚之后周围更容易也是同一族。
+const CULTURE_NEIGHBOR_BONUS: u32 = 6;
+/// 邻居加分的上限（折合 [`CULTURE_NEIGHBOR_BONUS`] 的倍数）。
+///
+/// 不设上限的话，一片已经铺满同族据点的地方会把权重推到「另一种文化
+/// 数值上不可能被抽中」——那等于把「一点随机」这条依据取消掉，也让
+/// 文化边界永远长不出来。取 3 让邻居项最多贡献 18 分，与「资源第一名
+/// + 地形」同一个量级。
+const MAX_CULTURE_NEIGHBOR_BONUS: u32 = 3;
+/// 见 [`culture_neighbor_range`]。
+const CULTURE_NEIGHBOR_RANGE_IN_SPACINGS: u32 = 2;
+
 const RESIDENTS_PER_BUILDING: u32 = 2;
 /// 一处废墟按历史峰值人口每多少人留下一栋残破建筑。
 const PEAK_RESIDENTS_PER_RUIN_BUILDING: u32 = 3;
@@ -942,8 +1088,9 @@ impl EpochRun {
         epochs: u32,
         seed: u64,
         tile_size: TorusSize,
-        war_range: u32,
+        ranges: NeighbourRanges,
         resources: ResourceTable,
+        cultures: CultureTable,
     ) -> EpochRun {
         let states = vec![
             SiteState {
@@ -954,6 +1101,7 @@ impl EpochRun {
                 extracted: 0,
                 depleted: false,
                 last_ruin: None,
+                culture: None,
             };
             candidates.len()
         ];
@@ -964,8 +1112,9 @@ impl EpochRun {
             epochs,
             seed,
             tile_size,
-            war_range,
+            ranges,
             resources,
+            cultures,
             next_world_id: 0,
         }
     }
@@ -1084,6 +1233,120 @@ impl EpochRun {
         top.map(|entry| entry.map(|(kind, _)| kind))
     }
 
+    /// 这处候选点在本纪元该长出哪一种文化——项目所有者定的四条依据
+    /// 「资源 + 地形 + 邻近据点 + 一点随机」的落地。
+    ///
+    /// # 四条依据分别落在哪
+    ///
+    /// | 依据 | 实现 |
+    /// |---|---|
+    /// | 资源 | 资源画像前两名的**大类**命中文化的 `economy` 就加分（[`CULTURE_PRIMARY_RESOURCE_BONUS`]/[`CULTURE_SECONDARY_RESOURCE_BONUS`]） |
+    /// | 地形 | 锚点基础地形命中文化的 `home_terrain` 就加分（[`CULTURE_TERRAIN_BONUS`]） |
+    /// | 邻近据点 | 射程内每有一座同文化的邻居就加分，有上限（[`CULTURE_NEIGHBOR_BONUS`]/[`MAX_CULTURE_NEIGHBOR_BONUS`]） |
+    /// | 一点随机 | 全部加分只是**权重**，最终由 `rng` 抽一次（[`CULTURE_BASE_WEIGHT`] 保证冷门文化仍有机会） |
+    ///
+    /// **一个字节的种族数据都不读**——这正是所有者「文化由据点建立时
+    /// 决定，**不看种族**」那一句的字面落实。反过来的那一半（种族给
+    /// 文化加权）落在 [`crate::culture::CultureAttrs::founder_races`]
+    /// 上，方向与所有者原话相反，理由记在那个字段的文档里。
+    ///
+    /// # 确定性（约束 C3 / C5）
+    ///
+    /// 遍历只走 [`CultureTable::registered`]（注册顺序的 `Vec`）；邻居
+    /// 统计按候选点光栅序；加权抽取线性扫描同一个顺序。全程不碰任何
+    /// 哈希容器。随机来自调用方递进来的、由
+    /// [`CHRONICLE_CULTURE_STREAM_ID`] 完全确定的那条流。
+    ///
+    /// 一条文化都没注册时返回 `None`（ADR 0015「尚无内容」的诚实
+    /// 表达），下游全部退化到文化落地之前的行为。
+    fn pick_culture(&self, index: usize, rng: &mut DetRng) -> Option<CultureKind> {
+        let registered = self.cultures.registered();
+        if registered.is_empty() {
+            return None;
+        }
+        let candidate = &self.candidates[index];
+        let mut total = 0u64;
+        // 两趟线性扫描而不是先物化一张权重表：文化条数是个位数量级，
+        // 第二趟重算一遍比分配一个 `Vec` 便宜，也不需要 `EpochRun`
+        // 多一个可变缓冲（约束 C1「不留跨帧隐式状态」在这里表现为
+        // 「不为一次抽取留一块长命内存」）。
+        for kind in registered {
+            total += u64::from(self.culture_weight(index, *kind));
+        }
+        if total == 0 {
+            return None;
+        }
+        let mut roll = rng.gen_range(total);
+        for kind in registered {
+            let weight = u64::from(self.culture_weight(index, *kind));
+            if roll < weight {
+                return Some(*kind);
+            }
+            roll -= weight;
+        }
+        // 理论不可达（`roll < total` 而循环恰好减掉了全部权重之和）。
+        // 退回第一份文化而不是 panic，规格 §10.2「降级而非崩溃」。
+        let _ = candidate;
+        registered.first().copied()
+    }
+
+    /// 一份文化在这处候选点上的权重，见 [`Self::pick_culture`] 的四条
+    /// 依据表。
+    fn culture_weight(&self, index: usize, kind: CultureKind) -> u32 {
+        let candidate = &self.candidates[index];
+        let mut weight = CULTURE_BASE_WEIGHT;
+
+        // ① 资源：画像前两名的大类命中这份文化靠什么吃饭。
+        if let Some(economy) = self.cultures.economy(kind) {
+            for (rank, entry) in self.resource_profile(index).into_iter().enumerate() {
+                let Some(resource) = entry else {
+                    continue;
+                };
+                if self.resources.category(resource) != Some(economy) {
+                    continue;
+                }
+                weight = weight.saturating_add(if rank == 0 {
+                    CULTURE_PRIMARY_RESOURCE_BONUS
+                } else {
+                    CULTURE_SECONDARY_RESOURCE_BONUS
+                });
+            }
+        }
+
+        // ② 地形：锚点那一格。
+        if self.cultures.home_terrain(kind) == Some(candidate.anchor_terrain) {
+            weight = weight.saturating_add(CULTURE_TERRAIN_BONUS);
+        }
+
+        // ③ 邻近据点：射程内还有人住、且已经是这份文化的那些。
+        let mut neighbours = 0u32;
+        for (other, state) in self.states.iter().enumerate() {
+            if other == index || state.population == 0 || state.culture != Some(kind) {
+                continue;
+            }
+            let distance = self
+                .tile_size
+                .chebyshev(candidate.anchor, self.candidates[other].anchor);
+            if distance <= self.ranges.culture {
+                neighbours += 1;
+                if neighbours >= MAX_CULTURE_NEIGHBOR_BONUS {
+                    break;
+                }
+            }
+        }
+        weight.saturating_add(neighbours.saturating_mul(CULTURE_NEIGHBOR_BONUS))
+    }
+
+    /// `attacker` 那座据点的文化对 `defender` 那座的敌意分。
+    ///
+    /// 两侧任意一方没有文化（或表里查不到这一对）就是 0——**全表敌意
+    /// 为 0 时战争行为与文化落地之前逐位相同**，见
+    /// [`crate::culture::CultureAttrs::hostility`]。
+    fn hostility_between(&self, attacker: usize, defender: usize) -> u32 {
+        self.cultures
+            .hostility(self.states[attacker].culture, self.states[defender].culture)
+    }
+
     /// 逐纪元推演。每个纪元内部按候选点光栅序处理，纪元末尾重算两项
     /// 跨据点聚合量（世界总人口、首邑）供**下一个**纪元使用——聚合在
     /// 纪元边界上计算，本纪元内部读到的恒是上一纪元的定局，因此处理
@@ -1133,14 +1396,14 @@ impl EpochRun {
     /// 攻方出场，也不会再被别人当作目标——「同一个纪元被打两次」不可能
     /// 发生，不需要额外的已处理标记。
     fn wage_wars(&mut self, epoch: u32) {
-        if self.war_range == 0 {
+        if self.ranges.war == 0 {
             return;
         }
         for attacker in 0..self.candidates.len() {
             if self.states[attacker].population < WAR_MIN_POPULATION {
                 continue;
             }
-            let Some(defender) = self.nearest_rival(attacker) else {
+            let Some(defender) = self.pick_target(attacker) else {
                 continue;
             };
             if self.states[attacker].population
@@ -1153,18 +1416,46 @@ impl EpochRun {
                 CHRONICLE_WAR_STREAM_ID,
                 attacker as u64 * u64::from(self.epochs) + u64::from(epoch),
             );
-            if !rng.chance(WAR_NUMERATOR, WAR_DENOMINATOR) {
+            // 敌对是**加分项**，不是替代品：人口阈值与优势比两条闸门
+            // 一个字都没动，敌意只是把已有的 1/8 掷骰抬高——与
+            // `try_found` 已经在用的「四条加分互相独立地推高同一个概率
+            // 分子」是同一个手法。上界 `MAX_HOSTILITY`（7）由注册期
+            // 校验守着，分子因此恒 < 分母，「够强就必然开战」不可能
+            // 发生。敌意恒为 0（空文化表）时这一行与旧代码逐位相同。
+            let hostility = self.hostility_between(attacker, defender);
+            if !rng.chance(WAR_NUMERATOR + hostility, WAR_DENOMINATOR) {
                 continue;
             }
             self.conquer(attacker, defender, epoch);
         }
     }
 
-    /// 离 `attacker` 最近、仍有人住、且值得打（人口不低于
-    /// [`WAR_MIN_POPULATION`]）的另一座据点，射程之内。
-    fn nearest_rival(&self, attacker: usize) -> Option<usize> {
+    /// `attacker` 这一纪元打谁：射程内、仍有人住、且值得打（人口不低于
+    /// [`WAR_MIN_POPULATION`]）的那些据点里，**敌意最高的**；敌意并列
+    /// 时取最近的；再并列时取候选点光栅序最先的。
+    ///
+    /// # 为什么排序键要加上敌意这一维
+    ///
+    /// 本函数此前叫 `nearest_rival`，只按距离取最近。部落与文明复用
+    /// 同一套据点推演之后，那条判据会产出语义错误的历史：一个哥布林
+    /// 营地因为**隔壁那个哥布林营地更近**而去灭了自己人，而两格之外
+    /// 的矮人矿城相安无事。加上敌意这一维之后，「矮人矿城被哥布林部落
+    /// 攻灭」才有可能真的发生。
+    ///
+    /// # 这不是「敌对才打」
+    ///
+    /// 全部据点敌意都是 0 时（空文化表、或者内容里没声明任何敌对），
+    /// 排序键退化成「距离，光栅序并列」——**与改名之前逐位相同的行为**。
+    /// 敌对没有成为开战的必要条件，只是改变了打谁；打不打仍由人口阈值、
+    /// 优势比、掷骰三条决定，见 [`Self::wage_wars`]。
+    ///
+    /// # 确定性（约束 C5）
+    ///
+    /// 遍历按候选点光栅序，比较是「敌意 `>` / 距离 `<`」的严格不等号，
+    /// 因此并列恒由光栅序决出，不依赖任何迭代顺序。
+    fn pick_target(&self, attacker: usize) -> Option<usize> {
         let origin = self.candidates[attacker].anchor;
-        let mut best: Option<(usize, u32)> = None;
+        let mut best: Option<(usize, u32, u32)> = None;
         for (index, state) in self.states.iter().enumerate() {
             if index == attacker || state.population < WAR_MIN_POPULATION {
                 continue;
@@ -1172,15 +1463,21 @@ impl EpochRun {
             let distance = self
                 .tile_size
                 .chebyshev(origin, self.candidates[index].anchor);
-            if distance > self.war_range {
+            if distance > self.ranges.war {
                 continue;
             }
-            match best {
-                Some((_, closest)) if distance >= closest => {}
-                _ => best = Some((index, distance)),
+            let hostility = self.hostility_between(attacker, index);
+            let better = match best {
+                None => true,
+                Some((_, top_hostility, closest)) => {
+                    hostility > top_hostility || (hostility == top_hostility && distance < closest)
+                }
+            };
+            if better {
+                best = Some((index, hostility, distance));
             }
         }
-        best.map(|(index, _)| index)
+        best.map(|(index, _, _)| index)
     }
 
     /// `attacker` 攻灭 `defender`：守方就此成为废墟，一半人口被并进
@@ -1236,6 +1533,9 @@ impl EpochRun {
             // 挖过的矿脉，见 SiteState::extracted 文档。
             extracted: state.extracted,
             depleted: state.depleted,
+            // 文化**不随覆灭清零**：废墟的建材要照着最后住在这里的那批
+            // 人来铺，见 SiteState::culture 文档。
+            culture: state.culture,
             last_ruin: Some(RuinRecord {
                 id: site_id,
                 founded_epoch: state.founded_epoch,
@@ -1296,11 +1596,23 @@ impl EpochRun {
         let site_id = WorldId::next(&mut self.next_world_id);
         let event_id = WorldId::next(&mut self.next_world_id);
         let previous = self.states[index];
+        // 文化在**拓荒这一刻**抽一次，此后这一茬人一直用它（项目所有者
+        // 「文化由据点建立时决定」）。走一条独立的流
+        // （[`CHRONICLE_CULTURE_STREAM_ID`]）而不是复用 `rng`：复用会
+        // 让「这个世界有几种文化」改变后面每一处拓荒/增长的掷骰，
+        // 加一条 cultures.json5 就等于换了一个世界。
+        let mut culture_rng = DetRng::for_entity(
+            self.seed,
+            CHRONICLE_CULTURE_STREAM_ID,
+            index as u64 * u64::from(self.epochs) + u64::from(epoch),
+        );
+        let culture = self.pick_culture(index, &mut culture_rng);
         self.states[index] = SiteState {
             id: Some(site_id),
             population,
             founded_epoch: epoch,
             peak_population: population,
+            culture,
             // 接手上一茬挖剩的矿：储量是这片地的属性，不随「换了一批
             // 人」恢复。一处已经被挖空的矿脉旁边可以再建村子，但那座
             // 村子从第一天起就没有矿业可依。
@@ -1452,6 +1764,7 @@ impl EpochRun {
                     building_count: (1 + state.population / RESIDENTS_PER_BUILDING)
                         .min(MAX_BUILDINGS),
                     resource_profile: self.resource_profile(index),
+                    culture: state.culture,
                 });
             } else if let Some(ruin) = state.last_ruin {
                 sites.push(SettlementSite {
@@ -1469,6 +1782,9 @@ impl EpochRun {
                     // 「还有没有人住」无关。将来的废墟叙事（这里曾经是
                     // 一座矿城）要的正是这一条。
                     resource_profile: self.resource_profile(index),
+                    // 废墟带的是**最后住在这里的那批人**的文化，见
+                    // SiteState::culture 文档「覆灭时不清零」。
+                    culture: state.culture,
                 });
             }
         }
@@ -1489,6 +1805,7 @@ fn epoch_tick(epoch: u32, epochs: u32) -> Tick {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::culture::CultureAttrs;
     use crate::terrain::base_terrain_fixture;
     use ll_core::torus::TorusSize;
 
@@ -1521,12 +1838,15 @@ mod tests {
         let (ids, table) = base_terrain_fixture();
         let (_kinds, resources) = test_resources(&ids);
         WorldChronicle::generate(
-            &layout,
-            &noise,
-            &params,
-            &ids,
-            &table,
-            &resources,
+            &ChronicleInput {
+                layout: &layout,
+                noise: &noise,
+                params: &params,
+                terrain_ids: &ids,
+                terrain_table: &table,
+                resources: &resources,
+                cultures: &CultureTable::new(),
+            },
             chronicle_params,
         )
     }
@@ -1539,6 +1859,282 @@ mod tests {
         let mut interner = ll_core::ident::Interner::new();
         crate::resource::base_resource_fixture(&mut interner, ids)
     }
+
+    /// 测试用文化表：两条，形状照抄 `mods/lostland/cultures.json5` 的
+    /// `lostland:mining_hold` 与 `lostland:goblin_warband`。
+    ///
+    /// `hostility` 是「部落 → 矿业」那一个方向的敌意分（反向恒为 0，
+    /// 刻意不对称）。传 0 就得到一张**除了敌对什么都一样**的表——
+    /// `全表敌意为零时战争结果与空文化表逐位相同` 与
+    /// `敌意抬高了战争导致的覆灭次数` 两条测试就靠这个参数把「敌对」
+    /// 这一个变量单独隔离出来。
+    fn test_cultures(
+        ids: &crate::terrain::BaseTerrainIds,
+        hostility: u32,
+    ) -> (CultureTable, [CultureKind; 2]) {
+        use ll_core::ident::{Interner, NamespacedId};
+        let mut interner = Interner::new();
+        let mut table = CultureTable::new();
+        let mining = interner.intern(NamespacedId::parse("test:mining_hold").expect("合法"));
+        let tribe = interner.intern(NamespacedId::parse("test:warband").expect("合法"));
+        let race = interner.intern(NamespacedId::parse("test:folk").expect("合法"));
+        table
+            .define(
+                mining,
+                CultureAttrs {
+                    display_name_key: NamespacedId::parse("test:culture.mining.display_name")
+                        .expect("合法"),
+                    economy: crate::resource::ResourceCategory::Metal,
+                    home_terrain: ids.mountain,
+                    wall_terrain: ids.wall_stone,
+                    founder_races: vec![(race, 10)],
+                    hostility: Vec::new(),
+                },
+            )
+            .expect("首次定义");
+        table
+            .define(
+                tribe,
+                CultureAttrs {
+                    display_name_key: NamespacedId::parse("test:culture.tribe.display_name")
+                        .expect("合法"),
+                    economy: crate::resource::ResourceCategory::Timber,
+                    home_terrain: ids.hill,
+                    wall_terrain: ids.wall_wood,
+                    founder_races: vec![(race, 10)],
+                    hostility: vec![(mining, hostility)],
+                },
+            )
+            .expect("首次定义");
+        (
+            table,
+            [
+                CultureKind::from_index(mining),
+                CultureKind::from_index(tribe),
+            ],
+        )
+    }
+
+    /// 与 [`chronicle_with`] 相同，但递一张指定的文化表进去。
+    fn chronicle_with_cultures(seed: u64, cultures: &CultureTable) -> WorldChronicle {
+        let layout = test_layout();
+        let params = GenParams {
+            seed,
+            ..GenParams::default()
+        };
+        let noise = crate::generate::build_zone_noise(&layout, &params).expect("布局合法");
+        let (ids, table) = base_terrain_fixture();
+        let (_kinds, resources) = test_resources(&ids);
+        WorldChronicle::generate(
+            &ChronicleInput {
+                layout: &layout,
+                noise: &noise,
+                params: &params,
+                terrain_ids: &ids,
+                terrain_table: &table,
+                resources: &resources,
+                cultures,
+            },
+            ChronicleParams::default(),
+        )
+    }
+
+    /// 这部编年史里因战争覆灭的据点有几座。
+    fn war_demises(chronicle: &WorldChronicle) -> usize {
+        chronicle
+            .events()
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    HistoricalEventKind::SettlementAbandoned(record)
+                        if matches!(record.cause, SettlementDemise::War { .. })
+                )
+            })
+            .count()
+    }
+
+    /// 这部编年史里全部战争覆灭事件的可比对摘要。
+    fn war_events(chronicle: &WorldChronicle) -> Vec<(Tick, WorldId, u32, SettlementDemise)> {
+        chronicle
+            .events()
+            .iter()
+            .filter_map(|event| match &event.kind {
+                HistoricalEventKind::SettlementAbandoned(record) => matches!(
+                    record.cause,
+                    SettlementDemise::War { .. }
+                )
+                .then_some((event.at, record.site, record.epoch, record.cause)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn 全表敌意为零时战争结果与空文化表逐位相同() {
+        // 这条守的是本批次最重要的一条兼容性性质：**文化只经「敌意」
+        // 这一个通道影响战争**。左边的世界没有文化这一层，右边的世界
+        // 每座据点都有文化（建材、名册都受影响），但两条文化互不敌对
+        // ——两边的战争史必须逐条相同。
+        //
+        // 它同时是「把改动关掉能精确回到旧行为」这条纪律在单元测试里
+        // 的落点：空文化表就是改动关掉的那个状态。
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let (peaceful, _kinds) = test_cultures(&ids, 0);
+
+        // Act
+        let without = chronicle_with_cultures(0xC0FF_EE12, &CultureTable::new());
+        let with = chronicle_with_cultures(0xC0FF_EE12, &peaceful);
+
+        // Assert：先确认右边真的有文化（否则这条测试是空转）。
+        assert!(
+            with.sites().iter().any(|site| site.culture.is_some()),
+            "右边的世界必须真的抽出了文化，否则本条比较毫无意义"
+        );
+        assert!(
+            without.sites().iter().all(|site| site.culture.is_none()),
+            "空文化表下不该有任何据点带文化"
+        );
+        assert_eq!(
+            war_events(&without),
+            war_events(&with),
+            "敌意为零时，有没有文化这一层不该改变任何一场战争"
+        );
+
+        // # 故意改坏的反例（人工核验，真实执行）
+        //
+        // 在 `wage_wars` 里把敌意那一行改成
+        // `hostility + u32::from(self.states[attacker].culture.is_some())`
+        // ——也就是让「有没有文化」本身也能改变开战概率——本条当场红：
+        // 左边 3 场战争、右边 6 场。恢复后重新跑通。
+        //
+        // **另一处试过但不成立的改坏**，一并记下来免得后人重走：把
+        // `try_found` 里的 `pick_culture(index, &mut culture_rng)` 改成
+        // 复用主 `rng`，本条**不会**红。原因是 `rng` 每个 (据点, 纪元)
+        // 由 `DetRng::for_entity` 现造、用完即弃，在 `try_found` 末尾
+        // 多取一个数不影响任何别的判定。这不是测试太弱，是那处改动
+        // 真的没有可观测后果。
+    }
+
+    #[test]
+    fn 敌意抬高了战争导致的覆灭次数() {
+        // Arrange：两张表只差一个数——「部落 → 矿业」的敌意分。
+        let (ids, _table) = base_terrain_fixture();
+        let (peaceful, _) = test_cultures(&ids, 0);
+        let (hostile, _) = test_cultures(&ids, crate::culture::MAX_HOSTILITY);
+
+        // Act：同一颗种子跑两遍。
+        let calm = war_demises(&chronicle_with_cultures(0xC0FF_EE12, &peaceful));
+        let bloody = war_demises(&chronicle_with_cultures(0xC0FF_EE12, &hostile));
+
+        // Assert
+        assert!(
+            bloody > calm,
+            "敌意应当抬高开战概率：平和 {calm} 场，敌对 {bloody} 场"
+        );
+
+        // # 故意改坏的反例（人工核验，真实执行）
+        //
+        // 把 `wage_wars` 的 `rng.chance(WAR_NUMERATOR + hostility, ..)`
+        // 改回 `rng.chance(WAR_NUMERATOR, ..)`（也就是敌对不接线），
+        // 本条当场红：平和 3 场、敌对也是 3 场。恢复后重新跑通。
+    }
+
+    #[test]
+    fn 文化抽取跟着资源走() {
+        // Arrange：矿业文化守金属、住山里；部落守木材、住丘陵。
+        let (ids, _table) = base_terrain_fixture();
+        let (cultures, [mining, tribe]) = test_cultures(&ids, 0);
+        let (_kinds, resources) = test_resources(&ids);
+
+        // Act：单颗种子的测试世界（16×16 区块）里守着金属的据点只有
+        // 个位数，样本太小；四颗种子累计起来才谈得上「更可能」。
+        let (mut metal_mining, mut metal_tribe) = (0usize, 0usize);
+        let (mut timber_mining, mut timber_tribe) = (0usize, 0usize);
+        for seed in [0xC0FF_EE12u64, 0x1234_5678, 7, 99] {
+            let chronicle = chronicle_with_cultures(seed, &cultures);
+            for site in chronicle.sites() {
+                let (Some(primary), Some(culture)) = (site.resource_profile[0], site.culture)
+                else {
+                    continue;
+                };
+                match resources.category(primary) {
+                    Some(crate::resource::ResourceCategory::Metal) if culture == mining => {
+                        metal_mining += 1
+                    }
+                    Some(crate::resource::ResourceCategory::Metal) if culture == tribe => {
+                        metal_tribe += 1
+                    }
+                    Some(crate::resource::ResourceCategory::Timber) if culture == mining => {
+                        timber_mining += 1
+                    }
+                    Some(crate::resource::ResourceCategory::Timber) if culture == tribe => {
+                        timber_tribe += 1
+                    }
+                    _ => {}
+                }
+            }
+        }
+
+        // Assert：先确认样本非空（否则下面两条是空转），再比大小。
+        // 守着金属的据点更可能是矿业文化，守着木材的更可能是部落——
+        // 这正是项目所有者定的第一条依据「资源」。
+        assert!(
+            metal_mining + metal_tribe > 0 && timber_mining + timber_tribe > 0,
+            "四颗种子里既没有守金属的据点也没有守木材的据点，本条测试是空转"
+        );
+        assert!(
+            metal_mining > metal_tribe,
+            "守着金属的据点里矿业文化 {metal_mining} 应多于部落 {metal_tribe}"
+        );
+        assert!(
+            timber_tribe > timber_mining,
+            "守着木材的据点里部落 {timber_tribe} 应多于矿业文化 {timber_mining}"
+        );
+    }
+
+    #[test]
+    fn 同一颗种子的文化派生逐位相同() {
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let (cultures, _) = test_cultures(&ids, 3);
+
+        // Act
+        let first = chronicle_with_cultures(0x1234_5678, &cultures);
+        let second = chronicle_with_cultures(0x1234_5678, &cultures);
+
+        // Assert：文化是派生量（ADR 0009），读档时靠这条性质重算出
+        // 逐位相同的结果。
+        assert_eq!(first.sites().len(), second.sites().len());
+        for (a, b) in first.sites().iter().zip(second.sites()) {
+            assert_eq!(a.culture, b.culture, "同一种子的文化派生出现分歧");
+        }
+    }
+
+    /// 把六样东西拼成一个不带文化的 [`ChronicleInput`]——只关心资源
+    /// 那一层的几条测试用它，省得每处都写一遍空文化表。
+    fn chronicle_input<'a>(
+        layout: &'a ZoneLayout,
+        noise: &'a TileableNoise,
+        params: &'a GenParams,
+        terrain_ids: &'a BaseTerrainIds,
+        terrain_table: &'a TerrainTable,
+        resources: &'a ResourceTable,
+    ) -> ChronicleInput<'a> {
+        ChronicleInput {
+            layout,
+            noise,
+            params,
+            terrain_ids,
+            terrain_table,
+            resources,
+            cultures: EMPTY_CULTURES.get_or_init(CultureTable::new),
+        }
+    }
+
+    /// [`chronicle_input`] 用的那张常驻空文化表。
+    static EMPTY_CULTURES: std::sync::OnceLock<CultureTable> = std::sync::OnceLock::new();
 
     /// 一部编年史里挨得最近的两座据点相距多少格（环面切比雪夫）。
     /// 少于两座时返回 `None`。
@@ -1873,10 +2469,14 @@ mod tests {
         let defaults = ChronicleParams::default();
 
         // Act
-        let with_resources =
-            WorldChronicle::generate(&layout, &noise, &params, &ids, &table, &resources, defaults);
-        let without =
-            WorldChronicle::generate(&layout, &noise, &params, &ids, &table, &empty, defaults);
+        let with_resources = WorldChronicle::generate(
+            &chronicle_input(&layout, &noise, &params, &ids, &table, &resources),
+            defaults,
+        );
+        let without = WorldChronicle::generate(
+            &chronicle_input(&layout, &noise, &params, &ids, &table, &empty),
+            defaults,
+        );
 
         // Assert
         let buildings = |chronicle: &WorldChronicle| -> u64 {
@@ -1910,12 +2510,7 @@ mod tests {
 
         // Act
         let chronicle = WorldChronicle::generate(
-            &layout,
-            &noise,
-            &params,
-            &ids,
-            &table,
-            &empty,
+            &chronicle_input(&layout, &noise, &params, &ids, &table, &empty),
             ChronicleParams::default(),
         );
 

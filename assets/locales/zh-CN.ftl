@@ -37,6 +37,7 @@ keybind-action-zoom_out = 缩小
 race-human-display_name = 人类
 race-dwarf-display_name = 矮人
 race-elf-display_name = 精灵
+race-goblin-display_name = 哥布林
 
 class-warrior-display_name = 战士
 class-mage-display_name = 法师
@@ -176,6 +177,15 @@ resource-iron_vein-display_name = 铁矿
 resource-granite-display_name = 花岗岩
 resource-fresh_water-display_name = 水源
 resource-fishery-display_name = 渔场
+
+# 文化（文化批次）——每座据点恰好一份，见 crates/ll-world/src/culture.rs
+# 与 mods/lostland/cultures.json5。
+culture-farmstead-display_name = 农庄
+culture-mining_hold-display_name = 矿邑
+culture-forest_kin-display_name = 林居
+culture-harbour-display_name = 渔港
+culture-stonecutters-display_name = 石砦
+culture-goblin_warband-display_name = 哥布林部落
 
 hud-character-panel-title = 角色
 hud-character-level-label = 等级

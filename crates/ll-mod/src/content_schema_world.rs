@@ -16,6 +16,7 @@
 //! 形突然不挡视线了」，而没有任何报错。数值字段同理，除非缺省值本身
 //! 有明确语义（见各字段文档）。
 
+use ll_world::culture::{CultureAttrs, CultureError, CultureTable};
 use ll_world::resource::{ResourceAttrs, ResourceCategory, ResourceError, ResourceTable};
 use ll_world::space_profile::{SpaceProfileAttrs, SpaceProfileError, SpaceProfileTable};
 use ll_world::terrain::{TerrainAttrs, TerrainError, TerrainKind, TerrainTable};
@@ -172,6 +173,128 @@ pub fn apply_resources(
                 },
             )
             .map_err(|err: ResourceError| err.to_string())?;
+    }
+    Ok(())
+}
+
+// ───────────────────────────── 文化 ─────────────────────────────
+
+/// `cultures.json5` 的顶层形状。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CultureFile {
+    /// 文化名册，按书写顺序注册。
+    pub cultures: Vec<RawCulture>,
+}
+
+/// 一条文化声明，见 [`ll_world::culture`] 模块文档。
+///
+/// 与 [`RawResource`] 同一条纪律：没有一个字段带
+/// `#[serde(default)]`。漏写 `wall_terrain` 的症状是「哥布林营地又跟
+/// 矮人矿城长得一样了」而没有任何报错，那正是这条纪律要挡的东西。
+/// 唯一的例外是 `hostility`——「谁也不恨」是一个**有意义且常见**的
+/// 答案（本体七条文化里有五条不声明任何敌对），而它与「忘了写」不会
+/// 产生难查的症状：敌意为 0 就是不额外开战，与文化落地之前逐位相同。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawCulture {
+    /// 完整命名空间标识符，例如 `lostland:mining_hold`。
+    pub id: String,
+    /// 展示名的 Fluent 本地化键。
+    pub display_name_key: String,
+    /// 这种文化靠哪个资源大类吃饭，五选一：`food` / `timber` /
+    /// `metal` / `stone` / `water`（[`ll_world::resource::ResourceCategory`]）。
+    pub economy: String,
+    /// 选址地形偏好（完整命名空间标识符，必须是一条已注册的地形）。
+    pub home_terrain: String,
+    /// 盖房子用的墙（同上）。
+    pub wall_terrain: String,
+    /// 建立者种族候选：`{ race: "...", weight: N }`，至少要有一条
+    /// 权重为正，否则装载期当场报错
+    /// （[`ll_world::culture::CultureError::NoFounderRace`]）。
+    pub founder_races: Vec<RawFounderRace>,
+    /// 敌对文化：`{ culture: "...", hostility: N }`，`N` 落在
+    /// `0..=`[`ll_world::culture::MAX_HOSTILITY`]。**有向**，见
+    /// [`ll_world::culture::CultureAttrs::hostility`]。
+    #[serde(default)]
+    pub hostility: Vec<RawCultureHostility>,
+}
+
+/// [`RawCulture::founder_races`] 的一项。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawFounderRace {
+    /// 种族的完整命名空间标识符。
+    pub race: String,
+    /// 抽取权重；0 表示这一档不参与抽取。
+    pub weight: i64,
+}
+
+/// [`RawCulture::hostility`] 的一项。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawCultureHostility {
+    /// 目标文化的完整命名空间标识符。
+    pub culture: String,
+    /// 敌意分，`0..=`[`ll_world::culture::MAX_HOSTILITY`]。
+    pub hostility: i64,
+}
+
+/// 把一批文化写进注册表与文化表。
+///
+/// 三处引用（`home_terrain`/`wall_terrain`/`founder_races[].race`/
+/// `hostility[].culture`）全部走 `intern` 而不是「只 get」，与
+/// [`RawResource::source_terrain`] 完全同一种处理，理由也逐字相同：
+/// 注册表本身不区分「谁先提到这个 id」，真正的校验由消费侧的
+/// `is_defined` 回答。**敌对目标尤其需要 `intern`**：两份互相敌对的
+/// 文化写在同一个文件里，无论怎么排序都有一方会先提到另一方。
+pub fn apply_cultures(
+    registry: &mut Registry,
+    table: &mut CultureTable,
+    cultures: &[RawCulture],
+) -> Applied {
+    for culture in cultures {
+        let index = intern_id(registry, &culture.id, "文化标识符")?;
+        let display_name_key = parse_id(&culture.display_name_key, "文化展示名键")?;
+        let economy = ResourceCategory::parse(&culture.economy).ok_or_else(|| {
+            format!(
+                "文化 {:?} 的经济大类 {:?} 不是 food / timber / metal / stone / water 之一",
+                culture.id, culture.economy
+            )
+        })?;
+        let home_terrain = TerrainKind::from_index(intern_id(
+            registry,
+            &culture.home_terrain,
+            "文化选址地形标识符",
+        )?);
+        let wall_terrain = TerrainKind::from_index(intern_id(
+            registry,
+            &culture.wall_terrain,
+            "文化建材地形标识符",
+        )?);
+        let mut founder_races = Vec::with_capacity(culture.founder_races.len());
+        for entry in &culture.founder_races {
+            let race = intern_id(registry, &entry.race, "文化建立者种族标识符")?;
+            founder_races.push((race, entry.weight.clamp(0, i64::from(u32::MAX)) as u32));
+        }
+        let mut hostility = Vec::with_capacity(culture.hostility.len());
+        for entry in &culture.hostility {
+            let target = intern_id(registry, &entry.culture, "文化敌对目标标识符")?;
+            hostility.push((target, entry.hostility.clamp(0, i64::from(u32::MAX)) as u32));
+        }
+        table
+            .define(
+                index,
+                CultureAttrs {
+                    display_name_key,
+                    economy,
+                    home_terrain,
+                    wall_terrain,
+                    founder_races,
+                    hostility,
+                },
+            )
+            .map_err(|err: CultureError| err.to_string())?;
     }
     Ok(())
 }

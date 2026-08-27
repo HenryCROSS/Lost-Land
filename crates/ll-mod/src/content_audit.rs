@@ -460,6 +460,19 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 「本体名册里必须有一种会枯竭的资源」这条内容设计要求因此
         // 有了一道机器检查：把 iron_vein 改成不枯竭，本门禁立刻变红。
         ContentTableKind::Resource,
+        // 文化批次：mods/lostland/cultures.json5（**新文件**，六条文化）
+        // 让文化表在 lostland 命名空间下一落地就非空，与资源表当初
+        // 一样不经过 deferred——文化名册本身就是本体内容，它引用的
+        // 地形与种族都已经在本体里。
+        //
+        // 这张表**六个字段全部被本体那六条覆盖，一条豁免都不需要**：
+        // display_name_key / economy / home_terrain / wall_terrain /
+        // founder_races 是 `define` 的必填入参（空建立者表在注册期就被
+        // 拒，见 CultureError::NoFounderRace），而 hostility 由
+        // lostland:goblin_warband 与 lostland:mining_hold 两条覆盖——
+        // 「本体名册里必须至少有一对互相敌对的文化」这条内容设计要求
+        // 因此有了一道机器检查：把那两段敌对删掉，本门禁立刻变红。
+        ContentTableKind::Culture,
     ],
     deferred: &[
         DeferredTable {
@@ -846,6 +859,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
         ContentTableKind::Recipe => "配方表",
         ContentTableKind::RecipeCategory => "配方类别表",
         ContentTableKind::Resource => "资源表",
+        ContentTableKind::Culture => "文化表",
     }
 }
 
@@ -854,7 +868,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
 /// 与 [`roster_slot`] 配套：新增一个变体时，那个不带通配分支的 `match`
 /// 会编译失败，逼人回到这里补上数组元素（数组长度也会对不上），见模块
 /// 文档「表花名册」一节。
-pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 22] = [
+pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 23] = [
     ContentTableKind::Opaque,
     ContentTableKind::Terrain,
     ContentTableKind::Class,
@@ -877,6 +891,7 @@ pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 22] = [
     ContentTableKind::Tag,
     ContentTableKind::ModifierType,
     ContentTableKind::Resource,
+    ContentTableKind::Culture,
 ];
 
 /// 给 [`ALL_CONTENT_TABLE_KINDS`] 的完备性做编译期强制：不带通配分支
@@ -909,6 +924,7 @@ fn roster_slot(kind: ContentTableKind) -> usize {
         ContentTableKind::Tag => 19,
         ContentTableKind::ModifierType => 20,
         ContentTableKind::Resource => 21,
+        ContentTableKind::Culture => 22,
     }
 }
 
@@ -1319,6 +1335,7 @@ fn inspect_entry(auditor: &mut Auditor<'_>, index: ContentIndex) {
         }
         ContentTableKind::Weather => inspect_weather(auditor, index),
         ContentTableKind::Resource => inspect_resource(auditor, index),
+        ContentTableKind::Culture => inspect_culture(auditor, index),
         ContentTableKind::Recipe => inspect_recipe(auditor, index),
         ContentTableKind::RecipeCategory => inspect_recipe_category(auditor, index),
     }
@@ -1616,6 +1633,36 @@ fn inspect_resource(auditor: &mut Auditor<'_>, index: ContentIndex) {
         table.settlement_draw(kind) != 0,
     );
     auditor.field("ResourceAttrs::exhaustible", table.exhaustible(kind));
+}
+
+/// [`ll_world::culture::CultureAttrs`] 的全部字段。
+///
+/// 前四个字段是 `define` 的必填入参（`ResourceCategory`/`TerrainKind`
+/// 都没有「未填」这个取值，装载期解析不出来就当场报错），因此恒记为
+/// 已覆盖，理由与 `inspect_resource` 里那三条逐字相同。
+///
+/// 后两个是真的可能空的列表，分别检查：
+///
+/// - `founder_races` 恒非空——注册期已经拒掉了空表
+///   （[`ll_world::culture::CultureError::NoFounderRace`]），这里记
+///   `true` 不是在放水，是在如实反映那道更早的门。
+/// - `hostility` **不恒非空**：本体七条文化里五条不声明任何敌对。
+///   它记的是「这条内容有没有真的声明过敌对」，于是「本体名册里必须
+///   至少有一对互相敌对的文化」这条内容设计要求有了一道机器检查——
+///   把 `lostland:goblin_warband` 的敌对整段删掉，本门禁立刻变红。
+fn inspect_culture(auditor: &mut Auditor<'_>, index: ContentIndex) {
+    let kind = ll_world::culture::CultureKind::from_index(index);
+    let table = auditor.tables.culture;
+    auditor.field("CultureAttrs::display_name_key", true);
+    auditor.field("CultureAttrs::economy", true);
+    auditor.field("CultureAttrs::home_terrain", true);
+    auditor.field("CultureAttrs::wall_terrain", true);
+    auditor.field("CultureAttrs::founder_races", true);
+    let declares_hostility = table
+        .registered()
+        .iter()
+        .any(|target| table.hostility(Some(kind), Some(*target)) > 0);
+    auditor.field("CultureAttrs::hostility", declares_hostility);
 }
 
 /// [`ll_render::anim::Clip`] 的全部字段——[`crate::clip::ClipTable`]
@@ -2137,6 +2184,7 @@ mod tests {
         damage_category: DamageCategoryTable,
         weather: WeatherTable,
         resource: ll_world::resource::ResourceTable,
+        culture: ll_world::culture::CultureTable,
         recipe: RecipeTable,
         recipe_category: RecipeCategoryTable,
         tag: TagTable,
@@ -2166,6 +2214,7 @@ mod tests {
                 damage_category: DamageCategoryTable::new(),
                 weather: WeatherTable::new(),
                 resource: ll_world::resource::ResourceTable::new(),
+                culture: ll_world::culture::CultureTable::new(),
                 recipe: RecipeTable::new(),
                 recipe_category: RecipeCategoryTable::new(),
             }
@@ -2194,6 +2243,7 @@ mod tests {
                 tag: &self.tag,
                 modifier_type: &self.modifier_type,
                 resource: &self.resource,
+                culture: &self.culture,
             }
         }
 

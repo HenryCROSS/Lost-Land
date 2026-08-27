@@ -70,6 +70,7 @@ use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{RegistryXpCurves, XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
 use ll_sim::exposure::AmbientSource;
+use ll_world::culture::CultureTable;
 use ll_world::resource::ResourceTable;
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
@@ -199,6 +200,13 @@ pub struct LoadedContent {
     /// `ll_world::chronicle::WorldChronicle::generate` 在建档与读档
     /// 重新派生时各消费一次。
     pub resource_table: ResourceTable,
+    /// 文化表（文化批次新增）——`ll_world::culture::CultureTable`。
+    /// 与资源表同一种性质：文化归属本身是纯派生值（据点的文化随编年史
+    /// 一起重新派生，不进存档，见 `ll_world::culture` 模块文档），这张
+    /// 表存的是「有哪几种文化、各自靠什么吃饭、用什么盖房、跟谁不对付」
+    /// 这份**内容**，由 `WorldChronicle::generate` 与
+    /// `ll_mod::roster::SettlementRoles::resolve` 各消费一次。
+    pub culture_table: CultureTable,
     /// 这次会话里成功解析出清单的全部 mod——供
     /// `ll_mod::mod_set::GenerationModSet::capture`/存档头「当前 mod
     /// 集合」使用。清单解析失败的候选不在这里（它们已经被记进
@@ -583,6 +591,7 @@ pub fn load_content(
         space_profile: space_table,
         weather: weather_table,
         resource: resource_table,
+        culture: culture_table,
         recipe: recipe_table,
         recipe_category: recipe_category_table,
         tag: tag_table,
@@ -649,6 +658,7 @@ pub fn load_content(
         damage_category: &damage_category_table,
         weather: &weather_table,
         resource: &resource_table,
+        culture: &culture_table,
         recipe: &recipe_table,
         recipe_category: &recipe_category_table,
         tag: &tag_table,
@@ -755,6 +765,7 @@ pub fn load_content(
         weather_ids,
         weather_table,
         resource_table,
+        culture_table,
         manifests,
         report,
         asset_vfs: asset_result.vfs,
@@ -1152,6 +1163,7 @@ mod tests {
             damage_category: &loaded.damage_category_table,
             weather: &loaded.weather_table,
             resource: &loaded.resource_table,
+            culture: &loaded.culture_table,
             recipe: &loaded.recipe_table,
             recipe_category: &loaded.recipe_category_table,
             tag: &loaded.tag_table,
@@ -1175,26 +1187,30 @@ mod tests {
             .collect();
         opaque_ids.sort();
 
-        // Assert：两条已知例外，不多不少。
+        // Assert：**一条**已知例外，不多不少。
         //
         // - `lostland:placeholder_race`：「种族未知/缺失」这个降级状态的
         //   占位索引，刻意不定义任何 `RaceDef`，见
         //   `ll_mod::base_placeholder` 模块文档。
-        // - `lostland:goblin`：`mods/lostland/quests.json5` 里三条
-        //   `kill-count` 任务的 `target_kind`。它指向「敌人类型」，而
-        //   代码库至今没有敌人类型注册表——这正是
-        //   `ll_mod::content_audit::ReferenceExpectation::UntypedIdSpace`
-        //   那条豁免说的情形（把它按「必须在某张内容表里已定义」检查
-        //   会把一条正确的设计判成错误），见 `ll_mod::quest` 模块文档
-        //   「跨表引用」一节。本体任务迁进脚本的批次之前，这三条任务
-        //   根本不在生产装载路径上，所以这个 id 此前也不在注册表里。
-        assert_eq!(
-            opaque_ids,
-            vec![
-                "lostland:goblin".to_string(),
-                "lostland:placeholder_race".to_string(),
-            ]
-        );
+        //
+        // # `lostland:goblin` 为什么从这份清单里消失了
+        //
+        // 它此前是第二条例外：`mods/lostland/quests.json5` 里三条
+        // `kill-count` 任务的 `target_kind` 指着它，而本体名册里没有
+        // 任何一条内容定义过它，因此值哈希只混 id、不混字段值
+        // （`ContentTableKind::Opaque`）。
+        //
+        // **文化批次把它变成了一条真的种族**（`mods/lostland/races.json5`
+        // 的 `lostland:goblin`）——那份内容是为了让哥布林部落能真的建立
+        // 据点而加的（项目所有者：「一个哥布林营地和一座矮人矿城是同一
+        // 种东西」），顺带把这条悬空引用接实了：三条任务从此指向一条
+        // 已定义的种族。
+        //
+        // 这**不削弱**任何检查。`ReferenceExpectation::UntypedIdSpace`
+        // 那条豁免（任务 `target_kind` 落在一个还没有注册表的 id 空间
+        // 里）仍然成立、仍然需要，因为下一条 `target_kind` 完全可能又
+        // 指向一个谁也没定义的东西；变的只是本体这一条恰好被定义了。
+        assert_eq!(opaque_ids, vec!["lostland:placeholder_race".to_string()]);
     }
     #[test]
     fn 真实内容的跨表引用完整性通过且不是空转() {

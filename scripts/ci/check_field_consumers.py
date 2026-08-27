@@ -168,6 +168,18 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     # 惯例的空壳结构体，正是 ADR 0021 拦的那件事。SpaceProfile 那条
     # 豁免记录的是同一类命名分歧，区别只在这张表**能**被字段门禁抓到。
     ("crates/ll-world/src/resource.rs", "struct", "ResourceAttrs"),
+    # 文化批次新增的第二十三张内容表（ContentTableKind::Culture）。
+    # 声明结构体叫 CultureAttrs 而不是 *Def，理由与 ResourceAttrs 逐字
+    # 相同：这张表没有「本体注册入口」那一层，本体六条文化与任何 mod
+    # 的文化走同一份 cultures.json5。
+    #
+    # 六个字段全部走豁免（逐条理由见下面的 EXEMPTIONS）：真实消费者
+    # 分别在 ll_world::chronicle（选址与战争）、ll_world::settlement
+    # （建材）、ll_mod::roster（建立者种族），三处都是本脚本判据下的
+    # 「存储/派生层」，进不了 DECISION_LAYER_FILES——与 ResourceAttrs
+    # 的 residents_supported/settlement_draw/exhaustible 三条完全同一种
+    # 处境，见那三条豁免自己的文字。
+    ("crates/ll-world/src/culture.rs", "struct", "CultureAttrs"),
 ]
 
 # 决策层文件：真正驱动模拟结算、影响玩法输出的地方。见脚本头注释
@@ -325,6 +337,41 @@ EXEMPTIONS: dict[str, str] = {
     "ResourceAttrs.abundance": "理由同 ResourceAttrs.source_terrain：真实消费者是 resource_node_at 的第二道筛（按丰度掷一次由种子与坐标完全确定的骰子），同样落在存储层文件 resource.rs 里。ll_world::resource 的单元测试「丰度越高的资源在同一片源地形上出现得越多」直接验收这个字段真的在改变输出。",
     "ResourceAttrs.residents_supported": "真实消费者是 ll_world::chronicle 的 EpochRun::capacity（一片领地能养活多少人 → 据点长多大 → 铺几栋房子），见本节开头那段说明为什么 chronicle.rs 进不了 DECISION_LAYER_FILES。ll_world::chronicle 的单元测试「资源丰富的世界据点规模明显更大」直接验收这个字段真的在改变输出。",
     "ResourceAttrs.settlement_draw": "真实消费者是 ll_world::chronicle 的 EpochRun::resource_draw_bonus（守着铁矿的地方更容易建城），同上。",
+    "CultureAttrs.display_name_key": (
+        "同 RaceDef.display_name_key，指向 Fluent 本地化键。它有一个已经存在的接线目标——"
+        "编年史要能说出「哥布林部落攻灭了矮人矿城」，呈现层由这个键取名字——但传说浏览 UI "
+        "尚未落地，与 ResourceAttrs.display_name_key 是同一种「等 UI」而不是「永远没人读」。"
+    ),
+    "CultureAttrs.economy": (
+        "真实消费者是 ll_world::chronicle 的 EpochRun::culture_weights（资源画像的大类命中"
+        "这份文化靠什么吃饭就加权重 → 守着铁矿的地方长出矿业文化）。chronicle.rs 按本脚本的"
+        "判据属于存储/派生层，进不了 DECISION_LAYER_FILES，理由见 ResourceAttrs."
+        "residents_supported 那一条。ll_world::chronicle 的单元测试「文化抽取跟着资源走」"
+        "直接验收这个字段真的在改变输出。"
+    ),
+    "CultureAttrs.home_terrain": (
+        "真实消费者同上（EpochRun::culture_weights 的地形项：锚点那一格的基础地形命中这份"
+        "文化的选址偏好就加权重）。这是项目所有者定的四条依据「资源 + 地形 + 邻近据点 + "
+        "一点随机」里的第二条。"
+    ),
+    "CultureAttrs.wall_terrain": (
+        "真实消费者是 ll_world::settlement 的 wall_terrain → house_tiles/ruin_tiles（一座"
+        "哥布林营地是木头搭的、一座矮人矿城是石头砌的）。settlement.rs 同样是存储/派生层。"
+        "ll_world::settlement 的单元测试「文化的建材真的换掉了墙」与 ll-game 的端到端验收"
+        "「哥布林营地与矮人矿城用的不是同一种建材」各验收一次。"
+    ),
+    "CultureAttrs.founder_races": (
+        "真实消费者是 ll_mod::roster::settlement_founder_race（这座据点是谁建的 → 整座据点"
+        "的主体人口）。roster.rs 与 ResourceAttrs.category 那条记录的情形相同：它按本脚本的"
+        "判据属于存储层。ll-game 的端到端验收「矮人矿城被哥布林部落攻灭」逐个断言攻守双方"
+        "的建立者种族。"
+    ),
+    "CultureAttrs.hostility": (
+        "真实消费者是 ll_world::chronicle 的 wage_wars（敌意加在开战概率的分子上）与 "
+        "pick_target（敌意高的目标优先被选为守方）。ll_world::chronicle 的单元测试「敌意"
+        "抬高了战争导致的覆灭次数」与「全表敌意为零时战争结果与空文化表逐位相同」一正一反"
+        "地守着它。"
+    ),
     "ResourceAttrs.exhaustible": "真实消费者是 ll_world::chronicle 的 EpochRun::capacity / exhaustible_reserve / dominant_exhaustible 三处（资源枯竭这条覆灭原因的全部来源），同上。ll_world::chronicle 的单元测试「推演里真的出现过资源枯竭导致的覆灭」直接验收它。",
     "WeaponCategoryDef.default_formula": "weapon_category.rs 模块文档「本批次没有给 ItemDef 加对应字段」一节：十九节默认公式挂载链条第 3 层（武器类别默认）不在本批次范围，字段是声明先行——同一份文档已经预告了这条一旦补进 TARGET_TYPES 就会命中本门禁。",
     "RecipeDef.id": "命名空间标识符，同 RaceDef.id/FormulaDef.id 一类——resolve_craft 按 ContentIndex 查 RecipeCatalog 取出 RecipeRule，那个最小视图刻意不含 id（见 ll_sim::craft::RecipeRule 文档），决策层不做任何 .id 读取。",
@@ -496,6 +543,7 @@ CONTENT_HASH_KIND_TO_TARGET_TYPE: dict[str, str] = {
     "Tag": "TagDef",
     "ModifierType": "ModifierTypeDef",
     "Resource": "ResourceAttrs",
+    "Culture": "CultureAttrs",
 }
 
 CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE: dict[str, str] = {

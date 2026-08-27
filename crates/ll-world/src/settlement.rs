@@ -102,6 +102,7 @@ use ll_core::rng::DetRng;
 use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::chunk::ChunkGrid;
+use crate::culture::{CultureKind, CultureTable};
 use crate::resource::ResourceKind;
 use crate::space::ZoneCoord;
 use crate::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
@@ -250,6 +251,29 @@ pub struct SettlementSite {
     /// 良田的要有农夫（项目所有者裁定「据点的资源应当影响职业分布」的
     /// 落点）。
     pub resource_profile: [Option<ResourceKind>; SITE_RESOURCE_SLOTS],
+    /// 这座据点**信什么、怎么建**：拓荒那一刻抽中的文化，见
+    /// [`crate::culture`] 模块文档。一条文化都没装载时为 `None`
+    /// （ADR 0015「尚无内容」的既有诚实表达）。
+    ///
+    /// # 为什么这一次是字段，而建立者种族当初不是
+    ///
+    /// `ll_mod::roster::settlement_founder_race` 的文档记录过一条相反
+    /// 的判断：「种族是内容，`ll-world` 既拿不到注册表、也没有一份候选
+    /// 名单可抽，因此不挂字段、改用 `pub fn` 现算」。**那条判断在文化
+    /// 这里不成立，区别是真实的**：文化表本身现在就注入在世界生成里
+    /// （[`crate::chronicle::ChronicleParams`] 已经在接
+    /// [`crate::resource::ResourceTable`]，文化走同一条），抽取因此
+    /// **发生在 `ll-world` 内部**，结果不挂在据点上就无处可放——
+    /// 铺房子的建材、战争的敌对判据、名册的建立者种族三个消费者分别
+    /// 在三个模块里，各自重抽一次只会得到三个互相矛盾的答案。
+    ///
+    /// # 加这个字段**不触发存档迁移**
+    ///
+    /// [`SettlementSite`] 是纯派生快照，整部编年史不进存档（模块文档
+    /// 「为什么据点不进存档」），也不参与 `WorldState::hash`。读档时
+    /// `rebuild_chronicle` 用同一颗种子重跑一遍推演，文化随之重新
+    /// 派生出逐位相同的结果。
+    pub culture: Option<CultureKind>,
 }
 
 /// [`SettlementSite::resource_profile`] 记几名——见该字段文档「为什么是
@@ -273,6 +297,13 @@ pub struct StampContext<'a> {
     pub table: &'a TerrainTable,
     /// 世界种子，喂给 [`SETTLEMENT_LAYOUT_STREAM_ID`] 的随机流。
     pub world_seed: u64,
+    /// 当前会话注册的文化表（[`crate::culture`]）——建材由它决定。
+    ///
+    /// 传一张**空**表是合法的：那等于「这个世界没有文化这一层」，
+    /// 建材退回 [`house_tiles`]/[`ruin_tiles`] 的引擎默认（木墙 /
+    /// 石墙），与文化落地之前**逐格相同**。本模块测试
+    /// `空文化表铺出的据点与旧的木墙据点逐格相同` 守着这条。
+    pub cultures: &'a CultureTable,
     /// **基础地形**（据点还没铺上去之前，噪声算出来的那一层）在任意
     /// 世界瓦片坐标处的值。
     ///
@@ -317,6 +348,9 @@ pub fn stamp_settlement(
     ctx: &StampContext<'_>,
 ) {
     let tile_size = layout.tile_size();
+    // 建材按**据点**解析一次，不按建筑：同一座据点的每栋房子用同一种
+    // 墙，而这次查表与「铺到第几栋」无关，放进循环只是重复劳动。
+    let wall = wall_terrain(ctx, site);
     for building in 0..site.building_count.min(MAX_BUILDINGS) {
         let (left, top) = building_origin(site, building);
         // 先问「这栋房子跟本区块有没有关系」：绝大多数建筑与绝大多数
@@ -334,8 +368,8 @@ pub fn stamp_settlement(
             u64::from(site.id.get()) * u64::from(MAX_BUILDINGS) + u64::from(building),
         );
         let tiles = match site.status {
-            SettlementStatus::Inhabited => house_tiles(ctx.ids, &mut rng),
-            SettlementStatus::Ruined => ruin_tiles(ctx.ids, &mut rng),
+            SettlementStatus::Inhabited => house_tiles(ctx.ids, wall, &mut rng),
+            SettlementStatus::Ruined => ruin_tiles(ctx.ids, wall, &mut rng),
         };
         write_footprint(grid, layout, zone, (left, top), &tiles);
     }
@@ -448,18 +482,51 @@ fn plot_is_clear(ctx: &StampContext<'_>, tile_size: TorusSize, left: i32, top: i
     true
 }
 
-/// 一栋有人住的屋子的 25 格：一圈木墙 + 中间木地板 + 一扇门 + 一扇窗。
+/// 这座据点该用哪种墙——文化说了算，说不上话时退回引擎默认。
+///
+/// # 「说不上话」有两种，都退回默认而不是 panic
+///
+/// 1. 据点没有文化（`site.culture` 为 `None`）：一条文化内容都没装载
+///    的世界，见 [`SettlementSite::culture`]。
+/// 2. 有文化但表里查不到 `wall_terrain`：调用方递进来的文化表与产出
+///    这份据点快照的那张不是同一张（测试夹具、或者读档时内容变了）。
+///
+/// 两种都退回「有人住 → 木墙、废墟 → 石墙」这组引擎默认，也就是文化
+/// 落地之前写死的那两个值——**空文化表下整个铺设路径逐格不变**，这正
+/// 是黄金基准重冻「把改动关掉」那一步依赖的性质。
+fn wall_terrain(ctx: &StampContext<'_>, site: &SettlementSite) -> TerrainKind {
+    let fallback = match site.status {
+        SettlementStatus::Inhabited => ctx.ids.wall_wood,
+        SettlementStatus::Ruined => ctx.ids.wall_stone,
+    };
+    site.culture
+        .and_then(|culture| ctx.cultures.wall_terrain(culture))
+        .unwrap_or(fallback)
+}
+
+/// 一栋有人住的屋子的 25 格：一圈墙 + 中间木地板 + 一扇门 + 一扇窗。
+///
+/// `wall` 由 [`wall_terrain`] 按据点的文化解析，因此**一座哥布林营地
+/// 与一座矮人矿城不再长得一模一样**（那是文化落地之前的状态，见
+/// [`crate::culture`] 模块文档）。地板仍恒为木地板：地板不影响
+/// 「这是谁家的房子」这一眼，也不影响任何玩法判定（`floor_wood` 与
+/// `floor_stone` 的移动代价、遮挡、光照全部相同），多加一个字段只会
+/// 是又一处声明先行。
 ///
 /// 产出一个定长数组而不是直接写进网格：跨区块的建筑要被**多个**区块
 /// 各写一部分，而每一格是什么必须与「哪个区块在写」无关。先把整栋算
 /// 出来、再由调用方挑自己那一部分写下去，是让这条性质显而易见的写法
 /// ——也顺带保证了随机流的消耗次数与顺序不随裁剪而变。
-fn house_tiles(ids: &BaseTerrainIds, rng: &mut DetRng) -> [TerrainKind; BUILDING_TILES] {
+fn house_tiles(
+    ids: &BaseTerrainIds,
+    wall: TerrainKind,
+    rng: &mut DetRng,
+) -> [TerrainKind; BUILDING_TILES] {
     let mut tiles = [ids.floor_wood; BUILDING_TILES];
     for dy in 0..BUILDING_SPAN {
         for dx in 0..BUILDING_SPAN {
             if on_edge(dx, dy) {
-                tiles[(dy * BUILDING_SPAN + dx) as usize] = ids.wall_wood;
+                tiles[(dy * BUILDING_SPAN + dx) as usize] = wall;
             }
         }
     }
@@ -475,13 +542,22 @@ fn house_tiles(ids: &BaseTerrainIds, rng: &mut DetRng) -> [TerrainKind; BUILDING
     tiles
 }
 
-/// 一处废墟的 25 格：石墙，没有门窗，且每堵墙都有塌掉的可能——塌掉的
-/// 那格变回草地。
+/// 一处废墟的 25 格：没有门窗，且每堵墙都有塌掉的可能——塌掉的那格
+/// 变回草地。
+///
+/// `wall` 同样由 [`wall_terrain`] 解析：一座矮人矿城塌了留下的是**石头**
+/// 废墟，一个哥布林营地塌了留下的是**木头**废墟。这是本批次验收线
+/// 「那座城在地上真的是废墟」能被区分开来看的那一半——不然全大陆的
+/// 废墟长得都一样，就分不出谁是谁。
 ///
 /// 塌掉的概率不随机到「整栋都没了」：只掷外圈那 16 格，中间的地板
 /// 原样保留（石地板是废墟仍然认得出是建筑的那部分）。掷骰顺序恒为
 /// `(dy, dx)` 行主序，与裁剪无关，见 [`house_tiles`] 文档。
-fn ruin_tiles(ids: &BaseTerrainIds, rng: &mut DetRng) -> [TerrainKind; BUILDING_TILES] {
+fn ruin_tiles(
+    ids: &BaseTerrainIds,
+    wall: TerrainKind,
+    rng: &mut DetRng,
+) -> [TerrainKind; BUILDING_TILES] {
     let mut tiles = [ids.floor_stone; BUILDING_TILES];
     for dy in 0..BUILDING_SPAN {
         for dx in 0..BUILDING_SPAN {
@@ -492,7 +568,7 @@ fn ruin_tiles(ids: &BaseTerrainIds, rng: &mut DetRng) -> [TerrainKind; BUILDING_
                 if rng.chance(RUIN_COLLAPSE_NUMERATOR, RUIN_COLLAPSE_DENOMINATOR) {
                     ids.grass
                 } else {
-                    ids.wall_stone
+                    wall
                 };
         }
     }
@@ -562,6 +638,7 @@ fn spiral_offset(n: u32) -> (i32, i32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::culture::CultureKind;
     use crate::terrain::base_terrain_fixture;
 
     /// 测试用区块布局：3×3 个区块、边长 48（144×144 格）。**必须多于
@@ -590,6 +667,10 @@ mod tests {
             // 本模块只验「往网格里铺地形」，铺法不读资源画像；给一份
             // 空画像是最诚实的夹具（不假装这里数到了什么）。
             resource_profile: [None; SITE_RESOURCE_SLOTS],
+            // 绝大多数用例只验「往网格里铺地形」，与文化无关；空文化
+            // 表下建材退回引擎默认，与文化落地之前逐格相同。真的要验
+            // 建材的那两条用例走 `site_with_culture`。
+            culture: None,
         }
     }
 
@@ -617,6 +698,120 @@ mod tests {
         found
     }
 
+    /// 一张只有一条文化的表：那条文化用 `wall` 当建材。
+    ///
+    /// 与 `crate::culture::base_culture_fixture` 不同——那个夹具造两条
+    /// 互相敌对的文化，本模块只关心建材，用不到敌对那一半。
+    fn culture_using(wall: TerrainKind) -> (CultureTable, CultureKind) {
+        use ll_core::ident::{Interner, NamespacedId};
+        let mut interner = Interner::new();
+        let index = interner.intern(NamespacedId::parse("test:brick_folk").expect("合法"));
+        let race = interner.intern(NamespacedId::parse("test:folk").expect("合法"));
+        let mut table = CultureTable::new();
+        table
+            .define(
+                index,
+                crate::culture::CultureAttrs {
+                    display_name_key: NamespacedId::parse("test:culture.brick.display_name")
+                        .expect("合法"),
+                    economy: crate::resource::ResourceCategory::Stone,
+                    home_terrain: wall,
+                    wall_terrain: wall,
+                    founder_races: vec![(race, 1)],
+                    hostility: Vec::new(),
+                },
+            )
+            .expect("首次定义");
+        (table, CultureKind::from_index(index))
+    }
+
+    #[test]
+    fn 文化的建材真的换掉了墙() {
+        // 文化落地之前，有人住的屋子恒是木墙——那是 `house_tiles` 里
+        // 写死的 `ids.wall_wood`。本条验的是那处硬编码真的被替换了。
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+        let layout = test_layout();
+        let (cultures, brick_folk) = culture_using(ids.wall_stone);
+        let mut site = site(SettlementStatus::Inhabited, 9);
+        site.culture = Some(brick_folk);
+        let mut grid = blank_window(&ids);
+        let grass = |_: TorusPos| ids.grass;
+        let ctx = StampContext {
+            ids: &ids,
+            table: &table,
+            world_seed: 7,
+            cultures: &cultures,
+            base_terrain: &grass,
+        };
+
+        // Act
+        stamp_settlement(&mut grid, &layout, site.zone, &site, &ctx);
+
+        // Assert：整座据点改用石墙，一格木墙都不剩。
+        assert!(
+            count_of(&grid, ids.wall_stone) > 0,
+            "文化声明了石墙，铺出来却一格石墙都没有"
+        );
+        assert_eq!(
+            count_of(&grid, ids.wall_wood),
+            0,
+            "文化声明了石墙，不该再出现引擎默认的木墙"
+        );
+
+        // # 故意改坏的反例（人工核验，真实执行）
+        //
+        // 把 [`wall_terrain`] 的函数体改成直接 `fallback`（回到文化
+        // 落地之前的硬编码），本条当场红：「文化声明了石墙，铺出来却
+        // 一格石墙都没有」。恢复后重新跑通。
+    }
+
+    #[test]
+    fn 空文化表铺出的据点与引擎默认建材逐格相同() {
+        // 这条守的是「把改动关掉能精确回到旧行为」：没有文化的世界，
+        // 建材退回 `house_tiles`/`ruin_tiles` 的引擎默认（木墙/石墙），
+        // 与文化落地之前逐格相同。
+        // Arrange
+        let (ids, table) = base_terrain_fixture();
+        let layout = test_layout();
+        let grass = |_: TorusPos| ids.grass;
+
+        // Act：左边没有文化表，右边有一张表但据点没有文化。
+        let stamp = |cultures: &CultureTable, culture: Option<CultureKind>| {
+            let mut site = site(SettlementStatus::Inhabited, 9);
+            site.culture = culture;
+            let mut grid = blank_window(&ids);
+            let ctx = StampContext {
+                ids: &ids,
+                table: &table,
+                world_seed: 7,
+                cultures,
+                base_terrain: &grass,
+            };
+            stamp_settlement(&mut grid, &layout, site.zone, &site, &ctx);
+            grid
+        };
+        let empty = CultureTable::new();
+        let (populated, _) = culture_using(ids.wall_stone);
+        let left = stamp(&empty, None);
+        let right = stamp(&populated, None);
+
+        // Assert：两边逐格相同，且都是引擎默认的木墙。
+        let size = left.world();
+        for y in 0..size.height() as i32 {
+            for x in 0..size.width() as i32 {
+                let pos = size.wrap(x, y);
+                assert_eq!(
+                    left.terrain_at(pos),
+                    right.terrain_at(pos),
+                    "({x}, {y}) 处两次铺设不一致"
+                );
+            }
+        }
+        assert!(count_of(&left, ids.wall_wood) > 0, "退化路径应当铺出木墙");
+        assert_eq!(count_of(&left, ids.wall_stone), 0);
+    }
+
     #[test]
     fn 有人住的据点铺出的每栋屋子都恰有一扇门() {
         // Arrange
@@ -629,6 +824,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 7,
+            cultures: &CultureTable::new(),
             base_terrain: &grass,
         };
 
@@ -655,6 +851,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 7,
+            cultures: &CultureTable::new(),
             base_terrain: &grass,
         };
 
@@ -681,6 +878,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 99,
+            cultures: &CultureTable::new(),
             base_terrain: &grass,
         };
         let mut first = blank_window(&ids);
@@ -718,6 +916,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 99,
+            cultures: &CultureTable::new(),
             base_terrain: &grass,
         };
         let mut once = blank_window(&ids);
@@ -759,6 +958,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 3,
+            cultures: &CultureTable::new(),
             base_terrain: &water_right,
         };
         let site = site(SettlementStatus::Inhabited, MAX_BUILDINGS);
@@ -834,6 +1034,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 11,
+            cultures: &CultureTable::new(),
             base_terrain: &grass,
         };
         let zone_count = layout.zone_count();
@@ -867,6 +1068,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 5,
+            cultures: &CultureTable::new(),
             base_terrain: &grass,
         };
         let zone_count = layout.zone_count();
@@ -918,6 +1120,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 5,
+            cultures: &CultureTable::new(),
             base_terrain: &water_right,
         };
         let zone_count = layout.zone_count();
@@ -949,6 +1152,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 13,
+            cultures: &CultureTable::new(),
             base_terrain: &grass,
         };
         let zone_count = layout.zone_count();
@@ -988,6 +1192,7 @@ mod tests {
             ids: &ids,
             table: &table,
             world_seed: 17,
+            cultures: &CultureTable::new(),
             base_terrain: &grass,
         };
 

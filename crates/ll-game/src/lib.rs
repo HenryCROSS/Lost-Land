@@ -285,12 +285,15 @@ fn rebuild_chronicle(content: &content::LoadedContent) -> ll_world::chronicle::W
     let noise = ll_world::generate::build_zone_noise(&layout, &params)
         .expect("默认区块布局满足全部构造前置条件");
     ll_world::chronicle::WorldChronicle::generate(
-        &layout,
-        &noise,
-        &params,
-        &content.terrain_ids,
-        &content.terrain_table,
-        &content.resource_table,
+        &ll_world::chronicle::ChronicleInput {
+            layout: &layout,
+            noise: &noise,
+            params: &params,
+            terrain_ids: &content.terrain_ids,
+            terrain_table: &content.terrain_table,
+            resources: &content.resource_table,
+            cultures: &content.culture_table,
+        },
         ll_world::chronicle::ChronicleParams::default(),
     )
 }

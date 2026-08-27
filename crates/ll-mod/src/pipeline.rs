@@ -56,6 +56,7 @@
 use std::path::{Path, PathBuf};
 
 use ll_core::ident::NamespacedId;
+use ll_world::culture::CultureTable;
 use ll_world::resource::ResourceTable;
 use ll_world::space_profile::SpaceProfileTable;
 use ll_world::terrain::TerrainTable;
@@ -110,6 +111,13 @@ pub struct GameplayTables<'a> {
     /// ——资源没有「本体注册入口」这一层，本体四种资源与任何 mod 的
     /// 资源走的是完全相同的 `resources.json5` 通道。
     pub resource: &'a mut ResourceTable,
+    /// 文化表（`cultures.json5`），见 `ll_world::culture` 模块文档。
+    ///
+    /// 与 `resource` 同一族、同一条理由：类型住在 `ll-world`（选址、
+    /// 铺房子、战争都发生在那里），数据由本装载器填，装完整张表注入
+    /// 世界生成。同样没有「本体注册入口」这一层——本体的文化与任何
+    /// mod 的文化走完全相同的 `cultures.json5` 通道。
+    pub culture: &'a mut CultureTable,
     /// 职业表（`classes.json5`）。
     pub class: &'a mut ClassTable,
     /// 技能表（`skills.json5`）。
@@ -354,6 +362,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut recipe = RecipeTable::new();
     let mut recipe_category = RecipeCategoryTable::new();
     let mut resource = ResourceTable::new();
+    let mut culture = CultureTable::new();
     let mut weather = WeatherTable::new();
     let mut modifier_type = ModifierTypeTable::new();
     let mut tables = GameplayTables {
@@ -376,6 +385,7 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         tag: &mut tag,
         space_profile: &mut space_profile,
         resource: &mut resource,
+        culture: &mut culture,
         weather: &mut weather,
         recipe: &mut recipe,
         recipe_category: &mut recipe_category,
@@ -839,6 +849,7 @@ mod tests {
                 weapon_category: &owned.weapon_category,
                 damage_category: &owned.damage_category,
                 resource: &owned.resource,
+                culture: &owned.culture,
                 weather: &owned.weather,
                 recipe: &owned.recipe,
                 recipe_category: &owned.recipe_category,

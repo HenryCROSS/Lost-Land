@@ -52,6 +52,7 @@
 use std::path::Path;
 
 use ll_core::ident::ContentIndex;
+use ll_world::culture::CultureTable;
 use ll_world::resource::ResourceTable;
 use ll_world::space_profile::{BaseSpaceProfileIds, SpaceProfileTable};
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
@@ -155,6 +156,8 @@ pub struct LoadSession {
     pub space_profile: SpaceProfileTable,
     /// 资源表（`resources.json5`），见 `ll_world::resource` 模块文档。
     pub resource: ResourceTable,
+    /// 文化表（`cultures.json5`），见 `ll_world::culture` 模块文档。
+    pub culture: CultureTable,
     /// 天气表。
     pub weather: WeatherTable,
     /// 配方表。
@@ -238,6 +241,7 @@ impl LoadSession {
             damage_category,
             space_profile,
             resource: ResourceTable::new(),
+            culture: CultureTable::new(),
             weather,
             recipe: RecipeTable::new(),
             recipe_category: RecipeCategoryTable::new(),
@@ -275,6 +279,7 @@ impl LoadSession {
             damage_category,
             space_profile,
             resource,
+            culture,
             weather,
             recipe,
             recipe_category,
@@ -305,6 +310,7 @@ impl LoadSession {
                 damage_category,
                 space_profile,
                 resource,
+                culture,
                 weather,
                 recipe,
                 recipe_category,

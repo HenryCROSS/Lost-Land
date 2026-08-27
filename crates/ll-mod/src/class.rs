@@ -51,10 +51,15 @@
 //! # 与 `Agent.profession` 的关系
 //!
 //! `ClassDef` 不是给 `Agent` 添加第二套「职业」概念，而是给 P3 阶段就
-//! 已经建好的 `Agent.profession: ContentIndex` 字段配一张真正的注册表
-//! ——`society-and-affiliation.md` 早已把 `AffiliationKind::Profession`
-//! 定为「恒为 `Def`」，职业本身是类型不是实例，与 `ContentIndex` 语义
-//! 完全吻合。见设计文档第一节。
+//! 已经建好的 `Agent.profession: ContentIndex` 字段配一张真正的注册表。
+//!
+//! **这件事在文化批次被项目所有者正式裁定了**：`Agent.profession` 是
+//! 职业的**唯一**真相源，`AffiliationKind` 里那个从未被构造过的
+//! `Profession` 变体已经删掉（「一个铁匠可以不加入铁匠行会」——从属
+//! 关系表达的是行会成员身份，那由已经存在的 `AffiliationKind::Guild`
+//! 表达）。`settlements-structures-and-npc-spawning.md` 十二节 1 挂了
+//! 四次的那条待裁决事项就此结案，见
+//! `ll_world::entity::affiliation` 模块文档。
 //!
 //! # 查询接口：`Option`，不是「安全兜底默认值」
 //!

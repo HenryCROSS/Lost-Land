@@ -286,6 +286,10 @@ impl SurfaceStore {
                 ids: terrain_ids,
                 table: chronicle.terrain_table(),
                 world_seed: params.seed,
+                // 文化表跟着编年史一起走：铺设要用的那张表必须与产出
+                // 这批据点快照的那一张是同一张，从别处凑一张可能对不上
+                // 号，见 `WorldChronicle::culture_table`。
+                cultures: chronicle.culture_table(),
                 base_terrain: &base_terrain,
             };
             for site in chronicle.sites_touching_zone(zone) {
