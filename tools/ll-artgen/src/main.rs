@@ -169,12 +169,15 @@ const CLIMATE_TERRAIN_NAMES: [&str; 2] = ["terrain_desert", "terrain_tundra"];
 /// 对它没有语义，取地形那一档只是为了不引入第三种取值。
 const DAYNIGHT_POINTER_NAME: &str = "ui_daynight_pointer";
 
+/// 世界地图上的玩家位置标记贴图，理由同 [`DAYNIGHT_POINTER_NAME`]。
+const MAP_PLAYER_MARKER_NAME: &str = "ui_map_player";
+
 /// 本体新增的松散贴图：四个种族的身子 + 十三个职业的挂件 + 气候条带
-/// 新增的两种地形 + 昼夜滑条的滑块。
+/// 新增的两种地形 + 两张 UI 贴图（昼夜滑块、世界地图玩家标记）。
 ///
 /// 顺序固定（先按 [`npc::race_bodies`] 再按 [`npc::profession_badges`]，
-/// 然后 [`CLIMATE_TERRAIN_NAMES`]，最后 [`DAYNIGHT_POINTER_NAME`]，四者
-/// 都是数组字面量或单个常量），符合约束 C5。
+/// 然后 [`CLIMATE_TERRAIN_NAMES`]，最后那两张 UI 贴图），全部是数组
+/// 字面量，符合约束 C5。
 fn loose_only_entries() -> Vec<LooseOnlyEntry> {
     let npcs = npc::race_bodies()
         .iter()
@@ -194,13 +197,22 @@ fn loose_only_entries() -> Vec<LooseOnlyEntry> {
         pivot: TERRAIN_PIVOT,
         footprint: TERRAIN_FOOTPRINT,
     });
-    let ui = [LooseOnlyEntry {
-        name: DAYNIGHT_POINTER_NAME,
-        width: ui::DAYNIGHT_POINTER_WIDTH,
-        height: ui::DAYNIGHT_POINTER_HEIGHT,
-        pivot: TERRAIN_PIVOT,
-        footprint: TERRAIN_FOOTPRINT,
-    }]
+    let ui = [
+        LooseOnlyEntry {
+            name: DAYNIGHT_POINTER_NAME,
+            width: ui::DAYNIGHT_POINTER_WIDTH,
+            height: ui::DAYNIGHT_POINTER_HEIGHT,
+            pivot: TERRAIN_PIVOT,
+            footprint: TERRAIN_FOOTPRINT,
+        },
+        LooseOnlyEntry {
+            name: MAP_PLAYER_MARKER_NAME,
+            width: ui::MAP_PLAYER_MARKER_SIZE,
+            height: ui::MAP_PLAYER_MARKER_SIZE,
+            pivot: TERRAIN_PIVOT,
+            footprint: TERRAIN_FOOTPRINT,
+        },
+    ]
     .into_iter();
     npcs.chain(terrains).chain(ui).collect()
 }
@@ -523,6 +535,9 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         // `TerrainSpec` 能表达的东西,见 `ui.rs::decorate_day_night_pointer`
         // 文档。
         "ui_daynight_pointer" => ui::decorate_day_night_pointer(image, rect),
+        // 世界地图上的玩家位置标记：向下的箭头,描边 + 主体 + 高光,
+        // 见 `ui.rs::decorate_map_player_marker` 文档。
+        "ui_map_player" => ui::decorate_map_player_marker(image, rect),
         // 据点建筑地形（墙/地板/门/窗/楼梯）：与自然地形不同，这九张
         // 靠**结构图案**而非「主色 + 稀疏点缀」表达自己是什么（门要有
         // 门板与把手、窗要有窗棂、楼梯要有阶梯条带），`TerrainSpec` 那

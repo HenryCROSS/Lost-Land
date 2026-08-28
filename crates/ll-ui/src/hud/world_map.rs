@@ -37,8 +37,10 @@ use ll_world::world_map::WorldMapSlice;
 use ll_world::zone::ZoneLayout;
 
 use crate::widget::geometry::Rect;
+use crate::widget::marker::{TexturedWorldMapMarkerAppearance, textured_marker_quad};
 use crate::widget::quad::QuadInstance;
-use crate::widget::skin::{PanelStyleId, Skin};
+use crate::widget::skin::{PanelStyleId, Skin, WorldMapMarkerStyleId};
+use crate::widget::textured_quad::TexturedQuadInstance;
 
 /// 未探索格子的显示色——中性深色，与 [`terrain_color`] 给出的任何真实
 /// 地形色都明显可区分，读起来像「这里确实有地图，但你没去过」，而不是
@@ -94,10 +96,30 @@ pub fn terrain_color(kind: TerrainKind, ids: &BaseTerrainIds) -> [f32; 4] {
     }
 }
 
-/// 玩家位置标记的显示色——刻意选一个不与 [`terrain_color`] 任何自然
-/// 地形色、也不与 [`FOG_COLOR`]/[`UNKNOWN_TERRAIN_COLOR`] 接近的暖橙：
-/// 标记要在深蓝的海、深绿的林、灰白的雪山上**同样一眼可见**，因此不能
-/// 取任何一种「某些底色上看得清、另一些上看不清」的颜色。
+/// 玩家位置标记的显示色——**贴图查不到时的降级路径**用它。
+///
+/// 刻意选一个不与 [`terrain_color`] 任何自然地形色、也不与
+/// [`FOG_COLOR`]/[`UNKNOWN_TERRAIN_COLOR`] 接近的暖橙：标记要在深蓝的
+/// 海、深绿的林、灰白的雪山上**同样一眼可见**，因此不能取任何一种
+/// 「某些底色上看得清、另一些上看不清」的颜色。
+///
+/// # 这条约束现在主要由贴图承担，纯色只是兜底
+///
+/// 所有者要求把标记做成箭头/图标（原话「角色所在位置我希望有个箭头或者
+/// 标识指示」），标记因此改走贴图（`ui_map_player`，见
+/// `tools/ll-artgen/src/ui.rs::decorate_map_player_marker`）。约束一个字
+/// 没松，但**满足它的方式更强了**：贴图同时带一圈近黑描边与一块暖奶油
+/// 高光，任何底色要么与暗色拉得开、要么与亮色拉得开，不可能两头都近；
+/// 而单一颜色做不到这一点——气候条带批次加进沙漠（地图色是偏橙的
+/// `[0.88, 0.68, 0.32]`）之后，这个暖橙压在沙漠上已经开始糊。
+///
+/// 贴图主体色与本常量**逐通道相同**（`(255, 140, 13)`）：降级时玩家看到
+/// 的是同一个颜色的方块，不是换了个东西。
+///
+/// 降级触发条件与其余 UI 贴图一致（图集里查不到条目），走
+/// [`crate::widget::skin::Skin::textured_world_map_marker`] 返回 `None`
+/// 那条路。**降级是退回方块，不是不画**——玩家在地图上找不到自己，比
+/// 标记难看严重得多。
 pub const PLAYER_MARKER_COLOR: [f32; 4] = [1.0, 0.55, 0.05, 1.0];
 
 /// 玩家标记方块相对格子边长的内缩比例——每边各缩这么多，标记因此是
@@ -303,7 +325,8 @@ pub fn world_map_cell_quads(data: &WorldMapPanelData<'_>, rect: Rect) -> Vec<Qua
         .collect()
 }
 
-/// 玩家位置标记这一帧的矩形——`data.player` 为 `None`（玩家不在本屏
+/// 玩家位置标记这一帧的矩形——**贴图查不到时的降级路径**，见
+/// [`PLAYER_MARKER_COLOR`] 文档。`data.player` 为 `None`（玩家不在本屏
 /// 视野内）或列行越界时返回空列表。
 ///
 /// # 为什么标记不受战争迷雾影响
@@ -333,6 +356,30 @@ pub fn player_marker_quads(data: &WorldMapPanelData<'_>, rect: Rect) -> Vec<Quad
         size: [grid.cell_size - inset * 2.0, grid.cell_size - inset * 2.0],
         color: PLAYER_MARKER_COLOR,
     }]
+}
+
+/// 玩家位置标记这一帧的**贴图**矩形，与 [`player_marker_quads`] 的
+/// 出现条件逐条一致（`data.player` 为 `None` 或列行越界时返回空列表），
+/// 只是外观换成一张真正的箭头贴图。
+///
+/// 两条路径共用同一份「哪一格」的判断，不共用内缩：贴图整格铺满，理由
+/// 见 [`crate::widget::marker::textured_marker_quad`] 文档。
+pub fn textured_player_marker_quads(
+    data: &WorldMapPanelData<'_>,
+    rect: Rect,
+    style: &TexturedWorldMapMarkerAppearance,
+) -> Vec<TexturedQuadInstance> {
+    let Some((col, row)) = data.player else {
+        return Vec::new();
+    };
+    let Some(grid) = WorldMapGrid::new(rect, data.cols, data.rows) else {
+        return Vec::new();
+    };
+    if col >= grid.cols || row >= grid.rows {
+        return Vec::new();
+    }
+    let (x, y) = grid.cell_origin(col, row);
+    vec![textured_marker_quad(x, y, grid.cell_size, style)]
 }
 
 /// 据点标记这一帧的矩形。
@@ -448,10 +495,18 @@ pub fn world_map_zone_at_pixel(
     slice.zone_at_cell(layout, col, row)
 }
 
-/// 世界地图整块面板这一帧的产出：边框 + 格子，恒是纯色矩形。
+/// 世界地图整块面板这一帧的产出。
 pub struct WorldMapFrame {
-    /// 边框 + 格子的全部填色矩形。
+    /// 边框 + 格子 + 据点标记的全部填色矩形，以及贴图查不到时降级的
+    /// 玩家标记方块。
     pub quads: Vec<QuadInstance>,
+    /// 玩家标记的贴图矩形——皮肤给出
+    /// [`crate::widget::skin::Skin::textured_world_map_marker`] 时才非空。
+    ///
+    /// 调用方须把它推进**与 `quads` 同一层**的贴图容器：层内贴图恒画在
+    /// 纯色之上（见 [`crate::widget::layer::LayerBatch`] 文档），玩家标记
+    /// 因此自然压在地形格与据点标记之上——那正是它需要的顺序。
+    pub textured_quads: Vec<TexturedQuadInstance>,
 }
 
 /// 只画四条边框窄条（不含中心填充）——与
@@ -519,8 +574,20 @@ pub fn world_map_frame(data: &WorldMapPanelData<'_>, rect: Rect, skin: &dyn Skin
     // 而玩家又恒盖在据点之上——同一格里同时有村子和玩家时，「我在哪」
     // 是玩家最先要找的东西。
     quads.extend(site_marker_quads(data, content_rect));
-    quads.extend(player_marker_quads(data, content_rect));
-    WorldMapFrame { quads }
+    // 玩家标记：有贴图就走贴图（落进 `textured_quads`，层内自然画在
+    // 全部纯色矩形之上），查不到就退回纯色方块——**不是不画**，见
+    // [`PLAYER_MARKER_COLOR`] 文档。
+    let mut textured_quads = Vec::new();
+    match skin.textured_world_map_marker(WorldMapMarkerStyleId::Player) {
+        Some(style) => {
+            textured_quads.extend(textured_player_marker_quads(data, content_rect, &style));
+        }
+        None => quads.extend(player_marker_quads(data, content_rect)),
+    }
+    WorldMapFrame {
+        quads,
+        textured_quads,
+    }
 }
 
 #[cfg(test)]
@@ -528,6 +595,188 @@ mod tests {
     use super::*;
     use crate::widget::skin::FlatColorSkin;
     use ll_world::terrain::base_terrain_fixture;
+
+    /// 只提供**玩家标记**贴图的假皮肤，其余外观一律沿用
+    /// [`FlatColorSkin`]。
+    ///
+    /// 单独一套而不是复用 `crate::hud::render` 里那个全贴图皮肤：本文件
+    /// 的测试关心的是「标记走没走贴图路径」，面板/条形有没有贴图与它
+    /// 无关，混进来只会让断言里多出一堆不相干的矩形。
+    struct MarkerTexturedSkin;
+
+    /// 假图集里玩家标记的 UV。
+    const FAKE_MARKER_UV: [f32; 4] = [0.125, 0.25, 0.0625, 0.0625];
+
+    impl Skin for MarkerTexturedSkin {
+        fn panel(&self, style: PanelStyleId) -> crate::widget::panel::FlatPanelAppearance {
+            FlatColorSkin.panel(style)
+        }
+
+        fn bar(
+            &self,
+            style: crate::widget::skin::BarStyleId,
+        ) -> crate::widget::bar::FlatBarAppearance {
+            FlatColorSkin.bar(style)
+        }
+
+        fn day_night_bar(
+            &self,
+            style: crate::widget::skin::DayNightBarStyleId,
+        ) -> crate::widget::day_night_bar::FlatDayNightBarAppearance {
+            FlatColorSkin.day_night_bar(style)
+        }
+
+        fn button(
+            &self,
+            style: crate::widget::skin::ButtonStyleId,
+            visual: crate::widget::skin::ButtonVisualState,
+        ) -> crate::widget::button::FlatButtonAppearance {
+            FlatColorSkin.button(style, visual)
+        }
+
+        fn textured_world_map_marker(
+            &self,
+            style: WorldMapMarkerStyleId,
+        ) -> Option<TexturedWorldMapMarkerAppearance> {
+            match style {
+                WorldMapMarkerStyleId::Player => Some(TexturedWorldMapMarkerAppearance {
+                    uv: FAKE_MARKER_UV,
+                    tint: [1.0, 1.0, 1.0, 1.0],
+                }),
+            }
+        }
+    }
+
+    /// 一份最小的地图面板数据：单格、已探索、玩家就在那一格。
+    fn single_cell_with_player(ids: &BaseTerrainIds) -> [OverviewCell; 1] {
+        [OverviewCell {
+            terrain: ids.grass,
+            explored: true,
+        }]
+    }
+
+    #[test]
+    fn 皮肤给出标记贴图时玩家标记走贴图路径且不再产出纯色方块() {
+        // 所有者要求把玩家标记做成箭头/图标。这条钉住「真的换成了贴图」
+        // ——而不是贴图画上去、纯色方块还留在下面（那会在标记周围露出
+        // 一圈橙边）。
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let cells = single_cell_with_player(&ids);
+        let data = WorldMapPanelData {
+            cells: &cells,
+            cols: 1,
+            rows: 1,
+            player: Some((0, 0)),
+            sites: &[],
+            terrain_ids: &ids,
+            tiles_per_cell: 48,
+        };
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+        // Act
+        let frame = world_map_frame(&data, rect, &MarkerTexturedSkin);
+
+        // Assert
+        assert_eq!(frame.textured_quads.len(), 1, "标记应当恰好一块贴图矩形");
+        assert_eq!(frame.textured_quads[0].uv_rect, FAKE_MARKER_UV);
+        assert!(
+            !frame
+                .quads
+                .iter()
+                .any(|quad| quad.color == PLAYER_MARKER_COLOR),
+            "贴图路径下不应再产出纯色标记方块"
+        );
+    }
+
+    #[test]
+    fn 皮肤查不到标记贴图时退回纯色方块而不是不画() {
+        // 降级路径的硬要求：玩家在地图上找不到自己，比标记难看严重得多。
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let cells = single_cell_with_player(&ids);
+        let data = WorldMapPanelData {
+            cells: &cells,
+            cols: 1,
+            rows: 1,
+            player: Some((0, 0)),
+            sites: &[],
+            terrain_ids: &ids,
+            tiles_per_cell: 48,
+        };
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+        // Act：`FlatColorSkin` 的 `textured_world_map_marker` 是 trait
+        // 默认实现，恒 `None`。
+        let frame = world_map_frame(&data, rect, &FlatColorSkin);
+
+        // Assert
+        assert!(frame.textured_quads.is_empty());
+        assert_eq!(
+            frame
+                .quads
+                .iter()
+                .filter(|quad| quad.color == PLAYER_MARKER_COLOR)
+                .count(),
+            1,
+            "查不到贴图时必须退回一块纯色标记方块"
+        );
+    }
+
+    #[test]
+    fn 贴图标记与纯色标记落在同一格() {
+        // 两条路径共用「哪一格」的判断。分叉了的话，换皮肤时标记会跳到
+        // 另一格——而地图上差一格看不出来，玩家只会觉得「我明明在这儿」。
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let cells = [
+            OverviewCell {
+                terrain: ids.grass,
+                explored: true,
+            },
+            OverviewCell {
+                terrain: ids.grass,
+                explored: true,
+            },
+            OverviewCell {
+                terrain: ids.grass,
+                explored: true,
+            },
+            OverviewCell {
+                terrain: ids.grass,
+                explored: true,
+            },
+        ];
+        let data = WorldMapPanelData {
+            cells: &cells,
+            cols: 2,
+            rows: 2,
+            player: Some((1, 1)),
+            sites: &[],
+            terrain_ids: &ids,
+            tiles_per_cell: 48,
+        };
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+        let content = rect.inset(FlatColorSkin.panel(PanelStyleId::Window).border_thickness);
+        let grid = WorldMapGrid::new(content, 2, 2).expect("2x2 网格恒可构造");
+        let (cell_x, cell_y) = grid.cell_origin(1, 1);
+
+        // Act
+        let textured = textured_player_marker_quads(
+            &data,
+            content,
+            &TexturedWorldMapMarkerAppearance {
+                uv: FAKE_MARKER_UV,
+                tint: [1.0, 1.0, 1.0, 1.0],
+            },
+        );
+        let flat = player_marker_quads(&data, content);
+
+        // Assert：贴图铺满整格，纯色内缩——但两者必须落在同一格里。
+        assert_eq!(textured[0].position, [cell_x, cell_y]);
+        assert!(flat[0].position[0] > cell_x && flat[0].position[0] < cell_x + grid.cell_size);
+        assert!(flat[0].position[1] > cell_y && flat[0].position[1] < cell_y + grid.cell_size);
+    }
 
     fn sample_cell(terrain: TerrainKind, explored: bool) -> OverviewCell {
         OverviewCell { terrain, explored }

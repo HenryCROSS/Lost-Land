@@ -107,6 +107,7 @@ use ll_render::atlas::Atlas;
 use super::bar::{FlatBarAppearance, TexturedBarAppearance, TexturedTwoLayerBarAppearance};
 use super::button::FlatButtonAppearance;
 use super::day_night_bar::{FlatDayNightBarAppearance, TexturedDayNightBarAppearance};
+use super::marker::TexturedWorldMapMarkerAppearance;
 use super::panel::{FlatPanelAppearance, TexturedPanelAppearance};
 
 /// 面板的语义样式名——调用点只认这个，不认具体颜色。目前只有一种
@@ -148,6 +149,17 @@ pub enum BarStyleId {
 pub enum DayNightBarStyleId {
     /// 状态栏下方常驻的昼夜滑条——见 `crate::hud::render` 模块文档。
     Clock,
+}
+
+/// 世界地图上各种标记的语义样式名，理由同 [`PanelStyleId`]。
+///
+/// 目前只有玩家标记一种：据点标记仍然是纯色小方块，因为它们**成群
+/// 出现**（一屏几十座），逐个换成贴图只会把地图糊成一片图标；玩家标记
+/// 全屏只有一个，是玩家最先要找的东西，值得单独一张图。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorldMapMarkerStyleId {
+    /// 玩家所在位置的标记。
+    Player,
 }
 
 /// 按钮的语义样式名，理由同 [`PanelStyleId`]——UI 交互层批次目前只有
@@ -211,6 +223,17 @@ pub trait Skin {
         &self,
         _style: DayNightBarStyleId,
     ) -> Option<TexturedDayNightBarAppearance> {
+        None
+    }
+    /// 解析世界地图标记的真实贴图外观，默认 `None`。
+    ///
+    /// 返回 `None` 时调用方退回纯色小方块
+    /// （`crate::hud::world_map::player_marker_quads`）——**不是不画**。
+    /// 玩家在地图上找不到自己，比标记难看严重得多。
+    fn textured_world_map_marker(
+        &self,
+        _style: WorldMapMarkerStyleId,
+    ) -> Option<TexturedWorldMapMarkerAppearance> {
         None
     }
     /// 解析按钮样式的真实贴图外观，默认 `None`——本批次没有按钮贴图
@@ -283,6 +306,8 @@ pub struct NineSliceSkin {
     /// 指针此前是纯色，被自己的底图整个盖住——见
     /// `crate::widget::day_night_bar` 模块文档「曾经的缺陷」一节。
     daynight_pointer_uv: Option<[f32; 4]>,
+    /// 世界地图玩家标记的 UV（`ui_map_player`）。
+    map_player_uv: Option<[f32; 4]>,
     /// 边框厚度（像素）——贴图本身是 16×16，与
     /// [`FlatPanelAppearance::DEFAULT`] 的 `2.0` 不同,选一个能让四个角
     /// 看起来像「边框」而不是「贴图被拉伸变形」的厚度。
@@ -324,6 +349,7 @@ impl NineSliceSkin {
             bar_fill_uv: lookup(BAR_FILL_KEY),
             daynight_bar_uv: lookup(DAYNIGHT_BAR_KEY),
             daynight_pointer_uv: lookup(DAYNIGHT_POINTER_KEY),
+            map_player_uv: lookup(MAP_PLAYER_KEY),
             border_thickness: 4.0,
         }
     }
@@ -341,6 +367,8 @@ pub const BAR_FILL_KEY: &str = "lostland:ui_bar_fill";
 pub const DAYNIGHT_BAR_KEY: &str = "lostland:ui_daynight_bar";
 /// 昼夜滑条滑块的图集键。
 pub const DAYNIGHT_POINTER_KEY: &str = "lostland:ui_daynight_pointer";
+/// 世界地图玩家标记的图集键。
+pub const MAP_PLAYER_KEY: &str = "lostland:ui_map_player";
 
 /// [`NineSliceSkin`] 需要、且本体**确实提供**了资产的全部图集键。
 ///
@@ -351,13 +379,14 @@ pub const DAYNIGHT_POINTER_KEY: &str = "lostland:ui_daynight_pointer";
 ///
 /// **不包含**按钮等「本体本来就没有资产」的贴图：那些恒走纯色路径是
 /// 有意的，不是缺陷，见模块文档末尾。
-pub const REQUIRED_SPRITE_KEYS: [&str; 6] = [
+pub const REQUIRED_SPRITE_KEYS: [&str; 7] = [
     PANEL_BORDER_KEY,
     PANEL_FILL_KEY,
     BAR_TRACK_KEY,
     BAR_FILL_KEY,
     DAYNIGHT_BAR_KEY,
     DAYNIGHT_POINTER_KEY,
+    MAP_PLAYER_KEY,
 ];
 
 /// 不透明白——纹理采样结果原样显示，不做任何颜色调制。
@@ -466,6 +495,18 @@ impl Skin for NineSliceSkin {
             }),
         }
     }
+
+    fn textured_world_map_marker(
+        &self,
+        style: WorldMapMarkerStyleId,
+    ) -> Option<TexturedWorldMapMarkerAppearance> {
+        match style {
+            WorldMapMarkerStyleId::Player => Some(TexturedWorldMapMarkerAppearance {
+                uv: self.map_player_uv?,
+                tint: NO_TINT,
+            }),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -507,6 +548,10 @@ mod tests {
         assert!(skin.textured_two_layer_bar(BarStyleId::Health).is_none());
         assert!(
             skin.textured_day_night_bar(DayNightBarStyleId::Clock)
+                .is_none()
+        );
+        assert!(
+            skin.textured_world_map_marker(WorldMapMarkerStyleId::Player)
                 .is_none()
         );
     }

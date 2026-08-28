@@ -217,6 +217,105 @@ pub(crate) fn decorate_day_night_pointer(image: &mut RgbaImage, rect: EntryRect)
     }
 }
 
+/// 世界地图玩家标记贴图的边长（像素）。
+///
+/// 取 16（与地形瓦片同一档）：它在屏幕上的尺寸恒等于一个地图格，而
+/// 地图格在最密的档位下约十来个像素，再大的画布只是白白多存像素。
+pub(crate) const MAP_PLAYER_MARKER_SIZE: u32 = 16;
+
+/// 玩家标记的描边色——近黑的暖暗色。
+///
+/// **这一圈描边是整张图的立身之本。** 它替代的那块纯色方块
+/// （`ll_ui::hud::world_map::PLAYER_MARKER_COLOR`）背着一条硬约束：标记
+/// 要在深蓝的海、深绿的林、灰白的雪山上**同样一眼可见**。单一颜色能
+/// 勉强满足它，是因为当时地图上还没有暖色地形；气候条带批次加进沙漠
+/// （地图色偏橙）之后，暖橙标记压在沙漠上已经开始糊。
+///
+/// 描边把这条约束从「挑一个跟所有底色都不像的颜色」（地形一多就挑不
+/// 出来）换成「**同时**带一个极暗与一个极亮的色调」——任何底色要么与
+/// 暗色拉得开，要么与亮色拉得开，不可能两头都近。这条性质由
+/// `crates/ll-game/tests/atlas_coverage.rs` 拿**真实图集像素**逐个地形
+/// 核实，而且地形清单是自动生长的。
+const MAP_PLAYER_OUTLINE: (u8, u8, u8) = (20, 16, 14);
+/// 玩家标记的主体色——与
+/// `ll_ui::hud::world_map::PLAYER_MARKER_COLOR` 逐通道相同（那份纯色
+/// 仍然是贴图查不到时的降级路径，两者同色，降级时玩家看到的是同一个
+/// 颜色的方块而不是换了个东西）。
+const MAP_PLAYER_BODY: (u8, u8, u8) = (255, 140, 13);
+/// 玩家标记的高光色——暖奶油，贴在箭头左缘一像素。
+const MAP_PLAYER_HIGHLIGHT: (u8, u8, u8) = (255, 236, 200);
+
+/// 描边厚度（像素）。取 2：贴图 16 像素见方而地图格最密时约 12 像素，
+/// 1 像素描边缩下去不足一个屏幕像素，等于没有。
+const MAP_PLAYER_OUTLINE_THICKNESS: i32 = 2;
+
+/// 箭头本体的像素判据——一根竖柄加一个向下的三角头。
+///
+/// 取「向下的箭头」而不是「一个点」：所有者原话是「角色所在位置我希望
+/// 有个箭头或者标识指示」，而箭头比圆点多一条信息——它指着**哪一格**。
+/// 三角尖落在图形下缘，玩家读的是尖端指的那一格，不是色块的重心。
+fn in_map_player_arrow(x: i32, y: i32) -> bool {
+    // 竖柄。
+    if (6..=9).contains(&x) && (2..=7).contains(&y) {
+        return true;
+    }
+    // 三角头：自上而下逐行收窄，最后一行只剩尖。
+    if (8..=14).contains(&y) {
+        let half = ((14 - y) as f32 * 0.6).round() as i32 + 1;
+        let center_left = 7;
+        let center_right = 8;
+        return x >= center_left - half && x <= center_right + half;
+    }
+    false
+}
+
+/// 画世界地图上的玩家标记：向下的箭头，一圈描边 + 暖橙主体 + 左缘高光。
+///
+/// **背景保持透明**（与 `crate::world_marks` 那几张记号同一条既有做法）：
+/// 标记画在地图格之上，透明的背景让这一格的地形色从箭头周围透出来，
+/// 玩家因此能同时看出「我在哪」与「我脚下是什么」——那正是它替代的
+/// 那块内缩小方块当初存在的理由，换成贴图之后由图形自己的留白实现，
+/// 不再需要调用方按比例内缩。
+pub(crate) fn decorate_map_player_marker(image: &mut RgbaImage, rect: EntryRect) {
+    for local_y in 0..rect.height as i32 {
+        for local_x in 0..rect.width as i32 {
+            let color = if in_map_player_arrow(local_x, local_y) {
+                // 左缘一像素提亮：光从左上来，箭头因此有厚度而不是一块
+                // 平涂的橙。
+                if !in_map_player_arrow(local_x - 1, local_y) {
+                    Some(MAP_PLAYER_HIGHLIGHT)
+                } else {
+                    Some(MAP_PLAYER_BODY)
+                }
+            } else if near_map_player_arrow(local_x, local_y) {
+                Some(MAP_PLAYER_OUTLINE)
+            } else {
+                None
+            };
+            let rgba = match color {
+                Some((r, g, b)) => Rgba([r, g, b, 255]),
+                None => Rgba([0, 0, 0, 0]),
+            };
+            image.put_pixel(rect.x + local_x as u32, rect.y + local_y as u32, rgba);
+        }
+    }
+}
+
+/// 这个像素是否落在箭头轮廓外 [`MAP_PLAYER_OUTLINE_THICKNESS`] 像素
+/// 以内——描边区。切比雪夫距离（八邻域方形扩张）而不是欧氏：像素图上
+/// 方形扩张出来的描边粗细均匀，圆形扩张在斜边上会时粗时细。
+fn near_map_player_arrow(x: i32, y: i32) -> bool {
+    let t = MAP_PLAYER_OUTLINE_THICKNESS;
+    for dy in -t..=t {
+        for dx in -t..=t {
+            if in_map_player_arrow(x + dx, y + dy) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -410,5 +509,105 @@ mod tests {
             "滑块在夜端看不清：{to_night}"
         );
         assert!(to_day >= min_channel_distance, "滑块在昼端看不清：{to_day}");
+    }
+
+    #[test]
+    fn decorate_map_player_marker既有极暗也有极亮的色调() {
+        // 「在深蓝的海、深绿的林、灰白的雪山上同样一眼可见」这条硬约束
+        // 在贴图这一侧的落点：单一颜色做不到两头都拉得开，描边 + 主体
+        // 这一对可以。真实图集像素对每种地形的逐个核实在
+        // `crates/ll-game/tests/atlas_coverage.rs`。
+        // Arrange
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: MAP_PLAYER_MARKER_SIZE,
+            height: MAP_PLAYER_MARKER_SIZE,
+        };
+        let mut image = RgbaImage::new(rect.width, rect.height);
+
+        // Act
+        decorate_map_player_marker(&mut image, rect);
+        let opaque: Vec<[u8; 3]> = image
+            .pixels()
+            .filter(|p| p.0[3] == 255)
+            .map(|p| [p.0[0], p.0[1], p.0[2]])
+            .collect();
+
+        // Assert
+        let darkest = opaque
+            .iter()
+            .map(|p| p.iter().map(|c| *c as u32).sum::<u32>())
+            .min()
+            .expect("标记必须有不透明像素");
+        let brightest = opaque
+            .iter()
+            .map(|p| p.iter().map(|c| *c as u32).sum::<u32>())
+            .max()
+            .expect("标记必须有不透明像素");
+        assert!(darkest <= 3 * 60, "标记缺少足够暗的色调：{darkest}");
+        assert!(brightest >= 3 * 180, "标记缺少足够亮的色调：{brightest}");
+    }
+
+    #[test]
+    fn decorate_map_player_marker的四角保持透明() {
+        // 背景必须透明：标记画在地图格之上，四角不透明会把这一格的地形
+        // 色整个盖住，玩家就看不出自己脚下是什么了。
+        // Arrange
+        let size = MAP_PLAYER_MARKER_SIZE;
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: size,
+            height: size,
+        };
+        let mut image = RgbaImage::new(size, size);
+
+        // Act
+        decorate_map_player_marker(&mut image, rect);
+
+        // Assert
+        for (x, y) in [(0, 0), (size - 1, 0), (0, size - 1), (size - 1, size - 1)] {
+            assert_eq!(image.get_pixel(x, y).0[3], 0, "({x}, {y}) 不该被画上");
+        }
+    }
+
+    #[test]
+    fn decorate_map_player_marker的箭头恒被描边整圈包住() {
+        // 描边只包住一部分等于在某些底色上有一段边界糊掉。逐个箭头像素
+        // 检查它的八邻域里没有透明像素——有的话说明那里缺描边。
+        // Arrange
+        let size = MAP_PLAYER_MARKER_SIZE;
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: size,
+            height: size,
+        };
+        let mut image = RgbaImage::new(size, size);
+
+        // Act
+        decorate_map_player_marker(&mut image, rect);
+
+        // Assert
+        for y in 0..size as i32 {
+            for x in 0..size as i32 {
+                if !in_map_player_arrow(x, y) {
+                    continue;
+                }
+                for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                    let (nx, ny) = (x + dx, y + dy);
+                    assert!(
+                        (0..size as i32).contains(&nx) && (0..size as i32).contains(&ny),
+                        "箭头顶到了画布边界 ({nx}, {ny})，描边放不下"
+                    );
+                    assert_eq!(
+                        image.get_pixel(nx as u32, ny as u32).0[3],
+                        255,
+                        "箭头像素 ({x}, {y}) 的邻居 ({nx}, {ny}) 是透明的——那里缺描边"
+                    );
+                }
+            }
+        }
     }
 }

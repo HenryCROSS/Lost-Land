@@ -58,8 +58,10 @@ use ll_game::app::load_sprite_sources;
 use ll_game::content::{LoadedContent, load_content};
 use ll_game::layout::terrain_atlas_key;
 use ll_render::atlas_pack::{PackedAtlas, pack_atlas};
+use ll_ui::hud::world_map::{FOG_COLOR, terrain_color};
 use ll_ui::widget::skin::{
-    BarStyleId, DayNightBarStyleId, NineSliceSkin, PanelStyleId, REQUIRED_SPRITE_KEYS, Skin,
+    BarStyleId, DayNightBarStyleId, MAP_PLAYER_KEY, NineSliceSkin, PanelStyleId,
+    REQUIRED_SPRITE_KEYS, Skin,
 };
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
 
@@ -326,4 +328,65 @@ fn hud皮肤拿真实资产装出来后每个贴图外观都是some() {
             .is_some(),
         "昼夜滑条退回了纯色——这正是所有者报的现象"
     );
+}
+
+#[test]
+fn 世界地图玩家标记在每一种地形色上都有足够对比的色调() {
+    // 所有者对这块标记的硬约束（`ll_ui::hud::world_map::PLAYER_MARKER_COLOR`
+    // 文档）：它要在深蓝的海、深绿的林、灰白的雪山上**同样一眼可见**。
+    // 换成贴图之后这条一个字没松，本条就是它的程序化核实。
+    //
+    // # 判据：每种底色都要能被标记的**某一个**色调拉开
+    //
+    // 单一颜色满足不了这条——底色一多，总有一种跟它接近。标记贴图同时
+    // 带一圈近黑描边与一块暖奶油高光，任何底色要么与暗的拉得开、要么与
+    // 亮的拉得开。因此判据是「存在一个不透明像素，与这种底色的最大通道
+    // 差 >= 阈值」，而不是「所有像素都拉得开」（那会把主体色误判成问题，
+    // 而主体色本来就允许与某些底色接近——描边负责在那些底色上切开轮廓）。
+    //
+    // 地形清单从注册表现查（`all_base_terrains`），加地形的那一刻这条
+    // 断言自动开始管它——沙漠与冻原正是这样进来的，而当年那个纯色标记
+    // 压在沙漠上已经开始糊。
+    //
+    // 反例：把 `MAP_PLAYER_OUTLINE` 改成跟主体差不多的暖色，这条立刻红。
+    const MIN_CHANNEL_DISTANCE: i32 = 90;
+
+    // Arrange
+    let (content, atlas) = real_content_and_atlas();
+    let ids = &content.terrain_ids;
+    let marker: Vec<[u8; 4]> = tile_pixels(&atlas, MAP_PLAYER_KEY)
+        .into_iter()
+        .filter(|pixel| pixel[3] == 255)
+        .collect();
+    assert!(
+        !marker.is_empty(),
+        "玩家标记贴图在真实图集里没有任何不透明像素"
+    );
+
+    // Act & Assert：逐种地形（外加迷雾色）核实。
+    let backgrounds = all_base_terrains(ids)
+        .into_iter()
+        .map(|(name, kind)| (name, terrain_color(kind, ids)))
+        .chain(std::iter::once(("未探索迷雾", FOG_COLOR)));
+    for (name, color) in backgrounds {
+        let background = [
+            (color[0] * 255.0).round() as i32,
+            (color[1] * 255.0).round() as i32,
+            (color[2] * 255.0).round() as i32,
+        ];
+        let best = marker
+            .iter()
+            .map(|pixel| {
+                (0..3)
+                    .map(|channel| (pixel[channel] as i32 - background[channel]).abs())
+                    .max()
+                    .expect("三个通道恒非空")
+            })
+            .max()
+            .expect("标记恒有不透明像素");
+        assert!(
+            best >= MIN_CHANNEL_DISTANCE,
+            "玩家标记在 {name} 上看不清：最大通道差只有 {best}，不足 {MIN_CHANNEL_DISTANCE}"
+        );
+    }
 }

@@ -440,6 +440,10 @@ pub fn build_hud_frame(
         let overlay = frame.layer_mut(UiLayer::Overlay);
         let map_frame = world_map::world_map_frame(world_map, rect, skin);
         overlay.quads.extend(map_frame.quads);
+        // 玩家标记的贴图矩形：与地图格同一层，层内贴图恒画在纯色之上,
+        // 标记因此压住地形格与据点标记,见
+        // `world_map::WorldMapFrame::textured_quads` 文档。
+        overlay.textured_quads.extend(map_frame.textured_quads);
         // 比例尺与操作提示：贴在地图面板的左上角内侧。走本层自己的
         // 文本批次——文本不再是「全屏最后一道 pass」，而是**层内**最后
         // 一道，因此常驻 HUD 的文字不会浮在地图上面。

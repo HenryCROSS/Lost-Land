@@ -28,6 +28,8 @@
 //! - [`focus::move_focus`]/[`focus::navigate_focus`]——焦点导航：不用
 //!   鼠标也能在一组控件间移动焦点、触发当前聚焦项，见其模块文档
 //!   「为什么不能只支持鼠标」一节。
+//! - [`marker::textured_marker_quad`]——世界地图标记：外观数据同样经
+//!   皮肤层解析，见其模块文档「为什么单独一个模块」一节。
 //! - [`layer::UiLayer`]——UI 层级：显式声明每块界面画在哪一层，由
 //!   层级而不是调用顺序或渲染 pass 的先后决定谁盖住谁，见其模块文档
 //!   「新加一块 UI 时该怎么选层」一节。
@@ -134,6 +136,7 @@ pub mod hit_test;
 pub mod label;
 pub mod layer;
 pub mod list;
+pub mod marker;
 pub mod panel;
 pub mod quad;
 pub mod skin;
