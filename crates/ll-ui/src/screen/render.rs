@@ -1,7 +1,10 @@
 //! 把 [`super::build_screen_panel`] 算出的内容真正提交到屏幕。
 //!
-//! 三道 pass 与 [`crate::hud::render::render_hud`] 完全同构（纯色矩形 →
-//! 贴图矩形 → 文本），且同样全部用 `LoadOp::Load` 不清屏——本模块画的
+//! 三道 pass（纯色矩形 → 贴图矩形 → 文本）与
+//! [`crate::hud::render::render_hud`] 的**层内**顺序同构，且同样全部用
+//! `LoadOp::Load` 不清屏。区别在于本模块只有一块屏、不需要分层：模态屏
+//! 恒盖在 HUD 全部层级之上（见 [`crate::widget::layer`] 模块文档「模态屏
+//! 不在这里」一节），因此不存在「这块屏与那块屏谁在上面」的问题。本模块画的
 //! 是**盖在 HUD 之上**的第四条通道，调用方
 //! （`ll_game::app::Demo::on_frame`）在 `render_hud` 之后调用它，压暗
 //! 背板因此会把世界层与 HUD 一起压暗，这正是「这块屏是模态的」要传达
@@ -28,8 +31,11 @@ use glyphon::Color;
 /// 文本颜色——与 HUD 面板统一，见 `crate::hud::render` 同名常量的理由。
 const TEXT_COLOR: Color = Color::rgba(235, 235, 235, 255);
 
-/// 一块模态屏这一帧全部需要提交给 GPU 的内容，形状与
-/// [`crate::hud::render::HudFrame`] 平行。
+/// 一块模态屏这一帧全部需要提交给 GPU 的内容。
+///
+/// **刻意不用 [`crate::widget::layer::LayeredFrame`]**：那个类型解决的是
+/// 「同一块画面里多块内容谁盖谁」，而模态屏这一层只有一块内容，整层又恒
+/// 盖在 HUD 之上。套一层层级只会多出三个永远为空的层。
 pub struct ScreenFrame {
     /// 皮肤给出纯色回退时的填色矩形，以及**恒存在**的压暗背板。
     pub quads: Vec<QuadInstance>,

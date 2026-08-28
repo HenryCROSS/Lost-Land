@@ -1,6 +1,13 @@
 //! HUD 的最外层薄封装：把四块面板的布局、面板背景、经验条、昼夜滑条、
 //! 文本行全部接起来，一次性提交到 GPU。
 //!
+//! # 谁盖住谁由 [`crate::widget::layer::UiLayer`] 决定
+//!
+//! 本模块**不**用「谁后推入谁在上面」表达遮挡关系——那条约定在这里从
+//! 来就不成立（内容被分装进纯色/贴图两个容器，跨容器的先后由渲染 pass
+//! 的固定顺序决定）。每块内容显式声明自己属于哪一层，新加一块 UI 时该
+//! 怎么选层见 [`crate::widget::layer`] 模块文档。
+//!
 //! # 布局：状态栏 + 资源条 + 昼夜滑条通栏在左上，角色/背包纵向堆叠在
 //! 左侧，装备栏单独锚定在屏幕右边
 //!
@@ -63,11 +70,12 @@ use crate::widget::day_night_bar::{
 };
 use crate::widget::geometry::Rect;
 use crate::widget::label::Label;
+use crate::widget::layer::{DrawBatch, LayerBatch, LayeredFrame, UiLayer};
 use crate::widget::panel::{panel_quads, textured_panel_quads};
-use crate::widget::quad::{QuadInstance, QuadRenderer};
+use crate::widget::quad::QuadRenderer;
 use crate::widget::skin::{BarStyleId, DayNightBarStyleId, PanelStyleId, Skin};
 use crate::widget::state::{WidgetStateTable, animate_experience_bar};
-use crate::widget::textured_quad::{TexturedQuadInstance, TexturedQuadRenderer};
+use crate::widget::textured_quad::TexturedQuadRenderer;
 use glyphon::Color;
 use std::collections::BTreeMap;
 
@@ -117,20 +125,10 @@ const AFTERGLOW_DURATION_FRAMES: u32 = DEFAULT_ANIM_DURATION_FRAMES * 3;
 /// 的多色分组是两种不同的场景。
 const TEXT_COLOR: Color = Color::rgba(235, 235, 235, 255);
 
-/// 四块面板 + 三条条形这一帧全部需要提交给 GPU 的内容：见
-/// [`render_hud`] 文档「三道 pass」一节。[`build_hud_frame`] 内部先把
-/// 它们**算**出来（不接触 GPU，可脱离窗口单元测试，见本模块测试）。
-pub struct HudFrame {
-    /// 皮肤给出纯色回退时的全部填色矩形。
-    pub quads: Vec<QuadInstance>,
-    /// 皮肤给出真实贴图外观时的全部贴图矩形——见
-    /// [`crate::widget::skin`] 模块文档「`Skin` trait 的两层方法」
-    /// 一节：同一块面板/同一条条形，只会落进 `quads` 或
-    /// `textured_quads` 其中一个，不会同时出现在两边。
-    pub textured_quads: Vec<TexturedQuadInstance>,
-    /// 四块面板的全部文本行。
-    pub labels: Vec<Label>,
-}
+// 这一帧要提交的内容现在装在 `crate::widget::layer::LayeredFrame` 里
+// （按层分装），不再是本模块自己的 `HudFrame`——「谁盖住谁」由层级
+// 决定，而不是由「先提交完一整批纯色、再提交完一整批贴图」这个固定
+// pass 顺序决定，见 `crate::widget::layer` 模块文档记录的那条实机缺陷。
 
 /// 装备栏面板左上角的 x 坐标——恒锚定在窗口右边缘往里缩
 /// [`EQUIPMENT_RIGHT_MARGIN`] + [`EQUIPMENT_WIDTH`]，不随角色/背包列
@@ -285,22 +283,16 @@ pub fn build_hud_frame(
     world_map: Option<&WorldMapPanelData<'_>>,
     menu: Option<&ActionMenuData<'_>>,
     feedback: Option<&str>,
-) -> HudFrame {
-    let mut quads = Vec::new();
-    let mut textured_quads = Vec::new();
-    let mut labels = Vec::new();
+) -> LayeredFrame {
+    let mut frame = LayeredFrame::default();
+    // 常驻 HUD 全部落在最底层，见 `crate::widget::layer` 模块文档的
+    // 选层判据表。
+    let hud = frame.layer_mut(UiLayer::Hud);
 
     let status_origin = (SCREEN_MARGIN, SCREEN_MARGIN);
     let status_panel =
         status_bar::status_bar_panel(status, catalog, language, status_origin, STATUS_WIDTH);
-    push_panel(
-        &mut quads,
-        &mut textured_quads,
-        &mut labels,
-        &status_panel.rect,
-        status_panel.labels,
-        skin,
-    );
+    push_panel(hud, &status_panel.rect, status_panel.labels, skin);
 
     // 生命/法力双层条：紧贴在状态栏下方,并排放置——立即层瞬间反映
     // 真实值,余晖层用更长的时长追赶,见
@@ -324,8 +316,7 @@ pub fn build_hud_frame(
         AFTERGLOW_DURATION_FRAMES,
     );
     push_two_layer_bar(
-        &mut quads,
-        &mut textured_quads,
+        hud,
         health_rect,
         health_immediate,
         health_lagging,
@@ -343,8 +334,7 @@ pub fn build_hud_frame(
         AFTERGLOW_DURATION_FRAMES,
     );
     push_two_layer_bar(
-        &mut quads,
-        &mut textured_quads,
+        hud,
         mana_rect,
         mana_immediate,
         mana_lagging,
@@ -364,13 +354,7 @@ pub fn build_hud_frame(
     );
     let pointer_real = status_bar::day_night_pointer_fraction(status.clock);
     let pointer_displayed = anim.animate("hud.day_night_pointer", pointer_real, now);
-    push_day_night_bar(
-        &mut quads,
-        &mut textured_quads,
-        day_night_rect,
-        pointer_displayed,
-        skin,
-    );
+    push_day_night_bar(hud, day_night_rect, pointer_displayed, skin);
 
     // 角色面板：紧贴在昼夜滑条下方——此前直接在生命/法力条下方,现在
     // 多插了一条昼夜滑条,角色面板跟着往下挪一格,列宽/内容不变。
@@ -385,9 +369,7 @@ pub fn build_hud_frame(
         CHARACTER_WIDTH,
     );
     push_panel(
-        &mut quads,
-        &mut textured_quads,
-        &mut labels,
+        hud,
         &character_panel_content.rect,
         character_panel_content.labels,
         skin,
@@ -403,13 +385,7 @@ pub fn build_hud_frame(
     let real_fraction = character_panel::experience_bar_fraction(character);
     let displayed_fraction =
         animate_experience_bar(anim, "hud.xp_bar", character.level, real_fraction, now);
-    push_bar(
-        &mut quads,
-        &mut textured_quads,
-        bar_rect,
-        displayed_fraction,
-        skin,
-    );
+    push_bar(hud, bar_rect, displayed_fraction, skin);
 
     // 背包面板：紧贴在经验条（角色面板的一部分）下方——项目所有者原话
     // 「背包先临时放在角色下面」,与此前「背包在角色右边」的并排布局
@@ -425,9 +401,7 @@ pub fn build_hud_frame(
         INVENTORY_WIDTH,
     );
     push_panel(
-        &mut quads,
-        &mut textured_quads,
-        &mut labels,
+        hud,
         &inventory_panel_content.rect,
         inventory_panel_content.labels,
         skin,
@@ -446,32 +420,34 @@ pub fn build_hud_frame(
         EQUIPMENT_WIDTH,
     );
     push_panel(
-        &mut quads,
-        &mut textured_quads,
-        &mut labels,
+        hud,
         &equipment_panel_content.rect,
         equipment_panel_content.labels,
         skin,
     );
 
-    // 世界地图：M 键切换的浮层，`None` 时整块不参与本次产出——见本
-    // 函数文档「`world_map` 为 `None` 时」一节。放在四块常驻面板之后
-    // 推入，恰好是这一帧 `quads`/`textured_quads` 里最后追加的内容，
-    // 覆盖在它们之上（同一份 wgpu draw call 按实例顺序绘制，后追加的
-    // 实例画在更上层）。
+    // 世界地图：M 键切换的近全屏覆盖层，`None` 时整块不参与本次产出
+    // ——见本函数文档「`world_map` 为 `None` 时」一节。
+    //
+    // 它落在 `UiLayer::Overlay`，**恒盖住整个常驻 HUD**。此前它只是
+    // 「在同一个 `quads` 里最后追加」，而常驻 HUD 在真实贴图皮肤下走
+    // 的是另一个容器、另一道 pass，于是血条与四块面板反过来压在地图
+    // 上——所有者实机反馈的那条缺陷，根因与修法见
+    // `crate::widget::layer` 模块文档。
     if let Some(world_map) = world_map {
         let rect = world_map_rect(screen_width, screen_height);
-        let frame = world_map::world_map_frame(world_map, rect, skin);
-        quads.extend(frame.quads);
-        // 比例尺与操作提示：贴在地图面板的左上角内侧。走文本 pass
-        // （`labels`），因此恒画在全部矩形之上，不需要操心与格子的推入
-        // 顺序，见本函数文档「三道 pass」一节。
+        let overlay = frame.layer_mut(UiLayer::Overlay);
+        let map_frame = world_map::world_map_frame(world_map, rect, skin);
+        overlay.quads.extend(map_frame.quads);
+        // 比例尺与操作提示：贴在地图面板的左上角内侧。走本层自己的
+        // 文本批次——文本不再是「全屏最后一道 pass」，而是**层内**最后
+        // 一道，因此常驻 HUD 的文字不会浮在地图上面。
         //
         // `tiles_per_cell` 为 0 表示调用方还没接缩放（例如只想画一张
         // 固定视图），此时整行不出现——与 `world_map` 为 `None` 时整块
         // 不产出是同一条「没有就不画，不留占位」的纪律。
         if world_map.tiles_per_cell > 0 {
-            labels.push(Label {
+            overlay.labels.push(Label {
                 text: world_map::scale_caption(world_map.tiles_per_cell, catalog, language),
                 x: rect.x + WORLD_MAP_CAPTION_MARGIN,
                 y: rect.y + WORLD_MAP_CAPTION_MARGIN,
@@ -480,22 +456,20 @@ pub fn build_hud_frame(
     }
 
     // 动作菜单：与世界地图同一条「`None` 就整块不产出」的纪律，见本
-    // 函数文档。画在世界地图之后——两者理论上可以同时打开，此时菜单
-    // 该压在地图之上（玩家正在选东西，地图只是背景）。
+    // 函数文档。落在 `UiLayer::Popup`，恒压在地图之上——两者理论上可以
+    // 同时打开，此时玩家正在菜单里选东西，地图只是背景。
     if let Some(menu) = menu {
         let panel = placed_action_menu(menu, catalog, language, screen_width, screen_height);
         push_panel(
-            &mut quads,
-            &mut textured_quads,
-            &mut labels,
+            frame.layer_mut(UiLayer::Popup),
             &panel.rect,
             panel.labels,
             skin,
         );
     }
 
-    // 反馈行：最后推入，压在所有东西之上——它要说的正是「你刚才那一下
-    // 没起作用」，被任何面板挡住就等于没说。
+    // 反馈行：最高一层 `UiLayer::Notice`，压在所有东西之上——它要说的
+    // 正是「你刚才那一下没起作用」，被任何面板挡住就等于没说。
     if let Some(text) = feedback {
         let panel = super::build_panel(
             (
@@ -506,52 +480,43 @@ pub fn build_hud_frame(
             |cursor, lines| cursor.push(lines, text.to_string()),
         );
         push_panel(
-            &mut quads,
-            &mut textured_quads,
-            &mut labels,
+            frame.layer_mut(UiLayer::Notice),
             &panel.rect,
             panel.labels,
             skin,
         );
     }
 
-    HudFrame {
-        quads,
-        textured_quads,
-        labels,
-    }
+    frame
 }
 
 /// 推入一块面板的背景——皮肤给出真实贴图外观
 /// （[`Skin::textured_panel`]）就走贴图路径,否则回退到
-/// [`Skin::panel`] 的纯色路径,两条路径互斥（见 [`HudFrame::textured_quads`]
-/// 文档）。
-fn push_panel(
-    quads: &mut Vec<QuadInstance>,
-    textured_quads: &mut Vec<TexturedQuadInstance>,
-    labels: &mut Vec<Label>,
-    rect: &Rect,
-    panel_labels: Vec<Label>,
-    skin: &dyn Skin,
-) {
+/// [`Skin::panel`] 的纯色路径,两条路径互斥（同一块面板只会落进
+/// [`LayerBatch::quads`] 或 [`LayerBatch::textured_quads`] 其中一个）。
+fn push_panel(batch: &mut LayerBatch, rect: &Rect, panel_labels: Vec<Label>, skin: &dyn Skin) {
     match skin.textured_panel(PanelStyleId::Window) {
-        Some(appearance) => textured_quads.extend(textured_panel_quads(*rect, &appearance)),
-        None => quads.extend(panel_quads(*rect, &skin.panel(PanelStyleId::Window))),
+        Some(appearance) => batch
+            .textured_quads
+            .extend(textured_panel_quads(*rect, &appearance)),
+        None => batch
+            .quads
+            .extend(panel_quads(*rect, &skin.panel(PanelStyleId::Window))),
     }
-    labels.extend(panel_labels);
+    batch.labels.extend(panel_labels);
 }
 
 /// 推入一条单层条形（经验条），分支逻辑同 [`push_panel`]。
-fn push_bar(
-    quads: &mut Vec<QuadInstance>,
-    textured_quads: &mut Vec<TexturedQuadInstance>,
-    rect: Rect,
-    fraction: f32,
-    skin: &dyn Skin,
-) {
+fn push_bar(batch: &mut LayerBatch, rect: Rect, fraction: f32, skin: &dyn Skin) {
     match skin.textured_bar(BarStyleId::Progress) {
-        Some(appearance) => textured_quads.extend(textured_bar_quads(rect, fraction, &appearance)),
-        None => quads.extend(bar_quads(rect, fraction, &skin.bar(BarStyleId::Progress))),
+        Some(appearance) => {
+            batch
+                .textured_quads
+                .extend(textured_bar_quads(rect, fraction, &appearance))
+        }
+        None => batch
+            .quads
+            .extend(bar_quads(rect, fraction, &skin.bar(BarStyleId::Progress))),
     }
 }
 
@@ -561,8 +526,7 @@ fn push_bar(
 /// 是「两条资源条能分清哪条是哪条」这条修复的直接落点,见
 /// `crate::widget::skin::BarStyleId::Health` 文档。
 fn push_two_layer_bar(
-    quads: &mut Vec<QuadInstance>,
-    textured_quads: &mut Vec<TexturedQuadInstance>,
+    batch: &mut LayerBatch,
     rect: Rect,
     immediate_fraction: f32,
     lagging_fraction: f32,
@@ -570,7 +534,7 @@ fn push_two_layer_bar(
     skin: &dyn Skin,
 ) {
     match skin.textured_two_layer_bar(style) {
-        Some(appearance) => textured_quads.extend(textured_two_layer_bar_quads(
+        Some(appearance) => batch.textured_quads.extend(textured_two_layer_bar_quads(
             rect,
             immediate_fraction,
             lagging_fraction,
@@ -583,7 +547,7 @@ fn push_two_layer_bar(
             // 区分两层的明暗,这是可接受的简化,不影响真实贴图路径
             // （`NineSliceSkin` 已经用 `afterglow_tint` 正确区分）。
             let appearance = skin.bar(style);
-            quads.extend(crate::widget::bar::two_layer_bar_quads(
+            batch.quads.extend(crate::widget::bar::two_layer_bar_quads(
                 rect,
                 immediate_fraction,
                 lagging_fraction,
@@ -604,42 +568,45 @@ fn push_two_layer_bar(
 /// 纯色回退用
 /// `crate::widget::day_night_bar::FlatDayNightBarAppearance::pointer_color`），
 /// 见 `crate::widget::day_night_bar` 模块文档「颜色走皮肤层」一节。
-fn push_day_night_bar(
-    quads: &mut Vec<QuadInstance>,
-    textured_quads: &mut Vec<TexturedQuadInstance>,
-    rect: Rect,
-    pointer_fraction: f32,
-    skin: &dyn Skin,
-) {
+fn push_day_night_bar(batch: &mut LayerBatch, rect: Rect, pointer_fraction: f32, skin: &dyn Skin) {
     let pointer_color = match skin.textured_day_night_bar(DayNightBarStyleId::Clock) {
         Some(appearance) => {
-            textured_quads.extend(textured_day_night_bar_quads(rect, &appearance));
+            batch
+                .textured_quads
+                .extend(textured_day_night_bar_quads(rect, &appearance));
             appearance.pointer_color
         }
         None => {
             let appearance = skin.day_night_bar(DayNightBarStyleId::Clock);
-            quads.extend(day_night_bar_quads(rect, &appearance));
+            batch.quads.extend(day_night_bar_quads(rect, &appearance));
             appearance.pointer_color
         }
     };
-    quads.push(day_night_pointer_quad(
+    batch.quads.push(day_night_pointer_quad(
         rect,
         pointer_color,
         pointer_fraction,
     ));
 }
 
-/// 把 [`build_hud_frame`] 算出的内容真正提交到屏幕：先画纯色面板背景
-/// （[`QuadRenderer`]），再画真实贴图面板背景/条形
-/// （[`TexturedQuadRenderer`]），最后画全部文本（[`TextRenderer`]）——
-/// 三道 pass 都用 `LoadOp::Load`，不清屏，叠加在调用方已经画好的世界层
-/// 之上（见 [`crate::widget::quad`] 模块文档「为什么不复用 SpriteBatch」
-/// 一节）。同一块面板/条形只会落进前两道 pass 中的一个（见
-/// [`HudFrame::textured_quads`] 文档），两道 pass 因此互不遮挡对方的
-/// 内容，先后顺序不影响最终画面——世界地图是这条规则刻意维持的一个
-/// 例外落点：它恒只产出纯色矩形，从不产出贴图矩形，见
-/// [`world_map::world_map_frame`] 文档「为什么不用九宫格面板背景」
-/// 一节的完整论证。
+/// 把 [`build_hud_frame`] 算出的内容真正提交到屏幕。
+///
+/// # 提交顺序 = [`LayeredFrame::draw_batches`]，不是「三道固定 pass」
+///
+/// 本函数**逐条遍历** [`LayeredFrame::draw_batches`]：按层升序，层内
+/// 纯色（[`QuadRenderer`]）→ 贴图（[`TexturedQuadRenderer`]）→ 文本
+/// （[`TextRenderer`]）。每条批次各自开一道 `LoadOp::Load` 的 pass，
+/// 不清屏，叠加在调用方已经画好的世界层之上（见
+/// [`crate::widget::quad`] 模块文档「为什么不复用 SpriteBatch」一节）。
+///
+/// **本函数不自己决定任何遮挡关系**——顺序全部来自 `draw_batches`，
+/// 那也正是测试断言的对象，两者因此不可能分叉。
+///
+/// 此前这里是「先提交完一整批纯色、再提交完一整批贴图、最后全部文本」
+/// 三道固定 pass。那个形状下，一块内容画在另一块之上与否取决于**皮肤
+/// 给不给贴图**，与调用点的推入顺序无关——世界地图被血条压住、昼夜
+/// 滑条的指针被自己的底图吞掉，都是它的直接后果，见
+/// [`crate::widget::layer`] 模块文档。
 #[allow(clippy::too_many_arguments)]
 pub fn render_hud(
     quad_renderer: &mut QuadRenderer,
@@ -689,44 +656,48 @@ pub fn render_hud(
         feedback,
     );
 
-    quad_renderer.render(
-        device,
-        queue,
-        target,
-        resolution_width,
-        resolution_height,
-        &frame.quads,
-    );
-    textured_quad_renderer.render(
-        device,
-        queue,
-        target,
-        resolution_width,
-        resolution_height,
-        &frame.textured_quads,
-    );
-
-    let runs: Vec<_> = frame
-        .labels
-        .iter()
-        .map(|label| {
-            label.to_text_run(
-                super::DEFAULT_FONT_SIZE,
-                super::DEFAULT_LINE_HEIGHT,
-                400.0,
-                TEXT_COLOR,
-            )
-        })
-        .collect();
-    if let Err(error) = text_renderer.render(
-        device,
-        queue,
-        target,
-        resolution_width,
-        resolution_height,
-        &runs,
-    ) {
-        tracing::error!(%error, "HUD 文本渲染失败");
+    for batch in frame.draw_batches() {
+        match batch {
+            DrawBatch::Quads(quads) => quad_renderer.render(
+                device,
+                queue,
+                target,
+                resolution_width,
+                resolution_height,
+                quads,
+            ),
+            DrawBatch::Textured(textured) => textured_quad_renderer.render(
+                device,
+                queue,
+                target,
+                resolution_width,
+                resolution_height,
+                textured,
+            ),
+            DrawBatch::Labels(labels) => {
+                let runs: Vec<_> = labels
+                    .iter()
+                    .map(|label| {
+                        label.to_text_run(
+                            super::DEFAULT_FONT_SIZE,
+                            super::DEFAULT_LINE_HEIGHT,
+                            400.0,
+                            TEXT_COLOR,
+                        )
+                    })
+                    .collect();
+                if let Err(error) = text_renderer.render(
+                    device,
+                    queue,
+                    target,
+                    resolution_width,
+                    resolution_height,
+                    &runs,
+                ) {
+                    tracing::error!(%error, "HUD 文本渲染失败");
+                }
+            }
+        }
     }
 }
 
@@ -825,7 +796,7 @@ mod tests {
 
         // Assert：四块面板各 9 块背景 + 双层条 2*3 块 + 单层条 2 块 +
         // 昼夜滑条 2 块（整条背景 + 指针）。
-        assert_eq!(frame.quads.len(), 4 * 9 + 2 * 3 + 2 + 2);
+        assert_eq!(frame.layer(UiLayer::Hud).quads.len(), 4 * 9 + 2 * 3 + 2 + 2);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -875,7 +846,7 @@ mod tests {
         );
 
         // Assert
-        assert_eq!(frame.quads.len(), 4 * 9 + 2 * 3 + 2 + 2);
+        assert_eq!(frame.layer(UiLayer::Hud).quads.len(), 4 * 9 + 2 * 3 + 2 + 2);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -966,8 +937,13 @@ mod tests {
 
         // Assert：世界地图边框恒 4 块（见
         // `crate::hud::world_map::border_only_quads` 文档）加上本例
-        // 2 个格子，共 6 块。
-        assert_eq!(open_frame.quads.len(), closed_frame.quads.len() + 6);
+        // 2 个格子，共 6 块——全部落在覆盖层，常驻 HUD 那一层一块不多。
+        assert_eq!(open_frame.layer(UiLayer::Overlay).quads.len(), 6);
+        assert!(closed_frame.layer(UiLayer::Overlay).quads.is_empty());
+        assert_eq!(
+            open_frame.layer(UiLayer::Hud).quads.len(),
+            closed_frame.layer(UiLayer::Hud).quads.len()
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -1014,7 +990,7 @@ mod tests {
         );
 
         // Assert
-        assert!(frame.textured_quads.is_empty());
+        assert!(frame.layer(UiLayer::Hud).textured_quads.is_empty());
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -1076,7 +1052,7 @@ mod tests {
         // （查不到职业定义），整行不出现——这条断言同时是那个分支的
         // 覆盖。有职业时那一行出现的证据在
         // `crate::hud::character_panel` 的对应测试。
-        assert_eq!(frame.labels.len(), 1 + 16 + 2 + 23);
+        assert_eq!(frame.layer(UiLayer::Hud).labels.len(), 1 + 16 + 2 + 23);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -1153,7 +1129,7 @@ mod tests {
         );
 
         // Assert：状态栏文本行里应该已经是 30,不是 100 附近的过渡值。
-        let status_line = &frame.labels[0].text;
+        let status_line = &frame.layer(UiLayer::Hud).labels[0].text;
         assert!(status_line.contains("30"));
         assert!(!status_line.contains("100"));
 
@@ -1220,7 +1196,7 @@ mod tests {
         // 一个推入的面板，前面共 9+3+3+2+9+2+9=37 块。装备栏九宫格的
         // 第一块（左上角）位置即等于它的 `origin`，直接核实这一块的
         // x 坐标等于 [`equipment_origin_x`]。
-        let equipment_first_quad = &frame.quads[37];
+        let equipment_first_quad = &frame.layer(UiLayer::Hud).quads[37];
         assert_eq!(
             equipment_first_quad.position[0],
             equipment_origin_x(screen_width)
@@ -1233,7 +1209,7 @@ mod tests {
     /// 构造一份最小可用的 HUD 帧，供下面两条「背包紧跟角色列」测试
     /// 共用——两条测试只是对同一帧取不同的断言，抽出这个帮手避免
     /// 复制粘贴整段 Arrange/Act。
-    fn build_frame_for_inventory_layout_test(dir_name: &str) -> (HudFrame, std::path::PathBuf) {
+    fn build_frame_for_inventory_layout_test(dir_name: &str) -> (LayeredFrame, std::path::PathBuf) {
         let dir = temp_dir(dir_name);
         write_fixture_catalog(&dir);
         let catalog = Catalog::load_dir(&dir);
@@ -1283,7 +1259,8 @@ mod tests {
         let (frame, dir) = build_frame_for_inventory_layout_test("inventory-left-aligned");
 
         // Assert
-        assert_eq!(frame.quads[17].position[0], frame.quads[28].position[0]);
+        let hud = frame.layer(UiLayer::Hud);
+        assert_eq!(hud.quads[17].position[0], hud.quads[28].position[0]);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -1296,7 +1273,8 @@ mod tests {
         let (frame, dir) = build_frame_for_inventory_layout_test("inventory-below");
 
         // Assert
-        assert!(frame.quads[28].position[1] > frame.quads[17].position[1]);
+        let hud = frame.layer(UiLayer::Hud);
+        assert!(hud.quads[28].position[1] > hud.quads[17].position[1]);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -1451,6 +1429,237 @@ mod tests {
                 original.y + dy
             );
         }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// 一套「贴图全部查得到」的假皮肤——真实运行期
+    /// (`crate::widget::skin::NineSliceSkin` 配上完整的 `assets/`) 就是
+    /// 这个形状：常驻 HUD 的面板与条形全部走**贴图**批次，而世界地图
+    /// 恒只产出纯色矩形。
+    ///
+    /// 下面两条遮挡测试必须用它而不是
+    /// [`crate::widget::skin::FlatColorSkin`]：纯色皮肤下所有东西都落
+    /// 进同一个容器，跨批次的遮挡问题**根本不会出现**——所有者实机
+    /// 撞到的那条缺陷，正因为仓库里既有的 HUD 测试全都跑在纯色皮肤上
+    /// 而一路绿着。
+    struct AllTexturedSkin;
+
+    impl Skin for AllTexturedSkin {
+        fn panel(&self, style: PanelStyleId) -> crate::widget::panel::FlatPanelAppearance {
+            FlatColorSkin.panel(style)
+        }
+
+        fn bar(&self, style: BarStyleId) -> crate::widget::bar::FlatBarAppearance {
+            FlatColorSkin.bar(style)
+        }
+
+        fn day_night_bar(
+            &self,
+            style: DayNightBarStyleId,
+        ) -> crate::widget::day_night_bar::FlatDayNightBarAppearance {
+            FlatColorSkin.day_night_bar(style)
+        }
+
+        fn button(
+            &self,
+            style: crate::widget::skin::ButtonStyleId,
+            visual: crate::widget::skin::ButtonVisualState,
+        ) -> crate::widget::button::FlatButtonAppearance {
+            FlatColorSkin.button(style, visual)
+        }
+
+        fn textured_panel(
+            &self,
+            _style: PanelStyleId,
+        ) -> Option<crate::widget::panel::TexturedPanelAppearance> {
+            Some(crate::widget::panel::TexturedPanelAppearance {
+                border_uv: [0.0, 0.0, 0.1, 0.1],
+                fill_uv: [0.1, 0.0, 0.1, 0.1],
+                border_tint: [1.0, 1.0, 1.0, 1.0],
+                fill_tint: [1.0, 1.0, 1.0, 1.0],
+                border_thickness: 4.0,
+            })
+        }
+
+        fn textured_bar(
+            &self,
+            style: BarStyleId,
+        ) -> Option<crate::widget::bar::TexturedBarAppearance> {
+            match style {
+                BarStyleId::Progress => Some(crate::widget::bar::TexturedBarAppearance {
+                    track_uv: [0.2, 0.0, 0.1, 0.1],
+                    fill_uv: [0.3, 0.0, 0.1, 0.1],
+                    track_tint: [1.0, 1.0, 1.0, 1.0],
+                    fill_tint: [1.0, 1.0, 1.0, 1.0],
+                }),
+                BarStyleId::Health | BarStyleId::Mana => None,
+            }
+        }
+
+        fn textured_two_layer_bar(
+            &self,
+            style: BarStyleId,
+        ) -> Option<crate::widget::bar::TexturedTwoLayerBarAppearance> {
+            match style {
+                BarStyleId::Progress => None,
+                _ => Some(crate::widget::bar::TexturedTwoLayerBarAppearance {
+                    track_uv: [0.2, 0.0, 0.1, 0.1],
+                    fill_uv: [0.3, 0.0, 0.1, 0.1],
+                    track_tint: [1.0, 1.0, 1.0, 1.0],
+                    afterglow_tint: [0.8, 0.8, 0.8, 1.0],
+                    fill_tint: [1.0, 1.0, 1.0, 1.0],
+                }),
+            }
+        }
+
+        fn textured_day_night_bar(
+            &self,
+            _style: DayNightBarStyleId,
+        ) -> Option<crate::widget::day_night_bar::TexturedDayNightBarAppearance> {
+            Some(
+                crate::widget::day_night_bar::TexturedDayNightBarAppearance {
+                    track_uv: [0.5, 0.5, 0.25, 0.25],
+                    track_tint: [1.0, 1.0, 1.0, 1.0],
+                    pointer_color: [1.0, 0.9, 0.5, 1.0],
+                },
+            )
+        }
+    }
+
+    /// 建一帧「贴图皮肤 + 世界地图打开」的 HUD——本模块两条遮挡测试
+    /// 共用。地图那两格**刻意都未探索**，因此格子恒是
+    /// `crate::hud::world_map::FOG_COLOR`，在整帧里独一无二，测试据此
+    /// 认出「哪一批是地图」而不必去数下标。
+    fn build_textured_frame_with_map(dir_name: &str) -> (LayeredFrame, std::path::PathBuf) {
+        let dir = temp_dir(dir_name);
+        write_fixture_catalog(&dir);
+        let existing = std::fs::read_to_string(dir.join("zh-CN.ftl")).expect("夹具应当已写入");
+        std::fs::write(
+            dir.join("zh-CN.ftl"),
+            format!("{existing}hud-world-map-scale-label = 比例尺\nhud-world-map-hint = 提示\n"),
+        )
+        .expect("测试用写入应当成功");
+        let catalog = Catalog::load_dir(&dir);
+        let status = StatusBarData {
+            clock: Tick(0),
+            health: 100,
+            mana: 50,
+            fps: 0.0,
+            weather_display_name_key: None,
+        };
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let character = sample_character_data(&modifiers, &equipment);
+        let item_table = ItemTable::new();
+        let mut anim = WidgetStateTable::new();
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+        let cells = [
+            ll_world::overview::OverviewCell {
+                terrain: ids.grass,
+                explored: false,
+            },
+            ll_world::overview::OverviewCell {
+                terrain: ids.grass,
+                explored: false,
+            },
+        ];
+        let map = WorldMapPanelData {
+            cells: &cells,
+            cols: 2,
+            rows: 1,
+            player: Some((0, 0)),
+            sites: &[],
+            terrain_ids: &ids,
+            tiles_per_cell: 48,
+        };
+        let frame = build_hud_frame(
+            &status,
+            &character,
+            &[],
+            &equipment,
+            &[],
+            &NoItems,
+            &item_table,
+            &catalog,
+            "zh-CN",
+            &AllTexturedSkin,
+            &mut anim,
+            0,
+            1280.0,
+            720.0,
+            Some(&map),
+            None,
+            None,
+        );
+        (frame, dir)
+    }
+
+    /// 本帧里「哪一批是世界地图」——按迷雾色认，见
+    /// [`build_textured_frame_with_map`]。
+    fn map_batch_index(batches: &[DrawBatch<'_>]) -> usize {
+        batches
+            .iter()
+            .position(|batch| match batch {
+                DrawBatch::Quads(quads) => {
+                    quads.iter().any(|quad| quad.color == world_map::FOG_COLOR)
+                }
+                _ => false,
+            })
+            .expect("世界地图的迷雾格必须出现在某一批纯色矩形里")
+    }
+
+    #[test]
+    fn 世界地图的绘制批次恒排在常驻hud的全部批次之后() {
+        // 所有者实机反馈「血条之类的 UI 会覆盖地图」的直接回归。判据走
+        // 数据层（`draw_batches` 就是 `render_hud` 逐条提交的那个序列），
+        // 不走合成按键（ADR 0025）。
+        // Arrange
+        let (frame, dir) = build_textured_frame_with_map("layer-order-map");
+
+        // Act
+        let batches = frame.draw_batches();
+        let map_index = map_batch_index(&batches);
+        let last_hud_index = batches
+            .iter()
+            .rposition(|batch| matches!(batch, DrawBatch::Textured(_)))
+            .expect("贴图皮肤下常驻 HUD 的面板与条形必须落进贴图批次");
+
+        // Assert：地图那一批严格排在常驻 HUD 最后一批之后。
+        assert!(
+            map_index > last_hud_index,
+            "世界地图排在第 {map_index} 批，常驻 HUD 最后一批是第 {last_hud_index} 批——地图被 HUD 盖住了"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 常驻hud的文本行也排在世界地图之前() {
+        // 文本此前是「全屏最后一道 pass」，因此角色/背包面板的每一行字
+        // 都会浮在地图上面。分层之后文本是**层内**最后一道，这条钉住它
+        // 不再回到全屏级别。
+        // Arrange
+        let (frame, dir) = build_textured_frame_with_map("layer-order-labels");
+
+        // Act
+        let batches = frame.draw_batches();
+        let map_index = map_batch_index(&batches);
+        let hud_label_index = batches
+            .iter()
+            .position(|batch| match batch {
+                DrawBatch::Labels(labels) => labels.iter().any(|label| label.text.contains("生命")),
+                _ => false,
+            })
+            .expect("状态栏那一行必须出现在某一批文本里");
+
+        // Assert
+        assert!(
+            hud_label_index < map_index,
+            "常驻 HUD 的文本排在第 {hud_label_index} 批，世界地图第 {map_index} 批——HUD 文字浮在地图上面"
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

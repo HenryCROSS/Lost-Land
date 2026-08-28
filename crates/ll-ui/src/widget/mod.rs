@@ -28,6 +28,9 @@
 //! - [`focus::move_focus`]/[`focus::navigate_focus`]——焦点导航：不用
 //!   鼠标也能在一组控件间移动焦点、触发当前聚焦项，见其模块文档
 //!   「为什么不能只支持鼠标」一节。
+//! - [`layer::UiLayer`]——UI 层级：显式声明每块界面画在哪一层，由
+//!   层级而不是调用顺序或渲染 pass 的先后决定谁盖住谁，见其模块文档
+//!   「新加一块 UI 时该怎么选层」一节。
 //! - [`ui_mode::UiModeStack`]——模态 UI 栈：驱动
 //!   `ll_platform::keybind::InputContext` 在 `Gameplay`/`Menu` 之间
 //!   切换，并保证每次切换都清空 `InputState`，见其模块文档。
@@ -129,6 +132,7 @@ pub mod focus;
 pub mod geometry;
 pub mod hit_test;
 pub mod label;
+pub mod layer;
 pub mod list;
 pub mod panel;
 pub mod quad;

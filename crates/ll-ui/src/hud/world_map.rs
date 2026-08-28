@@ -489,22 +489,25 @@ fn border_only_quads(rect: Rect, color: [f32; 4], thickness: f32) -> Vec<QuadIns
 /// # 为什么不用 [`crate::widget::panel::panel_quads`] 那套九宫格面板背景
 ///
 /// 四块常驻 HUD 面板（状态栏/角色/背包/装备栏）背景与内容分处两个不同
-/// 的东西——背景是矩形，内容是文本行，文本经 [`ll_text::TextRenderer`]
-/// 在第三道渲染 pass（`crate::hud::render::render_hud` 里最后提交）绘制，
-/// 天然画在任何背景之上，背景选纯色还是贴图（两道 pass 谁先谁后)不影响
-/// 结果，见 `render_hud` 文档「三道 pass」一节。
+/// 的东西——背景是矩形，内容是文本行，而文本在**层内**恒是最后一道
+/// pass（见 [`crate::widget::layer::LayerBatch`] 文档），天然画在同层
+/// 任何背景之上，背景选纯色还是贴图都不影响结果。
 ///
-/// 世界地图的内容不是文本，是与背景**同属 `QuadInstance` 这一层**的格子
-/// 矩形——若背景仍然套用九宫格面板（[`crate::widget::panel::panel_quads`]/
+/// 世界地图的内容不是文本，是与背景**同属 [`QuadInstance`] 这一层**的
+/// 格子矩形——若背景仍然套用九宫格面板
+/// （[`crate::widget::panel::panel_quads`]/
 /// `crate::widget::panel::textured_panel_quads`），中心填充块与格子矩形
-/// 会覆盖同一块区域，而两道 pass（纯色/贴图）按固定顺序先后提交,不由
-/// `quads`/`textured_quads` 两个切片内部的推入顺序决定——若皮肤恰好给出
-/// 贴图背景（贴图 pass 在纯色 pass 之后提交),贴图中心填充块会整个盖住
-/// 本该在它之上的格子矩形,把世界地图渲染成一块纯色/贴图矩形,格子完全
-/// 不可见。本函数因此刻意只画边框（[`border_only_quads`]，不含中心
-/// 填充)、格子恒画在边框内侧——两者都在同一个 `quads` 切片、同一道纯色
-/// pass 里，推入顺序（边框先、格子后）就能保证格子盖在边框之上，不存在
-/// 跨 pass 的顺序不确定性。
+/// 会覆盖同一块区域，而**层内**的纯色与贴图仍然是两道先后固定的 pass：
+/// 皮肤一旦给出贴图背景，贴图中心填充块会整个盖住本该在它之上的格子
+/// 矩形，把世界地图渲染成一块空白面板。
+///
+/// 这条约束**没有被 UI 层级取代**。层级解决的是「地图整体与常驻 HUD
+/// 谁在上面」（[`crate::widget::layer`] 模块文档记录的那条实机缺陷），
+/// 层**内部**仍然是纯色 → 贴图 → 文本三道，因此「同一层里互相重叠的
+/// 内容必须落进同一个容器」这条要求依然成立——本函数刻意只画边框
+/// （[`border_only_quads`]，不含中心填充）、格子恒画在边框内侧，边框与
+/// 格子都在同一个 `quads` 里，推入顺序（边框先、格子后）就能保证格子
+/// 盖在边框之上。
 pub fn world_map_frame(data: &WorldMapPanelData<'_>, rect: Rect, skin: &dyn Skin) -> WorldMapFrame {
     let appearance = skin.panel(PanelStyleId::Window);
     let mut quads = border_only_quads(rect, appearance.border_color, appearance.border_thickness);
