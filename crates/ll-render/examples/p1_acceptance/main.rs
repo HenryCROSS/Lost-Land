@@ -357,7 +357,7 @@ impl AppHandler for Demo {
         );
     }
 
-    fn on_frame(&mut self, frame: FrameId, input: &InputState) -> FrameOutcome {
+    fn on_frame(&mut self, frame: FrameId, input: &mut InputState) -> FrameOutcome {
         if input.was_just_pressed(GameKey::Cancel) {
             return FrameOutcome::Exit;
         }

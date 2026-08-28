@@ -1187,7 +1187,7 @@ impl AppHandler for Demo {
         resources.resize(size);
     }
 
-    fn on_frame(&mut self, frame: FrameId, input: &InputState) -> FrameOutcome {
+    fn on_frame(&mut self, frame: FrameId, input: &mut InputState) -> FrameOutcome {
         // 墙钟采样,见 `ll_platform::fps` 模块文档「为什么用墙钟,不用
         // 帧计数」一节——`Instant::now()` 只在这一处调用,产出的浮点数
         // 只流向状态栏文本,不进 `self.game_world`/`WorldState`。
@@ -2190,7 +2190,7 @@ mod tests {
         let mut open_inventory = InputState::new();
         open_inventory.press(GameKey::Inventory);
         assert_eq!(
-            demo.on_frame(FrameId(0), &open_inventory),
+            demo.on_frame(FrameId(0), &mut open_inventory),
             FrameOutcome::Continue
         );
         assert!(demo.menu.is_open(), "Arrange 应当把背包菜单打开");
@@ -2198,7 +2198,7 @@ mod tests {
         // Act
         let mut cancel = InputState::new();
         cancel.press(GameKey::Cancel);
-        let outcome = demo.on_frame(FrameId(1), &cancel);
+        let outcome = demo.on_frame(FrameId(1), &mut cancel);
 
         // Assert：没退出，菜单关了。
         assert_eq!(outcome, FrameOutcome::Continue, "不该退出整局");
@@ -2209,7 +2209,7 @@ mod tests {
         let mut cancel_again = InputState::new();
         cancel_again.press(GameKey::Cancel);
         assert_eq!(
-            demo.on_frame(FrameId(2), &cancel_again),
+            demo.on_frame(FrameId(2), &mut cancel_again),
             FrameOutcome::Exit,
             "菜单关着时取消键仍应退出"
         );

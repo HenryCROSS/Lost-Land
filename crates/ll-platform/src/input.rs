@@ -148,6 +148,21 @@ impl GameKey {
         self as usize
     }
 
+    /// 全部动作键，按 [`GameKey`] 的变体声明顺序——设置界面要为每一个
+    /// 动作列一行，需要一份**完整且顺序确定**的清单。
+    ///
+    /// 借出 [`ALL_KEYS`] 本身而不是另抄一份：那张表已经由本模块的
+    /// `每个动作键都已登记且下标互不重复` 测试用穷尽 `match` 钉死了
+    /// 「新增变体必须同步登记」，抄第二份等于把那道编译期保护绕过去
+    /// ——设置界面会静默漏掉新加的动作，症状与本项目反复踩过的
+    /// 「声明了但没接线」完全同型。
+    ///
+    /// 顺序是声明顺序而不是任何运行期算出来的顺序（C5）：玩家在设置
+    /// 界面里按的是「第几行」，列表顺序在那一刻就是逻辑输入。
+    pub fn all() -> &'static [GameKey] {
+        &ALL_KEYS
+    }
+
     /// 该键是否参与按键自动重复。
     ///
     /// 方向键与等待键长按连续触发是回合制的刚需；缩放键同理——长按
@@ -310,6 +325,8 @@ pub struct InputState {
     /// 仍落在同一个控件上」（见 `ll_ui::widget::button` 模块文档），
     /// 因此松开这一刻本身也需要能被查询到，不能只查 `held` 变成假。
     mouse_just_released: [bool; MOUSE_BUTTON_COUNT],
+    /// 本帧按下的**原始物理键**，见 [`Self::last_physical_key`]。
+    last_physical_key: Option<crate::keybind::KeyCode>,
 }
 
 impl Default for InputState {
@@ -330,7 +347,44 @@ impl InputState {
             mouse_held: [false; MOUSE_BUTTON_COUNT],
             mouse_just_pressed: [false; MOUSE_BUTTON_COUNT],
             mouse_just_released: [false; MOUSE_BUTTON_COUNT],
+            last_physical_key: None,
         }
+    }
+
+    /// 本帧按下的原始物理键——**绕过 [`crate::keybind::KeyBindings`]
+    /// 的那一份**，`None` 表示本帧没有任何键被按下。
+    ///
+    /// # 为什么必须绕过绑定表
+    ///
+    /// 重绑定的交互形状是「按下你想绑的那个键」，而这个键**按定义还
+    /// 不在绑定表里**：`KeyBindings::resolve` 对它返回 `None`，
+    /// [`crate::window`] 的事件循环当场 `return`，上层永远看不到它。
+    /// 不留这条旁路，设置界面里的键位重绑在结构上就不可能实现——这正是
+    /// `knowledge/design/action-capability-and-input-context.md` 2.2 节
+    /// 显式留给 P7 的那个开放问题（「设置界面可能需要文本输入……那也是
+    /// P7 才需要面对的问题」）。
+    ///
+    /// # 为什么不是新开一个 `InputContext` 变体
+    ///
+    /// 一个「全部物理键都穿透」的上下文要求 `resolve` 在那个上下文下
+    /// 永远返回 `None`——那是一个纯粹的死分支，且会让 `InputContext`
+    /// 这个「查表判重维度」承担一件与查表相反的职责。
+    ///
+    /// # 生命周期与 `just_pressed` 完全一致
+    ///
+    /// [`Self::end_frame`] 清空它（只在按下的那一帧可见），
+    /// [`Self::clear`] 也清空它（失焦与上下文切换语义一致，见该方法
+    /// 文档）。**它不进入「按住」状态**，因此不会参与自动重复——按住
+    /// 一个键不会被读成连续重绑十几次。
+    pub fn last_physical_key(&self) -> Option<crate::keybind::KeyCode> {
+        self.last_physical_key
+    }
+
+    /// 记一次原始物理键按下，见 [`Self::last_physical_key`]。由
+    /// [`crate::window`] 的事件循环在**每一次**按下时调用，与该键在
+    /// 当前上下文下能否解析出 `GameKey` 无关。
+    pub fn record_physical_key(&mut self, key: crate::keybind::KeyCode) {
+        self.last_physical_key = Some(key);
     }
 
     /// 记录一次按下。
@@ -460,6 +514,9 @@ impl InputState {
         self.repeated = [false; KEY_COUNT];
         self.mouse_just_pressed = [false; MOUSE_BUTTON_COUNT];
         self.mouse_just_released = [false; MOUSE_BUTTON_COUNT];
+        // 原始物理键与「刚按下」同一帧生命周期，见
+        // `Self::last_physical_key` 文档。
+        self.last_physical_key = None;
     }
 
     /// 清空全部按键状态（含鼠标按键，不含光标位置，见下方说明）。
@@ -493,6 +550,7 @@ impl InputState {
         self.mouse_held = [false; MOUSE_BUTTON_COUNT];
         self.mouse_just_pressed = [false; MOUSE_BUTTON_COUNT];
         self.mouse_just_released = [false; MOUSE_BUTTON_COUNT];
+        self.last_physical_key = None;
     }
 
     /// 记录一次光标移动——`position` 是窗口原生像素坐标系下的新位置，
@@ -674,6 +732,67 @@ mod tests {
 
         // Assert
         assert!(!input.was_just_pressed(GameKey::Confirm));
+    }
+
+    #[test]
+    fn 记下的原始物理键可以被查询到() {
+        // 重绑定唯一的输入来源，见 `InputState::last_physical_key` 文档。
+        // Arrange
+        let mut input = InputState::new();
+
+        // Act
+        input.record_physical_key(crate::keybind::KeyCode::KeyJ);
+
+        // Assert
+        assert_eq!(
+            input.last_physical_key(),
+            Some(crate::keybind::KeyCode::KeyJ)
+        );
+    }
+
+    #[test]
+    fn 原始物理键在结束帧后归空() {
+        // 与「刚按下」同一帧生命周期——否则玩家在捕获模式下按一次键会被
+        // 后续每一帧重复读成「又按了一次」。
+        // Arrange
+        let mut input = InputState::new();
+        input.record_physical_key(crate::keybind::KeyCode::KeyJ);
+
+        // Act
+        input.end_frame();
+
+        // Assert
+        assert_eq!(input.last_physical_key(), None);
+    }
+
+    #[test]
+    fn 清空时原始物理键一并归空() {
+        // 失焦与上下文切换的语义一致（见 `clear` 文档）：切换那一刻
+        // 尚未被消费的输入已经失去意义。
+        // Arrange
+        let mut input = InputState::new();
+        input.record_physical_key(crate::keybind::KeyCode::KeyJ);
+
+        // Act
+        input.clear();
+
+        // Assert
+        assert_eq!(input.last_physical_key(), None);
+    }
+
+    #[test]
+    fn 全部动作键清单与定长数组逐条一致() {
+        // `GameKey::all()` 借出的必须就是 ALL_KEYS 本身——抄第二份会绕过
+        // 「新增变体必须同步登记」那道编译期保护，设置界面会静默漏掉新
+        // 加的动作。
+        // Arrange & Act
+        let all = GameKey::all();
+
+        // Assert
+        assert_eq!(all.len(), KEY_COUNT);
+        for (index, key) in all.iter().enumerate() {
+            assert_eq!(key.index(), index);
+        }
     }
 
     #[test]
