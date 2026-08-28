@@ -125,6 +125,25 @@ impl Catalog {
         self.bundles.len()
     }
 
+    /// 已装载的全部语言标签，**按字典序排好**。
+    ///
+    /// # 为什么必须排序（C5）
+    ///
+    /// 内部是 `HashMap<String, FluentBundle>`，直接遍历它的键就是让
+    /// 哈希桶序参与逻辑判断——而这份清单的**顺序本身就是逻辑**：设置
+    /// 界面按左右键在这个清单里循环，顺序决定「按一下右键切到哪一种
+    /// 语言」。`docs/architecture/03-invariants.md` C5 一节给的判据在
+    /// 这里逐字成立：「这个值会不会被用来决定处理顺序……会，就是错的」。
+    ///
+    /// 排字典序而不是装载顺序：装载顺序来自
+    /// [`std::fs::read_dir`]，那个顺序在不同文件系统上并不保证一致，
+    /// 同样是一个隐藏的非确定输入。
+    pub fn languages(&self) -> Vec<String> {
+        let mut tags: Vec<String> = self.bundles.keys().cloned().collect();
+        tags.sort();
+        tags
+    }
+
     /// 查 `key` 在 `language` 下的文本，不带参数插值。
     ///
     /// `key` 既可以是裸 Fluent 路径（如 `"window.title"`，
@@ -291,6 +310,69 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ll-i18n-test-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).expect("测试用建目录应当成功");
         dir
+    }
+
+    #[test]
+    fn 已装载语言清单按字典序排列() {
+        // C5：这份清单的顺序**就是**逻辑（设置界面按左右键在它里面
+        // 循环）。直接遍历 HashMap 的键会让哈希桶序决定「按一下右键
+        // 切到哪一种语言」。
+        //
+        // **为什么铺八种语言而不是两种**：ADR 0018 的反例验证实测抓到
+        // 过——只有两种语言时，去掉排序之后本断言六次里只红两次
+        // （哈希桶序有约一半概率恰好就是字典序），是一条会漏网的断言。
+        // 八种语言把「碰巧有序」的概率压到 1/8!（约万分之零点二），
+        // 断言才真的咬得住。这正是 C5 一节警告的那种「测试照样全绿」
+        // 的形状，只是这次发生在守护它的测试自己身上。
+        // Arrange
+        let dir = temp_dir("languages-sorted");
+        let tags = ["zh-CN", "en", "ja", "de", "fr", "ko", "ru", "es"];
+        for tag in tags {
+            std::fs::write(
+                dir.join(format!("{tag}.ftl")),
+                "greeting = x
+",
+            )
+            .expect("测试用写入应当成功");
+        }
+        let catalog = Catalog::load_dir(&dir);
+
+        // Act
+        let languages = catalog.languages();
+
+        // Assert
+        let mut expected: Vec<String> = tags.iter().map(|tag| tag.to_string()).collect();
+        expected.sort();
+        assert_eq!(languages, expected);
+    }
+
+    #[test]
+    fn 同一份目录两次装载给出逐条相同的语言清单() {
+        // 上一条只能证明「这一次是排好的」；本条证明它不随进程内的
+        // 哈希种子变化——两个内容相同的 HashMap 给出不同迭代顺序是
+        // 本仓库 P4 期间实测确认过的事实（C5 一节原话）。
+        // Arrange
+        let dir = temp_dir("languages-stable");
+        write_fixture_catalog(&dir);
+
+        // Act
+        let 第一次 = Catalog::load_dir(&dir).languages();
+        let 第二次 = Catalog::load_dir(&dir).languages();
+
+        // Assert
+        assert_eq!(第一次, 第二次);
+    }
+
+    #[test]
+    fn 目录不存在时语言清单为空而不是恐慌() {
+        // Arrange
+        let dir = std::env::temp_dir().join("ll-i18n-test-no-such-dir-中文");
+
+        // Act
+        let catalog = Catalog::load_dir(&dir);
+
+        // Assert
+        assert!(catalog.languages().is_empty());
     }
 
     #[test]

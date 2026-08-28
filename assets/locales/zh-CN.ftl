@@ -361,3 +361,42 @@ worldgen-preset-highland-display_name = 山地
 worldgen-preset-highland-description = 陆地为主的高原世界，群山连绵。山地约占两成四，水域仅两成五。
 worldgen-preset-inland-display_name = 内陆
 worldgen-preset-inland-description = 几乎不见海洋的内陆世界，水域仅约一成六，渔猎让位给农牧。
+
+# 游戏内菜单与设置界面（P7 收尾批次）：
+#   - screen-menu-* / screen-settings-*
+#     ll-ui 的 screen 模块；每一行的文字本身由 ll-game 的 menu_screen
+#     排好版之后作为字符串传进去，见该模块文档。
+screen-menu-title = 菜单
+screen-menu-empty = （没有条目）
+screen-menu-hint = 上下移动，确认键选择，Esc 关闭
+screen-menu-continue = 继续游戏
+screen-menu-settings = 设置
+screen-menu-quit = 退出游戏
+
+screen-settings-title = 设置
+screen-settings-empty = （没有条目）
+screen-settings-hint = 左右切换取值，确认键改键位，Esc 返回
+screen-settings-capture-hint = 按下要绑定的键；退格键解绑，Esc 取消
+screen-settings-language = 语言
+screen-settings-vsync = 垂直同步
+screen-settings-scale-filter = 缩放滤波
+screen-settings-save = 保存到配置文件
+screen-settings-back = 返回
+screen-settings-keybinds-header = --- 键位（游戏内） ---
+screen-settings-on = 开
+screen-settings-off = 关
+screen-settings-filter-nearest = 最近邻
+screen-settings-filter-sharp-bilinear = 锐利双线性
+screen-settings-restart-required = （重启后生效）
+screen-settings-unbound = （未绑定）
+screen-settings-capturing = ……请按键……
+screen-settings-row = { $label }：{ $value }
+screen-settings-conflict = 这个键已经绑给了{ $action }
+screen-settings-bound = 已绑定{ $action }
+screen-settings-cleared = 已清除{ $action }的键位
+screen-settings-saved = 设置已保存（config.json5 里手写的注释会丢失）
+screen-settings-save-failed = 配置文件写入失败，本次会话内改动仍然有效
+
+# 语言自称（endonym）——设置界面的语言选单每一项用自己的文字写，
+# 见 ll_game::menu_screen::language_display_name。
+language-name = 简体中文

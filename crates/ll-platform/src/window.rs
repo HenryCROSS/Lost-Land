@@ -22,6 +22,37 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::WindowId;
 
+/// 按**上层当前所处的输入上下文**把一次物理按键解析成抽象动作。
+///
+/// 这一个函数就是交接文档第四节第 17 条那条死路径的接线点：此前
+/// [`App::window_event`] 把 [`InputContext::Gameplay`] 写死在调用里，
+/// `crate::keybind::DEFAULT_MENU_BINDINGS` 那 11 条绑定因此在运行期
+/// 永远查不到。
+///
+/// 抽成自由函数而不是留在事件循环里内联：`ApplicationHandler::window_event`
+/// 需要一个只有 winit 事件循环才造得出的 `ActiveEventLoop`，测试进不去；
+/// 抽出来之后「上下文真的来自 handler」这条断言才有地方落（见本模块
+/// 测试 `上层处于菜单上下文时按键按菜单表解析`）。
+fn resolve_key_for<H: AppHandler>(
+    bindings: &KeyBindings,
+    handler: &H,
+    code: winit::keyboard::KeyCode,
+    modifiers: Modifiers,
+) -> Option<crate::input::GameKey> {
+    bindings.resolve(code, modifiers, handler.input_context())
+}
+
+/// 滚轮版的 [`resolve_key_for`]——判重维度不同（`(方向, 上下文)`），
+/// 但「上下文由上层给」这一条完全一致，见 `crate::keybind::WheelDirection`
+/// 文档。
+fn resolve_wheel_for<H: AppHandler>(
+    bindings: &KeyBindings,
+    handler: &H,
+    direction: WheelDirection,
+) -> Option<crate::input::GameKey> {
+    bindings.resolve_wheel(direction, handler.input_context())
+}
+
 /// 把 winit 的鼠标按键换算成本项目的 [`MouseButton`]——只认左中右三键
 /// （见 [`MouseButton`] 文档），winit 的 `Back`/`Forward`/`Other(_)`
 /// 当前没有任何消费者，换算成 `None` 让调用方原样忽略这次事件,不是
@@ -170,7 +201,56 @@ pub trait AppHandler {
     /// 让退出成为上层的**显式意图**，平台层不必去猜某个按键的含义——
     /// 退出可能来自 Esc、来自菜单里的「退出游戏」、来自剧情结局，
     /// 平台层无从判断，也不该判断。
-    fn on_frame(&mut self, frame: FrameId, input: &InputState) -> FrameOutcome;
+    ///
+    /// # `input` 为什么是 `&mut`
+    ///
+    /// 上层打开/关闭一块模态 UI 时必须清空按键状态
+    /// （`ll_ui::widget::ui_mode::UiModeStack::push`/`pop` 要求
+    /// `&mut InputState`）——那是**第三种「隐式全键松开」边界**，与窗口
+    /// 失焦完全同一个函数、同一套语义，完整论证见
+    /// `knowledge/design/action-capability-and-input-context.md` 2.3 节
+    /// 与 `UiModeStack` 的模块文档。不给可变引用，那条不变式就没有任何
+    /// 调用点能守住：打开菜单时按着的 W 会带着「已按住」的状态进菜单，
+    /// 关闭菜单时按着的方向键会让角色立刻窜一格。
+    fn on_frame(&mut self, frame: FrameId, input: &mut InputState) -> FrameOutcome;
+
+    /// 本帧的物理按键该按哪个 [`InputContext`] 查绑定表。
+    ///
+    /// # 为什么由上层回答，而不是平台层自己维护
+    ///
+    /// 「现在是不是有一块模态 UI 盖在游戏画面上」是 UI 导航层的状态
+    /// （`ll_ui::widget::ui_mode::UiModeStack`），而 `ll-ui` 排在
+    /// `ll-platform` 的**下游**（规格 §5 依赖顺序），平台层物理上依赖
+    /// 不到那个类型。反过来把栈下沉进 `ll-platform` 已经被设计文档
+    /// 2.1 节明确否决：那会让 [`KeyBindings::resolve`] 从纯查表变成
+    /// 关心「之前发生过什么」的有状态查询。
+    ///
+    /// 于是唯一剩下的接法就是本方法：栈住在**同时认识两边**的那一层
+    /// （`ll_game::app::Demo`），平台层每次按键事件问它一句。
+    ///
+    /// 默认返回 [`InputContext::Gameplay`]——六个验收 demo 都没有模态
+    /// UI，行为与本方法引入之前**逐位等价**，它们一行都不用改。
+    fn input_context(&self) -> InputContext {
+        InputContext::Gameplay
+    }
+
+    /// 取走上层这一帧新改好的键位绑定表；`None`（默认）表示没改过。
+    ///
+    /// # 为什么需要这条回流通道
+    ///
+    /// 真正被 [`Self::input_context`] 那条路径查的绑定表住在平台层
+    /// （[`WindowConfig::bindings`]，`ll_game::run_game` 启动时把配置
+    /// 里那份**移动**进来）。设置界面改的是上层自己那份草稿——不把改动
+    /// 送回来，玩家会看到「设置界面里显示改好了，按下去还是旧的」。
+    ///
+    /// # 为什么是「取走」而不是「借出」
+    ///
+    /// 取走（`Option` 判空 + 少数几帧真的搬一次表）比每帧借出并比对
+    /// 便宜得多，也让「谁能改绑定表」变成一个具名、可搜索的入口，而
+    /// 不是一个到处都摸得到的 `&mut`。
+    fn take_rebound_keys(&mut self) -> Option<KeyBindings> {
+        None
+    }
 
     /// 退出前调用，用于保存与清理。
     ///
@@ -254,10 +334,15 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                 let PhysicalKey::Code(code) = event.physical_key else {
                     return;
                 };
+                // 原始物理键先无条件记一份——**必须排在 resolve 之前**：
+                // 重绑定要的恰恰是那些当前还没有任何绑定的键，它们
+                // 走不过下面那个 `else { return }`，见
+                // `InputState::last_physical_key` 文档。
+                if event.state == ElementState::Pressed {
+                    self.input.record_physical_key(code);
+                }
                 let Some(action) =
-                    self.config
-                        .bindings
-                        .resolve(code, self.modifiers, InputContext::Gameplay)
+                    resolve_key_for(&self.config.bindings, &self.handler, code, self.modifiers)
                 else {
                     return;
                 };
@@ -274,10 +359,8 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                 // `InputState::pulse` 文档），理由见
                 // `crate::keybind::WheelDirection` 模块文档。
                 if let Some(direction) = WheelDirection::from_scroll_delta(delta)
-                    && let Some(action) = self
-                        .config
-                        .bindings
-                        .resolve_wheel(direction, InputContext::Gameplay)
+                    && let Some(action) =
+                        resolve_wheel_for(&self.config.bindings, &self.handler, direction)
                 {
                     self.input.pulse(action);
                 }
@@ -341,7 +424,14 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                 self.last_frame_at = Some(now);
 
                 self.input.begin_frame(now, self.config.repeat);
-                let outcome = self.handler.on_frame(self.frame, &self.input);
+                let outcome = self.handler.on_frame(self.frame, &mut self.input);
+                // 设置界面这一帧若改过键位，把新表换进来——见
+                // `AppHandler::take_rebound_keys` 文档。放在 `on_frame`
+                // 之后：改动就是在这一帧的 `on_frame` 里发生的。
+                if let Some(bindings) = self.handler.take_rebound_keys() {
+                    tracing::info!("键位绑定表已由上层替换");
+                    self.config.bindings = bindings;
+                }
                 // 必须在逻辑处理之后清「刚按下」与「本帧重复触发」标志，
                 // 放在之前会让所有「刚按下」判定永远为假。
                 self.input.end_frame();
@@ -390,6 +480,128 @@ mod tests {
     use super::*;
     use crate::input::GameKey;
     use winit::keyboard::KeyCode;
+
+    /// 只回答「我现在在哪个输入上下文」的最小 handler——其余回调全是
+    /// 空实现：本组测试要验证的只有解析路径怎么取上下文，构造一个真实
+    /// 的 `ll_game::app::Demo` 需要 GPU、内容表与整个世界。
+    struct 固定上下文Handler {
+        context: InputContext,
+        rebound: Option<KeyBindings>,
+    }
+
+    impl AppHandler for 固定上下文Handler {
+        fn on_resume(&mut self, _window: Arc<Window>, _size: PhysicalSize<u32>) {}
+        fn on_resize(&mut self, _size: PhysicalSize<u32>) {}
+        fn on_frame(&mut self, _frame: FrameId, _input: &mut InputState) -> FrameOutcome {
+            FrameOutcome::Continue
+        }
+        fn on_exit(&mut self) {}
+        fn input_context(&self) -> InputContext {
+            self.context
+        }
+        fn take_rebound_keys(&mut self) -> Option<KeyBindings> {
+            self.rebound.take()
+        }
+    }
+
+    fn 固定上下文(context: InputContext) -> 固定上下文Handler {
+        固定上下文Handler {
+            context,
+            rebound: None,
+        }
+    }
+
+    #[test]
+    fn 上层处于游戏内上下文时菜单键解析成打开菜单() {
+        // Arrange：Tab 只在 Gameplay 上下文下绑给 GameKey::Menu。
+        let config = WindowConfig::default();
+        let handler = 固定上下文(InputContext::Gameplay);
+
+        // Act
+        let action = resolve_key_for(&config.bindings, &handler, KeyCode::Tab, Modifiers::NONE);
+
+        // Assert
+        assert_eq!(action, Some(GameKey::Menu));
+    }
+
+    #[test]
+    fn 上层处于菜单上下文时按键按菜单表解析() {
+        // 这一条是「InputContext::Menu 运行期是死路径」那条缺陷的直接
+        // 回归断言：Tab 在 DEFAULT_MENU_BINDINGS 里**没有**任何绑定，
+        // 一旦解析路径把上下文写死回 Gameplay，它就会解析出
+        // GameKey::Menu，本断言当场变红。
+        // Arrange
+        let config = WindowConfig::default();
+        let handler = 固定上下文(InputContext::Menu);
+
+        // Act
+        let action = resolve_key_for(&config.bindings, &handler, KeyCode::Tab, Modifiers::NONE);
+
+        // Assert
+        assert_eq!(action, None);
+    }
+
+    #[test]
+    fn 菜单上下文下取消键仍解析得到取消动作() {
+        // 上一条只证明了「菜单上下文不是游戏内上下文」；这一条证明菜单
+        // 那张表真的被查到了，而不是解析路径整个失效。
+        // Arrange
+        let config = WindowConfig::default();
+        let handler = 固定上下文(InputContext::Menu);
+
+        // Act
+        let action = resolve_key_for(&config.bindings, &handler, KeyCode::Escape, Modifiers::NONE);
+
+        // Assert
+        assert_eq!(action, Some(GameKey::Cancel));
+    }
+
+    #[test]
+    fn 滚轮解析同样按上层给的上下文查表() {
+        // DEFAULT_WHEEL_BINDINGS 只登记了 Gameplay 上下文的两个方向。
+        // Arrange
+        let config = WindowConfig::default();
+        let 游戏内 = 固定上下文(InputContext::Gameplay);
+        let 菜单里 = 固定上下文(InputContext::Menu);
+
+        // Act
+        let 游戏内动作 = resolve_wheel_for(&config.bindings, &游戏内, WheelDirection::Away);
+        let 菜单里动作 = resolve_wheel_for(&config.bindings, &菜单里, WheelDirection::Away);
+
+        // Assert
+        assert_eq!(游戏内动作, Some(GameKey::ZoomIn));
+        assert_eq!(菜单里动作, None);
+    }
+
+    #[test]
+    fn 上层不改键位时取走绑定表得到空值() {
+        // Arrange
+        let mut handler = 固定上下文(InputContext::Gameplay);
+
+        // Act
+        let taken = handler.take_rebound_keys();
+
+        // Assert
+        assert!(taken.is_none());
+    }
+
+    #[test]
+    fn 取走过一次之后不会再取到第二次() {
+        // 「取走」而非「借出」的语义验证：同一份改动不该被重复搬运。
+        // Arrange
+        let mut handler = 固定上下文Handler {
+            context: InputContext::Gameplay,
+            rebound: Some(KeyBindings::default_bindings()),
+        };
+
+        // Act
+        let 第一次 = handler.take_rebound_keys();
+        let 第二次 = handler.take_rebound_keys();
+
+        // Assert
+        assert!(第一次.is_some());
+        assert!(第二次.is_none());
+    }
 
     #[test]
     fn 默认窗口配置的绑定表能解析方向键() {

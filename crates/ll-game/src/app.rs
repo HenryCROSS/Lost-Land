@@ -18,10 +18,11 @@ use ll_i18n::Catalog;
 use ll_mod::asset_vfs::AssetVfs;
 use ll_mod::native_behavior::{BehaviorRuleCatalogs, NativeBehaviorSource, NativeBehaviorTree};
 use ll_mod::roster::SettlementRoles;
-use ll_platform::config::DisplayConfig;
-use ll_platform::config::ScaleFilter;
+use ll_platform::config::{DisplayConfig, GameConfig, ScaleFilter};
 use ll_platform::fps::FpsCounter;
 use ll_platform::input::{GameKey, InputState};
+use ll_platform::keybind::InputContext;
+use ll_platform::keybind::KeyBindings;
 use ll_platform::window::{AppHandler, FrameId, FrameOutcome, PhysicalSize, Window};
 use ll_render::anim::{AnimStateMachine, current_sprite_name};
 use ll_render::atlas::{Atlas, AtlasEntry};
@@ -40,10 +41,12 @@ use ll_ui::hud::character_panel::CharacterPanelData;
 use ll_ui::hud::render::render_hud;
 use ll_ui::hud::status_bar::StatusBarData;
 use ll_ui::hud::world_map::WorldMapPanelData;
+use ll_ui::screen::render::render_screen;
 use ll_ui::widget::quad::QuadRenderer;
 use ll_ui::widget::skin::NineSliceSkin;
 use ll_ui::widget::state::WidgetStateTable;
 use ll_ui::widget::textured_quad::TexturedQuadRenderer;
+use ll_ui::widget::ui_mode::{UiMode, UiModeStack};
 use ll_world::fov::compute_fov;
 use ll_world::overview::{ContinentField, continent_map, generate_continent_field};
 use ll_world::space::Space;
@@ -57,8 +60,13 @@ use crate::layout::{
     effective_sight_radius, effective_sight_radius_for_race, effective_tint, terrain_atlas_key,
     tile_tint,
 };
+use crate::menu_screen::{
+    ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, menu_focus_index, screen_data,
+    settings_rows, update_menu, update_settings,
+};
 use crate::player_action::{Feedback, PlayerCommand, PlayerMenu, player_command};
 use crate::save::save_game;
+use crate::settings_view::{menu_row_texts, settings_row_texts};
 use crate::surface_draw::{PLAYER_ENTITY, SurfaceDraw, TERRAIN_ENTITY_BASE, surface_draws};
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
@@ -346,10 +354,19 @@ pub struct Demo {
     zoom: Zoom,
     save_path: PathBuf,
     character_name: String,
-    /// 垂直同步与缩放滤波偏好，`on_resume` 建 [`GpuResources`] 时需要，
-    /// 但 `resources` 要等窗口就绪才能创建（见该字段文档），因此本
-    /// 结构体自己先存一份。
-    display: DisplayConfig,
+    /// 玩家配置的**唯一真相源**：键位 + 显示 + 语言 + 刻意解绑清单。
+    ///
+    /// 此前本结构体只留了 `display`/`language` 两份拷贝，改不动、也存
+    /// 不回。设置界面要能改这三样并显式写盘，就必须整份持有——两份
+    /// 拷贝在设置界面落地那一刻会立刻变成两个会漂移的真相源。
+    ///
+    /// **仍然不是世界状态**：`ll_platform::config` 模块文档「配置不是
+    /// 世界状态」一节那条约束原样成立，本字段绝不进 `GameWorld`/
+    /// `WorldState`、不参与 `hash()`、不影响确定性重放；`ll-platform`
+    /// 依赖不到 `ll-world` 这条依赖方向就是结构性保证。
+    config: GameConfig,
+    /// 配置文件路径——设置界面按下「保存」时写到这里。
+    config_path: PathBuf,
     /// 玩家行走剪辑在 `content.clip_table` 里的下标——装载期由
     /// [`ll_mod::base_clip::register_base_clips`] 分配，见
     /// `LoadedContent::clip_ids`。
@@ -378,9 +395,6 @@ pub struct Demo {
     /// `run_game` 已经装载过一次用于解析窗口标题，本字段是同一份
     /// `Catalog`，不重复装载第二份。
     catalog: Catalog,
-    /// 当前显示语言标签（如 `"zh-CN"`），来自
-    /// [`ll_platform::config::GameConfig::language`]。
-    language: String,
     /// HUD 条形动画的持久状态（P7 追加：血条/经验条动画）——按控件 id
     /// 索引的旁表,见 `ll_ui::widget::state` 模块文档「为什么是旁表」
     /// 一节：结构上不可能污染 `WorldState`,只影响画面。
@@ -431,6 +445,31 @@ pub struct Demo {
     /// 什么用墙钟，不用帧计数」一节：只活在表现层，每帧调用一次
     /// [`FpsCounter::record_frame`]，产出的浮点数只用来拼状态栏文本。
     fps_counter: FpsCounter,
+    /// 模态 UI 栈——**驱动 `InputContext` 在 `Gameplay`/`Menu` 之间切换
+    /// 的那个真相源**，见 `ll_ui::widget::ui_mode` 模块文档与
+    /// [`AppHandler::input_context`]。
+    ///
+    /// 栈非空 ⇔ 有一块模态屏盖在世界上 ⇔ 平台层按菜单表解析物理键 ⇔
+    /// [`Demo::advance`] 整段早退（世界一个字节都不动）。这四件事必须
+    /// 同时成立，因此它们由同一个字段决定，而不是各自留一个布尔量。
+    ui_modes: UiModeStack,
+    /// 模态屏当前开着哪一块（`None` = 没开）——与 `ui_modes` 是**同一
+    /// 件事的两面**：栈管「输入上下文该切到哪」，本字段管「这块屏里
+    /// 具体在显示什么、光标在哪」。不合并成一个：前者住在 `ll-ui`
+    /// 且刻意只有 `Menu` 一个变体（见 `UiMode` 文档），后者是
+    /// `ll-game` 自己的导航状态。
+    screen: Option<ScreenState>,
+    /// 菜单屏三条选项的焦点表——[`ll_ui::widget::focus`] 读写它。
+    ///
+    /// 与 `hud_anim` 同一条纪律（`ll_ui::widget::state` 模块文档「为
+    /// 什么是旁表」）：结构上不可能污染 `WorldState`。
+    screen_focus: WidgetStateTable,
+    /// 设置界面这一帧要说的一句话（键位冲突、已保存等），`None` 表示
+    /// 没有话要说。与 `feedback` 同一条「留到下一次操作」的语义。
+    screen_notice: Option<ScreenNotice>,
+    /// 本帧被设置界面改过、尚未交给平台层的键位表，见
+    /// [`AppHandler::take_rebound_keys`]。
+    pending_bindings: Option<KeyBindings>,
 }
 
 impl Demo {
@@ -450,9 +489,9 @@ impl Demo {
         mut game_world: GameWorld,
         save_path: PathBuf,
         character_name: String,
-        display: DisplayConfig,
+        config: GameConfig,
+        config_path: PathBuf,
         catalog: Catalog,
-        language: String,
     ) -> Demo {
         let player_pos = game_world
             .world
@@ -499,14 +538,14 @@ impl Demo {
             zoom: Zoom::default(),
             save_path,
             character_name,
-            display,
+            config,
+            config_path,
             walk_clip,
             idle_clip,
             engine,
             anim: AnimStateMachine::new(idle_clip, FrameId(0)),
             resources: None,
             catalog,
-            language,
             hud_anim: WidgetStateTable::new(),
             continent_field,
             menu: PlayerMenu::default(),
@@ -515,6 +554,11 @@ impl Demo {
             npc_ai,
             settlement_roles,
             fps_counter: FpsCounter::new(),
+            ui_modes: UiModeStack::new(),
+            screen: None,
+            screen_focus: WidgetStateTable::new(),
+            screen_notice: None,
+            pending_bindings: None,
         }
     }
 
@@ -553,6 +597,16 @@ impl Demo {
         // 之前——地图是否打开与本帧是否真的推进了一次回合无关。
         if input.was_just_pressed(GameKey::Map) {
             self.world_map_open = !self.world_map_open;
+        }
+        // 模态屏盖着的时候，世界一个字节都不动——不跑流式维护、不跑
+        // AI、不跑玩家指令，见 `crate::menu_screen` 模块文档「世界在
+        // 这块屏底下不动」一节。
+        //
+        // 这条比「回合制本来就是玩家不动世界就不走」更强，也必须更强：
+        // 后者只保证**时钟**不前进，但方向键仍然会被 `player_command`
+        // 读成移动意图。整段早退是最保守、也最容易向玩家解释的语义。
+        if self.screen.is_some() {
+            return;
         }
         self.maintain_streaming();
         // 地面物品老化清理（NPC 生命周期批次）——见
@@ -651,6 +705,121 @@ impl Demo {
         {
             self.camera.center = agent.pos;
         }
+    }
+
+    /// 打开游戏内菜单：压一层模态 UI 栈（这一步同时把输入上下文切到
+    /// `InputContext::Menu`、把这一刻按住的键视为全部松开），并把屏
+    /// 状态置成菜单。
+    ///
+    /// 焦点**刻意不预置**在任何一项上（`screen_focus` 保持全空）：玩家
+    /// 第一次按方向键才出现焦点，与
+    /// `ll_ui::widget::focus::move_focus` 文档「起点」一节的既有约定
+    /// 一致。
+    fn open_menu(&mut self, input: &mut InputState) {
+        self.ui_modes.push(UiMode::Menu, input);
+        self.screen = Some(ScreenState::Menu);
+        self.screen_focus = WidgetStateTable::new();
+        self.screen_notice = None;
+    }
+
+    /// 关掉整块模态屏，回到游戏——把栈弹空（同样清空按键状态：玩家在
+    /// 菜单里按着方向键就关掉菜单时，角色不该立刻窜出去）。
+    fn close_screen(&mut self, input: &mut InputState) {
+        while self.ui_modes.pop(input).is_some() {}
+        self.screen = None;
+        self.screen_notice = None;
+    }
+
+    /// 处理模态屏这一帧的输入。返回 `true` 表示玩家要退出整局。
+    ///
+    /// 拆成独立方法而不是塞进 [`Demo::on_frame`]：`on_frame` 已经同时
+    /// 承担着「退出判定 + 世界推进 + 三条渲染通道」，再往里塞一段
+    /// 二十行的菜单路由会让它越过 50 行的函数上限。
+    fn update_screen(&mut self, input: &mut InputState) -> bool {
+        let Some(state) = self.screen else {
+            return false;
+        };
+        let (outcome, next_state) = match state {
+            ScreenState::Menu => update_menu(&mut self.screen_focus, input),
+            ScreenState::Settings { .. } => {
+                let mut state = state;
+                let mut ctx = SettingsContext {
+                    config: &mut self.config,
+                    config_path: &self.config_path,
+                    catalog: &self.catalog,
+                };
+                let (outcome, notice) = update_settings(&mut state, input, &mut ctx);
+                if notice.is_some() {
+                    self.screen_notice = notice;
+                }
+                // 设置界面每一帧都可能改过键位表；把它送回平台层的通道
+                // 是 `take_rebound_keys`，见其文档。整表克隆只发生在
+                // 玩家真的在这块屏里操作的那些帧，不是每帧。
+                self.pending_bindings = Some(self.config.bindings.clone());
+                // 滤波方式当场生效（`blit_filter` 是一个普通字段）；
+                // 垂直同步做不到，它只在 `GpuContext::new` 时决定呈现
+                // 模式，屏上那一行因此带着「重启后生效」的提示。
+                if let Some(resources) = self.resources.as_mut() {
+                    resources.blit_filter = match self.config.display.scale_filter {
+                        ScaleFilter::Nearest => BlitFilter::Nearest,
+                        ScaleFilter::SharpBilinear => BlitFilter::SharpBilinear,
+                    };
+                }
+                (outcome, Some(state))
+            }
+        };
+        if let Some(next) = next_state {
+            self.screen = Some(next);
+        }
+        match outcome {
+            ScreenOutcome::Idle => false,
+            ScreenOutcome::Close => {
+                self.close_screen(input);
+                false
+            }
+            ScreenOutcome::Quit => true,
+        }
+    }
+
+    /// 把当前世界层画面存成一张 PNG（`GameKey::Screenshot`，默认 F2）。
+    ///
+    /// # 这是交接文档第四节第 16 条的接线点
+    ///
+    /// `GameKey::Screenshot` 此前在 `ll-game` 里**零消费点**——真实
+    /// 消费点只在五个验收 demo 里，本体按 F2 没反应。
+    ///
+    /// **与验收 demo 那一侧的语义区别，必须写清楚**：demo 里那个键存的
+    /// 是 `crates/ll-render/tests/visual/baseline/` 下的**视觉回归基准**
+    /// （`GameKey::Screenshot` 的枚举文档描述的是那一侧）。本体这一侧
+    /// 存的是**玩家截图**，落在数据目录的 `screenshots/` 下、按帧号
+    /// 编名、绝不覆盖既有文件。`crates/ll-game/tests/visual/` 下那三张
+    /// 基准由 `examples/*_preview.rs` 产出，与本方法无关。
+    fn take_screenshot(&self, frame: FrameId) {
+        let Some(resources) = self.resources.as_ref() else {
+            return;
+        };
+        let path = self
+            .screenshot_dir()
+            .join(ll_render::screenshot::screenshot_file_name(frame.0));
+        // 存图失败只记日志：按一次截图键失败的代价应当是一条日志，
+        // 不是一局游戏，与本模块其余降级路径同一条纪律。
+        if let Err(error) =
+            ll_render::screenshot::save_png(&resources.gpu, &resources.render_target, &path)
+        {
+            tracing::warn!(%error, path = %path.display(), "截图失败");
+        }
+    }
+
+    /// 截图目录：与配置文件同一个数据目录下的 `screenshots/`。
+    ///
+    /// 从 `config_path` 的父目录推，而不是再传一份路径进来——两者本来
+    /// 就同属一个数据目录（见 `crate::GamePaths`），多传一个参数只会
+    /// 多一处可能对不上的地方。
+    fn screenshot_dir(&self) -> PathBuf {
+        self.config_path
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."))
+            .join("screenshots")
     }
 
     /// 按本帧激活的缩放动作调整 `self.zoom`。`was_activated` 而非
@@ -956,6 +1125,56 @@ fn draw_hud(
     );
 }
 
+/// 把模态屏（菜单/设置）画到 `view` 上——**排在 [`draw_hud`] 之后**，
+/// 因此那层压暗背板会把世界层与 HUD 一起压暗，见 `ll_ui::screen::render`
+/// 模块文档。
+///
+/// `screen` 为 `None` 时整块不参与本次产出——不是「画出来但透明」，是
+/// 压根不调用渲染函数，与 `draw_hud` 对世界地图/动作菜单的同一条纪律。
+fn draw_screen(
+    screen: Option<ScreenState>,
+    config: &GameConfig,
+    catalog: &Catalog,
+    focus: &WidgetStateTable,
+    notice: Option<ScreenNotice>,
+    resources: &mut GpuResources,
+    view: &wgpu::TextureView,
+) {
+    let Some(state) = screen else {
+        return;
+    };
+    let language = config.language.as_str();
+    // 行文字与光标位置由 `crate::menu_screen` 排版，本函数只负责把
+    // 结果交给 GPU——见该模块文档「为什么排版在这一层」一节。
+    let (rows, cursor) = match state {
+        ScreenState::Menu => (menu_row_texts(catalog, language), menu_focus_index(focus)),
+        ScreenState::Settings { cursor, capturing } => {
+            let rows = settings_rows();
+            (
+                settings_row_texts(&rows, config, catalog, capturing, cursor),
+                cursor,
+            )
+        }
+    };
+    let notice_text = notice.map(|notice| notice.resolve(catalog, language));
+    let data = screen_data(state, &rows, cursor, notice_text.as_deref());
+    let size = resources.window_size;
+    render_screen(
+        &mut resources.quad_renderer,
+        &mut resources.textured_quad_renderer,
+        &mut resources.text_renderer,
+        resources.gpu.device(),
+        resources.gpu.queue(),
+        view,
+        size.width,
+        size.height,
+        &data,
+        catalog,
+        language,
+        &resources.skin,
+    );
+}
+
 fn render_surface(
     game_world: &GameWorld,
     content: &LoadedContent,
@@ -1175,7 +1394,7 @@ impl AppHandler for Demo {
         self.resources = Some(GpuResources::new(
             window,
             size,
-            self.display,
+            self.config.display,
             &self.content.asset_vfs,
         ));
     }
@@ -1187,16 +1406,44 @@ impl AppHandler for Demo {
         resources.resize(size);
     }
 
-    fn on_frame(&mut self, frame: FrameId, input: &InputState) -> FrameOutcome {
+    fn on_frame(&mut self, frame: FrameId, input: &mut InputState) -> FrameOutcome {
         // 墙钟采样,见 `ll_platform::fps` 模块文档「为什么用墙钟,不用
         // 帧计数」一节——`Instant::now()` 只在这一处调用,产出的浮点数
         // 只流向状态栏文本,不进 `self.game_world`/`WorldState`。
         let fps = self.fps_counter.record_frame(std::time::Instant::now());
 
+        // 截图键（默认 F2）——一次性动作，与地图键同一类。排在最前面：
+        // 存的是**上一帧已经画好**的离屏目标，与本帧要不要推进世界无关。
+        if input.was_just_pressed(GameKey::Screenshot) {
+            self.take_screenshot(frame);
+        }
+
+        // 模态屏开着时，这一帧的输入全部归它——**必须排在下面那条
+        // 「取消键退出游戏」之前**：否则玩家想关个菜单会直接退出整局
+        // （与 `crate::player_action` 里 `player_command` 第 ② 步防的
+        // 是同一个陷阱）。
+        if self.screen.is_some() {
+            if self.update_screen(input) {
+                return FrameOutcome::Exit;
+            }
+        } else if input.was_just_pressed(GameKey::Menu) && !self.menu.is_open() {
+            // 菜单键（默认 Tab）——交接文档第四节第 17 条那条死路径的
+            // 消费点。`was_just_pressed` 而非 `was_activated`：一次性
+            // 动作键，长按不该反复开关。
+            //
+            // 背包/制作/交互列表开着时不叠第二块模态 UI：两块屏叠在
+            // 一起会立刻引出「Esc 关哪一层」的新裁定，而没有任何人
+            // 要求过这件事。
+            self.open_menu(input);
+        }
+
         // 菜单开着时取消键归菜单用（关掉它），不退出游戏——否则玩家
         // 想关个背包会直接退出整局，见 `crate::player_action` 里
         // `player_command` 第 ② 步的同一段说明。
-        if !self.menu.is_open() && input.was_just_pressed(ll_platform::input::GameKey::Cancel) {
+        if self.screen.is_none()
+            && !self.menu.is_open()
+            && input.was_just_pressed(ll_platform::input::GameKey::Cancel)
+        {
             return FrameOutcome::Exit;
         }
 
@@ -1241,7 +1488,7 @@ impl AppHandler for Demo {
                 &self.game_world,
                 &self.content,
                 &self.catalog,
-                &self.language,
+                &self.config.language,
                 resources,
                 &view,
                 &mut self.hud_anim,
@@ -1252,10 +1499,34 @@ impl AppHandler for Demo {
                 self.menu,
                 self.feedback,
             );
+            draw_screen(
+                self.screen,
+                &self.config,
+                &self.catalog,
+                &self.screen_focus,
+                self.screen_notice,
+                resources,
+                &view,
+            );
             resources.present_frame(surface_frame);
         }
 
         FrameOutcome::Continue
+    }
+
+    /// 平台层每次按键/滚轮事件都问一句：这一帧该按哪张表解析物理键。
+    ///
+    /// 答案完全由 [`Demo::ui_modes`] 决定——它是本项目里「现在有没有
+    /// 一块模态屏盖着」的唯一真相源，见该字段文档与
+    /// [`AppHandler::input_context`] 的完整论证。
+    fn input_context(&self) -> InputContext {
+        self.ui_modes.current_context()
+    }
+
+    /// 把设置界面这一帧改好的键位表交给平台层，见
+    /// [`AppHandler::take_rebound_keys`]。
+    fn take_rebound_keys(&mut self) -> Option<KeyBindings> {
+        self.pending_bindings.take()
     }
 
     fn on_exit(&mut self) {
@@ -1329,9 +1600,9 @@ mod tests {
             game_world,
             save_path,
             "测试旅人".to_string(),
-            DisplayConfig::default(),
+            GameConfig::default(),
+            crate::test_support::unique_temp_path("ll-game-app-test-config").join("config.json5"),
             Catalog::load_dir(&std::env::temp_dir().join("ll-game-app-test-empty-locales")),
-            "zh-CN".to_string(),
         )
     }
 
@@ -2176,6 +2447,206 @@ mod tests {
         assert!(demo.menu.is_open(), "菜单应当仍然开着");
     }
 
+    /// 走**真实生产入口** `on_frame` 跑一帧——不是直接调 `advance`：
+    /// 菜单键的消费点、模态屏路由、退出判定全部住在 `on_frame` 里，
+    /// `advance` 根本看不见它们。`resources` 为 `None` 时 `on_frame`
+    /// 会在渲染那一步提前返回 `Continue`，因此脱离 GPU 也能跑。
+    fn 走一帧(demo: &mut Demo, at: u64, keys: &[GameKey]) -> FrameOutcome {
+        let mut input = InputState::new();
+        for key in keys {
+            input.press(*key);
+        }
+        demo.on_frame(FrameId(at), &mut input)
+    }
+
+    #[test]
+    fn 按下菜单键打开模态屏且输入上下文切到菜单() {
+        // 交接文档第四节第 17 条那条死路径的端到端验收：按 Tab 之前
+        // 上下文是 Gameplay，按下之后是 Menu，平台层从此按菜单那张表
+        // 解析物理键。
+        // Arrange
+        let mut demo = test_demo();
+        assert_eq!(demo.input_context(), InputContext::Gameplay);
+
+        // Act
+        走一帧(&mut demo, 0, &[GameKey::Menu]);
+
+        // Assert
+        assert_eq!(demo.screen, Some(ScreenState::Menu));
+        assert_eq!(demo.input_context(), InputContext::Menu);
+        assert_eq!(demo.ui_modes.depth(), 1);
+    }
+
+    #[test]
+    fn 模态屏开着时世界时钟与玩家坐标都不动() {
+        // 「打开菜单时世界不应继续推进」的直接验收。回合制本来就是
+        // 「玩家不提交意图时钟就不走」，但方向键仍然会被
+        // `player_command` 读成移动——`advance` 的整段早退才是真正
+        // 挡住它的那一步，见该方法里的注释。
+        // Arrange
+        let mut demo = test_demo();
+        走一帧(&mut demo, 0, &[GameKey::Menu]);
+        let 开屏后坐标 = player_pos(&demo);
+        let 开屏后时钟 = demo.game_world.world.clock;
+
+        // Act：菜单开着，连按十帧方向键与等待键。
+        for at in 1..11u64 {
+            走一帧(&mut demo, at, &[GameKey::Right]);
+            走一帧(&mut demo, at + 100, &[GameKey::Wait]);
+        }
+
+        // Assert
+        assert_eq!(player_pos(&demo), 开屏后坐标, "角色不该动");
+        assert_eq!(demo.game_world.world.clock, 开屏后时钟, "时钟不该走");
+        assert!(demo.screen.is_some(), "菜单应当仍然开着");
+    }
+
+    #[test]
+    fn 模态屏关掉之后世界重新可以推进() {
+        // 上一条的另一半：早退不能把游戏永久关死。
+        // Arrange
+        let mut demo = test_demo();
+        走一帧(&mut demo, 0, &[GameKey::Menu]);
+        走一帧(&mut demo, 1, &[GameKey::Cancel]);
+        let 关屏后时钟 = demo.game_world.world.clock;
+
+        // Act：连按几帧「等待」——第一帧多半还轮不到玩家
+        // （`PlayerTurnOutcome::NotYet`，非受控实体先结算），与既有的
+        // `连续多次玩家等待后世界时钟真的前进` 那条测试同一个理由。
+        for at in 2..8u64 {
+            走一帧(&mut demo, at, &[GameKey::Wait]);
+        }
+
+        // Assert
+        assert!(demo.screen.is_none());
+        assert!(demo.game_world.world.clock > 关屏后时钟, "等待应当推进时钟");
+    }
+
+    #[test]
+    fn 模态屏开着时取消键只关屏不退出游戏() {
+        // 与背包菜单那条同型的陷阱：玩家想关个菜单不该直接退出整局。
+        // Arrange
+        let mut demo = test_demo();
+        走一帧(&mut demo, 0, &[GameKey::Menu]);
+
+        // Act
+        let outcome = 走一帧(&mut demo, 1, &[GameKey::Cancel]);
+
+        // Assert
+        assert_eq!(outcome, FrameOutcome::Continue, "不该退出整局");
+        assert!(demo.screen.is_none(), "取消键应当把模态屏关掉");
+        assert_eq!(demo.input_context(), InputContext::Gameplay);
+    }
+
+    #[test]
+    fn 模态屏里选中退出项才真的退出() {
+        // Arrange：开菜单，焦点连按三次「下」落到第三项（退出游戏）。
+        let mut demo = test_demo();
+        走一帧(&mut demo, 0, &[GameKey::Menu]);
+        for at in 1..4u64 {
+            走一帧(&mut demo, at, &[GameKey::Down]);
+        }
+
+        // Act
+        let outcome = 走一帧(&mut demo, 4, &[GameKey::Confirm]);
+
+        // Assert
+        assert_eq!(outcome, FrameOutcome::Exit);
+    }
+
+    #[test]
+    fn 模态屏里选中设置项进入设置界面() {
+        // Arrange：焦点落到第二项（设置）。
+        let mut demo = test_demo();
+        走一帧(&mut demo, 0, &[GameKey::Menu]);
+        走一帧(&mut demo, 1, &[GameKey::Down]);
+        走一帧(&mut demo, 2, &[GameKey::Down]);
+
+        // Act
+        走一帧(&mut demo, 3, &[GameKey::Confirm]);
+
+        // Assert
+        assert!(matches!(demo.screen, Some(ScreenState::Settings { .. })));
+    }
+
+    #[test]
+    fn 设置界面里按取消退回菜单屏而不是退出整局() {
+        // 这一条比「菜单屏按取消不退出」咬得更紧：菜单屏那一条会关屏，
+        // 而关屏顺带 `InputState::clear()`（`UiModeStack::pop` 的语义），
+        // 取消键因此被吃掉，即使少一道闸门也看不出问题。设置界面按
+        // 取消**不关屏**（只退回菜单屏），取消键的「刚按下」标志原封
+        // 不动地留到下面那条退出判定——`self.screen.is_none()` 那道
+        // 闸门在这条路径上是真的在挡事。
+        // Arrange：进设置界面。
+        let mut demo = test_demo();
+        走一帧(&mut demo, 0, &[GameKey::Menu]);
+        走一帧(&mut demo, 1, &[GameKey::Down]);
+        走一帧(&mut demo, 2, &[GameKey::Down]);
+        走一帧(&mut demo, 3, &[GameKey::Confirm]);
+        assert!(matches!(demo.screen, Some(ScreenState::Settings { .. })));
+
+        // Act
+        let outcome = 走一帧(&mut demo, 4, &[GameKey::Cancel]);
+
+        // Assert
+        assert_eq!(outcome, FrameOutcome::Continue, "不该退出整局");
+        assert_eq!(demo.screen, Some(ScreenState::Menu));
+    }
+
+    #[test]
+    fn 背包开着时按菜单键不叠第二块模态屏() {
+        // 两块模态 UI 叠在一起会立刻引出「Esc 关哪一层」的新裁定，
+        // 而没有任何人要求过这件事。
+        // Arrange
+        let mut demo = test_demo();
+        走一帧(&mut demo, 0, &[GameKey::Inventory]);
+        assert!(demo.menu.is_open(), "Arrange 应当把背包打开");
+
+        // Act
+        走一帧(&mut demo, 1, &[GameKey::Menu]);
+
+        // Assert
+        assert!(demo.screen.is_none());
+        assert_eq!(demo.input_context(), InputContext::Gameplay);
+    }
+
+    #[test]
+    fn 打开模态屏时按住的键被视为全部松开() {
+        // 设计文档 2.3 节的硬结论：上下文切换是第三种「隐式全键松开」
+        // 边界。不清空的话，打开菜单那一刻按着的 W 会带着「已按住」
+        // 进菜单，用移动场景的重复计时基准去滚菜单光标。
+        // Arrange
+        let mut demo = test_demo();
+        let mut input = InputState::new();
+        input.press(GameKey::Up);
+        input.press(GameKey::Menu);
+
+        // Act
+        demo.on_frame(FrameId(0), &mut input);
+
+        // Assert
+        assert!(!input.is_held(GameKey::Up));
+    }
+
+    #[test]
+    fn 设置界面改了键位之后新表会被平台层取走() {
+        // 真正被解析路径查的表住在平台层；不送回去，玩家会看到「设置
+        // 界面里改好了，按下去还是旧的」。
+        // Arrange：进设置界面，把光标移到某个键位行并触发一次改动。
+        let mut demo = test_demo();
+        走一帧(&mut demo, 0, &[GameKey::Menu]);
+        走一帧(&mut demo, 1, &[GameKey::Down]);
+        走一帧(&mut demo, 2, &[GameKey::Down]);
+        走一帧(&mut demo, 3, &[GameKey::Confirm]);
+        demo.take_rebound_keys();
+
+        // Act：在设置界面里动一下（哪怕只是移动光标）。
+        走一帧(&mut demo, 4, &[GameKey::Down]);
+
+        // Assert
+        assert!(demo.take_rebound_keys().is_some());
+    }
+
     #[test]
     fn 菜单开着时取消键只关菜单不退出游戏() {
         // 守 `on_frame` 里那道 `!self.menu.is_open()` 闸门：没有它，玩家
@@ -2190,7 +2661,7 @@ mod tests {
         let mut open_inventory = InputState::new();
         open_inventory.press(GameKey::Inventory);
         assert_eq!(
-            demo.on_frame(FrameId(0), &open_inventory),
+            demo.on_frame(FrameId(0), &mut open_inventory),
             FrameOutcome::Continue
         );
         assert!(demo.menu.is_open(), "Arrange 应当把背包菜单打开");
@@ -2198,7 +2669,7 @@ mod tests {
         // Act
         let mut cancel = InputState::new();
         cancel.press(GameKey::Cancel);
-        let outcome = demo.on_frame(FrameId(1), &cancel);
+        let outcome = demo.on_frame(FrameId(1), &mut cancel);
 
         // Assert：没退出，菜单关了。
         assert_eq!(outcome, FrameOutcome::Continue, "不该退出整局");
@@ -2209,7 +2680,7 @@ mod tests {
         let mut cancel_again = InputState::new();
         cancel_again.press(GameKey::Cancel);
         assert_eq!(
-            demo.on_frame(FrameId(2), &cancel_again),
+            demo.on_frame(FrameId(2), &mut cancel_again),
             FrameOutcome::Exit,
             "菜单关着时取消键仍应退出"
         );

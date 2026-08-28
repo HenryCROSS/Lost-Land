@@ -225,7 +225,7 @@ impl AppHandler for Demo {
         resources.resize(size);
     }
 
-    fn on_frame(&mut self, _frame: FrameId, input: &InputState) -> FrameOutcome {
+    fn on_frame(&mut self, _frame: FrameId, input: &mut InputState) -> FrameOutcome {
         if input.was_just_pressed(GameKey::Cancel) {
             return FrameOutcome::Exit;
         }

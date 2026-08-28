@@ -19,8 +19,10 @@ pub mod animation;
 pub mod app;
 pub mod content;
 pub mod layout;
+pub mod menu_screen;
 pub mod player_action;
 pub mod save;
+pub mod settings_view;
 pub mod surface_draw;
 #[cfg(test)]
 mod test_support;
@@ -432,8 +434,12 @@ pub fn run_game() {
         "本地化目录已装载"
     );
 
+    // 克隆而不是移动：平台层查的是它自己那一份（`WindowConfig::bindings`），
+    // 设置界面改的是 `Demo` 那一份，两者经
+    // `ll_platform::window::AppHandler::take_rebound_keys` 同步。移动
+    // 会让 `Demo` 拿不到初始键位表，设置界面第一屏就是空的。
     let mut window_config = WindowConfig {
-        bindings: config.bindings,
+        bindings: config.bindings.clone(),
         ..WindowConfig::default()
     };
     window_config.resolved_title =
@@ -449,9 +455,9 @@ pub fn run_game() {
         game_world,
         paths.save.clone(),
         "旅人".to_string(),
-        config.display,
+        config,
+        paths.config.clone(),
         catalog,
-        config.language.clone(),
     );
 
     if let Err(error) = run(window_config, demo) {

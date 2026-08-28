@@ -18,6 +18,7 @@ pub mod atlas_pack;
 pub mod batch;
 pub mod camera;
 pub mod gpu;
+pub mod screenshot;
 pub mod sprite;
 pub mod target;
 

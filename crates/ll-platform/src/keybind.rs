@@ -79,7 +79,21 @@ use crate::input::GameKey;
 use serde::{Deserialize, Serialize};
 use std::fmt;
 use winit::event::MouseScrollDelta;
-use winit::keyboard::KeyCode;
+
+/// 物理按键码——原样重新导出 winit 的定义。
+///
+/// # 为什么重新导出，而不是让下游各自依赖 winit
+///
+/// 设置界面（`ll_game::menu_screen`）要亲手构造 [`KeyBinding`]，就必须
+/// 能**命名**这个类型；而让 `ll-game` 自己再声明一份 `winit` 依赖，就
+/// 多了一个版本漂移导致「同名不同类型」编译错误的风险点——与
+/// `ll-render` 重新导出 `wgpu`、`ll-ui`/`ll-text` 复用那一份是完全同一
+/// 条理由（见 `crates/ll-ui/Cargo.toml` 里 `ll-render` 那条依赖的注释）。
+///
+/// 与 `crate::window` 已经重新导出 `PhysicalSize`/`Window` 同一个做法：
+/// 平台层把下游真正需要命名的 winit 类型逐个转出去，而不是让下游穿过
+/// 本 crate 直接摸 winit。
+pub use winit::keyboard::KeyCode;
 
 /// 输入上下文：冲突检测的判重维度之一。
 ///
@@ -653,6 +667,42 @@ impl KeyBindings {
         self.bindings
             .iter()
             .filter(move |binding| binding.action == action)
+    }
+
+    /// 解除 `action` 在 `context` 下的**全部**按键绑定，返回真正移除了
+    /// 几条（零条表示它本来就没有绑定，不是错误）。
+    ///
+    /// # 为什么设置界面必须有这个动作，而不是只有「重绑」
+    ///
+    /// [`Self::try_bind`] 在键位槽被别的动作占着时**拒绝**（模块文档
+    /// 「为什么冲突在注册时拒绝」一节的硬约束，本方法不放宽它）。于是
+    /// 「把空格从 `Interact` 手里要回来给 `Confirm`」这件事——交接文档
+    /// 第四节第 18 条点名的、唯一一处玩家磁盘上的绑定被丢掉的场景——
+    /// 在只有「重绑」的界面里物理上做不到：空格被占着，`try_bind` 必然
+    /// 拒绝，而拒绝是对的。先解绑、再重绑是唯一不需要放宽冲突约束的
+    /// 出路。
+    ///
+    /// # 为什么是「清空该动作在该上下文下的全部键」而不是「删掉某一条」
+    ///
+    /// 界面上一行代表一个动作，不代表一条绑定（一个动作可以多绑，
+    /// `Up` 默认就同时绑着 `ArrowUp` 与 `KeyW`）。让玩家先选中「这一行
+    /// 的第几条绑定」再删，需要在一行里再开一层光标，换来的精度没有
+    /// 任何需求驱动——YAGNI。
+    ///
+    /// # 调用方还有一件事要做
+    ///
+    /// 解绑之后必须把 `action` 记进
+    /// [`crate::config::GameConfig::unbound_actions`]，否则下次加载时
+    /// [`Self::fill_missing_defaults`] 会把默认键位又补回来——「玩家
+    /// 刻意解绑」与「文件写出时还没有这个动作」在绑定表里长得一模一样，
+    /// 那个字段是唯一能把两者分开的地方（见其文档）。本方法**不替调用
+    /// 方做这件事**：`KeyBindings` 不认识 `GameConfig`（配置模块反过来
+    /// 依赖它），把这一步藏进来会造出一条倒着的依赖。
+    pub fn unbind_action(&mut self, action: GameKey, context: InputContext) -> usize {
+        let before = self.bindings.len();
+        self.bindings
+            .retain(|binding| !(binding.action == action && binding.context == context));
+        before - self.bindings.len()
     }
 
     /// 把**这份表里完全没有出现过的动作**补上它们的内置默认绑定，返回
