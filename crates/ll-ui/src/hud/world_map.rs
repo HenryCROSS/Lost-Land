@@ -75,6 +75,16 @@ pub fn terrain_color(kind: TerrainKind, ids: &BaseTerrainIds) -> [f32; 4] {
         [0.55, 0.55, 0.58, 1.0]
     } else if kind == ids.snow {
         [0.92, 0.92, 0.95, 1.0]
+    } else if kind == ids.desert {
+        // 与海岸 `sand` 刻意拉开：两者在地图上相邻的情形很常见（沙漠
+        // 一直铺到海边），配成近似色会让玩家分不出「这里是海滩」还是
+        // 「这里是沙漠」。沙漠取更饱和、更偏橙的一档。
+        [0.88, 0.68, 0.32, 1.0]
+    } else if kind == ids.tundra {
+        // 与高山 `snow` 刻意拉开，理由同上：冻原是极地**低海拔**，雪地
+        // 是雪线**以上**，两者在极圈附近会同框。冻原取带灰蓝的冷色，
+        // 保留「冷」的读感但明显暗于雪白。
+        [0.72, 0.78, 0.80, 1.0]
     } else if kind == ids.floor_stone {
         [0.45, 0.42, 0.40, 1.0]
     } else if kind == ids.wall_stone {
