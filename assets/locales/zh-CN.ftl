@@ -295,6 +295,13 @@ hud-interact-menu-hint = 确认=Enter　捡起=G　关闭=Esc
 hud-interact-action-work = 在此开工
 hud-interact-action-loot = 搜刮
 hud-interact-action-take = 捡起
+# 门（交互列表批次）——门是**地形**不是物品，因此名字不走 ItemTable，
+# 用这两条 HUD 通用文案，理由见 ll_game::player_action 的
+# interact_target_name 文档。
+hud-interact-action-open_door = 开门
+hud-interact-action-close_door = 关门
+hud-interact-door-closed = 一扇关着的门
+hud-interact-door-open = 一扇开着的门
 hud-interact-direction-title = 和哪边的东西交互（上下选择）
 hud-interact-direction-prompt = 附近什么都没有
 hud-interact-direction-hint = 确认=Enter　关闭=Esc

@@ -247,6 +247,13 @@ hud-interact-menu-hint = Enter confirm  G take  Esc close
 hud-interact-action-work = work here
 hud-interact-action-loot = loot
 hud-interact-action-take = take
+# Doors (interact-list batch) — a door is TERRAIN, not an item, so its name
+# does not come from the ItemTable. See ll_game::player_action's
+# interact_target_name docs for why these are generic HUD strings.
+hud-interact-action-open_door = open
+hud-interact-action-close_door = close
+hud-interact-door-closed = a closed door
+hud-interact-door-open = an open door
 hud-interact-direction-title = Interact with (up/down to select)
 hud-interact-direction-prompt = Nothing nearby
 hud-interact-direction-hint = Enter confirm  Esc close

@@ -313,16 +313,54 @@ pub enum InteractTarget {
         /// 这一堆是哪一种东西。
         def: ContentIndex,
     },
+    /// 一扇门——主交互是开或关（`Intent::OpenDoor` / `Intent::CloseDoor`）。
+    ///
+    /// # 这个变体怎么容纳「目标不是一件物品」
+    ///
+    /// 另外三个变体指着的都是一件**物品**（`ground_items` 里的一条），
+    /// 门是**地形**：它没有 `ItemDef`、不在 `ground_items` 里、捡不起来。
+    /// 因此本变体**不带 `ContentIndex`**，而那个「三个变体都携带同一个
+    /// 字段」的收敛方法（旧名 `def`，返回裸 `ContentIndex`）已经改成
+    /// [`InteractTarget::item_def`]，返回 `Option<ContentIndex>`——门那一
+    /// 支是 `None`。
+    ///
+    /// 换句话说：**类型层面第一次表达了「这一行未必指着一件物品」**，
+    /// 而不是随便找个索引塞进去冒充（那正是尸体 `def` 那次类型混淆的
+    /// 形状，见 `ll_mod::corpse_item` 模块文档）。全部把 `item_def` 当
+    /// 物品索引用的地方——`interact_row_text` 的名字与数量、按拾取键的
+    /// 那条捷径——因此在门这一行上自然地什么都不做，编译器逼着每一处
+    /// 都表态。
+    ///
+    /// 门当前是开是关不存在这个值里，只存一个「按下去要做什么」：地形
+    /// 本身是世界状态，重新查一次比在这里缓存一份更不容易过期。
+    Door {
+        /// 按下去是开门还是关门。
+        action: DoorAction,
+    },
+}
+
+/// 一扇门这一行按下去做什么，见 [`InteractTarget::Door`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoorAction {
+    /// 这一格是关着的门（地形声明了 `opens_into`）→ 开。
+    Open,
+    /// 这一格是开着的门（是某种地形 `opens_into` 的目标）→ 关。
+    Close,
 }
 
 impl InteractTarget {
-    /// 这一行指着的东西是什么（三个变体都携带同一个字段，本方法把那个
-    /// 穷尽 `match` 收敛成一次调用）。
-    pub fn def(self) -> ContentIndex {
+    /// 这一行指着的**物品**是什么；门那一支没有物品，是 `None`。
+    ///
+    /// 本方法此前叫 `def` 且返回裸 [`ContentIndex`]（三个变体都携带同
+    /// 一个字段）。门进交互列表之后那个签名不再诚实——一扇门没有物品
+    /// 索引，见 [`InteractTarget::Door`] 文档「这个变体怎么容纳『目标
+    /// 不是一件物品』」一节。
+    pub fn item_def(self) -> Option<ContentIndex> {
         match self {
             InteractTarget::Facility { def }
             | InteractTarget::Container { def }
-            | InteractTarget::Loose { def } => def,
+            | InteractTarget::Loose { def } => Some(def),
+            InteractTarget::Door { .. } => None,
         }
     }
 }
@@ -439,7 +477,45 @@ pub fn interact_entries(world: &WorldState, pos: TorusPos) -> Vec<InteractTarget
             rows.push(InteractTarget::Loose { def });
         }
     }
+    if let Some(action) = door_action_at(world, pos) {
+        rows.push(InteractTarget::Door { action });
+    }
     rows
+}
+
+/// 这一格是不是一扇能开或能关的门；不是就返回 `None`。
+///
+/// # 判据完全由内容声明推出，没有任何硬编码地形 id
+///
+/// - 地形声明了 `opens_into`（[`ll_world::terrain::TerrainKind::opens_into`]）
+///   → 它是一格「撞入即开」的地形，也就是**关着的门** → [`DoorAction::Open`]。
+/// - 地形是某种地形 `opens_into` 的**目标**
+///   （[`ll_world::terrain::TerrainTable::closes_into`] 有值）
+///   → 它是一格**开着的门** → [`DoorAction::Close`]。
+///
+/// 因此 mod 自己声明的门（只要写了 `opens_into`）自动进交互列表，
+/// 引擎侧零改动——与 `resolve_move` 的撞门分支当初把硬编码特判收拢成
+/// 声明式属性是同一条收益（见 `ll_world::terrain` 模块文档
+/// 「`opens_into`」一节）。
+///
+/// # 两条判据不可能同时成立吗
+///
+/// 内容上可以写出「A 开成 B，B 又开成 C」这样的链。真出现时**开优先**
+/// （先判 `opens_into`）：一格还能继续被推开的地形，玩家的第一意图是
+/// 推开它。这是一条确定性的先后，不是设计裁定——本体内容里不存在这种
+/// 链（`door_closed → door_open`，而 `door_open` 没有 `opens_into`）。
+///
+/// 区块未常驻时返回 `None`：查不到地形就是查不到（ADR 0015），与
+/// `resolve_move`/`resolve_open_door` 在同一情形下静默作废一致。
+fn door_action_at(world: &WorldState, pos: TorusPos) -> Option<DoorAction> {
+    let terrain = world.terrain_at(pos)?;
+    if terrain.opens_into(&world.terrain_table).is_some() {
+        return Some(DoorAction::Open);
+    }
+    world
+        .terrain_table
+        .closes_into(terrain)
+        .map(|_| DoorAction::Close)
 }
 
 /// 制作菜单这一帧的行——全部已注册配方，按索引升序。/// 制作菜单这一帧的行——全部已注册配方，按索引升序。
@@ -638,12 +714,16 @@ fn interact_command(
     };
     // 「不管它是什么，把这一样捡走」——立着的炉子也能这样收回背包，
     // 这是「摆下去还能收回来」那条闭环的出口。
-    if pressed_pick_up {
+    // 「不管它是什么，把这一样捡走」这条捷径只对**物品**成立——门捡不
+    // 起来（`item_def` 是 `None`），对着门按拾取键退化成它此刻真正做得
+    // 到的事：开或关。这比弹一句「这不能捡」诚实，也比静默什么都不做
+    // 好，理由同 `Facility` 隔一格时退化成「捡起它」那一段。
+    if pressed_pick_up && let Some(def) = target.item_def() {
         *menu = PlayerMenu::Closed;
         return PlayerCommand::Submit(Intent::PickUp {
             actor,
             pos: naked,
-            def: target.def(),
+            def,
         });
     }
     // 主交互按东西的种类分派，见 [`InteractTarget`] 各变体文档。
@@ -686,6 +766,20 @@ fn interact_command(
                 actor,
                 pos: naked,
                 def,
+            })
+        }
+        // 开门/关门。**撞门开门那条既有路径原样保留**
+        // （`ll_sim::resolve::resolve_move` 的 `opens_into` 分支），两条
+        // 路并存：撞上去是「顺手推开」，从列表里选是「我就是要开/关这
+        // 一扇」——后者是关门唯一的入口（撞不出一扇关上的门）。
+        //
+        // 与 `Loose` 同一个理由关掉菜单：地形一变，这一格的候选列表就
+        // 变了（开门那一行会变成关门那一行）。
+        InteractTarget::Door { action } => {
+            *menu = PlayerMenu::Closed;
+            PlayerCommand::Submit(match action {
+                DoorAction::Open => Intent::OpenDoor { actor, pos: naked },
+                DoorAction::Close => Intent::CloseDoor { actor, pos: naked },
             })
         }
     }
@@ -970,15 +1064,7 @@ pub fn direction_row_text(
     let entries = interact_entries(world, tile.pos);
     let first = entries
         .first()
-        .map(|target| {
-            item_display_name(
-                target.def(),
-                items,
-                catalog,
-                language,
-                &agent.identified_items,
-            )
-        })
+        .map(|target| interact_target_name(*target, items, catalog, language, agent))
         .unwrap_or_default();
     if entries.len() > 1 {
         let more = catalog.resolve(language, "hud-interact-direction-more");
@@ -1003,20 +1089,71 @@ pub fn interact_row_text(
     catalog: &Catalog,
     language: &str,
 ) -> String {
-    let def = target.def();
-    let name = item_display_name(def, items, catalog, language, &agent.identified_items);
+    let name = interact_target_name(target, items, catalog, language, agent);
+    let action_key = match target {
+        InteractTarget::Facility { .. } => "hud-interact-action-work",
+        InteractTarget::Container { .. } => "hud-interact-action-loot",
+        InteractTarget::Loose { .. } => "hud-interact-action-take",
+        InteractTarget::Door {
+            action: DoorAction::Open,
+        } => "hud-interact-action-open_door",
+        InteractTarget::Door {
+            action: DoorAction::Close,
+        } => "hud-interact-action-close_door",
+    };
+    let action = catalog.resolve(language, action_key);
+    // **门这一行不写数量。** 「x1」对一件可以有好几堆的物品才有意义，
+    // 一扇门是这一格的地形，不存在「两扇」。硬凑一个 `x1` 只会让玩家
+    // 以为它是一件能捡的东西。
+    let Some(def) = target.item_def() else {
+        return format!("{name}（{action}）");
+    };
     let count = world
         .ground_items
         .iter()
         .find(|ground| ground.pos == pos && ground.stack.def == def)
         .map_or(0, |ground| ground.stack.count);
-    let action_key = match target {
-        InteractTarget::Facility { .. } => "hud-interact-action-work",
-        InteractTarget::Container { .. } => "hud-interact-action-loot",
-        InteractTarget::Loose { .. } => "hud-interact-action-take",
-    };
-    let action = catalog.resolve(language, action_key);
     format!("{name} x{count}（{action}）")
+}
+
+/// 一行交互候选的**名字**——物品查物品表，门查一条专门的 Fluent 键。
+///
+/// # 门为什么不走 `item_display_name`
+///
+/// 地形没有 `display_name_key`：`ll_world::terrain::TerrainAttrs` 只有
+/// `blocks_sight`/`blocks_move`/`move_cost`/`opens_into` 四个字段，本体
+/// 十七种地形全部由引擎侧注册（`materialize_base_terrain`），从来没有
+/// 过显示名这一层。给地形补一条显示名字段是一次真正的内容 schema 变更
+/// （连带 `CONTENT_HASH_ALGORITHM_VERSION` 要递增），**不在本批次范围**。
+///
+/// 因此门这一行用两条专门的 HUD 文案键（`hud-interact-door-closed` /
+/// `hud-interact-door-open`），与 `hud-item-unidentified` 同一档：一句
+/// 属于呈现层的通用说法，不是某条内容自己的名字。
+///
+/// **代价要如实记一笔**：mod 声明的门也显示成这同一句「一扇门」，区分
+/// 不出「橡木门」和「铁栅门」。要区分就得给地形补显示名字段——那是
+/// 上面说的那次 schema 变更，留给需要它的那一批。
+fn interact_target_name(
+    target: InteractTarget,
+    items: &ItemTable,
+    catalog: &Catalog,
+    language: &str,
+    agent: &Agent,
+) -> String {
+    match target {
+        InteractTarget::Door {
+            action: DoorAction::Open,
+        } => catalog.resolve(language, "hud-interact-door-closed"),
+        InteractTarget::Door {
+            action: DoorAction::Close,
+        } => catalog.resolve(language, "hud-interact-door-open"),
+        other => {
+            let def = other
+                .item_def()
+                .expect("除门之外的每一个变体都携带物品索引");
+            item_display_name(def, items, catalog, language, &agent.identified_items)
+        }
+    }
 }
 
 /// 把菜单状态与已经排好版的行拼成 `ll-ui` 要的那份数据——菜单关着时

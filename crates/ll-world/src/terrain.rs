@@ -65,6 +65,7 @@
 //! 是只有 `DOOR_CLOSED` 这一个硬编码 ID 才有的特权。`ll-sim::resolve`
 //! 相应地把恒等比较换成 `table.opens_into(terrain)` 查表，见其文档。
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
@@ -81,7 +82,11 @@ use crate::chunk::ChunkGrid;
 /// 个理由（见其文档）。真正校验「存档里的每一个地形索引当前是否已
 /// 注册」的入口是 [`TerrainTable::validate_grid`]，由持有 `ChunkGrid`
 /// 整体反序列化结果与当前 `TerrainTable` 的调用方显式调用。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// `PartialOrd`/`Ord` 按内部 [`ContentIndex`] 的数值排序——只用来当
+/// `BTreeMap` 的键（[`TerrainTable::closes_into`] 的逆映射）与做确定性
+/// 的平局判断，**不表示任何玩法上的先后**。派生它是 C5 的正向选择：
+/// 有序容器的遍历顺序确定，`HashMap` 的不确定。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize, Deserialize)]
 pub struct TerrainKind(ContentIndex);
 
 impl TerrainKind {
@@ -240,6 +245,12 @@ pub struct TerrainTable {
     blocks_sight: Vec<bool>,
     blocks_move: Vec<bool>,
     opens_into: Vec<Option<TerrainKind>>,
+    /// [`Self::opens_into`] 的**逆映射**（开启形态 → 关上之后变回哪一
+    /// 种），[`Self::define`] 顺手建起来，见 [`Self::closes_into`]。
+    ///
+    /// 不是列式存储：它的键是「开启形态」这个**值**，不是本表的下标
+    /// 空间。`BTreeMap` 不是 `HashMap`——约束 C5。
+    closes_into: BTreeMap<TerrainKind, TerrainKind>,
     defined: Vec<bool>,
 }
 
@@ -294,6 +305,16 @@ impl TerrainTable {
         self.blocks_move[idx] = attrs.blocks_move;
         self.move_cost[idx] = attrs.move_cost;
         self.opens_into[idx] = attrs.opens_into;
+        // 顺手把逆映射建起来，见 `closes_into`。一对多时取索引最小的
+        // 那一个（确定性兜底，理由与写法见那个方法的文档）；`define`
+        // 的调用顺序不参与判断，只比索引。
+        if let Some(open_kind) = attrs.opens_into {
+            let closed_kind = TerrainKind(index);
+            let entry = self.closes_into.entry(open_kind).or_insert(closed_kind);
+            if closed_kind.index() < entry.index() {
+                *entry = closed_kind;
+            }
+        }
         Ok(())
     }
 
@@ -359,6 +380,41 @@ impl TerrainTable {
             .get(kind.0.get() as usize)
             .copied()
             .flatten()
+    }
+
+    /// `kind` 这种地形**关上**之后会变成哪一种；不是任何一种「已打开
+    /// 形态」时返回 `None`。
+    ///
+    /// # 为什么是反查 `opens_into`，不是新加一条 `closes_into` 字段
+    ///
+    /// 「关门」这条能力（交互列表批次）需要的正是 [`Self::opens_into`]
+    /// 的**逆映射**：`门关闭 --开--> 门开启`，反过来就是
+    /// `门开启 --关--> 门关闭`。新加一条内容字段会
+    ///
+    /// - 造出第二个真相源（内容作者可以把 `opens_into`/`closes_into`
+    ///   写成互相对不上的一对，而没有任何东西会拦），
+    /// - 改动 `TerrainDef` 的字段集合，连带要递增
+    ///   `ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION`。
+    ///
+    /// 反查两样都不要，而且**对 mod 自己声明的门自动成立**：任何地形
+    /// 只要声明了 `opens_into`，它的目标地形就自动可以被关回去。
+    ///
+    /// # 一对多时取索引最小的那一个（约束 C5）
+    ///
+    /// 内容上完全可能有两种不同的关门形态（木门、石门）打开成**同一种**
+    /// 开启形态。这时「关上」该变回哪一种没有唯一答案；本方法取
+    /// [`ContentIndex`] 最小的那一个——遍历走 `Vec` 下标升序，不经任何
+    /// 哈希容器，同一份内容两次调用恒得同一个答案。这不是一条设计裁定，
+    /// 是一条**确定性兜底**：真要区分木门石门，正确的修法是让开启形态
+    /// 也分成两种（内容侧就能解决），不是在这里猜。
+    ///
+    /// # 逆映射在 [`Self::define`] 那一刻就建好
+    ///
+    /// 不是每次查询现扫一遍：`define` 是唯一的写入口，顺手往一张
+    /// `BTreeMap` 里记一条即可，查询是一次 `O(log n)` 查表。这也让
+    /// 「一对多取最小」那条兜底只在写入侧实现一次。
+    pub fn closes_into(&self, kind: TerrainKind) -> Option<TerrainKind> {
+        self.closes_into.get(&kind).copied()
     }
 
     /// 批量校验一整张地形网格：网格里出现的每一个地形索引都必须能在

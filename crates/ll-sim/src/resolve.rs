@@ -1010,6 +1010,7 @@ fn resolve_dispatch(
             ambient,
         ),
         Intent::OpenDoor { actor, pos } => resolve_open_door(world, actor, pos),
+        Intent::CloseDoor { actor, pos } => resolve_close_door(world, actor, pos),
         Intent::EnterSpace { actor, target } => resolve_enter_space(world, actor, target),
         Intent::ExitSpace { actor } => resolve_exit_space(world, actor),
         Intent::UseSkill {
@@ -5011,6 +5012,84 @@ fn resolve_open_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Ve
         Effect::SetTerrain {
             pos: door_pos,
             kind: open_kind,
+        },
+        Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        },
+    ]
+}
+
+/// 关上某处的门（交互列表批次：所有者裁定「我希望交互也能包括……开关
+/// 门」）。
+///
+/// # 四道前置，任一不成立都只消耗时间、不改地形
+///
+/// 1. **发起者存在**（否则连耗时都算不出来，静默作废）。
+/// 2. **目标区块已常驻**——`world.terrain_at` 落空时静默作废、不消耗
+///    时间，与 [`resolve_open_door`]/[`resolve_move`] 同一条纪律：查不
+///    到地形就无法判断这一步「本该」耗时多久。
+/// 3. **目标是一格「已打开形态」**——
+///    [`ll_world::terrain::TerrainTable::closes_into`] 有值。反查
+///    `opens_into` 而不是新加一条内容字段，理由见那个方法的文档；
+///    副作用是**mod 自己声明的门自动可以被关上**，不需要内容作者多写
+///    一个字。
+/// 4. **那一格上没有实体、也没有立着的家具**——否则门会关在人身上，
+///    或者把一座炉子封进墙里。占位查找复用批次 1 落地的
+///    [`occupant_at`]（不另写一份），家具判据是
+///    [`ll_world::item::GroundItemStack::placed`]，与
+///    `resolve_place` 的「一格至多立一件」用的是同一个字段。
+///
+/// **散落在地上的东西不挡门**：它们本来就躺在地上、和门在同一格并不
+/// 矛盾（一把掉在门槛上的匕首不该让门关不上）。挡门的只有「站着的人」
+/// 与「立着的东西」这两类真正占据了这一格的存在。
+///
+/// 前置 3/4 不成立时**仍然消耗一次行动**，与 [`resolve_open_door`] 对
+/// 着一格不是门的地方按下去、与 [`resolve_move`] 撞墙，是同一个口径：
+/// 「查得到目标、确认这个动作在此处不成立」是一个确定结果，值得消耗
+/// 一次行动。
+///
+/// # 为什么不在交互列表那一层先把关不上的门筛掉
+///
+/// 那会让同一条判据存在两份，迟早分叉（分叉的表现是「列表里能选，按
+/// 下去没反应」或者更糟的「明明关得上，列表里却没有」）。这条纪律与
+/// `ll_game::player_action::craft_entries` 文档里写明的完全一致：
+/// 玩法前置只住在 `resolve`，呈现层不复制。
+fn resolve_close_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let door_pos = world.size.wrap(pos.0, pos.1);
+    let Some(terrain) = world.terrain_at(door_pos) else {
+        return Vec::new();
+    };
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    let idle = vec![Effect::ScheduleNext {
+        actor,
+        at: schedule_after(world, cost),
+    }];
+
+    let Some(closed_kind) = world.terrain_table.closes_into(terrain) else {
+        return idle; // 前置 3：这一格不是一扇开着的门。
+    };
+    if occupant_at(world, door_pos, actor).is_some() {
+        return idle; // 前置 4a：门口站着人。
+    }
+    if world
+        .ground_items
+        .iter()
+        .any(|ground| ground.pos == door_pos && ground.placed)
+    {
+        return idle; // 前置 4b：门口立着一件家具。
+    }
+
+    vec![
+        Effect::SetTerrain {
+            pos: door_pos,
+            kind: closed_kind,
         },
         Effect::ScheduleNext {
             actor,
