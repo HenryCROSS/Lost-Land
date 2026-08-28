@@ -249,10 +249,25 @@ build_zone_noise / 流式生成 / 编年史重建
 [`world_identity`](../../crates/ll-content/src/world_identity.rs) 描述的
 「缺一，世界都复现不出来」那一类。
 
-### 一处已知的不对齐
+### 那处不对齐已经修好（生成期 mod 集合修正批次）
 
-`WorldIdentity`（种子 + 尺寸 + 生成期 mod 集合）与存档**头部**
-（`SaveHeader.world_seed` / `world_size`）都还没有把形态参数算进去——它
-目前只住在存档**主体**（`WorldState.terrain_shape`）。这不影响正确性
-（主体才是流式生成读的那一份），但意味着「只读头部」的场景（未来的存档
-浏览界面）看不到这个世界是大陆还是群岛。留给 P7 存档界面批次一并处理。
+本节此前记着一条已知的不对齐：`WorldIdentity`（当时是种子 + 尺寸 +
+生成期 mod 集合三要素）与存档**头部**都没有把形态参数算进去，它只住在
+存档**主体**（`WorldState.terrain_shape`）。
+
+修生成期 mod 集合那条缺陷时一并收拢了：世界身份现在是**四要素**——
+种子 + 尺寸 + **地形形态** + 生成期 mod 集合
+（[`WorldIdentity`](../../crates/ll-content/src/world_identity.rs)），
+存档头部新增 `SaveHeader.terrain_shape`，「只读头部」的场景因此看得到
+这个世界是大陆还是群岛，不必先解压主体。
+
+两点仍然成立，值得写明：
+
+- **权威副本仍在存档主体。** 流式生成读的是 `WorldState.terrain_shape`，
+  头部那一份是展示用的副本。读档时 `WorldIdentity::restore_from_header`
+  的形态取自主体，不取自头部——这样本批次之前写出的老存档（头部没有
+  这个键）不会退化。
+- **老存档照常读得开，没有 schema 升级。** 头部是明文 JSON，新增的是
+  一个 `Option` 键；存档主体的字节布局一个字节都没动，因此不需要迁移
+  函数。`crates/ll-content/src/save_file.rs` 的
+  `头部不含terrain_shape键的老存档照常读得开` 把这条钉死。

@@ -63,7 +63,7 @@ use ll_content::content_index_map::{rebuild_from_header, snapshot_for_header};
 use ll_content::degrade::{
     ContentKind, DegradeAction, LoadOutcome, OwnerContext, decide_degrade_action,
 };
-use ll_content::header::{ModHeaderEntry, SaveHeader};
+use ll_content::header::{ModHeaderEntry, SaveHeader, SaveHeaderMeta};
 use ll_content::mode::SaveMode;
 use ll_content::remap::remap_world;
 use ll_content::save_file::{
@@ -187,20 +187,38 @@ fn header_with(
     generation_mods: Vec<ModHeaderEntry>,
     mode: SaveMode,
 ) -> SaveHeader {
-    SaveHeader {
-        schema_version: CURRENT_SCHEMA_VERSION,
-        saved_at: 1_755_200_000,
-        character_name: "验收旅人".to_string(),
-        current_region: "验收村落".to_string(),
-        playtime_ticks: 0,
-        generation_mods,
-        current_mods: Vec::new(),
-        content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
-        content_index_map,
-        world_size: (1, 1),
-        world_seed: 0,
-        mode,
+    // 存档头的四个世界身份字段只能整体来自一份绑定好的 `WorldIdentity`
+    // （见 `ll_content::header::SaveHeader::new`）——本 demo 因此先把
+    // 「这个世界当初是用哪一批 mod 生成的」表达成一份身份,再交给头部,
+    // 而不是直接往头部里塞一个数组。
+    let mut entries = Vec::with_capacity(generation_mods.len());
+    for entry in &generation_mods {
+        entries.push(ll_mod::mod_set::ModSetEntry {
+            id: ll_mod::manifest::mod_self_id(&entry.namespace).expect("命名空间恒合法"),
+            version: entry.version.clone(),
+            content_hash: entry.content_hash,
+        });
     }
+    let identity = WorldIdentity::bind(
+        0,
+        validate_size_choice(64, (1, 1)).expect("1x1/64 是合法尺寸选择"),
+        ll_world::generate::TerrainShape::default(),
+        GenerationModSet(entries),
+    );
+    SaveHeader::new(
+        &identity,
+        SaveHeaderMeta {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            saved_at: 1_755_200_000,
+            character_name: "验收旅人".to_string(),
+            current_region: "验收村落".to_string(),
+            playtime_ticks: 0,
+            current_mods: Vec::new(),
+            content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
+            content_index_map,
+            mode,
+        },
+    )
 }
 
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -244,10 +262,15 @@ fn step0_world_identity_chain_link() {
 
     let layout = validate_size_choice(64, (1, 1)).expect("1x1/64 是合法尺寸选择");
     let generation = GenerationModSet::capture(&registry, &manifests);
-    let identity = WorldIdentity::bind(20_260_819, layout, generation.clone());
+    let identity = WorldIdentity::bind(
+        20_260_819,
+        layout,
+        ll_world::generate::TerrainShape::default(),
+        generation.clone(),
+    );
 
-    assert_eq!(identity.seed, 20_260_819);
-    assert_eq!(identity.generation_mods, generation);
+    assert_eq!(identity.seed(), 20_260_819);
+    assert_eq!(identity.generation_mods(), &generation);
 
     let header_entries = generation_mods_to_header_entries(&generation);
     assert_eq!(header_entries.len(), 1);

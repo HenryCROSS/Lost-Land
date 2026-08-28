@@ -30,7 +30,7 @@
 | 世界生成器（`Space`/`SpaceProfile` 注册、聚落播种、区块粒度） | ✅ | `chronicle.rs` 2657 行、`settlement.rs` 1239 行、`resource.rs` 1038 行、`culture.rs`、`space_profile.rs` 1034 行 |
 | **游戏内菜单** | ❌ **零实现** | 见下 |
 | **设置界面** | ❌ **零实现** | 见下 |
-| **生成期 mod 集合的真实绑定时机** | ⚠️ **接了，但值的来源接错** | 见二节 |
+| **生成期 mod 集合的真实绑定时机** | ✅ **已修**（`wt-genmodset` 批次） | 见二节 |
 | **势力播种** | ❌ **零实现** | `OrgInstance`（`crates/ll-world/src/entity/org.rs:21`）全仓库零生产构造点 |
 
 ### 游戏内菜单：一处标准的「声明了但没接线」
@@ -62,9 +62,11 @@
 
 ---
 
-## 二、A. 生成期 mod 集合会被每一次存档静默覆盖
+## 二、A. 生成期 mod 集合会被每一次存档静默覆盖（**已修**）
 
 **这是本次清算发现的、此前无任何文档记录的真实缺陷，也是 P7 收尾里唯一一条会污染玩家数据的。**
+
+> **状态更新**：已在 `wt-genmodset` 批次修复。本节以下的现象描述与论证**如实保留**（它仍然是理解这条缺陷形状的最完整记录），修法与验证见本节末尾「已落地的修法」。
 
 ### 现象
 
@@ -97,6 +99,21 @@ let generation = GenerationModSet::capture(&content.registry, &content.manifests
 **拖着的代价是不可逆的**：一旦有玩家装了第三方 mod 并存过档，被污染的 `generation_mods` 就没有任何地方能追回原始值。
 
 **P8 为什么会撞上它**：P8 的随从/指令/派工都会往存档里加数据，存档格式的每一次改动都会让「这个存档到底是用哪套 mod 生成的」这个问题更要紧；而且 P8 是第一个大概率会引入第三方 mod 内容（自定义随从行为、自定义据点工种）的阶段。
+
+### 已落地的修法（`wt-genmodset` 批次）
+
+**形状**：世界身份收拢成单一真相源，绑定一次、此后只被搬运。
+
+- `ll_content::world_identity::WorldIdentity` 从三要素扩成**四要素**（种子 + 尺寸 + **地形形态** + 生成期 mod 集合），字段全部私有，只有两个构造器：`bind`（建新世界那一刻）与 `restore_from_header`（读档时把存档头那一份原样接回来）。
+- `ll_game::world::GameWorld` 新增 `identity` 字段保管它；`build_new_world` 是 `GenerationModSet::capture` 在生产代码里的**唯一**调用点。
+- `ll_game::save::load_game` 改为返回 `LoadedGame`（`Playable` 那一支额外带回身份）——`LoadOutcome::Playable` 只装 `WorldState`，而生成期集合不在主体里，不接出来就在读档那一刻丢了。
+- `save_game` 直接写 `game_world.identity`，不再 `capture`。
+
+**类型层修补（这条缺陷的教训是「编译期挡住了拿错类型，挡不住装错内容」）**：`SaveHeader` 的四个身份字段改成 `pub(crate)`，crate 外唯一的写出入口是 `SaveHeader::new(&WorldIdentity, SaveHeaderMeta)`。`ll-game` 因此**写不出**「现场 `capture` 一份塞进头部」这行代码——不是不该写，是编译不过。剩余的口子如实说明：`WorldIdentity::bind` 仍然公开（建档要用），所以「伪造一整份身份」在编译期仍可写，只是它再也不可能是顺手写错的样子。
+
+**顺带收拢的第四个要素**：地形形态参数一并进了 `WorldIdentity` 与存档头（`SaveHeader.terrain_shape`）。头部新增的是一个 `Option` 键、存档主体字节布局未动，**老存档照常读得开、没有 schema 升级**。
+
+**两道校验的语义未改**：「玩家多装了生成期名单之外的 mod」仍然放行（决策二只覆盖「缺 mod」与「版本对不上」两档）。本批次只保证放行之后名单不再被污染，语义由 `crates/ll-content/tests/e2e_save_cycle.rs` 的 `玩家中途多装一个生成期名单之外的mod时读档照常放行` 钉死。
 
 ---
 

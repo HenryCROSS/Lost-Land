@@ -68,7 +68,19 @@ pub(crate) const MOD_SELF_PATH: &str = "self";
 ///
 /// 复用 [`NamespacedId::parse`] 而不是自己重写字符合法性规则——命名
 /// 空间字符集的定义只应该有一处，多处各自实现同一套规则迟早会漂移。
-pub(crate) fn mod_self_id(namespace: &str) -> Result<NamespacedId, CoreError> {
+///
+/// # 为什么是 `pub`（生成期 mod 集合修正批次放宽）
+///
+/// 存档头里的每条 mod 记录只有一个**裸命名空间字符串**（
+/// `ll_content::header::ModHeaderEntry::namespace`，见该模块文档「为什么
+/// 头部不能引用 `ContentIndex`」：头部字段一律是不需要注册表就能解释的
+/// 原始类型）。读档时要把这批记录原样接回成
+/// [`crate::mod_set::GenerationModSet`]，就必须再走一次「裸命名空间 →
+/// `namespace:self`」这个约定——而这个约定的唯一定义就在本函数与
+/// [`MOD_SELF_PATH`] 里。放宽到 `pub` 是为了让 `ll-content` 直接调用它，
+/// 而不是在另一个 crate 里把 `"self"` 这个字面量再抄一遍：抄一遍就是第
+/// 二处定义，两处迟早漂移，正是本函数文档上一段要避免的事。
+pub fn mod_self_id(namespace: &str) -> Result<NamespacedId, CoreError> {
     NamespacedId::parse(&format!("{namespace}:{MOD_SELF_PATH}"))
 }
 

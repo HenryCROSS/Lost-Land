@@ -56,7 +56,7 @@ use std::collections::BTreeMap;
 
 use ll_content::content_index_map::snapshot_for_header;
 use ll_content::degrade::LoadOutcome;
-use ll_content::header::{ModHeaderEntry, SaveHeader};
+use ll_content::header::SaveHeader;
 use ll_content::mode::SaveMode;
 use ll_content::save_file::{CURRENT_SCHEMA_VERSION, load_full, save_to_file};
 use ll_core::ident::{ContentIndex, NamespacedId};
@@ -562,20 +562,32 @@ fn section4_save_load_roundtrip(content: &Content, world: &WorldState) {
     println!("[验收 4/4] 技能冷却与任务进度经存档往返保持一致（真实 P5-A 存档管线）");
 
     let content_index_map = snapshot_for_header(&content.registry);
-    let header = SaveHeader {
-        schema_version: CURRENT_SCHEMA_VERSION,
-        saved_at: 1_755_200_000,
-        character_name: "验收旅人".to_string(),
-        current_region: "验收村落".to_string(),
-        playtime_ticks: 0,
-        generation_mods: Vec::<ModHeaderEntry>::new(),
-        current_mods: Vec::new(),
-        content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
-        content_index_map: content_index_map.clone(),
-        world_size: (1, 1),
-        world_seed: 0,
-        mode: SaveMode::Permadeath,
-    };
+    // 世界身份四要素整体来自一份绑定好的 `WorldIdentity`,见
+    // `ll_content::header::SaveHeader::new`。
+    let identity = ll_content::world_identity::WorldIdentity::bind(
+        0,
+        ll_world::zone::ZoneLayout::new(
+            64,
+            ll_core::torus::TorusSize::new(1, 1).expect("1×1 是合法尺寸"),
+        )
+        .expect("64 满足全部对齐约束"),
+        ll_world::generate::TerrainShape::default(),
+        ll_mod::mod_set::GenerationModSet(Vec::new()),
+    );
+    let header = SaveHeader::new(
+        &identity,
+        ll_content::header::SaveHeaderMeta {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            saved_at: 1_755_200_000,
+            character_name: "验收旅人".to_string(),
+            current_region: "验收村落".to_string(),
+            playtime_ticks: 0,
+            current_mods: Vec::new(),
+            content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
+            content_index_map: content_index_map.clone(),
+            mode: SaveMode::Permadeath,
+        },
+    );
     let hash_before = world.hash();
     let path = temp_path("full-walkthrough");
     save_to_file(&path, &header, world).expect("写出应当成功");

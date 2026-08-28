@@ -33,9 +33,10 @@ use ll_world::terrain::materialize_base_terrain;
 use ll_world::zone::ZoneLayout;
 use proptest::prelude::*;
 
-use ll_content::header::{ModHeaderEntry, SaveHeader};
+use ll_content::header::{SaveHeader, SaveHeaderMeta};
 use ll_content::mode::SaveMode;
 use ll_content::save_file::{load_full_from_bytes, save_to_file};
+use ll_content::world_identity::WorldIdentity;
 
 /// 建一份结构完全合法、写出到临时文件后再读回原始字节的存档——供各条
 /// 定向用例在此基础上做局部损坏，而不是每条用例各自手搓一份存档字节
@@ -58,28 +59,37 @@ fn valid_save_bytes() -> Vec<u8> {
     )
     .expect("测试布局满足全部构造前置条件");
 
-    let header = SaveHeader {
-        schema_version: ll_content::save_file::CURRENT_SCHEMA_VERSION,
-        saved_at: 1_755_000_000,
-        character_name: "旅人".to_string(),
-        current_region: "初始村落".to_string(),
-        playtime_ticks: 0,
-        generation_mods: vec![ModHeaderEntry {
-            namespace: "lostland".to_string(),
+    // 存档头的四个世界身份字段只能整体来自一份绑定好的 `WorldIdentity`
+    // （见 `ll_content::header::SaveHeader::new`），本文件因此先造身份
+    // 再造头部,不再手写头部字面量。
+    let identity = WorldIdentity::bind(
+        0,
+        ZoneLayout::new(64, zone_count).expect("64 满足全部对齐约束"),
+        ll_world::generate::TerrainShape::default(),
+        ll_mod::mod_set::GenerationModSet(vec![ll_mod::mod_set::ModSetEntry {
+            id: ll_mod::manifest::mod_self_id("lostland").expect("命名空间恒合法"),
             version: "0.1.0".to_string(),
             content_hash: registry.content_hash_of("lostland"),
-        }],
-        current_mods: Vec::new(),
-        content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
-        content_index_map: registry
-            .snapshot()
-            .iter()
-            .map(ToString::to_string)
-            .collect(),
-        world_size: (1, 1),
-        world_seed: 0,
-        mode: SaveMode::Permadeath,
-    };
+        }]),
+    );
+    let header = SaveHeader::new(
+        &identity,
+        SaveHeaderMeta {
+            schema_version: ll_content::save_file::CURRENT_SCHEMA_VERSION,
+            saved_at: 1_755_000_000,
+            character_name: "旅人".to_string(),
+            current_region: "初始村落".to_string(),
+            playtime_ticks: 0,
+            current_mods: Vec::new(),
+            content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
+            content_index_map: registry
+                .snapshot()
+                .iter()
+                .map(ToString::to_string)
+                .collect(),
+            mode: SaveMode::Permadeath,
+        },
+    );
 
     // 文件名必须对每次调用唯一——proptest 的属性测试函数在同一进程内
     // 会被反复调用,且不同 `#[test]` 函数之间 Rust 测试框架默认并行
