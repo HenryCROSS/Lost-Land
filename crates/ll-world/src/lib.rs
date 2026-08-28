@@ -54,6 +54,7 @@ pub mod temperature;
 pub mod terrain;
 pub mod terrain_shape;
 pub mod weather;
+pub mod world_map;
 pub mod zone;
 
 /// 世界层的错误。

@@ -145,6 +145,11 @@ fn equipment_origin_x(screen_width: f32) -> f32 {
     screen_width - EQUIPMENT_RIGHT_MARGIN - EQUIPMENT_WIDTH
 }
 
+/// 世界地图比例尺文案与面板边框的留白（像素）——比
+/// [`SCREEN_MARGIN`] 小：这行字贴在地图**内侧**，留白太大就会压到
+/// 第一行格子上。
+const WORLD_MAP_CAPTION_MARGIN: f32 = 8.0;
+
 /// 世界地图面板与屏幕四边的留白比例——见 [`world_map_rect`]。取
 /// 10%：地图本身要足够大才有实际可读性（M 键切换的目的就是「看整个
 /// 世界」，不是又开一块小面板），同时四周留出的边距足以让玩家看出
@@ -458,6 +463,20 @@ pub fn build_hud_frame(
         let rect = world_map_rect(screen_width, screen_height);
         let frame = world_map::world_map_frame(world_map, rect, skin);
         quads.extend(frame.quads);
+        // 比例尺与操作提示：贴在地图面板的左上角内侧。走文本 pass
+        // （`labels`），因此恒画在全部矩形之上，不需要操心与格子的推入
+        // 顺序，见本函数文档「三道 pass」一节。
+        //
+        // `tiles_per_cell` 为 0 表示调用方还没接缩放（例如只想画一张
+        // 固定视图），此时整行不出现——与 `world_map` 为 `None` 时整块
+        // 不产出是同一条「没有就不画，不留占位」的纪律。
+        if world_map.tiles_per_cell > 0 {
+            labels.push(Label {
+                text: world_map::scale_caption(world_map.tiles_per_cell, catalog, language),
+                x: rect.x + WORLD_MAP_CAPTION_MARGIN,
+                y: rect.y + WORLD_MAP_CAPTION_MARGIN,
+            });
+        }
     }
 
     // 动作菜单：与世界地图同一条「`None` 就整块不产出」的纪律，见本
@@ -900,6 +919,9 @@ mod tests {
             cols: 2,
             rows: 1,
             terrain_ids: &terrain_ids,
+            player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act

@@ -349,3 +349,8 @@ screen-settings-save-failed = Could not write the config file; the change is sti
 # Endonym: every entry in the settings language picker is written in its
 # own language. See ll_game::menu_screen::language_display_name.
 language-name = English
+# World map (the continent overview overlay toggled with M, ll-ui::hud::world_map)
+# — zoom batch. hud-world-map-scale-label is immediately followed by
+# "1:<tiles per cell>"; see scale_caption in crates/ll-ui/src/hud/world_map.rs.
+hud-world-map-scale-label = Scale
+hud-world-map-hint = Arrows pan, zoom keys zoom

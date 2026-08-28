@@ -400,3 +400,8 @@ screen-settings-save-failed = 配置文件写入失败，本次会话内改动�
 # 语言自称（endonym）——设置界面的语言选单每一项用自己的文字写，
 # 见 ll_game::menu_screen::language_display_name。
 language-name = 简体中文
+# 世界地图（M 键切换的大陆概览浮层，ll-ui::hud::world_map）——缩放批次。
+# hud-world-map-scale-label 后面紧跟 "1:<每格覆盖的瓦片数>"，见
+# crates/ll-ui/src/hud/world_map.rs 的 scale_caption。
+hud-world-map-scale-label = 比例尺
+hud-world-map-hint = 方向键平移，缩放键放大缩小
