@@ -44,6 +44,7 @@ pub mod noise;
 pub mod overview;
 pub mod resource;
 pub mod settlement;
+pub mod sight_residency;
 pub mod space;
 pub mod space_profile;
 pub mod state;

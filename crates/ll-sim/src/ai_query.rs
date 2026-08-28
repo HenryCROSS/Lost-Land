@@ -35,6 +35,7 @@
 
 use ll_world::entity::{AffiliationKind, Agent, EntityId};
 use ll_world::fov::compute_fov;
+use ll_world::sight_residency::fov_neighborhood_resident;
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
 
@@ -75,12 +76,39 @@ pub fn nearest_hostile(world: &WorldState, self_id: EntityId) -> Option<EntityId
 /// 两段式过滤：`world.size.chebyshev` 粗筛（`O(1)`/候选者）+
 /// `VisibleSet::contains` 成员测试，只对观察者自己的位置算一次
 /// [`compute_fov`]。隔着墙的目标因此找不到。
+///
+/// # 观察者所需的地形不在内存里时返回 `None`（不是崩溃）
+///
+/// 常驻区块集合**只围着玩家维护**（`ll_game::app` 的
+/// `maintain_streaming`，半径 2 个区块），而 `advance_ai` 对常驻情况
+/// 零过滤：时间轴弹出谁就结算谁。于是一个离屏 NPC 完全可能在自己脚下
+/// 的区块早已被 LRU 驱逐之后，还照样跑到这里来算一次 FOV。此前的后果
+/// 是所有者实机撞到的那次崩溃（`SurfaceWindow` 的常驻前置被违反，游戏
+/// 当场退出）。
+///
+/// 现在先用
+/// [`fov_neighborhood_resident`] 问一句「这次 FOV 会碰到的区块都在内存里吗」，不都在就**根本不构造
+/// [`SurfaceWindow`]**，直接返回 `None`：看不见就是看不见（ADR 0015
+/// 「查不到就是查不到」）。判据落在这里而不是把 `SurfaceWindow` 的
+/// panic 改哑——那个 panic 守的是渲染路径的纪律，改哑等于永久拆掉它，
+/// 完整论证见 `ll_world::sight_residency` 模块文档。
+///
+/// 这也不是新发明：`crate::resolve` 的 `resolve_move` 在目的地区块非
+/// 常驻时早就静默作废，且所有者在批次 1 里明确裁定「不改」。移动已经
+/// 这么降级了，感知跟着降级是一致的。
+///
+/// **仍未解决的是另一个问题**：离屏 NPC 到底该不该被逐个结算。那属于
+/// P9 的 LOD 范围（规格 §9），本函数只保证「被结算到时不会把游戏搞
+/// 崩」，不改 `advance_ai` 的结算范围。
 pub fn nearest_visible_actor(
     world: &WorldState,
     self_id: EntityId,
     radius: u32,
 ) -> Option<EntityId> {
     let me = world.actors.get(self_id)?;
+    if !fov_neighborhood_resident(&world.terrain, me.pos, radius) {
+        return None;
+    }
     let visible = compute_fov(
         &SurfaceWindow::new(&world.terrain),
         &world.terrain_table,
@@ -328,6 +356,119 @@ mod tests {
 
         // Act & Assert
         assert!(!declared_hostile(&a, &b));
+    }
+
+    /// 造一个**多区块、只预热了出生点邻域**的世界：16×16 个区块、
+    /// 边长 48（世界 768×768 格）。`WorldState::new` 只预热出生点周围
+    /// 5×5 个区块，其余区块从未常驻过——这正是所有者实机崩溃时的世界
+    /// 形态（玩家一路走过去物化了远处据点的 NPC，常驻集合随后把那些
+    /// NPC 脚下的区块驱逐掉，它们却照样被时间轴弹出来跑行为树）。
+    fn streamed_world() -> (WorldState, ll_world::terrain::BaseTerrainIds) {
+        let zone_count = ll_core::torus::TorusSize::new(16, 16).expect("16x16 是合法尺寸");
+        let layout = ll_world::zone::ZoneLayout::new(48, zone_count).expect("48 满足全部对齐约束");
+        let (terrain_ids, terrain_table) = ll_world::terrain::base_terrain_fixture();
+        let spawn = layout.tile_size().wrap(0, 0);
+        let world = WorldState::new(
+            layout,
+            &ll_world::generate::GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件");
+        (world, terrain_ids)
+    }
+
+    /// 在给定坐标放一个实体，其余字段取默认。
+    fn spawn_at(world: &mut WorldState, x: i32, y: i32) -> EntityId {
+        let pos = world.size.wrap(x, y);
+        let mut agent = agent_with_factions(&[]);
+        agent.pos = pos;
+        agent.current_space = ll_world::space::Space::surface(
+            world.terrain.layout().tile_to_zone(pos).0,
+            ll_core::ident::ContentIndex::default(),
+        );
+        world.actors.spawn(agent)
+    }
+
+    #[test]
+    fn 观察者脚下的区块未常驻时看不见任何人而不是崩溃() {
+        // 这条复现的是所有者实机撞到的那次崩溃：
+        //   SurfaceWindow 假定视野范围内的区块都已经常驻，
+        //   TorusPos { x: 1008, y: 0 } 所属区块尚未加载
+        // 一个远处据点的卫兵被时间轴弹出来跑行为树，行为树调
+        // `nearest_visible_actor`，它在观察者**自己的位置**上算 FOV，
+        // 而那个位置所属的区块早已被 LRU 驱逐。
+        //
+        // Arrange：把观察者放进一个从未预热过的区块（区块 (8, 8)）。
+        let (mut world, _ids) = streamed_world();
+        let observer = spawn_at(&mut world, 8 * 48 + 24, 8 * 48 + 24);
+        spawn_at(&mut world, 8 * 48 + 26, 8 * 48 + 24);
+        let observer_zone = world
+            .terrain
+            .layout()
+            .tile_to_zone(world.actors.get(observer).expect("刚放进去").pos)
+            .0;
+        assert!(
+            !world.terrain.is_resident(observer_zone),
+            "前置：观察者脚下的区块必须不常驻，否则这条用例复现不了任何东西"
+        );
+
+        // Act & Assert：看不见就是看不见（ADR 0015），不是崩溃。
+        assert_eq!(
+            nearest_visible_actor(&world, observer, NEARBY_ACTOR_VIEW_RADIUS),
+            None
+        );
+    }
+
+    #[test]
+    fn 视野半径伸进相邻的非常驻区块时同样安全返回空() {
+        // **最容易漏的那一半**：只判观察者脚下那一格是不够的。观察者
+        // 站在常驻区块的边缘，FOV 会一路查到隔壁那个没常驻的区块里去。
+        //
+        // Arrange：出生点邻域预热半径是 2 个区块，于是区块 2 常驻、
+        // 区块 3 不常驻。把观察者放在区块 (2, 0) 的最后一列。
+        let (mut world, _ids) = streamed_world();
+        let observer = spawn_at(&mut world, 2 * 48 + 47, 24);
+        spawn_at(&mut world, 2 * 48 + 45, 24);
+        let layout = *world.terrain.layout();
+        let observer_zone = layout
+            .tile_to_zone(world.actors.get(observer).expect("刚放进去").pos)
+            .0;
+        assert!(
+            world.terrain.is_resident(observer_zone),
+            "前置：观察者脚下这一个区块本身必须是常驻的"
+        );
+        assert!(
+            !world
+                .terrain
+                .is_resident(layout.tile_to_zone(world.size.wrap(3 * 48, 24)).0),
+            "前置：视野要伸进去的那个相邻区块必须不常驻"
+        );
+
+        // Act & Assert
+        assert_eq!(
+            nearest_visible_actor(&world, observer, NEARBY_ACTOR_VIEW_RADIUS),
+            None
+        );
+    }
+
+    #[test]
+    fn 常驻齐全时依然照常看得见相邻的目标() {
+        // 守住「降级只在该降级的时候发生」：常驻齐全时行为一个字没变。
+        // Arrange：两人都站在出生点所在区块里，视野方框只覆盖已预热的
+        // 区块。
+        let (mut world, ids) = streamed_world();
+        let observer = spawn_at(&mut world, 0, 0);
+        let target = spawn_at(&mut world, 1, 0);
+        world.terrain.set_terrain(world.size.wrap(0, 0), ids.grass);
+        world.terrain.set_terrain(world.size.wrap(1, 0), ids.grass);
+
+        // Act & Assert
+        assert_eq!(
+            nearest_visible_actor(&world, observer, NEARBY_ACTOR_VIEW_RADIUS),
+            Some(target)
+        );
     }
 
     #[test]

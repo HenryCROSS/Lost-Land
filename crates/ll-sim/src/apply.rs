@@ -3,6 +3,7 @@
 use ll_core::ident::ContentIndex;
 use ll_world::entity::{Agent, EntityId};
 use ll_world::fov::compute_fov;
+use ll_world::sight_residency::fov_neighborhood_resident;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
@@ -254,15 +255,39 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
             // `ExplorationMemory::mark_explored` 要求的「同一个
             // ZoneLayout」天然一致（同一个 WorldState 只有一份地形，
             // 不存在换布局的可能）。
-            let layout = *world.terrain.layout();
-            let visible = compute_fov(
-                &SurfaceWindow::new(&world.terrain),
-                &world.terrain_table,
-                *origin,
-                *radius,
-            );
-            for pos in visible.iter() {
-                world.exploration.mark_explored(&layout, pos);
+            //
+            // 常驻前置与 `crate::ai_query::nearest_visible_actor` **共用
+            // 同一份判据**（`fov_neighborhood_resident`），不是各写一
+            // 遍——两处判据一旦漂移，症状是「AI 觉得看得见、apply 觉得
+            // 看不见」这种极难归因的不一致，见
+            // `ll_world::sight_residency` 模块文档。
+            //
+            // 这一处在**当前生产路径上够不到**：`MarkExplored` 只由
+            // `crate::resolve` 的 `resolve_move`/`resolve_swap` 在
+            // `world.player_entity == Some(actor)` 这一支产出，圆心恒
+            // 是玩家刚挪到的那一格，而 `ll_game::app` 的
+            // `maintain_streaming` 每帧围着玩家维护 2 个区块的常驻邻域
+            // （最小边距 96 格，见 `ll_game::world::MIN_SAFE_ZOOM` 文档
+            // 的推导），远大于 `EXPLORATION_SIGHT_RADIUS`（12）加上一步
+            // 移动的 1 格。这道闸门因此是**防御性的**：`apply` 是全局
+            // 唯一写入口（C1），它 panic 同样会当场崩游戏，而「哪些效果
+            // 能在什么常驻状态下被落地」不该只靠调用方的良心。
+            //
+            // 判断不成立时**什么都不做**：探索记忆是玩家「亲眼见过哪」
+            // 的记录，地形都不在内存里就谈不上见过。这不是往 `apply`
+            // 里塞游戏逻辑（C1/ADR 0023）——它不改变任何规则判定，只是
+            // 拒绝在前置不成立时去调一个会 panic 的函数。
+            if fov_neighborhood_resident(&world.terrain, *origin, *radius) {
+                let layout = *world.terrain.layout();
+                let visible = compute_fov(
+                    &SurfaceWindow::new(&world.terrain),
+                    &world.terrain_table,
+                    *origin,
+                    *radius,
+                );
+                for pos in visible.iter() {
+                    world.exploration.mark_explored(&layout, pos);
+                }
             }
         }
         Effect::GrantExperience { target, amount } => {
@@ -1376,6 +1401,47 @@ mod tests {
 
         // Assert
         assert!(world.exploration.is_explored(&layout, origin));
+    }
+
+    #[test]
+    fn markexplored落在非常驻区块上时静默跳过而不是崩溃() {
+        // `apply` 是全局唯一写入口（C1），它 panic 同样会当场崩游戏。
+        // 这条守的是那道防御性闸门：圆心所属区块不在内存里时，什么都
+        // 不做——探索记忆是玩家「亲眼见过哪」的记录，地形都不在内存里
+        // 就谈不上见过。判据与 `crate::ai_query::nearest_visible_actor`
+        // 共用同一份实现（`fov_neighborhood_resident`）。
+        //
+        // Arrange：多区块世界，`WorldState::new` 只预热出生点周围 5×5
+        // 个区块，区块 (8, 8) 从未进过内存。
+        let zone_count = TorusSize::new(16, 16).expect("16x16 是合法尺寸");
+        let layout = ZoneLayout::new(48, zone_count).expect("48 满足全部对齐与跨度约束");
+        let (terrain_ids, terrain_table) = base_terrain_fixture();
+        let spawn = layout.tile_size().wrap(0, 0);
+        let mut world = WorldState::new(
+            layout,
+            &GenParams::default(),
+            &terrain_ids,
+            terrain_table,
+            spawn,
+        )
+        .expect("测试布局满足全部构造前置条件");
+        let far = world.size.wrap(8 * 48 + 24, 8 * 48 + 24);
+        assert!(
+            !world.terrain.is_resident(layout.tile_to_zone(far).0),
+            "前置：圆心所属区块必须不常驻，否则这条用例什么都没验证"
+        );
+
+        // Act：此前这一行会 panic。
+        apply(
+            &mut world,
+            &Effect::MarkExplored {
+                origin: far,
+                radius: 12,
+            },
+        );
+
+        // Assert：没崩，且一格都没被标记成已探索。
+        assert!(!world.exploration.is_explored(&layout, far));
     }
 
     #[test]
