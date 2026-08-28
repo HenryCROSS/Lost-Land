@@ -1531,7 +1531,7 @@ mod pixel_to_zone_properties {
         /// panic、要么静默读到别的区块的数据。
         #[test]
         fn 任意档位与平移下像素换算出的区块恒落在合法范围内(
-            level in 0usize..4,
+            level in 0usize..ll_world::world_map::ZOOM_LADDER.len(),
             pan_x in -40i32..40,
             pan_y in -40i32..40,
             px in -200.0f32..1200.0,
@@ -1555,7 +1555,7 @@ mod pixel_to_zone_properties {
         /// 满足（ADR 0018 的同一条思路：断言必须能被改坏的实现咬到）。
         #[test]
         fn 网格之内的像素恒能换算出一个区块(
-            level in 0usize..4,
+            level in 0usize..ll_world::world_map::ZOOM_LADDER.len(),
             pan_x in -40i32..40,
             pan_y in -40i32..40,
             col_frac in 0.0f32..1.0,
@@ -1588,7 +1588,7 @@ mod pixel_to_zone_properties {
         /// 纵向不该有任何位移——只往右挪一列，行号没变。
         #[test]
         fn 屏幕上相邻的两格换算出的区块在环面上也相邻(
-            level in 0usize..4,
+            level in 0usize..ll_world::world_map::ZOOM_LADDER.len(),
             pan_x in -40i32..40,
             pan_y in -40i32..40,
             col_pick in 0u32..64,
@@ -1631,7 +1631,7 @@ mod pixel_to_zone_properties {
         /// 高亮的格子会差一个边框宽度。
         #[test]
         fn 格子中心的像素换算回来就是那一格的区块(
-            level in 0usize..4,
+            level in 0usize..ll_world::world_map::ZOOM_LADDER.len(),
             pan_x in -40i32..40,
             pan_y in -40i32..40,
             col_pick in 0u32..64,
