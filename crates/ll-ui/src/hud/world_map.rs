@@ -29,10 +29,9 @@
 //! 「没去过的地方就黑着」（`crate::hud` 模块文档同一条战争迷雾原话在
 //! 世界地图上的延伸）的正确落点。
 
-use ll_core::torus::TorusPos;
+use ll_i18n::Catalog;
 use ll_world::overview::OverviewCell;
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
-use ll_world::zone::ZoneLayout;
 
 use crate::widget::geometry::Rect;
 use crate::widget::quad::QuadInstance;
@@ -96,30 +95,31 @@ pub const PLAYER_MARKER_COLOR: [f32; 4] = [1.0, 0.55, 0.05, 1.0];
 /// 一两个像素、等于没画。
 const PLAYER_MARKER_INSET_FRACTION: f32 = 0.25;
 
-/// 把一个世界瓦片坐标换算成 `continent_map` 那张区块级网格上的列行
-/// 下标——供 [`WorldMapPanelData::player`] 的调用方使用。
+/// 有人住的据点在地图上的显示色——明亮的暖白，读起来像「灯还亮着」。
+pub const INHABITED_SITE_COLOR: [f32; 4] = [1.0, 0.93, 0.70, 1.0];
+
+/// 废墟据点的显示色——冷灰，与 [`INHABITED_SITE_COLOR`] 一眼可分：
+/// 「这里有过人」和「这里现在有人」对玩家挑落脚点是完全不同的信息。
+pub const RUINED_SITE_COLOR: [f32; 4] = [0.62, 0.60, 0.58, 1.0];
+
+/// 据点标记相对格子边长的内缩比例。
 ///
-/// # 环面正确性靠什么保证
+/// 比 [`PLAYER_MARKER_INSET_FRACTION`] 大（标记更小）：同一格里可能同时
+/// 有据点和玩家，玩家标记必须压得住据点标记——「我在哪」是玩家最先要
+/// 找的东西，不能被一串村庄点淹掉。
+const SITE_MARKER_INSET_FRACTION: f32 = 0.34;
+
+/// 一座要画在世界地图上的据点。
 ///
-/// 全程**不手写一次取模**：瓦片 → 区块由
-/// [`ll_world::zone::ZoneLayout::tile_to_zone`] 完成（它内部走
-/// `TorusSize`，见 `ll_world::zone` 模块文档），区块 → 网格列行只是一次
-/// 整数除法，而 `continent_map` 的网格恒从区块 `(0, 0)` 起按行主序铺满
-/// 整张世界图（见其文档），两者因此共用同一个原点、同一个方向。
-/// 玩家站在接缝旁边时，`tile_to_zone` 已经把坐标归一到 `[0, 区块数)`
-/// 区间内，标记不可能画到网格外或对侧去。
-///
-/// # 整数纪律
-///
-/// 除法是整数除法（ADR 0002）：`downsample` 为 2 时区块 3 与区块 2 同
-/// 落在第 1 列——这正是「一格覆盖 `downsample × downsample` 个区块」的
-/// 字面含义，不引入任何浮点插值。`downsample` 为零时夹到 1，与
-/// `continent_map` 对同一个参数的处理一致（与其在这里撞见除零 panic，
-/// 不如当成「不缩小」）。
-pub fn zone_grid_cell_of_tile(layout: &ZoneLayout, tile: TorusPos, downsample: u32) -> (u32, u32) {
-    let downsample = downsample.max(1);
-    let (zone, _local) = layout.tile_to_zone(tile);
-    (zone.x() as u32 / downsample, zone.y() as u32 / downsample)
+/// 只带「画在哪一格」与「还有没有人住」两条信息，不带据点的 id、人口、
+/// 文化——呈现层需要的就这两条，多带一条就多一分让 UI 去解读世界数据
+/// 的机会（那是 `ll_game::app` 装配这一层的职责）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WorldMapSite {
+    /// 落在哪一格（列, 行）。
+    pub cell: (u32, u32),
+    /// 是否仍有人居住（否即废墟）。
+    pub inhabited: bool,
 }
 
 /// 世界地图这一帧需要的全部输入——`cells` 通常来自
@@ -151,6 +151,19 @@ pub struct WorldMapPanelData<'a> {
     /// 系，不存在「格子按 A 算、标记按 B 算」而在缩放/接缝处错位的
     /// 可能——环面换算在算出这对下标之前就已经做完了。
     pub player: Option<(u32, u32)>,
+    /// 这一帧要画的据点，按调用方给出的顺序绘制。
+    ///
+    /// # 顺序必须由调用方定死（约束 C5）
+    ///
+    /// 两座据点落在同一格时，后画的那个盖住先画的。若这个顺序来自任何
+    /// 哈希容器的迭代，同一份世界在两次运行里可能画出不同的颜色。生产
+    /// 调用方（`ll_game::app`）取的是 `WorldChronicle::sites()`——一个
+    /// **已按区块光栅序排好的切片**（见其文档），顺序因此是世界数据
+    /// 自身的确定性顺序，不是桶序。
+    pub sites: &'a [WorldMapSite],
+    /// 当前缩放档位下，一个地图格覆盖多少个世界瓦片——比例尺文案要显示
+    /// 的就是这个数。为 0 时不显示比例尺（调用方还没接缩放）。
+    pub tiles_per_cell: u32,
 }
 
 /// 网格在 `rect` 内的落位：左上角像素坐标与格子边长（正方形）。
@@ -309,6 +322,73 @@ pub fn player_marker_quads(data: &WorldMapPanelData<'_>, rect: Rect) -> Vec<Quad
     }]
 }
 
+/// 据点标记这一帧的矩形。
+///
+/// # 战争迷雾**照样生效**（与玩家标记相反）
+///
+/// 玩家标记不受迷雾影响，因为「我自己在哪」玩家一直都知道；据点不是
+/// ——「那边山谷里有座村子」正是探索要换来的东西，开局就全图显示等于
+/// 把这份游戏内容白送。因此本函数对每个标记先查它所在那一格的
+/// `explored`，未探索就整个跳过，与 [`world_map_cell_quads`] 对地形的
+/// 处理是同一条规则。
+///
+/// # 给「开局在地图上选重生点」那批的说明
+///
+/// 那个界面需要「全图可见」才有意义（玩家还没探索过任何地方，却要据此
+/// 挑落脚点）。**不需要给本函数加任何 `reveal_all` 旗标**：
+/// `ll_world::world_map::world_map_slice` 与
+/// `ll_world::overview::continent_map` 都要求调用方**显式传入**一份
+/// `&ExplorationMemory`（见 `ll_world::exploration` 模块文档「为什么读取
+/// 接口要求显式传入」），选点界面只要传一份「全部已探索」的记忆进来，
+/// `explored` 就恒为真，同一份呈现代码自然变成全图可见。
+pub fn site_marker_quads(data: &WorldMapPanelData<'_>, rect: Rect) -> Vec<QuadInstance> {
+    let Some(grid) = WorldMapGrid::new(rect, data.cols, data.rows) else {
+        return Vec::new();
+    };
+    data.sites
+        .iter()
+        .filter(|site| site.cell.0 < grid.cols && site.cell.1 < grid.rows)
+        .filter(|site| {
+            data.cells
+                .get((site.cell.1 * data.cols + site.cell.0) as usize)
+                .is_some_and(|cell| cell.explored)
+        })
+        .map(|site| {
+            let inset = grid.cell_size * SITE_MARKER_INSET_FRACTION;
+            let (x, y) = grid.cell_origin(site.cell.0, site.cell.1);
+            QuadInstance {
+                position: [x + inset, y + inset],
+                size: [grid.cell_size - inset * 2.0, grid.cell_size - inset * 2.0],
+                color: if site.inhabited {
+                    INHABITED_SITE_COLOR
+                } else {
+                    RUINED_SITE_COLOR
+                },
+            }
+        })
+        .collect()
+}
+
+/// 比例尺与操作提示这一行文案。
+///
+/// # 为什么比例尺是必要的，不是装饰
+///
+/// 缩放之后，同一块屏幕面积代表的世界范围变了，但画面本身看不出这一点
+/// ——格子数恒定、格子像素尺寸恒定（见
+/// `ll_world::world_map::ZOOM_LADDER` 文档）。没有这行字，玩家分不清
+/// 自己在看整个世界还是八分之一个世界，「放大」这个操作因此失去参照。
+///
+/// # 文案全部走 i18n
+///
+/// 规格 §11.3：代码中不得出现任何硬编码的用户可见字符串
+/// （`scripts/ci/check_i18n_strings.py` 门禁）。本函数只做拼接与数字
+/// 格式化，两段文字都从 [`Catalog`] 里解析。
+pub fn scale_caption(tiles_per_cell: u32, catalog: &Catalog, language: &str) -> String {
+    let scale = catalog.resolve(language, "hud-world-map-scale-label");
+    let hint = catalog.resolve(language, "hud-world-map-hint");
+    format!("{scale} 1:{tiles_per_cell}   {hint}")
+}
+
 /// 世界地图整块面板这一帧的产出：边框 + 格子，恒是纯色矩形。
 pub struct WorldMapFrame {
     /// 边框 + 格子的全部填色矩形。
@@ -371,9 +451,12 @@ pub fn world_map_frame(data: &WorldMapPanelData<'_>, rect: Rect, skin: &dyn Skin
     let mut quads = border_only_quads(rect, appearance.border_color, appearance.border_thickness);
     let content_rect = rect.inset(appearance.border_thickness);
     quads.extend(world_map_cell_quads(data, content_rect));
-    // 玩家标记推在全部格子之后——同一道纯色 pass 里，推入顺序就是遮挡
-    // 顺序（本函数文档「为什么不用九宫格面板背景」一节同一条理由），
-    // 标记因此恒盖在它所在的那一格之上，而不是被后画的邻格盖住。
+    // 推入顺序 = 遮挡顺序（本函数文档「为什么不用九宫格面板背景」一节
+    // 同一条理由：同一道纯色 pass 里，后推的盖住先推的）。因此顺序是
+    // 地形格 → 据点 → 玩家：标记恒盖在地形之上而不会被后画的邻格盖住，
+    // 而玩家又恒盖在据点之上——同一格里同时有村子和玩家时，「我在哪」
+    // 是玩家最先要找的东西。
+    quads.extend(site_marker_quads(data, content_rect));
     quads.extend(player_marker_quads(data, content_rect));
     WorldMapFrame { quads }
 }
@@ -383,7 +466,6 @@ mod tests {
     use super::*;
     use crate::widget::skin::FlatColorSkin;
     use ll_world::terrain::base_terrain_fixture;
-    use ll_world::zone::ZoneLayout;
 
     fn sample_cell(terrain: TerrainKind, explored: bool) -> OverviewCell {
         OverviewCell { terrain, explored }
@@ -400,6 +482,8 @@ mod tests {
             rows: 1,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act
@@ -425,6 +509,8 @@ mod tests {
             rows: 2,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act
@@ -450,6 +536,8 @@ mod tests {
             rows: 2,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act
@@ -472,6 +560,8 @@ mod tests {
             rows: 1,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act
@@ -495,6 +585,8 @@ mod tests {
             rows: 1,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act
@@ -519,6 +611,8 @@ mod tests {
             rows: 1,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act
@@ -552,6 +646,8 @@ mod tests {
             rows: 1,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act
@@ -561,6 +657,224 @@ mod tests {
         assert_eq!(quads[0].color, UNKNOWN_TERRAIN_COLOR);
 
         // Cleanup: 无——`interner`/`extra_id` 只是本地栈上的值。
+    }
+
+    #[test]
+    fn 有人住的据点与废墟画成不同颜色() {
+        // 「那边有座村子」和「那边只剩废墟」对玩家挑落脚点是完全不同的
+        // 信息，两者必须一眼可分。
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let cells = [sample_cell(ids.grass, true); 4];
+        let sites = [
+            WorldMapSite {
+                cell: (0, 0),
+                inhabited: true,
+            },
+            WorldMapSite {
+                cell: (1, 0),
+                inhabited: false,
+            },
+        ];
+        let data = WorldMapPanelData {
+            cells: &cells,
+            cols: 2,
+            rows: 2,
+            terrain_ids: &ids,
+            player: None,
+            sites: &sites,
+            tiles_per_cell: 0,
+        };
+
+        // Act
+        let quads = site_marker_quads(&data, Rect::new(0.0, 0.0, 200.0, 200.0));
+
+        // Assert
+        assert_eq!(quads.len(), 2);
+        assert_eq!(quads[0].color, INHABITED_SITE_COLOR);
+        assert_eq!(quads[1].color, RUINED_SITE_COLOR);
+        assert_ne!(INHABITED_SITE_COLOR, RUINED_SITE_COLOR);
+    }
+
+    #[test]
+    fn 未探索格上的据点不画因此不泄漏战争迷雾() {
+        // 「那边山谷里有座村子」正是探索要换来的东西。开局就全图显示
+        // 等于把这份游戏内容白送，也与本模块对地形「没去过就不告诉你
+        // 是什么」直接矛盾。
+        // Arrange：两格地形相同、都有据点，只有第一格探索过。
+        let (ids, _table) = base_terrain_fixture();
+        let cells = [sample_cell(ids.grass, true), sample_cell(ids.grass, false)];
+        let sites = [
+            WorldMapSite {
+                cell: (0, 0),
+                inhabited: true,
+            },
+            WorldMapSite {
+                cell: (1, 0),
+                inhabited: true,
+            },
+        ];
+        let data = WorldMapPanelData {
+            cells: &cells,
+            cols: 2,
+            rows: 1,
+            terrain_ids: &ids,
+            player: None,
+            sites: &sites,
+            tiles_per_cell: 0,
+        };
+
+        // Act
+        let quads = site_marker_quads(&data, Rect::new(0.0, 0.0, 200.0, 100.0));
+
+        // Assert：只画探索过的那一座。
+        assert_eq!(quads.len(), 1);
+        assert_eq!(
+            quads[0].position[0],
+            0.0 + 100.0 * SITE_MARKER_INSET_FRACTION
+        );
+    }
+
+    #[test]
+    fn 据点标记比玩家标记小因此同格时玩家压得住() {
+        // Arrange：同一格上既有据点又有玩家。
+        let (ids, _table) = base_terrain_fixture();
+        let cells = [sample_cell(ids.grass, true)];
+        let sites = [WorldMapSite {
+            cell: (0, 0),
+            inhabited: true,
+        }];
+        let data = WorldMapPanelData {
+            cells: &cells,
+            cols: 1,
+            rows: 1,
+            terrain_ids: &ids,
+            player: Some((0, 0)),
+            sites: &sites,
+            tiles_per_cell: 0,
+        };
+        let rect = Rect::new(0.0, 0.0, 100.0, 100.0);
+
+        // Act
+        let site = site_marker_quads(&data, rect);
+        let player = player_marker_quads(&data, rect);
+
+        // Assert：玩家标记严格更大，且在整块面板里排在据点之后。
+        assert!(player[0].size[0] > site[0].size[0]);
+        let frame = world_map_frame(&data, rect, &FlatColorSkin);
+        let site_index = frame
+            .quads
+            .iter()
+            .position(|q| q.color == INHABITED_SITE_COLOR)
+            .expect("据点标记必须在这一帧里");
+        let player_index = frame
+            .quads
+            .iter()
+            .position(|q| q.color == PLAYER_MARKER_COLOR)
+            .expect("玩家标记必须在这一帧里");
+        assert!(
+            site_index < player_index,
+            "玩家标记必须推在据点之后才能盖住它"
+        );
+    }
+
+    #[test]
+    fn 据点列行越界时跳过而不是画到网格外() {
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let cells = [sample_cell(ids.grass, true)];
+        let sites = [WorldMapSite {
+            cell: (5, 5),
+            inhabited: true,
+        }];
+        let data = WorldMapPanelData {
+            cells: &cells,
+            cols: 1,
+            rows: 1,
+            terrain_ids: &ids,
+            player: None,
+            sites: &sites,
+            tiles_per_cell: 0,
+        };
+
+        // Act
+        let quads = site_marker_quads(&data, Rect::new(0.0, 0.0, 100.0, 100.0));
+
+        // Assert
+        assert!(quads.is_empty());
+    }
+
+    #[test]
+    fn 据点绘制顺序逐位跟随调用方给出的顺序() {
+        // 约束 C5 在呈现层的落点：同一格上的两座据点谁盖住谁，必须由
+        // 调用方给出的确定性顺序决定（生产调用方给的是编年史按区块光栅
+        // 序排好的切片），不能由任何哈希容器的桶序决定。本函数只做
+        // `filter` + `map`，不排序、不去重——这条测试锁住这一点。
+        // Arrange
+        let (ids, _table) = base_terrain_fixture();
+        let cells = [sample_cell(ids.grass, true)];
+        let forward = [
+            WorldMapSite {
+                cell: (0, 0),
+                inhabited: true,
+            },
+            WorldMapSite {
+                cell: (0, 0),
+                inhabited: false,
+            },
+        ];
+        let backward = [forward[1], forward[0]];
+        let make = |sites: &[WorldMapSite]| -> Vec<[f32; 4]> {
+            let data = WorldMapPanelData {
+                cells: &cells,
+                cols: 1,
+                rows: 1,
+                terrain_ids: &ids,
+                player: None,
+                sites,
+                tiles_per_cell: 0,
+            };
+            site_marker_quads(&data, Rect::new(0.0, 0.0, 100.0, 100.0))
+                .into_iter()
+                .map(|q| q.color)
+                .collect()
+        };
+
+        // Act
+        let a = make(&forward);
+        let b = make(&backward);
+
+        // Assert：顺序原样保留，因此两种输入产出的顺序不同。
+        assert_eq!(a, vec![INHABITED_SITE_COLOR, RUINED_SITE_COLOR]);
+        assert_eq!(b, vec![RUINED_SITE_COLOR, INHABITED_SITE_COLOR]);
+    }
+
+    #[test]
+    fn 比例尺文案不硬编码走本地化目录并带上每格瓦片数() {
+        // 规格 §11.3：代码里不得出现硬编码的用户可见字符串。这条测试
+        // 用一份只有两条键的临时目录，确认文案真的是查出来的——若哪天
+        // 有人把字面量写回代码里，解析结果就不再等于这里给的值。
+        // Arrange
+        let dir =
+            std::env::temp_dir().join(format!("ll-ui-world-map-caption-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).expect("测试用建目录应当成功");
+        std::fs::write(
+            dir.join("zh-CN.ftl"),
+            "hud-world-map-scale-label = 比例尺\nhud-world-map-hint = 提示\n",
+        )
+        .expect("测试用写入应当成功");
+        let catalog = Catalog::load_dir(&dir);
+
+        // Act
+        let caption = scale_caption(96, &catalog, "zh-CN");
+
+        // Assert
+        assert!(caption.contains("比例尺"), "标签必须来自本地化目录");
+        assert!(caption.contains("提示"), "提示必须来自本地化目录");
+        assert!(caption.contains("96"), "必须带上每格覆盖的瓦片数");
+
+        // Cleanup
+        std::fs::remove_dir_all(&dir).expect("测试用临时目录应当能删掉");
     }
 
     #[test]
@@ -581,6 +895,8 @@ mod tests {
             rows: 1,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act
@@ -600,6 +916,8 @@ mod tests {
             cols: 3,
             rows: 3,
             terrain_ids: &ids,
+            sites: &[],
+            tiles_per_cell: 0,
             player: Some((1, 1)),
         };
         let rect = Rect::new(0.0, 0.0, 300.0, 300.0);
@@ -625,6 +943,8 @@ mod tests {
             rows: 2,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
 
         // Act
@@ -646,6 +966,8 @@ mod tests {
             cols: 2,
             rows: 2,
             terrain_ids: &ids,
+            sites: &[],
+            tiles_per_cell: 0,
             player: Some((2, 0)),
         };
 
@@ -668,6 +990,8 @@ mod tests {
             cols: 2,
             rows: 2,
             terrain_ids: &ids,
+            sites: &[],
+            tiles_per_cell: 0,
             player: Some((0, 0)),
         };
 
@@ -695,6 +1019,8 @@ mod tests {
             cols: 1,
             rows: 1,
             terrain_ids: &ids,
+            sites: &[],
+            tiles_per_cell: 0,
             player: Some((0, 0)),
         };
 
@@ -704,63 +1030,6 @@ mod tests {
         // Assert
         assert_eq!(marker.len(), 1);
         assert_eq!(marker[0].color, PLAYER_MARKER_COLOR);
-    }
-
-    /// 玩家坐标 → 网格列行换算的测试用布局：8x8 个区块、区块边长 48
-    /// （与生产默认值一致），够大到能真的看出接缝与整除的差别。
-    fn conversion_layout() -> ZoneLayout {
-        let zone_count = ll_core::torus::TorusSize::new(8, 8).expect("8x8 是合法尺寸");
-        ZoneLayout::new(48, zone_count).expect("48 满足全部对齐与跨度约束")
-    }
-
-    #[test]
-    fn 玩家瓦片坐标换算到区块网格按下采样倍率整除() {
-        // Arrange：区块边长 48，瓦片 (150, 250) 落在区块 (3, 5)。
-        let layout = conversion_layout();
-        let tile = layout.tile_size().wrap(150, 250);
-
-        // Act
-        let without = zone_grid_cell_of_tile(&layout, tile, 1);
-        let with_two = zone_grid_cell_of_tile(&layout, tile, 2);
-
-        // Assert
-        assert_eq!(without, (3, 5));
-        assert_eq!(with_two, (1, 2));
-    }
-
-    #[test]
-    fn 玩家在接缝旁时标记落在网格内而不是对侧或越界() {
-        // 环面上 x = -1 与 x = 世界宽 - 1 是同一格。手写取模（或者干脆
-        // 忘了取模）会让这一格算出负数列或超出列数的列——两者都会让标记
-        // 消失或画到网格外。
-        // Arrange：世界 8*48 = 384 格宽，最后一列瓦片。
-        let layout = conversion_layout();
-        let last = layout.tile_size().wrap(-1, -1);
-        let first = layout.tile_size().wrap(0, 0);
-
-        // Act
-        let last_cell = zone_grid_cell_of_tile(&layout, last, 1);
-        let first_cell = zone_grid_cell_of_tile(&layout, first, 1);
-
-        // Assert：最后一格落在最后一个区块（7,7），第一格落在 (0,0)
-        // ——两者在环面上相邻，在网格上分别是两端，都必须在合法区间内。
-        assert_eq!(last_cell, (7, 7));
-        assert_eq!(first_cell, (0, 0));
-        let zone_count = layout.zone_count();
-        assert!(last_cell.0 < zone_count.width() && last_cell.1 < zone_count.height());
-    }
-
-    #[test]
-    fn 下采样倍率为零时换算退化为不缩小而不是除零() {
-        // Arrange
-        let layout = conversion_layout();
-        let tile = layout.tile_size().wrap(150, 250);
-
-        // Act
-        let cell = zone_grid_cell_of_tile(&layout, tile, 0);
-
-        // Assert
-        assert_eq!(cell, zone_grid_cell_of_tile(&layout, tile, 1));
     }
 
     #[test]
@@ -777,6 +1046,8 @@ mod tests {
             rows: 1,
             terrain_ids: &ids,
             player: None,
+            sites: &[],
+            tiles_per_cell: 0,
         };
         let border_color = FlatColorSkin.panel(PanelStyleId::Window).border_color;
 

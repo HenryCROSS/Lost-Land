@@ -39,17 +39,19 @@ use ll_text::TextRenderer;
 use ll_ui::hud::character_panel::CharacterPanelData;
 use ll_ui::hud::render::render_hud;
 use ll_ui::hud::status_bar::StatusBarData;
-use ll_ui::hud::world_map::WorldMapPanelData;
+use ll_ui::hud::world_map::{WorldMapPanelData, WorldMapSite};
 use ll_ui::widget::quad::QuadRenderer;
 use ll_ui::widget::skin::NineSliceSkin;
 use ll_ui::widget::state::WidgetStateTable;
 use ll_ui::widget::textured_quad::TexturedQuadRenderer;
 use ll_world::fov::compute_fov;
-use ll_world::overview::{ContinentField, continent_map, generate_continent_field};
+use ll_world::overview::{ContinentField, generate_continent_field};
+use ll_world::settlement::SettlementStatus;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
 use ll_world::weather::Weather;
+use ll_world::world_map::{WorldMapView, world_map_slice};
 
 use crate::animation::{self, FALLBACK_SPRITE};
 use crate::content::{LoadedContent, RuntimeCatalogs};
@@ -116,15 +118,6 @@ fn npc_behavior_source(content: &LoadedContent, world_seed: u64) -> NativeBehavi
 /// 明显差异的值——纯粹的手感取舍，不影响正确性，任意正数都不会破坏
 /// `Zoom::new`/`MIN_SAFE_ZOOM`/`MAX_SAFE_ZOOM` 的钳制。
 const ZOOM_STEP: f32 = 0.1;
-
-/// 世界地图（M 键切换）按区块下采样的倍率——喂给
-/// `ll_world::overview::continent_map` 的 `downsample` 参数。世界默认
-/// 64×48 个区块（见 `crate::world` 的 `ZONE_COUNT`），downsample=2 时
-/// 世界地图是 32×24=768 格，比 1:1 的 3072 格更适合铺进一块屏幕大小的
-/// 面板（单格不至于小到看不清是什么地形），又远没有稀疏到丢失大陆
-/// 轮廓——纯粹的表现层取舍，不影响 `continent_map` 本身「不触发按需
-/// 生成」这条只读保证（见其文档）。
-const WORLD_MAP_DOWNSAMPLE: u32 = 2;
 
 /// 把资产 VFS 已经解析完覆盖规则的精灵声明，逐个从磁盘读出图片字节，
 /// 转换成 `ll_render::atlas_pack::pack_atlas` 需要的输入。
@@ -416,6 +409,17 @@ pub struct Demo {
     /// [`Demo::advance`] 里的开关逻辑与 `ll_ui::hud::world_map` 模块
     /// 文档。纯粹的表现层 UI 状态,同样不进 `GameWorld`/`WorldState`。
     world_map_open: bool,
+    /// 世界地图当前的缩放档位与视野中心——所有者要的「直接对地图做一定
+    /// 的缩放」落在这里，见 `ll_world::world_map::WorldMapView`。
+    ///
+    /// 与 `world_map_open` 同一条纪律：**纯表现层状态**，不进
+    /// `GameWorld`/`WorldState`、不进存档、不参与回放。世界不因为玩家把
+    /// 地图拖到哪里、放大到第几档而有任何不同。
+    ///
+    /// 打开地图那一刻重新对准玩家（见 [`Demo::advance`]），而不是记住上
+    /// 次关掉时停在哪：玩家按 M 最常见的意图是「我现在在哪」，每次都从
+    /// 自己身上开始看比恢复一个可能已经与当前位置无关的旧视野更有用。
+    world_map_view: WorldMapView,
     /// NPC 决策来源——引擎自带的行为树，见 [`npc_behavior_source`] 文档。
     ///
     /// 做成字段而不是每帧现造：[`NativeBehaviorSource`] 持有一份**内容表
@@ -485,6 +489,10 @@ impl Demo {
             &game_world.params,
             &content.terrain_ids,
         );
+        // 视野必须在 `continent_field` 被移进下方的结构体字面量之前建好
+        // ——它借 `&continent_field`，与上面那句借 `layout()` 是同一条
+        // 顺序约束。
+        let world_map_view = WorldMapView::centered_on_tile(&continent_field, player_pos);
         let npc_ai = npc_behavior_source(&content, game_world.world.seed);
         let settlement_roles = SettlementRoles::resolve(
             &content.registry,
@@ -512,6 +520,9 @@ impl Demo {
             menu: PlayerMenu::default(),
             feedback: None,
             world_map_open: false,
+            // 视野先对准出生点；每次打开地图时还会重新对准玩家当前位置，
+            // 见 `Demo::world_map_view` 字段文档。
+            world_map_view,
             npc_ai,
             settlement_roles,
             fps_counter: FpsCounter::new(),
@@ -553,6 +564,30 @@ impl Demo {
         // 之前——地图是否打开与本帧是否真的推进了一次回合无关。
         if input.was_just_pressed(GameKey::Map) {
             self.world_map_open = !self.world_map_open;
+            if self.world_map_open {
+                // 每次打开都重新对准玩家，见 `Demo::world_map_view`
+                // 字段文档。
+                if let Some(agent) = self.game_world.world.actors.get(self.game_world.player) {
+                    self.world_map_view =
+                        WorldMapView::centered_on_tile(&self.continent_field, agent.pos);
+                }
+            }
+        }
+        // 地图打开时，方向键与缩放键**只作用于地图**，本帧不再驱动玩家
+        // 移动与画面缩放，直接返回。
+        //
+        // # 规格没裁定，本批临时选定
+        //
+        // 地图是一层全屏浮层。玩家盯着地图按方向键，期待的是移动地图，
+        // 而不是让角色在看不见的地方走两步——后者还会**推进世界时钟**
+        // （见本方法文档「玩家不行动，时间就不走」），是不可撤销的。
+        // 选这条是因为它最保守：反转它只需要删掉这个 `if` 分支。
+        //
+        // 早退也顺带保证了地图开着的时候世界完全静止：NPC 不动、流式
+        // 加载不跑、时钟不走。玩家看地图看多久都不会被咬。
+        if self.world_map_open {
+            self.pan_and_zoom_world_map(input);
+            return;
         }
         self.maintain_streaming();
         // 地面物品老化清理（NPC 生命周期批次）——见
@@ -663,6 +698,37 @@ impl Demo {
     /// 钳制到 `[MIN_SAFE_ZOOM, MAX_SAFE_ZOOM]`，不是 `Zoom` 的通用
     /// 上下限——这是拉远不会让渲染剔除范围超出常驻区块集合覆盖范围的
     /// 唯一强制点，见 `crate::world::MIN_SAFE_ZOOM` 文档。
+    /// 地图打开时把方向键与缩放键接到世界地图视野上。
+    ///
+    /// # 为什么复用既有按键，不新增 `GameKey`
+    ///
+    /// `ZoomIn`/`ZoomOut` 与四个方向键**已经存在**，且已经接好了自动
+    /// 重复与滚轮（见 `ll_platform::input::GameKey::ZoomIn` 文档）。
+    /// 新增两个「地图专用缩放键」意味着玩家要记两套键、要在设置里绑两
+    /// 次，而两套键在任何时刻都恰好只有一套可用——纯粹的重复。复用还有
+    /// 一个直接好处：滚轮缩放在地图上白拿，不用再接一遍。
+    ///
+    /// 方向键走 `was_activated`（参与自动重复）而不是 `was_just_pressed`：
+    /// 按住方向键连续平移是地图的通行手感，与它们在游戏内驱动连续移动
+    /// 是同一条既有约定。
+    fn pan_and_zoom_world_map(&mut self, input: &InputState) {
+        if input.was_activated(GameKey::ZoomIn) {
+            self.world_map_view.zoom_in();
+        }
+        if input.was_activated(GameKey::ZoomOut) {
+            self.world_map_view.zoom_out();
+        }
+        // 四个方向各算一次而不是 `else if` 串联：同时按下左和上应当斜着
+        // 平移，与游戏内八向移动的既有预期一致。
+        let dx = i32::from(input.was_activated(GameKey::Right))
+            - i32::from(input.was_activated(GameKey::Left));
+        let dy = i32::from(input.was_activated(GameKey::Down))
+            - i32::from(input.was_activated(GameKey::Up));
+        if dx != 0 || dy != 0 {
+            self.world_map_view.pan(&self.continent_field, dx, dy);
+        }
+    }
+
     fn update_zoom(&mut self, input: &InputState) {
         let mut value = self.zoom.get();
         if input.was_activated(GameKey::ZoomIn) {
@@ -800,6 +866,7 @@ fn draw_hud(
     fps: f32,
     world_map_open: bool,
     continent_field: &ContinentField,
+    world_map_view: &WorldMapView,
     // 玩家菜单与反馈行，见 `Demo::menu`/`Demo::feedback` 字段文档。
     menu: PlayerMenu,
     feedback: Option<Feedback>,
@@ -888,39 +955,74 @@ fn draw_hud(
         rule_modifiers: &rule_modifiers,
     };
 
-    // 见本函数文档「世界地图」一节：`world_map_cells` 声明在 `if` 之外，
-    // 让 `world_map_data` 借用的数据在传给 `render_hud` 那一刻仍然存活。
-    let world_map_cells;
+    // 见本函数文档「世界地图」一节：`world_map_slice_data`/`world_map_sites`
+    // 声明在 `if` 之外，让 `world_map_data` 借用的数据在传给 `render_hud`
+    // 那一刻仍然存活。
+    let world_map_slice_data;
+    let world_map_sites;
     let world_map_data = if world_map_open {
         let layout = *game_world.world.terrain.layout();
-        let zone_count = layout.zone_count();
-        let cols = zone_count.width().div_ceil(WORLD_MAP_DOWNSAMPLE);
-        let rows = zone_count.height().div_ceil(WORLD_MAP_DOWNSAMPLE);
-        world_map_cells = continent_map(
+        world_map_slice_data = world_map_slice(
             continent_field,
             &layout,
             &game_world.world.exploration,
-            WORLD_MAP_DOWNSAMPLE,
+            world_map_view,
         );
         // 玩家位置标记——纯呈现，由玩家坐标现算，不进 `WorldState`、
         // 不进 `OverviewCell`，见 `ll_ui::hud::world_map::WorldMapPanelData::player`
-        // 字段文档。环面换算由 `zone_grid_cell_of_tile` 内部的
-        // `ZoneLayout::tile_to_zone` 负责，这里不手写任何取模。
+        // 字段文档。环面换算由 `WorldMapSlice::cell_of_tile` 负责（内部
+        // 走 `TorusSize`），这里不手写任何取模；它与画格子用的是同一个
+        // 视野原点，因此任何缩放档位、任何平移下标记都对得上。
         //
         // 不区分玩家当前在哪个 `Space`：世界地图画的是大陆平面，玩家
         // 下到地下时他在大陆上的**横向**位置没变，标记仍然应该指在那
         // 里——藏起来只会让玩家在地下彻底失去方位感。
-        let player = Some(ll_ui::hud::world_map::zone_grid_cell_of_tile(
-            &layout,
-            agent.pos,
-            WORLD_MAP_DOWNSAMPLE,
-        ));
+        let player = world_map_slice_data.cell_of_tile(agent.pos);
+
+        // 据点标记——所有者要「显示多点细节，好让玩家决定选哪里」，而
+        // 「哪里有村子、哪里只剩废墟」大概率是那个决定里最重的一条。
+        //
+        // 数据来自编年史的 `sites()`：一个**已按区块光栅序排好的切片**
+        // （见 `ll_world::chronicle::WorldChronicle::sites` 文档），顺序
+        // 因此是世界数据自身的确定性顺序，不是任何哈希容器的桶序
+        // （约束 C5）。默认世界二百多座，每帧一次线性遍历，与同一帧已经
+        // 在跑的整屏归并相比可以忽略。
+        //
+        // 编年史拿不到时（`chronicle_handle` 为 `None`）就不画据点——
+        // 与 `GpuResources::lookup`「图集条目缺失，跳过本次绘制」同一条
+        // 显示层降级纪律，不 panic。
+        //
+        // **资源点没有画**：`SettlementSite` 只存了这座据点靠什么吃饭的
+        // 两种资源（那是据点的属性），世界里真正的资源点分布没有一份
+        // 可供概览查询的索引，要现算就得逐区块跑资源采样——那正是
+        // `ContinentField` 存在的理由所要避免的开销。如实不做，不硬接。
+        let chronicle = game_world.world.terrain.chronicle_handle();
+        world_map_sites = chronicle
+            .as_ref()
+            .map(|chronicle| {
+                chronicle
+                    .sites()
+                    .iter()
+                    .filter_map(|site| {
+                        world_map_slice_data
+                            .cell_of_tile(site.anchor)
+                            .map(|cell| WorldMapSite {
+                                cell,
+                                inhabited: matches!(site.status, SettlementStatus::Inhabited),
+                            })
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+
         Some(WorldMapPanelData {
-            cells: &world_map_cells,
-            cols,
-            rows,
+            cells: &world_map_slice_data.cells,
+            cols: world_map_slice_data.cols,
+            rows: world_map_slice_data.rows,
             terrain_ids: &content.terrain_ids,
             player,
+            sites: &world_map_sites,
+            tiles_per_cell: world_map_view.tiles_per_cell(continent_field),
         })
     } else {
         None
@@ -1263,6 +1365,7 @@ impl AppHandler for Demo {
                 fps,
                 self.world_map_open,
                 &self.continent_field,
+                &self.world_map_view,
                 self.menu,
                 self.feedback,
             );

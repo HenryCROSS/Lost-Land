@@ -361,3 +361,9 @@ worldgen-preset-highland-display_name = 山地
 worldgen-preset-highland-description = 陆地为主的高原世界，群山连绵。山地约占两成四，水域仅两成五。
 worldgen-preset-inland-display_name = 内陆
 worldgen-preset-inland-description = 几乎不见海洋的内陆世界，水域仅约一成六，渔猎让位给农牧。
+
+# 世界地图（M 键切换的大陆概览浮层，ll-ui::hud::world_map）——缩放批次。
+# hud-world-map-scale-label 后面紧跟 "1:<每格覆盖的瓦片数>"，见
+# crates/ll-ui/src/hud/world_map.rs 的 scale_caption。
+hud-world-map-scale-label = 比例尺
+hud-world-map-hint = 方向键平移，缩放键放大缩小

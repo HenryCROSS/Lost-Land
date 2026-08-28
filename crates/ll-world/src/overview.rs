@@ -22,7 +22,7 @@ use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::exploration::ExplorationMemory;
-use crate::generate::{GenParams, zone_representative_terrain};
+use crate::generate::{GenParams, terrain_at_tile};
 use crate::noise::TileableNoise;
 use crate::space::ZoneCoord;
 use crate::state::WorldState;
@@ -100,41 +100,118 @@ pub fn minimap(
 /// `SurfaceStore` 生成——这正是流式加载要避免的事（设计文档五节：
 /// 「不能为了画一张概览图就把全部区块的完整地形都生成出来」，任务 11
 /// 迁移时如实记录了这处临时状态，见其文档）。`ContinentField` 是一份
-/// **完全独立**的粗粒度数据：每个区块只采样代表点（区块左上角一格，见
-/// [`crate::generate::zone_representative_terrain`]），不经过、也不
-/// 写入 `SurfaceStore` 的常驻集合——这是本类型存在的唯一理由：概览图
-/// 的分辨率需求（每区块一格）与流式加载的分辨率需求（每瓦片一格）本
-/// 就不同，硬要复用同一份存储只会互相拖累。
+/// **完全独立**的粗粒度数据：只按固定间隔采样点，不经过、也不写入
+/// `SurfaceStore` 的常驻集合——这是本类型存在的唯一理由：概览图的
+/// 分辨率需求与流式加载的分辨率需求（每瓦片一格）本就不同，硬要复用
+/// 同一份存储只会互相拖累。
 ///
 /// 与地表的关系是「同一份种子噪声的两种粒度采样」，不是两份可能漂移
 /// 的地形真相——两者都经过
 /// [`crate::generate::build_zone_noise`]/`crate::generate::terrain_at_coord`
 /// （后者是模块私有函数，不能做成文档内链，见 `generate.rs` 模块文档）
 /// 那同一条阈值逻辑，只是采样密度不同。
+///
+/// # 分辨率：每个区块每轴 [`SAMPLES_PER_ZONE_AXIS`] 个采样点（世界地图
+/// 缩放批次加密）
+///
+/// 本类型**曾经**每个区块只存一个采样点。那个分辨率下，世界地图无论
+/// 怎么缩放，一格最细也只能到「一个区块 = 48×48 瓦片」——所有者要的
+/// 「放大之后看清楚是什么东西」在这份数据上根本变不出来，因为更细的
+/// 信息压根没被采过。加密到子区块分辨率是「细节」这件事唯一的来源。
+///
+/// 加密**不改变** [`continent_map`] 的产出：区块左上角那一个子采样点
+/// 对应的瓦片坐标恰好是 `(zone.x() * zone_span, zone.y() * zone_span)`
+/// ——正是 [`crate::generate::zone_representative_terrain`] 采的那一点，
+/// 见 [`Self::terrain_at_zone`]。这条由测试
+/// `加密后的大陆场每区块代表地形与加密前逐格相同` 锁住。
 #[derive(Debug, Clone)]
 pub struct ContinentField {
     zone_count: TorusSize,
-    /// 按 `(zone.y() * zone_count.width() + zone.x())` 行主序排列，长度
-    /// 恒等于 `zone_count.width() * zone_count.height()`。
+    /// 每个区块每轴存了多少个采样点，见 [`SAMPLES_PER_ZONE_AXIS`]。
+    samples_per_zone_axis: u32,
+    /// 一个采样点覆盖多少个瓦片（`zone_span / samples_per_zone_axis`）。
+    sample_span: u32,
+    /// 采样场的尺寸（单位是采样点，不是瓦片也不是区块）。
+    ///
+    /// 做成 [`TorusSize`] 而不是一对 `u32`：采样场与世界本身一样是环面
+    /// 的，视野平移要绕接缝，而 `TorusSize` 是本仓库唯一被允许做环面
+    /// 换算的地方（不允许在别处手写取模，见 `ll_core::torus` 模块文档
+    /// 与 `docs/architecture/04-torus-topology.md`）。
+    sample_size: TorusSize,
+    /// 按 `(sample.y() * sample_size.width() + sample.x())` 行主序排列，
+    /// 长度恒等于 `sample_size.width() * sample_size.height()`。
     cells: Vec<TerrainKind>,
 }
 
+/// 每个区块每轴采样多少个点，见 [`ContinentField`] 文档。
+///
+/// 取 4（默认区块边长 48 → 一个采样点覆盖 12×12 瓦片）：这是「放大到
+/// 最近一档时一格代表多大一片地」的下限。再密一倍，默认世界的采样点数
+/// 从 49152 涨到 196608（建局时的一次性噪声采样成本与常驻内存同步翻
+/// 四倍），换来的是 6 格见方的分辨率——对「在地图上挑一个区块出生」
+/// 这个用途已经远超必要（一个区块 48 格见方，12 格粒度下每个区块就有
+/// 4×4 个格子可看）。
+///
+/// `ZoneLayout::new` 保证 `zone_span` 是 `CELL_SIZE`（16）的整数倍
+/// （`crate::zone::ZoneLayout::new` 的对齐校验），因此恒能被 4 整除；
+/// [`generate_continent_field`] 仍然显式处理除不尽的情形（退化成每区块
+/// 一个采样点，即加密前的行为），不 panic。
+pub const SAMPLES_PER_ZONE_AXIS: u32 = 4;
+
 impl ContinentField {
-    /// 查询给定区块坐标的代表地形。
+    /// 查询给定区块坐标的代表地形——取该区块**左上角**那一个子采样点。
+    ///
+    /// 与加密前逐位相同：子采样 `(zx * spa, zy * spa)` 对应的瓦片坐标是
+    /// `(zx * zone_span, zy * zone_span)`，正是
+    /// [`crate::generate::zone_representative_terrain`] 采的那一点。
     fn terrain_at_zone(&self, zone: ZoneCoord) -> TerrainKind {
-        let index = zone.y() as usize * self.zone_count.width() as usize + zone.x() as usize;
+        let sample = self.sample_size.wrap(
+            zone.x() * self.samples_per_zone_axis as i32,
+            zone.y() * self.samples_per_zone_axis as i32,
+        );
+        self.terrain_at_sample(sample)
+    }
+
+    /// 采样场的尺寸（单位是采样点）。
+    pub fn sample_size(&self) -> TorusSize {
+        self.sample_size
+    }
+
+    /// 一个采样点覆盖多少个瓦片。
+    pub fn sample_span(&self) -> u32 {
+        self.sample_span
+    }
+
+    /// 每个区块每轴有多少个采样点。
+    pub fn samples_per_zone_axis(&self) -> u32 {
+        self.samples_per_zone_axis
+    }
+
+    /// 世界有多少个区块。
+    pub fn zone_count(&self) -> TorusSize {
+        self.zone_count
+    }
+
+    /// 查询给定采样点坐标的地形。
+    ///
+    /// `sample` 必须是**已经过 [`Self::sample_size`] 环绕**的坐标——
+    /// 与 [`crate::generate::terrain_at_tile`] 同一条既有约定：环绕由
+    /// `TorusSize::wrap` 统一负责，本函数不再重复一遍环面语义。
+    pub fn terrain_at_sample(&self, sample: TorusPos) -> TerrainKind {
+        let index = sample.y() as usize * self.sample_size.width() as usize + sample.x() as usize;
         self.cells[index]
     }
 }
 
-/// 生成一份 [`ContinentField`]：遍历 `layout` 的全部区块坐标，每个区块
-/// 只采样一个代表点，不生成任何区块窗口、不触碰 `SurfaceStore`。
+/// 生成一份 [`ContinentField`]：按 [`SAMPLES_PER_ZONE_AXIS`] 的密度遍历
+/// 整个世界的采样点，每个点只问一次噪声，不生成任何区块窗口、不触碰
+/// `SurfaceStore`。
 ///
 /// 调用方应在世界创建时调用一次并长期持有结果（与
-/// [`crate::generate::build_zone_noise`] 的噪声源同一个使用惯例：O(1)
-/// 到 O(区块数) 之间的一次性开销，不是每帧都要重算的东西）——
-/// `zone_count` 默认 48×32 = 1536 个区块，每个只采一点，成本远小于
-/// 生成一个完整区块窗口。
+/// [`crate::generate::build_zone_noise`] 的噪声源同一个使用惯例：一次性
+/// 开销，不是每帧都要重算的东西）——默认布局 64×48 个区块、每区块
+/// 4×4 个采样点 = 49152 次噪声采样，仍然远小于生成哪怕一小把完整区块
+/// 窗口（一个 48×48 的窗口就是 2304 次，且还要建整份网格）。
 pub fn generate_continent_field(
     layout: &ZoneLayout,
     noise: &TileableNoise,
@@ -142,21 +219,39 @@ pub fn generate_continent_field(
     terrain_ids: &BaseTerrainIds,
 ) -> ContinentField {
     let zone_count = layout.zone_count();
+    // 除不尽（当前 `ZoneLayout` 的对齐约束下不可能，见
+    // `SAMPLES_PER_ZONE_AXIS` 文档）或采样场尺寸构造不出来时，退化成
+    // 每区块一个采样点——那正是加密前的行为，是一条已知能工作的路径，
+    // 比 panic 或产出半份数据都好。
+    let samples_per_zone_axis = if layout.zone_span().is_multiple_of(SAMPLES_PER_ZONE_AXIS) {
+        SAMPLES_PER_ZONE_AXIS
+    } else {
+        1
+    };
+    let (samples_per_zone_axis, sample_size) = TorusSize::new(
+        zone_count.width() * samples_per_zone_axis,
+        zone_count.height() * samples_per_zone_axis,
+    )
+    .map(|size| (samples_per_zone_axis, size))
+    .unwrap_or((1, zone_count));
+
+    let sample_span = layout.zone_span() / samples_per_zone_axis;
+    let tile_size = layout.tile_size();
     let mut cells =
-        Vec::with_capacity((zone_count.width() as usize) * (zone_count.height() as usize));
-    for zy in 0..zone_count.height() as i32 {
-        for zx in 0..zone_count.width() as i32 {
-            let zone = zone_count.wrap(zx, zy);
-            cells.push(zone_representative_terrain(
-                noise,
-                params,
-                layout,
-                zone,
-                terrain_ids,
-            ));
+        Vec::with_capacity((sample_size.width() as usize) * (sample_size.height() as usize));
+    for sy in 0..sample_size.height() as i32 {
+        for sx in 0..sample_size.width() as i32 {
+            let tile = tile_size.wrap(sx * sample_span as i32, sy * sample_span as i32);
+            cells.push(terrain_at_tile(noise, params, tile, terrain_ids));
         }
     }
-    ContinentField { zone_count, cells }
+    ContinentField {
+        zone_count,
+        samples_per_zone_axis,
+        sample_span,
+        sample_size,
+        cells,
+    }
 }
 
 /// 取整份 [`ContinentField`] 的下采样概览，按行主序排列。
@@ -213,7 +308,7 @@ pub fn continent_map(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::generate::build_zone_noise;
+    use crate::generate::{build_zone_noise, zone_representative_terrain};
     use crate::terrain::base_terrain_fixture;
     use crate::zone::ZoneLayout;
     use ll_core::torus::TorusSize;
@@ -435,6 +530,95 @@ mod tests {
         let zone = layout.zone_count().wrap(0, 0);
         let expected = zone_representative_terrain(&noise, &params, &layout, zone, &terrain_ids);
         assert_eq!(first_cell.terrain, expected);
+    }
+
+    #[test]
+    fn 加密后的大陆场每区块代表地形与加密前逐格相同() {
+        // 本批把 `ContinentField` 从「每区块一个采样点」加密到「每区块
+        // 4x4 个采样点」。加密**不许**改变 `continent_map` 的产出——
+        // p2/p5 验收 demo 与视觉回归基准都吃这条产出。区块左上角那一个
+        // 子采样点对应的瓦片坐标恰是 `zone_representative_terrain` 采的
+        // 那一点，因此逐格相同；这条测试直接把两者对起来，防止将来有人
+        // 改动采样起点（例如改成采区块中心）而悄悄挪动整张概览图。
+        // Arrange
+        let layout = test_continent_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
+        let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+        // 全部标记为已探索无关紧要：本条只比 `terrain`，不比 `explored`。
+        let exploration = ExplorationMemory::new();
+
+        // Act
+        let cells = continent_map(&field, &layout, &exploration, 1);
+
+        // Assert：逐个区块比对。
+        let zone_count = layout.zone_count();
+        for zy in 0..zone_count.height() {
+            for zx in 0..zone_count.width() {
+                let zone = zone_count.wrap(zx as i32, zy as i32);
+                let expected =
+                    zone_representative_terrain(&noise, &params, &layout, zone, &terrain_ids);
+                let actual = cells[(zy * zone_count.width() + zx) as usize].terrain;
+                assert_eq!(actual, expected, "区块 ({zx}, {zy}) 的代表地形被加密改动了");
+            }
+        }
+    }
+
+    #[test]
+    fn 加密后的大陆场按每区块四个采样点排布() {
+        // 锁住「细节真的被采下来了」这条：采样场的尺寸必须是区块数的
+        // SAMPLES_PER_ZONE_AXIS 倍，一个采样点覆盖的瓦片数必须是区块
+        // 边长除以同一个倍数。若哪天有人把加密退回每区块一点，这条会
+        // 立刻红——而只看 `continent_map` 的产出是看不出来的（上一条
+        // 测试恰恰要求那份产出不变）。
+        // Arrange
+        let layout = test_continent_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
+
+        // Act
+        let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+
+        // Assert
+        let zone_count = layout.zone_count();
+        assert_eq!(field.samples_per_zone_axis(), SAMPLES_PER_ZONE_AXIS);
+        assert_eq!(
+            field.sample_size().width(),
+            zone_count.width() * SAMPLES_PER_ZONE_AXIS
+        );
+        assert_eq!(
+            field.sample_size().height(),
+            zone_count.height() * SAMPLES_PER_ZONE_AXIS
+        );
+        assert_eq!(
+            field.sample_span(),
+            layout.zone_span() / SAMPLES_PER_ZONE_AXIS
+        );
+    }
+
+    #[test]
+    fn 加密后的采样点地形与直接问噪声一致() {
+        // `terrain_at_sample` 不该重算或篡改地形，只是把同一条噪声阈值
+        // 逻辑的产出按另一种排列存下来。
+        // Arrange
+        let layout = test_continent_layout();
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        let noise = build_zone_noise(&layout, &params).expect("test_continent_layout 满足全部约束");
+        let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+
+        // Act：挑一个不在任何区块左上角的采样点（第 (1,2) 个子采样）。
+        let sample = field.sample_size().wrap(1, 2);
+        let actual = field.terrain_at_sample(sample);
+
+        // Assert
+        let tile = layout
+            .tile_size()
+            .wrap(field.sample_span() as i32, 2 * field.sample_span() as i32);
+        let expected = crate::generate::terrain_at_tile(&noise, &params, tile, &terrain_ids);
+        assert_eq!(actual, expected);
     }
 
     #[test]

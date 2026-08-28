@@ -310,3 +310,9 @@ worldgen-preset-highland-display_name = Highland
 worldgen-preset-highland-description = A land-dominated world of unbroken ranges. Roughly 24% mountain and only 25% water.
 worldgen-preset-inland-display_name = Inland
 worldgen-preset-inland-description = An inland world that barely sees the sea: roughly 16% water, farming and herding in place of fishing.
+
+# World map (the continent overview overlay toggled with M, ll-ui::hud::world_map)
+# — zoom batch. hud-world-map-scale-label is immediately followed by
+# "1:<tiles per cell>"; see scale_caption in crates/ll-ui/src/hud/world_map.rs.
+hud-world-map-scale-label = Scale
+hud-world-map-hint = Arrows pan, zoom keys zoom
