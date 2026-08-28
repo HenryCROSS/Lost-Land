@@ -29,7 +29,7 @@ pub mod worldgen;
 
 use std::path::{Path, PathBuf};
 
-use ll_content::degrade::LoadOutcome;
+use crate::save::LoadedGame;
 use ll_i18n::Catalog;
 use ll_platform::config::{load_or_default, save as save_config};
 use ll_platform::logging::init_logging;
@@ -214,7 +214,10 @@ fn load_or_new_game(
     }
 
     match save::load_game(&paths.save, content) {
-        LoadOutcome::Playable(mut world) => {
+        LoadedGame::Playable {
+            mut world,
+            identity,
+        } => {
             let player = world.player_entity.expect("可游玩的存档必然记录了玩家实体");
             // 编年史与 noise 同一类「按种子随时能重新派生」的运行期数据，
             // 不随 `WorldState` 序列化（ADR 0009，见
@@ -246,16 +249,21 @@ fn load_or_new_game(
                 params,
                 player,
                 timeline,
+                // 世界身份取**存档头里记着的那一份**，不是按当前会话
+                // 重新算一份——生成期 mod 集合只存在于存档头，重算等于
+                // 用「玩家现在开着哪些 mod」覆盖掉「这个世界当初是用
+                // 哪些 mod 生成的」，见 `crate::save` 模块文档第一节。
+                identity,
             }
         }
-        LoadOutcome::ReadOnly(_) => {
+        LoadedGame::ReadOnly(_) => {
             tracing::warn!(
                 path = %paths.save.display(),
                 "存档因缺失内容降级为只读，本体二进制暂不支持只读模式游玩，改为开始新游戏"
             );
             new_game(content, new_game_config)
         }
-        LoadOutcome::Rejected(error) => {
+        LoadedGame::Rejected(error) => {
             tracing::error!(?error, path = %paths.save.display(), "存档读取失败，开始新游戏");
             new_game(content, new_game_config)
         }

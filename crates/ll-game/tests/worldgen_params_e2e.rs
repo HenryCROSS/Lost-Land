@@ -14,12 +14,11 @@
 //! 地形**，而且完全静默：不报错、不变红。本文件的第二条测试正是对着
 //! 这个缺口写的。
 
-use ll_content::degrade::LoadOutcome;
 use ll_content::mode::SaveMode;
 use ll_content::world_identity::terrain_preset;
 use ll_core::time::Tick;
 use ll_game::content::{LoadedContent, load_content};
-use ll_game::save::{load_game, save_game};
+use ll_game::save::{LoadedGame, load_game, save_game};
 use ll_game::world::build_new_world;
 use ll_world::generate::{GenParams, TerrainShape, build_zone_noise, terrain_at_tile};
 use ll_world::state::WorldState;
@@ -189,7 +188,10 @@ fn 群岛存档重开之后玩家还没走到的地方生成出来的仍然是�
     );
 
     // Act：读档，然后**只用存档自己记着的参数**继续流式生成。
-    let LoadOutcome::Playable(mut loaded) = load_game(&path, &content) else {
+    let LoadedGame::Playable {
+        world: mut loaded, ..
+    } = load_game(&path, &content)
+    else {
         panic!("期望 Playable");
     };
     let loaded_params = loaded.gen_params();

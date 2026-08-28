@@ -25,17 +25,20 @@
 
 use ll_content::content_index_map::{rebuild_from_header, snapshot_for_header};
 use ll_content::degrade::LoadOutcome;
-use ll_content::header::SaveHeader;
+use ll_content::header::{SaveHeader, SaveHeaderMeta};
 use ll_content::mode::SaveMode;
 use ll_content::save_file::{
     CURRENT_SCHEMA_VERSION, load_from_header_only, load_full, save_to_file,
 };
+use ll_content::world_identity::WorldIdentity;
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::{TorusPos, TorusSize};
+use ll_mod::manifest::ModManifest;
+use ll_mod::mod_set::{GenerationModSet, ModSetEntry};
 use ll_mod::registry::Registry;
 use ll_world::entity::{Agent, BaseStats};
-use ll_world::generate::GenParams;
+use ll_world::generate::{GenParams, TerrainShape};
 use ll_world::space::{Space, ZoneCoord};
 use ll_world::state::WorldState;
 use ll_world::terrain::{TerrainTable, base_terrain_fixture, materialize_base_terrain};
@@ -122,21 +125,47 @@ fn bare_agent(pos: TorusPos, zone: ZoneCoord) -> Agent {
     }
 }
 
+/// 测试用的世界身份：1×1 区块、种子 0、默认地形形态，生成期 mod 集合
+/// 由调用方指定。
+///
+/// 存档头的四个身份字段现在只能整体来自一份 `WorldIdentity`（见
+/// `ll_content::header::SaveHeader::new`），所以本文件不再手写头部
+/// 字面量——「某个生成期 mod 后来消失了」这类场景，表达方式变成
+/// 「这个世界当初就是用这一批 mod 生成的」，比原先直接往头部数组里
+/// `push` 更贴近它真正的含义。
+fn sample_identity(generation_mods: GenerationModSet) -> WorldIdentity {
+    let layout = ZoneLayout::new(64, TorusSize::new(1, 1).expect("1×1 是合法尺寸"))
+        .expect("64 满足全部对齐约束");
+    WorldIdentity::bind(0, layout, TerrainShape::default(), generation_mods)
+}
+
 fn sample_header(content_index_map: Vec<String>, mode: SaveMode) -> SaveHeader {
-    SaveHeader {
-        schema_version: CURRENT_SCHEMA_VERSION,
-        saved_at: 1_755_100_000,
-        character_name: "端到端测试角色".to_string(),
-        current_region: "端到端测试区域".to_string(),
-        playtime_ticks: 0,
-        generation_mods: Vec::new(),
-        current_mods: Vec::new(),
-        content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
+    header_for(
+        sample_identity(GenerationModSet(Vec::new())),
         content_index_map,
-        world_size: (1, 1),
-        world_seed: 0,
         mode,
-    }
+    )
+}
+
+fn header_for(
+    identity: WorldIdentity,
+    content_index_map: Vec<String>,
+    mode: SaveMode,
+) -> SaveHeader {
+    SaveHeader::new(
+        &identity,
+        SaveHeaderMeta {
+            schema_version: CURRENT_SCHEMA_VERSION,
+            saved_at: 1_755_100_000,
+            character_name: "端到端测试角色".to_string(),
+            current_region: "端到端测试区域".to_string(),
+            playtime_ticks: 0,
+            current_mods: Vec::new(),
+            content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
+            content_index_map,
+            mode,
+        },
+    )
 }
 
 fn temp_path(name: &str) -> std::path::PathBuf {
@@ -239,6 +268,58 @@ fn 含实体与地形改动的世界存档读档后哈希一致() {
 }
 
 #[test]
+fn 玩家中途多装一个生成期名单之外的mod时读档照常放行() {
+    // 钉住两道校验（`check_mod_set`/`check_mod_content`）在「新装了生成期
+    // 之外的 mod」这一情形下的语义：它们**只遍历生成期名单**，名单之外
+    // 多出来的 mod 一眼都不看——读档放行。
+    //
+    // 生成期 mod 集合修正批次**没有改**这条语义：所有者裁定的决策二只
+    // 覆盖「mod 缺失」与「版本对不上」两档，「玩家多装了一个 mod」不在
+    // 其中。那条缺陷真正的伤害也不在这里放行，而在放行之后——修复前的
+    // `save_game` 会在下一次存档时把多出来的 mod 重算进生成期名单，永久
+    // 污染世界身份。放行之后名单不被污染那一半，由
+    // `ll_game::save` 的 `中途新装的mod不会被再存一次档混进生成期集合`
+    // 守着。
+    // Arrange：世界用「只有 lostland」这一批 mod 生成。
+    let (world, registry, _terrain_ids) = world_with_registry();
+    let content_index_map = snapshot_for_header(&registry);
+    let identity = sample_identity(GenerationModSet(vec![ModSetEntry {
+        id: id("lostland:self"),
+        version: "0.1.0".to_string(),
+        content_hash: registry.content_hash_of("lostland"),
+    }]));
+    let header = header_for(identity, content_index_map, SaveMode::Permadeath);
+    let path = temp_path("extra-mod-installed");
+    save_to_file(&path, &header, &world).expect("写出应当成功");
+    let hash_before = world.hash();
+
+    // Act：当前会话除 lostland 外还多装了一个 extramod。
+    let (current_registry, terrain_table) = current_session_registry_with_terrain();
+    let current_manifests = vec![
+        ModManifest {
+            id: id("lostland:self"),
+            version: "0.1.0".to_string(),
+            dependencies: Vec::new(),
+        },
+        ModManifest {
+            id: id("extramod:self"),
+            version: "0.1.0".to_string(),
+            dependencies: Vec::new(),
+        },
+    ];
+    let outcome = load_full(&path, &current_registry, &current_manifests, terrain_table);
+
+    // Assert：照常可游玩，世界逐位一致。
+    match outcome {
+        LoadOutcome::Playable(loaded) => assert_eq!(loaded.hash(), hash_before),
+        other => panic!("多装一个 mod 不该让存档打不开，实际读到 {other:?}"),
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn 存档后卸载一个曾贡献内容的mod读档后被硬门禁拒绝而不崩溃() {
     // 决策二（项目所有者拍板：「存档的 mod 如果不存在或者版本对不上
     // 就不能进入这个存档」）推翻了这条测试曾经验证的行为——P5-A 任务
@@ -262,14 +343,12 @@ fn 存档后卸载一个曾贡献内容的mod读档后被硬门禁拒绝而不�
     world.actors.spawn(npc);
 
     let content_index_map = snapshot_for_header(&registry);
-    let mut header = sample_header(content_index_map, SaveMode::Permadeath);
-    header
-        .generation_mods
-        .push(ll_content::header::ModHeaderEntry {
-            namespace: "vanishedmod".to_string(),
-            version: "0.1.0".to_string(),
-            content_hash: Some(vanished_content_hash),
-        });
+    let identity = sample_identity(GenerationModSet(vec![ModSetEntry {
+        id: id("vanishedmod:self"),
+        version: "0.1.0".to_string(),
+        content_hash: Some(vanished_content_hash),
+    }]));
+    let header = header_for(identity, content_index_map, SaveMode::Permadeath);
     let path = temp_path("mod-unload");
     save_to_file(&path, &header, &world).expect("写出应当成功");
 

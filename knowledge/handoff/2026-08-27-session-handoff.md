@@ -173,9 +173,15 @@
 
 ## 五、已知缺陷（已记录、未修）
 
-1. **生成期 mod 集合被每次存档静默覆盖**（最严重）。`crates/ll-game/src/save.rs:69` 每次存档都从当前会话重算 `GenerationModSet::capture`，`load_game:100` 不保留存档头那一份。而两道校验 `check_mod_set`/`check_mod_content` **只遍历 `generation_mods`**——新装的 mod 不在名单里，放行；再存一次就永久混进生成期名单，原始记录追不回。正是 `p4-to-p5.md` 点名要防的事。类型层防护挡住了「拿错类型」，挡不住「拿对类型、装错内容」。
+1. ~~**生成期 mod 集合被每次存档静默覆盖**（最严重）。~~ **已修（`wt-genmodset` 批次）。**
 
-   **关联**：地形形态参数是**第四个**同性质要素，但只住在存档主体（`WorldState.terrain_shape`），**没进 `WorldIdentity`、没进存档头部**。修这个缺陷时若顺手收拢「世界身份的单一真相源」，**应当同时把 `terrain_shape` 一并收进去**，否则会造出第二处不对齐。详见 `knowledge/design/worldgen-parameters.md` 第五节末尾。
+   原文如实保留：`crates/ll-game/src/save.rs:69` 每次存档都从当前会话重算 `GenerationModSet::capture`，`load_game:100` 不保留存档头那一份。而两道校验 `check_mod_set`/`check_mod_content` **只遍历 `generation_mods`**——新装的 mod 不在名单里，放行；再存一次就永久混进生成期名单，原始记录追不回。正是 `p4-to-p5.md` 点名要防的事。类型层防护挡住了「拿错类型」，挡不住「拿对类型、装错内容」。
+
+   **修法**：世界身份收拢成单一真相源。`WorldIdentity` 现在是**四要素**（种子 + 尺寸 + 地形形态 + 生成期 mod 集合）、字段私有、只有两个构造器（`bind` 建档 / `restore_from_header` 读档搬运）；`GameWorld` 保管一份，`save_game` 原样写回、不再 `capture`。**类型层修补**：`SaveHeader` 的四个身份字段改成 `pub(crate)`，crate 外唯一的写出入口 `SaveHeader::new` 只接受 `&WorldIdentity`——`ll-game` 因此写不出「现场重算一份塞进头部」这行代码。复现测试 `ll_game::save::中途新装的mod不会被再存一次档混进生成期集合` 在修之前实测是红的。
+
+   **关联（已一并做掉）**：地形形态参数是**第四个**同性质要素，此前只住在存档主体（`WorldState.terrain_shape`），没进 `WorldIdentity`、没进存档头部。本批次把它一并收进世界身份与存档头（`SaveHeader.terrain_shape`，`Option` + `#[serde(default)]`，老存档照常读得开、无 schema 升级）。详见 `knowledge/design/worldgen-parameters.md` 第五节末尾。
+
+   **本批次没改的**：两道校验对「玩家多装了生成期名单之外的 mod」仍然**放行**——那是所有者裁定的决策二的范围（只覆盖「mod 缺失」与「版本对不上」两档），本批次不动，只保证放行之后名单不再被污染。语义由端到端测试 `crates/ll-content/tests/e2e_save_cycle.rs` 的 `玩家中途多装一个生成期名单之外的mod时读档照常放行` 钉死。
 
 2. **任务击杀进度读裸 `agent.race`**（`resolve.rs:1603`），而聚合计数、死亡统计、尸体 def 三条都已改读 `creature_kind.unwrap_or(race)`。**四条路径三对一，静默不一致。**
 

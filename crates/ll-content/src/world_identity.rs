@@ -1,4 +1,32 @@
-//! 世界身份三要素：种子 + 尺寸 + 生成期 mod 集合。
+//! 世界身份四要素：种子 + 尺寸 + 地形形态 + 生成期 mod 集合。
+//!
+//! # 为什么是四个，不再是三个
+//!
+//! 地形形态参数（[`ll_world::generate::TerrainShape`]）与另外三个完全
+//! 同性质：玩家在建档那一刻做出的选择，事后没有任何数据能反推，缺了它
+//! 同一个世界就复现不出来（`knowledge/design/worldgen-parameters.md`
+//! 五节「为什么形态参数必须进存档」）。它此前只住在存档**主体**
+//! （`ll_world::state::WorldState::terrain_shape`），既不在本类型里、
+//! 也不在存档头部——同一份文档把这条记为「一处已知的不对齐」。生成期
+//! mod 集合修正批次把身份要素收拢成单一真相源时一并收进来，否则收拢
+//! 出来的仍然是一个缺了一角的身份。
+//!
+//! # 单一真相源：绑定一次，此后只被搬运
+//!
+//! 四要素在**世界创建那一刻**由 [`WorldIdentity::bind`] 绑定一次，写进
+//! 存档头；读档时由 [`WorldIdentity::restore_from_header`] 把存档头那
+//! 一份**原样接回来**，存档时原样写回。存档路径上没有任何一处重新推导
+//! 身份——尤其是生成期 mod 集合，重算它等于用「玩家现在开着哪些 mod」
+//! 覆盖掉「这个世界当初是用哪些 mod 生成的」，这正是
+//! `knowledge/audit/2026-08-26-phase-reckoning-p6-p8.md` 三节第 9 项
+//! 记录的那条缺陷。
+//!
+//! 这条纪律不靠注释维持，靠类型：[`crate::header::SaveHeader`] 的四个
+//! 身份字段是 `pub(crate)` 的，crate 外唯一能填它们的入口是
+//! [`crate::header::SaveHeader::new`]，而它只接受一个已经绑好的
+//! `&WorldIdentity`。存档路径（`ll_game::save::save_game`）因此**写不出**
+//! 「现场重算一份生成期集合塞进头部」这行代码——不是不该写，是编译
+//! 不过。
 //!
 //! # 为什么尺寸也是身份的一部分
 //!
@@ -24,13 +52,15 @@
 //! 安全"的纯函数校验（[`validate_size_choice`]）与一份推荐预设表
 //! （[`RECOMMENDED_PRESETS`]），供未来 P7 UI 直接引用。
 
+use ll_core::error::CoreError;
 use ll_core::torus::TorusSize;
-use ll_mod::mod_set::GenerationModSet;
+use ll_mod::manifest::mod_self_id;
+use ll_mod::mod_set::{GenerationModSet, ModSetEntry};
 use ll_world::WorldError;
 use ll_world::generate::TerrainShape;
 use ll_world::zone::ZoneLayout;
 
-use crate::header::ModHeaderEntry;
+use crate::header::{ModHeaderEntry, SaveHeader};
 
 /// 一档推荐的地图尺寸预设：区块边长（固定 48，与
 /// [`ZoneLayout::default_config`] 一致）+ 世界区块数。
@@ -250,30 +280,107 @@ pub fn validate_size_choice(
     ZoneLayout::new(zone_span, count)
 }
 
-/// 世界身份三要素——种子、尺寸、生成期 mod 集合——捆绑在一起的类型，
-/// 三者缺一，同一个世界都无法复现（见模块文档）。
+/// 世界身份四要素——种子、尺寸、地形形态、生成期 mod 集合——捆绑在
+/// 一起的类型，四者缺一，同一个世界都无法复现（见模块文档）。
+///
+/// # 为什么字段是私有的
+///
+/// 身份的每一个要素都只在世界创建那一刻确定一次，此后只被搬运。公开
+/// 字段等于公开一条「事后改一改」的通路，而这条缺陷（存档时把生成期
+/// 集合重算一遍）的形状恰恰就是「事后改了一改」。私有字段 + 两个具名
+/// 构造器（[`Self::bind`] 建档、[`Self::restore_from_header`] 读档搬运）
+/// 让「什么时候允许决定身份」这件事在类型层面只有两个答案。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorldIdentity {
-    /// 生成本世界地形所用的种子。
-    pub seed: u64,
-    /// 世界尺寸（区块边长 + 区块数）。
-    pub zone_layout: ZoneLayout,
-    /// 生成期 mod 集合快照，写入后永久不变。
-    pub generation_mods: GenerationModSet,
+    seed: u64,
+    zone_layout: ZoneLayout,
+    terrain_shape: TerrainShape,
+    generation_mods: GenerationModSet,
 }
 
 impl WorldIdentity {
-    /// 在世界创建时刻一次性捆绑三要素。
+    /// 在世界创建时刻一次性捆绑四要素。
     ///
     /// 本方法本身就是"绑定时机"的落点：调用它的地方就是"世界创建"这
-    /// 一刻——不应该在任何更晚的时间点（例如每次读档）重新调用，读档
-    /// 应该直接从存档头读回三要素，不是重新推导。
-    pub fn bind(seed: u64, zone_layout: ZoneLayout, generation_mods: GenerationModSet) -> Self {
+    /// 一刻——不应该在任何更晚的时间点（例如每次读档、每次存档）重新
+    /// 调用，读档走 [`Self::restore_from_header`] 把存档头那一份原样接
+    /// 回来，不是重新推导。
+    pub fn bind(
+        seed: u64,
+        zone_layout: ZoneLayout,
+        terrain_shape: TerrainShape,
+        generation_mods: GenerationModSet,
+    ) -> Self {
         WorldIdentity {
             seed,
             zone_layout,
+            terrain_shape,
             generation_mods,
         }
+    }
+
+    /// 读档时把存档头记录的世界身份**原样接回来**。
+    ///
+    /// # 四个要素各自从哪里来（不是随便挑的）
+    ///
+    /// - **生成期 mod 集合、种子**：取自存档头。这两项在头部有权威记录，
+    ///   且生成期集合**只有**头部这一份——本方法存在的全部理由就是把它
+    ///   接回来而不是重算。
+    /// - **尺寸**：取自调用方传入的 `zone_layout`。存档头只记了区块数
+    ///   （[`SaveHeader::world_size`]），不记区块边长（见该字段文档），
+    ///   而存档主体里的 `ZoneLayout` 两者都全，是更完整的同一个值。
+    /// - **地形形态**：取自调用方传入的 `terrain_shape`，来源是存档
+    ///   主体（`WorldState::terrain_shape`）——主体那一份是流式生成真正
+    ///   读的权威副本，且**一定存在**；头部那一份是本批次新增的展示用
+    ///   副本，本批次之前写出的存档里没有（见
+    ///   [`SaveHeader::terrain_shape`]）。取主体因此既权威又不会在老存档
+    ///   上退化。
+    ///
+    /// # 错误
+    ///
+    /// 存档头里的命名空间字符串拼不出合法的 [`ll_core::ident::NamespacedId`]
+    /// 时返回 [`CoreError`]——正常路径下不会发生（写出时这些命名空间都
+    /// 是从合法 `NamespacedId` 取出来的），但存档是外部数据，不做「一定
+    /// 合法」的假设。
+    pub fn restore_from_header(
+        header: &SaveHeader,
+        zone_layout: ZoneLayout,
+        terrain_shape: TerrainShape,
+    ) -> Result<Self, CoreError> {
+        let mut entries = Vec::with_capacity(header.generation_mods.len());
+        for entry in &header.generation_mods {
+            entries.push(ModSetEntry {
+                id: mod_self_id(&entry.namespace)?,
+                version: entry.version.clone(),
+                content_hash: entry.content_hash,
+            });
+        }
+        Ok(WorldIdentity {
+            seed: header.world_seed,
+            zone_layout,
+            terrain_shape,
+            generation_mods: GenerationModSet(entries),
+        })
+    }
+
+    /// 生成本世界地形所用的种子。
+    pub fn seed(&self) -> u64 {
+        self.seed
+    }
+
+    /// 世界尺寸（区块边长 + 区块数）。
+    pub fn zone_layout(&self) -> &ZoneLayout {
+        &self.zone_layout
+    }
+
+    /// 建档时选定的地形形态参数。
+    pub fn terrain_shape(&self) -> TerrainShape {
+        self.terrain_shape
+    }
+
+    /// 生成期 mod 集合快照——绑定后永久不变。
+    pub fn generation_mods(&self) -> &GenerationModSet {
+        &self.generation_mods
     }
 }
 
@@ -340,13 +447,18 @@ mod tests {
         registry.intern(id("lostland:mountain"));
         let manifests = vec![manifest("lostland", "0.1.0")];
         let generation = GenerationModSet::capture(&registry, &manifests);
-        let identity = WorldIdentity::bind(42, ZoneLayout::default_config(), generation.clone());
+        let identity = WorldIdentity::bind(
+            42,
+            ZoneLayout::default_config(),
+            TerrainShape::default(),
+            generation.clone(),
+        );
 
         // Act：世界创建之后 registry 继续变化。
         registry.intern(id("lostland:river"));
 
         // Assert：已绑定的三要素原样不变。
-        assert_eq!(identity.generation_mods, generation);
+        assert_eq!(identity.generation_mods(), &generation);
     }
 
     #[test]

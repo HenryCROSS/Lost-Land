@@ -155,7 +155,10 @@ fn load_save(
 ) -> ll_game::world::GameWorld {
     println!("读档：{}", path.display());
     match ll_game::save::load_game(path, content) {
-        ll_content::degrade::LoadOutcome::Playable(mut world) => {
+        ll_game::save::LoadedGame::Playable {
+            mut world,
+            identity,
+        } => {
             let player = world.player_entity.expect("可游玩的存档记录了玩家");
             let params = world.gen_params();
             let layout = ll_game::world::build_zone_layout().expect("默认布局");
@@ -182,6 +185,7 @@ fn load_save(
                 params,
                 player,
                 timeline,
+                identity,
             }
         }
         other => {

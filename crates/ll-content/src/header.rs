@@ -26,21 +26,40 @@
 //! `Serialize` 会把自己序列化成裸整数,若这里误把字段类型换成
 //! `Vec<ContentIndex>`,即便编译能通过,这条测试也会因为 JSON 形状从
 //! 字符串数组变成数字数组而失败。
+//!
+//! # 这条约束管的是「读」，不是「写」
+//!
+//! [`SaveHeader::terrain_shape`] 的类型是 `Option<ll_world::generate::TerrainShape>`
+//! ——它看起来打破了上面「全部字段只用原始类型」那句话，实际没有：
+//! `TerrainShape` 是四个整数字段的 `Copy` 结构体，序列化成一个纯数字
+//! 对象，解释它同样不需要任何注册表上下文（约束真正要挡的是
+//! `ContentIndex` 那类「离开当次加载顺序就无意义」的值）。
+//!
+//! 与之对称的是**写**这一侧：[`SaveHeader::new`] 的签名接受一个
+//! [`WorldIdentity`]，而不是四个散装的身份字段。头部四个身份字段
+//! （`generation_mods`/`world_size`/`world_seed`/`terrain_shape`）因此
+//! 是 `pub(crate)` 的——crate 外部想写出一份存档头，只能先有一份绑定
+//! 好的世界身份。这不是文档约定，是编译期约束，见
+//! [`crate::world_identity`] 模块文档「单一真相源」一节。
 
+use ll_world::generate::TerrainShape;
 use serde::{Deserialize, Serialize};
 
 use crate::mode::SaveMode;
+use crate::world_identity::WorldIdentity;
 
 /// 存档头：schema 版本、存档时间、角色名、当前区域、游玩时长、
 /// 启用 mod 列表（分生成期/当前两组）、`ContentIndex` ↔ 字符串映射表、
-/// 世界身份三要素（尺寸、种子、生成期 mod 集合，见
+/// 世界身份四要素（尺寸、种子、地形形态、生成期 mod 集合，见
 /// [`crate::world_identity`] 模块文档）。
 ///
-/// 世界身份三要素——种子、尺寸、生成期 mod 集合——三者缺一，同一个
-/// 世界都无法复现（[`crate::world_identity`] 模块文档）：地图大小在
-/// 开局建档前由玩家选择、世界可以是长方形，种子相同但尺寸不同产出的
-/// 不是同一个世界；换一批生成期 mod 同样如此。三者在这个类型里各自
-/// 对应 [`Self::world_seed`]/[`Self::world_size`]/[`Self::generation_mods`]。
+/// 世界身份四要素——种子、尺寸、地形形态、生成期 mod 集合——四者缺一，
+/// 同一个世界都无法复现（[`crate::world_identity`] 模块文档）：地图大小
+/// 在开局建档前由玩家选择、世界可以是长方形，种子相同但尺寸不同产出的
+/// 不是同一个世界；换一批生成期 mod、换一档地形形态同样如此。四者在这个
+/// 类型里各自对应 [`Self::world_seed`]/[`Self::world_size`]/
+/// [`Self::terrain_shape`]/[`Self::generation_mods`]，全部是 `pub(crate)`
+/// 字段，crate 外只能经 [`Self::new`] 从一份 [`WorldIdentity`] 整体写入。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SaveHeader {
     /// 存档主体的格式版本号——迁移链（[`crate::migration`]）按这个
@@ -62,7 +81,7 @@ pub struct SaveHeader {
     /// 生成期 mod 集合快照：这个世界是用这一批 mod 生成的，写入后
     /// 永久不变，只有它能用来复现世界（见模块文档与
     /// `knowledge/design/identity-and-ids.md` 六、③）。
-    pub generation_mods: Vec<ModHeaderEntry>,
+    pub(crate) generation_mods: Vec<ModHeaderEntry>,
     /// 当前 mod 集合快照：玩家现在实际开着的这一批，会随时间漂移，
     /// 不满足「同一个种子 + 同一批内容 ⇒ 同一个世界」这条前提，不能
     /// 用来复现世界，只用来与生成期集合比对、判定缺失/内容变化。
@@ -107,20 +126,140 @@ pub struct SaveHeader {
     /// 48,见 [`crate::world_identity`] 模块文档，不需要单独再存一个
     /// 字段）。地图大小在开局建档前由玩家选择、世界可以是长方形——
     /// 种子相同但尺寸不同产出的不是同一个世界。
-    pub world_size: (u32, u32),
+    pub(crate) world_size: (u32, u32),
     /// 世界身份三要素之二：生成本世界地形所用的种子。与
     /// [`ll_world::state::WorldState::seed`] 是同一个值——存档主体本身
     /// 已经带着它（`WorldState` 参与序列化），这里额外在头部存一份，
     /// 是为了让「仅读头部」（规格 §11.2）就能看到完整的世界身份三要素，
     /// 不必先解压主体——例如存档列表界面展示「种子：12345，可分享给
     /// 好友」，或未来的种子去重/展示功能，都不需要触发主体解压。
-    pub world_seed: u64,
+    pub(crate) world_seed: u64,
+    /// 世界身份四要素之四：建档时选定的地形形态参数（大陆/群岛/山地/
+    /// 内陆……）。
+    ///
+    /// # 为什么头部也要存一份
+    ///
+    /// 权威副本在存档**主体**（`ll_world::state::WorldState::terrain_shape`）
+    /// ——流式地形生成读的是那一份。头部这一份的理由与 [`Self::world_seed`]
+    /// 逐字相同：规格 §11.2 的「存档列表界面只读头部」要看得到完整的世界
+    /// 身份，不该为了知道「这个世界是大陆还是群岛」而先解压整个主体。
+    /// `knowledge/design/worldgen-parameters.md` 五节把「形态参数没进
+    /// `WorldIdentity`、没进头部」记为一处已知的不对齐，本字段是那处
+    /// 不对齐的修正。
+    ///
+    /// # 为什么是 `Option`，以及老存档怎么办
+    ///
+    /// `None` 表示「这份存档写于本字段存在之前」。本字段是生成期 mod
+    /// 集合修正批次新增的，此前写出的存档头 JSON 里没有这个键，而
+    /// **serde 对 `Option` 字段本来就允许整个键缺席**（缺席即 `None`），
+    /// `#[serde(default)]` 只是把这条隐式行为写明——真正让老存档读得开
+    /// 的是 `Option` 这个类型本身。ADR 0018 的反例验证实测到了这一点：
+    /// 单独摘掉 `#[serde(default)]`，两条老存档兼容测试**依旧是绿的**；
+    /// 只有把字段类型从 `Option<TerrainShape>` 改成 `TerrainShape`，
+    /// 它们才会红。改这个字段的类型前请先看那两条测试。
+    ///
+    /// **老存档因此照常读得开，不需要 schema 版本升级与迁移函数**：
+    /// 存档主体的字节布局一个字节都没动，动的只是头部 JSON 多了一个
+    /// 可缺席的键。读档时世界身份里的形态参数取自主体（见
+    /// [`crate::world_identity::WorldIdentity::restore_from_header`]），
+    /// 因此 `None` 只意味着「这份存档的头部还看不到形态」，不影响任何
+    /// 玩法或复现能力；下一次存档就会把它补上。
+    #[serde(default)]
+    pub(crate) terrain_shape: Option<TerrainShape>,
     /// 存档模式（任务 10）：纯永久死亡或自由读档，及模式2 → 模式3
     /// 的单向降级标记——降级是否发生过必须能被「仅读头部」看到（存档
     /// 列表界面需要区分「这是一份仍在永久死亡模式下的断点续玩存档」
     /// 与「这是一份自由读档存档」），因此这个字段必须在头部，不能只
     /// 存在存档主体里。
     pub mode: SaveMode,
+}
+
+/// [`SaveHeader::new`] 里除世界身份之外的其余部分——把一次存档写出
+/// 需要的「这一刻的元数据」收成一个参数，而不是让构造函数拉出一串
+/// 八九个位置参数（那种签名相邻两个 `String` 传反了编译器也不会说话）。
+///
+/// 这个类型里的每一项都是**会随每次存档变化**的量（时间戳、游玩时长、
+/// 玩家现在开着哪些 mod……），与 [`WorldIdentity`] 里那四个「建档时定
+/// 死、此后只被搬运」的量正好分成两半——参数分组本身就在说明这条区分。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SaveHeaderMeta {
+    /// 存档主体的格式版本号，见 [`SaveHeader::schema_version`]。
+    pub schema_version: u32,
+    /// 存档时间，Unix 时间戳（秒）。
+    pub saved_at: i64,
+    /// 角色名，供存档列表界面展示。
+    pub character_name: String,
+    /// 当前所在区域，人类可读的展示文本。
+    pub current_region: String,
+    /// 已游玩的 tick 数。
+    pub playtime_ticks: i64,
+    /// 当前 mod 集合快照，见 [`SaveHeader::current_mods`]。
+    pub current_mods: Vec<ModHeaderEntry>,
+    /// 写出这份存档时使用的内容哈希算法版本。
+    pub content_hash_algorithm_version: u32,
+    /// `ContentIndex` ↔ 字符串映射表。
+    pub content_index_map: Vec<String>,
+    /// 存档模式。
+    pub mode: SaveMode,
+}
+
+impl SaveHeader {
+    /// 拼出一份存档头：世界身份四要素从 `identity` **原样搬运**，其余
+    /// 元数据来自 `meta`。
+    ///
+    /// # 这是 crate 外唯一的写出入口，也是那条缺陷的类型层修补
+    ///
+    /// 四个身份字段是 `pub(crate)` 的（见本类型文档），所以 `ll-content`
+    /// 之外——也就是真正调用存档的 `ll_game::save::save_game`——没有第二
+    /// 条路把值填进去。想在存档那一刻「按当前会话重算一份生成期 mod
+    /// 集合」，就必须先凭空造出一整份 [`WorldIdentity`]（连种子、尺寸、
+    /// 地形形态一起伪造），而不是像修复前那样只把一行
+    /// `GenerationModSet::capture(...)` 的结果塞进一个公开字段。
+    ///
+    /// 类型能做到的到此为止，这一点如实说明：`WorldIdentity::bind` 本身
+    /// 仍是公开的（建新世界要用它），因此「伪造整份身份」在编译期仍然
+    /// 可写——只是它再也不可能是顺手写错的样子。
+    pub fn new(identity: &WorldIdentity, meta: SaveHeaderMeta) -> Self {
+        let zone_count = identity.zone_layout().zone_count();
+        SaveHeader {
+            schema_version: meta.schema_version,
+            saved_at: meta.saved_at,
+            character_name: meta.character_name,
+            current_region: meta.current_region,
+            playtime_ticks: meta.playtime_ticks,
+            generation_mods: crate::world_identity::generation_mods_to_header_entries(
+                identity.generation_mods(),
+            ),
+            current_mods: meta.current_mods,
+            content_hash_algorithm_version: meta.content_hash_algorithm_version,
+            content_index_map: meta.content_index_map,
+            world_size: (zone_count.width(), zone_count.height()),
+            world_seed: identity.seed(),
+            terrain_shape: Some(identity.terrain_shape()),
+            mode: meta.mode,
+        }
+    }
+
+    /// 生成期 mod 集合快照，见 [`Self::generation_mods`] 字段文档。
+    pub fn generation_mods(&self) -> &[ModHeaderEntry] {
+        &self.generation_mods
+    }
+
+    /// 世界尺寸（区块数），见 [`Self::world_size`] 字段文档。
+    pub fn world_size(&self) -> (u32, u32) {
+        self.world_size
+    }
+
+    /// 生成本世界地形所用的种子，见 [`Self::world_seed`] 字段文档。
+    pub fn world_seed(&self) -> u64 {
+        self.world_seed
+    }
+
+    /// 建档时选定的地形形态参数；`None` 表示这份存档写于本字段存在
+    /// 之前，见 [`Self::terrain_shape`] 字段文档。
+    pub fn terrain_shape(&self) -> Option<TerrainShape> {
+        self.terrain_shape
+    }
 }
 
 /// 存档头里记录的单个 mod 条目：命名空间、版本号、内容哈希。
@@ -196,8 +335,45 @@ mod tests {
             ],
             world_size: (48, 32),
             world_seed: 20_260_819,
+            terrain_shape: Some(TerrainShape::default()),
             mode: SaveMode::Permadeath,
         }
+    }
+
+    #[test]
+    fn 缺少terrain_shape键的旧存档头照常反序列化且形态为none() {
+        // 老存档兼容的最小单元：`terrain_shape` 是本批次新增的头部键，
+        // 此前写出的存档头 JSON 里没有它。这类头部必须照常读得开、形态
+        // 为 `None`，**不需要 schema 版本升级与迁移函数**（存档主体的
+        // 字节布局一个字节都没动）。
+        //
+        // ADR 0018 反例验证记录：把字段类型从 `Option<TerrainShape>`
+        // 改成 `TerrainShape`，本条会红；单独摘掉 `#[serde(default)]`
+        // 则**不会**红——真正兜住老存档的是 `Option` 这个类型本身，见
+        // `SaveHeader::terrain_shape` 字段文档。
+        // Arrange：一份完全不含 terrain_shape 键的头部 JSON。
+        let 旧头部 = serde_json::json!({
+            "schema_version": 1,
+            "saved_at": 1_755_000_000_i64,
+            "character_name": "旅人",
+            "current_region": "初始村落",
+            "playtime_ticks": 42,
+            "generation_mods": [],
+            "current_mods": [],
+            "content_hash_algorithm_version": 1,
+            "content_index_map": [],
+            "world_size": [48, 32],
+            "world_seed": 20_260_819_u64,
+            "mode": SaveMode::Permadeath,
+        })
+        .to_string();
+
+        // Act
+        let header: SaveHeader = serde_json::from_str(&旧头部).expect("旧头部必须照常读得开");
+
+        // Assert
+        assert_eq!(header.terrain_shape(), None);
+        assert_eq!(header.world_seed(), 20_260_819);
     }
 
     #[test]

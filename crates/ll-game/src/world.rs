@@ -24,6 +24,9 @@ use ll_world::{
     terrain::{BaseTerrainIds, TerrainTable},
 };
 
+use ll_content::world_identity::WorldIdentity;
+use ll_mod::mod_set::GenerationModSet;
+
 use crate::content::LoadedContent;
 
 /// 新游戏的起始世界时刻——早上八点。
@@ -147,6 +150,24 @@ pub struct GameWorld {
     /// 一节：与 `noise`/`params` 同一类「运行期派生数据」,不是
     /// `WorldState` 的一部分,不参与序列化。
     pub timeline: Timeline,
+    /// 这个世界的身份：种子 + 尺寸 + 地形形态 + **生成期 mod 集合**。
+    ///
+    /// # 为什么它必须住在这里，而不是每次存档现算
+    ///
+    /// 生成期 mod 集合是「这个世界当初是用哪一批 mod 生成的」这条事实
+    /// 的**唯一记录**，只存在于存档头里。存档时若从当前会话已装载的
+    /// 内容重新算一遍（修复前 `crate::save::save_game` 正是这么做的），
+    /// 玩家中途新装的任何一个 mod 都会永久混进这个世界的生成期名单，
+    /// 而原始记录被覆盖后追不回来——种子分享、缺陷复现、回归测试全部
+    /// 失效（`knowledge/handoff/p4-to-p5.md` 二节原话）。
+    ///
+    /// 因此它在**建新世界那一刻**由 [`build_new_world`] 绑定一次
+    /// （[`ll_content::world_identity::WorldIdentity::bind`]），读档时
+    /// 由 `crate::save::load_game` 从存档头**原样接回来**
+    /// （`WorldIdentity::restore_from_header`），存档时原样写回。
+    /// `GameWorld` 是这份身份在运行期的落脚点：存档函数只拿得到
+    /// `&GameWorld`，也就只拿得到这一份身份，没有第二个来源。
+    pub identity: WorldIdentity,
 }
 
 /// 从当前世界状态重建时间轴：按 [`WorldState::actors`] 里每个存活
@@ -317,12 +338,25 @@ pub fn build_new_world(
     // 一条与「玩家现在就能行动」一致的时间轴。
     let timeline = rebuild_timeline(&world);
 
+    // 世界身份在这里、也只在这里绑定一次——`GenerationModSet::capture`
+    // 的**唯一生产调用点**就是这一行（见 `ll_mod::mod_set` 模块文档
+    // 「绑定时机」一节：世界创建那一刻一次性调用，写入存档头后永久
+    // 不变）。存档路径上不再有第二次 capture，见 `GameWorld::identity`
+    // 字段文档。
+    let identity = WorldIdentity::bind(
+        params.seed,
+        layout,
+        params.shape,
+        GenerationModSet::capture(&content.registry, &content.manifests),
+    );
+
     Ok(GameWorld {
         world,
         noise,
         params,
         player,
         timeline,
+        identity,
     })
 }
 

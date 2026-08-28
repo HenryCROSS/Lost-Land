@@ -499,6 +499,7 @@ mod tests {
             content_index_map,
             world_size: (1, 1),
             world_seed: 0,
+            terrain_shape: None,
             mode: crate::mode::SaveMode::Permadeath,
         }
     }
@@ -510,6 +511,82 @@ mod tests {
             std::process::id()
         ));
         path
+    }
+
+    /// 把一份已经写出的存档改造成「本批次之前写出的老存档」：从头部
+    /// JSON 里彻底删掉 `terrain_shape` 这个键（不是置为 `null`——老存档
+    /// 里这个键**根本不存在**，两者对 serde 是不同的输入），重新算长度
+    /// 前缀写回，主体字节一个不动。
+    fn strip_terrain_shape_key(path: &std::path::Path) {
+        let bytes = std::fs::read(path).expect("读回刚写出的存档应当成功");
+        let header_len = u32::from_le_bytes(bytes[..4].try_into().expect("恰好四字节")) as usize;
+        let mut header: serde_json::Value =
+            serde_json::from_slice(&bytes[4..4 + header_len]).expect("头部是合法 JSON");
+        assert!(
+            header
+                .as_object_mut()
+                .expect("头部是 JSON 对象")
+                .remove("terrain_shape")
+                .is_some(),
+            "前置条件：当前写出的头部里必须真的有 terrain_shape 这个键，否则本测试无意义"
+        );
+        let new_header = serde_json::to_vec(&header).expect("改回去仍是合法 JSON");
+        let mut out = (new_header.len() as u32).to_le_bytes().to_vec();
+        out.extend_from_slice(&new_header);
+        out.extend_from_slice(&bytes[4 + header_len..]);
+        std::fs::write(path, out).expect("写回改造后的存档应当成功");
+    }
+
+    #[test]
+    fn 头部不含terrain_shape键的老存档照常读得开() {
+        // 「旧存档不许读崩」的端到端证据。`terrain_shape` 是生成期 mod
+        // 集合修正批次新增的**头部**键；存档主体的字节布局一个字节都没
+        // 动，因此这次改动**不需要** schema 版本升级与迁移函数（对照
+        // `Interior::origin` 那次：那一次动的是主体结构，才必须升 schema
+        // 并写真实迁移函数）。这条测试把「不需要」这个判断变成可执行的
+        // 断言，而不是一句注释里的声称。
+        // Arrange：先写出一份当前格式的存档，再把新键从头部里删掉。
+        let (world, save_registry) = test_world_with_save_registry();
+        let path = temp_path("old-header-without-terrain-shape");
+        let identity = crate::world_identity::WorldIdentity::bind(
+            0,
+            *world.terrain.layout(),
+            ll_world::generate::TerrainShape::default(),
+            ll_mod::mod_set::GenerationModSet(Vec::new()),
+        );
+        let header = SaveHeader::new(
+            &identity,
+            crate::header::SaveHeaderMeta {
+                schema_version: CURRENT_SCHEMA_VERSION,
+                saved_at: 1_755_000_000,
+                character_name: "旅人".to_string(),
+                current_region: "初始村落".to_string(),
+                playtime_ticks: 0,
+                current_mods: Vec::new(),
+                content_hash_algorithm_version: CONTENT_HASH_ALGORITHM_VERSION,
+                content_index_map: crate::content_index_map::snapshot_for_header(&save_registry),
+                mode: crate::mode::SaveMode::Permadeath,
+            },
+        );
+        save_to_file(&path, &header, &world).expect("写出应当成功");
+        let hash_before = world.hash();
+        strip_terrain_shape_key(&path);
+
+        // Act
+        let (current_registry, terrain_table) = current_session_registry_with_terrain();
+        let outcome = load_full(&path, &current_registry, &[], terrain_table);
+
+        // Assert：照常可游玩、世界逐位一致；只读头部同样读得开，形态为
+        // None（「这份存档写于本字段存在之前」）。
+        match outcome {
+            LoadOutcome::Playable(loaded) => assert_eq!(loaded.hash(), hash_before),
+            other => panic!("老存档必须照常读得开，实际读到 {other:?}"),
+        }
+        let only_header = load_from_header_only(&path).expect("只读头部同样应当成功");
+        assert_eq!(only_header.terrain_shape(), None);
+
+        // Cleanup
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
