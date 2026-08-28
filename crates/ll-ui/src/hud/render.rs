@@ -900,6 +900,7 @@ mod tests {
             cols: 2,
             rows: 1,
             terrain_ids: &terrain_ids,
+            player: None,
         };
 
         // Act

@@ -902,11 +902,25 @@ fn draw_hud(
             &game_world.world.exploration,
             WORLD_MAP_DOWNSAMPLE,
         );
+        // 玩家位置标记——纯呈现，由玩家坐标现算，不进 `WorldState`、
+        // 不进 `OverviewCell`，见 `ll_ui::hud::world_map::WorldMapPanelData::player`
+        // 字段文档。环面换算由 `zone_grid_cell_of_tile` 内部的
+        // `ZoneLayout::tile_to_zone` 负责，这里不手写任何取模。
+        //
+        // 不区分玩家当前在哪个 `Space`：世界地图画的是大陆平面，玩家
+        // 下到地下时他在大陆上的**横向**位置没变，标记仍然应该指在那
+        // 里——藏起来只会让玩家在地下彻底失去方位感。
+        let player = Some(ll_ui::hud::world_map::zone_grid_cell_of_tile(
+            &layout,
+            agent.pos,
+            WORLD_MAP_DOWNSAMPLE,
+        ));
         Some(WorldMapPanelData {
             cells: &world_map_cells,
             cols,
             rows,
             terrain_ids: &content.terrain_ids,
+            player,
         })
     } else {
         None
