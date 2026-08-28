@@ -11,7 +11,7 @@ use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use ll_world::bounded_grid::BoundedGrid;
 use ll_world::entity::{Agent, BaseStats, EntityId};
-use ll_world::generate::{GenParams, build_zone_noise};
+use ll_world::generate::{GenParams, TerrainShape, build_zone_noise};
 use ll_world::interior::Interior;
 use ll_world::noise::TileableNoise;
 use ll_world::space::{Space, SpaceId};
@@ -76,7 +76,22 @@ impl DemoWorld {
 /// 搭建演示世界：区块布局→噪声→出生点→Interior 入口与楼层→玩家实体。
 pub(crate) fn build_demo_world() -> DemoWorld {
     let layout = build_zone_layout();
-    let params = GenParams::default();
+    // 气候条带（规格 §7.1）在本 demo 里刻意关掉：本 demo 验的是 P5 那一
+    // 批的事（两级坐标系、Interior 楼层、流式加载），世界地形只是背景。
+    // `climate_band_width: 0` 是**精确恒等**（见
+    // `ll_world::generate::TerrainShape::climate_band_width`），本 demo
+    // 的世界因此与气候条带落地之前逐格相同，`layout.rs` 那张只认十种
+    // 地形的映射表不需要跟着多认沙漠与冻原，遗留共享画布也就不必凭空
+    // 多两个条目（那张画布是五个更早批次 demo 的冻结像素基准）。
+    //
+    // 本体二进制 `ll-game` 走的是真正的默认值，气候条带在真游戏里开着。
+    let params = GenParams {
+        shape: TerrainShape {
+            climate_band_width: 0,
+            ..TerrainShape::default()
+        },
+        ..GenParams::default()
+    };
     let (terrain_ids, terrain_table) = base_terrain_fixture();
     let (space_ids, space_table) = base_space_profile_fixture();
     let noise = build_zone_noise(&layout, &params).expect("build_zone_layout 满足全部约束");

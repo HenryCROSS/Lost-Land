@@ -62,9 +62,15 @@ mod tests {
         let mod_index =
             registry.intern(NamespacedId::parse("yourmod:crystal").expect("合法标识符"));
 
-        // Assert：mod 内容紧接在本体 17 个地形之后分配到索引，说明两者
+        // Assert：mod 内容紧接在本体 19 个地形之后分配到索引，说明两者
         // 共用同一个单调递增的号段,没有为本体预留任何特殊区间。
-        assert_eq!(mod_index.get(), terrain_ids.stairs_down.index().get() + 1);
+        //
+        // 比的是 `tundra`——`ll_world::terrain::materialize_base_terrain`
+        // **最后**注册的那一种（气候条带批次新增的沙漠/冻原追加在末尾，
+        // 见那里的注释：新增地形插队会平移其后每一种地形的
+        // `ContentIndex`，`crates/ll-sim/tests/replay.rs` 的黄金基准当场
+        // 会红）。日后再追加地形时这一行要跟着指向新的最后一种。
+        assert_eq!(mod_index.get(), terrain_ids.tundra.index().get() + 1);
     }
 
     #[test]

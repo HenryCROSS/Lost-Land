@@ -136,24 +136,52 @@ const STANDING_FOOTPRINT: Footprint = Footprint {
     height: 1,
 };
 
-/// 本体新增的松散贴图：四个种族的身子 + 十三个职业的挂件。
+/// 地面地形那一档的锚点：贴图铺满整格、原点即格子左上角，与
+/// `assets/atlas/placeholder.json` 里每一条 `terrain_*` 完全一致。
+const TERRAIN_PIVOT: Pivot = Pivot { x: 0, y: 0 };
+
+/// 地面地形那一档的占地格数，理由同 [`TERRAIN_PIVOT`]。
+const TERRAIN_FOOTPRINT: Footprint = Footprint {
+    width: 1,
+    height: 1,
+};
+
+/// 地形贴图的边长（像素），与 `placeholder.json` 里每一条 `terrain_*`
+/// 的 `rect` 一致。
+const TERRAIN_TILE_SIZE: u32 = 16;
+
+/// 气候条带（规格 §7.1）新增的两种自然地形贴图。
+///
+/// 走 [`LooseOnlyEntry`] 而不是加进 `placeholder.json`：见那个类型的
+/// 文档。它们与 `terrain.rs` 里同名的两条 [`terrain::TerrainSpec`] 配方
+/// 一一对应，名字必须逐字一致（`draw_entry` 按名字派发配方）。
+const CLIMATE_TERRAIN_NAMES: [&str; 2] = ["terrain_desert", "terrain_tundra"];
+
+/// 本体新增的松散贴图：四个种族的身子 + 十三个职业的挂件 + 气候条带
+/// 新增的两种地形。
 ///
 /// 顺序固定（先按 [`npc::race_bodies`] 再按 [`npc::profession_badges`]，
-/// 两者都是数组字面量），符合约束 C5。
+/// 最后 [`CLIMATE_TERRAIN_NAMES`]，三者都是数组字面量），符合约束 C5。
 fn loose_only_entries() -> Vec<LooseOnlyEntry> {
-    let names = npc::race_bodies()
+    let npcs = npc::race_bodies()
         .iter()
         .map(|(name, _)| *name)
-        .chain(npc::profession_badges().iter().map(|(name, _)| *name));
-    names
+        .chain(npc::profession_badges().iter().map(|(name, _)| *name))
         .map(|name| LooseOnlyEntry {
             name,
             width: npc::NPC_WIDTH,
             height: npc::NPC_HEIGHT,
             pivot: STANDING_PIVOT,
             footprint: STANDING_FOOTPRINT,
-        })
-        .collect()
+        });
+    let terrains = CLIMATE_TERRAIN_NAMES.iter().map(|name| LooseOnlyEntry {
+        name,
+        width: TERRAIN_TILE_SIZE,
+        height: TERRAIN_TILE_SIZE,
+        pivot: TERRAIN_PIVOT,
+        footprint: TERRAIN_FOOTPRINT,
+    });
+    npcs.chain(terrains).collect()
 }
 
 /// 松散贴图清单里的一条条目——`ll_mod::asset_vfs` 期望的形状，

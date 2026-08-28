@@ -509,6 +509,7 @@ mod tests {
             mountain_level: 780,
             octaves: 4,
             continent_shrink: 2,
+            ..ll_world::generate::TerrainShape::default()
         };
         assert_ne!(
             群岛,

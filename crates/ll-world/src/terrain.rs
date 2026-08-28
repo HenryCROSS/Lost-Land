@@ -387,7 +387,7 @@ impl TerrainTable {
     }
 }
 
-/// 本体 17 个固定地形在当前注册表里的索引缓存。
+/// 本体 19 个固定地形在当前注册表里的索引缓存。
 ///
 /// 由 [`materialize_base_terrain`] 在启动时一次性物化。旧版
 /// `TerrainKind::MOUNTAIN` 一类编译期字面量的替代——调用方现在写
@@ -409,8 +409,22 @@ pub struct BaseTerrainIds {
     pub hill: TerrainKind,
     /// 山地：可通行但代价极高，山体阻挡视线。
     pub mountain: TerrainKind,
-    /// 雪地：可通行但较慢，不阻挡视线。
+    /// 雪地：可通行但较慢，不阻挡视线。**雪线以上的峰顶**，不是低地
+    /// 冻土——后者是 [`Self::tundra`]。
     pub snow: TerrainKind,
+    /// 沙漠：可通行，比海岸沙地更费力，不阻挡视线。
+    ///
+    /// 与 [`Self::sand`] 是**两种地形**，不是同一种的两个名字：`sand`
+    /// 是紧贴海平面的海滩（由高度决定），`desert` 是干热带低地（由
+    /// 纬度决定，见 [`crate::climate`]）。合并它们会让「骆驼人的家」
+    /// 与「渔村的沙滩」在数据上无法区分。
+    pub desert: TerrainKind,
+    /// 冻原：可通行，比草地费力但比高山积雪好走，不阻挡视线。
+    ///
+    /// 与 [`Self::snow`] 是**两种地形**，理由同 [`Self::desert`]：`snow`
+    /// 是雪线以上的峰顶（由高度决定），`tundra` 是极地带低地的冻土
+    /// （由纬度决定）。
+    pub tundra: TerrainKind,
     /// 木地板：可通行，移动代价为基准值，不阻挡视线。
     pub floor_wood: TerrainKind,
     /// 石地板：可通行，移动代价为基准值，不阻挡视线。
@@ -439,7 +453,8 @@ pub struct BaseTerrainIds {
 /// 这正是保持 `ll-world` 不反向依赖 `ll-mod` 的关键（见模块文档
 /// 「与 Registry 的关系」）。
 ///
-/// 17 个地形按固定顺序依次注册（与旧版枚举同一顺序）——`门关闭` 在
+/// 19 个地形按固定顺序依次注册（前 17 个与旧版枚举同一顺序，气候条带
+/// 新增的沙漠/冻原追加在末尾）——`门关闭` 在
 /// `门打开` 之前，但 `opens_into` 引用没有先后限制：`intern` 本身是
 /// 幂等的，先为 `lostland:door_open` 换取一个索引、稍后再回来给它
 /// `define` 完整属性，两次调用互不冲突。
@@ -583,6 +598,33 @@ pub fn materialize_base_terrain(
         150,
         None,
     )?;
+    // 沙漠与冻原是**气候条带**（规格 §7.1）的落点，不是高度阈值的产物。
+    // 两者都追加在既有 17 种之后而不是插在 sand/snow 旁边：插队会平移
+    // 其后每一种地形的 ContentIndex，与批次 2「lostland:cultureless 必须
+    // 追加在末尾」是同一条纪律。
+    //
+    // 移动代价的量级：海岸 sand 是 120（浅浅一层沙），沙漠取 140——松软
+    // 的深沙更费力，但还不到丘陵/森林那一档（150）。冻原取 130——冻土
+    // 是硬的，比草地（100）难走，却比雪线上的松雪 snow（150）好走。
+    // 两者都不阻挡视线：与 sand/snow 同属开阔地貌。
+    let desert = define_base(
+        &mut table,
+        intern,
+        "lostland:desert",
+        false,
+        false,
+        140,
+        None,
+    )?;
+    let tundra = define_base(
+        &mut table,
+        intern,
+        "lostland:tundra",
+        false,
+        false,
+        130,
+        None,
+    )?;
 
     Ok((
         BaseTerrainIds {
@@ -594,6 +636,8 @@ pub fn materialize_base_terrain(
             hill,
             mountain,
             snow,
+            desert,
+            tundra,
             floor_wood,
             floor_stone,
             wall_wood,
@@ -611,8 +655,8 @@ pub fn materialize_base_terrain(
 /// [`materialize_base_terrain`] 的内部帮手：把一条声明的字面量字段
 /// 拆开传入，换取一次 `intern` + 一次 [`TerrainTable::define`]。
 ///
-/// 抽成函数而不是在 [`materialize_base_terrain`] 里内联 17 遍同样的
-/// 三步逻辑（解析 id、可选解析 opens_into、写入表），避免十七份几乎
+/// 抽成函数而不是在 [`materialize_base_terrain`] 里内联 19 遍同样的
+/// 三步逻辑（解析 id、可选解析 opens_into、写入表），避免十九份几乎
 /// 相同的样板代码互相漂移。
 #[allow(clippy::too_many_arguments)]
 fn define_base(
@@ -642,7 +686,7 @@ fn define_base(
     Ok(TerrainKind(index))
 }
 
-/// 供测试与验收 demo 使用：现造一个空 [`Interner`]，注册本体全部 17
+/// 供测试与验收 demo 使用：现造一个空 [`Interner`]，注册本体全部 19
 /// 个地形，返回可用的 `(BaseTerrainIds, TerrainTable)`。
 ///
 /// **不是生产路径**——生产路径必须经过 `ll-mod::Registry::intern`（见
@@ -982,7 +1026,7 @@ mod tests {
         // 对应「未在当前注册表里出现的地形索引，反序列化/校验时被
         // 拒绝」这条 TDD 要求——校验入口见 TerrainTable::validate_grid
         // 文档「与反序列化的分工」一节。
-        // Arrange：必须用同一个 Interner 先注册本体 17 个地形、再追加
+        // Arrange：必须用同一个 Interner 先注册本体 19 个地形、再追加
         // 一个「表里从未登记过」的索引——另起一个全新 Interner 会从 0
         // 开始重新分配，恰好撞上本体已经登记过的下标（0 号是
         // deep_water），那样测出的就不是「未登记」而是巧合撞号。

@@ -13,149 +13,16 @@ use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
+use crate::climate::{ClimateBand, band_at};
 use crate::noise::{CELL_SIZE, TileableNoise};
 use crate::space::ZoneCoord;
 use crate::terrain::{BaseTerrainIds, TerrainKind};
 use crate::zone::ZoneLayout;
 
-/// 地形**形态**参数：同一个种子下，这组数值决定世界长什么样——水陆
-/// 比例、山地多少、陆地碎成几块。
-///
-/// 全部取 [`TileableNoise`] 输出区间同一套千分比整数，全程无浮点
-/// （[ADR 0020](../../../knowledge/decisions/0020-scripts-may-use-floats-internally-boundary-type-gated.md)
-/// 乙区：这些数值直接流进世界状态，必须是量化整数）。
-///
-/// # 为什么与 `seed` 分成两个类型
-///
-/// 不是为了对称（[ADR 0021](../../../knowledge/decisions/0021-abstraction-requires-shared-algorithm-not-symmetry.md)
-/// 明令禁止那种理由），是因为存档里这两半的归属**本来就不同**：
-/// `seed` 早就作为 `ll_world::state::WorldState::seed` 单独持久化了，
-/// 而形态参数此前根本没进存档。把形态参数聚成一个类型，
-/// `WorldState` 就只需要新增**一个**字段（
-/// `ll_world::state::WorldState::terrain_shape`）承接它，
-/// 不必把种子再存第二遍、也不必把四个散字段各自铺进存档结构与
-/// `remap` 的穷尽解构里。
-///
-/// # 为什么它必须进存档（ADR 0009「默认派生，只存偏差」）
-///
-/// ADR 0009 的规则是「能派生的不进存档」。形态参数**不可派生**——它是
-/// 玩家在建档那一刻做出的选择，世界建成之后没有任何其它数据能反推出
-/// 「玩家当初选的是海平面 400 还是 620」（地形本身是这组参数的函数，
-/// 反过来不成立：不同参数组合可能在已常驻的那几块区块上产出相同地形）。
-/// 它与 `seed`、世界尺寸、生成期 mod 集合同属
-/// `ll_content::world_identity` 描述的「缺一，世界都复现不出来」那一
-/// 类，因此进存档是正当的，不是对 ADR 0009 的例外。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-pub struct TerrainShape {
-    /// 深水与浅水的分界高度（千分比）。**水陆比例的主旋钮**：噪声高度
-    /// 分布集中在 300～700 之间（见 `knowledge/design/worldgen-parameters.md` 实测直方
-    /// 图），这个值每上调 50，全图水域比例约上升 11 个百分点；调到 200
-    /// 以下或 700 以上旋钮会饱和（几乎全陆 / 几乎全水）。
-    pub sea_level: i32,
-    /// 丘陵与山地的分界高度（千分比）。**山地比例的主旋钮**，且与
-    /// [`Self::sea_level`] 正交——实测调这个值不改变水陆比例一个百分点。
-    pub mountain_level: i32,
-    /// 噪声倍频叠加层数，层数越多地形起伏的细节越丰富。**地形破碎程度
-    /// 的旋钮**：层数越多，高度分布越向中位数收拢（多层平均的必然结果），
-    /// 于是极端高度变少（山地占比从 1 层的 19% 掉到 8 层的 2.6%）、
-    /// 海岸线越曲折、独立陆块越多。
-    pub octaves: u32,
-    /// 大陆尺度缩减档位：每 +1 档，噪声最粗一层的格子边长减半，也就是
-    /// 「一块大陆」的典型尺寸减半。见
-    /// [`TileableNoise::shrink_continents`]——**这是「群岛」形态唯一
-    /// 真正需要的旋钮**，原有三个阈值旋钮表达不了它。
-    pub continent_shrink: u32,
-}
-
-impl Default for TerrainShape {
-    /// 默认形态：海平面 400、山地起点 750、四层倍频、不缩减大陆尺度。
-    ///
-    /// 这四个值必须**逐位**保持不变——它们是
-    /// `crates/ll-world/tests/determinism.rs` 的 `EXPECTED_WORLD_DIGEST`
-    /// 与 `crates/ll-sim/tests/replay.rs` 的 `EXPECTED_REPLAY_DIGEST`
-    /// 两条黄金基准所固定的那张地图。
-    fn default() -> Self {
-        TerrainShape {
-            sea_level: 400,
-            mountain_level: 750,
-            octaves: 4,
-            continent_shrink: 0,
-        }
-    }
-}
-
-/// [`TerrainShape`] 各字段的合法取值范围——越界即拒绝，见
-/// [`TerrainShape::validate`]。
-///
-/// 越界值不会让生成 panic（阈值链只是让某些地形带变空，
-/// `shrink_continents` 自己在 1 处饱和），但会静默产出一张没人想要的
-/// 地图——玩家手改配置写错一个零，应该看到一条明确的拒绝日志，而不是
-/// 开出一个全是深水的世界还以为是自己运气差。
-impl TerrainShape {
-    /// 高度千分比的取值上界（含），与 [`TileableNoise`] 输出区间一致。
-    pub const HEIGHT_MAX: i32 = 1000;
-    /// [`Self::mountain_level`] 至少要比 [`Self::sea_level`] 高出多少
-    /// ——阈值链里从海平面到山地之间铺了浅水(+50)/沙地(+100)与
-    /// 草地/森林/丘陵三段（`mountain_level - 150` 起算），少于 150 这
-    /// 几段就会互相穿插，地形带的先后顺序不再成立。
-    pub const MIN_LEVEL_GAP: i32 = 150;
-    /// 倍频层数的合法区间（含）。上界取 12：振幅每层减半，第 11 层起
-    /// 振幅整数除法归零、[`TileableNoise::octaves`] 自己就会提前跳出，
-    /// 再大的值只是无效声明。
-    pub const OCTAVES_RANGE: std::ops::RangeInclusive<u32> = 1..=12;
-    /// 大陆尺度缩减档位的上界（含）。取 8：本体最大预设尺寸下自动推导
-    /// 出的 `coarse_scale` 也不过 32（五档），8 档足以让任何尺寸都饱和
-    /// 到 1，再大没有额外效果。
-    pub const MAX_CONTINENT_SHRINK: u32 = 8;
-
-    /// 校验这组形态参数是否落在合法区间；不合法时返回一句可直接写进
-    /// 日志的中文原因。
-    ///
-    /// 这是系统边界上的输入校验（玩家手写的配置文件是不可信输入）：
-    /// 调用方（`ll_game` 的配置解析）应当在拒绝时记一条日志并退回
-    /// [`Self::default`]，与 `ll_platform::config::load_or_default`
-    /// 对损坏配置的处理同一条纪律——绝不 panic。
-    pub fn validate(&self) -> Result<(), String> {
-        if !(0..=Self::HEIGHT_MAX).contains(&self.sea_level) {
-            return Err(format!(
-                "海平面 {} 超出合法区间 0..={}",
-                self.sea_level,
-                Self::HEIGHT_MAX
-            ));
-        }
-        if !(0..=Self::HEIGHT_MAX).contains(&self.mountain_level) {
-            return Err(format!(
-                "山地阈值 {} 超出合法区间 0..={}",
-                self.mountain_level,
-                Self::HEIGHT_MAX
-            ));
-        }
-        if self.mountain_level - self.sea_level < Self::MIN_LEVEL_GAP {
-            return Err(format!(
-                "山地阈值 {} 与海平面 {} 的差不足 {}，地形带会互相穿插",
-                self.mountain_level,
-                self.sea_level,
-                Self::MIN_LEVEL_GAP
-            ));
-        }
-        if !Self::OCTAVES_RANGE.contains(&self.octaves) {
-            return Err(format!(
-                "倍频层数 {} 超出合法区间 {}..={}",
-                self.octaves,
-                Self::OCTAVES_RANGE.start(),
-                Self::OCTAVES_RANGE.end()
-            ));
-        }
-        if self.continent_shrink > Self::MAX_CONTINENT_SHRINK {
-            return Err(format!(
-                "大陆尺度缩减档位 {} 超出合法区间 0..={}",
-                self.continent_shrink,
-                Self::MAX_CONTINENT_SHRINK
-            ));
-        }
-        Ok(())
-    }
-}
+/// [`TerrainShape`] 本身住在 [`crate::terrain_shape`]（本文件越过 800 行
+/// 上限后拆出去的），这里原样再导出——`ll_world::generate::TerrainShape`
+/// 这条既有路径继续有效，调用方一处也不用改。
+pub use crate::terrain_shape::TerrainShape;
 
 /// 地形生成参数：种子 + 形态。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -236,14 +103,43 @@ fn terrain_at_coord(
     terrain_ids: &BaseTerrainIds,
 ) -> TerrainKind {
     let height = noise.octaves(x, y, params.shape.octaves);
-    height_to_terrain(height, params, terrain_ids)
+    // 世界高度取自噪声源本身（见 `TileableNoise::tile_height`），不从
+    // 调用方再传一遍——生成链路上只有一份「世界多高」的真相源。
+    let band = band_at(y, noise.tile_height(), params.shape.climate_band_width);
+    height_to_terrain(height, params, band, terrain_ids)
 }
 
-/// 把噪声高度按阈值表映射为具体地形种类。
+/// 把噪声高度按阈值表映射为具体地形种类，并让**气候条带调制其中一段**。
 ///
 /// 阈值全部取自 [`GenParams`] 的千分比整数，与 [`TileableNoise`] 的
 /// 输出区间保持一致，全程无浮点。
-fn height_to_terrain(height: i32, params: &GenParams, terrain_ids: &BaseTerrainIds) -> TerrainKind {
+///
+/// # 气候只调制「海岸带以上的第一段陆地」，其余七段一个字不改
+///
+/// 规格 §7.1 要的是「气候为周期性条带」，不是「整条阈值链随纬度平移」。
+/// 让整条链随纬度移动会同时改变森林/丘陵/山地/雪地四段的占比，影响面
+/// 是本批次的数倍，而表达「沙漠在赤道、冻原在极地」这件事**并不需要**
+/// 它——需要的只是那一段最低的陆地换个地形。
+///
+/// 具体地，`sea_level + 100 ..< mountain_level - 150` 这一段按气候带
+/// 三选一：干热带出 [`BaseTerrainIds::desert`]（沙漠）、极地带出
+/// [`BaseTerrainIds::tundra`]（冻原）、温带仍是
+/// [`BaseTerrainIds::grass`]（草地，**与气候条带落地前逐位相同**）。
+///
+/// 沙漠不是海岸的 [`BaseTerrainIds::sand`]，冻原也不是雪线以上的
+/// [`BaseTerrainIds::snow`]——那两种是海滩与峰顶，与低地的沙漠、冻土
+/// 是四件不同的事，移动代价与日后的资源亲和都不同，见
+/// `crates/ll-world/src/terrain.rs` 里两者的注册。
+///
+/// 极地的森林（针叶林）与干热带的高地森林是否也该另有地形，本批次
+/// **显式推迟**到后续内容批次，见
+/// `docs/superpowers/plans/2026-08-27-batch3-climate-bands.md` 二节。
+fn height_to_terrain(
+    height: i32,
+    params: &GenParams,
+    band: ClimateBand,
+    terrain_ids: &BaseTerrainIds,
+) -> TerrainKind {
     let shape = &params.shape;
     if height < shape.sea_level {
         terrain_ids.deep_water
@@ -252,7 +148,11 @@ fn height_to_terrain(height: i32, params: &GenParams, terrain_ids: &BaseTerrainI
     } else if height < shape.sea_level + 100 {
         terrain_ids.sand
     } else if height < shape.mountain_level - 150 {
-        terrain_ids.grass
+        match band {
+            ClimateBand::Hot => terrain_ids.desert,
+            ClimateBand::Temperate => terrain_ids.grass,
+            ClimateBand::Polar => terrain_ids.tundra,
+        }
     } else if height < shape.mountain_level - 50 {
         terrain_ids.forest
     } else if height < shape.mountain_level {
@@ -540,6 +440,172 @@ mod tests {
 
         // Assert
         assert!(count_water(&high_grid, &terrain_ids) > count_water(&low_grid, &terrain_ids));
+    }
+
+    /// 气候条带落地**之前**那条纯高度阈值链——测试里独立重写一遍，
+    /// 作为「关掉气候即恒等」的黄金参照。
+    ///
+    /// 刻意不复用 [`height_to_terrain`]：复用等于拿被测函数验被测函数，
+    /// 那样即便调制逻辑写错了，两边也会一起错、测试照样绿。这段代码是
+    /// 从本批次改动**之前**的 `height_to_terrain` 逐行抄下来的。
+    fn height_to_terrain_before_climate(
+        height: i32,
+        params: &GenParams,
+        terrain_ids: &BaseTerrainIds,
+    ) -> TerrainKind {
+        let shape = &params.shape;
+        if height < shape.sea_level {
+            terrain_ids.deep_water
+        } else if height < shape.sea_level + 50 {
+            terrain_ids.shallow_water
+        } else if height < shape.sea_level + 100 {
+            terrain_ids.sand
+        } else if height < shape.mountain_level - 150 {
+            terrain_ids.grass
+        } else if height < shape.mountain_level - 50 {
+            terrain_ids.forest
+        } else if height < shape.mountain_level {
+            terrain_ids.hill
+        } else if height < shape.mountain_level + 100 {
+            terrain_ids.mountain
+        } else {
+            terrain_ids.snow
+        }
+    }
+
+    fn shape_with_band(width: i32) -> GenParams {
+        GenParams {
+            seed: 31,
+            shape: TerrainShape {
+                climate_band_width: width,
+                ..TerrainShape::default()
+            },
+        }
+    }
+
+    #[test]
+    fn 气候带宽为零时整张地形与气候条带落地之前逐格相同() {
+        // 这是黄金基准重冻第 ② 步（「把改动关掉，确认精确回到旧值」）
+        // 的**长期版本**：那一步在提交信息里只是一次性的手工核验，这条
+        // 测试让它此后每次跑门禁都被重新验证一遍。
+        //
+        // 反例（本次开发实跑）：把 `ll_world::climate::band_from_warmth`
+        // 的 `warmth > WARMTH_MAX - band_width` 改成 `>=`，带宽为零时
+        // 赤道那一行落进干热带，本条当场报「(x,y) 处地形不一致」。
+        // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let world = test_world();
+        let params = shape_with_band(0);
+        let noise = build_noise(world, &params).expect("64x64 满足生成入口的约束");
+
+        // Act & Assert
+        for y in 0..world.height() as i32 {
+            for x in 0..world.width() as i32 {
+                let height = noise.octaves(x, y, params.shape.octaves);
+                assert_eq!(
+                    terrain_at_coord(&noise, &params, x, y, &terrain_ids),
+                    height_to_terrain_before_climate(height, &params, &terrain_ids),
+                    "({x},{y}) 处地形与气候条带落地之前不一致"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 默认带宽下干热带低海拔是沙漠而极地带是冻原() {
+        // 「气候条带真的存在」这句话的可执行版本：同一个高度、同一个
+        // 种子，只因为纬度不同就产出三种不同的地形。
+        //
+        // 反例（本次开发实跑）：把 `height_to_terrain` 那个 match 的
+        // 三支都写成 `terrain_ids.grass`，本条报「干热带低海拔应当是
+        // 沙漠」。
+        // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let params = GenParams::default();
+        // 落在「海岸带以上第一段陆地」区间内的一个高度。
+        let height = params.shape.sea_level + 120;
+        assert!(
+            height < params.shape.mountain_level - 150,
+            "取样高度必须落在被调制的那一段里"
+        );
+
+        // Act & Assert
+        assert_eq!(
+            height_to_terrain(height, &params, ClimateBand::Hot, &terrain_ids),
+            terrain_ids.desert,
+            "干热带低海拔应当是沙漠"
+        );
+        assert_eq!(
+            height_to_terrain(height, &params, ClimateBand::Polar, &terrain_ids),
+            terrain_ids.tundra,
+            "极地带低海拔应当是冻原"
+        );
+        assert_eq!(
+            height_to_terrain(height, &params, ClimateBand::Temperate, &terrain_ids),
+            terrain_ids.grass,
+            "温带低海拔仍然是草地"
+        );
+    }
+
+    #[test]
+    fn 沙漠不是海岸沙地冻原也不是高山雪地() {
+        // 所有者裁定新增独立地形而不是复用 sand/snow，这条把那个裁定
+        // 钉住：一旦有人「顺手简化」成 `desert = ids.sand`，本条变红。
+        //
+        // 反例（本次开发实跑）：把 materialize_base_terrain 的返回值改
+        // 成 `desert: sand`，本条报「沙漠与海岸沙地必须是两种地形」。
+        // Arrange & Act
+        let (terrain_ids, table) = base_terrain_fixture();
+
+        // Assert
+        assert_ne!(
+            terrain_ids.desert, terrain_ids.sand,
+            "沙漠与海岸沙地必须是两种地形——一个是沙漠，一个是海滩"
+        );
+        assert_ne!(
+            terrain_ids.tundra, terrain_ids.snow,
+            "冻原与高山雪地必须是两种地形——一个是低地冻土，一个是雪线以上的峰顶"
+        );
+        // 语义分离不能只体现在名字上：移动代价也必须真的不同，否则
+        // 「两种地形」只是两个查图集用的键。
+        assert_ne!(
+            table.move_cost(terrain_ids.desert),
+            table.move_cost(terrain_ids.sand)
+        );
+        assert_ne!(
+            table.move_cost(terrain_ids.tundra),
+            table.move_cost(terrain_ids.snow)
+        );
+    }
+
+    #[test]
+    fn 默认带宽下整张世界里沙漠与冻原都真的出现了() {
+        // 上一条只证明「调制函数会返回沙漠」，不证明「真实生成的世界里
+        // 真的有沙漠」——高度分布与气候带的交集可能是空的。
+        //
+        // 反例（本次开发实跑）：把 TerrainShape::DEFAULT_CLIMATE_BAND_WIDTH
+        // 改成 0，本条报「默认带宽下应当能生成出沙漠」。
+        // Arrange
+        let (terrain_ids, _table) = base_terrain_fixture();
+        let world = TorusSize::new(256, 256).expect("256x256 满足整除与视口跨度两条约束");
+        let params = GenParams {
+            seed: 5,
+            ..GenParams::default()
+        };
+
+        // Act
+        let grid = generate_terrain(world, &params, &terrain_ids).expect("满足生成入口的约束");
+        let kinds = collect_terrain(&grid);
+
+        // Assert
+        assert!(
+            kinds.contains(&terrain_ids.desert),
+            "默认带宽下应当能生成出沙漠"
+        );
+        assert!(
+            kinds.contains(&terrain_ids.tundra),
+            "默认带宽下应当能生成出冻原"
+        );
     }
 
     #[test]

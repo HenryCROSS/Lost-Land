@@ -83,6 +83,7 @@ pub fn resolve_gen_params(config: &NewGameConfig) -> GenParams {
         mountain_level = shape.mountain_level,
         octaves = shape.octaves,
         continent_shrink = shape.continent_shrink,
+        climate_band_width = shape.climate_band_width,
         "新世界的地形生成参数已确定"
     );
     GenParams { seed, shape }
@@ -99,6 +100,7 @@ fn apply_overrides(base: TerrainShape, config: &NewGameConfig) -> TerrainShape {
         mountain_level: config.mountain_level.unwrap_or(base.mountain_level),
         octaves: config.octaves.unwrap_or(base.octaves),
         continent_shrink: config.continent_shrink.unwrap_or(base.continent_shrink),
+        climate_band_width: config.climate_band_width.unwrap_or(base.climate_band_width),
     }
 }
 
@@ -228,6 +230,51 @@ mod tests {
 
         // Assert
         assert_eq!(shape, TerrainShape::default());
+    }
+
+    #[test]
+    fn 气候条带带宽越界时被拒绝() {
+        // TerrainShape::validate 的 MAX_CLIMATE_BAND_WIDTH 那条分支：
+        // 干热带与极地带各占一侧带宽，两侧合计超过全部纬度之后温带就被
+        // 挤没了，地形分带里「温带那一支」永远走不到。
+        //
+        // 反例（本次开发实跑）：删掉 validate 里那条分支，本条报
+        // `assertion `left == right` failed`——退回的形态里带宽还是 501。
+        // Arrange
+        let config = NewGameConfig {
+            climate_band_width: Some(TerrainShape::MAX_CLIMATE_BAND_WIDTH + 1),
+            ..NewGameConfig::default()
+        };
+
+        // Act
+        let shape = resolve_gen_params(&config).shape;
+
+        // Assert
+        assert_eq!(shape, TerrainShape::default());
+    }
+
+    #[test]
+    fn 配置里写零可以关掉气候条带() {
+        // `0` 不是「没写」——`NewGameConfig::climate_band_width` 是
+        // `Option`，`Some(0)` 必须真的把气候条带关掉（整图温带），而不是
+        // 被当成缺省值忽略掉。这条同时是「玩家想要一个没有气候条带的
+        // 世界」这个用例的接线证明。
+        //
+        // 反例（本次开发实跑）：把 apply_overrides 里那一支写成
+        // `config.climate_band_width.filter(|w| *w > 0).unwrap_or(..)`，
+        // 本条报 250 != 0。
+        // Arrange
+        let config = NewGameConfig {
+            climate_band_width: Some(0),
+            ..NewGameConfig::default()
+        };
+
+        // Act
+        let shape = resolve_gen_params(&config).shape;
+
+        // Assert
+        assert_eq!(shape.climate_band_width, 0);
+        assert_ne!(shape, TerrainShape::default());
     }
 
     #[test]

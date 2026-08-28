@@ -28,6 +28,7 @@ use core::fmt;
 pub mod bounded_grid;
 pub mod chronicle;
 pub mod chunk;
+pub mod climate;
 pub mod culture;
 pub mod entity;
 pub mod exploration;
@@ -51,6 +52,7 @@ pub mod state;
 pub mod surface_store;
 pub mod temperature;
 pub mod terrain;
+pub mod terrain_shape;
 pub mod weather;
 pub mod zone;
 

@@ -44,6 +44,25 @@
 | `terrain_mountain` | `MOUNTAIN` | `(128, 128, 132, 255)` 灰 |
 | `terrain_snow` | `SNOW` | `(238, 240, 244, 255)` 近白 |
 
+### 气候条带新增的两块（2026-08-27）
+
+规格 §7.1 的气候条带落地后，本体自然地形从八种变成十种。两块新色块
+**只进松散贴图树**（`assets/sprites/terrain_desert.png` /
+`terrain_tundra.png` + `assets/sprites/manifest.json5`），**不进**本目录
+这张遗留共享画布，也不进 `placeholder.json`——那张画布是五个更早批次
+验收 demo 的冻结像素基准，往里塞新内容只会把它们卷进来（理由见
+`tools/ll-artgen/src/main.rs` 的 `LooseOnlyEntry` 文档）。
+
+| 条目名 | 对应地形 | 颜色（RGBA） |
+|---|---|---|
+| `terrain_desert` | `lostland:desert` | `(198, 154, 86, 255)` 深橙沙 |
+| `terrain_tundra` | `lostland:tundra` | `(196, 206, 208, 255)` 灰青白 |
+
+两块的颜色都刻意与它们最容易被混淆的那一块拉开距离：沙漠比海滩
+`terrain_sand`(214,196,140) 更深更橙，冻原比高山 `terrain_snow`(238,240,244)
+更暗更青。`crates/ll-game/tests/atlas_coverage.rs` 的
+`十九种本体地形的贴图两两之间至少四分之一像素不同` 把这条钉死。
+
 ### 为什么不复用/不整体重排
 
 新色块全部追加在扩宽出的画布右侧（`x∈[64,96)`），而不是复用图像里

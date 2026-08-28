@@ -635,6 +635,30 @@
         "width": 1,
         "height": 1
       }
+    },
+    {
+      "name": "terrain_desert",
+      "file": "terrain_desert.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_tundra",
+      "file": "terrain_tundra.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
     }
   ]
 }

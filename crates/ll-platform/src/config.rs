@@ -223,6 +223,12 @@ pub struct NewGameConfig {
     /// 覆盖预设的大陆尺度缩减档位。
     #[serde(default)]
     pub continent_shrink: Option<u32>,
+    /// 覆盖预设的气候条带单侧带宽（千分比）。
+    ///
+    /// 干热带与极地带各占这么宽的一段纬度，其余是温带。写 `0` 即**关掉
+    /// 气候条带**（整图温带，地形分带回到气候条带落地之前的样子）。
+    #[serde(default)]
+    pub climate_band_width: Option<i32>,
 }
 
 /// [`NewGameConfig::terrain_preset`] 的默认值——与
@@ -244,6 +250,7 @@ impl Default for NewGameConfig {
             mountain_level: None,
             octaves: None,
             continent_shrink: None,
+            climate_band_width: None,
         }
     }
 }

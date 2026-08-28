@@ -117,7 +117,7 @@ mod tests {
     use super::*;
     use crate::layout::BASE_SIGHT_RADIUS;
     use ll_core::time::Tick;
-    use ll_world::generate::{GenParams, build_zone_noise};
+    use ll_world::generate::build_zone_noise;
     use ll_world::terrain::base_terrain_fixture;
     use ll_world::zone::ZoneLayout;
 
@@ -127,7 +127,7 @@ mod tests {
     /// `is_spawnable` 文档「为什么接受 &WorldState」。
     fn test_world() -> WorldState {
         let layout = crate::build_zone_layout();
-        let params = GenParams::default();
+        let params = crate::layout::demo_gen_params();
         let (terrain_ids, terrain_table) = base_terrain_fixture();
         let noise = build_zone_noise(&layout, &params).expect("build_zone_layout 满足全部约束");
         let placeholder_spawn = layout.tile_size().wrap(0, 0);
@@ -167,7 +167,7 @@ mod tests {
         // Arrange
         let zone_count = TorusSize::new(1, 1).expect("1x1 是合法尺寸");
         let layout = ZoneLayout::new(64, zone_count).expect("64 满足全部对齐与跨度约束");
-        let params = GenParams::default();
+        let params = crate::layout::demo_gen_params();
         let (terrain_ids, terrain_table) = base_terrain_fixture();
         let spawn_pos = layout.tile_size().wrap(0, 0);
         let mut world = WorldState::new(layout, &params, &terrain_ids, terrain_table, spawn_pos)

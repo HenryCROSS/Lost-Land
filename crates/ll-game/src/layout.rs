@@ -91,6 +91,10 @@ pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'s
         Some("lostland:terrain_mountain")
     } else if kind == ids.snow {
         Some("lostland:terrain_snow")
+    } else if kind == ids.desert {
+        Some("lostland:terrain_desert")
+    } else if kind == ids.tundra {
+        Some("lostland:terrain_tundra")
     } else if kind == ids.floor_wood {
         Some("lostland:terrain_floor_wood")
     } else if kind == ids.floor_stone {
