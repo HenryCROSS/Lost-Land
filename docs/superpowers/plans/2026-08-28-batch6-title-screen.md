@@ -463,8 +463,11 @@ StartNewGame → ScreenState::CharacterCreation { … }   （种族 / 性别 / �
 
 真变了就说明改动漏进了世界状态——**不要改常数**，走四步重冻并解释。
 
-基线测试数（本会话自己跑的 `bash scripts/ci/run_tests.sh`，改动前）：见提交信息与
-最终报告，此处不预填。
+基线测试数（本会话自己跑的 `bash scripts/ci/run_tests.sh`，改动**前**）：
+**111 个测试二进制、2512 passed / 0 failed / 0 ignored**，exit 0。
+
+两批改完之后：**112 个二进制、2533 passed / 0 failed / 0 ignored**，
+`bash scripts/ci/run_all.sh` exit 0。两条黄金基准常数一字未动，实跑通过。
 
 ---
 
@@ -477,3 +480,55 @@ StartNewGame → ScreenState::CharacterCreation { … }   （种族 / 性别 / �
 - **不做**角色创建 / 世界配置 / 选重生点。
 - **不做**「回到主菜单」。
 - **不收拢** `screen/` 里复制的 `build_panel`（第五节末）。
+
+---
+
+## 十一、落地之后：与本计划的偏差
+
+计划是开工前写的，落地过程中有五处与它不符。**逐条如实记录**，不回头改前面几节
+假装计划一开始就是这样。
+
+### 偏差 1：首页的状态机住在新文件 `title_screen.rs`，不是 `menu_screen.rs`
+
+第五节写的是「`menu_screen.rs`：新增 `ScreenState::Title`、两个新 `ScreenOutcome`、
+`update_title`」。实际把 `update_title` 那一套写进去之后，`menu_screen.rs` 变成
+**828 行**，越过本仓库 800 行的上限。于是把首页那一套（`TITLE_ITEM_IDS`/
+`TITLE_ITEM_KEYS`/`TITLE_LOAD_ROW`/`TitleUpdate`/`update_title`/`title_focus_index`）
+搬进新文件 `crates/ll-game/src/title_screen.rs`（153 行），`menu_screen.rs` 回到
+707 行。
+
+共用的类型（`ScreenState`/`ScreenOutcome`/`ScreenNotice`/`SettingsOrigin`）仍然只有
+一份，住在 `menu_screen`——拆的是文件，不是职责。
+
+### 偏差 2：`Demo::advance` 被拆成两半
+
+计划只说「加一道 `session` 闸门」。实际做不到只加一行：`advance` 后半段要持一个
+`&mut Session` 全程活着，而 `maintain_streaming`/`update_zoom` 是 `&mut self` 的
+方法，两者不能同时借。于是把后半段整体搬进新方法 `Demo::run_turn`——纯搬运，一行
+逻辑都没改。副作用是那个早已越过 50 行上限的函数被切小了一截。
+
+顺带：`cleanup_aged_ground_items` 因此从「`maintain_streaming` 紧后面」挪到了
+「`update_zoom`/`update_player_animation` 之后」。同一帧内、且那两步都不碰地面物品，
+行为不变。
+
+### 偏差 3：`Demo::new` 与 `Demo::at_title` 共用一个私有 `assemble`
+
+计划没写这一层。写的时候发现两个构造器如果各自摆一遍二十几个字段的结构体字面量，
+就会出现「首页那份忘了改 `ui_modes`」这类只可能靠人眼发现的漂移。改成
+`assemble(content, session: Option<Session>, …)`，**屏与模态栈的初值完全由
+`session` 是不是 `None` 推出来**，结构上不可能拼出「停在首页但栈是空的」这种自相
+矛盾的组合。
+
+### 偏差 4：`app.rs` 的测试改用 `test_world()`/`test_world_mut()`
+
+`session` 合并之后，`app.rs` 里四十多处 `demo.game_world` 全部失效。没有让每条断言
+各写一遍 `session.as_ref().unwrap()`（那是四十多行与断言主题无关的解包噪音），而是
+加了一对 `#[cfg(test)]` 的取用方法。
+
+### 偏差 5：交接文档里那两个黄金基准常数是过期的
+
+`knowledge/handoff/2026-08-27-session-handoff.md` 第一节列的是
+`17_228_492_522_544_021_674` / `14_731_332_643_995_045_404`，代码里实际是
+`10_180_278_885_427_934_050` / `6_885_882_507_408_978_859`。本计划第〇节最初照抄了
+交接文档，开工后 grep 复核时发现并改正——**那份文档自己就写了「以代码为准」，这次
+是那条纪律第一次真的派上用场**。

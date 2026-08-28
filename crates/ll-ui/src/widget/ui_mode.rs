@@ -36,26 +36,41 @@
 //! 都要求调用方传入 `&mut InputState`，内部只是老老实实调用
 //! `clear()`，不重新发明一套「上下文专用」的清空逻辑。
 //!
-//! # 本批次只有 `UiMode::Menu` 一个变体，且尚未接入真实游戏循环
+//! # 只有 `UiMode::Menu` 一个变体，但它已经接上真实游戏循环了
 //!
-//! 与 `InputContext::Menu` 同一条克制（见其文档）：背包/确认框等具体
-//! 交互界面明确排在下一批（任务书「不做」一节），本类型现在只是把
-//! 「push/pop 必须清空 InputState」这条不变式做实、做测，真正驱动它
-//! 的调用点（`ll_game::app::Demo` 在什么时候 push `UiMode::Menu`）留给
-//! 下一批——那需要 `ll_platform::window::AppHandler::on_frame` 能把
-//! `&mut InputState` 交给上层（当前签名是 `&InputState`，见其文档），
-//! 而这个签名被六个跨 crate 的验收 demo 共用（`ll-world`/`ll-render`/
-//! `ll-sim`/`ll-platform`/`ll-ui` 的 `p0`~`p5_coordinate_acceptance`
-//! 示例），改动它的正确时机是下一批真正有内容要 push 到菜单里的时候，
-//! 不是本批次——本批次交付的是这台机器本身，接线留给有真实负载的
-//! 那一刻。
+//! **这一节改写过**：本类型落地那一批写的是「尚未接入真实游戏循环，
+//! 接线留给下一批」。那一刻已经过去——`ll_platform::window::AppHandler::on_frame`
+//! 的签名早已改成 `&mut InputState`，`ll_game::app::Demo` 现在持有本
+//! 类型，并把它当作「现在有没有一块模态屏盖着」的唯一真相源：平台层
+//! 每次解析物理键都调一次 `AppHandler::input_context()`，那个方法返回
+//! 的就是 [`UiModeStack::current_context`]。
+//!
+//! 变体仍然只有 `Menu` 一个，那是 `InputContext::Menu` 那条克制的延续
+//! （见其文档）：游戏内菜单、设置界面、游戏主菜单（首页）三块屏共用
+//! 这一个变体，「现在具体是哪一块屏」由 `ll_game::menu_screen::ScreenState`
+//! 回答，不是本类型的职责。
+//!
+//! # 栈空不等于「在世界里」了
+//!
+//! 游戏主菜单（首页）落地之后，这条不变式的措辞变了，**如实记下**：
+//!
+//! - **栈非空 ⇔ 有一块模态屏盖着 ⇔ 按 `InputContext::Menu` 解析物理键**
+//!   ——这一条原样成立，从来没变。
+//! - 变的是它的反面：栈空**曾经**等价于「玩家在世界里」，因为那时候
+//!   游戏一启动就直接进世界。现在启动后先停在首页，那一刻栈非空、
+//!   而世界**还不存在**（`ll_game::app::Demo::session` 为 `None`）。
+//!   所以现在只剩单向：**栈空 ⇒ 有世界在跑**；栈非空推不出世界的有无。
+//!
+//! 首页在第一帧之前就已经开着，因此它用的是 [`UiModeStack::opened`]
+//! 而不是 [`UiModeStack::push`]——两者的区别见那个构造器的文档。
 
 use ll_platform::input::InputState;
 use ll_platform::keybind::InputContext;
 
-/// 覆盖游戏画面的模态 UI 种类——本批次只有 `Menu` 一种，对应
-/// `InputContext::Menu`（背包/物品详情/确认框等尚未建成的场景全部共用
-/// 这一个变体，见其文档）。
+/// 覆盖游戏画面的模态 UI 种类——只有 `Menu` 一种，对应
+/// `InputContext::Menu`（游戏内菜单、设置界面、游戏主菜单，以及背包/
+/// 物品详情/确认框等尚未建成的场景，全部共用这一个变体，见其文档与
+/// 模块文档同名一节）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiMode {
     /// 任意模态菜单类 UI。
@@ -73,6 +88,27 @@ impl UiModeStack {
     /// `InputContext::Gameplay`。
     pub fn new() -> UiModeStack {
         UiModeStack::default()
+    }
+
+    /// 建一个**开局就压着一层**的栈。
+    ///
+    /// # 为什么它不要 `&mut InputState`，而 [`Self::push`] 要
+    ///
+    /// 游戏主菜单（首页）在**第一帧之前**就已经盖在屏幕上了：
+    /// `ll_game::app::Demo` 一构造出来就停在首页，那一刻平台层的事件
+    /// 循环还没启动，既没有 `InputState` 可以传进来，也不可能有任何键
+    /// 正被按住。
+    ///
+    /// [`Self::push`]/[`Self::pop`] 要求 `&mut InputState` 是因为它们
+    /// 表达的是**运行期的一次上下文切换**——切换那一刻玩家可能正按着
+    /// 键，不清空就会把「已按住」带过边界（模块文档「上下文切换时按住
+    /// 的键」一节）。本构造器表达的是**初始状态**，没有「切换前」可言，
+    /// 因此不是那条纪律的旁路，而是它压根不适用的另一种情形。
+    ///
+    /// **不要用它替代 `push`**：运行期任何一次真正的开屏都必须走
+    /// `push`，否则那条纪律就被绕过了。
+    pub fn opened(mode: UiMode) -> UiModeStack {
+        UiModeStack { stack: vec![mode] }
     }
 
     /// 栈空则为 `Gameplay`，否则为 `Menu`——见模块文档 2.1 节引用的
@@ -126,6 +162,36 @@ mod tests {
         let stack = UiModeStack::new();
 
         // Assert
+        assert_eq!(stack.current_context(), InputContext::Gameplay);
+    }
+
+    #[test]
+    fn 开局就压着一层的栈深度为一且上下文是菜单() {
+        // 游戏主菜单（首页）在第一帧之前就已经开着——平台层解析第一批
+        // 物理键时就必须按菜单那张表查，否则首页的第一批按键会按
+        // Gameplay 表解析。
+        // Arrange & Act
+        let stack = UiModeStack::opened(UiMode::Menu);
+
+        // Assert
+        assert_eq!(stack.depth(), 1);
+        assert_eq!(stack.current_context(), InputContext::Menu);
+    }
+
+    #[test]
+    fn 开局就压着一层的栈弹一次就空() {
+        // 首页那一层被弹掉的时刻就是玩家真正进世界的时刻，弹完必须
+        // 回到 Gameplay，否则进了世界还在按菜单表解析方向键。
+        // Arrange
+        let mut stack = UiModeStack::opened(UiMode::Menu);
+        let mut input = InputState::new();
+
+        // Act
+        let popped = stack.pop(&mut input);
+
+        // Assert
+        assert_eq!(popped, Some(UiMode::Menu));
+        assert!(stack.is_empty());
         assert_eq!(stack.current_context(), InputContext::Gameplay);
     }
 

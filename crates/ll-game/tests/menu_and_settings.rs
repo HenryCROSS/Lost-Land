@@ -15,9 +15,9 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ll_game::menu_screen::{
-    EDITABLE_CONTEXT, ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, SettingsRow,
-    SettingsUpdate, clear_bindings, menu_focus_index, settings_rows, try_rebind, update_menu,
-    update_settings,
+    EDITABLE_CONTEXT, ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, SettingsOrigin,
+    SettingsRow, SettingsUpdate, clear_bindings, menu_focus_index, settings_rows, try_rebind,
+    update_menu, update_settings,
 };
 use ll_i18n::Catalog;
 use ll_platform::config::{GameConfig, ScaleFilter};
@@ -62,6 +62,7 @@ fn 设置状态(cursor: usize) -> ScreenState {
     ScreenState::Settings {
         cursor,
         capturing: false,
+        origin: SettingsOrigin::Menu,
     }
 }
 
@@ -127,7 +128,8 @@ fn 菜单里选中设置项后进入设置界面() {
         next,
         Some(ScreenState::Settings {
             cursor: 0,
-            capturing: false
+            capturing: false,
+            origin: SettingsOrigin::Menu,
         })
     );
 }
@@ -219,6 +221,7 @@ fn 重新绑上之后刻意解绑的记号被撤销() {
     let mut state = ScreenState::Settings {
         cursor: 某行下标(SettingsRow::Keybind(GameKey::Interact)),
         capturing: true,
+        origin: SettingsOrigin::Menu,
     };
     let catalog = 测试目录();
     let path = 临时路径("menu-screen-rebind");
@@ -248,6 +251,7 @@ fn 捕获模式下按退格解绑当前这一行() {
     let mut state = ScreenState::Settings {
         cursor,
         capturing: true,
+        origin: SettingsOrigin::Menu,
     };
     let catalog = 测试目录();
     let path = 临时路径("menu-screen-clear");
@@ -276,6 +280,7 @@ fn 捕获模式下按esc取消不改动任何绑定() {
     let mut state = ScreenState::Settings {
         cursor,
         capturing: true,
+        origin: SettingsOrigin::Menu,
     };
     let catalog = 测试目录();
     let path = 临时路径("menu-screen-cancel");
@@ -297,7 +302,8 @@ fn 捕获模式下按esc取消不改动任何绑定() {
         state,
         ScreenState::Settings {
             cursor,
-            capturing: false
+            capturing: false,
+            origin: SettingsOrigin::Menu,
         }
     );
 }
@@ -310,6 +316,7 @@ fn 冲突时留在捕获模式让玩家直接再按一个键() {
     let mut state = ScreenState::Settings {
         cursor,
         capturing: true,
+        origin: SettingsOrigin::Menu,
     };
     let catalog = 测试目录();
     let path = 临时路径("menu-screen-conflict");
@@ -330,7 +337,8 @@ fn 冲突时留在捕获模式让玩家直接再按一个键() {
         state,
         ScreenState::Settings {
             cursor,
-            capturing: true
+            capturing: true,
+            origin: SettingsOrigin::Menu,
         }
     );
 }
@@ -464,4 +472,86 @@ fn 设置界面按取消返回菜单屏() {
 
     // Assert
     assert_eq!(state, ScreenState::Menu);
+}
+
+#[test]
+fn 从菜单进的设置屏按取消回到菜单屏() {
+    // 守住既有行为不被 `SettingsOrigin` 改坏——这条在首页落地之前就
+    // 存在，落地之后必须一字不差地继续成立。
+    // Arrange
+    let mut config = GameConfig::default();
+    let catalog = 测试目录();
+    let path = 临时路径("settings-origin-menu");
+    let mut state = ScreenState::Settings {
+        cursor: 0,
+        capturing: false,
+        origin: SettingsOrigin::Menu,
+    };
+    let mut ctx = SettingsContext {
+        config: &mut config,
+        config_path: &path,
+        catalog: &catalog,
+    };
+
+    // Act
+    update_settings(&mut state, &按下(&[GameKey::Cancel]), &mut ctx);
+
+    // Assert
+    assert_eq!(state, ScreenState::Menu);
+}
+
+#[test]
+fn 从首页进的设置屏按取消回到首页而不是暂停菜单() {
+    // 写死回 `ScreenState::Menu` 会把玩家扔进一个**底下没有世界**的
+    // 暂停菜单，那块屏第一项是「继续游戏」，按下去会露出一个空世界。
+    //
+    // 反例验证（已实跑）：把 `update_navigation` 里的 `origin.screen()`
+    // 换回 `ScreenState::Menu`，本条立刻变红。
+    // Arrange
+    let mut config = GameConfig::default();
+    let catalog = 测试目录();
+    let path = 临时路径("settings-origin-title");
+    let mut state = ScreenState::Settings {
+        cursor: 0,
+        capturing: false,
+        origin: SettingsOrigin::Title,
+    };
+    let mut ctx = SettingsContext {
+        config: &mut config,
+        config_path: &path,
+        catalog: &catalog,
+    };
+
+    // Act
+    update_settings(&mut state, &按下(&[GameKey::Cancel]), &mut ctx);
+
+    // Assert
+    assert_eq!(state, ScreenState::Title);
+}
+
+#[test]
+fn 从首页进的设置屏按返回那一行也回到首页() {
+    // 取消键与「返回」那一行必须给出同一个答案；只修其中一条是本项目
+    // 反复踩过的「两处逻辑迟早只更新一份」。
+    // Arrange
+    let mut config = GameConfig::default();
+    let catalog = 测试目录();
+    let path = 临时路径("settings-origin-back-row");
+    let cursor = 某行下标(SettingsRow::Back);
+    let mut state = ScreenState::Settings {
+        cursor,
+        capturing: false,
+        origin: SettingsOrigin::Title,
+    };
+    let mut ctx = SettingsContext {
+        config: &mut config,
+        config_path: &path,
+        catalog: &catalog,
+    };
+
+    // Act
+    update_settings(&mut state, &按下(&[GameKey::Confirm]), &mut ctx);
+
+    // Assert
+    assert_eq!(state, ScreenState::Title);
 }

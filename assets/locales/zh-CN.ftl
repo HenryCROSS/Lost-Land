@@ -400,3 +400,18 @@ screen-settings-save-failed = 配置文件写入失败，本次会话内改动�
 # 语言自称（endonym）——设置界面的语言选单每一项用自己的文字写，
 # 见 ll_game::menu_screen::language_display_name。
 language-name = 简体中文
+
+# 游戏主菜单（首页，批次 6）：
+#   - screen-title-*
+#     与游戏内菜单共用 ll-ui 的同一个 screen 模块，唯一的区别是它底下
+#     还没有世界。
+screen-title-title = 迷途大陆
+screen-title-empty = （没有条目）
+screen-title-hint = 上下移动，确认键选择
+screen-title-new-game = 开始游戏
+screen-title-load = 读取存档
+screen-title-load-empty = 读取存档（没有存档）
+screen-title-settings = 设置
+screen-title-quit = 离开
+screen-title-no-save = 还没有可以读取的存档
+screen-title-load-failed = 存档读不回来，什么都没有改变

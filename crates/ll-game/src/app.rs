@@ -35,7 +35,7 @@ use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 use ll_render::wgpu;
 use ll_sim::effect::Effect;
 use ll_sim::rule_modifier::{SubjectRegistry, agent_rule_modifiers, rule_modifier_displays};
-use ll_sim::turn::{PlayerTurnOutcome, TurnEngine};
+use ll_sim::turn::PlayerTurnOutcome;
 use ll_text::TextRenderer;
 use ll_ui::hud::character_panel::CharacterPanelData;
 use ll_ui::hud::render::render_hud;
@@ -48,7 +48,7 @@ use ll_ui::widget::state::WidgetStateTable;
 use ll_ui::widget::textured_quad::TexturedQuadRenderer;
 use ll_ui::widget::ui_mode::{UiMode, UiModeStack};
 use ll_world::fov::compute_fov;
-use ll_world::overview::{ContinentField, continent_map, generate_continent_field};
+use ll_world::overview::{ContinentField, continent_map};
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::surface_store::SurfaceWindow;
@@ -66,8 +66,10 @@ use crate::menu_screen::{
 };
 use crate::player_action::{Feedback, PlayerCommand, PlayerMenu, player_command};
 use crate::save::save_game;
-use crate::settings_view::{menu_row_texts, settings_row_texts};
+use crate::session::Session;
+use crate::settings_view::{menu_row_texts, settings_row_texts, title_row_texts};
 use crate::surface_draw::{PLAYER_ENTITY, SurfaceDraw, TERRAIN_ENTITY_BASE, surface_draws};
+use crate::title_screen::{title_focus_index, update_title};
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
 /// 本体二进制的 NPC 决策来源：**按职业选行为树**。
@@ -103,7 +105,10 @@ use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES}
 /// 里**没有任何一条职业绑它**——本体至今不生成怪物，`examplemod:frostbolt`
 /// 那条技能也只在示例 mod 里。如实标注：这一支在生产装载下恒不成立，
 /// 它的证据在 `crates/ll-mod/tests/` 那批用示例 mod 的集成测试里。
-fn npc_behavior_source(content: &LoadedContent, world_seed: u64) -> NativeBehaviorSource {
+pub(crate) fn npc_behavior_source(
+    content: &LoadedContent,
+    world_seed: u64,
+) -> NativeBehaviorSource {
     NativeBehaviorSource::new(
         NativeBehaviorTree::townsfolk(),
         BehaviorRuleCatalogs::snapshot(
@@ -343,8 +348,19 @@ impl GpuResources {
 /// 游戏本体的完整运行期状态。
 pub struct Demo {
     content: LoadedContent,
-    game_world: GameWorld,
-    camera: Camera,
+    /// 正在进行的那一局——**`None` 表示世界尚未存在**（玩家还停在首页，
+    /// 一次都没选过「开始游戏 / 读取存档」）。
+    ///
+    /// 它是本项目里「有没有世界」这个问题的唯一真相源，见
+    /// `crate::session` 模块文档：世界、摄像机、回合引擎、粗粒度地形场、
+    /// NPC 决策源这五样东西的存在性永远同生同死，因此合成**一个**
+    /// `Option`，而不是五个各自可空的字段。
+    ///
+    /// 为 `None` 时有三处早退：[`Demo::advance`]（世界一个字节都不动）、
+    /// [`Demo::maintain_streaming`]、`on_frame` 的渲染段（不画世界层、
+    /// 不画 HUD，只画屏）。`on_exit` 也读它——没有世界就没有东西可存，
+    /// 见那里的说明。
+    session: Option<Session>,
     /// 当前画面缩放倍率——ADR 0020 甲区（渲染层浮点，结果只变成
     /// 像素，见 `ll_render::camera::Zoom` 文档），钳制在
     /// `[MIN_SAFE_ZOOM, MAX_SAFE_ZOOM]`（不是 `Zoom` 的通用上下限，
@@ -380,13 +396,6 @@ pub struct Demo {
     /// 状态」——与 `ll-sim` 的 `p5_coordinate_acceptance::Demo::anim`
     /// 同一套接线方式，只是本体二进制这一份是独立的运行期实例。
     anim: AnimStateMachine,
-    /// 回合引擎——世界时钟推进的唯一驱动者，见 [`Demo::advance`] 文档
-    /// 「世界时钟为什么会走」一节。由 [`Demo::new`] 从
-    /// `game_world.timeline` 接管（[`std::mem::take`]，见其字段文档），
-    /// 此后 `game_world.timeline` 恒为空，时间轴的权威副本只在本字段
-    /// 里——`GameWorld` 只是「建世界/读档」这一步的搬运容器，不是本
-    /// 引擎持续读写的地方。
-    engine: TurnEngine,
     resources: Option<GpuResources>,
     /// 本地化目录（P7 第一批：只读观测 HUD）——状态栏/角色面板/背包/
     /// 装备栏的全部标签、属性名、槽位名、物品名都经它解析，见
@@ -399,16 +408,6 @@ pub struct Demo {
     /// 索引的旁表,见 `ll_ui::widget::state` 模块文档「为什么是旁表」
     /// 一节：结构上不可能污染 `WorldState`,只影响画面。
     hud_anim: WidgetStateTable,
-    /// 世界地图（M 键切换）用的粗粒度地形场——[`Demo::new`] 建局时算
-    /// 一次并长期持有，理由见
-    /// `ll_world::overview::generate_continent_field` 文档「调用方应在
-    /// 世界创建时调用一次并长期持有结果」一节：这份数据只依赖噪声种子
-    /// 与地形表（两者建局后不再变化），每帧重新生成毫无必要。**只是
-    /// `Demo` 自己的表现层缓存**，不进 `GameWorld`/`WorldState`、不参与
-    /// 存档序列化——读档后的会话会在 [`Demo::new`] 里用读到的
-    /// `game_world.noise`/`game_world.params` 重新生成同一份数据（种子
-    /// 相同则地形场逐位相同），不需要随存档往返。
-    continent_field: ContinentField,
     /// 玩家菜单（背包 / 制作）当前的状态与光标位置——I 键与 C 键切换，
     /// 见 [`crate::player_action`] 模块文档。与 `world_map_open` 同一条
     /// 纪律：纯表现层状态，不进 `GameWorld`/`WorldState`、不进存档、
@@ -430,13 +429,6 @@ pub struct Demo {
     /// [`Demo::advance`] 里的开关逻辑与 `ll_ui::hud::world_map` 模块
     /// 文档。纯粹的表现层 UI 状态,同样不进 `GameWorld`/`WorldState`。
     world_map_open: bool,
-    /// NPC 决策来源——引擎自带的行为树，见 [`npc_behavior_source`] 文档。
-    ///
-    /// 做成字段而不是每帧现造：[`NativeBehaviorSource`] 持有一份**内容表
-    /// 快照**（`BehaviorRuleCatalogs`，五张表的克隆，见其类型文档「为什么
-    /// 是快照」），每帧克隆五张表是一笔白付的开销；而内容表在装载之后不再
-    /// 变化，快照一次就够。
-    npc_ai: NativeBehaviorSource,
     /// 据点职业名册解析结果——[`crate::world::materialize_nearby_settlements`]
     /// 每次物化都要用，同样只在建局/读档后解析一次（`SettlementRoles::resolve`
     /// 只是几次注册表查询，但它的输入——注册表——装载后不再变化）。
@@ -449,10 +441,23 @@ pub struct Demo {
     /// 的那个真相源**，见 `ll_ui::widget::ui_mode` 模块文档与
     /// [`AppHandler::input_context`]。
     ///
-    /// 栈非空 ⇔ 有一块模态屏盖在世界上 ⇔ 平台层按菜单表解析物理键 ⇔
+    /// 栈非空 ⇔ 有一块模态屏盖着 ⇔ 平台层按菜单表解析物理键 ⇔
     /// [`Demo::advance`] 整段早退（世界一个字节都不动）。这四件事必须
     /// 同时成立，因此它们由同一个字段决定，而不是各自留一个布尔量。
+    ///
+    /// **这段措辞被首页改写过一次**：原文写的是「盖在世界上」，并且
+    /// 反过来也成立——栈空 ⇔ 玩家在世界里。首页落地之后反向不再成立：
+    /// 启动后先停在首页，那一刻栈非空、而世界**还不存在**
+    /// （[`Demo::session`] 为 `None`）。现在只剩单向：**栈空 ⇒ 有世界
+    /// 在跑**。
     ui_modes: UiModeStack,
+    /// 磁盘上那份存档在**本次启动那一刻**存不存在——首页的「读取存档」
+    /// 那一行能不能按，由它决定。
+    ///
+    /// 只在构造时算一次，不每帧 stat 一次文件系统：首页停留期间没有
+    /// 任何路径能改变它（本批次不做「回到主菜单」，进了世界就回不到
+    /// 首页，见本批次计划文档第八节第 3 条）。
+    save_exists: bool,
     /// 模态屏当前开着哪一块（`None` = 没开）——与 `ui_modes` 是**同一
     /// 件事的两面**：栈管「输入上下文该切到哪」，本字段管「这块屏里
     /// 具体在显示什么、光标在哪」。不合并成一个：前者住在 `ll-ui`
@@ -486,23 +491,70 @@ impl Demo {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         content: LoadedContent,
-        mut game_world: GameWorld,
+        game_world: GameWorld,
         save_path: PathBuf,
         character_name: String,
         config: GameConfig,
         config_path: PathBuf,
         catalog: Catalog,
     ) -> Demo {
-        let player_pos = game_world
-            .world
-            .actors
-            .get(game_world.player)
-            .expect("玩家刚生成或刚读档，必然存在")
-            .pos;
-        let camera = Camera {
-            center: player_pos,
-            world: game_world.world.size,
-        };
+        let session = Session::begin(game_world, &content);
+        Demo::assemble(
+            content,
+            Some(session),
+            save_path,
+            character_name,
+            config,
+            config_path,
+            catalog,
+        )
+    }
+
+    /// 构造一个**停在游戏主菜单（首页）上**的运行期状态——世界尚未
+    /// 存在，由玩家在首页上选「开始游戏」或「读取存档」之后才建出来。
+    ///
+    /// 这是 [`crate::run_game`] 现在唯一的入口。[`Demo::new`] 保留给
+    /// 「直接构造一个已经在世界里的 `Demo`」那些调用点（本模块十几条
+    /// 测试全部依赖它）：让那些测试先过一遍首页，只会让它们的主题
+    /// （时钟推进、buff 到期、背包）被无关的 UI 状态污染。
+    #[allow(clippy::too_many_arguments)]
+    pub fn at_title(
+        content: LoadedContent,
+        save_path: PathBuf,
+        character_name: String,
+        config: GameConfig,
+        config_path: PathBuf,
+        catalog: Catalog,
+    ) -> Demo {
+        Demo::assemble(
+            content,
+            None,
+            save_path,
+            character_name,
+            config,
+            config_path,
+            catalog,
+        )
+    }
+
+    /// [`Demo::new`] 与 [`Demo::at_title`] 共用的装配步骤。
+    ///
+    /// **屏与模态栈的初值完全由 `session` 决定**，两者不是各自传进来的
+    /// 参数：世界已经建好就直接进世界（没有屏、栈空、按 `Gameplay` 表
+    /// 解析），世界尚未存在就停在首页（屏是 `Title`、栈压着一层、按
+    /// `Menu` 表解析）。写成两个独立参数就允许出现「停在首页但栈是空的」
+    /// 这种自相矛盾的组合。
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        content: LoadedContent,
+        session: Option<Session>,
+        save_path: PathBuf,
+        character_name: String,
+        config: GameConfig,
+        config_path: PathBuf,
+        catalog: Catalog,
+    ) -> Demo {
+        let at_title = session.is_none();
         let walk_clip = content.clip_ids.hero_walk.get() as usize;
         let idle_clip = content.clip_ids.hero_idle.get() as usize;
         tracing::info!(
@@ -511,20 +563,6 @@ impl Demo {
             idle_clip,
             "玩家动画状态机已装载"
         );
-        // 接管时间轴——见 `Demo::engine` 字段文档：本引擎此后是时间轴
-        // 唯一的权威持有者,`game_world.timeline` 留下的空值不再被读取。
-        let engine = TurnEngine::new(std::mem::take(&mut game_world.timeline));
-
-        // 世界地图的粗粒度地形场——建局/读档后只算这一次，见
-        // `Demo::continent_field` 字段文档。必须在 `game_world` 被移进
-        // 下方的结构体字面量之前借出 `&game_world.world.terrain.layout()`。
-        let continent_field = generate_continent_field(
-            game_world.world.terrain.layout(),
-            &game_world.noise,
-            &game_world.params,
-            &content.terrain_ids,
-        );
-        let npc_ai = npc_behavior_source(&content, game_world.world.seed);
         let settlement_roles = SettlementRoles::resolve(
             &content.registry,
             &content.class_table,
@@ -533,8 +571,10 @@ impl Demo {
         );
         Demo {
             content,
-            game_world,
-            camera,
+            // 走 `Demo::new` 这条路的调用方给的是一局**已经建好**的世界
+            // ——首页不在这条路上（那条路是 `Demo::at_title`）。
+            session,
+            save_exists: save_path.exists(),
             zoom: Zoom::default(),
             save_path,
             character_name,
@@ -542,20 +582,29 @@ impl Demo {
             config_path,
             walk_clip,
             idle_clip,
-            engine,
             anim: AnimStateMachine::new(idle_clip, FrameId(0)),
             resources: None,
             catalog,
             hud_anim: WidgetStateTable::new(),
-            continent_field,
             menu: PlayerMenu::default(),
             feedback: None,
             world_map_open: false,
-            npc_ai,
             settlement_roles,
             fps_counter: FpsCounter::new(),
-            ui_modes: UiModeStack::new(),
-            screen: None,
+            // 首页在**第一帧之前**就已经开着，因此这里用的是
+            // `UiModeStack::opened` 而不是 `push`——那一刻还没有
+            // `InputState` 可以清空，也没有任何键可能正被按住，见那个
+            // 构造器的文档。
+            ui_modes: if at_title {
+                UiModeStack::opened(UiMode::Menu)
+            } else {
+                UiModeStack::new()
+            },
+            screen: if at_title {
+                Some(ScreenState::Title)
+            } else {
+                None
+            },
             screen_focus: WidgetStateTable::new(),
             screen_notice: None,
             pending_bindings: None,
@@ -578,7 +627,7 @@ impl Demo {
     /// 时,昼夜循环、buff 到期、技能冷却、地面物品老化全部靠这个会走
     /// 的时钟,而它从未走过,是本项目当时最严重的缺陷。
     ///
-    /// 现在改由 [`TurnEngine::advance_ai`]/[`TurnEngine::try_player_turn`]
+    /// 现在改由 [`ll_sim::turn::TurnEngine::advance_ai`]/[`ll_sim::turn::TurnEngine::try_player_turn`]
     /// 驱动：先结算排在玩家之前的非受控实体回合（本体二进制目前没有
     /// NPC——NPC 生成批次之后**不再恒是空操作**，见
     /// [`npc_behavior_source`] 文档),再尝试用本帧输入
@@ -608,12 +657,16 @@ impl Demo {
         if self.screen.is_some() {
             return;
         }
+        // 世界尚未存在（玩家还停在首页）——同样整段早退。
+        //
+        // **两道闸门都要**，不是重复：上一道守的是「有一块屏盖着」，
+        // 这一道守的是「根本没有世界可推进」。首页两者同时成立，但它们
+        // 是两件事——将来任何一条绕过屏的路径（例如死亡后回到首页）
+        // 仍然会被这一道挡住。
+        if self.session.is_none() {
+            return;
+        }
         self.maintain_streaming();
-        // 地面物品老化清理（NPC 生命周期批次）——见
-        // `crate::world::cleanup_aged_ground_items` 文档「为什么挂在
-        // 这里」一节：与 `maintain_streaming` 并列，是当前代码库里
-        // 已经存在、每帧真正跑一遍的位置。
-        crate::world::cleanup_aged_ground_items(&mut self.game_world.world);
         self.update_zoom(input);
         animation::update_player_animation(
             &mut self.anim,
@@ -622,8 +675,27 @@ impl Demo {
             self.walk_clip,
             self.idle_clip,
         );
+        self.run_turn(input);
+    }
 
-        let player = self.game_world.player;
+    /// 本帧的一次回合结算：清理老化地面物品 → 结算排在玩家之前的
+    /// NPC 回合 → 尝试用本帧输入结算玩家一次行动 → 摄像机跟人。
+    ///
+    /// 从 [`Demo::advance`] 里拆出来，原因是借用检查：本方法全程持着
+    /// 一个 `&mut Session`，而 `maintain_streaming`/`update_zoom` 是
+    /// `&mut self` 的方法，两者不能同时活着。拆开之后 `advance` 只剩
+    /// 「闸门 + 每帧杂务 + 调用本方法」，也顺带把那个早已越过 50 行
+    /// 上限的函数切小了一截。
+    fn run_turn(&mut self, input: &InputState) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        // 地面物品老化清理（NPC 生命周期批次）——见
+        // `crate::world::cleanup_aged_ground_items` 文档「为什么挂在
+        // 这里」一节：与 `maintain_streaming` 并列，是当前代码库里
+        // 已经存在、每帧真正跑一遍的位置。
+        crate::world::cleanup_aged_ground_items(&mut session.game_world.world);
+        let player = session.game_world.player;
         // 本帧的结算目录束——每帧现借一次，不长期持有：`RuntimeCatalogs`
         // 只借用 `self.content`（装载期产物，建局后不再变化），构造成本
         // 是几个引用的复制，不是查表，与 ADR 0016/0017 的性能分级无关
@@ -648,12 +720,12 @@ impl Demo {
         // 不知道调用方在不在渲染。
         let mut on_effect = |_world: &WorldState, _effect: &Effect| {};
         // 行为树真的驱动回合推进这条链路的唯一标准接法，见
-        // `ll_sim::behavior::behavior_ai_intent` 文档。`self.npc_ai` 与
-        // `self.game_world.world` 是同一个 `self` 上的两个不同字段，
-        // 借用检查器分得开，不需要把决策来源搬出去。
-        let mut ai_intent = ll_sim::behavior::behavior_ai_intent(&mut self.npc_ai);
-        self.engine.advance_ai(
-            &mut self.game_world.world,
+        // `ll_sim::behavior::behavior_ai_intent` 文档。`session.npc_ai`
+        // 与 `session.game_world.world` 是同一个 `Session` 上的两个不同
+        // 字段，借用检查器分得开，不需要把决策来源搬出去。
+        let mut ai_intent = ll_sim::behavior::behavior_ai_intent(&mut session.npc_ai);
+        session.engine.advance_ai(
+            &mut session.game_world.world,
             player,
             &mut ai_intent,
             &catalogs,
@@ -672,7 +744,7 @@ impl Demo {
         let command = player_command(
             &mut self.menu,
             input,
-            &self.game_world.world,
+            &session.game_world.world,
             player,
             &self.content.recipe_table,
         );
@@ -680,8 +752,8 @@ impl Demo {
             PlayerCommand::Idle => {}
             PlayerCommand::Rejected(feedback) => self.feedback = Some(feedback),
             PlayerCommand::Submit(intent) => {
-                let outcome = self.engine.try_player_intent(
-                    &mut self.game_world.world,
+                let outcome = session.engine.try_player_intent(
+                    &mut session.game_world.world,
                     player,
                     intent,
                     &catalogs,
@@ -700,10 +772,10 @@ impl Demo {
             }
         }
 
-        if let Some(agent) = self.game_world.world.actors.get(player)
+        if let Some(agent) = session.game_world.world.actors.get(player)
             && matches!(agent.current_space, Space::Surface { .. })
         {
-            self.camera.center = agent.pos;
+            session.camera.center = agent.pos;
         }
     }
 
@@ -740,6 +812,13 @@ impl Demo {
             return false;
         };
         let (outcome, next_state) = match state {
+            ScreenState::Title => {
+                let update = update_title(&mut self.screen_focus, input, self.save_exists);
+                if update.notice.is_some() {
+                    self.screen_notice = update.notice;
+                }
+                (update.outcome, update.next)
+            }
             ScreenState::Menu => update_menu(&mut self.screen_focus, input),
             ScreenState::Settings { .. } => {
                 let mut state = state;
@@ -788,7 +867,56 @@ impl Demo {
                 false
             }
             ScreenOutcome::Quit => true,
+            ScreenOutcome::StartNewGame => {
+                self.start_new_game(input);
+                false
+            }
+            ScreenOutcome::LoadSave => {
+                self.load_saved_game(input);
+                false
+            }
         }
+    }
+
+    /// 首页的「开始游戏」：建一局全新的世界并进去。
+    ///
+    /// # 这里就是下一批（角色创建 / 世界配置 / 选重生点）的衔接点
+    ///
+    /// 本批次它直接 `crate::new_game(内容, 配置里的 new_game 段)`。
+    /// 下一批要把这一句换成「先进一串新的 `ScreenState`」（种族/性别/
+    /// 职业 → 世界配置 → 选重生点），走完之后再落到
+    /// [`Session::begin`]——那个函数是「世界准备好了，开始玩」这件事
+    /// 唯一的入口，四条路径共用，见本批次计划文档第七节。
+    fn start_new_game(&mut self, input: &mut InputState) {
+        tracing::info!("首页：开始新游戏");
+        let world = crate::new_game(&self.content, &self.config.new_game);
+        self.enter_world(world, input);
+    }
+
+    /// 首页的「读取存档」：把磁盘上那份存档读回来并进去。
+    ///
+    /// # 读不回来时**留在首页**，不悄悄开一局新游戏
+    ///
+    /// 启动期的 `crate::load_or_new_game` 在读档失败时回退到新游戏，
+    /// 那条语义在**那里**是对的：玩家已经决定要玩了，给他一个能玩的
+    /// 世界总比什么都没有强。首页这条不同——玩家明确点的是「读取
+    /// 存档」，给他一个新世界是答非所问，而且那局新世界退出时就会把
+    /// 那份坏档彻底覆盖掉（存档只有一份）。
+    fn load_saved_game(&mut self, input: &mut InputState) {
+        tracing::info!(path = %self.save_path.display(), "首页：读取存档");
+        let Some(world) = crate::load_saved_game(&self.save_path, &self.content) else {
+            tracing::warn!(path = %self.save_path.display(), "首页读档失败，留在首页");
+            self.screen_notice = Some(ScreenNotice::LoadFailed);
+            return;
+        };
+        self.enter_world(world, input);
+    }
+
+    /// 真正进世界：建出这一局的运行期状态，并把首页那一层从模态栈里
+    /// 弹掉（输入上下文随之回到 `Gameplay`，按住的键视为全部松开）。
+    fn enter_world(&mut self, world: crate::world::GameWorld, input: &mut InputState) {
+        self.session = Some(Session::begin(world, &self.content));
+        self.close_screen(input);
     }
 
     /// 把当前世界层画面存成一张 PNG（`GameKey::Screenshot`，默认 F2）。
@@ -854,18 +982,22 @@ impl Demo {
     }
 
     fn maintain_streaming(&mut self) {
-        let player = self.game_world.player;
-        let Some(agent) = self.game_world.world.actors.get(player) else {
+        let Some(session) = self.session.as_mut() else {
+            // 世界尚未存在（首页）——没有邻域可维护。
+            return;
+        };
+        let player = session.game_world.player;
+        let Some(agent) = session.game_world.world.actors.get(player) else {
             return;
         };
         if !matches!(agent.current_space, Space::Surface { .. }) {
             return;
         }
         let pos = agent.pos;
-        let clock = self.game_world.world.clock;
-        self.game_world.world.terrain.stream_neighborhood(
-            &self.game_world.noise,
-            &self.game_world.params,
+        let clock = session.game_world.world.clock;
+        session.game_world.world.terrain.stream_neighborhood(
+            &session.game_world.noise,
+            &session.game_world.params,
             &self.content.terrain_ids,
             pos,
             STREAM_RADIUS_ZONES,
@@ -875,7 +1007,7 @@ impl Demo {
         // 能不能站人」，读的正是上一行刚刚装进来的那些区块（见
         // `crate::world::materialize_nearby_settlements` 文档「时机」一节）。
         let spawned = crate::world::materialize_nearby_settlements(
-            &mut self.game_world.world,
+            &mut session.game_world.world,
             &self.content,
             &self.settlement_roles,
         );
@@ -883,7 +1015,7 @@ impl Demo {
         // 的路径在这里用不了（会丢掉 `TurnEngine::pending`），见
         // `ll_sim::turn::TurnEngine::schedule` 文档。
         for actor in spawned {
-            self.engine.schedule(actor, clock);
+            session.engine.schedule(actor, clock);
         }
     }
 
@@ -891,10 +1023,21 @@ impl Demo {
     /// 文档保证），是「游玩 → 存档 → 退出」这条闭环里存档动作唯一的
     /// 触发点。
     fn save_on_exit(&self) {
+        let Some(session) = self.session.as_ref() else {
+            // 从首页直接离开：这一局从来没有开始过，没有任何世界状态
+            // 可存。
+            //
+            // **这一条不只是防 panic，是防数据丢失**：存档只有一份
+            // （`crate::GamePaths::save` 是单个文件路径）。照旧无条件
+            // 存档会把一个「玩家从未玩过」的空世界写到玩家真正那份
+            // 存档上——启动、进首页、直接离开，档就没了。
+            tracing::info!("从首页退出，没有进行中的世界，跳过退出存档");
+            return;
+        };
         match save_game(
             &self.save_path,
             &self.content,
-            &self.game_world,
+            &session.game_world,
             &self.character_name,
             "旷野",
             ll_content::mode::SaveMode::Permadeath,
@@ -962,7 +1105,7 @@ impl Demo {
 /// 的是 `None`，世界地图整块不参与本帧渲染——见 `ll_ui::hud::world_map`
 /// 模块文档「战争迷雾」一节与 `ll_platform::input::GameKey::Map` 文档。
 /// 为真时才现算一份 [`ll_world::overview::continent_map`] 输出：这一步
-/// 只读 `continent_field`（建局时算过一次，见 [`Demo::continent_field`]
+/// 只读 `continent_field`（建局时算过一次，见 [`crate::session::Session::continent_field`]
 /// 字段文档）与 `game_world.world.exploration`（真实探索记忆），不触发
 /// 任何区块的按需生成、不修改任何世界状态——按需才算，避免地图关着的
 /// 绝大多数帧白白花这份 O(区块数) 的开销。
@@ -1141,12 +1284,18 @@ fn draw_hud(
 ///
 /// `screen` 为 `None` 时整块不参与本次产出——不是「画出来但透明」，是
 /// 压根不调用渲染函数，与 `draw_hud` 对世界地图/动作菜单的同一条纪律。
+// 八个参数：全部是不同类型的具名值，调用点只有一处（`on_frame` 的渲染
+// 段）。收拢的正确形状是把「屏 + 焦点 + 提示 + 存档在不在」四个纯 UI
+// 状态打包成一个类型，那是一次独立的重构——本批次只往里加了一个
+// `save_exists`（首页那一行「读取存档」显示成什么字要靠它），不夹带。
+#[allow(clippy::too_many_arguments)]
 fn draw_screen(
     screen: Option<ScreenState>,
     config: &GameConfig,
     catalog: &Catalog,
     focus: &WidgetStateTable,
     notice: Option<ScreenNotice>,
+    save_exists: bool,
     resources: &mut GpuResources,
     view: &wgpu::TextureView,
 ) {
@@ -1157,8 +1306,14 @@ fn draw_screen(
     // 行文字与光标位置由 `crate::menu_screen` 排版，本函数只负责把
     // 结果交给 GPU——见该模块文档「为什么排版在这一层」一节。
     let (rows, cursor) = match state {
+        ScreenState::Title => (
+            title_row_texts(catalog, language, save_exists),
+            title_focus_index(focus),
+        ),
         ScreenState::Menu => (menu_row_texts(catalog, language), menu_focus_index(focus)),
-        ScreenState::Settings { cursor, capturing } => {
+        ScreenState::Settings {
+            cursor, capturing, ..
+        } => {
             let rows = settings_rows();
             (
                 settings_row_texts(&rows, config, catalog, capturing, cursor),
@@ -1479,26 +1634,33 @@ impl AppHandler for Demo {
             return FrameOutcome::Continue;
         };
 
-        // 当前动画帧应显示的图集条目名，两层兜底见
-        // `current_sprite_name` 文档；两层都失败时（连 `FALLBACK_SPRITE`
-        // 本身都缺失）才会在 `GpuResources::lookup` 里记一条错误日志，
-        // 那已经是资产整体损坏，不再是「可选帧缺失」。
-        let sprite_name = current_sprite_name(
-            self.anim.playback(),
-            self.content.clip_table.as_clips(),
-            frame,
-            resources.atlas.metadata(),
-            FALLBACK_SPRITE,
-        );
+        // 世界尚未存在（首页）时**跳过世界层**，但下面那次
+        // `batch.flush` 照跑：空批次会走 `ll_render::batch` 的
+        // `wgpu::LoadOp::Clear(BLACK)`，首页背后因此是干净的黑，而不是
+        // 上一帧的残影或未初始化内存。
+        if let Some(session) = self.session.as_ref() {
+            // 当前动画帧应显示的图集条目名，两层兜底见
+            // `current_sprite_name` 文档；两层都失败时（连
+            // `FALLBACK_SPRITE` 本身都缺失）才会在 `GpuResources::lookup`
+            // 里记一条错误日志，那已经是资产整体损坏，不再是「可选帧
+            // 缺失」。
+            let sprite_name = current_sprite_name(
+                self.anim.playback(),
+                self.content.clip_table.as_clips(),
+                frame,
+                resources.atlas.metadata(),
+                FALLBACK_SPRITE,
+            );
 
-        render_surface(
-            &self.game_world,
-            &self.content,
-            &self.camera,
-            self.zoom,
-            sprite_name,
-            resources,
-        );
+            render_surface(
+                &session.game_world,
+                &self.content,
+                &session.camera,
+                self.zoom,
+                sprite_name,
+                resources,
+            );
+        }
 
         resources
             .batch
@@ -1510,27 +1672,34 @@ impl AppHandler for Demo {
         // 文档。取不到可用帧时（`acquire_and_blit` 返回 `None`）本帧
         // 直接跳过，与既有降级行为一致。
         if let Some((surface_frame, view)) = resources.acquire_and_blit() {
-            draw_hud(
-                &self.game_world,
-                &self.content,
-                &self.catalog,
-                &self.config.language,
-                resources,
-                &view,
-                &mut self.hud_anim,
-                frame,
-                fps,
-                self.world_map_open,
-                &self.continent_field,
-                self.menu,
-                self.feedback,
-            );
+            // HUD 是画在世界之上的观测层——没有世界就没有 HUD 可画
+            // （首页那一刻血条、时钟、背包全都无从谈起）。屏
+            // （`draw_screen`）不受影响：它本来就是盖住世界的模态层，
+            // 首页正是它唯一一种「底下没有世界」的用法。
+            if let Some(session) = self.session.as_ref() {
+                draw_hud(
+                    &session.game_world,
+                    &self.content,
+                    &self.catalog,
+                    &self.config.language,
+                    resources,
+                    &view,
+                    &mut self.hud_anim,
+                    frame,
+                    fps,
+                    self.world_map_open,
+                    &session.continent_field,
+                    self.menu,
+                    self.feedback,
+                );
+            }
             draw_screen(
                 self.screen,
                 &self.config,
                 &self.catalog,
                 &self.screen_focus,
                 self.screen_notice,
+                self.save_exists,
                 resources,
                 &view,
             );
@@ -1555,9 +1724,37 @@ impl AppHandler for Demo {
         self.pending_bindings.take()
     }
 
+    /// 退出前存档——**只在真的有一局世界的时候**，判断在
+    /// [`Demo::save_on_exit`] 里，见那里的说明（从首页直接离开时存档
+    /// 会覆盖玩家真正那一份存档）。
     fn on_exit(&mut self) {
         tracing::info!("demo exiting");
         self.save_on_exit();
+    }
+}
+
+/// 测试专用的世界取用入口——本模块的断言全部跑在 [] 建出的
+/// `Demo` 上，那条路走的是 [`Demo::new`]（世界已经建好），因此这里
+/// 解包是安全的。
+///
+/// 做成两个方法而不是让测试各写一遍 `session.as_ref().unwrap()`：那样
+/// 每条断言里都会多出一行与断言主题无关的解包噪音。
+#[cfg(test)]
+impl Demo {
+    fn test_world(&self) -> &GameWorld {
+        &self
+            .session
+            .as_ref()
+            .expect("测试里世界必然已经建好")
+            .game_world
+    }
+
+    fn test_world_mut(&mut self) -> &mut GameWorld {
+        &mut self
+            .session
+            .as_mut()
+            .expect("测试里世界必然已经建好")
+            .game_world
     }
 }
 
@@ -1632,18 +1829,145 @@ mod tests {
         )
     }
 
+    /// 建一个**停在首页**的 `Demo`——与 [`test_demo`] 的区别只有一个：
+    /// 世界尚未存在。`save_path` 指向一个必然不存在的临时路径，因此
+    /// `save_exists` 为假、「读取存档」那一行不可按。
+    fn test_demo_at_title() -> Demo {
+        let content = test_content();
+        let save_path =
+            crate::test_support::unique_temp_path("ll-game-title-save").with_extension("llsave");
+        Demo::at_title(
+            content,
+            save_path,
+            "测试旅人".to_string(),
+            GameConfig::default(),
+            crate::test_support::unique_temp_path("ll-game-title-config").join("config.json5"),
+            Catalog::load_dir(&std::env::temp_dir().join("ll-game-app-test-empty-locales")),
+        )
+    }
+
+    #[test]
+    fn 启动后停在首页且世界尚未存在() {
+        // 所有者原话：「我需要一个游戏的主菜单，而不是开始直接进入
+        // 存档」。此前 `run_game` 在建窗口之前就 `load_or_new_game`，
+        // 玩家没有任何机会在进世界之前做选择。
+        //
+        // 反例验证（已实跑）：把 `Demo::assemble` 里 `at_title` 那两个
+        // 三元判断的取值互换（屏恒为 `None`、栈恒为空），本条立刻变红。
+        // Arrange & Act
+        let demo = test_demo_at_title();
+
+        // Assert：三件事必须同时成立，见 `Demo::session` 字段文档。
+        assert!(demo.session.is_none(), "首页那一刻世界不该存在");
+        assert_eq!(demo.screen, Some(ScreenState::Title));
+        assert_eq!(
+            demo.input_context(),
+            InputContext::Menu,
+            "首页必须按菜单那张表解析物理键"
+        );
+    }
+
+    #[test]
+    fn 首页开着时推进一帧世界不动() {
+        // `Demo::advance` 有两道闸门（屏开着、世界不存在）。这一条走的
+        // 是真实的 `on_frame`：没有世界的那些帧一路跑到底也不该 panic，
+        // 更不该凭空造出一个世界来。
+        // Arrange
+        let mut demo = test_demo_at_title();
+
+        // Act：连按方向键与等待键——在世界里这些都会推进时钟。
+        for at in 0..3 {
+            走一帧(&mut demo, at, &[GameKey::Right, GameKey::Wait]);
+        }
+
+        // Assert
+        assert!(demo.session.is_none(), "首页按方向键不该把世界造出来");
+        assert_eq!(demo.screen, Some(ScreenState::Title));
+    }
+
+    #[test]
+    fn 首页选开始游戏之后世界建出来且屏关掉() {
+        // 首页 →「开始游戏」→ 真的在世界里，这是本批次的主干路径。
+        //
+        // 反例验证（已实跑）：把 `Demo::start_new_game` 里的
+        // `self.enter_world(world, input)` 换成只 `close_screen`
+        // （不建 session），本条立刻变红。
+        // Arrange：焦点落在第一项「开始游戏」。
+        let mut demo = test_demo_at_title();
+        走一帧(&mut demo, 0, &[GameKey::Down]);
+
+        // Act
+        走一帧(&mut demo, 1, &[GameKey::Confirm]);
+
+        // Assert
+        assert!(demo.session.is_some(), "世界必须已经建出来");
+        assert_eq!(demo.screen, None, "首页那一层必须弹掉");
+        assert_eq!(
+            demo.input_context(),
+            InputContext::Gameplay,
+            "进世界之后必须回到游戏内那张键位表"
+        );
+    }
+
+    #[test]
+    fn 没有存档时首页按读取存档不进世界() {
+        // 玩家点的是「读取存档」，没有存档就该被告知，而不是悄悄开一局
+        // 新游戏——那局新游戏退出时会把（本来就该被保护的）存档位置
+        // 写掉。
+        // Arrange：焦点落在第二项「读取存档」。
+        let mut demo = test_demo_at_title();
+        走一帧(&mut demo, 0, &[GameKey::Down]);
+        走一帧(&mut demo, 1, &[GameKey::Down]);
+
+        // Act
+        走一帧(&mut demo, 2, &[GameKey::Confirm]);
+
+        // Assert
+        assert!(demo.session.is_none(), "没有存档就不该进世界");
+        assert_eq!(demo.screen, Some(ScreenState::Title));
+        assert_eq!(demo.screen_notice, Some(ScreenNotice::NoSave));
+    }
+
+    #[test]
+    fn 从首页直接离开时一个字节都不写存档() {
+        // **这一条防的是数据丢失，不只是 panic**：存档只有一份
+        // （`crate::GamePaths::save` 是单个文件路径）。`on_exit` 此前
+        // 无条件 `save_on_exit()`，从首页直接离开会把一个「玩家从未
+        // 玩过」的空世界写到玩家真正那份存档上。
+        //
+        // 反例验证（已实跑）：把 `save_on_exit` 开头那道闸门的
+        // `return` 换成「照旧无条件存档」（现建一局新世界再
+        // `save_game`，也就是改动前那条路径在新结构下的等价物），本条
+        // 当场变红，且是因为**磁盘上真的多出了一份存档文件**——不是
+        // 因为 panic。
+        // Arrange
+        let mut demo = test_demo_at_title();
+        let save_path = demo.save_path.clone();
+        assert!(!save_path.exists(), "Arrange：这条路径本来就不该存在");
+
+        // Act
+        demo.on_exit();
+
+        // Assert
+        assert!(
+            !save_path.exists(),
+            "从首页退出不该写出任何存档：{}",
+            save_path.display()
+        );
+    }
+
     /// 读出玩家当前结算出的力量值——途经与真实战斗结算
     /// （`ll_sim::resolve::resolve_attack`）完全相同的
     /// `ll_sim::resolve::derive_stats` 聚合入口,不是另写一套判断逻辑。
     fn player_derived_strength(demo: &Demo) -> i32 {
-        let player = demo.game_world.player;
+        let player = demo.test_world().player;
         let agent = demo
-            .game_world
+            .test_world()
             .world
             .actors
             .get(player)
             .expect("玩家仍应存在");
-        let now = demo.game_world.world.clock;
+        let now = demo.test_world().world.clock;
         derive_stats(
             agent.stats,
             &agent.active_stat_modifiers,
@@ -1658,7 +1982,7 @@ mod tests {
     fn 连续多次玩家等待后世界时钟真的前进() {
         // Arrange
         let mut demo = test_demo();
-        let clock_before = demo.game_world.world.clock;
+        let clock_before = demo.test_world().world.clock;
         let mut input = InputState::new();
         input.press(GameKey::Wait);
 
@@ -1674,7 +1998,7 @@ mod tests {
         }
 
         // Assert：不是「变了」，是「前进了」——严格大于，不允许倒退。
-        assert!(demo.game_world.world.clock > clock_before);
+        assert!(demo.test_world().world.clock > clock_before);
     }
 
     #[test]
@@ -1695,13 +2019,13 @@ mod tests {
         // 它已经是的那个值」,不产生可观察的变化——真正能测出「一次
         // 行动的 tick 代价」要看第二次、第三次行动之间的差值。
         let mut demo = test_demo();
-        let player = demo.game_world.player;
+        let player = demo.test_world().player;
         let mut input = InputState::new();
         input.press(GameKey::Wait);
         demo.advance(&input, FrameId(0));
-        let clock_after_warm_up = demo.game_world.world.clock;
+        let clock_after_warm_up = demo.test_world().world.clock;
         demo.advance(&input, FrameId(1));
-        let clock_after_second_wait = demo.game_world.world.clock;
+        let clock_after_second_wait = demo.test_world().world.clock;
         let ticks_per_wait = clock_after_second_wait.0 - clock_after_warm_up.0;
         assert!(ticks_per_wait > 0, "第二次等待起，世界时钟应当真实推进");
 
@@ -1713,7 +2037,7 @@ mod tests {
         let expires_at = Tick(clock_after_second_wait.0 + ticks_per_wait / 2);
         {
             let agent = demo
-                .game_world
+                .test_world_mut()
                 .world
                 .actors
                 .get_mut(player)
@@ -1731,7 +2055,7 @@ mod tests {
                 );
         }
         let base_strength = demo
-            .game_world
+            .test_world()
             .world
             .actors
             .get(player)
@@ -1860,10 +2184,10 @@ mod tests {
     /// 上）。只看第一条会在第一堆被吃空、`apply` 把它移除之后突然"变
     /// 多"，那是一次真实踩到的假失败。
     fn carried(demo: &Demo, def: ContentIndex) -> u32 {
-        demo.game_world
+        demo.test_world()
             .world
             .actors
-            .get(demo.game_world.player)
+            .get(demo.test_world().player)
             .expect("玩家仍存在")
             .inventory
             .iter()
@@ -1875,13 +2199,13 @@ mod tests {
     /// 玩家脚下那一格摆着的全部地面物品定义。
     fn ground_defs_underfoot(demo: &Demo) -> Vec<ContentIndex> {
         let pos = demo
-            .game_world
+            .test_world()
             .world
             .actors
-            .get(demo.game_world.player)
+            .get(demo.test_world().player)
             .expect("玩家仍存在")
             .pos;
-        demo.game_world
+        demo.test_world()
             .world
             .ground_items
             .iter()
@@ -1900,23 +2224,23 @@ mod tests {
     /// `Scene::terrain_underfoot` 字段文档记的是同一个坑。
     fn clear_terrain_underfoot(demo: &mut Demo) {
         let pos = demo
-            .game_world
+            .test_world()
             .world
             .actors
-            .get(demo.game_world.player)
+            .get(demo.test_world().player)
             .expect("玩家仍存在")
             .pos;
         let grass = demo.content.terrain_ids.grass;
-        demo.game_world.world.terrain.set_terrain(pos, grass);
+        demo.test_world_mut().world.terrain.set_terrain(pos, grass);
     }
 
     /// 玩家背包/装备菜单里，第一条指着 `def` 的行是第几行。
     fn inventory_row_of(demo: &Demo, def: ContentIndex) -> usize {
         let agent = demo
-            .game_world
+            .test_world()
             .world
             .actors
-            .get(demo.game_world.player)
+            .get(demo.test_world().player)
             .expect("玩家仍存在");
         inventory_entries(agent)
             .iter()
@@ -1948,10 +2272,10 @@ mod tests {
 
     /// 玩家此刻站在哪一格。
     fn player_pos(demo: &Demo) -> TorusPos {
-        demo.game_world
+        demo.test_world()
             .world
             .actors
-            .get(demo.game_world.player)
+            .get(demo.test_world().player)
             .expect("玩家仍存在")
             .pos
     }
@@ -1959,8 +2283,8 @@ mod tests {
     /// 直接往玩家脚下这一格摆一堆东西（Arrange 用，不经按键）。
     fn put_on_ground(demo: &mut Demo, def: ContentIndex, placed: bool) {
         let pos = player_pos(demo);
-        let clock = demo.game_world.world.clock;
-        demo.game_world
+        let clock = demo.test_world().world.clock;
+        demo.test_world_mut()
             .world
             .ground_items
             .push(ll_world::item::GroundItemStack {
@@ -2029,9 +2353,9 @@ mod tests {
             .item_table
             .get(fixture.smith_hammer)
             .and_then(|view| view.max_durability);
-        let player = demo.game_world.player;
+        let player = demo.test_world().player;
         let agent = demo
-            .game_world
+            .test_world_mut()
             .world
             .actors
             .get_mut(player)
@@ -2077,10 +2401,10 @@ mod tests {
         frame(&mut demo, at, &[GameKey::Inventory]);
         at += 1;
         assert!(
-            demo.game_world
+            demo.test_world()
                 .world
                 .actors
-                .get(demo.game_world.player)
+                .get(demo.test_world().player)
                 .expect("玩家仍存在")
                 .equipment
                 .values()
@@ -2119,7 +2443,7 @@ mod tests {
         at += 1;
         let player_pos = player_pos(&demo);
         assert_eq!(
-            demo.game_world
+            demo.test_world()
                 .world
                 .placed_at(player_pos)
                 .map(|ground| ground.stack.def),
@@ -2194,7 +2518,7 @@ mod tests {
             "Arrange：炉子确实落在了脚下"
         );
         assert!(
-            demo.game_world.world.placed_at(player_pos).is_none(),
+            demo.test_world().world.placed_at(player_pos).is_none(),
             "Arrange：但它是躺着的，不是立着的"
         );
 
@@ -2225,7 +2549,7 @@ mod tests {
         place_forge_by_keys(&mut demo, &mut at, &fixture);
         let player_pos = player_pos(&demo);
         assert!(
-            demo.game_world.world.placed_at(player_pos).is_some(),
+            demo.test_world().world.placed_at(player_pos).is_some(),
             "Arrange 应当已经把锻炉立在脚下"
         );
 
@@ -2281,7 +2605,7 @@ mod tests {
         // Arrange：确认脚下与相邻八格全空。
         let mut demo = test_demo();
         assert!(
-            crate::player_action::interact_tiles(&demo.game_world.world, player_pos(&demo))
+            crate::player_action::interact_tiles(&demo.test_world().world, player_pos(&demo))
                 .is_empty(),
             "Arrange 假设出生点周围没有任何地面物品"
         );
@@ -2302,9 +2626,9 @@ mod tests {
         let fixture = arrange_smith(&mut demo);
         put_on_ground(&mut demo, fixture.iron_ingot, false);
         let here = player_pos(&demo);
-        let east = demo.game_world.world.size.wrap(here.x() + 1, here.y());
-        let clock = demo.game_world.world.clock;
-        demo.game_world
+        let east = demo.test_world().world.size.wrap(here.x() + 1, here.y());
+        let clock = demo.test_world().world.clock;
+        demo.test_world_mut()
             .world
             .ground_items
             .push(ll_world::item::GroundItemStack {
@@ -2353,9 +2677,13 @@ mod tests {
         let mut demo = test_demo();
         let fixture = arrange_smith(&mut demo);
         let here = player_pos(&demo);
-        let north_west = demo.game_world.world.size.wrap(here.x() - 1, here.y() - 1);
-        let clock = demo.game_world.world.clock;
-        demo.game_world
+        let north_west = demo
+            .test_world()
+            .world
+            .size
+            .wrap(here.x() - 1, here.y() - 1);
+        let clock = demo.test_world().world.clock;
+        demo.test_world_mut()
             .world
             .ground_items
             .push(ll_world::item::GroundItemStack {
@@ -2382,7 +2710,7 @@ mod tests {
         // Assert：斜后方那一格上的东西真的到了背包里。
         assert_eq!(carried(&demo, fixture.leather_strip), carried_before + 2);
         assert!(
-            demo.game_world
+            demo.test_world()
                 .world
                 .ground_items
                 .iter()
@@ -2399,9 +2727,9 @@ mod tests {
         let mut demo = test_demo();
         let fixture = arrange_smith(&mut demo);
         let here = player_pos(&demo);
-        let far = demo.game_world.world.size.wrap(here.x() + 2, here.y());
-        let clock = demo.game_world.world.clock;
-        demo.game_world
+        let far = demo.test_world().world.size.wrap(here.x() + 2, here.y());
+        let clock = demo.test_world().world.clock;
+        demo.test_world_mut()
             .world
             .ground_items
             .push(ll_world::item::GroundItemStack {
@@ -2460,7 +2788,7 @@ mod tests {
         arrange_smith(&mut demo);
         frame(&mut demo, 0, &[GameKey::Inventory]);
         let pos_before = player_pos(&demo);
-        let clock_before = demo.game_world.world.clock;
+        let clock_before = demo.test_world().world.clock;
 
         // Act：菜单开着，连按三次「下」。
         for at in 1..4u64 {
@@ -2469,7 +2797,7 @@ mod tests {
 
         // Assert：角色没动，时钟也没走（移动会消耗一次回合）。
         assert_eq!(player_pos(&demo), pos_before);
-        assert_eq!(demo.game_world.world.clock, clock_before);
+        assert_eq!(demo.test_world().world.clock, clock_before);
         assert!(demo.menu.is_open(), "菜单应当仍然开着");
     }
 
@@ -2513,7 +2841,7 @@ mod tests {
         let mut demo = test_demo();
         走一帧(&mut demo, 0, &[GameKey::Menu]);
         let 开屏后坐标 = player_pos(&demo);
-        let 开屏后时钟 = demo.game_world.world.clock;
+        let 开屏后时钟 = demo.test_world().world.clock;
 
         // Act：菜单开着，连按十帧方向键与等待键。
         for at in 1..11u64 {
@@ -2523,7 +2851,7 @@ mod tests {
 
         // Assert
         assert_eq!(player_pos(&demo), 开屏后坐标, "角色不该动");
-        assert_eq!(demo.game_world.world.clock, 开屏后时钟, "时钟不该走");
+        assert_eq!(demo.test_world().world.clock, 开屏后时钟, "时钟不该走");
         assert!(demo.screen.is_some(), "菜单应当仍然开着");
     }
 
@@ -2534,7 +2862,7 @@ mod tests {
         let mut demo = test_demo();
         走一帧(&mut demo, 0, &[GameKey::Menu]);
         走一帧(&mut demo, 1, &[GameKey::Cancel]);
-        let 关屏后时钟 = demo.game_world.world.clock;
+        let 关屏后时钟 = demo.test_world().world.clock;
 
         // Act：连按几帧「等待」——第一帧多半还轮不到玩家
         // （`PlayerTurnOutcome::NotYet`，非受控实体先结算），与既有的
@@ -2545,7 +2873,10 @@ mod tests {
 
         // Assert
         assert!(demo.screen.is_none());
-        assert!(demo.game_world.world.clock > 关屏后时钟, "等待应当推进时钟");
+        assert!(
+            demo.test_world().world.clock > 关屏后时钟,
+            "等待应当推进时钟"
+        );
     }
 
     #[test]
@@ -2844,10 +3175,10 @@ mod tests {
             "再按一次装备键应当把它卸回背包"
         );
         assert!(
-            demo.game_world
+            demo.test_world()
                 .world
                 .actors
-                .get(demo.game_world.player)
+                .get(demo.test_world().player)
                 .expect("玩家仍存在")
                 .equipment
                 .values()
@@ -2862,8 +3193,8 @@ mod tests {
         // Arrange
         let mut demo = test_demo();
         let roast = content_index(&demo, "lostland:roast_meat");
-        let player = demo.game_world.player;
-        demo.game_world
+        let player = demo.test_world().player;
+        demo.test_world_mut()
             .world
             .actors
             .get_mut(player)

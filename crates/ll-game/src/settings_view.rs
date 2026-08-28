@@ -19,6 +19,7 @@ use ll_platform::input::GameKey;
 use ll_platform::keybind::KeyBindings;
 
 use crate::menu_screen::{EDITABLE_CONTEXT, MENU_ITEM_KEYS, SettingsRow};
+use crate::title_screen::{TITLE_ITEM_KEYS, TITLE_LOAD_ROW};
 
 /// 某个动作在 [`EDITABLE_CONTEXT`] 下当前绑着哪些键，排好版成一行。
 ///
@@ -167,6 +168,34 @@ fn keybind_row(
         &action.display_name_key().to_string(),
         &value,
     )
+}
+
+/// 首页这一帧的四行文字。
+///
+/// # 没有存档时「读取存档」那一行长什么样
+///
+/// 换成 `screen-title-load-empty`（「读取存档（没有存档）」），行本身
+/// **不消失、不换位置**：玩家得知道这个功能存在、在第几行。按下去
+/// 什么都不会发生，只得到一句提示，见
+/// [`crate::title_screen::update_title`]。
+///
+/// **如实记录这是一处取舍**：真正的「置灰」需要
+/// `ll_ui::screen::ScreenData` 长出「某一行不可用」这个概念（数据形状
+/// 加一个维度、渲染侧加一套配色），而「导航直接跳过这一行」会让光标在
+/// 按一下方向键之后跳两格——那种手感玩家会当成 bug。两者都超出本批
+/// 范围，换文案是当下最保守、最容易反转的做法。
+pub fn title_row_texts(catalog: &Catalog, language: &str, has_save: bool) -> Vec<String> {
+    TITLE_ITEM_KEYS
+        .iter()
+        .enumerate()
+        .map(|(index, key)| {
+            if index == TITLE_LOAD_ROW && !has_save {
+                catalog.resolve(language, "screen-title-load-empty")
+            } else {
+                catalog.resolve(language, key)
+            }
+        })
+        .collect()
 }
 
 /// 菜单屏这一帧的三行文字。
