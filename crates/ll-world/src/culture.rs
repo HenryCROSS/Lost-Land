@@ -239,6 +239,24 @@ pub struct CultureTable {
     hostility: Vec<Vec<(ContentIndex, u32)>>,
     defined: Vec<bool>,
     order: Vec<CultureKind>,
+    /// 「无文化」哨兵索引（`lostland:cultureless`，由
+    /// `ll_mod::base_cultureless` 注册），`None` 表示这次会话没注册过
+    /// 它、「无文化」这条判据整个不生效。
+    ///
+    /// # 为什么它住在这张表里，而不是在判定点另外传一个参数
+    ///
+    /// 它与 `hostility` 是**同一个问题的两半**：敌意表里那一行
+    /// `(哨兵索引, 分数)` 只有配上「哨兵索引是哪一个」才读得懂。表已经
+    /// 会跟着编年史一起走（见 `crate::chronicle::WorldChronicle::culture_table`
+    /// 的字段注释「跟着编年史一起走，调用方就不需要再从别处凑一张可能
+    /// 已经对不上号的表」），哨兵搭同一趟车，判定点因此**不需要任何新
+    /// 参数**——`ll_sim::turn` 的撞格路由从 `WorldState` 现有的编年史
+    /// 句柄就能把两半一起拿到。
+    ///
+    /// 它**不是**第二个真相源：真相源是 `Registry`（字符串 id ↔ 索引），
+    /// 这里存的是那次解析的结果，与 `crate::settlement::SettlementSite::culture`
+    /// 存一个索引而不是一个字符串是同一种缓存。
+    cultureless: Option<ContentIndex>,
 }
 
 impl CultureTable {
@@ -251,6 +269,26 @@ impl CultureTable {
     /// 那一步所依赖的。
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// 记下这次会话的「无文化」哨兵索引，见 [`Self::cultureless`]。
+    ///
+    /// 生产调用点只有一处：`ll_mod::load_session::LoadSession::load_all`
+    /// 在全部 mod 装载完成之后注册哨兵、随即写进这张表。重复调用直接
+    /// 覆盖——没有「已经设过就拒绝」的校验，因为同一次会话里这个值只
+    /// 可能来自同一次 `Registry::intern`，覆盖恒是幂等的。
+    pub fn set_cultureless(&mut self, index: ContentIndex) {
+        self.cultureless = Some(index);
+    }
+
+    /// 这次会话的「无文化」哨兵索引，没注册过就是 `None`。
+    ///
+    /// 消费者是 `ll_sim::ai_query::declared_hostile`：身上找不到
+    /// `AffiliationKind::Culture` 归属的实体，判定时回退到这个索引，
+    /// 于是「哥布林对无文化敌意 6」这条内容真的能咬到一个没有任何归属
+    /// 的玩家。
+    pub fn cultureless(&self) -> Option<ContentIndex> {
+        self.cultureless
     }
 
     /// 注册期入口：给一个已经 `intern` 出来的索引附上文化属性。

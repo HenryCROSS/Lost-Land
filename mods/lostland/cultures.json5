@@ -147,10 +147,26 @@
       // 对矿邑 6（分子 1+6=7，分母 8）：够强的哥布林部落遇上矿邑几乎
       // 必打。对农庄 4、石砦 4：也劫掠，但没那么执着。对林居与渔港
       // 不声明——精灵住得深、渔港太远，是内容决定不是遗漏。
+      //
+      // 对「无文化」6：与对矿邑同一档——无依无靠的外来者在部落眼里
+      // 与世仇矮人同级。`lostland:cultureless` 是一个**只 intern、不
+      // define** 的哨兵索引（注册在 `ll_mod::base_cultureless`，不是
+      // 本文件的一条文化），身上没有任何文化归属的实体判定时回退到
+      // 它，见 `ll_sim::ai_query::declared_hostile`。
+      //
+      // 这个数**必须 ≥ `ll_sim::ai_query::HOSTILE_CULTURE_THRESHOLD`
+      // （5）**，否则项目所有者最想要的那条效果——「玩家走向哥布林
+      // 就是打起来」——不成立：玩家至今不挂任何归属，正是「无文化」
+      // 这一档。
+      //
+      // 其余五份文化**刻意不追加**这一条：农夫不该因为你没有文化就
+      // 砍你。「唯一一条主动敌对的文化」这句话在本文件顶上，加了就
+      // 不再成立。
       hostility: [
         { culture: "lostland:mining_hold", hostility: 6 },
         { culture: "lostland:farmstead", hostility: 4 },
         { culture: "lostland:stonecutters", hostility: 4 },
+        { culture: "lostland:cultureless", hostility: 6 },
       ],
     },
   ],

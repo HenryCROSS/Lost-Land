@@ -558,6 +558,20 @@ pub enum PlayerTurnOutcome {
 /// 这一个比较（`resolve_move`/`resolve_swap` 各一处），不新开第二套
 /// 「谁是受控实体」的表示法。
 ///
+/// # 文化敌意的那张表从 `world` 自己身上取，本函数签名一个字没改
+///
+/// [`crate::ai_query::declared_hostile`] 现在还要一张
+/// [`ll_world::culture::CultureTable`]（文化敌意 + 「无文化」哨兵索
+/// 引）。它不需要新参数、也不需要往
+/// [`crate::catalogs::ResolveCatalogs`] 加字段：编年史自己就带着一份
+/// 推演时用的文化表快照（`WorldChronicle::culture_table`，那份快照
+/// 「跟着编年史一起走，调用方就不需要再从别处凑一张可能已经对不上号
+/// 的表」），而编年史句柄挂在 `world.terrain` 上。
+///
+/// 没有编年史的世界（大量单元测试直接构造的裸世界）拿到 `None`，文化
+/// 判据整个不生效，行为与本批次落地之前逐位相同——`declared_hostile`
+/// 文档「`cultures` 传 `None`」一段。
+///
 /// # 查找目标格的那段代码在 `crate::resolve` 里
 ///
 /// [`crate::resolve::step_destination`]/[`crate::resolve::occupant_at`]
@@ -575,7 +589,10 @@ fn route_move_into_occupant(world: &WorldState, raw: Intent) -> Intent {
     let Some((target, other)) = crate::resolve::occupant_at(world, dest, actor) else {
         return raw;
     };
-    if crate::ai_query::declared_hostile(agent, other) {
+    // 见本函数文档「文化敌意的那张表从 `world` 自己身上取」一节。
+    let chronicle = world.terrain.chronicle_handle();
+    let cultures = chronicle.as_deref().map(|it| it.culture_table());
+    if crate::ai_query::declared_hostile(agent, other, cultures) {
         return Intent::Attack { actor, target };
     }
     if world.player_entity == Some(actor) {

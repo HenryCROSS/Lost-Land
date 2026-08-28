@@ -550,6 +550,15 @@ fn build_player_agent(
         stats,
         next_action_at,
         health: Agent::STARTING_HEALTH,
+        // **玩家不挂任何归属，这是裁定不是遗漏。** 项目所有者：「玩家
+        // 可以没有势力归属，这个可以通过后面和据点的管理者对话加入。」
+        //
+        // 文化那一侧同样刻意留空：玩家「没有文化」由判定期回退表达
+        // （`ll_sim::ai_query::declared_hostile` 找不到 `Culture` 归属
+        // 就回退到 `lostland:cultureless` 哨兵），不写一条指向哨兵的
+        // 归属——那会让同一件事有两种表示法，还会给玩家平白增加一条
+        // 进存档与世界哈希的记录。NPC 那一条路径（`ll_mod::roster::
+        // build_npc_agent`）会挂，两者不对称是有意的。
         affiliations: Vec::new(),
         wallet: 0,
         // 本体目前没有注册任何职业内容（职业只经 mod 脚本
@@ -681,6 +690,10 @@ pub fn materialize_nearby_settlements(
             items: &content.item_table,
             surface_profile: content.space_ids.surface,
             now: world.clock,
+            // 据点的文化直接转发给物化——`Agent::affiliations` 的第一个
+            // 生产者，见 `ll_mod::roster::build_npc_agent` 文档「文化
+            // 归属」一节。
+            culture: site.culture,
         };
         let mut made = Vec::new();
         for (profile, pos) in roster.iter().zip(spots) {

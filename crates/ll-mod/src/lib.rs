@@ -50,6 +50,11 @@
 //!   `Agent`/`QuestTable`/`Registry`，返回一份纯数据的
 //!   `QuestLogView`（已完成/已解锁未完成），不含任何渲染，见该模块
 //!   文档。
+//! - [`base_cultureless`] —— 同一个模式在「无文化」哨兵上的落点（文化
+//!   归属与敌对判定批次）：把 `lostland:cultureless` 注册进
+//!   [`registry::Registry`]，一个**只 `intern`、不 `define`** 的文化
+//!   索引，让「身上没有文化归属」这件事在敌意表里有一个可被声明敌意的
+//!   目标，见该模块文档。
 //! - [`base_placeholder`] —— 同一个模式在「占位/未知内容」上的落点
 //!   （P5-A 任务 14 补齐）：把本体的占位内容注册进
 //!   [`registry::Registry`]，让 NPC 种族缺失的占位降级分支在生产读档
@@ -130,6 +135,7 @@
 pub mod asset_vfs;
 pub mod base_clip;
 pub mod base_contract;
+pub mod base_cultureless;
 pub mod base_damage_category;
 pub mod base_damage_formula;
 pub mod base_placeholder;
