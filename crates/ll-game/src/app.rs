@@ -1437,14 +1437,30 @@ impl AppHandler for Demo {
             self.open_menu(input);
         }
 
-        // 菜单开着时取消键归菜单用（关掉它），不退出游戏——否则玩家
-        // 想关个背包会直接退出整局，见 `crate::player_action` 里
-        // `player_command` 第 ② 步的同一段说明。
+        // 菜单开着时取消键归菜单用（关掉它），见 `crate::player_action`
+        // 里 `player_command` 第 ② 步的同一段说明。
+        //
+        // # 什么都没开时按取消键：**开主菜单，不退出游戏**
+        //
+        // 这一段推翻了本函数此前的行为。游戏内菜单落地之前，顶层按取消
+        // 键是唯一的退出通道，于是它直接返回 [`FrameOutcome::Exit`]
+        // ——按一下 Esc 整局就没了，没有任何确认。项目所有者实机撞到这
+        // 件事并要求改掉。
+        //
+        // 现在退出有了正经去处：菜单里那一项，经 `update_screen` 的
+        // `ScreenOutcome::Quit` 走同一个 `FrameOutcome::Exit`。因此 Esc
+        // 回归它在绝大多数游戏里的含义——**逐层往回退**：开着子菜单就
+        // 关子菜单，什么都没开就开主菜单，再从菜单里选退出。
+        //
+        // **刻意不改键位表**：Esc 绑给 `GameKey::Cancel`（`ll_platform`
+        // 的默认表，玩家磁盘上那份也是这么写的）本来就是对的。错的是
+        // 「顶层 Cancel 等于退出」这条行为，不是那条绑定——改键位只会
+        // 把同一个问题挪到另一个键上。
         if self.screen.is_none()
             && !self.menu.is_open()
             && input.was_just_pressed(ll_platform::input::GameKey::Cancel)
         {
-            return FrameOutcome::Exit;
+            self.open_menu(input);
         }
 
         self.advance(input, frame);
@@ -2675,14 +2691,23 @@ mod tests {
         assert_eq!(outcome, FrameOutcome::Continue, "不该退出整局");
         assert!(!demo.menu.is_open(), "取消键应当把菜单关掉");
 
-        // 再按一次（菜单已经关着）才是真正的退出——这一半保证上面那道
-        // 闸门没有把退出功能整个关死。
+        // 再按一次（子菜单已经关着、模态屏也没开）——**开主菜单，不退出**。
+        //
+        // 这一半在「顶层取消键改成开主菜单」那次改动里反转过：此前它断言
+        // `FrameOutcome::Exit`（按一下 Esc 整局就没了，没有任何确认，
+        // 项目所有者实机撞到并要求改掉）。现在 Esc 是逐层往回退，退出的
+        // 唯一入口是主菜单里那一项。
         let mut cancel_again = InputState::new();
         cancel_again.press(GameKey::Cancel);
         assert_eq!(
             demo.on_frame(FrameId(2), &mut cancel_again),
-            FrameOutcome::Exit,
-            "菜单关着时取消键仍应退出"
+            FrameOutcome::Continue,
+            "什么都没开时按取消键不该退出整局"
+        );
+        assert!(
+            demo.screen.is_some(),
+            "什么都没开时按取消键应当开出主菜单——否则这个键就成了死键，\
+             玩家既退不出也进不去菜单"
         );
     }
 
