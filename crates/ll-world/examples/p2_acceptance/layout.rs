@@ -15,6 +15,7 @@
 //! 权威定义。
 
 use ll_core::time::{DAYS_PER_SEASON, Season, TICKS_PER_DAY, TICKS_PER_HOUR, Tick};
+use ll_world::generate::{GenParams, TerrainShape};
 use ll_world::light::ambient_light;
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
 // 「占地锚点 − pivot = 图像左上角」这条精灵摆放换算不再在本文件重复
@@ -155,6 +156,35 @@ pub(crate) fn minimap_cell_screen_pos(col: u32, row: u32) -> (i32, i32) {
         MINIMAP_MARGIN_PX + col as i32 * MINIMAP_CELL_PX,
         MINIMAP_MARGIN_PX + row as i32 * MINIMAP_CELL_PX,
     )
+}
+
+/// 本 demo 生成地形用的参数：默认形态，**但气候条带关掉**。
+///
+/// # 为什么刻意关掉气候条带
+///
+/// 本 demo 的产物是一张**冻结的视觉回归基准**
+/// （`crates/ll-world/tests/visual/baseline/p2_acceptance.png`，规矩见
+/// 该目录 README：绝不允许「看着不一样就重新截图覆盖」）。气候条带
+/// （规格 §7.1，落地于 `ll_world::climate`）会把干热带与极地带的低海拔
+/// 换成沙漠与冻原，这张基准里的地形分布因此会整片改变——而本 demo 要
+/// 验的是 P2 那一批的事（可平铺噪声、环面绕行、FOV、小地图），不是
+/// 「展示最新的世界生成形态」。
+///
+/// 把它钉在 `climate_band_width: 0`（该取值是**精确恒等**，见
+/// `ll_world::generate::TerrainShape::climate_band_width`），这张基准
+/// 与气候条带落地之前**逐格相同**，不需要重冻，也不需要一台能跑 GPU
+/// 的机器去重截。
+///
+/// 本体二进制 `ll-game` 走的是真正的默认值，气候条带在真游戏里是开着
+/// 的——**这不是把功能关了，是把这个 demo 的世界钉住**。
+pub(crate) fn demo_gen_params() -> GenParams {
+    GenParams {
+        shape: TerrainShape {
+            climate_band_width: 0,
+            ..TerrainShape::default()
+        },
+        ..GenParams::default()
+    }
 }
 
 #[cfg(test)]

@@ -43,11 +43,11 @@
 //!
 //! | 改坏什么 | 哪条变红 |
 //! | --- | --- |
-//! | `layout.rs` 里 `ids.wall_wood` 那一支改回 `None` | `十七种本体地形在真实图集里都查得到条目` |
-//! | `layout.rs` 里 `wall_stone` 改回借用 `terrain_mountain` | `十七种本体地形的贴图两两之间至少四分之一像素不同` |
+//! | `layout.rs` 里 `ids.wall_wood` 那一支改回 `None` | `十九种本体地形在真实图集里都查得到条目` |
+//! | `layout.rs` 里 `wall_stone` 改回借用 `terrain_mountain` | `十九种本体地形的贴图两两之间至少四分之一像素不同` |
 //! | `skin.rs` 的 `PANEL_BORDER_KEY` 改回裸名字 `"ui_panel_border"` | `hud皮肤需要的五张贴图在真实图集里都查得到条目` |
-//! | 移走 `assets/sprites/terrain_window.png` | `十七种本体地形在真实图集里都查得到条目` |
-//! | 把 `terrain_door_open.png` 换成全透明 | `十七种本体地形的贴图都铺满整格` |
+//! | 移走 `assets/sprites/terrain_window.png` | `十九种本体地形在真实图集里都查得到条目` |
+//! | 把 `terrain_door_open.png` 换成全透明 | `十九种本体地形的贴图都铺满整格` |
 //! | `skin.rs` 五个键全部改回裸名字（复现所有者报的原始现象） | `hud皮肤需要的五张贴图在真实图集里都查得到条目` 与 `hud皮肤拿真实资产装出来后五个贴图外观全部是some` 两条同时红 |
 //!
 //! 反例的实跑记录见提交信息。
@@ -104,9 +104,15 @@ fn tile_pixels(atlas: &PackedAtlas, name: &str) -> Vec<[u8; 4]> {
     pixels
 }
 
-/// `define_base` 注册的全部 17 种本体地形，与 `ll_world::terrain` 里那
+/// `define_base` 注册的全部 19 种本体地形，与 `ll_world::terrain` 里那
 /// 张注册表逐条对应。顺序固定（不经任何哈希容器），符合约束 C5。
-fn all_base_terrains(ids: &BaseTerrainIds) -> [(&'static str, TerrainKind); 17] {
+///
+/// **加一种本体地形就要在这里加一行。** 这张表是手写的，不是从注册表
+/// 现查的——气候条带批次新增 `desert`/`tundra` 时实测过：只加地形不加
+/// 这两行，移走 `assets/sprites/terrain_desert.png` 本文件依然全绿，
+/// 新地形完全在这道门禁之外。日后若嫌手写易漏，正确的改法是让本函数
+/// 从 `BaseTerrainIds` 的字段穷尽解构里推导，不是继续手抄。
+fn all_base_terrains(ids: &BaseTerrainIds) -> [(&'static str, TerrainKind); 19] {
     [
         ("deep_water", ids.deep_water),
         ("shallow_water", ids.shallow_water),
@@ -116,6 +122,8 @@ fn all_base_terrains(ids: &BaseTerrainIds) -> [(&'static str, TerrainKind); 17] 
         ("hill", ids.hill),
         ("mountain", ids.mountain),
         ("snow", ids.snow),
+        ("desert", ids.desert),
+        ("tundra", ids.tundra),
         ("floor_wood", ids.floor_wood),
         ("floor_stone", ids.floor_stone),
         ("wall_wood", ids.wall_wood),
@@ -142,9 +150,9 @@ fn terrain_keys(content: &LoadedContent) -> Vec<(&'static str, String)> {
 }
 
 #[test]
-fn 十七种本体地形在真实图集里都查得到条目() {
+fn 十九种本体地形在真实图集里都查得到条目() {
     // 这条直接对应所有者实测报到的现象：走进据点，控制台每帧刷
-    // 「图集条目缺失」。缺的正是这 17 种里的建筑那一整套。
+    // 「图集条目缺失」。缺的正是这 19 种里的建筑那一整套。
     // Arrange
     let (content, atlas) = real_content_and_atlas();
 
@@ -160,7 +168,7 @@ fn 十七种本体地形在真实图集里都查得到条目() {
 }
 
 #[test]
-fn 十七种本体地形的贴图都铺满整格() {
+fn 十九种本体地形的贴图都铺满整格() {
     // 地形是那一格的底层，不像 `world_marks.rs` 那几张记号可以留透明
     // 让下面透出来——留透明会露出清屏背景，读成「这里什么都没有」。
     // Arrange
@@ -180,7 +188,7 @@ fn 十七种本体地形的贴图都铺满整格() {
 }
 
 #[test]
-fn 十七种本体地形的贴图两两之间至少四分之一像素不同() {
+fn 十九种本体地形的贴图两两之间至少四分之一像素不同() {
     // 「查得到条目」不等于「看得出区别」：`wall_stone` 此前与 `mountain`
     // 共用 `terrain_mountain`，两条查找都成功，屏幕上却分不出哪格是山、
     // 哪格是石墙。所有者的验收方式是「走进据点看一眼」，墙/地板/门/窗

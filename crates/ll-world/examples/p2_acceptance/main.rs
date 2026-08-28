@@ -66,7 +66,7 @@ use ll_render::target::{BlitFilter, RenderTarget, fit_viewport};
 // p1_acceptance 完全一致：独立 crate 的下游只有这一条路径能用。
 use ll_render::wgpu;
 use ll_world::fov::{VisibleSet, compute_fov};
-use ll_world::generate::{GenParams, build_zone_noise};
+use ll_world::generate::build_zone_noise;
 use ll_world::light::{ambient_light, sight_radius_at};
 
 /// 「这个调用方不知道谁在看」时传给暗视参数的取值。
@@ -220,7 +220,7 @@ struct Demo {
 impl Demo {
     fn new() -> Demo {
         let layout = build_zone_layout();
-        let params = GenParams::default();
+        let params = crate::layout::demo_gen_params();
         let (terrain_ids, terrain_table) = base_terrain_fixture();
         let noise = build_zone_noise(&layout, &params).expect("build_zone_layout 满足全部约束");
 

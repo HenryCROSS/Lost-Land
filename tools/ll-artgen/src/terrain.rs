@@ -115,6 +115,31 @@ const TERRAIN_SPECS: &[TerrainSpec] = &[
         accent_lightness_delta: -0.35,
         accent_saturation_boost: 0.4,
     },
+    // 气候条带（规格 §7.1）新增的两种自然地形。它们**不进** 遗留共享
+    // 画布（`assets/atlas/placeholder.json` 一个字未动），只走
+    // `main.rs` 的 `LooseOnlyEntry` 通道——理由见那个类型的文档：新增
+    // 内容塞进共享画布只会把五个更早批次验收 demo 的冻结像素基准卷
+    // 进来。
+    TerrainSpec {
+        name: "terrain_desert",
+        // 沙漠：比海岸 `terrain_sand`(214,196,140) 更深更橙。两者是两种
+        // 地形（海滩 vs 沙漠），颜色必须一眼分得开，否则屏幕上又变回
+        // 「借用」那种看不出区别的状态。
+        base: (198, 154, 86),
+        // 暖黄的互补色落在蓝紫这一侧，调暗读成沙丘背阴处的碎石。
+        accent_lightness_delta: -0.30,
+        accent_saturation_boost: 0.0,
+    },
+    TerrainSpec {
+        name: "terrain_tundra",
+        // 冻原：比高山 `terrain_snow`(238,240,244) 更暗更青——低地冻土
+        // 不是峰顶的新雪。
+        base: (196, 206, 208),
+        // 与 `terrain_snow` 同一条理由：近灰白色饱和度接近 0，不把饱和度
+        // 顶上去，互补色相换算回 RGB 后仍是「另一种灰」。
+        accent_lightness_delta: -0.30,
+        accent_saturation_boost: 0.4,
+    },
     // 以下两份配方不属于本体图集（不会出现在 `assets/atlas/placeholder.json`
     // 里），只供 `mods/example_mod` 的真实资产 VFS 验收 demo 使用——见
     // `main.rs` 里 `generate_mod_demo_assets` 一节。放进同一张配方表，

@@ -1556,17 +1556,25 @@ fn write_kill_cause(hasher: &mut StateHasher, cause: &KillCause) {
 /// 省略 `z`/`floor` 这类当前批次「恒定」或「预留」的字段：即便它们
 /// 现在不变，混入的代价接近零，却能在未来这些字段真的开始变化时立刻
 /// 被这条哈希覆盖，不需要那时再回来找哪里漏掉了一处摘要。
-/// 把地形形态参数混入世界摘要——四个字段全部混入，一个不省。
+/// 把地形形态参数混入世界摘要——五个字段全部混入，一个不省。
 ///
 /// 与 [`write_space`] 文档末段同一条纪律：`continent_shrink` 目前
 /// 只有本体四档预设在用、多数世界取 0，但混入它的代价接近零，却能在
 /// 未来任何人新增一档预设、或把它接进开局界面时立刻被这条哈希覆盖，
 /// 不需要那时再回来找哪里漏掉了一处摘要。
+///
+/// `climate_band_width`（气候条带单侧带宽，见 [`crate::climate`]）
+/// **必须**同样混入，理由与本函数存在的理由逐字相同：地形是**流式
+/// 生成**的，存档里只有玩家去过的那一小块。带宽若不进摘要，「气候带宽
+/// 没有正确随存档往返」这条缺陷不会被任何确定性回归测出来，而它的表现
+/// 恰是最难察觉的一种——已常驻的区块看起来一切正常，玩家往前多走一步
+/// 才踩进另一套气候的地形。
 fn write_terrain_shape(hasher: &mut StateHasher, shape: TerrainShape) {
     hasher.write_i64(i64::from(shape.sea_level));
     hasher.write_i64(i64::from(shape.mountain_level));
     hasher.write_u64(u64::from(shape.octaves));
     hasher.write_u64(u64::from(shape.continent_shrink));
+    hasher.write_i64(i64::from(shape.climate_band_width));
 }
 
 fn write_space(hasher: &mut StateHasher, space: Space) {

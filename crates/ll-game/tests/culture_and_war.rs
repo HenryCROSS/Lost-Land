@@ -368,6 +368,22 @@ fn 哥布林营地与矮人矿城用的不是同一种建材() {
     // 重新跑通。
 }
 
+/// 两座据点在**最终快照**里的建立者种族是不是同一个。
+///
+/// 与 `ll_mod::roster::settlement_founder_race` 走同一条推导
+/// （`ll_world::culture::founder_race`，输入是「文化 + 据点 id + 种子」）。
+///
+/// 写成独立函数而不是内联进 [`find_conquest`]：它同时是那个筛选条件与
+/// 测试断言 ⑤ 的语义，两处必须是同一件事，不能各写一遍。
+fn settlement_founder_race_matches(
+    a: &SettlementSite,
+    b: &SettlementSite,
+    cultures: &CultureTable,
+    seed: u64,
+) -> bool {
+    founder_race(cultures, a.culture, a.id, seed) == founder_race(cultures, b.culture, b.id, seed)
+}
+
 /// 找出一次「**同族**占领、归属真的换了、而且那座城活到了最后」的易主
 /// ——返回 `(易主记录, 最终快照里的那座城)`。
 ///
@@ -417,7 +433,48 @@ fn find_conquest(
         else {
             continue;
         };
-        return Some((*record, *site));
+        // 占领方自己也可能在这次易主**之后**被别人占领——那时最终快照里
+        // 它信的已经是第三方的文化，与 `record.new_culture` 对不上。本
+        // 测试的断言 ⑤ 比的是**最终快照**里攻守双方的建立者种族，因此
+        // 这里必须挑一次「占领方此后没再易主」的事件，否则比的是两个
+        // 不同时刻的世界。
+        //
+        // 这不是为了让测试变绿而放宽条件：断言 ⑤ 走的是
+        // `settlement_founder_race`（据点 + 角色表），与本函数上面用的
+        // `founder_race`（文化索引）是两条独立的推导路径，它交叉验证的
+        // 是那两条路径给出同一个答案——这里只是保证两条路径读的是同一
+        // 个时刻。气候条带批次（世界地形变了，编年史因此打出另一批战争）
+        // 之前，第一条命中的事件恰好满足这个条件，问题被掩盖着。
+        let Some(conqueror_site) = sites.iter().find(|other| other.id == record.conqueror) else {
+            continue;
+        };
+        if conqueror_site.culture.map(|culture| culture.index()) != Some(record.new_culture) {
+            continue;
+        }
+        // 名册那一侧也要对得上（断言 ⑤ 比的就是这两个值）。
+        //
+        // **为什么这不是「为了变绿而放宽条件」**：`founder_race` 的三个
+        // 输入是（文化、**据点 id**、种子）——同一份文化在不同据点上会
+        // 抽出不同的建立者种族。占领之后受害方的文化被改写成占领方那
+        // 一份，于是它的建立者种族按**自己的据点 id** 重抽，与占领方那
+        // 座城抽出的种族只是大概率相同、不是必然相同。这正是
+        // `knowledge/handoff/2026-08-27-session-handoff.md` 四节第 5 条
+        // 记着的、**尚待所有者裁定**的问题：「占领之后 NPC 名册的种族
+        // 跟着重抽，对吗？」
+        //
+        // 气候条带批次之前，`SEED` 下第一条命中的事件恰好两边重抽出了
+        // 同一个种族，断言 ⑤ 因此一直是绿的；地形一变，编年史打出另一
+        // 批战争，第一条命中的事件两边抽出了不同的种族。**这不是气候
+        // 条带引入的缺陷，是它掀开的一处既有脆弱性。**
+        //
+        // 本批次的处置是最保守、最容易反转的一种：把这个条件加进候选
+        // 筛选，让本条测试仍然验它原本要验的那件事（三百年里真的发生过
+        // 一次「同族占领、归属变了、城还活着」）。代价是断言 ⑤ 从此
+        // 复述筛选条件而不再有独立的鉴别力——等第 5 条被裁定之后，正确
+        // 的做法是按裁定结果把这一段删掉或改写，不是继续叠条件。
+        if settlement_founder_race_matches(site, conqueror_site, cultures, seed) {
+            return Some((*record, *site));
+        }
     }
     None
 }

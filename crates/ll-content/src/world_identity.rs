@@ -206,11 +206,17 @@ pub const TERRAIN_PRESETS: &[TerrainPreset] = &[
         description_key: "lostland:worldgen.preset.continent.description",
         // 必须与 TerrainShape::default() 逐位相同，见
         // DEFAULT_TERRAIN_PRESET_ID 文档。
+        //
+        // 四档预设的 climate_band_width 全部取默认值：气候条带是**纬度**
+        // 的函数，与「水陆比例/山地多少/陆地碎成几块」这三件由高度决定
+        // 的事正交，没有哪一档地形形态天然该配一条更宽或更窄的气候带。
+        // 要单独调，改 config.json5 的 new_game.climate_band_width。
         shape: TerrainShape {
             sea_level: 400,
             mountain_level: 750,
             octaves: 4,
             continent_shrink: 0,
+            climate_band_width: TerrainShape::DEFAULT_CLIMATE_BAND_WIDTH,
         },
     },
     TerrainPreset {
@@ -222,6 +228,7 @@ pub const TERRAIN_PRESETS: &[TerrainPreset] = &[
             mountain_level: 780,
             octaves: 4,
             continent_shrink: 2,
+            climate_band_width: TerrainShape::DEFAULT_CLIMATE_BAND_WIDTH,
         },
     },
     TerrainPreset {
@@ -233,6 +240,7 @@ pub const TERRAIN_PRESETS: &[TerrainPreset] = &[
             mountain_level: 620,
             octaves: 4,
             continent_shrink: 0,
+            climate_band_width: TerrainShape::DEFAULT_CLIMATE_BAND_WIDTH,
         },
     },
     TerrainPreset {
@@ -244,6 +252,7 @@ pub const TERRAIN_PRESETS: &[TerrainPreset] = &[
             mountain_level: 760,
             octaves: 4,
             continent_shrink: 0,
+            climate_band_width: TerrainShape::DEFAULT_CLIMATE_BAND_WIDTH,
         },
     },
 ];
