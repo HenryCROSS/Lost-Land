@@ -153,6 +153,7 @@ pub mod content_hash;
 pub mod content_schema;
 pub mod content_schema_gear;
 pub mod content_schema_world;
+pub mod corpse_item;
 pub mod damage_category;
 pub mod discover;
 pub mod formula;

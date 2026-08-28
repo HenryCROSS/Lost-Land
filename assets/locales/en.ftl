@@ -71,6 +71,13 @@ trait-tailoring_mastery-display_name = Tailoring Mastery
 trait-alchemy_mastery-display_name = Alchemy Mastery
 trait-cooking_mastery-display_name = Cooking Mastery
 
+# Corpses (ll-mod corpse_item: every race automatically gets a corpse item).
+# The species half is interpolated via $species, taken from that race's own
+# display_name_key — so a third-party mod that adds a race gets a working
+# corpse name for free, with no extra key. See the ll_mod::corpse_item module
+# docs for why this is one parameterised message rather than one key per race.
+item-corpse-display_name = { $species } Corpse
+
 # Base-game items (mods/lostland/items.json5, thirty entries) —
 # ll-mod ItemAttrs::display_name_key.
 item-iron_ingot-display_name = Iron Ingot

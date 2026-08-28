@@ -151,8 +151,20 @@ fn 本体物品的id清单不多不少() {
     let actual = loaded.ids_in("lostland", |index| loaded.item.is_defined(index));
 
     // Assert：逐字列全，集合相等。多一条少一条都在这里变红。
+    //
+    // **末尾那四条 `.corpse` 不在 `items.json5` 里**——它们由引擎侧的
+    // `ll_mod::corpse_item::register_corpse_items` 在全部 mod 装载完之后
+    // 按「本体一共有哪些种族」自动注册（所有者裁定「尸体也是一件可堆叠
+    // 的物品才对」）。因此本条同时是一条**活的接线证据**：
+    // `races.json5` 加一个种族的那一刻，这份清单自动开始要求它的尸体，
+    // 少一条当场变红。第三方 mod 的种族尸体归它自己的命名空间，不会
+    // 落进这份 `lostland:` 清单。
     let expected: BTreeSet<String> = [
         "lostland:amber_pendant",
+        "lostland:dwarf.corpse",
+        "lostland:elf.corpse",
+        "lostland:goblin.corpse",
+        "lostland:human.corpse",
         "lostland:bone_needle",
         "lostland:field_cookbook",
         "lostland:forge",
@@ -187,7 +199,8 @@ fn 本体物品的id清单不多不少() {
     .map(str::to_string)
     .collect();
     assert_eq!(actual, expected);
-    assert_eq!(actual.len(), 30);
+    // 30 条内容作者手写的 + 4 条引擎按种族自动注册的尸体。
+    assert_eq!(actual.len(), 34);
 }
 
 #[test]

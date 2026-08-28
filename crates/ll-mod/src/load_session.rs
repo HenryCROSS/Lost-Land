@@ -258,7 +258,9 @@ impl LoadSession {
     /// 可以对同一个会话调用多次（例如先装一个目录再装另一个），语义
     /// 与连续两次 `load_all` 完全相同——本方法不持有任何跨调用状态。
     ///
-    /// # 末尾多做一件事：注册「无文化」哨兵
+    /// # 末尾多做两件事
+    ///
+    /// ## 一、注册「无文化」哨兵
     ///
     /// 全部 mod 装载完之后才调
     /// [`register_base_cultureless_culture`]，理由见该函数文档「调用
@@ -272,6 +274,17 @@ impl LoadSession {
     /// 随即把索引写进文化表（[`CultureTable::set_cultureless`]），
     /// 敌意表那一行 `(哨兵索引, 分数)` 与「哨兵索引是哪一个」从此
     /// 一起走，判定点不需要再从别处凑。
+    ///
+    /// ## 二、给每个种族注册一件尸体物品
+    ///
+    /// [`crate::corpse_item::register_corpse_items`]，调用时机的理由与
+    /// 上面那一条**完全相同**（`intern` 按顺序分配索引，放在装载之前会
+    /// 整体后移全部 mod 内容），外加一条它独有的：只有全部 mod 都装完
+    /// 了，「一共有哪些种族」才是确定的。
+    ///
+    /// **第三方 mod 加一个种族因此自动获得尸体物品**，内容作者不写一个
+    /// 字——「本体即 Mod」检验（规格 §10.3、ADR 0018）在尸体这件事上的
+    /// 落点就是这一行。
     pub fn load_all(&mut self, mods_root: &Path) -> LoadReport {
         // 逐字段解构而不是 `&mut self.xxx` 逐个写：借用检查器需要看到
         // 这些是**互不重叠**的字段借用（`registry` 与各表同时可变借出）。
@@ -335,9 +348,13 @@ impl LoadSession {
             },
         );
 
-        // 见本方法文档「末尾多做一件事」一节。
+        // 见本方法文档「末尾多做两件事」一节，第一件。
         let cultureless = register_base_cultureless_culture(&mut self.registry);
         self.culture.set_cultureless(cultureless);
+        // 第二件：给每个种族注册一件真正的尸体物品。必须在这里、且必须
+        // 在装载**之后**——只有全部 mod 都装完了「一共有哪些种族」才
+        // 确定，见 `crate::corpse_item::register_corpse_items` 文档。
+        crate::corpse_item::register_corpse_items(&mut self.registry, &self.race, &mut self.item);
         report
     }
 }
