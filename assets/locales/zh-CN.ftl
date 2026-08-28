@@ -81,6 +81,13 @@ trait-tailoring_mastery-display_name = 缝纫精通
 trait-alchemy_mastery-display_name = 炼金精通
 trait-cooking_mastery-display_name = 烹饪精通
 
+# 尸体（ll-mod corpse_item：每个种族自动获得一件尸体物品）。
+# 物种那一半靠 $species 参数插进来，取的是该种族自己的 display_name_key
+# ——因此第三方 mod 加一个种族，它的尸体名自动就有，不需要再补一条键。
+# 这是本条消息必须带参数、而不是每族一条键的全部理由，见
+# ll_mod::corpse_item 模块文档。
+item-corpse-display_name = { $species }的尸体
+
 # 本体物品（mods/lostland/items.json5，三十条）——
 # ll-mod ItemAttrs::display_name_key。
 item-iron_ingot-display_name = 铁锭
@@ -288,6 +295,13 @@ hud-interact-menu-hint = 确认=Enter　捡起=G　关闭=Esc
 hud-interact-action-work = 在此开工
 hud-interact-action-loot = 搜刮
 hud-interact-action-take = 捡起
+# 门（交互列表批次）——门是**地形**不是物品，因此名字不走 ItemTable，
+# 用这两条 HUD 通用文案，理由见 ll_game::player_action 的
+# interact_target_name 文档。
+hud-interact-action-open_door = 开门
+hud-interact-action-close_door = 关门
+hud-interact-door-closed = 一扇关着的门
+hud-interact-door-open = 一扇开着的门
 hud-interact-direction-title = 和哪边的东西交互（上下选择）
 hud-interact-direction-prompt = 附近什么都没有
 hud-interact-direction-hint = 确认=Enter　关闭=Esc

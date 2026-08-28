@@ -120,6 +120,27 @@ pub enum Intent {
         /// 用裸元组」一节。
         pos: (i32, i32),
     },
+    /// 关上某处的门（交互列表批次）。
+    ///
+    /// # 为什么是一个独立变体，不是给 `OpenDoor` 加一个布尔
+    ///
+    /// 两者的前置条件**不同**，不是同一个动作的两个方向：开门只要目标
+    /// 是一格「撞入即开」的地形；关门还要求那一格上**没有实体、没有
+    /// 立着的家具**（否则门会关在人身上）。加一个 `close: bool` 会得到
+    /// 一个「一半参数只对一半取值有意义」的变体，正是 ADR 0021 反面
+    /// 那一半警告的形状。
+    ///
+    /// 「关上之后变成哪一种地形」由
+    /// [`ll_world::terrain::TerrainTable::closes_into`] 反查
+    /// `opens_into` 得出，不需要内容作者再声明一遍。
+    ///
+    /// `pos` 未经归一化，理由同 [`Intent::OpenDoor`]。
+    CloseDoor {
+        /// 发起者。
+        actor: EntityId,
+        /// 门所在的世界坐标，未经归一化。
+        pos: (i32, i32),
+    },
     /// 尝试进入一个具体的 `Interior` 空间实例（任务 12：两级坐标系
     /// 重写）。
     ///
@@ -712,6 +733,7 @@ impl Intent {
             | Intent::Swap { actor, .. }
             | Intent::Wait { actor }
             | Intent::OpenDoor { actor, .. }
+            | Intent::CloseDoor { actor, .. }
             | Intent::EnterSpace { actor, .. }
             | Intent::ExitSpace { actor }
             | Intent::UseSkill { actor, .. }

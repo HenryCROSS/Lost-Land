@@ -1010,6 +1010,7 @@ fn resolve_dispatch(
             ambient,
         ),
         Intent::OpenDoor { actor, pos } => resolve_open_door(world, actor, pos),
+        Intent::CloseDoor { actor, pos } => resolve_close_door(world, actor, pos),
         Intent::EnterSpace { actor, target } => resolve_enter_space(world, actor, target),
         Intent::ExitSpace { actor } => resolve_exit_space(world, actor),
         Intent::UseSkill {
@@ -1148,7 +1149,7 @@ fn resolve_dispatch(
     // 死亡掉落（NPC 生命周期批次）：与击杀历史记录同一个触发点（同一批
     // Effect::Kill），各自独立追加,互不依赖——见 append_corpse_drop
     // 文档。不需要按 Intent 类型区分调用与否,理由同 append_kill_history。
-    append_corpse_drop(world, &mut effects);
+    append_corpse_drop(world, &mut effects, items);
     // 击杀经验：与击杀历史记录/死亡掉落同一个触发点（同一批
     // `Effect::Kill`），各自独立追加，互不依赖——见
     // `append_kill_experience` 文档。
@@ -1777,37 +1778,68 @@ fn append_kill_history(world: &WorldState, effects: &mut Vec<Effect>) {
 /// 与存档体积的无谓开销。
 ///
 /// # 尸体的 `def`：复用死者的 `creature_kind`/`race`，不新开一张
-/// "尸体物品"注册表
+/// # 尸体的 `def`：查 [`ItemCatalog::corpse_of`]，**不再是种族索引本身**
 ///
-/// `ll-sim` 不能依赖 `ll-mod`（依赖方向，规格 §5），本函数因此拿不到
-/// 任何 `ItemCatalog`/`Registry` 去 `intern` 一个专门的
-/// `lostland:corpse` 内容 ID——即便能拿到，也需要每个 mod 各自声明
-/// "我的种族死了要用哪个尸体物品"这类新的注册表，而当前没有任何真实
-/// 消费场景需要区分"哥布林尸体"与"人类尸体"这两件事本身是两种不同的
-/// 可堆叠物品（YAGNI，同一条判断见 `ll_world::item` 模块文档「`Owner`
-/// 本批次仍然不落地」一节）。`victim_agent.creature_kind.unwrap_or(victim_agent.race)`
-/// ——与 [`Effect::IncrementKillCount`] 归并键完全同一套既有回退规则
-/// （见其文档「为什么按 `kind: ContentIndex`」一节）——天然给出一个
-/// "这具尸体是什么生物"的身份，不需要新的注册表或跨 crate 依赖：
-/// 一具哥布林的尸体，`def` 就是"哥布林"这个种族/生物类型索引本身。
+/// **这一整节推翻了本函数此前的文档。** 旧文档论证「`ll-sim` 不能依赖
+/// `ll-mod`（规格 §5），拿不到注册表去 `intern` 一个尸体物品；而『区分
+/// 哥布林尸体与人类尸体』当时没有真实消费场景（YAGNI）」，于是把
+/// `victim.creature_kind.unwrap_or(victim.race)` 这个**种族**索引直接
+/// 塞进了 [`ItemStack::def`]——那个字段本该是**物品**索引。
+///
+/// 那段论证在两处上是错的：
+///
+/// 1. **它不只是名字难看。** 所有者实机在交互列表里看到的
+///    `#103 x1（搜刮）` 只是最表层的症状；真正的后果是凡是下游要查
+///    `ItemDef` 的地方对尸体**全部静默落空**——没有重量、没有堆叠上限、
+///    没有耐久、没有标签。这不是 YAGNI，是一次类型混淆。
+/// 2. **跨 crate 依赖不是唯一出路。** 依赖倒置早就摆在这条调用链上了：
+///    `resolve_dispatch` 手里现成有一个 [`ItemCatalog`]。给它加一条
+///    `corpse_of` 查询（带默认实现 `None`，见其文档）就够了，一个新
+///    trait 都不用开。
+///
+/// 所有者裁定：**「尸体也是一件可堆叠的物品才对」**。落地形状见
+/// `ll_mod::corpse_item` 模块文档：全部 mod 装载完之后，**每个种族**
+/// 自动获得一件真正的尸体 `ItemDef`（可堆叠、有重量、名字走 i18n 且
+/// 带物种），内容作者不写一个字。
+///
+/// ## 归并键一个字没改
+///
+/// `victim.creature_kind.unwrap_or(victim.race)` 原样保留——它是四条
+/// 路径里三条的既有惯例（见 [`Effect::IncrementKillCount`] 文档「为什么
+/// 按 `kind: ContentIndex`」一节）。改的只是「拿这个键去查什么」。
+///
+/// ## 查不到尸体物品时退回旧行为，不是不产出
+///
+/// 两种情形会查不到：目录侧没有实现 `corpse_of`（[`NoItems`] 与大量
+/// 只关心「查一条规则」的测试夹具，默认实现恒 `None`），或者
+/// `creature_kind` 指向的**不是一个种族**（那个字段是裸
+/// [`ContentIndex`]，至今没有「生物种类表」）。
+///
+/// 这时按归并键原样产出，与本次改动之前**逐位相同**。选这条兜底而不是
+/// 「不产出尸体」，是因为尸体是死者**全部遗物**的唯一容器：查不到一条
+/// 物品定义就把遗物一起吞掉，是拿一个呈现层的缺失去毁掉一份世界状态。
+/// 退化的只是「这具尸体查得到多少字段」，不是「死者的东西还在不在」。
+/// 这也让本次改动在没有真实内容的测试世界里是**零行为变更**——两条
+/// 黄金基准因此不受影响。
 ///
 /// `stack.durability` 恒 `None`——尸体这件"容器"本身没有耐久概念，与
-/// [`ItemStack::new`] 材料/消耗品的既有语义一致。
+/// [`ItemStack::new`] 材料/消耗品的既有语义一致，也与
+/// `ll_mod::corpse_item` 给尸体 `ItemDef` 填的 `max_durability: None`
+/// 对得上。
 ///
-/// # 两具尸体不会被静默合并
+/// # 两具尸体今天仍然不会被合并
 ///
-/// [`resolve_pick_up`] 已经把 `contents` 非空的地面物品整体排除在
-/// 合并/拾取路径之外（见其文档「为什么跳过容器」一节）——`can_merge`
-/// 只比较 `ItemStack` 的 `def`/`durability`，两具同种生物的尸体确实会
-/// 在这两个字段上相等（`can_merge` 会判定为"可合并"），但这条判定
-/// 永远不会被触发到：尸体从不作为 [`Intent::PickUp`] 的目标进入
-/// `merge_into_inventory_effect`，真正阻止"两具尸体的战利品被静默
-/// 混进同一个背包堆"的是这道路径排除，不是 `stack_limit`（`stack_limit`
-/// 查不到该 `def` 对应的 `ItemDef` 时按"不限量"处理，见
-/// [`resolve_pick_up`] 文档，本身并不能阻止 `can_merge` 判真——两具
-/// 尸体的地面条目本身也从不会被本函数或任何既有代码路径互相合并，
-/// `AddGroundItem` 的 `apply` 分支恒是无条件 `push`，见其文档）。
-fn append_corpse_drop(world: &WorldState, effects: &mut Vec<Effect>) {
+/// [`resolve_pick_up`] 把 `contents` 非空的地面物品整体排除在合并/拾取
+/// 路径之外（见其文档「为什么跳过容器」一节），而本函数**只在死者身上
+/// 有东西时才产出尸体**（`loot.is_empty()` 那一支），于是生产路径上的
+/// 尸体 `contents` 恒非空、恒被那道排除挡住。
+///
+/// 也就是说：`ll_mod::corpse_item::CORPSE_STACK_LIMIT` 今天还
+/// 观察不到——它是一条**诚实的声明**（这件物品可堆叠），等尸体真的能
+/// 被捡起来的那一天自动生效，不是一条现在就在跑的逻辑。`can_merge` 只
+/// 比较 `def`/`durability`，两具同物种的空尸体在这两个字段上确实相等，
+/// 判定会说"可合并"——这条判定路径至今没有任何调用点能走到。
+fn append_corpse_drop(world: &WorldState, effects: &mut Vec<Effect>, items: &dyn ItemCatalog) {
     let drops: Vec<Effect> = effects
         .iter()
         .filter_map(|effect| {
@@ -1820,7 +1852,10 @@ fn append_corpse_drop(world: &WorldState, effects: &mut Vec<Effect>) {
             if loot.is_empty() {
                 return None;
             }
-            let corpse_def = victim.creature_kind.unwrap_or(victim.race);
+            // 归并键一个字没改，改的是拿它去查什么——见本函数文档
+            // 「尸体的 `def`」一节。查不到就退回旧行为（用归并键本身）。
+            let corpse_kind = victim.creature_kind.unwrap_or(victim.race);
+            let corpse_def = items.corpse_of(corpse_kind).unwrap_or(corpse_kind);
             Some(Effect::AddGroundItem {
                 pos: victim.pos,
                 stack: ItemStack::new(corpse_def, 1),
@@ -4977,6 +5012,84 @@ fn resolve_open_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Ve
         Effect::SetTerrain {
             pos: door_pos,
             kind: open_kind,
+        },
+        Effect::ScheduleNext {
+            actor,
+            at: schedule_after(world, cost),
+        },
+    ]
+}
+
+/// 关上某处的门（交互列表批次：所有者裁定「我希望交互也能包括……开关
+/// 门」）。
+///
+/// # 四道前置，任一不成立都只消耗时间、不改地形
+///
+/// 1. **发起者存在**（否则连耗时都算不出来，静默作废）。
+/// 2. **目标区块已常驻**——`world.terrain_at` 落空时静默作废、不消耗
+///    时间，与 [`resolve_open_door`]/[`resolve_move`] 同一条纪律：查不
+///    到地形就无法判断这一步「本该」耗时多久。
+/// 3. **目标是一格「已打开形态」**——
+///    [`ll_world::terrain::TerrainTable::closes_into`] 有值。反查
+///    `opens_into` 而不是新加一条内容字段，理由见那个方法的文档；
+///    副作用是**mod 自己声明的门自动可以被关上**，不需要内容作者多写
+///    一个字。
+/// 4. **那一格上没有实体、也没有立着的家具**——否则门会关在人身上，
+///    或者把一座炉子封进墙里。占位查找复用批次 1 落地的
+///    [`occupant_at`]（不另写一份），家具判据是
+///    [`ll_world::item::GroundItemStack::placed`]，与
+///    `resolve_place` 的「一格至多立一件」用的是同一个字段。
+///
+/// **散落在地上的东西不挡门**：它们本来就躺在地上、和门在同一格并不
+/// 矛盾（一把掉在门槛上的匕首不该让门关不上）。挡门的只有「站着的人」
+/// 与「立着的东西」这两类真正占据了这一格的存在。
+///
+/// 前置 3/4 不成立时**仍然消耗一次行动**，与 [`resolve_open_door`] 对
+/// 着一格不是门的地方按下去、与 [`resolve_move`] 撞墙，是同一个口径：
+/// 「查得到目标、确认这个动作在此处不成立」是一个确定结果，值得消耗
+/// 一次行动。
+///
+/// # 为什么不在交互列表那一层先把关不上的门筛掉
+///
+/// 那会让同一条判据存在两份，迟早分叉（分叉的表现是「列表里能选，按
+/// 下去没反应」或者更糟的「明明关得上，列表里却没有」）。这条纪律与
+/// `ll_game::player_action::craft_entries` 文档里写明的完全一致：
+/// 玩法前置只住在 `resolve`，呈现层不复制。
+fn resolve_close_door(world: &WorldState, actor: EntityId, pos: (i32, i32)) -> Vec<Effect> {
+    let Some(agent) = world.actors.get(actor) else {
+        return Vec::new();
+    };
+    let door_pos = world.size.wrap(pos.0, pos.1);
+    let Some(terrain) = world.terrain_at(door_pos) else {
+        return Vec::new();
+    };
+    let cost = action_cost(
+        BASE_ACTION_COST,
+        effective_speed_from_dexterity(agent.stats.dexterity),
+    );
+    let idle = vec![Effect::ScheduleNext {
+        actor,
+        at: schedule_after(world, cost),
+    }];
+
+    let Some(closed_kind) = world.terrain_table.closes_into(terrain) else {
+        return idle; // 前置 3：这一格不是一扇开着的门。
+    };
+    if occupant_at(world, door_pos, actor).is_some() {
+        return idle; // 前置 4a：门口站着人。
+    }
+    if world
+        .ground_items
+        .iter()
+        .any(|ground| ground.pos == door_pos && ground.placed)
+    {
+        return idle; // 前置 4b：门口立着一件家具。
+    }
+
+    vec![
+        Effect::SetTerrain {
+            pos: door_pos,
+            kind: closed_kind,
         },
         Effect::ScheduleNext {
             actor,

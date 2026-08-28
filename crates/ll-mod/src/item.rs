@@ -53,6 +53,7 @@
 //! `register-trait-resource-pool` 相对 `register-trait`「新增能力用
 //! 新函数」的先例补一个 `register-item-durability`。
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use ll_core::ident::{ContentIndex, NamespacedId};
@@ -672,6 +673,19 @@ pub struct ItemTable {
     /// 每件物品放到地上是不是家具（家具层批次）——见
     /// [`ItemDef::furniture`]。
     furniture: Vec<bool>,
+    /// `种族索引 → 那个种族的尸体物品索引`（尸体物品批次）——见
+    /// [`crate::corpse_item`] 模块文档。
+    ///
+    /// **不是列式存储**：它的下标空间是「种族」而不是「物品」，塞进
+    /// 上面那一排按物品索引对齐的 `Vec` 会让两个不同的下标空间共用
+    /// 一条列，是本表最不该发生的类型混淆。`BTreeMap` 不是 `HashMap`
+    /// ——约束 C5，遍历顺序必须确定。
+    corpse_of: BTreeMap<ContentIndex, ContentIndex>,
+    /// `尸体物品索引 → 那个物种自己的显示名键`（同上批次）。
+    ///
+    /// 呈现层靠它把一条通用的「{ $species }的尸体」Fluent 消息插值成
+    /// 「哥布林的尸体」，见 `ll_ui::hud::item_display_name`。
+    corpse_species_name_key: BTreeMap<ContentIndex, NamespacedId>,
     defined: Vec<bool>,
 }
 
@@ -735,6 +749,55 @@ impl ItemTable {
         // 恒是空列表，真正的取值由后续 `add_tag` 逐条折算。
         self.wear_channels[idx] = WearChannels::NONE;
         Ok(())
+    }
+
+    /// 登记一条「这个种族的尸体是这件物品」的双向接线（尸体物品
+    ///批次）——[`crate::corpse_item::register_corpse_items`] 是唯一
+    /// 调用方。
+    ///
+    /// # 为什么写入口在这里，不是 `ItemAttrs` 的一个字段
+    ///
+    /// 两条映射的**键**分属两个不同的下标空间（`corpse_of` 的键是
+    /// 种族，`corpse_species_name_key` 的键是物品），而 `ItemAttrs`
+    /// 是「一件物品自己的属性」。把 `种族 → 物品` 塞进物品属性里，
+    /// 表达的会是反过来的意思。
+    ///
+    /// 同样重要的是：本方法**不进内容哈希**（`content_hash` 的
+    /// `write_item_fields` 字段集合一个字没加，`CONTENT_HASH_ALGORITHM_
+    /// VERSION` 因此不需要递增）。这不是遗漏——两侧的东西都已经各自
+    /// 被算进去了：尸体物品本身是一条真正的物品定义（照常被
+    /// `write_item_fields` 覆盖），种族也照常被种族那一段覆盖，而这条
+    /// 映射是从「有哪些种族」**确定性派生**出来的，不含任何独立信息。
+    ///
+    /// 重复登记以**最后一次**为准（`BTreeMap::insert` 的语义）——
+    /// `register_corpse_items` 本身幂等，重复写入的是同一对值。
+    pub fn set_corpse_link(
+        &mut self,
+        race: ContentIndex,
+        corpse: ContentIndex,
+        species_name_key: NamespacedId,
+    ) {
+        self.corpse_of.insert(race, corpse);
+        self.corpse_species_name_key
+            .insert(corpse, species_name_key);
+    }
+
+    /// 这个种族（或生物种类）的尸体是哪件物品；没登记过就是 `None`
+    /// （ADR 0015）。
+    ///
+    /// [`ll_sim::item::ItemCatalog::corpse_of`] 的实现就是转调本方法，
+    /// 那条 trait 方法才是 `ll-sim` 侧 `append_corpse_drop` 用的入口。
+    pub fn corpse_of(&self, kind: ContentIndex) -> Option<ContentIndex> {
+        self.corpse_of.get(&kind).copied()
+    }
+
+    /// 这件尸体物品对应物种的显示名键；不是尸体物品就是 `None`。
+    ///
+    /// 呈现层（`ll_ui::hud::item_display_name`）唯一的用途是把它喂给
+    /// `ll_i18n::Catalog::resolve` 拿到物种名，再插进通用的
+    /// 「{ $species }的尸体」消息里。
+    pub fn corpse_species_name_key(&self, item: ContentIndex) -> Option<&NamespacedId> {
+        self.corpse_species_name_key.get(&item)
     }
 
     /// 给定的物品索引当前是否已经登记过属性。
@@ -1070,6 +1133,13 @@ impl ItemCatalog for ItemTable {
             blind_box_pool: view.blind_box_pool.to_vec(),
             furniture: view.furniture,
         })
+    }
+
+    /// 转调 [`ItemTable::corpse_of`]——本仓库唯一一个真正实现这条
+    /// trait 方法的类型，数据由
+    /// [`crate::corpse_item::register_corpse_items`] 填。
+    fn corpse_of(&self, kind: ContentIndex) -> Option<ContentIndex> {
+        ItemTable::corpse_of(self, kind)
     }
 }
 

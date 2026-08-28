@@ -311,6 +311,34 @@ pub struct BlindBoxEntry {
 pub trait ItemCatalog {
     /// 查询一条物品定义；未注册的索引返回 `None`（ADR 0015）。
     fn item(&self, item: ContentIndex) -> Option<ItemRule>;
+
+    /// 这个**种族/生物种类**的尸体是哪件物品；查不到就是 `None`
+    /// （ADR 0015）。
+    ///
+    /// # 为什么这条查询在物品目录上
+    ///
+    /// `crate::resolve` 的 `append_corpse_drop` 需要把
+    /// `victim.creature_kind.unwrap_or(victim.race)` 这个**归并键**翻译
+    /// 成一个真正的**物品**索引（此前它把种族索引直接塞进
+    /// [`ItemStack::def`]，那是一次类型混淆，见
+    /// `ll_mod::corpse_item` 模块文档）。`ll-sim` 不能依赖 `ll-mod`
+    /// （依赖方向，规格 §5），拿不到注册表，只能靠一条依赖倒置的查询；
+    /// 而 `ItemCatalog` 已经是那个函数所在调用链上现成的物品目录参数，
+    /// 不需要为此新开一个只有一个实现的 trait（ADR 0021）。
+    ///
+    /// # 为什么有默认实现
+    ///
+    /// 本 crate 内外有十几处 `impl ItemCatalog`，绝大多数是只关心
+    /// 「查一条规则」的测试夹具。给它们强加一条必填方法只会让每一处都
+    /// 抄一遍 `None`。默认实现 `None` 的含义与 [`NoItems`] 一致：**没有
+    /// 尸体物品注册表**，调用方按自己的兜底纪律处理。
+    ///
+    /// 真正的实现只有一处：`ll_mod::item::ItemTable`，数据由
+    /// `ll_mod::corpse_item::register_corpse_items` 在全部 mod 装载完
+    /// 之后填进去。
+    fn corpse_of(&self, _kind: ContentIndex) -> Option<ContentIndex> {
+        None
+    }
 }
 
 /// 空物品目录：查询任何索引恒返回 `None`——理由同 [`crate::skill::NoSkills`]。

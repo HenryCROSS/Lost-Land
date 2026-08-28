@@ -49,7 +49,8 @@ use ll_sim::item::ItemCatalog;
 use ll_text::TextRenderer;
 use ll_world::item::{EquipSlot, ItemStack};
 
-use super::action_menu::{self, ActionMenuData};
+use super::PanelContent;
+use super::action_menu::{self, ActionMenuData, MenuPlacement};
 use super::character_panel::{self, CharacterPanelData};
 use super::equipment_panel;
 use super::inventory_panel;
@@ -156,6 +157,56 @@ const WORLD_MAP_MARGIN_FRACTION: f32 = 0.1;
 /// 的取舍——窗口尺寸由 `ll_platform::window::WindowConfig` 固定给定
 /// （见 [`equipment_origin_x`] 文档同一段说明),按比例现算仍然比写死
 /// 像素常量更不容易在窗口配置调整后悄悄错位。
+/// 按这块菜单声明的 [`MenuPlacement`] 把它摆到屏幕上。
+///
+/// # 为什么要「先建一次、再整体平移」
+///
+/// 面板高度是**内容现算**的（[`super::build_panel`]：行数 × 行高 + 上下
+/// 内边距），行数取决于这一帧有几行可选项——`ScreenCenter` 要垂直居中
+/// 就必须先知道这个高度。两条可选路：把行数算法在这里再写一遍（迟早
+/// 与 `write_action_menu_lines` 分叉），或者建完之后整体平移。选后者：
+/// 平移是纯几何、没有第二份真相源，而且 `PanelContent` 只有一个矩形
+/// 加一列标签，平移的代价是一次线性遍历。
+///
+/// 水平方向两个变体都居中（这是本函数落地之前就有的行为），差别只在
+/// 垂直：`TopCenter` 贴上沿，`ScreenCenter` 也居中。
+///
+/// # 屏幕比面板还矮时
+///
+/// `ScreenCenter` 算出来的 `y` 会是负数，面板顶部被截在屏幕外——**这是
+/// 刻意不钳制的**：钳到 0 会让面板底部改为超出屏幕，同样看不全，却把
+/// 「窗口比屏幕高」这个真问题藏起来。与
+/// `ActionMenuData::cursor` 越界时「不钳制、也不 panic」同一条纪律。
+fn placed_action_menu(
+    menu: &ActionMenuData<'_>,
+    catalog: &Catalog,
+    language: &str,
+    screen_width: f32,
+    screen_height: f32,
+) -> PanelContent {
+    let x = (screen_width - ACTION_MENU_WIDTH) * 0.5;
+    let top = SCREEN_MARGIN + PANEL_GAP;
+    let panel =
+        action_menu::action_menu_panel(menu, catalog, language, (x, top), ACTION_MENU_WIDTH);
+    match menu.placement {
+        MenuPlacement::TopCenter => panel,
+        MenuPlacement::ScreenCenter => {
+            let centered_top = (screen_height - panel.rect.height) * 0.5;
+            translate_panel(panel, centered_top - top)
+        }
+    }
+}
+
+/// 把一块已经建好的面板整体沿 y 轴平移 `dy` 像素——背景矩形与每一行
+/// 文字一起动，见 [`placed_action_menu`] 文档「先建一次、再整体平移」。
+fn translate_panel(mut panel: PanelContent, dy: f32) -> PanelContent {
+    panel.rect.y += dy;
+    for label in &mut panel.labels {
+        label.y += dy;
+    }
+    panel
+}
+
 fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
     let margin_x = screen_width * WORLD_MAP_MARGIN_FRACTION;
     let margin_y = screen_height * WORLD_MAP_MARGIN_FRACTION;
@@ -190,8 +241,14 @@ fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
 ///
 /// `menu` 为 `None` 时（没有任何动作菜单打开）那块面板整块不参与本次
 /// 产出，与 `world_map` 同一条纪律。为 `Some` 时按
-/// [`super::action_menu::action_menu_panel`] 画在屏幕正中偏右——不与
-/// 左侧那一列常驻面板重叠，玩家挑东西时仍看得见自己的属性与背包。
+/// [`super::action_menu::action_menu_panel`] 画出，**画在哪由那块菜单
+/// 自己声明的 [`MenuPlacement`] 决定**（见 [`placed_action_menu`]）：
+/// 背包与制作贴屏幕上沿、水平居中（本参数落地以来一直如此），交互列表
+/// 与方向列表水平垂直**都居中**——所有者裁定「那个互动显示的 UI 窗口，
+/// 我希望是出现在屏幕正中间」。
+///
+/// 两者水平方向都居中，因此都不与左侧那一列常驻面板重叠，玩家挑东西时
+/// 仍看得见自己的属性与背包。
 ///
 /// `feedback` 是一句**已经解析好**的反馈文字（`None` 表示这一帧没有
 /// 反馈要说）。它存在的唯一理由是：`ll_sim::resolve` 判定「这一步什么
@@ -407,12 +464,7 @@ pub fn build_hud_frame(
     // 函数文档。画在世界地图之后——两者理论上可以同时打开，此时菜单
     // 该压在地图之上（玩家正在选东西，地图只是背景）。
     if let Some(menu) = menu {
-        let origin = (
-            (screen_width - ACTION_MENU_WIDTH) * 0.5,
-            SCREEN_MARGIN + PANEL_GAP,
-        );
-        let panel =
-            action_menu::action_menu_panel(menu, catalog, language, origin, ACTION_MENU_WIDTH);
+        let panel = placed_action_menu(menu, catalog, language, screen_width, screen_height);
         push_panel(
             &mut quads,
             &mut textured_quads,
@@ -1223,6 +1275,160 @@ mod tests {
 
         // Assert
         assert!(frame.quads[28].position[1] > frame.quads[17].position[1]);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ── 动作菜单的位置（所有者裁定：交互窗口居中） ──────────────────
+
+    /// 造一块给位置测试用的菜单数据——内容无关紧要，只要行数固定。
+    fn placement_menu(rows: &[String], placement: MenuPlacement) -> ActionMenuData<'_> {
+        ActionMenuData {
+            title_key: "menu-title",
+            rows,
+            cursor: 0,
+            empty_key: "menu-empty",
+            hint_key: "menu-hint",
+            placement,
+        }
+    }
+
+    /// 位置测试用的空目录目录——这几条只看几何，不看文字，键查不到时
+    /// `Catalog::resolve` 退回键名本身，行数不变。
+    fn placement_catalog(name: &str) -> (std::path::PathBuf, Catalog) {
+        let dir = temp_dir(name);
+        let catalog = Catalog::load_dir(&dir);
+        (dir, catalog)
+    }
+
+    #[test]
+    fn 交互菜单在屏幕上水平垂直都居中() {
+        // **所有者裁定**：「那个互动显示的 UI 窗口，我希望是出现在屏幕
+        // 正中间」。
+        //
+        // 故意改坏的反例（人工核验）：把 `placed_action_menu` 里
+        // `MenuPlacement::ScreenCenter` 那一支改成直接返回 `panel`
+        // （退回旧的贴上沿行为），本条当场变红。
+        // Arrange
+        let (dir, catalog) = placement_catalog("interact-centered");
+        let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
+        let menu = placement_menu(&rows, MenuPlacement::ScreenCenter);
+        let (width, height) = (1280.0_f32, 720.0_f32);
+
+        // Act
+        let panel = placed_action_menu(&menu, &catalog, "zh-CN", width, height);
+
+        // Assert：面板中心与屏幕中心重合（浮点，允许半像素）。
+        let center_x = panel.rect.x + panel.rect.width * 0.5;
+        let center_y = panel.rect.y + panel.rect.height * 0.5;
+        assert!(
+            (center_x - width * 0.5).abs() < 0.5,
+            "水平未居中：面板中心 {center_x}，屏幕中心 {}",
+            width * 0.5
+        );
+        assert!(
+            (center_y - height * 0.5).abs() < 0.5,
+            "垂直未居中：面板中心 {center_y}，屏幕中心 {}",
+            height * 0.5
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 交互菜单在任意窗口尺寸下都居中() {
+        // 不许把 1280×720 写死——真实窗口可以是任意尺寸。三种差别很大的
+        // 尺寸各算一次。
+        //
+        // 故意改坏的反例（人工核验）：把 `placed_action_menu` 里的
+        // `screen_height` 换成字面量 `720.0`，第一与第三组当场变红。
+        // Arrange
+        let (dir, catalog) = placement_catalog("interact-any-size");
+        let rows: Vec<String> = (0..3).map(|n| format!("行{n}")).collect();
+        let menu = placement_menu(&rows, MenuPlacement::ScreenCenter);
+
+        for (width, height) in [(800.0_f32, 600.0_f32), (1280.0, 720.0), (2560.0, 1440.0)] {
+            // Act
+            let panel = placed_action_menu(&menu, &catalog, "zh-CN", width, height);
+
+            // Assert
+            let center_y = panel.rect.y + panel.rect.height * 0.5;
+            assert!(
+                (center_y - height * 0.5).abs() < 0.5,
+                "{width}×{height} 下垂直未居中：面板中心 {center_y}"
+            );
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 背包与制作菜单原位不动() {
+        // **所有者只要求交互那一块居中。** 三块菜单共用同一条渲染路径，
+        // 这条守的是「本次改动没有把另外两块一并挪走」——它们仍然贴着
+        // 屏幕上沿，与改动之前逐像素相同。
+        //
+        // 故意改坏的反例（人工核验）：把 `placed_action_menu` 改成无视
+        // `menu.placement` 一律居中，本条当场变红。
+        // Arrange
+        let (dir, catalog) = placement_catalog("top-center-unmoved");
+        let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
+        let menu = placement_menu(&rows, MenuPlacement::TopCenter);
+
+        // Act
+        let panel = placed_action_menu(&menu, &catalog, "zh-CN", 1280.0, 720.0);
+
+        // Assert：贴上沿的那个 y 是本次改动之前唯一存在的取值。
+        assert_eq!(panel.rect.y, SCREEN_MARGIN + PANEL_GAP);
+        assert_eq!(panel.rect.x, (1280.0 - ACTION_MENU_WIDTH) * 0.5);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 居中之后每一行文字跟着面板一起挪() {
+        // 平移必须是**整体**的：只挪背景矩形而不挪文字，玩家会看到一块
+        // 空面板加一列悬空的字。
+        //
+        // 故意改坏的反例（人工核验）：把 `translate_panel` 里那个
+        // `for label in &mut panel.labels` 循环删掉，本条当场变红。
+        // Arrange
+        let (dir, catalog) = placement_catalog("labels-follow");
+        let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
+        let top = placed_action_menu(
+            &placement_menu(&rows, MenuPlacement::TopCenter),
+            &catalog,
+            "zh-CN",
+            1280.0,
+            720.0,
+        );
+
+        // Act
+        let centered = placed_action_menu(
+            &placement_menu(&rows, MenuPlacement::ScreenCenter),
+            &catalog,
+            "zh-CN",
+            1280.0,
+            720.0,
+        );
+
+        // Assert：每一行相对面板顶部的偏移逐条不变。
+        let dy = centered.rect.y - top.rect.y;
+        assert!(dy.abs() > 1.0, "两种摆法应当真的落在不同的高度");
+        assert_eq!(centered.labels.len(), top.labels.len());
+        for (moved, original) in centered.labels.iter().zip(top.labels.iter()) {
+            assert_eq!(moved.x, original.x, "水平位置不该变");
+            assert!(
+                (moved.y - (original.y + dy)).abs() < 0.001,
+                "文字没有跟着面板一起挪：{} 应当是 {}",
+                moved.y,
+                original.y + dy
+            );
+        }
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

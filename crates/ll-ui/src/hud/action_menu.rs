@@ -43,6 +43,35 @@ pub const CURSOR_PREFIX: &str = "> ";
 /// 上下移动而左右抖动。
 pub const IDLE_PREFIX: &str = "  ";
 
+/// 一块动作菜单画在屏幕的什么位置。
+///
+/// # 为什么这条要由调用方声明，不是本层一律拍一个位置
+///
+/// 三块菜单（背包、制作、交互）**共用同一条渲染路径**
+/// （`crate::hud::render::build_hud_frame` 的 `menu` 参数是一个
+/// `Option<&ActionMenuData>`，认不出打开的是哪一块）。所有者试玩后只
+/// 要求**交互**那一块挪到屏幕正中：
+///
+/// > 「那个互动显示的 UI 窗口，我希望是出现在屏幕正中间」
+///
+/// 在渲染层写死「一律居中」会把背包与制作一并挪走，那是替所有者做了他
+/// 没提的决定。把位置做成**数据的一部分**，让持有 `PlayerMenu` 的那一
+/// 层（`ll_game::player_action::menu_data`）逐个变体声明，是唯一既满足
+/// 要求、又不牵连另外两块的形状。
+///
+/// 这不是「为对称而抽象」（ADR 0021）：两个变体今天各自都有真实使用
+/// 者，不是一个只有一种取值的枚举。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuPlacement {
+    /// 水平居中、垂直贴着屏幕上沿（留出与常驻面板同款的外边距）。
+    ///
+    /// **这是本字段落地之前唯一存在的行为**，背包与制作两块菜单原样
+    /// 保留在这里——本次改动对它们是逐像素零变更。
+    TopCenter,
+    /// 水平与垂直**都**居中。所有者对交互窗口的要求。
+    ScreenCenter,
+}
+
 /// 一块动作菜单这一帧要显示的全部内容。
 pub struct ActionMenuData<'a> {
     /// 面板标题的 Fluent 键。
@@ -57,6 +86,8 @@ pub struct ActionMenuData<'a> {
     pub empty_key: &'a str,
     /// 面板底部的操作提示行的 Fluent 键（「确认=制作，取消=关闭」这类）。
     pub hint_key: &'a str,
+    /// 这块菜单画在屏幕的什么位置，见 [`MenuPlacement`]。
+    pub placement: MenuPlacement,
 }
 
 /// 建出动作菜单面板：标题 + 逐行（光标行带 [`CURSOR_PREFIX`]）+ 提示行。
@@ -159,6 +190,7 @@ mod tests {
             cursor: 1,
             empty_key: "menu-empty",
             hint_key: "menu-hint",
+            placement: MenuPlacement::TopCenter,
         };
 
         // Act
@@ -183,6 +215,7 @@ mod tests {
             cursor: 7,
             empty_key: "menu-empty",
             hint_key: "menu-hint",
+            placement: MenuPlacement::TopCenter,
         };
 
         // Act
@@ -205,6 +238,7 @@ mod tests {
             cursor: 0,
             empty_key: "menu-empty",
             hint_key: "menu-hint",
+            placement: MenuPlacement::TopCenter,
         };
 
         // Act

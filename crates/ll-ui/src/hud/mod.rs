@@ -73,8 +73,8 @@ pub mod render;
 pub mod status_bar;
 pub mod world_map;
 
-use ll_core::ident::ContentIndex;
-use ll_i18n::Catalog;
+use ll_core::ident::{ContentIndex, NamespacedId};
+use ll_i18n::{Catalog, FluentArgs};
 use ll_mod::item::ItemTable;
 
 use crate::widget::geometry::Rect;
@@ -163,8 +163,38 @@ pub fn item_display_name(
             if view.requires_identification && !identified.contains(&def) {
                 return catalog.resolve(language, "hud-item-unidentified");
             }
+            if let Some(species_key) = items.corpse_species_name_key(def) {
+                return corpse_display_name(view.display_name_key, species_key, catalog, language);
+            }
             catalog.resolve(language, &view.display_name_key.to_string())
         }
         None => format!("#{}", def.get()),
     }
+}
+
+/// 一具尸体的显示名：拿物种自己的显示名键查出物种名，再插进通用的
+/// 「{ $species }的尸体」消息（`item-corpse-display_name`）。
+///
+/// # 为什么尸体名要在呈现层拼，不是在内容里写死
+///
+/// 因为**第三方 mod 加一个种族必须自动获得能显示的尸体名**（规格
+/// §10.3、ADR 0018 的「本体即 Mod」检验）。若每个物种一条 Fluent 键，
+/// 本体的四个种族补得上，第三方 mod 的种族补不上——mod 的 `.ftl` 装载
+/// 至今没有落地（`ll_i18n` 模块文档「五、mod 的 `.ftl`」）。走参数插值
+/// 之后，物种那一半复用种族**早就有的** `display_name_key`，尸体不多
+/// 欠任何一条翻译。完整论证见 `ll_mod::corpse_item` 模块文档。
+///
+/// `name_key` 是尸体 `ItemDef` 自己的显示名键（全部尸体共用一条，
+/// `ll_mod::corpse_item::CORPSE_DISPLAY_NAME_KEY`）——传进来而不是在
+/// 这里写死字面量，好让「那条键叫什么」只有注册那一处一个真相源。
+fn corpse_display_name(
+    name_key: &NamespacedId,
+    species_key: &NamespacedId,
+    catalog: &Catalog,
+    language: &str,
+) -> String {
+    let species = catalog.resolve(language, &species_key.to_string());
+    let mut args = FluentArgs::new();
+    args.set("species", species);
+    catalog.resolve_with_args(language, &name_key.to_string(), Some(&args))
 }
