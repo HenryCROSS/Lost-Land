@@ -405,3 +405,18 @@ language-name = 简体中文
 # crates/ll-ui/src/hud/world_map.rs 的 scale_caption。
 hud-world-map-scale-label = 比例尺
 hud-world-map-hint = 方向键平移，缩放键放大缩小
+
+# 游戏主菜单（首页，批次 6）：
+#   - screen-title-*
+#     与游戏内菜单共用 ll-ui 的同一个 screen 模块，唯一的区别是它底下
+#     还没有世界。
+screen-title-title = 迷途大陆
+screen-title-empty = （没有条目）
+screen-title-hint = 上下移动，确认键选择
+screen-title-new-game = 开始游戏
+screen-title-load = 读取存档
+screen-title-load-empty = 读取存档（没有存档）
+screen-title-settings = 设置
+screen-title-quit = 离开
+screen-title-no-save = 还没有可以读取的存档
+screen-title-load-failed = 存档读不回来，什么都没有改变

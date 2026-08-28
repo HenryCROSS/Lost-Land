@@ -22,10 +22,12 @@ pub mod layout;
 pub mod menu_screen;
 pub mod player_action;
 pub mod save;
+pub mod session;
 pub mod settings_view;
 pub mod surface_draw;
 #[cfg(test)]
 mod test_support;
+pub mod title_screen;
 pub mod world;
 pub mod worldgen;
 
@@ -203,19 +205,44 @@ fn resolve_data_dir_with(
     find_data_dir_from(exe_dir)
 }
 
-/// 装载内容 → 建世界或读档：存档存在就读档，读档失败/降级为只读时
-/// 记日志退回新游戏，从不 panic——存档损坏不该让玩家彻底玩不了。
+/// 建世界或读档：存档存在就读档，读档失败/降级为只读时记日志退回新
+/// 游戏，从不 panic——存档损坏不该让玩家彻底玩不了。
+///
+/// # 它现在没有生产调用者了，为什么还留着
+///
+/// 游戏主菜单（首页）落地之后，启动流程不再自动进世界：`run_game`
+/// 直接停在首页，「开始游戏」走 [`new_game`]、「读取存档」走
+/// [`load_saved_game`]，两条路**分开**。本函数是那两条路融合成一条的
+/// 旧形状，保留下来是因为它把「存档存在但读不回来时该怎么办」这个
+/// 决定完整地记在一处，而那个决定与首页那条**刻意不同**（首页读档
+/// 失败留在首页，见 `crate::app::Demo::load_saved_game`）——留着它，
+/// 两种语义的差别才有一个可对照的落点。
+#[cfg_attr(not(test), allow(dead_code))]
 fn load_or_new_game(
     paths: &GamePaths,
     content: &content::LoadedContent,
     new_game_config: &ll_platform::config::NewGameConfig,
 ) -> GameWorld {
-    if !paths.save.exists() {
-        tracing::info!(path = %paths.save.display(), "未找到存档，开始新游戏");
-        return new_game(content, new_game_config);
+    load_saved_game(&paths.save, content).unwrap_or_else(|| new_game(content, new_game_config))
+}
+
+/// 把 `save` 指向的那份存档读回来；读不回来（不存在、损坏、或因缺失
+/// 内容降级为只读）时返回 `None`，**从不 panic、也不代替调用方决定
+/// 「那就开一局新的吧」**。
+///
+/// 那个决定现在有两个不同的答案，因此必须留给调用方：
+///
+/// - 启动期的 [`load_or_new_game`]：回退到新游戏（玩家已经决定要玩了）；
+/// - 首页的「读取存档」（`crate::app::Demo::load_saved_game`）：留在
+///   首页报错（玩家明确点的是读档，给他一个新世界是答非所问，而且那局
+///   新世界退出时会把坏档彻底覆盖——存档只有一份）。
+pub(crate) fn load_saved_game(save: &Path, content: &content::LoadedContent) -> Option<GameWorld> {
+    if !save.exists() {
+        tracing::info!(path = %save.display(), "未找到存档");
+        return None;
     }
 
-    match save::load_game(&paths.save, content) {
+    match save::load_game(save, content) {
         LoadedGame::Playable {
             mut world,
             identity,
@@ -232,7 +259,7 @@ fn load_or_new_game(
                     content,
                     &world.gen_params(),
                 )));
-            tracing::info!(path = %paths.save.display(), "读档成功，继续游玩");
+            tracing::info!(path = %save.display(), "读档成功，继续游玩");
             // 时间轴与 noise 同一类「运行期派生数据」，不随
             // `WorldState` 序列化——按每个存活实体已持久化的
             // `next_action_at` 重建即可，见
@@ -245,7 +272,7 @@ fn load_or_new_game(
             // 本体默认种子加默认形态，玩家一旦能自己选，往前走一步地形
             // 就会换一张图。
             let params = world.gen_params();
-            GameWorld {
+            Some(GameWorld {
                 world,
                 noise: rebuild_noise(&params),
                 params,
@@ -256,25 +283,25 @@ fn load_or_new_game(
                 // 用「玩家现在开着哪些 mod」覆盖掉「这个世界当初是用
                 // 哪些 mod 生成的」，见 `crate::save` 模块文档第一节。
                 identity,
-            }
+            })
         }
         LoadedGame::ReadOnly(_) => {
             tracing::warn!(
-                path = %paths.save.display(),
-                "存档因缺失内容降级为只读，本体二进制暂不支持只读模式游玩，改为开始新游戏"
+                path = %save.display(),
+                "存档因缺失内容降级为只读，本体二进制暂不支持只读模式游玩"
             );
-            new_game(content, new_game_config)
+            None
         }
         LoadedGame::Rejected(error) => {
-            tracing::error!(?error, path = %paths.save.display(), "存档读取失败，开始新游戏");
-            new_game(content, new_game_config)
+            tracing::error!(?error, path = %save.display(), "存档读取失败");
+            None
         }
     }
 }
 
 /// 按玩家的新游戏配置建一局新世界——`config.json5` 的
 /// `new_game` 段在这里、也只在这里，真正变成一张地图。
-fn new_game(
+pub(crate) fn new_game(
     content: &content::LoadedContent,
     new_game_config: &ll_platform::config::NewGameConfig,
 ) -> GameWorld {
@@ -415,11 +442,18 @@ pub fn run_game() {
         );
     }
 
-    let game_world = load_or_new_game(&paths, &content, &config.new_game);
+    // **启动时不再自动进世界。**
+    //
+    // 项目所有者原话：「我需要一个游戏的主菜单，而不是开始直接进入
+    // 存档」。此前这里 `load_or_new_game`（有存档读档、没有就建新档）
+    // 然后把世界按值交给 `Demo::new`，玩家没有任何机会在进世界之前做
+    // 选择。现在 `Demo::at_title` 停在首页，世界由玩家在首页上选
+    // 「开始游戏」或「读取存档」之后才建出来，见 `crate::session`
+    // 模块文档「世界尚未存在」一节。
     tracing::info!(
-        seed = game_world.world.seed,
-        clock = game_world.world.clock.0,
-        "世界就绪"
+        save = %paths.save.display(),
+        save_exists = paths.save.exists(),
+        "停在游戏主菜单，等待玩家选择"
     );
 
     // 装载本地化：真正的消费点在下面——用当前配置里的 `language`
@@ -450,9 +484,8 @@ pub fn run_game() {
         language = %config.language,
         "窗口标题已解析"
     );
-    let demo = Demo::new(
+    let demo = Demo::at_title(
         content,
-        game_world,
         paths.save.clone(),
         "旅人".to_string(),
         config,

@@ -179,6 +179,12 @@
 - `ll-game/src/app.rs`：`Demo` 新增 `world_map_view` 字段；地图打开时
   `ZoomIn`/`ZoomOut` 改缩放档位、四个方向键改平移（见 4.1）；装配据点与
   玩家标记。
+
+  > **落地后被首页批次挪过一次**：`world_map_view` 现在住在
+  > `ll-game/src/session.rs` 的 `Session` 上，不在 `Demo` 上。首页落地
+  > 之后「世界」不再恒存在，而这个视野是对着 `continent_field` 与玩家
+  > 位置建出来的——两个输入都随世界同生同死，因此它跟着搬进了同一束
+  > 东西里。见 `Session::world_map_view` 字段文档。
 - 新文案（`en.ftl` 与 `zh-CN.ftl` **两个都加**）：比例尺与操作提示。
 
 #### 4.1 地图打开时的输入分流（规格没裁定，本批临时选定）

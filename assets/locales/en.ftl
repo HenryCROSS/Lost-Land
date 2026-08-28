@@ -354,3 +354,18 @@ language-name = English
 # "1:<tiles per cell>"; see scale_caption in crates/ll-ui/src/hud/world_map.rs.
 hud-world-map-scale-label = Scale
 hud-world-map-hint = Arrows pan, zoom keys zoom
+
+# Title screen — the game's front page (batch 6):
+#   - screen-title-*
+#     Same ll-ui screen module as the in-game menu; the only difference is
+#     that there is no world underneath it yet.
+screen-title-title = Lost Land
+screen-title-empty = (no entries)
+screen-title-hint = Up/Down to move, Confirm to choose
+screen-title-new-game = New Game
+screen-title-load = Load Game
+screen-title-load-empty = Load Game (no save file)
+screen-title-settings = Settings
+screen-title-quit = Quit
+screen-title-no-save = There is no save file to load yet
+screen-title-load-failed = The save file could not be read; nothing was changed
