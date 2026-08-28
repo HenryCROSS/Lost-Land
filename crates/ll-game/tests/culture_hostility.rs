@@ -8,6 +8,16 @@
 //! > 「那文化设定一个独特的东西叫无文化，这东西颗粒度小到具体某个 NPC。」
 //! > 敌对阈值：「我觉得 5 也没问题。」
 //!
+//! **2026-08-27 追加的第五条裁定（推翻了本文件此前的一条断言）**：
+//!
+//! > 「关于矮人那个，整体机制应该是**只要有一方处于敌对状态，另一方
+//! >   也会发起攻击**」
+//!
+//! 落点是 `ll_sim::ai_query::culture_declares_hostile` 改取两个方向的
+//! 最大值，`矮人矿工撞哥布林不是攻击` 因此反转为
+//! `矮人矿工撞哥布林也是攻击`。**编年史层的战争推演仍然有向，本次
+//! 一个字都没改。**
+//!
 //! 全部用例走**真实 `mods/` 内容**（敌意分 6/4/3 是
 //! `mods/lostland/cultures.json5` 里真的写着的那几个数，不是夹具编的）
 //! 与生产路径上的 `build_new_world` + `TurnEngine`，与本体二进制
@@ -277,7 +287,15 @@ fn 没有任何归属的玩家走向农夫仍然是互换位置() {
     );
 }
 
-// ── 二、NPC 之间：那份刻意的不对称 ───────────────────────────────
+// ── 二、NPC 之间：内容声明有向，撞格判定对称 ─────────────────────
+//
+// **本节在 2026-08-27 被所有者裁定改写过。** 原标题是「那份刻意的
+// 不对称」，原意是撞格路由只看「发起者朝目标」那一个方向。所有者实机
+// 试玩后裁定「只要有一方处于敌对状态，另一方也会发起攻击」，判据改为
+// 两个方向取最大值。`mining_hold → goblin_warband` 那个刻意写低的 3
+// 一个字没改，仍然在**编年史层**决定出兵与否，见
+// `ll_sim::ai_query::declared_hostile` 文档「内容声明有向、战斗判定
+// 对称」一节。
 
 #[test]
 fn 哥布林撞哥布林不敌对() {
@@ -285,10 +303,15 @@ fn 哥布林撞哥布林不敌对() {
     // `CultureTable::hostility` 查不到即 0。这条守的是「哥布林不会
     // 在自己营地里内讧」。
     //
-    // 故意改坏的反例（人工核验）：把 `culture_declares_hostile` 里
-    // 「发起者有文化」那一支改成取两个方向的最大值 **并** 让哨兵参与
-    // （`hostility(mover, cultureless).max(..)`），本条当场变红——
-    // 因为哥布林对无文化是 6。
+    // **对称化之后这条更值钱了**：判据现在取两个方向的最大值，但两侧
+    // 各自的文化都是 `goblin_warband`（哨兵只在某一方**没有**文化时
+    // 才顶上），两个方向查的都是 `goblin_warband → goblin_warband`，
+    // 表里没这一条即 0。这条守的就是「对称化不等于让哨兵到处乱入」。
+    //
+    // 故意改坏的反例（人工核验）：把 `culture_declares_hostile` 里的
+    // `culture_of(a).unwrap_or(cultureless)` 改成无条件 `cultureless`
+    // （让哨兵替掉发起者真实的文化），本条当场变红——因为哥布林对
+    // 无文化是 6。
     // Arrange
     let (mut game_world, content, mover, target) = world_with_two_npcs();
     let goblin = index_of(&content, GOBLIN_WARBAND);
@@ -342,20 +365,28 @@ fn 哥布林撞矮人矿工是攻击() {
 }
 
 #[test]
-fn 矮人矿工撞哥布林不是攻击() {
-    // **这条守的是那份刻意的不对称。** `mining_hold → goblin_warband`
-    // 只有 3（内容注释原话：「出兵清剿，不是不共戴天」），3 < 5 →
-    // 不敌对。撞格路由的文化判据取的是**发起者朝目标**那个方向，不是
-    // 两个方向的最大值——取最大值会让这个 3 永远观察不到，见
-    // `ll_sim::ai_query::declared_hostile` 文档「为什么不是两个方向取
-    // 最大值」一节。
+fn 矮人矿工撞哥布林也是攻击() {
+    // **本条在 2026-08-27 被所有者裁定反转过。** 原断言是「矮人矿工撞
+    // 哥布林**不是**攻击」，理由是撞格路由取「发起者朝目标」那一个方向
+    // 而 `mining_hold → goblin_warband` 只有 3。所有者实机试玩后裁定：
+    // 「整体机制应该是**只要有一方处于敌对状态，另一方也会发起攻击**」。
     //
-    // 非受控实体撞上非敌对目标既不攻击也不互换，是一次失败的移动
-    // （见 `ll_sim::turn` 的撞格路由文档「玩家优先度高于 NPC」），
-    // 因此这里同时断言「没掉血」与「没挪窝」。
+    // 判据因此改成两个方向取最大值：`max(3, 6) = 6 >= 5` → 敌对。
+    // 哥布林砍得动矮人，矮人就还得了手——不再是「哥布林砍矮人，矮人
+    // 撞回去却只是一次失败的移动」。
     //
-    // 故意改坏的反例（人工核验）：把 `culture_declares_hostile` 改成
-    // 取两个方向的最大值，本条当场变红（矮人会主动砍哥布林）。
+    // **那个刻意写低的 3 没有作废，只是换了一层**：它照常决定编年史层
+    // 「矮人矿邑会不会主动出兵讨伐哥布林」（`ll_world::chronicle`
+    // 的 `hostility_between`/`wage_wars`/`pick_target` 仍然按有向读表，
+    // 本次一个字都没改）。见 `ll_sim::ai_query::declared_hostile` 文档
+    // 「内容声明有向、战斗判定对称」一节。
+    //
+    // 与上一条 `哥布林撞矮人矿工是攻击` 合起来，两条钉住的是**对称性**
+    // 本身：同一对文化，换个方向答案相同。
+    //
+    // 故意改坏的反例（人工核验）：把 `culture_declares_hostile` 里的
+    // `.max(cultures.hostility(Some(target), Some(mover)))` 删掉、退回
+    // 有向判据，本条当场变红。
     // Arrange
     let (mut game_world, content, mover, target) = world_with_two_npcs();
     join_culture(
@@ -368,28 +399,17 @@ fn 矮人矿工撞哥布林不是攻击() {
         target,
         index_of(&content, GOBLIN_WARBAND),
     );
-    let mover_before = pos_of(&game_world.world, mover);
-    let target_before = pos_of(&game_world.world, target);
     let target_health_before = health_of(&game_world.world, target);
 
     // Act
     npc_steps_east(&mut game_world, &content, mover);
 
     // Assert
-    assert_eq!(
+    assert!(
+        health_of(&game_world.world, target) < target_health_before,
+        "矮人矿工走向哥布林应当动手（哥布林那边的 6 把这一对拖进了敌对），         实测血量 {} 未低于 {}",
         health_of(&game_world.world, target),
-        target_health_before,
-        "矮人矿工不主动砍哥布林——那个刻意写低的 3 就是干这个的"
-    );
-    assert_eq!(
-        pos_of(&game_world.world, mover),
-        mover_before,
-        "NPC 撞上非敌对目标是一次失败的移动，不该挪窝"
-    );
-    assert_eq!(
-        pos_of(&game_world.world, target),
-        target_before,
-        "更不该发生互换——互换只对受控实体开放"
+        target_health_before
     );
 }
 
