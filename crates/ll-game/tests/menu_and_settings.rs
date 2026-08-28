@@ -16,7 +16,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ll_game::menu_screen::{
     EDITABLE_CONTEXT, ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, SettingsRow,
-    clear_bindings, menu_focus_index, settings_rows, try_rebind, update_menu, update_settings,
+    SettingsUpdate, clear_bindings, menu_focus_index, settings_rows, try_rebind, update_menu,
+    update_settings,
 };
 use ll_i18n::Catalog;
 use ll_platform::config::{GameConfig, ScaleFilter};
@@ -49,6 +50,12 @@ fn 按下(keys: &[GameKey]) -> InputState {
         input.press(*key);
     }
     input
+}
+
+/// 只取这一帧要说的那句话——多数断言只关心它，不关心 `outcome` 与
+/// `rebound`。
+fn 提示(update: SettingsUpdate) -> Option<ScreenNotice> {
+    update.notice
 }
 
 fn 设置状态(cursor: usize) -> ScreenState {
@@ -226,7 +233,7 @@ fn 重新绑上之后刻意解绑的记号被撤销() {
     // Act：走公开入口 `update_settings`（内部会因为 `capturing`
     // 为真而进捕获模式），不直接调私有的捕获处理函数——测的是
     // 玩家真正走的那条路径。
-    let (_, notice) = update_settings(&mut state, &input, &mut ctx);
+    let notice = 提示(update_settings(&mut state, &input, &mut ctx));
 
     // Assert
     assert_eq!(notice, Some(ScreenNotice::Bound(GameKey::Interact)));
@@ -253,7 +260,7 @@ fn 捕获模式下按退格解绑当前这一行() {
     };
 
     // Act
-    let (_, notice) = update_settings(&mut state, &input, &mut ctx);
+    let notice = 提示(update_settings(&mut state, &input, &mut ctx));
 
     // Assert
     assert_eq!(notice, Some(ScreenNotice::Cleared(GameKey::Map)));
@@ -281,7 +288,7 @@ fn 捕获模式下按esc取消不改动任何绑定() {
     };
 
     // Act
-    let (_, notice) = update_settings(&mut state, &input, &mut ctx);
+    let notice = 提示(update_settings(&mut state, &input, &mut ctx));
 
     // Assert
     assert_eq!(notice, None);
@@ -315,7 +322,7 @@ fn 冲突时留在捕获模式让玩家直接再按一个键() {
     };
 
     // Act
-    let (_, notice) = update_settings(&mut state, &input, &mut ctx);
+    let notice = 提示(update_settings(&mut state, &input, &mut ctx));
 
     // Assert
     assert_eq!(notice, Some(ScreenNotice::Conflict(GameKey::Interact)));
@@ -421,7 +428,11 @@ fn 保存写出的配置能被重新加载且键位一致() {
     };
 
     // Act
-    let (_, notice) = update_settings(&mut state, &按下(&[GameKey::Confirm]), &mut ctx);
+    let notice = 提示(update_settings(
+        &mut state,
+        &按下(&[GameKey::Confirm]),
+        &mut ctx,
+    ));
     let 读回 = ll_platform::config::load_or_default(&path);
 
     // Assert

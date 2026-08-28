@@ -748,14 +748,24 @@ impl Demo {
                     config_path: &self.config_path,
                     catalog: &self.catalog,
                 };
-                let (outcome, notice) = update_settings(&mut state, input, &mut ctx);
-                if notice.is_some() {
-                    self.screen_notice = notice;
+                let update = update_settings(&mut state, input, &mut ctx);
+                if update.notice.is_some() {
+                    self.screen_notice = update.notice;
                 }
-                // 设置界面每一帧都可能改过键位表；把它送回平台层的通道
-                // 是 `take_rebound_keys`，见其文档。整表克隆只发生在
-                // 玩家真的在这块屏里操作的那些帧，不是每帧。
-                self.pending_bindings = Some(self.config.bindings.clone());
+                // 把改好的键位表送回平台层的通道是 `take_rebound_keys`，
+                // 见其文档。**只在真的改过的那些帧克隆整表**：
+                // `SettingsUpdate::rebound` 由
+                // `crate::menu_screen` 里那两处、也是全仓库仅有的两处
+                // 改键位入口（重绑成功、退格解绑）置位。
+                //
+                // 这一行此前是无条件执行的，而旁边的注释却写着「不是
+                // 每帧」——注释与代码直接矛盾，实机表现是设置屏一开就
+                // 每帧克隆整表、每帧刷一行 `键位绑定表已由上层替换`，
+                // 把一条为稀有事件准备的诊断日志烧成了噪音。
+                if update.rebound {
+                    self.pending_bindings = Some(self.config.bindings.clone());
+                }
+                let outcome = update.outcome;
                 // 滤波方式当场生效（`blit_filter` 是一个普通字段）；
                 // 垂直同步做不到，它只在 `GpuContext::new` 时决定呈现
                 // 模式，屏上那一行因此带着「重启后生效」的提示。
@@ -2644,23 +2654,93 @@ mod tests {
         assert!(!input.is_held(GameKey::Up));
     }
 
+    /// 把 `demo` 开到设置界面，光标停在 `action` 那一行，并且已经进了
+    /// 捕获模式（下一帧按什么物理键就绑什么）。
+    ///
+    /// 走的全是玩家真正走的公开路径（`on_frame`），不直接摆弄
+    /// `demo.screen`——那样测出来的是「我把状态摆成这样之后会怎样」，
+    /// 不是「玩家按出来会怎样」。
+    fn 开到捕获模式(demo: &mut Demo, action: GameKey) -> u64 {
+        走一帧(demo, 0, &[GameKey::Menu]);
+        走一帧(demo, 1, &[GameKey::Down]);
+        走一帧(demo, 2, &[GameKey::Down]);
+        走一帧(demo, 3, &[GameKey::Confirm]);
+        let target = crate::menu_screen::settings_rows()
+            .iter()
+            .position(|row| *row == crate::menu_screen::SettingsRow::Keybind(action))
+            .expect("每个动作在设置界面都有一行");
+        let mut at = 4;
+        for _ in 0..target {
+            走一帧(demo, at, &[GameKey::Down]);
+            at += 1;
+        }
+        // 确认键把这一行推进捕获模式。
+        走一帧(demo, at, &[GameKey::Confirm]);
+        at + 1
+    }
+
     #[test]
-    fn 设置界面改了键位之后新表会被平台层取走() {
-        // 真正被解析路径查的表住在平台层；不送回去，玩家会看到「设置
-        // 界面里改好了，按下去还是旧的」。
-        // Arrange：进设置界面，把光标移到某个键位行并触发一次改动。
+    fn 设置屏开着但玩家什么都不按时不产生待送回的键位表() {
+        // 项目所有者实机撞到的缺陷：这一支此前**每帧无条件**
+        // `pending_bindings = Some(整表克隆)`，于是设置屏一开，终端每帧
+        // 刷一行「键位绑定表已由上层替换」——一条为稀有事件准备的诊断
+        // 日志被烧成了噪音，而它旁边的注释还写着「不是每帧」。
+        //
+        // 反例验证（已实跑）：把 `update_screen` 里那道
+        // `if update.rebound` 判断去掉、恢复成无条件赋值，本条立刻变红。
+        // Arrange：进设置界面，把开屏那几帧可能攒下的东西先取空。
         let mut demo = test_demo();
         走一帧(&mut demo, 0, &[GameKey::Menu]);
         走一帧(&mut demo, 1, &[GameKey::Down]);
         走一帧(&mut demo, 2, &[GameKey::Down]);
         走一帧(&mut demo, 3, &[GameKey::Confirm]);
+        assert!(matches!(demo.screen, Some(ScreenState::Settings { .. })));
         demo.take_rebound_keys();
 
-        // Act：在设置界面里动一下（哪怕只是移动光标）。
-        走一帧(&mut demo, 4, &[GameKey::Down]);
+        // Act：屏开着，一连三帧一个键都不按，也不移动光标。
+        for at in 4..7 {
+            走一帧(&mut demo, at, &[]);
+        }
 
         // Assert
-        assert!(demo.take_rebound_keys().is_some());
+        assert!(
+            demo.take_rebound_keys().is_none(),
+            "没改键位的帧不该产生整表克隆"
+        );
+    }
+
+    #[test]
+    fn 设置界面真的重绑之后新表会被平台层取走且内容正确() {
+        // 真正被解析路径查的表住在平台层；不送回去，玩家会看到「设置
+        // 界面里改好了，按下去还是旧的」。
+        //
+        // 本条此前的写法是「在设置界面里动一下（哪怕只是移动光标）」
+        // 就断言取得到表——那恰好把上面那个缺陷当成了正确行为钉死。
+        // 现在改成真的重绑一次，并检查取回来的表里那个键确实生效。
+        //
+        // 反例验证（已实跑）：把 `SettingsUpdate::rebound` 构造器里的
+        // `rebound: true` 改成 `false`，本条立刻变红。
+        // Arrange：进设置界面并把光标推到 Map 那一行的捕获模式。
+        let mut demo = test_demo();
+        let at = 开到捕获模式(&mut demo, GameKey::Map);
+        demo.take_rebound_keys();
+
+        // Act：按下一个默认表里谁都没占的物理键。
+        let mut input = InputState::new();
+        input.record_physical_key(ll_platform::keybind::KeyCode::KeyN);
+        demo.on_frame(FrameId(at), &mut input);
+
+        // Assert
+        let taken = demo.take_rebound_keys().expect("真的改过键位，必须送回");
+        assert_eq!(
+            taken.resolve(
+                ll_platform::keybind::KeyCode::KeyN,
+                ll_platform::keybind::Modifiers::NONE,
+                crate::menu_screen::EDITABLE_CONTEXT,
+            ),
+            Some(GameKey::Map),
+            "送回平台层的表必须已经带上这次重绑"
+        );
     }
 
     #[test]

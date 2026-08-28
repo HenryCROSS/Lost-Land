@@ -284,6 +284,64 @@ pub fn screen_data<'a>(
     }
 }
 
+/// 一次设置界面输入处理的全部产出。
+///
+/// # 为什么 `rebound` 是一个独立字段，而不是从别处推出来
+///
+/// 平台层查的绑定表与设置界面改的那一份是两份（见
+/// `ll_platform::window::AppHandler::take_rebound_keys` 与
+/// `crate::run_game` 里那句「克隆而不是移动」），改完必须送回去，否则
+/// 「改了键位不生效」。而**送回去的代价不是零**：整表克隆一份、平台层
+/// 整表替换一次、日志里多一行「键位绑定表已由上层替换」。
+///
+/// 这一行此前是**每帧无条件**执行的（设置屏一开，终端每帧刷一行），
+/// 而它旁边的注释却写着「不是每帧」——项目所有者实机撞到。修法就是本
+/// 字段：只有真的改过键位的那些帧才为真。
+///
+/// **不从 [`ScreenNotice`] 推导**（`Bound`/`Cleared` 恰好就是那两条
+/// 路径）：那会把「屏幕上对玩家说什么」与「要不要把表送回平台层」绑成
+/// 同一件事，将来一条改了键位却不说话（或说别的话）的路径会让缺陷以
+/// 「改了键位不生效」的形态回来。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SettingsUpdate {
+    /// 处理完这一帧输入之后，调用方该做什么。
+    pub outcome: ScreenOutcome,
+    /// 这一帧屏上要说的一句话，`None` 表示没有话要说。
+    pub notice: Option<ScreenNotice>,
+    /// 这一帧**真的**改动了 [`SettingsContext::config`] 里的键位表——
+    /// 只有为真时调用方才需要把整表送回平台层，见本类型文档。
+    pub rebound: bool,
+}
+
+impl SettingsUpdate {
+    /// 什么都没发生。
+    fn idle() -> SettingsUpdate {
+        SettingsUpdate {
+            outcome: ScreenOutcome::Idle,
+            notice: None,
+            rebound: false,
+        }
+    }
+
+    /// 只有一句话要说，键位表一个字节都没动。
+    fn saying(notice: ScreenNotice) -> SettingsUpdate {
+        SettingsUpdate {
+            outcome: ScreenOutcome::Idle,
+            notice: Some(notice),
+            rebound: false,
+        }
+    }
+
+    /// 键位表真的改了，并说一句话——**唯一**把 `rebound` 置真的构造器。
+    fn rebound(notice: ScreenNotice) -> SettingsUpdate {
+        SettingsUpdate {
+            outcome: ScreenOutcome::Idle,
+            notice: Some(notice),
+            rebound: true,
+        }
+    }
+}
+
 /// 一次设置界面输入处理需要摸到的全部东西。
 pub struct SettingsContext<'a> {
     /// 玩家配置的**草稿**——本模块直接改它，改完由调用方决定什么时候
@@ -332,14 +390,13 @@ pub fn update_settings(
     state: &mut ScreenState,
     input: &InputState,
     ctx: &mut SettingsContext<'_>,
-) -> (ScreenOutcome, Option<ScreenNotice>) {
+) -> SettingsUpdate {
     let ScreenState::Settings { cursor, capturing } = *state else {
-        return (ScreenOutcome::Idle, None);
+        return SettingsUpdate::idle();
     };
     let rows = settings_rows();
     if capturing {
-        let notice = update_capture(state, input, ctx, &rows, cursor);
-        return (ScreenOutcome::Idle, notice);
+        return update_capture(state, input, ctx, &rows, cursor);
     }
     update_navigation(state, input, ctx, &rows, cursor)
 }
@@ -351,13 +408,17 @@ fn update_capture(
     ctx: &mut SettingsContext<'_>,
     rows: &[SettingsRow],
     cursor: usize,
-) -> Option<ScreenNotice> {
-    let key = input.last_physical_key()?;
+) -> SettingsUpdate {
+    // 这一帧没按任何物理键——捕获模式绝大多数帧走的都是这一条，也正是
+    // 「屏开着但玩家什么都不按」那些帧不该产生任何键位表克隆的原因。
+    let Some(key) = input.last_physical_key() else {
+        return SettingsUpdate::idle();
+    };
     let Some(SettingsRow::Keybind(action)) = rows.get(cursor).copied() else {
         // 光标不在键位行上却进了捕获模式——不该发生，但退出捕获比
         // panic 好（一个纯 UI 状态问题不该拖垮整局）。
         *state = leave_capture(cursor);
-        return None;
+        return SettingsUpdate::idle();
     };
     // Esc 取消、退格解绑——两个键因此不可绑，代价写进本批次计划文档
     // D5。走原始物理键而不是 `GameKey::Cancel`：捕获模式的整个语义就是
@@ -365,12 +426,13 @@ fn update_capture(
     match key {
         KeyCode::Escape => {
             *state = leave_capture(cursor);
-            None
+            SettingsUpdate::idle()
         }
         KeyCode::Backspace => {
+            // 解绑：键位表真的变了，两处改键位入口之一。
             clear_bindings(ctx.config, action);
             *state = leave_capture(cursor);
-            Some(ScreenNotice::Cleared(action))
+            SettingsUpdate::rebound(ScreenNotice::Cleared(action))
         }
         key => apply_capture(state, ctx, action, key, cursor),
     }
@@ -391,18 +453,19 @@ fn apply_capture(
     action: GameKey,
     key: KeyCode,
     cursor: usize,
-) -> Option<ScreenNotice> {
+) -> SettingsUpdate {
     match try_rebind(&ctx.config.bindings, action, key) {
         Ok(bindings) => {
+            // 重绑成功：键位表真的变了，两处改键位入口之二。
             ctx.config.bindings = bindings;
             // 重新绑上了，「刻意解绑」这个意图随之作废。
             ctx.config.unbound_actions.retain(|it| *it != action);
             *state = leave_capture(cursor);
-            Some(ScreenNotice::Bound(action))
+            SettingsUpdate::rebound(ScreenNotice::Bound(action))
         }
         // 冲突：**留在捕获模式**，玩家可以直接再按一个别的键，不用重新
-        // 进一次。表一个字节都没变。
-        Err(occupied) => Some(ScreenNotice::Conflict(occupied)),
+        // 进一次。表一个字节都没变，`rebound` 因此为假。
+        Err(occupied) => SettingsUpdate::saying(ScreenNotice::Conflict(occupied)),
     }
 }
 
@@ -413,28 +476,28 @@ fn update_navigation(
     ctx: &mut SettingsContext<'_>,
     rows: &[SettingsRow],
     cursor: usize,
-) -> (ScreenOutcome, Option<ScreenNotice>) {
+) -> SettingsUpdate {
     if input.was_just_pressed(GameKey::Cancel) {
         *state = ScreenState::Menu;
-        return (ScreenOutcome::Idle, None);
+        return SettingsUpdate::idle();
     }
     if let Some(next) = moved_cursor(input, cursor, rows.len()) {
         *state = ScreenState::Settings {
             cursor: next,
             capturing: false,
         };
-        return (ScreenOutcome::Idle, None);
+        return SettingsUpdate::idle();
     }
     let Some(row) = rows.get(cursor).copied() else {
-        return (ScreenOutcome::Idle, None);
+        return SettingsUpdate::idle();
     };
     if input.was_just_pressed(GameKey::Left) || input.was_just_pressed(GameKey::Right) {
         let forward = input.was_just_pressed(GameKey::Right);
         adjust_value(row, ctx, forward);
-        return (ScreenOutcome::Idle, None);
+        return SettingsUpdate::idle();
     }
     if !input.was_just_pressed(GameKey::Confirm) {
-        return (ScreenOutcome::Idle, None);
+        return SettingsUpdate::idle();
     }
     match row {
         SettingsRow::Keybind(_) => {
@@ -442,19 +505,20 @@ fn update_navigation(
                 cursor,
                 capturing: true,
             };
-            (ScreenOutcome::Idle, None)
+            SettingsUpdate::idle()
         }
-        SettingsRow::Save => (ScreenOutcome::Idle, Some(save_settings(ctx))),
+        // 保存写的是磁盘，不动内存里那张表——`rebound` 因此为假。
+        SettingsRow::Save => SettingsUpdate::saying(save_settings(ctx)),
         SettingsRow::Back => {
             *state = ScreenState::Menu;
-            (ScreenOutcome::Idle, None)
+            SettingsUpdate::idle()
         }
         // 三个取值行按确认等价于「往前拨一格」，与左右键一致；分隔标题
         // 什么都不做。
-        SettingsRow::KeybindsHeader => (ScreenOutcome::Idle, None),
+        SettingsRow::KeybindsHeader => SettingsUpdate::idle(),
         other => {
             adjust_value(other, ctx, true);
-            (ScreenOutcome::Idle, None)
+            SettingsUpdate::idle()
         }
     }
 }
