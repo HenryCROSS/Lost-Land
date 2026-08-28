@@ -296,3 +296,42 @@ worldgen-preset-highland-display_name = Highland
 worldgen-preset-highland-description = A land-dominated world of unbroken ranges. Roughly 24% mountain and only 25% water.
 worldgen-preset-inland-display_name = Inland
 worldgen-preset-inland-description = An inland world that barely sees the sea: roughly 16% water, farming and herding in place of fishing.
+
+# In-game menu and settings screens (P7 wrap-up batch):
+#   - screen-menu-* / screen-settings-*
+#     ll-ui screen module; the rows themselves are laid out by
+#     ll-game menu_screen, which passes already-formatted strings.
+screen-menu-title = Menu
+screen-menu-empty = (no entries)
+screen-menu-hint = Up/Down to move, Confirm to choose, Esc to close
+screen-menu-continue = Continue
+screen-menu-settings = Settings
+screen-menu-quit = Quit Game
+
+screen-settings-title = Settings
+screen-settings-empty = (no entries)
+screen-settings-hint = Left/Right to change, Confirm to rebind, Esc to go back
+screen-settings-capture-hint = Press the key to bind; Backspace clears it, Esc cancels
+screen-settings-language = Language
+screen-settings-vsync = Vertical Sync
+screen-settings-scale-filter = Scale Filter
+screen-settings-save = Save to config file
+screen-settings-back = Back
+screen-settings-keybinds-header = --- Key Bindings (gameplay) ---
+screen-settings-on = On
+screen-settings-off = Off
+screen-settings-filter-nearest = Nearest
+screen-settings-filter-sharp-bilinear = Sharp Bilinear
+screen-settings-restart-required = (takes effect after restart)
+screen-settings-unbound = (unbound)
+screen-settings-capturing = ...press a key...
+screen-settings-row = { $label }: { $value }
+screen-settings-conflict = That key is already bound to { $action }
+screen-settings-bound = Bound { $action }
+screen-settings-cleared = Cleared the keys for { $action }
+screen-settings-saved = Settings saved (hand-written comments in config.json5 are lost)
+screen-settings-save-failed = Could not write the config file; the change is still active this session
+
+# Endonym: every entry in the settings language picker is written in its
+# own language. See ll_game::menu_screen::language_display_name.
+language-name = English
