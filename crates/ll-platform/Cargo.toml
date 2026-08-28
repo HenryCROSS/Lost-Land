@@ -34,6 +34,13 @@ winit = { version = "0.30", default-features = false, features = [
 ] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+# 滚动文件日志（crate::logging）。**刻意不用 `tracing_appender::non_blocking`**：
+# 它返回一个 `WorkerGuard`，守卫一旦被 drop 日志就静默停止写入，而
+# `init_logging` 有 7 个调用点，接住守卫要改 7 处签名——「声明了但没接线」
+# 正是本仓库最贵的失败模式。改用阻塞式的 `rolling` appender 直接当 writer：
+# 代价是写日志是阻塞的（info 级一局游戏只有几十行，可忽略），换来的是
+# 物理上不可能忘记持有守卫。见 crate::logging 模块文档。
+tracing-appender = "0.2"
 rayon = "1.12"
 crossbeam-channel = "0.5"
 # 键位绑定表需要完整可序列化，为将来的配置文件持久化打底（见

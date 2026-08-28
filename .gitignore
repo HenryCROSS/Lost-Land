@@ -1,1 +1,6 @@
 /target
+# 滚动文件日志（crates/ll-platform/src/logging.rs 的 LOG_DIR）。不写成 `/logs`
+# 是因为日志目录建在**进程当前工作目录**下：本体从仓库根跑时确实是
+# `/logs`，而 `cargo test` 给每个 crate 的 cwd 是该 crate 自己的目录，
+# 日志会落到 `crates/<crate>/logs`——只锚根目录会把后者漏进版本库。
+logs/
