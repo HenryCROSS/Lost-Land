@@ -31,7 +31,10 @@
 
 use ll_i18n::Catalog;
 use ll_world::overview::OverviewCell;
+use ll_world::space::ZoneCoord;
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
+use ll_world::world_map::WorldMapSlice;
+use ll_world::zone::ZoneLayout;
 
 use crate::widget::geometry::Rect;
 use crate::widget::quad::QuadInstance;
@@ -387,6 +390,52 @@ pub fn scale_caption(tiles_per_cell: u32, catalog: &Catalog, language: &str) -> 
     let scale = catalog.resolve(language, "hud-world-map-scale-label");
     let hint = catalog.resolve(language, "hud-world-map-hint");
     format!("{scale} 1:{tiles_per_cell}   {hint}")
+}
+
+/// 屏幕像素 → 世界**区块**（`ZoneCoord`）。落在网格之外时返回 `None`。
+///
+/// # 这个函数是给谁用的
+///
+/// **下一批「开局在地图上选重生点」。** 那批要做的是所有者裁定的这条：
+///
+/// > 「重生点就是随机点一个格子，然后在那区块内随机出生在陆地上。」
+///
+/// 也就是「玩家在地图上点一个 **zone**，然后在那个区块内随机挑一格陆地
+/// 出生」。本函数就是「点了哪里」到「哪个 zone」的唯一换算，是那条链路
+/// 的第一步。本批**不做**选点交互本身，只把换算做成一个有测试的公开
+/// 函数交出去。
+///
+/// # 参数为什么长这样
+///
+/// `rect` 与 `skin` 与 [`world_map_frame`] 的**同名参数完全一致**——传
+/// 面板外框矩形，本函数自己按皮肤的边框粗细内缩，得到与格子实际绘制时
+/// 一模一样的内容矩形。若改成让调用方传已经内缩过的矩形，就多出一处
+/// 「谁负责内缩」的约定，一旦两边理解不同，玩家点的地方与选中的区块会
+/// 系统性偏移一个边框宽度——而这种偏差小到肉眼看不出来，只会表现为
+/// 「偶尔点到隔壁那格」。
+///
+/// `slice` 而不是 [`WorldMapPanelData`]：反算需要视野原点与缩放档位，
+/// 那些长在 `ll_world::world_map::WorldMapSlice` 上（`cells`/`cols`/
+/// `rows` 只是它的一部分被抄进面板数据）。直接吃切片，就不可能出现
+/// 「面板数据与切片来自不同的两帧」这种错位。
+///
+/// # 整数纪律（ADR 0002）
+///
+/// 像素 → 列行是浮点（呈现层允许：屏幕坐标本来就是像素），但**列行
+/// 之后全程整数**——列行 → 采样点 → 瓦片 → 区块由
+/// `WorldMapSlice::zone_at_cell` 完成，那条链上没有任何一步是浮点，
+/// 环绕全部走 `TorusSize`，一次手写取模都没有。
+pub fn world_map_zone_at_pixel(
+    slice: &WorldMapSlice,
+    layout: &ZoneLayout,
+    rect: Rect,
+    skin: &dyn Skin,
+    pixel: (f32, f32),
+) -> Option<ZoneCoord> {
+    let content_rect = rect.inset(skin.panel(PanelStyleId::Window).border_thickness);
+    let grid = WorldMapGrid::new(content_rect, slice.cols, slice.rows)?;
+    let (col, row) = grid.cell_at_pixel(pixel)?;
+    slice.zone_at_cell(layout, col, row)
 }
 
 /// 世界地图整块面板这一帧的产出：边框 + 格子，恒是纯色矩形。
@@ -1058,5 +1107,288 @@ mod tests {
         // 才具备区分度（`FlatColorSkin` 边框色与草地色本就不同）。
         assert!(frame.quads[0..4].iter().all(|q| q.color == border_color));
         assert_eq!(frame.quads[4].color, terrain_color(ids.grass, &ids));
+    }
+}
+
+/// 「屏幕像素 → zone」换算的属性测试（规格 §14.2 点名环面坐标要有属性
+/// 测试）。
+///
+/// 单独成一个 `mod`：它需要一份真实的 `ContinentField`（因此要建噪声、
+/// 建布局），与上面那些只喂几个 `OverviewCell` 字面量的单元测试是两种
+/// 完全不同的搭建成本。
+#[cfg(test)]
+mod pixel_to_zone_properties {
+    use super::*;
+    use crate::widget::skin::FlatColorSkin;
+    use ll_world::exploration::ExplorationMemory;
+    use ll_world::generate::{GenParams, build_zone_noise};
+    use ll_world::overview::{ContinentField, generate_continent_field};
+    use ll_world::terrain::base_terrain_fixture;
+    use ll_world::world_map::{WorldMapView, world_map_slice};
+    use ll_world::zone::ZoneLayout;
+    use proptest::prelude::*;
+
+    /// 测试世界：8×8 个区块、区块边长 48（与生产默认值一致），采样场
+    /// 因此是 32×32 个采样点。
+    ///
+    /// 建一次存进 `OnceLock`：每个 proptest 用例都重建一份噪声场是纯粹
+    /// 的浪费（几百次噪声采样 × 上百个用例），而这份数据在整个测试期间
+    /// 完全不变。
+    fn world() -> &'static (ZoneLayout, ContinentField) {
+        static WORLD: std::sync::OnceLock<(ZoneLayout, ContinentField)> =
+            std::sync::OnceLock::new();
+        WORLD.get_or_init(|| {
+            let zone_count = ll_core::torus::TorusSize::new(8, 8).expect("8x8 是合法尺寸");
+            let layout = ZoneLayout::new(48, zone_count).expect("48 满足全部对齐与跨度约束");
+            let (terrain_ids, _table) = base_terrain_fixture();
+            let params = GenParams::default();
+            let noise = build_zone_noise(&layout, &params).expect("测试布局满足全部约束");
+            let field = generate_continent_field(&layout, &noise, &params, &terrain_ids);
+            (layout, field)
+        })
+    }
+
+    /// 按给定的档位与平移量建一屏切片。
+    fn slice_at(level: usize, pan_x: i32, pan_y: i32) -> ll_world::world_map::WorldMapSlice {
+        let (layout, field) = world();
+        let mut view = WorldMapView::centered_on_tile(field, layout.tile_size().wrap(0, 0));
+        for _ in 0..level {
+            view.zoom_in();
+        }
+        view.pan(field, pan_x, pan_y);
+        world_map_slice(field, layout, &ExplorationMemory::new(), &view)
+    }
+
+    /// 面板矩形：刻意选一个宽高比与网格宽高比都对不上的尺寸，让居中
+    /// 留白真的存在（网格铺不满 `rect`），这样「落在留白里的像素返回
+    /// `None`」这条路径才会被真正走到。
+    const PANEL: Rect = Rect {
+        x: 37.0,
+        y: 19.0,
+        width: 901.0,
+        height: 613.0,
+    };
+
+    #[test]
+    fn 像素反算用的几何与实际画出的格子逐格一致() {
+        // 这是「反算用的几何与画格子用的几何是同一份」这条不变式最直接
+        // 的断言：拿 `world_map_frame` **真正画出来**的每一块格子矩形，
+        // 用它自身左上角往内一个像素处去反算，必须得到那一格的区块。
+        //
+        // 为什么取左上角 + 1 像素，不取格子中心：中心离两侧边界都有半格
+        // 远（本例格宽 150 像素上下），几个像素的系统性偏移根本推不动
+        // 它——贴着边界取样才对小偏移有分辨力。
+        //
+        // **不要把这一条当成边框内缩的守卫**：本批做 ADR 0018 反例验证
+        // 时，把 `world_map_zone_at_pixel` 里的「按边框粗细内缩」整个
+        // 删掉，本条测试照样全绿（真正咬住那处破坏的是
+        // `网格之外的像素返回空而不是钳到最近的一格`）。本条守的是
+        // 「画出来的格子与反算出的格子一一对应」这条整体自洽性。
+        // Arrange
+        let (layout, field) = world();
+        let mut view = WorldMapView::centered_on_tile(field, layout.tile_size().wrap(0, 0));
+        view.zoom_in();
+        let slice = world_map_slice(field, layout, &ExplorationMemory::new(), &view);
+        let (ids, _table) = base_terrain_fixture();
+        let data = WorldMapPanelData {
+            cells: &slice.cells,
+            cols: slice.cols,
+            rows: slice.rows,
+            terrain_ids: &ids,
+            player: None,
+            sites: &[],
+            tiles_per_cell: 0,
+        };
+
+        // Act
+        let frame = world_map_frame(&data, PANEL, &FlatColorSkin);
+
+        // Assert：前 4 块是边框（见 `border_only_quads`），其后按行主序
+        // 是格子。
+        let cell_quads = &frame.quads[4..4 + (slice.cols * slice.rows) as usize];
+        for (index, quad) in cell_quads.iter().enumerate() {
+            let col = index as u32 % slice.cols;
+            let row = index as u32 / slice.cols;
+            let pixel = (quad.position[0] + 1.0, quad.position[1] + 1.0);
+            assert_eq!(
+                world_map_zone_at_pixel(&slice, layout, PANEL, &FlatColorSkin, pixel),
+                slice.zone_at_cell(layout, col, row),
+                "第 ({col}, {row}) 格画在 {:?}，反算却指向别处",
+                quad.position
+            );
+        }
+    }
+
+    #[test]
+    fn 网格之外的像素返回空而不是钳到最近的一格() {
+        // 网格在面板内**居中**，四周通常有留白（格子恒为正方形，见
+        // `WorldMapGrid::new` 文档）。点在留白或面板之外，正确答案是
+        // 「什么都没点到」——钳到最近的一格会让玩家在地图边上随手一点
+        // 就选中边缘的区块，而他其实什么都没瞄准。对下一批的选重生点
+        // 来说，这是一次不可撤销的误选。
+        // Arrange
+        let (layout, field) = world();
+        let view = WorldMapView::centered_on_tile(field, layout.tile_size().wrap(0, 0));
+        let slice = world_map_slice(field, layout, &ExplorationMemory::new(), &view);
+        let content = PANEL.inset(FlatColorSkin.panel(PanelStyleId::Window).border_thickness);
+        let grid = WorldMapGrid::new(content, slice.cols, slice.rows).expect("列行恒非零");
+        // 前置：网格确实没铺满面板，左侧真的存在留白。
+        assert!(
+            grid.origin_x > content.x,
+            "前置：本例的面板宽高比应当留出居中空白"
+        );
+
+        // Act & Assert
+        let outside = [
+            (grid.origin_x - 1.0, grid.origin_y + 1.0),
+            (
+                grid.origin_x + grid.cell_size * grid.cols as f32 + 1.0,
+                grid.origin_y + 1.0,
+            ),
+            (
+                grid.origin_x + 1.0,
+                grid.origin_y + grid.cell_size * grid.rows as f32 + 1.0,
+            ),
+            (-500.0, -500.0),
+        ];
+        for pixel in outside {
+            assert_eq!(
+                world_map_zone_at_pixel(&slice, layout, PANEL, &FlatColorSkin, pixel),
+                None,
+                "网格之外的像素 {pixel:?} 不该选中任何区块"
+            );
+        }
+    }
+
+    proptest! {
+        /// 任意缩放档位 × 任意平移 × 任意像素，结果要么是 `None`，要么
+        /// 是一个**合法**的区块坐标。
+        ///
+        /// 「合法」在这里是硬要求而不是形式主义：下一批会拿这个返回值
+        /// 直接去 `WorldChronicle`/地形场里查那个区块，越界的坐标要么
+        /// panic、要么静默读到别的区块的数据。
+        #[test]
+        fn 任意档位与平移下像素换算出的区块恒落在合法范围内(
+            level in 0usize..4,
+            pan_x in -40i32..40,
+            pan_y in -40i32..40,
+            px in -200.0f32..1200.0,
+            py in -200.0f32..900.0,
+        ) {
+            let (layout, _field) = world();
+            let slice = slice_at(level, pan_x, pan_y);
+
+            let zone = world_map_zone_at_pixel(&slice, layout, PANEL, &FlatColorSkin, (px, py));
+
+            if let Some(zone) = zone {
+                let zone_count = layout.zone_count();
+                prop_assert!(zone.x() >= 0 && (zone.x() as u32) < zone_count.width());
+                prop_assert!(zone.y() >= 0 && (zone.y() as u32) < zone_count.height());
+            }
+        }
+
+        /// 网格**之内**的像素恒有答案——`None` 只该出现在留白或面板外。
+        ///
+        /// 少了这一条，上一条断言可以被一个「恒返回 `None`」的退化实现
+        /// 满足（ADR 0018 的同一条思路：断言必须能被改坏的实现咬到）。
+        #[test]
+        fn 网格之内的像素恒能换算出一个区块(
+            level in 0usize..4,
+            pan_x in -40i32..40,
+            pan_y in -40i32..40,
+            col_frac in 0.0f32..1.0,
+            row_frac in 0.0f32..1.0,
+        ) {
+            let (layout, _field) = world();
+            let slice = slice_at(level, pan_x, pan_y);
+            let content = PANEL.inset(FlatColorSkin.panel(PanelStyleId::Window).border_thickness);
+            let grid = WorldMapGrid::new(content, slice.cols, slice.rows)
+                .expect("列行恒非零");
+            // 取网格内部一个点：按比例落在整片网格范围内，再往内缩半个
+            // 像素避开右下边界（格子是左闭右开的区间）。
+            let px = grid.origin_x + col_frac * (grid.cell_size * grid.cols as f32 - 0.5);
+            let py = grid.origin_y + row_frac * (grid.cell_size * grid.rows as f32 - 0.5);
+
+            let zone = world_map_zone_at_pixel(&slice, layout, PANEL, &FlatColorSkin, (px, py));
+
+            prop_assert!(zone.is_some(), "网格内的像素 ({px}, {py}) 换算不出区块");
+        }
+
+        /// **接缝两侧连续**：屏幕上横向相邻的两格，换算出的区块在环面上
+        /// 的 Chebyshev 距离不超过「一格覆盖多少个区块」。
+        ///
+        /// 这条是环面正确性的核心断言。视野跨接缝时，相邻两格的区块坐标
+        /// 在数值上可能是 7 和 0（世界宽 8 个区块）——朴素的相减会得到
+        /// 7，判定为「不连续」；`TorusSize::chebyshev` 得到 1，因为环面上
+        /// 它们本来就是紧邻的。用它来断言，等于同时要求实现也走环面语义：
+        /// 任何一处忘了环绕，都会让某一对相邻格的距离炸成整个世界宽。
+        ///
+        /// 纵向不该有任何位移——只往右挪一列，行号没变。
+        #[test]
+        fn 屏幕上相邻的两格换算出的区块在环面上也相邻(
+            level in 0usize..4,
+            pan_x in -40i32..40,
+            pan_y in -40i32..40,
+            col_pick in 0u32..64,
+            row_pick in 0u32..64,
+        ) {
+            let (layout, field) = world();
+            let slice = slice_at(level, pan_x, pan_y);
+            // 取余而不是 `prop_assume!`：视野只有几列几行，直接生成一个
+            // 大范围的列号会让绝大多数用例被拒，proptest 会因为「拒绝
+            // 太多」直接放弃整条属性（本批实测：1024 次全局拒绝）。
+            let col = col_pick % (slice.cols - 1);
+            let row = row_pick % slice.rows;
+
+            let left = slice.zone_at_cell(layout, col, row).expect("刚断言过在范围内");
+            let right = slice.zone_at_cell(layout, col + 1, row).expect("刚断言过在范围内");
+
+            // 一格覆盖多少个区块（向上取整）——最远档位下一格 96 个瓦片、
+            // 区块 48 个瓦片，因此相邻两格的区块相差 2。
+            let tiles_per_cell = slice.samples_per_cell * field.sample_span();
+            let bound = tiles_per_cell.div_ceil(layout.zone_span()).max(1);
+
+            let zone_count = layout.zone_count();
+            let distance = zone_count.chebyshev(
+                zone_count.wrap(left.x(), left.y()),
+                zone_count.wrap(right.x(), right.y()),
+            );
+            prop_assert!(
+                distance <= bound,
+                "相邻两格 ({col},{row}) 与 ({},{row}) 的区块在环面上相距 {distance}，超过上限 {bound}",
+                col + 1
+            );
+            prop_assert_eq!(left.y(), right.y(), "只往右挪一列，行不该变");
+        }
+
+        /// 正反换算自洽：像素落在哪一格算出的区块，与直接问那一格算出的
+        /// 区块必须是同一个。
+        ///
+        /// 这条锁住的是「反算用的几何与画格子用的几何是同一份」——两者
+        /// 一旦分叉（例如一边内缩了边框、另一边没有），玩家点的位置与
+        /// 高亮的格子会差一个边框宽度。
+        #[test]
+        fn 格子中心的像素换算回来就是那一格的区块(
+            level in 0usize..4,
+            pan_x in -40i32..40,
+            pan_y in -40i32..40,
+            col_pick in 0u32..64,
+            row_pick in 0u32..64,
+        ) {
+            let (layout, _field) = world();
+            let slice = slice_at(level, pan_x, pan_y);
+            // 取余，理由同上一条属性。
+            let col = col_pick % slice.cols;
+            let row = row_pick % slice.rows;
+            let content = PANEL.inset(FlatColorSkin.panel(PanelStyleId::Window).border_thickness);
+            let grid = WorldMapGrid::new(content, slice.cols, slice.rows).expect("列行恒非零");
+            let px = grid.origin_x + (col as f32 + 0.5) * grid.cell_size;
+            let py = grid.origin_y + (row as f32 + 0.5) * grid.cell_size;
+
+            let by_pixel = world_map_zone_at_pixel(&slice, layout, PANEL, &FlatColorSkin, (px, py));
+            let by_cell = slice.zone_at_cell(layout, col, row);
+
+            prop_assert_eq!(by_pixel, by_cell);
+        }
     }
 }
