@@ -146,7 +146,7 @@ use ll_mod::item::ItemTable;
 use ll_mod::recipe::RecipeTable;
 use ll_platform::input::{GameKey, InputState};
 use ll_sim::intent::{Direction, Intent, intent_from_input};
-use ll_ui::hud::action_menu::ActionMenuData;
+use ll_ui::hud::action_menu::{ActionMenuData, MenuPlacement};
 use ll_ui::hud::item_display_name;
 use ll_world::entity::{Agent, EntityId};
 use ll_world::item::EquipSlot;
@@ -1021,6 +1021,21 @@ pub fn interact_row_text(
 
 /// 把菜单状态与已经排好版的行拼成 `ll-ui` 要的那份数据——菜单关着时
 /// 是 `None`，整块面板不参与这一帧的产出。
+///
+/// # 位置逐个变体声明（所有者裁定：交互窗口居中）
+///
+/// > 「那个互动显示的 UI 窗口，我希望是出现在屏幕正中间」
+///
+/// 三块菜单共用 `ll_ui::hud::render::build_hud_frame` 的**同一条**渲染
+/// 路径（那个参数是 `Option<&ActionMenuData>`，认不出打开的是哪一块），
+/// 因此「画在哪」不能由渲染层拍——那会把背包与制作一并挪走。位置是
+/// 这份数据的一个字段（[`MenuPlacement`]），在这里按 [`PlayerMenu`] 的
+/// 变体逐个声明：
+///
+/// - **交互列表**与**方向列表**（同一次交互流程的两步）→
+///   [`MenuPlacement::ScreenCenter`]，所有者要的那个位置。
+/// - **背包**与**制作** → [`MenuPlacement::TopCenter`]，**原位不动**，
+///   与本次改动之前逐像素相同。所有者只提了交互那一块。
 pub fn menu_data(menu: PlayerMenu, rows: &[String]) -> Option<ActionMenuData<'_>> {
     match menu {
         PlayerMenu::Closed => None,
@@ -1030,6 +1045,7 @@ pub fn menu_data(menu: PlayerMenu, rows: &[String]) -> Option<ActionMenuData<'_>
             cursor,
             empty_key: "hud-inventory-menu-empty",
             hint_key: "hud-inventory-menu-hint",
+            placement: MenuPlacement::TopCenter,
         }),
         PlayerMenu::Craft { cursor } => Some(ActionMenuData {
             title_key: "hud-craft-menu-title",
@@ -1037,6 +1053,7 @@ pub fn menu_data(menu: PlayerMenu, rows: &[String]) -> Option<ActionMenuData<'_>
             cursor,
             empty_key: "hud-craft-menu-empty",
             hint_key: "hud-craft-menu-hint",
+            placement: MenuPlacement::TopCenter,
         }),
         PlayerMenu::Interact { cursor, .. } => Some(ActionMenuData {
             title_key: "hud-interact-menu-title",
@@ -1044,6 +1061,7 @@ pub fn menu_data(menu: PlayerMenu, rows: &[String]) -> Option<ActionMenuData<'_>
             cursor,
             empty_key: "hud-interact-menu-empty",
             hint_key: "hud-interact-menu-hint",
+            placement: MenuPlacement::ScreenCenter,
         }),
         PlayerMenu::InteractDirection { cursor } => Some(ActionMenuData {
             title_key: "hud-interact-direction-title",
@@ -1051,6 +1069,7 @@ pub fn menu_data(menu: PlayerMenu, rows: &[String]) -> Option<ActionMenuData<'_>
             cursor,
             empty_key: "hud-interact-direction-prompt",
             hint_key: "hud-interact-direction-hint",
+            placement: MenuPlacement::ScreenCenter,
         }),
     }
 }
