@@ -366,12 +366,12 @@ EXEMPTIONS: dict[str, str] = {
         "判据属于存储层。ll-game 的端到端验收「矮人矿城被哥布林部落攻灭」逐个断言攻守双方"
         "的建立者种族。"
     ),
-    "CultureAttrs.hostility": (
-        "真实消费者是 ll_world::chronicle 的 wage_wars（敌意加在开战概率的分子上）与 "
-        "pick_target（敌意高的目标优先被选为守方）。ll_world::chronicle 的单元测试「敌意"
-        "抬高了战争导致的覆灭次数」与「全表敌意为零时战争结果与空文化表逐位相同」一正一反"
-        "地守着它。"
-    ),
+    # CultureAttrs.hostility 的豁免已在「文化归属与敌对判定」批次删掉：
+    # ll_sim::ai_query::declared_hostile 现在直接读它（撞格路由把「走进
+    # 对方那一格」判成攻击还是互换），ai_query.rs 落在决策层通配里，本
+    # 门禁因此能自己抓到，不再需要豁免。原豁免理由（消费者只在
+    # ll_world::chronicle 的 wage_wars/pick_target，那是存储/派生层）
+    # 仍然属实，只是不再是**唯一**的消费者。
     "ResourceAttrs.exhaustible": "真实消费者是 ll_world::chronicle 的 EpochRun::capacity / exhaustible_reserve / dominant_exhaustible 三处（资源枯竭这条覆灭原因的全部来源），同上。ll_world::chronicle 的单元测试「推演里真的出现过资源枯竭导致的覆灭」直接验收它。",
     "WeaponCategoryDef.default_formula": "weapon_category.rs 模块文档「本批次没有给 ItemDef 加对应字段」一节：十九节默认公式挂载链条第 3 层（武器类别默认）不在本批次范围，字段是声明先行——同一份文档已经预告了这条一旦补进 TARGET_TYPES 就会命中本门禁。",
     "RecipeDef.id": "命名空间标识符，同 RaceDef.id/FormulaDef.id 一类——resolve_craft 按 ContentIndex 查 RecipeCatalog 取出 RecipeRule，那个最小视图刻意不含 id（见 ll_sim::craft::RecipeRule 文档），决策层不做任何 .id 读取。",

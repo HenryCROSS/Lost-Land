@@ -227,6 +227,27 @@ use ll_world::zone::ZoneLayout;
 //    进程，新摘要 `17_228_492_522_544_021_674` 两次一致，才写进下面的
 //    常量。
 //
+// # 文化归属与敌对判定批次：**没有重冻**，如实记录为什么不可能变
+//
+// 本批次给 `Agent::affiliations` 补上了第一个生产者（据点文化归属，
+// `ll_mod::roster::build_npc_agent`），而 `Affiliation::standing` 确实
+// 进 `WorldState::hash`——但它与「等级与经验系统」「装备栏位」两次
+// 的情形逐字相同：混入代码在 `for agent in self.actors.iter()` 循环体
+// **之内**，只有真的存在至少一个 `Agent` 时才会被读到。本文件下方
+// `固定种子的四十八乘四十八世界摘要跨平台稳定` 的世界由
+// `WorldState::new(..)` 直接构造，全程零 `actors.spawn`（本文件
+// `grep actors.spawn` 仍为零命中），`self.actors` 恒是空 `Arena`，
+// 循环体一次都不执行。
+//
+// 世界生成那一侧同样不动：新增的 `lostland:cultureless` 是一个**只
+// `intern`、不 `define`** 的索引（见 `ll_mod::base_cultureless`），
+// 不进 `CultureTable::registered()`，`pick_culture` 的权重与掷骰序列
+// 一个字节都没变；何况本条测试压根不装载任何 mod 内容。
+//
+// 人工核验（真实执行，不是推断）：本次改动落地后跑
+// `cargo test -p ll-world --test determinism`，九条全绿，摘要与改动前
+// 的常量逐位相同，因此常量本身不需要更新。
+//
 // 旧值（世界生成参数落地批次之前）：13_932_142_645_965_877_185
 const EXPECTED_WORLD_DIGEST: u64 = 17_228_492_522_544_021_674;
 

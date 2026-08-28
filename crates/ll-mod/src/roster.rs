@@ -105,8 +105,8 @@ use ll_core::rng::DetRng;
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use ll_sim::item::{ItemCatalog, equip_mask_of, outfit_from_inventory};
-use ll_world::culture::CultureTable;
-use ll_world::entity::{Agent, BaseStats};
+use ll_world::culture::{CultureKind, CultureTable};
+use ll_world::entity::{Affiliation, AffiliationKind, Agent, BaseStats, OrgRef};
 use ll_world::item::{EquipSlot, ItemStack};
 use ll_world::resource::{ResourceCategory, ResourceKind, ResourceTable};
 use ll_world::settlement::{SettlementSite, SettlementStatus};
@@ -761,7 +761,35 @@ pub struct MaterializeContext<'a> {
     pub surface_profile: ContentIndex,
     /// 这一刻的世界时刻：`spawned_at` 与 `next_action_at` 都取它。
     pub now: Tick,
+    /// 这批 NPC 所属据点的文化（[`SettlementSite::culture`]），`None`
+    /// 表示这座据点没有文化——空文化表的世界，或者内容里一条文化都
+    /// 没装载。
+    ///
+    /// 与本结构体其余各项同一条纪律：它「与哪一位无关」——物化按据点
+    /// 成批进行，同一批人共用同一份文化，因此它属于这一束而不是
+    /// [`NpcProfile`]。
+    ///
+    /// `None` 时 [`build_npc_agent`] **不挂**文化归属，判定侧回退到
+    /// 「无文化」（`ll_sim::ai_query::declared_hostile`）——与 ADR 0015
+    /// 「尚无内容就诚实表达尚无内容」一致，不伪造一条指向某个默认文化
+    /// 的归属。
+    pub culture: Option<CultureKind>,
 }
+
+/// 一个 NPC 对**自己出生的那份文化**的声望，千分比
+/// （[`Affiliation::standing`]）。
+///
+/// 取满值 1000（= 1.0，完全认同）而不是 0：0 在千分比语义下是「毫无
+/// 认同」，与「生在这个文化里、说这套话、盖这种房」自相矛盾。也不取一
+/// 个居中的折中值——那需要一条「为什么是 0.5 不是 0.6」的内容依据，而
+/// 本批次没有任何机制读得出这个差别（[`ll_sim::ai_query::is_hostile`]
+/// 与文化敌意判据都不读 `standing`）。凭空造一个中间数只会让后来人以为
+/// 它是调过的。
+///
+/// 真正让它离开满值的机制——个体经历、叛出、改宗——属于 P8 的声望矩阵
+/// （`knowledge/design/society-and-affiliation.md`），届时这个常量是
+/// 「出生时的初值」而不是「恒定值」。
+pub const NATIVE_CULTURE_STANDING: i32 = 1000;
 
 /// 把一份派生身份物化成一个真正被模拟的 [`Agent`]。
 ///
@@ -771,6 +799,23 @@ pub struct MaterializeContext<'a> {
 /// `ll_game::world::build_player_agent` 是同一个函数——NPC 与玩家在数值
 /// 上不是两套东西（`knowledge/design/race-system.md`「二、属性修正」的
 /// 烘焙语义对两者一视同仁）。
+///
+/// # 文化归属：[`ll_world::entity::Agent::affiliations`] 的第一个生产者
+///
+/// 在此之前**两条 `Agent` 构造路径都写死 `Vec::new()`**，那个字段自
+/// 落地起零生产者。本函数给 NPC 挂上一条指向所属据点文化的
+/// [`AffiliationKind::Culture`] 归属，声望取
+/// [`NATIVE_CULTURE_STANDING`]。
+///
+/// [`MaterializeContext::culture`] 为 `None`（据点没有文化）时**不挂**
+/// ——不写一条指向「无文化」哨兵的归属。哨兵是**查询期回退**，不是写进
+/// 每个实体的数据：项目所有者裁定玩家不挂归属，若这里反过来给每个 NPC
+/// 写一条，同一件事就有了两种表示法，还会让每个 NPC 白白多背一条进存
+/// 档与世界哈希的记录。将来要让某个具体 NPC **显式**无文化，给它写一条
+/// 指向哨兵的归属即可，判定结果与不挂完全一致，不产生歧义。
+///
+/// **这会改变经物化路径产生的世界的摘要**：`Affiliation::standing` 进
+/// `ll_world::state::WorldState::hash`。
 ///
 /// # 装备：NPC 自行决策（项目所有者裁定）
 ///
@@ -803,7 +848,17 @@ pub fn build_npc_agent(
         // 否则这个 NPC 一进时间轴就会把世界时钟倒拨回午夜。
         next_action_at: ctx.now,
         health: Agent::STARTING_HEALTH,
-        affiliations: Vec::new(),
+        // 见本函数文档「文化归属」一节：据点有文化就挂一条，没有就
+        // 留空、由判定侧回退到「无文化」。
+        affiliations: ctx
+            .culture
+            .map(|culture| Affiliation {
+                kind: AffiliationKind::Culture,
+                org: OrgRef::Def(culture.index()),
+                standing: NATIVE_CULTURE_STANDING,
+            })
+            .into_iter()
+            .collect(),
         wallet: 0,
         profession: profile.profession,
         goals: Vec::new(),

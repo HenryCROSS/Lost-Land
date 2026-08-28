@@ -28,9 +28,25 @@
 //! 十二节 1 挂了很久的那条「职业到底有几个真相源」就此结案：**一个**。
 //!
 //! 删掉是安全的，不是一次存档迁移：`Profession` 这个变体**从未被构造
-//! 过一次**（全仓库零构造点），而生产路径上两条 `Agent` 构造路径的
-//! `affiliations` 至今都写死 `Vec::new()`，因此没有任何存档里可能出现
-//! 这个变体名。
+//! 过一次**（全仓库零构造点），而在删掉它的那一刻，生产路径上两条
+//! `Agent` 构造路径的 `affiliations` 都还写死 `Vec::new()`，因此没有
+//! 任何存档里可能出现这个变体名。
+//!
+//! # `affiliations` 现在有生产者了（文化归属与敌对判定批次）
+//!
+//! 上一段那句「两条构造路径都写死 `Vec::new()`」**在本批次之后只剩
+//! 一半成立**，如实更新而不是留着：
+//!
+//! - NPC 那一条（`ll_mod::roster::build_npc_agent`）现在会挂一条
+//!   [`AffiliationKind::Culture`] 归属，指向所属据点的文化。这是本
+//!   字段落地以来的**第一个生产者**。
+//! - 玩家那一条（`ll_game::world::build_player_agent`）仍然写死
+//!   `Vec::new()`，且这是**裁定**不是遗漏：项目所有者「玩家可以没有
+//!   势力归属，这个可以通过后面和据点的管理者对话加入」。玩家「没有
+//!   文化」这件事由判定期回退表达（`ll_sim::ai_query::declared_hostile`
+//!   回退到 `lostland:cultureless` 哨兵），不写进实体。
+//!
+//! [`AffiliationKind::Faction`] 仍然零生产者——势力播种是另一批。
 
 use ll_core::ident::{ContentIndex, WorldId};
 
@@ -49,11 +65,16 @@ pub enum AffiliationKind {
     /// 文化：与生俱来，不索取任何东西，只塑造偏好。mod 装载时确定的
     /// 类型，走 [`OrgRef::Def`]。
     ///
-    /// 这一类现在有了真正的内容表（[`crate::culture::CultureTable`]）
-    /// 与真正的生产者（据点的文化，见
-    /// [`crate::settlement::SettlementSite::culture`]）——但**个体级
-    /// 的 `Affiliation` 仍然没有生产者**：两条 `Agent` 构造路径的
-    /// `affiliations` 至今写死 `Vec::new()`。如实标注，不假装已接线。
+    /// 这一类现在有了真正的内容表（[`crate::culture::CultureTable`]）、
+    /// 真正的据点级生产者（[`crate::settlement::SettlementSite::culture`]），
+    /// **以及个体级的生产者**（文化归属与敌对判定批次）：
+    /// `ll_mod::roster::build_npc_agent` 给每个物化出来的 NPC 挂一条
+    /// 指向所属据点文化的本类归属。这一条同时是整个
+    /// [`Affiliation`] 字段的第一个生产者，见本模块文档
+    /// 「`affiliations` 现在有生产者了」一节。
+    ///
+    /// 消费者是 `ll_sim::ai_query::declared_hostile`：撞格路由靠它把
+    /// 「走进对方那一格」判成攻击还是互换。
     Culture,
     /// 家族：血缘与姻亲。与生俱来，可因联姻扩展。世界生成期间造出来
     /// 的实例，走 [`OrgRef::Instance`]。

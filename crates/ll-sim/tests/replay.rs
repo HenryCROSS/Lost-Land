@@ -858,6 +858,25 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///    （两次**独立的 `cargo test` 进程**），确认新摘要
 ///    `14_731_332_643_995_045_404` 稳定复现，才写进下面的常量。
 ///
+/// # 文化归属与敌对判定批次：**没有重冻**，如实记录为什么不可能变
+///
+/// 本批次给 `Agent::affiliations` 补上了第一个生产者，而
+/// `Affiliation::standing` 确实进 `WorldState::hash`——但它只在
+/// `for agent in ..` 循环体内被读到，而本条测试的 `setup` 直接
+/// `world.actors.spawn(..)` 两个 `affiliations: Vec::new()` 的实体，
+/// **不经 `ll_mod::roster::build_npc_agent`**（那条路径住在 `ll-mod`，
+/// 是 `ll-sim` 的下游，本 crate 的测试够不到，也不该够到）。两个实体
+/// 的归属列表因此仍然是空的，混进哈希器的内容逐位不变。
+///
+/// 撞格路由那一侧同样不动：`declared_hostile` 现在多收一张文化表，而
+/// 本条测试的世界没有编年史，`WorldState::terrain.chronicle_handle()`
+/// 返回 `None`，文化判据整个不生效，只剩与本批次之前逐位相同的势力
+/// 判据。
+///
+/// 人工核验（真实执行，不是推断）：本次改动落地后跑
+/// `cargo test -p ll-sim --test replay`，七条全绿，摘要与改动前的常量
+/// 逐位相同，因此常量本身不需要更新。
+///
 /// 旧值（世界生成参数落地批次之前）：17_219_713_135_340_447_375
 const EXPECTED_REPLAY_DIGEST: u64 = 14_731_332_643_995_045_404;
 

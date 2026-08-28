@@ -1187,11 +1187,19 @@ mod tests {
             .collect();
         opaque_ids.sort();
 
-        // Assert：**一条**已知例外，不多不少。
+        // Assert：**两条**已知例外，不多不少。
         //
         // - `lostland:placeholder_race`：「种族未知/缺失」这个降级状态的
         //   占位索引，刻意不定义任何 `RaceDef`，见
         //   `ll_mod::base_placeholder` 模块文档。
+        // - `lostland:cultureless`：「这个实体没有文化」这个缺席状态的
+        //   哨兵索引，刻意**只 `intern`、不 `define`**，见
+        //   `ll_mod::base_cultureless` 模块文档。它出现在这份清单里不是
+        //   疏漏，恰恰是那份设计成立的**证据**：一个不落在任何内容表里
+        //   的索引照样能被 `mods/lostland/cultures.json5` 声明敌意，也
+        //   因此照样不会被 `pick_culture` 选为建城文化。真去给它
+        //   `CultureTable::define` 一条属性反而要挖开「至少要有一个权重
+        //   为正的建立者种族」那条注册期校验。
         //
         // # `lostland:goblin` 为什么从这份清单里消失了
         //
@@ -1210,7 +1218,13 @@ mod tests {
         // 那条豁免（任务 `target_kind` 落在一个还没有注册表的 id 空间
         // 里）仍然成立、仍然需要，因为下一条 `target_kind` 完全可能又
         // 指向一个谁也没定义的东西；变的只是本体这一条恰好被定义了。
-        assert_eq!(opaque_ids, vec!["lostland:placeholder_race".to_string()]);
+        assert_eq!(
+            opaque_ids,
+            vec![
+                "lostland:cultureless".to_string(),
+                "lostland:placeholder_race".to_string(),
+            ]
+        );
     }
     #[test]
     fn 真实内容的跨表引用完整性通过且不是空转() {

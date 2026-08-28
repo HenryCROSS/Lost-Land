@@ -59,6 +59,7 @@ use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 use ll_world::weather::{BaseWeatherIds, WeatherTable};
 
 use crate::base_clip::register_base_clips;
+use crate::base_cultureless::register_base_cultureless_culture;
 use crate::base_damage_category::register_base_damage_category;
 use crate::base_damage_formula::register_base_damage_formula;
 use crate::base_placeholder::register_base_placeholder_content;
@@ -256,6 +257,21 @@ impl LoadSession {
     ///
     /// 可以对同一个会话调用多次（例如先装一个目录再装另一个），语义
     /// 与连续两次 `load_all` 完全相同——本方法不持有任何跨调用状态。
+    ///
+    /// # 末尾多做一件事：注册「无文化」哨兵
+    ///
+    /// 全部 mod 装载完之后才调
+    /// [`register_base_cultureless_culture`]，理由见该函数文档「调用
+    /// 时机」一节：[`Registry::intern`] 按调用顺序分配索引，放在
+    /// [`Self::with_engine_registrations`] 里会把全部 mod 内容的索引
+    /// 整体后移一位。放在这里，它要么是本次会话**最后**一条新记录，
+    /// 要么早已被某份 `cultures.json5` 的敌意目标 `intern` 过（本体
+    /// 就是这种情形，`intern` 幂等，拿到同一个索引）——两种情形都不
+    /// 挤占任何既有号段。
+    ///
+    /// 随即把索引写进文化表（[`CultureTable::set_cultureless`]），
+    /// 敌意表那一行 `(哨兵索引, 分数)` 与「哨兵索引是哪一个」从此
+    /// 一起走，判定点不需要再从别处凑。
     pub fn load_all(&mut self, mods_root: &Path) -> LoadReport {
         // 逐字段解构而不是 `&mut self.xxx` 逐个写：借用检查器需要看到
         // 这些是**互不重叠**的字段借用（`registry` 与各表同时可变借出）。
@@ -288,7 +304,7 @@ impl LoadSession {
             ..
         } = self;
 
-        load_all(
+        let report = load_all(
             mods_root,
             registry,
             &mut GameplayTables {
@@ -317,7 +333,12 @@ impl LoadSession {
                 modifier_type,
                 tag,
             },
-        )
+        );
+
+        // 见本方法文档「末尾多做一件事」一节。
+        let cultureless = register_base_cultureless_culture(&mut self.registry);
+        self.culture.set_cultureless(cultureless);
+        report
     }
 }
 
