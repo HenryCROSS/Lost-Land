@@ -67,6 +67,7 @@ use crate::widget::anim::{DEFAULT_ANIM_DURATION_FRAMES, FrameTick};
 use crate::widget::bar::{bar_quads, textured_bar_quads, textured_two_layer_bar_quads};
 use crate::widget::day_night_bar::{
     day_night_bar_quads, day_night_pointer_quad, textured_day_night_bar_quads,
+    textured_day_night_pointer_quad,
 };
 use crate::widget::geometry::Rect;
 use crate::widget::label::Label;
@@ -561,32 +562,42 @@ fn push_two_layer_bar(
     }
 }
 
-/// 推入昼夜滑条：整条背景（分支逻辑同 [`push_panel`]）+ 指针——指针
-/// **恒是纯色矩形**（不区分纯色/贴图两条路径），颜色取自实际生效的那
-/// 份外观（贴图皮肤用
-/// `crate::widget::day_night_bar::TexturedDayNightBarAppearance::pointer_color`，
-/// 纯色回退用
-/// `crate::widget::day_night_bar::FlatDayNightBarAppearance::pointer_color`），
-/// 见 `crate::widget::day_night_bar` 模块文档「颜色走皮肤层」一节。
+/// 推入昼夜滑条：整条底图 + 滑块，分支逻辑同 [`push_panel`]。
+///
+/// # 底图与滑块必须落进**同一个**容器
+///
+/// 两者恒是「底图先、滑块后」推入同一个 `Vec`：贴图路径两块都进
+/// `textured_quads`，纯色回退两块都进 `quads`。**不允许一边贴图一边
+/// 纯色**——那正是所有者实机反馈「少了滑条，只显示了背景条」的根因：
+/// 纯色滑块与贴图底图分处层内两道 pass，底图恒后提交、把滑块整个盖住，
+/// 见 `crate::widget::day_night_bar` 模块文档「曾经的缺陷」一节。
+///
+/// 这个不变式由皮肤层保证而不是靠这里的调用纪律：
+/// `crate::widget::skin::NineSliceSkin::textured_day_night_bar` 里底图与
+/// 滑块的 UV 各带一个 `?`，任一张查不到就整条返回 `None`，本函数因此
+/// 只能整条走贴图或整条走纯色。
 fn push_day_night_bar(batch: &mut LayerBatch, rect: Rect, pointer_fraction: f32, skin: &dyn Skin) {
-    let pointer_color = match skin.textured_day_night_bar(DayNightBarStyleId::Clock) {
+    match skin.textured_day_night_bar(DayNightBarStyleId::Clock) {
         Some(appearance) => {
             batch
                 .textured_quads
                 .extend(textured_day_night_bar_quads(rect, &appearance));
-            appearance.pointer_color
+            batch.textured_quads.push(textured_day_night_pointer_quad(
+                rect,
+                &appearance,
+                pointer_fraction,
+            ));
         }
         None => {
             let appearance = skin.day_night_bar(DayNightBarStyleId::Clock);
             batch.quads.extend(day_night_bar_quads(rect, &appearance));
-            appearance.pointer_color
+            batch.quads.push(day_night_pointer_quad(
+                rect,
+                appearance.pointer_color,
+                pointer_fraction,
+            ));
         }
-    };
-    batch.quads.push(day_night_pointer_quad(
-        rect,
-        pointer_color,
-        pointer_fraction,
-    ));
+    }
 }
 
 /// 把 [`build_hud_frame`] 算出的内容真正提交到屏幕。
@@ -1446,6 +1457,12 @@ mod tests {
     /// 而一路绿着。
     struct AllTexturedSkin;
 
+    /// 假图集里昼夜滑条底图的 UV——与滑块取不同的值，测试据此分辨
+    /// 「这一块是底图还是滑块」。
+    const FAKE_DAYNIGHT_TRACK_UV: [f32; 4] = [0.5, 0.5, 0.25, 0.25];
+    /// 假图集里昼夜滑条滑块的 UV，理由同 [`FAKE_DAYNIGHT_TRACK_UV`]。
+    const FAKE_DAYNIGHT_POINTER_UV: [f32; 4] = [0.75, 0.5, 0.05, 0.25];
+
     impl Skin for AllTexturedSkin {
         fn panel(&self, style: PanelStyleId) -> crate::widget::panel::FlatPanelAppearance {
             FlatColorSkin.panel(style)
@@ -1520,9 +1537,10 @@ mod tests {
         ) -> Option<crate::widget::day_night_bar::TexturedDayNightBarAppearance> {
             Some(
                 crate::widget::day_night_bar::TexturedDayNightBarAppearance {
-                    track_uv: [0.5, 0.5, 0.25, 0.25],
+                    track_uv: FAKE_DAYNIGHT_TRACK_UV,
                     track_tint: [1.0, 1.0, 1.0, 1.0],
-                    pointer_color: [1.0, 0.9, 0.5, 1.0],
+                    pointer_uv: FAKE_DAYNIGHT_POINTER_UV,
+                    pointer_tint: [1.0, 1.0, 1.0, 1.0],
                 },
             )
         }
@@ -1660,6 +1678,99 @@ mod tests {
             hud_label_index < map_index,
             "常驻 HUD 的文本排在第 {hud_label_index} 批，世界地图第 {map_index} 批——HUD 文字浮在地图上面"
         );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 贴图皮肤下昼夜滑块与底图同批且排在底图之后() {
+        // 所有者实机反馈「时间调，少了滑条……目前只显示了背景条」的直接
+        // 回归：滑块此前是纯色矩形，落进层内更早的那一道 pass，被贴图
+        // 底图整个盖住。判据走数据层，不走截图（ADR 0025）。
+        // Arrange
+        let (frame, dir) = build_textured_frame_with_map("daynight-pointer-order");
+
+        // Act
+        let textured = &frame.layer(UiLayer::Hud).textured_quads;
+        let track_index = textured
+            .iter()
+            .position(|quad| quad.uv_rect == FAKE_DAYNIGHT_TRACK_UV)
+            .expect("贴图皮肤下昼夜滑条底图必须落进贴图批次");
+        let pointer_index = textured
+            .iter()
+            .position(|quad| quad.uv_rect == FAKE_DAYNIGHT_POINTER_UV)
+            .expect("贴图皮肤下昼夜滑块必须与底图同在贴图批次——落进纯色批次就会被底图盖住");
+
+        // Assert
+        assert!(
+            pointer_index > track_index,
+            "滑块排在第 {pointer_index} 块、底图第 {track_index} 块——滑块被自己的底图盖住了"
+        );
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 纯色皮肤下昼夜滑块与底图同批且排在底图之后() {
+        // 纯色回退路径的同一条性质——它此前恰好是对的（两块都在
+        // `quads` 里），钉住它别在将来某次改动里也被拆到两个容器。
+        // Arrange
+        let dir = temp_dir("daynight-pointer-flat");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_dir(&dir);
+        let status = StatusBarData {
+            clock: Tick(0),
+            health: 100,
+            mana: 50,
+            fps: 0.0,
+            weather_display_name_key: None,
+        };
+        let modifiers = BTreeMap::new();
+        let equipment = BTreeMap::new();
+        let character = sample_character_data(&modifiers, &equipment);
+        let item_table = ItemTable::new();
+        let mut anim = WidgetStateTable::new();
+
+        // Act
+        let frame = build_hud_frame(
+            &status,
+            &character,
+            &[],
+            &equipment,
+            &[],
+            &NoItems,
+            &item_table,
+            &catalog,
+            "zh-CN",
+            &FlatColorSkin,
+            &mut anim,
+            0,
+            1280.0,
+            720.0,
+            None,
+            None,
+            None,
+        );
+
+        // Assert：底图整条、滑块只有 `POINTER_WIDTH` 宽，按宽度认。
+        let appearance = FlatColorSkin.day_night_bar(DayNightBarStyleId::Clock);
+        let quads = &frame.layer(UiLayer::Hud).quads;
+        let track_index = quads
+            .iter()
+            .position(|quad| {
+                quad.color == appearance.track_color && quad.size[0] == DAY_NIGHT_BAR_WIDTH
+            })
+            .expect("纯色回退下昼夜滑条底图必须在纯色批次里");
+        let pointer_index = quads
+            .iter()
+            .position(|quad| {
+                quad.color == appearance.pointer_color
+                    && quad.size[0] == crate::widget::day_night_bar::POINTER_WIDTH
+            })
+            .expect("纯色回退下昼夜滑块必须在纯色批次里");
+        assert!(pointer_index > track_index);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

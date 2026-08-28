@@ -157,6 +157,66 @@ pub(crate) fn decorate_day_night_bar(image: &mut RgbaImage, rect: EntryRect) {
     }
 }
 
+/// 昼夜滑条**滑块**的宽高（像素）。
+///
+/// 与底图（`ui_daynight_bar`）不同，滑块不做拉伸——它在屏幕上恒是
+/// `ll_ui::widget::day_night_bar::POINTER_WIDTH` 宽、整条高，画布按同一
+/// 个比例（宽:高 = 1:2）出图，拉伸后不会把描边拉成粗细不均的一圈。
+pub(crate) const DAYNIGHT_POINTER_WIDTH: u32 = 8;
+/// 滑块画布高度，理由同 [`DAYNIGHT_POINTER_WIDTH`]。
+pub(crate) const DAYNIGHT_POINTER_HEIGHT: u32 = 16;
+
+/// 滑块的描边色——近黑的冷暗色。
+///
+/// 描边是这张图存在的**主要理由**：滑块要压在一条从深靛蓝（夜）一路
+/// 渐变到暖金（昼）的底图上，任何单一颜色都会在渐变的某一段糊掉。一圈
+/// 深色描边把滑块与底图彻底切开，无论它停在哪个时刻都读得出轮廓——与
+/// `crate::world_marks` 那几张记号「先描边再填色」是同一条既有做法。
+const POINTER_OUTLINE: (u8, u8, u8) = (18, 16, 22);
+/// 滑块主体色——暖白，比底图昼端的暖金更亮更淡，因此在正午那一段也
+/// 不会与底色同化。
+const POINTER_BODY: (u8, u8, u8) = (248, 244, 232);
+/// 滑块中央那道竖槽的颜色——比主体暗一档，让滑块读起来像一个「有厚度
+/// 的把手」而不是一根白条。
+const POINTER_GROOVE: (u8, u8, u8) = (152, 146, 132);
+
+/// 画昼夜滑条的滑块：一圈描边 + 暖白主体 + 中央一道竖槽。
+///
+/// 尺寸恒按 `rect` 现算而不是写死像素坐标——`rect.width`/`rect.height`
+/// 来自 [`DAYNIGHT_POINTER_WIDTH`]/[`DAYNIGHT_POINTER_HEIGHT`]，但本函数
+/// 不假设那两个值具体是多少（改尺寸不必改画法）。
+///
+/// **整张图不透明**：滑块要压住底图，透明像素会让底图的渐变从滑块里透
+/// 出来，正是「看不清滑块停在哪」的老问题。这与 `crate::world_marks`
+/// 那几张「刻意留空底色」的世界记号不同——那些画在地形之上要露出地形，
+/// 这一块的职责恰恰相反。
+pub(crate) fn decorate_day_night_pointer(image: &mut RgbaImage, rect: EntryRect) {
+    for local_y in 0..rect.height {
+        for local_x in 0..rect.width {
+            let on_border = local_x == 0
+                || local_y == 0
+                || local_x + 1 == rect.width
+                || local_y + 1 == rect.height;
+            // 中央竖槽：宽度取 1/4 画布宽（至少 1 像素），上下各留出
+            // 两格描边与主体，槽因此不碰到边。
+            let groove_half = (rect.width / 8).max(1);
+            let center = rect.width / 2;
+            let in_groove = local_x + groove_half >= center
+                && local_x < center + groove_half
+                && local_y >= 3
+                && local_y + 3 < rect.height;
+            let (r, g, b) = if on_border {
+                POINTER_OUTLINE
+            } else if in_groove {
+                POINTER_GROOVE
+            } else {
+                POINTER_BODY
+            };
+            image.put_pixel(rect.x + local_x, rect.y + local_y, Rgba([r, g, b, 255]));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -266,5 +326,89 @@ mod tests {
 
         // Assert
         assert_eq!(first, second);
+    }
+
+    #[test]
+    fn decorate_day_night_pointer整张图不透明() {
+        // 滑块要压住底图的渐变，任何透明像素都会让底色透出来——这正是
+        // 「看不清滑块停在哪」的老问题，见本函数文档。
+        // Arrange
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: DAYNIGHT_POINTER_WIDTH,
+            height: DAYNIGHT_POINTER_HEIGHT,
+        };
+        let mut image = RgbaImage::new(rect.width, rect.height);
+
+        // Act
+        decorate_day_night_pointer(&mut image, rect);
+
+        // Assert
+        for pixel in image.pixels() {
+            assert_eq!(pixel.0[3], 255, "滑块贴图不应有半透明或透明像素");
+        }
+    }
+
+    #[test]
+    fn decorate_day_night_pointer四条边都是描边色() {
+        // 描边是这张图能在深靛蓝到暖金整段渐变上都看得清的唯一依靠。
+        // Arrange
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: DAYNIGHT_POINTER_WIDTH,
+            height: DAYNIGHT_POINTER_HEIGHT,
+        };
+        let mut image = RgbaImage::new(rect.width, rect.height);
+
+        // Act
+        decorate_day_night_pointer(&mut image, rect);
+
+        // Assert
+        let outline = Rgba([POINTER_OUTLINE.0, POINTER_OUTLINE.1, POINTER_OUTLINE.2, 255]);
+        for x in 0..rect.width {
+            assert_eq!(*image.get_pixel(x, 0), outline);
+            assert_eq!(*image.get_pixel(x, rect.height - 1), outline);
+        }
+        for y in 0..rect.height {
+            assert_eq!(*image.get_pixel(0, y), outline);
+            assert_eq!(*image.get_pixel(rect.width - 1, y), outline);
+        }
+    }
+
+    #[test]
+    fn 滑块主体与底图两端色都拉得开() {
+        // 「在夜端和昼端都一眼可见」这条要求的程序化核实：主体色与底图
+        // 的夜色、昼色都要有足够的通道差，而不是只跟其中一端不同。
+        // Arrange
+        let min_channel_distance = 60i32;
+
+        // Act
+        let to_night: i32 = [
+            POINTER_BODY.0 as i32 - DAYNIGHT_NIGHT_COLOR.0 as i32,
+            POINTER_BODY.1 as i32 - DAYNIGHT_NIGHT_COLOR.1 as i32,
+            POINTER_BODY.2 as i32 - DAYNIGHT_NIGHT_COLOR.2 as i32,
+        ]
+        .iter()
+        .map(|d| d.abs())
+        .max()
+        .expect("三个通道恒非空");
+        let to_day: i32 = [
+            POINTER_BODY.0 as i32 - DAYNIGHT_DAY_COLOR.0 as i32,
+            POINTER_BODY.1 as i32 - DAYNIGHT_DAY_COLOR.1 as i32,
+            POINTER_BODY.2 as i32 - DAYNIGHT_DAY_COLOR.2 as i32,
+        ]
+        .iter()
+        .map(|d| d.abs())
+        .max()
+        .expect("三个通道恒非空");
+
+        // Assert
+        assert!(
+            to_night >= min_channel_distance,
+            "滑块在夜端看不清：{to_night}"
+        );
+        assert!(to_day >= min_channel_distance, "滑块在昼端看不清：{to_day}");
     }
 }

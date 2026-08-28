@@ -157,11 +157,24 @@ const TERRAIN_TILE_SIZE: u32 = 16;
 /// 一一对应，名字必须逐字一致（`draw_entry` 按名字派发配方）。
 const CLIMATE_TERRAIN_NAMES: [&str; 2] = ["terrain_desert", "terrain_tundra"];
 
+/// 昼夜滑条的**滑块**贴图。
+///
+/// 走 [`LooseOnlyEntry`] 而不是加进 `placeholder.json`：见那个类型的
+/// 文档（那份 JSON 是五个更早批次验收 demo 的冻结像素基准）。底图
+/// `ui_daynight_bar` 本身在 `placeholder.json` 里是历史原因，新增的这
+/// 一张不跟着进去。
+///
+/// 锚点/占地与地形那一档一致（整张图铺满自己的矩形、原点即左上角）：
+/// 它由 HUD 直接按屏幕矩形绘制，不经过世界格子，`pivot`/`footprint`
+/// 对它没有语义，取地形那一档只是为了不引入第三种取值。
+const DAYNIGHT_POINTER_NAME: &str = "ui_daynight_pointer";
+
 /// 本体新增的松散贴图：四个种族的身子 + 十三个职业的挂件 + 气候条带
-/// 新增的两种地形。
+/// 新增的两种地形 + 昼夜滑条的滑块。
 ///
 /// 顺序固定（先按 [`npc::race_bodies`] 再按 [`npc::profession_badges`]，
-/// 最后 [`CLIMATE_TERRAIN_NAMES`]，三者都是数组字面量），符合约束 C5。
+/// 然后 [`CLIMATE_TERRAIN_NAMES`]，最后 [`DAYNIGHT_POINTER_NAME`]，四者
+/// 都是数组字面量或单个常量），符合约束 C5。
 fn loose_only_entries() -> Vec<LooseOnlyEntry> {
     let npcs = npc::race_bodies()
         .iter()
@@ -181,7 +194,15 @@ fn loose_only_entries() -> Vec<LooseOnlyEntry> {
         pivot: TERRAIN_PIVOT,
         footprint: TERRAIN_FOOTPRINT,
     });
-    npcs.chain(terrains).collect()
+    let ui = [LooseOnlyEntry {
+        name: DAYNIGHT_POINTER_NAME,
+        width: ui::DAYNIGHT_POINTER_WIDTH,
+        height: ui::DAYNIGHT_POINTER_HEIGHT,
+        pivot: TERRAIN_PIVOT,
+        footprint: TERRAIN_FOOTPRINT,
+    }]
+    .into_iter();
+    npcs.chain(terrains).chain(ui).collect()
 }
 
 /// 松散贴图清单里的一条条目——`ll_mod::asset_vfs` 期望的形状，
@@ -498,6 +519,10 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         // 昼夜滑条底图：水平渐变,不是 `TerrainSpec` 能表达的单一主色,
         // 单独按名字分派,见 `ui.rs::decorate_day_night_bar` 文档。
         "ui_daynight_bar" => ui::decorate_day_night_bar(image, rect),
+        // 昼夜滑条的滑块：描边 + 主体 + 竖槽的结构图案,同样不是
+        // `TerrainSpec` 能表达的东西,见 `ui.rs::decorate_day_night_pointer`
+        // 文档。
+        "ui_daynight_pointer" => ui::decorate_day_night_pointer(image, rect),
         // 据点建筑地形（墙/地板/门/窗/楼梯）：与自然地形不同，这九张
         // 靠**结构图案**而非「主色 + 稀疏点缀」表达自己是什么（门要有
         // 门板与把手、窗要有窗棂、楼梯要有阶梯条带），`TerrainSpec` 那

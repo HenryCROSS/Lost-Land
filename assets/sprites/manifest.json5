@@ -659,6 +659,18 @@
         "width": 1,
         "height": 1
       }
+    },
+    {
+      "name": "ui_daynight_pointer",
+      "file": "ui_daynight_pointer.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
     }
   ]
 }

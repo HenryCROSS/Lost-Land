@@ -24,6 +24,31 @@
 //! [`crate::widget::bar::bar_quads`] 「`fraction` 由调用方算好再传入」
 //! 同一条既有分工）。
 //!
+//! # 曾经的缺陷：指针画了，却被自己的底图吞掉
+//!
+//! 所有者实机反馈：「时间调，少了滑条……目前只显示了背景条」。
+//!
+//! **不是没画，也不是没有贴图**——[`day_night_pointer_quad`] 一直在产出
+//! 指针矩形，位置换算也一直是对的。问题出在它落进**哪一批**：指针恒是
+//! 纯色矩形，而整条底图在真实贴图皮肤下是贴图矩形，而纯色批次恒在贴图
+//! 批次**之前**提交（见 [`crate::widget::layer`] 模块文档），于是底图把
+//! 指针整个盖掉，屏幕上只剩一条背景。
+//!
+//! UI 层级（`UiLayer`）**修不了这一条**：底图与指针同属
+//! [`crate::widget::layer::UiLayer::Hud`]，而层**内部**仍然是「纯色 →
+//! 贴图」两道固定 pass。同一层里互相重叠的两块内容必须落进同一个容器，
+//! 才谈得上用推入顺序决定遮挡（[`crate::widget::layer::LayerBatch`]
+//! 文档写明了这条要求）。
+//!
+//! 因此指针现在也有自己的贴图（`ui_daynight_pointer`，见
+//! `tools/ll-artgen/src/ui.rs::decorate_day_night_pointer`）：贴图皮肤下
+//! 底图与指针同在贴图批次、指针后推，纯色回退下两者同在纯色批次、指针
+//! 同样后推——两条路径各自内部有序，不再有跨批次的先后。
+//!
+//! **不允许「一半贴图一半纯色」**：[`crate::widget::skin`] 里若查不到
+//! 指针贴图，整条昼夜滑条（含底图）一起退回纯色，而不是底图走贴图、
+//! 指针走纯色——后者恰好复现上面那条缺陷。
+//!
 //! # 颜色走皮肤层
 //!
 //! 背景整条与指针的颜色都不是本模块决定的——见
@@ -57,10 +82,13 @@ impl FlatDayNightBarAppearance {
 }
 
 /// 昼夜滑条的真实贴图外观——理由同
-/// [`crate::widget::bar::TexturedBarAppearance`]。指针**仍然是纯色**
-/// （`pointer_color`，不是贴图 UV）：一个几像素宽的指示条不值得为它
-/// 单独烧一张贴图，纯色在任何背景上都能靠调制颜色保持可辨识，见
-/// `crate::widget::skin` 模块里 `DAYNIGHT_POINTER_TINT` 的选色说明。
+/// [`crate::widget::bar::TexturedBarAppearance`]。
+///
+/// **指针也是贴图**（`pointer_uv`）。此前它是纯色，那正是模块文档
+/// 「曾经的缺陷」一节记的那条实机问题的根因：纯色指针与贴图底图分处
+/// 两道 pass，底图恒后提交、把指针整个盖住。原来的理由（「一个几像素
+/// 宽的指示条不值得单独烧一张贴图」）在**开销**上没错，但它默认了两者
+/// 的先后由推入顺序决定——那个前提是错的。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TexturedDayNightBarAppearance {
     /// 整条贴图（`ui_daynight_bar`，见 `tools/ll-artgen/src/ui.rs`）在
@@ -68,13 +96,42 @@ pub struct TexturedDayNightBarAppearance {
     pub track_uv: [f32; 4],
     /// 整条颜色调制。
     pub track_tint: [f32; 4],
-    /// 指针颜色。
-    pub pointer_color: [f32; 4],
+    /// 指针贴图（`ui_daynight_pointer`）在图集里的 UV 矩形。
+    pub pointer_uv: [f32; 4],
+    /// 指针颜色调制——贴图本身已经是描边 + 暖白主体，默认不再染色。
+    pub pointer_tint: [f32; 4],
 }
 
-/// 指针矩形的宽度（像素）——足够窄以像一根指针，又足够宽以在原生
-/// 分辨率下不因抗锯齿糊成看不清的一条线。
-pub const POINTER_WIDTH: f32 = 4.0;
+/// 指针矩形的宽度（像素）。
+///
+/// 从 4 加宽到 8：指针现在是一张有描边、有中央竖槽的**滑块**贴图
+/// （所有者原话「少了滑条，这个可能需要你另外画一个」），4 像素宽装不
+/// 下「描边 + 主体 + 描边」这三段还留得出主体，拉伸后只会糊成一条。8
+/// 与贴图画布的 8×16 同宽同比例，横向不做任何拉伸。
+pub const POINTER_WIDTH: f32 = 8.0;
+
+/// 指针这一帧的矩形——纯色与贴图两条路径**共用同一份几何**。
+///
+/// `pointer_fraction` 是 0.0（当日 00:00，最左）到 1.0（次日 00:00 前
+/// 一刻，最右）之间的归一化位置，钳制到 `[0.0, 1.0]` 理由同
+/// [`crate::widget::bar::bar_quads`]（防御调用方传入越界值，不代表越界
+/// 是预期状态）。可移动距离整体收缩 [`POINTER_WIDTH`]，使指针在
+/// `pointer_fraction == 1.0` 时仍然完整落在 `rect` 内部，不会有一半探出
+/// 滑条右边界。
+///
+/// 抽成一个函数而不是在两条路径里各写一遍：位置算法一旦分叉，贴图皮肤
+/// 与纯色回退下的指针会停在不同的地方，而这种差异只有同时看两套皮肤才
+/// 发现得了。
+fn pointer_rect(rect: Rect, pointer_fraction: f32) -> Rect {
+    let clamped = pointer_fraction.clamp(0.0, 1.0);
+    let travel = (rect.width - POINTER_WIDTH).max(0.0);
+    Rect::new(
+        rect.x + travel * clamped,
+        rect.y,
+        POINTER_WIDTH,
+        rect.height,
+    )
+}
 
 /// 产出昼夜滑条整条背景的填色矩形——恒一块，不裁切，见模块文档
 /// 「与经验条/资源条不是同一类条形」一节。
@@ -100,23 +157,36 @@ pub fn textured_day_night_bar_quads(
     }]
 }
 
-/// 产出指针矩形——`pointer_fraction` 是 0.0（当日 00:00，最左）到 1.0
-/// （次日 00:00 前一刻，最右）之间的归一化位置，钳制到 `[0.0, 1.0]`
-/// 理由同 [`crate::widget::bar::bar_quads`]（防御调用方传入越界值，
-/// 不代表越界是预期状态）。指针矩形整体向左收缩
-/// [`POINTER_WIDTH`]，使指针在 `pointer_fraction == 1.0` 时仍然完整
-/// 落在 `rect` 内部，不会有一半探出滑条右边界。
+/// 产出**纯色回退**路径的指针矩形，几何见 [`pointer_rect`]。
 pub fn day_night_pointer_quad(
     rect: Rect,
     pointer_color: [f32; 4],
     pointer_fraction: f32,
 ) -> QuadInstance {
-    let clamped = pointer_fraction.clamp(0.0, 1.0);
-    let travel = (rect.width - POINTER_WIDTH).max(0.0);
+    let pointer = pointer_rect(rect, pointer_fraction);
     QuadInstance {
-        position: [rect.x + travel * clamped, rect.y],
-        size: [POINTER_WIDTH, rect.height],
+        position: [pointer.x, pointer.y],
+        size: [pointer.width, pointer.height],
         color: pointer_color,
+    }
+}
+
+/// 产出**贴图**路径的指针矩形，几何与 [`day_night_pointer_quad`] 逐位
+/// 相同（两者共用 [`pointer_rect`]）。
+///
+/// 调用方必须把它推在 [`textured_day_night_bar_quads`] **之后**——同一
+/// 批贴图矩形里后推的画在上面，见模块文档「曾经的缺陷」一节。
+pub fn textured_day_night_pointer_quad(
+    rect: Rect,
+    style: &TexturedDayNightBarAppearance,
+    pointer_fraction: f32,
+) -> TexturedQuadInstance {
+    let pointer = pointer_rect(rect, pointer_fraction);
+    TexturedQuadInstance {
+        position: [pointer.x, pointer.y],
+        size: [pointer.width, pointer.height],
+        uv_rect: style.pointer_uv,
+        color: style.pointer_tint,
     }
 }
 
@@ -182,7 +252,8 @@ mod tests {
         let textured_style = TexturedDayNightBarAppearance {
             track_uv: [0.0, 0.0, 1.0, 1.0],
             track_tint: [1.0, 1.0, 1.0, 1.0],
-            pointer_color: [1.0, 0.9, 0.5, 1.0],
+            pointer_uv: [0.0, 0.5, 1.0, 0.5],
+            pointer_tint: [1.0, 1.0, 1.0, 1.0],
         };
 
         // Act
@@ -192,5 +263,53 @@ mod tests {
         // Assert
         assert_eq!(flat[0].position, textured[0].position);
         assert_eq!(flat[0].size, textured[0].size);
+    }
+
+    #[test]
+    fn 贴图指针与纯色指针的几何逐位相同() {
+        // 两条路径共用 `pointer_rect`。这条钉住它们不会各写一份位置
+        // 算法——一旦分叉，换皮肤时指针会停在不同的地方，而这种差异
+        // 只有同时看两套皮肤才发现得了。
+        // Arrange
+        let rect = Rect::new(10.0, 20.0, 300.0, 14.0);
+        let style = TexturedDayNightBarAppearance {
+            track_uv: [0.0, 0.0, 1.0, 0.5],
+            track_tint: [1.0, 1.0, 1.0, 1.0],
+            pointer_uv: [0.0, 0.5, 1.0, 0.5],
+            pointer_tint: [1.0, 1.0, 1.0, 1.0],
+        };
+
+        // Act & Assert：整条取样若干位置，逐个比对。
+        for step in 0..=10 {
+            let fraction = step as f32 / 10.0;
+            let flat = day_night_pointer_quad(rect, [1.0, 1.0, 1.0, 1.0], fraction);
+            let textured = textured_day_night_pointer_quad(rect, &style, fraction);
+            assert_eq!(
+                flat.position, textured.position,
+                "比例 {fraction} 位置不一致"
+            );
+            assert_eq!(flat.size, textured.size, "比例 {fraction} 尺寸不一致");
+        }
+    }
+
+    #[test]
+    fn 贴图指针采的是指针uv不是底图uv() {
+        // 「指针有了自己的贴图」这条的直接核实——若有人图省事让指针复用
+        // `track_uv`，屏幕上会是一小片渐变底图而不是滑块。
+        // Arrange
+        let rect = Rect::new(0.0, 0.0, 300.0, 14.0);
+        let style = TexturedDayNightBarAppearance {
+            track_uv: [0.0, 0.0, 1.0, 0.5],
+            track_tint: [1.0, 1.0, 1.0, 1.0],
+            pointer_uv: [0.0, 0.5, 1.0, 0.5],
+            pointer_tint: [1.0, 1.0, 1.0, 1.0],
+        };
+
+        // Act
+        let pointer = textured_day_night_pointer_quad(rect, &style, 0.5);
+
+        // Assert
+        assert_eq!(pointer.uv_rect, style.pointer_uv);
+        assert_ne!(pointer.uv_rect, style.track_uv);
     }
 }

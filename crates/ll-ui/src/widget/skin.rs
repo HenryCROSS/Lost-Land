@@ -39,8 +39,9 @@
 //! # 现在有两种皮肤实现——[`FlatColorSkin`]（纯色回退）与
 //! [`NineSliceSkin`]（真实贴图）
 //!
-//! `ll-artgen` 已经生成了四张占位 UI 贴图（`ui_panel_border`/
-//! `ui_panel_fill`/`ui_bar_track`/`ui_bar_fill`，见
+//! `ll-artgen` 已经生成了占位 UI 贴图（`ui_panel_border`/
+//! `ui_panel_fill`/`ui_bar_track`/`ui_bar_fill`/`ui_daynight_bar`/
+//! `ui_daynight_pointer`，完整清单即 [`REQUIRED_SPRITE_KEYS`]，见
 //! `tools/ll-artgen/src/ui.rs` 与 `assets/sprites/manifest.json5`），
 //! 走的是与地形瓦片/角色精灵完全相同的运行期图集打包管线——
 //! [`NineSliceSkin`] 因此能在本批次就真的用贴图画出九宫格边框/条形，
@@ -81,14 +82,14 @@
 //!
 //! # 曾经的缺陷：这里查的是裸名字，图集里存的是完整命名空间 ID
 //!
-//! [`REQUIRED_SPRITE_KEYS`] 现在带 `lostland:` 前缀。此前这五个查找键
+//! [`REQUIRED_SPRITE_KEYS`] 现在带 `lostland:` 前缀。此前那几个查找键
 //! 写的是裸名字（`"ui_panel_border"`），而运行期图集打包器
 //! （`ll_render::atlas_pack::pack_atlas`）用的条目名恒等于精灵的完整
 //! 命名空间 ID（见 `ll_mod::asset_vfs::ResolvedSprite::atlas_name`
 //! 文档），真实图集里只有 `lostland:ui_panel_border`——于是
-//! [`Atlas::uv_rect`] 五次全部返回 `None`，五个 `textured_*` 方法里的
-//! `?` 全部短路，`crate::hud::render` 每一帧都静默退回 [`FlatColorSkin`]
-//! 的纯色外观。
+//! [`Atlas::uv_rect`] 每次都返回 `None`，`textured_*` 方法里的 `?` 全部
+//! 短路，`crate::hud::render` 每一帧都静默退回 [`FlatColorSkin`] 的纯色
+//! 外观。
 //!
 //! 这条缺陷**不会打任何日志**：`uv_rect` 返回 `None` 是本模块设计上的
 //! 正常降级路径（「这张皮肤没有这个贴图」），它分辨不出「本来就没有」
@@ -263,7 +264,8 @@ impl Skin for FlatColorSkin {
     }
 }
 
-/// 真实贴图皮肤：引用 `ll-artgen` 生成的四张占位 UI 贴图（见模块文档）
+/// 真实贴图皮肤：引用 `ll-artgen` 生成的那几张占位 UI 贴图（完整清单
+/// 见 [`REQUIRED_SPRITE_KEYS`]，选型理由见模块文档）
 /// 在图集里的 UV 矩形，构造时一次性查出全部需要的 UV（`Atlas::uv_rect`
 /// 本身不便宜到可以每帧调用，见其模块文档），之后 `textured_*` 方法
 /// 只是克隆已经查好的数据。
@@ -276,6 +278,11 @@ pub struct NineSliceSkin {
     /// （`ui_daynight_bar`），见本文件底部 [`DayNightBarStyleId`] 一节
     /// 与 `tools/ll-artgen/src/ui.rs::decorate_day_night_bar` 文档。
     daynight_bar_uv: Option<[f32; 4]>,
+    /// 昼夜滑条**滑块**的 UV（`ui_daynight_pointer`）。
+    ///
+    /// 指针此前是纯色，被自己的底图整个盖住——见
+    /// `crate::widget::day_night_bar` 模块文档「曾经的缺陷」一节。
+    daynight_pointer_uv: Option<[f32; 4]>,
     /// 边框厚度（像素）——贴图本身是 16×16，与
     /// [`FlatPanelAppearance::DEFAULT`] 的 `2.0` 不同,选一个能让四个角
     /// 看起来像「边框」而不是「贴图被拉伸变形」的厚度。
@@ -316,6 +323,7 @@ impl NineSliceSkin {
             bar_track_uv: lookup(BAR_TRACK_KEY),
             bar_fill_uv: lookup(BAR_FILL_KEY),
             daynight_bar_uv: lookup(DAYNIGHT_BAR_KEY),
+            daynight_pointer_uv: lookup(DAYNIGHT_POINTER_KEY),
             border_thickness: 4.0,
         }
     }
@@ -331,6 +339,8 @@ pub const BAR_TRACK_KEY: &str = "lostland:ui_bar_track";
 pub const BAR_FILL_KEY: &str = "lostland:ui_bar_fill";
 /// 昼夜滑条底图的图集键。
 pub const DAYNIGHT_BAR_KEY: &str = "lostland:ui_daynight_bar";
+/// 昼夜滑条滑块的图集键。
+pub const DAYNIGHT_POINTER_KEY: &str = "lostland:ui_daynight_pointer";
 
 /// [`NineSliceSkin`] 需要、且本体**确实提供**了资产的全部图集键。
 ///
@@ -341,12 +351,13 @@ pub const DAYNIGHT_BAR_KEY: &str = "lostland:ui_daynight_bar";
 ///
 /// **不包含**按钮等「本体本来就没有资产」的贴图：那些恒走纯色路径是
 /// 有意的，不是缺陷，见模块文档末尾。
-pub const REQUIRED_SPRITE_KEYS: [&str; 5] = [
+pub const REQUIRED_SPRITE_KEYS: [&str; 6] = [
     PANEL_BORDER_KEY,
     PANEL_FILL_KEY,
     BAR_TRACK_KEY,
     BAR_FILL_KEY,
     DAYNIGHT_BAR_KEY,
+    DAYNIGHT_POINTER_KEY,
 ];
 
 /// 不透明白——纹理采样结果原样显示，不做任何颜色调制。
@@ -362,9 +373,14 @@ const HEALTH_AFTERGLOW_TINT: [f32; 4] = [0.75, 0.35, 0.3, 0.85];
 const MANA_FILL_TINT: [f32; 4] = [0.45, 0.65, 1.0, 1.0];
 /// 法力条余晖层调制，理由同 [`HEALTH_AFTERGLOW_TINT`]。
 const MANA_AFTERGLOW_TINT: [f32; 4] = [0.35, 0.45, 0.75, 0.85];
-/// 昼夜滑条指针调制——不透明暖黄,在昼夜贴图的深蓝/暖橙背景上都能
-/// 保持可辨识（既不像夜晚的深蓝会隐没,也不像正午的暖橙会糊在一起）。
-const DAYNIGHT_POINTER_TINT: [f32; 4] = [1.0, 0.92, 0.55, 1.0];
+/// 昼夜滑条滑块的颜色调制——**不染色**（不透明白）。
+///
+/// 此前这里是一个暖黄值，因为那时指针是一块纯色矩形、颜色是它唯一的
+/// 外观。现在滑块是一张自带描边与主体色的贴图
+/// （`tools/ll-artgen/src/ui.rs::decorate_day_night_pointer`），再乘一层
+/// 暖黄只会把那圈刻意选暗的描边一起染亮，削弱它「在夜端与昼端都切得
+/// 开底图」的作用。
+const DAYNIGHT_POINTER_TINT: [f32; 4] = NO_TINT;
 
 impl Skin for NineSliceSkin {
     fn panel(&self, style: PanelStyleId) -> FlatPanelAppearance {
@@ -430,6 +446,13 @@ impl Skin for NineSliceSkin {
         }
     }
 
+    /// 底图与滑块**两张都查得到才走贴图路径**（两个 `?` 缺一不可）。
+    ///
+    /// 只有底图、没有滑块时整条退回纯色，而不是「底图走贴图、滑块走
+    /// 纯色」——后者恰好复现
+    /// `crate::widget::day_night_bar` 模块文档「曾经的缺陷」记的那条
+    /// 实机问题：两者分处纯色/贴图两道 pass，底图恒后提交、把滑块盖掉。
+    /// 全退回纯色至少两者同批、滑块看得见。
     fn textured_day_night_bar(
         &self,
         style: DayNightBarStyleId,
@@ -438,7 +461,8 @@ impl Skin for NineSliceSkin {
             DayNightBarStyleId::Clock => Some(TexturedDayNightBarAppearance {
                 track_uv: self.daynight_bar_uv?,
                 track_tint: NO_TINT,
-                pointer_color: DAYNIGHT_POINTER_TINT,
+                pointer_uv: self.daynight_pointer_uv?,
+                pointer_tint: DAYNIGHT_POINTER_TINT,
             }),
         }
     }
