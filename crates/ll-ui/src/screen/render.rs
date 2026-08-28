@@ -108,8 +108,31 @@ pub fn render_screen(
         &frame.textured_quads,
     );
 
-    let runs: Vec<_> = frame
-        .labels
+    render_labels(
+        text_renderer,
+        device,
+        queue,
+        target,
+        resolution_width,
+        resolution_height,
+        &frame.labels,
+    );
+}
+
+/// 把一屏文本行交给 [`TextRenderer`]——抽出来只为让
+/// [`render_screen`] 不越过本仓库 50 行的函数上限；`Label` 借出的
+/// `TextRun` 生命周期不能超过 `labels`，所以两步必须在同一个作用域里
+/// 完成（见 `crate::widget::label::Label::to_text_run` 文档）。
+fn render_labels(
+    text_renderer: &mut TextRenderer,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    target: &wgpu::TextureView,
+    resolution_width: u32,
+    resolution_height: u32,
+    labels: &[crate::widget::label::Label],
+) {
+    let runs: Vec<_> = labels
         .iter()
         .map(|label| {
             label.to_text_run(

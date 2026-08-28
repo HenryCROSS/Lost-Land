@@ -22,6 +22,7 @@ pub mod layout;
 pub mod menu_screen;
 pub mod player_action;
 pub mod save;
+pub mod settings_view;
 pub mod surface_draw;
 #[cfg(test)]
 mod test_support;

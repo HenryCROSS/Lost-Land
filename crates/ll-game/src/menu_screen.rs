@@ -61,7 +61,7 @@ pub const MENU_ITEM_IDS: [WidgetId; 3] = [
 ];
 
 /// 菜单屏三条选项各自的 Fluent 键，与 [`MENU_ITEM_IDS`] 逐条对应。
-const MENU_ITEM_KEYS: [&str; 3] = [
+pub(crate) const MENU_ITEM_KEYS: [&str; 3] = [
     "screen-menu-continue",
     "screen-menu-settings",
     "screen-menu-quit",
@@ -242,141 +242,6 @@ pub fn clear_bindings(config: &mut GameConfig, action: GameKey) {
     }
 }
 
-/// 某个动作在 [`EDITABLE_CONTEXT`] 下当前绑着哪些键，排好版成一行。
-///
-/// 键名用 `KeyCode` 的 `Debug` 形态（`KeyW`/`Space`/`ArrowUp`）——如实
-/// 记录这是一处**临时取舍**：给两百多个 `KeyCode` 变体各配一条 i18n
-/// 键是一笔与本批次目标无关的大工程，而物理键名在绝大多数游戏里本来
-/// 就不翻译（键帽上印的就是这些字母）。真要本地化，加法是在
-/// `ll-platform` 给 `KeyCode` 配一张 `display_name_key` 表，本函数改成
-/// 查那张表，其余一行不动。
-pub fn binding_summary(
-    bindings: &KeyBindings,
-    action: GameKey,
-    catalog: &Catalog,
-    language: &str,
-) -> String {
-    let keys: Vec<String> = bindings
-        .bindings_for(action)
-        .filter(|binding| binding.context == EDITABLE_CONTEXT)
-        .map(|binding| format!("{:?}", binding.key))
-        .collect();
-    if keys.is_empty() {
-        return catalog.resolve(language, "screen-settings-unbound");
-    }
-    keys.join(" / ")
-}
-
-/// 某种语言在**它自己的语言**里叫什么（endonym）。
-///
-/// 查的是 `language-name` 这条键在**那一份** `.ftl` 里的取值，不是在
-/// 当前显示语言里的取值——语言选单上每一项都用自己的文字写，是这类
-/// 界面的通行做法（玩家看不懂当前语言时，恰恰要靠这一列找回自己的
-/// 语言）。查不到时退回语言标签本身（`Catalog::resolve` 找不到键会
-/// 原样返回键名，那个键名对玩家毫无意义，退回标签更诚实）。
-pub fn language_display_name(catalog: &Catalog, tag: &str) -> String {
-    let name = catalog.resolve(tag, "language-name");
-    if name == "language-name" {
-        tag.to_string()
-    } else {
-        name
-    }
-}
-
-/// 把一行排成「标签：取值」——分隔符走 i18n 模板（`screen-settings-row`）
-/// 而不是在代码里拼一个冒号：中文用全角「：」、英文用半角「: 」，写死
-/// 任何一种都会在另一种语言下看起来是错的。
-fn labeled_row(catalog: &Catalog, language: &str, label_key: &str, value: &str) -> String {
-    let mut args = FluentArgs::new();
-    args.set("label", catalog.resolve(language, label_key));
-    args.set("value", value.to_string());
-    catalog.resolve_with_args(language, "screen-settings-row", Some(&args))
-}
-
-/// 把设置界面这一帧的每一行排好版。
-pub fn settings_row_texts(
-    rows: &[SettingsRow],
-    config: &GameConfig,
-    catalog: &Catalog,
-    capturing: bool,
-    capture_row: usize,
-) -> Vec<String> {
-    rows.iter()
-        .enumerate()
-        .map(|(index, row)| {
-            settings_row_text(*row, config, catalog, capturing && index == capture_row)
-        })
-        .collect()
-}
-
-fn settings_row_text(
-    row: SettingsRow,
-    config: &GameConfig,
-    catalog: &Catalog,
-    capturing_this_row: bool,
-) -> String {
-    let language = config.language.as_str();
-    match row {
-        SettingsRow::Language => labeled_row(
-            catalog,
-            language,
-            "screen-settings-language",
-            &language_display_name(catalog, language),
-        ),
-        SettingsRow::Vsync => {
-            let value = catalog.resolve(
-                language,
-                if config.display.vsync {
-                    "screen-settings-on"
-                } else {
-                    "screen-settings-off"
-                },
-            );
-            let restart = catalog.resolve(language, "screen-settings-restart-required");
-            labeled_row(
-                catalog,
-                language,
-                "screen-settings-vsync",
-                &format!("{value} {restart}"),
-            )
-        }
-        SettingsRow::ScaleFilter => {
-            let value = catalog.resolve(
-                language,
-                match config.display.scale_filter {
-                    ScaleFilter::Nearest => "screen-settings-filter-nearest",
-                    ScaleFilter::SharpBilinear => "screen-settings-filter-sharp-bilinear",
-                },
-            );
-            labeled_row(catalog, language, "screen-settings-scale-filter", &value)
-        }
-        SettingsRow::KeybindsHeader => catalog.resolve(language, "screen-settings-keybinds-header"),
-        SettingsRow::Keybind(action) => {
-            let value = if capturing_this_row {
-                catalog.resolve(language, "screen-settings-capturing")
-            } else {
-                binding_summary(&config.bindings, action, catalog, language)
-            };
-            labeled_row(
-                catalog,
-                language,
-                &action.display_name_key().to_string(),
-                &value,
-            )
-        }
-        SettingsRow::Save => catalog.resolve(language, "screen-settings-save"),
-        SettingsRow::Back => catalog.resolve(language, "screen-settings-back"),
-    }
-}
-
-/// 菜单屏这一帧的三行文字。
-pub fn menu_row_texts(catalog: &Catalog, language: &str) -> Vec<String> {
-    MENU_ITEM_KEYS
-        .iter()
-        .map(|key| catalog.resolve(language, key))
-        .collect()
-}
-
 /// 菜单屏当前聚焦的是第几行；没有任何一项聚焦时返回 `usize::MAX`
 /// ——那是一个**必然越界**的下标，`ll_ui::screen` 收到越界光标时不标记
 /// 任何一行（见 `ScreenData::cursor` 文档），正好等于「还没选中任何
@@ -491,10 +356,7 @@ fn update_capture(
     let Some(SettingsRow::Keybind(action)) = rows.get(cursor).copied() else {
         // 光标不在键位行上却进了捕获模式——不该发生，但退出捕获比
         // panic 好（一个纯 UI 状态问题不该拖垮整局）。
-        *state = ScreenState::Settings {
-            cursor,
-            capturing: false,
-        };
+        *state = leave_capture(cursor);
         return None;
     };
     // Esc 取消、退格解绑——两个键因此不可绑，代价写进本批次计划文档
@@ -502,35 +364,45 @@ fn update_capture(
     // 「这一刻不查绑定表」，为这两个键破例去查表会自相矛盾。
     match key {
         KeyCode::Escape => {
-            *state = ScreenState::Settings {
-                cursor,
-                capturing: false,
-            };
+            *state = leave_capture(cursor);
             None
         }
         KeyCode::Backspace => {
             clear_bindings(ctx.config, action);
-            *state = ScreenState::Settings {
-                cursor,
-                capturing: false,
-            };
+            *state = leave_capture(cursor);
             Some(ScreenNotice::Cleared(action))
         }
-        key => match try_rebind(&ctx.config.bindings, action, key) {
-            Ok(bindings) => {
-                ctx.config.bindings = bindings;
-                // 重新绑上了，「刻意解绑」这个意图随之作废。
-                ctx.config.unbound_actions.retain(|it| *it != action);
-                *state = ScreenState::Settings {
-                    cursor,
-                    capturing: false,
-                };
-                Some(ScreenNotice::Bound(action))
-            }
-            // 冲突：**留在捕获模式**，玩家可以直接再按一个别的键，
-            // 不用重新进一次。表一个字节都没变。
-            Err(occupied) => Some(ScreenNotice::Conflict(occupied)),
-        },
+        key => apply_capture(state, ctx, action, key, cursor),
+    }
+}
+
+/// 退出捕获模式、光标留在原处。
+fn leave_capture(cursor: usize) -> ScreenState {
+    ScreenState::Settings {
+        cursor,
+        capturing: false,
+    }
+}
+
+/// 玩家按下的是一个普通物理键：试着绑上去。
+fn apply_capture(
+    state: &mut ScreenState,
+    ctx: &mut SettingsContext<'_>,
+    action: GameKey,
+    key: KeyCode,
+    cursor: usize,
+) -> Option<ScreenNotice> {
+    match try_rebind(&ctx.config.bindings, action, key) {
+        Ok(bindings) => {
+            ctx.config.bindings = bindings;
+            // 重新绑上了，「刻意解绑」这个意图随之作废。
+            ctx.config.unbound_actions.retain(|it| *it != action);
+            *state = leave_capture(cursor);
+            Some(ScreenNotice::Bound(action))
+        }
+        // 冲突：**留在捕获模式**，玩家可以直接再按一个别的键，不用重新
+        // 进一次。表一个字节都没变。
+        Err(occupied) => Some(ScreenNotice::Conflict(occupied)),
     }
 }
 
@@ -675,466 +547,5 @@ fn save_settings(ctx: &mut SettingsContext<'_>) -> ScreenNotice {
             tracing::warn!(%error, path = %ctx.config_path.display(), "配置写入失败");
             ScreenNotice::SaveFailed
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn 测试目录() -> Catalog {
-        Catalog::load_dir(Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../assets/locales"
-        )))
-    }
-
-    fn 按下(keys: &[GameKey]) -> InputState {
-        let mut input = InputState::new();
-        for key in keys {
-            input.press(*key);
-        }
-        input
-    }
-
-    fn 设置状态(cursor: usize) -> ScreenState {
-        ScreenState::Settings {
-            cursor,
-            capturing: false,
-        }
-    }
-
-    fn 某行下标(target: SettingsRow) -> usize {
-        settings_rows()
-            .iter()
-            .position(|row| *row == target)
-            .expect("这一行必然存在")
-    }
-
-    #[test]
-    fn 每个动作键在设置界面都占一行() {
-        // 「新增动作后设置界面静默漏掉它」是本模块最想防的缺陷。
-        // Arrange & Act
-        let rows = settings_rows();
-
-        // Assert
-        for key in GameKey::all() {
-            assert!(
-                rows.contains(&SettingsRow::Keybind(*key)),
-                "{key:?} 在设置界面里没有对应的行"
-            );
-        }
-    }
-
-    #[test]
-    fn 菜单里向下移动焦点落在第一项() {
-        // Arrange
-        let mut table = WidgetStateTable::new();
-
-        // Act
-        update_menu(&mut table, &按下(&[GameKey::Down]));
-
-        // Assert
-        assert_eq!(menu_focus_index(&table), 0);
-    }
-
-    #[test]
-    fn 菜单里没有任何一项聚焦时光标越界不标记任何行() {
-        // Arrange
-        let table = WidgetStateTable::new();
-
-        // Act
-        let index = menu_focus_index(&table);
-
-        // Assert
-        assert_eq!(index, usize::MAX);
-    }
-
-    #[test]
-    fn 菜单里选中设置项后进入设置界面() {
-        // Arrange：向下一次落在「继续游戏」，再一次落在「设置」。
-        let mut table = WidgetStateTable::new();
-        update_menu(&mut table, &按下(&[GameKey::Down]));
-        update_menu(&mut table, &按下(&[GameKey::Down]));
-
-        // Act
-        let (outcome, next) = update_menu(&mut table, &按下(&[GameKey::Confirm]));
-
-        // Assert
-        assert_eq!(outcome, ScreenOutcome::Idle);
-        assert_eq!(
-            next,
-            Some(ScreenState::Settings {
-                cursor: 0,
-                capturing: false
-            })
-        );
-    }
-
-    #[test]
-    fn 菜单里选中退出项返回退出() {
-        // Arrange
-        let mut table = WidgetStateTable::new();
-        for _ in 0..3 {
-            update_menu(&mut table, &按下(&[GameKey::Down]));
-        }
-
-        // Act
-        let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Confirm]));
-
-        // Assert
-        assert_eq!(outcome, ScreenOutcome::Quit);
-    }
-
-    #[test]
-    fn 菜单里按取消关掉整块屏() {
-        // Arrange
-        let mut table = WidgetStateTable::new();
-
-        // Act
-        let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Cancel]));
-
-        // Assert
-        assert_eq!(outcome, ScreenOutcome::Close);
-    }
-
-    #[test]
-    fn 把已经被别的动作占着的键绑过来会被拒绝且原表不变() {
-        // 空格默认绑给 Interact；试图把它绑给 Confirm 必须被拒。
-        // Arrange
-        let bindings = KeyBindings::default_bindings();
-        let 原来的空格 = bindings.resolve(KeyCode::Space, Modifiers::NONE, EDITABLE_CONTEXT);
-
-        // Act
-        let result = try_rebind(&bindings, GameKey::Confirm, KeyCode::Space);
-
-        // Assert
-        assert_eq!(result.err(), Some(GameKey::Interact));
-        assert_eq!(
-            bindings.resolve(KeyCode::Space, Modifiers::NONE, EDITABLE_CONTEXT),
-            原来的空格,
-            "被拒绝的重绑不该改动原表"
-        );
-    }
-
-    #[test]
-    fn 解绑之后空格可以改回确认键() {
-        // 交接文档第四节第 18 条的直接验收：Interact 从 Confirm 手里
-        // 拿走了空格，所有者要求「配置合并落地后要能让玩家改回来」。
-        // Arrange
-        let mut config = GameConfig::default();
-        clear_bindings(&mut config, GameKey::Interact);
-
-        // Act
-        let rebound = try_rebind(&config.bindings, GameKey::Confirm, KeyCode::Space)
-            .expect("空格已经解绑，重绑不该冲突");
-
-        // Assert
-        assert_eq!(
-            rebound.resolve(KeyCode::Space, Modifiers::NONE, EDITABLE_CONTEXT),
-            Some(GameKey::Confirm)
-        );
-    }
-
-    #[test]
-    fn 解绑会把动作记进刻意解绑清单() {
-        // 不记的话，下次加载 fill_missing_defaults 会把默认键补回来。
-        // Arrange
-        let mut config = GameConfig::default();
-
-        // Act
-        clear_bindings(&mut config, GameKey::Interact);
-
-        // Assert
-        assert!(config.unbound_actions.contains(&GameKey::Interact));
-    }
-
-    #[test]
-    fn 重新绑上之后刻意解绑的记号被撤销() {
-        // 否则玩家「解绑再绑别的键」之后，下次加载会以为他还想解绑。
-        // Arrange
-        let mut config = GameConfig::default();
-        clear_bindings(&mut config, GameKey::Interact);
-        let mut state = ScreenState::Settings {
-            cursor: 某行下标(SettingsRow::Keybind(GameKey::Interact)),
-            capturing: true,
-        };
-        let catalog = 测试目录();
-        let path = crate::test_support::unique_temp_path("menu-screen-rebind");
-        let mut input = InputState::new();
-        input.record_physical_key(KeyCode::KeyN);
-        let mut ctx = SettingsContext {
-            config: &mut config,
-            config_path: &path,
-            catalog: &catalog,
-        };
-
-        // Act
-        let notice = update_capture(
-            &mut state,
-            &input,
-            &mut ctx,
-            &settings_rows(),
-            某行下标(SettingsRow::Keybind(GameKey::Interact)),
-        );
-
-        // Assert
-        assert_eq!(notice, Some(ScreenNotice::Bound(GameKey::Interact)));
-        assert!(!config.unbound_actions.contains(&GameKey::Interact));
-    }
-
-    #[test]
-    fn 捕获模式下按退格解绑当前这一行() {
-        // Arrange
-        let mut config = GameConfig::default();
-        let cursor = 某行下标(SettingsRow::Keybind(GameKey::Map));
-        let mut state = ScreenState::Settings {
-            cursor,
-            capturing: true,
-        };
-        let catalog = 测试目录();
-        let path = crate::test_support::unique_temp_path("menu-screen-clear");
-        let mut input = InputState::new();
-        input.record_physical_key(KeyCode::Backspace);
-        let mut ctx = SettingsContext {
-            config: &mut config,
-            config_path: &path,
-            catalog: &catalog,
-        };
-
-        // Act
-        let notice = update_capture(&mut state, &input, &mut ctx, &settings_rows(), cursor);
-
-        // Assert
-        assert_eq!(notice, Some(ScreenNotice::Cleared(GameKey::Map)));
-        assert_eq!(config.bindings.bindings_for(GameKey::Map).count(), 0);
-    }
-
-    #[test]
-    fn 捕获模式下按esc取消不改动任何绑定() {
-        // Arrange
-        let mut config = GameConfig::default();
-        let 改前 = config.bindings.bindings_for(GameKey::Map).count();
-        let cursor = 某行下标(SettingsRow::Keybind(GameKey::Map));
-        let mut state = ScreenState::Settings {
-            cursor,
-            capturing: true,
-        };
-        let catalog = 测试目录();
-        let path = crate::test_support::unique_temp_path("menu-screen-cancel");
-        let mut input = InputState::new();
-        input.record_physical_key(KeyCode::Escape);
-        let mut ctx = SettingsContext {
-            config: &mut config,
-            config_path: &path,
-            catalog: &catalog,
-        };
-
-        // Act
-        let notice = update_capture(&mut state, &input, &mut ctx, &settings_rows(), cursor);
-
-        // Assert
-        assert_eq!(notice, None);
-        assert_eq!(config.bindings.bindings_for(GameKey::Map).count(), 改前);
-        assert_eq!(
-            state,
-            ScreenState::Settings {
-                cursor,
-                capturing: false
-            }
-        );
-    }
-
-    #[test]
-    fn 冲突时留在捕获模式让玩家直接再按一个键() {
-        // Arrange
-        let mut config = GameConfig::default();
-        let cursor = 某行下标(SettingsRow::Keybind(GameKey::Confirm));
-        let mut state = ScreenState::Settings {
-            cursor,
-            capturing: true,
-        };
-        let catalog = 测试目录();
-        let path = crate::test_support::unique_temp_path("menu-screen-conflict");
-        let mut input = InputState::new();
-        input.record_physical_key(KeyCode::Space);
-        let mut ctx = SettingsContext {
-            config: &mut config,
-            config_path: &path,
-            catalog: &catalog,
-        };
-
-        // Act
-        let notice = update_capture(&mut state, &input, &mut ctx, &settings_rows(), cursor);
-
-        // Assert
-        assert_eq!(notice, Some(ScreenNotice::Conflict(GameKey::Interact)));
-        assert_eq!(
-            state,
-            ScreenState::Settings {
-                cursor,
-                capturing: true
-            }
-        );
-    }
-
-    #[test]
-    fn 左右键切换语言当场改变配置里的语言标签() {
-        // Arrange
-        let mut config = GameConfig::default();
-        let 原语言 = config.language.clone();
-        let catalog = 测试目录();
-        let path = crate::test_support::unique_temp_path("menu-screen-language");
-        let mut state = 设置状态(某行下标(SettingsRow::Language));
-        let mut ctx = SettingsContext {
-            config: &mut config,
-            config_path: &path,
-            catalog: &catalog,
-        };
-
-        // Act
-        update_settings(&mut state, &按下(&[GameKey::Right]), &mut ctx);
-
-        // Assert
-        assert_ne!(config.language, 原语言);
-    }
-
-    #[test]
-    fn 切换语言后同一个键解析出另一种语言的文字() {
-        // 「当场生效」的实质验证：不是只改了一个字符串字段。
-        // Arrange
-        let catalog = 测试目录();
-
-        // Act
-        let 中文 = catalog.resolve("zh-CN", "screen-menu-title");
-        let 英文 = catalog.resolve("en", "screen-menu-title");
-
-        // Assert
-        assert_ne!(中文, 英文);
-    }
-
-    #[test]
-    fn 垂直同步行左右键翻转开关() {
-        // Arrange
-        let mut config = GameConfig::default();
-        let 原值 = config.display.vsync;
-        let catalog = 测试目录();
-        let path = crate::test_support::unique_temp_path("menu-screen-vsync");
-        let mut state = 设置状态(某行下标(SettingsRow::Vsync));
-        let mut ctx = SettingsContext {
-            config: &mut config,
-            config_path: &path,
-            catalog: &catalog,
-        };
-
-        // Act
-        update_settings(&mut state, &按下(&[GameKey::Right]), &mut ctx);
-
-        // Assert
-        assert_eq!(config.display.vsync, !原值);
-    }
-
-    #[test]
-    fn 缩放滤波行左右键在两档之间循环() {
-        // Arrange
-        let mut config = GameConfig::default();
-        let catalog = 测试目录();
-        let path = crate::test_support::unique_temp_path("menu-screen-filter");
-        let mut state = 设置状态(某行下标(SettingsRow::ScaleFilter));
-        let mut ctx = SettingsContext {
-            config: &mut config,
-            config_path: &path,
-            catalog: &catalog,
-        };
-
-        // Act
-        update_settings(&mut state, &按下(&[GameKey::Right]), &mut ctx);
-
-        // Assert
-        assert_eq!(config.display.scale_filter, ScaleFilter::SharpBilinear);
-    }
-
-    #[test]
-    fn 保存写出的配置能被重新加载且键位一致() {
-        // Arrange：先改一处键位，再保存，再读回。
-        let mut config = GameConfig::default();
-        clear_bindings(&mut config, GameKey::Interact);
-        config.bindings = try_rebind(&config.bindings, GameKey::Confirm, KeyCode::Space)
-            .expect("空格已解绑，不该冲突");
-        let catalog = 测试目录();
-        let path = crate::test_support::unique_temp_path("menu-screen-save").join("config.json5");
-        let mut state = 设置状态(某行下标(SettingsRow::Save));
-        let mut ctx = SettingsContext {
-            config: &mut config,
-            config_path: &path,
-            catalog: &catalog,
-        };
-
-        // Act
-        let (_, notice) = update_settings(&mut state, &按下(&[GameKey::Confirm]), &mut ctx);
-        let 读回 = ll_platform::config::load_or_default(&path);
-
-        // Assert
-        assert_eq!(notice, Some(ScreenNotice::Saved));
-        assert_eq!(
-            读回
-                .bindings
-                .resolve(KeyCode::Space, Modifiers::NONE, EDITABLE_CONTEXT),
-            Some(GameKey::Confirm),
-            "存盘再读回之后，空格仍然是确认键"
-        );
-    }
-
-    #[test]
-    fn 设置界面按取消返回菜单屏() {
-        // Arrange
-        let mut config = GameConfig::default();
-        let catalog = 测试目录();
-        let path = crate::test_support::unique_temp_path("menu-screen-back");
-        let mut state = 设置状态(0);
-        let mut ctx = SettingsContext {
-            config: &mut config,
-            config_path: &path,
-            catalog: &catalog,
-        };
-
-        // Act
-        update_settings(&mut state, &按下(&[GameKey::Cancel]), &mut ctx);
-
-        // Assert
-        assert_eq!(state, ScreenState::Menu);
-    }
-
-    #[test]
-    fn 未绑定的动作在设置界面显示成未绑定而不是空白() {
-        // 空白会让玩家分不清「没绑」与「这一行坏了」。
-        // Arrange
-        let mut config = GameConfig::default();
-        clear_bindings(&mut config, GameKey::Map);
-        let catalog = 测试目录();
-
-        // Act
-        let text = binding_summary(&config.bindings, GameKey::Map, &catalog, &config.language);
-
-        // Assert
-        assert_eq!(
-            text,
-            catalog.resolve(&config.language, "screen-settings-unbound")
-        );
-    }
-
-    #[test]
-    fn 键位行同时列出一个动作的多个绑定() {
-        // Up 默认同时绑着 ArrowUp 与 KeyW，只显示一个会让玩家以为丢了。
-        // Arrange
-        let config = GameConfig::default();
-        let catalog = 测试目录();
-
-        // Act
-        let text = binding_summary(&config.bindings, GameKey::Up, &catalog, &config.language);
-
-        // Assert
-        assert!(text.contains("ArrowUp"), "实际是：{text}");
-        assert!(text.contains("KeyW"), "实际是：{text}");
     }
 }

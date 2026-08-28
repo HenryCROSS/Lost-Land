@@ -61,11 +61,12 @@ use crate::layout::{
     tile_tint,
 };
 use crate::menu_screen::{
-    ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, menu_focus_index, menu_row_texts,
-    screen_data, settings_row_texts, settings_rows, update_menu, update_settings,
+    ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, menu_focus_index, screen_data,
+    settings_rows, update_menu, update_settings,
 };
 use crate::player_action::{Feedback, PlayerCommand, PlayerMenu, player_command};
 use crate::save::save_game;
+use crate::settings_view::{menu_row_texts, settings_row_texts};
 use crate::surface_draw::{PLAYER_ENTITY, SurfaceDraw, TERRAIN_ENTITY_BASE, surface_draws};
 use crate::world::{GameWorld, MAX_SAFE_ZOOM, MIN_SAFE_ZOOM, STREAM_RADIUS_ZONES};
 
