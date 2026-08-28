@@ -30,6 +30,20 @@ jobs:
         run: bash scripts/ci/check_clippy.sh
       - name: 测试
         run: bash scripts/ci/run_tests.sh
+      # 编译过 ≠ 断言过：`cargo test`/`cargo clippy --all-targets` 都会
+      # 编译每个 example，但都不运行它的 `main()`，而验收 demo 的断言
+      # 恰恰全在 `main()` 里。2026-08 的实例：`p5_save_acceptance` 因为
+      # 「决策二」硬门禁落地而失效，`cargo run` 恒定 panic，CI 却一直
+      # 全绿——没有任何一个 job 运行过它。脚本还带一条完整性检查：新增
+      # 的 example 必须显式进 RUN_LIST 或 SKIP_LIST，否则本步骤直接红，
+      # 免得再出现「加了个验收 demo，但谁也没跑过」。
+      #
+      # 放在 `test` job 而不是新开一个 job：这里 workspace 已经编译并
+      # 缓存好了，跑两个无头 demo 的边际成本只有几秒；顺带还能在
+      # ubuntu-latest 与 windows-latest 两个 target 上各跑一次——存档
+      # 格式的跨平台一致性（规格 §14.4）正好是这两个 demo 在验的东西。
+      - name: 运行验收 demo（编译过不等于断言过）
+        run: bash scripts/ci/run_acceptance_demos.sh
 
   licenses:
     runs-on: ubuntu-latest

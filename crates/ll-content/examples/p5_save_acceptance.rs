@@ -56,6 +56,36 @@
 //!    拒绝）与「mod 完全不在场」（放行给 `remap_world` 降级）。
 //!    [`b3_player_missing_full_pipeline_readonly`] 现在记一条真实的
 //!    `generation_mods` 条目,不再需要靠留空规避这个检查点。
+//!
+//! # 决策二又收回了上面第 2 条的一半结论
+//!
+//! 上面第 2 条描述的「放行」至今仍然成立，**但只对不在
+//! `generation_mods` 里的 mod 成立**。项目所有者此后拍板的决策二
+//! （「存档的 mod 如果不存在或者版本对不上就不能进入这个存档」）在
+//! [`ll_content::load_error::check_mod_set`] 里加了一条更粗粒度、且排在
+//! `check_mod_content` 与 [`ll_content::remap::remap_world`] **之前**的
+//! 硬门禁：存档头 `generation_mods` 里记着的 mod，只要当前会话找不到
+//! 它、或版本号对不上，一律直接 `Rejected(ModSetMismatch)`，细粒度降级
+//! 根本没有机会运行。
+//!
+//! 因此「生成期 mod 被整个卸载 → 只读」这条**旧期望已经不可达**——不是
+//! 本 demo 的断言写错了，是产品决策改变了这个场景的正确答案。本 demo
+//! 相应拆成两节，两边都断言，互为对照：
+//!
+//! 1. [`b3_player_missing_full_pipeline_readonly`]：玩家角色种族来自一个
+//!    **中途装上的** mod（只进 `current_mods`，不进 `generation_mods`）。
+//!    卸载它绕不开细粒度降级，因为硬门禁按定义只遍历 `generation_mods`
+//!    ——这是决策二之后「玩家角色种族缺失 → 只读」仍然真实可达的场景。
+//! 2. [`b5_generation_mod_missing_hard_gate_rejects`]：同一件事发生在
+//!    **生成期** mod 上——硬门禁抢先判定 `ModSetMismatch`，只读降级不再
+//!    发生。这一节把那条不可达的旧期望本身钉成反向断言，免得以后有人
+//!    凭印象把它改回只读。
+//!
+//! 这条不一致在 main 上长期存在而没人发现，原因很具体：`cargo test`
+//! 与 `cargo clippy --all-targets` 都只**编译** example，不运行它的
+//! `main()`，而本 demo 的验收断言全写在 `main()` 里，于是整条 CI 一直
+//! 是绿的。本批次同时补上了 `scripts/ci/run_acceptance_demos.sh`——真的
+//! 跑一遍无头验收 demo，并强制新增的 example 必须显式分类。
 
 use std::collections::BTreeMap;
 
@@ -64,6 +94,7 @@ use ll_content::degrade::{
     ContentKind, DegradeAction, LoadOutcome, OwnerContext, decide_degrade_action,
 };
 use ll_content::header::{ModHeaderEntry, SaveHeader, SaveHeaderMeta};
+use ll_content::load_error::{LoadError, SAVE_MOD_MISSING_MESSAGE_KEY};
 use ll_content::mode::SaveMode;
 use ll_content::remap::remap_world;
 use ll_content::save_file::{
@@ -436,6 +467,7 @@ fn section_b_degrade_by_kind() {
     b2_player_vs_npc_race_missing_mixed_outcome();
     b3_player_missing_full_pipeline_readonly();
     b4_npc_race_missing_full_pipeline_placeholder();
+    b5_generation_mod_missing_hard_gate_rejects();
     println!();
 }
 
@@ -559,11 +591,33 @@ fn b2_player_vs_npc_race_missing_mixed_outcome() {
 /// 玩家角色种族缺失，走完整的「文件 → load_full」管线（不是直接调用
 /// `remap_world`），确认端到端也是 `ReadOnly` 而不是崩溃/静默丢数据；
 /// 并展示只读模式本身：允许查看/导出，不提供任何能推进世界的方法。
+///
+/// # 为什么这里的 mod 是「中途装上的」，不是生成期 mod
+///
+/// 本节早期版本把 `uninstalledmod` 记进存档头的 `generation_mods`，再
+/// 卸载它。决策二的硬门禁落地之后，那份存档在
+/// [`ll_content::load_error::check_mod_set`] 这一步就被判成
+/// `ModSetMismatch` 直接拒绝，[`ll_content::remap::remap_world`] 连运行
+/// 的机会都没有——旧断言「期望 ReadOnly」因此恒定 panic（见模块文档
+/// 「决策二又收回了上面第 2 条的一半结论」一节；那条新行为本身由
+/// [`b5_generation_mod_missing_hard_gate_rejects`] 正面断言）。
+///
+/// 改用「中途装上的 mod」不是为了绕开门禁凑一个绿色断言，而是因为硬
+/// 门禁**按定义**只遍历 `generation_mods`：一个在世界建好之后才装上的
+/// mod 只会进 `current_mods`（两个字段各自独立记录，见
+/// [`ll_content::header::SaveHeader::current_mods`] 字段文档与
+/// `ll-content` header 模块测试 `生成期mod集合与当前mod集合各自独立记录`），
+/// 它不参与「同一批 mod 能否复现同一个世界」这条判定，自然也不在硬门禁
+/// 的管辖范围内。「玩了二十小时、中途装了个种族 mod、后来把它卸了」
+/// 因此仍然走细粒度降级——这正是 `check_mod_set` 文档结尾点名「不受
+/// 影响」的那部分场景，也是决策二之后本条只读路径唯一真实可达的入口。
 fn b3_player_missing_full_pipeline_readonly() {
     let (mut world, mut save_registry, _terrain_ids) = world_with_registry();
-    let vanished_race = save_registry.intern(id("uninstalledmod:player_race"));
+    // latemod：世界建好**之后**玩家才装上的 mod（命名刻意区别于
+    // b5 的 uninstalledmod——那个是生成期 mod，走的是另一条判定）。
+    let vanished_race = save_registry.intern(id("latemod:player_race"));
     let vanished_content_hash = save_registry
-        .content_hash_of("uninstalledmod")
+        .content_hash_of("latemod")
         .expect("刚刚 intern 过，必有内容哈希");
     let player_pos = world.size.wrap(1, 1);
     let player_zone = world.terrain.layout().tile_to_zone(player_pos).0;
@@ -574,22 +628,25 @@ fn b3_player_missing_full_pipeline_readonly() {
     world.player_entity = Some(player);
 
     let content_index_map = snapshot_for_header(&save_registry);
-    // 断链二已修复：generation_mods 现在记一条真实的 uninstalledmod
-    // 条目（带真实 content_hash），不再需要靠留空规避 check_mod_content
-    // ——当前会话的 current_manifests（load_full 调用处传 &[]）里完全
-    // 找不到这个命名空间，check_mod_content 会把判断放行给
-    // remap_world，本节验证的正是这条放行之后的细粒度降级路径。
-    let generation_mods = vec![ModHeaderEntry {
-        namespace: "uninstalledmod".to_string(),
+    // generation_mods 留空：这个世界是纯本体内容生成的，latemod 是之后
+    // 才装的。留空不是为了规避某个检查点（那才是本节要避免的取巧），
+    // 而是这份存档的事实本就如此——世界身份的锚点里没有 latemod。
+    let mut header = header_with(content_index_map, Vec::new(), SaveMode::Permadeath);
+    // 但 latemod 在写出存档那一刻确实装着，如实记进 current_mods（带
+    // 真实 content_hash）——这样这份存档是一个玩家真的会写出来的样本，
+    // 不是一个把 mod 痕迹全抹掉、只为了让断言通过的人造文件。两个门禁
+    // 都只读 generation_mods，因此这条记录不会改变本节的判定结果。
+    header.current_mods = vec![ModHeaderEntry {
+        namespace: "latemod".to_string(),
         version: "0.1.0".to_string(),
         content_hash: Some(vanished_content_hash),
     }];
-    let header = header_with(content_index_map, generation_mods, SaveMode::Permadeath);
     let path = temp_path("player-race-missing");
     save_to_file(&path, &header, &world).expect("写出应当成功");
 
-    // current_manifests 传 &[]——uninstalledmod 确实被卸载了，manifests
-    // 里找不到它，这正是要验证的场景。
+    // current_manifests 传 &[]——latemod 确实被卸载了。check_mod_set 与
+    // check_mod_content 遍历的都是 generation_mods（空），双双放行；
+    // 判断这才落到 remap_world 手里，本节验证的正是这条路径。
     let (current_registry, terrain_table) = current_session_registry_with_terrain();
     let outcome = load_full(&path, &current_registry, &[], terrain_table);
 
@@ -619,7 +676,7 @@ fn b3_player_missing_full_pipeline_readonly() {
     let _ = std::fs::remove_file(&path);
 
     println!(
-        "  [2c] 玩家角色种族缺失（完整 load_full 管线）-> ReadOnly，未崩溃；只读模式下数据可查看/导出"
+        "  [2c] 玩家角色种族缺失（中途装上的 mod 被卸载，完整 load_full 管线）-> ReadOnly，未崩溃；只读模式下数据可查看/导出"
     );
 }
 
@@ -666,6 +723,80 @@ fn b4_npc_race_missing_full_pipeline_placeholder() {
 
     println!(
         "  [2d] NPC 种族缺失（完整 load_full 管线，此前不可达）-> Playable，种族已换成占位内容"
+    );
+}
+
+/// 决策二硬门禁：**生成期** mod 被整个卸载 → 直接
+/// `Rejected(ModSetMismatch)`，细粒度降级不再介入。
+///
+/// # 这一节存在的意义：把一条「曾经的正确答案」钉成反向断言
+///
+/// [`b3_player_missing_full_pipeline_readonly`] 早期版本断言过「生成期
+/// mod 整个卸载 → ReadOnly」。决策二落地后这条期望不再成立，而 demo 没
+/// 跟着改，于是它在 main 上一直是 panic 的（详见模块文档）。
+///
+/// 只把 b3 换成一个仍然可达的场景是不够的：那样一来「生成期 mod 被卸载
+/// 会怎样」在整个验收里就没有任何断言兜底了，下一个人完全可能凭对旧
+/// 文档的印象把它改回只读。本节因此正面断言新行为本身，并核对
+/// [`ll_content::load_error::ModSetMismatch`] 的诊断字段确实指向那个缺失
+/// 的命名空间——门禁报出的原因必须能让玩家定位到「该去装回哪个 mod 的
+/// 哪个版本」，不能只是「拒绝」两个字。
+fn b5_generation_mod_missing_hard_gate_rejects() {
+    let (mut world, mut save_registry, _terrain_ids) = world_with_registry();
+    let vanished_race = save_registry.intern(id("uninstalledmod:player_race"));
+    let vanished_content_hash = save_registry
+        .content_hash_of("uninstalledmod")
+        .expect("刚刚 intern 过，必有内容哈希");
+    let player_pos = world.size.wrap(1, 1);
+    let player_zone = world.terrain.layout().tile_to_zone(player_pos).0;
+    let mut player_agent = bare_agent(player_pos, player_zone);
+    player_agent.race = vanished_race;
+    let player = world.actors.spawn(player_agent);
+    world.player_entity = Some(player);
+
+    let content_index_map = snapshot_for_header(&save_registry);
+    // 与 b3 唯一的实质差别：这一次 uninstalledmod 是货真价实的生成期
+    // mod——世界当初就是用它生成的，它是世界身份四要素之一。
+    let generation_mods = vec![ModHeaderEntry {
+        namespace: "uninstalledmod".to_string(),
+        version: "0.1.0".to_string(),
+        content_hash: Some(vanished_content_hash),
+    }];
+    let header = header_with(content_index_map, generation_mods, SaveMode::Permadeath);
+    let path = temp_path("generation-mod-uninstalled");
+    save_to_file(&path, &header, &world).expect("写出应当成功");
+
+    // current_manifests 传 &[]——mod 被卸载了。与 b3 的区别只在存档头，
+    // 当前会话的构造完全一样，因此两节结果不同只可能来自那一条
+    // generation_mods 记录，不来自任何其他变量。
+    let (current_registry, terrain_table) = current_session_registry_with_terrain();
+    let outcome = load_full(&path, &current_registry, &[], terrain_table);
+
+    match outcome {
+        LoadOutcome::Rejected(LoadError::ModSetMismatch(detail)) => {
+            assert_eq!(
+                detail.message_key, SAVE_MOD_MISSING_MESSAGE_KEY,
+                "「完全找不到」与「版本对不上」是两个不同的 message_key，本节构造的是前者，不能被后者蒙混过关"
+            );
+            assert_eq!(
+                detail.namespace, "uninstalledmod",
+                "诊断必须指名道姓是哪个 mod 缺了，否则玩家无从修复"
+            );
+            assert_eq!(
+                detail.required_version, "0.1.0",
+                "还要告诉玩家该装回哪个版本"
+            );
+            assert_eq!(
+                detail.current_version, None,
+                "当前会话根本没有这个 mod，此处应当是 None，而不是某个占位字符串"
+            );
+        }
+        other => panic!("期望 Rejected(ModSetMismatch)，实际 {other:?}"),
+    }
+    let _ = std::fs::remove_file(&path);
+
+    println!(
+        "  [2e] 生成期 mod 整个卸载（完整 load_full 管线）-> Rejected(ModSetMismatch)，决策二硬门禁优先于细粒度降级"
     );
 }
 
