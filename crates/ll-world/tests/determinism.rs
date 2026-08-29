@@ -283,6 +283,23 @@ use ll_world::zone::ZoneLayout;
 //    独立的 `cargo test -p ll-world --test determinism` 进程里稳定复现。
 //
 // 旧值（气候条带批次之前）：17_228_492_522_544_021_674
+//
+// # 角色创建批次（`Agent::gender`，2026-08-28）：**本条没有重冻**，
+//   如实记录为什么，以及这一次是**实测**不是推断
+//
+// `WorldState::hash` 新增混入了 `gender_hash_tag(agent.gender)`，而本条
+// 的世界由 `WorldState::new(..)` 生成之后**一个实体都没有 spawn**
+// （`world.actors` 恒空），那个 `for agent in ..` 循环体一次都不进，
+// 因此新增的那一行对本条的字节序列毫无贡献。
+//
+// 同批的 `ll_game::world::spawn_player`（玩家默认职业改成本体战士）同样
+// 够不到本条：那条路径住在 `ll-game`，是本 crate 的下游。
+//
+// 实测：改动落地后本文件九条全绿、摘要与上面的常量逐位相同；随后在
+// 黄金基准重冻的第 ② 步（把那一行注释掉）里再次确认全绿——**两个方向
+// 都验过**，不是「跑一遍没红就当没事」。真正被这一批重冻的是
+// `crates/ll-sim/tests/replay.rs` 的 `EXPECTED_REPLAY_DIGEST`（那条的
+// 世界里有两个真实实体），见那里的四步记录。
 const EXPECTED_WORLD_DIGEST: u64 = 10_180_278_885_427_934_050;
 
 // # 等级与经验系统落地批次：本次没有重冻，如实记录为什么不可能变

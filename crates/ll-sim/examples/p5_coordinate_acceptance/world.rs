@@ -193,6 +193,8 @@ fn spawn_player(
     let race =
         interner.intern(NamespacedId::parse("lostland:human").expect("demo 内置标识符恒合法"));
     world.actors.spawn(Agent {
+        // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+        gender: ll_world::entity::Gender::default(),
         pos,
         stats: BaseStats::BASELINE,
         next_action_at: Tick(0),

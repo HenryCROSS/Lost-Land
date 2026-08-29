@@ -538,6 +538,9 @@ fn spawn_player(
         content,
         content.race_ids.human,
         content.class_ids.warrior,
+        // 性别取默认占位值——这条路径没有界面可问。所有者原话：
+        // 「目前先留着个位置默认用其中一个好了」。
+        ll_world::entity::Gender::default(),
         next_action_at,
     ))
 }
@@ -577,6 +580,7 @@ pub fn build_player_agent(
     content: &LoadedContent,
     race: ll_core::ident::ContentIndex,
     profession: ll_core::ident::ContentIndex,
+    gender: ll_world::entity::Gender,
     next_action_at: Tick,
 ) -> Agent {
     // 出生携带物品（NPC 生命周期批次：NPC 带物品 → 死亡掉落 → 尸体 →
@@ -614,6 +618,9 @@ pub fn build_player_agent(
     let stats =
         ll_sim::character::bake_race_stat_modifiers(BaseStats::BASELINE, race, &content.race_table);
     Agent {
+        // 性别由调用方给出——与 `race`/`profession` 同一条理由：
+        // 它是玩家在角色创建界面上做的选择，不该被这个构造器写死。
+        gender,
         pos,
         stats,
         next_action_at,
@@ -1486,6 +1493,7 @@ mod tests {
             &content,
             content.race_ids.dwarf,
             content.class_ids.warrior,
+            ll_world::entity::Gender::default(),
             Tick(0),
         );
 
@@ -1529,6 +1537,7 @@ mod tests {
                 &content,
                 race,
                 content.class_ids.warrior,
+                ll_world::entity::Gender::default(),
                 Tick(0),
             );
 
@@ -1613,6 +1622,7 @@ mod tests {
             &content,
             content.race_ids.human,
             content.class_ids.warrior,
+            ll_world::entity::Gender::default(),
             Tick(0),
         );
 
@@ -1650,6 +1660,7 @@ mod tests {
             &content,
             half_elf,
             content.class_ids.warrior,
+            ll_world::entity::Gender::default(),
             Tick(0),
         );
 

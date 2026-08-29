@@ -231,6 +231,22 @@ EXEMPTIONS: dict[str, str] = {
     "TraitDef.display_name_key": "同上。",
     "WeatherDef.id": "同上（天气标识符）。",
     "WeatherDef.display_name_key": "同 RaceDef.display_name_key，指向 Fluent 本地化键。与其余几条不同的是它有一个真实且已接线的 UI 消费者：ll_ui::hud::status_bar::StatusBarData::weather_display_name_key 每帧把它交给 Catalog::resolve 显示在状态栏（见 crates/ll-game/src/app.rs::draw_hud）——但那是表现层，不是本门禁定义的决策层，判据上仍归入「结构性字段」。",
+    # ---- (d) 消费者在渲染层（本门禁定义的决策层之外），登记日期与安排 ----
+    "Agent.gender": (
+        "渲染层**今天就在读它**：ll_game::surface_draw::npc_draws 把它拼进精灵键的候选串"
+        "（<种族>_<职业>_<性别> → <种族>_<职业> → <种族>），"
+        "crates/ll-game/tests/npc_appearance.rs 有断言钉住这条链的次序与「合成图存在时"
+        "职业挂件层让位」这条规则。这不是「等以后」的占位理由，是一个现在就成立的真实消费点"
+        "——只是它落在表现层，不在本门禁定义的决策层 glob 内，与 WeatherDef.display_name_key "
+        "那条（状态栏每帧真的在读，判据上仍归结构性字段）同一种情形。"
+        "决策层消费者随规格 §15 P9 的婚配/血缘（Kinship）落地——那才是本字段被所有者"
+        "要求加进来的原始理由（『开始游戏的时候需要玩家设置种族，性别，职业』）。"
+        "登记日期 2026-08-28（角色创建批次）。"
+        "安排：P9『智能体经济与人口模拟』批次开工时，婚配/血缘接线的同一批**必须**回来"
+        "删掉这一条豁免，或把它改写成一条说明『为什么它仍然只在渲染层被读』的新理由。"
+        "写死日期与承接批次，是为了不让它变成第二个 RaceDef.footprint"
+        "（零消费者、问了三次没答复、至今挂着）。"
+    ),
     # ---- (c) 消费者在派生层而不是决策层 glob 覆盖的文件里 ----
     "WeatherDef.season_weights": (
         "唯一消费者是 ll_world::weather::weather_kind_at 的加权选取（`table.season_weights(index)[slot]`）"

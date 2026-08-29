@@ -29,6 +29,7 @@
 mod affiliation;
 mod agent;
 mod arena;
+mod gender;
 mod goal;
 mod id;
 mod org;
@@ -38,6 +39,7 @@ mod thin;
 pub use affiliation::{Affiliation, AffiliationKind, OrgRef};
 pub use agent::{Agent, RestState};
 pub use arena::Arena;
+pub use gender::{GENDER_EVENT, Gender};
 pub use goal::Goal;
 pub use id::{EntityId, FamilyId};
 pub use org::OrgInstance;

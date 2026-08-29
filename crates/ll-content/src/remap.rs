@@ -327,6 +327,11 @@ fn remap_agent(
         wallet: _,
         ref mut profession,
         ref mut goals,
+        // 性别（角色创建批次新增）：一个封闭的 Rust 枚举，**不是内容**
+        // （不进 `Registry`、不占 `ContentIndex`，见
+        // `ll_world::entity::Gender` 模块文档「为什么不是内容」一节），
+        // 因此换一份 mod 集合读档时它的取值不需要、也无从重映射。
+        gender: _,
         ref mut race,
         // 资源当前值——纯数值，不携带任何 ContentIndex，不需要重映射。
         mana: _,
@@ -887,6 +892,8 @@ mod tests {
 
     fn bare_agent(pos_zone: ll_world::space::ZoneCoord) -> Agent {
         Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: TorusSize::new(64, 64).expect("合法尺寸").wrap(1, 1),
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),

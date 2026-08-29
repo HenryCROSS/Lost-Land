@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::space::Space;
 
-use super::{Agent, BaseStats, EntityId, FamilyId};
+use super::{Agent, BaseStats, EntityId, FamilyId, Gender};
 
 /// 钱包公式每「天」的基础收入。P3 阶段的占位取值——真实的经济平衡
 /// （职业、聚落健康度、供需）属于 P8，见
@@ -250,6 +250,11 @@ impl ThinPopulation {
             wallet,
             profession: self.profession[index],
             goals: Vec::new(),
+            // 性别由 `(世界种子, 实体 id, 本用途专属事件计数)` 确定性
+            // 抽出（约束 C3），不占薄层的一列：薄层的设计纪律是「只存
+            // 公式算不出来的东西」，而性别恰好算得出来——同一个薄层
+            // NPC 无论升格多少次都得到同一个性别。
+            gender: Gender::deterministic(seed, id.as_u64(), super::GENDER_EVENT),
             race,
             mana: Agent::STARTING_MANA,
             stamina: Agent::STARTING_STAMINA,

@@ -196,6 +196,8 @@ mod tests {
         let race = interner
             .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
         let actor = world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: spawn,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),

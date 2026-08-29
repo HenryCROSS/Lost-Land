@@ -38,7 +38,7 @@ use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::WorldError;
 use crate::chunk::ChunkGrid;
-use crate::entity::{Affiliation, Agent, Arena, EntityId, Goal, OrgRef, ThinPopulation};
+use crate::entity::{Affiliation, Agent, Arena, EntityId, Gender, Goal, OrgRef, ThinPopulation};
 use crate::exploration::ExplorationMemory;
 use crate::generate::{GenParams, TerrainShape, build_zone_noise};
 use crate::history::{
@@ -1176,6 +1176,17 @@ impl WorldState {
             write_stats(&mut hasher, agent.stats);
             hasher.write_u64(u64::from(agent.profession.get()));
             hasher.write_u64(u64::from(agent.race.get()));
+            // 性别（角色创建批次）——**必须混入**：ADR 0022「判据漏了
+            // 东西，测试就是在空跑」。它是 `Agent` 上一个真实存储、
+            // 进存档、会被读档搬运的字段，漏掉它就意味着「读档之后
+            // 全世界性别错乱」这类缺陷永远测不出来。
+            //
+            // 位置紧跟在 `race` 之后（而不是追加到本函数末尾）：性别
+            // 与种族/职业是同一束「这个角色是谁」的字段，混入顺序照着
+            // 字段的语义分组走，与 `mana`/`stamina` 相邻同一条理由。
+            // **这个位置一旦选定就不能再挪**——挪一次就要重冻一次黄金
+            // 基准。
+            hasher.write_u64(gender_hash_tag(agent.gender));
             hasher.write_u64(agent.affiliations.len() as u64);
             for affiliation in &agent.affiliations {
                 write_affiliation(&mut hasher, affiliation);
@@ -1622,6 +1633,26 @@ fn write_stats(hasher: &mut StateHasher, stats: crate::entity::BaseStats) {
     hasher.write_i64(i64::from(stats.luck));
 }
 
+/// 把一个 [`Gender`] 混成一个稳定的整数标签——[`WorldState::hash`] 的
+/// 帮手。
+///
+/// # 为什么不直接 `gender as u64`
+///
+/// 那会让摘要依赖**变体的声明顺序**：将来在 `Male` 与 `Female` 之间插
+/// 一个变体，全世界的性别标签整体平移，摘要跟着变——正是气候批次踩过
+/// 的 `ContentIndex` 平移在枚举上的翻版（见
+/// `knowledge/handoff/2026-08-28-session-handoff.md` 第二节）。
+///
+/// 这里改为 `match` 出**手写的、与声明顺序无关的**常量：加变体只需在
+/// `match` 里补一条新常量（编译器会因为穷尽性检查逼你补），已有变体的
+/// 标签一个字节不动，摘要因此不受影响。
+fn gender_hash_tag(gender: Gender) -> u64 {
+    match gender {
+        Gender::Male => 1,
+        Gender::Female => 2,
+    }
+}
+
 /// 把一条 [`Affiliation`] 混入哈希——[`WorldState::hash`] 的帮手（P5
 /// 批次 B）。`kind` 是无数据枚举，直接转 `u64` 取判别值；`org` 与
 /// [`write_space`] 同样的模式：先混入一个变体判别字节，再混入各自
@@ -1930,6 +1961,143 @@ mod tests {
         assert!(result.is_ok());
     }
 
+    /// 一个最朴素的测试用 `Agent`——全部字段取默认/基线值。
+    ///
+    /// 本模块此前的每条断言都各摆一遍那三十几个字段的结构体字面量。
+    /// 性别这一批新增的两条测试不再照抄第 N 份，抽一个帮手出来（**只
+    /// 供新增的两条用**，既有断言一行不动：把四十多处字面量一次性
+    /// 换掉是一次与本批主题无关的重构，会把 diff 淹掉）。
+    fn sample_agent(pos: ll_core::torus::TorusPos, zone: crate::space::ZoneCoord) -> Agent {
+        Agent {
+            gender: crate::entity::Gender::default(),
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: ContentIndex::default(),
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
+            resting: None,
+            unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
+            identified_items: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: Space::surface(zone, ContentIndex::default()),
+            mod_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: ll_core::time::Tick(0),
+            remembered_id: None,
+            level: Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            stealthed: false,
+        }
+    }
+
+    #[test]
+    fn 改变一个实体的性别会改变世界哈希() {
+        // ADR 0022「判据漏了东西，测试就是在空跑」：`Agent::gender` 是
+        // 一个真实存储、进存档、会被读档搬运的字段，若它不进
+        // `WorldState::hash`，「读档之后全世界性别错乱」这类缺陷永远
+        // 测不出来。
+        // Arrange
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let id = world.actors.spawn(sample_agent(pos, zone));
+        let before = world.hash();
+
+        // Act
+        world
+            .actors
+            .get_mut(id)
+            .expect("刚 spawn 出来的实体必然存在")
+            .gender = crate::entity::Gender::Female;
+
+        // Assert
+        assert_ne!(
+            world.hash(),
+            before,
+            "改了一个实体的性别，世界摘要却一位没动——性别没有进哈希"
+        );
+    }
+
+    #[test]
+    fn 缺性别键的老存档读得回来且取默认值() {
+        // 存档兼容：本批改的是存档**主体**而不是头部，走
+        // `serde(default)`，`CURRENT_SCHEMA_VERSION` 不动。老存档的
+        // `Agent` 早于「性别」这个概念，磁盘上根本没有这个键。
+        //
+        // 这里刻意**手工把键删掉**再反序列化，而不是「序列化再读回来」
+        // ——后者写出的 JSON 里带着 `gender` 键，根本测不到缺键那条路。
+        // Arrange
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let mut agent = sample_agent(pos, zone);
+        agent.gender = crate::entity::Gender::Female;
+        world.actors.spawn(agent);
+        let mut value: serde_json::Value =
+            serde_json::to_value(&world).expect("WorldState 全部字段可序列化");
+        // 把每一个 agent 对象里的 gender 键摘掉，模拟老存档。
+        let mut removed = 0usize;
+        strip_gender(&mut value, &mut removed);
+        assert_eq!(removed, 1, "夹具里应当恰好有一个带 gender 键的实体");
+
+        // Act
+        let decoded: WorldState =
+            serde_json::from_value(value).expect("缺 gender 键的老存档必须读得回来，不许读崩");
+
+        // Assert
+        let agent = decoded
+            .actors
+            .iter()
+            .next()
+            .expect("读回来的世界里应当还有那个实体");
+        assert_eq!(
+            agent.gender,
+            crate::entity::Gender::default(),
+            "缺键时应当回落到默认占位值"
+        );
+    }
+
+    /// 递归摘掉 JSON 里全部名为 `gender` 的键，返回摘掉了几个。
+    ///
+    /// 只用在上一条测试里：它要构造的是一份**真的没有这个键**的老存档
+    /// 字节流，而不是「有键但值是默认值」——后者走的是完全不同的一条
+    /// serde 路径，测不到 `serde(default)`。
+    fn strip_gender(value: &mut serde_json::Value, removed: &mut usize) {
+        match value {
+            serde_json::Value::Object(map) => {
+                if map.remove("gender").is_some() {
+                    *removed += 1;
+                }
+                for (_, child) in map.iter_mut() {
+                    strip_gender(child, removed);
+                }
+            }
+            serde_json::Value::Array(items) => {
+                for item in items {
+                    strip_gender(item, removed);
+                }
+            }
+            _ => {}
+        }
+    }
+
     #[test]
     fn player_entity序列化往返后保持原样而非被重置() {
         // 裁定 P5-3：存档必须知道玩家是谁——这里锁住 player_entity 真的
@@ -1940,6 +2108,8 @@ mod tests {
         let pos = world.size.wrap(5, 5);
         let (zone, _) = world.terrain.layout().tile_to_zone(pos);
         let player_id = world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: crate::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -2004,6 +2174,8 @@ mod tests {
         let pos = world.size.wrap(5, 5);
         let (zone, _) = world.terrain.layout().tile_to_zone(pos);
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: crate::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -2222,6 +2394,8 @@ mod tests {
         let pos = world.size.wrap(5, 5);
         let (zone, _) = world.terrain.layout().tile_to_zone(pos);
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: crate::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -2296,6 +2470,8 @@ mod tests {
         let pos = world.size.wrap(5, 5);
         let (zone, _) = world.terrain.layout().tile_to_zone(pos);
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: crate::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -2362,6 +2538,8 @@ mod tests {
         let pos = world.size.wrap(5, 5);
         let (zone, _) = world.terrain.layout().tile_to_zone(pos);
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: crate::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -2438,6 +2616,8 @@ mod tests {
         let pos = world.size.wrap(5, 5);
         let (zone, _) = world.terrain.layout().tile_to_zone(pos);
         let id = world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: crate::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -2733,6 +2913,8 @@ mod tests {
         let pos = world.size.wrap(0, 0);
         let (zone, _) = world.terrain.layout().tile_to_zone(pos);
         Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: crate::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -3161,6 +3343,8 @@ mod tests {
             ItemStack::with_durability(armor_def, 1, 37),
         );
         let id = world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: crate::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),

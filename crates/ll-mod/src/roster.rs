@@ -106,7 +106,7 @@ use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
 use ll_sim::item::{ItemCatalog, equip_mask_of, outfit_from_inventory};
 use ll_world::culture::{CultureKind, CultureTable};
-use ll_world::entity::{Affiliation, AffiliationKind, Agent, BaseStats, OrgRef};
+use ll_world::entity::{Affiliation, AffiliationKind, Agent, BaseStats, Gender, OrgRef};
 use ll_world::item::{EquipSlot, ItemStack};
 use ll_world::resource::{ResourceCategory, ResourceKind, ResourceTable};
 use ll_world::settlement::{SettlementSite, SettlementStatus};
@@ -121,6 +121,19 @@ use crate::registry::Registry;
 /// （[`ll_world::chronicle::CHRONICLE_STREAM_ID`]）各自分开：改动名册
 /// 抽法不会连带改掉房子怎么铺，反之亦然。
 pub const ROSTER_STREAM_ID: u64 = 0x004E_5043_5F52_0001;
+
+/// 名册**性别**抽取专用的流标识——与 [`ROSTER_STREAM_ID`] **必须**分开。
+///
+/// # 为什么不复用名册那条流
+///
+/// [`settlement_roster`] 的循环里那句注释写得很清楚：「抽取顺序（先种族
+/// 后职业）本身是这条流的一部分，调换顺序会让同一颗种子产出另一份
+/// 名册」。在那条流里再插一次抽取，等于把全世界每一座据点的**种族与
+/// 职业**全部重抽——那是一次远超「加一个性别字段」的世界改动，
+/// 战争结果、据点存亡、人口构成会跟着全变。
+///
+/// 单开一条流，既有名册逐位不变，只是每个人多了一个此前不存在的属性。
+pub const ROSTER_GENDER_STREAM_ID: u64 = 0x004E_5043_5F47_0001;
 
 /// 一座据点最多派生（因而最多物化）多少个 NPC。
 ///
@@ -600,6 +613,17 @@ pub struct NpcProfile {
     /// 职业，指向 [`crate::class::ClassTable`]；对应的职业内容没装载时
     /// 为 `ContentIndex::default()`（「尚无职业」的既有诚实表达）。
     pub profession: ContentIndex,
+    /// 性别。
+    ///
+    /// 与 `race`/`profession` 一样是**派生身份的一部分**（同一
+    /// `(world_seed, 据点 id, 名册序号)` 恒得到同一个），因此长在这里
+    /// 而不是 [`MaterializeContext`]——后者装的是「与哪一位无关」的
+    /// 那一束（见 `MaterializeContext::culture` 字段文档）。
+    ///
+    /// 抽取走的是**独立的一条流**（[`ROSTER_GENDER_STREAM_ID`]），
+    /// 理由见那个常量的文档：在名册那条流里插一次抽取会把全世界的
+    /// 种族与职业重抽一遍。
+    pub gender: Gender,
 }
 
 /// 派生一座据点的完整名册。
@@ -662,6 +686,8 @@ pub fn settlement_roster(
             roster_index: index,
             race,
             profession: profession.unwrap_or_default(),
+            // **不从 `rng` 里取**——见 `ROSTER_GENDER_STREAM_ID` 文档。
+            gender: roster_gender(world_seed, site.id, index),
         });
     }
     roster
@@ -712,6 +738,21 @@ pub fn settlement_founder_race(
 /// [`ll_world::settlement::stamp_settlement`] 为每栋建筑派生流时用的
 /// `site.id × MAX_BUILDINGS + building` 逐字同形，保证同一座据点的不同
 /// 人、不同据点的同一序号，都落在互不重叠的流上。
+/// 名册第 `index` 位居民的性别——与 [`roster_rng`] 同一个坐标
+/// （`据点 id × MAX_ROSTER + 名册序号`），但走
+/// [`ROSTER_GENDER_STREAM_ID`] 这条**独立的流**。
+///
+/// 两条流用同一个坐标而不是同一条流上的相邻两次抽取，是刻意的：坐标
+/// 是「这个人是谁」的稳定表达，流标识是「问的是哪件事」。这样往后再加
+/// 一个派生属性时，同样只需再开一条流，既有属性一位不动。
+fn roster_gender(world_seed: u64, site: WorldId, index: u32) -> Gender {
+    Gender::deterministic(
+        world_seed,
+        ROSTER_GENDER_STREAM_ID,
+        u64::from(site.get()) * u64::from(MAX_ROSTER) + u64::from(index),
+    )
+}
+
 fn roster_rng(world_seed: u64, site: WorldId, index: u32) -> DetRng {
     DetRng::for_entity(
         world_seed,
@@ -848,6 +889,9 @@ pub fn build_npc_agent(
         // 否则这个 NPC 一进时间轴就会把世界时钟倒拨回午夜。
         next_action_at: ctx.now,
         health: Agent::STARTING_HEALTH,
+        // 性别直接从派生身份搬运，不在这里再抽一次——`NpcProfile` 才是
+        // 「这个人是谁」的真相源，本函数只负责把它物化成 `Agent`。
+        gender: profile.gender,
         // 见本函数文档「文化归属」一节：据点有文化就挂一条，没有就
         // 留空、由判定侧回退到「无文化」。
         affiliations: ctx
@@ -1475,6 +1519,8 @@ mod tests {
         let mut counter = 1u32;
         let home = WorldId::next(&mut counter);
         let farmer = NpcProfile {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             home,
             roster_index: 4,
             race: ContentIndex::default(),

@@ -227,6 +227,8 @@ fn spawn_combatant(
     // 与时间轴，不是任务 12 才接线的进出 Interior）。
     let (zone, _) = world.terrain.layout().tile_to_zone(pos);
     let id = world.actors.spawn(Agent {
+        // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+        gender: ll_world::entity::Gender::default(),
         pos,
         stats: BaseStats {
             dexterity,

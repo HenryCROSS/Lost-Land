@@ -66,6 +66,43 @@
 //! 它同时也是那条纪律的**另一侧**——把同一张人形抄 52 遍同样没有正当
 //! 理由，因为那 52 份之间没有任何算法差异，只有一个查表键的差异。
 //!
+//! # 合成图的回退链（角色创建批次，所有者裁定「留个位置，不要复制粘贴」）
+//!
+//! 上面那条「身子 + 挂件」的分层合成**没有被推翻**，它成了三段回退链的
+//! 最后一段：
+//!
+//! ```text
+//! <种族>_<职业>_<性别>   ← 今天一张都没有
+//!       ↓ 查不到就退
+//! <种族>_<职业>          ← 后续美术批次要加的 117 张
+//!       ↓ 查不到就退
+//! <种族> + <职业>         ← 现有的分层合成
+//! ```
+//!
+//! 所有者的原话是「以后可能会加入不同性别的贴图，不过目前先留着个位置
+//! 默认用其中一个好了」。**「留着个位置」不等于把同一张图复制两份**
+//! ——两份同样的图迟早会漂（本仓库有过先例）。做成回退链，今天零张
+//! 合成图 ⇒ 所有人自然落到最后一段 ⇒ **行为与本批次之前逐像素相同**，
+//! 但槽位是真实存在的：往 `assets/sprites/` 里放一张
+//! `lostland_human_lostland_blacksmith_female.png` 就生效，引擎一个字
+//! 都不用改。
+//!
+//! ## 命中合成图时，职业挂件那一层必须让位
+//!
+//! 合成图里职业已经画在身子上了，挂件再叠一层等于同一件事画两遍。
+//! 这就是 [`SurfaceDraw::superseded_by`] 存在的全部理由：挂件那条指令
+//! 声明「这几个键里任何一个查得到，我就不画」。今天那两个键一个都命
+//! 不中，因此该字段恒不生效——**它防的是 117 张落地那天突然人人挂两个
+//! 职业记号**，而那种缺陷一旦出现极难归因（美术那批不会想到去看
+//! `surface_draw`）。
+//!
+//! ## 这条链就是 `Agent::gender` 那条门禁豁免的理由
+//!
+//! `scripts/ci/check_field_consumers.py` 里 `Agent.gender` 那条豁免写的
+//! 是「渲染层今天就在读它」。指的就是 [`npc_draws`] 里那句
+//! `agent.gender.sprite_tag()`。豁免理由要成立，这条链就必须是真接上的，
+//! 不是写在文档里的计划。
+//!
 //! 「身子按种族、挂件按职业」这条分工是本批次的判断，不是所有者原话；
 //! 所有者只说了「根据职业种族做出区别」。真要改成「职业也换体型」或者
 //! 「装备也画上去」，是往这条规则上再加层，不是推翻它。
@@ -95,7 +132,7 @@ use std::collections::BTreeSet;
 use ll_core::torus::TorusPos;
 use ll_mod::registry::Registry;
 use ll_render::sprite::Layer;
-use ll_world::entity::EntityId;
+use ll_world::entity::{EntityId, Gender};
 use ll_world::state::WorldState;
 
 /// 玩家标记在绘制顺序里固定的实体号（[`Layer::ENTITY`] 层）。
@@ -168,9 +205,33 @@ pub struct SurfaceDraw {
     /// [`ll_render::sprite::DrawOrder`] 的最后一级比较键，号段见模块
     /// 文档「确定性」一节。
     pub entity: u64,
-    /// 内容自己声明的图集键——内容的完整命名空间 ID。`None` 表示这类
-    /// 内容**不允许**被内容覆盖（目前只有地面物品堆，见模块文档）。
-    pub preferred_key: Option<String>,
+    /// 内容自己声明的图集键，**按优先级从高到低排列**——通常是内容的
+    /// 完整命名空间 ID。空列表表示这类内容**不允许**被内容覆盖（目前
+    /// 只有地面物品堆，见模块文档）。
+    ///
+    /// # 为什么是一串而不是一个
+    ///
+    /// NPC 的身子层有三个候选（`<种族>_<职业>_<性别>` →
+    /// `<种族>_<职业>` → `<种族>`，见模块文档「合成图的回退链」一节）。
+    /// 其余两类内容各只有零个或一个候选，语义因此**一个字没变**：
+    /// [`SurfaceDraw::keys`] 依旧是「按次序取第一个查得到的」。
+    pub preferred_keys: Vec<String>,
+    /// 这一层被**哪些键压制**：其中任何一个在图集里查得到，本条指令就
+    /// 整个不画。空列表表示没有任何东西能压制它。
+    ///
+    /// # 它防的是什么
+    ///
+    /// 职业挂件层。身子层一旦落到合成图（`<种族>_<职业>[_<性别>]`），
+    /// 职业信息就已经画在身子上了，挂件再叠一层等于同一件事画两遍。
+    /// 今天一张合成图都没有，因此这个字段恒不生效——**行为与它落地
+    /// 之前逐像素相同**，见模块文档「合成图的回退链」一节。
+    ///
+    /// # 为什么只声明键，不在这里查图
+    ///
+    /// 本模块是**纯计算**（模块文档第一句），拿不到图集。「查不查得到」
+    /// 由唯一的消费点 `crate::app::push_surface_draw` 回答，与
+    /// [`Self::keys`] 那条查图次序落在同一处，不散成两份。
+    pub superseded_by: Vec<String>,
     /// 优先键查不到时的通用记号。`None` 表示这一层**本来就是可选的**
     /// ——查不到就整条指令不画，而不是退到某张兜底图。目前只有 NPC 的
     /// 职业挂件是这一种：没有为某个职业准备挂件贴图是正常状态（mod 新
@@ -186,9 +247,9 @@ impl SurfaceDraw {
     /// 把「次序」收在这里而不是让每个消费方自己写 `match`，是模块文档
     /// 「不许把同一段查图逻辑抄三遍」那条的落点。
     pub fn keys(&self) -> impl Iterator<Item = &str> {
-        self.preferred_key
-            .as_deref()
-            .into_iter()
+        self.preferred_keys
+            .iter()
+            .map(String::as_str)
             .chain(self.fallback_key)
     }
 }
@@ -236,9 +297,10 @@ pub fn ground_pile_draws(world: &WorldState) -> Vec<SurfaceDraw> {
             pos: world.size.wrap(x, y),
             layer: Layer::DECOR,
             entity: GROUND_PILE_ENTITY_BASE + y as u64 * width + x as u64,
-            // 恒定 `None`：所有者裁定「统一用一个团」，内容不得为
+            // 恒定空：所有者裁定「统一用一个团」，内容不得为
             // 「地上躺着的东西」声明自己的样子。
-            preferred_key: None,
+            preferred_keys: Vec::new(),
+            superseded_by: Vec::new(),
             fallback_key: Some(GROUND_PILE_SPRITE),
         })
         .collect()
@@ -255,7 +317,12 @@ pub fn placed_furniture_draws(world: &WorldState, registry: &Registry) -> Vec<Su
             pos: ground.pos,
             layer: Layer::DECOR,
             entity: PLACED_FURNITURE_ENTITY_BASE + index as u64,
-            preferred_key: registry.resolve(ground.stack.def).map(|id| id.to_string()),
+            preferred_keys: registry
+                .resolve(ground.stack.def)
+                .map(|id| id.to_string())
+                .into_iter()
+                .collect(),
+            superseded_by: Vec::new(),
             fallback_key: Some(PLACED_FURNITURE_SPRITE),
         })
         .collect()
@@ -291,19 +358,31 @@ pub fn npc_draws(world: &WorldState, registry: &Registry, player: EntityId) -> V
         .filter(|(id, _)| *id != player)
         .flat_map(|(id, agent)| {
             let slot = id.index() as u64;
+            let race_key = registry.resolve(agent.race).map(|id| id.to_string());
+            let class_key = registry.resolve(agent.profession).map(|id| id.to_string());
+            let composites =
+                composite_keys(race_key.as_deref(), class_key.as_deref(), agent.gender);
+            // 身子层：合成图优先，退到分层的种族身子，最后退到通用记号。
+            let mut body_keys = composites.clone();
+            body_keys.extend(race_key);
             [
                 SurfaceDraw {
                     pos: agent.pos,
                     layer: Layer::ENTITY,
                     entity: NPC_ENTITY_BASE + slot,
-                    preferred_key: registry.resolve(agent.race).map(|id| id.to_string()),
+                    preferred_keys: body_keys,
+                    superseded_by: Vec::new(),
                     fallback_key: Some(NPC_SPRITE),
                 },
                 SurfaceDraw {
                     pos: agent.pos,
                     layer: Layer::ENTITY,
                     entity: NPC_BADGE_ENTITY_BASE + slot,
-                    preferred_key: registry.resolve(agent.profession).map(|id| id.to_string()),
+                    preferred_keys: class_key.into_iter().collect(),
+                    // 身子层一旦落到合成图，职业已经画在身子上了，这一层
+                    // 必须让位——见模块文档「命中合成图时，职业挂件那一
+                    // 层必须让位」一节。今天零张合成图，因此恒不生效。
+                    superseded_by: composites,
                     // 没有挂件贴图就不画这一层，见 `fallback_key` 字段
                     // 文档。
                     fallback_key: None,
@@ -311,6 +390,42 @@ pub fn npc_draws(world: &WorldState, registry: &Registry, player: EntityId) -> V
             ]
         })
         .collect()
+}
+
+/// 「种族 × 职业」合成图的候选键，按优先级从高到低。
+///
+/// 两段：`<种族>_<职业>_<性别>`（今天零张）与 `<种族>_<职业>`（后续
+/// 美术批次的 117 张）。种族或职业任一解析不出完整命名空间 ID 时返回
+/// 空列表——**没有半个键这种东西**：拿 `#103` 之类的裸索引去拼键，
+/// 拼出来的是一个永远查不到、还会误导后来人的字符串。
+///
+/// # 分隔符为什么是下划线
+///
+/// 内容 ID 本身含冒号（`lostland:human`），而冒号在多数文件系统上不能
+/// 出现在文件名里。`ll_mod::asset_vfs::ResolvedSprite::atlas_name` 的
+/// 既有约定就是「命名空间与本地名之间用下划线」，本函数只是把同一条
+/// 约定用在两个 ID 的拼接上：
+/// `lostland_human_lostland_blacksmith_female`。
+///
+/// # 为什么性别用 [`Gender::sprite_tag`] 而不是展示名
+///
+/// 展示名随语言变（「女性」/`Female`），资产文件名不能随语言变——同
+/// `ll_platform::config::NewGameConfig::terrain_preset`「存标识而不是
+/// 译名」那条既有理由。
+fn composite_keys(race: Option<&str>, class: Option<&str>, gender: Gender) -> Vec<String> {
+    let (Some(race), Some(class)) = (race, class) else {
+        return Vec::new();
+    };
+    let base = format!("{}_{}", sprite_segment(race), sprite_segment(class));
+    vec![format!("{base}_{}", gender.sprite_tag()), base]
+}
+
+/// 把一个完整命名空间 ID 变成可以出现在文件名里的一段——冒号换下划线。
+///
+/// 与 `ll_mod::asset_vfs` 那侧的约定一致，见 [`composite_keys`] 文档
+/// 「分隔符为什么是下划线」一节。
+fn sprite_segment(id: &str) -> String {
+    id.replace(':', "_")
 }
 
 #[cfg(test)]
@@ -345,6 +460,48 @@ mod tests {
 
     fn at(world: &WorldState, x: i32, y: i32) -> TorusPos {
         world.size.wrap(x, y)
+    }
+
+    /// 一个最朴素的测试用 `Agent`——种族/职业/性别由调用方按需改写。
+    fn agent_at(pos: TorusPos, zone: ll_world::space::ZoneCoord) -> ll_world::entity::Agent {
+        use ll_world::entity::{Agent, BaseStats};
+        Agent {
+            gender: Gender::default(),
+            pos,
+            stats: BaseStats::BASELINE,
+            next_action_at: Tick(0),
+            health: Agent::STARTING_HEALTH,
+            affiliations: Vec::new(),
+            wallet: 0,
+            profession: ContentIndex::default(),
+            goals: Vec::new(),
+            race: ContentIndex::default(),
+            mana: Agent::STARTING_MANA,
+            stamina: Agent::STARTING_STAMINA,
+            resource_pools: std::collections::BTreeMap::new(),
+            spent_slots: std::collections::BTreeMap::new(),
+            inventory: Vec::new(),
+            equipment: std::collections::BTreeMap::new(),
+            resting: None,
+            unlocked_skills: Vec::new(),
+            known_recipes: Vec::new(),
+            identified_items: Vec::new(),
+            skill_cooldowns: std::collections::BTreeMap::new(),
+            subclasses: Vec::new(),
+            subclasses_ever_granted: Vec::new(),
+            active_stat_modifiers: std::collections::BTreeMap::new(),
+            current_space: ll_world::space::Space::surface(zone, ContentIndex::default()),
+            mod_state: std::collections::BTreeMap::new(),
+            creature_kind: None,
+            spawned_at: Tick(0),
+            remembered_id: None,
+            level: Agent::STARTING_LEVEL,
+            experience: 0,
+            xp_to_next_level: Agent::STARTING_XP_TO_NEXT_LEVEL,
+            unspent_attribute_points: 0,
+            unspent_skill_points: 0,
+            stealthed: false,
+        }
     }
 
     /// 注册一条内容并拿到它的索引——`ContentIndex` 没有公开构造函数
@@ -459,7 +616,7 @@ mod tests {
 
         // Assert：与上一条形成对照——同一件物品，立着时用自己的图，
         // 躺着时只能是那个团。这正是所有者裁定的两侧。
-        assert_eq!(draws[0].preferred_key, None);
+        assert!(draws[0].preferred_keys.is_empty());
         assert_eq!(
             draws[0].keys().collect::<Vec<_>>(),
             vec![GROUND_PILE_SPRITE]
@@ -486,6 +643,140 @@ mod tests {
         // 的前后顺序会变成未定义的。
         assert_eq!(piles[0].layer, furniture[0].layer);
         assert!(piles[0].entity < furniture[0].entity);
+    }
+
+    #[test]
+    fn 身子层的候选键恰好是三段回退链且次序正确() {
+        // 所有者裁定的回退链（见模块文档「合成图的回退链」一节）：
+        // <种族>_<职业>_<性别> → <种族>_<职业> → <种族> → 通用记号。
+        // Arrange
+        let mut world = empty_world();
+        let mut registry = Registry::new();
+        let race = intern(&mut registry, "lostland:human");
+        let class = intern(&mut registry, "lostland:blacksmith");
+        let pos = at(&world, 3, 3);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let player = world.actors.spawn(agent_at(pos, zone));
+        let mut npc = agent_at(pos, zone);
+        npc.race = race;
+        npc.profession = class;
+        npc.gender = Gender::Female;
+        world.actors.spawn(npc);
+
+        // Act
+        let draws = npc_draws(&world, &registry, player);
+        let body = draws
+            .iter()
+            .find(|draw| draw.entity < NPC_BADGE_ENTITY_BASE)
+            .expect("身子层必然产出一条");
+
+        // Assert
+        assert_eq!(
+            body.keys().collect::<Vec<_>>(),
+            vec![
+                "lostland_human_lostland_blacksmith_female",
+                "lostland_human_lostland_blacksmith",
+                "lostland:human",
+                NPC_SPRITE,
+            ]
+        );
+    }
+
+    #[test]
+    fn 性别不同时身子层的第一个候选键跟着不同() {
+        // 这一条是 `Agent::gender` 那条门禁豁免（「渲染层今天就在读它」）
+        // 的直接证据：改一个实体的性别，渲染层算出来的候选键真的变了。
+        // Arrange
+        let mut world = empty_world();
+        let mut registry = Registry::new();
+        let race = intern(&mut registry, "lostland:human");
+        let class = intern(&mut registry, "lostland:blacksmith");
+        let pos = at(&world, 3, 3);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let _ = &mut world;
+
+        let first_key_of = |gender: Gender| {
+            let mut world = empty_world();
+            let player = world.actors.spawn(agent_at(pos, zone));
+            let mut npc = agent_at(pos, zone);
+            npc.race = race;
+            npc.profession = class;
+            npc.gender = gender;
+            world.actors.spawn(npc);
+            let draws = npc_draws(&world, &registry, player);
+            draws
+                .iter()
+                .find(|draw| draw.entity < NPC_BADGE_ENTITY_BASE)
+                .and_then(|draw| draw.keys().next().map(str::to_string))
+                .expect("身子层必然有第一个候选")
+        };
+
+        // Act / Assert
+        assert_ne!(
+            first_key_of(Gender::Male),
+            first_key_of(Gender::Female),
+            "两个性别算出了同一个精灵键——性别没有真的参与查图"
+        );
+    }
+
+    #[test]
+    fn 挂件层被两段合成图压制而身子层不被压制() {
+        // 合成图里职业已经画在身子上，挂件必须让位，否则同一件事画两遍。
+        // Arrange
+        let mut world = empty_world();
+        let mut registry = Registry::new();
+        let race = intern(&mut registry, "lostland:human");
+        let class = intern(&mut registry, "lostland:blacksmith");
+        let pos = at(&world, 3, 3);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let player = world.actors.spawn(agent_at(pos, zone));
+        let mut npc = agent_at(pos, zone);
+        npc.race = race;
+        npc.profession = class;
+        world.actors.spawn(npc);
+
+        // Act
+        let draws = npc_draws(&world, &registry, player);
+        let body = draws
+            .iter()
+            .find(|draw| draw.entity < NPC_BADGE_ENTITY_BASE)
+            .expect("身子层必然产出一条");
+        let badge = draws
+            .iter()
+            .find(|draw| draw.entity >= NPC_BADGE_ENTITY_BASE)
+            .expect("挂件层必然产出一条");
+
+        // Assert
+        assert!(
+            body.superseded_by.is_empty(),
+            "身子层不该被任何东西压制——它自己就是那条回退链"
+        );
+        assert_eq!(
+            badge.superseded_by,
+            vec![
+                "lostland_human_lostland_blacksmith_male".to_string(),
+                "lostland_human_lostland_blacksmith".to_string(),
+            ],
+            "挂件层该被两段合成图压制"
+        );
+    }
+
+    #[test]
+    fn 种族或职业解析不出id时没有半个合成键() {
+        // 拿 `#103` 之类的裸索引拼键，拼出来的是一个永远查不到、还会
+        // 误导后来人的字符串。宁可整段不产出。
+        // Arrange
+        let mut registry = Registry::new();
+        let race = intern(&mut registry, "lostland:human");
+        let race_id = registry.resolve(race).map(|id| id.to_string());
+
+        // Act / Assert
+        assert!(composite_keys(race_id.as_deref(), None, Gender::Male).is_empty());
+        assert!(composite_keys(None, race_id.as_deref(), Gender::Male).is_empty());
+        assert_eq!(
+            composite_keys(race_id.as_deref(), race_id.as_deref(), Gender::Male).len(),
+            2
+        );
     }
 
     #[test]

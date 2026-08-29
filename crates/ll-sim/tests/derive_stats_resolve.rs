@@ -163,6 +163,8 @@ fn spawn_agent(
     let pos = world.size.wrap(5, 5);
     let (zone, _) = world.terrain.layout().tile_to_zone(pos);
     world.actors.spawn(Agent {
+        // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+        gender: ll_world::entity::Gender::default(),
         pos,
         stats: BaseStats::BASELINE,
         next_action_at: Tick(0),
@@ -931,6 +933,8 @@ fn spawn_agent_with_race_and_equipment(
     let pos = world.size.wrap(5, 5);
     let (zone, _) = world.terrain.layout().tile_to_zone(pos);
     world.actors.spawn(Agent {
+        // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+        gender: ll_world::entity::Gender::default(),
         pos,
         stats: BaseStats::BASELINE,
         next_action_at: Tick(0),

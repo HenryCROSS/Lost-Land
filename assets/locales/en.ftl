@@ -32,6 +32,11 @@ keybind-action-use = Use
 keybind-action-place = Place
 keybind-action-interact = Interact
 
+# Character gender (ll_world::entity::Gender::display_name_key). Not
+# content: the key lives on the Rust enum, not in any content table.
+gender-male-display_name = Male
+gender-female-display_name = Female
+
 race-human-display_name = Human
 race-dwarf-display_name = Dwarf
 race-elf-display_name = Elf

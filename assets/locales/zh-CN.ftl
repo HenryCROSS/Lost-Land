@@ -42,6 +42,11 @@ keybind-action-use = 使用
 keybind-action-place = 放置
 keybind-action-interact = 交互
 
+# 角色性别（ll_world::entity::Gender::display_name_key）——不是内容，
+# 因此键长在 Rust 侧那个枚举上，不在任何内容表里。
+gender-male-display_name = 男性
+gender-female-display_name = 女性
+
 race-human-display_name = 人类
 race-dwarf-display_name = 矮人
 race-elf-display_name = 精灵

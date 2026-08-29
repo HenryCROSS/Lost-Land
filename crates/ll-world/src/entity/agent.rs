@@ -11,7 +11,7 @@ use crate::item::{EquipSlot, ItemStack};
 use crate::mod_state::ModStateValue;
 use crate::space::Space;
 
-use super::{ActiveStatModifier, Affiliation, AttributeKind, BaseStats, Goal};
+use super::{ActiveStatModifier, Affiliation, AttributeKind, BaseStats, Gender, Goal};
 
 /// 一段正在进行的休息会话（`knowledge/design/resource-pools-and-rest.md`
 /// 七、八节）——`Agent::resting` 唯一的载荷类型。
@@ -124,6 +124,28 @@ pub struct Agent {
     pub profession: ContentIndex,
     /// 目标栈。
     pub goals: Vec<Goal>,
+    /// 性别。
+    ///
+    /// # 为什么它在这里，而它今天只有渲染层在读
+    ///
+    /// 所有者裁定「开始游戏的时候需要玩家设置种族，性别，职业」。今天
+    /// 真实的消费点是 `ll_game::surface_draw` 的贴图查找回退链
+    /// （`<种族>_<职业>_<性别>` → `<种族>_<职业>` → `<种族>`）——那是
+    /// 一个**现在就成立**的消费点，不是占位。决策层消费者
+    /// （婚配/血缘 `Kinship`）属规格 §15 的 P9，
+    /// `scripts/ci/check_field_consumers.py` 里有一条写明日期与安排的
+    /// 豁免。
+    ///
+    /// # `serde(default)`：老存档不许读崩
+    ///
+    /// 这个字段改的是存档**主体**（`WorldState`）而不是头部，因此走
+    /// `serde(default)` 而不是版本迁移链——与
+    /// `ll_world::terrain_shape::TerrainShape::climate_band_width` 是同
+    /// 一条既有先例，`ll_content::save_file::CURRENT_SCHEMA_VERSION`
+    /// 不必递增。缺这个键的老存档读回来一律是
+    /// [`Gender::default()`]，见那里的文档：**那是占位，不是断言**。
+    #[serde(default)]
+    pub gender: Gender,
     /// 种族，指向注册表。
     ///
     /// 与 `profession` 同样的模式：种族是内容（mod 可以注册新种族），
@@ -761,6 +783,8 @@ mod tests {
             .wrap(3, 5);
 
         Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: crate::entity::Gender::default(),
             pos: ll_core::torus::TorusSize::new(64, 64)
                 .expect("64x64 是合法尺寸")
                 .wrap(10, 20),

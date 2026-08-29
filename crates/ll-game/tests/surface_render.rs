@@ -243,10 +243,7 @@ fn 没有自带贴图的家具退回通用记号() {
         .expect("至少兜底记号必须查得到");
 
     // Assert：内容自带键查不到 → 退回通用记号，而不是什么都不画。
-    assert_eq!(
-        draws[0].preferred_key.as_deref(),
-        Some("lostland:iron_ingot")
-    );
+    assert_eq!(draws[0].preferred_keys, vec!["lostland:iron_ingot"]);
     assert_eq!(chosen, PLACED_FURNITURE_SPRITE);
 }
 
@@ -330,9 +327,9 @@ fn npc的身子查种族挂件查职业且挂件画在身子之上() {
     // Assert
     assert_eq!(mine.len(), 2, "一个 NPC 应当恰好产出身子与挂件两条指令");
     assert_eq!(
-        mine[0].preferred_key.as_deref(),
+        mine[0].keys().nth(2),
         Some(race_id.as_str()),
-        "身子查的键应当是种族 ID"
+        "身子层的第三个候选（两段合成图之后）应当是种族 ID，见 surface_draw 模块文档「合成图的回退链」"
     );
     assert_eq!(
         mine[0].keys().last(),
@@ -340,8 +337,8 @@ fn npc的身子查种族挂件查职业且挂件画在身子之上() {
         "身子查不到种族贴图时应当退回通用记号"
     );
     assert_eq!(
-        mine[1].preferred_key.as_deref(),
-        Some(profession_id.as_str()),
+        mine[1].preferred_keys,
+        vec![profession_id.clone()],
         "挂件查的键应当是职业 ID"
     );
     assert_eq!(

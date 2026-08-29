@@ -93,6 +93,8 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
     let player_pos = world.size.wrap(10, 10);
     let (player_zone, _) = world.terrain.layout().tile_to_zone(player_pos);
     let player = world.actors.spawn(Agent {
+        // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+        gender: ll_world::entity::Gender::default(),
         pos: player_pos,
         stats: BaseStats::BASELINE,
         next_action_at: Tick(0),
@@ -139,6 +141,8 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
     let enemy_pos = world.size.wrap(20, 20);
     let (enemy_zone, _) = world.terrain.layout().tile_to_zone(enemy_pos);
     let enemy = world.actors.spawn(Agent {
+        // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+        gender: ll_world::entity::Gender::default(),
         pos: enemy_pos,
         stats: BaseStats::BASELINE,
         next_action_at: Tick(0),
@@ -905,9 +909,43 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 4. **两个独立进程复现**：新值 `6_885_882_507_408_978_859` 在两次彼此
 ///    独立的 `cargo test -p ll-sim --test replay` 进程里稳定复现。
 ///
+///
+/// # 角色创建批次（`Agent::gender`，2026-08-28）：**又重冻了一次**
+///
+/// 来源只有一个，而且很窄：`Agent` 新增 `gender` 字段，
+/// `WorldState::hash` 在 `race` 之后多混入一个 `gender_hash_tag(..)`。
+/// 本条测试的两个实体由 `setup` 直接 `spawn`，性别取
+/// `Gender::default()`（`Male` → 标签 1），因此每个实体多混入一个 `1`。
+///
+/// **同批的另外两处改动对本条没有影响，这一点是实测的不是推断的**：
+///
+/// - `ll_game::world::spawn_player` 的玩家职业从占位索引改成本体战士
+///   ——那条路径住在 `ll-game`（`ll-sim` 的下游），本 crate 的测试够
+///   不到。改完单独跑过本文件，七条全绿、摘要一位未动。
+/// - `ll_mod::roster` 给名册加了性别，走的是**独立的一条流**
+///   （`ROSTER_GENDER_STREAM_ID`），既有名册的种族/职业逐位不变；且
+///   本条测试的世界根本不经名册。
+///
+/// 四步重冻（每一步真实执行）：
+///
+/// 1. **基线红**：`left: 4180595409733934027, right: 6885882507408978859`。
+/// 2. **关掉后精确回到旧值**：把 `WorldState::hash` 里那一行
+///    `hasher.write_u64(gender_hash_tag(agent.gender))` 注释掉，**其余
+///    改动全部保留**（字段还在、`serde` 还在、名册还在抽性别）——本条
+///    与 `crates/ll-world/tests/determinism.rs` 当场全绿，摘要与旧常量
+///    `6_885_882_507_408_978_859` 逐位相同。
+///
+///    这一步这次要证的是一件具体的事：**`Gender` 不是内容注册项，
+///    因此不该出现气候批次那种 `ContentIndex` 整体平移**（见上一节）。
+///    实测精确回到旧值，证明这条推理成立——若回不去，就说明加字段
+///    的过程中动到了别的东西，必须查明而不是直接抄新值。
+/// 3. **恢复那一行**。
+/// 4. **两个独立进程复现**：见常量下方的记录。
+///
 /// 旧值（世界生成参数落地批次之前）：17_219_713_135_340_447_375
 /// 旧值（气候条带批次之前）：14_731_332_643_995_045_404
-const EXPECTED_REPLAY_DIGEST: u64 = 6_885_882_507_408_978_859;
+/// 旧值（角色创建批次之前）：6_885_882_507_408_978_859
+const EXPECTED_REPLAY_DIGEST: u64 = 4_180_595_409_733_934_027;
 
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {

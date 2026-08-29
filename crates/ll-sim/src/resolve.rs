@@ -5606,6 +5606,8 @@ mod tests {
             .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
         let pos = world.size.wrap(5, 5);
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -5875,6 +5877,8 @@ mod tests {
             .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
         let pos = world.size.wrap(5, 5);
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos,
             stats: BaseStats {
                 dexterity,
@@ -5929,6 +5933,8 @@ mod tests {
         let race = interner
             .intern(ll_core::ident::NamespacedId::parse("lostland:human").expect("合法标识符"));
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos,
             stats: BaseStats {
                 luck,
@@ -6610,6 +6616,8 @@ mod tests {
             .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
         let mut world_id_counter = 0u32;
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -7011,6 +7019,8 @@ mod tests {
         let profession = interner
             .intern(ll_core::ident::NamespacedId::parse("lostland:tester").expect("合法标识符"));
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos,
             stats: BaseStats {
                 luck,
@@ -7711,6 +7721,8 @@ mod tests {
         let attacker = spawn_agent(&mut world);
         let victim_pos = east_of_spawn(&world);
         let victim = world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: victim_pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),
@@ -7779,6 +7791,8 @@ mod tests {
         let goblin_race = interner
             .intern(ll_core::ident::NamespacedId::parse("lostland:goblin").expect("合法标识符"));
         let victim = world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: victim_pos,
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),

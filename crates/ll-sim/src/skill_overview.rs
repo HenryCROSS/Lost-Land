@@ -199,6 +199,8 @@ mod tests {
         let profession = interner.intern(NamespacedId::parse("lostland:tester").unwrap());
         let race = interner.intern(NamespacedId::parse("lostland:human").unwrap());
         Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: ll_core::torus::TorusSize::new(64, 64).unwrap().wrap(0, 0),
             stats: BaseStats::BASELINE,
             next_action_at: Tick(0),

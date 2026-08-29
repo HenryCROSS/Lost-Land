@@ -423,6 +423,8 @@ mod tests {
         let size = ll_core::torus::TorusSize::new(64, 64).expect("64x64 是合法尺寸");
         let index = ll_core::ident::ContentIndex::default();
         Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: size.wrap(0, 0),
             stats: ll_world::entity::BaseStats::BASELINE,
             next_action_at: ll_core::time::Tick(0),

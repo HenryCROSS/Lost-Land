@@ -616,6 +616,8 @@ mod tests {
         let race = registry.intern(id("lostland:human"));
         let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
         let player = world.actors.spawn(ll_world::entity::Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: world.size.wrap(1, 1),
             stats: ll_world::entity::BaseStats::BASELINE,
             next_action_at: ll_core::time::Tick(0),
@@ -931,6 +933,8 @@ mod tests {
             .expect("刚刚 intern 过，必有内容哈希");
         let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
         world.actors.spawn(ll_world::entity::Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: world.size.wrap(1, 1),
             stats: ll_world::entity::BaseStats::BASELINE,
             next_action_at: ll_core::time::Tick(0),
@@ -1064,6 +1068,8 @@ mod tests {
         let vanished_race = registry.intern(id("vanishedmod:ghost_race"));
         let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
         world.actors.spawn(ll_world::entity::Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: world.size.wrap(1, 1),
             stats: ll_world::entity::BaseStats::BASELINE,
             next_action_at: ll_core::time::Tick(0),
@@ -1131,6 +1137,8 @@ mod tests {
         let vanished_race = registry.intern(id("vanishedmod:ghost_race"));
         let zone = world.terrain.layout().tile_to_zone(world.size.wrap(1, 1)).0;
         let npc = world.actors.spawn(ll_world::entity::Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: world.size.wrap(1, 1),
             stats: ll_world::entity::BaseStats::BASELINE,
             next_action_at: ll_core::time::Tick(0),

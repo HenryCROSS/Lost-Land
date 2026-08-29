@@ -650,6 +650,8 @@ mod tests {
         let race = interner.intern(NamespacedId::parse("lostland:human").expect("合法标识符"));
         let agent_pos = world.size.wrap(pos.0, pos.1);
         world.actors.spawn(Agent {
+            // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+            gender: ll_world::entity::Gender::default(),
             pos: agent_pos,
             stats: BaseStats {
                 dexterity,

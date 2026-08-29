@@ -1582,6 +1582,17 @@ fn push_surface_draw(
     zoom: Zoom,
     resources: &mut GpuResources,
 ) {
+    // 被压制的那一层整个不画——见 `SurfaceDraw::superseded_by` 字段
+    // 文档。判据在这里而不是在 `surface_draw` 里，是因为「这个键在图集
+    // 里查不查得到」只有拿得到图集的这一侧回答得了，而这一侧正是查图
+    // 次序（`SurfaceDraw::keys`）的唯一消费点，两件事因此仍然只有一处。
+    if draw
+        .superseded_by
+        .iter()
+        .any(|key| resources.lookup(key).is_some())
+    {
+        return;
+    }
     let Some((entry, uv)) = resources.lookup_first(draw.keys()) else {
         return;
     };

@@ -525,6 +525,8 @@ fn 没有文化的据点物化出来的npc不挂归属() {
     let items = ll_sim::item::NoItems;
     let size = ll_core::torus::TorusSize::new(64, 64).expect("64x64 是合法尺寸");
     let profile = ll_mod::roster::NpcProfile {
+        // 性别：测试夹具/示例里的角色不经角色创建界面，取默认占位值。
+        gender: ll_world::entity::Gender::default(),
         home: ll_core::ident::WorldId::next(&mut 1u32),
         roster_index: 0,
         race: ContentIndex::default(),
