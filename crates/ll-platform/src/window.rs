@@ -17,7 +17,7 @@ use crate::keybind::{InputContext, KeyBindings, Modifiers, WheelDirection};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use winit::application::ApplicationHandler;
-use winit::event::{ElementState, WindowEvent};
+use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::keyboard::PhysicalKey;
 use winit::window::WindowId;
@@ -230,6 +230,12 @@ pub trait AppHandler {
     ///
     /// 默认返回 [`InputContext::Gameplay`]——六个验收 demo 都没有模态
     /// UI，行为与本方法引入之前**逐位等价**，它们一行都不用改。
+    ///
+    /// # 它同时决定输入法开不开
+    ///
+    /// 返回 [`InputContext::TextEntry`] 的那一帧，事件循环会
+    /// `Window::set_ime_allowed(true)` 并打开文本通道；离开时关掉。
+    /// 三件事共用这一个判据，见 [`App::sync_text_input_mode`]。
     fn input_context(&self) -> InputContext {
         InputContext::Gameplay
     }
@@ -278,9 +284,121 @@ struct App<H: AppHandler> {
     /// 窗口关闭与主动退出是两条独立路径，都会触发收尾；没有这个标志，
     /// 某些平台上两条路径先后触发会让存档逻辑跑两遍。
     has_exited: bool,
+    /// 当前是否已经对窗口开启了输入法，见 [`App::sync_text_input_mode`]。
+    ///
+    /// 攒住这一份是为了只在**变化时**调用 `Window::set_ime_allowed`
+    /// ——那是一次跨线程投递（winit 的 `maybe_queue_on_main`），每帧
+    /// 无条件调一次是白付的开销。
+    ime_allowed: bool,
 }
 
 impl<H: AppHandler> App<H> {
+    /// 把「输入法开着吗」「文本通道收数据吗」这两件事同步到上层当前的
+    /// 输入上下文——**判据只有一个**：
+    /// `AppHandler::input_context() == InputContext::TextEntry`。
+    ///
+    /// # 为什么三件事共用一个判据
+    ///
+    /// 「IME 开着」「文本通道在收」「游戏按键查得到绑定」是同一件事的
+    /// 三个侧面。分成三个开关，迟早出现「IME 开了但通道没收」或
+    /// 「通道收了但 WASD 还在动角色」这种半接线状态，而且不会有任何
+    /// 东西报错。共用一个判据之后，要让它们分叉得先把这个函数拆开。
+    ///
+    /// # 为什么 IME 不能一直开着
+    ///
+    /// 游戏中常开会让 WASD 被输入法吃掉。winit 自己的文档还给了一条
+    /// 独立理由：X11 上「开启 IME 会关掉 compose 期间的死键上报」。
+    ///
+    /// # 为什么在帧末调用
+    ///
+    /// 上层的屏切换发生在 `on_frame` 里。帧末同步意味着**这一帧就
+    /// 生效**，下一批窗口事件已经按新上下文走；放在帧首会白白多一帧
+    /// 延迟，那一帧里玩家打的第一个字会掉。
+    fn sync_text_input_mode(&mut self) {
+        let want = self.handler.input_context() == InputContext::TextEntry;
+        if want == self.ime_allowed {
+            return;
+        }
+        self.ime_allowed = want;
+        if let Some(window) = &self.window {
+            window.set_ime_allowed(want);
+        }
+        self.input.text_input_mut().set_active(want);
+        tracing::debug!(enabled = want, "文本输入态切换");
+    }
+
+    /// 一次按键事件：物理键 → 文本 → 抽象动作，三条互不替代。
+    fn on_keyboard_input(&mut self, event: KeyEvent) {
+        let PhysicalKey::Code(code) = event.physical_key else {
+            return;
+        };
+        // 原始物理键先无条件记一份——**必须排在 resolve 之前**：
+        // 重绑定要的恰恰是那些当前还没有任何绑定的键，它们走不过下面
+        // 那个 `else { return }`，见 `InputState::last_physical_key` 文档。
+        if event.state == ElementState::Pressed {
+            self.input.record_physical_key(code);
+            self.collect_typed_text(code, event.text.as_deref());
+        }
+        let Some(action) =
+            resolve_key_for(&self.config.bindings, &self.handler, code, self.modifiers)
+        else {
+            return;
+        };
+        match event.state {
+            ElementState::Pressed => self.input.press(action),
+            ElementState::Released => self.input.release(action),
+        }
+    }
+
+    /// 从一次按下里取出「玩家打出的字」，喂给文本通道。
+    ///
+    /// 这是**直接键入**那一条来源（拉丁布局、大写、标点、Windows 的
+    /// 死键组合）；中文那一条走 [`App::on_ime`]。两条都要接：只接
+    /// IME 会漏掉直接键入，只接这里会漏掉中文。
+    ///
+    /// # 正在拼字时不吃 `event.text`
+    ///
+    /// 预编辑串非空 = 玩家正在用输入法拼词，那些字母键是给输入法的，
+    /// 不是给文本框的。万一某平台在 compose 期间仍然送带文本的
+    /// `KeyboardInput`，不加这条守卫就会把拼音重复插进去一遍。加了
+    /// 之后最坏情况是「某平台 compose 期间的直接键入丢一个字符」，
+    /// 而那个场景本身自相矛盾——保守取舍，见批次计划第八节。
+    ///
+    /// 退格不走 `text`（winit 会把它填成控制字符 `"\u{8}"`，而
+    /// `TextInput::push_committed` 按规矩把控制字符全挡了），按物理键
+    /// 单独识别成一次 [`crate::text_input::TextEdit::Backspace`]。
+    fn collect_typed_text(&mut self, code: winit::keyboard::KeyCode, text: Option<&str>) {
+        if !self.input.text_input_active() {
+            return;
+        }
+        if code == winit::keyboard::KeyCode::Backspace {
+            self.input.text_input_mut().push_backspace();
+            return;
+        }
+        if !self.input.preedit().is_empty() {
+            return;
+        }
+        if let Some(text) = text {
+            self.input.text_input_mut().push_committed(text);
+        }
+    }
+
+    /// 一次输入法事件——中文/日文/韩文那条来源。
+    ///
+    /// `Commit` 之前 winit 保证会先送一条空 `Preedit`（其
+    /// `event.rs` 文档原话），所以这里不需要自己猜什么时候清预编辑串。
+    fn on_ime(&mut self, ime: Ime) {
+        let text = self.input.text_input_mut();
+        match ime {
+            // 新的一轮开始/结束：没上屏的拼写串一律作废。
+            Ime::Enabled | Ime::Disabled => text.clear_preedit(),
+            // 光标区间参数刻意丢弃：本批的输入框没有行内插入点，
+            // 光标恒在末尾，见批次计划第八节。
+            Ime::Preedit(preedit, _) => text.set_preedit(preedit),
+            Ime::Commit(committed) => text.push_committed(&committed),
+        }
+    }
+
     /// 执行一次且仅一次收尾，然后请求事件循环退出。
     fn shutdown(&mut self, event_loop: &ActiveEventLoop) {
         if !self.has_exited {
@@ -331,25 +449,13 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                 self.modifiers = Modifiers::from(modifiers.state());
             }
             WindowEvent::KeyboardInput { event, .. } => {
-                let PhysicalKey::Code(code) = event.physical_key else {
-                    return;
-                };
-                // 原始物理键先无条件记一份——**必须排在 resolve 之前**：
-                // 重绑定要的恰恰是那些当前还没有任何绑定的键，它们
-                // 走不过下面那个 `else { return }`，见
-                // `InputState::last_physical_key` 文档。
-                if event.state == ElementState::Pressed {
-                    self.input.record_physical_key(code);
-                }
-                let Some(action) =
-                    resolve_key_for(&self.config.bindings, &self.handler, code, self.modifiers)
-                else {
-                    return;
-                };
-                match event.state {
-                    ElementState::Pressed => self.input.press(action),
-                    ElementState::Released => self.input.release(action),
-                }
+                self.on_keyboard_input(event);
+            }
+            WindowEvent::Ime(ime) => {
+                // 这条事件**只有先 `Window::set_ime_allowed(true)` 才
+                // 会送来**（winit 文档），开关由
+                // `App::sync_text_input_mode` 一处掌管。
+                self.on_ime(ime);
             }
             WindowEvent::MouseWheel { delta, .. } => {
                 // 滚轮走独立的 resolve_wheel/pulse 入口，不复用键盘的
@@ -435,6 +541,10 @@ impl<H: AppHandler> ApplicationHandler for App<H> {
                 // 必须在逻辑处理之后清「刚按下」与「本帧重复触发」标志，
                 // 放在之前会让所有「刚按下」判定永远为假。
                 self.input.end_frame();
+                // 上层可能就在刚才那次 `on_frame` 里开/关了一块文本
+                // 输入屏——帧末同步，下一批事件立刻按新上下文走，见
+                // `App::sync_text_input_mode` 文档。
+                self.sync_text_input_mode();
                 self.frame = self.frame.next();
 
                 match outcome {
@@ -468,6 +578,9 @@ pub fn run<H: AppHandler + 'static>(config: WindowConfig, handler: H) -> Result<
         frame: FrameId::default(),
         last_frame_at: None,
         has_exited: false,
+        // 与 `InputState::new()` 里那个关闭的文本通道对齐：开局不开
+        // 输入法，第一次进文本输入屏时由 `sync_text_input_mode` 打开。
+        ime_allowed: false,
     };
 
     event_loop
@@ -539,6 +652,26 @@ mod tests {
 
         // Assert
         assert_eq!(action, None);
+    }
+
+    #[test]
+    fn 上层处于文本输入上下文时字母键解析不出动作() {
+        // 「打字打出个 W 不该让角色往上走」这条要求在**解析路径**上的
+        // 断言（`keybind` 里那条是在表上断言的）：上下文由 handler 给，
+        // 一旦这条路径把它退回 Gameplay/Menu，W 就会解析成 Up。
+        // Arrange
+        let config = WindowConfig::default();
+        let handler = 固定上下文(InputContext::TextEntry);
+
+        // Act
+        let 字母 = resolve_key_for(&config.bindings, &handler, KeyCode::KeyW, Modifiers::NONE);
+        let 空格 = resolve_key_for(&config.bindings, &handler, KeyCode::Space, Modifiers::NONE);
+        let 确认 = resolve_key_for(&config.bindings, &handler, KeyCode::Enter, Modifiers::NONE);
+
+        // Assert
+        assert_eq!(字母, None);
+        assert_eq!(空格, None, "文本框里空格是一个字符，不是确认");
+        assert_eq!(确认, Some(GameKey::Confirm), "但提交仍然要按得出来");
     }
 
     #[test]

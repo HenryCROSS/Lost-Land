@@ -75,6 +75,23 @@ use ll_platform::keybind::InputContext;
 pub enum UiMode {
     /// 任意模态菜单类 UI。
     Menu,
+    /// 玩家正在往一个输入框里打字（存档命名，将来的角色命名/聊天/
+    /// 搜索）——对应 `ll_platform::keybind::InputContext::TextEntry`。
+    ///
+    /// # 它为什么值得一个独立变体，而 13 块菜单屏共用一个
+    ///
+    /// `Menu` 那一个变体覆盖所有模态菜单，是因为它们**共用同一张键位
+    /// 表**（方向键导航、Enter/Space 确认、Esc 返回），「具体是哪一块
+    /// 屏」由 `ll_game::menu_screen::ScreenState` 回答。
+    ///
+    /// 文本输入态不同：它需要的是**另一张表**——空格必须是一个字符
+    /// 而不是确认，WASD 必须解析不出任何动作（否则玩家打字会让角色
+    /// 走起来）。换一张表就是换一个 `InputContext`，换一个
+    /// `InputContext` 就要在这里有一个变体。
+    ///
+    /// 它同时是「输入法开不开」的判据，见
+    /// `ll_platform::window::AppHandler::input_context` 文档。
+    TextEntry,
 }
 
 /// 当前打开的模态 UI 栈——见模块文档。
@@ -111,15 +128,28 @@ impl UiModeStack {
         UiModeStack { stack: vec![mode] }
     }
 
-    /// 栈空则为 `Gameplay`，否则为 `Menu`——见模块文档 2.1 节引用的
-    /// 设计结论：栈顶决定当前用哪个 `InputContext` 查表，具体是哪一层
-    /// 菜单由调用方自己的路由逻辑决定，不是 `InputContext` 的职责。
+    /// **栈顶**决定当前用哪个 `InputContext` 查表——见模块文档 2.1 节
+    /// 引用的设计结论：具体是哪一层菜单由调用方自己的路由逻辑决定，
+    /// 不是 `InputContext` 的职责。
+    ///
+    /// 本方法此前写的是「空则 `Gameplay`，否则 `Menu`」。文本输入批次
+    /// 之后必须**真的看栈顶**：一块文本输入屏压在菜单屏上时，两者要
+    /// 查的是不同的表（空格在菜单里是确认、在输入框里是一个字符），
+    /// 二分法答不出这个区别。
     pub fn current_context(&self) -> InputContext {
-        if self.stack.is_empty() {
-            InputContext::Gameplay
-        } else {
-            InputContext::Menu
+        match self.stack.last() {
+            None => InputContext::Gameplay,
+            Some(UiMode::Menu) => InputContext::Menu,
+            Some(UiMode::TextEntry) => InputContext::TextEntry,
         }
+    }
+
+    /// 栈顶那一层；栈空时为 `None`。
+    ///
+    /// 调用方（`ll_game::app::Demo::sync_text_entry_mode`）用它判断
+    /// 「现在这层是不是已经是想要的那层」，避免重复压栈。
+    pub fn top(&self) -> Option<UiMode> {
+        self.stack.last().copied()
     }
 
     /// 栈是否为空。
@@ -163,6 +193,27 @@ mod tests {
 
         // Assert
         assert_eq!(stack.current_context(), InputContext::Gameplay);
+    }
+
+    #[test]
+    fn 文本输入层压在菜单层上时上下文按栈顶算() {
+        // 本方法此前是「空/非空」二分，二分法答不出「菜单屏上盖着一块
+        // 输入框」这个区别——而那正是存档命名屏的真实形状：空格在菜单
+        // 里是确认，在输入框里是一个字符。
+        // Arrange
+        let mut stack = UiModeStack::opened(UiMode::Menu);
+        let mut input = InputState::new();
+
+        // Act & Assert：压上去
+        stack.push(UiMode::TextEntry, &mut input);
+        assert_eq!(stack.current_context(), InputContext::TextEntry);
+        assert_eq!(stack.top(), Some(UiMode::TextEntry));
+        assert_eq!(stack.depth(), 2);
+
+        // Act & Assert：弹回来，菜单层还在
+        stack.pop(&mut input);
+        assert_eq!(stack.current_context(), InputContext::Menu);
+        assert_eq!(stack.top(), Some(UiMode::Menu));
     }
 
     #[test]

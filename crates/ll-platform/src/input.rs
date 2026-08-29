@@ -327,6 +327,9 @@ pub struct InputState {
     mouse_just_released: [bool; MOUSE_BUTTON_COUNT],
     /// 本帧按下的**原始物理键**，见 [`Self::last_physical_key`]。
     last_physical_key: Option<crate::keybind::KeyCode>,
+    /// 文本输入通道——**与上面那个物理键通道回答的是两个不同的问题**，
+    /// 分工见 [`crate::text_input`] 模块文档开头那张表。
+    text: crate::text_input::TextInput,
 }
 
 impl Default for InputState {
@@ -348,6 +351,7 @@ impl InputState {
             mouse_just_pressed: [false; MOUSE_BUTTON_COUNT],
             mouse_just_released: [false; MOUSE_BUTTON_COUNT],
             last_physical_key: None,
+            text: crate::text_input::TextInput::new(),
         }
     }
 
@@ -383,8 +387,38 @@ impl InputState {
     /// 记一次原始物理键按下，见 [`Self::last_physical_key`]。由
     /// [`crate::window`] 的事件循环在**每一次**按下时调用，与该键在
     /// 当前上下文下能否解析出 `GameKey` 无关。
+    ///
+    /// # 它**不是**文本输入通道
+    ///
+    /// 想知道「玩家打出了什么字」的调用方要走 [`Self::text_edits`]，
+    /// 不是这里。本方法记的是键盘上的**位置**：AZERTY 键盘上
+    /// `KeyCode::KeyW` 那个位置印着的是 Z，中文输入法上屏的「你好」
+    /// 根本没有对应的位置。两条通道的完整分工见 [`crate::text_input`]
+    /// 模块文档。
     pub fn record_physical_key(&mut self, key: crate::keybind::KeyCode) {
         self.last_physical_key = Some(key);
+    }
+
+    /// 本帧发生的文本编辑，按顺序——见 [`crate::text_input`]。
+    pub fn text_edits(&self) -> &[crate::text_input::TextEdit] {
+        self.text.edits()
+    }
+
+    /// 正在拼写、尚未上屏的串。**调用方必须把它显示在输入框里**，
+    /// 否则玩家看不见自己打了什么，见 [`crate::text_input::TextInput::preedit`]。
+    pub fn preedit(&self) -> &str {
+        self.text.preedit()
+    }
+
+    /// 现在是不是文本输入态。
+    pub fn text_input_active(&self) -> bool {
+        self.text.is_active()
+    }
+
+    /// 文本输入通道的可变引用——**只该由 [`crate::window`] 的事件循环
+    /// 使用**。上层读取走上面那三个只读访问器。
+    pub fn text_input_mut(&mut self) -> &mut crate::text_input::TextInput {
+        &mut self.text
     }
 
     /// 记录一次按下。
@@ -517,6 +551,9 @@ impl InputState {
         // 原始物理键与「刚按下」同一帧生命周期，见
         // `Self::last_physical_key` 文档。
         self.last_physical_key = None;
+        // 文本编辑是事件（消费掉就没了），预编辑串是状态（玩家还在拼，
+        // 屏上得一直显示着）——`TextInput::end_frame` 只清前者。
+        self.text.end_frame();
     }
 
     /// 清空全部按键状态（含鼠标按键，不含光标位置，见下方说明）。
@@ -551,6 +588,10 @@ impl InputState {
         self.mouse_just_pressed = [false; MOUSE_BUTTON_COUNT];
         self.mouse_just_released = [false; MOUSE_BUTTON_COUNT];
         self.last_physical_key = None;
+        // 未消费的文本编辑与没上屏的拼写串同样失去意义。**`clear` 不
+        // 改变「是否处于文本输入态」**——那是模式不是按键状态，理由见
+        // `crate::text_input::TextInput::clear` 文档。
+        self.text.clear();
     }
 
     /// 记录一次光标移动——`position` 是窗口原生像素坐标系下的新位置，

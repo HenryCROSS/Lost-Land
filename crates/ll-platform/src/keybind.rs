@@ -113,6 +113,21 @@ pub use winit::keyboard::KeyCode;
 /// 节：不给每一层嵌套菜单各开一个变体（那是过度设计，嵌套深度是
 /// 运行时可变的），也不让 `InputContext` 自己变成一个栈（那会把
 /// `KeyBindings::resolve` 从纯函数变成有状态查询）。
+///
+/// # `TextEntry`：文本输入批次新增
+///
+/// 玩家正在往一个输入框里打字（存档命名，将来的角色命名/聊天/搜索）。
+/// [`DEFAULT_TEXT_ENTRY_BINDINGS`] 只有**两条**——确认与取消，别的
+/// 一条都没有。
+///
+/// **这就是「打字打出个 W 不该让角色往上走」的全部实现，而且它是结构
+/// 性的**：在这个上下文下 [`KeyBindings::resolve`] 对 `W`/`A`/`S`/`D`/
+/// `I`/`C`/`G`/`Space` 全部返回 `None`，事件循环当场返回，路径上根本
+/// 没有动作可以产出——不是靠某处 `if` 记得跳过。
+///
+/// **`Space` 刻意没有绑给 `Confirm`**（`Menu` 表里它是确认）：在文本
+/// 框里空格是一个字符。这正是它需要自己一张表、而不是复用菜单表再打
+/// 补丁的理由。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum InputContext {
     /// 游戏内主流程——角色移动、攻击等直接作用于世界的输入。
@@ -120,6 +135,8 @@ pub enum InputContext {
     /// 任意模态 UI 覆盖游戏画面时的输入上下文，见本类型文档「`Menu`」
     /// 一节。
     Menu,
+    /// 玩家正在往输入框里打字，见本类型文档「`TextEntry`」一节。
+    TextEntry,
 }
 
 /// 一次按键事件里参与判定的修饰键状态。
@@ -512,6 +529,32 @@ const DEFAULT_MENU_BINDINGS: &[KeyBinding] = &[
     },
 ];
 
+/// `InputContext::TextEntry` 下的默认键位表——**只有两条**。
+///
+/// 少即是全部意义所在：这个上下文下没有绑定的每一个键，都因此在
+/// `KeyBindings::resolve` 里返回 `None`，玩家打字打出的 `W` 结构上
+/// 不可能变成「向上走」。完整论证见 [`InputContext`] 的
+/// 「`TextEntry`」一节。
+///
+/// **没有 `Space`**：文本框里空格是一个字符，不是确认。
+/// **没有方向键**：本批的输入框没有插入点移动（见
+/// `ll_game::save_name` 模块文档）；将来真要做，它们在这里加，
+/// 不在别处打补丁。
+const DEFAULT_TEXT_ENTRY_BINDINGS: &[KeyBinding] = &[
+    KeyBinding {
+        key: KeyCode::Enter,
+        modifiers: Modifiers::NONE,
+        context: InputContext::TextEntry,
+        action: GameKey::Confirm,
+    },
+    KeyBinding {
+        key: KeyCode::Escape,
+        modifiers: Modifiers::NONE,
+        context: InputContext::TextEntry,
+        action: GameKey::Cancel,
+    },
+];
+
 /// 默认滚轮绑定：与 [`DEFAULT_BINDINGS`] 里的缩放键位绑给同一对抽象
 /// 动作——`GameKey::ZoomIn`/`ZoomOut` 因此能同时由滚轮与按键触发，
 /// 上层游戏逻辑（`ll-game` 的 `Demo::advance`）只需要查询
@@ -541,9 +584,10 @@ impl KeyBindings {
             DEFAULT_BINDINGS
                 .iter()
                 .copied()
-                .chain(DEFAULT_MENU_BINDINGS.iter().copied()),
+                .chain(DEFAULT_MENU_BINDINGS.iter().copied())
+                .chain(DEFAULT_TEXT_ENTRY_BINDINGS.iter().copied()),
         )
-        .expect("DEFAULT_BINDINGS/DEFAULT_MENU_BINDINGS 是内置常量表，不应自相冲突");
+        .expect("三张内置常量表不应自相冲突");
         for binding in DEFAULT_WHEEL_BINDINGS.iter().copied() {
             table
                 .try_bind_wheel(binding)
@@ -782,9 +826,13 @@ impl KeyBindings {
     /// 绑定 + 补上的默认绑定」这张平表，规则见那个方法的文档。
     fn merged_key_bindings(&self, unbound_actions: &[GameKey]) -> Vec<KeyBinding> {
         let mut merged: Vec<KeyBinding> = self.bindings.clone();
+        // 三张表都要参与补齐：漏掉任何一张，写过配置文件的老玩家就
+        // **永久静默地**拿不到那张表里的默认绑定——本方法存在的全部
+        // 理由就是这条缺陷，见本方法文档与 `crate::config` 模块文档。
         for candidate in DEFAULT_BINDINGS
             .iter()
             .chain(DEFAULT_MENU_BINDINGS.iter())
+            .chain(DEFAULT_TEXT_ENTRY_BINDINGS.iter())
             .copied()
         {
             let already_bound = self
@@ -1015,6 +1063,82 @@ impl TryFrom<KeyBindingsRepr> for KeyBindings {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 文本输入态下游戏按键解析不出任何动作() {
+        // 「打字打出个 W 不该让角色往上走」这条要求的直接断言。它靠的
+        // 不是某处 `if` 记得跳过，而是 `DEFAULT_TEXT_ENTRY_BINDINGS`
+        // 里根本没有这些键——路径上产不出动作。
+        // Arrange
+        let table = KeyBindings::default_bindings();
+
+        // Act & Assert
+        for key in [
+            KeyCode::KeyW,
+            KeyCode::KeyA,
+            KeyCode::KeyS,
+            KeyCode::KeyD,
+            KeyCode::ArrowUp,
+            KeyCode::KeyI,
+            KeyCode::KeyG,
+            // 空格在菜单里是确认，在文本框里必须是一个字符。
+            KeyCode::Space,
+        ] {
+            assert_eq!(
+                table.resolve(key, Modifiers::NONE, InputContext::TextEntry),
+                None,
+                "{key:?} 在文本输入态下不该解析出任何动作"
+            );
+        }
+    }
+
+    #[test]
+    fn 文本输入态下确认与取消仍然解析得到() {
+        // 上一条只证明了「文本输入态不是游戏内/菜单上下文」；这一条
+        // 证明那张表真的被查到了，而不是整个解析失效——玩家得能提交
+        // 和退出。
+        // Arrange
+        let table = KeyBindings::default_bindings();
+
+        // Act & Assert
+        assert_eq!(
+            table.resolve(KeyCode::Enter, Modifiers::NONE, InputContext::TextEntry),
+            Some(GameKey::Confirm)
+        );
+        assert_eq!(
+            table.resolve(KeyCode::Escape, Modifiers::NONE, InputContext::TextEntry),
+            Some(GameKey::Cancel)
+        );
+    }
+
+    #[test]
+    fn 已有配置文件的玩家也能补到文本输入态那两条默认绑定() {
+        // 这是 `crate::config` 模块文档里那条缺陷的预防：新增一张默认
+        // 表却忘了接进 `fill_missing_defaults`，写过配置文件的玩家就
+        // **永久静默地**拿不到它。
+        // Arrange：一份只含游戏内绑定的老配置。
+        let 老配置 =
+            KeyBindings::from_bindings([KeyBinding::gameplay(KeyCode::ArrowUp, GameKey::Up)])
+                .expect("单条绑定不会冲突");
+        assert_eq!(
+            老配置.resolve(KeyCode::Enter, Modifiers::NONE, InputContext::TextEntry),
+            None,
+            "前置条件：老配置里本来就没有这两条"
+        );
+
+        // Act
+        let 补齐后 = 老配置.fill_missing_defaults(&[]);
+
+        // Assert
+        assert_eq!(
+            补齐后.resolve(KeyCode::Enter, Modifiers::NONE, InputContext::TextEntry),
+            Some(GameKey::Confirm)
+        );
+        assert_eq!(
+            补齐后.resolve(KeyCode::Escape, Modifiers::NONE, InputContext::TextEntry),
+            Some(GameKey::Cancel)
+        );
+    }
 
     #[test]
     fn 默认绑定表能解析方向键() {
