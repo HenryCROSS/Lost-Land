@@ -180,6 +180,32 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     # 的 residents_supported/settlement_draw/exhaustible 三条完全同一种
     # 处境，见那三条豁免自己的文字。
     ("crates/ll-world/src/culture.rs", "struct", "CultureAttrs"),
+    # 归属批次新增。ItemStack 不是一张内容表（它是**运行期实例**，与
+    # Agent 同一类），加进来的理由与 Agent 当初一样：它的字段直接驱动
+    # 结算（def/count/durability/owner 四个全部有决策层读取点），而这
+    # 张清单此前只覆盖内容表 + Agent 一个运行期结构体——物品实例这一整
+    # 类逃在门禁之外。
+    #
+    # 具体到本批次：`owner` 的真实决策层消费者是
+    # ll_sim::ownership::pick_up_owner（拾取即归属）与
+    # ll_world::item::can_merge 的那一条比较；把 ItemStack 加进来，
+    # 是让门禁**真的**去检查这件事，而不是靠人记得。将来给 ItemStack
+    # 加 quality/modifiers 时，门禁立刻就能看见它们。
+    #
+    # **如实记录一处假阴性**（脚本头注释「已知局限」第 2 条点名的那一
+    # 类，字段名撞车）：`ItemStack.owner` 这一条本门禁**咬不住**——
+    # crates/ll-sim/src/traits.rs 里有一处 `source.owner`（那是
+    # `TraitGrantSource` 的字段，与物品归属毫无关系），全文正则搜
+    # `\.owner` 一视同仁地命中它。实测：把 ownership.rs 里全部真实
+    # 的 `.owner` 读取改名之后，本门禁**仍然判定已接线**。也就是说
+    # `ItemStack.owner` 的真实保护来自另外三处，不是这里：
+    #   ① ll_world::item::can_merge 的那一条比较（有专门的测试：
+    #      「归属不同的两堆无法合并」，改坏当场红）；
+    #   ② ll_sim::ownership::pick_up_owner 的四条单元测试 + 一条端到端；
+    #   ③ WorldState::hash 的「改一堆地面物品的归属会改变世界摘要」。
+    # 把这一条写在这里而不是假装门禁管住了，是因为下一个人一定会以为
+    # 它管住了。
+    ("crates/ll-world/src/item.rs", "struct", "ItemStack"),
 ]
 
 # 决策层文件：真正驱动模拟结算、影响玩法输出的地方。见脚本头注释

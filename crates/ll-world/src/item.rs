@@ -25,36 +25,31 @@
 //! 依赖任何 `ll-sim` 专属类型（只用得到 `ItemStack` 自身），跟着一起
 //! 挪动没有额外代价。
 //!
-//! # `Owner` 本批次仍然不落地——没有真正的消费者
+//! # `Owner` 已经落地（归属批次），住在 [`crate::ownership`]
 //!
-//! `item-system.md` 三节的 `Owner`（`Unowned`/`Player`/`Npc`/`Faction`/
-//! `Shop`）按文档所写驱动三件事：偷窃判定、随从装备归属、商店库存。
-//! 核实过当前代码库：没有偷窃系统（无治安反应/目击判定）、没有商店
-//! 系统（`Shop` 相关字段/注册表不存在）、没有 NPC 私产系统——三个消费
-//! 场景一个都不存在。本批次的四条端到端（拾取/丢弃/合并/老化）也不
-//! 需要判断"这件物品归谁"：任何实体都能捡起地面上的任何物品，没有
-//! 权限检查。给 [`ItemStack`] 加一个没有任何读者的 `owner` 字段，正是
-//! 项目已经栽过十四次的那类死字段（与 P6 第一批 `owner`/`quality`/
-//! `modifiers` 排除在外同一条 YAGNI 判断，见 `ll_sim::item` 模块此前
-//! 文档「本批次范围」一节）。
+//! **这一节推翻了本模块此前的「`Owner` 本批次仍然不落地」。** 旧文档
+//! 的论证（三个消费场景一个都不存在，加一个没有读者的字段就是第十五
+//! 个死字段）在当时成立；本批次让它不再成立的是**拾取即归属**这条
+//! 所有者裁定——
 //!
-//! 最小形状记录在此，供未来真正需要它的批次（偷窃系统/商店系统）参考：
+//! > 也可以默认不归属于谁然后谁拿了就变成谁的。
 //!
-//! ```text
-//! pub enum Owner {
-//!     Unowned,
-//!     Player,
-//!     Npc(EntityId),
-//!     Faction(ContentIndex),
-//!     Shop(EntityId),
-//! }
-//! ```
+//! 它给 `owner` 提供了第一个**决策层**读者（`ll_sim::resolve` 的
+//! `pick_up_owner`），因此这个字段落地的那一刻就不是死的。
 //!
-//! 落地时机：`Owner` 一旦加进 [`ItemStack`]，[`can_merge`] 也必须同步
-//! 追加这一条比较（`item-system.md` 二节原文：「新增任何实例字段都
-//! 自动被覆盖……只要补进这个比较，堆叠逻辑就自动正确」）——两者是同一
-//! 个改动的两半，不能只加字段不改比较逻辑。
-
+//! 类型本身连同全部论证住在 [`crate::ownership`]（那里也记着设计文档
+//! 1.2/1.3 两条引用类型修正、以及「据点归属」用哪个变体的裁定）；本
+//! 模块只承担两件事：
+//!
+//! 1. [`ItemStack::owner`] 这个字段（设计文档 1.6：**存在 `ItemStack`
+//!    上，不单独开一张表**）；
+//! 2. [`can_merge`] 里对应的那一条比较——旧文档「落地时机」一节写死了
+//!    这是同一个改动的两半，本批次兑现了它。
+//!
+//! 设计文档同一节的 `stolen_marker`（销赃计时）**本批次不落地**：它只
+//! 服务盗窃，而盗窃判定、目击判定、犯罪记录整体归下一批，见
+//! [`crate::ownership`] 模块文档「这一批落地了什么、没落地什么」。
+//!
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
@@ -95,24 +90,92 @@ pub struct ItemStack {
     /// 批次只落地这个字段的形状,并用它证明"同一个 `def` 的两个
     /// `ItemStack` 各自独立"这条区分是实的（见本模块的测试）。
     pub durability: Option<i32>,
+    /// 这一堆现在归谁（归属批次）——见 [`crate::ownership::Owner`]。
+    ///
+    /// # 为什么存在这里，不单独开一张表
+    ///
+    /// 设计文档 1.6：`ItemStack` 没有实例级别的稳定 ID（一堆物品拆分/
+    /// 合并之后"这是不是同一份实例"这个问题本身就没有明确答案），
+    /// 没有 ID 就没有键，一张 `HashMap<物品实例 ID, Owner>` 根本无法
+    /// 维护。更根本的是：`Owner` 与 [`Self::durability`] 是同一类东西
+    /// ——**这一份实例独有的状态**，两堆同种物品若实例状态不同就不该
+    /// 合并，跟 `durability` 存在同一个结构体上是同一条既有纪律的
+    /// 自然延伸。
+    ///
+    /// # 默认 [`Owner::Unowned`](crate::ownership::Owner::Unowned)，不
+    /// # 改变任何现有行为
+    ///
+    /// 设计文档 1.5：现有代码里构造地面物品/背包物品的每一处，隐含的
+    /// 语义都是"这堆东西没有主张归属的机制"，本字段只是把它显式化。
+    /// 唯一会写出非 `Unowned` 值的路径是拾取即归属（`ll_sim::resolve`
+    /// 的 `pick_up_owner`）。
+    ///
+    /// # 存档：`#[serde(default)]` **不够**，`CURRENT_SCHEMA_VERSION`
+    /// # 必须往上加一
+    ///
+    /// 这一段刻意写得长，因为它纠正了本仓库里流传过两批的一个错误认识。
+    ///
+    /// `#[serde(default)]` 在这里**保留**，它对**自描述格式**（本模块
+    /// 与 `crate::state` 的 `serde_json` 往返测试、将来任何 JSON/RON
+    /// 形式的调试导出）确实生效：缺这个键就取 `Unowned`，正是那些物品
+    /// 当时真实的语义。
+    ///
+    /// **但真正的存档主体走的是 `postcard`**
+    /// （`ll_content::save_file::save_to_file`），那是一个
+    /// non-self-describing 的二进制格式——字节流里没有字段名，反序列化
+    /// 按声明顺序逐字段吃字节，`serde` 根本没有机会报告「这个字段
+    /// 缺席」。**`#[serde(default)]` 在那条路径上是空操作。** 实测过：
+    /// 老结构体三字段编码、新结构体四字段带 `#[serde(default)]` 解码，
+    /// 直接报 "Hit the end of buffer"。
+    ///
+    /// 因此本批次同时把
+    /// `ll_content::save_file::CURRENT_SCHEMA_VERSION`（本 crate 不能
+    /// 引用 `ll-content`，依赖方向不允许，这里只能点名、不能用
+    /// intra-doc link 指过去）从 2 加到 3——老存档从此被**明确拒绝**，而不是被当前的字段布局静默
+    /// 误解析。完整论证连同「`Agent::gender`/`GroundItemStack::placed`
+    /// 两条既有先例错在哪里」，写在那个常量自己的文档里。
+    ///
+    /// # `remap` 不需要碰它
+    ///
+    /// [`Owner`](crate::ownership::Owner) 的三个带载荷变体里两个是
+    /// [`WorldId`](ll_core::ident::WorldId)（世界实例 ID，不随内容集
+    /// 变化）、一个是
+    /// [`EntityId`](crate::entity::EntityId)。**没有任何
+    /// [`ContentIndex`]**，因此 `ll_content::remap` 一行都不用加——
+    /// 这一条写在这里而不是让人自己推，是因为"新字段是不是要进
+    /// remap"这个问题下一个人一定会问。
+    #[serde(default)]
+    pub owner: crate::ownership::Owner,
 }
 
 impl ItemStack {
     /// 造一个没有耐久概念的堆（材料、消耗品……）。
+    ///
+    /// 归属恒是 [`Owner::Unowned`](crate::ownership::Owner::Unowned)：
+    /// 「刚被造出来的一堆东西没有主人」是本仓库全部产出点（世界生成、
+    /// 制作、出生装备、尸体掉落）此前就已经隐含的语义，归属批次只是把
+    /// 它写明。真正给东西安上主人的是拾取即归属那一条路径，见
+    /// [`Self::owner`] 字段文档。**不给本构造器加一个 `owner` 参数**：
+    /// 那会逼着两百多个调用点每一处都写一遍 `Owner::Unowned`，而其中
+    /// 没有任何一处需要别的值——要写非默认归属的地方用
+    /// `ItemStack { owner, ..stack }` 结构更新语法，与
+    /// [`merge_stacks`]/[`split_stack`] 现在的写法一致。
     pub const fn new(def: ContentIndex, count: u32) -> Self {
         ItemStack {
             def,
             count,
             durability: None,
+            owner: crate::ownership::Owner::Unowned,
         }
     }
 
-    /// 造一个带耐久的堆（武器、装备……）。
+    /// 造一个带耐久的堆（武器、装备……）。归属同 [`Self::new`]。
     pub const fn with_durability(def: ContentIndex, count: u32, durability: i32) -> Self {
         ItemStack {
             def,
             count,
             durability: Some(durability),
+            owner: crate::ownership::Owner::Unowned,
         }
     }
 
@@ -160,6 +223,7 @@ impl ItemStack {
             def,
             count,
             durability: max_durability,
+            owner: crate::ownership::Owner::Unowned,
         }
     }
 }
@@ -180,22 +244,41 @@ impl ItemStack {
 /// 「物品此刻在哪」时（例如脚本要查询一件物品当前位置），再引入这个
 /// 枚举把 `Inventory`/`Ground`/未来的 `Equipped`/`Container` 收拢，不
 /// 在本批次提前做。
-/// 这堆地面物品是否有效地是一具尸体（或任何容器）——`contents` 非空。
+/// 这堆地面物品是否有效地是一个**容器**——`contents` 非空。
 ///
-/// # 为什么用「`contents` 是否非空」作判据，不是一个独立的 `is_corpse`
-/// 布尔字段
+/// # 尸体不再是容器（尸体平铺批次）
 ///
-/// NPC 死亡掉落批次要求「尸体是一件地面物品，它装着死者的东西」——
+/// **这一节推翻了本类型文档此前的内容。** 上一版把「容器」几乎等同于
+/// 「尸体」，那导致了一个死结：`resolve_pick_up` 把 `contents` 非空的
+/// 地面物品整体排除在拾取之外，于是尸体**根本捡不起来**。
+///
+/// 项目所有者的裁定「尸体会变成物品，然后原本的物品和尸体都会放在一
+/// 格子内的掉落物列表里」把尸体从容器这一类里摘了出去：现在一次死亡
+/// 产出**1 + N 条**独立的地面物品（尸体一条、死者的每一堆遗物各一
+/// 条，同一格），尸体的 `contents` 恒空，它就是一件普通的、可拾取、
+/// 可堆叠的物品。
+///
+/// **本字段不删**——它是**箱子**的地基（家具那批的箱子已经在
+/// `mods/lostland/items.json5` 的注释里写明了这一点）。今天的分工：
+///
+/// | | `contents` 空 | `contents` 非空 |
+/// |---|---|---|
+/// | 是什么 | 普通地面物品，**尸体也在这一列** | 真容器：箱子、袋子…… |
+/// | 怎么拿 | `Intent::PickUp` | `Intent::Loot`（开一次容器，全部拿走） |
+/// | 今天有没有生产者 | 有（丢弃、放置、死亡掉落） | **没有**，等箱子那批 |
+///
+/// # 为什么用「`contents` 是否非空」作判据，不是一个独立的布尔字段
+///
 /// 与其为「这堆地面物品是不是容器」再开一个可能与 `contents`
-/// 不同步的布尔字段（`is_corpse == true` 但 `contents` 恰好为空、或
-/// 反过来的不一致状态需要额外维护），不如让 `contents.is_empty()`
+/// 不同步的布尔字段（`is_container == true` 但 `contents` 恰好为空、
+/// 或反过来的不一致状态需要额外维护），不如让 `contents.is_empty()`
 /// 本身就是唯一的真相源——container 与 non-container 之间不存在
 /// 「是容器但没内容物」这种中间状态需要表达，见
 /// [`crate::item::ItemStack::count`] 文档「恒 ≥ 1」一节同一条「不引入
 /// 需要手动维持一致的冗余状态」纪律。`resolve_pick_up`
 /// （`ll_sim::resolve::resolve_pick_up`，本 crate 不能引用它，依赖方向
-/// 不允许，这里只点名）用这条判据把尸体排除在普通拾取目标之外——见该
-/// 函数文档。
+/// 不允许，这里只点名）用这条判据把**容器**排除在普通拾取目标之外
+/// ——那道排除**依然在**，只是尸体不再被它挡住。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct GroundItemStack {
     /// 这堆物品所在的世界坐标。
@@ -207,12 +290,23 @@ pub struct GroundItemStack {
     /// 见 NPC 生命周期批次任务书「尸体也随着时间最后消失回收」一节：
     /// 尸体和内容物作为一个整体老化，不需要给尸体单独发明第二套计时。
     pub dropped_at: Tick,
-    /// 容器内容物（NPC 死亡掉落批次新增）——非空表示这堆地面物品本身
-    /// 是一具尸体（或未来任何容器：箱子、袋子……），`stack` 此时只是
-    /// 容器本身这件"物品"的壳，`contents` 才是死者真正掉落的家当。
-    /// 绝大多数普通丢弃/拾取场景（`ll_sim::resolve::resolve_drop`）
-    /// 产出的地面物品这里恒为空 `Vec`——见类型文档「为什么用 `contents`
-    /// 是否非空作判据」一节。
+    /// 容器内容物——非空表示这堆地面物品本身是一个**容器**（箱子、
+    /// 袋子……），`stack` 此时只是容器那件"物品"的壳，`contents` 才是
+    /// 里面装的东西。
+    ///
+    /// # 今天没有任何生产者，这是**故意**的
+    ///
+    /// **尸体曾经是这个字段唯一的生产者，尸体平铺批次把它摘走了**
+    /// （见类型文档「尸体不再是容器」一节）：现在一次死亡产出尸体 +
+    /// 每堆遗物各一条独立的地面物品，全部 `contents` 恒空。普通丢弃/
+    /// 放置（`ll_sim::resolve` 的 `resolve_drop`/`resolve_place`）本来
+    /// 就恒空。
+    ///
+    /// 字段**不删**：箱子是它将来的正经消费者，删掉再写一遍是净损失
+    /// ——`Intent::Loot`/`resolve_loot`/`ll_game::player_action` 的
+    /// `InteractTarget::Container` 三处同样保留、同样暂时没有生产者。
+    /// 这与家具那批**删掉**「丢家具即放置」那条合并是相反方向的判断，
+    /// 因为那条合并没有任何将来的消费者，这个字段有。
     ///
     /// # 为什么不是 `Option<Vec<ItemStack>>`
     ///
@@ -741,18 +835,33 @@ impl std::error::Error for ItemStackError {}
 /// 两个堆是否可以合并——`item-system.md` 二节原文：「当且仅当 `def`
 /// 相同且全部实例状态相同」。
 ///
-/// # 为什么只比较 `def`/`durability` 两个字段
+/// # 为什么比较 `def`/`durability`/`owner` 三个字段
 ///
-/// 设计文档的完整判据还比较 `owner`/`quality`/`modifiers`——本模块
-/// [`ItemStack`] 还没有这三个字段（见模块文档「`Owner` 本批次仍然不
-/// 落地」一节），这里只能比较已经存在的字段。这不是对设计文档判据的
-/// 简化：文档原文特别强调「新增任何实例字段都自动被覆盖：以后给
-/// `ItemStack` 加了『绑定角色』字段，只要补进这个比较，堆叠逻辑就自动
-/// 正确」——本函数现在按同一条纪律实现，未来补 `owner`/`quality`/
-/// `modifiers` 字段时只需要在这里追加对应的比较项，不需要改
-/// `merge_stacks`/`split_stack` 的算法本身。
+/// 设计文档的完整判据是 `def` + 全部实例状态，点名的实例状态有
+/// `durability`/`owner`/`quality`/`modifiers`——本模块 [`ItemStack`]
+/// 现在有前两个（`quality`/`modifiers` 仍未落地，也仍然没有消费者），
+/// 这里就比较这两个。
+///
+/// `owner` 那一条是**归属批次同批补上的**，兑现的正是
+/// `item-system.md` 二节原文那句预告：「新增任何实例字段都自动被覆盖：
+/// 以后给 `ItemStack` 加了『绑定角色』字段，只要补进这个比较，堆叠
+/// 逻辑就自动正确」——[`crate::ownership`] 落地时若只加字段不改这里，
+/// 两堆归属不同的同种物品会被静默合并成一堆，合并结果的归属取决于
+/// [`merge_stacks`] 里 `..a` 取的是哪一边，**一堆东西会悄悄换主人**。
+/// 本模块此前文档的「落地时机」一节把这两半写成了同一个改动，这里是
+/// 它的兑现。
+///
+/// # 一条真实的行为后果，不是形式要求
+///
+/// 玩家丢下一堆箭（归属 `Player`）、一个 NPC 捡起来（拾取即归属改写成
+/// `Npc(..)`）、再丢回同一格——地上此刻是两堆箭，`def`/`durability`
+/// 全同，归属不同，**不合并**。这正确：它们确实是两份归属不同的财产。
+///
+/// `quality`/`modifiers` 落地时按同一条纪律在这里各追加一行，
+/// [`merge_stacks`]/[`split_stack`] 仍然一行都不用改（`..a`/`..stack`
+/// 结构更新语法自动继承新字段）。
 pub fn can_merge(a: &ItemStack, b: &ItemStack) -> bool {
-    a.def == b.def && a.durability == b.durability
+    a.def == b.def && a.durability == b.durability && a.owner == b.owner
 }
 
 /// 合并两个堆，`stack_limit` 是这个 `def` 声明的堆叠上限
@@ -968,6 +1077,133 @@ mod tests {
 
         // Assert
         assert_eq!(result, Err(ItemStackError::CannotMerge));
+    }
+
+    #[test]
+    fn 归属不同的两堆无法合并() {
+        // 归属批次：can_merge 必须与 owner 字段同批落地——只加字段不改
+        // 比较，两堆归属不同的同种物品会被静默合并，合并结果的归属取决
+        // 于 merge_stacks 里 `..a` 取的是哪一边，一堆东西会悄悄换主人。
+        //
+        // 场景是真实的：玩家丢下一堆箭（Player）、一个 NPC 捡起来
+        // （拾取即归属改写成 Npc）、再丢回同一格。
+        // Arrange
+        let arrow_def = index("lostland:arrow");
+        let mut counter = 3u32;
+        let npc = ll_core::ident::WorldId::next(&mut counter);
+        let mine = ItemStack {
+            owner: crate::ownership::Owner::Player,
+            ..ItemStack::new(arrow_def, 5)
+        };
+        let his = ItemStack {
+            owner: crate::ownership::Owner::Npc(npc),
+            ..ItemStack::new(arrow_def, 5)
+        };
+        assert_eq!(mine.def, his.def, "夹具前提：两堆是同一种物品");
+        assert_eq!(
+            mine.durability, his.durability,
+            "夹具前提：两堆耐久相同——否则测不出归属这一条"
+        );
+
+        // Act
+        let mergeable = can_merge(&mine, &his);
+        let merged = merge_stacks(mine, his, 99);
+
+        // Assert
+        assert!(!mergeable, "归属不同的两堆不该判定为可合并");
+        assert_eq!(merged, Err(ItemStackError::CannotMerge));
+    }
+
+    #[test]
+    fn 归属相同的两堆照常合并() {
+        // 上一条的反向：归属这一条比较只该拦住归属**不同**的，不该把
+        // 「两堆都是玩家的箭」也一并拦掉——那会让拾取即归属之后玩家
+        // 的背包再也堆不起来。
+        // Arrange
+        let arrow_def = index("lostland:arrow");
+        let a = ItemStack {
+            owner: crate::ownership::Owner::Player,
+            ..ItemStack::new(arrow_def, 5)
+        };
+        let b = ItemStack {
+            owner: crate::ownership::Owner::Player,
+            ..ItemStack::new(arrow_def, 7)
+        };
+
+        // Act
+        let (merged, overflow) = merge_stacks(a, b, 99).expect("归属相同的两堆可以合并");
+
+        // Assert
+        assert_eq!(merged.count, 12);
+        assert_eq!(merged.owner, crate::ownership::Owner::Player);
+        assert_eq!(overflow, None);
+    }
+
+    #[test]
+    fn 拆分与合并都原样继承归属() {
+        // merge_stacks/split_stack 用 `..a`/`..stack` 结构更新语法，
+        // 设计文档开头「落地状态」核实过它们不需要改一行就自动带上新
+        // 字段——这条断言把那句核实钉住：哪天有人把结构更新语法改成
+        // 逐字段手写，漏掉 owner 就会当场红。
+        // Arrange
+        let arrow_def = index("lostland:arrow");
+        let mut counter = 11u32;
+        let npc = ll_core::ident::WorldId::next(&mut counter);
+        let stack = ItemStack {
+            owner: crate::ownership::Owner::Npc(npc),
+            ..ItemStack::new(arrow_def, 30)
+        };
+
+        // Act
+        let (taken, rest) = split_stack(stack, 10).expect("10 < 30，拆分合法");
+        let (merged, overflow) = merge_stacks(taken, rest, 20).expect("两个子堆归属相同，可合并");
+
+        // Assert
+        assert_eq!(taken.owner, crate::ownership::Owner::Npc(npc));
+        assert_eq!(rest.owner, crate::ownership::Owner::Npc(npc));
+        assert_eq!(merged.owner, crate::ownership::Owner::Npc(npc));
+        assert_eq!(
+            overflow.map(|stack| stack.owner),
+            Some(crate::ownership::Owner::Npc(npc)),
+            "溢出堆同样要原样继承归属——它用的是 `..b`"
+        );
+    }
+
+    #[test]
+    fn 缺归属键的老存档读得回来且取无主() {
+        // 本条守的是**自描述格式**那条路（JSON/RON 调试导出、本 crate
+        // 的 serde_json 往返测试），不是真正的存档主体——主体走 postcard，
+        // `serde(default)` 在那里是空操作，见 ItemStack::owner 字段文档
+        // 「存档」一节。真正的存档兼容由 CURRENT_SCHEMA_VERSION 2 → 3
+        // 负责，端到端证据在 crates/ll-game/tests/save_slots.rs 的
+        // 「上一版 schema 的老存档被明确拒绝而不是静默误解析」。
+        //
+        // 刻意**手工把键删掉**再反序列化，而不是「序列化再读回来」——
+        // 后者写出的 JSON 里带着 owner 键，根本测不到缺键那条路。
+        // Arrange
+        let stack = ItemStack {
+            owner: crate::ownership::Owner::Player,
+            ..ItemStack::new(index("lostland:arrow"), 5)
+        };
+        let mut value: serde_json::Value =
+            serde_json::to_value(stack).expect("ItemStack 全部字段可序列化");
+        let removed = value
+            .as_object_mut()
+            .expect("ItemStack 序列化成一个 JSON 对象")
+            .remove("owner");
+        assert!(removed.is_some(), "夹具前提：写出来的 JSON 里确实有这个键");
+
+        // Act
+        let decoded: ItemStack =
+            serde_json::from_value(value).expect("缺 owner 键的老存档必须读得回来，不许读崩");
+
+        // Assert
+        assert_eq!(
+            decoded.owner,
+            crate::ownership::Owner::Unowned,
+            "老存档里的物品当时真实的语义就是无主"
+        );
+        assert_eq!(decoded.count, 5, "其余字段照常读回");
     }
 
     #[test]

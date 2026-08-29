@@ -4,12 +4,26 @@
 //!
 //! 1. 能被 [`ll_mod::race::starting_inventory`] 转换成背包物品；
 //! 2. 一旦发给一个真实存在的实体（哥布林），死亡结算真的会把它们
-//!    （连同已装备物品）打包进一具尸体（[`Intent::Attack`] →
-//!    `resolve_with_skills_traits_pools_and_items` →
-//!    `crate::resolve` 内部的 `append_corpse_drop`，本文件看不到那个
+//!    （连同已装备物品）与尸体一起**平铺**到死者倒下的那一格
+//!    （[`Intent::Attack`] → `resolve_with_skills_traits_pools_and_items`
+//!    → `crate::resolve` 内部的 `append_corpse_drop`，本文件看不到那个
 //!    私有函数，只能通过端到端的公开入口验证它的效果）；
-//! 3. 尸体不会被普通 [`Intent::PickUp`] 吞掉，只能通过
-//!    [`Intent::Loot`] 搜刮。
+//! 3. 尸体是一件**普通可拾取、可堆叠**的物品——[`Intent::PickUp`] 捡得
+//!    走，两具同物种的尸体在背包里堆成一堆。
+//!
+//! # 第 2、3 条被尸体平铺批次翻转过，如实记录
+//!
+//! 此前尸体是**容器**（`GroundItemStack::contents` 装着死者遗物），第
+//! 3 条写的是「尸体不会被普通 `Intent::PickUp` 吞掉，只能通过
+//! `Intent::Loot` 搜刮」。那条形状撞上一个死结：`resolve_pick_up` 把
+//! `contents` 非空的地面物品整体排除，于是尸体**根本捡不起来**。
+//! 项目所有者的裁定「尸体会变成物品，然后原本的物品和尸体都会放在一
+//! 格子内的掉落物列表里」解开了它。
+//!
+//! 容器这条路径本身**没有被删**（箱子是它将来的消费者），本文件另有
+//! 两条手工摆容器的测试守着它——见
+//! `普通拾取仍然跳过真容器不吞掉其内容物` 与
+//! `搜刮真容器后内容物进入背包且容器从地面消失`。
 //!
 //! ——NPC 生命周期批次（NPC 带物品 → 死亡掉落 → 尸体 → 老化回收）
 //! 端到端的那份证据,与 `crates/ll-mod/tests/example_mod_equipment.rs`
@@ -222,11 +236,11 @@ fn 真实哥布林出生物品转换成对应的两条物品堆() {
 }
 
 #[test]
-fn 携带出生物品的哥布林被杀死后背包物品完整进入尸体() {
-    // 死亡掉落端到端验收（NPC 生命周期批次）：给一个真实存在的哥布林
+fn 携带出生物品的哥布林被杀死后尸体与遗物平铺进同一格() {
+    // 死亡掉落端到端验收（尸体平铺批次改写）：给一个真实存在的哥布林
     // 发真实 mod 注册的出生物品 → 用真实的 Intent::Attack 结算杀死它
-    // → 断言地上真的出现了尸体，且尸体里装的战利品与死者结算前的背包
-    // 完全一致——数量守恒,不多不少。
+    // → 断言地上出现的是**尸体一条 + 每堆遗物各一条**，全在同一格，
+    // 且尸体的 contents 是空的（它不再是容器）。数量守恒：不多不少。
     // Arrange
     let handle = load_real_mods();
     let mut world = test_world();
@@ -267,19 +281,44 @@ fn 携带出生物品的哥布林被杀死后背包物品完整进入尸体() {
         &handle.item,
     );
 
-    // Assert：受害者已死，地面上出现恰好一具尸体，装着的战利品与出生
-    // 时的背包逐条相等（总数守恒：既没有物品凭空消失，也没有多出）。
+    // Assert：受害者已死；地上恰好 1 + loadout.len() 条（尸体一条、
+    // 每堆遗物各一条），全在死者倒下的那一格；尸体的 contents 是空的。
     assert!(world.actors.get(victim).is_none());
-    assert_eq!(world.ground_items.len(), 1);
+    assert_eq!(
+        world.ground_items.len(),
+        1 + loadout.len(),
+        "尸体一条 + 每堆遗物各一条"
+    );
+    let pos = world.ground_items[0].pos;
+    assert!(
+        world.ground_items.iter().all(|item| item.pos == pos),
+        "所有者原话「都会放在一格子内」——全部落在同一格"
+    );
+    assert!(
+        world
+            .ground_items
+            .iter()
+            .all(|item| item.contents.is_empty()),
+        "尸体不再是容器，遗物本来就不是——一条 contents 非空的都不该有"
+    );
+    // 第一条是尸体本身（append_corpse_drop 先推尸体再推遗物）。
     let corpse = &world.ground_items[0];
-    assert!(!corpse.contents.is_empty());
-    assert_eq!(corpse.contents, loadout);
+    assert!(
+        !loadout.iter().any(|stack| stack.def == corpse.stack.def),
+        "夹具前提：尸体的 def 与任何一件遗物都不同，下面按 def 比对才有意义"
+    );
+    // 其余各条逐条等于死者结算前的背包，顺序不变。
+    let dropped: Vec<_> = world.ground_items[1..]
+        .iter()
+        .map(|item| item.stack)
+        .collect();
+    assert_eq!(dropped, loadout, "遗物逐条守恒，既没消失也没多出");
 }
 
 #[test]
-fn 携带已装备物品的哥布林被杀死后装备也进入尸体() {
-    // 装备也要掉：死者身上穿着的物品（Agent::equipment）同样要出现在
-    // 尸体的战利品里，不只是背包（Agent::inventory）。
+fn 携带已装备物品的哥布林被杀死后装备也掉在同一格() {
+    // 装备也要掉：死者身上穿着的物品（Agent::equipment）同样要平铺到
+    // 地上，不只是背包（Agent::inventory）。
     // Arrange
     let handle = load_real_mods();
     let mut world = test_world();
@@ -316,15 +355,19 @@ fn 携带已装备物品的哥布林被杀死后装备也进入尸体() {
         &handle.item,
     );
 
-    // Assert：已装备的匕首出现在尸体战利品里。
-    assert_eq!(world.ground_items.len(), 1);
-    assert_eq!(world.ground_items[0].contents, vec![equipped]);
+    // Assert：地上两条——尸体 + 那把匕首，同一格。
+    assert_eq!(world.ground_items.len(), 2, "尸体一条 + 匕首一条");
+    assert_eq!(world.ground_items[0].pos, world.ground_items[1].pos);
+    assert_eq!(world.ground_items[1].stack, equipped);
+    assert!(world.ground_items[0].contents.is_empty());
 }
 
 #[test]
-fn 空手死者不产出可搜刮的尸体() {
-    // 背包与装备栏都空的死者不应该占一个地面物品条目——见
-    // append_corpse_drop 文档「空手死者不产出尸体」一节。
+fn 空手死者也产出一具可拾取的尸体() {
+    // **这条测试的期望被尸体平铺批次翻转了。** 旧期望是「背包与装备栏
+    // 都空的死者不占地面物品条目」，理由是当时尸体是容器、一具空容器
+    // 谁也搜刮不了。平铺之后尸体是一件普通可拾取物品，那条理由作废
+    // ——见 append_corpse_drop 文档「空手死者**也**产出尸体」一节。
     // Arrange
     let handle = load_real_mods();
     let mut world = test_world();
@@ -360,16 +403,22 @@ fn 空手死者不产出可搜刮的尸体() {
         &handle.item,
     );
 
-    // Assert
-    assert!(world.ground_items.is_empty());
+    // Assert：恰好一条，就是尸体本身，contents 空。
+    assert_eq!(world.ground_items.len(), 1, "空手死者也留下一具尸体");
+    assert!(world.ground_items[0].contents.is_empty());
+    assert_eq!(world.ground_items[0].stack.count, 1);
 }
 
 #[test]
-fn 普通拾取跳过尸体不吞掉其战利品() {
-    // Intent::PickUp 不是尸体的合法目标——见 resolve_pick_up 文档
-    // 「为什么跳过容器」一节：普通拾取只会搬走 GroundItemStack.stack
-    // 这个壳，contents 里的真实战利品会被丢在地上永久不可达,这是必须
-    // 避免的数据丢失,不是可接受的降级。
+fn 普通拾取现在能把尸体捡进背包() {
+    // **这条测试的期望被尸体平铺批次翻转了。** 旧期望是「Intent::PickUp
+    // 不是尸体的合法目标」，理由是普通拾取只会搬走 GroundItemStack.stack
+    // 这个壳、把 contents 里的战利品丢在地上永久不可达。那个死结正是
+    // 所有者要解开的：「尸体会变成物品」。平铺之后尸体的 contents 恒空，
+    // 容器排除对它不再生效。
+    //
+    // 容器排除本身**没有被删掉**，仍然咬得住真容器——见下面
+    // `普通拾取仍然跳过真容器不吞掉其内容物` 那条。
     // Arrange
     let handle = load_real_mods();
     let mut world = test_world();
@@ -407,12 +456,10 @@ fn 普通拾取跳过尸体不吞掉其战利品() {
         },
         &handle.item,
     );
-    assert_eq!(world.ground_items.len(), 1, "前置条件：尸体已经产出");
+    let before = world.ground_items.len();
+    assert_eq!(before, 1 + loadout.len(), "前置条件：尸体与遗物已经平铺");
 
-    // Act：攻击者站在尸体所在格,点名要捡那具尸体本身
-    // （`Intent::PickUp` 现在带 `def`，见其文档「为什么带 `def`」一节
-    // ——点名之后这条反例反而更强：不是「引擎恰好没挑中尸体」，是
-    // 「明确要求捡它也捡不走」）。
+    // Act：攻击者站在尸体所在格，点名要捡那具尸体本身。
     let corpse_def = world.ground_items[0].stack.def;
     let corpse_pos = world.ground_items[0].pos;
     resolve_and_apply(
@@ -425,31 +472,32 @@ fn 普通拾取跳过尸体不吞掉其战利品() {
         &handle.item,
     );
 
-    // Assert：尸体原封不动地留在地面上,攻击者背包没有多出任何东西。
-    assert_eq!(world.ground_items.len(), 1);
-    assert_eq!(world.ground_items[0].contents, loadout);
-    assert!(world.actors.get(attacker).unwrap().inventory.is_empty());
+    // Assert：尸体离开地面进了背包，遗物原样留在地上（这一次只捡了
+    // 尸体这一堆）。
+    assert_eq!(world.ground_items.len(), before - 1);
+    assert!(
+        !world
+            .ground_items
+            .iter()
+            .any(|item| item.stack.def == corpse_def),
+        "尸体应当已经不在地上了"
+    );
+    let inventory = &world.actors.get(attacker).unwrap().inventory;
+    assert_eq!(inventory.len(), 1);
+    assert_eq!(inventory[0].def, corpse_def);
+    assert_eq!(inventory[0].count, 1);
 }
 
 #[test]
-fn 搜刮尸体后战利品进入背包且尸体从地面消失() {
-    // Arrange
+fn 两具同物种的尸体捡进背包后堆成一堆() {
+    // `ll_mod::corpse_item::CORPSE_STACK_LIMIT` 此前是一条**观察不到**的
+    // 诚实声明——尸体是容器、捡不起来，那条判定路径没有任何调用点能走
+    // 到（见 append_corpse_drop 旧文档「两具尸体今天仍然不会被合并」）。
+    // 平铺之后它第一次真的在跑：两具空手哥布林的尸体 def 相同、
+    // durability 同为 None、owner 同为 Unowned，can_merge 三项全等。
+    // Arrange：两个空手哥布林先后死在同一格。
     let handle = load_real_mods();
     let mut world = test_world();
-    let view = handle
-        .race
-        .get(handle.goblin_id)
-        .expect("哥布林应当已被真实注册");
-    let loadout = starting_inventory(&view, &handle.item);
-    let victim = spawn_agent(
-        &mut world,
-        handle.goblin_id,
-        BaseStats::BASELINE,
-        1,
-        loadout.clone(),
-        BTreeMap::new(),
-        (4, 0),
-    );
     let attacker = spawn_agent(
         &mut world,
         handle.goblin_id,
@@ -460,30 +508,139 @@ fn 搜刮尸体后战利品进入背包且尸体从地面消失() {
         Agent::STARTING_HEALTH,
         Vec::new(),
         BTreeMap::new(),
-        (4, 0),
+        (6, 0),
     );
+    for _ in 0..2 {
+        let victim = spawn_agent(
+            &mut world,
+            handle.goblin_id,
+            BaseStats::BASELINE,
+            1,
+            Vec::new(),
+            BTreeMap::new(),
+            (6, 0),
+        );
+        resolve_and_apply(
+            &mut world,
+            &Intent::Attack {
+                actor: attacker,
+                target: victim,
+            },
+            &handle.item,
+        );
+    }
+    assert_eq!(world.ground_items.len(), 2, "前置条件：两具尸体各占一条");
+    let corpse_def = world.ground_items[0].stack.def;
+    let corpse_pos = world.ground_items[0].pos;
+
+    // Act：连捡两次。
+    for _ in 0..2 {
+        resolve_and_apply(
+            &mut world,
+            &Intent::PickUp {
+                actor: attacker,
+                pos: (corpse_pos.x(), corpse_pos.y()),
+                def: corpse_def,
+            },
+            &handle.item,
+        );
+    }
+
+    // Assert：地上空了，背包里是**一堆 x2**，不是两堆 x1。
+    assert!(world.ground_items.is_empty());
+    let inventory = &world.actors.get(attacker).unwrap().inventory;
+    assert_eq!(inventory.len(), 1, "两具尸体应当堆成一堆");
+    assert_eq!(inventory[0].count, 2);
+}
+
+#[test]
+fn 普通拾取仍然跳过真容器不吞掉其内容物() {
+    // 容器排除这道闸门**没有被尸体平铺批次删掉**，只是今天没有任何
+    // 生产路径会造出它的目标（尸体不再是容器，箱子还没开工）。这里
+    // 手工摆一个 contents 非空的地面物品，证明闸门本身还咬得住——
+    // 否则箱子那批开工时会发现保护早就没了、而且没人知道是哪一批
+    // 弄丢的。
+    // Arrange
+    let handle = load_real_mods();
+    let mut world = test_world();
+    let actor = spawn_agent(
+        &mut world,
+        handle.goblin_id,
+        BaseStats::BASELINE,
+        Agent::STARTING_HEALTH,
+        Vec::new(),
+        BTreeMap::new(),
+        (7, 0),
+    );
+    let pos = world.actors.get(actor).unwrap().pos;
+    let chest_def = handle.crude_dagger_id; // 借一个真实注册的 def 当箱子的壳
+    let inside = ItemStack::new(handle.arrow_id, 5);
+    world.ground_items.push(ll_world::item::GroundItemStack {
+        pos,
+        stack: ItemStack::new(chest_def, 1),
+        dropped_at: Tick(0),
+        contents: vec![inside],
+        placed: false,
+    });
+
+    // Act：点名要捡那个容器的壳。
     resolve_and_apply(
         &mut world,
-        &Intent::Attack {
-            actor: attacker,
-            target: victim,
+        &Intent::PickUp {
+            actor,
+            pos: (pos.x(), pos.y()),
+            def: chest_def,
         },
         &handle.item,
     );
-    assert_eq!(world.ground_items.len(), 1, "前置条件：尸体已经产出");
+
+    // Assert：容器原封不动，背包空——内容物没有被丢在地上永久不可达。
+    assert_eq!(world.ground_items.len(), 1);
+    assert_eq!(world.ground_items[0].contents, vec![inside]);
+    assert!(world.actors.get(actor).unwrap().inventory.is_empty());
+}
+
+#[test]
+fn 搜刮真容器后内容物进入背包且容器从地面消失() {
+    // resolve_loot 同样保留、同样今天没有生产者（尸体已经不是容器）。
+    // 手工摆一个容器验证这条路径本身还在工作，理由同上一条：箱子那批
+    // 要直接用它。
+    // Arrange
+    let handle = load_real_mods();
+    let mut world = test_world();
+    let actor = spawn_agent(
+        &mut world,
+        handle.goblin_id,
+        BaseStats::BASELINE,
+        Agent::STARTING_HEALTH,
+        Vec::new(),
+        BTreeMap::new(),
+        (8, 0),
+    );
+    let pos = world.actors.get(actor).unwrap().pos;
+    let inside = vec![
+        ItemStack::with_durability(handle.crude_dagger_id, 1, 20),
+        ItemStack::new(handle.arrow_id, 2),
+    ];
+    world.ground_items.push(ll_world::item::GroundItemStack {
+        pos,
+        stack: ItemStack::new(handle.crude_dagger_id, 1),
+        dropped_at: Tick(0),
+        contents: inside.clone(),
+        placed: false,
+    });
 
     // Act
-    let corpse_pos = world.ground_items[0].pos;
     resolve_and_apply(
         &mut world,
         &Intent::Loot {
-            actor: attacker,
-            pos: (corpse_pos.x(), corpse_pos.y()),
+            actor,
+            pos: (pos.x(), pos.y()),
         },
         &handle.item,
     );
 
-    // Assert：尸体从地面消失,战利品原样进了攻击者背包。
+    // Assert：容器从地面消失，内容物原样进了背包。
     assert!(world.ground_items.is_empty());
-    assert_eq!(world.actors.get(attacker).unwrap().inventory, loadout);
+    assert_eq!(world.actors.get(actor).unwrap().inventory, inside);
 }

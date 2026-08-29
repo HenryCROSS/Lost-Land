@@ -219,6 +219,21 @@ fn 重写时间戳(path: &std::path::Path, value: i64) {
     std::fs::write(path, out).expect("回写应当成功");
 }
 
+/// 把一份存档头里的 `schema_version` 改成 `value`——直接改头部 JSON，
+/// 主体一个字节不动，用来模拟「上一版 schema 写出的存档」。
+fn 重写schema版本(path: &std::path::Path, value: u32) {
+    let bytes = std::fs::read(path).expect("存档应当读得出来");
+    let len = u32::from_le_bytes(bytes[..4].try_into().expect("前四个字节必然够")) as usize;
+    let mut header: serde_json::Value =
+        serde_json::from_slice(&bytes[4..4 + len]).expect("头部应当是合法 JSON");
+    header["schema_version"] = serde_json::json!(value);
+    let new_header = serde_json::to_vec(&header).expect("改完仍然可序列化");
+    let mut out = (new_header.len() as u32).to_le_bytes().to_vec();
+    out.extend_from_slice(&new_header);
+    out.extend_from_slice(&bytes[4 + len..]);
+    std::fs::write(path, out).expect("回写应当成功");
+}
+
 /// 把一份存档头里的某个键**整个删掉**——模拟本批次之前写出的老存档。
 fn 删掉头部的键(path: &std::path::Path, key: &str) {
     let bytes = std::fs::read(path).expect("存档应当读得出来");
@@ -457,4 +472,56 @@ fn 槽位标识过滤之后仍然落在存档目录里() {
 fn 时间戳显示成人类读得懂的样子() {
     // 存档列表要回答「哪一份更新」，一串 Unix 秒回答不了。
     assert_eq!(format_saved_at(1_800_000_000), "2027-01-15 08:00");
+}
+
+#[test]
+fn 上一版schema的老存档被明确拒绝而不是静默误解析() {
+    // 归属批次的存档兼容证据（端到端，走真实 mods/ 与真实读写管线）。
+    //
+    // 背景：本批次给 ItemStack 加了 owner 字段——那是存档**主体**的结构
+    // 变化。主体走 postcard，而 postcard 是 non-self-describing 的二进制
+    // 格式：字节流里没有字段名，反序列化按声明顺序逐字段吃字节，
+    // `#[serde(default)]` 在那条路径上是**空操作**（既有的
+    // `Agent::gender`/`GroundItemStack::placed` 两批都误以为它管用，
+    // 完整论证见 ll_content::save_file::CURRENT_SCHEMA_VERSION 文档）。
+    //
+    // 因此本批次把 CURRENT_SCHEMA_VERSION 从 2 加到 3。本条钉住那个决定
+    // 的可观察后果：一份自称 schema 2 的存档必须被**明确拒绝**
+    // （LoadedGame::Rejected），不许被当前的字段布局静默解析成一份看似
+    // 合法实则损坏的世界，也不许 panic。所有者手上有真实存档，这一条
+    // 决定的正是它撞上新版本时的表现。
+    //
+    // 反例验证（已实跑）：把 CURRENT_SCHEMA_VERSION 改回 2，本条当场变红
+    // ——那份存档会被当成当前版本直接解析。
+    // Arrange
+    let content = real_content();
+    let dir = 临时目录("schema-bump");
+    std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
+    let path = dir.join("old.llsave");
+    let world = 建一局(&content, 77);
+    save_game(&path, &content, &world, "旧旅人", "出生地", "").expect("写出应当成功");
+    重写schema版本(&path, 2);
+
+    // Act
+    let loaded = load_game(&path, &content);
+
+    // Assert：明确拒绝，不是 Playable、也不是 ReadOnly。
+    match loaded {
+        LoadedGame::Rejected(_) => {}
+        LoadedGame::Playable { .. } => {
+            panic!("上一版 schema 的存档不许被当前字段布局静默解析成可游玩的世界")
+        }
+        LoadedGame::ReadOnly(_) => panic!("这不是「内容缺失」那类降级，应当是明确拒绝"),
+    }
+
+    // Assert：当前版本写出的存档照常读得回来——上面那条拒绝不是把读档
+    // 整个弄坏了。
+    let fresh = dir.join("fresh.llsave");
+    save_game(&fresh, &content, &world, "新旅人", "出生地", "").expect("写出应当成功");
+    assert!(
+        matches!(load_game(&fresh, &content), LoadedGame::Playable { .. }),
+        "当前版本自己写出的存档必须照常可游玩"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
 }

@@ -1769,13 +1769,72 @@ fn append_kill_history(world: &WorldState, effects: &mut Vec<Effect>) {
 /// 先移除背包再产出效果，只能把已经读到的物品原样打包进
 /// [`Effect::AddGroundItem`]。
 ///
-/// # 空手死者不产出尸体
+/// # 尸体不再是容器——尸体与遗物平铺进同一格（尸体平铺批次）
 ///
-/// `inventory`/`equipment` 合计为空时不追加任何效果——`GroundItemStack::contents`
-/// 非空是"这是一具容器"的唯一判据（见其文档），一具打不出任何东西的
-/// 尸体没有玩法意义（[`resolve_loot`]/[`resolve_pick_up`] 都不会把它
-/// 当作合法目标），提前占一个 `ground_items` 条目只会增加后续老化清理
-/// 与存档体积的无谓开销。
+/// **这一节推翻了本函数此前的形状。** 此前一次死亡产出**一条**
+/// `Effect::AddGroundItem`：尸体这件"壳"当 `stack`，死者的家当塞进
+/// `contents`。那条形状撞上一个死结——
+/// [`resolve_pick_up`] 把 `contents` 非空的地面物品**整体排除**在拾取
+/// 之外，于是生产路径上的尸体**根本捡不起来**，
+/// `ll_mod::corpse_item::CORPSE_STACK_LIMIT` 至今只是一条诚实的声明。
+///
+/// 项目所有者的解法：
+///
+/// > 尸体会变成物品，然后原本的物品和尸体都会放在一格子内的掉落物
+/// > 列表里。
+///
+/// 本函数因此改为产出 **1 + N 条**：尸体自己一条（`contents` 恒空），
+/// 死者的每一堆遗物各一条，全部落在同一个 `victim.pos`。死结当场解开
+/// ——尸体的 `contents` 为空 ⇒ 不再被那道容器排除挡住 ⇒ 可拾取、可
+/// 堆叠，`CORPSE_STACK_LIMIT` 第一次真的生效。
+///
+/// **物品总数不变**：那些遗物本来就已经在世界状态里（在 `contents`
+/// 这个 `Vec` 里），平铺只是把它们从嵌套一层挪到顶层。
+///
+/// `GroundItemStack::contents` 这个字段**不删**——箱子才是它将来的
+/// 正经消费者，新分工写在该字段自己的文档里。[`resolve_loot`]/
+/// `Intent::Loot` 同样保留，但**今天没有任何生产路径会造出容器**。
+///
+/// # 空手死者**也**产出尸体（本批次改变了行为）
+///
+/// 旧行为是 `inventory`/`equipment` 合计为空时不追加任何效果，理由
+/// 原文是「`contents` 非空是『这是一具容器』的唯一判据……一具打不出
+/// 任何东西的尸体没有玩法意义（`resolve_loot`/`resolve_pick_up` 都不会
+/// 把它当作合法目标）」。
+///
+/// **那条理由被本批次自己作废了**：平铺之后 `resolve_pick_up` 就是
+/// 尸体的合法目标，一具空手死者的尸体是一件正常的、捡得起来的物品，
+/// 有名字、有重量、有堆叠上限。守卫因此去掉，每一次死亡都产出尸体
+/// ——这也让所有者那句「尸体会变成物品」在**所有**死亡路径上成立，
+/// 而不只是「死者身上恰好有东西」的那一半。
+///
+/// 代价如实记录：`ground_items` 会比此前多——每个空手死者多一条。
+/// 老化清理（[`ll_world::state::WorldState::cleanup_aged_ground_items`]）
+/// 照常收，与普通丢弃物同一条通道，不需要给尸体单独发明第二套计时。
+///
+/// # 遗物的归属：原样搬移，不重置也不改写
+///
+/// 每一堆遗物的 [`owner`](ll_world::item::ItemStack::owner) 跟着
+/// `ItemStack` 整体搬到地上，本函数一个字都不碰它。生产路径上它今天
+/// 恒是 [`Owner::Unowned`](ll_world::ownership::Owner::Unowned)——
+/// NPC 的出生装备与名册物品都是无主的。
+///
+/// **为什么不改写成 `Owner::Npc(死者)`**（那条路技术上走得通：死亡
+/// 路径正是 `remembered_id_of_or_assign` 今天唯一的真实调用点，死者
+/// 恒有 `remembered_id`）：
+///
+/// 1. **那会改变行为**。今天从尸体上搜刮遗物零权限检查；判成死者的
+///    私产，会让「战场搜刮」在盗窃判定落地的那一刻**一次性**变成
+///    盗窃——那是一条所有者没有裁定过的玩法规则（战利品权利、继承），
+///    不该由本批次夹带。
+/// 2. 设计文档
+///    `knowledge/design/ownership-and-crime-detection.md` 1.5 把「野外
+///    掉落」与「怪物尸体」并列为 `Unowned` 的两个典型场景，遗物落在
+///    同一格、同一次结算里产出，与尸体同判是唯一自洽的选择。
+/// 3. **最容易反转**：真要改成「死者的遗物仍属死者」，是这里一行。
+///
+/// 尸体本身恒 `Unowned`（[`ItemStack::new`] 的默认），设计文档 1.5
+/// 直接点名了「怪物尸体」。
 ///
 /// # 尸体的 `def`：复用死者的 `creature_kind`/`race`，不新开一张
 /// # 尸体的 `def`：查 [`ItemCatalog::corpse_of`]，**不再是种族索引本身**
@@ -1827,18 +1886,17 @@ fn append_kill_history(world: &WorldState, effects: &mut Vec<Effect>) {
 /// `ll_mod::corpse_item` 给尸体 `ItemDef` 填的 `max_durability: None`
 /// 对得上。
 ///
-/// # 两具尸体今天仍然不会被合并
+/// # 两具尸体现在真的会被合并
 ///
-/// [`resolve_pick_up`] 把 `contents` 非空的地面物品整体排除在合并/拾取
-/// 路径之外（见其文档「为什么跳过容器」一节），而本函数**只在死者身上
-/// 有东西时才产出尸体**（`loot.is_empty()` 那一支），于是生产路径上的
-/// 尸体 `contents` 恒非空、恒被那道排除挡住。
+/// **这一节推翻了本函数此前的文档。** 旧文档说 `CORPSE_STACK_LIMIT`
+/// 「今天还观察不到……不是一条现在就在跑的逻辑」——那是因为尸体恒被
+/// [`resolve_pick_up`] 的容器排除挡住。平铺之后那道排除对尸体不再
+/// 生效：两具同物种的尸体 `def` 相同、`durability` 同为 `None`、
+/// `owner` 同为 `Unowned`，[`can_merge`]
+/// 三项全等 ⇒ 可合并，玩家捡起两具哥布林尸体，背包里就是一堆
+/// `x2`（上限 8）。
 ///
-/// 也就是说：`ll_mod::corpse_item::CORPSE_STACK_LIMIT` 今天还
-/// 观察不到——它是一条**诚实的声明**（这件物品可堆叠），等尸体真的能
-/// 被捡起来的那一天自动生效，不是一条现在就在跑的逻辑。`can_merge` 只
-/// 比较 `def`/`durability`，两具同物种的空尸体在这两个字段上确实相等，
-/// 判定会说"可合并"——这条判定路径至今没有任何调用点能走到。
+/// 这条声明第一次真的在跑。
 fn append_corpse_drop(world: &WorldState, effects: &mut Vec<Effect>, items: &dyn ItemCatalog) {
     let drops: Vec<Effect> = effects
         .iter()
@@ -1847,26 +1905,40 @@ fn append_corpse_drop(world: &WorldState, effects: &mut Vec<Effect>, items: &dyn
                 return None;
             };
             let victim = world.actors.get(*target)?;
-            let mut loot = victim.inventory.clone();
-            loot.extend(victim.equipment.values().copied());
-            if loot.is_empty() {
-                return None;
-            }
             // 归并键一个字没改，改的是拿它去查什么——见本函数文档
             // 「尸体的 `def`」一节。查不到就退回旧行为（用归并键本身）。
             let corpse_kind = victim.creature_kind.unwrap_or(victim.race);
             let corpse_def = items.corpse_of(corpse_kind).unwrap_or(corpse_kind);
-            Some(Effect::AddGroundItem {
+            // 尸体自己一条：contents 恒空——它不再是容器，见本函数文档
+            // 「尸体不再是容器」一节。
+            let corpse = Effect::AddGroundItem {
                 pos: victim.pos,
                 stack: ItemStack::new(corpse_def, 1),
                 dropped_at: world.clock,
-                contents: loot,
+                contents: Vec::new(),
                 // 尸体是**躺**在地上的，不是被谁立起来的——它照常老化
                 // （见 WorldState::cleanup_aged_ground_items），也挡不住
                 // 别人往这一格丢东西。
                 placed: false,
-            })
+            };
+            // 死者的每一堆遗物各一条，全落在同一个 victim.pos 上。
+            // 归属原样搬移（不重置成 Unowned，也不改写成死者的）——见
+            // 本函数文档「遗物的归属」一节。
+            let loot = victim
+                .inventory
+                .iter()
+                .chain(victim.equipment.values())
+                .map(|stack| Effect::AddGroundItem {
+                    pos: victim.pos,
+                    stack: *stack,
+                    dropped_at: world.clock,
+                    contents: Vec::new(),
+                    placed: false,
+                })
+                .collect::<Vec<_>>();
+            Some(std::iter::once(corpse).chain(loot))
         })
+        .flatten()
         .collect();
     effects.extend(drops);
 }
@@ -2218,17 +2290,22 @@ fn within_reach(world: &WorldState, origin: TorusPos, target: TorusPos) -> bool 
 /// 「目标实体……若已不在 `world.actors` 中……一律返回空 `Vec`」），不是
 /// 错误，只是这一步什么都不发生。
 ///
-/// # 为什么跳过容器（NPC 死亡掉落批次）
+/// # 为什么跳过容器——**尸体已经不在这一类里了**
 ///
-/// 容器（[`ll_world::item::GroundItemStack::contents`] 非空,典型是
-/// 尸体）不是[`Intent::PickUp`]的合法目标——本函数只会把 `ground.stack`
-/// 这一个字段拿去合并进背包，容器真正的价值（`contents` 里的战利品）
-/// 会被原样丢在地上、永久不可达,这不是"物品异常地不能堆叠"那类可以
-/// 接受的降级，是真实的数据丢失。搜刮容器走专门的
+/// 容器（[`ll_world::item::GroundItemStack::contents`] 非空）不是
+/// [`Intent::PickUp`] 的合法目标——本函数只会把 `ground.stack` 这一个
+/// 字段拿去合并进背包，容器真正的价值（`contents` 里的东西）会被原样
+/// 丢在地上、永久不可达，这不是"物品异常地不能堆叠"那类可以接受的
+/// 降级，是真实的数据丢失。搜刮容器走专门的
 /// [`Intent::Loot`]（[`resolve_loot`]），本函数因此显式过滤掉
-/// `!item.contents.is_empty()` 的地面物品，与 `GroundItemStack::contents`
-/// 字段文档「`resolve_pick_up` 用这条判据把尸体排除在普通拾取目标
-/// 之外」一节相互印证。
+/// `!item.contents.is_empty()` 的地面物品。
+///
+/// **这道排除此前把尸体一并挡住了，那是一个死结**：尸体是容器 ⇒ 捡
+/// 不起来 ⇒ `CORPSE_STACK_LIMIT` 只是一条诚实的声明。尸体平铺批次
+/// （见 [`append_corpse_drop`] 文档「尸体不再是容器」一节）把尸体从
+/// 容器这一类里摘了出去——排除本身一个字没改，改的是尸体不再满足它。
+/// 今天**没有任何生产路径会造出 `contents` 非空的地面物品**，这道
+/// 排除因此暂时空转，等箱子那批把它用起来。
 ///
 /// # 同一格同一个 `def` 有两堆时取哪一条
 ///
@@ -2237,6 +2314,19 @@ fn within_reach(world: &WorldState, origin: TorusPos, target: TorusPos) -> bool 
 /// `(pos, def)` 定位的既有边界是同一条（见其文档）：两堆同 `def` 的东西
 /// 摞在一格上时，「捡的是哪一堆」与「移除的是哪一堆」由同一个规则回答，
 /// 因此不会出现「读了 A、删了 B」的错配。
+///
+/// # 拾取即归属；盗窃判定的挂载点不在本函数里
+///
+/// 所有者裁定「默认不归属于谁然后谁拿了就变成谁的」——本函数因此在
+/// 产出 [`Effect::MergeIntoInventory`] 之前把这一堆的
+/// [`owner`](ll_world::item::ItemStack::owner) 改写成
+/// [`crate::ownership::pick_up_owner`] 算出来的值。
+///
+/// **判定住在那个函数里，不在这里**：`resolve.rs` 已近 8000 行（全仓
+/// 最严重的既有行数违规），而归属判定将来只会长大（盗窃、目击、赃物
+/// 标记）。设计文档二节 2.1 指定的挂载点是「`resolve_pick_up`」，
+/// [`crate::ownership::pick_up_owner`] 就是它抽出来的那一半，判定需要的
+/// 全部输入都在它的参数里——犯罪批次改那一个函数即可，不必再进本文件。
 ///
 /// # 为什么合并结果由这里算好，`apply` 只做替换
 ///
@@ -2265,7 +2355,13 @@ fn resolve_pick_up(
     else {
         return Vec::new();
     };
-    let picked = ground.stack;
+    // 拾取即归属（归属批次，所有者原话「谁拿了就变成谁的」）——判定
+    // 本身住在 crate::ownership::pick_up_owner，那里也是盗窃判定将来的
+    // 挂载点，见该函数文档。这里只做机械的字段改写。
+    let picked = ItemStack {
+        owner: crate::ownership::pick_up_owner(world, agent, actor, ground.stack),
+        ..ground.stack
+    };
 
     vec![
         Effect::RemoveGroundItem {
@@ -2276,17 +2372,26 @@ fn resolve_pick_up(
     ]
 }
 
-/// [`Intent::Loot`] 结算（NPC 死亡掉落批次）：把 `actor` 脚下第一具
-/// 容器（[`ll_world::item::GroundItemStack::contents`] 非空,典型是
-/// 尸体）的全部内容物移进背包，容器本身随后从地面移除——「搜刮」是
+/// [`Intent::Loot`] 结算：把 `actor` 脚下第一个容器
+/// （[`ll_world::item::GroundItemStack::contents`] 非空）的全部内容物
+/// 移进背包，容器本身随后从地面移除——「搜刮」是
 /// 一次性、全部拿走，不支持挑拣部分战利品,与 `Intent::Drop`「不支持
 /// 部分数量」同一条范围裁定（见其文档）：本批次的验收范围不需要战利品
 /// 挑选 UI,提前引入只会制造一个当前没有测试覆盖的分支。
 ///
+/// # 今天没有任何生产者会造出它的目标（尸体平铺批次）
+///
+/// 本函数**保留但暂时空转**：尸体曾经是唯一的容器生产者，尸体平铺
+/// 批次把它摘走了（见 [`append_corpse_drop`] 文档「尸体不再是容器」
+/// 一节），而箱子那批还没开工。保留而不是删掉，是因为箱子是
+/// [`ll_world::item::GroundItemStack::contents`] 将来的正经消费者，
+/// 删掉再写一遍是净损失——判据、`Effect` 复用、已知限制这几段论证都
+/// 已经成立，不会因为暂时没有生产者而失效。
+///
 /// # 静默无效的两种情形
 ///
-/// `actor` 不存在，或脚下没有任何容器——与 [`resolve_pick_up`] 同一条
-/// 纪律。
+/// `actor` 不存在，或脚下没有任何容器（**今天恒是这一支**）——与
+/// [`resolve_pick_up`] 同一条纪律。
 ///
 /// # 为什么容器本身用 [`Effect::RemoveGroundItem`]，不新开一个变体
 ///

@@ -15,6 +15,7 @@ use ll_world::entity::{AttributeKind, EntityId};
 use ll_world::history::KillCause;
 use ll_world::item::EquipSlot;
 use ll_world::mod_state::ModStateWrite;
+use ll_world::ownership::Owner;
 use ll_world::space::Space;
 use ll_world::terrain::TerrainKind;
 
@@ -605,6 +606,56 @@ pub enum Effect {
         /// 保证移除的是 `resolve` 实际读到的那一堆，不是"随便一堆同
         /// `def` 的"。
         durability: Option<i32>,
+    },
+    /// 把某人背包里一堆物品的归属改成别人的（归属批次）——设计文档
+    /// 四节「合法转移」的接口形状。
+    ///
+    /// # 一个变体就够，不是三个
+    ///
+    /// 设计文档四节原文：赠送、购买、任务发放物品在「改变 `Owner`」
+    /// 这个动作本身上**完全同构**（都是把一堆物品的 `owner` 从 A 改成
+    /// B），区别只在"谁触发的、有没有对价"——那部分逻辑属于各自系统
+    /// （交易的价格结算、任务的完成判定），不属于归属转移本身。
+    ///
+    /// # 调用方今天一个都不存在，如实标注
+    ///
+    /// 没有交易系统（无价格结算、无货币扣减接线）、没有对话系统
+    /// （赠送需要一个"NPC 决定要不要给你"的交互载体）、没有任务奖励
+    /// 发放的 `resolve`（`QuestNodeDef` 已落地类型定义，发放机制未
+    /// 落地）。设计文档把三者如实标注为「空中楼阁，接口形状可以先
+    /// 给」——本变体就是那个形状，**没有对应的 `Intent`**，产出者要等
+    /// 那三个系统各自落地。
+    ///
+    /// # 给未来三个调用方的一条硬前置
+    ///
+    /// 设计文档四节末尾（并在三节 3.3 末尾预告过）：三种合法转移的
+    /// `resolve` 都**必须**校验「发起转移的一方确实是这堆物品当前的
+    /// `owner`」（[`Owner::Unowned`]
+    /// 的物品谁都能转移，因为没有人的权益受损）。不满足则这次转移本身
+    /// 不合法，不该产出本效果。
+    ///
+    /// **`apply` 侧不做这条校验**——它是决策，属 `resolve`（约束 C1）。
+    /// 少了它，销赃计时会被一条作弊路径绕开：小偷把赃物"卖"给自己控制
+    /// 的另一个角色，标记瞬间清空。这条写在这里，是为了让那三个系统
+    /// 落地时读得到。
+    ///
+    /// # 为什么用 `(holder, def, durability)` 三元组定位
+    ///
+    /// 设计文档四节给的形状是 `{ stack_def, new_owner }` 两个字段——
+    /// **本变体比它多两个**，因为只给 `def` 定位不到"具体是谁背包里的
+    /// 哪一堆"，而 `apply` 是全局唯一写入口（约束 C1），它必须能唯一
+    /// 落到一堆上。这个三元组正是
+    /// [`Effect::RemoveFromInventory`]/[`Effect::ConsumeInventoryItem`]
+    /// 已经在用的定位方式，照抄既有惯例，不新发明一套。
+    TransferOwnership {
+        /// 这堆物品现在在谁的背包里。
+        holder: EntityId,
+        /// 哪一种物品。
+        def: ContentIndex,
+        /// 那一堆的耐久——与 `def` 一起唯一定位，见本变体文档。
+        durability: Option<i32>,
+        /// 转移之后归谁。
+        new_owner: Owner,
     },
     /// 把物品堆装进某个槽位（装备栏位批次，P6 第三批）——
     /// `crate::resolve::resolve_equip` 唯一的产出者。`slot` 是这件
