@@ -1,10 +1,41 @@
-//! 角色贴图标志：给玩家（`hero_*`）与 boss（`boss_idle_0`）加简单标志，
-//! 让两者在测试截图里一眼可辨，而不是像之前那样只凭矩形位置猜测
-//! 「这块蓝色是玩家、这块红色是 boss」。
+//! 玩家（`hero_*`）与 boss（`boss_idle_0`）的角色贴图。
 //!
-//! 玩家与 boss 的主体色（蓝色 `hero_*`、红色 `boss_idle_0`）沿用既有
-//! 取值，本模块只新增标志图案，不改主体色：保留主体色是为了不破坏
-//! 「玩家=蓝、boss=红」这条已经跑通全部验收 demo 的既有视觉约定。
+//! # 玩家贴图重画（所有者：「目前的贴图有点丑了」）
+//!
+//! 重画之前，`hero_*` 是**一整块 16×24 的实心钢蓝矩形**，上面压一个
+//! 金色头部方块与一个金十字：没有轮廓、没有明暗、四角全部不透明。它在
+//! `crates/ll-game/tests/visual/surface_preview.png` 里与旁边的 NPC 并排
+//! 一摆就很刺眼——NPC 已经是有肩、有头、有耳朵、四周透明的人形，玩家
+//! 还是一块砖。
+//!
+//! **重画的是同八张，不新增第二套**（`hero_idle_0/1`、`hero_walk_0..5`
+//! 文件名与语义一个字没动，动画状态机与三处剪辑定义不受影响）。四条
+//! 可核实的改进，每条都有一条断言盯着：
+//!
+//! | 改进 | 判据 |
+//! | --- | --- |
+//! | 有轮廓，不再是实心矩形 | 四角透明，不透明像素占比落在 `0.35..0.80`（此前恒为 1.00） |
+//! | 一圈近黑描边把人形从任何底色上切出来 | 每个「贴着透明的」不透明像素都必须是描边色 |
+//! | 三档明暗（受光/主体/背光），不是一片平色 | 三个钢蓝档在同一张图里同时出现 |
+//! | 与任何地形底色都拉得开 | 同一张图里同时存在极暗与极亮像素（最大亮度差 ≥ 140） |
+//!
+//! 最后一条与 `ll_ui::hud::world_map::PLAYER_MARKER_COLOR` 那条「要在深
+//! 蓝的海、深绿的林、灰白的雪山上同样一眼可见」是同一个道理：**单一
+//! 颜色满足不了**，底色一多总有一种跟它接近；同时带极暗描边与极亮金饰
+//! 的图形，任何底色要么与暗的拉得开、要么与亮的拉得开。
+//!
+//! # 主体色与标志色沿用既有取值
+//!
+//! 钢蓝 `(70,130,180)` 与暖金 `(255,220,120)` 一个字没改：「玩家=蓝、
+//! boss=红」这条视觉约定跑通过全部验收 demo，`world_marks.rs` 的
+//! `npc主体色与玩家和boss都不同` 还在拿钢蓝当基准。重画换的是**结构**
+//! （轮廓、明暗、人形），不是身份色。
+//!
+//! # 与 NPC 贴图共用同一条地平线
+//!
+//! 脚底行号取 21（与 `npc.rs` 的 `FEET_TOP` 相同），锚点 `pivot.y = 24`
+//! 也与种族身子一致。玩家和 NPC 站在同一格里时脚踩在同一条线上——此前
+//! 那块实心矩形的「脚」其实是画布底边，看着像浮着。
 
 use crate::EntryRect;
 use image::{Rgba, RgbaImage};
@@ -15,8 +46,102 @@ const HERO_BODY: (u8, u8, u8) = (70, 130, 180);
 /// 金色（色相约 45°）相差约 160°，接近互补色，本就是「一眼分清主体与
 /// 标志」的经典配色，无需重新设计。
 const HERO_MARK: (u8, u8, u8) = (255, 220, 120);
-/// 玩家行走帧脚部标记色（深藏青），取自既有像素，未改动。
+/// 玩家靴子色（深藏青），取自既有像素，未改动——重画之前它是行走帧的
+/// 「脚部标记」，现在它就是靴子本身，语义与像素都对得上了。
 const HERO_FOOT_MARK: (u8, u8, u8) = (30, 30, 60);
+
+/// 玩家受光面（左上打光）。与 [`HERO_SHADE`] 一起把躯干从一片平色变成
+/// 三档明暗——像素画里「体积」全靠这三档，不靠渐变。
+const HERO_LIGHT: (u8, u8, u8) = (126, 186, 228);
+/// 玩家背光面。
+const HERO_SHADE: (u8, u8, u8) = (40, 82, 126);
+/// 玩家描边色（近黑藏青）。
+///
+/// **它是这张图能压在任何地形上都看得清的那一半**（另一半是暖金）：
+/// 描边把人形的轮廓从底色里切出来，无论底下是浅沙、深海还是灰白的雪。
+const HERO_OUTLINE: (u8, u8, u8) = (16, 22, 42);
+/// 金饰暗部（盔的护颊、腰带下沿）。暖金只有一档的话，头盔与腰带会读成
+/// 两块贴纸而不是两件金属。
+const HERO_MARK_DARK: (u8, u8, u8) = (182, 142, 54);
+/// 玩家肤色（脸与双手）。
+const HERO_SKIN: (u8, u8, u8) = (236, 196, 158);
+/// 玩家肤色暗面（脸的右侧一列）。
+const HERO_SKIN_SHADE: (u8, u8, u8) = (188, 144, 108);
+/// 眼睛。
+const HERO_EYE: (u8, u8, u8) = (24, 28, 44);
+/// **后腿**的裤色——比前腿再暗一档。
+///
+/// 两条腿必须有前后之分，不只是为了好看：`hero_walk_0` 与
+/// `hero_walk_1` 的两条腿位置集合完全一致（镜像摆动），同色的话两帧会
+/// 画成**逐像素相同的两张图**，行走动画当场退化成静止。见
+/// [`draw_hero`] 里画腿那一段的注释。
+const HERO_LEG_BACK: (u8, u8, u8) = (28, 58, 92);
+/// **后腿**的靴色，理由同 [`HERO_LEG_BACK`]。
+const HERO_BOOT_BACK: (u8, u8, u8) = (20, 20, 42);
+
+/// 玩家贴图宽度（与 `assets/atlas/placeholder.json` 里 `hero_*` 的
+/// `rect` 一致）。
+const HERO_W: u32 = 16;
+/// 玩家贴图高度，理由同 [`HERO_W`]。
+const HERO_H: u32 = 24;
+/// 脚底那一档的行号——**与 `npc.rs` 的 `FEET_TOP` 相同**，玩家和 NPC
+/// 站在同一格里时必须踩在同一条地平线上。
+const HERO_FEET_TOP: u32 = 21;
+/// 腿从第几行开始。
+const HERO_LEG_TOP: u32 = 17;
+/// 待机姿态下躯干顶端的行号。呼吸帧在此基础上抬 1 行（胸腔张开），
+/// 见 [`decorate_hero_idle_breath`]。
+const HERO_TORSO_TOP: u32 = 9;
+/// 躯干宽度。
+const HERO_TORSO_W: u32 = 8;
+/// 躯干左边界列号——由画布宽居中算出，不写死。
+const HERO_TORSO_X: u32 = (HERO_W - HERO_TORSO_W) / 2;
+/// 头宽。
+const HERO_HEAD_W: u32 = 6;
+/// 头左边界列号，同样居中算出。
+const HERO_HEAD_X: u32 = (HERO_W - HERO_HEAD_W) / 2;
+/// 头高。
+const HERO_HEAD_H: u32 = 6;
+/// 手臂宽度（躯干两侧各一条）。
+const HERO_ARM_W: u32 = 2;
+/// 一条腿的宽度。
+const HERO_LEG_W: u32 = 3;
+/// 腰带上沿的行号。**比手高三行**——中间那一行躯干色是把「腰带 + 双手」
+/// 切成两条的那一刀，见 [`draw_hero`] 里画腰带那一段。
+const HERO_BELT_TOP: u32 = HERO_LEG_TOP - 3;
+/// 一只靴子的宽度——比腿宽 1 像素，读成「脚尖朝前」。
+const HERO_BOOT_W: u32 = 4;
+
+/// 一帧玩家的姿态。三个绘制入口（待机、呼吸、行走）**共用同一段绘制
+/// 代码**，差异全部收在这个结构体里——这正是 ADR 0021 说的「抽象的
+/// 正当理由是有算法要共用」：八张图之间没有任何画法差异，只有四个数
+/// 的差异。
+#[derive(Debug, Clone, Copy)]
+struct HeroPose {
+    /// 胸腔抬起的行数（0 = 待机/行走，1 = 吸气）。上半身整体跟着抬，
+    /// 腿与脚不动。
+    chest_rise: u32,
+    /// 前腿左边界列号。
+    lead_leg_dx: u32,
+    /// 后腿左边界列号。
+    trail_leg_dx: u32,
+    /// 前脚是否离地一像素（过腿相位）。
+    lead_lifted: bool,
+}
+
+/// 待机与行走共用的双腿站位：躯干两侧各一条，不跨步。
+const HERO_STANCE_LEGS: (u32, u32) = (HERO_TORSO_X, HERO_TORSO_X + HERO_TORSO_W - HERO_LEG_W);
+
+/// 后腿列号由前腿列号镜像得出：两条腿绕画布中线对称摆动。
+///
+/// `foot_dx` 的取值域是 `2..=10`（见 `crate::draw_entry` 的六帧表），
+/// 镜像轴取 6（`(2 + 10) / 2`），因此后腿列号 = `12 - foot_dx`，同样落在
+/// `2..=10`。**不写成两个独立参数**：写成两个的话，六帧表里就要手填十二
+/// 个数，其中任何一个填错都会画出一条长短腿，而那种错在 16 像素宽的图上
+/// 极难看出来。
+fn mirrored_trail_leg(foot_dx: u32) -> u32 {
+    12 - foot_dx
+}
 
 /// boss 主体色（暗红），取自既有像素，未改动。
 const BOSS_BODY: (u8, u8, u8) = (180, 40, 40);
@@ -63,87 +188,268 @@ pub(crate) fn paint_patch(
     fill_rect(image, patch, color);
 }
 
-/// 在精灵胸口画一个「十」字标志：竖条 2px 宽、6px 高，横条 6px 宽、
-/// 2px 高，交叉居中。选十字而非更复杂的图案，是因为它在只有 16 像素
-/// 宽的画布上仍能保持轴对称，不会因为画布太窄而变形走样。
-fn paint_chest_cross(image: &mut RgbaImage, rect: EntryRect, color: (u8, u8, u8)) {
-    paint_chest_cross_shifted(image, rect, 0, color);
+/// 在胸口画一枚小十字纹章：竖条 2px 宽 3px 高，横条 4px 宽 2px 高。
+///
+/// 选十字而非更复杂的图案，是因为它在只有 8 像素宽的躯干上仍能保持轴
+/// 对称，不会因为画布太窄而变形走样。`chest_top` 是躯干顶端行号，纹章
+/// 跟着躯干走——呼吸帧胸腔抬 1 行，纹章也抬 1 行。
+fn paint_chest_crest(image: &mut RgbaImage, rect: EntryRect, chest_top: u32) {
+    paint_patch(image, rect, 7, chest_top + 1, 2, 3, HERO_MARK);
+    paint_patch(image, rect, 6, chest_top + 2, 4, 2, HERO_MARK);
+    debug_assert!(
+        chest_top + 4 <= HERO_BELT_TOP,
+        "纹章与腰带之间必须留出一行躯干色，否则两块暖金会连成一个锚形"
+    );
 }
 
-/// [`paint_chest_cross`] 的通用版本，纵向额外偏移 `dy_shift`（可为负）。
-/// 待机呼吸帧（[`decorate_hero_idle_breath`]）与行走的「过腿」帧
-/// （[`decorate_hero_walk`] 的 `passing = true`）都要在原十字位置上下
-/// 挪 1 像素模拟胸腔起伏，抽出这个通用版本避免两处各抄一份坐标算术。
-fn paint_chest_cross_shifted(
-    image: &mut RgbaImage,
-    rect: EntryRect,
-    dy_shift: i32,
-    color: (u8, u8, u8),
-) {
-    let vertical_dy = (11 + dy_shift).max(0) as u32;
-    let horizontal_dy = (13 + dy_shift).max(0) as u32;
-    paint_patch(image, rect, 7, vertical_dy, 2, 6, color);
-    paint_patch(image, rect, 5, horizontal_dy, 6, 2, color);
+/// 画一帧玩家：腿 → 靴 → 躯干 → 手臂 → 头 → 盔 → 纹章 → 描边。
+///
+/// 八张 `hero_*` 全部走这一段代码，差异只来自 [`HeroPose`] 的四个数。
+fn draw_hero(image: &mut RgbaImage, rect: EntryRect, pose: HeroPose) {
+    let chest_top = HERO_TORSO_TOP - pose.chest_rise;
+    let head_top = chest_top - HERO_HEAD_H;
+    let torso_h = HERO_LEG_TOP - chest_top;
+
+    // 双腿与靴子。**后腿先画、前腿后画**，前腿盖住后腿——这两条必须有
+    // 前后之分，否则 `hero_walk_0`（前腿在 2、后腿在 10）与
+    // `hero_walk_1`（前腿在 10、后腿在 2）会画出**逐像素相同的两张图**
+    // （镜像摆动让两条腿的位置集合完全一致）。本次开发实测撞到过这个坑：
+    // 那时两条腿同色，六帧循环的基准差异当场变成 0。
+    for (leg_dx, lifted, leg_color, boot_color) in [
+        (pose.trail_leg_dx, false, HERO_LEG_BACK, HERO_BOOT_BACK),
+        (
+            pose.lead_leg_dx,
+            pose.lead_lifted,
+            HERO_SHADE,
+            HERO_FOOT_MARK,
+        ),
+    ] {
+        let boot_top = if lifted {
+            HERO_FEET_TOP - 1
+        } else {
+            HERO_FEET_TOP
+        };
+        paint_patch(
+            image,
+            rect,
+            leg_dx,
+            HERO_LEG_TOP,
+            HERO_LEG_W,
+            boot_top - HERO_LEG_TOP,
+            leg_color,
+        );
+        paint_patch(
+            image,
+            rect,
+            leg_dx,
+            boot_top,
+            HERO_BOOT_W,
+            HERO_H - HERO_FEET_TOP,
+            boot_color,
+        );
+    }
+
+    // 躯干：主体色打底，左两列受光、右两列背光——三档明暗。
+    paint_patch(
+        image,
+        rect,
+        HERO_TORSO_X,
+        chest_top,
+        HERO_TORSO_W,
+        torso_h,
+        HERO_BODY,
+    );
+    paint_patch(image, rect, HERO_TORSO_X, chest_top, 2, torso_h, HERO_LIGHT);
+    paint_patch(
+        image,
+        rect,
+        HERO_TORSO_X + HERO_TORSO_W - 2,
+        chest_top,
+        2,
+        torso_h,
+        HERO_SHADE,
+    );
+    // 腰带：暖金一亮一暗两行，**与手之间留出一行躯干色**。
+    //
+    // 腰带与手贴在同一档高度时，浅肤色的左手 + 暖金腰带 + 浅肤色的右手
+    // 会连成一条横贯全身的亮带（读起来像端着一个金托盘）。留出的这一行
+    // 是把两者切开的那一刀，见下面画手臂那一段的注释。
+    for (row, color) in [
+        (HERO_BELT_TOP, HERO_MARK),
+        (HERO_BELT_TOP + 1, HERO_MARK_DARK),
+    ] {
+        paint_patch(image, rect, HERO_TORSO_X, row, HERO_TORSO_W, 1, color);
+    }
+
+    // 双臂：袖子取背光色，末端两行是手（肤色）。
+    //
+    // **手必须落在腰带那两行之下**（`HERO_LEG_TOP` 起，垂到大腿外侧）。
+    // 手与腰带同高时，浅肤色的左手 + 暖金腰带 + 浅肤色的右手在 16 像素宽
+    // 的画布上连成一条横贯全身的亮带，读起来像「端着一个金托盘」——本次
+    // 开发画出来第一版就是这样，看图才发现。垂到腰带之下既解决了这个
+    // 问题，也更像人：手臂本来就比躯干长。
+    let arm_top = chest_top + 1;
+    let hand_top = HERO_LEG_TOP;
+    debug_assert!(hand_top > HERO_BELT_TOP + 1, "手必须落在腰带之下");
+    for arm_x in [HERO_TORSO_X - HERO_ARM_W, HERO_TORSO_X + HERO_TORSO_W] {
+        paint_patch(
+            image,
+            rect,
+            arm_x,
+            arm_top,
+            HERO_ARM_W,
+            hand_top - arm_top,
+            HERO_SHADE,
+        );
+        paint_patch(image, rect, arm_x, hand_top, HERO_ARM_W, 2, HERO_SKIN);
+    }
+
+    // 头：肤色，右侧一列压暗。
+    paint_patch(
+        image,
+        rect,
+        HERO_HEAD_X,
+        head_top,
+        HERO_HEAD_W,
+        HERO_HEAD_H,
+        HERO_SKIN,
+    );
+    paint_patch(
+        image,
+        rect,
+        HERO_HEAD_X + HERO_HEAD_W - 1,
+        head_top,
+        1,
+        HERO_HEAD_H,
+        HERO_SKIN_SHADE,
+    );
+    // 头盔：顶两行暖金，左右各外扩一列当护颊（暗金）。
+    paint_patch(
+        image,
+        rect,
+        HERO_HEAD_X - 1,
+        head_top,
+        HERO_HEAD_W + 2,
+        2,
+        HERO_MARK,
+    );
+    for cheek_x in [HERO_HEAD_X - 1, HERO_HEAD_X + HERO_HEAD_W] {
+        paint_patch(image, rect, cheek_x, head_top + 2, 1, 2, HERO_MARK_DARK);
+    }
+    // 眼睛。
+    paint_patch(image, rect, HERO_HEAD_X + 1, head_top + 3, 1, 1, HERO_EYE);
+    paint_patch(image, rect, HERO_HEAD_X + 4, head_top + 3, 1, 1, HERO_EYE);
+
+    paint_chest_crest(image, rect, chest_top);
+    outline_silhouette(image, rect, HERO_OUTLINE);
 }
 
-/// 画 `hero_idle_0`：蓝色主体 + 头部方块标记（位置与既有像素一致）+
-/// 新增的胸口十字标志。
+/// 给已经画好的人形描一圈边：**矩形内**每一个透明、且四邻里至少有一个
+/// 不透明的像素，涂成 `color`。
+///
+/// # 为什么先快照再涂
+///
+/// 边涂边判会让描边自己长出第二圈（刚涂上的像素立刻算作「不透明的
+/// 邻居」）。先把不透明掩码整份快照下来，再照着快照涂，描边恒定一像素宽。
+///
+/// # 为什么四邻不出 `rect`
+///
+/// 遗留共享画布 `assets/atlas/placeholder.png` 上条目是紧挨着摆的，
+/// 越界一个像素就会把隔壁那张图涂脏——而那张画布是五个验收 demo 的
+/// 冻结基准。人形贴着矩形下沿（靴底就是最后一行）的地方因此没有描边，
+/// 这是对的：那一行本来就在地面之下。
+fn outline_silhouette(image: &mut RgbaImage, rect: EntryRect, color: (u8, u8, u8)) {
+    let opaque: Vec<bool> = (0..rect.height)
+        .flat_map(|dy| (0..rect.width).map(move |dx| (dx, dy)))
+        .map(|(dx, dy)| image.get_pixel(rect.x + dx, rect.y + dy).0[3] != 0)
+        .collect();
+    let at = |dx: u32, dy: u32| opaque[(dy * rect.width + dx) as usize];
+
+    for dy in 0..rect.height {
+        for dx in 0..rect.width {
+            if at(dx, dy) {
+                continue;
+            }
+            let touches_body = (dx > 0 && at(dx - 1, dy))
+                || (dx + 1 < rect.width && at(dx + 1, dy))
+                || (dy > 0 && at(dx, dy - 1))
+                || (dy + 1 < rect.height && at(dx, dy + 1));
+            if touches_body {
+                paint_patch(image, rect, dx, dy, 1, 1, color);
+            }
+        }
+    }
+}
+
+/// 画 `hero_idle_0`：站姿，双腿并在躯干两侧。
 pub(crate) fn decorate_hero_idle(image: &mut RgbaImage, rect: EntryRect) {
-    fill_rect(image, rect, HERO_BODY);
-    paint_patch(image, rect, 6, 2, 4, 4, HERO_MARK);
-    paint_chest_cross(image, rect, HERO_MARK);
+    draw_hero(
+        image,
+        rect,
+        HeroPose {
+            chest_rise: 0,
+            lead_leg_dx: HERO_STANCE_LEGS.0,
+            trail_leg_dx: HERO_STANCE_LEGS.1,
+            lead_lifted: false,
+        },
+    );
 }
 
-/// 画 `hero_idle_1`：待机呼吸动画的第二帧，与 `hero_idle_0` 差两处
-/// ——头部标记纵向 1 像素（`dy` 从 2 挪到 1）、胸口十字纵向同向挪 1
-/// 像素（`dy_shift = -1`），一起模拟吸气时胸腔/头部整体略微抬起。
+/// 画 `hero_idle_1`：待机呼吸动画的第二帧。
 ///
-/// 此前只挪头部标记一处，两帧只差 8 个像素（384 像素画布的 2%），呼吸
-/// 效果基本不可见；这次补上胸口十字同向的 1 像素挪动，实测把差异抬到
-/// 20 像素，仍然明显低于行走相邻帧的差异（16~26 像素，见
-/// `decorate_hero_walk` 文档），不会喧宾夺主。幅度依旧刻意压到最小：
-/// 呼吸动画若挪动太多像素，在像素风画面
-/// 里会读成「抖动」而不是「起伏」——项目所有者明确要求「不要做成明显
-/// 的抖动」，1 像素是这张 16×24 画布上能表达出可见变化的最小单位。
+/// 与 `hero_idle_0` 的唯一差别是 `chest_rise = 1`——**胸腔张开一行**，
+/// 头、手臂、纹章跟着抬一行，腿与脚一动不动。幅度刻意压到最小：呼吸
+/// 动画若挪动太多像素，在像素风画面里会读成「抖动」而不是「起伏」，
+/// 项目所有者明确要求「不要做成明显的抖动」，1 像素是这张 16×24 画布
+/// 上能表达出可见变化的最小单位。
+///
+/// 重画之前这两帧靠「把头部方块和金十字各挪 1 像素」表达呼吸；现在
+/// 挪的是**整个上半身**，因此差异比此前大，但仍然只有 1 像素的位移，
+/// 读起来仍是起伏而不是抖动。
 pub(crate) fn decorate_hero_idle_breath(image: &mut RgbaImage, rect: EntryRect) {
-    fill_rect(image, rect, HERO_BODY);
-    paint_patch(image, rect, 6, 1, 4, 4, HERO_MARK);
-    paint_chest_cross_shifted(image, rect, -1, HERO_MARK);
+    draw_hero(
+        image,
+        rect,
+        HeroPose {
+            chest_rise: 1,
+            lead_leg_dx: HERO_STANCE_LEGS.0,
+            trail_leg_dx: HERO_STANCE_LEGS.1,
+            lead_lifted: false,
+        },
+    );
 }
 
-/// 画一帧 `hero_walk_*`：蓝色主体 + 顶部整行标记（肩线，固定不动）+
-/// 沿水平方向挪动的脚部标记 + 胸口十字标志。六帧共用这一个函数，靠
-/// 两个参数区分姿态，避免同一份绘制逻辑在 `main.rs` 里被抄六遍：
+/// 画一帧 `hero_walk_*`。六帧共用这一个函数，靠两个参数区分姿态，避免
+/// 同一份绘制逻辑在 `main.rs` 里被抄六遍：
 ///
-/// - `foot_dx`：脚部标记的水平位置（0..=12，标记本身 4px 宽）。六帧
-///   按 2 → 4 → 7 → 10 → 8 → 5 → （循环回 2）取值，每相邻两帧只挪 2~3
-///   像素——标记宽度是 4px，位移小于宽度时新旧位置有重叠，读起来是
-///   「脚在挪」而不是「换了张完全不同的图」。落点 2 与 10 是接触地面
-///   的极值姿态（`hero_walk_0`/`hero_walk_1` 沿用的既有像素，未改动），
-///   中间值是脚正在摆动过程中的过渡姿态。
-/// - `passing`：是否处于「过腿」相位（脚摆到接近身体中线、尚未落地）。
-///   为真时脚标记纵向抬高 1 像素（`dy` 从 20 变 19，模拟脚离地）——
-///   「挪腿」这一种过渡手法的最小实现。
+/// - `foot_dx`：**前腿**的水平位置（取值域 `2..=10`）。六帧按
+///   2 → 4 → 7 → 10 → 8 → 5 → （循环回 2）取值，每相邻两帧只挪 2~3
+///   像素——腿宽 3 像素，位移小于宽度时新旧位置有重叠，读起来是「腿在
+///   迈」而不是「换了张完全不同的图」。后腿由 [`mirrored_trail_leg`]
+///   镜像得出，两条腿绕画布中线对称摆动。
+/// - `passing`：是否处于「过腿」相位（前脚摆到接近身体中线、尚未落地）。
+///   为真时前脚整只抬高 1 像素。
 ///
-///   刻意不让 `passing` 再顺带牵动胸口十字（呼吸帧才用
-///   [`paint_chest_cross_shifted`] 表达身体起伏，见
-///   [`decorate_hero_idle_breath`]）：脚部水平位移与纵向抬高已经是
-///   两个同时变化的量，若再叠加胸口纵向偏移，会让「passing 翻转」的
-///   那几对相邻帧一步变化过大（实测会超过原先两帧直接互跳的 32 像素
-///   基准）。胸口十字在六帧里保持不动，把「变化幅度」完全交给脚部，
-///   使全部相邻帧对的像素差异都不超过 26 像素——见 `main.rs` 里的
-///   `六帧行走循环相邻帧像素差异全部小于两帧方案的直接互跳` 测试。
+/// 上半身在六帧里**完全不动**（`chest_rise` 恒 0）：把变化幅度全部交给
+/// 腿，才能让每一对相邻帧的差异都小于 `hero_walk_0`/`hero_walk_1` 那次
+/// 硬切——见 `main.rs` 里的
+/// `六帧行走循环相邻帧像素差异全部小于两帧方案的直接互跳`。
 pub(crate) fn decorate_hero_walk(
     image: &mut RgbaImage,
     rect: EntryRect,
     foot_dx: u32,
     passing: bool,
 ) {
-    fill_rect(image, rect, HERO_BODY);
-    paint_patch(image, rect, 0, 0, rect.width, 1, HERO_MARK);
-    let foot_dy = if passing { 19 } else { 20 };
-    paint_patch(image, rect, foot_dx, foot_dy, 4, 4, HERO_FOOT_MARK);
-    paint_chest_cross(image, rect, HERO_MARK);
+    draw_hero(
+        image,
+        rect,
+        HeroPose {
+            chest_rise: 0,
+            lead_leg_dx: foot_dx,
+            trail_leg_dx: mirrored_trail_leg(foot_dx),
+            lead_lifted: passing,
+        },
+    );
 }
 
 /// 画 `boss_idle_0`。
@@ -210,18 +516,171 @@ mod tests {
         height: 48,
     };
 
+    /// 八张 `hero_*` 各自的画法，供下面几条断言遍历。**手写一次**，理由
+    /// 与 `furniture.rs` 的 `all_furniture` 相同：这些断言要验的正是
+    /// 「这八张各自长什么样」，从别处现查会把断言变成同义反复。
+    fn all_hero_frames() -> Vec<(&'static str, RgbaImage)> {
+        let mut frames: Vec<(&'static str, RgbaImage)> = vec![
+            ("hero_idle_0", render(decorate_hero_idle)),
+            ("hero_idle_1", render(decorate_hero_idle_breath)),
+        ];
+        for (name, foot_dx, passing) in [
+            ("hero_walk_0", 2, false),
+            ("hero_walk_1", 10, false),
+            ("hero_walk_2", 4, false),
+            ("hero_walk_3", 7, true),
+            ("hero_walk_4", 8, false),
+            ("hero_walk_5", 5, true),
+        ] {
+            frames.push((
+                name,
+                render(|i, r| decorate_hero_walk(i, r, foot_dx, passing)),
+            ));
+        }
+        frames
+    }
+
+    fn render(draw: impl Fn(&mut RgbaImage, EntryRect)) -> RgbaImage {
+        let mut image = RgbaImage::new(HERO_W, HERO_H);
+        draw(&mut image, HERO_RECT);
+        image
+    }
+
+    fn luminance(pixel: &Rgba<u8>) -> i32 {
+        // 与 `ll_ui` 那侧的口径无关，这里只要一个单调的明暗度量。
+        (pixel.0[0] as i32 * 299 + pixel.0[1] as i32 * 587 + pixel.0[2] as i32 * 114) / 1000
+    }
+
     #[test]
-    fn 玩家主体色像素占比仍是压倒多数() {
+    fn 玩家贴图不再是一整块实心矩形而是有轮廓的人形() {
+        // 所有者报的正是这件事：「目前的贴图有点丑了」。重画之前
+        // `fill_rect` 把整张 16×24 铺满，不透明占比恒为 1.00，四角全是
+        // 钢蓝——摆在四周透明的 NPC 人形旁边就是一块砖。
+        //
+        // 反例（本次开发实跑）：把 `draw_hero` 第一行换回
+        // `fill_rect(image, rect, HERO_BODY)`，本条报「四角 (0, 0) 应当
+        // 透明」。
+        // Arrange & Act & Assert
+        for (name, image) in all_hero_frames() {
+            for corner in [
+                (0, 0),
+                (HERO_W - 1, 0),
+                (0, HERO_H - 1),
+                (HERO_W - 1, HERO_H - 1),
+            ] {
+                assert_eq!(
+                    image.get_pixel(corner.0, corner.1).0[3],
+                    0,
+                    "{name} 的角落 {corner:?} 应当透明"
+                );
+            }
+            let opaque = image.pixels().filter(|p| p.0[3] != 0).count();
+            let ratio = opaque as f32 / (HERO_W * HERO_H) as f32;
+            assert!(
+                (0.35..0.80).contains(&ratio),
+                "{name} 的不透明像素占比 {ratio:.2} 不在 0.35..0.80——\
+                 太高说明又铺成了实心矩形，太低说明人形没画全"
+            );
+        }
+    }
+
+    #[test]
+    fn 玩家人形被一圈近黑描边整个包住() {
+        // 描边是这张图能压在任何地形上都看得清的那一半。判据取「每一个
+        // 贴着透明的不透明像素都必须是描边色」——等价于「人形与背景之间
+        // 恒有一圈描边」，但不需要另外算一遍轮廓。
+        //
+        // 矩形四条边上的像素除外：那里的四邻出了 `rect`，
+        // `outline_silhouette` 刻意不越界（越界会涂脏遗留共享画布上紧挨着
+        // 的隔壁条目）。
+        //
+        // 反例（本次开发实跑）：把 `draw_hero` 末尾那句
+        // `outline_silhouette` 删掉，本条报「hero_idle_0 的 (4, 9) 贴着
+        // 透明却不是描边色」。
         // Arrange
-        let mut image = RgbaImage::new(16, 24);
+        let outline = Rgba([HERO_OUTLINE.0, HERO_OUTLINE.1, HERO_OUTLINE.2, 255]);
 
-        // Act
-        decorate_hero_idle(&mut image, HERO_RECT);
-        let body = Rgba([HERO_BODY.0, HERO_BODY.1, HERO_BODY.2, 255]);
-        let body_count = image.pixels().filter(|&&p| p == body).count();
+        // Act & Assert
+        for (name, image) in all_hero_frames() {
+            for y in 1..HERO_H - 1 {
+                for x in 1..HERO_W - 1 {
+                    let pixel = *image.get_pixel(x, y);
+                    if pixel.0[3] == 0 || pixel == outline {
+                        continue;
+                    }
+                    for (nx, ny) in [(x - 1, y), (x + 1, y), (x, y - 1), (x, y + 1)] {
+                        assert_ne!(
+                            image.get_pixel(nx, ny).0[3],
+                            0,
+                            "{name} 的 ({x}, {y}) 贴着透明却不是描边色——人形没被描边包住"
+                        );
+                    }
+                }
+            }
+        }
+    }
 
-        // Assert：头部标记 16 像素 + 十字标志约 20 像素，主体仍占绝大多数。
-        assert!(body_count as f32 / (16.0 * 24.0) > 0.8);
+    #[test]
+    fn 玩家身上同时有三档钢蓝明暗() {
+        // 重画之前躯干是一片平色，读不出体积。三档（受光/主体/背光）是
+        // 像素画里表达体积的最小手段，不需要任何渐变或抗锯齿。
+        // Arrange & Act & Assert
+        for (name, image) in all_hero_frames() {
+            for (label, color) in [
+                ("受光", HERO_LIGHT),
+                ("主体", HERO_BODY),
+                ("背光", HERO_SHADE),
+            ] {
+                let target = Rgba([color.0, color.1, color.2, 255]);
+                assert!(
+                    image.pixels().any(|p| *p == target),
+                    "{name} 上找不到{label}那一档"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 玩家贴图同时有极暗与极亮的像素() {
+        // 与 `ll_ui::hud::world_map::PLAYER_MARKER_COLOR` 那条「要在深蓝
+        // 的海、深绿的林、灰白的雪山上同样一眼可见」同一个道理：**单一
+        // 颜色满足不了**，底色一多总有一种跟它接近。同时带极暗描边与极亮
+        // 暖金的图形，任何底色要么与暗的拉得开、要么与亮的拉得开。
+        //
+        // 门槛 140：重画之前整张图只有钢蓝 (亮度约 120) 与暖金
+        // (约 215) 两档，差 95，压在浅沙地上金色那半会糊。
+        const MIN_LUMINANCE_SPAN: i32 = 140;
+
+        // Arrange & Act & Assert
+        for (name, image) in all_hero_frames() {
+            let opaque: Vec<i32> = image
+                .pixels()
+                .filter(|p| p.0[3] != 0)
+                .map(luminance)
+                .collect();
+            let span = opaque.iter().max().expect("恒有不透明像素")
+                - opaque.iter().min().expect("恒有不透明像素");
+            assert!(
+                span >= MIN_LUMINANCE_SPAN,
+                "{name} 最亮与最暗只差 {span} 档（门槛 {MIN_LUMINANCE_SPAN}），\
+                 压在某些地形底色上会糊成一团"
+            );
+        }
+    }
+
+    #[test]
+    fn 玩家的脚底与npc踩在同一条地平线上() {
+        // `npc.rs` 的 `FEET_TOP` 也是 21。两边对不齐的话，玩家和 NPC 站在
+        // 相邻两格里会一高一低——重画之前玩家的「脚」其实是画布底边，
+        // 看着像浮着。
+        // Arrange & Act & Assert
+        assert_eq!(HERO_FEET_TOP, 21);
+        let image = render(decorate_hero_idle);
+        let boots = Rgba([HERO_FOOT_MARK.0, HERO_FOOT_MARK.1, HERO_FOOT_MARK.2, 255]);
+        assert!(
+            (0..HERO_W).any(|x| *image.get_pixel(x, HERO_FEET_TOP) == boots),
+            "脚底那一行上找不到靴子"
+        );
     }
 
     #[test]
@@ -238,74 +697,99 @@ mod tests {
     }
 
     #[test]
-    fn 待机呼吸帧头部标记比待机帧高一像素() {
+    fn 待机呼吸帧的上半身比待机帧高一像素而腿脚一动不动() {
         // Arrange
-        let mut idle = RgbaImage::new(16, 24);
-        let mut breath = RgbaImage::new(16, 24);
+        let idle = render(decorate_hero_idle);
+        let breath = render(decorate_hero_idle_breath);
 
-        // Act
-        decorate_hero_idle(&mut idle, HERO_RECT);
-        decorate_hero_idle_breath(&mut breath, HERO_RECT);
+        // Act：只比脚底那三行（靴子）。
+        let boots_differ = (0..HERO_W)
+            .flat_map(|x| (HERO_FEET_TOP..HERO_H).map(move |y| (x, y)))
+            .filter(|&(x, y)| idle.get_pixel(x, y) != breath.get_pixel(x, y))
+            .count();
 
-        // Assert：呼吸帧在头部标记顶行（y=1）已经是标记色，待机帧同一
-        // 行仍是主体色——两帧只差这一行像素，幅度克制在 1 像素，不是
-        // 明显的抖动。
-        let mark = Rgba([HERO_MARK.0, HERO_MARK.1, HERO_MARK.2, 255]);
-        assert_eq!(*breath.get_pixel(7, 1), mark);
-        assert_ne!(*idle.get_pixel(7, 1), mark);
+        // Assert：呼吸帧的头顶（盔的最上一行）比待机帧高一行；靴子逐
+        // 像素不动——「吸气时胸腔张开」而不是「整个人上下弹跳」。
+        let head_top_of = |image: &RgbaImage| {
+            (0..HERO_H)
+                .find(|&y| (0..HERO_W).any(|x| image.get_pixel(x, y).0[3] != 0))
+                .expect("恒有不透明像素")
+        };
+        assert_eq!(
+            head_top_of(&idle) - head_top_of(&breath),
+            1,
+            "呼吸帧的上半身应当恰好高一像素"
+        );
+        assert_eq!(boots_differ, 0, "呼吸不该让脚也跟着动");
     }
 
     #[test]
-    fn 两个接触帧的脚部标记落在不同列() {
-        // Arrange：hero_walk_0/hero_walk_1 沿用的两个接触极值姿态。
-        let mut left = RgbaImage::new(16, 24);
-        let mut right = RgbaImage::new(16, 24);
+    fn 两个接触帧的前腿落在不同列() {
+        // Arrange：hero_walk_0/hero_walk_1 那两个接触极值姿态。
+        let left = render(|i, r| decorate_hero_walk(i, r, 2, false));
+        let right = render(|i, r| decorate_hero_walk(i, r, 10, false));
 
-        // Act
-        decorate_hero_walk(&mut left, HERO_RECT, 2, false);
-        decorate_hero_walk(&mut right, HERO_RECT, 10, false);
-
-        // Assert：左脚帧在 x=2 处是脚部标记色，右脚帧在同一位置不是。
-        let foot = Rgba([HERO_FOOT_MARK.0, HERO_FOOT_MARK.1, HERO_FOOT_MARK.2, 255]);
-        assert_eq!(*left.get_pixel(2, 20), foot);
-        assert_ne!(*right.get_pixel(2, 20), foot);
+        // Act & Assert：左脚帧在 x=2 的脚底行是靴色，右脚帧在同一位置不是。
+        let boots = Rgba([HERO_FOOT_MARK.0, HERO_FOOT_MARK.1, HERO_FOOT_MARK.2, 255]);
+        assert_eq!(*left.get_pixel(2, HERO_FEET_TOP), boots);
+        assert_ne!(*right.get_pixel(2, HERO_FEET_TOP), boots);
     }
 
     #[test]
-    fn 过腿帧的脚部标记比接触帧高一像素() {
+    fn 过腿帧的前脚比接触帧高一像素() {
         // Arrange：同一水平位置，只切换 passing。
-        let mut contact = RgbaImage::new(16, 24);
-        let mut passing = RgbaImage::new(16, 24);
+        let contact = render(|i, r| decorate_hero_walk(i, r, 7, false));
+        let passing = render(|i, r| decorate_hero_walk(i, r, 7, true));
 
-        // Act
-        decorate_hero_walk(&mut contact, HERO_RECT, 7, false);
-        decorate_hero_walk(&mut passing, HERO_RECT, 7, true);
-
-        // Assert：过腿帧脚部标记顶行（y=19）已经是标记色（脚离地抬高
-        // 1 像素），接触帧同一行仍是主体色。
-        let foot = Rgba([HERO_FOOT_MARK.0, HERO_FOOT_MARK.1, HERO_FOOT_MARK.2, 255]);
-        assert_eq!(*passing.get_pixel(7, 19), foot);
-        assert_ne!(*contact.get_pixel(7, 19), foot);
+        // Act & Assert：过腿帧在 `FEET_TOP - 1` 那一行已经是靴色（脚离地
+        // 抬高一像素），接触帧同一行还是腿。
+        let boots = Rgba([HERO_FOOT_MARK.0, HERO_FOOT_MARK.1, HERO_FOOT_MARK.2, 255]);
+        assert_eq!(*passing.get_pixel(7, HERO_FEET_TOP - 1), boots);
+        assert_ne!(*contact.get_pixel(7, HERO_FEET_TOP - 1), boots);
     }
 
     #[test]
-    fn 行走帧的胸口十字不随passing挪动() {
-        // Arrange：胸口十字在行走的六帧里保持不动，只有脚部标记随
-        // passing 变化——理由见 decorate_hero_walk 文档「刻意不让
-        // passing 再顺带牵动胸口十字」一节：把变化幅度全部交给脚部，
-        // 才能让 passing 翻转的相邻帧对差异保持在可控范围内。
-        let mut contact = RgbaImage::new(16, 24);
-        let mut passing = RgbaImage::new(16, 24);
+    fn 行走六帧的上半身逐像素不动() {
+        // 理由见 `decorate_hero_walk` 文档最后一段：把变化幅度全部交给
+        // 腿，才能让每一对相邻帧的差异都小于两帧方案那次硬切。上半身
+        // 取「腿顶端之上」的全部行。
+        // Arrange
+        let frames: Vec<RgbaImage> = [
+            (2, false),
+            (4, false),
+            (7, true),
+            (10, false),
+            (8, false),
+            (5, true),
+        ]
+        .into_iter()
+        .map(|(dx, passing)| render(move |i, r| decorate_hero_walk(i, r, dx, passing)))
+        .collect();
 
-        // Act
-        decorate_hero_walk(&mut contact, HERO_RECT, 7, false);
-        decorate_hero_walk(&mut passing, HERO_RECT, 7, true);
+        // Act & Assert
+        for frame in &frames[1..] {
+            let upper_differ = (0..HERO_W)
+                .flat_map(|x| (0..HERO_LEG_TOP).map(move |y| (x, y)))
+                .filter(|&(x, y)| frames[0].get_pixel(x, y) != frame.get_pixel(x, y))
+                .count();
+            assert_eq!(upper_differ, 0, "行走帧的上半身不该随迈步变化");
+        }
+    }
 
-        // Assert：胸口十字竖条顶行（y=11）两帧都是标记色，未随
-        // passing 挪动。
-        let mark = Rgba([HERO_MARK.0, HERO_MARK.1, HERO_MARK.2, 255]);
-        assert_eq!(*contact.get_pixel(7, 11), mark);
-        assert_eq!(*passing.get_pixel(7, 11), mark);
+    #[test]
+    fn 后腿由前腿镜像得出() {
+        // 六帧表里只填前腿一个数，后腿现算——填两个数的话，其中任何一个
+        // 填错都会画出一条长短腿，而那种错在 16 像素宽的图上极难看出来。
+        // Arrange & Act & Assert
+        for foot_dx in 2..=10u32 {
+            let trail = mirrored_trail_leg(foot_dx);
+            assert!((2..=10).contains(&trail), "后腿列号 {trail} 跑出了取值域");
+            assert_eq!(
+                mirrored_trail_leg(trail),
+                foot_dx,
+                "镜像必须是自反的，否则前后腿会越走越偏"
+            );
+        }
     }
 
     #[test]

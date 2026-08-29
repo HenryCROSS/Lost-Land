@@ -9,6 +9,30 @@ F2 把当前离屏渲染目标（`ll_render::target::RenderTarget::read_pixels`�
 视口、boss（重点目标）与 hero（普通单位，当时处于 `hero_idle_0` 帧）
 均在画面内且互不重叠。
 
+## 已知过期：玩家贴图重画（2026-08-28）
+
+**`baseline/p1_acceptance.png` 里画的 hero 是重画之前那一版**（一整块
+实心钢蓝矩形）。所有者裁定「目前的贴图有点丑了」之后，八张 `hero_*`
+被重画成有轮廓、有明暗的人形，`assets/atlas/placeholder.png` 因此变了，
+这张基准与它已经对不上。
+
+按本文件下面那三条规矩，第 1、2 条**已经执行完**：这是一次经所有者裁定
+的、有意的视觉调整，不是缺陷；改了什么、为什么，记在
+`assets/atlas/README.md` 的「玩家贴图重画」一节与
+`tools/ll-artgen/src/sprite.rs` 模块文档里。缺的只有「重新截一张」这一步
+——`p1_acceptance` 要开真实窗口、要图形适配器（见
+`scripts/ci/run_acceptance_demos.sh` 的 `SKIP_LIST`），当时的开发环境
+拿不到 GPU，截不出新图。
+
+**处置：宁可留一张写明「已过期」的旧基准，也不写一张没人真正看过的新
+基准。** 下一次在有 GPU 的机器上跑 `p1_acceptance` 的人，请按下面第 2 条
+截一张新图覆盖它，并在提交信息里引用本节。在那之前，这张图只能用来看
+「布局有没有乱」（地形棋盘、boss 与 hero 的相对位置），**不能**用来比
+hero 那块像素。
+
+生成侧的重冻证据（`assets/atlas/placeholder.png` 那一半）走的是四步，
+实跑记录见玩家贴图重画那个提交的提交信息。
+
 ## 比对失败时的处置规矩
 
 渲染改动导致某次比对与基准不一致时：
