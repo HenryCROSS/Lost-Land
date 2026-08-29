@@ -136,14 +136,47 @@ pub struct Agent {
     /// `scripts/ci/check_field_consumers.py` 里有一条写明日期与安排的
     /// 豁免。
     ///
-    /// # `serde(default)`：老存档不许读崩
+    /// # `serde(default)` 在存档主体上是**空操作**——本节纠正一条曾经
+    /// # 写在这里的假事实
     ///
-    /// 这个字段改的是存档**主体**（`WorldState`）而不是头部，因此走
-    /// `serde(default)` 而不是版本迁移链——与
-    /// `ll_world::terrain_shape::TerrainShape::climate_band_width` 是同
-    /// 一条既有先例，`ll_content::save_file::CURRENT_SCHEMA_VERSION`
-    /// 不必递增。缺这个键的老存档读回来一律是
-    /// [`Gender::default()`]，见那里的文档：**那是占位，不是断言**。
+    /// 这一段原本写着「改的是存档**主体**而不是头部，因此走
+    /// `serde(default)` 而不是版本迁移链，`CURRENT_SCHEMA_VERSION`
+    /// 不必递增」。**那句话是错的，而且刚好把因果讲反了**：正因为改的
+    /// 是主体，`serde(default)` 才救不了；能靠它的恰恰是头部。
+    ///
+    /// 存档**主体**走 `postcard`（`ll_content::save_file::save_to_file`
+    /// 里的 `postcard::to_allocvec(world)`；本 crate 不能引用
+    /// `ll-content`，依赖方向不允许，这里只能点名、不能用 intra-doc
+    /// link 指过去），那是 **non-self-describing** 的二进制格式——字节流
+    /// 里没有字段名，反序列化按声明顺序逐字段吃字节，`serde` 根本没有
+    /// 机会报告「这个字段缺席」。**`#[serde(default)]` 在那条路径上是
+    /// 空操作。** 实测过：老结构体三字段编码、新结构体四字段带
+    /// `#[serde(default)]` 解码，直接报 "Hit the end of buffer"；新字段
+    /// 若不在结构体末尾更糟——后续字段的字节会被错位读成**合法值**。
+    ///
+    /// 当时那条「缺性别键的老存档读得回来」的测试（现已改名为
+    /// `crate::state` 测试模块里的
+    /// `缺性别键的自描述格式反序列化回落到默认值`）
+    /// 走的是 `serde_json::Value`——**自描述**格式，`serde(default)` 在
+    /// 那里确实生效，所以它是绿的，**但它一个字节都没碰到真正的
+    /// postcard 主体那条路**。那条测试测的东西本身是真的，只是覆盖面
+    /// 比它当时的名字暗示的小得多，改名后已如实说明。
+    ///
+    /// **属性本身保留**（不是遗留垃圾）：它在**自描述格式**上确实
+    /// 生效，而本仓库真的走那条路——`crate::state` 的 `serde_json`
+    /// 往返测试，以及将来任何 JSON/RON 形式的调试导出。删掉它会让那
+    /// 几条路径变成硬错误。（**注意不要拿存档头部当理由**：头部确实是
+    /// 明文 JSON、`serde(default)` 在那里也确实生效，但头部是
+    /// `ll_content::header::SaveHeader`，里面没有 `Agent`，与本字段
+    /// 无关。）
+    ///
+    /// 真正的补救在归属批次（2026-08-29）落地：
+    /// `ll_content::save_file::CURRENT_SCHEMA_VERSION` 从 2 加到 3，
+    /// 写在性别字段之前的老存档从此被**明确拒绝**，而不是被当前的字段
+    /// 布局静默误解析；同批加了 `scripts/ci/check_save_schema_version.py`
+    /// 这道门禁，让「往主体加字段却不升版本」不可能再悄悄通过。缺这个
+    /// 键**在自描述格式那条路上**读回来是 [`Gender::default()`]，见那里
+    /// 的文档：**那是占位，不是断言**。
     #[serde(default)]
     pub gender: Gender,
     /// 种族，指向注册表。

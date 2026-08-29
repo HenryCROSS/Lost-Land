@@ -48,10 +48,18 @@ use serde::{Deserialize, Serialize};
 /// **13 职业 × 9 种族 = 117 张**，性别维度**一张都没有**。多加一个
 /// 变体等于凭空要求美术多产一档，而所有者没有裁定过那件事。
 ///
-/// P9 婚配系统真正需要更多变体时，**追加一个变体是纯加法**：
-/// [`Agent::gender`] 已经带 `serde(default)`，老存档不受影响；
+/// P9 婚配系统真正需要更多变体时，**追加一个变体在代码这一侧是纯加法**：
 /// [`Gender::ALL`] 是本文件里唯一那份清单，界面与测试都从它现取，
 /// 不存在第二份需要同步的平行表。
+///
+/// **但在存档那一侧不是纯加法**，这里原本写着「[`Agent::gender`] 已经带
+/// `serde(default)`，老存档不受影响」——**那句话是错的**。存档主体走
+/// `postcard`（non-self-describing），`serde(default)` 在那条路径上是
+/// 空操作，完整论证见 [`Agent::gender`] 的字段文档。往这个枚举**末尾
+/// 追加**变体确实读得回老存档（老字节流里不会出现新的变体下标），但
+/// 往**中间插**一个会让所有后续变体的下标平移，老存档会被错位读成
+/// 别的性别；两种情况 `scripts/ci/check_save_schema_version.py` 都会
+/// 拦下来，并且只对前者给出「向后兼容」的提示。
 ///
 /// [`Agent::gender`]: crate::entity::Agent::gender
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -137,13 +145,21 @@ impl Default for Gender {
     ///
     /// **这是占位，不是断言。** 它服务两处：
     ///
-    /// 1. 老存档——那些 `Agent` 早于「性别」这个概念，磁盘上没有任何
-    ///    可以恢复的真相，`serde(default)` 只能给一个值；
+    /// 1. **自描述格式**里缺席的性别键——`crate::state` 的
+    ///    `serde_json` 往返测试，以及将来任何 JSON/RON 调试导出。
+    ///    **注意这里刻意不再说「老存档」**（存档头部也不算：那是
+    ///    `ll_content::header::SaveHeader`，里面根本没有性别）：真正
+    ///    装着 `Agent` 的存档主体走 `postcard`，
+    ///    `serde(default)` 在那条路径上是空操作，缺字段的老主体根本
+    ///    走不到这个 `default()`，而是被 `CURRENT_SCHEMA_VERSION`
+    ///    明确拒绝（详见 [`Agent::gender`] 字段文档）；
     /// 2. 不经角色创建界面的构造路径（测试夹具、
     ///    `ll_game::world::spawn_player` 的默认那一份）。
     ///
     /// 选 `Male` 没有任何设定上的含义，只是「枚举的第一个」——所有者
     /// 的原话正是「目前先留着个位置默认用其中一个好了」。
+    ///
+    /// [`Agent::gender`]: crate::entity::Agent::gender
     fn default() -> Self {
         Gender::Male
     }

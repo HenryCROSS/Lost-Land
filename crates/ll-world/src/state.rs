@@ -2178,10 +2178,32 @@ mod tests {
     }
 
     #[test]
-    fn 缺性别键的老存档读得回来且取默认值() {
-        // 存档兼容：本批改的是存档**主体**而不是头部，走
-        // `serde(default)`，`CURRENT_SCHEMA_VERSION` 不动。老存档的
-        // `Agent` 早于「性别」这个概念，磁盘上根本没有这个键。
+    fn 缺性别键的自描述格式反序列化回落到默认值() {
+        // # 这条测试到底覆盖了什么——名字与注释都改正过一次
+        //
+        // 它原来叫「缺性别键的老存档读得回来且取默认值」，注释写着
+        // 「本批改的是存档**主体**而不是头部，走 `serde(default)`，
+        // `CURRENT_SCHEMA_VERSION` 不动」。**那个断言是假的**，而且刚好
+        // 把因果讲反了：正因为改的是主体，`serde(default)` 才救不了。
+        //
+        // 真正的存档主体走 `postcard`（`ll_content::save_file` 里的
+        // `postcard::to_allocvec(world)`），是 non-self-describing 的
+        // 二进制格式——没有字段名，反序列化按声明顺序逐字段吃字节，
+        // `serde` 没有机会报告「这个字段缺席」，`#[serde(default)]` 在
+        // 那条路径上是**空操作**。而本测试走的是 `serde_json::Value`，
+        // **自描述**格式，`serde(default)` 在那里确实生效——所以它一直
+        // 是绿的，**却一个字节都没碰到 postcard 主体那条路**。
+        //
+        // 保留这条测试，因为**它测的东西本身是真的**：存档**头部**是
+        // 明文 JSON，`serde_json` 往返与将来的 JSON/RON 调试导出都走
+        // 自描述格式这条路，缺键回落默认值是那条路上真实成立、值得锁住
+        // 的性质。改的只是名字与这段注释——它们此前暗示了一个比实际
+        // 大得多的覆盖面。
+        //
+        // 「老存档主体读不读得回来」由另一处证据锁住：
+        // `crates/ll-game/tests/save_slots.rs` 的
+        // 「上一版schema的老存档被明确拒绝而不是静默误解析」，加上
+        // `scripts/ci/check_save_schema_version.py` 这道门禁。
         //
         // 这里刻意**手工把键删掉**再反序列化，而不是「序列化再读回来」
         // ——后者写出的 JSON 里带着 `gender` 键，根本测不到缺键那条路。
@@ -2201,7 +2223,7 @@ mod tests {
 
         // Act
         let decoded: WorldState =
-            serde_json::from_value(value).expect("缺 gender 键的老存档必须读得回来，不许读崩");
+            serde_json::from_value(value).expect("缺 gender 键的 JSON 必须读得回来，不许读崩");
 
         // Assert
         let agent = decoded
@@ -2218,9 +2240,12 @@ mod tests {
 
     /// 递归摘掉 JSON 里全部名为 `gender` 的键，返回摘掉了几个。
     ///
-    /// 只用在上一条测试里：它要构造的是一份**真的没有这个键**的老存档
-    /// 字节流，而不是「有键但值是默认值」——后者走的是完全不同的一条
-    /// serde 路径，测不到 `serde(default)`。
+    /// 只用在上一条测试里：它要构造的是一份**真的没有这个键**的
+    /// **自描述格式**（JSON）文档，而不是「有键但值是默认值」——后者
+    /// 走的是完全不同的一条 serde 路径，测不到 `serde(default)`。
+    ///
+    /// 刻意不再说「老存档字节流」：真正的老存档主体是 `postcard` 字节
+    /// 流，摘不掉「键」（那里根本没有键），见上一条测试的注释。
     fn strip_gender(value: &mut serde_json::Value, removed: &mut usize) {
         match value {
             serde_json::Value::Object(map) => {

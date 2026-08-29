@@ -368,6 +368,37 @@ pub struct GroundItemStack {
     /// 放置物这条不变式因此由结算层维持（`resolve_place` 的前置），不
     /// 由存储结构强制——与 `ItemStack::count` 恒 ≥ 1 由容器维持、不由
     /// 类型强制是同一条既有取舍。
+    ///
+    /// # 下面这个 `#[serde(default)]` 保不住老存档——它当初是被误当成
+    /// # 存档兼容手段加上的
+    ///
+    /// 家具放置批次落地这个字段时，只加了 `#[serde(default)]`、**没有**
+    /// 递增 `ll_content::save_file::CURRENT_SCHEMA_VERSION`（本 crate
+    /// 不能引用 `ll-content`，依赖方向不允许，这里只能点名、不能用
+    /// intra-doc link 指过去），当时以为那样就兼容了老存档。**没有。**
+    ///
+    /// 存档**主体**走 `postcard`（那个 crate 的 `save_to_file` 里的
+    /// `postcard::to_allocvec(world)`），是 **non-self-describing** 的
+    /// 二进制格式——字节流里没有字段名，反序列化按声明顺序逐字段吃
+    /// 字节，`serde` 根本没有机会报告「这个字段缺席」。
+    /// **`#[serde(default)]` 在那条路径上是空操作。** 本字段又恰好加在
+    /// [`GroundItemStack`] 的**末尾**，老主体读到这里已经没有字节，
+    /// 于是直接报 "Hit the end of buffer"；真正更危险的是加在中间的
+    /// 情形——后续字段的字节会被错位读成**合法值**，静默数据损坏。
+    ///
+    /// 与 [`ItemStack::owner`] 完全同一条判据，那里有完整论证。
+    ///
+    /// **属性本身保留**（不是遗留垃圾）：它在**自描述格式**上确实
+    /// 生效，而本仓库真的走那条路——本模块与 `crate::state` 的
+    /// `serde_json` 往返测试，以及将来任何 JSON/RON 调试导出。
+    /// （**不要拿存档头部当理由**：头部是
+    /// `ll_content::header::SaveHeader`，里面没有地面物品堆。）
+    ///
+    /// 真正的补救在归属批次（2026-08-29）落地：`CURRENT_SCHEMA_VERSION`
+    /// 从 2 加到 3，写在本字段之前的老存档从此被**明确拒绝**而不是被
+    /// 当前的字段布局静默误解析；同批加了
+    /// `scripts/ci/check_save_schema_version.py` 这道门禁，让「往主体加
+    /// 字段却不升版本」不可能再悄悄通过。
     #[serde(default)]
     pub placed: bool,
 }
