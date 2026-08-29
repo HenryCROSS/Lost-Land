@@ -44,6 +44,7 @@
 
 mod building;
 mod color;
+mod furniture;
 mod npc;
 mod sprite;
 mod terrain;
@@ -172,12 +173,36 @@ const DAYNIGHT_POINTER_NAME: &str = "ui_daynight_pointer";
 /// 世界地图上的玩家位置标记贴图，理由同 [`DAYNIGHT_POINTER_NAME`]。
 const MAP_PLAYER_MARKER_NAME: &str = "ui_map_player";
 
+/// 家具批次新增的六件本体家具贴图（`mods/lostland/items.json5` 末尾
+/// 那一节）。
+///
+/// 走 [`LooseOnlyEntry`] 而不是加进 `placeholder.json`：理由见那个类型
+/// 的文档与 [`furniture`] 模块文档。锻炉（`forge`）在那份 JSON 里是历史
+/// 原因——家具层落地时松散贴图这条路还没分岔——新的六张不跟着进去。
+///
+/// **名字必须与内容 id 的本地名逐字一致**（`lostland:oak_chair` →
+/// `oak_chair`），`draw_entry` 也按同一个名字派发画法。加一件家具要动
+/// 三处：`items.json5` 一条、本数组一行、`draw_entry` 一支。少了任何
+/// 一处，`crates/ll-game/tests/atlas_coverage.rs` 的
+/// `本体每一件家具在真实图集里都查得到自带贴图` 会红。
+const FURNITURE_NAMES: [&str; 6] = [
+    "oak_chair",
+    "oak_table",
+    "fur_bed",
+    "oak_bookshelf",
+    "oak_barrel",
+    "iron_bound_chest",
+];
+
 /// 本体新增的松散贴图：四个种族的身子 + 十三个职业的挂件 + 气候条带
-/// 新增的两种地形 + 两张 UI 贴图（昼夜滑块、世界地图玩家标记）。
+/// 新增的两种地形 + 两张 UI 贴图（昼夜滑块、世界地图玩家标记）+ 六件
+/// 家具。
 ///
 /// 顺序固定（先按 [`npc::race_bodies`] 再按 [`npc::profession_badges`]，
-/// 然后 [`CLIMATE_TERRAIN_NAMES`]，最后那两张 UI 贴图），全部是数组
-/// 字面量，符合约束 C5。
+/// 然后 [`CLIMATE_TERRAIN_NAMES`]，再那两张 UI 贴图，最后
+/// [`FURNITURE_NAMES`]），全部是数组字面量，符合约束 C5。**新增的一组
+/// 追加在末尾**，与「新内容追加在末尾」那条纪律同一个理由：前面每一条
+/// 产出的文件名与清单次序都因此逐字不变。
 fn loose_only_entries() -> Vec<LooseOnlyEntry> {
     let npcs = npc::race_bodies()
         .iter()
@@ -214,7 +239,17 @@ fn loose_only_entries() -> Vec<LooseOnlyEntry> {
         },
     ]
     .into_iter();
-    npcs.chain(terrains).chain(ui).collect()
+    // 家具与地形同尺寸（16×16 铺一格）、同锚点：它们画在世界格子上，
+    // 与地面物品堆/通用家具记号那几张完全一档，见
+    // `assets/atlas/placeholder.json` 里 `forge` 那一条。
+    let furnitures = FURNITURE_NAMES.iter().map(|name| LooseOnlyEntry {
+        name,
+        width: TERRAIN_TILE_SIZE,
+        height: TERRAIN_TILE_SIZE,
+        pivot: TERRAIN_PIVOT,
+        footprint: TERRAIN_FOOTPRINT,
+    });
+    npcs.chain(terrains).chain(ui).chain(furnitures).collect()
 }
 
 /// 松散贴图清单里的一条条目——`ll_mod::asset_vfs` 期望的形状，
@@ -528,6 +563,16 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         "furniture_placed" => world_marks::decorate_furniture_placed(image, rect),
         "npc_idle_0" => world_marks::decorate_npc(image, rect),
         "forge" => world_marks::decorate_forge(image, rect),
+        // 家具批次新增的六件本体家具。与 `forge` 地位完全相同——内容
+        // 顺手带的图，删掉就自动退回通用家具记号，见 `furniture` 模块
+        // 文档。名字与 `FURNITURE_NAMES`、与 `items.json5` 里那六条的
+        // 本地名三处逐字一致。
+        "oak_chair" => furniture::decorate_oak_chair(image, rect),
+        "oak_table" => furniture::decorate_oak_table(image, rect),
+        "fur_bed" => furniture::decorate_fur_bed(image, rect),
+        "oak_bookshelf" => furniture::decorate_oak_bookshelf(image, rect),
+        "oak_barrel" => furniture::decorate_oak_barrel(image, rect),
+        "iron_bound_chest" => furniture::decorate_iron_bound_chest(image, rect),
         // 昼夜滑条底图：水平渐变,不是 `TerrainSpec` 能表达的单一主色,
         // 单独按名字分派,见 `ui.rs::decorate_day_night_bar` 文档。
         "ui_daynight_bar" => ui::decorate_day_night_bar(image, rect),

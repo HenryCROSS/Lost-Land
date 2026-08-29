@@ -49,6 +49,10 @@
 //! | 移走 `assets/sprites/terrain_window.png` | `十九种本体地形在真实图集里都查得到条目` |
 //! | 把 `terrain_door_open.png` 换成全透明 | `十九种本体地形的贴图都铺满整格` |
 //! | `skin.rs` 五个键全部改回裸名字（复现所有者报的原始现象） | `hud皮肤需要的五张贴图在真实图集里都查得到条目` 与 `hud皮肤拿真实资产装出来后五个贴图外观全部是some` 两条同时红 |
+//! | 把 `FURNITURE_NAMES` 里的 `oak_barrel` 删掉（artgen 不再产出那张图） | `本体每一件家具在真实图集里都查得到自带贴图` |
+//! | 把 `furniture.rs` 的 `decorate_oak_table` 改成照抄 `decorate_oak_chair` | `本体家具的贴图两两之间至少四分之一像素不同` |
+//! | 移走 `assets/sprites/iron_bound_chest.png` | `本体每一件家具在真实图集里都查得到自带贴图` |
+//! | 把 `items.json5` 里**全部**七条 `furniture: true` 去掉 | `本体每一件家具在真实图集里都查得到自带贴图`（报「一件家具都数不出来」） |
 //!
 //! 反例的实跑记录见提交信息。
 
@@ -57,6 +61,7 @@ use std::path::PathBuf;
 use ll_game::app::load_sprite_sources;
 use ll_game::content::{LoadedContent, load_content};
 use ll_game::layout::terrain_atlas_key;
+use ll_game::surface_draw::PLACED_FURNITURE_SPRITE;
 use ll_render::atlas_pack::{PackedAtlas, pack_atlas};
 use ll_ui::hud::world_map::{FOG_COLOR, terrain_color};
 use ll_ui::widget::skin::{
@@ -388,5 +393,108 @@ fn 世界地图玩家标记在每一种地形色上都有足够对比的色调()
             best >= MIN_CHANNEL_DISTANCE,
             "玩家标记在 {name} 上看不清：最大通道差只有 {best}，不足 {MIN_CHANNEL_DISTANCE}"
         );
+    }
+}
+
+/// 本体命名空间下全部**家具**（`ItemDef.furniture` 为真）的完整 ID，
+/// 按注册顺序。
+///
+/// **清单从真实注册表现查，不手抄**——这正是同文件上方
+/// [`all_base_terrains`] 那张手写地形表欠下的债（气候条带批次新增两种
+/// 地形时实测过：只加地形不加那两行，移走贴图本文件依然全绿）。家具这
+/// 一侧不再欠第二笔：`mods/lostland/items.json5` 里多一条
+/// `furniture: true`，下面两条断言当场开始管它，本文件一个字都不用改。
+///
+/// `Registry::snapshot` 按 `ContentIndex` 顺序返回，不经任何哈希容器
+/// （约束 C5）。
+fn base_furniture_ids(content: &LoadedContent) -> Vec<String> {
+    content
+        .registry
+        .snapshot()
+        .into_iter()
+        .filter(|id| id.namespace() == "lostland")
+        .filter(|id| {
+            content
+                .registry
+                .get(id)
+                .and_then(|index| content.item_table.get(index))
+                .is_some_and(|view| view.furniture)
+        })
+        .map(|id| id.to_string())
+        .collect()
+}
+
+#[test]
+fn 本体每一件家具在真实图集里都查得到自带贴图() {
+    // 家具的失效方式与上面那批地形逐字同型，只是更安静：
+    // `ll_game::surface_draw::placed_furniture_draws` 先拿这件物品的完整
+    // 命名空间 ID 查图，查不到就退回通用家具记号
+    // （`lostland:furniture_placed`）——**不报错、不打日志**，画面上只是
+    // 六件家具全变成同一个紫罗兰箱子。这条断言是那件事的可执行版本。
+    //
+    // 键就是内容的完整 ID（带 `lostland:` 前缀），与生产路径
+    // `registry.resolve(ground.stack.def).map(|id| id.to_string())` 拿到
+    // 的是同一个字符串——**不在这里另抄一份映射**。上一批五张 HUD 贴图
+    // 正是栽在「查裸名字、图集里存带前缀的」这一步上。
+    // Arrange
+    let (content, atlas) = real_content_and_atlas();
+    let furniture = base_furniture_ids(&content);
+
+    // Act & Assert
+    assert!(
+        !furniture.is_empty(),
+        "本体一件家具都数不出来——要么 items.json5 的 furniture 标志掉了，要么这条断言本身已经查错了表"
+    );
+    for key in &furniture {
+        assert!(
+            atlas.metadata.lookup(key).is_some(),
+            "家具 {key} 在真实图集里没有自带贴图——跑起来它会静默退回通用家具记号 {}，屏幕上与其余家具长得一模一样",
+            PLACED_FURNITURE_SPRITE
+        );
+        let pixels = tile_pixels(&atlas, key);
+        let opaque = pixels.iter().filter(|p| p[3] > 0).count();
+        assert!(opaque > 0, "家具 {key} 在真实图集里是一张空图");
+    }
+}
+
+#[test]
+fn 本体家具的贴图两两之间至少四分之一像素不同() {
+    // 判据与上面 `十九种本体地形的贴图两两之间至少四分之一像素不同`
+    // 逐字相同，理由也一样：「查得到条目」不等于「看得出区别」。两件
+    // 摆在同一间屋里的家具（一把椅子和一张桌子）必须一眼分得开，否则
+    // 「给建筑按类型填家具」这件事在画面上根本读不出来。
+    //
+    // 门槛四分之一：16×16 = 256 像素，64 个像素不同。
+    //
+    // 这条与 `tools/ll-artgen/src/furniture.rs` 里那条同名单测**不重复**：
+    // 那条比的是绘制函数的输出，这条比的是真实资产打包进图集之后的像素
+    // ——两张清单条目指向同一个 PNG 文件这种失效方式，只有这一条抓得到。
+    // Arrange
+    let (content, atlas) = real_content_and_atlas();
+    let furniture = base_furniture_ids(&content);
+    let rendered: Vec<(&String, Vec<[u8; 4]>)> = furniture
+        .iter()
+        .map(|key| (key, tile_pixels(&atlas, key)))
+        .collect();
+
+    // Act & Assert
+    for (i, (key_a, pixels_a)) in rendered.iter().enumerate() {
+        for (key_b, pixels_b) in &rendered[i + 1..] {
+            assert_eq!(
+                pixels_a.len(),
+                pixels_b.len(),
+                "家具贴图尺寸不一致，无法逐像素比较：{key_a} 与 {key_b}"
+            );
+            let differing = pixels_a
+                .iter()
+                .zip(pixels_b.iter())
+                .filter(|(a, b)| a != b)
+                .count();
+            let threshold = pixels_a.len() / 4;
+            assert!(
+                differing >= threshold,
+                "家具 {key_a} 与 {key_b} 的贴图只有 {differing} 个像素不同（门槛 {threshold}）——屏幕上分不出这两件家具"
+            );
+        }
     }
 }

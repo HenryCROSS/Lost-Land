@@ -1,4 +1,4 @@
-//! 端到端验证：本体二十七件物品、九条配方、五个配方类别真的由
+//! 端到端验证：本体三十六件物品、十二条配方、五个配方类别真的由
 //! `mods/lostland/items.json5` 与 `mods/lostland/crafting.json5` 注册，
 //! 且**逐字段**与那两个文件的声明一致。
 //!
@@ -170,6 +170,7 @@ fn 本体物品的id清单不多不少() {
         "lostland:forge",
         "lostland:forge_apron",
         "lostland:forge_brand",
+        "lostland:fur_bed",
         "lostland:fur_mantle",
         "lostland:fur_pelt",
         "lostland:herb_bundle",
@@ -178,6 +179,7 @@ fn 本体物品的id清单不多不少() {
         "lostland:iron_helm",
         "lostland:iron_ingot",
         "lostland:iron_rivet",
+        "lostland:iron_bound_chest",
         "lostland:iron_shortsword",
         "lostland:iron_warpick",
         "lostland:leather_boots",
@@ -185,7 +187,11 @@ fn 本体物品的id清单不多不少() {
         "lostland:leather_strip",
         "lostland:linen_cloth",
         "lostland:linen_shirt",
+        "lostland:oak_barrel",
+        "lostland:oak_bookshelf",
         "lostland:oak_buckler",
+        "lostland:oak_chair",
+        "lostland:oak_table",
         "lostland:raw_meat",
         "lostland:roast_meat",
         "lostland:sealed_relic_box",
@@ -199,8 +205,8 @@ fn 本体物品的id清单不多不少() {
     .map(str::to_string)
     .collect();
     assert_eq!(actual, expected);
-    // 30 条内容作者手写的 + 4 条引擎按种族自动注册的尸体。
-    assert_eq!(actual.len(), 34);
+    // 36 条内容作者手写的 + 4 条引擎按种族自动注册的尸体。
+    assert_eq!(actual.len(), 40);
 }
 
 #[test]
@@ -215,9 +221,11 @@ fn 本体配方与类别的id清单不多不少() {
     // Assert
     let expected_recipes: BTreeSet<String> = [
         "lostland:forge_recipe",
+        "lostland:fur_bed_recipe",
         "lostland:fur_mantle_recipe",
         "lostland:herb_roast_recipe",
         "lostland:herbal_draught_recipe",
+        "lostland:iron_bound_chest_recipe",
         "lostland:iron_greaves_recipe",
         "lostland:iron_helm_recipe",
         "lostland:iron_rivet_batch",
@@ -229,7 +237,7 @@ fn 本体配方与类别的id清单不多不少() {
     .map(str::to_string)
     .collect();
     assert_eq!(recipes, expected_recipes);
-    assert_eq!(recipes.len(), 10);
+    assert_eq!(recipes.len(), 12);
 
     let expected_categories: BTreeSet<String> = [
         "lostland:advanced_forging",
@@ -580,7 +588,7 @@ fn 本体配方除砌锻炉外都必须先被发现() {
     let ids = loaded.ids_in("lostland", |index| loaded.recipe.is_defined(index));
 
     // Assert
-    assert_eq!(ids.len(), 10);
+    assert_eq!(ids.len(), 12);
     for id in &ids {
         let requires_discovery = loaded.recipe_view(id).requires_discovery;
         if 天生就会.contains(&id.as_str()) {
@@ -708,12 +716,20 @@ fn 打铁短剑既要场地也要工具() {
 }
 
 #[test]
-fn 裁缝两条配方都要骨针() {
+fn 裁缝三条配方都要骨针() {
+    // 家具批次新增的铺毛皮卧铺（`lostland:fur_bed_recipe`）走的是同一条
+    // 裁缝路：它的产出是**家具**，但用料与工具与另外两条完全同型——
+    // 「家具是物品的一个取值，不是物品之外的第二种东西」（ADR 0021）在
+    // 制作这一侧的直接体现，配方那边不需要任何新形状。
     // Arrange
     let loaded = load_real_mods();
 
     // Act & Assert
-    for id in ["lostland:linen_shirt_recipe", "lostland:fur_mantle_recipe"] {
+    for id in [
+        "lostland:linen_shirt_recipe",
+        "lostland:fur_mantle_recipe",
+        "lostland:fur_bed_recipe",
+    ] {
         let view = loaded.recipe_view(id);
         assert_eq!(view.category, loaded.index("lostland:tailoring"), "{id}");
         assert_eq!(
@@ -806,4 +822,175 @@ fn 进阶锻造那两条配方都落在设了闸门的类别里() {
             "{id}"
         );
     }
+}
+
+// ─────────────────────────── 家具 ───────────────────────────
+
+/// 本体全部家具的 id，按 `items.json5` 的书写顺序。
+///
+/// 手写一份是刻意的：本节几条断言要钉的正是「家具这一组**恰好是这七
+/// 件**」，从注册表现查会把它变成同义反复。加一件家具就在这里加一行
+/// ——加不加得对由 [`本体家具的清单不多不少`] 当场判。
+const 本体家具: [&str; 7] = [
+    "lostland:forge",
+    "lostland:oak_chair",
+    "lostland:oak_table",
+    "lostland:fur_bed",
+    "lostland:oak_bookshelf",
+    "lostland:oak_barrel",
+    "lostland:iron_bound_chest",
+];
+
+#[test]
+fn 本体家具的清单不多不少() {
+    // 与 `本体物品的id清单不多不少` 同一条判据，只收窄到家具这一维：
+    // 上面那条钉的是「一共有多少件物品」，本条钉的是「其中哪几件立在
+    // 地上」。两件事在渲染层（要不要一张自带贴图）、老化层（会不会
+    // 过期消失）、制作层（当不当得了场地）上后果完全不同。
+    // Arrange
+    let loaded = load_real_mods();
+
+    // Act
+    let actual: BTreeSet<String> = loaded
+        .ids_in("lostland", |index| loaded.item.is_defined(index))
+        .into_iter()
+        .filter(|id| {
+            loaded
+                .item
+                .get(loaded.index(id))
+                .is_some_and(|view| view.furniture)
+        })
+        .collect();
+
+    // Assert
+    let expected: BTreeSet<String> = 本体家具.iter().map(|id| id.to_string()).collect();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn 七件家具全部不可堆叠且不带耐久不带标签也不可装备() {
+    // 四条一起断言，因为它们是同一个决定的四个面：
+    //
+    //   * `stack_limit == 1` 是**注册期硬校验**
+    //     （`content_schema_gear::define_one_item`）在内容侧的对应事实
+    //     ——一格上摆的是一座锻炉，不是一摞锻炉；
+    //   * 没有耐久 + 没有标签是一对：磨损通道由标签决定，而
+    //     `ON_HIT` 只读「持有者身上装备着的」、`ON_USE` 只读「装备着的
+    //     工具/武器被使用」（`ll_sim::resolve` 那两处读取点）。立在地上
+    //     的家具两条都碰不到，配一条耐久等于声明一个永远不变的数字；
+    //   * 不可装备是前一条的前提——`equip_mask` 一旦非空，「家具没有
+    //     磨损通道」这句话就不再成立。
+    // Arrange
+    let loaded = load_real_mods();
+
+    // Act & Assert
+    for id in 本体家具 {
+        let view = loaded.item_view(id);
+        assert!(view.furniture, "{id} 应当是家具");
+        assert_eq!(view.stack_limit, 1, "{id} 的家具不可堆叠");
+        assert_eq!(view.max_durability, None, "{id} 不该带耐久");
+        assert!(view.tags.is_empty(), "{id} 不该带标签");
+        assert_eq!(
+            view.wear_channels,
+            WearChannels::NONE,
+            "{id} 不该有磨损通道"
+        );
+        assert_eq!(view.equip_mask, SlotMask::EMPTY, "{id} 不该可装备");
+        assert_eq!(view.use_effect, None, "{id} 不该有使用效果");
+    }
+}
+
+#[test]
+fn 家具的重量全部高于随身工具且不高于锻炉() {
+    // 「背得动，但背着它走不远」是家具与随身工具真正的分界（见
+    // `items.json5` 里锻炉那条的注释）。这条把那句话变成一段可执行的
+    // 区间判据：下界取本体最重的一件随身装备（铁匠锤 2800），上界取
+    // 锻炉自己——它是全表最重最贵的一档，新加的家具不该越过它。
+    //
+    // 反过来说，这条**不**要求家具彼此有序：一卷毛皮卧铺比一张长桌轻
+    // 是它该有的样子，不是缺陷。
+    // Arrange
+    let loaded = load_real_mods();
+    let 随身工具上限 = loaded.item_view("lostland:smith_hammer").base_weight;
+    let 锻炉重量 = loaded.item_view("lostland:forge").base_weight;
+
+    // Act & Assert
+    for id in 本体家具 {
+        let weight = loaded.item_view(id).base_weight;
+        assert!(
+            weight > 随身工具上限,
+            "{id} 重 {weight:?}，没有比铁匠锤（{随身工具上限:?}）更沉——那它就只是件随身物"
+        );
+        assert!(
+            weight <= 锻炉重量,
+            "{id} 重 {weight:?}，超过了全表最重的锻炉（{锻炉重量:?}）"
+        );
+    }
+}
+
+#[test]
+fn 本体三条产出家具的配方各自的材料全部来自本体已有物品() {
+    // 「配方的材料要在本体已有物品里找得到，不引出新原材料」——本批
+    // 只给毛皮卧铺与铁箍箱两件家具写了配方，另外四件（椅/桌/书柜/
+    // 酒桶）是纯木器而本体没有木料，理由写在 `crafting.json5` 打铁箍箱
+    // 那条的注释里。
+    //
+    // 这条同时守住一条更容易出事的东西：配方的成品必须**真的是家具**。
+    // 产出一件非家具却叫「砌/铺/打某某」的配方，在数据上完全合法、在
+    // 玩法上却造出一件放不下去的「家具」。
+    // Arrange
+    let loaded = load_real_mods();
+
+    // Act & Assert
+    for id in [
+        "lostland:forge_recipe",
+        "lostland:fur_bed_recipe",
+        "lostland:iron_bound_chest_recipe",
+    ] {
+        let view = loaded.recipe_view(id);
+        let product = loaded
+            .item
+            .get(view.product)
+            .unwrap_or_else(|| panic!("{id} 的成品必须登记在物品表里"));
+        assert!(product.furniture, "{id} 的成品必须真的是家具");
+        assert!(!view.ingredients.is_empty(), "{id} 必须有材料");
+        for ingredient in view.ingredients {
+            assert!(
+                loaded.item.is_defined(ingredient.item),
+                "{id} 的某一味材料没有登记在物品表里"
+            );
+            let ingredient_id = loaded
+                .registry
+                .resolve(ingredient.item)
+                .expect("已登记的材料必然解析得回 id");
+            assert_eq!(
+                ingredient_id.namespace(),
+                "lostland",
+                "{id} 的材料 {ingredient_id} 不在本体命名空间里——本体配方不许依赖第三方 mod 的原材料"
+            );
+        }
+    }
+}
+
+#[test]
+fn 打铁箍箱与打铁短剑同形只是产出的是家具() {
+    // 家具与普通装备在制作这一侧走的是**同一条路**（ADR 0021：家具是
+    // 物品的一个取值）。这条把那句话钉成可执行的：两条配方的类别、
+    // 场地、工具三项逐字相同，差别只在成品。
+    // Arrange
+    let loaded = load_real_mods();
+
+    // Act
+    let chest = loaded.recipe_view("lostland:iron_bound_chest_recipe");
+    let sword = loaded.recipe_view("lostland:iron_shortsword_recipe");
+
+    // Assert
+    assert_eq!(chest.category, sword.category);
+    assert_eq!(chest.required_station, sword.required_station);
+    assert_eq!(chest.required_tool, sword.required_tool);
+    assert_eq!(chest.product, loaded.index("lostland:iron_bound_chest"));
+    assert_eq!(chest.product_count, 1);
+    assert!(chest.requires_discovery);
+    // 成品那一项正是两条的分岔点。
+    assert_ne!(chest.product, sword.product);
 }

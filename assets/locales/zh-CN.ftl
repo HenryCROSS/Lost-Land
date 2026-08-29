@@ -13,8 +13,8 @@
 #   - subclass-*-display_name             ll-mod SubclassAttrs::display_name_key（本体两个转职）
 #   - trait-*-display_name                ll-mod TraitAttrs::display_name_key（本体四条制作精通）
 #   - recipe_category-*-display_name       ll-mod RecipeCategoryDef::display_name_key（本体五个配方类别）
-#   - item-*-display_name                 ll-mod ItemAttrs::display_name_key（本体二十四件物品）
-#   - recipe-*-display_name               ll-mod RecipeAttrs::display_name_key（本体九条配方）
+#   - item-*-display_name                 ll-mod ItemAttrs::display_name_key（本体三十六件物品）
+#   - recipe-*-display_name               ll-mod RecipeAttrs::display_name_key（本体十二条配方）
 #   - save-mod-missing / save-mod-version-mismatch
 #                                          ll-content ModSetMismatch::message_key
 #   - mod-dependency-version-mismatch     ll-mod DependencyVersionMismatch::message_key
@@ -93,7 +93,7 @@ trait-cooking_mastery-display_name = 烹饪精通
 # ll_mod::corpse_item 模块文档。
 item-corpse-display_name = { $species }的尸体
 
-# 本体物品（mods/lostland/items.json5，三十条）——
+# 本体物品（mods/lostland/items.json5，三十六条）——
 # ll-mod ItemAttrs::display_name_key。
 item-iron_ingot-display_name = 铁锭
 item-iron_rivet-display_name = 铁铆钉
@@ -125,8 +125,16 @@ item-tarnished_signet-display_name = 蒙尘印戒
 item-unmarked_phial-display_name = 无标小瓶
 item-sealed_relic_box-display_name = 封蜡遗物匣
 item-forge-display_name = 锻炉
+# 家具第二批——填满住宅／作坊／仓库／酒馆四类建筑的六件。哪一件
+# 归哪类建筑，见 mods/lostland/items.json5 那一节的表格。
+item-oak_chair-display_name = 橡木椅
+item-oak_table-display_name = 橡木长桌
+item-fur_bed-display_name = 毛皮卧铺
+item-oak_bookshelf-display_name = 橡木书柜
+item-oak_barrel-display_name = 橡木酒桶
+item-iron_bound_chest-display_name = 铁箍箱
 
-# 本体配方（mods/lostland/crafting.json5，十条）——
+# 本体配方（mods/lostland/crafting.json5，十二条）——
 # ll-mod RecipeAttrs::display_name_key。
 recipe-roast_meat-display_name = 烤肉
 recipe-herb_roast-display_name = 香草烤肉
@@ -138,6 +146,8 @@ recipe-iron_greaves-display_name = 打铁胫甲
 recipe-linen_shirt-display_name = 缝亚麻衬衣
 recipe-fur_mantle-display_name = 缝毛皮披风
 recipe-forge-display_name = 砌锻炉
+recipe-fur_bed-display_name = 铺毛皮卧铺
+recipe-iron_bound_chest-display_name = 打铁箍箱
 
 # 下面两条与下方 mod-dependency-version-mismatch 携带 Fluent 变量
 # （`{ $名字 }`），对应结构体字段：ModSetMismatch 的 namespace/

@@ -1,4 +1,5 @@
-// 本体制作内容——配方类别五条 + 配方九条。
+// 本体制作内容——配方类别五条 + 配方十二条（家具批次新增末尾两条：
+// 铺毛皮卧铺、打铁箍箱）。
 //
 // 搬家来历见 races.json5 文件头。schema 见
 // `crates/ll-mod/src/content_schema.rs` 的 `CraftingFile`。
@@ -16,11 +17,11 @@
 // 本文件此前只有类别、没有一条配方，理由是「配方要引用物品，而本体
 // 一件物品都没有」。那条阻塞随 mods/lostland/items.json5 落地解除。
 //
-// ── 全部九条配方都声明 requires_discovery: true ─────────────────
+// ── 除砌锻炉之外的十一条配方都声明 requires_discovery: true ─────
 //
 // 项目所有者裁定原话：「这个机制我希望是**一开始什么都不会，只能乱
 // 煮**，然后通过各种途径发现了制作配方。」本文件是那条裁定唯一的落点
-// ——新角色的 `known_recipes` 是空的，本体这九条一条都做不了，必须先
+// ——新角色的 `known_recipes` 是空的，本体这十一条一条都做不了，必须先
 // 经下面两条路径之一学会。
 //
 // **为什么是逐条显式声明，而不是把 schema 的默认值翻过来。**
@@ -55,7 +56,7 @@
 //     教 `lostland:roast_meat_recipe`。`resolve_read` **不查类别闸门**
 //     ——知识可以先于资格获得，两条路径因此互补而不是互为备份。
 //
-// 这两条路径覆盖得到本体全部九条配方吗？覆盖得到：乱煮对任何
+// 这两条路径覆盖得到本体全部十一条配方吗？覆盖得到：乱煮对任何
 // requires_discovery 的配方都适用，只要求「手上有料」+「过得了类别
 // 闸门」，而下面五个类别里只有 advanced_forging 设了闸。
 {
@@ -216,8 +217,9 @@
       requires_discovery: true,
     },
 
-    // 砌锻炉：本体唯一一条产出**家具**的配方，也是三条锻造配方能开工
-    // 的前提——先有炉子，才谈得上打铁。
+    // 砌锻炉：本体**第一条**产出家具的配方（家具批次之后另有铺毛皮
+    // 卧铺与打铁箍箱两条，见文件末尾），也是四条锻造配方能开工的前提
+    // ——先有炉子，才谈得上打铁。
     //
     // 刻意**不要场地**（自己不能要求自己）、**不要工具**（砌炉子是垒
     // 石头，不是敲铁），且 requires_discovery 为假——它必须是这条链上
@@ -318,6 +320,57 @@
       product: "lostland:fur_mantle",
       product_count: 1,
       required_tool: "lostland:bone_needle",
+      requires_discovery: true,
+    },
+
+    // 铺毛皮卧铺：本体第二条产出**家具**的配方（第一条是上面的砌锻炉）。
+    // 与缝毛皮披风同一条裁缝路、同一把骨针，只是用料更多、做工更糙
+    // ——披风要合身，铺盖只要够大。
+    //
+    // 它不要场地：铺床在哪儿都能铺。
+    {
+      id: "lostland:fur_bed_recipe",
+      display_name_key: "lostland:recipe.fur_bed.display_name",
+      category: "lostland:tailoring",
+      ingredients: [
+        { item: "lostland:fur_pelt", count: 4 },
+        { item: "lostland:linen_cloth", count: 3 },
+      ],
+      product: "lostland:fur_bed",
+      product_count: 1,
+      required_tool: "lostland:bone_needle",
+      requires_discovery: true,
+    },
+
+    // 打铁箍箱：与打铁短剑同形（要锻炉、要铁匠锤），但产出的是家具。
+    // 铆钉 12 颗是全表用量最大的一处——`lostland:iron_rivet_batch`
+    // 一次出八颗，这条要打两批，是那条批量配方第一个真正吃得下产量的
+    // 下游。
+    //
+    // ── 为什么本体六件家具里只有两件有配方 ──────────────────────
+    //
+    // 本体的原材料只有铁锭、铁铆钉、亚麻布、皮革条、毛皮、草药束、
+    // 生肉七种，**没有木料**。椅、长桌、书柜、酒桶四件是纯木器，给
+    // 它们写配方就必须先引出一种新原材料，而「木料从哪来」牵着树木
+    // 系统（可砍伐、可培植、多树种），那条至今没有拿到所有者对架构的
+    // 明确裁定。先例是橡木圆盾——本体早就有一件没有配方的木器，玩家
+    // 从世界里捡它。
+    //
+    // 这条与毛皮卧铺那条能写，恰恰因为它们要的东西本体已经有：卧铺是
+    // 毛皮加亚麻，箱子打的是铁箍与合页（木壳是配得上的那部分）。
+    {
+      id: "lostland:iron_bound_chest_recipe",
+      display_name_key: "lostland:recipe.iron_bound_chest.display_name",
+      category: "lostland:forging",
+      ingredients: [
+        { item: "lostland:iron_ingot", count: 2 },
+        { item: "lostland:iron_rivet", count: 12 },
+        { item: "lostland:leather_strip", count: 2 },
+      ],
+      product: "lostland:iron_bound_chest",
+      product_count: 1,
+      required_station: "lostland:forge",
+      required_tool: "lostland:smith_hammer",
       requires_discovery: true,
     },
   ],
