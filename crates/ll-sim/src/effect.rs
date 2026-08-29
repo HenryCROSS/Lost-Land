@@ -630,7 +630,7 @@ pub enum Effect {
     ///
     /// 设计文档四节末尾（并在三节 3.3 末尾预告过）：三种合法转移的
     /// `resolve` 都**必须**校验「发起转移的一方确实是这堆物品当前的
-    /// `owner`」（[`Owner::Unowned`](ll_world::ownership::Owner::Unowned)
+    /// `owner`」（[`Owner::Unowned`]
     /// 的物品谁都能转移，因为没有人的权益受损）。不满足则这次转移本身
     /// 不合法，不该产出本效果。
     ///

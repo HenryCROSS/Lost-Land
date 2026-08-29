@@ -439,10 +439,15 @@ fn direction_key(dir: Option<Direction>) -> &'static str {
 ///
 /// - 立着的（`placed`）→ [`InteractTarget::Facility`]。一格至多一件
 ///   （`resolve_place` 的第 ④ 道前置保证），因此不需要去重。
-/// - 容器（`contents` 非空，典型是尸体）→ [`InteractTarget::Container`]。
-///   **只留第一具**：`Intent::Loot` 不带参数，恒搜刮脚下第一具容器
+/// - 容器（`contents` 非空）→ [`InteractTarget::Container`]。
+///   **只留第一个**：`Intent::Loot` 不带参数，恒搜刮脚下第一个容器
 ///   （见 `ll_sim::resolve` 的 `resolve_loot`），列出第二行会是一行按了
 ///   跟第一行效果一样的假选项。
+///
+///   **今天这一支恒不命中**：尸体平铺批次之后没有任何生产路径会造出
+///   `contents` 非空的地面物品（尸体不再是容器，见
+///   `ll_world::item::GroundItemStack::contents` 字段文档），箱子那批
+///   才会把它用起来。分支保留不删，理由同该字段文档。
 /// - 其余 → [`InteractTarget::Loose`]，**同一个 `def` 只留第一次出现**：
 ///   `Intent::PickUp` 认的是 `def`，同 `def` 的第二堆按下去仍然会捡到
 ///   第一堆（见 `resolve_pick_up` 文档「同一格同一个 `def` 有两堆时取

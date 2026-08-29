@@ -34,7 +34,7 @@
 //! | 变体 | `item-system.md` 原文 | 本模块 | 一句话理由 |
 //! |---|---|---|---|
 //! | `Npc` | `EntityId` | [`WorldId`] | `EntityId` 在 `despawn` 后故意失效，而「这原本是谁的」必须在主人死后仍读得出 |
-//! | `Faction` | `ContentIndex` | [`WorldId`] | 与 [`OrgRef::Instance`](crate::entity::affiliation::OrgRef::Instance) 对齐，势力是世界生成期产出的实例，不是装载期确定的类型 |
+//! | `Faction` | `ContentIndex` | [`WorldId`] | 与 [`OrgRef::Instance`](crate::entity::OrgRef::Instance) 对齐，势力是世界生成期产出的实例，不是装载期确定的类型 |
 
 use ll_core::ident::WorldId;
 use serde::{Deserialize, Serialize};
@@ -105,7 +105,7 @@ pub enum Owner {
     ///
     /// 载荷是 [`WorldId`] 而不是 [`ContentIndex`](ll_core::ident::ContentIndex)
     /// （设计文档 1.3 的修正二）：
-    /// [`OrgRef`](crate::entity::affiliation::OrgRef) 已经把六类归属分成
+    /// [`OrgRef`](crate::entity::OrgRef) 已经把六类归属分成
     /// `Def(ContentIndex)`（文化、职业——装载期确定的类型）与
     /// `Instance(WorldId)`（势力、宗教、行会、家族——世界生成期产出的
     /// 具体个体）两条轨道，势力明确落在 `Instance` 一侧。若这里继续用

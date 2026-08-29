@@ -961,7 +961,10 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 ///
 /// 同批的**尸体平铺**（`crate::resolve` 的 `append_corpse_drop`）同样
 /// 够不到本条：本文件的意图流打不死任何人（见上一条注释：攻击那一步
-/// 之后敌人只是掉血），`Effect::Kill` 一次都不会产出。
+/// 之后敌人只是掉血），`Effect::Kill` 一次都不会产出。**这一条也是用
+/// 反例证的，不是推断**：把 `append_corpse_drop` 产出的尸体数量临时
+/// 改成 9999，本文件七条仍然全绿、摘要逐位不变——若意图流里真的死过
+/// 人，这个改动必然把摘要打飞。
 const EXPECTED_REPLAY_DIGEST: u64 = 4_180_595_409_733_934_027;
 
 #[test]
