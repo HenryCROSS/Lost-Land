@@ -57,6 +57,7 @@ use ll_world::weather::Weather;
 use ll_world::world_map::{WorldMapView, world_map_slice};
 
 use crate::animation::{self, FALLBACK_SPRITE};
+use crate::atlas_miss::{ChainOutcome, DrawResolution, MissLedger};
 use crate::content::{LoadedContent, RuntimeCatalogs};
 use crate::layout::{
     effective_sight_radius, effective_sight_radius_for_race, effective_tint, terrain_atlas_key,
@@ -208,6 +209,28 @@ struct GpuResources {
     /// `ll_ui::widget::skin::NineSliceSkin` 文档。构造好之后不依赖任何
     /// 运行期状态,贯穿整个会话复用同一份。
     skin: NineSliceSkin,
+    /// 「整条候选链都没命中」的去重账本，见 [`crate::atlas_miss`]。
+    ///
+    /// 它必须是**长寿**的（跟着 GPU 资源走完整个会话），不是每帧现造
+    /// 一个——每帧现造等于每帧都是「第一次」，去重就完全不存在了，
+    /// 日志会退回刷屏。
+    miss_ledger: MissLedger,
+}
+
+/// 这个图集键**在不在**——完全静默的存在性探测，「什么叫查得到」这条
+/// 判据的唯一一份。
+///
+/// 返回类型是 `bool` 而不是条目本身，正是为了让它拿不到、也不可能顺手
+/// 打出一条日志：回退链的中间候选未命中、以及压制键
+/// （[`SurfaceDraw::superseded_by`]）不存在，都是**正常工作方式**，
+/// 见 [`crate::atlas_miss`] 模块文档。
+///
+/// 写成自由函数而不是 `GpuResources` 的方法：两个调用点
+/// （[`GpuResources::resolve_key`] 与 [`push_surface_draw`]）都必须在
+/// 可变借用去重账本的同时共享借用图集，方法形式的 `self.contains(..)`
+/// 会借走整个 `GpuResources`。
+fn atlas_contains(atlas: &Atlas, name: &str) -> bool {
+    atlas.metadata().lookup(name).is_some() && atlas.uv_rect(name).is_some()
 }
 
 impl GpuResources {
@@ -260,6 +283,7 @@ impl GpuResources {
             quad_renderer,
             textured_quad_renderer,
             skin,
+            miss_ledger: MissLedger::new(),
         }
     }
 
@@ -296,45 +320,58 @@ impl GpuResources {
         self.gpu.queue().present(frame);
     }
 
-    fn lookup<'a>(&'a self, name: &str) -> Option<(&'a AtlasEntry, [f32; 4])> {
-        let entry = self.atlas.metadata().lookup(name);
-        let uv = self.atlas.uv_rect(name);
-        match (entry, uv) {
+    /// 取一个**已经确认存在**的条目，静默；查不到返回 `None` 而不说话。
+    ///
+    /// 「说不说话」的决定全部收在 [`Self::resolve_key`] 里，本方法只负责
+    /// 把两张表（元数据与 uv）查出来拼在一起。
+    fn entry_of<'a>(&'a self, name: &str) -> Option<(&'a AtlasEntry, [f32; 4])> {
+        match (self.atlas.metadata().lookup(name), self.atlas.uv_rect(name)) {
             (Some(entry), Some(uv)) => Some((entry, uv)),
-            _ => {
-                tracing::error!(name, "图集条目缺失，跳过本次绘制");
-                None
-            }
+            _ => None,
         }
     }
 
-    /// 按 `names` 给出的优先级取**第一个真的在图集里**的条目。
+    /// 按 `names` 给出的优先级挑出**第一个真的在图集里**的键；全部落空
+    /// 时按去重策略留一条 `WARN`，同一组候选整个进程只留一次。
     ///
-    /// # 为什么不能直接对每个候选调用 [`Self::lookup`]
+    /// # 为什么返回键名而不是条目
     ///
-    /// [`Self::lookup`] 查不到时会打一条 `error!` 日志——那对「就这一个
-    /// 名字，查不到就是缺图」的既有调用方是对的，但对本方法是错的：
-    /// 「内容没有自带贴图，退回通用记号」是**预期内的正常路径**（绝大
-    /// 多数家具与种族都不会自带图），不是缺陷。用 `lookup` 逐个试会让
-    /// 每一帧、每一个 NPC 都刷一条 error 日志，日志本身随即失去信噪比。
-    /// 因此前面的候选走不打日志的探测，只有最后一个候选（兜底记号）
-    /// 走 [`Self::lookup`]——兜底记号缺席才真的是缺陷，那条 error 该打。
-    fn lookup_first<'a, 'n>(
-        &'a self,
-        names: impl Iterator<Item = &'n str>,
-    ) -> Option<(&'a AtlasEntry, [f32; 4])> {
-        let mut names = names.peekable();
-        while let Some(name) = names.next() {
-            if names.peek().is_none() {
-                return self.lookup(name);
+    /// 本方法要写账本，所以必须持 `&mut self`；而调用方拿到条目之后
+    /// 紧接着就要以 `&mut` 使用 `GpuResources`（把精灵推进批次）。返回
+    /// 一个从 `&mut self` 借出来的 `&AtlasEntry` 会让那次推批次借不到
+    /// 可变引用。返回的 `&'n str` 借的是**调用方的候选表**，与 `self`
+    /// 无关，可变借用因此在本方法返回时就结束了——调用方接着调
+    /// [`Self::entry_of`]（`&self`）拿条目，借用形状与本次改动之前逐字
+    /// 相同。
+    ///
+    /// # 日志级别为什么是 `WARN`
+    ///
+    /// 项目所有者裁定「这一类改成 Warning」。独立于裁定也成立：一条
+    /// 落空的候选链可能是一层**本来就可选**的内容
+    /// （[`SurfaceDraw::fallback_key`] 为 `None`，例如没有挂件贴图的
+    /// 职业——那个字段的文档明写这是正常状态）。把正常状态记成 `ERROR`，
+    /// `ERROR` 这个级别就再也不能表示「真出事了」。
+    fn resolve_key<'n>(&mut self, names: impl IntoIterator<Item = &'n str>) -> Option<&'n str> {
+        // 显式借出这两个字段：账本要可变借用、图集要共享借用，两者是
+        // `GpuResources` 上不相干的字段。探测判据走 [`atlas_contains`]
+        // 而不是在这里再写一遍——它与 [`Self::contains`] 是同一份。
+        let atlas = &self.atlas;
+        match self
+            .miss_ledger
+            .resolve(names, |key| atlas_contains(atlas, key))
+        {
+            ChainOutcome::Hit { key, .. } => Some(key),
+            ChainOutcome::MissedFirstTime { candidates } => {
+                // 整条候选链一个都没命中，这一层这一帧真的没画出来。
+                // **只有这一个分支会说话**，而且同一组候选只说一次。
+                tracing::warn!(
+                    %candidates,
+                    "整条图集候选链都没有命中，这一层没有画出来（同一组候选只报一次）"
+                );
+                None
             }
-            if self.atlas.metadata().lookup(name).is_some()
-                && let Some(uv) = self.atlas.uv_rect(name)
-            {
-                return self.atlas.metadata().lookup(name).map(|entry| (entry, uv));
-            }
+            ChainOutcome::MissedAgain => None,
         }
-        None
     }
 }
 
@@ -1288,7 +1325,7 @@ impl Demo {
     ///
     /// 世界地图只可能在有世界的时候开着（开关那一步已经过了同一道闸门，
     /// 见 [`Demo::advance`]），因此这里的 `else` 分支在生产路径上不可
-    /// 达。写成早退而不是 `expect`：与 `GpuResources::lookup`「取不到就
+    /// 达。写成早退而不是 `expect`：与 `GpuResources::resolve_key`「取不到就
     /// 跳过本次」同一条表现层降级纪律——一次意外的落空不该让游戏崩溃。
     fn pan_and_zoom_world_map(&mut self, input: &InputState) {
         let Some(session) = self.session.as_mut() else {
@@ -1426,7 +1463,7 @@ impl Demo {
 ///
 /// 玩家实体查不到时（不应该发生——`GameWorld::player` 恒指向一个刚
 /// 生成或刚读档必然存在的实体）跳过本帧 HUD 绘制并记一条警告,不
-/// panic：显示层的降级纪律与 `GpuResources::lookup`「图集条目缺失，
+/// panic：显示层的降级纪律与 `GpuResources::resolve_key`「整条候选链落空，
 /// 跳过本次绘制」一致，不能因为一次意外的查询落空就让整个游戏崩溃。
 ///
 /// # 世界地图（`world_map_open`/`continent_field`/`world_map_view`）
@@ -1600,7 +1637,7 @@ fn draw_hud(
         // 在跑的整屏归并相比可以忽略。
         //
         // 编年史拿不到时（`chronicle_handle` 为 `None`）就不画据点——
-        // 与 `GpuResources::lookup`「图集条目缺失，跳过本次绘制」同一条
+        // 与 `GpuResources::resolve_key`「整条候选链落空，跳过本次绘制」同一条
         // 显示层降级纪律，不 panic。
         //
         // **资源点没有画**：`SettlementSite` 只存了这座据点靠什么吃饭的
@@ -1859,7 +1896,14 @@ fn render_surface(
         let Some(name) = terrain_atlas_key(kind, &content.terrain_ids, &content.registry) else {
             continue;
         };
-        let Some((entry, uv)) = resources.lookup(&name) else {
+        // 两步：先挑键（写去重账本，持 `&mut`），再取条目（`&self`）。
+        // 地形瓦片每帧画满整屏，是全仓库最容易刷屏的一处——单个名字
+        // 也走去重的那条路，不另开一条「只有一个候选就直接打日志」的
+        // 旁路，见 [`GpuResources::resolve_key`] 文档。
+        let Some(key) = resources.resolve_key(std::iter::once(name.as_str())) else {
+            continue;
+        };
+        let Some((entry, uv)) = resources.entry_of(key) else {
             continue;
         };
         // 先按未缩放的相机换算拿到屏幕坐标（DrawOrder 排序用这份原始
@@ -1907,8 +1951,8 @@ fn render_surface(
 /// 抽象理由的落点：查图次序（内容自带键 → 通用记号）在
 /// [`SurfaceDraw::keys`]，锚点/缩放/绘制顺序换算在这里，两处各只有一份。
 ///
-/// 查不到任何图集条目时**跳过**而不是 panic：兜底记号缺席已经由
-/// [`GpuResources::lookup_first`] 打了 error 日志，画面上少一个记号远好于
+/// 查不到任何图集条目时**跳过**而不是 panic：整条候选链落空已经由
+/// [`GpuResources::resolve_key`] 按去重策略留过一条 WARN，画面上少一个记号远好于
 /// 让整局游戏崩掉（与 [`push_player_marker`] 同一条降级纪律）。
 fn push_surface_draw(
     draw: &SurfaceDraw,
@@ -1921,14 +1965,39 @@ fn push_surface_draw(
     // 文档。判据在这里而不是在 `surface_draw` 里，是因为「这个键在图集
     // 里查不查得到」只有拿得到图集的这一侧回答得了，而这一侧正是查图
     // 次序（`SurfaceDraw::keys`）的唯一消费点，两件事因此仍然只有一处。
-    if draw
-        .superseded_by
-        .iter()
-        .any(|key| resources.lookup(key).is_some())
-    {
-        return;
-    }
-    let Some((entry, uv)) = resources.lookup_first(draw.keys()) else {
+    //
+    // 压制判定与回退链走**同一个**决定点 [`MissLedger::resolve_draw`]，
+    // 两者的探测都是静默的。此前压制判定调的是会打日志的取用接口，而
+    // `superseded_by` 装的正是两个合成键、今天一张合成图都没有——于是
+    // 每个 NPC 每帧刷两行 ERROR，正是所有者实机撞到的那一屏。见
+    // `crate::atlas_miss` 模块文档。
+    let resolution = {
+        // 账本要可变借用、图集要共享借用，两者是 `GpuResources` 上不相
+        // 干的字段，显式借出以免方法调用借走整个结构体。
+        let atlas = &resources.atlas;
+        resources.miss_ledger.resolve_draw(
+            draw.superseded_by.iter().map(String::as_str),
+            draw.keys(),
+            |key| atlas_contains(atlas, key),
+        )
+    };
+    let key = match resolution {
+        DrawResolution::Draw { key } => key,
+        DrawResolution::Superseded => return,
+        DrawResolution::Missed { report } => {
+            if let Some(candidates) = report {
+                tracing::warn!(
+                    %candidates,
+                    "整条图集候选链都没有命中，这一层没有画出来（同一组候选只报一次）"
+                );
+            }
+            return;
+        }
+    };
+    // 取条目走 `&self`：`resolution` 已经把可变借用还回去了，接下来那句
+    // 推批次因此仍然借得到 `&mut`，见 [`GpuResources::resolve_key`] 文档
+    // 「为什么返回键名而不是条目」一节。
+    let Some((entry, uv)) = resources.entry_of(key) else {
         return;
     };
     let (sx, sy) = camera.world_to_screen(draw.pos);
@@ -1980,7 +2049,10 @@ fn push_player_marker(
     zoom: Zoom,
     resources: &mut GpuResources,
 ) {
-    let Some((entry, uv)) = resources.lookup(sprite_name) else {
+    let Some(key) = resources.resolve_key(std::iter::once(sprite_name)) else {
+        return;
+    };
+    let Some((entry, uv)) = resources.entry_of(key) else {
         return;
     };
     let footprint = entry.footprint;
@@ -2114,7 +2186,7 @@ impl AppHandler for Demo {
         if let Some(session) = self.session.as_ref() {
             // 当前动画帧应显示的图集条目名，两层兜底见
             // `current_sprite_name` 文档；两层都失败时（连
-            // `FALLBACK_SPRITE` 本身都缺失）才会在 `GpuResources::lookup`
+            // `FALLBACK_SPRITE` 本身都缺失）才会在 `GpuResources::resolve_key`
             // 里记一条错误日志，那已经是资产整体损坏，不再是「可选帧
             // 缺失」。
             let sprite_name = current_sprite_name(

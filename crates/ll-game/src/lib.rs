@@ -17,6 +17,7 @@
 
 pub mod animation;
 pub mod app;
+pub mod atlas_miss;
 pub mod chargen;
 pub mod content;
 pub mod layout;

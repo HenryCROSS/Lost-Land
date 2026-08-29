@@ -253,7 +253,7 @@ impl GpuResources {
         match (entry, uv) {
             (Some(entry), Some(uv)) => Some((entry, uv)),
             _ => {
-                tracing::error!(name, "图集条目缺失，跳过本次绘制");
+                tracing::warn!(name, "图集条目缺失，跳过本次绘制");
                 None
             }
         }
