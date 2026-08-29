@@ -118,6 +118,29 @@ pub enum ScreenState {
     },
 }
 
+impl ScreenState {
+    /// 这块屏是不是要玩家**打字**（而不是在若干项之间选一项）。
+    ///
+    /// # 它决定三件事，因为那三件事本来就是一件
+    ///
+    /// 返回真的那一帧，`crate::app::Demo` 会往
+    /// `ll_ui::widget::ui_mode::UiModeStack` 压一层 `UiMode::TextEntry`，
+    /// 于是：输入上下文切到 `InputContext::TextEntry`（WASD 解析不出
+    /// 动作，空格变回一个字符）、事件循环开启输入法、文本通道开始
+    /// 收数据。三者共用这一个判据，见
+    /// `ll_platform::window::AppHandler::input_context` 文档。
+    ///
+    /// # 为什么是屏的属性，不是某处 `if screen == SaveNaming`
+    ///
+    /// 将来的角色命名、聊天、mod 搜索框都要走同一条路。写成屏自己的
+    /// 属性，新屏只需在这里加一行；写成散在路由里的判等，每加一块屏
+    /// 就要有人记得去改那处判等——而忘了改不会有任何东西报错，只会
+    /// 表现为「那块屏打不了中文」。
+    pub fn wants_text_entry(self) -> bool {
+        matches!(self, ScreenState::SaveNaming)
+    }
+}
+
 /// 设置界面是从哪一块屏进来的。
 ///
 /// # 为什么必须记住它

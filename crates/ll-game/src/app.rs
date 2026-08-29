@@ -1092,6 +1092,34 @@ impl Demo {
         self.screen_notice = None;
     }
 
+    /// 让模态栈的栈顶与「当前这块屏要不要玩家打字」对齐。
+    ///
+    /// 判据来自 [`ScreenState::wants_text_entry`]（今天只有命名屏返回
+    /// 真）。压上 `UiMode::TextEntry` 那一层之后，输入上下文变成
+    /// `InputContext::TextEntry`：WASD 在那张表里查不到任何动作（打字
+    /// 不会让角色走起来），空格变回一个字符，事件循环同时开启输入法并
+    /// 打开文本通道——**三件事共用这一个判据**，见
+    /// `ll_platform::window::AppHandler::input_context` 文档。
+    ///
+    /// **复用既有的 `UiModeStack`，不另起一套**：它的 `push`/`pop` 自带
+    /// `InputState::clear()`，正好是进出文本输入态时想要的（进去时把
+    /// 按住的方向键视为松开，出来时同理）。
+    ///
+    /// 在屏切换那个唯一漏斗后面调用。关整块屏走 `close_screen`，它本来
+    /// 就把栈弹空，不需要额外处理。
+    fn sync_text_entry_mode(&mut self, input: &mut InputState) {
+        let want = self.screen.is_some_and(ScreenState::wants_text_entry);
+        let has = self.ui_modes.top() == Some(UiMode::TextEntry);
+        if want == has {
+            return;
+        }
+        if want {
+            self.ui_modes.push(UiMode::TextEntry, input);
+        } else {
+            self.ui_modes.pop(input);
+        }
+    }
+
     /// 关掉整块模态屏，回到游戏——把栈弹空（同样清空按键状态：玩家在
     /// 菜单里按着方向键就关掉菜单时，角色不该立刻窜出去）。
     fn close_screen(&mut self, input: &mut InputState) {
@@ -1217,6 +1245,10 @@ impl Demo {
                 self.save_slots = crate::save_slot::list_slots(&self.saves_dir);
             }
             self.screen = Some(next);
+            // 新屏若要玩家打字（今天只有命名屏），这里把模态栈顶换成
+            // `UiMode::TextEntry`；离开时换回来。见
+            // `Demo::sync_text_entry_mode`。
+            self.sync_text_entry_mode(input);
         }
         match outcome {
             ScreenOutcome::Idle => false,
@@ -3975,6 +4007,84 @@ mod tests {
         assert_eq!(demo.screen, Some(ScreenState::Menu));
         assert_eq!(demo.input_context(), InputContext::Menu);
         assert_eq!(demo.ui_modes.depth(), 1);
+    }
+
+    #[test]
+    fn 切到命名屏之后输入上下文是文本输入态离开后换回来() {
+        // 「文本输入态下游戏按键不该触发游戏动作」这条要求的**接线**
+        // 断言：`InputContext::TextEntry` 那张表里没有 WASD（
+        // `ll_platform::keybind` 里有独立断言），但表对了不代表这块屏
+        // 真的切到了那个上下文。少了这条，`sync_text_entry_mode` 不
+        // 接线也不会有任何东西变红。
+        // Arrange：先开一块普通菜单屏。
+        let mut demo = test_demo();
+        let mut input = InputState::new();
+        demo.open_menu(&mut input);
+        assert_eq!(demo.input_context(), InputContext::Menu);
+
+        // Act：切到命名屏。
+        demo.screen = Some(ScreenState::SaveNaming);
+        demo.sync_text_entry_mode(&mut input);
+
+        // Assert
+        assert_eq!(demo.input_context(), InputContext::TextEntry);
+
+        // Act：切走。
+        demo.screen = Some(ScreenState::Menu);
+        demo.sync_text_entry_mode(&mut input);
+
+        // Assert：换回来，而且没有把底下那层菜单一起弹掉。
+        assert_eq!(demo.input_context(), InputContext::Menu);
+        assert_eq!(demo.ui_modes.depth(), 1);
+    }
+
+    #[test]
+    fn 屏切换漏斗真的调了文本输入态同步() {
+        // 上一条只证明 `sync_text_entry_mode` 这个方法本身对；这一条
+        // 证明它**被接进了屏切换那个唯一漏斗**。少了这条，把漏斗里那
+        // 一行删掉不会有任何东西变红——而那正是本仓库最贵的失败模式
+        // （声明了但没接线）。
+        //
+        // 手法：在栈上留一层与当前屏不相符的 `TextEntry`，然后驱动
+        // 一帧 `update_screen`。只有漏斗真的调了同步，那一层才会被
+        // 弹掉。
+        // Arrange
+        let mut demo = test_demo();
+        let mut input = InputState::new();
+        demo.open_menu(&mut input);
+        demo.screen = Some(ScreenState::SaveList { cursor: 0 });
+        demo.ui_modes.push(UiMode::TextEntry, &mut input);
+        assert_eq!(demo.input_context(), InputContext::TextEntry);
+
+        // Act
+        demo.update_screen(&mut input);
+
+        // Assert
+        assert_eq!(
+            demo.input_context(),
+            InputContext::Menu,
+            "存档列表屏不要文本输入，漏斗应当把那一层弹掉"
+        );
+    }
+
+    #[test]
+    fn 反复同步不会把模态栈越堆越高() {
+        // `sync_text_entry_mode` 每帧都可能被调到，必须幂等——否则
+        // 停在命名屏几秒钟就会堆出几百层栈。
+        // Arrange
+        let mut demo = test_demo();
+        let mut input = InputState::new();
+        demo.open_menu(&mut input);
+        demo.screen = Some(ScreenState::SaveNaming);
+
+        // Act
+        for _ in 0..10 {
+            demo.sync_text_entry_mode(&mut input);
+        }
+
+        // Assert
+        assert_eq!(demo.ui_modes.depth(), 2, "菜单层 + 文本输入层，就两层");
+        assert_eq!(demo.input_context(), InputContext::TextEntry);
     }
 
     #[test]
