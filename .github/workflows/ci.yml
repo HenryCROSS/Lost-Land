@@ -97,6 +97,34 @@ jobs:
       - name: 字段接线检查（声明但没有决策层消费者，阻断模式）
         run: python3 scripts/ci/check_field_consumers.py
 
+  # 存档**主体**走 postcard（`ll-content/src/save_file.rs` 里的
+  # `postcard::to_allocvec(world)`），那是 non-self-describing 的二进制
+  # 格式——字节流里没有字段名，反序列化按声明顺序逐字段吃字节。两条后果：
+  # `#[serde(default)]` 在这条路上**完全是空操作**；新字段若不在结构体
+  # 末尾，后续字段的字节会被错位读成**合法值**（静默数据损坏，没有任何
+  # 东西会报错）。
+  #
+  # 这个仓库已经犯过两次——`Agent::gender` 与 `GroundItemStack::placed`
+  # 都往主体加了字段、都只加了 `#[serde(default)]`、都没有递增
+  # `CURRENT_SCHEMA_VERSION`；两批各自的"老存档读得回来"测试走的是
+  # `serde_json::Value`（自描述格式，`serde(default)` 在那里确实生效），
+  # 于是全绿，却一个字节都没碰到真正的 postcard 主体那条路。
+  #
+  # 本门禁从 `WorldState` 出发机械求出"会被序列化进主体的类型闭包"
+  # （闭包多大、含哪些类型跑 `--dump` 就是答案，这里刻意不抄一份会漂移
+  # 的副本），把每个类型的线格式形状记进一份**由脚本自己
+  # 生成**的快照 `scripts/ci/save_body_shape.json`，强制形状变化与
+  # `CURRENT_SCHEMA_VERSION` 递增同批发生。刻意不维护任何手写类型清单
+  # ——本仓库最稳定的缺陷来源就是"把真相源之外的副本当判据"
+  # （`atlas_coverage.rs` 的手写地形清单、交接文档里的常量表、`skin.rs`
+  # 查裸贴图名），门禁自己不能是第四个。已知局限与豁免机制见脚本头注释。
+  save-schema-version-check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 存档主体形状 ↔ schema 版本联动检查（阻断模式）
+        run: python3 scripts/ci/check_save_schema_version.py
+
   # 规格 §14.5 要求"行覆盖率 ≥ 80%，核心 crate（ll-core/ll-sim/ll-world）
   # ≥ 90%"，但 `cargo-llvm-cov` 从未在本项目任何环境安装或运行过——不是
   # "曾经达标后来退化"，是从 P0 到现在都不知道真实数字。没有这道门禁，

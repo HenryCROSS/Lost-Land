@@ -1,0 +1,2033 @@
+{
+  "_note": "本文件由 scripts/ci/check_save_schema_version.py --bless 生成，不要手工编辑。它记录存档主体（postcard 编码的 WorldState 闭包）的线格式形状，以及生成它时的 CURRENT_SCHEMA_VERSION。",
+  "fingerprint": "ed930cbd01e027a26074a77b01a17a4aa4a2dad000a549fdb5cd44db78aebafc",
+  "schema_version": 3,
+  "types": {
+    "ActiveStatModifier": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/stats.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Tick"
+        }
+      ]
+    },
+    "Affiliation": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/affiliation.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "AffiliationKind"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "OrgRef"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "i32"
+        }
+      ]
+    },
+    "AffiliationKind": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/affiliation.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "payload": []
+        }
+      ]
+    },
+    "Agent": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/agent.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "TorusPos"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "BaseStats"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Tick"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "Vec<Affiliation>"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "i64"
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "ty": "ContentIndex"
+        },
+        {
+          "attrs": [],
+          "i": 7,
+          "ty": "Vec<Goal>"
+        },
+        {
+          "attrs": [],
+          "i": 8,
+          "ty": "Gender"
+        },
+        {
+          "attrs": [],
+          "i": 9,
+          "ty": "ContentIndex"
+        },
+        {
+          "attrs": [],
+          "i": 10,
+          "ty": "Space"
+        },
+        {
+          "attrs": [],
+          "i": 11,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 12,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 13,
+          "ty": "BTreeMap<ContentIndex, i32>"
+        },
+        {
+          "attrs": [
+            "with = \"spent_slots_serde\""
+          ],
+          "i": 14,
+          "ty": "BTreeMap<(ContentIndex, u8), u32>"
+        },
+        {
+          "attrs": [],
+          "i": 15,
+          "ty": "Option<RestState>"
+        },
+        {
+          "attrs": [],
+          "i": 16,
+          "ty": "Vec<ContentIndex>"
+        },
+        {
+          "attrs": [],
+          "i": 17,
+          "ty": "Vec<ContentIndex>"
+        },
+        {
+          "attrs": [],
+          "i": 18,
+          "ty": "Vec<ContentIndex>"
+        },
+        {
+          "attrs": [],
+          "i": 19,
+          "ty": "BTreeMap<ContentIndex, Tick>"
+        },
+        {
+          "attrs": [],
+          "i": 20,
+          "ty": "Vec<ContentIndex>"
+        },
+        {
+          "attrs": [],
+          "i": 21,
+          "ty": "Vec<ContentIndex>"
+        },
+        {
+          "attrs": [],
+          "i": 22,
+          "ty": "BTreeMap<AttributeKind, BTreeMap<ContentIndex, ActiveStatModifier>>"
+        },
+        {
+          "attrs": [
+            "with = \"crate::mod_state::serde_map\""
+          ],
+          "i": 23,
+          "ty": "BTreeMap<(String, String), ModStateValue>"
+        },
+        {
+          "attrs": [],
+          "i": 24,
+          "ty": "Option<ContentIndex>"
+        },
+        {
+          "attrs": [],
+          "i": 25,
+          "ty": "Tick"
+        },
+        {
+          "attrs": [],
+          "i": 26,
+          "ty": "Option<WorldId>"
+        },
+        {
+          "attrs": [],
+          "i": 27,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 28,
+          "ty": "i64"
+        },
+        {
+          "attrs": [],
+          "i": 29,
+          "ty": "i64"
+        },
+        {
+          "attrs": [],
+          "i": 30,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 31,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 32,
+          "ty": "Vec<ItemStack>"
+        },
+        {
+          "attrs": [],
+          "i": 33,
+          "ty": "BTreeMap<EquipSlot, ItemStack>"
+        },
+        {
+          "attrs": [],
+          "i": 34,
+          "ty": "bool"
+        }
+      ]
+    },
+    "Arena": {
+      "container": [],
+      "file": "crates/ll-world/src/entity/arena.rs",
+      "kind": "struct",
+      "manual_serde": {
+        "Deserialize": "fc8df1f9266749c6",
+        "Serialize": "386494d5676b26d4"
+      },
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Vec<Slot<T>>"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<u32>"
+        }
+      ]
+    },
+    "AttributeKind": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/stats.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "payload": []
+        }
+      ]
+    },
+    "BaseStats": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/stats.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "ty": "i32"
+        }
+      ]
+    },
+    "BoundedGrid": {
+      "container": [],
+      "file": "crates/ll-world/src/bounded_grid.rs",
+      "kind": "struct",
+      "manual_serde": {
+        "Deserialize": "1b6cce0b0df6267f",
+        "Serialize": "cdb27d74c9f88d77"
+      },
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "BoundedSize"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<TerrainKind>"
+        }
+      ]
+    },
+    "BoundedSize": {
+      "container": [],
+      "file": "crates/ll-core/src/bounded.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "u32"
+        }
+      ]
+    },
+    "ChunkGrid": {
+      "container": [],
+      "file": "crates/ll-world/src/chunk.rs",
+      "kind": "struct",
+      "manual_serde": {
+        "Deserialize": "076f1f6f64b1f282",
+        "Serialize": "49d69f2ac8825572"
+      },
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "TorusSize"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<TerrainKind>"
+        }
+      ]
+    },
+    "ContentIndex": {
+      "container": [],
+      "file": "crates/ll-core/src/ident.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u32"
+        }
+      ]
+    },
+    "CultureKind": {
+      "container": [],
+      "file": "crates/ll-world/src/culture.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "ContentIndex"
+        }
+      ]
+    },
+    "CultureTable": {
+      "container": [],
+      "file": "crates/ll-world/src/culture.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Vec<Option<NamespacedId>>"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<Option<ResourceCategory>>"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Vec<Option<TerrainKind>>"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "Vec<Option<TerrainKind>>"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "Vec<Vec<(ContentIndex, u32)>>"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "Vec<Vec<(ContentIndex, u32)>>"
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "ty": "Vec<bool>"
+        },
+        {
+          "attrs": [],
+          "i": 7,
+          "ty": "Vec<CultureKind>"
+        },
+        {
+          "attrs": [],
+          "i": 8,
+          "ty": "Option<ContentIndex>"
+        }
+      ]
+    },
+    "EntityId": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/id.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "u32"
+        }
+      ]
+    },
+    "EquipSlot": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/item.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u8"
+        }
+      ]
+    },
+    "ExplorationMemory": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/exploration.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [
+            "with = \"zone_map\""
+          ],
+          "i": 0,
+          "ty": "BTreeMap<ZoneCoord, ZoneExploration>"
+        }
+      ]
+    },
+    "FamilyId": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/id.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u32"
+        }
+      ]
+    },
+    "Gender": {
+      "container": [
+        "#[serde(rename_all = \"snake_case\")]",
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/gender.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": []
+        }
+      ]
+    },
+    "GeneratorKind": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/interior.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": []
+        }
+      ]
+    },
+    "GeneratorParams": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/interior.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u64"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "GeneratorKind"
+        }
+      ]
+    },
+    "Goal": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/goal.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "ContentIndex"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<i64>"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "i32"
+        }
+      ]
+    },
+    "GroundItemStack": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/item.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "TorusPos"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "ItemStack"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Tick"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "Vec<ItemStack>"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "bool"
+        }
+      ]
+    },
+    "HistoricalEvent": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "WorldId"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Tick"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "TorusPos"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "HistoricalEventKind"
+        }
+      ]
+    },
+    "HistoricalEventKind": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": [
+            "KillRecord"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": [
+            "SettlementFoundedRecord"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": [
+            "SettlementAbandonedRecord"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "payload": [
+            "SettlementConqueredRecord"
+          ]
+        }
+      ]
+    },
+    "Interior": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/interior.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "SpaceId"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "TorusPos"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "ContentIndex"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "Option<GeneratorParams>"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "HashMap<i16, BoundedGrid>"
+        }
+      ]
+    },
+    "InteriorTable": {
+      "container": [],
+      "file": "crates/ll-world/src/interior.rs",
+      "kind": "struct",
+      "manual_serde": {
+        "Deserialize": "0c4c628c307652e1",
+        "Serialize": "a5b5134e29edda39"
+      },
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "HashMap<SpaceId, Interior>"
+        }
+      ]
+    },
+    "ItemStack": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/item.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "ContentIndex"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Option<i32>"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "crate::ownership::Owner"
+        }
+      ]
+    },
+    "KillCause": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": [
+            "Option<ContentIndex>"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": [
+            "ContentIndex"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": [
+            "TerrainKind"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "payload": [
+            "ContentIndex"
+          ]
+        }
+      ]
+    },
+    "KillRecord": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Option<WorldId>"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "WorldId"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "KillCause"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "KillingBlow"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "VictimState"
+        }
+      ]
+    },
+    "KillingBlow": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "i32"
+        }
+      ]
+    },
+    "ModStateValue": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/mod_state.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": [
+            "i64"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": [
+            "bool"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": [
+            "Box<str>"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "payload": [
+            "Box<str>"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "payload": [
+            "EntityId"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "payload": [
+            "Vec<ModStateValue>"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "payload": [
+            "BTreeMap<Box<str>, ModStateValue>"
+          ]
+        }
+      ]
+    },
+    "NamespacedId": {
+      "container": [],
+      "file": "crates/ll-core/src/ident.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Box<str>"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Box<str>"
+        }
+      ]
+    },
+    "OrgRef": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/affiliation.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": [
+            "ContentIndex"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": [
+            "WorldId"
+          ]
+        }
+      ]
+    },
+    "Owner": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/ownership.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": [
+            "WorldId"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "payload": [
+            "WorldId"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "payload": [
+            "EntityId"
+          ]
+        }
+      ]
+    },
+    "RecencyClock": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/surface_store.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "BTreeSet<(Tick, K)>"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "HashSet<K>"
+        }
+      ]
+    },
+    "ResourceCategory": {
+      "container": [],
+      "file": "crates/ll-world/src/resource.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "payload": []
+        }
+      ]
+    },
+    "ResourceKind": {
+      "container": [],
+      "file": "crates/ll-world/src/resource.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "ContentIndex"
+        }
+      ]
+    },
+    "RestState": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/agent.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Tick"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "u32"
+        }
+      ]
+    },
+    "SettlementAbandonedRecord": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "WorldId"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "SettlementDemise"
+        }
+      ]
+    },
+    "SettlementConqueredRecord": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "WorldId"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "WorldId"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "ContentIndex"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "ContentIndex"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "u32"
+        }
+      ]
+    },
+    "SettlementDemise": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": [
+            "ContentIndex"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": [
+            "WorldId"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "payload": [
+            "u32"
+          ]
+        }
+      ]
+    },
+    "SettlementFoundedRecord": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "WorldId"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "u32"
+        }
+      ]
+    },
+    "SettlementSite": {
+      "container": [],
+      "file": "crates/ll-world/src/settlement.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "WorldId"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "ZoneCoord"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "TorusPos"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "SettlementStatus"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "Option<u32>"
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 7,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 8,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 9,
+          "ty": "[Option<ResourceKind>; SITE_RESOURCE_SLOTS]"
+        },
+        {
+          "attrs": [],
+          "i": 10,
+          "ty": "Option<CultureKind>"
+        }
+      ]
+    },
+    "SettlementStatus": {
+      "container": [],
+      "file": "crates/ll-world/src/settlement.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": []
+        }
+      ]
+    },
+    "Slot": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/arena.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": [
+            "u32",
+            "T"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": [
+            "u32"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "payload": []
+        }
+      ]
+    },
+    "Space": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/space.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": [
+            "ZoneCoord",
+            "i8",
+            "ContentIndex"
+          ]
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": [
+            "SpaceId",
+            "i16",
+            "TorusPos",
+            "ContentIndex"
+          ]
+        }
+      ]
+    },
+    "SpaceId": {
+      "container": [],
+      "file": "crates/ll-world/src/space.rs",
+      "kind": "alias",
+      "manual_serde": {},
+      "members": [
+        {
+          "target": "WorldId"
+        }
+      ]
+    },
+    "SurfaceStore": {
+      "container": [],
+      "file": "crates/ll-world/src/surface_store.rs",
+      "kind": "struct",
+      "manual_serde": {
+        "Deserialize": "4f95170ed22102f1",
+        "Serialize": "7d9922454ba3ad4d"
+      },
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "ZoneLayout"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "HashMap<ZoneCoord, ChunkGrid>"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "RecencyClock<ZoneCoord>"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "usize"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "Option<Arc<WorldChronicle>>"
+        }
+      ]
+    },
+    "TerrainKind": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/terrain.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "ContentIndex"
+        }
+      ]
+    },
+    "TerrainShape": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/terrain_shape.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "i32"
+        }
+      ]
+    },
+    "TerrainTable": {
+      "container": [],
+      "file": "crates/ll-world/src/terrain.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Vec<u32>"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<bool>"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Vec<bool>"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "Vec<Option<TerrainKind>>"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "BTreeMap<TerrainKind, TerrainKind>"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "Vec<bool>"
+        }
+      ]
+    },
+    "ThinPopulation": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/thin.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Vec<u32>"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<u16>"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Vec<ContentIndex>"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "Vec<FamilyId>"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "Vec<i64>"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "Vec<i64>"
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "ty": "Vec<Tick>"
+        }
+      ]
+    },
+    "Tick": {
+      "container": [],
+      "file": "crates/ll-core/src/time.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "i64"
+        }
+      ]
+    },
+    "TorusPos": {
+      "container": [],
+      "file": "crates/ll-core/src/torus.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "i32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "i32"
+        }
+      ]
+    },
+    "TorusSize": {
+      "container": [],
+      "file": "crates/ll-core/src/torus.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "u32"
+        }
+      ]
+    },
+    "VictimState": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/history.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "bool"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "bool"
+        }
+      ]
+    },
+    "WorldChronicle": {
+      "container": [],
+      "file": "crates/ll-world/src/chronicle.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Vec<HistoricalEvent>"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<SettlementSite>"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Vec<((i32, i32), u32)>"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "TerrainTable"
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "ty": "CultureTable"
+        }
+      ]
+    },
+    "WorldId": {
+      "container": [],
+      "file": "crates/ll-core/src/ident.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u32"
+        }
+      ]
+    },
+    "WorldState": {
+      "container": [
+        "#[serde(try_from = \"WorldStateRepr\")]",
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/state.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u64"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "TerrainShape"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Tick"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "TorusSize"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "SurfaceStore"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "InteriorTable"
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "ty": "ThinPopulation"
+        },
+        {
+          "attrs": [],
+          "i": 7,
+          "ty": "Arena<Agent>"
+        },
+        {
+          "attrs": [],
+          "i": 8,
+          "ty": "Option<EntityId>"
+        },
+        {
+          "attrs": [],
+          "i": 9,
+          "ty": "ExplorationMemory"
+        },
+        {
+          "attrs": [],
+          "i": 10,
+          "ty": "Vec<HistoricalEvent>"
+        },
+        {
+          "attrs": [],
+          "i": 11,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 12,
+          "ty": "BTreeMap<ContentIndex, u64>"
+        },
+        {
+          "attrs": [],
+          "i": 13,
+          "ty": "Vec<GroundItemStack>"
+        },
+        {
+          "attrs": [],
+          "i": 14,
+          "ty": "Vec<WorldId>"
+        }
+      ]
+    },
+    "WorldStateRepr": {
+      "container": [
+        "derive(Deserialize)"
+      ],
+      "file": "crates/ll-world/src/state.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u64"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "TerrainShape"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Tick"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "TorusSize"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "SurfaceStore"
+        },
+        {
+          "attrs": [],
+          "i": 5,
+          "ty": "InteriorTable"
+        },
+        {
+          "attrs": [],
+          "i": 6,
+          "ty": "ThinPopulation"
+        },
+        {
+          "attrs": [],
+          "i": 7,
+          "ty": "Arena<Agent>"
+        },
+        {
+          "attrs": [],
+          "i": 8,
+          "ty": "Option<EntityId>"
+        },
+        {
+          "attrs": [],
+          "i": 9,
+          "ty": "ExplorationMemory"
+        },
+        {
+          "attrs": [],
+          "i": 10,
+          "ty": "Vec<HistoricalEvent>"
+        },
+        {
+          "attrs": [],
+          "i": 11,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 12,
+          "ty": "BTreeMap<ContentIndex, u64>"
+        },
+        {
+          "attrs": [],
+          "i": 13,
+          "ty": "Vec<GroundItemStack>"
+        },
+        {
+          "attrs": [],
+          "i": 14,
+          "ty": "Vec<WorldId>"
+        }
+      ]
+    },
+    "ZoneCoord": {
+      "container": [],
+      "file": "crates/ll-world/src/space.rs",
+      "kind": "alias",
+      "manual_serde": {},
+      "members": [
+        {
+          "target": "TorusPos"
+        }
+      ]
+    },
+    "ZoneExploration": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/exploration.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Vec<u64>"
+        }
+      ]
+    },
+    "ZoneLayout": {
+      "container": [
+        "#[serde(try_from = \"ZoneLayoutRepr\")]",
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/zone.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "TorusSize"
+        }
+      ]
+    },
+    "ZoneLayoutRepr": {
+      "container": [
+        "derive(Deserialize)"
+      ],
+      "file": "crates/ll-world/src/zone.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "TorusSize"
+        }
+      ]
+    }
+  }
+}

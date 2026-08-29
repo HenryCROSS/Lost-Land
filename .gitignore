@@ -4,3 +4,9 @@
 # `/logs`，而 `cargo test` 给每个 crate 的 cwd 是该 crate 自己的目录，
 # 日志会落到 `crates/<crate>/logs`——只锚根目录会把后者漏进版本库。
 logs/
+
+# CI 门禁脚本的 Python 字节码缓存。`scripts/ci/check_save_schema_version.py`
+# 从同目录 import `save_shape_lib`，CPython 因此会在 `scripts/ci/` 下建
+# `__pycache__/`。不写成 `/scripts/ci/__pycache__` 是与上面 `logs/` 同一条
+# 理由：脚本可能从任意 cwd 被调用，只锚一个路径会漏。
+__pycache__/
