@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use ll_game::menu_screen::{
-    EDITABLE_CONTEXT, MenuRow, ScreenNotice, ScreenOutcome, ScreenState, SettingsContext,
-    SettingsOrigin, SettingsRow, SettingsUpdate, clear_bindings, menu_focus_index, menu_rows,
-    settings_rows, try_rebind, update_menu, update_settings,
+    EDITABLE_CONTEXT, ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, SettingsOrigin,
+    SettingsRow, SettingsUpdate, clear_bindings, settings_rows, try_rebind, update_settings,
 };
+use ll_game::pause_menu::{MenuRow, menu_focus_index, menu_rows, update_menu};
 use ll_i18n::Catalog;
 use ll_platform::config::{GameConfig, ScaleFilter};
 use ll_platform::input::{GameKey, InputState};

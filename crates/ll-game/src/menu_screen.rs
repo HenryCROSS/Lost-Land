@@ -49,83 +49,8 @@ use ll_platform::config::{GameConfig, ScaleFilter, save as save_config};
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::keybind::{InputContext, KeyBinding, KeyBindings, KeyCode, Modifiers};
 use ll_ui::screen::ScreenData;
-use ll_ui::widget::focus::{focused_widget, navigate_focus};
+use ll_ui::widget::focus::focused_widget;
 use ll_ui::widget::state::{WidgetId, WidgetStateTable};
-
-/// 暂停菜单的一行是什么。**每帧现算**（见 [`menu_rows`]），不缓存。
-///
-/// 从一张编译期静态数组改成一个枚举 + 现算列表，是因为
-/// [`MenuRow::Save`] 这一行**在肉鸽模式下根本不出现**（所有者裁定：
-/// 肉鸽只有自动保存），行数因此不再固定。形状照
-/// [`settings_rows`] 的既有做法，不发明第二种。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MenuRow {
-    /// 关掉菜单回到游戏。
-    Continue,
-    /// 手动存一次档——**只有普通模式才有这一行**。
-    Save,
-    /// 打开设置屏。
-    Settings,
-    /// 回到游戏主菜单（首页）。**回去之前会先存一次**，见
-    /// `crate::app::Demo::back_to_title`。
-    BackToTitle,
-    /// 退出整个进程。
-    Quit,
-}
-
-impl MenuRow {
-    /// 这一行的控件 id——顺序即导航顺序（见
-    /// [`ll_ui::widget::focus::move_focus`] 文档「列表顺序即导航顺序」）。
-    pub fn widget_id(self) -> WidgetId {
-        match self {
-            MenuRow::Continue => "screen.menu.continue",
-            MenuRow::Save => "screen.menu.save",
-            MenuRow::Settings => "screen.menu.settings",
-            MenuRow::BackToTitle => "screen.menu.back-to-title",
-            MenuRow::Quit => "screen.menu.quit",
-        }
-    }
-
-    /// 这一行的 Fluent 键。
-    pub fn text_key(self) -> &'static str {
-        match self {
-            MenuRow::Continue => "screen-menu-continue",
-            MenuRow::Save => "screen-menu-save",
-            MenuRow::Settings => "screen-menu-settings",
-            MenuRow::BackToTitle => "screen-menu-back-to-title",
-            MenuRow::Quit => "screen-menu-quit",
-        }
-    }
-}
-
-/// 暂停菜单这一帧的全部行，顺序固定。
-///
-/// `can_save_manually` 应当由 [`ll_content::world_identity::WorldIdentity::allows_manual_save`]
-/// 给出——**UI 层不自己 `match` 存档模式**，判据只有那一处。
-///
-/// # 为什么「保存」是整行消失，不是置灰
-///
-/// `ll_ui::screen::ScreenData` 今天没有「逐行禁用样式」这个概念（批次 6
-/// 第 4.2 节论证过，加它要动数据形状与配色）。而这一项的**缺席本身**
-/// 就是模式的可见后果：肉鸽玩家看不到手动存档，正是这个模式的全部意思。
-pub fn menu_rows(can_save_manually: bool) -> Vec<MenuRow> {
-    let mut rows = vec![MenuRow::Continue];
-    if can_save_manually {
-        rows.push(MenuRow::Save);
-    }
-    rows.push(MenuRow::Settings);
-    rows.push(MenuRow::BackToTitle);
-    rows.push(MenuRow::Quit);
-    rows
-}
-
-/// 这一帧菜单屏的控件 id 列表，与 [`menu_rows`] 逐条对应。
-pub fn menu_item_ids(can_save_manually: bool) -> Vec<WidgetId> {
-    menu_rows(can_save_manually)
-        .into_iter()
-        .map(MenuRow::widget_id)
-        .collect()
-}
 
 /// 模态屏当前开着哪一块。
 ///
@@ -164,6 +89,23 @@ pub enum ScreenState {
     /// 光标（选中哪一格）不在这里而在 `crate::chargen::NewGameDraft` 上：
     /// 它是一对 `(u32, u32)`，与这块屏的「哪一行」不是同一种东西。
     SpawnPick,
+    /// 存档列表——首页的「读取存档」进这里，见 [`crate::save_list`]。
+    ///
+    /// **它底下没有世界**，与 [`ScreenState::Title`] 同一种状态。
+    SaveList {
+        /// 光标落在第几份存档上。
+        cursor: usize,
+    },
+    /// 给这份存档起名字，见 [`crate::save_name`]。
+    ///
+    /// 插在**选出生地确认之后、真正进世界之前**：那一刻世界已经建好、
+    /// 角色已经选好，起名是这条链的最后一步。之后每次存档都写同一个
+    /// 槽位，不再问第二次。
+    ///
+    /// 正在输入的那串字不在这里而在 `crate::chargen::NewGameDraft` 上
+    /// ——与选点光标同一条理由：`ScreenState` 是 `Copy` 的，装不下一个
+    /// `String`，而且屏切走再切回来时那串字不该丢。
+    SaveNaming,
     /// 设置界面。
     Settings {
         /// 光标落在第几行，见模块文档「焦点导航」一节。
@@ -306,6 +248,12 @@ pub enum ScreenNotice {
     Cleared(GameKey),
     /// 配置已写回磁盘。
     Saved,
+    /// 玩家死了：存档**保留**，这个世界的模式转为普通，请重新创建一个
+    /// 角色。
+    ///
+    /// 所有者的修正原话：「死亡后变成一般模式，可以再创建角色然后选择在
+    /// 某个地方出生。」
+    PlayerDied,
     /// 游戏进度已写回磁盘（暂停菜单的「保存」）。
     ///
     /// 与 [`Self::Saved`] 刻意分开：一个说的是设置，一个说的是存档，
@@ -341,6 +289,7 @@ impl ScreenNotice {
             ScreenNotice::Bound(_) => "screen-settings-bound",
             ScreenNotice::Cleared(_) => "screen-settings-cleared",
             ScreenNotice::Saved => "screen-settings-saved",
+            ScreenNotice::PlayerDied => "screen-chargen-player-died",
             ScreenNotice::GameSaved => "screen-menu-game-saved",
             ScreenNotice::GameSaveFailed => "screen-menu-game-save-failed",
             ScreenNotice::SaveFailed => "screen-settings-save-failed",
@@ -358,6 +307,7 @@ impl ScreenNotice {
             | ScreenNotice::Bound(action)
             | ScreenNotice::Cleared(action) => Some(action),
             ScreenNotice::Saved
+            | ScreenNotice::PlayerDied
             | ScreenNotice::GameSaved
             | ScreenNotice::GameSaveFailed
             | ScreenNotice::SaveFailed
@@ -439,11 +389,6 @@ pub fn focus_index(table: &WidgetStateTable, ids: &[WidgetId]) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// 菜单屏当前聚焦的是第几行，见 [`focus_index`]。
-pub fn menu_focus_index(table: &WidgetStateTable, can_save_manually: bool) -> usize {
-    focus_index(table, &menu_item_ids(can_save_manually))
-}
-
 /// 建出这一帧要交给 `ll_ui::screen` 的数据。
 pub fn screen_data<'a>(
     state: ScreenState,
@@ -495,6 +440,25 @@ pub fn screen_data<'a>(
             cursor: focus,
             empty_key: "screen-chargen-empty",
             hint_key: "screen-spawnpick-hint",
+            notice,
+        },
+        ScreenState::SaveList { cursor } => ScreenData {
+            title_key: "screen-savelist-title",
+            rows,
+            cursor,
+            empty_key: "screen-savelist-empty",
+            hint_key: "screen-savelist-hint",
+            notice,
+        },
+        ScreenState::SaveNaming => ScreenData {
+            title_key: "screen-savename-title",
+            rows,
+            // 命名屏没有「选中哪一行」这回事——两行都是给玩家看的，
+            // 光标是那串字尾巴上的下划线。`usize::MAX` 是本仓库既有的
+            // 「一行都没选中」表示（见 `focus_index`）。
+            cursor: usize::MAX,
+            empty_key: "screen-savelist-empty",
+            hint_key: "screen-savename-hint",
             notice,
         },
         ScreenState::Settings { capturing, .. } => ScreenData {
@@ -579,44 +543,6 @@ pub struct SettingsContext<'a> {
     pub config_path: &'a Path,
     /// 本地化目录，切换语言时要按它列出已装载的语言。
     pub catalog: &'a Catalog,
-}
-
-/// 处理菜单屏这一帧的输入。
-pub fn update_menu(
-    table: &mut WidgetStateTable,
-    input: &InputState,
-    can_save_manually: bool,
-) -> (ScreenOutcome, Option<ScreenState>) {
-    let rows = menu_rows(can_save_manually);
-    let ids = menu_item_ids(can_save_manually);
-    navigate_focus(table, &ids, input);
-    if input.was_just_pressed(GameKey::Cancel) {
-        return (ScreenOutcome::Close, None);
-    }
-    if !input.was_just_pressed(GameKey::Confirm) {
-        return (ScreenOutcome::Idle, None);
-    }
-    // 按**行的语义**分支，不按下标——行数随模式变化，写死下标就是
-    // 「肉鸽模式下按『设置』结果退出了游戏」这种缺陷的形状。
-    let Some(row) = rows.get(focus_index(table, &ids)) else {
-        // 还没选中任何一项（光标为 usize::MAX）时按确认——什么都不做，
-        // 不猜一个默认项。
-        return (ScreenOutcome::Idle, None);
-    };
-    match row {
-        MenuRow::Continue => (ScreenOutcome::Close, None),
-        MenuRow::Save => (ScreenOutcome::SaveNow, None),
-        MenuRow::Settings => (
-            ScreenOutcome::Idle,
-            Some(ScreenState::Settings {
-                cursor: 0,
-                capturing: false,
-                origin: SettingsOrigin::Menu,
-            }),
-        ),
-        MenuRow::BackToTitle => (ScreenOutcome::BackToTitle, None),
-        MenuRow::Quit => (ScreenOutcome::Quit, None),
-    }
 }
 
 /// 处理设置界面这一帧的输入，返回这一帧产生的提示（若有）。

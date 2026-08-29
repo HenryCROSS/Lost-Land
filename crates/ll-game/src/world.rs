@@ -762,6 +762,52 @@ pub fn apply_character_choice(
     *slot = agent;
 }
 
+/// **死亡之后重新入世**：在 `pos` 造一个全新的玩家实体，接管
+/// `player_entity`。
+///
+/// # 为什么不能复用 [`apply_character_choice`] + [`move_player_to`]
+///
+/// 那两个都要求玩家实体**还在**（它们改的是现有那一个）。而玩家死亡在
+/// 本仓库里就是「实体从 arena 里消失」（`ll_sim::apply` 的 `Despawn`），
+/// 所以那条路上没有东西可改——必须造一个新的。
+///
+/// # 这正是批次 8 第七节接缝 2 预留的用途
+///
+/// 那份计划的原话：「拿一份 `CharacterChoice` + 一个选好的格子 → 造一个
+/// 新 `Agent` → `world.actors.spawn`，与 `spawn_player` 今天做的完全
+/// 一样。本批把 [`build_player_agent`] 从『`build_new_world` 的私有细节』
+/// 提升成公开入口，就是为了那一天不必把同一段逻辑抄第二份。」本函数
+/// 因此只有装配，没有一行属于「玩家长什么样」的逻辑。
+///
+/// # 旧实体不需要在这里清理
+///
+/// 它在死亡那一刻就已经被 `Despawn` 从 arena 里摘掉了；尸体、掉落物是
+/// 结算层的产物，本函数一个都不碰——那些东西留在地上正是玩家回去捡自己
+/// 遗物的前提。
+pub fn respawn_player(
+    game_world: &mut GameWorld,
+    content: &LoadedContent,
+    pos: TorusPos,
+    race: ll_core::ident::ContentIndex,
+    profession: ll_core::ident::ContentIndex,
+    gender: ll_world::entity::Gender,
+) -> EntityId {
+    let (zone, _) = game_world.world.terrain.layout().tile_to_zone(pos);
+    // 新角色的初次可行动时刻取**当前**世界时钟，不是 `Tick(0)`——理由与
+    // `spawn_player` 里那一段逐字相同：写 0 会让 `TurnEngine` 在他第一次
+    // 行动时把世界时钟倒拨回世界开天辟地那一刻。
+    let next_action_at = game_world.world.clock;
+    let agent = build_player_agent(pos, zone, content, race, profession, gender, next_action_at);
+    let id = game_world.world.actors.spawn(agent);
+    // 三处必须同时更新，漏一处就是「玩家实体号指着一个不存在的实体」：
+    // `WorldState::player_entity`（探索记忆的写入路径读它）、
+    // `GameWorld::player`（渲染与输入读它）、时间轴（新角色要排得上队）。
+    game_world.world.player_entity = Some(id);
+    game_world.player = id;
+    game_world.timeline = rebuild_timeline(&game_world.world);
+    id
+}
+
 /// 把玩家挪到 `pos`，并同步他所在的区块。
 ///
 /// # 为什么必须同时改 `current_space`

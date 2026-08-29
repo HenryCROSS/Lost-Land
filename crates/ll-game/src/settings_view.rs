@@ -18,7 +18,8 @@ use ll_platform::config::{GameConfig, ScaleFilter};
 use ll_platform::input::GameKey;
 use ll_platform::keybind::KeyBindings;
 
-use crate::menu_screen::{EDITABLE_CONTEXT, SettingsRow, menu_rows};
+use crate::menu_screen::{EDITABLE_CONTEXT, SettingsRow};
+use crate::pause_menu::menu_rows;
 use crate::title_screen::{TITLE_ITEM_KEYS, TITLE_LOAD_ROW};
 
 /// 某个动作在 [`EDITABLE_CONTEXT`] 下当前绑着哪些键，排好版成一行。

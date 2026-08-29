@@ -256,6 +256,13 @@ pub fn list_slots(dir: &Path) -> Vec<SaveSlot> {
     slots
 }
 
+/// `dir` 下**最近存过**的那一个槽位；一份都没有时返回 `None`。
+///
+/// 「最近」的定义就在 [`list_slots`] 的排序里，不在这里重写一遍。
+pub fn latest_slot(dir: &Path) -> Option<SaveSlot> {
+    list_slots(dir).into_iter().next()
+}
+
 /// 把迁移前那份单文件存档收编进 `dir`。
 ///
 /// 返回收编出来的路径；没有可收编的东西（老文件不存在，或者已经收编过）

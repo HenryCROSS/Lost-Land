@@ -64,9 +64,10 @@ use crate::layout::{
     tile_tint,
 };
 use crate::menu_screen::{
-    ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, menu_focus_index, screen_data,
-    settings_rows, update_menu, update_settings,
+    ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, screen_data, settings_rows,
+    update_settings,
 };
+use crate::pause_menu::{menu_focus_index, update_menu};
 use crate::player_action::{Feedback, PlayerCommand, PlayerMenu, player_command};
 use crate::save::save_game;
 use crate::session::Session;
@@ -371,6 +372,46 @@ impl GpuResources {
                 None
             }
             ChainOutcome::MissedAgain => None,
+        }
+    }
+}
+
+/// 自动存档的间隔，按**世界时间**计（tick）。
+///
+/// 取既有常量 `TICKS_PER_HOUR`（36 000 tick = 游戏内一小时）而不是新造
+/// 一个魔数。为什么必须是世界时间而不是墙钟，见
+/// [`Demo::maybe_autosave`] 文档。
+const AUTOSAVE_INTERVAL_TICKS: i64 = ll_core::time::TICKS_PER_HOUR;
+
+/// 一块屏这一帧的去向——`update_screen` 里那几条私有分支的共同返回形状。
+///
+/// 比裸元组 `(ScreenOutcome, Option<ScreenState>)` 多的只有名字，而这两
+/// 项在调用点上恰恰读不出含义（哪个是「做什么」、哪个是「去哪儿」）。
+struct ScreenTransition {
+    outcome: ScreenOutcome,
+    next: Option<ScreenState>,
+}
+
+impl ScreenTransition {
+    fn idle() -> ScreenTransition {
+        ScreenTransition {
+            outcome: ScreenOutcome::Idle,
+            next: None,
+        }
+    }
+
+    fn going(next: ScreenState) -> ScreenTransition {
+        ScreenTransition {
+            outcome: ScreenOutcome::Idle,
+            next: Some(next),
+        }
+    }
+
+    /// 屏整个关掉——玩家真的进世界了。
+    fn closed() -> ScreenTransition {
+        ScreenTransition {
+            outcome: ScreenOutcome::Close,
+            next: None,
         }
     }
 }
@@ -732,7 +773,10 @@ impl Demo {
     /// 「等待一回合」在纯实时游戏里没有意义,只有回合制才需要一个显式
     /// 「什么都不做但仍然让时间前进」的意图）。没有按任何方向/等待键
     /// 的这一帧,`try_player_turn` 直接返回假,时钟原地不动。
-    fn advance(&mut self, input: &InputState, frame: FrameId) {
+    // `input` 是 `&mut`：本方法末尾的死亡处理要切输入上下文（压一层
+    // 模态栈），而上下文切换按设计必须清空按键状态——玩家死的那一刻可能
+    // 正按着方向键，见 `ll_ui::widget::ui_mode::UiModeStack::push`。
+    fn advance(&mut self, input: &mut InputState, frame: FrameId) {
         // 世界地图开关——一次性动作，`was_just_pressed` 而非
         // `was_activated`：与 `GameKey::Screenshot`/`GameKey::Menu` 同一类
         // 键（`GameKey::is_repeatable` 没有把 `Map` 收进去），长按不该
@@ -806,6 +850,130 @@ impl Demo {
             self.idle_clip,
         );
         self.run_turn(input);
+        // 回合结算之后、下一帧之前：先看玩家还活着没有，再决定要不要
+        // 自动存一次。次序不能反——玩家刚死的那一帧要存的是「模式已经
+        // 转成普通」的那份，不是死之前那份。
+        self.handle_player_death(input);
+        self.maybe_autosave();
+    }
+
+    /// 世界时钟走满一个自动存档周期就存一次。
+    ///
+    /// # 为什么必须按世界时间，不能按墙钟
+    ///
+    /// 墙钟会让存档时机取决于**玩家盯着屏幕想了多久**：同一串输入在两
+    /// 台机器上、甚至同一台机器的两次运行里，会在不同的世界状态上触发
+    /// 存档。那正是约束 C4 禁止的那类隐藏输入——世界的演化不该是「真实
+    /// 时间过了多久」的函数。
+    ///
+    /// 世界时钟只由回合推进驱动（`ll_sim::turn::TurnEngine`），它是玩家
+    /// 输入的纯函数，因此同一串输入的存档时机逐次相同。
+    ///
+    /// # 间隔为什么是游戏内一小时
+    ///
+    /// [`AUTOSAVE_INTERVAL_TICKS`] 直接取既有常量 `TICKS_PER_HOUR`，不
+    /// 新造一个魔数。游戏内一小时对应几十到上百个回合：既不会频繁到每
+    /// 走几步就卡一次盘，也不会久到死一次要退回很远。
+    ///
+    /// # 写盘失败只记一条日志
+    ///
+    /// 自动存档是背景动作，玩家没有在等它。弹一句提示会在他正走路时突然
+    /// 盖住屏幕；而**下一次自动存档还会再试一遍**，一次失败不是终局。
+    /// 真正要紧的那次（退出、回主菜单、手动存档）都会各自报错。
+    fn maybe_autosave(&mut self) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        let now = session.game_world.world.clock;
+        if now.0.saturating_sub(session.last_autosave.0) < AUTOSAVE_INTERVAL_TICKS {
+            return;
+        }
+        match write_save(&self.content, session, &self.character_name) {
+            Ok(()) => tracing::info!(
+                path = %session.save_target.path.display(),
+                world_tick = now.0,
+                "自动存档完成"
+            ),
+            Err(error) => tracing::error!(%error, "自动存档失败，下一次周期会再试"),
+        }
+        // 无论成败都把节拍往前推：失败时不推的话，下一帧会立刻再试一次，
+        // 磁盘满/无权限这类持续性故障会变成每帧一次写盘 + 每帧一行日志
+        // ——又一次刷屏。
+        if let Some(session) = self.session.as_mut() {
+            session.last_autosave = now;
+        }
+    }
+
+    /// 玩家死了：模式从肉鸽单向降级为普通，存一次，然后回角色创建屏。
+    ///
+    /// # 所有者的裁定（含那次修正）
+    ///
+    /// > 「肉鸽模式是只有自动保存的，并且死亡就删除存档。」
+    /// > **（追问后的修正）**「死亡后变成一般模式，可以再创建角色然后
+    /// > 选择在某个地方出生。」
+    ///
+    /// 所以**不删档**：世界比角色活得长（`crate::save_slot` 模块文档）。
+    ///
+    /// # 复用批次 8 留的那三处接缝，不抄第三份
+    ///
+    /// 1. [`crate::chargen::NewGameDraft::world_already_exists`]——为真时
+    ///    状态机跳过世界配置屏（重新生成等于把这局玩过的一切抹掉）；
+    /// 2. `crate::world::apply_character_choice`——把新选的种族/性别/职业
+    ///    落到玩家实体上；
+    /// 3. `crate::world::move_player_to`——把他挪到新选的出生地。
+    ///
+    /// 后两处在 [`Demo::generate_draft_world`] 与
+    /// [`Demo::finish_entering_world`] 里，与开局那条路**共用同一段代码**。
+    fn handle_player_death(&mut self, input: &mut InputState) {
+        let Some(session) = self.session.as_ref() else {
+            return;
+        };
+        if session
+            .game_world
+            .world
+            .actors
+            .get(session.game_world.player)
+            .is_some()
+        {
+            return;
+        }
+        // 实体已经从 arena 里消失了（`ll_sim::apply` 的 `Despawn`），
+        // 这就是「玩家死了」在本仓库里的表示。
+        let Some(mut session) = self.session.take() else {
+            return;
+        };
+        let relaxed = session.game_world.identity.downgrade_mode();
+        tracing::info!(
+            slot = session.save_target.id.as_str(),
+            mode_relaxed = relaxed,
+            "玩家死亡：存档保留，回到角色创建"
+        );
+        // 先存一次，把模式变化落盘——不存的话玩家一关游戏，这次降级就
+        // 白降了，下次读回来还是肉鸽档。
+        if let Err(error) = write_save(&self.content, &session, &self.character_name) {
+            tracing::error!(%error, "死亡后存档失败，模式变化可能没有落盘");
+        }
+        let target = session.save_target.clone();
+        // `Session::begin` 当初用 `mem::take` 把时间轴接管走了，现在要把
+        // 世界交回给草稿，得先按 `Agent::next_action_at` 重建一条——见
+        // `crate::world::rebuild_timeline` 文档。
+        session.game_world.timeline = crate::world::rebuild_timeline(&session.game_world.world);
+        self.new_game_draft = Some(crate::chargen::NewGameDraft::for_reincarnation(
+            &self.content,
+            session.game_world,
+            target,
+        ));
+        self.save_slots = crate::save_slot::list_slots(&self.saves_dir);
+        self.screen = Some(ScreenState::CharacterCreation { cursor: 0 });
+        self.screen_notice = Some(ScreenNotice::PlayerDied);
+        self.screen_focus = WidgetStateTable::default();
+        // 角色创建是一块模态屏，输入上下文要切到 `Menu`；玩家死的那一刻
+        // 可能正按着方向键，一并视为松开。
+        if self.ui_modes.depth() == 0 {
+            self.ui_modes.push(UiMode::Menu, input);
+        } else {
+            input.clear();
+        }
     }
 
     /// 本帧的一次回合结算：清理老化地面物品 → 结算排在玩家之前的
@@ -975,6 +1143,9 @@ impl Demo {
                 (ScreenOutcome::Idle, Some(next))
             }
             ScreenState::SpawnPick => {
+                // 死亡重生那条路直接从角色创建屏跳过来，选点屏要的地图
+                // 视野还没建过——**只建视野，不碰世界**（世界早就存在）。
+                self.prepare_spawn_pick_view();
                 let update = self.update_spawn_pick(input);
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
@@ -985,6 +1156,19 @@ impl Demo {
                 } else {
                     (ScreenOutcome::Idle, update.next)
                 }
+            }
+            ScreenState::SaveList { cursor } => {
+                let mut cursor = crate::save_list::clamp_cursor(cursor, &self.save_slots);
+                let update =
+                    crate::save_list::update_save_list(&mut cursor, &self.save_slots, input);
+                (
+                    update.outcome,
+                    Some(update.next.unwrap_or(ScreenState::SaveList { cursor })),
+                )
+            }
+            ScreenState::SaveNaming => {
+                let update = self.update_save_naming(input);
+                (update.outcome, update.next)
             }
             ScreenState::Settings { .. } => {
                 let mut state = state;
@@ -1024,6 +1208,14 @@ impl Demo {
             }
         };
         if let Some(next) = next_state {
+            // 进存档列表屏那一刻刷新一次槽位——玩家可能刚在游戏里存过
+            // 一次再回主菜单，缓存下来的那份列表已经旧了。只在**进入**
+            // 时刷，不是每帧刷：每帧 `read_dir` 加逐份读头部是白付的开销。
+            if matches!(next, ScreenState::SaveList { .. })
+                && !matches!(state, ScreenState::SaveList { .. })
+            {
+                self.save_slots = crate::save_slot::list_slots(&self.saves_dir);
+            }
             self.screen = Some(next);
         }
         match outcome {
@@ -1088,7 +1280,14 @@ impl Demo {
             return crate::chargen::ChargenUpdate::going(ScreenState::Title);
         };
         let roster = draft.roster.clone();
-        crate::chargen::update_character_creation(cursor, &mut draft.choice, &roster, input)
+        let world_already_exists = draft.world_already_exists;
+        crate::chargen::update_character_creation(
+            cursor,
+            &mut draft.choice,
+            &roster,
+            input,
+            world_already_exists,
+        )
     }
 
     /// 世界配置屏这一帧；按下「生成世界」时真的把世界建出来。
@@ -1102,9 +1301,16 @@ impl Demo {
             return crate::chargen::ChargenUpdate::going(ScreenState::Title);
         };
         let mut preset = draft.preset;
-        let update =
-            crate::world_setup::update_world_setup(cursor, &mut draft.shape, &mut preset, input);
+        let mut mode = draft.mode;
+        let update = crate::world_setup::update_world_setup(
+            cursor,
+            &mut draft.shape,
+            &mut preset,
+            &mut mode,
+            input,
+        );
         draft.preset = preset;
+        draft.mode = mode;
         if update.next != Some(ScreenState::SpawnPick) {
             return update;
         }
@@ -1123,23 +1329,47 @@ impl Demo {
             return crate::chargen::ChargenUpdate::going(ScreenState::Title);
         };
         let params = draft.gen_params();
-        let mut world = match crate::world::build_new_world(&self.content, params) {
+        let mode = draft.mode;
+        // 模式在建世界那一刻绑进世界身份，此后只被搬运——存档路径上
+        // 没有第二个来源，见 `ll_content::world_identity` 模块文档。
+        let world = match crate::world::build_new_world_with_mode(&self.content, params, mode) {
             Ok(world) => world,
             Err(error) => {
                 tracing::error!(?error, "按玩家选的参数建世界失败，留在世界配置屏");
                 return crate::chargen::ChargenUpdate::idle();
             }
         };
-        // 玩家选的三项在这里落到那个真实的玩家实体上——`build_new_world`
-        // 造出来的是「没有界面时的默认那一份」（人类 + 战士 + 默认性别），
-        // 见 `crate::world::spawn_player` 文档。
-        crate::world::apply_character_choice(
-            &mut world,
-            &self.content,
-            draft.choice.race(&draft.roster),
-            draft.choice.profession(&draft.roster),
-            draft.choice.gender(),
-        );
+        // 玩家选的三项**不在这里**落到实体上，而在
+        // [`Demo::finish_entering_world`]——与死亡重生那条路共用同一处。
+        // 放在这里会让新游戏那条路应用两次（这里一次、进世界时再一次），
+        // 而重生那条路根本不经过本函数。
+        draft.world = Some(world);
+        self.prepare_spawn_pick_view();
+        crate::chargen::ChargenUpdate::going(ScreenState::SpawnPick)
+    }
+
+    /// 把选出生地屏要的地图视野准备好——**只读草稿里那个世界，一个字节
+    /// 都不改它**。
+    ///
+    /// 幂等：已经准备好就直接返回。选出生地屏每帧都会调它一次（死亡重生
+    /// 那条路从角色创建屏直接跳过来，没有经过「生成世界」那一步），每帧
+    /// 重算一次粗粒度地形场是几千个区块的白工。
+    ///
+    /// # 为什么从 `generate_draft_world` 里拆出来
+    ///
+    /// 进选出生地屏有两条路：新游戏（先生成世界，再准备视野）与死亡重生
+    /// （世界早就在，只准备视野）。两条路共用这一份，就不会出现「重生那
+    /// 条路顺手又把世界重新生成了一遍」——那会把这局玩过的一切抹掉。
+    fn prepare_spawn_pick_view(&mut self) {
+        let Some(draft) = self.new_game_draft.as_mut() else {
+            return;
+        };
+        if draft.continent_field.is_some() && draft.map_view.is_some() {
+            return;
+        }
+        let Some(world) = draft.world.as_ref() else {
+            return;
+        };
         let layout = *world.world.terrain.layout();
         let field = ll_world::overview::generate_continent_field(
             &layout,
@@ -1147,6 +1377,9 @@ impl Demo {
             &world.params,
             &self.content.terrain_ids,
         );
+        // 光标初值对准玩家现在（或默认会）站的那一格。死亡重生时玩家实体
+        // 已经不在了，退回世界原点——那只是光标的落脚点，玩家马上会自己
+        // 挑一个。
         let player_pos = world
             .world
             .actors
@@ -1158,14 +1391,10 @@ impl Demo {
         // 写进 `WorldState`，见 `ExplorationMemory::fully_explored` 文档。
         let exploration = ll_world::exploration::ExplorationMemory::fully_explored(&layout);
         let slice = ll_world::world_map::world_map_slice(&field, &layout, &exploration, &view);
-        // 光标初值对准默认出生点那一格——玩家一进屏就看见「引擎本来会把
-        // 我放在哪」，再决定要不要换个地方。
         draft.cursor_cell = slice.cell_of_tile(player_pos).unwrap_or((0, 0));
         draft.exploration = Some(exploration);
-        draft.world = Some(world);
         draft.continent_field = Some(field);
         draft.map_view = Some(view);
-        crate::chargen::ChargenUpdate::going(ScreenState::SpawnPick)
     }
 
     /// 选出生地屏这一帧。
@@ -1260,27 +1489,113 @@ impl Demo {
     fn enter_world_at(
         &mut self,
         pos: ll_core::torus::TorusPos,
-        input: &mut InputState,
+        _input: &mut InputState,
     ) -> crate::spawn_pick::SpawnPickUpdate {
+        let Some(draft) = self.new_game_draft.as_mut() else {
+            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::Title);
+        };
+        draft.spawn = Some(pos);
+        if draft.existing_target.is_some() {
+            // **死亡重生那条路：不问名字。** 这个世界早就有自己的槽位
+            // 了，再起一个名字会让同一个世界在列表里出现两份，而玩家只是
+            // 换了个角色（`crate::save_slot` 模块文档「一份存档 = 一个
+            // 世界」）。
+            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::SaveNaming);
+        }
+        crate::spawn_pick::SpawnPickUpdate::going(ScreenState::SaveNaming)
+    }
+
+    /// 命名屏这一帧；玩家按确认时真正进世界。
+    fn update_save_naming(&mut self, input: &mut InputState) -> ScreenTransition {
+        let Some(draft) = self.new_game_draft.as_mut() else {
+            tracing::warn!("命名屏没有草稿，退回首页");
+            return ScreenTransition::going(ScreenState::Title);
+        };
+        // 死亡重生那条路没有名字可打——世界已经有槽位了，直接进去。
+        if draft.existing_target.is_some() {
+            return self.finish_entering_world(input);
+        }
+        let update = crate::save_name::update_save_name(&mut draft.save_name, input);
+        if let Some(next) = update.next {
+            return ScreenTransition::going(next);
+        }
+        if !update.confirmed {
+            return ScreenTransition::idle();
+        }
+        self.finish_entering_world(input)
+    }
+
+    /// 把玩家挪到选好的那一格、开出（或沿用）槽位，然后真正进世界。
+    ///
+    /// 这是新游戏与死亡重生**共用**的终点：两条路的差别只有「槽位是新
+    /// 开的还是沿用的」，其余（挪玩家、`Session::begin`、关屏）逐字相同。
+    fn finish_entering_world(&mut self, input: &mut InputState) -> ScreenTransition {
         let Some(draft) = self.new_game_draft.take() else {
-            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::Title);
+            return ScreenTransition::going(ScreenState::Title);
         };
-        let Some(mut world) = draft.world else {
-            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::Title);
+        let (Some(mut world), Some(pos)) = (draft.world, draft.spawn) else {
+            tracing::warn!("要进世界了却没有世界或没有出生地，退回首页");
+            return ScreenTransition::going(ScreenState::Title);
         };
-        crate::world::move_player_to(&mut world, pos);
+        // 玩家实体还在不在，决定这里是「挪」还是「造」。
+        //
+        // - 新游戏：`build_new_world` 已经造好了一个玩家，选出生地只是把他
+        //   挪过去 —— 批次 8 接缝 3 `move_player_to`。
+        // - 死亡重生：实体在死亡那一刻就被 `Despawn` 摘掉了，这里必须造一个
+        //   新的 —— 批次 8 接缝 2 `build_player_agent`（经
+        //   `respawn_player` 装配）。
+        //
+        // 两条路都不抄第三份逻辑。
+        if world.world.actors.get(world.player).is_some() {
+            crate::world::move_player_to(&mut world, pos);
+            // 批次 8 接缝之一：玩家选的三项落到那个真实实体上。
+            crate::world::apply_character_choice(
+                &mut world,
+                &self.content,
+                draft.choice.race(&draft.roster),
+                draft.choice.profession(&draft.roster),
+                draft.choice.gender(),
+            );
+        } else {
+            let race = draft
+                .choice
+                .race(&draft.roster)
+                .unwrap_or(self.content.race_ids.human);
+            let profession = draft
+                .choice
+                .profession(&draft.roster)
+                .unwrap_or(self.content.class_ids.warrior);
+            crate::world::respawn_player(
+                &mut world,
+                &self.content,
+                pos,
+                race,
+                profession,
+                draft.choice.gender(),
+            );
+        }
+        let target = match draft.existing_target {
+            Some(target) => target,
+            None => {
+                let name = crate::save_name::resolved_name(
+                    &draft.save_name,
+                    &self.catalog,
+                    &self.config.language,
+                );
+                crate::save_slot::SaveTarget::create_in(&self.saves_dir, &name)
+            }
+        };
         tracing::info!(
             spawn_x = pos.x(),
             spawn_y = pos.y(),
+            slot = target.id.as_str(),
+            name = %target.name,
             "玩家选定出生地，进入世界"
         );
-        // 终点仍然是 `Session::begin`——四条进世界的路径共用它，见
+        // 终点仍然是 `Session::begin`——进世界的每一条路径共用它，见
         // `crate::session::Session::begin` 文档。
-        // 新开的一局：在存档目录里开一个新槽位。命名屏（玩家自己起
-        // 名字）在下一个提交里插在这一步之前，届时名字从草稿里取。
-        let target = crate::save_slot::SaveTarget::create_in(&self.saves_dir, &self.character_name);
         self.enter_world_in_slot(world, target, input);
-        crate::spawn_pick::SpawnPickUpdate::entered()
+        ScreenTransition::closed()
     }
 
     /// 存档列表屏选中的那一份：读回来并进去。
@@ -1904,10 +2219,10 @@ fn draw_screen(
     notice: Option<ScreenNotice>,
     has_save: bool,
     // 暂停菜单里「保存」那一行在不在——肉鸽模式下整行消失，见
-    // `crate::menu_screen::menu_rows`。
+    // `crate::pause_menu::menu_rows`。
     can_save_manually: bool,
-    // 存档列表屏要列的那些槽位（下一个提交才用到）。
-    _slots: &[crate::save_slot::SaveSlot],
+    // 存档列表屏要列的那些槽位。
+    slots: &[crate::save_slot::SaveSlot],
     // 角色创建/世界配置两块屏的行文字要读草稿（玩家选了什么）与内容
     // （种族/职业的展示名）——两样都只有 `Demo` 够得着，因此从这里
     // 传进来，而不是让排版函数各自去找。
@@ -1931,6 +2246,19 @@ fn draw_screen(
             menu_row_texts(catalog, language, can_save_manually),
             menu_focus_index(focus, can_save_manually),
         ),
+        ScreenState::SaveList { cursor } => (
+            crate::save_list::save_list_row_texts(slots, catalog, language),
+            crate::save_list::clamp_cursor(cursor, slots),
+        ),
+        ScreenState::SaveNaming => (
+            match draft {
+                Some(draft) => {
+                    crate::save_name::save_name_row_texts(&draft.save_name, catalog, language)
+                }
+                None => Vec::new(),
+            },
+            usize::MAX,
+        ),
         ScreenState::CharacterCreation { cursor } => (
             match draft {
                 Some(draft) => crate::chargen::character_row_texts(
@@ -1951,6 +2279,7 @@ fn draw_screen(
                 Some(draft) => crate::world_setup::world_setup_row_texts(
                     &draft.shape,
                     draft.preset,
+                    draft.mode,
                     catalog,
                     language,
                 ),
@@ -2528,6 +2857,18 @@ impl Demo {
     }
 }
 
+/// 存档相关的断言（自动存档节拍、死亡接线、手动存档、回主菜单）住在
+/// 一个**独立文件**里。
+///
+/// `app.rs` 已经 4000 行开外（既有违规，交接文档第四节第 8 条记着这笔
+/// 账），本批次给它加的产品代码只有几十行，但断言有四百多行。用
+/// `#[path]` 把它们挪进 `app_save_tests.rs`：子模块看得见父模块的私有
+/// 项（`Demo` 的字段、`handle_player_death` 这些私有方法），断言因此
+/// 仍然走真实的私有路径，而 `app.rs` 本身没有因为本批次多出四百行。
+#[cfg(test)]
+#[path = "app_save_tests.rs"]
+mod save_tests;
+
 #[cfg(test)]
 mod tests {
     //! 世界时钟推进批次的组合断言——这是本任务真正要修的缺陷：
@@ -2558,7 +2899,7 @@ mod tests {
     use ll_world::entity::{ActiveStatModifier, AttributeKind};
     use ll_world::item::ItemStack;
 
-    fn test_content() -> LoadedContent {
+    pub(super) fn test_content() -> LoadedContent {
         let dir = crate::test_support::unique_temp_path("ll-game-app-test-content");
         std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
         // mods_root 指向仓库真实的 mods/ 目录（本体内容住在
@@ -2576,7 +2917,7 @@ mod tests {
     /// 建一个真实可用的 `Demo`——`Demo::new` 本身不触碰 GPU/窗口（那些
     /// 在 `on_resume` 才建，见 [`GpuResources`] 字段文档），因此可以
     /// 脱离真实窗口直接在单元测试里构造并调用私有的 `advance`。
-    fn test_demo() -> Demo {
+    pub(super) fn test_demo() -> Demo {
         let content = test_content();
         let game_world = crate::world::build_new_world(
             &content,
@@ -2712,135 +3053,6 @@ mod tests {
     }
 
     #[test]
-    fn 回主菜单之前先把进度存下来() {
-        // B2。**这一条防的是静默丢弃玩家进度**：所有者只说要有「返回
-        // 主菜单」这一项，没说未保存的进度怎么办；本批次选定「先存一次
-        // 再回去」，理由见 `Demo::back_to_title` 文档。
-        //
-        // 反例验证（已实跑）：把 `back_to_title` 里那句 `write_save`
-        // 删掉（直接置空 `session`），本条当场变红——存档目录里一份都
-        // 没有。
-        // Arrange
-        let mut demo = test_demo();
-        let mut input = InputState::new();
-        let saves_dir = demo.saves_dir.clone();
-        assert!(
-            crate::save_slot::list_slots(&saves_dir).is_empty(),
-            "Arrange：这一局还没存过"
-        );
-        assert!(demo.session.is_some(), "Arrange：玩家在世界里");
-
-        // Act
-        demo.back_to_title(&mut input);
-
-        // Assert
-        let slots = crate::save_slot::list_slots(&saves_dir);
-        assert_eq!(slots.len(), 1, "回主菜单必须把进度写下来，不能静默丢弃");
-        assert!(demo.session.is_none(), "回主菜单之后世界不该还在");
-        assert_eq!(demo.screen, Some(ScreenState::Title));
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&saves_dir);
-    }
-
-    #[test]
-    fn 回主菜单时写盘失败就留在暂停菜单不丢弃世界() {
-        // B3。「回去了但没存上」是这条路径上最坏的结果——玩家已经离开
-        // 世界，那份进度再也拿不回来。写盘失败时必须留在原地。
-        //
-        // 反例验证（已实跑）：把 `back_to_title` 里那句 `return` 去掉
-        // （失败也照样置空 `session`），本条当场变红。
-        // Arrange：让存档目录这条路径被一个**文件**占住，`create_dir_all`
-        // 因此必然失败——不是假造一个错误类型，是真的写不进去。
-        let mut demo = test_demo();
-        let mut input = InputState::new();
-        let blocker = demo.saves_dir.clone();
-        if let Some(parent) = blocker.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        std::fs::write(&blocker, b"not a directory").expect("占位文件应当写得出来");
-        demo.session
-            .as_mut()
-            .expect("Arrange：玩家在世界里")
-            .save_target
-            .path = blocker.join("whatever.llsave");
-
-        // Act
-        demo.back_to_title(&mut input);
-
-        // Assert
-        assert!(
-            demo.session.is_some(),
-            "写盘失败时不该把玩家从世界里踢出去——那份进度会就此消失"
-        );
-        assert_eq!(
-            demo.screen_notice,
-            Some(ScreenNotice::GameSaveFailed),
-            "必须明说存档失败了，不能静默"
-        );
-
-        // Cleanup
-        let _ = std::fs::remove_file(&blocker);
-    }
-
-    #[test]
-    fn 手动存档写出一份档并留在菜单里() {
-        // Arrange
-        let mut demo = test_demo();
-        let saves_dir = demo.saves_dir.clone();
-        demo.screen = Some(ScreenState::Menu);
-
-        // Act
-        demo.save_now();
-
-        // Assert
-        assert_eq!(crate::save_slot::list_slots(&saves_dir).len(), 1);
-        assert_eq!(demo.screen_notice, Some(ScreenNotice::GameSaved));
-        assert_eq!(demo.screen, Some(ScreenState::Menu), "存完仍留在菜单里");
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&saves_dir);
-    }
-
-    #[test]
-    fn 同一局连存两次是覆盖不是新建第二份() {
-        // C2（本提交先把它钉住）：槽位标识在建档那一刻定死，此后永远
-        // 写同一个文件。每次存档按当前名字重算文件名的话，列表里会出现
-        // 两个同一个世界的条目。
-        // Arrange
-        let mut demo = test_demo();
-        let saves_dir = demo.saves_dir.clone();
-
-        // Act
-        demo.save_now();
-        demo.save_now();
-
-        // Assert
-        assert_eq!(
-            crate::save_slot::list_slots(&saves_dir).len(),
-            1,
-            "同一局存两次应当覆盖同一份存档"
-        );
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&saves_dir);
-    }
-
-    #[test]
-    fn 新建的世界默认是普通模式因此暂停菜单里有保存那一行() {
-        // 迁移前 `save_game` 的 7 处调用点全部硬编码 `Permadeath`——
-        // 也就是每一局都被记成肉鸽档，而玩家从来没做过这个选择。
-        // Arrange
-        let demo = test_demo();
-
-        // Act & Assert
-        assert!(
-            demo.can_save_manually(),
-            "没明说模式时建出来的应当是普通档（限制更少的那一档）"
-        );
-    }
-
-    #[test]
     fn 从首页直接离开时一个字节都不写存档() {
         // **这一条防的是数据丢失，不只是 panic**。`on_exit` 此前
         // 无条件 `save_on_exit()`，从首页直接离开会把一个「玩家从未
@@ -2905,7 +3117,7 @@ mod tests {
         // `ll_sim::turn::tests` 里驱动 `TurnEngine` 的现成测试同一个
         // 手法（不模拟按键事件，只构造 `InputState` 的值）。
         for frame in 0..3u64 {
-            demo.advance(&input, FrameId(frame));
+            demo.advance(&mut input, FrameId(frame));
         }
 
         // Assert：不是「变了」，是「前进了」——严格大于，不允许倒退。
@@ -2933,9 +3145,9 @@ mod tests {
         let player = demo.test_world().player;
         let mut input = InputState::new();
         input.press(GameKey::Wait);
-        demo.advance(&input, FrameId(0));
+        demo.advance(&mut input, FrameId(0));
         let clock_after_warm_up = demo.test_world().world.clock;
-        demo.advance(&input, FrameId(1));
+        demo.advance(&mut input, FrameId(1));
         let clock_after_second_wait = demo.test_world().world.clock;
         let ticks_per_wait = clock_after_second_wait.0 - clock_after_warm_up.0;
         assert!(ticks_per_wait > 0, "第二次等待起，世界时钟应当真实推进");
@@ -2981,7 +3193,7 @@ mod tests {
         );
 
         // Act：再跑一次等待（第三次）——时钟应当越过 expires_at。
-        demo.advance(&input, FrameId(2));
+        demo.advance(&mut input, FrameId(2));
 
         // Assert：buff 已过期，结算值应回落到裸属性值。
         assert_eq!(
@@ -3013,7 +3225,7 @@ mod tests {
         input.press(GameKey::Map);
 
         // Act
-        demo.advance(&input, FrameId(0));
+        demo.advance(&mut input, FrameId(0));
 
         // Assert
         assert!(demo.world_map_open);
@@ -3034,11 +3246,11 @@ mod tests {
         let mut demo = test_demo();
         let mut input = InputState::new();
         input.press(GameKey::Map);
-        demo.advance(&input, FrameId(0));
+        demo.advance(&mut input, FrameId(0));
         assert!(demo.world_map_open, "第一次按下后应先翻转为打开");
 
         // Act
-        demo.advance(&input, FrameId(1));
+        demo.advance(&mut input, FrameId(1));
 
         // Assert
         assert!(!demo.world_map_open);
@@ -3061,7 +3273,7 @@ mod tests {
         input.press(GameKey::Map);
 
         // Act
-        demo.advance(&input, FrameId(0));
+        demo.advance(&mut input, FrameId(0));
 
         // Assert
         assert!(!demo.world_map_open, "世界尚未存在的时候地图开关不该翻上去");
@@ -3099,7 +3311,7 @@ mod tests {
         for key in keys {
             input.press(*key);
         }
-        demo.advance(&input, FrameId(at));
+        demo.advance(&mut input, FrameId(at));
     }
 
     /// 把光标从第 0 行按到第 `row` 行——每帧一次「下」。
@@ -3833,7 +4045,7 @@ mod tests {
     fn 模态屏里选中退出项才真的退出() {
         // Arrange：开菜单，焦点连按三次「下」落到第三项（退出游戏）。
         let mut demo = test_demo();
-        let at = 开到菜单行(&mut demo, crate::menu_screen::MenuRow::Quit);
+        let at = 开到菜单行(&mut demo, crate::pause_menu::MenuRow::Quit);
 
         // Act
         let outcome = 走一帧(&mut demo, at, &[GameKey::Confirm]);
@@ -3846,7 +4058,7 @@ mod tests {
     fn 模态屏里选中设置项进入设置界面() {
         // Arrange：焦点落到「设置」那一行。
         let mut demo = test_demo();
-        let at = 开到菜单行(&mut demo, crate::menu_screen::MenuRow::Settings);
+        let at = 开到菜单行(&mut demo, crate::pause_menu::MenuRow::Settings);
 
         // Act
         走一帧(&mut demo, at, &[GameKey::Confirm]);
@@ -3918,9 +4130,9 @@ mod tests {
     /// （「保存」那一行在肉鸽档里整行不存在），写死次数的测试会在行数
     /// 一变时静默地按到另一项上去——本批次加两行的那一刻，六条既有断言
     /// 正是这么红的。
-    fn 开到菜单行(demo: &mut Demo, target: crate::menu_screen::MenuRow) -> u64 {
+    fn 开到菜单行(demo: &mut Demo, target: crate::pause_menu::MenuRow) -> u64 {
         let can_save = demo.can_save_manually();
-        let index = crate::menu_screen::menu_rows(can_save)
+        let index = crate::pause_menu::menu_rows(can_save)
             .iter()
             .position(|row| *row == target)
             .expect("这一行必然存在");
@@ -3937,7 +4149,7 @@ mod tests {
 
     /// 把 `demo` 开到设置界面，返回下一帧的时刻。
     fn 开到设置屏(demo: &mut Demo) -> u64 {
-        let at = 开到菜单行(demo, crate::menu_screen::MenuRow::Settings);
+        let at = 开到菜单行(demo, crate::pause_menu::MenuRow::Settings);
         走一帧(demo, at, &[GameKey::Confirm]);
         at + 1
     }

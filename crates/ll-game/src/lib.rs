@@ -22,8 +22,11 @@ pub mod chargen;
 pub mod content;
 pub mod layout;
 pub mod menu_screen;
+pub mod pause_menu;
 pub mod player_action;
 pub mod save;
+pub mod save_list;
+pub mod save_name;
 pub mod save_slot;
 pub mod session;
 pub mod settings_view;
@@ -54,8 +57,7 @@ use world::{GameWorld, build_new_world, rebuild_timeline};
 /// 玩家手改这份文件时可以加注释、留尾逗号。
 const CONFIG_FILE_NAME: &str = "config.json5";
 /// 存档文件相对可执行文件所在目录的文件名——本体目前只有单一存档位
-/// 多槽位落地之后它**只用于一次性收编**——见 `GamePaths::legacy_save`。
-/// 新存档一律写进 `saves/` 目录，见 `crate::save_slot`。
+/// 只用于一次性收编，见 `GamePaths::legacy_save`。
 const SAVE_FILE_NAME: &str = "save.llsave";
 /// mod 根目录相对可执行文件所在目录的路径——与仓库根 `mods/` 对齐。
 const MODS_DIR_NAME: &str = "mods";
@@ -77,11 +79,7 @@ const LOCALES_DIR_NAME: &str = "locales";
 pub struct GamePaths {
     /// 配置文件路径。
     pub config: PathBuf,
-    /// 迁移前那份**唯一**的存档文件路径。
-    ///
-    /// 多槽位落地之后它不再是游戏写存档的地方——现在写的是
-    /// [`Self::saves_dir`] 下的某一份。留着它只有一个用途：启动时把它
-    /// **收编**成一个槽位，见 `crate::save_slot::adopt_legacy_save`。
+    /// 迁移前那份唯一的存档，只用于一次性收编（`crate::save_slot`）。
     pub legacy_save: PathBuf,
     /// 存档目录（`saves/`），一个槽位一个文件，见 `crate::save_slot`。
     pub saves_dir: PathBuf,
@@ -235,12 +233,8 @@ fn load_or_new_game(
     content: &content::LoadedContent,
     new_game_config: &ll_platform::config::NewGameConfig,
 ) -> GameWorld {
-    let latest = crate::save_slot::list_slots(&paths.saves_dir)
-        .into_iter()
-        .next()
-        .map(|slot| slot.path);
-    latest
-        .and_then(|path| load_saved_game(&path, content))
+    save_slot::latest_slot(&paths.saves_dir)
+        .and_then(|slot| load_saved_game(&slot.path, content))
         .unwrap_or_else(|| new_game(content, new_game_config))
 }
 
@@ -468,13 +462,11 @@ pub fn run_game() {
     // 选择。现在 `Demo::at_title` 停在首页，世界由玩家在首页上选
     // 「开始游戏」或「读取存档」之后才建出来，见 `crate::session`
     // 模块文档「世界尚未存在」一节。
-    // 迁移前那份单文件存档在这里、也只在这里被收编成一个槽位——复制，
-    // 原文件一个字节都不动，见 `crate::save_slot::adopt_legacy_save`。
-    crate::save_slot::adopt_legacy_save(&paths.legacy_save, &paths.saves_dir);
-    let slots = crate::save_slot::list_slots(&paths.saves_dir);
+    // 老存档在这里、也只在这里被收编成一个槽位（复制，原文件不动）。
+    save_slot::adopt_legacy_save(&paths.legacy_save, &paths.saves_dir);
     tracing::info!(
         saves_dir = %paths.saves_dir.display(),
-        slot_count = slots.len(),
+        slot_count = save_slot::list_slots(&paths.saves_dir).len(),
         "停在游戏主菜单，等待玩家选择"
     );
 

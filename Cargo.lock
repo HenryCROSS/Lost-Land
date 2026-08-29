@@ -1288,6 +1288,7 @@ dependencies = [
  "ll-ui",
  "ll-world",
  "proptest",
+ "serde_json",
  "tracing",
 ]
 
