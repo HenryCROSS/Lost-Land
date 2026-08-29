@@ -17,12 +17,17 @@
 
 pub mod animation;
 pub mod app;
+pub mod atlas_miss;
 pub mod chargen;
 pub mod content;
 pub mod layout;
 pub mod menu_screen;
+pub mod pause_menu;
 pub mod player_action;
 pub mod save;
+pub mod save_list;
+pub mod save_name;
+pub mod save_slot;
 pub mod session;
 pub mod settings_view;
 pub mod spawn_pick;
@@ -52,8 +57,7 @@ use world::{GameWorld, build_new_world, rebuild_timeline};
 /// 玩家手改这份文件时可以加注释、留尾逗号。
 const CONFIG_FILE_NAME: &str = "config.json5";
 /// 存档文件相对可执行文件所在目录的文件名——本体目前只有单一存档位
-/// （规格 §11.2 模式2 默认单存档位，见 `ll_content::mode` 模块文档），
-/// 多存档位管理属于 P7 存档界面范围。
+/// 只用于一次性收编，见 `GamePaths::legacy_save`。
 const SAVE_FILE_NAME: &str = "save.llsave";
 /// mod 根目录相对可执行文件所在目录的路径——与仓库根 `mods/` 对齐。
 const MODS_DIR_NAME: &str = "mods";
@@ -75,8 +79,10 @@ const LOCALES_DIR_NAME: &str = "locales";
 pub struct GamePaths {
     /// 配置文件路径。
     pub config: PathBuf,
-    /// 存档文件路径。
-    pub save: PathBuf,
+    /// 迁移前那份唯一的存档，只用于一次性收编（`crate::save_slot`）。
+    pub legacy_save: PathBuf,
+    /// 存档目录（`saves/`），一个槽位一个文件，见 `crate::save_slot`。
+    pub saves_dir: PathBuf,
     /// mod 根目录。
     pub mods_root: PathBuf,
     /// 本体资产根目录。
@@ -93,7 +99,8 @@ impl GamePaths {
         let assets_root = base.join(ASSETS_DIR_NAME);
         GamePaths {
             config: base.join(CONFIG_FILE_NAME),
-            save: base.join(SAVE_FILE_NAME),
+            legacy_save: base.join(SAVE_FILE_NAME),
+            saves_dir: base.join(crate::save_slot::SAVES_DIR_NAME),
             mods_root: base.join(MODS_DIR_NAME),
             locales_root: assets_root.join(LOCALES_DIR_NAME),
             assets_root,
@@ -226,7 +233,9 @@ fn load_or_new_game(
     content: &content::LoadedContent,
     new_game_config: &ll_platform::config::NewGameConfig,
 ) -> GameWorld {
-    load_saved_game(&paths.save, content).unwrap_or_else(|| new_game(content, new_game_config))
+    save_slot::latest_slot(&paths.saves_dir)
+        .and_then(|slot| load_saved_game(&slot.path, content))
+        .unwrap_or_else(|| new_game(content, new_game_config))
 }
 
 /// 把 `save` 指向的那份存档读回来；读不回来（不存在、损坏、或因缺失
@@ -453,9 +462,11 @@ pub fn run_game() {
     // 选择。现在 `Demo::at_title` 停在首页，世界由玩家在首页上选
     // 「开始游戏」或「读取存档」之后才建出来，见 `crate::session`
     // 模块文档「世界尚未存在」一节。
+    // 老存档在这里、也只在这里被收编成一个槽位（复制，原文件不动）。
+    save_slot::adopt_legacy_save(&paths.legacy_save, &paths.saves_dir);
     tracing::info!(
-        save = %paths.save.display(),
-        save_exists = paths.save.exists(),
+        saves_dir = %paths.saves_dir.display(),
+        slot_count = save_slot::list_slots(&paths.saves_dir).len(),
         "停在游戏主菜单，等待玩家选择"
     );
 
@@ -489,7 +500,7 @@ pub fn run_game() {
     );
     let demo = Demo::at_title(
         content,
-        paths.save.clone(),
+        paths.saves_dir.clone(),
         "旅人".to_string(),
         config,
         paths.config.clone(),
@@ -563,7 +574,8 @@ mod tests {
 
         // Assert
         assert_eq!(paths.config, base.join(CONFIG_FILE_NAME));
-        assert_eq!(paths.save, base.join(SAVE_FILE_NAME));
+        assert_eq!(paths.legacy_save, base.join(SAVE_FILE_NAME));
+        assert_eq!(paths.saves_dir, base.join(crate::save_slot::SAVES_DIR_NAME));
         assert_eq!(paths.mods_root, base.join(MODS_DIR_NAME));
         assert_eq!(paths.assets_root, base.join(ASSETS_DIR_NAME));
         assert_eq!(
@@ -697,13 +709,14 @@ mod tests {
             .get(original.player)
             .expect("刚生成必然存在")
             .pos;
+        std::fs::create_dir_all(&paths.saves_dir).expect("创建存档目录应当成功");
         save::save_game(
-            &paths.save,
+            &crate::save_slot::SlotId::from_name("测试存档").path_in(&paths.saves_dir),
             &content,
             &original,
             "测试旅人",
             "出生地",
-            ll_content::mode::SaveMode::Permadeath,
+            "测试存档",
         )
         .expect("写出应当成功");
 
@@ -746,13 +759,14 @@ mod tests {
             .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
         let default_config = ll_platform::config::NewGameConfig::default();
         let original = new_game(&content, &default_config);
+        std::fs::create_dir_all(&paths.saves_dir).expect("创建存档目录应当成功");
         save::save_game(
-            &paths.save,
+            &crate::save_slot::SlotId::from_name("测试存档").path_in(&paths.saves_dir),
             &content,
             &original,
             "测试旅人",
             "出生地",
-            ll_content::mode::SaveMode::Permadeath,
+            "测试存档",
         )
         .expect("写出应当成功");
         let hash_before = original.world.hash();
@@ -798,7 +812,7 @@ mod tests {
             .expect("预设表里有群岛这一档")
             .shape;
 
-        // Act：paths.save 不存在，走的是新游戏分支。
+        // Act：存档目录里一份都没有，走的是新游戏分支。
         let game_world = load_or_new_game(&paths, &content, &config);
 
         // Assert

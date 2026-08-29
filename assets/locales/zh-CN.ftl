@@ -385,8 +385,12 @@ screen-menu-title = 菜单
 screen-menu-empty = （没有条目）
 screen-menu-hint = 上下移动，确认键选择，Esc 关闭
 screen-menu-continue = 继续游戏
+screen-menu-save = 保存游戏
 screen-menu-settings = 设置
+screen-menu-back-to-title = 返回主菜单
 screen-menu-quit = 退出游戏
+screen-menu-game-saved = 进度已保存
+screen-menu-game-save-failed = 存档写入失败，进度还在，但没有存下来
 
 screen-settings-title = 设置
 screen-settings-empty = （没有条目）
@@ -463,3 +467,19 @@ screen-worldsetup-invalid = 这个取值超出合法范围，本次调整已撤�
 screen-spawnpick-title = 选择出生地
 screen-spawnpick-hint = 方向键移动光标或用鼠标点击，确认键在此出生，Esc 返回
 screen-spawnpick-no-land = 这个区块里没有能落脚的陆地，换一个地方
+
+# 存档列表 / 命名 / 存档模式（批次 9）
+screen-savelist-title = 读取存档
+screen-savelist-empty = （没有条目）
+screen-savelist-empty-row = 还没有任何存档
+screen-savelist-hint = 上下移动，确认键读取，Esc 返回
+screen-savelist-row = { $name } · { $time } · { $mode }
+screen-savelist-mode-roguelike = 肉鸽
+screen-savelist-mode-normal = 普通
+screen-savelist-legacy-name = 旧存档
+screen-savename-title = 给这份存档起个名字
+screen-savename-hint = 字母数字可输入，退格删除，确认键开始游戏，Esc 返回
+screen-savename-prompt = 名称
+screen-savename-default = 无名之地
+screen-worldsetup-mode = 存档模式
+screen-chargen-player-died = 你死了。这个世界保留下来，模式转为普通——再造一个角色，另选一处出生。

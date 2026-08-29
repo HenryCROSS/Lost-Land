@@ -76,6 +76,21 @@ pub struct SaveHeader {
     /// 当前所在区域，人类可读的展示文本——**不是** `ContentIndex`，
     /// 不需要注册表就能显示，这正是本模块顶部约束要求的形状。
     pub current_region: String,
+    /// 这份存档的名字（玩家自己起的），供存档列表界面展示。
+    ///
+    /// # 为什么不需要升 schema 版本
+    ///
+    /// `#[serde(default)]` ⇒ 本字段存在之前写出的存档头 JSON 里没有这
+    /// 个键，反序列化时缺省为空串，展示时退回文件名主干。**存档主体的
+    /// 字节布局一个字节都没动**，动的只是头部 JSON 多了一个可缺席的
+    /// 键——与 [`Self::terrain_shape`] 那次逐字相同的理由，见那个字段
+    /// 的文档「为什么是 `Option`，以及老存档怎么办」一节。
+    ///
+    /// 真正需要迁移的是**文件位置**（单份 `save.llsave` → `saves/` 目录
+    /// 下的多份），那是 `ll_game::save_slot::adopt_legacy_save` 的职责，
+    /// 与存档格式无关。
+    #[serde(default)]
+    pub save_name: String,
     /// 已游玩的 tick 数。
     pub playtime_ticks: i64,
     /// 生成期 mod 集合快照：这个世界是用这一批 mod 生成的，写入后
@@ -171,7 +186,16 @@ pub struct SaveHeader {
     /// 列表界面需要区分「这是一份仍在永久死亡模式下的断点续玩存档」
     /// 与「这是一份自由读档存档」），因此这个字段必须在头部，不能只
     /// 存在存档主体里。
-    pub mode: SaveMode,
+    ///
+    /// # 为什么从 `pub` 收成 `pub(crate)`
+    ///
+    /// 公开字段等于公开一条 `header.mode = SaveMode::Permadeath;` 的
+    /// 通路——那一行会把「曾经降级过」这条永久标记整个抹掉，
+    /// [`crate::mode`] 模块辛苦用私有字段守住的单向不可逆，在存档头这
+    /// 一层就白守了。收进来之后，crate 外唯一能决定这个值的入口是
+    /// [`Self::new`]，而它只从一份 [`WorldIdentity`] 里取——与另外四个
+    /// 世界身份字段逐字同一条纪律。
+    pub(crate) mode: SaveMode,
 }
 
 /// [`SaveHeader::new`] 里除世界身份之外的其余部分——把一次存档写出
@@ -199,8 +223,12 @@ pub struct SaveHeaderMeta {
     pub content_hash_algorithm_version: u32,
     /// `ContentIndex` ↔ 字符串映射表。
     pub content_index_map: Vec<String>,
-    /// 存档模式。
-    pub mode: SaveMode,
+    /// 这份存档的名字，供存档列表界面认出「哪一份是哪一份」。
+    ///
+    /// 与 [`Self::character_name`] 是两件事：一个世界里可以先后死过好
+    /// 几个角色（死亡后模式转普通、重新建角色，见
+    /// `ll_game::save_slot` 模块文档），但它始终是同一份存档。
+    pub save_name: String,
 }
 
 impl SaveHeader {
@@ -226,6 +254,7 @@ impl SaveHeader {
             saved_at: meta.saved_at,
             character_name: meta.character_name,
             current_region: meta.current_region,
+            save_name: meta.save_name,
             playtime_ticks: meta.playtime_ticks,
             generation_mods: crate::world_identity::generation_mods_to_header_entries(
                 identity.generation_mods(),
@@ -236,7 +265,10 @@ impl SaveHeader {
             world_size: (zone_count.width(), zone_count.height()),
             world_seed: identity.seed(),
             terrain_shape: Some(identity.terrain_shape()),
-            mode: meta.mode,
+            // 模式与另外四个身份要素一样从 `identity` 搬运，**不来自
+            // `meta`**：让它留在 `meta` 里等于留着一条「存档那一刻现填
+            // 一个模式」的通路，而那正是单向不可逆最怕的形状。
+            mode: identity.mode(),
         }
     }
 
@@ -259,6 +291,11 @@ impl SaveHeader {
     /// 之前，见 [`Self::terrain_shape`] 字段文档。
     pub fn terrain_shape(&self) -> Option<TerrainShape> {
         self.terrain_shape
+    }
+
+    /// 这份存档的模式，见 [`Self::mode`] 字段文档。
+    pub fn mode(&self) -> SaveMode {
+        self.mode
     }
 }
 
@@ -310,6 +347,7 @@ mod tests {
             saved_at: 1_755_000_000,
             character_name: "旅人".to_string(),
             current_region: "初始村落".to_string(),
+            save_name: "测试存档".to_string(),
             playtime_ticks: 42,
             generation_mods: vec![ModHeaderEntry {
                 namespace: "lostland".to_string(),

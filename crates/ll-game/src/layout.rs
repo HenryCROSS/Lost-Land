@@ -146,7 +146,7 @@ pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'s
 ///
 /// 与 GPU 无关的纯函数：[`Registry`] 是普通数据，不需要真实图集就能
 /// 单测覆盖「查到了哪个字符串」这层逻辑；「这个字符串在图集里查不查
-/// 得到条目」是下一步 `GpuResources::lookup` 的职责，不在本函数范围。
+/// 得到条目」是下一步 `GpuResources::resolve_key` 的职责，不在本函数范围。
 pub fn terrain_atlas_key(
     kind: TerrainKind,
     ids: &BaseTerrainIds,

@@ -40,6 +40,11 @@ tracing = "0.1"
 
 [dev-dependencies]
 proptest.workspace = true
+# 仅供 `tests/save_slots.rs` 直接改写存档头部 JSON——那些测试要造出
+# 「本批次之前写出的老存档」（头部缺 `save_name` 键）与「两份时间戳拉开
+# 的存档」，两件事都必须在**真实的存档文件字节**上做，不能靠夹具伪造。
+# 版本与 `ll-content` 那份一致，避免同一个 crate 在工作区里被解析成两份。
+serde_json = "1"
 # 仅供 `examples/surface_preview.rs`（地表内容渲染的可视化验收产物）
 # 把真实图集的像素拼成一张可以直接看的 PNG。版本与 features 与
 # `ll-render` 的那份一致，避免同一个 crate 在工作区里被解析成两份。

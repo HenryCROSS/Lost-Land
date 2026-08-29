@@ -237,6 +237,7 @@ fn header_with(
         validate_size_choice(64, (1, 1)).expect("1x1/64 是合法尺寸选择"),
         ll_world::generate::TerrainShape::default(),
         GenerationModSet(entries),
+        mode,
     );
     SaveHeader::new(
         &identity,
@@ -249,7 +250,7 @@ fn header_with(
             current_mods: Vec::new(),
             content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
             content_index_map,
-            mode,
+            save_name: "验收存档".to_string(),
         },
     )
 }
@@ -300,6 +301,7 @@ fn step0_world_identity_chain_link() {
         layout,
         ll_world::generate::TerrainShape::default(),
         generation.clone(),
+        SaveMode::fresh_free_save(),
     );
 
     assert_eq!(identity.seed(), 20_260_819);
@@ -830,13 +832,13 @@ fn section_c_mode_downgrade() {
 
     // 只读头部即可看到模式与降级标记——不需要触发主体解压。
     let loaded_header = load_from_header_only(&path).expect("读头部应当成功");
-    assert!(matches!(loaded_header.mode, SaveMode::FreeSave { .. }));
-    assert!(loaded_header.mode.was_downgraded_from_permadeath());
+    assert!(matches!(loaded_header.mode(), SaveMode::FreeSave { .. }));
+    assert!(loaded_header.mode().was_downgraded_from_permadeath());
 
     // 「升级回模式2」应被拒绝——尝试对已降级的 FreeSave 再调用
     // downgrade()，唯一存在的返回路径仍然不产出 Permadeath。
     assert_eq!(
-        loaded_header.mode.downgrade(),
+        loaded_header.mode().downgrade(),
         None,
         "FreeSave 不存在任何返回 Permadeath 的代码路径"
     );

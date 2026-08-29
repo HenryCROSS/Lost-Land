@@ -71,6 +71,7 @@ fn valid_save_bytes() -> Vec<u8> {
             version: "0.1.0".to_string(),
             content_hash: registry.content_hash_of("lostland"),
         }]),
+        SaveMode::Permadeath,
     );
     let header = SaveHeader::new(
         &identity,
@@ -87,7 +88,7 @@ fn valid_save_bytes() -> Vec<u8> {
                 .iter()
                 .map(ToString::to_string)
                 .collect(),
-            mode: SaveMode::Permadeath,
+            save_name: "模糊测试存档".to_string(),
         },
     );
 

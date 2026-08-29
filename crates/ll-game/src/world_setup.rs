@@ -26,6 +26,7 @@
 //! `display_name_key`。**加一档预设，界面自动多一项**，本文件一个字都
 //! 不用改。
 
+use ll_content::mode::SaveMode;
 use ll_content::world_identity::{DEFAULT_TERRAIN_PRESET_ID, TERRAIN_PRESETS, terrain_preset};
 use ll_i18n::Catalog;
 use ll_platform::input::{GameKey, InputState};
@@ -58,6 +59,22 @@ pub enum WorldSetupRow {
     ContinentShrink,
     /// 气候条带单侧带宽（千分比）。
     ClimateBandWidth,
+    /// 存档模式：肉鸽（只有自动保存、死后模式转普通）还是普通（可手动
+    /// 命名存档）。左右键在两者之间切换。
+    ///
+    /// # 为什么在这块屏上，不是单独一块
+    ///
+    /// **模式是世界的属性，不是角色的**（`crate::save_slot` 模块文档
+    /// 「一份存档 = 一个世界」）：同一个世界里死了一个角色再建一个，
+    /// 模式跟着世界走。它因此与地形形态旋钮属于同一个决定面，摆在同一
+    /// 块屏上。
+    ///
+    /// # 这块屏上它是**唯一**一个可以往肉鸽方向改的地方
+    ///
+    /// 世界还没建出来，所以这里改它不是「把一个已有世界改回肉鸽」——
+    /// 那件事在类型层面写不出来（`ll_content::mode::SaveMode` 模块
+    /// 文档）。
+    Mode,
     /// 按这一行生成世界，随后进选出生地屏。
     Generate,
     /// 回到角色创建屏。
@@ -65,8 +82,9 @@ pub enum WorldSetupRow {
 }
 
 /// 世界配置屏这一帧的全部行，顺序固定。
-pub fn world_setup_rows() -> [WorldSetupRow; 8] {
+pub fn world_setup_rows() -> [WorldSetupRow; 9] {
     [
+        WorldSetupRow::Mode,
         WorldSetupRow::Preset,
         WorldSetupRow::SeaLevel,
         WorldSetupRow::MountainLevel,
@@ -122,12 +140,21 @@ pub fn update_world_setup(
     cursor: &mut usize,
     shape: &mut TerrainShape,
     preset: &mut usize,
+    mode: &mut SaveMode,
     input: &InputState,
 ) -> ChargenUpdate {
     let rows = world_setup_rows();
     *cursor = move_cursor(*cursor, rows.len(), input);
     let row = rows[(*cursor).min(rows.len() - 1)];
 
+    if row == WorldSetupRow::Mode && horizontal(input).is_some() {
+        // 两档之间切换，方向无关（只有两个值，左右都是「换到另一个」）。
+        *mode = match *mode {
+            SaveMode::Permadeath => SaveMode::fresh_free_save(),
+            SaveMode::FreeSave { .. } => SaveMode::Permadeath,
+        };
+        return ChargenUpdate::idle();
+    }
     if let Some(forward) = horizontal(input)
         && let Err(reason) = adjust_row(row, shape, preset, forward)
     {
@@ -193,7 +220,9 @@ fn adjust_row(
             candidate.climate_band_width += step(PERMILLE_STEP, forward);
         }),
         // 两行按钮没有取值可调。
-        WorldSetupRow::Generate | WorldSetupRow::Back => Ok(()),
+        // 模式那一行在 `update_world_setup` 里就地处理（它不是形态参数，
+        // 不走 `TerrainShape::validate`），到不了这里。
+        WorldSetupRow::Mode | WorldSetupRow::Generate | WorldSetupRow::Back => Ok(()),
     }
 }
 
@@ -206,12 +235,21 @@ fn step(magnitude: i32, forward: bool) -> i32 {
 pub fn world_setup_row_texts(
     shape: &TerrainShape,
     preset: usize,
+    mode: SaveMode,
     catalog: &Catalog,
     language: &str,
 ) -> Vec<String> {
     world_setup_rows()
         .into_iter()
         .map(|row| match row {
+            WorldSetupRow::Mode => labeled_row(
+                catalog,
+                language,
+                "screen-worldsetup-mode",
+                // 模式的展示名走 `crate::save_list::mode_key`——存档列表
+                // 与这里说的必须是同一个词，两处各写一份迟早会分叉。
+                &catalog.resolve(language, crate::save_list::mode_key(mode)),
+            ),
             WorldSetupRow::Preset => labeled_row(
                 catalog,
                 language,

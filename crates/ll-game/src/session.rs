@@ -51,6 +51,7 @@
 //! `crate::world::rebuild_timeline`）。存档序列化的只有
 //! `game_world.world`。
 
+use ll_core::time::Tick;
 use ll_mod::native_behavior::NativeBehaviorSource;
 use ll_render::camera::Camera;
 use ll_sim::turn::TurnEngine;
@@ -58,6 +59,7 @@ use ll_world::overview::{ContinentField, generate_continent_field};
 use ll_world::world_map::WorldMapView;
 
 use crate::content::LoadedContent;
+use crate::save_slot::SaveTarget;
 use crate::world::GameWorld;
 
 /// 一局正在进行的游戏，见模块文档。
@@ -100,6 +102,19 @@ pub struct Session {
     /// `crate::app::npc_behavior_source` 文档。做成字段而不是每帧现造：
     /// 它持有一份内容表快照，每帧克隆五张表是一笔白付的开销。
     pub npc_ai: NativeBehaviorSource,
+    /// 这一局写到哪个存档槽位——**进世界那一刻就定下来**，手动存档、
+    /// 自动存档、退出存档三条路全部写同一份，见
+    /// `crate::save_slot::SaveTarget`。
+    ///
+    /// 它落在 `Session` 上而不是 `Demo` 上，理由与 `world_map_view`
+    /// 逐字相同：世界不存在时它也不存在（首页上没有「当前槽位」这种
+    /// 东西），留在 `Demo` 上就要多一个 `Option`。
+    pub save_target: SaveTarget,
+    /// 上一次自动存档时的世界时钟。
+    ///
+    /// **世界时钟，不是墙钟**——见 `crate::app::Demo::maybe_autosave`
+    /// 文档「为什么必须按世界时间」一节。
+    pub last_autosave: Tick,
 }
 
 impl Session {
@@ -115,7 +130,11 @@ impl Session {
     ///
     /// 下一批的角色创建 / 世界配置 / 选重生点走完之后，终点仍然是本
     /// 函数——它是「世界准备好了，开始玩」这件事唯一的入口。
-    pub fn begin(mut game_world: GameWorld, content: &LoadedContent) -> Session {
+    pub fn begin(
+        mut game_world: GameWorld,
+        content: &LoadedContent,
+        save_target: SaveTarget,
+    ) -> Session {
         let player_pos = game_world
             .world
             .actors
@@ -143,6 +162,10 @@ impl Session {
         // [`Session::world_map_view`] 字段文档。
         let world_map_view = WorldMapView::centered_on_tile(&continent_field, player_pos);
         let npc_ai = crate::app::npc_behavior_source(content, game_world.world.seed);
+        // 自动存档的节拍从**进世界这一刻的世界时钟**起算，不是从 0 起
+        // 算：读回一份已经玩了三天的存档时，从 0 起算会让「距上次自动
+        // 存档超过一小时」立刻成立，一进世界就先卡一次盘。
+        let last_autosave = game_world.world.clock;
         Session {
             game_world,
             camera,
@@ -150,6 +173,8 @@ impl Session {
             continent_field,
             world_map_view,
             npc_ai,
+            save_target,
+            last_autosave,
         }
     }
 }

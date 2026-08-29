@@ -61,6 +61,7 @@ use ll_world::generate::TerrainShape;
 use ll_world::zone::ZoneLayout;
 
 use crate::header::{ModHeaderEntry, SaveHeader};
+use crate::mode::SaveMode;
 
 /// 一档推荐的地图尺寸预设：区块边长（固定 48，与
 /// [`ZoneLayout::default_config`] 一致）+ 世界区块数。
@@ -305,6 +306,7 @@ pub struct WorldIdentity {
     zone_layout: ZoneLayout,
     terrain_shape: TerrainShape,
     generation_mods: GenerationModSet,
+    mode: SaveMode,
 }
 
 impl WorldIdentity {
@@ -319,12 +321,14 @@ impl WorldIdentity {
         zone_layout: ZoneLayout,
         terrain_shape: TerrainShape,
         generation_mods: GenerationModSet,
+        mode: SaveMode,
     ) -> Self {
         WorldIdentity {
             seed,
             zone_layout,
             terrain_shape,
             generation_mods,
+            mode,
         }
     }
 
@@ -369,6 +373,11 @@ impl WorldIdentity {
             zone_layout,
             terrain_shape,
             generation_mods: GenerationModSet(entries),
+            // 模式取自存档头——它是这条事实**唯一**的持久记录，与生成期
+            // mod 集合同性质：读档时只能搬运，不能重新推导。重新推导的话
+            // 「这局是不是肉鸽」就变成了「玩家现在的偏好设置是什么」，
+            // 单向不可逆当场失效。
+            mode: header.mode,
         })
     }
 
@@ -390,6 +399,52 @@ impl WorldIdentity {
     /// 生成期 mod 集合快照——绑定后永久不变。
     pub fn generation_mods(&self) -> &GenerationModSet {
         &self.generation_mods
+    }
+
+    /// 这个世界的存档模式：肉鸽（[`SaveMode::Permadeath`]）还是普通
+    /// （[`SaveMode::FreeSave`]）。
+    pub fn mode(&self) -> SaveMode {
+        self.mode
+    }
+
+    /// 玩家可以手动存档吗——肉鸽模式下只有自动保存，没有手动存档入口。
+    ///
+    /// 判据收在这里而不是让每个 UI 各写一次 `matches!`：暂停菜单要用它
+    /// 决定「保存」那一行在不在，将来的任何入口也该问同一个问题。
+    pub fn allows_manual_save(&self) -> bool {
+        matches!(self.mode, SaveMode::FreeSave { .. })
+    }
+
+    /// **唯一**允许的模式变化：肉鸽 → 普通。返回真表示这次调用真的改变
+    /// 了模式。
+    ///
+    /// # 反向为什么写不出来
+    ///
+    /// 本方法内部就是 [`SaveMode::downgrade`]，而那个函数的 `match` 里
+    /// **没有任何一个分支返回 [`SaveMode::Permadeath`]**，且
+    /// `FreeSave` 的「曾经降级过」标记是 `crate::mode` 模块私有的。因此
+    /// 「普通 → 肉鸽」不是「不该写」，是**写不出来**——本类型上也没有
+    /// 任何 `set_mode`，字段是私有的，唯一能产出 `Permadeath` 的入口是
+    /// [`Self::bind`]，而调用它的地方按定义就是「创建一个新世界」。
+    ///
+    /// 判据不在这里重写一份：本方法只是把那个单向转换接到世界身份上。
+    ///
+    /// ```compile_fail
+    /// # use ll_content::world_identity::WorldIdentity;
+    /// # use ll_content::mode::SaveMode;
+    /// fn 把普通档改回肉鸽(identity: &mut WorldIdentity) {
+    ///     // 没有 set_mode，字段也是私有的——这一行编译不过。
+    ///     identity.set_mode(SaveMode::Permadeath);
+    /// }
+    /// ```
+    pub fn downgrade_mode(&mut self) -> bool {
+        match self.mode.downgrade() {
+            Some(relaxed) => {
+                self.mode = relaxed;
+                true
+            }
+            None => false,
+        }
     }
 }
 
@@ -461,6 +516,7 @@ mod tests {
             ZoneLayout::default_config(),
             TerrainShape::default(),
             generation.clone(),
+            SaveMode::fresh_free_save(),
         );
 
         // Act：世界创建之后 registry 继续变化。

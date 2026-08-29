@@ -335,8 +335,12 @@ screen-menu-title = Menu
 screen-menu-empty = (no entries)
 screen-menu-hint = Up/Down to move, Confirm to choose, Esc to close
 screen-menu-continue = Continue
+screen-menu-save = Save Game
 screen-menu-settings = Settings
+screen-menu-back-to-title = Back to Main Menu
 screen-menu-quit = Quit Game
+screen-menu-game-saved = Progress saved
+screen-menu-game-save-failed = Could not write the save; your progress is still here but not stored
 
 screen-settings-title = Settings
 screen-settings-empty = (no entries)
@@ -414,3 +418,19 @@ screen-worldsetup-invalid = That value is out of range; the change was discarded
 screen-spawnpick-title = Choose Birthplace
 screen-spawnpick-hint = Arrows or mouse to pick a zone, Confirm to be born there, Esc to go back
 screen-spawnpick-no-land = No walkable land in that zone - pick somewhere else
+
+# Save list / naming / save mode (batch 9)
+screen-savelist-title = Load Game
+screen-savelist-empty = (no entries)
+screen-savelist-empty-row = No saves yet
+screen-savelist-hint = Up/Down to move, Confirm to load, Esc to go back
+screen-savelist-row = { $name } · { $time } · { $mode }
+screen-savelist-mode-roguelike = Roguelike
+screen-savelist-mode-normal = Normal
+screen-savelist-legacy-name = Old Save
+screen-savename-title = Name This Save
+screen-savename-hint = Letters and digits to type, Backspace to delete, Confirm to begin, Esc to go back
+screen-savename-prompt = Name
+screen-savename-default = Nameless Land
+screen-worldsetup-mode = Save Mode
+screen-chargen-player-died = You died. The world remains and switches to Normal mode - create a new character and choose where to begin.

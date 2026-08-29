@@ -49,23 +49,8 @@ use ll_platform::config::{GameConfig, ScaleFilter, save as save_config};
 use ll_platform::input::{GameKey, InputState};
 use ll_platform::keybind::{InputContext, KeyBinding, KeyBindings, KeyCode, Modifiers};
 use ll_ui::screen::ScreenData;
-use ll_ui::widget::focus::{focused_widget, navigate_focus};
+use ll_ui::widget::focus::focused_widget;
 use ll_ui::widget::state::{WidgetId, WidgetStateTable};
-
-/// 菜单屏三条选项的控件 id，顺序即导航顺序（见
-/// [`ll_ui::widget::focus::move_focus`] 文档「列表顺序即导航顺序」）。
-pub const MENU_ITEM_IDS: [WidgetId; 3] = [
-    "screen.menu.continue",
-    "screen.menu.settings",
-    "screen.menu.quit",
-];
-
-/// 菜单屏三条选项各自的 Fluent 键，与 [`MENU_ITEM_IDS`] 逐条对应。
-pub(crate) const MENU_ITEM_KEYS: [&str; 3] = [
-    "screen-menu-continue",
-    "screen-menu-settings",
-    "screen-menu-quit",
-];
 
 /// 模态屏当前开着哪一块。
 ///
@@ -104,6 +89,23 @@ pub enum ScreenState {
     /// 光标（选中哪一格）不在这里而在 `crate::chargen::NewGameDraft` 上：
     /// 它是一对 `(u32, u32)`，与这块屏的「哪一行」不是同一种东西。
     SpawnPick,
+    /// 存档列表——首页的「读取存档」进这里，见 [`crate::save_list`]。
+    ///
+    /// **它底下没有世界**，与 [`ScreenState::Title`] 同一种状态。
+    SaveList {
+        /// 光标落在第几份存档上。
+        cursor: usize,
+    },
+    /// 给这份存档起名字，见 [`crate::save_name`]。
+    ///
+    /// 插在**选出生地确认之后、真正进世界之前**：那一刻世界已经建好、
+    /// 角色已经选好，起名是这条链的最后一步。之后每次存档都写同一个
+    /// 槽位，不再问第二次。
+    ///
+    /// 正在输入的那串字不在这里而在 `crate::chargen::NewGameDraft` 上
+    /// ——与选点光标同一条理由：`ScreenState` 是 `Copy` 的，装不下一个
+    /// `String`，而且屏切走再切回来时那串字不该丢。
+    SaveNaming,
     /// 设置界面。
     Settings {
         /// 光标落在第几行，见模块文档「焦点导航」一节。
@@ -171,6 +173,17 @@ pub enum ScreenOutcome {
     /// 存在时那一行按下去只会得到 [`ScreenNotice::NoSave`]，**绝不**
     /// 悄悄改成开一局新游戏。
     LoadSave,
+    /// 手动存一次档，存完**留在菜单里**——暂停菜单的「保存」。
+    ///
+    /// 存完不自动关菜单：玩家按「保存」的意图是「把进度落盘」，不是
+    /// 「回到游戏」；顺手关掉会让他看不到那句「已保存」，而写盘失败时
+    /// 更会把唯一一次报错一并关掉。
+    SaveNow,
+    /// 回到游戏主菜单（首页）——暂停菜单的「返回主菜单」。
+    ///
+    /// **调用方必须先存一次再回去**，见 `crate::app::Demo::back_to_title`
+    /// 文档「未保存的进度怎么办」一节。
+    BackToTitle,
 }
 
 /// 设置界面的一行是什么。**每帧现算**（见 [`settings_rows`]），不缓存。
@@ -235,6 +248,20 @@ pub enum ScreenNotice {
     Cleared(GameKey),
     /// 配置已写回磁盘。
     Saved,
+    /// 玩家死了：存档**保留**，这个世界的模式转为普通，请重新创建一个
+    /// 角色。
+    ///
+    /// 所有者的修正原话：「死亡后变成一般模式，可以再创建角色然后选择在
+    /// 某个地方出生。」
+    PlayerDied,
+    /// 游戏进度已写回磁盘（暂停菜单的「保存」）。
+    ///
+    /// 与 [`Self::Saved`] 刻意分开：一个说的是设置，一个说的是存档，
+    /// 玩家在同一块屏上会先后看到这两句，混用一句会让他分不清刚才存的
+    /// 到底是什么。
+    GameSaved,
+    /// 游戏进度写盘失败——**进度还在内存里，什么都没丢**，但没存下来。
+    GameSaveFailed,
     /// 配置写盘失败——本次会话内的改动仍然有效，只是没存下来。
     SaveFailed,
     /// 首页按了「读取存档」，但磁盘上没有存档。
@@ -262,6 +289,9 @@ impl ScreenNotice {
             ScreenNotice::Bound(_) => "screen-settings-bound",
             ScreenNotice::Cleared(_) => "screen-settings-cleared",
             ScreenNotice::Saved => "screen-settings-saved",
+            ScreenNotice::PlayerDied => "screen-chargen-player-died",
+            ScreenNotice::GameSaved => "screen-menu-game-saved",
+            ScreenNotice::GameSaveFailed => "screen-menu-game-save-failed",
             ScreenNotice::SaveFailed => "screen-settings-save-failed",
             ScreenNotice::NoSave => "screen-title-no-save",
             ScreenNotice::LoadFailed => "screen-title-load-failed",
@@ -277,6 +307,9 @@ impl ScreenNotice {
             | ScreenNotice::Bound(action)
             | ScreenNotice::Cleared(action) => Some(action),
             ScreenNotice::Saved
+            | ScreenNotice::PlayerDied
+            | ScreenNotice::GameSaved
+            | ScreenNotice::GameSaveFailed
             | ScreenNotice::SaveFailed
             | ScreenNotice::NoSave
             | ScreenNotice::LoadFailed
@@ -356,11 +389,6 @@ pub fn focus_index(table: &WidgetStateTable, ids: &[WidgetId]) -> usize {
         .unwrap_or(usize::MAX)
 }
 
-/// 菜单屏当前聚焦的是第几行，见 [`focus_index`]。
-pub fn menu_focus_index(table: &WidgetStateTable) -> usize {
-    focus_index(table, &MENU_ITEM_IDS)
-}
-
 /// 建出这一帧要交给 `ll_ui::screen` 的数据。
 pub fn screen_data<'a>(
     state: ScreenState,
@@ -412,6 +440,25 @@ pub fn screen_data<'a>(
             cursor: focus,
             empty_key: "screen-chargen-empty",
             hint_key: "screen-spawnpick-hint",
+            notice,
+        },
+        ScreenState::SaveList { cursor } => ScreenData {
+            title_key: "screen-savelist-title",
+            rows,
+            cursor,
+            empty_key: "screen-savelist-empty",
+            hint_key: "screen-savelist-hint",
+            notice,
+        },
+        ScreenState::SaveNaming => ScreenData {
+            title_key: "screen-savename-title",
+            rows,
+            // 命名屏没有「选中哪一行」这回事——两行都是给玩家看的，
+            // 光标是那串字尾巴上的下划线。`usize::MAX` 是本仓库既有的
+            // 「一行都没选中」表示（见 `focus_index`）。
+            cursor: usize::MAX,
+            empty_key: "screen-savelist-empty",
+            hint_key: "screen-savename-hint",
             notice,
         },
         ScreenState::Settings { capturing, .. } => ScreenData {
@@ -496,35 +543,6 @@ pub struct SettingsContext<'a> {
     pub config_path: &'a Path,
     /// 本地化目录，切换语言时要按它列出已装载的语言。
     pub catalog: &'a Catalog,
-}
-
-/// 处理菜单屏这一帧的输入。
-pub fn update_menu(
-    table: &mut WidgetStateTable,
-    input: &InputState,
-) -> (ScreenOutcome, Option<ScreenState>) {
-    navigate_focus(table, &MENU_ITEM_IDS, input);
-    if input.was_just_pressed(GameKey::Cancel) {
-        return (ScreenOutcome::Close, None);
-    }
-    if !input.was_just_pressed(GameKey::Confirm) {
-        return (ScreenOutcome::Idle, None);
-    }
-    match menu_focus_index(table) {
-        0 => (ScreenOutcome::Close, None),
-        1 => (
-            ScreenOutcome::Idle,
-            Some(ScreenState::Settings {
-                cursor: 0,
-                capturing: false,
-                origin: SettingsOrigin::Menu,
-            }),
-        ),
-        2 => (ScreenOutcome::Quit, None),
-        // 还没选中任何一项（光标为 usize::MAX）时按确认——什么都不做，
-        // 不猜一个默认项。
-        _ => (ScreenOutcome::Idle, None),
-    }
 }
 
 /// 处理设置界面这一帧的输入，返回这一帧产生的提示（若有）。

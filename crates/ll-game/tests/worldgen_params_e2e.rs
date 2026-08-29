@@ -14,7 +14,6 @@
 //! 地形**，而且完全静默：不报错、不变红。本文件的第二条测试正是对着
 //! 这个缺口写的。
 
-use ll_content::mode::SaveMode;
 use ll_content::world_identity::terrain_preset;
 use ll_core::time::Tick;
 use ll_game::content::{LoadedContent, load_content};
@@ -168,7 +167,7 @@ fn 群岛存档重开之后玩家还没走到的地方生成出来的仍然是�
         &game_world,
         "测试旅人",
         "出生地",
-        SaveMode::Permadeath,
+        "测试存档",
     )
     .expect("写出应当成功");
     drop(game_world);

@@ -115,7 +115,9 @@ fn 没有存档时按读取存档只说一句话不进世界() {
 }
 
 #[test]
-fn 有存档时按读取存档要求调用方去读档() {
+fn 有存档时按读取存档进的是存档列表屏而不是直接读那一份() {
+    // 多槽位之后这一行的语义变了：玩家点「读取存档」时想的是「读**哪**
+    // 一份」，直接读一份是替他做了一个他没做的决定。
     // Arrange
     let mut table = WidgetStateTable::new();
     移到第几行(&mut table, TITLE_LOAD_ROW);
@@ -124,7 +126,8 @@ fn 有存档时按读取存档要求调用方去读档() {
     let update = update_title(&mut table, &按下(&[GameKey::Confirm]), true);
 
     // Assert
-    assert_eq!(update.outcome, ScreenOutcome::LoadSave);
+    assert_eq!(update.outcome, ScreenOutcome::Idle);
+    assert_eq!(update.next, Some(ScreenState::SaveList { cursor: 0 }));
     assert_eq!(update.notice, None);
 }
 

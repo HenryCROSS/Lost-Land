@@ -32,7 +32,7 @@ use ll_ui::widget::state::{WidgetId, WidgetStateTable};
 use crate::menu_screen::{ScreenNotice, ScreenOutcome, ScreenState, SettingsOrigin, focus_index};
 
 /// 游戏主菜单（首页）四条选项的控件 id，顺序即导航顺序（同
-/// [`crate::menu_screen::MENU_ITEM_IDS`]）。
+/// [`crate::pause_menu::menu_item_ids`]）。
 pub const TITLE_ITEM_IDS: [WidgetId; 4] = [
     "screen.title.new-game",
     "screen.title.load",
@@ -62,7 +62,7 @@ pub fn title_focus_index(table: &WidgetStateTable) -> usize {
 
 /// 处理首页这一帧输入之后，调用方该做什么。
 ///
-/// 比 [`crate::menu_screen::update_menu`] 的裸元组多一格「这一帧要说的话」：首页有一条
+/// 比 [`crate::pause_menu::update_menu`] 的裸元组多一格「这一帧要说的话」：首页有一条
 /// 需要说话的路径（没有存档时按「读取存档」），而菜单屏一条都没有。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TitleUpdate {
@@ -114,9 +114,9 @@ impl TitleUpdate {
 
 /// 处理首页这一帧的输入。
 ///
-/// `has_save` 是「磁盘上那份存档存不存在」——存档只有一份
-/// （`crate::GamePaths::save` 是单个文件路径），所以这是一个布尔而不是
-/// 一张列表。
+/// `has_save` 是「存档目录里有没有东西」。它仍然是一个布尔而不是一张
+/// 列表：首页只需要回答「这一行按不按得动」，**哪一份**由下一块屏
+/// （[`ScreenState::SaveList`]）负责。
 ///
 /// # 取消键在首页什么都不做
 ///
@@ -134,7 +134,9 @@ pub fn update_title(
     }
     match title_focus_index(table) {
         0 => TitleUpdate::acting(ScreenOutcome::StartNewGame),
-        TITLE_LOAD_ROW if has_save => TitleUpdate::acting(ScreenOutcome::LoadSave),
+        // 多槽位之后这一行不再「直接读那一份」，而是进存档列表让玩家
+        // 挑——他点「读取存档」时想的本来就是「读**哪**一份」。
+        TITLE_LOAD_ROW if has_save => TitleUpdate::going(ScreenState::SaveList { cursor: 0 }),
         // 没有存档：这一行按下去只说一句话。**绝不**退而求其次地开一局
         // 新游戏——玩家点的是「读取存档」，给他一个新世界是答非所问。
         TITLE_LOAD_ROW => TitleUpdate::saying(ScreenNotice::NoSave),

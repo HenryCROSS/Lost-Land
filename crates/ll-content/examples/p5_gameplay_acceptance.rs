@@ -575,6 +575,7 @@ fn section4_save_load_roundtrip(content: &Content, world: &WorldState) {
         .expect("64 满足全部对齐约束"),
         ll_world::generate::TerrainShape::default(),
         ll_mod::mod_set::GenerationModSet(Vec::new()),
+        SaveMode::Permadeath,
     );
     let header = SaveHeader::new(
         &identity,
@@ -587,7 +588,7 @@ fn section4_save_load_roundtrip(content: &Content, world: &WorldState) {
             current_mods: Vec::new(),
             content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
             content_index_map: content_index_map.clone(),
-            mode: SaveMode::Permadeath,
+            save_name: "验收存档".to_string(),
         },
     );
     let hash_before = world.hash();

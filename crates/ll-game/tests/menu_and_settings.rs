@@ -16,9 +16,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use ll_game::menu_screen::{
     EDITABLE_CONTEXT, ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, SettingsOrigin,
-    SettingsRow, SettingsUpdate, clear_bindings, menu_focus_index, settings_rows, try_rebind,
-    update_menu, update_settings,
+    SettingsRow, SettingsUpdate, clear_bindings, settings_rows, try_rebind, update_settings,
 };
+use ll_game::pause_menu::{MenuRow, menu_focus_index, menu_rows, update_menu};
 use ll_i18n::Catalog;
 use ll_platform::config::{GameConfig, ScaleFilter};
 use ll_platform::input::{GameKey, InputState};
@@ -58,6 +58,18 @@ fn 提示(update: SettingsUpdate) -> Option<ScreenNotice> {
     update.notice
 }
 
+/// 这一批既有菜单测试全部按**普通模式**跑（「保存」那一行在）——它是
+/// 玩家最常见的那一档，也是行数最多的那一档，因此最能咬住「按下标分支
+/// 会错位」这类缺陷。肉鸽模式那一档由 `menu_rows` 自己的测试覆盖。
+const 普通模式: bool = true;
+
+/// 走到第 `steps` 行：每按一次向下，焦点前进一格。
+fn 向下(table: &mut WidgetStateTable, steps: usize) {
+    for _ in 0..steps {
+        update_menu(table, &按下(&[GameKey::Down]), 普通模式);
+    }
+}
+
 fn 设置状态(cursor: usize) -> ScreenState {
     ScreenState::Settings {
         cursor,
@@ -94,10 +106,10 @@ fn 菜单里向下移动焦点落在第一项() {
     let mut table = WidgetStateTable::new();
 
     // Act
-    update_menu(&mut table, &按下(&[GameKey::Down]));
+    向下(&mut table, 1);
 
     // Assert
-    assert_eq!(menu_focus_index(&table), 0);
+    assert_eq!(menu_focus_index(&table, 普通模式), 0);
 }
 
 #[test]
@@ -106,7 +118,7 @@ fn 菜单里没有任何一项聚焦时光标越界不标记任何行() {
     let table = WidgetStateTable::new();
 
     // Act
-    let index = menu_focus_index(&table);
+    let index = menu_focus_index(&table, 普通模式);
 
     // Assert
     assert_eq!(index, usize::MAX);
@@ -114,13 +126,13 @@ fn 菜单里没有任何一项聚焦时光标越界不标记任何行() {
 
 #[test]
 fn 菜单里选中设置项后进入设置界面() {
-    // Arrange：向下一次落在「继续游戏」，再一次落在「设置」。
+    // Arrange：普通模式的菜单是「继续 / 保存 / 设置 / 返回主菜单 / 退出」
+    // ——向下三次落在「设置」。
     let mut table = WidgetStateTable::new();
-    update_menu(&mut table, &按下(&[GameKey::Down]));
-    update_menu(&mut table, &按下(&[GameKey::Down]));
+    向下(&mut table, 3);
 
     // Act
-    let (outcome, next) = update_menu(&mut table, &按下(&[GameKey::Confirm]));
+    let (outcome, next) = update_menu(&mut table, &按下(&[GameKey::Confirm]), 普通模式);
 
     // Assert
     assert_eq!(outcome, ScreenOutcome::Idle);
@@ -136,14 +148,12 @@ fn 菜单里选中设置项后进入设置界面() {
 
 #[test]
 fn 菜单里选中退出项返回退出() {
-    // Arrange
+    // Arrange：「退出游戏」是普通模式下的第五行。
     let mut table = WidgetStateTable::new();
-    for _ in 0..3 {
-        update_menu(&mut table, &按下(&[GameKey::Down]));
-    }
+    向下(&mut table, 5);
 
     // Act
-    let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Confirm]));
+    let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Confirm]), 普通模式);
 
     // Assert
     assert_eq!(outcome, ScreenOutcome::Quit);
@@ -155,7 +165,7 @@ fn 菜单里按取消关掉整块屏() {
     let mut table = WidgetStateTable::new();
 
     // Act
-    let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Cancel]));
+    let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Cancel]), 普通模式);
 
     // Assert
     assert_eq!(outcome, ScreenOutcome::Close);
@@ -554,4 +564,129 @@ fn 从首页进的设置屏按返回那一行也回到首页() {
 
     // Assert
     assert_eq!(state, ScreenState::Title);
+}
+
+// ---------------------------------------------------------------------
+// 任务 B：暂停菜单补「保存」与「返回主菜单」
+// ---------------------------------------------------------------------
+
+#[test]
+fn 普通模式的暂停菜单有保存那一行而肉鸽模式没有() {
+    // B1。所有者裁定：「肉鸽模式是只有自动保存的」——所以手动存档那一
+    // 项在肉鸽档里**整行不存在**，不是置灰。
+    // Arrange & Act
+    let 普通 = menu_rows(true);
+    let 肉鸽 = menu_rows(false);
+
+    // Assert
+    assert!(
+        普通.contains(&MenuRow::Save),
+        "普通模式必须能手动存档：{普通:?}"
+    );
+    assert!(
+        !肉鸽.contains(&MenuRow::Save),
+        "肉鸽模式不该出现手动存档入口：{肉鸽:?}"
+    );
+    // 另外四行两种模式都有——「保存」是唯一随模式变化的那一行。
+    for row in [
+        MenuRow::Continue,
+        MenuRow::Settings,
+        MenuRow::BackToTitle,
+        MenuRow::Quit,
+    ] {
+        assert!(普通.contains(&row), "普通模式缺了 {row:?}");
+        assert!(肉鸽.contains(&row), "肉鸽模式缺了 {row:?}");
+    }
+}
+
+#[test]
+fn 两种模式下按同一行都得到同一件事() {
+    // 行数随模式变化 ⇒ 按下标分支必然错位。这一条钉住的是「按行的语义
+    // 分支」这个实现选择：肉鸽档里选「设置」不该退出游戏。
+    // Arrange：肉鸽菜单是「继续 / 设置 / 返回主菜单 / 退出」，「设置」
+    // 是第二行。
+    let mut table = WidgetStateTable::new();
+    for _ in 0..2 {
+        update_menu(&mut table, &按下(&[GameKey::Down]), false);
+    }
+
+    // Act
+    let (outcome, next) = update_menu(&mut table, &按下(&[GameKey::Confirm]), false);
+
+    // Assert
+    assert_eq!(outcome, ScreenOutcome::Idle);
+    assert_eq!(
+        next,
+        Some(ScreenState::Settings {
+            cursor: 0,
+            capturing: false,
+            origin: SettingsOrigin::Menu,
+        }),
+        "肉鸽模式下第二行是「设置」，不该走成别的东西"
+    );
+}
+
+#[test]
+fn 选中保存那一行产出存档意图而不是关掉菜单() {
+    // 存完留在菜单里——玩家按「保存」的意图是「把进度落盘」，不是
+    // 「回到游戏」；顺手关掉会把那句「已保存」（以及写盘失败时唯一一次
+    // 报错）一并关掉。
+    // Arrange：普通模式第二行就是「保存」。
+    let mut table = WidgetStateTable::new();
+    向下(&mut table, 2);
+
+    // Act
+    let (outcome, next) = update_menu(&mut table, &按下(&[GameKey::Confirm]), 普通模式);
+
+    // Assert
+    assert_eq!(outcome, ScreenOutcome::SaveNow);
+    assert_eq!(next, None, "存档不该顺手切走这块屏");
+}
+
+#[test]
+fn 选中返回主菜单那一行产出回首页意图而不是退出进程() {
+    // 「返回主菜单」与「退出游戏」是两件事——写死下标最容易把它们弄混。
+    // Arrange：普通模式第四行是「返回主菜单」。
+    let mut table = WidgetStateTable::new();
+    向下(&mut table, 4);
+
+    // Act
+    let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Confirm]), 普通模式);
+
+    // Assert
+    assert_eq!(outcome, ScreenOutcome::BackToTitle);
+}
+
+#[test]
+fn 菜单每一行的文案在两种语言里都解析得出来() {
+    // 硬编码用户可见字符串是门禁禁止的；这一条钉住「新加的行真的补了
+    // 两个语言的 Fluent 键」——漏了的话 `resolve` 会回落成键名本身。
+    // Arrange
+    let catalog = 测试目录();
+
+    // Act & Assert
+    for can_save in [true, false] {
+        for row in menu_rows(can_save) {
+            for language in ["zh-CN", "en"] {
+                let text = catalog.resolve(language, row.text_key());
+                assert_ne!(
+                    text,
+                    row.text_key(),
+                    "{language} 缺少 {} 的译文",
+                    row.text_key()
+                );
+                assert!(!text.is_empty());
+            }
+        }
+    }
+    for notice in [ScreenNotice::GameSaved, ScreenNotice::GameSaveFailed] {
+        for language in ["zh-CN", "en"] {
+            let text = notice.resolve(&catalog, language);
+            assert!(!text.is_empty(), "{language} 缺少 {notice:?} 的译文");
+            assert!(
+                !text.starts_with("screen-menu-"),
+                "{language} 的 {notice:?} 回落成了键名：{text}"
+            );
+        }
+    }
 }
