@@ -9,20 +9,37 @@
 
 ---
 
-## 〇、三个关键常量的当前值
+## 〇、三个关键常量：**不要在文档里找它们的值**
 
-**前一份交接（`2026-08-27`）第一节那张表已经过期**——两条黄金基准都被本会话的
-气候条带批次重冻过。本会话有**两个互不相干的代理各自撞上那张过期的表**，其中一个
-照抄进了自己的计划文档、grep 复核时才发现。表列在这里省下第三次。
+跑这一条，它就是答案：
 
-| 常量 | 当前值 | 位置 |
-|---|---|---|
-| `EXPECTED_WORLD_DIGEST` | `10_180_278_885_427_934_050` | `crates/ll-world/tests/determinism.rs:286` |
-| `EXPECTED_REPLAY_DIGEST` | `6_885_882_507_408_978_859` | `crates/ll-sim/tests/replay.rs:910` |
-| `CONTENT_HASH_ALGORITHM_VERSION` | `27` | `crates/ll-mod/src/content_hash.rs:805` |
+```bash
+grep -rn "const EXPECTED_WORLD_DIGEST\|const EXPECTED_REPLAY_DIGEST" \
+  crates/ll-world/tests/determinism.rs crates/ll-sim/tests/replay.rs
+grep -n "pub const CONTENT_HASH_ALGORITHM_VERSION" crates/ll-mod/src/content_hash.rs
+```
 
-**读到这份文档时它们可能又变了。以代码为准**——这正是纪律第 1 条，而它在本会话
-里救了两次场。
+### 为什么这里不列具体数值
+
+前一份交接（`2026-08-27`）第一节列了一张表，然后：
+
+- 气候条带批次重冻了两条黄金基准 → 那张表过期；
+- **两个互不相干的代理各自撞上它**，其中一个照抄进了自己的计划文档，grep 复核时
+  才发现；
+- 于是这份文档在此处补了一张「当前值」表——**接着角色创建批次又重冻了回放摘要，
+  这张新表当场也过期了**；
+- **第三个代理撞上了这张新表。**
+
+三次事故，同一个形状。问题不是「有人忘了更新」——三次重冻里有两次发生在**同一个
+会话内**，快到没有任何人工纪律追得上。**问题是文档里存了一份会漂移的副本。**
+
+这与仓库反复记录的另一条教训同源：`ContentIndex` 的裸数值当判据、
+`atlas_coverage.rs` 的手写地形清单、`skin.rs` 查的裸贴图名、`composite_keys` 少一个
+冒号——**凡是把真相源之外的副本当判据，迟早分叉，而分叉时没有任何东西会报错。**
+唯一的解法是不留副本。
+
+纪律第 1 条（「数字自己 grep，不要信任何人口头转述」）在本会话至少救了三次场。
+这一节是把那条纪律**从劝告变成唯一可行的做法**：这里没有值可抄。
 
 ---
 
