@@ -43,10 +43,14 @@
 //!
 //! # NPC 为什么是两条指令而不是一张「种族×职业」的图
 //!
-//! 所有者要求「npc 根据职业种族做出区别」。本体现有 4 个种族 × 13 个
-//! 职业 = 52 种组合，所有者已说还要再加 5 个种族（9 × 13 = 117）——
-//! 逐个组合备一张图，加第 10 个种族要补 13 张，加第 14 个职业要补 9 张，
-//! 是乘法级的负担。
+//! **这一节记的是分层合成为什么存在，它现在是回退链的最后一段而不是
+//! 唯一的画法**——所有者后来裁定「每个种族的每个职业画上风格不同的
+//! 图片」，那 52 张合成图排在它前面（见下一节）。分层这一层没有退休：
+//! mod 新加的种族或职业没有合成图时，落到的就是这里。
+//!
+//! 所有者最初要求「npc 根据职业种族做出区别」。本体现有 4 个种族 × 13
+//! 个职业 = 52 种组合——逐个组合备一张图，加第 10 个种族要补 13 张，
+//! 加第 14 个职业要补 9 张，是乘法级的负担。
 //!
 //! 本模块因此把一个 NPC 拆成**两条绘制指令、两张图**：
 //!
@@ -72,29 +76,31 @@
 //! 最后一段：
 //!
 //! ```text
-//! <种族>_<职业>_<性别>   ← 今天一张都没有
+//! <种族 ID>_<压平的职业 ID>_<性别>   ← 今天一张都没有
 //!       ↓ 查不到就退
-//! <种族>_<职业>          ← 后续美术批次要加的 117 张
+//! <种族 ID>_<压平的职业 ID>          ← 美术批次的 52 张（4 族 × 13 职业）
 //!       ↓ 查不到就退
-//! <种族> + <职业>         ← 现有的分层合成
+//! <种族 ID> + <职业 ID>               ← 分层合成（种族没有合成图时的兜底）
 //! ```
+//!
+//! 键的确切拼法（以及「为什么冒号那一位必须留给种族」）见
+//! [`composite_keys`] 文档「键的形状」一节——那一段记着一个真实踩过的
+//! 坑：拼错一个字符，52 张图会**静默**全部失效。
 //!
 //! 所有者的原话是「以后可能会加入不同性别的贴图，不过目前先留着个位置
 //! 默认用其中一个好了」。**「留着个位置」不等于把同一张图复制两份**
-//! ——两份同样的图迟早会漂（本仓库有过先例）。做成回退链，今天零张
-//! 合成图 ⇒ 所有人自然落到最后一段 ⇒ **行为与本批次之前逐像素相同**，
-//! 但槽位是真实存在的：往 `assets/sprites/` 里放一张
-//! `lostland_human_lostland_blacksmith_female.png` 就生效，引擎一个字
-//! 都不用改。
+//! ——两份同样的图迟早会漂（本仓库有过先例）。性别那一段今天仍然零张
+//! ⇒ 每个人都落到第二段（合成图）⇒ 男女暂时同图，但槽位是真实存在的：
+//! 往 `assets/sprites/` 里放一张 `human_lostland_blacksmith_female.png`
+//! 并在精灵清单里登记，它就生效，引擎一个字都不用改。
 //!
 //! ## 命中合成图时，职业挂件那一层必须让位
 //!
 //! 合成图里职业已经画在身子上了，挂件再叠一层等于同一件事画两遍。
 //! 这就是 [`SurfaceDraw::superseded_by`] 存在的全部理由：挂件那条指令
-//! 声明「这几个键里任何一个查得到，我就不画」。今天那两个键一个都命
-//! 不中，因此该字段恒不生效——**它防的是 117 张落地那天突然人人挂两个
-//! 职业记号**，而那种缺陷一旦出现极难归因（美术那批不会想到去看
-//! `surface_draw`）。
+//! 声明「这几个键里任何一个查得到，我就不画」。合成图批次落地之后
+//! 本体四族全部命中，**挂件层因此对本体 NPC 恒不画**；没有合成图的
+//! mod 内容（示例 mod 的半精灵/死灵法师）仍然走分层合成那条老路。
 //!
 //! ## 这条链就是 `Agent::gender` 那条门禁豁免的理由
 //!
@@ -223,8 +229,9 @@ pub struct SurfaceDraw {
     ///
     /// 职业挂件层。身子层一旦落到合成图（`<种族>_<职业>[_<性别>]`），
     /// 职业信息就已经画在身子上了，挂件再叠一层等于同一件事画两遍。
-    /// 今天一张合成图都没有，因此这个字段恒不生效——**行为与它落地
-    /// 之前逐像素相同**，见模块文档「合成图的回退链」一节。
+    /// 美术批次落地之后本体四族 × 十三职业全部命中合成图，这个字段对
+    /// 本体 NPC **恒生效**；没有合成图的 mod 内容仍然走分层合成，那时
+    /// 它恒不命中。见模块文档「合成图的回退链」一节。
     ///
     /// # 为什么只声明键，不在这里查图
     ///
@@ -394,18 +401,38 @@ pub fn npc_draws(world: &WorldState, registry: &Registry, player: EntityId) -> V
 
 /// 「种族 × 职业」合成图的候选键，按优先级从高到低。
 ///
-/// 两段：`<种族>_<职业>_<性别>`（今天零张）与 `<种族>_<职业>`（后续
-/// 美术批次的 117 张）。种族或职业任一解析不出完整命名空间 ID 时返回
+/// 两段：`<种族>_<职业>_<性别>`（今天零张，槽位留给以后）与
+/// `<种族>_<职业>`（美术批次的 52 张，本体 4 族 × 13 职业；mod 内容
+/// 没有就自动落到分层合成）。种族或职业任一解析不出完整命名空间 ID 时返回
 /// 空列表——**没有半个键这种东西**：拿 `#103` 之类的裸索引去拼键，
 /// 拼出来的是一个永远查不到、还会误导后来人的字符串。
 ///
-/// # 分隔符为什么是下划线
+/// # 键的形状：种族 ID 原样保留，职业 ID 压平接在后面
 ///
-/// 内容 ID 本身含冒号（`lostland:human`），而冒号在多数文件系统上不能
-/// 出现在文件名里。`ll_mod::asset_vfs::ResolvedSprite::atlas_name` 的
-/// 既有约定就是「命名空间与本地名之间用下划线」，本函数只是把同一条
-/// 约定用在两个 ID 的拼接上：
-/// `lostland_human_lostland_blacksmith_female`。
+/// `lostland:human` + `lostland:blacksmith` →
+/// `lostland:human_lostland_blacksmith`。
+///
+/// 这个形状不是审美选择，是**图集条目名的形状逼出来的**。
+/// `ll_mod::asset_vfs::ResolvedSprite::atlas_name` 恒等于
+/// `"{命名空间}:{清单条目名}"`（见那份字段文档「本体也加前缀」一节），
+/// 因此任何查得到的键**必然恰好含一个冒号，且冒号左边是一个真实存在
+/// 的命名空间**。本函数在合成图批次开工前返回的是
+/// `lostland_human_lostland_blacksmith`——**一个冒号都没有，图集里
+/// 永远查不到**。而回退链查不到只会静默退回分层合成、**不打任何日志**
+/// （`GpuResources::lookup_first` 只对最后一个候选打 error），于是 52
+/// 张合成图会一张都用不上、屏幕上毫无异常、无人察觉。这与 `skin.rs`
+/// 查裸名字导致五张 HUD 贴图全军覆没是逐字同型的失效方式。
+///
+/// 于是：**冒号那一位留给种族**（合成图归种族所属的命名空间——加一个
+/// 种族的 mod 才是那一族 13 张图的作者），职业那一段按
+/// `atlas_name` 既有的「命名空间与本地名之间用下划线」约定压平接在
+/// 后面。带性别时再接一段：
+/// `lostland:human_lostland_blacksmith_female`。
+///
+/// 端到端防线在 `crates/ll-game/tests/npc_appearance.rs` 的
+/// `本体每一个种族与职业的组合在真实图集里都查得到合成图`：它用真实
+/// `assets/` + `mods/` 打出真实图集，逐个组合断言本函数拼出的键真的
+/// 查得到。名字差一个字符它当场红。
 ///
 /// # 为什么性别用 [`Gender::sprite_tag`] 而不是展示名
 ///
@@ -416,14 +443,15 @@ fn composite_keys(race: Option<&str>, class: Option<&str>, gender: Gender) -> Ve
     let (Some(race), Some(class)) = (race, class) else {
         return Vec::new();
     };
-    let base = format!("{}_{}", sprite_segment(race), sprite_segment(class));
+    let base = format!("{race}_{}", sprite_segment(class));
     vec![format!("{base}_{}", gender.sprite_tag()), base]
 }
 
 /// 把一个完整命名空间 ID 变成可以出现在文件名里的一段——冒号换下划线。
 ///
 /// 与 `ll_mod::asset_vfs` 那侧的约定一致，见 [`composite_keys`] 文档
-/// 「分隔符为什么是下划线」一节。
+/// 「键的形状」一节。**只用在职业那一段**：种族那一段要原样保留自己的
+/// 冒号，否则拼出来的键在图集里恒查不到。
 fn sprite_segment(id: &str) -> String {
     id.replace(':', "_")
 }
@@ -674,8 +702,8 @@ mod tests {
         assert_eq!(
             body.keys().collect::<Vec<_>>(),
             vec![
-                "lostland_human_lostland_blacksmith_female",
-                "lostland_human_lostland_blacksmith",
+                "lostland:human_lostland_blacksmith_female",
+                "lostland:human_lostland_blacksmith",
                 "lostland:human",
                 NPC_SPRITE,
             ]
@@ -754,8 +782,8 @@ mod tests {
         assert_eq!(
             badge.superseded_by,
             vec![
-                "lostland_human_lostland_blacksmith_male".to_string(),
-                "lostland_human_lostland_blacksmith".to_string(),
+                "lostland:human_lostland_blacksmith_male".to_string(),
+                "lostland:human_lostland_blacksmith".to_string(),
             ],
             "挂件层该被两段合成图压制"
         );
@@ -777,6 +805,45 @@ mod tests {
             composite_keys(race_id.as_deref(), race_id.as_deref(), Gender::Male).len(),
             2
         );
+    }
+
+    #[test]
+    fn 每个合成键都恰好含一个冒号且冒号左边是种族的命名空间() {
+        // 这条守的是本文件历史上最贵的一个字符：图集条目名恒是
+        // `"{命名空间}:{条目名}"`，因此**不含冒号的候选键在图集里永远
+        // 查不到**，而回退链查不到只会静默退回分层合成、不打任何日志。
+        // 合成图批次开工时本函数返回的正是不含冒号的串，52 张图会一张
+        // 都用不上且无人察觉。判据写成「形状」而不是「等于某个字面量」，
+        // 是为了让它对任意 mod 的种族/职业都成立。
+        //
+        // 反例（本次开发实跑）：把 `composite_keys` 里的 `{race}` 改回
+        // `sprite_segment(race)`，本条报「候选键 … 一个冒号都没有」。
+        // Arrange
+        let mut registry = Registry::new();
+        let race = intern(&mut registry, "othermod:half_elf");
+        let class = intern(&mut registry, "lostland:blacksmith");
+        let race_id = registry.resolve(race).map(|id| id.to_string());
+        let class_id = registry.resolve(class).map(|id| id.to_string());
+
+        // Act
+        let keys = composite_keys(race_id.as_deref(), class_id.as_deref(), Gender::Female);
+
+        // Assert
+        assert_eq!(keys.len(), 2);
+        for key in &keys {
+            assert_eq!(
+                key.matches(':').count(),
+                1,
+                "候选键 {key} 的冒号数量不是 1——图集条目名恒是「命名空间:条目名」，\
+                 冒号数对不上的键永远查不到，而且查不到不打任何日志"
+            );
+            assert!(
+                key.starts_with("othermod:half_elf_"),
+                "候选键 {key} 的命名空间不是种族自己的——合成图归种族所属的命名空间"
+            );
+        }
+        assert_eq!(keys[0], "othermod:half_elf_lostland_blacksmith_female");
+        assert_eq!(keys[1], "othermod:half_elf_lostland_blacksmith");
     }
 
     #[test]

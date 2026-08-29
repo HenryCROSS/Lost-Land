@@ -33,8 +33,11 @@
 //! | --- | --- |
 //! | 删掉 `assets/sprites/dwarf.png` | `本体每一个种族在真实图集里都有自带身子贴图` |
 //! | 删掉 `assets/sprites/mason.png` | `本体每一个职业在真实图集里都有自带挂件贴图` |
-//! | 把 `goblin` 的肤色/发色/衣色/身高/肩宽/腿长六个参数改成与 `human` 相同 | `本体的种族与职业组合两两之间至少三十六个像素不同` 与 `同一个职业下不同种族至少差四分之一张图`（两条都报「只有 8 个像素不同」） |
-//! | 把 `npc_draws` 里挂件那条的 `preferred_key` 改成 `None`，或改成查 `agent.race` | 本文件四条同时红（挂件那一层要么消失、要么与身子同图） |
+//! | 移走 `assets/sprites/dwarf_lostland_mason.png` | `本体每一个种族与每一个职业的组合在真实图集里都查得到合成图` |
+//! | 把 `surface_draw::composite_keys` 里的 `{race}` 改回 `sprite_segment(race)`（键里没有冒号，图集恒查不到） | 同上一条（**这正是本批开工时的真实状态**） |
+//! | 把 `goblin` 的肤色/发色/衣色/身高/肩宽/腿长六个参数改成与 `human` 相同 | `同一个职业下不同种族至少差四分之一张图` |
+//! | 把 `composite.rs` 的 `paint_tool` 与帽子/袖子那两行去掉 | `同一个种族下不同职业至少差四分之一张图`（哥布林那几对只剩 72 个像素） |
+//! | 把 `npc_draws` 里挂件那条的 `preferred_keys` 改成空，或改成查 `agent.race` | 没有合成图的 mod 内容那两条同时红 |
 //! | 删掉 `mods/example_mod/assets/sprites/half_elf.png` | `mod自己声明的种族与职业不改一行引擎代码就能有自己的样子` |
 //! | 给 `mods/example_mod/assets/sprites/` 补一张 `dragonborn.png` | `没有自带贴图的种族退回通用记号而没有自带贴图的职业不画挂件` |
 //!
@@ -194,6 +197,27 @@ fn npc_composite(
     atlas: &PackedAtlas,
     npc: EntityId,
 ) -> Composite {
+    let keys = chosen_keys(content, world, atlas, npc);
+    assert!(!keys.is_empty(), "至少身子那一层必须查得到（兜底记号保证）");
+    composite(atlas, &keys)
+}
+
+/// 这个 NPC 的两条指令里**真的会被画出来**的那些图集键，按绘制顺序。
+///
+/// 两处降级与生产路径上的 `push_surface_draw` 逐字一致：
+///
+/// 1. `superseded_by` 里任何一个键在图集里查得到 ⇒ 这一层整个不画
+///    （身子命中合成图时，职业挂件那一层必须让位）；
+/// 2. `keys()` 一个都查不到 ⇒ 这一层不画。
+///
+/// **第 1 条是合成图批次新增的**。少了它，本文件叠出来的图会是「合成图
+/// 上再压一枚挂件」，而屏幕上不是——那样本文件验的就不再是生产路径。
+fn chosen_keys(
+    content: &LoadedContent,
+    world: &GameWorld,
+    atlas: &PackedAtlas,
+    npc: EntityId,
+) -> Vec<String> {
     let mut mine: Vec<_> = npc_draws(&world.world, &content.registry, world.player)
         .into_iter()
         .filter(|draw| {
@@ -203,16 +227,19 @@ fn npc_composite(
         })
         .collect();
     mine.sort_by_key(|draw| draw.entity);
-    let keys: Vec<String> = mine
-        .iter()
+    mine.iter()
+        .filter(|draw| {
+            !draw
+                .superseded_by
+                .iter()
+                .any(|key| atlas.metadata.lookup(key).is_some())
+        })
         .filter_map(|draw| {
             draw.keys()
                 .find(|name| atlas.metadata.lookup(name).is_some())
                 .map(str::to_string)
         })
-        .collect();
-    assert!(!keys.is_empty(), "至少身子那一层必须查得到（兜底记号保证）");
-    composite(atlas, &keys)
+        .collect()
 }
 
 /// 两张图有多少个像素不同。
@@ -265,13 +292,98 @@ fn 本体每一个种族在真实图集里都有自带身子贴图() {
             .keys()
             .find(|name| atlas.metadata.lookup(name).is_some())
             .expect("至少兜底记号查得到");
-        assert_eq!(
-            chosen,
-            id.to_string(),
-            "本体种族 {id} 没有自带身子贴图，退回了通用记号 {NPC_SPRITE}——\
+        assert_ne!(
+            chosen, NPC_SPRITE,
+            "本体种族 {id} 一层图都没查到，退回了通用记号 {NPC_SPRITE}——\
              屏幕上它会和别的没图的种族长得一模一样"
         );
+        // 合成图批次之后，身子层第一个命中的是「种族 × 职业」合成图，
+        // 分层的那张种族身子退到回退链更靠后的一段。它**仍然必须存在**
+        // ——mod 新加一个职业时，本体四族与那个职业的组合没有合成图，
+        // 全靠这一张兜住。
+        assert!(
+            atlas.metadata.lookup(&id.to_string()).is_some(),
+            "本体种族 {id} 的分层身子贴图不见了——回退链最后一段断了，\
+             mod 新加职业时这一族会直接掉到通用记号"
+        );
     }
+}
+
+#[test]
+fn 本体每一个种族与每一个职业的组合在真实图集里都查得到合成图() {
+    // 所有者裁定「每个种族的每个职业画上风格不同的图片」的**接线**验收：
+    // 52 张图真的被生产路径选中了吗。
+    //
+    // 这条盯的是本批最贵的失效方式：合成图的文件名与
+    // `surface_draw::composite_keys` 拼出来的键**差一个字符**，回退链
+    // 会静默退回分层合成、不打任何日志，52 张图一张都用不上而屏幕上毫
+    // 无异常。开工时这条真的是红的——那时 `composite_keys` 拼出来的串
+    // 一个冒号都没有，而图集条目名恒是「命名空间:条目名」。
+    //
+    // 清单从注册表现查（`registered_races` × `registered_professions`），
+    // 加种族的那一刻这条断言自动开始管它。
+    //
+    // 反例（本次开发实跑）：把 `assets/sprites/dwarf_lostland_mason.png`
+    // 移走，本条报「矮人/石匠 没有自带合成图」。
+    // Arrange
+    let (content, mut world, atlas) = real_setup();
+    let base = base_namespace(&content);
+    let races: Vec<_> = registered_races(&content)
+        .into_iter()
+        .filter(|(id, _)| id.namespace() == base)
+        .collect();
+    let professions: Vec<_> = registered_professions(&content)
+        .into_iter()
+        .filter(|(id, _)| id.namespace() == base)
+        .collect();
+    assert!(
+        !races.is_empty() && !professions.is_empty(),
+        "本体一个种族或一个职业都数不出来——这条断言本身已经查错了表"
+    );
+
+    // Act & Assert
+    let mut offset = 1;
+    for (race_id, race) in &races {
+        for (profession_id, profession) in &professions {
+            let npc = spawn_npc(&mut world, *race, *profession, offset);
+            offset += 1;
+            let draws = npc_draws(&world.world, &content.registry, world.player);
+            let body = draws
+                .iter()
+                .find(|draw| {
+                    draw.entity == ll_game::surface_draw::NPC_ENTITY_BASE + u64::from(npc.index())
+                })
+                .expect("刚 spawn 的 NPC 必然有身子那一条指令");
+            let chosen = body
+                .keys()
+                .find(|name| atlas.metadata.lookup(name).is_some())
+                .expect("至少兜底记号查得到");
+            // 身子层的候选次序是「带性别的合成图 → 合成图 → 分层身子 →
+            // 通用记号」。今天带性别的一张都没有，因此第一个命中的必须
+            // 正好是合成图那一段；退到分层身子就说明这个组合缺图。
+            assert!(
+                chosen.starts_with(&format!("{race_id}_"))
+                    && chosen.contains(&format!("_{profession_id}").replace(':', "_")),
+                "{race_id} / {profession_id} 没有自带合成图，身子层退到了 {chosen}——\
+                 这个组合在屏幕上会与同族其他职业长得一模一样"
+            );
+            let pixels = tile_pixels(&atlas, chosen);
+            let opaque = pixels.iter().filter(|p| p[3] > 0).count();
+            assert!(opaque > 0, "合成图 {chosen} 在真实图集里是一张空图");
+            // 命中合成图 ⇒ 职业挂件那一层必须让位，否则同一件事画两遍。
+            assert_eq!(
+                chosen_keys(&content, &world, &atlas, npc),
+                vec![chosen.to_string()],
+                "{race_id} / {profession_id} 命中合成图之后，职业挂件层没有让位"
+            );
+        }
+    }
+}
+
+/// 这个图集条目对应矩形的像素——与 `atlas_coverage.rs` 的同名帮手同一
+/// 段逻辑，本文件只多用在合成图那一条上。
+fn tile_pixels(atlas: &PackedAtlas, name: &str) -> Vec<[u8; 4]> {
+    entry_pixels(atlas, name).2
 }
 
 #[test]
@@ -311,15 +423,15 @@ fn 本体每一个职业在真实图集里都有自带挂件贴图() {
 }
 
 #[test]
-fn 本体的种族与职业组合两两之间至少三十六个像素不同() {
-    // 这是所有者那句「不同种族、不同职业的 NPC 在屏幕上互相可分」最直接
-    // 的可执行版本：本体 4 × 13 = 52 种组合，两两比一遍（1326 对）。
+fn 本体的种族与职业组合两两之间至少四分之一像素不同() {
+    // 这是所有者那句「要真的区分得开，不是同一张图换个色调」最直接的
+    // 可执行版本：本体 4 × 13 = 52 种组合，两两比一遍（1326 对）。
     //
-    // 门槛取 [`BADGE_PIXELS`] 而不是 [`BODY_PIXELS`]：同种族不同职业那
-    // 些对之间的差异**只可能**来自胸口那块徽记，取更大的数等于要求
-    // 「换个职业连体型也变」，那不是本批次的设计（见
-    // `ll_game::surface_draw` 模块文档）。跨种族那一侧另有更严的
-    // `同一个职业下不同种族至少差四分之一张图` 盯着。
+    // 门槛从 [`BADGE_PIXELS`] 提到 [`BODY_PIXELS`]（整张图的四分之一）
+    // 是合成图批次的事：此前同种族不同职业之间的差异**只可能**来自胸口
+    // 那块 6×6 徽记，36 是那个设计下的上界；现在职业还换衣服、换帽子、
+    // 换袖子、手里多一件工具，四分之一才是新设计下诚实的下界，与
+    // `atlas_coverage.rs` 的家具/地形那两条同一把尺子。
     // Arrange
     let (content, mut world, atlas) = real_setup();
     let base = base_namespace(&content);
@@ -354,19 +466,25 @@ fn 本体的种族与职业组合两两之间至少三十六个像素不同() {
         for (label_b, b) in &rendered[i + 1..] {
             let diff = differing(a, b);
             assert!(
-                diff >= BADGE_PIXELS,
+                diff >= BODY_PIXELS,
                 "「{label_a}」与「{label_b}」画出来只有 {diff} 个像素不同\
-                 （门槛 {BADGE_PIXELS}）——屏幕上分不出这两个 NPC"
+                 （门槛 {BODY_PIXELS}）——屏幕上分不出这两个 NPC"
             );
         }
     }
 }
 
 #[test]
-fn 同一个种族下不同职业至少差整块徽记() {
+fn 同一个种族下不同职业至少差四分之一张图() {
     // 上一条是全体两两比。这一条把「职业这条轴真的起作用了」单独钉出来
     // ——上一条即使职业完全不起作用，只要种族之间差得够多也可能碰巧通过
     // （不会，但那是巧合不是保证）。
+    //
+    // 合成图批次之前这条断的是 `assert_eq!(diff, BADGE_PIXELS)`——精确
+    // 等于一块 6×6 徽记，因为当时同种族之间的差异**只可能**来自那块
+    // 徽记。所有者裁定「每个种族的每个职业画上风格不同的图片」之后那条
+    // 上界不再成立（职业现在还换衣服、换帽子、换袖子、带一件工具），
+    // 判据因此改成与跨种族那一侧同一把尺子的下界。
     // Arrange
     let (content, mut world, atlas) = real_setup();
     let base = base_namespace(&content);
@@ -390,11 +508,10 @@ fn 同一个种族下不同职业至少差整块徽记() {
     for (i, (label_a, a)) in rendered.iter().enumerate() {
         for (label_b, b) in &rendered[i + 1..] {
             let diff = differing(a, b);
-            assert_eq!(
-                diff, BADGE_PIXELS,
-                "同为矮人的 {label_a} 与 {label_b} 差了 {diff} 个像素——\
-                 同种族之间差异**只**该来自那块 6×6 徽记，多了说明职业\
-                 悄悄改了身子，少了说明两个职业的徽记撞了色"
+            assert!(
+                diff >= BODY_PIXELS,
+                "同为矮人的 {label_a} 与 {label_b} 只差了 {diff} 个像素\
+                 （门槛 {BODY_PIXELS}）——职业这条轴没起作用"
             );
         }
     }

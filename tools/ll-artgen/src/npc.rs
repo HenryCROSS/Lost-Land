@@ -3,19 +3,29 @@
 //! # 这个模块解的是一道乘法题
 //!
 //! 项目所有者的要求是「npc 根据职业种族做出区别，多画点」。本体现有
-//! 4 个种族 × 13 个职业 = 52 种组合，所有者已说还要再加 5 个种族
-//! （9 × 13 = 117）。逐个组合画一张图，加第 10 个种族要补 13 张、加第
-//! 14 个职业要补 9 张——是乘法级的负担，不可接受。
+//! 4 个种族 × 13 个职业 = 52 种组合。逐个组合画一张图，加第 10 个种族
+//! 要补 13 张、加第 14 个职业要补 9 张——是乘法级的负担。
 //!
-//! 因此这里画的是**两套可以叠在一起的图**，不是一套组合图：
+//! **所有者后来裁定就要那 52 张**（「我觉得还是每个种族的每个职业画上
+//! 风格不同的图片。虽然美术资源会很多。」），落点是 [`crate::composite`]。
+//! 但那道乘法题并没有消失，只是换了个答案：合成图**复用本模块的配方**
+//! （[`draw_race_body`] 一行没重写、[`draw_profession_badge`] 直接叠上
+//! 去），52 张图仍然只有「种族数 + 职业数」份配方。
+//!
+//! 本模块的两套图**一张都没退休**：它们是回退链的最后一段——mod 新加
+//! 的种族或职业没有合成图时自动落到这里（见 `ll_game::surface_draw`
+//! 模块文档「合成图的回退链」一节）。
+//!
+//! 这里画的是**两套可以叠在一起的图**，不是一套组合图：
 //!
 //! - [`race_bodies`]：每个种族一张 16×24 的身子，决定体型、肤色、耳朵、
 //!   胡子这些「他是什么」的东西。
 //! - [`profession_badges`]：每个职业一张 16×24、**四周全透明、只在胸口
 //!   有一块徽记**的挂件，叠在身子上，决定「他干什么」。
 //!
-//! 资产量因此是 `种族数 + 职业数`（本批 4 + 13 = 17 张）而不是
-//! `种族数 × 职业数`（52 张）。渲染侧怎么把两张叠起来，见
+//! 本模块的资产量因此是 `种族数 + 职业数`（4 + 13 = 17 张）；
+//! [`crate::composite`] 另外产出 `种族数 × 职业数`（52 张），但它靠的
+//! 是这里的同一批配方。渲染侧怎么把两张叠起来，见
 //! `ll_game::surface_draw` 模块文档「NPC 为什么是两条指令」一节——两张
 //! 图同尺寸、同 `pivot`、同 `footprint`，因此像素级对齐，不需要任何
 //! 额外的偏移换算。
@@ -120,6 +130,50 @@ pub(crate) struct BodySpec {
     ears: Ears,
     /// 胡子高度（行数，0 表示不留胡子）。
     beard_h: u32,
+}
+
+/// 一个种族身子上几块可寻址区域的坐标，由 [`BodySpec`] 的几何参数现算。
+///
+/// # 为什么把它抽出来
+///
+/// [`draw_race_body`] 与 [`crate::composite`] 都要知道「躯干在哪几行几
+/// 列」：前者用它填衣服色，后者用它把衣服换成职业色。这些坐标**只能有
+/// 一份**——抄第二份的话，改一次肩宽公式就会让合成图的衣服与身子错位，
+/// 而错位在 16 像素宽的画布上一眼就是「衣服穿歪了」。
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BodyGeometry {
+    /// 躯干（衣服）矩形：`(x, y, 宽, 高)`。
+    pub(crate) torso: (u32, u32, u32, u32),
+    /// 头（肤色）矩形。
+    pub(crate) head: (u32, u32, u32, u32),
+    /// 头顶发际那两行——合成图把它换成职业色的帽子。
+    pub(crate) hair: (u32, u32, u32, u32),
+    /// 左右两条手臂（露出的皮肤）矩形。
+    pub(crate) arms: [(u32, u32, u32, u32); 2],
+}
+
+impl BodySpec {
+    /// 这个种族身子各块区域的坐标。[`draw_race_body`] 自己也走这一份。
+    pub(crate) fn geometry(self) -> BodyGeometry {
+        let shoulder_x0 = NPC_WIDTH / 2 - self.shoulder_w / 2;
+        let head_x0 = NPC_WIDTH / 2 - HEAD_W / 2;
+        let torso_top = self.head_top + HEAD_H;
+        let arm_h = self.leg_top - torso_top - 1;
+        BodyGeometry {
+            torso: (
+                shoulder_x0,
+                torso_top,
+                self.shoulder_w,
+                self.leg_top - torso_top,
+            ),
+            head: (head_x0, self.head_top, HEAD_W, HEAD_H),
+            hair: (head_x0, self.head_top, HEAD_W, 2),
+            arms: [
+                (shoulder_x0 - 2, torso_top + 1, 2, arm_h),
+                (shoulder_x0 + self.shoulder_w, torso_top + 1, 2, arm_h),
+            ],
+        }
+    }
 }
 
 /// 一个职业挂件的配方。只有一个颜色与一张 6×6 图形——**没有任何一个种族
@@ -342,6 +396,22 @@ pub(crate) fn race_bodies() -> &'static [(&'static str, BodySpec)] {
     &RACE_BODIES
 }
 
+/// 徽记底板色——[`crate::composite`] 拿它当这个职业的**签名色**，衣服
+/// 与工具的配色都从它推。十三块底板两两不同（本模块的
+/// `十三个职业挂件两两之间每一个像素都不同` 钉住），因此十三件衣服也
+/// 两两不同，不需要再手工挑十三个颜色、也就不会手滑挑重。
+pub(crate) fn badge_plate(spec: BadgeSpec) -> (u8, u8, u8) {
+    spec.plate
+}
+
+/// 沿明度轴压暗，供 [`crate::composite`] 从签名色推衣服色用。
+///
+/// 与本模块给裤子/鞋用的是同一个函数，理由也一样：同一套明暗关系只写
+/// 一份。
+pub(crate) fn darken_color(color: (u8, u8, u8), delta: f32) -> (u8, u8, u8) {
+    darken(color, delta)
+}
+
 /// 本体全部职业挂件的 `(条目名, 配方)`，顺序固定。
 pub(crate) fn profession_badges() -> &'static [(&'static str, BadgeSpec)] {
     &PROFESSION_BADGES
@@ -380,42 +450,19 @@ pub(crate) fn draw_named(image: &mut RgbaImage, name: &str, rect: EntryRect) -> 
 /// ——这正是 ADR 0021 说的「抽象的正当理由是有算法要共用」：加一个种族
 /// 是加八个数字，不是抄一遍这几十行。
 pub(crate) fn draw_race_body(image: &mut RgbaImage, rect: EntryRect, spec: BodySpec) {
-    let shoulder_x0 = NPC_WIDTH / 2 - spec.shoulder_w / 2;
-    let head_x0 = NPC_WIDTH / 2 - HEAD_W / 2;
-    let torso_top = spec.head_top + HEAD_H;
+    let geometry = spec.geometry();
+    let shoulder_x0 = geometry.torso.0;
+    let head_x0 = geometry.head.0;
     let boot = darken(spec.cloth, 0.16);
     let trouser = darken(spec.cloth, 0.08);
 
     // 躯干（衣服）。
-    paint_patch(
-        image,
-        rect,
-        shoulder_x0,
-        torso_top,
-        spec.shoulder_w,
-        spec.leg_top - torso_top,
-        spec.cloth,
-    );
+    let (tx, ty, tw, th) = geometry.torso;
+    paint_patch(image, rect, tx, ty, tw, th, spec.cloth);
     // 双臂（露出的皮肤），贴着躯干两侧各 2 像素宽。
-    let arm_h = spec.leg_top - torso_top - 1;
-    paint_patch(
-        image,
-        rect,
-        shoulder_x0 - 2,
-        torso_top + 1,
-        2,
-        arm_h,
-        spec.skin,
-    );
-    paint_patch(
-        image,
-        rect,
-        shoulder_x0 + spec.shoulder_w,
-        torso_top + 1,
-        2,
-        arm_h,
-        spec.skin,
-    );
+    for (ax, ay, aw, ah) in geometry.arms {
+        paint_patch(image, rect, ax, ay, aw, ah, spec.skin);
+    }
     // 双腿：躯干两侧各一条，宽 3。
     let leg_h = FEET_TOP - spec.leg_top;
     paint_patch(image, rect, shoulder_x0, spec.leg_top, 3, leg_h, trouser);

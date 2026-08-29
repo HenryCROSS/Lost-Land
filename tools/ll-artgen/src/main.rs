@@ -44,6 +44,7 @@
 
 mod building;
 mod color;
+mod composite;
 mod furniture;
 mod npc;
 mod sprite;
@@ -112,11 +113,18 @@ struct AtlasJson {
 ///
 /// 因此新增内容走这一条平行清单：画布尺寸仍是 96×144，`placeholder.json`
 /// 一个字没动，五个 demo 的基准物理上不可能受影响。
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct LooseOnlyEntry {
     /// 图集条目名（也是文件名的主干）。必须与内容 id 的本地名逐字一致，
     /// 见 [`npc`] 模块文档。
-    name: &'static str,
+    ///
+    /// # 为什么是 `String` 而不是 `&'static str`
+    ///
+    /// 合成图那 52 条名字是「种族表 × 职业表」的笛卡尔积**现拼**的
+    /// （见 [`composite::composite_names`]），写不成字面量。把它们
+    /// `Box::leak` 成 `&'static str` 只是为了保住这个字段的类型，
+    /// 换来的是一份看不见的泄漏和一句解释不清的注释。
+    name: String,
     /// 画布宽。
     width: u32,
     /// 画布高。
@@ -209,14 +217,14 @@ fn loose_only_entries() -> Vec<LooseOnlyEntry> {
         .map(|(name, _)| *name)
         .chain(npc::profession_badges().iter().map(|(name, _)| *name))
         .map(|name| LooseOnlyEntry {
-            name,
+            name: name.to_string(),
             width: npc::NPC_WIDTH,
             height: npc::NPC_HEIGHT,
             pivot: STANDING_PIVOT,
             footprint: STANDING_FOOTPRINT,
         });
     let terrains = CLIMATE_TERRAIN_NAMES.iter().map(|name| LooseOnlyEntry {
-        name,
+        name: name.to_string(),
         width: TERRAIN_TILE_SIZE,
         height: TERRAIN_TILE_SIZE,
         pivot: TERRAIN_PIVOT,
@@ -224,14 +232,14 @@ fn loose_only_entries() -> Vec<LooseOnlyEntry> {
     });
     let ui = [
         LooseOnlyEntry {
-            name: DAYNIGHT_POINTER_NAME,
+            name: DAYNIGHT_POINTER_NAME.to_string(),
             width: ui::DAYNIGHT_POINTER_WIDTH,
             height: ui::DAYNIGHT_POINTER_HEIGHT,
             pivot: TERRAIN_PIVOT,
             footprint: TERRAIN_FOOTPRINT,
         },
         LooseOnlyEntry {
-            name: MAP_PLAYER_MARKER_NAME,
+            name: MAP_PLAYER_MARKER_NAME.to_string(),
             width: ui::MAP_PLAYER_MARKER_SIZE,
             height: ui::MAP_PLAYER_MARKER_SIZE,
             pivot: TERRAIN_PIVOT,
@@ -243,13 +251,30 @@ fn loose_only_entries() -> Vec<LooseOnlyEntry> {
     // 与地面物品堆/通用家具记号那几张完全一档，见
     // `assets/atlas/placeholder.json` 里 `forge` 那一条。
     let furnitures = FURNITURE_NAMES.iter().map(|name| LooseOnlyEntry {
-        name,
+        name: name.to_string(),
         width: TERRAIN_TILE_SIZE,
         height: TERRAIN_TILE_SIZE,
         pivot: TERRAIN_PIVOT,
         footprint: TERRAIN_FOOTPRINT,
     });
-    npcs.chain(terrains).chain(ui).chain(furnitures).collect()
+    // 「种族 × 职业」合成图（52 张）。锚点/占地与种族身子那一档完全
+    // 一致——回退链在这三段之间来回换图时画面不能跳，见
+    // `composite` 模块文档。**追加在最末尾**，前面每一条的文件名与
+    // 清单次序因此逐字不变。
+    let composites = composite::composite_names()
+        .into_iter()
+        .map(|name| LooseOnlyEntry {
+            name,
+            width: composite::COMPOSITE_WIDTH,
+            height: composite::COMPOSITE_HEIGHT,
+            pivot: STANDING_PIVOT,
+            footprint: STANDING_FOOTPRINT,
+        });
+    npcs.chain(terrains)
+        .chain(ui)
+        .chain(furnitures)
+        .chain(composites)
+        .collect()
 }
 
 /// 松散贴图清单里的一条条目——`ll_mod::asset_vfs` 期望的形状，
@@ -450,7 +475,7 @@ fn generate_loose_sprites(atlas: &AtlasJson, sprites_dir: &Path) -> usize {
             height: entry.height,
         };
         let mut image = RgbaImage::new(entry.width, entry.height);
-        draw_entry(&mut image, entry.name, local_rect);
+        draw_entry(&mut image, &entry.name, local_rect);
 
         let file_name = format!("{}.png", entry.name);
         let png_path = sprites_dir.join(&file_name);
@@ -601,6 +626,11 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         // `placeholder.json` 里，只走 `loose_only_entries()` 那条平行
         // 清单，因此不会撑大遗留共享画布，见 `LooseOnlyEntry` 文档。
         _ if npc::draw_named(image, name, rect) => {}
+        // 「种族 × 职业」合成图（`composite.rs`）。放在种族/职业那一支
+        // **之后**：合成图的条目名里嵌着 `_lostland_` 这一段，与种族、
+        // 职业的本地名不可能撞上，两支的次序其实无关，写在后面只是因为
+        // 它在回退链上也排在后面（先有分层，才有合成）。
+        _ if composite::draw_named(image, name, rect) => {}
         _ => match terrain::terrain_spec(name).or_else(|| ui::ui_spec(name)) {
             Some(spec) => terrain::decorate_terrain_tile(image, rect, spec),
             None => {
