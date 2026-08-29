@@ -110,13 +110,30 @@ pub struct ItemStack {
     /// 唯一会写出非 `Unowned` 值的路径是拾取即归属（`ll_sim::resolve`
     /// 的 `pick_up_owner`）。
     ///
-    /// # 存档：`#[serde(default)]`，`CURRENT_SCHEMA_VERSION` 不动
+    /// # 存档：`#[serde(default)]` **不够**，`CURRENT_SCHEMA_VERSION`
+    /// # 必须往上加一
     ///
-    /// 改的是存档**主体**而不是头部，走
-    /// [`crate::entity::Agent::gender`] 那条既有先例（见
-    /// `crate::state` 的「缺性别键的老存档读得回来且取默认值」测试）：
-    /// 老存档里根本没有这个键，读回来取 `Unowned`——正是那些物品当时
-    /// 真实的语义。
+    /// 这一段刻意写得长，因为它纠正了本仓库里流传过两批的一个错误认识。
+    ///
+    /// `#[serde(default)]` 在这里**保留**，它对**自描述格式**（本模块
+    /// 与 `crate::state` 的 `serde_json` 往返测试、将来任何 JSON/RON
+    /// 形式的调试导出）确实生效：缺这个键就取 `Unowned`，正是那些物品
+    /// 当时真实的语义。
+    ///
+    /// **但真正的存档主体走的是 `postcard`**
+    /// （`ll_content::save_file::save_to_file`），那是一个
+    /// non-self-describing 的二进制格式——字节流里没有字段名，反序列化
+    /// 按声明顺序逐字段吃字节，`serde` 根本没有机会报告「这个字段
+    /// 缺席」。**`#[serde(default)]` 在那条路径上是空操作。** 实测过：
+    /// 老结构体三字段编码、新结构体四字段带 `#[serde(default)]` 解码，
+    /// 直接报 "Hit the end of buffer"。
+    ///
+    /// 因此本批次同时把
+    /// `ll_content::save_file::CURRENT_SCHEMA_VERSION`（本 crate 不能
+    /// 引用 `ll-content`，依赖方向不允许，这里只能点名、不能用
+    /// intra-doc link 指过去）从 2 加到 3——老存档从此被**明确拒绝**，而不是被当前的字段布局静默
+    /// 误解析。完整论证连同「`Agent::gender`/`GroundItemStack::placed`
+    /// 两条既有先例错在哪里」，写在那个常量自己的文档里。
     ///
     /// # `remap` 不需要碰它
     ///
@@ -1154,9 +1171,12 @@ mod tests {
 
     #[test]
     fn 缺归属键的老存档读得回来且取无主() {
-        // 存档兼容：本批改的是存档**主体**而不是头部，走 serde(default)，
-        // CURRENT_SCHEMA_VERSION 不动（先例：Agent::gender）。老存档里
-        // 的物品早于「归属」这个概念，磁盘上根本没有这个键。
+        // 本条守的是**自描述格式**那条路（JSON/RON 调试导出、本 crate
+        // 的 serde_json 往返测试），不是真正的存档主体——主体走 postcard，
+        // `serde(default)` 在那里是空操作，见 ItemStack::owner 字段文档
+        // 「存档」一节。真正的存档兼容由 CURRENT_SCHEMA_VERSION 2 → 3
+        // 负责，端到端证据在 crates/ll-game/tests/save_slots.rs 的
+        // 「上一版 schema 的老存档被明确拒绝而不是静默误解析」。
         //
         // 刻意**手工把键删掉**再反序列化，而不是「序列化再读回来」——
         // 后者写出的 JSON 里带着 owner 键，根本测不到缺键那条路。

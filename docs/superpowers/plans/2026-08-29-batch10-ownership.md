@@ -426,11 +426,41 @@ gender/equipment 两次同类记录同一形式。
 6. 不落地 `stolen_marker`（〇节）。
 7. `Intent::Loot`/`resolve_loot`/`InteractTarget::Container` 三处保留但
    **今天零生产者**（2.3）——备选是一并删掉，等箱子那批重写。
+8. **`CURRENT_SCHEMA_VERSION` 2 → 3，不配迁移函数**（见下「五之三」）
+   ——所有者手上那份真实存档从此被明确拒绝。备选是写一份迁移函数
+   （需要一份「形状变了」的 `ItemStackV2` 镜像类型），但那与所有者
+   已经裁定过的「老存档去掉就好了」相反。
+
+## 五之三、存档：`serde(default)` 在真正的存档主体上是**空操作**
+
+计划 1.2 写的「走 `Agent.gender` 那条既有先例，`CURRENT_SCHEMA_VERSION`
+不动」**是错的**，落地时才查出来，如实记录：
+
+- 存档主体走 **`postcard`**（`ll_content::save_file::save_to_file`），
+  那是 non-self-describing 的二进制格式——字节流里没有字段名，反序列化
+  按声明顺序逐字段吃字节。`#[serde(default)]` 需要格式能报告「这个字段
+  缺席」，`postcard` 报告不了。
+- **实测**（独立最小探针）：老结构体三字段编码 → 新结构体四字段带
+  `#[serde(default)]` 解码 → `Err("Hit the end of buffer, expected more
+  data")`。新字段若不在末尾会更糟：后续字段的字节被错位读成合法值。
+- **`Agent::gender`（2026-08-28）与 `GroundItemStack::placed` 两条既有
+  先例因此都是错的**：它们的「老存档读得回来」测试走的是
+  `serde_json::Value`（自描述格式，`serde(default)` 在那里确实生效），
+  **测不到真正的 `postcard` 主体那条路**。上一次真的动过
+  `CURRENT_SCHEMA_VERSION` 是 2026-08-23（`2661a27`）。
+
+本批次的处理：**`CURRENT_SCHEMA_VERSION` 2 → 3，不配迁移函数**，与
+所有者已经裁定过的「老存档去掉就好了」一致（项目尚未发布，全部存档都是
+开发期产物，`crate::migrations` 模块文档记录了这次裁定）。效果是老存档
+走 `LoadError::SchemaMigrationGap` 这条**明确拒绝**的路径，而不是被当前
+的字段布局静默误解析。端到端证据：`crates/ll-game/tests/save_slots.rs`
+的「上一版schema的老存档被明确拒绝而不是静默误解析」，反例（把常量改回
+2）实跑当场变红。
 
 ## 七、实测数字（改后）
 
 - `bash scripts/ci/run_all.sh` → **exit 0**
-- 测试数：改前 **2714** → 改后 **2736**（+22）
+- 测试数：改前 **2714** → 改后 **2737**（+23）
 - 一格的交互列表长度 = 这一格上**不同 `def` 的个数**（+ 门那一行），
   不是地面堆数——`interact_entries` 对 `Loose` 按 `def` 去重这条规则
   平铺之前就存在，本批次一个字没改。实测证据：
