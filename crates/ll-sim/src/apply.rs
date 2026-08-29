@@ -431,6 +431,17 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 placed: *placed,
             });
         }
+        Effect::TransferOwnership {
+            holder,
+            def,
+            durability,
+            new_owner,
+        } => {
+            // 机械执行：查找 + 写字段，一句判断都不做（约束 C1）。
+            // 「这次转移合不合法」属 resolve，见 Effect::TransferOwnership
+            // 文档「给未来三个调用方的一条硬前置」一节。
+            world.transfer_item_ownership(*holder, *def, *durability, *new_owner);
+        }
         Effect::MergeIntoInventory {
             actor,
             replaced,

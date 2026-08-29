@@ -2238,6 +2238,19 @@ fn within_reach(world: &WorldState, origin: TorusPos, target: TorusPos) -> bool 
 /// 摞在一格上时，「捡的是哪一堆」与「移除的是哪一堆」由同一个规则回答，
 /// 因此不会出现「读了 A、删了 B」的错配。
 ///
+/// # 拾取即归属；盗窃判定的挂载点不在本函数里
+///
+/// 所有者裁定「默认不归属于谁然后谁拿了就变成谁的」——本函数因此在
+/// 产出 [`Effect::MergeIntoInventory`] 之前把这一堆的
+/// [`owner`](ll_world::item::ItemStack::owner) 改写成
+/// [`crate::ownership::pick_up_owner`] 算出来的值。
+///
+/// **判定住在那个函数里，不在这里**：`resolve.rs` 已近 8000 行（全仓
+/// 最严重的既有行数违规），而归属判定将来只会长大（盗窃、目击、赃物
+/// 标记）。设计文档二节 2.1 指定的挂载点是「`resolve_pick_up`」，
+/// [`crate::ownership::pick_up_owner`] 就是它抽出来的那一半，判定需要的
+/// 全部输入都在它的参数里——犯罪批次改那一个函数即可，不必再进本文件。
+///
 /// # 为什么合并结果由这里算好，`apply` 只做替换
 ///
 /// 见 [`Effect::MergeIntoInventory`] 文档「为什么合并结果由 `resolve`
@@ -2265,7 +2278,13 @@ fn resolve_pick_up(
     else {
         return Vec::new();
     };
-    let picked = ground.stack;
+    // 拾取即归属（归属批次，所有者原话「谁拿了就变成谁的」）——判定
+    // 本身住在 crate::ownership::pick_up_owner，那里也是盗窃判定将来的
+    // 挂载点，见该函数文档。这里只做机械的字段改写。
+    let picked = ItemStack {
+        owner: crate::ownership::pick_up_owner(world, agent, actor, ground.stack),
+        ..ground.stack
+    };
 
     vec![
         Effect::RemoveGroundItem {

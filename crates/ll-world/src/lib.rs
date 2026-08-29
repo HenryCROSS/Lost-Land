@@ -43,6 +43,7 @@ pub mod mod_state;
 pub mod naming;
 pub mod noise;
 pub mod overview;
+pub mod ownership;
 pub mod resource;
 pub mod settlement;
 pub mod sight_residency;

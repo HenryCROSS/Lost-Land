@@ -300,6 +300,27 @@ use ll_world::zone::ZoneLayout;
 // 都验过**，不是「跑一遍没红就当没事」。真正被这一批重冻的是
 // `crates/ll-sim/tests/replay.rs` 的 `EXPECTED_REPLAY_DIGEST`（那条的
 // 世界里有两个真实实体），见那里的四步记录。
+//
+// # 归属批次（`ItemStack::owner`，2026-08-29）：**本条没有重冻**，
+//   而且这次是**用反例证的**，不是「跑一遍没红就当没事」
+//
+// `write_item_stack` 新增混入了 `stack.owner`（判别式 + 载荷）。本条
+// 的世界由 `WorldState::new(..)` 生成之后一个实体都没有 spawn、
+// `ground_items` 恒空——`write_item_stack` 的三个调用点
+// （`agent.inventory`/`agent.equipment`/`self.ground_items` 三个循环
+// 体）因此一次都不会执行。
+//
+// **实测的反例**（四步重冻第 ① 步的替代形式）：把
+// `write_item_stack` 函数体开头临时插一行
+// `hasher.write_u64(0xDEAD_BEEF)`——也就是让**每一个**物品堆都往哈希
+// 里灌一个显眼的常量——本文件九条**仍然全绿**，摘要逐位不变。这证明
+// 的比「新字段没影响」更强：**本条测试的整个世界里根本不存在任何一个
+// `ItemStack`**，因此它对 `ItemStack` 的任何改动都天然免疫。随后把那
+// 一行删掉恢复原状。
+//
+// 同批的尸体平铺（`ll_sim::resolve::append_corpse_drop`）同样够不到
+// 本条：那条路径住在 `ll-sim`，是本 crate 的下游，且本条世界里没有
+// 任何实体会死。
 const EXPECTED_WORLD_DIGEST: u64 = 10_180_278_885_427_934_050;
 
 // # 等级与经验系统落地批次：本次没有重冻，如实记录为什么不可能变

@@ -116,6 +116,7 @@ pub mod exposure;
 pub mod formula;
 pub mod intent;
 pub mod item;
+pub mod ownership;
 pub mod quest;
 pub mod resolve;
 pub mod resource_pool;

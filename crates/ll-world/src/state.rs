@@ -48,6 +48,7 @@ use crate::interior::{Interior, InteriorTable};
 use crate::item::{GroundItemStack, ItemStack};
 use crate::mod_state::ModStateValue;
 use crate::noise::TileableNoise;
+use crate::ownership::Owner;
 use crate::space::{Space, SpaceId};
 use crate::surface_store::SurfaceStore;
 use crate::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
@@ -1421,6 +1422,30 @@ fn write_item_stack(hasher: &mut StateHasher, stack: &ItemStack) {
         }
         None => hasher.write_u64(0),
     }
+    // 归属（归属批次新增，`ItemStack::owner` 字段文档）——ADR 0022
+    // 「世界状态哈希必须完整」。它真的分岔未来：`can_merge` 现在读它，
+    // 拾取即归属会改写它，将来的盗窃/合法转移都以它为判据。缺席
+    // hash() 就是又一次「新字段只加了，没人测过它是否被正确覆盖」。
+    //
+    // 判别式与载荷分开写：只写载荷会让 `Npc(7)` 与 `Faction(7)` 撞成
+    // 同一个哈希，而那正是「张三的东西」与「张三所在据点的公产」两回
+    // 事（见 `ll_world::ownership::Owner` 的同名测试）。
+    match stack.owner {
+        Owner::Unowned => hasher.write_u64(0),
+        Owner::Player => hasher.write_u64(1),
+        Owner::Npc(id) => {
+            hasher.write_u64(2);
+            hasher.write_u64(u64::from(id.get()));
+        }
+        Owner::Faction(id) => {
+            hasher.write_u64(3);
+            hasher.write_u64(u64::from(id.get()));
+        }
+        Owner::Shop(entity) => {
+            hasher.write_u64(4);
+            hasher.write_u64(entity.as_u64());
+        }
+    }
 }
 
 /// 把一个 `Option<ContentIndex>` 混入哈希——[`WorldState::hash`] 的
@@ -2032,6 +2057,123 @@ mod tests {
             world.hash(),
             before,
             "改了一个实体的性别，世界摘要却一位没动——性别没有进哈希"
+        );
+    }
+
+    #[test]
+    fn 改一堆地面物品的归属会改变世界摘要() {
+        // ADR 0022：世界状态哈希必须完整。owner 现在被 can_merge 读、
+        // 被拾取即归属改写，缺席 hash() 就测不出这些结算跑偏。
+        // Arrange
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        world.ground_items.push(GroundItemStack {
+            pos,
+            stack: ItemStack::new(ContentIndex::default(), 1),
+            dropped_at: Tick(0),
+            contents: Vec::new(),
+            placed: false,
+        });
+        let before = world.hash();
+
+        // Act
+        world.ground_items[0].stack.owner = Owner::Player;
+
+        // Assert
+        assert_ne!(
+            world.hash(),
+            before,
+            "改了一堆地面物品的归属，世界摘要却一位没动——归属没有进哈希"
+        );
+    }
+
+    #[test]
+    fn 同一个裸编号的两种归属摘要不同() {
+        // 判别式必须与载荷一起进哈希：只写载荷会让 Npc(7) 与
+        // Faction(7) 撞成同一个摘要，而那是「张三的东西」与「张三所在
+        // 据点的公产」两回事。
+        // Arrange
+        let mut counter = 7u32;
+        let id = ll_core::ident::WorldId::next(&mut counter);
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        world.ground_items.push(GroundItemStack {
+            pos,
+            stack: ItemStack {
+                owner: Owner::Npc(id),
+                ..ItemStack::new(ContentIndex::default(), 1)
+            },
+            dropped_at: Tick(0),
+            contents: Vec::new(),
+            placed: false,
+        });
+        let as_npc = world.hash();
+
+        // Act
+        world.ground_items[0].stack.owner = Owner::Faction(id);
+
+        // Assert
+        assert_ne!(world.hash(), as_npc);
+    }
+
+    #[test]
+    fn 转移归属改写指定那一堆并返回真() {
+        // Effect::TransferOwnership 的 apply 侧（设计文档四节）。今天
+        // 没有任何 resolve 会产出这个效果——直接调 WorldState 方法，与
+        // 其余「effect 已落地但产出者未落地」的既有测试同一手法。
+        // Arrange
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let mut agent = sample_agent(pos, zone);
+        let sword = ContentIndex::default();
+        agent.inventory = vec![ItemStack::with_durability(sword, 1, 100)];
+        let holder = world.actors.spawn(agent);
+
+        // Act
+        let changed = world.transfer_item_ownership(holder, sword, Some(100), Owner::Player);
+
+        // Assert
+        assert!(changed, "背包里有这一堆，转移必须真的改到它");
+        assert_eq!(
+            world
+                .actors
+                .get(holder)
+                .expect("刚 spawn 的实体必然在")
+                .inventory[0]
+                .owner,
+            Owner::Player
+        );
+    }
+
+    #[test]
+    fn 背包里没有那一堆时转移归属什么都不做() {
+        // 「找不到」在正常路径上不可能发生（resolve 刚读到过它），真
+        // 发生了说明同一批效果里有更早的一条把它移走了——不许 panic，
+        // 也不许改到别的堆。
+        // Arrange
+        let mut world = test_world();
+        let pos = world.size.wrap(5, 5);
+        let (zone, _) = world.terrain.layout().tile_to_zone(pos);
+        let mut agent = sample_agent(pos, zone);
+        let sword = ContentIndex::default();
+        agent.inventory = vec![ItemStack::with_durability(sword, 1, 100)];
+        let holder = world.actors.spawn(agent);
+
+        // Act：耐久对不上——定位三元组的第三项。
+        let changed = world.transfer_item_ownership(holder, sword, Some(37), Owner::Player);
+
+        // Assert
+        assert!(!changed);
+        assert_eq!(
+            world
+                .actors
+                .get(holder)
+                .expect("刚 spawn 的实体必然在")
+                .inventory[0]
+                .owner,
+            Owner::Unowned,
+            "定位不上时不许改到别的堆"
         );
     }
 
