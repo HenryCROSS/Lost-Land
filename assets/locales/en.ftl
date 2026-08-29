@@ -78,7 +78,7 @@ trait-cooking_mastery-display_name = Cooking Mastery
 # docs for why this is one parameterised message rather than one key per race.
 item-corpse-display_name = { $species } Corpse
 
-# Base-game items (mods/lostland/items.json5, thirty entries) —
+# Base-game items (mods/lostland/items.json5, thirty-six entries) —
 # ll-mod ItemAttrs::display_name_key.
 item-iron_ingot-display_name = Iron Ingot
 item-iron_rivet-display_name = Iron Rivet
@@ -110,8 +110,17 @@ item-tarnished_signet-display_name = Tarnished Signet
 item-unmarked_phial-display_name = Unmarked Phial
 item-sealed_relic_box-display_name = Sealed Relic Box
 item-forge-display_name = Forge
+# Furniture batch two — the six pieces that fill dwellings, workshops,
+# warehouses and taverns. See mods/lostland/items.json5 for the table of
+# which piece belongs in which building type.
+item-oak_chair-display_name = Oak Chair
+item-oak_table-display_name = Oak Long Table
+item-fur_bed-display_name = Fur Bedding
+item-oak_bookshelf-display_name = Oak Bookshelf
+item-oak_barrel-display_name = Oak Barrel
+item-iron_bound_chest-display_name = Iron-Bound Chest
 
-# Base-game recipes (mods/lostland/crafting.json5, ten entries) —
+# Base-game recipes (mods/lostland/crafting.json5, twelve entries) —
 # ll-mod RecipeAttrs::display_name_key.
 recipe-roast_meat-display_name = Roast Meat
 recipe-herb_roast-display_name = Herb-Crusted Roast
@@ -123,6 +132,8 @@ recipe-iron_greaves-display_name = Forge Iron Greaves
 recipe-linen_shirt-display_name = Sew Linen Shirt
 recipe-fur_mantle-display_name = Sew Fur Mantle
 recipe-forge-display_name = Build a Forge
+recipe-fur_bed-display_name = Lay Out Fur Bedding
+recipe-iron_bound_chest-display_name = Forge Iron-Bound Chest
 
 save-mod-missing = This save requires mod { $namespace } (version { $required }), which is not loaded in the current session.
 save-mod-version-mismatch = This save requires mod { $namespace } version { $required }, but the loaded version is { $current }.
