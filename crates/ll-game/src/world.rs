@@ -512,23 +512,56 @@ fn spawn_player(
     // 第一次行动时 `TurnEngine::perform` 把 `world.clock` 倒拨回午夜
     // ——时钟不但没有前进，反而先开局倒退了 8 小时。
     let next_action_at = world.clock;
-    // 玩家种族固定是 `content.race_ids.human`——选种族是 UI（P7）的
-    // 工作，不在本批次范围。但 `build_player_agent` 本身按任意
-    // `race: ContentIndex` 工作，不假设调用方只会传人类：见该函数文档。
+    // 玩家的种族与职业在这条路径上取本体默认值（人类 + 战士）——
+    // 选种族/性别/职业是角色创建界面的工作，那条路径不经过本函数，
+    // 而是自己调 [`build_player_agent`] 并把玩家选的三项传进去，见
+    // `crate::chargen` 模块文档「接缝」一节。
+    //
+    // 本函数因此**不是**「玩家怎么被造出来」的唯一入口，只是「没有
+    // 界面时的默认那一份」。
+    //
+    // # 默认职业为什么是 `class_ids.warrior`，不是「第一个已注册的职业」
+    //
+    // 「第一个已注册的」依赖注册顺序，而注册顺序是 **mod 装载顺序**的
+    // 函数——第三方 mod 装在本体前面就会让本体玩家的默认职业变成别人
+    // 的职业。这是交接文档第五节第 13 条（`ContentIndex` 的裸数值在
+    // 任何跨边界场景下都不可作为判据）的同型问题。
+    //
+    // 也不写字符串字面量 `"lostland:warrior"`：引擎里不按内容 id 分支
+    // 是本仓库既有纪律（见 `crate::surface_draw::npc_draws` 文档
+    // 「引擎里没有任何一处按种族/职业 id 分支」一节）。`BaseClassIds`
+    // 正是为「Rust 侧确实需要按名字引用某条内容」准备的那个句柄，
+    // 缺了它装载期就整批失败，不会静默退化。
     world.actors.spawn(build_player_agent(
         pos,
         zone,
         content,
         content.race_ids.human,
+        content.class_ids.warrior,
         next_action_at,
     ))
 }
 
-/// 按给定种族构造一份厚层玩家快照——`spawn_player` 实际的生成逻辑
-/// 参数化在这里，而不是把 `content.race_ids.human` 焊死进字段字面量：
-/// 换一个 `race` 就能生成一个属性/出生物品都不同的角色，测试直接用
-/// 这一点验证「种族修正真的接线了」，不需要等待选种族 UI 落地才能
-/// 验收这条链路。
+/// 按给定种族与职业构造一份厚层玩家快照——`spawn_player` 实际的生成
+/// 逻辑参数化在这里，而不是把 `content.race_ids.human` 焊死进字段
+/// 字面量：换一个 `race` 就能生成一个属性/出生物品都不同的角色，测试
+/// 直接用这一点验证「种族修正真的接线了」，不需要等待选种族 UI 落地
+/// 才能验收这条链路。
+///
+/// # 为什么是公开的（`pub`）
+///
+/// 它是**「一个角色进入世界」这件事唯一的构造器**，而这件事有两个
+/// 调用方，第二个还没写：
+///
+/// 1. 新游戏（[`spawn_player`]，本模块内部）；
+/// 2. 角色创建界面（`crate::chargen`）——玩家选完种族/性别/职业之后
+///    造出来的就是这一份快照。
+///
+/// 还有一个已经被所有者裁定、但属于存档批次的第三个调用方：**肉鸽
+/// 模式死亡之后重新入世**（「死亡后变成一般模式，可以再创建角色然后
+/// 选择在某个地方出生」）。那条路径要做的与前两条完全一样——拿一份
+/// 角色选择 + 一个选好的格子造一个新 `Agent`——把它留在私有作用域里
+/// 只会逼那一批把同一段字段字面量抄第三份。
 ///
 /// # 属性修正：一次性烘焙，见 `ll_sim::character` 模块文档
 ///
@@ -538,11 +571,12 @@ fn spawn_player(
 /// 挂钩（烘焙语义，见 `knowledge/design/race-system.md`「二、属性修正」
 /// 一节）。未注册的种族索引（正常运行不该发生）退化成裸基线，不是
 /// panic——见该函数文档「查不到就是查不到」纪律。
-fn build_player_agent(
+pub fn build_player_agent(
     pos: TorusPos,
     zone: ll_world::space::ZoneCoord,
     content: &LoadedContent,
     race: ll_core::ident::ContentIndex,
+    profession: ll_core::ident::ContentIndex,
     next_action_at: Tick,
 ) -> Agent {
     // 出生携带物品（NPC 生命周期批次：NPC 带物品 → 死亡掉落 → 尸体 →
@@ -595,10 +629,29 @@ fn build_player_agent(
         // build_npc_agent`）会挂，两者不对称是有意的。
         affiliations: Vec::new(),
         wallet: 0,
-        // 本体目前没有注册任何职业内容（职业只经 mod 脚本
-        // `register-class` 注册，见 `ll_mod::class` 模块文档）——占位索引
-        // 是诚实的「尚无职业」表达，不是缺陷。
-        profession: ll_core::ident::ContentIndex::default(),
+        // 职业由调用方给出，**不再是占位索引**。
+        //
+        // # 这句注释此前写的是什么，为什么它双重过期
+        //
+        // 原文是「本体目前没有注册任何职业内容（职业只经 mod 脚本
+        // `register-class` 注册）——占位索引是诚实的『尚无职业』表达，
+        // 不是缺陷」。两句都不再成立：
+        //
+        // 1. **脚本系统已被整体拆除**（ADR 0028），`register-class`
+        //    这条注册通道今天根本不存在，职业改从内容数据文件装载；
+        // 2. **本体有 13 个职业**（`mods/lostland/classes.json5`），
+        //    其中三个还被 `ll_mod::class::resolve_base_classes` 解析进
+        //    了 `content.class_ids`。
+        //
+        // 于是那个「诚实的表达」变成了一个真实缺陷：
+        // `ContentIndex::default()` 是 0 号索引（`lostland:placeholder_race`
+        // 占着），`class_table.is_defined(0)` 为假，因此
+        // `class_table.get(玩家职业)` 恒为 `None`——角色面板的主属性
+        // 倾向那一行永远不出现，`crate::surface_draw` 的职业挂件对玩家
+        // 永远查不到图。玩家不是「看起来没有职业」，是**真的没有职业**。
+        //
+        // 注释按规格 §13「文档与代码不一致即视为缺陷」重写而不是删掉。
+        profession,
         goals: Vec::new(),
         race,
         mana: Agent::STARTING_MANA,
@@ -1427,7 +1480,14 @@ mod tests {
         let (pos, zone) = spawn_pos_and_zone(&content);
 
         // Act
-        let dwarf_agent = build_player_agent(pos, zone, &content, content.race_ids.dwarf, Tick(0));
+        let dwarf_agent = build_player_agent(
+            pos,
+            zone,
+            &content,
+            content.race_ids.dwarf,
+            content.class_ids.warrior,
+            Tick(0),
+        );
 
         // Assert
         assert_eq!(
@@ -1463,7 +1523,14 @@ mod tests {
             (content.race_ids.elf, 4),
         ] {
             // Act
-            let agent = build_player_agent(pos, zone, &content, race, Tick(0));
+            let agent = build_player_agent(
+                pos,
+                zone,
+                &content,
+                race,
+                content.class_ids.warrior,
+                Tick(0),
+            );
 
             // Assert：进的是背包，不是装备栏——出生装备是「行囊里有
             // 什么」，玩家自己决定穿哪件（见 races.json5「语义」一节）。
@@ -1492,6 +1559,46 @@ mod tests {
     }
 
     #[test]
+    fn 新游戏生成的玩家真的有一个查得到定义的职业() {
+        // 交接文档待裁定第 13 条（「玩家永远是钢蓝色英雄图，哪怕他是
+        // 铁匠」）的真正根因：他根本没有职业。`spawn_player` 此前把
+        // `profession` 写死成 `ContentIndex::default()`（0 号占位索引），
+        // 于是 `class_table.get(..)` 恒为 `None`。
+        //
+        // 断言刻意**不比裸整数**（交接文档第五节第 13 条：`ContentIndex`
+        // 的裸数值在跨边界场景下不可作判据），而是问「这个索引在职业表
+        // 里查得到定义吗」——那才是缺陷的实质。
+        // Arrange
+        let content = test_content();
+
+        // Act
+        let game_world = build_new_world(
+            &content,
+            GenParams {
+                seed: 20260828,
+                ..GenParams::default()
+            },
+        )
+        .expect("默认布局满足全部前置条件");
+        let player = game_world
+            .world
+            .actors
+            .get(game_world.player)
+            .expect("玩家刚生成，必然存在");
+
+        // Assert
+        assert!(
+            content.class_table.is_defined(player.profession),
+            "新游戏生成的玩家职业索引在职业表里查不到定义——他没有职业"
+        );
+        assert_ne!(
+            player.profession,
+            ll_core::ident::ContentIndex::default(),
+            "玩家职业仍然是占位索引"
+        );
+    }
+
+    #[test]
     fn 修正为零的人类种族生成的角色属性等于基线() {
         // 反例：证明上一条测试不是「无论如何都加点什么」——零修正的
         // 人类种族，生成结果的 stats 必须原样等于基线。
@@ -1500,7 +1607,14 @@ mod tests {
         let (pos, zone) = spawn_pos_and_zone(&content);
 
         // Act
-        let human_agent = build_player_agent(pos, zone, &content, content.race_ids.human, Tick(0));
+        let human_agent = build_player_agent(
+            pos,
+            zone,
+            &content,
+            content.race_ids.human,
+            content.class_ids.warrior,
+            Tick(0),
+        );
 
         // Assert
         assert_eq!(human_agent.stats, BaseStats::BASELINE);
@@ -1530,7 +1644,14 @@ mod tests {
         let (pos, zone) = spawn_pos_and_zone(&content);
 
         // Act
-        let half_elf_agent = build_player_agent(pos, zone, &content, half_elf, Tick(0));
+        let half_elf_agent = build_player_agent(
+            pos,
+            zone,
+            &content,
+            half_elf,
+            content.class_ids.warrior,
+            Tick(0),
+        );
 
         // Assert
         assert_eq!(
