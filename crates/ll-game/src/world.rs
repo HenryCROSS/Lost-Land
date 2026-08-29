@@ -689,6 +689,84 @@ pub fn build_player_agent(
     }
 }
 
+/// 把玩家换成一份按**玩家选定的种族/性别/职业**造出来的新快照。
+///
+/// # 为什么是「换掉」而不是「改三个字段」
+///
+/// 种族决定的不只是 `Agent::race`：属性修正要重新烘焙
+/// （`ll_sim::character::bake_race_stat_modifiers`），出生装备要按新种族
+/// 重新取（`ll_mod::race::starting_inventory`）。改三个字段等于把
+/// [`build_player_agent`] 里那两步的知识抄第二份，而这两份迟早会漂——
+/// 加一条「种族还决定 X」的规则时，只有一份会被更新。
+///
+/// 换掉的是**内容**不是身份：`EntityId` 一位不变，
+/// `WorldState::player_entity`、时间轴、以及任何持有玩家 id 的地方都
+/// 不需要跟着改。
+///
+/// # `None` 的含义
+///
+/// `race`/`profession` 取 `None` 表示「界面上那份清单是空的」（内容里
+/// 一个种族/职业都没有）。这时**保留世界生成时那一份默认**，不写入一个
+/// 占位索引——ADR 0015「查不到就是查不到」，而默认那一份至少是查得到
+/// 定义的。
+///
+/// # 谁会调用它
+///
+/// 今天只有角色创建流程（`ll_game::app::Demo::generate_draft_world`）。
+/// 所有者已裁定的**肉鸽死亡后重新入世**走的是同一件事——「拿一份角色
+/// 选择造一个新玩家」——那一批直接调本函数即可，不必再抄一遍。
+pub fn apply_character_choice(
+    game_world: &mut GameWorld,
+    content: &LoadedContent,
+    race: Option<ll_core::ident::ContentIndex>,
+    profession: Option<ll_core::ident::ContentIndex>,
+    gender: ll_world::entity::Gender,
+) {
+    let Some(current) = game_world.world.actors.get(game_world.player) else {
+        tracing::warn!("世界里查不到玩家实体，角色选择无处可落");
+        return;
+    };
+    let pos = current.pos;
+    let next_action_at = current.next_action_at;
+    let race = race.unwrap_or(current.race);
+    let profession = profession.unwrap_or(current.profession);
+    let (zone, _) = game_world.world.terrain.layout().tile_to_zone(pos);
+    let agent = build_player_agent(pos, zone, content, race, profession, gender, next_action_at);
+    let Some(slot) = game_world.world.actors.get_mut(game_world.player) else {
+        return;
+    };
+    *slot = agent;
+}
+
+/// 把玩家挪到 `pos`，并同步他所在的区块。
+///
+/// # 为什么必须同时改 `current_space`
+///
+/// `Agent::pos` 是世界瓦片坐标，`Agent::current_space` 里那个
+/// `ZoneCoord` 是「他在哪个区块」。两者是同一件事的两种表示，只改一个
+/// 会让玩家的坐标与他自称所在的区块对不上——而流式加载、FOV 常驻判定
+/// 都读后者（`ll_world::sight_residency` 那条已经让游戏崩过一次的路径）。
+///
+/// 只在**玩家还没入世**时被调用（选出生地确认那一帧）。真正玩起来之后
+/// 移动走的是 `ll_sim` 的 `resolve`/`apply`，那条路是唯一写入口（约束
+/// C1），本函数不是它的旁路。
+pub fn move_player_to(game_world: &mut GameWorld, pos: TorusPos) {
+    let layout = *game_world.world.terrain.layout();
+    let (zone, _) = layout.tile_to_zone(pos);
+    let Some(agent) = game_world.world.actors.get_mut(game_world.player) else {
+        tracing::warn!("世界里查不到玩家实体，出生地无处可落");
+        return;
+    };
+    agent.pos = pos;
+    agent.current_space = match agent.current_space {
+        Space::Surface { profile, .. } => Space::surface(zone, profile),
+        // 玩家在选出生地那一刻恒在地表（`build_new_world` 只造地表玩家）。
+        // 真出现别的空间就原样保留：那说明有一条本函数不知道的路径，
+        // 猜一个 zone 写进去只会把问题埋得更深。
+        other => other,
+    };
+}
+
 /// 物化 NPC 时，从据点锚点向外最多搜多少格找可站立的位置。
 ///
 /// 取 26 = [`ll_world::settlement::MAX_FOOTPRINT_RADIUS`] 的量级：一座

@@ -17,6 +17,7 @@
 
 pub mod animation;
 pub mod app;
+pub mod chargen;
 pub mod content;
 pub mod layout;
 pub mod menu_screen;
@@ -24,11 +25,13 @@ pub mod player_action;
 pub mod save;
 pub mod session;
 pub mod settings_view;
+pub mod spawn_pick;
 pub mod surface_draw;
 #[cfg(test)]
 mod test_support;
 pub mod title_screen;
 pub mod world;
+pub mod world_setup;
 pub mod worldgen;
 
 use std::path::{Path, PathBuf};

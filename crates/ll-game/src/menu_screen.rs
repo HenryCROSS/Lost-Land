@@ -80,6 +80,30 @@ pub enum ScreenState {
     Title,
     /// 游戏内菜单（继续游戏 / 设置 / 退出），底下有一局正在进行的世界。
     Menu,
+    /// 角色创建（种族 / 性别 / 职业），见 [`crate::chargen`]。
+    ///
+    /// **它底下也没有世界**——与 [`ScreenState::Title`] 同一种状态，
+    /// 只是玩家已经按下了「开始游戏」。
+    CharacterCreation {
+        /// 光标落在第几行。
+        cursor: usize,
+    },
+    /// 世界（历史）生成配置，见 [`crate::world_setup`]。底下同样没有世界。
+    WorldSetup {
+        /// 光标落在第几行。
+        cursor: usize,
+    },
+    /// 在世界地图上选出生地，见 [`crate::spawn_pick`]。
+    ///
+    /// **这一块屏底下有世界**——它必须先被生成出来，否则没有地图可看
+    /// （见 `crate::spawn_pick` 模块文档「顺序」一节）。它因此是唯一
+    /// 一块「世界已经存在，但玩家还没有真正入世」的屏：世界不推进
+    /// （`Demo::advance` 因 `screen.is_some()` 早退），退出时也**不存档**
+    /// （见 `crate::app::Demo::save_on_exit`）。
+    ///
+    /// 光标（选中哪一格）不在这里而在 `crate::chargen::NewGameDraft` 上：
+    /// 它是一对 `(u32, u32)`，与这块屏的「哪一行」不是同一种东西。
+    SpawnPick,
     /// 设置界面。
     Settings {
         /// 光标落在第几行，见模块文档「焦点导航」一节。
@@ -218,6 +242,16 @@ pub enum ScreenNotice {
     /// 首页按了「读取存档」，存档存在但读不回来（损坏，或因缺失内容
     /// 降级为只读）。**留在首页**，不悄悄退回新游戏。
     LoadFailed,
+    /// 世界配置屏上的这次调整会让形态参数越界，**整体被丢弃**——判据
+    /// 是 `ll_world::terrain_shape::TerrainShape::validate`，UI 层不抄
+    /// 第二份，见 `crate::world_setup` 模块文档。
+    InvalidTerrainShape,
+    /// 选出生地屏：玩家点的那个区块里没有任何可站立的格子（全是水/
+    /// 全是山），请重选。
+    ///
+    /// **刻意不自动换到邻近区块**，理由见
+    /// `crate::spawn_pick::pick_spawn_in_zone` 文档「退化策略」一节。
+    NoLandInZone,
 }
 
 impl ScreenNotice {
@@ -231,6 +265,8 @@ impl ScreenNotice {
             ScreenNotice::SaveFailed => "screen-settings-save-failed",
             ScreenNotice::NoSave => "screen-title-no-save",
             ScreenNotice::LoadFailed => "screen-title-load-failed",
+            ScreenNotice::InvalidTerrainShape => "screen-worldsetup-invalid",
+            ScreenNotice::NoLandInZone => "screen-spawnpick-no-land",
         }
     }
 
@@ -243,7 +279,9 @@ impl ScreenNotice {
             ScreenNotice::Saved
             | ScreenNotice::SaveFailed
             | ScreenNotice::NoSave
-            | ScreenNotice::LoadFailed => None,
+            | ScreenNotice::LoadFailed
+            | ScreenNotice::InvalidTerrainShape
+            | ScreenNotice::NoLandInZone => None,
         };
         match action {
             Some(action) => {
@@ -345,6 +383,35 @@ pub fn screen_data<'a>(
             cursor: focus,
             empty_key: "screen-menu-empty",
             hint_key: "screen-menu-hint",
+            notice,
+        },
+        ScreenState::CharacterCreation { .. } => ScreenData {
+            title_key: "screen-chargen-title",
+            rows,
+            cursor: focus,
+            empty_key: "screen-chargen-empty",
+            hint_key: "screen-chargen-hint",
+            notice,
+        },
+        ScreenState::WorldSetup { .. } => ScreenData {
+            title_key: "screen-worldsetup-title",
+            rows,
+            cursor: focus,
+            empty_key: "screen-chargen-empty",
+            hint_key: "screen-worldsetup-hint",
+            notice,
+        },
+        // 选出生地屏**不走这块居中面板**：它的「屏」就是整张世界地图，
+        // 一块盖在正中央的面板会挡住玩家要点的地方。调用方
+        // （`crate::app::draw_screen`）为这个变体整块跳过，本函数因此
+        // 永远不该收到它——但仍然给一个诚实的退化产出而不是 panic，
+        // 与本模块其余降级路径一致。
+        ScreenState::SpawnPick => ScreenData {
+            title_key: "screen-spawnpick-title",
+            rows,
+            cursor: focus,
+            empty_key: "screen-chargen-empty",
+            hint_key: "screen-spawnpick-hint",
             notice,
         },
         ScreenState::Settings { capturing, .. } => ScreenData {

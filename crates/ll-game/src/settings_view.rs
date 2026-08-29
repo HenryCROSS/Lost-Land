@@ -65,7 +65,12 @@ pub fn language_display_name(catalog: &Catalog, tag: &str) -> String {
 /// 把一行排成「标签：取值」——分隔符走 i18n 模板（`screen-settings-row`）
 /// 而不是在代码里拼一个冒号：中文用全角「：」、英文用半角「: 」，写死
 /// 任何一种都会在另一种语言下看起来是错的。
-fn labeled_row(catalog: &Catalog, language: &str, label_key: &str, value: &str) -> String {
+pub(crate) fn labeled_row(
+    catalog: &Catalog,
+    language: &str,
+    label_key: &str,
+    value: &str,
+) -> String {
     let mut args = FluentArgs::new();
     args.set("label", catalog.resolve(language, label_key));
     args.set("value", value.to_string());

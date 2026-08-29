@@ -468,6 +468,22 @@ pub struct Demo {
     /// 本帧被设置界面改过、尚未交给平台层的键位表，见
     /// [`AppHandler::take_rebound_keys`]。
     pending_bindings: Option<KeyBindings>,
+    /// 一局**尚未开始**的游戏：角色创建 / 世界配置 / 选出生地这三块屏
+    /// 期间的全部状态，见 [`crate::chargen::NewGameDraft`]。
+    ///
+    /// # 为什么它与 [`Demo::session`] 是两个字段，而不是一个
+    ///
+    /// 两者表达的是**先后**而不是二选一：草稿在前（玩家还在挑），
+    /// `Session` 在后（玩家进世界了）。选出生地那一刻草稿里已经有一局
+    /// 真实的 `GameWorld`（不生成就没有地图可看），但那时**还不该有**
+    /// `Session`——`Session::begin` 的语义是「世界准备好了，开始玩」，
+    /// 而玩家还没决定在哪出生。
+    ///
+    /// 这样分还顺带保住了一条既有不变式：`session` 为 `Some` ⇔ 玩家真
+    /// 的在世界里，因此 `save_on_exit`、`advance`、`draw_hud` 三处的
+    /// 判据一个字都不用改——选点期间退出游戏不会写出一份「玩家还没选
+    /// 好出生地」的存档。
+    new_game_draft: Option<crate::chargen::NewGameDraft>,
 }
 
 impl Demo {
@@ -601,6 +617,7 @@ impl Demo {
             screen_focus: WidgetStateTable::new(),
             screen_notice: None,
             pending_bindings: None,
+            new_game_draft: None,
         }
     }
 
@@ -849,6 +866,38 @@ impl Demo {
                 (update.outcome, update.next)
             }
             ScreenState::Menu => update_menu(&mut self.screen_focus, input),
+            ScreenState::CharacterCreation { cursor } => {
+                let mut cursor = cursor;
+                let update = self.update_character_creation(&mut cursor, input);
+                if update.notice.is_some() {
+                    self.screen_notice = update.notice;
+                }
+                let next = update
+                    .next
+                    .unwrap_or(ScreenState::CharacterCreation { cursor });
+                (ScreenOutcome::Idle, Some(next))
+            }
+            ScreenState::WorldSetup { cursor } => {
+                let mut cursor = cursor;
+                let update = self.update_world_setup(&mut cursor, input);
+                if update.notice.is_some() {
+                    self.screen_notice = update.notice;
+                }
+                let next = update.next.unwrap_or(ScreenState::WorldSetup { cursor });
+                (ScreenOutcome::Idle, Some(next))
+            }
+            ScreenState::SpawnPick => {
+                let update = self.update_spawn_pick(input);
+                if update.notice.is_some() {
+                    self.screen_notice = update.notice;
+                }
+                if update.entered {
+                    // 玩家确认了出生地、世界已经开始跑：整块屏关掉。
+                    (ScreenOutcome::Close, None)
+                } else {
+                    (ScreenOutcome::Idle, update.next)
+                }
+            }
             ScreenState::Settings { .. } => {
                 let mut state = state;
                 let mut ctx = SettingsContext {
@@ -916,10 +965,223 @@ impl Demo {
     /// 职业 → 世界配置 → 选重生点），走完之后再落到
     /// [`Session::begin`]——那个函数是「世界准备好了，开始玩」这件事
     /// 唯一的入口，四条路径共用，见本批次计划文档第七节。
-    fn start_new_game(&mut self, input: &mut InputState) {
-        tracing::info!("首页：开始新游戏");
-        let world = crate::new_game(&self.content, &self.config.new_game);
+    fn start_new_game(&mut self, _input: &mut InputState) {
+        tracing::info!("首页：开始新游戏，进入角色创建");
+        // **本批次把这里从「直接建世界进游戏」换成了「先进一串屏」**
+        // ——批次 6 计划文档第七节写明的那个衔接点。三块屏走完之后，
+        // 终点仍然是 `Session::begin`（见 [`Demo::enter_world`]）。
+        self.new_game_draft = Some(crate::chargen::NewGameDraft::new(
+            &self.content,
+            &self.config.new_game,
+        ));
+        self.screen = Some(ScreenState::CharacterCreation { cursor: 0 });
+        self.screen_notice = None;
+    }
+
+    /// 角色创建屏这一帧。
+    fn update_character_creation(
+        &mut self,
+        cursor: &mut usize,
+        input: &InputState,
+    ) -> crate::chargen::ChargenUpdate {
+        let Some(draft) = self.new_game_draft.as_mut() else {
+            // 停在这块屏上却没有草稿，是一种不该发生的状态。退回首页而
+            // 不是 panic：一块屏的状态错乱不该拖垮整局游戏，与本模块
+            // 其余降级路径同一条纪律。
+            tracing::warn!("角色创建屏没有草稿，退回首页");
+            return crate::chargen::ChargenUpdate::going(ScreenState::Title);
+        };
+        let roster = draft.roster.clone();
+        crate::chargen::update_character_creation(cursor, &mut draft.choice, &roster, input)
+    }
+
+    /// 世界配置屏这一帧；按下「生成世界」时真的把世界建出来。
+    fn update_world_setup(
+        &mut self,
+        cursor: &mut usize,
+        input: &InputState,
+    ) -> crate::chargen::ChargenUpdate {
+        let Some(draft) = self.new_game_draft.as_mut() else {
+            tracing::warn!("世界配置屏没有草稿，退回首页");
+            return crate::chargen::ChargenUpdate::going(ScreenState::Title);
+        };
+        let mut preset = draft.preset;
+        let update =
+            crate::world_setup::update_world_setup(cursor, &mut draft.shape, &mut preset, input);
+        draft.preset = preset;
+        if update.next != Some(ScreenState::SpawnPick) {
+            return update;
+        }
+        // 「生成世界」：真的建一局出来，随后进选出生地屏。**世界必须先
+        // 存在**，否则没有地图可看（见 `crate::spawn_pick` 模块文档
+        // 「顺序」一节）。
+        self.generate_draft_world()
+    }
+
+    /// 按草稿的参数建一局世界，并把选出生地屏需要的东西准备好。
+    ///
+    /// 建不出来时（区块布局非法等，正常运行不该发生）**留在世界配置屏**
+    /// 并记一条错误日志，不 panic——与首页读档失败留在首页同一条纪律。
+    fn generate_draft_world(&mut self) -> crate::chargen::ChargenUpdate {
+        let Some(draft) = self.new_game_draft.as_mut() else {
+            return crate::chargen::ChargenUpdate::going(ScreenState::Title);
+        };
+        let params = draft.gen_params();
+        let mut world = match crate::world::build_new_world(&self.content, params) {
+            Ok(world) => world,
+            Err(error) => {
+                tracing::error!(?error, "按玩家选的参数建世界失败，留在世界配置屏");
+                return crate::chargen::ChargenUpdate::idle();
+            }
+        };
+        // 玩家选的三项在这里落到那个真实的玩家实体上——`build_new_world`
+        // 造出来的是「没有界面时的默认那一份」（人类 + 战士 + 默认性别），
+        // 见 `crate::world::spawn_player` 文档。
+        crate::world::apply_character_choice(
+            &mut world,
+            &self.content,
+            draft.choice.race(&draft.roster),
+            draft.choice.profession(&draft.roster),
+            draft.choice.gender(),
+        );
+        let layout = *world.world.terrain.layout();
+        let field = ll_world::overview::generate_continent_field(
+            &layout,
+            &world.noise,
+            &world.params,
+            &self.content.terrain_ids,
+        );
+        let player_pos = world
+            .world
+            .actors
+            .get(world.player)
+            .map(|agent| agent.pos)
+            .unwrap_or_else(|| layout.tile_size().wrap(0, 0));
+        let view = ll_world::world_map::WorldMapView::centered_on_tile(&field, player_pos);
+        // 全图可见：一份「全部已探索」的记忆，**只活在草稿里**，绝不
+        // 写进 `WorldState`，见 `ExplorationMemory::fully_explored` 文档。
+        let exploration = ll_world::exploration::ExplorationMemory::fully_explored(&layout);
+        let slice = ll_world::world_map::world_map_slice(&field, &layout, &exploration, &view);
+        // 光标初值对准默认出生点那一格——玩家一进屏就看见「引擎本来会把
+        // 我放在哪」，再决定要不要换个地方。
+        draft.cursor_cell = slice.cell_of_tile(player_pos).unwrap_or((0, 0));
+        draft.exploration = Some(exploration);
+        draft.world = Some(world);
+        draft.continent_field = Some(field);
+        draft.map_view = Some(view);
+        crate::chargen::ChargenUpdate::going(ScreenState::SpawnPick)
+    }
+
+    /// 选出生地屏这一帧。
+    fn update_spawn_pick(&mut self, input: &mut InputState) -> crate::spawn_pick::SpawnPickUpdate {
+        let Some(slice) = self.spawn_pick_slice() else {
+            tracing::warn!("选出生地屏没有世界，退回世界配置屏");
+            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::WorldSetup {
+                cursor: 0,
+            });
+        };
+        let clicked = self.clicked_spawn_zone(&slice, input);
+        let Some(draft) = self.new_game_draft.as_mut() else {
+            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::Title);
+        };
+        let layout = *draft
+            .world
+            .as_ref()
+            .expect("spawn_pick_slice 已经确认世界存在")
+            .world
+            .terrain
+            .layout();
+        let decision = crate::spawn_pick::update_spawn_pick(
+            &mut draft.cursor_cell,
+            &slice,
+            &layout,
+            input,
+            clicked,
+        );
+        let Some(zone) = decision.confirmed else {
+            return decision.update;
+        };
+        let world = draft.world.as_ref().expect("上面已经确认世界存在");
+        // 玩家确认了一个区块：在那个区块内确定性地挑一格陆地。
+        let picked = crate::spawn_pick::pick_spawn_in_zone(
+            &layout,
+            &world.noise,
+            &world.params,
+            &self.content.terrain_ids,
+            &self.content.terrain_table,
+            zone,
+        );
+        let Some(pos) = picked else {
+            // 退化策略：**提示玩家重选，不自动换邻近区块**，理由见
+            // `crate::spawn_pick::pick_spawn_in_zone` 文档「退化策略」一节。
+            return crate::spawn_pick::SpawnPickUpdate::saying(ScreenNotice::NoLandInZone);
+        };
+        self.enter_world_at(pos, input)
+    }
+
+    /// 选出生地屏这一帧的地图切片；世界还没建出来时返回 `None`。
+    ///
+    /// **传的是草稿里那份「全部已探索」的记忆**，`explored` 因此恒为真，
+    /// 同一份呈现代码自然变成全图可见——没有 `reveal_all` 标志，见
+    /// `ll_world::exploration::ExplorationMemory::fully_explored` 文档。
+    fn spawn_pick_slice(&self) -> Option<ll_world::world_map::WorldMapSlice> {
+        let draft = self.new_game_draft.as_ref()?;
+        let world = draft.world.as_ref()?;
+        Some(ll_world::world_map::world_map_slice(
+            draft.continent_field.as_ref()?,
+            world.world.terrain.layout(),
+            draft.exploration.as_ref()?,
+            draft.map_view.as_ref()?,
+        ))
+    }
+
+    /// 玩家这一帧有没有用鼠标点中某个区块。
+    ///
+    /// 换算走 `ll_ui::hud::world_map::world_map_zone_at_pixel`（上上批
+    /// 备好的那个函数，带 4 条属性测试）。它要面板外框矩形与皮肤——
+    /// **两样都传与画图时逐字相同的那一份**，由它自己按边框粗细内缩，
+    /// 因此玩家点的地方与选中的区块不可能系统性偏移一个边框宽度。
+    fn clicked_spawn_zone(
+        &self,
+        slice: &ll_world::world_map::WorldMapSlice,
+        input: &InputState,
+    ) -> Option<ll_world::space::ZoneCoord> {
+        if !input.was_mouse_just_pressed(ll_platform::input::MouseButton::Left) {
+            return None;
+        }
+        let resources = self.resources.as_ref()?;
+        let pixel = input.cursor_position()?;
+        let draft = self.new_game_draft.as_ref()?;
+        let layout = *draft.world.as_ref()?.world.terrain.layout();
+        let rect = ll_ui::hud::render::world_map_rect(
+            resources.window_size.width as f32,
+            resources.window_size.height as f32,
+        );
+        ll_ui::hud::world_map::world_map_zone_at_pixel(slice, &layout, rect, &resources.skin, pixel)
+    }
+
+    /// 把玩家挪到选中的那一格，然后真正进世界。
+    fn enter_world_at(
+        &mut self,
+        pos: ll_core::torus::TorusPos,
+        input: &mut InputState,
+    ) -> crate::spawn_pick::SpawnPickUpdate {
+        let Some(draft) = self.new_game_draft.take() else {
+            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::Title);
+        };
+        let Some(mut world) = draft.world else {
+            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::Title);
+        };
+        crate::world::move_player_to(&mut world, pos);
+        tracing::info!(
+            spawn_x = pos.x(),
+            spawn_y = pos.y(),
+            "玩家选定出生地，进入世界"
+        );
+        // 终点仍然是 `Session::begin`——四条进世界的路径共用它，见
+        // `crate::session::Session::begin` 文档。
         self.enter_world(world, input);
+        crate::spawn_pick::SpawnPickUpdate::entered()
     }
 
     /// 首页的「读取存档」：把磁盘上那份存档读回来并进去。
@@ -1203,6 +1465,9 @@ fn draw_hud(
     // 玩家菜单与反馈行，见 `Demo::menu`/`Demo::feedback` 字段文档。
     menu: PlayerMenu,
     feedback: Option<Feedback>,
+    // 选出生地屏那一刻的两处改写，`None` 表示正常游玩，见
+    // [`SpawnPickHud`]。
+    spawn_pick: Option<SpawnPickHud<'_>>,
 ) {
     let Some(agent) = game_world.world.actors.get(game_world.player) else {
         tracing::warn!("玩家实体查不到，本帧跳过 HUD 绘制");
@@ -1298,7 +1563,13 @@ fn draw_hud(
         world_map_slice_data = world_map_slice(
             continent_field,
             &layout,
-            &game_world.world.exploration,
+            // 选出生地屏传一份「全部已探索」的记忆进来，`explored` 恒为
+            // 真，**同一份呈现代码**自然变成全图可见——没有 `reveal_all`
+            // 标志，见 `ll_world::exploration::ExplorationMemory::fully_explored`
+            // 与 `ll_ui::hud::world_map::site_marker_quads` 两处文档。
+            spawn_pick
+                .map(|overlay| overlay.exploration)
+                .unwrap_or(&game_world.world.exploration),
             world_map_view,
         );
         // 玩家位置标记——纯呈现，由玩家坐标现算，不进 `WorldState`、
@@ -1310,7 +1581,14 @@ fn draw_hud(
         // 不区分玩家当前在哪个 `Space`：世界地图画的是大陆平面，玩家
         // 下到地下时他在大陆上的**横向**位置没变，标记仍然应该指在那
         // 里——藏起来只会让玩家在地下彻底失去方位感。
-        let player = world_map_slice_data.cell_of_tile(agent.pos);
+        // 正常游玩时这是「我在哪」；**选出生地屏上它是「我将在哪」**
+        // ——同一个橙色标记，同一段呈现代码。这不是把字段挪作他用：
+        // `WorldMapPanelData::player` 的语义本来就是「玩家落在哪一格」，
+        // 而选点期间玩家落在哪，答案就是光标那一格。
+        let player = match spawn_pick {
+            Some(overlay) => Some(overlay.cursor_cell),
+            None => world_map_slice_data.cell_of_tile(agent.pos),
+        };
 
         // 据点标记——所有者要「显示多点细节，好让玩家决定选哪里」，而
         // 「哪里有村子、哪里只剩废墟」大概率是那个决定里最重的一条。
@@ -1423,6 +1701,11 @@ fn draw_screen(
     focus: &WidgetStateTable,
     notice: Option<ScreenNotice>,
     save_exists: bool,
+    // 角色创建/世界配置两块屏的行文字要读草稿（玩家选了什么）与内容
+    // （种族/职业的展示名）——两样都只有 `Demo` 够得着，因此从这里
+    // 传进来，而不是让排版函数各自去找。
+    content: &LoadedContent,
+    draft: Option<&crate::chargen::NewGameDraft>,
     resources: &mut GpuResources,
     view: &wgpu::TextureView,
 ) {
@@ -1438,6 +1721,33 @@ fn draw_screen(
             title_focus_index(focus),
         ),
         ScreenState::Menu => (menu_row_texts(catalog, language), menu_focus_index(focus)),
+        ScreenState::CharacterCreation { cursor } => (
+            match draft {
+                Some(draft) => crate::chargen::character_row_texts(
+                    &draft.choice,
+                    &draft.roster,
+                    content,
+                    catalog,
+                    language,
+                ),
+                // 没有草稿却停在这块屏上是不该发生的状态；画一块空面板
+                // 比 panic 好，且下一帧 `update_screen` 会把玩家退回首页。
+                None => Vec::new(),
+            },
+            cursor,
+        ),
+        ScreenState::WorldSetup { cursor } => (
+            match draft {
+                Some(draft) => crate::world_setup::world_setup_row_texts(
+                    &draft.shape,
+                    draft.preset,
+                    catalog,
+                    language,
+                ),
+                None => Vec::new(),
+            },
+            cursor,
+        ),
         ScreenState::Settings {
             cursor, capturing, ..
         } => {
@@ -1447,6 +1757,11 @@ fn draw_screen(
                 cursor,
             )
         }
+        // 选出生地屏**不画这块居中面板**：它的「屏」就是整张世界地图，
+        // 一块盖在正中央的面板会挡住玩家要点的地方。它的画面全部由
+        // `draw_hud` 那一侧产出（地图 + 光标标记 + 提示行），见
+        // `crate::spawn_pick` 模块文档。
+        ScreenState::SpawnPick => return,
     };
     let notice_text = notice.map(|notice| notice.resolve(catalog, language));
     let data = screen_data(state, &rows, cursor, notice_text.as_deref());
@@ -1465,6 +1780,26 @@ fn draw_screen(
         language,
         &resources.skin,
     );
+}
+
+/// 选出生地屏对世界地图 HUD 的两处改写。
+///
+/// # 为什么是「改写既有 HUD」而不是另画一块屏
+///
+/// 玩家在选点屏上看到的地图，与他进游戏之后按 M 看到的**必须是同一张**
+/// ——同一套配色、同一个缩放档位表、同一份据点标记。另写一份呈现代码
+/// 等于把「世界地图长什么样」变成两个真相源，两边一旦漂移，玩家会在
+/// 「我按着地图选的地方」和「我进去之后看到的地方」之间对不上号。
+///
+/// 因此这里只改**两样东西**：探索记忆（换成全部已探索）与玩家标记落在
+/// 哪一格（换成光标那一格）。其余一行不动。
+#[derive(Clone, Copy)]
+pub struct SpawnPickHud<'a> {
+    /// 一份「全部已探索」的记忆，见
+    /// `ll_world::exploration::ExplorationMemory::fully_explored`。
+    pub exploration: &'a ll_world::exploration::ExplorationMemory,
+    /// 选点光标落在地图的哪一格（列, 行）。
+    pub cursor_cell: (u32, u32),
 }
 
 fn render_surface(
@@ -1834,6 +2169,44 @@ impl AppHandler for Demo {
                     &session.world_map_view,
                     self.menu,
                     self.feedback,
+                    // 正常游玩：不改写任何东西。
+                    None,
+                );
+            } else if self.screen == Some(ScreenState::SpawnPick)
+                && let Some(draft) = self.new_game_draft.as_ref()
+                && let (Some(world), Some(field), Some(view_of_map), Some(exploration)) = (
+                    draft.world.as_ref(),
+                    draft.continent_field.as_ref(),
+                    draft.map_view.as_ref(),
+                    draft.exploration.as_ref(),
+                )
+            {
+                // 选出生地屏：世界已经建好但玩家还没入世（`session` 仍是
+                // `None`），HUD 因此从**草稿**里取世界、地形场与视野。
+                // 世界地图强制打开——这块屏的全部画面就是那张地图。
+                //
+                // 四个 `as_ref` 写在一个 `let` 里而不是各自 `expect`：
+                // 它们四个同生同死（`generate_draft_world` 一次性全部
+                // 赋值），一条模式匹配比四条各自会 panic 的断言诚实。
+                draw_hud(
+                    world,
+                    &self.content,
+                    &self.catalog,
+                    &self.config.language,
+                    resources,
+                    &view,
+                    &mut self.hud_anim,
+                    frame,
+                    fps,
+                    true,
+                    field,
+                    view_of_map,
+                    PlayerMenu::default(),
+                    None,
+                    Some(SpawnPickHud {
+                        exploration,
+                        cursor_cell: draft.cursor_cell,
+                    }),
                 );
             }
             draw_screen(
@@ -1843,6 +2216,8 @@ impl AppHandler for Demo {
                 &self.screen_focus,
                 self.screen_notice,
                 self.save_exists,
+                &self.content,
+                self.new_game_draft.as_ref(),
                 resources,
                 &view,
             );
@@ -2029,12 +2404,19 @@ mod tests {
     }
 
     #[test]
-    fn 首页选开始游戏之后世界建出来且屏关掉() {
-        // 首页 →「开始游戏」→ 真的在世界里，这是本批次的主干路径。
+    fn 首页选开始游戏之后进的是角色创建屏而不是世界() {
+        // **这条断言被角色创建批次改写过一次，如实记录。**
         //
-        // 反例验证（已实跑）：把 `Demo::start_new_game` 里的
-        // `self.enter_world(world, input)` 换成只 `close_screen`
-        // （不建 session），本条立刻变红。
+        // 批次 6（首页）落地时它断言的是「开始游戏 → 世界建出来 → 屏关
+        // 掉」，因为那一批的「开始游戏」就是直接建新档进世界，且那一批的
+        // 计划文档第七节写明：`ScreenOutcome::StartNewGame` 那个 match 臂
+        // 就是下一批的衔接点。本批次正是接在那里——「开始游戏」现在先进
+        // 一串屏（角色创建 → 世界配置 → 选出生地），终点仍然是
+        // `Session::begin`。
+        //
+        // 断言因此跟着改：改的是**行为**，不是把一条碍事的断言删掉。
+        // 「走完三块屏真的能进世界」由 `crates/ll-game/tests/chargen.rs`
+        // 端到端钉住。
         // Arrange：焦点落在第一项「开始游戏」。
         let mut demo = test_demo_at_title();
         走一帧(&mut demo, 0, &[GameKey::Down]);
@@ -2043,12 +2425,20 @@ mod tests {
         走一帧(&mut demo, 1, &[GameKey::Confirm]);
 
         // Assert
-        assert!(demo.session.is_some(), "世界必须已经建出来");
-        assert_eq!(demo.screen, None, "首页那一层必须弹掉");
+        assert!(
+            demo.session.is_none(),
+            "玩家还没选完角色，这一刻不该有世界在跑"
+        );
+        assert_eq!(
+            demo.screen,
+            Some(ScreenState::CharacterCreation { cursor: 0 }),
+            "「开始游戏」该进角色创建屏"
+        );
+        assert!(demo.new_game_draft.is_some(), "草稿必须建出来");
         assert_eq!(
             demo.input_context(),
-            InputContext::Gameplay,
-            "进世界之后必须回到游戏内那张键位表"
+            InputContext::Menu,
+            "还在模态屏里，键位表不该切回游戏内那张"
         );
     }
 

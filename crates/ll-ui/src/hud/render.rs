@@ -211,7 +211,17 @@ fn translate_panel(mut panel: PanelContent, dy: f32) -> PanelContent {
     panel
 }
 
-fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
+/// 世界地图面板的**外框**矩形：屏幕四周各留一成边距，居中一块。
+///
+/// # 为什么是公开的
+///
+/// 「玩家点的像素落在哪个区块」这条反算
+/// （[`crate::hud::world_map::world_map_zone_at_pixel`]）要的正是这一份
+/// 矩形——**必须与画图时用的那一份逐字相同**，否则玩家点的地方与选中
+/// 的区块会系统性偏移一个边距，而这种偏差小到肉眼看不出来，只会表现为
+/// 「偶尔点到隔壁那格」。开放它，是为了让选出生地屏（`ll_game::app`）
+/// 拿到同一个真相源，而不是在那边照着这里的公式再抄一份。
+pub fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
     let margin_x = screen_width * WORLD_MAP_MARGIN_FRACTION;
     let margin_y = screen_height * WORLD_MAP_MARGIN_FRACTION;
     Rect::new(

@@ -425,3 +425,31 @@ screen-title-settings = 设置
 screen-title-quit = 离开
 screen-title-no-save = 还没有可以读取的存档
 screen-title-load-failed = 存档读不回来，什么都没有改变
+
+# 角色创建 / 世界配置 / 选出生地三块屏（ll_game::chargen / world_setup /
+# spawn_pick）——所有者裁定的开局三步：「设置种族，性别，职业。然后设置
+# 历史生成的配置。接着就是选择地图上在哪重生。」
+screen-chargen-title = 创建角色
+screen-chargen-empty = （没有条目）
+screen-chargen-hint = 上下移动，左右改选项，确认键选择，Esc 返回
+screen-chargen-race = 种族
+screen-chargen-gender = 性别
+screen-chargen-profession = 职业
+screen-chargen-next = 下一步：世界配置
+screen-chargen-back = 返回首页
+
+screen-worldsetup-title = 世界配置
+screen-worldsetup-hint = 上下移动，左右调整，确认键生成世界，Esc 返回
+screen-worldsetup-preset = 地形预设
+screen-worldsetup-sea-level = 海平面（千分比）
+screen-worldsetup-mountain-level = 山地阈值（千分比）
+screen-worldsetup-octaves = 噪声倍频层数
+screen-worldsetup-continent-shrink = 大陆缩减档位
+screen-worldsetup-climate-band-width = 气候带宽（千分比）
+screen-worldsetup-generate = 生成世界
+screen-worldsetup-back = 返回角色创建
+screen-worldsetup-invalid = 这个取值超出合法范围，本次调整已撤销
+
+screen-spawnpick-title = 选择出生地
+screen-spawnpick-hint = 方向键移动光标或用鼠标点击，确认键在此出生，Esc 返回
+screen-spawnpick-no-land = 这个区块里没有能落脚的陆地，换一个地方

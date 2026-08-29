@@ -374,3 +374,32 @@ screen-title-settings = Settings
 screen-title-quit = Quit
 screen-title-no-save = There is no save file to load yet
 screen-title-load-failed = The save file could not be read; nothing was changed
+
+# Character creation / world setup / spawn picking (ll_game::chargen,
+# world_setup, spawn_pick) - the three opening steps the project owner
+# specified: pick race, gender and class; configure world history
+# generation; then choose where on the map to be born.
+screen-chargen-title = Create Character
+screen-chargen-empty = (no entries)
+screen-chargen-hint = Up/Down to move, Left/Right to change, Confirm to select, Esc to go back
+screen-chargen-race = Race
+screen-chargen-gender = Gender
+screen-chargen-profession = Class
+screen-chargen-next = Next: World Setup
+screen-chargen-back = Back to Title
+
+screen-worldsetup-title = World Setup
+screen-worldsetup-hint = Up/Down to move, Left/Right to adjust, Confirm to generate, Esc to go back
+screen-worldsetup-preset = Terrain Preset
+screen-worldsetup-sea-level = Sea Level (per mille)
+screen-worldsetup-mountain-level = Mountain Threshold (per mille)
+screen-worldsetup-octaves = Noise Octaves
+screen-worldsetup-continent-shrink = Continent Shrink
+screen-worldsetup-climate-band-width = Climate Band Width (per mille)
+screen-worldsetup-generate = Generate World
+screen-worldsetup-back = Back to Character Creation
+screen-worldsetup-invalid = That value is out of range; the change was discarded
+
+screen-spawnpick-title = Choose Birthplace
+screen-spawnpick-hint = Arrows or mouse to pick a zone, Confirm to be born there, Esc to go back
+screen-spawnpick-no-land = No walkable land in that zone - pick somewhere else

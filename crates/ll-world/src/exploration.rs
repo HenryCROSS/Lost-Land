@@ -171,6 +171,49 @@ impl ExplorationMemory {
         Self::default()
     }
 
+    /// 建立一份「**全图已探索**」的记忆——每个区块都标上一格。
+    ///
+    /// # 谁要它，为什么不是一个 `reveal_all` 标志
+    ///
+    /// 开局的**选出生地界面**需要全图可见（玩家还没进世界，谈不上
+    /// 「去过哪」）。而 `crate::world_map::world_map_slice` 与
+    /// `crate::overview::continent_map` 都**显式要求调用方传一份**
+    /// `&ExplorationMemory`（见本模块文档「为什么读取接口要求显式传入」
+    /// 一节）——那条设计正是为这种场合准备的：选点界面传一份全部已探索
+    /// 的记忆进去，`explored` 就恒为真，**同一份呈现代码**自然变成全图
+    /// 可见。
+    ///
+    /// 加一个 `reveal_all: bool` 标志会走上相反的路：每一处读探索状态的
+    /// 地方都要多一条分支，而那些分支只有一处调用方会走成 `true`，其余
+    /// 全部永远是 `false`——一条长期存在、几乎不被执行、却必须被每个
+    /// 后来人绕过的死代码。
+    ///
+    /// # 粒度：每个区块一格就够
+    ///
+    /// 两个消费者判「这一片黑不黑」用的都是区块粒度的
+    /// [`Self::zone_has_any_explored`]，一格与全铺的效果完全一样，而
+    /// 全铺要写 `区块数 × zone_span²` 个位（默认世界约一千四百万位）。
+    ///
+    /// # 它绝不该被写进 `WorldState`
+    ///
+    /// 这份记忆只活在选点界面的草稿里。写进世界状态等于永久摧毁战争
+    /// 迷雾——玩家一进游戏整张地图就是亮的。
+    pub fn fully_explored(layout: &ZoneLayout) -> Self {
+        let zone_count = layout.zone_count();
+        let mut memory = Self::new();
+        let span = layout.zone_span() as i32;
+        for y in 0..zone_count.height() as i32 {
+            for x in 0..zone_count.width() as i32 {
+                // 取该区块左上角那一格的世界坐标，交给 `mark_explored`
+                // 自己换算回 (区块, 局部) ——**不手写位图下标**：那会在
+                // 本模块内造出第二处「局部坐标怎么变成位下标」的知识，
+                // 与 `local_bit_index` 分叉的那一天谁都发现不了。
+                memory.mark_explored(layout, layout.tile_size().wrap(x * span, y * span));
+            }
+        }
+        memory
+    }
+
     /// 把 `pos`（世界瓦片坐标）标记为已探索。
     ///
     /// `layout` 决定该坐标落在哪个区块、区块内哪一格——同一份
@@ -248,6 +291,43 @@ impl ExplorationMemory {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn 全图已探索的记忆里每个区块都算去过() {
+        // 选出生地屏靠它变成全图可见（`world_map_slice` 的 `explored`
+        // 判据走的是区块粒度的 `zone_has_any_explored`）。若这个构造器
+        // 退化成一份空记忆，整张选点地图会全黑，玩家无从下手。
+        // Arrange
+        let zone_count = ll_core::torus::TorusSize::new(4, 3).expect("4x3 是合法尺寸");
+        let layout = ZoneLayout::new(48, zone_count).expect("48 满足全部对齐与跨度约束");
+
+        // Act
+        let memory = ExplorationMemory::fully_explored(&layout);
+
+        // Assert：一个区块都不能漏。
+        assert_eq!(
+            memory.visited_zone_count(),
+            (zone_count.width() * zone_count.height()) as usize,
+            "全图已探索的记忆漏掉了区块" // i18n-exempt：测试断言的失败消息
+        );
+        for y in 0..zone_count.height() as i32 {
+            for x in 0..zone_count.width() as i32 {
+                assert!(
+                    memory.zone_has_any_explored(zone_count.wrap(x, y)),
+                    "区块 ({x}, {y}) 没有被标记为已探索" // i18n-exempt：测试断言的失败消息
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 空记忆里没有任何区块算去过() {
+        // 反例：证明上一条不是「无论如何都返回真」。
+        let zone_count = ll_core::torus::TorusSize::new(4, 3).expect("4x3 是合法尺寸");
+        let memory = ExplorationMemory::new();
+        assert_eq!(memory.visited_zone_count(), 0);
+        assert!(!memory.zone_has_any_explored(zone_count.wrap(0, 0)));
+    }
     use super::*;
     use ll_core::torus::TorusSize;
 
