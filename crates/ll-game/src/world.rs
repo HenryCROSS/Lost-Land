@@ -24,6 +24,7 @@ use ll_world::{
     terrain::{BaseTerrainIds, TerrainTable},
 };
 
+use ll_content::mode::SaveMode;
 use ll_content::world_identity::WorldIdentity;
 use ll_mod::mod_set::GenerationModSet;
 
@@ -221,6 +222,28 @@ pub fn build_new_world(
     content: &LoadedContent,
     params: GenParams,
 ) -> Result<GameWorld, WorldError> {
+    // 没有明说模式的调用方一律建**普通档**——这是两个模式里限制更少的
+    // 那一个。肉鸽是玩家必须主动选择的约束，把没选过的人默认丢进「不能
+    // 手动存档、死了就得换角色」远比反过来糟糕；而且模式的转换是单向的
+    // （见 `ll_content::mode::SaveMode`），默认成肉鸽之后玩家想改回来
+    // 只能靠死一次。
+    build_new_world_with_mode(content, params, SaveMode::fresh_free_save())
+}
+
+/// 与 [`build_new_world`] 完全相同，但由调用方指定存档模式——新游戏
+/// 流程（世界配置屏上那一行「存档模式」）走这一条。
+///
+/// # 为什么另开一个函数而不是给 `build_new_world` 加参数
+///
+/// `build_new_world` 在仓库里有五十多个调用点（测试、探针、验收 demo），
+/// 它们一个都不关心存档模式。给它加第五个参数等于让五十多处各写一遍
+/// `SaveMode::fresh_free_save()`，而那串字面量在那些调用点上不携带任何
+/// 信息。真正需要选择模式的只有开局那一条路径。
+pub fn build_new_world_with_mode(
+    content: &LoadedContent,
+    params: GenParams,
+    mode: SaveMode,
+) -> Result<GameWorld, WorldError> {
     let layout = build_zone_layout()?;
     let noise = build_zone_noise(&layout, &params)?;
 
@@ -348,6 +371,7 @@ pub fn build_new_world(
         layout,
         params.shape,
         GenerationModSet::capture(&content.registry, &content.manifests),
+        mode,
     );
 
     Ok(GameWorld {

@@ -492,6 +492,7 @@ mod tests {
             saved_at: 1_755_000_000,
             character_name: "旅人".to_string(),
             current_region: "初始村落".to_string(),
+            save_name: "测试存档".to_string(),
             playtime_ticks: 0,
             generation_mods: Vec::new(),
             current_mods: Vec::new(),
@@ -553,6 +554,7 @@ mod tests {
             *world.terrain.layout(),
             ll_world::generate::TerrainShape::default(),
             ll_mod::mod_set::GenerationModSet(Vec::new()),
+            crate::mode::SaveMode::Permadeath,
         );
         let header = SaveHeader::new(
             &identity,
@@ -565,7 +567,7 @@ mod tests {
                 current_mods: Vec::new(),
                 content_hash_algorithm_version: CONTENT_HASH_ALGORITHM_VERSION,
                 content_index_map: crate::content_index_map::snapshot_for_header(&save_registry),
-                mode: crate::mode::SaveMode::Permadeath,
+                save_name: "测试存档".to_string(),
             },
         );
         save_to_file(&path, &header, &world).expect("写出应当成功");

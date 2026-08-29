@@ -135,25 +135,23 @@ fn bare_agent(pos: TorusPos, zone: ZoneCoord) -> Agent {
 /// 字面量——「某个生成期 mod 后来消失了」这类场景，表达方式变成
 /// 「这个世界当初就是用这一批 mod 生成的」，比原先直接往头部数组里
 /// `push` 更贴近它真正的含义。
-fn sample_identity(generation_mods: GenerationModSet) -> WorldIdentity {
+fn sample_identity(generation_mods: GenerationModSet, mode: SaveMode) -> WorldIdentity {
     let layout = ZoneLayout::new(64, TorusSize::new(1, 1).expect("1×1 是合法尺寸"))
         .expect("64 满足全部对齐约束");
-    WorldIdentity::bind(0, layout, TerrainShape::default(), generation_mods)
+    WorldIdentity::bind(0, layout, TerrainShape::default(), generation_mods, mode)
 }
 
 fn sample_header(content_index_map: Vec<String>, mode: SaveMode) -> SaveHeader {
     header_for(
-        sample_identity(GenerationModSet(Vec::new())),
+        sample_identity(GenerationModSet(Vec::new()), mode),
         content_index_map,
-        mode,
     )
 }
 
-fn header_for(
-    identity: WorldIdentity,
-    content_index_map: Vec<String>,
-    mode: SaveMode,
-) -> SaveHeader {
+// 模式现在**只能**经世界身份进头部（`SaveHeaderMeta` 里已经没有这个
+// 字段了），本帮手因此不再单独收一个 `mode` 参数——这正是那条收拢在
+// 调用点上的可见后果。
+fn header_for(identity: WorldIdentity, content_index_map: Vec<String>) -> SaveHeader {
     SaveHeader::new(
         &identity,
         SaveHeaderMeta {
@@ -165,7 +163,7 @@ fn header_for(
             current_mods: Vec::new(),
             content_hash_algorithm_version: ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION,
             content_index_map,
-            mode,
+            save_name: "端到端测试存档".to_string(),
         },
     )
 }
@@ -285,12 +283,15 @@ fn 玩家中途多装一个生成期名单之外的mod时读档照常放行() {
     // Arrange：世界用「只有 lostland」这一批 mod 生成。
     let (world, registry, _terrain_ids) = world_with_registry();
     let content_index_map = snapshot_for_header(&registry);
-    let identity = sample_identity(GenerationModSet(vec![ModSetEntry {
-        id: id("lostland:self"),
-        version: "0.1.0".to_string(),
-        content_hash: registry.content_hash_of("lostland"),
-    }]));
-    let header = header_for(identity, content_index_map, SaveMode::Permadeath);
+    let identity = sample_identity(
+        GenerationModSet(vec![ModSetEntry {
+            id: id("lostland:self"),
+            version: "0.1.0".to_string(),
+            content_hash: registry.content_hash_of("lostland"),
+        }]),
+        SaveMode::Permadeath,
+    );
+    let header = header_for(identity, content_index_map);
     let path = temp_path("extra-mod-installed");
     save_to_file(&path, &header, &world).expect("写出应当成功");
     let hash_before = world.hash();
@@ -345,12 +346,15 @@ fn 存档后卸载一个曾贡献内容的mod读档后被硬门禁拒绝而不�
     world.actors.spawn(npc);
 
     let content_index_map = snapshot_for_header(&registry);
-    let identity = sample_identity(GenerationModSet(vec![ModSetEntry {
-        id: id("vanishedmod:self"),
-        version: "0.1.0".to_string(),
-        content_hash: Some(vanished_content_hash),
-    }]));
-    let header = header_for(identity, content_index_map, SaveMode::Permadeath);
+    let identity = sample_identity(
+        GenerationModSet(vec![ModSetEntry {
+            id: id("vanishedmod:self"),
+            version: "0.1.0".to_string(),
+            content_hash: Some(vanished_content_hash),
+        }]),
+        SaveMode::Permadeath,
+    );
+    let header = header_for(identity, content_index_map);
     let path = temp_path("mod-unload");
     save_to_file(&path, &header, &world).expect("写出应当成功");
 
@@ -391,11 +395,11 @@ fn 模式2存档降级为模式3后存档读档模式仍是自由读档且标记
     // Assert：只读头部（不触发主体解压）就能看到模式已经是自由读档，
     // 且降级标记为真。
     let loaded_header = load_from_header_only(&path).expect("读头部应当成功");
-    assert!(matches!(loaded_header.mode, SaveMode::FreeSave { .. }));
-    assert!(loaded_header.mode.was_downgraded_from_permadeath());
+    assert!(matches!(loaded_header.mode(), SaveMode::FreeSave { .. }));
+    assert!(loaded_header.mode().was_downgraded_from_permadeath());
 
     // 不可逆——即便存档往返之后，也没有任何路径能把这个标记「升级」
     // 回模式2。
-    assert_eq!(loaded_header.mode.downgrade(), None);
+    assert_eq!(loaded_header.mode().downgrade(), None);
     let _ = std::fs::remove_file(&path);
 }

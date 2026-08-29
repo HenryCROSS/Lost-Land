@@ -34,7 +34,6 @@ use ll_content::content_index_map::snapshot_for_header;
 use ll_content::degrade::{LoadOutcome, ReadOnlySave};
 use ll_content::header::{ModHeaderEntry, SaveHeader, SaveHeaderMeta};
 use ll_content::load_error::LoadError;
-use ll_content::mode::SaveMode;
 use ll_content::save_file::{
     CURRENT_SCHEMA_VERSION, SaveError, load_from_header_only, load_full, save_to_file,
 };
@@ -92,13 +91,27 @@ fn now_unix_seconds() -> i64 {
 /// 本来就该随每次存档变化的字段（`current_mods`、`content_index_map`）。
 /// 世界身份的四个要素一个字节都不来自它——那是 `game_world.identity`
 /// 的职责，见本模块文档第一节。
+///
+/// # 存档模式也不再是参数
+///
+/// 本函数曾经收一个 `mode: SaveMode` 参数，而全仓库 7 处调用点**全部
+/// 硬编码 `SaveMode::Permadeath`**——也就是说「这局是不是肉鸽」这条
+/// 事实，此前在每次存档那一刻由调用方现填一个字面量。那与「存档时重算
+/// 生成期 mod 集合」是同一种形状的缺陷，而模式的单向不可逆
+/// （[`ll_content::mode::SaveMode`]）让它更严重：现填一个值等于随时
+/// 可以把降级抹掉。
+///
+/// 现在模式住在 [`ll_content::world_identity::WorldIdentity`] 里，与另外
+/// 四个身份要素同一条通路：建档时绑定、读档时从存档头搬回来、存档时原样
+/// 写回。`SaveHeaderMeta` 里已经没有这个字段，本函数因此**写不出**
+/// 「存档那一刻现填一个模式」这行代码。
 pub fn save_game(
     path: &Path,
     content: &LoadedContent,
     game_world: &GameWorld,
     character_name: &str,
     current_region: &str,
-    mode: SaveMode,
+    save_name: &str,
 ) -> Result<(), SaveError> {
     let CurrentModSet(current_entries) =
         CurrentModSet::derive_from(&content.registry, &content.manifests);
@@ -114,7 +127,7 @@ pub fn save_game(
             current_mods: current_mods_to_header_entries(&current_entries),
             content_hash_algorithm_version: CONTENT_HASH_ALGORITHM_VERSION,
             content_index_map: snapshot_for_header(&content.registry),
-            mode,
+            save_name: save_name.to_string(),
         },
     );
 
@@ -337,7 +350,7 @@ mod tests {
             &game_world,
             "测试旅人",
             "出生地",
-            SaveMode::Permadeath,
+            "测试存档",
         )
         .expect("写出应当成功");
         let 建档时的生成期名单 = header_generation_namespaces(&path);
@@ -374,15 +387,8 @@ mod tests {
             "从存档头接回来的生成期集合里不该出现建档后才装的 mod"
         );
         let reloaded = reassemble(world, identity);
-        save_game(
-            &path,
-            &内容乙,
-            &reloaded,
-            "测试旅人",
-            "出生地",
-            SaveMode::Permadeath,
-        )
-        .expect("写出应当成功");
+        save_game(&path, &内容乙, &reloaded, "测试旅人", "出生地", "测试存档")
+            .expect("写出应当成功");
 
         // Assert：存档头的生成期名单仍然是 A，一个字都没变。
         let 再存一次之后 = header_generation_namespaces(&path);
@@ -419,7 +425,7 @@ mod tests {
             &game_world,
             "测试旅人",
             "出生地",
-            SaveMode::Permadeath,
+            "测试存档",
         )
         .expect("写出应当成功");
         let 第一次 = ll_content::save_file::load_from_header_only(&path)
@@ -430,15 +436,8 @@ mod tests {
 
         // Act
         let reloaded = load_playable(&path, &content);
-        save_game(
-            &path,
-            &content,
-            &reloaded,
-            "测试旅人",
-            "出生地",
-            SaveMode::Permadeath,
-        )
-        .expect("写出应当成功");
+        save_game(&path, &content, &reloaded, "测试旅人", "出生地", "测试存档")
+            .expect("写出应当成功");
 
         // Assert
         let 第二次 = ll_content::save_file::load_from_header_only(&path)
@@ -477,7 +476,7 @@ mod tests {
             &game_world,
             "测试旅人",
             "出生地",
-            SaveMode::Permadeath,
+            "测试存档",
         )
         .expect("写出应当成功");
         drop(game_world);
@@ -538,7 +537,7 @@ mod tests {
             &game_world,
             "测试旅人",
             "出生地",
-            SaveMode::Permadeath,
+            "测试存档",
         )
         .expect("写出应当成功");
         drop(game_world);
@@ -554,6 +553,7 @@ mod tests {
             *reloaded.identity.zone_layout(),
             ll_world::generate::TerrainShape::default(),
             reloaded.identity.generation_mods().clone(),
+            reloaded.identity.mode(),
         );
         assert_ne!(reloaded.identity, 另一档);
 
@@ -583,7 +583,7 @@ mod tests {
             &game_world,
             "测试旅人",
             "出生地",
-            SaveMode::Permadeath,
+            "测试存档",
         )
         .expect("写出应当成功");
 

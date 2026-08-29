@@ -18,7 +18,7 @@ use ll_platform::config::{GameConfig, ScaleFilter};
 use ll_platform::input::GameKey;
 use ll_platform::keybind::KeyBindings;
 
-use crate::menu_screen::{EDITABLE_CONTEXT, MENU_ITEM_KEYS, SettingsRow};
+use crate::menu_screen::{EDITABLE_CONTEXT, SettingsRow, menu_rows};
 use crate::title_screen::{TITLE_ITEM_KEYS, TITLE_LOAD_ROW};
 
 /// 某个动作在 [`EDITABLE_CONTEXT`] 下当前绑着哪些键，排好版成一行。
@@ -203,11 +203,15 @@ pub fn title_row_texts(catalog: &Catalog, language: &str, has_save: bool) -> Vec
         .collect()
 }
 
-/// 菜单屏这一帧的三行文字。
-pub fn menu_row_texts(catalog: &Catalog, language: &str) -> Vec<String> {
-    MENU_ITEM_KEYS
-        .iter()
-        .map(|key| catalog.resolve(language, key))
+/// 暂停菜单这一帧的行文字。
+///
+/// 行本身由 [`menu_rows`] 现算——**不再抄一张平行的 Fluent 键数组**：
+/// 「保存」那一行在肉鸽模式下整行消失，两张各自维护的清单迟早会只更新
+/// 一份（`settings_rows` 的文档记着同一条账）。
+pub fn menu_row_texts(catalog: &Catalog, language: &str, can_save_manually: bool) -> Vec<String> {
+    menu_rows(can_save_manually)
+        .into_iter()
+        .map(|row| catalog.resolve(language, row.text_key()))
         .collect()
 }
 

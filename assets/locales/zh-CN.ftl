@@ -385,8 +385,12 @@ screen-menu-title = 菜单
 screen-menu-empty = （没有条目）
 screen-menu-hint = 上下移动，确认键选择，Esc 关闭
 screen-menu-continue = 继续游戏
+screen-menu-save = 保存游戏
 screen-menu-settings = 设置
+screen-menu-back-to-title = 返回主菜单
 screen-menu-quit = 退出游戏
+screen-menu-game-saved = 进度已保存
+screen-menu-game-save-failed = 存档写入失败，进度还在，但没有存下来
 
 screen-settings-title = 设置
 screen-settings-empty = （没有条目）

@@ -335,8 +335,12 @@ screen-menu-title = Menu
 screen-menu-empty = (no entries)
 screen-menu-hint = Up/Down to move, Confirm to choose, Esc to close
 screen-menu-continue = Continue
+screen-menu-save = Save Game
 screen-menu-settings = Settings
+screen-menu-back-to-title = Back to Main Menu
 screen-menu-quit = Quit Game
+screen-menu-game-saved = Progress saved
+screen-menu-game-save-failed = Could not write the save; your progress is still here but not stored
 
 screen-settings-title = Settings
 screen-settings-empty = (no entries)

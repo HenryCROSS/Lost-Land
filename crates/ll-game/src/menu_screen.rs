@@ -52,20 +52,80 @@ use ll_ui::screen::ScreenData;
 use ll_ui::widget::focus::{focused_widget, navigate_focus};
 use ll_ui::widget::state::{WidgetId, WidgetStateTable};
 
-/// 菜单屏三条选项的控件 id，顺序即导航顺序（见
-/// [`ll_ui::widget::focus::move_focus`] 文档「列表顺序即导航顺序」）。
-pub const MENU_ITEM_IDS: [WidgetId; 3] = [
-    "screen.menu.continue",
-    "screen.menu.settings",
-    "screen.menu.quit",
-];
+/// 暂停菜单的一行是什么。**每帧现算**（见 [`menu_rows`]），不缓存。
+///
+/// 从一张编译期静态数组改成一个枚举 + 现算列表，是因为
+/// [`MenuRow::Save`] 这一行**在肉鸽模式下根本不出现**（所有者裁定：
+/// 肉鸽只有自动保存），行数因此不再固定。形状照
+/// [`settings_rows`] 的既有做法，不发明第二种。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MenuRow {
+    /// 关掉菜单回到游戏。
+    Continue,
+    /// 手动存一次档——**只有普通模式才有这一行**。
+    Save,
+    /// 打开设置屏。
+    Settings,
+    /// 回到游戏主菜单（首页）。**回去之前会先存一次**，见
+    /// `crate::app::Demo::back_to_title`。
+    BackToTitle,
+    /// 退出整个进程。
+    Quit,
+}
 
-/// 菜单屏三条选项各自的 Fluent 键，与 [`MENU_ITEM_IDS`] 逐条对应。
-pub(crate) const MENU_ITEM_KEYS: [&str; 3] = [
-    "screen-menu-continue",
-    "screen-menu-settings",
-    "screen-menu-quit",
-];
+impl MenuRow {
+    /// 这一行的控件 id——顺序即导航顺序（见
+    /// [`ll_ui::widget::focus::move_focus`] 文档「列表顺序即导航顺序」）。
+    pub fn widget_id(self) -> WidgetId {
+        match self {
+            MenuRow::Continue => "screen.menu.continue",
+            MenuRow::Save => "screen.menu.save",
+            MenuRow::Settings => "screen.menu.settings",
+            MenuRow::BackToTitle => "screen.menu.back-to-title",
+            MenuRow::Quit => "screen.menu.quit",
+        }
+    }
+
+    /// 这一行的 Fluent 键。
+    pub fn text_key(self) -> &'static str {
+        match self {
+            MenuRow::Continue => "screen-menu-continue",
+            MenuRow::Save => "screen-menu-save",
+            MenuRow::Settings => "screen-menu-settings",
+            MenuRow::BackToTitle => "screen-menu-back-to-title",
+            MenuRow::Quit => "screen-menu-quit",
+        }
+    }
+}
+
+/// 暂停菜单这一帧的全部行，顺序固定。
+///
+/// `can_save_manually` 应当由 [`ll_content::world_identity::WorldIdentity::allows_manual_save`]
+/// 给出——**UI 层不自己 `match` 存档模式**，判据只有那一处。
+///
+/// # 为什么「保存」是整行消失，不是置灰
+///
+/// `ll_ui::screen::ScreenData` 今天没有「逐行禁用样式」这个概念（批次 6
+/// 第 4.2 节论证过，加它要动数据形状与配色）。而这一项的**缺席本身**
+/// 就是模式的可见后果：肉鸽玩家看不到手动存档，正是这个模式的全部意思。
+pub fn menu_rows(can_save_manually: bool) -> Vec<MenuRow> {
+    let mut rows = vec![MenuRow::Continue];
+    if can_save_manually {
+        rows.push(MenuRow::Save);
+    }
+    rows.push(MenuRow::Settings);
+    rows.push(MenuRow::BackToTitle);
+    rows.push(MenuRow::Quit);
+    rows
+}
+
+/// 这一帧菜单屏的控件 id 列表，与 [`menu_rows`] 逐条对应。
+pub fn menu_item_ids(can_save_manually: bool) -> Vec<WidgetId> {
+    menu_rows(can_save_manually)
+        .into_iter()
+        .map(MenuRow::widget_id)
+        .collect()
+}
 
 /// 模态屏当前开着哪一块。
 ///
@@ -171,6 +231,17 @@ pub enum ScreenOutcome {
     /// 存在时那一行按下去只会得到 [`ScreenNotice::NoSave`]，**绝不**
     /// 悄悄改成开一局新游戏。
     LoadSave,
+    /// 手动存一次档，存完**留在菜单里**——暂停菜单的「保存」。
+    ///
+    /// 存完不自动关菜单：玩家按「保存」的意图是「把进度落盘」，不是
+    /// 「回到游戏」；顺手关掉会让他看不到那句「已保存」，而写盘失败时
+    /// 更会把唯一一次报错一并关掉。
+    SaveNow,
+    /// 回到游戏主菜单（首页）——暂停菜单的「返回主菜单」。
+    ///
+    /// **调用方必须先存一次再回去**，见 `crate::app::Demo::back_to_title`
+    /// 文档「未保存的进度怎么办」一节。
+    BackToTitle,
 }
 
 /// 设置界面的一行是什么。**每帧现算**（见 [`settings_rows`]），不缓存。
@@ -235,6 +306,14 @@ pub enum ScreenNotice {
     Cleared(GameKey),
     /// 配置已写回磁盘。
     Saved,
+    /// 游戏进度已写回磁盘（暂停菜单的「保存」）。
+    ///
+    /// 与 [`Self::Saved`] 刻意分开：一个说的是设置，一个说的是存档，
+    /// 玩家在同一块屏上会先后看到这两句，混用一句会让他分不清刚才存的
+    /// 到底是什么。
+    GameSaved,
+    /// 游戏进度写盘失败——**进度还在内存里，什么都没丢**，但没存下来。
+    GameSaveFailed,
     /// 配置写盘失败——本次会话内的改动仍然有效，只是没存下来。
     SaveFailed,
     /// 首页按了「读取存档」，但磁盘上没有存档。
@@ -262,6 +341,8 @@ impl ScreenNotice {
             ScreenNotice::Bound(_) => "screen-settings-bound",
             ScreenNotice::Cleared(_) => "screen-settings-cleared",
             ScreenNotice::Saved => "screen-settings-saved",
+            ScreenNotice::GameSaved => "screen-menu-game-saved",
+            ScreenNotice::GameSaveFailed => "screen-menu-game-save-failed",
             ScreenNotice::SaveFailed => "screen-settings-save-failed",
             ScreenNotice::NoSave => "screen-title-no-save",
             ScreenNotice::LoadFailed => "screen-title-load-failed",
@@ -277,6 +358,8 @@ impl ScreenNotice {
             | ScreenNotice::Bound(action)
             | ScreenNotice::Cleared(action) => Some(action),
             ScreenNotice::Saved
+            | ScreenNotice::GameSaved
+            | ScreenNotice::GameSaveFailed
             | ScreenNotice::SaveFailed
             | ScreenNotice::NoSave
             | ScreenNotice::LoadFailed
@@ -357,8 +440,8 @@ pub fn focus_index(table: &WidgetStateTable, ids: &[WidgetId]) -> usize {
 }
 
 /// 菜单屏当前聚焦的是第几行，见 [`focus_index`]。
-pub fn menu_focus_index(table: &WidgetStateTable) -> usize {
-    focus_index(table, &MENU_ITEM_IDS)
+pub fn menu_focus_index(table: &WidgetStateTable, can_save_manually: bool) -> usize {
+    focus_index(table, &menu_item_ids(can_save_manually))
 }
 
 /// 建出这一帧要交给 `ll_ui::screen` 的数据。
@@ -502,17 +585,28 @@ pub struct SettingsContext<'a> {
 pub fn update_menu(
     table: &mut WidgetStateTable,
     input: &InputState,
+    can_save_manually: bool,
 ) -> (ScreenOutcome, Option<ScreenState>) {
-    navigate_focus(table, &MENU_ITEM_IDS, input);
+    let rows = menu_rows(can_save_manually);
+    let ids = menu_item_ids(can_save_manually);
+    navigate_focus(table, &ids, input);
     if input.was_just_pressed(GameKey::Cancel) {
         return (ScreenOutcome::Close, None);
     }
     if !input.was_just_pressed(GameKey::Confirm) {
         return (ScreenOutcome::Idle, None);
     }
-    match menu_focus_index(table) {
-        0 => (ScreenOutcome::Close, None),
-        1 => (
+    // 按**行的语义**分支，不按下标——行数随模式变化，写死下标就是
+    // 「肉鸽模式下按『设置』结果退出了游戏」这种缺陷的形状。
+    let Some(row) = rows.get(focus_index(table, &ids)) else {
+        // 还没选中任何一项（光标为 usize::MAX）时按确认——什么都不做，
+        // 不猜一个默认项。
+        return (ScreenOutcome::Idle, None);
+    };
+    match row {
+        MenuRow::Continue => (ScreenOutcome::Close, None),
+        MenuRow::Save => (ScreenOutcome::SaveNow, None),
+        MenuRow::Settings => (
             ScreenOutcome::Idle,
             Some(ScreenState::Settings {
                 cursor: 0,
@@ -520,10 +614,8 @@ pub fn update_menu(
                 origin: SettingsOrigin::Menu,
             }),
         ),
-        2 => (ScreenOutcome::Quit, None),
-        // 还没选中任何一项（光标为 usize::MAX）时按确认——什么都不做，
-        // 不猜一个默认项。
-        _ => (ScreenOutcome::Idle, None),
+        MenuRow::BackToTitle => (ScreenOutcome::BackToTitle, None),
+        MenuRow::Quit => (ScreenOutcome::Quit, None),
     }
 }
 
