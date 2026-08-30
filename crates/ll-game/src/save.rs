@@ -71,7 +71,21 @@ fn current_mods_to_header_entries(entries: &[ModSetEntry]) -> Vec<ModHeaderEntry
 /// 当前墙钟时间的 Unix 秒数；系统时钟异常（早于 1970 年）时退回 0——
 /// 存档时间戳只用于展示，不值得因为这种几乎不可能出现的情况让存档
 /// 失败。
-fn now_unix_seconds() -> i64 {
+///
+/// # 全 crate 唯一一处墙钟读取，因此是 `pub`
+///
+/// 除了写进存档头的 `saved_at`，建档那一刻还要给
+/// [`crate::save_slot::SaveTarget::create_in`] 一个时刻（玩家的名字被
+/// 白名单滤空时拿它当文件名主干，见 `save_slot` 模块文档）。两处要的
+/// 是同一个「现在」，**不该各读一次** `SystemTime::now()`——那样同一次
+/// 建档的头部时间与文件名时间可以差一秒，而这种偏差只会在跨秒的那一
+/// 瞬间出现，是最难复现的一类不一致。
+///
+/// **读墙钟在这里是对的，不违反约束 C3/C4**：这个值不进 `WorldState`、
+/// 不参与结算、不喂 `DetRng`，只用于展示与命名。完整论证见
+/// `crate::save_slot` 模块文档「建档时间戳读墙钟，这不违反约束
+/// C3/C4」一节。
+pub fn now_unix_seconds() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_secs() as i64)

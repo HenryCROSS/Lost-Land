@@ -331,6 +331,9 @@ fn 死亡重生走的是选出生地而不是重新生成世界() {
     let target = crate::save_slot::SaveTarget::create_in(
         &crate::test_support::unique_temp_path("ll-game-reincarnate-saves"),
         "reborn",
+        // 建档时刻钉死一个常量：这条断言的主题是转生流程，与文件名主干
+        // 无关，而 `reborn` 本来就过得了白名单，时间戳根本用不上。
+        0,
     );
     let mut draft = crate::chargen::NewGameDraft::for_reincarnation(&content, world, target);
     let mut cursor = 0usize;

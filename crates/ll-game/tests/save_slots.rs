@@ -53,6 +53,9 @@ fn 建一局(content: &LoadedContent, seed: u64) -> GameWorld {
 }
 
 /// 把一局世界写进 `dir` 下叫 `name` 的槽位，返回那个槽位目标。
+/// 建档时刻的固定值：1_755_000_000 秒 = 2025-08-12 12:00:00 UTC。
+const 建档时刻: i64 = 1_755_000_000;
+
 fn 存一份(
     dir: &std::path::Path,
     content: &LoadedContent,
@@ -60,7 +63,8 @@ fn 存一份(
     name: &str,
 ) -> SaveTarget {
     std::fs::create_dir_all(dir).expect("创建存档目录应当成功");
-    let target = SaveTarget::create_in(dir, name);
+    // 建档时刻钉死，测试不读墙钟——名字滤空时的时间戳主干因此可预测。
+    let target = SaveTarget::create_in(dir, name, 建档时刻);
     save_game(
         &target.path,
         content,
