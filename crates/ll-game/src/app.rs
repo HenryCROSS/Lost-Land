@@ -631,7 +631,11 @@ impl Demo {
         // 这条入口（测试与旧调用点）没有经过命名屏，就在存档目录里开一
         // 个以角色名命名的槽位——与首页那条路走同一个构造器，不另开
         // 「没有槽位的会话」这种状态。
-        let target = crate::save_slot::SaveTarget::create_in(&saves_dir, &character_name);
+        let target = crate::save_slot::SaveTarget::create_in(
+            &saves_dir,
+            &character_name,
+            crate::save::now_unix_seconds(),
+        );
         let session = Session::begin(game_world, &content, target);
         Demo::assemble(
             content,
@@ -1614,7 +1618,11 @@ impl Demo {
                     &self.catalog,
                     &self.config.language,
                 );
-                crate::save_slot::SaveTarget::create_in(&self.saves_dir, &name)
+                crate::save_slot::SaveTarget::create_in(
+                    &self.saves_dir,
+                    &name,
+                    crate::save::now_unix_seconds(),
+                )
             }
         };
         tracing::info!(
