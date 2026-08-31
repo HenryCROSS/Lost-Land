@@ -64,22 +64,11 @@ ll-platform = { path = "../ll-platform" }
 
 [dev-dependencies]
 proptest.workspace = true
-# 仅供 p4_acceptance 验收 demo 使用：加载管理界面本身不依赖世界层
-# （分层约束见本 crate 顶层文档），但验收 demo 要把「mod 目录
-# -> 加载管线 -> 注册表 -> 世界地形 -> 屏幕」这条完整链路真正跑起来，
-# 属于开发期验证工具而非产品代码，因此放在 dev-dependencies——不会
-# 传染给依赖 ll-ui 的下游 crate（P4 阶段 ll-ui 还没有下游）。与
-# ll-sim 的 p3_acceptance 同样的取舍，见其 Cargo.toml。
+# 供 `tests/mod_load_pipeline.rs` 使用：那条端到端回归要把「mod 目录
+# -> 加载管线 -> 注册表 -> 世界地形 -> 玩家可行走」整条链路真正跑起来
+# （2026-08-29 批次 13 从 p4_acceptance 搬入，见该文件模块文档）。
+# 属于开发期验证而非产品代码，因此留在 dev-dependencies——不会传染给
+# 依赖 ll-ui 的下游 crate。
 ll-core = { path = "../ll-core", features = ["serde"] }
-# ll-sim/ll-world 本身已经是 [dependencies] 的真实依赖（P7 第一批新增，
-# 见上方说明），这里不再重复声明——demo 仍然只用得到 P3 验收过的
-# Move/Wait 两种 Intent，不需要时间轴/AI。
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-[[example]]
-name = "p4_acceptance"
-# 默认 examples 的 test = false：cargo test --workspace 只保证它能编译，
-# 不会跑里面的 #[test]。这个 demo 里的世界搭建、加载报告展示等纯函数
-# 逻辑值得被 `cargo test --workspace` 真正覆盖，而不只是编译检查——与
-# p1/p2/p3_acceptance 同样的理由。
-test = true
+# 2026-08-29 批次 13：`image` 随 `p4_acceptance` 一并移除——它此前的
+# 唯一用途是那个 demo 的 F2 截图落盘。
