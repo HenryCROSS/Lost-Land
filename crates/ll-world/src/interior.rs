@@ -2,6 +2,93 @@
 //!
 //! 落地设计文档六节「稀疏性：拆成两条」与四节「锚定关系：单一真相源」。
 //!
+//! # 今天为什么留着它（2026-08-30 重写理由）
+//!
+//! **旧理由已作废。** 本模块与 `ll_sim::intent::Intent::EnterSpace`
+//! 此前写下的唯一现存消费者是 `crates/ll-sim/examples/p5_coordinate_acceptance`
+//! ——而 `examples/` 已被所有者裁定整体删除（`knowledge/decisions/0030-remove-examples-acceptance-demos.md`）。
+//! 理由段指向一个不存在的东西，于是「它今天该不该留」就没有判据了：
+//! 2026-08-29 的文档—代码一致性审计把这一条判成缺陷第 5 项，明说
+//! 「判不了结论，先改写理由、再由所有者裁」。**所有者裁定：留着，
+//! 重写理由。** 下面是重写后的三要素，照
+//! [`crate::item::GroundItemStack::contents`]（本仓库「刻意搁置」的
+//! 样板写法：理由 / 最小形状 / 落地条件三样齐全）来写。
+//!
+//! ## 理由一：删它不是「删 577 行」，是一次破坏性存档结构变更
+//!
+//! [`crate::space::Space::Interior`] 是
+//! [`crate::entity::Agent::current_space`] 的一个变体，而 `Agent` 随
+//! 存档主体走 **postcard**——非自描述、按声明顺序的定位编码格式。删掉
+//! 这个变体就改变了 `Space` 的编码形状 ⇒
+//! `ll_content::save_file::CURRENT_SCHEMA_VERSION` 必须递增（门禁
+//! `scripts/ci/check_save_schema_version.py` 盯着这件事）⇒ 全部现存
+//! 存档按既有「版本不对就明确拒绝」策略作废；连带要拆的还有
+//! `ll_content::remap` 的 `remap_space`、`ll_sim::resolve` 的
+//! `resolve_enter_space`/`resolve_exit_space` 两条臂、
+//! `Effect::ChangeSpace` 的 apply 分支，以及 [`crate::state::WorldState`]
+//! 的 `insert_interior`/`enter_interior`/`exit_interior`/`recompute_shared_cap`
+//! 这套共享常驻预算记账。**代价是内容批次级别的；收益是删掉一个今天
+//! 零维护成本的模块**——9 条单元测试全绿、零 `TODO`/`FIXME`、不阻塞
+//! 任何人。这条不是「以后可能用得上」，是「现在删它比留着贵得多」。
+//!
+//! ## 理由二：生产路径上已经有两个真实消费者，只是它们今天恒走地表那一支
+//!
+//! `crates/ll-game/src/app.rs` 有两处
+//! `matches!(agent.current_space, Space::Surface { .. })` 判断：相机
+//! **只在地表**跟随玩家、区块流式加载与 NPC 物化**只在地表**做。这两处
+//! 每帧都在跑，不是死代码——它们的存在说明「玩家可能不在地表」已经被
+//! 生产代码当成一个必须处理的状态。删掉 `Interior` 要连这两处判断一起
+//! 删；留着，它们就是将来接线时不会漏掉的那两个点。
+//!
+//! ## 理由三：本体内容里已经躺着「在等它」的东西
+//!
+//! `lostland:stairs_up` / `lostland:stairs_down` 两种地形**已经注册**
+//! （[`crate::terrain`] 的 `materialize_base_terrain`）、有贴图、
+//! `ll_game::layout::terrain_entry_name` 已经能把它们画出来、
+//! `crates/ll-game/tests/atlas_coverage.rs` 守着它们的图——但**全仓库
+//! 没有任何生成器放置过它们**（2026-08-30 全仓 grep：除地形注册与贴图
+//! 查找两处外零命中，是 19 支地形里唯一一对零放置的）。楼梯的语义只有
+//! 一个：楼层之间的过渡点，也就是 `Intent::EnterSpace`/`ExitSpace`。
+//! 这与 [`crate::item::GroundItemStack::contents`] 的处境同构——那一条
+//! 等的是「箱子」，而 `lostland:iron_bound_chest` 已经存在；这一条等的
+//! 是「多层建筑 / 地下城」，而楼梯的地形与贴图已经存在。
+//!
+//! ## 落地条件：P9「据点扩张 / 建筑种类与资源循环」那一批
+//!
+//! 见 `knowledge/handoff/2026-08-28-session-handoff.md` 第三节 P9 一节。
+//! 今天 [`crate::settlement`] 只有 `house_tiles` 一种建筑：5×5 外廓、
+//! 一门一窗、内部就直接画在**地表**格子上。「建筑种类」一旦开工，第一个
+//! 必须回答的问题就是「二楼 / 地窖怎么表示」——那正是 `Interior` 的
+//! 定义域。**在那之前不要接**：今天接了没有内容可进（没有任何生成器
+//! 产出 `Interior` 实例），只会多出一个空房间和一条没人走的路径。
+//!
+//! ## 最小形状（接线那一批最少要做的四件事）
+//!
+//! 1. **一个 `Interior` 生成器**——把据点的某些建筑物化成 `Interior`
+//!    实例，并在地表那一格放下门或 `stairs_down` 当入口。它同时是下文
+//!    「楼层本身仍然不参与淘汰」一节列出的两个前提之一，接上它顺带把
+//!    那笔技术债的第一条路打开。
+//! 2. **`ll-game` 侧一个「同一格多入口选哪一个」的选择 UI**——
+//!    `Intent::EnterSpace` 的 `target` 刻意要求调用方给出具体实例，
+//!    理由写在那个变体的文档里：那是一个真实的玩法选择，不该由
+//!    `resolve` 静默取「排序后第一个」蒙混过去。
+//! 3. **在开放这条 Intent 之前显式赋值 `world.surface_profile`**——
+//!    [`crate::state::WorldState::surface_profile`] 的字段文档写死了
+//!    这条前置条件（否则退出 `Interior` 之后的 `Space::Surface.profile`
+//!    指向一个可能未注册的占位索引）。
+//! 4. **补上 `app.rs` 那两处 `Space::Surface` 判断的 `Interior` 分支**
+//!    ——相机换成 `BoundedCamera`、流式加载换成「当前空间整层常驻」。
+//!
+//! ## 端到端回归今天就在跑
+//!
+//! `crates/ll-sim/tests/coordinate_layers_e2e.rs` 由被删的那个 demo
+//! **逐字搬迁**而来（批次 13，ADR 0030 说的「有用的东西搬迁走」），
+//! 进出 `Interior` 那几条断言一条未改。所以「唯一消费者随 `examples/`
+//! 一起没了」这句话本身也不成立：demo 没了，它的验收断言还在，而且
+//! 现在是全仓库唯一程序化走通
+//! 「`stream_neighborhood` → `Intent` → `resolve` → `Effect` → `apply`」
+//! 这条链的地方。
+//!
 //! # 单一真相源：`anchor` 只存在 `Interior` 自己身上
 //!
 //! `anchor: TorusPos`（这个空间在世界地图上显示为哪一格）是**唯一真相
@@ -69,9 +156,16 @@
 //!    存、存多少、何时失效），提前在本批次实现会绑定一套还没有定案的
 //!    存档格式细节。
 //!
-//! 在两者之一落地前，「无条件常驻」是唯一安全的选择——本批次的验收
-//! demo（`ll-sim/examples/p5_coordinate_acceptance`）只放了一个
+//! 在两者之一落地前，「无条件常驻」是唯一安全的选择——~~本批次的验收
+//! demo（`ll-sim/examples/p5_coordinate_acceptance`）~~只放了一个
 //! `Interior`（远小于 256 的预算），这条限制在当前阶段不构成实际压力。
+//!
+//! **【2026-08-30 更正】** 上一句里那个 demo 已随 `examples/` 整体删除
+//! （ADR 0030），它的断言逐字搬进了
+//! `crates/ll-sim/tests/coordinate_layers_e2e.rs`，同样只放一个
+//! `Interior`——**结论不变，只是证据换了个地方**。今天这条限制仍然不
+//! 构成实际压力的更强理由是：生产路径上根本还没有任何 `Interior` 实例
+//! 被造出来，见本模块开头「今天为什么留着它」一节。
 
 use std::collections::HashMap;
 
