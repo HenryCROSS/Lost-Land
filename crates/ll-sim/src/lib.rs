@@ -110,6 +110,7 @@ pub mod check;
 pub mod combat;
 pub mod craft;
 pub mod damage_category;
+pub mod dialogue;
 pub mod effect;
 pub mod experience;
 pub mod exposure;
