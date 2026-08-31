@@ -15,6 +15,11 @@
 //! `InputState` 那几个既有公开 setter——ADR 0025 要求的「程序化驱动
 //! 同一条调用路径」，不合成任何操作系统级事件。
 
+// `screen_data` 原先由 `app.rs` 的 use 块带进来（`use super::*`）；批次 16 把
+// 屏流程搬进 `app::screen_flow` 之后 `app.rs` 自己不再用它，这里显式导入。
+// 断言本身一个字未改。
+use crate::menu_screen::screen_data;
+
 use super::*;
 
 // ───────────────────── 导航收敛批次（规格 N8 / N2 / N7 / N10）─────────

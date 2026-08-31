@@ -17,7 +17,7 @@
 # 半 target。CI 的 `test` job 在 ubuntu-latest 与 windows-latest 两个
 # target 上各跑一次 fmt/clippy/test/禁止 example；`licenses`/`no-manual-euclidean-
 # distance`/`coverage`/`no-hardcoded-i18n-strings`/`docs-and-links`/
-# `field-consumer-check`/`save-schema-version-check` 七个 job 全部只在
+# `field-consumer-check`/`save-schema-version-check`/`file-size-budget` 八个 job 全部只在
 # ubuntu-latest 上跑，本地完全没有对应环境。任何依平台生效
 # 的差异——`std::path::Component` 解析、`cfg(unix)`/`cfg(windows)` 条件
 # 编译分支、规格 §14.4 要求的双 target 世界哈希逐位相同——本脚本永远
@@ -62,6 +62,7 @@ run_step "许可证与安全公告扫描"           bash scripts/ci/check_licens
 run_step "禁止手写欧氏距离"               bash scripts/ci/check_no_manual_euclidean_distance.sh
 run_step "字段接线检查（声明但无决策层消费者，阻断模式）" python3 scripts/ci/check_field_consumers.py
 run_step "存档主体形状 ↔ schema 版本联动检查（阻断模式）" python3 scripts/ci/check_save_schema_version.py
+run_step "文件行数棘轮门禁（规格 §13，阻断模式）" python3 scripts/ci/check_file_size_budget.py
 run_step "硬编码用户可见字符串扫描（warn 模式）" python3 scripts/ci/check_i18n_strings.py
 run_step "文档断链检查"                   bash scripts/ci/check_doc_links.sh
 run_step "Markdown 死链检查"              python3 scripts/ci/check_markdown_links.py
