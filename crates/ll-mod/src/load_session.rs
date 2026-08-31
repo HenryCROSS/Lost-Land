@@ -71,6 +71,7 @@ use crate::behavior_binding::ClassBehaviorBindings;
 use crate::class::ClassTable;
 use crate::clip::{BaseClipIds, ClipTable};
 use crate::damage_category::DamageCategoryTable;
+use crate::dialogue::{DialogueNodeTable, DialogueTable};
 use crate::formula::FormulaTable;
 use crate::item::ItemTable;
 use crate::load_report::LoadReport;
@@ -131,6 +132,10 @@ pub struct LoadSession {
     pub subclass: SubclassTable,
     /// 任务表。
     pub quest: QuestTable,
+    /// 会话入口表（`dialogues.json5`），见 `crate::dialogue` 模块文档。
+    pub dialogue: DialogueTable,
+    /// 对话节点表（与 `dialogue` 同住 `dialogues.json5`）。
+    pub dialogue_node: DialogueNodeTable,
     /// 种族表。
     pub race: RaceTable,
     /// 动画剪辑表。
@@ -229,6 +234,8 @@ impl LoadSession {
             skill: SkillTable::new(),
             subclass: SubclassTable::new(),
             quest: QuestTable::new(),
+            dialogue: DialogueTable::new(),
+            dialogue_node: DialogueNodeTable::new(),
             race: RaceTable::new(),
             clip,
             xp_curve,
@@ -295,6 +302,8 @@ impl LoadSession {
             skill,
             subclass,
             quest,
+            dialogue,
+            dialogue_node,
             race,
             clip,
             xp_curve,
@@ -326,6 +335,8 @@ impl LoadSession {
                 skill,
                 subclass,
                 quest,
+                dialogue,
+                dialogue_node,
                 race,
                 clip,
                 xp_curve,

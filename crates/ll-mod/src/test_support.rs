@@ -16,6 +16,7 @@ use crate::behavior_binding::ClassBehaviorBindings;
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
 use crate::damage_category::DamageCategoryTable;
+use crate::dialogue::{DialogueNodeTable, DialogueTable};
 use crate::formula::FormulaTable;
 use crate::item::ItemTable;
 use crate::modifier_type::ModifierTypeTable;
@@ -74,6 +75,8 @@ pub(crate) struct OwnedTables {
     pub(crate) skill: SkillTable,
     pub(crate) subclass: SubclassTable,
     pub(crate) quest: QuestTable,
+    pub(crate) dialogue: DialogueTable,
+    pub(crate) dialogue_node: DialogueNodeTable,
     pub(crate) race: RaceTable,
     pub(crate) clip: ClipTable,
     pub(crate) xp_curve: XpCurveTable,
@@ -103,6 +106,8 @@ impl OwnedTables {
             skill: &mut self.skill,
             subclass: &mut self.subclass,
             quest: &mut self.quest,
+            dialogue: &mut self.dialogue,
+            dialogue_node: &mut self.dialogue_node,
             race: &mut self.race,
             clip: &mut self.clip,
             xp_curve: &mut self.xp_curve,

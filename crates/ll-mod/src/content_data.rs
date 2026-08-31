@@ -59,6 +59,7 @@ use crate::content_schema::{
     apply_quests, apply_races, apply_recipe_categories, apply_recipe_category_subclass_gates,
     apply_skills, apply_subclasses, apply_tags,
 };
+use crate::content_schema_dialogue::{DialogueFile, apply_dialogues};
 use crate::content_schema_gear::{
     DamageCategoryFile, DamageFormulaFile, ItemFile, ModifierTypeFile, ResourcePoolFile, TraitFile,
     WeaponCategoryFile, XpCurveFile, apply_damage_categories, apply_damage_formulas, apply_items,
@@ -129,6 +130,8 @@ enum ContentFileKind {
     Skills,
     Traits,
     Quests,
+    /// 对话（`dialogues.json5`），见 [`crate::dialogue`] 模块文档。
+    Dialogues,
 }
 
 impl ContentFileKind {
@@ -161,6 +164,7 @@ impl ContentFileKind {
             ContentFileKind::Skills => "skills.json5",
             ContentFileKind::Traits => "traits.json5",
             ContentFileKind::Quests => "quests.json5",
+            ContentFileKind::Dialogues => "dialogues.json5",
         }
     }
 }
@@ -174,7 +178,7 @@ impl ContentFileKind {
 /// 每一条排在这个位置的理由都是一条**真实的引用方向**，逐条列在下面
 /// 的注释里。判据统一是「谁只 get 不 intern」：只 get 的那一方必须
 /// 排在被引用者之后。
-const CONTENT_FILES: [ContentFileKind; 22] = [
+const CONTENT_FILES: [ContentFileKind; 23] = [
     // 标签没有任何前置依赖，而物品会引用它（只 get 不 intern）。
     ContentFileKind::Tags,
     // 加值类型同样没有任何前置依赖，而天赋与物品的规则修正会引用它
@@ -231,6 +235,17 @@ const CONTENT_FILES: [ContentFileKind; 22] = [
     // 它自己引用的资源池与伤害类别都已经在前面。
     ContentFileKind::Traits,
     ContentFileKind::Quests,
+    // 对话排在**最后**，两条独立的理由：
+    //
+    // 1. 依赖方向：`speaker` 的职业与文化、条件里的任务/物品/种族/组织
+    //    **全部只 get 不 intern**（见 `crate::content_schema_dialogue`
+    //    模块文档那张表），因此必须排在这五张表之后——排在末尾一次满足
+    //    全部五条。节点之间的 `root`/`next` 走 intern，允许前向引用，
+    //    对本表的位置没有约束。
+    // 2. 与内容无关的一条：**新内容追加在注册表末尾，既有条目的
+    //    `ContentIndex` 一个都不平移**。本仓库有过「新增内容插在注册表
+    //    中间导致其后条目整体平移」的教训，追加是最便宜的规避。
+    ContentFileKind::Dialogues,
 ];
 
 /// 装载一个 mod 目录下的全部内容数据文件。
@@ -387,6 +402,10 @@ fn apply_one(
         ContentFileKind::Quests => {
             let file: QuestFile = parse(&source).map_err(fail)?;
             apply_quests(registry, tables.quest, &file.quests)
+        }
+        ContentFileKind::Dialogues => {
+            let file: DialogueFile = parse(&source).map_err(fail)?;
+            apply_dialogues(registry, tables.dialogue, tables.dialogue_node, &file)
         }
     }
     .map_err(fail)

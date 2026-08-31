@@ -66,6 +66,7 @@ use crate::behavior_binding::ClassBehaviorBindings;
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
 use crate::damage_category::DamageCategoryTable;
+use crate::dialogue::{DialogueNodeTable, DialogueTable};
 use crate::formula::FormulaTable;
 use crate::item::ItemTable;
 use crate::load_report::{LoadError, LoadReport, LoadStage, LoadStatus, SourceLocation};
@@ -126,6 +127,11 @@ pub struct GameplayTables<'a> {
     pub subclass: &'a mut SubclassTable,
     /// 任务表（`quests.json5`）。
     pub quest: &'a mut QuestTable,
+    /// 会话入口表（`dialogues.json5`），见 `crate::dialogue` 模块文档。
+    pub dialogue: &'a mut DialogueTable,
+    /// 对话节点表（`dialogues.json5`，与 `dialogue` 同住一个文件，先例是
+    /// 配方类别与配方同住 `crafting.json5`）。
+    pub dialogue_node: &'a mut DialogueNodeTable,
     /// 种族表（`races.json5`）。
     pub race: &'a mut RaceTable,
     /// 动画剪辑表（`animations.json5`）——不进 `WorldState`、不参与
@@ -346,6 +352,8 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
     let mut skill = SkillTable::new();
     let mut subclass = SubclassTable::new();
     let mut quest = QuestTable::new();
+    let mut dialogue = DialogueTable::new();
+    let mut dialogue_node = DialogueNodeTable::new();
     let mut race = RaceTable::new();
     let mut clip = ClipTable::new();
     let mut xp_curve = XpCurveTable::new();
@@ -371,6 +379,8 @@ pub fn reload_mod(manifest_path: &Path) -> LoadStatus {
         skill: &mut skill,
         subclass: &mut subclass,
         quest: &mut quest,
+        dialogue: &mut dialogue,
+        dialogue_node: &mut dialogue_node,
         race: &mut race,
         clip: &mut clip,
         xp_curve: &mut xp_curve,
@@ -838,6 +848,8 @@ mod tests {
                 skill: &owned.skill,
                 subclass: &owned.subclass,
                 quest: &owned.quest,
+                dialogue: &owned.dialogue,
+                dialogue_node: &owned.dialogue_node,
                 race: &owned.race,
                 space_profile: &owned.space_profile,
                 clip: &owned.clip,
