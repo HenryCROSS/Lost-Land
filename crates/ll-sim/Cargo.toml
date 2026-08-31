@@ -29,7 +29,7 @@ serde = { version = "1", features = ["derive"] }
 # 仍未轮到受控实体时记一条结构化错误日志——这是「必须保证进展」这道
 # 防线被真正触发时唯一能看见的信号（见该方法文档），不是可选的开发期
 # 工具，故属于 [dependencies] 而非 [dev-dependencies]：`ll-game`（生产
-# 二进制）与 `p3_acceptance`（验收 demo）都要调用这个方法。
+# 二进制）要调用这个方法。
 tracing = "0.1"
 
 [dev-dependencies]
@@ -38,29 +38,9 @@ proptest.workspace = true
 # 往返，而不只是停留在 derive 能编译这一层面（与 ll-core/ll-world
 # 同样的理由，见其 Cargo.toml）。
 serde_json = "1"
-# 仅供 p3_acceptance 验收 demo 使用：模拟层本身不依赖渲染/平台层
-# （分层约束见本 crate 顶层文档），但验收 demo 要把 Intent → resolve →
-# Effect → apply → 时间轴这条链路真正画到屏幕上，属于开发期验证工具而
-# 非产品代码，因此放在 dev-dependencies——不会传染给依赖 ll-sim 的下游
-# crate。与 `ll-world` 的 `p2_acceptance` 同样的取舍，见其 Cargo.toml。
-ll-render = { path = "../ll-render" }
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-[[example]]
-name = "p3_acceptance"
-# 默认 examples 的 test = false：cargo test --workspace 只保证它能编译，
-# 不会跑里面的 #[test]。这个 demo 里的回合引擎、AI 路由、字体栅格化等
-# 纯函数逻辑值得被 `cargo test --workspace` 真正覆盖，而不只是编译检查
-# ——与 `ll-world` 的 `p2_acceptance`、`ll-render` 的 `p1_acceptance`
-# 同样的理由。
-test = true
-
-[[example]]
-name = "p5_coordinate_acceptance"
-# 两级坐标系重写（任务 15）的验收 demo，宿主选在本 crate 而非
-# `ll-world`：需要 Intent → resolve → Effect → apply 这条链路
-# （进出 Interior、EnterSpace/ExitSpace 都要走它，见 ll-sim::resolve
-# 任务 12），`ll-world` 没有这些类型；本 crate 已经具备
-# ll-render/ll-platform 两个 dev-dependency（p3_acceptance 已经在用），
-# 不需要为此新引入依赖或换一个尚不存在的 crate（ll-app）。
-test = true
+# 2026-08-29 批次 13：`ll-render` 与 `image` 两条 dev-dependency 随
+# `p3_acceptance` 一并移除——它们此前的唯一用途是那个 demo 的开窗渲染
+# 与截图落盘。搬进 `tests/coordinate_layers_e2e.rs` 的九条断言全程不碰
+# 渲染层（见该文件模块文档与
+# `knowledge/decisions/0030-remove-examples-acceptance-demos.md`），
+# 模拟层因此回到「不依赖渲染/平台层」这条分层约束的干净状态。

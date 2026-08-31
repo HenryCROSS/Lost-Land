@@ -45,7 +45,7 @@ proptest.workspace = true
 # 的存档」，两件事都必须在**真实的存档文件字节**上做，不能靠夹具伪造。
 # 版本与 `ll-content` 那份一致，避免同一个 crate 在工作区里被解析成两份。
 serde_json = "1"
-# 仅供 `examples/surface_preview.rs`（地表内容渲染的可视化验收产物）
-# 把真实图集的像素拼成一张可以直接看的 PNG。版本与 features 与
-# `ll-render` 的那份一致，避免同一个 crate 在工作区里被解析成两份。
-image = { version = "0.25", default-features = false, features = ["png"] }
+# 2026-08-29 批次 13：`image` 随三个 preview example 一并移除——它此前
+# 的唯一用途是把真实图集的像素拼成 `tests/visual/*.png` 那三张给人看的
+# 预览图。三张图本身保留，只是暂时没有生产者，见
+# `crates/ll-game/tests/visual/README.md`。

@@ -84,8 +84,22 @@
 //! 这条不一致在 main 上长期存在而没人发现，原因很具体：`cargo test`
 //! 与 `cargo clippy --all-targets` 都只**编译** example，不运行它的
 //! `main()`，而本 demo 的验收断言全写在 `main()` 里，于是整条 CI 一直
-//! 是绿的。本批次同时补上了 `scripts/ci/run_acceptance_demos.sh`——真的
-//! 跑一遍无头验收 demo，并强制新增的 example 必须显式分类。
+//! 是绿的。当时的补救是 `scripts/ci/run_acceptance_demos.sh`——真的跑一遍
+//! 无头验收 demo，并强制新增的 example 必须显式分类。
+//!
+//! # 出处（2026-08-29 批次 13）
+//!
+//! 本文件搬自 `crates/ll-content/examples/p5_save_acceptance.rs`。所有者
+//! 裁定去掉 `examples/`（见
+//! `knowledge/decisions/0030-remove-examples-acceptance-demos.md`）。
+//! 原 `main()` 与 `section_b_degrade_by_kind` 那层纯转发的包装删掉，
+//! 八个零参数、各自建夹具的顶层小节直接标 `#[test]`——**35 条断言一条
+//! 未改**，但从此由 `cargo test --workspace` 执行，并按 8 个独立用例
+//! 报告失败。
+//!
+//! **上面那条教训因此在结构上不再可能重演**：断言不再藏在任何 `main()`
+//! 里。原门禁随之改形为 `scripts/ci/check_no_examples.sh`（判据收紧成
+//! 「工作区一个 example target 都不许有」）。
 
 use std::collections::BTreeMap;
 
@@ -122,17 +136,6 @@ use ll_world::terrain::{
     BaseTerrainIds, TerrainTable, base_terrain_fixture, materialize_base_terrain,
 };
 use ll_world::zone::ZoneLayout;
-
-fn main() {
-    println!("=== P5 存档格式与身份 —— 验收 demo ===\n");
-
-    step0_world_identity_chain_link();
-    section_a_full_roundtrip();
-    section_b_degrade_by_kind();
-    section_c_mode_downgrade();
-
-    println!("\n=== 全部验收断言通过（程序化验证，未启动任何窗口） ===");
-}
 
 // ---------------------------------------------------------------------
 // 共享测试夹具
@@ -282,6 +285,7 @@ fn temp_path(name: &str) -> std::path::PathBuf {
 /// 只能在自己代码里临时补一份等价的胶水代码绕过去。现在改为直接调用
 /// [`ll_content::world_identity::generation_mods_to_header_entries`]——
 /// 这是补上的生产函数，本 demo 不再需要自己的胶水实现。
+#[test]
 fn step0_world_identity_chain_link() {
     println!("[步骤零] 建档：世界身份三要素绑定链路");
 
@@ -331,6 +335,7 @@ fn step0_world_identity_chain_link() {
 /// 完整调用链的核心一段：世界生成 → 游玩（真实
 /// `Intent → resolve → Effect → apply`，含mod 状态写入）→ 存档 →
 /// 退出 → 读档 → 世界与存档前逐位一致。
+#[test]
 fn section_a_full_roundtrip() {
     println!("[验收 1/3] 存档 → 读档后世界逐位一致");
 
@@ -465,16 +470,6 @@ fn section_a_full_roundtrip() {
 // 第二件事：缺失 mod 时按内容类型正确降级且不崩溃
 // ---------------------------------------------------------------------
 
-fn section_b_degrade_by_kind() {
-    println!("[验收 2/3] 缺失 mod 时按内容类型正确降级且不崩溃");
-    b1_item_missing_policy_only();
-    b2_player_vs_npc_race_missing_mixed_outcome();
-    b3_player_missing_full_pipeline_readonly();
-    b4_npc_race_missing_full_pipeline_placeholder();
-    b5_generation_mod_missing_hard_gate_rejects();
-    println!();
-}
-
 /// 物品类型缺失 → 丢弃并提示。
 ///
 /// # 为什么不走完整读档管线（如实记录）
@@ -486,6 +481,7 @@ fn section_b_degrade_by_kind() {
 /// 因为压根没有物品字段可以遍历）。本节只能验证策略层本身
 /// （[`decide_degrade_action`]）行为正确，不能证明它已经接入某条真实
 /// 读档路径——那条路径要等 P6 物品系统落地之后才存在。
+#[test]
 fn b1_item_missing_policy_only() {
     let action = decide_degrade_action(ContentKind::Item, OwnerContext::None, None);
     assert_eq!(
@@ -510,6 +506,7 @@ fn b1_item_missing_policy_only() {
 /// 是因为本节要在**同一次**重映射里同时观察玩家与 NPC 两种归属的结果，
 /// `load_full` 每次调用只处理一份存档、产出一个整体 `LoadOutcome`，
 /// 拿不到「这一条具体是 Reject 还是 FallbackToPlaceholder」的逐条明细。
+#[test]
 fn b2_player_vs_npc_race_missing_mixed_outcome() {
     let (mut world, mut save_registry, _terrain_ids) = world_with_registry();
     let vanished_player_race = save_registry.intern(id("uninstalledmod:player_race"));
@@ -615,6 +612,7 @@ fn b2_player_vs_npc_race_missing_mixed_outcome() {
 /// 的管辖范围内。「玩了二十小时、中途装了个种族 mod、后来把它卸了」
 /// 因此仍然走细粒度降级——这正是 `check_mod_set` 文档结尾点名「不受
 /// 影响」的那部分场景，也是决策二之后本条只读路径唯一真实可达的入口。
+#[test]
 fn b3_player_missing_full_pipeline_readonly() {
     let (mut world, mut save_registry, _terrain_ids) = world_with_registry();
     // latemod：世界建好**之后**玩家才装上的 mod（命名刻意区别于
@@ -689,6 +687,7 @@ fn b3_player_missing_full_pipeline_readonly() {
 /// （断链一修复，P5-A 任务 14）——此前这条分支只能通过直接调用
 /// `remap_world` 观察，见 [`b2_player_vs_npc_race_missing_mixed_outcome`]
 /// 文档。
+#[test]
 fn b4_npc_race_missing_full_pipeline_placeholder() {
     let (mut world, mut save_registry, _terrain_ids) = world_with_registry();
     let vanished_race = save_registry.intern(id("uninstalledmod:npc_race"));
@@ -745,6 +744,7 @@ fn b4_npc_race_missing_full_pipeline_placeholder() {
 /// [`ll_content::load_error::ModSetMismatch`] 的诊断字段确实指向那个缺失
 /// 的命名空间——门禁报出的原因必须能让玩家定位到「该去装回哪个 mod 的
 /// 哪个版本」，不能只是「拒绝」两个字。
+#[test]
 fn b5_generation_mod_missing_hard_gate_rejects() {
     let (mut world, mut save_registry, _terrain_ids) = world_with_registry();
     let vanished_race = save_registry.intern(id("uninstalledmod:player_race"));
@@ -808,6 +808,7 @@ fn b5_generation_mod_missing_hard_gate_rejects() {
 // 第三件事：模式2 → 模式3 单向降级，生效且不可逆
 // ---------------------------------------------------------------------
 
+#[test]
 fn section_c_mode_downgrade() {
     println!("[验收 3/3] 模式2 → 模式3 单向降级，生效且不可逆");
 

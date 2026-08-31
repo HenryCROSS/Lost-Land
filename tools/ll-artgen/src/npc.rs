@@ -41,10 +41,11 @@
 //!
 //! # 为什么这些图不进遗留共享画布
 //!
-//! [`crate::generate_legacy_shared_atlas`] 那张 `placeholder.png` 是五个
-//! 更早批次验收 demo 的冻结像素基准。本模块的图**只**进松散贴图树
+//! [`crate::generate_legacy_shared_atlas`] 那张 `placeholder.png` 是四张
+//! 冻结像素基准的来源（见 `main.rs` 的 `LooseOnlyEntry` 文档更正段）。
+//! 本模块的图**只**进松散贴图树
 //! （`assets/sprites/`），画布尺寸因此仍是 96×144、既有条目的矩形一个
-//! 都没动，五个 demo 的基准完全不受影响。做法上的落点是
+//! 都没动，那四张基准完全不受影响。做法上的落点是
 //! [`crate::LooseOnlyEntry`]：一份与 `placeholder.json` 平行、只喂给
 //! [`crate::generate_loose_sprites`] 的条目清单。
 //!

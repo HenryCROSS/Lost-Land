@@ -11,7 +11,8 @@
 //! 文件因此只能靠自己实现这个 trait，这正是依赖反转设计本身要验证的
 //! 东西：`resolve_with_skills_and_quests` 不关心目录从哪来，只要实现了
 //! `QuestCatalog`。`crates/ll-mod/src/quest_overview.rs`（任务 8）与
-//! `crates/ll-content/examples/p5_gameplay_acceptance.rs`（任务 9）另有
+//! `crates/ll-content/tests/gameplay_acceptance.rs`（任务 9，2026-08-29
+//! 前是 `examples/p5_gameplay_acceptance.rs`，见 ADR 0030）另有
 //! 使用真实 `ll-mod` 内容的端到端验收。
 
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};

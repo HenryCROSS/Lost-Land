@@ -1,9 +1,26 @@
-//! 世界搭建：本体地形注册、真实 mod 目录装载、玩家出生、熔岩地板落地。
+//! Mod 装载管线的端到端回归：真实 `mods/` 目录 + 两个失败夹具目录。
 //!
-//! 这是本 demo 唯一负责证明「完整调用链」的模块（task-12-brief 的
-//! 自查表）：`register_base_terrain` → `load_all` → `Registry`/
-//! `TerrainTable` → `WorldState` → 玩家可查询/可行走的地形属性，一条
-//! 链路里没有任何为 demo 单独开的旁路。
+//! # 出处（2026-08-29 批次 13）
+//!
+//! 本文件搬自 `crates/ll-ui/examples/p4_acceptance/world.rs`。所有者裁定
+//! 去掉 `examples/`（见 `knowledge/decisions/0030-remove-examples-acceptance-demos.md`），
+//! 那个 demo 的八条断言是全仓库**唯一**跑仓库根目录下
+//! `mods_missing_dependency/` 与 `mods_duplicate_namespace/` 两个真实夹具
+//! 目录的地方——`ll-mod/src/pipeline.rs` 的单测走的是临时目录造出来的
+//! 失败样本，不覆盖这两个目录本身。搬迁**逐字保留了全部八条断言**，
+//! 只删掉了 demo 专用的呈现字段（`example_mod_manifest`，原本喂给
+//! demo 的 'R' 键一键重载）。
+//!
+//! 这条链路是：`register_base_terrain` → `load_all`（跑三次，分别对应
+//! 正常 mod / 缺失依赖 / 重复命名空间三批目录）→ `Registry`/`TerrainTable`
+//! → `WorldState` → 玩家可查询/可行走的地形属性，一条链路里没有任何
+//! 为测试单开的旁路。
+//!
+//! # 为什么宿主在 `ll-ui` 而不是 `ll-mod`
+//!
+//! 沿用 demo 的宿主 crate，搬迁不改依赖方向：`ll-mod` 不依赖 `ll-ui`，
+//! 而这条链路要同时用到 `ll-mod::pipeline` 与 `ll-world::state`，
+//! `ll-ui` 两者都够得到。真要换宿主是另一次改动，不该混进搬迁批次。
 
 use std::path::Path;
 
@@ -27,10 +44,19 @@ use ll_mod::xp_curve::{XpCurveBindings, XpCurveTable};
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
 use ll_world::state::WorldState;
-use ll_world::terrain::{BaseTerrainIds, TerrainKind};
+use ll_world::terrain::TerrainKind;
 use ll_world::zone::ZoneLayout;
 
-use crate::layout::{INITIAL_CLOCK_TICKS, WORLD_HEIGHT, WORLD_WIDTH};
+/// 演示世界的宽度（格）——与原 demo 的 `layout::WORLD_WIDTH` 同值。
+const WORLD_WIDTH: u32 = 64;
+
+/// 演示世界的高度（格）——与原 demo 的 `layout::WORLD_HEIGHT` 同值。
+const WORLD_HEIGHT: u32 = 64;
+
+/// 世界时钟的初始刻度：正午——与原 demo 的 `layout::INITIAL_CLOCK_TICKS`
+/// 同值。地形属性与光照无关，这里保留它只是为了让搬迁前后的世界状态
+/// 逐位一致。
+const INITIAL_CLOCK_TICKS: i64 = 12 * ll_core::time::TICKS_PER_HOUR;
 
 /// 区块边长（格）：取世界边长本身，demo 世界因此正好是单个区块（与
 /// `WORLD_WIDTH == WORLD_HEIGHT` 一致）——理由与 `p3_acceptance` 同一
@@ -43,7 +69,7 @@ fn build_zone_layout() -> ZoneLayout {
 }
 
 /// 示例 mod 注册的熔岩地板 id。
-pub(crate) const LAVA_FLOOR_ID: &str = "examplemod:lava_floor";
+const LAVA_FLOOR_ID: &str = "examplemod:lava_floor";
 
 /// 出生点搜索的最大环半径——与 p2/p3_acceptance 同一算法，取世界较小
 /// 维度的一半，保证除非整张地图没有一格可站立，否则恒能找到。
@@ -57,20 +83,16 @@ const SEARCH_MAX_RADIUS: i32 = (if WORLD_WIDTH < WORLD_HEIGHT {
 /// 地板的地形索引（`None` 表示 examplemod 这次没能成功注册它——
 /// 三种故意写错的 mod 都不会影响到这一个，但如实处理这个可能性，不
 /// 假设它必然存在）。
-pub(crate) struct DemoWorld {
-    pub(crate) world: WorldState,
-    pub(crate) terrain_ids: BaseTerrainIds,
-    pub(crate) report: LoadReport,
-    pub(crate) lava_kind: Option<TerrainKind>,
-    pub(crate) player: EntityId,
-    /// examplemod 的清单路径——供「一键重载」演示使用（见
-    /// `crate::main` 对 'R' 键的处理）。
-    pub(crate) example_mod_manifest: std::path::PathBuf,
+struct DemoWorld {
+    world: WorldState,
+    report: LoadReport,
+    lava_kind: Option<TerrainKind>,
+    player: EntityId,
     /// `mods/example_mod/classes.json5` 声明的亡灵法师职业的主属性
     /// 倾向——P5-C 缺口修补批次新增，证明玩法层内容声明在完整装载管线
     /// （不只是孤立的单元测试）里也确实生效。`None` 表示这次没能成功
     /// 注册（如实处理，理由同 `lava_kind` 字段文档）。
-    pub(crate) necromancer_primary_attribute: Option<ll_world::entity::AttributeKind>,
+    necromancer_primary_attribute: Option<ll_world::entity::AttributeKind>,
 }
 
 /// 三个 mod 根目录相对本 crate `Cargo.toml` 的路径。分成三个独立目录
@@ -88,7 +110,7 @@ const DUPLICATE_NAMESPACE_ROOT: &str = concat!(
 /// 搭建演示世界：注册本体地形、跑三次装载管线（分别对应「正常 mod」
 /// 「缺失依赖」「重复命名空间」三批目录）、生成地形、出生玩家、把
 /// 熔岩地板铺在玩家出生点附近。
-pub(crate) fn build_demo_world() -> DemoWorld {
+fn build_demo_world() -> DemoWorld {
     let mut registry = Registry::new();
     let (terrain_ids, mut table) =
         register_base_terrain(&mut registry).expect("本体地形声明表内部一致，注册恒不失败");
@@ -256,13 +278,9 @@ pub(crate) fn build_demo_world() -> DemoWorld {
 
     DemoWorld {
         world,
-        terrain_ids,
         report,
         lava_kind,
         player,
-        example_mod_manifest: Path::new(PRIMARY_MODS_ROOT)
-            .join("example_mod")
-            .join(ll_mod::discover::MANIFEST_FILENAME),
         necromancer_primary_attribute,
     }
 }
@@ -380,7 +398,6 @@ fn spawn_player(world: &mut WorldState, pos: TorusPos) -> EntityId {
     })
 }
 
-#[cfg(test)]
 mod tests {
     use super::*;
     use ll_mod::load_report::LoadStatus;

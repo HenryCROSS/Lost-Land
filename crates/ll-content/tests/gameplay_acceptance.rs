@@ -83,12 +83,6 @@ use ll_world::state::WorldState;
 use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 use ll_world::zone::ZoneLayout;
 
-fn main() {
-    println!("=== P5-B 玩法系统 —— 验收 demo ===\n");
-    run_walkthrough();
-    println!("\n=== 全部验收断言通过（程序化验证，未启动任何窗口） ===");
-}
-
 // ---------------------------------------------------------------------
 // 共享测试夹具
 // ---------------------------------------------------------------------
@@ -652,10 +646,7 @@ fn section4_save_load_roundtrip(content: &Content, world: &WorldState) {
     println!("  存档往返验收通过\n");
 }
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn 完整验收流程程序化验证() {
-        super::run_walkthrough();
-    }
+#[test]
+fn 完整验收流程程序化验证() {
+    run_walkthrough();
 }

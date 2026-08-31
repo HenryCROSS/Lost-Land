@@ -118,7 +118,7 @@ const TERRAIN_SPECS: &[TerrainSpec] = &[
     // 气候条带（规格 §7.1）新增的两种自然地形。它们**不进** 遗留共享
     // 画布（`assets/atlas/placeholder.json` 一个字未动），只走
     // `main.rs` 的 `LooseOnlyEntry` 通道——理由见那个类型的文档：新增
-    // 内容塞进共享画布只会把五个更早批次验收 demo 的冻结像素基准卷
+    // 内容塞进共享画布只会把那四张冻结像素基准卷
     // 进来。
     TerrainSpec {
         name: "terrain_desert",

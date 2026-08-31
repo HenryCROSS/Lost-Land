@@ -4,9 +4,12 @@
 //!
 //! 「本体即 Mod」原则（`ll_mod` 模块文档）要求本体内容与 mod 内容走
 //! 完全相同的 [`ll_mod::registry::Registry::intern`] 通道，但**注册的
-//! 先后顺序与调用方式**目前散落在各个验收 demo 里各写各的一份
-//! （`p4_acceptance::world::build_demo_world`、
-//! `p5_save_acceptance::world_with_registry` ……）。另一个批次正在把
+//! 先后顺序与调用方式**散落在若干端到端回归里各写各的一份
+//! （`crates/ll-ui/tests/mod_load_pipeline.rs` 的 `build_demo_world`、
+//! `crates/ll-content/tests/save_acceptance.rs` 的
+//! `world_with_registry` ……；两者 2026-08-29 前分别是
+//! `p4_acceptance`/`p5_save_acceptance` 两个验收 demo，见 ADR 0030）。
+//! 另一个批次正在把
 //! 「地形/种族/空间层属性由 Rust 函数直接注册」逐步换成「由 mod 脚本
 //! 注册」——那次改动的落点必然是**这一个函数**：本体二进制自身只调用
 //! [`load_content`] 一次，不知道、也不需要知道内容具体是 Rust 调用

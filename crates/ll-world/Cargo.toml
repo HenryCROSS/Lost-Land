@@ -31,21 +31,11 @@ criterion.workspace = true
 # 仅用于序列化往返测试：验证 WorldState 能经过一种真实的 serde 格式
 # 完整往返，而不只是停留在 derive 能编译这一层面。
 serde_json = "1"
-# 仅供 p2_acceptance 验收 demo 使用：世界层本身不依赖渲染/平台层
-# （分层约束见本 crate 顶层文档），但验收 demo 需要把 ll-world 产出的
-# 真实地形画到屏幕上，属于开发期验证工具而非产品代码，因此放在
-# dev-dependencies——不会传染给依赖 ll-world 的下游 crate。
-ll-render = { path = "../ll-render" }
-ll-platform = { path = "../ll-platform" }
-image = { version = "0.25", default-features = false, features = ["png"] }
-
-[[example]]
-name = "p2_acceptance"
-# 默认 examples 的 test = false：cargo test --workspace 只保证它能编译，
-# 不会跑里面的 #[test]。这个 demo 里的地形映射、出生点搜索、光照色调
-# 等纯函数逻辑值得被 `cargo test --workspace` 真正覆盖，而不只是编译
-# 检查（与 ll-render 的 p1_acceptance 同样的理由，见其 Cargo.toml）。
-test = true
+# 2026-08-29 批次 13：`ll-render`/`ll-platform`/`image` 三条
+# dev-dependency 随 `p2_acceptance` 一并移除——它们此前的唯一用途是那个
+# demo 的开窗渲染与截图落盘。世界层因此回到「不依赖渲染/平台层」这条
+# 分层约束的干净状态（见
+# `knowledge/decisions/0030-remove-examples-acceptance-demos.md`）。
 
 [[bench]]
 name = "terrain"

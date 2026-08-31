@@ -15,7 +15,7 @@
 `surface_preview.png` 由
 
 ```
-cargo run -p ll-game --example surface_preview
+cargo run -p ll-game --example surface_preview   # 2026-08-29 起该 target 已删，见文末
 ```
 
 生成（无需 GPU、无需窗口）。图里应当能一眼看见五样东西：
@@ -66,7 +66,7 @@ cargo run -p ll-game --example surface_preview
 由
 
 ```
-cargo run -p ll-game --example settlement_preview
+cargo run -p ll-game --example settlement_preview   # 2026-08-29 起该 target 已删，见文末
 ```
 
 生成（同样无需 GPU、无需窗口）。图里是一间手工摆好的小屋，一眼应当
@@ -113,7 +113,7 @@ cargo run -p ll-game --example settlement_preview
 由
 
 ```
-cargo run -p ll-game --example npc_roster_preview
+cargo run -p ll-game --example npc_roster_preview   # 2026-08-29 起该 target 已删，见文末
 ```
 
 生成（同样无需 GPU、无需窗口）。一行是一个种族，一列是一个职业；
@@ -173,3 +173,31 @@ cargo run -p ll-game --example npc_roster_preview
 ### 比对失败时的处置规矩
 
 与本文件上半部分逐字同一条，适用于这张图。
+
+## 生产者已删除（2026-08-29 批次 13）
+
+**本目录三张图** 的唯一生产者是 ``ll-game:{surface,settlement,npc_roster}_preview` 三个 example`。
+2026-08-29 项目所有者裁定去掉 `examples/`（原话「我觉得应该要去掉 example。
+然后有用的东西搬迁了。剩下的后面考虑。」），那个 target 随之删除，见
+[ADR 0030](../../../../knowledge/decisions/0030-remove-examples-acceptance-demos.md)。
+
+**图本身一张没删，删的是生产者。** 也就是说：这张基准现在**无法重新生成**，
+在有人按上面的方式恢复生产者、或把出图逻辑搬成带比对的测试之前，它只能当作
+**只读的历史留档**看。
+（与四张 GPU 基准不同，这三张是**纯 CPU 出图，不需要 GPU、不需要窗口**——
+把它们搬成 `#[test]` 技术上完全可行，代价只是要新造一套「比对基准 PNG +
+环境变量覆盖」的机制。这一组是三条路都便宜的一组，见 ADR 0030。
+另外，这三张图**给机器看的那一半没有受影响**：`tests/surface_render.rs`、
+`tests/atlas_coverage.rs`、`tests/npc_appearance.rs` 一条断言都没动。）
+
+这不是一次「顺手删掉」——ADR 0030「后果」一节列了三条路（保留那一个 example /
+把生成逻辑搬成测试 / 放弃这张基准）各自的代价，并明确写着**本批次不替所有者
+做选择**，只做最保守、最容易反转的那一侧：图留着，生产者删掉，恢复方式写在
+这里。
+
+恢复被删的生产者（git 里逐字节留着，与提交哈希无关）：
+
+```bash
+git log --oneline --diff-filter=D -- crates/ll-game/examples
+git show <那个提交>^:crates/ll-game/examples/surface_preview.rs
+```

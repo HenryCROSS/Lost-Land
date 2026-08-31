@@ -46,24 +46,16 @@ lz4_flex = "0.11"
 
 [dev-dependencies]
 proptest.workspace = true
-# 任务 13（验收 demo）新增：demo 需要证明「脚本状态写入经
+# 任务 13（验收 demo）新增，2026-08-29 批次 13 后由
+# `tests/save_acceptance.rs`/`tests/gameplay_acceptance.rs` 继承：
+# 那两条回归需要证明「脚本状态写入经
 # Effect::SetScriptState → apply 这条唯一入口是否真的被
 # WorldState::hash() 正确捕捉」（P5 计划验收纪律点 a），这要求直接
 # 调用 ll_sim::apply::apply/ll_sim::effect::Effect 与
 # ll_sim::intent/resolve（走一遍真实的 Intent → resolve → Effect →
 # apply 链路，而不是绕过去直接改字段）。依赖方向规格 §5 允许——
 # ll-content 已经直接依赖 ll-world，它排在 ll-sim
-# 的前后两侧，新增这一条不反转任何箭头。只在 examples/tests 里使用，
+# 的前后两侧，新增这一条不反转任何箭头。只在 tests 里使用，
 # 放 dev-dependencies 不进入生产依赖图（不影响
 # `cargo tree -p ll-world | grep ll-sim` 这条既有验证）。
 ll-sim = { path = "../ll-sim" }
-
-[[example]]
-name = "p5_gameplay_acceptance"
-# P5-B 任务 9（验收 demo）：与 `ll-sim` 的 `p5_coordinate_acceptance`
-# 同样的取舍——demo 里的职业/技能树/副职/网状任务/存档往返全部是纯
-# 函数逻辑加 assert!，值得被 `cargo test --workspace` 真正跑一遍，
-# 不只是编译检查。`p5_save_acceptance`（P5-A）没有加这个开关，是因为
-# 它的 main() 本身没有 `#[test]` 函数；本文件把同一段验证逻辑包进了
-# `#[cfg(test)] mod tests`，因此需要这个开关才会被执行到。
-test = true

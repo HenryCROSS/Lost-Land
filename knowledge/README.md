@@ -55,6 +55,7 @@
 - [0026 — 账本纪律的第一次复发](decisions/0026-recurring-ledger-to-adr-discipline-lapse.md) — ADR 0013 立下三天后，又攒了 21 条未提升的裁定
 - [0028 — Steel 引擎构造期的偶发内存破坏](decisions/0028-steel-engine-construction-memory-corruption.md) — 定位到上游缺陷，逐条否决五条假说（爆栈/并发/sync/升级/畸形脚本） 〔脚本时代，历史记录；本 ADR 是「为什么拆掉脚本系统」的证据链〕
 - [0029 — 构造阶段先于编译阶段（约束 C6）](decisions/0029-engine-construction-phase-precedes-compilation.md) — 机器强制的引擎构造时序，作用域单位从脚本文件升格为 mod 〔**约束 C6 已废止**，见该 ADR 订正段〕
+- [0030 — 去掉 `examples/` 验收 demo](decisions/0030-remove-examples-acceptance-demos.md) — 2026-08-29 所有者裁定：验收改由本体二进制实机试玩 + 分层自动化测试承担；规格 §15 那句硬性要求随之修改，八张冻结像素基准的唯一生产者随之消失（图保留，三条路留给下一次裁定）
 
 ### 许可证
 

@@ -1276,7 +1276,6 @@ dependencies = [
 name = "ll-game"
 version = "0.1.0"
 dependencies = [
- "image",
  "ll-content",
  "ll-core",
  "ll-i18n",
@@ -1355,10 +1354,8 @@ dependencies = [
 name = "ll-sim"
 version = "0.1.0"
 dependencies = [
- "image",
  "ll-core",
  "ll-platform",
- "ll-render",
  "ll-world",
  "proptest",
  "serde",
@@ -1372,11 +1369,9 @@ version = "0.1.0"
 dependencies = [
  "cosmic-text",
  "glyphon",
- "image",
  "insta",
  "ll-core",
  "ll-render",
- "pollster",
  "proptest",
  "tracing",
 ]
@@ -1387,7 +1382,6 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "glyphon",
- "image",
  "ll-core",
  "ll-i18n",
  "ll-mod",
@@ -1405,10 +1399,7 @@ name = "ll-world"
 version = "0.1.0"
 dependencies = [
  "criterion",
- "image",
  "ll-core",
- "ll-platform",
- "ll-render",
  "postcard",
  "proptest",
  "serde",

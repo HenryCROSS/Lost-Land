@@ -38,8 +38,9 @@
 //!
 //! # 走 `LooseOnlyEntry`，不进 `placeholder.json`
 //!
-//! 与家具那批逐字同一条理由：`assets/atlas/placeholder.png` 是五个更早
-//! 批次验收 demo 的冻结像素基准，往里加 52 条会把画布撑大、把那批基准
+//! 与家具那批逐字同一条理由：`assets/atlas/placeholder.png` 是四张冻结
+//! 像素基准的来源（见 `main.rs` 的 `LooseOnlyEntry` 文档，含 2026-08-29
+//! 的更正段），往里加 52 条会把画布撑大、把那批基准
 //! 卷进来，而 `ll-game` 本体二进制早就不读那张图了。见
 //! [`crate::LooseOnlyEntry`] 文档。
 //!

@@ -33,8 +33,9 @@ use crate::registry::Registry;
 
 /// 本体占位内容的固定标识符。
 ///
-/// 命名沿用 P5 验收 demo（`crates/ll-content/examples/p5_save_acceptance.rs`
-/// 早期版本）摸索出的约定——demo 当时只能在测试代码里临时 `intern`
+/// 命名沿用 P5 验收 demo（`crates/ll-content/tests/save_acceptance.rs`
+/// 的早期版本，当时还叫 `examples/p5_save_acceptance.rs`，见 ADR 0030）
+/// 摸索出的约定——demo 当时只能在测试代码里临时 `intern`
 /// 这个字符串来绕过 `load_full` 的硬编码 `None`，本模块把它转正为一条
 /// 真实的本体注册。
 pub const PLACEHOLDER_RACE_ID: &str = "lostland:placeholder_race";

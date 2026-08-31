@@ -24,16 +24,10 @@ tracing = "0.1"
 
 [dev-dependencies]
 proptest.workspace = true
-pollster = "1.0"
-# 只启用 PNG：截图证据落盘用，不需要其余格式解码器。
-image = { version = "0.25", default-features = false, features = ["png"] }
 # 断行结果快照测试——像素级渲染快照对字体/驱动版本太敏感，只测排版
 # 的结构化结果（行数、每行文本范围、宽度）。
 insta = "1"
-
-# 最小可行验证 demo：离屏渲染一行中英混排文本 + 一个 Tabler 图标，
-# 存 PNG 作截图证据。不建窗口——headless 请求 adapter，不依赖显示环境
-# 的窗口系统调用能否成功，只依赖 GPU 适配器本身是否可用。
-[[example]]
-name = "mixed_text_demo"
-test = false
+# 2026-08-29 批次 13：`pollster` 与 `image` 随 `mixed_text_demo` 一并
+# 移除——它们的唯一用途是那个 demo 的离屏截图落盘（见
+# `knowledge/decisions/0030-remove-examples-acceptance-demos.md`）。
+# `tests/visual/mixed_text_demo.png` 本身保留，只是暂时没有生产者。

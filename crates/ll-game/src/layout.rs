@@ -66,14 +66,15 @@ pub const BASE_SIGHT_RADIUS: u32 = 12;
 /// `terrain_dirt` 糊在一起——所有者的验收方式是「走进据点看一眼」，
 /// 木/石地板必须一眼可分。这是本批次的判断，不是所有者原话。
 ///
-/// `p5_coordinate_acceptance` 里的同一处借用也已经解除，理由见本模块
-/// 文档开头「逻辑一致曾经短暂地不成立」一段。
+/// 当年 `p5_coordinate_acceptance` 里的同一处借用也一并解除过，理由见
+/// 本模块文档开头「逻辑一致曾经短暂地不成立」一段（那个 demo 已于
+/// 2026-08-29 随所有者裁定删除，见 ADR 0030）。
 ///
-/// `terrain_dirt` 本身**没有**因此变成孤儿图：
-/// `crates/ll-render/examples/p1_acceptance` 拿它铺棋盘格、
-/// `crates/ll-game/src/content.rs` 的 mod 资产覆盖验收拿它当被覆盖的
-/// 目标，两处都还在用。这两处**不是**借用——那里的 `terrain_dirt` 就是
-/// 泥土本身，与「拿泥土冒充石地板」是两回事，不在这次统一的范围内。
+/// `terrain_dirt` 本身**没有**因此变成孤儿图，但**它的消费者已经从两处
+/// 降到一处**：`crates/ll-game/src/content.rs` 的 mod 资产覆盖验收拿它
+/// 当被覆盖的目标。另一处（`crates/ll-render/examples/p1_acceptance`
+/// 拿它铺棋盘格）随上述裁定一起没了。剩下那一处**不是**借用——那里的
+/// `terrain_dirt` 就是泥土本身，与「拿泥土冒充石地板」是两回事。
 pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'static str> {
     if kind == ids.deep_water {
         Some("lostland:terrain_deep_water")

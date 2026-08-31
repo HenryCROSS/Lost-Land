@@ -15,7 +15,7 @@
 #
 # 平台盲区：本机（本仓库开发机是 Windows）只能覆盖 windows-latest 这一
 # 半 target。CI 的 `test` job 在 ubuntu-latest 与 windows-latest 两个
-# target 上各跑一次 fmt/clippy/test/验收 demo；`licenses`/`no-manual-euclidean-
+# target 上各跑一次 fmt/clippy/test/禁止 example；`licenses`/`no-manual-euclidean-
 # distance`/`coverage`/`no-hardcoded-i18n-strings`/`docs-and-links`/
 # `field-consumer-check`/`save-schema-version-check` 七个 job 全部只在
 # ubuntu-latest 上跑，本地完全没有对应环境。任何依平台生效
@@ -57,7 +57,7 @@ run_step() {
 run_step "格式检查"                     bash scripts/ci/check_fmt.sh
 run_step "Clippy"                       bash scripts/ci/check_clippy.sh
 run_step "测试"                         bash scripts/ci/run_tests.sh
-run_step "运行验收 demo（编译过不等于断言过）" bash scripts/ci/run_acceptance_demos.sh
+run_step "禁止 example target（2026-08-29 裁定，ADR 0030）" bash scripts/ci/check_no_examples.sh
 run_step "许可证与安全公告扫描"           bash scripts/ci/check_licenses.sh
 run_step "禁止手写欧氏距离"               bash scripts/ci/check_no_manual_euclidean_distance.sh
 run_step "字段接线检查（声明但无决策层消费者，阻断模式）" python3 scripts/ci/check_field_consumers.py
