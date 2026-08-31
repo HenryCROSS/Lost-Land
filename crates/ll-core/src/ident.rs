@@ -23,6 +23,24 @@ use std::collections::HashMap;
 use std::fmt;
 
 /// 内容标识符，形如 `命名空间:路径`。
+///
+/// # `serde` 走 `try_from`/`into`，不裸派生（ADR 0011）
+///
+/// 本类型**有**一条不依赖任何运行期上下文的不变式：两段都非空、且只由
+/// 小写字母/数字/下划线/连字符/点号组成（见 [`NamespacedId::parse`]）。
+/// 裸派生会让反序列化绕过 `parse` 直接填两个 `Box<str>` 字段，凭空造出
+/// 一个 `NamespacedId { namespace: "", path: "MyMod:x" }` 这类**结构上
+/// 非法**的值——ADR 0011 点名的正是这个失效模式。因此线格式是一个
+/// **字符串**，反序列化必经 `parse`。
+///
+/// 这与紧邻下方 [`ContentIndex`] 的裸派生**不矛盾**：那个类型没有任何
+/// 无上下文不变式（任意 `u32` 都形状合法），见它自己的文档。
+///
+/// **谁需要它**：势力播种批次把 [`ContentIndex`] 之外的
+/// `ll_world::entity::OrgInstance::authored`（`Option<NamespacedId>`）
+/// 放进了存档主体——那是本类型第一次需要持久化。
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+#[cfg_attr(feature = "serde", serde(try_from = "String", into = "String"))]
 #[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub struct NamespacedId {
     namespace: Box<str>,
@@ -74,6 +92,23 @@ fn is_valid_segment(segment: &str) -> bool {
 impl fmt::Display for NamespacedId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}:{}", self.namespace, self.path)
+    }
+}
+
+/// 线格式的写出侧，见 [`NamespacedId`] 文档「`serde` 走 `try_from`/`into`」。
+impl From<NamespacedId> for String {
+    fn from(id: NamespacedId) -> String {
+        id.to_string()
+    }
+}
+
+/// 线格式的读入侧：必经 [`NamespacedId::parse`]，因此反序列化产不出
+/// 结构非法的值。
+impl TryFrom<String> for NamespacedId {
+    type Error = CoreError;
+
+    fn try_from(raw: String) -> Result<Self, Self::Error> {
+        NamespacedId::parse(&raw)
     }
 }
 

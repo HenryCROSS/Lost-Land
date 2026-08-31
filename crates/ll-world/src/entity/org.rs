@@ -12,12 +12,27 @@ use ll_core::ident::{ContentIndex, NamespacedId, WorldId};
 /// 一个组织实例——势力、宗教、行会、家族等在世界生成期间被创造出来的
 /// 具体个体。
 ///
-/// 不派生 `serde`：`def` 里的 [`ContentIndex`] 依赖 mod 加载顺序、
-/// `ll_core::ident` 模块文档明确写着不可持久化，理由同
-/// [`crate::entity::Goal::kind`]。真正持久化需要先把 `def` 解析回
-/// [`NamespacedId`] 字符串再重新登记，属于内容注册表的存档格式，不在
-/// 本任务范围内。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// # 现在派生 `serde`（势力播种批次）——这推翻本段的旧文字
+///
+/// 这里原本写着「不派生 `serde`：`def` 里的 [`ContentIndex`] 依赖 mod
+/// 加载顺序、不可持久化」。**按纪律重写而不是删掉**：那条理由在今天只
+/// 剩一半。[`ContentIndex`] 早已补齐了无上下文的直接
+/// `Serialize`/`Deserialize`（`crate::entity::Affiliation` 的
+/// [`crate::entity::OrgRef::Def`] 就在派生），「这个索引当前是否已注册」
+/// 的校验留给拿到注册表之后的调用方——ADR 0015 与 0011 分工的既有落点。
+///
+/// 项目所有者已裁定（2026-08-29）：**「`OrgInstance` 进入存档，因为被
+/// 占领后肯定会有变化的。」** 势力播种（[`crate::faction`]）因此把它
+/// 放进 [`crate::state::WorldState::factions`]，随存档主体的 `postcard`
+/// 一起走。
+///
+/// **仍然成立的那一半，如实记账**：播种出来的势力 `def`/`authored`
+/// **恒为 `None`**（纯生成），因此今天存档里不存在任何一个真实的
+/// `ContentIndex`。等 mod 真的定义具体势力那天（
+/// `knowledge/design/identity-and-ids.md` 四），`def` 会开始携带真实
+/// 索引，那时 `ll_content::remap` 必须为它补一条重映射——否则换一批
+/// mod 装载顺序之后它会静默指向另一个模板。**这笔账现在就记在这里。**
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct OrgInstance {
     /// 一切实例都有：这是它在存档、事件日志、脚本查询里被引用的方式。
     /// 永不复用——王朝覆灭后历史事件仍要能解析回它。

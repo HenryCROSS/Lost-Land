@@ -32,6 +32,7 @@ pub mod climate;
 pub mod culture;
 pub mod entity;
 pub mod exploration;
+pub mod faction;
 pub mod fov;
 pub mod generate;
 pub mod history;
