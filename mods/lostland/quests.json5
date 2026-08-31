@@ -12,25 +12,74 @@
 // - 「一个任务有多个前置」：finale 要求两条分支都完成——finale 有两个
 //   父节点，因此这张图不是树。
 //
-// 同时演示两档完成条件：三条用 kill-count（一档），branch_b 用
-// script（三档）。
+// # 【2026-08-30 更正】branch_b 从 script 改成 kill-count
 //
-// # lostland:goblin 与 lostland:branch_b_condition 是开放标识符
+// **被推翻的原文**（保留在此，追溯用）：「同时演示两档完成条件：三条
+// 用 kill-count（一档），branch_b 用 script（三档）」；以及下面「开放
+// 标识符」一节曾有的那半段——它如实写着「求值 `lostland:branch_b_
+// condition` 指向的回调是**尚未落地**的能力……Script 变体目前只是一个
+// 携带命名空间 id 的数据标签」。
 //
-// 前者指向「敌人类型」，代码库至今没有敌人类型注册表——
+// **那句话本身没有错，错在没有人算过它的下游后果。** branch_b 是
+// finale 的两个前置之一，而任务完成判定只交付 KillCount 一档：
+// `crates/ll-sim/src/quest.rs` 的 `QuestCatalog` 文档写明「只交付
+// `KillCount`」，`ll_mod::quest::RegisteredQuests::kill_count_quests`
+// 对任何非 `KillCount` 条件直接 `continue`。于是——
+//
+//   branch_b 永不可完成 ⇒ finale 的前置永远不满足
+//   ⇒ **本体任务链的终点是死的**。
+//
+// 这是一条诚实的声明 + 一条没人算过的连锁。2026-08-29 的文档—代码
+// 一致性审计（`knowledge/audit/2026-08-29-doc-code-audit.md` 二节缺陷
+// 第 1 项）抓到它，所有者裁定**改条件保住连通性**，本次落地。
+//
+// 这条缺口的**另一端不动**：`QuestCondition::Script` 变体本身保留，
+// 见 `crates/ll-mod/src/quest.rs` 该变体的文档——那里写明它今天为什么
+// 还留着、等哪一批、最小形状是什么。本次变的只是「本体内容不再拿一条
+// 今天求值不出来的条件去挡自己的任务链」。**三档条件的示范价值不靠
+// 本体任务链背**：schema 侧 `RawQuestCondition::resolve` 的 `"script"`
+// 分支、注册/查询/无环校验/存档往返全部原样还在，它们才是那半条链路
+// 的真实证据。
+//
+// 由 `crates/ll-mod/tests/base_quest_graph_completable.rs` 守住：本体
+// 每一条任务都必须能被今天真实在跑的判定器完成，清单从注册表现查，
+// 以后新加的任务自动进入这道门。
+//
+// # 为什么 branch_b 不能沿用 lostland:goblin
+//
+// 击杀计数按 target_kind 累加成**同一个键**（`ll_sim::quest` 的
+// `kill_count_key`）。若两条分支都数哥布林，杀满 branch_a 要的 5 只
+// 时，任何 count ≤ 5 的哥布林条件都会在同一刻一起达标——两条分支就
+// 不再是两条路，「网」退化成「一条路解锁全部」，上面那张图白画。
+// 因此 branch_b 必须换一个 target_kind。
+//
+// # branch_b 的内容口径（本批次自己定的，不是所有者裁定）
+//
+// 所有者只裁定了「改条件」，改成什么由实现者定，如实标注在这里。
+// 取 `lostland:human` / count 1，三条理由：
+//
+// 1. **把这条链读成一场哥布林战争**：main_quest_1 是遭遇（3 只），
+//    branch_a 是正面清剿（5 只），branch_b 是揪出放哥布林进来的那个
+//    内应（1 个人类），finale 是最后一击（1 只）。两条分支代价不同：
+//    一条打怪，一条对定居者出手（`crates/ll-world/src/ownership.rs`
+//    的归属/犯罪判定是它天然的后果面）。
+// 2. **最可达**：`cultures.json5` 里 farmstead 与 harbour 的
+//    `founder_races` 人类权重最高（8 / 7），玩家不必满世界找一个稀有
+//    种族才能推进本体任务。
+// 3. **count 取 1**：本体这四条任务是**验收样例**，不是难度曲线。
+//    数量取最小可达值，让「两条分支各自独立达成」这件事以最低的内容
+//    代价成立；真要做难度曲线是内容批次的账，不是这条缺陷修复的账。
+//
+// # lostland:goblin 与 lostland:human 在这里是「开放标识符」
+//
+// 两者都指向「敌人类型」，而代码库至今没有敌人类型注册表——
 // `ll_mod::content_audit::ReferenceExpectation::UntypedIdSpace` 正是
 // 为这种情形留的豁免出口，把它按「必须在某张内容表里已定义」检查会把
 // 一条**正确的设计**判成错误，见 `ll_mod::quest` 模块文档「跨表引用」。
-//
-// 后者是 `QuestCondition::Script` 携带的脚本回调标识符。**必须如实说
-// 清楚**：求值它指向的回调是**尚未落地**的能力——`ll_sim` 的任务完成
-// 判定当前只处理 KillCount 变体，Script 变体目前只是一个携带命名空间
-// id 的数据标签。这条内容存在的意义是把「三档条件能被注册、能被存档、
-// 能被查询」这半条链路钉住，不是宣称脚本回调已经能跑。
-//
-// **本批次之后这条缺口的形状变了、但没有变大**：脚本系统整体在拆，
-// 「脚本回调」将来指向的会是 Rust 侧注册的具名判定函数，不是一段
-// Steel 源码。数据里携带一个 id 这件事本身不受影响。
+// （两者恰好也都是 `races.json5` 里定义过的种族 id，但那是内容作者的
+// 选择，不是 schema 的要求：击杀匹配走的是
+// `victim.creature_kind.unwrap_or(victim.race)` 这个归并键，见
+// `ll_sim::quest` 模块文档「击杀计数」一节如实记录的那处语义借用。）
 //
 // # 环检查
 //
@@ -45,19 +94,20 @@
       condition: { kind: "kill-count", target: "lostland:goblin", count: 3 },
     },
 
-    // 分支之一（一档条件）：击杀 5 个哥布林。
+    // 分支之一：正面清剿，再击杀 5 个哥布林。
     {
       id: "lostland:branch_a",
       prerequisites: ["lostland:main_quest_1"],
       condition: { kind: "kill-count", target: "lostland:goblin", count: 5 },
     },
 
-    // 分支之二（三档条件）：脚本回调判定，见文件头对 Script 档现状的
-    // 说明。
+    // 分支之二：揪出内应，击杀 1 个人类。target_kind 与 branch_a 不同
+    // 是**刻意**的，理由见文件头「为什么 branch_b 不能沿用
+    // lostland:goblin」。
     {
       id: "lostland:branch_b",
       prerequisites: ["lostland:main_quest_1"],
-      condition: { kind: "script", target: "lostland:branch_b_condition" },
+      condition: { kind: "kill-count", target: "lostland:human", count: 1 },
     },
 
     // 汇聚任务：两条分支都完成后才解锁。

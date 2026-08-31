@@ -548,6 +548,127 @@ fn section3_networked_quest_progress(content: &Content, world: &mut WorldState, 
     ));
 
     println!("  网状任务验收通过（branch_a 与 branch_b 同时解锁，finale 仍需两者都完成）\n");
+
+    // -----------------------------------------------------------------
+    // 一路打到 finale：这张图的终点必须真的走得到
+    //
+    // 2026-08-29 审计缺陷第 1 项：`branch_b` 曾经用三档 `Script` 条件，
+    // 而三档没有求值器，于是 `finale` 的前置永远不满足——**本体任务链
+    // 的终点是死的**。当时这段验收只走到 `main_quest_1` 完成为止，
+    // 因此一条测试都没有红。所有者裁定「改条件」（`branch_b` 改成击杀
+    // 1 个人类，见 `mods/lostland/quests.json5` 文件头），本段是那次
+    // 修复的端到端证据：全程走真实的
+    // Intent::Attack -> resolve_with_skills_and_quests -> Effect -> apply，
+    // 不直接调用 `mark_quest_completed` 伪造任何一步。
+    //
+    // 姊妹断言在 `crates/ll-mod/tests/base_quest_graph_completable.rs`：
+    // 那一条**从注册表现查**本体任务清单、不手抄 id，以后新加的任务
+    // 自动进入那道门；本段负责的是「真打一遍确实能打通」这半边。
+    // -----------------------------------------------------------------
+
+    // branch_a：哥布林累计击杀达到 5（上面已经杀过 3 只，再补 2 只）。
+    for i in 0..2 {
+        kill_one(content, world, player, content.goblin_kind, (2 + i, 1));
+    }
+    let after_branch_a = build_quest_log_view(
+        world.actors.get(player).expect("玩家应存在"),
+        &content.quest_table,
+        &content.registry,
+    );
+    assert!(
+        after_branch_a
+            .completed
+            .contains(&content.quest_ids.branch_a),
+        "哥布林累计击杀 5 只之后 branch_a 应当完成"
+    );
+    assert!(
+        !after_branch_a
+            .completed
+            .contains(&content.quest_ids.branch_b),
+        "branch_b 数的是另一个 target_kind，它不该被哥布林击杀顺带完成——否则两条分支不是两条路"
+    );
+
+    // branch_b：击杀 1 个人类。
+    kill_one(content, world, player, content.human_race, (2, 2));
+    let after_branch_b = build_quest_log_view(
+        world.actors.get(player).expect("玩家应存在"),
+        &content.quest_table,
+        &content.registry,
+    );
+    for branch in [content.quest_ids.branch_a, content.quest_ids.branch_b] {
+        assert!(
+            after_branch_b.completed.contains(&branch),
+            "两条分支此刻都应当已完成"
+        );
+    }
+    assert!(
+        after_branch_b
+            .unlocked_not_completed
+            .contains(&content.quest_ids.finale),
+        "两条分支都完成之后 finale 应当解锁"
+    );
+
+    // finale：它自己的条件是再击杀 1 个哥布林。**前置检查读的是本批
+    // 结算之前的状态**（见 `QuestKillRule::prerequisites` 文档），因此
+    // finale 不会在完成 branch_a 的那一刀上顺带完成，必须再打一刀。
+    kill_one(content, world, player, content.goblin_kind, (2, 3));
+    let after_finale = build_quest_log_view(
+        world.actors.get(player).expect("玩家应存在"),
+        &content.quest_table,
+        &content.registry,
+    );
+    assert!(
+        after_finale.completed.contains(&content.quest_ids.finale),
+        "两条分支都完成、再击杀一只哥布林之后 finale 应当完成——这张图的终点必须真的走得到"
+    );
+    assert!(
+        !after_finale
+            .unlocked_not_completed
+            .contains(&content.quest_ids.finale),
+        "已完成的任务不该再出现在「已解锁未完成」里"
+    );
+
+    println!("  本体任务链全程打通：main_quest_1 -> branch_a/branch_b -> finale\n");
+}
+
+/// 在 `at` 处生成一个 `kind` 种类、一击必杀的目标并真的把它打死——走的
+/// 是与本节上半段完全相同的
+/// `Intent::Attack -> resolve_with_skills_and_quests -> apply` 链路，
+/// 抽出来只是为了让「打通任务链」那段读起来是一串击杀而不是一串样板。
+fn kill_one(
+    content: &Content,
+    world: &mut WorldState,
+    player: EntityId,
+    kind: ContentIndex,
+    at: (i32, i32),
+) {
+    let victim_pos = pos_at(world, at.0, at.1);
+    let victim_agent = {
+        let mut agent = bare_agent(world, victim_pos);
+        agent.race = kind;
+        agent.health = 1; // 一击必杀,聚焦验证击杀->任务这条接线。
+        agent
+    };
+    let victim = world.actors.spawn(victim_agent);
+    let effects = resolve_with_skills_and_quests(
+        world,
+        &Intent::Attack {
+            actor: player,
+            target: victim,
+        },
+        &content.skill_table,
+        &RegisteredQuests {
+            table: &content.quest_table,
+            registry: &content.registry,
+        },
+    );
+    assert!(
+        effects.iter().any(|e| matches!(e, Effect::Kill { .. })),
+        "这一击应当致死"
+    );
+    for effect in &effects {
+        apply(world, effect);
+    }
 }
 
 // ---------------------------------------------------------------------

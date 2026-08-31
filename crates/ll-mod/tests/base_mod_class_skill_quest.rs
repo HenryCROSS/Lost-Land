@@ -324,12 +324,13 @@ fn 剑舞者与学徒不声明获得条件这是一条写下来的已知缺口()
 }
 
 #[test]
-fn 本体四条任务的网状结构与两档完成条件逐条与迁移前一致() {
+fn 本体四条任务的网状结构与完成条件逐条钉死() {
     // Arrange
     let loaded = load_real_mods();
     let ids =
         resolve_base_quests(&loaded.registry, &loaded.quest).expect("本体任务契约必须解析成功");
     let goblin = index_of(&loaded.registry, "lostland:goblin");
+    let human = index_of(&loaded.registry, "lostland:human");
 
     // Act & Assert：起点，无前置，击杀 3。
     let main = loaded.quest.get(ids.main_quest_1).expect("已注册");
@@ -353,14 +354,25 @@ fn 本体四条任务的网状结构与两档完成条件逐条与迁移前一�
         }
     );
 
-    // branch_b：三档条件（脚本回调标识符）。
+    // branch_b：一档条件，击杀 1 个**人类**。
+    //
+    // 【2026-08-30】此处原本钉的是三档 `QuestCondition::Script(
+    // "lostland:branch_b_condition")`。三档今天没有求值器，而 branch_b
+    // 是 finale 的前置——本体任务链的终点因此曾经永远解不开（2026-08-29
+    // 审计缺陷第 1 项，所有者裁定「改条件」）。`target_kind` 与
+    // branch_a 不同是刻意的，理由见 quests.json5 文件头。
     let branch_b = loaded.quest.get(ids.branch_b).expect("已注册");
     assert_eq!(branch_b.prerequisites, &[ids.main_quest_1]);
     assert_eq!(
         branch_b.condition,
-        &QuestCondition::Script(
-            NamespacedId::parse("lostland:branch_b_condition").expect("合法标识符")
-        )
+        &QuestCondition::KillCount {
+            target_kind: human,
+            count: 1,
+        }
+    );
+    assert_ne!(
+        goblin, human,
+        "两条分支的 target_kind 必须不同，否则击杀计数共用同一个键、         两条分支同时达标，网状图退化成一条路"
     );
 
     // finale：两个前置同时满足——这张图因此不是树。
