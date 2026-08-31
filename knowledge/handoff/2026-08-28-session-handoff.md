@@ -58,7 +58,7 @@ grep -n "pub const CONTENT_HASH_ALGORITHM_VERSION" crates/ll-mod/src/content_has
 | 3 | **「加入」走 `AffiliationKind::Faction`，不新加 `Settlement` 变体。** 而且 **`Faction` 必须是真的势力、下属多个据点——不许拿据点的 `WorldId` 冒充** | 所有者原话：「理论上是应该加入某个国家的」「Faction 应该是真的势力，下属很多据点」。**两次裁定，第二次否掉了过渡变通。** 后果见下方「第 3 条的后果：对话的『加入』依赖势力播种」 |
 | 4 | **NPC 初始钱包不能是 0**，按职业量级给、从据点人口派生 | 现状 `ll_mod::roster::build_npc_agent` 写死 `wallet: 0` ⇒ **玩家只能买不能卖，交易落地即残废**。触及货币守恒，落地时要在文档里写明取值理由 |
 | 5 | **`standing`：加入据点给 +250，满值 1000** | 今天连一个常量都没有。先立常量，数值以后调 |
-| 6 | **关不上的门要给具体提示**（「门口有人挡着」「门口立着东西」），中英各一 | 现状只有一句泛化的「什么都没发生」（`PlayerTurnOutcome::Nothing`）——不是「没有反馈」，是**太笼统** |
+| 6 | **关不上的门要给具体提示**（「门口有人挡着」「门口立着东西」），中英各一 | 现状只有一句泛化的「什么都没发生」（`PlayerTurnOutcome::Nothing`）——不是「没有反馈」，是**太笼统**。**【2026-08-31 已落地，批次 19】** 两句都落了（`Feedback::DoorBlockedByOccupant` / `DoorBlockedByObject`）。`knowledge/design/ui-and-navigation.md` 九节 F1 此前把这条裁定收敛成了**一个** `DoorBlocked` 变体，落地时按本条原话更正回两条，更正记在该节原地 |
 | 7 | **第一批对话不支持加入行会/宗教**，记录着等 P9 | 两者连「拿据点 id 当 org」这条变通都没有 |
 | 8 | **对话里不出现玩家自定义文本** | 会引出「玩家输入进不进存档、进不进世界哈希」一串新问题 |
 | 9 | **老存档里指向据点 `WorldId` 的归属：不写迁移**，纳入既有「版本不对就打不开」策略 | 编年史不进存档、靠种子重跑派生，而 `remap_affiliations` 对 `OrgRef::Instance` 不做重映射 |
