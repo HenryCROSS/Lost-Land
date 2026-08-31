@@ -229,7 +229,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("unidentified");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let (table, relic) = relic_item_table();
 
         // Act：observer 的已鉴定列表是空的。
@@ -261,7 +261,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("identified");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let (table, relic) = relic_item_table();
 
         // Act
@@ -290,7 +290,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("empty");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let (table, _) = arrow_item_table();
 
         // Act
@@ -313,7 +313,7 @@ mod tests {
         // Arrange：3 支箭。
         let dir = temp_dir("name-and-count");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let (table, index) = arrow_item_table();
         let inventory = vec![ItemStack::new(index, 3)];
 
@@ -338,7 +338,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("durability");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let (table, index) = arrow_item_table();
         let inventory = vec![ItemStack::with_durability(index, 1, 37)];
 
@@ -363,7 +363,7 @@ mod tests {
         // Arrange：`ItemStack::new` 恒把 durability 设成 None。
         let dir = temp_dir("no-durability");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let (table, index) = arrow_item_table();
         let inventory = vec![ItemStack::new(index, 1)];
 
@@ -388,7 +388,7 @@ mod tests {
         // Arrange：内容索引来自一个从未在 table 里 define 过的标识符。
         let dir = temp_dir("unknown-item");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let mut interner = Interner::new();
         let unknown = interner.intern(NamespacedId::parse("lostland:ghost_item").unwrap());
         let table = ItemTable::new();
@@ -415,7 +415,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("panel-width");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let (table, _) = arrow_item_table();
 
         // Act

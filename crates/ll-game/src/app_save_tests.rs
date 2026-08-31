@@ -12,7 +12,6 @@
 //! ADR 0025 禁止用合成按键做验收：这里每一条都是程序化驱动公开/私有
 //! 路径，不模拟任何键盘事件。
 
-use ll_i18n::Catalog;
 use ll_platform::config::GameConfig;
 use ll_platform::input::InputState;
 
@@ -117,7 +116,7 @@ fn 玩家死亡后存档保留模式转普通并回到角色创建() {
         "测试旅人".to_string(),
         GameConfig::default(),
         crate::test_support::unique_temp_path("ll-game-death-config").join("config.json5"),
-        Catalog::load_dir(&std::env::temp_dir().join("ll-game-death-empty-locales")),
+        crate::test_support::empty_catalog("ll-game-death-empty-locales"),
     );
     assert!(!demo.can_save_manually(), "Arrange：这是一局肉鸽档");
     demo.save_now();

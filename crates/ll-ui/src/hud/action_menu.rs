@@ -169,7 +169,7 @@ mod tests {
     fn fixture_catalog(name: &str) -> Catalog {
         let dir = temp_dir(name);
         write_fixture_catalog(&dir);
-        Catalog::load_dir(&dir)
+        Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir)
     }
 
     fn texts(data: &ActionMenuData<'_>, catalog: &Catalog) -> Vec<String> {

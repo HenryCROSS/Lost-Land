@@ -223,10 +223,10 @@ mod tests {
     use std::path::Path;
 
     fn 测试目录() -> Catalog {
-        Catalog::load_dir(Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../assets/locales"
-        )))
+        Catalog::load_one(
+            crate::content::BASE_NAMESPACE,
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales")),
+        )
     }
 
     #[test]

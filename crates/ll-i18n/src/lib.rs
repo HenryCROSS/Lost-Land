@@ -39,9 +39,45 @@
 //!   `lostland:keybind.action.up` 的原始文本），但一眼就能看出「这里
 //!   缺了翻译」，比空白或占位符更容易在测试/游玩中被发现并追溯到具体
 //!   缺失的是哪一条。
+//!
+//! # 命名空间是查表的一部分，不是可以剥掉的装饰
+//!
+//! [`Catalog`] 按 **`(命名空间, 语言标签)`** 分桶（实现上是两级
+//! `HashMap`），[`Catalog::resolve`] 用 key 的命名空间前缀决定去哪个桶
+//! 查。此前的实现把前缀**整个剥掉**再查一张只按语言分桶的扁平表，那有
+//! 两个后果，缺一不可修：
+//!
+//! 1. 两个 mod 各自定义同名内容（两边都有 `elf` 种族）时，
+//!    `mymod:race.elf.display_name` 与 `lostland:race.elf.display_name`
+//!    折成同一个 Fluent id，**后装载的静默覆盖前一个**，没有任何东西
+//!    会报错；
+//! 2. 与之配套的装载端此前只读本体一个目录，第三方 mod 的 `.ftl`
+//!    **根本没有被读过**。
+//!
+//! 两条都是 `knowledge/design/dialogue-system.md` 三节 3.2 点名的致命
+//! 缺口，本 crate 与 `ll_mod::locale_vfs`、`ll_game` 的装载点同批修完。
+//!
+//! # 语言回退：不许让玩家看见键名
+//!
+//! 一个 mod 只提供了 `zh-CN.ftl`，玩家用 `en` 玩——此前的行为是整屏
+//! 显示 `mymod:item.foo.display_name` 这样的原始键名。
+//! [`Catalog::resolve`] 因此有一条回退链：
+//!
+//! ```text
+//! 请求的语言 → FALLBACK_LANGUAGE（en）→ 该命名空间其余语言（字典序）→ 键名
+//! ```
+//!
+//! - **回退不跨命名空间**：`mymod:greet` 缺译时绝不去看本体的
+//!   `greet`——那正是上一节要消灭的撞键行为换一种形式。
+//! - 回退到**另一种语言的真实文案**是「看得懂但语言不对」，回退到键名
+//!   是「看不懂」。前者玩家能继续玩，且一眼能看出是翻译缺失。
+//! - 每次落到回退都记一条 `warn`，缺译仍然在日志里看得见。
+//! - 需要判断「这个键在这种语言下到底有没有译文」的调用方（覆盖率门禁）
+//!   用 [`Catalog::try_resolve`]，它精确、不回退。**这条配套不是可选
+//!   的**：没有它，回退链会把已经在生效的覆盖率断言全部变哑。
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use fluent::{FluentBundle, FluentResource};
 use unic_langid::LanguageIdentifier;
@@ -57,7 +93,49 @@ use unic_langid::LanguageIdentifier;
 /// `ll-render` 重新导出的 `wgpu` 一致。
 pub use fluent::FluentArgs;
 
-/// 一个语言的完整消息集合：`语言标签 → FluentBundle`。
+/// 一个 mod（或本体）的本地化目录：命名空间 + 该命名空间的 `locales/`
+/// 目录。
+///
+/// **本体不是特例**：本体那一条与任何 mod 那一条是同一个类型、走同一
+/// 条装载路径，唯一的差别是 `dir` 指向 `assets/locales/` 而不是
+/// `mods/<id>/locales/`——与 `ll_mod::asset_vfs::build` 把本体资产根目录
+/// 与 `mods_root` 并列传入是同一形状，也正是
+/// `knowledge/design/mod-package-structure.md`「本地化文件」一节
+/// 「规格 §5 `locales/` 目录本身就可以理解成本体这个虚拟 mod 自己的
+/// `locales/`」的直接实现。这里**没有**一条「本体专用」的装载入口。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocaleSource {
+    /// 这个目录里的全部 `.ftl` 属于哪个命名空间。
+    pub namespace: String,
+    /// 该命名空间的 `locales/` 目录，内含 `<语言标签>.ftl`。
+    pub dir: PathBuf,
+}
+
+impl LocaleSource {
+    /// 构造一条本地化来源。
+    pub fn new(namespace: impl Into<String>, dir: impl Into<PathBuf>) -> LocaleSource {
+        LocaleSource {
+            namespace: namespace.into(),
+            dir: dir.into(),
+        }
+    }
+}
+
+/// 查不到请求语言时，回退链里**优先**尝试的语言标签。
+///
+/// 见模块文档「语言回退」一节：本项目首发中英双语，`en` 是 mod 作者最
+/// 可能提供的那一份，也是最可能被最多人看懂的那一份，因此它排在其余
+/// 语言（字典序）之前。
+pub const FALLBACK_LANGUAGE: &str = "en";
+
+/// 全部已装载的本地化消息，按**命名空间 → 语言标签 → `FluentBundle`**
+/// 两级分桶。
+///
+/// # 为什么必须有命名空间这一维
+///
+/// 见模块文档「命名空间是查表的一部分」一节。一句话：没有这一维，
+/// `mymod:race.elf.display_name` 与 `lostland:race.elf.display_name`
+/// 会折成同一个 Fluent id，落进同一个 bundle。
 ///
 /// 语言标签是 `.ftl` 文件名去掉扩展名，如 `zh-CN.ftl` 对应标签
 /// `"zh-CN"`——与
@@ -65,11 +143,15 @@ pub use fluent::FluentArgs;
 /// `locales/<语言标签>.ftl` 约定完全一致，不需要在文件名之外再维护
 /// 一份语言标签清单。
 pub struct Catalog {
-    bundles: HashMap<String, FluentBundle<FluentResource>>,
+    /// 裸键（不含冒号，如 `window.title`、`hud-status-time-label`）归属
+    /// 的命名空间。这些键属于引擎/HUD 自身而不属于任何内容表，今天就
+    /// 没有前缀，此处保持它们的既有行为。
+    base_namespace: String,
+    bundles: HashMap<String, HashMap<String, FluentBundle<FluentResource>>>,
 }
 
 impl Catalog {
-    /// 从一个目录装载全部 `*.ftl` 文件，每个文件是一种语言。
+    /// 按顺序装载全部本地化来源。
     ///
     /// **不返回 `Result`，永不失败**：目录不存在、某个文件语法有误、
     /// 文件名不是合法语言标签——这些情况各自跳过对应的语言/文件并记一条
@@ -78,70 +160,111 @@ impl Catalog {
     /// 启动。极端情况下（目录整个不存在）会得到一个空 `Catalog`——
     /// 此后每次 `resolve` 都会走「回退到键名」分支，游戏仍然能跑，只是
     /// 玩家会看到键名而不是译文，这比直接起不来更好。
-    pub fn load_dir(dir: &Path) -> Catalog {
-        let mut bundles = HashMap::new();
-
-        let entries = match std::fs::read_dir(dir) {
-            Ok(entries) => entries,
-            Err(error) => {
-                tracing::warn!(
-                    dir = %dir.display(),
-                    %error,
-                    "本地化目录不存在或无法读取，本次运行没有任何已装载的语言"
-                );
-                return Catalog { bundles };
-            }
-        };
-
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().and_then(|ext| ext.to_str()) != Some("ftl") {
-                continue;
-            }
-            let Some(language) = path.file_stem().and_then(|stem| stem.to_str()) else {
-                continue;
-            };
-
-            match load_bundle(&path, language) {
-                Ok(bundle) => {
-                    bundles.insert(language.to_string(), bundle);
-                }
-                Err(error) => {
+    ///
+    /// `sources` 的顺序**不参与任何判断**：每一条各自落进自己命名空间
+    /// 的桶，互不覆盖（C5——顺序不是逻辑，因此也不需要排序）。同一个
+    /// 命名空间被给出两次是调用方的缺陷（`ll_mod::topo::topo_sort` 会
+    /// 先一步拒绝重复命名空间），这里记一条 warn 并让后来者生效。
+    pub fn load(base_namespace: &str, sources: &[LocaleSource]) -> Catalog {
+        let mut bundles: HashMap<String, HashMap<String, FluentBundle<FluentResource>>> =
+            HashMap::new();
+        for source in sources {
+            let loaded = load_namespace_dir(&source.namespace, &source.dir);
+            let slot = bundles.entry(source.namespace.clone()).or_default();
+            for (language, bundle) in loaded {
+                if slot.insert(language.clone(), bundle).is_some() {
                     tracing::warn!(
-                        path = %path.display(),
-                        %error,
-                        "本地化文件装载失败，跳过这一种语言"
+                        namespace = %source.namespace,
+                        %language,
+                        "同一个命名空间被装载了两次，后一份覆盖前一份"
                     );
                 }
             }
         }
-
-        Catalog { bundles }
+        Catalog {
+            base_namespace: base_namespace.to_string(),
+            bundles,
+        }
     }
 
-    /// 已成功装载的语言标签数量——只用于启动日志与测试断言，不参与
-    /// 任何查表逻辑。
+    /// 只装载一个命名空间的一个目录——测试与「只关心某一份内容的文案」
+    /// 的调用点用。
+    ///
+    /// 它**不是**给本体开的捷径：命名空间是显式入参，本体要用它就得和
+    /// 任何 mod 一样把 `"lostland"` 写出来。
+    pub fn load_one(namespace: &str, dir: &Path) -> Catalog {
+        Catalog::load(namespace, &[LocaleSource::new(namespace, dir)])
+    }
+
+    /// 本体命名空间下已成功装载的语言标签数量——只用于启动日志与测试
+    /// 断言，不参与任何查表逻辑。
     pub fn loaded_language_count(&self) -> usize {
-        self.bundles.len()
+        self.languages().len()
     }
 
-    /// 已装载的全部语言标签，**按字典序排好**。
+    /// 全部 `(命名空间, 语言)` 桶的数量——启动日志用它回答「有几个 mod
+    /// 的本地化真的被装进来了」，[`Self::loaded_language_count`] 回答不了
+    /// 这个问题。
+    pub fn loaded_bundle_count(&self) -> usize {
+        self.bundles.values().map(HashMap::len).sum()
+    }
+
+    /// **本体命名空间**已装载的全部语言标签，**按字典序排好**。
+    ///
+    /// # 为什么只报本体这一个命名空间
+    ///
+    /// 这份清单的唯一消费者是设置界面的语言切换（见
+    /// `ll_game::menu_screen` 里那条「顺序本身就是逻辑」的文档）。一个
+    /// mod 提供了 `ja.ftl` 并不意味着**游戏本体 UI** 有日文——把 `ja`
+    /// 放进设置里，玩家选中后看到的是一整屏走回退链的英文 UI 加一小撮
+    /// 日文 mod 文案。「mod 能不能给游戏新增一种可选语言」是一个独立的
+    /// 产品问题，本 crate 不替它做决定，保持本地化命名空间化之前的行为
+    /// 逐字不变。
     ///
     /// # 为什么必须排序（C5）
     ///
-    /// 内部是 `HashMap<String, FluentBundle>`，直接遍历它的键就是让
-    /// 哈希桶序参与逻辑判断——而这份清单的**顺序本身就是逻辑**：设置
-    /// 界面按左右键在这个清单里循环，顺序决定「按一下右键切到哪一种
-    /// 语言」。`docs/architecture/03-invariants.md` C5 一节给的判据在
-    /// 这里逐字成立：「这个值会不会被用来决定处理顺序……会，就是错的」。
+    /// 内部是 `HashMap`，直接遍历它的键就是让哈希桶序参与逻辑判断——而
+    /// 这份清单的**顺序本身就是逻辑**：设置界面按左右键在这个清单里
+    /// 循环，顺序决定「按一下右键切到哪一种语言」。
+    /// `docs/architecture/03-invariants.md` C5 一节给的判据在这里逐字
+    /// 成立：「这个值会不会被用来决定处理顺序……会，就是错的」。
     ///
     /// 排字典序而不是装载顺序：装载顺序来自
     /// [`std::fs::read_dir`]，那个顺序在不同文件系统上并不保证一致，
     /// 同样是一个隐藏的非确定输入。
     pub fn languages(&self) -> Vec<String> {
-        let mut tags: Vec<String> = self.bundles.keys().cloned().collect();
+        let Some(slot) = self.bundles.get(&self.base_namespace) else {
+            return Vec::new();
+        };
+        let mut tags: Vec<String> = slot.keys().cloned().collect();
         tags.sort();
         tags
+    }
+
+    /// 查 `key` 在 `language` 下的文本，**精确查找，不走任何回退**：
+    /// 查不到返回 `None`。
+    ///
+    /// # 为什么需要它，而不是让所有人都用 [`Self::resolve`]
+    ///
+    /// [`Self::resolve`] 有语言回退链（见模块文档「语言回退」一节），
+    /// 于是「某个键漏了 zh-CN 译文」在它那里表现为一句英文，而不是键名。
+    /// 那对玩家是改善，对**门禁**是灾难：本 crate 里那三条真实资产
+    /// 覆盖率测试的判据正是「解析结果 == 键名即视为缺译」，回退链会让
+    /// 它们全部变哑。凡是要判断「这个键在这种语言下到底有没有译文」的
+    /// 调用方，用这一个，不要用 [`Self::resolve`]。
+    pub fn try_resolve(&self, language: &str, key: &str) -> Option<String> {
+        self.try_resolve_with_args(language, key, None)
+    }
+
+    /// [`Self::try_resolve`] 的带参版本。
+    pub fn try_resolve_with_args(
+        &self,
+        language: &str,
+        key: &str,
+        args: Option<&FluentArgs>,
+    ) -> Option<String> {
+        let (namespace, fluent_id) = split_key(key, &self.base_namespace);
+        self.format(namespace, language, &fluent_id, args)
     }
 
     /// 查 `key` 在 `language` 下的文本，不带参数插值。
@@ -151,11 +274,8 @@ impl Catalog {
     /// crate 不依赖 `ll-platform`，此处只是文字引用，不做可解析的文档
     /// 内链），也可以是带命名空间前缀的完整键（如
     /// `"lostland:race.human.display_name"`，`ll-mod` 内容表的
-    /// `display_name_key: NamespacedId` 既有形状）——命名空间前缀会被
-    /// 剥离后再查表。**当前只装载了本体（`lostland`）一份 `.ftl`**，
-    /// 剥离命名空间前缀这一步只是让两种既有键形状都能被同一个
-    /// `resolve` 处理，尚不代表按命名空间分流去查对应 mod 的
-    /// `locales/`——那是「五、mod 的 `.ftl`」一节留的接口，见模块文档。
+    /// `display_name_key: NamespacedId` 既有形状）。**命名空间前缀决定
+    /// 去哪个 mod 的 `locales/` 里查**，裸键落到本体命名空间。
     pub fn resolve(&self, language: &str, key: &str) -> String {
         self.resolve_with_args(language, key, None)
     }
@@ -164,33 +284,77 @@ impl Catalog {
     /// `{ $变量 }` 占位符的实参（例如
     /// `ll_content::load_error::ModSetMismatch` 的 `namespace`/
     /// `required_version`）。
+    ///
+    /// 查不到时走模块文档「语言回退」一节的回退链，全部落空才回退到
+    /// 键名本身。
     pub fn resolve_with_args(
         &self,
         language: &str,
         key: &str,
         args: Option<&FluentArgs>,
     ) -> String {
-        let fluent_id = to_fluent_id(key);
+        let (namespace, fluent_id) = split_key(key, &self.base_namespace);
 
-        let Some(bundle) = self.bundles.get(language) else {
-            tracing::warn!(language, key, "请求的语言未装载，回退到键名本身");
-            return key.to_string();
-        };
+        if let Some(text) = self.format(namespace, language, &fluent_id, args) {
+            return text;
+        }
 
-        let Some(message) = bundle.get_message(&fluent_id) else {
-            tracing::warn!(language, key, fluent_id, "本地化键不存在，回退到键名本身");
-            return key.to_string();
-        };
-
-        let Some(pattern) = message.value() else {
+        for fallback in self.fallback_languages(namespace, language) {
+            let Some(text) = self.format(namespace, &fallback, &fluent_id, args) else {
+                continue;
+            };
             tracing::warn!(
                 language,
+                fallback = %fallback,
                 key,
-                fluent_id,
-                "本地化键存在但没有可显示的值，回退到键名本身"
+                namespace,
+                "该键在请求的语言下查不到，回退到同一命名空间的另一种语言"
             );
-            return key.to_string();
+            return text;
+        }
+
+        tracing::warn!(
+            language,
+            key,
+            namespace,
+            fluent_id,
+            "该键在这个命名空间的任何一种语言下都查不到，回退到键名本身"
+        );
+        key.to_string()
+    }
+
+    /// `namespace` 下除 `requested` 之外的全部语言，[`FALLBACK_LANGUAGE`]
+    /// 排最前，其余按字典序——**回退链的顺序必须确定**（C5），否则同一份
+    /// 内容在两次运行里可能回退到不同的语言。
+    fn fallback_languages(&self, namespace: &str, requested: &str) -> Vec<String> {
+        let Some(slot) = self.bundles.get(namespace) else {
+            return Vec::new();
         };
+        let mut tags: Vec<String> = slot
+            .keys()
+            .filter(|tag| tag.as_str() != requested)
+            .cloned()
+            .collect();
+        tags.sort();
+        if let Some(position) = tags.iter().position(|tag| tag == FALLBACK_LANGUAGE) {
+            let preferred = tags.remove(position);
+            tags.insert(0, preferred);
+        }
+        tags
+    }
+
+    /// 在一个确定的 `(命名空间, 语言)` 桶里格式化一条消息；桶不存在、
+    /// 键不存在、键没有可显示的值，三种情况一律返回 `None`——**由调用方
+    /// 决定降级到什么**，本方法不自己决定。
+    fn format(
+        &self,
+        namespace: &str,
+        language: &str,
+        fluent_id: &str,
+        args: Option<&FluentArgs>,
+    ) -> Option<String> {
+        let bundle = self.bundles.get(namespace)?.get(language)?;
+        let pattern = bundle.get_message(fluent_id)?.value()?;
 
         let mut errors = Vec::new();
         let text = bundle
@@ -199,21 +363,30 @@ impl Catalog {
 
         if !errors.is_empty() {
             tracing::warn!(
+                namespace,
                 language,
-                key,
                 fluent_id,
                 ?errors,
                 "本地化文本格式化出现错误，结果可能不完整"
             );
         }
 
-        text
+        Some(text)
     }
 }
 
-/// 把一个 `_key` 字段的取值转成 Fluent 消息 id。
+/// 把一个 `_key` 字段的取值拆成 `(命名空间, Fluent 消息 id)`。
 ///
-/// # 为什么需要转换，不能直接拿字符串当 id
+/// # 命名空间：决定去哪个桶查，不再被丢弃
+///
+/// 冒号前缀是 `NamespacedId` 的命名空间（`lostland:race.elf.display_name`
+/// 的 `lostland`）。此前它在查表前被**整个剥掉**，于是两个 mod 各自
+/// 定义的同名内容会折成同一个 Fluent id：`mymod:race.elf.display_name`
+/// 与 `lostland:race.elf.display_name` 剥完都是 `race-elf-display_name`。
+/// 现在它决定去哪个命名空间的桶里查。没有冒号的裸键（`window.title`）
+/// 落到 `base_namespace`。
+///
+/// # 为什么消息 id 需要转换，不能直接拿路径当 id
 ///
 /// 两条既有约束叠在一起，逼出这次转换：
 ///
@@ -231,13 +404,56 @@ impl Catalog {
 /// `race-human-display_name`），下划线保留不动——连字符和下划线都是
 /// Fluent id 合法字符，只有点号不合法。`.ftl` 文件里的条目因此用
 /// 连字符分隔而不是点号，见 `assets/locales/zh-CN.ftl`。
+fn split_key<'a>(key: &'a str, base_namespace: &'a str) -> (&'a str, String) {
+    match key.split_once(':') {
+        Some((namespace, path)) => (namespace, path.replace('.', "-")),
+        None => (base_namespace, key.replace('.', "-")),
+    }
+}
+
+/// 装载一个命名空间的 `locales/` 目录，产出 `语言标签 → FluentBundle`。
 ///
-/// 命名空间前缀（`lostland:`）在这一步之前就被剥离——冒号同样不是
-/// Fluent id 合法字符，且剥离的理由已在 [`Catalog::resolve`] 文档
-/// 说明。
-fn to_fluent_id(key: &str) -> String {
-    let path = key.split_once(':').map_or(key, |(_, path)| path);
-    path.replace('.', "-")
+/// 目录不存在只记一条 warn 并返回空表——见 [`Catalog::load`] 文档
+/// 「不返回 `Result`」一节。
+fn load_namespace_dir(namespace: &str, dir: &Path) -> Vec<(String, FluentBundle<FluentResource>)> {
+    let mut loaded = Vec::new();
+
+    let entries = match std::fs::read_dir(dir) {
+        Ok(entries) => entries,
+        Err(error) => {
+            tracing::warn!(
+                namespace,
+                dir = %dir.display(),
+                %error,
+                "本地化目录不存在或无法读取，这个命名空间没有任何已装载的语言"
+            );
+            return loaded;
+        }
+    };
+
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("ftl") {
+            continue;
+        }
+        let Some(language) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+
+        match load_bundle(&path, language) {
+            Ok(bundle) => loaded.push((language.to_string(), bundle)),
+            Err(error) => {
+                tracing::warn!(
+                    namespace,
+                    path = %path.display(),
+                    %error,
+                    "本地化文件装载失败，跳过这一种语言"
+                );
+            }
+        }
+    }
+
+    loaded
 }
 
 /// 装载单个 `.ftl` 文件为一个语言的 `FluentBundle`。
@@ -296,6 +512,12 @@ impl std::error::Error for LoadError {}
 mod tests {
     use super::*;
 
+    /// 测试里统一用本体的命名空间——**不是**因为本体特殊，而是因为
+    /// 真实资产覆盖率那几条测试读的就是本体的 `assets/locales/`。
+    /// `ll_game::content::BASE_NAMESPACE` 是它的生产真相源，本 crate
+    /// 不依赖 `ll-game`（依赖方向见模块文档），此处只能重写一份字面量。
+    const BASE: &str = "lostland";
+
     /// 在临时目录写两个最小 `.ftl` 文件，模拟 `assets/locales/` 的
     /// 真实形状——用临时目录而非直接读仓库里的 `assets/locales/`，
     /// 是为了让本测试不依赖仓库内容是否被后续改动，只验证
@@ -335,7 +557,7 @@ mod tests {
             )
             .expect("测试用写入应当成功");
         }
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(BASE, &dir);
 
         // Act
         let languages = catalog.languages();
@@ -356,8 +578,8 @@ mod tests {
         write_fixture_catalog(&dir);
 
         // Act
-        let 第一次 = Catalog::load_dir(&dir).languages();
-        let 第二次 = Catalog::load_dir(&dir).languages();
+        let 第一次 = Catalog::load_one(BASE, &dir).languages();
+        let 第二次 = Catalog::load_one(BASE, &dir).languages();
 
         // Assert
         assert_eq!(第一次, 第二次);
@@ -369,7 +591,7 @@ mod tests {
         let dir = std::env::temp_dir().join("ll-i18n-test-no-such-dir-中文");
 
         // Act
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(BASE, &dir);
 
         // Assert
         assert!(catalog.languages().is_empty());
@@ -380,7 +602,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("resolve-basic");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(BASE, &dir);
 
         // Act
         let text = catalog.resolve("zh-CN", "greeting");
@@ -400,7 +622,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("resolve-switch-language");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(BASE, &dir);
 
         // Act
         let zh_text = catalog.resolve("zh-CN", "greeting");
@@ -420,7 +642,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("resolve-missing-key");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(BASE, &dir);
 
         // Act
         let text = catalog.resolve("zh-CN", "no.such.key");
@@ -433,17 +655,194 @@ mod tests {
     }
 
     #[test]
-    fn 未装载的语言回退到键名本身而不是空字符串() {
+    fn 未装载的语言回退到同命名空间的另一种语言而不是键名() {
+        // 本条**推翻**了本地化命名空间化之前的同名断言（原断言：查不到
+        // 语言就返回键名）。理由见模块文档「语言回退」一节：一个只提供
+        // zh-CN 的 mod 在英文玩家那里会整屏显示原始键名，那是玩家可见的
+        // 乱码。原断言原样保留在 git 历史里，此处不删来由。
         // Arrange
         let dir = temp_dir("resolve-missing-language");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(BASE, &dir);
 
         // Act
         let text = catalog.resolve("fr", "greeting");
 
+        // Assert：fr 没装载，回退链先试 FALLBACK_LANGUAGE（en）
+        assert_eq!(text, "Hello");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 只提供一种语言的模组在别的语言下给出它自己的文案而不是键名() {
+        // 任务书的硬约束：**不许静默显示原始键名**。这一条咬住的正是
+        // 「mod 只写了 zh-CN，玩家用 en」这个真实场景。
+        // Arrange
+        let dir = temp_dir("resolve-mod-single-language");
+        std::fs::write(dir.join("zh-CN.ftl"), "item-foo-display_name = 魔杖\n")
+            .expect("测试用写入应当成功");
+        let catalog = Catalog::load_one("mymod", &dir);
+
+        // Act
+        let text = catalog.resolve("en", "mymod:item.foo.display_name");
+
         // Assert
-        assert_eq!(text, "greeting");
+        assert_eq!(text, "魔杖");
+        assert_ne!(text, "mymod:item.foo.display_name");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 回退链优先英文而不是字典序第一名() {
+        // C5：回退链的顺序必须确定。这一条同时证明它**不是**字典序——
+        // 只按字典序的话 de 会赢过 en。
+        // Arrange
+        let dir = temp_dir("resolve-fallback-prefers-en");
+        std::fs::write(dir.join("de.ftl"), "greeting = Hallo\n").expect("测试用写入应当成功");
+        std::fs::write(dir.join("en.ftl"), "greeting = Hello\n").expect("测试用写入应当成功");
+        let catalog = Catalog::load_one("mymod", &dir);
+
+        // Act
+        let text = catalog.resolve("ja", "mymod:greeting");
+
+        // Assert
+        assert_eq!(text, "Hello");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn 语言回退不跨命名空间() {
+        // 跨命名空间回退等于把本批要消灭的撞键行为换一种形式重新引入：
+        // 一个 mod 忘了写译文，玩家看到的会是本体同路径那条内容的名字，
+        // 而且没有任何东西会说这不对。
+        // Arrange
+        let base_dir = temp_dir("fallback-scope-base");
+        std::fs::write(base_dir.join("en.ftl"), "race-elf-display_name = Elf\n")
+            .expect("测试用写入应当成功");
+        let mod_dir = temp_dir("fallback-scope-mod");
+        std::fs::write(
+            mod_dir.join("zh-CN.ftl"),
+            "race-gnome-display_name = 侏儒\n",
+        )
+        .expect("测试用写入应当成功");
+        let catalog = Catalog::load(
+            BASE,
+            &[
+                LocaleSource::new(BASE, &base_dir),
+                LocaleSource::new("mymod", &mod_dir),
+            ],
+        );
+
+        // Act：mymod 没有 elf 这条键，本体有
+        let text = catalog.resolve("en", "mymod:race.elf.display_name");
+
+        // Assert：回退到键名，**不是**本体的 "Elf"
+        assert_eq!(text, "mymod:race.elf.display_name");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let _ = std::fs::remove_dir_all(&mod_dir);
+    }
+
+    #[test]
+    fn 两个命名空间下的同名键互不覆盖() {
+        // 这是缺口 ② 的单元级断言（端到端那条在 ll-game 的集成测试里，
+        // 用真实的 mods/ 目录）。把命名空间分流去掉，两条会解析成同一段
+        // 文本，本条必红。
+        // Arrange
+        let base_dir = temp_dir("collision-base");
+        std::fs::write(base_dir.join("zh-CN.ftl"), "race-elf-display_name = 精灵\n")
+            .expect("测试用写入应当成功");
+        let mod_dir = temp_dir("collision-mod");
+        std::fs::write(
+            mod_dir.join("zh-CN.ftl"),
+            "race-elf-display_name = 高等精灵\n",
+        )
+        .expect("测试用写入应当成功");
+        let catalog = Catalog::load(
+            BASE,
+            &[
+                LocaleSource::new(BASE, &base_dir),
+                LocaleSource::new("mymod", &mod_dir),
+            ],
+        );
+
+        // Act
+        let 本体 = catalog.resolve("zh-CN", "lostland:race.elf.display_name");
+        let 模组 = catalog.resolve("zh-CN", "mymod:race.elf.display_name");
+
+        // Assert
+        assert_eq!(本体, "精灵");
+        assert_eq!(模组, "高等精灵");
+        assert_ne!(本体, 模组);
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&base_dir);
+        let _ = std::fs::remove_dir_all(&mod_dir);
+    }
+
+    #[test]
+    fn 装载来源的先后顺序不改变任何解析结果() {
+        // C5：`sources` 的顺序不参与判断。两个 mod 各自落进自己的桶，
+        // 谁先谁后都一样——这与精灵资产的「覆盖按拓扑序生效」是两件不同
+        // 的事，本地化结构上就没有覆盖。
+        // Arrange
+        let a_dir = temp_dir("order-a");
+        std::fs::write(a_dir.join("zh-CN.ftl"), "greeting = 甲\n").expect("测试用写入应当成功");
+        let b_dir = temp_dir("order-b");
+        std::fs::write(b_dir.join("zh-CN.ftl"), "greeting = 乙\n").expect("测试用写入应当成功");
+        let 正序 = Catalog::load(
+            BASE,
+            &[
+                LocaleSource::new("amod", &a_dir),
+                LocaleSource::new("bmod", &b_dir),
+            ],
+        );
+        let 逆序 = Catalog::load(
+            BASE,
+            &[
+                LocaleSource::new("bmod", &b_dir),
+                LocaleSource::new("amod", &a_dir),
+            ],
+        );
+
+        // Act & Assert
+        for key in ["amod:greeting", "bmod:greeting"] {
+            assert_eq!(正序.resolve("zh-CN", key), 逆序.resolve("zh-CN", key));
+        }
+        assert_eq!(正序.resolve("zh-CN", "amod:greeting"), "甲");
+        assert_eq!(正序.resolve("zh-CN", "bmod:greeting"), "乙");
+
+        // Cleanup
+        let _ = std::fs::remove_dir_all(&a_dir);
+        let _ = std::fs::remove_dir_all(&b_dir);
+    }
+
+    #[test]
+    fn 精确查找不走回退链所以覆盖率门禁不会被弄哑() {
+        // `try_resolve` 是语言回退链的必要配套：没有它，「某个键漏了
+        // zh-CN 译文」会被回退成一句英文，而覆盖率断言的判据（结果 ==
+        // 键名即视为缺译）就再也不会红。
+        // Arrange
+        let dir = temp_dir("try-resolve-exact");
+        write_fixture_catalog(&dir);
+        let catalog = Catalog::load_one(BASE, &dir);
+
+        // Act & Assert
+        assert_eq!(
+            catalog.try_resolve("zh-CN", "greeting").as_deref(),
+            Some("你好")
+        );
+        assert_eq!(catalog.try_resolve("fr", "greeting"), None);
+        assert_eq!(catalog.try_resolve("zh-CN", "no.such.key"), None);
+        // 对照：同一个输入走 resolve 会被回退链救回来
+        assert_eq!(catalog.resolve("fr", "greeting"), "Hello");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -457,29 +856,34 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
 
         // Act
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(BASE, &dir);
 
         // Assert
         assert_eq!(catalog.loaded_language_count(), 0);
     }
 
     #[test]
-    fn 命名空间前缀被剥离后仍能查到同一个键() {
+    fn 命名空间前缀决定去哪个桶查而裸键落到本体命名空间() {
         // 验证 ll-mod 内容表的 NamespacedId 键形状
         // （"lostland:race.human.display_name"）与 ll-platform 的裸键
-        // 形状（"window.title"）走同一条查表路径——见 `to_fluent_id`
-        // 文档。
+        // 形状（"window.title"）都能解析——前者按前缀选桶，后者落到
+        // base_namespace，见 `split_key` 文档。
         // Arrange
         let dir = temp_dir("resolve-namespaced");
-        std::fs::write(dir.join("zh-CN.ftl"), "race-human-display_name = 人类\n")
-            .expect("测试用写入应当成功");
-        let catalog = Catalog::load_dir(&dir);
+        std::fs::write(
+            dir.join("zh-CN.ftl"),
+            "race-human-display_name = 人类\nwindow-title = 迷途大陆\n",
+        )
+        .expect("测试用写入应当成功");
+        let catalog = Catalog::load_one(BASE, &dir);
 
         // Act
         let text = catalog.resolve("zh-CN", "lostland:race.human.display_name");
+        let 裸键 = catalog.resolve("zh-CN", "window.title");
 
         // Assert
         assert_eq!(text, "人类");
+        assert_eq!(裸键, "迷途大陆");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -494,7 +898,7 @@ mod tests {
             "save-mod-missing = 缺少模组 { $namespace }\n",
         )
         .expect("测试用写入应当成功");
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(BASE, &dir);
         let mut args = FluentArgs::new();
         args.set("namespace", "examplemod");
 
@@ -659,25 +1063,30 @@ mod tests {
     #[test]
     fn 真实资产目录覆盖全部本体键的中文翻译() {
         // Arrange
-        let catalog = Catalog::load_dir(&repo_locales_dir());
+        let catalog = Catalog::load_one(BASE, &repo_locales_dir());
 
-        // Act & Assert：任何一条真的缺译文都会退化成键名本身，
-        // 与键相等即视为该键未被覆盖。
+        // Act & Assert：用 `try_resolve` 而不是 `resolve`——后者有语言
+        // 回退链，一条只缺 zh-CN 的键会被回退成英文，这条断言就再也不会
+        // 红了。见 `Catalog::try_resolve` 文档。
         for key in PRODUCTION_KEYS {
-            let text = catalog.resolve("zh-CN", key);
-            assert_ne!(&text, key, "键 {key} 在 zh-CN.ftl 里没有对应译文");
+            assert!(
+                catalog.try_resolve("zh-CN", key).is_some(),
+                "键 {key} 在 zh-CN.ftl 里没有对应译文"
+            );
         }
     }
 
     #[test]
     fn 真实资产目录覆盖全部本体键的英文翻译() {
         // Arrange
-        let catalog = Catalog::load_dir(&repo_locales_dir());
+        let catalog = Catalog::load_one(BASE, &repo_locales_dir());
 
-        // Act & Assert
+        // Act & Assert：理由同上一条，用精确查找。
         for key in PRODUCTION_KEYS {
-            let text = catalog.resolve("en", key);
-            assert_ne!(&text, key, "键 {key} 在 en.ftl 里没有对应译文");
+            assert!(
+                catalog.try_resolve("en", key).is_some(),
+                "键 {key} 在 en.ftl 里没有对应译文"
+            );
         }
     }
 
@@ -688,12 +1097,12 @@ mod tests {
         // 「两份 .ftl 手滑复制成了同一份内容」这种两条测试各自都通过
         // 但本地化其实没有真正切换的情形。
         // Arrange
-        let catalog = Catalog::load_dir(&repo_locales_dir());
+        let catalog = Catalog::load_one(BASE, &repo_locales_dir());
 
         // Act & Assert
         for key in PRODUCTION_KEYS {
-            let zh_text = catalog.resolve("zh-CN", key);
-            let en_text = catalog.resolve("en", key);
+            let zh_text = catalog.try_resolve("zh-CN", key);
+            let en_text = catalog.try_resolve("en", key);
             assert_ne!(zh_text, en_text, "键 {key} 的中英文译文相同，怀疑内容重复");
         }
     }

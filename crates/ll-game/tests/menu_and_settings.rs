@@ -38,10 +38,10 @@ fn 临时路径(name: &str) -> PathBuf {
 }
 
 fn 测试目录() -> Catalog {
-    Catalog::load_dir(Path::new(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/../../assets/locales"
-    )))
+    Catalog::load_one(
+        ll_game::content::BASE_NAMESPACE,
+        Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales")),
+    )
 }
 
 fn 按下(keys: &[GameKey]) -> InputState {

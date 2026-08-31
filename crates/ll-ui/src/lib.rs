@@ -36,3 +36,14 @@ pub mod hud;
 pub mod load_report_view;
 pub mod screen;
 pub mod widget;
+
+/// 测试夹具用的命名空间——本 crate 的测试要么读仓库真实的
+/// `assets/locales/`（本体，命名空间 `lostland`），要么写一份形状相同的
+/// 临时 `.ftl`，两者查的都是本体那些键（`hud-*` 裸键与
+/// `lostland:attribute.*` 之类的带前缀键）。
+///
+/// 生产真相源是 `ll_game::content::BASE_NAMESPACE`；本 crate **不依赖
+/// `ll-game`**（依赖方向见模块文档「只做渲染，不做加载管线」一节），
+/// 因此这里只能重写一份字面量，集中一处而不是散在五十几个测试里。
+#[cfg(test)]
+pub(crate) const TEST_LOCALE_NAMESPACE: &str = "lostland";

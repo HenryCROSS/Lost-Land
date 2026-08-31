@@ -784,7 +784,7 @@ mod tests {
         // 空,见后一条测试。
         let dir = temp_dir("quad-count");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let status = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -835,7 +835,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("world-map-closed");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let status = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -886,7 +886,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("world-map-open");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let status = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -979,7 +979,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("textured-quad-empty");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let status = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -1026,7 +1026,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("label-count");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let status = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -1092,7 +1092,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("instant-number");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let character = sample_character_data(&modifiers, &equipment);
@@ -1179,7 +1179,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("equipment-right-edge");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let status = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -1237,7 +1237,7 @@ mod tests {
     fn build_frame_for_inventory_layout_test(dir_name: &str) -> (LayeredFrame, std::path::PathBuf) {
         let dir = temp_dir(dir_name);
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let status = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -1323,7 +1323,7 @@ mod tests {
     /// `Catalog::resolve` 退回键名本身，行数不变。
     fn placement_catalog(name: &str) -> (std::path::PathBuf, Catalog) {
         let dir = temp_dir(name);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         (dir, catalog)
     }
 
@@ -1573,7 +1573,7 @@ mod tests {
             format!("{existing}hud-world-map-scale-label = 比例尺\nhud-world-map-hint = 提示\n"),
         )
         .expect("测试用写入应当成功");
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let status = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -1733,7 +1733,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("daynight-pointer-flat");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let status = StatusBarData {
             clock: Tick(0),
             health: 100,

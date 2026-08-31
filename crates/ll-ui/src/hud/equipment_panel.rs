@@ -229,7 +229,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("line-count");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let table = ItemTable::new();
         let equipment = BTreeMap::new();
 
@@ -249,7 +249,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("empty-slot");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let table = ItemTable::new();
         let equipment = BTreeMap::new();
 
@@ -288,7 +288,7 @@ mod tests {
             EquipSlot::MAIN_HAND,
             ItemStack::with_durability(sword, 1, 100),
         );
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
 
         // Act
         let lines =
@@ -331,7 +331,7 @@ mod tests {
             EquipSlot::MAIN_HAND,
             ItemStack::with_durability(great_axe, 1, 100),
         );
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
 
         // Act
         let lines =
@@ -354,7 +354,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("panel-width");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let table = ItemTable::new();
         let equipment = BTreeMap::new();
 

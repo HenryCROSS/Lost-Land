@@ -310,10 +310,10 @@ mod tests {
     use std::path::Path;
 
     fn 测试目录() -> Catalog {
-        Catalog::load_dir(Path::new(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../assets/locales"
-        )))
+        Catalog::load_one(
+            crate::TEST_LOCALE_NAMESPACE,
+            Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales")),
+        )
     }
 
     fn 测试数据<'a>(rows: &'a [String], cursor: usize) -> ScreenData<'a> {
