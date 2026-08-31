@@ -128,6 +128,24 @@ jobs:
       - name: 存档主体形状 ↔ schema 版本联动检查（阻断模式）
         run: python3 scripts/ci/check_save_schema_version.py
 
+  # 规格 §13 写「文件 200–400 行为宜，800 行为上限」，落地至今没有任何门禁
+  # 管它，于是十几个文件长期超限、每批都在如实登记违规却没人还账（见
+  # knowledge/handoff/2026-08-28-session-handoff.md 第四节第 8 条）。
+  #
+  # 这道门禁**不是**「文件不许长」的硬约束——所有者 2026-08-29 裁定「要合理
+  # 规划，不是说超了就得砍」，行数超标是症状不是病。它是**棘轮**：当前超限
+  # 的文件连同各自「为什么可以这么长」的理由冻进快照，此后新超限文件红、
+  # 快照内文件变长红、变短要求刷新快照。判据是**非空非注释行**而不是总
+  # 行数——本仓库文档密度极高（超限文件里代码行只占 38%–75%），用总行数会
+  # 把规格下一条要求的「注释解释为什么」直接惩罚成行数负担。完整理由与
+  # 计数规则见 scripts/ci/check_file_size_budget.py 头注释。
+  file-size-budget:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 文件行数棘轮门禁（规格 §13，阻断模式）
+        run: python3 scripts/ci/check_file_size_budget.py
+
   # 规格 §14.5 要求"行覆盖率 ≥ 80%，核心 crate（ll-core/ll-sim/ll-world）
   # ≥ 90%"，但 `cargo-llvm-cov` 从未在本项目任何环境安装或运行过——不是
   # "曾经达标后来退化"，是从 P0 到现在都不知道真实数字。没有这道门禁，
