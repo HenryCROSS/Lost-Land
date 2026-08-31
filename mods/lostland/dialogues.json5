@@ -1,0 +1,306 @@
+// 本体对话名册——两段会话、十三个节点。
+//
+// schema 见 `crates/ll-mod/src/content_schema_dialogue.rs` 的 `DialogueFile`；
+// 表与语义见 `crates/ll-mod/src/dialogue.rs`；设计冻结在
+// `knowledge/design/dialogue-system.md`，落地计划见
+// `docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md`。
+//
+// ── 这个文件里一个字面文案都没有 ────────────────────────────────
+//
+// 结构在 JSON5，文案在 `.ftl`（本体那一份在 `assets/locales/`，注册成
+// `lostland` 命名空间）。理由不是「一致性」：`scripts/ci/check_i18n_strings.py`
+// **只扫 `crates/*/src/**/*.rs` 里含 CJK 的字符串字面量**，`mods/**/*.json5`
+// 完全在它的视野之外——允许内联文案等于让规格 §11.3「代码中不得出现任何
+// 硬编码的用户可见字符串」这条硬规则，在项目里文本量最大的那个系统上等于
+// 不存在。见设计文档三节 3.1。
+//
+// ── 本批次没有 `outcomes` ───────────────────────────────────────
+//
+// 批次 1 只做内容表，一条后果都不做。一个只允许空数组的字段就是一个
+// 「声明了但没接线」的死字段，因此干脆没有这个字段——今天在这里写
+// `outcomes:` 会被 `deny_unknown_fields` 当场拒掉，这比让它静默无效诚实。
+// 因此下面这些「我想加入」「有活干吗」的选项**今天只会换一个节点，不会
+// 改变世界的任何状态**。真正的加入/接任务/交易是批次 3/4/5。
+//
+// ── 台词为什么不提 NPC 的名字 ───────────────────────────────────
+//
+// `Agent` 没有 `name` 字段，`naming.rs` 的纯函数在生产路径零调用（设计
+// 文档三节 3.4 的甲/乙/丙三条路里，第一批走的是乙：用职业显示名代替）。
+// 等 NPC 姓名那一批落地，把 `.ftl` 里的称呼换成 `{ $npc_name }` 即可，
+// **本文件一个字都不用改**——这正是「结构在 JSON5、文案在 .ftl」白送的
+// 好处。
+{
+  dialogues: [
+    // 据点管理者。所有者提出对话系统的动机原话就落在这一段上：
+    // 「玩家可以没有势力归属，这个可以通过后面和据点的管理者对话加入。」
+    // 「管理者」是名册序号 0 的固定角色，每座还有人住的据点恰好一位
+    // （`ll_mod::roster` 的 `STEWARD_INDEX`）。
+    {
+      id: "lostland:steward_greeting",
+      speaker: { profession: "lostland:steward" },
+      root: "lostland:steward_root",
+    },
+
+    // 矿堡的卫兵。**这一段存在的理由是 `speaker.culture` 那一档收窄**：
+    // 它与任何一段只声明 `profession: "lostland:guard"` 的对话同时匹配
+    // 一个矿堡卫兵时，按设计文档 1.3 的裁决顺序，声明了文化的这一条赢。
+    // 今天本体没有第二段卫兵对话，但 mod 随时可以加一段，那一刻这条
+    // 规则就会真的起作用。
+    {
+      id: "lostland:mining_guard_greeting",
+      speaker: { profession: "lostland:guard", culture: "lostland:mining_hold" },
+      root: "lostland:mining_guard_root",
+    },
+  ],
+
+  nodes: [
+    // ── 管理者 ────────────────────────────────────────────────
+    //
+    // 开场白带五条分支选项，每条各带自己的条件。**注意 `affiliated` 与
+    // `standing-at-least` 这两条今天求值恒为假**：玩家的 `affiliations`
+    // 仍然写死空列表（`ll_game::world::build_player_agent`），批次 3 的
+    // 「加入据点」才写下第一条。它们**能被求值**、只是结果是假——这与
+    // 「求值不出来」是两回事。
+    {
+      id: "lostland:steward_root",
+      text_key: "lostland:dialogue.steward.root",
+      options: [
+        {
+          text_key: "lostland:dialogue.steward.ask_join",
+          conditions: [
+            { kind: "not-affiliated", affiliation: "faction" },
+          ],
+          next: "lostland:steward_join",
+        },
+        {
+          text_key: "lostland:dialogue.steward.ask_duties",
+          conditions: [
+            { kind: "affiliated", affiliation: "faction" },
+          ],
+          next: "lostland:steward_duties",
+        },
+        {
+          // 同乡问候：带 `org` 的归属条件，覆盖那个可选参数。
+          text_key: "lostland:dialogue.steward.ask_kin",
+          conditions: [
+            { kind: "affiliated", affiliation: "culture", org: "lostland:farmstead" },
+          ],
+          next: "lostland:steward_kin",
+        },
+        {
+          text_key: "lostland:dialogue.steward.ask_work",
+          conditions: [
+            { kind: "quest-not-completed", quest: "lostland:main_quest_1" },
+          ],
+          next: "lostland:steward_work",
+        },
+        {
+          text_key: "lostland:dialogue.steward.ask_reward",
+          conditions: [
+            { kind: "quest-completed", quest: "lostland:main_quest_1" },
+          ],
+          next: "lostland:steward_reward",
+        },
+        {
+          text_key: "lostland:dialogue.common.farewell",
+          conditions: [],
+          next: "end",
+        },
+      ],
+    },
+    {
+      id: "lostland:steward_join",
+      text_key: "lostland:dialogue.steward.join",
+      options: [
+        // ← **回环**：回到开场白。这条边就是「对话图允许有环」这件事在
+        // 本体内容里的证据——给节点图加上无环校验，本文件当场装不进来。
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:steward_root",
+        },
+      ],
+    },
+    {
+      id: "lostland:steward_duties",
+      text_key: "lostland:dialogue.steward.duties",
+      options: [
+        {
+          // 声望阈值取 250：所有者裁定「加入据点给 +250，满值 1000」
+          // （`knowledge/handoff/2026-08-28-session-handoff.md` 第〇之二
+          // 节第 5 条）。**常量本身属批次 3**，这里先把数值用起来。
+          text_key: "lostland:dialogue.steward.ask_tax",
+          conditions: [
+            { kind: "standing-at-least", affiliation: "faction", value: 250 },
+          ],
+          next: "lostland:steward_tax",
+        },
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:steward_root",
+        },
+      ],
+    },
+    {
+      id: "lostland:steward_tax",
+      text_key: "lostland:dialogue.steward.tax",
+      options: [
+        // 第二级回环：回到上一层而不是开场白。一棵树表达不了这个——
+        // 它得把整个 duties 子树复制一份。
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:steward_duties",
+        },
+      ],
+    },
+    {
+      id: "lostland:steward_kin",
+      text_key: "lostland:dialogue.steward.kin",
+      options: [
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:steward_root",
+        },
+      ],
+    },
+    {
+      id: "lostland:steward_work",
+      text_key: "lostland:dialogue.steward.work",
+      options: [
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:steward_root",
+        },
+      ],
+    },
+    {
+      id: "lostland:steward_reward",
+      text_key: "lostland:dialogue.steward.reward",
+      options: [
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:steward_root",
+        },
+      ],
+    },
+
+    // ── 矿堡卫兵 ──────────────────────────────────────────────
+    //
+    // 这一段把剩下五条谓词全部用上：`wallet-at-least`、`has-item`、
+    // `is-race`、`flag-not-set`、`flag-set`。**每一条谓词都必须有一条
+    // 真实内容用例**是设计文档四节 4.3 立的硬规则。
+    {
+      id: "lostland:mining_guard_root",
+      text_key: "lostland:dialogue.guard.root",
+      options: [
+        {
+          // 50000 = 50 个单位（`Milli` 千分之一），量级参照
+          // mods/lostland/items.json5 的 `base_price`：一把铁短剑五万上下。
+          text_key: "lostland:dialogue.guard.ask_toll",
+          conditions: [
+            { kind: "wallet-at-least", value: 50000 },
+          ],
+          next: "lostland:mining_guard_toll",
+        },
+        {
+          text_key: "lostland:dialogue.guard.show_signet",
+          conditions: [
+            { kind: "has-item", item: "lostland:tarnished_signet", count: 1 },
+          ],
+          next: "lostland:mining_guard_signet",
+        },
+        {
+          text_key: "lostland:dialogue.guard.kinsman",
+          conditions: [
+            { kind: "is-race", race: "lostland:dwarf" },
+          ],
+          next: "lostland:mining_guard_kin",
+        },
+        {
+          // 这一对（`flag-not-set` / `flag-set`）是设计文档五节 2 第 1 条
+          // 「已接取是对话系统自己的标志」在条件侧的那一半。**写入这条
+          // 标志的 `set-flag` 后果属批次 2**，因此今天它恒为「没设过」，
+          // 玩家永远只看到第一句、看不到第二句。这是如实的现状，不是
+          // 缺陷：谓词能求值、内容能装载，缺的是写入端。
+          text_key: "lostland:dialogue.guard.ask_rumour",
+          conditions: [
+            { kind: "flag-not-set", flag: "lostland:dialogue_flag.guard_rumour_heard" },
+          ],
+          next: "lostland:mining_guard_rumour",
+        },
+        {
+          text_key: "lostland:dialogue.guard.ask_rumour_again",
+          conditions: [
+            { kind: "flag-set", flag: "lostland:dialogue_flag.guard_rumour_heard" },
+          ],
+          next: "lostland:mining_guard_rumour_again",
+        },
+        {
+          text_key: "lostland:dialogue.common.farewell",
+          conditions: [],
+          next: "end",
+        },
+      ],
+    },
+    {
+      id: "lostland:mining_guard_toll",
+      text_key: "lostland:dialogue.guard.toll",
+      options: [
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:mining_guard_root",
+        },
+      ],
+    },
+    {
+      id: "lostland:mining_guard_signet",
+      text_key: "lostland:dialogue.guard.signet",
+      options: [
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:mining_guard_root",
+        },
+      ],
+    },
+    {
+      id: "lostland:mining_guard_kin",
+      text_key: "lostland:dialogue.guard.kin",
+      options: [
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:mining_guard_root",
+        },
+      ],
+    },
+    {
+      id: "lostland:mining_guard_rumour",
+      text_key: "lostland:dialogue.guard.rumour",
+      options: [
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:mining_guard_root",
+        },
+      ],
+    },
+    {
+      id: "lostland:mining_guard_rumour_again",
+      text_key: "lostland:dialogue.guard.rumour_again",
+      options: [
+        {
+          text_key: "lostland:dialogue.common.back",
+          conditions: [],
+          next: "lostland:mining_guard_root",
+        },
+      ],
+    },
+  ],
+}

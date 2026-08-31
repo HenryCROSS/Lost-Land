@@ -102,3 +102,25 @@ weather-ashfall-display_name = 落灰
 # 三条断言在 crates/ll-game/tests/mod_locales.rs 里。
 race-elf-display_name = 示例模组的精灵
 hud-inventory-empty = 示例模组不该劫持本体的这条文案
+
+## 对话（对话内容表批次）
+#
+# 结构在本 mod 自己的 dialogues.json5，文案在这里——本体的 assets/locales/
+# 一个字都不用改。这是「第三方 mod 能写自己的对话」这件事的活证据。
+#
+# 注意 `dialogue-common-farewell` 与 `dialogue-common-back` 两条：它们与本体
+# 的同名条目**折出同一个 Fluent id**，文案却不同。这是又一对**故意的**撞键
+# 回归夹具，与本文件末尾那两条同一形状——命名空间维度落地之前，mod 恒在本体
+# 之后装载，这两条会静默顶掉本体的告辞与返回。断言在
+# crates/ll-game/tests/dialogue_content.rs。
+
+dialogue-common-farewell = （拂袖而去）
+dialogue-common-back = （话还没完）
+
+dialogue-necromancer-root = 死灵法师头也不抬。「活人来这儿，通常只有两种理由。你是哪一种？」
+dialogue-necromancer-offer_potion = （递上那瓶治疗药水）
+dialogue-necromancer-potion = 他嗤笑一声。「你拿这个来收买我？留着吧，你比我更需要它。」
+dialogue-necromancer-ask_craft = 你在做什么？
+dialogue-necromancer-craft = 「炼一味药。」他终于抬眼，「材料难找，火候更难。你要是插得上手，站远点就是帮忙。」
+dialogue-necromancer-ask_more = 什么药？
+dialogue-necromancer-more = 「能让不该说话的东西开口的那一种。」他重新低下头，「别再问了。」

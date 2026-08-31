@@ -72,3 +72,25 @@ weather-ashfall-display_name = Ashfall
 # See the zh-CN.ftl comment for the full reasoning.
 race-elf-display_name = Elf of the example mod
 hud-inventory-empty = the example mod must not hijack this base-game string
+
+## Dialogue (dialogue content-table batch)
+#
+# The structure lives in this mod's own dialogues.json5; the words live here -
+# the base game's assets/locales/ needs no change at all. This is the living
+# evidence that a third-party mod can write its own dialogue.
+#
+# Note `dialogue-common-farewell` and `dialogue-common-back`: they collapse to
+# the SAME Fluent id as the base game's entries but carry different text. Another
+# deliberate key-collision fixture, same shape as the two at the end of this
+# file. See crates/ll-game/tests/dialogue_content.rs.
+
+dialogue-common-farewell = (sweep out without another word)
+dialogue-common-back = (there was more to say)
+
+dialogue-necromancer-root = The necromancer does not look up. "The living come here for one of two reasons. Which are you?"
+dialogue-necromancer-offer_potion = (hold out the healing potion)
+dialogue-necromancer-potion = He snorts. "You mean to buy me with that? Keep it. You need it more than I do."
+dialogue-necromancer-ask_craft = What are you making?
+dialogue-necromancer-craft = "A draught." He finally raises his eyes. "The materials are hard to find, the heat harder. If you want to help, stand further back."
+dialogue-necromancer-ask_more = What kind of draught?
+dialogue-necromancer-more = "The kind that makes things talk when they should not." He lowers his head again. "Ask no more."

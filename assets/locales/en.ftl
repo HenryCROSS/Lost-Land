@@ -434,3 +434,42 @@ screen-savename-prompt = Name
 screen-savename-default = Nameless Land
 screen-worldsetup-mode = Save Mode
 screen-chargen-player-died = You died. The world remains and switches to Normal mode - create a new character and choose where to begin.
+
+## Dialogue (dialogue content-table batch)
+#
+# The structure lives in mods/lostland/dialogues.json5; the words live here.
+# The two are joined by text_key: rewording a line never touches the JSON5, and
+# adding an option never touches an existing line here.
+#
+# No NPC names appear in these lines: `Agent` has no `name` field today (design
+# doc 3.4 adopted "use the profession display name for the first batch"). When
+# NPC naming lands, swap the forms of address here for { $npc_name } - not one
+# character of mods/**/dialogues.json5 has to change.
+
+dialogue-common-farewell = (take your leave)
+dialogue-common-back = (there was something else)
+
+dialogue-steward-root = The steward looks up from the ledger. "Another outsider. Say your piece."
+dialogue-steward-ask_join = I would like to settle here.
+dialogue-steward-join = "Settling is easy. Belonging is not." He sets down the pen. "Do something worth telling around here first, then come talk to me."
+dialogue-steward-ask_duties = What is expected of me?
+dialogue-steward-duties = "Hold your stretch of wall, pay your dues on time, and draw no blade in the market." He counts them off. "That is all of it."
+dialogue-steward-ask_tax = Could this year's dues wait a few days?
+dialogue-steward-tax = He studies you a moment. "For the years you have given - ten days. Not one more."
+dialogue-steward-ask_kin = I came up out of the furrows myself.
+dialogue-steward-kin = "Did you now." His tone loosens by half. "Then you know when the grain comes in. Sit."
+dialogue-steward-ask_work = Is there work going?
+dialogue-steward-work = "The mountain road is not clean." He tips his chin north. "If you have the stomach for it, clear it."
+dialogue-steward-ask_reward = The thing is done.
+dialogue-steward-reward = "So I hear." He nods. "Once the stores are counted, you will have every bit of what is owed."
+dialogue-guard-root = The guard levels her halberd. "The hold takes no visitors. Give me a reason."
+dialogue-guard-ask_toll = I know what the road costs.
+dialogue-guard-toll = She weighs the purse and steps half aside. "Good. Do not wander deep."
+dialogue-guard-show_signet = (show the tarnished signet)
+dialogue-guard-signet = Her look changes. "...where did you come by that? Go in. Quietly."
+dialogue-guard-kinsman = Stone knows stone.
+dialogue-guard-kin = "Hah!" She grins. "Little enough of our own below the mountain. Go on in."
+dialogue-guard-ask_rumour = Heard anything worth hearing?
+dialogue-guard-rumour = She drops her voice. "Third shaft. Sounds at night. The overseer calls it settling rock, but rock does not settle night after night."
+dialogue-guard-ask_rumour_again = The third shaft. Tell me more.
+dialogue-guard-rumour_again = "I said nothing." The halberd comes level again. "Neither did you."

@@ -1,0 +1,96 @@
+// 示例 mod 的对话名册——一段会话、四个节点。
+//
+// 这个文件是「本体即 Mod」在对话上的检验：它与 mods/lostland/dialogues.json5
+// **除了 id 里的命名空间字符串之外没有任何结构性差异**，走的是同一个
+// `ContentFileKind::Dialogues`、同一份 schema、同一张表。
+//
+// 它同时是本地化批次（`docs/superpowers/plans/2026-08-30-batch17-mod-localization.md`）
+// 的第二次兑现：下面每一条 `text_key` 都在 `examplemod` 命名空间下，文案写在
+// **本 mod 自己的** `locales/{zh-CN,en}.ftl` 里，本体的 `assets/locales/`
+// 一个字都不用改。
+//
+// `examplemod:dialogue.common.farewell` 是一条**故意的撞键回归夹具**：它与
+// 本体的 `lostland:dialogue.common.farewell` 折出同一个 Fluent id
+// （`dialogue-common-farewell`），但文案不同。命名空间维度落地之前，mod 恒在
+// 本体之后装载，这条会静默顶掉本体那一句。先例是本 mod `locales/*.ftl` 末尾
+// 已有的两条夹具（`race-elf-display_name` 与裸键 `hud-inventory-empty`）。
+// 断言在 crates/ll-game/tests/dialogue_content.rs。
+{
+  dialogues: [
+    {
+      id: "examplemod:necromancer_greeting",
+      speaker: { profession: "examplemod:necromancer" },
+      root: "examplemod:necromancer_root",
+    },
+  ],
+
+  nodes: [
+    {
+      id: "examplemod:necromancer_root",
+      text_key: "examplemod:dialogue.necromancer.root",
+      options: [
+        {
+          // 带条件的选项：条件引用的是**本 mod 自己的**物品
+          // （`examplemod:healing_potion`，见 items.json5）。跨命名空间的
+          // 引用同样合法——把它改成 `lostland:herbal_draught` 照样装得上，
+          // 这里用自己的那件只是为了让示例自足。
+          text_key: "examplemod:dialogue.necromancer.offer_potion",
+          conditions: [
+            { kind: "has-item", item: "examplemod:healing_potion", count: 1 },
+          ],
+          next: "examplemod:necromancer_potion",
+        },
+        {
+          text_key: "examplemod:dialogue.necromancer.ask_craft",
+          conditions: [],
+          next: "examplemod:necromancer_craft",
+        },
+        {
+          text_key: "examplemod:dialogue.common.farewell",
+          conditions: [],
+          next: "end",
+        },
+      ],
+    },
+    {
+      id: "examplemod:necromancer_potion",
+      text_key: "examplemod:dialogue.necromancer.potion",
+      options: [
+        // 回环——mod 的对话图同样可以有环，与本体一视同仁。
+        {
+          text_key: "examplemod:dialogue.common.back",
+          conditions: [],
+          next: "examplemod:necromancer_root",
+        },
+      ],
+    },
+    {
+      id: "examplemod:necromancer_craft",
+      text_key: "examplemod:dialogue.necromancer.craft",
+      options: [
+        {
+          text_key: "examplemod:dialogue.common.back",
+          conditions: [],
+          next: "examplemod:necromancer_root",
+        },
+        {
+          text_key: "examplemod:dialogue.necromancer.ask_more",
+          conditions: [],
+          next: "examplemod:necromancer_more",
+        },
+      ],
+    },
+    {
+      id: "examplemod:necromancer_more",
+      text_key: "examplemod:dialogue.necromancer.more",
+      options: [
+        // 两级回环：回到上一层，不是开场白。
+        {
+          text_key: "examplemod:dialogue.common.back",
+          conditions: [],
+          next: "examplemod:necromancer_craft",
+        },
+      ],
+    },
+  ],
+}

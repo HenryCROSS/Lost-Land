@@ -483,3 +483,42 @@ screen-savename-prompt = 名称
 screen-savename-default = 无名之地
 screen-worldsetup-mode = 存档模式
 screen-chargen-player-died = 你死了。这个世界保留下来，模式转为普通——再造一个角色，另选一处出生。
+
+## 对话（对话内容表批次）
+#
+# 结构在 mods/lostland/dialogues.json5，文案在这里。两边靠 text_key 相连，
+# 一句台词的措辞怎么改都不触碰 JSON5，反过来加一条选项也不需要动这里已有的
+# 任何一行——这正是「结构在 JSON5、文案在 .ftl」这条边界买到的东西。
+#
+# 台词里不出现 NPC 的名字：`Agent` 今天没有 name 字段（设计文档三节 3.4
+# 采纳的是「第一批用职业显示名代替」那一条）。等 NPC 姓名那一批落地，把这里
+# 的称呼换成 { $npc_name } 即可，mods/**/dialogues.json5 一个字都不用改。
+
+dialogue-common-farewell = （告辞）
+dialogue-common-back = （还有别的事）
+
+dialogue-steward-root = 管理者从账册上抬起头。「又一个外乡人。说吧，你要什么。」
+dialogue-steward-ask_join = 我想在这里落脚。
+dialogue-steward-join = 「落脚不难，认门难。」他把笔搁下，「先在这一带做点像样的事，再来找我谈。」
+dialogue-steward-ask_duties = 我该做些什么？
+dialogue-steward-duties = 「守好你那一段墙，按时缴税，别在集市上动刀子。」他数着，「就这三条。」
+dialogue-steward-ask_tax = 今年的税，能不能宽限几日？
+dialogue-steward-tax = 他盯了你一会儿。「看在你这些年的份上——十日。多一日都没有。」
+dialogue-steward-ask_kin = 我也是从麦垄里出来的。
+dialogue-steward-kin = 「哦？」他的语气松了半分，「那你该知道谷子什么时候该收。坐吧。」
+dialogue-steward-ask_work = 有什么活干吗？
+dialogue-steward-work = 「山道上不干净。」他朝北边扬了扬下巴，「你要是有那个本事，去清一清。」
+dialogue-steward-ask_reward = 我把事办完了。
+dialogue-steward-reward = 「我听说了。」他点点头，「等库房清点完，该给你的一样不少。」
+
+dialogue-guard-root = 卫兵横过长戟。「矿堡不接外客。想进去，先说个理由。」
+dialogue-guard-ask_toll = 过路的规矩我懂。
+dialogue-guard-toll = 他掂了掂钱袋，侧身让开半步。「规矩懂就好。别往深处走。」
+dialogue-guard-show_signet = （出示那枚发乌的印记）
+dialogue-guard-signet = 他的眼神变了。「……这东西你从哪儿来的？进去吧，别声张。」
+dialogue-guard-kinsman = 石头认得石头。
+dialogue-guard-kin = 「哈！」他咧开嘴，「山下头难得见着自家人。进去吧。」
+dialogue-guard-ask_rumour = 最近听到什么风声没有？
+dialogue-guard-rumour = 他压低声音。「三坑那边，夜里有声音。管事的说是塌方，可塌方不会一夜一夜地响。」
+dialogue-guard-ask_rumour_again = 你刚才说的三坑，再讲讲。
+dialogue-guard-rumour_again = 「我什么都没说过。」他重新横起长戟，「你也一样。」
