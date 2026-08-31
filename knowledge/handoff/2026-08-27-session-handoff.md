@@ -14,11 +14,26 @@
 
 1. **数字自己 grep，不要信任何人口头转述。** 本会话里口头传递的常量值错过三次（内容哈希版本、缺图张数、黄金基准）。三个关键常量当前值：
 
-   | 常量 | 当前值 | 位置 |
+   > **【2026-08-30 更正：下面这张表是这条纪律自己的反例，第四次过期了。不要读它，
+   > 跑 grep。】** 表里两条黄金基准的数值与行号在 2026-08-30 复核时**全部对不上**
+   > （行号早在气候条带批次就漂了：`determinism.rs` 那条已不在 `:231`、`replay.rs`
+   > 那条已不在 `:862`）。**这张表本身已经害过三个互不相干的代理**——事故经过与
+   > 结论写在 [2026-08-28 会话交接](2026-08-28-session-handoff.md) 第〇节
+   > 「三个关键常量：**不要在文档里找它们的值**」，那一节给出了唯一可行的做法：
+   >
+   > ```bash
+   > grep -rn "const EXPECTED_" crates/ll-world/tests/determinism.rs crates/ll-sim/tests/replay.rs
+   > grep -n "pub const CONTENT_HASH_ALGORITHM_VERSION" crates/ll-mod/src/content_hash.rs
+   > ```
+   >
+   > **本次刻意不在这里填新值**——填新值就是第五次。原表原样保留只为追溯，
+   > 见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 2 条。
+
+   | 常量 | 当前值 ~~（已四次过期，见上）~~ | 位置 ~~（行号亦已漂移）~~ |
    |---|---|---|
-   | `EXPECTED_WORLD_DIGEST` | `17_228_492_522_544_021_674` | `crates/ll-world/tests/determinism.rs:231` |
-   | `EXPECTED_REPLAY_DIGEST` | `14_731_332_643_995_045_404` | `crates/ll-sim/tests/replay.rs:862` |
-   | `CONTENT_HASH_ALGORITHM_VERSION` | `27` | `crates/ll-mod/src/content_hash.rs:805` |
+   | `EXPECTED_WORLD_DIGEST` | ~~`17_228_492_522_544_021_674`~~ | ~~`crates/ll-world/tests/determinism.rs:231`~~ |
+   | `EXPECTED_REPLAY_DIGEST` | ~~`14_731_332_643_995_045_404`~~ | ~~`crates/ll-sim/tests/replay.rs:862`~~ |
+   | `CONTENT_HASH_ALGORITHM_VERSION` | `27`（2026-08-30 复核仍是这个值，但同样**请自己 grep**） | `crates/ll-mod/src/content_hash.rs:805` |
 
    **读到这份文档时它们可能已经变了。以代码为准。**
 

@@ -390,12 +390,49 @@ Some(clone())`，注释却写着「不是每帧」，终端每帧刷一行 INFO�
 
 ### 会越拖越贵
 
-1. **`Owner`（物品归属）认领还是正式放弃**（原第 2 条）。五族那批要加 **5 套出生
-   装备**，等于又多 5 条物品产出路径，而加字段必须同批改 `can_merge`。
-2. **尸体被捡起来之后，肚子里的遗物去哪？** 不定这条，「尸体可堆叠」就只是一条
+> **【2026-08-30 更正：下面三条里，第 1、2 条已经在 2026-08-29 落地关闭，
+> 不要再拿它们去问所有者、更不要照它们排期。】** 只有第 3 条仍然悬着。
+> 逐条证据见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 3 条。
+
+1. ~~**`Owner`（物品归属）认领还是正式放弃**（原第 2 条）。五族那批要加 **5 套出生
+   装备**，等于又多 5 条物品产出路径，而加字段必须同批改 `can_merge`。~~
+
+   **【2026-08-30：已认领并落地，本条关闭。】** `Owner` 枚举住在
+   `crates/ll-world/src/ownership.rs:63`（`#[default] Unowned` + 其余变体），
+   `Effect::TransferOwnership` 在 `crates/ll-sim/src/effect.rs:650`。落地批次是
+   `docs/superpowers/plans/2026-08-29-batch10-ownership.md`，同批把
+   `CURRENT_SCHEMA_VERSION` 推到 3（今天是 4，`crates/ll-content/src/save_file.rs:139`）。
+   **注意该批次同时推翻了一条本文档背书过的存档结论**，见下方第 5 条之二。
+
+2. ~~**尸体被捡起来之后，肚子里的遗物去哪？** 不定这条，「尸体可堆叠」就只是一条
    诚实的声明——生产路径上尸体**根本捡不起来**（`resolve_pick_up` 把 `contents`
-   非空的地面物品整体排除在合并/拾取之外）。
+   非空的地面物品整体排除在合并/拾取之外）。~~
+
+   **【2026-08-30：所有者已答复并落地，本条关闭。】** 所有者原话：「尸体会变成
+   物品，然后原本的物品和尸体都会放在一格子内的掉落物列表里」。落地形状是
+   `append_corpse_drop` 产出 **1 + N 条**（尸体自己 `contents` 恒空、死者每一堆
+   遗物各一条，全部落在同一 `victim.pos`），死结当场解开——见
+   `crates/ll-sim/src/resolve.rs:1775`-`1798` 的函数文档与
+   `crates/ll-game/tests/corpse_flattening_interact_list.rs`。
+   **顺带改变的行为**：空手死者现在**也**产出尸体（旧守卫的理由被这一批自己作废）。
+
 3. **树木是「派生 + 只存偏差」还是「每棵独立实体」**（见第三节第 5 条）。
+   **【2026-08-30 复核：仍然悬着，是这三条里唯一还开着的。】**
+
+### 第 5 条之二（2026-08-30 补记）：本文档第二节背书过的一条存档结论已被推翻
+
+本文档第二节「气候条带」一批把 `TerrainShape::climate_band_width` 的
+`#[serde(default)]` 当成「存档主体加字段不必动 `CURRENT_SCHEMA_VERSION`」的先例，
+`docs/superpowers/plans/2026-08-28-batch8-character-creation.md` 3.5 节又照抄了这条先例
+给 `Agent::gender` 用。**这条先例是错的**：存档主体走 `postcard`（non-self-describing），
+`#[serde(default)]` 在那条路径上是**空操作**，靠它的两条「老存档读得回来」测试走的是
+`serde_json::Value`（自描述格式），**测不到真正的主体那条路**。
+
+实测与结论写在 `docs/superpowers/plans/2026-08-29-batch10-ownership.md` 五之三节，
+代码侧已经修好并自带论证：`crates/ll-world/src/entity/gender.rs:56`、
+`crates/ll-world/src/item.rs:372`-`384`、`crates/ll-content/src/save_file.rs:99`-`115`。
+**给存档主体加字段一律要动 `CURRENT_SCHEMA_VERSION`**，门禁
+`scripts/ci/check_save_schema_version.py` 现在盯着这件事。
 
 ### 设计口径
 

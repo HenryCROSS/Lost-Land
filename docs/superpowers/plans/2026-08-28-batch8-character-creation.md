@@ -174,12 +174,39 @@ NPC 必须有性别，否则「渲染层今天就在读它」这条豁免理由�
 
 ### 3.5 存档兼容
 
-改的是**主体**（`WorldState` → `Agent`），不是头部 ⇒ 走 `serde(default)`，
-`CURRENT_SCHEMA_VERSION` 不动（与气候批次给 `TerrainShape::climate_band_width`
-加 `serde(default)` 是同一条既有先例）。
+> # ⚠ 【2026-08-30 更正：本节整段是错的，不要拿它当先例。】
+>
+> **本节原文保留在下面只为追溯。它被 2026-08-29 的归属批次实测推翻了**，翻案记录在
+> `docs/superpowers/plans/2026-08-29-batch10-ownership.md` 五之三节
+> 「存档：`serde(default)` 在真正的存档主体上是**空操作**」。
+>
+> **错在哪**：存档主体走 **`postcard`**（non-self-describing），字节流里没有字段名，
+> 反序列化按声明顺序逐字段吃字节。`#[serde(default)]` 需要格式能报告「这个字段缺席」，
+> `postcard` **报告不了**。实测（独立最小探针）：老结构体三字段编码 → 新结构体四字段带
+> `#[serde(default)]` 解码 → `Err("Hit the end of buffer, expected more data")`。
+> **新字段若不在末尾会更糟**：后续字段的字节被错位读成合法值。
+>
+> **为什么当时没被抓住**：本节那条端到端测试（以及气候批次那条「既有先例」）走的都是
+> `serde_json::Value`——**自描述格式，`serde(default)` 在那里确实生效**，
+> **测不到真正的 `postcard` 主体那条路**。`Agent::gender` 与 `GroundItemStack::placed`
+> 两条「老存档兼容」的论证因此**因果讲反了**。
+>
+> **今天的正确做法**：**给存档主体加字段一律要动 `CURRENT_SCHEMA_VERSION`**
+> （今天是 4，`crates/ll-content/src/save_file.rs:139`），老存档走
+> `LoadError::SchemaMigrationGap` 这条**明确拒绝**的路径，而不是被当前字段布局静默误解析。
+> 门禁 `scripts/ci/check_save_schema_version.py` 现在盯着这件事。代码侧已修好并自带
+> 完整论证：`crates/ll-world/src/entity/gender.rs:56`、
+> `crates/ll-world/src/item.rs:372`-`384`、`crates/ll-content/src/save_file.rs:99`-`115`。
+>
+> 逐条见 [2026-08-29 文档—代码一致性审计](../../../knowledge/audit/2026-08-29-doc-code-audit.md) 一节第 6 条。
 
-端到端测试：造一份**缺 `gender` 键**的存档主体 JSON，读回来不崩、性别是
-`Gender::default()`。
+~~改的是**主体**（`WorldState` → `Agent`），不是头部 ⇒ 走 `serde(default)`，
+`CURRENT_SCHEMA_VERSION` 不动（与气候批次给 `TerrainShape::climate_band_width`
+加 `serde(default)` 是同一条既有先例）。~~
+
+~~端到端测试：造一份**缺 `gender` 键**的存档主体 JSON，读回来不崩、性别是
+`Gender::default()`。~~ ——**这条测试正是上面说的那个盲区**：它走 JSON，
+测不到 postcard 主体。
 
 ---
 
