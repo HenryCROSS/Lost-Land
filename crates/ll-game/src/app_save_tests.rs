@@ -655,3 +655,89 @@ fn 选点屏缺世界时的降级目标不是那块会抹掉世界的屏() {
         );
     }
 }
+
+#[test]
+fn 存档列表选第二份读的就是第二份() {
+    // **D5**（`knowledge/design/ui-and-navigation.md` 2.2 节）：列表屏的
+    // 光标此前是个装饰品——`selected_slot` 恒返回 `save_slots.first()`，
+    // 玩家把光标移到第二份按确认，进的是第一份，而此后每一次存档都写进
+    // 那个错的槽位。
+    //
+    // 反例验证（已实跑）：把 `selected_slot` 改回
+    // `self.save_slots.first().cloned()`，本条当场变红。
+    // Arrange：磁盘上造两份内容可区分的存档。
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    let 第一份时刻 = ll_core::time::Tick(demo.test_world().world.clock.0 + 1_000);
+    demo.test_world_mut().world.clock = 第一份时刻;
+    demo.save_now();
+    // 换一个槽位再存一次——`SaveTarget::create_in` 是新开槽位唯一的入口。
+    let 第二份时刻 = ll_core::time::Tick(第一份时刻.0 + 7_777);
+    demo.test_world_mut().world.clock = 第二份时刻;
+    demo.session
+        .as_mut()
+        .expect("测试用 Demo 一开始就在世界里")
+        .save_target = crate::save_slot::SaveTarget::create_in(&saves_dir, "second", 1);
+    demo.save_now();
+    demo.save_slots = crate::save_slot::list_slots(&saves_dir);
+    assert_eq!(demo.save_slots.len(), 2, "Arrange：磁盘上恰好两份存档");
+    let 第二行槽位号 = demo.save_slots[1].id.clone();
+    assert_ne!(
+        第二行槽位号, demo.save_slots[0].id,
+        "Arrange：两行是不同的两份"
+    );
+
+    // Act：玩家把光标停在第二行，按确认。
+    demo.screen = Some(ScreenState::SaveList { cursor: 1 });
+    let mut input = InputState::new();
+    demo.load_saved_game(&mut input);
+
+    // Assert：进的是第二份，而且此后每一次存档都写它。
+    let session = demo.session.as_ref().expect("读档之后应当在世界里");
+    assert_eq!(
+        session.save_target.id, 第二行槽位号,
+        "玩家选的是第二份，读进来的却是别的一份"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 不在存档列表屏时不猜一份存档给他() {
+    // `selected_slot` 的降级路径：状态错乱时返回 `None`，调用方走既有的
+    // 「留在原地 + 提示」，不 panic、也不悄悄读一份玩家没选的。
+    // Arrange
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    demo.save_now();
+    demo.save_slots = crate::save_slot::list_slots(&saves_dir);
+    assert_eq!(demo.save_slots.len(), 1, "Arrange：磁盘上有一份存档");
+    demo.screen = Some(ScreenState::Title);
+    let 原槽位 = demo
+        .session
+        .as_ref()
+        .expect("测试用 Demo 一开始就在世界里")
+        .save_target
+        .id
+        .clone();
+    let mut input = InputState::new();
+
+    // Act
+    demo.load_saved_game(&mut input);
+
+    // Assert：什么都没读，只留下一句提示。
+    assert_eq!(demo.screen_notice, Some(ScreenNotice::NoSave));
+    assert_eq!(
+        demo.session
+            .as_ref()
+            .expect("原来那一局还在")
+            .save_target
+            .id,
+        原槽位,
+        "不该把玩家换到另一份存档上"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}

@@ -1803,11 +1803,30 @@ impl Demo {
     }
 
     /// 存档列表屏当前光标落在哪一份上。
+    ///
+    /// # 读的是列表屏的光标，不是「最近那一份」
+    ///
+    /// 此前这里恒返回 `save_slots.first()`，于是存档列表屏的光标是一个
+    /// **装饰品**：玩家把它移到第三份、按确认，进的是第一份，而
+    /// [`Demo::enter_world_in_slot`] 之后每一次存档都写进那个错的槽位
+    /// （`knowledge/design/ui-and-navigation.md` 2.2 节 D5）。
+    ///
+    /// `ScreenOutcome::LoadSave` 的**唯一生产者**是
+    /// `crate::save_list::update_save_list`，而 [`Demo::update_screen`] 的
+    /// 屏切换漏斗在分派 `outcome` **之前**就把本帧的新光标写回了
+    /// `self.screen`——所以这里读到的就是玩家这一刻看到的那一行。
+    ///
+    /// 不在列表屏时返回 `None`：那是一种不该发生的状态，调用方走既有的
+    /// 「留在原地 + 提示」降级路径，不 panic。
     fn selected_slot(&self) -> Option<crate::save_slot::SaveSlot> {
-        // 列表已经按「最近存过的排在最前」排好；本提交只有首页那一条
-        // 触发路径，取最近的那一份。存档列表屏（玩家自己挑哪一份）在
-        // 下一个提交里接上，届时这里改成读它的光标。
-        self.save_slots.first().cloned()
+        let Some(ScreenState::SaveList { cursor }) = self.screen else {
+            tracing::warn!("不在存档列表屏却要读「选中的那一份」，不猜一份给他");
+            return None;
+        };
+        // 夹一次而不是直接索引：玩家离开这块屏期间列表可能变短。判据只有
+        // `crate::save_list::clamp_cursor` 这一处，不写第二份。
+        let cursor = crate::save_list::clamp_cursor(cursor, &self.save_slots);
+        self.save_slots.get(cursor).cloned()
     }
 
     /// 真正进世界：建出这一局的运行期状态，并把首页那一层从模态栈里
