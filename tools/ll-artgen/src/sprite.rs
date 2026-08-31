@@ -27,7 +27,7 @@
 //! # 主体色与标志色沿用既有取值
 //!
 //! 钢蓝 `(70,130,180)` 与暖金 `(255,220,120)` 一个字没改：「玩家=蓝、
-//! boss=红」这条视觉约定跑通过全部验收 demo，`world_marks.rs` 的
+//! boss=红」这条视觉约定当年跑通过全部验收 demo，`world_marks.rs` 的
 //! `npc主体色与玩家和boss都不同` 还在拿钢蓝当基准。重画换的是**结构**
 //! （轮廓、明暗、人形），不是身份色。
 //!
@@ -355,7 +355,7 @@ fn draw_hero(image: &mut RgbaImage, rect: EntryRect, pose: HeroPose) {
 /// # 为什么四邻不出 `rect`
 ///
 /// 遗留共享画布 `assets/atlas/placeholder.png` 上条目是紧挨着摆的，
-/// 越界一个像素就会把隔壁那张图涂脏——而那张画布是五个验收 demo 的
+/// 越界一个像素就会把隔壁那张图涂脏——而那张画布是四张冻结基准的
 /// 冻结基准。人形贴着矩形下沿（靴底就是最后一行）的地方因此没有描边，
 /// 这是对的：那一行本来就在地面之下。
 fn outline_silhouette(image: &mut RgbaImage, rect: EntryRect, color: (u8, u8, u8)) {
@@ -454,15 +454,21 @@ pub(crate) fn decorate_hero_walk(
 
 /// 画 `boss_idle_0`。
 ///
-/// # 这张图现在的身份是测试夹具，不是待接线的内容
+/// # 这张图现在零消费者，仍然留图
 ///
-/// `ll-game` 本体二进制一处都不消费 `boss_idle_0`，只有
-/// `crates/ll-render/examples/p1_acceptance` 与
-/// `crates/ll-sim/examples/p3_acceptance` 在用（后者的冻结截图基准里
-/// 真的画着它，它还是唯一一个 2×2 占地的条目，p3 靠它验「footprint 从
-/// 图集条目读取」）。项目所有者的裁定是「现在应该不太需要 boss 这
-/// 东西」——处置是**留图但不再当作待办**，理由见
-/// `assets/atlas/README.md` 的同名一节。
+/// `ll-game` 本体二进制一处都不消费 `boss_idle_0`。此前它还有两个
+/// 消费者——`crates/ll-render/examples/p1_acceptance` 与
+/// `crates/ll-sim/examples/p3_acceptance`——因此上一批把它的身份记成
+/// 「两个验收 demo 的测试夹具」。**〔2026-08-29〕那两个 demo 已随所有者
+/// 裁定删除（ADR 0030），那个身份随之失效，不要再照抄。**
+///
+/// 处置**仍然是留图**，但理由换了：p3 的冻结截图基准里真的画着这只 boss
+/// （它还是整张画布上唯一一个 2×2 占地的条目），而那张基准现在连重截的
+/// 生产者都没有了，删条目会让它彻底失去对照。至于它当年验的那条性质
+/// 「footprint 从图集条目读取」，真正的守门人一直是
+/// `ll-render/src/sprite.rs` 里那两条锁精确数值的测试，**不受影响**。
+/// 项目所有者早前那句「现在应该不太需要 boss 这东西」说的是不做这个
+/// 内容，没有说删图。完整记录见 `assets/atlas/README.md` 的同名一节。
 ///
 /// 红色主体 + 面甲（位置与既有像素一致）+ 新增的
 /// 面甲内暗色眼部 + 新增的胸口菱形警示标志。boss 的 2×2 占地格让它的

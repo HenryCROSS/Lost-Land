@@ -162,7 +162,14 @@ p4 11、p2 14）。
 | `ll-content/examples/p5_gameplay_acceptance.rs` | `crates/ll-content/tests/gameplay_acceptance.rs` | 1 → 1 | 不变（`run_walkthrough` 四节共享同一个 `world`，**刻意不拆**——拆开要重排状态依赖，那才是弱化） |
 | `ll-ui/examples/p4_acceptance/world.rs` | `crates/ll-ui/tests/mod_load_pipeline.rs` | 8 → 8 | 不变（`build_demo_world` 连同三次 `load_all` 原样搬过去） |
 | `ll-sim/examples/p5_coordinate_acceptance/{walkthrough_test,world}.rs` | `crates/ll-sim/tests/coordinate_layers_e2e.rs` | 9 → 9 | 不变 |
-| `ll-sim/examples/p5_coordinate_acceptance/layout.rs` 的 3 条视野半径 | `crates/ll-world/tests/space_profile_light.rs` | 3 → 3 | 不变（demo 的 `effective_sight_radius` 包装函数一并搬过去，不改换算） |
+| `ll-sim/examples/p5_coordinate_acceptance/layout.rs` 的 3 条视野半径 | `crates/ll-sim/tests/coordinate_layers_e2e.rs`（**落地时改了落点**，见下） | 3 → 3 | 不变（demo 的 `effective_sight_radius` 包装函数一并搬过去，不改换算） |
+
+**落地时与本表的一处偏差（如实记录）**：三条视野半径断言原计划落
+`crates/ll-world/tests/space_profile_light.rs`，实际落在
+`crates/ll-sim/tests/coordinate_layers_e2e.rs` 的 `space_profile_tests`
+子模块里。理由是另开一个文件就要**复制第二份 `effective_sight_radius`**
+——本仓库反复吃亏的正是「真相源之外的副本当判据」。同一个包装函数一处
+定义，Interior 验收与这三条共用。断言逐字未改。
 
 合计搬入 **29** 条。
 
@@ -319,6 +326,9 @@ git 里逐字节留着，任何一条路都还走得通；本批次不替所有�
 | 删掉的 example 内 `#[test]` | −80 |
 | 搬入 `tests/` | +29 |
 | **预期改后** | **2717** |
+
+**实跑结果与预期逐位相同**：搬迁提交后 **2797**（= 2768 + 29，两侧并存），
+删除提交后 **2717**。
 
 **净减 51，且必须能逐条解释**：这 51 条测的全是**随 demo 一起删掉的
 demo 自有代码**（demo 的棋盘格、巡逻三角波、点阵字体、两行 AI、

@@ -20,8 +20,8 @@
 //!
 //! # 六张图都走 `LooseOnlyEntry`，不进 `placeholder.json`
 //!
-//! 那份 JSON 描述的共享画布 `assets/atlas/placeholder.png` 是五个更早
-//! 批次验收 demo 的**冻结像素基准**（见 `main.rs` 的 `LooseOnlyEntry`
+//! 那份 JSON 描述的共享画布 `assets/atlas/placeholder.png` 是四张
+//! **冻结像素基准**的来源（见 `main.rs` 的 `LooseOnlyEntry`
 //! 文档）。往里加条目会撑大画布、把那批基准卷进来，换不到任何东西
 //! ——`ll-game` 本体二进制早就不读那张图了。锻炉在里面是历史原因
 //! （家具层落地时那条路径还没分岔），新的六张不跟着进去。

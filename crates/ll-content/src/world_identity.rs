@@ -468,7 +468,8 @@ impl WorldIdentity {
 /// 逻辑。
 ///
 /// 调用点：见 [`crate::save_file`] 的存档写出流程测试与
-/// `crates/ll-content/examples/p5_save_acceptance.rs`——两处都已经改为
+/// `crates/ll-content/tests/save_acceptance.rs`（2026-08-29 前是
+/// `examples/p5_save_acceptance.rs`，见 ADR 0030）——两处都已经改为
 /// 调用这个函数，不再各自重新发明一份等价的搬运代码。
 pub fn generation_mods_to_header_entries(set: &GenerationModSet) -> Vec<ModHeaderEntry> {
     set.0

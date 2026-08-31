@@ -84,8 +84,22 @@
 //! 这条不一致在 main 上长期存在而没人发现，原因很具体：`cargo test`
 //! 与 `cargo clippy --all-targets` 都只**编译** example，不运行它的
 //! `main()`，而本 demo 的验收断言全写在 `main()` 里，于是整条 CI 一直
-//! 是绿的。本批次同时补上了 `scripts/ci/run_acceptance_demos.sh`——真的
-//! 跑一遍无头验收 demo，并强制新增的 example 必须显式分类。
+//! 是绿的。当时的补救是 `scripts/ci/run_acceptance_demos.sh`——真的跑一遍
+//! 无头验收 demo，并强制新增的 example 必须显式分类。
+//!
+//! # 出处（2026-08-29 批次 13）
+//!
+//! 本文件搬自 `crates/ll-content/examples/p5_save_acceptance.rs`。所有者
+//! 裁定去掉 `examples/`（见
+//! `knowledge/decisions/0030-remove-examples-acceptance-demos.md`）。
+//! 原 `main()` 与 `section_b_degrade_by_kind` 那层纯转发的包装删掉，
+//! 八个零参数、各自建夹具的顶层小节直接标 `#[test]`——**35 条断言一条
+//! 未改**，但从此由 `cargo test --workspace` 执行，并按 8 个独立用例
+//! 报告失败。
+//!
+//! **上面那条教训因此在结构上不再可能重演**：断言不再藏在任何 `main()`
+//! 里。原门禁随之改形为 `scripts/ci/check_no_examples.sh`（判据收紧成
+//! 「工作区一个 example target 都不许有」）。
 
 use std::collections::BTreeMap;
 

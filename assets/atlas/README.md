@@ -3,6 +3,26 @@
 `placeholder.png` 与 `placeholder.json` 是**程序生成的临时占位资产**，
 不是美术成品。
 
+## 〔2026-08-29〕这张共享画布现在零消费者
+
+本文件下面多处写着「五个更早批次验收 demo 的冻结像素基准」——**那五个
+demo 已经不存在了**。项目所有者裁定去掉 `examples/`（见
+[ADR 0030](../../knowledge/decisions/0030-remove-examples-acceptance-demos.md)），
+`crates/` 下从此**没有任何一处读 `placeholder.png`/`placeholder.json`**：
+本体二进制早就不读（运行期图集由 `pack_atlas` 从 `assets/sprites/` 的松散
+贴图现打），五个 demo 是仅存的消费者。
+
+**两件事没有变，一件事变了：**
+
+- **生产者没变**：这张画布由 `tools/ll-artgen` 的
+  `generate_legacy_shared_atlas` 生成，随时可以重新跑出来，它不是被删的
+  那一类。`tools/ll-artgen` 自己的测试仍在读 `placeholder.json`。
+- **「不要往这张画布里塞新内容」这条纪律没变，理由反而更强**：四张 GPU
+  冻结基准（p1/p2/p3/p4）还在 `crates/*/tests/visual/baseline/` 下，画布
+  一动它们就再也对不上——而现在**连重截的生产者都没有了**，对不上就再也
+  修不回来。新增贴图继续走 `LooseOnlyEntry`（只进松散贴图树）。
+- **变的是 `boss_idle_0` 的身份**，见本文件最后一节。
+
 - `placeholder.png`：96×72 RGBA PNG，由 `ll-render` Task 5 提交时的一段
   一次性脚本（未随本次提交保留）生成，纯色块拼出四块内容：16×24 的
   「普通单位」、32×48 的「重点目标」、两块 16×16 地形。每个单位顶部
@@ -28,8 +48,9 @@
 ## 地形色块（P2 新增）
 
 [`ll_world::terrain::TerrainKind`] 定义了八种自然地形（深水、浅水、沙、
-草、林、丘、山、雪），`crates/ll-world/examples/p2_acceptance/` 需要把
-它们画成能用肉眼区分的颜色。既有的 `terrain_grass`（草绿色，见上一节）
+草、林、丘、山、雪）。当年 `crates/ll-world/examples/p2_acceptance/`
+（**2026-08-29 已随裁定删除**，见顶部一节）需要把它们画成能用肉眼区分的
+颜色。既有的 `terrain_grass`（草绿色，见上一节）
 本身就适合直接复用给 `TerrainKind::GRASS`，因此没有新建一块重复的绿色
 ——新增的只是另外七种地形各一块 16×16 纯色：
 
@@ -49,9 +70,10 @@
 规格 §7.1 的气候条带落地后，本体自然地形从八种变成十种。两块新色块
 **只进松散贴图树**（`assets/sprites/terrain_desert.png` /
 `terrain_tundra.png` + `assets/sprites/manifest.json5`），**不进**本目录
-这张遗留共享画布，也不进 `placeholder.json`——那张画布是五个更早批次
-验收 demo 的冻结像素基准，往里塞新内容只会把它们卷进来（理由见
-`tools/ll-artgen/src/main.rs` 的 `LooseOnlyEntry` 文档）。
+这张遗留共享画布，也不进 `placeholder.json`——那张画布是四张冻结像素基准
+的来源，往里塞新内容只会把它们卷进来（理由见
+`tools/ll-artgen/src/main.rs` 的 `LooseOnlyEntry` 文档，以及本文件顶部
+「这张共享画布现在零消费者」一节）。
 
 | 条目名 | 对应地形 | 颜色（RGBA） |
 |---|---|---|
@@ -67,10 +89,11 @@
 
 新色块全部追加在扩宽出的画布右侧（`x∈[64,96)`），而不是复用图像里
 其余的空白区域或整体重排版面：既有条目（`hero_*`/`boss_idle_0`/
-`terrain_grass`/`terrain_dirt`）的矩形坐标已经写死在
-`crates/ll-render/examples/p1_acceptance/` 与本 crate若干测试里，
+`terrain_grass`/`terrain_dirt`）的矩形坐标当年写死在
+`crates/ll-render/examples/p1_acceptance/`（已删）与若干测试里，
 任何挪动都会让那些坐标失效；只在画布上"新开一块地"追加，能保证
-这次扩图对既有引用零影响。
+这次扩图对既有引用零影响。**这条规矩在 demo 删除之后依然成立**——
+四张冻结基准 PNG 的像素就是按这些矩形截出来的，见本文件顶部一节。
 
 ## 像素点缀与角色标志（占位美术改进）
 
@@ -162,7 +185,7 @@ mod 想给自己的家具/种族一张专属贴图，同样只要在自己的
 
 九张的矩形全部落在**新增的两整行**（`y∈[112,144)`），画布因此从
 96×112 长到 96×144，**既有条目的 `rect` 一个都没动**——理由同「为什么
-不复用/不整体重排」一节。画布长高不影响五个遗留 demo 的冻结截图基准：
+不复用/不整体重排」一节。画布长高不影响那四张冻结截图基准：
 UV 换算是 `(像素坐标 ± 半纹素) / 图片尺寸`，采样器固定
 `FilterMode::Nearest`，分子分母同步变化，既有条目命中的纹素中心逐个
 不变（本批次实测：旧的 96×112 区域逐像素零差异）。
@@ -172,12 +195,16 @@ UV 换算是 `(像素坐标 ± 半纹素) / 图片尺寸`，采样器固定
 
 `floor_stone`/`wall_stone` 借用 `terrain_dirt`/`terrain_mountain` 的
 关系已在生产渲染路径（`ll_game::layout::terrain_entry_name`）与
-`crates/ll-sim/examples/p5_coordinate_acceptance` 两处**全部**解除——
-后者一度还留着旧借用，所有者裁定统一（「第三条的话先统一了吧，避免
-以后有什么问题」）。`terrain_dirt` **没有**因此变成孤儿图：
-`crates/ll-render/examples/p1_acceptance` 拿它铺棋盘格、
-`crates/ll-game/src/content.rs` 的 mod 资产覆盖验收拿它当被覆盖目标，
-两处都还在用——那两处的 `terrain_dirt` 就是泥土本身，不是借用。
+当年的 `crates/ll-sim/examples/p5_coordinate_acceptance` 两处**全部**
+解除——后者一度还留着旧借用，所有者裁定统一（「第三条的话先统一了吧，
+避免以后有什么问题」）。
+
+**〔2026-08-29 更正〕** 此前这里写着「`terrain_dirt` 没有因此变成孤儿图，
+`p1_acceptance` 拿它铺棋盘格、`ll_game::content` 拿它当被覆盖目标，两处
+都还在用」——`p1_acceptance` 已随裁定删除，**现在只剩后一处**：
+`crates/ll-game/src/content.rs` 的 mod 资产覆盖验收拿它当被覆盖目标。
+那一处的 `terrain_dirt` 就是泥土本身，不是借用，因此它仍然不是孤儿图，
+但**它的消费者从两处降到一处**，如实记在这里。
 
 ## NPC 的种族身子与职业挂件（十七张 + 示例 mod 两张）
 
@@ -210,37 +237,47 @@ id，它们照样画得出来，这就是「加第 10 个种族只加数据、�
 ### 这十九张不进 `placeholder.png`
 
 与前面每一节都不同：这批图**只**进松散贴图树（`assets/sprites/`），
-不进遗留共享画布。`placeholder.png` 是五个更早批次验收 demo 的冻结像素
-基准，而本体二进制早就不读它了；把只有运行期图集用得到的图塞进那张
-画布，只会把画布撑大、把五个 demo 的基准卷进来。做法上的落点是
+不进遗留共享画布。`placeholder.png` 是四张冻结像素基准的来源，而本体
+二进制早就不读它了；把只有运行期图集用得到的图塞进那张画布，只会把画布
+撑大、把那四张基准卷进来。做法上的落点是
 `tools/ll-artgen` 的 `LooseOnlyEntry`：一份与 `placeholder.json` 平行、
 只喂给 `generate_loose_sprites` 的条目清单。**画布尺寸仍是 96×144，
 `placeholder.json` 一个字没动，`placeholder.png` 逐字节未变。**
 
-## `boss_idle_0` 的去留：留图，不再算「待接线」
+## `boss_idle_0` 的去留：留图，但身份已经变了两次
 
-上一批查出 `boss_idle_0` 在 `ll-game` 里零消费者——只有
+**第一次（上一批）**：查出 `boss_idle_0` 在 `ll-game` 里零消费者——只有
 `crates/ll-render/examples/p1_acceptance` 与
-`crates/ll-sim/examples/p3_acceptance` 两个更早批次的验收 demo 在用，
-本体二进制一处都没有。项目所有者的裁定是「现在应该不太需要 boss
-这东西」。
+`crates/ll-sim/examples/p3_acceptance` 两个更早批次的验收 demo 在用。
+项目所有者的裁定是「现在应该不太需要 boss 这东西」，处置是**留图**，
+身份被记成「**两个验收 demo 的测试夹具**，不是本体缺的一块内容」。
+当时留图的理由是「删它并不便宜」：p3 的冻结截图基准
+`crates/ll-sim/tests/visual/baseline/p3_acceptance.png` 里真的画着这只
+boss（它还是整张画布上唯一一个 2×2 占地的条目，p3 靠它验「footprint 从
+图集条目读取」），删条目要连带重冻那张基准、改两个 demo 的资产装载。
 
-**处置：图与 `placeholder.json` 条目原样保留，但它不再是一条「等着接
-进游戏」的待办。** 理由是删它并不便宜而留它不花钱：
+**第二次（2026-08-29，本次）**：那两个 demo 已随所有者裁定删除
+（[ADR 0030](../../knowledge/decisions/0030-remove-examples-acceptance-demos.md)）。
 
-- p1/p3 两个 demo 各自 `include_bytes!` 这张共享画布，且 p3 的冻结截图
-  基准 `crates/ll-sim/tests/visual/baseline/p3_acceptance.png` 里真的
-  画着这只 boss（它还是唯一一个 2×2 占地的条目，p3 的
-  `spawn.rs`/`ll_render::sprite` 靠它验「footprint 从图集条目读取」这条
-  性质）。删条目要连带重冻 p3 的基准、改两个 demo 的资产装载，代价与
-  收益完全不成比例。
-- 留着它不占运行期成本：本体二进制根本不读这张共享画布（运行期图集由
-  `pack_atlas` 从松散贴图现打），松散贴图那边的 `boss_idle_0.png` 也
-  只是多一个没人查的图集条目。
+**结论没变，理由全变了，身份必须更正：**
 
-换句话说：**它现在的身份是「两个验收 demo 的测试夹具」，不是「本体缺
-的一块内容」。** 真到了做 boss 的那天，那时的美术不会是这张占位红块。
-这条处置是本批次的判断，所有者只说了那一句「现在应该不太需要」。
+- **`boss_idle_0` 现在在 `crates/` 下零消费者**——「两个验收 demo 的测试
+  夹具」这个身份**已经失效，不要再照抄它**。它现在只是
+  `placeholder.json` 与 `assets/sprites/` 里各一条没人查的条目。
+- **「footprint 从图集条目读取」这条性质并不依赖它**：真正的守门人是
+  `crates/ll-render/src/sprite.rs` 的 `重点目标占四格` 与
+  `三十二乘四十八双格精灵绘制原点锁定实际坐标` 两条测试，都在生产
+  crate 里、都锁精确数值（32×48、pivot (16,48)、2×2 占地），比 p3 那条
+  只锁条目名的断言强。删 demo **没有削弱**这条性质的覆盖。
+- **处置仍是留图**：所有者「现在应该不太需要 boss」那句裁定说的是「不做
+  boss 这个内容」，没有说删图；而 p3 的冻结基准里仍然画着它，那张基准
+  现在**连重截的生产者都没有了**（见
+  `crates/ll-sim/tests/visual/README.md`），删条目会让它彻底失去对照。
+  留图是可反转的一侧。
+
+**这条处置是本批次的判断，不是所有者的新裁定**——所有者这次只说了
+「去掉 example，有用的东西搬迁了，剩下的后面考虑」，`boss_idle_0` 属于
+「剩下的」。
 
 ## 待办
 

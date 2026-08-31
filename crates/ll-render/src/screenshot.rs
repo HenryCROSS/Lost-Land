@@ -2,8 +2,10 @@
 //!
 //! # 为什么这个函数住在 `ll-render`
 //!
-//! 五个验收 demo 各自抄了一份等价的 `save_baseline_png`（
-//! `crates/ll-render/examples/p1_acceptance/png.rs` 是最早那一份）。
+//! 五个验收 demo 曾各自抄了一份等价的 `save_baseline_png`（
+//! `crates/ll-render/examples/p1_acceptance/png.rs` 是最早那一份；
+//! 那五个 demo 已于 2026-08-29 随所有者裁定删除，见 ADR 0030，
+//! 因此本函数现在是全仓库仅存的那一份）。
 //! 本体二进制（`ll-game`）接 `GameKey::Screenshot` 时不再抄第六份：
 //! `ll-render` 已经把 `image` 列为正式依赖（`Cargo.toml`，为图集打包
 //! 而引入），而 `ll-game` 没有——把函数放这里，`ll-game` 就不需要为

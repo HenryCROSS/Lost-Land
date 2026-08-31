@@ -35,11 +35,14 @@
 //! `crates/ll-sim/examples/p3_acceptance`/`p5_coordinate_acceptance`、
 //! `crates/ll-ui/examples/p4_acceptance`、
 //! `crates/ll-world/examples/p2_acceptance` 这五个更早批次的验收 demo
-//! 仍然直接 `include_bytes!` 这张共享画布，它们的既有视觉回归基准
-//! （冻结的截图比对）绑定的是这张图的具体像素内容——不在本次资产 VFS
-//! 任务的范围内去重构五个独立 demo 各自的资产装载方式，因此继续保留
-//! 生成它的能力，避免这批 demo 因为找不到最新脚本而悄悄用上一份过期
-//! 像素。两个生成函数共用同一批像素绘制逻辑（`sprite.rs`/`terrain.rs`），
+//! 曾经直接 `include_bytes!` 这张共享画布，它们的视觉回归基准（冻结的
+//! 截图比对）绑定的是这张图的具体像素内容。
+//!
+//! **〔2026-08-29〕那五个 demo 已随所有者裁定删除（ADR 0030），但生成
+//! 能力仍然保留**：四张基准 PNG 一张没删，画布的像素布局仍然是它们的
+//! 唯一对照物；而这张画布的生成器（本函数）恰恰**不是**被删的那一类，
+//! 它是那四张基准之外仅存的、还能重新跑出来的东西。详见
+//! [`LooseOnlyEntry`] 文档的更正段。两个生成函数共用同一批像素绘制逻辑（`sprite.rs`/`terrain.rs`），
 //! 不是两份独立实现。
 
 mod building;
@@ -106,13 +109,27 @@ struct AtlasJson {
 ///
 /// [`generate_loose_sprites`] 与 [`generate_legacy_shared_atlas`] 此前
 /// 共用同一份来源 `placeholder.json`：往那份 JSON 里加一条，两边同时
-/// 多一张图。但遗留共享画布是五个更早批次验收 demo 的**冻结像素基准**，
+/// 多一张图。但遗留共享画布是四张**冻结像素基准**的来源，
 /// 而 `ll-game` 本体二进制早就不读它了——NPC 的种族身子与职业挂件只有
-/// 运行期图集用得到，把它们塞进那张共享画布只会把画布撑大、把五个
-/// demo 的基准卷进来，徒增一层「这次变红到底是因为哪个改动」的纠缠。
+/// 运行期图集用得到，把它们塞进那张共享画布只会把画布撑大、把那四张
+/// 基准卷进来，徒增一层「这次变红到底是因为哪个改动」的纠缠。
 ///
 /// 因此新增内容走这一条平行清单：画布尺寸仍是 96×144，`placeholder.json`
-/// 一个字没动，五个 demo 的基准物理上不可能受影响。
+/// 一个字没动，那些基准物理上不可能受影响。
+///
+/// # 〔2026-08-29 更正〕那五个 demo 已经不存在，这条纪律不变而理由更强
+///
+/// 项目所有者裁定去掉 `examples/`（`knowledge/decisions/`
+/// `0030-remove-examples-acceptance-demos.md`），五个 demo 全部删除。
+/// 本文件与 `composite.rs`/`furniture.rs`/`npc.rs`/`sprite.rs`/`terrain.rs`
+/// 里凡是写「五个更早批次验收 demo 的冻结像素基准」的地方，说的都是
+/// **同一批四张 PNG**（`p1`/`p2`/`p3`/`p4` 的 `tests/visual/baseline/`；
+/// `p5_coordinate` 从来没有真的存出过它那一张）。
+///
+/// **四张图一张没删，删的是它们的生产者。** 因此这条「不要往共享画布里
+/// 塞新内容」的纪律**不但不作废，理由还更强了**：画布一动，那四张基准
+/// 就再也对不上——而现在连重截一张来对照的生产者都没有了，对不上就再也
+/// 修不回来。新增内容继续走这条平行清单。
 #[derive(Debug, Clone)]
 struct LooseOnlyEntry {
     /// 图集条目名（也是文件名的主干）。必须与内容 id 的本地名逐字一致，
@@ -169,7 +186,7 @@ const CLIMATE_TERRAIN_NAMES: [&str; 2] = ["terrain_desert", "terrain_tundra"];
 /// 昼夜滑条的**滑块**贴图。
 ///
 /// 走 [`LooseOnlyEntry`] 而不是加进 `placeholder.json`：见那个类型的
-/// 文档（那份 JSON 是五个更早批次验收 demo 的冻结像素基准）。底图
+/// 文档（那份 JSON 是四张冻结像素基准的来源）。底图
 /// `ui_daynight_bar` 本身在 `placeholder.json` 里是历史原因，新增的这
 /// 一张不跟着进去。
 ///
@@ -521,7 +538,7 @@ fn generate_legacy_shared_atlas(atlas: &AtlasJson, atlas_dir: &Path) {
     // `rect.x`/`rect.y` 全部落在新增的两整行里，**既有条目的矩形一个
     // 都没动**（项目所有者硬要求「别动图集里既有条目的矩形」）。
     //
-    // 画布长高会不会让五个遗留 demo 的冻结截图基准变红：不会。UV 换算
+    // 画布长高会不会让那四张冻结截图基准变红：不会。UV 换算
     // 是 `(像素坐标 ± 半纹素) / 图片尺寸`（见
     // `ll_render::atlas::normalized_uv_rect`），采样器固定
     // `FilterMode::Nearest`——分子分母同步变化，既有条目命中的纹素中心

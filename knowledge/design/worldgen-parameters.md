@@ -323,10 +323,16 @@ warmth = if 2t <= p { 1000 - 2000t/p } else { 2000t/p - 1000 }
 `气候带宽为零时整张地形与气候条带落地之前逐格相同` 钉死。
 
 > **为什么不是一个 `probe_*` example**：本批次第一版确实写了
-> `probe_climate` example，随后删掉了。两条理由：门禁
+> `probe_climate` example，随后删掉了。两条理由：当时的门禁
 > `scripts/ci/run_acceptance_demos.sh` 要求每个 example 显式登记并长期
 > 维护，而这是一次性测量；更要紧的是 example 只打印、不断言，下次有人
 > 改坏气候分带时它一声不吭。写成测试之后同一批数字变成了断言。
+>
+> **〔2026-08-29〕这个判断被所有者裁定推到了尽头**：全部 `examples/`
+> 删除，门禁改形为 `scripts/ci/check_no_examples.sh`（判据是「工作区一个
+> example target 都不许有」），见
+> [ADR 0030](../decisions/0030-remove-examples-acceptance-demos.md)。
+> 当初选对了落点，这一节因此不需要改结论。
 
 ### 它连带改变了什么（实测，不是估计）
 

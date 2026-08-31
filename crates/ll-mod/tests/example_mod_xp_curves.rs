@@ -24,9 +24,10 @@ use ll_sim::experience::ExperienceCatalog;
 use ll_sim::xp_curve::eval_xp_curve;
 
 /// 仓库根目录下的真实 `mods/` 路径——与
-/// `crates/ll-ui/examples/p4_acceptance/world.rs` 的 `PRIMARY_MODS_ROOT`
+/// `crates/ll-ui/tests/mod_load_pipeline.rs` 的 `PRIMARY_MODS_ROOT`
 /// 是同一个目录，只是从 `ll-mod` 自己的 `CARGO_MANIFEST_DIR` 出发多跳
-/// 一层。
+/// 一层。（那份常量原在 `ll-ui/examples/p4_acceptance/world.rs`，
+/// 2026-08-29 随所有者裁定搬进 `tests/`，见 ADR 0030。）
 const REAL_MODS_ROOT: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../mods");
 
 /// 装载真实 `mods/` 目录一次，连同装载报告一起返回全部断言需要的表

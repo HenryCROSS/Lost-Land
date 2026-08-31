@@ -33,9 +33,10 @@ F2 把当前离屏渲染目标（`ll_render::target::RenderTarget::read_pixels`�
 验证成本较高，留给 P1 收尾后单独处理，见
 `crates/ll-render/tests/visual/README.md` 与
 `.superpowers/sdd/2026-08-17-p1-render-animation/task-9-brief.md` 的
-自查表——这个未决项跨阶段延续，尚未被单独处理）。当前的比对方式是：
+自查表——这个未决项跨阶段延续，尚未被单独处理）。原先的比对方式是：
 跑一次 `p2_acceptance` demo，按 F2 存一张新 PNG，与 `baseline/` 下的
-基准肉眼或用外部工具逐像素对比。
+基准肉眼或用外部工具逐像素对比——**这条路径自 2026-08-29 起需要先恢复
+生产者才能走**，见下一节。
 
 ## 这张基准与 `ll-render` 的 `p1_acceptance.png` 的区别
 
@@ -45,3 +46,28 @@ F2 把当前离屏渲染目标（`ll_render::target::RenderTarget::read_pixels`�
 噪声生成的环面地形、分块存储、阴影投射视野、昼夜四季光照——棋盘格在
 这里不适用，因为验收点本身就是「地形分布看起来像真实地形，而不是
 人工图案」。两张基准职责不同，互不替代。
+
+## 生产者已删除（2026-08-29 批次 13）
+
+**`baseline/p2_acceptance.png`** 的唯一生产者是 ``ll-world:p2_acceptance`（按 F2 存图）`。
+2026-08-29 项目所有者裁定去掉 `examples/`（原话「我觉得应该要去掉 example。
+然后有用的东西搬迁了。剩下的后面考虑。」），那个 target 随之删除，见
+[ADR 0030](../../../../knowledge/decisions/0030-remove-examples-acceptance-demos.md)。
+
+**图本身一张没删，删的是生产者。** 也就是说：这张基准现在**无法重新生成**，
+在有人按上面的方式恢复生产者、或另立一套无头像素比对之前，它只能当作
+**只读的历史留档**看——发现不一致时无法「重新截一张对比」，只能靠读代码判断。
+（这张图要真实窗口 + 图形适配器才截得出来，无头 CI 上 `request_adapter` 会失败，
+硬搬成测试只能写出「拿不到适配器就跳过」的假测试，正是 ADR 0018 要根除的东西。）
+
+这不是一次「顺手删掉」——ADR 0030「后果」一节列了三条路（保留那一个 example /
+把生成逻辑搬成测试 / 放弃这张基准）各自的代价，并明确写着**本批次不替所有者
+做选择**，只做最保守、最容易反转的那一侧：图留着，生产者删掉，恢复方式写在
+这里。
+
+恢复被删的生产者（git 里逐字节留着，与提交哈希无关）：
+
+```bash
+git log --oneline --diff-filter=D -- crates/ll-world/examples
+git show <那个提交>^:crates/ll-world/examples/p2_acceptance/main.rs
+```

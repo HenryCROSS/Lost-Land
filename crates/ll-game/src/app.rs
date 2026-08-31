@@ -1781,12 +1781,15 @@ impl Demo {
     /// `GameKey::Screenshot` 此前在 `ll-game` 里**零消费点**——真实
     /// 消费点只在五个验收 demo 里，本体按 F2 没反应。
     ///
-    /// **与验收 demo 那一侧的语义区别，必须写清楚**：demo 里那个键存的
-    /// 是 `crates/ll-render/tests/visual/baseline/` 下的**视觉回归基准**
-    /// （`GameKey::Screenshot` 的枚举文档描述的是那一侧）。本体这一侧
+    /// **与冻结基准那一侧的语义区别，必须写清楚**：
+    /// `crates/*/tests/visual/` 下的 PNG 是**视觉回归基准**。本体这一侧
     /// 存的是**玩家截图**，落在数据目录的 `screenshots/` 下、按帧号
-    /// 编名、绝不覆盖既有文件。`crates/ll-game/tests/visual/` 下那三张
-    /// 基准由 `examples/*_preview.rs` 产出，与本方法无关。
+    /// 编名、绝不覆盖既有文件，与那些基准无关。
+    ///
+    /// 〔2026-08-29〕那些基准原先各由一个 `examples/` 验收 demo 产出，
+    /// 那些 demo 已随所有者裁定删除（ADR 0030）；基准 PNG 全部保留，
+    /// 但暂时没有生产者，见各 `tests/visual/README.md`。**本方法不是
+    /// 它们的替代**——它存的是玩家截图，不是基准。
     fn take_screenshot(&self, frame: FrameId) {
         let Some(resources) = self.resources.as_ref() else {
             return;
