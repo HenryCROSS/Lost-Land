@@ -1,0 +1,193 @@
+{
+  "bindings": {
+    "bindings": [
+      {
+        "key": "ArrowUp",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Up"
+      },
+      {
+        "key": "KeyW",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Up"
+      },
+      {
+        "key": "ArrowDown",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Down"
+      },
+      {
+        "key": "KeyS",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Down"
+      },
+      {
+        "key": "ArrowLeft",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Left"
+      },
+      {
+        "key": "KeyA",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Left"
+      },
+      {
+        "key": "ArrowRight",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Right"
+      },
+      {
+        "key": "KeyD",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Right"
+      },
+      {
+        "key": "Enter",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Confirm"
+      },
+      {
+        "key": "Space",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Confirm"
+      },
+      {
+        "key": "Escape",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Cancel"
+      },
+      {
+        "key": "Tab",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Menu"
+      },
+      {
+        "key": "KeyM",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Map"
+      },
+      {
+        "key": "Period",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Wait"
+      },
+      {
+        "key": "F2",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "Screenshot"
+      },
+      {
+        "key": "Equal",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "ZoomIn"
+      },
+      {
+        "key": "Minus",
+        "modifiers": {
+          "shift": false,
+          "ctrl": false,
+          "alt": false
+        },
+        "context": "Gameplay",
+        "action": "ZoomOut"
+      }
+    ],
+    "wheel_bindings": [
+      {
+        "direction": "Away",
+        "context": "Gameplay",
+        "action": "ZoomIn"
+      },
+      {
+        "direction": "Toward",
+        "context": "Gameplay",
+        "action": "ZoomOut"
+      }
+    ]
+  },
+  "display": {
+    "vsync": true,
+    "scale_filter": "Nearest"
+  },
+  "language": "zh-CN"
+}
