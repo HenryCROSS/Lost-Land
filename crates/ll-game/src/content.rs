@@ -52,6 +52,7 @@ use ll_mod::content_audit::{
 };
 use ll_mod::content_hash::{ContentValueTables, apply_value_hashes};
 use ll_mod::damage_category::{DamageCategoryTable, RegistryDamageCategories};
+use ll_mod::dialogue::{DialogueError, DialogueNodeTable, DialogueTable};
 use ll_mod::discover::discover_mods;
 use ll_mod::formula::{FormulaTable, RegistryFormulas};
 use ll_mod::item::ItemTable;
@@ -122,6 +123,14 @@ pub struct LoadedContent {
     pub quest_ids: BaseQuestIds,
     /// 任务表。
     pub quest_table: QuestTable,
+    /// 会话入口表（对话内容表批次新增）——`ll_mod::dialogue::DialogueTable`。
+    /// 本批次没有任何 `resolve` 侧或 UI 侧消费者（交互列表接线与会话 UI
+    /// 属批次 2），见 `ll_mod::dialogue` 模块文档「本批次范围」与计划文档
+    /// `docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md` 第七节
+    /// 的挂载点表。
+    pub dialogue_table: DialogueTable,
+    /// 对话节点表（与 `dialogue_table` 同住 `dialogues.json5`）。
+    pub dialogue_node_table: DialogueNodeTable,
     /// 本体动画剪辑索引缓存（行走/待机）。
     pub clip_ids: BaseClipIds,
     /// 动画剪辑表——纯表现层内容，不进 `WorldState`、不参与
@@ -242,6 +251,46 @@ pub struct LoadedContent {
 /// # 为什么需要这个中间类型
 ///
 /// 各路目录里有五份不是「某张表自己就实现了 trait」：
+impl LoadedContent {
+    /// 把这次装载出来的全部内容表束成一份只读引用集合。
+    ///
+    /// 与 [`load_content`] 内部那一份**必须逐字段一致**——所以它们现在是
+    /// 同一份：`load_content` 自己没法用这个方法（那时 `LoadedContent`
+    /// 还没构造出来），但装载后的调用方（内容值哈希的覆盖率回归测试、
+    /// `crates/ll-game/tests/dialogue_content.rs`）一律走这里，不再各自
+    /// 抄一份字段清单。两处若各写一份，`ContentValueTables` 新增字段时
+    /// 只改一处就会静默漂移，与 `ll_mod::content_hash` 模块文档记录过的
+    /// 那类漂移同源。
+    pub fn value_tables(&self) -> ContentValueTables<'_> {
+        ContentValueTables {
+            terrain: &self.terrain_table,
+            class: &self.class_table,
+            skill: &self.skill_table,
+            subclass: &self.subclass_table,
+            quest: &self.quest_table,
+            dialogue: &self.dialogue_table,
+            dialogue_node: &self.dialogue_node_table,
+            race: &self.race_table,
+            space_profile: &self.space_table,
+            clip: &self.clip_table,
+            trait_def: &self.trait_table,
+            resource_pool: &self.resource_pool_table,
+            item: &self.item_table,
+            xp_curve: &self.xp_curve_table,
+            formula: &self.formula_table,
+            weapon_category: &self.weapon_category_table,
+            damage_category: &self.damage_category_table,
+            weather: &self.weather_table,
+            resource: &self.resource_table,
+            culture: &self.culture_table,
+            recipe: &self.recipe_table,
+            recipe_category: &self.recipe_category_table,
+            tag: &self.tag_table,
+            modifier_type: &self.modifier_type_table,
+        }
+    }
+}
+
 /// [`RegisteredQuests`] 要把 [`QuestTable`] 与 [`Registry`] 绑在一起，
 /// [`RegistryFormulas`] 要把 [`FormulaTable`] 与保底默认公式索引绑在
 /// 一起，[`RegistryDamageCategories`] 要把「哪一类是全局默认伤害类别」
@@ -454,6 +503,18 @@ pub enum ContentLoadError {
         /// 牵涉到的内容 id。
         involved: Vec<NamespacedId>,
     },
+    /// 某段对话的 `root`、或某条选项的 `next`，指向一个谁都没定义过的
+    /// 对话节点。理由与 [`ContentLoadError::SkillGraph`] 逐字相同。
+    ///
+    /// **注意这里没有「成环」这一档**：对话图的环合法（见
+    /// `ll_mod::dialogue` 模块文档「因此对话图允许有环」一节），与技能树/
+    /// 任务图那两条的分歧是刻意的，不是漏了一个变体。
+    DialogueGraph {
+        /// 原始错误。
+        error: DialogueError,
+        /// 牵涉到的内容 id。
+        involved: Vec<NamespacedId>,
+    },
     /// 副职获得条件可达性校验失败——至少一个副职被自己的获得条件与
     /// 配方类别的副职闸门锁死，永远拿不到。为什么它与引用完整性一样
     /// 阻断启动（而字段覆盖不阻断），见
@@ -514,6 +575,13 @@ impl std::fmt::Display for ContentLoadError {
                 write!(
                     f,
                     "任务前置关系校验失败：{error}{}",
+                    involved_suffix(involved)
+                )
+            }
+            ContentLoadError::DialogueGraph { error, involved } => {
+                write!(
+                    f,
+                    "对话跨表引用校验失败：{error}{}",
                     involved_suffix(involved)
                 )
             }
@@ -580,6 +648,8 @@ pub fn load_content(
         skill: skill_table,
         subclass: subclass_table,
         quest: quest_table,
+        dialogue: dialogue_table,
+        dialogue_node: dialogue_node_table,
         race: race_table,
         clip: clip_table,
         xp_curve: xp_curve_table,
@@ -639,6 +709,19 @@ pub fn load_content(
         return Err(ContentLoadError::QuestGraph { error, involved });
     }
 
+    // 对话的跨表引用校验：每个 `root` 与每个 `next` 指向的节点必须真的被
+    // 定义过。与上面两条同样必须排在**全部 mod 装载完毕之后**——一个 mod
+    // 完全可以把自己的节点接到本体的对话上。
+    //
+    // **这里没有、也不该有无环校验**：对话图的环是合法的、且是设计意图
+    // （「还有别的事吗」回到开场白），见 `ll_mod::dialogue` 模块文档
+    // 「因此对话图允许有环」一节。
+    if let Err(error) = ll_mod::dialogue::validate_references(&dialogue_table, &dialogue_node_table)
+    {
+        let involved = resolve_involved(&registry, &error.involved_indices());
+        return Err(ContentLoadError::DialogueGraph { error, involved });
+    }
+
     // 全部内容表的只读引用束——装载后校验（本处）与值哈希（下面）共用
     // 同一份，不各建一份：两处若各写一份字段清单，`ContentValueTables`
     // 新增字段时只改一处就会静默漂移，与 `ll_mod::content_hash` 模块
@@ -662,6 +745,8 @@ pub fn load_content(
         weather: &weather_table,
         resource: &resource_table,
         culture: &culture_table,
+        dialogue: &dialogue_table,
+        dialogue_node: &dialogue_node_table,
         recipe: &recipe_table,
         recipe_category: &recipe_category_table,
         tag: &tag_table,
@@ -747,6 +832,8 @@ pub fn load_content(
         subclass_table,
         quest_ids,
         quest_table,
+        dialogue_table,
+        dialogue_node_table,
         clip_ids,
         clip_table,
         default_xp_curve_id,
@@ -1148,30 +1235,7 @@ mod tests {
         let mods_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods");
         let loaded = load_content(&mods_root, &repo_assets_dir())
             .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
-        let tables = ContentValueTables {
-            terrain: &loaded.terrain_table,
-            class: &loaded.class_table,
-            skill: &loaded.skill_table,
-            subclass: &loaded.subclass_table,
-            quest: &loaded.quest_table,
-            race: &loaded.race_table,
-            space_profile: &loaded.space_table,
-            clip: &loaded.clip_table,
-            trait_def: &loaded.trait_table,
-            resource_pool: &loaded.resource_pool_table,
-            item: &loaded.item_table,
-            xp_curve: &loaded.xp_curve_table,
-            formula: &loaded.formula_table,
-            weapon_category: &loaded.weapon_category_table,
-            damage_category: &loaded.damage_category_table,
-            weather: &loaded.weather_table,
-            resource: &loaded.resource_table,
-            culture: &loaded.culture_table,
-            recipe: &loaded.recipe_table,
-            recipe_category: &loaded.recipe_category_table,
-            tag: &loaded.tag_table,
-            modifier_type: &loaded.modifier_type_table,
-        };
+        let tables = loaded.value_tables();
 
         // Act
         let mut opaque_ids: Vec<String> = loaded

@@ -141,6 +141,8 @@ fn build_demo_world() -> DemoWorld {
     let mut tag_table = ll_mod::tag::TagTable::new();
     let mut damage_category = ll_mod::damage_category::DamageCategoryTable::new();
     let mut modifier_type_table = ModifierTypeTable::new();
+    let mut dialogue = ll_mod::dialogue::DialogueTable::new();
+    let mut dialogue_node = ll_mod::dialogue::DialogueNodeTable::new();
 
     let mut report = load_all(
         Path::new(PRIMARY_MODS_ROOT),
@@ -151,6 +153,8 @@ fn build_demo_world() -> DemoWorld {
             skill: &mut skill,
             subclass: &mut subclass,
             quest: &mut quest,
+            dialogue: &mut dialogue,
+            dialogue_node: &mut dialogue_node,
             race: &mut race,
             clip: &mut clip,
             xp_curve: &mut xp_curve,
@@ -181,6 +185,8 @@ fn build_demo_world() -> DemoWorld {
             skill: &mut skill,
             subclass: &mut subclass,
             quest: &mut quest,
+            dialogue: &mut dialogue,
+            dialogue_node: &mut dialogue_node,
             race: &mut race,
             clip: &mut clip,
             xp_curve: &mut xp_curve,
@@ -211,6 +217,8 @@ fn build_demo_world() -> DemoWorld {
             skill: &mut skill,
             subclass: &mut subclass,
             quest: &mut quest,
+            dialogue: &mut dialogue,
+            dialogue_node: &mut dialogue_node,
             race: &mut race,
             clip: &mut clip,
             xp_curve: &mut xp_curve,

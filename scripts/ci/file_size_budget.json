@@ -18,11 +18,11 @@
       "reason": "合理（待复查）：新游戏的世界搭建——区块布局、噪声、编年史、出生点、玩家实体，一条从零到可玩的顺序流水线，各步共享同一份构建中状态。待复查点：批次「据点建筑类型」会碰这里的流式加载那一段。"
     },
     "crates/ll-mod/src/content_audit.rs": {
-      "code_lines": 2080,
+      "code_lines": 2194,
       "reason": "合理：装载后内容校验的逐条规则平铺，与 content_hash.rs 同一形状——一条校验一段，规则之间不互相调用。文件长度等于校验条数。"
     },
     "crates/ll-mod/src/content_hash.rs": {
-      "code_lines": 2601,
+      "code_lines": 2853,
       "reason": "合理：单一职责的逐类型平铺表——每个内容类型一段「哪些字段进哈希」，类型之间不互相调用。拆开等于把 CONTENT_HASH_ALGORITHM_VERSION 要盯住的那份唯一真相源分散到多处，而「真相源之外的副本」是本仓库最稳定的缺陷来源。"
     },
     "crates/ll-mod/src/content_schema_gear.rs": {

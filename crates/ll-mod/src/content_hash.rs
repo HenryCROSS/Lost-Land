@@ -151,7 +151,7 @@ use ll_sim::resource_pool::{
 use ll_sim::skill::{ResourceCost, SkillEffect};
 use ll_sim::xp_curve::{XpCurveCond, XpCurveOp, XpCurveOperand};
 use ll_world::culture::{CultureKind, CultureTable};
-use ll_world::entity::BaseStats;
+use ll_world::entity::{AffiliationKind, BaseStats};
 use ll_world::resource::{ResourceKind, ResourceTable};
 use ll_world::space_profile::SpaceProfileTable;
 use ll_world::terrain::{TerrainKind, TerrainTable};
@@ -160,6 +160,9 @@ use ll_world::weather::WeatherTable;
 use crate::class::ClassTable;
 use crate::clip::ClipTable;
 use crate::damage_category::DamageCategoryTable;
+use crate::dialogue::{
+    AffiliationQuery, DialogueCondition, DialogueNext, DialogueNodeTable, DialogueTable,
+};
 use crate::formula::FormulaTable;
 use crate::item::ItemTable;
 use crate::modifier_type::ModifierTypeTable;
@@ -802,7 +805,37 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// `建材不同的两条文化摘要不同`，以及版本 7 那次事故之后立下的那条
 /// 纪律——**提交信息声称改了，不等于代码里真的改了**，下面这一行的
 /// 字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 27;
+///
+/// ---
+///
+/// # 版本 28（对话内容表批次）
+///
+/// **新增两张内容表**：[`ContentTableKind::Dialogue`]（判别值 23）与
+/// [`ContentTableKind::DialogueNode`]（判别值 24）——[`ContentValueTables`]
+/// 多了 `dialogue`/`dialogue_node` 两个字段，[`entry_value_digest`] 多了
+/// [`write_dialogue_fields`]/[`write_dialogue_node_fields`] 两条分支。这是
+/// 版本 4/5/16/22/27「**新增内容表**」那一类，不是「已有表加字段」那一类：
+/// 既有内容的字段摘要一个字节都没变，但**同一套内容在新旧两版算法下的哈希
+/// 不同**——`lostland:steward_greeting` 这类条目此前落在
+/// [`ContentTableKind::Opaque`] 一侧（只混 id、不混字段值），现在混的是完整
+/// 字段流。按 ADR 0027 必须递增。
+///
+/// 与版本 22/27 一样，这次 `check_content_hash_gate_cross_coverage`
+/// **确实有事可做**：`scripts/ci/check_field_consumers.py` 的
+/// `CONTENT_HASH_KIND_TO_TARGET_TYPE` 与 `TARGET_TYPES` 各补了两条
+/// （`Dialogue` → `DialogueDef`、`DialogueNode` → `DialogueNodeDef`），
+/// 否则那条互校会当场把门禁变红。
+///
+/// **本表的 `text_key` 是本地化键，不是 `ContentIndex`**（见
+/// [`crate::dialogue`] 模块文档末节），因此直接
+/// [`StateHasher::write_namespaced_id`] 混入，不经 `Registry::resolve`——
+/// 与 `SpaceProfile.reverb_tag` 同一种情形。
+///
+/// 守门方式同前几批：本段文字 + 本模块单元测试
+/// `跳转目标不同的两个对话节点摘要不同`，以及版本 7 那次事故之后立下的
+/// 那条纪律——**提交信息声称改了，不等于代码里真的改了**，下面这一行的
+/// 字面值就是唯一权威。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 28;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -875,6 +908,12 @@ pub enum ContentTableKind {
     /// 文化表（文化批次新增，定义在 `ll-world`）——见
     /// [`ll_world::culture`] 模块文档。
     Culture = 22,
+    /// 会话入口表（对话内容表批次新增）——见 [`crate::dialogue`] 模块文档。
+    Dialogue = 23,
+    /// 对话节点表（对话内容表批次新增）——与 `Dialogue` 同住
+    /// `dialogues.json5`，但它们是两张独立的表（节点有自己的 id、自己的
+    /// `ContentIndex`），因此各占一个判别值。
+    DialogueNode = 24,
 }
 
 /// 全部内容表的只读引用集合——供 [`apply_value_hashes`]/[`classify_index`]
@@ -936,6 +975,10 @@ pub struct ContentValueTables<'a> {
     /// 相同：强制消费者 `ll_world::chronicle`/`ll_world::settlement`
     /// 就在那个 crate）。
     pub culture: &'a CultureTable,
+    /// 会话入口表（对话内容表批次新增）。
+    pub dialogue: &'a DialogueTable,
+    /// 对话节点表（对话内容表批次新增）。
+    pub dialogue_node: &'a DialogueNodeTable,
 }
 
 /// 判定一个 `ContentIndex` 归属哪张内容表——[`entry_value_digest`] 用它
@@ -991,6 +1034,8 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         modifier_type,
         resource,
         culture,
+        dialogue,
+        dialogue_node,
     } = *tables;
 
     let terrain_kind = TerrainKind::from_index(index);
@@ -1038,6 +1083,10 @@ pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> C
         ContentTableKind::Resource
     } else if culture.is_defined(index) {
         ContentTableKind::Culture
+    } else if dialogue.is_defined(index) {
+        ContentTableKind::Dialogue
+    } else if dialogue_node.is_defined(index) {
+        ContentTableKind::DialogueNode
     } else {
         ContentTableKind::Opaque
     }
@@ -1140,6 +1189,12 @@ fn entry_value_digest(
         }
         ContentTableKind::Culture => {
             write_culture_fields(&mut hasher, tables.culture, index, registry);
+        }
+        ContentTableKind::Dialogue => {
+            write_dialogue_fields(&mut hasher, tables.dialogue, index, registry);
+        }
+        ContentTableKind::DialogueNode => {
+            write_dialogue_node_fields(&mut hasher, tables.dialogue_node, index, registry);
         }
         ContentTableKind::ModifierType => {
             // 加值类型没有任何字段（`ModifierTypeDef` 是空结构体，理由
@@ -1483,6 +1538,138 @@ fn write_quest_condition(
             hasher.write_namespaced_id(id);
         }
     }
+}
+
+/// 混入 [`crate::dialogue::DialogueAttrs`] 的全部字段（对话内容表批次
+/// 新增）。
+///
+/// `speaker.profession`/`speaker.culture` 与 `root` 都是 `ContentIndex`，
+/// 按 ADR 0027 的既有纪律**先解析回 id 字符串再混入**——否则哈希会依赖
+/// mod 装载顺序。
+fn write_dialogue_fields(
+    hasher: &mut StateHasher,
+    table: &DialogueTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
+    let view = table
+        .get(index)
+        .expect("调用方已确认 is_defined，get 必返回 Some");
+    write_optional_resolved(hasher, Some(view.speaker.profession), registry);
+    write_optional_resolved(hasher, view.speaker.culture, registry);
+    write_optional_resolved(hasher, Some(view.root), registry);
+}
+
+/// 混入 [`crate::dialogue::DialogueNodeAttrs`] 的全部字段（对话内容表批次
+/// 新增）。
+///
+/// `text_key` 与选项的 `text_key` 都是**本地化键**（字面
+/// [`NamespacedId`]，不是 `ContentIndex`，见 [`crate::dialogue`] 模块文档
+/// 末节），直接混入、不经 [`Registry::resolve`]——与
+/// [`write_space_profile_fields`] 的 `reverb_tag` 同一种情形。
+///
+/// 选项按**书写顺序**逐条混入并先写条数：顺序本身是内容的一部分（玩家看到
+/// 的第几行），两份只有选项次序不同的内容必须算出不同的摘要。
+fn write_dialogue_node_fields(
+    hasher: &mut StateHasher,
+    table: &DialogueNodeTable,
+    index: ContentIndex,
+    registry: &Registry,
+) {
+    let view = table
+        .get(index)
+        .expect("调用方已确认 is_defined，get 必返回 Some");
+    hasher.write_namespaced_id(view.text_key);
+    hasher.write_u64(view.options.len() as u64);
+    for option in view.options {
+        hasher.write_namespaced_id(&option.text_key);
+        match option.next {
+            DialogueNext::End => hasher.write_u64(0),
+            DialogueNext::Node(target) => {
+                hasher.write_u64(1);
+                write_optional_resolved(hasher, Some(target), registry);
+            }
+        }
+        hasher.write_u64(option.conditions.len() as u64);
+        for condition in &option.conditions {
+            write_dialogue_condition(hasher, condition, registry);
+        }
+    }
+}
+
+/// 混入一条 [`DialogueCondition`]，理由同 [`write_quest_condition`]：判别
+/// 值 + 各自的参数，`ContentIndex` 一律先解析回 id 字符串。
+///
+/// 判别值 `0..=9` 与 [`DialogueCondition`] 的变体声明顺序一致，**新增谓词
+/// 必须往后接、不挪既有值**（同 [`ContentTableKind`] 那条纪律）。
+fn write_dialogue_condition(
+    hasher: &mut StateHasher,
+    condition: &DialogueCondition,
+    registry: &Registry,
+) {
+    match condition {
+        DialogueCondition::Affiliated(query) => {
+            hasher.write_u64(0);
+            write_affiliation_query(hasher, query, registry);
+        }
+        DialogueCondition::NotAffiliated(query) => {
+            hasher.write_u64(1);
+            write_affiliation_query(hasher, query, registry);
+        }
+        DialogueCondition::StandingAtLeast { query, value } => {
+            hasher.write_u64(2);
+            write_affiliation_query(hasher, query, registry);
+            hasher.write_u64(*value as u64);
+        }
+        DialogueCondition::QuestCompleted(quest) => {
+            hasher.write_u64(3);
+            write_optional_resolved(hasher, Some(*quest), registry);
+        }
+        DialogueCondition::QuestNotCompleted(quest) => {
+            hasher.write_u64(4);
+            write_optional_resolved(hasher, Some(*quest), registry);
+        }
+        DialogueCondition::FlagSet(flag) => {
+            hasher.write_u64(5);
+            hasher.write_namespaced_id(flag);
+        }
+        DialogueCondition::FlagNotSet(flag) => {
+            hasher.write_u64(6);
+            hasher.write_namespaced_id(flag);
+        }
+        DialogueCondition::HasItem { item, count } => {
+            hasher.write_u64(7);
+            write_optional_resolved(hasher, Some(*item), registry);
+            hasher.write_u64(u64::from(*count));
+        }
+        DialogueCondition::WalletAtLeast(value) => {
+            hasher.write_u64(8);
+            hasher.write_u64(*value as u64);
+        }
+        DialogueCondition::IsRace(race) => {
+            hasher.write_u64(9);
+            write_optional_resolved(hasher, Some(*race), registry);
+        }
+    }
+}
+
+/// 混入一条归属查询（谓词参数的公共一半）。
+fn write_affiliation_query(
+    hasher: &mut StateHasher,
+    query: &AffiliationQuery,
+    registry: &Registry,
+) {
+    // `AffiliationKind` 是 `ll-world` 的公开枚举、没有显式判别值，这里按
+    // 声明顺序显式编号，**不用 `as u64`**：那会把「往枚举中间插一个变体」
+    // 这件事悄悄变成一次哈希语义改动，而这里看得见。
+    hasher.write_u64(match query.kind {
+        AffiliationKind::Faction => 0,
+        AffiliationKind::Religion => 1,
+        AffiliationKind::Guild => 2,
+        AffiliationKind::Culture => 3,
+        AffiliationKind::Family => 4,
+    });
+    write_optional_resolved(hasher, query.org, registry);
 }
 
 /// 混入 [`ll_world::space_profile::SpaceProfile`] 的全部字段
@@ -2532,6 +2719,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
         apply_value_hashes(
@@ -2559,6 +2748,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
 
@@ -2665,6 +2856,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
         apply_value_hashes(
@@ -2692,6 +2885,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
 
@@ -2793,6 +2988,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
         apply_value_hashes(
@@ -2820,6 +3017,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
 
@@ -2977,6 +3176,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
         apply_value_hashes(
@@ -3004,6 +3205,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
 
@@ -3101,6 +3304,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
         apply_value_hashes(
@@ -3128,6 +3333,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
 
@@ -3233,6 +3440,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
         apply_value_hashes(
@@ -3260,6 +3469,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
 
@@ -3368,6 +3579,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
         apply_value_hashes(
@@ -3395,6 +3608,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
 
@@ -3460,6 +3675,8 @@ mod tests {
                 modifier_type: &ModifierTypeTable::new(),
                 resource: &ResourceTable::new(),
                 culture: &CultureTable::new(),
+                dialogue: &DialogueTable::new(),
+                dialogue_node: &DialogueNodeTable::new(),
             },
         );
 
@@ -4122,7 +4339,11 @@ mod tests {
             recipe_category,
         ) = empty_non_race_tables();
         let race = RaceTable::new();
+        let dialogue = DialogueTable::new();
+        let dialogue_node = DialogueNodeTable::new();
         let tables = ContentValueTables {
+            dialogue: &dialogue,
+            dialogue_node: &dialogue_node,
             terrain: &terrain,
             class: &class,
             skill: &skill,
@@ -4205,6 +4426,127 @@ mod tests {
                     digests[left], digests[right],
                     "大类 {} 与 {} 的摘要撞了",
                     categories[left], categories[right]
+                );
+            }
+        }
+    }
+
+    /// 对话节点的跳转目标真的进了摘要：同一个节点、只换选项的 `next`，
+    /// 摘要必须不同（版本 28 守门，见 [`CONTENT_HASH_ALGORITHM_VERSION`]
+    /// 文档「版本 28」一节）。
+    ///
+    /// 三种形态两两比对：`end`、跳到 A、跳到 B。只比前两种发现不了
+    /// 「`Node` 那一支忘了把目标索引混进去」——那正是最容易漏的一处，
+    /// 因为它是唯一需要 `Registry::resolve` 的一步。
+    #[test]
+    fn 跳转目标不同的两个对话节点摘要不同() {
+        // Arrange
+        let mut registry = Registry::new();
+        let node = registry.intern(NamespacedId::parse("test:root").expect("合法标识符"));
+        let a = registry.intern(NamespacedId::parse("test:a").expect("合法标识符"));
+        let b = registry.intern(NamespacedId::parse("test:b").expect("合法标识符"));
+        let digest = |next: DialogueNext| -> u64 {
+            let mut table = DialogueNodeTable::new();
+            table
+                .define(
+                    node,
+                    crate::dialogue::DialogueNodeAttrs {
+                        text_key: NamespacedId::parse("test:dialogue.root").expect("合法标识符"),
+                        options: vec![crate::dialogue::DialogueOption {
+                            text_key: NamespacedId::parse("test:dialogue.go").expect("合法标识符"),
+                            conditions: Vec::new(),
+                            next,
+                        }],
+                    },
+                )
+                .expect("声明自洽");
+            let mut hasher = StateHasher::new();
+            write_dialogue_node_fields(&mut hasher, &table, node, &registry);
+            hasher.finish()
+        };
+
+        // Act
+        let digests = [
+            digest(DialogueNext::End),
+            digest(DialogueNext::Node(a)),
+            digest(DialogueNext::Node(b)),
+        ];
+
+        // Assert
+        for left in 0..digests.len() {
+            for right in (left + 1)..digests.len() {
+                assert_ne!(
+                    digests[left], digests[right],
+                    "跳转目标 {left} 与 {right} 的摘要撞了"
+                );
+            }
+        }
+    }
+
+    /// 十条谓词的判别值两两不同，且带参数的那几条真的把参数混进去了
+    /// （版本 28 守门）。
+    ///
+    /// 判别值撞车的后果是「两条语义完全不同的条件算出同一个摘要」——
+    /// 内容改了而哈希没变，正是内容哈希这套机制要拦的那件事。
+    #[test]
+    fn 十条对话谓词的摘要两两不同() {
+        // Arrange
+        let mut registry = Registry::new();
+        let target = registry.intern(NamespacedId::parse("test:target").expect("合法标识符"));
+        let other = registry.intern(NamespacedId::parse("test:other").expect("合法标识符"));
+        let flag = NamespacedId::parse("test:flag").expect("合法标识符");
+        let query = AffiliationQuery {
+            kind: AffiliationKind::Faction,
+            org: None,
+        };
+        let conditions = [
+            DialogueCondition::Affiliated(query),
+            DialogueCondition::NotAffiliated(query),
+            DialogueCondition::StandingAtLeast { query, value: 250 },
+            DialogueCondition::QuestCompleted(target),
+            DialogueCondition::QuestNotCompleted(target),
+            DialogueCondition::FlagSet(flag.clone()),
+            DialogueCondition::FlagNotSet(flag),
+            DialogueCondition::HasItem {
+                item: target,
+                count: 1,
+            },
+            DialogueCondition::WalletAtLeast(250),
+            DialogueCondition::IsRace(target),
+            // 参数敏感性：与上面几条只差一个参数。
+            DialogueCondition::StandingAtLeast { query, value: 251 },
+            DialogueCondition::QuestCompleted(other),
+            DialogueCondition::HasItem {
+                item: target,
+                count: 2,
+            },
+            DialogueCondition::Affiliated(AffiliationQuery {
+                kind: AffiliationKind::Guild,
+                org: None,
+            }),
+            DialogueCondition::Affiliated(AffiliationQuery {
+                kind: AffiliationKind::Faction,
+                org: Some(target),
+            }),
+        ];
+
+        // Act
+        let digests: Vec<u64> = conditions
+            .iter()
+            .map(|condition| {
+                let mut hasher = StateHasher::new();
+                write_dialogue_condition(&mut hasher, condition, &registry);
+                hasher.finish()
+            })
+            .collect();
+
+        // Assert
+        for left in 0..digests.len() {
+            for right in (left + 1)..digests.len() {
+                assert_ne!(
+                    digests[left], digests[right],
+                    "条件 {:?} 与 {:?} 的摘要撞了",
+                    conditions[left], conditions[right]
                 );
             }
         }

@@ -147,6 +147,7 @@ use ll_world::terrain::TerrainKind;
 use ll_world::weather::WEATHER_SCALE_ONE;
 
 use crate::content_hash::{ContentTableKind, ContentValueTables, classify_index};
+use crate::dialogue::DialogueCondition;
 use crate::quest::QuestCondition;
 use crate::registry::Registry;
 use crate::trait_def::RuleModifier;
@@ -473,6 +474,23 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 「本体名册里必须至少有一对互相敌对的文化」这条内容设计要求
         // 因此有了一道机器检查：把那两段敌对删掉，本门禁立刻变红。
         ContentTableKind::Culture,
+        // 对话内容表批次：mods/lostland/dialogues.json5（**新文件**，两段
+        // 会话 + 十二个节点）让两张对话表在 lostland 命名空间下一落地就
+        // 非空，与资源表/文化表当初一样不经过 deferred——对话名册本身就是
+        // 本体内容，它引用的职业/文化/任务/物品/种族都已经在本体里。
+        //
+        // 会话入口表**三个字段全部被本体那两段覆盖，一条豁免都不需要**：
+        // speaker_profession 与 root 是 `define` 的必填入参，
+        // speaker_culture 由 lostland:mining_guard_greeting 那一条覆盖——
+        // 「本体名册里必须至少有一段按文化收窄的对话」这条内容设计要求
+        // 因此有了一道机器检查：把那个 culture 字段删掉，本门禁立刻变红。
+        // 它守的是规格 1.3 的裁决顺序真的有活用例，而不只是有实现。
+        ContentTableKind::Dialogue,
+        // 节点表同理，四个字段全部被覆盖：text_key 必填；options 非空（多数
+        // 节点都有选项）；options::conditions 由那批带条件的选项覆盖；
+        // options::next_node 由回环覆盖——**最后这一条正是「对话图允许有
+        // 环」的机器检查**：把本体那几条「还有别的事吗」删光，本门禁变红。
+        ContentTableKind::DialogueNode,
     ],
     deferred: &[
         DeferredTable {
@@ -860,6 +878,8 @@ fn table_label(kind: ContentTableKind) -> &'static str {
         ContentTableKind::RecipeCategory => "配方类别表",
         ContentTableKind::Resource => "资源表",
         ContentTableKind::Culture => "文化表",
+        ContentTableKind::Dialogue => "会话入口表",
+        ContentTableKind::DialogueNode => "对话节点表",
     }
 }
 
@@ -868,7 +888,7 @@ fn table_label(kind: ContentTableKind) -> &'static str {
 /// 与 [`roster_slot`] 配套：新增一个变体时，那个不带通配分支的 `match`
 /// 会编译失败，逼人回到这里补上数组元素（数组长度也会对不上），见模块
 /// 文档「表花名册」一节。
-pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 23] = [
+pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 25] = [
     ContentTableKind::Opaque,
     ContentTableKind::Terrain,
     ContentTableKind::Class,
@@ -892,6 +912,8 @@ pub const ALL_CONTENT_TABLE_KINDS: [ContentTableKind; 23] = [
     ContentTableKind::ModifierType,
     ContentTableKind::Resource,
     ContentTableKind::Culture,
+    ContentTableKind::Dialogue,
+    ContentTableKind::DialogueNode,
 ];
 
 /// 给 [`ALL_CONTENT_TABLE_KINDS`] 的完备性做编译期强制：不带通配分支
@@ -925,6 +947,8 @@ fn roster_slot(kind: ContentTableKind) -> usize {
         ContentTableKind::ModifierType => 20,
         ContentTableKind::Resource => 21,
         ContentTableKind::Culture => 22,
+        ContentTableKind::Dialogue => 23,
+        ContentTableKind::DialogueNode => 24,
     }
 }
 
@@ -1336,6 +1360,8 @@ fn inspect_entry(auditor: &mut Auditor<'_>, index: ContentIndex) {
         ContentTableKind::Weather => inspect_weather(auditor, index),
         ContentTableKind::Resource => inspect_resource(auditor, index),
         ContentTableKind::Culture => inspect_culture(auditor, index),
+        ContentTableKind::Dialogue => inspect_dialogue(auditor, index),
+        ContentTableKind::DialogueNode => inspect_dialogue_node(auditor, index),
         ContentTableKind::Recipe => inspect_recipe(auditor, index),
         ContentTableKind::RecipeCategory => inspect_recipe_category(auditor, index),
     }
@@ -1663,6 +1689,129 @@ fn inspect_culture(auditor: &mut Auditor<'_>, index: ContentIndex) {
         .iter()
         .any(|target| table.hostility(Some(kind), Some(*target)) > 0);
     auditor.field("CultureAttrs::hostility", declares_hostility);
+}
+
+/// [`crate::dialogue::DialogueDef`] 的全部字段。
+///
+/// `speaker.profession` 与 `root` 是 `define` 的必填入参，因此恒记为已覆盖
+/// （理由与 `inspect_culture` 里那几条逐字相同）；`speaker.culture` 是真的
+/// 可能缺席的那一个，如实记「这条内容有没有声明它」。
+fn inspect_dialogue(auditor: &mut Auditor<'_>, index: ContentIndex) {
+    let view = auditor
+        .tables
+        .dialogue
+        .get(index)
+        .expect("classify_index 已判定为 Dialogue，get 必返回 Some");
+    auditor.field("DialogueAttrs::speaker::profession", true);
+    auditor.reference(
+        "DialogueAttrs::speaker::profession",
+        view.speaker.profession,
+        ReferenceExpectation::Table(ContentTableKind::Class),
+    );
+    auditor.optional_reference(
+        "DialogueAttrs::speaker::culture",
+        view.speaker.culture,
+        ReferenceExpectation::Table(ContentTableKind::Culture),
+    );
+    auditor.field("DialogueAttrs::root", true);
+    auditor.reference(
+        "DialogueAttrs::root",
+        view.root,
+        ReferenceExpectation::Table(ContentTableKind::DialogueNode),
+    );
+}
+
+/// [`crate::dialogue::DialogueNodeDef`] 的全部字段。
+///
+/// `text_key` 是**本地化键**（不是 `ContentIndex`，见 [`crate::dialogue`]
+/// 模块文档末节），只记覆盖、没有引用可查——与
+/// `SpaceProfile::reverb_tag` 同一种情形。
+///
+/// `options::next_node` 记的是「这条内容有没有真的写过一条指向别的节点的
+/// 跳转」。**这是「对话图允许有环」那件事的机器检查的一半**：本体的回环
+/// 内容一旦被删光，全部选项都会退化成 `end`，这个字段当场变成未覆盖。
+fn inspect_dialogue_node(auditor: &mut Auditor<'_>, index: ContentIndex) {
+    let view = auditor
+        .tables
+        .dialogue_node
+        .get(index)
+        .expect("classify_index 已判定为 DialogueNode，get 必返回 Some");
+    // 先把要记的东西抄出来：`auditor` 后面要可变借用，而 `view` 借着
+    // `auditor.tables`。
+    let has_options = !view.options.is_empty();
+    let has_conditions = view.options.iter().any(|o| !o.conditions.is_empty());
+    let jumps: Vec<ContentIndex> = view
+        .options
+        .iter()
+        .filter_map(|o| crate::content_schema_dialogue::next_target(o.next))
+        .collect();
+    let condition_refs: Vec<(&'static str, ContentIndex, ContentTableKind)> = view
+        .options
+        .iter()
+        .flat_map(|o| o.conditions.iter())
+        .filter_map(condition_reference)
+        .collect();
+
+    auditor.field("DialogueNodeAttrs::text_key", true);
+    auditor.field("DialogueNodeAttrs::options", has_options);
+    auditor.field("DialogueNodeAttrs::options::conditions", has_conditions);
+    auditor.slice_reference(
+        "DialogueNodeAttrs::options::next_node",
+        &jumps,
+        ReferenceExpectation::Table(ContentTableKind::DialogueNode),
+    );
+    for (field, target, expected) in condition_refs {
+        auditor.reference(field, target, ReferenceExpectation::Table(expected));
+    }
+}
+
+/// 一条对话条件里携带的跨表引用（有的话）：字段名、目标索引、目标该落在
+/// 哪张表。
+///
+/// 不返回引用的三条不是漏了：`FlagSet`/`FlagNotSet` 携带的是**本地化空间
+/// 之外的一个裸标识符**（对话系统自己写进 `Agent.mod_state` 的键，没有
+/// 内容表），`WalletAtLeast` 只有一个数。
+fn condition_reference(
+    condition: &DialogueCondition,
+) -> Option<(&'static str, ContentIndex, ContentTableKind)> {
+    match condition {
+        DialogueCondition::Affiliated(query) | DialogueCondition::NotAffiliated(query) => {
+            query.org.map(|org| {
+                (
+                    "DialogueOption::conditions::org",
+                    org,
+                    ContentTableKind::Culture,
+                )
+            })
+        }
+        DialogueCondition::StandingAtLeast { query, .. } => query.org.map(|org| {
+            (
+                "DialogueOption::conditions::org",
+                org,
+                ContentTableKind::Culture,
+            )
+        }),
+        DialogueCondition::QuestCompleted(quest) | DialogueCondition::QuestNotCompleted(quest) => {
+            Some((
+                "DialogueOption::conditions::quest",
+                *quest,
+                ContentTableKind::Quest,
+            ))
+        }
+        DialogueCondition::HasItem { item, .. } => Some((
+            "DialogueOption::conditions::item",
+            *item,
+            ContentTableKind::Item,
+        )),
+        DialogueCondition::IsRace(race) => Some((
+            "DialogueOption::conditions::race",
+            *race,
+            ContentTableKind::Race,
+        )),
+        DialogueCondition::FlagSet(_)
+        | DialogueCondition::FlagNotSet(_)
+        | DialogueCondition::WalletAtLeast(_) => None,
+    }
 }
 
 /// [`ll_render::anim::Clip`] 的全部字段——[`crate::clip::ClipTable`]
@@ -2185,6 +2334,8 @@ mod tests {
         weather: WeatherTable,
         resource: ll_world::resource::ResourceTable,
         culture: ll_world::culture::CultureTable,
+        dialogue: crate::dialogue::DialogueTable,
+        dialogue_node: crate::dialogue::DialogueNodeTable,
         recipe: RecipeTable,
         recipe_category: RecipeCategoryTable,
         tag: TagTable,
@@ -2215,6 +2366,8 @@ mod tests {
                 weather: WeatherTable::new(),
                 resource: ll_world::resource::ResourceTable::new(),
                 culture: ll_world::culture::CultureTable::new(),
+                dialogue: crate::dialogue::DialogueTable::new(),
+                dialogue_node: crate::dialogue::DialogueNodeTable::new(),
                 recipe: RecipeTable::new(),
                 recipe_category: RecipeCategoryTable::new(),
             }
@@ -2244,6 +2397,8 @@ mod tests {
                 modifier_type: &self.modifier_type,
                 resource: &self.resource,
                 culture: &self.culture,
+                dialogue: &self.dialogue,
+                dialogue_node: &self.dialogue_node,
             }
         }
 

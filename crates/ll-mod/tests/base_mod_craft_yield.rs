@@ -182,6 +182,8 @@ fn load_real_mods() -> Handle {
     let mut recipe_category_table = RecipeCategoryTable::new();
     let mut tag_table = TagTable::new();
     let mut modifier_type_table = ModifierTypeTable::new();
+    let mut dialogue = ll_mod::dialogue::DialogueTable::new();
+    let mut dialogue_node = ll_mod::dialogue::DialogueNodeTable::new();
 
     let report = load_all(
         Path::new(REAL_MODS_ROOT),
@@ -192,6 +194,8 @@ fn load_real_mods() -> Handle {
             skill: &mut skill,
             subclass: &mut subclass,
             quest: &mut quest,
+            dialogue: &mut dialogue,
+            dialogue_node: &mut dialogue_node,
             race: &mut race,
             clip: &mut clip,
             xp_curve: &mut xp_curve,

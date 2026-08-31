@@ -154,6 +154,16 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
     # 两条耐久磨损通道），只是那条消费路径是间接的，见下面 TagDef.wear
     # 的豁免理由。
     ("crates/ll-mod/src/tag.rs", "struct", "TagDef"),
+    # 对话内容表批次新增的第二十四、二十五张内容表（ContentTableKind::Dialogue
+    # 与 ::DialogueNode）。与 WeaponCategory/DamageCategory 当初的情形一样：
+    # 这两张表**本批次没有任何决策层消费者**——对话的消费者是交互列表、会话
+    # UI 与 `resolve` 侧的 `Intent::DialogueChoose`，那些全部属于批次 2
+    # （docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md 第七节
+    # 的挂载点表）。因此下面每个字段各挂一条 EXEMPTIONS，逐条写明预期接线的
+    # 批次。**条件谓词那一半不在这里**：`DialogueCondition` 与它的求值住在
+    # crates/ll-sim/src/dialogue.rs，本来就在决策层 glob 里。
+    ("crates/ll-mod/src/dialogue.rs", "struct", "DialogueDef"),
+    ("crates/ll-mod/src/dialogue.rs", "struct", "DialogueNodeDef"),
     # 加值类型批次新增的第二十一张内容表（ContentTableKind::ModifierType）。
     # 这张表**一个字段都没有**（加值类型是纯身份，理由见 ll_mod::modifier_type
     # 模块文档），因此本条进 TARGET_TYPES 之后扫描到的字段数是 0——它不是
@@ -255,6 +265,9 @@ EXEMPTIONS: dict[str, str] = {
     "SkillDef.id": "同上。",
     "SubclassDef.id": "同上。",
     "QuestNodeDef.id": "同上（任务节点标识符）。",
+    "DialogueDef.id": "同上（会话入口标识符）。",
+    "DialogueNodeDef.id": "同上（对话节点标识符）。",
+    "DialogueNodeDef.text_key": "同 RaceDef.display_name_key，指向 Fluent 本地化键；对话文案一个字都不进 JSON5，见 crates/ll-mod/src/dialogue.rs 模块文档末节。",
     "ResourcePoolDef.id": "同上。",
     "TraitDef.id": "同上。",
     "TerrainDef.id": "同上。",
@@ -266,6 +279,33 @@ EXEMPTIONS: dict[str, str] = {
     "TraitDef.display_name_key": "同上。",
     "WeatherDef.id": "同上（天气标识符）。",
     "WeatherDef.display_name_key": "同 RaceDef.display_name_key，指向 Fluent 本地化键。与其余几条不同的是它有一个真实且已接线的 UI 消费者：ll_ui::hud::status_bar::StatusBarData::weather_display_name_key 每帧把它交给 Catalog::resolve 显示在状态栏（见 crates/ll-game/src/app.rs::draw_hud）——但那是表现层，不是本门禁定义的决策层，判据上仍归入「结构性字段」。",
+    # ---- (c2) 对话内容表批次（2026-08-31）：消费者是批次 2 的交互列表与会话 UI ----
+    #
+    # 计划文档 docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md
+    # 第一节写明本批**只做内容表**：交互列表接线、会话 UI、
+    # Intent::DialogueChoose 与三条后果全部属于批次 2 及之后。下面三条各自
+    # 点名将来读它的那一处，不是「以后再说」。
+    #
+    # 注意条件谓词那一半**不在这里**：DialogueCondition 与它的求值住在
+    # crates/ll-sim/src/dialogue.rs，本来就在决策层 glob 内，从第一天起就
+    # 有真实读取点（condition_holds 逐变体 match）。
+    "DialogueDef.speaker": (
+        "说话人匹配（职业 + 可选文化）。读它的是 ll_mod::dialogue::DialogueTable::match_speaker，"
+        "而 match_speaker 的调用方是批次 2 的 ll_game::player_action::interact_entries"
+        "（给站在这一格上的 NPC push 一行 InteractTarget::Talk）——那是输入层，"
+        "不是本门禁定义的决策层，且本批次尚未接线。"
+    ),
+    "DialogueDef.root": (
+        "会话从哪个节点开始。今天已经有一个真实消费者：ll_mod::dialogue::validate_references "
+        "在装载期校验它指向的节点真的被定义过（调用点 ll_game::content::load_content）。"
+        "运行期读它的是批次 2 的会话 UI（开口说话时从这里进入节点表）。"
+    ),
+    "DialogueNodeDef.options": (
+        "玩家能选的行。读它的是批次 2 的会话 UI（显示可选行，逐条调 "
+        "ll_sim::dialogue::all_conditions_hold 过滤）与同批的 resolve 侧重新校验——"
+        "后者落在决策层，届时这条豁免应当摘掉。装载期已经有一个消费者："
+        "validate_references 遍历每条选项的 next。"
+    ),
     # ---- (d) 消费者在渲染层（本门禁定义的决策层之外），登记日期与安排 ----
     "Agent.gender": (
         "渲染层**今天就在读它**：ll_game::surface_draw::npc_draws 把它拼进精灵键的候选串"
@@ -595,6 +635,8 @@ CONTENT_HASH_KIND_TO_TARGET_TYPE: dict[str, str] = {
     "ModifierType": "ModifierTypeDef",
     "Resource": "ResourceAttrs",
     "Culture": "CultureAttrs",
+    "Dialogue": "DialogueDef",
+    "DialogueNode": "DialogueNodeDef",
 }
 
 CONTENT_HASH_KINDS_NOT_TRACKED_BY_FIELD_GATE: dict[str, str] = {
