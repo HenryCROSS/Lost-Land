@@ -174,6 +174,26 @@ let catalog = Catalog::load(BASE_NAMESPACE, &sources);
 
 ### 3.1 键名改成与本体逐字同构的形状
 
+> **【落地时被推翻，不删原文】** 本小节原计划把 `example_mod` 的 46 条
+> 扁平键改成本体的 `<内容类型>.<id>.display_name` 形状。**所有者侧的
+> 硬约束在开工后明确为「不要碰 `mods/example_mod/` 的既有内容结构——
+> 本批是给它加 `locales/`，不是改它别的东西」，因此这次改名没有做。**
+>
+> 撞键那条验收断言改用另一条路，且**不需要动任何内容文件**：
+> `mods/example_mod/locales/*.ftl` 末尾留两条**故意与本体同 id** 的
+> 条目（`race-elf-display_name` 与**裸键** `hud-inventory-empty`），
+> 在文件里逐条注明它们是活的回归夹具。先例是同一个 mod 目录下的
+> `assets/overrides/lostland/sprites/terrain_dirt.png`——那张图同样只为了
+> 让资产覆盖机制有一份真实证据而存在。
+>
+> **这条替代路比原计划更狠**：裸键那一条覆盖的是「第三方 mod 能不能
+> 劫持**引擎自己**的 HUD 文案」，而 mod 恒在本体之后装载。反例实测
+> （把 `Catalog` 还原成本批之前的一张扁平表）显示：示例 mod 真的会
+> 把本体的「（空）」换成自己那句话，且没有任何东西会报错。
+>
+> 随之作废的还有本小节「代价」段：**内容哈希一个字节都没变**，
+> 此前用 `example_mod` 生成的存档不受影响。
+
 现状：`example_mod` 的 47 条 `display_name_key` 里，**46 条是扁平形状**
 （`examplemod:iron_sword_display_name`），**1 条已经是分层形状**
 （`examplemod:weather.ashfall.display_name`，天气批次写的）。本体全部 94 条无一例外是
@@ -268,4 +288,54 @@ item 36 / race 4 / recipe 12 / recipe_category 5 / resource 7 / subclass 6 / tra
 
 ## 八、落地后回填
 
-（实施完成后在此补：实际测试数、门禁 exit code、两条黄金基准实测、计划之外必须做的事。）
+### 实测数字
+
+| | 改前 | 改后 |
+|---|---|---|
+| `run_tests.sh` 合计通过 | **2798** | **2817** |
+| `ll-i18n` 单元测试 | 11 | 19 |
+| `ll-mod::locale_vfs` | 0（模块不存在） | 7 |
+| `ll-game/tests/mod_locales.rs` | 0（文件不存在） | 6 |
+| `check_i18n_strings.py` 疑似命中（warn 模式） | 996 | **1008** |
+
+`check_i18n_strings.py` 多出来的十二条**全部在 `crates/ll-i18n/src/lib.rs`**：
+`tracing::warn!` 的日志文案与测试夹具里的 `.ftl` 片段（`"race-elf-display_name = 精灵
+"`
+这一类）。它们与该文件里既有的同类命中同一形状，是开发者向诊断信息与测试数据，
+不是玩家可见文本。**这道门禁的假设没有被本批改动破坏**：它扫的仍然是
+`crates/*/src/**/*.rs` 的 CJK 字面量，对 `mods/**/*.json5` 与 `**/*.ftl` 一如既往地
+看不见——本批新增的 `mods/example_mod/locales/*.ftl` 正落在它的盲区里，
+这也正是设计文档三节 3.1 建议补第二道门禁的理由。补那道门禁属于独立一批。
+
+### 两条黄金基准
+
+**都没变**，实跑通过（`determinism.rs` 与 `replay.rs` 两个文件在本批里
+`git diff` 为空）。本批不碰世界状态与结算，这是预期结果。
+`CONTENT_HASH_ALGORITHM_VERSION` 同样不动（没有新增内容类型，也没有改内容）。
+
+### 计划之外、但必须做的四件
+
+1. **`ll-ui` 的 53 处调用点**。计划二节 2.1 只数了 `ll-game` 的八处，漏了 `ll-ui`
+   的五十三处（全部在 `#[cfg(test)]` 里）。为它们在 `ll-ui/src/lib.rs` 立了一个
+   `TEST_LOCALE_NAMESPACE` 常量，而不是把 `"lostland"` 抄五十三遍。
+2. **`ll_game::test_support::empty_catalog`**。命名空间化之后构造式变长，就地写会被
+   rustfmt 拆成四行，把 `crates/ll-game/src/app_tests.rs` 从 1053 顶到 1059 代码行，
+   **文件行数棘轮门禁当场红**。抽成一个共用函数之后两个调用点各自回到一行，
+   `app_tests.rs` 逐字回到原行数——**没有动 `--bless`**。
+3. **`clippy::items-after-test-module`**。`empty_catalog` 一开始追加在文件末尾，
+   落在 `mod tests` 之后；`-D warnings` 下这是硬错误。已移到测试模块之前。
+4. **一条 rustdoc 内链**。`LoadError` 的文档指向被删掉的 `Catalog::load_dir`，
+   `-D rustdoc::broken-intra-doc-links` 让 `check_doc_links.sh` 红。改指
+   `Catalog::load`。
+
+### 规格没裁定、本批临时选的做法（可反转，逐条列出）
+
+1. **语言回退链**（二节 2.4）：请求语言 → `en` → 该命名空间其余语言（字典序）→ 键名。
+2. **`languages()` 只报本体命名空间**（二节 2.5）：保持今天的行为不变，
+   把「mod 能不能给游戏新增一种可选语言」留给独立一批。
+3. **`example_mod` 的撞键夹具是两条与本体同 id 的 `.ftl` 条目**（三节 3.1 的更正段）：
+   原计划改它的键名，被「不许动 example_mod 既有内容结构」这条约束否掉。
+4. **不做本地化覆盖机制**（mod 改写别人的译文）：今天没有需求，且要做得先回答
+   「覆盖粒度是文件还是条目」。
+5. **同一个命名空间被给出两次时后来者生效并记 warn**：`topo_sort` 已经会先一步
+   拒绝重复命名空间，这条只是兜底，选了「不丢数据、留痕迹」这一侧。

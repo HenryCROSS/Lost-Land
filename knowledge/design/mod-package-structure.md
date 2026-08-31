@@ -69,6 +69,18 @@ yourmod/
 
 ### 本地化文件：为什么键不需要再编码命名空间
 
+> **【2026-08-30 已落地】** 本节定的两步查找规则（① 从命名空间定位到
+> 对应 mod 的 `locales/`；② 取 `path` 部分当 Fluent 消息 id）此前**只有
+> 第 ② 步是真的**——`ll_i18n::Catalog` 把命名空间前缀剥掉就丢了，装载端
+> 也只读本体一个目录。批次 17（计划文档
+> `docs/superpowers/plans/2026-08-30-batch17-mod-localization.md`）把第 ①
+> 步补上：`ll_mod::locale_vfs::discover_locale_dirs` 遍历
+> `mods/*/locales/`，`Catalog` 按 `(命名空间, 语言)` 分桶。
+> 下一段「本体的本地化文件遵循完全相同的约定」也随之从**主张**变成
+> **事实**：本体的 `assets/locales/` 现在是 `ll_game::locale_sources`
+> 返回的同一个 `LocaleSource` 列表里的第一条，`Catalog` 无从分辨哪一条
+> 是本体。活证据是 `mods/example_mod/locales/`。
+
 `display_name_key: NamespacedId` 这类字段（`ClassDef`/`SkillDef` 等已经在用，见 `crates/ll-mod/src/class.rs`）存的是形如 `"examplemod:necromancer_display_name"` 的完整命名空间字符串。**但 Fluent 的消息标识符语法本身不允许冒号**（合法字符集是字母数字/连字符/下划线），若要求 `.ftl` 文件里直接写 `examplemod:necromancer_display_name = ...` 这一整串当 key，会在 Fluent 解析阶段直接报语法错误——这是一个真实的、此刻就该定下来的兼容性问题，不是未来才会撞见的边角情况。
 
 **解法：本地化文件本身已经按 mod 目录隔离，键里不需要再重复命名空间。** `locales/<语言标签>.ftl` 物理上就活在这个 mod 自己的目录里，"这个键属于哪个命名空间"这件事已经由**文件所在的目录**回答了，不需要再让键的字面文本自己携带一遍命名空间。查找规则因此是两步：

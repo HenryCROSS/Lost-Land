@@ -484,7 +484,7 @@ fn load_bundle(path: &Path, language: &str) -> Result<FluentBundle<FluentResourc
 }
 
 /// [`load_bundle`] 的失败原因，只用于日志诊断（见
-/// [`Catalog::load_dir`] 文档「不返回 `Result`」一节）——不向调用方
+/// [`Catalog::load`] 文档「不返回 `Result`」一节）——不向调用方
 /// 暴露，调用方只关心装载后 [`Catalog::loaded_language_count`] 少了
 /// 一种语言，具体哪里错、错在哪一行留给日志。
 #[derive(Debug)]
