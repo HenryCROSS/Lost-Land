@@ -249,7 +249,7 @@ mod tests {
         // Arrange：建局那一刻（Tick(0)）——第 0 天 00:00。
         let dir = temp_dir("day-zero");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -273,7 +273,7 @@ mod tests {
         // Arrange：第 2 天 08:05——2 * TICKS_PER_DAY + 8 小时 + 5 分钟。
         let dir = temp_dir("day-two-eight-oh-five");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let clock = Tick(2 * TICKS_PER_DAY + 8 * TICKS_PER_HOUR + 5 * TICKS_PER_MINUTE);
         let data = StatusBarData {
             clock,
@@ -301,7 +301,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("weather-shown");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -328,7 +328,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("weather-absent");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -353,7 +353,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("health-value");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(0),
             health: 42,
@@ -377,7 +377,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("mana-value");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -401,7 +401,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("language-switch");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -426,7 +426,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("panel-one-line");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -450,7 +450,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("panel-width");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -510,7 +510,7 @@ mod tests {
         // Arrange：日 40 落在夏季（0..30 春、30..60 夏）。
         let dir = temp_dir("season-name");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(40 * TICKS_PER_DAY),
             health: 100,
@@ -534,7 +534,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("fps-value");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let data = StatusBarData {
             clock: Tick(0),
             health: 100,
@@ -559,7 +559,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("fps-changes-text");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let low_fps = StatusBarData {
             clock: Tick(0),
             health: 100,

@@ -260,6 +260,34 @@ JSON 表示天然不重叠，条件与后果不满足这个前提。
 
 ### 3.2 致命缺口：mod 的 `.ftl` 装载零实现——正面处理，不绕过
 
+> **【2026-08-30 已落地：批次 0，工作树 `wt-modftl`，计划文档
+> `docs/superpowers/plans/2026-08-30-batch17-mod-localization.md`】**
+> 本节以下正文原样保留（纪律：推翻要留来由，不删原文），但**两个缺口
+> 都已经补上**，正文里的「现状」段落自此是历史记述，不再是现状。
+>
+> - `Catalog` 的桶从「语言标签」改成「**命名空间 → 语言标签**」两级；
+>   `split_key`（原 `to_fluent_id`）用命名空间前缀**选桶**而不是丢弃它，
+>   裸键落到 `base_namespace`，行为不变。
+> - `Catalog::load_dir` **删除**——它没有命名空间入参，正是「本体特权
+>   路径」的实现载体。新入口是 `Catalog::load(base_namespace, &[LocaleSource])`。
+> - 新模块 `ll_mod::locale_vfs::discover_locale_dirs` 遍历
+>   `mods/*/locales/`；`ll_game::locale_sources` 把**本体那一条与每个 mod
+>   那一条放进同一个同构列表**，`Catalog` 无从分辨哪一条是本体。
+> - `mods/example_mod/locales/{zh-CN,en}.ftl` 落地，端到端断言在
+>   `crates/ll-game/tests/mod_locales.rs`。
+>
+> **本节没有预料到、落地时另行裁定的一条**：**语言回退**。一个 mod 只
+> 提供 zh-CN 而玩家用 en 时，本节原文说「沿用现有降级……查不到就回退到
+> 键名」——那意味着整屏 `mymod:item.foo.display_name`，是玩家可见的乱码。
+> 落地时改成「请求语言 → `en` → 该命名空间其余语言（字典序）→ 键名」，
+> 回退**不跨命名空间**，并同批新增 `Catalog::try_resolve`（精确、不回退）
+> 给覆盖率门禁用——否则回退链会把已经在生效的断言弄哑。理由与代价写在
+> 计划文档二节 2.4。
+>
+> **仍未做、不属于本批**：`mods/**/*.json5` 的 CJK 字面量门禁、
+> `text_key` 的多语言覆盖率门禁（本节 3.1/3.5 建议的两条）、本地化覆盖
+> 机制（mod 改写别人的译文）。
+
 **现状精确到行**：
 
 - 全仓库唯一的本地化装载点是 `crates/ll-game/src/lib.rs:477` 的
@@ -679,7 +707,7 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 
 | 批 | 内容 | 前置 | 依赖 P9？ |
 |---|---|---|---|
-| **0** | **mod 的 `.ftl` 装载**：`Catalog` 加命名空间维度、遍历 `mods/*/locales/`、本体的 `assets/locales/` 注册成 `lostland` 命名空间 | 无 | 否 |
+| **0** ✅ | **mod 的 `.ftl` 装载**（2026-08-30 已落地）：`Catalog` 加命名空间维度、遍历 `mods/*/locales/`、本体的 `assets/locales/` 注册成 `lostland` 命名空间 | 无 | 否 |
 | **1** | 对话内容表：`dialogues.json5`、两张表、进 `CONTENT_FILES` 与内容哈希、条件谓词七条、本体写一份 steward 对话、`example_mod` 写一份**带自己 `.ftl`** 的对话（这是批次 0 的验收标的） | 0 | 否 |
 | **2** | 进交互列表 + 会话 UI + `Intent::DialogueChoose` + `outcomes` 里的 `set-flag`。**此时对话已经能说话、能分支、能记住玩家的选择，但还没有丙档的三条后果** | 1；UI 形状等 `wt-uxdesign` | 否 |
 | **3** | **加入据点**：`Agent.home` 字段（含存档 schema 升版）、`join-settlement` 后果、`affiliated`/`standing-at-least` 两条谓词真的有东西可读 | 2 | **部分**——「加入据点」不依赖 P9；「加入**势力**」依赖 P9 的 `OrgInstance` 播种 |

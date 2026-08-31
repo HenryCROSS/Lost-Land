@@ -52,7 +52,7 @@ fn index_of(content: &LoadedContent, raw: &str) -> ContentIndex {
 /// 真实的 i18n 目录——从仓库的 `assets/locales/` 装，不是夹具。
 fn locales() -> ll_i18n::Catalog {
     let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/locales");
-    ll_i18n::Catalog::load_dir(&root)
+    ll_i18n::Catalog::load_one(ll_game::content::BASE_NAMESPACE, &root)
 }
 
 #[test]

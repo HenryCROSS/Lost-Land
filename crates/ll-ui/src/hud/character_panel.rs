@@ -409,7 +409,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("seven-attributes");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let data = CharacterPanelData {
@@ -456,7 +456,7 @@ mod tests {
         // 枚举变体加了、展示层却漏掉。
         let dir = temp_dir("luck-attribute-row");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let data = CharacterPanelData {
@@ -496,7 +496,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("level-xp");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let data = CharacterPanelData {
@@ -566,7 +566,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("unspent-points");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let data = CharacterPanelData {
@@ -594,7 +594,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("zero-points");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let data = sample_data(&modifiers, &equipment);
@@ -619,7 +619,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("primary-attribute");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let without_class = sample_data(&modifiers, &equipment);
@@ -645,7 +645,7 @@ mod tests {
         // Arrange：力量有一条未过期的 +50 修正。
         let dir = temp_dir("active-modifier");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let mut interner = Interner::new();
         let source = interner.intern(NamespacedId::parse("lostland:test_buff").unwrap());
         let mut modifiers = BTreeMap::new();
@@ -694,7 +694,7 @@ mod tests {
         // Arrange：修正在 Tick(100) 过期，查询时刻已是 Tick(200)。
         let dir = temp_dir("expired-modifier");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let mut interner = Interner::new();
         let source = interner.intern(NamespacedId::parse("lostland:test_buff").unwrap());
         let mut modifiers = BTreeMap::new();
@@ -743,7 +743,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("no-modifiers");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let data = CharacterPanelData {
@@ -806,7 +806,7 @@ mod tests {
         // Arrange
         let dir = temp_dir("panel-width");
         write_fixture_catalog(&dir);
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let data = CharacterPanelData {
@@ -939,7 +939,7 @@ mod tests {
         // 其文档），所以「渲染结果里还看得见键名」就是「这条文案漏了」
         // 的信号。中英两份 `.ftl` 各查一遍——只补中文那份是本仓库最容易
         // 犯的漂移。
-        let catalog = Catalog::load_dir(&real_locales_dir());
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &real_locales_dir());
         let displays = all_variant_displays();
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
@@ -968,7 +968,7 @@ mod tests {
         // Arrange：`锻造产出 +2（2 项来源）` 是这次的折中——数字是真实
         // 生效的合并值，「有几条声明」另行说明，见
         // `ll_sim::rule_modifier::RuleModifierDisplay` 文档。
-        let catalog = Catalog::load_dir(&real_locales_dir());
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &real_locales_dir());
         let single = vec![RuleModifierDisplay {
             name_key: ll_sim::rule_modifier::CRAFT_YIELD_NAME_KEY,
             subject_key: Some("lostland:recipe_category.forging.display_name".to_string()),
@@ -1002,7 +1002,7 @@ mod tests {
     fn 一条规则修正都没有时那一段仍然出现并写着无() {
         // Arrange：段落恒常显示，与「生效中的属性修正」同一条纪律——
         // 面板高度按行数现算，段落时有时无会让高度跳动。
-        let catalog = Catalog::load_dir(&real_locales_dir());
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &real_locales_dir());
         let modifiers = BTreeMap::new();
         let equipment = BTreeMap::new();
         let data = sample_data(&modifiers, &equipment);

@@ -69,7 +69,7 @@ pub(super) fn test_demo() -> Demo {
         "测试旅人".to_string(),
         GameConfig::default(),
         crate::test_support::unique_temp_path("ll-game-app-test-config").join("config.json5"),
-        Catalog::load_dir(&std::env::temp_dir().join("ll-game-app-test-empty-locales")),
+        crate::test_support::empty_catalog("ll-game-app-test-empty-locales"),
     )
 }
 
@@ -85,7 +85,7 @@ fn test_demo_at_title() -> Demo {
         "测试旅人".to_string(),
         GameConfig::default(),
         crate::test_support::unique_temp_path("ll-game-title-config").join("config.json5"),
-        Catalog::load_dir(&std::env::temp_dir().join("ll-game-app-test-empty-locales")),
+        crate::test_support::empty_catalog("ll-game-app-test-empty-locales"),
     )
 }
 

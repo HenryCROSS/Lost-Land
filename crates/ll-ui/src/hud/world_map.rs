@@ -1174,7 +1174,7 @@ mod tests {
             "hud-world-map-scale-label = 比例尺\nhud-world-map-hint = 提示\n",
         )
         .expect("测试用写入应当成功");
-        let catalog = Catalog::load_dir(&dir);
+        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
 
         // Act
         let caption = scale_caption(96, &catalog, "zh-CN");

@@ -45,7 +45,7 @@ pub mod worldgen;
 use std::path::{Path, PathBuf};
 
 use crate::save::LoadedGame;
-use ll_i18n::Catalog;
+use ll_i18n::{Catalog, LocaleSource};
 use ll_platform::config::{load_or_default, save as save_config};
 use ll_platform::logging::init_logging;
 use ll_platform::window::{WindowConfig, run};
@@ -361,6 +361,38 @@ fn rebuild_chronicle(
     )
 }
 
+/// 本次会话要装载的全部本地化来源：本体一条 + 每个带了 `locales/` 的
+/// mod 各一条。
+///
+/// # 本体没有特权路径
+///
+/// 本体那一条与任何 mod 那一条是**同一个类型的同一条列表里的元素**，
+/// 唯一的差别是目录取自 `assets/locales/` 而不是 `mods/<id>/locales/`
+/// ——那是发行布局决定的（`assets/` 与 `mods/` 是两个并列的发行目录），
+/// 不是查表规则上的例外。`ll_i18n::Catalog` 拿到这份列表之后无从分辨
+/// 哪一条是本体。这正是
+/// `knowledge/design/mod-package-structure.md`「本地化文件」一节
+/// 「规格 §5 `locales/` 目录本身就可以理解成本体这个虚拟 mod 自己的
+/// `locales/`……不需要为本体另开一条特殊路径」的落地形态，也是
+/// `knowledge/design/dialogue-system.md` 三节 3.2 点名要补上的那一半。
+///
+/// # 顺序不参与判断（C5）
+///
+/// 每个命名空间各自落进自己的桶，本体排第一只是可读性上的选择；
+/// `ll_i18n` 那边有一条断言专门咬住「打乱来源顺序结果逐条相同」。
+pub fn locale_sources(paths: &GamePaths) -> Vec<LocaleSource> {
+    let mut sources = vec![LocaleSource::new(
+        content::BASE_NAMESPACE,
+        &paths.locales_root,
+    )];
+    sources.extend(
+        ll_mod::locale_vfs::discover_locale_dirs(&paths.mods_root)
+            .into_iter()
+            .map(|(namespace, dir)| LocaleSource::new(namespace, dir)),
+    );
+    sources
+}
+
 /// 用 `catalog` 把 `title_key` 解析成 `language` 下的真实显示文本。
 ///
 /// 单独拆出这个一行函数，是为了给「键 → 加载器 → 实际渲染文字」这条
@@ -477,11 +509,13 @@ pub fn run_game() {
     // 把 `title_key` 解析成实际显示文本，而不是让 winit 直接拿键名当
     // 标题（那是本地化系统落地之前的临时占位行为，见
     // `ll_platform::window::WindowConfig::title_key` 文档）。
-    let catalog = Catalog::load_dir(&paths.locales_root);
+    let catalog = Catalog::load(content::BASE_NAMESPACE, &locale_sources(&paths));
     tracing::info!(
         language = %config.language,
         loaded_language_count = catalog.loaded_language_count(),
+        loaded_bundle_count = catalog.loaded_bundle_count(),
         locales_root = %paths.locales_root.display(),
+        mods_root = %paths.mods_root.display(),
         "本地化目录已装载"
     );
 
@@ -538,7 +572,7 @@ mod tests {
         // WindowConfig::default().title_key → Catalog::resolve → 中文
         // 标题文本，用的是仓库里真实的 assets/locales/zh-CN.ftl。
         // Arrange
-        let catalog = Catalog::load_dir(&real_locales_dir());
+        let catalog = Catalog::load_one(crate::content::BASE_NAMESPACE, &real_locales_dir());
         let title_key = WindowConfig::default().title_key;
 
         // Act
@@ -555,7 +589,7 @@ mod tests {
         // 那条测的是查表器本身，这条测的是本体二进制实际会用到的键
         // （`WindowConfig::title_key`）在切换语言后确实产出不同文本。
         // Arrange
-        let catalog = Catalog::load_dir(&real_locales_dir());
+        let catalog = Catalog::load_one(crate::content::BASE_NAMESPACE, &real_locales_dir());
         let title_key = WindowConfig::default().title_key;
 
         // Act
