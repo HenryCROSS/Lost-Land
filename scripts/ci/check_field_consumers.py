@@ -14,7 +14,7 @@ r"""扫描一份显式列出的「内容声明结构体/规则修正枚举」清
 
 # 存储层 vs 决策层，怎么区分
 
-- **决策层**（`DECISION_LAYER_FILES`）：`ll-sim/src/*.rs`（`resolve`/
+- **决策层**（`DECISION_LAYER_FILES`）：`ll-sim/src/**/*.rs`（`resolve`/
   `apply`/`combat`/`effect`/`intent`/`behavior`/`skill`/`item`/
   `resource_pool`/`traits`/`xp_curve`/`experience`/`quest`/`timeline`，
   不含 `tests/`、`examples/`）与 `ll-world/src/{fov,light}.rs`——这些是
@@ -209,9 +209,18 @@ TARGET_TYPES: list[tuple[str, str, str]] = [
 ]
 
 # 决策层文件：真正驱动模拟结算、影响玩法输出的地方。见脚本头注释
-# 「存储层 vs 决策层」一节。ll-sim/src 用整目录非递归通配（排除
-# tests/、examples/ 子目录），ll-world 只挑 fov/light 两个文件。
-DECISION_LAYER_GLOBS: list[str] = ["crates/ll-sim/src/*.rs"]
+# 「存储层 vs 决策层」一节。ll-sim/src 整目录**递归**通配，ll-world 只挑
+# fov/light 两个文件。
+#
+# 递归（`**`）不是可有可无的：批次 16 把 `resolve.rs` 按意图族拆成
+# `resolve.rs` + `resolve/` 九个子模块之后，原来的非递归 `src/*.rs` 当场
+# 漏掉了整个 `resolve/` 目录，26 个本来接了线的字段一起变成假阳性
+# （`ItemDef.stack_limit`、`TerrainDef.move_cost`、`RecipeDef.ingredients`…）。
+# 原注释写的「非递归是为了排除 tests/、examples/ 子目录」其实是多余的顾虑
+# ——那两个目录是 `src/` 的**兄弟**而不是子目录，`src/**/*.rs` 本来就够不着
+# 它们。决策层的判据从来是「哪个 crate 的哪一层」，不是「目录深度」，
+# 所以子模块必须跟着算进来。
+DECISION_LAYER_GLOBS: list[str] = ["crates/ll-sim/src/**/*.rs"]
 DECISION_LAYER_FILES: list[str] = [
     "crates/ll-world/src/fov.rs",
     "crates/ll-world/src/light.rs",
