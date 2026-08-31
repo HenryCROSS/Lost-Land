@@ -703,12 +703,40 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 
 ## 八、分批与优先级
 
+> **【2026-08-31 落地回填：批次 1（对话内容表）已完成】**
+> 计划文档 `docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md`，
+> 工作树 `wt-dlgcontent`。落点：`crates/ll-sim/src/dialogue.rs`（十条谓词与求值）、
+> `crates/ll-mod/src/dialogue.rs`（两张表、`validate_references`、`match_speaker`）、
+> `crates/ll-mod/src/content_schema_dialogue.rs`（schema 与装载）、
+> `mods/lostland/dialogues.json5`、`mods/example_mod/dialogues.json5`。
+> `CONTENT_HASH_ALGORITHM_VERSION` 27 → 28；两条黄金基准实测未变。
+>
+> **本节以下正文原样保留**（纪律：推翻要留来由，不删原文），但落地时对本文档
+> 有三处**偏离与补充**，逐条记在这里：
+>
+> 1. **本批的 schema 里没有 `outcomes` 字段。** 二节 2.2 的示例 JSON5 写了它。
+>    批次 1 一条后果都不做，一个只允许空数组的字段就是一个「声明了但没接线」
+>    的死字段；`deny_unknown_fields` 会让今天写 `outcomes:` 的内容当场报错。
+>    批次 2 加它时加的是一个从第一天起就有真实消费者的字段。
+> 2. **条件里的 `org` 参数今天只能指向内容空间的组织（实际上只有文化），且
+>    `standing-at-least` 的 `org` 改成可选。** 四节 4.1 那张表把它写成必填。
+>    `OrgRef::Instance(WorldId)` 是世界生成期分配的号，**内容文件里根本写不
+>    出来**；不写 `org` 因此解释成「该类归属里任意一条」，`standing-at-least`
+>    取该类归属 `standing` 的最大值。如实登记的缺口：今天写不出「加入了某一个
+>    具体势力」这条条件。
+> 3. **条件谓词与它的求值住在 `ll-sim` 而不是 `ll-mod`。** 本文档没有裁定落点。
+>    判据是七节 7.2 自己那一条：「条件判定的代码只写一份，UI 与 `resolve` 共用
+>    同一个函数」——`resolve` 在 `ll-sim`、UI 在 `ll-ui`/`ll-game`，唯一能被
+>    两边共用的位置是 `ll-sim`。附带好处是它落在
+>    `scripts/ci/check_field_consumers.py` 的决策层 glob 内。
+
+
 每一批都能独立落地、独立验收。**顺序不能调换**，前置写在每一批第一行。
 
 | 批 | 内容 | 前置 | 依赖 P9？ |
 |---|---|---|---|
 | **0** ✅ | **mod 的 `.ftl` 装载**（2026-08-30 已落地）：`Catalog` 加命名空间维度、遍历 `mods/*/locales/`、本体的 `assets/locales/` 注册成 `lostland` 命名空间 | 无 | 否 |
-| **1** | 对话内容表：`dialogues.json5`、两张表、进 `CONTENT_FILES` 与内容哈希、条件谓词七条、本体写一份 steward 对话、`example_mod` 写一份**带自己 `.ftl`** 的对话（这是批次 0 的验收标的） | 0 | 否 |
+| **1** ✅ | 对话内容表（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md`）：`dialogues.json5`、两张表、进 `CONTENT_FILES` 与内容哈希、条件谓词七条、本体写一份 steward 对话、`example_mod` 写一份**带自己 `.ftl`** 的对话（这是批次 0 的验收标的） | 0 | 否 |
 | **2** | 进交互列表 + 会话 UI + `Intent::DialogueChoose` + `outcomes` 里的 `set-flag`。**此时对话已经能说话、能分支、能记住玩家的选择，但还没有丙档的三条后果** | 1；UI 形状等 `wt-uxdesign` | 否 |
 | **3** | **加入据点**：`Agent.home` 字段（含存档 schema 升版）、`join-settlement` 后果、`affiliated`/`standing-at-least` 两条谓词真的有东西可读 | 2 | **部分**——「加入据点」不依赖 P9；「加入**势力**」依赖 P9 的 `OrgInstance` 播种 |
 | **4** | **任务**：`complete-quest` 后果、`give-item` 后果（`Effect::TransferOwnership` 的第一个调用方，含 owner 校验） | 2 | 否 |

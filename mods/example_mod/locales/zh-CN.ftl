@@ -111,7 +111,10 @@ hud-inventory-empty = 示例模组不该劫持本体的这条文案
 # 注意 `dialogue-common-farewell` 与 `dialogue-common-back` 两条：它们与本体
 # 的同名条目**折出同一个 Fluent id**，文案却不同。这是又一对**故意的**撞键
 # 回归夹具，与本文件末尾那两条同一形状——命名空间维度落地之前，mod 恒在本体
-# 之后装载，这两条会静默顶掉本体的告辞与返回。断言在
+# 之后装载，这两条与本体那两条会**坍缩成一条**，另一条永远查不到（实测到的
+# 方向是本体赢，与本文件末尾 race-elf 那次实测的方向相反——方向取决于
+# FluentBundle::add_resource 撞上重复 id 时是整份文件被跳过还是只跳过冲突
+# 条目，不重要；重要的是两条键变成了一条）。断言在
 # crates/ll-game/tests/dialogue_content.rs。
 
 dialogue-common-farewell = （拂袖而去）

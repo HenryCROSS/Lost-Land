@@ -235,7 +235,7 @@ NamespacedId` 的反查（`quest-completed` 需要它，因为 `is_quest_complet
 
 ### 5.1 本体 `mods/lostland/dialogues.json5`
 
-两段会话、十二个节点。
+两段会话、**十三个节点**。
 
 - **`lostland:steward_greeting`**（`speaker: { profession: "lostland:steward" }`）——
   据点管理者。所有者提出对话系统的动机原话「玩家可以没有势力归属，这个可以通过后面和
@@ -372,3 +372,38 @@ NamespacedId` 的反查（`quest-completed` 需要它，因为 `is_quest_complet
 - 第 9 条：本批会更正 `knowledge/design/dialogue-system.md`（八节批次 1 那一行落地标注）
   与 `crates/ll-mod/src/quest.rs` 的 `QuestCondition::Script` 文档（它举的例子「拜访某个
   NPC 并说出特定台词」正是对话）——**两边互相指向**
+
+---
+
+## 十、落地实测（本节在收尾时回填，不是计划）
+
+### 10.1 两条黄金基准：**实测未变**，符合预期
+
+```
+crates/ll-world/tests/determinism.rs:351  EXPECTED_WORLD_DIGEST  = 11_270_479_921_196_970_914
+crates/ll-sim/tests/replay.rs:984         EXPECTED_REPLAY_DIGEST = 11_222_878_776_777_704_235
+```
+
+两条常量一个字符都没改，`cargo test -p ll-world --test determinism` 与
+`cargo test -p ll-sim --test replay` 全绿。这正是「新内容追加在 `CONTENT_FILES` 末尾」
+那条规避买到的东西——本体的对话排在 `lostland` 那一遍的最后，既有条目的 `ContentIndex`
+一个都没有平移。
+
+### 10.2 `CONTENT_HASH_ALGORITHM_VERSION`：27 → 28
+
+说明段落写在 `crates/ll-mod/src/content_hash.rs` 该常量的文档注释里，标题
+「# 版本 28（对话内容表批次）」，归类为**新增内容表**那一档（同版本 4/5/16/22/27）。
+
+### 10.3 ADR 0018 反例验证：四条，全部实测
+
+| # | 改坏什么 | 结果 |
+|---|---|---|
+| ① | 给 `validate_references` 加一份真的无环校验（把 `next` 当边跑 DFS） | **本体内容当场装不进来**：`DialogueGraph { UnregisteredNext { node: ContentIndex(143) } }`，反查出来是 `lostland:steward_root`。`crates/ll-game/tests/dialogue_content.rs` 里 10 条断言红了 8 条。改回后全绿 |
+| ② | 把 `ll_i18n::split_key` 的命名空间分流改回「剥掉前缀」 | 三条红：`对话里故意撞键的两条互不覆盖`、`示例模组的对话文案来自它自己的ftl`、`每一条对话文案键在中英文下都有精确译文`。**实测到的坍缩方向是本体赢**（示例模组那句永远查不到），与批次 0 的 `race-elf-display_name` 那次实测方向相反——方向取决于 `FluentBundle::add_resource` 撞上重复 id 时是整份跳过还是只跳过冲突条目，不重要；重要的是两条键坍缩成了一条。改回后全绿 |
+| ③ | 删掉本体矿堡卫兵那一段的 `culture:` 收窄 | 两条红：`矿堡卫兵匹配到按文化收窄的那一段`，以及 `content_audit` 的字段覆盖（`会话入口表::DialogueAttrs::speaker::culture：没有任何一条内容把它设成非默认值`）。改回后全绿 |
+| ④ | 删掉本体那一条 `is-race` 谓词的用例 | `十条谓词在真实内容里全部有用例` 红（9 ≠ 10）。这条把设计文档四节 4.3 那条硬规则从劝告变成了机器检查。改回后全绿 |
+
+### 10.4 规格没裁定、本批临时选的做法
+
+逐条列在最终报告里，并已回填进 `knowledge/design/dialogue-system.md` 八节前的复核横幅
+（纪律第 9 条：更正必须写回被更正方，两边互相指向）。
