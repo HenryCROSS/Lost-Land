@@ -49,7 +49,46 @@ use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 use ll_world::world_map::WorldMapSlice;
 use ll_world::zone::ZoneLayout;
 
-use crate::menu_screen::{ScreenNotice, ScreenState, SpawnOrigin};
+use crate::menu_screen::{ScreenNotice, ScreenState};
+
+/// 选出生地屏是从哪一块屏进来的。
+///
+/// 住在本模块而不是 `crate::menu_screen`（`SettingsOrigin` 在那儿）：
+/// 它描述的是**这块屏**，而本模块就是这块屏；`menu_screen.rs` 已经越过
+/// 800 行的文件上限（既有违规），新类型往那儿放只会让那笔账更难还。
+///
+/// # 为什么必须记住它
+///
+/// 选点屏有三个入口——世界配置屏按「生成世界」、**死亡转生**从角色创建屏
+/// 直接跳过来、玩家从命名屏按取消退回来——而在本类型落地之前，取消目标
+/// 是**写死**的一块 `WorldSetup`。后果是
+/// `knowledge/design/ui-and-navigation.md` 2.2 节记的 **D1**：转生流程里
+/// 按一下取消就落到那块屏上，而 `crate::chargen` 自己的论证写明转生
+/// **必须跳过**它（重新生成世界 = 把这局玩过的一切抹掉）。
+///
+/// # 为什么照抄 [`crate::menu_screen::SettingsOrigin`] 而不是新造机制
+///
+/// 「一块屏有多个入口，取消要回到来处」这个问题在本仓库已经被解决过一次
+/// ——设置屏。同一个形状用第二遍，比新造一套通用返回栈诚实：真正的通用
+/// 返回栈是 `ll_ui::widget::ui_mode::UiModeStack` 的职责，把「哪一块屏」
+/// 也塞进它是一次独立的扩展（规格 N8），不夹带在本批次里。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SpawnOrigin {
+    /// 从世界配置屏按「生成世界」进来的（新游戏那条路）。
+    WorldSetup,
+    /// 从角色创建屏直接跳过来的（死亡转生那条路，世界早就存在）。
+    CharacterCreation,
+}
+
+impl SpawnOrigin {
+    /// 按取消该回到哪一块屏。
+    pub fn screen(self) -> ScreenState {
+        match self {
+            SpawnOrigin::WorldSetup => ScreenState::WorldSetup { cursor: 0 },
+            SpawnOrigin::CharacterCreation => ScreenState::CharacterCreation { cursor: 0 },
+        }
+    }
+}
 
 /// 「在这个区块里挑一格出生地」专用的确定性流标识。
 ///

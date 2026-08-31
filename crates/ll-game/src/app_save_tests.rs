@@ -375,7 +375,7 @@ fn 死亡重生走的是选出生地而不是重新生成世界() {
     assert_eq!(
         update.next,
         Some(ScreenState::SpawnPick {
-            origin: crate::menu_screen::SpawnOrigin::CharacterCreation
+            origin: crate::spawn_pick::SpawnOrigin::CharacterCreation
         }),
         "世界已经存在时必须跳过世界配置屏，且选点屏的取消目标是角色创建"
     );
@@ -644,8 +644,8 @@ fn 选点屏缺世界时的降级目标不是那块会抹掉世界的屏() {
 
     // Act & Assert：两个来处都不许落到世界配置屏。
     for origin in [
-        crate::menu_screen::SpawnOrigin::WorldSetup,
-        crate::menu_screen::SpawnOrigin::CharacterCreation,
+        crate::spawn_pick::SpawnOrigin::WorldSetup,
+        crate::spawn_pick::SpawnOrigin::CharacterCreation,
     ] {
         let update = demo.update_spawn_pick(&mut input, origin);
         assert_eq!(

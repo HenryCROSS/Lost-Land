@@ -52,6 +52,8 @@ use ll_ui::screen::ScreenData;
 use ll_ui::widget::focus::focused_widget;
 use ll_ui::widget::state::{WidgetId, WidgetStateTable};
 
+use crate::spawn_pick::SpawnOrigin;
+
 /// 模态屏当前开着哪一块。
 ///
 /// 与 `crate::player_action::PlayerMenu` 同一条纪律：纯表现层状态，
@@ -89,7 +91,8 @@ pub enum ScreenState {
     /// 光标（选中哪一格）不在这里而在 `crate::chargen::NewGameDraft` 上：
     /// 它是一对 `(u32, u32)`，与这块屏的「哪一行」不是同一种东西。
     SpawnPick {
-        /// 从哪一块屏进来的，按取消要回到那里。见 [`SpawnOrigin`]。
+        /// 从哪一块屏进来的，按取消要回到那里。见
+        /// [`crate::spawn_pick::SpawnOrigin`]。
         origin: SpawnOrigin,
     },
     /// 存档列表——首页的「读取存档」进这里，见 [`crate::save_list`]。
@@ -109,12 +112,9 @@ pub enum ScreenState {
     /// ——与选点光标同一条理由：`ScreenState` 是 `Copy` 的，装不下一个
     /// `String`，而且屏切走再切回来时那串字不该丢。
     SaveNaming {
-        /// **选出生地屏**是从哪一块屏进来的。
-        ///
-        /// 命名屏自己只有一个入口（选点屏确认），它带着这个字段不是为了
-        /// 自己用，而是为了**透传**：玩家从命名屏按取消退回选点屏之后
-        /// 再按一次取消，要回到当初进选点屏时的那一块屏，而不是命名屏
-        /// 自己编一个（规格 N5 判据 3）。
+        /// **选出生地屏**是从哪一块屏进来的——纯过路件，命名屏自己只有
+        /// 一个入口。带着它是为了玩家从这里退回选点屏、再按一次取消时
+        /// 能回到当初的来处，而不是让命名屏自己编一个。
         origin: SpawnOrigin,
     },
     /// 设置界面。
@@ -149,41 +149,6 @@ impl ScreenState {
     /// 表现为「那块屏打不了中文」。
     pub fn wants_text_entry(self) -> bool {
         matches!(self, ScreenState::SaveNaming { .. })
-    }
-}
-
-/// 选出生地屏是从哪一块屏进来的。
-///
-/// # 为什么必须记住它
-///
-/// 选点屏有三个入口——世界配置屏按「生成世界」、**死亡转生**从角色创建屏
-/// 直接跳过来、玩家从命名屏按取消退回来——而在本类型落地之前，取消目标
-/// 是**写死**的一块 `WorldSetup`。后果是
-/// `knowledge/design/ui-and-navigation.md` 2.2 节记的 **D1**：转生流程里
-/// 按一下取消就落到那块屏上，而 `crate::chargen` 自己的论证写明转生
-/// **必须跳过**它（重新生成世界 = 把这局玩过的一切抹掉）。
-///
-/// # 为什么照抄 [`SettingsOrigin`] 而不是新造机制
-///
-/// 「一块屏有多个入口，取消要回到来处」这个问题在本仓库已经被解决过一次
-/// ——设置屏。同一个形状用第二遍，比新造一套通用返回栈诚实：真正的通用
-/// 返回栈是 `ll_ui::widget::ui_mode::UiModeStack` 的职责，把「哪一块屏」
-/// 也塞进它是一次独立的扩展（规格 N8），不夹带在本批次里。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SpawnOrigin {
-    /// 从世界配置屏按「生成世界」进来的（新游戏那条路）。
-    WorldSetup,
-    /// 从角色创建屏直接跳过来的（死亡转生那条路，世界早就存在）。
-    CharacterCreation,
-}
-
-impl SpawnOrigin {
-    /// 按取消该回到哪一块屏。
-    pub fn screen(self) -> ScreenState {
-        match self {
-            SpawnOrigin::WorldSetup => ScreenState::WorldSetup { cursor: 0 },
-            SpawnOrigin::CharacterCreation => ScreenState::CharacterCreation { cursor: 0 },
-        }
     }
 }
 

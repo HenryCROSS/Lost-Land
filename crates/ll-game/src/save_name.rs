@@ -185,7 +185,7 @@ impl SaveNameUpdate {
 pub fn update_save_name(
     field: &mut NameField,
     input: &InputState,
-    origin: crate::menu_screen::SpawnOrigin,
+    origin: crate::spawn_pick::SpawnOrigin,
 ) -> SaveNameUpdate {
     if input.was_just_pressed(GameKey::Cancel) {
         // 退回选出生地屏：玩家可能只是想再挑一次地方。**不丢弃已经
@@ -345,7 +345,7 @@ mod tests {
         update_save_name(
             &mut field,
             &input,
-            crate::menu_screen::SpawnOrigin::WorldSetup,
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
         );
 
         // Assert
@@ -404,7 +404,7 @@ mod tests {
         let update = update_save_name(
             &mut field,
             &input,
-            crate::menu_screen::SpawnOrigin::WorldSetup,
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
         );
 
         // Assert
@@ -425,7 +425,7 @@ mod tests {
         let update = update_save_name(
             &mut field,
             &input,
-            crate::menu_screen::SpawnOrigin::WorldSetup,
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
         );
 
         // Assert
@@ -446,7 +446,7 @@ mod tests {
         update_save_name(
             &mut field,
             &input,
-            crate::menu_screen::SpawnOrigin::WorldSetup,
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
         );
 
         // Assert
@@ -469,8 +469,8 @@ mod tests {
         // `ScreenState::SpawnPick { origin: SpawnOrigin::WorldSetup }`，
         // 本条的第二段（转生那条路）当场变红。
         for origin in [
-            crate::menu_screen::SpawnOrigin::WorldSetup,
-            crate::menu_screen::SpawnOrigin::CharacterCreation,
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
+            crate::spawn_pick::SpawnOrigin::CharacterCreation,
         ] {
             // Arrange
             let mut input = 文本输入态();

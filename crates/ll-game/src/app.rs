@@ -1352,7 +1352,7 @@ impl Demo {
         draft.mode = mode;
         if update.next
             != Some(ScreenState::SpawnPick {
-                origin: crate::menu_screen::SpawnOrigin::WorldSetup,
+                origin: crate::spawn_pick::SpawnOrigin::WorldSetup,
             })
         {
             return update;
@@ -1406,7 +1406,7 @@ impl Demo {
             .put(world);
         self.prepare_spawn_pick_view();
         crate::chargen::ChargenUpdate::going(ScreenState::SpawnPick {
-            origin: crate::menu_screen::SpawnOrigin::WorldSetup,
+            origin: crate::spawn_pick::SpawnOrigin::WorldSetup,
         })
     }
 
@@ -1463,7 +1463,7 @@ impl Demo {
     fn update_spawn_pick(
         &mut self,
         input: &mut InputState,
-        origin: crate::menu_screen::SpawnOrigin,
+        origin: crate::spawn_pick::SpawnOrigin,
     ) -> crate::spawn_pick::SpawnPickUpdate {
         let Some(slice) = self.spawn_pick_slice() else {
             // **降级也不许把玩家扔到世界配置屏上**（规格 N6 后半句）：
@@ -1573,7 +1573,7 @@ impl Demo {
         &mut self,
         pos: ll_core::torus::TorusPos,
         _input: &mut InputState,
-        origin: crate::menu_screen::SpawnOrigin,
+        origin: crate::spawn_pick::SpawnOrigin,
     ) -> crate::spawn_pick::SpawnPickUpdate {
         let Some(draft) = self.new_game_draft.as_mut() else {
             return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::Title);
@@ -1586,7 +1586,7 @@ impl Demo {
     fn update_save_naming(
         &mut self,
         input: &mut InputState,
-        origin: crate::menu_screen::SpawnOrigin,
+        origin: crate::spawn_pick::SpawnOrigin,
     ) -> ScreenTransition {
         let Some(draft) = self.new_game_draft.as_mut() else {
             tracing::warn!("命名屏没有草稿，退回首页");
@@ -4092,7 +4092,7 @@ mod tests {
 
         // Act：切到命名屏。
         demo.screen = Some(ScreenState::SaveNaming {
-            origin: crate::menu_screen::SpawnOrigin::WorldSetup,
+            origin: crate::spawn_pick::SpawnOrigin::WorldSetup,
         });
         demo.sync_text_entry_mode(&mut input);
 
@@ -4146,7 +4146,7 @@ mod tests {
         let mut input = InputState::new();
         demo.open_menu(&mut input);
         demo.screen = Some(ScreenState::SaveNaming {
-            origin: crate::menu_screen::SpawnOrigin::WorldSetup,
+            origin: crate::spawn_pick::SpawnOrigin::WorldSetup,
         });
 
         // Act

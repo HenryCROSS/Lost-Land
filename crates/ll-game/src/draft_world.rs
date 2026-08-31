@@ -43,8 +43,9 @@
 //! 必须把那个老槽位**显式写出来**——那是明写，不是漂移。D1 那条端到端
 //! 断言（`crate::app` 的 `app_save_tests`）兜住这一处。
 
-use crate::menu_screen::{ScreenState, SpawnOrigin};
+use crate::menu_screen::ScreenState;
 use crate::save_slot::SaveTarget;
+use crate::spawn_pick::SpawnOrigin;
 use crate::world::GameWorld;
 
 /// 草稿手里那个世界的来处。
@@ -77,6 +78,31 @@ pub struct FreshWorld {
 /// **没有任何方法能换掉里面那个世界。** 转生的语义就是「世界原样不动，
 /// 只换一个角色」（`crate::save_slot` 模块文档「一份存档 = 一个世界」），
 /// 所以「重新生成」这件事在这个类型上根本不存在。
+///
+/// # 「新世界 + 老槽位」编译不过
+///
+/// 先例是 `ll_content::degrade::ReadOnlySave` 那条 `compile_fail` 文档
+/// 测试：把「不该写出来」这件事**交给编译器去证**，而不是交给评审去记。
+///
+/// ```compile_fail
+/// # use ll_game::draft_world::RebornWorld;
+/// # use ll_game::world::GameWorld;
+/// fn 把一个新生成的世界塞进转生草稿(reborn: &mut RebornWorld, 新世界: GameWorld) {
+///     // 字段私有，而且这个类型上没有任何替换世界的方法。
+///     reborn.world = 新世界;
+/// }
+/// ```
+///
+/// 对照组——**这一条编译得过**，它是转生真正的构造入口，调用方必须把那个
+/// 老槽位显式写出来（见模块文档「残余的那一处口子」一节）：
+///
+/// ```no_run
+/// # use ll_game::draft_world::DraftWorld;
+/// # fn demo(世界: ll_game::world::GameWorld, 槽位: ll_game::save_slot::SaveTarget) {
+/// let draft = DraftWorld::reborn(世界, 槽位);
+/// assert!(draft.is_reborn());
+/// # }
+/// ```
 pub struct RebornWorld {
     /// 玩家已经玩过的那一局，从 `Session` 手里交回来的原件。
     world: GameWorld,
