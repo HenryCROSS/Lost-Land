@@ -21,20 +21,28 @@
 //! 完全对齐——调用方只需要按绘制顺序传入 `widgets`，不需要额外反转。
 
 use super::geometry::Rect;
-use super::state::WidgetId;
 
 /// 在 `widgets`（按绘制顺序排列，越靠后越靠上）中找出包含 `point` 的
 /// 最上层控件的 id；没有任何一个包含则返回 `None`。
+///
+/// # id 为什么是泛型
+///
+/// 本函数落地时 id 恒是 [`super::state::WidgetId`]（一个静态字符串）。
+/// 模态屏的行接上鼠标之后出现了第二种 id：**第几行**（一个 `usize`）
+/// ——那些行是每帧现算出来的，没有、也不该有静态字符串 id。把 id 泛型
+/// 化是为了让第二种调用方**走同一个命中测试**：写第二份「哪个矩形包含
+/// 这个点」的实现，就是本仓库反复付过代价的那个形状（两份同一个算法
+/// 迟早分叉，而分叉时没有任何东西会报错）。
 ///
 /// `point` 与 `widgets` 里的 `Rect` 必须是同一套坐标系——本项目里恒为
 /// 窗口原生像素坐标（见 [`Rect`] 模块文档「坐标系」一节），调用方通常
 /// 直接传 `ll_platform::input::InputState::cursor_position` 的返回值
 /// （本 crate 不直接依赖那个具体类型，只要求调用方给出同一套坐标系的
 /// `(f32, f32)`，保持这个函数本身足够通用、可脱离平台层单元测试）。
-pub fn hit_test(
+pub fn hit_test<Id>(
     point: (f32, f32),
-    widgets: impl IntoIterator<Item = (WidgetId, Rect)>,
-) -> Option<WidgetId> {
+    widgets: impl IntoIterator<Item = (Id, Rect)>,
+) -> Option<Id> {
     widgets
         .into_iter()
         .filter(|(_, rect)| rect.contains(point))
@@ -45,6 +53,24 @@ pub fn hit_test(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn 行下标当作id时命中第几行() {
+        // id 泛型化之后的第二种调用方：模态屏的行没有静态字符串 id，
+        // 用「第几行」当 id 走同一个命中测试，不写第二份。
+        // Arrange
+        let rows = [
+            Rect::new(0.0, 0.0, 100.0, 20.0),
+            Rect::new(0.0, 20.0, 100.0, 20.0),
+            Rect::new(0.0, 40.0, 100.0, 20.0),
+        ];
+
+        // Act
+        let hit = hit_test((50.0, 45.0), rows.into_iter().enumerate());
+
+        // Assert
+        assert_eq!(hit, Some(2));
+    }
 
     #[test]
     fn 点落在唯一控件内时命中该控件() {

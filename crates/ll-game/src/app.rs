@@ -565,6 +565,22 @@ pub struct Demo {
     /// `Demo` 时，以及每次**进入存档列表屏**时——玩家在游戏里存过一次
     /// 再回主菜单，列表必须是新的。
     save_slots: Vec<crate::save_slot::SaveSlot>,
+    /// 窗口这一刻多大（物理像素），`None` = 窗口还没建出来。
+    ///
+    /// # 为什么它不住在 `GpuResources` 里
+    ///
+    /// `GpuResources::window_size` 也有一份，但那一份要等 GPU 资源建好
+    /// 才有。而**窗口尺寸是窗口的事实，不是 GPU 的**：模态屏的行矩形
+    /// （鼠标点在第几行）只需要窗口多大，不需要任何 GPU 对象。
+    /// [`AppHandler::on_resume`]/[`AppHandler::on_resize`] 因此**先**记
+    /// 这个字段、再去碰 `resources`。
+    ///
+    /// `None` 时鼠标一律不生效——与 [`Demo::clicked_spawn_zone`] 那条
+    /// 既有降级同一条：没有窗口就没有窗口坐标可言。
+    viewport: Option<(f32, f32)>,
+    /// 指针在模态屏行列表上的跨帧状态（这次按下是从哪一行开始的、这一
+    /// 刻悬停在哪一行），见 [`crate::pointer`] 模块文档。
+    pointer: crate::pointer::PointerState,
     /// 菜单屏三条选项的焦点表——[`ll_ui::widget::focus`] 读写它。
     ///
     /// 与 `hud_anim` 同一条纪律（`ll_ui::widget::state` 模块文档「为
@@ -724,6 +740,8 @@ impl Demo {
             // **首页的第一项预先选中**——所有者 2026-08-29 裁定（交接
             // 文档第〇之二节第 1 条），规格 N10。见 [`Demo::open_menu`]
             // 上面那一段对被推翻的原论证的复盘。
+            viewport: None,
+            pointer: crate::pointer::PointerState::default(),
             screen_focus: if at_title {
                 crate::menu_screen::preselected_focus(&crate::title_screen::TITLE_ITEM_IDS)
             } else {
@@ -1137,14 +1155,74 @@ impl Demo {
     /// 拆成独立方法而不是塞进 [`Demo::on_frame`]：`on_frame` 已经同时
     /// 承担着「退出判定 + 世界推进 + 三条渲染通道」，再往里塞一段
     /// 二十行的菜单路由会让它越过 50 行的函数上限。
+    /// 这一帧指针对这块模态屏的行做了什么，见 [`crate::pointer`] 模块
+    /// 文档那四条约定。
+    ///
+    /// # 三条降级，各有各的理由
+    ///
+    /// - 窗口还没建出来（[`Demo::viewport`] 为 `None`）→ 没有窗口坐标
+    ///   可言，鼠标一律不生效。与 [`Demo::clicked_spawn_zone`] 那条既有
+    ///   降级同一条。
+    /// - 这块屏不画居中面板（选出生地屏）→ 它的鼠标交互是**在地图上
+    ///   点一格**，早已由 `clicked_spawn_zone` 接上，不走行列表这一套。
+    /// - 行矩形算出来是空的（列表为空，只显示一行占位文字）→ 那一行
+    ///   不是按钮，点它没有可对应的动作。
+    ///
+    /// 三条都返回 [`crate::pointer::RowPointer::Idle`]，并且**照样推进
+    /// 一次跨帧状态**（松开时解除武装），否则在这些屏上按下再切走会
+    /// 留下一个永不清除的「已武装」。
+    fn resolve_screen_pointer(
+        &mut self,
+        state: ScreenState,
+        input: &InputState,
+    ) -> crate::pointer::RowPointer {
+        let Some((width, height)) = self.viewport else {
+            return crate::pointer::RowPointer::Idle;
+        };
+        let rects = {
+            let Some((rows, cursor)) = screen_row_texts(
+                state,
+                &self.config,
+                &self.catalog,
+                &self.screen_focus,
+                !self.save_slots.is_empty(),
+                self.can_save_manually(),
+                &self.save_slots,
+                &self.content,
+                self.new_game_draft.as_ref(),
+            ) else {
+                return crate::pointer::RowPointer::Idle;
+            };
+            let notice_text = self
+                .screen_notice
+                .map(|notice| notice.resolve(&self.catalog, &self.config.language));
+            let data = screen_data(state, &rows, cursor, notice_text.as_deref());
+            ll_ui::screen::screen_row_rects(
+                &data,
+                &self.catalog,
+                &self.config.language,
+                width,
+                height,
+            )
+        };
+        crate::pointer::resolve_row_pointer(&mut self.pointer, input, &rects)
+    }
+
     fn update_screen(&mut self, input: &mut InputState) -> bool {
         let Some(state) = self.modal.screen() else {
             return false;
         };
+        // 这一帧鼠标对这块屏的行做了什么——**先算，再把它与键盘输入
+        // 一起交给各屏的状态机**，两条路径因此走同一个动作分派分支。
+        let pointer = self.resolve_screen_pointer(state, input);
         let (outcome, next_state) = match state {
             ScreenState::Title => {
-                let update =
-                    update_title(&mut self.screen_focus, input, !self.save_slots.is_empty());
+                let update = update_title(
+                    &mut self.screen_focus,
+                    input,
+                    pointer,
+                    !self.save_slots.is_empty(),
+                );
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
                 }
@@ -1152,11 +1230,11 @@ impl Demo {
             }
             ScreenState::Menu => {
                 let can_save_manually = self.can_save_manually();
-                update_menu(&mut self.screen_focus, input, can_save_manually)
+                update_menu(&mut self.screen_focus, input, pointer, can_save_manually)
             }
             ScreenState::CharacterCreation { cursor } => {
                 let mut cursor = cursor;
-                let update = self.update_character_creation(&mut cursor, input);
+                let update = self.update_character_creation(&mut cursor, input, pointer);
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
                 }
@@ -1167,7 +1245,7 @@ impl Demo {
             }
             ScreenState::WorldSetup { cursor } => {
                 let mut cursor = cursor;
-                let update = self.update_world_setup(&mut cursor, input);
+                let update = self.update_world_setup(&mut cursor, input, pointer);
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
                 }
@@ -1191,8 +1269,12 @@ impl Demo {
             }
             ScreenState::SaveList { cursor } => {
                 let mut cursor = crate::save_list::clamp_cursor(cursor, &self.save_slots);
-                let update =
-                    crate::save_list::update_save_list(&mut cursor, &self.save_slots, input);
+                let update = crate::save_list::update_save_list(
+                    &mut cursor,
+                    &self.save_slots,
+                    input,
+                    pointer,
+                );
                 (
                     update.outcome,
                     Some(update.next.unwrap_or(ScreenState::SaveList { cursor })),
@@ -1209,7 +1291,7 @@ impl Demo {
                     config_path: &self.config_path,
                     catalog: &self.catalog,
                 };
-                let update = update_settings(&mut state, input, &mut ctx);
+                let update = update_settings(&mut state, input, pointer, &mut ctx);
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
                 }
@@ -1306,6 +1388,7 @@ impl Demo {
         &mut self,
         cursor: &mut usize,
         input: &InputState,
+        pointer: crate::pointer::RowPointer,
     ) -> crate::chargen::ChargenUpdate {
         let Some(draft) = self.new_game_draft.as_mut() else {
             // 停在这块屏上却没有草稿，是一种不该发生的状态。退回首页而
@@ -1323,6 +1406,7 @@ impl Demo {
             &mut draft.choice,
             &roster,
             input,
+            pointer,
             next_screen,
         )
     }
@@ -1332,6 +1416,7 @@ impl Demo {
         &mut self,
         cursor: &mut usize,
         input: &InputState,
+        pointer: crate::pointer::RowPointer,
     ) -> crate::chargen::ChargenUpdate {
         let Some(draft) = self.new_game_draft.as_mut() else {
             tracing::warn!("世界配置屏没有草稿，退回首页");
@@ -1345,6 +1430,7 @@ impl Demo {
             &mut preset,
             &mut mode,
             input,
+            pointer,
         );
         draft.preset = preset;
         draft.mode = mode;
@@ -2310,44 +2396,31 @@ fn draw_hud(
     );
 }
 
-/// 把模态屏（菜单/设置）画到 `view` 上——**排在 [`draw_hud`] 之后**，
-/// 因此那层压暗背板会把世界层与 HUD 一起压暗，见 `ll_ui::screen::render`
-/// 模块文档。
+/// 这一帧这块模态屏的**每一行显示成什么字、光标停在第几行**。
 ///
-/// `screen` 为 `None` 时整块不参与本次产出——不是「画出来但透明」，是
-/// 压根不调用渲染函数，与 `draw_hud` 对世界地图/动作菜单的同一条纪律。
-// 八个参数：全部是不同类型的具名值，调用点只有一处（`on_frame` 的渲染
-// 段）。收拢的正确形状是把「屏 + 焦点 + 提示 + 存档在不在」四个纯 UI
-// 状态打包成一个类型，那是一次独立的重构——本批次只往里加了一个
-// `has_save`（首页那一行「读取存档」显示成什么字要靠它），不夹带。
+/// # 为什么抽出来
+///
+/// 两个调用方要的是同一份东西：渲染侧（[`draw_screen`]）拿它排版，
+/// 输入侧（[`Demo::resolve_screen_pointer`]）拿它算出行矩形、判断鼠标
+/// 点在第几行。两处各算一遍就是两份同一个算法——**分叉时点击会静悄悄
+/// 地落到隔壁那一行上**，而没有任何东西会报错。
+///
+/// 返回 `None` 表示这块屏不画那块居中面板（今天只有选出生地屏，它的
+/// 「屏」是整张世界地图）。
 #[allow(clippy::too_many_arguments)]
-fn draw_screen(
-    screen: Option<ScreenState>,
+fn screen_row_texts(
+    state: ScreenState,
     config: &GameConfig,
     catalog: &Catalog,
     focus: &WidgetStateTable,
-    notice: Option<ScreenNotice>,
     has_save: bool,
-    // 暂停菜单里「保存」那一行在不在——肉鸽模式下整行消失，见
-    // `crate::pause_menu::menu_rows`。
     can_save_manually: bool,
-    // 存档列表屏要列的那些槽位。
     slots: &[crate::save_slot::SaveSlot],
-    // 角色创建/世界配置两块屏的行文字要读草稿（玩家选了什么）与内容
-    // （种族/职业的展示名）——两样都只有 `Demo` 够得着，因此从这里
-    // 传进来，而不是让排版函数各自去找。
     content: &LoadedContent,
     draft: Option<&crate::chargen::NewGameDraft>,
-    resources: &mut GpuResources,
-    view: &wgpu::TextureView,
-) {
-    let Some(state) = screen else {
-        return;
-    };
+) -> Option<(Vec<String>, usize)> {
     let language = config.language.as_str();
-    // 行文字与光标位置由 `crate::menu_screen` 排版，本函数只负责把
-    // 结果交给 GPU——见该模块文档「为什么排版在这一层」一节。
-    let (rows, cursor) = match state {
+    Some(match state {
         ScreenState::Title => (
             title_row_texts(catalog, language, has_save),
             title_focus_index(focus),
@@ -2410,10 +2483,46 @@ fn draw_screen(
         // 一块盖在正中央的面板会挡住玩家要点的地方。它的画面全部由
         // `draw_hud` 那一侧产出（地图 + 光标标记 + 提示行），见
         // `crate::spawn_pick` 模块文档。
-        ScreenState::SpawnPick { .. } => return,
+        ScreenState::SpawnPick { .. } => return None,
+    })
+}
+
+/// 把模态屏（菜单/设置）画到 `view` 上——**排在 [`draw_hud`] 之后**，
+/// 因此那层压暗背板会把世界层与 HUD 一起压暗，见 `ll_ui::screen::render`
+/// 模块文档。
+///
+/// `screen` 为 `None` 时整块不参与本次产出——不是「画出来但透明」，是
+/// 压根不调用渲染函数，与 `draw_hud` 对世界地图/动作菜单的同一条纪律。
+// 八个参数：全部是不同类型的具名值，调用点只有一处（`on_frame` 的渲染
+// 段）。本批次**净减了四个**——行文字改由 [`screen_row_texts`] 在调用点
+// 算好传进来（渲染侧与输入侧共用同一份），于是 `config`/`focus`/
+// `has_save`/`can_save_manually`/`slots`/`content`/`draft` 七个换成了
+// 一个 `rows_and_cursor` 加一个 `language`。收拢剩下这几个的正确形状是
+// 把「屏 + 提示 + 悬停行」打包成一个类型，那是一次独立的重构。
+#[allow(clippy::too_many_arguments)]
+fn draw_screen(
+    screen: Option<ScreenState>,
+    // 行文字与光标位置由 [`screen_row_texts`] 现算——**渲染侧与输入侧
+    // 共用同一份**，见那个函数的文档。`None` 表示这块屏不画居中面板。
+    rows_and_cursor: Option<(Vec<String>, usize)>,
+    catalog: &Catalog,
+    language: &str,
+    notice: Option<ScreenNotice>,
+    // 指针这一刻悬停在第几行——只用来画那块淡高亮，**不改焦点**，见
+    // `crate::pointer` 模块文档约定一。
+    hovered_row: Option<usize>,
+    resources: &mut GpuResources,
+    view: &wgpu::TextureView,
+) {
+    let Some(state) = screen else {
+        return;
+    };
+    let Some((rows, cursor)) = rows_and_cursor else {
+        return;
     };
     let notice_text = notice.map(|notice| notice.resolve(catalog, language));
-    let data = screen_data(state, &rows, cursor, notice_text.as_deref());
+    let mut data = screen_data(state, &rows, cursor, notice_text.as_deref());
+    data.hovered = hovered_row;
     let size = resources.window_size;
     render_screen(
         &mut resources.quad_renderer,
@@ -2713,6 +2822,9 @@ fn sprite_instance(
 impl AppHandler for Demo {
     fn on_resume(&mut self, window: Arc<Window>, size: PhysicalSize<u32>) {
         tracing::info!(width = size.width, height = size.height, "window resumed");
+        // **先记窗口尺寸，再建 GPU 资源**：尺寸是窗口的事实，不是 GPU
+        // 的，见 [`Demo::viewport`] 字段文档。
+        self.viewport = Some((size.width as f32, size.height as f32));
         self.resources = Some(GpuResources::new(
             window,
             size,
@@ -2722,6 +2834,9 @@ impl AppHandler for Demo {
     }
 
     fn on_resize(&mut self, size: PhysicalSize<u32>) {
+        // 理由同 [`AppHandler::on_resume`]：窗口尺寸先记下，GPU 资源还
+        // 没建出来也不影响它。
+        self.viewport = Some((size.width as f32, size.height as f32));
         let Some(resources) = self.resources.as_mut() else {
             return;
         };
@@ -2799,6 +2914,24 @@ impl AppHandler for Demo {
         // 会借走整个 `self`）之前算好——它读的是 `session`，与渲染无关。
         let can_save_manually = self.can_save_manually();
         let has_save = !self.save_slots.is_empty();
+        // 行文字与光标位置必须在借出 `resources`（可变借 `self` 的一个
+        // 字段，而方法调用会借走整个 `self`）之前算好——**而且这正是
+        // 输入侧刚刚用过的同一个函数**，见 `screen_row_texts` 的文档。
+        let screen = self.modal.screen();
+        let screen_rows = screen.and_then(|state| {
+            screen_row_texts(
+                state,
+                &self.config,
+                &self.catalog,
+                &self.screen_focus,
+                has_save,
+                can_save_manually,
+                &self.save_slots,
+                &self.content,
+                self.new_game_draft.as_ref(),
+            )
+        });
+        let hovered_row = self.pointer.hovered_row();
 
         let Some(resources) = self.resources.as_mut() else {
             return FrameOutcome::Continue;
@@ -2907,16 +3040,12 @@ impl AppHandler for Demo {
                 );
             }
             draw_screen(
-                self.modal.screen(),
-                &self.config,
+                screen,
+                screen_rows,
                 &self.catalog,
-                &self.screen_focus,
+                &self.config.language,
                 self.screen_notice,
-                has_save,
-                can_save_manually,
-                &self.save_slots,
-                &self.content,
-                self.new_game_draft.as_ref(),
+                hovered_row,
                 resources,
                 &view,
             );
@@ -3496,6 +3625,149 @@ mod tests {
         assert!(!demo.modal.player_menu().is_open());
         assert_eq!(demo.modal.screen(), None, "**不该**开出暂停菜单");
         assert!(demo.modal.is_empty());
+    }
+
+    // ───────────────────── 鼠标接线：漏斗真的接上了 ─────────────────────
+
+    /// 首页第 `row` 行这一刻画在屏幕的哪一块——**用的是渲染侧与输入侧
+    /// 共用的那同一个 `screen_row_texts`**，测试里不另抄一份几何。
+    fn 首页行矩形(demo: &Demo, viewport: (f32, f32)) -> Vec<ll_ui::widget::geometry::Rect> {
+        let (rows, cursor) = screen_row_texts(
+            ScreenState::Title,
+            &demo.config,
+            &demo.catalog,
+            &demo.screen_focus,
+            !demo.save_slots.is_empty(),
+            demo.can_save_manually(),
+            &demo.save_slots,
+            &demo.content,
+            demo.new_game_draft.as_ref(),
+        )
+        .expect("首页画的就是那块居中面板");
+        let data = screen_data(ScreenState::Title, &rows, cursor, None);
+        ll_ui::screen::screen_row_rects(
+            &data,
+            &demo.catalog,
+            &demo.config.language,
+            viewport.0,
+            viewport.1,
+        )
+    }
+
+    #[test]
+    fn 在首页第三行上点一下真的进设置屏() {
+        // **这一条盯的是漏斗**：`update_screen` 里那句
+        // `self.resolve_screen_pointer(state, input)`，以及它算出来的
+        // `RowPointer` 真的被传给了 `update_title`。`title_screen.rs`
+        // 那几条只证明「`update_title` 收到 Activate(2) 会进设置屏」，
+        // 少了本条，把漏斗里那一行改成恒传 `RowPointer::Idle` 不会有
+        // 任何东西变红——而那正是本仓库最贵的失败模式。
+        //
+        // 反例验证（已实跑）：把 `update_screen` 里那句 `let pointer =
+        // self.resolve_screen_pointer(state, input);` 改成
+        // `RowPointer::Idle`，本条立刻变红。
+        //
+        // ADR 0025：不合成任何操作系统级事件。窗口尺寸经
+        // `AppHandler::on_resize`（winit 真实事件的落点）交给 `Demo`，
+        // 鼠标经 `InputState` 那几个既有公开 setter——两者都是真实鼠标
+        // 最终也要走的同一条路径。
+        // Arrange
+        let mut demo = test_demo_at_title();
+        demo.on_resize(PhysicalSize::new(1280, 720));
+        let rects = 首页行矩形(&demo, (1280.0, 720.0));
+        let 设置行 = rects[2];
+        let mut input = InputState::new();
+        input.set_cursor_position((
+            设置行.x + 设置行.width / 2.0,
+            设置行.y + 设置行.height / 2.0,
+        ));
+
+        // Act：在那一行上按下再松开。
+        input.mouse_press(ll_platform::input::MouseButton::Left);
+        input.mouse_release(ll_platform::input::MouseButton::Left);
+        demo.on_frame(FrameId(0), &mut input);
+
+        // Assert
+        assert!(
+            matches!(demo.modal.screen(), Some(ScreenState::Settings { .. })),
+            "点第 3 行「设置」应当进设置屏，实际是 {:?}",
+            demo.modal.screen()
+        );
+    }
+
+    #[test]
+    fn 在首页面板外的空白上点一下什么都不发生() {
+        // 约定二：点空白不改焦点、不触发、**不关屏**。
+        // Arrange
+        let mut demo = test_demo_at_title();
+        demo.on_resize(PhysicalSize::new(1280, 720));
+        let 焦点前 = crate::title_screen::title_focus_index(&demo.screen_focus);
+        let mut input = InputState::new();
+        input.set_cursor_position((5.0, 5.0));
+
+        // Act
+        input.mouse_press(ll_platform::input::MouseButton::Left);
+        input.mouse_release(ll_platform::input::MouseButton::Left);
+        demo.on_frame(FrameId(0), &mut input);
+
+        // Assert
+        assert_eq!(
+            demo.modal.screen(),
+            Some(ScreenState::Title),
+            "屏不该被关掉"
+        );
+        assert_eq!(
+            crate::title_screen::title_focus_index(&demo.screen_focus),
+            焦点前,
+            "焦点也不该动"
+        );
+    }
+
+    #[test]
+    fn 窗口尺寸还没到手时鼠标一律不生效() {
+        // `viewport` 为 `None` 的降级：没有窗口就没有窗口坐标可言。少了
+        // 这条闸门，行矩形会按一个瞎猜的尺寸算出来，点击落到别的行上。
+        // Arrange：**不调** `on_resize`。
+        let mut demo = test_demo_at_title();
+        let mut input = InputState::new();
+        input.set_cursor_position((640.0, 360.0));
+
+        // Act
+        input.mouse_press(ll_platform::input::MouseButton::Left);
+        input.mouse_release(ll_platform::input::MouseButton::Left);
+        demo.on_frame(FrameId(0), &mut input);
+
+        // Assert
+        assert_eq!(demo.modal.screen(), Some(ScreenState::Title));
+    }
+
+    #[test]
+    fn 指针悬停记进跨帧状态但不改焦点() {
+        // 约定一在整条链路上的验收：`Demo` 把悬停行记下来（渲染侧画那块
+        // 淡高亮要用），而焦点一动不动。
+        // Arrange
+        let mut demo = test_demo_at_title();
+        demo.on_resize(PhysicalSize::new(1280, 720));
+        走一帧(&mut demo, 0, &[GameKey::Down]);
+        let 焦点前 = crate::title_screen::title_focus_index(&demo.screen_focus);
+        let rects = 首页行矩形(&demo, (1280.0, 720.0));
+        let 第三行 = rects[3];
+        let mut input = InputState::new();
+        input.set_cursor_position((
+            第三行.x + 第三行.width / 2.0,
+            第三行.y + 第三行.height / 2.0,
+        ));
+
+        // Act：只移动，不按键。
+        demo.on_frame(FrameId(1), &mut input);
+
+        // Assert
+        assert_eq!(demo.pointer.hovered_row(), Some(3), "悬停行要记下来");
+        assert_eq!(
+            crate::title_screen::title_focus_index(&demo.screen_focus),
+            焦点前,
+            "但焦点不跟着指针走"
+        );
     }
 
     // ───────────────────── 输入接线批次：物品链六个意图 ─────────────────────

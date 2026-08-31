@@ -66,7 +66,12 @@ const 普通模式: bool = true;
 /// 走到第 `steps` 行：每按一次向下，焦点前进一格。
 fn 向下(table: &mut WidgetStateTable, steps: usize) {
     for _ in 0..steps {
-        update_menu(table, &按下(&[GameKey::Down]), 普通模式);
+        update_menu(
+            table,
+            &按下(&[GameKey::Down]),
+            ll_game::pointer::RowPointer::Idle,
+            普通模式,
+        );
     }
 }
 
@@ -132,7 +137,12 @@ fn 菜单里选中设置项后进入设置界面() {
     向下(&mut table, 3);
 
     // Act
-    let (outcome, next) = update_menu(&mut table, &按下(&[GameKey::Confirm]), 普通模式);
+    let (outcome, next) = update_menu(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        普通模式,
+    );
 
     // Assert
     assert_eq!(outcome, ScreenOutcome::Idle);
@@ -153,7 +163,12 @@ fn 菜单里选中退出项返回退出() {
     向下(&mut table, 5);
 
     // Act
-    let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Confirm]), 普通模式);
+    let (outcome, _) = update_menu(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        普通模式,
+    );
 
     // Assert
     assert_eq!(outcome, ScreenOutcome::Quit);
@@ -165,7 +180,12 @@ fn 菜单里按取消关掉整块屏() {
     let mut table = WidgetStateTable::new();
 
     // Act
-    let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Cancel]), 普通模式);
+    let (outcome, _) = update_menu(
+        &mut table,
+        &按下(&[GameKey::Cancel]),
+        ll_game::pointer::RowPointer::Idle,
+        普通模式,
+    );
 
     // Assert
     assert_eq!(outcome, ScreenOutcome::Close);
@@ -246,7 +266,12 @@ fn 重新绑上之后刻意解绑的记号被撤销() {
     // Act：走公开入口 `update_settings`（内部会因为 `capturing`
     // 为真而进捕获模式），不直接调私有的捕获处理函数——测的是
     // 玩家真正走的那条路径。
-    let notice = 提示(update_settings(&mut state, &input, &mut ctx));
+    let notice = 提示(update_settings(
+        &mut state,
+        &input,
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    ));
 
     // Assert
     assert_eq!(notice, Some(ScreenNotice::Bound(GameKey::Interact)));
@@ -274,7 +299,12 @@ fn 捕获模式下按退格解绑当前这一行() {
     };
 
     // Act
-    let notice = 提示(update_settings(&mut state, &input, &mut ctx));
+    let notice = 提示(update_settings(
+        &mut state,
+        &input,
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    ));
 
     // Assert
     assert_eq!(notice, Some(ScreenNotice::Cleared(GameKey::Map)));
@@ -303,7 +333,12 @@ fn 捕获模式下按esc取消不改动任何绑定() {
     };
 
     // Act
-    let notice = 提示(update_settings(&mut state, &input, &mut ctx));
+    let notice = 提示(update_settings(
+        &mut state,
+        &input,
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    ));
 
     // Assert
     assert_eq!(notice, None);
@@ -339,7 +374,12 @@ fn 冲突时留在捕获模式让玩家直接再按一个键() {
     };
 
     // Act
-    let notice = 提示(update_settings(&mut state, &input, &mut ctx));
+    let notice = 提示(update_settings(
+        &mut state,
+        &input,
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    ));
 
     // Assert
     assert_eq!(notice, Some(ScreenNotice::Conflict(GameKey::Interact)));
@@ -368,7 +408,12 @@ fn 左右键切换语言当场改变配置里的语言标签() {
     };
 
     // Act
-    update_settings(&mut state, &按下(&[GameKey::Right]), &mut ctx);
+    update_settings(
+        &mut state,
+        &按下(&[GameKey::Right]),
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    );
 
     // Assert
     assert_ne!(config.language, 原语言);
@@ -403,7 +448,12 @@ fn 垂直同步行左右键翻转开关() {
     };
 
     // Act
-    update_settings(&mut state, &按下(&[GameKey::Right]), &mut ctx);
+    update_settings(
+        &mut state,
+        &按下(&[GameKey::Right]),
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    );
 
     // Assert
     assert_eq!(config.display.vsync, !原值);
@@ -423,7 +473,12 @@ fn 缩放滤波行左右键在两档之间循环() {
     };
 
     // Act
-    update_settings(&mut state, &按下(&[GameKey::Right]), &mut ctx);
+    update_settings(
+        &mut state,
+        &按下(&[GameKey::Right]),
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    );
 
     // Assert
     assert_eq!(config.display.scale_filter, ScaleFilter::SharpBilinear);
@@ -449,6 +504,7 @@ fn 保存写出的配置能被重新加载且键位一致() {
     let notice = 提示(update_settings(
         &mut state,
         &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
         &mut ctx,
     ));
     let 读回 = ll_platform::config::load_or_default(&path);
@@ -478,7 +534,12 @@ fn 设置界面按取消返回菜单屏() {
     };
 
     // Act
-    update_settings(&mut state, &按下(&[GameKey::Cancel]), &mut ctx);
+    update_settings(
+        &mut state,
+        &按下(&[GameKey::Cancel]),
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    );
 
     // Assert
     assert_eq!(state, ScreenState::Menu);
@@ -504,7 +565,12 @@ fn 从菜单进的设置屏按取消回到菜单屏() {
     };
 
     // Act
-    update_settings(&mut state, &按下(&[GameKey::Cancel]), &mut ctx);
+    update_settings(
+        &mut state,
+        &按下(&[GameKey::Cancel]),
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    );
 
     // Assert
     assert_eq!(state, ScreenState::Menu);
@@ -533,7 +599,12 @@ fn 从首页进的设置屏按取消回到首页而不是暂停菜单() {
     };
 
     // Act
-    update_settings(&mut state, &按下(&[GameKey::Cancel]), &mut ctx);
+    update_settings(
+        &mut state,
+        &按下(&[GameKey::Cancel]),
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    );
 
     // Assert
     assert_eq!(state, ScreenState::Title);
@@ -560,7 +631,12 @@ fn 从首页进的设置屏按返回那一行也回到首页() {
     };
 
     // Act
-    update_settings(&mut state, &按下(&[GameKey::Confirm]), &mut ctx);
+    update_settings(
+        &mut state,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        &mut ctx,
+    );
 
     // Assert
     assert_eq!(state, ScreenState::Title);
@@ -607,11 +683,21 @@ fn 两种模式下按同一行都得到同一件事() {
     // 是第二行。
     let mut table = WidgetStateTable::new();
     for _ in 0..2 {
-        update_menu(&mut table, &按下(&[GameKey::Down]), false);
+        update_menu(
+            &mut table,
+            &按下(&[GameKey::Down]),
+            ll_game::pointer::RowPointer::Idle,
+            false,
+        );
     }
 
     // Act
-    let (outcome, next) = update_menu(&mut table, &按下(&[GameKey::Confirm]), false);
+    let (outcome, next) = update_menu(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        false,
+    );
 
     // Assert
     assert_eq!(outcome, ScreenOutcome::Idle);
@@ -636,7 +722,12 @@ fn 选中保存那一行产出存档意图而不是关掉菜单() {
     向下(&mut table, 2);
 
     // Act
-    let (outcome, next) = update_menu(&mut table, &按下(&[GameKey::Confirm]), 普通模式);
+    let (outcome, next) = update_menu(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        普通模式,
+    );
 
     // Assert
     assert_eq!(outcome, ScreenOutcome::SaveNow);
@@ -651,7 +742,12 @@ fn 选中返回主菜单那一行产出回首页意图而不是退出进程() {
     向下(&mut table, 4);
 
     // Act
-    let (outcome, _) = update_menu(&mut table, &按下(&[GameKey::Confirm]), 普通模式);
+    let (outcome, _) = update_menu(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        普通模式,
+    );
 
     // Assert
     assert_eq!(outcome, ScreenOutcome::BackToTitle);

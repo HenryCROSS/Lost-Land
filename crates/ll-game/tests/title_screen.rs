@@ -33,11 +33,21 @@ fn 按下(keys: &[GameKey]) -> InputState {
     input
 }
 
-/// 把焦点向下移到第 `index` 行——首页的焦点刻意不预置在任何一项上
-/// （与菜单屏同一条约定），第一次按下会落在第 0 行。
+/// 把焦点向下移到第 `index` 行。
+///
+/// **本批改过**：首页的焦点此前刻意不预置在任何一项上，第一次按下才
+/// 落到第 0 行；规格 N10 之后一进屏第 0 行就已经选中（预置在
+/// `ll_game::app::Demo` 的构造里）。本函数拿到的是一张空表，所以仍然
+/// 要按 `index + 1` 次——它测的是 `update_title` 自己的导航，不是
+/// `Demo` 的预置。
 fn 移到第几行(table: &mut WidgetStateTable, index: usize) {
     for _ in 0..=index {
-        update_title(table, &按下(&[GameKey::Down]), true);
+        update_title(
+            table,
+            &按下(&[GameKey::Down]),
+            ll_game::pointer::RowPointer::Idle,
+            true,
+        );
     }
     assert_eq!(title_focus_index(table), index, "Arrange 的焦点没落对地方");
 }
@@ -106,7 +116,12 @@ fn 没有存档时按读取存档只说一句话不进世界() {
     移到第几行(&mut table, TITLE_LOAD_ROW);
 
     // Act
-    let update = update_title(&mut table, &按下(&[GameKey::Confirm]), false);
+    let update = update_title(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        false,
+    );
 
     // Assert
     assert_eq!(update.outcome, ScreenOutcome::Idle, "不该产生任何动作");
@@ -123,7 +138,12 @@ fn 有存档时按读取存档进的是存档列表屏而不是直接读那一�
     移到第几行(&mut table, TITLE_LOAD_ROW);
 
     // Act
-    let update = update_title(&mut table, &按下(&[GameKey::Confirm]), true);
+    let update = update_title(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        true,
+    );
 
     // Assert
     assert_eq!(update.outcome, ScreenOutcome::Idle);
@@ -138,7 +158,12 @@ fn 按开始游戏要求调用方建一局新世界() {
     移到第几行(&mut table, 0);
 
     // Act
-    let update = update_title(&mut table, &按下(&[GameKey::Confirm]), false);
+    let update = update_title(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        false,
+    );
 
     // Assert：**没有存档也能开始新游戏**——这一项与存档无关。
     assert_eq!(update.outcome, ScreenOutcome::StartNewGame);
@@ -151,7 +176,12 @@ fn 按离开退出整局() {
     移到第几行(&mut table, 3);
 
     // Act
-    let update = update_title(&mut table, &按下(&[GameKey::Confirm]), true);
+    let update = update_title(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        true,
+    );
 
     // Assert
     assert_eq!(update.outcome, ScreenOutcome::Quit);
@@ -166,7 +196,12 @@ fn 首页按取消什么都不做() {
     移到第几行(&mut table, 3);
 
     // Act
-    let update = update_title(&mut table, &按下(&[GameKey::Cancel]), true);
+    let update = update_title(
+        &mut table,
+        &按下(&[GameKey::Cancel]),
+        ll_game::pointer::RowPointer::Idle,
+        true,
+    );
 
     // Assert
     assert_eq!(update.outcome, ScreenOutcome::Idle);
@@ -182,7 +217,12 @@ fn 还没选中任何一项时按确认什么都不做() {
     assert_eq!(title_focus_index(&table), usize::MAX);
 
     // Act
-    let update = update_title(&mut table, &按下(&[GameKey::Confirm]), true);
+    let update = update_title(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        true,
+    );
 
     // Assert
     assert_eq!(update.outcome, ScreenOutcome::Idle);
@@ -199,7 +239,12 @@ fn 从首页进的设置屏记着要回首页() {
     移到第几行(&mut table, 2);
 
     // Act
-    let update = update_title(&mut table, &按下(&[GameKey::Confirm]), true);
+    let update = update_title(
+        &mut table,
+        &按下(&[GameKey::Confirm]),
+        ll_game::pointer::RowPointer::Idle,
+        true,
+    );
 
     // Assert
     assert_eq!(
@@ -210,4 +255,110 @@ fn 从首页进的设置屏记着要回首页() {
             origin: SettingsOrigin::Title,
         })
     );
+}
+
+// ───────────────────── 鼠标：四条约定在首页上的验收 ─────────────────────
+//
+// ADR 0025：**不合成任何操作系统级事件**。这里驱动的是
+// `RowPointer`——它由 `ll_game::pointer::resolve_row_pointer` 从一份直接
+// 构造的 `InputState` 算出来（那一层的断言在 `pointer.rs` 自己的单元
+// 测试里），而 `update_title` 收到的就是真实鼠标最终也会得到的同一个值。
+
+#[test]
+fn 指针触发第几行就等于在第几行按确认() {
+    // 约定三：点哪一行，哪一行就既被选中又被触发——与键盘确认走同一个
+    // 动作分派分支。
+    //
+    // 反例验证（已实跑）：把 `update_title` 里 `|| pointer.activated()`
+    // 那一半删掉，本条立刻变红。
+    // Arrange：焦点停在第 0 行「开始游戏」，指针触发第 2 行「设置」。
+    let mut table = WidgetStateTable::new();
+    移到第几行(&mut table, 0);
+
+    // Act
+    let update = update_title(
+        &mut table,
+        &InputState::new(),
+        ll_game::pointer::RowPointer::Activate(2),
+        true,
+    );
+
+    // Assert
+    assert_eq!(
+        update.next,
+        Some(ScreenState::Settings {
+            cursor: 0,
+            capturing: false,
+            origin: SettingsOrigin::Title,
+        }),
+        "触发第 2 行应当进设置屏，而不是原先聚焦的第 0 行"
+    );
+    assert_eq!(title_focus_index(&table), 2, "触发那一行同时也被选中");
+}
+
+#[test]
+fn 指针只按下时挪焦点但不触发任何一行() {
+    // 约定三的前半 + 约定一的代价补偿：玩家在触发之前一定先看见高亮跟
+    // 了过去。
+    // Arrange
+    let mut table = WidgetStateTable::new();
+    移到第几行(&mut table, 0);
+
+    // Act
+    let update = update_title(
+        &mut table,
+        &InputState::new(),
+        ll_game::pointer::RowPointer::Focus(3),
+        true,
+    );
+
+    // Assert
+    assert_eq!(title_focus_index(&table), 3, "焦点应当跟到按下的那一行");
+    assert_eq!(update.outcome, ScreenOutcome::Idle, "但这一帧不该触发它");
+    assert_eq!(update.next, None);
+}
+
+#[test]
+fn 指针空闲时焦点一动不动() {
+    // 约定一：悬停不改焦点。`resolve_row_pointer` 对「只是划过去」产出
+    // 的正是 `Idle`，这里验的是收到 `Idle` 之后这块屏什么都不做。
+    // Arrange：键盘先走到第 2 行。
+    let mut table = WidgetStateTable::new();
+    移到第几行(&mut table, 2);
+
+    // Act
+    update_title(
+        &mut table,
+        &InputState::new(),
+        ll_game::pointer::RowPointer::Idle,
+        true,
+    );
+
+    // Assert
+    assert_eq!(
+        title_focus_index(&table),
+        2,
+        "键盘走到第 3 项、手碰了下鼠标，焦点不该跳回第 1 项"
+    );
+}
+
+#[test]
+fn 指针触发越界的行时什么都不做() {
+    // 行矩形与 id 表同源现算，越界只可能是两者在两帧之间不同步——那时
+    // 候不动焦点比猜一个安全。
+    // Arrange
+    let mut table = WidgetStateTable::new();
+    移到第几行(&mut table, 1);
+
+    // Act
+    let update = update_title(
+        &mut table,
+        &InputState::new(),
+        ll_game::pointer::RowPointer::Focus(99),
+        true,
+    );
+
+    // Assert
+    assert_eq!(title_focus_index(&table), 1, "焦点不该被越界的行挪走");
+    assert_eq!(update.next, None);
 }

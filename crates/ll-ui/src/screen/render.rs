@@ -64,10 +64,52 @@ pub fn build_screen_frame(
             &skin.panel(PanelStyleId::Window),
         )),
     }
+    push_row_highlights(data, &content, skin, &mut quads, &mut textured_quads);
     ScreenFrame {
         quads,
         textured_quads,
         labels: content.labels,
+    }
+}
+
+/// 给聚焦行与悬停行各画一块高亮底——**「模态屏的每一行本身就是按钮」
+/// 这句话的视觉部分**。
+///
+/// # 为什么跟着面板走同一个分支
+///
+/// 纯色与贴图是**两道 pass**，同一层里纯色永远被贴图盖住（见
+/// `crate::widget::layer` 模块文档）。高亮若一律走纯色，那么装了窗口
+/// 贴图的皮肤下它会被面板整块盖掉——玩家就再也看不到自己选中了哪一行。
+/// 因此这里照抄面板自己那个 `match`：面板走贴图，高亮也走贴图（拿面板
+/// 的填充 UV，用高亮色当调制），面板走纯色，高亮也走纯色。
+///
+/// 聚焦行与悬停行落在同一行时只画聚焦那一块：两块叠在一起会得到一个
+/// 谁都没预期过的第三种颜色。
+fn push_row_highlights(
+    data: &ScreenData<'_>,
+    content: &super::ScreenContent,
+    skin: &dyn Skin,
+    quads: &mut Vec<QuadInstance>,
+    textured_quads: &mut Vec<TexturedQuadInstance>,
+) {
+    let hovered = data.hovered.filter(|row| *row != data.cursor);
+    let rows = [
+        (hovered, super::HOVER_HIGHLIGHT_COLOR),
+        (Some(data.cursor), super::FOCUS_HIGHLIGHT_COLOR),
+    ];
+    for (row, color) in rows {
+        let Some(rect) = row.and_then(|row| content.row_rects.get(row).copied()) else {
+            continue;
+        };
+        match skin.textured_panel(PanelStyleId::Window) {
+            Some(appearance) => textured_quads.push(TexturedQuadInstance {
+                position: [rect.x, rect.y],
+                size: [rect.width, rect.height],
+                uv_rect: appearance.fill_uv,
+                color,
+            }),
+            None => quads.push(super::row_highlight_quad(rect, color)),
+        }
     }
 }
 
@@ -186,6 +228,7 @@ mod tests {
             empty_key: "screen-menu-empty",
             hint_key: "screen-menu-hint",
             notice: None,
+            hovered: None,
         };
 
         // Act
@@ -206,6 +249,7 @@ mod tests {
             empty_key: "screen-menu-empty",
             hint_key: "screen-menu-hint",
             notice: None,
+            hovered: None,
         };
 
         // Act

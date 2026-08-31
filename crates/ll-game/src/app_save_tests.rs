@@ -361,6 +361,7 @@ fn 死亡重生走的是选出生地而不是重新生成世界() {
             &mut draft.choice,
             &roster,
             &down,
+            crate::pointer::RowPointer::Idle,
             draft.world.screen_after_character_creation(),
         );
     }
@@ -373,6 +374,7 @@ fn 死亡重生走的是选出生地而不是重新生成世界() {
         &mut draft.choice,
         &roster,
         &confirm,
+        crate::pointer::RowPointer::Idle,
         draft.world.screen_after_character_creation(),
     );
 
@@ -417,6 +419,7 @@ fn 开局那条路仍然经过世界配置屏() {
             &mut draft.choice,
             &roster,
             &down,
+            crate::pointer::RowPointer::Idle,
             draft.world.screen_after_character_creation(),
         );
     }
@@ -429,6 +432,7 @@ fn 开局那条路仍然经过世界配置屏() {
         &mut draft.choice,
         &roster,
         &confirm,
+        crate::pointer::RowPointer::Idle,
         draft.world.screen_after_character_creation(),
     );
 

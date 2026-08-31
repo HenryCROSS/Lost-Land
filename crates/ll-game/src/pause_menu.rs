@@ -19,7 +19,10 @@ use ll_platform::input::{GameKey, InputState};
 use ll_ui::widget::focus::navigate_focus;
 use ll_ui::widget::state::{WidgetId, WidgetStateTable};
 
-use crate::menu_screen::{ScreenOutcome, ScreenState, SettingsOrigin, focus_index};
+use crate::menu_screen::{
+    ScreenOutcome, ScreenState, SettingsOrigin, apply_row_pointer, focus_index,
+};
+use crate::pointer::RowPointer;
 
 /// 暂停菜单的一行是什么。**每帧现算**（见 [`menu_rows`]），不缓存。
 ///
@@ -105,15 +108,17 @@ pub fn menu_focus_index(table: &WidgetStateTable, can_save_manually: bool) -> us
 pub fn update_menu(
     table: &mut WidgetStateTable,
     input: &InputState,
+    pointer: RowPointer,
     can_save_manually: bool,
 ) -> (ScreenOutcome, Option<ScreenState>) {
     let rows = menu_rows(can_save_manually);
     let ids = menu_item_ids(can_save_manually);
     navigate_focus(table, &ids, input);
+    apply_row_pointer(table, &ids, pointer);
     if input.was_just_pressed(GameKey::Cancel) {
         return (ScreenOutcome::Close, None);
     }
-    if !input.was_just_pressed(GameKey::Confirm) {
+    if !input.was_just_pressed(GameKey::Confirm) && !pointer.activated() {
         return (ScreenOutcome::Idle, None);
     }
     // 按**行的语义**分支，不按下标——行数随模式变化，写死下标就是

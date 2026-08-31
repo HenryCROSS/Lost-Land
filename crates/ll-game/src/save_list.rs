@@ -59,6 +59,7 @@ pub fn update_save_list(
     cursor: &mut usize,
     slots: &[SaveSlot],
     input: &InputState,
+    pointer: crate::pointer::RowPointer,
 ) -> SaveListUpdate {
     if input.was_just_pressed(GameKey::Cancel) {
         return SaveListUpdate {
@@ -76,7 +77,12 @@ pub fn update_save_list(
     } else if input.was_just_pressed(GameKey::Up) {
         *cursor = (*cursor + slots.len() - 1) % slots.len();
     }
-    if input.was_just_pressed(GameKey::Confirm) {
+    // 指针按下把光标挪过去（不钳制越界：`row` 只可能来自这块屏自己
+    // 现算的行矩形，行数与 `slots` 同源）。
+    if let Some(row) = pointer.focus_row() {
+        *cursor = row.min(slots.len() - 1);
+    }
+    if input.was_just_pressed(GameKey::Confirm) || pointer.activated() {
         return SaveListUpdate {
             outcome: ScreenOutcome::LoadSave,
             next: None,
@@ -163,12 +169,27 @@ mod tests {
         let mut cursor = 0;
 
         // Act & Assert
-        update_save_list(&mut cursor, &slots, &按下(&[GameKey::Down]));
+        update_save_list(
+            &mut cursor,
+            &slots,
+            &按下(&[GameKey::Down]),
+            crate::pointer::RowPointer::Idle,
+        );
         assert_eq!(cursor, 1);
-        update_save_list(&mut cursor, &slots, &按下(&[GameKey::Up]));
+        update_save_list(
+            &mut cursor,
+            &slots,
+            &按下(&[GameKey::Up]),
+            crate::pointer::RowPointer::Idle,
+        );
         assert_eq!(cursor, 0);
         // 从第一行往上走绕到最后一行。
-        update_save_list(&mut cursor, &slots, &按下(&[GameKey::Up]));
+        update_save_list(
+            &mut cursor,
+            &slots,
+            &按下(&[GameKey::Up]),
+            crate::pointer::RowPointer::Idle,
+        );
         assert_eq!(cursor, 2);
     }
 
@@ -179,7 +200,12 @@ mod tests {
         let mut cursor = 0;
 
         // Act
-        let update = update_save_list(&mut cursor, &slots, &按下(&[GameKey::Confirm]));
+        let update = update_save_list(
+            &mut cursor,
+            &slots,
+            &按下(&[GameKey::Confirm]),
+            crate::pointer::RowPointer::Idle,
+        );
 
         // Assert
         assert_eq!(update.outcome, ScreenOutcome::LoadSave);
@@ -191,7 +217,12 @@ mod tests {
         let mut cursor = 0;
 
         // Act
-        let update = update_save_list(&mut cursor, &[], &按下(&[GameKey::Confirm]));
+        let update = update_save_list(
+            &mut cursor,
+            &[],
+            &按下(&[GameKey::Confirm]),
+            crate::pointer::RowPointer::Idle,
+        );
 
         // Assert
         assert_eq!(update.outcome, ScreenOutcome::Idle);
@@ -205,7 +236,12 @@ mod tests {
         let mut cursor = 0;
 
         // Act
-        let update = update_save_list(&mut cursor, &slots, &按下(&[GameKey::Cancel]));
+        let update = update_save_list(
+            &mut cursor,
+            &slots,
+            &按下(&[GameKey::Cancel]),
+            crate::pointer::RowPointer::Idle,
+        );
 
         // Assert
         assert_eq!(update.next, Some(ScreenState::Title));
