@@ -22,6 +22,23 @@ pub struct Label {
     pub x: f32,
     /// 左上角 y 像素坐标。
     pub y: f32,
+    /// 这一行的**断行宽度**（像素）——超过它就换行。
+    ///
+    /// # 为什么这条信息住在 `Label` 上，而不是提交给 GPU 时才补
+    ///
+    /// 此前它是提交时补的一个与面板无关的常数：HUD 全部文本一律
+    /// `400.0`（`crate::hud::render`），模态屏一律 `SCREEN_WIDTH`
+    /// （连自己的内边距都没减）。而六块 HUD 面板的内容宽是
+    /// 608/248/208/208/348/408，**没有一块等于 400**——英文界面下
+    /// 十处溢出，其中八处中文构建里一个像素都看不见
+    /// （`knowledge/design/ui-and-navigation.md` §8）。
+    ///
+    /// 现在这个字段的**唯一**写入点是
+    /// [`crate::widget::list::RowCursor`]，而它的值由面板宽度派生
+    /// （`面板宽 - 2 × 内边距`）。于是「面板有多宽」成了唯一真相源，
+    /// 断行宽度是它的派生值——**任何人再想写死一个断行宽度，都得先
+    /// 绕过 `RowCursor`**。这是把纪律变成结构，不是靠注释提醒。
+    pub max_width: f32,
 }
 
 impl Label {
@@ -30,20 +47,16 @@ impl Label {
     /// 进一个 `Vec` 再统一转换（不能在产出 `Label` 的同一个函数里就
     /// 地借出 `TextRun`,那是自引用,见 `load_report_view` 模块文档
     /// 「分两步，不是一步」一节的同一条限制）。
-    pub fn to_text_run(
-        &self,
-        font_size: f32,
-        line_height: f32,
-        max_width: f32,
-        color: Color,
-    ) -> TextRun<'_> {
+    /// 断行宽度不再是参数——它是 [`Label::max_width`]，由产出这一行的
+    /// 面板决定，见该字段文档。
+    pub fn to_text_run(&self, font_size: f32, line_height: f32, color: Color) -> TextRun<'_> {
         TextRun {
             text: &self.text,
             x: self.x,
             y: self.y,
             font_size,
             line_height,
-            max_width,
+            max_width: self.max_width,
             color,
             bold: false,
         }
@@ -61,12 +74,36 @@ mod tests {
             text: "sample".to_string(),
             x: 1.0,
             y: 2.0,
+            max_width: 200.0,
         };
 
         // Act
-        let run = label.to_text_run(14.0, 18.0, 200.0, Color::rgba(255, 255, 255, 255));
+        let run = label.to_text_run(14.0, 18.0, Color::rgba(255, 255, 255, 255));
 
         // Assert
         assert_eq!(run.text, "sample");
+    }
+
+    #[test]
+    fn to_text_run的断行宽度取自标签自己而不是调用方() {
+        // 这条盯的是「断行宽度是面板宽度的派生值」这条不变式的最后
+        // 一环：`TextRun` 的 `max_width` 必须原样来自 `Label`，中途
+        // 没有任何一处能再塞一个与面板无关的常数进去。
+        //
+        // 反例验证（已实跑）：把 `to_text_run` 里的 `self.max_width`
+        // 改回一个字面量 `400.0`，本条立刻变红。
+        // Arrange
+        let label = Label {
+            text: "sample".to_string(),
+            x: 1.0,
+            y: 2.0,
+            max_width: 208.0,
+        };
+
+        // Act
+        let run = label.to_text_run(14.0, 18.0, Color::rgba(255, 255, 255, 255));
+
+        // Assert
+        assert_eq!(run.max_width, 208.0);
     }
 }

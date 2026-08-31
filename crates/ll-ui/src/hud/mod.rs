@@ -77,6 +77,8 @@ use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_i18n::{Catalog, FluentArgs};
 use ll_mod::item::ItemTable;
 
+use ll_text::MeasureText;
+
 use crate::widget::geometry::Rect;
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
@@ -105,17 +107,44 @@ pub struct PanelContent {
     pub labels: Vec<Label>,
 }
 
+/// 一块 `width` 宽的面板去掉两侧内边距之后剩下的**内容宽**——也就是
+/// 这块面板里每一行文字的断行宽度。
+///
+/// # 这是「面板宽度是唯一真相源」那条不变式的落点
+///
+/// 此前 HUD 全部文本的断行宽度是 `crate::hud::render` 里一个写死的
+/// `400.0`，而六块面板的内容宽是 608/248/208/208/348/408——**没有一块
+/// 等于 400**，于是每块面板要么提前换行（第二行掉出面板）要么根本不
+/// 换行（直接画到面板外面），见
+/// `knowledge/design/ui-and-navigation.md` §8.2 那张表。
+///
+/// 现在断行宽度只有这一个产出点，它的输入只有面板宽度一个。
+pub(crate) fn content_width(panel_width: f32) -> f32 {
+    // 面板比两侧内边距还窄这种极端配置下会算出负数——**不钳制**，与
+    // `render::equipment_origin_x` 同一条取舍：钳制会把「面板宽度被配
+    // 错了」这种应该显形的问题掩盖成一块看起来正常、内容却被挤没了的
+    // 面板。
+    panel_width - DEFAULT_PADDING * 2.0
+}
+
 /// 建一块面板：在 `origin` 处开一个宽 `width` 的面板，`fill` 负责用
 /// 传入的 [`RowCursor`] 逐行写内容，本函数收尾时按 `fill` 实际写了
 /// 多少行现算出面板矩形的高度。四个面板模块的公开入口都是这个函数的
 /// 薄封装,不重复这套「游标 + 现算高度」的样板。
 pub(crate) fn build_panel(
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     width: f32,
-    fill: impl FnOnce(&mut RowCursor, &mut Vec<Label>),
+    fill: impl FnOnce(&mut RowCursor<'_>, &mut Vec<Label>),
 ) -> PanelContent {
     let content_origin = (origin.0 + DEFAULT_PADDING, origin.1 + DEFAULT_PADDING);
-    let mut cursor = RowCursor::new(content_origin, DEFAULT_LINE_HEIGHT);
+    let mut cursor = RowCursor::new(
+        measure,
+        content_origin,
+        DEFAULT_LINE_HEIGHT,
+        DEFAULT_FONT_SIZE,
+        content_width(width),
+    );
     let mut labels = Vec::new();
     fill(&mut cursor, &mut labels);
     let content_height = cursor.cursor_y() - content_origin.1;

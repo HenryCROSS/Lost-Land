@@ -44,6 +44,7 @@
 pub mod render;
 
 use ll_i18n::Catalog;
+use ll_text::MeasureText;
 
 use crate::widget::geometry::Rect;
 use crate::widget::label::Label;
@@ -56,10 +57,41 @@ pub const SCREEN_LINE_HEIGHT: f32 = 18.0;
 pub const SCREEN_PADDING: f32 = 10.0;
 /// 模态屏正文字号（像素）。
 pub const SCREEN_FONT_SIZE: f32 = 14.0;
-/// 模态屏面板宽度（像素）——设置界面最长的一行是「某个动作 + 它绑着的
-/// 几个键」，固定宽度比按内容现算更稳：现算会让面板宽度随光标移动而
-/// 跳变（不同行的文字长短不一），看起来像画面在抖。
+/// 模态屏面板的**最小**宽度（像素）。
+///
+/// # 从「写死」改成「下限」（规格 W3 / F5）
+///
+/// 此前这是写死的面板宽度，理由是「现算会让面板宽度随光标移动而跳变
+/// （不同行的文字长短不一），看起来像画面在抖」。**那条理由针对的是
+/// 行，而行从来不是问题**——`knowledge/design/ui-and-navigation.md`
+/// 八节实测：全部模态屏的行都在 500 内，最长 285.3。真正放不下的是
+/// **提示语、通知与说明文本**：`screen-savename-hint` 在中英两种语言
+/// 下都溢出，`screen-chargen-player-died` 的英文是可用宽的 145%，四条
+/// 世界预设说明 583.9–649.1 全部撞 500 的内容框。
+///
+/// 而底部那一行提示是这个游戏**唯一**的按键教学（九节 F5），它被布局
+/// 缺陷吃掉不是「不好看」，是玩家不知道能按什么。
+///
+/// 现在宽度是 [`panel_width`]：`max(本常量, 本屏最长行 + 2 × 内边距)`，
+/// **每屏算一次、进屏时固定**——输入是「这一屏的全部行」，光标移动不
+/// 改变行的集合，因此原来那条反对理由指的跳变不会发生。
 pub const SCREEN_WIDTH: f32 = 520.0;
+
+/// 模态屏面板与窗口边缘之间至少要留的空（像素）——与
+/// `crate::hud::render` 的 `SCREEN_MARGIN` 取同一个值，两块屏贴边的
+/// 节奏要一致。
+///
+/// [`panel_width`] 按内容伸缩时以它为上限：面板再宽也不许长到窗口
+/// 外面去，撞到上限之后多出来的文字改走换行（规格 W3 采纳的第二条
+/// 手段）。
+pub const SCREEN_SIDE_MARGIN: f32 = 16.0;
+
+/// 量「这一行本来要多宽」时给的断行宽度——大到任何一条 UI 文案都不
+/// 可能被它断开，于是量出来的就是**不换行时的自然宽度**。
+///
+/// 不用 `f32::INFINITY`：它会被传进 `cosmic_text::Buffer::set_size`，
+/// 一个非有限值在那一层的行为没有文档承诺，不值得赌。
+const NATURAL_WIDTH_PROBE: f32 = 1.0e6;
 
 /// 光标所在那一行的前缀——与 [`crate::hud::action_menu::CURSOR_PREFIX`]
 /// 取同一个记号，理由见那里的模块文档「光标标记为什么是文字前缀」
@@ -147,11 +179,147 @@ pub struct ScreenData<'a> {
 /// 钳制**，与 [`crate::hud::render`] 的 `equipment_origin_x` 同一条
 /// 取舍：钳制会掩盖「窗口配置改小了却没人发现面板被塞没了」这种应该
 /// 显形的问题。
-fn centered_origin(screen_width: f32, screen_height: f32, panel_height: f32) -> (f32, f32) {
+fn centered_origin(
+    screen_width: f32,
+    screen_height: f32,
+    panel_width: f32,
+    panel_height: f32,
+) -> (f32, f32) {
     (
-        (screen_width - SCREEN_WIDTH) / 2.0,
+        (screen_width - panel_width) / 2.0,
         (screen_height - panel_height) / 2.0,
     )
+}
+
+/// 这一屏的面板该多宽：`max(SCREEN_WIDTH, 最长行的自然宽 + 2 * 内边距)`，
+/// 再以「不许长到窗口外面」为上限钳一次。
+///
+/// **每屏算一次**，输入是这一屏的全部行文本（[`screen_text_lines`]），
+/// 与光标落在第几行无关——见 [`SCREEN_WIDTH`] 文档。
+pub fn panel_width(lines: &[String], measure: &mut dyn MeasureText, screen_width: f32) -> f32 {
+    let longest = lines
+        .iter()
+        .map(|text| {
+            measure
+                .measure_text(
+                    text,
+                    SCREEN_FONT_SIZE,
+                    SCREEN_LINE_HEIGHT,
+                    NATURAL_WIDTH_PROBE,
+                )
+                .max_line_width
+        })
+        .fold(0.0_f32, f32::max);
+    let wanted = SCREEN_WIDTH.max(longest + SCREEN_PADDING * 2.0);
+    let ceiling = screen_width - SCREEN_SIDE_MARGIN * 2.0;
+    // 窗口比最小宽度还窄时 `ceiling` 会小于 `SCREEN_WIDTH`——这时候取
+    // `ceiling`（面板缩窄、文字换行），不取 `SCREEN_WIDTH`（面板伸出
+    // 窗口、文字直接看不见）。
+    wanted.min(ceiling.max(0.0))
+}
+
+/// 这一屏这一帧要显示的**全部行的文本**，按从上到下顺序：标题、各行
+/// （或占位行）、可选的通知、提示行。
+///
+/// 抽出来是因为有两个消费者需要**同一份**文本而不需要几何：
+/// [`panel_width`]（量宽度）与 [`layout_screen`]（排位置）。两处各拼
+/// 一遍就是同一段排版逻辑的两份副本，而副本迟早分叉。
+///
+/// 返回值第二项是「这些行里从第几条开始是可点的行」（`rows` 在
+/// [`ScreenData`] 里的那些），`None` 表示这一屏显示的是占位行——占位行
+/// 不是一个可点的按钮。
+pub fn screen_text_lines(
+    data: &ScreenData<'_>,
+    catalog: &Catalog,
+    language: &str,
+) -> (Vec<String>, Option<usize>) {
+    let mut lines = vec![catalog.resolve(language, data.title_key)];
+    let rows_start = if data.rows.is_empty() {
+        lines.push(format!(
+            "{IDLE_PREFIX}{}",
+            catalog.resolve(language, data.empty_key)
+        ));
+        None
+    } else {
+        let start = lines.len();
+        for (row, text) in data.rows.iter().enumerate() {
+            let prefix = if row == data.cursor {
+                CURSOR_PREFIX
+            } else {
+                IDLE_PREFIX
+            };
+            lines.push(format!("{prefix}{text}"));
+        }
+        Some(start)
+    };
+    if let Some(notice) = data.notice {
+        lines.push(notice.to_string());
+    }
+    lines.push(catalog.resolve(language, data.hint_key));
+    (lines, rows_start)
+}
+
+/// [`layout_screen`] 的产出：全部文本行、每个可点行的矩形、内容区
+/// 实际占用的总高。
+struct ScreenLayout {
+    labels: Vec<Label>,
+    row_rects: Vec<Rect>,
+    content_height: f32,
+}
+
+/// 把 [`screen_text_lines`] 的文本按行排出位置，**同时**产出每一个
+/// 可点行的矩形与内容总高。
+///
+/// # 行矩形为什么必须与行文字同一个产出点
+///
+/// 此前行矩形是按 `content_origin.1 + (i + 1) * SCREEN_LINE_HEIGHT`
+/// 这条**公式**算的——它假设「标题恰占一行、每一行恰占一行」。规格 W2
+/// 落地之后这个假设不再成立（一条长行会占两行），公式与实际画出来的
+/// 位置会**静悄悄地**错开，点击落到隔壁那一行上。
+///
+/// 现在两者出自同一次游标推进：一行的矩形就是这一行推进前后的那一段，
+/// 面板高度也是同一个游标的终点。
+fn layout_screen(
+    lines: &[String],
+    rows_start: Option<usize>,
+    row_count: usize,
+    measure: &mut dyn MeasureText,
+    content_origin: (f32, f32),
+    wrap_width: f32,
+) -> ScreenLayout {
+    let mut cursor = RowCursor::new(
+        measure,
+        content_origin,
+        SCREEN_LINE_HEIGHT,
+        SCREEN_FONT_SIZE,
+        wrap_width,
+    );
+    let mut labels = Vec::new();
+    let mut row_rects = Vec::new();
+    for (index, text) in lines.iter().enumerate() {
+        let top = cursor.cursor_y();
+        cursor.push(&mut labels, text.clone());
+        let is_row = rows_start
+            .map(|start| index >= start && index < start + row_count)
+            .unwrap_or(false);
+        if is_row {
+            // 横向占满面板去掉两侧内边距之后的整条——按钮的可点区域是
+            // **一整行**，不是那几个字所占的宽度：后者会让玩家点在一行
+            // 的空白处什么都不发生。
+            row_rects.push(Rect::new(
+                content_origin.0,
+                top,
+                wrap_width,
+                cursor.cursor_y() - top,
+            ));
+        }
+    }
+    let content_height = cursor.cursor_y() - content_origin.1;
+    ScreenLayout {
+        labels,
+        row_rects,
+        content_height,
+    }
 }
 
 /// 产出一块模态屏的全部文本行——纯函数，不接触 GPU，供本模块测试与
@@ -165,42 +333,20 @@ pub fn screen_lines(
     data: &ScreenData<'_>,
     catalog: &Catalog,
     language: &str,
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
-    line_height: f32,
+    wrap_width: f32,
 ) -> Vec<Label> {
-    let mut cursor = RowCursor::new(origin, line_height);
-    let mut lines = Vec::new();
-    write_screen_lines(data, catalog, language, &mut cursor, &mut lines);
-    lines
-}
-
-fn write_screen_lines(
-    data: &ScreenData<'_>,
-    catalog: &Catalog,
-    language: &str,
-    cursor: &mut RowCursor,
-    lines: &mut Vec<Label>,
-) {
-    cursor.push(lines, catalog.resolve(language, data.title_key));
-    if data.rows.is_empty() {
-        cursor.push(
-            lines,
-            format!("{IDLE_PREFIX}{}", catalog.resolve(language, data.empty_key)),
-        );
-    } else {
-        for (row, text) in data.rows.iter().enumerate() {
-            let prefix = if row == data.cursor {
-                CURSOR_PREFIX
-            } else {
-                IDLE_PREFIX
-            };
-            cursor.push(lines, format!("{prefix}{text}"));
-        }
-    }
-    if let Some(notice) = data.notice {
-        cursor.push(lines, notice.to_string());
-    }
-    cursor.push(lines, catalog.resolve(language, data.hint_key));
+    let (texts, rows_start) = screen_text_lines(data, catalog, language);
+    layout_screen(
+        &texts,
+        rows_start,
+        data.rows.len(),
+        measure,
+        origin,
+        wrap_width,
+    )
+    .labels
 }
 
 /// 建出整块模态屏：压暗背板 + 居中面板 + 全部文本行 + 每一行的矩形。
@@ -208,47 +354,75 @@ pub fn build_screen_panel(
     data: &ScreenData<'_>,
     catalog: &Catalog,
     language: &str,
+    measure: &mut dyn MeasureText,
     screen_width: f32,
     screen_height: f32,
 ) -> ScreenContent {
-    // 先按原点 (0, 0) 排一遍只为量出高度，再把量出来的高度拿去居中、
-    // 用真正的原点重排一遍。两遍的代价是几十次字符串格式化，换来的是
-    // 「面板高度恒等于内容高度」这条不变式不需要任何调用方去手算行数。
-    let probe = screen_lines(data, catalog, language, (0.0, 0.0), SCREEN_LINE_HEIGHT);
-    let panel_height = probe.len() as f32 * SCREEN_LINE_HEIGHT + SCREEN_PADDING * 2.0;
-    let origin = centered_origin(screen_width, screen_height, panel_height);
-    let content_origin = (origin.0 + SCREEN_PADDING, origin.1 + SCREEN_PADDING);
-    let labels = screen_lines(data, catalog, language, content_origin, SCREEN_LINE_HEIGHT);
+    let geometry = screen_geometry(
+        data,
+        catalog,
+        language,
+        measure,
+        screen_width,
+        screen_height,
+    );
     ScreenContent {
         backdrop: Rect::new(0.0, 0.0, screen_width, screen_height),
-        panel: Rect::new(origin.0, origin.1, SCREEN_WIDTH, panel_height),
-        row_rects: row_rects(data, content_origin),
-        labels,
+        panel: geometry.panel,
+        row_rects: geometry.row_rects,
+        labels: geometry.labels,
     }
 }
 
-/// 第 i 行占的那块矩形——**行的几何唯一的产出点**，
-/// [`build_screen_panel`] 与 [`screen_row_rects`] 都走它。
-///
-/// 第 0 个 `Label` 是标题（见 [`write_screen_lines`]），因此第 i 行的
-/// 纵坐标是 `content_origin.1 + (i + 1) * SCREEN_LINE_HEIGHT`。横向占满
-/// 面板去掉两侧内边距之后的整条——按钮的可点区域是**一整行**，不是那
-/// 几个字所占的宽度：后者会让玩家点在一行的空白处什么都不发生。
-fn row_rects(data: &ScreenData<'_>, content_origin: (f32, f32)) -> Vec<Rect> {
-    if data.rows.is_empty() {
-        // 占位行不是可点的按钮。
-        return Vec::new();
+/// [`build_screen_panel`] 与 [`screen_row_rects`] 共用的那一段：算出
+/// 面板宽、面板高、居中原点，再排一遍。
+struct ScreenGeometry {
+    panel: Rect,
+    labels: Vec<Label>,
+    row_rects: Vec<Rect>,
+}
+
+fn screen_geometry(
+    data: &ScreenData<'_>,
+    catalog: &Catalog,
+    language: &str,
+    measure: &mut dyn MeasureText,
+    screen_width: f32,
+    screen_height: f32,
+) -> ScreenGeometry {
+    let (texts, rows_start) = screen_text_lines(data, catalog, language);
+    let width = panel_width(&texts, measure, screen_width);
+    let wrap_width = width - SCREEN_PADDING * 2.0;
+    // 先按原点 (0, 0) 排一遍只为量出高度，再把量出来的高度拿去居中、
+    // 用真正的原点重排一遍。两遍的代价是几十次字符串格式化，换来的是
+    // 「面板高度恒等于内容高度」这条不变式不需要任何调用方去手算行数。
+    //
+    // 高度按**渲染出的行数**算（游标推进的终点），不是按标签条数算
+    // ——规格 W2，见 `crate::widget::list::RowCursor` 模块文档。
+    let probe = layout_screen(
+        &texts,
+        rows_start,
+        data.rows.len(),
+        measure,
+        (0.0, 0.0),
+        wrap_width,
+    );
+    let panel_height = probe.content_height + SCREEN_PADDING * 2.0;
+    let origin = centered_origin(screen_width, screen_height, width, panel_height);
+    let content_origin = (origin.0 + SCREEN_PADDING, origin.1 + SCREEN_PADDING);
+    let laid = layout_screen(
+        &texts,
+        rows_start,
+        data.rows.len(),
+        measure,
+        content_origin,
+        wrap_width,
+    );
+    ScreenGeometry {
+        panel: Rect::new(origin.0, origin.1, width, panel_height),
+        labels: laid.labels,
+        row_rects: laid.row_rects,
     }
-    (0..data.rows.len())
-        .map(|row| {
-            Rect::new(
-                content_origin.0,
-                content_origin.1 + (row as f32 + 1.0) * SCREEN_LINE_HEIGHT,
-                SCREEN_WIDTH - SCREEN_PADDING * 2.0,
-                SCREEN_LINE_HEIGHT,
-            )
-        })
-        .collect()
 }
 
 /// 只要这块屏每一行的矩形，不排全部文本——**输入这一侧**（这一帧鼠标
@@ -267,13 +441,19 @@ pub fn screen_row_rects(
     data: &ScreenData<'_>,
     catalog: &Catalog,
     language: &str,
+    measure: &mut dyn MeasureText,
     screen_width: f32,
     screen_height: f32,
 ) -> Vec<Rect> {
-    let probe = screen_lines(data, catalog, language, (0.0, 0.0), SCREEN_LINE_HEIGHT);
-    let panel_height = probe.len() as f32 * SCREEN_LINE_HEIGHT + SCREEN_PADDING * 2.0;
-    let origin = centered_origin(screen_width, screen_height, panel_height);
-    row_rects(data, (origin.0 + SCREEN_PADDING, origin.1 + SCREEN_PADDING))
+    screen_geometry(
+        data,
+        catalog,
+        language,
+        measure,
+        screen_width,
+        screen_height,
+    )
+    .row_rects
 }
 
 /// 聚焦行的高亮矩形颜色（RGBA）——**「这一行现在会响应确认键」的视觉
@@ -307,6 +487,7 @@ pub fn backdrop_quad(rect: Rect) -> crate::widget::quad::QuadInstance {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ll_text::MeasureText;
     use std::path::Path;
 
     fn 测试目录() -> Catalog {
@@ -342,7 +523,14 @@ mod tests {
         let data = 测试数据(&rows, 1);
 
         // Act
-        let content = build_screen_panel(&data, &catalog, "zh-CN", 1280.0, 720.0);
+        let content = build_screen_panel(
+            &data,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
 
         // Assert
         assert_eq!(content.row_rects.len(), rows.len(), "一行一块矩形");
@@ -371,7 +559,14 @@ mod tests {
         let data = 测试数据(&rows, 0);
 
         // Act
-        let content = build_screen_panel(&data, &catalog, "zh-CN", 1280.0, 720.0);
+        let content = build_screen_panel(
+            &data,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
 
         // Assert
         assert_eq!(
@@ -393,7 +588,14 @@ mod tests {
         let data = 测试数据(&rows, 0);
 
         // Act
-        let content = build_screen_panel(&data, &catalog, "zh-CN", 1280.0, 720.0);
+        let content = build_screen_panel(
+            &data,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
 
         // Assert
         assert!(content.row_rects.is_empty());
@@ -415,8 +617,22 @@ mod tests {
         let data = 测试数据(&rows, 2);
 
         // Act
-        let 整块 = build_screen_panel(&data, &catalog, "zh-CN", 1024.0, 768.0);
-        let 只量 = screen_row_rects(&data, &catalog, "zh-CN", 1024.0, 768.0);
+        let 整块 = build_screen_panel(
+            &data,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1024.0,
+            768.0,
+        );
+        let 只量 = screen_row_rects(
+            &data,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1024.0,
+            768.0,
+        );
 
         // Assert
         assert_eq!(只量, 整块.row_rects);
@@ -429,7 +645,14 @@ mod tests {
         let data = 测试数据(&rows, 1);
 
         // Act
-        let lines = screen_lines(&data, &测试目录(), "zh-CN", (0.0, 0.0), 18.0);
+        let lines = screen_lines(
+            &data,
+            &测试目录(),
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            crate::测试断行宽,
+        );
 
         // Assert：第 0 行是标题，所以第 1 条行内容在下标 1。
         assert!(lines[1].text.starts_with(IDLE_PREFIX));
@@ -444,7 +667,14 @@ mod tests {
         let data = 测试数据(&rows, 9);
 
         // Act
-        let lines = screen_lines(&data, &测试目录(), "zh-CN", (0.0, 0.0), 18.0);
+        let lines = screen_lines(
+            &data,
+            &测试目录(),
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            crate::测试断行宽,
+        );
 
         // Assert
         assert!(
@@ -463,8 +693,22 @@ mod tests {
         有提示.notice = Some("出事了");
 
         // Act
-        let 无 = screen_lines(&无提示, &测试目录(), "zh-CN", (0.0, 0.0), 18.0);
-        let 有 = screen_lines(&有提示, &测试目录(), "zh-CN", (0.0, 0.0), 18.0);
+        let 无 = screen_lines(
+            &无提示,
+            &测试目录(),
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            crate::测试断行宽,
+        );
+        let 有 = screen_lines(
+            &有提示,
+            &测试目录(),
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            crate::测试断行宽,
+        );
 
         // Assert
         assert_eq!(有.len(), 无.len() + 1);
@@ -478,8 +722,22 @@ mod tests {
         let 多 = vec!["甲".to_string(), "乙".to_string(), "丙".to_string()];
 
         // Act
-        let 矮 = build_screen_panel(&测试数据(&少, 0), &测试目录(), "zh-CN", 1280.0, 720.0);
-        let 高 = build_screen_panel(&测试数据(&多, 0), &测试目录(), "zh-CN", 1280.0, 720.0);
+        let 矮 = build_screen_panel(
+            &测试数据(&少, 0),
+            &测试目录(),
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
+        let 高 = build_screen_panel(
+            &测试数据(&多, 0),
+            &测试目录(),
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
 
         // Assert
         assert_eq!(高.panel.height - 矮.panel.height, 2.0 * SCREEN_LINE_HEIGHT);
@@ -491,7 +749,14 @@ mod tests {
         let rows = vec!["甲".to_string()];
 
         // Act
-        let content = build_screen_panel(&测试数据(&rows, 0), &测试目录(), "zh-CN", 1280.0, 720.0);
+        let content = build_screen_panel(
+            &测试数据(&rows, 0),
+            &测试目录(),
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
 
         // Assert：左右边距相等即为横向居中。
         let 右边距 = 1280.0 - (content.panel.x + content.panel.width);
@@ -505,7 +770,14 @@ mod tests {
         let rows = vec!["甲".to_string()];
 
         // Act
-        let content = build_screen_panel(&测试数据(&rows, 0), &测试目录(), "zh-CN", 1280.0, 720.0);
+        let content = build_screen_panel(
+            &测试数据(&rows, 0),
+            &测试目录(),
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
 
         // Assert
         assert_eq!(content.backdrop.width, 1280.0);
@@ -529,9 +801,198 @@ mod tests {
         let data = 测试数据(&rows, 0);
 
         // Act
-        let lines = screen_lines(&data, &测试目录(), "zh-CN", (0.0, 0.0), 18.0);
+        let lines = screen_lines(
+            &data,
+            &测试目录(),
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            crate::测试断行宽,
+        );
 
         // Assert：标题 + 占位行 + 提示行。
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn 面板宽度按本屏最长的一行伸缩() {
+        // 规格 W3 / F5：底部那一行提示是这个游戏唯一的按键教学，它被
+        // 面板宽度吃掉不是「不好看」。这条用**真实的 en 文案**测，不用
+        // 占位符——占位符放得下，断言就永远绿。
+        //
+        // 反例验证（已实跑）：把 `panel_width` 的
+        // `SCREEN_WIDTH.max(longest + ...)` 改回恒 `SCREEN_WIDTH`，
+        // 本条立刻变红。
+        // Arrange
+        let catalog = 测试目录();
+        let mut measure = crate::测试测量器();
+        let rows = vec!["短".to_string()];
+        let mut data = 测试数据(&rows, 0);
+        // `screen-chargen-player-died` 的 en 文案实测 722.5px，远宽于
+        // 520 的最小宽度（`knowledge/design/ui-and-navigation.md` 八节
+        // O-3）。
+        data.hint_key = "screen-chargen-player-died";
+        let 提示 = catalog.resolve("en", data.hint_key);
+        let 提示宽 = measure
+            .measure_text(&提示, SCREEN_FONT_SIZE, SCREEN_LINE_HEIGHT, 1.0e6)
+            .max_line_width;
+        assert!(
+            提示宽 > SCREEN_WIDTH,
+            "测试文案必须真的比最小面板宽还宽，实测 {提示宽}"
+        );
+
+        // Act
+        let content = build_screen_panel(&data, &catalog, "en", &mut measure, 1920.0, 1080.0);
+
+        // Assert：面板宽到足以让那一行一整行画完。
+        assert!(
+            content.panel.width >= 提示宽 + SCREEN_PADDING * 2.0,
+            "面板宽 {} 放不下 {提示宽} 的提示行",
+            content.panel.width
+        );
+    }
+
+    #[test]
+    fn 面板再宽也不越过窗口边缘() {
+        // 伸缩有上限：窗口窄的时候面板缩回去、文字改走换行，而不是
+        // 面板伸到窗口外面（那等于把文字直接藏起来）。
+        // Arrange
+        let catalog = 测试目录();
+        let mut measure = crate::测试测量器();
+        let rows = vec!["短".to_string()];
+        let mut data = 测试数据(&rows, 0);
+        data.hint_key = "screen-chargen-player-died";
+
+        // Act：一个刚好放不下 722.5px 那一行的窗口。
+        let content = build_screen_panel(&data, &catalog, "en", &mut measure, 640.0, 480.0);
+
+        // Assert
+        assert!(
+            content.panel.width <= 640.0 - SCREEN_SIDE_MARGIN * 2.0,
+            "面板宽 {} 越过了窗口边缘",
+            content.panel.width
+        );
+        assert!(content.panel.x >= SCREEN_SIDE_MARGIN - 0.5);
+    }
+
+    #[test]
+    fn 面板高度覆盖全部渲染行而不是标签条数() {
+        // 规格 W2。一条必然换行的行之后，面板底边必须仍然在最后一行
+        // 文字的下面——此前面板高度按**标签条数**算，于是背景比内容矮
+        // 一行、最后一行文字掉在面板外面。
+        //
+        // 反例验证（已实跑）：把 `layout_screen` 的 `content_height`
+        // 改成 `lines.len() as f32 * SCREEN_LINE_HEIGHT`，本条立刻变红。
+        // Arrange
+        let catalog = 测试目录();
+        let mut measure = crate::测试测量器();
+        // 一条长到在 500px 内容宽里一定要断行的真实行（拿 en 的死亡
+        // 通知当行文字，722.5px），再跟一条短行。
+        let 长行 = catalog.resolve("en", "screen-chargen-player-died");
+        let rows = vec![长行.clone(), "短".to_string()];
+        let data = 测试数据(&rows, 0);
+
+        // Act：窗口窄到面板伸缩被上限钳住，于是那一行必须换行。
+        let content = build_screen_panel(&data, &catalog, "en", &mut measure, 560.0, 720.0);
+        let wrap = content.panel.width - SCREEN_PADDING * 2.0;
+        let 行数 = measure
+            .measure_text(
+                &format!("{CURSOR_PREFIX}{长行}"),
+                SCREEN_FONT_SIZE,
+                SCREEN_LINE_HEIGHT,
+                wrap,
+            )
+            .line_count;
+        assert!(行数 > 1, "测试文案必须真的会换行，实测 {行数} 行");
+
+        // Assert：最后一条标签的最后一行仍在面板内。
+        let 末行 = content.labels.last().expect("至少有标题与提示行");
+        let 末行行数 = measure
+            .measure_text(&末行.text, SCREEN_FONT_SIZE, SCREEN_LINE_HEIGHT, wrap)
+            .line_count;
+        let 末行底 = 末行.y + 末行行数 as f32 * SCREEN_LINE_HEIGHT;
+        assert!(
+            末行底 <= content.panel.bottom() - SCREEN_PADDING + 0.5,
+            "最后一行底边 {末行底} 掉出了面板底边 {}",
+            content.panel.bottom()
+        );
+    }
+
+    #[test]
+    fn 换行的一行之后行矩形仍然正对着它自己那一行的文字() {
+        // 「点击落在第几行」与「第几行画在哪儿」必须永远对得上。此前
+        // 行矩形按 `(i + 1) * 行高` 这条公式算，W2 落地后那个假设不再
+        // 成立——公式与实际位置会静悄悄地错开，点击落到隔壁那一行上。
+        //
+        // 反例验证（已实跑）：把 `layout_screen` 里行矩形的高度改回恒
+        // `SCREEN_LINE_HEIGHT`，本条立刻变红。
+        // Arrange
+        let catalog = 测试目录();
+        let mut measure = crate::测试测量器();
+        let 长行 = catalog.resolve("en", "screen-chargen-player-died");
+        let rows = vec![长行, "第二行".to_string()];
+        let data = 测试数据(&rows, 0);
+
+        // Act
+        let content = build_screen_panel(&data, &catalog, "en", &mut measure, 560.0, 720.0);
+
+        // Assert：第 1 行（第二行文字）的矩形要罩住第 1 行标签的原点。
+        // 标签顺序是 标题、第 0 行、第 1 行、提示行。
+        let 第二行标签 = &content.labels[2];
+        let 第二行矩形 = content.row_rects[1];
+        assert!(
+            第二行矩形.y <= 第二行标签.y + 0.5 && 第二行标签.y < 第二行矩形.bottom() - 0.5,
+            "第 1 行矩形 y {}..{} 没罩住那一行文字的 y {}",
+            第二行矩形.y,
+            第二行矩形.bottom(),
+            第二行标签.y
+        );
+    }
+
+    #[test]
+    fn 每一行的断行宽度都等于面板内容宽() {
+        // 规格 W1 的不变式：断行宽度是**面板宽度的派生值**，不是某处
+        // 写死的常数。
+        //
+        // 反例验证（已实跑）：把 `screen_geometry` 的 `wrap_width` 改成
+        // 一个字面量 `400.0`，本条立刻变红。
+        // Arrange
+        let catalog = 测试目录();
+        let mut measure = crate::测试测量器();
+        let rows = vec!["甲".to_string(), "乙".to_string()];
+        let data = 测试数据(&rows, 0);
+
+        // Act
+        let content = build_screen_panel(&data, &catalog, "zh-CN", &mut measure, 1280.0, 720.0);
+
+        // Assert
+        let 内容宽 = content.panel.width - SCREEN_PADDING * 2.0;
+        for label in &content.labels {
+            assert_eq!(label.max_width, 内容宽, "「{}」的断行宽不对", label.text);
+        }
+    }
+
+    #[test]
+    fn 输入侧的行矩形与渲染侧逐个相等() {
+        // `screen_row_rects`（输入）与 `build_screen_panel`（渲染）现在
+        // 走同一个 `screen_geometry`，两者不可能对不上——这条是那句话的
+        // 断言。
+        // Arrange
+        let catalog = 测试目录();
+        let mut measure = crate::测试测量器();
+        let 长行 = catalog.resolve("en", "screen-chargen-player-died");
+        let rows = vec![长行, "第二行".to_string()];
+        let data = 测试数据(&rows, 1);
+
+        // Act
+        let 渲染侧 =
+            build_screen_panel(&data, &catalog, "en", &mut measure, 560.0, 720.0).row_rects;
+        let 输入侧 = screen_row_rects(&data, &catalog, "en", &mut measure, 560.0, 720.0);
+
+        // Assert
+        assert_eq!(渲染侧.len(), 输入侧.len());
+        for (a, b) in 渲染侧.iter().zip(输入侧.iter()) {
+            assert_eq!(a, b);
+        }
     }
 }

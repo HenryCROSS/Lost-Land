@@ -26,6 +26,8 @@ use ll_mod::item::ItemTable;
 use ll_world::item::ItemStack;
 
 use super::{PanelContent, build_panel, item_display_name};
+use ll_text::MeasureText;
+
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
 
@@ -88,16 +90,25 @@ fn write_inventory_panel_lines(
 
 /// 产出背包面板的全部文本行：标题 + 逐条堆叠，背包为空时显示占位行。
 /// 纯函数，不接触 GPU。
+#[allow(clippy::too_many_arguments)]
 pub fn inventory_panel_lines(
     inventory: &[ItemStack],
     items: &ItemTable,
     catalog: &Catalog,
     language: &str,
     identified: &[ContentIndex],
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     line_height: f32,
+    wrap_width: f32,
 ) -> Vec<Label> {
-    let mut cursor = RowCursor::new(origin, line_height);
+    let mut cursor = RowCursor::new(
+        measure,
+        origin,
+        line_height,
+        super::DEFAULT_FONT_SIZE,
+        wrap_width,
+    );
     let mut lines = Vec::new();
     write_inventory_panel_lines(
         inventory,
@@ -120,10 +131,11 @@ pub fn inventory_panel(
     catalog: &Catalog,
     language: &str,
     identified: &[ContentIndex],
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     width: f32,
 ) -> PanelContent {
-    build_panel(origin, width, |cursor, lines| {
+    build_panel(measure, origin, width, |cursor, lines| {
         write_inventory_panel_lines(
             inventory, items, catalog, language, identified, cursor, lines,
         );
@@ -239,8 +251,10 @@ mod tests {
             &catalog,
             "zh-CN",
             &[],
+            &mut crate::测试测量器(),
             (0.0, 0.0),
             16.0,
+            crate::测试断行宽,
         );
         let joined = lines
             .iter()
@@ -271,8 +285,10 @@ mod tests {
             &catalog,
             "zh-CN",
             &[relic],
+            &mut crate::测试测量器(),
             (0.0, 0.0),
             16.0,
+            crate::测试断行宽,
         );
         let joined = lines
             .iter()
@@ -294,7 +310,17 @@ mod tests {
         let (table, _) = arrow_item_table();
 
         // Act
-        let lines = inventory_panel_lines(&[], &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
+        let lines = inventory_panel_lines(
+            &[],
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -318,8 +344,17 @@ mod tests {
         let inventory = vec![ItemStack::new(index, 3)];
 
         // Act
-        let lines =
-            inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
+        let lines = inventory_panel_lines(
+            &inventory,
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -343,8 +378,17 @@ mod tests {
         let inventory = vec![ItemStack::with_durability(index, 1, 37)];
 
         // Act
-        let lines =
-            inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
+        let lines = inventory_panel_lines(
+            &inventory,
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -368,8 +412,17 @@ mod tests {
         let inventory = vec![ItemStack::new(index, 1)];
 
         // Act
-        let lines =
-            inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
+        let lines = inventory_panel_lines(
+            &inventory,
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -395,8 +448,17 @@ mod tests {
         let inventory = vec![ItemStack::new(unknown, 1)];
 
         // Act
-        let lines =
-            inventory_panel_lines(&inventory, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
+        let lines = inventory_panel_lines(
+            &inventory,
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -419,7 +481,16 @@ mod tests {
         let (table, _) = arrow_item_table();
 
         // Act
-        let panel = inventory_panel(&[], &table, &catalog, "zh-CN", &[], (0.0, 0.0), 220.0);
+        let panel = inventory_panel(
+            &[],
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            220.0,
+        );
 
         // Assert
         assert_eq!(panel.rect.width, 220.0);

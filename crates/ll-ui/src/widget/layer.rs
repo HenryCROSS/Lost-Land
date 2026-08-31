@@ -272,6 +272,7 @@ mod tests {
             text: "x".to_string(),
             x: 0.0,
             y: 0.0,
+            max_width: 400.0,
         });
         hud.textured_quads.push(sample_textured());
         hud.quads.push(sample_quad([1.0, 1.0, 1.0, 1.0]));

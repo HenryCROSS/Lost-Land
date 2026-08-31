@@ -102,6 +102,8 @@ pub(super) fn draw_hud(
     catalog: &Catalog,
     language: &str,
     resources: &mut GpuResources,
+    // 见 `Demo::measurer` 字段文档：输入侧与渲染侧共用同一个测量器。
+    measure: &mut dyn ll_text::MeasureText,
     view: &wgpu::TextureView,
     hud_anim: &mut WidgetStateTable,
     frame: FrameId,
@@ -305,6 +307,7 @@ pub(super) fn draw_hud(
         &mut resources.quad_renderer,
         &mut resources.textured_quad_renderer,
         &mut resources.text_renderer,
+        measure,
         resources.gpu.device(),
         resources.gpu.queue(),
         view,
