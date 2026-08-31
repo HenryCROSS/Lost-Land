@@ -683,4 +683,22 @@ fn 两条门被挡反馈各有自己的i18n键且两种语言都有文案() {
         catalog.resolve("zh-CN", Feedback::DoorBlockedByOccupant.i18n_key()),
         catalog.resolve("zh-CN", Feedback::DoorBlockedByObject.i18n_key())
     );
+
+    // 英文那一份必须真的是英文，不是回落到中文那一份。
+    //
+    // 上面那圈 `文案 != key` **抓不到 `en.ftl` 缺条目**：`Catalog` 查不
+    // 到时会回落到另一门语言，于是删掉 en 的两条之后断言照样绿——这条
+    // 假绿是 ADR 0018 反例验证当场抓出来的，正是本会话反复吃亏的形状
+    // （判据只覆盖了一半，另一半静默失效）。
+    for feedback in [
+        Feedback::DoorBlockedByOccupant,
+        Feedback::DoorBlockedByObject,
+    ] {
+        let key = feedback.i18n_key();
+        assert_ne!(
+            catalog.resolve("en", key),
+            catalog.resolve("zh-CN", key),
+            "{key} 的 en 文案回落成了中文，说明 en.ftl 里缺这一条"
+        );
+    }
 }

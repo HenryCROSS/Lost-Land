@@ -85,13 +85,13 @@ const SCREEN_MARGIN: f32 = 16.0;
 /// 三列之间、状态栏与三列之间的间隔（像素）。
 const PANEL_GAP: f32 = 10.0;
 /// 状态栏通栏宽度。
-const STATUS_WIDTH: f32 = 620.0;
+pub const STATUS_WIDTH: f32 = 620.0;
 /// 角色面板宽度。
-const CHARACTER_WIDTH: f32 = 260.0;
+pub const CHARACTER_WIDTH: f32 = 260.0;
 /// 背包面板宽度。
-const INVENTORY_WIDTH: f32 = 220.0;
+pub const INVENTORY_WIDTH: f32 = 220.0;
 /// 装备栏面板宽度。
-const EQUIPMENT_WIDTH: f32 = 220.0;
+pub const EQUIPMENT_WIDTH: f32 = 220.0;
 /// 经验条高度（像素）。
 const EXPERIENCE_BAR_HEIGHT: f32 = 6.0;
 /// 生命/法力条高度（像素）。
@@ -106,10 +106,10 @@ const DAY_NIGHT_BAR_HEIGHT: f32 = 14.0;
 const DAY_NIGHT_BAR_WIDTH: f32 = RESOURCE_BAR_WIDTH * 2.0 + PANEL_GAP;
 /// 动作菜单面板宽度——比背包/装备两列宽一些：它的行要同时容下配方名
 /// 与食材清单（见 `ll_game::player_action` 的排版），照 220 会频繁截断。
-const ACTION_MENU_WIDTH: f32 = 360.0;
+pub const ACTION_MENU_WIDTH: f32 = 360.0;
 /// 反馈行面板宽度——一句话的宽度，见 [`build_hud_frame`] 的 `feedback`
 /// 参数文档。
-const FEEDBACK_WIDTH: f32 = 420.0;
+pub const FEEDBACK_WIDTH: f32 = 420.0;
 /// 反馈行面板与窗口下边缘的留白（像素）。
 const FEEDBACK_BOTTOM_MARGIN: f32 = 48.0;
 /// 装备栏与窗口右边缘的留白（像素）——见模块文档「装备放在屏幕右边」

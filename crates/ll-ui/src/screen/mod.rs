@@ -936,8 +936,30 @@ mod tests {
         // Act
         let content = build_screen_panel(&data, &catalog, "en", &mut measure, 560.0, 720.0);
 
-        // Assert：第 1 行（第二行文字）的矩形要罩住第 1 行标签的原点。
-        // 标签顺序是 标题、第 0 行、第 1 行、提示行。
+        // Assert 之一：第 0 行换了行，它的矩形高度必须罩住它**自己的
+        // 全部渲染行**——否则玩家点在那一行的第二行上会什么都不发生
+        // （或者更糟：落到下一行上）。
+        //
+        // 只断言「第 1 行的矩形罩住第 1 行的文字」是**不够的**：第 0 行
+        // 的矩形即使只有一行高，第 1 行的起点仍然是对的（游标本身推进
+        // 正确）。这条假绿是 ADR 0018 反例验证当场抓出来的。
+        let wrap = content.panel.width - SCREEN_PADDING * 2.0;
+        let 第零行 = &content.labels[1];
+        let 第零行行数 = measure
+            .measure_text(&第零行.text, SCREEN_FONT_SIZE, SCREEN_LINE_HEIGHT, wrap)
+            .line_count;
+        assert!(
+            第零行行数 > 1,
+            "测试文案必须真的会换行，实测 {第零行行数} 行"
+        );
+        assert_eq!(
+            content.row_rects[0].height,
+            第零行行数 as f32 * SCREEN_LINE_HEIGHT,
+            "换了行的那一行，它的可点矩形没盖住自己的全部渲染行"
+        );
+
+        // Assert 之二：第 1 行（第二行文字）的矩形要罩住第 1 行标签的
+        // 原点。标签顺序是 标题、第 0 行、第 1 行、提示行。
         let 第二行标签 = &content.labels[2];
         let 第二行矩形 = content.row_rects[1];
         assert!(

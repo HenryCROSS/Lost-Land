@@ -119,7 +119,7 @@ pub struct PanelContent {
 /// `knowledge/design/ui-and-navigation.md` §8.2 那张表。
 ///
 /// 现在断行宽度只有这一个产出点，它的输入只有面板宽度一个。
-pub(crate) fn content_width(panel_width: f32) -> f32 {
+pub fn content_width(panel_width: f32) -> f32 {
     // 面板比两侧内边距还窄这种极端配置下会算出负数——**不钳制**，与
     // `render::equipment_origin_x` 同一条取舍：钳制会把「面板宽度被配
     // 错了」这种应该显形的问题掩盖成一块看起来正常、内容却被挤没了的
