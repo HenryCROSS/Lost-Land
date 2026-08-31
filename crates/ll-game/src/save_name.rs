@@ -182,12 +182,19 @@ impl SaveNameUpdate {
 /// 玩家敲回车多半是在跟输入法选词。输入法通常自己就把回车吃掉了，但
 /// 平台之间不一致；加这条守卫最坏是「玩家得多按一次回车」，不加则是
 /// 「选个词就莫名其妙进了世界」。
-pub fn update_save_name(field: &mut NameField, input: &InputState) -> SaveNameUpdate {
+pub fn update_save_name(
+    field: &mut NameField,
+    input: &InputState,
+    origin: crate::spawn_pick::SpawnOrigin,
+) -> SaveNameUpdate {
     if input.was_just_pressed(GameKey::Cancel) {
         // 退回选出生地屏：玩家可能只是想再挑一次地方。**不丢弃已经
         // 打好的名字**——草稿还留着这个 `NameField`。
+        // **把来处原样带回去**：玩家在选点屏上再按一次取消时，要回到
+        // 当初进选点屏的那一块屏，而不是命名屏自己编一个（规格 N5
+        // 判据 3）。
         return SaveNameUpdate {
-            next: Some(ScreenState::SpawnPick),
+            next: Some(ScreenState::SpawnPick { origin }),
             confirmed: false,
         };
     }
@@ -335,7 +342,11 @@ mod tests {
         let mut field = NameField::new();
 
         // Act
-        update_save_name(&mut field, &input);
+        update_save_name(
+            &mut field,
+            &input,
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
+        );
 
         // Assert
         assert_eq!(field.text(), "abd你");
@@ -390,7 +401,11 @@ mod tests {
         let mut field = NameField::new();
 
         // Act
-        let update = update_save_name(&mut field, &input);
+        let update = update_save_name(
+            &mut field,
+            &input,
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
+        );
 
         // Assert
         assert!(!update.confirmed);
@@ -407,7 +422,11 @@ mod tests {
         let mut field = NameField::new();
 
         // Act
-        let update = update_save_name(&mut field, &input);
+        let update = update_save_name(
+            &mut field,
+            &input,
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
+        );
 
         // Assert
         assert!(update.confirmed);
@@ -424,7 +443,11 @@ mod tests {
         let mut field = NameField::new();
 
         // Act
-        update_save_name(&mut field, &input);
+        update_save_name(
+            &mut field,
+            &input,
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
+        );
 
         // Assert
         assert_eq!(field.text(), "", "物理键不该变成字符");
@@ -434,5 +457,31 @@ mod tests {
     fn 显示的那一行带一个尾随光标() {
         // Arrange & Act & Assert
         assert_eq!(NameField::new().display(), "_", "空框也要看得见光标");
+    }
+
+    #[test]
+    fn 按取消退回选点屏时把来处原样带回去() {
+        // **规格 N5 判据 3**：玩家从命名屏退回选点屏、再按一次取消，要
+        // 回到当初进选点屏时的那一块屏——命名屏不能自己编一个来处。
+        // 这块屏只有一个入口（选点屏确认），来处对它而言纯粹是过路件。
+        //
+        // 反例验证（已实跑）：把 `next` 改回写死的
+        // `ScreenState::SpawnPick { origin: SpawnOrigin::WorldSetup }`，
+        // 本条的第二段（转生那条路）当场变红。
+        for origin in [
+            crate::spawn_pick::SpawnOrigin::WorldSetup,
+            crate::spawn_pick::SpawnOrigin::CharacterCreation,
+        ] {
+            // Arrange
+            let mut input = 文本输入态();
+            input.press(GameKey::Cancel);
+            let mut field = NameField::new();
+
+            // Act
+            let update = update_save_name(&mut field, &input, origin);
+
+            // Assert
+            assert_eq!(update.next, Some(ScreenState::SpawnPick { origin }));
+        }
     }
 }

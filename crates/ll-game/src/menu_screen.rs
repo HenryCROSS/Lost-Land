@@ -52,6 +52,8 @@ use ll_ui::screen::ScreenData;
 use ll_ui::widget::focus::focused_widget;
 use ll_ui::widget::state::{WidgetId, WidgetStateTable};
 
+use crate::spawn_pick::SpawnOrigin;
+
 /// 模态屏当前开着哪一块。
 ///
 /// 与 `crate::player_action::PlayerMenu` 同一条纪律：纯表现层状态，
@@ -88,7 +90,11 @@ pub enum ScreenState {
     ///
     /// 光标（选中哪一格）不在这里而在 `crate::chargen::NewGameDraft` 上：
     /// 它是一对 `(u32, u32)`，与这块屏的「哪一行」不是同一种东西。
-    SpawnPick,
+    SpawnPick {
+        /// 从哪一块屏进来的，按取消要回到那里。见
+        /// [`crate::spawn_pick::SpawnOrigin`]。
+        origin: SpawnOrigin,
+    },
     /// 存档列表——首页的「读取存档」进这里，见 [`crate::save_list`]。
     ///
     /// **它底下没有世界**，与 [`ScreenState::Title`] 同一种状态。
@@ -105,7 +111,12 @@ pub enum ScreenState {
     /// 正在输入的那串字不在这里而在 `crate::chargen::NewGameDraft` 上
     /// ——与选点光标同一条理由：`ScreenState` 是 `Copy` 的，装不下一个
     /// `String`，而且屏切走再切回来时那串字不该丢。
-    SaveNaming,
+    SaveNaming {
+        /// **选出生地屏**是从哪一块屏进来的——纯过路件，命名屏自己只有
+        /// 一个入口。带着它是为了玩家从这里退回选点屏、再按一次取消时
+        /// 能回到当初的来处，而不是让命名屏自己编一个。
+        origin: SpawnOrigin,
+    },
     /// 设置界面。
     Settings {
         /// 光标落在第几行，见模块文档「焦点导航」一节。
@@ -137,7 +148,7 @@ impl ScreenState {
     /// 就要有人记得去改那处判等——而忘了改不会有任何东西报错，只会
     /// 表现为「那块屏打不了中文」。
     pub fn wants_text_entry(self) -> bool {
-        matches!(self, ScreenState::SaveNaming)
+        matches!(self, ScreenState::SaveNaming { .. })
     }
 }
 
@@ -457,7 +468,7 @@ pub fn screen_data<'a>(
         // （`crate::app::draw_screen`）为这个变体整块跳过，本函数因此
         // 永远不该收到它——但仍然给一个诚实的退化产出而不是 panic，
         // 与本模块其余降级路径一致。
-        ScreenState::SpawnPick => ScreenData {
+        ScreenState::SpawnPick { .. } => ScreenData {
             title_key: "screen-spawnpick-title",
             rows,
             cursor: focus,
@@ -473,7 +484,7 @@ pub fn screen_data<'a>(
             hint_key: "screen-savelist-hint",
             notice,
         },
-        ScreenState::SaveNaming => ScreenData {
+        ScreenState::SaveNaming { .. } => ScreenData {
             title_key: "screen-savename-title",
             rows,
             // 命名屏没有「选中哪一行」这回事——两行都是给玩家看的，

@@ -20,6 +20,7 @@ pub mod app;
 pub mod atlas_miss;
 pub mod chargen;
 pub mod content;
+pub mod draft_world;
 pub mod layout;
 pub mod menu_screen;
 pub mod pause_menu;
