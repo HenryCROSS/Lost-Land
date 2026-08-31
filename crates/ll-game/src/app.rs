@@ -920,8 +920,9 @@ impl Demo {
     ///
     /// # 复用批次 8 留的那三处接缝，不抄第三份
     ///
-    /// 1. [`crate::chargen::NewGameDraft::world_already_exists`]——为真时
-    ///    状态机跳过世界配置屏（重新生成等于把这局玩过的一切抹掉）；
+    /// 1. [`crate::draft_world::DraftWorld`]——转生那条路的世界与槽位绑
+    ///    在一个类型里，状态机因此跳过世界配置屏，而「重新生成世界」在
+    ///    那个类型上**写不出来**（重新生成等于把这局玩过的一切抹掉）；
     /// 2. `crate::world::apply_character_choice`——把新选的种族/性别/职业
     ///    落到玩家实体上；
     /// 3. `crate::world::move_player_to`——把他挪到新选的出生地。
@@ -1174,11 +1175,11 @@ impl Demo {
                 let next = update.next.unwrap_or(ScreenState::WorldSetup { cursor });
                 (ScreenOutcome::Idle, Some(next))
             }
-            ScreenState::SpawnPick => {
+            ScreenState::SpawnPick { origin } => {
                 // 死亡重生那条路直接从角色创建屏跳过来，选点屏要的地图
                 // 视野还没建过——**只建视野，不碰世界**（世界早就存在）。
                 self.prepare_spawn_pick_view();
-                let update = self.update_spawn_pick(input);
+                let update = self.update_spawn_pick(input, origin);
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
                 }
@@ -1198,8 +1199,8 @@ impl Demo {
                     Some(update.next.unwrap_or(ScreenState::SaveList { cursor })),
                 )
             }
-            ScreenState::SaveNaming => {
-                let update = self.update_save_naming(input);
+            ScreenState::SaveNaming { origin } => {
+                let update = self.update_save_naming(input, origin);
                 (update.outcome, update.next)
             }
             ScreenState::Settings { .. } => {
@@ -1316,13 +1317,15 @@ impl Demo {
             return crate::chargen::ChargenUpdate::going(ScreenState::Title);
         };
         let roster = draft.roster.clone();
-        let world_already_exists = draft.world_already_exists;
+        // 「下一步」去哪块屏是**草稿手里那个世界的属性**，不是这块屏
+        // 自己的判断，见 `crate::draft_world::DraftWorld` 模块文档。
+        let next_screen = draft.world.screen_after_character_creation();
         crate::chargen::update_character_creation(
             cursor,
             &mut draft.choice,
             &roster,
             input,
-            world_already_exists,
+            next_screen,
         )
     }
 
@@ -1347,7 +1350,11 @@ impl Demo {
         );
         draft.preset = preset;
         draft.mode = mode;
-        if update.next != Some(ScreenState::SpawnPick) {
+        if update.next
+            != Some(ScreenState::SpawnPick {
+                origin: crate::menu_screen::SpawnOrigin::WorldSetup,
+            })
+        {
             return update;
         }
         // 「生成世界」：真的建一局出来，随后进选出生地屏。**世界必须先
@@ -1360,12 +1367,25 @@ impl Demo {
     ///
     /// 建不出来时（区块布局非法等，正常运行不该发生）**留在世界配置屏**
     /// 并记一条错误日志，不 panic——与首页读档失败留在首页同一条纪律。
+    ///
+    /// # 转生草稿在这里**根本拿不到可写的目标**（规格 N6）
+    ///
+    /// [`crate::draft_world::DraftWorld::generatable`] 在转生草稿上返回
+    /// `None`：那条路上的世界与槽位绑在同一个类型里，而那个类型没有任何
+    /// 替换世界的方法。这不是一句「顺手加的 if」——它是 D1 那条数据丢失
+    /// 路径在类型层面的闸门，见该模块文档。
     fn generate_draft_world(&mut self) -> crate::chargen::ChargenUpdate {
         let Some(draft) = self.new_game_draft.as_mut() else {
             return crate::chargen::ChargenUpdate::going(ScreenState::Title);
         };
         let params = draft.gen_params();
         let mode = draft.mode;
+        let Some(_) = draft.world.generatable() else {
+            tracing::error!(
+                "转生草稿上不存在「生成世界」这条路径：世界与槽位绑在一起，                 重新生成会把玩家那一局抹掉。拒绝生成，留在原地"
+            );
+            return crate::chargen::ChargenUpdate::idle();
+        };
         // 模式在建世界那一刻绑进世界身份，此后只被搬运——存档路径上
         // 没有第二个来源，见 `ll_content::world_identity` 模块文档。
         let world = match crate::world::build_new_world_with_mode(&self.content, params, mode) {
@@ -1379,9 +1399,15 @@ impl Demo {
         // [`Demo::finish_entering_world`]——与死亡重生那条路共用同一处。
         // 放在这里会让新游戏那条路应用两次（这里一次、进世界时再一次），
         // 而重生那条路根本不经过本函数。
-        draft.world = Some(world);
+        draft
+            .world
+            .generatable()
+            .expect("本函数开头那道闸门已经确认这是新游戏那条路")
+            .put(world);
         self.prepare_spawn_pick_view();
-        crate::chargen::ChargenUpdate::going(ScreenState::SpawnPick)
+        crate::chargen::ChargenUpdate::going(ScreenState::SpawnPick {
+            origin: crate::menu_screen::SpawnOrigin::WorldSetup,
+        })
     }
 
     /// 把选出生地屏要的地图视野准备好——**只读草稿里那个世界，一个字节
@@ -1403,7 +1429,7 @@ impl Demo {
         if draft.continent_field.is_some() && draft.map_view.is_some() {
             return;
         }
-        let Some(world) = draft.world.as_ref() else {
+        let Some(world) = draft.world.world() else {
             return;
         };
         let layout = *world.world.terrain.layout();
@@ -1434,10 +1460,18 @@ impl Demo {
     }
 
     /// 选出生地屏这一帧。
-    fn update_spawn_pick(&mut self, input: &mut InputState) -> crate::spawn_pick::SpawnPickUpdate {
+    fn update_spawn_pick(
+        &mut self,
+        input: &mut InputState,
+        origin: crate::menu_screen::SpawnOrigin,
+    ) -> crate::spawn_pick::SpawnPickUpdate {
         let Some(slice) = self.spawn_pick_slice() else {
-            tracing::warn!("选出生地屏没有世界，退回世界配置屏");
-            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::WorldSetup {
+            // **降级也不许把玩家扔到世界配置屏上**（规格 N6 后半句）：
+            // 那块屏在转生流程里按 `crate::chargen` 的论证必须跳过，而
+            // 一条降级路径把玩家送过去，与 D1 的后果一模一样。角色创建
+            // 屏是两条路都回得去、且什么都抹不掉的那一块。
+            tracing::warn!("选出生地屏没有世界，退回角色创建屏");
+            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::CharacterCreation {
                 cursor: 0,
             });
         };
@@ -1447,7 +1481,7 @@ impl Demo {
         };
         let layout = *draft
             .world
-            .as_ref()
+            .world()
             .expect("spawn_pick_slice 已经确认世界存在")
             .world
             .terrain
@@ -1458,11 +1492,12 @@ impl Demo {
             &layout,
             input,
             clicked,
+            origin,
         );
         let Some(zone) = decision.confirmed else {
             return decision.update;
         };
-        let world = draft.world.as_ref().expect("上面已经确认世界存在");
+        let world = draft.world.world().expect("上面已经确认世界存在");
         // 玩家确认了一个区块：在那个区块内确定性地挑一格陆地。
         let picked = crate::spawn_pick::pick_spawn_in_zone(
             &layout,
@@ -1477,7 +1512,7 @@ impl Demo {
             // `crate::spawn_pick::pick_spawn_in_zone` 文档「退化策略」一节。
             return crate::spawn_pick::SpawnPickUpdate::saying(ScreenNotice::NoLandInZone);
         };
-        self.enter_world_at(pos, input)
+        self.enter_world_at(pos, input, origin)
     }
 
     /// 选出生地屏这一帧的地图切片；世界还没建出来时返回 `None`。
@@ -1487,7 +1522,7 @@ impl Demo {
     /// `ll_world::exploration::ExplorationMemory::fully_explored` 文档。
     fn spawn_pick_slice(&self) -> Option<ll_world::world_map::WorldMapSlice> {
         let draft = self.new_game_draft.as_ref()?;
-        let world = draft.world.as_ref()?;
+        let world = draft.world.world()?;
         Some(ll_world::world_map::world_map_slice(
             draft.continent_field.as_ref()?,
             world.world.terrain.layout(),
@@ -1513,7 +1548,7 @@ impl Demo {
         let resources = self.resources.as_ref()?;
         let pixel = input.cursor_position()?;
         let draft = self.new_game_draft.as_ref()?;
-        let layout = *draft.world.as_ref()?.world.terrain.layout();
+        let layout = *draft.world.world()?.world.terrain.layout();
         let rect = ll_ui::hud::render::world_map_rect(
             resources.window_size.width as f32,
             resources.window_size.height as f32,
@@ -1522,36 +1557,46 @@ impl Demo {
     }
 
     /// 把玩家挪到选中的那一格，然后真正进世界。
+    ///
+    /// `origin` 只是**过路**：命名屏自己没有第二个入口，它带着这个来处
+    /// 是为了在玩家从那里按取消退回选点屏时，把当初进选点屏的那一块屏
+    /// 原样交还（规格 N5 判据 3）。
+    ///
+    /// # 死亡重生那条路不问名字
+    ///
+    /// 那个世界早就有自己的槽位，再起一个名字会让同一个世界在列表里出现
+    /// 两份，而玩家只是换了个角色（`crate::save_slot` 模块文档「一份
+    /// 存档 = 一个世界」）。**短路点在 [`Demo::update_save_naming`]**
+    /// ——此处此前有一段按 `existing_target` 分叉的代码，两个分支的返回值
+    /// 逐字相同，读起来像「转生走了另一条道」而实际没有，已删。
     fn enter_world_at(
         &mut self,
         pos: ll_core::torus::TorusPos,
         _input: &mut InputState,
+        origin: crate::menu_screen::SpawnOrigin,
     ) -> crate::spawn_pick::SpawnPickUpdate {
         let Some(draft) = self.new_game_draft.as_mut() else {
             return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::Title);
         };
         draft.spawn = Some(pos);
-        if draft.existing_target.is_some() {
-            // **死亡重生那条路：不问名字。** 这个世界早就有自己的槽位
-            // 了，再起一个名字会让同一个世界在列表里出现两份，而玩家只是
-            // 换了个角色（`crate::save_slot` 模块文档「一份存档 = 一个
-            // 世界」）。
-            return crate::spawn_pick::SpawnPickUpdate::going(ScreenState::SaveNaming);
-        }
-        crate::spawn_pick::SpawnPickUpdate::going(ScreenState::SaveNaming)
+        crate::spawn_pick::SpawnPickUpdate::going(ScreenState::SaveNaming { origin })
     }
 
     /// 命名屏这一帧；玩家按确认时真正进世界。
-    fn update_save_naming(&mut self, input: &mut InputState) -> ScreenTransition {
+    fn update_save_naming(
+        &mut self,
+        input: &mut InputState,
+        origin: crate::menu_screen::SpawnOrigin,
+    ) -> ScreenTransition {
         let Some(draft) = self.new_game_draft.as_mut() else {
             tracing::warn!("命名屏没有草稿，退回首页");
             return ScreenTransition::going(ScreenState::Title);
         };
         // 死亡重生那条路没有名字可打——世界已经有槽位了，直接进去。
-        if draft.existing_target.is_some() {
+        if draft.world.existing_target().is_some() {
             return self.finish_entering_world(input);
         }
-        let update = crate::save_name::update_save_name(&mut draft.save_name, input);
+        let update = crate::save_name::update_save_name(&mut draft.save_name, input, origin);
         if let Some(next) = update.next {
             return ScreenTransition::going(next);
         }
@@ -1569,7 +1614,10 @@ impl Demo {
         let Some(draft) = self.new_game_draft.take() else {
             return ScreenTransition::going(ScreenState::Title);
         };
-        let (Some(mut world), Some(pos)) = (draft.world, draft.spawn) else {
+        // 世界与（可能有的）槽位一起从草稿里拆出来——它们本来就是一件
+        // 事的两面，见 `crate::draft_world::DraftWorld::into_parts`。
+        let (drafted_world, existing_target) = draft.world.into_parts();
+        let (Some(mut world), Some(pos)) = (drafted_world, draft.spawn) else {
             tracing::warn!("要进世界了却没有世界或没有出生地，退回首页");
             return ScreenTransition::going(ScreenState::Title);
         };
@@ -1610,7 +1658,7 @@ impl Demo {
                 draft.choice.gender(),
             );
         }
-        let target = match draft.existing_target {
+        let target = match existing_target {
             Some(target) => target,
             None => {
                 let name = crate::save_name::resolved_name(
@@ -2290,7 +2338,7 @@ fn draw_screen(
             crate::save_list::save_list_row_texts(slots, catalog, language),
             crate::save_list::clamp_cursor(cursor, slots),
         ),
-        ScreenState::SaveNaming => (
+        ScreenState::SaveNaming { .. } => (
             match draft {
                 Some(draft) => {
                     crate::save_name::save_name_row_texts(&draft.save_name, catalog, language)
@@ -2340,7 +2388,7 @@ fn draw_screen(
         // 一块盖在正中央的面板会挡住玩家要点的地方。它的画面全部由
         // `draw_hud` 那一侧产出（地图 + 光标标记 + 提示行），见
         // `crate::spawn_pick` 模块文档。
-        ScreenState::SpawnPick => return,
+        ScreenState::SpawnPick { .. } => return,
     };
     let notice_text = notice.map(|notice| notice.resolve(catalog, language));
     let data = screen_data(state, &rows, cursor, notice_text.as_deref());
@@ -2791,10 +2839,10 @@ impl AppHandler for Demo {
                     // 正常游玩：不改写任何东西。
                     None,
                 );
-            } else if self.screen == Some(ScreenState::SpawnPick)
+            } else if matches!(self.screen, Some(ScreenState::SpawnPick { .. }))
                 && let Some(draft) = self.new_game_draft.as_ref()
                 && let (Some(world), Some(field), Some(view_of_map), Some(exploration)) = (
-                    draft.world.as_ref(),
+                    draft.world.world(),
                     draft.continent_field.as_ref(),
                     draft.map_view.as_ref(),
                     draft.exploration.as_ref(),
@@ -2940,18 +2988,11 @@ mod tests {
     use ll_world::item::ItemStack;
 
     pub(super) fn test_content() -> LoadedContent {
-        let dir = crate::test_support::unique_temp_path("ll-game-app-test-content");
-        std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
-        // mods_root 指向仓库真实的 mods/ 目录（本体内容住在
-        // mods/lostland/，临时空目录下契约解析必然失败）；assets_root
-        // 仍指向临时目录，本文件的测试不需要真实贴图。
-        let content = crate::content::load_content(
-            &crate::test_support::repo_mods_dir(),
-            &dir.join("assets"),
-        )
-        .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
-        let _ = std::fs::remove_dir_all(&dir);
-        content
+        // 判据只有一处：`crate::test_support::test_content`。此前这段拷贝
+        // 住在这里，而 `crate::draft_world` 的断言也要同一份内容集——
+        // 兄弟模块看不见彼此的 `mod tests`，抽到 `test_support` 才是唯一
+        // 不会分叉的落点。
+        crate::test_support::test_content()
     }
 
     /// 建一个真实可用的 `Demo`——`Demo::new` 本身不触碰 GPU/窗口（那些
@@ -4031,7 +4072,9 @@ mod tests {
         assert_eq!(demo.input_context(), InputContext::Menu);
 
         // Act：切到命名屏。
-        demo.screen = Some(ScreenState::SaveNaming);
+        demo.screen = Some(ScreenState::SaveNaming {
+            origin: crate::menu_screen::SpawnOrigin::WorldSetup,
+        });
         demo.sync_text_entry_mode(&mut input);
 
         // Assert
@@ -4083,7 +4126,9 @@ mod tests {
         let mut demo = test_demo();
         let mut input = InputState::new();
         demo.open_menu(&mut input);
-        demo.screen = Some(ScreenState::SaveNaming);
+        demo.screen = Some(ScreenState::SaveNaming {
+            origin: crate::menu_screen::SpawnOrigin::WorldSetup,
+        });
 
         // Act
         for _ in 0..10 {

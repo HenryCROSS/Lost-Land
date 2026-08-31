@@ -49,7 +49,7 @@ use ll_world::terrain::{BaseTerrainIds, TerrainTable};
 use ll_world::world_map::WorldMapSlice;
 use ll_world::zone::ZoneLayout;
 
-use crate::menu_screen::{ScreenNotice, ScreenState};
+use crate::menu_screen::{ScreenNotice, ScreenState, SpawnOrigin};
 
 /// 「在这个区块里挑一格出生地」专用的确定性流标识。
 ///
@@ -291,6 +291,7 @@ pub fn update_spawn_pick(
     layout: &ZoneLayout,
     input: &InputState,
     clicked_zone: Option<ZoneCoord>,
+    origin: SpawnOrigin,
 ) -> SpawnPickDecision {
     let (dx, dy) = (
         i32::from(input.was_just_pressed(GameKey::Right))
@@ -316,8 +317,15 @@ pub fn update_spawn_pick(
     }
 
     if input.was_just_pressed(GameKey::Cancel) {
+        // **回到来处，不是回一块写死的屏。**
+        //
+        // 这里此前写死的是 `ScreenState::WorldSetup`，而这块屏有三个
+        // 入口，其中「死亡转生」那一条按 `crate::chargen` 自己的论证
+        // **必须跳过**世界配置屏——把玩家送到那里，他按一下「生成世界」
+        // 就会用一个全新的世界覆盖掉自己玩过的那一局
+        // （`knowledge/design/ui-and-navigation.md` 2.2 节 D1）。
         return SpawnPickDecision {
-            update: SpawnPickUpdate::going(ScreenState::WorldSetup { cursor: 0 }),
+            update: SpawnPickUpdate::going(origin.screen()),
             confirmed: None,
         };
     }
@@ -472,5 +480,60 @@ mod tests {
     #[test]
     fn 零尺寸网格不做越界运算() {
         assert_eq!(move_cell_cursor((3, 3), 0, 0, 1, 1), (0, 0));
+    }
+
+    /// 一份够本模块用的地图切片——选点屏的取消目标与地形无关，这里只是
+    /// 把 `update_spawn_pick` 的参数凑齐。
+    fn slice_of(layout: &ZoneLayout, params: &GenParams) -> WorldMapSlice {
+        let noise = noise_of(layout, params);
+        let (ids, _) = base_terrain_fixture();
+        let field = ll_world::overview::generate_continent_field(layout, &noise, params, &ids);
+        let exploration = ll_world::exploration::ExplorationMemory::fully_explored(layout);
+        let view = ll_world::world_map::WorldMapView::centered_on_tile(
+            &field,
+            layout.tile_size().wrap(0, 0),
+        );
+        ll_world::world_map::world_map_slice(&field, layout, &exploration, &view)
+    }
+
+    fn 按下取消(origin: SpawnOrigin) -> Option<ScreenState> {
+        let layout = layout();
+        let params = GenParams::default();
+        let slice = slice_of(&layout, &params);
+        let mut input = InputState::new();
+        input.press(GameKey::Cancel);
+        let mut cursor = (0u32, 0u32);
+        update_spawn_pick(&mut cursor, &slice, &layout, &input, None, origin)
+            .update
+            .next
+    }
+
+    #[test]
+    fn 从世界配置进来的按取消回世界配置() {
+        // 规格 N5 判据 1：守住既有行为不被 D1 的修法改坏。
+        //
+        // 反例验证（已实跑）：把 `update_spawn_pick` 里那句
+        // `going(origin.screen())` 换回写死的
+        // `going(ScreenState::CharacterCreation { cursor: 0 })`，本条当场
+        // 变红（而下一条仍绿——两条互为对照，缺一条就盯不住「读的是来处」
+        // 这件事）。
+        assert_eq!(
+            按下取消(SpawnOrigin::WorldSetup),
+            Some(ScreenState::WorldSetup { cursor: 0 })
+        );
+    }
+
+    #[test]
+    fn 从转生进来的按取消回角色创建而不是那块会抹掉世界的屏() {
+        // **规格 N5 判据 2，也是 D1 那条数据丢失路径的入口。**
+        // 死亡转生从角色创建屏直接跳到这里，世界早就存在；把玩家送回
+        // 世界配置屏，他按一下「生成世界」就会把自己玩过的那一局抹掉。
+        //
+        // 反例验证（已实跑）：把取消目标换回写死的 `WorldSetup`（落地前
+        // 的样子），本条当场变红。
+        assert_eq!(
+            按下取消(SpawnOrigin::CharacterCreation),
+            Some(ScreenState::CharacterCreation { cursor: 0 })
+        );
     }
 }

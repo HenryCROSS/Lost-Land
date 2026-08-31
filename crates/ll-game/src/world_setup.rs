@@ -33,7 +33,7 @@ use ll_platform::input::{GameKey, InputState};
 use ll_world::terrain_shape::TerrainShape;
 
 use crate::chargen::{ChargenUpdate, cycle, horizontal, move_cursor};
-use crate::menu_screen::{ScreenNotice, ScreenState};
+use crate::menu_screen::{ScreenNotice, ScreenState, SpawnOrigin};
 use crate::settings_view::labeled_row;
 
 /// 一个旋钮每按一次左右键的步长。
@@ -179,7 +179,11 @@ pub fn update_world_setup(
         return ChargenUpdate::idle();
     }
     match row {
-        WorldSetupRow::Generate => ChargenUpdate::going(ScreenState::SpawnPick),
+        // 这块屏是选点屏三个入口里的一个，按取消要回得到这里来，
+        // 见 `crate::menu_screen::SpawnOrigin`。
+        WorldSetupRow::Generate => ChargenUpdate::going(ScreenState::SpawnPick {
+            origin: SpawnOrigin::WorldSetup,
+        }),
         WorldSetupRow::Back => ChargenUpdate::going(ScreenState::CharacterCreation { cursor: 0 }),
         _ => ChargenUpdate::idle(),
     }

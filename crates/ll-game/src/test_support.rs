@@ -45,6 +45,25 @@ pub(crate) fn repo_mods_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../mods")
 }
 
+/// 装载一份真实可用的内容集，供各测试模块共用。
+///
+/// `mods_root` 指向仓库真实的 `mods/` 目录（见 [`repo_mods_dir`]，临时
+/// 空目录下本体内容契约必然解析失败）；`assets_root` 指向一个独占的
+/// 临时目录，调用它的测试都不需要真实贴图。
+///
+/// 住在这里而不是某个测试模块里：`crate::app` 与 `crate::draft_world`
+/// 两处都要它，而 `#[cfg(test)] mod tests` 是各自私有的，兄弟模块看不见
+/// ——第二份拷贝是这个帮手当初被抽出来要防的那件事本身。
+#[cfg(test)]
+pub(crate) fn test_content() -> crate::content::LoadedContent {
+    let dir = unique_temp_path("ll-game-test-content");
+    std::fs::create_dir_all(&dir).expect("创建测试目录应当成功");
+    let content = crate::content::load_content(&repo_mods_dir(), &dir.join("assets"))
+        .expect("仓库真实 mods/ 目录下本体内容契约必须解析成功");
+    let _ = std::fs::remove_dir_all(&dir);
+    content
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

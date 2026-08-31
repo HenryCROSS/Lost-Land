@@ -150,12 +150,12 @@ fn 玩家死亡后存档保留模式转普通并回到角色创建() {
     assert!(demo.session.is_none(), "玩家已经不在世界里了");
     let draft = demo.new_game_draft.as_ref().expect("死亡后应当有一份草稿");
     assert!(
-        draft.world_already_exists,
+        draft.world.is_reborn(),
         "世界本来就存在——状态机因此会跳过世界配置屏（批次 8 第七节接缝 1）"
     );
-    assert!(draft.world.is_some(), "草稿里带着那一局原样的世界");
+    assert!(draft.world.world().is_some(), "草稿里带着那一局原样的世界");
     assert!(
-        draft.existing_target.is_some(),
+        draft.world.existing_target().is_some(),
         "沿用原来的槽位，不再起一个名字——否则同一个世界会在列表里出现两份"
     );
 
@@ -314,9 +314,10 @@ fn 死亡重生走的是选出生地而不是重新生成世界() {
     // 条路走进世界配置屏，玩家按下「生成世界」就会得到一个全新的世界，
     // 而他只是想换一个角色。
     //
-    // 反例验证（已实跑）：把 `update_character_creation` 里那条
-    // `CharacterRow::Next if world_already_exists` 分支去掉（恢复成
-    // 无条件去 `WorldSetup`），本条当场变红。
+    // 反例验证（已实跑）：把
+    // `crate::draft_world::DraftWorld::screen_after_character_creation`
+    // 的 `Reborn` 分支改成也返回 `WorldSetup`（恢复成无条件去世界配置
+    // 屏），本条当场变红。
     // Arrange：造一份「世界已经存在」的草稿——就是死亡重生那条路的形状。
     let content = test_content();
     let world = crate::world::build_new_world(
@@ -355,7 +356,7 @@ fn 死亡重生走的是选出生地而不是重新生成世界() {
             &mut draft.choice,
             &roster,
             &down,
-            draft.world_already_exists,
+            draft.world.screen_after_character_creation(),
         );
     }
 
@@ -367,18 +368,20 @@ fn 死亡重生走的是选出生地而不是重新生成世界() {
         &mut draft.choice,
         &roster,
         &confirm,
-        draft.world_already_exists,
+        draft.world.screen_after_character_creation(),
     );
 
     // Assert：直接去选出生地，**不经过世界配置屏**。
     assert_eq!(
         update.next,
-        Some(ScreenState::SpawnPick),
-        "世界已经存在时必须跳过世界配置屏"
+        Some(ScreenState::SpawnPick {
+            origin: crate::menu_screen::SpawnOrigin::CharacterCreation
+        }),
+        "世界已经存在时必须跳过世界配置屏，且选点屏的取消目标是角色创建"
     );
     // 而且草稿里那个世界原样还在——没有被重新生成过。
     assert_eq!(
-        draft.world.as_ref().expect("世界还在").world.seed,
+        draft.world.world().expect("世界还在").world.seed,
         种子,
         "重生不该动这个世界一个字节"
     );
@@ -391,10 +394,7 @@ fn 开局那条路仍然经过世界配置屏() {
     let content = test_content();
     let mut draft =
         crate::chargen::NewGameDraft::new(&content, &ll_platform::config::NewGameConfig::default());
-    assert!(
-        !draft.world_already_exists,
-        "Arrange：开局那条路世界还不存在"
-    );
+    assert!(!draft.world.is_reborn(), "Arrange：开局那条路世界还不存在");
     let mut cursor = 0usize;
     let roster = draft.roster.clone();
     let rows = crate::chargen::character_rows();
@@ -412,7 +412,7 @@ fn 开局那条路仍然经过世界配置屏() {
             &mut draft.choice,
             &roster,
             &down,
-            draft.world_already_exists,
+            draft.world.screen_after_character_creation(),
         );
     }
 
@@ -424,9 +424,234 @@ fn 开局那条路仍然经过世界配置屏() {
         &mut draft.choice,
         &roster,
         &confirm,
-        draft.world_already_exists,
+        draft.world.screen_after_character_creation(),
     );
 
     // Assert
     assert_eq!(update.next, Some(ScreenState::WorldSetup { cursor: 0 }));
+}
+
+/// 走**真实生产入口** `on_frame` 跑一帧——与 `crate::app::tests` 里那个
+/// `走一帧` 同一个手法（那一份是那个模块私有的，兄弟模块看不见，不把它
+/// 摆成 `pub` 只为了跨模块复用一个四行辅助函数）。
+///
+/// 每帧新建 `InputState`：`was_just_pressed` 因此在这一帧恰好置位一次，
+/// 与真实事件循环「按下 → 下一帧清标志」的时序等价。**不合成任何键盘
+/// 事件**（ADR 0025）——这里构造的是 `InputState`，走的是与玩家按键
+/// 完全相同的那一条调用路径。
+fn 跑一帧(demo: &mut Demo, at: u64, keys: &[ll_platform::input::GameKey]) {
+    let mut input = InputState::new();
+    for key in keys {
+        input.press(*key);
+    }
+    let _ = ll_platform::window::AppHandler::on_frame(
+        demo,
+        ll_platform::window::FrameId(at),
+        &mut input,
+    );
+}
+
+/// 「下一步」在角色创建屏的第几行——不写死下标，行表变了这里跟着变。
+fn 下一步所在行() -> usize {
+    crate::chargen::character_rows()
+        .iter()
+        .position(|row| *row == crate::chargen::CharacterRow::Next)
+        .expect("「下一步」必然是其中一行")
+}
+
+/// 在角色创建屏上从第 0 行走到「下一步」并按下确认。
+fn 角色创建屏按下一步(demo: &mut Demo, at: &mut u64) {
+    for _ in 0..下一步所在行() {
+        跑一帧(demo, *at, &[ll_platform::input::GameKey::Down]);
+        *at += 1;
+    }
+    跑一帧(demo, *at, &[ll_platform::input::GameKey::Confirm]);
+    *at += 1;
+}
+
+/// 在选出生地屏上挑一格能落脚的区块并确认。
+///
+/// 逐格试而不是写死一格：出生地要求那个区块里有陆地
+/// （`spawn_pick::pick_spawn_in_zone` 挑不出来时只提示重选），而光标初值
+/// 落在哪一格取决于世界地形。上限是一道防死循环的闸门，不是重试策略。
+fn 选出生地并确认(demo: &mut Demo, at: &mut u64) {
+    for _ in 0..256 {
+        if !matches!(demo.screen, Some(ScreenState::SpawnPick { .. })) {
+            return;
+        }
+        跑一帧(demo, *at, &[ll_platform::input::GameKey::Confirm]);
+        *at += 1;
+        if !matches!(demo.screen, Some(ScreenState::SpawnPick { .. })) {
+            return;
+        }
+        跑一帧(demo, *at, &[ll_platform::input::GameKey::Right]);
+        *at += 1;
+    }
+    panic!("选出生地屏上试遍 256 格都没能落脚，测试世界不该是一片汪洋");
+}
+
+#[test]
+fn 转生路径按一次取消绝不落到会抹掉玩家世界的那块屏() {
+    // **D1**（`knowledge/design/ui-and-navigation.md` 2.2 节，全表唯一一条
+    // 会造成数据丢失的死路）的端到端验收。
+    //
+    // 链条：死亡 → 角色创建 → 下一步 → 选出生地屏 → **按一次取消** →
+    // 落到世界配置屏（`spawn_pick.rs` 把取消目标写死了）→ 在那里按「生成」
+    // 就会用一个全新的世界覆盖草稿，而 `existing_target` 从没被清空 ⇒
+    // 此后每一次存档都把新世界写在玩家原来那份存档上。
+    //
+    // 本条钉的是**结果**，不是某一处实现：走完整条路之后，磁盘上那一份
+    // 存档必须还是玩家原来那个世界，逐位相同。
+    // Arrange：磁盘上先有一份属于这个世界的存档。
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    // 让这个世界「玩过一阵」——**否则这条断言什么都盯不住**：转生草稿的
+    // 种子取自世界身份（`chargen.rs` 的 `for_reincarnation`），按它重新
+    // 生成出来的世界与原来那个逐位相同，覆盖了也看不出来。世界时钟是
+    // 「玩家玩过的那些时间」最直接的表示，而重新生成出来的世界时钟恒为
+    // 零——它因此是「这还是不是玩家那一局」的判据。
+    let 原世界时刻 = ll_core::time::Tick(demo.test_world().world.clock.0 + 12_345);
+    demo.test_world_mut().world.clock = 原世界时刻;
+    demo.save_now();
+    let 原槽位 = crate::save_slot::list_slots(&saves_dir);
+    assert_eq!(原槽位.len(), 1, "Arrange：磁盘上恰好一份存档");
+    let 原槽位号 = 原槽位[0].id.clone();
+    let 原世界种子 = demo.test_world().world.seed;
+
+    // Act 1：玩家死了——实体从 arena 里消失，正是 `ll_sim::apply` 的
+    // `Despawn` 在生产路径上做的事。
+    let player = demo.test_world().player;
+    demo.test_world_mut().world.actors.despawn(player);
+    let mut input = InputState::new();
+    demo.handle_player_death(&mut input);
+    assert_eq!(
+        demo.screen,
+        Some(ScreenState::CharacterCreation { cursor: 0 }),
+        "Arrange：死亡之后停在角色创建屏"
+    );
+
+    // Act 2：角色创建「下一步」——世界已经存在，应当直接去选出生地。
+    let mut at = 1u64;
+    角色创建屏按下一步(&mut demo, &mut at);
+    assert!(
+        matches!(demo.screen, Some(ScreenState::SpawnPick { .. })),
+        "Arrange：转生跳过世界配置屏，直接到选出生地，实际停在 {:?}",
+        demo.screen
+    );
+
+    // Act 3：**按一次取消。** 这一下就是 D1 的入口。
+    跑一帧(&mut demo, at, &[ll_platform::input::GameKey::Cancel]);
+    at += 1;
+
+    // Assert 1：绝不能落到世界配置屏——那块屏在转生流程里按
+    // `chargen.rs` 自己的论证「必须跳过」。
+    assert!(
+        !matches!(demo.screen, Some(ScreenState::WorldSetup { .. })),
+        "转生路径按一次取消落到了世界配置屏，在那里按「生成」就会抹掉玩家的世界"
+    );
+
+    // Act 4：走完剩下的路——回到角色创建、再下一步、选出生地、进世界，
+    // 然后存一次档。转生那条路不问名字（世界已经有自己的槽位）。
+    角色创建屏按下一步(&mut demo, &mut at);
+    选出生地并确认(&mut demo, &mut at);
+    for _ in 0..4 {
+        if demo.session.is_some() {
+            break;
+        }
+        跑一帧(&mut demo, at, &[]);
+        at += 1;
+    }
+    assert!(demo.session.is_some(), "走完全程之后玩家应当已经在世界里");
+    demo.save_now();
+
+    // Assert 2：磁盘上仍然是**同一份**存档，装着**同一个**世界。
+    //
+    // 转生**会**改动这个世界（造一个新玩家实体、把他放到选中的那一格），
+    // 所以这里比的不是世界哈希逐位相同，而是「这还是不是玩家那一局」：
+    // 世界时钟与种子。被一个新生成的世界覆盖时，时钟会掉回零。
+    let 现槽位 = crate::save_slot::list_slots(&saves_dir);
+    assert_eq!(现槽位.len(), 1, "转生不该多出一份存档");
+    assert_eq!(现槽位[0].id, 原槽位号, "转生应当写回原来那个槽位");
+    let 盘上世界 =
+        crate::load_saved_game(&现槽位[0].path, &demo.content).expect("刚写下去的存档必须读得回来");
+    assert_eq!(
+        盘上世界.world.clock, 原世界时刻,
+        "玩家那份存档被一个新生成的世界覆盖了（时钟掉回了生成时的初值）         ——这正是 D1 造成的数据丢失"
+    );
+    assert_eq!(盘上世界.world.seed, 原世界种子, "而且必须还是同一个世界");
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 转生草稿上按下生成世界会被拒绝且世界一个字节不动() {
+    // **规格 N6**：N5 修好了取消目标，但只要「转生草稿」与「重新生成
+    // 世界」还能同时存在，D1 就还能从别的路径复现。这一条盯的是那道
+    // 纵深闸门本身。
+    //
+    // 反例验证（已实跑）：把 `generate_draft_world` 开头那道
+    // `draft.world.generatable()` 闸门去掉、改回无条件
+    // `draft.world = Some(新世界)` 那个形状，本条当场变红。
+    // Arrange：走真实生产路径造出一份转生草稿。
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    let player = demo.test_world().player;
+    demo.test_world_mut().world.actors.despawn(player);
+    let mut input = InputState::new();
+    demo.handle_player_death(&mut input);
+    let draft = demo.new_game_draft.as_ref().expect("死亡后应当有一份草稿");
+    assert!(draft.world.is_reborn(), "Arrange：这是一份转生草稿");
+    // 基准取**草稿手里那一份**：死亡本身会改动世界（玩家实体被摘掉、
+    // 时间轴重建），拿死亡之前的快照当基准盯的就不是这条断言的主题了。
+    let 草稿世界 = draft.world.world().expect("转生草稿必然带着世界");
+    let 原世界种子 = 草稿世界.world.seed;
+    let 原世界哈希 = 草稿世界.world.hash();
+
+    // Act：直接调那个会生成世界的函数——就算有人把世界配置屏又接了回来。
+    let update = demo.generate_draft_world();
+
+    // Assert：留在原地，什么都没生成。
+    assert_eq!(update.next, None, "被拒绝时不该把玩家送去任何一块屏");
+    let draft = demo.new_game_draft.as_ref().expect("草稿仍在");
+    let world = draft.world.world().expect("那一局仍在");
+    assert_eq!(world.world.seed, 原世界种子, "世界种子被换掉了");
+    assert_eq!(world.world.hash(), 原世界哈希, "世界被重新生成了");
+    assert!(
+        draft.world.existing_target().is_some(),
+        "槽位仍然是原来那一个"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 选点屏缺世界时的降级目标不是那块会抹掉世界的屏() {
+    // 规格 N6 后半句：`app.rs` 那条「选出生地屏没有世界」的降级路径此前
+    // 回退到世界配置屏，后果与 D1 一模一样——转生流程里一旦走到它，玩家
+    // 就站在了那个会抹掉自己世界的按钮前面。
+    //
+    // 反例验证（已实跑）：把降级目标改回
+    // `ScreenState::WorldSetup { cursor: 0 }`，本条当场变红。
+    // Arrange：一份还没生成世界的草稿。
+    let mut demo = test_demo();
+    demo.new_game_draft = Some(crate::chargen::NewGameDraft::new(
+        &demo.content,
+        &ll_platform::config::NewGameConfig::default(),
+    ));
+    let mut input = InputState::new();
+
+    // Act & Assert：两个来处都不许落到世界配置屏。
+    for origin in [
+        crate::menu_screen::SpawnOrigin::WorldSetup,
+        crate::menu_screen::SpawnOrigin::CharacterCreation,
+    ] {
+        let update = demo.update_spawn_pick(&mut input, origin);
+        assert_eq!(
+            update.next,
+            Some(ScreenState::CharacterCreation { cursor: 0 }),
+            "降级路径把玩家扔到了世界配置屏上"
+        );
+    }
 }

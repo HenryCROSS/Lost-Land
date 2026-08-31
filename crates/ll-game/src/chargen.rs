@@ -19,7 +19,7 @@
 //! 新角色再选个地方放进去）。
 //!
 //! 本批**不接死亡重生那条线**（属存档批次），但形状必须留对。接缝有
-//! 且只有两个，见 [`NewGameDraft::world_already_exists`] 与
+//! 且只有两个，见 [`crate::draft_world::DraftWorld`] 与
 //! `crate::world::build_player_agent` 的文档。
 //!
 //! # 三项清单全部**从注册表现查**
@@ -236,7 +236,7 @@ pub fn update_character_creation(
     choice: &mut CharacterChoice,
     roster: &ChargenRoster,
     input: &InputState,
-    world_already_exists: bool,
+    next_screen: ScreenState,
 ) -> ChargenUpdate {
     let rows = character_rows();
     *cursor = move_cursor(*cursor, rows.len(), input);
@@ -269,15 +269,20 @@ pub fn update_character_creation(
     }
     match row {
         // **「下一步」去哪儿，取决于世界存不存在**——这正是
-        // [`NewGameDraft::world_already_exists`] 那条接缝的落点，也是批次 8
+        // [`crate::draft_world::DraftWorld`] 那条接缝的落点，也是批次 8
         // 计划文档第七节写的「状态机因此要按 `world.is_some()` 决定下一步
         // 去哪块屏，而不是写死一条固定的三屏顺序」。
         //
         // 死亡重生那条路上世界早就存在，再进一次世界配置屏等于让玩家
         // 重新生成一个世界——这局玩过的一切当场被抹掉，而他只是想换个
         // 角色。
-        CharacterRow::Next if world_already_exists => ChargenUpdate::going(ScreenState::SpawnPick),
-        CharacterRow::Next => ChargenUpdate::going(ScreenState::WorldSetup { cursor: 0 }),
+        //
+        // **判据不在本函数里**：它是草稿手里那个世界的属性，由
+        // [`crate::draft_world::DraftWorld::screen_after_character_creation`]
+        // 算好再传进来。此前这里读的是一个裸布尔
+        // （`NewGameDraft::world_already_exists`），而那个布尔与「存哪个
+        // 槽位」是两个能各自漂移的字段——D1 就是它们漂移出来的。
+        CharacterRow::Next => ChargenUpdate::going(next_screen),
         CharacterRow::Back => ChargenUpdate::going(ScreenState::Title),
         // 在取值行上按确认什么都不做——改取值用左右键，与设置屏的
         // 语言/垂直同步两行同一套手感。
@@ -361,7 +366,7 @@ fn profession_display_name(
 ///
 /// # 接缝：这个类型就是「死亡之后重新入世」的入口
 ///
-/// 见 [`Self::world_already_exists`]。
+/// 见 [`Self::world`] 与 [`crate::draft_world::DraftWorld`]。
 pub struct NewGameDraft {
     /// 可选的种族与职业清单，进入角色创建屏那一刻现查一次。
     pub roster: ChargenRoster,
@@ -383,29 +388,23 @@ pub struct NewGameDraft {
     pub exploration: Option<ExplorationMemory>,
     /// 选点光标落在地图的哪一格（列, 行）。
     pub cursor_cell: (u32, u32),
-    /// 按当前配置生成出来的世界——**按下「生成世界」之后才有**。
+    /// 这一局的世界**从哪来**、将来**存进哪个槽位**——两件事绑在一个
+    /// 类型里，见 [`crate::draft_world::DraftWorld`]。
     ///
     /// 它就是最终会交给 `crate::session::Session::begin` 的那一局；
     /// 选出生地屏期间它已经完全建好，只是玩家还没决定在哪落脚。
-    pub world: Option<crate::world::GameWorld>,
+    ///
+    /// # 它此前是三个字段
+    ///
+    /// `world: Option<GameWorld>` + `world_already_exists: bool` +
+    /// `existing_target: Option<SaveTarget>`。三者必然同真同假却互不相干，
+    /// 而「新生成的世界 + 老槽位」这个非法组合就是 D1 造成数据丢失的那
+    /// 一步。合成一个类型之后它**表示不出来**。
+    pub world: crate::draft_world::DraftWorld,
     /// 世界地图用的粗粒度地形场，与 [`Self::world`] 同生同死。
     pub continent_field: Option<ll_world::overview::ContinentField>,
     /// 选点屏的地图视野，与 [`Self::world`] 同生同死。
     pub map_view: Option<ll_world::world_map::WorldMapView>,
-    /// 这一局的世界**是不是本来就存在**。
-    ///
-    /// # 这是留给「死亡之后重新入世」的那条接缝
-    ///
-    /// 开局那条路：`false` → 角色创建 → 世界配置 → 生成世界 → 选出生地。
-    ///
-    /// 死亡重生那条路（**本批不接线**）：`true` → 角色创建 → **跳过
-    /// 世界配置**（世界早就存在，重新生成等于把这局玩过的一切抹掉）
-    /// → 直接选出生地。
-    ///
-    /// 把它做成草稿上的一个布尔、并让角色创建屏的「下一步」去问它，
-    /// 而不是把三块屏的顺序写死成一条固定链条——那一天要接线时，改的
-    /// 就只有「谁把 `world_already_exists` 置真」这一处。
-    pub world_already_exists: bool,
     /// 玩家正在给这份存档打的名字，见 [`crate::save_name`]。
     ///
     /// 它住在草稿上而不是 `ScreenState::SaveNaming` 里：`ScreenState`
@@ -415,14 +414,6 @@ pub struct NewGameDraft {
     /// 玩家在选出生地屏上确认的那一格——命名屏在它之后，真正把玩家挪
     /// 过去要等命名结束，因此得先记下来。
     pub spawn: Option<ll_core::torus::TorusPos>,
-    /// 这一局要写到哪个槽位；`None` 表示还没开（新游戏走命名屏之后才
-    /// 开）。
-    ///
-    /// # 死亡重生那条路它是 `Some`
-    ///
-    /// 世界本来就存在 ⇒ 它已经有自己的槽位了，**不该也不能**再起一个
-    /// 名字：那会让同一个世界在列表里出现两份，而玩家只是换了个角色。
-    pub existing_target: Option<crate::save_slot::SaveTarget>,
     /// 这一局的存档模式（肉鸽 / 普通），在世界配置屏上选。
     ///
     /// 死亡重生那条路它取自那个世界身份里已经有的那一份——模式跟着世界
@@ -443,13 +434,11 @@ impl NewGameDraft {
             seed: params.seed,
             exploration: None,
             cursor_cell: (0, 0),
-            world: None,
+            world: crate::draft_world::DraftWorld::fresh(),
             continent_field: None,
             map_view: None,
-            world_already_exists: false,
             save_name: crate::save_name::NameField::new(),
             spawn: None,
-            existing_target: None,
             // 默认普通档：肉鸽是玩家必须主动选择的约束，见
             // `crate::world::build_new_world` 文档。
             mode: ll_content::mode::SaveMode::fresh_free_save(),
@@ -461,8 +450,10 @@ impl NewGameDraft {
     ///
     /// # 这是批次 8 第七节留的那条接缝真正被用上的地方
     ///
-    /// [`Self::world_already_exists`] 为真 ⇒ 状态机跳过世界配置屏（重新
-    /// 生成等于把这局玩过的一切抹掉），角色创建之后直接去选出生地。
+    /// 草稿手里那个世界是 [`crate::draft_world::DraftWorld::Reborn`] ⇒
+    /// 状态机跳过世界配置屏（重新生成等于把这局玩过的一切抹掉），角色
+    /// 创建之后直接去选出生地；而「重新生成」这件事在那个变体上**根本
+    /// 写不出来**，见该模块文档。
     pub fn for_reincarnation(
         content: &LoadedContent,
         world: crate::world::GameWorld,
@@ -479,13 +470,11 @@ impl NewGameDraft {
             seed,
             exploration: None,
             cursor_cell: (0, 0),
-            world: Some(world),
+            world: crate::draft_world::DraftWorld::reborn(world, target),
             continent_field: None,
             map_view: None,
-            world_already_exists: true,
             save_name: crate::save_name::NameField::new(),
             spawn: None,
-            existing_target: Some(target),
             mode,
         }
     }
