@@ -46,7 +46,20 @@
 //!   文化」这件事由判定期回退表达（`ll_sim::ai_query::declared_hostile`
 //!   回退到 `lostland:cultureless` 哨兵），不写进实体。
 //!
-//! [`AffiliationKind::Faction`] 仍然零生产者——势力播种是另一批。
+//! # `Faction` 现在有东西可指了（势力播种批次，2026-08-29）
+//!
+//! 上一段那句「[`AffiliationKind::Faction`] 仍然零生产者——势力播种是
+//! 另一批」**只剩一半成立**，如实更新：那一批已经落地。
+//! [`crate::faction::FactionTable`] 住在
+//! [`crate::state::WorldState::factions`] 里，每座活着的据点恰好归一个
+//! 势力，[`crate::faction::FactionTable::faction_of`] 把据点号翻译成
+//! 势力号。
+//!
+//! **但 `Faction` 这一类归属本身仍然零生产者**——势力播种只让势力
+//! **存在**，「玩家怎么加入」是对话批次的事（`dialogue-system.md`
+//! 5.1 节，那一节的「拿据点 `WorldId` 冒充」变通已随本批作废）。
+//! 区别在于：此前是「没有任何东西可以加入」，现在是「有东西可以加入、
+//! 只是还没有人写那句加入」。
 
 use ll_core::ident::{ContentIndex, WorldId};
 

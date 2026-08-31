@@ -443,6 +443,45 @@ C 落地之后 B 自然升级成 `{ $npc_name }`，对话内容**一个字不用
 
 ### 5.1 加入据点/势力——今天能加入的只有「据点」，不是「势力」
 
+> **【2026-08-29 更新：势力播种已落地，本节的「变通」就此作废】**
+> 本节以下正文原样保留（纪律：推翻要留来由，不删原文），但**第一批的
+> 「加入」不再走那条变通**。
+>
+> **变了什么**：`OrgInstance` 现在有生产构造点了——
+> `ll_world::faction::seed_factions` 把编年史的占领链折叠成
+> `ll_world::faction::FactionTable`，它住在 `WorldState::factions`、
+> **进存档**（所有者裁定「被占领后肯定会有变化的」）。每座活着的据点
+> 恰好归一个势力，`FactionTable::faction_of(据点号)` 就是换算。
+>
+> **因此正确写法是**：
+>
+> ```rust
+> Affiliation {
+>     kind: AffiliationKind::Faction,
+>     org: OrgRef::Instance(world.factions.faction_of(那座据点的 id)?),
+>     standing: 初始值,   // 所有者裁定：加入据点给 +250，满值 1000
+> }
+> ```
+>
+> **下面三条「必须如实标注的事」各自的现状**：
+>
+> 1. 「把据点暂时塞进 `Faction` 这一类」——**不再需要**，指向的是真正的
+>    `OrgInstance`。那笔「P9 那天变成惊喜」的迁移账**就此销账**，因为
+>    还没有任何存档写过据点号形态的 `Faction` 归属（`build_player_agent`
+>    今天仍写死 `Vec::new()`）。
+> 2. 「`SettlementSite` 不进存档而 `Affiliation` 进存档」这条风险——
+>    **正是靠「势力表进存档」解决的**。势力不再是编年史的派生物，
+>    改变推演判据不会让老存档里的归属静默指向另一个势力；老存档由
+>    `CURRENT_SCHEMA_VERSION` 的「版本不对就明确拒绝」兜底。本节九节
+>    留给所有者的那道选择题因此关闭。
+> 3. 「`standing` 没有任何常量」——**仍然成立，仍是本批之外的事**
+>    （交接文档第〇之二第 5 条已裁定数值，落地属对话批次）。
+>
+> 「这位管理者管的是哪座据点」那一块（`Agent.home: Option<WorldId>`
+> 从 `NpcProfile.home` 搬运）**同样仍然成立、仍未落地**——势力播种
+> 只让势力**存在**，不做对话这一支。
+
+
 **所有者裁定的落点**是 `Agent.affiliations`。现状：
 
 - `AffiliationKind::Faction` 恒配 `OrgRef::Instance(WorldId)`（`affiliation.rs:84`）；
