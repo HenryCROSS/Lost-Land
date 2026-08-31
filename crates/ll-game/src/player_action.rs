@@ -61,6 +61,12 @@
 //!   **无条件**出现——哪怕那一格只有一件东西，也是一行的列表，不是
 //!   直接捡走（所有者原话「不是捡走，只是打开交互列表」）。
 //!
+//! 两块列表是**两级**，取消键因此**退一层不是关到底**（规格 N7，
+//! 兑现所有者「Esc 逐层往回退」那条裁定）：在物品列表里按取消回方向
+//! 列表、光标停在刚才选的那一格；方向列表里再按一次才关掉。只有一格
+//! 有东西那条路跳过了方向列表，那时物品列表的上一层就是世界，一次
+//! 关到底才**是**退一层。判定全在 `cancelled_menu`。
+//!
 //! 「只有一个」指的是**只有一格有东西**，不是「总共只有一件物品」：
 //! 脚下躺着一把剑、四周全空，跳过的是方向列表那一层，物品列表照弹。
 //!
@@ -186,6 +192,19 @@ pub enum PlayerMenu {
         pos: TorusPos,
         /// 光标落在候选列表的第几行。
         cursor: usize,
+        /// 这块列表是**从方向列表里选一格进来的**吗。
+        ///
+        /// 规格 N7 的落点：取消键要「退一层」而不是「关到底」，而
+        /// 「上一层是方向列表还是世界」这条信息此前根本不存在——
+        /// `begin_interact` 在只有一格有东西时会**跳过**方向列表直接
+        /// 开这块列表，那种情况下退一层就是关掉。
+        ///
+        /// **刻意只存一个布尔，不存整个上一级状态**：方向列表的内容由
+        /// [`interact_tiles`] 现算，退回去自然重算一遍，与 ADR 0009
+        /// 「默认派生、只存偏差」同一条思路。连方向列表的光标都不存
+        /// ——它由 `pos` 在 `interact_tiles` 结果里的下标派生，见
+        /// [`cancelled_menu`]。
+        from_direction: bool,
     },
 }
 
@@ -545,7 +564,7 @@ pub fn craft_entries(recipes: &RecipeTable) -> Vec<ContentIndex> {
 /// ① 背包键/制作键：切换对应菜单（另一块开着就换成这块）→ Idle
 /// ② 菜单关着：拾取键 → 看脚下有几堆（0 报空 / 1 直接捡 / 多开菜单）
 /// ③ 菜单关着且没按拾取：回落到 intent_from_input（Move/Wait）
-/// ④ 菜单开着且按了取消：关掉 → Idle
+/// ④ 菜单开着且按了取消：**退一层**（见 `cancelled_menu`）→ Idle
 /// ⑤ 菜单开着：上/下移光标 → Idle；动作键 → Submit/Rejected
 /// ```
 ///
@@ -610,7 +629,8 @@ pub fn player_command(
     // `AppHandler::on_frame` 把 `GameKey::Cancel` 当作「退出游戏」，
     // 菜单开着时按取消如果穿透过去，玩家想关个背包会直接退出整局。
     if input.was_just_pressed(GameKey::Cancel) {
-        *menu = PlayerMenu::Closed;
+        // **退一层**，不是关到底——见 [`cancelled_menu`] 与规格 N7。
+        *menu = cancelled_menu(*menu, world, agent.pos);
         return PlayerCommand::Idle;
     }
 
@@ -660,6 +680,9 @@ pub fn player_command(
                             *menu = PlayerMenu::Interact {
                                 pos: tile.pos,
                                 cursor: 0,
+                                // 这一层**是**从方向列表进来的，取消键
+                                // 要退回去而不是关到底（规格 N7）。
+                                from_direction: true,
                             };
                             PlayerCommand::Idle
                         }
@@ -671,11 +694,19 @@ pub fn player_command(
                 }
             }
         }
-        PlayerMenu::Interact { pos, cursor } => {
+        PlayerMenu::Interact {
+            pos,
+            cursor,
+            from_direction,
+        } => {
             let entries = interact_entries(world, pos);
             match moved_cursor(input, cursor, entries.len()) {
                 Some(next) => {
-                    *menu = PlayerMenu::Interact { pos, cursor: next };
+                    *menu = PlayerMenu::Interact {
+                        pos,
+                        cursor: next,
+                        from_direction,
+                    };
                     PlayerCommand::Idle
                 }
                 None => interact_command(
@@ -790,6 +821,37 @@ fn interact_command(
     }
 }
 
+/// 按下取消键之后菜单该变成什么——**退一层，不是关到底**。
+///
+/// # 规格 N7：这里此前一次退两级
+///
+/// 方向列表 → 物品列表是**两级**，而此前取消键的处理排在 `match *menu`
+/// 之前、任何形态一律 `Closed`。玩家在物品列表里发现选错了格子、按取消
+/// 想退回方向列表重选——整个菜单没了，得从按交互键重来。项目所有者已经
+/// 裁定的「Esc 逐层往回退」在这里没有被兑现（规格 D4）。
+///
+/// # 方向列表的光标是**派生**出来的，不是存下来的
+///
+/// 退回方向列表时，光标要停在玩家刚才选中的那一格上。这条信息不需要
+/// 存：方向列表的内容就是 `interact_tiles(world, origin)`，在它的结果里
+/// 找 `pos` 的下标即可。找不到（两帧之间那一格上的东西没了）时回落到第
+/// 0 行——不 panic，一个纯 UI 状态问题不该拖垮整局。
+fn cancelled_menu(menu: PlayerMenu, world: &WorldState, origin: TorusPos) -> PlayerMenu {
+    let PlayerMenu::Interact {
+        pos,
+        from_direction: true,
+        ..
+    } = menu
+    else {
+        return PlayerMenu::Closed;
+    };
+    let cursor = interact_tiles(world, origin)
+        .iter()
+        .position(|tile| tile.pos == pos)
+        .unwrap_or(0);
+    PlayerMenu::InteractDirection { cursor }
+}
+
 /// 按下交互键的那一刻：扫一圈范围，按有东西的格数分三种。
 ///
 /// 见模块文档「交互键、方向列表、物品列表」一节那张表：0 格报一句、
@@ -805,9 +867,12 @@ fn begin_interact(menu: &mut PlayerMenu, world: &WorldState, origin: TorusPos) -
             PlayerCommand::Rejected(Feedback::NothingNearby)
         }
         1 => {
+            // 只有一格有东西：**跳过**方向列表那一层。因此这块列表的
+            // 上一层就是世界，取消键直接关到底才是「退一层」。
             *menu = PlayerMenu::Interact {
                 pos: tiles[0].pos,
                 cursor: 0,
+                from_direction: false,
             };
             PlayerCommand::Idle
         }

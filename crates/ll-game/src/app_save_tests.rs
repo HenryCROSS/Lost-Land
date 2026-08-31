@@ -144,7 +144,7 @@ fn 玩家死亡后存档保留模式转普通并回到角色创建() {
 
     // Assert：回到角色创建，且走的是批次 8 留的那条接缝。
     assert_eq!(
-        demo.screen,
+        demo.modal.screen(),
         Some(ScreenState::CharacterCreation { cursor: 0 })
     );
     assert!(demo.session.is_none(), "玩家已经不在世界里了");
@@ -205,7 +205,7 @@ fn 回主菜单之前先把进度存下来() {
     let slots = crate::save_slot::list_slots(&saves_dir);
     assert_eq!(slots.len(), 1, "回主菜单必须把进度写下来，不能静默丢弃");
     assert!(demo.session.is_none(), "回主菜单之后世界不该还在");
-    assert_eq!(demo.screen, Some(ScreenState::Title));
+    assert_eq!(demo.modal.screen(), Some(ScreenState::Title));
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&saves_dir);
@@ -256,7 +256,8 @@ fn 手动存档写出一份档并留在菜单里() {
     // Arrange
     let mut demo = test_demo();
     let saves_dir = demo.saves_dir.clone();
-    demo.screen = Some(ScreenState::Menu);
+    let mut input = InputState::new();
+    demo.modal.set_screen(Some(ScreenState::Menu), &mut input);
 
     // Act
     demo.save_now();
@@ -264,7 +265,11 @@ fn 手动存档写出一份档并留在菜单里() {
     // Assert
     assert_eq!(crate::save_slot::list_slots(&saves_dir).len(), 1);
     assert_eq!(demo.screen_notice, Some(ScreenNotice::GameSaved));
-    assert_eq!(demo.screen, Some(ScreenState::Menu), "存完仍留在菜单里");
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::Menu),
+        "存完仍留在菜单里"
+    );
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&saves_dir);
@@ -356,6 +361,7 @@ fn 死亡重生走的是选出生地而不是重新生成世界() {
             &mut draft.choice,
             &roster,
             &down,
+            crate::pointer::RowPointer::Idle,
             draft.world.screen_after_character_creation(),
         );
     }
@@ -368,6 +374,7 @@ fn 死亡重生走的是选出生地而不是重新生成世界() {
         &mut draft.choice,
         &roster,
         &confirm,
+        crate::pointer::RowPointer::Idle,
         draft.world.screen_after_character_creation(),
     );
 
@@ -412,6 +419,7 @@ fn 开局那条路仍然经过世界配置屏() {
             &mut draft.choice,
             &roster,
             &down,
+            crate::pointer::RowPointer::Idle,
             draft.world.screen_after_character_creation(),
         );
     }
@@ -424,6 +432,7 @@ fn 开局那条路仍然经过世界配置屏() {
         &mut draft.choice,
         &roster,
         &confirm,
+        crate::pointer::RowPointer::Idle,
         draft.world.screen_after_character_creation(),
     );
 
@@ -476,12 +485,12 @@ fn 角色创建屏按下一步(demo: &mut Demo, at: &mut u64) {
 /// 落在哪一格取决于世界地形。上限是一道防死循环的闸门，不是重试策略。
 fn 选出生地并确认(demo: &mut Demo, at: &mut u64) {
     for _ in 0..256 {
-        if !matches!(demo.screen, Some(ScreenState::SpawnPick { .. })) {
+        if !matches!(demo.modal.screen(), Some(ScreenState::SpawnPick { .. })) {
             return;
         }
         跑一帧(demo, *at, &[ll_platform::input::GameKey::Confirm]);
         *at += 1;
-        if !matches!(demo.screen, Some(ScreenState::SpawnPick { .. })) {
+        if !matches!(demo.modal.screen(), Some(ScreenState::SpawnPick { .. })) {
             return;
         }
         跑一帧(demo, *at, &[ll_platform::input::GameKey::Right]);
@@ -525,7 +534,7 @@ fn 转生路径按一次取消绝不落到会抹掉玩家世界的那块屏() {
     let mut input = InputState::new();
     demo.handle_player_death(&mut input);
     assert_eq!(
-        demo.screen,
+        demo.modal.screen(),
         Some(ScreenState::CharacterCreation { cursor: 0 }),
         "Arrange：死亡之后停在角色创建屏"
     );
@@ -534,9 +543,9 @@ fn 转生路径按一次取消绝不落到会抹掉玩家世界的那块屏() {
     let mut at = 1u64;
     角色创建屏按下一步(&mut demo, &mut at);
     assert!(
-        matches!(demo.screen, Some(ScreenState::SpawnPick { .. })),
+        matches!(demo.modal.screen(), Some(ScreenState::SpawnPick { .. })),
         "Arrange：转生跳过世界配置屏，直接到选出生地，实际停在 {:?}",
-        demo.screen
+        demo.modal.screen()
     );
 
     // Act 3：**按一次取消。** 这一下就是 D1 的入口。
@@ -546,7 +555,7 @@ fn 转生路径按一次取消绝不落到会抹掉玩家世界的那块屏() {
     // Assert 1：绝不能落到世界配置屏——那块屏在转生流程里按
     // `chargen.rs` 自己的论证「必须跳过」。
     assert!(
-        !matches!(demo.screen, Some(ScreenState::WorldSetup { .. })),
+        !matches!(demo.modal.screen(), Some(ScreenState::WorldSetup { .. })),
         "转生路径按一次取消落到了世界配置屏，在那里按「生成」就会抹掉玩家的世界"
     );
 
@@ -688,8 +697,9 @@ fn 存档列表选第二份读的就是第二份() {
     );
 
     // Act：玩家把光标停在第二行，按确认。
-    demo.screen = Some(ScreenState::SaveList { cursor: 1 });
     let mut input = InputState::new();
+    demo.modal
+        .set_screen(Some(ScreenState::SaveList { cursor: 1 }), &mut input);
     demo.load_saved_game(&mut input);
 
     // Assert：进的是第二份，而且此后每一次存档都写它。
@@ -713,7 +723,8 @@ fn 不在存档列表屏时不猜一份存档给他() {
     demo.save_now();
     demo.save_slots = crate::save_slot::list_slots(&saves_dir);
     assert_eq!(demo.save_slots.len(), 1, "Arrange：磁盘上有一份存档");
-    demo.screen = Some(ScreenState::Title);
+    let mut input = InputState::new();
+    demo.modal.set_screen(Some(ScreenState::Title), &mut input);
     let 原槽位 = demo
         .session
         .as_ref()

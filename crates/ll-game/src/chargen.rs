@@ -236,10 +236,14 @@ pub fn update_character_creation(
     choice: &mut CharacterChoice,
     roster: &ChargenRoster,
     input: &InputState,
+    pointer: crate::pointer::RowPointer,
     next_screen: ScreenState,
 ) -> ChargenUpdate {
     let rows = character_rows();
     *cursor = move_cursor(*cursor, rows.len(), input);
+    if let Some(row) = pointer.focus_row() {
+        *cursor = row.min(rows.len() - 1);
+    }
     let row = rows[(*cursor).min(rows.len() - 1)];
 
     if let Some(forward) = horizontal(input) {
@@ -264,7 +268,7 @@ pub fn update_character_creation(
     if input.was_just_pressed(GameKey::Cancel) {
         return ChargenUpdate::going(ScreenState::Title);
     }
-    if !input.was_just_pressed(GameKey::Confirm) {
+    if !input.was_just_pressed(GameKey::Confirm) && !pointer.activated() {
         return ChargenUpdate::idle();
     }
     match row {

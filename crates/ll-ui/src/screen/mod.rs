@@ -88,6 +88,17 @@ pub struct ScreenContent {
     pub panel: Rect,
     /// 这一帧面板内容的全部文本行。
     pub labels: Vec<Label>,
+    /// [`ScreenData::rows`] 里第 i 行占的那块矩形，与 `rows` 逐条对应。
+    ///
+    /// **它就是这块屏的按钮清单**：鼠标点在第几行由
+    /// [`crate::widget::hit_test::hit_test`] 拿它现算，聚焦/悬停高亮也
+    /// 画在它上面。列表为空（显示占位行）时它是空的——占位行不是一个
+    /// 可点的按钮。
+    ///
+    /// 之所以从这里出来而不是让调用方自己按行高算一遍：那就是两份同一
+    /// 个布局算法，改了标题行/提示行的位置就会分叉，而分叉时点击会**静
+    /// 悄悄地**落到隔壁那一行上。
+    pub row_rects: Vec<Rect>,
 }
 
 /// 一块模态屏这一帧要显示的内容——调用方（`ll-game`）已经把每一行排好
@@ -115,6 +126,17 @@ pub struct ScreenData<'a> {
     /// [`crate::hud::render::build_hud_frame`] 的 `feedback` 参数同一条
     /// 理由。
     pub notice: Option<&'a str>,
+    /// 指针这一刻悬停在第几行（`None` = 不在任何一行上）。
+    ///
+    /// # 它为什么与 [`ScreenData::cursor`] 是两个字段
+    ///
+    /// 「悬停」与「聚焦」在这套 UI 里是两件事：指针划过一行**不改变
+    /// 键盘焦点**（`ll_game::pointer` 模块文档约定一），它只是在说
+    /// 「点下去会是这一行」。合成一个字段就等于把那条约定抹掉。
+    ///
+    /// 两者落在同一行时只画聚焦那一块高亮（更亮的那个），见
+    /// [`crate::screen::render::build_screen_frame`]。
+    pub hovered: Option<usize>,
 }
 
 /// 居中一块 [`SCREEN_WIDTH`] 宽、高度按内容行数现算的面板。
@@ -181,7 +203,7 @@ fn write_screen_lines(
     cursor.push(lines, catalog.resolve(language, data.hint_key));
 }
 
-/// 建出整块模态屏：压暗背板 + 居中面板 + 全部文本行。
+/// 建出整块模态屏：压暗背板 + 居中面板 + 全部文本行 + 每一行的矩形。
 pub fn build_screen_panel(
     data: &ScreenData<'_>,
     catalog: &Catalog,
@@ -200,7 +222,76 @@ pub fn build_screen_panel(
     ScreenContent {
         backdrop: Rect::new(0.0, 0.0, screen_width, screen_height),
         panel: Rect::new(origin.0, origin.1, SCREEN_WIDTH, panel_height),
+        row_rects: row_rects(data, content_origin),
         labels,
+    }
+}
+
+/// 第 i 行占的那块矩形——**行的几何唯一的产出点**，
+/// [`build_screen_panel`] 与 [`screen_row_rects`] 都走它。
+///
+/// 第 0 个 `Label` 是标题（见 [`write_screen_lines`]），因此第 i 行的
+/// 纵坐标是 `content_origin.1 + (i + 1) * SCREEN_LINE_HEIGHT`。横向占满
+/// 面板去掉两侧内边距之后的整条——按钮的可点区域是**一整行**，不是那
+/// 几个字所占的宽度：后者会让玩家点在一行的空白处什么都不发生。
+fn row_rects(data: &ScreenData<'_>, content_origin: (f32, f32)) -> Vec<Rect> {
+    if data.rows.is_empty() {
+        // 占位行不是可点的按钮。
+        return Vec::new();
+    }
+    (0..data.rows.len())
+        .map(|row| {
+            Rect::new(
+                content_origin.0,
+                content_origin.1 + (row as f32 + 1.0) * SCREEN_LINE_HEIGHT,
+                SCREEN_WIDTH - SCREEN_PADDING * 2.0,
+                SCREEN_LINE_HEIGHT,
+            )
+        })
+        .collect()
+}
+
+/// 只要这块屏每一行的矩形，不排全部文本——**输入这一侧**（这一帧鼠标
+/// 点在第几行）的入口。
+///
+/// 与 [`build_screen_panel`] 共用同一段布局算法（同一个 [`row_rects`]、
+/// 同一个 [`centered_origin`]），因此「点击落在第几行」与「第几行画在
+/// 哪儿」不可能对不上。
+///
+/// # 为什么输入这一侧要单独一个入口
+///
+/// 模态屏这一帧的输入处理排在渲染**之前**（`ll_game::app::Demo::on_frame`
+/// 先 `update_screen` 再 `draw_screen`），那时候还没有 `ScreenContent`。
+/// 而重排一遍全部标签只为了拿几个矩形，是几十次白付的字符串格式化。
+pub fn screen_row_rects(
+    data: &ScreenData<'_>,
+    catalog: &Catalog,
+    language: &str,
+    screen_width: f32,
+    screen_height: f32,
+) -> Vec<Rect> {
+    let probe = screen_lines(data, catalog, language, (0.0, 0.0), SCREEN_LINE_HEIGHT);
+    let panel_height = probe.len() as f32 * SCREEN_LINE_HEIGHT + SCREEN_PADDING * 2.0;
+    let origin = centered_origin(screen_width, screen_height, panel_height);
+    row_rects(data, (origin.0 + SCREEN_PADDING, origin.1 + SCREEN_PADDING))
+}
+
+/// 聚焦行的高亮矩形颜色（RGBA）——**「这一行现在会响应确认键」的视觉
+/// 承诺**，与 `crate::widget::button::FlatButtonAppearance::HOVERED` 的
+/// 填充同一份色，两处读起来要像同一个产品。
+pub const FOCUS_HIGHLIGHT_COLOR: [f32; 4] = [0.2, 0.35, 0.5, 0.75];
+
+/// 悬停行的高亮矩形颜色（RGBA）——比聚焦淡一档：指针划过去**不改变
+/// 焦点**（见 `ll_game::pointer` 模块文档那四条约定），它只是在说
+/// 「点下去会是这一行」。
+pub const HOVER_HIGHLIGHT_COLOR: [f32; 4] = [0.2, 0.35, 0.5, 0.32];
+
+/// 把某一行的矩形画成一块高亮底——[`backdrop_quad`] 的同形函数。
+pub fn row_highlight_quad(rect: Rect, color: [f32; 4]) -> crate::widget::quad::QuadInstance {
+    crate::widget::quad::QuadInstance {
+        position: [rect.x, rect.y],
+        size: [rect.width, rect.height],
+        color,
     }
 }
 
@@ -233,7 +324,102 @@ mod tests {
             empty_key: "screen-menu-empty",
             hint_key: "screen-menu-hint",
             notice: None,
+            hovered: None,
         }
+    }
+
+    #[test]
+    fn 每一行的矩形正对着那一行的文字() {
+        // 「点击落在第几行」与「第几行画在哪儿」必须永远对得上——两者
+        // 走的是同一段布局算法（同一个 `row_rects`），这条盯的就是这
+        // 件事：第 i 行矩形的纵向范围必须罩住第 i 行标签的原点。
+        //
+        // 反例验证（已实跑）：把 `row_rects` 里的 `row + 1.0` 改成
+        // `row`（忘掉标题占的那一行），本条立刻变红。
+        // Arrange
+        let catalog = 测试目录();
+        let rows: Vec<String> = ["甲", "乙", "丙"].iter().map(|s| s.to_string()).collect();
+        let data = 测试数据(&rows, 1);
+
+        // Act
+        let content = build_screen_panel(&data, &catalog, "zh-CN", 1280.0, 720.0);
+
+        // Assert
+        assert_eq!(content.row_rects.len(), rows.len(), "一行一块矩形");
+        for (row, rect) in content.row_rects.iter().enumerate() {
+            // 第 0 个标签是标题，第 i 行的标签因此是第 i + 1 个。
+            let label = &content.labels[row + 1];
+            assert!(
+                rect.y <= label.y && label.y < rect.y + rect.height,
+                "第 {row} 行的矩形应当罩住第 {row} 行文字的原点：矩形 {rect:?}，文字 y={}",
+                label.y
+            );
+            assert!(
+                rect.x >= content.panel.x && rect.x + rect.width <= content.panel.right(),
+                "行矩形不该伸出面板"
+            );
+        }
+    }
+
+    #[test]
+    fn 行矩形横向占满面板内容宽而不是只包住那几个字() {
+        // 可点区域是**一整行**：只包住文字宽度的话，玩家点在一行右侧
+        // 的空白上什么都不会发生，而那看起来仍然是「那一行」。
+        // Arrange
+        let catalog = 测试目录();
+        let rows = vec!["短".to_string(), "长得多的一行文字".to_string()];
+        let data = 测试数据(&rows, 0);
+
+        // Act
+        let content = build_screen_panel(&data, &catalog, "zh-CN", 1280.0, 720.0);
+
+        // Assert
+        assert_eq!(
+            content.row_rects[0].width, content.row_rects[1].width,
+            "两行宽度应当一样，与各自文字长短无关"
+        );
+        assert_eq!(
+            content.row_rects[0].width,
+            SCREEN_WIDTH - SCREEN_PADDING * 2.0
+        );
+    }
+
+    #[test]
+    fn 列表为空时一块行矩形都没有() {
+        // 占位行（「没有存档」之类）不是一个可点的按钮。
+        // Arrange
+        let catalog = 测试目录();
+        let rows: Vec<String> = Vec::new();
+        let data = 测试数据(&rows, 0);
+
+        // Act
+        let content = build_screen_panel(&data, &catalog, "zh-CN", 1280.0, 720.0);
+
+        // Assert
+        assert!(content.row_rects.is_empty());
+    }
+
+    #[test]
+    fn 只量行矩形与整块排版算出来的完全一致() {
+        // 输入侧（这一帧点在第几行）与渲染侧（第几行画在哪儿）走的是
+        // 同一段算法，这条把「同一段」钉死。
+        //
+        // 反例验证（已实跑）：把 `screen_row_rects` 里的
+        // `origin.1 + SCREEN_PADDING` 写成 `origin.1`，本条立刻变红。
+        // Arrange
+        let catalog = 测试目录();
+        let rows: Vec<String> = ["甲", "乙", "丙", "丁"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let data = 测试数据(&rows, 2);
+
+        // Act
+        let 整块 = build_screen_panel(&data, &catalog, "zh-CN", 1024.0, 768.0);
+        let 只量 = screen_row_rects(&data, &catalog, "zh-CN", 1024.0, 768.0);
+
+        // Assert
+        assert_eq!(只量, 整块.row_rects);
     }
 
     #[test]

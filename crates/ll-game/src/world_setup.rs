@@ -143,9 +143,13 @@ pub fn update_world_setup(
     preset: &mut usize,
     mode: &mut SaveMode,
     input: &InputState,
+    pointer: crate::pointer::RowPointer,
 ) -> ChargenUpdate {
     let rows = world_setup_rows();
     *cursor = move_cursor(*cursor, rows.len(), input);
+    if let Some(row) = pointer.focus_row() {
+        *cursor = row.min(rows.len() - 1);
+    }
     let row = rows[(*cursor).min(rows.len() - 1)];
 
     if row == WorldSetupRow::Mode && horizontal(input).is_some() {
@@ -176,7 +180,7 @@ pub fn update_world_setup(
     if input.was_just_pressed(GameKey::Cancel) {
         return ChargenUpdate::going(ScreenState::CharacterCreation { cursor: 0 });
     }
-    if !input.was_just_pressed(GameKey::Confirm) {
+    if !input.was_just_pressed(GameKey::Confirm) && !pointer.activated() {
         return ChargenUpdate::idle();
     }
     match row {

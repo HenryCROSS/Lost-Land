@@ -29,7 +29,10 @@ use ll_platform::input::{GameKey, InputState};
 use ll_ui::widget::focus::navigate_focus;
 use ll_ui::widget::state::{WidgetId, WidgetStateTable};
 
-use crate::menu_screen::{ScreenNotice, ScreenOutcome, ScreenState, SettingsOrigin, focus_index};
+use crate::menu_screen::{
+    ScreenNotice, ScreenOutcome, ScreenState, SettingsOrigin, apply_row_pointer, focus_index,
+};
+use crate::pointer::RowPointer;
 
 /// 游戏主菜单（首页）四条选项的控件 id，顺序即导航顺序（同
 /// [`crate::pause_menu::menu_item_ids`]）。
@@ -126,10 +129,15 @@ impl TitleUpdate {
 pub fn update_title(
     table: &mut WidgetStateTable,
     input: &InputState,
+    pointer: RowPointer,
     has_save: bool,
 ) -> TitleUpdate {
     navigate_focus(table, &TITLE_ITEM_IDS, input);
-    if !input.was_just_pressed(GameKey::Confirm) {
+    // 指针**按下**那一刻把焦点挪过去；松开在同一行才算确认。两条路径
+    // 在这里汇成同一个分支——不为鼠标另写一套动作分派，见
+    // `crate::pointer` 模块文档。
+    apply_row_pointer(table, &TITLE_ITEM_IDS, pointer);
+    if !input.was_just_pressed(GameKey::Confirm) && !pointer.activated() {
         return TitleUpdate::idle();
     }
     match title_focus_index(table) {

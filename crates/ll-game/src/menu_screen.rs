@@ -410,6 +410,23 @@ pub fn clear_bindings(config: &mut GameConfig, action: GameKey) {
     }
 }
 
+/// 建一张**第一项已经聚焦**的焦点表——规格 N10 的落点。
+///
+/// # 为什么复用 `move_focus` 而不是直接写 `entry(ids[0]).focused = true`
+///
+/// 「一组控件里第一项是哪个、聚焦时其余项要不要一并清掉」这条算法
+/// `ll_ui::widget::focus::move_focus` 已经有了（冷启动 `Next` → 第 0
+/// 项，并保证「至多一个控件聚焦」这条不变式）。自己写一遍就是同一个
+/// 算法的第二份，而两份迟早分叉。
+///
+/// `ids` 为空时返回一张空表——`move_focus` 对空列表返回 `None` 且不
+/// 修改表，这里照样不特殊处理。
+pub fn preselected_focus(ids: &[WidgetId]) -> WidgetStateTable {
+    let mut table = WidgetStateTable::new();
+    ll_ui::widget::focus::move_focus(&mut table, ids, ll_ui::widget::focus::FocusDirection::Next);
+    table
+}
+
 /// `ids` 这一组控件里当前聚焦的是第几个；没有任何一项聚焦时返回
 /// `usize::MAX` ——那是一个**必然越界**的下标，`ll_ui::screen` 收到越界
 /// 光标时不标记任何一行（见 `ScreenData::cursor` 文档），正好等于「还没
@@ -438,6 +455,9 @@ pub fn screen_data<'a>(
             empty_key: "screen-title-empty",
             hint_key: "screen-title-hint",
             notice,
+            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
         },
         ScreenState::Menu => ScreenData {
             title_key: "screen-menu-title",
@@ -446,6 +466,9 @@ pub fn screen_data<'a>(
             empty_key: "screen-menu-empty",
             hint_key: "screen-menu-hint",
             notice,
+            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
         },
         ScreenState::CharacterCreation { .. } => ScreenData {
             title_key: "screen-chargen-title",
@@ -454,6 +477,9 @@ pub fn screen_data<'a>(
             empty_key: "screen-chargen-empty",
             hint_key: "screen-chargen-hint",
             notice,
+            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
         },
         ScreenState::WorldSetup { .. } => ScreenData {
             title_key: "screen-worldsetup-title",
@@ -462,6 +488,9 @@ pub fn screen_data<'a>(
             empty_key: "screen-chargen-empty",
             hint_key: "screen-worldsetup-hint",
             notice,
+            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
         },
         // 选出生地屏**不走这块居中面板**：它的「屏」就是整张世界地图，
         // 一块盖在正中央的面板会挡住玩家要点的地方。调用方
@@ -475,6 +504,9 @@ pub fn screen_data<'a>(
             empty_key: "screen-chargen-empty",
             hint_key: "screen-spawnpick-hint",
             notice,
+            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
         },
         ScreenState::SaveList { cursor } => ScreenData {
             title_key: "screen-savelist-title",
@@ -483,6 +515,9 @@ pub fn screen_data<'a>(
             empty_key: "screen-savelist-empty",
             hint_key: "screen-savelist-hint",
             notice,
+            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
         },
         ScreenState::SaveNaming { .. } => ScreenData {
             title_key: "screen-savename-title",
@@ -494,6 +529,9 @@ pub fn screen_data<'a>(
             empty_key: "screen-savelist-empty",
             hint_key: "screen-savename-hint",
             notice,
+            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
         },
         ScreenState::Settings { capturing, .. } => ScreenData {
             title_key: "screen-settings-title",
@@ -506,6 +544,9 @@ pub fn screen_data<'a>(
                 "screen-settings-hint"
             },
             notice,
+            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
         },
     }
 }
@@ -579,14 +620,42 @@ pub struct SettingsContext<'a> {
     pub catalog: &'a Catalog,
 }
 
+/// 把这一帧的指针动作落到一张**焦点表**上（首页与暂停菜单用它）。
+///
+/// 只做「把焦点挪到指针那一行」这一件事——「要不要因此触发」由调用方
+/// 与键盘确认键并起来判，两条路径因此走同一个动作分派分支。
+///
+/// `row` 越界时什么都不做：行矩形与 `ids` 同源现算，越界只可能是两者
+/// 在两帧之间不同步，那时候不动焦点比猜一个安全。
+pub fn apply_row_pointer(
+    table: &mut WidgetStateTable,
+    ids: &[WidgetId],
+    pointer: crate::pointer::RowPointer,
+) {
+    let Some(row) = pointer.focus_row() else {
+        return;
+    };
+    if row >= ids.len() {
+        return;
+    }
+    for (index, id) in ids.iter().enumerate() {
+        table.entry(id).focused = index == row;
+    }
+}
+
 /// 处理设置界面这一帧的输入，返回这一帧产生的提示（若有）。
 ///
 /// 拆成「捕获模式」与「常规模式」两条，是因为两者读的**根本不是同一种
 /// 输入**：捕获模式读的是原始物理键（`InputState::last_physical_key`，
 /// 绕过绑定表），常规模式读的是抽象动作（`GameKey`）。
+///
+/// `pointer` 见 `crate::pointer` 模块文档——它在**捕获模式下一律不
+/// 生效**：那一刻整块屏的语义是「按下你想绑的那个物理键」，鼠标点一行
+/// 没有任何可对应的动作，而把光标挪走会让玩家绑到另一个动作上。
 pub fn update_settings(
     state: &mut ScreenState,
     input: &InputState,
+    pointer: crate::pointer::RowPointer,
     ctx: &mut SettingsContext<'_>,
 ) -> SettingsUpdate {
     let ScreenState::Settings {
@@ -599,9 +668,17 @@ pub fn update_settings(
     };
     let rows = settings_rows();
     if capturing {
+        // **捕获模式下指针一律不生效**：那一刻整块屏的语义是「按下你
+        // 想绑的那个物理键」，鼠标点一行没有任何可对应的动作，而把光标
+        // 挪走会让玩家绑到另一个动作上。
         return update_capture(state, input, ctx, &rows, cursor, origin);
     }
-    update_navigation(state, input, ctx, &rows, cursor, origin)
+    // 指针按下把光标挪过去；越界不动（行矩形与 `rows` 同源现算）。
+    let cursor = match pointer.focus_row() {
+        Some(row) if row < rows.len() => row,
+        _ => cursor,
+    };
+    update_navigation(state, input, pointer, ctx, &rows, cursor, origin)
 }
 
 /// 捕获模式：只看原始物理键。
@@ -677,9 +754,27 @@ fn apply_capture(
 }
 
 /// 常规模式：上下移动光标、左右改取值、确认触发这一行的动作。
+///
+/// # 确认键只做一件事：激活当前焦点（规格 N1）
+///
+/// 本函数此前还有第二件事：光标停在**取值行**（语言 / 垂直同步 /
+/// 滤波）上按确认等价于「把这个值往前拨一格」，与左右键一致。
+///
+/// **那条特例已经删掉。** 它与同一个代码库里另外两块屏直接冲突——
+/// 角色创建（`crate::chargen`）与世界配置（`crate::world_setup`）的
+/// 取值行按确认**刻意是空操作**，而且 `chargen` 那处有注释说明这是
+/// 有意的。同一个物理键在三块长得一样的屏上做两件不同的事，玩家学不
+/// 到任何规律（规格 I7）。
+///
+/// 裁定是**统一到「确认键绝不改变数值、绝不切换开关」**：数值一律用
+/// 左右键改。代价如实记录——设置屏切语言从此非用左右键不可，少了一条
+/// 冗余路径；换来的是「确认 = 激活当前焦点」这条规律在全部十块屏上
+/// 无例外，鼠标点击（`crate::pointer`）也就能安全地复用它。
+#[allow(clippy::too_many_arguments)]
 fn update_navigation(
     state: &mut ScreenState,
     input: &InputState,
+    pointer: crate::pointer::RowPointer,
     ctx: &mut SettingsContext<'_>,
     rows: &[SettingsRow],
     cursor: usize,
@@ -698,6 +793,15 @@ fn update_navigation(
         };
         return SettingsUpdate::idle();
     }
+    // 指针挪过光标但这一帧没有触发：把新光标写回屏状态就返回。
+    if matches!(pointer, crate::pointer::RowPointer::Focus(_)) {
+        *state = ScreenState::Settings {
+            cursor,
+            capturing: false,
+            origin,
+        };
+        return SettingsUpdate::idle();
+    }
     let Some(row) = rows.get(cursor).copied() else {
         return SettingsUpdate::idle();
     };
@@ -706,7 +810,7 @@ fn update_navigation(
         adjust_value(row, ctx, forward);
         return SettingsUpdate::idle();
     }
-    if !input.was_just_pressed(GameKey::Confirm) {
+    if !input.was_just_pressed(GameKey::Confirm) && !pointer.activated() {
         return SettingsUpdate::idle();
     }
     match row {
@@ -724,13 +828,12 @@ fn update_navigation(
             *state = origin.screen();
             SettingsUpdate::idle()
         }
-        // 三个取值行按确认等价于「往前拨一格」，与左右键一致；分隔标题
-        // 什么都不做。
-        SettingsRow::KeybindsHeader => SettingsUpdate::idle(),
-        other => {
-            adjust_value(other, ctx, true);
-            SettingsUpdate::idle()
-        }
+        // 分隔标题与**三个取值行**（语言 / 垂直同步 / 滤波）按确认一律
+        // 什么都不做——见本函数文档「确认键只做一件事」一节。
+        SettingsRow::KeybindsHeader
+        | SettingsRow::Language
+        | SettingsRow::Vsync
+        | SettingsRow::ScaleFilter => SettingsUpdate::idle(),
     }
 }
 

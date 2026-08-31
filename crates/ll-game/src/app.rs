@@ -46,7 +46,6 @@ use ll_ui::widget::quad::QuadRenderer;
 use ll_ui::widget::skin::NineSliceSkin;
 use ll_ui::widget::state::WidgetStateTable;
 use ll_ui::widget::textured_quad::TexturedQuadRenderer;
-use ll_ui::widget::ui_mode::{UiMode, UiModeStack};
 use ll_world::fov::compute_fov;
 use ll_world::overview::ContinentField;
 use ll_world::settlement::SettlementStatus;
@@ -514,12 +513,6 @@ pub struct Demo {
     /// 索引的旁表,见 `ll_ui::widget::state` 模块文档「为什么是旁表」
     /// 一节：结构上不可能污染 `WorldState`,只影响画面。
     hud_anim: WidgetStateTable,
-    /// 玩家菜单（背包 / 制作）当前的状态与光标位置——I 键与 C 键切换，
-    /// 见 [`crate::player_action`] 模块文档。与 `world_map_open` 同一条
-    /// 纪律：纯表现层状态，不进 `GameWorld`/`WorldState`、不进存档、
-    /// 不参与回放，该模块文档「菜单状态算不算跨帧隐式状态（约束 C1）」
-    /// 一节给了完整的三条判据。
-    menu: PlayerMenu,
     /// 上一次玩家操作留下的反馈（`None` 表示没有话要说）——它是
     /// 「静默作废对玩家不成立」这条的落点，见
     /// `ll_sim::turn::PlayerTurnOutcome` 文档。
@@ -531,10 +524,6 @@ pub struct Demo {
     /// 诚实的语义：屏幕上那句话恒等于「你最近这一下按出了什么结果」，
     /// 玩家再按一次它就被换掉。
     feedback: Option<Feedback>,
-    /// 世界地图当前是否处于打开状态——M 键（`GameKey::Map`）切换,见
-    /// [`Demo::advance`] 里的开关逻辑与 `ll_ui::hud::world_map` 模块
-    /// 文档。纯粹的表现层 UI 状态,同样不进 `GameWorld`/`WorldState`。
-    world_map_open: bool,
     /// 据点职业名册解析结果——[`crate::world::materialize_nearby_settlements`]
     /// 每次物化都要用，同样只在建局/读档后解析一次（`SettlementRoles::resolve`
     /// 只是几次注册表查询，但它的输入——注册表——装载后不再变化）。
@@ -543,20 +532,24 @@ pub struct Demo {
     /// 什么用墙钟，不用帧计数」一节：只活在表现层，每帧调用一次
     /// [`FpsCounter::record_frame`]，产出的浮点数只用来拼状态栏文本。
     fps_counter: FpsCounter,
-    /// 模态 UI 栈——**驱动 `InputContext` 在 `Gameplay`/`Menu` 之间切换
-    /// 的那个真相源**，见 `ll_ui::widget::ui_mode` 模块文档与
-    /// [`AppHandler::input_context`]。
+    /// **「现在盖着屏幕的是哪一层」的唯一真相源**——模态栈 + 模态屏 +
+    /// 玩家菜单 + 世界地图，四样东西封在一个类型里，见
+    /// [`crate::modal::Modal`] 模块文档。
     ///
-    /// 栈非空 ⇔ 有一块模态屏盖着 ⇔ 平台层按菜单表解析物理键 ⇔
-    /// [`Demo::advance`] 整段早退（世界一个字节都不动）。这四件事必须
-    /// 同时成立，因此它们由同一个字段决定，而不是各自留一个布尔量。
+    /// # 这个字段此前是四个字段
     ///
-    /// **这段措辞被首页改写过一次**：原文写的是「盖在世界上」，并且
-    /// 反过来也成立——栈空 ⇔ 玩家在世界里。首页落地之后反向不再成立：
-    /// 启动后先停在首页，那一刻栈非空、而世界**还不存在**
-    /// （[`Demo::session`] 为 `None`）。现在只剩单向：**栈空 ⇒ 有世界
-    /// 在跑**。
-    ui_modes: UiModeStack,
+    /// `ui_modes` / `screen` / `menu` / `world_map_open` 曾经各自独立，
+    /// 而后三者里只有 `screen` 会去压那个栈。规格
+    /// `knowledge/design/ui-and-navigation.md` 第〇节把后果逐条列了出来
+    /// （Esc 实现了两遍、地图那套一遍都没有、方向键被两处同时吃）。
+    /// 合成一个字段之后，「两套模态各记各的」在 `crate::modal` 之外
+    /// **写不出来**——那四样东西是私有的。
+    ///
+    /// 栈非空 ⇔ 有东西盖着屏幕 ⇔ 取消键该退一层而不是开主菜单
+    /// （规格 N2）。**注意这不再等价于「`advance` 整段早退」**：玩家
+    /// 菜单与世界地图现在也在栈里，而它们各自的早退判据仍然是各自
+    /// 那一条，见 [`Demo::advance`]。
+    modal: crate::modal::Modal,
     /// 磁盘上那份存档在**本次启动那一刻**存不存在——首页的「读取存档」
     /// 那一行能不能按，由它决定。
     ///
@@ -572,12 +565,22 @@ pub struct Demo {
     /// `Demo` 时，以及每次**进入存档列表屏**时——玩家在游戏里存过一次
     /// 再回主菜单，列表必须是新的。
     save_slots: Vec<crate::save_slot::SaveSlot>,
-    /// 模态屏当前开着哪一块（`None` = 没开）——与 `ui_modes` 是**同一
-    /// 件事的两面**：栈管「输入上下文该切到哪」，本字段管「这块屏里
-    /// 具体在显示什么、光标在哪」。不合并成一个：前者住在 `ll-ui`
-    /// 且刻意只有 `Menu` 一个变体（见 `UiMode` 文档），后者是
-    /// `ll-game` 自己的导航状态。
-    screen: Option<ScreenState>,
+    /// 窗口这一刻多大（物理像素），`None` = 窗口还没建出来。
+    ///
+    /// # 为什么它不住在 `GpuResources` 里
+    ///
+    /// `GpuResources::window_size` 也有一份，但那一份要等 GPU 资源建好
+    /// 才有。而**窗口尺寸是窗口的事实，不是 GPU 的**：模态屏的行矩形
+    /// （鼠标点在第几行）只需要窗口多大，不需要任何 GPU 对象。
+    /// [`AppHandler::on_resume`]/[`AppHandler::on_resize`] 因此**先**记
+    /// 这个字段、再去碰 `resources`。
+    ///
+    /// `None` 时鼠标一律不生效——与 [`Demo::clicked_spawn_zone`] 那条
+    /// 既有降级同一条：没有窗口就没有窗口坐标可言。
+    viewport: Option<(f32, f32)>,
+    /// 指针在模态屏行列表上的跨帧状态（这次按下是从哪一行开始的、这一
+    /// 刻悬停在哪一行），见 [`crate::pointer`] 模块文档。
+    pointer: crate::pointer::PointerState,
     /// 菜单屏三条选项的焦点表——[`ll_ui::widget::focus`] 读写它。
     ///
     /// 与 `hud_anim` 同一条纪律（`ll_ui::widget::state` 模块文档「为
@@ -724,26 +727,26 @@ impl Demo {
             resources: None,
             catalog,
             hud_anim: WidgetStateTable::new(),
-            menu: PlayerMenu::default(),
             feedback: None,
-            world_map_open: false,
             settlement_roles,
             fps_counter: FpsCounter::new(),
-            // 首页在**第一帧之前**就已经开着，因此这里用的是
-            // `UiModeStack::opened` 而不是 `push`——那一刻还没有
-            // `InputState` 可以清空，也没有任何键可能正被按住，见那个
-            // 构造器的文档。
-            ui_modes: if at_title {
-                UiModeStack::opened(UiMode::Menu)
+            // 首页在**第一帧之前**就已经开着，见
+            // `crate::modal::Modal::at_title`。
+            modal: if at_title {
+                crate::modal::Modal::at_title()
             } else {
-                UiModeStack::new()
+                crate::modal::Modal::in_world()
             },
-            screen: if at_title {
-                Some(ScreenState::Title)
+            // **首页的第一项预先选中**——所有者 2026-08-29 裁定（交接
+            // 文档第〇之二节第 1 条），规格 N10。见 [`Demo::open_menu`]
+            // 上面那一段对被推翻的原论证的复盘。
+            viewport: None,
+            pointer: crate::pointer::PointerState::default(),
+            screen_focus: if at_title {
+                crate::menu_screen::preselected_focus(&crate::title_screen::TITLE_ITEM_IDS)
             } else {
-                None
+                WidgetStateTable::new()
             },
-            screen_focus: WidgetStateTable::new(),
             screen_notice: None,
             pending_bindings: None,
             new_game_draft: None,
@@ -781,50 +784,6 @@ impl Demo {
     // 模态栈），而上下文切换按设计必须清空按键状态——玩家死的那一刻可能
     // 正按着方向键，见 `ll_ui::widget::ui_mode::UiModeStack::push`。
     fn advance(&mut self, input: &mut InputState, frame: FrameId) {
-        // 世界地图开关——一次性动作，`was_just_pressed` 而非
-        // `was_activated`：与 `GameKey::Screenshot`/`GameKey::Menu` 同一类
-        // 键（`GameKey::is_repeatable` 没有把 `Map` 收进去），长按不该
-        // 反复切换。不依赖世界时钟是否前进，因此排在 `maintain_streaming`
-        // 之前——地图是否打开与本帧是否真的推进了一次回合无关。
-        if input.was_just_pressed(GameKey::Map) {
-            // 没有世界就没有地图——玩家还停在首页的那一刻按下 M 什么都
-            // 不该发生。与 [`Demo::draw`] 里 HUD 那道闸门同源：世界地图
-            // 是画在世界之上的观测层，它的视野本身也住在 `Session` 上
-            // （见 `crate::session::Session::world_map_view` 字段文档）。
-            if let Some(session) = self.session.as_mut() {
-                self.world_map_open = !self.world_map_open;
-                if self.world_map_open {
-                    // 每次打开都重新对准玩家，见
-                    // `crate::session::Session::world_map_view` 字段文档。
-                    let player_pos = session
-                        .game_world
-                        .world
-                        .actors
-                        .get(session.game_world.player)
-                        .map(|agent| agent.pos);
-                    if let Some(pos) = player_pos {
-                        session.world_map_view =
-                            WorldMapView::centered_on_tile(&session.continent_field, pos);
-                    }
-                }
-            }
-        }
-        // 地图打开时，方向键与缩放键**只作用于地图**，本帧不再驱动玩家
-        // 移动与画面缩放，直接返回。
-        //
-        // # 规格没裁定，本批临时选定
-        //
-        // 地图是一层全屏浮层。玩家盯着地图按方向键，期待的是移动地图，
-        // 而不是让角色在看不见的地方走两步——后者还会**推进世界时钟**
-        // （见本方法文档「玩家不行动，时间就不走」），是不可撤销的。
-        // 选这条是因为它最保守：反转它只需要删掉这个 `if` 分支。
-        //
-        // 早退也顺带保证了地图开着的时候世界完全静止：NPC 不动、流式
-        // 加载不跑、时钟不走。玩家看地图看多久都不会被咬。
-        if self.world_map_open {
-            self.pan_and_zoom_world_map(input);
-            return;
-        }
         // 模态屏盖着的时候，世界一个字节都不动——不跑流式维护、不跑
         // AI、不跑玩家指令，见 `crate::menu_screen` 模块文档「世界在
         // 这块屏底下不动」一节。
@@ -832,7 +791,14 @@ impl Demo {
         // 这条比「回合制本来就是玩家不动世界就不走」更强，也必须更强：
         // 后者只保证**时钟**不前进，但方向键仍然会被 `player_command`
         // 读成移动意图。整段早退是最保守、也最容易向玩家解释的语义。
-        if self.screen.is_some() {
+        //
+        // # 这道闸门此前排在地图那道**后面**（规格 D3）
+        //
+        // 结果是暂停菜单盖在世界地图上的那一帧里，方向键**同时**被
+        // `update_screen`（菜单光标）与 `pan_and_zoom_world_map`（地图
+        // 平移）消费：玩家按一下「下」，菜单光标动一格，地图也跟着滚
+        // 一格。规格 N8 的落点之一就是把两道闸门换个次序。
+        if self.modal.screen().is_some() {
             return;
         }
         // 世界尚未存在（玩家还停在首页）——同样整段早退。
@@ -842,6 +808,11 @@ impl Demo {
         // 是两件事——将来任何一条绕过屏的路径（例如死亡后回到首页）
         // 仍然会被这一道挡住。
         if self.session.is_none() {
+            return;
+        }
+        // 世界地图那一层：开关、取消、平移三件事全在里面，吃掉这一帧
+        // 就返回。
+        if self.handle_world_map(input) {
             return;
         }
         self.maintain_streaming();
@@ -859,6 +830,58 @@ impl Demo {
         // 转成普通」的那份，不是死之前那份。
         self.handle_player_death(input);
         self.maybe_autosave();
+    }
+
+    /// 世界地图那一层这一帧的全部输入：取消键关掉它、地图键开关它、
+    /// 开着时方向键与缩放键**只作用于地图**。返回真表示这一帧到此为止，
+    /// 世界不再推进。
+    ///
+    /// # 取消键关地图，是规格 N2 在这一层的落点
+    ///
+    /// 此前地图**没有任何取消处理**：`world_map_open` 是 `Demo` 上一个
+    /// 裸 `bool`，既不是 `ScreenState` 也不是 `PlayerMenu`，于是
+    /// `on_frame` 那条顶层取消判据在地图开着时成立——按 Esc 不关地图，
+    /// 而是在地图上面盖一层暂停菜单（规格 D3）。现在地图进了栈，那条
+    /// 顶层判据只在 `modal.is_empty()` 时才成立，取消键因此落到这里。
+    ///
+    /// # 地图开着时世界完全静止
+    ///
+    /// 早退顺带保证了 NPC 不动、流式加载不跑、时钟不走。玩家盯着地图
+    /// 看多久都不会被咬。
+    fn handle_world_map(&mut self, input: &mut InputState) -> bool {
+        if self.modal.world_map_open() && input.was_just_pressed(GameKey::Cancel) {
+            self.modal.close_world_map(input);
+            return true;
+        }
+        // 地图开关——一次性动作，`was_just_pressed` 而非 `was_activated`：
+        // 与 `GameKey::Screenshot`/`GameKey::Menu` 同一类键
+        // （`GameKey::is_repeatable` 没有把 `Map` 收进去），长按不该反复
+        // 切换。
+        if input.was_just_pressed(GameKey::Map) && self.modal.toggle_world_map(input) {
+            self.recenter_world_map();
+        }
+        if self.modal.world_map_open() {
+            self.pan_and_zoom_world_map(input);
+            return true;
+        }
+        false
+    }
+
+    /// 每次打开地图都重新对准玩家，见
+    /// `crate::session::Session::world_map_view` 字段文档。
+    fn recenter_world_map(&mut self) {
+        let Some(session) = self.session.as_mut() else {
+            return;
+        };
+        let player_pos = session
+            .game_world
+            .world
+            .actors
+            .get(session.game_world.player)
+            .map(|agent| agent.pos);
+        if let Some(pos) = player_pos {
+            session.world_map_view = WorldMapView::centered_on_tile(&session.continent_field, pos);
+        }
     }
 
     /// 世界时钟走满一个自动存档周期就存一次。
@@ -969,16 +992,13 @@ impl Demo {
             target,
         ));
         self.save_slots = crate::save_slot::list_slots(&self.saves_dir);
-        self.screen = Some(ScreenState::CharacterCreation { cursor: 0 });
+        // 角色创建是一块模态屏，输入上下文要切到 `Menu`；玩家死的那一刻
+        // 可能正按着方向键，一并视为松开——两件事都由
+        // `crate::modal::Modal::set_screen` 一起做完。
+        self.modal
+            .set_screen(Some(ScreenState::CharacterCreation { cursor: 0 }), input);
         self.screen_notice = Some(ScreenNotice::PlayerDied);
         self.screen_focus = WidgetStateTable::default();
-        // 角色创建是一块模态屏，输入上下文要切到 `Menu`；玩家死的那一刻
-        // 可能正按着方向键，一并视为松开。
-        if self.ui_modes.depth() == 0 {
-            self.ui_modes.push(UiMode::Menu, input);
-        } else {
-            input.clear();
-        }
     }
 
     /// 本帧的一次回合结算：清理老化地面物品 → 结算排在玩家之前的
@@ -989,7 +1009,7 @@ impl Demo {
     /// `&mut self` 的方法，两者不能同时活着。拆开之后 `advance` 只剩
     /// 「闸门 + 每帧杂务 + 调用本方法」，也顺带把那个早已越过 50 行
     /// 上限的函数切小了一截。
-    fn run_turn(&mut self, input: &InputState) {
+    fn run_turn(&mut self, input: &mut InputState) {
         let Some(session) = self.session.as_mut() else {
             return;
         };
@@ -1044,13 +1064,15 @@ impl Demo {
         //
         // 查不到玩家实体时跳过（与 `draw_hud` 同一条降级纪律）：菜单
         // 要读它的背包与装备。
-        let command = player_command(
-            &mut self.menu,
-            input,
-            &session.game_world.world,
-            player,
-            &self.content.recipe_table,
-        );
+        //
+        // 菜单开关与模态栈的配对由 `crate::modal::Modal::with_player_menu`
+        // 负责——那是本模块**唯一**能拿到 `&mut PlayerMenu` 的路径，
+        // 见 `crate::modal` 模块文档最后一节。
+        let content = &self.content;
+        let world = &session.game_world.world;
+        let command = self.modal.with_player_menu(input, |menu, input| {
+            player_command(menu, input, world, player, &content.recipe_table)
+        });
         match command {
             PlayerCommand::Idle => {}
             PlayerCommand::Rejected(feedback) => self.feedback = Some(feedback),
@@ -1084,52 +1106,47 @@ impl Demo {
 
     /// 打开游戏内菜单：压一层模态 UI 栈（这一步同时把输入上下文切到
     /// `InputContext::Menu`、把这一刻按住的键视为全部松开），并把屏
-    /// 状态置成菜单。
+    /// 状态置成菜单、**焦点预置在第一项上**。
     ///
-    /// 焦点**刻意不预置**在任何一项上（`screen_focus` 保持全空）：玩家
-    /// 第一次按方向键才出现焦点，与
+    /// # 「刻意不预置焦点」那条论证被推翻了，原文与推翻理由都记在这里
+    ///
+    /// 本方法此前写的是：焦点**刻意不预置**在任何一项上
+    /// （`screen_focus` 保持全空），玩家第一次按方向键才出现焦点，与
     /// `ll_ui::widget::focus::move_focus` 文档「起点」一节的既有约定
     /// 一致。
+    ///
+    /// **项目所有者 2026-08-29 裁定改成预选第一项**（交接文档
+    /// `knowledge/handoff/2026-08-28-session-handoff.md` 第〇之二节
+    /// 第 1 条，规格 `knowledge/design/ui-and-navigation.md` N10）。
+    /// 原论证**在它写下的那一刻是成立的**——不预选就不会误触，这在
+    /// 一个鼠标也能用的界面里是对的。它作废是因为**前提变了**：那时候
+    /// 这些屏只有键盘一条路，代价是新玩家进游戏第一眼看到首页、第一
+    /// 反应按 Enter，**什么都不发生**（规格 I6：这条对新玩家的伤害最
+    /// 直接）。而「误触」那一侧现在由鼠标那套约定自己管：指针要
+    /// **按下**才移焦点，光把鼠标划过去什么都不会发生，见
+    /// `crate::pointer` 模块文档。
+    ///
+    /// `move_focus` 文档那条「起点」约定**不动**：冷启动
+    /// `Next`→0 / `Prev`→末位仍然照旧，本方法只是不再让表保持全空。
+    /// 预置本身也复用它，不新造第二套「怎么算第一项」的逻辑。
     fn open_menu(&mut self, input: &mut InputState) {
-        self.ui_modes.push(UiMode::Menu, input);
-        self.screen = Some(ScreenState::Menu);
-        self.screen_focus = WidgetStateTable::new();
+        let ids = crate::pause_menu::menu_item_ids(self.can_save_manually());
+        self.modal.set_screen(Some(ScreenState::Menu), input);
+        self.screen_focus = crate::menu_screen::preselected_focus(&ids);
         self.screen_notice = None;
     }
 
-    /// 让模态栈的栈顶与「当前这块屏要不要玩家打字」对齐。
+    /// 关掉整块模态屏，回到游戏——屏那一层连同压在它上面的文本输入层
+    /// 一起弹掉（同样清空按键状态：玩家在菜单里按着方向键就关掉菜单时，
+    /// 角色不该立刻窜出去）。
     ///
-    /// 判据来自 [`ScreenState::wants_text_entry`]（今天只有命名屏返回
-    /// 真）。压上 `UiMode::TextEntry` 那一层之后，输入上下文变成
-    /// `InputContext::TextEntry`：WASD 在那张表里查不到任何动作（打字
-    /// 不会让角色走起来），空格变回一个字符，事件循环同时开启输入法并
-    /// 打开文本通道——**三件事共用这一个判据**，见
-    /// `ll_platform::window::AppHandler::input_context` 文档。
-    ///
-    /// **复用既有的 `UiModeStack`，不另起一套**：它的 `push`/`pop` 自带
-    /// `InputState::clear()`，正好是进出文本输入态时想要的（进去时把
-    /// 按住的方向键视为松开，出来时同理）。
-    ///
-    /// 在屏切换那个唯一漏斗后面调用。关整块屏走 `close_screen`，它本来
-    /// 就把栈弹空，不需要额外处理。
-    fn sync_text_entry_mode(&mut self, input: &mut InputState) {
-        let want = self.screen.is_some_and(ScreenState::wants_text_entry);
-        let has = self.ui_modes.top() == Some(UiMode::TextEntry);
-        if want == has {
-            return;
-        }
-        if want {
-            self.ui_modes.push(UiMode::TextEntry, input);
-        } else {
-            self.ui_modes.pop(input);
-        }
-    }
-
-    /// 关掉整块模态屏，回到游戏——把栈弹空（同样清空按键状态：玩家在
-    /// 菜单里按着方向键就关掉菜单时，角色不该立刻窜出去）。
+    /// **只弹屏那一层，不再把整个栈弹空**：玩家菜单与世界地图现在也在
+    /// 栈里（规格 N8），把栈清空等于把它们的状态与栈的配对当场打断。
+    /// 今天没有任何路径能让屏与那两者同时开着（`on_frame` 里那道
+    /// `!menu.is_open()` 的闸门挡着），但依赖「今天恰好没有」正是本
+    /// 仓库反复付过代价的形状。
     fn close_screen(&mut self, input: &mut InputState) {
-        while self.ui_modes.pop(input).is_some() {}
-        self.screen = None;
+        self.modal.set_screen(None, input);
         self.screen_notice = None;
     }
 
@@ -1138,14 +1155,74 @@ impl Demo {
     /// 拆成独立方法而不是塞进 [`Demo::on_frame`]：`on_frame` 已经同时
     /// 承担着「退出判定 + 世界推进 + 三条渲染通道」，再往里塞一段
     /// 二十行的菜单路由会让它越过 50 行的函数上限。
+    /// 这一帧指针对这块模态屏的行做了什么，见 [`crate::pointer`] 模块
+    /// 文档那四条约定。
+    ///
+    /// # 三条降级，各有各的理由
+    ///
+    /// - 窗口还没建出来（[`Demo::viewport`] 为 `None`）→ 没有窗口坐标
+    ///   可言，鼠标一律不生效。与 [`Demo::clicked_spawn_zone`] 那条既有
+    ///   降级同一条。
+    /// - 这块屏不画居中面板（选出生地屏）→ 它的鼠标交互是**在地图上
+    ///   点一格**，早已由 `clicked_spawn_zone` 接上，不走行列表这一套。
+    /// - 行矩形算出来是空的（列表为空，只显示一行占位文字）→ 那一行
+    ///   不是按钮，点它没有可对应的动作。
+    ///
+    /// 三条都返回 [`crate::pointer::RowPointer::Idle`]，并且**照样推进
+    /// 一次跨帧状态**（松开时解除武装），否则在这些屏上按下再切走会
+    /// 留下一个永不清除的「已武装」。
+    fn resolve_screen_pointer(
+        &mut self,
+        state: ScreenState,
+        input: &InputState,
+    ) -> crate::pointer::RowPointer {
+        let Some((width, height)) = self.viewport else {
+            return crate::pointer::RowPointer::Idle;
+        };
+        let rects = {
+            let Some((rows, cursor)) = screen_row_texts(
+                state,
+                &self.config,
+                &self.catalog,
+                &self.screen_focus,
+                !self.save_slots.is_empty(),
+                self.can_save_manually(),
+                &self.save_slots,
+                &self.content,
+                self.new_game_draft.as_ref(),
+            ) else {
+                return crate::pointer::RowPointer::Idle;
+            };
+            let notice_text = self
+                .screen_notice
+                .map(|notice| notice.resolve(&self.catalog, &self.config.language));
+            let data = screen_data(state, &rows, cursor, notice_text.as_deref());
+            ll_ui::screen::screen_row_rects(
+                &data,
+                &self.catalog,
+                &self.config.language,
+                width,
+                height,
+            )
+        };
+        crate::pointer::resolve_row_pointer(&mut self.pointer, input, &rects)
+    }
+
     fn update_screen(&mut self, input: &mut InputState) -> bool {
-        let Some(state) = self.screen else {
+        let Some(state) = self.modal.screen() else {
             return false;
         };
+        // 这一帧鼠标对这块屏的行做了什么——**先算，再把它与键盘输入
+        // 一起交给各屏的状态机**，两条路径因此走同一个动作分派分支。
+        let pointer = self.resolve_screen_pointer(state, input);
         let (outcome, next_state) = match state {
             ScreenState::Title => {
-                let update =
-                    update_title(&mut self.screen_focus, input, !self.save_slots.is_empty());
+                let update = update_title(
+                    &mut self.screen_focus,
+                    input,
+                    pointer,
+                    !self.save_slots.is_empty(),
+                );
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
                 }
@@ -1153,11 +1230,11 @@ impl Demo {
             }
             ScreenState::Menu => {
                 let can_save_manually = self.can_save_manually();
-                update_menu(&mut self.screen_focus, input, can_save_manually)
+                update_menu(&mut self.screen_focus, input, pointer, can_save_manually)
             }
             ScreenState::CharacterCreation { cursor } => {
                 let mut cursor = cursor;
-                let update = self.update_character_creation(&mut cursor, input);
+                let update = self.update_character_creation(&mut cursor, input, pointer);
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
                 }
@@ -1168,7 +1245,7 @@ impl Demo {
             }
             ScreenState::WorldSetup { cursor } => {
                 let mut cursor = cursor;
-                let update = self.update_world_setup(&mut cursor, input);
+                let update = self.update_world_setup(&mut cursor, input, pointer);
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
                 }
@@ -1192,8 +1269,12 @@ impl Demo {
             }
             ScreenState::SaveList { cursor } => {
                 let mut cursor = crate::save_list::clamp_cursor(cursor, &self.save_slots);
-                let update =
-                    crate::save_list::update_save_list(&mut cursor, &self.save_slots, input);
+                let update = crate::save_list::update_save_list(
+                    &mut cursor,
+                    &self.save_slots,
+                    input,
+                    pointer,
+                );
                 (
                     update.outcome,
                     Some(update.next.unwrap_or(ScreenState::SaveList { cursor })),
@@ -1210,7 +1291,7 @@ impl Demo {
                     config_path: &self.config_path,
                     catalog: &self.catalog,
                 };
-                let update = update_settings(&mut state, input, &mut ctx);
+                let update = update_settings(&mut state, input, pointer, &mut ctx);
                 if update.notice.is_some() {
                     self.screen_notice = update.notice;
                 }
@@ -1249,11 +1330,9 @@ impl Demo {
             {
                 self.save_slots = crate::save_slot::list_slots(&self.saves_dir);
             }
-            self.screen = Some(next);
-            // 新屏若要玩家打字（今天只有命名屏），这里把模态栈顶换成
-            // `UiMode::TextEntry`；离开时换回来。见
-            // `Demo::sync_text_entry_mode`。
-            self.sync_text_entry_mode(input);
+            // 换屏与「新屏要不要玩家打字」（今天只有命名屏）是同一步
+            // 里做完的，见 `crate::modal::Modal::set_screen`。
+            self.modal.set_screen(Some(next), input);
         }
         match outcome {
             ScreenOutcome::Idle => false,
@@ -1290,7 +1369,7 @@ impl Demo {
     /// 职业 → 世界配置 → 选重生点），走完之后再落到
     /// [`Session::begin`]——那个函数是「世界准备好了，开始玩」这件事
     /// 唯一的入口，四条路径共用，见本批次计划文档第七节。
-    fn start_new_game(&mut self, _input: &mut InputState) {
+    fn start_new_game(&mut self, input: &mut InputState) {
         tracing::info!("首页：开始新游戏，进入角色创建");
         // **本批次把这里从「直接建世界进游戏」换成了「先进一串屏」**
         // ——批次 6 计划文档第七节写明的那个衔接点。三块屏走完之后，
@@ -1299,7 +1378,8 @@ impl Demo {
             &self.content,
             &self.config.new_game,
         ));
-        self.screen = Some(ScreenState::CharacterCreation { cursor: 0 });
+        self.modal
+            .set_screen(Some(ScreenState::CharacterCreation { cursor: 0 }), input);
         self.screen_notice = None;
     }
 
@@ -1308,6 +1388,7 @@ impl Demo {
         &mut self,
         cursor: &mut usize,
         input: &InputState,
+        pointer: crate::pointer::RowPointer,
     ) -> crate::chargen::ChargenUpdate {
         let Some(draft) = self.new_game_draft.as_mut() else {
             // 停在这块屏上却没有草稿，是一种不该发生的状态。退回首页而
@@ -1325,6 +1406,7 @@ impl Demo {
             &mut draft.choice,
             &roster,
             input,
+            pointer,
             next_screen,
         )
     }
@@ -1334,6 +1416,7 @@ impl Demo {
         &mut self,
         cursor: &mut usize,
         input: &InputState,
+        pointer: crate::pointer::RowPointer,
     ) -> crate::chargen::ChargenUpdate {
         let Some(draft) = self.new_game_draft.as_mut() else {
             tracing::warn!("世界配置屏没有草稿，退回首页");
@@ -1347,6 +1430,7 @@ impl Demo {
             &mut preset,
             &mut mode,
             input,
+            pointer,
         );
         draft.preset = preset;
         draft.mode = mode;
@@ -1794,9 +1878,11 @@ impl Demo {
         // 屏换成首页，模态栈保持压着一层——首页也是一块模态屏，输入
         // 上下文仍然是 `Menu`。`close_screen` 会把栈弹空，那是「回到
         // 游戏」用的，这里不能用。
-        self.screen = Some(ScreenState::Title);
+        self.modal.set_screen(Some(ScreenState::Title), input);
         self.screen_notice = None;
-        self.screen_focus = WidgetStateTable::default();
+        // 首页的第一项预先选中（规格 N10），见 [`Demo::open_menu`]。
+        self.screen_focus =
+            crate::menu_screen::preselected_focus(&crate::title_screen::TITLE_ITEM_IDS);
         // 按住的键视为全部松开：玩家在菜单里按着方向键回主菜单，光标不
         // 该立刻在首页上窜出去（与 `close_screen` 同一条纪律）。
         input.clear();
@@ -1819,7 +1905,7 @@ impl Demo {
     /// 不在列表屏时返回 `None`：那是一种不该发生的状态，调用方走既有的
     /// 「留在原地 + 提示」降级路径，不 panic。
     fn selected_slot(&self) -> Option<crate::save_slot::SaveSlot> {
-        let Some(ScreenState::SaveList { cursor }) = self.screen else {
+        let Some(ScreenState::SaveList { cursor }) = self.modal.screen() else {
             tracing::warn!("不在存档列表屏却要读「选中的那一份」，不猜一份给他");
             return None;
         };
@@ -2310,44 +2396,31 @@ fn draw_hud(
     );
 }
 
-/// 把模态屏（菜单/设置）画到 `view` 上——**排在 [`draw_hud`] 之后**，
-/// 因此那层压暗背板会把世界层与 HUD 一起压暗，见 `ll_ui::screen::render`
-/// 模块文档。
+/// 这一帧这块模态屏的**每一行显示成什么字、光标停在第几行**。
 ///
-/// `screen` 为 `None` 时整块不参与本次产出——不是「画出来但透明」，是
-/// 压根不调用渲染函数，与 `draw_hud` 对世界地图/动作菜单的同一条纪律。
-// 八个参数：全部是不同类型的具名值，调用点只有一处（`on_frame` 的渲染
-// 段）。收拢的正确形状是把「屏 + 焦点 + 提示 + 存档在不在」四个纯 UI
-// 状态打包成一个类型，那是一次独立的重构——本批次只往里加了一个
-// `has_save`（首页那一行「读取存档」显示成什么字要靠它），不夹带。
+/// # 为什么抽出来
+///
+/// 两个调用方要的是同一份东西：渲染侧（[`draw_screen`]）拿它排版，
+/// 输入侧（[`Demo::resolve_screen_pointer`]）拿它算出行矩形、判断鼠标
+/// 点在第几行。两处各算一遍就是两份同一个算法——**分叉时点击会静悄悄
+/// 地落到隔壁那一行上**，而没有任何东西会报错。
+///
+/// 返回 `None` 表示这块屏不画那块居中面板（今天只有选出生地屏，它的
+/// 「屏」是整张世界地图）。
 #[allow(clippy::too_many_arguments)]
-fn draw_screen(
-    screen: Option<ScreenState>,
+fn screen_row_texts(
+    state: ScreenState,
     config: &GameConfig,
     catalog: &Catalog,
     focus: &WidgetStateTable,
-    notice: Option<ScreenNotice>,
     has_save: bool,
-    // 暂停菜单里「保存」那一行在不在——肉鸽模式下整行消失，见
-    // `crate::pause_menu::menu_rows`。
     can_save_manually: bool,
-    // 存档列表屏要列的那些槽位。
     slots: &[crate::save_slot::SaveSlot],
-    // 角色创建/世界配置两块屏的行文字要读草稿（玩家选了什么）与内容
-    // （种族/职业的展示名）——两样都只有 `Demo` 够得着，因此从这里
-    // 传进来，而不是让排版函数各自去找。
     content: &LoadedContent,
     draft: Option<&crate::chargen::NewGameDraft>,
-    resources: &mut GpuResources,
-    view: &wgpu::TextureView,
-) {
-    let Some(state) = screen else {
-        return;
-    };
+) -> Option<(Vec<String>, usize)> {
     let language = config.language.as_str();
-    // 行文字与光标位置由 `crate::menu_screen` 排版，本函数只负责把
-    // 结果交给 GPU——见该模块文档「为什么排版在这一层」一节。
-    let (rows, cursor) = match state {
+    Some(match state {
         ScreenState::Title => (
             title_row_texts(catalog, language, has_save),
             title_focus_index(focus),
@@ -2410,10 +2483,46 @@ fn draw_screen(
         // 一块盖在正中央的面板会挡住玩家要点的地方。它的画面全部由
         // `draw_hud` 那一侧产出（地图 + 光标标记 + 提示行），见
         // `crate::spawn_pick` 模块文档。
-        ScreenState::SpawnPick { .. } => return,
+        ScreenState::SpawnPick { .. } => return None,
+    })
+}
+
+/// 把模态屏（菜单/设置）画到 `view` 上——**排在 [`draw_hud`] 之后**，
+/// 因此那层压暗背板会把世界层与 HUD 一起压暗，见 `ll_ui::screen::render`
+/// 模块文档。
+///
+/// `screen` 为 `None` 时整块不参与本次产出——不是「画出来但透明」，是
+/// 压根不调用渲染函数，与 `draw_hud` 对世界地图/动作菜单的同一条纪律。
+// 八个参数：全部是不同类型的具名值，调用点只有一处（`on_frame` 的渲染
+// 段）。本批次**净减了四个**——行文字改由 [`screen_row_texts`] 在调用点
+// 算好传进来（渲染侧与输入侧共用同一份），于是 `config`/`focus`/
+// `has_save`/`can_save_manually`/`slots`/`content`/`draft` 七个换成了
+// 一个 `rows_and_cursor` 加一个 `language`。收拢剩下这几个的正确形状是
+// 把「屏 + 提示 + 悬停行」打包成一个类型，那是一次独立的重构。
+#[allow(clippy::too_many_arguments)]
+fn draw_screen(
+    screen: Option<ScreenState>,
+    // 行文字与光标位置由 [`screen_row_texts`] 现算——**渲染侧与输入侧
+    // 共用同一份**，见那个函数的文档。`None` 表示这块屏不画居中面板。
+    rows_and_cursor: Option<(Vec<String>, usize)>,
+    catalog: &Catalog,
+    language: &str,
+    notice: Option<ScreenNotice>,
+    // 指针这一刻悬停在第几行——只用来画那块淡高亮，**不改焦点**，见
+    // `crate::pointer` 模块文档约定一。
+    hovered_row: Option<usize>,
+    resources: &mut GpuResources,
+    view: &wgpu::TextureView,
+) {
+    let Some(state) = screen else {
+        return;
+    };
+    let Some((rows, cursor)) = rows_and_cursor else {
+        return;
     };
     let notice_text = notice.map(|notice| notice.resolve(catalog, language));
-    let data = screen_data(state, &rows, cursor, notice_text.as_deref());
+    let mut data = screen_data(state, &rows, cursor, notice_text.as_deref());
+    data.hovered = hovered_row;
     let size = resources.window_size;
     render_screen(
         &mut resources.quad_renderer,
@@ -2713,6 +2822,9 @@ fn sprite_instance(
 impl AppHandler for Demo {
     fn on_resume(&mut self, window: Arc<Window>, size: PhysicalSize<u32>) {
         tracing::info!(width = size.width, height = size.height, "window resumed");
+        // **先记窗口尺寸，再建 GPU 资源**：尺寸是窗口的事实，不是 GPU
+        // 的，见 [`Demo::viewport`] 字段文档。
+        self.viewport = Some((size.width as f32, size.height as f32));
         self.resources = Some(GpuResources::new(
             window,
             size,
@@ -2722,6 +2834,9 @@ impl AppHandler for Demo {
     }
 
     fn on_resize(&mut self, size: PhysicalSize<u32>) {
+        // 理由同 [`AppHandler::on_resume`]：窗口尺寸先记下，GPU 资源还
+        // 没建出来也不影响它。
+        self.viewport = Some((size.width as f32, size.height as f32));
         let Some(resources) = self.resources.as_mut() else {
             return;
         };
@@ -2744,11 +2859,11 @@ impl AppHandler for Demo {
         // 「取消键退出游戏」之前**：否则玩家想关个菜单会直接退出整局
         // （与 `crate::player_action` 里 `player_command` 第 ② 步防的
         // 是同一个陷阱）。
-        if self.screen.is_some() {
+        if self.modal.screen().is_some() {
             if self.update_screen(input) {
                 return FrameOutcome::Exit;
             }
-        } else if input.was_just_pressed(GameKey::Menu) && !self.menu.is_open() {
+        } else if input.was_just_pressed(GameKey::Menu) && self.modal.is_empty() {
             // 菜单键（默认 Tab）——交接文档第四节第 17 条那条死路径的
             // 消费点。`was_just_pressed` 而非 `was_activated`：一次性
             // 动作键，长按不该反复开关。
@@ -2778,10 +2893,18 @@ impl AppHandler for Demo {
         // 的默认表，玩家磁盘上那份也是这么写的）本来就是对的。错的是
         // 「顶层 Cancel 等于退出」这条行为，不是那条绑定——改键位只会
         // 把同一个问题挪到另一个键上。
-        if self.screen.is_none()
-            && !self.menu.is_open()
-            && input.was_just_pressed(ll_platform::input::GameKey::Cancel)
-        {
+        //
+        // # 这条判据此前是一串手工合取（规格 N2/N8）
+        //
+        // 原文是 `screen.is_none() && !menu.is_open() && Cancel`——
+        // **每加一套模态 UI 就要多一项，且漏了不报错**，而世界地图那
+        // 一项从来没被加进去：开着地图按 Esc 不关地图，反而在地图上面
+        // 盖一层暂停菜单（规格 D3）。现在只剩一条
+        // [`crate::modal::Modal::is_empty`]：**一层都没盖着才开菜单，
+        // 否则这一帧的取消键归栈顶那一层自己处理**（模态屏在
+        // `update_screen` 里，地图在 `Demo::handle_world_map` 里，玩家
+        // 菜单在 `crate::player_action::player_command` 里）。
+        if self.modal.is_empty() && input.was_just_pressed(ll_platform::input::GameKey::Cancel) {
             self.open_menu(input);
         }
 
@@ -2791,6 +2914,24 @@ impl AppHandler for Demo {
         // 会借走整个 `self`）之前算好——它读的是 `session`，与渲染无关。
         let can_save_manually = self.can_save_manually();
         let has_save = !self.save_slots.is_empty();
+        // 行文字与光标位置必须在借出 `resources`（可变借 `self` 的一个
+        // 字段，而方法调用会借走整个 `self`）之前算好——**而且这正是
+        // 输入侧刚刚用过的同一个函数**，见 `screen_row_texts` 的文档。
+        let screen = self.modal.screen();
+        let screen_rows = screen.and_then(|state| {
+            screen_row_texts(
+                state,
+                &self.config,
+                &self.catalog,
+                &self.screen_focus,
+                has_save,
+                can_save_manually,
+                &self.save_slots,
+                &self.content,
+                self.new_game_draft.as_ref(),
+            )
+        });
+        let hovered_row = self.pointer.hovered_row();
 
         let Some(resources) = self.resources.as_mut() else {
             return FrameOutcome::Continue;
@@ -2853,15 +2994,15 @@ impl AppHandler for Demo {
                     &mut self.hud_anim,
                     frame,
                     fps,
-                    self.world_map_open,
+                    self.modal.world_map_open(),
                     &session.continent_field,
                     &session.world_map_view,
-                    self.menu,
+                    self.modal.player_menu(),
                     self.feedback,
                     // 正常游玩：不改写任何东西。
                     None,
                 );
-            } else if matches!(self.screen, Some(ScreenState::SpawnPick { .. }))
+            } else if matches!(self.modal.screen(), Some(ScreenState::SpawnPick { .. }))
                 && let Some(draft) = self.new_game_draft.as_ref()
                 && let (Some(world), Some(field), Some(view_of_map), Some(exploration)) = (
                     draft.world.world(),
@@ -2899,16 +3040,12 @@ impl AppHandler for Demo {
                 );
             }
             draw_screen(
-                self.screen,
-                &self.config,
+                screen,
+                screen_rows,
                 &self.catalog,
-                &self.screen_focus,
+                &self.config.language,
                 self.screen_notice,
-                has_save,
-                can_save_manually,
-                &self.save_slots,
-                &self.content,
-                self.new_game_draft.as_ref(),
+                hovered_row,
                 resources,
                 &view,
             );
@@ -2920,11 +3057,11 @@ impl AppHandler for Demo {
 
     /// 平台层每次按键/滚轮事件都问一句：这一帧该按哪张表解析物理键。
     ///
-    /// 答案完全由 [`Demo::ui_modes`] 决定——它是本项目里「现在有没有
-    /// 一块模态屏盖着」的唯一真相源，见该字段文档与
+    /// 答案完全由 [`Demo::modal`] 决定——它是本项目里「现在盖着屏幕的
+    /// 是哪一层」的唯一真相源，见 [`crate::modal::Modal`] 模块文档与
     /// [`AppHandler::input_context`] 的完整论证。
     fn input_context(&self) -> InputContext {
-        self.ui_modes.current_context()
+        self.modal.input_context()
     }
 
     /// 把设置界面这一帧改好的键位表交给平台层，见
@@ -3071,7 +3208,7 @@ mod tests {
 
         // Assert：三件事必须同时成立，见 `Demo::session` 字段文档。
         assert!(demo.session.is_none(), "首页那一刻世界不该存在");
-        assert_eq!(demo.screen, Some(ScreenState::Title));
+        assert_eq!(demo.modal.screen(), Some(ScreenState::Title));
         assert_eq!(
             demo.input_context(),
             InputContext::Menu,
@@ -3094,7 +3231,7 @@ mod tests {
 
         // Assert
         assert!(demo.session.is_none(), "首页按方向键不该把世界造出来");
-        assert_eq!(demo.screen, Some(ScreenState::Title));
+        assert_eq!(demo.modal.screen(), Some(ScreenState::Title));
     }
 
     #[test]
@@ -3111,12 +3248,12 @@ mod tests {
         // 断言因此跟着改：改的是**行为**，不是把一条碍事的断言删掉。
         // 「走完三块屏真的能进世界」由 `crates/ll-game/tests/chargen.rs`
         // 端到端钉住。
-        // Arrange：焦点落在第一项「开始游戏」。
+        // Arrange：首页一开焦点就在第一项「开始游戏」上（规格 N10），
+        // **不再需要先按一次方向键**。
         let mut demo = test_demo_at_title();
-        走一帧(&mut demo, 0, &[GameKey::Down]);
 
         // Act
-        走一帧(&mut demo, 1, &[GameKey::Confirm]);
+        走一帧(&mut demo, 0, &[GameKey::Confirm]);
 
         // Assert
         assert!(
@@ -3124,7 +3261,7 @@ mod tests {
             "玩家还没选完角色，这一刻不该有世界在跑"
         );
         assert_eq!(
-            demo.screen,
+            demo.modal.screen(),
             Some(ScreenState::CharacterCreation { cursor: 0 }),
             "「开始游戏」该进角色创建屏"
         );
@@ -3141,17 +3278,16 @@ mod tests {
         // 玩家点的是「读取存档」，没有存档就该被告知，而不是悄悄开一局
         // 新游戏——那局新游戏退出时会把（本来就该被保护的）存档位置
         // 写掉。
-        // Arrange：焦点落在第二项「读取存档」。
+        // Arrange：焦点从第一项往下挪一格，落在第二项「读取存档」。
         let mut demo = test_demo_at_title();
         走一帧(&mut demo, 0, &[GameKey::Down]);
-        走一帧(&mut demo, 1, &[GameKey::Down]);
 
         // Act
-        走一帧(&mut demo, 2, &[GameKey::Confirm]);
+        走一帧(&mut demo, 1, &[GameKey::Confirm]);
 
         // Assert
         assert!(demo.session.is_none(), "没有存档就不该进世界");
-        assert_eq!(demo.screen, Some(ScreenState::Title));
+        assert_eq!(demo.modal.screen(), Some(ScreenState::Title));
         assert_eq!(demo.screen_notice, Some(ScreenNotice::NoSave));
     }
 
@@ -3315,7 +3451,7 @@ mod tests {
         let demo = test_demo();
 
         // Assert
-        assert!(!demo.world_map_open);
+        assert!(!demo.modal.world_map_open());
     }
 
     #[test]
@@ -3331,7 +3467,7 @@ mod tests {
         demo.advance(&mut input, FrameId(0));
 
         // Assert
-        assert!(demo.world_map_open);
+        assert!(demo.modal.world_map_open());
     }
 
     #[test]
@@ -3350,13 +3486,13 @@ mod tests {
         let mut input = InputState::new();
         input.press(GameKey::Map);
         demo.advance(&mut input, FrameId(0));
-        assert!(demo.world_map_open, "第一次按下后应先翻转为打开");
+        assert!(demo.modal.world_map_open(), "第一次按下后应先翻转为打开");
 
         // Act
         demo.advance(&mut input, FrameId(1));
 
         // Assert
-        assert!(!demo.world_map_open);
+        assert!(!demo.modal.world_map_open());
     }
 
     #[test]
@@ -3379,8 +3515,17 @@ mod tests {
         demo.advance(&mut input, FrameId(0));
 
         // Assert
-        assert!(!demo.world_map_open, "世界尚未存在的时候地图开关不该翻上去");
+        assert!(
+            !demo.modal.world_map_open(),
+            "世界尚未存在的时候地图开关不该翻上去"
+        );
     }
+    /// 导航收敛（规格 N8/N7/N2/N1/N10）与鼠标接线的断言住在一个
+    /// **独立文件**里，理由与 `save_tests` 逐字相同，见那个模块的
+    /// 文档与 `app_navigation_tests.rs` 的模块文档。
+    #[path = "../../app_navigation_tests.rs"]
+    mod navigation_tests;
+
     // ───────────────────── 输入接线批次：物品链六个意图 ─────────────────────
     //
     // 下面这一组的共同点：**Act 一律只有按键**。它们要证明的不是
@@ -3709,16 +3854,16 @@ mod tests {
         frame(&mut demo, at, &[GameKey::Interact]);
         at += 1;
         assert!(
-            matches!(demo.menu, PlayerMenu::Interact { .. }),
+            matches!(demo.modal.player_menu(), PlayerMenu::Interact { .. }),
             "脚下立着炉子，按空格应当开出交互列表，实际是 {:?}",
-            demo.menu
+            demo.modal.player_menu()
         );
         frame(&mut demo, at, &[GameKey::Confirm]);
         at += 1;
         assert!(
-            matches!(demo.menu, PlayerMenu::Craft { .. }),
+            matches!(demo.modal.player_menu(), PlayerMenu::Craft { .. }),
             "对着立着的炉子按确认应当换开制作菜单，实际是 {:?}",
-            demo.menu
+            demo.modal.player_menu()
         );
         let sword_row = craft_row_of(&demo, fixture.iron_shortsword_recipe);
         move_cursor_to(&mut demo, &mut at, sword_row);
@@ -3836,9 +3981,9 @@ mod tests {
 
         // Assert：列表开着，东西**还在地上**——没有被直接捡走。
         assert!(
-            matches!(demo.menu, PlayerMenu::Interact { .. }),
+            matches!(demo.modal.player_menu(), PlayerMenu::Interact { .. }),
             "只有一样东西时也必须弹列表，实际是 {:?}",
-            demo.menu
+            demo.modal.player_menu()
         );
         assert_eq!(
             carried(&demo, fixture.iron_ingot),
@@ -3863,7 +4008,11 @@ mod tests {
         frame(&mut demo, 0, &[GameKey::Interact]);
 
         // Assert
-        assert_eq!(demo.menu, PlayerMenu::Closed, "什么都没有时不该开出菜单");
+        assert_eq!(
+            demo.modal.player_menu(),
+            PlayerMenu::Closed,
+            "什么都没有时不该开出菜单"
+        );
         assert_eq!(demo.feedback, Some(Feedback::NothingNearby));
     }
 
@@ -3893,9 +4042,12 @@ mod tests {
 
         // Assert：开的是方向列表，不是物品列表。
         assert!(
-            matches!(demo.menu, PlayerMenu::InteractDirection { .. }),
+            matches!(
+                demo.modal.player_menu(),
+                PlayerMenu::InteractDirection { .. }
+            ),
             "两格有东西时应当先弹方向列表，实际是 {:?}",
-            demo.menu
+            demo.modal.player_menu()
         );
 
         // 再按确认：选中第一行（脚下），进那一格的物品列表——**不**捡走
@@ -3903,10 +4055,11 @@ mod tests {
         let carried_before = carried(&demo, fixture.iron_ingot);
         frame(&mut demo, 1, &[GameKey::Confirm]);
         assert_eq!(
-            demo.menu,
+            demo.modal.player_menu(),
             PlayerMenu::Interact {
                 pos: here,
-                cursor: 0
+                cursor: 0,
+                from_direction: true
             },
             "选完方向应当进那一格的物品列表"
         );
@@ -3947,10 +4100,11 @@ mod tests {
         // Act：只有一格有东西 → 直接进那一格的物品列表 → 按确认捡起。
         frame(&mut demo, 0, &[GameKey::Interact]);
         assert_eq!(
-            demo.menu,
+            demo.modal.player_menu(),
             PlayerMenu::Interact {
                 pos: north_west,
-                cursor: 0
+                cursor: 0,
+                from_direction: false
             },
             "只有一格有东西时应当跳过方向列表，直接开那一格的物品列表"
         );
@@ -3994,7 +4148,7 @@ mod tests {
         frame(&mut demo, 0, &[GameKey::Interact]);
 
         // Assert
-        assert_eq!(demo.menu, PlayerMenu::Closed);
+        assert_eq!(demo.modal.player_menu(), PlayerMenu::Closed);
         assert_eq!(demo.feedback, Some(Feedback::NothingNearby));
         assert_eq!(carried(&demo, fixture.leather_strip), carried_before);
     }
@@ -4047,7 +4201,7 @@ mod tests {
         // Assert：角色没动，时钟也没走（移动会消耗一次回合）。
         assert_eq!(player_pos(&demo), pos_before);
         assert_eq!(demo.test_world().world.clock, clock_before);
-        assert!(demo.menu.is_open(), "菜单应当仍然开着");
+        assert!(demo.modal.player_menu().is_open(), "菜单应当仍然开着");
     }
 
     /// 走**真实生产入口** `on_frame` 跑一帧——不是直接调 `advance`：
@@ -4075,9 +4229,9 @@ mod tests {
         走一帧(&mut demo, 0, &[GameKey::Menu]);
 
         // Assert
-        assert_eq!(demo.screen, Some(ScreenState::Menu));
+        assert_eq!(demo.modal.screen(), Some(ScreenState::Menu));
         assert_eq!(demo.input_context(), InputContext::Menu);
-        assert_eq!(demo.ui_modes.depth(), 1);
+        assert_eq!(demo.modal.depth(), 1);
     }
 
     #[test]
@@ -4094,21 +4248,22 @@ mod tests {
         assert_eq!(demo.input_context(), InputContext::Menu);
 
         // Act：切到命名屏。
-        demo.screen = Some(ScreenState::SaveNaming {
-            origin: crate::spawn_pick::SpawnOrigin::WorldSetup,
-        });
-        demo.sync_text_entry_mode(&mut input);
+        demo.modal.set_screen(
+            Some(ScreenState::SaveNaming {
+                origin: crate::spawn_pick::SpawnOrigin::WorldSetup,
+            }),
+            &mut input,
+        );
 
         // Assert
         assert_eq!(demo.input_context(), InputContext::TextEntry);
 
         // Act：切走。
-        demo.screen = Some(ScreenState::Menu);
-        demo.sync_text_entry_mode(&mut input);
+        demo.modal.set_screen(Some(ScreenState::Menu), &mut input);
 
         // Assert：换回来，而且没有把底下那层菜单一起弹掉。
         assert_eq!(demo.input_context(), InputContext::Menu);
-        assert_eq!(demo.ui_modes.depth(), 1);
+        assert_eq!(demo.modal.depth(), 1);
     }
 
     #[test]
@@ -4118,47 +4273,56 @@ mod tests {
         // 一行删掉不会有任何东西变红——而那正是本仓库最贵的失败模式
         // （声明了但没接线）。
         //
-        // 手法：在栈上留一层与当前屏不相符的 `TextEntry`，然后驱动
-        // 一帧 `update_screen`。只有漏斗真的调了同步，那一层才会被
-        // 弹掉。
-        // Arrange
-        let mut demo = test_demo();
-        let mut input = InputState::new();
-        demo.open_menu(&mut input);
-        demo.screen = Some(ScreenState::SaveList { cursor: 0 });
-        demo.ui_modes.push(UiMode::TextEntry, &mut input);
-        assert_eq!(demo.input_context(), InputContext::TextEntry);
+        // **手法本批改过**：原来是「在栈上留一层与当前屏不相符的
+        // `TextEntry`，看漏斗会不会把它弹掉」。那种状态现在**构造不
+        // 出来**——`crate::modal::Modal` 把栈与屏封在一起，「屏是存档
+        // 列表而栈顶是文本输入」在 `modal` 之外写不出来（那正是规格 N8
+        // 要的结果）。
+        //
+        // 改成从**外面**看同一件事：驱动一帧 `update_screen`，让它算出
+        // 一块新屏。漏斗里那行 `self.modal.set_screen(...)` 一旦删掉，
+        // 屏根本不会换，这条当场变红；而 `set_screen` 自己就负责文本
+        // 输入层的同步（有单元测试盯着），两件事因此不可能只做一件。
+        // Arrange：首页，焦点落在「设置」那一行。
+        let mut demo = test_demo_at_title();
+        走一帧(&mut demo, 0, &[GameKey::Down]);
+        走一帧(&mut demo, 1, &[GameKey::Down]);
 
         // Act
-        demo.update_screen(&mut input);
+        走一帧(&mut demo, 2, &[GameKey::Confirm]);
 
         // Assert
-        assert_eq!(
-            demo.input_context(),
-            InputContext::Menu,
-            "存档列表屏不要文本输入，漏斗应当把那一层弹掉"
+        assert!(
+            matches!(demo.modal.screen(), Some(ScreenState::Settings { .. })),
+            "屏切换漏斗应当真的把新屏写回去，实际是 {:?}",
+            demo.modal.screen()
         );
+        assert_eq!(demo.modal.depth(), 1, "换屏不是又盖一层");
+        assert_eq!(demo.input_context(), InputContext::Menu);
     }
 
     #[test]
-    fn 反复同步不会把模态栈越堆越高() {
-        // `sync_text_entry_mode` 每帧都可能被调到，必须幂等——否则
-        // 停在命名屏几秒钟就会堆出几百层栈。
+    fn 反复切到同一块屏不会把模态栈越堆越高() {
+        // 屏切换漏斗每帧都会调一次 `set_screen`（`update_screen` 算出
+        // 的 `next` 大多数帧等于当前屏），必须幂等——否则停在命名屏
+        // 几秒钟就会堆出几百层栈。
         // Arrange
         let mut demo = test_demo();
         let mut input = InputState::new();
         demo.open_menu(&mut input);
-        demo.screen = Some(ScreenState::SaveNaming {
-            origin: crate::spawn_pick::SpawnOrigin::WorldSetup,
-        });
 
         // Act
         for _ in 0..10 {
-            demo.sync_text_entry_mode(&mut input);
+            demo.modal.set_screen(
+                Some(ScreenState::SaveNaming {
+                    origin: crate::spawn_pick::SpawnOrigin::WorldSetup,
+                }),
+                &mut input,
+            );
         }
 
         // Assert
-        assert_eq!(demo.ui_modes.depth(), 2, "菜单层 + 文本输入层，就两层");
+        assert_eq!(demo.modal.depth(), 2, "菜单层 + 文本输入层，就两层");
         assert_eq!(demo.input_context(), InputContext::TextEntry);
     }
 
@@ -4183,7 +4347,7 @@ mod tests {
         // Assert
         assert_eq!(player_pos(&demo), 开屏后坐标, "角色不该动");
         assert_eq!(demo.test_world().world.clock, 开屏后时钟, "时钟不该走");
-        assert!(demo.screen.is_some(), "菜单应当仍然开着");
+        assert!(demo.modal.screen().is_some(), "菜单应当仍然开着");
     }
 
     #[test]
@@ -4203,7 +4367,7 @@ mod tests {
         }
 
         // Assert
-        assert!(demo.screen.is_none());
+        assert!(demo.modal.screen().is_none());
         assert!(
             demo.test_world().world.clock > 关屏后时钟,
             "等待应当推进时钟"
@@ -4222,7 +4386,7 @@ mod tests {
 
         // Assert
         assert_eq!(outcome, FrameOutcome::Continue, "不该退出整局");
-        assert!(demo.screen.is_none(), "取消键应当把模态屏关掉");
+        assert!(demo.modal.screen().is_none(), "取消键应当把模态屏关掉");
         assert_eq!(demo.input_context(), InputContext::Gameplay);
     }
 
@@ -4249,7 +4413,10 @@ mod tests {
         走一帧(&mut demo, at, &[GameKey::Confirm]);
 
         // Assert
-        assert!(matches!(demo.screen, Some(ScreenState::Settings { .. })));
+        assert!(matches!(
+            demo.modal.screen(),
+            Some(ScreenState::Settings { .. })
+        ));
     }
 
     #[test]
@@ -4263,14 +4430,17 @@ mod tests {
         // Arrange：进设置界面。
         let mut demo = test_demo();
         let at = 开到设置屏(&mut demo);
-        assert!(matches!(demo.screen, Some(ScreenState::Settings { .. })));
+        assert!(matches!(
+            demo.modal.screen(),
+            Some(ScreenState::Settings { .. })
+        ));
 
         // Act
         let outcome = 走一帧(&mut demo, at, &[GameKey::Cancel]);
 
         // Assert
         assert_eq!(outcome, FrameOutcome::Continue, "不该退出整局");
-        assert_eq!(demo.screen, Some(ScreenState::Menu));
+        assert_eq!(demo.modal.screen(), Some(ScreenState::Menu));
     }
 
     #[test]
@@ -4280,13 +4450,13 @@ mod tests {
         // Arrange
         let mut demo = test_demo();
         走一帧(&mut demo, 0, &[GameKey::Inventory]);
-        assert!(demo.menu.is_open(), "Arrange 应当把背包打开");
+        assert!(demo.modal.player_menu().is_open(), "Arrange 应当把背包打开");
 
         // Act
         走一帧(&mut demo, 1, &[GameKey::Menu]);
 
         // Assert
-        assert!(demo.screen.is_none());
+        assert!(demo.modal.screen().is_none());
         assert_eq!(demo.input_context(), InputContext::Gameplay);
     }
 
@@ -4323,9 +4493,10 @@ mod tests {
             .expect("这一行必然存在");
         走一帧(demo, 0, &[GameKey::Menu]);
         let mut at = 1;
-        // 第一次「向下」把焦点从「什么都没选」落到第 0 行，所以到第
-        // `index` 行要按 `index + 1` 次。
-        for _ in 0..=index {
+        // **本批改过**：菜单一开焦点就在第 0 行（规格 N10），所以到第
+        // `index` 行只要按 `index` 次。此前第一次「向下」是用来把焦点
+        // 从「什么都没选」落到第 0 行的。
+        for _ in 0..index {
             走一帧(demo, at, &[GameKey::Down]);
             at += 1;
         }
@@ -4343,7 +4514,7 @@ mod tests {
     /// 捕获模式（下一帧按什么物理键就绑什么）。
     ///
     /// 走的全是玩家真正走的公开路径（`on_frame`），不直接摆弄
-    /// `demo.screen`——那样测出来的是「我把状态摆成这样之后会怎样」，
+    /// `demo.modal.screen()`——那样测出来的是「我把状态摆成这样之后会怎样」，
     /// 不是「玩家按出来会怎样」。
     fn 开到捕获模式(demo: &mut Demo, action: GameKey) -> u64 {
         let mut at = 开到设置屏(demo);
@@ -4372,7 +4543,10 @@ mod tests {
         // Arrange：进设置界面，把开屏那几帧可能攒下的东西先取空。
         let mut demo = test_demo();
         let start = 开到设置屏(&mut demo);
-        assert!(matches!(demo.screen, Some(ScreenState::Settings { .. })));
+        assert!(matches!(
+            demo.modal.screen(),
+            Some(ScreenState::Settings { .. })
+        ));
         demo.take_rebound_keys();
 
         // Act：屏开着，一连三帧一个键都不按，也不移动光标。
@@ -4438,7 +4612,10 @@ mod tests {
             demo.on_frame(FrameId(0), &mut open_inventory),
             FrameOutcome::Continue
         );
-        assert!(demo.menu.is_open(), "Arrange 应当把背包菜单打开");
+        assert!(
+            demo.modal.player_menu().is_open(),
+            "Arrange 应当把背包菜单打开"
+        );
 
         // Act
         let mut cancel = InputState::new();
@@ -4447,7 +4624,7 @@ mod tests {
 
         // Assert：没退出，菜单关了。
         assert_eq!(outcome, FrameOutcome::Continue, "不该退出整局");
-        assert!(!demo.menu.is_open(), "取消键应当把菜单关掉");
+        assert!(!demo.modal.player_menu().is_open(), "取消键应当把菜单关掉");
 
         // 再按一次（子菜单已经关着、模态屏也没开）——**开主菜单，不退出**。
         //
@@ -4463,7 +4640,7 @@ mod tests {
             "什么都没开时按取消键不该退出整局"
         );
         assert!(
-            demo.screen.is_some(),
+            demo.modal.screen().is_some(),
             "什么都没开时按取消键应当开出主菜单——否则这个键就成了死键，\
              玩家既退不出也进不去菜单"
         );
