@@ -16,6 +16,20 @@
 >
 > 本目录各文档正文一律保持冻结原样，不逐句改写。
 
+> **【2026-08-30 更正：本文档正文里的「二十份」「十九份」「第二十一份」「第二十三份」
+> 这类计数与序数全部已过期，且它们是一份注定会漂移的副本，本次不改成新数字。】**
+> 本目录**实际有多少份，跑一条命令就是答案**：
+>
+> ```bash
+> ls knowledge/design/*.md
+> ```
+>
+> 2026-08-30 复核时是 40 份（不含本 README）。**这里不留这个数字当判据**——理由与
+> 黄金基准常量表那三次事故完全相同，见
+> [2026-08-28 会话交接](../handoff/2026-08-28-session-handoff.md) 第〇节
+> 「凡是把真相源之外的副本当判据，迟早分叉，而分叉时没有任何东西会报错」。
+> 下面各节的序数（「第十份」「第十八份」……）**只表示写作先后**，不表示总数。
+
 本目录下二十份文档共同描述「迷途大陆」的物品、装备、属性、社会、经济、种族、世界历史、身份标识、命名与本地化、坐标与空间模型、脚本层数据句柄与批量查询、脚本状态存储、三轴战斗结算、增益与通用触发器、职业技能与任务、动画与视觉特效边界、击杀与死亡记录、mod 包结构与资产 VFS、剧本系统、伤害公式 mod API 二十个子系统。它们分开冻结、分次写成，彼此高度依赖但没有统一校对过——这份索引是校对结果：谁管什么、谁引用了谁、贯穿全局的原则用在哪几处、该按什么顺序读。
 
 前五份（物品、装备、属性、社会、经济）是最早冻结的一批，中间四份（种族、世界历史、身份与 ID 空间、命名与本地化）是在前五份基础上补的一批已拍板决定——它们大量引用前五份的既有结构（`Affiliation`、`Kinship`、`ContentIndex`、`BaseStats`……），几乎不新增底层机制，只是把前五份没覆盖到的角落（种族怎么算、历史怎么生成、生成物怎么引用、名字怎么本地化）填满。
@@ -73,6 +87,14 @@
 | [副职系统](subclass-system.md) | 副职是资格不是数值——`SubclassDef` 新增 `traits: Vec<TraitGrant>`（唯一"给东西"字段，引用 [天赋/特性系统](trait-system.md) 的 `TraitTable`，不新增数值载荷）；获得机制走使用计数（`SubclassUnlock`/`SubclassUnlockTrigger` + **`Effect::GrantSubclass`**——冻结版漏命名的授予效果，本次补上：`Agent.subclasses` 属 `WorldState` 不属 `script_state`，按 ADR 0023 必须是独立 `Effect` 变体）；上限与放弃机制（`Effect::RemoveSubclass`，放弃不追溯已学技能，**但制作闸门每次都判、放弃即刻失效**）；**十七个方向合并成九个副职的独立复核（一之二节）**——先纠正一处判据误用：ADR 0021 裁决 Rust 类型与函数，副职是注册表里的一行内容，不携带算法（[制作系统](crafting-system.md) 自己就是证据：一套 `resolve_craft` + 四个独立副职），改用「存不存在一份想对其中一个开门、对另一个关门的内容设计」这条可证伪判据，且代价不对称（合并不可逆，`remap_subclasses` 丢弃解析不到的索引；拆开只是一行 `register-subclass`）；九条里三条不成立（**采集**四合一把「种植」这个未立项系统藏进了看起来最便宜的一行、**驭兽**被所有者关于载具的原话劈成活物与造物两半、**行商**的「驮运」全部内容是一个负重数字因而违反本文档自己的红线，应改记为一条 `TraitGrant`）；**缺口复核（一之三节）**——潜行/盗窃**不是副职**（所有者裁定归盗贼主职业，本文档记录为一次有据可查的更正：它站错了轴、且会拆掉「错位搭配」的张力、且 `register-class-trait` 那条路已经通了）、营造独立成职（产出通道是 `Effect::SetTerrain` 而非背包，与工匠不共用算法；`buildable`/`diggable` 两个死字段的成对消费者）、**医疗比协调者判断的便宜得多**（`Intent::UseSkill{target}` + `SkillEffect::RestoreResource` 今天就能治疗别人）；另找到两处真实漏洞：获得机制整套隐式「只对玩家」（`MarkExplored` 玩家专属、NPC 从不提交 `Intent::Craft`）、`Effect::GrantSubclass` 从未被命名；**一之四节**：制作类三个副职的闸门**已经是真代码**（`08cdeb0`），缺的只剩成长挂钩，且实现者必须先读「计数键用 `NamespacedId` 字符串、不要照抄 `kill_count_key` 索引数值键」这条纪律；六节全名册重排（新最小可用集：采集 + 工匠 + 裁缝 + 调剂 + 求生，五个副职三个触发器变体，"最小"的对象是实现工作量不是名册长度）；七节按已落地的两条脚本命名惯例把 `subclass-grants-trait!` 改名为 **`register-subclass-trait`**；八节记录四条仍悬着的冲突（科研 vs 菜谱不设门槛、裁缝不对称、技艺浮动/工具磨损、抗性 tie-break） | 具体副职数值内容（内容设计范畴）、`skill-requires!`/`resolve_learn_skill` 本身（见 [技能可学条件设计](skill-learn-requirements.md)，本文档只确认其现状与副职的接线关系）、`TraitDef`/`TraitGrant` 本身（见天赋系统，本文档只消费其既有结论）、种植/交易/同伴/载具四个未落地系统本身（只标依赖）、八节四条冲突的裁决（指出，不代所有者决定） |
 | [制作类副职的奖励](crafting-subclass-rewards.md) | **回答一条阻塞**：工匠/裁缝/炼金术士/厨师四条制作副职「没有语义对的东西可给」。核心发现是阻塞报告问错了地方——「会打铁」是**被动**不是主动技能，`SkillEffect` 因此**一个变体都不用加**（它的消费者是 `Intent::UseSkill`，还强制带冷却与资源消耗）；正确的落点是天赋效果③「改变规则本身」，即 `RuleModifier` 增开第八个变体 `CraftYield { category, bonus_product_count }`，四条副职各授予一条指向自己配方类别的天赋，闭合「做够 N 件 → 得到副职 → 此后每件多产出」这个与成长挂钩同轴的循环；落地是一个枚举分支 + 一个八行选择器（`craft_yield_bonus`，与 `resistance_damage_reduction` 逐字同构，复用 `merged_across_types`/`AddAcrossTypes`）+ `resolve_craft` 第⑨步换一个件数，**零新增 `Effect`、零新增注册表、零新增逐实体状态、零新增 `DetRng` 调用**（`WorldState::hash()` 不动、黄金基准不重冻、存档无 remap）；四个视角逐条自检并记录反对意见（玩法 5 条含「打一次铁出两把剑味道不对」这条只反驳得了一半的、架构 6 条含 ADR 0021 正面复核与 `resolve_craft` 签名加宽这处真实成本、确定性 7 条含 ADR 0027 内容哈希这处「漏了会静默出错」的星标接线、内容作者 5 条含被动不可见这处既有缺口）；十条否决方案各带理由，其中**三个零消费者的 `RuleModifier` 变体（`RerollOnce`/`Advantage`/`Disadvantage`）经核实不适合制作**——用它们要先造 d20 判定系统或伤害公式骰子钩子，且给制作加掷骰与 [制作系统](crafting-system.md) 九节⑤「否决制作失败」直接冲突 | 其余两条本体副职（剑舞者/学徒）该给什么、副职奖励的通用框架、「给点数」那一半裁定怎么落地、四条副职的具体数值（内容设计范畴）、产出品质分档（`ItemStack` 无品质字段，跨 crate 独立批次）、技艺数值浮动（需新持久化状态，与既有裁定冲突）、材料折扣（钳在 1 使多数单件配方零收益，记为备选待裁决）、规则修正的面板可见性（既有缺口，`Resistance` 等三条同样不显示） |
 | [据点、结构物与 NPC 生成](settlements-structures-and-npc-spawning.md) | **先核实后设计**：所有者点名的「最基础的那批东西」里墙/门/窗/地板/楼梯/建筑内部（`Interior` 577 行）/容器机制（`GroundItemStack.contents` + `resolve_loot`）**已经全部落地**，`StructureKind` 则**代码里根本不存在**（只活在四份设计文档的行文里）；据此按 ADR 0021 双向判据**否决新建结构物类型**——田地/床/树落地形（田地三种地形走 `SetTerrain` 推进，与门的开合同一机械操作）、抽屉落带 `contents` 的地面物品；**砍树/收获/挖矿复用 `resolve_craft`**（九分之八的算法已写好，只给 `RecipeDef` 加一个可选字段 `station_becomes` + `recipe-becomes-terrain!`，**零新增 `Intent`/`Effect`/内容表**）；**树的非方块表达**：一格不动，地面照常画、树画在**零使用者**的 `Layer::DECOR` 上，走 `ll-render` 里已写好文档但**零调用点**的 `sprite_draw_position`/`footprint_bottom_screen_y`，靠图集条目的 `pivot`/`footprint` 让树高过格子；机制全在图集条目名约定（`<ID>__decor`）里，**零新增内容类型**，且不撞上「贴图 pass 恒在纯色之后」那条限制（世界精灵同批排序）；**NPC 职业 = `ClassDef`**（不建平行的 `NpcRoleDef`：没有一份算法只属于其中一边，且已有 `Agent.profession` 与 `AffiliationKind::Profession` 两处在描述同一概念，不该有第三处）；缺的只是「哪种 NPC 用哪棵树」——`ClassBehaviorBindings` + `register-class-behavior`，照抄已落地的 `XpCurveBindings`，**`Agent` 一个字段都不加**；**据点生成两步走**：第一步纯派生 `f(种子, 区块, 地形)`（选址复用 `find_spawn_site` 的连通域分析——ADR 0021 反向拦截「复制同一份算法」；构成的随机走 `DetRng::for_entity(seed, SETTLEMENT_STREAM_ID, 区块线性号)`，形状照抄已落地的 `weather_kind_at`），第二步等历史生成落地后按 ADR 0009 覆盖成偏差；生成器整段纯 Rust 读扁平列（ADR 0016：区块 2304 格 × 326ns = 750µs，脚本调用不可接受）；三个接线点各自的完整清单（`CONTENT_HASH_ALGORITHM_VERSION` 当前 11）见八节 | 世界历史生成本身（P7，`history.rs` 只有 `Kill` 一个变体）、区域气候（`base_temperature` 与 `Weather` **都与坐标无关**，「寒冷区域的据点」当前不可表达）、建筑逐格铺法的算法（只定死纯函数的输入输出边界）、~~可搬动家具（依赖不存在的「可放置物件」路径）~~（家具层批次已落地该路径，见[物品系统](item-system.md)四节；据点自动摆家具仍未做，见该文档十二节第 6 条待裁定）、动态刷怪（需要 `Effect::SpawnActor`）、NPC 副职（**`Effect::GrantSubclass` 全仓库零命中——副职对玩家也同样不存在**，比 `subclass-system.md` 记录的缺口更大）、十二节六条留给所有者裁决的（职业到底有几个真相源、生成器住哪个 crate、「营地」是不是玩家自己搭的、采集要不要副职门槛、树会不会长回来、`terrain_forest.png` 语义变更对大陆地图的影响） |
+
+| [对话系统](dialogue-system.md) ⟵ **2026-08-30 补进索引** | 对话树的形状、说话/选项/后果三段、与剧本系统的边界；**3.3 节是 [剧本系统](narrative-system.md)「对话变量插值必须等 `format-text`」那句话的唯一更正出处**——该更正在本文档补进索引之前实践上不可达 | 具体对话内容 |
+| [存档与 mod 版本策略](save-and-mod-version-policy.md) ⟵ **2026-08-30 补进索引** | 存档格式版本、mod 集合变化的分类处理、「版本不对就明确拒绝」这条策略本身 | 存档字节布局（见代码 `crates/ll-content/src/save_file.rs`） |
+| [世界生成参数](worldgen-parameters.md) ⟵ **2026-08-30 补进索引** | `sea_level`/`mountain_level`/`octaves`/`continent_shrink` 四个旋钮与四档预设、`TerrainShape` 进世界身份的理由 | 地形噪声算法本身（见 ADR 0005） |
+
+> **【2026-08-30】上面三行是补进来的。** 2026-08-30 复核发现这三份设计文档在本索引里
+> **零命中**——从索引出发的人根本找不到它们。其中 `dialogue-system.md` 最要紧，理由见
+> 该行。详见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 三节第 2 条。
 
 一句话版边界：**物品定义「是什么」，装备定义「戴在哪」，属性定义「打起来怎么算」，社会定义「谁跟谁什么关系」，经济定义「钱和活儿怎么流动」，种族定义「先天差异有多少、体现在哪几处」，世界历史定义「世界是怎么变成现在这样的」，身份定义「东西怎么被引用而不会指错」，命名定义「叫什么、谁能改」，坐标与空间定义「世界本身怎么划分、怎么按需生成」，三轴战斗定义「打的时候具体算什么」，增益与触发器定义「效果怎么持续、怎么互相触发而不失控」，职业技能任务定义「玩家能学什么、接什么」，动画与视觉特效边界定义「算完的东西该怎么演给玩家看，演的过程绝不能反过来改算的结果」，击杀与死亡记录定义「谁杀了谁、用什么杀的，记成历史事件而不是另开一本战斗日志」，mod 包结构定义「一个 mod 长什么样、脚本与资产怎么组织、怎么被发现与覆盖」，剧本系统定义「有顺序、有具体人地的故事该怎么讲，而不与任务系统的完成判定重叠」。** 十九者共用同一个 `Agent`/`ItemStack`/`Affiliation`/`TorusPos`/`DerivedStats`/`Effect`/`ScriptValue` 底座，但没有一份文档试图覆盖别人的地盘——边界比内容更容易搞混，出现「这个概念该去哪份文档找」的疑惑时，先查下面的对照表。
 
@@ -259,6 +281,50 @@
 ---
 
 ## 五、落地状态速览
+
+> # ⚠ 【2026-08-30：这张表不能当判据。】
+>
+> 2026-08-30 逐行核对代码，**27 行里 20 行与代码对不上，而且全部错在同一个方向——
+> 把已经落地的东西写成「纯设计，代码中无任何对应类型」。** 照它做事的直接后果是
+> **重做一遍已经做完的工作**。逐行证据（带 `文件:行号`）在
+> [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+>
+> **真相源是两处，不是这张表**：
+>
+> 1. **代码**——`grep` 它点名的那个类型，一次就有答案；
+> 2. **每份文档自己开头的「落地状态」行**——**12 份被本表写成「纯设计」的文档，
+>    它们自己早就更正过了**（物品、装备、坐标系、世界历史、制作、制作类副职奖励、
+>    等级与经验、副职、职业/技能/任务、社会、种族、mod 包结构）。
+>    **索引与它索引的文档矛盾时，索引是错的那一方。**
+>
+> **为什么不逐行改成新状态**：那只会再造一份会漂移的副本，与本文档开头那张计数
+> 更正段、与黄金基准常量表三次事故是同一个形状。表**原样保留**只为追溯。
+>
+> ## 最会致人白做工的十四行（本表里这些行请直接无视）
+>
+> | 本表这一行 | 实际已落地，证据 |
+> |---|---|
+> | 物品系统「纯设计」 | `crates/ll-mod/src/item.rs:70`、`crates/ll-world/src/item.rs:79`/`:283` |
+> | 装备栏位与占位掩码「纯设计」 | `crates/ll-world/src/item.rs:426`（`EquipSlot`）、`:589`（`SlotMask`） |
+> | 坐标系与空间模型「纯设计」 | `crates/ll-world/src/space.rs:56`、`space_profile.rs:58`；该文档自己写的是**已完整落地** |
+> | 身份与 ID 空间「纯设计」 | `crates/ll-core/src/ident.rs:249`、`crates/ll-world/src/entity/org.rs:36`（`OrgInstance`） |
+> | 世界历史生成「纯设计」 | `crates/ll-world/src/chronicle.rs`、`history.rs:122`、`settlement.rs` |
+> | 种族系统「`RaceDef` 未落地 / 薄层是 P9 债务」 | `crates/ll-mod/src/race.rs:114`/`:302`；债务已还，`crates/ll-world/src/entity/thin.rs:42`-`52` |
+> | 社会系统「文化生成器未落地」 | `crates/ll-world/src/culture.rs:73`/`:99`/`:250`、`mods/lostland/cultures.json5` |
+> | 天赋/特性系统「纯设计」+「等级概念不存在」 | `crates/ll-mod/src/trait_def.rs:85`/`:168`、`crates/ll-sim/src/traits.rs:304`；等级在 `crates/ll-world/src/entity/agent.rs:558` |
+> | 资源池与休息系统「纯设计 / 需 `trait-system.md` 补待办字段」 | 连那个字段都有了：`crates/ll-mod/src/content_audit.rs:521`；另有 `resource_pool.rs:27`、`agent.rs:25`、`intent.rs:194` |
+> | 击杀与死亡记录「`Effect::Kill` 只有 `target`」 | `crates/ll-sim/src/effect.rs:91` 有三个字段；`crates/ll-world/src/history.rs:283`/`:312` |
+> | 伤害公式 mod API「纯设计」 | `crates/ll-sim/src/formula.rs:78`、`crates/ll-mod/src/weapon_category.rs:36`、`damage_category.rs:78` |
+> | 增益与通用触发器「`effect.rs` 只有六个变体」 | 约四十个；增益通道是 `crates/ll-sim/src/effect.rs:321` `ApplyStatModifier` |
+> | 行动能力与输入上下文「`InputContext` 仅 `Gameplay`」 | `crates/ll-platform/src/keybind.rs:132`-`141` 三个变体；`crates/ll-ui/src/widget/ui_mode.rs:105`/`:138` |
+> | 界面布局与导航模型「规格尚未落地任何一条」 | N8/N2/N7/N1/N10 已落地，提交 `1d74e75` |
+> | mod 包结构与资产 VFS「无 `vfs.rs`，在未合入的分支上」 | `crates/ll-mod/src/asset_vfs.rs` 就在 `main`，已接进 `crates/ll-game/src/app.rs:18`/`:154`/`:246` |
+> | 三轴战斗结算 / 载具与骑乘「`resolve_attack` 是占位实现」 | 已走 `DerivedStats`：`crates/ll-sim/src/resolve.rs:263`、`:2647`。**同一句占位断言被复制到四处** |
+> | 脚本层数据句柄 / 脚本状态存储 / 资产管理系统 | 三行都把 `ll-script`、`steel-core`、`ScriptEntityHandle`、`script_state.rs` 当作**已落地依赖**——**四者全部不存在**，见本文档开头 2026-08-23 全局订正段 |
+>
+> **另有六份文档在本文档三节里列着、在这张表里根本没有行**：等级与经验系统、
+> 食物与烹饪系统、物品归属与犯罪判定、制作系统、制作类副职的奖励、
+> 据点/结构物/NPC 生成——**其中四份已经落地**。
 
 详细依据（对应到 `crates/` 具体路径）写在每份文档开头的「落地状态」行，这里只给结论：
 
