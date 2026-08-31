@@ -21,7 +21,9 @@ use ll_i18n::Catalog;
 use ll_render::wgpu;
 use ll_text::TextRenderer;
 
-use super::{SCREEN_FONT_SIZE, SCREEN_LINE_HEIGHT, SCREEN_WIDTH, ScreenData, build_screen_panel};
+use ll_text::MeasureText;
+
+use super::{SCREEN_FONT_SIZE, SCREEN_LINE_HEIGHT, ScreenData, build_screen_panel};
 use crate::widget::panel::{panel_quads, textured_panel_quads};
 use crate::widget::quad::{QuadInstance, QuadRenderer};
 use crate::widget::skin::{PanelStyleId, Skin};
@@ -51,10 +53,18 @@ pub fn build_screen_frame(
     catalog: &Catalog,
     language: &str,
     skin: &dyn Skin,
+    measure: &mut dyn MeasureText,
     screen_width: f32,
     screen_height: f32,
 ) -> ScreenFrame {
-    let content = build_screen_panel(data, catalog, language, screen_width, screen_height);
+    let content = build_screen_panel(
+        data,
+        catalog,
+        language,
+        measure,
+        screen_width,
+        screen_height,
+    );
     let mut quads = vec![super::backdrop_quad(content.backdrop)];
     let mut textured_quads = Vec::new();
     match skin.textured_panel(PanelStyleId::Window) {
@@ -120,6 +130,8 @@ pub fn render_screen(
     quad_renderer: &mut QuadRenderer,
     textured_quad_renderer: &mut TexturedQuadRenderer,
     text_renderer: &mut TextRenderer,
+    // 见 `crate::hud::render::render_hud` 同名参数。
+    measure: &mut dyn MeasureText,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target: &wgpu::TextureView,
@@ -135,6 +147,7 @@ pub fn render_screen(
         catalog,
         language,
         skin,
+        measure,
         resolution_width as f32,
         resolution_height as f32,
     );
@@ -183,12 +196,10 @@ fn render_labels(
     let runs: Vec<_> = labels
         .iter()
         .map(|label| {
-            label.to_text_run(
-                SCREEN_FONT_SIZE,
-                SCREEN_LINE_HEIGHT,
-                SCREEN_WIDTH,
-                TEXT_COLOR,
-            )
+            // 断行宽度取自标签自己（= 这块面板的内容宽），不再是
+            // 面板宽本身——此前传的是 `SCREEN_WIDTH`，连自己那两侧
+            // 各 10px 的内边距都没减掉，最后几个字会压在边框上。
+            label.to_text_run(SCREEN_FONT_SIZE, SCREEN_LINE_HEIGHT, TEXT_COLOR)
         })
         .collect();
     if let Err(error) = text_renderer.render(
@@ -232,7 +243,15 @@ mod tests {
         };
 
         // Act
-        let frame = build_screen_frame(&data, &测试目录(), "zh-CN", &FlatColorSkin, 1280.0, 720.0);
+        let frame = build_screen_frame(
+            &data,
+            &测试目录(),
+            "zh-CN",
+            &FlatColorSkin,
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
 
         // Assert
         assert_eq!(frame.quads[0].size, [1280.0, 720.0]);
@@ -253,7 +272,15 @@ mod tests {
         };
 
         // Act
-        let frame = build_screen_frame(&data, &测试目录(), "zh-CN", &FlatColorSkin, 1280.0, 720.0);
+        let frame = build_screen_frame(
+            &data,
+            &测试目录(),
+            "zh-CN",
+            &FlatColorSkin,
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
 
         // Assert
         assert!(frame.textured_quads.is_empty());

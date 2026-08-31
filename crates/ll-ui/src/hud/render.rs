@@ -85,13 +85,13 @@ const SCREEN_MARGIN: f32 = 16.0;
 /// 三列之间、状态栏与三列之间的间隔（像素）。
 const PANEL_GAP: f32 = 10.0;
 /// 状态栏通栏宽度。
-const STATUS_WIDTH: f32 = 620.0;
+pub const STATUS_WIDTH: f32 = 620.0;
 /// 角色面板宽度。
-const CHARACTER_WIDTH: f32 = 260.0;
+pub const CHARACTER_WIDTH: f32 = 260.0;
 /// 背包面板宽度。
-const INVENTORY_WIDTH: f32 = 220.0;
+pub const INVENTORY_WIDTH: f32 = 220.0;
 /// 装备栏面板宽度。
-const EQUIPMENT_WIDTH: f32 = 220.0;
+pub const EQUIPMENT_WIDTH: f32 = 220.0;
 /// 经验条高度（像素）。
 const EXPERIENCE_BAR_HEIGHT: f32 = 6.0;
 /// 生命/法力条高度（像素）。
@@ -106,10 +106,10 @@ const DAY_NIGHT_BAR_HEIGHT: f32 = 14.0;
 const DAY_NIGHT_BAR_WIDTH: f32 = RESOURCE_BAR_WIDTH * 2.0 + PANEL_GAP;
 /// 动作菜单面板宽度——比背包/装备两列宽一些：它的行要同时容下配方名
 /// 与食材清单（见 `ll_game::player_action` 的排版），照 220 会频繁截断。
-const ACTION_MENU_WIDTH: f32 = 360.0;
+pub const ACTION_MENU_WIDTH: f32 = 360.0;
 /// 反馈行面板宽度——一句话的宽度，见 [`build_hud_frame`] 的 `feedback`
 /// 参数文档。
-const FEEDBACK_WIDTH: f32 = 420.0;
+pub const FEEDBACK_WIDTH: f32 = 420.0;
 /// 反馈行面板与窗口下边缘的留白（像素）。
 const FEEDBACK_BOTTOM_MARGIN: f32 = 48.0;
 /// 装备栏与窗口右边缘的留白（像素）——见模块文档「装备放在屏幕右边」
@@ -185,13 +185,20 @@ fn placed_action_menu(
     menu: &ActionMenuData<'_>,
     catalog: &Catalog,
     language: &str,
+    measure: &mut dyn ll_text::MeasureText,
     screen_width: f32,
     screen_height: f32,
 ) -> PanelContent {
     let x = (screen_width - ACTION_MENU_WIDTH) * 0.5;
     let top = SCREEN_MARGIN + PANEL_GAP;
-    let panel =
-        action_menu::action_menu_panel(menu, catalog, language, (x, top), ACTION_MENU_WIDTH);
+    let panel = action_menu::action_menu_panel(
+        menu,
+        catalog,
+        language,
+        measure,
+        (x, top),
+        ACTION_MENU_WIDTH,
+    );
     match menu.placement {
         MenuPlacement::TopCenter => panel,
         MenuPlacement::ScreenCenter => {
@@ -287,6 +294,11 @@ pub fn build_hud_frame(
     catalog: &Catalog,
     language: &str,
     skin: &dyn Skin,
+    // 「这段字画出来多宽、断成几行」的唯一来源。产品路径传的是
+    // `ll_text::TextRenderer` 自己（它复用自己那份 `FontSystem`），
+    // 测试与门禁传纯 CPU 的 `ll_text::TextMeasurer`——两条路径底下是
+    // 同一个 `layout_text`，见 `ll_text::measure` 模块文档。
+    measure: &mut dyn ll_text::MeasureText,
     anim: &mut WidgetStateTable,
     now: FrameTick,
     screen_width: f32,
@@ -301,8 +313,14 @@ pub fn build_hud_frame(
     let hud = frame.layer_mut(UiLayer::Hud);
 
     let status_origin = (SCREEN_MARGIN, SCREEN_MARGIN);
-    let status_panel =
-        status_bar::status_bar_panel(status, catalog, language, status_origin, STATUS_WIDTH);
+    let status_panel = status_bar::status_bar_panel(
+        status,
+        catalog,
+        language,
+        measure,
+        status_origin,
+        STATUS_WIDTH,
+    );
     push_panel(hud, &status_panel.rect, status_panel.labels, skin);
 
     // 生命/法力双层条：紧贴在状态栏下方,并排放置——立即层瞬间反映
@@ -376,6 +394,7 @@ pub fn build_hud_frame(
         items,
         catalog,
         language,
+        measure,
         row_origin,
         CHARACTER_WIDTH,
     );
@@ -408,6 +427,7 @@ pub fn build_hud_frame(
         catalog,
         language,
         identified,
+        measure,
         inventory_origin,
         INVENTORY_WIDTH,
     );
@@ -427,6 +447,7 @@ pub fn build_hud_frame(
         catalog,
         language,
         identified,
+        measure,
         equipment_origin,
         EQUIPMENT_WIDTH,
     );
@@ -466,6 +487,10 @@ pub fn build_hud_frame(
                 text: world_map::scale_caption(world_map.tiles_per_cell, catalog, language),
                 x: rect.x + WORLD_MAP_CAPTION_MARGIN,
                 y: rect.y + WORLD_MAP_CAPTION_MARGIN,
+                // 这一行的「面板」就是地图面板本身，断行宽度是它去掉
+                // 两侧同一个留白之后的宽——与其余每一块面板同一条
+                // 派生规则，见 `crate::widget::label::Label::max_width`。
+                max_width: rect.width - WORLD_MAP_CAPTION_MARGIN * 2.0,
             });
         }
     }
@@ -474,7 +499,14 @@ pub fn build_hud_frame(
     // 函数文档。落在 `UiLayer::Popup`，恒压在地图之上——两者理论上可以
     // 同时打开，此时玩家正在菜单里选东西，地图只是背景。
     if let Some(menu) = menu {
-        let panel = placed_action_menu(menu, catalog, language, screen_width, screen_height);
+        let panel = placed_action_menu(
+            menu,
+            catalog,
+            language,
+            measure,
+            screen_width,
+            screen_height,
+        );
         push_panel(
             frame.layer_mut(UiLayer::Popup),
             &panel.rect,
@@ -487,6 +519,7 @@ pub fn build_hud_frame(
     // 正是「你刚才那一下没起作用」，被任何面板挡住就等于没说。
     if let Some(text) = feedback {
         let panel = super::build_panel(
+            measure,
             (
                 (screen_width - FEEDBACK_WIDTH) * 0.5,
                 (screen_height - FEEDBACK_BOTTOM_MARGIN).max(0.0),
@@ -637,6 +670,10 @@ pub fn render_hud(
     quad_renderer: &mut QuadRenderer,
     textured_quad_renderer: &mut TexturedQuadRenderer,
     text_renderer: &mut TextRenderer,
+    // 测量器与绘制器分开收：调用方（`ll_game::app::Demo`）持有的那一个
+    // **同时**服务输入侧（模态屏行矩形）与渲染侧，两侧因此不可能对同
+    // 一行算出不同的高度，见 `ll_text::measure` 模块文档。
+    measure: &mut dyn ll_text::MeasureText,
     device: &wgpu::Device,
     queue: &wgpu::Queue,
     target: &wgpu::TextureView,
@@ -672,6 +709,7 @@ pub fn render_hud(
         catalog,
         language,
         skin,
+        measure,
         anim,
         now,
         resolution_width as f32,
@@ -706,7 +744,6 @@ pub fn render_hud(
                         label.to_text_run(
                             super::DEFAULT_FONT_SIZE,
                             super::DEFAULT_LINE_HEIGHT,
-                            400.0,
                             TEXT_COLOR,
                         )
                     })
@@ -734,6 +771,48 @@ mod tests {
     use ll_sim::item::NoItems;
     use ll_world::entity::BaseStats;
     use std::path::Path;
+
+    /// 本模块建一帧 HUD 的共用入口。
+    ///
+    /// [`build_hud_frame`] 有十八个参数，其中**八个在本模块每一条断言
+    /// 里都取同一个值**（空背包、空已鉴定表、[`NoItems`]、中文、720 高、
+    /// 无菜单、无反馈）。逐条抄十八行是这个测试模块最大的一块噪声，也是
+    /// 每次给 `build_hud_frame` 加一个参数时最大的一块机械改动——本批次
+    /// 加测量器参数时正是它把这个文件推过了行数棘轮门禁。
+    #[allow(clippy::too_many_arguments)]
+    fn 建帧(
+        status: &StatusBarData<'_>,
+        character: &CharacterPanelData<'_>,
+        equipment: &BTreeMap<EquipSlot, ItemStack>,
+        item_table: &ItemTable,
+        catalog: &Catalog,
+        skin: &dyn Skin,
+        anim: &mut WidgetStateTable,
+        now: FrameTick,
+        screen_width: f32,
+        world_map: Option<&WorldMapPanelData<'_>>,
+    ) -> LayeredFrame {
+        build_hud_frame(
+            status,
+            character,
+            &[],
+            equipment,
+            &[],
+            &NoItems,
+            item_table,
+            catalog,
+            "zh-CN",
+            skin,
+            &mut crate::测试测量器(),
+            anim,
+            now,
+            screen_width,
+            720.0,
+            world_map,
+            None,
+            None,
+        )
+    }
 
     fn write_fixture_catalog(dir: &Path) {
         std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nhud-status-fps-label = 帧率\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\nhud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nhud-character-rule-modifiers-title = 生效中的规则修正\nhud-character-rule-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\nhud-inventory-panel-title = 背包\nhud-inventory-empty = （空）\nhud-inventory-durability-label = 耐久\nhud-equipment-panel-title = 装备\nhud-equipment-empty-slot = （空）\nequip_slot-main_hand-display_name = 主手\nequip_slot-off_hand-display_name = 副手\nequip_slot-head-display_name = 头部\nequip_slot-face-display_name = 面部\nequip_slot-eyes-display_name = 眼部\nequip_slot-neck-display_name = 颈部\nequip_slot-body-display_name = 躯干\nequip_slot-outer-display_name = 外袍\nequip_slot-back-display_name = 背部\nequip_slot-shoulder_l-display_name = 左肩\nequip_slot-shoulder_r-display_name = 右肩\nequip_slot-arm_l-display_name = 左臂\nequip_slot-arm_r-display_name = 右臂\nequip_slot-hand_l-display_name = 左手\nequip_slot-hand_r-display_name = 右手\nequip_slot-belt-display_name = 腰带\nequip_slot-tasset-display_name = 腿甲\nequip_slot-legs-display_name = 双腿\nequip_slot-boot_l-display_name = 左靴\nequip_slot-boot_r-display_name = 右靴\nequip_slot-ring_l-display_name = 左戒指\nequip_slot-ring_r-display_name = 右戒指\n").expect("测试用写入应当成功");
@@ -799,23 +878,16 @@ mod tests {
         let mut anim = WidgetStateTable::new();
 
         // Act
-        let frame = build_hud_frame(
+        let frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             0,
             1280.0,
-            720.0,
-            None,
-            None,
             None,
         );
 
@@ -850,23 +922,16 @@ mod tests {
         let mut anim = WidgetStateTable::new();
 
         // Act
-        let frame = build_hud_frame(
+        let frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             0,
             1280.0,
-            720.0,
-            None,
-            None,
             None,
         );
 
@@ -921,43 +986,29 @@ mod tests {
         };
 
         // Act
-        let closed_frame = build_hud_frame(
+        let closed_frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             0,
             1280.0,
-            720.0,
-            None,
-            None,
             None,
         );
-        let open_frame = build_hud_frame(
+        let open_frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             1,
             1280.0,
-            720.0,
             Some(&world_map_data),
-            None,
-            None,
         );
 
         // Assert：世界地图边框恒 4 块（见
@@ -994,23 +1045,16 @@ mod tests {
         let mut anim = WidgetStateTable::new();
 
         // Act
-        let frame = build_hud_frame(
+        let frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             0,
             1280.0,
-            720.0,
-            None,
-            None,
             None,
         );
 
@@ -1041,23 +1085,16 @@ mod tests {
         let mut anim = WidgetStateTable::new();
 
         // Act
-        let frame = build_hud_frame(
+        let frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             0,
             1280.0,
-            720.0,
-            None,
-            None,
             None,
         );
 
@@ -1105,23 +1142,16 @@ mod tests {
             fps: 0.0,
             weather_display_name_key: None,
         };
-        build_hud_frame(
+        建帧(
             &full_status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             0,
             1280.0,
-            720.0,
-            None,
-            None,
             None,
         );
 
@@ -1133,23 +1163,16 @@ mod tests {
             fps: 0.0,
             weather_display_name_key: None,
         };
-        let frame = build_hud_frame(
+        let frame = 建帧(
             &damaged_status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             1,
             1280.0,
-            720.0,
-            None,
-            None,
             None,
         );
 
@@ -1195,23 +1218,16 @@ mod tests {
         let screen_width = 1280.0;
 
         // Act
-        let frame = build_hud_frame(
+        let frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             0,
             screen_width,
-            720.0,
-            None,
-            None,
             None,
         );
 
@@ -1251,23 +1267,16 @@ mod tests {
         let item_table = ItemTable::new();
         let mut anim = WidgetStateTable::new();
 
-        let frame = build_hud_frame(
+        let frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             0,
             1280.0,
-            720.0,
-            None,
-            None,
             None,
         );
         (frame, dir)
@@ -1342,7 +1351,14 @@ mod tests {
         let (width, height) = (1280.0_f32, 720.0_f32);
 
         // Act
-        let panel = placed_action_menu(&menu, &catalog, "zh-CN", width, height);
+        let panel = placed_action_menu(
+            &menu,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            width,
+            height,
+        );
 
         // Assert：面板中心与屏幕中心重合（浮点，允许半像素）。
         let center_x = panel.rect.x + panel.rect.width * 0.5;
@@ -1376,7 +1392,14 @@ mod tests {
 
         for (width, height) in [(800.0_f32, 600.0_f32), (1280.0, 720.0), (2560.0, 1440.0)] {
             // Act
-            let panel = placed_action_menu(&menu, &catalog, "zh-CN", width, height);
+            let panel = placed_action_menu(
+                &menu,
+                &catalog,
+                "zh-CN",
+                &mut crate::测试测量器(),
+                width,
+                height,
+            );
 
             // Assert
             let center_y = panel.rect.y + panel.rect.height * 0.5;
@@ -1404,7 +1427,14 @@ mod tests {
         let menu = placement_menu(&rows, MenuPlacement::TopCenter);
 
         // Act
-        let panel = placed_action_menu(&menu, &catalog, "zh-CN", 1280.0, 720.0);
+        let panel = placed_action_menu(
+            &menu,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
 
         // Assert：贴上沿的那个 y 是本次改动之前唯一存在的取值。
         assert_eq!(panel.rect.y, SCREEN_MARGIN + PANEL_GAP);
@@ -1428,6 +1458,7 @@ mod tests {
             &placement_menu(&rows, MenuPlacement::TopCenter),
             &catalog,
             "zh-CN",
+            &mut crate::测试测量器(),
             1280.0,
             720.0,
         );
@@ -1437,6 +1468,7 @@ mod tests {
             &placement_menu(&rows, MenuPlacement::ScreenCenter),
             &catalog,
             "zh-CN",
+            &mut crate::测试测量器(),
             1280.0,
             720.0,
         );
@@ -1606,24 +1638,17 @@ mod tests {
             terrain_ids: &ids,
             tiles_per_cell: 48,
         };
-        let frame = build_hud_frame(
+        let frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &AllTexturedSkin,
             &mut anim,
             0,
             1280.0,
-            720.0,
             Some(&map),
-            None,
-            None,
         );
         (frame, dir)
     }
@@ -1748,23 +1773,16 @@ mod tests {
         let mut anim = WidgetStateTable::new();
 
         // Act
-        let frame = build_hud_frame(
+        let frame = 建帧(
             &status,
             &character,
-            &[],
             &equipment,
-            &[],
-            &NoItems,
             &item_table,
             &catalog,
-            "zh-CN",
             &FlatColorSkin,
             &mut anim,
             0,
             1280.0,
-            720.0,
-            None,
-            None,
             None,
         );
 

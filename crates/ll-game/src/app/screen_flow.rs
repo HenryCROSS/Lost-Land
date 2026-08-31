@@ -174,6 +174,8 @@ pub(super) fn draw_screen(
     // `crate::pointer` 模块文档约定一。
     hovered_row: Option<usize>,
     resources: &mut GpuResources,
+    // 见 `Demo::measurer` 字段文档：输入侧与渲染侧共用同一个测量器。
+    measure: &mut dyn ll_text::MeasureText,
     view: &wgpu::TextureView,
 ) {
     let Some(state) = screen else {
@@ -190,6 +192,7 @@ pub(super) fn draw_screen(
         &mut resources.quad_renderer,
         &mut resources.textured_quad_renderer,
         &mut resources.text_renderer,
+        measure,
         resources.gpu.device(),
         resources.gpu.queue(),
         view,
@@ -279,13 +282,17 @@ impl Demo {
             return crate::pointer::RowPointer::Idle;
         };
         let rects = {
+            // 先把要整个 `&self` 的东西取完，再去借 `&mut self.measurer`
+            // ——行矩形现在要一个文本测量器（行高按渲染行数算，见
+            // `ll_ui::screen`），两处借用必须错开。
+            let can_save = self.can_save_manually();
             let Some((rows, cursor)) = screen_row_texts(
                 state,
                 &self.config,
                 &self.catalog,
                 &self.screen_focus,
                 !self.save_slots.is_empty(),
-                self.can_save_manually(),
+                can_save,
                 &self.save_slots,
                 &self.content,
                 self.new_game_draft.as_ref(),
@@ -300,6 +307,7 @@ impl Demo {
                 &data,
                 &self.catalog,
                 &self.config.language,
+                &mut self.measurer,
                 width,
                 height,
             )

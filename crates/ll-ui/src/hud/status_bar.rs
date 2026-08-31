@@ -65,6 +65,7 @@
 
 use ll_core::time::{Season, TICKS_PER_DAY, TICKS_PER_HOUR, TICKS_PER_MINUTE, Tick};
 use ll_i18n::Catalog;
+use ll_text::MeasureText;
 use ll_world::entity::Agent;
 
 use super::{PanelContent, build_panel};
@@ -213,10 +214,11 @@ pub fn status_bar_panel(
     data: &StatusBarData<'_>,
     catalog: &Catalog,
     language: &str,
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     width: f32,
 ) -> PanelContent {
-    build_panel(origin, width, |cursor, labels| {
+    build_panel(measure, origin, width, |cursor, labels| {
         cursor.push(labels, status_bar_text(data, catalog, language));
     })
 }
@@ -436,7 +438,14 @@ mod tests {
         };
 
         // Act
-        let panel = status_bar_panel(&data, &catalog, "zh-CN", (0.0, 0.0), 400.0);
+        let panel = status_bar_panel(
+            &data,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            400.0,
+        );
 
         // Assert
         assert_eq!(panel.labels.len(), 1);
@@ -460,7 +469,14 @@ mod tests {
         };
 
         // Act
-        let panel = status_bar_panel(&data, &catalog, "zh-CN", (0.0, 0.0), 400.0);
+        let panel = status_bar_panel(
+            &data,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            400.0,
+        );
 
         // Assert
         assert_eq!(panel.rect.width, 400.0);

@@ -39,9 +39,11 @@
 pub mod error;
 pub mod fonts;
 pub mod layout;
+pub mod measure;
 pub mod render;
 
 pub use error::TextError;
 pub use fonts::FontCatalog;
 pub use layout::{GlyphOrigin, LayoutGlyphInfo, LayoutLineInfo, LayoutResult};
+pub use measure::{MeasureText, TextMeasurer, TextMetrics};
 pub use render::{TextRenderer, TextRun};

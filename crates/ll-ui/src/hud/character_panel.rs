@@ -57,6 +57,8 @@ use ll_world::entity::{ActiveStatModifier, AttributeKind, BaseStats};
 use ll_world::item::{EquipSlot, ItemStack};
 
 use super::{PanelContent, build_panel};
+use ll_text::MeasureText;
+
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
 
@@ -338,15 +340,24 @@ fn rule_modifier_line(display: &RuleModifierDisplay, catalog: &Catalog, language
 /// [`crate::widget::list::RowCursor`] 逐行推进，产出
 /// [`crate::widget::label::Label`]，理由见 [`crate::widget`] 模块文档
 /// 「不是通用控件库,是把这五样做对」一节。
+#[allow(clippy::too_many_arguments)]
 pub fn character_panel_lines(
     data: &CharacterPanelData<'_>,
     items: &dyn ItemCatalog,
     catalog: &Catalog,
     language: &str,
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     line_height: f32,
+    wrap_width: f32,
 ) -> Vec<Label> {
-    let mut cursor = RowCursor::new(origin, line_height);
+    let mut cursor = RowCursor::new(
+        measure,
+        origin,
+        line_height,
+        super::DEFAULT_FONT_SIZE,
+        wrap_width,
+    );
     let mut lines = Vec::new();
     write_character_panel_lines(data, items, catalog, language, &mut cursor, &mut lines);
     lines
@@ -376,10 +387,11 @@ pub fn character_panel(
     items: &dyn ItemCatalog,
     catalog: &Catalog,
     language: &str,
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     width: f32,
 ) -> PanelContent {
-    build_panel(origin, width, |cursor, lines| {
+    build_panel(measure, origin, width, |cursor, lines| {
         write_character_panel_lines(data, items, catalog, language, cursor, lines);
     })
 }
@@ -435,7 +447,16 @@ mod tests {
         };
 
         // Act
-        let lines = character_panel_lines(&data, &NoItems, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines = character_panel_lines(
+            &data,
+            &NoItems,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -477,7 +498,16 @@ mod tests {
         };
 
         // Act
-        let lines = character_panel_lines(&data, &NoItems, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines = character_panel_lines(
+            &data,
+            &NoItems,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -514,7 +544,16 @@ mod tests {
         };
 
         // Act
-        let lines = character_panel_lines(&data, &NoItems, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines = character_panel_lines(
+            &data,
+            &NoItems,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -530,11 +569,20 @@ mod tests {
 
     /// 把面板全部文本行拼成一整块，供下面几条断言做包含检查。
     fn joined_lines(data: &CharacterPanelData<'_>, catalog: &Catalog) -> String {
-        character_panel_lines(data, &NoItems, catalog, "zh-CN", (0.0, 0.0), 16.0)
-            .iter()
-            .map(|line| line.text.clone())
-            .collect::<Vec<_>>()
-            .join("\n")
+        character_panel_lines(
+            data,
+            &NoItems,
+            catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        )
+        .iter()
+        .map(|line| line.text.clone())
+        .collect::<Vec<_>>()
+        .join("\n")
     }
 
     /// 一份除点数/主属性外全部取中性值的面板数据——下面三条测试各自
@@ -675,7 +723,16 @@ mod tests {
         };
 
         // Act
-        let lines = character_panel_lines(&data, &NoItems, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines = character_panel_lines(
+            &data,
+            &NoItems,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -724,7 +781,16 @@ mod tests {
         };
 
         // Act
-        let lines = character_panel_lines(&data, &NoItems, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines = character_panel_lines(
+            &data,
+            &NoItems,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -761,7 +827,16 @@ mod tests {
         };
 
         // Act
-        let lines = character_panel_lines(&data, &NoItems, &catalog, "zh-CN", (0.0, 0.0), 16.0);
+        let lines = character_panel_lines(
+            &data,
+            &NoItems,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -824,7 +899,15 @@ mod tests {
         };
 
         // Act
-        let panel = character_panel(&data, &NoItems, &catalog, "zh-CN", (0.0, 0.0), 260.0);
+        let panel = character_panel(
+            &data,
+            &NoItems,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            260.0,
+        );
 
         // Assert
         assert_eq!(panel.rect.width, 260.0);
@@ -850,14 +933,23 @@ mod tests {
     /// 与 [`joined_lines`] 同一件事，只是语言可选——规则修正那一段
     /// 要在中英两份 `.ftl` 上各查一遍。
     fn joined_lines_in(data: &CharacterPanelData<'_>, language: &str, catalog: &Catalog) -> String {
-        character_panel_lines(data, &NoItems, catalog, language, (0.0, 0.0), 16.0)
-            .iter()
-            .map(|line| line.text.clone())
-            .collect::<Vec<_>>()
-            .join(
-                "
+        character_panel_lines(
+            data,
+            &NoItems,
+            catalog,
+            language,
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        )
+        .iter()
+        .map(|line| line.text.clone())
+        .collect::<Vec<_>>()
+        .join(
+            "
 ",
-            )
+        )
     }
 
     /// 测试用帮手：九个变体各来一条，走真实的

@@ -34,6 +34,8 @@
 use ll_i18n::Catalog;
 
 use super::{PanelContent, build_panel};
+use ll_text::MeasureText;
+
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
 
@@ -95,10 +97,11 @@ pub fn action_menu_panel(
     data: &ActionMenuData<'_>,
     catalog: &Catalog,
     language: &str,
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     width: f32,
 ) -> PanelContent {
-    build_panel(origin, width, |cursor, lines| {
+    build_panel(measure, origin, width, |cursor, lines| {
         write_action_menu_lines(data, catalog, language, cursor, lines);
     })
 }
@@ -109,10 +112,18 @@ pub fn action_menu_lines(
     data: &ActionMenuData<'_>,
     catalog: &Catalog,
     language: &str,
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     line_height: f32,
+    wrap_width: f32,
 ) -> Vec<Label> {
-    let mut cursor = RowCursor::new(origin, line_height);
+    let mut cursor = RowCursor::new(
+        measure,
+        origin,
+        line_height,
+        super::DEFAULT_FONT_SIZE,
+        wrap_width,
+    );
     let mut lines = Vec::new();
     write_action_menu_lines(data, catalog, language, &mut cursor, &mut lines);
     lines
@@ -173,10 +184,18 @@ mod tests {
     }
 
     fn texts(data: &ActionMenuData<'_>, catalog: &Catalog) -> Vec<String> {
-        action_menu_lines(data, catalog, "zh-CN", (0.0, 0.0), 10.0)
-            .into_iter()
-            .map(|label| label.text)
-            .collect()
+        action_menu_lines(
+            data,
+            catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            10.0,
+            crate::测试断行宽,
+        )
+        .into_iter()
+        .map(|label| label.text)
+        .collect()
     }
 
     #[test]

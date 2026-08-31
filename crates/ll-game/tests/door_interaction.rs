@@ -18,8 +18,12 @@
 
 use ll_core::torus::TorusPos;
 use ll_game::content::{LoadedContent, RuntimeCatalogs};
-use ll_game::player_action::{DoorAction, InteractTarget, interact_entries, interact_tiles};
+use ll_game::player_action::{
+    DoorAction, Feedback, InteractTarget, PlayerCommand, PlayerMenu, interact_entries,
+    interact_tiles, player_command,
+};
 use ll_game::world::{GameWorld, build_new_world};
+use ll_platform::input::{GameKey, InputState};
 use ll_sim::intent::Intent;
 use ll_sim::timeline::Timeline;
 use ll_sim::turn::{PlayerTurnOutcome, TurnEngine};
@@ -502,4 +506,199 @@ fn 每一件立着的家具都进得了交互列表() {
 
     // Assert
     assert_eq!(entries, vec![InteractTarget::Facility { def: ingot }]);
+}
+
+// ── 五、关不上的门要说清楚是被什么挡住的（规格 F1） ──────────────
+
+/// 把光标停在门那一格的第一行、按下确认键，取输入层这一帧的产出。
+///
+/// 走的是 `player_command` 这个真实入口，不是直接调那个私有的分派
+/// 函数——「输入层拒绝就不消耗回合」这句话要在真实入口上成立才算数。
+fn 在门那一格按确认(
+    game_world: &ll_game::world::GameWorld,
+    door: TorusPos,
+    content: &LoadedContent,
+) -> PlayerCommand {
+    // 光标要停在**门**那一行——门排在地面物品之后（见「门那一行排在
+    // 地面物品之后」那条断言），立着家具的那一格上第 0 行是家具。
+    let cursor = interact_entries(&game_world.world, door)
+        .iter()
+        .position(|entry| matches!(entry, InteractTarget::Door { .. }))
+        .expect("这一格上必然有一扇门");
+    let mut menu = PlayerMenu::Interact {
+        pos: door,
+        cursor,
+        from_direction: false,
+    };
+    let mut input = InputState::new();
+    input.press(GameKey::Confirm);
+    player_command(
+        &mut menu,
+        &input,
+        &game_world.world,
+        game_world.player,
+        &content.recipe_table,
+    )
+}
+
+#[test]
+fn 门口站着人时关门被输入层挡下并说清楚是有人挡着() {
+    // 规格 F1。此前这一路照常提交 `Intent::CloseDoor`，结算层判定关不上
+    // 并静默返回空效果，玩家只看到笼统的一句「这一下没有起作用」。
+    //
+    // 反例验证（已实跑）：把 `interact_command` 关门那一支改回无条件
+    // `PlayerCommand::Submit(Intent::CloseDoor { .. })`，本条立刻变红。
+    // Arrange
+    let content = test_content();
+    let (mut game_world, east) = world_with_east_terrain(&content, content.terrain_ids.door_open);
+    let player = game_world.player;
+    let mut agent = game_world.world.actors.get(player).expect("玩家在").clone();
+    agent.pos = east;
+    let _standing: EntityId = game_world.world.actors.spawn(agent);
+
+    // Act
+    let command = 在门那一格按确认(&game_world, east, &content);
+
+    // Assert
+    assert_eq!(
+        command,
+        PlayerCommand::Rejected(Feedback::DoorBlockedByOccupant)
+    );
+}
+
+#[test]
+fn 门口立着家具时关门被输入层挡下并说清楚是立着东西() {
+    // 所有者给的是**两句**文案（「门口有人挡着」/「门口立着东西」），
+    // 这一条盯的是第二句真的走了另一条分支——两条合成一条的话，本条
+    // 与上一条会同时绿，而玩家看到的仍然是同一句话。
+    //
+    // 反例验证（已实跑）：把 `DoorCloseBlocker::PlacedObject` 那一支也
+    // 映射成 `DoorBlockedByOccupant`，本条立刻变红。
+    // Arrange
+    let content = test_content();
+    let (mut game_world, east) = world_with_east_terrain(&content, content.terrain_ids.door_open);
+    let forge = content
+        .registry
+        .get(&ll_core::ident::NamespacedId::parse("lostland:forge").expect("合法标识符"))
+        .expect("本体注册过锻炉");
+    game_world.world.ground_items.push(GroundItemStack {
+        pos: east,
+        stack: ItemStack::new(forge, 1),
+        dropped_at: game_world.world.clock,
+        contents: Vec::new(),
+        placed: true,
+    });
+
+    // Act
+    let command = 在门那一格按确认(&game_world, east, &content);
+
+    // Assert
+    assert_eq!(
+        command,
+        PlayerCommand::Rejected(Feedback::DoorBlockedByObject)
+    );
+}
+
+#[test]
+fn 门口没东西挡着时关门照常提交意图() {
+    // 与上面两条互补：只有前两条会得到一条永远绿的实现（把关门整支
+    // 改成恒拒绝），这一条把那条路堵上。
+    // Arrange
+    let content = test_content();
+    let (game_world, east) = world_with_east_terrain(&content, content.terrain_ids.door_open);
+
+    // Act
+    let command = 在门那一格按确认(&game_world, east, &content);
+
+    // Assert
+    assert_eq!(
+        command,
+        PlayerCommand::Submit(Intent::CloseDoor {
+            actor: game_world.player,
+            pos: (east.x(), east.y()),
+        })
+    );
+}
+
+#[test]
+fn 被挡下的那一次关门不消耗回合() {
+    // 规格 F1 的第二半判据：输入层拒绝 ⇒ 不产 `Intent` ⇒ 结算层不排期
+    // ⇒ 世界时钟不前进。按空了的那一下不该白花一回合。
+    //
+    // 反例验证（已实跑）：把拒绝改成照常 `Submit(Intent::CloseDoor)`，
+    // 时钟会随结算层的 `ScheduleNext` 前进，本条立刻变红。
+    // Arrange
+    let content = test_content();
+    let (mut game_world, east) = world_with_east_terrain(&content, content.terrain_ids.door_open);
+    let player = game_world.player;
+    let mut agent = game_world.world.actors.get(player).expect("玩家在").clone();
+    agent.pos = east;
+    let _standing: EntityId = game_world.world.actors.spawn(agent);
+    let 起始时钟 = game_world.world.clock;
+
+    // Act：拿到的是一条 `Rejected`，因此**不会**有任何东西被提交给
+    // `TurnEngine`——这正是要断言的事。
+    let command = 在门那一格按确认(&game_world, east, &content);
+    if let PlayerCommand::Submit(intent) = command {
+        player_submits(&mut game_world, &content, intent);
+    }
+
+    // Assert
+    assert!(matches!(command, PlayerCommand::Rejected(_)));
+    assert_eq!(
+        game_world.world.clock, 起始时钟,
+        "输入层拒绝的那一下不该消耗回合"
+    );
+}
+
+#[test]
+fn 两条门被挡反馈各有自己的i18n键且两种语言都有文案() {
+    // 「不许硬编码用户可见字符串」这条纪律在反馈这一层的落点：
+    // `Feedback::i18n_key` 给出的键必须在两份 `.ftl` 里都解析得到真正
+    // 的文案，而不是回落成键名本身。
+    //
+    // 反例验证（已实跑）：把 `en.ftl` 里那两条删掉，本条立刻变红。
+    // Arrange
+    let catalog = ll_i18n::Catalog::load_one(
+        "lostland",
+        std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/../../assets/locales")),
+    );
+
+    for feedback in [
+        Feedback::DoorBlockedByOccupant,
+        Feedback::DoorBlockedByObject,
+    ] {
+        let key = feedback.i18n_key();
+        for language in ["zh-CN", "en"] {
+            // Act
+            let 文案 = catalog.resolve(language, key);
+
+            // Assert
+            assert_ne!(文案, key, "{language} 缺 {key} 的文案");
+            assert!(!文案.is_empty());
+        }
+    }
+    // 两条必须是两句不同的话——否则「分成两条」等于没分。
+    assert_ne!(
+        catalog.resolve("zh-CN", Feedback::DoorBlockedByOccupant.i18n_key()),
+        catalog.resolve("zh-CN", Feedback::DoorBlockedByObject.i18n_key())
+    );
+
+    // 英文那一份必须真的是英文，不是回落到中文那一份。
+    //
+    // 上面那圈 `文案 != key` **抓不到 `en.ftl` 缺条目**：`Catalog` 查不
+    // 到时会回落到另一门语言，于是删掉 en 的两条之后断言照样绿——这条
+    // 假绿是 ADR 0018 反例验证当场抓出来的，正是本会话反复吃亏的形状
+    // （判据只覆盖了一半，另一半静默失效）。
+    for feedback in [
+        Feedback::DoorBlockedByOccupant,
+        Feedback::DoorBlockedByObject,
+    ] {
+        let key = feedback.i18n_key();
+        assert_ne!(
+            catalog.resolve("en", key),
+            catalog.resolve("zh-CN", key),
+            "{key} 的 en 文案回落成了中文，说明 en.ftl 里缺这一条"
+        );
+    }
 }

@@ -147,10 +147,14 @@ fn 首页行矩形(demo: &Demo, viewport: (f32, f32)) -> Vec<ll_ui::widget::geom
     )
     .expect("首页画的就是那块居中面板");
     let data = screen_data(ScreenState::Title, &rows, cursor, None);
+    // 纯 CPU 的测量器：这条测试跑在没有图形适配器的环境里，
+    // 见 `ll_text::measure` 模块文档。
+    let mut measure = ll_text::TextMeasurer::new().expect("内置字体资产应能正常解析");
     ll_ui::screen::screen_row_rects(
         &data,
         &demo.catalog,
         &demo.config.language,
+        &mut measure,
         viewport.0,
         viewport.1,
     )

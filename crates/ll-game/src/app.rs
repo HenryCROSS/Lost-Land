@@ -174,6 +174,20 @@ pub struct Demo {
     /// 同一套接线方式，只是本体二进制这一份是独立的运行期实例。
     anim: AnimStateMachine,
     resources: Option<GpuResources>,
+    /// 文本测量器——「这一行画出来多宽、断成几行」的唯一来源。
+    ///
+    /// # 为什么它在这里，不在 [`GpuResources`] 里
+    ///
+    /// 测量是纯 CPU 的（`ll_text::TextMeasurer`，见其模块文档），而
+    /// **需要它的不只有渲染**：模态屏的鼠标命中要先算出每一行的矩形，
+    /// 而行高现在按渲染出的行数走（规格 W2），于是输入这一侧也要测量。
+    /// 把它放进 `GpuResources` 会让「没建窗口就点不了任何一行」——那正
+    /// 是本字段落地时 `app_navigation_tests` 两条测试抓到的实际后果。
+    ///
+    /// 一个测量器服务输入与渲染两条路，两条路因此**不可能**对同一行算
+    /// 出不同的高度——这正是「行矩形与行文字必须同一个产出点」那条
+    /// 纪律（批次 15）在测量这一层的延续。
+    measurer: ll_text::TextMeasurer,
     /// 本地化目录（P7 第一批：只读观测 HUD）——状态栏/角色面板/背包/
     /// 装备栏的全部标签、属性名、槽位名、物品名都经它解析，见
     /// `ll_ui::hud` 模块文档「三、所有文本必须走 i18n」一节对应的
@@ -397,6 +411,11 @@ impl Demo {
             idle_clip,
             anim: AnimStateMachine::new(idle_clip, FrameId(0)),
             resources: None,
+            // 建不出测量器意味着内置字体资产坏了——那种情况下整个 UI
+            // 都画不出来，没有可降级的路径，与 `TextRenderer::new` 失败
+            // 时同一条处理。
+            measurer: ll_text::TextMeasurer::new()
+                .expect("内置字体资产应能正常解析（与 TextRenderer::new 同一条来源）"),
             catalog,
             hud_anim: WidgetStateTable::new(),
             feedback: None,
@@ -1043,6 +1062,7 @@ impl AppHandler for Demo {
                     &self.catalog,
                     &self.config.language,
                     resources,
+                    &mut self.measurer,
                     &view,
                     &mut self.hud_anim,
                     frame,
@@ -1077,6 +1097,7 @@ impl AppHandler for Demo {
                     &self.catalog,
                     &self.config.language,
                     resources,
+                    &mut self.measurer,
                     &view,
                     &mut self.hud_anim,
                     frame,
@@ -1100,6 +1121,7 @@ impl AppHandler for Demo {
                 self.screen_notice,
                 hovered_row,
                 resources,
+                &mut self.measurer,
                 &view,
             );
             resources.present_frame(surface_frame);

@@ -30,6 +30,8 @@ use ll_world::item::{EquipSlot, ItemStack};
 use ll_core::ident::ContentIndex;
 
 use super::{PanelContent, build_panel, item_display_name};
+use ll_text::MeasureText;
+
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
 
@@ -127,10 +129,18 @@ pub fn equipment_panel_lines(
     catalog: &Catalog,
     language: &str,
     identified: &[ContentIndex],
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     line_height: f32,
+    wrap_width: f32,
 ) -> Vec<Label> {
-    let mut cursor = RowCursor::new(origin, line_height);
+    let mut cursor = RowCursor::new(
+        measure,
+        origin,
+        line_height,
+        super::DEFAULT_FONT_SIZE,
+        wrap_width,
+    );
     let mut lines = Vec::new();
     write_equipment_panel_lines(
         equipment,
@@ -153,10 +163,11 @@ pub fn equipment_panel(
     catalog: &Catalog,
     language: &str,
     identified: &[ContentIndex],
+    measure: &mut dyn MeasureText,
     origin: (f32, f32),
     width: f32,
 ) -> PanelContent {
-    build_panel(origin, width, |cursor, lines| {
+    build_panel(measure, origin, width, |cursor, lines| {
         write_equipment_panel_lines(
             equipment, items, catalog, language, identified, cursor, lines,
         );
@@ -234,8 +245,17 @@ mod tests {
         let equipment = BTreeMap::new();
 
         // Act
-        let lines =
-            equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
+        let lines = equipment_panel_lines(
+            &equipment,
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
 
         // Assert
         assert_eq!(lines.len(), 23);
@@ -254,8 +274,17 @@ mod tests {
         let equipment = BTreeMap::new();
 
         // Act
-        let lines =
-            equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
+        let lines = equipment_panel_lines(
+            &equipment,
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -291,8 +320,17 @@ mod tests {
         let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
 
         // Act
-        let lines =
-            equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
+        let lines = equipment_panel_lines(
+            &equipment,
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -334,8 +372,17 @@ mod tests {
         let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
 
         // Act
-        let lines =
-            equipment_panel_lines(&equipment, &table, &catalog, "zh-CN", &[], (0.0, 0.0), 16.0);
+        let lines = equipment_panel_lines(
+            &equipment,
+            &table,
+            &catalog,
+            "zh-CN",
+            &[],
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            16.0,
+            crate::测试断行宽,
+        );
         let joined = lines
             .iter()
             .map(|l| l.text.as_str())
@@ -365,6 +412,7 @@ mod tests {
             &catalog,
             "zh-CN",
             &[],
+            &mut crate::测试测量器(),
             (0.0, 0.0),
             240.0,
         );

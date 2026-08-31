@@ -16,6 +16,7 @@ use ll_render::wgpu;
 use crate::error::TextError;
 use crate::fonts::FontCatalog;
 use crate::layout::{self, LayoutResult};
+use crate::measure::{MeasureText, TextMetrics, metrics_of};
 
 /// 一段待绘制的文本：内容、位置、字号与颜色。
 ///
@@ -108,6 +109,10 @@ impl TextRenderer {
     }
 
     /// 对一段文本排版但不绘制，供调用方在绘制前查询断行结果与占用尺寸。
+    ///
+    /// 只要「几行、多宽」两个数时用 [`MeasureText::measure_text`]——它
+    /// 走的是**同一个** [`layout::layout_text`]，只是把结果折算成
+    /// [`TextMetrics`]，见 [`crate::measure`] 模块文档。
     pub fn layout(
         &mut self,
         text: &str,
@@ -226,5 +231,20 @@ impl TextRenderer {
         self.atlas.trim();
 
         Ok(())
+    }
+}
+
+/// **复用 [`TextRenderer`] 自己那份 `FontSystem`**，不额外建第二份——
+/// 见 [`crate::measure`] 模块文档「一份度量，两个持有者」一节。
+impl MeasureText for TextRenderer {
+    fn measure_text(
+        &mut self,
+        text: &str,
+        font_size: f32,
+        line_height: f32,
+        max_width: f32,
+    ) -> TextMetrics {
+        let result = self.layout(text, font_size, line_height, max_width);
+        metrics_of(&result)
     }
 }

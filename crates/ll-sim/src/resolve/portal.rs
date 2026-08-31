@@ -5,6 +5,7 @@
 //! 新意图族的必经之地，按族分开之后，加一族新意图等于加一个模块，而不是
 //! 往一个八千行的文件中间插。分派表本身仍然在 [`crate::resolve`]。
 
+use ll_core::torus::TorusPos;
 use ll_world::entity::EntityId;
 use ll_world::space::{Space, SpaceId};
 use ll_world::state::WorldState;
@@ -124,15 +125,10 @@ pub(super) fn resolve_close_door(
     let Some(closed_kind) = world.terrain_table.closes_into(terrain) else {
         return idle; // 前置 3：这一格不是一扇开着的门。
     };
-    if occupant_at(world, door_pos, actor).is_some() {
-        return idle; // 前置 4a：门口站着人。
-    }
-    if world
-        .ground_items
-        .iter()
-        .any(|ground| ground.pos == door_pos && ground.placed)
-    {
-        return idle; // 前置 4b：门口立着一件家具。
+    // 前置 4：门口被占着。两种占法由 [`door_close_blocker`] 判定——
+    // **输入层用的是同一个函数**，见它的文档。
+    if door_close_blocker(world, door_pos, actor).is_some() {
+        return idle;
     }
 
     vec![
@@ -145,6 +141,62 @@ pub(super) fn resolve_close_door(
             at: schedule_after(world, cost),
         },
     ]
+}
+
+/// 一扇开着的门关不上的两种原因——**结算层与输入层共用的那份判据的
+/// 值域**。
+///
+/// # 为什么要分成两条，而不是一句「有东西挡着」
+///
+/// 项目所有者 2026-08-29 的裁定给的是**两句**文案：「门口有人挡着」
+/// 与「门口立着东西」（`knowledge/handoff/2026-08-28-session-handoff.md`
+/// 第〇之二节第 6 条）。结算层这两条本来就是两道独立前置
+/// （[`resolve_close_door`] 的前置 4a / 4b），合成一条等于把**已经
+/// 分开的信息**在呈现层重新丢掉。
+///
+/// `knowledge/design/ui-and-navigation.md` 九节 F1 曾把它收敛成一个
+/// `DoorBlocked` 变体；那一条已按所有者原话更正，更正记在该节原地。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoorCloseBlocker {
+    /// 门口站着另一个活着的实体。
+    Occupant,
+    /// 门口立着一件家具（`GroundItem::placed`）。
+    PlacedObject,
+}
+
+/// 这一格上的门此刻**关不上**的原因，`None` 表示关得上。
+///
+/// # 一份判据，两个调用点
+///
+/// [`resolve_close_door`] 的前置 4 用它，`ll_game::player_action` 的
+/// 关门分派**也**用它——后者要在提交意图**之前**就能告诉玩家「为什么
+/// 关不上」（规格 F1：此前只有一句笼统的「这一下没有起作用」）。
+///
+/// 规格原文写的是「这条判据输入层自己就能答」，但**照着在输入层再写
+/// 一遍**正是 ADR 0021 点名要拦的形状：同一条判据两份实现，改了一份
+/// 另一份不会有任何东西报错。提成一个公开函数之后，两个调用点分叉在
+/// 结构上不可能发生。
+///
+/// **本函数不判「这一格是不是一扇开着的门」**——那是
+/// [`ll_world::terrain::TerrainTable::closes_into`] 的事，输入层的候选
+/// 列表已经按它分过类（`InteractTarget::Door` 的 `DoorAction::Close`）。
+/// 本函数只回答「挡没挡着」。
+pub fn door_close_blocker(
+    world: &WorldState,
+    door_pos: TorusPos,
+    actor: EntityId,
+) -> Option<DoorCloseBlocker> {
+    if occupant_at(world, door_pos, actor).is_some() {
+        return Some(DoorCloseBlocker::Occupant);
+    }
+    if world
+        .ground_items
+        .iter()
+        .any(|ground| ground.pos == door_pos && ground.placed)
+    {
+        return Some(DoorCloseBlocker::PlacedObject);
+    }
+    None
 }
 
 /// 尝试进入 `target` 这个具体的 `Interior` 空间实例。

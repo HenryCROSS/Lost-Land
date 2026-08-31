@@ -288,6 +288,8 @@ hud-direction-north_west = Northwest
 hud-feedback-no-selection = Nothing to act on
 hud-feedback-nothing-happened = That had no effect
 hud-feedback-nothing-nearby = Nothing nearby to interact with
+hud-feedback-door-blocked-occupant = Someone is standing in the doorway
+hud-feedback-door-blocked-object = Something is standing in the doorway
 
 equip_slot-main_hand-display_name = Main Hand
 equip_slot-off_hand-display_name = Off Hand

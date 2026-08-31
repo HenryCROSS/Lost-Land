@@ -152,6 +152,7 @@ use ll_mod::item::ItemTable;
 use ll_mod::recipe::RecipeTable;
 use ll_platform::input::{GameKey, InputState};
 use ll_sim::intent::{Direction, Intent, intent_from_input};
+use ll_sim::resolve::{DoorCloseBlocker, door_close_blocker};
 use ll_ui::hud::action_menu::{ActionMenuData, MenuPlacement};
 use ll_ui::hud::item_display_name;
 use ll_world::entity::{Agent, EntityId};
@@ -259,6 +260,25 @@ pub enum Feedback {
     /// 清楚，说不清楚的才退回那句笼统的——这条分界与
     /// [`Self::NoSelection`] 是同一条。
     NothingNearby,
+    /// 按了关门，但门口站着另一个活着的实体。
+    ///
+    /// # 为什么这一条不是「结算层的判定被抄到了输入层」
+    ///
+    /// 判据本体住在 `ll_sim::resolve::door_close_blocker`——结算层的
+    /// [`ll_sim::resolve`] 与本模块**调的是同一个函数**，不是两份实现。
+    /// 输入层在这里问它，只是为了在**提交意图之前**就能说清楚原因；
+    /// 说不清楚时仍然退回 [`Self::NothingHappened`]。这与
+    /// [`Self::NothingNearby`] 是同一条分界。
+    ///
+    /// # 为什么分成「人」与「东西」两条
+    ///
+    /// 项目所有者 2026-08-29 的裁定给的是两句文案（「门口有人挡着」/
+    /// 「门口立着东西」），而结算层本来就是两道独立前置。合成一条等于
+    /// 把已经分开的信息重新丢掉，见
+    /// `ll_sim::resolve::DoorCloseBlocker` 文档。
+    DoorBlockedByOccupant,
+    /// 按了关门，但门口立着一件家具。见 [`Self::DoorBlockedByOccupant`]。
+    DoorBlockedByObject,
 }
 
 impl Feedback {
@@ -269,6 +289,8 @@ impl Feedback {
             Feedback::NoSelection => "hud-feedback-no-selection",
             Feedback::NothingHappened => "hud-feedback-nothing-happened",
             Feedback::NothingNearby => "hud-feedback-nothing-nearby",
+            Feedback::DoorBlockedByOccupant => "hud-feedback-door-blocked-occupant",
+            Feedback::DoorBlockedByObject => "hud-feedback-door-blocked-object",
         }
     }
 }
@@ -712,6 +734,7 @@ pub fn player_command(
                 None => interact_command(
                     input,
                     menu,
+                    world,
                     actor,
                     pos,
                     agent.pos,
@@ -732,6 +755,9 @@ pub fn player_command(
 fn interact_command(
     input: &InputState,
     menu: &mut PlayerMenu,
+    // 关门那一支要在提交意图之前问一次「门口挡没挡着」，见
+    // [`Feedback::DoorBlockedByOccupant`]。
+    world: &WorldState,
     actor: EntityId,
     pos: TorusPos,
     actor_pos: TorusPos,
@@ -813,10 +839,26 @@ fn interact_command(
         // 变了（开门那一行会变成关门那一行）。
         InteractTarget::Door { action } => {
             *menu = PlayerMenu::Closed;
-            PlayerCommand::Submit(match action {
-                DoorAction::Open => Intent::OpenDoor { actor, pos: naked },
-                DoorAction::Close => Intent::CloseDoor { actor, pos: naked },
-            })
+            match action {
+                DoorAction::Open => PlayerCommand::Submit(Intent::OpenDoor { actor, pos: naked }),
+                // 关门之前先问一句「关不上的话是被什么挡着」——规格 F1：
+                // 此前这一路照常提交意图，结算层判定关不上、静默返回空
+                // 效果，玩家只看到一句笼统的「这一下没有起作用」，不知道
+                // 是门口站着人、还是自己按错了键、还是这扇门根本关不上。
+                //
+                // **输入层拒绝就不消耗回合**：不产 `Intent` ⇒ 结算层不
+                // 排期 ⇒ 世界时钟不前进。这与 `NothingNearby` 那条同一
+                // 条纪律（按空了的那一下不该白花一回合）。
+                DoorAction::Close => match door_close_blocker(world, pos, actor) {
+                    Some(DoorCloseBlocker::Occupant) => {
+                        PlayerCommand::Rejected(Feedback::DoorBlockedByOccupant)
+                    }
+                    Some(DoorCloseBlocker::PlacedObject) => {
+                        PlayerCommand::Rejected(Feedback::DoorBlockedByObject)
+                    }
+                    None => PlayerCommand::Submit(Intent::CloseDoor { actor, pos: naked }),
+                },
+            }
         }
     }
 }
