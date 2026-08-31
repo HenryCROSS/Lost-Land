@@ -17,6 +17,8 @@
 use ll_core::ident::WorldId;
 use ll_core::torus::TorusSize;
 use ll_world::chunk::ChunkGrid;
+use ll_world::entity::OrgInstance;
+use ll_world::faction::{Faction, FactionStatus, FactionTable};
 use ll_world::generate::GenParams;
 use ll_world::state::WorldState;
 use ll_world::terrain::base_terrain_fixture;
@@ -322,7 +324,31 @@ use ll_world::zone::ZoneLayout;
 // 本条：那条路径住在 `ll-sim`，是本 crate 的下游，且本条世界里没有
 // 任何实体会死。**同样用反例证过**：把该函数产出的尸体数量临时改成
 // 9999，本文件九条仍然全绿。
-const EXPECTED_WORLD_DIGEST: u64 = 10_180_278_885_427_934_050;
+// # 势力播种批次（`WorldState::factions`，2026-08-29）：**本条重冻了**
+//
+// `WorldState::hash` 末尾新增 `self.factions.write_hash(&mut hasher)`。
+// 四步走完，逐条记在这里：
+//
+// 1. **确认基线红**：改完实现、还没动本常量，本条 FAILED，
+//    left = 11270479921196970914，right = 10180278885427934050。
+// 2. **把改动关掉，确认精确回到旧值**：把 `state.rs` 里那一行整段注掉
+//    （其余全部改动保留），本条**绿**——摘要精确等于旧常量
+//    10180278885427934050。同一步在 `replay.rs` 那条上也精确回到它的
+//    旧值。这一步排除掉「其实是别的改动顺手平移了索引」。
+// 3. **恢复那一行**。
+// 4. **两个独立进程复现新值**：见常量下方的记录。
+//
+// **本条世界里的势力表是空的**（它走 `WorldState::new`，从不建档、
+// 不跑编年史），因此摘要变化只来自 `write_hash` 写出的那个长度 0 标记
+// ——如实说明，不假装它覆盖了势力的内容。**真正覆盖内容的是本文件新增
+// 的 `新增势力后世界哈希必须变化` 与 `势力覆灭与否会改变世界哈希` 两条**
+// （各自带反例验证），以及
+// `crates/ll-world/tests/faction_seeding.rs` 那一整套端到端断言。
+// 这正是交接文档点名的那个陷阱的正面处理：「基线红了，但那个测试的
+// 世界里根本不存在这类对象」。
+//
+// 旧值（势力播种批次之前）：10_180_278_885_427_934_050
+const EXPECTED_WORLD_DIGEST: u64 = 11_270_479_921_196_970_914;
 
 // # 等级与经验系统落地批次：本次没有重冻，如实记录为什么不可能变
 //
@@ -486,6 +512,116 @@ fn 标记一座据点已物化会改变世界哈希() {
     let hash_after_first = world.hash();
     assert!(!world.mark_settlement_materialized(site));
     assert_eq!(world.hash(), hash_after_first);
+}
+
+#[test]
+fn 新增势力后世界哈希必须变化() {
+    // 与紧邻上面那条「标记一座据点已物化会改变世界哈希」同一条 ADR 0022
+    // 纪律的又一次重演，而且这一条**尤其**不能省：本文件那个黄金基准
+    // 世界（`固定种子的四十八乘四十八世界摘要跨平台稳定`）里
+    // **一个势力都没有**——它走 `WorldState::new`，从不建档、不跑编年史。
+    // 也就是说那条黄金基准的重冻只证明了「空势力表的长度标记进了哈希」，
+    // **没有**证明「势力表的内容进了哈希」。这正是交接文档点名的那个
+    // 陷阱：「基线红了，但那个测试的世界里根本不存在这类对象」。
+    //
+    // 反例验证（ADR 0018）：把 `FactionTable::write_hash` 里除长度以外
+    // 的每一行删掉（只留 `hasher.write_u64(len)`），本条立刻红——两个
+    // 都只有一个势力、但统治的据点完全不同的世界会算出同一个哈希。
+    // Arrange
+    let (terrain_ids, terrain_table) = base_terrain_fixture();
+    let layout = test_layout();
+    let spawn = layout.tile_size().wrap(0, 0);
+    let mut world = WorldState::new(
+        layout,
+        &GenParams::default(),
+        &terrain_ids,
+        terrain_table,
+        spawn,
+    )
+    .expect("测试布局满足全部构造前置条件");
+    let empty_hash = world.hash();
+
+    let mut counter = 0u32;
+    let site_a = WorldId::next(&mut counter);
+    let site_b = WorldId::next(&mut counter);
+    let make = |id: WorldId, members: Vec<WorldId>| Faction {
+        org: OrgInstance {
+            id,
+            def: None,
+            authored: None,
+        },
+        seat: members[0],
+        founded_epoch: 0,
+        status: FactionStatus::Active,
+        members,
+    };
+    let faction_id = WorldId::next(&mut counter);
+
+    // Act：先装一个只统治 site_a 的势力，再换成同号、同首邑、但**多统治
+    // 一座城**的势力。
+    world.factions =
+        FactionTable::rebuild(vec![make(faction_id, vec![site_a])]).expect("表本身合法");
+    let one_city = world.hash();
+    world.factions =
+        FactionTable::rebuild(vec![make(faction_id, vec![site_a, site_b])]).expect("表本身合法");
+    let two_cities = world.hash();
+
+    // Assert
+    assert_ne!(one_city, empty_hash, "势力表从空变成有一个势力，哈希必须变");
+    assert_ne!(
+        two_cities, one_city,
+        "同一个势力多统治一座城，哈希必须变——否则「占领悄悄没落地」测不出来"
+    );
+}
+
+#[test]
+fn 势力覆灭与否会改变世界哈希() {
+    // `FactionStatus` 是真正的世界状态：玩家加入的势力还在不在，直接
+    // 决定后续玩法。反例验证：把 `write_hash` 里 `status` 那个 match
+    // 整段删掉，本条红。
+    // Arrange
+    let (terrain_ids, terrain_table) = base_terrain_fixture();
+    let layout = test_layout();
+    let spawn = layout.tile_size().wrap(0, 0);
+    let mut world = WorldState::new(
+        layout,
+        &GenParams::default(),
+        &terrain_ids,
+        terrain_table,
+        spawn,
+    )
+    .expect("测试布局满足全部构造前置条件");
+    let mut counter = 0u32;
+    let faction_id = WorldId::next(&mut counter);
+    let site = WorldId::next(&mut counter);
+    let org = OrgInstance {
+        id: faction_id,
+        def: None,
+        authored: None,
+    };
+
+    // Act
+    world.factions = FactionTable::rebuild(vec![Faction {
+        org: org.clone(),
+        seat: site,
+        founded_epoch: 2,
+        status: FactionStatus::Active,
+        members: vec![site],
+    }])
+    .expect("表本身合法");
+    let alive = world.hash();
+    world.factions = FactionTable::rebuild(vec![Faction {
+        org,
+        seat: site,
+        founded_epoch: 2,
+        status: FactionStatus::Fallen { epoch: 9 },
+        members: Vec::new(),
+    }])
+    .expect("表本身合法");
+    let fallen = world.hash();
+
+    // Assert
+    assert_ne!(alive, fallen);
 }
 
 /// 世界尺寸下限常量（43×25）从渲染层 `Camera::visible_tiles` 的跨度

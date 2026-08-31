@@ -1,7 +1,7 @@
 {
   "_note": "本文件由 scripts/ci/check_save_schema_version.py --bless 生成，不要手工编辑。它记录存档主体（postcard 编码的 WorldState 闭包）的线格式形状，以及生成它时的 CURRENT_SCHEMA_VERSION。",
-  "fingerprint": "ed930cbd01e027a26074a77b01a17a4aa4a2dad000a549fdb5cd44db78aebafc",
-  "schema_version": 3,
+  "fingerprint": "553086e72cb29e03c34de1b5be8d2233be92271acc3f8f8e164baf543e5f15de",
+  "schema_version": 4,
   "types": {
     "ActiveStatModifier": {
       "container": [
@@ -574,6 +574,94 @@
         }
       ]
     },
+    "Faction": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/faction.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "OrgInstance"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "WorldId"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 3,
+          "ty": "FactionStatus"
+        },
+        {
+          "attrs": [],
+          "i": 4,
+          "ty": "Vec<WorldId>"
+        }
+      ]
+    },
+    "FactionStatus": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/faction.rs",
+      "kind": "enum",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "payload": []
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "payload": [
+            "u32"
+          ]
+        }
+      ]
+    },
+    "FactionTable": {
+      "container": [
+        "#[serde(try_from = \"FactionTableRepr\")]",
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/faction.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Vec<Faction>"
+        }
+      ]
+    },
+    "FactionTableRepr": {
+      "container": [
+        "derive(Deserialize)"
+      ],
+      "file": "crates/ll-world/src/faction.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Vec<Faction>"
+        }
+      ]
+    },
     "FamilyId": {
       "container": [
         "derive(Deserialize,Serialize)"
@@ -1051,6 +1139,31 @@
           "attrs": [],
           "i": 1,
           "ty": "Box<str>"
+        }
+      ]
+    },
+    "OrgInstance": {
+      "container": [
+        "derive(Deserialize,Serialize)"
+      ],
+      "file": "crates/ll-world/src/entity/org.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "WorldId"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Option<ContentIndex>"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Option<NamespacedId>"
         }
       ]
     },
@@ -1775,6 +1888,11 @@
           "attrs": [],
           "i": 6,
           "ty": "CultureTable"
+        },
+        {
+          "attrs": [],
+          "i": 7,
+          "ty": "FactionTable"
         }
       ]
     },
@@ -1874,6 +1992,11 @@
           "attrs": [],
           "i": 14,
           "ty": "Vec<WorldId>"
+        },
+        {
+          "attrs": [],
+          "i": 15,
+          "ty": "FactionTable"
         }
       ]
     },
@@ -1959,6 +2082,11 @@
           "attrs": [],
           "i": 14,
           "ty": "Vec<WorldId>"
+        },
+        {
+          "attrs": [],
+          "i": 15,
+          "ty": "FactionTable"
         }
       ]
     },

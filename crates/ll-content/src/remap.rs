@@ -159,6 +159,17 @@ pub fn remap_world(
         // 编译器会在它某天变成携带索引的类型时让这一行继续通过、因此这条
         // 注释就是那个提醒。
         materialized_settlements: _,
+        // 势力表（势力播种批次）——同样是**逐字段确认过不需要重映射**：
+        // `Faction` 里除了 `org.def`/`org.authored` 之外全部是 `WorldId`
+        // 与 `u32`，而世界生成播种出来的势力那两项**恒为 `None`**（纯
+        // 生成，没有 mod 模板、没有 mod 具名定义，见
+        // `ll_world::entity::OrgInstance` 字段文档）。
+        //
+        // **等 mod 真的定义具体势力那天，这一行必须改。** 那时 `org.def`
+        // 会携带真实的 `ContentIndex`，`_` 会让它在换一批 mod 装载顺序之后
+        // 静默指向另一个模板——正是上面那段注释点名的那类事故。这笔账同时
+        // 记在 `OrgInstance` 的类型文档里。
+        factions: _,
     } = *world;
 
     terrain.try_remap_resident_terrain(|kind| -> Result<TerrainKind, LoadError> {

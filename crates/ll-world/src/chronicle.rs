@@ -83,6 +83,7 @@ use ll_core::time::{DAYS_PER_SEASON, SEASONS_PER_YEAR, TICKS_PER_DAY, Tick};
 use ll_core::torus::{TorusPos, TorusSize};
 
 use crate::culture::{CultureKind, CultureTable};
+use crate::faction::{FactionTable, seed_factions};
 use crate::generate::{
     GenParams, generate_zone_window, terrain_at_tile, zone_representative_terrain,
 };
@@ -309,6 +310,14 @@ pub struct WorldChronicle {
     /// 同一条取舍**：跟着编年史一起走，调用方就不需要再从别处凑一张
     /// 可能已经对不上号的表。
     cultures: CultureTable,
+    /// 从这部编年史的**占领链**折叠出来的势力表，见 [`crate::faction`]。
+    ///
+    /// 存在这里而不是让调用方自己折叠：势力号从本结构的
+    /// [`Self::next_world_id`] 计数器分配，折叠必须发生在计数器还在手上
+    /// 的时候。折叠本身是 `events` 的纯函数（无掷骰、无哈希容器），
+    /// 算法全在 [`crate::faction::seed_factions`] 里——`chronicle.rs`
+    /// 只做这一处接线。
+    factions: FactionTable,
 }
 
 /// 一次历史推演要读的全部**世界形状**输入——除可调参数
@@ -389,14 +398,20 @@ impl WorldChronicle {
         run.simulate();
         let sites = run.final_sites();
         let zone_index = build_zone_index(&sites, layout);
+        // 势力播种：把刚推演出来的占领链折叠成势力表。必须排在这里
+        // ——`run.next_world_id` 还在手上，势力号从同一个计数器继续
+        // 分配（`crate::faction` 模块文档「`WorldId` 从哪来」）。
+        let mut next_world_id = run.next_world_id;
+        let factions = seed_factions(&run.events, &mut next_world_id);
         WorldChronicle {
-            next_world_id: run.next_world_id,
+            next_world_id,
             events: run.events,
             sites,
             zone_index,
             epochs: chronicle_params.epochs,
             table: table.clone(),
             cultures: cultures.clone(),
+            factions,
         }
     }
 
@@ -415,6 +430,8 @@ impl WorldChronicle {
             table,
             // 没有据点就没有文化可查；空表的语义见 `CultureTable::new`。
             cultures: CultureTable::new(),
+            // 没有据点就没有势力可立，见 `FactionTable::new`。
+            factions: FactionTable::new(),
         }
     }
 
@@ -438,6 +455,17 @@ impl WorldChronicle {
     /// 到与历史事件相同的号码。见模块文档「为什么编年史不进存档」。
     pub fn next_world_id(&self) -> u32 {
         self.next_world_id
+    }
+
+    /// 从占领链折叠出来的势力表——**「谁统治谁」这层关系的物化**，见
+    /// [`crate::faction`]。
+    ///
+    /// 调用方（`ll_game::world::build_world`）要把它搬进
+    /// [`crate::state::WorldState::factions`]：与整部编年史不同，势力
+    /// **进存档**（项目所有者裁定「被占领后肯定会有变化的」），因此读档
+    /// 时不重跑这一步，直接读存档里那一份。
+    pub fn factions(&self) -> &FactionTable {
+        &self.factions
     }
 
     /// 判断某个区块能不能盖房时用的地形表快照。

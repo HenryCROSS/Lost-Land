@@ -40,6 +40,7 @@ use crate::WorldError;
 use crate::chunk::ChunkGrid;
 use crate::entity::{Affiliation, Agent, Arena, EntityId, Gender, Goal, OrgRef, ThinPopulation};
 use crate::exploration::ExplorationMemory;
+use crate::faction::FactionTable;
 use crate::generate::{GenParams, TerrainShape, build_zone_noise};
 use crate::history::{
     HistoricalEvent, HistoricalEventKind, KillCause, KillingBlow, SettlementDemise, VictimState,
@@ -472,6 +473,33 @@ pub struct WorldState {
     /// 的两批实体），缺席 `hash()` 就测不出「重复生成」这条缺陷本身有没有
     /// 回潮。
     pub materialized_settlements: Vec<WorldId>,
+    /// **全世界的势力**——从编年史的占领链折叠出来，见
+    /// [`crate::faction`]。
+    ///
+    /// # 为什么这一份**进存档**，而整部编年史不进
+    ///
+    /// 编年史是种子的纯函数，读档时 `ll_game::rebuild_chronicle` 重跑一遍
+    /// 就逐位复现（ADR 0009「默认派生，只存偏差」）。势力**不是**：项目
+    /// 所有者裁定「`OrgInstance` 进入存档，**因为被占领后肯定会有变化的**」
+    /// ——一旦游戏内的占领开始改写势力版图，它就不再是种子的函数，而是
+    /// ADR 0009 意义上真正的「偏差」。
+    ///
+    /// 还有一条更硬的理由：玩家的势力归属是
+    /// `Affiliation { kind: Faction, org: OrgRef::Instance(号) }`，而
+    /// `ll_content::remap::remap_affiliations` 对 `Instance` **不做任何
+    /// 重映射**。势力表若走派生，那么任何改变编年史推演的改动（地形、
+    /// 气候、文化、战争判据）都会让老存档里那条归属**静默指向另一个
+    /// 势力，且没有任何东西会报错**——`dialogue-system.md` 5.1 节把这条
+    /// 风险登记为「必须裁定」的那一项。进存档就是对它的回答。
+    ///
+    /// # 参与 `hash()`（ADR 0022）
+    ///
+    /// 与 [`Self::materialized_settlements`] 同一条纪律，第九次重演：
+    /// 势力版图真的分岔未来（谁统治哪座城、玩家加入的势力还在不在），
+    /// 缺席 `hash()` 就测不出「占领悄悄没落地/多算了一座城」。表内全部
+    /// 是 `Vec` 顺序，不涉及 `HashMap`/`HashSet` 迭代顺序（约束 C5），
+    /// 编码见 [`crate::faction::FactionTable::write_hash`]。
+    pub factions: FactionTable,
 }
 
 /// [`WorldState`] 反序列化的中转表示。
@@ -533,6 +561,15 @@ struct WorldStateRepr {
     /// 固件。
     #[serde(default)]
     materialized_settlements: Vec<WorldId>,
+    /// 势力表（势力播种批次）——**必须是本结构的最后一个字段**：存档
+    /// 主体走 `postcard`（按声明顺序定位、不带字段名），插在中间会让
+    /// 后续字段的字节被错位读成合法值，`scripts/ci/check_save_schema_version.py`
+    /// 的头注释点名的正是这条。`#[serde(default)]` 的理由与上面那批
+    /// 一致：只服务本文件内部用 `serde_json::json!` 手写局部字段的测试
+    /// 固件；老存档走的是「版本不对就明确拒绝」，不是默认值兜底
+    /// （`CURRENT_SCHEMA_VERSION` 已随本批递增）。
+    #[serde(default)]
+    factions: FactionTable,
 }
 
 impl TryFrom<WorldStateRepr> for WorldState {
@@ -581,6 +618,7 @@ impl TryFrom<WorldStateRepr> for WorldState {
             kill_counts: repr.kill_counts,
             ground_items: repr.ground_items,
             materialized_settlements: repr.materialized_settlements,
+            factions: repr.factions,
         })
     }
 }
@@ -630,6 +668,9 @@ impl WorldState {
             kill_counts: BTreeMap::new(),
             ground_items: Vec::new(),
             materialized_settlements: Vec::new(),
+            // 新造的世界还没有历史，因此还没有势力；建档路径随后会把
+            // 编年史折叠出来的那一份搬进来（`ll_game::world::build_world`）。
+            factions: FactionTable::new(),
         })
     }
 
@@ -1404,6 +1445,11 @@ impl WorldState {
         for site in &self.materialized_settlements {
             hasher.write_u64(u64::from(site.get()));
         }
+
+        // 势力表（势力播种批次）——同一条先例第九次重演，理由见
+        // Self::factions 文档「参与 hash()」一节。编码本身在
+        // faction.rs 里（这个文件已经 3700+ 行，新代码不再往里堆）。
+        self.factions.write_hash(&mut hasher);
 
         hasher.finish()
     }

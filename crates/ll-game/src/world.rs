@@ -307,6 +307,15 @@ pub fn build_new_world_with_mode(
     // 编年史分配掉的 WorldId 不能被游戏内的击杀记录再发一次——历史
     // 事件与据点用的是同一个号码空间（`identity-and-ids.md`）。
     world.next_world_id = world.next_world_id.max(chronicle.next_world_id());
+    // 势力播种：把编年史折叠出来的那份势力表搬进世界状态。
+    //
+    // **搬运，不是重算**——与整部编年史相反，势力**进存档**（项目所有者
+    // 裁定「被占领后肯定会有变化的」，见
+    // `ll_world::state::WorldState::factions` 字段文档）。因此
+    // `rebuild_chronicle` 那条读档路径**不**再调一次这里：存档里的那一份
+    // 才是权威，它可能已经被游戏内的占领改写过。
+    world.factions = chronicle.factions().clone();
+    tracing::info!(factions = world.factions.len(), "势力播种完成");
     world
         .terrain
         .install_chronicle(chronicle, &noise, &params, &content.terrain_ids);

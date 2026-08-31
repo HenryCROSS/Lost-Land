@@ -123,7 +123,20 @@ use crate::remap::remap_world;
 /// 「老存档去掉就好了」，项目尚未发布，全部存档都是开发期产物。空链
 /// 会让版本不匹配的存档走 `SchemaMigrationGap` 这条明确拒绝的路径，
 /// 这是本阶段有意的行为，不是缺口。
-pub const CURRENT_SCHEMA_VERSION: u32 = 3;
+/// # 3 → 4（势力播种批次，2026-08-29）
+///
+/// [`ll_world::state::WorldState`] 多了 `factions` 字段（项目所有者裁定
+/// 「`OrgInstance` 进入存档，因为被占领后肯定会有变化的」），存档主体的
+/// 线格式形状随之改变——`scripts/ci/check_save_schema_version.py` 正是
+/// 为了强制这一步而存在的，它当场报出了新进入闭包的
+/// `Faction`/`FactionStatus`/`FactionTable`/`OrgInstance` 四个类型。
+///
+/// **仍然不配迁移函数**：老存档（`schema_version <= 3`）走
+/// [`crate::load_error::LoadError::SchemaMigrationGap`] 这条**明确拒绝**
+/// 的既有路径，交接文档第〇之二第 9 条已裁定「不写迁移，纳入既有『版本
+/// 不对就打不开』策略」。端到端证据见本文件测试
+/// `势力播种之前的老存档被明确拒绝而不是静默按新布局误解析`。
+pub const CURRENT_SCHEMA_VERSION: u32 = 4;
 
 /// 头部 JSON 长度声明的安全上限——防御「声明长度与实际不符」类畸形
 /// 存档（规格 §14.3 fuzz 要求之一）：一个只有几十字节的文件却在长度
@@ -803,15 +816,19 @@ mod tests {
     #[test]
     fn 老存档的schema版本号不再被支持时读档明确拒绝而不静默解析() {
         // 项目所有者裁定「老存档去掉就好了」——发布前累计的迁移链已经
-        // 清空（crate::migrations 模块文档），CURRENT_SCHEMA_VERSION
-        // 重置为 1。这里模拟一份写于清空之前、版本号为 4（清空前的
-        // CURRENT_SCHEMA_VERSION）的老存档：读档不应该把它当成当前版本
-        // 静默塞进现在的 WorldState 类型解析，必须明确拒绝，且错误里
-        // 能读到具体的版本号，不是笼统的"损坏"。
+        // 清空（crate::migrations 模块文档）。这里模拟一份**比当前版本
+        // 更新**的存档：读档不应该把它当成当前版本静默塞进现在的
+        // WorldState 类型解析，必须明确拒绝，且错误里能读到具体的版本
+        // 号，不是笼统的"损坏"。
+        //
+        // **版本号写成 `CURRENT_SCHEMA_VERSION + 1` 而不是一个字面量**：
+        // 这条测试原本钉着字面量 4，而势力播种批次把常量升到 4，那个
+        // 字面量当场从「比当前新」变成「正好等于当前」，测试本该在那一刻
+        // 静默失去意义。派生量表达的才是这条测试真正要问的性质。
         // Arrange
         let path = temp_path("legacy-schema-version-rejected");
         let mut header = sample_header(Vec::new());
-        header.schema_version = 4;
+        header.schema_version = CURRENT_SCHEMA_VERSION + 1;
         save_to_file(&path, &header, &test_world()).expect("写出应当成功");
 
         // Act
@@ -824,12 +841,49 @@ mod tests {
                     detail,
                     crate::load_error::SchemaTooNew {
                         message_key: crate::load_error::SAVE_SCHEMA_TOO_NEW_MESSAGE_KEY,
-                        save_version: 4,
+                        save_version: CURRENT_SCHEMA_VERSION + 1,
                         max_supported: CURRENT_SCHEMA_VERSION,
                     }
                 );
             }
             other => panic!("期望 Rejected(SchemaTooNew)，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 势力播种之前的老存档被明确拒绝而不是静默按新布局误解析() {
+        // 势力播种批次把 CURRENT_SCHEMA_VERSION 从 3 升到 4：
+        // `WorldState` 末尾多了 `factions`，而存档主体走 postcard
+        // （non-self-describing、按声明顺序定位），一份写于版本 3 的
+        // 字节流用现在的布局去读会在末尾撞上「缓冲区提前结束」，或者
+        // 更糟——被错位读成合法值。
+        //
+        // 交接文档第〇之二第 9 条已裁定**不写迁移**，因此正确行为是
+        // 走既有的「版本不对就打不开」这条路。这一条是那个裁定的端到端
+        // 证据。
+        //
+        // 反例验证（ADR 0018）：把 `check_schema_version` 的比较改成恒
+        // 返回 `Ok`，本条立刻红——读档会尝试按新布局解析那份旧字节流。
+        // Arrange：3 是势力播种之前的那个版本号。
+        let path = temp_path("pre-faction-seeding-save-rejected");
+        let mut header = sample_header(Vec::new());
+        header.schema_version = 3;
+        save_to_file(&path, &header, &test_world()).expect("写出应当成功");
+
+        // Act
+        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default());
+
+        // Assert：明确拒绝，且错误里说得出是从哪个版本来的。
+        match outcome {
+            LoadOutcome::Rejected(LoadError::SchemaMigrationGap(detail)) => {
+                assert_eq!(detail.from, 3);
+                // 「3 已经是一个过时版本」这条前提用 const 断言表达：
+                // 它在编译期就该成立，而 clippy::assertions-on-constants
+                // 正确地拦下了写成运行期 assert! 的那种写法。
+                const _: () = assert!(3 < CURRENT_SCHEMA_VERSION);
+            }
+            other => panic!("期望 Rejected(SchemaMigrationGap)，实际 {other:?}"),
         }
         let _ = std::fs::remove_file(&path);
     }
