@@ -2,6 +2,8 @@
 
 **冻结于** 2026-08-21。核对提交 `fa361a8`（`main` 分支）。**并发声明**：写作本文档时工作区里有另一路并行改动（`crates/ll-mod/src/item.rs`、`crates/ll-mod/src/script_item_api.rs`、`crates/ll-sim/src/{item,resolve}.rs` 及三个测试文件，均处于未提交的修改状态，给攻击接线武器引用）——本文档不触碰、不依赖这些改动的具体内容，只依赖它们改动前就已经落地的公共接口（`ItemStack`/`GroundItemStack`/`resolve_pick_up` 等），若这些接口的具体行数在本文档冻结后发生位移，不影响本文档的结论。
 
+> **【2026-08-30 复核：下面这条「落地状态」已过期，正文原样保留。】** **`Owner` 已经落地**：`crates/ll-world/src/ownership.rs:63`（`#[default] Unowned` + 其余变体），`Effect::TransferOwnership` 在 `crates/ll-sim/src/effect.rs:650`。落地批次是 `docs/superpowers/plans/2026-08-29-batch10-ownership.md`（2026-08-29），同批把 `CURRENT_SCHEMA_VERSION` 推到 3。**「`Owner` 认领还是正式放弃」这个曾经挂在交接文档第四节的待裁定项因此已经关闭**，见 [2026-08-28 会话交接](../handoff/2026-08-28-session-handoff.md) 第四节的 2026-08-30 更正段。盗窃判定/销赃/犯罪记录仍是纯设计。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 3 条。
+
 **落地状态**：纯设计，`crates/` 中无任何 `Owner`、盗窃判定、销赃、犯罪记录的对应类型。已核实的现状：
 
 - `Owner` 的最小形状目前只记在 `ll_world::item` 模块文档（`crates/ll-world/src/item.rs` 第 28–56 行）「`Owner` 本批次仍然不落地」一节，与 [物品系统](item-system.md) 三节原文一致——五变体 `Unowned`/`Player`/`Npc(EntityId)`/`Faction(ContentIndex)`/`Shop(EntityId)`，无任何消费者。

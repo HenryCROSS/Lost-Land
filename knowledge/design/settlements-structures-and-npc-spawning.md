@@ -356,6 +356,8 @@ NPC 副职本身**不在本文档范围**，前置是 `Effect::GrantSubclass` �
 
 ### 7.1 冲突：历史生成不存在，而且它是 P7 规模
 
+> **【2026-08-30 复核：下面这条核实结论已过期，正文原样保留。】** **世界历史生成已经落地并在跑**：`crates/ll-world/src/history.rs:122`-`131` 的 `HistoricalEventKind` 有四个变体（含 `SettlementFounded`/`Abandoned`/`Conquered`），编年史推演在 `crates/ll-world/src/chronicle.rs:140`，据点写进地形在 `crates/ll-world/src/settlement.rs`，势力在 `crates/ll-world/src/faction.rs:200`。「`history.rs` 只有 `Kill` 一个变体」这句核实**已经不成立**。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 `world-history.md` 冻结于 2026-08-17，实现阶段列为 P7，落地状态「纯设计，尚无代码」——**本文档核实：仍然如此**（`history.rs` 只有 `Kill` 一个变体，模块文档自己写明 `SettlementFounded` 等四个变体「连字段都不存在」）。该文档描述的是 500 年 × 500 聚落的聚合量模拟、王朝继承、联姻、政变、一万五千名历史人物。
 
 **这不是可以顺手夹带的东西。** 而 NPC 需要现在就能生成。

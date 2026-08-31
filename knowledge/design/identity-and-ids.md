@@ -2,6 +2,8 @@
 
 **冻结于** 2026-08-17。**实现阶段** 需在[世界历史生成](world-history.md)（约 P7，[2026-08-18 规格修订] 插入「物品与装备」新 P6 阶段后原 P6 顺移为 P7）动工前定案——它是该阶段明确列出的三件「必须提前做」的事之一,但类型本身在更早的 P4（内容注册表）落地也不构成问题。
 
+> **【2026-08-30 复核：下面这条「落地状态」已过期，正文原样保留。】** 这条 2026-08-19 的更正**自己也过期了一处**：它当时写 `OrgInstance` 仍未落地，而 `OrgInstance` 已随 **2026-08-29 势力播种批次**落地——`crates/ll-world/src/entity/org.rs:36`，`WorldState::factions: FactionTable` 进存档主体（`crates/ll-world/src/state.rs:502`），`CURRENT_SCHEMA_VERSION` 因此到 4（`crates/ll-content/src/save_file.rs:139`）。计划见 `docs/superpowers/plans/2026-08-29-batch14-faction-seeding.md`。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1、4 条。
+
 **落地状态**（2026-08-19 复核更正——原文「纯设计,尚无代码」已过期）：`WorldId` 已随坐标系重写批次落地（`crates/ll-core/src/ident.rs`，含 `next`/`get` 与三条单元测试），是当时 `SpaceId` 需要而顺带交付的。`OrgInstance` 仍**未落地**——本文档「势力/家族/聚落」相关部分（二、四节）仍是纯设计。`Affiliation.org: ContentIndex`（`crates/ll-world/src/entity/affiliation.rs`,已落地）依然是本文档要处理的问题的现状——它把两种不同的东西用同一个类型表示,详见下文。
 
 ---

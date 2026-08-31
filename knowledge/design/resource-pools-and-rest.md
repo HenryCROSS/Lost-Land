@@ -1,5 +1,7 @@
 # 资源池与休息系统：法力池、法术位、血魔法与可中断的休息事件
 
+> **【2026-08-30 复核：下面这条「落地状态」已过期，正文原样保留。】** 这四样**全部已经存在**：`ResourcePoolDef`（`crates/ll-mod/src/resource_pool.rs:27`）、`Intent::Rest`（`crates/ll-sim/src/intent.rs:194`）、`RestState`（`crates/ll-world/src/entity/agent.rs:25`，另有 `:247` `resource_pools`、`:281` `resting`）、`Effect::BeginRest`（`crates/ll-sim/src/effect.rs:483`）。**连本文档说「需要 `trait-system.md` 补一个待办字段」的那个字段也有了**：`TraitAttrs::granted_resource_pools`，`crates/ll-mod/src/content_audit.rs:521`。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 **落地状态**：纯设计，`crates/**` 全代码库检索无 `ResourcePoolDef`/`register-resource-pool`/`Intent::Rest`/`RestState` 等任何匹配。
 
 **冻结于** 2026-08-20，基线提交 `234e041`（`main` 分支）。工作区此刻还有另一路并行工作（配置格式统一为 JSON5，改 `crates/ll-mod/`、`crates/ll-platform/src/config.rs`、`mods/`、`assets/sprites/`、`tools/ll-artgen`、`knowledge/design/mod-package-structure.md`）的未提交改动——本文档不触碰上述任何路径，只新增这一个文件 + 更新 `README.md` 索引里属于本文档的那一行。

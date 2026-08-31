@@ -2,6 +2,14 @@
 
 **冻结于** 2026-08-20。核对提交 `5769bae007d336adedad2e589da931e40ce99688`（`main` 分支，967 测试全绿）。
 
+> **【2026-08-30 复核：下面「落地状态」的四条依赖前提与正文三处「必须等 `format-text`
+> 落地」全部已过期。正文原样保留，逐条更正见文末「⚠ 落地状态复核更正（2026-08-30）」。】**
+> **最要紧的两条**：① `OrgInstance` 已经落地（`crates/ll-world/src/entity/org.rs:36`），
+> `WorldState::factions`（`crates/ll-world/src/state.rs:502`）随存档一起走——本文档二节
+> 「角色绑定解析要等世界生成」那条阻塞**已经解除**，不要再照它推迟；② 对话变量插值
+> **今天就能做**，`Catalog::resolve_with_args`（`crates/ll-i18n/src/lib.rs:167`）早已落地
+> 并有六个真实调用方。详见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md)。
+
 **落地状态**：纯设计，`crates/` 中无任何对应类型。已核实的依赖前提：
 
 - [任务系统](class-skill-quest-system.md)的 `QuestNodeDef`/`QuestCondition`（`crates/ll-mod/src/quest.rs`）已落地，DAG 无环校验复用 `crate::prereq_graph`，任务进度走脚本状态存储的每实体存储（`mark_quest_completed`/`is_quest_completed`，已下沉到 `ll_sim::quest`）。本文档大量复用这套既有机制，不重新发明。
@@ -237,3 +245,55 @@ pub enum ScriptValue {
 - [0016 — mod 性能分档按声明方式](../decisions/0016-mod-performance-tiers-by-declaration.md) / [0019 — 被禁能力必须有替代品或理由](../decisions/0019-denied-capability-needs-substitute-or-justification.md) —— 三档分级方法论、`format-text` 待办项
 - [0023 — 脚本状态写入必须经 apply](../decisions/0023-script-state-writes-go-through-apply.md) —— 本文档四节持久化机制的强制约束
 - [总纲设计规格](../../docs/superpowers/specs/2026-08-16-lostland-design.md) —— §11.1 数据格式分工、§11.3 本地化 CI 门禁、§15 阶段表
+
+---
+
+## ⚠ 落地状态复核更正（2026-08-30）
+
+来源：[2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md)。
+**正文一个字未改**，下面逐条说明哪一句在今天不成立、什么时候因为什么被推翻。
+
+### 1. 开头「落地状态」四条依赖前提，四条全部过期
+
+| 原文怎么说 | 今天的实际情况 | 什么时候因为什么变的 |
+|---|---|---|
+| 脚本状态存储「已落地（`crates/ll-world/src/script_state.rs`、`crates/ll-script/src/api/state.rs`）」 | **两条路径都不存在了。** `crates/ll-script/` 整个 crate 已删除；`script_state.rs` 改名为 `crates/ll-world/src/mod_state.rs` | 2026-08-23 Steel 脚本系统整体拆除（[ADR 0028](../decisions/0028-steel-engine-construction-memory-corruption.md)） |
+| `ScriptValue` 七个变体、「没有 `WorldId` 变体」 | 类型已改名为 `ModStateValue`（`crates/ll-sim/tests/replay.rs:691` 记着这次改名）。**「缺 `WorldId` 变体」这个缺口本身仍然成立**，只是它现在挂在 `ModStateValue` 上 | 同上 |
+| `OrgInstance` 与 `WorldId`「均**纯设计，无代码**」 | **`OrgInstance` 已落地**：`crates/ll-world/src/entity/org.rs:36`；`WorldState::factions: FactionTable` 进存档主体（`crates/ll-world/src/state.rs:502`），`CURRENT_SCHEMA_VERSION` 因此升到 4（`crates/ll-content/src/save_file.rs:139`）。`WorldId` 更早就落地了（`crates/ll-core/src/ident.rs`） | 2026-08-29 势力播种批次，计划见 `docs/superpowers/plans/2026-08-29-batch14-faction-seeding.md`；裁定来由见 [2026-08-28 会话交接](../handoff/2026-08-28-session-handoff.md) 第〇之二节第 3 条 |
+| 世界历史生成「纯设计，无代码」 | **已落地并在跑**：`crates/ll-world/src/chronicle.rs`（12 纪元推演，含建城/战争/占领）、`crates/ll-world/src/history.rs`、`crates/ll-world/src/settlement.rs` | 2026-08-26 前后陆续落地，见 [2026-08-26 三份文档落地状态复核](../audit/2026-08-26-society-race-conflicts-reverification.md) 零节第 2 条 |
+
+**这四条合起来的后果，是本次更正里最要紧的一条**：本文档二节把「角色绑定解析
+（`RoleQuery::Builtin` 真正落到具体 `OrgInstance`/`Agent`）」列为本系统**唯一有意义的
+世界生成依赖**，七节据此把整个剧本系统的可用形状推迟到世界生成之后。**那个阻塞今天
+已经解除了。** 下一批要做剧本/对话的角色绑定时，不要再照 198 行那张表推迟——直接查
+`WorldState::factions` 与 `crates/ll-world/src/faction.rs`。
+
+### 2. 三处「对话变量插值必须等 `format-text` 落地」：今天不成立
+
+涉及正文 **185 行**（三节末段）、**201 行**（那张前置依赖表里 `format-text` 那一行）、
+**214 行**（最小可用形状第 4 条）。三处说的是同一件事：剧本对话在 `format-text` 落地
+之前只能用不含变量的静态文案。
+
+**今天不成立。** [ADR 0019](../decisions/0019-denied-capability-needs-substitute-or-justification.md)
+B-2 的 `format-text` 是**脚本侧**的 API，它随脚本系统一起作废；而它要解决的那个问题
+（Fluent 具名参数、不许字符串拼接）**由引擎侧的 `ll-i18n` 独立解决了**：
+
+- `Catalog::resolve_with_args`（`crates/ll-i18n/src/lib.rs:167`）与实参类型
+  `FluentArgs`（`crates/ll-i18n/src/lib.rs:49`）都是 `pub`，**从一开始就是**。
+- 生产调用方今天有六处：`crates/ll-game/src/menu_screen.rs:360`、
+  `crates/ll-game/src/save_list.rs:119`、`crates/ll-game/src/settings_view.rs:78`、
+  `crates/ll-ui/src/hud/character_panel.rs:321` 与 `:331`、`crates/ll-ui/src/hud/mod.rs:199`。
+- 尸体名字走的正是「一条带 `$species` 参数的通用 Fluent 消息」，见
+  [2026-08-28 会话交接](../handoff/2026-08-28-session-handoff.md) 第二节「其余零碎」。
+
+**这一条不是本次新发现**：[对话系统](dialogue-system.md) 3.3 节（`dialogue-system.md:309`）
+早已写下这条更正。本次更正只是把它**搬回被更正的这一份**——上一次只改了更正方、没有
+在被更正方留任何标记，于是打开本文档的人拿不到这条信息。
+
+### 3. 仍然成立、不需要改的
+
+- 一节「剧本与任务的边界」、二节「按角色绑定」那条结论与另外两条被否决路线的论证，
+  没有任何证据反对它们。
+- `ModStateValue` 缺 `WorldId`（原文写 `ScriptValue::World(WorldId)`）这个缺口是真的，
+  只是承载类型改了名。
+

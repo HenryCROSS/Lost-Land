@@ -390,6 +390,8 @@ for (attribute, per_source) in &agent.active_stat_modifiers {     // 按 Attribu
 > 下面两条是当时的原文，保留作为「阻塞点判断随基础设施推进而变化」的记录，**不再是现状**：
 
 - **`AttributeKind` 缺抗性变体这条路径已经被完全绕开，不再是阻碍**——`trait-system.md` 三节③新增的 `RuleModifier::Resistance { damage_category: ContentIndex, multiplier_permille: i32 }` 走的是声明式规则修正（一档，ADR 0016/0017），挂在 `TraitTable`（`resistance_multiplier(defender, damage_category)` 遍历 `defender` 的有效天赋，收集匹配的 `Resistance` 条目取乘数），从头到尾没有用到、也不需要 `AttributeKind` 这个类型——抗性从来就不该是"体质"这类主属性的一个变体（`damage-formula-mod-api.md` 九节早就论证过"体质"是描述性文字，不是按伤害类别分列的抗性表），`RuleModifier::Resistance` 直接按 `damage_category`（`ContentIndex`，`damage-formula-mod-api.md` 十七节已开放的注册表）分类，粒度天然匹配"火抗""冰抗"这类具体类别，不需要经过 `AttributeKind` 这一层。
+> **【2026-08-30 复核：下面这条阻塞判断已过期，正文原样保留。】** **天赋系统已经落地，这条阻塞已经解除**：`TraitDef`/`TraitTable` 在 `crates/ll-mod/src/trait_def.rs:85`/`:168`，`effective_traits` 在 `crates/ll-sim/src/traits.rs:304`。另：本文档「落地状态」说 `crates/ll-sim/src/effect.rs`「只有六个既有变体」也已过期——今天约四十个，且增益通道就是其中之一（`crates/ll-sim/src/effect.rs:321` `ApplyStatModifier`）。**仍然成立的是本文档自己的主题**：`ActiveEffect`/`TriggerDef`/`StackPolicy` 零命中。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 - **真正卡住的是 `TraitTable`/`TraitDef`/`effective_traits` 这一整套天赋系统本身零实现**——`trait-system.md` 自己的「落地状态」已经写明"纯设计，无实现代码，全代码库检索无 `TraitDef`/`register-trait`/`TraitTable` 任何匹配"。`RuleModifier::Resistance` 给出的是"乘数从哪来"这个此前缺失的规则**形状**，不是可以立刻运行的代码——它依赖的 `effective_traits(agent, world)`（天赋系统六节的并集算法）同样是纯设计。`damage-formula-mod-api.md` 二十节已经把挂载点定死在"减伤之后、乘数形式"，现在**规则来源**也有了形状（`RuleModifier::Resistance`），但**这条链路从"伤害类别"到"实际乘数"中间的每一环——`TraitTable` 本身、`effective_traits`、`resistance_multiplier`——都还没有一行代码**，抗性因此仍然是四类里唯一"做不了"的一类，只是阻塞点从"没有规则形状"变成了"规则形状有了，但它依赖的整套基础设施还不存在"。
 
 ### 7.4 触发式效果（命中时中毒）：框架本体能做，`ApplyBuff` 档卡在与抗性同一处

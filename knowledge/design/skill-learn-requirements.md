@@ -200,6 +200,8 @@ fn requirement_satisfied(
 
 项目所有者补充：某些技能该限定文化背景。
 
+> **【2026-08-30 复核：下面这条核实结论已过期，正文原样保留。】** **文化表存在，只是不在这个 crate、也不叫这个名字**：`crates/ll-world/src/culture.rs:73`/`:99`/`:250` （三件套 `CultureKind`/`CultureAttrs`/`CultureTable`，走 `TerrainKind`/`TerrainAttrs`/`TerrainTable` 的既有形状），内容侧 `mods/lostland/cultures.json5`。落地时间是 2026-08-27 文化批次（提交 `4aec07e`）。「`crates/ll-mod/src/` 下没有 `culture.rs`」这句话字面上仍然为真，**但由它推出的结论是错的**。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 **核实协调者的判断：成立。** `CultureDef`/`CultureTable` 完全不存在于代码——`crates/ll-mod/src/` 目录下没有 `culture.rs`，没有 `register-culture`，没有任何文化注册表。`society-and-affiliation.md`「落地状态」一节明确写「完整 `CultureDef` 未落地」，实现阶段 P9。
 
 但这里有一个比「缺失引用」更深的问题，必须正面处理：**即使某个具体文化 id 被正确注册（`require-content!` 能保证的那一层），当前代码库里没有任何一行代码会把 `AffiliationKind::Culture` 的 `Affiliation` 写到任何 `Agent` 身上**——世界生成、角色创建流程都不产出文化归属（P9 之前它就是一个从未被赋值过的字段）。这意味着即便 `skill-requires!` 现在就支持文化条件、且引用的文化 id 完全合法，该技能依然会对**当前存在的每一个 `Agent`**永远不满足——不是「某个特定 mod 没装」这种可修复的配置错误，而是「支撑这个判断的运行期数据源，系统性地、对全部实体都不存在」。`require-content!` 校验的是「这个 id 被谁注册过」，不校验、也不可能校验「未来会不会有 `Agent` 真的拿到这个归属」——两者是不同层面的问题，**乙选项（现在加、靠 `require-content!` 强制校验）不能覆盖后者**。

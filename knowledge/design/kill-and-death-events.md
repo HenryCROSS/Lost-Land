@@ -2,6 +2,8 @@
 
 **冻结于** 2026-08-19。核对提交 `1b4094e`（`main` 分支，876 测试全绿）。
 
+> **【2026-08-30 复核：下面这条「落地状态」已过期，正文原样保留。】** `Effect::Kill` 今天有**三个**字段（`target`/`killer`/`cause`），`crates/ll-sim/src/effect.rs:91`；`KillRecord`/`KillCause` 已落地在 `crates/ll-world/src/history.rs:283`/`:312`；`Agent.creature_kind` 在 `crates/ll-world/src/entity/agent.rs:530`；事件写入走 `Effect::RecordHistoricalEvent`（`crates/ll-sim/src/effect.rs:132`）。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 **落地状态**：纯设计，`crates/` 中无任何对应类型。已核实：`Effect::Kill`（`crates/ll-sim/src/effect.rs`）只有 `target: EntityId` 一个字段；`resolve_attack`/`resolve_use_skill`（`crates/ll-sim/src/resolve.rs`）在目标生命值降到零或以下时产出它；`KillCount` 任务条件（`crates/ll-mod/src/quest.rs`）已借用 `Agent::race` 当"敌人类型"，其模块文档「跨表引用」一节已如实记录这是简化，不是精确解；`append_quest_kill_progress`（`crates/ll-sim/src/resolve.rs`）已经示范了本文档要复用的模式——**在 `apply` 销毁目标之前，`resolve` 阶段读取它的信息、追加更多 `Effect`**。`HistoricalEvent` 作为一个概念已被[命名、改名与本地化](naming-and-localization.md)使用（改名产生一条 `HistoricalEvent`），但至今没有任何文档给出它的正式字段——本文档顺带把这个信封定型，供 `Kill` 这个变体使用。
 
 ---

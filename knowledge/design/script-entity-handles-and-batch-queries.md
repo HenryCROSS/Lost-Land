@@ -15,6 +15,8 @@
 
 - **冻结时间**：2026-08-18
 - **基线提交**：`270783e`（写作本文档时的 HEAD，工作区干净，496 测试全绿）
+> **【2026-08-30 复核：下面这条「落地状态」已过期，正文原样保留。】** **这条 2026-08-19 的更正整条失效**：它说的「已落地为 `crates/ll-script/src/api/handle.rs::ScriptEntityHandle`」——**那个 crate 与那个类型今天都不存在**（`crates/` 下无 `ll-script`，`ScriptEntityHandle` 全仓库零命中），`crates/ll-world/src/script_state.rs` 也已改名为 `mod_state.rs`。起因是 2026-08-23 Steel 脚本系统整体拆除，见本目录 [README](README.md) 开头的全局订正段。**本文档今天是历史记录，不描述当前代码。** 逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 - **状态**（2026-08-19 复核更正——原文「纯设计，不要求本次实现」已部分过期）：**部分落地**。三、2/3 节的句柄形状与防伪造机制已随脚本状态存储批次（提交 `ac27217`）落地为 `crates/ll-script/src/api/handle.rs::ScriptEntityHandle`，模块文档明确写着「该文档整体标注『纯设计,不要求本次实现』,但本批次的脚本状态存储需要一个可以安全跨越 Steel FFI 边界的实体引用表示……因此这里按该设计文档已经给出的形状把它落地」——即句柄机制是作为脚本状态存储的前置依赖顺带落地的，不是本文档本身被认领实现。四节 `Intent::Attack` 的解禁也已落地（`crates/ll-sim/src/intent.rs` 已有 `Attack` 变体）。**五节「批量查询原语」（`filter-within-distance`/`average` 等）仍是纯设计，未落地**——已核实 `crates/ll-script/src/api/query.rs` 不含这些函数名。读者应分节看待落地状态，不能整份文档一概而论。
 - **落地依赖**：`crates/ll-script/src/api/`（新增模块，路径见正文）、`crates/ll-world/src/entity/`（复用既有机制，无需改动）、`crates/ll-sim/src/intent.rs`（`Intent::Attack` 解禁，需要新增变体）
 - **对应任务**：填补 `.superpowers/sdd/2026-08-18-p4-script-and-mod/task-3-5-report.md` 记录的缺口——`intent.rs` 只支持 `Move`/`Wait`，`Attack` 因「脚本如何安全持有一个不可伪造的 `EntityId`」这个未设计的机制而被搁置

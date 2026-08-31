@@ -1,5 +1,7 @@
 # 载具与骑乘系统
 
+> **【2026-08-30 复核：下面这条「落地状态」已过期，正文原样保留。】** 本行点名「已核实无匹配」的几样**已经落地**：`ItemDef`（`crates/ll-mod/src/item.rs:70`）、`ItemStack`（`crates/ll-world/src/item.rs:79`）、`Owner`（`crates/ll-world/src/ownership.rs:63`）、`EquipSlot`/`SlotMask`（`crates/ll-world/src/item.rs:426`/`:589`）；本文档「确认尚未落地」的那条阻塞（`resolve_attack` 不读 `active_stat_modifiers`）**也已解除**（`crates/ll-sim/src/resolve.rs:263` `DerivedStats`）。**本文档自己的主题仍是纯设计**：`MountDef`/`SurfaceKind` 零命中。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 **冻结于** 2026-08-20。**落地状态**：纯设计，`crates/` 中无任何对应类型——已核实：`ItemDef`/`ItemStack`/`Owner`/`ItemLocation`（[物品系统](item-system.md)）、`SlotMask`/`EquipSlot`（[装备栏位](equipment-slots.md)）全代码库检索无匹配；`Agent` 没有 `mounted_on`/`rider`/`mount_profile`/`suspended_action_offset` 字段；`TerrainDef`/`TerrainTable` 没有地表分类；`ll-sim::effect::Effect` 没有 `Mount`/`Dismount`/`PlaceVehicle` 变体；`Agent.skill_cooldowns`/`active_stat_modifiers`/`unlocked_skills`/`Timeline::remove`/`ExplorationMemory` 的 `Vec<u64>` 位图**均已落地**（见一节，本文档大量复用它们）。**实现阶段**：P6（物品与装备）——项目所有者原话点名「这将会是物品与装备的一部分」，但 `Agent` 新增字段与既有先例（种族、职业技能）同样的理由，宜尽早落地。**冻结时对应 git 提交**：`7ec16b9`（`main` 分支，本文档写作时的仓库 HEAD）。
 
 **本文档只给出「能支撑一匹马和一条船」的最小形状**，多人载具、马车、载具改装、载具驯养/繁殖、载具战斗深度定制（除本文档已裁定的攻防加成/技能授予外）明确排除在外，见九节。

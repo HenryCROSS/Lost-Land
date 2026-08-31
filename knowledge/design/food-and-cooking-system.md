@@ -1,5 +1,7 @@
 # 食物与烹饪系统：食材、菜谱、烹饪与饱食度
 
+> **【2026-08-30 复核：下面这条「落地状态」已过期，正文原样保留。】** 制作那一半**已落地**：`RecipeDef` 在 `crates/ll-mod/src/recipe.rs:49`，`Intent::Craft` 在 `crates/ll-sim/src/intent.rs:476`。**仍然成立的是饱食度那一半**——`Agent.satiety`/`ResourceKind::Satiety` 至今零命中。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 **落地状态**：纯设计。`crates/**` 全代码库检索无 `RecipeDef`/`register-recipe`/`Intent::Craft`/`Agent.satiety`/`ResourceKind::Satiety` 等任何匹配。本文档要建在其上的地基（`ItemDef`/`ItemStack`/`Intent::Use`/`use_effect: Option<SkillEffect>`/`Effect::ConsumeInventoryItem`/`Effect::MergeIntoInventory`/`Effect::ApplyStatModifier`/`Agent.active_stat_modifiers`）**已经实装**，不是纯设计——见一节逐项核实。
 
 **冻结于** 2026-08-21，基线提交 `6bb0cb3`（`main` 分支，P6 第五批「耐久消耗与 `Intent::Use`」收尾之后）。

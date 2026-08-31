@@ -1,5 +1,7 @@
 # 战斗结算：三条正交轴，不按武器类型分类
 
+> **【2026-08-30 复核：下面这条「落地状态」已过期，正文原样保留。】** **`resolve_attack` 已经不是占位实现了**：它今天走 `DerivedStats`（`crates/ll-sim/src/resolve.rs:263`，调用点 `:2647`），而 `DerivedStats` 吸收了 `active_stat_modifiers` 与 `equipment`——正是本文档「四、接线点」要接的那两样。**仍然成立的是三条轴本身**：`TargetSpec`/`AimShape`/`DamageSchool`/`DeliveryMode` 至今零命中。注意「`resolve_attack` 是占位实现」这句断言在仓库里被复制到了四处（本行、[载具与骑乘](vehicle-and-mounting.md)、[伤害公式 mod API](damage-formula-mod-api.md)、[设计文档总索引](README.md) 五节），**四处一起过期**。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 **冻结于** 2026-08-18。**落地状态**：纯设计，尚无代码——`crates/ll-sim/src/resolve.rs` 的 `resolve_attack` 仍是占位实现（见「一、现状核实」）。**实现阶段**：主体属新 P6「物品与装备」（装备属性接线）与既有 P3「回合与战斗」的后续批次；`Intent::Attack` 的形状变更与 `TargetSpec` 落地建议随 P6 一并完成（技能树消费本文档定义的武器/系别/投送模型属 P5，但 P5 已先冻结，技能树若需要新增瞄准形状/伤害系别，走注册表扩展，不改本文档的轴本身）。**冻结时对应 git 提交**：`1abb1d3`（本文档写作时的仓库 HEAD，即插入「物品与装备」阶段那次提交）。
 
 ---

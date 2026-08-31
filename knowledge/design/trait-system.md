@@ -1,5 +1,7 @@
 # 天赋/特性系统（Trait）
 
+> **【2026-08-30 复核：下面这条「落地状态」已过期，正文原样保留。】** 天赋系统**已落地**：`TraitDef`/`TraitTable` 在 `crates/ll-mod/src/trait_def.rs:85`/`:168`，`TraitGrant`/`effective_traits` 在 `crates/ll-sim/src/traits.rs:92`/`:304`，`RuleModifier` 在 `crates/ll-sim/src/rule_modifier.rs:300`，内容侧 `mods/example_mod/traits.json5`。另：正文里「全项目检索确认『等级』这个概念当前不存在于任何字段」也已过期——等级字段在 `crates/ll-world/src/entity/agent.rs:558`/`:563`/`:572`。逐条见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md) 一节第 1 条。
+
 **落地状态**：纯设计，无实现代码，`crates/**` 全代码库检索无 `TraitDef`/`register-trait`/`TraitTable` 等任何匹配。
 
 **冻结于** 2026-08-20，基线提交 `383246d`（工作区除本文件外有另外三路并行工作的未提交改动，见下方并发声明；本文档只新增这一个文件）。

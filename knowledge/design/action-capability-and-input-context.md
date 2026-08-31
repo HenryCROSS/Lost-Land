@@ -1,5 +1,12 @@
 # 行动能力与输入上下文：角色为什么动不了
 
+> **【2026-08-30 复核：下面「落地状态」与二节整节的前提已经消失，正文原样保留，更正见文末。】**
+> **一句话**：`InputContext` 今天有**三个**变体（`Gameplay`/`Menu`/`TextEntry`，
+> `crates/ll-platform/src/keybind.rs:132`-`141`），本文档 2.2 节提议「新增
+> `InputContext::Menu` 一个变体」的那件事**早已做完**——照着做等于重做一遍。
+> 逐条见文末「⚠ 落地状态复核更正（2026-08-30）」与
+> [界面布局与导航模型](ui-and-navigation.md)「相关文档」一节。
+
 **冻结于** 2026-08-20。**落地状态**：纯设计，`crates/` 中无任何对应类型——`crates/ll-platform/src/keybind.rs` 的 [`InputContext`](../../crates/ll-platform/src/keybind.rs) 目前只有 `Gameplay` 一个变体，`ll_world::entity::Agent` 没有 `active_buffs` 或任何「行动能力」字段，`crates/ll-sim/src/effect.rs` 六个变体不含增益/触发器相关内容（与 [buffs-and-triggers.md](buffs-and-triggers.md) 现状核实一致）。**冻结时对应 git 提交**：`7149122`（本文档写作时的仓库 HEAD，`main` 分支）。
 
 **已核实的现状**（供复核）：
@@ -318,3 +325,27 @@ fn resolve_move(world: &WorldState, actor: EntityId, dir: Direction) -> Vec<Effe
 - `crates/ll-platform/src/input.rs`（`InputState`/`InputState::clear()`，已落地）
 - `crates/ll-sim/src/resolve.rs`（`resolve_move`/`resolve_attack`/`schedule_after`，已落地）
 - [总纲设计规格](../../docs/superpowers/specs/2026-08-16-lostland-design.md) §8（时间轴调度器）、§15（阶段划分，P6/P7 两行）
+
+---
+
+## ⚠ 落地状态复核更正（2026-08-30）
+
+来源：[2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md)。
+**正文一个字未改。** [界面布局与导航模型](ui-and-navigation.md)（冻结于 2026-08-30）
+的「相关文档」一节已经逐条列出本文档的五处过期，**但那条记录留在更正方、没有在被更正的
+这一份留下任何标记**——打开本文档的人因此拿不到它。本节把它搬回来，并补上两条。
+
+| # | 原文怎么说 | 今天的实际情况（证据） |
+|---|---|---|
+| 1 | 开头「落地状态」：**纯设计，`crates/` 中无任何对应类型**，`InputContext` 只有 `Gameplay` 一个变体 | **`InputContext` 有三个变体**：`Gameplay`/`Menu`/`TextEntry`，`crates/ll-platform/src/keybind.rs:132`-`141` |
+| 2 | 2.2 节「**结论：新增 `InputContext::Menu` 一个变体**」 | **已落地**（`keybind.rs:136`）。**这一条是本文档最会让人白做工的一句**——它把一件已完成的事写成待办 |
+| 3 | 2.2 节把「背包首页、物品详情」列为 `Menu` 覆盖的场景 | **背包实际跑在 `Gameplay` 上下文**，且是**刻意**的：`crates/ll-game/src/player_action.rs:124`-`133` 的模块文档给出了完整理由（方向键仍要解析成 `GameKey::Up/Down/...`，变的只是这一层怎么解读） |
+| 4 | 94 行前后把「设置界面可能需要文本输入」写成将来才需要分裂的假设 | `TextEntry` **已落地**（`keybind.rs:139`），不再是开放问题 |
+| 5 | 236 行那张三行表里「背包打开时按 W」一行的**机制**解释（`Menu` 上下文下不会翻译成 `Intent::Move`） | **结论对、机制错**：靠的是 `crates/ll-game/src/player_action.rs` 的控制流分支，不是上下文切换。见第 3 条 |
+| 6 | 「已核实的现状」列 `Intent` 枚举**七个**变体 | 今天远不止七个，且其中有多个至今零生产者——清单与逐条判据见 [2026-08-29 文档—代码一致性审计](../audit/2026-08-29-doc-code-audit.md)「二、未接线声明盘点」 |
+| 7 | 「已核实的现状」引 `knowledge/design/mod-lifecycle-and-event-api.md`「均纯设计」 | 该文档整体写于脚本时代，已带 2026-08-23 状态订正，见 [设计文档总索引](README.md) 开头的全局订正段 |
+
+**仍然成立、不需要改的**：三节「能力检查放在 `resolve` 顶部」的落点判断、
+4.2 节「被眩晕时按 W 应该消耗回合」的完整论证、以及「调度层不生成 `Intent` 即可让实体
+完全不行动」这条先例（[载具与骑乘系统](vehicle-and-mounting.md) 四节直接复用了它）。
+
