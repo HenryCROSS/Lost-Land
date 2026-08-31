@@ -36,6 +36,32 @@
 //! 都要求调用方传入 `&mut InputState`，内部只是老老实实调用
 //! `clear()`，不重新发明一套「上下文专用」的清空逻辑。
 //!
+//! # 清键的判据是上下文变没变，不是栈动没动
+//!
+//! 上一节那条纪律**此前写成了「每一次 `push`/`pop` 都清」**。导航收敛
+//! 批次（规格 N8）把判据收紧成它本来的样子：**`current_context()` 前后
+//! 不同才清**。理由就是上一节自己的论证——要防的是「切换那一刻按住的键
+//! 被带过边界」，没有切换就没有边界可跨。
+//!
+//! 这不是放松：对本条落地之前**已经存在**的四种转移（空→`Menu`、
+//! `Menu`→`TextEntry`、`TextEntry`→`Menu`、`Menu`→空），每一次都真的换了
+//! 上下文，因此行为逐条等价。收紧只影响下一节那两个新变体。
+//!
+//! # 新变体为什么不换键位表
+//!
+//! [`UiMode::PlayerMenu`]（背包/制作/交互列表）与 [`UiMode::Overlay`]
+//! （世界地图）的 [`UiModeStack::current_context`] **仍然是
+//! `InputContext::Gameplay`**。这是规格
+//! `knowledge/design/ui-and-navigation.md` N8 的明文裁定：
+//! `ll_game::player_action` 模块文档论证过「键位表不该换」（换了以后
+//! I 键/C 键/空格在背包里全部解析不出来，「再按一次 I 关背包」这条既有
+//! 行为当场消失），而「要不要进栈」是另一件事。
+//!
+//! 两者进栈换来的是**「现在有没有东西盖着屏幕」终于只有一个答案**：
+//! 在此之前，背包开着、地图开着的时候 [`UiModeStack::is_empty`] 都返回
+//! 真，于是取消键的顶层判据要靠 `&& !xxx.is_open()` 一条条手工补，而
+//! 漏了不报错。配对由 `ll_game::modal::Modal` 结构性保证，见那个类型。
+//!
 //! # 只有 `UiMode::Menu` 一个变体，但它已经接上真实游戏循环了
 //!
 //! **这一节改写过**：本类型落地那一批写的是「尚未接入真实游戏循环，
@@ -45,10 +71,16 @@
 //! 每次解析物理键都调一次 `AppHandler::input_context()`，那个方法返回
 //! 的就是 [`UiModeStack::current_context`]。
 //!
-//! 变体仍然只有 `Menu` 一个，那是 `InputContext::Menu` 那条克制的延续
-//! （见其文档）：游戏内菜单、设置界面、游戏主菜单（首页）三块屏共用
-//! 这一个变体，「现在具体是哪一块屏」由 `ll_game::menu_screen::ScreenState`
-//! 回答，不是本类型的职责。
+//! `Menu` 那一个变体覆盖全部模态菜单屏，是 `InputContext::Menu` 那条
+//! 克制的延续（见其文档）：游戏内菜单、设置界面、游戏主菜单（首页）
+//! 共用这一个变体，「现在具体是哪一块屏」由
+//! `ll_game::menu_screen::ScreenState` 回答，不是本类型的职责。
+//!
+//! **本节标题此前写的是「只有 `UiMode::Menu` 一个变体」**，那一刻已经
+//! 过去两次：文本输入批次加了 `TextEntry`，导航收敛批次（规格 N8）又加了
+//! `PlayerMenu` 与 `Overlay`。判据从来不是「克制到只留一个」，而是
+//! **一个变体 ⇔ 一张键位表**——见上面「新变体为什么不换键位表」一节
+//! 对后两个变体为什么共用 `Gameplay` 那张表的论证。
 //!
 //! # 栈空不等于「在世界里」了
 //!
@@ -67,13 +99,13 @@
 use ll_platform::input::InputState;
 use ll_platform::keybind::InputContext;
 
-/// 覆盖游戏画面的模态 UI 种类——只有 `Menu` 一种，对应
-/// `InputContext::Menu`（游戏内菜单、设置界面、游戏主菜单，以及背包/
-/// 物品详情/确认框等尚未建成的场景，全部共用这一个变体，见其文档与
-/// 模块文档同名一节）。
+/// 覆盖游戏画面的模态 UI 种类——**一个变体对应一张键位表**，见模块
+/// 文档「新变体为什么不换键位表」一节。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum UiMode {
-    /// 任意模态菜单类 UI。
+    /// 任意模态菜单屏（首页、暂停菜单、设置、角色创建……），对应
+    /// `InputContext::Menu`。「现在具体是哪一块屏」由
+    /// `ll_game::menu_screen::ScreenState` 回答。
     Menu,
     /// 玩家正在往一个输入框里打字（存档命名，将来的角色命名/聊天/
     /// 搜索）——对应 `ll_platform::keybind::InputContext::TextEntry`。
@@ -92,6 +124,13 @@ pub enum UiMode {
     /// 它同时是「输入法开不开」的判据，见
     /// `ll_platform::window::AppHandler::input_context` 文档。
     TextEntry,
+    /// 玩家菜单（背包 / 制作 / 方向列表 / 交互列表）——跑在
+    /// `InputContext::Gameplay` 上，见 [`UiModeStack::current_context`]
+    /// 与本模块「新变体为什么不换键位表」一节。
+    PlayerMenu,
+    /// 覆盖世界的观测浮层（今天只有世界地图）——同样跑在
+    /// `InputContext::Gameplay` 上。
+    Overlay,
 }
 
 /// 当前打开的模态 UI 栈——见模块文档。
@@ -141,6 +180,9 @@ impl UiModeStack {
             None => InputContext::Gameplay,
             Some(UiMode::Menu) => InputContext::Menu,
             Some(UiMode::TextEntry) => InputContext::TextEntry,
+            // 这两层**刻意仍然是 `Gameplay`**，见模块文档
+            // 「新变体为什么不换键位表」一节。
+            Some(UiMode::PlayerMenu | UiMode::Overlay) => InputContext::Gameplay,
         }
     }
 
@@ -162,22 +204,66 @@ impl UiModeStack {
         self.stack.len()
     }
 
-    /// 压入一层新的模态 UI，并把这一刻按住的键视为隐式全部松开——见
-    /// 模块文档「上下文切换时按住的键」一节。
+    /// 压入一层新的模态 UI；**若这一压真的换了 `InputContext`**，把这一刻
+    /// 按住的键视为隐式全部松开——见模块文档「上下文切换时按住的键」与
+    /// 「清键的判据是上下文变没变，不是栈动没动」两节。
     pub fn push(&mut self, mode: UiMode, input: &mut InputState) {
+        let before = self.current_context();
         self.stack.push(mode);
-        input.clear();
+        self.clear_if_context_changed(before, input);
     }
 
     /// 弹出最上层模态 UI，理由同 [`Self::push`]。栈已空时不做任何事、
     /// 也不清空 `InputState`——没有发生真正的上下文切换（栈从空到空），
     /// 不该清空玩家正在 `Gameplay` 上下文里按着的键。
     pub fn pop(&mut self, input: &mut InputState) -> Option<UiMode> {
+        let before = self.current_context();
         let popped = self.stack.pop();
         if popped.is_some() {
-            input.clear();
+            self.clear_if_context_changed(before, input);
         }
         popped
+    }
+
+    /// 栈里有几层是 `mode`——配对断言的判据，见
+    /// `ll_game::modal::Modal` 的一致性断言：每一类模态 UI 在栈里恰好
+    /// 有零层或一层，多一层少一层都是 push/pop 没配对。
+    pub fn count(&self, mode: UiMode) -> usize {
+        self.stack.iter().filter(|it| **it == mode).count()
+    }
+
+    /// 把栈里**最上面那一层** `mode` 抽掉，其余各层原样保留；栈里没有
+    /// 这一类时什么都不做，返回是否真的抽掉了一层。
+    ///
+    /// # 为什么不是 [`Self::pop`]
+    ///
+    /// 要关掉的那一层未必在栈顶：玩家可以先开背包再开地图，也可以反
+    /// 过来，而关地图只该关地图。`pop` 在这种场景下会弹错层，配对当场
+    /// 断掉——而那正是本方法存在的场景。
+    ///
+    /// 清键的判据仍然是 [`Self::clear_if_context_changed`]：抽掉的若是
+    /// 栈顶那一层且上下文因此改变，才清；抽掉栈中间那一层不改变栈顶，
+    /// 也就没有跨边界可言。
+    pub fn remove_topmost(&mut self, mode: UiMode, input: &mut InputState) -> bool {
+        let before = self.current_context();
+        let Some(index) = self.stack.iter().rposition(|it| *it == mode) else {
+            return false;
+        };
+        self.stack.remove(index);
+        self.clear_if_context_changed(before, input);
+        true
+    }
+
+    /// 清键的**唯一**判据：`current_context()` 前后不同。
+    ///
+    /// 见模块文档「清键的判据是上下文变没变，不是栈动没动」一节——这条
+    /// 对本方法落地之前已有的四种转移（空→`Menu`、`Menu`→`TextEntry`、
+    /// `TextEntry`→`Menu`、`Menu`→空）逐条等价，因为那四种转移每一次都
+    /// **真的**换了上下文。
+    fn clear_if_context_changed(&self, before: InputContext, input: &mut InputState) {
+        if self.current_context() != before {
+            input.clear();
+        }
     }
 }
 
@@ -333,6 +419,72 @@ mod tests {
 
         // Assert
         assert!(input.is_held(GameKey::Up));
+    }
+
+    #[test]
+    fn 玩家菜单层与浮层不换键位表() {
+        // 规格 N8 的明文裁定：这两层只进栈，不换 `InputContext`——换了
+        // 以后 I/C/空格在背包里全部解析不出来。
+        // Arrange
+        let mut stack = UiModeStack::new();
+        let mut input = InputState::new();
+
+        // Act & Assert
+        stack.push(UiMode::PlayerMenu, &mut input);
+        assert_eq!(stack.current_context(), InputContext::Gameplay);
+        assert_eq!(stack.depth(), 1, "不换表不等于不进栈");
+        stack.push(UiMode::Overlay, &mut input);
+        assert_eq!(stack.current_context(), InputContext::Gameplay);
+        assert_eq!(stack.depth(), 2);
+    }
+
+    #[test]
+    fn 压入不换上下文的一层时不清空按住的键() {
+        // 清键的理由是「切换那一刻按住的键被带过边界」；玩家菜单那一层
+        // 压根没跨边界（前后都是 Gameplay），清掉就等于把玩家正按着的
+        // 方向键无故吞掉一次。
+        // Arrange
+        let mut stack = UiModeStack::new();
+        let mut input = InputState::new();
+        input.press(GameKey::Up);
+
+        // Act
+        stack.push(UiMode::PlayerMenu, &mut input);
+
+        // Assert
+        assert!(input.is_held(GameKey::Up));
+    }
+
+    #[test]
+    fn 弹出不换上下文的一层时同样不清空按住的键() {
+        // Arrange
+        let mut stack = UiModeStack::new();
+        let mut input = InputState::new();
+        stack.push(UiMode::Overlay, &mut input);
+        input.press(GameKey::Up);
+
+        // Act
+        stack.pop(&mut input);
+
+        // Assert
+        assert!(input.is_held(GameKey::Up));
+    }
+
+    #[test]
+    fn 在玩家菜单层之上压入菜单屏仍然清空按住的键() {
+        // 反面：这一次上下文真的从 Gameplay 变成了 Menu，纪律照旧生效。
+        // Arrange
+        let mut stack = UiModeStack::new();
+        let mut input = InputState::new();
+        stack.push(UiMode::PlayerMenu, &mut input);
+        input.press(GameKey::Up);
+
+        // Act
+        stack.push(UiMode::Menu, &mut input);
+
+        // Assert
+        assert!(!input.is_held(GameKey::Up));
+        assert_eq!(stack.current_context(), InputContext::Menu);
     }
 
     #[test]

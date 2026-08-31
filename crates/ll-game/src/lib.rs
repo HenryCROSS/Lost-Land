@@ -23,6 +23,7 @@ pub mod content;
 pub mod draft_world;
 pub mod layout;
 pub mod menu_screen;
+pub mod modal;
 pub mod pause_menu;
 pub mod player_action;
 pub mod save;

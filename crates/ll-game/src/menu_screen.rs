@@ -410,6 +410,23 @@ pub fn clear_bindings(config: &mut GameConfig, action: GameKey) {
     }
 }
 
+/// 建一张**第一项已经聚焦**的焦点表——规格 N10 的落点。
+///
+/// # 为什么复用 `move_focus` 而不是直接写 `entry(ids[0]).focused = true`
+///
+/// 「一组控件里第一项是哪个、聚焦时其余项要不要一并清掉」这条算法
+/// `ll_ui::widget::focus::move_focus` 已经有了（冷启动 `Next` → 第 0
+/// 项，并保证「至多一个控件聚焦」这条不变式）。自己写一遍就是同一个
+/// 算法的第二份，而两份迟早分叉。
+///
+/// `ids` 为空时返回一张空表——`move_focus` 对空列表返回 `None` 且不
+/// 修改表，这里照样不特殊处理。
+pub fn preselected_focus(ids: &[WidgetId]) -> WidgetStateTable {
+    let mut table = WidgetStateTable::new();
+    ll_ui::widget::focus::move_focus(&mut table, ids, ll_ui::widget::focus::FocusDirection::Next);
+    table
+}
+
 /// `ids` 这一组控件里当前聚焦的是第几个；没有任何一项聚焦时返回
 /// `usize::MAX` ——那是一个**必然越界**的下标，`ll_ui::screen` 收到越界
 /// 光标时不标记任何一行（见 `ScreenData::cursor` 文档），正好等于「还没
@@ -677,6 +694,22 @@ fn apply_capture(
 }
 
 /// 常规模式：上下移动光标、左右改取值、确认触发这一行的动作。
+///
+/// # 确认键只做一件事：激活当前焦点（规格 N1）
+///
+/// 本函数此前还有第二件事：光标停在**取值行**（语言 / 垂直同步 /
+/// 滤波）上按确认等价于「把这个值往前拨一格」，与左右键一致。
+///
+/// **那条特例已经删掉。** 它与同一个代码库里另外两块屏直接冲突——
+/// 角色创建（`crate::chargen`）与世界配置（`crate::world_setup`）的
+/// 取值行按确认**刻意是空操作**，而且 `chargen` 那处有注释说明这是
+/// 有意的。同一个物理键在三块长得一样的屏上做两件不同的事，玩家学不
+/// 到任何规律（规格 I7）。
+///
+/// 裁定是**统一到「确认键绝不改变数值、绝不切换开关」**：数值一律用
+/// 左右键改。代价如实记录——设置屏切语言从此非用左右键不可，少了一条
+/// 冗余路径；换来的是「确认 = 激活当前焦点」这条规律在全部十块屏上
+/// 无例外，鼠标点击（`crate::pointer`）也就能安全地复用它。
 fn update_navigation(
     state: &mut ScreenState,
     input: &InputState,
@@ -724,13 +757,12 @@ fn update_navigation(
             *state = origin.screen();
             SettingsUpdate::idle()
         }
-        // 三个取值行按确认等价于「往前拨一格」，与左右键一致；分隔标题
-        // 什么都不做。
-        SettingsRow::KeybindsHeader => SettingsUpdate::idle(),
-        other => {
-            adjust_value(other, ctx, true);
-            SettingsUpdate::idle()
-        }
+        // 分隔标题与**三个取值行**（语言 / 垂直同步 / 滤波）按确认一律
+        // 什么都不做——见本函数文档「确认键只做一件事」一节。
+        SettingsRow::KeybindsHeader
+        | SettingsRow::Language
+        | SettingsRow::Vsync
+        | SettingsRow::ScaleFilter => SettingsUpdate::idle(),
     }
 }
 
