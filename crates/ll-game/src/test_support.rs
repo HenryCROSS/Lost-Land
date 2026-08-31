@@ -65,6 +65,21 @@ pub(crate) fn test_content() -> crate::content::LoadedContent {
 }
 
 #[cfg(test)]
+/// 一个**没有任何已装载语言**的 `Catalog`——`Demo` 的构造参数，用在那些
+/// 只关心导航/存档行为、完全不查文案的测试里。
+///
+/// 为什么是一个共用函数而不是在各测试文件里就地构造：命名空间化之后
+/// 构造式变长，就地写会被 rustfmt 拆成四行，把
+/// `crates/ll-game/src/app_tests.rs` 顶过文件行数棘轮门禁
+/// （`scripts/ci/check_file_size_budget.py`）。抽到这里两个调用点各自
+/// 回到一行，且「空目录 = 空 Catalog」这条约定只写一遍。
+pub fn empty_catalog(name: &str) -> ll_i18n::Catalog {
+    ll_i18n::Catalog::load_one(
+        crate::content::BASE_NAMESPACE,
+        &std::env::temp_dir().join(name),
+    )
+}
+
 mod tests {
     use super::*;
 
@@ -122,19 +137,4 @@ mod tests {
             "并发取到的路径出现了重复，临时目录仍会在并行测试下互相踩踏"
         );
     }
-}
-
-/// 一个**没有任何已装载语言**的 `Catalog`——`Demo` 的构造参数，用在那些
-/// 只关心导航/存档行为、完全不查文案的测试里。
-///
-/// 为什么是一个共用函数而不是在各测试文件里就地构造：命名空间化之后
-/// 构造式变长，就地写会被 rustfmt 拆成四行，把
-/// `crates/ll-game/src/app_tests.rs` 顶过文件行数棘轮门禁
-/// （`scripts/ci/check_file_size_budget.py`）。抽到这里两个调用点各自
-/// 回到一行，且「空目录 = 空 Catalog」这条约定只写一遍。
-pub fn empty_catalog(name: &str) -> ll_i18n::Catalog {
-    ll_i18n::Catalog::load_one(
-        crate::content::BASE_NAMESPACE,
-        &std::env::temp_dir().join(name),
-    )
 }
