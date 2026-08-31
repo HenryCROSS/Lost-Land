@@ -338,6 +338,8 @@ hud-direction-north_west = 西北
 hud-feedback-no-selection = 没有可操作的条目
 hud-feedback-nothing-happened = 这一下没有起作用
 hud-feedback-nothing-nearby = 附近没有可交互的东西
+hud-feedback-door-blocked-occupant = 门口有人挡着，关不上
+hud-feedback-door-blocked-object = 门口立着东西，关不上
 
 equip_slot-main_hand-display_name = 主手
 equip_slot-off_hand-display_name = 副手

@@ -95,6 +95,9 @@ mod upkeep;
 // （`ll_sim::resolve::derive_stats` 等）与 `#[cfg(test)] use super::*`
 // 因此一个字都不用改。
 pub(crate) use self::movement::{occupant_at, step_destination};
+// 关门那两道前置的公开判据——`ll-game` 的输入层要在提交意图之前问同一
+// 个问题，见 `portal::door_close_blocker` 文档「一份判据，两个调用点」。
+pub use self::portal::{DoorCloseBlocker, door_close_blocker};
 pub use self::stats::{DerivedStats, derive_stats, derive_stats_at};
 // 只有断言用得到的项：`resolve_tests.rs` 里的 `use super::*` 靠这一行看见它，
 // 因此那 45 条断言一个字都不用改。非测试构建下它不存在，也就不会有未用导入。
