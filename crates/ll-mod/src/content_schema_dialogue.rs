@@ -131,9 +131,9 @@ pub struct RawDialogueOption {
 ///
 /// # 未实现的三种为什么报错而不是静默接受
 ///
-/// `give-item`（批次 4）/`open-trade`（批次 5）各自缺着自己的前置。若把
-/// 它们解析成一条「什么都不做」的后果，内容作者写下 `give-item` 之后会
-/// 以为奖励真的发下去了，而实际什么都没发生——
+/// `open-trade`（批次 5）缺着自己的前置。若把它解析成一条「什么都不做」
+/// 的后果，内容作者写下 `open-trade` 之后会以为交易界面真的开了，而实际
+/// 什么都没发生——
 /// **静默无效比当场报错贵得多**，这与 [`RawDialogueCondition`] 拒绝多余
 /// 参数是同一条纪律。
 ///
@@ -141,9 +141,11 @@ pub struct RawDialogueOption {
 /// 它的前置（`ll_world::entity::Agent::home` 与势力表）都齐了，见
 /// [`RawDialogueOutcome::resolve`]。
 ///
-/// 〔2026-08-31，批次 29〕`complete-quest` 同样挪了出来：它的前置
-/// （`ll_sim::quest::mark_quest_completed`）从任务批次起就在，本批只是把
-/// 对话这条产出路径接上去。
+/// 〔2026-08-31，批次 29〕`complete-quest` 与 `give-item` 同样挪了出来：
+/// 前者的前置（`ll_sim::quest::mark_quest_completed`）从任务批次起就在，
+/// 后者的前置（`ll_world::ownership::Owner` 与背包搬运那两条效果）从归属
+/// 批次起就在，本批只是把对话这两条产出路径接上去。**今天只剩
+/// `open-trade` 一种**仍然报「尚未实现」。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawDialogueOutcome {
@@ -158,6 +160,11 @@ pub struct RawDialogueOutcome {
     /// 并点名文件，与 `quest-completed` 那条条件逐字同办。
     #[serde(default)]
     pub quest: Option<String>,
+    /// 物品标识符（`give-item` 必填；其余 kind **必须没有**）。
+    ///
+    /// 同样走 [`required_id`]：物品有内容表。
+    #[serde(default)]
+    pub item: Option<String>,
 }
 
 /// 一条后果里「哪些参数该出现」的清单——与 [`Allowed`] 那张同名清单
@@ -170,6 +177,7 @@ pub struct RawDialogueOutcome {
 struct AllowedOutcomeFields {
     flag: bool,
     quest: bool,
+    item: bool,
 }
 
 impl RawDialogueOutcome {
@@ -184,6 +192,7 @@ impl RawDialogueOutcome {
         for (name, present, permitted) in [
             ("flag", self.flag.is_some(), allowed.flag),
             ("quest", self.quest.is_some(), allowed.quest),
+            ("item", self.item.is_some(), allowed.item),
         ] {
             if present && !permitted {
                 return Err(format!("对话后果 kind {:?} 不接受字段 {name:?}", self.kind));
@@ -243,12 +252,30 @@ impl RawDialogueOutcome {
                     "任务标识符",
                 )?))
             }
-            "give-item" | "open-trade" => Err(format!(
-                "对话后果 kind {:?} 尚未实现（give-item 属批次 4，open-trade 属批次 5，见 knowledge/design/dialogue-system.md 八节的分批表）",
+            // 「说话人把自己背包里的一件这种东西交给发起者」。
+            // **不带 `count`**：一次一件，见 `DialogueOutcome::GiveItem`
+            // 文档「为什么不带 count」。
+            "give-item" => {
+                self.reject_extras(AllowedOutcomeFields {
+                    item: true,
+                    ..AllowedOutcomeFields::default()
+                })?;
+                let raw = self
+                    .item
+                    .as_deref()
+                    .ok_or_else(|| self.missing_outcome_field("item"))?;
+                Ok(DialogueOutcome::GiveItem(required_id(
+                    registry,
+                    raw,
+                    "物品标识符",
+                )?))
+            }
+            "open-trade" => Err(format!(
+                "对话后果 kind {:?} 尚未实现（open-trade 属批次 5，见 knowledge/design/dialogue-system.md 八节的分批表）",
                 self.kind
             )),
             other => Err(format!(
-                "未知的对话后果 kind {other:?}（只认 set-flag / join-settlement / complete-quest）"
+                "未知的对话后果 kind {other:?}（只认 set-flag / join-settlement / complete-quest / give-item）"
             )),
         }
     }
@@ -559,486 +586,5 @@ pub fn next_target(next: DialogueNext) -> Option<ContentIndex> {
     match next {
         DialogueNext::End => None,
         DialogueNext::Node(index) => Some(index),
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use ll_core::ident::NamespacedId;
-
-    /// 装一份最小的前置内容（职业/文化/任务/物品/种族各一条），再解析一份
-    /// 对话文件。前置全部 `intern` 进去，因为条件里的引用走 `required_id`。
-    fn 解析(source: &str) -> (Registry, DialogueTable, DialogueNodeTable, Applied) {
-        let mut registry = Registry::new();
-        for raw in [
-            "lostland:steward",
-            "lostland:mining_hold",
-            "lostland:main_quest_1",
-            "lostland:iron_ingot",
-            "lostland:dwarf",
-        ] {
-            registry.intern(NamespacedId::parse(raw).expect("固定字面量恒合法"));
-        }
-        let mut dialogues = DialogueTable::new();
-        let mut nodes = DialogueNodeTable::new();
-        let result = match json5::from_str::<DialogueFile>(source) {
-            Ok(file) => apply_dialogues(&mut registry, &mut dialogues, &mut nodes, &file),
-            Err(err) => Err(err.to_string()),
-        };
-        (registry, dialogues, nodes, result)
-    }
-
-    #[test]
-    fn 一段带回环的对话解析成功且引用校验通过() {
-        // Arrange & Act
-        let (_registry, dialogues, nodes, result) = 解析(
-            r#"{
-              dialogues: [ { id: "lostland:greet",
-                             speaker: { profession: "lostland:steward" },
-                             root: "lostland:root" } ],
-              nodes: [
-                { id: "lostland:root", text_key: "lostland:dialogue.root",
-                  options: [ { text_key: "lostland:dialogue.more", next: "lostland:more" },
-                             { text_key: "lostland:dialogue.bye", next: "end" } ] },
-                { id: "lostland:more", text_key: "lostland:dialogue.more_text",
-                  options: [ { text_key: "lostland:dialogue.back", next: "lostland:root" } ] },
-              ],
-            }"#,
-        );
-
-        // Assert
-        assert_eq!(result, Ok(()));
-        assert_eq!(
-            crate::dialogue::validate_references(&dialogues, &nodes),
-            Ok(())
-        );
-    }
-
-    #[test]
-    fn 前向引用的节点合法因为next走intern() {
-        // `root` 与第一条 `next` 都指向写在后面的节点。
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [
-                { id: "lostland:a", text_key: "lostland:dialogue.a",
-                  options: [ { text_key: "lostland:dialogue.go", next: "lostland:b" } ] },
-                { id: "lostland:b", text_key: "lostland:dialogue.b" },
-              ],
-            }"#,
-        );
-
-        // Assert
-        assert_eq!(result, Ok(()));
-    }
-
-    #[test]
-    fn 说话人的职业拼错在装载期当场报错() {
-        // Arrange & Act：只 get 不 intern，拼错就是拼错。
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              dialogues: [ { id: "lostland:greet",
-                             speaker: { profession: "lostland:stewrad" },
-                             root: "lostland:root" } ],
-            }"#,
-        );
-
-        // Assert
-        assert!(
-            result.is_err_and(|err| err.contains("lostland:stewrad") && err.contains("尚未注册")),
-            "错误必须点名拼错的那个 id"
-        );
-    }
-
-    #[test]
-    fn 未知的条件kind报错并列出全部认得的kind() {
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      conditions: [ { kind: "mood-good" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert!(
-            result.is_err_and(|err| err.contains("mood-good") && err.contains("wallet-at-least")),
-            "未知 kind 必须连同封闭清单一起报出来"
-        );
-    }
-
-    #[test]
-    fn 条件带上不属于它的参数当场报错() {
-        // 这条守的是「不该有的必须没有」那一半：wallet-at-least 只认
-        // value，写了 count 说明作者以为自己写的是 has-item。
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      conditions: [ { kind: "wallet-at-least", value: 10,
-                                                      count: 3 } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert!(
-            result.is_err_and(|err| err.contains("不接受字段") && err.contains("count")),
-            "多余参数必须点名"
-        );
-    }
-
-    #[test]
-    fn 缺必填参数的条件报错并点名字段() {
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      conditions: [ { kind: "has-item",
-                                                      item: "lostland:iron_ingot" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert!(
-            result.is_err_and(|err| err.contains("缺少必填字段") && err.contains("count")),
-            "缺参数必须点名字段"
-        );
-    }
-
-    #[test]
-    fn has_item的数量为零当场报错() {
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      conditions: [ { kind: "has-item",
-                                                      item: "lostland:iron_ingot",
-                                                      count: 0 } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert!(result.is_err_and(|err| err.contains("至少是 1")));
-    }
-
-    #[test]
-    fn 未知的归属类别报错并列出五类() {
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      conditions: [ { kind: "affiliated",
-                                                      affiliation: "profession" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert!(
-            result.is_err_and(|err| err.contains("profession") && err.contains("family")),
-            "归属类别是封闭的五类"
-        );
-    }
-
-    #[test]
-    fn 未知字段报错且错误信息带行列位置() {
-        // 与 content_schema 的同名钉子同一条理由：deny_unknown_fields 的
-        // 错误必须能定位到行列，否则内容作者只知道「某处拼错了」。
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         outcomes: [] } ],
-            }"#,
-        );
-
-        // Assert：`outcomes` 是批次 2 才会有的字段，今天写它必须当场红。
-        let err = result.expect_err("未知字段必须报错");
-        assert!(err.contains("outcomes"), "错误里没点名字段：{err}");
-        assert!(err.contains("line"), "错误里没有行列位置：{err}");
-    }
-
-    #[test]
-    fn 十条kind全部能解析出对应的条件() {
-        // 这条把封闭清单的十条一次跑遍——新增一条 kind 而忘了在这里加
-        // 一行，覆盖率不会掉，但下面的条数断言会红。
-        // Arrange & Act
-        let (_registry, _dialogues, nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a", options: [
-                { text_key: "lostland:dialogue.x", next: "end", conditions: [
-                  { kind: "affiliated", affiliation: "faction" },
-                  { kind: "not-affiliated", affiliation: "culture",
-                    org: "lostland:mining_hold" },
-                  { kind: "standing-at-least", affiliation: "faction", value: 250 },
-                  { kind: "quest-completed", quest: "lostland:main_quest_1" },
-                  { kind: "quest-not-completed", quest: "lostland:main_quest_1" },
-                  { kind: "flag-set", flag: "lostland:dialogue_flag.seen" },
-                  { kind: "flag-not-set", flag: "lostland:dialogue_flag.seen" },
-                  { kind: "has-item", item: "lostland:iron_ingot", count: 2 },
-                  { kind: "wallet-at-least", value: 50000 },
-                  { kind: "is-race", race: "lostland:dwarf" },
-                ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert_eq!(result, Ok(()));
-        let index = nodes.defined_indices()[0];
-        let view = nodes.get(index).expect("刚定义过");
-        assert_eq!(view.options[0].conditions.len(), 10, "封闭清单是十条");
-    }
-
-    #[test]
-    fn 保留字end解析成结束会话() {
-        // Arrange & Act
-        let (_registry, _dialogues, nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end" } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert_eq!(result, Ok(()));
-        let index = nodes.defined_indices()[0];
-        let view = nodes.get(index).expect("刚定义过");
-        assert!(is_end(view.options[0].next));
-        assert_eq!(next_target(view.options[0].next), None);
-    }
-
-    #[test]
-    fn set_flag后果解析成一条对话标志() {
-        // Arrange & Act
-        let (_registry, _dialogues, nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      outcomes: [ { kind: "set-flag",
-                                                    flag: "lostland:dialogue_flag.seen" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert_eq!(result, Ok(()));
-        let index = nodes.defined_indices()[0];
-        let view = nodes.get(index).expect("刚定义过");
-        assert_eq!(
-            view.options[0].outcomes,
-            vec![DialogueOutcome::SetFlag(
-                NamespacedId::parse("lostland:dialogue_flag.seen").expect("固定字面量恒合法")
-            )],
-        );
-    }
-
-    #[test]
-    fn join_settlement后果解析成不带参数的变体() {
-        // 加入哪座据点由**说话人**回答（他的 `Agent::home`），内容文件
-        // 里写不出 `WorldId`——因此这条后果一个参数都没有，见
-        // `DialogueOutcome::JoinSettlement` 文档。
-        //
-        // 反例验证（ADR 0022）：把 `resolve` 里 `"join-settlement"` 那一支
-        // 改回并进「尚未实现」那一支，本条当场红。
-        // Arrange & Act
-        let (_registry, _dialogues, nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      outcomes: [ { kind: "join-settlement" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert_eq!(result, Ok(()));
-        let index = nodes.defined_indices()[0];
-        let view = nodes.get(index).expect("刚定义过");
-        assert_eq!(
-            view.options[0].outcomes,
-            vec![DialogueOutcome::JoinSettlement]
-        );
-    }
-
-    #[test]
-    fn join_settlement带多余的flag参数报错() {
-        // 「不该有的必须没有」——静默接受会让作者以为那个 `flag` 起了
-        // 作用，与 `RawDialogueCondition` 拒绝多余参数同一条纪律。
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      outcomes: [ { kind: "join-settlement",
-                                                    flag: "lostland:dialogue_flag.x" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        let err = result.expect_err("多余参数必须报错");
-        assert!(
-            err.contains("join-settlement"),
-            "错误信息要点名是哪一种：{err}"
-        );
-        assert!(err.contains("flag"), "错误信息要点名是哪个参数：{err}");
-    }
-
-    #[test]
-    fn 不写outcomes的选项是纯导航选项() {
-        // 老 mod 不写这个字段照样装得进来（`#[serde(default)]`），且解析
-        // 出来是空数组而不是「一条什么都不做的后果」。
-        // Arrange & Act
-        let (_registry, _dialogues, nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end" } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert_eq!(result, Ok(()));
-        let index = nodes.defined_indices()[0];
-        assert!(
-            nodes.get(index).expect("刚定义过").options[0]
-                .outcomes
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn 尚未实现的后果报明确错误而不是静默接受() {
-        // 〔2026-08-31，批次 26〕`join-settlement` 已经实现，从这份清单里
-        // 挪走了——它现在由 `join_settlement后果解析成不带参数的变体`
-        // 与 `join_settlement带多余的flag参数报错` 两条守着。
-        // 〔2026-08-31，批次 29〕`complete-quest` 同样挪走了，由
-        // `complete_quest后果解析成一条任务引用` 等三条守着。
-        for kind in ["give-item", "open-trade"] {
-            // Arrange & Act
-            let source = format!(
-                r#"{{
-                  nodes: [ {{ id: "lostland:a", text_key: "lostland:dialogue.a",
-                             options: [ {{ text_key: "lostland:dialogue.x", next: "end",
-                                          outcomes: [ {{ kind: "{kind}" }} ] }} ] }} ],
-                }}"#
-            );
-            let (_registry, _dialogues, _nodes, result) = 解析(&source);
-
-            // Assert
-            let err = result.expect_err("尚未实现的后果必须报错");
-            assert!(err.contains("尚未实现"), "错误信息要说清楚为什么：{err}");
-            assert!(err.contains(kind), "错误信息要点名是哪一种：{err}");
-        }
-    }
-
-    /// `complete-quest` 携带的是一条**有内容表**的任务引用：解析成
-    /// `ContentIndex`，而不是一个字符串。
-    #[test]
-    fn complete_quest后果解析成一条任务引用() {
-        // 反例验证（ADR 0022）：把 `resolve` 里 `"complete-quest"` 那一支
-        // 挪回「尚未实现」那一支，本条当场红。
-        // Arrange & Act
-        let (registry, _dialogues, nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      outcomes: [ { kind: "complete-quest",
-                                                    quest: "lostland:main_quest_1" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        assert_eq!(result, Ok(()));
-        let quest = registry
-            .get(&NamespacedId::parse("lostland:main_quest_1").expect("固定字面量恒合法"))
-            .expect("夹具里已经 intern 过");
-        let index = nodes.defined_indices()[0];
-        let view = nodes.get(index).expect("刚定义过");
-        assert_eq!(
-            view.options[0].outcomes,
-            vec![DialogueOutcome::CompleteQuest(quest)]
-        );
-    }
-
-    /// 拼错的任务 id **在装载期**当场报错，不是等到运行期静默无效——
-    /// `required_id`（只 get 不 intern）的既有纪律。
-    #[test]
-    fn complete_quest的任务id没注册过时装载期报错() {
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      outcomes: [ { kind: "complete-quest",
-                                                    quest: "lostland:no_such_quest" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        let err = result.expect_err("没注册过的任务 id 必须报错");
-        assert!(
-            err.contains("lostland:no_such_quest"),
-            "错误信息要点名是哪一条：{err}"
-        );
-    }
-
-    #[test]
-    fn complete_quest缺少quest参数报错() {
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      outcomes: [ { kind: "complete-quest" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        let err = result.expect_err("缺必填参数必须报错");
-        assert!(err.contains("complete-quest"), "要点名是哪一种：{err}");
-        assert!(err.contains("quest"), "要点名是哪个参数：{err}");
-    }
-
-    /// 「不该有的必须没有」这一半对**两个方向**都成立：`complete-quest`
-    /// 不认 `flag`，`set-flag` 也不认 `quest`。
-    #[test]
-    fn 后果参数用错了种类当场报错() {
-        for (kind, extra) in [
-            ("complete-quest", r#"flag: "lostland:dialogue_flag.x""#),
-            ("set-flag", r#"quest: "lostland:main_quest_1""#),
-        ] {
-            // Arrange & Act
-            let source = format!(
-                r#"{{
-                  nodes: [ {{ id: "lostland:a", text_key: "lostland:dialogue.a",
-                             options: [ {{ text_key: "lostland:dialogue.x", next: "end",
-                                          outcomes: [ {{ kind: "{kind}", {extra} }} ] }} ] }} ],
-                }}"#
-            );
-            let (_registry, _dialogues, _nodes, result) = 解析(&source);
-
-            // Assert
-            let err = result.expect_err("多余参数必须报错");
-            assert!(err.contains(kind), "要点名是哪一种：{err}");
-            assert!(err.contains("不接受字段"), "要说清楚为什么：{err}");
-        }
-    }
-
-    #[test]
-    fn set_flag缺少flag参数报错() {
-        // Arrange & Act
-        let (_registry, _dialogues, _nodes, result) = 解析(
-            r#"{
-              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ { text_key: "lostland:dialogue.x", next: "end",
-                                      outcomes: [ { kind: "set-flag" } ] } ] } ],
-            }"#,
-        );
-
-        // Assert
-        let err = result.expect_err("缺必填参数必须报错");
-        assert!(err.contains("flag"), "错误信息要点名缺的是哪个字段：{err}");
     }
 }

@@ -1,5 +1,5 @@
-//! `Intent::DialogueChoose` 的**任务族后果**：`complete-quest`
-//! （`give-item` 在下一个提交里加进本文件；对话系统的批次 4，计划文档
+//! `Intent::DialogueChoose` 的**任务族后果**：`complete-quest` 与
+//! `give-item`（对话系统的批次 4，计划文档
 //! `docs/superpowers/plans/2026-08-31-batch29-dialogue-quest.md`）。
 //!
 //! # 为什么另开一个文件，不塞进 `dialogue_choose.rs`
@@ -16,10 +16,13 @@
 //! | `complete-quest` 走的是**既有**的 `mark_quest_completed` | `complete_quest产出的写入就是mark_quest_completed的返回值` |
 //! | `complete-quest` 反查不到任务 id ⇒ 零效果 | `反查不到任务标识符时complete_quest零效果` |
 //! | `complete-quest` 不消耗回合 | `完成任务不消耗回合` |
+//! | **NPC 不能把不属于自己的东西送人** | `说话人送不属于自己的东西时give_item零效果` |
+//! | `give-item` 的搬运两端 | `选中give_item的选项把一件东西从说话人搬到发起者` |
+//! | `give-item` 不消耗回合 | `赠送物品不消耗回合` |
 
 use std::collections::BTreeMap;
 
-use ll_core::ident::{ContentIndex, Interner, NamespacedId};
+use ll_core::ident::{ContentIndex, Interner, NamespacedId, WorldId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_sim::apply::apply;
@@ -34,6 +37,8 @@ use ll_sim::resolve::resolve_with_catalogs;
 use ll_sim::turn::{PlayerTurnOutcome, TurnEngine};
 use ll_world::entity::{Agent, BaseStats, EntityId};
 use ll_world::generate::GenParams;
+use ll_world::item::ItemStack;
+use ll_world::ownership::Owner;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
 use ll_world::terrain::base_terrain_fixture;
@@ -323,6 +328,244 @@ fn 完成任务不消耗回合() {
         is_quest_completed(world.actors.get(actor).expect("玩家在"), &quest_id()),
         "对照组：任务真的完成了"
     );
+    assert_eq!(world.clock, clock_before, "对话不消耗回合，世界时钟不动");
+    assert_eq!(
+        world.actors.get(actor).expect("玩家在").next_action_at,
+        next_before,
+        "对话不消耗回合，下次行动时刻不动"
+    );
+}
+
+// ── give-item ─────────────────────────────────────────────────────
+
+/// 把「玩家 + 一个背着 `count` 件东西的说话人」摆好。
+fn 有东西可送的世界(
+    owner: Owner,
+    count: u32,
+) -> (WorldState, EntityId, EntityId, ContentIndex) {
+    let mut world = test_world();
+    let actor = spawn_agent(&mut world);
+    let speaker = spawn_agent(&mut world);
+    let item = ContentIndex::default();
+    world
+        .actors
+        .get_mut(speaker)
+        .expect("刚生成的实体必然存在")
+        .inventory = vec![ItemStack {
+        owner,
+        ..ItemStack::new(item, count)
+    }];
+    (world, actor, speaker, item)
+}
+
+fn 背包里(world: &WorldState, who: EntityId) -> Vec<ItemStack> {
+    world.actors.get(who).expect("实体在").inventory.clone()
+}
+
+/// **主线**：一件东西从说话人背包里少掉、在发起者背包里多出来，且归属
+/// 变成发起者的。
+#[test]
+fn 选中give_item的选项把一件东西从说话人搬到发起者() {
+    // Arrange
+    let (mut world, actor, speaker, item) = 有东西可送的世界(Owner::Unowned, 3);
+    world.player_entity = Some(actor);
+    let node = ContentIndex::default();
+    let dialogues = 一个节点一条选项(node, DialogueOutcome::GiveItem(item));
+    let ids = FakeContentIds(Vec::new());
+    // 对照组前提：给方真的带着三件，收方两手空空。
+    assert_eq!(背包里(&world, speaker).len(), 1);
+    assert_eq!(背包里(&world, speaker)[0].count, 3);
+    assert!(背包里(&world, actor).is_empty());
+
+    // Act
+    let effects =
+        resolve_with_catalogs(&world, &选中(actor, speaker, node), &目录(&dialogues, &ids));
+    for effect in &effects {
+        apply(&mut world, effect);
+    }
+
+    // Assert
+    assert_eq!(
+        背包里(&world, speaker)[0].count,
+        2,
+        "给方背包里必须真的少一件"
+    );
+    let 收到 = 背包里(&world, actor);
+    assert_eq!(收到.len(), 1, "收方必须多出一堆：{收到:?}");
+    assert_eq!(收到[0].def, item);
+    assert_eq!(收到[0].count, 1, "一次交一件");
+    assert_eq!(收到[0].owner, Owner::Player, "收下之后那一堆必须归收方所有");
+}
+
+/// 最后一件送出去之后，给方那一堆整条消失（不留 `count == 0` 的死堆）
+/// ——这条是 `Effect::ConsumeInventoryItem` 既有语义的复用证据。
+#[test]
+fn 送出最后一件之后给方那一堆整条消失() {
+    // Arrange
+    let (mut world, actor, speaker, item) = 有东西可送的世界(Owner::Unowned, 1);
+    world.player_entity = Some(actor);
+    let node = ContentIndex::default();
+    let dialogues = 一个节点一条选项(node, DialogueOutcome::GiveItem(item));
+    let ids = FakeContentIds(Vec::new());
+
+    // Act
+    let effects =
+        resolve_with_catalogs(&world, &选中(actor, speaker, node), &目录(&dialogues, &ids));
+    for effect in &effects {
+        apply(&mut world, effect);
+    }
+
+    // Assert
+    assert!(背包里(&world, speaker).is_empty(), "给方那一堆必须整条消失");
+    assert_eq!(背包里(&world, actor).len(), 1);
+}
+
+/// **owner 校验硬前置**（`Effect::TransferOwnership` 文档给三个未来调用方
+/// 立的那一条，规格五节 5.2 原样接受）：**NPC 不能把不属于自己的东西
+/// 送人**。
+///
+/// 三种「不是他的」各验一次，另加两种「是他的/无主」的**对照组**——
+/// 只验拒绝的那一半时，一个「什么都不送」的实现照样全绿。
+///
+/// 故意改坏的反例（本批实测，见计划文档六节 ①）：把 `resolve` 里那段
+/// owner 校验整段去掉，前三条当场红。
+#[test]
+fn 说话人送不属于自己的东西时give_item零效果() {
+    let mut counter = 7u32;
+    let 别人 = WorldId::next(&mut counter);
+    let 某势力 = WorldId::next(&mut counter);
+    // 拒绝的三档。
+    for owner in [Owner::Player, Owner::Npc(别人), Owner::Faction(某势力)] {
+        // Arrange
+        let (mut world, actor, speaker, item) = 有东西可送的世界(owner, 1);
+        world.player_entity = Some(actor);
+        let node = ContentIndex::default();
+        let dialogues = 一个节点一条选项(node, DialogueOutcome::GiveItem(item));
+        let ids = FakeContentIds(Vec::new());
+
+        // Act
+        let effects =
+            resolve_with_catalogs(&world, &选中(actor, speaker, node), &目录(&dialogues, &ids));
+
+        // Assert
+        assert!(
+            effects.is_empty(),
+            "{owner:?} 不是说话人的东西，必须一条效果都不产：{effects:?}"
+        );
+    }
+
+    // 对照组：同一份夹具、只换归属，**必须产得出效果**——否则上面三条
+    // 会因为「这条路径根本走不通」而恒绿。
+    let (mut world, actor, speaker, item) = 有东西可送的世界(Owner::Unowned, 1);
+    world.player_entity = Some(actor);
+    let node = ContentIndex::default();
+    let dialogues = 一个节点一条选项(node, DialogueOutcome::GiveItem(item));
+    let ids = FakeContentIds(Vec::new());
+    assert!(
+        !resolve_with_catalogs(&world, &选中(actor, speaker, node), &目录(&dialogues, &ids))
+            .is_empty(),
+        "对照组：无主的东西谁都能转移"
+    );
+}
+
+/// 第二个对照组：**东西真的是他的**（`Owner::Npc(他自己的
+/// `remembered_id`)`）时照样送得出去。
+///
+/// 没有这一条，「凡是有主就拒」这种把校验退化成 `is_claimed()` 的实现
+/// 会全绿——而那会让 NPC 永远送不出任何一件自己的东西。
+#[test]
+fn 说话人送自己名下的东西时give_item照常产出效果() {
+    // Arrange
+    let mut counter = 3u32;
+    let 他自己 = WorldId::next(&mut counter);
+    let (mut world, actor, speaker, item) = 有东西可送的世界(Owner::Npc(他自己), 1);
+    world.player_entity = Some(actor);
+    world
+        .actors
+        .get_mut(speaker)
+        .expect("说话人在")
+        .remembered_id = Some(他自己);
+    let node = ContentIndex::default();
+    let dialogues = 一个节点一条选项(node, DialogueOutcome::GiveItem(item));
+    let ids = FakeContentIds(Vec::new());
+
+    // Act
+    let effects =
+        resolve_with_catalogs(&world, &选中(actor, speaker, node), &目录(&dialogues, &ids));
+    let mut world_after = world.clone();
+    for effect in &effects {
+        apply(&mut world_after, effect);
+    }
+
+    // Assert
+    assert!(!effects.is_empty(), "自己的东西必须送得出去");
+    assert_eq!(背包里(&world_after, actor)[0].owner, Owner::Player);
+}
+
+/// 说话人背包里压根没有那件东西 ⇒ **零效果**（第 4 道闸门）。
+///
+/// 故意改坏的反例（本批实测，见计划文档六节 ⑤）：把「背包里找得到这一
+/// 堆」那道闸门去掉（找不到时凭空造一堆），本条当场红。
+#[test]
+fn 说话人没有那件东西时give_item零效果() {
+    // Arrange
+    let mut world = test_world();
+    let actor = spawn_agent(&mut world);
+    let speaker = spawn_agent(&mut world);
+    world.player_entity = Some(actor);
+    let node = ContentIndex::default();
+    let dialogues =
+        一个节点一条选项(node, DialogueOutcome::GiveItem(ContentIndex::default()));
+    let ids = FakeContentIds(Vec::new());
+
+    // Act
+    let effects =
+        resolve_with_catalogs(&world, &选中(actor, speaker, node), &目录(&dialogues, &ids));
+
+    // Assert
+    assert!(effects.is_empty(), "实际产出了 {effects:?}");
+}
+
+/// **`give-item` 也不消耗回合**，理由同 `完成任务不消耗回合`。
+///
+/// 故意改坏的反例（本批实测）：给 `give-item` 那一支再补一条
+/// `Effect::ScheduleNext`，本条当场红。
+#[test]
+fn 赠送物品不消耗回合() {
+    // Arrange
+    let (mut world, actor, speaker, item) = 有东西可送的世界(Owner::Unowned, 1);
+    world.player_entity = Some(actor);
+    let node = ContentIndex::default();
+    let dialogues = 一个节点一条选项(node, DialogueOutcome::GiveItem(item));
+    let ids = FakeContentIds(Vec::new());
+    let clock_before = world.clock;
+    let next_before = world.actors.get(actor).expect("玩家在").next_action_at;
+    let mut timeline = ll_sim::timeline::Timeline::new();
+    timeline.schedule(actor, clock_before);
+    let mut engine = TurnEngine::new(timeline);
+    let mut on_effect = |_world: &WorldState, _effect: &Effect| {};
+    let mut ai =
+        |_world: &WorldState, actor: EntityId, _controlled: EntityId| Intent::Wait { actor };
+    engine.advance_ai(
+        &mut world,
+        actor,
+        &mut ai,
+        &目录(&dialogues, &ids),
+        &mut on_effect,
+    );
+
+    // Act
+    let outcome = engine.try_player_intent(
+        &mut world,
+        actor,
+        选中(actor, speaker, node),
+        &目录(&dialogues, &ids),
+        &mut on_effect,
+    );
+
+    // Assert：先确认东西真的到手了。
+    assert_eq!(outcome, PlayerTurnOutcome::Acted);
+    assert_eq!(背包里(&world, actor).len(), 1, "对照组：东西真的到手了");
     assert_eq!(world.clock, clock_before, "对话不消耗回合，世界时钟不动");
     assert_eq!(
         world.actors.get(actor).expect("玩家在").next_action_at,
