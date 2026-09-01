@@ -470,6 +470,16 @@ steward_root ──ask_reward（quest-completed main_quest_1）──► steward
     这一段与 `CONTENT_HASH_ALGORITHM_VERSION` 是同一处真相源）。
   - 新测试一律落在**独立测试文件**，一行都没往已经贴着上限的
     `dialogue_session.rs`（846 行）里塞。
+- **如实登记：第二个提交（`give-item`）单独看过不了 `cargo clippy
+  -D warnings`。** 它把 `resolve_dialogue_choose` 的参数表推到 8 个
+  （`clippy::too_many_arguments` 上限 7），并让「尚未实现的后果」那张清单
+  只剩一个元素（`clippy::single_element_loop`）——两处都在**第三个提交**里
+  才修好。`run_tests.sh` 在第二个提交上是绿的（2987 通过），红的只有 clippy
+  这道门。**将来 `git bisect` 走到那个提交会假红**，与批次 26 报过的那处
+  （第一个提交的 `check_field_consumers.py`）是同一类。
+  本想把那两处修补折进第二个提交，但改写历史被本机的安全门拦下了，因此改成
+  在这里与最终报告里明写。第三个提交的提交信息里也写了这两处形状调整的
+  由来。
 - 顺带被 `-D warnings` 逼出来的两处形状调整（不是本批的设计选择，如实记）：
   `resolve_dialogue_choose` 的参数表到了 8 个，按仓库既有应对收成一个
   `DialogueResolveCatalogs` 结构体；`尚未实现的后果报明确错误而不是静默接受`
