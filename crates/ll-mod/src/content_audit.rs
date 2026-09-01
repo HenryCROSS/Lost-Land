@@ -461,7 +461,8 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 「本体名册里必须有一种会枯竭的资源」这条内容设计要求因此
         // 有了一道机器检查：把 iron_vein 改成不枯竭，本门禁立刻变红。
         ContentTableKind::Resource,
-        // 文化批次：mods/lostland/cultures.json5（**新文件**，六条文化）
+        // 文化批次：mods/lostland/cultures.json5（**新文件**，当时六条文化，
+        // 批次 24 之后七条）
         // 让文化表在 lostland 命名空间下一落地就非空，与资源表当初
         // 一样不经过 deferred——文化名册本身就是本体内容，它引用的
         // 地形与种族都已经在本体里。
@@ -475,7 +476,7 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // 因此有了一道机器检查：把那两段敌对删掉，本门禁立刻变红。
         //
         // **据点建筑类型批次追加了第七个字段 `buildings`**，同样不需要
-        // 豁免：注册期拒了空表，六条文化因此全部覆盖它。它额外带来一条
+        // 豁免：注册期拒了空表，每一条文化因此全部覆盖它。它额外带来一条
         // 跨表引用检查（家具索引必须落在物品表里），见 `inspect_culture`。
         ContentTableKind::Culture,
         // 对话内容表批次：mods/lostland/dialogues.json5（**新文件**，两段

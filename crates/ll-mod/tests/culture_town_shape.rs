@@ -229,16 +229,23 @@ fn 一条建筑类型都不声明的文化当场拒绝() {
 }
 
 #[test]
-fn 本体六条文化各自的城镇形态互不相同() {
+fn 本体每一条文化各自的城镇形态互不相同() {
     // Arrange：读仓库里**真实的**那一份，不抄一份副本进测试。
     let path =
         std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../mods/lostland/cultures.json5");
     let source = std::fs::read_to_string(&path)
         .unwrap_or_else(|err| panic!("读不到 {}：{err}", path.display()));
     let (registry, table, order) = load(&source);
-    assert_eq!(order.len(), 6, "本体名册当前是六条文化");
+    // 这个字面量是一条**绊线**，不是判据：真相源是仓库里那份
+    // `cultures.json5`，本行只是让「有人动了名册」这件事在这里也响一声。
+    // 〔2026-08-31，批次 24〕6 → 7，多的那一条是 `lostland:sand_nomads`
+    // （沙民，食物 × 沙漠）。**本条当时真的红了**，报的正是 `left: 7`
+    // / `right: 6`；下面那圈两两比较随之从 15 对变成 21 对，新那一条也
+    // 必须与既有六条都不同——它确实不同（住宅 6 / 货栈 3 / 客栈 1，
+    // 且货栈里桶比箱多，全表独一份）。
+    assert_eq!(order.len(), 7, "本体名册当前是七条文化");
 
-    // Act：六条各铺一座满额据点。
+    // Act：每一条各铺一座满额据点。
     let censuses: Vec<Vec<(String, usize)>> = order
         .iter()
         .enumerate()
@@ -249,7 +256,7 @@ fn 本体六条文化各自的城镇形态互不相同() {
         .map(|k| registry.resolve(k.index()).expect("已注册").to_string())
         .collect();
 
-    // Assert ①：六座城两两不同。
+    // Assert ①：每两座城都不同。
     for left in 0..censuses.len() {
         for right in (left + 1)..censuses.len() {
             assert_ne!(

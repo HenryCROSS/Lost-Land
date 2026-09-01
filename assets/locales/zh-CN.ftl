@@ -547,3 +547,9 @@ race-catfolk-display_name = 猫人
 race-orc-display_name = 欧克
 race-lizardfolk-display_name = 蜥蜴人
 race-merfolk-display_name = 鱼人
+
+# ── 沙漠文化（批次 24）─────────────────────────────────────────────
+# 第七份文化：食物 × 沙漠。气候条带让沙漠真实存在之后才写得出来的
+# 一条。声明在 mods/lostland/cultures.json5。
+
+culture-sand_nomads-display_name = 沙民

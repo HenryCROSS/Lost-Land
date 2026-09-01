@@ -499,3 +499,10 @@ race-catfolk-display_name = Catfolk
 race-orc-display_name = Orc
 race-lizardfolk-display_name = Lizardfolk
 race-merfolk-display_name = Merfolk
+
+# ── The desert culture (batch 24) ─────────────────────────────────────
+# The seventh culture: food x desert. Only writable once the climate
+# bands made desert terrain actually exist. Declared in
+# mods/lostland/cultures.json5.
+
+culture-sand_nomads-display_name = Sand Nomads
