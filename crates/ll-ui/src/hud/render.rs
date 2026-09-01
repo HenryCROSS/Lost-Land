@@ -56,8 +56,7 @@ use ll_sim::item::ItemCatalog;
 use ll_text::TextRenderer;
 use ll_world::item::{EquipSlot, ItemStack};
 
-use super::PanelContent;
-use super::action_menu::{self, ActionMenuData, MenuPlacement};
+use super::action_menu::ActionMenuData;
 use super::character_panel::{self, CharacterPanelData};
 use super::equipment_panel;
 use super::inventory_panel;
@@ -81,9 +80,9 @@ use glyphon::Color;
 use std::collections::BTreeMap;
 
 /// 面板左上角与窗口边缘的留白（像素）。
-const SCREEN_MARGIN: f32 = 16.0;
+pub(super) const SCREEN_MARGIN: f32 = 16.0;
 /// 三列之间、状态栏与三列之间的间隔（像素）。
-const PANEL_GAP: f32 = 10.0;
+pub(super) const PANEL_GAP: f32 = 10.0;
 /// 状态栏通栏宽度。
 pub const STATUS_WIDTH: f32 = 620.0;
 /// 角色面板宽度。
@@ -107,11 +106,10 @@ const DAY_NIGHT_BAR_WIDTH: f32 = RESOURCE_BAR_WIDTH * 2.0 + PANEL_GAP;
 /// 动作菜单面板宽度——比背包/装备两列宽一些：它的行要同时容下配方名
 /// 与食材清单（见 `ll_game::player_action` 的排版），照 220 会频繁截断。
 pub const ACTION_MENU_WIDTH: f32 = 360.0;
-/// 反馈行面板宽度——一句话的宽度，见 [`build_hud_frame`] 的 `feedback`
-/// 参数文档。
-pub const FEEDBACK_WIDTH: f32 = 420.0;
-/// 反馈行面板与窗口下边缘的留白（像素）。
-const FEEDBACK_BOTTOM_MARGIN: f32 = 48.0;
+// 反馈行与按键提示行的宽度/位置常量搬去了 `super::bottom_rows`——
+// 两行形状相同，放在一起才不会各写一份。这里再导出一次，
+// `ll_ui::hud::render::FEEDBACK_WIDTH` 这条既有路径不变。
+pub use super::bottom_rows::{FEEDBACK_WIDTH, KEY_HINT_WIDTH};
 /// 装备栏与窗口右边缘的留白（像素）——见模块文档「装备放在屏幕右边」
 /// 一节，与 [`SCREEN_MARGIN`] 取同一个值，让装备栏与状态栏在视觉上
 /// 是对称锚定在屏幕两侧的一对。
@@ -161,7 +159,7 @@ const WORLD_MAP_MARGIN_FRACTION: f32 = 0.1;
 /// 的取舍——窗口尺寸由 `ll_platform::window::WindowConfig` 固定给定
 /// （见 [`equipment_origin_x`] 文档同一段说明),按比例现算仍然比写死
 /// 像素常量更不容易在窗口配置调整后悄悄错位。
-/// 按这块菜单声明的 [`MenuPlacement`] 把它摆到屏幕上。
+/// 按这块菜单声明的 [`MenuPlacement`](super::action_menu::MenuPlacement) 把它摆到屏幕上。
 ///
 /// # 为什么要「先建一次、再整体平移」
 ///
@@ -175,49 +173,6 @@ const WORLD_MAP_MARGIN_FRACTION: f32 = 0.1;
 /// 水平方向两个变体都居中（这是本函数落地之前就有的行为），差别只在
 /// 垂直：`TopCenter` 贴上沿，`ScreenCenter` 也居中。
 ///
-/// # 屏幕比面板还矮时
-///
-/// `ScreenCenter` 算出来的 `y` 会是负数，面板顶部被截在屏幕外——**这是
-/// 刻意不钳制的**：钳到 0 会让面板底部改为超出屏幕，同样看不全，却把
-/// 「窗口比屏幕高」这个真问题藏起来。与
-/// `ActionMenuData::cursor` 越界时「不钳制、也不 panic」同一条纪律。
-fn placed_action_menu(
-    menu: &ActionMenuData<'_>,
-    catalog: &Catalog,
-    language: &str,
-    measure: &mut dyn ll_text::MeasureText,
-    screen_width: f32,
-    screen_height: f32,
-) -> PanelContent {
-    let x = (screen_width - ACTION_MENU_WIDTH) * 0.5;
-    let top = SCREEN_MARGIN + PANEL_GAP;
-    let panel = action_menu::action_menu_panel(
-        menu,
-        catalog,
-        language,
-        measure,
-        (x, top),
-        ACTION_MENU_WIDTH,
-    );
-    match menu.placement {
-        MenuPlacement::TopCenter => panel,
-        MenuPlacement::ScreenCenter => {
-            let centered_top = (screen_height - panel.rect.height) * 0.5;
-            translate_panel(panel, centered_top - top)
-        }
-    }
-}
-
-/// 把一块已经建好的面板整体沿 y 轴平移 `dy` 像素——背景矩形与每一行
-/// 文字一起动，见 [`placed_action_menu`] 文档「先建一次、再整体平移」。
-fn translate_panel(mut panel: PanelContent, dy: f32) -> PanelContent {
-    panel.rect.y += dy;
-    for label in &mut panel.labels {
-        label.y += dy;
-    }
-    panel
-}
-
 /// 世界地图面板的**外框**矩形：屏幕四周各留一成边距，居中一块。
 ///
 /// # 为什么是公开的
@@ -263,7 +218,7 @@ pub fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
 /// `menu` 为 `None` 时（没有任何动作菜单打开）那块面板整块不参与本次
 /// 产出，与 `world_map` 同一条纪律。为 `Some` 时按
 /// [`super::action_menu::action_menu_panel`] 画出，**画在哪由那块菜单
-/// 自己声明的 [`MenuPlacement`] 决定**（见 [`placed_action_menu`]）：
+/// 自己声明的 [`MenuPlacement`](super::action_menu::MenuPlacement) 决定**（见 [`placed_action_menu`](super::placement::placed_action_menu)）：
 /// 背包与制作贴屏幕上沿、水平居中（本参数落地以来一直如此），交互列表
 /// 与方向列表水平垂直**都居中**——所有者裁定「那个互动显示的 UI 窗口，
 /// 我希望是出现在屏幕正中间」。
@@ -306,6 +261,11 @@ pub fn build_hud_frame(
     world_map: Option<&WorldMapPanelData<'_>>,
     menu: Option<&ActionMenuData<'_>>,
     feedback: Option<&str>,
+    // 世界里那一行常驻的按键提示（规格 F6），`None` = 这一刻不显示
+    // （有模态屏盖着，或者压根没有世界）。与 `feedback` 完全同构：
+    // 本层只收**已经排好版的一句话**，键名怎么从当前键位表现查是
+    // `ll_game::key_hint` 的事，见那个模块。
+    key_hint: Option<&str>,
 ) -> LayeredFrame {
     let mut frame = LayeredFrame::default();
     // 常驻 HUD 全部落在最底层，见 `crate::widget::layer` 模块文档的
@@ -499,7 +459,7 @@ pub fn build_hud_frame(
     // 函数文档。落在 `UiLayer::Popup`，恒压在地图之上——两者理论上可以
     // 同时打开，此时玩家正在菜单里选东西，地图只是背景。
     if let Some(menu) = menu {
-        let panel = placed_action_menu(
+        let panel = super::placement::placed_action_menu(
             menu,
             catalog,
             language,
@@ -515,23 +475,28 @@ pub fn build_hud_frame(
         );
     }
 
-    // 反馈行：最高一层 `UiLayer::Notice`，压在所有东西之上——它要说的
-    // 正是「你刚才那一下没起作用」，被任何面板挡住就等于没说。
-    if let Some(text) = feedback {
-        let panel = super::build_panel(
+    // 屏幕底部那两行——形状相同、分层不同，见 `super::bottom_rows`
+    // 模块文档那张表。
+    if let Some(text) = key_hint {
+        let batch = frame.layer_mut(UiLayer::Hud);
+        super::bottom_rows::push_key_hint_row(
+            batch,
             measure,
-            (
-                (screen_width - FEEDBACK_WIDTH) * 0.5,
-                (screen_height - FEEDBACK_BOTTOM_MARGIN).max(0.0),
-            ),
-            FEEDBACK_WIDTH,
-            |cursor, lines| cursor.push(lines, text.to_string()),
-        );
-        push_panel(
-            frame.layer_mut(UiLayer::Notice),
-            &panel.rect,
-            panel.labels,
             skin,
+            text,
+            screen_width,
+            screen_height,
+        );
+    }
+    if let Some(text) = feedback {
+        let batch = frame.layer_mut(UiLayer::Notice);
+        super::bottom_rows::push_feedback_row(
+            batch,
+            measure,
+            skin,
+            text,
+            screen_width,
+            screen_height,
         );
     }
 
@@ -542,7 +507,12 @@ pub fn build_hud_frame(
 /// （[`Skin::textured_panel`]）就走贴图路径,否则回退到
 /// [`Skin::panel`] 的纯色路径,两条路径互斥（同一块面板只会落进
 /// [`LayerBatch::quads`] 或 [`LayerBatch::textured_quads`] 其中一个）。
-fn push_panel(batch: &mut LayerBatch, rect: &Rect, panel_labels: Vec<Label>, skin: &dyn Skin) {
+pub(super) fn push_panel(
+    batch: &mut LayerBatch,
+    rect: &Rect,
+    panel_labels: Vec<Label>,
+    skin: &dyn Skin,
+) {
     match skin.textured_panel(PanelStyleId::Window) {
         Some(appearance) => batch
             .textured_quads
@@ -697,6 +667,7 @@ pub fn render_hud(
     // `menu`/`feedback` 见 `build_hud_frame` 同名参数文档。
     menu: Option<&ActionMenuData<'_>>,
     feedback: Option<&str>,
+    key_hint: Option<&str>,
 ) {
     let frame = build_hud_frame(
         status,
@@ -717,6 +688,7 @@ pub fn render_hud(
         world_map,
         menu,
         feedback,
+        key_hint,
     );
 
     for batch in frame.draw_batches() {
@@ -765,6 +737,8 @@ pub fn render_hud(
 
 #[cfg(test)]
 mod tests {
+    use super::super::action_menu::MenuPlacement;
+    use super::super::placement::placed_action_menu;
     use super::*;
     use crate::widget::skin::FlatColorSkin;
     use ll_core::time::Tick;
@@ -811,8 +785,17 @@ mod tests {
             world_map,
             None,
             None,
+            None,
         )
     }
+
+    // 底部两行（反馈行 / 按键提示行）的断言住在隔壁文件，用 `#[path]`
+    // 挂成本模块的子模块——手法与 `ll_game` 的 `app_tests.rs` 一样。
+    // 本文件已经在行数棘轮的快照里（`scripts/ci/file_size_budget.json`），
+    // 而那条断言要用本模块这一整套夹具（`建帧`/`write_fixture_catalog`/
+    // `sample_character_data`），搬去 `tests/` 就够不着它们了。
+    #[path = "../../render_bottom_rows_tests.rs"]
+    mod bottom_rows_tests;
 
     fn write_fixture_catalog(dir: &Path) {
         std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nhud-status-fps-label = 帧率\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\nhud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nhud-character-rule-modifiers-title = 生效中的规则修正\nhud-character-rule-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\nhud-inventory-panel-title = 背包\nhud-inventory-empty = （空）\nhud-inventory-durability-label = 耐久\nhud-equipment-panel-title = 装备\nhud-equipment-empty-slot = （空）\nequip_slot-main_hand-display_name = 主手\nequip_slot-off_hand-display_name = 副手\nequip_slot-head-display_name = 头部\nequip_slot-face-display_name = 面部\nequip_slot-eyes-display_name = 眼部\nequip_slot-neck-display_name = 颈部\nequip_slot-body-display_name = 躯干\nequip_slot-outer-display_name = 外袍\nequip_slot-back-display_name = 背部\nequip_slot-shoulder_l-display_name = 左肩\nequip_slot-shoulder_r-display_name = 右肩\nequip_slot-arm_l-display_name = 左臂\nequip_slot-arm_r-display_name = 右臂\nequip_slot-hand_l-display_name = 左手\nequip_slot-hand_r-display_name = 右手\nequip_slot-belt-display_name = 腰带\nequip_slot-tasset-display_name = 腿甲\nequip_slot-legs-display_name = 双腿\nequip_slot-boot_l-display_name = 左靴\nequip_slot-boot_r-display_name = 右靴\nequip_slot-ring_l-display_name = 左戒指\nequip_slot-ring_r-display_name = 右戒指\n").expect("测试用写入应当成功");

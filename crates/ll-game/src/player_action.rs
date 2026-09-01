@@ -284,6 +284,22 @@ pub enum Feedback {
     DoorBlockedByOccupant,
     /// 按了关门，但门口立着一件家具。见 [`Self::DoorBlockedByOccupant`]。
     DoorBlockedByObject,
+    /// **世界正在推进**：连续多帧轮不到玩家（`ll_sim::turn::PlayerTurnOutcome::NotYet`）。
+    ///
+    /// # 它与其余四条的分界
+    ///
+    /// 其余四条说的都是「你刚那一下没起作用」。这一条说的是相反的
+    /// 事——**你那一下压根还没被处理**，世界正在跑别人的回合。
+    ///
+    /// # 为什么不是每一帧 `NotYet` 都说
+    ///
+    /// 规格 §9.2 F4：单帧 `NotYet` 保持静默是对的（这次输入没被消费，
+    /// 下一帧原样重试，说话反而是噪音）。但玩家按住方向键、世界连着
+    /// 几十帧都在结算 NPC 时，屏幕上什么都不动，**看起来像卡死**。
+    /// 门槛是 `crate::app::NOT_YET_FEEDBACK_FRAMES` 帧，判定本身在
+    /// `crate::app::feedback_after_turn`——那是「连续多少帧」这条算法
+    /// 的唯一产出点。
+    WorldAdvancing,
 }
 
 impl Feedback {
@@ -296,6 +312,7 @@ impl Feedback {
             Feedback::NothingNearby => "hud-feedback-nothing-nearby",
             Feedback::DoorBlockedByOccupant => "hud-feedback-door-blocked-occupant",
             Feedback::DoorBlockedByObject => "hud-feedback-door-blocked-object",
+            Feedback::WorldAdvancing => "hud-feedback-world-advancing",
         }
     }
 }

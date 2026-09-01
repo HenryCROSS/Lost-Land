@@ -41,6 +41,26 @@
 //! **不提供** `menu_mut()`：拿到裸引用就等于绕过配对。取而代之的是
 //! [`Modal::with_player_menu`]——闭包拿到 `&mut PlayerMenu`，返回之后
 //! 由本类型负责把栈重新对齐。拿不到裸引用 ⇒ 绕不过对齐。
+//!
+//! # 深度上限为什么也落在这里（规格 N4）
+//!
+//! 规格 `knowledge/design/ui-and-navigation.md` N4 的判据原文写的是
+//! 「`UiModeStack::push` 在深度已达 3 时 `debug_assert!` 并拒绝压入」。
+//! **本批（批次 23）把它落在本类型，不落在 `UiModeStack`**，理由是规格
+//! 自己在十节 P0 表下面已经记过的那一条：
+//!
+//! > 「此刻加一条『超 3 就拒绝压入』会让 `Modal` 的配对不变式当场被
+//! > 自己破坏。」
+//!
+//! 那条顾虑成立，而且它同时指出了正确落点。`UiModeStack` 只持有栈，
+//! 它拒绝得了压栈、拒绝不了 [`Modal::world_map_open`] 那半个字段的
+//! 改动——于是「栈少一层、字段却已经翻转」，[`Modal::assert_paired`]
+//! 下一行就红。**拒绝必须是原子的：状态字段与栈一起不动**，而只有
+//! 同时持有两者的本类型做得到。
+//!
+//! 上限值 3 的理由照抄规格：设置屏 → 键位捕获已经是 2 层，再加一个
+//! 确认框就是 3；**第 4 层意味着流程设计出了问题，应当在开发期就红，
+//! 而不是在玩家那里变成一堆退不完的屏**。
 
 use ll_platform::input::InputState;
 use ll_platform::keybind::InputContext;
@@ -69,6 +89,13 @@ pub struct Modal {
 }
 
 impl Modal {
+    /// 模态栈允许的最大深度——规格 N4，见模块文档「深度上限为什么也
+    /// 落在这里」一节。
+    ///
+    /// 超过它的那一次开屏/开菜单/开地图**整个被拒绝**：状态字段与栈
+    /// 一起不动，因此配对不变式照旧成立。
+    pub const MAX_DEPTH: usize = 3;
+
     /// 什么都没开——玩家直接在世界里。
     pub fn in_world() -> Modal {
         Modal::default()
@@ -124,6 +151,55 @@ impl Modal {
         self.stack.current_context()
     }
 
+    /// 这一块屏自己要占几层——屏那一层，加上「它要不要玩家打字」那一层。
+    ///
+    /// [`Modal::set_screen`] 的层数变化不是无脑 ±1：从菜单屏换到命名屏
+    /// 是 1 → 2，关掉命名屏是 2 → 0。上限判定必须按这个数算，否则
+    /// **换屏与关屏也会被上限挡住**，而那两件事根本不加层。
+    fn screen_layers(screen: Option<ScreenState>) -> usize {
+        match screen {
+            None => 0,
+            Some(state) => 1 + usize::from(state.wants_text_entry()),
+        }
+    }
+
+    /// 这一次改动之后总层数会是多少，超了没有——规格 N4 的唯一判据。
+    ///
+    /// `replaced`（本次替换掉的层数）/ `needed`（本次要占的层数） 一起收：地图与玩家菜单
+    /// 各是 0 → 1，模态屏那一路则可能是 1 → 2 或 2 → 0，见
+    /// [`Modal::screen_layers`]。
+    fn would_exceed(&self, replaced: usize, needed: usize) -> bool {
+        let others = self.stack.depth().saturating_sub(replaced);
+        others + needed > Modal::MAX_DEPTH
+    }
+
+    /// 上限拦下一次压入时统一走这里。**两种构建下是两种行为，都是
+    /// 规格 N4 要的**：
+    ///
+    /// - **开发期（debug，含 `cargo test`）当场红**——规格原文「第 4 层
+    ///   意味着流程设计出了问题，应当在开发期就红」。
+    /// - **发布构建下安静地拒绝**——规格原文的后半句「而不是在玩家那里
+    ///   变成一堆退不完的屏」。`debug_assert` 而不是 `assert`，与
+    ///   [`Modal::assert_paired`] 同一条既有取舍：一个纯 UI 状态问题
+    ///   不该在玩家机器上拖垮整局。
+    ///
+    /// 因此「拒绝」这一半在 debug 下**观察不到**（那一刻已经 panic 了）。
+    /// 守它的判据是 [`Modal::would_exceed`] 这个纯判据本身，见本模块
+    /// 测试里那两条。
+    fn reject_push(what: &str) {
+        debug_assert!(
+            false,
+            "模态栈已经 {} 层，再压一层就是第 {} 层（{what}）：规格 N4",
+            Modal::MAX_DEPTH,
+            Modal::MAX_DEPTH + 1
+        );
+        tracing::warn!(
+            max_depth = Modal::MAX_DEPTH,
+            what,
+            "模态栈已达深度上限，这一次压入被拒绝"
+        );
+    }
+
     /// 打开一块模态屏（此前没有屏开着）。
     ///
     /// 已经有屏开着时**换屏**走 [`Modal::set_screen`]，不重复压栈。
@@ -140,6 +216,15 @@ impl Modal {
     ///    只有命名屏返回真）→ 压/弹 `UiMode::TextEntry`。
     /// 3. 一致性断言。
     pub fn set_screen(&mut self, next: Option<ScreenState>, input: &mut InputState) {
+        // 规格 N4：超上限就整个拒绝——`self.screen` 一个字节都还没改，
+        // 栈也没动过，配对因此不可能破。**这一句必须在任何赋值之前。**
+        if self.would_exceed(
+            Modal::screen_layers(self.screen),
+            Modal::screen_layers(next),
+        ) {
+            Modal::reject_push("再开一块模态屏");
+            return;
+        }
         let had = self.screen.is_some();
         self.screen = next;
         match (had, self.screen.is_some()) {
@@ -181,6 +266,10 @@ impl Modal {
         if self.world_map_open {
             self.close_world_map(input);
         } else {
+            if self.would_exceed(0, 1) {
+                Modal::reject_push("再开世界地图");
+                return false;
+            }
             self.world_map_open = true;
             self.stack.push(UiMode::Overlay, input);
             self.assert_paired();
@@ -212,8 +301,16 @@ impl Modal {
         f: impl FnOnce(&mut PlayerMenu, &InputState) -> R,
     ) -> R {
         let was_open = self.menu.is_open();
+        let menu_before = self.menu;
         let result = f(&mut self.menu, input);
         match (was_open, self.menu.is_open()) {
+            (false, true) if self.would_exceed(0, 1) => {
+                // 闭包已经把 `menu` 改掉了才知道会超——**整个还原**，
+                // 状态与栈一起不动。`PlayerMenu` 是 `Copy`，还原是一次
+                // 赋值，不需要闭包自己知道有上限这回事。
+                Modal::reject_push("再开一块玩家菜单");
+                self.menu = menu_before;
+            }
             (false, true) => self.stack.push(UiMode::PlayerMenu, input),
             (true, false) => self.pop_first(UiMode::PlayerMenu, input),
             _ => {}
@@ -426,6 +523,91 @@ mod tests {
 
         // Assert
         assert!(modal.is_empty());
+    }
+
+    /// 把栈叠到恰好 [`Modal::MAX_DEPTH`] 层：地图 + 玩家菜单 + 模态屏。
+    ///
+    /// 这三样是今天**真的能同时存在**的三层（规格十节 P0 表下面那一段
+    /// 点名的组合），不是为了凑数造出来的。
+    fn 叠到上限() -> (Modal, InputState) {
+        let mut modal = Modal::in_world();
+        let mut input = InputState::new();
+        modal.toggle_world_map(&mut input);
+        modal.with_player_menu(&mut input, |menu, _input| {
+            *menu = PlayerMenu::Inventory { cursor: 0 }
+        });
+        modal.open_screen(ScreenState::Menu, &mut input);
+        assert_eq!(modal.depth(), Modal::MAX_DEPTH, "Arrange：恰好叠到上限");
+        (modal, input)
+    }
+
+    #[test]
+    fn 深度上限的判据在第四层为真在第三层为假() {
+        // 规格 N4 的算术本体。它是纯判据，不 panic——「拒绝」那一半在
+        // debug 构建下观察不到（`reject_push` 当场 panic），因此这条
+        // 断言守的就是判据自己。
+        //
+        // 反例（已实跑）：把 `would_exceed` 改成恒 `false`，本条当场红，
+        // 红在「叠满之后再要一层仍然被判为不超」这一句。
+        // Arrange
+        let (modal, _input) = 叠到上限();
+
+        // Act & Assert
+        assert!(
+            modal.would_exceed(0, 1),
+            "已经 {} 层，再要一层就是第 {} 层，必须判为超限",
+            Modal::MAX_DEPTH,
+            Modal::MAX_DEPTH + 1
+        );
+        assert!(
+            !modal.would_exceed(1, 1),
+            "换掉一层再占一层，总数不变，不该被上限挡住"
+        );
+        assert!(!modal.would_exceed(1, 0), "关掉一层永远不该被上限挡住");
+    }
+
+    #[test]
+    #[should_panic(expected = "规格 N4")]
+    fn 叠到第四层当场被拒() {
+        // 规格 N4 判据：深度已达上限时**拒绝压入**。debug 构建（含
+        // `cargo test`）下这一拒绝表现为 `debug_assert` 当场红，正是
+        // 规格要的「应当在开发期就红」。
+        //
+        // 反例（已实跑）：把 `would_exceed` 改成恒 `false`，本条不再
+        // panic 而是安静地叠到第 4 层，`#[should_panic]` 因此失败——
+        // 红的原因确实是「第 4 层压进去了」。
+        // Arrange
+        let (mut modal, mut input) = 叠到上限();
+
+        // Act：命名屏要屏那一层 + 文本输入层，是最容易撞上限的一路。
+        modal.set_screen(
+            Some(ScreenState::SaveNaming {
+                origin: SpawnOrigin::WorldSetup,
+            }),
+            &mut input,
+        );
+    }
+
+    #[test]
+    fn 上限之内的换屏与关屏一概不受影响() {
+        // 上限判据按「换完之后一共几层」算，不是无脑 +1——按 +1 算的话
+        // 叠满之后连**关屏**都会被挡住，那是把一条防护做成了死锁。
+        // Arrange
+        let (mut modal, mut input) = 叠到上限();
+
+        // Act：同深度换一块屏
+        modal.set_screen(Some(ScreenState::Title), &mut input);
+
+        // Assert
+        assert_eq!(modal.screen(), Some(ScreenState::Title));
+        assert_eq!(modal.depth(), Modal::MAX_DEPTH);
+
+        // Act：关掉屏那一层
+        modal.set_screen(None, &mut input);
+
+        // Assert
+        assert_eq!(modal.depth(), Modal::MAX_DEPTH - 1);
+        assert!(modal.world_map_open() && modal.player_menu().is_open());
     }
 
     #[test]

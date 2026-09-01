@@ -485,3 +485,16 @@ screen-dialogue-hint = Up/Down to choose · Enter to confirm · Esc to end
 screen-dialogue-missing = (he opens his mouth, but no sound comes)
 hud-interact-action-talk = talk
 hud-interact-someone = someone
+
+# ── "The world is taking its turn" (batch 23, spec F4) ──────────
+# Only appears after several consecutive frames in which the player's
+# turn has not come up; see NOT_YET_FEEDBACK_FRAMES in ll-game/src/app.rs.
+
+hud-feedback-world-advancing = The world is taking its turn…
+
+# ── The always-on key hint row in the world (batch 23, spec F6) ──
+# Key names are interpolated at runtime from the player's current
+# bindings; see crates/ll-game/src/key_hint.rs.
+
+hud-key-hint-world = { $inventory } inventory　{ $craft } craft　{ $interact } interact　{ $map } map　{ $menu } menu
+hud-key-hint-map = arrows pan　{ $zoom_in } / { $zoom_out } zoom　{ $close } close

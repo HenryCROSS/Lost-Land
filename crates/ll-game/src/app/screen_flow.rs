@@ -303,6 +303,42 @@ impl Demo {
     /// `move_focus` 文档那条「起点」约定**不动**：冷启动
     /// `Next`→0 / `Prev`→末位仍然照旧，本方法只是不再让表保持全空。
     /// 预置本身也复用它，不新造第二套「怎么算第一项」的逻辑。
+    /// 进 `next` 这块屏时，焦点表该长什么样——规格 N10「所有列表一律
+    /// 进入时第 0 行预选中」。
+    ///
+    /// # 两套选中模型，这里只管其中一套
+    ///
+    /// 九块屏分两类（规格 §4 I6 盘点过这两套并存）：
+    ///
+    /// - **焦点表模型**（首页、游戏内菜单）：选中状态住在
+    ///   `Demo::screen_focus` 这张 [`WidgetStateTable`] 里。它是本方法
+    ///   要回答的那一类，答案走 `crate::menu_screen::preselected_focus`
+    ///   ——批次 15 就是用它给首页与菜单屏预置第一项的，**不新造第二套
+    ///   「怎么算第一项」的逻辑**。
+    /// - **光标模型**（角色创建 / 世界配置 / 存档列表 / 设置 / 选点 /
+    ///   命名 / 会话屏）：选中状态是 `ScreenState` 自己带的那个
+    ///   `cursor: usize`，一律以 `cursor: 0` 构造，**批次 21 的会话屏
+    ///   就是这么做的**（`Dialogue { node, cursor: 0 }`）。它们不读
+    ///   `screen_focus`，本方法对它们返回一张空表，把上一块屏留下的
+    ///   焦点顺手清掉。
+    fn preselected_focus_for(&self, next: ScreenState) -> WidgetStateTable {
+        match next {
+            ScreenState::Title => {
+                crate::menu_screen::preselected_focus(&crate::title_screen::TITLE_ITEM_IDS)
+            }
+            ScreenState::Menu => crate::menu_screen::preselected_focus(
+                &crate::pause_menu::menu_item_ids(self.can_save_manually()),
+            ),
+            ScreenState::CharacterCreation { .. }
+            | ScreenState::WorldSetup { .. }
+            | ScreenState::SpawnPick { .. }
+            | ScreenState::SaveList { .. }
+            | ScreenState::SaveNaming { .. }
+            | ScreenState::Dialogue { .. }
+            | ScreenState::Settings { .. } => WidgetStateTable::default(),
+        }
+    }
+
     pub(super) fn open_menu(&mut self, input: &mut InputState) {
         let ids = crate::pause_menu::menu_item_ids(self.can_save_manually());
         self.modal.set_screen(Some(ScreenState::Menu), input);
@@ -468,6 +504,11 @@ impl Demo {
         let Some(state) = self.modal.screen() else {
             return false;
         };
+        // 规格 N14：换屏时把**上一块屏留下**的那句提示清掉。记下进这个
+        // 函数时的值，是为了分得出「旧的」与「本帧刚产生的」——下面
+        // 六个分支都会在换屏之前置 `screen_notice`，无条件清会把刚说的
+        // 那句话也吃掉。见换屏漏斗里那一段。
+        let notice_before = self.screen_notice;
         // 这一帧鼠标对这块屏的行做了什么——**先算，再把它与键盘输入
         // 一起交给各屏的状态机**，两条路径因此走同一个动作分派分支。
         let pointer = self.resolve_screen_pointer(state, input);
@@ -593,6 +634,28 @@ impl Demo {
                 && !matches!(state, ScreenState::SaveList { .. })
             {
                 self.save_slots = crate::save_slot::list_slots(&self.saves_dir);
+            }
+            // **屏别真的变了**才做下面两件事。判据是枚举的判别式，不是
+            // 整个 `ScreenState` 相等：设置屏的光标每动一格 `next != state`
+            // 都成立，按整体相等判会退化成「每帧重置一次焦点、每帧清一次
+            // 提示」。
+            if std::mem::discriminant(&next) != std::mem::discriminant(&state) {
+                // 规格 N10：进一块屏，第 0 行就该是选中的。**放在这个
+                // 漏斗里而不是每个「去某某屏」的调用点各补一句**——漏斗
+                // 是换屏唯一的必经之路，补在调用点上则是一笔每加一条路径
+                // 就要多记一项、且漏了不报错的账。
+                //
+                // 这一条今天真的会退化：玩家死亡那条路把 `screen_focus`
+                // 清空（`app.rs` 的 `handle_player_death`）并进角色创建屏，
+                // 玩家在角色创建屏按 Esc 回首页时焦点表仍是空的，
+                // `focus_index` 返回 `usize::MAX` ⇒ 按 Enter 什么都不发生，
+                // 正是 N10 要消灭的那个症状。
+                self.screen_focus = self.preselected_focus_for(next);
+                // 规格 N14：只清**旧的**那一句。本帧刚产生的提示（例如
+                // 「没有存档」）不动，见函数开头 `notice_before`。
+                if self.screen_notice == notice_before {
+                    self.screen_notice = None;
+                }
             }
             // 换屏与「新屏要不要玩家打字」（今天只有命名屏）是同一步
             // 里做完的，见 `crate::modal::Modal::set_screen`。

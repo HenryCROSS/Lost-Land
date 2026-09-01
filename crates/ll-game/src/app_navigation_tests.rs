@@ -492,3 +492,218 @@ fn 暂停菜单一开就预选第一项按确认直接回到世界() {
     assert_eq!(demo.modal.screen(), None, "第一项「继续」应当已经预先选中");
     assert!(demo.modal.is_empty());
 }
+
+// ───────────────────── 批次 23：N10 换屏预选 / N14 换屏清提示 ─────────
+//
+// 两条落在**同一个换屏漏斗**里（`app::screen_flow::update_screen` 末尾），
+// 判据也是同一条「屏别真的变了」。放在一起断言，是因为把它们拆到两处
+// 会让下一个改那段代码的人只看到其中一半。
+
+#[test]
+fn 死亡回到首页之后第一项仍然是预选中的() {
+    // 规格 N10 今天**真的会退化**的那条路径：`handle_player_death` 把
+    // `screen_focus` 清空并进角色创建屏，玩家在角色创建屏按取消回首页
+    // 时，那张表还是空的 ⇒ `focus_index` 返回 `usize::MAX` ⇒ 按确认
+    // 什么都不发生。批次 15 给首页预选的那三个调用点
+    //（`Demo::at_title` / `open_menu` / `back_to_title`）都不在这条路上。
+    //
+    // 反例验证（已实跑）：把换屏漏斗里那句
+    // `self.screen_focus = self.preselected_focus_for(next)` 删掉，本条
+    // 变红——红在最后那句断言，屏仍停在 `Title`，因为焦点表是空的。
+    // Arrange：玩家死了，回到角色创建屏，焦点表被清空。
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    let mut input = InputState::new();
+    let player = demo.test_world().player;
+    demo.test_world_mut().world.actors.despawn(player);
+    demo.handle_player_death(&mut input);
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::CharacterCreation { cursor: 0 }),
+        "Arrange：死亡之后停在角色创建屏"
+    );
+    assert_eq!(
+        crate::menu_screen::focus_index(&demo.screen_focus, &crate::title_screen::TITLE_ITEM_IDS),
+        usize::MAX,
+        "Arrange：这一刻焦点表确实是空的——被断言的那个退化状态真的存在"
+    );
+
+    // Act：角色创建屏按取消回首页，然后**不按任何方向键**直接确认。
+    走一帧(&mut demo, 0, &[GameKey::Cancel]);
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::Title),
+        "Arrange：取消键把玩家送回首页"
+    );
+    走一帧(&mut demo, 1, &[GameKey::Confirm]);
+
+    // Assert
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::CharacterCreation { cursor: 0 }),
+        "首页第一项应当已经预先选中——这正是 N10 那一条"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 换屏时清掉上一块屏留下的提示语() {
+    // 规格 N14 的判据原文：首页按「读取存档」得到「没有存档」提示，
+    // 再进设置屏，`screen_notice` 是 `None`。
+    //
+    // 反例验证（已实跑）：把换屏漏斗里那句 `self.screen_notice = None`
+    // 删掉，本条变红——红在最后那句，`Some(NoSave)` 跟着进了设置屏。
+    // Arrange：一份存档都没有的首页。
+    let mut demo = test_demo_at_title();
+    assert!(demo.save_slots.is_empty(), "Arrange：磁盘上一份存档都没有");
+    走一帧(&mut demo, 0, &[GameKey::Down]);
+    走一帧(&mut demo, 1, &[GameKey::Confirm]);
+    assert_eq!(
+        demo.screen_notice,
+        Some(ScreenNotice::NoSave),
+        "Arrange：这句提示真的产生了——被清空的那个对象存在"
+    );
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::Title),
+        "Arrange：没有存档时留在首页"
+    );
+
+    // Act：光标再往下一行进设置屏。
+    走一帧(&mut demo, 2, &[GameKey::Down]);
+    走一帧(&mut demo, 3, &[GameKey::Confirm]);
+
+    // Assert
+    assert!(
+        matches!(demo.modal.screen(), Some(ScreenState::Settings { .. })),
+        "Arrange 之后确实换到了设置屏"
+    );
+    assert_eq!(demo.screen_notice, None, "上一块屏留下的提示不该跟着进新屏");
+}
+
+// ───────────────────── 批次 23：F4「还没轮到你」不该一直静默 ─────────
+
+#[test]
+fn 连续三十帧轮不到玩家之后屏上说世界正在推进() {
+    // 规格 F4。门槛前一帧仍然静默、门槛那一帧开始说话——两侧都断言，
+    // 否则「恒说」与「恒不说」两种坏实现里至少有一种测不出来。
+    //
+    // 反例验证（已实跑）：把 `feedback_after_turn` 里那句
+    // `if next >= NOT_YET_FEEDBACK_FRAMES` 改成恒 `false`，本条红在
+    // 「门槛这一帧要说话」；改成恒 `true`，红在「门槛之前保持静默」。
+    // Arrange & Act：从零开始连着喂 `NotYet`。
+    let mut streak = 0;
+    let mut feedback = None;
+    for _ in 0..(crate::app::NOT_YET_FEEDBACK_FRAMES - 1) {
+        let (next, said) =
+            crate::app::feedback_after_turn(PlayerTurnOutcome::NotYet, streak, feedback);
+        streak = next;
+        feedback = said;
+    }
+
+    // Assert：门槛前一帧
+    assert_eq!(streak, crate::app::NOT_YET_FEEDBACK_FRAMES - 1);
+    assert_eq!(feedback, None, "半秒之内保持静默——单帧 NotYet 说话是噪音");
+
+    // Act：再跑一帧，正好到门槛
+    let (streak, feedback) =
+        crate::app::feedback_after_turn(PlayerTurnOutcome::NotYet, streak, feedback);
+
+    // Assert
+    assert_eq!(streak, crate::app::NOT_YET_FEEDBACK_FRAMES);
+    assert_eq!(
+        feedback,
+        Some(Feedback::WorldAdvancing),
+        "连着半秒屏幕纹丝不动，必须说一句，否则看起来像卡死"
+    );
+}
+
+#[test]
+fn 轮到玩家的那一帧把连续计数归零() {
+    // 防「说了就再也不闭嘴」：世界一旦处理了玩家这一下，那句话就该
+    // 换成这一下的真实结果。
+    // Arrange：已经说上了
+    let (streak, feedback) = crate::app::feedback_after_turn(
+        PlayerTurnOutcome::NotYet,
+        crate::app::NOT_YET_FEEDBACK_FRAMES,
+        Some(Feedback::WorldAdvancing),
+    );
+    assert_eq!(feedback, Some(Feedback::WorldAdvancing), "Arrange：正在说");
+
+    // Act & Assert：真的动了 → 归零且不再说话
+    assert_eq!(
+        crate::app::feedback_after_turn(PlayerTurnOutcome::Acted, streak, feedback),
+        (0, None)
+    );
+    // Act & Assert：轮到了但白按 → 归零且换成「这一下没起作用」
+    assert_eq!(
+        crate::app::feedback_after_turn(PlayerTurnOutcome::Nothing, streak, feedback),
+        (0, Some(Feedback::NothingHappened))
+    );
+}
+
+#[test]
+fn 还没轮到玩家这个结局在真实世界上确实产得出来() {
+    // **先证明被断言的对象存在**，再断言它的行为：上面两条驱动的是
+    // 一段纯计数逻辑，它们再绿也不证明 `NotYet` 在生产路径上出得来。
+    // 这一条走真实的 `TurnEngine`——刚建出来的引擎 `pending` 是空的，
+    // 那正是「时间轴还没轮到任何人」的形状。
+    //
+    // 反例（不适用）：这一条本身就是那个「对象存在」的证明。
+    // Arrange：一份真实的世界，一台刚建出来、时间轴还没排到任何人的
+    // 结算引擎——`pending` 为空正是「还没轮到你」的形状。
+    let content = crate::test_support::test_content();
+    let mut game_world = crate::world::build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: 3,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("测试用布局满足全部构造前置条件");
+    let player = game_world.player;
+    let catalogs = crate::content::RuntimeCatalogs::new(&content);
+    let mut engine = ll_sim::turn::TurnEngine::new(ll_sim::timeline::Timeline::default());
+    let mut on_effect = |_w: &ll_world::state::WorldState, _e: &ll_sim::effect::Effect| {};
+
+    // Act
+    let outcome = engine.try_player_intent(
+        &mut game_world.world,
+        player,
+        ll_sim::intent::Intent::Wait { actor: player },
+        &catalogs.as_resolve_catalogs(),
+        &mut on_effect,
+    );
+
+    // Assert
+    assert_eq!(
+        outcome,
+        PlayerTurnOutcome::NotYet,
+        "`pending` 不是玩家时结局就是「还没轮到你」——F4 要说的正是这个"
+    );
+}
+
+#[test]
+fn 世界正在推进这句话在两种语言下各有各的文案() {
+    // 防「空 Catalog ⇒ 查不到 ⇒ 回落到另一门语言 ⇒ 用『文案 != 键名』
+    // 判恒绿」：用仓库真实的 `assets/locales`，断言**两种语言的文案
+    // 互不相同**。
+    //
+    // 反例（已实跑）：只往 zh-CN.ftl 加这条键、en.ftl 不加，本条红在
+    // 「两种语言互不相同」——en 会回落到中文那一句。
+    // Arrange
+    let locales = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/locales");
+    let catalog = ll_i18n::Catalog::load_one("lostland", &locales);
+    let key = Feedback::WorldAdvancing.i18n_key();
+
+    // Act
+    let zh = catalog.resolve("zh-CN", key);
+    let en = catalog.resolve("en", key);
+
+    // Assert
+    assert_ne!(zh, key, "中文那一条必须真的存在");
+    assert_ne!(en, key, "英文那一条必须真的存在");
+    assert_ne!(zh, en, "两种语言各写各的，不是其中一种回落到另一种");
+}

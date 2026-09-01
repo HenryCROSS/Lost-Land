@@ -534,3 +534,16 @@ screen-dialogue-hint = 上下选择 · 回车确认 · Esc 结束对话
 screen-dialogue-missing = （他张了张嘴，没有出声）
 hud-interact-action-talk = 交谈
 hud-interact-someone = 一个人
+
+# ── 「世界正在推进」（批次 23，规格 F4）─────────────────────────
+# 连续多帧轮不到玩家时才出现，见 crates/ll-game/src/app.rs 的
+# NOT_YET_FEEDBACK_FRAMES。
+
+hud-feedback-world-advancing = 世界正在推进…
+
+# ── 世界层底部那一行常驻按键提示（批次 23，规格 F6）─────────────
+# 键名是运行期插值：走 crates/ll-game/src/key_hint.rs，从玩家当前的
+# 键位表现查，重绑之后这一行跟着变。
+
+hud-key-hint-world = { $inventory } 背包　{ $craft } 制作　{ $interact } 交互　{ $map } 地图　{ $menu } 菜单
+hud-key-hint-map = 方向键 平移　{ $zoom_in } / { $zoom_out } 缩放　{ $close } 关闭

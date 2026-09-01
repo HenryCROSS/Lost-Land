@@ -66,9 +66,11 @@
 //! ——因此世界地图选择做成 M 键切换,不进四块常驻面板的行列。
 
 pub mod action_menu;
+pub mod bottom_rows;
 pub mod character_panel;
 pub mod equipment_panel;
 pub mod inventory_panel;
+pub mod placement;
 pub mod render;
 pub mod status_bar;
 pub mod world_map;
