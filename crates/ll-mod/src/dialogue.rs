@@ -82,8 +82,8 @@ use ll_core::ident::{ContentIndex, NamespacedId};
 
 use crate::registry::Registry;
 pub use ll_sim::dialogue::{
-    AffiliationQuery, ContentIdLookup, DialogueCondition, NoContentIds, all_conditions_hold,
-    condition_holds, dialogue_flag_key, has_dialogue_flag,
+    AffiliationQuery, ContentIdLookup, DialogueCondition, DialogueOutcome, NoContentIds,
+    all_conditions_hold, condition_holds, dialogue_flag_key, has_dialogue_flag, set_dialogue_flag,
 };
 
 /// 把内容索引反查回标识符——[`ll_sim::dialogue::DialogueCondition`] 的任务
@@ -128,11 +128,22 @@ pub enum DialogueNext {
 
 /// 一条对话选项。
 ///
-/// **本批次没有 `outcomes` 字段**，这不是遗漏：批次 1 一条后果都不做，一个
+/// ~~**本批次没有 `outcomes` 字段**，这不是遗漏：批次 1 一条后果都不做，一个
 /// 只允许空数组的字段就是一个「声明了但没接线」的死字段——本仓库长期记账的
 /// 正是这一类。`#[serde(deny_unknown_fields)]` 会让今天写 `outcomes:` 的
 /// 内容当场报错，这比让它静默无效诚实。批次 2 加这个字段时，加的是一个
-/// 从第一天起就有真实消费者的字段，见计划文档第七节的挂载点表。
+/// 从第一天起就有真实消费者的字段，见计划文档第七节的挂载点表。~~
+///
+/// 〔2026-08-31，批次 21（对话系统的批次 2），计划文档
+/// `docs/superpowers/plans/2026-08-31-batch21-dialogue-ui.md` 二节〕
+/// **上面那一段的条件满足了**：`outcomes` 现在有真实消费者——
+/// `ll_sim::resolve` 的 `Intent::DialogueChoose` 一支把它翻译成
+/// `Effect::SetModState`。原文原样保留（划掉），因为它记的是「一个字段
+/// 什么时候才该被加进来」这条判据，那条判据本身没有作废。
+///
+/// **本批只实现 [`ll_sim::dialogue::DialogueOutcome::SetFlag`] 一种后果**，
+/// 其余四种（`join-settlement` / `complete-quest` / `give-item` /
+/// `open-trade`）是批次 3–5 的，schema 侧对它们报明确错误而不是静默接受。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DialogueOption {
     /// 这一行显示什么——**本地化键**，不是文案，见模块文档末节。
@@ -141,6 +152,12 @@ pub struct DialogueOption {
     pub conditions: Vec<DialogueCondition>,
     /// 选中之后跳到哪。
     pub next: DialogueNext,
+    /// 选中之后**世界**发生什么，按书写顺序；空数组 = 纯导航选项。
+    ///
+    /// 空与非空在 UI 那一侧是两条不同的路径（规格七节 7.2）：**纯导航
+    /// 选项不提交 `Intent`**，在 UI 层换个节点就完了——提交一个恒产出
+    /// 空效果的 `Intent` 只会污染 `Intent` 日志。
+    pub outcomes: Vec<DialogueOutcome>,
 }
 
 /// 单条会话入口声明：本体与 mod 注册对话时共用的同一个输入形状。
@@ -527,6 +544,7 @@ mod tests {
                 text_key: id("lostland:dialogue.common.back"),
                 conditions: Vec::new(),
                 next,
+                outcomes: Vec::new(),
             }],
         }
     }

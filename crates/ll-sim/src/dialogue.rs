@@ -52,8 +52,8 @@
 //! 2 及之后，见计划文档第七节的挂载点表。
 
 use ll_core::ident::{ContentIndex, NamespacedId};
-use ll_world::entity::{AffiliationKind, Agent, OrgRef};
-use ll_world::mod_state::ModStateValue;
+use ll_world::entity::{AffiliationKind, Agent, EntityId, OrgRef};
+use ll_world::mod_state::{ModStateValue, ModStateWrite};
 
 use crate::quest::is_quest_completed;
 
@@ -77,8 +77,11 @@ pub fn dialogue_flag_key(flag: &NamespacedId) -> String {
 /// 值固定是 [`ModStateValue::Bool(true)`](ModStateValue::Bool)——「设过」
 /// 是一个存在性判断（写过就是设过），不需要一个可以取多种值的状态机，
 /// 理由与 [`crate::quest::mark_quest_completed`] 用 `Int(1)` 逐字相同。
-/// **写入这一侧属于批次 2**（`outcomes` 里的 `set-flag`，经
-/// [`crate::effect::Effect::SetModState`] 落地，约束 C1）。
+///
+/// 〔2026-08-31，批次 21〕原文说「**写入这一侧属于批次 2**」——那一批就是
+/// 本批，写入侧现在是 [`set_dialogue_flag`]（`outcomes` 里的 `set-flag`，经
+/// [`crate::effect::Effect::SetModState`] 落地，约束 C1）。本条谓词因此从
+/// 本批起有非假的读数。
 pub fn has_dialogue_flag(agent: &Agent, flag: &NamespacedId) -> bool {
     matches!(
         agent
@@ -86,6 +89,49 @@ pub fn has_dialogue_flag(agent: &Agent, flag: &NamespacedId) -> bool {
             .get(&(flag.namespace().to_string(), dialogue_flag_key(flag))),
         Some(ModStateValue::Bool(true))
     )
+}
+
+/// 产出一条「在 `actor` 身上设下 `flag`」的脚本状态写入记录。
+///
+/// **不直接改任何 `WorldState`**——本函数只产出数据，调用方
+/// （[`crate::resolve`] 的 `Intent::DialogueChoose` 一支）负责把返回值包进
+/// [`crate::effect::Effect::SetModState`] 交给 [`crate::apply::apply`]
+/// （约束 C1，唯一写入口）。与 [`crate::quest::mark_quest_completed`] 逐条
+/// 同办，只是值取 [`ModStateValue::Bool`] 而不是 `Int(1)`——读那一侧
+/// （[`has_dialogue_flag`]）从批次 1 起就是按 `Bool(true)` 判的。
+pub fn set_dialogue_flag(actor: EntityId, flag: &NamespacedId) -> ModStateWrite {
+    ModStateWrite {
+        entity: actor,
+        mod_namespace: flag.namespace().to_string(),
+        key: dialogue_flag_key(flag),
+        value: ModStateValue::Bool(true),
+    }
+}
+
+/// 选中一条选项之后**世界**发生什么——数据里的一条**声明**，把声明变成
+/// [`crate::effect::Effect`] 的是 `resolve`（规格五节 5.0）。
+///
+/// # 为什么本批只有一个变体
+///
+/// 规格八节的分批表：`join-settlement` 是批次 3、`complete-quest` 与
+/// `give-item` 是批次 4、`open-trade` 是批次 5，每一支都各自缺着自己的
+/// 前置（`Agent.home` 字段、`Effect::TransferOwnership` 的 owner 校验、
+/// NPC 初始钱包）。**先声明一个只能写空数组的变体，就是又一个「声明了
+/// 但没接线」的死字段**——本仓库长期记账的正是这一类，批次 1 因此连
+/// `outcomes` 这个字段本身都没有加。
+///
+/// 而**枚举**这个形状本身是有价值的：`write_dialogue_outcome`（内容哈希）
+/// 与 `resolve` 两处都是穷尽 `match`，批次 3 加一支时编译器会逼那两处
+/// 各自表态，不会出现「加了一种后果、哈希没混进去」这种静默分叉。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogueOutcome {
+    /// 在发起者身上设下一条对话标志——[`DialogueCondition::FlagSet`] /
+    /// [`DialogueCondition::FlagNotSet`] 读的就是它。
+    ///
+    /// 标志**没有内容表**（它是对话系统自己在 [`Agent::mod_state`] 里写的
+    /// 一条记录），因此携带的是 [`NamespacedId`] 而不是 [`ContentIndex`]，
+    /// 与条件那两支逐字相同。
+    SetFlag(NamespacedId),
 }
 
 /// 把 `ContentIndex` 反查回 `NamespacedId` 的最小接口。

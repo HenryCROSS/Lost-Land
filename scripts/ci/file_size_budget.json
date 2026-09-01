@@ -18,12 +18,12 @@
       "reason": "合理（待复查）：新游戏的世界搭建——区块布局、噪声、编年史、出生点、玩家实体，一条从零到可玩的顺序流水线，各步共享同一份构建中状态。待复查点：批次「据点建筑类型」会碰这里的流式加载那一段。"
     },
     "crates/ll-mod/src/content_audit.rs": {
-      "code_lines": 2194,
-      "reason": "合理：装载后内容校验的逐条规则平铺，与 content_hash.rs 同一形状——一条校验一段，规则之间不互相调用。文件长度等于校验条数。"
+      "code_lines": 2196,
+      "reason": "合理：装载后内容校验的逐条规则平铺，与 content_hash.rs 同一形状——一条校验一段，规则之间不互相调用。文件长度等于校验条数。〔2026-08-31，批次 21〕+2 行：DialogueNodeAttrs::options::outcomes 的字段覆盖，追加在 inspect_dialogue_node 末尾。拆不动——它是那一段逐字段登记的一行。"
     },
     "crates/ll-mod/src/content_hash.rs": {
-      "code_lines": 2853,
-      "reason": "合理：单一职责的逐类型平铺表——每个内容类型一段「哪些字段进哈希」，类型之间不互相调用。拆开等于把 CONTENT_HASH_ALGORITHM_VERSION 要盯住的那份唯一真相源分散到多处，而「真相源之外的副本」是本仓库最稳定的缺陷来源。"
+      "code_lines": 2906,
+      "reason": "合理：单一职责的逐类型平铺表——每个内容类型一段「哪些字段进哈希」，类型之间不互相调用。拆开等于把 CONTENT_HASH_ALGORITHM_VERSION 要盯住的那份唯一真相源分散到多处，而「真相源之外的副本」是本仓库最稳定的缺陷来源。〔2026-08-31，批次 21〕+53 行：write_dialogue_outcome（8 行）与守门它的单元测试「后果不同的两个对话节点摘要不同」（其余）。测试刻意与被守门的那段代码同住一个文件——它守的正是 CONTENT_HASH_ALGORITHM_VERSION 那份唯一真相源，搬走就变成又一份会漂移的副本。"
     },
     "crates/ll-mod/src/content_schema_gear.rs": {
       "code_lines": 1465,

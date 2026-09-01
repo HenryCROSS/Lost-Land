@@ -161,7 +161,8 @@ use crate::class::ClassTable;
 use crate::clip::ClipTable;
 use crate::damage_category::DamageCategoryTable;
 use crate::dialogue::{
-    AffiliationQuery, DialogueCondition, DialogueNext, DialogueNodeTable, DialogueTable,
+    AffiliationQuery, DialogueCondition, DialogueNext, DialogueNodeTable, DialogueOutcome,
+    DialogueTable,
 };
 use crate::formula::FormulaTable;
 use crate::item::ItemTable;
@@ -835,7 +836,21 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// `跳转目标不同的两个对话节点摘要不同`，以及版本 7 那次事故之后立下的
 /// 那条纪律——**提交信息声称改了，不等于代码里真的改了**，下面这一行的
 /// 字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 28;
+///
+/// # 版本 29（对话后果批次，对话系统的批次 2）
+///
+/// [`crate::dialogue::DialogueOption`] 加了 `outcomes` 字段，
+/// [`write_dialogue_node_fields`] 因此在**每条选项字段流的末尾**多混入
+/// 「后果条数 + 逐条后果」。这是**「已有表加字段」**那一档（同版本
+/// 3/6/8/…），不是「新增内容表」那一档：对话两张表在版本 28 就已经进了
+/// 值哈希，本次只是字段流变长。
+///
+/// 既有内容的摘要因此**必然改变**（每条选项都多出一个 `0u64` 的长度前缀），
+/// 按 ADR 0027 必须递增。
+///
+/// 守门方式同前几批：本段文字 + 本模块单元测试
+/// `后果不同的两个对话节点摘要不同`。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 29;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1593,6 +1608,31 @@ fn write_dialogue_node_fields(
         hasher.write_u64(option.conditions.len() as u64);
         for condition in &option.conditions {
             write_dialogue_condition(hasher, condition, registry);
+        }
+        // 后果（对话批次 2 新增）——**追加在这一条选项字段流的末尾**，
+        // 不插在 `conditions` 之前：既有内容的字段序列因此原样延续，
+        // 而并行批次也在改本文件，末尾追加是唯一不会与它交错的位置。
+        hasher.write_u64(option.outcomes.len() as u64);
+        for outcome in &option.outcomes {
+            write_dialogue_outcome(hasher, outcome);
+        }
+    }
+}
+
+/// 混入一条 [`DialogueOutcome`]，理由同 [`write_dialogue_condition`]：判别
+/// 值 + 各自的参数。
+///
+/// 判别值从 `0` 起、与 [`DialogueOutcome`] 的变体声明顺序一致，**批次 3–5
+/// 新增的后果必须往后接、不挪既有值**（同 [`ContentTableKind`] 那条纪律）。
+///
+/// 不收 `Registry`：本批唯一的后果携带的是一条没有内容表的标志标识符
+/// （与 `FlagSet`/`FlagNotSet` 两条条件逐字相同），直接
+/// [`StateHasher::write_namespaced_id`]。
+fn write_dialogue_outcome(hasher: &mut StateHasher, outcome: &DialogueOutcome) {
+    match outcome {
+        DialogueOutcome::SetFlag(flag) => {
+            hasher.write_u64(0);
+            hasher.write_namespaced_id(flag);
         }
     }
 }
@@ -4456,6 +4496,7 @@ mod tests {
                             text_key: NamespacedId::parse("test:dialogue.go").expect("合法标识符"),
                             conditions: Vec::new(),
                             next,
+                            outcomes: Vec::new(),
                         }],
                     },
                 )
@@ -4478,6 +4519,59 @@ mod tests {
                 assert_ne!(
                     digests[left], digests[right],
                     "跳转目标 {left} 与 {right} 的摘要撞了"
+                );
+            }
+        }
+    }
+
+    /// 后果真的进了摘要：同一个节点、只换选项的 `outcomes`，摘要必须不同
+    /// （版本 29 守门，见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档
+    /// 「版本 29」一节）。
+    ///
+    /// 三种形态两两比对：没有后果、设标志 A、设标志 B。**只比前两种发现
+    /// 不了「`SetFlag` 那一支忘了把标志本身混进去」**——那是最容易漏的
+    /// 一处，与 `跳转目标不同的两个对话节点摘要不同` 挑三种形态是同一条
+    /// 理由。
+    #[test]
+    fn 后果不同的两个对话节点摘要不同() {
+        // Arrange
+        let mut registry = Registry::new();
+        let node = registry.intern(NamespacedId::parse("test:root").expect("合法标识符"));
+        let flag = |raw: &str| NamespacedId::parse(raw).expect("合法标识符");
+        let digest = |outcomes: Vec<DialogueOutcome>| -> u64 {
+            let mut table = DialogueNodeTable::new();
+            table
+                .define(
+                    node,
+                    crate::dialogue::DialogueNodeAttrs {
+                        text_key: NamespacedId::parse("test:dialogue.root").expect("合法标识符"),
+                        options: vec![crate::dialogue::DialogueOption {
+                            text_key: NamespacedId::parse("test:dialogue.go").expect("合法标识符"),
+                            conditions: Vec::new(),
+                            next: DialogueNext::End,
+                            outcomes,
+                        }],
+                    },
+                )
+                .expect("声明自洽");
+            let mut hasher = StateHasher::new();
+            write_dialogue_node_fields(&mut hasher, &table, node, &registry);
+            hasher.finish()
+        };
+
+        // Act
+        let digests = [
+            digest(Vec::new()),
+            digest(vec![DialogueOutcome::SetFlag(flag("test:flag.a"))]),
+            digest(vec![DialogueOutcome::SetFlag(flag("test:flag.b"))]),
+        ];
+
+        // Assert
+        for left in 0..digests.len() {
+            for right in (left + 1)..digests.len() {
+                assert_ne!(
+                    digests[left], digests[right],
+                    "后果 {left} 与 {right} 的摘要撞了"
                 );
             }
         }

@@ -41,7 +41,7 @@ use ll_world::entity::AffiliationKind;
 use crate::content_schema::{Applied, intern_id, parse_id, required_id};
 use crate::dialogue::{
     AffiliationQuery, DialogueAttrs, DialogueCondition, DialogueNext, DialogueNodeAttrs,
-    DialogueNodeTable, DialogueOption, DialogueSpeaker, DialogueTable,
+    DialogueNodeTable, DialogueOption, DialogueOutcome, DialogueSpeaker, DialogueTable,
 };
 use crate::registry::Registry;
 
@@ -101,7 +101,9 @@ pub struct RawDialogueNode {
 
 /// 一条选项声明。
 ///
-/// **本批次没有 `outcomes` 字段**，理由见 [`DialogueOption`] 文档。
+/// ~~**本批次没有 `outcomes` 字段**，理由见 [`DialogueOption`] 文档。~~
+/// 〔2026-08-31，批次 21〕`outcomes` 已加，见 [`DialogueOption`] 文档里
+/// 那一段更正与 [`RawDialogueOutcome`]。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawDialogueOption {
@@ -112,6 +114,61 @@ pub struct RawDialogueOption {
     pub conditions: Vec<RawDialogueCondition>,
     /// 选中之后跳到哪：节点标识符，或保留字 [`END_OF_DIALOGUE`]。
     pub next: String,
+    /// 选中之后世界发生什么；缺省 = 纯导航选项。
+    ///
+    /// **`#[serde(default)]` 只在 JSON5/JSON 这类自描述格式上有意义。**
+    /// 内容表走 JSON5，所以老 mod 不写这个字段照样装得进来；但这**不是**
+    /// 任何存档兼容性声明——存档主体走 `postcard`，`serde(default)` 在那条
+    /// 路径上是空操作（交接文档纪律第 9 条点名的 batch8 先例）。本批不改
+    /// 存档主体形状。
+    #[serde(default)]
+    pub outcomes: Vec<RawDialogueOutcome>,
+}
+
+/// 一条后果声明。形状与 [`RawDialogueCondition`] 同构：一个 `kind` 标签 +
+/// 一组可选参数，`resolve` 里逐 `kind` 校验「该有的必须有、不该有的必须
+/// 没有」。
+///
+/// # 未实现的四种为什么报错而不是静默接受
+///
+/// `join-settlement`（批次 3）/`complete-quest`/`give-item`（批次 4）/
+/// `open-trade`（批次 5）各自缺着自己的前置。若把它们解析成一条「什么都
+/// 不做」的后果，内容作者写下 `complete-quest` 之后会以为任务真的完成了，
+/// 而实际什么都没发生——**静默无效比当场报错贵得多**，这与
+/// [`RawDialogueCondition`] 拒绝多余参数是同一条纪律。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawDialogueOutcome {
+    /// 目前只认 `set-flag`，见本类型文档。
+    pub kind: String,
+    /// 对话标志标识符（`set-flag` 必填）。
+    #[serde(default)]
+    pub flag: Option<String>,
+}
+
+impl RawDialogueOutcome {
+    /// 解析成一条 [`DialogueOutcome`]。
+    ///
+    /// 不收 `Registry`：本批唯一的后果携带的是一条**没有内容表**的标志
+    /// 标识符（与 `flag-set`/`flag-not-set` 两条条件逐字相同），只
+    /// `parse_id` 不 intern。批次 3–5 的后果要查表时再把注册表加进来。
+    fn resolve(&self) -> Result<DialogueOutcome, String> {
+        match self.kind.as_str() {
+            "set-flag" => {
+                let raw = self.flag.as_deref().ok_or_else(|| {
+                    format!("对话后果 kind {:?} 缺少必填字段 \"flag\"", self.kind)
+                })?;
+                Ok(DialogueOutcome::SetFlag(parse_id(raw, "对话标志标识符")?))
+            }
+            "join-settlement" | "complete-quest" | "give-item" | "open-trade" => Err(format!(
+                "对话后果 kind {:?} 尚未实现（join-settlement 属批次 3，\
+                 complete-quest / give-item 属批次 4，open-trade 属批次 5，\
+                 见 knowledge/design/dialogue-system.md 八节的分批表）",
+                self.kind
+            )),
+            other => Err(format!("未知的对话后果 kind {other:?}（只认 set-flag）")),
+        }
+    }
 }
 
 /// 一条显示条件。形状与理由同
@@ -354,10 +411,15 @@ pub fn apply_dialogues(
                 conditions.push(condition.resolve(registry)?);
             }
             let next = resolve_next(registry, &option.next)?;
+            let mut outcomes = Vec::with_capacity(option.outcomes.len());
+            for outcome in &option.outcomes {
+                outcomes.push(outcome.resolve()?);
+            }
             options.push(DialogueOption {
                 text_key: parse_id(&option.text_key, "本地化键标识符")?,
                 conditions,
                 next,
+                outcomes,
             });
         }
         nodes
@@ -665,5 +727,92 @@ mod tests {
         let view = nodes.get(index).expect("刚定义过");
         assert!(is_end(view.options[0].next));
         assert_eq!(next_target(view.options[0].next), None);
+    }
+
+    #[test]
+    fn set_flag后果解析成一条对话标志() {
+        // Arrange & Act
+        let (_registry, _dialogues, nodes, result) = 解析(
+            r#"{
+              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                         options: [ { text_key: "lostland:dialogue.x", next: "end",
+                                      outcomes: [ { kind: "set-flag",
+                                                    flag: "lostland:dialogue_flag.seen" } ] } ] } ],
+            }"#,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        let index = nodes.defined_indices()[0];
+        let view = nodes.get(index).expect("刚定义过");
+        assert_eq!(
+            view.options[0].outcomes,
+            vec![DialogueOutcome::SetFlag(
+                NamespacedId::parse("lostland:dialogue_flag.seen").expect("固定字面量恒合法")
+            )],
+        );
+    }
+
+    #[test]
+    fn 不写outcomes的选项是纯导航选项() {
+        // 老 mod 不写这个字段照样装得进来（`#[serde(default)]`），且解析
+        // 出来是空数组而不是「一条什么都不做的后果」。
+        // Arrange & Act
+        let (_registry, _dialogues, nodes, result) = 解析(
+            r#"{
+              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                         options: [ { text_key: "lostland:dialogue.x", next: "end" } ] } ],
+            }"#,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        let index = nodes.defined_indices()[0];
+        assert!(
+            nodes.get(index).expect("刚定义过").options[0]
+                .outcomes
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn 尚未实现的四种后果报明确错误而不是静默接受() {
+        for kind in [
+            "join-settlement",
+            "complete-quest",
+            "give-item",
+            "open-trade",
+        ] {
+            // Arrange & Act
+            let source = format!(
+                r#"{{
+                  nodes: [ {{ id: "lostland:a", text_key: "lostland:dialogue.a",
+                             options: [ {{ text_key: "lostland:dialogue.x", next: "end",
+                                          outcomes: [ {{ kind: "{kind}" }} ] }} ] }} ],
+                }}"#
+            );
+            let (_registry, _dialogues, _nodes, result) = 解析(&source);
+
+            // Assert
+            let err = result.expect_err("尚未实现的后果必须报错");
+            assert!(err.contains("尚未实现"), "错误信息要说清楚为什么：{err}");
+            assert!(err.contains(kind), "错误信息要点名是哪一种：{err}");
+        }
+    }
+
+    #[test]
+    fn set_flag缺少flag参数报错() {
+        // Arrange & Act
+        let (_registry, _dialogues, _nodes, result) = 解析(
+            r#"{
+              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                         options: [ { text_key: "lostland:dialogue.x", next: "end",
+                                      outcomes: [ { kind: "set-flag" } ] } ] } ],
+            }"#,
+        );
+
+        // Assert
+        let err = result.expect_err("缺必填参数必须报错");
+        assert!(err.contains("flag"), "错误信息要点名缺的是哪个字段：{err}");
     }
 }
