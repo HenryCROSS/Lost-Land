@@ -914,7 +914,23 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 ///
 /// 守门方式同前几批：本段文字 + 本模块单元测试
 /// `后果种类不同的两个对话节点摘要不同`。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 31;
+/// ---
+///
+/// # 版本 32（`complete-quest`，对话系统的批次 4 上半）
+///
+/// [`crate::dialogue::DialogueOutcome`] 又多一个变体 `CompleteQuest`，
+/// [`write_dialogue_outcome`] 因此多一条判别值 `2` 的分支，**并且这个函数
+/// 第一次收 `Registry`**：这一支携带的是一条**有内容表**的任务引用，按既有
+/// 纪律必须经 [`write_optional_resolved`] 反查成标识符再混，不能混索引号。
+///
+/// 「已有表的枚举加变体」那一档，与版本 31 同类。既有内容的摘要照样会变：
+/// 本批给管理者「山道我已经走过一趟了」那一行挂上了
+/// `outcomes: [{ kind: "complete-quest", quest: "lostland:main_quest_1" }]`。
+/// **两件事都要求递增**（ADR 0027）。
+///
+/// 守门方式同前几批：本段文字 + 本模块单元测试
+/// `后果种类不同的两个对话节点摘要不同`。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 32;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1678,7 +1694,7 @@ fn write_dialogue_node_fields(
         // 而并行批次也在改本文件，末尾追加是唯一不会与它交错的位置。
         hasher.write_u64(option.outcomes.len() as u64);
         for outcome in &option.outcomes {
-            write_dialogue_outcome(hasher, outcome);
+            write_dialogue_outcome(hasher, outcome, registry);
         }
     }
 }
@@ -1689,10 +1705,17 @@ fn write_dialogue_node_fields(
 /// 判别值从 `0` 起、与 [`DialogueOutcome`] 的变体声明顺序一致，**批次 3–5
 /// 新增的后果必须往后接、不挪既有值**（同 [`ContentTableKind`] 那条纪律）。
 ///
-/// 不收 `Registry`：本批唯一的后果携带的是一条没有内容表的标志标识符
-/// （与 `FlagSet`/`FlagNotSet` 两条条件逐字相同），直接
-/// [`StateHasher::write_namespaced_id`]。
-fn write_dialogue_outcome(hasher: &mut StateHasher, outcome: &DialogueOutcome) {
+/// ~~不收 `Registry`~~：〔2026-08-31，批次 29〕**改成收了**——
+/// [`DialogueOutcome::CompleteQuest`] 携带的是一条**有内容表**的任务引用
+/// （`ContentIndex`），必须经 [`write_optional_resolved`] 反查成标识符再混
+/// 进去，理由同 [`write_dialogue_condition`] 里 `QuestCompleted` 那一支：
+/// 索引号本身依赖装载顺序，混索引会让「同一份内容换个装载顺序」算出不同
+/// 的摘要。`SetFlag` 那一支照旧直接写标识符（对话标志没有内容表）。
+fn write_dialogue_outcome(
+    hasher: &mut StateHasher,
+    outcome: &DialogueOutcome,
+    registry: &Registry,
+) {
     match outcome {
         DialogueOutcome::SetFlag(flag) => {
             hasher.write_u64(0);
@@ -1703,6 +1726,19 @@ fn write_dialogue_outcome(hasher: &mut StateHasher, outcome: &DialogueOutcome) {
         // `ll_world::entity::Agent::home` 回答，内容文件里写不出
         // `WorldId`），因此只写判别值——判别值本身就是全部信息。
         DialogueOutcome::JoinSettlement => hasher.write_u64(1),
+        // 判别值 `2`：往后接，不挪前两条。
+        //
+        // **这一支与下一支是判别值这条纪律的第一个真守卫**：批次 26 如实
+        // 登记过一条「改坏了它不红」——`JoinSettlement` 不带参数，把它的
+        // `1` 改成 `SetFlag` 的 `0` 时守门测试没红，因为两条字节流长度本来
+        // 就不同。`CompleteQuest` 与 `GiveItem` 的载荷形状**完全相同**
+        // （判别值 + 一个反查出来的标识符），撞号之后字节流一模一样，
+        // 这时候判别值才真的是唯一的区分手段。见
+        // `后果种类不同的两个对话节点摘要不同` 的文档注释。
+        DialogueOutcome::CompleteQuest(quest) => {
+            hasher.write_u64(2);
+            write_optional_resolved(hasher, Some(*quest), registry);
+        }
     }
 }
 
@@ -4776,6 +4812,7 @@ mod tests {
         // Arrange
         let mut registry = Registry::new();
         let node = registry.intern(NamespacedId::parse("test:root").expect("合法标识符"));
+        let quest = registry.intern(NamespacedId::parse("test:quest").expect("合法标识符"));
         let digest = |outcomes: Vec<DialogueOutcome>| -> u64 {
             let mut table = DialogueNodeTable::new();
             table
@@ -4803,6 +4840,7 @@ mod tests {
             digest(Vec::new()),
             digest(vec![DialogueOutcome::SetFlag(flag)]),
             digest(vec![DialogueOutcome::JoinSettlement]),
+            digest(vec![DialogueOutcome::CompleteQuest(quest)]),
         ];
 
         // Assert
@@ -4821,7 +4859,7 @@ mod tests {
         let 空手 = StateHasher::new().finish();
         let 写过 = {
             let mut hasher = StateHasher::new();
-            write_dialogue_outcome(&mut hasher, &DialogueOutcome::JoinSettlement);
+            write_dialogue_outcome(&mut hasher, &DialogueOutcome::JoinSettlement, &registry);
             hasher.finish()
         };
         assert_ne!(

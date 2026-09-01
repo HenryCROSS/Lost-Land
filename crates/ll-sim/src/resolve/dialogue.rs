@@ -40,6 +40,7 @@ use crate::dialogue::{
     all_conditions_hold, set_dialogue_flag,
 };
 use crate::effect::Effect;
+use crate::quest::mark_quest_completed;
 
 /// 结算一次「选中了一条带后果的对话选项」。
 ///
@@ -83,6 +84,20 @@ pub(super) fn resolve_dialogue_choose(
             DialogueOutcome::SetFlag(flag) => writes.push(set_dialogue_flag(actor, flag)),
             DialogueOutcome::JoinSettlement => {
                 effects.extend(join_settlement(world, actor, speaker));
+            }
+            // 「把这条任务标记成已完成」——**调既有函数**，不重写一份
+            // 完成逻辑（ADR 0021，见 `DialogueOutcome::CompleteQuest`
+            // 文档）。`mark_quest_completed` 返回的就是一条
+            // `ModStateWrite`，形状与 `set-flag` 那一支天生对得上，因此
+            // 攒进同一条 `Effect::SetModState`。
+            //
+            // 反查不到（`content_ids` 是 `NoContentIds`，或者这个索引
+            // 压根没注册过）⇒ 这一条后果零效果，与本模块其余闸门同一条
+            // 纪律：不 panic，也不产出一条什么都不做的效果。
+            DialogueOutcome::CompleteQuest(quest) => {
+                if let Some(id) = content_ids.id_of(*quest) {
+                    writes.push(mark_quest_completed(actor, id));
+                }
             }
         }
     }

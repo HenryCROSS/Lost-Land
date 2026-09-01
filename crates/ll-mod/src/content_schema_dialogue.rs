@@ -131,39 +131,85 @@ pub struct RawDialogueOption {
 ///
 /// # 未实现的三种为什么报错而不是静默接受
 ///
-/// `complete-quest`/`give-item`（批次 4）/`open-trade`（批次 5）各自缺着
-/// 自己的前置。若把它们解析成一条「什么都不做」的后果，内容作者写下
-/// `complete-quest` 之后会以为任务真的完成了，而实际什么都没发生——
+/// `give-item`（批次 4）/`open-trade`（批次 5）各自缺着自己的前置。若把
+/// 它们解析成一条「什么都不做」的后果，内容作者写下 `give-item` 之后会
+/// 以为奖励真的发下去了，而实际什么都没发生——
 /// **静默无效比当场报错贵得多**，这与 [`RawDialogueCondition`] 拒绝多余
 /// 参数是同一条纪律。
 ///
 /// 〔2026-08-31，批次 26〕`join-settlement` **已从那份清单里挪出来**：
 /// 它的前置（`ll_world::entity::Agent::home` 与势力表）都齐了，见
 /// [`RawDialogueOutcome::resolve`]。
+///
+/// 〔2026-08-31，批次 29〕`complete-quest` 同样挪了出来：它的前置
+/// （`ll_sim::quest::mark_quest_completed`）从任务批次起就在，本批只是把
+/// 对话这条产出路径接上去。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawDialogueOutcome {
-    /// 认 `set-flag` 与 `join-settlement`，见本类型文档。
+    /// 认 `set-flag` / `join-settlement` / `complete-quest`，见本类型文档。
     pub kind: String,
     /// 对话标志标识符（`set-flag` 必填；其余 kind **必须没有**）。
     #[serde(default)]
     pub flag: Option<String>,
+    /// 任务标识符（`complete-quest` 必填；其余 kind **必须没有**）。
+    ///
+    /// 走 [`required_id`]：任务**有内容表**，拼错的 id 在装载期当场报错
+    /// 并点名文件，与 `quest-completed` 那条条件逐字同办。
+    #[serde(default)]
+    pub quest: Option<String>,
+}
+
+/// 一条后果里「哪些参数该出现」的清单——与 [`Allowed`] 那张同名清单
+/// 同一手法：`resolve` 用它一次性把不该出现的参数挑出来报错，而不是
+/// 每条 `kind` 各写一遍 `if x.is_some()`。
+///
+/// **「不该有的必须没有」这一半不能省**：`{ kind: "join-settlement",
+/// flag: "…" }` 若被静默接受，作者会以为那个 `flag` 起了作用。
+#[derive(Debug, Clone, Copy, Default)]
+struct AllowedOutcomeFields {
+    flag: bool,
+    quest: bool,
 }
 
 impl RawDialogueOutcome {
+    /// 报出「这个 kind 缺了某个必填参数」——与
+    /// [`RawDialogueCondition::missing`] 同一手法。
+    fn missing_outcome_field(&self, field: &str) -> String {
+        format!("对话后果 kind {:?} 缺少必填字段 {field:?}", self.kind)
+    }
+
+    /// 校验「不该出现的参数确实没出现」，见 [`AllowedOutcomeFields`]。
+    fn reject_extras(&self, allowed: AllowedOutcomeFields) -> Result<(), String> {
+        for (name, present, permitted) in [
+            ("flag", self.flag.is_some(), allowed.flag),
+            ("quest", self.quest.is_some(), allowed.quest),
+        ] {
+            if present && !permitted {
+                return Err(format!("对话后果 kind {:?} 不接受字段 {name:?}", self.kind));
+            }
+        }
+        Ok(())
+    }
+
     /// 解析成一条 [`DialogueOutcome`]。
     ///
-    /// 不收 `Registry`：本批唯一的后果携带的是一条**没有内容表**的标志
-    /// 标识符（与 `flag-set`/`flag-not-set` 两条条件逐字相同），只
-    /// `parse_id` 不 intern。〔2026-08-31，批次 26〕新加的
-    /// `join-settlement` **一个参数都不带**，同样不需要注册表；批次 4/5
-    /// 的 `complete-quest`/`give-item` 要查表时再把它加进来。
-    fn resolve(&self) -> Result<DialogueOutcome, String> {
+    /// ~~不收 `Registry`~~：〔2026-08-31，批次 29〕**改成收了**，正如批次 26
+    /// 在这里预告的那样——`complete-quest` 携带的是一条**有内容表**的任务
+    /// 引用，必须走 [`required_id`]（只 get 不 intern，拼错当场报错并点名
+    /// 文件）。`set-flag` 那一支照旧只 `parse_id`（对话标志没有内容表），
+    /// `join-settlement` 照旧一个参数都不带。
+    fn resolve(&self, registry: &Registry) -> Result<DialogueOutcome, String> {
         match self.kind.as_str() {
             "set-flag" => {
-                let raw = self.flag.as_deref().ok_or_else(|| {
-                    format!("对话后果 kind {:?} 缺少必填字段 \"flag\"", self.kind)
+                self.reject_extras(AllowedOutcomeFields {
+                    flag: true,
+                    ..AllowedOutcomeFields::default()
                 })?;
+                let raw = self
+                    .flag
+                    .as_deref()
+                    .ok_or_else(|| self.missing_outcome_field("flag"))?;
                 Ok(DialogueOutcome::SetFlag(parse_id(raw, "对话标志标识符")?))
             }
             // 「加入说话人所属据点的势力」——**不带任何参数**：加入哪座
@@ -175,23 +221,34 @@ impl RawDialogueOutcome {
             // [`RawDialogueCondition`]：`{ kind: "join-settlement",
             // flag: "…" }` 若被静默接受，作者会以为那个 `flag` 起了作用。
             "join-settlement" => {
-                if self.flag.is_some() {
-                    return Err(format!(
-                        "对话后果 kind {:?} 不接受字段 \"flag\"（加入哪座据点由说话人回答，\
-                         不由内容声明，见 knowledge/design/dialogue-system.md 五节 5.1）",
-                        self.kind
-                    ));
-                }
+                self.reject_extras(AllowedOutcomeFields::default())?;
                 Ok(DialogueOutcome::JoinSettlement)
             }
-            "complete-quest" | "give-item" | "open-trade" => Err(format!(
-                "对话后果 kind {:?} 尚未实现（complete-quest / give-item 属批次 4，\
-                 open-trade 属批次 5，\
-                 见 knowledge/design/dialogue-system.md 八节的分批表）",
+            // 「把这条任务标记成已完成」——结算时调既有的
+            // `ll_sim::quest::mark_quest_completed`，见
+            // `DialogueOutcome::CompleteQuest` 文档「为什么不重写一份完成
+            // 逻辑」。
+            "complete-quest" => {
+                self.reject_extras(AllowedOutcomeFields {
+                    quest: true,
+                    ..AllowedOutcomeFields::default()
+                })?;
+                let raw = self
+                    .quest
+                    .as_deref()
+                    .ok_or_else(|| self.missing_outcome_field("quest"))?;
+                Ok(DialogueOutcome::CompleteQuest(required_id(
+                    registry,
+                    raw,
+                    "任务标识符",
+                )?))
+            }
+            "give-item" | "open-trade" => Err(format!(
+                "对话后果 kind {:?} 尚未实现（give-item 属批次 4，open-trade 属批次 5，见 knowledge/design/dialogue-system.md 八节的分批表）",
                 self.kind
             )),
             other => Err(format!(
-                "未知的对话后果 kind {other:?}（只认 set-flag / join-settlement）"
+                "未知的对话后果 kind {other:?}（只认 set-flag / join-settlement / complete-quest）"
             )),
         }
     }
@@ -439,7 +496,7 @@ pub fn apply_dialogues(
             let next = resolve_next(registry, &option.next)?;
             let mut outcomes = Vec::with_capacity(option.outcomes.len());
             for outcome in &option.outcomes {
-                outcomes.push(outcome.resolve()?);
+                outcomes.push(outcome.resolve(registry)?);
             }
             options.push(DialogueOption {
                 text_key: parse_id(&option.text_key, "本地化键标识符")?,
@@ -852,11 +909,13 @@ mod tests {
     }
 
     #[test]
-    fn 尚未实现的三种后果报明确错误而不是静默接受() {
+    fn 尚未实现的后果报明确错误而不是静默接受() {
         // 〔2026-08-31，批次 26〕`join-settlement` 已经实现，从这份清单里
         // 挪走了——它现在由 `join_settlement后果解析成不带参数的变体`
         // 与 `join_settlement带多余的flag参数报错` 两条守着。
-        for kind in ["complete-quest", "give-item", "open-trade"] {
+        // 〔2026-08-31，批次 29〕`complete-quest` 同样挪走了，由
+        // `complete_quest后果解析成一条任务引用` 等三条守着。
+        for kind in ["give-item", "open-trade"] {
             // Arrange & Act
             let source = format!(
                 r#"{{
@@ -871,6 +930,99 @@ mod tests {
             let err = result.expect_err("尚未实现的后果必须报错");
             assert!(err.contains("尚未实现"), "错误信息要说清楚为什么：{err}");
             assert!(err.contains(kind), "错误信息要点名是哪一种：{err}");
+        }
+    }
+
+    /// `complete-quest` 携带的是一条**有内容表**的任务引用：解析成
+    /// `ContentIndex`，而不是一个字符串。
+    #[test]
+    fn complete_quest后果解析成一条任务引用() {
+        // 反例验证（ADR 0022）：把 `resolve` 里 `"complete-quest"` 那一支
+        // 挪回「尚未实现」那一支，本条当场红。
+        // Arrange & Act
+        let (registry, _dialogues, nodes, result) = 解析(
+            r#"{
+              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                         options: [ { text_key: "lostland:dialogue.x", next: "end",
+                                      outcomes: [ { kind: "complete-quest",
+                                                    quest: "lostland:main_quest_1" } ] } ] } ],
+            }"#,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        let quest = registry
+            .get(&NamespacedId::parse("lostland:main_quest_1").expect("固定字面量恒合法"))
+            .expect("夹具里已经 intern 过");
+        let index = nodes.defined_indices()[0];
+        let view = nodes.get(index).expect("刚定义过");
+        assert_eq!(
+            view.options[0].outcomes,
+            vec![DialogueOutcome::CompleteQuest(quest)]
+        );
+    }
+
+    /// 拼错的任务 id **在装载期**当场报错，不是等到运行期静默无效——
+    /// `required_id`（只 get 不 intern）的既有纪律。
+    #[test]
+    fn complete_quest的任务id没注册过时装载期报错() {
+        // Arrange & Act
+        let (_registry, _dialogues, _nodes, result) = 解析(
+            r#"{
+              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                         options: [ { text_key: "lostland:dialogue.x", next: "end",
+                                      outcomes: [ { kind: "complete-quest",
+                                                    quest: "lostland:no_such_quest" } ] } ] } ],
+            }"#,
+        );
+
+        // Assert
+        let err = result.expect_err("没注册过的任务 id 必须报错");
+        assert!(
+            err.contains("lostland:no_such_quest"),
+            "错误信息要点名是哪一条：{err}"
+        );
+    }
+
+    #[test]
+    fn complete_quest缺少quest参数报错() {
+        // Arrange & Act
+        let (_registry, _dialogues, _nodes, result) = 解析(
+            r#"{
+              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                         options: [ { text_key: "lostland:dialogue.x", next: "end",
+                                      outcomes: [ { kind: "complete-quest" } ] } ] } ],
+            }"#,
+        );
+
+        // Assert
+        let err = result.expect_err("缺必填参数必须报错");
+        assert!(err.contains("complete-quest"), "要点名是哪一种：{err}");
+        assert!(err.contains("quest"), "要点名是哪个参数：{err}");
+    }
+
+    /// 「不该有的必须没有」这一半对**两个方向**都成立：`complete-quest`
+    /// 不认 `flag`，`set-flag` 也不认 `quest`。
+    #[test]
+    fn 后果参数用错了种类当场报错() {
+        for (kind, extra) in [
+            ("complete-quest", r#"flag: "lostland:dialogue_flag.x""#),
+            ("set-flag", r#"quest: "lostland:main_quest_1""#),
+        ] {
+            // Arrange & Act
+            let source = format!(
+                r#"{{
+                  nodes: [ {{ id: "lostland:a", text_key: "lostland:dialogue.a",
+                             options: [ {{ text_key: "lostland:dialogue.x", next: "end",
+                                          outcomes: [ {{ kind: "{kind}", {extra} }} ] }} ] }} ],
+                }}"#
+            );
+            let (_registry, _dialogues, _nodes, result) = 解析(&source);
+
+            // Assert
+            let err = result.expect_err("多余参数必须报错");
+            assert!(err.contains(kind), "要点名是哪一种：{err}");
+            assert!(err.contains("不接受字段"), "要说清楚为什么：{err}");
         }
     }
 

@@ -162,6 +162,35 @@ pub enum DialogueOutcome {
     /// 的变通**已经作废**（势力播种批次落地之后），本批指向的是真正的
     /// `ll_world::faction::Faction`。
     JoinSettlement,
+    /// **把这条任务标记成已完成**（规格五节 5.2 第 2 条）。
+    ///
+    /// 结算时调的是**既有**的 [`crate::quest::mark_quest_completed`]，
+    /// 不重写一份完成逻辑：任务「已完成」这件事的存储形状（按命名空间
+    /// 隔离的 `mod_state` + [`crate::quest::quest_progress_key`] 那个键 +
+    /// `Int(1)`）只有一处真相源，就是 [`crate::quest`]。在对话这一侧再
+    /// 抄一份，两处会各自漂移，而漂移时没有任何东西会报错——ADR 0021
+    /// 点名要拦的正是这个形状。
+    ///
+    /// # 为什么是 `ContentIndex` 而不是 `NamespacedId`
+    ///
+    /// 任务**有内容表**（`ll_mod::quest::QuestTable`），因此这条引用走
+    /// 跨表引用的既有纪律：装载期 `required_id`（只 get 不 intern），
+    /// 拼错的任务 id 当场报错并点名文件。与
+    /// [`DialogueCondition::QuestCompleted`] 逐字同办。
+    /// [`SetFlag`](DialogueOutcome::SetFlag) 之所以拿的是
+    /// [`NamespacedId`]，是因为对话标志**没有内容表**——两者不是同一档。
+    ///
+    /// 结算侧因此要一次 [`ContentIdLookup`] 反查（`mark_quest_completed`
+    /// 按标识符字符串写 `mod_state`），用的就是批次 1 为
+    /// `quest-completed` 谓词建的那条窄接口，不新加依赖。
+    ///
+    /// # 这一支让 `QuestCondition::Script` 第一次有了替代品
+    ///
+    /// `ll_mod::quest::QuestCondition::Script` 的文档原话是「处理『拜访
+    /// 某个 NPC 并说出特定台词』这类无法穷举成数据的条件」——**那正是
+    /// 对话**。三档脚本回调已随脚本系统消失（ADR 0028），本变体把这类
+    /// 条件变回了数据可表达的东西。
+    CompleteQuest(ContentIndex),
 }
 
 /// 「加入一座据点」给多少声望——项目所有者裁定
