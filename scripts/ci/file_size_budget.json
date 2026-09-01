@@ -14,15 +14,15 @@
       "reason": "合理（批次 16 的搬移产物）：crate::app 的断言，用 #[path] 挂成 app 的子模块，与 app_save_tests.rs / app_navigation_tests.rs 同一手法（它们现在是本文件的子模块）。搬出来还顺手消掉了一处 rustc 与 rustfmt 对嵌套 #[path] 基准目录的分歧，见文件头注释。不按主题拆开：断言与 test_demo_at_title / frame 等共享夹具交错，按主题切开只会把夹具复制多份。"
     },
     "crates/ll-game/src/world.rs": {
-      "code_lines": 960,
+      "code_lines": 871,
       "reason": "合理（待复查）：新游戏的世界搭建——区块布局、噪声、编年史、出生点、玩家实体，一条从零到可玩的顺序流水线，各步共享同一份构建中状态。待复查点：批次「据点建筑类型」会碰这里的流式加载那一段。"
     },
     "crates/ll-mod/src/content_audit.rs": {
-      "code_lines": 2194,
+      "code_lines": 2205,
       "reason": "合理：装载后内容校验的逐条规则平铺，与 content_hash.rs 同一形状——一条校验一段，规则之间不互相调用。文件长度等于校验条数。"
     },
     "crates/ll-mod/src/content_hash.rs": {
-      "code_lines": 2853,
+      "code_lines": 2923,
       "reason": "合理：单一职责的逐类型平铺表——每个内容类型一段「哪些字段进哈希」，类型之间不互相调用。拆开等于把 CONTENT_HASH_ALGORITHM_VERSION 要盯住的那份唯一真相源分散到多处，而「真相源之外的副本」是本仓库最稳定的缺陷来源。"
     },
     "crates/ll-mod/src/content_schema_gear.rs": {
@@ -30,7 +30,7 @@
       "reason": "合理：内容数据文件 schema 的装备与规则侧七类，逐类型平铺。它本身已经是从 content_schema.rs 拆出来的一半（分界线见两者模块文档），再拆会打碎「一个 JSON5 文件对应一段 schema」这条对应关系。"
     },
     "crates/ll-mod/src/roster.rs": {
-      "code_lines": 831,
+      "code_lines": 833,
       "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。"
     },
     "crates/ll-platform/src/keybind.rs": {
@@ -62,7 +62,7 @@
       "reason": "合理：单一面板——M 键切换的大陆概览，从缩放级别、色带到玩家标记都是这一块面板自己的事，不与别的面板共享任何状态。"
     },
     "crates/ll-world/src/chronicle.rs": {
-      "code_lines": 1728,
+      "code_lines": 1730,
       "reason": "合理（待复查）：世界历史推演——建立、增长、瘟疫、战争、占领、文化演替在一条时间线上逐纪元推进，各段共享同一份 EpochRun 状态与同一条确定性随机流，拆开会把那份状态变成跨模块传递的可变参数。待复查点：P9 的运行期据点扩张落地后若再长，按「纪元阶段」重新评估。"
     },
     "crates/ll-world/src/state.rs": {
