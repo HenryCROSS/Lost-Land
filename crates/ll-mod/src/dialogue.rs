@@ -82,8 +82,9 @@ use ll_core::ident::{ContentIndex, NamespacedId};
 
 use crate::registry::Registry;
 pub use ll_sim::dialogue::{
-    AffiliationQuery, ContentIdLookup, DialogueCondition, DialogueOutcome, NoContentIds,
-    all_conditions_hold, condition_holds, dialogue_flag_key, has_dialogue_flag, set_dialogue_flag,
+    AffiliationQuery, ContentIdLookup, DialogueCatalog, DialogueCondition, DialogueOptionView,
+    DialogueOutcome, NoContentIds, NoDialogues, all_conditions_hold, condition_holds,
+    dialogue_flag_key, has_dialogue_flag, set_dialogue_flag,
 };
 
 /// 把内容索引反查回标识符——[`ll_sim::dialogue::DialogueCondition`] 的任务
@@ -305,6 +306,19 @@ pub struct DialogueTable {
 }
 
 impl DialogueTable {
+    /// 一张**常量**空表。
+    ///
+    /// `Default` 派生出来的构造器不是 `const fn`，而「一张永远查不到东西
+    /// 的对话表」需要能出现在常量上下文里：`ll_game::player_action::TalkLookup`
+    /// 借的是 `&DialogueTable`，它的「不接对话内容」构造器因此需要一个
+    /// `'static` 的空表可借。`Vec::new()` 本身是 `const`，代价为零。
+    pub const EMPTY: DialogueTable = DialogueTable {
+        speaker: Vec::new(),
+        root: Vec::new(),
+        defined: Vec::new(),
+        defined_ids: Vec::new(),
+    };
+
     /// 建立空表。
     pub fn new() -> Self {
         Self::default()
@@ -415,6 +429,25 @@ impl DialogueTable {
                     .expect("defined_indices 里的索引必然已通过 define 注册");
                 (view.speaker.culture.is_none(), index.get())
             })
+    }
+}
+
+/// 「这个节点的第几条选项长什么样」——`Intent::DialogueChoose` 结算的
+/// 内容来源。
+///
+/// 直接由本表实现，不另造一个绑定结构体：与
+/// [`crate::subclass::SubclassTable`] 同时实现 `TraitGrantSource` 与
+/// `SubclassUnlockCatalog` 是同一种情形——这个问题的全部答案就在这一
+/// 张表里，不需要把它与注册表或别的表绑在一起（对比
+/// [`crate::quest::RegisteredQuests`]，那一路真的需要两样东西）。
+impl DialogueCatalog for DialogueNodeTable {
+    fn option(&self, node: ContentIndex, option: usize) -> Option<DialogueOptionView<'_>> {
+        let view = self.get(node)?;
+        let def = view.options.get(option)?;
+        Some(DialogueOptionView {
+            conditions: &def.conditions,
+            outcomes: &def.outcomes,
+        })
     }
 }
 

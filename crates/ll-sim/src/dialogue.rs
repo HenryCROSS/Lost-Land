@@ -164,6 +164,62 @@ impl ContentIdLookup for NoContentIds {
     }
 }
 
+/// 透过一层引用照样是一份反查——让 [`all_conditions_hold`] 这类收
+/// `&impl ContentIdLookup` 的泛型函数能直接接住一个
+/// `&dyn ContentIdLookup`（[`crate::catalogs::ResolveCatalogs`] 里存的
+/// 就是后者）。
+///
+/// 写成 `?Sized` 的一揽子实现而不是只给 `&dyn ContentIdLookup` 写一条：
+/// 后者会让 `&SomeConcreteTable` 走不通，于是调用方要按手上拿的是具体
+/// 类型还是 trait 对象分两种写法——那是一处只为绕开类型系统而存在的
+/// 分叉。
+impl<T: ContentIdLookup + ?Sized> ContentIdLookup for &T {
+    fn id_of(&self, index: ContentIndex) -> Option<&NamespacedId> {
+        (**self).id_of(index)
+    }
+}
+
+/// 一条对话选项里 `resolve` 需要看的两样东西。
+///
+/// **不含 `text_key` 与 `next`**：前者是纯呈现层的事，后者是 UI 状态
+/// （规格 7.1「会话内的位置是 UI 状态」）——`resolve` 两样都不该读。
+/// 视图只开放它真正需要的字段，与 `ll_mod` 那批 `*View` 类型同一条
+/// 既有手法。
+#[derive(Debug, Clone, Copy)]
+pub struct DialogueOptionView<'a> {
+    /// 这一行的显示条件——`resolve` 要**重新校验**一遍，见
+    /// [`crate::resolve`] 的 `Intent::DialogueChoose` 一支。
+    pub conditions: &'a [DialogueCondition],
+    /// 选中之后世界发生什么。
+    pub outcomes: &'a [DialogueOutcome],
+}
+
+/// 「这个节点的第几条选项长什么样」——`Intent::DialogueChoose` 结算的
+/// 唯一内容来源。
+///
+/// 与 [`crate::skill::SkillCatalog`]/[`crate::quest::QuestCatalog`] 同一
+/// 套依赖倒置：真正的表（`ll_mod::dialogue::DialogueNodeTable`）定义在
+/// 下游的 `ll-mod`，本 crate 只声明这个接口。
+pub trait DialogueCatalog {
+    /// `node` 这个节点的第 `option` 条选项；节点或下标不存在时返回
+    /// `None`（**不 panic**：那两样都可能来自一个已经过时的 UI 帧）。
+    fn option(&self, node: ContentIndex, option: usize) -> Option<DialogueOptionView<'_>>;
+}
+
+/// 空对话目录：任何查询都查不到。
+///
+/// 与 [`NoContentIds`]/[`crate::quest::NoQuests`] 同一个理由：这是保底
+/// 实现，不是特殊路径。在它下面 `Intent::DialogueChoose` 恒产出空效果
+/// ——与「玩家选了一条不存在的选项」同一个结果，诚实且确定。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoDialogues;
+
+impl DialogueCatalog for NoDialogues {
+    fn option(&self, _node: ContentIndex, _option: usize) -> Option<DialogueOptionView<'_>> {
+        None
+    }
+}
+
 /// 一条对话选项的显示条件。**这十条就是全部**，见模块文档。
 ///
 /// 否定不是一个可嵌套的算子，是**成对的变体**：`Affiliated` /

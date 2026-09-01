@@ -66,6 +66,7 @@ use ll_world::state::WorldState;
 use crate::catalogs::ResolveCatalogs;
 use crate::craft::{NoRecipes, RecipeCatalog};
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
+use crate::dialogue::{ContentIdLookup, DialogueCatalog, NoContentIds, NoDialogues};
 use crate::effect::Effect;
 use crate::experience::{ExperienceCatalog, NoExperience};
 use crate::exposure::AmbientSource;
@@ -83,6 +84,7 @@ use crate::traits::{NO_TRAIT_GRANTS, NoTraitGrants, NoTraits, TraitCatalog, Trai
 // 每加一族新意图 = 加一个模块 + 在分派表上加一条 arm。
 mod combat;
 mod crafting;
+mod dialogue;
 mod equipment;
 mod inventory;
 mod movement;
@@ -94,7 +96,14 @@ mod upkeep;
 // 搬出去的项在这里重新引进本模块的作用域：对外的公开路径
 // （`ll_sim::resolve::derive_stats` 等）与 `#[cfg(test)] use super::*`
 // 因此一个字都不用改。
-pub(crate) use self::movement::{occupant_at, step_destination};
+use self::dialogue::resolve_dialogue_choose;
+pub(crate) use self::movement::step_destination;
+// `occupant_at` 从 `pub(crate)` 开成 `pub`（对话批次 2）：`ll-game` 的
+// 交互列表要问「这一格上站着谁」，而那正是本函数文档
+// 「为什么必须只有这一份实现」里已经论证过的同一个问题。在输入层另写
+// 一份查找，那条平局打破规则（同一格站着多于一个单位时取谁）会各自
+// 漂移——正是 ADR 0021 点名要拦的形状。
+pub use self::movement::occupant_at;
 // 关门那两道前置的公开判据——`ll-game` 的输入层要在提交意图之前问同一
 // 个问题，见 `portal::door_close_blocker` 文档「一份判据，两个调用点」。
 pub use self::portal::{DoorCloseBlocker, door_close_blocker};
@@ -295,6 +304,8 @@ pub fn resolve_with_skills_and_traits(
         &NoExperience,
         &NoSkills,
         &NoSubclassUnlocks,
+        &NoDialogues,
+        &NoContentIds,
     )
 }
 
@@ -341,6 +352,8 @@ pub fn resolve_with_skills_traits_and_pools(
         &NoExperience,
         &NoSkills,
         &NoSubclassUnlocks,
+        &NoDialogues,
+        &NoContentIds,
     )
 }
 
@@ -387,6 +400,8 @@ pub fn resolve_with_skills_traits_pools_and_items(
         &NoExperience,
         &NoSkills,
         &NoSubclassUnlocks,
+        &NoDialogues,
+        &NoContentIds,
     )
 }
 
@@ -433,6 +448,8 @@ pub fn resolve_with_skills_traits_pools_items_and_formulas(
         &NoExperience,
         &NoSkills,
         &NoSubclassUnlocks,
+        &NoDialogues,
+        &NoContentIds,
     )
 }
 
@@ -485,6 +502,8 @@ pub fn resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
         &NoExperience,
         &NoSkills,
         &NoSubclassUnlocks,
+        &NoDialogues,
+        &NoContentIds,
     )
 }
 
@@ -546,6 +565,8 @@ pub fn resolve_with_all_catalogs(
         &NoExperience,
         &NoSkills,
         &NoSubclassUnlocks,
+        &NoDialogues,
+        &NoContentIds,
     )
 }
 
@@ -585,6 +606,8 @@ pub fn resolve_with_catalogs(
         catalogs.experience,
         catalogs.skill_tree,
         catalogs.subclass_unlocks,
+        catalogs.dialogues,
+        catalogs.content_ids,
     )
 }
 
@@ -636,6 +659,8 @@ pub fn resolve_with_skills_and_quests(
         &NoExperience,
         &NoSkills,
         &NoSubclassUnlocks,
+        &NoDialogues,
+        &NoContentIds,
     )
 }
 
@@ -673,6 +698,10 @@ fn resolve_dispatch(
     experience: &dyn ExperienceCatalog,
     skill_tree: &dyn SkillTreeCatalog,
     subclass_unlocks: &dyn SubclassUnlockCatalog,
+    // 对话批次 2 新增的两路。**追加在参数表末尾**，不插在中间：
+    // 九个调用点的实参是按位置对上的，插在中间会让每一处静默错位。
+    dialogues: &dyn DialogueCatalog,
+    content_ids: &dyn ContentIdLookup,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => resolve_wait(
@@ -772,6 +801,11 @@ fn resolve_dispatch(
         Intent::Experiment { actor, category } => {
             resolve_experiment(world, actor, category, recipes)
         }
+        Intent::DialogueChoose {
+            actor,
+            node,
+            option,
+        } => resolve_dialogue_choose(world, actor, node, option, dialogues, content_ids),
     };
     // 副职使用计数（副职获得机制批次）：一次**成功**的制作把对应配方
     // 类别的累计次数推进一格，达标就产出 `Effect::GrantSubclass`。
@@ -909,6 +943,8 @@ pub fn resolve_with_skills_quests_and_experience(
         experience,
         &NoSkills,
         &NoSubclassUnlocks,
+        &NoDialogues,
+        &NoContentIds,
     )
 }
 

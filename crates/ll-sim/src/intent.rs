@@ -751,6 +751,48 @@ pub enum Intent {
         /// [`ll_world::entity::Agent::identified_items`] 文档。
         def: ContentIndex,
     },
+    /// 在一场对话里选中了一条**带后果**的选项。
+    ///
+    /// # 只有带 `outcomes` 的选项才产出本变体
+    ///
+    /// 规格 `knowledge/design/dialogue-system.md` 七节 7.2：纯导航选项
+    /// （`outcomes` 为空，只是换个节点）**不提交意图**，在 UI 层完成
+    /// ——它什么都没改变，提交一个恒产出空效果的意图只会污染意图日志。
+    ///
+    /// # 为什么不带 `dialogue`
+    ///
+    /// 结算要的全部信息都在 `(node, option)` 里：那个节点的选项列表、
+    /// 那条选项的条件与后果。「这是哪一段会话」只在 UI 那侧有意义。
+    /// 带一个 `resolve` 从不读的字段，`scripts/ci/check_field_consumers.py`
+    /// 会如实把它报成未接线。
+    ///
+    /// # 结算侧必须重新校验条件
+    ///
+    /// `option` 是 UI 按**某一帧**的世界快照算出来的下标，结算时世界
+    /// 可能已经变了。`crate::resolve` 因此拿同一个
+    /// [`crate::dialogue::all_conditions_hold`] 再判一遍——不是不信任
+    /// UI，是两者看的世界不是同一刻的。
+    ///
+    /// # 它不消耗回合
+    ///
+    /// 所有者裁定（`knowledge/handoff/2026-08-28-session-handoff.md`
+    /// 第〇之二节第 2 条）：结算**不产出 [`crate::effect::Effect::ScheduleNext`]**，
+    /// 于是 `next_action_at` 不变、世界时钟不前进，说完一整轮话时间
+    /// 一格没动。
+    ///
+    /// # 输入映射
+    ///
+    /// 产出者是 `ll_game::dialogue_screen::update_dialogue`（会话屏），
+    /// 从落地那一刻起就带着键位与鼠标两条入口。
+    DialogueChoose {
+        /// 发起者——条件按他求值，后果也写在他身上。
+        actor: EntityId,
+        /// 现在停在哪个对话节点上。
+        node: ContentIndex,
+        /// 选中的是这个节点 `options` 里的第几条（**原始下标**，不是
+        /// UI 过滤之后的行号，见本变体文档「结算侧必须重新校验条件」）。
+        option: usize,
+    },
 }
 
 impl Intent {
@@ -787,7 +829,8 @@ impl Intent {
             | Intent::AbandonSubclass { actor, .. }
             | Intent::Read { actor, .. }
             | Intent::Experiment { actor, .. }
-            | Intent::Identify { actor, .. } => actor,
+            | Intent::Identify { actor, .. }
+            | Intent::DialogueChoose { actor, .. } => actor,
         }
     }
 }

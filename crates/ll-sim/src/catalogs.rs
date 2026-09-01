@@ -34,6 +34,7 @@
 
 use crate::craft::{NoRecipes, RecipeCatalog};
 use crate::damage_category::{DamageCategoryCatalog, NoDamageCategories};
+use crate::dialogue::{ContentIdLookup, DialogueCatalog, NoContentIds, NoDialogues};
 use crate::experience::{ExperienceCatalog, NoExperience};
 use crate::exposure::AmbientSource;
 use crate::formula::{DamageFormulaCatalog, NoFormulas};
@@ -166,6 +167,22 @@ pub struct ResolveCatalogs<'a> {
     /// 这一路换成空实现，`Effect::GrantSubclass` 立刻不再产生，被副
     /// 职闸门把守的配方类别重新变回「谁都做不了」。
     pub subclass_unlocks: &'a dyn SubclassUnlockCatalog,
+    /// 对话节点目录——`Intent::DialogueChoose` 的定义来源（对话批次 2
+    /// 新增）。真实实现是 `ll_mod::dialogue::DialogueNodeTable`。
+    ///
+    /// 不接这一路（[`NoDialogues`]）时任何一次选项选择都查不到内容、
+    /// 恒产出空效果——与「玩家选了一条不存在的选项」同一个结果。
+    pub dialogues: &'a dyn DialogueCatalog,
+    /// 内容索引 → 标识符的反查（对话批次 2 新增）。真实实现是
+    /// `ll_mod::registry::Registry`。
+    ///
+    /// 只被对话条件里 `quest-completed`/`quest-not-completed` 两支用到
+    /// ——任务进度按**标识符字符串**存在 `mod_state` 里，而条件里存的是
+    /// `ContentIndex`，两种表示之间必须有一次反查，见
+    /// [`crate::dialogue::ContentIdLookup`] 文档。
+    ///
+    /// 不接这一路（[`NoContentIds`]）时那两条谓词恒判为「未完成」。
+    pub content_ids: &'a dyn ContentIdLookup,
 }
 
 /// [`ResolveCatalogs::empty`] 借出的各路目录空实现的 `'static` 实例。
@@ -189,6 +206,8 @@ const NO_FORMULAS: NoFormulas = NoFormulas;
 const NO_DAMAGE_CATEGORIES: NoDamageCategories = NoDamageCategories;
 const NO_RECIPES: NoRecipes = NoRecipes;
 const NO_SUBCLASS_UNLOCKS: NoSubclassUnlocks = NoSubclassUnlocks;
+const NO_DIALOGUES: NoDialogues = NoDialogues;
+const NO_CONTENT_IDS: NoContentIds = NoContentIds;
 
 impl ResolveCatalogs<'static> {
     /// 十路全空的一束——与「一份目录都没接」在行为上完全等价
@@ -220,6 +239,8 @@ impl ResolveCatalogs<'static> {
             skill_tree: &NO_SKILLS,
             xp_curves: &FlatXpCurve::DEFAULT,
             subclass_unlocks: &NO_SUBCLASS_UNLOCKS,
+            dialogues: &NO_DIALOGUES,
+            content_ids: &NO_CONTENT_IDS,
         }
     }
 }
@@ -255,5 +276,7 @@ mod tests {
                 .is_empty()
         );
         assert!(catalogs.subclass_unlocks.craft_unlocks().is_empty());
+        assert!(catalogs.dialogues.option(any, 0).is_none());
+        assert!(catalogs.content_ids.id_of(any).is_none());
     }
 }
