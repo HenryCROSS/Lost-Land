@@ -131,9 +131,9 @@ pub struct RawDialogueOption {
 ///
 /// # 未实现的三种为什么报错而不是静默接受
 ///
-/// `open-trade`（批次 5）缺着自己的前置。若把它解析成一条「什么都不做」
+/// ~~`open-trade`（批次 5）缺着自己的前置。若把它解析成一条「什么都不做」
 /// 的后果，内容作者写下 `open-trade` 之后会以为交易界面真的开了，而实际
-/// 什么都没发生——
+/// 什么都没发生——~~
 /// **静默无效比当场报错贵得多**，这与 [`RawDialogueCondition`] 拒绝多余
 /// 参数是同一条纪律。
 ///
@@ -144,12 +144,20 @@ pub struct RawDialogueOption {
 /// 〔2026-08-31，批次 29〕`complete-quest` 与 `give-item` 同样挪了出来：
 /// 前者的前置（`ll_sim::quest::mark_quest_completed`）从任务批次起就在，
 /// 后者的前置（`ll_world::ownership::Owner` 与背包搬运那两条效果）从归属
-/// 批次起就在，本批只是把对话这两条产出路径接上去。**今天只剩
-/// `open-trade` 一种**仍然报「尚未实现」。
+/// 批次起就在，本批只是把对话这两条产出路径接上去。~~**今天只剩
+/// `open-trade` 一种**仍然报「尚未实现」。~~
+///
+/// 〔2026-09-01，批次 31〕**`open-trade` 也挪了出来，那份「尚未实现」
+/// 的清单就此清空**（计划文档
+/// `docs/superpowers/plans/2026-09-01-batch31-dialogue-trade.md` 二节）。
+/// 上面划掉的两段原文保留以便追溯：它们的判据本身仍然成立，只是没有
+/// 任何一个 `kind` 还落在那一档里了；今天走到 `Err` 的只剩「不认识的
+/// `kind`」这一种情形。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawDialogueOutcome {
-    /// 认 `set-flag` / `join-settlement` / `complete-quest`，见本类型文档。
+    /// 认 `set-flag` / `join-settlement` / `complete-quest` / `give-item` /
+    /// `open-trade`，见本类型文档。
     pub kind: String,
     /// 对话标志标识符（`set-flag` 必填；其余 kind **必须没有**）。
     #[serde(default)]
@@ -270,12 +278,15 @@ impl RawDialogueOutcome {
                     "物品标识符",
                 )?))
             }
-            "open-trade" => Err(format!(
-                "对话后果 kind {:?} 尚未实现（open-trade 属批次 5，见 knowledge/design/dialogue-system.md 八节的分批表）",
-                self.kind
-            )),
+            // 「把 UI 推进交易屏」——**不带任何参数**，理由与
+            // `join-settlement` 逐字相同：跟谁交易由说话人回答，实体号
+            // 内容文件里写不出来。见 `DialogueOutcome::OpenTrade` 文档。
+            "open-trade" => {
+                self.reject_extras(AllowedOutcomeFields::default())?;
+                Ok(DialogueOutcome::OpenTrade)
+            }
             other => Err(format!(
-                "未知的对话后果 kind {other:?}（只认 set-flag / join-settlement / complete-quest / give-item）"
+                "未知的对话后果 kind {other:?}（只认 set-flag / join-settlement / complete-quest / give-item / open-trade）"
             )),
         }
     }

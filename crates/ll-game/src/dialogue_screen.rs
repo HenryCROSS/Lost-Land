@@ -237,12 +237,22 @@ pub fn update_dialogue(
         return DialogueUpdate::close();
     };
     // **纯导航选项不提交任何意图**（规格 7.2）。
-    let submit = (!option.outcomes.is_empty()).then_some(Intent::DialogueChoose {
-        actor,
-        speaker,
-        node,
-        option: row.option,
-    });
+    //
+    // 〔2026-09-01，批次 31〕判据从「`outcomes` 非空」收窄成「存在一条
+    // **不是只推 UI** 的后果」：`open-trade` 恒产出空效果，与纯导航选项
+    // 同一档，提交一条恒空的意图只会污染意图日志（规格 7.2 原话）。
+    // 判据本身在 `ll_sim::dialogue::DialogueOutcome::is_ui_only`——
+    // **不在这里抄一份 `matches!`**，那样下一支后果落地时这里会静默漏掉。
+    let submit = option
+        .outcomes
+        .iter()
+        .any(|outcome| !outcome.is_ui_only())
+        .then_some(Intent::DialogueChoose {
+            actor,
+            speaker,
+            node,
+            option: row.option,
+        });
     match option.next {
         // 「说完这句就散了」：屏关掉。带 `outcomes` 的告别选项**仍然会
         // 把那条后果提交出去**——两件事互不排斥，这正是 `submit` 与

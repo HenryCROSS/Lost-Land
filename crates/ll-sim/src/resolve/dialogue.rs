@@ -133,6 +133,18 @@ pub(super) fn resolve_dialogue_choose(
             DialogueOutcome::GiveItem(item) => {
                 effects.extend(give_item(world, actor, speaker, *item, items));
             }
+            // **这一支空着就是规格 5.3 那句话的落点**：`open-trade`
+            // 「不产出任何 `Effect`，只把 UI 推进交易界面」。世界状态
+            // 一个字节都不该在这里改——真正的交易走
+            // `Intent::Trade`（`super::trade`），那一条照旧经 `apply`
+            // 这个唯一写入口（约束 C1）。
+            //
+            // 一条**只有** `open-trade` 的选项压根不会走到这里：会话屏
+            // 按 `DialogueOutcome::is_ui_only` 判定「不提交意图」
+            // （规格 7.2，与纯导航选项同一档）。留着这一支是因为
+            // `match` 是穷尽的，而且一条 `[set-flag, open-trade]` 混着
+            // 的选项**会**走到这里——那时它同样什么都不做。
+            DialogueOutcome::OpenTrade => {}
         }
     }
     if !writes.is_empty() {
