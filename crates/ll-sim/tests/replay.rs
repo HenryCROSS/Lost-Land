@@ -999,6 +999,25 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 两条反例都做完、都仍绿，才写下「本批次没有重冻」这句话。
 ///
 /// 旧值（势力播种批次之前）：4_180_595_409_733_934_027
+///
+/// # 五个新种族 + 沙漠文化批次（2026-08-31，批次 24）：**本条没有重冻**，
+///   证伪走的是**对照组**那一条路
+///
+/// 本批往 `mods/lostland/races.json5` 追加五个种族、往
+/// `mods/lostland/cultures.json5` 追加第七份文化。三条黄金基准里只有
+/// `crates/ll-game/tests/populated_determinism.rs` 那条红了。
+///
+/// **「绿」不算证据**——它可以被「那段代码根本没执行」解释掉。因此先立
+/// 对照组：把 `TerrainShape::default()` 的 `sea_level` 从 400 临时改成
+/// 401（`crates/ll-world/src/terrain_shape.rs`，**生产代码，不在任何
+/// `cfg(test)` 里**），本条当场红：`left: 8781493854886781786`、
+/// `right: 11222878776777704235`。改回 400 后恢复绿。**本条真的在执行，
+/// 也真的对世界的改变敏感。**
+///
+/// 够不到的理由是结构性的：本文件**一次都没有装载过 `mods/`**
+/// （`load_content`/`LoadSession`/`Chronicle`/`CultureTable` 在本文件里
+/// 零命中），`setup` 手写的两个 `Agent` 的 `race`/`profession` 是测试
+/// 自己造的固定索引，`mods/lostland/*.json5` 里写什么都到不了它。
 const EXPECTED_REPLAY_DIGEST: u64 = 11_222_878_776_777_704_235;
 
 // # 【2026-08-31 补记】本条够不到的那一块，现在有第三条基准接着

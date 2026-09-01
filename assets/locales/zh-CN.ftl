@@ -547,3 +547,21 @@ hud-feedback-world-advancing = 世界正在推进…
 
 hud-key-hint-world = { $inventory } 背包　{ $craft } 制作　{ $interact } 交互　{ $map } 地图　{ $menu } 菜单
 hud-key-hint-map = 方向键 平移　{ $zoom_in } / { $zoom_out } 缩放　{ $close } 关闭
+# ── 五个新种族（批次 24）───────────────────────────────────────────
+# 五族的数值由项目所有者批准，见
+# knowledge/handoff/2026-08-28-session-handoff.md 第六节。声明在
+# mods/lostland/races.json5，追加在注册表末尾。
+# 这几条只是展示名：贴图查找用的是 id 的本地名（camelfolk / catfolk /
+# orc / lizardfolk / merfolk），永远不用译名。
+
+race-camelfolk-display_name = 骆驼人
+race-catfolk-display_name = 猫人
+race-orc-display_name = 欧克
+race-lizardfolk-display_name = 蜥蜴人
+race-merfolk-display_name = 鱼人
+
+# ── 沙漠文化（批次 24）─────────────────────────────────────────────
+# 第七份文化：食物 × 沙漠。气候条带让沙漠真实存在之后才写得出来的
+# 一条。声明在 mods/lostland/cultures.json5。
+
+culture-sand_nomads-display_name = 沙民

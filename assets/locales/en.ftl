@@ -498,3 +498,23 @@ hud-feedback-world-advancing = The world is taking its turn…
 
 hud-key-hint-world = { $inventory } inventory　{ $craft } craft　{ $interact } interact　{ $map } map　{ $menu } menu
 hud-key-hint-map = arrows pan　{ $zoom_in } / { $zoom_out } zoom　{ $close } close
+# ── Five new races (batch 24) ─────────────────────────────────────────
+# The five races' numbers were approved by the project owner; see
+# knowledge/handoff/2026-08-28-session-handoff.md section 6. Declared in
+# mods/lostland/races.json5, appended at the end of the registry.
+# These names are display names only: the sprite lookup uses the id's
+# local name (camelfolk / catfolk / orc / lizardfolk / merfolk), never
+# the translation.
+
+race-camelfolk-display_name = Camelfolk
+race-catfolk-display_name = Catfolk
+race-orc-display_name = Orc
+race-lizardfolk-display_name = Lizardfolk
+race-merfolk-display_name = Merfolk
+
+# ── The desert culture (batch 24) ─────────────────────────────────────
+# The seventh culture: food x desert. Only writable once the climate
+# bands made desert terrain actually exist. Declared in
+# mods/lostland/cultures.json5.
+
+culture-sand_nomads-display_name = Sand Nomads

@@ -620,7 +620,7 @@ fn 被占领的据点在地上仍然是活的() {
     let expected_wall = content
         .culture_table
         .wall_terrain(CultureKind::from_index(record.new_culture))
-        .expect("本体六条文化都声明了 wall_terrain");
+        .expect("本体每一条文化都声明了 wall_terrain");
     let (mut walls, mut doors, mut windows, mut new_master_walls) =
         (0usize, 0usize, 0usize, 0usize);
     for dy in 0..span {
