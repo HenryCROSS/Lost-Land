@@ -463,7 +463,7 @@ dialogue-steward-kin = "Did you now." His tone loosens by half. "Then you know w
 dialogue-steward-ask_work = Is there work going?
 dialogue-steward-work = "The mountain road is not clean." He tips his chin north. "If you have the stomach for it, clear it."
 dialogue-steward-ask_reward = The thing is done.
-dialogue-steward-reward = "So I hear." He nods. "Once the stores are counted, you will have every bit of what is owed."
+dialogue-steward-reward = "So I hear." He pushes over a ration. "Take this. More once the stores are counted."
 dialogue-guard-root = The guard levels her halberd. "The hold takes no visitors. Give me a reason."
 dialogue-guard-ask_toll = I know what the road costs.
 dialogue-guard-toll = She weighs the purse and steps half aside. "Good. Do not wander deep."
@@ -518,3 +518,14 @@ race-merfolk-display_name = Merfolk
 # mods/lostland/cultures.json5.
 
 culture-sand_nomads-display_name = Sand Nomads
+
+# ── The two quest-chain lines (batch 29, dialogue batch 4) ────────────
+# Two options with outcomes, hung on the steward's segment: reporting in
+# runs complete-quest (which calls the existing mark_quest_completed),
+# taking the pay runs give-item (with the owner precondition). The
+# dialogue-steward-reward line above was rewritten in the same batch:
+# it used to promise payment later, which stops being true once the
+# goods change hands. Rewriting beats adding an orphan node.
+
+dialogue-steward-report = I have walked the mountain road.
+dialogue-steward-take_reward = Then I will take it.

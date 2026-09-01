@@ -90,6 +90,26 @@ pub fn pick_up_owner(
     if picked.owner.is_claimed() {
         return picked.owner;
     }
+    holder_owner(world, agent, actor)
+}
+
+/// 「东西到了 `actor` 手上之后归谁」——[`pick_up_owner`] 与对话赠送
+/// （`crate::resolve` 的 `DialogueOutcome::GiveItem` 一支）共用的那一半。
+///
+/// 玩家是 [`Owner::Player`]；有 `remembered_id` 的 NPC 是
+/// [`Owner::Npc`]；无名 NPC 是 [`Owner::Unowned`]（理由见
+/// [`pick_up_owner`] 文档「为什么无名 NPC 捡到的东西继续无主」一节，
+/// 那条降级对赠送逐字同样成立）。
+///
+/// # 为什么赠送不直接调 [`pick_up_owner`]
+///
+/// 那个函数的第一句是「原本就有主的东西保持原主」——那是**拾取**的
+/// 语义（也是将来盗窃判定的挂载点：捡走别人的东西不会让它变成你的）。
+/// 赠送是一次**合法转移**：说话人已经通过了 owner 校验硬前置，东西
+/// 转手之后就归收方。两者在这一点上判据相反，共用会让将来的盗窃判定
+/// 把每一次赠送也标成赃物。共用的只有这一半——「谁拿到手就是谁的」
+/// 这条映射本身，那正是 ADR 0021 说的「共享算法」。
+pub fn holder_owner(world: &WorldState, agent: &Agent, actor: EntityId) -> Owner {
     if world.player_entity == Some(actor) {
         return Owner::Player;
     }

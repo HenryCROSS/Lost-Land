@@ -511,7 +511,7 @@ dialogue-steward-kin = 「哦？」他的语气松了半分，「那你该知道
 dialogue-steward-ask_work = 有什么活干吗？
 dialogue-steward-work = 「山道上不干净。」他朝北边扬了扬下巴，「你要是有那个本事，去清一清。」
 dialogue-steward-ask_reward = 我把事办完了。
-dialogue-steward-reward = 「我听说了。」他点点头，「等库房清点完，该给你的一样不少。」
+dialogue-steward-reward = 「我听说了。」他推过来一份干粮，「先拿着，库房清点完还有。」
 
 dialogue-guard-root = 卫兵横过长戟。「矿堡不接外客。想进去，先说个理由。」
 dialogue-guard-ask_toll = 过路的规矩我懂。
@@ -565,3 +565,13 @@ race-merfolk-display_name = 鱼人
 # 一条。声明在 mods/lostland/cultures.json5。
 
 culture-sand_nomads-display_name = 沙民
+
+# ── 任务链的两行（批次 29，对话系统的批次 4）─────────────────────
+# 挂在管理者那段上的两条**带后果**的选项：交差走 complete-quest（调既有
+# 的 mark_quest_completed），领赏走 give-item（含 owner 校验硬前置）。
+# 上面 dialogue-steward-reward 那一句同批改写过：原文是「等库房清点完，
+# 该给你的一样不少」——东西当场交到手上之后那句话不再成立。改写而不是
+# 新增一个节点，同批次 26 第 7 条裁定。
+
+dialogue-steward-report = 山道我已经走过一趟了。
+dialogue-steward-take_reward = 那我就收下了。

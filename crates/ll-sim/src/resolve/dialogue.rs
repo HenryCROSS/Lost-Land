@@ -10,7 +10,12 @@
 //!   只产出 [`Effect`]。`set-flag` 走
 //!   [`Effect::SetModState`]，与 [`crate::quest::mark_quest_completed`]
 //!   逐条同办；`join-settlement`（批次 3）走
-//!   [`Effect::AddAffiliation`]，同一条纪律。
+//!   [`Effect::AddAffiliation`]，同一条纪律；`complete-quest`（批次 4）
+//!   走 [`Effect::SetModState`]（调既有的
+//!   [`crate::quest::mark_quest_completed`]），`give-item`（批次 4）走
+//!   [`Effect::ConsumeInventoryItem`] + [`Effect::MergeIntoInventory`]。
+//!   **`give-item` 的 owner 校验落在本模块**（产出效果**之前**），
+//!   见 [`may_give_away`]——那正是 C1 说的「决策在 resolve」。
 //! - **对话不消耗回合**（所有者裁定，交接文档第〇之二节第 2 条）：
 //!   **不产出 [`Effect::ScheduleNext`]**。`TurnEngine::perform` 末尾
 //!   无条件 `timeline.schedule(actor, agent.next_action_at)`，因此
@@ -32,7 +37,9 @@
 
 use ll_core::ident::ContentIndex;
 use ll_world::entity::{Affiliation, AffiliationKind, EntityId, OrgRef};
+use ll_world::item::ItemStack;
 use ll_world::mod_state::ModStateWrite;
+use ll_world::ownership::Owner;
 use ll_world::state::WorldState;
 
 use crate::dialogue::{
@@ -40,6 +47,27 @@ use crate::dialogue::{
     all_conditions_hold, set_dialogue_flag,
 };
 use crate::effect::Effect;
+use crate::item::ItemCatalog;
+use crate::ownership::holder_owner;
+use crate::quest::mark_quest_completed;
+
+use super::inventory::merge_into_inventory_effect;
+
+/// 本模块要用到的三份目录。
+///
+/// 收成一个结构体是为了让 [`resolve_dialogue_choose`] 的参数表停在 7 个
+/// 以内（`clippy::too_many_arguments`，全仓库 `-D warnings`）——与
+/// `crates/ll-game/tests/dialogue_session.rs` 里 `会话夹具` 是同一条既有
+/// 应对，不是为了抽象。
+#[derive(Clone, Copy)]
+pub(super) struct DialogueResolveCatalogs<'a> {
+    /// 节点与选项从哪来。
+    pub dialogues: &'a dyn DialogueCatalog,
+    /// `complete-quest` 的 `ContentIndex → NamespacedId` 反查。
+    pub content_ids: &'a dyn ContentIdLookup,
+    /// `give-item` 并进背包时要查的堆叠上限。
+    pub items: &'a dyn ItemCatalog,
+}
 
 /// 结算一次「选中了一条带后果的对话选项」。
 ///
@@ -62,9 +90,13 @@ pub(super) fn resolve_dialogue_choose(
     speaker: EntityId,
     node: ContentIndex,
     option: usize,
-    dialogues: &dyn DialogueCatalog,
-    content_ids: &dyn ContentIdLookup,
+    catalogs: DialogueResolveCatalogs<'_>,
 ) -> Vec<Effect> {
+    let DialogueResolveCatalogs {
+        dialogues,
+        content_ids,
+        items,
+    } = catalogs;
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };
@@ -83,6 +115,23 @@ pub(super) fn resolve_dialogue_choose(
             DialogueOutcome::SetFlag(flag) => writes.push(set_dialogue_flag(actor, flag)),
             DialogueOutcome::JoinSettlement => {
                 effects.extend(join_settlement(world, actor, speaker));
+            }
+            // 「把这条任务标记成已完成」——**调既有函数**，不重写一份
+            // 完成逻辑（ADR 0021，见 `DialogueOutcome::CompleteQuest`
+            // 文档）。`mark_quest_completed` 返回的就是一条
+            // `ModStateWrite`，形状与 `set-flag` 那一支天生对得上，因此
+            // 攒进同一条 `Effect::SetModState`。
+            //
+            // 反查不到（`content_ids` 是 `NoContentIds`，或者这个索引
+            // 压根没注册过）⇒ 这一条后果零效果，与本模块其余闸门同一条
+            // 纪律：不 panic，也不产出一条什么都不做的效果。
+            DialogueOutcome::CompleteQuest(quest) => {
+                if let Some(id) = content_ids.id_of(*quest) {
+                    writes.push(mark_quest_completed(actor, id));
+                }
+            }
+            DialogueOutcome::GiveItem(item) => {
+                effects.extend(give_item(world, actor, speaker, *item, items));
             }
         }
     }
@@ -124,6 +173,111 @@ pub(super) fn resolve_dialogue_choose(
 /// 「同一条 `(kind, org)` 已经在了就整条不做」是最终防线（见
 /// [`Effect::AddAffiliation`] 文档）。在这里再抄一份判据，就是让同一条
 /// 规则有两处真相源——ADR 0021 点名要拦的形状。
+/// 「说话人把自己背包里的一件这种东西交给发起者」——
+/// [`DialogueOutcome::GiveItem`] 那一支的全部内容。
+///
+/// # 三道闸门（前几道在调用方，这里是这三道）
+///
+/// 1. **说话人还在世界里**；
+/// 2. **他背包里真的有一堆 `item`**（第一条匹配，与
+///    [`Effect::RemoveFromInventory`] / [`Effect::ConsumeInventoryItem`]
+///    的既有定位纪律相同）；
+/// 3. **owner 校验硬前置**——见 [`may_give_away`]。
+///
+/// 任何一道不过就返回**空效果**，与本模块其余闸门同一条纪律：不 panic、
+/// 也不产出一条什么都不做的效果。**校验失败与「说话人拿不出这件东西」
+/// 在玩家那一侧是同一个观察结果**（按了但什么都没发生），这是本批刻意
+/// 取的最保守一档：选项显不显示是内容作者用 `conditions` 表达的事，条件
+/// 清单里今天没有「这个 NPC 有没有这件东西」这条谓词，加一条需要它自己
+/// 的真实内容用例（规格四节 4.3 的硬规则）。
+///
+/// # 为什么产出的**不是** [`Effect::TransferOwnership`]
+///
+/// 那个效果只改一堆物品的 `owner` 字段、**不搬运它**，而一次赠送必须
+/// 同时做两件事。用现有效果集组合只有两种排法，两种都不成立：
+///
+/// - 先 `TransferOwnership`(说话人那一堆) 再搬运：只交一件而他还剩几件
+///   时，剩下的几件会被一起改成收方的（**可观察的错**）；整堆交出时，
+///   那一次写入紧接着被搬运覆盖，**在同一批效果里不可观察**——一条改坏
+///   了也不会红的死效果。
+/// - 先搬运（保留原主）再 `TransferOwnership`(收方那一堆)：
+///   `(holder, def, durability)` **定位不到刚收下的那一堆**。收方若已经
+///   有一堆同 `def` 同耐久、归属不同的东西，
+///   `WorldState::transfer_item_ownership` 命中的是前一堆（它取第一条
+///   匹配），新收的那一堆仍然挂着原主。而这恰恰是常见情形：玩家捡来的
+///   同种物品是 [`Owner::Player`]，NPC 的出生装备是 [`Owner::Unowned`]。
+///
+/// 因此本批采纳 [`super::inventory::resolve_pick_up`] 已经在用的那条既有
+/// 手法：**归属由 `resolve` 算好、写进搬运效果携带的那一堆里**
+/// （[`holder_owner`] 就是那个算子）。`Effect::TransferOwnership` 因此
+/// **仍然没有调用方**——它文档里那条「给未来三个调用方的一条硬前置」
+/// 原样成立，本函数按那段原话把校验落地了，只是没有产出那个效果。
+/// 完整论证见 `docs/superpowers/plans/2026-08-31-batch29-dialogue-quest.md`
+/// 三节 3.5。
+fn give_item(
+    world: &WorldState,
+    actor: EntityId,
+    speaker: EntityId,
+    item: ContentIndex,
+    items: &dyn ItemCatalog,
+) -> Vec<Effect> {
+    let (Some(giver), Some(receiver)) = (world.actors.get(speaker), world.actors.get(actor)) else {
+        return Vec::new();
+    };
+    let Some(held) = giver.inventory.iter().find(|stack| stack.def == item) else {
+        return Vec::new();
+    };
+    if !may_give_away(giver.remembered_id, held.owner) {
+        return Vec::new();
+    }
+    // 一次一件（见 `DialogueOutcome::GiveItem` 文档「为什么不带 count」），
+    // 归属在这里算好——`apply` 只照单执行。
+    let given = ItemStack {
+        count: 1,
+        owner: holder_owner(world, receiver, actor),
+        ..*held
+    };
+    vec![
+        Effect::ConsumeInventoryItem {
+            actor: speaker,
+            def: item,
+            durability: held.durability,
+        },
+        merge_into_inventory_effect(receiver, actor, given, items),
+    ]
+}
+
+/// **owner 校验硬前置**：这一堆东西，说话人送得出去吗？
+///
+/// `ll_world::ownership` 的设计文档四节原话（`Effect::TransferOwnership`
+/// 的文档逐字转述过一遍）：合法转移的 `resolve` **必须**校验发起转移的
+/// 一方确实是这堆物品当前的 `owner`，`Owner::Unowned` 除外。
+///
+/// | 归属 | 送得出去吗 | 理由 |
+/// |---|---|---|
+/// | [`Owner::Unowned`] | ✅ | 没有人的权益受损（效果文档原话） |
+/// | [`Owner::Npc`]，号就是他自己的 `remembered_id` | ✅ | 是他自己的 |
+/// | [`Owner::Npc`]（别人的）/ [`Owner::Player`] / [`Owner::Faction`] / [`Owner::Shop`] | ❌ | 不是他的 |
+///
+/// `Owner::Faction`（据点与势力的公产）**这一批一律拒**：「管理者能不能
+/// 把据点的公产发给你」是一次玩法裁定，规格没写，不做是最保守、最容易
+/// 反转的一档（反转成本是这张表加一行 + 一条「他属于那个势力吗」的查询）。
+///
+/// # 无名 NPC 名下的东西
+///
+/// `remembered_id` 是懒分配的（今天唯一的真实分配点是死亡路径），因此
+/// 一个活着的 NPC 通常是 `None`——那时任何 `Owner::Npc(_)` 都不是「可
+/// 证明属于他的」，一律拒。这与 `pick_up_owner` 那条「无名 NPC 捡到的
+/// 东西继续无主」是同一处既有降级的两面：今天 NPC 的背包里全是
+/// `Owner::Unowned` 的出生装备，那一档照常送得出去。
+fn may_give_away(giver: Option<ll_core::ident::WorldId>, owner: Owner) -> bool {
+    match owner {
+        Owner::Unowned => true,
+        Owner::Npc(id) => giver == Some(id),
+        Owner::Player | Owner::Faction(_) | Owner::Shop(_) => false,
+    }
+}
+
 fn join_settlement(world: &WorldState, actor: EntityId, speaker: EntityId) -> Option<Effect> {
     let home = world.actors.get(speaker)?.home?;
     let faction = world.factions.faction_of(home)?;

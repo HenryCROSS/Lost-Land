@@ -25,9 +25,22 @@
 //
 // 〔2026-08-31，批次 26（对话系统的批次 3）〕`join-settlement` 也实现了，
 // 挂在管理者那段的「我想在这里落脚」上——**那是整个对话系统第一条真的
-// 改变归属的边**。写 `complete-quest`/`give-item`/`open-trade` 仍会报
-// 「尚未实现」而不是静默接受（批次 4/5）。因此下面「有活干吗」这类选项
-// 今天仍然只换一个节点。
+// 改变归属的边**。
+//
+// 〔2026-08-31，批次 29（对话系统的批次 4）〕`complete-quest` 与
+// `give-item` 也实现了，各挂一条选项，凑成本体第一条**能从头走到尾的
+// 任务链**：管理者的开场白 →「有什么活干吗」→ 交差（`complete-quest`）
+// → 回到开场白，此时「我把事办完了」出现 → 领赏（`give-item`）。
+// 只剩 `open-trade` 仍会报「尚未实现」而不是静默接受（批次 5）。
+//
+// ── 今天的任务只有两态，「接活」与「交差」是同一行 ────────────
+//
+// 规格五节 5.2 原文：**今天不存在「接取」这个概念**——任务从「不存在」
+// 直接跳到「已完成」，中间没有「进行中」这一档。因此下面那一行
+// 「山道我已经走过一趟了」既是接活也是交差，`kill-count` 是同一条任务的
+// **另一条**完成路径，两条写的是同一个 `mod_state` 键、互相幂等。
+// **没有任何东西会校验玩家真的去过山道**——那是任务系统缺「进行中」那
+// 一档的直接后果，不是对话引进来的，如实写在这里等任务系统补上。
 //
 // ── 台词为什么不提 NPC 的名字 ───────────────────────────────────
 //
@@ -199,6 +212,23 @@
       text_key: "lostland:dialogue.steward.work",
       options: [
         {
+          // **本体第一条 `complete-quest`**：调的是既有的
+          // `ll_sim::quest::mark_quest_completed`（对话侧没有第二份完成
+          // 逻辑）。选中之后回到开场白，那里的「我把事办完了」
+          // （`quest-completed`）就会出现、「有什么活干吗」
+          // （`quest-not-completed`）消失。
+          //
+          // 这一行同时是 `ll_mod::quest::QuestCondition::Script` 那个死
+          // 变体的替代品第一次落到内容上：它的文档原话是「处理『拜访某个
+          // NPC 并说出特定台词』这类无法穷举成数据的条件」——那正是对话。
+          text_key: "lostland:dialogue.steward.report",
+          conditions: [],
+          outcomes: [
+            { kind: "complete-quest", quest: "lostland:main_quest_1" },
+          ],
+          next: "lostland:steward_root",
+        },
+        {
           text_key: "lostland:dialogue.common.back",
           conditions: [],
           next: "lostland:steward_root",
@@ -209,6 +239,27 @@
       id: "lostland:steward_reward",
       text_key: "lostland:dialogue.steward.reward",
       options: [
+        {
+          // **本体第一条 `give-item`**。奖励取烤肉，理由是硬前置：那件
+          // 东西必须**真的在管理者背包里**（规格 5.2「一个 NPC 凭空变出
+          // 奖励物品是另一件事，不能靠转移假装」）。NPC 的背包今天唯一的
+          // 生产者是种族的 `starting_items` 经 `outfit_decision` 之后剩在
+          // 背包里的那部分——`races.json5` 里人类带三份烤肉、矮人带一份，
+          // 而 farmstead / harbour 两支文化的人类权重最高。
+          //
+          // **如实登记的缺口**：管理者若恰好是精灵（出生装备里没有烤肉），
+          // 这一行零效果，玩家得到「按了但什么都没发生」。要让它稳定拿得
+          // 出来，得让 `NpcProfile` 有一份内容声明的背包——那是另一批。
+          //
+          // 没有 `count`：一次一件，见
+          // `ll_sim::dialogue::DialogueOutcome::GiveItem` 文档。
+          text_key: "lostland:dialogue.steward.take_reward",
+          conditions: [],
+          outcomes: [
+            { kind: "give-item", item: "lostland:roast_meat" },
+          ],
+          next: "lostland:steward_root",
+        },
         {
           text_key: "lostland:dialogue.common.back",
           conditions: [],

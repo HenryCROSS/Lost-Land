@@ -162,6 +162,67 @@ pub enum DialogueOutcome {
     /// 的变通**已经作废**（势力播种批次落地之后），本批指向的是真正的
     /// `ll_world::faction::Faction`。
     JoinSettlement,
+    /// **把这条任务标记成已完成**（规格五节 5.2 第 2 条）。
+    ///
+    /// 结算时调的是**既有**的 [`crate::quest::mark_quest_completed`]，
+    /// 不重写一份完成逻辑：任务「已完成」这件事的存储形状（按命名空间
+    /// 隔离的 `mod_state` + [`crate::quest::quest_progress_key`] 那个键 +
+    /// `Int(1)`）只有一处真相源，就是 [`crate::quest`]。在对话这一侧再
+    /// 抄一份，两处会各自漂移，而漂移时没有任何东西会报错——ADR 0021
+    /// 点名要拦的正是这个形状。
+    ///
+    /// # 为什么是 `ContentIndex` 而不是 `NamespacedId`
+    ///
+    /// 任务**有内容表**（`ll_mod::quest::QuestTable`），因此这条引用走
+    /// 跨表引用的既有纪律：装载期 `required_id`（只 get 不 intern），
+    /// 拼错的任务 id 当场报错并点名文件。与
+    /// [`DialogueCondition::QuestCompleted`] 逐字同办。
+    /// [`SetFlag`](DialogueOutcome::SetFlag) 之所以拿的是
+    /// [`NamespacedId`]，是因为对话标志**没有内容表**——两者不是同一档。
+    ///
+    /// 结算侧因此要一次 [`ContentIdLookup`] 反查（`mark_quest_completed`
+    /// 按标识符字符串写 `mod_state`），用的就是批次 1 为
+    /// `quest-completed` 谓词建的那条窄接口，不新加依赖。
+    ///
+    /// # 这一支让 `QuestCondition::Script` 第一次有了替代品
+    ///
+    /// `ll_mod::quest::QuestCondition::Script` 的文档原话是「处理『拜访
+    /// 某个 NPC 并说出特定台词』这类无法穷举成数据的条件」——**那正是
+    /// 对话**。三档脚本回调已随脚本系统消失（ADR 0028），本变体把这类
+    /// 条件变回了数据可表达的东西。
+    CompleteQuest(ContentIndex),
+    /// **说话人把自己背包里的一件这种东西交给发起者**（规格五节 5.2
+    /// 第 3 条：发奖）。
+    ///
+    /// # 硬前置：不属于他的东西送不出去
+    ///
+    /// `ll_world::ownership` 的设计文档四节给「合法转移」立的那条前置，
+    /// 规格 5.2 原样接受并落到对话上：**那东西必须真的在他背包里、且
+    /// 归他所有**（[`ll_world::ownership::Owner::Unowned`] 除外——没有
+    /// 人的权益受损）。校验落在 `crate::resolve` 一侧、在产出任何
+    /// [`crate::effect::Effect`] **之前**（约束 C1：`apply` 只机械执行，
+    /// 一句判断都不做）。
+    ///
+    /// 少了它，销赃计时会被一条作弊路径绕开：把赃物「送」给自己控制的
+    /// 另一个角色，标记瞬间清空。
+    ///
+    /// **一个 NPC 凭空变出奖励物品是另一件事**（规格 5.2 原文），本变体
+    /// 不假装能做到：他拿不出来就什么都不发生。
+    ///
+    /// # 为什么不带 `count`
+    ///
+    /// 规格 5.2 的草图写的是 `{ item, count: N }`，本批**刻意收窄成一次
+    /// 一件**：`apply` 侧因此直接复用既有的
+    /// [`crate::effect::Effect::ConsumeInventoryItem`]（「数量减一，减到
+    /// 零时整条堆移除」正是这个语义，一个字都不用改），而 N > 1 需要一
+    /// 套拆堆机械、今天一条内容都不需要它（YAGNI）。反转成本：schema 加
+    /// 一个默认为 1 的 `count` 字段，既有内容一个字不改。
+    ///
+    /// # 收方是**发起者**，不是说话人
+    ///
+    /// 与 [`JoinSettlement`](DialogueOutcome::JoinSettlement) 把归属挂在
+    /// 发起者身上同一条：后果作用于「按下这一行的那个人」。
+    GiveItem(ContentIndex),
 }
 
 /// 「加入一座据点」给多少声望——项目所有者裁定

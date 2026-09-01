@@ -639,6 +639,28 @@ pub enum Effect {
     /// 的另一个角色，标记瞬间清空。这条写在这里，是为了让那三个系统
     /// 落地时读得到。
     ///
+    /// # 〔2026-08-31，批次 29〕对话赠送**读到了这条前置、但没有产出本
+    /// 效果**——预告的「第一个调用方」就此更正
+    ///
+    /// `docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md`
+    /// 第七节的挂载点表预告「`give-item` 是 `Effect::TransferOwnership`
+    /// 的第一个调用方」。落地时反转了这半句，**owner 校验硬前置照原话
+    /// 落地了**（`crate::resolve` 的 `may_give_away`），产出的却是
+    /// [`Effect::ConsumeInventoryItem`] + [`Effect::MergeIntoInventory`]。
+    ///
+    /// 理由是本效果只改 `owner`、**不搬运**，而一次赠送必须同时做两件事，
+    /// 用现有效果集组合的两种排法都不成立：先改主再搬运，那次写入要么
+    /// 波及给方剩下的几件（可观察的错）、要么在同一批效果里被覆盖成一条
+    /// 改坏了也不会红的死效果；先搬运再改主，`(holder, def, durability)`
+    /// 定位不到刚收下的那一堆（收方已有同 `def` 同耐久、归属不同的一堆时，
+    /// [`ll_world::state::WorldState::transfer_item_ownership`] 取的是第
+    /// 一条匹配）。因此归属改由 `resolve` 算好写进搬运效果——这正是
+    /// `resolve_pick_up` 已经在用的既有手法。完整论证见批次 29 计划文档
+    /// 三节 3.5 与 `crates/ll-sim/src/resolve/dialogue.rs` 的 `give_item`。
+    ///
+    /// **本变体因此至今没有调用方**，上面那条硬前置对交易（批次 5）与
+    /// 任务发奖的其余形态原样有效。
+    ///
     /// # 为什么用 `(holder, def, durability)` 三元组定位
     ///
     /// 设计文档四节给的形状是 `{ stack_def, new_owner }` 两个字段——

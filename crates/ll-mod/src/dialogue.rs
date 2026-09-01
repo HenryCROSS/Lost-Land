@@ -142,9 +142,15 @@ pub enum DialogueNext {
 /// `Effect::SetModState`。原文原样保留（划掉），因为它记的是「一个字段
 /// 什么时候才该被加进来」这条判据，那条判据本身没有作废。
 ///
-/// **本批只实现 [`ll_sim::dialogue::DialogueOutcome::SetFlag`] 一种后果**，
+/// ~~**本批只实现 [`ll_sim::dialogue::DialogueOutcome::SetFlag`] 一种后果**，
 /// 其余四种（`join-settlement` / `complete-quest` / `give-item` /
-/// `open-trade`）是批次 3–5 的，schema 侧对它们报明确错误而不是静默接受。
+/// `open-trade`）是批次 3–5 的，schema 侧对它们报明确错误而不是静默接受。~~
+///
+/// 〔2026-08-31，批次 26〕`join-settlement` 落地。
+/// 〔2026-08-31，批次 29，计划文档
+/// `docs/superpowers/plans/2026-08-31-batch29-dialogue-quest.md`〕
+/// `complete-quest` 与 `give-item` 落地。**今天只剩 `open-trade`
+/// （批次 5）一种**仍然在 schema 侧报明确错误而不是静默接受。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DialogueOption {
     /// 这一行显示什么——**本地化键**，不是文案，见模块文档末节。

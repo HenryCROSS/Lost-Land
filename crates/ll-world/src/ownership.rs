@@ -17,7 +17,11 @@
 //! - ✅ [`Owner`] 类型本体（五变体，含设计文档 1.2/1.3 两条修正）
 //! - ✅ `ItemStack.owner` 字段、[`crate::item::can_merge`] 追加比较
 //! - ✅ 拾取即归属（`ll_sim::resolve` 的 `resolve_pick_up`）
-//! - ✅ `Effect::TransferOwnership`（合法转移的接口形状，调用方不存在）
+//! - ✅ `Effect::TransferOwnership`（合法转移的接口形状，调用方不存在
+//!   ——〔2026-08-31，批次 29〕**至今仍然不存在**：对话赠送落地时读到了
+//!   设计文档四节那条 owner 校验硬前置并照原话落地，但产出的是
+//!   「消耗一件 + 并进背包」两条既有效果，理由见
+//!   `ll_sim::effect::Effect::TransferOwnership` 文档末节）
 //! - ❌ `StolenMarker`（销赃计时）、目击判定、`HistoricalEventKind::Crime`
 //!   ——设计文档二、三、五节，整体归犯罪判定批次。它们只服务「盗窃」
 //!   这一件事，提前落地就是又一批没有消费者的死字段。
