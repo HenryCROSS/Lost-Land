@@ -278,6 +278,117 @@ Intent::DialogueChoose { actor: EntityId, node: ContentIndex, option: usize }
 4. `feat(ll-sim): Intent::DialogueChoose 与端到端验收` ——
    `Intent`/`resolve`/`ResolveCatalogs`、端到端测试、计划与设计文档回填
 
-## 九、规格没裁定、本批临时选的做法（收尾时逐条回填到最终报告）
+## 九、规格没裁定、本批临时选的做法
 
-本节在落地过程中追加，**不预先编造**。
+逐条列出，都取了「最保守、最容易反转」的那一种。
+
+1. **`InteractTarget::Talk` 与 `ScreenState::Dialogue` 都不带说话人的
+   `EntityId`。** 会话屏是模态屏，`Demo::advance` 在它开着时整个早退，
+   世界一个字节不动 ⇒ 说话人不可能在会话中途走开或死掉，一个从头到尾
+   没有消费者的字段就是又一个「声明了但没接线」。**反转成本一行**：
+   批次 4/5 的 `give-item`/`open-trade` 真的需要「给谁」时把它加回来，
+   那时它从第一天起就有消费者。
+2. **会话屏的标题就是节点的 `text_key`**（NPC 那一句），不给
+   `ll_ui::screen::ScreenData` 加第六个槽。规格七节只说了「会话位置是
+   UI 状态」，没有规定这块屏的排版。反转成本：加一个 `lead` 槽 + 改
+   十余处构造点。
+3. **一条选项同时带 `outcomes` 与 `next: "end"` 时，后果照常提交、屏
+   照常关。** 规格没说这两件事怎么组合。取「互不排斥」是唯一不丢信息
+   的解释（另一种解释是「结束会话的选项不许带后果」，那要在装载期加
+   一条校验，且没有任何设计理由）。
+4. **换节点时光标复位到第一项。** 所有者裁定第 1 条说的是「预选第一
+   项」，没说换节点之后。不复位的话光标会停在新节点里毫不相干的行上。
+5. **一条选项都显示不出来时留在屏上、显示占位行**，而不是自动关屏。
+   自动关屏会让玩家看不出「他没话跟你说」与「按键没生效」的区别。
+6. **schema 对四种未实现的后果报「尚未实现」错误**，而不是解析成一条
+   什么都不做的后果。静默无效比当场报错贵得多。
+7. **`TalkLookup` 是必填参数而不是 `Option`。** 可选会让「同一格、
+   两个调用方、两份行列表」在类型上成为可能。
+8. **敌对判定用 `declared_hostile`（对称判据）而不是单向敌意。**
+   规格六节第 3 条点名了这个函数，本批只是照做；如实登记它今天只有
+   文化那一半在起作用。
+9. **尸体不列对话行**（`health <= 0`）。规格没提，但「跟尸体说话」
+   显然不是意图。
+
+## 十、落地实测（收尾回填）
+
+### 10.1 两条黄金基准：**实测未变**，并做了覆盖面证伪
+
+```
+crates/ll-world/tests/determinism.rs  EXPECTED_WORLD_DIGEST  = 11_270_479_921_196_970_914
+crates/ll-sim/tests/replay.rs         EXPECTED_REPLAY_DIGEST = 11_222_878_776_777_704_235
+```
+
+两条常量一个字符都没改，两个测试全绿。**「没红」这件事本身被证伪过一次**
+（交接文档点名的那个陷阱：基线没红可能只是因为那个测试的世界里根本
+不存在这类对象）：往 `ll_world::state::write_mod_state` 里灌一个
+`hasher.write_u64(0xDEAD_BEEF)`——
+
+| 基准 | 灌常量之后 | 说明 |
+|---|---|---|
+| `EXPECTED_WORLD_DIGEST` | **不红** | 那个世界零 `actor`，`write_mod_state` 一次都不执行。该常量自己的文档早就写着这条局限 |
+| `EXPECTED_REPLAY_DIGEST` | **红**（`14171074418694948339` ≠ 旧值） | 它真的覆盖 `Agent::mod_state` |
+
+结论因此是有据的：回放基准**有能力**发现 `set-flag` 的写入，本批没让它
+变，是因为回放的固定意图流里没有 `Intent::DialogueChoose`。
+
+内容侧不变的理由是结构性的：对话排在 `CONTENT_FILES` **最后**
+（`crates/ll-mod/src/content_data.rs`），本批又**零新增 `intern` 的
+内容 id**（`set-flag` 的 `flag` 走 `parse_id`），既有 `ContentIndex`
+一个都没平移。
+
+### 10.2 `CONTENT_HASH_ALGORITHM_VERSION`：28 → 29
+
+说明段写在 `crates/ll-mod/src/content_hash.rs` 该常量的文档注释里，
+标题「# 版本 29（对话后果批次，对话系统的批次 2）」，归**「已有表加
+字段」**那一档。
+
+> **并行冲突（协调方已确认）**：`wt-buildings` 那一批也递增到了 29，
+> 且已先合入 main。**合并时后到的那一个要重新递增到 30**，由协调方处理。
+
+### 10.3 存档 schema：**不动**
+
+`CURRENT_SCHEMA_VERSION` 仍是分叉时的值。`Agent::mod_state` 早已在存档
+主体里（任务进度就存那儿），本批不改任何存档主体形状。
+`RawDialogueOption.outcomes` 的 `#[serde(default)]` **只在 JSON5 侧有
+意义**，postcard 上是空操作——这一句写进了那个字段的文档，不是一句
+兼容性声明。
+
+### 10.4 ADR 0018 反例验证：六条，全部实测
+
+| # | 改坏什么 | 结果 |
+|---|---|---|
+| ① | `dialogue_rows` 的条件过滤换成恒 `true` | **3 条红**：`条件不满足的选项在会话屏上一行都不显示`、`鼠标点在第几行就选中第几行`、`听完风声之后那一行消失换成另一行` |
+| ② | `resolve_dialogue_choose` 补一条 `Effect::ScheduleNext` | **3 条红**：`说完一整轮话世界时钟一格没动` 等 |
+| ③ | `SetFlag` 那一支的 `ModStateWrite` 去掉 | `听完风声之后那一行消失换成另一行` 红——那一行**还在** |
+| ④ | 删掉 `resolve` 侧的重新校验 | `条件不再满足的选项在结算侧被拒掉` 红 |
+| ⑤ | 删掉 `talk_target` 的敌对过滤 | `敌对目标不进对话行` 红 |
+| ⑥ | 去掉 `interact_entries` 开头的 `talk_target` | `站着的npc让交互列表多出一行对话` 红 |
+
+六条全部改回后复跑，全绿。
+
+### 10.5 抓到的两处假绿（都在本批自己的测试里）
+
+1. `查不到的节点或越界的选项产出空效果而不是panic`：对照组「另一个
+   节点」用新建 `Interner` 的第一个索引取，而那就是
+   `ContentIndex::default()`，与被测节点**撞成同一个**，那一半当时恒
+   绿。已加 `assert_ne!` 钉死。
+2. `敌对目标不进对话行`：一开始给玩家挑的是 `farmstead` 文化，而
+   `goblin_warband → farmstead` 的敌意只有 4、不到阈值 5，测试当时是
+   **假红**（写完就不过）。换成 `mining_hold`（6）才真的验到，理由写进
+   了测试注释。
+
+第三条是主动防治：本批 UI 断言一律断言**具体文案**或**具体行序**，
+测试用**真实 `Catalog`**——空 `Catalog` 下 `resolve` 会退回键名，
+「文案不等于键名」那种写法会恒绿（批次 19 刚抓到过一条）。
+
+### 10.6 门禁与测试数
+
+- `bash scripts/ci/run_all.sh` **EXIT=0**。
+- `bash scripts/ci/run_tests.sh`：改前 **2886 通过 / 120 个二进制 / 0 失败**，
+  改后 **2904 通过 / 122 个二进制 / 0 失败**（+18 条，+2 个二进制：
+  `ll-sim/tests/dialogue_choose.rs` 与 `ll-game/tests/dialogue_session.rs`）。
+- 行数棘轮 `--bless` 三处，理由都写进了快照文件：
+  `content_hash.rs` +53、`content_audit.rs` +2、`app_tests.rs` +5。
+  `player_action.rs` 加完对话那一行是 822 行（超 800 且不在快照里），
+  **拆而不是 bless**：新模块 `interact_list.rs`。
