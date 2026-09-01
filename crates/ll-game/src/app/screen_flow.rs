@@ -13,7 +13,7 @@ use ll_render::wgpu;
 use ll_ui::screen::render::render_screen;
 use ll_ui::widget::state::WidgetStateTable;
 
-use crate::content::LoadedContent;
+use crate::content::{LoadedContent, RuntimeCatalogs};
 use crate::menu_screen::{
     ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, screen_data, settings_rows,
     update_settings,
@@ -21,6 +21,7 @@ use crate::menu_screen::{
 use crate::pause_menu::{menu_focus_index, update_menu};
 use crate::settings_view::{menu_row_texts, settings_row_texts, title_row_texts};
 use crate::title_screen::{title_focus_index, update_title};
+use ll_sim::effect::Effect;
 
 use super::Demo;
 use super::gpu::GpuResources;
@@ -80,9 +81,12 @@ pub(super) fn screen_row_texts(
     slots: &[crate::save_slot::SaveSlot],
     content: &LoadedContent,
     draft: Option<&crate::chargen::NewGameDraft>,
-) -> Option<(Vec<String>, usize)> {
+    // 会话屏要读世界（按玩家这一刻的状态过滤选项）。`None` = 底下没有
+    // 世界，此时会话屏画不出任何行——与角色创建屏没有草稿时同一条降级。
+    session: Option<(&ll_world::state::WorldState, ll_world::entity::EntityId)>,
+) -> Option<ScreenRows> {
     let language = config.language.as_str();
-    Some(match state {
+    let (rows, cursor) = match state {
         ScreenState::Title => (
             title_row_texts(catalog, language, has_save),
             title_focus_index(focus),
@@ -141,12 +145,75 @@ pub(super) fn screen_row_texts(
                 cursor,
             )
         }
+        // 会话屏：行是**过滤后**的选项，标题是 NPC 这一句（在下面
+        // 单独算）。见 `crate::dialogue_screen` 模块文档。
+        ScreenState::Dialogue { node, cursor } => (
+            match session {
+                Some((world, player)) => match world.actors.get(player) {
+                    Some(agent) => crate::dialogue_screen::dialogue_rows(
+                        node,
+                        &content.dialogue_node_table,
+                        agent,
+                        &content.registry,
+                        catalog,
+                        language,
+                    )
+                    .into_iter()
+                    .map(|row| row.text)
+                    .collect(),
+                    None => Vec::new(),
+                },
+                None => Vec::new(),
+            },
+            cursor,
+        ),
         // 选出生地屏**不画这块居中面板**：它的「屏」就是整张世界地图，
         // 一块盖在正中央的面板会挡住玩家要点的地方。它的画面全部由
         // `draw_hud` 那一侧产出（地图 + 光标标记 + 提示行），见
         // `crate::spawn_pick` 模块文档。
         ScreenState::SpawnPick { .. } => return None,
+    };
+    Some(ScreenRows {
+        rows,
+        cursor,
+        title_key: screen_title_key(state, content),
     })
+}
+
+/// 这块屏的标题键。
+///
+/// 除会话屏外全部是写死的字面量，由 `crate::menu_screen::screen_data`
+/// 自己认；会话屏的标题**是 NPC 说的那一句**，只有查了内容表才知道，
+/// 见 `crate::dialogue_screen::dialogue_title_key`。
+///
+/// 与行文字出自**同一个产出点**（[`ScreenRows`]）：渲染侧与输入侧因此
+/// 拿到的是同一份标题，面板宽度（`ll_ui::screen::panel_width` 要量全部
+/// 行，标题也算一行）不可能在两侧算出两个值。
+fn screen_title_key(state: ScreenState, content: &LoadedContent) -> String {
+    match state {
+        ScreenState::Dialogue { node, .. } => {
+            crate::dialogue_screen::dialogue_title_key(node, &content.dialogue_node_table)
+        }
+        // 其余各屏的标题在 `screen_data` 里写死，这里给什么都不会被读到
+        // ——给一个空串而不是随便挑一个键，是为了让「谁读了它」在调试时
+        // 一眼可辨。
+        _ => String::new(),
+    }
+}
+
+/// [`screen_row_texts`] 的产出：这一帧这块屏的全部行、光标位置与标题键。
+///
+/// **三样必须同源**：渲染侧（[`draw_screen`]）与输入侧
+/// （[`Demo::resolve_screen_pointer`]）各算一遍就是两份同一个算法，
+/// 分叉时点击会静悄悄地落到隔壁那一行上。此前只有前两样，标题键是会话
+/// 屏落地时加进来的第三样——它进面板宽度的计算，因此同样不能两侧各算。
+pub(super) struct ScreenRows {
+    /// 每一行显示成什么字。
+    pub rows: Vec<String>,
+    /// 光标停在第几行。
+    pub cursor: usize,
+    /// 标题的 Fluent 键，见 [`screen_title_key`]。
+    pub title_key: String,
 }
 
 /// 把模态屏（菜单/设置）画到 `view` 上——**排在 [`draw_hud`](super::hud_draw::draw_hud) 之后**，
@@ -166,7 +233,7 @@ pub(super) fn draw_screen(
     screen: Option<ScreenState>,
     // 行文字与光标位置由 [`screen_row_texts`] 现算——**渲染侧与输入侧
     // 共用同一份**，见那个函数的文档。`None` 表示这块屏不画居中面板。
-    rows_and_cursor: Option<(Vec<String>, usize)>,
+    rows_and_cursor: Option<ScreenRows>,
     catalog: &Catalog,
     language: &str,
     notice: Option<ScreenNotice>,
@@ -181,11 +248,16 @@ pub(super) fn draw_screen(
     let Some(state) = screen else {
         return;
     };
-    let Some((rows, cursor)) = rows_and_cursor else {
+    let Some(ScreenRows {
+        rows,
+        cursor,
+        title_key,
+    }) = rows_and_cursor
+    else {
         return;
     };
     let notice_text = notice.map(|notice| notice.resolve(catalog, language));
-    let mut data = screen_data(state, &rows, cursor, notice_text.as_deref());
+    let mut data = screen_data(state, &rows, cursor, notice_text.as_deref(), &title_key);
     data.hovered = hovered_row;
     let size = resources.window_size;
     render_screen(
@@ -286,7 +358,15 @@ impl Demo {
             // ——行矩形现在要一个文本测量器（行高按渲染行数算，见
             // `ll_ui::screen`），两处借用必须错开。
             let can_save = self.can_save_manually();
-            let Some((rows, cursor)) = screen_row_texts(
+            let session = self
+                .session
+                .as_ref()
+                .map(|session| (&session.game_world.world, session.game_world.player));
+            let Some(ScreenRows {
+                rows,
+                cursor,
+                title_key,
+            }) = screen_row_texts(
                 state,
                 &self.config,
                 &self.catalog,
@@ -296,13 +376,15 @@ impl Demo {
                 &self.save_slots,
                 &self.content,
                 self.new_game_draft.as_ref(),
-            ) else {
+                session,
+            )
+            else {
                 return crate::pointer::RowPointer::Idle;
             };
             let notice_text = self
                 .screen_notice
                 .map(|notice| notice.resolve(&self.catalog, &self.config.language));
-            let data = screen_data(state, &rows, cursor, notice_text.as_deref());
+            let data = screen_data(state, &rows, cursor, notice_text.as_deref(), &title_key);
             ll_ui::screen::screen_row_rects(
                 &data,
                 &self.catalog,
@@ -313,6 +395,73 @@ impl Demo {
             )
         };
         crate::pointer::resolve_row_pointer(&mut self.pointer, input, &rects)
+    }
+
+    /// 会话屏这一帧：算行 → 交给 [`crate::dialogue_screen::update_dialogue`]
+    /// → 把它要提交的意图送进回合引擎。
+    ///
+    /// # 行在这里**又算了一遍**，这不是那个「两份同一个算法」的形状
+    ///
+    /// [`Demo::resolve_screen_pointer`] 刚刚算过一遍同样的行（为了拿行
+    /// 矩形）。两遍调的是**同一个函数**
+    /// （[`crate::dialogue_screen::dialogue_rows`]）、跑在同一帧的同一份
+    /// 世界上，因此逐条相同——与 `crate::player_action::menu_rows` 和
+    /// `player_command` 各自重建一次列表是同一条既有取舍，理由见那里
+    /// 的文档：攒成一个跨帧字段才是真正的风险（要有人负责让它失效）。
+    ///
+    /// # 提交意图这条路径
+    ///
+    /// 走的是与玩家按键完全相同的
+    /// [`ll_sim::turn::TurnEngine::try_player_intent`]——**不是**另开
+    /// 一条「屏里也能改世界」的小路（约束 C1）。因此
+    /// `Intent::DialogueChoose` 的结算、条件重新校验、效果落地全部与
+    /// `crate::player_action` 提交的那六个意图逐条同办。
+    fn update_dialogue_screen(
+        &mut self,
+        node: ll_core::ident::ContentIndex,
+        cursor: &mut usize,
+        input: &InputState,
+        pointer: crate::pointer::RowPointer,
+    ) -> (ScreenOutcome, Option<ScreenState>) {
+        let Some(session) = self.session.as_mut() else {
+            // 底下没有世界却停在会话屏上是不该发生的状态；关掉这块屏
+            // 比 panic 好，与本模块其余降级路径一致。
+            return (ScreenOutcome::Close, None);
+        };
+        let player = session.game_world.player;
+        let Some(agent) = session.game_world.world.actors.get(player) else {
+            return (ScreenOutcome::Close, None);
+        };
+        let rows = crate::dialogue_screen::dialogue_rows(
+            node,
+            &self.content.dialogue_node_table,
+            agent,
+            &self.content.registry,
+            &self.catalog,
+            &self.config.language,
+        );
+        let update = crate::dialogue_screen::update_dialogue(
+            node,
+            cursor,
+            &rows,
+            &self.content.dialogue_node_table,
+            player,
+            input,
+            pointer,
+        );
+        if let Some(intent) = update.submit {
+            let runtime_catalogs = RuntimeCatalogs::new(&self.content);
+            let catalogs = runtime_catalogs.as_resolve_catalogs();
+            let mut on_effect = |_world: &ll_world::state::WorldState, _effect: &Effect| {};
+            session.engine.try_player_intent(
+                &mut session.game_world.world,
+                player,
+                intent,
+                &catalogs,
+                &mut on_effect,
+            );
+        }
+        (update.outcome, update.next)
     }
 
     pub(super) fn update_screen(&mut self, input: &mut InputState) -> bool {
@@ -390,6 +539,14 @@ impl Demo {
             ScreenState::SaveNaming { origin } => {
                 let update = self.update_save_naming(input, origin);
                 (update.outcome, update.next)
+            }
+            ScreenState::Dialogue { node, cursor } => {
+                let mut cursor = cursor;
+                let outcome = self.update_dialogue_screen(node, &mut cursor, input, pointer);
+                (
+                    outcome.0,
+                    outcome.1.or(Some(ScreenState::Dialogue { node, cursor })),
+                )
             }
             ScreenState::Settings { .. } => {
                 let mut state = state;

@@ -134,7 +134,7 @@ fn 背包开着时按取消键关背包而不是开暂停菜单() {
 /// 首页第 `row` 行这一刻画在屏幕的哪一块——**用的是渲染侧与输入侧
 /// 共用的那同一个 `screen_row_texts`**，测试里不另抄一份几何。
 fn 首页行矩形(demo: &Demo, viewport: (f32, f32)) -> Vec<ll_ui::widget::geometry::Rect> {
-    let (rows, cursor) = screen_row_texts(
+    let produced = screen_row_texts(
         ScreenState::Title,
         &demo.config,
         &demo.catalog,
@@ -144,9 +144,17 @@ fn 首页行矩形(demo: &Demo, viewport: (f32, f32)) -> Vec<ll_ui::widget::geom
         &demo.save_slots,
         &demo.content,
         demo.new_game_draft.as_ref(),
+        // 首页底下没有世界，会话屏那一路用不到。
+        None,
     )
     .expect("首页画的就是那块居中面板");
-    let data = screen_data(ScreenState::Title, &rows, cursor, None);
+    let data = screen_data(
+        ScreenState::Title,
+        &produced.rows,
+        produced.cursor,
+        None,
+        &produced.title_key,
+    );
     // 纯 CPU 的测量器：这条测试跑在没有图形适配器的环境里，
     // 见 `ll_text::measure` 模块文档。
     let mut measure = ll_text::TextMeasurer::new().expect("内置字体资产应能正常解析");

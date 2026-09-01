@@ -142,6 +142,9 @@ impl RealModsHandle {
             skill_tree: &NoSkills,
             xp_curves: &FlatXpCurve::DEFAULT,
             subclass_unlocks: &ll_sim::subclass::NoSubclassUnlocks,
+            // 对话这两路（对话批次 2 新增）：本条测试与对话无关，接空实现。
+            dialogues: &ll_sim::dialogue::NoDialogues,
+            content_ids: &ll_sim::dialogue::NoContentIds,
         }
     }
 

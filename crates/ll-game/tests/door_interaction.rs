@@ -19,7 +19,7 @@
 use ll_core::torus::TorusPos;
 use ll_game::content::{LoadedContent, RuntimeCatalogs};
 use ll_game::player_action::{
-    DoorAction, Feedback, InteractTarget, PlayerCommand, PlayerMenu, interact_entries,
+    DoorAction, Feedback, InteractTarget, PlayerCommand, PlayerMenu, TalkLookup, interact_entries,
     interact_tiles, player_command,
 };
 use ll_game::world::{GameWorld, build_new_world};
@@ -126,7 +126,12 @@ fn 关着的门出现在交互列表里且主交互是开门() {
     let (game_world, east) = world_with_east_terrain(&content, content.terrain_ids.door_closed);
 
     // Act
-    let entries = interact_entries(&game_world.world, east);
+    let entries = interact_entries(
+        &game_world.world,
+        east,
+        game_world.player,
+        TalkLookup::none(),
+    );
 
     // Assert
     assert_eq!(
@@ -154,7 +159,12 @@ fn 开着的门出现在交互列表里且主交互是关门() {
     let (game_world, east) = world_with_east_terrain(&content, content.terrain_ids.door_open);
 
     // Act
-    let entries = interact_entries(&game_world.world, east);
+    let entries = interact_entries(
+        &game_world.world,
+        east,
+        game_world.player,
+        TalkLookup::none(),
+    );
 
     // Assert
     assert_eq!(
@@ -184,7 +194,12 @@ fn 有门的那一格进得了方向列表() {
         .pos;
 
     // Act
-    let tiles = interact_tiles(&game_world.world, player_pos);
+    let tiles = interact_tiles(
+        &game_world.world,
+        player_pos,
+        game_world.player,
+        TalkLookup::none(),
+    );
 
     // Assert
     assert!(
@@ -205,7 +220,12 @@ fn 平地不会被当成门() {
     let (game_world, east) = world_with_east_terrain(&content, content.terrain_ids.floor_stone);
 
     // Act
-    let entries = interact_entries(&game_world.world, east);
+    let entries = interact_entries(
+        &game_world.world,
+        east,
+        game_world.player,
+        TalkLookup::none(),
+    );
 
     // Assert
     assert!(entries.is_empty(), "石地板不是门，实测 {entries:?}");
@@ -455,7 +475,12 @@ fn 门那一行排在地面物品之后() {
     });
 
     // Act
-    let entries = interact_entries(&game_world.world, east);
+    let entries = interact_entries(
+        &game_world.world,
+        east,
+        game_world.player,
+        TalkLookup::none(),
+    );
 
     // Assert
     assert_eq!(
@@ -502,7 +527,12 @@ fn 每一件立着的家具都进得了交互列表() {
     });
 
     // Act
-    let entries = interact_entries(&game_world.world, east);
+    let entries = interact_entries(
+        &game_world.world,
+        east,
+        game_world.player,
+        TalkLookup::none(),
+    );
 
     // Assert
     assert_eq!(entries, vec![InteractTarget::Facility { def: ingot }]);
@@ -521,10 +551,15 @@ fn 在门那一格按确认(
 ) -> PlayerCommand {
     // 光标要停在**门**那一行——门排在地面物品之后（见「门那一行排在
     // 地面物品之后」那条断言），立着家具的那一格上第 0 行是家具。
-    let cursor = interact_entries(&game_world.world, door)
-        .iter()
-        .position(|entry| matches!(entry, InteractTarget::Door { .. }))
-        .expect("这一格上必然有一扇门");
+    let cursor = interact_entries(
+        &game_world.world,
+        door,
+        game_world.player,
+        TalkLookup::none(),
+    )
+    .iter()
+    .position(|entry| matches!(entry, InteractTarget::Door { .. }))
+    .expect("这一格上必然有一扇门");
     let mut menu = PlayerMenu::Interact {
         pos: door,
         cursor,
@@ -538,6 +573,7 @@ fn 在门那一格按确认(
         &game_world.world,
         game_world.player,
         &content.recipe_table,
+        TalkLookup::none(),
     )
 }
 

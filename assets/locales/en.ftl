@@ -475,3 +475,13 @@ dialogue-guard-ask_rumour = Heard anything worth hearing?
 dialogue-guard-rumour = She drops her voice. "Third shaft. Sounds at night. The overseer calls it settling rock, but rock does not settle night after night."
 dialogue-guard-ask_rumour_again = The third shaft. Tell me more.
 dialogue-guard-rumour_again = "I said nothing." The halberd comes level again. "Neither did you."
+
+# ── Dialogue screen and the talk row in the interact list (batch 21) ──
+# The dialogue screen's title is not here: it is the NPC's own line, keyed
+# by the content table's text_key (see crates/ll-game/src/dialogue_screen.rs).
+
+screen-dialogue-empty = (nothing to say)
+screen-dialogue-hint = Up/Down to choose · Enter to confirm · Esc to end
+screen-dialogue-missing = (he opens his mouth, but no sound comes)
+hud-interact-action-talk = talk
+hud-interact-someone = someone

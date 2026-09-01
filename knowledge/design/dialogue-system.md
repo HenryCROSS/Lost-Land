@@ -703,6 +703,30 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 
 ## 八、分批与优先级
 
+> **【2026-08-31 落地回填：批次 2（把对话跑通）已完成】**
+> 计划文档 `docs/superpowers/plans/2026-08-31-batch21-dialogue-ui.md`，
+> 工作树 `wt-dialogue2`。落点：`crates/ll-sim/src/dialogue.rs`
+> （`DialogueOutcome`/`set_dialogue_flag`/`DialogueCatalog`）、
+> `crates/ll-sim/src/resolve/dialogue.rs`（`Intent::DialogueChoose` 的
+> 结算）、`crates/ll-game/src/interact_list.rs`（`InteractTarget::Talk`）、
+> `crates/ll-game/src/dialogue_screen.rs`（会话屏）。
+> `CONTENT_HASH_ALGORITHM_VERSION` 28 → 29（**注意：并行的据点建筑批次
+> 也递增到了 29，合并时要重新递增**）；`CURRENT_SCHEMA_VERSION` 不动；
+> 两条黄金基准实测未变（并做了覆盖面证伪，见计划文档十节）。
+>
+> **本节以下正文原样保留**，落地时对本文档有三处偏离与补充：
+>
+> 1. **六节说的「`Talk` 这一行排在哪」按建议取了「最前」**，与
+>    `wt-uxdesign` 无冲突（那边没有相反结论）。
+> 2. **`InteractTarget::Talk` 不带说话人的 `EntityId`**，`ScreenState::Dialogue`
+>    也不带。会话屏是模态屏，`Demo::advance` 在它开着时整个早退，世界
+>    一个字节不动 ⇒ 说话人不可能在会话中途走开或死掉，带一个从头到尾
+>    没有消费者的字段就是又一个「声明了但没接线」。批次 4/5 的
+>    `give-item`/`open-trade` 真的需要「给谁」时再加。
+> 3. **会话屏的标题就是节点的 `text_key`**（NPC 那一句），不给
+>    `ll_ui::screen::ScreenData` 加第六个槽。七节 7.1 只说了「会话位置是
+>    UI 状态」，没有规定屏的排版。
+
 > **【2026-08-31 落地回填：批次 1（对话内容表）已完成】**
 > 计划文档 `docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md`，
 > 工作树 `wt-dlgcontent`。落点：`crates/ll-sim/src/dialogue.rs`（十条谓词与求值）、
@@ -737,7 +761,7 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 |---|---|---|---|
 | **0** ✅ | **mod 的 `.ftl` 装载**（2026-08-30 已落地）：`Catalog` 加命名空间维度、遍历 `mods/*/locales/`、本体的 `assets/locales/` 注册成 `lostland` 命名空间 | 无 | 否 |
 | **1** ✅ | 对话内容表（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md`）：`dialogues.json5`、两张表、进 `CONTENT_FILES` 与内容哈希、条件谓词七条、本体写一份 steward 对话、`example_mod` 写一份**带自己 `.ftl`** 的对话（这是批次 0 的验收标的） | 0 | 否 |
-| **2** | 进交互列表 + 会话 UI + `Intent::DialogueChoose` + `outcomes` 里的 `set-flag`。**此时对话已经能说话、能分支、能记住玩家的选择，但还没有丙档的三条后果** | 1；UI 形状等 `wt-uxdesign` | 否 |
+| **2** ✅ | 进交互列表 + 会话 UI + `Intent::DialogueChoose` + `outcomes` 里的 `set-flag`（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch21-dialogue-ui.md`）。**此时对话已经能说话、能分支、能记住玩家的选择，但还没有丙档的三条后果** | 1；UI 形状等 `wt-uxdesign` | 否 |
 | **3** | **加入据点**：`Agent.home` 字段（含存档 schema 升版）、`join-settlement` 后果、`affiliated`/`standing-at-least` 两条谓词真的有东西可读 | 2 | **部分**——「加入据点」不依赖 P9；「加入**势力**」依赖 P9 的 `OrgInstance` 播种 |
 | **4** | **任务**：`complete-quest` 后果、`give-item` 后果（`Effect::TransferOwnership` 的第一个调用方，含 owner 校验） | 2 | 否 |
 | **5** | **交易**：NPC 初始钱包、`Intent::Trade`、占位价格公式（基础价 × 归属系数） | 3（归属系数要有 `standing` 可读） | **是**——真正的定价（库存/需求/政策/商路四因子、行会中介、商队）整体属 P9，本批只交付占位公式并在代码里写明它将来会被替换 |

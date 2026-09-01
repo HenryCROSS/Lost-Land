@@ -52,8 +52,8 @@
 //! 2 及之后，见计划文档第七节的挂载点表。
 
 use ll_core::ident::{ContentIndex, NamespacedId};
-use ll_world::entity::{AffiliationKind, Agent, OrgRef};
-use ll_world::mod_state::ModStateValue;
+use ll_world::entity::{AffiliationKind, Agent, EntityId, OrgRef};
+use ll_world::mod_state::{ModStateValue, ModStateWrite};
 
 use crate::quest::is_quest_completed;
 
@@ -77,8 +77,11 @@ pub fn dialogue_flag_key(flag: &NamespacedId) -> String {
 /// 值固定是 [`ModStateValue::Bool(true)`](ModStateValue::Bool)——「设过」
 /// 是一个存在性判断（写过就是设过），不需要一个可以取多种值的状态机，
 /// 理由与 [`crate::quest::mark_quest_completed`] 用 `Int(1)` 逐字相同。
-/// **写入这一侧属于批次 2**（`outcomes` 里的 `set-flag`，经
-/// [`crate::effect::Effect::SetModState`] 落地，约束 C1）。
+///
+/// 〔2026-08-31，批次 21〕原文说「**写入这一侧属于批次 2**」——那一批就是
+/// 本批，写入侧现在是 [`set_dialogue_flag`]（`outcomes` 里的 `set-flag`，经
+/// [`crate::effect::Effect::SetModState`] 落地，约束 C1）。本条谓词因此从
+/// 本批起有非假的读数。
 pub fn has_dialogue_flag(agent: &Agent, flag: &NamespacedId) -> bool {
     matches!(
         agent
@@ -86,6 +89,49 @@ pub fn has_dialogue_flag(agent: &Agent, flag: &NamespacedId) -> bool {
             .get(&(flag.namespace().to_string(), dialogue_flag_key(flag))),
         Some(ModStateValue::Bool(true))
     )
+}
+
+/// 产出一条「在 `actor` 身上设下 `flag`」的脚本状态写入记录。
+///
+/// **不直接改任何 `WorldState`**——本函数只产出数据，调用方
+/// （[`crate::resolve`] 的 `Intent::DialogueChoose` 一支）负责把返回值包进
+/// [`crate::effect::Effect::SetModState`] 交给 [`crate::apply::apply`]
+/// （约束 C1，唯一写入口）。与 [`crate::quest::mark_quest_completed`] 逐条
+/// 同办，只是值取 [`ModStateValue::Bool`] 而不是 `Int(1)`——读那一侧
+/// （[`has_dialogue_flag`]）从批次 1 起就是按 `Bool(true)` 判的。
+pub fn set_dialogue_flag(actor: EntityId, flag: &NamespacedId) -> ModStateWrite {
+    ModStateWrite {
+        entity: actor,
+        mod_namespace: flag.namespace().to_string(),
+        key: dialogue_flag_key(flag),
+        value: ModStateValue::Bool(true),
+    }
+}
+
+/// 选中一条选项之后**世界**发生什么——数据里的一条**声明**，把声明变成
+/// [`crate::effect::Effect`] 的是 `resolve`（规格五节 5.0）。
+///
+/// # 为什么本批只有一个变体
+///
+/// 规格八节的分批表：`join-settlement` 是批次 3、`complete-quest` 与
+/// `give-item` 是批次 4、`open-trade` 是批次 5，每一支都各自缺着自己的
+/// 前置（`Agent.home` 字段、`Effect::TransferOwnership` 的 owner 校验、
+/// NPC 初始钱包）。**先声明一个只能写空数组的变体，就是又一个「声明了
+/// 但没接线」的死字段**——本仓库长期记账的正是这一类，批次 1 因此连
+/// `outcomes` 这个字段本身都没有加。
+///
+/// 而**枚举**这个形状本身是有价值的：`write_dialogue_outcome`（内容哈希）
+/// 与 `resolve` 两处都是穷尽 `match`，批次 3 加一支时编译器会逼那两处
+/// 各自表态，不会出现「加了一种后果、哈希没混进去」这种静默分叉。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DialogueOutcome {
+    /// 在发起者身上设下一条对话标志——[`DialogueCondition::FlagSet`] /
+    /// [`DialogueCondition::FlagNotSet`] 读的就是它。
+    ///
+    /// 标志**没有内容表**（它是对话系统自己在 [`Agent::mod_state`] 里写的
+    /// 一条记录），因此携带的是 [`NamespacedId`] 而不是 [`ContentIndex`]，
+    /// 与条件那两支逐字相同。
+    SetFlag(NamespacedId),
 }
 
 /// 把 `ContentIndex` 反查回 `NamespacedId` 的最小接口。
@@ -114,6 +160,62 @@ pub struct NoContentIds;
 
 impl ContentIdLookup for NoContentIds {
     fn id_of(&self, _index: ContentIndex) -> Option<&NamespacedId> {
+        None
+    }
+}
+
+/// 透过一层引用照样是一份反查——让 [`all_conditions_hold`] 这类收
+/// `&impl ContentIdLookup` 的泛型函数能直接接住一个
+/// `&dyn ContentIdLookup`（[`crate::catalogs::ResolveCatalogs`] 里存的
+/// 就是后者）。
+///
+/// 写成 `?Sized` 的一揽子实现而不是只给 `&dyn ContentIdLookup` 写一条：
+/// 后者会让 `&SomeConcreteTable` 走不通，于是调用方要按手上拿的是具体
+/// 类型还是 trait 对象分两种写法——那是一处只为绕开类型系统而存在的
+/// 分叉。
+impl<T: ContentIdLookup + ?Sized> ContentIdLookup for &T {
+    fn id_of(&self, index: ContentIndex) -> Option<&NamespacedId> {
+        (**self).id_of(index)
+    }
+}
+
+/// 一条对话选项里 `resolve` 需要看的两样东西。
+///
+/// **不含 `text_key` 与 `next`**：前者是纯呈现层的事，后者是 UI 状态
+/// （规格 7.1「会话内的位置是 UI 状态」）——`resolve` 两样都不该读。
+/// 视图只开放它真正需要的字段，与 `ll_mod` 那批 `*View` 类型同一条
+/// 既有手法。
+#[derive(Debug, Clone, Copy)]
+pub struct DialogueOptionView<'a> {
+    /// 这一行的显示条件——`resolve` 要**重新校验**一遍，见
+    /// [`crate::resolve`] 的 `Intent::DialogueChoose` 一支。
+    pub conditions: &'a [DialogueCondition],
+    /// 选中之后世界发生什么。
+    pub outcomes: &'a [DialogueOutcome],
+}
+
+/// 「这个节点的第几条选项长什么样」——`Intent::DialogueChoose` 结算的
+/// 唯一内容来源。
+///
+/// 与 [`crate::skill::SkillCatalog`]/[`crate::quest::QuestCatalog`] 同一
+/// 套依赖倒置：真正的表（`ll_mod::dialogue::DialogueNodeTable`）定义在
+/// 下游的 `ll-mod`，本 crate 只声明这个接口。
+pub trait DialogueCatalog {
+    /// `node` 这个节点的第 `option` 条选项；节点或下标不存在时返回
+    /// `None`（**不 panic**：那两样都可能来自一个已经过时的 UI 帧）。
+    fn option(&self, node: ContentIndex, option: usize) -> Option<DialogueOptionView<'_>>;
+}
+
+/// 空对话目录：任何查询都查不到。
+///
+/// 与 [`NoContentIds`]/[`crate::quest::NoQuests`] 同一个理由：这是保底
+/// 实现，不是特殊路径。在它下面 `Intent::DialogueChoose` 恒产出空效果
+/// ——与「玩家选了一条不存在的选项」同一个结果，诚实且确定。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct NoDialogues;
+
+impl DialogueCatalog for NoDialogues {
+    fn option(&self, _node: ContentIndex, _option: usize) -> Option<DialogueOptionView<'_>> {
         None
     }
 }

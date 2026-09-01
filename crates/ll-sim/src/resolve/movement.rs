@@ -72,8 +72,10 @@ pub(crate) fn step_destination(world: &WorldState, from: TorusPos, dir: Directio
 ///
 /// # 为什么必须只有这一份实现
 ///
-/// 两处消费它：[`resolve_move`] 的占位检查与
-/// `crate::turn::route_move_into_occupant` 的撞格路由。这两处问的是
+/// 三处消费它：[`resolve_move`] 的占位检查、
+/// `crate::turn::route_move_into_occupant` 的撞格路由，以及
+/// （对话批次 2 起）`ll_game::player_action::interact_entries` 的
+/// 「这一格上站着谁、能不能跟他说话」。这两处问的是
 /// **同一个问题**——「我要迈进的那一格上站着谁」——而它们的答案必须
 /// 逐字一致：路由据此决定这一步是攻击、互换还是原样放行，占位检查据此
 /// 决定这一步能不能落地。两边各写一遍的真正代价不是多几行，是那条
@@ -90,7 +92,7 @@ pub(crate) fn step_destination(world: &WorldState, from: TorusPos, dir: Directio
 /// 返回 `(id, &Agent)` 而不是只返回 id：撞格路由紧接着就要拿那个
 /// `Agent` 去问 `crate::ai_query::declared_hostile`，返回 id 会逼它再查
 /// 一次同一张表，而「两次查找之间表没变」这件事需要读者自己去确认。
-pub(crate) fn occupant_at(
+pub fn occupant_at(
     world: &WorldState,
     pos: TorusPos,
     mover: EntityId,

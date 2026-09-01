@@ -334,6 +334,16 @@ NamespacedId` 的反查（`quest-completed` 需要它，因为 `is_quest_complet
 
 ## 七、批次 2 及之后的挂载点（本节是给下一批的交接）
 
+> **【2026-08-31 回填：批次 2 已落地】** 计划文档
+> `docs/superpowers/plans/2026-08-31-batch21-dialogue-ui.md`，工作树
+> `wt-dialogue2`。下表**批次 2 那五行全部照本节写的挂载点做完了**，
+> 一处偏离：`Intent::DialogueChoose` 的形状是
+> `{ actor, node, option }`——**不带 `dialogue`**，因为结算要的全部
+> 信息都在 `(node, option)` 里，带一个 `resolve` 从不读的字段会被
+> `check_field_consumers.py` 如实报成未接线。
+> `CONTENT_HASH_ALGORITHM_VERSION` 28 → 29（本节预告的「会再次递增
+> 内容哈希版本」兑现了）。批次 3–6 那几行原样有效。
+
 | 批 | 要加什么 | 挂在哪（本批已经留好的位置） |
 |---|---|---|
 | **2** | `outcomes` 字段 | `RawDialogueOption` 加一个 `#[serde(default)] outcomes: Vec<RawDialogueOutcome>`；`DialogueOption` 加同名字段；`write_dialogue_node_fields` 与 `inspect_dialogue_node` 各补一段（**会再次递增内容哈希版本**） |

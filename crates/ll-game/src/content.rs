@@ -438,6 +438,22 @@ impl<'a> RuntimeCatalogs<'a> {
             // 钥匙」的状态，而全部证据仍能在集成测试里成立——与击杀
             // 经验那次「只在测试里成立的接线」是同一类缺陷。
             subclass_unlocks: &self.content.subclass_table,
+            // 对话这一路（对话批次 2）：`DialogueNodeTable` 本就按节点
+            // 索引登记了每条选项的条件与后果，直接充当目录，见
+            // `ll_mod::dialogue` 里那条 `impl DialogueCatalog for
+            // DialogueNodeTable`。
+            //
+            // **这一行是「对话选项真的能改变世界」在真实游戏里唯一的
+            // 接线点**：`ll-game` 全程只经 `TurnEngine` 驱动世界，漏掉
+            // 它，`Intent::DialogueChoose` 会恒查不到内容、恒产出空
+            // 效果，而全部证据仍能在集成测试里成立——与击杀经验、副职
+            // 那两次「只在测试里成立的接线」是同一类缺陷。
+            dialogues: &self.content.dialogue_node_table,
+            // 反查这一路：对话条件里 `quest-completed`/
+            // `quest-not-completed` 两支要把 `ContentIndex` 反查回
+            // 标识符才能读任务进度，见
+            // `ll_sim::dialogue::ContentIdLookup` 文档。
+            content_ids: &self.content.registry,
         }
     }
 }

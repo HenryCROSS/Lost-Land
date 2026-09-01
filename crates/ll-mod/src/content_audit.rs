@@ -1764,6 +1764,7 @@ fn inspect_dialogue_node(auditor: &mut Auditor<'_>, index: ContentIndex) {
     // `auditor.tables`。
     let has_options = !view.options.is_empty();
     let has_conditions = view.options.iter().any(|o| !o.conditions.is_empty());
+    let has_outcomes = view.options.iter().any(|o| !o.outcomes.is_empty());
     let jumps: Vec<ContentIndex> = view
         .options
         .iter()
@@ -1787,6 +1788,14 @@ fn inspect_dialogue_node(auditor: &mut Auditor<'_>, index: ContentIndex) {
     for (field, target, expected) in condition_refs {
         auditor.reference(field, target, ReferenceExpectation::Table(expected));
     }
+    // 后果（对话批次 2 新增）——**追加在本函数末尾**，理由同
+    // `write_dialogue_node_fields` 那一处：并行批次也在改本文件。
+    //
+    // `set-flag` 携带的是一条**没有内容表**的标志标识符，因此这里只记
+    // 「有没有人真的写过后果」，没有可校验的跨表引用——与 `FlagSet` /
+    // `FlagNotSet` 两条条件在 `condition_reference` 里同样不返回引用是
+    // 同一个理由。
+    auditor.field("DialogueNodeAttrs::options::outcomes", has_outcomes);
 }
 
 /// 一条对话条件里携带的跨表引用（有的话）：字段名、目标索引、目标该落在

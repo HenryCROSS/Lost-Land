@@ -26,7 +26,7 @@
 use ll_core::ident::NamespacedId;
 use ll_core::torus::TorusPos;
 use ll_game::content::LoadedContent;
-use ll_game::player_action::{InteractTarget, interact_entries};
+use ll_game::player_action::{InteractTarget, TalkLookup, interact_entries};
 use ll_game::world::{GameWorld, build_new_world};
 use ll_world::item::{GroundItemStack, ItemStack};
 
@@ -96,7 +96,13 @@ fn 一具哥布林尸体平铺后脚下交互列表是三行() {
     // Arrange
     let content = test_content();
     let (mut game_world, pos) = test_world(&content);
-    let before = interact_entries(&game_world.world, pos).len();
+    let before = interact_entries(
+        &game_world.world,
+        pos,
+        game_world.player,
+        TalkLookup::none(),
+    )
+    .len();
     let corpse = index(&content, "lostland:goblin.corpse");
     let dagger = index(&content, "examplemod:crude_dagger");
     let arrow = index(&content, "examplemod:arrow");
@@ -105,7 +111,12 @@ fn 一具哥布林尸体平铺后脚下交互列表是三行() {
     drop_at(&mut game_world, pos, arrow);
 
     // Act
-    let rows = interact_entries(&game_world.world, pos);
+    let rows = interact_entries(
+        &game_world.world,
+        pos,
+        game_world.player,
+        TalkLookup::none(),
+    );
 
     // Assert
     assert_eq!(
@@ -132,13 +143,24 @@ fn 同一格两具同物种的尸体只占交互列表一行() {
     // Arrange
     let content = test_content();
     let (mut game_world, pos) = test_world(&content);
-    let before = interact_entries(&game_world.world, pos).len();
+    let before = interact_entries(
+        &game_world.world,
+        pos,
+        game_world.player,
+        TalkLookup::none(),
+    )
+    .len();
     let corpse = index(&content, "lostland:goblin.corpse");
     drop_at(&mut game_world, pos, corpse);
     drop_at(&mut game_world, pos, corpse);
 
     // Act
-    let rows = interact_entries(&game_world.world, pos);
+    let rows = interact_entries(
+        &game_world.world,
+        pos,
+        game_world.player,
+        TalkLookup::none(),
+    );
 
     // Assert
     assert_eq!(
@@ -166,7 +188,13 @@ fn 列表长度随物品种类数增长而不是随堆数增长() {
     // Arrange
     let content = test_content();
     let (mut game_world, pos) = test_world(&content);
-    let before = interact_entries(&game_world.world, pos).len();
+    let before = interact_entries(
+        &game_world.world,
+        pos,
+        game_world.player,
+        TalkLookup::none(),
+    )
+    .len();
     let defs = [
         index(&content, "lostland:goblin.corpse"),
         index(&content, "examplemod:crude_dagger"),
@@ -178,7 +206,12 @@ fn 列表长度随物品种类数增长而不是随堆数增长() {
     }
 
     // Act
-    let rows = interact_entries(&game_world.world, pos);
+    let rows = interact_entries(
+        &game_world.world,
+        pos,
+        game_world.player,
+        TalkLookup::none(),
+    );
 
     // Assert
     assert_eq!(

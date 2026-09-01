@@ -297,8 +297,13 @@ pub(super) fn draw_hud(
         game_world.player,
         &content.recipe_table,
         &content.item_table,
+        &content.class_table,
         catalog,
         language,
+        crate::player_action::TalkLookup {
+            dialogues: &content.dialogue_table,
+            cultures: Some(&content.culture_table),
+        },
     );
     let menu_data = crate::player_action::menu_data(menu, &menu_rows);
     let feedback_text = feedback.map(|feedback| catalog.resolve(language, feedback.i18n_key()));
