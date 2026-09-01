@@ -4,7 +4,7 @@
 > 讲反例验证／「覆盖不全的守护等于没有守护」的是
 > [ADR 0022 — 覆盖不全的确定性哈希，等于没有确定性哈希](../../../knowledge/decisions/0022-guard-coverage-gap-defeats-the-guard.md)；
 > [ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
-> 讲的是引擎层／玩法层的脚本边界，全文 0 次出现「反例」。**纪律本身完全成立、
+> 讲的是引擎层／玩法层的脚本边界，正文与反例验证无关（`grep -c 反例 knowledge/decisions/0018-*.md` 在 0018 末尾追加订正节之前为 0）。**纪律本身完全成立、
 > 一字不改，错的只是编号。** 错误源头是
 > [2026-08-27 会话交接](../../../knowledge/handoff/2026-08-27-session-handoff.md)
 > 第一节第 6 条（该条已原地更正）。本文档是历史档案，按纪律第 9 条**原文一字不改**，

@@ -192,7 +192,7 @@ git show <那个提交>^:crates/ll-render/examples/p1_acceptance/main.rs
   正是 ADR 0018 要根除的东西」，以及「相关」一节第一条
   「[ADR 0018]——反例验证是硬要求」。
 - **为什么错**：ADR 0018 讲的是**引擎层／玩法层的脚本边界**（三步归类判据 +
-  「本体即 Mod」限定于玩法层），**全文 0 次出现「反例」**（判据：
+  「本体即 Mod」限定于玩法层），**正文与反例验证无关（`grep -c 反例 knowledge/decisions/0018-*.md` 在 0018 末尾追加订正节之前为 0）**（判据：
   `grep -c 反例 knowledge/decisions/0018-*.md` 为 0）。讲「反例验证 / 覆盖不全的
   守护等于没有守护」的是
   [0022 — 覆盖不全的确定性哈希，等于没有确定性哈希](0022-guard-coverage-gap-defeats-the-guard.md)：

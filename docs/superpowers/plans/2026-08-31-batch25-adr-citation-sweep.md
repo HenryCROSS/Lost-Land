@@ -30,7 +30,9 @@ grep -c 反例 knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting
 
 1. **ADR 0018** =
    `knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md`，
-   标题「脚本层边界改按系统类型划分（引擎层 / 玩法层）」。**全文 0 次出现「反例」**。
+   标题「脚本层边界改按系统类型划分（引擎层 / 玩法层）」。**全文与反例验证无关**
+   （`grep -c 反例` 为 **0**；本批 B 部分在它末尾追加订正节之后这个数不再是 0，
+   复核时请只看正文与两节订正之外的部分）。
    它讲的是三步归类判据 + 「本体即 Mod」限定于玩法层；其 2026-08-23 订正段把
    验收要求改写为「每种玩法层内容类型都能从 mod 的 JSON5 内容数据文件声明，且要有
    真实 mod 内容为证」。
