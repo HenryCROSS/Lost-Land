@@ -34,8 +34,17 @@
 //! **`max_durability` 后来被这条判据自己请了进来**（新造物品耐久批次）：
 //! `resolve_craft`/`resolve_identify` 造成品时要回答「这件刚造出来的
 //! 东西带多少耐久」，答案只能来自成品那条定义的耐久上限——这正是
-//! 「`resolve` 真正要读的字段才收进来」，不是判据松动。`base_weight`/
-//! `base_price` 照旧不收：负重与经济系统至今没有任何结算消费者。
+//! 「`resolve` 真正要读的字段才收进来」，不是判据松动。~~`base_weight`/
+//! `base_price` 照旧不收：负重与经济系统至今没有任何结算消费者。~~
+//!
+//! **〔2026-09-01，批次 31〕`base_price` 也被同一条判据请了进来**：
+//! `Intent::Trade` 的结算要回答「这一件多少钱」，答案只能来自那条定义
+//! 的基础价（[`crate::trade::trade_price`]）。同一批把
+//! `scripts/ci/check_field_consumers.py` 里 `ItemDef.base_price` 那条
+//! 豁免删掉了——它的原话正是「经济系统（买卖定价）尚未落地」，那句话
+//! 从这一批起不成立。**`base_weight` 照旧不收**：负重至今没有任何结算
+//! 消费者，它那条豁免原样留着。
+//! 上面划掉的两行原文保留以便追溯（纪律：推翻要留来由）。
 
 use std::collections::BTreeMap;
 

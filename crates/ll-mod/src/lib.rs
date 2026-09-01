@@ -167,6 +167,7 @@ pub mod manifest;
 pub mod mod_set;
 pub mod modifier_type;
 pub mod native_behavior;
+pub mod npc_wallet;
 pub mod pipeline;
 pub(crate) mod prereq_graph;
 pub mod quest;

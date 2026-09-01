@@ -293,7 +293,7 @@ enum AffinityRule {
 ///
 /// 全部字段是 `Option`：本结构体由 [`Self::resolve`] 从注册表**查**出来，
 /// 查不到就是 `None`（ADR 0015，见模块文档四节）。
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SettlementRoles {
     /// 据点管理者——每座据点恰好一位（名册序号 0）。
     pub steward: Option<ContentIndex>,
@@ -815,6 +815,21 @@ pub struct MaterializeContext<'a> {
     /// 「尚无内容就诚实表达尚无内容」一致，不伪造一条指向某个默认文化
     /// 的归属。
     pub culture: Option<CultureKind>,
+    /// 这座据点的当前人口（[`ll_world::settlement::SettlementSite::population`]）。
+    ///
+    /// 与本结构体其余各项同一条纪律：它「与哪一位无关」——物化按据点
+    /// 成批进行，同一批人共用同一个人口数，因此它属于这一束而不是
+    /// [`NpcProfile`]。
+    ///
+    /// 唯一的消费者是 [`crate::npc_wallet::npc_initial_wallet`]（所有者
+    /// 裁定第 4 条：初始钱包「从据点人口派生」）。**它从第一天起就有
+    /// 消费者**，因此过得了 `scripts/ci/check_field_consumers.py`。
+    ///
+    /// 注意它与名册长度**不是一回事**：名册按 [`MAX_ROSTER`] 截断，
+    /// 人口不截断（见那个常量的文档「这个上界只截断物化，不篡改人口」）。
+    /// 钱包读的是人口——一座两百人的城即使只物化出二十个人，它的管理者
+    /// 也该按两百人的量级富有。
+    pub population: u32,
 }
 
 /// 一个 NPC 对**自己出生的那份文化**的声望，千分比
@@ -903,7 +918,15 @@ pub fn build_npc_agent(
             })
             .into_iter()
             .collect(),
-        wallet: 0,
+        // **初始钱包不再是 0**（所有者裁定第 4 条，
+        // `knowledge/handoff/2026-08-28-session-handoff.md` 第〇之二节）：
+        // 按职业量级给、从据点人口派生。旧行为的代价是交易落地即残废
+        // ——NPC 一分钱拿不出来，玩家只能买不能卖。
+        //
+        // **这会改变经物化路径产生的世界的摘要**：`Agent::wallet` 进
+        // `ll_world::state::WorldState::hash`。取值理由、量纲对照与那笔
+        // 通胀账写在 `crate::npc_wallet` 模块文档里。
+        wallet: crate::npc_wallet::npc_initial_wallet(profile.profession, roles, ctx.population),
         profession: profile.profession,
         goals: Vec::new(),
         race: profile.race,

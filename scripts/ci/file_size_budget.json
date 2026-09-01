@@ -30,8 +30,8 @@
       "reason": "合理：内容数据文件 schema 的装备与规则侧七类，逐类型平铺。它本身已经是从 content_schema.rs 拆出来的一半（分界线见两者模块文档），再拆会打碎「一个 JSON5 文件对应一段 schema」这条对应关系。"
     },
     "crates/ll-mod/src/roster.rs": {
-      "code_lines": 835,
-      "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。（2026-08-31，批次 26）+1 行：`build_npc_agent` 写 `home: Some(profile.home)`——`Agent::home` 唯一的非 `None` 生产者，把既有真相源 `NpcProfile.home` 搬进实体。结构体字面量必须列全字段，不可拆分。〔2026-09-01，批次 31〕+1 行：`ItemRule` 加了 `base_price` 字段（交易的占位价格公式要读它），本文件 `mod tests` 里那个夹具因此多一行——编译器强制的一行，拆不动。**本批的 NPC 初始钱包没有加在这个文件里**，它落在新模块 `crates/ll-mod/src/npc_wallet.rs`。"
+      "code_lines": 836,
+      "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。（2026-08-31，批次 26）+1 行：`build_npc_agent` 写 `home: Some(profile.home)`——`Agent::home` 唯一的非 `None` 生产者，把既有真相源 `NpcProfile.home` 搬进实体。结构体字面量必须列全字段，不可拆分。〔2026-09-01，批次 31〕+1 行：`ItemRule` 加了 `base_price` 字段（交易的占位价格公式要读它），本文件 `mod tests` 里那个夹具因此多一行——编译器强制的一行，拆不动。**本批的 NPC 初始钱包没有加在这个文件里**，它落在新模块 `crates/ll-mod/src/npc_wallet.rs`。 再 +1 行：`MaterializeContext` 加 `population: u32` 字段（钱包的两个因子之一）。**钱包的计算本身按门禁原话拆进了新模块** `crates/ll-mod/src/npc_wallet.rs`；留在这里的只有一个字段声明与一行调用，拆不动。"
     },
     "crates/ll-platform/src/keybind.rs": {
       "code_lines": 987,

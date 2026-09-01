@@ -307,7 +307,46 @@ fn populated_world() -> GameWorld {
 /// **同批对照**：`EXPECTED_REPLAY_DIGEST` 也红（它的两个手写 `Agent`
 /// 各多写一个 `None` 判别值），`EXPECTED_WORLD_DIGEST` **不红**（那个
 /// 世界零 `actor`，A 表第二行早就实测过这条局限）。
-const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 14_539_485_488_716_496_306;
+/// ### 2026-09-01，批次 31（交易：NPC 初始钱包不再是 0）
+///
+/// `14_539_485_488_716_496_306` → `5_695_002_850_796_623_600`。
+///
+/// 项目所有者裁定第 4 条（`knowledge/handoff/2026-08-28-session-handoff.md`
+/// 第〇之二节）：**NPC 初始钱包不能是 0**，按职业量级给、从据点人口
+/// 派生。`ll_mod::roster::build_npc_agent` 那一行 `wallet: 0` 换成
+/// [`ll_mod::npc_wallet::npc_initial_wallet`]，而
+/// `WorldState::hash` 里本来就有一行 `write_i64(agent.wallet)`
+/// ——本文件的世界里 29 个 `Agent` 全部经物化路径产生，摘要必然改变。
+///
+/// **这一批与前两次重冻不同的地方**：改的不是哈希函数、也不是内容表，
+/// 是**世界生成期写进实体的一个值**。因此第 2 步关掉的是那一行赋值
+/// 本身，而不是哈希里的某一行。
+///
+/// 四步（一步没少，全部在 Windows 实跑）：
+///
+/// 1. **基线红**：`left: 5695002850796623600` /
+///    `right: 14539485488716496306`。**七条存在性断言全部在摘要断言之前
+///    通过**（panic 落在 `assert_eq!(world.hash(), ..)` 那一行，
+///    也就是本常量下面那条），世界没有变空。
+/// 2. **把改动关掉，精确回到旧值**：**只**把 `build_npc_agent` 里那一行
+///    改回 `wallet: 0`（新模块 `ll_mod::npc_wallet` 本身、
+///    `MaterializeContext::population` 字段、它的两处赋值、
+///    `ItemRule::base_price`、`Intent::Trade` 整条链 **全部保留**），
+///    再跑一次：**绿**，摘要精确等于旧常量
+///    `14_539_485_488_716_496_306`。这一步证明这次摘要变化**只来自那
+///    一行赋值**，本批其余改动一个比特都没碰到这个世界。
+/// 3. **恢复**那一行。
+/// 4. **两个独立进程复现**新值：两次彼此独立的
+///    `cargo test -p ll-game --test populated_determinism` 进程都给出
+///    `5_695_002_850_796_623_600`。
+///
+/// **同批对照**：另外两条黄金基准**都不红**——`EXPECTED_WORLD_DIGEST`
+/// 的世界零 `actor`（A 表第二行那条局限），`EXPECTED_REPLAY_DIGEST`
+/// 的两个 `Agent` 是手写的、不经 `build_npc_agent`（见
+/// `crates/ll-sim/tests/replay.rs` 那处注释）。**没红不算「改动无害」**，
+/// 两组对照证伪写在计划文档
+/// `docs/superpowers/plans/2026-09-01-batch31-dialogue-trade.md` 十节。
+const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 5_695_002_850_796_623_600;
 
 #[test]
 fn 有人有城有物有势力的世界摘要跨平台稳定() {

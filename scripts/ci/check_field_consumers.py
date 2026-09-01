@@ -380,7 +380,6 @@ EXEMPTIONS: dict[str, str] = {
     "RaceDef.starting_items": "出生携带物品列表——同 traits，声明与消费路径分离（starting_inventory 消费的是查表结果，不是对 RaceDef 实例做 .starting_items 点号访问），本脚本的字段名正则抓不到这条间接路径，见脚本头注释「已知局限」第 2 条。",
     # ---- (b) 其余本次扫描发现的死字段/占位字段，均有源码内注释自证 ----
     "ItemDef.base_weight": "ll-sim/src/item.rs 模块文档原文：resolve_pick_up/resolve_drop 不需要 base_weight/base_price/max_durability 中的任何一个，负重是后续批次的工作（YAGNI）。只收敛了 stack_limit 一个字段进 ItemCatalog 依赖倒置接口。",
-    "ItemDef.base_price": "同 ItemDef.base_weight，同一处模块文档同一句话——经济系统（买卖定价）尚未落地。",
     "ClassDef.primary_attribute": "职业的主属性倾向。**已有真实消费者，但那个消费者在呈现层而不是决策层，且它永远不该进决策层**：项目所有者裁定「升级获得属性点技能点，然后就自己加点」，加到哪一项由玩家决定——主属性若驱动任何结算（自动成长/加点更便宜/额外发点），就是在玩家的决定之外偷偷替他选，与那条裁定直接冲突。字段自己的文档从一开始写的用途（「供职业选择界面展示」）因此就是它唯一正确的用途，升级加点批次已把它接进 ll_ui::hud::character_panel（CharacterPanelData::primary_attribute，由 ll_game::app 从 ClassTable 查出后传入），在「你还有 N 点属性点可以加」那一行旁边给出「你这个职业倾向于哪一项」的提示。本条豁免因此不是「等着被接线」的临时状态，而是一条**永久判定**：本脚本的决策层通配（crates/ll-sim/src）里不应该、也不会出现对这个字段的读取。",
     "SkillDef.owning_class": "skill.rs 字段文档原文：只是一个分类/展示字段，不是命名空间隔离的边界，主职副职共享同一份技能命名空间（P5-4 裁定）。",
     "QuestNodeDef.condition": "任务结算走的是 ll-sim::quest::QuestCatalog::kill_count_quests() 返回的窄接口 QuestKillRule（依赖倒置，同 ItemDef.stack_limit 的收敛手法），不是对 QuestNodeDef 实例整体做 .condition 点号访问——真实消费路径在 ll-mod 侧把 QuestCondition 拆解、按需要的字段喂给 QuestKillRule，本脚本按字段名正则抓不到这条间接路径，见脚本头注释「已知局限」第 2 条。",
