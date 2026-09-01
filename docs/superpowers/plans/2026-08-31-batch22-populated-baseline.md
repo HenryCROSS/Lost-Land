@@ -196,7 +196,43 @@ ll_game::world::materialize_nearby_settlements(world, content, roles)
   物化全世界要把两百多个区块全部拉进内存，耗时与内存都不可接受，而**一座
   据点已经足以让四类对象全部非空**——存在性断言（第 3.5 节）会把这一点钉死。
   取几座、取哪几座是可调的，取一座是最保守、最容易反转的那一档。
-- 实测耗时记在第五节。
+**实测规模与耗时**（`cargo test -p ll-game --test populated_determinism`，
+Windows，debug profile）：
+
+| 量 | 值 |
+|---|---|
+| 已物化据点 | 2（第一座还有人住的据点 + 它邻域里的另一座） |
+| 实体（`world.actors`） | 29（1 个玩家 + 28 个 NPC） |
+| 其中 `affiliations` 非空 | 28 |
+| 地面物品（`ground_items`） | 126 |
+| 其中 `placed: true` | 126 |
+| 其中 `Owner::Faction(..)` | 126 |
+| 势力（`factions`） | 255 |
+| 常驻区块 | 25 |
+| **测试本体耗时** | **0.47 s** |
+
+0.47 秒里已经包含了「装载仓库真实 `mods/`、生成整张地图的噪声、跑完
+十二个纪元的编年史、铺出两百多座据点、物化两座据点的名册与家具」全过程。
+**规模上没有任何为了跑得快而做的削减**，因此也没有为此付出可测的代价。
+
+### 3.4.1 「全走生产路径」的证据
+
+测试文件里**零**下列写法（可用 grep 复核）：
+
+```bash
+grep -nE "actors\.spawn|ground_items\.push|\.factions =|set_terrain|WorldState::new" \
+  crates/ll-game/tests/populated_determinism.rs
+```
+
+零命中。测试只调用四个生产函数：`ll_game::content::load_content`、
+`ll_game::world::build_new_world`、
+`ll_world::surface_store::SurfaceStore::stream_neighborhood`、
+`ll_game::world::materialize_nearby_settlements`——前两个是新游戏流程本身，
+第三个是 `Demo::maintain_streaming` 每帧都在调的那一个，第四个是
+`ll_game::app` 在流式加载之后调的那一个。
+
+**更强的证据是第四节那张反例表**：手搓的状态不会让「往 `stamp_settlement`
+里插一行」变红，只有真的走过那条路径的世界才会。
 
 ### 3.5 存在性断言：这条基准的全部意义
 
