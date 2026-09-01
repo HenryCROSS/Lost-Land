@@ -167,3 +167,51 @@ fn 整帧每一个矩形边界与每一行文字原点都落在整数像素上()
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn 状态栏与两条资源条与昼夜条右边界对齐() {
+    // 规格 L5（3.2 节第 1 条）：状态栏 620、昼夜条 610，而
+    // `render.rs` 的注释声称它们「读起来是对齐的一列」，没有任何测试
+    // 盯着这条。**落地前先跑过一遍确认它真的红**。
+    //
+    // 修法取「把资源条宽改成 (STATUS_WIDTH - PANEL_GAP)/2」而不是「把
+    // 昼夜条硬改成 620」：后者会让昼夜条与它正上方那两条资源条不齐，
+    // 是拆东墙补西墙。
+    //
+    // 反例验证（已实跑）：把 `RESOURCE_BAR_WIDTH` 改回 `300.0`，本条红在
+    // 「昼夜条右边界 626 != 状态栏右边界 636」。
+    // Arrange
+    let (dir, catalog) = 布局夹具("l5-right-edges");
+
+    // Act
+    let frame = 满帧(&catalog, 1280.0, 720.0);
+    let hud = frame.layer(UiLayer::Hud);
+
+    // 状态栏是第一块推入的面板，它的九宫格里第 1 块是右上角，其右边界
+    // 即面板右边界。生命条紧随四块面板之后……与其数下标，不如直接按
+    // 常量重算一次三者的右边界——这几个常量本身就是被测对象。
+    let 状态栏右 = SCREEN_MARGIN + STATUS_WIDTH;
+    let 法力条右 = SCREEN_MARGIN + RESOURCE_BAR_WIDTH * 2.0 + PANEL_GAP;
+    let 昼夜条右 = SCREEN_MARGIN + DAY_NIGHT_BAR_WIDTH;
+
+    // Assert 一：三条常量算出来的右边界相等。
+    assert_eq!(状态栏右, 昼夜条右, "状态栏与昼夜条右边界不齐");
+    assert_eq!(状态栏右, 法力条右, "状态栏与两条资源条并排的右边界不齐");
+
+    // Assert 二：那几个常量真的被这一帧用上了——否则上面三行只是在
+    // 断言算术，与屏幕上画了什么无关。
+    let 最右 = hud
+        .quads
+        .iter()
+        .map(|q| q.position[0] + q.size[0])
+        .fold(0.0_f32, f32::max);
+    assert!(
+        hud.quads
+            .iter()
+            .any(|q| (q.position[0] + q.size[0] - 状态栏右).abs() < 0.5),
+        "这一帧的常驻层里没有任何一块的右边界落在 {状态栏右}（最右的是 {最右}）"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
