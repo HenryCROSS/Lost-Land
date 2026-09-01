@@ -17,6 +17,7 @@
 //! [`LayeredFrame`] 的全部层、全部容器，新加的任何一块内容自动进入判据。
 
 use super::*;
+use crate::widget::zone::ScreenZone;
 
 /// 本文件几条都要的那一套输入：一份日志目录 + 目录里那份 catalog。
 /// 与 `placement_catalog` 不同的是这里要真实文案（面板里得有字），
@@ -323,6 +324,63 @@ fn 背包面板紧贴经验条下方一个间隔且左边界对齐() {
         经验条.position[1] + 经验条.size[1] + PANEL_GAP,
         "背包没紧贴经验条下方一个 PANEL_GAP"
     );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn 常驻层不占屏幕中段只落在左半右半或底栏() {
+    // 规格 L1 的留白规则：常驻区左列与右列之间的中段永远不放常驻元素
+    // ——那是玩家看世界的地方。
+    //
+    // **判据比规格原文多一个例外**：规格写的是「要么 `right() <= 屏宽/2`
+    // 要么 `x >= 屏宽/2`」两选一，而批次 23 的按键提示行（`Hud` 层、
+    // 水平居中、贴屏幕最下沿）照那条会红。它是对的：留白规则的理由是
+    // 「那是玩家看世界的地方」，屏幕最下沿那一条窄边不是。因此加第三个
+    // 落点：底栏。完整论证见
+    // `docs/superpowers/plans/2026-09-01-batch30-ui-p2.md` 第八节第 4 条。
+    //
+    // 反例验证（已实跑）：把装备面板的锚点从 `Anchor::TopRight` 改成
+    // `Anchor::TopCenter`，本条在 1280 与 1920 两个尺寸下都红。
+    // Arrange
+    let (dir, catalog) = 布局夹具("l1-middle-band");
+
+    // Act & Assert：两个尺寸各跑一遍。
+    for (w, h) in [(1280.0_f32, 720.0_f32), (1920.0, 1080.0)] {
+        let frame = 满帧(&catalog, w, h);
+        // 底栏有多高由 `bottom_rows` 自己说了算，这里不抄一个数。
+        let 底栏顶 = h - crate::hud::bottom_rows::BOTTOM_STRIP_HEIGHT;
+        let 中线 = w / 2.0;
+
+        // **按区筛层，不写死 `UiLayer::Hud`**：留白规则约束的是「常驻区」
+        // 这个概念，不是某一个层的名字。将来常驻区多出一层（或者 N9 把
+        // 模态屏收进 `UiLayer`）时，只要 `ScreenZone::of` 说它是常驻，它
+        // 就自动进入本判据——这正是「判据的适用面被新代码绕过」那个失败
+        // 形状的防法。
+        let mut 常驻块数 = 0usize;
+        for layer in UiLayer::ALL {
+            if ScreenZone::of(layer) != ScreenZone::Resident {
+                continue;
+            }
+            let batch = frame.layer(layer);
+            常驻块数 += batch.quads.len() + batch.textured_quads.len();
+            let 纯色 = batch.quads.iter().map(|q| (q.position, q.size));
+            let 贴图 = batch.textured_quads.iter().map(|q| (q.position, q.size));
+            for (position, size) in 纯色.chain(贴图) {
+                let (x, right, y) = (position[0], position[0] + size[0], position[1]);
+                assert!(
+                    right <= 中线 || x >= 中线 || y >= 底栏顶,
+                    "{layer:?}（常驻区）有一块占了屏幕中段（{w}×{h}）：x={x} right={right} y={y}，中线 {中线}，底栏顶 {底栏顶}"
+                );
+            }
+        }
+
+        assert!(
+            常驻块数 > 30,
+            "常驻区应当有六块面板加三条条形，实际只有 {常驻块数} 块（{w}×{h}）"
+        );
+    }
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);

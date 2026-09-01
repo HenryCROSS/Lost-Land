@@ -144,3 +144,4 @@ pub mod skin;
 pub mod state;
 pub mod textured_quad;
 pub mod ui_mode;
+pub mod zone;
