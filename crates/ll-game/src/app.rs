@@ -1058,7 +1058,22 @@ impl AppHandler for Demo {
         // （与 `crate::player_action` 里 `player_command` 第 ② 步防的
         // 是同一个陷阱）。
         if self.modal.screen().is_some() {
-            if self.update_screen(input) {
+            // 菜单键（默认 Tab）是**开关键**，开得了就得关得掉——规格
+            // N13 / D8：它此前只绑 `Gameplay`，菜单一开上下文就变
+            // `Menu`，Tab 解析不出任何动作，于是「能开菜单，却关不掉
+            // 菜单」。绑定那一半补在 `ll_platform::keybind` 的
+            // `DEFAULT_MENU_BINDINGS` 里，这里是消费点。
+            //
+            // **只关它自己开出来的那一块**（`ScreenState::Menu`）：在
+            // 设置屏、首页、角色创建这些屏上按 Tab 什么都不发生。理由是
+            // 保守——「Tab 关掉任意一层模态屏」会让它变成第二个取消键，
+            // 而取消键的「退一层」语义是规格 N2 专门裁定过的，本条没有
+            // 要求改那个。
+            if input.was_just_pressed(GameKey::Menu)
+                && matches!(self.modal.screen(), Some(ScreenState::Menu))
+            {
+                self.close_screen(input);
+            } else if self.update_screen(input) {
                 return FrameOutcome::Exit;
             }
         } else if input.was_just_pressed(GameKey::Menu) && self.modal.is_empty() {

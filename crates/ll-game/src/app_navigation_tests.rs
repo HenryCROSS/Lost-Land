@@ -707,3 +707,65 @@ fn 世界正在推进这句话在两种语言下各有各的文案() {
     assert_ne!(en, key, "英文那一条必须真的存在");
     assert_ne!(zh, en, "两种语言各写各的，不是其中一种回落到另一种");
 }
+
+#[test]
+fn 菜单键开得了菜单也关得掉菜单() {
+    // 规格 N13 / D8：`GameKey::Menu`（默认 Tab）此前只绑 `Gameplay`，
+    // 菜单一开上下文就变 `Menu`，Tab 解析不出任何动作——开关键不对称。
+    //
+    // **这条在落地前是红的**（规格标注的那一类），实测红在第二个断言：
+    // 按第二下 Tab 之后 `screen` 仍然是 `Some(Menu)`。
+    //
+    // 反例验证（已实跑）：把 `on_frame` 里那段
+    // `if input.was_just_pressed(GameKey::Menu) && matches!(…Menu)` 删掉，
+    // 本条红在同一个断言上。
+    // Arrange
+    let mut demo = test_demo();
+
+    // Act 一：按 Tab 开菜单。
+    走一帧(&mut demo, 0, &[GameKey::Menu]);
+
+    // Assert 一：先自证菜单真的开了——否则「按一下就关上了」对一个压根
+    // 没开的菜单恒绿。
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::Menu),
+        "第一下 Tab 应当开出游戏内菜单"
+    );
+
+    // Act 二：再按一下 Tab。
+    走一帧(&mut demo, 1, &[GameKey::Menu]);
+
+    // Assert 二
+    assert_eq!(demo.modal.screen(), None, "第二下 Tab 应当把菜单关掉");
+    assert_eq!(demo.modal.depth(), 0, "关掉之后栈应当是空的");
+}
+
+#[test]
+fn 菜单键只关它自己开出来的那一块屏() {
+    // 上一条的配套：`Tab` **不是**第二个取消键。在设置屏上按 Tab 什么都
+    // 不该发生——取消键的「退一层」语义是规格 N2 专门裁定过的，N13 没有
+    // 要求把 Tab 也变成那个。这条把那个保守取舍钉住。
+    //
+    // 反例验证（已实跑）：把消费点里的
+    // `matches!(self.modal.screen(), Some(ScreenState::Menu))` 去掉
+    // （变成「Tab 关掉任意一层屏」），本条红在「设置屏不该被 Tab 关掉」。
+    // Arrange：开到设置屏。
+    let mut demo = test_demo();
+    开到设置屏(&mut demo);
+    let 屏 = demo.modal.screen();
+    assert!(
+        matches!(屏, Some(ScreenState::Settings { .. })),
+        "夹具没能开到设置屏，实际是 {屏:?}"
+    );
+
+    // Act
+    走一帧(&mut demo, 9, &[GameKey::Menu]);
+
+    // Assert
+    assert!(
+        matches!(demo.modal.screen(), Some(ScreenState::Settings { .. })),
+        "设置屏不该被 Tab 关掉，实际变成了 {:?}",
+        demo.modal.screen()
+    );
+}
