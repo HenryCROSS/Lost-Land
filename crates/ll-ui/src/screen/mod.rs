@@ -182,7 +182,7 @@ pub struct ScreenData<'a> {
 /// 纵向也居中：面板高度随行数变化（菜单三行、设置二十几行），按内容
 /// 高度算出来再居中，比写死一个 y 坐标更不容易在行数变化后错位。
 /// `screen_height` 比面板还矮这种极端窗口尺寸下会算出负坐标——**不
-/// 钳制**，与 [`crate::hud::render`] 的 `equipment_origin_x` 同一条
+/// 钳制**，与 [`crate::hud::render`] 的 `equipment_rect` 同一条
 /// 取舍：钳制会掩盖「窗口配置改小了却没人发现面板被塞没了」这种应该
 /// 显形的问题。
 fn centered_origin(

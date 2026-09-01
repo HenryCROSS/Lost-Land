@@ -113,7 +113,7 @@ impl Rect {
     ///
     /// 屏幕比面板还小时会算出负坐标，**刻意不钳到 0**。这条取舍是从被
     /// 收敛掉的那五处里已经写下理由的那一侧继承来的
-    /// （`hud::render::equipment_origin_x` / `hud::placement` /
+    /// （`hud::render::equipment_rect` / `hud::placement` /
     /// `screen::centered_origin` 三处的原话）：钳制会把「窗口配置改小了
     /// 却没人发现面板被塞没了」掩盖成一块看起来正常、内容却被挤出去的
     /// 面板。收敛之前只有反馈行那一处钳（`.max(0.0)`）且没写理由，

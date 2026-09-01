@@ -80,7 +80,7 @@ fn translate_panel(mut panel: PanelContent, dy: f32) -> PanelContent {
 }
 
 /// 世界地图比例尺文案与面板边框的留白（像素）——比
-/// [`SCREEN_MARGIN`](super::render::SCREEN_MARGIN) 小：这行字贴在地图**内侧**，留白太大就会压到
+/// [`SCREEN_MARGIN`] 小：这行字贴在地图**内侧**，留白太大就会压到
 /// 第一行格子上。
 pub(crate) const WORLD_MAP_CAPTION_MARGIN: f32 = 8.0;
 
@@ -92,11 +92,11 @@ const WORLD_MAP_MARGIN_FRACTION: f32 = 0.1;
 
 /// 世界地图面板这一帧的矩形——以屏幕为参照居中，四边各留
 /// [`WORLD_MAP_MARGIN_FRACTION`] 的屏幕尺寸,理由见该常量文档。与
-/// [`equipment_origin_x`] 同一种「按屏幕原生像素尺寸现算,不写死常量」
+/// `super::render` 的 `equipment_rect` 同一种「按屏幕原生像素尺寸现算,不写死常量」
 /// 的取舍——窗口尺寸由 `ll_platform::window::WindowConfig` 固定给定
-/// （见 [`equipment_origin_x`] 文档同一段说明),按比例现算仍然比写死
+/// （见 `super::render` 的 `equipment_rect` 文档同一段说明),按比例现算仍然比写死
 /// 像素常量更不容易在窗口配置调整后悄悄错位。
-/// 按这块菜单声明的 [`MenuPlacement`](super::action_menu::MenuPlacement) 把它摆到屏幕上。
+/// 按这块菜单声明的 [`MenuPlacement`] 把它摆到屏幕上。
 ///
 /// # 为什么要「先建一次、再整体平移」
 ///
