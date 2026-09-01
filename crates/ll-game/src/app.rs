@@ -831,6 +831,39 @@ impl Demo {
         }
     }
 
+    /// 这一帧世界层底部该显示哪一行按键提示——规格 F6。
+    ///
+    /// # 三种情形，两种答案
+    ///
+    /// - **有模态屏盖着** → `None`。那块屏自己底部就有一行 `hint_key`
+    ///   （规格 F5，批次 19 之后两种语言下都完整可见），世界层再叠一行
+    ///   是重复，而且它此刻说的键（I/C/空格）在菜单上下文里根本不生效。
+    /// - **世界地图开着** → 地图那一条（缩放、关闭）。
+    /// - **玩家在世界里** → 世界那一条（背包/制作/交互/地图/菜单）。
+    ///
+    /// 玩家菜单开着时仍然显示世界那一条：背包/制作/交互三块弹窗跑在
+    /// `InputContext::Gameplay` 上（规格 N8），世界那一行说的键此刻
+    /// 全部仍然有效。
+    ///
+    /// 排版本体在 [`crate::key_hint::key_hint_line`]，本方法只回答
+    /// 「这一刻是哪一种情形」。
+    fn key_hint_line(&self) -> Option<String> {
+        if self.modal.screen().is_some() {
+            return None;
+        }
+        let context = if self.modal.world_map_open() {
+            crate::key_hint::KeyHintContext::WorldMap
+        } else {
+            crate::key_hint::KeyHintContext::World
+        };
+        Some(crate::key_hint::key_hint_line(
+            context,
+            &self.config.bindings,
+            &self.catalog,
+            &self.config.language,
+        ))
+    }
+
     /// 把当前世界层画面存成一张 PNG（`GameKey::Screenshot`，默认 F2）。
     ///
     /// # 这是交接文档第四节第 16 条的接线点
@@ -1090,6 +1123,10 @@ impl AppHandler for Demo {
             )
         });
         let hovered_row = self.pointer.hovered_row();
+        // 世界层底部那一行按键提示（规格 F6）——**必须在借出
+        // `self.resources` 之前算**：它要读 `self.config.bindings` 与
+        // `self.catalog`，而下面那个 `as_mut` 借的是整个 `self`。
+        let key_hint = self.key_hint_line();
 
         let Some(resources) = self.resources.as_mut() else {
             return FrameOutcome::Continue;
@@ -1158,6 +1195,7 @@ impl AppHandler for Demo {
                     &session.world_map_view,
                     self.modal.player_menu(),
                     self.feedback,
+                    key_hint.as_deref(),
                     // 正常游玩：不改写任何东西。
                     None,
                 );
@@ -1192,6 +1230,9 @@ impl AppHandler for Demo {
                     field,
                     view_of_map,
                     PlayerMenu::default(),
+                    None,
+                    // 选出生地屏是一块模态屏，它自己底部有一行提示
+                    // （规格 F5）——再叠一行世界层的按键提示是重复。
                     None,
                     Some(SpawnPickHud {
                         exploration,

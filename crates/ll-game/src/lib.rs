@@ -23,6 +23,7 @@ pub mod content;
 pub mod dialogue_screen;
 pub mod draft_world;
 pub mod interact_list;
+pub mod key_hint;
 pub mod layout;
 pub mod menu_screen;
 pub mod modal;

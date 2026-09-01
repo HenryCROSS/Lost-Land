@@ -540,3 +540,10 @@ hud-interact-someone = 一个人
 # NOT_YET_FEEDBACK_FRAMES。
 
 hud-feedback-world-advancing = 世界正在推进…
+
+# ── 世界层底部那一行常驻按键提示（批次 23，规格 F6）─────────────
+# 键名是运行期插值：走 crates/ll-game/src/key_hint.rs，从玩家当前的
+# 键位表现查，重绑之后这一行跟着变。
+
+hud-key-hint-world = { $inventory } 背包　{ $craft } 制作　{ $interact } 交互　{ $map } 地图　{ $menu } 菜单
+hud-key-hint-map = 方向键 平移　{ $zoom_in } / { $zoom_out } 缩放　{ $close } 关闭

@@ -114,6 +114,11 @@ pub(super) fn draw_hud(
     // 玩家菜单与反馈行，见 `Demo::menu`/`Demo::feedback` 字段文档。
     menu: PlayerMenu,
     feedback: Option<Feedback>,
+    // 世界里那一行常驻的按键提示（规格 F6），`None` = 这一刻不显示。
+    // 收的是**已经排好版的一句话**：键名要从当前键位表现查，而键位表
+    // 住在 `Demo::config` 上，本函数够不着——与 `feedback` 同一条分工，
+    // 见 `crate::key_hint` 模块文档。
+    key_hint: Option<&str>,
     // 选出生地屏那一刻的两处改写，`None` 表示正常游玩，见
     // [`SpawnPickHud`]。
     spawn_pick: Option<SpawnPickHud<'_>>,
@@ -335,6 +340,7 @@ pub(super) fn draw_hud(
         world_map_data.as_ref(),
         menu_data.as_ref(),
         feedback_text.as_deref(),
+        key_hint,
     );
 }
 
