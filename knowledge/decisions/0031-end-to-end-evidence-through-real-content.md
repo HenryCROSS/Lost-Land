@@ -3,7 +3,7 @@
 **日期**：2026-09-01（所有者裁定新开本 ADR）
 **状态**：已生效的项目纪律（**追认**：这条做法在本 ADR 之前已被全仓库执行了数十个批次，见「为什么是追认」）
 **影响范围**：`crates/**/tests/*.rs` 的写法、每一个新增能力的验收方式、`scripts/ci/run_all.sh` 的测试步
-**相关**：[0018](0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)（**不是**本条的依据，长期被误引）、[0021](0021-abstraction-requires-shareable-algorithm.md)、[0022](0022-guard-coverage-gap-defeats-the-guard.md)（相邻但不同，见「与 0022 的分界」）
+**相关**：[0018](0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)（**不是**本条的依据，长期被误引）、[0021](0021-abstraction-requires-shared-algorithm-not-symmetry.md)、[0022](0022-guard-coverage-gap-defeats-the-guard.md)（相邻但不同，见「与 0022 的分界」）
 
 ## 决定
 
@@ -42,7 +42,7 @@
 ## 判据（怎么算满足）
 
 - **真实内容**：测试走 `load_content` / `LoadSession` 之类的生产装载路径读仓库真实 `mods/`；需要额外内容时**追加一份真实 mod**，而不是在测试里内联一张表。
-- **生产路径**：断言的对象是生产函数的返回值或它写出的状态。**判据来源不许在测试里抄一份副本**——同一个算法出现两份就是 [0021](0021-abstraction-requires-shareable-algorithm.md) 要拦的形状，而两份之中测试那份永远不会报告自己漂了。
+- **生产路径**：断言的对象是生产函数的返回值或它写出的状态。**判据来源不许在测试里抄一份副本**——同一个算法出现两份就是 [0021](0021-abstraction-requires-shared-algorithm-not-symmetry.md) 要拦的形状，而两份之中测试那份永远不会报告自己漂了。
 - **端到端**：能一路验到可观察产出。做不到时**如实登记为局限**，不许把中间某一步的成功当成整条链的成功。
 
 ## 已知的合法例外
