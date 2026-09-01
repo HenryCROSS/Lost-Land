@@ -41,6 +41,43 @@
 //! 它们。本条是最外面那一层网，代价也最高——见
 //! [`EXPECTED_POPULATED_WORLD_DIGEST`] 文档「这条基准红了怎么办」一节。
 //!
+//! # 反例验证：这条基准真的咬得住吗
+//!
+//! 「写一条测试、让它通过」只完成了表面工作（ADR 0022）。下面两张表是
+//! **实测**：每一行都是「故意改坏一处 → 看这条基准红不红」，全部在
+//! Windows、基线提交 `3db8e23` 之上跑出来的。
+//!
+//! ## 摘要断言：A 表里每一类「保护外」的东西，改坏它这条都红
+//!
+//! | 改坏什么 | 这条基准 | 两条既有基准（对照） |
+//! |---|---|---|
+//! | `TerrainShape::default()` 的 `sea_level` 400→401（对照组） | **红** | 都红 |
+//! | `WorldState::hash` 的 `for agent in self.actors.iter()` 循环体开头灌 `0xDEAD_BEEF` | **红** | 世界摘要绿、回放摘要红 |
+//! | `ll_world::settlement::stamp_settlement` 开头每次铺设都写一堵石墙 | **红** | **都绿** |
+//! | `write_item_stack` 开头灌 `0xDEAD_BEEF`（物品 id / 数量 / `Owner`……） | **红** | **都绿** |
+//! | `WorldState::hash` 的 `for item in &self.ground_items` 循环体开头灌 `0xDEAD_BEEF` | **红** | **都绿** |
+//! | `FactionTable::write_hash` 的 `for faction in ..` 循环体开头灌 `0xDEAD_BEEF` | **红** | **都绿** |
+//! | `ChronicleParams::default()` 的 `epochs` 12→11 | **红** | **都绿** |
+//!
+//! 五个「两条既有基准都绿」的格子，正是本文件存在的全部理由。
+//!
+//! ## 存在性断言：每一条都能被单独打红
+//!
+//! 存在性断言若自己也是恒真的，它就成了「防假绿」措施本身的假绿。逐条
+//! 实测（每一行改坏的是**生产代码**，不是测试）：
+//!
+//! | 改坏什么 | 打红了哪一条存在性断言 |
+//! |---|---|
+//! | `materialize_nearby_settlements` 整条早返回 | 已物化据点非空 |
+//! | `settlement_roster` 恒返回空名册 | 实体数 > 1（实际只剩玩家 1 个） |
+//! | `furnish_settlement` 早返回 0 | 地面物品非空 |
+//! | 家具的 `placed: true` 改成 `false` | 存在 `placed` 的地面物品 |
+//! | 家具的 `Owner::Faction(site.id)` 改成 `Owner::Unowned` | 存在带 `Owner::Faction` 的地面物品 |
+//! | `seed_factions` 恒返回空表 | 势力表非空 |
+//! | `build_npc_agent` 不挂文化归属 | 存在 `affiliations` 非空的 `Agent` |
+//!
+//! 七条断言、七个各自独立的反例，全部红。
+//!
 //! # ADR 0025：不启动窗口，不盲注输入
 //!
 //! 与 `npc_materialization.rs`/`fog_of_war.rs` 同一条纪律：全程不碰 GPU、

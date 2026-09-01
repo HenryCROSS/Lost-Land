@@ -254,11 +254,54 @@ Agent 数 > 1   （玩家之外还有 NPC）
 
 ## 四、C：反例验证（ADR 0022 / 交接文档纪律第 6 条）
 
-A 表里**每一类**「保护外」的东西，都要有一行对应的反例结果：改坏那一处，
-新基准必须红。逐类实测，结果填在第五节。
+### 4.1 摘要断言：A 表七类全部咬住
 
-某一类若实在进不了这条基准，**如实记为局限并说明原因**——本仓库反复付过
-「假装覆盖到了」的代价（ADR 0022 三个实例、交接文档第〇节三次事故）。
+同样的七次注入，这次看第三条基准。**全部红。**
+
+| 改坏什么 | 新基准 | `EXPECTED_WORLD_DIGEST` | `EXPECTED_REPLAY_DIGEST` |
+|---|---|---|---|
+| A0 `sea_level` 400→401（对照） | **红** | 红 | 红 |
+| A1 `for agent` 循环体灌常量 | **红** | 绿 | 红 |
+| A2 `stamp_settlement` 每次铺设写一堵石墙 | **红** | 绿 | 绿 |
+| A3 `write_item_stack` 灌常量 | **红** | 绿 | 绿 |
+| A4 `for item in &self.ground_items` 灌常量 | **红** | 绿 | 绿 |
+| A5 `FactionTable::write_hash` 的势力循环体灌常量 | **红** | 绿 | 绿 |
+| A6 `ChronicleParams::default().epochs` 12→11 | **红** | 绿 | 绿 |
+
+五个「两条既有基准都绿」的格子（A2–A6），正是这条基准存在的全部理由。
+七次全部红在同一行——摘要 `assert_eq`，不是被存在性断言拦下的。
+
+### 4.2 存在性断言：七条，七个独立反例，全部红
+
+存在性断言若自己也是恒真的，它就成了「防假绿」措施本身的假绿。每一条
+都用**改坏生产代码**（不是改测试）的方式单独打红过：
+
+| 改坏什么 | 打红了哪一条 |
+|---|---|
+| `materialize_nearby_settlements` 整条早返回 | 已物化据点非空 |
+| `settlement_roster` 恒返回空名册 | 实体数 > 1（实际只剩玩家 1 个） |
+| `furnish_settlement` 早返回 0 | 地面物品非空 |
+| 家具 `placed: true` → `false` | 存在 `placed` 的地面物品 |
+| 家具 `Owner::Faction(site.id)` → `Owner::Unowned` | 存在带 `Owner::Faction` 的地面物品 |
+| `seed_factions` 恒返回空表 | 势力表非空 |
+| `build_npc_agent` 不挂文化归属 | 存在 `affiliations` 非空的 `Agent` |
+
+### 4.3 顺带更正一条 ADR 编号（纪律第 9 条：更正要写回被更正方）
+
+交接文档 `knowledge/handoff/2026-08-27-session-handoff.md` 第一节第 6 条
+写的是「**ADR 0018** 的反例验证是硬要求」。实际讲反例验证的是
+[ADR 0022](../../../knowledge/decisions/0022-guard-coverage-gap-defeats-the-guard.md)
+「覆盖不全的确定性哈希，等于没有确定性哈希」；
+[ADR 0018](../../../knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting-boundary.md)
+讲的是引擎层/玩法层的脚本边界，全文与反例验证无关。
+
+按纪律第 9 条，已在被更正方**原地**加了更正标记（原文一字未改），两边
+互相指向。
+
+### 4.4 局限：这条基准仍然够不到什么
+
+见第八节。**没有把够不到的东西说成够到了**——本仓库反复付过「假装覆盖到了」
+的代价（ADR 0022 三个实例、交接文档第〇节三次事故）。
 
 ---
 
