@@ -945,7 +945,7 @@ mod tests {
         //
         // 只断言「第 1 行的矩形罩住第 1 行的文字」是**不够的**：第 0 行
         // 的矩形即使只有一行高，第 1 行的起点仍然是对的（游标本身推进
-        // 正确）。这条假绿是 ADR 0018 反例验证当场抓出来的。
+        // 正确）。这条假绿是 ADR 0022 反例验证当场抓出来的。
         let wrap = content.panel.width - SCREEN_PADDING * 2.0;
         let 第零行 = &content.labels[1];
         let 第零行行数 = measure

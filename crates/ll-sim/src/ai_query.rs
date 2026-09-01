@@ -635,7 +635,7 @@ mod tests {
         // `ContentIndex::default()`（索引 0）。这不是巧合式的夹具细节：
         // 它让「拿不到哨兵就退回默认索引」这种偷懒写法在本条里当场
         // 变红——退回默认索引恰好等于退回哨兵本身，敌意分会从 0 跳到
-        // 满值。见 ADR 0018 的反例验证。
+        // 满值。见 ADR 0022 的反例验证。
         let cultureless = id("test:cultureless");
         let hater = id("test:hater");
         let founder = id("test:race");

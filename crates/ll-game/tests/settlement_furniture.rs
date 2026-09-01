@@ -134,7 +134,7 @@ fn 每一件家具生成时就带着这座据点的归属() {
     // 这是所有者第三句话的落点：「每个物品都会有个主人，一个建筑内的
     // 物品通常都是属于某个人的」。
     //
-    // 反例（ADR 0018，人工验证过）：把 `furnish_settlement` 里
+    // 反例（ADR 0022，人工验证过）：把 `furnish_settlement` 里
     // `let owner = Owner::Faction(site.id);` 改成 `Owner::Unowned`，
     // 本条当场红。
     // Arrange & Act
@@ -225,7 +225,7 @@ fn 家具不和npc同格也不互相叠放() {
     // 与「每格至多站一人」那条不变式的相互作用，见
     // `ll_game::settlement_spawn` 模块文档最后一节。
     //
-    // 反例（ADR 0018，人工验证过）：把 `furnish_settlement` 里那两行
+    // 反例（ADR 0022，人工验证过）：把 `furnish_settlement` 里那两行
     // 「跳过被实体占住的格」「跳过已有放置物的格」任意删掉一行，本条
     // 都会红。
     // Arrange & Act
@@ -345,7 +345,7 @@ fn 玩家不会在谁家屋里开局() {
     // 「四档预设都能建出带玩家实体且出生点连得开的世界」当场红了
     // （「预设 continent 的出生点周围只有 9 格连通可行走地面」）。
     //
-    // 反例（ADR 0018，人工验证过）：把 `build_new_world` 里那一行
+    // 反例（ADR 0022，人工验证过）：把 `build_new_world` 里那一行
     // `spawn_outside_buildings` 去掉，本条与那一条同时红。
     // Arrange & Act
     let content = test_content();

@@ -168,7 +168,7 @@ pub struct SaveHeader {
     /// 集合修正批次新增的，此前写出的存档头 JSON 里没有这个键，而
     /// **serde 对 `Option` 字段本来就允许整个键缺席**（缺席即 `None`），
     /// `#[serde(default)]` 只是把这条隐式行为写明——真正让老存档读得开
-    /// 的是 `Option` 这个类型本身。ADR 0018 的反例验证实测到了这一点：
+    /// 的是 `Option` 这个类型本身。ADR 0022 的反例验证实测到了这一点：
     /// 单独摘掉 `#[serde(default)]`，两条老存档兼容测试**依旧是绿的**；
     /// 只有把字段类型从 `Option<TerrainShape>` 改成 `TerrainShape`，
     /// 它们才会红。改这个字段的类型前请先看那两条测试。
@@ -385,7 +385,7 @@ mod tests {
         // 为 `None`，**不需要 schema 版本升级与迁移函数**（存档主体的
         // 字节布局一个字节都没动）。
         //
-        // ADR 0018 反例验证记录：把字段类型从 `Option<TerrainShape>`
+        // ADR 0022 反例验证记录：把字段类型从 `Option<TerrainShape>`
         // 改成 `TerrainShape`，本条会红；单独摘掉 `#[serde(default)]`
         // 则**不会**红——真正兜住老存档的是 `Option` 这个类型本身，见
         // `SaveHeader::terrain_shape` 字段文档。
