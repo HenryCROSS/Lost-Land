@@ -225,9 +225,10 @@ const TERRAIN_VARIANT_SUFFIX: &str = "_alt";
 /// [`Registry`] 回退路径，那条路径上「图集条目名 = 完整命名空间 ID」
 /// 是一对一的约定，没有变体这个概念。
 pub fn terrain_variant_count(kind: TerrainKind, ids: &BaseTerrainIds) -> u32 {
-    if kind == ids.grass {
-        3
-    } else if kind == ids.forest {
+    // 草地与森林写成**一支**只是因为 clippy 的 `if_same_then_else` 不接受
+    // 两支返回同一个数（本批实测撞到过）——它们的张数是**各自**定的，不是
+    // 「必须相同」。哪天草地要第 4 张，把这一支拆回两支即可。
+    if kind == ids.grass || kind == ids.forest {
         3
     } else if kind == ids.sand {
         2
