@@ -2,56 +2,56 @@
   "_note": "本文件由 scripts/ci/check_file_size_budget.py --bless 生成。code_lines 一律由脚本从源码算出，不要手工编辑；reason 是人写的「为什么这个文件可以这么长」，--bless 会原样保留，空着门禁会红。判据是非空非注释行，理由见脚本头注释。",
   "files": {
     "crates/ll-content/src/remap.rs": {
-      "code_lines": 1350,
-      "reason": "合理：读档后的 ContentIndex 重映射，与存档主体的类型闭包一一对应、逐类型一段。拆开等于让「哪些字段需要重映射」这份清单分家，而漏掉一处不会报错，只会静默错读。"
+      "code_lines": 1352,
+      "reason": "合理：读档后的 ContentIndex 重映射，与存档主体的类型闭包一一对应、逐类型一段。拆开等于让「哪些字段需要重映射」这份清单分家，而漏掉一处不会报错，只会静默错读。（2026-08-31，批次 26）+2 行：`remap_agent` 的穷尽解构必须为新字段 `Agent::home` 写一行 `home: _` 加理由注释。**这一档增长是本文件的设计本身**——穷尽解构就是要逼每一个新字段在这里显式表态，它不可拆分、也不该拆分。"
     },
     "crates/ll-content/src/save_file.rs": {
-      "code_lines": 858,
-      "reason": "合理：存档读写管线——头部、迁移链、索引映射、主体、降级，一条从文件到 WorldState 的顺序管线。中间任何一步单独拆走，都会让「读档要按什么顺序做什么」不再有唯一的阅读入口。"
+      "code_lines": 878,
+      "reason": "合理：存档读写管线——头部、迁移链、索引映射、主体、降级，一条从文件到 WorldState 的顺序管线。中间任何一步单独拆走，都会让「读档要按什么顺序做什么」不再有唯一的阅读入口。（2026-08-31，批次 26）+20 行：新增测试 `加入据点批次之前的老存档被明确拒绝而不是静默按新布局误解析`（schema 5 → 6 的端到端证据）。它与既有的 `势力播种之前的老存档被明确拒绝……` 是同一族断言，共用本文件私有的 `temp_path`/`sample_header`/`test_world` 三个夹具；搬出去要把那三个夹具复制一份，而「同一族测试两份夹具」正是本仓库反复付过代价的形状。"
     },
     "crates/ll-game/src/app_tests.rs": {
       "code_lines": 1058,
       "reason": "合理（批次 16 的搬移产物）：crate::app 的断言，用 #[path] 挂成 app 的子模块，与 app_save_tests.rs / app_navigation_tests.rs 同一手法（它们现在是本文件的子模块）。搬出来还顺手消掉了一处 rustc 与 rustfmt 对嵌套 #[path] 基准目录的分歧，见文件头注释。不按主题拆开：断言与 test_demo_at_title / frame 等共享夹具交错，按主题切开只会把夹具复制多份。〔2026-08-31，批次 21〕+5 行：`interact_tiles` 多了两个参数（发起者 + 对话查询），一处调用点从一行变成六行。**纯签名跟随，没有新增断言**——把它搬进新模块只会让那条断言与它的夹具分家。"
     },
     "crates/ll-game/src/world.rs": {
-      "code_lines": 871,
-      "reason": "合理（待复查）：新游戏的世界搭建——区块布局、噪声、编年史、出生点、玩家实体，一条从零到可玩的顺序流水线，各步共享同一份构建中状态。待复查点：批次「据点建筑类型」会碰这里的流式加载那一段。"
+      "code_lines": 872,
+      "reason": "合理（待复查）：新游戏的世界搭建——区块布局、噪声、编年史、出生点、玩家实体，一条从零到可玩的顺序流水线，各步共享同一份构建中状态。待复查点：批次「据点建筑类型」会碰这里的流式加载那一段。（2026-08-31，批次 26）+1 行：`build_player_agent` 为新字段 `Agent::home` 写 `home: None`（玩家不属于任何据点——所有者裁定「玩家可以没有势力归属」在实体上的表达）。结构体字面量必须列全字段，这一行不可拆分。"
     },
     "crates/ll-mod/src/content_audit.rs": {
       "code_lines": 2207,
       "reason": "合理：装载后内容校验的逐条规则平铺，与 content_hash.rs 同一形状——一条校验一段，规则之间不互相调用。文件长度等于校验条数。〔2026-08-31，批次 20〕+11 行：CultureAttrs::buildings 的字段覆盖。〔2026-08-31，批次 21〕+2 行：DialogueNodeAttrs::options::outcomes 的字段覆盖，追加在 inspect_dialogue_node 末尾。两批并行开工、各自 bless 过自己那一份，合并时数字是两者之和（2194+11+2）。拆不动——都是那一段逐字段登记的一行。"
     },
     "crates/ll-mod/src/content_hash.rs": {
-      "code_lines": 2976,
-      "reason": "合理：单一职责的逐类型平铺表——每个内容类型一段「哪些字段进哈希」，类型之间不互相调用。拆开等于把 CONTENT_HASH_ALGORITHM_VERSION 要盯住的那份唯一真相源分散到多处，而「真相源之外的副本」是本仓库最稳定的缺陷来源。〔2026-08-31，批次 20〕+70 行：write_culture_fields 的 buildings 段与守门它的单元测试「建筑类型不同的两条文化摘要不同」。〔2026-08-31，批次 21〕+53 行：write_dialogue_outcome（8 行）与守门它的单元测试「后果不同的两个对话节点摘要不同」（其余）。两批并行开工、各自 bless 过自己那一份，合并时数字是两者之和（2853+70+53）。测试刻意与被守门的那段代码同住一个文件——它守的正是 CONTENT_HASH_ALGORITHM_VERSION 那份唯一真相源，搬走就变成又一份会漂移的副本。"
+      "code_lines": 3026,
+      "reason": "合理：单一职责的逐类型平铺表——每个内容类型一段「哪些字段进哈希」，类型之间不互相调用。拆开等于把 CONTENT_HASH_ALGORITHM_VERSION 要盯住的那份唯一真相源分散到多处，而「真相源之外的副本」是本仓库最稳定的缺陷来源。〔2026-08-31，批次 20〕+70 行：write_culture_fields 的 buildings 段与守门它的单元测试「建筑类型不同的两条文化摘要不同」。〔2026-08-31，批次 21〕+53 行：write_dialogue_outcome（8 行）与守门它的单元测试「后果不同的两个对话节点摘要不同」（其余）。两批并行开工、各自 bless 过自己那一份，合并时数字是两者之和（2853+70+53）。测试刻意与被守门的那段代码同住一个文件——它守的正是 CONTENT_HASH_ALGORITHM_VERSION 那份唯一真相源，搬走就变成又一份会漂移的副本。（2026-08-31，批次 26）+50 行：`write_dialogue_outcome` 的 `JoinSettlement` 一支 + 新单元测试 `后果种类不同的两个对话节点摘要不同`（含一条如实登记的「改坏了它不红」及其原因）。理由同上面几批：判别值纪律与 `CONTENT_HASH_ALGORITHM_VERSION` 必须是同一份真相源，测试搬出去就够不着私有的 `write_dialogue_outcome`。"
     },
     "crates/ll-mod/src/content_schema_gear.rs": {
       "code_lines": 1465,
       "reason": "合理：内容数据文件 schema 的装备与规则侧七类，逐类型平铺。它本身已经是从 content_schema.rs 拆出来的一半（分界线见两者模块文档），再拆会打碎「一个 JSON5 文件对应一段 schema」这条对应关系。"
     },
     "crates/ll-mod/src/roster.rs": {
-      "code_lines": 833,
-      "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。"
+      "code_lines": 834,
+      "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。（2026-08-31，批次 26）+1 行：`build_npc_agent` 写 `home: Some(profile.home)`——`Agent::home` 唯一的非 `None` 生产者，把既有真相源 `NpcProfile.home` 搬进实体。结构体字面量必须列全字段，不可拆分。"
     },
     "crates/ll-platform/src/keybind.rs": {
       "code_lines": 987,
       "reason": "合理：单一数据表——物理按键与抽象动作之间的映射，加上按输入上下文的分层查找。逐绑定平铺，文件长度等于绑定条数。"
     },
     "crates/ll-sim/src/apply.rs": {
-      "code_lines": 1163,
-      "reason": "合理：规格 C2 的「唯一写入口」——一个 Effect 一段落地逻辑，逐变体平铺在一个穷尽 match 上。这个文件的长度就是 Effect 变体的数量。拆开会让「写世界的地方」不再只有一处，与 C2 直接冲突。"
+      "code_lines": 1182,
+      "reason": "合理：规格 C2 的「唯一写入口」——一个 Effect 一段落地逻辑，逐变体平铺在一个穷尽 match 上。这个文件的长度就是 Effect 变体的数量。拆开会让「写世界的地方」不再只有一处，与 C2 直接冲突。（2026-08-31，批次 26）+19 行：`Effect::AddAffiliation` 的 `apply` 分支（去重闸门 + `standing` 夹紧）。**这正是本文件预算理由说的那件事**——文件长度就是 `Effect` 变体的数量本身。新增的三条测试**已经拆出去**了（`crates/ll-sim/tests/affiliation_apply.rs`），留在这里的只有实现。"
     },
     "crates/ll-sim/src/resolve_tests.rs": {
-      "code_lines": 1796,
-      "reason": "合理（批次 16 的搬移产物）：crate::resolve 的 45 条断言，用 #[path] 挂成 resolve 的子模块，与 app_save_tests.rs / app_navigation_tests.rs 同一手法。刻意不按意图族拆开——45 条断言与约十个共享夹具（test_world、spawn_agent、spawn_agent_with_luck 等）交错在一起，按族切开要么把夹具复制九份、要么造一个被九个模块回头调用的 test_support，那正是「一堆互相调来调去的小文件」。而且它不影响下一批的难度：新意图族在自己的模块里写自己的断言，不用碰这个文件。"
+      "code_lines": 1803,
+      "reason": "合理（批次 16 的搬移产物）：crate::resolve 的 45 条断言，用 #[path] 挂成 resolve 的子模块，与 app_save_tests.rs / app_navigation_tests.rs 同一手法。刻意不按意图族拆开——45 条断言与约十个共享夹具（test_world、spawn_agent、spawn_agent_with_luck 等）交错在一起，按族切开要么把夹具复制九份、要么造一个被九个模块回头调用的 test_support，那正是「一堆互相调来调去的小文件」。而且它不影响下一批的难度：新意图族在自己的模块里写自己的断言，不用碰这个文件。（2026-08-31，批次 26）+7 行：七处 `Agent` 测试夹具字面量各补一行 `home: None`。结构体字面量必须列全字段，不可拆分。"
     },
     "crates/ll-sim/src/rule_modifier.rs": {
       "code_lines": 1925,
       "reason": "合理：「一个实体此刻身上有哪些规则修正」这个问题的唯一答案处，加上建在它之上的五个消费者。五个消费者共用同一条 tie-break 规则，把它们拆走会让那条规则出现副本。"
     },
     "crates/ll-sim/tests/derive_stats_resolve.rs": {
-      "code_lines": 864,
-      "reason": "合理：集成测试文件——一个主题（derive_stats 接进战斗）下的断言集合，共享同一套 FakeItems/spawn_agent 夹具。代码行占比高（75%）属正常，断言本来就是代码。"
+      "code_lines": 866,
+      "reason": "合理：集成测试文件——一个主题（derive_stats 接进战斗）下的断言集合，共享同一套 FakeItems/spawn_agent 夹具。代码行占比高（75%）属正常，断言本来就是代码。（2026-08-31，批次 26）+2 行：两处 `Agent` 测试夹具字面量各补一行 `home: None`。同上，不可拆分。"
     },
     "crates/ll-ui/src/hud/render.rs": {
       "code_lines": 1202,
@@ -66,8 +66,8 @@
       "reason": "合理（待复查）：世界历史推演——建立、增长、瘟疫、战争、占领、文化演替在一条时间线上逐纪元推进，各段共享同一份 EpochRun 状态与同一条确定性随机流，拆开会把那份状态变成跨模块传递的可变参数。待复查点：P9 的运行期据点扩张落地后若再长，按「纪元阶段」重新评估。"
     },
     "crates/ll-world/src/state.rs": {
-      "code_lines": 1989,
-      "reason": "待重构（不在批次 16）：确定性哈希那一块（hash 加十七个 write_* 序列化器，约 680 行）是干净的可拆出物。不在本批做的理由是它服务的是批次「据点建筑类型」与 P9，不是最先开工的那一批，而且它紧挨存档形状（WorldStateRepr 与 ChunkGrid 的 serde impl），搬移风险高于本批另两处。批次「据点建筑类型」开工前拆。"
+      "code_lines": 2023,
+      "reason": "待重构（不在批次 16）：确定性哈希那一块（hash 加十七个 write_* 序列化器，约 680 行）是干净的可拆出物。不在本批做的理由是它服务的是批次「据点建筑类型」与 P9，不是最先开工的那一批，而且它紧挨存档形状（WorldStateRepr 与 ChunkGrid 的 serde impl），搬移风险高于本批另两处。批次「据点建筑类型」开工前拆。（2026-08-31，批次 26）+34 行：`WorldState::hash` 里 `Agent::home` 那一行（ADR 0022：它真的分岔未来）+ 红/绿验证测试 `所属据点变化会改变世界哈希`（带「改之前两个世界哈希相同」的对照组前提）+ 一处 `Agent` 夹具的 `home: None`。测试与 `hash()` 同住是本文件既有的十几条同族测试的一贯做法，它依赖本文件私有的 `test_world_with_one_agent`；搬出去要把那个夹具（一份四十行的 `Agent` 字面量）复制一份，净行数更差。"
     }
   },
   "limit": 800

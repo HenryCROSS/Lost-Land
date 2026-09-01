@@ -23,9 +23,7 @@ use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
 use ll_sim::resolve::resolve_with_catalogs;
 use ll_sim::turn::{PlayerTurnOutcome, TurnEngine};
-use ll_world::entity::{
-    Affiliation, AffiliationKind, Agent, BaseStats, EntityId, OrgInstance, OrgRef,
-};
+use ll_world::entity::{AffiliationKind, Agent, BaseStats, EntityId, OrgInstance, OrgRef};
 use ll_world::faction::{Faction, FactionStatus, FactionTable};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;

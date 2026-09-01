@@ -172,6 +172,48 @@ fn 物化出来的npc全部带着据点职业而不是占位索引() {
     assert!(guards >= 1, "每座还有人住的据点至少配一名守卫");
 }
 
+/// 物化出来的 NPC **带着自己那座据点的号**（`Agent::home`，加入据点批次）。
+///
+/// 这是对话的「加入据点」问「加入哪座」时唯一答得出的地方：
+/// `ll_sim::resolve` 结算 `DialogueOutcome::JoinSettlement` 读的正是
+/// **说话人**的这个字段，再经 `FactionTable::faction_of` 换成势力号。
+///
+/// 故意改坏的反例（本批实测）：把 `ll_mod::roster::build_npc_agent` 里的
+/// `home: Some(profile.home)` 改回 `home: None`，本条当场红。
+#[test]
+fn 物化出来的npc带着自己那座据点的号() {
+    // Arrange
+    let (mut game_world, content, roles, site) = world_at_a_living_settlement();
+
+    // Act
+    let spawned = materialize_nearby_settlements(&mut game_world.world, &content, &roles);
+
+    // Assert：先钉住「被断言的对象真的存在」，否则下面的循环可能空转。
+    assert!(!spawned.is_empty(), "这座据点必须真的物化出人来");
+    for id in &spawned {
+        let agent = game_world.world.actors.get(*id).expect("刚生成必然存在");
+        assert!(
+            agent.home.is_some(),
+            "物化出的 NPC 必须知道自己是哪座据点的人"
+        );
+    }
+    // 至少有一个人属于**我们挑的这一座**——只断言「非 None」的话，一个
+    // 恒返回某个固定野号的实现也能蒙混过关。
+    assert!(
+        spawned.iter().any(|id| {
+            game_world
+                .world
+                .actors
+                .get(*id)
+                .expect("刚生成必然存在")
+                .home
+                == Some(site.id)
+        }),
+        "至少有一个 NPC 的 home 必须正是这座据点（{:?}）",
+        site.id
+    );
+}
+
 #[test]
 fn 同一座据点再跑一遍物化不会多出任何人() {
     // 这正是本批次要解决的那个缺陷：区块被淘汰再加载时，不能照着同一份

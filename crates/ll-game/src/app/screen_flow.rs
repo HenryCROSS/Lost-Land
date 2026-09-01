@@ -482,8 +482,10 @@ impl Demo {
             cursor,
             &rows,
             &self.content.dialogue_node_table,
-            player,
-            speaker,
+            crate::dialogue_screen::DialogueParticipants {
+                actor: player,
+                speaker,
+            },
             input,
             pointer,
         );

@@ -23,16 +23,22 @@
 
 use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_game::content::{LoadedContent, RuntimeCatalogs};
-use ll_game::dialogue_screen::{DialogueRow, dialogue_rows, dialogue_title_key, update_dialogue};
+use ll_game::dialogue_screen::{
+    DialogueParticipants, DialogueRow, dialogue_rows, dialogue_title_key, update_dialogue,
+};
 use ll_game::menu_screen::{ScreenOutcome, ScreenState};
 use ll_game::player_action::{InteractTarget, TalkLookup, interact_entries};
 use ll_game::pointer::RowPointer;
 use ll_game::world::{GameWorld, build_new_world};
 use ll_i18n::Catalog;
 use ll_platform::input::{GameKey, InputState};
+use ll_sim::dialogue::{
+    AffiliationQuery, DialogueCondition, JOIN_SETTLEMENT_STANDING, NoContentIds, condition_holds,
+};
 use ll_sim::timeline::Timeline;
 use ll_sim::turn::TurnEngine;
 use ll_world::entity::{Affiliation, AffiliationKind, EntityId, OrgRef};
+use ll_world::settlement::SettlementStatus;
 use ll_world::state::WorldState;
 
 /// 固定种子，理由同 `door_interaction.rs` 的同名常量。
@@ -161,18 +167,28 @@ fn 会话行(
     )
 }
 
+/// 一次会话要用到的两份只读夹具。
+///
+/// 收成一个结构体是为了让 [`会话一帧`] 的参数表停在 7 个以内
+/// （`clippy::too_many_arguments`，全仓库 `-D warnings`）——顺带也让
+/// 每个调用点少写一行。
+struct 会话夹具<'a> {
+    content: &'a LoadedContent,
+    catalog: &'a Catalog,
+}
+
 /// 把一次会话屏的输入跑完，并把它要提交的意图真的交给回合引擎——
 /// `Demo::update_dialogue_screen` 那一串调用的最小等价物。
 fn 会话一帧(
     game_world: &mut GameWorld,
-    content: &LoadedContent,
-    catalog: &Catalog,
+    夹具: &会话夹具<'_>,
     speaker: EntityId,
     node: ContentIndex,
     cursor: &mut usize,
     input: &InputState,
     pointer: RowPointer,
 ) -> (ScreenOutcome, Option<ScreenState>) {
+    let 会话夹具 { content, catalog } = 夹具;
     let rows = 会话行(game_world, content, catalog, node);
     let player = game_world.player;
     let update = update_dialogue(
@@ -180,8 +196,10 @@ fn 会话一帧(
         cursor,
         &rows,
         &content.dialogue_node_table,
-        player,
-        speaker,
+        DialogueParticipants {
+            actor: player,
+            speaker,
+        },
         input,
         pointer,
     );
@@ -390,8 +408,10 @@ fn 鼠标点在第几行就选中第几行() {
     // Act：指针触发第 1 行（「有什么活干吗？」→ steward_work 节点）。
     let (outcome, next) = 会话一帧(
         &mut game_world,
-        &content,
-        &catalog,
+        &会话夹具 {
+            content: &content,
+            catalog: &catalog,
+        },
         npc,
         root,
         &mut cursor,
@@ -428,8 +448,10 @@ fn 取消键关掉整块会话屏() {
     // Act
     let (outcome, next) = 会话一帧(
         &mut game_world,
-        &content,
-        &catalog,
+        &会话夹具 {
+            content: &content,
+            catalog: &catalog,
+        },
         npc,
         root,
         &mut cursor,
@@ -483,8 +505,10 @@ fn 听完风声之后那一行消失换成另一行() {
     let mut cursor = row;
     let (_, next) = 会话一帧(
         &mut game_world,
-        &content,
-        &catalog,
+        &会话夹具 {
+            content: &content,
+            catalog: &catalog,
+        },
         npc,
         root,
         &mut cursor,
@@ -545,8 +569,10 @@ fn 说完一整轮话世界时钟一格没动() {
     for _ in 0..6 {
         let (_, next) = 会话一帧(
             &mut game_world,
-            &content,
-            &catalog,
+            &会话夹具 {
+                content: &content,
+                catalog: &catalog,
+            },
             npc,
             node,
             &mut cursor,
@@ -573,5 +599,248 @@ fn 说完一整轮话世界时钟一格没动() {
             .next_action_at,
         next_before,
         "下次行动时刻也不动"
+    );
+}
+
+// ── 三、加入据点：两条谓词第一次有非假的读数（批次 26）───────────
+
+/// 建一局世界，并在玩家东侧放一个**真的属于某座据点**的管理者。
+///
+/// 与 [`world_with_neighbour`] 的差别只有一处：这里的 NPC 带
+/// `home: Some(据点号)`，而那座据点在势力表里真的归某个势力。这两样
+/// 正是 `join-settlement` 那一支的第 4、5 道闸门要问的东西。
+///
+/// **不手搓势力表**：用 `build_new_world` 跑出来的真实编年史折叠结果
+/// （`ll_world::faction::seed_factions`），与本体二进制同一条通道。
+fn world_with_steward_of_a_real_settlement(
+    content: &LoadedContent,
+) -> (GameWorld, EntityId, ll_core::ident::WorldId) {
+    let steward = 索引(content, "lostland:steward");
+    let (mut game_world, npc) = world_with_neighbour(content, steward, None);
+    // 挑一座**在势力表里真的归某个势力**的据点：`faction_of` 对废墟与
+    // 从不存在的号返回 `None`，因此这一步不是形式主义。
+    let site = {
+        let chronicle = game_world
+            .world
+            .terrain
+            .chronicle_handle()
+            .expect("新游戏必然装了编年史");
+        chronicle
+            .sites()
+            .iter()
+            .find(|site| {
+                site.status == SettlementStatus::Inhabited
+                    && game_world.world.factions.faction_of(site.id).is_some()
+            })
+            .expect("三百年历史必然留下至少一座还有人住、且归属某个势力的据点")
+            .id
+    };
+    let faction = game_world
+        .world
+        .factions
+        .faction_of(site)
+        .expect("刚按这个条件挑的");
+    game_world
+        .world
+        .actors
+        .get_mut(npc)
+        .expect("刚放进去的 NPC")
+        .home = Some(site);
+    (game_world, npc, faction)
+}
+
+/// 玩家身上的 `Faction` 归属（没有就是 `None`）。
+fn 玩家的势力归属(game_world: &GameWorld) -> Option<Affiliation> {
+    game_world
+        .world
+        .actors
+        .get(game_world.player)
+        .expect("玩家在")
+        .affiliations
+        .iter()
+        .find(|affiliation| affiliation.kind == AffiliationKind::Faction)
+        .copied()
+}
+
+/// **端到端：加入前那条依赖 `affiliated` 的选项不出现 → 加入 → 它出现。**
+///
+/// 批次 1 写下 `affiliated`/`not-affiliated` 两条谓词时它们**恒为假**
+/// （`build_player_agent` 写死 `affiliations: Vec::new()`）。本条是它们
+/// 第一次有非假读数的证据。
+///
+/// 故意改坏的反例（本批实测）：把 `apply` 里 `Effect::AddAffiliation`
+/// 那一支的 `agent.affiliations.push(..)` 去掉，本条当场红。
+#[test]
+fn 加入据点之前那条选项不出现加入之后出现() {
+    // Arrange
+    let content = test_content();
+    let catalog = 真实文案();
+    let (mut game_world, npc, faction) = world_with_steward_of_a_real_settlement(&content);
+    let root = 索引(&content, "lostland:steward_root");
+    let 我想落脚 = "我想在这里落脚。";
+    let 我该做什么 = "我该做些什么？";
+
+    // 对照组前提一：玩家真的**还没有**任何势力归属。
+    assert_eq!(
+        玩家的势力归属(&game_world),
+        None,
+        "加入之前玩家必须一条势力归属都没有，否则下面验的不是这次加入"
+    );
+    // 对照组前提二：这一格上的人真的匹配到了管理者那段对话（否则下面
+    // 「那一行在/不在」两条断言会因为整块列表为空而恒真恒假）。
+    let rows = interact_entries(
+        &game_world.world,
+        east_of_player(&game_world),
+        game_world.player,
+        talk(&content),
+    );
+    assert!(
+        matches!(rows.first(), Some(InteractTarget::Talk { speaker, .. }) if *speaker == npc),
+        "东侧那一格必须匹配出一行对话，实际 {rows:?}"
+    );
+
+    let 之前: Vec<String> = 会话行(&game_world, &content, &catalog, root)
+        .into_iter()
+        .map(|row| row.text)
+        .collect();
+    assert!(
+        之前.iter().any(|text| text == 我想落脚),
+        "加入之前 `not-affiliated` 那一行必须在：{之前:?}"
+    );
+    assert!(
+        !之前.iter().any(|text| text == 我该做什么),
+        "加入之前 `affiliated` 那一行必须**不在**：{之前:?}"
+    );
+
+    // Act：选中第 0 行（「我想在这里落脚。」）。
+    let mut cursor = 0;
+    let (_, _next) = 会话一帧(
+        &mut game_world,
+        &会话夹具 {
+            content: &content,
+            catalog: &catalog,
+        },
+        npc,
+        root,
+        &mut cursor,
+        &InputState::new(),
+        RowPointer::Activate(0),
+    );
+
+    // Assert：归属真的挂上了，指的是**势力**号，声望恰好 250。
+    let 归属 = 玩家的势力归属(&game_world).expect("加入之后必须有一条势力归属");
+    assert_eq!(归属.org, OrgRef::Instance(faction), "指的必须是势力号");
+    assert_eq!(
+        归属.standing, JOIN_SETTLEMENT_STANDING,
+        "所有者裁定：加入据点给 +250"
+    );
+
+    // Assert：两条谓词的读数都翻过来了。
+    let 之后: Vec<String> = 会话行(&game_world, &content, &catalog, root)
+        .into_iter()
+        .map(|row| row.text)
+        .collect();
+    assert!(
+        !之后.iter().any(|text| text == 我想落脚),
+        "加入之后 `not-affiliated` 那一行必须消失：{之后:?}"
+    );
+    assert!(
+        之后.iter().any(|text| text == 我该做什么),
+        "加入之后 `affiliated` 那一行必须出现：{之后:?}"
+    );
+}
+
+/// **反过来也要验**：`standing-at-least` 真的在**比大小**，不是退化成了
+/// 「有没有这类归属」。
+///
+/// 两半：
+///
+/// 1. 内容侧——`steward_duties` 里那条 `standing-at-least: 250` 的选项，
+///    加入**之前**不出现（一条 `Faction` 归属都没有 ⇒ `best_standing`
+///    是 `None`），加入**之后**出现（250 >= 250）。
+/// 2. 谓词侧——同一个玩家、同一条 `Faction` 归属，把阈值抬到 251
+///    **仍然不满足**。这一半才真的排除「谓词退化成 `affiliated`」这种
+///    假绿：只验第 1 半的话，一个把 `StandingAtLeast` 实现成
+///    「有没有这类归属」的版本照样全绿。
+///
+/// 故意改坏的反例（本批实测）：把 `condition_holds` 里
+/// `StandingAtLeast` 那一支改成 `query.best_standing(agent).is_some()`
+/// （丢掉比大小），第 2 半当场红。
+#[test]
+fn standing不够时那一行仍然不出现() {
+    // Arrange
+    let content = test_content();
+    let catalog = 真实文案();
+    let (mut game_world, npc, _faction) = world_with_steward_of_a_real_settlement(&content);
+    let root = 索引(&content, "lostland:steward_root");
+    let duties = 索引(&content, "lostland:steward_duties");
+    let 宽限几日 = "今年的税，能不能宽限几日？";
+
+    // 第 1 半（加入之前）：那一行不在。
+    let 之前: Vec<String> = 会话行(&game_world, &content, &catalog, duties)
+        .into_iter()
+        .map(|row| row.text)
+        .collect();
+    assert!(
+        !之前.iter().any(|text| text == 宽限几日),
+        "加入之前 `standing-at-least: 250` 那一行必须不在：{之前:?}"
+    );
+
+    // Act：加入。
+    let mut cursor = 0;
+    let _ = 会话一帧(
+        &mut game_world,
+        &会话夹具 {
+            content: &content,
+            catalog: &catalog,
+        },
+        npc,
+        root,
+        &mut cursor,
+        &InputState::new(),
+        RowPointer::Activate(0),
+    );
+
+    // 第 1 半（加入之后）：那一行出现了——250 >= 250。
+    let 之后: Vec<String> = 会话行(&game_world, &content, &catalog, duties)
+        .into_iter()
+        .map(|row| row.text)
+        .collect();
+    assert!(
+        之后.iter().any(|text| text == 宽限几日),
+        "加入之后 `standing-at-least: 250` 那一行必须出现：{之后:?}"
+    );
+
+    // 第 2 半：同一个玩家，阈值抬到 251 **仍然不满足**。
+    let player = game_world
+        .world
+        .actors
+        .get(game_world.player)
+        .expect("玩家在");
+    let query = AffiliationQuery {
+        kind: AffiliationKind::Faction,
+        org: None,
+    };
+    assert!(
+        condition_holds(
+            &DialogueCondition::StandingAtLeast {
+                query,
+                value: JOIN_SETTLEMENT_STANDING,
+            },
+            player,
+            &NoContentIds,
+        ),
+        "对照组：阈值恰好等于 250 时必须满足"
+    );
+    assert!(
+        !condition_holds(
+            &DialogueCondition::StandingAtLeast {
+                query,
+                value: JOIN_SETTLEMENT_STANDING + 1,
+            },
+            player,
+            &NoContentIds,
+        ),
+        "阈值高于 250 时必须**不**满足——这条排除「谓词退化成 affiliated」"
     );
 }
