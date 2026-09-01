@@ -457,6 +457,17 @@ EXEMPTIONS: dict[str, str] = {
         "判据属于存储层。ll-game 的端到端验收「矮人矿城被哥布林部落攻灭」逐个断言攻守双方"
         "的建立者种族。"
     ),
+    "CultureAttrs.buildings": (
+        "据点建筑类型批次新增。真实消费者是 ll_world::building::settlement_furnishing"
+        "（按权重给每栋屋子抽一条模板 → 摆哪几件家具）与 ll_game::settlement_spawn 的"
+        "furnish_settlement（把那份计划真的写进 WorldState::ground_items，带主人）。"
+        "两处都按本脚本的判据属于存储/派生层：building.rs 在 ll-world 但不在 fov/light"
+        "两个白名单文件里，settlement_spawn.rs 在 ll-game——与同一张表其余五条豁免完全"
+        "同一种处境。真正守着它的是 ll_world::building 的单元测试、"
+        "crates/ll-mod/tests/culture_town_shape.rs（一份 cultures.json5 文本经真实"
+        "解析路径决定城镇形态）与 crates/ll-game/tests/settlement_furniture.rs（端到端："
+        "家具真的立在屋里、真的带着据点归属）。"
+    ),
     # CultureAttrs.hostility 的豁免已在「文化归属与敌对判定」批次删掉：
     # ll_sim::ai_query::declared_hostile 现在直接读它（撞格路由把「走进
     # 对方那一格」判成攻击还是互换），ai_query.rs 落在决策层通配里，本

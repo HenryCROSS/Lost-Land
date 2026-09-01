@@ -2111,6 +2111,7 @@ mod tests {
                     wall_terrain: ids.wall_stone,
                     founder_races: vec![(race, 10)],
                     hostility: Vec::new(),
+                    buildings: crate::building::bare_building_fixture(),
                 },
             )
             .expect("首次定义");
@@ -2125,6 +2126,7 @@ mod tests {
                     wall_terrain: ids.wall_wood,
                     founder_races: vec![(tribe_race, 10)],
                     hostility: vec![(mining, hostility)],
+                    buildings: crate::building::bare_building_fixture(),
                 },
             )
             .expect("首次定义");

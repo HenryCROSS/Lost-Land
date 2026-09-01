@@ -50,6 +50,32 @@
 // 不对称是刻意的（`CultureAttrs::hostility` 文档「刻意允许不对称」）：
 // 部落对矿邑 6，矿邑对部落只有 3——哥布林主动来劫掠，矮人只是有时候
 // 出兵清剿。
+//
+// ── 建筑类型：每份文化自己声明有哪几类屋子 ────────────────────────
+//
+// 建筑类型批次（2026-08-31）新增 `buildings`。所有者原话：「聚居地的
+// 建筑靠这么近，而且只有款式一样的房子」「建筑需要根据他的类型填入
+// 不同的家具，例如箱子，椅子，床，书柜等」。
+//
+// **类型是内容，不是引擎枚举**——本文件写几类就是几类，第三方 mod 加
+// 一份 cultures.json5 就有自己的城镇形态。引擎侧只认「权重 + 摆什么」
+// 两项，连名字都不认（理由见 `ll_world::building` 模块文档），所以下面
+// 每一条的名字都写在注释里。
+//
+// 本体一共出现**四种**：住宅 / 作坊 / 仓库 / 酒馆。这四个名字不是这一
+// 批想出来的——`mods/lostland/items.json5` 里那七件家具的注释**自己
+// 已经写好了各自的去处**（「住宅与酒馆各摆几把」「仓库与酒馆」「仓库
+// 与住宅」「住宅（识字人家）与作坊」）。本字段做的是把那些注释兑现成
+// 可执行的声明，不是发明一套新分类。
+//
+// 每份文化挑自己用得上的那几类：矿邑作坊多（它靠打铁吃饭），农庄住宅
+// 多，部落只有住宅与仓库两类（哥布林没有酒馆，也没有书柜——那是「识字
+// 人家」的东西）。**这就是「城镇形态」这个词的全部含义**：同样八十栋
+// 屋子，矿邑里三成是作坊，农庄里七成是住宅。
+//
+// 一栋屋子最多摆 8 件（`ll_world::building::MAX_FURNITURE_PER_BUILDING`
+// ——5×5 外廓的内部是 3×3，正中那一格永远留空好让人站进去），超了装载
+// 期当场报错，不会静默丢弃。
 {
   cultures: [
     // 农庄：食物 × 草地。人类为主，三族都可能。
@@ -66,6 +92,36 @@
         { race: "lostland:human", weight: 8 },
         { race: "lostland:dwarf", weight: 2 },
         { race: "lostland:elf", weight: 2 },
+      ],
+      // 农庄的形态：住宅压倒性多数（种地的人家家户户住得开），一座
+      // 仓库囤粮，一间酒馆是村口那家。**没有作坊**——农庄不打铁。
+      buildings: [
+        // 住宅：一卷卧铺、一把椅子、一口箱子。
+        {
+          weight: 7,
+          furniture: [
+            { item: "lostland:fur_bed", count: 1 },
+            { item: "lostland:oak_chair", count: 1 },
+            { item: "lostland:iron_bound_chest", count: 1 },
+          ],
+        },
+        // 仓库：箱子与酒桶，堆得满，不住人所以没有床。
+        {
+          weight: 2,
+          furniture: [
+            { item: "lostland:iron_bound_chest", count: 3 },
+            { item: "lostland:oak_barrel", count: 2 },
+          ],
+        },
+        // 酒馆：一张长桌配四把椅子，外加一只酒桶。
+        {
+          weight: 1,
+          furniture: [
+            { item: "lostland:oak_table", count: 1 },
+            { item: "lostland:oak_chair", count: 4 },
+            { item: "lostland:oak_barrel", count: 1 },
+          ],
+        },
       ],
     },
 
@@ -86,6 +142,44 @@
       hostility: [
         { culture: "lostland:goblin_warband", hostility: 3 },
       ],
+      // 矿邑的形态：**作坊最多**——它靠打铁吃饭，锻炉是这份文化在
+      // 地上最显眼的东西。住宅其次，仓库囤矿，酒馆一间。
+      buildings: [
+        // 作坊：锻炉 + 工作面（长桌）+ 一面放配方与账册的书柜。
+        {
+          weight: 4,
+          furniture: [
+            { item: "lostland:forge", count: 1 },
+            { item: "lostland:oak_table", count: 1 },
+            { item: "lostland:oak_bookshelf", count: 1 },
+          ],
+        },
+        // 住宅
+        {
+          weight: 4,
+          furniture: [
+            { item: "lostland:fur_bed", count: 1 },
+            { item: "lostland:oak_chair", count: 1 },
+            { item: "lostland:iron_bound_chest", count: 1 },
+          ],
+        },
+        // 仓库：矿石论箱装。
+        {
+          weight: 2,
+          furniture: [
+            { item: "lostland:iron_bound_chest", count: 4 },
+          ],
+        },
+        // 酒馆
+        {
+          weight: 1,
+          furniture: [
+            { item: "lostland:oak_table", count: 1 },
+            { item: "lostland:oak_chair", count: 4 },
+            { item: "lostland:oak_barrel", count: 1 },
+          ],
+        },
+      ],
     },
 
     // 林居：木材 × 森林。
@@ -98,6 +192,34 @@
       founder_races: [
         { race: "lostland:elf", weight: 8 },
         { race: "lostland:human", weight: 3 },
+      ],
+      // 林居的形态：住宅为主，作坊做木工（锻炉也用来烤弯木料），
+      // 书柜比别处多——精灵识字。没有仓库：林居把东西堆在自家屋里。
+      buildings: [
+        {
+          weight: 6,
+          furniture: [
+            { item: "lostland:fur_bed", count: 1 },
+            { item: "lostland:oak_chair", count: 1 },
+            { item: "lostland:oak_bookshelf", count: 1 },
+          ],
+        },
+        {
+          weight: 3,
+          furniture: [
+            { item: "lostland:oak_table", count: 1 },
+            { item: "lostland:oak_bookshelf", count: 2 },
+            { item: "lostland:oak_chair", count: 1 },
+          ],
+        },
+        {
+          weight: 1,
+          furniture: [
+            { item: "lostland:oak_table", count: 1 },
+            { item: "lostland:oak_chair", count: 4 },
+            { item: "lostland:oak_barrel", count: 1 },
+          ],
+        },
       ],
     },
 
@@ -112,6 +234,32 @@
         { race: "lostland:human", weight: 7 },
         { race: "lostland:elf", weight: 3 },
       ],
+      // 渔港的形态：仓库与酒馆的比例都比内陆高——货要囤，船工要喝。
+      buildings: [
+        {
+          weight: 5,
+          furniture: [
+            { item: "lostland:fur_bed", count: 1 },
+            { item: "lostland:oak_chair", count: 1 },
+            { item: "lostland:iron_bound_chest", count: 1 },
+          ],
+        },
+        {
+          weight: 3,
+          furniture: [
+            { item: "lostland:oak_barrel", count: 4 },
+            { item: "lostland:iron_bound_chest", count: 2 },
+          ],
+        },
+        {
+          weight: 2,
+          furniture: [
+            { item: "lostland:oak_table", count: 2 },
+            { item: "lostland:oak_chair", count: 4 },
+            { item: "lostland:oak_barrel", count: 2 },
+          ],
+        },
+      ],
     },
 
     // 石砦：石材 × 丘陵。
@@ -124,6 +272,32 @@
       founder_races: [
         { race: "lostland:dwarf", weight: 6 },
         { race: "lostland:human", weight: 4 },
+      ],
+      // 石砦的形态：作坊与住宅各半，仓库堆石料。没有酒馆。
+      buildings: [
+        {
+          weight: 4,
+          furniture: [
+            { item: "lostland:forge", count: 1 },
+            { item: "lostland:oak_table", count: 1 },
+            { item: "lostland:iron_bound_chest", count: 1 },
+          ],
+        },
+        {
+          weight: 4,
+          furniture: [
+            { item: "lostland:fur_bed", count: 1 },
+            { item: "lostland:oak_chair", count: 1 },
+            { item: "lostland:iron_bound_chest", count: 1 },
+          ],
+        },
+        {
+          weight: 2,
+          furniture: [
+            { item: "lostland:iron_bound_chest", count: 3 },
+            { item: "lostland:oak_barrel", count: 1 },
+          ],
+        },
       ],
     },
 
@@ -167,6 +341,26 @@
         { culture: "lostland:farmstead", hostility: 4 },
         { culture: "lostland:stonecutters", hostility: 4 },
         { culture: "lostland:cultureless", hostility: 6 },
+      ],
+      // 部落的形态：**只有两类**——住宅与仓库（劫来的东西要有地方
+      // 堆）。没有作坊（哥布林不打铁，铁是抢来的），没有酒馆，没有
+      // 书柜。这一条是「城镇形态真的因文化而不同」最直白的证据：
+      // 同样的八十栋屋子，部落营地里一座锻炉、一面书柜都找不到。
+      buildings: [
+        {
+          weight: 7,
+          furniture: [
+            { item: "lostland:fur_bed", count: 1 },
+            { item: "lostland:oak_chair", count: 1 },
+          ],
+        },
+        {
+          weight: 3,
+          furniture: [
+            { item: "lostland:iron_bound_chest", count: 2 },
+            { item: "lostland:oak_barrel", count: 2 },
+          ],
+        },
       ],
     },
   ],

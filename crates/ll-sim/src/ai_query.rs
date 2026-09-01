@@ -494,6 +494,7 @@ mod tests {
             wall_terrain: terrain,
             founder_races: vec![(founder, 1)],
             hostility,
+            buildings: ll_world::building::bare_building_fixture(),
         };
         let mut table = CultureTable::new();
         table
@@ -600,6 +601,7 @@ mod tests {
                     founder_races: vec![(founder, 1)],
                     // 只对「无文化」声明敌意，对任何真文化都不声明。
                     hostility: vec![(cultureless, HOSTILE_CULTURE_THRESHOLD)],
+                    buildings: ll_world::building::bare_building_fixture(),
                 },
             )
             .expect("测试用文化声明合法");
@@ -649,6 +651,7 @@ mod tests {
                     wall_terrain: terrain,
                     founder_races: vec![(founder, 1)],
                     hostility: vec![(cultureless, ll_world::culture::MAX_HOSTILITY)],
+                    buildings: ll_world::building::bare_building_fixture(),
                 },
             )
             .expect("测试用文化声明合法");

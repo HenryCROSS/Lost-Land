@@ -835,7 +835,33 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 /// `跳转目标不同的两个对话节点摘要不同`，以及版本 7 那次事故之后立下的
 /// 那条纪律——**提交信息声称改了，不等于代码里真的改了**，下面这一行的
 /// 字面值就是唯一权威。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 28;
+///
+/// ---
+///
+/// # 版本 29（据点建筑类型批次）
+///
+/// **既有表加字段**，不是新增表：[`ll_world::culture::CultureAttrs`] 多了
+/// `buildings`（这份文化有哪几类屋子、各占多少权重、每类摆什么家具），
+/// [`write_culture_fields`] 末尾多混入这一段。这是版本 16
+/// （`ItemDef.furniture`）那一类——**文化表以外的条目摘要一个字节都没变**，
+/// 但每一条文化的摘要都变了（哪怕它一条建筑都不声明也不可能，注册期拒了
+/// 空表）。按 ADR 0027 必须递增。
+///
+/// 混入形状与同一函数里的 `founder_races` 逐字一致：先写条数，再逐条写
+/// 权重 + 家具列表（同样先写条数再逐条写「物品 id + 件数」）。**物品索引
+/// 经 [`Registry::resolve`] 换成命名空间 id 再混入**，不混裸的
+/// `ContentIndex` ——裸数值当判据正是本仓库反复付过代价的那件事，且它会让
+/// 「往注册表中间插一条内容」这种与文化毫无关系的改动把哈希打飞。
+///
+/// **本次不动 `check_field_consumers.py` 的 `CONTENT_HASH_KIND_TO_TARGET_TYPE`**：
+/// `Culture` → `CultureAttrs` 那一行在版本 27 就加好了，新字段自动落进
+/// 同一条互校，不需要有人记得改第二处。（新增的 `CultureAttrs.buildings`
+/// 需要一条 `EXEMPTIONS`，与既有六条同一种处境——消费者在 `ll-world`/
+/// `ll-game`，都不在决策层 glob 内。）
+///
+/// 守门方式同前几批：本段文字 + 本模块单元测试
+/// `建筑类型不同的两条文化摘要不同`。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 29;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1854,6 +1880,24 @@ fn write_culture_fields(
             }
         }
         hasher.write_u64(u64::from(table.hostility(Some(kind), Some(*target))));
+    }
+    // 建筑类型（版本 29）：形状与上面的 `founder_races` 逐字一致——先条数
+    // 再逐条。家具那一层也一样：先条数，再逐条写「物品 id + 件数」。
+    let buildings = table.buildings(kind);
+    hasher.write_u64(buildings.len() as u64);
+    for template in buildings {
+        hasher.write_u64(u64::from(template.weight));
+        hasher.write_u64(template.furniture.len() as u64);
+        for (item, count) in &template.furniture {
+            match registry.resolve(*item) {
+                None => hasher.write_u64(0),
+                Some(id) => {
+                    hasher.write_u64(1);
+                    hasher.write_namespaced_id(id);
+                }
+            }
+            hasher.write_u64(u64::from(*count));
+        }
     }
 }
 
@@ -4374,6 +4418,91 @@ mod tests {
         // Assert
         assert_eq!(kind, ContentTableKind::Opaque);
     }
+    /// 建筑类型真的进了摘要：同一条文化、只换 `buildings`，摘要必须不同
+    /// （版本 29 守门，见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档
+    /// 「版本 29」一节）。
+    ///
+    /// 三份声明两两比对，各自只差一处：权重、家具种类、家具件数。只比
+    /// 其中两份是不够的——混入代码里漏写 `count` 那一行的话，「换件数」
+    /// 那一对会静默相等，而那正是最容易漏的一行。
+    ///
+    /// # 顺带如实记录一处**已经存在的**文档—代码分歧
+    ///
+    /// [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 27」一节写着守门的
+    /// 是「本模块单元测试 `建材不同的两条文化摘要不同`」——**那条测试从
+    /// 来没有存在过**（`grep 建材不同的两条文化摘要不同 crates/` 只命中
+    /// 那句注释自己）。这正是同一段文字警告过的那件事：「提交信息声称
+    /// 改了，不等于代码里真的改了」。本条测试同时补上那个缺口：它构造的
+    /// 三份声明只在 `buildings` 上不同，但走的是 [`write_culture_fields`]
+    /// 的完整字段流，任何一处混入被删掉都会让某一对当场相等。
+    #[test]
+    fn 建筑类型不同的两条文化摘要不同() {
+        // Arrange
+        //
+        // **索引必须来自 `registry` 本身**，不能来自一个旁边的 `Interner`：
+        // `write_culture_fields` 混的是 `registry.resolve(索引)` 换出来的
+        // 命名空间 id，而一个查不到的索引一律写 0——那样「换家具种类」
+        // 这一对会静默相等。第一版正是这么写的，本条测试当场把它咬住了。
+        let mut registry = Registry::new();
+        let mut id = |raw: &str| {
+            registry.intern(ll_core::ident::NamespacedId::parse(raw).expect("合法标识符"))
+        };
+        let index = id("test:folk");
+        let race = id("test:race");
+        let chair = id("test:chair");
+        let bed = id("test:bed");
+        let digest = |buildings: Vec<ll_world::building::BuildingTemplate>| -> u64 {
+            let mut table = CultureTable::new();
+            table
+                .define(
+                    index,
+                    ll_world::culture::CultureAttrs {
+                        display_name_key: ll_core::ident::NamespacedId::parse("test:name")
+                            .expect("合法标识符"),
+                        economy: ll_world::resource::ResourceCategory::Food,
+                        home_terrain: ll_world::terrain::TerrainKind::from_index(
+                            ContentIndex::default(),
+                        ),
+                        wall_terrain: ll_world::terrain::TerrainKind::from_index(
+                            ContentIndex::default(),
+                        ),
+                        founder_races: vec![(race, 1)],
+                        hostility: Vec::new(),
+                        buildings,
+                    },
+                )
+                .expect("声明自洽");
+            let mut hasher = StateHasher::new();
+            write_culture_fields(&mut hasher, &table, index, &registry);
+            hasher.finish()
+        };
+        let template = |weight: u32, item, count| ll_world::building::BuildingTemplate {
+            weight,
+            furniture: vec![(item, count)],
+        };
+
+        // Act：三份声明，两两之间只差一处。
+        let digests = [
+            digest(vec![template(1, chair, 1)]),
+            // 只换权重
+            digest(vec![template(2, chair, 1)]),
+            // 只换家具种类
+            digest(vec![template(1, bed, 1)]),
+            // 只换件数
+            digest(vec![template(1, chair, 2)]),
+        ];
+
+        // Assert：四份两两不同。
+        for left in 0..digests.len() {
+            for right in (left + 1)..digests.len() {
+                assert_ne!(
+                    digests[left], digests[right],
+                    "第 {left} 份与第 {right} 份建筑声明不同，摘要却相同——                     write_culture_fields 少混了某一项"
+                );
+            }
+        }
+    }
+
     /// 资源的大类真的进了摘要：同一条资源、只换 `category`，摘要必须
     /// 不同（版本 24 守门，见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档
     /// 「版本 24」一节）。

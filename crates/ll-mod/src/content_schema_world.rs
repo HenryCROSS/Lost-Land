@@ -16,6 +16,7 @@
 //! 形突然不挡视线了」，而没有任何报错。数值字段同理，除非缺省值本身
 //! 有明确语义（见各字段文档）。
 
+use ll_world::building::BuildingTemplate;
 use ll_world::culture::{CultureAttrs, CultureError, CultureTable};
 use ll_world::resource::{ResourceAttrs, ResourceCategory, ResourceError, ResourceTable};
 use ll_world::space_profile::{SpaceProfileAttrs, SpaceProfileError, SpaceProfileTable};
@@ -218,6 +219,41 @@ pub struct RawCulture {
     /// [`ll_world::culture::CultureAttrs::hostility`]。
     #[serde(default)]
     pub hostility: Vec<RawCultureHostility>,
+    /// 这种文化有哪几类建筑、各占多少权重、每类屋里摆什么家具。
+    /// 至少要有一条权重为正，否则装载期当场报错
+    /// （[`ll_world::culture::CultureError::NoBuildingTemplate`]）。
+    ///
+    /// **必填**，不给 `#[serde(default)]`：与 `wall_terrain` 同一条纪律
+    /// （见 [`RawCulture`] 类型文档）。漏写的症状是「这份文化的城镇里
+    /// 每一栋屋子都是空的」，而那正是本字段落地要消灭的东西。
+    pub buildings: Vec<RawBuilding>,
+}
+
+/// [`RawCulture::buildings`] 的一项——一种建筑类型。
+///
+/// **没有 `id`，也没有 `display_name_key`**：今天没有任何消费者需要
+/// 「按名字找一栋酒馆」，理由见 [`ll_world::building`] 模块文档。人读的
+/// 名字写在 `mods/*/cultures.json5` 的注释里。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawBuilding {
+    /// 抽取权重；0 表示这一档不参与抽取。
+    pub weight: i64,
+    /// 屋里摆哪些家具，按声明顺序占用内壁的格子。件数合计不得超过
+    /// [`ll_world::building::MAX_FURNITURE_PER_BUILDING`]。
+    pub furniture: Vec<RawBuildingFurniture>,
+}
+
+/// [`RawBuilding::furniture`] 的一项。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawBuildingFurniture {
+    /// 物品的完整命名空间标识符，必须是一条 `furniture: true` 的物品
+    /// （这条跨表检查落在 `crate::content_audit`，见
+    /// [`ll_world::building::BuildingTemplate::furniture`]）。
+    pub item: String,
+    /// 摆几件。
+    pub count: i64,
 }
 
 /// [`RawCulture::founder_races`] 的一项。
@@ -282,6 +318,25 @@ pub fn apply_cultures(
             let target = intern_id(registry, &entry.culture, "文化敌对目标标识符")?;
             hostility.push((target, entry.hostility.clamp(0, i64::from(u32::MAX)) as u32));
         }
+        // 建筑类型：家具索引同样走 `intern` 而不是「只 get」，与上面三处
+        // 逐字同一种处理——注册表不区分「谁先提到这个 id」，真正的校验
+        // （这个索引是不是一件已定义的、`furniture: true` 的物品）由
+        // `crate::content_audit` 的跨表引用检查回答。**这里必须 intern**：
+        // 文化文件与物品文件的装载顺序由引擎侧一张固定表决定，一份 mod
+        // 完全可以在自己的 cultures.json5 里引用它自己 items.json5 里的
+        // 家具，而那张表把 cultures 排在 items 之前。
+        let mut buildings = Vec::with_capacity(culture.buildings.len());
+        for raw in &culture.buildings {
+            let mut furniture = Vec::with_capacity(raw.furniture.len());
+            for entry in &raw.furniture {
+                let item = intern_id(registry, &entry.item, "建筑家具物品标识符")?;
+                furniture.push((item, entry.count.clamp(0, i64::from(u32::MAX)) as u32));
+            }
+            buildings.push(BuildingTemplate {
+                weight: raw.weight.clamp(0, i64::from(u32::MAX)) as u32,
+                furniture,
+            });
+        }
         table
             .define(
                 index,
@@ -292,6 +347,7 @@ pub fn apply_cultures(
                     wall_terrain,
                     founder_races,
                     hostility,
+                    buildings,
                 },
             )
             .map_err(|err: CultureError| err.to_string())?;

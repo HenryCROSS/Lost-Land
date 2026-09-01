@@ -354,6 +354,10 @@ pub fn build_new_world_with_mode(
         carve_spawn_clearing(&mut world, &noise, &params, content, spawn);
     }
 
+    // 出生点落进谁家屋里就挪出来——见
+    // `crate::settlement_spawn::spawn_outside_buildings`（那里记着这是
+    // 一个先于据点街道批次就存在的缺陷）。
+    let spawn = crate::settlement_spawn::spawn_outside_buildings(&world, &layout, spawn);
     let (zone, _) = layout.tile_to_zone(spawn);
     let player = spawn_player(&mut world, spawn, zone, content);
     // 必须显式赋值——见 `ll_world::state::WorldState::player_entity`
@@ -846,177 +850,16 @@ pub fn move_player_to(game_world: &mut GameWorld, pos: TorusPos) {
     };
 }
 
-/// 物化 NPC 时，从据点锚点向外最多搜多少格找可站立的位置。
+/// 据点物化（NPC + 家具）已经搬到 [`crate::settlement_spawn`]，这里
+/// 保留一行转发。
 ///
-/// 取 26 = [`ll_world::settlement::MAX_FOOTPRINT_RADIUS`] 的量级：一座
-/// 长满的据点（80 栋建筑）外廓半径正是这个数，搜到这里就等于「把整座
-/// 村子找了一遍」。再往外就会走进荒野，NPC 会站在离家很远的地方。
-const NPC_PLACEMENT_RADIUS: i32 = 26;
-
-/// 把**当前常驻区块里、还有人住、且此前从未物化过**的据点，各自的名册
-/// 物化成真正的 `Agent`。
-///
-/// 返回这一次新生成的实体，调用方负责把它们排进时间轴
-/// （[`ll_sim::turn::TurnEngine::schedule`]）——本函数不碰时间轴，与
-/// `ll-world`/`ll-sim` 的分层一致（世界状态归 `WorldState`，调度归回合
-/// 引擎）。
-///
-/// # 时机：跟着流式加载走，不另起一套触发机制
-///
-/// 调用点是 [`crate::app::Demo::maintain_streaming`]——**已经存在的、
-/// 每帧真跑一遍的那个钩子**，与 `cleanup_aged_ground_items` 并列（同一
-/// 条「复用已有的每帧钩子，比新建一套框架更小、更诚实」的既有理由）。
-/// 它排在 `stream_neighborhood` **之后**：物化要读地形判断「这一格能不
-/// 能站人」，而那些区块正是上一行刚刚装进来的。
-///
-/// # 为什么不是「区块首次物化时生成」
-///
-/// 那是最直觉的时机，也是上一批标记为「唯一没有现成先例」的那个设计
-/// 问题——它的麻烦在于**一座据点可以横跨最多 8 个区块**（见
-/// `ll_world::settlement` 模块文档「实测」一节）：按区块触发，同一座
-/// 据点会被触发多次，每次只该生成「属于这个区块的那几个人」，而名册
-/// 本身是按据点派生的、不按区块切分。按**据点**触发则一次到位：一座
-/// 据点物化一次，全部人一起出现，`materialized_settlements` 里也只记
-/// 一条。
-///
-/// 代价如实标注：玩家走到一座跨界据点的边缘时，据点另一头（可能还在
-/// 未加载区块里）的那几个人会因为找不到常驻地形而被跳过——见
-/// [`place_roster`]。他们不会在下次靠近时补上（这座据点已经记成「物化
-/// 过」了）。修它需要把「物化」从一次性事件改成可增量的，那要的正是
-/// 上面否掉的逐 NPC 身份，属独立批次。
-///
-/// # 确定性
-///
-/// 本函数不取任何随机数：名册来自 [`ll_mod::roster::settlement_roster`]
-/// （自己走 `DetRng::for_entity`），位置来自一次确定性的方环扫描。据点
-/// 的处理顺序由 [`ll_world::chronicle::WorldChronicle::sites_touching_zone`]
-/// 与区块光栅序共同决定，不依赖任何 `HashMap` 迭代顺序（约束 C5）。
-pub fn materialize_nearby_settlements(
-    world: &mut WorldState,
-    content: &LoadedContent,
-    roles: &ll_mod::roster::SettlementRoles,
-) -> Vec<EntityId> {
-    let Some(chronicle) = world.terrain.chronicle_handle() else {
-        // 没装编年史就没有据点，因此也不该有任何 NPC——「有 NPC 的地方
-        // 必然存在一个据点」这条裁定在这里表现为一次直接返回。
-        return Vec::new();
-    };
-    let layout = *world.terrain.layout();
-
-    // 先把「附近有哪些据点」收齐再动世界。
-    //
-    // 「附近」的口径取**当前常驻的区块集合**，不是「以玩家为中心画一个
-    // 方框」：两者在正常游玩时几乎重合（常驻集合就是流式加载按玩家位置
-    // 维护出来的），但常驻集合额外满足一条本函数真正需要的性质——
-    // [`place_roster`] 只在常驻地形上摆人，非常驻区块里的据点就算被算作
-    // 「附近」也一个人都摆不出来，却会被记成「已物化」而**永久错过**。
-    // 按常驻集合取，这种情形从源头上不会发生。
-    //
-    // 一座跨区块的据点会被它覆盖到的每个常驻区块各报一次，按 id 去重
-    // （排序 + dedup，不碰任何 HashSet，约束 C5）。
-    let mut nearby: Vec<ll_world::settlement::SettlementSite> = Vec::new();
-    for zone in world.terrain.resident_zones() {
-        for site in chronicle.sites_touching_zone(zone) {
-            nearby.push(*site);
-        }
-    }
-    nearby.sort_by_key(|site| site.id.get());
-    nearby.dedup_by_key(|site| site.id.get());
-
-    let mut spawned = Vec::new();
-    for site in nearby {
-        if world.settlement_is_materialized(site.id) {
-            continue;
-        }
-        let roster = ll_mod::roster::settlement_roster(&site, roles, world.seed);
-        if roster.is_empty() {
-            // 废墟与空据点：名册本来就是空的，**照样记成已物化**——否则
-            // 每一帧都会为同一片废墟重跑一次名册派生。
-            world.mark_settlement_materialized(site.id);
-            continue;
-        }
-        let spots = place_roster(world, &layout, site.anchor, roster.len());
-        let ctx = ll_mod::roster::MaterializeContext {
-            races: &content.race_table,
-            items: &content.item_table,
-            surface_profile: content.space_ids.surface,
-            now: world.clock,
-            // 据点的文化直接转发给物化——`Agent::affiliations` 的第一个
-            // 生产者，见 `ll_mod::roster::build_npc_agent` 文档「文化
-            // 归属」一节。
-            culture: site.culture,
-        };
-        let mut made = Vec::new();
-        for (profile, pos) in roster.iter().zip(spots) {
-            let zone = layout.tile_to_zone(pos).0;
-            made.push(ll_mod::roster::build_npc_agent(
-                profile, pos, zone, roles, &ctx,
-            ));
-        }
-        for agent in made {
-            spawned.push(world.actors.spawn(agent));
-        }
-        world.mark_settlement_materialized(site.id);
-        tracing::info!(
-            site = site.id.get(),
-            population = site.population,
-            roster = roster.len(),
-            spawned = spawned.len(),
-            "据点 NPC 物化完成"
-        );
-    }
-    spawned
-}
-
-/// 为一份名册找 `wanted` 个可站立、互不重叠的位置。
-///
-/// 从锚点开始按方环由内向外扫描（半径 0、1、2……直到
-/// [`NPC_PLACEMENT_RADIUS`]），每一环内按行主序——完全确定，不取随机数。
-///
-/// 只认**已常驻**的地形（[`ll_world::surface_store::SurfaceStore::terrain_at_resident`]）：
-/// 落在尚未加载区块里的那些格一律跳过，绝不为了摆一个 NPC 去触发一次
-/// 区块生成（那会让物化路径悄悄把整座跨界据点的邻区块都拉进内存）。
-/// 找不到足够多的位置就返回少于 `wanted` 个，调用方按 `zip` 自然截断
-/// ——多出来的那几个人这一局就不出现，见
-/// [`materialize_nearby_settlements`] 文档「代价如实标注」一节。
-///
-/// 已被其他实体占着的格子也跳过：本仓库的移动结算不允许两个实体站在
-/// 同一格，物化时就摞在一起会让他们互相卡死。
-fn place_roster(
-    world: &WorldState,
-    layout: &ZoneLayout,
-    anchor: TorusPos,
-    wanted: usize,
-) -> Vec<TorusPos> {
-    let tile_size = layout.tile_size();
-    let occupied: Vec<TorusPos> = world.actors.iter().map(|agent| agent.pos).collect();
-    let mut spots = Vec::with_capacity(wanted);
-    for ring in 0..=NPC_PLACEMENT_RADIUS {
-        for dy in -ring..=ring {
-            for dx in -ring..=ring {
-                if spots.len() >= wanted {
-                    return spots;
-                }
-                // 只取这一环最外圈的格子，内圈上一轮已经看过了。
-                if ring > 0 && dx.abs() != ring && dy.abs() != ring {
-                    continue;
-                }
-                let pos = tile_size.wrap(anchor.x() + dx, anchor.y() + dy);
-                let Some(kind) = world.terrain.terrain_at_resident(pos) else {
-                    continue;
-                };
-                if kind.blocks_move(&world.terrain_table) {
-                    continue;
-                }
-                if occupied.contains(&pos) || spots.contains(&pos) {
-                    continue;
-                }
-                spots.push(pos);
-            }
-        }
-    }
-    spots
-}
+/// **为什么保留转发而不是让调用点改名**：既有调用点是
+/// `crate::app::Demo::maintain_streaming` 与两个整合测试文件
+/// （`crates/ll-game/tests/npc_materialization.rs`、
+/// `crates/ll-game/tests/culture_hostility.rs`），改它们只会在这一批的
+/// diff 里多出一堆与本批次无关的改名噪声。搬家的理由见
+/// [`crate::settlement_spawn`] 模块文档。
+pub use crate::settlement_spawn::materialize_nearby_settlements;
 
 /// 供渲染/存档使用的一张干净地形表克隆——存档读入（`load_full`）需要
 /// 「当前会话按同一次装载重新注册出的表」，与写出时的表逐字段相同但
