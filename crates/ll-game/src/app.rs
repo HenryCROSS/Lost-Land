@@ -120,6 +120,46 @@ const ZOOM_STEP: f32 = 0.1;
 /// [`Demo::maybe_autosave`] 文档。
 const AUTOSAVE_INTERVAL_TICKS: i64 = ll_core::time::TICKS_PER_HOUR;
 
+/// 连续多少帧轮不到玩家，才在 `Notice` 层说一句「世界正在推进…」。
+///
+/// 规格 §9.2 F4 定的是「半秒」；本项目主循环按 60 帧每秒跑，因此是 30。
+/// **门槛不能是 1**：单帧 `NotYet` 保持静默是对的（这次输入没被消费，
+/// 下一帧原样重试），见 `crate::player_action::Feedback::WorldAdvancing`。
+pub const NOT_YET_FEEDBACK_FRAMES: u32 = 30;
+
+/// 这一次回合结算之后，连续 `NotYet` 的计数与屏上该说的那句话。
+///
+/// # 为什么抽成纯函数
+///
+/// 「连续多少帧」这条算法只该有一个产出点。它住在调用点里的话，唯一
+/// 能驱动它的方式是造一个 NPC 密集到连着三十帧都轮不到玩家的世界——
+/// 那种夹具既慢又脆（NPC 的行动速度一改它就不成立了），而它要证的
+/// 其实只是一段计数逻辑。**「`NotYet` 真的出得来」是另一条断言**，
+/// 由 `ll_sim::turn::TurnEngine::try_player_intent` 自己那条守着，
+/// 见本模块测试。
+///
+/// `previous` 是上一帧屏上那句话：`NotYet` 且还没到门槛时**原样保留**
+/// ——这次输入压根没被消费，把上一次操作的结果擦掉是错的。
+pub fn feedback_after_turn(
+    outcome: PlayerTurnOutcome,
+    streak: u32,
+    previous: Option<Feedback>,
+) -> (u32, Option<Feedback>) {
+    match outcome {
+        // 轮到了就归零：这一下不管有没有效果，世界都已经处理了它。
+        PlayerTurnOutcome::Nothing => (0, Some(Feedback::NothingHappened)),
+        PlayerTurnOutcome::Acted => (0, None),
+        PlayerTurnOutcome::NotYet => {
+            let next = streak.saturating_add(1);
+            if next >= NOT_YET_FEEDBACK_FRAMES {
+                (next, Some(Feedback::WorldAdvancing))
+            } else {
+                (next, previous)
+            }
+        }
+    }
+}
+
 /// 游戏本体的完整运行期状态。
 pub struct Demo {
     content: LoadedContent,
@@ -210,6 +250,13 @@ pub struct Demo {
     /// 诚实的语义：屏幕上那句话恒等于「你最近这一下按出了什么结果」，
     /// 玩家再按一次它就被换掉。
     feedback: Option<Feedback>,
+    /// 连续多少帧「还没轮到玩家」（`PlayerTurnOutcome::NotYet`）——规格
+    /// F4 的计数器。
+    ///
+    /// 纯表现层，与 [`Demo::feedback`] 同一条纪律：不进 `GameWorld`/
+    /// `WorldState`、不进存档、不参与回放。它只回答「屏幕看起来卡了
+    /// 多久」，而那是一个关于**帧**的问题，世界时钟答不了它。
+    not_yet_streak: u32,
     /// 据点职业名册解析结果——[`crate::world::materialize_nearby_settlements`]
     /// 每次物化都要用，同样只在建局/读档后解析一次（`SettlementRoles::resolve`
     /// 只是几次注册表查询，但它的输入——注册表——装载后不再变化）。
@@ -419,6 +466,7 @@ impl Demo {
             catalog,
             hud_anim: WidgetStateTable::new(),
             feedback: None,
+            not_yet_streak: 0,
             settlement_roles,
             fps_counter: FpsCounter::new(),
             // 首页在**第一帧之前**就已经开着，见
@@ -746,12 +794,17 @@ impl Demo {
                 // `Demo::feedback` 字段文档与
                 // `ll_sim::turn::PlayerTurnOutcome` 文档。还没轮到玩家
                 // （`NotYet`）不算按空——这次输入压根没被消费，下一帧
-                // 原样重试，说话反而是噪音。
-                self.feedback = match outcome {
-                    PlayerTurnOutcome::Nothing => Some(Feedback::NothingHappened),
-                    PlayerTurnOutcome::Acted => None,
-                    PlayerTurnOutcome::NotYet => self.feedback,
-                };
+                // 原样重试，说话反而是噪音。**连续几十帧都是 `NotYet`
+                // 时是另一回事**：屏幕上什么都不动看起来像卡死，那时候
+                // 要说的是「世界正在推进…」而不是「这一下没起作用」，
+                // 见 [`NOT_YET_FEEDBACK_FRAMES`]。
+                // 连续几十帧轮不到玩家时要说一句「世界正在推进…」，
+                // 规格 F4——判定本体在 `feedback_after_turn`，本行只
+                // 负责把计数器与那句话接回 `Demo` 上。
+                let (streak, feedback) =
+                    feedback_after_turn(outcome, self.not_yet_streak, self.feedback);
+                self.not_yet_streak = streak;
+                self.feedback = feedback;
             }
             // 跟人说话：开一块模态屏，**不提交任何意图、不推进世界**
             // （规格七节 7.1：会话内的位置是 UI 状态）。起始节点由这段

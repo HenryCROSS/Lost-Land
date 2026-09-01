@@ -534,3 +534,9 @@ screen-dialogue-hint = 上下选择 · 回车确认 · Esc 结束对话
 screen-dialogue-missing = （他张了张嘴，没有出声）
 hud-interact-action-talk = 交谈
 hud-interact-someone = 一个人
+
+# ── 「世界正在推进」（批次 23，规格 F4）─────────────────────────
+# 连续多帧轮不到玩家时才出现，见 crates/ll-game/src/app.rs 的
+# NOT_YET_FEEDBACK_FRAMES。
+
+hud-feedback-world-advancing = 世界正在推进…

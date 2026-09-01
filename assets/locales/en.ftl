@@ -485,3 +485,9 @@ screen-dialogue-hint = Up/Down to choose · Enter to confirm · Esc to end
 screen-dialogue-missing = (he opens his mouth, but no sound comes)
 hud-interact-action-talk = talk
 hud-interact-someone = someone
+
+# ── "The world is taking its turn" (batch 23, spec F4) ──────────
+# Only appears after several consecutive frames in which the player's
+# turn has not come up; see NOT_YET_FEEDBACK_FRAMES in ll-game/src/app.rs.
+
+hud-feedback-world-advancing = The world is taking its turn…

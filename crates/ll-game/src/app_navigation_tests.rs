@@ -582,3 +582,128 @@ fn 换屏时清掉上一块屏留下的提示语() {
     );
     assert_eq!(demo.screen_notice, None, "上一块屏留下的提示不该跟着进新屏");
 }
+
+// ───────────────────── 批次 23：F4「还没轮到你」不该一直静默 ─────────
+
+#[test]
+fn 连续三十帧轮不到玩家之后屏上说世界正在推进() {
+    // 规格 F4。门槛前一帧仍然静默、门槛那一帧开始说话——两侧都断言，
+    // 否则「恒说」与「恒不说」两种坏实现里至少有一种测不出来。
+    //
+    // 反例验证（已实跑）：把 `feedback_after_turn` 里那句
+    // `if next >= NOT_YET_FEEDBACK_FRAMES` 改成恒 `false`，本条红在
+    // 「门槛这一帧要说话」；改成恒 `true`，红在「门槛之前保持静默」。
+    // Arrange & Act：从零开始连着喂 `NotYet`。
+    let mut streak = 0;
+    let mut feedback = None;
+    for _ in 0..(crate::app::NOT_YET_FEEDBACK_FRAMES - 1) {
+        let (next, said) =
+            crate::app::feedback_after_turn(PlayerTurnOutcome::NotYet, streak, feedback);
+        streak = next;
+        feedback = said;
+    }
+
+    // Assert：门槛前一帧
+    assert_eq!(streak, crate::app::NOT_YET_FEEDBACK_FRAMES - 1);
+    assert_eq!(feedback, None, "半秒之内保持静默——单帧 NotYet 说话是噪音");
+
+    // Act：再跑一帧，正好到门槛
+    let (streak, feedback) =
+        crate::app::feedback_after_turn(PlayerTurnOutcome::NotYet, streak, feedback);
+
+    // Assert
+    assert_eq!(streak, crate::app::NOT_YET_FEEDBACK_FRAMES);
+    assert_eq!(
+        feedback,
+        Some(Feedback::WorldAdvancing),
+        "连着半秒屏幕纹丝不动，必须说一句，否则看起来像卡死"
+    );
+}
+
+#[test]
+fn 轮到玩家的那一帧把连续计数归零() {
+    // 防「说了就再也不闭嘴」：世界一旦处理了玩家这一下，那句话就该
+    // 换成这一下的真实结果。
+    // Arrange：已经说上了
+    let (streak, feedback) = crate::app::feedback_after_turn(
+        PlayerTurnOutcome::NotYet,
+        crate::app::NOT_YET_FEEDBACK_FRAMES,
+        Some(Feedback::WorldAdvancing),
+    );
+    assert_eq!(feedback, Some(Feedback::WorldAdvancing), "Arrange：正在说");
+
+    // Act & Assert：真的动了 → 归零且不再说话
+    assert_eq!(
+        crate::app::feedback_after_turn(PlayerTurnOutcome::Acted, streak, feedback),
+        (0, None)
+    );
+    // Act & Assert：轮到了但白按 → 归零且换成「这一下没起作用」
+    assert_eq!(
+        crate::app::feedback_after_turn(PlayerTurnOutcome::Nothing, streak, feedback),
+        (0, Some(Feedback::NothingHappened))
+    );
+}
+
+#[test]
+fn 还没轮到玩家这个结局在真实世界上确实产得出来() {
+    // **先证明被断言的对象存在**，再断言它的行为：上面两条驱动的是
+    // 一段纯计数逻辑，它们再绿也不证明 `NotYet` 在生产路径上出得来。
+    // 这一条走真实的 `TurnEngine`——刚建出来的引擎 `pending` 是空的，
+    // 那正是「时间轴还没轮到任何人」的形状。
+    //
+    // 反例（不适用）：这一条本身就是那个「对象存在」的证明。
+    // Arrange：一份真实的世界，一台刚建出来、时间轴还没排到任何人的
+    // 结算引擎——`pending` 为空正是「还没轮到你」的形状。
+    let content = crate::test_support::test_content();
+    let mut game_world = crate::world::build_new_world(
+        &content,
+        ll_world::generate::GenParams {
+            seed: 3,
+            ..ll_world::generate::GenParams::default()
+        },
+    )
+    .expect("测试用布局满足全部构造前置条件");
+    let player = game_world.player;
+    let catalogs = crate::content::RuntimeCatalogs::new(&content);
+    let mut engine = ll_sim::turn::TurnEngine::new(ll_sim::timeline::Timeline::default());
+    let mut on_effect = |_w: &ll_world::state::WorldState, _e: &ll_sim::effect::Effect| {};
+
+    // Act
+    let outcome = engine.try_player_intent(
+        &mut game_world.world,
+        player,
+        ll_sim::intent::Intent::Wait { actor: player },
+        &catalogs.as_resolve_catalogs(),
+        &mut on_effect,
+    );
+
+    // Assert
+    assert_eq!(
+        outcome,
+        PlayerTurnOutcome::NotYet,
+        "`pending` 不是玩家时结局就是「还没轮到你」——F4 要说的正是这个"
+    );
+}
+
+#[test]
+fn 世界正在推进这句话在两种语言下各有各的文案() {
+    // 防「空 Catalog ⇒ 查不到 ⇒ 回落到另一门语言 ⇒ 用『文案 != 键名』
+    // 判恒绿」：用仓库真实的 `assets/locales`，断言**两种语言的文案
+    // 互不相同**。
+    //
+    // 反例（已实跑）：只往 zh-CN.ftl 加这条键、en.ftl 不加，本条红在
+    // 「两种语言互不相同」——en 会回落到中文那一句。
+    // Arrange
+    let locales = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/locales");
+    let catalog = ll_i18n::Catalog::load_one("lostland", &locales);
+    let key = Feedback::WorldAdvancing.i18n_key();
+
+    // Act
+    let zh = catalog.resolve("zh-CN", key);
+    let en = catalog.resolve("en", key);
+
+    // Assert
+    assert_ne!(zh, key, "中文那一条必须真的存在");
+    assert_ne!(en, key, "英文那一条必须真的存在");
+    assert_ne!(zh, en, "两种语言各写各的，不是其中一种回落到另一种");
+}
