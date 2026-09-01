@@ -33,6 +33,7 @@ pub mod save_name;
 pub mod save_slot;
 pub mod session;
 pub mod settings_view;
+pub mod settlement_spawn;
 pub mod spawn_pick;
 pub mod surface_draw;
 #[cfg(test)]
