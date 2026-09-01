@@ -19,6 +19,7 @@
 //! 用 `world.size.wrap(x, y)` 归一化一次即可，不需要 `Intent` 自己
 //! 提前做这件事。
 
+use crate::trade::TradeDirection;
 use ll_core::ident::ContentIndex;
 use ll_platform::input::InputState;
 use ll_world::entity::{AttributeKind, EntityId};
@@ -811,6 +812,59 @@ pub enum Intent {
         /// UI 过滤之后的行号，见本变体文档「结算侧必须重新校验条件」）。
         option: usize,
     },
+    /// **一次成交**——玩家与一个 NPC 之间的一件物品换一笔钱
+    /// （规格五节 5.3，对话系统的批次 5）。
+    ///
+    /// # 它与 `open-trade` 后果的分界
+    ///
+    /// [`crate::dialogue::DialogueOutcome::OpenTrade`] **不产任何
+    /// `Effect`**，它只把 UI 推进交易屏。**钱货两清是这一条意图**，
+    /// 照旧走 `resolve → Effect → apply`（约束 C1：`apply` 是全局唯一
+    /// 写入口）。两件事不矛盾：前者是 UI 状态，后者是世界状态，分界与
+    /// 规格七节 7.1 那条逐字相同。
+    ///
+    /// # 为什么不带 `count`——一次一件
+    ///
+    /// 规格 5.3 的草图写的是 `{ partner, item, count, direction }`。
+    /// 本批**刻意收窄**，与批次 4 的
+    /// [`crate::dialogue::DialogueOutcome::GiveItem`] 逐条同一条理由：
+    /// `apply` 侧因此直接复用既有的
+    /// [`crate::effect::Effect::ConsumeInventoryItem`]（「数量减一，减到
+    /// 零时整条堆移除」正是这个语义），而 N > 1 需要一套拆堆机械、
+    /// 今天一条内容都不需要它（YAGNI）。反转成本：加一个默认为 1 的
+    /// `count` 字段 + 一段拆堆。
+    ///
+    /// # 五道闸门
+    ///
+    /// 见 `crate::resolve` 的 `resolve_trade`：两位当事人都在、卖方真的
+    /// 有这堆东西、**owner 校验**（与对话赠送共用
+    /// [`crate::ownership::may_give_away`]，不另写一份）、买方付得起。
+    /// 任何一道不过就是**零效果**。
+    ///
+    /// # 它不消耗回合（**本批自裁，规格没写**）
+    ///
+    /// 所有者裁定的是「**对话**不消耗回合」；交易不是对话，这一条是
+    /// 落地时自己选的最保守一档，理由与反转成本写在
+    /// `docs/superpowers/plans/2026-09-01-batch31-dialogue-trade.md`
+    /// 三节 3.6 与十一节。结算**不产出
+    /// [`crate::effect::Effect::ScheduleNext`]**，守卫是
+    /// `crates/ll-sim/tests/trade.rs` 的 `交易不消耗回合`。
+    ///
+    /// # 输入映射
+    ///
+    /// 产出者是 `ll_game::trade_screen::update_trade`（交易屏），
+    /// 从落地那一刻起就带着键位与鼠标两条入口。
+    Trade {
+        /// 发起者（玩家）——[`TradeDirection`] 是站在他的角度说的。
+        actor: EntityId,
+        /// 对面那位（NPC）。价格系数读的是 `actor` 与**他所属势力**
+        /// 之间的声望，见 [`crate::trade::partner_standing`]。
+        partner: EntityId,
+        /// 成交的是哪一种东西。**一次一件**，见本变体文档。
+        item: ContentIndex,
+        /// 买还是卖。
+        direction: TradeDirection,
+    },
 }
 
 impl Intent {
@@ -848,7 +902,8 @@ impl Intent {
             | Intent::Read { actor, .. }
             | Intent::Experiment { actor, .. }
             | Intent::Identify { actor, .. }
-            | Intent::DialogueChoose { actor, .. } => actor,
+            | Intent::DialogueChoose { actor, .. }
+            | Intent::Trade { actor, .. } => actor,
         }
     }
 }

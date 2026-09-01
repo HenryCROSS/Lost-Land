@@ -117,6 +117,7 @@ fn arrow_index() -> (ContentIndex, FakeItems) {
         items: BTreeMap::from([(
             arrow,
             ItemRule {
+                base_price: ll_core::scaled::Milli::ZERO,
                 wear_channels: WearChannels::NONE,
                 max_durability: None,
                 taught_recipes: Vec::new(),

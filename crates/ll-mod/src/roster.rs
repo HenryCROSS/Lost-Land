@@ -1495,6 +1495,7 @@ mod tests {
     impl ItemCatalog for MaskCatalog {
         fn item(&self, item: ContentIndex) -> Option<ItemRule> {
             self.0.get(&item).map(|mask| ItemRule {
+                base_price: ll_core::scaled::Milli::ZERO,
                 stack_limit: 1,
                 equip_mask: *mask,
                 stat_bonuses: Vec::new(),

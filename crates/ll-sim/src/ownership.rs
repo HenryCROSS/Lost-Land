@@ -119,6 +119,65 @@ pub fn holder_owner(world: &WorldState, agent: &Agent, actor: EntityId) -> Owner
     }
 }
 
+/// **owner 校验硬前置**：这一堆东西，`giver` 交得出去吗？
+///
+/// `ll_world::ownership` 的设计文档四节给「合法转移」（赠送 / 购买 /
+/// 任务发奖）立的那条前置，[`ll_sim::effect::Effect::TransferOwnership`](crate::effect::Effect::TransferOwnership)
+/// 的文档逐字转述过一遍：
+///
+/// > 三种合法转移的 `resolve` 都**必须**校验「发起转移的一方确实是这堆
+/// > 物品当前的 `owner`」（`Owner::Unowned` 除外，因为没有人的权益受损）。
+/// > 不满足则不产出效果。
+///
+/// | 这一堆的归属 | 交得出去吗 | 理由 |
+/// |---|---|---|
+/// | [`Owner::Unowned`] | ✅ | 没有人的权益受损（效果文档原话） |
+/// | [`Owner::Player`]，且交出方就是玩家 | ✅ | 是他自己的 |
+/// | [`Owner::Npc`]，且号就是交出方的 | ✅ | 是他自己的 |
+/// | 以上之外的任何有主归属 | ❌ | 不是他的 |
+/// | [`Owner::Faction`] / [`Owner::Shop`] | ❌ | **公产，本批一律拒**，见下 |
+///
+/// `giver` 由**既有的** [`holder_owner`] 算出来——「这个实体名下的东西
+/// 长什么样」只有那一处真相源，本函数不重新推一遍。
+///
+/// # `Owner::Faction` / `Owner::Shop` 一律拒
+///
+/// 「管理者能不能把据点的公产发给你」「店铺的货算不算店主的」都是玩法
+/// 裁定，规格没写。不做是最保守、最容易反转的一档（反转成本是这张表加
+/// 一行 + 一条「他属于那个势力吗」的查询）。这条是批次 29 第 4 条临时
+/// 裁定，本批原样继承。
+///
+/// # 无名 NPC 名下的东西
+///
+/// `remembered_id` 是懒分配的（今天唯一的真实分配点是死亡路径），因此
+/// 一个活着的 NPC 通常得到 `Owner::Unowned` 这个 `giver`——那时任何
+/// `Owner::Npc(_)` 都不是「可证明属于他的」，一律拒。这与
+/// [`pick_up_owner`] 那条「无名 NPC 捡到的东西继续无主」是同一处既有
+/// 降级的两面：今天 NPC 的背包里全是 `Owner::Unowned` 的出生装备，
+/// 那一档照常交得出去。
+///
+/// # 两个调用方，一份判据（ADR 0021）
+///
+/// 〔2026-08-31，批次 29〕本函数最初住在
+/// `crates/ll-sim/src/resolve/dialogue.rs`，是那一批 `give-item` 的私有
+/// 函数，入参是 `Option<WorldId>`（因为交出方恒是 NPC）。
+///
+/// 〔2026-09-01，批次 31〕交易是它的**第二个调用方**，而交易里交出方
+/// 可能是玩家。**搬到这里并把入参泛化成 [`Owner`]，而不是在交易那一侧
+/// 另写一份** ——两份判据分叉时没有任何东西会报错，正是 ADR 0021 点名
+/// 要拦的形状。赠送那条路径的行为逐条不变：交出方是 NPC，
+/// [`holder_owner`] 给的正是旧签名里那个 `Option<WorldId>` 的两种情形。
+/// 唯一放宽的是「交出方恰好是玩家」这一格（旧实现恒拒，因为它写死了
+/// 交出方不可能是玩家），泛化之后那一格是**正确**的那一档。
+pub fn may_give_away(giver: Owner, owner: Owner) -> bool {
+    match owner {
+        Owner::Unowned => true,
+        Owner::Player => giver == Owner::Player,
+        Owner::Npc(id) => giver == Owner::Npc(id),
+        Owner::Faction(_) | Owner::Shop(_) => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -14,8 +14,9 @@
 //!   走 [`Effect::SetModState`]（调既有的
 //!   [`crate::quest::mark_quest_completed`]），`give-item`（批次 4）走
 //!   [`Effect::ConsumeInventoryItem`] + [`Effect::MergeIntoInventory`]。
-//!   **`give-item` 的 owner 校验落在本模块**（产出效果**之前**），
-//!   见 [`may_give_away`]——那正是 C1 说的「决策在 resolve」。
+//!   **`give-item` 的 owner 校验落在 `resolve` 一侧**（产出效果
+//!   **之前**），判据是 [`crate::ownership::may_give_away`]——那正是
+//!   C1 说的「决策在 resolve」。
 //! - **对话不消耗回合**（所有者裁定，交接文档第〇之二节第 2 条）：
 //!   **不产出 [`Effect::ScheduleNext`]**。`TurnEngine::perform` 末尾
 //!   无条件 `timeline.schedule(actor, agent.next_action_at)`，因此
@@ -39,7 +40,6 @@ use ll_core::ident::ContentIndex;
 use ll_world::entity::{Affiliation, AffiliationKind, EntityId, OrgRef};
 use ll_world::item::ItemStack;
 use ll_world::mod_state::ModStateWrite;
-use ll_world::ownership::Owner;
 use ll_world::state::WorldState;
 
 use crate::dialogue::{
@@ -48,7 +48,7 @@ use crate::dialogue::{
 };
 use crate::effect::Effect;
 use crate::item::ItemCatalog;
-use crate::ownership::holder_owner;
+use crate::ownership::{holder_owner, may_give_away};
 use crate::quest::mark_quest_completed;
 
 use super::inventory::merge_into_inventory_effect;
@@ -194,7 +194,11 @@ pub(super) fn resolve_dialogue_choose(
 /// 2. **他背包里真的有一堆 `item`**（第一条匹配，与
 ///    [`Effect::RemoveFromInventory`] / [`Effect::ConsumeInventoryItem`]
 ///    的既有定位纪律相同）；
-/// 3. **owner 校验硬前置**——见 [`may_give_away`]。
+/// 3. **owner 校验硬前置**——见 [`crate::ownership::may_give_away`]。
+///    〔2026-09-01，批次 31〕那条判据**从本模块搬到了
+///    [`crate::ownership`]**：交易是它的第二个调用方，两处调同一个
+///    函数（ADR 0021）。搬家不改赠送这一侧的任何行为，见那个函数文档
+///    「两个调用方，一份判据」一节。
 ///
 /// 任何一道不过就返回**空效果**，与本模块其余闸门同一条纪律：不 panic、
 /// 也不产出一条什么都不做的效果。**校验失败与「说话人拿不出这件东西」
@@ -239,7 +243,7 @@ fn give_item(
     let Some(held) = giver.inventory.iter().find(|stack| stack.def == item) else {
         return Vec::new();
     };
-    if !may_give_away(giver.remembered_id, held.owner) {
+    if !may_give_away(holder_owner(world, giver, speaker), held.owner) {
         return Vec::new();
     }
     // 一次一件（见 `DialogueOutcome::GiveItem` 文档「为什么不带 count」），
@@ -257,37 +261,6 @@ fn give_item(
         },
         merge_into_inventory_effect(receiver, actor, given, items),
     ]
-}
-
-/// **owner 校验硬前置**：这一堆东西，说话人送得出去吗？
-///
-/// `ll_world::ownership` 的设计文档四节原话（`Effect::TransferOwnership`
-/// 的文档逐字转述过一遍）：合法转移的 `resolve` **必须**校验发起转移的
-/// 一方确实是这堆物品当前的 `owner`，`Owner::Unowned` 除外。
-///
-/// | 归属 | 送得出去吗 | 理由 |
-/// |---|---|---|
-/// | [`Owner::Unowned`] | ✅ | 没有人的权益受损（效果文档原话） |
-/// | [`Owner::Npc`]，号就是他自己的 `remembered_id` | ✅ | 是他自己的 |
-/// | [`Owner::Npc`]（别人的）/ [`Owner::Player`] / [`Owner::Faction`] / [`Owner::Shop`] | ❌ | 不是他的 |
-///
-/// `Owner::Faction`（据点与势力的公产）**这一批一律拒**：「管理者能不能
-/// 把据点的公产发给你」是一次玩法裁定，规格没写，不做是最保守、最容易
-/// 反转的一档（反转成本是这张表加一行 + 一条「他属于那个势力吗」的查询）。
-///
-/// # 无名 NPC 名下的东西
-///
-/// `remembered_id` 是懒分配的（今天唯一的真实分配点是死亡路径），因此
-/// 一个活着的 NPC 通常是 `None`——那时任何 `Owner::Npc(_)` 都不是「可
-/// 证明属于他的」，一律拒。这与 `pick_up_owner` 那条「无名 NPC 捡到的
-/// 东西继续无主」是同一处既有降级的两面：今天 NPC 的背包里全是
-/// `Owner::Unowned` 的出生装备，那一档照常送得出去。
-fn may_give_away(giver: Option<ll_core::ident::WorldId>, owner: Owner) -> bool {
-    match owner {
-        Owner::Unowned => true,
-        Owner::Npc(id) => giver == Some(id),
-        Owner::Player | Owner::Faction(_) | Owner::Shop(_) => false,
-    }
 }
 
 fn join_settlement(world: &WorldState, actor: EntityId, speaker: EntityId) -> Option<Effect> {

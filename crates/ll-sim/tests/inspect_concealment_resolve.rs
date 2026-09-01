@@ -166,6 +166,7 @@ fn spawn_agent(
 /// `items_seen` 里」，其余字段取不影响判定的占位值。
 fn plain_item_rule() -> ItemRule {
     ItemRule {
+        base_price: ll_core::scaled::Milli::ZERO,
         wear_channels: WearChannels::NONE,
         max_durability: None,
         taught_recipes: Vec::new(),

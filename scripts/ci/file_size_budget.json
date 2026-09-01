@@ -30,8 +30,8 @@
       "reason": "合理：内容数据文件 schema 的装备与规则侧七类，逐类型平铺。它本身已经是从 content_schema.rs 拆出来的一半（分界线见两者模块文档），再拆会打碎「一个 JSON5 文件对应一段 schema」这条对应关系。"
     },
     "crates/ll-mod/src/roster.rs": {
-      "code_lines": 834,
-      "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。（2026-08-31，批次 26）+1 行：`build_npc_agent` 写 `home: Some(profile.home)`——`Agent::home` 唯一的非 `None` 生产者，把既有真相源 `NpcProfile.home` 搬进实体。结构体字面量必须列全字段，不可拆分。"
+      "code_lines": 835,
+      "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。（2026-08-31，批次 26）+1 行：`build_npc_agent` 写 `home: Some(profile.home)`——`Agent::home` 唯一的非 `None` 生产者，把既有真相源 `NpcProfile.home` 搬进实体。结构体字面量必须列全字段，不可拆分。〔2026-09-01，批次 31〕+1 行：`ItemRule` 加了 `base_price` 字段（交易的占位价格公式要读它），本文件 `mod tests` 里那个夹具因此多一行——编译器强制的一行，拆不动。**本批的 NPC 初始钱包没有加在这个文件里**，它落在新模块 `crates/ll-mod/src/npc_wallet.rs`。"
     },
     "crates/ll-platform/src/keybind.rs": {
       "code_lines": 987,
@@ -46,12 +46,12 @@
       "reason": "合理（批次 16 的搬移产物）：crate::resolve 的 45 条断言，用 #[path] 挂成 resolve 的子模块，与 app_save_tests.rs / app_navigation_tests.rs 同一手法。刻意不按意图族拆开——45 条断言与约十个共享夹具（test_world、spawn_agent、spawn_agent_with_luck 等）交错在一起，按族切开要么把夹具复制九份、要么造一个被九个模块回头调用的 test_support，那正是「一堆互相调来调去的小文件」。而且它不影响下一批的难度：新意图族在自己的模块里写自己的断言，不用碰这个文件。（2026-08-31，批次 26）+7 行：七处 `Agent` 测试夹具字面量各补一行 `home: None`。结构体字面量必须列全字段，不可拆分。"
     },
     "crates/ll-sim/src/rule_modifier.rs": {
-      "code_lines": 1925,
-      "reason": "合理：「一个实体此刻身上有哪些规则修正」这个问题的唯一答案处，加上建在它之上的五个消费者。五个消费者共用同一条 tie-break 规则，把它们拆走会让那条规则出现副本。"
+      "code_lines": 1926,
+      "reason": "合理：「一个实体此刻身上有哪些规则修正」这个问题的唯一答案处，加上建在它之上的五个消费者。五个消费者共用同一条 tie-break 规则，把它们拆走会让那条规则出现副本。〔2026-09-01，批次 31〕+1 行：`ItemRule` 加了 `base_price` 字段（交易的占位价格公式要读它），本文件 `mod tests` 里那个 `FixedItems` 夹具因此多一行——**编译器强制的一行**，字段加在 `ItemRule` 上是为了让每一处构造点表态（见该字段文档「为什么是字段而不是 `ItemCatalog` 的一条带默认实现的方法」）。拆不动：它是一个结构体字面量里的一行。"
     },
     "crates/ll-sim/tests/derive_stats_resolve.rs": {
-      "code_lines": 866,
-      "reason": "合理：集成测试文件——一个主题（derive_stats 接进战斗）下的断言集合，共享同一套 FakeItems/spawn_agent 夹具。代码行占比高（75%）属正常，断言本来就是代码。（2026-08-31，批次 26）+2 行：两处 `Agent` 测试夹具字面量各补一行 `home: None`。同上，不可拆分。"
+      "code_lines": 869,
+      "reason": "合理：集成测试文件——一个主题（derive_stats 接进战斗）下的断言集合，共享同一套 FakeItems/spawn_agent 夹具。代码行占比高（75%）属正常，断言本来就是代码。（2026-08-31，批次 26）+2 行：两处 `Agent` 测试夹具字面量各补一行 `home: None`。同上，不可拆分。〔2026-09-01，批次 31〕+3 行：同上，三处 `ItemRule` 字面量各多一行 `base_price`，编译器强制。拆不动。"
     },
     "crates/ll-ui/src/hud/render.rs": {
       "code_lines": 1202,

@@ -126,6 +126,7 @@ pub mod skill;
 pub mod skill_overview;
 pub mod subclass;
 pub mod timeline;
+pub mod trade;
 pub mod traits;
 pub mod turn;
 pub mod vision;

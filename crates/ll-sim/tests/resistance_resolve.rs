@@ -168,6 +168,7 @@ fn spawn_agent(
 /// （`ConstFormula::formula_for` 不理会 `explicit` 参数，见其文档）。
 fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
     ItemRule {
+        base_price: ll_core::scaled::Milli::ZERO,
         wear_channels: WearChannels::NONE,
         max_durability: None,
         taught_recipes: Vec::new(),
@@ -189,6 +190,7 @@ fn weapon_rule(damage_category: ContentIndex) -> ItemRule {
 /// 一件只提供护甲加成的防具。
 fn armor_rule(amount: i32) -> ItemRule {
     ItemRule {
+        base_price: ll_core::scaled::Milli::ZERO,
         wear_channels: WearChannels::NONE,
         max_durability: None,
         taught_recipes: Vec::new(),

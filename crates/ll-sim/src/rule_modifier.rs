@@ -1928,6 +1928,7 @@ mod tests {
                 .iter()
                 .find(|(id, _)| *id == item)
                 .map(|(_, modifiers)| ItemRule {
+                    base_price: ll_core::scaled::Milli::ZERO,
                     wear_channels: crate::item::WearChannels::NONE,
                     max_durability: None,
                     taught_recipes: Vec::new(),
