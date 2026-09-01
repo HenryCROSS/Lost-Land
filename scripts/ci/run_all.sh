@@ -16,7 +16,7 @@
 # 平台盲区：本机（本仓库开发机是 Windows）只能覆盖 windows-latest 这一
 # 半 target。CI 的 `test` job 在 ubuntu-latest 与 windows-latest 两个
 # target 上各跑一次 fmt/clippy/test/禁止 example；`licenses`/`no-manual-euclidean-
-# distance`/`coverage`/`no-hardcoded-i18n-strings`/`docs-and-links`/
+# distance`/`single-anchor-impl`/`coverage`/`no-hardcoded-i18n-strings`/`docs-and-links`/
 # `field-consumer-check`/`save-schema-version-check`/`file-size-budget` 八个 job 全部只在
 # ubuntu-latest 上跑，本地完全没有对应环境。任何依平台生效
 # 的差异——`std::path::Component` 解析、`cfg(unix)`/`cfg(windows)` 条件
@@ -60,6 +60,7 @@ run_step "测试"                         bash scripts/ci/run_tests.sh
 run_step "禁止 example target（2026-08-29 裁定，ADR 0030）" bash scripts/ci/check_no_examples.sh
 run_step "许可证与安全公告扫描"           bash scripts/ci/check_licenses.sh
 run_step "禁止手写欧氏距离"               bash scripts/ci/check_no_manual_euclidean_distance.sh
+run_step "禁止第二份屏幕落位实现（规格 L2）" bash scripts/ci/check_single_anchor_impl.sh
 run_step "字段接线检查（声明但无决策层消费者，阻断模式）" python3 scripts/ci/check_field_consumers.py
 run_step "存档主体形状 ↔ schema 版本联动检查（阻断模式）" python3 scripts/ci/check_save_schema_version.py
 run_step "文件行数棘轮门禁（规格 §13，阻断模式）" python3 scripts/ci/check_file_size_budget.py

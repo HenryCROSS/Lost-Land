@@ -215,3 +215,52 @@ fn 状态栏与两条资源条与昼夜条右边界对齐() {
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn 动作菜单两种落位改走anchored之后逐像素与旧算术相同() {
+    // 规格 L2 第 2/3 处的「改写前后逐像素相同」回归断言。**走
+    // `placed_action_menu` 这条生产路径**，不是在测试里自己拼一个
+    // `Rect::anchored`——起初就是那么写的，反例验证时两条都没红（见
+    // `hud/placement.rs` 测试模块顶部那段注释）。
+    //
+    // 期望值是被收敛掉的那两份旧算术：
+    //   TopCenter：`x = (screen_width - ACTION_MENU_WIDTH) * 0.5`，
+    //              `y = SCREEN_MARGIN + PANEL_GAP`
+    //   ScreenCenter：`y = (screen_height - panel.rect.height) * 0.5`
+    //
+    // 反例验证（已实跑）：把 `placed_action_menu` 里贴上沿那一支的
+    // `Anchor::TopCenter` 换成 `Anchor::TopLeft`，本条红在 x 上；
+    // 把居中那一支的 `Anchor::Center` 换成 `Anchor::TopCenter`，
+    // 本条红在「居中的 y」上。
+    // Arrange
+    let (dir, catalog) = placement_catalog("l2-action-menu-regression");
+    let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
+    let (w, h) = (1280.0_f32, 720.0_f32);
+    let 摆 = |placement| {
+        placed_action_menu(
+            &placement_menu(&rows, placement),
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            w,
+            h,
+        )
+    };
+
+    // Act
+    let 贴上沿 = 摆(MenuPlacement::TopCenter);
+    let 居中 = 摆(MenuPlacement::ScreenCenter);
+
+    // Assert：两种落位的 x 都是旧的水平居中算术。
+    assert_eq!(贴上沿.rect.x, (w - ACTION_MENU_WIDTH) * 0.5, "贴上沿的 x");
+    assert_eq!(居中.rect.x, (w - ACTION_MENU_WIDTH) * 0.5, "居中的 x");
+    // 贴上沿的 y 是旧的 `SCREEN_MARGIN + PANEL_GAP`。
+    assert_eq!(贴上沿.rect.y, SCREEN_MARGIN + PANEL_GAP, "贴上沿的 y");
+    // 居中的 y 是旧的 `(screen_height - 面板高) * 0.5`。两种落位的面板
+    // 高度相同（同一批行、同一个宽度），因此可以拿贴上沿那一份的高。
+    assert_eq!(居中.rect.height, 贴上沿.rect.height);
+    assert_eq!(居中.rect.y, (h - 贴上沿.rect.height) * 0.5, "居中的 y");
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}

@@ -14,9 +14,16 @@
 //! `bottom_rows` 管**贴着下沿**的那两行。
 
 use super::PanelContent;
-use crate::widget::geometry::Rect;
 use super::action_menu::{self, ActionMenuData, MenuPlacement};
 use super::render::{ACTION_MENU_WIDTH, PANEL_GAP, SCREEN_MARGIN};
+use crate::widget::geometry::Anchor;
+use crate::widget::geometry::Rect;
+
+/// 动作菜单贴屏幕上沿时的顶边距——规格 L3 要求布局表达式里不再出现
+/// 未命名的像素组合，此前这里是一个裸的 `SCREEN_MARGIN + PANEL_GAP`。
+/// 它是「比常驻面板再往下让一格」的意思：菜单浮在状态栏之上，多让出
+/// 一个间隔玩家才看得出这是两层东西。
+const ACTION_MENU_TOP_MARGIN: f32 = SCREEN_MARGIN + PANEL_GAP;
 use ll_i18n::Catalog;
 
 /// # 屏幕比面板还矮时
@@ -33,21 +40,31 @@ pub(super) fn placed_action_menu(
     screen_width: f32,
     screen_height: f32,
 ) -> PanelContent {
-    let x = (screen_width - ACTION_MENU_WIDTH) * 0.5;
-    let top = SCREEN_MARGIN + PANEL_GAP;
+    // 规格 L2：水平居中与垂直居中两份算术都走 `Rect::anchored`。
+    let 贴上沿 = Rect::anchored(
+        (screen_width, screen_height),
+        Anchor::TopCenter,
+        (ACTION_MENU_WIDTH, 0.0),
+        ACTION_MENU_TOP_MARGIN,
+    );
     let panel = action_menu::action_menu_panel(
         menu,
         catalog,
         language,
         measure,
-        (x, top),
+        贴上沿.origin(),
         ACTION_MENU_WIDTH,
     );
     match menu.placement {
         MenuPlacement::TopCenter => panel,
         MenuPlacement::ScreenCenter => {
-            let centered_top = (screen_height - panel.rect.height) * 0.5;
-            translate_panel(panel, centered_top - top)
+            let 居中 = Rect::anchored(
+                (screen_width, screen_height),
+                Anchor::Center,
+                (ACTION_MENU_WIDTH, panel.rect.height),
+                0.0,
+            );
+            translate_panel(panel, 居中.y - 贴上沿.y)
         }
     }
 }
@@ -104,12 +121,58 @@ const WORLD_MAP_MARGIN_FRACTION: f32 = 0.1;
 /// 「偶尔点到隔壁那格」。开放它，是为了让选出生地屏（`ll_game::app`）
 /// 拿到同一个真相源，而不是在那边照着这里的公式再抄一份。
 pub fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
+    // 尺寸按比例现算，落位走 `Rect::anchored`（规格 L2）——「四边各留
+    // 一成边距」与「居中一块按比例算出来的面板」是同一件事的两种写法，
+    // 收敛之后这里不再有第六份自己的定位算术。
     let margin_x = screen_width * WORLD_MAP_MARGIN_FRACTION;
     let margin_y = screen_height * WORLD_MAP_MARGIN_FRACTION;
-    Rect::new(
-        margin_x,
-        margin_y,
-        (screen_width - margin_x * 2.0).max(0.0),
-        (screen_height - margin_y * 2.0).max(0.0),
+    Rect::anchored(
+        (screen_width, screen_height),
+        Anchor::Center,
+        (
+            (screen_width - margin_x * 2.0).max(0.0),
+            (screen_height - margin_y * 2.0).max(0.0),
+        ),
+        0.0,
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 规格 L2 第 6 处（世界地图）的「改写前后逐像素相同」回归断言。
+    ///
+    /// 动作菜单那两处（第 2/3 处）的同类断言**不在这里**——它们要真的
+    /// 调用 [`placed_action_menu`]，而那需要 `Catalog` 与文本测量器这一
+    /// 整套夹具，住在 `hud/render.rs` 的测试模块里。落在
+    /// `hud/render_layout_tests.rs`，理由与代价见那里的注释。
+    ///
+    /// # 这条注释是补上来的
+    ///
+    /// 起初这里写了三条，其中动作菜单那两条**自己构造 `Rect::anchored`**
+    /// 而不是调用 `placed_action_menu`。反例验证时它们**没红**（把
+    /// `Anchor::TopCenter` 换成 `TopLeft`，测试照绿）——因为被断言的
+    /// 对象压根不是生产代码，是测试自己重写了一遍同一句算术。这正是
+    /// 本会话点名的假绿形状之二。按 ADR 0022 换成真调用生产路径的那
+    /// 两条，不留在这里充数。
+    #[test]
+    fn 世界地图矩形改走anchored之后逐像素与旧算术相同() {
+        // 旧写法：`Rect::new(margin_x, margin_y, w - 2mx, h - 2my)`，
+        // 其中 `margin_x = w * 0.1`。
+        //
+        // 反例验证（已实跑）：把 `Anchor::Center` 换成 `Anchor::TopLeft`
+        // （margin 传 0），本条红在 x/y 上（0 而不是 128/72）。
+        for (w, h) in [(1280.0_f32, 720.0_f32), (1920.0, 1080.0)] {
+            // Act
+            let rect = world_map_rect(w, h);
+
+            // Assert
+            let (mx, my) = (w * WORLD_MAP_MARGIN_FRACTION, h * WORLD_MAP_MARGIN_FRACTION);
+            assert_eq!(rect.x, mx, "屏 {w}×{h} 的左边距");
+            assert_eq!(rect.y, my, "屏 {w}×{h} 的上边距");
+            assert_eq!(rect.width, w - mx * 2.0);
+            assert_eq!(rect.height, h - my * 2.0);
+        }
+    }
 }

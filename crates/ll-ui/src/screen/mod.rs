@@ -46,7 +46,7 @@ pub mod render;
 use ll_i18n::Catalog;
 use ll_text::MeasureText;
 
-use crate::widget::geometry::Rect;
+use crate::widget::geometry::{Anchor, Rect};
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
 
@@ -185,11 +185,12 @@ fn centered_origin(
     panel_width: f32,
     panel_height: f32,
 ) -> Rect {
-    Rect::new(
-        (screen_width - panel_width) / 2.0,
-        (screen_height - panel_height) / 2.0,
-        panel_width,
-        panel_height,
+    // 规格 L2：这一份居中算术走 `Rect::anchored`。
+    Rect::anchored(
+        (screen_width, screen_height),
+        Anchor::Center,
+        (panel_width, panel_height),
+        0.0,
     )
 }
 
@@ -833,6 +834,23 @@ mod tests {
 
         // Assert：标题 + 占位行 + 提示行。
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn 模态屏居中改走anchored之后逐像素与旧算术相同() {
+        // 规格 L2 第 5 处的「改写前后逐像素相同」回归断言。旧写法是
+        // `((screen_width - panel_width) / 2.0, (screen_height - panel_height) / 2.0)`。
+        //
+        // 反例验证（已实跑）：把 `centered_origin` 的
+        // `Anchor::Center` 换成 `Anchor::TopCenter`，本条红在 y 上。
+        // Arrange & Act
+        let rect = centered_origin(1280.0, 720.0, 520.0, 300.0);
+
+        // Assert
+        assert_eq!(rect.x, (1280.0 - 520.0) / 2.0);
+        assert_eq!(rect.y, (720.0 - 300.0) / 2.0);
+        assert_eq!(rect.width, 520.0);
+        assert_eq!(rect.height, 300.0);
     }
 
     #[test]

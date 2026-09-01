@@ -72,6 +72,7 @@ pub mod equipment_panel;
 pub mod inventory_panel;
 pub mod placement;
 pub mod render;
+pub mod skinned_push;
 pub mod status_bar;
 pub mod world_map;
 

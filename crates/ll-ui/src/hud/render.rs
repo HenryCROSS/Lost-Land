@@ -17,7 +17,7 @@
 //!    没有问题；但装备栏原来紧跟在背包右边，三列一路向右排开，在较窄
 //!    的窗口里会整个压在地图视口上（见下一条）。
 //! 2. 「装备放在屏幕右边」——装备栏改成不再跟随角色/背包的列位置，
-//!    而是独立锚定到窗口右边缘（[`equipment_origin_x`]），与状态栏
+//!    而是独立锚定到窗口右边缘（[`equipment_rect`]），与状态栏
 //!    锚定左上角是同一种「贴屏幕边缘」的 HUD 摆法，不再侵占地图视口
 //!    中段。
 //!
@@ -63,17 +63,13 @@ use super::inventory_panel;
 use super::status_bar::{self, StatusBarData};
 use super::world_map::{self, WorldMapPanelData};
 use crate::widget::anim::{DEFAULT_ANIM_DURATION_FRAMES, FrameTick};
-use crate::widget::bar::{bar_quads, textured_bar_quads, textured_two_layer_bar_quads};
-use crate::widget::day_night_bar::{
-    day_night_bar_quads, day_night_pointer_quad, textured_day_night_bar_quads,
-    textured_day_night_pointer_quad,
-};
-use crate::widget::geometry::Rect;
+use crate::widget::geometry::{Anchor, Rect};
 use crate::widget::label::Label;
-use crate::widget::layer::{DrawBatch, LayerBatch, LayeredFrame, UiLayer};
-use crate::widget::panel::{panel_quads, textured_panel_quads};
+use crate::widget::layer::{DrawBatch, LayeredFrame, UiLayer};
 use crate::widget::quad::QuadRenderer;
-use crate::widget::skin::{BarStyleId, DayNightBarStyleId, PanelStyleId, Skin};
+use crate::widget::skin::{BarStyleId, Skin};
+#[cfg(test)]
+use crate::widget::skin::{DayNightBarStyleId, PanelStyleId};
 use crate::widget::state::{WidgetStateTable, animate_experience_bar};
 use crate::widget::textured_quad::TexturedQuadRenderer;
 use glyphon::Color;
@@ -125,6 +121,12 @@ const DAY_NIGHT_BAR_WIDTH: f32 = RESOURCE_BAR_WIDTH * 2.0 + PANEL_GAP;
 /// 动作菜单面板宽度——比背包/装备两列宽一些：它的行要同时容下配方名
 /// 与食材清单（见 `ll_game::player_action` 的排版），照 220 会频繁截断。
 pub const ACTION_MENU_WIDTH: f32 = 360.0;
+// 皮肤分支（贴图有就走贴图、没有就回退纯色）那四条 `push_*` 助手搬去了
+// `super::skinned_push`——见那个模块的文档。这里再导出一次，
+// `push_panel` 这条 crate 内既有路径不变。
+pub(super) use super::skinned_push::push_panel;
+use super::skinned_push::{push_bar, push_day_night_bar, push_two_layer_bar};
+
 // 反馈行与按键提示行的宽度/位置常量搬去了 `super::bottom_rows`——
 // 两行形状相同，放在一起才不会各写一份。这里再导出一次，
 // `ll_ui::hud::render::FEEDBACK_WIDTH` 这条既有路径不变。
@@ -157,16 +159,21 @@ const TEXT_COLOR: Color = Color::rgba(235, 235, 235, 255);
 /// 解析的文档内链，与 `crate::widget::mod` 模块文档同一条既有写法），
 /// 不会真的出现这种尺寸，钳制反而会掩盖「窗口配置改小了却没人发现
 /// 装备栏被塞没了」这种应该显形的问题。
-fn equipment_origin_x(screen_width: f32) -> f32 {
-    screen_width - EQUIPMENT_RIGHT_MARGIN - EQUIPMENT_WIDTH
+fn equipment_rect(screen_width: f32, height: f32) -> Rect {
+    Rect::anchored(
+        (screen_width, 0.0),
+        Anchor::TopRight,
+        (EQUIPMENT_WIDTH, height),
+        EQUIPMENT_RIGHT_MARGIN,
+    )
 }
 
 // 世界地图面板的落位（`world_map_rect`）与比例尺文案的留白常量搬去了
 // `super::placement`——那个模块管的正是「不按固定分区平铺、要现算落位」
 // 的面板，与动作菜单同一类。这里再导出一次，
 // `ll_ui::hud::render::world_map_rect` 这条既有路径不变（`ll_game` 在用）。
-pub use super::placement::world_map_rect;
 pub(super) use super::placement::WORLD_MAP_CAPTION_MARGIN;
+pub use super::placement::world_map_rect;
 
 /// 现算这一帧 HUD 需要的全部填色矩形/贴图矩形与文本行——纯函数,不
 /// 接触 GPU,是 [`render_hud`] 与本模块测试共用的核心逻辑。
@@ -178,7 +185,7 @@ pub(super) use super::placement::WORLD_MAP_CAPTION_MARGIN;
 /// `crate::widget::day_night_bar` 模块文档「数字瞬时，指针平滑」一节。
 ///
 /// `screen_width`/`screen_height` 是窗口原生像素尺寸——前者此前就已
-/// 存在，只用来算装备栏的锚定坐标（见 [`equipment_origin_x`]）；后者
+/// 存在，只用来算装备栏的锚定坐标（见 [`equipment_rect`]）；后者
 /// 是世界地图批次新增的，只用来算世界地图面板的居中矩形（见
 /// [`world_map_rect`]），同样不影响其余面板的布局。
 ///
@@ -373,8 +380,12 @@ pub fn build_hud_frame(
     );
 
     // 装备栏：不再跟随背包列的位置,独立锚定到窗口右边缘——项目所有者
-    // 原话「装备放在屏幕右边」,见 [`equipment_origin_x`] 与模块文档。
-    let equipment_origin = (equipment_origin_x(screen_width), SCREEN_MARGIN);
+    // 原话「装备放在屏幕右边」,见 [`equipment_rect`] 与模块文档。
+    // 规格 L2：贴右这一份算术不再写在这里，走 `Rect::anchored`。高度传 0
+    // ——装备面板的高度由 `equipment_panel` 按内容行数现算，这里只要那个
+    // x；`TopRight` 的 y 恒是 `margin`，与旧写法逐字相同
+    // （`EQUIPMENT_RIGHT_MARGIN` 与 `SCREEN_MARGIN` 取同一个值）。
+    let equipment_origin = equipment_rect(screen_width, 0.0).origin();
     let equipment_panel_content = equipment_panel::equipment_panel(
         equipment,
         item_table,
@@ -479,120 +490,6 @@ pub fn build_hud_frame(
     // `LayeredFrame::snap_to_pixels` 文档「为什么这一层要有一道」一节。
     frame.snap_to_pixels();
     frame
-}
-
-/// 推入一块面板的背景——皮肤给出真实贴图外观
-/// （[`Skin::textured_panel`]）就走贴图路径,否则回退到
-/// [`Skin::panel`] 的纯色路径,两条路径互斥（同一块面板只会落进
-/// [`LayerBatch::quads`] 或 [`LayerBatch::textured_quads`] 其中一个）。
-pub(super) fn push_panel(
-    batch: &mut LayerBatch,
-    rect: &Rect,
-    panel_labels: Vec<Label>,
-    skin: &dyn Skin,
-) {
-    match skin.textured_panel(PanelStyleId::Window) {
-        Some(appearance) => batch
-            .textured_quads
-            .extend(textured_panel_quads(*rect, &appearance)),
-        None => batch
-            .quads
-            .extend(panel_quads(*rect, &skin.panel(PanelStyleId::Window))),
-    }
-    batch.labels.extend(panel_labels);
-}
-
-/// 推入一条单层条形（经验条），分支逻辑同 [`push_panel`]。
-fn push_bar(batch: &mut LayerBatch, rect: Rect, fraction: f32, skin: &dyn Skin) {
-    match skin.textured_bar(BarStyleId::Progress) {
-        Some(appearance) => {
-            batch
-                .textured_quads
-                .extend(textured_bar_quads(rect, fraction, &appearance))
-        }
-        None => batch
-            .quads
-            .extend(bar_quads(rect, fraction, &skin.bar(BarStyleId::Progress))),
-    }
-}
-
-/// 推入一条双层条形（生命/法力），分支逻辑同 [`push_panel`]。`style`
-/// 由调用方指定是 [`BarStyleId::Health`] 还是 [`BarStyleId::Mana`]——
-/// 两者外观（含贴图 tint）在 [`crate::widget::skin`] 里各自独立解析,
-/// 是「两条资源条能分清哪条是哪条」这条修复的直接落点,见
-/// `crate::widget::skin::BarStyleId::Health` 文档。
-fn push_two_layer_bar(
-    batch: &mut LayerBatch,
-    rect: Rect,
-    immediate_fraction: f32,
-    lagging_fraction: f32,
-    style: BarStyleId,
-    skin: &dyn Skin,
-) {
-    match skin.textured_two_layer_bar(style) {
-        Some(appearance) => batch.textured_quads.extend(textured_two_layer_bar_quads(
-            rect,
-            immediate_fraction,
-            lagging_fraction,
-            &appearance,
-        )),
-        None => {
-            // 纯色回退没有专门的"双层"外观数据（`FlatBarAppearance`
-            // 只有背景/前景两色）,复用同一份外观：背景当轨道,前景色
-            // 同时充当立即层与余晖层——纯色场景下没有真实贴图可供
-            // 区分两层的明暗,这是可接受的简化,不影响真实贴图路径
-            // （`NineSliceSkin` 已经用 `afterglow_tint` 正确区分）。
-            let appearance = skin.bar(style);
-            batch.quads.extend(crate::widget::bar::two_layer_bar_quads(
-                rect,
-                immediate_fraction,
-                lagging_fraction,
-                &crate::widget::bar::FlatTwoLayerBarAppearance {
-                    background_color: appearance.background_color,
-                    afterglow_color: appearance.fill_color,
-                    fill_color: appearance.fill_color,
-                },
-            ));
-        }
-    }
-}
-
-/// 推入昼夜滑条：整条底图 + 滑块，分支逻辑同 [`push_panel`]。
-///
-/// # 底图与滑块必须落进**同一个**容器
-///
-/// 两者恒是「底图先、滑块后」推入同一个 `Vec`：贴图路径两块都进
-/// `textured_quads`，纯色回退两块都进 `quads`。**不允许一边贴图一边
-/// 纯色**——那正是所有者实机反馈「少了滑条，只显示了背景条」的根因：
-/// 纯色滑块与贴图底图分处层内两道 pass，底图恒后提交、把滑块整个盖住，
-/// 见 `crate::widget::day_night_bar` 模块文档「曾经的缺陷」一节。
-///
-/// 这个不变式由皮肤层保证而不是靠这里的调用纪律：
-/// `crate::widget::skin::NineSliceSkin::textured_day_night_bar` 里底图与
-/// 滑块的 UV 各带一个 `?`，任一张查不到就整条返回 `None`，本函数因此
-/// 只能整条走贴图或整条走纯色。
-fn push_day_night_bar(batch: &mut LayerBatch, rect: Rect, pointer_fraction: f32, skin: &dyn Skin) {
-    match skin.textured_day_night_bar(DayNightBarStyleId::Clock) {
-        Some(appearance) => {
-            batch
-                .textured_quads
-                .extend(textured_day_night_bar_quads(rect, &appearance));
-            batch.textured_quads.push(textured_day_night_pointer_quad(
-                rect,
-                &appearance,
-                pointer_fraction,
-            ));
-        }
-        None => {
-            let appearance = skin.day_night_bar(DayNightBarStyleId::Clock);
-            batch.quads.extend(day_night_bar_quads(rect, &appearance));
-            batch.quads.push(day_night_pointer_quad(
-                rect,
-                appearance.pointer_color,
-                pointer_fraction,
-            ));
-        }
-    }
 }
 
 /// 把 [`build_hud_frame`] 算出的内容真正提交到屏幕。
@@ -1151,12 +1048,21 @@ mod tests {
     }
 
     #[test]
-    fn equipment_origin_x等于窗口宽度减去右边距与装备栏宽度() {
+    fn 装备栏贴右改走anchored之后逐像素与旧算术相同() {
+        // 规格 L2 要求的「改写前后逐像素相同」回归断言（第 1 处）。期望值
+        // 就是收敛掉的那份旧算术
+        // （`screen_width - EQUIPMENT_RIGHT_MARGIN - EQUIPMENT_WIDTH`），
+        // 这里把屏宽写成具体像素——那是夹具，不是第二份实现，见
+        // `scripts/ci/check_single_anchor_impl.sh` 头注释「判据盯的是变量名」。
+        //
+        // 反例验证（已实跑）：把 `equipment_rect` 的锚点从 `Anchor::TopRight`
+        // 换成 `Anchor::TopCenter`，本条红在 `left: 530.0 right: 1044.0`。
         // Arrange & Act
-        let x = equipment_origin_x(1280.0);
+        let rect = equipment_rect(1280.0, 0.0);
 
-        // Assert
-        assert_eq!(x, 1280.0 - EQUIPMENT_RIGHT_MARGIN - EQUIPMENT_WIDTH);
+        // Assert：x 与 y 各一条——旧写法的 y 是调用点补的 `SCREEN_MARGIN`。
+        assert_eq!(rect.x, 1280.0 - EQUIPMENT_RIGHT_MARGIN - EQUIPMENT_WIDTH);
+        assert_eq!(rect.y, SCREEN_MARGIN);
     }
 
     #[test]
@@ -1201,11 +1107,12 @@ mod tests {
         // （9）、经验条（2）、背包面板（9），装备栏是第 8 个、也是最后
         // 一个推入的面板，前面共 9+3+3+2+9+2+9=37 块。装备栏九宫格的
         // 第一块（左上角）位置即等于它的 `origin`，直接核实这一块的
-        // x 坐标等于 [`equipment_origin_x`]。
+        // x 坐标等于旧算术算出来的那个数（规格 L2 的逐像素回归断言）。
         let equipment_first_quad = &frame.layer(UiLayer::Hud).quads[37];
         assert_eq!(
             equipment_first_quad.position[0],
-            equipment_origin_x(screen_width)
+            1280.0 - EQUIPMENT_RIGHT_MARGIN - EQUIPMENT_WIDTH,
+            "装备栏左上角没落在「窗口右沿往里缩一个边距加自身宽」上"
         );
 
         // Cleanup

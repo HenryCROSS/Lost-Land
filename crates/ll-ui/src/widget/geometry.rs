@@ -11,6 +11,34 @@
 //! 共享的算法支撑）。真正需要更复杂布局的那一天，`Rect` 本身不需要
 //! 改——新的布局算法可以是消费 `Rect` 的新函数，不必推翻这个类型。
 
+/// 一块面板相对**屏幕**的落位方式——规格 L2 收敛掉的那五份副本共用的
+/// 唯一一个枚举。
+///
+/// # 为什么这个可以抽，而「通用列表控件」不可以（ADR 0021）
+///
+/// ADR 0021 拦的是「形状对称就抽象」。这里有一个**真正可共享的算法**：
+/// 已知屏幕尺寸、锚点、自身尺寸、边距，求原点——一句算术，没有任何
+/// 分支参数化。收敛之前它被抄了五遍，而五遍在边界钳制上还各不相同
+/// （反馈行对 y 做了 `.max(0.0)`，另外四处刻意不钳，没有任何一处说明
+/// 为什么不同）。
+///
+/// 对照 ADR 0021 明确否决的那个：「通用列表控件」要把光标模型、循环
+/// 与否、连发与否、左右键含义**四个开关**做成参数——那不是抽象，是
+/// 伪装。本枚举一个开关都没有。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    /// 贴左上角，两个方向都留 `margin`。
+    TopLeft,
+    /// 贴右上角：右边界距屏幕右沿 `margin`，顶边距上沿 `margin`。
+    TopRight,
+    /// 水平居中、顶边距上沿 `margin`。
+    TopCenter,
+    /// 屏幕正中——**`margin` 不参与**，居中没有边距可言。
+    Center,
+    /// 水平居中、底边距下沿 `margin`。
+    BottomCenter,
+}
+
 /// 一个像素矩形：左上角坐标 + 宽高。所有字段都是原生分辨率像素——与
 /// [`crate::widget::quad::QuadInstance`]/[`ll_text::TextRun`] 同一套
 /// 坐标系（见 `ll_text` crate 顶层文档「两条渲染通道」一节：HUD 文本
@@ -76,6 +104,35 @@ impl Rect {
             (self.width - inset * 2.0).max(0.0),
             (self.height - inset * 2.0).max(0.0),
         )
+    }
+
+    /// 已知屏幕尺寸、锚点、自身尺寸与边距，求这块面板的矩形——规格 L2
+    /// 的那一个函数。
+    ///
+    /// # 一律不钳制
+    ///
+    /// 屏幕比面板还小时会算出负坐标，**刻意不钳到 0**。这条取舍是从被
+    /// 收敛掉的那五处里已经写下理由的那一侧继承来的
+    /// （`hud::render::equipment_origin_x` / `hud::placement` /
+    /// `screen::centered_origin` 三处的原话）：钳制会把「窗口配置改小了
+    /// 却没人发现面板被塞没了」掩盖成一块看起来正常、内容却被挤出去的
+    /// 面板。收敛之前只有反馈行那一处钳（`.max(0.0)`）且没写理由，
+    /// 统一到不钳的那一侧。
+    ///
+    /// [`Anchor::Center`] 忽略 `margin`——居中没有边距可言，传什么都
+    /// 一样。这不是漏了处理，是这个锚点的定义。
+    pub fn anchored(screen: (f32, f32), anchor: Anchor, size: (f32, f32), margin: f32) -> Rect {
+        let (screen_w, screen_h) = screen;
+        let (w, h) = size;
+        let 水平居中 = (screen_w - w) * 0.5;
+        let (x, y) = match anchor {
+            Anchor::TopLeft => (margin, margin),
+            Anchor::TopRight => (screen_w - margin - w, margin),
+            Anchor::TopCenter => (水平居中, margin),
+            Anchor::Center => (水平居中, (screen_h - h) * 0.5),
+            Anchor::BottomCenter => (水平居中, screen_h - margin - h),
+        };
+        Rect::new(x, y, w, h)
     }
 
     /// 把四条边界各取整到最近的整数像素——**像素画唯一真正需要的那一次
@@ -203,6 +260,75 @@ mod tests {
 
         // Act & Assert
         assert!(rect.contains((10.0, 10.0)));
+    }
+
+    #[test]
+    fn anchored在任意尺寸下贴右都让右边界距屏幕右沿恰好一个边距() {
+        // 规格 L2 的属性判据。扫一批尺寸/边距，不是只测一个数——
+        // 单点断言对「写死一个常量」这种改坏方式咬不住。
+        //
+        // 反例验证（已实跑）：把 `TopRight` 那一支的
+        // `screen_w - margin - w` 改成 `screen_w - margin`，本条红在
+        // 第一组尺寸上。
+        for (sw, sh) in [(1280.0_f32, 720.0_f32), (1920.0, 1080.0), (640.5, 481.25)] {
+            for (w, h) in [(220.0_f32, 300.0_f32), (17.5, 3.0)] {
+                for margin in [0.0_f32, 16.0, 33.75] {
+                    // Act
+                    let rect = Rect::anchored((sw, sh), Anchor::TopRight, (w, h), margin);
+
+                    // Assert
+                    assert!(
+                        (rect.right() - (sw - margin)).abs() < 1e-3,
+                        "屏 {sw}×{sh}、面板 {w}×{h}、边距 {margin}：右边界 {} 距右沿不是 {margin}",
+                        rect.right()
+                    );
+                    assert_eq!(rect.y, margin);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn anchored居中时面板中心与屏幕中心相差不到一像素() {
+        // 规格 L2 的另一条属性判据。
+        //
+        // 反例验证（已实跑）：把 `Anchor::Center` 那一支的
+        // `(screen_h - h) * 0.5` 改成 `(screen_h - h) * 0.4`，本条红在
+        // 「纵向中心差 ...」。
+        for (sw, sh) in [(1280.0_f32, 720.0_f32), (1920.0, 1080.0), (640.5, 481.25)] {
+            for (w, h) in [(520.0_f32, 300.0_f32), (17.5, 3.0)] {
+                // Act：`margin` 传一个非零值，顺便证明 `Center` 真的忽略它。
+                let rect = Rect::anchored((sw, sh), Anchor::Center, (w, h), 99.0);
+
+                // Assert
+                let 横向差 = (rect.x + w * 0.5 - sw * 0.5).abs();
+                let 纵向差 = (rect.y + h * 0.5 - sh * 0.5).abs();
+                assert!(
+                    横向差 < 1.0,
+                    "屏 {sw}×{sh}、面板 {w}×{h}：横向中心差 {横向差}"
+                );
+                assert!(
+                    纵向差 < 1.0,
+                    "屏 {sw}×{sh}、面板 {w}×{h}：纵向中心差 {纵向差}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn anchored一律不钳制屏幕比面板还小时算出负坐标() {
+        // 这是从被收敛掉那五处里继承来的取舍，见 `anchored` 文档
+        // 「一律不钳制」一节。收敛前反馈行那一处 `.max(0.0)` 钳过，
+        // 且没写理由——这条断言把「统一到不钳」变成结构。
+        //
+        // 反例验证（已实跑）：在 `anchored` 的返回上加 `.max(0.0)`，
+        // 本条红。
+        // Arrange & Act：面板比屏幕还宽还高。
+        let rect = Rect::anchored((100.0, 50.0), Anchor::BottomCenter, (300.0, 80.0), 16.0);
+
+        // Assert
+        assert!(rect.x < 0.0, "屏幕比面板窄时 x 应当是负数，实际 {}", rect.x);
+        assert!(rect.y < 0.0, "屏幕比面板矮时 y 应当是负数，实际 {}", rect.y);
     }
 
     #[test]
