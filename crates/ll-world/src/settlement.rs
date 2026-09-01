@@ -66,8 +66,8 @@
 //! 那一半**。
 //!
 //! 「读到自己刚铺的墙就跳过」那条副作用随之消失，但它本来就是空转：
-//! 建筑按 [`BUILDING_SPACING`]（6）的方格排布、外廓 [`BUILDING_SPAN`]
-//! （5），两栋建筑在几何上不可能重叠；不同据点之间又隔着
+//! 建筑按 `BUILDING_SPAN + 巷宽`（≥6）的方格排布、外廓
+//! [`BUILDING_SPAN`]（5），两栋建筑在几何上不可能重叠；不同据点之间又隔着
 //! [`crate::chronicle::ChronicleParams::min_settlement_spacing`]，远
 //! 大于两倍的 [`MAX_FOOTPRINT_RADIUS`]。
 //!
@@ -97,6 +97,31 @@
 //! 也就是说本模块的跨区块能力**不再只是能力**：约一成的据点真的铺过了
 //! 自己那一格区块的边界，惰性铺设那条路径每局游戏都会走到。
 //!
+//! # 再测一次：据点建筑类型批次（街道与密度，2026-08-31）
+//!
+//! 上面那张表里「跨区块据点 21~29（每个世界）」是**街道落地之前**的
+//! 数字，原样保留。加进街道与按人口分档的巷宽之后，同样三个种子
+//! （20260826 / 7 / 99）、走真实 `mods/` 与
+//! [`crate::generate::GenParams::default`] 的默认世界尺寸，实测：
+//!
+//! | | 改动前（恒 1 格间距） | 改动后（街道 + 分档） |
+//! |---|---|---|
+//! | 据点总数 / 存活 / 活人口 | 765 / 703 / 28588 | **一模一样** |
+//! | 建筑总数 / 占领 / 遗弃 / 势力 | 15206 / 21 / 119 / 822 | **一模一样** |
+//! | **跨区块据点** | 58 | **223**（3.8 倍） |
+//! | 覆盖区块总数 | 1027 | **1798**（+75%） |
+//! | 单座最多覆盖 | 8 | 8 |
+//! | [`MAX_FOOTPRINT_RADIUS`] | 26 | **36** |
+//!
+//! 上面那一整行「一模一样」是**本批次最重要的一条下游结论**：
+//! [`crate::chronicle`] 一个字都没动，它也不读任何建筑几何，因此人口、
+//! 战争、占领、势力全部逐个数字不变。**若它们变了，说明有一处没被发现
+//! 的耦合，必须查明而不是接受。**
+//!
+//! 真正变的只有占地：据点摊开了，跨区块的从 58 座涨到 223 座（近三成），
+//! 惰性铺设那条路径因此走得比以前更勤。单座最多覆盖区块数没变（仍是 8），
+//! 因为那个上界由区块边长而不是据点半径决定。
+//!
 use ll_core::ident::WorldId;
 use ll_core::rng::DetRng;
 use ll_core::torus::{TorusPos, TorusSize};
@@ -121,11 +146,123 @@ pub const SETTLEMENT_LAYOUT_STREAM_ID: u64 = 0x0053_5445_4144_0001;
 /// 取 5 而不是 3：3×3 的「建筑」内部只有一格，进门就到底，看起来不像
 /// 房子；5×5 是仍然只占一个区块窗口一小块、又能一眼认出是间屋子的
 /// 最小尺寸。
-const BUILDING_SPAN: i32 = 5;
+///
+/// **转成 `pub` 是建筑类型批次做的**：`crate::building`（同一批的下一个
+/// 提交）要按同一个外廓算内壁那八格，两边各写一个 5 正是本仓库反复付过
+/// 代价的那类分歧；`crates/ll-world/tests/settlement_layout.rs` 也要用它
+/// 量街道宽度。
+pub const BUILDING_SPAN: i32 = 5;
 
-/// 相邻两栋建筑锚点之间的间距（格）——比 [`BUILDING_SPAN`] 大 1，
-/// 保证两栋屋子之间恒留出一格通道，不会连成一整块实心墙。
-const BUILDING_SPACING: i32 = BUILDING_SPAN + 1;
+/// 相邻两栋屋子之间留出的**巷宽**（格）下界：最密的大城也至少隔一格。
+///
+/// # 所有者原话与本批次改了什么
+///
+/// > 「聚居地的建筑靠这么近，而且只有款式一样的房子，这不像是一个能
+/// > 正常运作的聚居地。」
+///
+/// 本批次之前这里只有一个常量 `BUILDING_SPACING = BUILDING_SPAN + 1`
+/// ——**全大陆每一座据点、每两栋屋子之间恒隔 1 格**，没有街道、没有
+/// 留白、没有疏密之分。现在拆成两层：
+///
+/// 1. **巷宽按人口分档**（[`alley_width`]）：大城密、村落疏。
+/// 2. **每 [`BLOCK_SPAN`] 栋插一条街**（[`STREET_EXTRA`]）：街区之间
+///    多出一条肉眼看得出的通道。
+const MIN_ALLEY_WIDTH: i32 = 1;
+
+/// 巷宽上界（格）：最疏的村落，两栋屋子之间隔三格。
+///
+/// 它同时是 [`MAX_FOOTPRINT_RADIUS`] 那条几何推导里的最坏情况——
+/// 一座据点最疏的时候占地最大。
+const MAX_ALLEY_WIDTH: i32 = 3;
+
+/// 「大城」的人口门槛：到了这一档就用最密的巷宽（[`MIN_ALLEY_WIDTH`]）。
+///
+/// 取 96 而不是别的数：`ll_world::chronicle` 的实测里人口中位数是三十
+/// 出头、最大一百七十上下（见本模块文档「实测」一节那张表），96 因此
+/// 落在「明显是大城、但不是只有首邑够得着」的位置——一个世界里会有
+/// 几座，不是一座也没有、也不是遍地都是。
+const DENSE_POPULATION: u32 = 96;
+
+/// 「镇」的人口门槛：这一档用中间的巷宽（2 格）。
+///
+/// 取 32 = 人口中位数的量级：一半的据点在这一档或以上，另一半是最疏的
+/// 村落。分档因此真的会在同一个世界里同时出现三种密度，而不是全大陆
+/// 一个样。
+const TOWN_POPULATION: u32 = 32;
+
+/// 多少栋屋子构成一个街区——每 [`BLOCK_SPAN`] 个格位之后插一条街。
+///
+/// 取 3：再小（2）街道比街区还密，看起来像栅栏；再大（5 以上）一座
+/// 中等据点（二十栋上下、格位半径 2）根本排不满一个街区，街道一条都
+/// 不会出现。3 是「一座普通村子也看得见一条街」的最小值。
+const BLOCK_SPAN: i32 = 3;
+
+/// 街道比巷子额外宽几格。街道净宽 = 巷宽 + 本值（3~5 格）。
+///
+/// 取 2 而不是更大：街道要一眼分得出「这是路不是两栋房子之间的缝」，
+/// 但据点的占地半径直接进 [`MAX_FOOTPRINT_RADIUS`]，而那个值必须小于
+/// 据点最小间距的一半。2 让最坏情况的占地半径落在 36，仍然远小于 72。
+const STREET_EXTRA: i32 = 2;
+
+/// 这座据点的屋子之间该留多宽的巷子——**人口越多越密**。
+///
+/// # 为什么用峰值人口，不用当前人口
+///
+/// 一座城的**建成形态**是它鼎盛时留下的：人走了，房子和街道还在原地。
+/// 用当前人口的话，一座据点被遗弃（人口归零）的那一刻，它的废墟会突然
+/// 散开成最疏的村落形态——同一片地上的墙会跟着挪位置，而那显然不对。
+///
+/// 取 `max(峰值, 当前)` 而不是直接取峰值：峰值在语义上恒 ≥ 当前，但那
+/// 是 [`crate::chronicle`] 那一侧维持的性质，本模块不该依赖一个自己
+/// 管不着的不变式（它一旦破了，症状会是「据点比它自己的历史峰值还大」
+/// 这种没人查得出来的怪相）。
+const fn alley_width(site: &SettlementSite) -> i32 {
+    let population = if site.peak_population > site.population {
+        site.peak_population
+    } else {
+        site.population
+    };
+    if population >= DENSE_POPULATION {
+        MIN_ALLEY_WIDTH
+    } else if population >= TOWN_POPULATION {
+        2
+    } else {
+        MAX_ALLEY_WIDTH
+    }
+}
+
+/// 把「第几个格位」换算成「离锚点几格」——间距 + 街道两层一起算。
+///
+/// ```text
+/// 格位:   -4  -3  -2  -1 | 0   1   2 | 3   4
+///          └── 街区 ──┘  街  └ 街区 ┘ 街 └ …
+/// ```
+///
+/// # 街道相对锚点**对称**，而这一点是被一条既有测试逼出来的
+///
+/// 格位可以是负数（方环由内向外排，锚点在原点），因此「第几个街区」
+/// 这个除法会踩到负数。第一版写的是 `cell.div_euclid(BLOCK_SPAN)`，
+/// 它在数学上是对的（负半轴不会错开一个街区），**但它不对称**：
+/// 格位 0、1、2 是一个街区，而负半轴的第一个街区只有 -1、-2 两个格位，
+/// 于是格位 -4 比格位 +4 多推出去两格。
+///
+/// `crates/ll-world/src/settlement.rs` 的既有单测 `外廓半径上界真的是
+/// 上界` 当场抓住了它（「第 49 栋伸到了 (38, 38)，超过外廓半径上界
+/// 36」）——[`MAX_FOOTPRINT_RADIUS`] 那条几何推导只算了正半轴。
+///
+/// 现在的写法先取绝对值再除，再把符号贴回去：**正负两侧的街道关于锚点
+/// 镜像**，占地半径两侧相等，那条推导因此只需要算一次。代价是正中那个
+/// 街区宽 5 个格位（-2..=2）而不是 3——那是城中心，比别处宽一点反而
+/// 合理。
+///
+/// 顺带：取绝对值之后除的是非负数，本函数因此没有任何「整数除法在负数
+/// 上怎么取整」的悬念，与仓库里「环面换算一律走 `TorusSize::wrap`、
+/// 不手写取模」是同一条纪律的另一面。
+const fn grid_to_tile(cell: i32, alley: i32) -> i32 {
+    let blocks = (cell.abs() / BLOCK_SPAN) * STREET_EXTRA;
+    let shift = if cell < 0 { -blocks } else { blocks };
+    cell * (BUILDING_SPAN + alley) + shift
+}
 
 /// 一座据点最多铺多少栋建筑——[`SettlementSite::building_count`] 的
 /// 上界。
@@ -150,8 +287,11 @@ const BUILDING_SPACING: i32 = BUILDING_SPAN + 1;
 /// 这不改变取 80 的理由，只是让那个理由第一次变成实的：
 ///
 /// 取 80 而不是继续留 24：80 恰好用满以锚点为中心第 4 圈方环
-/// （`(2×4+1)² = 81` 个格位）的前 80 个，[`MAX_FOOTPRINT_RADIUS`] 因此
-/// 是 26 格——仍然远小于据点最小间距的一半
+/// （`(2×4+1)² = 81` 个格位）的前 80 个。**这里原本写着
+/// 「[`MAX_FOOTPRINT_RADIUS`] 因此是 26 格」——据点建筑类型批次
+/// （2026-08-31）把间距从「恒 1 格」改成「按人口分档 + 每三栋插一条
+/// 街」之后，最坏情况（最疏的村落）是 36 格**，仍然远小于据点最小间距
+/// 的一半
 /// （[`crate::chronicle::ChronicleParams::min_settlement_spacing`] 默认
 /// 144），两座长满的据点不会互相压进对方的街区。
 pub const MAX_BUILDINGS: u32 = 80;
@@ -159,13 +299,20 @@ pub const MAX_BUILDINGS: u32 = 80;
 /// 一座据点外廓的半径上界（格）：从锚点到最外那一圈建筑外墙的切比
 /// 雪夫距离。
 ///
-/// **由 [`MAX_BUILDINGS`]、[`BUILDING_SPACING`]、[`BUILDING_SPAN`] 三者
-/// 推出，不是一个可以独立调的数值**——改上面任何一个，这个常量跟着
-/// 变。消费者是 [`crate::chronicle::ChronicleParams::min_settlement_spacing`]
+/// **由 [`MAX_BUILDINGS`]、[`BUILDING_SPAN`]、巷宽与街道宽四者推出，
+/// 不是一个可以独立调的数值**——改上面任何一个，这个常量跟着变。
+/// 消费者是 [`crate::chronicle::ChronicleParams::min_settlement_spacing`]
 /// （据点最小间距必须大于它的两倍，否则两座长满的据点会互相压进对方
 /// 的街区）。
+///
+/// # 取**最坏情况**：最疏的那一档
+///
+/// 巷宽现在随人口变（[`alley_width`]），因此「占地半径」不再是一个数
+/// 而是一个区间。本常量取区间的上端（`MAX_ALLEY_WIDTH`），因为它的
+/// 唯一用途是当上界：一座人口不足 32 的小村子铺满八十栋（历史上曾经
+/// 是大城、后来人口跌下去，`building_count` 由峰值定）时，占地最大。
 pub const MAX_FOOTPRINT_RADIUS: i32 =
-    max_ring(MAX_BUILDINGS) * BUILDING_SPACING + BUILDING_SPAN / 2;
+    grid_to_tile(max_ring(MAX_BUILDINGS), MAX_ALLEY_WIDTH) + BUILDING_SPAN / 2;
 
 /// 铺 `count` 栋建筑时，[`spiral_offset`] 用到的最外一圈方环半径
 /// （单位是「第几圈」，不是格）。
@@ -407,11 +554,17 @@ pub fn footprint_zones(site: &SettlementSite, layout: &ZoneLayout) -> Vec<ZoneCo
 
 /// 第 `building` 栋建筑外廓左上角的**世界瓦片**坐标（未环绕的原始
 /// 整数，调用方按需 `wrap`）。锚点是第 0 栋的中心。
-fn building_origin(site: &SettlementSite, building: u32) -> (i32, i32) {
+///
+/// **转成 `pub` 是建筑类型批次做的**：`crate::building`（同一批的下一个
+/// 提交）要把家具摆进同一栋屋子的内壁，它必须问到与铺墙那一步**完全
+/// 同一个**左上角，而不是自己再推一遍（同一份几何两处实现正是 ADR 0021
+/// 拦的那件事）；街道那一组断言同样按它量。
+pub fn building_origin(site: &SettlementSite, building: u32) -> (i32, i32) {
     let (ox, oy) = spiral_offset(building);
+    let alley = alley_width(site);
     (
-        site.anchor.x() + ox * BUILDING_SPACING - BUILDING_SPAN / 2,
-        site.anchor.y() + oy * BUILDING_SPACING - BUILDING_SPAN / 2,
+        site.anchor.x() + grid_to_tile(ox, alley) - BUILDING_SPAN / 2,
+        site.anchor.y() + grid_to_tile(oy, alley) - BUILDING_SPAN / 2,
     )
 }
 
@@ -465,9 +618,10 @@ fn write_footprint(
 /// 「那真正的难点在哪」。
 ///
 /// 上一批次靠「读到自己刚铺的墙就跳过」来保证建筑之间不重叠，那条
-/// 副作用现在没有了，**但它本来就是空转**：建筑按 [`BUILDING_SPACING`]
-/// （6）的方格排布而外廓只有 [`BUILDING_SPAN`]（5）宽，两栋在几何上
-/// 不可能重叠；不同据点之间又隔着据点最小间距，远大于两倍的
+/// 副作用现在没有了，**但它本来就是空转**：建筑按
+/// `BUILDING_SPAN + 巷宽`（≥6）的方格排布而外廓只有 [`BUILDING_SPAN`]
+/// （5）宽，两栋在几何上不可能重叠；街道只会把它们推得更开。不同据点
+/// 之间又隔着据点最小间距，远大于两倍的
 /// [`MAX_FOOTPRINT_RADIUS`]。本模块测试 `螺旋偏移前二十五个互不重复`
 /// 与 `同一份输入铺两次逐格相同` 守着这条。
 fn plot_is_clear(ctx: &StampContext<'_>, tile_size: TorusSize, left: i32, top: i32) -> bool {
@@ -599,8 +753,8 @@ fn edge_midpoint(side: usize) -> (i32, i32) {
     }
 }
 
-/// 第 `n` 栋建筑相对锚点的**格位**偏移（单位是「第几栋」，还要乘上
-/// [`BUILDING_SPACING`] 才是格数）。
+/// 第 `n` 栋建筑相对锚点的**格位**偏移（单位是「第几个格位」，还要经
+/// [`grid_to_tile`] 换算才是格数）。
 ///
 /// 按方环由内向外排：第 0 栋在锚点上，第 1..8 栋在半径 1 的一圈上，
 /// 第 9..24 栋在半径 2 的一圈上……同一圈内按 `(dy, dx)` 光栅序。纯
