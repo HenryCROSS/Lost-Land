@@ -232,5 +232,9 @@ grep -c 反例 knowledge/decisions/0018-engine-layer-vs-gameplay-layer-scripting
 **这不是本次才发现的**：[0028](0028-steel-engine-construction-memory-corruption.md)
 「候选 D」一段已有一句原地订正——「调查过程中有人把这条做法归给 ADR 0018，实际
 不是……这条做法只体现在 `crates/ll-mod/tests/*.rs` 的写法里，**没有任何 ADR 为它
-背书**」。批次 25 复核确认该结论至今成立。**是否为它新开一份 ADR，需要项目所有者
-裁定；批次 25 不代为决定**，那一类引用因此一处未动，逐条列在批次 25 的报告里。
+背书**」。批次 25 复核确认该结论至今成立。
+
+**〔2026-09-01 结案〕项目所有者裁定新开一份 ADR，缺口已补**：这条纪律现在由
+[0031](0031-end-to-end-evidence-through-real-content.md) 承载。批次 25 留下的
+那 12 处「拿不准」引用，从今天起有了正确的指向对象，可在下次触碰各自文件时
+改指 0031。**引用时不要再默认写 0018。**
