@@ -167,6 +167,7 @@ fn 会话一帧(
     game_world: &mut GameWorld,
     content: &LoadedContent,
     catalog: &Catalog,
+    speaker: EntityId,
     node: ContentIndex,
     cursor: &mut usize,
     input: &InputState,
@@ -180,6 +181,7 @@ fn 会话一帧(
         &rows,
         &content.dialogue_node_table,
         player,
+        speaker,
         input,
         pointer,
     );
@@ -222,7 +224,7 @@ fn 站着的npc让交互列表多出一行对话() {
     // Arrange：东侧站一个管理者（本体给这个职业写了一段对话）。
     let content = test_content();
     let steward = 索引(&content, "lostland:steward");
-    let (game_world, _npc) = world_with_neighbour(&content, steward, None);
+    let (game_world, npc) = world_with_neighbour(&content, steward, None);
 
     // Act
     let rows = interact_entries(
@@ -237,6 +239,7 @@ fn 站着的npc让交互列表多出一行对话() {
     assert_eq!(
         rows.first(),
         Some(&InteractTarget::Talk {
+            speaker: npc,
             profession: steward,
             dialogue: expected,
         }),
@@ -355,7 +358,13 @@ fn 条件不满足的选项在会话屏上一行都不显示() {
 #[test]
 fn 打开会话屏时预选第一项() {
     // Arrange & Act：`app` 那一侧开屏时构造的就是这个状态。
+    // 说话人取一个真实世界里的实体（本条只看 `cursor`，但拿一个真的
+    // `EntityId` 比造一个野值诚实）。
+    let content = test_content();
+    let (_game_world, npc) =
+        world_with_neighbour(&content, 索引(&content, "lostland:steward"), None);
     let state = ScreenState::Dialogue {
+        speaker: npc,
         node: ContentIndex::default(),
         cursor: 0,
     };
@@ -373,7 +382,7 @@ fn 鼠标点在第几行就选中第几行() {
     // Arrange
     let content = test_content();
     let catalog = 真实文案();
-    let (mut game_world, _npc) =
+    let (mut game_world, npc) =
         world_with_neighbour(&content, 索引(&content, "lostland:steward"), None);
     let root = 索引(&content, "lostland:steward_root");
     let mut cursor = 0;
@@ -383,6 +392,7 @@ fn 鼠标点在第几行就选中第几行() {
         &mut game_world,
         &content,
         &catalog,
+        npc,
         root,
         &mut cursor,
         &InputState::new(),
@@ -394,6 +404,7 @@ fn 鼠标点在第几行就选中第几行() {
     assert_eq!(
         next,
         Some(ScreenState::Dialogue {
+            speaker: npc,
             node: 索引(&content, "lostland:steward_work"),
             cursor: 0,
         }),
@@ -407,7 +418,7 @@ fn 取消键关掉整块会话屏() {
     // Arrange
     let content = test_content();
     let catalog = 真实文案();
-    let (mut game_world, _npc) =
+    let (mut game_world, npc) =
         world_with_neighbour(&content, 索引(&content, "lostland:steward"), None);
     let root = 索引(&content, "lostland:steward_root");
     let mut cursor = 0;
@@ -419,6 +430,7 @@ fn 取消键关掉整块会话屏() {
         &mut game_world,
         &content,
         &catalog,
+        npc,
         root,
         &mut cursor,
         &input,
@@ -445,7 +457,7 @@ fn 听完风声之后那一行消失换成另一行() {
     let catalog = 真实文案();
     let guard = 索引(&content, "lostland:guard");
     let mining = 索引(&content, "lostland:mining_hold");
-    let (mut game_world, _npc) = world_with_neighbour(&content, guard, Some(mining));
+    let (mut game_world, npc) = world_with_neighbour(&content, guard, Some(mining));
     let root = 索引(&content, "lostland:mining_guard_root");
     let 问风声 = "最近听到什么风声没有？";
     let 再问三坑 = "你刚才说的三坑，再讲讲。";
@@ -473,6 +485,7 @@ fn 听完风声之后那一行消失换成另一行() {
         &mut game_world,
         &content,
         &catalog,
+        npc,
         root,
         &mut cursor,
         &InputState::new(),
@@ -516,7 +529,7 @@ fn 说完一整轮话世界时钟一格没动() {
     let catalog = 真实文案();
     let guard = 索引(&content, "lostland:guard");
     let mining = 索引(&content, "lostland:mining_hold");
-    let (mut game_world, _npc) = world_with_neighbour(&content, guard, Some(mining));
+    let (mut game_world, npc) = world_with_neighbour(&content, guard, Some(mining));
     let root = 索引(&content, "lostland:mining_guard_root");
     let clock_before = game_world.world.clock;
     let next_before = game_world
@@ -534,6 +547,7 @@ fn 说完一整轮话世界时钟一格没动() {
             &mut game_world,
             &content,
             &catalog,
+            npc,
             node,
             &mut cursor,
             &InputState::new(),

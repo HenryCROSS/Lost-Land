@@ -1,7 +1,7 @@
 //! `apply`：把一个 [`Effect`] 落到 [`WorldState`] 上的唯一入口。
 
 use ll_core::ident::ContentIndex;
-use ll_world::entity::{Agent, EntityId};
+use ll_world::entity::{Affiliation, Agent, EntityId};
 use ll_world::fov::compute_fov;
 use ll_world::sight_residency::fov_neighborhood_resident;
 use ll_world::space::Space;
@@ -540,6 +540,32 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
             if let Some(agent) = world.actors.get_mut(*actor) {
                 agent.stealthed = *stealthed;
             }
+        }
+        Effect::AddAffiliation {
+            entity,
+            affiliation,
+        } => {
+            let Some(agent) = world.actors.get_mut(*entity) else {
+                return;
+            };
+            // 已经有同一条 `(kind, org)` → 整条静默不做（不叠加、不刷新）。
+            // 见 `Effect::AddAffiliation` 文档「`apply` 只做两件事」一节：
+            // 「再加入一次该怎样」今天没有裁定，不做是最保守的一档。
+            //
+            // 遍历的是 `Vec`，保序、不碰任何哈希容器（约束 C5）。
+            let already = agent.affiliations.iter().any(|existing| {
+                existing.kind == affiliation.kind && existing.org == affiliation.org
+            });
+            if already {
+                return;
+            }
+            agent.affiliations.push(Affiliation {
+                // **唯一的 clamp 执行点**（约束 C1：写入口只有一个，
+                // 夹紧也只需要一处），见
+                // `ll_world::entity::Affiliation::STANDING_FULL` 文档。
+                standing: Affiliation::clamp_standing(affiliation.standing),
+                ..*affiliation
+            });
         }
     }
 }
@@ -1678,6 +1704,103 @@ mod tests {
         // Assert
         assert!(after_once);
         assert_eq!(after_once, after_twice);
+    }
+
+    /// [`Effect::AddAffiliation`] 的三条语义各验一遍：**挂上去**、
+    /// **`standing` 夹到满值**、**同一条 `(kind, org)` 再来一次不叠加**。
+    ///
+    /// 反例验证（ADR 0022，本批实测）：
+    ///
+    /// - 把 `Affiliation::clamp_standing(..)` 换成 `affiliation.standing`
+    ///   → 「夹到满值」那一段红。
+    /// - 把 `already` 那道闸门去掉 → 「不叠加」那一段红（归属变成两条）。
+    #[test]
+    fn addaffiliation挂上归属夹紧声望且不重复叠加() {
+        // Arrange
+        let mut world = test_world();
+        let actor = world.actors.spawn(blank_agent(&world));
+        let mut counter = 0u32;
+        let faction = ll_core::ident::WorldId::next(&mut counter);
+        // 对照组前提：挂之前一条归属都没有。
+        assert!(
+            world
+                .actors
+                .get(actor)
+                .expect("刚生成的实体必然存在")
+                .affiliations
+                .is_empty()
+        );
+        // 故意写一个**超过满值**的声望，验夹紧。
+        let effect = Effect::AddAffiliation {
+            entity: actor,
+            affiliation: Affiliation {
+                kind: ll_world::entity::AffiliationKind::Faction,
+                org: ll_world::entity::OrgRef::Instance(faction),
+                standing: Affiliation::STANDING_FULL + 1,
+            },
+        };
+
+        // Act：同一条效果应用两次。
+        apply(&mut world, &effect);
+        let after_once = world
+            .actors
+            .get(actor)
+            .expect("刚生成的实体必然存在")
+            .affiliations
+            .clone();
+        apply(&mut world, &effect);
+        let after_twice = world
+            .actors
+            .get(actor)
+            .expect("刚生成的实体必然存在")
+            .affiliations
+            .clone();
+
+        // Assert
+        assert_eq!(after_once.len(), 1, "第一次必须真的挂上");
+        assert_eq!(
+            after_once[0].standing,
+            Affiliation::STANDING_FULL,
+            "超过满值的声望必须被夹到满值"
+        );
+        assert_eq!(
+            after_twice, after_once,
+            "同一条 (kind, org) 再来一次整条静默不做，不叠加也不刷新"
+        );
+    }
+
+    /// 负方向同样夹到 `-STANDING_FULL`——对称是本批的选择，见
+    /// [`ll_world::entity::Affiliation::STANDING_FULL`] 文档「负方向为什么
+    /// 也是 1000」一节。
+    #[test]
+    fn addaffiliation的负声望夹到负满值() {
+        // Arrange
+        let mut world = test_world();
+        let actor = world.actors.spawn(blank_agent(&world));
+        let mut counter = 0u32;
+        let faction = ll_core::ident::WorldId::next(&mut counter);
+
+        // Act
+        apply(
+            &mut world,
+            &Effect::AddAffiliation {
+                entity: actor,
+                affiliation: Affiliation {
+                    kind: ll_world::entity::AffiliationKind::Faction,
+                    org: ll_world::entity::OrgRef::Instance(faction),
+                    standing: -Affiliation::STANDING_FULL - 7,
+                },
+            },
+        );
+
+        // Assert
+        let affiliations = &world
+            .actors
+            .get(actor)
+            .expect("刚生成的实体必然存在")
+            .affiliations;
+        assert_eq!(affiliations.len(), 1);
+        assert_eq!(affiliations[0].standing, -Affiliation::STANDING_FULL);
     }
 
     #[test]

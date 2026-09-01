@@ -147,7 +147,7 @@ pub(super) fn screen_row_texts(
         }
         // 会话屏：行是**过滤后**的选项，标题是 NPC 这一句（在下面
         // 单独算）。见 `crate::dialogue_screen` 模块文档。
-        ScreenState::Dialogue { node, cursor } => (
+        ScreenState::Dialogue { node, cursor, .. } => (
             match session {
                 Some((world, player)) => match world.actors.get(player) {
                     Some(agent) => crate::dialogue_screen::dialogue_rows(
@@ -454,6 +454,7 @@ impl Demo {
     /// `crate::player_action` 提交的那六个意图逐条同办。
     fn update_dialogue_screen(
         &mut self,
+        speaker: ll_world::entity::EntityId,
         node: ll_core::ident::ContentIndex,
         cursor: &mut usize,
         input: &InputState,
@@ -482,6 +483,7 @@ impl Demo {
             &rows,
             &self.content.dialogue_node_table,
             player,
+            speaker,
             input,
             pointer,
         );
@@ -581,12 +583,21 @@ impl Demo {
                 let update = self.update_save_naming(input, origin);
                 (update.outcome, update.next)
             }
-            ScreenState::Dialogue { node, cursor } => {
+            ScreenState::Dialogue {
+                speaker,
+                node,
+                cursor,
+            } => {
                 let mut cursor = cursor;
-                let outcome = self.update_dialogue_screen(node, &mut cursor, input, pointer);
+                let outcome =
+                    self.update_dialogue_screen(speaker, node, &mut cursor, input, pointer);
                 (
                     outcome.0,
-                    outcome.1.or(Some(ScreenState::Dialogue { node, cursor })),
+                    outcome.1.or(Some(ScreenState::Dialogue {
+                        speaker,
+                        node,
+                        cursor,
+                    })),
                 )
             }
             ScreenState::Settings { .. } => {

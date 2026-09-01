@@ -896,7 +896,25 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 ///
 /// 守门方式同前几批：本段文字 + 本模块单元测试
 /// `后果不同的两个对话节点摘要不同`。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 30;
+/// ---
+///
+/// # 版本 31（加入据点，对话系统的批次 3）
+///
+/// [`crate::dialogue::DialogueOutcome`] 多了一个变体
+/// `JoinSettlement`，[`write_dialogue_outcome`] 因此多一条判别值 `1`
+/// 的分支。**判别值往后接，`SetFlag` 的 `0` 一个字没挪**——同
+/// [`ContentTableKind`] 那条纪律。
+///
+/// 这是**「已有表的枚举加变体」**那一档：既有内容的摘要**不会**因为
+/// 加了一个没人用的变体而改变，但本批同时给
+/// `mods/lostland/dialogues.json5` 的管理者「我想在这里落脚」那一行挂上
+/// 了 `outcomes: [{ kind: "join-settlement" }]`，那条选项的字段流真的
+/// 变长了（`0` → `1` 条后果 + 一个判别值）。**两件事都要求递增**
+/// （ADR 0027）：前者是算法变了、后者是内容变了，算法版本管前者。
+///
+/// 守门方式同前几批：本段文字 + 本模块单元测试
+/// `后果种类不同的两个对话节点摘要不同`。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 31;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1680,6 +1698,11 @@ fn write_dialogue_outcome(hasher: &mut StateHasher, outcome: &DialogueOutcome) {
             hasher.write_u64(0);
             hasher.write_namespaced_id(flag);
         }
+        // 判别值 `1`：**往后接，不挪 `SetFlag` 的 `0`**。这一支不带任何
+        // 参数（「加入哪座据点」由说话人的
+        // `ll_world::entity::Agent::home` 回答，内容文件里写不出
+        // `WorldId`），因此只写判别值——判别值本身就是全部信息。
+        DialogueOutcome::JoinSettlement => hasher.write_u64(1),
     }
 }
 
@@ -4721,6 +4744,61 @@ mod tests {
                 assert_ne!(
                     digests[left], digests[right],
                     "后果 {left} 与 {right} 的摘要撞了"
+                );
+            }
+        }
+    }
+
+    /// **后果的种类**不同也必须算出不同的摘要（版本 31 守门）。
+    ///
+    /// 上一条比的是「同一种后果、参数不同」，本条比的是「不同种」——
+    /// 判别值撞车的后果是「把一条『加入据点』悄悄换成一条『设标志』而
+    /// 内容哈希毫无反应」。
+    ///
+    /// 反例验证（ADR 0022）：把 [`write_dialogue_outcome`] 里
+    /// `JoinSettlement` 那一支的 `write_u64(1)` 改成 `write_u64(0)`
+    /// （与 `SetFlag` 撞），本条当场红——空后果与它仍然不同，红的是
+    /// 「设标志」与「加入据点」那一对。
+    #[test]
+    fn 后果种类不同的两个对话节点摘要不同() {
+        // Arrange
+        let mut registry = Registry::new();
+        let node = registry.intern(NamespacedId::parse("test:root").expect("合法标识符"));
+        let digest = |outcomes: Vec<DialogueOutcome>| -> u64 {
+            let mut table = DialogueNodeTable::new();
+            table
+                .define(
+                    node,
+                    crate::dialogue::DialogueNodeAttrs {
+                        text_key: NamespacedId::parse("test:dialogue.root").expect("合法标识符"),
+                        options: vec![crate::dialogue::DialogueOption {
+                            text_key: NamespacedId::parse("test:dialogue.go").expect("合法标识符"),
+                            conditions: Vec::new(),
+                            next: DialogueNext::End,
+                            outcomes,
+                        }],
+                    },
+                )
+                .expect("声明自洽");
+            let mut hasher = StateHasher::new();
+            write_dialogue_node_fields(&mut hasher, &table, node, &registry);
+            hasher.finish()
+        };
+
+        // Act
+        let flag = NamespacedId::parse("test:flag.a").expect("合法标识符");
+        let digests = [
+            digest(Vec::new()),
+            digest(vec![DialogueOutcome::SetFlag(flag)]),
+            digest(vec![DialogueOutcome::JoinSettlement]),
+        ];
+
+        // Assert
+        for left in 0..digests.len() {
+            for right in (left + 1)..digests.len() {
+                assert_ne!(
+                    digests[left], digests[right],
+                    "后果种类 {left} 与 {right} 的摘要撞了"
                 );
             }
         }

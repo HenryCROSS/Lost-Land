@@ -182,6 +182,7 @@ pub fn update_dialogue(
     rows: &[DialogueRow],
     nodes: &DialogueNodeTable,
     actor: EntityId,
+    speaker: EntityId,
     input: &InputState,
     pointer: RowPointer,
 ) -> DialogueUpdate {
@@ -221,6 +222,7 @@ pub fn update_dialogue(
     // **纯导航选项不提交任何意图**（规格 7.2）。
     let submit = (!option.outcomes.is_empty()).then_some(Intent::DialogueChoose {
         actor,
+        speaker,
         node,
         option: row.option,
     });
@@ -238,6 +240,7 @@ pub fn update_dialogue(
             DialogueUpdate {
                 outcome: ScreenOutcome::Idle,
                 next: Some(ScreenState::Dialogue {
+                    speaker,
                     node: target,
                     cursor: 0,
                 }),

@@ -765,7 +765,8 @@ impl Demo {
         // 这一帧要不要开一块会话屏（`None` = 不开）。**先记下来，等
         // `session` 的可变借用结束之后再开**：开屏要 `&mut self.modal`
         // 与 `&mut InputState`，而这一段全程持着 `&mut self.session`。
-        let mut open_dialogue: Option<ll_core::ident::ContentIndex> = None;
+        let mut open_dialogue: Option<(ll_world::entity::EntityId, ll_core::ident::ContentIndex)> =
+            None;
         let command = self.modal.with_player_menu(input, |menu, input| {
             player_command(
                 menu,
@@ -810,8 +811,11 @@ impl Demo {
             // （规格七节 7.1：会话内的位置是 UI 状态）。起始节点由这段
             // 会话的 `root` 查出来——查不到（内容被换掉）就什么都不做，
             // 与本模块其余降级路径一致。
-            PlayerCommand::OpenDialogue { dialogue } => {
-                open_dialogue = content.dialogue_table.get(dialogue).map(|view| view.root);
+            PlayerCommand::OpenDialogue { speaker, dialogue } => {
+                open_dialogue = content
+                    .dialogue_table
+                    .get(dialogue)
+                    .map(|view| (speaker, view.root));
             }
         }
 
@@ -824,9 +828,15 @@ impl Demo {
         // `set_screen` 同时把输入上下文切到 `InputContext::Menu` 并把
         // 这一刻按住的键视为全部松开（`crate::modal::Modal::set_screen`），
         // 玩家因此不会「按着交互键开了会话屏、松手时又触发一次确认」。
-        if let Some(node) = open_dialogue {
-            self.modal
-                .set_screen(Some(ScreenState::Dialogue { node, cursor: 0 }), input);
+        if let Some((speaker, node)) = open_dialogue {
+            self.modal.set_screen(
+                Some(ScreenState::Dialogue {
+                    speaker,
+                    node,
+                    cursor: 0,
+                }),
+                input,
+            );
             self.screen_notice = None;
         }
     }

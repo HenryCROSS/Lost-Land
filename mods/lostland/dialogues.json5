@@ -21,10 +21,13 @@
 // 在这里写 `outcomes:` 会被 `deny_unknown_fields` 当场拒掉。」
 //
 // 〔2026-08-31，批次 21（对话系统的批次 2）〕`outcomes` 已加，**但只实现
-// `set-flag` 一种**（全文件仅一处，在卫兵那段的「最近听到什么风声没有？」
-// 上）。写 `join-settlement`/`complete-quest`/`give-item`/`open-trade` 会
-// 报「尚未实现」而不是静默接受——真正的加入/接任务/交易仍是批次 3/4/5。
-// 因此下面这些「我想加入」「有活干吗」的选项**今天仍然只换一个节点**。
+// `set-flag` 一种**（在卫兵那段的「最近听到什么风声没有？」上）。
+//
+// 〔2026-08-31，批次 26（对话系统的批次 3）〕`join-settlement` 也实现了，
+// 挂在管理者那段的「我想在这里落脚」上——**那是整个对话系统第一条真的
+// 改变归属的边**。写 `complete-quest`/`give-item`/`open-trade` 仍会报
+// 「尚未实现」而不是静默接受（批次 4/5）。因此下面「有活干吗」这类选项
+// 今天仍然只换一个节点。
 //
 // ── 台词为什么不提 NPC 的名字 ───────────────────────────────────
 //
@@ -60,19 +63,35 @@
   nodes: [
     // ── 管理者 ────────────────────────────────────────────────
     //
-    // 开场白带五条分支选项，每条各带自己的条件。**注意 `affiliated` 与
-    // `standing-at-least` 这两条今天求值恒为假**：玩家的 `affiliations`
-    // 仍然写死空列表（`ll_game::world::build_player_agent`），批次 3 的
-    // 「加入据点」才写下第一条。它们**能被求值**、只是结果是假——这与
-    // 「求值不出来」是两回事。
+    // 开场白带五条分支选项，每条各带自己的条件。
+    //
+    // ~~**注意 `affiliated` 与 `standing-at-least` 这两条今天求值恒为
+    // 假**：玩家的 `affiliations` 仍然写死空列表。~~
+    // 〔2026-08-31，批次 26〕**那句话就此作废**：下面第一条选项的
+    // `join-settlement` 后果会给玩家挂上一条 `Faction` 归属
+    // （`standing` = 250，`ll_sim::dialogue::JOIN_SETTLEMENT_STANDING`），
+    // 于是「我该做些什么？」（`affiliated`）与 `steward_duties` 里那条
+    // 「今年的税」（`standing-at-least: 250`）**加入之后真的会出现**。
+    // 端到端证据在 `crates/ll-game/tests/dialogue_session.rs`。
     {
       id: "lostland:steward_root",
       text_key: "lostland:dialogue.steward.root",
       options: [
         {
+          // **整个对话系统里第一条真的改变归属的边**（批次 26）。
+          // `join-settlement` 不带参数：加入哪座据点由**说话人**回答
+          // （他的 `Agent.home`），内容文件里写不出 `WorldId`。
+          //
+          // 结算之后 `not-affiliated` 转假、这一行消失，下面那条
+          // `affiliated` 的「我该做些什么？」出现——批次 1 写下这两条
+          // 谓词时它们**恒为假**，这条 `outcomes` 就是让它们第一次有
+          // 非假读数的那个写入端。
           text_key: "lostland:dialogue.steward.ask_join",
           conditions: [
             { kind: "not-affiliated", affiliation: "faction" },
+          ],
+          outcomes: [
+            { kind: "join-settlement" },
           ],
           next: "lostland:steward_join",
         },
@@ -132,7 +151,12 @@
         {
           // 声望阈值取 250：所有者裁定「加入据点给 +250，满值 1000」
           // （`knowledge/handoff/2026-08-28-session-handoff.md` 第〇之二
-          // 节第 5 条）。**常量本身属批次 3**，这里先把数值用起来。
+          // 节第 5 条）。〔批次 26〕常量已经落地
+          // （`ll_sim::dialogue::JOIN_SETTLEMENT_STANDING` 与
+          // `ll_world::entity::Affiliation::STANDING_FULL`），但**这里
+          // 刻意仍然写字面量 250**：内容里的阈值是内容作者的数值决定，
+          // 让它去引用引擎常量等于把那个决定权拿走。两者相等是这一批
+          // 内容的选择，由端到端测试钉住，不是靠数字长得一样。
           text_key: "lostland:dialogue.steward.ask_tax",
           conditions: [
             { kind: "standing-at-least", affiliation: "faction", value: 250 },

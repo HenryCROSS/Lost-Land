@@ -129,19 +129,23 @@ pub struct RawDialogueOption {
 /// 一组可选参数，`resolve` 里逐 `kind` 校验「该有的必须有、不该有的必须
 /// 没有」。
 ///
-/// # 未实现的四种为什么报错而不是静默接受
+/// # 未实现的三种为什么报错而不是静默接受
 ///
-/// `join-settlement`（批次 3）/`complete-quest`/`give-item`（批次 4）/
-/// `open-trade`（批次 5）各自缺着自己的前置。若把它们解析成一条「什么都
-/// 不做」的后果，内容作者写下 `complete-quest` 之后会以为任务真的完成了，
-/// 而实际什么都没发生——**静默无效比当场报错贵得多**，这与
-/// [`RawDialogueCondition`] 拒绝多余参数是同一条纪律。
+/// `complete-quest`/`give-item`（批次 4）/`open-trade`（批次 5）各自缺着
+/// 自己的前置。若把它们解析成一条「什么都不做」的后果，内容作者写下
+/// `complete-quest` 之后会以为任务真的完成了，而实际什么都没发生——
+/// **静默无效比当场报错贵得多**，这与 [`RawDialogueCondition`] 拒绝多余
+/// 参数是同一条纪律。
+///
+/// 〔2026-08-31，批次 26〕`join-settlement` **已从那份清单里挪出来**：
+/// 它的前置（`ll_world::entity::Agent::home` 与势力表）都齐了，见
+/// [`RawDialogueOutcome::resolve`]。
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct RawDialogueOutcome {
-    /// 目前只认 `set-flag`，见本类型文档。
+    /// 认 `set-flag` 与 `join-settlement`，见本类型文档。
     pub kind: String,
-    /// 对话标志标识符（`set-flag` 必填）。
+    /// 对话标志标识符（`set-flag` 必填；其余 kind **必须没有**）。
     #[serde(default)]
     pub flag: Option<String>,
 }
@@ -151,7 +155,9 @@ impl RawDialogueOutcome {
     ///
     /// 不收 `Registry`：本批唯一的后果携带的是一条**没有内容表**的标志
     /// 标识符（与 `flag-set`/`flag-not-set` 两条条件逐字相同），只
-    /// `parse_id` 不 intern。批次 3–5 的后果要查表时再把注册表加进来。
+    /// `parse_id` 不 intern。〔2026-08-31，批次 26〕新加的
+    /// `join-settlement` **一个参数都不带**，同样不需要注册表；批次 4/5
+    /// 的 `complete-quest`/`give-item` 要查表时再把它加进来。
     fn resolve(&self) -> Result<DialogueOutcome, String> {
         match self.kind.as_str() {
             "set-flag" => {
@@ -160,13 +166,33 @@ impl RawDialogueOutcome {
                 })?;
                 Ok(DialogueOutcome::SetFlag(parse_id(raw, "对话标志标识符")?))
             }
-            "join-settlement" | "complete-quest" | "give-item" | "open-trade" => Err(format!(
-                "对话后果 kind {:?} 尚未实现（join-settlement 属批次 3，\
-                 complete-quest / give-item 属批次 4，open-trade 属批次 5，\
+            // 「加入说话人所属据点的势力」——**不带任何参数**：加入哪座
+            // 由说话人的 `ll_world::entity::Agent::home` 回答，而
+            // `ll_core::ident::WorldId` 是世界生成期分配的号，内容文件里
+            // 根本写不出来（见 [`DialogueOutcome::JoinSettlement`] 文档）。
+            //
+            // 「不该有的必须没有」这一半照样不能省，理由同
+            // [`RawDialogueCondition`]：`{ kind: "join-settlement",
+            // flag: "…" }` 若被静默接受，作者会以为那个 `flag` 起了作用。
+            "join-settlement" => {
+                if self.flag.is_some() {
+                    return Err(format!(
+                        "对话后果 kind {:?} 不接受字段 \"flag\"（加入哪座据点由说话人回答，\
+                         不由内容声明，见 knowledge/design/dialogue-system.md 五节 5.1）",
+                        self.kind
+                    ));
+                }
+                Ok(DialogueOutcome::JoinSettlement)
+            }
+            "complete-quest" | "give-item" | "open-trade" => Err(format!(
+                "对话后果 kind {:?} 尚未实现（complete-quest / give-item 属批次 4，\
+                 open-trade 属批次 5，\
                  见 knowledge/design/dialogue-system.md 八节的分批表）",
                 self.kind
             )),
-            other => Err(format!("未知的对话后果 kind {other:?}（只认 set-flag）")),
+            other => Err(format!(
+                "未知的对话后果 kind {other:?}（只认 set-flag / join-settlement）"
+            )),
         }
     }
 }
@@ -754,6 +780,56 @@ mod tests {
     }
 
     #[test]
+    fn join_settlement后果解析成不带参数的变体() {
+        // 加入哪座据点由**说话人**回答（他的 `Agent::home`），内容文件
+        // 里写不出 `WorldId`——因此这条后果一个参数都没有，见
+        // `DialogueOutcome::JoinSettlement` 文档。
+        //
+        // 反例验证（ADR 0022）：把 `resolve` 里 `"join-settlement"` 那一支
+        // 改回并进「尚未实现」那一支，本条当场红。
+        // Arrange & Act
+        let (_registry, _dialogues, nodes, result) = 解析(
+            r#"{
+              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                         options: [ { text_key: "lostland:dialogue.x", next: "end",
+                                      outcomes: [ { kind: "join-settlement" } ] } ] } ],
+            }"#,
+        );
+
+        // Assert
+        assert_eq!(result, Ok(()));
+        let index = nodes.defined_indices()[0];
+        let view = nodes.get(index).expect("刚定义过");
+        assert_eq!(
+            view.options[0].outcomes,
+            vec![DialogueOutcome::JoinSettlement]
+        );
+    }
+
+    #[test]
+    fn join_settlement带多余的flag参数报错() {
+        // 「不该有的必须没有」——静默接受会让作者以为那个 `flag` 起了
+        // 作用，与 `RawDialogueCondition` 拒绝多余参数同一条纪律。
+        // Arrange & Act
+        let (_registry, _dialogues, _nodes, result) = 解析(
+            r#"{
+              nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                         options: [ { text_key: "lostland:dialogue.x", next: "end",
+                                      outcomes: [ { kind: "join-settlement",
+                                                    flag: "lostland:dialogue_flag.x" } ] } ] } ],
+            }"#,
+        );
+
+        // Assert
+        let err = result.expect_err("多余参数必须报错");
+        assert!(
+            err.contains("join-settlement"),
+            "错误信息要点名是哪一种：{err}"
+        );
+        assert!(err.contains("flag"), "错误信息要点名是哪个参数：{err}");
+    }
+
+    #[test]
     fn 不写outcomes的选项是纯导航选项() {
         // 老 mod 不写这个字段照样装得进来（`#[serde(default)]`），且解析
         // 出来是空数组而不是「一条什么都不做的后果」。
@@ -776,13 +852,11 @@ mod tests {
     }
 
     #[test]
-    fn 尚未实现的四种后果报明确错误而不是静默接受() {
-        for kind in [
-            "join-settlement",
-            "complete-quest",
-            "give-item",
-            "open-trade",
-        ] {
+    fn 尚未实现的三种后果报明确错误而不是静默接受() {
+        // 〔2026-08-31，批次 26〕`join-settlement` 已经实现，从这份清单里
+        // 挪走了——它现在由 `join_settlement后果解析成不带参数的变体`
+        // 与 `join_settlement带多余的flag参数报错` 两条守着。
+        for kind in ["complete-quest", "give-item", "open-trade"] {
             // Arrange & Act
             let source = format!(
                 r#"{{

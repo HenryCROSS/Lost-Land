@@ -453,7 +453,7 @@ dialogue-common-back = (there was something else)
 
 dialogue-steward-root = The steward looks up from the ledger. "Another outsider. Say your piece."
 dialogue-steward-ask_join = I would like to settle here.
-dialogue-steward-join = "Settling is easy. Belonging is not." He sets down the pen. "Do something worth telling around here first, then come talk to me."
+dialogue-steward-join = He sets down the pen and adds a line to the roll. "Written in. What happens here is your business now too."
 dialogue-steward-ask_duties = What is expected of me?
 dialogue-steward-duties = "Hold your stretch of wall, pay your dues on time, and draw no blade in the market." He counts them off. "That is all of it."
 dialogue-steward-ask_tax = Could this year's dues wait a few days?

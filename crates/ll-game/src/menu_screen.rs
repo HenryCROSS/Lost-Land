@@ -52,6 +52,7 @@ use ll_platform::keybind::{InputContext, KeyBinding, KeyBindings, KeyCode, Modif
 use ll_ui::screen::ScreenData;
 use ll_ui::widget::focus::focused_widget;
 use ll_ui::widget::state::{WidgetId, WidgetStateTable};
+use ll_world::entity::EntityId;
 
 use crate::spawn_pick::SpawnOrigin;
 
@@ -127,6 +128,12 @@ pub enum ScreenState {
     /// 会话位置（停在哪个节点、光标停在第几行）**是 UI 状态**，不进
     /// `WorldState`、不进存档、不进世界哈希（规格七节 7.1）。
     Dialogue {
+        /// 跟谁说的这场话——一路带到
+        /// `ll_sim::intent::Intent::DialogueChoose`，`join-settlement`
+        /// 那一支要读他的 `ll_world::entity::Agent::home`
+        /// （批次 21 第 1 条临时裁定的反转，理由见
+        /// `crate::player_action::PlayerCommand::OpenDialogue` 文档）。
+        speaker: EntityId,
         /// 现在停在哪个对话节点上。
         node: ContentIndex,
         /// 光标落在**过滤后**的第几行——注意不是选项的原始下标，
