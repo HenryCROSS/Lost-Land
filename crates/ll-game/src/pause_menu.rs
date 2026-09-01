@@ -22,6 +22,7 @@ use ll_ui::widget::state::{WidgetId, WidgetStateTable};
 use crate::menu_screen::{
     ScreenOutcome, ScreenState, SettingsOrigin, apply_row_pointer, focus_index,
 };
+use crate::nav_row::NavRow;
 use crate::pointer::RowPointer;
 
 /// 暂停菜单的一行是什么。**每帧现算**（见 [`menu_rows`]），不缓存。
@@ -43,6 +44,21 @@ pub enum MenuRow {
     BackToTitle,
     /// 退出整个进程。
     Quit,
+}
+
+impl crate::nav_row::NavRow for MenuRow {
+    /// 「继续」是**关闭**——它把整条模态栈弹空回到世界（`ScreenOutcome::Close`），
+    /// 不是退一层。见 `crate::nav_row` 模块文档。
+    ///
+    /// 「返回主菜单」刻意**不是**导航角色：它不退层，它先存一次档再
+    /// 把玩家送到首页，是一次真正的流程动作（`ScreenOutcome::BackToTitle`）。
+    /// 「退出」同理，它退的是进程。
+    fn nav_role(self) -> Option<crate::nav_row::NavRole> {
+        match self {
+            MenuRow::Continue => Some(crate::nav_row::NavRole::Close),
+            MenuRow::Save | MenuRow::Settings | MenuRow::BackToTitle | MenuRow::Quit => None,
+        }
+    }
 }
 
 impl MenuRow {
@@ -128,8 +144,19 @@ pub fn update_menu(
         // 不猜一个默认项。
         return (ScreenOutcome::Idle, None);
     };
+    // 「这一行是不是关闭」问的是行自己声明的导航角色（规格 N3），
+    // 不是对 `MenuRow::Continue` 直接 `match`——判据与行为因此共用同一
+    // 份声明，角色标错的那一刻菜单的行为当场就变了，见
+    // `crate::nav_row` 模块文档。
+    if row.nav_role() == Some(crate::nav_row::NavRole::Close) {
+        return (ScreenOutcome::Close, None);
+    }
     match row {
-        MenuRow::Continue => (ScreenOutcome::Close, None),
+        // 「继续」在上面那一句就已经返回了（它的角色是关闭）。走到这里
+        // 只可能是角色声明被改坏了——**退回「什么都不做」，不猜一个动作**，
+        // 与本函数上面「还没选中任何一项时不猜一个默认项」同一条纪律。
+        // 这也让那条声明真正载重：标错角色的那一刻「继续」当场关不掉菜单。
+        MenuRow::Continue => (ScreenOutcome::Idle, None),
         MenuRow::Save => (ScreenOutcome::SaveNow, None),
         MenuRow::Settings => (
             ScreenOutcome::Idle,

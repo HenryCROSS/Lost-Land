@@ -255,6 +255,22 @@ pub enum SettingsRow {
     Back,
 }
 
+impl crate::nav_row::NavRow for SettingsRow {
+    /// 「返回」是**返回**——退回 `origin` 那一层（首页或游戏内菜单），
+    /// 不是关到底。见 `crate::nav_row` 模块文档。
+    fn nav_role(self) -> Option<crate::nav_row::NavRole> {
+        match self {
+            SettingsRow::Back => Some(crate::nav_row::NavRole::Back),
+            SettingsRow::Language
+            | SettingsRow::Vsync
+            | SettingsRow::ScaleFilter
+            | SettingsRow::KeybindsHeader
+            | SettingsRow::Keybind(_)
+            | SettingsRow::Save => None,
+        }
+    }
+}
+
 /// 设置界面这一帧的全部行，顺序固定。
 ///
 /// 键位那一段直接遍历 [`GameKey::all()`]——**不手抄一张平行清单**：

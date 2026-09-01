@@ -144,6 +144,20 @@ pub enum CharacterRow {
     Back,
 }
 
+impl crate::nav_row::NavRow for CharacterRow {
+    /// 「返回」是**返回**——退回首页那一层。「下一步」不是导航角色：
+    /// 它往流程的**下一**层走，不是往回。见 `crate::nav_row` 模块文档。
+    fn nav_role(self) -> Option<crate::nav_row::NavRole> {
+        match self {
+            CharacterRow::Back => Some(crate::nav_row::NavRole::Back),
+            CharacterRow::Race
+            | CharacterRow::Gender
+            | CharacterRow::Profession
+            | CharacterRow::Next => None,
+        }
+    }
+}
+
 /// 角色创建屏这一帧的全部行，顺序固定。
 ///
 /// 与 `crate::menu_screen::settings_rows` 同一条纪律：**行列表每帧现算，

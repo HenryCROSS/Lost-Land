@@ -82,6 +82,24 @@ pub enum WorldSetupRow {
     Back,
 }
 
+impl crate::nav_row::NavRow for WorldSetupRow {
+    /// 「返回」是**返回**——退回角色创建屏那一层。「生成世界」不是导航
+    /// 角色：它往流程的下一层走。见 `crate::nav_row` 模块文档。
+    fn nav_role(self) -> Option<crate::nav_row::NavRole> {
+        match self {
+            WorldSetupRow::Back => Some(crate::nav_row::NavRole::Back),
+            WorldSetupRow::Preset
+            | WorldSetupRow::SeaLevel
+            | WorldSetupRow::MountainLevel
+            | WorldSetupRow::Octaves
+            | WorldSetupRow::ContinentShrink
+            | WorldSetupRow::ClimateBandWidth
+            | WorldSetupRow::Mode
+            | WorldSetupRow::Generate => None,
+        }
+    }
+}
+
 /// 世界配置屏这一帧的全部行，顺序固定。
 pub fn world_setup_rows() -> [WorldSetupRow; 9] {
     [

@@ -26,6 +26,7 @@ pub mod interact_list;
 pub mod layout;
 pub mod menu_screen;
 pub mod modal;
+pub mod nav_row;
 pub mod pause_menu;
 pub mod player_action;
 pub mod pointer;
