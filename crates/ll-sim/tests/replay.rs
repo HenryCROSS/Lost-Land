@@ -1001,6 +1001,24 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 旧值（势力播种批次之前）：4_180_595_409_733_934_027
 const EXPECTED_REPLAY_DIGEST: u64 = 11_222_878_776_777_704_235;
 
+// # 【2026-08-31 补记】本条够不到的那一块，现在有第三条基准接着
+//
+// 本常量的文档注释里记着两条反例：据点（`stamp_settlement`）与家具
+// （`write_item_stack`）改坏了本条都不红——本条的 `setup` 只手写两个
+// 实体，`inventory`/`equipment`/`affiliations` 全空、`ground_items`
+// 从未被写过、一次据点铺设都不发生。
+//
+// 批次 22 实测复核了这两条（结论一致），并新增了**第三条**黄金基准来
+// 接住这一块：`crates/ll-game/tests/populated_determinism.rs` 的
+// `EXPECTED_POPULATED_WORLD_DIGEST`，世界全部走生产路径构造。同一批
+// 实测还确认了本条**确实**覆盖 `Agent` 的字段（往 `WorldState::hash`
+// 的 `for agent in ..` 循环体开头灌一个常量，本条当场红，而
+// `EXPECTED_WORLD_DIGEST` 仍绿）——本条守的「事件重放」那一段仍然
+// 有效，新的那条不是它的替代品。
+//
+// 表在 `docs/superpowers/plans/2026-08-31-batch22-populated-baseline.md`
+// 第二节与第四节。
+
 #[test]
 fn 固定种子与固定意图流的世界哈希跨平台稳定() {
     // Arrange
