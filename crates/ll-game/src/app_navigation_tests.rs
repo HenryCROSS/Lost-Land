@@ -492,3 +492,93 @@ fn 暂停菜单一开就预选第一项按确认直接回到世界() {
     assert_eq!(demo.modal.screen(), None, "第一项「继续」应当已经预先选中");
     assert!(demo.modal.is_empty());
 }
+
+// ───────────────────── 批次 23：N10 换屏预选 / N14 换屏清提示 ─────────
+//
+// 两条落在**同一个换屏漏斗**里（`app::screen_flow::update_screen` 末尾），
+// 判据也是同一条「屏别真的变了」。放在一起断言，是因为把它们拆到两处
+// 会让下一个改那段代码的人只看到其中一半。
+
+#[test]
+fn 死亡回到首页之后第一项仍然是预选中的() {
+    // 规格 N10 今天**真的会退化**的那条路径：`handle_player_death` 把
+    // `screen_focus` 清空并进角色创建屏，玩家在角色创建屏按取消回首页
+    // 时，那张表还是空的 ⇒ `focus_index` 返回 `usize::MAX` ⇒ 按确认
+    // 什么都不发生。批次 15 给首页预选的那三个调用点
+    //（`Demo::at_title` / `open_menu` / `back_to_title`）都不在这条路上。
+    //
+    // 反例验证（已实跑）：把换屏漏斗里那句
+    // `self.screen_focus = self.preselected_focus_for(next)` 删掉，本条
+    // 变红——红在最后那句断言，屏仍停在 `Title`，因为焦点表是空的。
+    // Arrange：玩家死了，回到角色创建屏，焦点表被清空。
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    let mut input = InputState::new();
+    let player = demo.test_world().player;
+    demo.test_world_mut().world.actors.despawn(player);
+    demo.handle_player_death(&mut input);
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::CharacterCreation { cursor: 0 }),
+        "Arrange：死亡之后停在角色创建屏"
+    );
+    assert_eq!(
+        crate::menu_screen::focus_index(&demo.screen_focus, &crate::title_screen::TITLE_ITEM_IDS),
+        usize::MAX,
+        "Arrange：这一刻焦点表确实是空的——被断言的那个退化状态真的存在"
+    );
+
+    // Act：角色创建屏按取消回首页，然后**不按任何方向键**直接确认。
+    走一帧(&mut demo, 0, &[GameKey::Cancel]);
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::Title),
+        "Arrange：取消键把玩家送回首页"
+    );
+    走一帧(&mut demo, 1, &[GameKey::Confirm]);
+
+    // Assert
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::CharacterCreation { cursor: 0 }),
+        "首页第一项应当已经预先选中——这正是 N10 那一条"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 换屏时清掉上一块屏留下的提示语() {
+    // 规格 N14 的判据原文：首页按「读取存档」得到「没有存档」提示，
+    // 再进设置屏，`screen_notice` 是 `None`。
+    //
+    // 反例验证（已实跑）：把换屏漏斗里那句 `self.screen_notice = None`
+    // 删掉，本条变红——红在最后那句，`Some(NoSave)` 跟着进了设置屏。
+    // Arrange：一份存档都没有的首页。
+    let mut demo = test_demo_at_title();
+    assert!(demo.save_slots.is_empty(), "Arrange：磁盘上一份存档都没有");
+    走一帧(&mut demo, 0, &[GameKey::Down]);
+    走一帧(&mut demo, 1, &[GameKey::Confirm]);
+    assert_eq!(
+        demo.screen_notice,
+        Some(ScreenNotice::NoSave),
+        "Arrange：这句提示真的产生了——被清空的那个对象存在"
+    );
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::Title),
+        "Arrange：没有存档时留在首页"
+    );
+
+    // Act：光标再往下一行进设置屏。
+    走一帧(&mut demo, 2, &[GameKey::Down]);
+    走一帧(&mut demo, 3, &[GameKey::Confirm]);
+
+    // Assert
+    assert!(
+        matches!(demo.modal.screen(), Some(ScreenState::Settings { .. })),
+        "Arrange 之后确实换到了设置屏"
+    );
+    assert_eq!(demo.screen_notice, None, "上一块屏留下的提示不该跟着进新屏");
+}
