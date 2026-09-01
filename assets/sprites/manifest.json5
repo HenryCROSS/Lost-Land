@@ -481,6 +481,66 @@
       }
     },
     {
+      "name": "camelfolk",
+      "file": "camelfolk.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk",
+      "file": "catfolk.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc",
+      "file": "orc.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk",
+      "file": "lizardfolk.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk",
+      "file": "merfolk.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
       "name": "warrior",
       "file": "warrior.png",
       "pivot": {
@@ -1371,6 +1431,786 @@
     {
       "name": "goblin_lostland_mason",
       "file": "goblin_lostland_mason.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_warrior",
+      "file": "camelfolk_lostland_warrior.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_mage",
+      "file": "camelfolk_lostland_mage.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_ranger",
+      "file": "camelfolk_lostland_ranger.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_guard",
+      "file": "camelfolk_lostland_guard.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_steward",
+      "file": "camelfolk_lostland_steward.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_militia",
+      "file": "camelfolk_lostland_militia.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_farmer",
+      "file": "camelfolk_lostland_farmer.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_hunter",
+      "file": "camelfolk_lostland_hunter.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_butcher",
+      "file": "camelfolk_lostland_butcher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_blacksmith",
+      "file": "camelfolk_lostland_blacksmith.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_fisher",
+      "file": "camelfolk_lostland_fisher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_shepherd",
+      "file": "camelfolk_lostland_shepherd.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "camelfolk_lostland_mason",
+      "file": "camelfolk_lostland_mason.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_warrior",
+      "file": "catfolk_lostland_warrior.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_mage",
+      "file": "catfolk_lostland_mage.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_ranger",
+      "file": "catfolk_lostland_ranger.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_guard",
+      "file": "catfolk_lostland_guard.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_steward",
+      "file": "catfolk_lostland_steward.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_militia",
+      "file": "catfolk_lostland_militia.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_farmer",
+      "file": "catfolk_lostland_farmer.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_hunter",
+      "file": "catfolk_lostland_hunter.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_butcher",
+      "file": "catfolk_lostland_butcher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_blacksmith",
+      "file": "catfolk_lostland_blacksmith.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_fisher",
+      "file": "catfolk_lostland_fisher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_shepherd",
+      "file": "catfolk_lostland_shepherd.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "catfolk_lostland_mason",
+      "file": "catfolk_lostland_mason.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_warrior",
+      "file": "orc_lostland_warrior.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_mage",
+      "file": "orc_lostland_mage.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_ranger",
+      "file": "orc_lostland_ranger.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_guard",
+      "file": "orc_lostland_guard.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_steward",
+      "file": "orc_lostland_steward.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_militia",
+      "file": "orc_lostland_militia.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_farmer",
+      "file": "orc_lostland_farmer.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_hunter",
+      "file": "orc_lostland_hunter.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_butcher",
+      "file": "orc_lostland_butcher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_blacksmith",
+      "file": "orc_lostland_blacksmith.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_fisher",
+      "file": "orc_lostland_fisher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_shepherd",
+      "file": "orc_lostland_shepherd.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "orc_lostland_mason",
+      "file": "orc_lostland_mason.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_warrior",
+      "file": "lizardfolk_lostland_warrior.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_mage",
+      "file": "lizardfolk_lostland_mage.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_ranger",
+      "file": "lizardfolk_lostland_ranger.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_guard",
+      "file": "lizardfolk_lostland_guard.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_steward",
+      "file": "lizardfolk_lostland_steward.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_militia",
+      "file": "lizardfolk_lostland_militia.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_farmer",
+      "file": "lizardfolk_lostland_farmer.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_hunter",
+      "file": "lizardfolk_lostland_hunter.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_butcher",
+      "file": "lizardfolk_lostland_butcher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_blacksmith",
+      "file": "lizardfolk_lostland_blacksmith.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_fisher",
+      "file": "lizardfolk_lostland_fisher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_shepherd",
+      "file": "lizardfolk_lostland_shepherd.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "lizardfolk_lostland_mason",
+      "file": "lizardfolk_lostland_mason.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_warrior",
+      "file": "merfolk_lostland_warrior.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_mage",
+      "file": "merfolk_lostland_mage.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_ranger",
+      "file": "merfolk_lostland_ranger.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_guard",
+      "file": "merfolk_lostland_guard.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_steward",
+      "file": "merfolk_lostland_steward.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_militia",
+      "file": "merfolk_lostland_militia.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_farmer",
+      "file": "merfolk_lostland_farmer.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_hunter",
+      "file": "merfolk_lostland_hunter.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_butcher",
+      "file": "merfolk_lostland_butcher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_blacksmith",
+      "file": "merfolk_lostland_blacksmith.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_fisher",
+      "file": "merfolk_lostland_fisher.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_shepherd",
+      "file": "merfolk_lostland_shepherd.png",
+      "pivot": {
+        "x": 8,
+        "y": 24
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "merfolk_lostland_mason",
+      "file": "merfolk_lostland_mason.png",
       "pivot": {
         "x": 8,
         "y": 24

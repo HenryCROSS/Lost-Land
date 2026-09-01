@@ -191,7 +191,7 @@ fn 本体每个种族都有尸体且各不相同() {
             content.race_table.is_defined(index).then_some(index)
         })
         .collect();
-    assert!(races.len() >= 4, "本体至少四个种族");
+    assert!(races.len() >= 9, "本体至少九个种族");
 
     // Act
     let corpses: Vec<ContentIndex> = races

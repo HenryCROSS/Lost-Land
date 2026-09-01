@@ -534,3 +534,16 @@ screen-dialogue-hint = 上下选择 · 回车确认 · Esc 结束对话
 screen-dialogue-missing = （他张了张嘴，没有出声）
 hud-interact-action-talk = 交谈
 hud-interact-someone = 一个人
+
+# ── 五个新种族（批次 24）───────────────────────────────────────────
+# 五族的数值由项目所有者批准，见
+# knowledge/handoff/2026-08-28-session-handoff.md 第六节。声明在
+# mods/lostland/races.json5，追加在注册表末尾。
+# 这几条只是展示名：贴图查找用的是 id 的本地名（camelfolk / catfolk /
+# orc / lizardfolk / merfolk），永远不用译名。
+
+race-camelfolk-display_name = 骆驼人
+race-catfolk-display_name = 猫人
+race-orc-display_name = 欧克
+race-lizardfolk-display_name = 蜥蜴人
+race-merfolk-display_name = 鱼人

@@ -152,7 +152,7 @@ fn 本体物品的id清单不多不少() {
 
     // Assert：逐字列全，集合相等。多一条少一条都在这里变红。
     //
-    // **末尾那四条 `.corpse` 不在 `items.json5` 里**——它们由引擎侧的
+    // **那九条 `.corpse` 不在 `items.json5` 里**——它们由引擎侧的
     // `ll_mod::corpse_item::register_corpse_items` 在全部 mod 装载完之后
     // 按「本体一共有哪些种族」自动注册（所有者裁定「尸体也是一件可堆叠
     // 的物品才对」）。因此本条同时是一条**活的接线证据**：
@@ -161,10 +161,20 @@ fn 本体物品的id清单不多不少() {
     // 落进这份 `lostland:` 清单。
     let expected: BTreeSet<String> = [
         "lostland:amber_pendant",
+        // 九条自动派生的尸体，与 `races.json5` 的九个种族一一对应。
+        // 〔2026-08-31，批次 24〕后五条随五个新种族一起进来——**本条
+        // 当时真的红了**，报的正是「多了 camelfolk/catfolk/lizardfolk/
+        // merfolk/orc 五条 `.corpse`」，也就是上面那段注释预言的
+        // 「加一个种族的那一刻这份清单自动开始要求它的尸体」。
         "lostland:dwarf.corpse",
         "lostland:elf.corpse",
         "lostland:goblin.corpse",
         "lostland:human.corpse",
+        "lostland:camelfolk.corpse",
+        "lostland:catfolk.corpse",
+        "lostland:lizardfolk.corpse",
+        "lostland:merfolk.corpse",
+        "lostland:orc.corpse",
         "lostland:bone_needle",
         "lostland:field_cookbook",
         "lostland:forge",
@@ -205,8 +215,8 @@ fn 本体物品的id清单不多不少() {
     .map(str::to_string)
     .collect();
     assert_eq!(actual, expected);
-    // 36 条内容作者手写的 + 4 条引擎按种族自动注册的尸体。
-    assert_eq!(actual.len(), 40);
+    // 36 条内容作者手写的 + 9 条引擎按种族自动注册的尸体。
+    assert_eq!(actual.len(), 45);
 }
 
 #[test]

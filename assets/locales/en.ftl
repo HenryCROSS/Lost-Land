@@ -485,3 +485,17 @@ screen-dialogue-hint = Up/Down to choose · Enter to confirm · Esc to end
 screen-dialogue-missing = (he opens his mouth, but no sound comes)
 hud-interact-action-talk = talk
 hud-interact-someone = someone
+
+# ── Five new races (batch 24) ─────────────────────────────────────────
+# The five races' numbers were approved by the project owner; see
+# knowledge/handoff/2026-08-28-session-handoff.md section 6. Declared in
+# mods/lostland/races.json5, appended at the end of the registry.
+# These names are display names only: the sprite lookup uses the id's
+# local name (camelfolk / catfolk / orc / lizardfolk / merfolk), never
+# the translation.
+
+race-camelfolk-display_name = Camelfolk
+race-catfolk-display_name = Catfolk
+race-orc-display_name = Orc
+race-lizardfolk-display_name = Lizardfolk
+race-merfolk-display_name = Merfolk
