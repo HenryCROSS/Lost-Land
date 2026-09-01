@@ -45,7 +45,17 @@ proptest.workspace = true
 # 的存档」，两件事都必须在**真实的存档文件字节**上做，不能靠夹具伪造。
 # 版本与 `ll-content` 那份一致，避免同一个 crate 在工作区里被解析成两份。
 serde_json = "1"
-# 2026-08-29 批次 13：`image` 随三个 preview example 一并移除——它此前
+# ~~2026-08-29 批次 13：`image` 随三个 preview example 一并移除——它此前
 # 的唯一用途是把真实图集的像素拼成 `tests/visual/*.png` 那三张给人看的
 # 预览图。三张图本身保留，只是暂时没有生产者，见
-# `crates/ll-game/tests/visual/README.md`。
+# `crates/ll-game/tests/visual/README.md`。~~
+#
+# 【2026-08-31 批次 27 原地更正（纪律第 9 条）：上面那段的结论「暂时没有
+# 生产者」已经作废。】所有者批准走 ADR 0030「后果」一节列的第 2 条路——把
+# 出图逻辑搬成测试，落点 `tests/visual_baselines.rs` + `tests/visual_support/`。
+# 因此 `image` 回到 dev-dependency，用途与从前逐字相同（把真实图集的像素
+# 拼成那三张图），只是消费者从 example 变成了三条 `#[test]`，并且多了一层
+# 「与仓库里那张基准 PNG 逐像素比对」。版本与 feature 集合与 `ll-render`、
+# `tools/ll-artgen` 那两份保持一致，避免同一个 crate 在工作区里被解析成两份。
+# 更正方：`docs/superpowers/plans/2026-08-31-batch27-visual-baselines.md`。
+image = { version = "0.25", default-features = false, features = ["png"] }
