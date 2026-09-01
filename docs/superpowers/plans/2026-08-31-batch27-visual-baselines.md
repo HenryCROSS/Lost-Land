@@ -282,6 +282,15 @@ target）。`crates/ll-game/Cargo.toml` 加回 `image` dev-dependency，批次 1
 
 那一批落地时仍要做的（本批没有替它做，也做不了）：
 
+> **【2026-08-31 补记：下面四条已由批次 28 全部落地】**
+> 落点是 [`2026-08-31-batch28-terrain-art.md`](2026-08-31-batch28-terrain-art.md)
+> （四条对应它的第六节）。原文一字未改，只加这条指向。
+> **一处预期与实测不符，如实记在这里**：第 4 条说「前两张基准同批重冻」，
+> 实测**只有 `settlement_preview.png` 变了**——`surface_preview.png` 那张图
+> 的窗口内 165 格是 140 格浅水加一栋木屋，**一格草地/森林/沙地都没有**，
+> 因此本次地形变体对它零输入。理由是查实的（批次 28 落地记录里有逐格计数），
+> 不是「碰巧没变」。
+
 1. **`ll_game::layout::terrain_atlas_key` 得知道「哪一格」。** 它今天的签名只有
    `(kind, ids, registry)`，按位置哈希取图必须多一个位置（或变体号）入参。
    两条测试的调用点各改一行：`surface` 那条手上已经有 `pos`，`settlement`

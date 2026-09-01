@@ -77,7 +77,12 @@ pub(super) fn render_surface(
         let Some(kind) = world.terrain_at(pos) else {
             continue;
         };
-        let Some(name) = terrain_atlas_key(kind, &content.terrain_ids, &content.registry) else {
+        // `pos` 进来是批次 28 的地形美术变化：同一种地形按位置取多张
+        // 贴图。变体号在 `terrain_variant_at` 里现算（纯函数、不进世界
+        // 状态、不消耗随机流），`pos` 本身已经是规范化过的 `TorusPos`，
+        // 这里一行取模都不需要。
+        let Some(name) = terrain_atlas_key(kind, &content.terrain_ids, &content.registry, pos)
+        else {
             continue;
         };
         // 两步：先挑键（写去重账本，持 `&mut`），再取条目（`&self`）。

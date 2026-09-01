@@ -16,7 +16,9 @@
 //! 路径，p5 是验收 demo。守住这条一致性的是 p5 自己的
 //! `十种地形两两不共用同一个图集条目`——任何一支改回借用它立刻变红。
 
+use ll_core::hashing::StateHasher;
 use ll_core::time::Tick;
+use ll_core::torus::TorusPos;
 use ll_mod::registry::Registry;
 use ll_world::light::sight_radius_under_weather;
 use ll_world::space_profile::{SpaceProfile, effective_ambient_light, effective_weather};
@@ -26,8 +28,14 @@ use ll_world::weather::Weather;
 /// 地表视野基准半径（格），随光照缩放。
 pub const BASE_SIGHT_RADIUS: u32 = 12;
 
-/// 把地形种类映射到图集条目名——覆盖本体 `define_base` 注册的**全部
-/// 17 种**地形，一种不漏。
+/// 把地形种类映射到图集条目名——覆盖本体 `define_base` 注册的~~**全部
+/// 17 种**~~**全部 19 种**地形，一种不漏。
+///
+/// 〔2026-08-31 批次 28 原地更正（纪律第 9 条）：数字是 19 不是 17。
+/// 气候条带批次给 `BaseTerrainIds` 加了 `desert`/`tundra`，这张表当时
+/// **跟着加了两支**、句子里的数字没跟上。原文划掉保留只为追溯，表本身
+/// 一直是对的。更正方：
+/// `docs/superpowers/plans/2026-08-31-batch28-terrain-art.md` 五节第 3 条。〕
 ///
 /// 返回值带 `lostland:` 前缀：图集条目名统一用完整命名空间字符串（见
 /// `ll_mod::asset_vfs::ResolvedSprite::atlas_name` 文档），这张表本身
@@ -53,7 +61,7 @@ pub const BASE_SIGHT_RADIUS: u32 = 12;
 /// 缺失，跳过本次绘制」的 ERROR，据点/建筑/室内一格都画不出来。
 ///
 /// 守住「一种不漏」的是本文件的
-/// `全部十七种本体地形都能查到图集条目` 与
+/// `全部十九种本体地形都能查到图集条目` 与
 /// `crates/ll-game/tests/atlas_coverage.rs`：前者钉这张表返回 `Some`，
 /// 后者钉那个字符串在真实图集里查得到、且对应矩形里真的有像素。此前
 /// 只有一条覆盖 8 种自然地形的测试，缺口正落在它的盲区里。
@@ -148,15 +156,226 @@ pub fn terrain_entry_name(kind: TerrainKind, ids: &BaseTerrainIds) -> Option<&'s
 /// 与 GPU 无关的纯函数：[`Registry`] 是普通数据，不需要真实图集就能
 /// 单测覆盖「查到了哪个字符串」这层逻辑；「这个字符串在图集里查不查
 /// 得到条目」是下一步 `GpuResources::resolve_key` 的职责，不在本函数范围。
+///
+/// # `pos` 是干什么的（批次 28 加的第四个入参）
+///
+/// 同一种地形按**位置**取多张贴图——所有者报的现象是地表「看起来太
+/// 单调」，一整片草原铺同一张 16×16 图。哪一格取第几张由
+/// [`terrain_variant_at`] 现算，**是纯函数、不进世界状态、不消耗任何
+/// 随机流**，理由见那个函数的文档。
+///
+/// 每种地形有几张由 [`terrain_variant_count`] 声明；今天只有草地/森林/
+/// 沙地各有多张，其余 16 种恒 1 张——对它们而言本函数与加 `pos` 之前
+/// **逐字符相同**（变体 0 的条目名恒等于 [`terrain_entry_name`] 的返回值）。
 pub fn terrain_atlas_key(
     kind: TerrainKind,
     ids: &BaseTerrainIds,
     registry: &Registry,
+    pos: TorusPos,
 ) -> Option<String> {
+    terrain_atlas_key_for_variant(kind, ids, registry, terrain_variant_at(kind, ids, pos))
+}
+
+/// 变体贴图的条目名后缀，接在基准条目名与**从 1 开始**的变体号之间
+/// （`lostland:terrain_grass` → `lostland:terrain_grass_alt1`）。
+///
+/// 变体 0 **不带后缀**，条目名恒等于 [`terrain_entry_name`] 的返回值。
+/// 这不是省事，是两条实在的收益：既有那批地形 PNG 一个字节都不用重画；
+/// 把 [`terrain_variant_count`] 全改回 `1`，行为就**精确**回到多变体
+/// 落地之前（批次 28 计划三节「最可反转」一条）。
+const TERRAIN_VARIANT_SUFFIX: &str = "_alt";
+
+/// 某种地形有几张贴图可供按位置挑选。恒 `>= 1`。
+///
+/// # 为什么这张表在引擎侧，不在内容侧也不在资产侧
+///
+/// 三条路的完整代价对照见
+/// `docs/superpowers/plans/2026-08-31-batch28-terrain-art.md` 第三节，
+/// 这里只留结论与那两条被否掉的路各自的**致命伤**：
+///
+/// - **内容侧声明**（地形定义里加一个 `variants` 字段）：mod 作者能自己
+///   声明变体数是真收益，但今天没有任何 mod 需要它；代价是内容 schema
+///   变了 ⇒ `ll_mod::content_hash::CONTENT_HASH_ALGORITHM_VERSION` 要升
+///   ⇒ 三条黄金基准里的「有人世界」那条跟着红。**留给「mod 真的要自带
+///   多变体地形」那天再走**，那时这段文档就是落点。
+/// - **资产侧按文件名发现**（扫 `assets/sprites/` 数有几张 `_alt*.png`）：
+///   本函数是每帧上千次的纯函数，手上没有图集也没有资产 VFS；更要命的是
+///   它**把「漏了一张图」从错误变成了正常**——少一张 alt 就自动少一个
+///   变体，全绿。那正是 ADR 0022 点名的「覆盖退化」形状。
+///
+/// 因此变体数写在这里，与 [`terrain_entry_name`] 那张硬编码静态表并排、
+/// 同一个形状（一串 `if`，不经任何哈希容器，符合约束 C5）。
+///
+/// **声明侧与资产侧是两份清单，会漂。** 漂了当场红，两个方向都有锁：
+/// `crates/ll-game/tests/atlas_coverage.rs` 的
+/// `每一种本体地形的每一张变体在真实图集里都查得到条目`（声明多了、图没画）
+/// 与 `图集里不许有声明侧数不出来的变体贴图`（图画了、声明没加）。
+///
+/// # 为什么只有三种地形有变体
+///
+/// 所有者报的现象是地表「看起来太单调」，而铺得最满的就是草地与森林，
+/// 海岸沙地紧随其后。建筑地形（墙/门/窗/楼梯）刻意**不做**：它们靠
+/// 结构图案（门板、窗棂、砖缝）表达自己是什么，变体很容易跌到「看起来
+/// 是另一种地形」，需要单独论证，不在本批范围。
+///
+/// 三种地形的变体数**刻意不一样**（3/3/2），把「每种地形变体数可以不同」
+/// 这条真的走一遍，而不是留成一条没人验过的纸面能力。
+///
+/// mod 注册的地形恒返回 `1`——它们走 [`terrain_atlas_key`] 的
+/// [`Registry`] 回退路径，那条路径上「图集条目名 = 完整命名空间 ID」
+/// 是一对一的约定，没有变体这个概念。
+pub fn terrain_variant_count(kind: TerrainKind, ids: &BaseTerrainIds) -> u32 {
+    // 草地与森林写成**一支**只是因为 clippy 的 `if_same_then_else` 不接受
+    // 两支返回同一个数（本批实测撞到过）——它们的张数是**各自**定的，不是
+    // 「必须相同」。哪天草地要第 4 张，把这一支拆回两支即可。
+    if kind == ids.grass || kind == ids.forest {
+        3
+    } else if kind == ids.sand {
+        2
+    } else {
+        1
+    }
+}
+
+/// 这一格该用第几张变体贴图——**渲染期现算的纯函数**，输入只有
+/// 「哪种地形」与「哪一格」。
+///
+/// # 不进世界状态（这是本函数最要紧的一条性质）
+///
+/// 返回值**不写回任何结构体**：不进 `ll_world::state::WorldState`、不进
+/// `WorldState::hash()`、不进存档。它每帧被重新算出来、用完就扔。因此
+/// 加变体这件事结构上不可能动到三条黄金基准（世界摘要 / 回放摘要 /
+/// 有人世界摘要）——批次 28 实测确认过这一点，见其计划文档十节。
+///
+/// # 为什么不用 `DetRng`
+///
+/// `ll_core::rng::DetRng` 是**世界状态**的随机源（约束 C3：一切随机来自
+/// `hash(种子, 实体 id, 事件计数)`）。在渲染层向它取数有两处硬伤：
+///
+/// 1. 地形瓦片每帧铺满整屏，取数次数取决于**这一帧画了几格**——摄像机
+///    缩放、窗口大小、视野半径都会改变它。让这种量参与随机流，等于把
+///    确定性重放交给显示器分辨率。
+/// 2. 语义上也不对：变体号不是「世界里发生的事」，是「这一格长什么样」，
+///    它压根不该出现在事件流里。
+///
+/// 因此这里走**位置哈希**：`ll_core::hashing::StateHasher`（FNV-1a）。
+/// 选它而不是自己再写一个，是因为它的模块文档已经把这里需要的性质写死了
+/// ——「完全由整数运算构成、由规范唯一确定，因而跨平台跨版本恒定」。
+///
+/// # 三个输入各自为什么在里面
+///
+/// - **`pos.x()` / `pos.y()`**：位置本身。
+/// - **条目名**：不混它的话，`grass` 与 `forest` 在同一格会算出同一个
+///   变体号，两种地形的图案在交界处对齐，读起来又是一种规则感——正是
+///   本批要消除的那种单调。用 `write_len_prefixed_bytes` 而不是裸字节，
+///   理由是该方法自己文档里那条碰撞论证。
+///
+/// # 混入次序为什么是位置在前、名字在后
+///
+/// **这条是实测出来的，不是设计出来的。** FNV-1a 逐字节 `异或 + 乘质数`，
+/// 最后混进去的那几个字节没有足够的轮数被摊开；而 `write_i64` 写的是
+/// 小端 8 字节，世界坐标那种小整数**高 7 字节全是 0**——也就是说相邻两格
+/// 只差最低那一个字节，之后只剩 7 轮「异或 0 再乘」。
+///
+/// 后果是**最后混进去的那个维度，相邻格子会明显倾向取到同一张图**。
+/// 128×128 格实测（草地，3 张变体，理想值 33.3%）：
+///
+/// | 混入次序 | 横向相邻同变体 | 纵向相邻同变体 | 斜向相邻同变体 |
+/// |---|---|---|---|
+/// | 名字, x, y（y 在最后） | 30.2% | **47.3%** | 31.4% |
+/// | 名字, y, x（x 在最后） | **47.3%** | 30.2% | 31.4% |
+/// | **x, y, 名字（本函数）** | **33.0%** | **32.4%** | **30.5%** |
+///
+/// 47% 意味着纵向平均每两格才换一次图——画面上就是一条条竖纹，
+/// 把「太单调」换成了另一种规则感。条目名有 20 个以上字节，放在最后
+/// 恰好给位置那 16 个字节补足了混合轮数。
+///
+/// 守住这条的是本文件的 `相邻格子取到同一变体的比例接近相互独立`：
+/// 把这三行的次序换回去，它当场红。
+///
+/// # 环面：一行取模都没有
+///
+/// 入参类型是 [`TorusPos`]，它的字段私有、只能经
+/// `ll_core::torus::TorusSize::wrap` 构造，不变式是「坐标恒被规范化到
+/// `[0, width) × [0, height)`」。也就是说**绕回这件事在类型边界上就已经
+/// 做完了**：环面上同一个物理格子，无论从哪个方向走到它、坐标算出来
+/// 是 `-1` 还是 `width - 1`，`TorusPos` 都是同一个值，因此变体号必然相同。
+/// 本函数因此不需要、也不允许自己写 `%` 或 `rem_euclid`（与仓库那条
+/// 「禁止手写欧氏距离」的门禁同一条精神）。
+///
+/// # 折算为什么取高位而不是取余
+///
+/// FNV-1a 的**低位雪崩弱**：相邻格子的摘要低几位相关性明显，直接
+/// `% 3` 会在规则网格上留下肉眼可见的条纹——那是把一种单调换成另一种。
+/// 这里用乘法取高位（Lemire 折算），与 `ll_core::rng::DetRng::gen_range`
+/// 逐字同一条写法，没有理由在这里另发明一个。
+pub fn terrain_variant_at(kind: TerrainKind, ids: &BaseTerrainIds, pos: TorusPos) -> u32 {
+    let count = terrain_variant_count(kind, ids);
+    if count <= 1 {
+        return 0;
+    }
+    let Some(bare) = terrain_entry_name(kind, ids) else {
+        // mod 地形走 Registry 回退路径，那条路径上没有变体这个概念。
+        // 理论上到不了这里（`terrain_variant_count` 只对本体地形返回
+        // 大于 1 的值），写成显式的 0 而不是 `expect`：渲染层宁可退回
+        // 单张贴图，也不该因为一个美术分支把整局游戏打断。
+        return 0;
+    };
+    let mut hasher = StateHasher::new();
+    // **次序不是随手写的**：位置在前、条目名在后。理由见本函数文档
+    // 「混入次序为什么是位置在前、名字在后」一节——反过来写会在画面上
+    // 留下肉眼可见的纵向条纹，实测数字在那一节里。
+    hasher.write_i64(i64::from(pos.x()));
+    hasher.write_i64(i64::from(pos.y()));
+    hasher.write_len_prefixed_bytes(bare.as_bytes());
+    let digest = hasher.finish();
+    // Lemire 乘法折算：取高 64 位，见本函数文档「折算为什么取高位」。
+    ((u128::from(digest) * u128::from(count)) >> 64) as u32
+}
+
+/// 指定变体号时的图集条目名——**门禁按变体逐张枚举时用的那一条**，
+/// 不在渲染热路径上。
+///
+/// 渲染路径走 [`terrain_atlas_key`]（它自己按位置算变体号），一格只
+/// 分配一个 `String`。本函数刻意**不**返回 `Vec<String>`：地形瓦片是
+/// 全仓库最热的一处循环，给它一个每格都要分配一个 `Vec` 的 API，
+/// 迟早有人在渲染路径上用它。
+///
+/// `variant` 超出 [`terrain_variant_count`] 时返回 `None`——静默截断成
+/// 合法值会让「门禁多数了一张」变成「门禁重复验了同一张」，正是 ADR 0022
+/// 那种「测试全绿但保护不存在」的形状。
+pub fn terrain_atlas_key_for_variant(
+    kind: TerrainKind,
+    ids: &BaseTerrainIds,
+    registry: &Registry,
+    variant: u32,
+) -> Option<String> {
+    if variant >= terrain_variant_count(kind, ids) {
+        return None;
+    }
     if let Some(bare) = terrain_entry_name(kind, ids) {
-        return Some(bare.to_string());
+        return Some(if variant == 0 {
+            bare.to_string()
+        } else {
+            format!("{bare}{TERRAIN_VARIANT_SUFFIX}{variant}")
+        });
     }
     registry.resolve(kind.index()).map(|id| id.to_string())
+}
+
+/// 一个图集条目名是不是某种地形的**变体**（带 [`TERRAIN_VARIANT_SUFFIX`]
+/// 后缀 + 十进制变体号）。
+///
+/// 供 `crates/ll-game/tests/atlas_coverage.rs` 的反向锁使用：扫真实图集里
+/// 全部满足本判据的条目，逐个要求它出现在声明侧那份清单里。判据放在生产
+/// 代码这一侧而不是测试里另抄一份正则，理由与该文件模块文档反复写的
+/// 那条一样——**凡是把真相源之外的副本当判据，迟早分叉，而分叉时没有
+/// 任何东西会报错**。
+pub fn is_terrain_variant_entry(name: &str) -> bool {
+    let Some((_, tail)) = name.rsplit_once(TERRAIN_VARIANT_SUFFIX) else {
+        return false;
+    };
+    !tail.is_empty() && tail.chars().all(|c| c.is_ascii_digit())
 }
 
 /// 给定空间在某一世界时刻、某种天气下的环境光换算出的视野半径。
@@ -371,11 +590,227 @@ mod tests {
         let (ids, _table) = ll_world::terrain::base_terrain_fixture();
         let registry = Registry::new();
 
-        // Act
-        let key = terrain_atlas_key(ids.grass, &ids, &registry);
+        // Act：取变体号 0 那一格。变体 0 的条目名恒等于
+        // `terrain_entry_name` 的返回值，见 `TERRAIN_VARIANT_SUFFIX`。
+        let pos = first_pos_with_variant(ids.grass, &ids, 0);
+        let key = terrain_atlas_key(ids.grass, &ids, &registry, pos);
 
         // Assert
         assert_eq!(key.as_deref(), Some("lostland:terrain_grass"));
+    }
+
+    /// 测试用的环面尺寸。取值只要够大到能扫出全部变体即可，与真实世界
+    /// 尺寸无关——变体号只看 `TorusPos` 的两个坐标，不看世界多大。
+    fn test_world() -> ll_core::torus::TorusSize {
+        ll_core::torus::TorusSize::new(64, 64).expect("非零尺寸恒合法")
+    }
+
+    /// 扫出第一个取到指定变体号的格子。找不到就 panic——「某个声明出来
+    /// 的变体在 64×64 格里一次都没被取到」本身就是缺陷（等于那张图白画）。
+    fn first_pos_with_variant(kind: TerrainKind, ids: &BaseTerrainIds, variant: u32) -> TorusPos {
+        let world = test_world();
+        for y in 0..world.height() as i32 {
+            for x in 0..world.width() as i32 {
+                let pos = world.wrap(x, y);
+                if terrain_variant_at(kind, ids, pos) == variant {
+                    return pos;
+                }
+            }
+        }
+        panic!("64×64 格里一次都没取到变体 {variant}");
+    }
+
+    #[test]
+    fn 同一格的地形变体号跑两次恒相同() {
+        // 「确定性」这条性质的最小可执行形式：变体选取是渲染期每帧重算
+        // 的，同一格在相邻两帧算出不同的图会直接闪烁。
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+        let world = test_world();
+
+        // Act & Assert
+        for y in 0..world.height() as i32 {
+            for x in 0..world.width() as i32 {
+                let pos = world.wrap(x, y);
+                let first = terrain_variant_at(ids.grass, &ids, pos);
+                let second = terrain_variant_at(ids.grass, &ids, pos);
+                assert_eq!(first, second, "({x}, {y}) 两次取到不同的变体号");
+            }
+        }
+    }
+
+    #[test]
+    fn 环面上绕回同一格的坐标取到同一个变体号() {
+        // 环面：`TorusPos` 的不变式保证 `(-1, -1)` 与 `(63, 63)` 是同一个
+        // 值，因此变体号必然相同。这条钉的是「有人把入参从 `TorusPos`
+        // 放宽成裸 `(i32, i32)`」那种失效方式——那一刻绕回就断了，而
+        // 画面上只会表现成世界接缝处的一条纹路，没人看得出是这里的问题。
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+        let world = test_world();
+
+        // Act & Assert
+        for (x, y) in [(0, 0), (7, 3), (63, 63), (12, 40)] {
+            let direct = world.wrap(x, y);
+            let wrapped = world.wrap(x - world.width() as i32, y + world.height() as i32);
+            assert_eq!(direct, wrapped, "绕回后应当是同一个 TorusPos");
+            assert_eq!(
+                terrain_variant_at(ids.grass, &ids, direct),
+                terrain_variant_at(ids.grass, &ids, wrapped),
+            );
+        }
+    }
+
+    #[test]
+    fn 位置不同真的会取到不同的地形变体() {
+        // 反例验证点名的第三条：「位置不同真的会取到不同变体（否则等于
+        // 没做）」。判据不止「至少出现过两个值」——那条太松，一张变体
+        // 只在角落里出现一次也算过。这里要求**每一个声明出来的变体号在
+        // 64×64 格里都至少占到 1/6**，即分布没有塌到某一张上。
+        //
+        // 1/6 这个下界怎么来的：本批最多 3 个变体，均匀分布下每个应当
+        // 占 1/3；取一半当门槛，既容得下哈希的自然抖动，又拦得住
+        // 「某张图几乎永远选不到」。
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+        let world = test_world();
+        let total = (world.width() * world.height()) as usize;
+
+        for kind in all_base_kinds(&ids) {
+            let count = terrain_variant_count(kind, &ids);
+            if count <= 1 {
+                continue;
+            }
+            // Act
+            let mut tally = vec![0usize; count as usize];
+            for y in 0..world.height() as i32 {
+                for x in 0..world.width() as i32 {
+                    let variant = terrain_variant_at(kind, &ids, world.wrap(x, y));
+                    assert!(variant < count, "变体号 {variant} 越界（共 {count} 张）");
+                    tally[variant as usize] += 1;
+                }
+            }
+
+            // Assert
+            for (variant, hits) in tally.iter().enumerate() {
+                assert!(
+                    *hits * 6 >= total,
+                    "地形 {:?} 的变体 {variant} 在 {total} 格里只被取到 {hits} 次，\
+                     不足 1/6——这张图等于白画",
+                    kind.index()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 相邻格子取到同一变体的比例接近相互独立() {
+        // **这条是本批唯一一条抓到真问题的断言，不是补充说明。**
+        // 「每个变体各占三分之一」这条太弱：把 `terrain_variant_at` 里
+        // 三行混入的次序换一下，分布仍然是漂亮的 33/33/33，而画面上会
+        // 长出一条条竖纹——纵向相邻同变体的比例从 32% 跳到 47%，也就是
+        // 平均每两格才换一次图。那是把「太单调」换成另一种规则感。
+        //
+        // 门槛是**相互独立时的比例再加 8 个百分点**——不是一个固定数字：
+        // 相互独立时相邻两格同变体的概率就是 `1/变体数`，草地（3 张）
+        // 是 33%，沙地（2 张）是 50%，拿同一个绝对数字卡两者必然冤枉
+        // 其中一个。
+        //
+        // 128×128 实测（本函数 vs 把三行次序换回去）：
+        //
+        // | 混入次序 | 草/林 n=3（理想 33%） | 沙 n=2（理想 50%） |
+        // |---|---|---|
+        // | x, y, 名字（本函数） | 横 33 / 纵 32 / 斜 30 | 横 48 / 纵 50 / 斜 49 |
+        // | 名字, x, y | 横 30 / **纵 47** / 斜 31 | 横 48 / **纵 62** / 斜 49 |
+        // | 名字, y, x | **横 47** / 纵 30 / 斜 31 | **横 62** / 纵 48 / 斜 49 |
+        //
+        // 本函数最大偏离 0 个百分点，两种错写法偏离 12~14 个。8 卡在
+        // 中间，两种错写法在草地与沙地上**都**会红。
+        const ADJACENT_SAME_SLACK_PERCENT: usize = 8;
+
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+        let world = ll_core::torus::TorusSize::new(128, 128).expect("非零尺寸恒合法");
+        let (w, h) = (world.width() as i32, world.height() as i32);
+
+        for kind in all_base_kinds(&ids) {
+            if terrain_variant_count(kind, &ids) <= 1 {
+                continue;
+            }
+            // Act：横、纵、斜三个方向各数一遍。
+            let mut same = [0usize; 3];
+            let total = (w * h) as usize;
+            for y in 0..h {
+                for x in 0..w {
+                    let here = terrain_variant_at(kind, &ids, world.wrap(x, y));
+                    for (slot, (dx, dy)) in [(1, 0), (0, 1), (1, 1)].into_iter().enumerate() {
+                        if terrain_variant_at(kind, &ids, world.wrap(x + dx, y + dy)) == here {
+                            same[slot] += 1;
+                        }
+                    }
+                }
+            }
+
+            // Assert
+            for (slot, label) in ["横向", "纵向", "斜向"].into_iter().enumerate() {
+                let percent = same[slot] * 100 / total;
+                let independent = 100 / terrain_variant_count(kind, &ids) as usize;
+                let threshold = independent + ADJACENT_SAME_SLACK_PERCENT;
+                assert!(
+                    percent <= threshold,
+                    "地形 {:?} 的{label}相邻格有 {percent}% 取到同一张变体\
+                     （相互独立时应为 {independent}%，门槛 {threshold}%）\
+                     ——画面上会读成一条条纹路",
+                    kind.index()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 变体号越界时查不到条目名() {
+        // `terrain_atlas_key_for_variant` 刻意不截断越界的变体号：截断会
+        // 让「门禁多数了一张」退化成「门禁重复验了同一张」，正是 ADR 0022
+        // 那种「测试全绿但保护不存在」的形状。
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+        let registry = Registry::new();
+        let count = terrain_variant_count(ids.grass, &ids);
+
+        // Act & Assert
+        assert!(terrain_atlas_key_for_variant(ids.grass, &ids, &registry, count - 1).is_some());
+        assert_eq!(
+            terrain_atlas_key_for_variant(ids.grass, &ids, &registry, count),
+            None
+        );
+    }
+
+    #[test]
+    fn 变体条目名带后缀且能被反向锁的判据认出来() {
+        // 反向锁（`atlas_coverage.rs` 的「图集里不许有声明侧数不出来的
+        // 变体贴图」）用 `is_terrain_variant_entry` 判定，判据必须与
+        // `terrain_atlas_key_for_variant` 产出的名字对得上——两边分叉的
+        // 话反向锁会漏掉真正的孤儿图而自己毫不知情。
+        // Arrange
+        let (ids, _table) = ll_world::terrain::base_terrain_fixture();
+        let registry = Registry::new();
+
+        // Act & Assert
+        for variant in 0..terrain_variant_count(ids.grass, &ids) {
+            let key = terrain_atlas_key_for_variant(ids.grass, &ids, &registry, variant)
+                .expect("变体号在范围内");
+            assert_eq!(
+                is_terrain_variant_entry(&key),
+                variant > 0,
+                "{key} 的变体判定不对"
+            );
+        }
+        assert!(is_terrain_variant_entry("lostland:terrain_grass_alt1"));
+        assert!(!is_terrain_variant_entry("lostland:terrain_grass"));
+        // 后缀后面不是十进制数字的不算变体——否则真有一种地形叫
+        // `xxx_altar`，反向锁会把它当孤儿变体图报红。
+        assert!(!is_terrain_variant_entry("lostland:terrain_altar"));
+        assert!(!is_terrain_variant_entry("lostland:terrain_grass_alt"));
     }
 
     #[test]
@@ -398,43 +833,88 @@ mod tests {
         let index = registry.intern(mod_id);
         let mod_terrain = ll_world::terrain::TerrainKind::from_index(index);
 
-        // Act
-        let key = terrain_atlas_key(mod_terrain, &ids, &registry);
+        // Act：mod 地形恒 1 张，任何位置都取变体 0，走 Registry 回退。
+        let key = terrain_atlas_key(mod_terrain, &ids, &registry, test_world().wrap(3, 7));
 
         // Assert
         assert_eq!(key.as_deref(), Some("examplemod:lava_floor"));
+        assert_eq!(terrain_variant_count(mod_terrain, &ids), 1);
     }
 
-    /// `define_base` 注册的全部 17 种本体地形，与
+    /// ~~`define_base` 注册的全部 17 种本体地形~~，与
     /// `ll_world::terrain` 里那张注册表逐条对应。
     ///
-    /// 写成一张具名表而不是就地展开，是因为下面两条测试都要遍历它：
-    /// 一条断言「每种都查得到条目名」，一条断言「17 种查出来的名字
-    /// 两两不同」。
-    fn all_base_kinds(ids: &BaseTerrainIds) -> [TerrainKind; 17] {
+    /// 写成一张具名表而不是就地展开，是因为下面几条测试都要遍历它。
+    ///
+    /// # 〔2026-08-31 批次 28 原地更正（纪律第 9 条）：这张表当时漏了两种〕
+    ///
+    /// 原文说「全部 17 种」——**在气候条带批次给 [`BaseTerrainIds`] 加上
+    /// `desert`/`tundra` 之后，这句话就不成立了**：表还是 17 行，注册表
+    /// 已经是 19 种，沙漠与冻原整个落在本文件三条断言的盲区里，
+    /// 与 `crates/ll-game/tests/atlas_coverage.rs` 模块文档记着的那次
+    /// 「手写地形清单漏掉新地形」是**同一个形状、同一份债**。
+    ///
+    /// 更正方：`docs/superpowers/plans/2026-08-31-batch28-terrain-art.md`
+    /// 五节第 3 条（变体覆盖的分母就是这张表，分母漏一行，逐张覆盖照样
+    /// 退化）。
+    ///
+    /// **改法不是补两行，是让它没法再漏**：下面对 [`BaseTerrainIds`] 做
+    /// **穷尽解构**——没有 `..`，加一个字段这里编译不过。这正是
+    /// `atlas_coverage.rs` 那份文档给出的、当时没人还的那条建议。
+    fn all_base_kinds(ids: &BaseTerrainIds) -> [TerrainKind; BASE_TERRAIN_COUNT] {
+        // 穷尽解构：这里**不许**写 `..`。加一种本体地形，本行编译不过，
+        // 而不是安静地少验一种。
+        let BaseTerrainIds {
+            deep_water,
+            shallow_water,
+            sand,
+            grass,
+            forest,
+            hill,
+            mountain,
+            snow,
+            desert,
+            tundra,
+            floor_wood,
+            floor_stone,
+            wall_wood,
+            wall_stone,
+            door_closed,
+            door_open,
+            window,
+            stairs_up,
+            stairs_down,
+        } = *ids;
         [
-            ids.deep_water,
-            ids.shallow_water,
-            ids.sand,
-            ids.grass,
-            ids.forest,
-            ids.hill,
-            ids.mountain,
-            ids.snow,
-            ids.floor_wood,
-            ids.floor_stone,
-            ids.wall_wood,
-            ids.wall_stone,
-            ids.door_closed,
-            ids.door_open,
-            ids.window,
-            ids.stairs_up,
-            ids.stairs_down,
+            deep_water,
+            shallow_water,
+            sand,
+            grass,
+            forest,
+            hill,
+            mountain,
+            snow,
+            desert,
+            tundra,
+            floor_wood,
+            floor_stone,
+            wall_wood,
+            wall_stone,
+            door_closed,
+            door_open,
+            window,
+            stairs_up,
+            stairs_down,
         ]
     }
 
+    /// [`all_base_kinds`] 的长度。数组长度写成具名常量，是为了让
+    /// 「加了一种地形却忘了往数组字面量里补一行」在**长度不匹配**这一步
+    /// 就编译不过，而不是靠人去数。
+    const BASE_TERRAIN_COUNT: usize = 19;
+
     #[test]
-    fn 全部十七种本体地形都能查到图集条目() {
+    fn 全部十九种本体地形都能查到图集条目() {
         // 此前这条只覆盖 8 种自然地形，7 种建筑地形整个落在盲区里——
         // 见 `terrain_entry_name` 文档「一种不漏」一节。
         // Arrange
@@ -451,7 +931,7 @@ mod tests {
     }
 
     #[test]
-    fn 十七种本体地形的图集条目名两两不同() {
+    fn 十九种本体地形的图集条目名两两不同() {
         // 「都查得到」不等于「查到的不是同一张图」：此前 `wall_stone`
         // 与 `mountain` 就共用 `terrain_mountain`，两条都是 Some，屏幕
         // 上却分不出哪格是山、哪格是石墙。这条钉的是那种失效方式。
@@ -470,7 +950,7 @@ mod tests {
         assert_eq!(
             unique.len(),
             names.len(),
-            "17 种地形只查出 {} 个不同的图集条目名：{names:?}",
+            "{BASE_TERRAIN_COUNT} 种地形只查出 {} 个不同的图集条目名：{names:?}",
             unique.len()
         );
     }

@@ -183,6 +183,28 @@ const TERRAIN_TILE_SIZE: u32 = 16;
 /// 一一对应，名字必须逐字一致（`draw_entry` 按名字派发配方）。
 const CLIMATE_TERRAIN_NAMES: [&str; 2] = ["terrain_desert", "terrain_tundra"];
 
+/// 地形**变体**贴图：同一种地形按位置取多张，用来消掉所有者报的
+/// 「地表看起来太单调」。
+///
+/// 名字形如 `<基准条目名>_alt<变体号>`，变体号从 1 起（变体 0 就是基准
+/// 条目本身，不在这张表里——那些 PNG 一个字节都没重画）。派发在
+/// [`terrain::draw_variant_named`]。
+///
+/// **这张表必须与 `ll_game::layout::terrain_variant_count` 声明的张数
+/// 对得上**：草地 3 张（基准 + alt1 + alt2）、森林 3 张、海岸沙地 2 张。
+/// 两边是两份清单，会漂——但漂了当场红，两个方向都锁着，见
+/// `crates/ll-game/tests/atlas_coverage.rs`。
+///
+/// 走 [`LooseOnlyEntry`] 而不是加进 `placeholder.json`：见那个类型的
+/// 文档（那份 JSON 是四张冻结像素基准的来源）。
+const TERRAIN_VARIANT_NAMES: [&str; 5] = [
+    "terrain_grass_alt1",
+    "terrain_grass_alt2",
+    "terrain_forest_alt1",
+    "terrain_forest_alt2",
+    "terrain_sand_alt1",
+];
+
 /// 昼夜滑条的**滑块**贴图。
 ///
 /// 走 [`LooseOnlyEntry`] 而不是加进 `placeholder.json`：见那个类型的
@@ -287,10 +309,21 @@ fn loose_only_entries() -> Vec<LooseOnlyEntry> {
             pivot: STANDING_PIVOT,
             footprint: STANDING_FOOTPRINT,
         });
+    // 地形变体（批次 28）。与基准地形同尺寸、同锚点——它们就是同一种
+    // 地形的另一张脸，任何一处摆放参数不同都会让画面在换变体时跳一下。
+    // **追加在最末尾**，前面每一条的文件名与清单次序因此逐字不变。
+    let terrain_variants = TERRAIN_VARIANT_NAMES.iter().map(|name| LooseOnlyEntry {
+        name: name.to_string(),
+        width: TERRAIN_TILE_SIZE,
+        height: TERRAIN_TILE_SIZE,
+        pivot: TERRAIN_PIVOT,
+        footprint: TERRAIN_FOOTPRINT,
+    });
     npcs.chain(terrains)
         .chain(ui)
         .chain(furnitures)
         .chain(composites)
+        .chain(terrain_variants)
         .collect()
 }
 
@@ -648,6 +681,10 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         // 职业的本地名不可能撞上，两支的次序其实无关，写在后面只是因为
         // 它在回退链上也排在后面（先有分层，才有合成）。
         _ if composite::draw_named(image, name, rect) => {}
+        // 地形变体（`<基准名>_alt<变体号>`）。放在末尾那一支**之前**：
+        // 变体名去掉后缀才查得到配方，直接丢给下面的 `terrain_spec`
+        // 会当成未知条目 panic。
+        _ if terrain::draw_variant_named(image, name, rect) => {}
         _ => match terrain::terrain_spec(name).or_else(|| ui::ui_spec(name)) {
             Some(spec) => terrain::decorate_terrain_tile(image, rect, spec),
             None => {

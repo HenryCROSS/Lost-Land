@@ -199,36 +199,215 @@ pub(crate) fn hash_pixel(tile_seed: u32, local_x: u32, local_y: u32) -> u32 {
 /// B、约 3 个落入互补点缀色，其余约 243 个（95%）保持主色——这是
 /// 「稀疏点缀、不改变主色调」这条硬约束的具体数字化。
 pub(crate) fn decorate_terrain_tile(image: &mut RgbaImage, rect: EntryRect, spec: &TerrainSpec) {
-    let base_hsl = Hsl::from_rgb(spec.base.0, spec.base.1, spec.base.2);
-    let analogous_a = base_hsl
-        .rotated(ANALOGOUS_HUE_SHIFT_DEG)
-        .lighten(ANALOGOUS_LIGHTNESS_DELTA)
-        .to_rgb();
-    let analogous_b = base_hsl
-        .rotated(-ANALOGOUS_HUE_SHIFT_DEG)
-        .lighten(-ANALOGOUS_LIGHTNESS_DELTA)
-        .to_rgb();
-    let accent = base_hsl
-        .rotated(180.0)
-        .lighten(spec.accent_lightness_delta)
-        .saturate(spec.accent_saturation_boost)
-        .to_rgb();
+    // 盐取 0：与本函数长出变体那一层之前**逐位相同**，既有那批地形 PNG
+    // 因此一个字节都不用重画。
+    fill_speckle(image, rect, spec, 0);
+}
+
+/// 主色 + 稀疏点缀这一层，`seed_salt` 混进地块种子。
+///
+/// 从 [`decorate_terrain_tile`] 抽出来只是为了让变体那一层复用同一套
+/// 密度与配色，**不是**为了让点缀密度变成可调参数——三档 bucket 的边界
+/// 仍然写死在这里，见 [`decorate_terrain_tile`] 文档里那串数字。
+fn fill_speckle(image: &mut RgbaImage, rect: EntryRect, spec: &TerrainSpec, seed_salt: u32) {
+    let palette = TerrainPalette::of(spec);
 
     // 地块种子取自它在图集里的像素坐标：见本函数与 hash_pixel 的文档。
-    let tile_seed = (rect.x << 16) | rect.y;
+    //
+    // 松散贴图那条路径上每张图都是自己一张画布，`rect` 恒是 `(0, 0)`，
+    // 因此种子恒为 0——同一批地形贴图的点缀**位置**其实完全一样，只是
+    // 颜色不同。这对基准图没问题（本来就是不同地形），但对**同一种地形
+    // 的多张变体**是致命的：不掺盐的话三张图的点缀会落在同一批像素上，
+    // 差异只剩「颜色略有不同」。`seed_salt` 就是为这件事存在的。
+    let tile_seed = ((rect.x << 16) | rect.y) ^ seed_salt;
 
     for local_y in 0..rect.height {
         for local_x in 0..rect.width {
             let bucket = hash_pixel(tile_seed, local_x, local_y) % 256;
             let (r, g, b) = match bucket {
-                0..=4 => analogous_a,
-                5..=9 => analogous_b,
-                10..=12 => accent,
+                0..=4 => palette.analogous_a,
+                5..=9 => palette.analogous_b,
+                10..=12 => palette.accent,
                 _ => spec.base,
             };
             image.put_pixel(rect.x + local_x, rect.y + local_y, Rgba([r, g, b, 255]));
         }
     }
+}
+
+/// 一种地形从主色派生出来的四个颜色。抽成一个类型，是为了让点缀那一层
+/// 与变体图案那一层**物理上共用同一份换算**——「风格一致」因此是构造上
+/// 保证的，不是靠两处各自手挑颜色再祈祷它们像。
+struct TerrainPalette {
+    /// 色相 +18°、提亮：同色系里浅的那一档。
+    analogous_a: (u8, u8, u8),
+    /// 色相 -18°、压暗：同色系里深的那一档。
+    analogous_b: (u8, u8, u8),
+    /// 互补色，按地形单独调过明度/饱和度。
+    accent: (u8, u8, u8),
+}
+
+impl TerrainPalette {
+    fn of(spec: &TerrainSpec) -> Self {
+        let base_hsl = Hsl::from_rgb(spec.base.0, spec.base.1, spec.base.2);
+        TerrainPalette {
+            analogous_a: base_hsl
+                .rotated(ANALOGOUS_HUE_SHIFT_DEG)
+                .lighten(ANALOGOUS_LIGHTNESS_DELTA)
+                .to_rgb(),
+            analogous_b: base_hsl
+                .rotated(-ANALOGOUS_HUE_SHIFT_DEG)
+                .lighten(-ANALOGOUS_LIGHTNESS_DELTA)
+                .to_rgb(),
+            accent: base_hsl
+                .rotated(180.0)
+                .lighten(spec.accent_lightness_delta)
+                .saturate(spec.accent_saturation_boost)
+                .to_rgb(),
+        }
+    }
+
+    /// 变体图案用的两个颜色：与点缀同色系、同色相偏移，只是明度差拉大
+    /// 一档，见 [`MOTIF_LIGHTNESS_DELTA`]。
+    fn motif(spec: &TerrainSpec) -> ((u8, u8, u8), (u8, u8, u8)) {
+        let base_hsl = Hsl::from_rgb(spec.base.0, spec.base.1, spec.base.2);
+        (
+            base_hsl
+                .rotated(ANALOGOUS_HUE_SHIFT_DEG)
+                .lighten(MOTIF_LIGHTNESS_DELTA)
+                .to_rgb(),
+            base_hsl
+                .rotated(-ANALOGOUS_HUE_SHIFT_DEG)
+                .lighten(-MOTIF_LIGHTNESS_DELTA)
+                .to_rgb(),
+        )
+    }
+}
+
+/// 变体贴图的条目名后缀，与 `ll_game::layout::TERRAIN_VARIANT_SUFFIX`
+/// 必须逐字一致（`terrain_grass_alt1`）。
+///
+/// **这里是那个常量的第二份副本。** 本工具是一个不依赖 `ll-game` 的独立
+/// 二进制（`Cargo.toml` 只有 `image`/`serde`/`serde_json`），把引擎那个
+/// 常量引过来要付上整个 `ll-game` 依赖树的代价。副本会漂，但漂了当场红：
+/// `crates/ll-game/tests/atlas_coverage.rs` 两个方向都锁着——声明侧算出
+/// 的键在图集里查不到会红，图集里有声明侧数不出来的变体图也会红。
+pub(crate) const VARIANT_SUFFIX: &str = "_alt";
+
+/// 变体图案的明度偏移，比点缀那一层（[`ANALOGOUS_LIGHTNESS_DELTA`]，
+/// 0.08）大一档。
+///
+/// 不是随手加大：点缀是**单像素散点**，靠密度读，明度差小一点反而自然；
+/// 图案是**成块**的形状，块内外明度差太小会整团糊进主色，形状读不出来
+/// ——那就退回「只换配色」，正是五族那批点名的失效方式。0.14 是能读出
+/// 形状的下限档，再大就开始像「打了高光的立体贴图」，与这套平涂像素风
+/// 不搭。
+const MOTIF_LIGHTNESS_DELTA: f32 = 0.14;
+
+/// 变体图案：8×8 的字符画，`#` 用浅的那一档、`,` 用深的那一档、`.`
+/// 保持点缀层原样。
+///
+/// 写成字符画而不是坐标数组，理由与 `crates/ll-game/tests/visual_baselines.rs`
+/// 的 `FLOOR_PLAN` 一样：形状在字符画里一眼能看出来，在数组字面量里
+/// 看不出来。
+///
+/// **图案本身刻意不铺满整格**（8×8 摆在 16×16 里，四边留白）：地形贴图
+/// 是要拼在一起的，边缘一动，相邻两格的接缝就会露出图案被切断的痕迹。
+type Motif = &'static [&'static str];
+
+/// 变体 1「丛簇」：两团实心块，一大一小，斜着错开。
+const CLUMP_MOTIF: Motif = &[
+    "..##....", ".#####..", ".#####,.", "..###,..", "...,....", "...##...", "..####..", "...##,..",
+];
+
+/// 变体 2「碎屑」：一条斜向细纹，配两处 2×2 的散块。与 [`CLUMP_MOTIF`]
+/// 的差别是**结构**（线 vs 团），不只是位置——只挪位置的话缩到 16×16
+/// 仍然读成同一张图。
+const SCATTER_MOTIF: Motif = &[
+    ",...##..", ".,,.##..", "..,,....", "...,,...", "..##,,..", "..##..,,", "......,,", "##.....,",
+];
+
+/// 变体号（从 1 起）到图案的映射，外加它在格子里的左上角落点。
+///
+/// 落点也随变体错开：两个图案即使形状不同，都压在同一处也会让「这一格
+/// 中间总有东西」变成新的规则感。
+const VARIANT_MOTIFS: [(Motif, u32, u32); 2] = [(CLUMP_MOTIF, 3, 2), (SCATTER_MOTIF, 5, 6)];
+
+/// 按变体号给一块地形贴图填色并点缀。变体 0 就是 [`decorate_terrain_tile`]
+/// 本身（**逐位相同**），变体 `>= 1` 在同一份配方上重新播种点缀、再叠一个
+/// 几何图案。
+///
+/// # 为什么必须叠几何图案，不能只重新播种点缀
+///
+/// 点缀只占每格 5%（13/256 像素）。只换种子的话，两张图的差异上限就是
+/// 那 26 个像素——缩到 16×16 的真实显示尺寸，读起来就是同一张图，
+/// 「变体」这件事在画面上根本不成立。五族那批的教训是「只换配色会跌破
+/// 可分辨门槛」，这里是同一条：**成块的形状差异是那 5% 之外必须另加的
+/// 东西**。
+///
+/// 判据与实测数字见 `crates/ll-game/tests/atlas_coverage.rs` 的
+/// `同一种地形的各张变体之间既看得出不同又仍然是同一种地形`，以及本文件
+/// 下方 `变体之间的差异过得了可分辨门槛` 那条单测。
+pub(crate) fn decorate_terrain_variant(
+    image: &mut RgbaImage,
+    rect: EntryRect,
+    spec: &TerrainSpec,
+    variant: u32,
+) {
+    // 盐用 splitmix 那个黄金比例常数乘一下，只要求「不同变体落到不同
+    // 的点缀图案」，不需要任何统计学性质。
+    fill_speckle(image, rect, spec, variant.wrapping_mul(0x9E37_79B1));
+    if variant == 0 {
+        return;
+    }
+    let (motif, offset_x, offset_y) = VARIANT_MOTIFS[(variant - 1) as usize];
+    let (light, dark) = TerrainPalette::motif(spec);
+    for (row_index, row) in motif.iter().enumerate() {
+        for (col_index, cell) in row.chars().enumerate() {
+            let (r, g, b) = match cell {
+                '#' => light,
+                ',' => dark,
+                '.' => continue,
+                // 未知字符直接 panic，与 `main.rs` 的 `draw_entry` 同一条
+                // 原则：静默跳过会在图上留一个看不见的洞。
+                other => panic!("变体图案里有未知字符 {other:?}"),
+            };
+            let x = rect.x + offset_x + col_index as u32;
+            let y = rect.y + offset_y + row_index as u32;
+            debug_assert!(
+                x < rect.x + rect.width && y < rect.y + rect.height,
+                "变体图案越出了这一格的矩形"
+            );
+            image.put_pixel(x, y, Rgba([r, g, b, 255]));
+        }
+    }
+}
+
+/// 按条目名派发地形**变体**画法：名字形如 `<基准名>_alt<变体号>` 且基准名
+/// 查得到配方时画出来并返回真，否则返回假交给下一支。
+///
+/// 与 `npc::draw_named`/`composite::draw_named` 同一个形状——`main.rs` 的
+/// `draw_entry` 那张大 `match` 不必认识每一个变体名。
+///
+/// 变体号越界（没有对应图案）时**返回假**而不是画一张退化的图：返回假会
+/// 让 `draw_entry` 落到末尾那一支 panic「不知道如何绘制条目」，加变体数
+/// 却忘了加图案的人当场看得见；悄悄复用一个已有图案则会画出两张一模一样
+/// 的「变体」，而门禁那边只会报「差异不够」，找起来绕一大圈。
+pub(crate) fn draw_variant_named(image: &mut RgbaImage, name: &str, rect: EntryRect) -> bool {
+    let Some((base, tail)) = name.rsplit_once(VARIANT_SUFFIX) else {
+        return false;
+    };
+    let Ok(variant) = tail.parse::<u32>() else {
+        return false;
+    };
+    if variant == 0 || (variant as usize) > VARIANT_MOTIFS.len() {
+        return false;
+    }
+    let Some(spec) = terrain_spec(base) else {
+        return false;
+    };
+    decorate_terrain_variant(image, rect, spec, variant);
+    true
 }
 
 #[cfg(test)]
@@ -254,6 +433,142 @@ mod tests {
         for name in names {
             assert!(terrain_spec(name).is_some(), "缺少配方：{name}");
         }
+    }
+
+    /// 单独画一张 16×16 的变体图，返回它的像素。
+    fn render_variant(name: &str, variant: u32) -> Vec<Rgba<u8>> {
+        let spec = terrain_spec(name).unwrap_or_else(|| panic!("{name} 应当有配方"));
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+        };
+        let mut image = RgbaImage::new(16, 16);
+        decorate_terrain_variant(&mut image, rect, spec, variant);
+        image.pixels().copied().collect()
+    }
+
+    #[test]
+    fn 变体零与基准逐位相同() {
+        // 这条钉的是「既有那批地形 PNG 一个字节都不用重画」这句承诺。
+        // 它一旦不成立，`assets/sprites/` 里十九张地形图会集体变动，
+        // 两张视觉基准跟着变，而那些差异与「加了变体」这件事毫无关系。
+        // Arrange
+        let spec = terrain_spec("terrain_grass").expect("有配方");
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+        };
+        let mut baseline = RgbaImage::new(16, 16);
+        let mut variant_zero = RgbaImage::new(16, 16);
+
+        // Act
+        decorate_terrain_tile(&mut baseline, rect, spec);
+        decorate_terrain_variant(&mut variant_zero, rect, spec, 0);
+
+        // Assert
+        assert_eq!(baseline.as_raw(), variant_zero.as_raw());
+    }
+
+    #[test]
+    fn 变体之间的差异过得了可分辨门槛() {
+        // 下界 1/8：256 像素里 32 个。判据与门槛的完整论证见
+        // `docs/superpowers/plans/2026-08-31-batch28-terrain-art.md` 四节。
+        //
+        // 这条与 `crates/ll-game/tests/atlas_coverage.rs` 那条同名判据
+        // **不重复**：那边比的是真实资产打包进图集之后的像素（能抓到
+        // 「两个清单条目指向同一个 PNG」），这边比的是绘制函数的输出
+        // （能在跑 artgen 之前就抓到画法本身写塌了）——与家具那两条
+        // 「同名单测 + 图集断言」的分工逐字相同。
+        const MIN_DIFFERING: usize = 256 / 8;
+
+        // Arrange & Act
+        for (name, count) in [
+            ("terrain_grass", 3),
+            ("terrain_forest", 3),
+            ("terrain_sand", 2),
+        ] {
+            let rendered: Vec<Vec<Rgba<u8>>> =
+                (0..count).map(|v| render_variant(name, v)).collect();
+
+            // Assert
+            for (i, a) in rendered.iter().enumerate() {
+                for (j, b) in rendered.iter().enumerate().skip(i + 1) {
+                    let differing = a.iter().zip(b.iter()).filter(|(x, y)| x != y).count();
+                    assert!(
+                        differing >= MIN_DIFFERING,
+                        "{name} 的变体 {i} 与变体 {j} 只有 {differing} 个像素不同\
+                         （门槛 {MIN_DIFFERING}）——缩到 16×16 会读成同一张图"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn 变体仍然铺满整格且主色仍然占多数() {
+        // 上界那一侧：地形是那一格的底层，留透明会露出清屏背景；主色
+        // 被图案吃掉太多则会读成另一种地形。
+        //
+        // 主色占比门槛取 70%：基准图是 95%（13/256 点缀），变体多叠一个
+        // 约 25 像素的图案，理论下界约 85%。70% 留足余量，同时拦得住
+        // 「图案铺满整格」那种画法。
+        // Arrange & Act & Assert
+        for (name, count) in [
+            ("terrain_grass", 3),
+            ("terrain_forest", 3),
+            ("terrain_sand", 2),
+        ] {
+            let spec = terrain_spec(name).expect("有配方");
+            let base = Rgba([spec.base.0, spec.base.1, spec.base.2, 255]);
+            for variant in 0..count {
+                let pixels = render_variant(name, variant);
+                assert_eq!(
+                    pixels.iter().filter(|p| p.0[3] != 255).count(),
+                    0,
+                    "{name} 变体 {variant} 有不透明度不足的像素"
+                );
+                let base_count = pixels.iter().filter(|&&p| p == base).count();
+                assert!(
+                    base_count * 100 >= pixels.len() * 70,
+                    "{name} 变体 {variant} 的主色只剩 {base_count}/{}——读起来已经不是这种地形了",
+                    pixels.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 变体名派发只认基准名加后缀加十进制变体号() {
+        // 反向锁那一侧的机制反例：派发认得太宽，`draw_entry` 就会把不该
+        // 当变体的名字画成变体图（而不是 panic 报「不知道如何绘制」）。
+        // Arrange
+        let rect = EntryRect {
+            x: 0,
+            y: 0,
+            width: 16,
+            height: 16,
+        };
+        let mut image = RgbaImage::new(16, 16);
+
+        // Act & Assert
+        assert!(draw_variant_named(&mut image, "terrain_grass_alt1", rect));
+        assert!(draw_variant_named(&mut image, "terrain_grass_alt2", rect));
+        // 变体 0 不是一张单独的图（它就是基准条目本身）。
+        assert!(!draw_variant_named(&mut image, "terrain_grass_alt0", rect));
+        // 没有第 3 个图案：宁可让 `draw_entry` panic，也不悄悄复用一个
+        // 已有图案画出两张一模一样的「变体」。
+        assert!(!draw_variant_named(&mut image, "terrain_grass_alt3", rect));
+        // 基准名查不到配方。
+        assert!(!draw_variant_named(&mut image, "terrain_lava_alt1", rect));
+        // 后缀后面不是十进制数字。
+        assert!(!draw_variant_named(&mut image, "terrain_grass_alt", rect));
+        assert!(!draw_variant_named(&mut image, "terrain_grass_altx", rect));
+        // 压根没有后缀。
+        assert!(!draw_variant_named(&mut image, "terrain_grass", rect));
     }
 
     #[test]

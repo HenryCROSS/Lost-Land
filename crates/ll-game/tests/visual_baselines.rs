@@ -196,9 +196,12 @@ fn 地表内容预览与基准逐像素一致() {
             let Some(kind) = world.world.terrain_at(pos) else {
                 continue;
             };
-            let Some(name) =
-                ll_game::layout::terrain_atlas_key(kind, &content.terrain_ids, &content.registry)
-            else {
+            let Some(name) = ll_game::layout::terrain_atlas_key(
+                kind,
+                &content.terrain_ids,
+                &content.registry,
+                pos,
+            ) else {
                 continue;
             };
             if atlas.metadata.lookup(&name).is_none() {
@@ -394,15 +397,25 @@ fn 据点建筑地形预览与基准逐像素一致() {
     );
 
     // Act
+    // 平面图自己的「世界」尺寸——只用来把 `(col, row)` 规范化成
+    // `TorusPos` 喂给 `terrain_atlas_key`，与真实世界尺寸无关。
+    let plan_size = ll_core::torus::TorusSize::new(cols, rows).expect("平面图非空");
     let mut canvas = RgbaImage::new(cols * TILE_SIZE, rows * TILE_SIZE);
     for (row_index, row) in FLOOR_PLAN.iter().enumerate() {
         for (col_index, cell) in row.chars().enumerate() {
             let kind = terrain_of(cell, &content.terrain_ids);
             // 生产路径：这一格该查哪个图集键，由 `terrain_atlas_key` 决定，
             // 本文件不自己推。
-            let key =
-                ll_game::layout::terrain_atlas_key(kind, &content.terrain_ids, &content.registry)
-                    .unwrap_or_else(|| panic!("地形字符 {cell:?} 算不出图集键"));
+            // 平面图的 `(col, row)` 换算成位置：走既有的 `TorusSize::wrap`，
+            // **不手写取模**。批次 28 起坐标参与选图（同一种地形按位置取
+            // 多张贴图），因此这张手工摆的平面图也必须给出一个位置。
+            let key = ll_game::layout::terrain_atlas_key(
+                kind,
+                &content.terrain_ids,
+                &content.registry,
+                plan_size.wrap(col_index as i32, row_index as i32),
+            )
+            .unwrap_or_else(|| panic!("地形字符 {cell:?} 算不出图集键"));
             blit_copy(
                 &mut canvas,
                 &atlas,
