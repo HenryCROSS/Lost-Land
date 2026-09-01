@@ -204,3 +204,31 @@ git show <那个提交>^:crates/ll-render/examples/p1_acceptance/main.rs
 - **错误源头**：[2026-08-27 会话交接](../handoff/2026-08-27-session-handoff.md)
   第一节第 6 条（该条已原地更正）。
 - **更正方**：[批次 25 计划：ADR 引用编号勘误普扫](../../docs/superpowers/plans/2026-08-31-batch25-adr-citation-sweep.md)。
+
+---
+
+## 【2026-08-31 补记】「后果」一节第 1 条列的三条路，所有者选了第 2 条（后三张）
+
+**正文一字未改**（ADR 惯例，与上一节同一条理由）。
+
+- **哪一处**：本文「后果」一节第 1 条「八张冻结像素基准的唯一生产者随之消失
+  （**已知代价，留给下一次裁定**）」那张表里的**后三张**——
+  `crates/ll-game/tests/visual/{surface,settlement,npc_roster}_preview.png`
+  （表里标着「纯 CPU，不需要 GPU」的那三行），以及紧随其后那句「本批次的处置
+  是『图留着，生产者删掉』……**不是对三条路的选择**」。
+- **结论现在是什么**：2026-08-31，项目所有者对**这三张**选了第 2 条路——
+  **把生成逻辑搬成测试**。落点
+  `crates/ll-game/tests/visual_baselines.rs`（三条 `#[test]`）+
+  `crates/ll-game/tests/visual_support/mod.rs`（本节预告的那套「比对基准 +
+  环境变量覆盖」机制，环境变量是 `LL_BLESS_VISUAL=1`），进
+  `scripts/ci/run_tests.sh` 的常规路径。**没有新增任何 example target**，
+  `scripts/ci/check_no_examples.sh` 的判据一个字没松。
+- **前五张不受影响**：本节写的「前五张**做不到**——无头 CI 拿不到适配器，
+  只能写成『拿不到就跳过』的假测试」仍然成立，它们仍是只读的历史留档。
+  本次裁定的范围**只有后三张**。
+- **搬迁没有走样的证据**：`settlement_preview.png` **逐位一致**——本 ADR 删掉的
+  那个 example 写出来的图，与搬家后那条测试出的图一个像素都不差。另两张的差异
+  逐条核对为主干正确演进（据点街道摊开 / 五个新种族），无一处判定为画坏，
+  逐条归属见实施计划与提交
+  `test(ll-game): 三张纯 CPU 视觉基准从历史留档变回会跑的测试，并逐张核对差异`。
+- **更正方**：[`docs/superpowers/plans/2026-08-31-batch27-visual-baselines.md`](../../docs/superpowers/plans/2026-08-31-batch27-visual-baselines.md)。

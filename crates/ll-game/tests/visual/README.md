@@ -1,5 +1,13 @@
 # 地表内容渲染的可视化验收产物
 
+> **【2026-08-31 批次 27：三张图重新有了生产者，而且是会自己比对的那种。】**
+> 本文末尾「生产者已删除」一节的结论**已经作废**，原文按纪律第 9 条保留在
+> 原处并加了原地更正。现在的落点是
+> [`crates/ll-game/tests/visual_baselines.rs`](../visual_baselines.rs) 的三条
+> `#[test]`，比对机制在 [`../visual_support/mod.rs`](../visual_support/mod.rs)。
+> **本文下面每一处 `cargo run -p ll-game --example …` 的命令行都已经不能用了**，
+> 逐处在原地标了替代命令。
+
 本目录有三张图，各验一件事：
 
 - **`surface_preview.png`**——地表内容（物品堆/家具/NPC/玩家）画在了
@@ -15,7 +23,11 @@
 `surface_preview.png` 由
 
 ```
-cargo run -p ll-game --example surface_preview   # 2026-08-29 起该 target 已删，见文末
+# ~~cargo run -p ll-game --example surface_preview~~   # 2026-08-29 起该 target 已删
+# 【2026-08-31 批次 27 起改成这一条，见本文顶部横幅】
+cargo test -p ll-game --test visual_baselines 地表内容预览与基准逐像素一致
+# 有意更新这张基准（先判断是不是有意的视觉调整，见下方处置规矩）：
+LL_BLESS_VISUAL=1 cargo test -p ll-game --test visual_baselines 地表内容预览与基准逐像素一致
 ```
 
 生成（无需 GPU、无需窗口）。图里应当能一眼看见五样东西：
@@ -66,7 +78,11 @@ cargo run -p ll-game --example surface_preview   # 2026-08-29 起该 target 已�
 由
 
 ```
-cargo run -p ll-game --example settlement_preview   # 2026-08-29 起该 target 已删，见文末
+# ~~cargo run -p ll-game --example settlement_preview~~   # 2026-08-29 起该 target 已删
+# 【2026-08-31 批次 27 起改成这一条，见本文顶部横幅】
+cargo test -p ll-game --test visual_baselines 据点建筑地形预览与基准逐像素一致
+# 有意更新这张基准（先判断是不是有意的视觉调整，见下方处置规矩）：
+LL_BLESS_VISUAL=1 cargo test -p ll-game --test visual_baselines 据点建筑地形预览与基准逐像素一致
 ```
 
 生成（同样无需 GPU、无需窗口）。图里是一间手工摆好的小屋，一眼应当
@@ -113,7 +129,11 @@ cargo run -p ll-game --example settlement_preview   # 2026-08-29 起该 target �
 由
 
 ```
-cargo run -p ll-game --example npc_roster_preview   # 2026-08-29 起该 target 已删，见文末
+# ~~cargo run -p ll-game --example npc_roster_preview~~   # 2026-08-29 起该 target 已删
+# 【2026-08-31 批次 27 起改成这一条，见本文顶部横幅】
+cargo test -p ll-game --test visual_baselines npc点名册预览与基准逐像素一致
+# 有意更新这张基准（先判断是不是有意的视觉调整，见下方处置规矩）：
+LL_BLESS_VISUAL=1 cargo test -p ll-game --test visual_baselines npc点名册预览与基准逐像素一致
 ```
 
 生成（同样无需 GPU、无需窗口）。一行是一个种族，一列是一个职业；
@@ -174,7 +194,24 @@ cargo run -p ll-game --example npc_roster_preview   # 2026-08-29 起该 target �
 
 与本文件上半部分逐字同一条，适用于这张图。
 
-## 生产者已删除（2026-08-29 批次 13）
+## ~~生产者已删除（2026-08-29 批次 13）~~
+
+> **【2026-08-31 批次 27 原地更正（纪律第 9 条）：本节的结论「无法重新生成」
+> 「只能当作只读的历史留档看」已经作废，原文一字未改，保留只为追溯。】**
+>
+> - **什么时候／因为什么**：2026-08-31，项目所有者批准走本节下面
+>   [ADR 0030](../../../../knowledge/decisions/0030-remove-examples-acceptance-demos.md)
+>   「后果」一节列的**第 2 条路**——把生成逻辑搬成测试。本节自己写的那句
+>   「把它们搬成 `#[test]` 技术上完全可行，代价只是要新造一套『比对基准 PNG +
+>   环境变量覆盖』的机制」正是本批做完的事。
+> - **结论现在是什么**：三张图各由一条 `#[test]` 出图并与本目录的 PNG
+>   **逐像素**比对，落点 [`../visual_baselines.rs`](../visual_baselines.rs) +
+>   [`../visual_support/mod.rs`](../visual_support/mod.rs)，
+>   进 `scripts/ci/run_tests.sh` 的常规路径。下面那段 `git show` 恢复配方
+>   **不再需要**（留着仍然有效，但没有场合用得上它）。
+> - **搬迁没有走样的证据**：`settlement_preview.png` 逐位一致——批次 13 那个
+>   example 写出来的图，与今天这条测试出的图**一个像素都不差**。
+> - **更正方**：`docs/superpowers/plans/2026-08-31-batch27-visual-baselines.md`。
 
 **本目录三张图** 的唯一生产者是 ``ll-game:{surface,settlement,npc_roster}_preview` 三个 example`。
 2026-08-29 项目所有者裁定去掉 `examples/`（原话「我觉得应该要去掉 example。
