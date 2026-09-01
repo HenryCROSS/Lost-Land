@@ -273,3 +273,73 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+mod w4_tests {
+    use super::*;
+    use crate::save_slot::{MAX_SAVE_NAME_CHARS, SaveSlot, SlotId};
+    use ll_text::MeasureText;
+
+    /// 仓库真实的两份 `.ftl`——空 `Catalog` 会让 `screen-savelist-row`
+    /// 查不到而退化成键名本身，那时候量出来的宽度与真实排版无关。
+    fn 真实文案() -> Catalog {
+        let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/locales");
+        Catalog::load_one("lostland", &dir)
+    }
+
+    #[test]
+    fn 顶到长度上限的存档名整行仍然落在它自己那块面板里() {
+        // 规格 W4 的判据：24 个汉字的存档名 + 时间 + 模式，整行渲染宽
+        // ≤ 内容宽。**内容宽现取**（面板按内容伸缩，批次 19 的 W3），
+        // 本测试里没有任何像素字面量。
+        //
+        // 这条同时是 `MAX_SAVE_NAME_CHARS` 那句被改掉的理由的证据：
+        // 撑不破面板的**不是**那个字符上限，是面板会伸缩。
+        //
+        // 反例验证（已实跑）：把 `ll_ui::screen::panel_width` 里的
+        // `SCREEN_WIDTH.max(longest + …)` 改回恒 `SCREEN_WIDTH`，本条
+        // 当场红（整行 2 行）。
+        // Arrange：名字顶到上限，两种语言各一遍。
+        let catalog = 真实文案();
+        let mut measurer = ll_text::TextMeasurer::new().expect("内置字体资产应能正常解析");
+        let slot = SaveSlot {
+            id: SlotId::from_name("测试"),
+            path: std::path::PathBuf::from("测试.llsave"),
+            save_name: "存".repeat(MAX_SAVE_NAME_CHARS),
+            character_name: "测试旅人".to_string(),
+            saved_at: 1_700_000_000,
+            mode: ll_content::mode::SaveMode::fresh_free_save(),
+        };
+        assert_eq!(
+            slot.display_name().chars().count(),
+            MAX_SAVE_NAME_CHARS,
+            "Arrange：这个名字确实顶到了上限"
+        );
+
+        for language in ["zh-CN", "en"] {
+            // Act：这一屏的行文字 → 这一屏的面板宽 → 这一行排几行。
+            let rows = save_list_row_texts(std::slice::from_ref(&slot), &catalog, language);
+            let row = rows.first().expect("一个槽位排出一行").clone();
+            assert!(
+                row.contains(&"存".repeat(MAX_SAVE_NAME_CHARS)),
+                "Arrange：{language} 的整行里真的带着那个名字：{row}"
+            );
+            // 面板宽按「这一屏的全部行」算——这里只有这一行，它就是最长的。
+            let 面板宽 = ll_ui::screen::panel_width(&rows, &mut measurer, 1280.0);
+            let 内容宽 = 面板宽 - ll_ui::screen::SCREEN_PADDING * 2.0;
+
+            // Assert
+            let metrics = measurer.measure_text(
+                &row,
+                ll_ui::screen::SCREEN_FONT_SIZE,
+                ll_ui::screen::SCREEN_LINE_HEIGHT,
+                内容宽,
+            );
+            assert_eq!(
+                metrics.line_count, 1,
+                "{language}：顶到上限的存档名那一行应当整行可见，实际 {} 行（宽 {}，内容宽 {内容宽}）",
+                metrics.line_count, metrics.max_line_width
+            );
+        }
+    }
+}
