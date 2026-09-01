@@ -54,7 +54,12 @@ use crate::widget::list::RowCursor;
 /// 一个值，两块屏读起来要像同一个产品。
 pub const SCREEN_LINE_HEIGHT: f32 = 18.0;
 /// 模态屏面板的内边距（像素）。
-pub const SCREEN_PADDING: f32 = 10.0;
+///
+/// 规格 L3 之后它只是 [`crate::widget::metrics::PANEL_PADDING`] 的一个
+/// 别名：本条（原 10）与 HUD 那套（`hud::DEFAULT_PADDING`，原 6）合并
+/// 成同一个刻度，取 6，理由见那里。**模态屏的内容宽因此从 500 变成
+/// 508**（变宽），溢出门禁的行数预算只会更宽松，不会有键新超预算。
+pub const SCREEN_PADDING: f32 = crate::widget::metrics::PANEL_PADDING;
 /// 模态屏正文字号（像素）。
 pub const SCREEN_FONT_SIZE: f32 = 14.0;
 /// 模态屏面板的**最小**宽度（像素）。
@@ -77,14 +82,15 @@ pub const SCREEN_FONT_SIZE: f32 = 14.0;
 /// 改变行的集合，因此原来那条反对理由指的跳变不会发生。
 pub const SCREEN_WIDTH: f32 = 520.0;
 
-/// 模态屏面板与窗口边缘之间至少要留的空（像素）——与
-/// `crate::hud::render` 的 `SCREEN_MARGIN` 取同一个值，两块屏贴边的
-/// 节奏要一致。
+/// 模态屏面板与窗口边缘之间至少要留的空（像素）——规格 L3 之后它就是
+/// [`crate::widget::metrics::SCREEN_MARGIN`] 本身，不再是「碰巧与
+/// `hud::render` 那个取同一个值」：两块屏贴边的节奏由同一个常量保证，
+/// 改一个另一个自动跟上。
 ///
 /// [`panel_width`] 按内容伸缩时以它为上限：面板再宽也不许长到窗口
 /// 外面去，撞到上限之后多出来的文字改走换行（规格 W3 采纳的第二条
 /// 手段）。
-pub const SCREEN_SIDE_MARGIN: f32 = 16.0;
+pub const SCREEN_SIDE_MARGIN: f32 = crate::widget::metrics::SCREEN_MARGIN;
 
 /// 量「这一行本来要多宽」时给的断行宽度——大到任何一条 UI 文案都不
 /// 可能被它断开，于是量出来的就是**不换行时的自然宽度**。

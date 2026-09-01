@@ -75,10 +75,11 @@ use crate::widget::textured_quad::TexturedQuadRenderer;
 use glyphon::Color;
 use std::collections::BTreeMap;
 
-/// 面板左上角与窗口边缘的留白（像素）。
-pub(super) const SCREEN_MARGIN: f32 = 16.0;
-/// 三列之间、状态栏与三列之间的间隔（像素）。
-pub(super) const PANEL_GAP: f32 = 10.0;
+// 间距刻度（`SCREEN_MARGIN`/`PANEL_GAP`）住在 `crate::widget::metrics`
+// ——`hud` 与 `screen` 都依赖 `widget`、彼此不依赖，那是两边唯一都看得见
+// 的地方（规格 L3，见该模块文档）。这里再导出一次，`super::SCREEN_MARGIN`
+// 这条 crate 内既有路径不变。
+pub(crate) use crate::widget::metrics::{PANEL_GAP, SCREEN_MARGIN};
 /// 状态栏通栏宽度。
 pub const STATUS_WIDTH: f32 = 620.0;
 /// 角色面板宽度。
@@ -350,9 +351,12 @@ pub fn build_hud_frame(
     // `character_panel::experience_bar_fraction` 文档）、因此能诚实做成
     // 条形的数值；升级时的「填满→清零→继续填」由
     // `animate_experience_bar` 负责,见其文档。
+    // 间隔走 `PANEL_GAP`（规格 L3）——此前这里是全 HUD 唯一一处裸字面量
+    // `4.0`，规格 §3.2 第 2 条点名。经验条与它下面的背包面板因此各下移
+    // 6px。
     let bar_rect = character_panel_content
         .rect
-        .stack_below(4.0, EXPERIENCE_BAR_HEIGHT);
+        .stack_below(PANEL_GAP, EXPERIENCE_BAR_HEIGHT);
     let real_fraction = character_panel::experience_bar_fraction(character);
     let displayed_fraction =
         animate_experience_bar(anim, "hud.xp_bar", character.level, real_fraction, now);
@@ -361,7 +365,17 @@ pub fn build_hud_frame(
     // 背包面板：紧贴在经验条（角色面板的一部分）下方——项目所有者原话
     // 「背包先临时放在角色下面」,与此前「背包在角色右边」的并排布局
     // 不同,见模块文档「布局」一节。
-    let inventory_origin = bar_rect.stack_below(PANEL_GAP, INVENTORY_WIDTH).origin();
+    // 规格 L4：此前这里写的是
+    // `bar_rect.stack_below(PANEL_GAP, INVENTORY_WIDTH).origin()`，而
+    // `stack_below(gap, height)` 的第二个参数是**高度**，传进去的却是一个
+    // **宽度**常量（§3.3）。今天无害——紧跟的 `.origin()` 把那个高度扔了
+    // ——但哪天有人保留这个 `Rect`，就会拿到一条 220 像素高的条。
+    //
+    // 改成显式构造：这里真正要的只有「贴在经验条下方一个间隔」的那个
+    // 原点，写出来就不可能再传错参数。取规格给的第一个选项（显式构造）
+    // 而不是第二个（给 `stack_below` 两个参数各上一个 newtype）：给 `f32`
+    // 尺寸上 newtype 会波及 `Rect` 全部方法与全 crate 调用点，不是本批面积。
+    let inventory_origin = (bar_rect.x, bar_rect.bottom() + PANEL_GAP);
     let inventory_panel_content = inventory_panel::inventory_panel(
         inventory,
         item_table,

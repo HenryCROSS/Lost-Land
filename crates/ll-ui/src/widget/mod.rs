@@ -137,6 +137,7 @@ pub mod label;
 pub mod layer;
 pub mod list;
 pub mod marker;
+pub mod metrics;
 pub mod panel;
 pub mod quad;
 pub mod skin;

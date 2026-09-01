@@ -92,7 +92,12 @@ use crate::widget::list::RowCursor;
 pub const DEFAULT_LINE_HEIGHT: f32 = 18.0;
 /// 全部四块面板共用的默认内边距（像素）——面板背景（见
 /// [`crate::widget::panel::panel_quads`]）与内容文字之间的留白。
-pub const DEFAULT_PADDING: f32 = 6.0;
+///
+/// 规格 L3 之后它只是 [`crate::widget::metrics::PANEL_PADDING`] 的一个
+/// 别名：模态屏那套（原 `screen::SCREEN_PADDING` = 10）与本条（原 6）
+/// 合并成同一个刻度，理由与取值见那里。这条路径保留是为了不动全部
+/// 调用点与两道门禁。
+pub const DEFAULT_PADDING: f32 = crate::widget::metrics::PANEL_PADDING;
 /// 全部四块面板共用的默认字号（像素）。
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 

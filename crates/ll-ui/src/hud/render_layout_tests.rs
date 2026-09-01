@@ -264,3 +264,66 @@ fn 动作菜单两种落位改走anchored之后逐像素与旧算术相同() {
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+#[test]
+fn 间距刻度只有两档且两套内边距已经合并成同一个() {
+    // 规格 L3。此前 HUD 与模态屏各有一套常量、互不知情：贴边留白两个
+    // 「碰巧相等」的 16，内边距两个不相干的 6 与 10（§3.2）。谁改了其中
+    // 一个，另一个不会跟着动，也没有任何东西会红——这条断言就是那个
+    // 「会红」。
+    //
+    // 反例验证（已实跑）：把 `screen::SCREEN_PADDING` 改回字面量 `10.0`，
+    // 本条红在「两套内边距没合并」。
+    // Assert 一：两套内边距是同一个数。
+    assert_eq!(
+        crate::hud::DEFAULT_PADDING,
+        crate::screen::SCREEN_PADDING,
+        "两套内边距没合并成同一个刻度"
+    );
+    // Assert 二：两套贴边留白是同一个数，且就是刻度本身。
+    assert_eq!(SCREEN_MARGIN, crate::screen::SCREEN_SIDE_MARGIN);
+    assert_eq!(SCREEN_MARGIN, crate::widget::metrics::SCREEN_MARGIN);
+    // Assert 三：两档互不相等——合并成一个数就说明刻度塌了。
+    assert_ne!(SCREEN_MARGIN, PANEL_GAP);
+}
+
+#[test]
+fn 背包面板紧贴经验条下方一个间隔且左边界对齐() {
+    // 规格 L4（§3.3）：此前这里写的是
+    // `bar_rect.stack_below(PANEL_GAP, INVENTORY_WIDTH).origin()`——
+    // `stack_below` 的第二个参数是**高度**，传进去的是一个**宽度**常量。
+    // 今天无害（`.origin()` 把高度扔了），哪天有人保留那个 `Rect` 就会
+    // 拿到一条 220 像素高的条。改成显式构造之后加这一条盯着落位本身。
+    //
+    // 顺带也是 L3 的落点：经验条与角色面板之间此前是裸字面量 4.0，现在
+    // 走 `PANEL_GAP`，背包因此比收敛前下移 6px。
+    //
+    // 反例验证（已实跑）：把显式构造里的 `bar_rect.x` 换成
+    // `bar_rect.right()`，本条红在左边界；把 `+ PANEL_GAP` 去掉，红在
+    // 纵向间隔。
+    // Arrange
+    let (dir, catalog) = 布局夹具("l4-inventory-origin");
+
+    // Act
+    let frame = 满帧(&catalog, 1280.0, 720.0);
+    let hud = frame.layer(UiLayer::Hud);
+
+    // 推入顺序：状态栏(9) 生命(3) 法力(3) 昼夜(2) 角色(9) 经验条(2)
+    // 背包(9) 装备(9)。经验条是第 26/27 块，背包九宫格从第 28 块起。
+    let 经验条 = &hud.quads[26];
+    let 背包左上角 = &hud.quads[28];
+
+    // Assert
+    assert_eq!(
+        背包左上角.position[0], 经验条.position[0],
+        "背包与经验条（也就是角色列）左边界没对齐"
+    );
+    assert_eq!(
+        背包左上角.position[1],
+        经验条.position[1] + 经验条.size[1] + PANEL_GAP,
+        "背包没紧贴经验条下方一个 PANEL_GAP"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
