@@ -458,6 +458,18 @@ fn remap_agent(
         // 任何 ContentIndex，编译器会在它某天变成携带索引的类型时让这
         // 一行继续通过、因此这条注释就是那个提醒。
         stealthed: _,
+        // 所属据点（对话「加入据点」批次新增）：`Option<WorldId>`，
+        // 类型里不含任何 `ContentIndex`，因此不需要重映射——与
+        // `remembered_id` 以及 `remap_affiliations` 对 `OrgRef::Instance`
+        // 的既有处理同一条理由（`WorldId` 不依赖 mod 加载顺序，见
+        // `ll_core::ident::WorldId` 模块文档）。
+        //
+        // **这条「不需要重映射」不等于「没有风险」**：据点号是编年史
+        // 推演的派生物，改变推演的批次会让老存档里的这个号静默指向另
+        // 一座据点。那处风险由 `CURRENT_SCHEMA_VERSION` 的「版本不对
+        // 就明确拒绝」兜底，不归重映射管，完整论证见
+        // `ll_world::entity::Agent::home` 字段文档。
+        home: _,
     } = *agent;
 
     *profession = remapper.remap_character_attribute(*profession, owner)?;
@@ -939,6 +951,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         }
     }
 

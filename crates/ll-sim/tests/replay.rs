@@ -129,6 +129,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     });
     // 探索记忆写入路径（`resolve_move` 追加的 `Effect::MarkExplored`）
     // 按 `player_entity` 区分「谁在动」，只给玩家标记探索——见其文档
@@ -177,6 +178,7 @@ fn setup(seed: u64) -> (WorldState, EntityId, EntityId) {
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     });
 
     (world, player, enemy)
@@ -1018,7 +1020,42 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// （`load_content`/`LoadSession`/`Chronicle`/`CultureTable` 在本文件里
 /// 零命中），`setup` 手写的两个 `Agent` 的 `race`/`profession` 是测试
 /// 自己造的固定索引，`mods/lostland/*.json5` 里写什么都到不了它。
-const EXPECTED_REPLAY_DIGEST: u64 = 11_222_878_776_777_704_235;
+/// # 本次重冻的原因（对话「加入据点」批次，2026-08-31）
+///
+/// `11_222_878_776_777_704_235` → `9_888_838_904_816_377_323`。
+///
+/// [`ll_world::entity::Agent`] 多了一个 `home: Option<WorldId>` 字段
+/// （见它自己的文档），`WorldState::hash` 里跟着多了一行
+/// `write_optional_world_id(&mut hasher, agent.home)`。本文件 `setup`
+/// 手写的两个 `Agent` 的 `home` 都是 `None`，但 `None` 也要写一个判别
+/// 值（否则「没有据点」与「据点号恰好编码成空」在哈希上不可区分），
+/// 于是每个实体多一个 `0`，摘要必然改变。**这是它该有的行为**：
+/// 这条基准守的正是「`Agent` 的字段真的都进了哈希」。
+///
+/// 四步（交接文档纪律第 2 条，一步没少，全部在 Windows 实跑）：
+///
+/// 1. **基线红**：字段与哈希行都落地、常量未动，
+///    `cargo test -p ll-sim --test replay` 报
+///    `left: 9888838904816377323` / `right: 11222878776777704235`。
+/// 2. **把改动关掉，精确回到旧值**：**只**把 `WorldState::hash` 里那一行
+///    `write_optional_world_id(&mut hasher, agent.home)` 临时注掉（本批
+///    其余改动——`Agent` 的新字段本身、八十余处构造点、
+///    `build_npc_agent` 的 `home: Some(profile.home)`、
+///    `CURRENT_SCHEMA_VERSION` 5 → 6——**全部保留**），再跑一次：**绿**，
+///    摘要精确等于旧常量 `11_222_878_776_777_704_235`。这一步证明这次
+///    变化**只来自那一行**，不是别的什么顺手动了字段布局或索引。
+/// 3. **恢复**那一行。
+/// 4. **两个独立进程复现**新值：两次彼此独立的
+///    `cargo test -p ll-sim --test replay` 进程都给出
+///    `9_888_838_904_816_377_323`。
+///
+/// **同批的对照**：`crates/ll-world/tests/determinism.rs` 的
+/// `EXPECTED_WORLD_DIGEST` **没有红**——那个世界零 `actor`，
+/// `for agent in self.actors.iter()` 循环体一次都不执行，新加的那一行
+/// 根本没有机会跑（这条局限是它自己文档里早就写着的，本批只是又一次
+/// 实测确认）。`crates/ll-game/tests/populated_determinism.rs` 的
+/// `EXPECTED_POPULATED_WORLD_DIGEST` 与本条一起红。
+const EXPECTED_REPLAY_DIGEST: u64 = 9_888_838_904_816_377_323;
 
 // # 【2026-08-31 补记】本条够不到的那一块，现在有第三条基准接着
 //

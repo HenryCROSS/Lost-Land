@@ -130,6 +130,7 @@ fn spawn_agent(world: &mut WorldState, race: ContentIndex, level: i32) -> Entity
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 

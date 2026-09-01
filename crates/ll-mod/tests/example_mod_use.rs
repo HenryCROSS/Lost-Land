@@ -135,6 +135,7 @@ fn spawn_agent(world: &mut WorldState, inventory: Vec<ItemStack>) -> EntityId {
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 

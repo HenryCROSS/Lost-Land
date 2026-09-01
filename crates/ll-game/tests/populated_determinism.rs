@@ -280,7 +280,34 @@ fn populated_world() -> GameWorld {
 /// **为什么它一定会红**（不是意外）：多一份文化会改 `pick_culture` 的
 /// 权重之和与掷骰消耗，多五个种族会改 `founder_race` 的加权抽取，两者
 /// 都在编年史与名册的判据里，而本文件的世界两样都真的跑过。
-const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 16_159_509_792_380_282_786;
+/// ### 2026-08-31，批次 26（对话的「加入据点」：`Agent.home`）
+///
+/// `16_159_509_792_380_282_786` → `14_539_485_488_716_496_306`。
+///
+/// [`ll_world::entity::Agent`] 多了 `home: Option<WorldId>`，
+/// `WorldState::hash` 跟着多一行 `write_optional_world_id`。本文件的世界
+/// 里有 29 个 `Agent`，物化出来的那些的 `home` 全都是 `Some(据点号)`
+/// ——摘要必然改变。
+///
+/// 四步（一步没少，全部在 Windows 实跑）：
+///
+/// 1. **基线红**：`left: 14539485488716496306` /
+///    `right: 16159509792380282786`。**七条存在性断言全部在摘要断言之前
+///    通过**（panic 落在 `assert_eq!(world.hash(), ..)` 那一行），世界
+///    没有变空。
+/// 2. **把改动关掉，精确回到旧值**：**只**把 `WorldState::hash` 里那一行
+///    `write_optional_world_id(&mut hasher, agent.home)` 临时注掉（新字段
+///    本身、八十余处构造点、`build_npc_agent` 的 `home: Some(profile.home)`、
+///    `CURRENT_SCHEMA_VERSION` 5 → 6 **全部保留**），再跑一次：**绿**，
+///    摘要精确等于旧常量 `16_159_509_792_380_282_786`。
+/// 3. **恢复**那一行。
+/// 4. **两个独立进程复现**新值：两次都给出
+///    `14_539_485_488_716_496_306`。
+///
+/// **同批对照**：`EXPECTED_REPLAY_DIGEST` 也红（它的两个手写 `Agent`
+/// 各多写一个 `None` 判别值），`EXPECTED_WORLD_DIGEST` **不红**（那个
+/// 世界零 `actor`，A 表第二行早就实测过这条局限）。
+const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 14_539_485_488_716_496_306;
 
 #[test]
 fn 有人有城有物有势力的世界摘要跨平台稳定() {

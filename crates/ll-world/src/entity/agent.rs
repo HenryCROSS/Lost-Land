@@ -695,6 +695,54 @@ pub struct Agent {
     /// 伤害/陷阱）都能无代价剥掉一个角色的潜行，是一条所有者没有要求、
     /// 且当前没有任何反制设计（重新潜行的代价/冷却）配套的规则。
     pub stealthed: bool,
+    /// 这个实体属于**哪座据点**——`ll_world::settlement::SettlementSite::id`
+    /// （本 crate 内是 [`crate::settlement::SettlementSite::id`]）。玩家与
+    /// 任何不隶属于某座据点的实体是 `None`。
+    ///
+    /// # 它不是第二份真相源，是一次搬运
+    ///
+    /// 真相源是 `ll_mod::roster::NpcProfile::home`（依赖方向不允许本 crate
+    /// 引用 `ll-mod`，这里只能点名、不能用 intra-doc link 指过去）：那份
+    /// 派生身份由 `(world_seed, 据点 id, 名册序号)` 完全确定、不进存档。
+    /// 物化那一刻（`ll_mod::roster::build_npc_agent`）把它抄进本字段，
+    /// 实体从此自己答得出「我是哪座据点的人」。
+    ///
+    /// **被否决的替代方案是按位置反查**（`sites_touching_zone`，那条路径
+    /// 今天真的在生产代码里）：NPC 会走动，离开自己那片 zone 之后反查
+    /// 要么给出错的据点、要么什么都给不出，**而且不会报错**——那正是
+    /// 「用真相源之外的东西当判据」那一类缺陷的形状
+    /// （`knowledge/design/dialogue-system.md` 五节 5.1）。
+    ///
+    /// # 唯一消费者（对话的「加入据点」），以及为什么它够格
+    ///
+    /// `ll_sim::resolve` 结算 `Intent::DialogueChoose` 里的
+    /// `DialogueOutcome::JoinSettlement` 时读**说话人**的这个字段，再经
+    /// `ll_world::faction::FactionTable::faction_of` 换成势力号，产出一条
+    /// `AffiliationKind::Faction` 归属。没有本字段，「跟这座据点的管理者
+    /// 说话就能加入这座据点」这句所有者裁定在代码里根本问不出「哪座」。
+    ///
+    /// # 一处如实标注的风险：据点号本身是派生的
+    ///
+    /// 编年史不进存档，读档时用同一颗种子重跑推演，据点 `WorldId` 因此
+    /// 逐位复现——**今天这条成立**。但任何改变编年史推演的改动（地形、
+    /// 气候、文化、战争判据）都会让老存档里的这个号静默指向另一座据点，
+    /// 而没有任何东西会报错。本字段与由它派生出来的
+    /// `crate::entity::OrgRef::Instance` 归属**共享同一处风险**
+    /// （`ll_content::remap::remap_affiliations` 对 `Instance` 不做重映射，
+    /// 理由是「`WorldId` 不依赖 mod 加载顺序」——那条理由对**顺序**成立，
+    /// 对**世界生成变了**不成立）。今天的兜底只有一条：
+    /// `ll_content::save_file::CURRENT_SCHEMA_VERSION` 的「版本不对就明确
+    /// 拒绝」。彻底的解法（存一份锚点坐标校验、或把世界生成变更纳入
+    /// mod 版本作废策略）需要所有者裁定，见
+    /// `knowledge/design/dialogue-system.md` 九节第 3 条。
+    ///
+    /// # `Option` 不是「还没想好」
+    ///
+    /// 玩家真的不属于任何据点（所有者裁定：「玩家可以没有势力归属，
+    /// 这个可以通过后面和据点的管理者对话加入」），`None` 是那句话在
+    /// 类型上的表达，不是一个待填的占位。与 [`Self::remembered_id`]
+    /// 「懒分配」那种 `Option` 不同：本字段永远不会由引擎在事后补上。
+    pub home: Option<WorldId>,
 }
 
 /// [`Agent::spent_slots`] 的自定义 serde 编码：把 `(ContentIndex, u8)`
@@ -906,6 +954,9 @@ mod tests {
             // 值」，否则往返测试会因为「恰好等于默认值」而掩盖真正的
             // 编解码缺陷（见本函数文档）。
             stealthed: true,
+            // 非默认值（`None`）——同上一条理由：`Option` 字段若在这里
+            // 取 `None`，往返测试就只覆盖了它两个变体里的一个。
+            home: Some(WorldId::next(&mut world_id_counter)),
             // 非空背包——见 agent序列化往返后全部字段逐一相等 文档：
             // 空 Vec 序列化恒等于自身,不足以验证真正的编解码,必须让
             // 往返测试真的经过至少一条 ItemStack。
@@ -946,5 +997,58 @@ mod tests {
         // 互不重叠的字段，后者当前恰好持有一个副职，容器形状本身允许
         // 多于一个。
         assert_eq!(agent.subclasses.len(), 1);
+    }
+
+    /// **老存档到底兼不兼容，这一条是那个问题的实测答案。**
+    ///
+    /// 存档主体走 `postcard`（`ll_content::save_file::save_to_file` 的
+    /// `postcard::to_allocvec(world)`；依赖方向不允许本 crate 引用
+    /// `ll-content`，因此这里直接对 [`Agent`] 自己编解码——被验的性质
+    /// 完全相同：**non-self-describing，按声明顺序逐字段吃字节**）。
+    ///
+    /// # 「旧形状」是怎么造出来的，为什么它精确
+    ///
+    /// [`Agent::home`] 是**声明顺序上的最后一个**字段，且它是
+    /// `Option<WorldId>`：`None` 在 postcard 里恰好编码成一个字节的判别
+    /// 值 `0`。因此「加 `home` 之前的那份字节流」= 「现在的字节流去掉
+    /// 末尾那一个字节」——不需要把整个 `Agent` 复制一份旧定义出来，
+    /// 也就不会因为那份副本自己漂移而让这条断言变假。
+    ///
+    /// # 它证的是什么
+    ///
+    /// 旧字节流用**新**布局解不回来（缓冲区提前结束）。也就是说：本批
+    /// **没有**给老存档留下任何兼容路径，`#[serde(default)]` 在这条路上
+    /// 救不了任何东西（本类型 `gender` 字段文档里那一大段更正讲的正是
+    /// 这件事）。正确行为是 `ll_content::save_file::CURRENT_SCHEMA_VERSION`
+    /// 递增之后**明确拒绝**，端到端证据在 `ll-content` 那一侧的
+    /// `加入据点批次之前的老存档被明确拒绝而不是静默按新布局误解析`。
+    ///
+    /// # 对照组（否则这条可能只是「随便截一刀都解不回来」）
+    ///
+    /// 同一份**完整**字节流必须解得回来，且逐字段相等。没有这一半，
+    /// 「截断之后失败」什么都证不了。
+    #[test]
+    fn 少一个末尾字段的旧形状用postcard解不回新形状() {
+        // Arrange：`home: None` ⇒ 末尾恰好一个字节。
+        let mut agent = fully_populated_agent();
+        agent.home = None;
+        let full = postcard::to_allocvec(&agent).expect("Agent 可序列化");
+
+        // 对照组：完整字节流解得回来，且逐字段相等。
+        let round: Agent = postcard::from_bytes(&full).expect("完整字节流必须解得回来");
+        assert_eq!(round, agent, "对照组：完整的新形状字节流往返必须无损");
+
+        // Act：砍掉末尾那一个字节 = 加 `home` 之前的那份字节流。
+        let old_shape = &full[..full.len() - 1];
+
+        // Assert：解不回来。**不是**「解回来一个 `home: None` 的默认值」。
+        let decoded: Result<Agent, _> = postcard::from_bytes(old_shape);
+        // 红的理由必须是「字节不够了」而不是别的什么——否则这条断言
+        // 可能在某天因为一个完全无关的解码失败而继续绿着。
+        assert_eq!(
+            decoded.as_ref().err(),
+            Some(&postcard::Error::DeserializeUnexpectedEnd),
+            "旧形状必须因为『缓冲区提前结束』而失败，实际 {decoded:?}"
+        );
     }
 }

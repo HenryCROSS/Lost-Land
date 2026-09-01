@@ -168,7 +168,28 @@ use crate::remap::remap_world;
 /// 用来跳过任何比对**——全文只有一处引用它，那是「死豁免要清理」那条
 /// 反向检查。也就是说那份豁免机制今天是空转的。本批次没有去修它（那属
 /// 门禁自己的批次），只是把这件事写在这里，免得下一个人以为豁免可用。
-pub const CURRENT_SCHEMA_VERSION: u32 = 5;
+/// # 5 → 6（对话「加入据点」批次，2026-08-31）——回到最经典的那一档
+///
+/// [`ll_world::entity::Agent`] 多了一个字段 `home: Option<WorldId>`
+/// （见它自己的文档：把 `ll_mod::roster::NpcProfile::home` 这个既有真相源
+/// 搬进实体，好让对话的「加入据点」问得出「哪座」）。`Agent` 在存档主体
+/// 的类型闭包里，因此这是**字节布局真的变了**那一档，与 2 → 3 / 3 → 4
+/// 同形，不是 4 → 5 那种「布局没变但派生形状变了」。
+///
+/// **老存档不兼容，而且这件事不能靠 `#[serde(default)]` 声称。** 本字段
+/// **没有**加 `#[serde(default)]`：加了也是空操作（postcard 是
+/// non-self-describing，见本常量文档开头那一大段），加了反而会让下一个
+/// 读代码的人以为老存档还读得回来。老存档走
+/// [`crate::load_error::LoadError::SchemaMigrationGap`] 这条**明确拒绝**
+/// 的既有路径，与前五次一样不配迁移函数（所有者裁定「老存档去掉就好了」）。
+///
+/// **不兼容这件事有实测证据**，不是一句声明：本文件测试
+/// `加入据点批次之前的老存档被明确拒绝而不是静默按新布局误解析` 走的是
+/// 真实的 `postcard` 主体（不是 `serde_json::Value`），
+/// `crates/ll-world/src/entity/agent.rs` 的
+/// `少一个末尾字段的旧形状用postcard解不回新形状` 则直接对着字节流验证
+/// 「少一个末尾字段就解不回来」。
+pub const CURRENT_SCHEMA_VERSION: u32 = 6;
 
 /// 头部 JSON 长度声明的安全上限——防御「声明长度与实际不符」类畸形
 /// 存档（规格 §14.3 fuzz 要求之一）：一个只有几十字节的文件却在长度
@@ -731,6 +752,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
         world.player_entity = Some(player);
         // 已物化据点集合（NPC 生成批次）：**必须设成非默认值**，否则这条
@@ -921,6 +943,42 @@ mod tests {
     }
 
     #[test]
+    fn 加入据点批次之前的老存档被明确拒绝而不是静默按新布局误解析() {
+        // 对话的「加入据点」批次把 CURRENT_SCHEMA_VERSION 从 5 升到 6：
+        // `ll_world::entity::Agent` 末尾多了 `home: Option<WorldId>`，而
+        // 存档主体走 postcard（non-self-describing、按声明顺序定位），
+        // 一份写于版本 5 的字节流用现在的布局去读，会在末尾撞上「缓冲区
+        // 提前结束」——那一半由 `ll-world` 那一侧的
+        // `少一个末尾字段的旧形状用postcard解不回新形状` 直接对着字节流
+        // 验证。本条验的是另一半：**读档管线根本不会走到那一步**，它在
+        // 版本比较那里就明确拒绝了。
+        //
+        // 交接文档第〇之二第 9 条已裁定**不写迁移**，因此正确行为就是
+        // 走「版本不对就打不开」这条既有路径。
+        //
+        // 反例验证（ADR 0022）：把 `check_schema_version` 的比较改成恒
+        // 返回 `Ok`，本条立刻红。
+        // Arrange：5 是加入据点批次之前的那个版本号。
+        let path = temp_path("pre-join-settlement-save-rejected");
+        let mut header = sample_header(Vec::new());
+        header.schema_version = 5;
+        save_to_file(&path, &header, &test_world()).expect("写出应当成功");
+
+        // Act
+        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default());
+
+        // Assert：明确拒绝，且错误里说得出是从哪个版本来的。
+        match outcome {
+            LoadOutcome::Rejected(LoadError::SchemaMigrationGap(detail)) => {
+                assert_eq!(detail.from, 5);
+                const _: () = assert!(5 < CURRENT_SCHEMA_VERSION);
+            }
+            other => panic!("期望 Rejected(SchemaMigrationGap)，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn terrain_table未正确灌入时读档返回rejected() {
         // 直接对应任务 9 的核心要求之一：assert_terrain_table_loaded
         // 真的在读档流程里被调用——传入一张空表,读档必须拒绝而不是
@@ -1089,6 +1147,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
         let content_index_map = registry
             .snapshot()
@@ -1224,6 +1283,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
         let content_index_map = registry
             .snapshot()
@@ -1293,6 +1353,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
         let content_index_map = registry
             .snapshot()

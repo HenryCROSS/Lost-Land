@@ -116,6 +116,7 @@ fn spawn_agent(world: &mut WorldState) -> EntityId {
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 
@@ -390,6 +391,7 @@ fn spawn_agent_with_dexterity(world: &mut WorldState, dexterity: i32) -> EntityI
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 
@@ -446,6 +448,7 @@ fn spawn_agent_with_luck(
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 
@@ -1124,6 +1127,7 @@ fn spawn_named_agent(
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 
@@ -1528,6 +1532,7 @@ fn spawn_agent_with_luck_and_race(
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 
@@ -2220,6 +2225,7 @@ fn 未具名目标被击杀时不产生历史事件记录() {
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     });
 
     // Act
@@ -2290,6 +2296,7 @@ fn 未具名目标被击杀时按生物类型归并计数加一() {
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     });
 
     // Act

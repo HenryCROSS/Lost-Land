@@ -199,6 +199,7 @@ fn spawn_agent(
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 
@@ -969,6 +970,7 @@ fn spawn_agent_with_race_and_equipment(
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 

@@ -403,6 +403,7 @@ fn spawn_player(world: &mut WorldState, pos: TorusPos) -> EntityId {
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 

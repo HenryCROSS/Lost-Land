@@ -956,6 +956,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         };
         let actor = world.actors.spawn(blank(vec![tree.root]));
         let target = world.actors.spawn(blank(Vec::new()));
