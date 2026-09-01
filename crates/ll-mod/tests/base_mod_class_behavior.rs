@@ -1,6 +1,6 @@
 //! 端到端验证「**按职业选行为树**」这条内容绑定：本体真实内容
 //! （`mods/lostland/classes.json5` 的 `behavior` 字段）+ 经由
-//! [`ll_sim::turn::TurnEngine`] 的真实回合推进 + 一条反例（ADR 0018）。
+//! [`ll_sim::turn::TurnEngine`] 的真实回合推进 + 一条反例（ADR 0022）。
 //!
 //! # 本文件守的那个缺陷
 //!

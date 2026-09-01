@@ -895,7 +895,7 @@ mod tests {
         // 走既有的「版本不对就打不开」这条路。这一条是那个裁定的端到端
         // 证据。
         //
-        // 反例验证（ADR 0018）：把 `check_schema_version` 的比较改成恒
+        // 反例验证（ADR 0022）：把 `check_schema_version` 的比较改成恒
         // 返回 `Ok`，本条立刻红——读档会尝试按新布局解析那份旧字节流。
         // Arrange：3 是势力播种之前的那个版本号。
         let path = temp_path("pre-faction-seeding-save-rejected");

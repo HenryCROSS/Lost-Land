@@ -89,7 +89,7 @@ fn 真编年史的占领链长出下属多座据点的势力() {
     // 「一条占领链天然就是『一个势力下属多个据点』」。这一条把那句话
     // 从设想变成可执行的断言。
     //
-    // 反例验证（ADR 0018）：把 `seed_factions` 里 `SettlementConquered`
+    // 反例验证（ADR 0022）：把 `seed_factions` 里 `SettlementConquered`
     // 那一支改成 `continue`，本条立刻红——每个势力都只剩自己一座城。
     // Arrange
     let (chronicle, _cultures) = seed_with_conquest();
