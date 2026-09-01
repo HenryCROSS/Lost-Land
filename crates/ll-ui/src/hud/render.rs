@@ -159,7 +159,7 @@ const WORLD_MAP_MARGIN_FRACTION: f32 = 0.1;
 /// 的取舍——窗口尺寸由 `ll_platform::window::WindowConfig` 固定给定
 /// （见 [`equipment_origin_x`] 文档同一段说明),按比例现算仍然比写死
 /// 像素常量更不容易在窗口配置调整后悄悄错位。
-/// 按这块菜单声明的 [`MenuPlacement`] 把它摆到屏幕上。
+/// 按这块菜单声明的 [`MenuPlacement`](super::action_menu::MenuPlacement) 把它摆到屏幕上。
 ///
 /// # 为什么要「先建一次、再整体平移」
 ///
@@ -218,7 +218,7 @@ pub fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
 /// `menu` 为 `None` 时（没有任何动作菜单打开）那块面板整块不参与本次
 /// 产出，与 `world_map` 同一条纪律。为 `Some` 时按
 /// [`super::action_menu::action_menu_panel`] 画出，**画在哪由那块菜单
-/// 自己声明的 [`MenuPlacement`] 决定**（见 [`placed_action_menu`]）：
+/// 自己声明的 [`MenuPlacement`](super::action_menu::MenuPlacement) 决定**（见 [`placed_action_menu`](super::placement::placed_action_menu)）：
 /// 背包与制作贴屏幕上沿、水平居中（本参数落地以来一直如此），交互列表
 /// 与方向列表水平垂直**都居中**——所有者裁定「那个互动显示的 UI 窗口，
 /// 我希望是出现在屏幕正中间」。
