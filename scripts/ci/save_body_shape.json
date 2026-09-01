@@ -1,7 +1,7 @@
 {
   "_note": "本文件由 scripts/ci/check_save_schema_version.py --bless 生成，不要手工编辑。它记录存档主体（postcard 编码的 WorldState 闭包）的线格式形状，以及生成它时的 CURRENT_SCHEMA_VERSION。",
-  "fingerprint": "553086e72cb29e03c34de1b5be8d2233be92271acc3f8f8e164baf543e5f15de",
-  "schema_version": 4,
+  "fingerprint": "2c098d7cf9d08a42da2e7759854a16a5fc8e1eba4b683d12a3e0b71540bb73df",
+  "schema_version": 5,
   "types": {
     "ActiveStatModifier": {
       "container": [
@@ -422,6 +422,24 @@
         }
       ]
     },
+    "BuildingTemplate": {
+      "container": [],
+      "file": "crates/ll-world/src/building.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "u32"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<(ContentIndex, u32)>"
+        }
+      ]
+    },
     "ChunkGrid": {
       "container": [],
       "file": "crates/ll-world/src/chunk.rs",
@@ -508,16 +526,21 @@
         {
           "attrs": [],
           "i": 6,
-          "ty": "Vec<bool>"
+          "ty": "Vec<Vec<BuildingTemplate>>"
         },
         {
           "attrs": [],
           "i": 7,
-          "ty": "Vec<CultureKind>"
+          "ty": "Vec<bool>"
         },
         {
           "attrs": [],
           "i": 8,
+          "ty": "Vec<CultureKind>"
+        },
+        {
+          "attrs": [],
+          "i": 9,
           "ty": "Option<ContentIndex>"
         }
       ]

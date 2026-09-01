@@ -42,6 +42,12 @@
 //! | `wall_terrain` | [`crate::settlement`] 的 `house_tiles`/`ruin_tiles` | 矮人矿城是石头的，哥布林营地是木头的 |
 //! | `founder_races` | `ll_mod::roster::settlement_founder_race` | 哥布林部落里住的是哥布林 |
 //! | `hostility` | `chronicle` 的 `wage_wars`/`pick_target` | 「矮人矿城被哥布林部落攻灭」 |
+//! | `buildings` | [`crate::building`] 的 `settlement_furnishing` | 矿邑的作坊里立着锻炉，酒馆里摆着桌椅 |
+//!
+//! **上面那句「五个字段」是文化批次写下的，建筑类型批次（2026-08-31）
+//! 之后是六个**——原句原样保留以便追溯，这里加一行更正：新增的
+//! [`CultureAttrs::buildings`] 由 [`crate::building`] 读，落地计划见
+//! `docs/superpowers/plans/2026-08-31-batch20-buildings.md`。
 //!
 //! # 文化不进存档（ADR 0009「默认派生，只存偏差」）
 //!
@@ -63,6 +69,7 @@ use std::fmt;
 use ll_core::ident::{ContentIndex, NamespacedId, WorldId};
 use ll_core::rng::DetRng;
 
+use crate::building::BuildingTemplate;
 use crate::resource::ResourceCategory;
 use crate::terrain::TerrainKind;
 
@@ -204,6 +211,34 @@ pub struct CultureAttrs {
     /// 战争行为与本模块落地之前**逐位相同**（本模块测试
     /// `敌意全为零时开战判定与旧行为逐位相同` 守着这条）。
     pub hostility: Vec<(ContentIndex, u32)>,
+    /// 这种文化**有哪几类屋子、各占多少、里面摆什么**——建筑类型批次
+    /// （2026-08-31）新增，落地所有者原话「聚居地……只有款式一样的
+    /// 房子」与「建筑需要根据他的类型填入不同的家具」。
+    ///
+    /// **谁读它**：[`crate::building::settlement_furnishing`] 按权重给每
+    /// 栋屋子抽一条模板，再把那条模板声明的家具摆进屋里；真正写进世界
+    /// 的那一步在 `ll_game::settlement_spawn`（本 crate 不能引用它，
+    /// 依赖方向不允许，这里只点名）。
+    ///
+    /// 可观测结果：**一座矿邑的作坊里立着锻炉，一间酒馆里摆着长桌与
+    /// 椅子，一座仓库里堆着箱子与酒桶**——而在本字段落地之前，全大陆
+    /// 每一栋屋子的地板上都是空的。
+    ///
+    /// # 为什么是文化声明的列表，而不是引擎的一个 `enum`
+    ///
+    /// 与 [`Self::wall_terrain`] 完全同一条判据：把「住宅/作坊/仓库/
+    /// 酒馆」写成 Rust 枚举，第三方 mod 就永远只能在这四类里挑，
+    /// 而「加一份 `cultures.json5` 就有自己的城镇形态」这条判据当场
+    /// 不成立。列表则相反：一份文化想只有两类（哥布林部落没有酒馆）
+    /// 或者想有第五类，都是内容改动，一行 Rust 都不用动。
+    ///
+    /// # 注册期校验（ADR 0017）
+    ///
+    /// 1. 至少要有一条权重为正的模板——[`CultureError::NoBuildingTemplate`]。
+    /// 2. 单条模板的家具件数合计不得超过
+    ///    [`crate::building::MAX_FURNITURE_PER_BUILDING`]——
+    ///    [`CultureError::TooMuchFurniture`]。
+    pub buildings: Vec<BuildingTemplate>,
 }
 
 /// 文化注册期可能出现的错误。ADR 0017「注册期完整校验」。
@@ -221,6 +256,18 @@ pub enum CultureError {
     /// 会拿到一份「谁也不是」的名册。静默产出那种据点比装载期当场
     /// 点名要难查得多（ADR 0017）。
     NoFounderRace(ContentIndex),
+    /// [`CultureAttrs::buildings`] 是空的，或者全部权重都是 0。
+    ///
+    /// 与 [`Self::NoFounderRace`] 同一条纪律：一份没有任何建筑类型的
+    /// 文化，它的城镇里每一栋屋子都是空壳——那正是本批次要消灭的症状，
+    /// 让它靠「忘了写」重新出现是说不过去的。
+    NoBuildingTemplate(ContentIndex),
+    /// 某条 [`BuildingTemplate`] 的家具件数合计超过了一栋屋子摆得下的
+    /// 上限（[`crate::building::MAX_FURNITURE_PER_BUILDING`]）。
+    ///
+    /// 载荷是 `(文化索引, 声明的件数)`。静默丢弃超出的部分会让「我明明
+    /// 声明了十件，屋里只有八件」变成一个查不出来的问题。
+    TooMuchFurniture(ContentIndex, u32),
 }
 
 impl fmt::Display for CultureError {
@@ -235,6 +282,15 @@ impl fmt::Display for CultureError {
             CultureError::NoFounderRace(index) => {
                 write!(f, "文化索引 {} 没有任何权重为正的建立者种族", index.get())
             }
+            CultureError::NoBuildingTemplate(index) => {
+                write!(f, "文化索引 {} 没有任何权重为正的建筑类型", index.get())
+            }
+            CultureError::TooMuchFurniture(index, declared) => write!(
+                f,
+                "文化索引 {} 的某一类建筑声明了 {declared} 件家具，超过一栋屋子摆得下的 {} 件",
+                index.get(),
+                crate::building::MAX_FURNITURE_PER_BUILDING
+            ),
         }
     }
 }
@@ -254,6 +310,7 @@ pub struct CultureTable {
     wall_terrain: Vec<Option<TerrainKind>>,
     founder_races: Vec<Vec<(ContentIndex, u32)>>,
     hostility: Vec<Vec<(ContentIndex, u32)>>,
+    buildings: Vec<Vec<BuildingTemplate>>,
     defined: Vec<bool>,
     order: Vec<CultureKind>,
     /// 「无文化」哨兵索引（`lostland:cultureless`，由
@@ -326,6 +383,15 @@ impl CultureTable {
         if !attrs.founder_races.iter().any(|(_, weight)| *weight > 0) {
             return Err(CultureError::NoFounderRace(index));
         }
+        if !attrs.buildings.iter().any(|template| template.weight > 0) {
+            return Err(CultureError::NoBuildingTemplate(index));
+        }
+        for template in &attrs.buildings {
+            let declared = template.furniture_count();
+            if declared as usize > crate::building::MAX_FURNITURE_PER_BUILDING {
+                return Err(CultureError::TooMuchFurniture(index, declared));
+            }
+        }
 
         let idx = index.get() as usize;
         if idx >= self.defined.len() {
@@ -337,6 +403,7 @@ impl CultureTable {
             self.wall_terrain.resize(new_len, None);
             self.founder_races.resize(new_len, Vec::new());
             self.hostility.resize(new_len, Vec::new());
+            self.buildings.resize(new_len, Vec::new());
         }
 
         if self.defined[idx] {
@@ -350,6 +417,7 @@ impl CultureTable {
         self.wall_terrain[idx] = Some(attrs.wall_terrain);
         self.founder_races[idx] = attrs.founder_races;
         self.hostility[idx] = attrs.hostility;
+        self.buildings[idx] = attrs.buildings;
         self.order.push(CultureKind::from_index(index));
         Ok(())
     }
@@ -406,6 +474,17 @@ impl CultureTable {
     /// 未定义的索引返回空切片。
     pub fn founder_races(&self, kind: CultureKind) -> &[(ContentIndex, u32)] {
         self.founder_races
+            .get(kind.index().get() as usize)
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
+    /// 这种文化有哪几类建筑，**按声明顺序**（约束 C5）。未定义的索引
+    /// 返回空切片——空切片的语义是「这个世界的这份文化不摆家具」，与
+    /// 空文化表下建材退回引擎默认是同一种诚实退化，见
+    /// [`crate::building::settlement_furnishing`] 文档。
+    pub fn buildings(&self, kind: CultureKind) -> &[BuildingTemplate] {
+        self.buildings
             .get(kind.index().get() as usize)
             .map(Vec::as_slice)
             .unwrap_or(&[])
@@ -544,6 +623,7 @@ pub fn base_culture_fixture(
                 wall_terrain: stone_wall,
                 founder_races: vec![(metal_race, 10)],
                 hostility: Vec::new(),
+                buildings: crate::building::bare_building_fixture(),
             },
         )
         .expect("夹具文化互不重复");
@@ -558,6 +638,7 @@ pub fn base_culture_fixture(
                 wall_terrain: wood_wall,
                 founder_races: vec![(tribal_race, 10)],
                 hostility: vec![(mountain_id, MAX_HOSTILITY)],
+                buildings: crate::building::bare_building_fixture(),
             },
         )
         .expect("夹具文化互不重复");
@@ -654,6 +735,7 @@ mod tests {
             wall_terrain: terrain,
             founder_races: vec![(race, 1)],
             hostility: Vec::new(),
+            buildings: crate::building::bare_building_fixture(),
         };
         let mut table = CultureTable::new();
         table.define(index, attrs()).expect("第一次定义应当成功");
@@ -688,6 +770,7 @@ mod tests {
                 wall_terrain: terrain,
                 founder_races: vec![(race, 1)],
                 hostility: vec![(other, MAX_HOSTILITY + 1)],
+                buildings: crate::building::bare_building_fixture(),
             },
         );
 
@@ -720,6 +803,7 @@ mod tests {
                 wall_terrain: terrain,
                 founder_races: vec![(race, 0)],
                 hostility: Vec::new(),
+                buildings: crate::building::bare_building_fixture(),
             },
         );
 

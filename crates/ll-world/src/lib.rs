@@ -26,6 +26,7 @@
 use core::fmt;
 
 pub mod bounded_grid;
+pub mod building;
 pub mod chronicle;
 pub mod chunk;
 pub mod climate;

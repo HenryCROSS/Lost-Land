@@ -873,6 +873,7 @@ mod tests {
                     wall_terrain: wall,
                     founder_races: vec![(race, 1)],
                     hostility: Vec::new(),
+                    buildings: crate::building::bare_building_fixture(),
                 },
             )
             .expect("首次定义");

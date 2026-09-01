@@ -473,6 +473,10 @@ pub const BASE_CONTENT_AUDIT: ContentAuditPolicy = ContentAuditPolicy {
         // lostland:goblin_warband 与 lostland:mining_hold 两条覆盖——
         // 「本体名册里必须至少有一对互相敌对的文化」这条内容设计要求
         // 因此有了一道机器检查：把那两段敌对删掉，本门禁立刻变红。
+        //
+        // **据点建筑类型批次追加了第七个字段 `buildings`**，同样不需要
+        // 豁免：注册期拒了空表，六条文化因此全部覆盖它。它额外带来一条
+        // 跨表引用检查（家具索引必须落在物品表里），见 `inspect_culture`。
         ContentTableKind::Culture,
         // 对话内容表批次：mods/lostland/dialogues.json5（**新文件**，两段
         // 会话 + 十二个节点）让两张对话表在 lostland 命名空间下一落地就
@@ -1689,6 +1693,26 @@ fn inspect_culture(auditor: &mut Auditor<'_>, index: ContentIndex) {
         .iter()
         .any(|target| table.hostility(Some(kind), Some(*target)) > 0);
     auditor.field("CultureAttrs::hostility", declares_hostility);
+
+    // 建筑类型（据点建筑类型批次）。恒非空——注册期已经拒了空表
+    // （`CultureError::NoBuildingTemplate`），这里记 `true` 与
+    // `founder_races` 同一条理由：如实反映那道更早的门。
+    //
+    // 真正有价值的是下面那条**跨表引用**：家具索引必须指向一件真的存在
+    // 的物品。写错一个 id（`lostland:oak_char`）在装载期只会 intern 出
+    // 一个没人定义的索引，然后在游戏里表现为「这栋屋子少了一把椅子」
+    // ——一个没有任何报错、要靠肉眼数家具才发现的症状。
+    let furniture: Vec<ContentIndex> = table
+        .buildings(kind)
+        .iter()
+        .flat_map(|template| template.furniture.iter().map(|(item, _)| *item))
+        .collect();
+    auditor.field("CultureAttrs::buildings", true);
+    auditor.slice_reference(
+        "CultureAttrs::buildings::furniture",
+        &furniture,
+        ReferenceExpectation::Table(ContentTableKind::Item),
+    );
 }
 
 /// [`crate::dialogue::DialogueDef`] 的全部字段。
