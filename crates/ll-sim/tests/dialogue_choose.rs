@@ -10,10 +10,12 @@
 
 use std::collections::BTreeMap;
 
+use ll_core::ident::WorldId;
 use ll_core::ident::{ContentIndex, Interner, NamespacedId};
 use ll_core::time::Tick;
 use ll_core::torus::TorusSize;
 use ll_sim::catalogs::ResolveCatalogs;
+use ll_sim::dialogue::JOIN_SETTLEMENT_STANDING;
 use ll_sim::dialogue::{
     DialogueCatalog, DialogueCondition, DialogueOptionView, DialogueOutcome, has_dialogue_flag,
 };
@@ -21,7 +23,8 @@ use ll_sim::effect::Effect;
 use ll_sim::intent::Intent;
 use ll_sim::resolve::resolve_with_catalogs;
 use ll_sim::turn::{PlayerTurnOutcome, TurnEngine};
-use ll_world::entity::{Agent, BaseStats, EntityId};
+use ll_world::entity::{AffiliationKind, Agent, BaseStats, EntityId, OrgInstance, OrgRef};
+use ll_world::faction::{Faction, FactionStatus, FactionTable};
 use ll_world::generate::GenParams;
 use ll_world::space::Space;
 use ll_world::state::WorldState;
@@ -105,6 +108,7 @@ fn spawn_agent(world: &mut WorldState) -> EntityId {
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 
@@ -144,6 +148,9 @@ fn 选中带set_flag的选项产出一条setmodstate() {
         &world,
         &Intent::DialogueChoose {
             actor,
+            // 本组用例的后果只有 `set-flag`，不读说话人；取 `actor` 自己
+            // 是最短的合法值，`join-settlement` 那一支另有专门的用例。
+            speaker: actor,
             node,
             option: 0,
         },
@@ -204,6 +211,9 @@ fn 说完一整轮话世界时钟一格没动() {
             actor,
             Intent::DialogueChoose {
                 actor,
+                // 本组用例的后果只有 `set-flag`，不读说话人；取 `actor` 自己
+                // 是最短的合法值，`join-settlement` 那一支另有专门的用例。
+                speaker: actor,
                 node,
                 option: 0,
             },
@@ -245,6 +255,9 @@ fn 条件不再满足的选项在结算侧被拒掉() {
     let dialogues = fake_dialogues(node);
     let choose = |option: usize| Intent::DialogueChoose {
         actor,
+        // 本组用例的后果只有 `set-flag`，不读说话人；取 `actor` 自己
+        // 是最短的合法值，`join-settlement` 那一支另有专门的用例。
+        speaker: actor,
         node,
         option,
     };
@@ -303,6 +316,9 @@ fn 查不到的节点或越界的选项产出空效果而不是panic() {
             &world,
             &Intent::DialogueChoose {
                 actor,
+                // 本组用例的后果只有 `set-flag`，不读说话人；取 `actor` 自己
+                // 是最短的合法值，`join-settlement` 那一支另有专门的用例。
+                speaker: actor,
                 node: 别的节点,
                 option: 0,
             },
@@ -315,11 +331,239 @@ fn 查不到的节点或越界的选项产出空效果而不是panic() {
             &world,
             &Intent::DialogueChoose {
                 actor,
+                // 本组用例的后果只有 `set-flag`，不读说话人；取 `actor` 自己
+                // 是最短的合法值，`join-settlement` 那一支另有专门的用例。
+                speaker: actor,
                 node,
                 option: 99,
             },
             &catalogs(&dialogues),
         )
         .is_empty()
+    );
+}
+
+// ── join-settlement（对话系统的批次 3）─────────────────────────────
+
+/// 造一张只有一个势力的势力表：`faction` 号的势力统治 `site` 号的据点。
+///
+/// 走 `FactionTable::rebuild`（**唯一**的有内容构造路径，全部不变式都
+/// 在它里面），不手搓内部字段。
+fn 一个势力统治一座据点(faction: WorldId, site: WorldId) -> FactionTable {
+    FactionTable::rebuild(vec![Faction {
+        org: OrgInstance {
+            id: faction,
+            def: None,
+            authored: None,
+        },
+        seat: site,
+        founded_epoch: 0,
+        status: FactionStatus::Active,
+        members: vec![site],
+    }])
+    .expect("一个势力一座据点满足全部不变式")
+}
+
+/// 一个节点、一条选项：无条件带 `join-settlement`。
+fn 加入据点的对话(node: ContentIndex) -> FakeDialogues {
+    FakeDialogues {
+        node,
+        options: vec![(Vec::new(), vec![DialogueOutcome::JoinSettlement])],
+    }
+}
+
+/// 把「玩家 + 管理者 + 势力表」这一套摆好，返回 `(世界, 玩家, 管理者,
+/// 势力号)`。
+fn 有管理者的世界() -> (WorldState, EntityId, EntityId, WorldId) {
+    let mut world = test_world();
+    let actor = spawn_agent(&mut world);
+    let speaker = spawn_agent(&mut world);
+    let mut counter = 0u32;
+    let site = WorldId::next(&mut counter);
+    let faction = WorldId::next(&mut counter);
+    world
+        .actors
+        .get_mut(speaker)
+        .expect("刚生成的实体必然存在")
+        .home = Some(site);
+    world.factions = 一个势力统治一座据点(faction, site);
+    (world, actor, speaker, faction)
+}
+
+/// **加入据点的主线**：产出一条 `Effect::AddAffiliation`，指向说话人那座
+/// 据点所属的势力，`standing` 恰好是所有者裁定的 +250。
+///
+/// 故意改坏的反例（本批实测）：把 `join_settlement` 里的
+/// `world.factions.faction_of(home)?` 换成 `Some(home)`（拿据点号冒充
+/// 势力号，也就是规格 5.1 那条已作废的变通），本条当场红——`org` 指的
+/// 是据点而不是势力。
+#[test]
+fn 选中join_settlement的选项产出一条指向势力的归属() {
+    // Arrange
+    let (world, actor, speaker, faction) = 有管理者的世界();
+    let node = ContentIndex::default();
+    let dialogues = 加入据点的对话(node);
+    // 对照组前提：改之前玩家身上一条归属都没有。
+    assert!(
+        world
+            .actors
+            .get(actor)
+            .expect("玩家在")
+            .affiliations
+            .is_empty(),
+        "结算之前玩家必须一条归属都没有，否则下面的断言可能验的是别人挂的"
+    );
+
+    // Act
+    let effects = resolve_with_catalogs(
+        &world,
+        &Intent::DialogueChoose {
+            actor,
+            speaker,
+            node,
+            option: 0,
+        },
+        &catalogs(&dialogues),
+    );
+
+    // Assert
+    assert_eq!(effects.len(), 1, "一条 join-settlement 恰好产出一条效果");
+    let Effect::AddAffiliation {
+        entity,
+        affiliation,
+    } = &effects[0]
+    else {
+        panic!("join-settlement 必须走 Effect::AddAffiliation，实际是 {effects:?}");
+    };
+    assert_eq!(*entity, actor, "归属挂在**发起者**身上，不是说话人");
+    assert_eq!(affiliation.kind, AffiliationKind::Faction);
+    assert_eq!(
+        affiliation.org,
+        OrgRef::Instance(faction),
+        "指的必须是**势力**号，不是据点号"
+    );
+    assert_eq!(
+        affiliation.standing, JOIN_SETTLEMENT_STANDING,
+        "所有者裁定：加入据点给 +250"
+    );
+    assert_eq!(JOIN_SETTLEMENT_STANDING, 250, "常量本身就是那个裁定值");
+}
+
+/// **说话人没有 `home` → 零效果。** 玩家、以及任何不隶属某座据点的实体
+/// 都是这一档。
+///
+/// 故意改坏的反例（本批实测）：把 `join_settlement` 里的
+/// `world.actors.get(speaker)?.home?` 换成 `.home.unwrap_or(<任意号>)`，
+/// 本条当场红。
+#[test]
+fn 说话人没有所属据点时join_settlement零效果() {
+    // Arrange
+    let (mut world, actor, speaker, _faction) = 有管理者的世界();
+    world.actors.get_mut(speaker).expect("说话人在").home = None;
+    let node = ContentIndex::default();
+    let dialogues = 加入据点的对话(node);
+
+    // Act
+    let effects = resolve_with_catalogs(
+        &world,
+        &Intent::DialogueChoose {
+            actor,
+            speaker,
+            node,
+            option: 0,
+        },
+        &catalogs(&dialogues),
+    );
+
+    // Assert
+    assert!(effects.is_empty(), "实际产出了 {effects:?}");
+}
+
+/// **那座据点查不到势力（废墟、或从不存在的号）→ 零效果。**
+///
+/// 故意改坏的反例（本批实测）：把 `faction_of(home)?` 换成
+/// `faction_of(home).unwrap_or(home)`，本条当场红。
+#[test]
+fn 据点查不到势力时join_settlement零效果() {
+    // Arrange：说话人的 home 指向一座**不在任何势力成员表里**的据点。
+    let (mut world, actor, speaker, _faction) = 有管理者的世界();
+    let mut counter = 900u32;
+    world.actors.get_mut(speaker).expect("说话人在").home = Some(WorldId::next(&mut counter));
+    let node = ContentIndex::default();
+    let dialogues = 加入据点的对话(node);
+
+    // Act
+    let effects = resolve_with_catalogs(
+        &world,
+        &Intent::DialogueChoose {
+            actor,
+            speaker,
+            node,
+            option: 0,
+        },
+        &catalogs(&dialogues),
+    );
+
+    // Assert
+    assert!(effects.is_empty(), "实际产出了 {effects:?}");
+}
+
+/// **加入据点同样不消耗回合**（所有者裁定第 2 条）。
+///
+/// 批次 21 已经有一条 `说完一整轮话世界时钟一格没动`，但那条走的是
+/// `set-flag` 那一支——`match` 加了新变体之后它**不再覆盖**这一支，
+/// 因此本批必须补这一条。
+///
+/// 故意改坏的反例（本批实测）：给 `join_settlement` 的返回值再补一条
+/// `Effect::ScheduleNext`，本条当场红。
+#[test]
+fn 加入据点不消耗回合() {
+    // Arrange
+    let (mut world, actor, speaker, _faction) = 有管理者的世界();
+    let node = ContentIndex::default();
+    let dialogues = 加入据点的对话(node);
+    let clock_before = world.clock;
+    let next_before = world.actors.get(actor).expect("玩家在").next_action_at;
+    let mut timeline = ll_sim::timeline::Timeline::new();
+    timeline.schedule(actor, clock_before);
+    let mut engine = TurnEngine::new(timeline);
+    let mut on_effect = |_world: &WorldState, _effect: &Effect| {};
+
+    // Act：先让引擎弹出玩家（受控实体早退路径），再提交——这正是真实
+    // 游戏里 `run_turn` 走的那条链，与上面那条 `set-flag` 用例同办。
+    let mut ai =
+        |_world: &WorldState, actor: EntityId, _controlled: EntityId| Intent::Wait { actor };
+    engine.advance_ai(
+        &mut world,
+        actor,
+        &mut ai,
+        &catalogs(&dialogues),
+        &mut on_effect,
+    );
+    let outcome = engine.try_player_intent(
+        &mut world,
+        actor,
+        Intent::DialogueChoose {
+            actor,
+            speaker,
+            node,
+            option: 0,
+        },
+        &catalogs(&dialogues),
+        &mut on_effect,
+    );
+
+    // Assert：效果真的落地了（否则「时钟没动」可能只是因为什么都没发生）。
+    assert_eq!(outcome, PlayerTurnOutcome::Acted);
+    assert_eq!(
+        world.actors.get(actor).expect("玩家在").affiliations.len(),
+        1,
+        "对照组：归属真的挂上了"
+    );
+    assert_eq!(world.clock, clock_before, "对话不消耗回合，世界时钟不动");
+    assert_eq!(
+        world.actors.get(actor).expect("玩家在").next_action_at,
+        next_before,
+        "对话不消耗回合，下次行动时刻不动"
     );
 }

@@ -1,7 +1,7 @@
 //! `apply`：把一个 [`Effect`] 落到 [`WorldState`] 上的唯一入口。
 
 use ll_core::ident::ContentIndex;
-use ll_world::entity::{Agent, EntityId};
+use ll_world::entity::{Affiliation, Agent, EntityId};
 use ll_world::fov::compute_fov;
 use ll_world::sight_residency::fov_neighborhood_resident;
 use ll_world::space::Space;
@@ -541,6 +541,32 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.stealthed = *stealthed;
             }
         }
+        Effect::AddAffiliation {
+            entity,
+            affiliation,
+        } => {
+            let Some(agent) = world.actors.get_mut(*entity) else {
+                return;
+            };
+            // 已经有同一条 `(kind, org)` → 整条静默不做（不叠加、不刷新）。
+            // 见 `Effect::AddAffiliation` 文档「`apply` 只做两件事」一节：
+            // 「再加入一次该怎样」今天没有裁定，不做是最保守的一档。
+            //
+            // 遍历的是 `Vec`，保序、不碰任何哈希容器（约束 C5）。
+            let already = agent.affiliations.iter().any(|existing| {
+                existing.kind == affiliation.kind && existing.org == affiliation.org
+            });
+            if already {
+                return;
+            }
+            agent.affiliations.push(Affiliation {
+                // **唯一的 clamp 执行点**（约束 C1：写入口只有一个，
+                // 夹紧也只需要一处），见
+                // `ll_world::entity::Affiliation::STANDING_FULL` 文档。
+                standing: Affiliation::clamp_standing(affiliation.standing),
+                ..*affiliation
+            });
+        }
     }
 }
 
@@ -749,6 +775,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         }
     }
 

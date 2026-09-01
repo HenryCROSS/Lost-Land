@@ -11,7 +11,7 @@
 use ll_core::ident::ContentIndex;
 use ll_core::time::Tick;
 use ll_core::torus::TorusPos;
-use ll_world::entity::{AttributeKind, EntityId};
+use ll_world::entity::{Affiliation, AttributeKind, EntityId};
 use ll_world::history::KillCause;
 use ll_world::item::EquipSlot;
 use ll_world::mod_state::ModStateWrite;
@@ -836,6 +836,39 @@ pub enum Effect {
         actor: EntityId,
         /// 这一刻之后它的潜行状态。
         stealthed: bool,
+    },
+    /// 给一个实体挂上一条归属（对话的「加入据点」批次）——
+    /// [`ll_world::entity::Agent::affiliations`] 的**第一个由玩家行动
+    /// 驱动的写入口**（此前唯一的生产者是 NPC 物化时挂的那条文化归属，
+    /// 那是世界生成，不经 `apply`）。
+    ///
+    /// # 为什么携带一整条 `Affiliation`，而不是 `(kind, org, delta)`
+    ///
+    /// 与 [`Effect::SetStealth`]「携带目标值而不是取反」同一条判据的另
+    /// 一面：那里携带**绝对值**是因为「翻转」会让同一条效果应用两次得
+    /// 到相反结果；这里携带**整条归属**是因为「加入」本来就是从无到有
+    /// 造出一条记录，没有「在原值上增减」这个语义。`standing` 的增减
+    /// （交易、任务、犯罪）是**另一条**将来的效果，那一条才需要 delta，
+    /// 今天没有任何生产者，按 YAGNI 不预留（ADR 0021）。
+    ///
+    /// # `apply` 只做两件事，都是不需要读世界就能决定的
+    ///
+    /// 1. **同一条 `(kind, org)` 已经在了 → 整条静默不做**（不叠加、
+    ///    不刷新）。「再加入一次该怎样」是一次数值设计决定，今天没有
+    ///    裁定；不做是最保守、最容易反转的那一档。
+    /// 2. `standing` 夹进 `[-STANDING_FULL, STANDING_FULL]`
+    ///    （[`ll_world::entity::Affiliation::clamp_standing`]）。
+    ///
+    /// 「这座据点归哪个势力」「玩家满不满足加入条件」全部在 `resolve`
+    /// 侧判完（不满足就一条效果都不产出），与约束 C1 / ADR 0023 一致。
+    ///
+    /// 唯一生产者是 `crate::resolve` 结算
+    /// [`crate::dialogue::DialogueOutcome::JoinSettlement`] 那一支。
+    AddAffiliation {
+        /// 挂归属的实体。
+        entity: EntityId,
+        /// 要挂上去的那一条。
+        affiliation: Affiliation,
     },
     /// 花掉一点未分配属性点，把指定的那一项主属性加一（升级加点
     /// 批次）——[`crate::intent::Intent::AllocateAttributePoint`] 的

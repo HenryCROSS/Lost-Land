@@ -130,7 +130,55 @@ pub struct Affiliation {
     /// 具体组织：类型还是实例由 `kind` 决定，见 [`OrgRef`]。
     pub org: OrgRef,
     /// 声望，千分比。负值表示敌对。
+    ///
+    /// 量纲的两端由 [`Affiliation::STANDING_FULL`] 给出，写入路径负责
+    /// clamp——见那个常量的文档。
     pub standing: i32,
+}
+
+impl Affiliation {
+    /// **满值**：`standing` 这条千分比标尺的上界，负方向对称
+    /// （`-STANDING_FULL` 是「敌对到底」）。
+    ///
+    /// # 它从哪来
+    ///
+    /// 项目所有者裁定（`knowledge/handoff/2026-08-28-session-handoff.md`
+    /// 第〇之二节第 5 条）：「加入据点给 +250，**满值 1000**」。前一半是
+    /// 一条**后果**的数值，住在产出它的地方
+    /// （`ll_sim::dialogue::JOIN_SETTLEMENT_STANDING`）；后一半是**这个
+    /// 字段本身的量纲**，因此住在这里。
+    ///
+    /// # 唯一执行点在 `apply`
+    ///
+    /// 本常量不是一句注释：`ll_sim::apply` 处理
+    /// `ll_sim::effect::Effect::AddAffiliation` 时把写进来的 `standing`
+    /// clamp 到 `[-STANDING_FULL, STANDING_FULL]`（约束 C1：写入口只有
+    /// 一个，因此夹紧也只需要一处）。**本类型的构造函数不夹**——
+    /// `Affiliation` 是一个纯数据结构，测试与内容表都要能造出任意值来
+    /// 验证夹紧本身。
+    ///
+    /// # 负方向为什么也是 1000
+    ///
+    /// 所有者只裁定了「满值 1000」这一半。取对称是本批的选择：字段文档
+    /// 自 P3 起就写着「千分比，负值表示敌对」，而千分比这个词本身给出的
+    /// 就是一条对称标尺；非对称需要一条独立的设计理由，今天没有。这条
+    /// 是**最容易反转**的一档——改成非对称只要动这一处 clamp。
+    pub const STANDING_FULL: i32 = 1000;
+
+    /// 把一个声望值夹进 `[-STANDING_FULL, STANDING_FULL]`。
+    ///
+    /// 住在这里而不是 `ll-sim`：它是这个字段量纲的一部分，与
+    /// [`Self::STANDING_FULL`] 同住才不会出现「常量在这、夹紧在那，
+    /// 改一个忘了另一个」。
+    pub const fn clamp_standing(value: i32) -> i32 {
+        if value > Self::STANDING_FULL {
+            Self::STANDING_FULL
+        } else if value < -Self::STANDING_FULL {
+            -Self::STANDING_FULL
+        } else {
+            value
+        }
+    }
 }
 
 #[cfg(test)]

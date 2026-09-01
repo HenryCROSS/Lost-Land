@@ -1383,6 +1383,21 @@ impl WorldState {
             // `crates/ll-sim/tests/replay.rs` 的 `EXPECTED_REPLAY_DIGEST`
             // 文档「本次重冻的原因」一节）。
             hasher.write_u64(u64::from(agent.stealthed));
+            // 所属据点（对话「加入据点」批次）——同一条先例又一次重演
+            // （见本方法文档「新增字段若不在这里显式写一行……」一节）：
+            // 它真的分岔未来，`ll_sim::resolve` 结算
+            // `DialogueOutcome::JoinSettlement` 时读的正是**说话人**的
+            // 这个字段，两个 `home` 不同的 NPC 会把玩家带进两个不同的
+            // 势力。ADR 0022「覆盖不全的确定性哈希，等于没有确定性
+            // 哈希」——因此这一行必须存在，本批次的两条黄金基准摘要
+            // 也确实因此改变（`crates/ll-sim/tests/replay.rs` 与
+            // `crates/ll-game/tests/populated_determinism.rs` 各自常量
+            // 文档的重冻记录）。
+            //
+            // 走既有的 `write_optional_world_id`（`remembered_id` 用的
+            // 同一个）：`None` 也写一个判别值，否则「没有据点」与
+            // 「据点号恰好编码成空」在哈希上不可区分。
+            write_optional_world_id(&mut hasher, agent.home);
         }
 
         write_optional_entity(&mut hasher, self.player_entity);
@@ -2075,6 +2090,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         }
     }
 
@@ -2357,6 +2373,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
         world.player_entity = Some(player_id);
         let encoded = serde_json::to_vec(&world).expect("WorldState 全部字段可序列化");
@@ -2423,6 +2440,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
         world
     }
@@ -2456,6 +2474,56 @@ mod tests {
 
         // Assert
         assert_ne!(hash_visible, hash_stealthed);
+    }
+
+    #[test]
+    fn 所属据点变化会改变世界哈希() {
+        // ADR 0022 红/绿验证：`Agent::home` 必须已经手动补进 hash() 的
+        // 逐字段遍历——把 hash() 里新增的
+        // `write_optional_world_id(&mut hasher, agent.home);` 一行临时
+        // 注掉重跑，本测试 panic（两个只差 home 的世界算出同一个哈希），
+        // 恢复后转绿。**这条手法与本批黄金基准重冻第 ② 步是同一条**，
+        // 见 `crates/ll-sim/tests/replay.rs` 的 `EXPECTED_REPLAY_DIGEST`
+        // 与 `crates/ll-game/tests/populated_determinism.rs` 的
+        // `EXPECTED_POPULATED_WORLD_DIGEST` 两处重冻记录。
+        //
+        // 这个字段值得这道守卫，是因为它**真的分岔未来**：
+        // `ll_sim::resolve` 结算 `DialogueOutcome::JoinSettlement` 时读的
+        // 正是说话人的这个字段，两个 `home` 不同的 NPC 会把玩家带进两个
+        // 不同的势力（见 `crate::entity::Agent::home` 文档）。
+        //
+        // **`None` 与 `Some` 的区别也要咬住**：本条验的是 `None` vs
+        // `Some(1)`，正是那条「`None` 也要写一个判别值」的理由——若
+        // `None` 什么都不写，一个恰好编码成空的据点号就会与「没有据点」
+        // 撞哈希。
+        // Arrange：两个世界只差所属据点这一个字段。
+        let world_homeless = test_world_with_one_agent(1, 0, 100);
+        let mut world_settled = test_world_with_one_agent(1, 0, 100);
+        let only_agent = world_settled
+            .actors
+            .iter_with_id()
+            .map(|(id, _)| id)
+            .next()
+            .expect("test_world_with_one_agent 恰好生成一个实体");
+        // 对照组前提：改之前两个世界确实哈希相同（否则下面那条
+        // `assert_ne!` 可能是因为别的什么不同而绿的）。
+        assert_eq!(
+            world_homeless.hash(),
+            world_settled.hash(),
+            "两个同样构造出来的世界在改动之前必须哈希相同"
+        );
+        let mut counter = 0u32;
+        world_settled
+            .actors
+            .get_mut(only_agent)
+            .expect("刚取到的 id 必然有效")
+            .home = Some(WorldId::next(&mut counter));
+
+        // Act
+        let (hash_homeless, hash_settled) = (world_homeless.hash(), world_settled.hash());
+
+        // Assert
+        assert_ne!(hash_homeless, hash_settled);
     }
 
     #[test]
@@ -2643,6 +2711,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
         world
     }
@@ -2719,6 +2788,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
         world
     }
@@ -2787,6 +2857,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
         world
     }
@@ -2865,6 +2936,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
 
         // Act
@@ -3162,6 +3234,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         }
     }
 
@@ -3592,6 +3665,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         });
 
         // Act

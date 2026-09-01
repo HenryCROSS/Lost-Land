@@ -121,6 +121,23 @@ pub fn dialogue_title_key(node: ContentIndex, nodes: &DialogueNodeTable) -> Stri
         .unwrap_or_else(|| "screen-dialogue-missing".to_string())
 }
 
+/// 一场会话的两位当事人。
+///
+/// 把 `actor` 与 `speaker` 收成一个结构体，不是为了绕过
+/// `clippy::too_many_arguments`（虽然它确实先叫起来了），而是因为这两个
+/// `EntityId` 在 [`update_dialogue`] 的签名里紧挨着、类型相同、传反了
+/// 编译器一个字都不会说——「玩家加入了说话人所属的据点」会变成「说话人
+/// 加入了玩家所属的据点」，而玩家的 `home` 恒是 `None`，于是那条后果
+/// 静默什么都不做。具名字段让传反这件事在调用点就看得见。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DialogueParticipants {
+    /// 发起者（玩家）——条件按他求值，后果也写在他身上。
+    pub actor: EntityId,
+    /// 说话人（NPC）——`join-settlement` 那一支读他的
+    /// `ll_world::entity::Agent::home`。
+    pub speaker: EntityId,
+}
+
 /// 会话屏这一帧的产出。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct DialogueUpdate {
@@ -181,10 +198,11 @@ pub fn update_dialogue(
     cursor: &mut usize,
     rows: &[DialogueRow],
     nodes: &DialogueNodeTable,
-    actor: EntityId,
+    who: DialogueParticipants,
     input: &InputState,
     pointer: RowPointer,
 ) -> DialogueUpdate {
+    let DialogueParticipants { actor, speaker } = who;
     // 取消键**关掉整块屏**而不是退一层：会话屏只有一层，它的上一层就是
     // 世界（规格 N7 的「退一层」在这里就是「退出会话」）。
     if input.was_just_pressed(GameKey::Cancel) {
@@ -221,6 +239,7 @@ pub fn update_dialogue(
     // **纯导航选项不提交任何意图**（规格 7.2）。
     let submit = (!option.outcomes.is_empty()).then_some(Intent::DialogueChoose {
         actor,
+        speaker,
         node,
         option: row.option,
     });
@@ -238,6 +257,7 @@ pub fn update_dialogue(
             DialogueUpdate {
                 outcome: ScreenOutcome::Idle,
                 next: Some(ScreenState::Dialogue {
+                    speaker,
                     node: target,
                     cursor: 0,
                 }),

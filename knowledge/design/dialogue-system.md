@@ -703,6 +703,39 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 
 ## 八、分批与优先级
 
+> **【2026-08-31 落地回填：批次 3（加入据点）已完成】**
+> 计划文档 `docs/superpowers/plans/2026-08-31-batch26-dialogue-join.md`，
+> 工作树 `wt-dialogue3`。落点：`ll_world::entity::Agent::home`
+> （`Option<WorldId>`，物化时从 `NpcProfile.home` 搬运）、
+> `ll_world::entity::Affiliation::STANDING_FULL`、
+> `ll_sim::dialogue::{DialogueOutcome::JoinSettlement, JOIN_SETTLEMENT_STANDING}`、
+> `ll_sim::effect::Effect::AddAffiliation` + `apply` 一支、
+> `ll_sim::resolve::dialogue::join_settlement`。
+> `CONTENT_HASH_ALGORITHM_VERSION` 30 → 31；
+> **`CURRENT_SCHEMA_VERSION` 5 → 6**（`Agent` 加字段 = 存档主体形状变更，
+> 老存档**明确拒绝**、不写迁移；`#[serde(default)]` 在 postcard 上是空
+> 操作，因此本批没有给这个字段加它，也没有写任何兼容性断言）。
+> **三条黄金基准里两条重冻**（`EXPECTED_REPLAY_DIGEST` 与
+> `EXPECTED_POPULATED_WORLD_DIGEST`，`Agent` 的字段进了世界哈希），
+> `EXPECTED_WORLD_DIGEST` 不变（那个世界零 `actor`）；四步证据写在两个
+> 常量各自的文档里。
+>
+> **本节以下正文原样保留**，落地时对本文档有三处偏离与补充：
+>
+> 1. **批次 2 的第 1 条临时裁定（`Talk`/`Dialogue` 不带说话人
+>    `EntityId`）就此反转**，按它自己写好的反转条件——本批比它预告的
+>    批次 4 早一批撞上「需要知道对面是谁」。`speaker: EntityId` 一路从
+>    `InteractTarget::Talk` 带到 `Intent::DialogueChoose`。
+> 2. **五节 5.1 那条「`standing` 没有任何常量、没有 clamp、没有校验」
+>    只作废了一半**：常量与 clamp 都落地了（+250 / 满值 1000，唯一
+>    clamp 执行点在 `apply`），**校验仍然没有**——`Affiliation` 是纯数据
+>    结构，构造函数不夹，测试与内容表都要能造出越界值来验证夹紧本身。
+>    负方向取 `-1000`（对称）是本批的选择，所有者只裁定了正的那一半。
+> 3. **九节第 3 条那道题仍然开着**：老存档里的据点号是编年史推演的
+>    派生物，改变推演的批次会让它静默指向另一座据点。本批的兜底只有
+>    `CURRENT_SCHEMA_VERSION` 的「版本不对就拒绝」，如实写进了
+>    `Agent::home` 与 `remap_agent` 两处文档。
+
 > **【2026-08-31 落地回填：批次 2（把对话跑通）已完成】**
 > 计划文档 `docs/superpowers/plans/2026-08-31-batch21-dialogue-ui.md`，
 > 工作树 `wt-dialogue2`。落点：`crates/ll-sim/src/dialogue.rs`
@@ -762,7 +795,7 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 | **0** ✅ | **mod 的 `.ftl` 装载**（2026-08-30 已落地）：`Catalog` 加命名空间维度、遍历 `mods/*/locales/`、本体的 `assets/locales/` 注册成 `lostland` 命名空间 | 无 | 否 |
 | **1** ✅ | 对话内容表（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md`）：`dialogues.json5`、两张表、进 `CONTENT_FILES` 与内容哈希、条件谓词七条、本体写一份 steward 对话、`example_mod` 写一份**带自己 `.ftl`** 的对话（这是批次 0 的验收标的） | 0 | 否 |
 | **2** ✅ | 进交互列表 + 会话 UI + `Intent::DialogueChoose` + `outcomes` 里的 `set-flag`（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch21-dialogue-ui.md`）。**此时对话已经能说话、能分支、能记住玩家的选择，但还没有丙档的三条后果** | 1；UI 形状等 `wt-uxdesign` | 否 |
-| **3** | **加入据点**：`Agent.home` 字段（含存档 schema 升版）、`join-settlement` 后果、`affiliated`/`standing-at-least` 两条谓词真的有东西可读 | 2 | **部分**——「加入据点」不依赖 P9；「加入**势力**」依赖 P9 的 `OrgInstance` 播种 |
+| **3** ✅ | **加入据点**（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch26-dialogue-join.md`）：`Agent.home` 字段（存档 schema 5 → 6）、`join-settlement` 后果、`affiliated`/`standing-at-least` 两条谓词真的有东西可读 | 2 | **否**——势力播种（2026-08-29）之后「加入据点」指的是真正的 `OrgInstance`，原表这一格写的「加入**势力**依赖 P9」已经不成立 |
 | **4** | **任务**：`complete-quest` 后果、`give-item` 后果（`Effect::TransferOwnership` 的第一个调用方，含 owner 校验） | 2 | 否 |
 | **5** | **交易**：NPC 初始钱包、`Intent::Trade`、占位价格公式（基础价 × 归属系数） | 3（归属系数要有 `standing` 可读） | **是**——真正的定价（库存/需求/政策/商路四因子、行会中介、商队）整体属 P9，本批只交付占位公式并在代码里写明它将来会被替换 |
 | **6** | **NPC 姓名**：`CultureAttrs.naming`、渲染期现算、对话文案从「职业名」换成 `{ $npc_name }`（**只改 `.ftl`，不改任何 JSON5**） | 1 | 否 |

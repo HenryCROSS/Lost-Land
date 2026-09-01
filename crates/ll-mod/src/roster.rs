@@ -932,6 +932,14 @@ pub fn build_npc_agent(
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        // **把 `NpcProfile.home` 搬进实体**——本字段唯一的非 `None`
+        // 生产者。`NpcProfile` 是「这个人是谁」的真相源，本函数只负责
+        // 把它物化成 `Agent`（与上面 `gender` 那一行逐字同理）。
+        //
+        // 消费者是对话的「加入据点」：玩家跟这座据点的管理者说话时，
+        // `ll_sim::resolve` 读的正是**说话人**的这个字段，见
+        // `ll_world::entity::Agent::home` 文档。
+        home: Some(profile.home),
     }
 }
 

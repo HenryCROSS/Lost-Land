@@ -256,6 +256,7 @@ fn bare_agent(world: &WorldState, pos: TorusPos) -> Agent {
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     }
 }
 

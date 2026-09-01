@@ -9,7 +9,8 @@
 //! - **C1（`apply` 是唯一写入口）**：本模块一个字节的世界状态都不改，
 //!   只产出 [`Effect`]。`set-flag` 走
 //!   [`Effect::SetModState`]，与 [`crate::quest::mark_quest_completed`]
-//!   逐条同办。
+//!   逐条同办；`join-settlement`（批次 3）走
+//!   [`Effect::AddAffiliation`]，同一条纪律。
 //! - **对话不消耗回合**（所有者裁定，交接文档第〇之二节第 2 条）：
 //!   **不产出 [`Effect::ScheduleNext`]**。`TurnEngine::perform` 末尾
 //!   无条件 `timeline.schedule(actor, agent.next_action_at)`，因此
@@ -30,11 +31,13 @@
 //! 漂移，而漂移时没有任何东西会报错——正是 ADR 0021 点名要拦的形状。
 
 use ll_core::ident::ContentIndex;
-use ll_world::entity::EntityId;
+use ll_world::entity::{Affiliation, AffiliationKind, EntityId, OrgRef};
+use ll_world::mod_state::ModStateWrite;
 use ll_world::state::WorldState;
 
 use crate::dialogue::{
-    ContentIdLookup, DialogueCatalog, DialogueOutcome, all_conditions_hold, set_dialogue_flag,
+    ContentIdLookup, DialogueCatalog, DialogueOutcome, JOIN_SETTLEMENT_STANDING,
+    all_conditions_hold, set_dialogue_flag,
 };
 use crate::effect::Effect;
 
@@ -56,6 +59,7 @@ use crate::effect::Effect;
 pub(super) fn resolve_dialogue_choose(
     world: &WorldState,
     actor: EntityId,
+    speaker: EntityId,
     node: ContentIndex,
     option: usize,
     dialogues: &dyn DialogueCatalog,
@@ -70,19 +74,65 @@ pub(super) fn resolve_dialogue_choose(
     if !all_conditions_hold(view.conditions, agent, &content_ids) {
         return Vec::new();
     }
-    let writes: Vec<_> = view
-        .outcomes
-        .iter()
-        .map(|outcome| match outcome {
-            DialogueOutcome::SetFlag(flag) => set_dialogue_flag(actor, flag),
-        })
-        .collect();
-    if writes.is_empty() {
-        return Vec::new();
+    // 逐条把**声明**翻译成 `Effect`（规格五节 5.0 的分工）。顺序就是
+    // `outcomes` 的书写顺序（`Vec`，不碰任何哈希容器——约束 C5）。
+    let mut effects: Vec<Effect> = Vec::new();
+    let mut writes: Vec<ModStateWrite> = Vec::new();
+    for outcome in view.outcomes {
+        match outcome {
+            DialogueOutcome::SetFlag(flag) => writes.push(set_dialogue_flag(actor, flag)),
+            DialogueOutcome::JoinSettlement => {
+                effects.extend(join_settlement(world, actor, speaker));
+            }
+        }
     }
-    // 一次决策里的全部写入攒成**一条** `Effect`，见
-    // [`Effect::SetModState`] 文档「为什么是一条 `Effect` 携带一批」。
-    //
-    // **这里就是「不产 `ScheduleNext`」的落点**：这个 `vec!` 只有一项。
-    vec![Effect::SetModState { writes }]
+    if !writes.is_empty() {
+        // 一次决策里的全部脚本状态写入攒成**一条** `Effect`，见
+        // [`Effect::SetModState`] 文档「为什么是一条 `Effect` 携带一批」。
+        effects.push(Effect::SetModState { writes });
+    }
+    // **这里就是「不产 `ScheduleNext`」的落点**：上面每一条分支产出的
+    // 都只是世界状态写入，没有任何一条往时间轴里放东西。
+    effects
+}
+
+/// 「加入说话人所属据点的势力」——[`DialogueOutcome::JoinSettlement`]
+/// 那一支的全部内容。
+///
+/// # 五道闸门（前三道在调用方，这里是后两道）
+///
+/// 4. **说话人还在世界里，且他有 `home`**。玩家、以及任何不隶属于某座
+///    据点的实体是 `None`——跟他说话没有「加入哪里」这回事。
+/// 5. **那座据点查得到一个势力**
+///    （[`ll_world::faction::FactionTable::faction_of`]，废墟与从不存在
+///    的号返回 `None`）。
+///
+/// 任何一道不过就返回**空效果**，与本模块其余闸门同一条纪律：不 panic，
+/// 也不产出一条什么都不做的效果。
+///
+/// # 加入的是**势力**，不是据点
+///
+/// 规格 5.1 原文那条「拿据点 `WorldId` 冒充 `Faction` 归属」的变通在势力
+/// 播种批次之后已经作废；这里指向的是真正的
+/// [`ll_world::faction::Faction`]，`org` 因此是
+/// [`OrgRef::Instance`]（`AffiliationKind::Faction` 恒配它，见
+/// `ll_world::entity::OrgRef` 文档）。
+///
+/// # 重复加入由 `apply` 兜住，不在这里再判一遍
+///
+/// 内容那一侧的 `not-affiliated` 条件已经挡了一层，`apply` 那一侧的
+/// 「同一条 `(kind, org)` 已经在了就整条不做」是最终防线（见
+/// [`Effect::AddAffiliation`] 文档）。在这里再抄一份判据，就是让同一条
+/// 规则有两处真相源——ADR 0021 点名要拦的形状。
+fn join_settlement(world: &WorldState, actor: EntityId, speaker: EntityId) -> Option<Effect> {
+    let home = world.actors.get(speaker)?.home?;
+    let faction = world.factions.faction_of(home)?;
+    Some(Effect::AddAffiliation {
+        entity: actor,
+        affiliation: Affiliation {
+            kind: AffiliationKind::Faction,
+            org: OrgRef::Instance(faction),
+            standing: JOIN_SETTLEMENT_STANDING,
+        },
+    })
 }

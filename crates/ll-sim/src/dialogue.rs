@@ -111,18 +111,24 @@ pub fn set_dialogue_flag(actor: EntityId, flag: &NamespacedId) -> ModStateWrite 
 /// 选中一条选项之后**世界**发生什么——数据里的一条**声明**，把声明变成
 /// [`crate::effect::Effect`] 的是 `resolve`（规格五节 5.0）。
 ///
-/// # 为什么本批只有一个变体
+/// # 为什么变体是一支一支加进来的
 ///
-/// 规格八节的分批表：`join-settlement` 是批次 3、`complete-quest` 与
-/// `give-item` 是批次 4、`open-trade` 是批次 5，每一支都各自缺着自己的
-/// 前置（`Agent.home` 字段、`Effect::TransferOwnership` 的 owner 校验、
-/// NPC 初始钱包）。**先声明一个只能写空数组的变体，就是又一个「声明了
-/// 但没接线」的死字段**——本仓库长期记账的正是这一类，批次 1 因此连
-/// `outcomes` 这个字段本身都没有加。
+/// 规格八节的分批表：`set-flag` 是批次 2、`join-settlement` 是批次 3、
+/// `complete-quest` 与 `give-item` 是批次 4、`open-trade` 是批次 5，
+/// 每一支都各自缺着自己的前置。**先声明一个只能写空数组的变体，就是又
+/// 一个「声明了但没接线」的死字段**——本仓库长期记账的正是这一类，
+/// 批次 1 因此连 `outcomes` 这个字段本身都没有加。
 ///
-/// 而**枚举**这个形状本身是有价值的：`write_dialogue_outcome`（内容哈希）
-/// 与 `resolve` 两处都是穷尽 `match`，批次 3 加一支时编译器会逼那两处
-/// 各自表态，不会出现「加了一种后果、哈希没混进去」这种静默分叉。
+/// 〔2026-08-31，批次 26〕`JoinSettlement` 落地：它的前置
+/// （`ll_world::entity::Agent::home` 与
+/// `ll_world::faction::FactionTable`）这一批补齐了。剩下三种在
+/// `ll_mod::content_schema_dialogue` 里仍然**报「尚未实现」而不是静默
+/// 接受**。
+///
+/// 而**枚举**这个形状本身是有价值的，本批第一次兑现：
+/// `write_dialogue_outcome`（内容哈希）与 `resolve` 两处都是穷尽
+/// `match`，加这一支时编译器逼那两处各自表态，没有出现「加了一种后果、
+/// 哈希没混进去」这种静默分叉。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DialogueOutcome {
     /// 在发起者身上设下一条对话标志——[`DialogueCondition::FlagSet`] /
@@ -132,7 +138,53 @@ pub enum DialogueOutcome {
     /// 一条记录），因此携带的是 [`NamespacedId`] 而不是 [`ContentIndex`]，
     /// 与条件那两支逐字相同。
     SetFlag(NamespacedId),
+    /// **加入说话人所属据点的势力**（规格五节 5.1）——所有者提出整个
+    /// 对话系统的动机原话（「玩家可以没有势力归属，这个可以通过后面和
+    /// 据点的管理者对话加入」）在数据里的那一条声明。
+    ///
+    /// # 为什么不带任何参数
+    ///
+    /// 「加入哪座」由**说话人**回答（他的 `ll_world::entity::Agent::home`），
+    /// 不由内容作者写死：据点号是 `ll_core::ident::WorldId`，世界生成期
+    /// 分配，**内容文件里根本写不出来**。这与
+    /// [`AffiliationQuery::org` 只能指向内容空间的组织](AffiliationQuery)
+    /// 是同一处能力边界的两面。
+    ///
+    /// 因此这条后果的语义完整地写成一句话是：「把发起者挂进**说话人
+    /// 那座据点所属的那个势力**」。[`crate::resolve`] 那一侧的五道闸门
+    /// （说话人还在、他有 `home`、那座据点查得到势力……）见
+    /// `crates/ll-sim/src/resolve/dialogue.rs`。
+    ///
+    /// # 加入的是**势力**，不是据点
+    ///
+    /// `ll_world::faction::FactionTable::faction_of` 把据点号翻译成势力
+    /// 号。规格 5.1 原文里那条「拿据点 `WorldId` 冒充 `Faction` 归属」
+    /// 的变通**已经作废**（势力播种批次落地之后），本批指向的是真正的
+    /// `ll_world::faction::Faction`。
+    JoinSettlement,
 }
+
+/// 「加入一座据点」给多少声望——项目所有者裁定
+/// （`knowledge/handoff/2026-08-28-session-handoff.md` 第〇之二节第 5 条）：
+/// 「加入据点给 **+250**，满值 1000」。
+///
+/// # 为什么这一半住在这里，另一半住在 `ll-world`
+///
+/// 「满值 1000」是 `ll_world::entity::Affiliation::standing` **这个字段的
+/// 量纲**，与谁来写它无关，因此是
+/// [`ll_world::entity::Affiliation::STANDING_FULL`]；「加入据点给多少」
+/// 是**这一条后果**的数值，与产出它的 [`DialogueOutcome::JoinSettlement`]
+/// 同住。将来若有第二条会改 `standing` 的后果（交易折扣、任务奖励），
+/// 它带自己的常量，不复用本条。
+///
+/// # 它与内容里那条 `standing-at-least: 250` 是两回事
+///
+/// `mods/lostland/dialogues.json5` 里管理者「今年的税」那一行的阈值也写着
+/// 250。**刻意不让内容去引用本常量**：那等于把一次数值决定从内容作者手里
+/// 拿走。两者相等是那一批内容的设计选择，由端到端测试
+/// （`crates/ll-game/tests/dialogue_session.rs`）钉住「加入之后那一行真的
+/// 出现」，不是靠两处数字长得一样。
+pub const JOIN_SETTLEMENT_STANDING: i32 = 250;
 
 /// 把 `ContentIndex` 反查回 `NamespacedId` 的最小接口。
 ///
@@ -449,6 +501,7 @@ mod tests {
             unspent_attribute_points: 0,
             unspent_skill_points: 0,
             stealthed: false,
+            home: None,
         }
     }
 

@@ -171,6 +171,7 @@ fn spawn_rogue(world: &mut WorldState, profession: ContentIndex, level: i32) -> 
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 

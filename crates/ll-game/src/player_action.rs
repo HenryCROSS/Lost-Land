@@ -339,14 +339,22 @@ pub enum PlayerCommand {
     /// 真正会改变世界的是**选中一条带 `outcomes` 的选项**，那一步走
     /// `Intent::DialogueChoose`（规格 7.2）。
     ///
-    /// # 为什么不带说话人的 `EntityId`
+    /// # 为什么**带**说话人的 `EntityId`（批次 21 的第 1 条裁定反转）
     ///
-    /// 会话屏是**模态屏**，`crate::app::Demo::advance` 在它开着的时候
-    /// 整个早退——世界一个字节都不动，说话人因此不可能在会话中途走开
-    /// 或死掉。带一个从头到尾没有消费者的字段，正是本仓库长期记账的
-    /// 「声明了但没接线」。批次 4/5 的 `give-item`/`open-trade` 真的
-    /// 需要「给谁/跟谁交易」时再加，那时它从第一天起就有消费者。
+    /// 原文写的是「会话屏是模态屏，说话人不可能在会话中途走开或死掉，
+    /// 带一个从头到尾没有消费者的字段就是又一个『声明了但没接线』」，
+    /// 并写明反转条件：「批次 4/5 的 `give-item`/`open-trade` 真的需要
+    /// 『给谁』时再加，那时它从第一天起就有消费者」。**加入据点这一批
+    /// 就是那一刻**：`ll_sim::dialogue::DialogueOutcome::JoinSettlement`
+    /// 要读说话人的 `ll_world::entity::Agent::home`，而
+    /// `ll_sim::resolve` 手上没有「玩家当初朝的哪一格」这份输入层上下文。
+    ///
+    /// 「模态屏期间世界不动」那条论证仍然成立，它现在的作用是**解释
+    /// 为什么把 `EntityId` 缓存到会话结束是安全的**，而不再是「所以
+    /// 不需要这个字段」。
     OpenDialogue {
+        /// 跟谁说——一路带到 `ll_sim::intent::Intent::DialogueChoose`。
+        speaker: EntityId,
         /// 说哪一段——`match_speaker` 裁决完的那一段。会话屏的起始节点
         /// 由它的 `root` 查出来。
         dialogue: ContentIndex,
@@ -679,9 +687,11 @@ fn interact_command(
         // 与 `Loose`/`Door` 同一个理由关掉菜单：会话屏是一块模态屏，
         // 它盖住整个画面，底下那块交互列表留着只会在退出会话时露出一
         // 份已经过期的列表。
-        InteractTarget::Talk { dialogue, .. } => {
+        InteractTarget::Talk {
+            speaker, dialogue, ..
+        } => {
             *menu = PlayerMenu::Closed;
-            PlayerCommand::OpenDialogue { dialogue }
+            PlayerCommand::OpenDialogue { speaker, dialogue }
         }
     }
 }

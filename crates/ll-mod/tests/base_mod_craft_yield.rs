@@ -323,6 +323,7 @@ fn spawn_agent(world: &mut WorldState, pos: (i32, i32), attempt: &Attempt) -> En
         unspent_attribute_points: 0,
         unspent_skill_points: 0,
         stealthed: false,
+        home: None,
     })
 }
 

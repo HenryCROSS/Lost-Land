@@ -761,10 +761,23 @@ pub enum Intent {
     ///
     /// # 为什么不带 `dialogue`
     ///
-    /// 结算要的全部信息都在 `(node, option)` 里：那个节点的选项列表、
-    /// 那条选项的条件与后果。「这是哪一段会话」只在 UI 那侧有意义。
-    /// 带一个 `resolve` 从不读的字段，`scripts/ci/check_field_consumers.py`
-    /// 会如实把它报成未接线。
+    /// 结算要的全部信息都在 `(speaker, node, option)` 里：那个节点的选项
+    /// 列表、那条选项的条件与后果，以及后果要问的「跟谁说的这句话」。
+    /// 「这是哪一段会话」只在 UI 那侧有意义。带一个 `resolve` 从不读的
+    /// 字段，`scripts/ci/check_field_consumers.py` 会如实把它报成未接线。
+    ///
+    /// # 为什么**带** `speaker`（批次 21 的第 1 条临时裁定就此反转）
+    ///
+    /// 那一条写的是「`InteractTarget::Talk` 与 `ScreenState::Dialogue`
+    /// 都不带说话人的 `EntityId`……**反转成本一行**：批次 4/5 的
+    /// `give-item`/`open-trade` 真的需要『给谁』时把它加回来，那时它从
+    /// 第一天起就有消费者」。**加入据点这一批就是那一刻**（比预告的批次
+    /// 4 早一批）：[`crate::dialogue::DialogueOutcome::JoinSettlement`]
+    /// 要读说话人的 `ll_world::entity::Agent::home` 才知道加入哪座据点，
+    /// 而按位置反查已被规格 5.1 否决。
+    ///
+    /// **不能在结算侧重新查一次**：`resolve` 手上只有一条意图，它没有、
+    /// 也不该有「玩家当初按空格时朝的哪一格」这份输入层上下文。
     ///
     /// # 结算侧必须重新校验条件
     ///
@@ -787,6 +800,11 @@ pub enum Intent {
     DialogueChoose {
         /// 发起者——条件按他求值，后果也写在他身上。
         actor: EntityId,
+        /// **跟谁说的这句话**——后果里需要「对面是谁」的那几支读它，
+        /// 见本变体文档「为什么带 `speaker`」一节。今天唯一的读者是
+        /// [`crate::dialogue::DialogueOutcome::JoinSettlement`]（读他的
+        /// `ll_world::entity::Agent::home`）。
+        speaker: EntityId,
         /// 现在停在哪个对话节点上。
         node: ContentIndex,
         /// 选中的是这个节点 `options` 里的第几条（**原始下标**，不是

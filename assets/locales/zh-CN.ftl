@@ -501,7 +501,7 @@ dialogue-common-back = （还有别的事）
 
 dialogue-steward-root = 管理者从账册上抬起头。「又一个外乡人。说吧，你要什么。」
 dialogue-steward-ask_join = 我想在这里落脚。
-dialogue-steward-join = 「落脚不难，认门难。」他把笔搁下，「先在这一带做点像样的事，再来找我谈。」
+dialogue-steward-join = 他把笔搁下，在名册末尾添了一行。「记上了。这一带的事，从今天起也有你一份。」
 dialogue-steward-ask_duties = 我该做些什么？
 dialogue-steward-duties = 「守好你那一段墙，按时缴税，别在集市上动刀子。」他数着，「就这三条。」
 dialogue-steward-ask_tax = 今年的税，能不能宽限几日？

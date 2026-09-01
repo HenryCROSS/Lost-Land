@@ -361,7 +361,7 @@ NamespacedId` 的反查（`quest-completed` 需要它，因为 `is_quest_complet
 | **2** | 会话 UI | 显示用 `DialogueNodeTable::get(node)`；选项过滤用本批的 `ll_sim::dialogue::all_conditions_hold`——**UI 与 `resolve` 必须调同一个函数**（规格 7.2），不各写一份 |
 | **2** | `Intent::DialogueChoose` | `resolve` 侧**重新校验条件**，调的还是 `all_conditions_hold`；**不产 `Effect::ScheduleNext`**（所有者裁定第 2 条：对话不消耗回合） |
 | **2** | `set-flag` 后果 | 键的构造已经在 `ll_sim::dialogue::dialogue_flag_key`，写入走 `Effect::SetModState`；条件侧的 `flag-set`/`flag-not-set` 本批已经读它 |
-| **3** | 加入据点 | `join-settlement` 后果；`Agent.home: Option<WorldId>`（**存档主体形状变更，`CURRENT_SCHEMA_VERSION` 必须跟着升**）；`standing` 常量（+250 / 满值 1000，所有者裁定第 5 条）。本批的 `affiliated`/`standing-at-least` 两条谓词届时第一次有非假的读数 |
+| **3** ✅ | 加入据点（**2026-08-31 已落地**，计划文档 `docs/superpowers/plans/2026-08-31-batch26-dialogue-join.md`） | 本行预告的每一项都照做了：`join-settlement` 后果、`Agent.home: Option<WorldId>`（`CURRENT_SCHEMA_VERSION` 5 → 6）、`standing` 常量（`JOIN_SETTLEMENT_STANDING` = 250 在 `ll-sim`，`Affiliation::STANDING_FULL` = 1000 在 `ll-world`）。`affiliated`/`standing-at-least` 两条谓词确实第一次有了非假读数，端到端证据在 `crates/ll-game/tests/dialogue_session.rs` 的 `加入据点之前那条选项不出现加入之后出现` 与 `standing不够时那一行仍然不出现`。**一处本行没预告到的代价**：批次 2 的「不带说话人 `EntityId`」那条裁定必须反转（`join-settlement` 要问说话人的 `home`） |
 | **4** | 任务 | `complete-quest`（调既有 `mark_quest_completed`）、`give-item`（`Effect::TransferOwnership` 的第一个调用方，含 owner 校验硬前置） |
 | **5** | 交易 | `open-trade` 后果（不产 `Effect`，只推 UI）、`Intent::Trade`、NPC 初始钱包（所有者裁定第 4 条）、占位价格公式 |
 | **6** | NPC 姓名 | `CultureAttrs.naming` + 渲染期现算；对话文案从职业名换成 `{ $npc_name }`——**只改 `.ftl`，一个 JSON5 字都不改**（这正是本批 5.4 那条边界白送的好处） |

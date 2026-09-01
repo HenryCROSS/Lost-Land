@@ -1,7 +1,7 @@
 {
   "_note": "本文件由 scripts/ci/check_save_schema_version.py --bless 生成，不要手工编辑。它记录存档主体（postcard 编码的 WorldState 闭包）的线格式形状，以及生成它时的 CURRENT_SCHEMA_VERSION。",
-  "fingerprint": "2c098d7cf9d08a42da2e7759854a16a5fc8e1eba4b683d12a3e0b71540bb73df",
-  "schema_version": 5,
+  "fingerprint": "990cf84f71c499e03d548b3902c05da21dd7f2dae65d4c3c053cdde1e2dadf1c",
+  "schema_version": 6,
   "types": {
     "ActiveStatModifier": {
       "container": [
@@ -269,6 +269,11 @@
           "attrs": [],
           "i": 34,
           "ty": "bool"
+        },
+        {
+          "attrs": [],
+          "i": 35,
+          "ty": "Option<WorldId>"
         }
       ]
     },

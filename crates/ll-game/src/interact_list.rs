@@ -92,15 +92,26 @@ pub enum InteractTarget {
     /// `Option<ContentIndex>` 白送的好处，见 [`InteractTarget::Door`]
     /// 文档「这个变体怎么容纳『目标不是一件物品』」一节。
     ///
-    /// # 为什么不带 `EntityId`
+    /// # 为什么**带** `EntityId`（批次 21 的第 1 条临时裁定就此反转）
     ///
-    /// 「这一格上站着谁」是**世界状态**，重新查一次比在这里缓存一份更
-    /// 不容易过期——与门那一支不缓存「现在是开是关」逐字同一条理由。
-    /// 「跟这一格上的人说话」这个动作按下去之后由
-    /// `crate::player_action` 那一侧翻成
-    /// [`crate::player_action::PlayerCommand::OpenDialogue`]，会话屏
-    /// 自己去查这一刻的世界。
+    /// 原文是「『这一格上站着谁』是世界状态，重新查一次比在这里缓存一份
+    /// 更不容易过期」，并写明**反转条件**：「批次 4/5 的 `give-item`/
+    /// `open-trade` 真的需要『给谁』时把它加回来，那时它从第一天起就有
+    /// 消费者」。**加入据点这一批就是那一刻**（比预告的批次 4 早一批）：
+    /// `ll_sim::dialogue::DialogueOutcome::JoinSettlement` 要读说话人的
+    /// `ll_world::entity::Agent::home` 才知道加入哪座据点。
+    ///
+    /// **「重新查一次」在结算侧行不通**：`ll_sim::resolve` 手上只有一条
+    /// `ll_sim::intent::Intent`，它没有、也不该有「玩家当初按空格时朝的
+    /// 哪一格」这份输入层上下文。这个 `EntityId` 因此从这一行开始一路
+    /// 带到 `Intent::DialogueChoose`，每一站都有真实消费者。
+    ///
+    /// 「过期」这条原来的顾虑仍然被兜住，只是兜在别处：会话屏是模态屏，
+    /// `Demo::advance` 在它开着时整个早退（世界一个字节不动），而
+    /// `resolve` 侧 `world.actors.get(speaker)` 查不到就整条产出空效果。
     Talk {
+        /// 说话人是谁——见本变体文档「为什么带 `EntityId`」一节。
+        speaker: EntityId,
         /// 说话人的职业——**排版取它的显示名**（`Agent` 今天没有名字，
         /// 走设计文档三节 3.4 的乙案：用职业显示名代替）。
         profession: ContentIndex,
@@ -344,7 +355,7 @@ fn talk_target(
     talk: TalkLookup<'_>,
 ) -> Option<InteractTarget> {
     let viewer = world.actors.get(actor)?;
-    let (_, other) = occupant_at(world, pos, actor)?;
+    let (speaker, other) = occupant_at(world, pos, actor)?;
     if other.health <= 0 {
         return None;
     }
@@ -355,6 +366,7 @@ fn talk_target(
         .dialogues
         .match_speaker(other.profession, culture_of(other))?;
     Some(InteractTarget::Talk {
+        speaker,
         profession: other.profession,
         dialogue,
     })
