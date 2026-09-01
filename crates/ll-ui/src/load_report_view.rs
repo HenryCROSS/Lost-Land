@@ -29,6 +29,7 @@ use std::collections::HashSet;
 use glyphon::Color;
 use ll_core::ident::NamespacedId;
 use ll_mod::load_report::{LoadReport, LoadStatus};
+use ll_text::MeasureText;
 use ll_text::render::TextRun;
 use ll_text::{TextError, TextRenderer};
 
@@ -72,16 +73,28 @@ pub fn load_report_lines(
     report: &LoadReport,
     expanded: &HashSet<NamespacedId>,
     origin: (f32, f32),
+    // 「这一段字画出来断成几行」的唯一来源——产品路径传的是
+    // `ll_text::TextRenderer` 自己，测试传纯 CPU 的 `TextMeasurer`，
+    // 两条路径底下是同一个 `layout_text`。见 [`push_line`] 文档。
+    measure: &mut dyn MeasureText,
+    font_size: f32,
     line_height: f32,
+    max_width: f32,
 ) -> Vec<LoadReportLine> {
     let mut lines = Vec::new();
     let mut cursor_y = origin.1;
+    let mut layout = LineLayout {
+        measure,
+        font_size,
+        line_height,
+        max_width,
+    };
 
     push_line(
         &mut lines,
         &mut cursor_y,
         origin.0,
-        line_height,
+        layout.reborrow(),
         LOADED_COLOR,
         "[已加载]".to_string(),
     );
@@ -91,7 +104,7 @@ pub fn load_report_lines(
             &mut lines,
             &mut cursor_y,
             origin.0,
-            line_height,
+            layout.reborrow(),
             LOADED_COLOR,
             format!("  {id}"),
         );
@@ -101,7 +114,7 @@ pub fn load_report_lines(
         &mut lines,
         &mut cursor_y,
         origin.0,
-        line_height,
+        layout.reborrow(),
         WARNING_COLOR,
         "[有警告]".to_string(),
     );
@@ -111,7 +124,7 @@ pub fn load_report_lines(
                 &mut lines,
                 &mut cursor_y,
                 origin.0,
-                line_height,
+                layout.reborrow(),
                 WARNING_COLOR,
                 format!("  {id}：{message}"),
             );
@@ -122,7 +135,7 @@ pub fn load_report_lines(
         &mut lines,
         &mut cursor_y,
         origin.0,
-        line_height,
+        layout.reborrow(),
         FAILED_COLOR,
         "[失败]".to_string(),
     );
@@ -135,7 +148,7 @@ pub fn load_report_lines(
                 &mut lines,
                 &mut cursor_y,
                 origin.0,
-                line_height,
+                layout.reborrow(),
                 FAILED_COLOR,
                 format!("  {id}（{:?} 阶段，点击折叠）", error.stage),
             );
@@ -143,9 +156,9 @@ pub fn load_report_lines(
                 &mut lines,
                 &mut cursor_y,
                 origin.0,
-                line_height,
+                layout.reborrow(),
                 FAILED_COLOR,
-                format!("    原因：{}", truncate_for_panel(&error.message)),
+                format!("    原因：{}", error.message),
             );
             let location_text = match &error.location {
                 Some(loc) => match loc.line {
@@ -158,7 +171,7 @@ pub fn load_report_lines(
                 &mut lines,
                 &mut cursor_y,
                 origin.0,
-                line_height,
+                layout.reborrow(),
                 HINT_COLOR,
                 location_text,
             );
@@ -167,7 +180,7 @@ pub fn load_report_lines(
                 &mut lines,
                 &mut cursor_y,
                 origin.0,
-                line_height,
+                layout.reborrow(),
                 FAILED_COLOR,
                 format!("  {id}：失败（按键展开查看详情）"),
             );
@@ -186,37 +199,13 @@ pub fn load_report_lines(
             &mut lines,
             &mut cursor_y,
             origin.0,
-            line_height,
+            layout.reborrow(),
             color,
             text,
         );
     }
 
     lines
-}
-
-/// 把面板上单行展示的文字截到一个不容易触发 `cosmic-text` 自动换行
-/// 的长度，超出部分换成省略号。
-///
-/// 与 [`short_path`] 缓解的是同一类真实撞见的问题（见其文档）：错误
-/// 消息本身也可能很长（脚本时代的白名单拒绝在实测验收 demo 里产出过
-/// 一条中英夹杂近 60 字的解释，导致这一行在面板宽度内换行、压住下一
-/// 行文字；内容数据文件的 `json5` 反序列化错误同样可以很长）。按**字符数**而不是字节数截断
-/// ——`str` 按字节切片可能切在多字节字符中间导致 panic，
-/// `chars().take(n)` 不会有这个问题。这不是根治（真正的根治见
-/// [`short_path`] 文档最后一段），只是让面板在当前项目的错误消息长度
-/// 分布下保持可读，本身也促使错误消息的作者把话说得更精炼——这与
-/// 「代价可见，人才会去省」是同一条精神在文案篇幅上的体现。
-const PANEL_MESSAGE_MAX_CHARS: usize = 44;
-
-fn truncate_for_panel(text: &str) -> String {
-    let char_count = text.chars().count();
-    if char_count <= PANEL_MESSAGE_MAX_CHARS {
-        return text.to_string();
-    }
-    let mut truncated: String = text.chars().take(PANEL_MESSAGE_MAX_CHARS).collect();
-    truncated.push('…');
-    truncated
 }
 
 /// 只取路径最后两段（通常是「mod 目录名/文件名」，如
@@ -244,23 +233,75 @@ fn short_path(path: &std::path::Path) -> String {
     tail.into_iter().rev().collect::<Vec<_>>().join("/")
 }
 
-/// 追加一行并把光标下移一行高——抽成帮手避免上面五处分组各自重复
-/// 「构造 LoadReportLine + 推进 cursor_y」这套样板。
+/// 追加一行并把光标下移**它实际占的那么多行**——抽成帮手避免上面五处
+/// 分组各自重复「构造 LoadReportLine + 推进 cursor_y」这套样板。
+///
+/// # 为什么不是「下移一行高」（规格 W3）
+///
+/// 此前这里恒加一个 `line_height`，前提是「一条逻辑行恰好画成一行」。
+/// 那个前提对错误消息不成立：`json5` 反序列化错误、内容契约拒绝这类
+/// 消息可以很长，`cosmic-text` 会在 [`DEFAULT_MAX_WIDTH`] 处断行，
+/// 于是下一条目与它重叠。
+///
+/// 从前的缓解手段是**按字符数截断**（`PANEL_MESSAGE_MAX_CHARS = 44`）。
+/// `knowledge/design/ui-and-navigation.md` §8.3 的 O-9 证伪了它：比例
+/// 字体里 44 个汉字 = 616px，已经超过 600px 的断行宽，加上调用点那句
+/// `format!("    原因：{}", …)` 是 670.5px。**字符数兜不住宽度**，而且
+/// 截掉后半句等于把「玩家怎么知道出了什么事」这件事做反了。
+///
+/// 规格 W3 的裁定是「先伸缩、不够再换行、**绝不截断**」。装载报告不是
+/// 居中面板，没有「伸缩」可言，于是走换行那一半——与批次 19 给 HUD 与
+/// 模态屏做的 W2（`ll_ui::widget::list::RowCursor` 按渲染行数推进）
+/// **是同一个解法**，那一段旧文档里说的「真正的根治」就是这个。
 fn push_line(
     lines: &mut Vec<LoadReportLine>,
     cursor_y: &mut f32,
     x: f32,
-    line_height: f32,
+    layout: LineLayout<'_>,
     color: Color,
     text: String,
 ) {
+    // 这一条逻辑行**实际会被画成几行**——`cosmic-text` 自己的断行结果，
+    // 不是「一条逻辑行恒占一行」这个假设。见本函数文档。
+    let metrics = layout.measure.measure_text(
+        &text,
+        layout.font_size,
+        layout.line_height,
+        layout.max_width,
+    );
     lines.push(LoadReportLine {
         text,
         x,
         y: *cursor_y,
         color,
     });
-    *cursor_y += line_height;
+    *cursor_y += metrics.line_count as f32 * layout.line_height;
+}
+
+/// 排一行要的三个数加一个测量器——把它们打成一束，是因为
+/// [`push_line`] 有五处调用点，逐处多传四个参数会让那五处各长四行。
+impl LineLayout<'_> {
+    /// 借出一份**更短生命周期**的自己——`measure` 是 `&mut dyn`，不是
+    /// `Copy`，五处调用点直接传 `layout` 会在第一处就把它移走。
+    fn reborrow(&mut self) -> LineLayout<'_> {
+        LineLayout {
+            measure: self.measure,
+            font_size: self.font_size,
+            line_height: self.line_height,
+            max_width: self.max_width,
+        }
+    }
+}
+
+struct LineLayout<'a> {
+    /// 「这一段字画出来断成几行」的唯一来源，见 `ll_text::measure`。
+    measure: &'a mut dyn MeasureText,
+    /// 字号（像素）。
+    font_size: f32,
+    /// 相邻两行之间的垂直间距（像素）。
+    line_height: f32,
+    /// 断行宽度（像素）。
+    max_width: f32,
 }
 
 /// 把 `lines` 转换成 [`TextRun`]，供 [`TextRenderer::render`] 消费。
@@ -313,7 +354,17 @@ pub fn render_load_report(
     expanded: &HashSet<NamespacedId>,
     origin: (f32, f32),
 ) -> Result<(), TextError> {
-    let lines = load_report_lines(report, expanded, origin, DEFAULT_LINE_HEIGHT);
+    // 先量再画：`TextRenderer` 自己就是一个 `MeasureText`，因此排版侧
+    // 与渲染侧用的是同一份字体度量，不可能对同一行算出不同的高度。
+    let lines = load_report_lines(
+        report,
+        expanded,
+        origin,
+        text_renderer,
+        DEFAULT_FONT_SIZE,
+        DEFAULT_LINE_HEIGHT,
+        DEFAULT_MAX_WIDTH,
+    );
     let runs = load_report_runs(
         &lines,
         DEFAULT_FONT_SIZE,
@@ -340,23 +391,91 @@ mod tests {
         NamespacedId::parse(raw).expect("测试用标识符恒合法")
     }
 
-    #[test]
-    fn truncate_for_panel对短文本原样返回() {
-        // Arrange & Act & Assert
-        assert_eq!(truncate_for_panel("短消息"), "短消息");
+    /// 测试里排一次报告——五处调用点共用，省得各写一遍测量器。
+    fn 排行(
+        report: &LoadReport,
+        expanded: &HashSet<NamespacedId>,
+        origin: (f32, f32),
+        line_height: f32,
+    ) -> Vec<LoadReportLine> {
+        load_report_lines(
+            report,
+            expanded,
+            origin,
+            &mut crate::测试测量器(),
+            DEFAULT_FONT_SIZE,
+            line_height,
+            DEFAULT_MAX_WIDTH,
+        )
     }
 
     #[test]
-    fn truncate_for_panel对超长文本截断并加省略号() {
-        // Arrange：故意超过 PANEL_MESSAGE_MAX_CHARS 字符数。
-        let long_text = "字".repeat(PANEL_MESSAGE_MAX_CHARS + 10);
+    fn 超长错误消息换行之后下一条目不会被压住且一个字都没被截掉() {
+        // 规格 W3：**绝不截断**。此前这里按字符数截到 44 个字加一个
+        // 省略号（`PANEL_MESSAGE_MAX_CHARS`），而 §8.3 的 O-9 算过：
+        // 44 个汉字 = 616px，已经超过 600px 的断行宽——**字符数兜不住
+        // 宽度**，而且截掉的正是玩家最需要的那半句。
+        //
+        // 反例验证（已实跑）：把 `push_line` 里那句
+        // `metrics.line_count as f32 * layout.line_height` 改回
+        // `layout.line_height`，本条红在「下一条目的 y 落在这一条之下
+        // 至少两行高」。
+        // Arrange：一条**确实排得下两行以上**的错误消息。
+        let long = "这是一条很长的内容装载错误消息".repeat(6);
+        let mut report = LoadReport::new();
+        let bad_id = id("lostland:long");
+        report.push(
+            bad_id.clone(),
+            LoadStatus::Failed(LoadError {
+                mod_id: bad_id.clone(),
+                stage: LoadStage::Parse,
+                message: long.clone(),
+                location: Some(SourceLocation {
+                    file: PathBuf::from("a/b.json5"),
+                    line: Some(1),
+                }),
+            }),
+        );
+        let expanded: HashSet<NamespacedId> = [bad_id].into_iter().collect();
+        let 行高 = 18.0;
+        let metrics = crate::测试测量器().measure_text(
+            &format!("    原因：{long}"),
+            DEFAULT_FONT_SIZE,
+            行高,
+            DEFAULT_MAX_WIDTH,
+        );
+        assert!(
+            metrics.line_count >= 2,
+            "Arrange：这条消息真的会换行（实测 {} 行），否则本条恒绿",
+            metrics.line_count
+        );
 
         // Act
-        let truncated = truncate_for_panel(&long_text);
+        let lines = 排行(&report, &expanded, (0.0, 0.0), 行高);
 
-        // Assert
-        assert_eq!(truncated.chars().count(), PANEL_MESSAGE_MAX_CHARS + 1);
-        assert!(truncated.ends_with('…'));
+        // Assert：那一行原文一个字都没少。
+        let 原因行 = lines
+            .iter()
+            .find(|line| line.text.starts_with("    原因："))
+            .expect("展开的失败条目必然有「原因」那一行");
+        assert!(
+            原因行.text.ends_with(&long),
+            "整条消息必须原样保留，不许截断：{}",
+            原因行.text
+        );
+        assert!(!原因行.text.contains('…'), "更不许加省略号");
+
+        // Assert：下一条目（位置那一行）让开了它实际占的行数。
+        let 位置行 = lines
+            .iter()
+            .find(|line| line.text.starts_with("    位置："))
+            .expect("展开的失败条目必然有「位置」那一行");
+        assert!(
+            位置行.y - 原因行.y >= metrics.line_count as f32 * 行高,
+            "下一条目必须落在「原因」那一条实际占掉的 {} 行之下，实际只让了 {}px",
+            metrics.line_count,
+            位置行.y - 原因行.y
+        );
     }
 
     #[test]
@@ -404,7 +523,7 @@ mod tests {
         let expanded = HashSet::new();
 
         // Act
-        let lines = load_report_lines(&report, &expanded, (0.0, 0.0), 18.0);
+        let lines = 排行(&report, &expanded, (0.0, 0.0), 18.0);
 
         // Assert
         assert!(lines.iter().any(|line| line.text.contains("good:self")));
@@ -426,7 +545,7 @@ mod tests {
         let expanded = HashSet::new();
 
         // Act
-        let lines = load_report_lines(&report, &expanded, (0.0, 0.0), 18.0);
+        let lines = 排行(&report, &expanded, (0.0, 0.0), 18.0);
 
         // Assert：折叠状态只应该看到一行提示，不应该泄漏"缺右括号"这类
         // 详情文本。
@@ -459,7 +578,7 @@ mod tests {
         expanded.insert(bad_id);
 
         // Act
-        let lines = load_report_lines(&report, &expanded, (0.0, 0.0), 18.0);
+        let lines = 排行(&report, &expanded, (0.0, 0.0), 18.0);
 
         // Assert：展开状态渲染出比折叠状态更详细的内容——原因文本、
         // 具体行号都应该出现。
@@ -483,10 +602,10 @@ mod tests {
         );
 
         // Act
-        let collapsed = load_report_lines(&report, &HashSet::new(), (0.0, 0.0), 18.0);
+        let collapsed = 排行(&report, &HashSet::new(), (0.0, 0.0), 18.0);
         let mut expanded_set = HashSet::new();
         expanded_set.insert(bad_id);
-        let expanded = load_report_lines(&report, &expanded_set, (0.0, 0.0), 18.0);
+        let expanded = 排行(&report, &expanded_set, (0.0, 0.0), 18.0);
 
         // Assert
         assert!(expanded.len() > collapsed.len());
@@ -501,7 +620,7 @@ mod tests {
         let expanded = HashSet::new();
 
         // Act
-        let lines = load_report_lines(&report, &expanded, (10.0, 20.0), 16.0);
+        let lines = 排行(&report, &expanded, (10.0, 20.0), 16.0);
 
         // Assert：至少两行 y 值互不相同且递增（分组标题 + 两个条目）。
         for pair in lines.windows(2) {
@@ -517,7 +636,7 @@ mod tests {
         let expanded = HashSet::new();
 
         // Act
-        let lines = load_report_lines(&report, &expanded, (0.0, 0.0), 18.0);
+        let lines = 排行(&report, &expanded, (0.0, 0.0), 18.0);
 
         // Assert
         assert!(
@@ -533,7 +652,7 @@ mod tests {
         let mut report = LoadReport::new();
         report.push(id("a:self"), LoadStatus::Loaded);
         let expanded = HashSet::new();
-        let lines = load_report_lines(&report, &expanded, (0.0, 0.0), 18.0);
+        let lines = 排行(&report, &expanded, (0.0, 0.0), 18.0);
 
         // Act
         let runs = load_report_runs(&lines, 14.0, 18.0, 400.0);
