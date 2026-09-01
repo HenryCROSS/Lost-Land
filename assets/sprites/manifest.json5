@@ -2219,6 +2219,66 @@
         "width": 1,
         "height": 1
       }
+    },
+    {
+      "name": "terrain_grass_alt1",
+      "file": "terrain_grass_alt1.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_grass_alt2",
+      "file": "terrain_grass_alt2.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_forest_alt1",
+      "file": "terrain_forest_alt1.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_forest_alt2",
+      "file": "terrain_forest_alt2.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "terrain_sand_alt1",
+      "file": "terrain_sand_alt1.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
     }
   ]
 }
