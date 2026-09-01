@@ -247,7 +247,40 @@ fn populated_world() -> GameWorld {
 /// grep -rn "const EXPECTED_" crates/ll-world/tests/determinism.rs \
 ///   crates/ll-sim/tests/replay.rs crates/ll-game/tests/populated_determinism.rs
 /// ```
-const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 960_808_593_865_190_740;
+/// ## 重冻记录
+///
+/// ### 2026-08-31，批次 24（五个新种族 + 沙漠文化）
+///
+/// `960_808_593_865_190_740` → `16_159_509_792_380_282_786`。
+///
+/// **本批同时动了内容表与世界状态，而三条黄金基准里只有这一条红了**
+/// ——那正是本文件存在的理由，也是它落地后第一次真的兑现：另外两条的
+/// 世界里既没有 `mods/` 装载、也没有编年史，够不到这次改动（不是「改动
+/// 无害」，证伪与对照组见本批计划文档
+/// `docs/superpowers/plans/2026-08-31-batch24-races.md` 第五节）。
+///
+/// 四步（交接文档纪律第 2 条，一步都没少，全部在 Windows 实跑）：
+///
+/// 1. **基线红**：内容落地、常量未动，
+///    `cargo test -p ll-game --test populated_determinism` 报
+///    `left: 16159509792380282786` / `right: 960808593865190740`。
+///    **七条存在性断言全部在摘要断言之前通过**（panic 落在
+///    `assert_eq!(world.hash(), ..)` 那一行），世界没有变空。
+/// 2. **把改动关掉，精确回到旧值**：`git checkout --` 只还原
+///    `mods/lostland/races.json5` 与 `mods/lostland/cultures.json5`
+///    这两个文件（本批其余改动——贴图、`.ftl`、artgen 配方、文档——
+///    **全部保留**），再跑一次：**绿**，也就是摘要精确等于旧常量
+///    `960_808_593_865_190_740`。这一步证明这次摘要变化**只来自那两份
+///    内容**，没有任何别的东西顺手平移了索引。
+/// 3. **恢复**两份内容。
+/// 4. **两个独立进程复现**新值：两次彼此独立的
+///    `cargo test -p ll-game --test populated_determinism` 进程都给出
+///    `16_159_509_792_380_282_786`。
+///
+/// **为什么它一定会红**（不是意外）：多一份文化会改 `pick_culture` 的
+/// 权重之和与掷骰消耗，多五个种族会改 `founder_race` 的加权抽取，两者
+/// 都在编年史与名册的判据里，而本文件的世界两样都真的跑过。
+const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 16_159_509_792_380_282_786;
 
 #[test]
 fn 有人有城有物有势力的世界摘要跨平台稳定() {
