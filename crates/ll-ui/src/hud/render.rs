@@ -142,57 +142,12 @@ fn equipment_origin_x(screen_width: f32) -> f32 {
     screen_width - EQUIPMENT_RIGHT_MARGIN - EQUIPMENT_WIDTH
 }
 
-/// 世界地图比例尺文案与面板边框的留白（像素）——比
-/// [`SCREEN_MARGIN`] 小：这行字贴在地图**内侧**，留白太大就会压到
-/// 第一行格子上。
-const WORLD_MAP_CAPTION_MARGIN: f32 = 8.0;
-
-/// 世界地图面板与屏幕四边的留白比例——见 [`world_map_rect`]。取
-/// 10%：地图本身要足够大才有实际可读性（M 键切换的目的就是「看整个
-/// 世界」，不是又开一块小面板），同时四周留出的边距足以让玩家看出
-/// 这是一层覆盖在游戏画面上的浮层，而不是把整个屏幕都吃掉。
-const WORLD_MAP_MARGIN_FRACTION: f32 = 0.1;
-
-/// 世界地图面板这一帧的矩形——以屏幕为参照居中，四边各留
-/// [`WORLD_MAP_MARGIN_FRACTION`] 的屏幕尺寸,理由见该常量文档。与
-/// [`equipment_origin_x`] 同一种「按屏幕原生像素尺寸现算,不写死常量」
-/// 的取舍——窗口尺寸由 `ll_platform::window::WindowConfig` 固定给定
-/// （见 [`equipment_origin_x`] 文档同一段说明),按比例现算仍然比写死
-/// 像素常量更不容易在窗口配置调整后悄悄错位。
-/// 按这块菜单声明的 [`MenuPlacement`](super::action_menu::MenuPlacement) 把它摆到屏幕上。
-///
-/// # 为什么要「先建一次、再整体平移」
-///
-/// 面板高度是**内容现算**的（[`super::build_panel`]：行数 × 行高 + 上下
-/// 内边距），行数取决于这一帧有几行可选项——`ScreenCenter` 要垂直居中
-/// 就必须先知道这个高度。两条可选路：把行数算法在这里再写一遍（迟早
-/// 与 `write_action_menu_lines` 分叉），或者建完之后整体平移。选后者：
-/// 平移是纯几何、没有第二份真相源，而且 `PanelContent` 只有一个矩形
-/// 加一列标签，平移的代价是一次线性遍历。
-///
-/// 水平方向两个变体都居中（这是本函数落地之前就有的行为），差别只在
-/// 垂直：`TopCenter` 贴上沿，`ScreenCenter` 也居中。
-///
-/// 世界地图面板的**外框**矩形：屏幕四周各留一成边距，居中一块。
-///
-/// # 为什么是公开的
-///
-/// 「玩家点的像素落在哪个区块」这条反算
-/// （[`crate::hud::world_map::world_map_zone_at_pixel`]）要的正是这一份
-/// 矩形——**必须与画图时用的那一份逐字相同**，否则玩家点的地方与选中
-/// 的区块会系统性偏移一个边距，而这种偏差小到肉眼看不出来，只会表现为
-/// 「偶尔点到隔壁那格」。开放它，是为了让选出生地屏（`ll_game::app`）
-/// 拿到同一个真相源，而不是在那边照着这里的公式再抄一份。
-pub fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
-    let margin_x = screen_width * WORLD_MAP_MARGIN_FRACTION;
-    let margin_y = screen_height * WORLD_MAP_MARGIN_FRACTION;
-    Rect::new(
-        margin_x,
-        margin_y,
-        (screen_width - margin_x * 2.0).max(0.0),
-        (screen_height - margin_y * 2.0).max(0.0),
-    )
-}
+// 世界地图面板的落位（`world_map_rect`）与比例尺文案的留白常量搬去了
+// `super::placement`——那个模块管的正是「不按固定分区平铺、要现算落位」
+// 的面板，与动作菜单同一类。这里再导出一次，
+// `ll_ui::hud::render::world_map_rect` 这条既有路径不变（`ll_game` 在用）。
+pub use super::placement::world_map_rect;
+pub(super) use super::placement::WORLD_MAP_CAPTION_MARGIN;
 
 /// 现算这一帧 HUD 需要的全部填色矩形/贴图矩形与文本行——纯函数,不
 /// 接触 GPU,是 [`render_hud`] 与本模块测试共用的核心逻辑。
@@ -500,6 +455,10 @@ pub fn build_hud_frame(
         );
     }
 
+    // 规格 L0：取整发生在**提交那一刻**，中间的布局计算照旧用 `f32`。
+    // 放在这里（而不是逐块面板/条形/地图各取一次）的完整理由见
+    // `LayeredFrame::snap_to_pixels` 文档「为什么这一层要有一道」一节。
+    frame.snap_to_pixels();
     frame
 }
 
@@ -796,6 +755,10 @@ mod tests {
     // `sample_character_data`），搬去 `tests/` 就够不着它们了。
     #[path = "../../render_bottom_rows_tests.rs"]
     mod bottom_rows_tests;
+
+    // 布局收敛那一批（规格 L0–L5）的断言，同一条理由挂在隔壁文件。
+    #[path = "../../render_layout_tests.rs"]
+    mod layout_tests;
 
     fn write_fixture_catalog(dir: &Path) {
         std::fs::write(dir.join("zh-CN.ftl"), "hud-status-time-label = 时间\nhud-status-health-label = 生命\nhud-status-mana-label = 法力\nhud-status-fps-label = 帧率\nseason-spring-display_name = 春\nseason-summer-display_name = 夏\nseason-autumn-display_name = 秋\nseason-winter-display_name = 冬\nhud-character-panel-title = 角色\nhud-character-level-label = 等级\nhud-character-experience-label = 经验\nhud-character-modifiers-title = 生效中的属性修正\nhud-character-modifiers-empty = 无\nhud-character-rule-modifiers-title = 生效中的规则修正\nhud-character-rule-modifiers-empty = 无\nattribute-strength-display_name = 力量\nattribute-dexterity-display_name = 敏捷\nattribute-constitution-display_name = 体质\nattribute-intelligence-display_name = 智力\nattribute-willpower-display_name = 意志\nattribute-charisma-display_name = 魅力\nattribute-luck-display_name = 幸运\nhud-inventory-panel-title = 背包\nhud-inventory-empty = （空）\nhud-inventory-durability-label = 耐久\nhud-equipment-panel-title = 装备\nhud-equipment-empty-slot = （空）\nequip_slot-main_hand-display_name = 主手\nequip_slot-off_hand-display_name = 副手\nequip_slot-head-display_name = 头部\nequip_slot-face-display_name = 面部\nequip_slot-eyes-display_name = 眼部\nequip_slot-neck-display_name = 颈部\nequip_slot-body-display_name = 躯干\nequip_slot-outer-display_name = 外袍\nequip_slot-back-display_name = 背部\nequip_slot-shoulder_l-display_name = 左肩\nequip_slot-shoulder_r-display_name = 右肩\nequip_slot-arm_l-display_name = 左臂\nequip_slot-arm_r-display_name = 右臂\nequip_slot-hand_l-display_name = 左手\nequip_slot-hand_r-display_name = 右手\nequip_slot-belt-display_name = 腰带\nequip_slot-tasset-display_name = 腿甲\nequip_slot-legs-display_name = 双腿\nequip_slot-boot_l-display_name = 左靴\nequip_slot-boot_r-display_name = 右靴\nequip_slot-ring_l-display_name = 左戒指\nequip_slot-ring_r-display_name = 右戒指\n").expect("测试用写入应当成功");

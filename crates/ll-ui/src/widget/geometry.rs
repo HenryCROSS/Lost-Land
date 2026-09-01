@@ -78,6 +78,40 @@ impl Rect {
         )
     }
 
+    /// 把四条边界各取整到最近的整数像素——**像素画唯一真正需要的那一次
+    /// 取整**（规格 L0，`knowledge/design/ui-and-navigation.md` §6.1）。
+    ///
+    /// # 为什么取整的是「边界」，不是「原点 + 尺寸」
+    ///
+    /// 这是本方法全部的设计内容，也是「相邻两块之间不留缝、也不重叠」
+    /// 这条性质**唯一**的来源：
+    ///
+    /// 两块相邻矩形共享的那条边（左边那块的 `right()` 与右边那块的 `x`）
+    /// 是**同一个 `f32` 值**。`round()` 是函数，同一个输入必然给出同一个
+    /// 输出，于是两块取整之后仍然共享同一条边——缝与叠都不可能出现。
+    ///
+    /// 换成「分别取整 `x` 与 `width`」就不成立了：`x = 0.6`、`width = 1.8`
+    /// 时，`round(0.6) + round(1.8) = 1 + 2 = 3`，而右边那块的
+    /// `round(0.6 + 1.8) = round(2.4) = 2`——两块之间叠了一像素。
+    ///
+    /// # 为什么要有这件事
+    ///
+    /// ADR 0002 的范围是**世界状态**，明文允许渲染层用浮点，本层的 `f32`
+    /// 不是违规（见 `crate::widget::geometry` 与
+    /// `knowledge/design/animation-and-vfx-boundary.md`）。像素画糊掉的
+    /// 原因不是浮点本身，是**半像素边界**：一条落在 `x = 10.5` 的边会被
+    /// 光栅化成两列各半亮的像素。取整只需要发生在**提交那一刻**，中间的
+    /// 布局计算照旧用 `f32`。
+    ///
+    /// 取整是**幂等**的（对已经是整数的矩形调它得到自己），因此在积木内部
+    /// 与帧出口各调一次不会互相打架，见
+    /// [`crate::widget::layer::LayeredFrame::snap_to_pixels`]。
+    pub fn snap(&self) -> Rect {
+        let x = self.x.round();
+        let y = self.y.round();
+        Rect::new(x, y, self.right().round() - x, self.bottom().round() - y)
+    }
+
     /// `point` 是否落在这个矩形内——命中测试（[`crate::widget::hit_test`]）
     /// 与按钮悬停判定（[`crate::widget::button`]）共用的唯一几何判据。
     ///
@@ -169,6 +203,68 @@ mod tests {
 
         // Act & Assert
         assert!(rect.contains((10.0, 10.0)));
+    }
+
+    #[test]
+    fn snap把四条边界都取整到整数像素() {
+        // 规格 L0。**先自证输入真的带半像素**——否则「取整后是整数」
+        // 对一个本来就是整数的输入恒绿（本会话点名的假绿形状之二：
+        // 被断言的对象根本不存在）。
+        // Arrange
+        let rect = Rect::new(10.4, 20.6, 100.3, 60.7);
+        assert!(
+            rect.x.fract() != 0.0 && rect.right().fract() != 0.0,
+            "测试输入必须真的带半像素，否则这条断言恒绿"
+        );
+
+        // Act
+        let snapped = rect.snap();
+
+        // Assert
+        for v in [snapped.x, snapped.y, snapped.right(), snapped.bottom()] {
+            assert_eq!(v.fract(), 0.0, "取整后 {v} 仍带小数");
+        }
+    }
+
+    #[test]
+    fn snap取整的是边界因此相邻两块既不留缝也不重叠() {
+        // 这是 `snap` 全部的设计内容，见其文档那一段推导。
+        //
+        // 反例验证（已实跑）：把 `snap` 改成分别取整 `x` 与 `width`
+        // （`Rect::new(x.round(), y.round(), width.round(), height.round())`），
+        // 本条当场红——左块右边界 3、右块左边界 2，叠了一像素。
+        // Arrange：左块的右边界与右块的左边界是**同一个** f32。
+        let 边界 = 2.4_f32;
+        let 左 = Rect::new(0.6, 0.0, 边界 - 0.6, 10.0);
+        let 右 = Rect::new(边界, 0.0, 5.0, 10.0);
+        assert_eq!(左.right(), 右.x, "两块必须真的共享同一条边");
+
+        // Act
+        let (左, 右) = (左.snap(), 右.snap());
+
+        // Assert
+        assert_eq!(
+            左.right(),
+            右.x,
+            "取整后两块之间出现了缝或重叠：左块右边界 {}，右块左边界 {}",
+            左.right(),
+            右.x
+        );
+    }
+
+    #[test]
+    fn snap是幂等的() {
+        // 积木内部取一次、帧出口再取一次，两次不能互相打架，见
+        // `crate::widget::layer::LayeredFrame::snap_to_pixels`。
+        // Arrange
+        let rect = Rect::new(10.4, 20.6, 100.3, 60.7);
+
+        // Act
+        let 一次 = rect.snap();
+        let 两次 = 一次.snap();
+
+        // Assert
+        assert_eq!(一次, 两次);
     }
 
     #[test]

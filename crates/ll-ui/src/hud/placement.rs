@@ -14,6 +14,7 @@
 //! `bottom_rows` 管**贴着下沿**的那两行。
 
 use super::PanelContent;
+use crate::widget::geometry::Rect;
 use super::action_menu::{self, ActionMenuData, MenuPlacement};
 use super::render::{ACTION_MENU_WIDTH, PANEL_GAP, SCREEN_MARGIN};
 use ll_i18n::Catalog;
@@ -59,4 +60,56 @@ fn translate_panel(mut panel: PanelContent, dy: f32) -> PanelContent {
         label.y += dy;
     }
     panel
+}
+
+/// 世界地图比例尺文案与面板边框的留白（像素）——比
+/// [`SCREEN_MARGIN`](super::render::SCREEN_MARGIN) 小：这行字贴在地图**内侧**，留白太大就会压到
+/// 第一行格子上。
+pub(crate) const WORLD_MAP_CAPTION_MARGIN: f32 = 8.0;
+
+/// 世界地图面板与屏幕四边的留白比例——见 [`world_map_rect`]。取
+/// 10%：地图本身要足够大才有实际可读性（M 键切换的目的就是「看整个
+/// 世界」，不是又开一块小面板），同时四周留出的边距足以让玩家看出
+/// 这是一层覆盖在游戏画面上的浮层，而不是把整个屏幕都吃掉。
+const WORLD_MAP_MARGIN_FRACTION: f32 = 0.1;
+
+/// 世界地图面板这一帧的矩形——以屏幕为参照居中，四边各留
+/// [`WORLD_MAP_MARGIN_FRACTION`] 的屏幕尺寸,理由见该常量文档。与
+/// [`equipment_origin_x`] 同一种「按屏幕原生像素尺寸现算,不写死常量」
+/// 的取舍——窗口尺寸由 `ll_platform::window::WindowConfig` 固定给定
+/// （见 [`equipment_origin_x`] 文档同一段说明),按比例现算仍然比写死
+/// 像素常量更不容易在窗口配置调整后悄悄错位。
+/// 按这块菜单声明的 [`MenuPlacement`](super::action_menu::MenuPlacement) 把它摆到屏幕上。
+///
+/// # 为什么要「先建一次、再整体平移」
+///
+/// 面板高度是**内容现算**的（[`super::build_panel`]：行数 × 行高 + 上下
+/// 内边距），行数取决于这一帧有几行可选项——`ScreenCenter` 要垂直居中
+/// 就必须先知道这个高度。两条可选路：把行数算法在这里再写一遍（迟早
+/// 与 `write_action_menu_lines` 分叉），或者建完之后整体平移。选后者：
+/// 平移是纯几何、没有第二份真相源，而且 `PanelContent` 只有一个矩形
+/// 加一列标签，平移的代价是一次线性遍历。
+///
+/// 水平方向两个变体都居中（这是本函数落地之前就有的行为），差别只在
+/// 垂直：`TopCenter` 贴上沿，`ScreenCenter` 也居中。
+///
+/// 世界地图面板的**外框**矩形：屏幕四周各留一成边距，居中一块。
+///
+/// # 为什么是公开的
+///
+/// 「玩家点的像素落在哪个区块」这条反算
+/// （[`crate::hud::world_map::world_map_zone_at_pixel`]）要的正是这一份
+/// 矩形——**必须与画图时用的那一份逐字相同**，否则玩家点的地方与选中
+/// 的区块会系统性偏移一个边距，而这种偏差小到肉眼看不出来，只会表现为
+/// 「偶尔点到隔壁那格」。开放它，是为了让选出生地屏（`ll_game::app`）
+/// 拿到同一个真相源，而不是在那边照着这里的公式再抄一份。
+pub fn world_map_rect(screen_width: f32, screen_height: f32) -> Rect {
+    let margin_x = screen_width * WORLD_MAP_MARGIN_FRACTION;
+    let margin_y = screen_height * WORLD_MAP_MARGIN_FRACTION;
+    Rect::new(
+        margin_x,
+        margin_y,
+        (screen_width - margin_x * 2.0).max(0.0),
+        (screen_height - margin_y * 2.0).max(0.0),
+    )
 }

@@ -184,10 +184,12 @@ fn centered_origin(
     screen_height: f32,
     panel_width: f32,
     panel_height: f32,
-) -> (f32, f32) {
-    (
+) -> Rect {
+    Rect::new(
         (screen_width - panel_width) / 2.0,
         (screen_height - panel_height) / 2.0,
+        panel_width,
+        panel_height,
     )
 }
 
@@ -210,8 +212,15 @@ pub fn panel_width(lines: &[String], measure: &mut dyn MeasureText, screen_width
                 .max_line_width
         })
         .fold(0.0_f32, f32::max);
-    let wanted = SCREEN_WIDTH.max(longest + SCREEN_PADDING * 2.0);
-    let ceiling = screen_width - SCREEN_SIDE_MARGIN * 2.0;
+    // 往**上**取整，不是四舍五入：面板宽度是「这一屏最长那一行画得完」
+    // 的下限，而规格 L0 的取整（[`Rect::snap`]）最多能把面板削掉不到
+    // 一个像素——四舍五入下来正好会把「恰好放得下」变成「差 0.46px
+    // 放不下」（落地本条时实测：722.46 + 20 = 742.46 被舍成 742）。
+    // 先 `ceil` 一次，取整就再也咬不动它。
+    let wanted = SCREEN_WIDTH.max(longest + SCREEN_PADDING * 2.0).ceil();
+    // 上限反过来往**下**取整，同一条理由的另一半：面板再宽也不许越过
+    // 窗口边缘，取整不能把它推出去。
+    let ceiling = (screen_width - SCREEN_SIDE_MARGIN * 2.0).floor();
     // 窗口比最小宽度还窄时 `ceiling` 会小于 `SCREEN_WIDTH`——这时候取
     // `ceiling`（面板缩窄、文字换行），不取 `SCREEN_WIDTH`（面板伸出
     // 窗口、文字直接看不见）。
@@ -408,8 +417,17 @@ fn screen_geometry(
         wrap_width,
     );
     let panel_height = probe.content_height + SCREEN_PADDING * 2.0;
-    let origin = centered_origin(screen_width, screen_height, width, panel_height);
-    let content_origin = (origin.0 + SCREEN_PADDING, origin.1 + SCREEN_PADDING);
+    // 规格 L0：**这一处的取整刻意提前到几何算完那一刻**，不是等到
+    // `ScreenFrame::snap_to_pixels` 那个提交出口。
+    //
+    // 理由是 `row_rects` 有两个消费者：一个是画行高亮（走提交出口，会
+    // 被那一道取整），另一个是 `screen_row_rects` 拿去做**点击命中**
+    // （压根不进渲染帧，那一道摸不到它）。两者若一取整一不取整，玩家
+    // 点在两块行矩形交界那一像素上时，命中的行与高亮的行会差一格——
+    // 而这正是本模块 `row_rects` 字段文档点名要防的那种「静悄悄落到
+    // 隔壁那一行」。在这里取整一次，两个消费者拿到的就是同一份。
+    let panel = centered_origin(screen_width, screen_height, width, panel_height).snap();
+    let content_origin = (panel.x + SCREEN_PADDING, panel.y + SCREEN_PADDING);
     let laid = layout_screen(
         &texts,
         rows_start,
@@ -419,9 +437,9 @@ fn screen_geometry(
         wrap_width,
     );
     ScreenGeometry {
-        panel: Rect::new(origin.0, origin.1, width, panel_height),
+        panel,
         labels: laid.labels,
-        row_rects: laid.row_rects,
+        row_rects: laid.row_rects.into_iter().map(|r| r.snap()).collect(),
     }
 }
 

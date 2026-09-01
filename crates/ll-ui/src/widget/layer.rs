@@ -58,6 +58,7 @@
 //! 压暗背板本来就要把世界层与整个 HUD 一起压暗。它已经是对的，本模块
 //! 不接管它，也不需要为它加第五个变体。
 
+use super::geometry::Rect;
 use super::label::Label;
 use super::quad::QuadInstance;
 use super::textured_quad::TexturedQuadInstance;
@@ -126,6 +127,52 @@ impl LayerBatch {
     pub fn is_empty(&self) -> bool {
         self.quads.is_empty() && self.textured_quads.is_empty() && self.labels.is_empty()
     }
+
+    /// 把这一层里全部矩形的边界与全部文本行的原点取整到整数像素
+    /// （规格 L0），见 [`LayeredFrame::snap_to_pixels`]。
+    fn snap_to_pixels(&mut self) {
+        snap_quads(&mut self.quads);
+        snap_textured_quads(&mut self.textured_quads);
+        snap_labels(&mut self.labels);
+    }
+}
+
+/// 把一块 quad 的 `position`/`size` 还原成 [`Rect`]——只为借用
+/// [`Rect::snap`] 那一份取整算法，不在这里另写一遍。
+fn rect_of(position: [f32; 2], size: [f32; 2]) -> Rect {
+    Rect::new(position[0], position[1], size[0], size[1])
+}
+
+/// 取整一批纯色矩形的边界（规格 L0）。
+///
+/// 与 [`snap_textured_quads`]/[`snap_labels`] 一起，是本 crate 里
+/// **唯一**把「一批要提交的东西对齐到像素格」这件事写出来的地方：
+/// [`LayeredFrame::snap_to_pixels`]（HUD 与三层浮层）与
+/// `crate::screen::render::ScreenFrame::snap_to_pixels`（模态屏，那一层
+/// 刻意不套 `LayeredFrame`，见其类型文档）都调它们，不各写一遍。
+pub(crate) fn snap_quads(quads: &mut [QuadInstance]) {
+    for quad in quads {
+        let snapped = rect_of(quad.position, quad.size).snap();
+        quad.position = [snapped.x, snapped.y];
+        quad.size = [snapped.width, snapped.height];
+    }
+}
+
+/// 取整一批贴图矩形的边界，见 [`snap_quads`]。
+pub(crate) fn snap_textured_quads(quads: &mut [TexturedQuadInstance]) {
+    for quad in quads {
+        let snapped = rect_of(quad.position, quad.size).snap();
+        quad.position = [snapped.x, snapped.y];
+        quad.size = [snapped.width, snapped.height];
+    }
+}
+
+/// 取整一批文本行的原点，见 [`snap_quads`]。
+pub(crate) fn snap_labels(labels: &mut [Label]) {
+    for label in labels {
+        label.x = label.x.round();
+        label.y = label.y.round();
+    }
 }
 
 /// 按层分装的一帧 UI 内容。
@@ -165,6 +212,40 @@ impl LayeredFrame {
     /// 取某一层的只读引用。
     pub fn layer(&self, layer: UiLayer) -> &LayerBatch {
         &self.layers[layer.index()]
+    }
+
+    /// **提交那一刻的取整**（规格 L0，
+    /// `knowledge/design/ui-and-navigation.md` §6.1）：把这一帧全部层里
+    /// 每一个矩形的四条边界、每一行文字的原点，取整到整数像素。
+    ///
+    /// # 为什么这一层要有一道，明明积木里已经取过了
+    ///
+    /// `crate::widget::panel::panel_quads` 与
+    /// `crate::widget::list::RowCursor::push` 各自已经取过整——那两处
+    /// 覆盖的是**面板与文本**。而进 [`QuadInstance`] 的矩形远不止它们：
+    /// 条形（`crate::widget::bar`，`宽 × 比例` 是半像素的最大来源）、
+    /// 昼夜滑条与它的指针、世界地图的每一格与据点标记、模态屏的压暗
+    /// 背板与行高亮——全 crate 二十多处 `QuadInstance { … }` 字面量。
+    ///
+    /// 逐处去改就是一份**手写清单**，而本仓库已经付过这个代价：
+    /// `crates/ll-game/src/layout.rs` 的地形清单漏掉沙漠与冻原，从落地
+    /// 起就在盲区里，直到批次 28 才被发现（`atlas_coverage` 那道门禁
+    /// 当初被重写正是因为同一件事）。放在**帧的出口**上，新加的任何
+    /// 一块 quad 自动被覆盖，漏不掉。
+    ///
+    /// 取整幂等（[`Rect::snap`]），因此积木内部那一次与这一次不会互相
+    /// 打架：已经是整数的矩形再取一次还是它自己。
+    ///
+    /// # 它不管什么
+    ///
+    /// 不管**逻辑坐标**——例如 `crate::screen::ScreenGeometry` 的行矩形
+    /// 既要拿去画高亮、又要拿去做点击命中，两者必须是同一份，因此那一处
+    /// 在几何算完时就自己取整了，不是等到这里。本方法只管**这一帧要提交
+    /// 出去的像素**。
+    pub fn snap_to_pixels(&mut self) {
+        for batch in &mut self.layers {
+            batch.snap_to_pixels();
+        }
     }
 
     /// 本帧真实的提交顺序：**按层升序**，层内纯色 → 贴图 → 文本，空

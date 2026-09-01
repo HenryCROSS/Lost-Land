@@ -64,6 +64,14 @@ const KEY_HINT_BOTTOM_OFFSET: f32 = BOTTOM_MARGIN + ROW_PANEL_HEIGHT;
 const FEEDBACK_BOTTOM_OFFSET: f32 =
     KEY_HINT_BOTTOM_OFFSET + ROW_PANEL_HEIGHT + super::DEFAULT_PADDING;
 
+/// 屏幕最下沿那一条**底栏**有多高——规格 L1 的中段留白规则在这一条
+/// 窄边上开的例外（见 `hud/render_layout_tests.rs` 那条断言）。
+///
+/// 取「最靠上的那一行的顶边距下沿多远」，也就是反馈行的偏移：底栏里
+/// 只有这两行，反馈行是上面那一行。**导出这个常量而不是让测试自己抄
+/// 一个数**——两行的位置将来再动一次，判据跟着动，不会分叉。
+pub const BOTTOM_STRIP_HEIGHT: f32 = FEEDBACK_BOTTOM_OFFSET;
+
 /// 排一块「水平居中、距下沿 `bottom_offset`」的单行小面板。
 ///
 /// 文字仍然可能排成多行（超长翻译），那时面板会自己长高——高度走

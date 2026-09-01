@@ -90,10 +90,16 @@ impl<'m> RowCursor<'m> {
         let metrics =
             self.measure
                 .measure_text(&text, self.font_size, self.row_height, self.wrap_width);
+        // 规格 L0：**提交出去的那一份**取整，内部游标不取整。
+        //
+        // 顺序要紧：`cursor_y` 保持精确的累计值，只有写进 `Label` 的
+        // 那一刻 `round()` 一次。反过来（取整内部游标）会让每一行的
+        // 取整误差逐行累加——十行之后整块面板的底边就会与
+        // `cursor_y()` 现算出来的面板高度对不上。
         labels.push(Label {
             text,
-            x: self.x,
-            y: self.cursor_y,
+            x: self.x.round(),
+            y: self.cursor_y.round(),
             max_width: self.wrap_width,
         });
         self.cursor_y += metrics.line_count as f32 * self.row_height;
@@ -181,6 +187,54 @@ mod tests {
 
         // Assert
         assert_eq!(cursor.cursor_y(), 48.0);
+    }
+
+    #[test]
+    fn 内部游标按精确值累计只有写进标签的那一刻才取整() {
+        // 规格 L0 在本模块的那一半：`push` 写 `Label` 时 `round()` 一次，
+        // **内部 `cursor_y` 不取整**，否则每行不到一像素的取整误差会
+        // 逐行累加，十行之后面板背景的底边就与 `cursor_y()` 现算出来的
+        // 高度对不上。
+        //
+        // # 这条断言是补上来的，补的原因如实记在这里
+        //
+        // 落地时先写的反例是「把 `push` 改成取整内部 `cursor_y`」，
+        // 实跑**它不红**——因为全项目今天的行高（`hud::DEFAULT_LINE_HEIGHT`
+        // 与 `screen::SCREEN_LINE_HEIGHT` 都是 18.0）都是整数，取整一个
+        // 本来就是整数的累加器是空操作，既有那几条测试用的也全是整数
+        // 行高。也就是说**那条不变式当时根本没有任何测试咬着**。
+        // 按 ADR 0022，不粉饰、也不把断言改宽，改成用**分数行高**
+        // 把它真正逼出来。
+        //
+        // 反例验证（已实跑）：把 `push` 末尾改成
+        // `self.cursor_y = (self.cursor_y + …).round();`，本条红在
+        // 「四行之后游标应当是 70，实际 72」——两像素正是四次取整
+        // 累加出来的漂移。
+        // Arrange：17.5 的行高，四行的精确终点是 70.0。
+        let mut measure = 单行测量器;
+        let mut cursor = RowCursor::new(&mut measure, (0.0, 0.0), 17.5, 14.0, 400.0);
+        let mut labels = Vec::new();
+
+        // Act
+        for n in 0..4 {
+            cursor.push(&mut labels, format!("第{n}行"));
+        }
+
+        // Assert 一：游标是精确累计值，一点都没漂。
+        assert_eq!(
+            cursor.cursor_y(),
+            70.0,
+            "四行 × 17.5 的精确终点是 70，游标漂了"
+        );
+
+        // Assert 二：写出去的每一行原点都是整数（这才是提交那一刻要的）。
+        for label in &labels {
+            assert_eq!(label.y.fract(), 0.0, "标签原点 {} 没取整", label.y);
+        }
+
+        // Assert 三：取整是**就地**取整，不是逐行累加取整——第三行的
+        // 精确值 35.0 取整还是 35，而逐行累加的版本会给出 36。
+        assert_eq!(labels[2].y, 35.0);
     }
 
     #[test]
