@@ -893,8 +893,13 @@ fn 附近什么都没有时按空格给出提示而不是静默作废() {
     // Arrange：确认脚下与相邻八格全空。
     let mut demo = test_demo();
     assert!(
-        crate::player_action::interact_tiles(&demo.test_world().world, player_pos(&demo))
-            .is_empty(),
+        crate::player_action::interact_tiles(
+            &demo.test_world().world,
+            player_pos(&demo),
+            demo.test_world().player,
+            crate::player_action::TalkLookup::none(),
+        )
+        .is_empty(),
         "Arrange 假设出生点周围没有任何地面物品"
     );
 

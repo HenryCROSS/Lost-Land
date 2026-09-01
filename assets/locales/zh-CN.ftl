@@ -524,3 +524,13 @@ dialogue-guard-ask_rumour = 最近听到什么风声没有？
 dialogue-guard-rumour = 他压低声音。「三坑那边，夜里有声音。管事的说是塌方，可塌方不会一夜一夜地响。」
 dialogue-guard-ask_rumour_again = 你刚才说的三坑，再讲讲。
 dialogue-guard-rumour_again = 「我什么都没说过。」他重新横起长戟，「你也一样。」
+
+# ── 会话屏与交互列表的对话那一行（批次 21）───────────────────────
+# 会话屏的标题不在这里：它是 NPC 那一句台词，键由内容表的 text_key
+# 现给（见 crates/ll-game/src/dialogue_screen.rs 模块文档那张表）。
+
+screen-dialogue-empty = （没有话可说）
+screen-dialogue-hint = 上下选择 · 回车确认 · Esc 结束对话
+screen-dialogue-missing = （他张了张嘴，没有出声）
+hud-interact-action-talk = 交谈
+hud-interact-someone = 一个人

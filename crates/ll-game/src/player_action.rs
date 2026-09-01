@@ -145,13 +145,18 @@
 //! 合成一个键之后规矩变成「对着它按 E，它就换一边」——这是玩家真正
 //! 需要理解的那条规则，少一个键、少一块面板、少一条规矩。
 
+pub use crate::interact_list::{
+    DoorAction, InteractTarget, InteractTile, TalkLookup, direction_row_text, interact_entries,
+    interact_row_text, interact_tiles,
+};
 use ll_core::ident::ContentIndex;
 use ll_core::torus::TorusPos;
 use ll_i18n::Catalog;
+use ll_mod::class::ClassTable;
 use ll_mod::item::ItemTable;
 use ll_mod::recipe::RecipeTable;
 use ll_platform::input::{GameKey, InputState};
-use ll_sim::intent::{Direction, Intent, intent_from_input};
+use ll_sim::intent::{Intent, intent_from_input};
 use ll_sim::resolve::{DoorCloseBlocker, door_close_blocker};
 use ll_ui::hud::action_menu::{ActionMenuData, MenuPlacement};
 use ll_ui::hud::item_display_name;
@@ -305,6 +310,30 @@ pub enum PlayerCommand {
     Submit(Intent),
     /// 按了，但输入层这一层就判定按空了，见 [`Feedback`]。
     Rejected(Feedback),
+    /// 打开会话屏，跟这一格上的人说话。
+    ///
+    /// # 为什么它不是一个 `Intent`
+    ///
+    /// 规格七节 7.1 那条分界：**「玩家现在停在哪个对话节点上」是 UI
+    /// 状态**，不进 `WorldState`、不进存档、不进世界哈希——它与背包
+    /// 光标停在第几行是同一类东西。打开一块屏什么都没改变，提交一个
+    /// 恒产出空效果的 `Intent` 只会污染 `Intent` 日志。
+    ///
+    /// 真正会改变世界的是**选中一条带 `outcomes` 的选项**，那一步走
+    /// `Intent::DialogueChoose`（规格 7.2）。
+    ///
+    /// # 为什么不带说话人的 `EntityId`
+    ///
+    /// 会话屏是**模态屏**，`crate::app::Demo::advance` 在它开着的时候
+    /// 整个早退——世界一个字节都不动，说话人因此不可能在会话中途走开
+    /// 或死掉。带一个从头到尾没有消费者的字段，正是本仓库长期记账的
+    /// 「声明了但没接线」。批次 4/5 的 `give-item`/`open-trade` 真的
+    /// 需要「给谁/跟谁交易」时再加，那时它从第一天起就有消费者。
+    OpenDialogue {
+        /// 说哪一段——`match_speaker` 裁决完的那一段。会话屏的起始节点
+        /// 由它的 `root` 查出来。
+        dialogue: ContentIndex,
+    },
 }
 
 /// 背包菜单这一帧的行——背包堆在前，已装备的在后。
@@ -328,240 +357,6 @@ pub fn inventory_entries(agent: &Agent) -> Vec<InventoryEntry> {
                 }),
         )
         .collect()
-}
-
-/// 交互列表的一行指向脚下的什么东西。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum InteractTarget {
-    /// 立着的一件设施——主交互是「在它这儿开工」（打开制作菜单）。
-    ///
-    /// 判据是 [`ll_world::item::GroundItemStack::placed`]，**不是**
-    /// 「它是不是某条配方的 `required_station`」：后者要查配方表，而
-    /// 一件立在那里的东西无论有没有配方指着它，玩家想做的都是「用它」。
-    /// 真的没有任何配方认它时，制作菜单照样打得开，只是选什么都做不出
-    /// 来——那是 `resolve_craft` 的场地前置在说话，不是本层该抢答的。
-    Facility {
-        /// 这件设施是什么，只用来排版显示。
-        def: ContentIndex,
-    },
-    /// 一具尸体/容器——主交互是搜刮（`Intent::Loot`）。
-    Container {
-        /// 容器本身这件「物品」的壳是什么，只用来排版显示。
-        def: ContentIndex,
-    },
-    /// 散落的一堆——主交互是捡起（`Intent::PickUp`）。
-    Loose {
-        /// 这一堆是哪一种东西。
-        def: ContentIndex,
-    },
-    /// 一扇门——主交互是开或关（`Intent::OpenDoor` / `Intent::CloseDoor`）。
-    ///
-    /// # 这个变体怎么容纳「目标不是一件物品」
-    ///
-    /// 另外三个变体指着的都是一件**物品**（`ground_items` 里的一条），
-    /// 门是**地形**：它没有 `ItemDef`、不在 `ground_items` 里、捡不起来。
-    /// 因此本变体**不带 `ContentIndex`**，而那个「三个变体都携带同一个
-    /// 字段」的收敛方法（旧名 `def`，返回裸 `ContentIndex`）已经改成
-    /// [`InteractTarget::item_def`]，返回 `Option<ContentIndex>`——门那一
-    /// 支是 `None`。
-    ///
-    /// 换句话说：**类型层面第一次表达了「这一行未必指着一件物品」**，
-    /// 而不是随便找个索引塞进去冒充（那正是尸体 `def` 那次类型混淆的
-    /// 形状，见 `ll_mod::corpse_item` 模块文档）。全部把 `item_def` 当
-    /// 物品索引用的地方——`interact_row_text` 的名字与数量、按拾取键的
-    /// 那条捷径——因此在门这一行上自然地什么都不做，编译器逼着每一处
-    /// 都表态。
-    ///
-    /// 门当前是开是关不存在这个值里，只存一个「按下去要做什么」：地形
-    /// 本身是世界状态，重新查一次比在这里缓存一份更不容易过期。
-    Door {
-        /// 按下去是开门还是关门。
-        action: DoorAction,
-    },
-}
-
-/// 一扇门这一行按下去做什么，见 [`InteractTarget::Door`]。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum DoorAction {
-    /// 这一格是关着的门（地形声明了 `opens_into`）→ 开。
-    Open,
-    /// 这一格是开着的门（是某种地形 `opens_into` 的目标）→ 关。
-    Close,
-}
-
-impl InteractTarget {
-    /// 这一行指着的**物品**是什么；门那一支没有物品，是 `None`。
-    ///
-    /// 本方法此前叫 `def` 且返回裸 [`ContentIndex`]（三个变体都携带同
-    /// 一个字段）。门进交互列表之后那个签名不再诚实——一扇门没有物品
-    /// 索引，见 [`InteractTarget::Door`] 文档「这个变体怎么容纳『目标
-    /// 不是一件物品』」一节。
-    pub fn item_def(self) -> Option<ContentIndex> {
-        match self {
-            InteractTarget::Facility { def }
-            | InteractTarget::Container { def }
-            | InteractTarget::Loose { def } => Some(def),
-            InteractTarget::Door { .. } => None,
-        }
-    }
-}
-
-/// 交互范围内的一格候选。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InteractTile {
-    /// 它相对行动者在哪个方向——`None` 表示就是脚下这一格。
-    pub dir: Option<Direction>,
-    /// 这一格的世界坐标（已归一化）。
-    pub pos: TorusPos,
-}
-
-/// 交互范围内**有东西可交互**的那些格，按固定罗盘顺序。
-///
-/// 顺序是「脚下 → 北 → 东北 → 东 → 东南 → 南 → 西南 → 西 → 西北」：
-/// 一个写死在 [`SCAN_ORDER`] 里的常量数组，不依赖任何容器的迭代顺序
-/// （约束 C5）。这条在这里是**真陷阱**而不是形式要求：玩家按的是
-/// 「第几行」，同一个存档同一处两次按空格若列出的方向顺序不一致，同一
-/// 串按键就会作用到不同的格上，回放与存档一致性一起碎。
-///
-/// 范围是脚下加相邻**八**格，理由见模块文档「范围为什么是脚下加相邻
-/// 八格」一节：移动是八向的。
-pub fn interact_tiles(world: &WorldState, origin: TorusPos) -> Vec<InteractTile> {
-    SCAN_ORDER
-        .iter()
-        .map(|dir| {
-            let pos = match dir {
-                Some(dir) => {
-                    let (dx, dy) = dir.delta();
-                    world.size.wrap(origin.x() + dx, origin.y() + dy)
-                }
-                None => origin,
-            };
-            InteractTile { dir: *dir, pos }
-        })
-        .filter(|tile| !interact_entries(world, tile.pos).is_empty())
-        .collect()
-}
-
-/// [`interact_tiles`] 的扫描顺序：脚下优先，其余按罗盘顺时针。
-///
-/// 罗盘顺序而不是 [`Direction`] 的变体声明顺序（北/南/西/东/东北/…）：
-/// 玩家看到的是一列方向名，顺时针排列读起来是一圈，声明顺序读起来是
-/// 一堆。两者都确定，选好读的那个。
-const SCAN_ORDER: [Option<Direction>; 9] = [
-    None,
-    Some(Direction::North),
-    Some(Direction::NorthEast),
-    Some(Direction::East),
-    Some(Direction::SouthEast),
-    Some(Direction::South),
-    Some(Direction::SouthWest),
-    Some(Direction::West),
-    Some(Direction::NorthWest),
-];
-
-/// 这一格相对行动者的方向名的 Fluent 键。
-fn direction_key(dir: Option<Direction>) -> &'static str {
-    match dir {
-        None => "hud-direction-here",
-        Some(Direction::North) => "hud-direction-north",
-        Some(Direction::NorthEast) => "hud-direction-north_east",
-        Some(Direction::East) => "hud-direction-east",
-        Some(Direction::SouthEast) => "hud-direction-south_east",
-        Some(Direction::South) => "hud-direction-south",
-        Some(Direction::SouthWest) => "hud-direction-south_west",
-        Some(Direction::West) => "hud-direction-west",
-        Some(Direction::NorthWest) => "hud-direction-north_west",
-    }
-}
-
-/// 某一格上**可以交互**的东西，按 `ground_items` 的存储顺序。
-///
-/// # 分类与去重
-///
-/// - 立着的（`placed`）→ [`InteractTarget::Facility`]。一格至多一件
-///   （`resolve_place` 的第 ④ 道前置保证），因此不需要去重。
-/// - 容器（`contents` 非空）→ [`InteractTarget::Container`]。
-///   **只留第一个**：`Intent::Loot` 不带参数，恒搜刮脚下第一个容器
-///   （见 `ll_sim::resolve` 的 `resolve_loot`），列出第二行会是一行按了
-///   跟第一行效果一样的假选项。
-///
-///   **今天这一支恒不命中**：尸体平铺批次之后没有任何生产路径会造出
-///   `contents` 非空的地面物品（尸体不再是容器，见
-///   `ll_world::item::GroundItemStack::contents` 字段文档），箱子那批
-///   才会把它用起来。分支保留不删，理由同该字段文档。
-/// - 其余 → [`InteractTarget::Loose`]，**同一个 `def` 只留第一次出现**：
-///   `Intent::PickUp` 认的是 `def`，同 `def` 的第二堆按下去仍然会捡到
-///   第一堆（见 `resolve_pick_up` 文档「同一格同一个 `def` 有两堆时取
-///   哪一条」）。列出两行一模一样的东西、其中一行按了没有对应效果，
-///   那是在骗玩家。
-///
-/// # 顺序确定（约束 C5）
-///
-/// `WorldState::ground_items` 是 `Vec`（保序），全程线性扫描，不涉及
-/// 任何哈希容器。这条在这里是**真陷阱**而不是形式要求：玩家按的是
-/// 「第几行」，同一个存档同一格两次打开列表的顺序若不一致，按同一串
-/// 按键就会作用到不同的东西上，回放与存档一致性一起碎。
-pub fn interact_entries(world: &WorldState, pos: TorusPos) -> Vec<InteractTarget> {
-    let mut rows: Vec<InteractTarget> = Vec::new();
-    let mut has_container = false;
-    for ground in &world.ground_items {
-        if ground.pos != pos {
-            continue;
-        }
-        let def = ground.stack.def;
-        if ground.placed {
-            rows.push(InteractTarget::Facility { def });
-        } else if !ground.contents.is_empty() {
-            if !has_container {
-                has_container = true;
-                rows.push(InteractTarget::Container { def });
-            }
-        } else if !rows
-            .iter()
-            .any(|row| matches!(row, InteractTarget::Loose { def: seen } if *seen == def))
-        {
-            rows.push(InteractTarget::Loose { def });
-        }
-    }
-    if let Some(action) = door_action_at(world, pos) {
-        rows.push(InteractTarget::Door { action });
-    }
-    rows
-}
-
-/// 这一格是不是一扇能开或能关的门；不是就返回 `None`。
-///
-/// # 判据完全由内容声明推出，没有任何硬编码地形 id
-///
-/// - 地形声明了 `opens_into`（[`ll_world::terrain::TerrainKind::opens_into`]）
-///   → 它是一格「撞入即开」的地形，也就是**关着的门** → [`DoorAction::Open`]。
-/// - 地形是某种地形 `opens_into` 的**目标**
-///   （[`ll_world::terrain::TerrainTable::closes_into`] 有值）
-///   → 它是一格**开着的门** → [`DoorAction::Close`]。
-///
-/// 因此 mod 自己声明的门（只要写了 `opens_into`）自动进交互列表，
-/// 引擎侧零改动——与 `resolve_move` 的撞门分支当初把硬编码特判收拢成
-/// 声明式属性是同一条收益（见 `ll_world::terrain` 模块文档
-/// 「`opens_into`」一节）。
-///
-/// # 两条判据不可能同时成立吗
-///
-/// 内容上可以写出「A 开成 B，B 又开成 C」这样的链。真出现时**开优先**
-/// （先判 `opens_into`）：一格还能继续被推开的地形，玩家的第一意图是
-/// 推开它。这是一条确定性的先后，不是设计裁定——本体内容里不存在这种
-/// 链（`door_closed → door_open`，而 `door_open` 没有 `opens_into`）。
-///
-/// 区块未常驻时返回 `None`：查不到地形就是查不到（ADR 0015），与
-/// `resolve_move`/`resolve_open_door` 在同一情形下静默作废一致。
-fn door_action_at(world: &WorldState, pos: TorusPos) -> Option<DoorAction> {
-    let terrain = world.terrain_at(pos)?;
-    if terrain.opens_into(&world.terrain_table).is_some() {
-        return Some(DoorAction::Open);
-    }
-    world
-        .terrain_table
-        .closes_into(terrain)
-        .map(|_| DoorAction::Close)
 }
 
 /// 制作菜单这一帧的行——全部已注册配方，按索引升序。/// 制作菜单这一帧的行——全部已注册配方，按索引升序。
@@ -603,6 +398,7 @@ pub fn player_command(
     world: &WorldState,
     actor: EntityId,
     recipes: &RecipeTable,
+    talk: TalkLookup<'_>,
 ) -> PlayerCommand {
     let Some(agent) = world.actors.get(actor) else {
         return PlayerCommand::Idle;
@@ -634,14 +430,14 @@ pub fn player_command(
             *menu = PlayerMenu::Closed;
             return PlayerCommand::Idle;
         }
-        return begin_interact(menu, world, agent.pos);
+        return begin_interact(menu, world, agent.pos, actor, talk);
     }
     // 拾取键在**菜单外**按下时，开的是同一条交互流程——[`begin_interact`]
     // 是唯一的实现，两个键只是两个入口，不是两条拾取路径（所有者原话
     // 「统一以列表显示」，见模块文档）。在物品列表**里**按它是「把选中
     // 的这一样捡走」，那一支在下面的 `PlayerMenu::Interact` 分支里。
     if input.was_just_pressed(GameKey::PickUp) && !menu.is_open() {
-        return begin_interact(menu, world, agent.pos);
+        return begin_interact(menu, world, agent.pos, actor, talk);
     }
 
     if !menu.is_open() {
@@ -652,7 +448,7 @@ pub fn player_command(
     // 菜单开着时按取消如果穿透过去，玩家想关个背包会直接退出整局。
     if input.was_just_pressed(GameKey::Cancel) {
         // **退一层**，不是关到底——见 [`cancelled_menu`] 与规格 N7。
-        *menu = cancelled_menu(*menu, world, agent.pos);
+        *menu = cancelled_menu(*menu, world, agent.pos, actor, talk);
         return PlayerCommand::Idle;
     }
 
@@ -685,7 +481,7 @@ pub fn player_command(
             }
         }
         PlayerMenu::InteractDirection { cursor } => {
-            let tiles = interact_tiles(world, agent.pos);
+            let tiles = interact_tiles(world, agent.pos, actor, talk);
             match moved_cursor(input, cursor, tiles.len()) {
                 Some(next) => {
                     *menu = PlayerMenu::InteractDirection { cursor: next };
@@ -721,7 +517,7 @@ pub fn player_command(
             cursor,
             from_direction,
         } => {
-            let entries = interact_entries(world, pos);
+            let entries = interact_entries(world, pos, actor, talk);
             match moved_cursor(input, cursor, entries.len()) {
                 Some(next) => {
                     *menu = PlayerMenu::Interact {
@@ -860,6 +656,16 @@ fn interact_command(
                 },
             }
         }
+        // 开口说话：**开一块屏，不提交任何意图**，见
+        // [`PlayerCommand::OpenDialogue`] 文档。
+        //
+        // 与 `Loose`/`Door` 同一个理由关掉菜单：会话屏是一块模态屏，
+        // 它盖住整个画面，底下那块交互列表留着只会在退出会话时露出一
+        // 份已经过期的列表。
+        InteractTarget::Talk { dialogue, .. } => {
+            *menu = PlayerMenu::Closed;
+            PlayerCommand::OpenDialogue { dialogue }
+        }
     }
 }
 
@@ -878,7 +684,13 @@ fn interact_command(
 /// 存：方向列表的内容就是 `interact_tiles(world, origin)`，在它的结果里
 /// 找 `pos` 的下标即可。找不到（两帧之间那一格上的东西没了）时回落到第
 /// 0 行——不 panic，一个纯 UI 状态问题不该拖垮整局。
-fn cancelled_menu(menu: PlayerMenu, world: &WorldState, origin: TorusPos) -> PlayerMenu {
+fn cancelled_menu(
+    menu: PlayerMenu,
+    world: &WorldState,
+    origin: TorusPos,
+    actor: EntityId,
+    talk: TalkLookup<'_>,
+) -> PlayerMenu {
     let PlayerMenu::Interact {
         pos,
         from_direction: true,
@@ -887,7 +699,7 @@ fn cancelled_menu(menu: PlayerMenu, world: &WorldState, origin: TorusPos) -> Pla
     else {
         return PlayerMenu::Closed;
     };
-    let cursor = interact_tiles(world, origin)
+    let cursor = interact_tiles(world, origin, actor, talk)
         .iter()
         .position(|tile| tile.pos == pos)
         .unwrap_or(0);
@@ -901,8 +713,14 @@ fn cancelled_menu(menu: PlayerMenu, world: &WorldState, origin: TorusPos) -> Pla
 ///
 /// **一格上只有一件东西时也开物品列表**（不走「直接捡走」的捷径）——
 /// 所有者原话「不是捡走，只是打开交互列表」。跳过的只是方向列表那一层。
-fn begin_interact(menu: &mut PlayerMenu, world: &WorldState, origin: TorusPos) -> PlayerCommand {
-    let tiles = interact_tiles(world, origin);
+fn begin_interact(
+    menu: &mut PlayerMenu,
+    world: &WorldState,
+    origin: TorusPos,
+    actor: EntityId,
+    talk: TalkLookup<'_>,
+) -> PlayerCommand {
+    let tiles = interact_tiles(world, origin, actor, talk);
     match tiles.len() {
         0 => {
             *menu = PlayerMenu::Closed;
@@ -1125,14 +943,19 @@ pub fn craft_row_text(
 /// 写入点），列表必然逐条相同。把它攒成一个字段跨帧复用才是真正的
 /// 风险——那份缓存要有人负责在背包变化时失效，而背包每一次结算都可能
 /// 变，见 `crate::app::draw_hud` 里「派生而不缓存」同一条纪律。
+#[allow(clippy::too_many_arguments)]
 pub fn menu_rows(
     menu: PlayerMenu,
     world: &WorldState,
     actor: EntityId,
     recipes: &RecipeTable,
     items: &ItemTable,
+    // 对话那一行的名字取说话人的职业显示名（`Agent` 今天没有名字），
+    // 见 [`InteractTarget::Talk`] 文档。
+    classes: &ClassTable,
     catalog: &Catalog,
     language: &str,
+    talk: TalkLookup<'_>,
 ) -> Vec<String> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
@@ -1147,124 +970,20 @@ pub fn menu_rows(
             .into_iter()
             .map(|recipe| craft_row_text(recipe, recipes, items, catalog, language))
             .collect(),
-        PlayerMenu::Interact { pos, .. } => interact_entries(world, pos)
+        PlayerMenu::Interact { pos, .. } => interact_entries(world, pos, actor, talk)
             .into_iter()
-            .map(|target| interact_row_text(target, pos, world, agent, items, catalog, language))
+            .map(|target| {
+                interact_row_text(target, pos, world, agent, items, classes, catalog, language)
+            })
             .collect(),
-        PlayerMenu::InteractDirection { .. } => interact_tiles(world, agent.pos)
+        PlayerMenu::InteractDirection { .. } => interact_tiles(world, agent.pos, actor, talk)
             .into_iter()
-            .map(|tile| direction_row_text(tile, world, agent, items, catalog, language))
+            .map(|tile| {
+                direction_row_text(
+                    tile, world, actor, agent, items, classes, catalog, language, talk,
+                )
+            })
             .collect(),
-    }
-}
-
-/// 方向列表一行的显示文本：方向名 + 那一格上第一样东西的名字。
-///
-/// 带上「那儿有什么」是这块列表唯一有用的信息：光有「北」「东南」两行
-/// 方向名，玩家还是不知道该往哪一格去。只列第一样（后面加省略号）是
-/// 因为这一行的作用是**认出是哪一格**，不是复述那一格的完整清单——
-/// 完整清单在选完之后的物品列表里。
-pub fn direction_row_text(
-    tile: InteractTile,
-    world: &WorldState,
-    agent: &Agent,
-    items: &ItemTable,
-    catalog: &Catalog,
-    language: &str,
-) -> String {
-    let direction = catalog.resolve(language, direction_key(tile.dir));
-    let entries = interact_entries(world, tile.pos);
-    let first = entries
-        .first()
-        .map(|target| interact_target_name(*target, items, catalog, language, agent))
-        .unwrap_or_default();
-    if entries.len() > 1 {
-        let more = catalog.resolve(language, "hud-interact-direction-more");
-        format!("{direction}：{first} {more}")
-    } else {
-        format!("{direction}：{first}")
-    }
-}
-
-/// 交互列表一行的显示文本：名字 + 数量 + 这一行的主交互是什么。
-///
-/// 标出主交互是玩家唯一能在这块列表里分辨「这是我立着的炉子（按确认
-/// 会开工）」和「这是掉在这儿的一座炉子（按确认会捡走）」的途径——
-/// 两者名字一模一样，后果完全不同。
-#[allow(clippy::too_many_arguments)]
-pub fn interact_row_text(
-    target: InteractTarget,
-    pos: TorusPos,
-    world: &WorldState,
-    agent: &Agent,
-    items: &ItemTable,
-    catalog: &Catalog,
-    language: &str,
-) -> String {
-    let name = interact_target_name(target, items, catalog, language, agent);
-    let action_key = match target {
-        InteractTarget::Facility { .. } => "hud-interact-action-work",
-        InteractTarget::Container { .. } => "hud-interact-action-loot",
-        InteractTarget::Loose { .. } => "hud-interact-action-take",
-        InteractTarget::Door {
-            action: DoorAction::Open,
-        } => "hud-interact-action-open_door",
-        InteractTarget::Door {
-            action: DoorAction::Close,
-        } => "hud-interact-action-close_door",
-    };
-    let action = catalog.resolve(language, action_key);
-    // **门这一行不写数量。** 「x1」对一件可以有好几堆的物品才有意义，
-    // 一扇门是这一格的地形，不存在「两扇」。硬凑一个 `x1` 只会让玩家
-    // 以为它是一件能捡的东西。
-    let Some(def) = target.item_def() else {
-        return format!("{name}（{action}）");
-    };
-    let count = world
-        .ground_items
-        .iter()
-        .find(|ground| ground.pos == pos && ground.stack.def == def)
-        .map_or(0, |ground| ground.stack.count);
-    format!("{name} x{count}（{action}）")
-}
-
-/// 一行交互候选的**名字**——物品查物品表，门查一条专门的 Fluent 键。
-///
-/// # 门为什么不走 `item_display_name`
-///
-/// 地形没有 `display_name_key`：`ll_world::terrain::TerrainAttrs` 只有
-/// `blocks_sight`/`blocks_move`/`move_cost`/`opens_into` 四个字段，本体
-/// 十七种地形全部由引擎侧注册（`materialize_base_terrain`），从来没有
-/// 过显示名这一层。给地形补一条显示名字段是一次真正的内容 schema 变更
-/// （连带 `CONTENT_HASH_ALGORITHM_VERSION` 要递增），**不在本批次范围**。
-///
-/// 因此门这一行用两条专门的 HUD 文案键（`hud-interact-door-closed` /
-/// `hud-interact-door-open`），与 `hud-item-unidentified` 同一档：一句
-/// 属于呈现层的通用说法，不是某条内容自己的名字。
-///
-/// **代价要如实记一笔**：mod 声明的门也显示成这同一句「一扇门」，区分
-/// 不出「橡木门」和「铁栅门」。要区分就得给地形补显示名字段——那是
-/// 上面说的那次 schema 变更，留给需要它的那一批。
-fn interact_target_name(
-    target: InteractTarget,
-    items: &ItemTable,
-    catalog: &Catalog,
-    language: &str,
-    agent: &Agent,
-) -> String {
-    match target {
-        InteractTarget::Door {
-            action: DoorAction::Open,
-        } => catalog.resolve(language, "hud-interact-door-closed"),
-        InteractTarget::Door {
-            action: DoorAction::Close,
-        } => catalog.resolve(language, "hud-interact-door-open"),
-        other => {
-            let def = other
-                .item_def()
-                .expect("除门之外的每一个变体都携带物品索引");
-            item_display_name(def, items, catalog, language, &agent.identified_items)
-        }
     }
 }
 

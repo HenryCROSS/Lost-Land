@@ -44,6 +44,7 @@
 
 use std::path::Path;
 
+use ll_core::ident::ContentIndex;
 use ll_i18n::{Catalog, FluentArgs};
 use ll_platform::config::{GameConfig, ScaleFilter, save as save_config};
 use ll_platform::input::{GameKey, InputState};
@@ -116,6 +117,21 @@ pub enum ScreenState {
         /// 一个入口。带着它是为了玩家从这里退回选点屏、再按一次取消时
         /// 能回到当初的来处，而不是让命名屏自己编一个。
         origin: SpawnOrigin,
+    },
+    /// 会话屏——跟一个 NPC 说话，见 [`crate::dialogue_screen`]。
+    ///
+    /// **它底下有一局正在进行的世界**，与 [`ScreenState::Menu`] 同一
+    /// 种状态：世界不推进（`Demo::advance` 因 `screen.is_some()` 早退），
+    /// 因此对话过程中说话人不可能走开或死掉。
+    ///
+    /// 会话位置（停在哪个节点、光标停在第几行）**是 UI 状态**，不进
+    /// `WorldState`、不进存档、不进世界哈希（规格七节 7.1）。
+    Dialogue {
+        /// 现在停在哪个对话节点上。
+        node: ContentIndex,
+        /// 光标落在**过滤后**的第几行——注意不是选项的原始下标，
+        /// 见 `crate::dialogue_screen::DialogueRow`。
+        cursor: usize,
     },
     /// 设置界面。
     Settings {
@@ -441,11 +457,16 @@ pub fn focus_index(table: &WidgetStateTable, ids: &[WidgetId]) -> usize {
 }
 
 /// 建出这一帧要交给 `ll_ui::screen` 的数据。
+/// `title_key` 只被 [`ScreenState::Dialogue`] 那一支读——其余各支的
+/// 标题是一个写死的字面量键。收一个参数而不是让本函数自己去查内容表，
+/// 与本模块「只收已经排好版的字符串，不收领域类型」那条既有分工一致
+/// （见模块文档「为什么只有一种屏」一节）。
 pub fn screen_data<'a>(
     state: ScreenState,
     rows: &'a [String],
     focus: usize,
     notice: Option<&'a str>,
+    title_key: &'a str,
 ) -> ScreenData<'a> {
     match state {
         ScreenState::Title => ScreenData {
@@ -528,6 +549,20 @@ pub fn screen_data<'a>(
             cursor: usize::MAX,
             empty_key: "screen-savelist-empty",
             hint_key: "screen-savename-hint",
+            notice,
+            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
+        },
+        // 会话屏的**标题就是 NPC 说的那一句**——它本身是一条 Fluent
+        // 键，见 `crate::dialogue_screen` 模块文档那张表。因此这一支
+        // 不能像其余各支那样写一个字面量键，键由调用方现算好传进来。
+        ScreenState::Dialogue { .. } => ScreenData {
+            title_key,
+            rows,
+            cursor: focus,
+            empty_key: "screen-dialogue-empty",
+            hint_key: "screen-dialogue-hint",
             notice,
             // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。

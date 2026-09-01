@@ -10,8 +10,8 @@
       "reason": "合理：存档读写管线——头部、迁移链、索引映射、主体、降级，一条从文件到 WorldState 的顺序管线。中间任何一步单独拆走，都会让「读档要按什么顺序做什么」不再有唯一的阅读入口。"
     },
     "crates/ll-game/src/app_tests.rs": {
-      "code_lines": 1053,
-      "reason": "合理（批次 16 的搬移产物）：crate::app 的断言，用 #[path] 挂成 app 的子模块，与 app_save_tests.rs / app_navigation_tests.rs 同一手法（它们现在是本文件的子模块）。搬出来还顺手消掉了一处 rustc 与 rustfmt 对嵌套 #[path] 基准目录的分歧，见文件头注释。不按主题拆开：断言与 test_demo_at_title / frame 等共享夹具交错，按主题切开只会把夹具复制多份。"
+      "code_lines": 1058,
+      "reason": "合理（批次 16 的搬移产物）：crate::app 的断言，用 #[path] 挂成 app 的子模块，与 app_save_tests.rs / app_navigation_tests.rs 同一手法（它们现在是本文件的子模块）。搬出来还顺手消掉了一处 rustc 与 rustfmt 对嵌套 #[path] 基准目录的分歧，见文件头注释。不按主题拆开：断言与 test_demo_at_title / frame 等共享夹具交错，按主题切开只会把夹具复制多份。〔2026-08-31，批次 21〕+5 行：`interact_tiles` 多了两个参数（发起者 + 对话查询），一处调用点从一行变成六行。**纯签名跟随，没有新增断言**——把它搬进新模块只会让那条断言与它的夹具分家。"
     },
     "crates/ll-game/src/world.rs": {
       "code_lines": 960,
