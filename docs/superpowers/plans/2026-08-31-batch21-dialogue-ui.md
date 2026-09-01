@@ -310,6 +310,23 @@ Intent::DialogueChoose { actor: EntityId, node: ContentIndex, option: usize }
 9. **尸体不列对话行**（`health <= 0`）。规格没提，但「跟尸体说话」
    显然不是意图。
 
+### 与本文档前半（写在开工前）的三处偏离
+
+前半是计划，落地时改了三处，逐条记在这里：
+
+- **2.5 说的内容标的换了。** 计划写的是「给管理者『我想在这里落脚』
+  挂 `set-flag: lostland:steward_asked_join`，再加一条依赖它的选项」。
+  落地时发现**批次 1 已经写好了更合适的一对**：矿堡卫兵那段的
+  `flag-not-set`/`flag-set`（`lostland:dialogue_flag.guard_rumour_heard`），
+  它当时的注释就写着「写入这条标志的 `set-flag` 后果属批次 2」。
+  给那一条挂上 `outcomes` 即可——**零新增内容 id、零新增 `.ftl` 键**，
+  而且把批次 1 留的那句话就地兑现了。
+- **3.4 的 `PlayerCommand::OpenDialogue { npc, dialogue, node }` 变成
+  `{ dialogue }`。** 理由同上面第 1 条（不带没有消费者的字段），
+  `node` 由 `dialogue` 的 `root` 现查。
+- **4.1 的 `ScreenState::Dialogue { npc, dialogue, node, cursor }` 变成
+  `{ node, cursor }`。** 同一条理由。
+
 ## 十、落地实测（收尾回填）
 
 ### 10.1 两条黄金基准：**实测未变**，并做了覆盖面证伪
