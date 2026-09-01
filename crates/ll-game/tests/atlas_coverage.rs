@@ -60,7 +60,7 @@ use std::path::PathBuf;
 
 use ll_game::app::load_sprite_sources;
 use ll_game::content::{LoadedContent, load_content};
-use ll_game::layout::terrain_atlas_key;
+use ll_game::layout::terrain_atlas_key_for_variant;
 use ll_game::surface_draw::PLACED_FURNITURE_SPRITE;
 use ll_render::atlas_pack::{PackedAtlas, pack_atlas};
 use ll_ui::hud::world_map::{FOG_COLOR, terrain_color};
@@ -149,8 +149,9 @@ fn terrain_keys(content: &LoadedContent) -> Vec<(&'static str, String)> {
     all_base_terrains(&content.terrain_ids)
         .into_iter()
         .map(|(label, kind)| {
-            let key = terrain_atlas_key(kind, &content.terrain_ids, &content.registry)
-                .unwrap_or_else(|| panic!("地形 {label} 连图集键都算不出来"));
+            let key =
+                terrain_atlas_key_for_variant(kind, &content.terrain_ids, &content.registry, 0)
+                    .unwrap_or_else(|| panic!("地形 {label} 连图集键都算不出来"));
             (label, key)
         })
         .collect()
