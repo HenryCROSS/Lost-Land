@@ -251,6 +251,55 @@ fn 回主菜单时写盘失败就留在暂停菜单不丢弃世界() {
 }
 
 #[test]
+fn 手动存档失败时必须明说不能静默() {
+    // 规格 F2 的另一半。成功那一侧由下面那条断言守着，**失败这一侧
+    // 此前只有 `back_to_title` 那条路上有断言**——`save_now` 自己的
+    // `Err` 分支没有任何东西盯着，把那句 `screen_notice` 删掉不会有
+    // 任何测试变红。
+    //
+    // 反例验证（已实跑）：把 `save_now` 的 `Err` 分支里那句
+    // `self.screen_notice = Some(ScreenNotice::GameSaveFailed)` 删掉
+    // （只留 `tracing::error!`），本条当场红——红在 `screen_notice`
+    // 是 `None`。
+    //
+    // Arrange：让存档目录这条路径被一个**文件**占住，`create_dir_all`
+    // 因此必然失败——不假造错误类型，是真的写不进去。与
+    // `回主菜单时存档失败必须留在原地` 同一个手法。
+    let mut demo = test_demo();
+    let mut input = InputState::new();
+    demo.modal.set_screen(Some(ScreenState::Menu), &mut input);
+    let blocker = demo.saves_dir.clone();
+    if let Some(parent) = blocker.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&blocker, b"not a directory").expect("占位文件应当写得出来");
+    demo.session
+        .as_mut()
+        .expect("Arrange：玩家在世界里")
+        .save_target
+        .path = blocker.join("whatever.llsave");
+    assert_eq!(demo.screen_notice, None, "Arrange：这一刻屏上没有话要说");
+
+    // Act
+    demo.save_now();
+
+    // Assert
+    assert_eq!(
+        demo.screen_notice,
+        Some(ScreenNotice::GameSaveFailed),
+        "按了「保存」却没存上，屏幕上必须说话——静默等于让玩家以为存上了"
+    );
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::Menu),
+        "失败也留在菜单里，玩家看得见那句话"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_file(&blocker);
+}
+
+#[test]
 fn 手动存档写出一份档并留在菜单里() {
     // Arrange
     let mut demo = test_demo();
