@@ -53,6 +53,22 @@ use crate::quest::mark_quest_completed;
 
 use super::inventory::merge_into_inventory_effect;
 
+/// 本模块要用到的三份目录。
+///
+/// 收成一个结构体是为了让 [`resolve_dialogue_choose`] 的参数表停在 7 个
+/// 以内（`clippy::too_many_arguments`，全仓库 `-D warnings`）——与
+/// `crates/ll-game/tests/dialogue_session.rs` 里 `会话夹具` 是同一条既有
+/// 应对，不是为了抽象。
+#[derive(Clone, Copy)]
+pub(super) struct DialogueResolveCatalogs<'a> {
+    /// 节点与选项从哪来。
+    pub dialogues: &'a dyn DialogueCatalog,
+    /// `complete-quest` 的 `ContentIndex → NamespacedId` 反查。
+    pub content_ids: &'a dyn ContentIdLookup,
+    /// `give-item` 并进背包时要查的堆叠上限。
+    pub items: &'a dyn ItemCatalog,
+}
+
 /// 结算一次「选中了一条带后果的对话选项」。
 ///
 /// 四道闸门，任何一道不过就返回**空效果**（不是 panic、也不是一个
@@ -74,10 +90,13 @@ pub(super) fn resolve_dialogue_choose(
     speaker: EntityId,
     node: ContentIndex,
     option: usize,
-    dialogues: &dyn DialogueCatalog,
-    content_ids: &dyn ContentIdLookup,
-    items: &dyn ItemCatalog,
+    catalogs: DialogueResolveCatalogs<'_>,
 ) -> Vec<Effect> {
+    let DialogueResolveCatalogs {
+        dialogues,
+        content_ids,
+        items,
+    } = catalogs;
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();
     };

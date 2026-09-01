@@ -372,29 +372,30 @@ fn 尚未实现的后果报明确错误而不是静默接受() {
     // 〔2026-08-31，批次 26〕`join-settlement` 已经实现，从这份清单里
     // 挪走了——它现在由 `join_settlement后果解析成不带参数的变体`
     // 与 `join_settlement带多余的flag参数报错` 两条守着。
-    // 〔2026-08-31，批次 29〕`complete-quest` 与 `give-item` 同样挪走
-    // 了，由 `complete_quest后果解析成一条任务引用`、
-    // `give_item后果解析成一条物品引用` 等几条守着。
-    for kind in ["open-trade"] {
-        // Arrange & Act
-        let source = format!(
-            r#"{{
-              nodes: [ {{ id: "lostland:a", text_key: "lostland:dialogue.a",
-                         options: [ {{ text_key: "lostland:dialogue.x", next: "end",
-                                      outcomes: [ {{ kind: "{kind}" }} ] }} ] }} ],
-            }}"#
-        );
-        let (_registry, _dialogues, _nodes, result) = 解析(&source);
+    // 〔2026-08-31，批次 29〕`complete-quest` 与 `give-item` 同样挪走了，
+    // 由 `complete_quest后果解析成一条任务引用`、
+    // `give_item后果解析成一条物品引用` 等几条守着。**清单里只剩
+    // `open-trade` 一种**，因此这里不再是一个循环（`clippy` 会把只有一个
+    // 元素的 `for` 判成 `single_element_loop`）；批次 5 落地那天这条测试
+    // 整条删掉，而不是把最后一个元素也拿走留一个空循环。
+    let kind = "open-trade";
 
-        // Assert
-        let err = result.expect_err("尚未实现的后果必须报错");
-        assert!(err.contains("尚未实现"), "错误信息要说清楚为什么：{err}");
-        assert!(err.contains(kind), "错误信息要点名是哪一种：{err}");
-    }
+    // Arrange & Act
+    let source = format!(
+        r#"{{
+          nodes: [ {{ id: "lostland:a", text_key: "lostland:dialogue.a",
+                     options: [ {{ text_key: "lostland:dialogue.x", next: "end",
+                                  outcomes: [ {{ kind: "{kind}" }} ] }} ] }} ],
+        }}"#
+    );
+    let (_registry, _dialogues, _nodes, result) = 解析(&source);
+
+    // Assert
+    let err = result.expect_err("尚未实现的后果必须报错");
+    assert!(err.contains("尚未实现"), "错误信息要说清楚为什么：{err}");
+    assert!(err.contains(kind), "错误信息要点名是哪一种：{err}");
 }
 
-/// `complete-quest` 携带的是一条**有内容表**的任务引用：解析成
-/// `ContentIndex`，而不是一个字符串。
 #[test]
 fn complete_quest后果解析成一条任务引用() {
     // 反例验证（ADR 0022）：把 `resolve` 里 `"complete-quest"` 那一支

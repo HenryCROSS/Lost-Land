@@ -812,9 +812,11 @@ fn resolve_dispatch(
             speaker,
             node,
             option,
-            dialogues,
-            content_ids,
-            items,
+            self::dialogue::DialogueResolveCatalogs {
+                dialogues,
+                content_ids,
+                items,
+            },
         ),
     };
     // 副职使用计数（副职获得机制批次）：一次**成功**的制作把对应配方

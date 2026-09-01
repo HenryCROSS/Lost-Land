@@ -756,6 +756,10 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 >    一个字节不动 ⇒ 说话人不可能在会话中途走开或死掉，带一个从头到尾
 >    没有消费者的字段就是又一个「声明了但没接线」。批次 4/5 的
 >    `give-item`/`open-trade` 真的需要「给谁」时再加。
+>    **【2026-08-31 更正（批次 3，比预告早一批）】这一条已按它自己写好的
+>    反转条件反转**：`join-settlement` 要问说话人的 `home`，`speaker` 因此
+>    加进了四处（见批次 26 计划文档 3.2）。批次 4 的 `give-item` 直接用上
+>    了它——「从谁的背包里拿」正是那个字段回答的。
 > 3. **会话屏的标题就是节点的 `text_key`**（NPC 那一句），不给
 >    `ll_ui::screen::ScreenData` 加第六个槽。七节 7.1 只说了「会话位置是
 >    UI 状态」，没有规定屏的排版。
@@ -796,7 +800,7 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 | **1** ✅ | 对话内容表（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch18-dialogue-content.md`）：`dialogues.json5`、两张表、进 `CONTENT_FILES` 与内容哈希、条件谓词七条、本体写一份 steward 对话、`example_mod` 写一份**带自己 `.ftl`** 的对话（这是批次 0 的验收标的） | 0 | 否 |
 | **2** ✅ | 进交互列表 + 会话 UI + `Intent::DialogueChoose` + `outcomes` 里的 `set-flag`（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch21-dialogue-ui.md`）。**此时对话已经能说话、能分支、能记住玩家的选择，但还没有丙档的三条后果** | 1；UI 形状等 `wt-uxdesign` | 否 |
 | **3** ✅ | **加入据点**（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch26-dialogue-join.md`）：`Agent.home` 字段（存档 schema 5 → 6）、`join-settlement` 后果、`affiliated`/`standing-at-least` 两条谓词真的有东西可读 | 2 | **否**——势力播种（2026-08-29）之后「加入据点」指的是真正的 `OrgInstance`，原表这一格写的「加入**势力**依赖 P9」已经不成立 |
-| **4** | **任务**：`complete-quest` 后果、`give-item` 后果（`Effect::TransferOwnership` 的第一个调用方，含 owner 校验） | 2 | 否 |
+| **4** ✅ | **任务**（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch29-dialogue-quest.md`）：`complete-quest` 后果（调既有的 `mark_quest_completed`）、`give-item` 后果（**含 owner 校验硬前置**）。**一处偏离**：`give-item` **没有**成为 `Effect::TransferOwnership` 的第一个调用方——那个效果只改 `owner` 不搬运，与赠送必须同时做的两件事组合不出一条既正确又可观察的排法，归属改由 `resolve` 算好写进搬运效果（`resolve_pick_up` 的既有手法），完整论证见计划文档三节 3.5。**另一处收窄**：`give-item` 不带 `count`，一次一件 | 2 | 否 |
 | **5** | **交易**：NPC 初始钱包、`Intent::Trade`、占位价格公式（基础价 × 归属系数） | 3（归属系数要有 `standing` 可读） | **是**——真正的定价（库存/需求/政策/商路四因子、行会中介、商队）整体属 P9，本批只交付占位公式并在代码里写明它将来会被替换 |
 | **6** | **NPC 姓名**：`CultureAttrs.naming`、渲染期现算、对话文案从「职业名」换成 `{ $npc_name }`（**只改 `.ftl`，不改任何 JSON5**） | 1 | 否 |
 

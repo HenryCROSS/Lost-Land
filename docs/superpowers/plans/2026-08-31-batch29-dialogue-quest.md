@@ -367,6 +367,171 @@ steward_root ──ask_reward（quest-completed main_quest_1）──► steward
 
 ---
 
-## 十、落地实测（收尾回填）
+## 十、落地实测
 
-## 十一、规格没裁定、本批临时选的做法（收尾回填）
+### 10.1 三条黄金基准：**一条都没动**，两组对照给证伪
+
+| 基准 | 结果 |
+|---|---|
+| `EXPECTED_WORLD_DIGEST` | **没动** |
+| `EXPECTED_REPLAY_DIGEST` | **没动** |
+| `EXPECTED_POPULATED_WORLD_DIGEST` | **没动** |
+
+**证伪（两组对照，都是已知会红的注入点，都在生产代码/内容里，不在
+`#[cfg(test)]` 里）**：
+
+- **对照组一：往 `mods/lostland/items.json5` 的中段插一条新物品**
+  （让其后每一张表的 `ContentIndex` 整体后移）。
+  → `EXPECTED_POPULATED_WORLD_DIGEST` **当场红**
+  （`15530339882465142459` ≠ `14539485488716496306`），另外两条不动。
+  这证明「populated 那条真的读得到内容索引」，因此本批「零新增内容 id」
+  这条结构性理由不是空话。
+- **对照组二：往 `WorldState::hash` 的顶层注一句 `write_u64(7777)`**。
+  → **三条全红**（`7594479950126602861` / `1287695771458674620` /
+  `15752884311848722697` 各自 ≠ 自己的常量）。这证明三条基准**全都是活
+  的**，本批「跑了一遍没红」不是因为它们已经失效。
+
+**结构性理由**（每条都指向一处已经实测记录过的既有事实）：
+
+1. 本批**零新增内容 id**——两条新选项挂在既有节点上，`text_key` 走
+   `parse_id` 不 intern，因此一个 `ContentIndex` 都不平移；
+2. 本批**不给任何进哈希的类型加字段**、不改任何既有 `Effect` 的 `apply`；
+3. 两条新后果**只在玩家选中一条对话选项时才产出效果**，而三条基准的
+   意图流里没有一条 `Intent::DialogueChoose`（世界生成与回放脚本都不说话）。
+
+### 10.2 七条存在性断言：**仍然全绿**
+
+`populated_determinism.rs` 是一条 `#[test]`，改前改后都整条通过 ⇒ 七条
+存在性断言全过。对照组一那次红时，panic 落在**它们之后**的摘要断言
+（`populated_determinism.rs:376`）上——世界没有变空。一条都没重冻、
+一条都没删。
+
+### 10.3 内容哈希与存档 schema
+
+- `CONTENT_HASH_ALGORITHM_VERSION`：**31 → 33**（提交 A 递到 32、提交 B
+  递到 33，各带一段说明；两次都是「已有表的枚举加变体 + 本体内容真的用上
+  了新变体」那一档，按 ADR 0027 两件事都要求递增）。
+- `CURRENT_SCHEMA_VERSION`：**6，不动**。本批不给任何进存档主体的类型加
+  字段，`check_save_schema_version.py` 报「形状与快照一致」。**没有写任何
+  兼容性声明**——postcard 非自描述，`#[serde(default)]` 在那条路径上是空
+  操作，本批没有需要它的地方。
+
+### 10.4 ADR 0022 反例验证：十条实测，**没有出现「改坏了它不红」**
+
+| # | 改坏什么 | 结果 | 红在哪 |
+|---|---|---|---|
+| ① | `give_item` 的 owner 校验整段去掉 | **红** | `说话人送不属于自己的东西时give_item零效果`（`Owner::Player` 那一档产出了效果）；端到端那条 `管理者拿别人的东西当奖励时领赏那一行什么都不做` 也红（`1 ≠ 2`） |
+| ②a | `complete-quest` 一支补 `Effect::ScheduleNext` | **红** | `完成任务不消耗回合`：`next_action_at` `Tick(100)` ≠ `Tick(0)` |
+| ②b | `give-item` 一支补 `Effect::ScheduleNext` | **红** | `赠送物品不消耗回合`：同上 |
+| ③ | `write_dialogue_outcome` 里 `GiveItem` 的 `3` 改成 `CompleteQuest` 的 `2` | **红** | `后果种类不同的两个对话节点摘要不同`：「后果种类 3 与 4 的摘要撞了」，`left == right == 2181073775456014323` |
+| ④ | `ll_sim::quest::mark_quest_completed` 的函数体改坏（写到另一个键上） | **红** | `结算之后任务真的变成已完成` 与 `完成任务不消耗回合` 的对照组断言。**这条红就是「真的调的是既有函数」的证据**：若 `resolve` 里另抄了一份完成逻辑，改坏它不会有任何反应 |
+| ⑤ | 「说话人背包里找得到这一堆」那道闸门去掉（找不到时凭空造一堆） | **红** | `说话人没有那件东西时give_item零效果` |
+| ⑥ | 交出的那一件不改归属（`owner: held.owner`） | **红** | 主线 `选中give_item的选项把一件东西从说话人搬到发起者`：`Unowned` ≠ `Player`；`说话人送自己名下的东西时give_item照常产出效果`：`Npc(WorldId(3))` ≠ `Player` |
+| ⑦a | `resolve` 的 `complete-quest` 一支不产写入 | **红** | 端到端 `管理者的任务链从接活走到领赏` 红在 `complete-quest 之后这条任务必须是已完成`（`dialogue_quest_chain.rs:346`） |
+| ⑦b | `resolve` 的 `give-item` 一支不产效果 | **红** | 同一条端到端红在「管理者手里必须真的少一份」（`2 ≠ 1`） |
+| ⑧ | `Effect::ConsumeInventoryItem` 那条不产出 | **红** | `选中give_item的选项把一件东西从说话人搬到发起者`（`3 ≠ 2`）与 `送出最后一件之后给方那一堆整条消失` |
+
+另外 schema 侧两条也各自写了「挪回尚未实现那一支就红」的反例说明
+（`complete_quest后果解析成一条任务引用` / `give_item后果解析成一条物品引用`）。
+
+**一条**在改坏时**保持绿**、并且这是它应有的行为，如实记在这里：
+`complete_quest产出的写入就是mark_quest_completed的返回值` 在反例 ④ 下
+仍绿——断言的两边一起变了。它守的是「产出形状**就是**那个函数的返回值」
+（一份在 `resolve` 里另抄键名的实现会让它红），不是「那个函数本身没坏」；
+后者由 ④ 那两条行为断言守。**两条各守一半，不是一条失效。**
+
+### 10.5 批次 26 那条「判别值撞号不红」：**现在验到了，两边都写了**
+
+批次 26 登记的原因是「`JoinSettlement` 不带参数，字节流长度本来就不同」，
+并预告要等批次 5 的 `open-trade`。**本批提前兑现了，而且是另一对**：
+`CompleteQuest` 与 `GiveItem` 的载荷形状完全相同（判别值 + 一条反查出来
+的标识符），撞号之后字节流一模一样，实测当场红（见上表 ③）。
+
+更正写在两处、互相指向（纪律第 9 条）：
+`crates/ll-mod/src/content_hash.rs` 里 `后果种类不同的两个对话节点摘要不同`
+的文档注释；`docs/superpowers/plans/2026-08-31-batch26-dialogue-join.md`
+第 10.5 节那一行下面的引用框。
+
+### 10.6 门禁与测试数
+
+- `bash scripts/ci/run_all.sh` **EXIT=0**。
+- `bash scripts/ci/run_tests.sh`：改前 **2970 通过 / 129 个二进制 / 0 忽略**，
+  改后 **2989 通过 / 132 个二进制 / 0 忽略**（+19 条、+3 个二进制：
+  `crates/ll-sim/tests/dialogue_quest_outcomes.rs`、
+  `crates/ll-mod/tests/dialogue_schema.rs`、
+  `crates/ll-game/tests/dialogue_quest_chain.rs`）。
+- 行数棘轮，**先拆再 bless**：
+  - **真的拆了**：`crates/ll-mod/src/content_schema_dialogue.rs` 因为两条
+    新后果冲到 806 行（新增超限文件），整个 `mod tests` 搬进
+    `crates/ll-mod/tests/dialogue_schema.rs`（只用公开入口，搬家不改一条
+    断言），源文件回落到 570 行以内、退出超限名单。
+  - **bless 一个文件**：`content_hash.rs` 3026 → 3041，两段理由各自追加进
+    `reason`（被测的是私有函数 `write_dialogue_outcome`，搬出去就够不着；
+    这一段与 `CONTENT_HASH_ALGORITHM_VERSION` 是同一处真相源）。
+  - 新测试一律落在**独立测试文件**，一行都没往已经贴着上限的
+    `dialogue_session.rs`（846 行）里塞。
+- 顺带被 `-D warnings` 逼出来的两处形状调整（不是本批的设计选择，如实记）：
+  `resolve_dialogue_choose` 的参数表到了 8 个，按仓库既有应对收成一个
+  `DialogueResolveCatalogs` 结构体；`尚未实现的后果报明确错误而不是静默接受`
+  的清单只剩一个元素，`clippy::single_element_loop` 逼着把 `for` 展开。
+
+### 10.7 「必须杀一个人类平民」那个悬而未决的问题：**本批没有碰**
+
+本批的任务链**只用 `lostland:main_quest_1`（击杀 3 只哥布林）**，
+`mods/lostland/quests.json5` 一个字都没改。`lostland:branch_b` 的
+`target: "lostland:human"` 原样在那里，它文件头那段「本批次自己定的口径，
+不是所有者裁定」的标注也原样在那里。**既没有动那个选择，也没有绕开它另造
+一条链。** 这一条同时写进了
+`crates/ll-game/tests/dialogue_quest_chain.rs` 的 `QUEST` 常量文档，免得
+下一个人以为可以顺手把链接到 `branch_b` 上。
+
+---
+
+## 十一、规格没裁定、本批临时选的做法
+
+逐条列出，都取了「最保守、最容易反转」的那一种。
+
+1. **`give-item` 不带 `count`，一次一件。** 规格 5.2 的草图写的是
+   `{ item, count: N }`。收窄的好处是直接复用既有的
+   `Effect::ConsumeInventoryItem`（「减一，减到零整条移除」正是这个语义），
+   代价是内容写不出「给你三瓶药」。**反转成本**：schema 加一个默认为 1 的
+   `count` 字段 + 一段拆堆，既有内容一个字不改。
+   顺带的好处是它让 `CompleteQuest`/`GiveItem` 的载荷形状相同，判别值这条
+   纪律因此第一次有了真守卫（10.5）。
+2. **`complete-quest` 不校验前置任务。** `kill_progress_effects` 在标记
+   完成前会检查前置全完成，对话这一侧本批不做。「前置没完成能不能靠对话
+   跳过」是一次玩法裁定，规格没写。**反转成本**：`resolve` 里一个 `if` +
+   一份 `QuestCatalog`。
+3. **`complete-quest` 不校验「是不是已经完成过」。** 幂等（同一个键写同一
+   个 `Int(1)`），不会产生第二份状态。**反转成本**：一个 `if`。
+4. **owner 校验对 `Owner::Faction` / `Owner::Shop` 一律拒。**
+   「管理者能不能把据点的公产发给你」是一次玩法裁定。**反转成本**：
+   `may_give_away` 那张表加一行 + 一条「他属于那个势力吗」的查询。
+5. **校验失败 = 零效果，选项照常显示，不加新反馈键。** 与既有闸门同一条
+   纪律；「这个 NPC 有没有这件东西」要成为一条**显示条件**，需要它自己的
+   谓词与真实内容用例（规格四节 4.3 的硬规则）。
+6. **不产出 `Effect::TransferOwnership`**——反转了上游交接表的预告。
+   owner 校验硬前置照原话落地了，产出的是「消耗一件 + 并进背包」。完整
+   论证见三节 3.5；更正写回了三处（效果文档、`ll-world` 的 ownership 模块
+   文档、批次 18 计划文档第七节那一行），三处互相指向。
+7. **收方的归属由新抽出来的 `holder_owner` 算，不复用 `pick_up_owner`。**
+   后者第一句「原本有主就保持原主」是拾取（也是将来盗窃判定挂载点）的
+   语义，与合法转移判据相反；共用会让盗窃判定把每一次赠送也标成赃物。
+   共享的只有「谁拿到手就是谁的」这条映射本身——那才是 ADR 0021 说的
+   共享算法。
+8. **奖励物品取 `lostland:roast_meat`。** 硬前置要求那件东西真的在 NPC
+   背包里，而 NPC 的背包今天唯一的生产者是种族出生装备经 `outfit_decision`
+   之后剩下的部分；人类带三份烤肉、矮人带一份，人类在 farmstead/harbour
+   两支文化里权重最高。**如实登记的缺口**：管理者若恰好是精灵（出生装备
+   里没有烤肉），这条后果零效果。要让它稳定拿得出来，得让 `NpcProfile`
+   有一份内容声明的背包——那是另一批。
+9. **`complete-quest` 指向既有的 `main_quest_1`，不新增任务节点。**
+   三条理由见 4.3（注册表索引不平移、不动
+   `base_quest_graph_completable.rs` 那道门、不碰「必须杀人类平民」那个
+   待裁定问题）。**代价如实记**：今天任务只有两态，那一行既是接活也是
+   交差，`kill-count` 是同一条任务的另一条完成路径，**没有任何东西会校验
+   玩家真的去过山道**。这是任务系统缺「进行中」那一档的直接后果（规格 5.2
+   已经写明），不是对话引进来的，已经写进 `dialogues.json5` 的文件头。
+10. **`dialogue-steward-reward` 那一句改写，而不是新增一个节点。**
+    原文承诺「等库房清点完再给」，东西当场交到手上之后那句话不再成立。
+    与批次 26 第 7 条裁定同一手法：零新增内容 id、零孤儿节点。
