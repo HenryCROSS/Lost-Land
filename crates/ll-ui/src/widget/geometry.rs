@@ -11,6 +11,34 @@
 //! 共享的算法支撑）。真正需要更复杂布局的那一天，`Rect` 本身不需要
 //! 改——新的布局算法可以是消费 `Rect` 的新函数，不必推翻这个类型。
 
+/// 一块面板相对**屏幕**的落位方式——规格 L2 收敛掉的那五份副本共用的
+/// 唯一一个枚举。
+///
+/// # 为什么这个可以抽，而「通用列表控件」不可以（ADR 0021）
+///
+/// ADR 0021 拦的是「形状对称就抽象」。这里有一个**真正可共享的算法**：
+/// 已知屏幕尺寸、锚点、自身尺寸、边距，求原点——一句算术，没有任何
+/// 分支参数化。收敛之前它被抄了五遍，而五遍在边界钳制上还各不相同
+/// （反馈行对 y 做了 `.max(0.0)`，另外四处刻意不钳，没有任何一处说明
+/// 为什么不同）。
+///
+/// 对照 ADR 0021 明确否决的那个：「通用列表控件」要把光标模型、循环
+/// 与否、连发与否、左右键含义**四个开关**做成参数——那不是抽象，是
+/// 伪装。本枚举一个开关都没有。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Anchor {
+    /// 贴左上角，两个方向都留 `margin`。
+    TopLeft,
+    /// 贴右上角：右边界距屏幕右沿 `margin`，顶边距上沿 `margin`。
+    TopRight,
+    /// 水平居中、顶边距上沿 `margin`。
+    TopCenter,
+    /// 屏幕正中——**`margin` 不参与**，居中没有边距可言。
+    Center,
+    /// 水平居中、底边距下沿 `margin`。
+    BottomCenter,
+}
+
 /// 一个像素矩形：左上角坐标 + 宽高。所有字段都是原生分辨率像素——与
 /// [`crate::widget::quad::QuadInstance`]/[`ll_text::TextRun`] 同一套
 /// 坐标系（见 `ll_text` crate 顶层文档「两条渲染通道」一节：HUD 文本
@@ -76,6 +104,69 @@ impl Rect {
             (self.width - inset * 2.0).max(0.0),
             (self.height - inset * 2.0).max(0.0),
         )
+    }
+
+    /// 已知屏幕尺寸、锚点、自身尺寸与边距，求这块面板的矩形——规格 L2
+    /// 的那一个函数。
+    ///
+    /// # 一律不钳制
+    ///
+    /// 屏幕比面板还小时会算出负坐标，**刻意不钳到 0**。这条取舍是从被
+    /// 收敛掉的那五处里已经写下理由的那一侧继承来的
+    /// （`hud::render::equipment_rect` / `hud::placement` /
+    /// `screen::centered_origin` 三处的原话）：钳制会把「窗口配置改小了
+    /// 却没人发现面板被塞没了」掩盖成一块看起来正常、内容却被挤出去的
+    /// 面板。收敛之前只有反馈行那一处钳（`.max(0.0)`）且没写理由，
+    /// 统一到不钳的那一侧。
+    ///
+    /// [`Anchor::Center`] 忽略 `margin`——居中没有边距可言，传什么都
+    /// 一样。这不是漏了处理，是这个锚点的定义。
+    pub fn anchored(screen: (f32, f32), anchor: Anchor, size: (f32, f32), margin: f32) -> Rect {
+        let (screen_w, screen_h) = screen;
+        let (w, h) = size;
+        let 水平居中 = (screen_w - w) * 0.5;
+        let (x, y) = match anchor {
+            Anchor::TopLeft => (margin, margin),
+            Anchor::TopRight => (screen_w - margin - w, margin),
+            Anchor::TopCenter => (水平居中, margin),
+            Anchor::Center => (水平居中, (screen_h - h) * 0.5),
+            Anchor::BottomCenter => (水平居中, screen_h - margin - h),
+        };
+        Rect::new(x, y, w, h)
+    }
+
+    /// 把四条边界各取整到最近的整数像素——**像素画唯一真正需要的那一次
+    /// 取整**（规格 L0，`knowledge/design/ui-and-navigation.md` §6.1）。
+    ///
+    /// # 为什么取整的是「边界」，不是「原点 + 尺寸」
+    ///
+    /// 这是本方法全部的设计内容，也是「相邻两块之间不留缝、也不重叠」
+    /// 这条性质**唯一**的来源：
+    ///
+    /// 两块相邻矩形共享的那条边（左边那块的 `right()` 与右边那块的 `x`）
+    /// 是**同一个 `f32` 值**。`round()` 是函数，同一个输入必然给出同一个
+    /// 输出，于是两块取整之后仍然共享同一条边——缝与叠都不可能出现。
+    ///
+    /// 换成「分别取整 `x` 与 `width`」就不成立了：`x = 0.6`、`width = 1.8`
+    /// 时，`round(0.6) + round(1.8) = 1 + 2 = 3`，而右边那块的
+    /// `round(0.6 + 1.8) = round(2.4) = 2`——两块之间叠了一像素。
+    ///
+    /// # 为什么要有这件事
+    ///
+    /// ADR 0002 的范围是**世界状态**，明文允许渲染层用浮点，本层的 `f32`
+    /// 不是违规（见 `crate::widget::geometry` 与
+    /// `knowledge/design/animation-and-vfx-boundary.md`）。像素画糊掉的
+    /// 原因不是浮点本身，是**半像素边界**：一条落在 `x = 10.5` 的边会被
+    /// 光栅化成两列各半亮的像素。取整只需要发生在**提交那一刻**，中间的
+    /// 布局计算照旧用 `f32`。
+    ///
+    /// 取整是**幂等**的（对已经是整数的矩形调它得到自己），因此在积木内部
+    /// 与帧出口各调一次不会互相打架，见
+    /// [`crate::widget::layer::LayeredFrame::snap_to_pixels`]。
+    pub fn snap(&self) -> Rect {
+        let x = self.x.round();
+        let y = self.y.round();
+        Rect::new(x, y, self.right().round() - x, self.bottom().round() - y)
     }
 
     /// `point` 是否落在这个矩形内——命中测试（[`crate::widget::hit_test`]）
@@ -169,6 +260,137 @@ mod tests {
 
         // Act & Assert
         assert!(rect.contains((10.0, 10.0)));
+    }
+
+    #[test]
+    fn anchored在任意尺寸下贴右都让右边界距屏幕右沿恰好一个边距() {
+        // 规格 L2 的属性判据。扫一批尺寸/边距，不是只测一个数——
+        // 单点断言对「写死一个常量」这种改坏方式咬不住。
+        //
+        // 反例验证（已实跑）：把 `TopRight` 那一支的
+        // `screen_w - margin - w` 改成 `screen_w - margin`，本条红在
+        // 第一组尺寸上。
+        for (sw, sh) in [(1280.0_f32, 720.0_f32), (1920.0, 1080.0), (640.5, 481.25)] {
+            for (w, h) in [(220.0_f32, 300.0_f32), (17.5, 3.0)] {
+                for margin in [0.0_f32, 16.0, 33.75] {
+                    // Act
+                    let rect = Rect::anchored((sw, sh), Anchor::TopRight, (w, h), margin);
+
+                    // Assert
+                    assert!(
+                        (rect.right() - (sw - margin)).abs() < 1e-3,
+                        "屏 {sw}×{sh}、面板 {w}×{h}、边距 {margin}：右边界 {} 距右沿不是 {margin}",
+                        rect.right()
+                    );
+                    assert_eq!(rect.y, margin);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn anchored居中时面板中心与屏幕中心相差不到一像素() {
+        // 规格 L2 的另一条属性判据。
+        //
+        // 反例验证（已实跑）：把 `Anchor::Center` 那一支的
+        // `(screen_h - h) * 0.5` 改成 `(screen_h - h) * 0.4`，本条红在
+        // 「纵向中心差 ...」。
+        for (sw, sh) in [(1280.0_f32, 720.0_f32), (1920.0, 1080.0), (640.5, 481.25)] {
+            for (w, h) in [(520.0_f32, 300.0_f32), (17.5, 3.0)] {
+                // Act：`margin` 传一个非零值，顺便证明 `Center` 真的忽略它。
+                let rect = Rect::anchored((sw, sh), Anchor::Center, (w, h), 99.0);
+
+                // Assert
+                let 横向差 = (rect.x + w * 0.5 - sw * 0.5).abs();
+                let 纵向差 = (rect.y + h * 0.5 - sh * 0.5).abs();
+                assert!(
+                    横向差 < 1.0,
+                    "屏 {sw}×{sh}、面板 {w}×{h}：横向中心差 {横向差}"
+                );
+                assert!(
+                    纵向差 < 1.0,
+                    "屏 {sw}×{sh}、面板 {w}×{h}：纵向中心差 {纵向差}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn anchored一律不钳制屏幕比面板还小时算出负坐标() {
+        // 这是从被收敛掉那五处里继承来的取舍，见 `anchored` 文档
+        // 「一律不钳制」一节。收敛前反馈行那一处 `.max(0.0)` 钳过，
+        // 且没写理由——这条断言把「统一到不钳」变成结构。
+        //
+        // 反例验证（已实跑）：在 `anchored` 的返回上加 `.max(0.0)`，
+        // 本条红。
+        // Arrange & Act：面板比屏幕还宽还高。
+        let rect = Rect::anchored((100.0, 50.0), Anchor::BottomCenter, (300.0, 80.0), 16.0);
+
+        // Assert
+        assert!(rect.x < 0.0, "屏幕比面板窄时 x 应当是负数，实际 {}", rect.x);
+        assert!(rect.y < 0.0, "屏幕比面板矮时 y 应当是负数，实际 {}", rect.y);
+    }
+
+    #[test]
+    fn snap把四条边界都取整到整数像素() {
+        // 规格 L0。**先自证输入真的带半像素**——否则「取整后是整数」
+        // 对一个本来就是整数的输入恒绿（本会话点名的假绿形状之二：
+        // 被断言的对象根本不存在）。
+        // Arrange
+        let rect = Rect::new(10.4, 20.6, 100.3, 60.7);
+        assert!(
+            rect.x.fract() != 0.0 && rect.right().fract() != 0.0,
+            "测试输入必须真的带半像素，否则这条断言恒绿"
+        );
+
+        // Act
+        let snapped = rect.snap();
+
+        // Assert
+        for v in [snapped.x, snapped.y, snapped.right(), snapped.bottom()] {
+            assert_eq!(v.fract(), 0.0, "取整后 {v} 仍带小数");
+        }
+    }
+
+    #[test]
+    fn snap取整的是边界因此相邻两块既不留缝也不重叠() {
+        // 这是 `snap` 全部的设计内容，见其文档那一段推导。
+        //
+        // 反例验证（已实跑）：把 `snap` 改成分别取整 `x` 与 `width`
+        // （`Rect::new(x.round(), y.round(), width.round(), height.round())`），
+        // 本条当场红——左块右边界 3、右块左边界 2，叠了一像素。
+        // Arrange：左块的右边界与右块的左边界是**同一个** f32。
+        let 边界 = 2.4_f32;
+        let 左 = Rect::new(0.6, 0.0, 边界 - 0.6, 10.0);
+        let 右 = Rect::new(边界, 0.0, 5.0, 10.0);
+        assert_eq!(左.right(), 右.x, "两块必须真的共享同一条边");
+
+        // Act
+        let (左, 右) = (左.snap(), 右.snap());
+
+        // Assert
+        assert_eq!(
+            左.right(),
+            右.x,
+            "取整后两块之间出现了缝或重叠：左块右边界 {}，右块左边界 {}",
+            左.right(),
+            右.x
+        );
+    }
+
+    #[test]
+    fn snap是幂等的() {
+        // 积木内部取一次、帧出口再取一次，两次不能互相打架，见
+        // `crate::widget::layer::LayeredFrame::snap_to_pixels`。
+        // Arrange
+        let rect = Rect::new(10.4, 20.6, 100.3, 60.7);
+
+        // Act
+        let 一次 = rect.snap();
+        let 两次 = 一次.snap();
+
+        // Assert
+        assert_eq!(一次, 两次);
     }
 
     #[test]

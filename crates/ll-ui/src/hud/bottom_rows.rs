@@ -54,15 +54,26 @@ pub const KEY_HINT_WIDTH: f32 = 620.0;
 /// 派生，不各写一个魔数。
 const ROW_PANEL_HEIGHT: f32 = super::DEFAULT_LINE_HEIGHT + super::DEFAULT_PADDING * 2.0;
 
-/// 面板与窗口下边缘的留白。
-const BOTTOM_MARGIN: f32 = 16.0;
+/// 按键提示行的**底边**距窗口下沿多远——它贴着最下沿，走全局的屏幕
+/// 边距刻度（规格 L3），不再自己定义一个同值的 `BOTTOM_MARGIN`。
+const KEY_HINT_BOTTOM_MARGIN: f32 = super::render::SCREEN_MARGIN;
 
-/// 按键提示行的顶边距下沿多远——它贴着最下沿。
-const KEY_HINT_BOTTOM_OFFSET: f32 = BOTTOM_MARGIN + ROW_PANEL_HEIGHT;
+/// 反馈行的**底边**距窗口下沿多远——它叠在提示行**上面**一格，见模块
+/// 文档。
+///
+/// 两行之间那一格此前用的是 `DEFAULT_PADDING`（把**内边距**当**间隔**
+/// 使），规格 L3 要求间距只有 `SCREEN_MARGIN`/`PANEL_GAP` 两档，改走
+/// `PANEL_GAP`——反馈行因此比收敛前上移 4px。
+const FEEDBACK_BOTTOM_MARGIN: f32 =
+    KEY_HINT_BOTTOM_MARGIN + ROW_PANEL_HEIGHT + super::render::PANEL_GAP;
 
-/// 反馈行的顶边距下沿多远——它叠在提示行**上面**一格，见模块文档。
-const FEEDBACK_BOTTOM_OFFSET: f32 =
-    KEY_HINT_BOTTOM_OFFSET + ROW_PANEL_HEIGHT + super::DEFAULT_PADDING;
+/// 屏幕最下沿那一条**底栏**有多高——规格 L1 的中段留白规则在这一条
+/// 窄边上开的例外（见 `hud/render_layout_tests.rs` 那条断言）。
+///
+/// 取「最靠上的那一行的顶边距下沿多远」，也就是反馈行的偏移：底栏里
+/// 只有这两行，反馈行是上面那一行。**导出这个常量而不是让测试自己抄
+/// 一个数**——两行的位置将来再动一次，判据跟着动，不会分叉。
+pub const BOTTOM_STRIP_HEIGHT: f32 = FEEDBACK_BOTTOM_MARGIN + ROW_PANEL_HEIGHT;
 
 /// 排一块「水平居中、距下沿 `bottom_offset`」的单行小面板。
 ///
@@ -73,19 +84,29 @@ fn bottom_row_panel(
     measure: &mut dyn ll_text::MeasureText,
     text: &str,
     width: f32,
-    bottom_offset: f32,
+    bottom_margin: f32,
     screen_width: f32,
     screen_height: f32,
 ) -> PanelContent {
-    build_panel(
-        measure,
-        (
-            (screen_width - width) * 0.5,
-            (screen_height - bottom_offset).max(0.0),
-        ),
-        width,
-        |cursor, lines| cursor.push(lines, text.to_string()),
-    )
+    // 规格 L2：居中与贴下沿这一份算术走 `Rect::anchored`。
+    //
+    // 高度传 `ROW_PANEL_HEIGHT`（一行的高）而不是这块面板最终的高度：
+    // 面板高度是 `build_panel` 按实际行数现算出来的，而落位得先于它。
+    // 这与收敛之前的行为逐字相同——旧写法里 `bottom_offset` 本来就是
+    // `bottom_margin + ROW_PANEL_HEIGHT` 拼出来的常量。
+    //
+    // 旧写法对 y 做过 `.max(0.0)`，**收敛后取消**：另外四处都刻意不钳，
+    // 且都写了理由（钳制会掩盖「窗口配置改小了却没人发现」）；这一处
+    // 是五处里唯一钳的，且没写为什么。见 `Rect::anchored` 文档。
+    let rect = crate::widget::geometry::Rect::anchored(
+        (screen_width, screen_height),
+        crate::widget::geometry::Anchor::BottomCenter,
+        (width, ROW_PANEL_HEIGHT),
+        bottom_margin,
+    );
+    build_panel(measure, rect.origin(), width, |cursor, lines| {
+        cursor.push(lines, text.to_string())
+    })
 }
 
 /// 反馈行：一句「你刚才那一下没起作用」，压在所有东西之上。
@@ -101,7 +122,7 @@ pub(super) fn push_feedback_row(
         measure,
         text,
         FEEDBACK_WIDTH,
-        FEEDBACK_BOTTOM_OFFSET,
+        FEEDBACK_BOTTOM_MARGIN,
         screen_width,
         screen_height,
     );
@@ -121,7 +142,7 @@ pub(super) fn push_key_hint_row(
         measure,
         text,
         KEY_HINT_WIDTH,
-        KEY_HINT_BOTTOM_OFFSET,
+        KEY_HINT_BOTTOM_MARGIN,
         screen_width,
         screen_height,
     );
@@ -133,12 +154,44 @@ mod tests {
     use super::*;
 
     #[test]
+    fn 底部两行改走anchored之后水平居中且底边距下沿恰好一个边距() {
+        // 规格 L2 第 4 处的「改写前后逐像素相同」回归断言。旧写法是
+        // `((screen_width - width) * 0.5, (screen_height - bottom_offset).max(0.0))`，
+        // 其中 `bottom_offset = bottom_margin + ROW_PANEL_HEIGHT`。
+        //
+        // **`.max(0.0)` 收敛后取消**，见 `bottom_row_panel` 里那段注释与
+        // `Rect::anchored` 文档「一律不钳制」。那一处钳制在 720 高的窗口
+        // 上本来也不生效（它只在窗口比面板还矮时才有区别），因此这条
+        // 逐像素断言不受影响。
+        //
+        // 反例验证（已实跑）：把 `Anchor::BottomCenter` 换成
+        // `Anchor::TopCenter`，本条红在 y 上。
+        // Arrange
+        let mut measure = ll_text::TextMeasurer::new().expect("内置字体资产应能正常解析");
+        let (w, h) = (1280.0_f32, 720.0_f32);
+
+        // Act
+        let hint = bottom_row_panel(
+            &mut measure,
+            "提示",
+            KEY_HINT_WIDTH,
+            KEY_HINT_BOTTOM_MARGIN,
+            w,
+            h,
+        );
+
+        // Assert：x 与旧算术逐像素相同；y 与旧的 `h - bottom_offset` 相同。
+        assert_eq!(hint.rect.x, (w - KEY_HINT_WIDTH) * 0.5);
+        assert_eq!(hint.rect.y, h - (KEY_HINT_BOTTOM_MARGIN + ROW_PANEL_HEIGHT));
+    }
+
+    #[test]
     fn 两行互不重叠且都在窗口内() {
         // 「贴着下沿」与「叠在上面一格」这两句话的算术。改动任何一个
         // 常量都会在这里显形。
         //
-        // 反例（已实跑）：把 `FEEDBACK_BOTTOM_OFFSET` 改回
-        // `KEY_HINT_BOTTOM_OFFSET`，本条红在「反馈行底边不越过提示行
+        // 反例（已实跑）：把 `FEEDBACK_BOTTOM_MARGIN` 改回
+        // `KEY_HINT_BOTTOM_MARGIN`，本条红在「反馈行底边不越过提示行
         // 顶边」。
         // Arrange
         let mut measure = ll_text::TextMeasurer::new().expect("内置字体资产应能正常解析");
@@ -149,7 +202,7 @@ mod tests {
             &mut measure,
             "提示",
             KEY_HINT_WIDTH,
-            KEY_HINT_BOTTOM_OFFSET,
+            KEY_HINT_BOTTOM_MARGIN,
             w,
             h,
         );
@@ -157,7 +210,7 @@ mod tests {
             &mut measure,
             "反馈",
             FEEDBACK_WIDTH,
-            FEEDBACK_BOTTOM_OFFSET,
+            FEEDBACK_BOTTOM_MARGIN,
             w,
             h,
         );

@@ -33,10 +33,6 @@
       "code_lines": 834,
       "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。（2026-08-31，批次 26）+1 行：`build_npc_agent` 写 `home: Some(profile.home)`——`Agent::home` 唯一的非 `None` 生产者，把既有真相源 `NpcProfile.home` 搬进实体。结构体字面量必须列全字段，不可拆分。"
     },
-    "crates/ll-platform/src/keybind.rs": {
-      "code_lines": 987,
-      "reason": "合理：单一数据表——物理按键与抽象动作之间的映射，加上按输入上下文的分层查找。逐绑定平铺，文件长度等于绑定条数。"
-    },
     "crates/ll-sim/src/apply.rs": {
       "code_lines": 1182,
       "reason": "合理：规格 C2 的「唯一写入口」——一个 Effect 一段落地逻辑，逐变体平铺在一个穷尽 match 上。这个文件的长度就是 Effect 变体的数量。拆开会让「写世界的地方」不再只有一处，与 C2 直接冲突。（2026-08-31，批次 26）+19 行：`Effect::AddAffiliation` 的 `apply` 分支（去重闸门 + `standing` 夹紧）。**这正是本文件预算理由说的那件事**——文件长度就是 `Effect` 变体的数量本身。新增的三条测试**已经拆出去**了（`crates/ll-sim/tests/affiliation_apply.rs`），留在这里的只有实现。"
@@ -54,7 +50,7 @@
       "reason": "合理：集成测试文件——一个主题（derive_stats 接进战斗）下的断言集合，共享同一套 FakeItems/spawn_agent 夹具。代码行占比高（75%）属正常，断言本来就是代码。（2026-08-31，批次 26）+2 行：两处 `Agent` 测试夹具字面量各补一行 `home: None`。同上，不可拆分。"
     },
     "crates/ll-ui/src/hud/render.rs": {
-      "code_lines": 1202,
+      "code_lines": 1118,
       "reason": "待重构（部分已动）：常驻 HUD 的总装配，六块面板的尺寸常量与装配次序都在这里。〔2026-08-31，批次 23〕−17 行：往底部加一行常驻按键提示（规格 F6）之前先搬走了两段——屏幕底部那两行小面板（反馈行 / 按键提示行，形状相同）搬进 hud/bottom_rows.rs，动作菜单的浮动落位（placed_action_menu / translate_panel）搬进 hud/placement.rs，新增那条断言用 #[path] 挂在 render_bottom_rows_tests.rs。所有者要的方向是「重构让代码为之后的开发做准备」，因此是先拆再加，不是加完再 bless 一个更大的数。剩下的主线（六块常驻面板的分区平铺表）仍待「面板尺寸计算 / 提交次序」那一刀。"
     },
     "crates/ll-ui/src/hud/world_map.rs": {

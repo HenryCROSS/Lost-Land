@@ -46,7 +46,7 @@ pub mod render;
 use ll_i18n::Catalog;
 use ll_text::MeasureText;
 
-use crate::widget::geometry::Rect;
+use crate::widget::geometry::{Anchor, Rect};
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
 
@@ -54,7 +54,12 @@ use crate::widget::list::RowCursor;
 /// 一个值，两块屏读起来要像同一个产品。
 pub const SCREEN_LINE_HEIGHT: f32 = 18.0;
 /// 模态屏面板的内边距（像素）。
-pub const SCREEN_PADDING: f32 = 10.0;
+///
+/// 规格 L3 之后它只是 [`crate::widget::metrics::PANEL_PADDING`] 的一个
+/// 别名：本条（原 10）与 HUD 那套（`hud::DEFAULT_PADDING`，原 6）合并
+/// 成同一个刻度，取 6，理由见那里。**模态屏的内容宽因此从 500 变成
+/// 508**（变宽），溢出门禁的行数预算只会更宽松，不会有键新超预算。
+pub const SCREEN_PADDING: f32 = crate::widget::metrics::PANEL_PADDING;
 /// 模态屏正文字号（像素）。
 pub const SCREEN_FONT_SIZE: f32 = 14.0;
 /// 模态屏面板的**最小**宽度（像素）。
@@ -77,14 +82,15 @@ pub const SCREEN_FONT_SIZE: f32 = 14.0;
 /// 改变行的集合，因此原来那条反对理由指的跳变不会发生。
 pub const SCREEN_WIDTH: f32 = 520.0;
 
-/// 模态屏面板与窗口边缘之间至少要留的空（像素）——与
-/// `crate::hud::render` 的 `SCREEN_MARGIN` 取同一个值，两块屏贴边的
-/// 节奏要一致。
+/// 模态屏面板与窗口边缘之间至少要留的空（像素）——规格 L3 之后它就是
+/// [`crate::widget::metrics::SCREEN_MARGIN`] 本身，不再是「碰巧与
+/// `hud::render` 那个取同一个值」：两块屏贴边的节奏由同一个常量保证，
+/// 改一个另一个自动跟上。
 ///
 /// [`panel_width`] 按内容伸缩时以它为上限：面板再宽也不许长到窗口
 /// 外面去，撞到上限之后多出来的文字改走换行（规格 W3 采纳的第二条
 /// 手段）。
-pub const SCREEN_SIDE_MARGIN: f32 = 16.0;
+pub const SCREEN_SIDE_MARGIN: f32 = crate::widget::metrics::SCREEN_MARGIN;
 
 /// 量「这一行本来要多宽」时给的断行宽度——大到任何一条 UI 文案都不
 /// 可能被它断开，于是量出来的就是**不换行时的自然宽度**。
@@ -100,6 +106,18 @@ const NATURAL_WIDTH_PROBE: f32 = 1.0e6;
 pub const CURSOR_PREFIX: &str = "> ";
 /// 其余行的前缀——与 [`CURSOR_PREFIX`] **等宽**，否则整列文字会随光标
 /// 上下移动而左右抖动。
+///
+/// # 【2026-09-01 批次 30】「等宽」这句话今天是假的
+///
+/// 比例字体里 `"> "` 是 10.91px、`"  "` 是 6.27px——**两者根本不等宽**，
+/// 整列文字确实会随光标上下移动而抖动
+/// （`knowledge/design/ui-and-navigation.md` §8.5 W7 / §9.3 F7）。守着
+/// 这句话的那条断言只在 `crate::hud::action_menu` 里有一份，而它比的是
+/// **字符数**，所以照样绿；§12 点名它是反面教材。
+///
+/// 修法与「为什么批次 30 没修」逐字见
+/// `crate::hud::action_menu` 那条测试原地的标记：W7 与 F7 是同一个问题，
+/// 必须同批做。本行文字先划出真相，免得下一个人照着「等宽」二字推理。
 pub const IDLE_PREFIX: &str = "  ";
 
 /// 压暗整屏的背板颜色（RGBA，`0.0..=1.0`）。
@@ -176,7 +194,7 @@ pub struct ScreenData<'a> {
 /// 纵向也居中：面板高度随行数变化（菜单三行、设置二十几行），按内容
 /// 高度算出来再居中，比写死一个 y 坐标更不容易在行数变化后错位。
 /// `screen_height` 比面板还矮这种极端窗口尺寸下会算出负坐标——**不
-/// 钳制**，与 [`crate::hud::render`] 的 `equipment_origin_x` 同一条
+/// 钳制**，与 [`crate::hud::render`] 的 `equipment_rect` 同一条
 /// 取舍：钳制会掩盖「窗口配置改小了却没人发现面板被塞没了」这种应该
 /// 显形的问题。
 fn centered_origin(
@@ -184,10 +202,13 @@ fn centered_origin(
     screen_height: f32,
     panel_width: f32,
     panel_height: f32,
-) -> (f32, f32) {
-    (
-        (screen_width - panel_width) / 2.0,
-        (screen_height - panel_height) / 2.0,
+) -> Rect {
+    // 规格 L2：这一份居中算术走 `Rect::anchored`。
+    Rect::anchored(
+        (screen_width, screen_height),
+        Anchor::Center,
+        (panel_width, panel_height),
+        0.0,
     )
 }
 
@@ -210,8 +231,15 @@ pub fn panel_width(lines: &[String], measure: &mut dyn MeasureText, screen_width
                 .max_line_width
         })
         .fold(0.0_f32, f32::max);
-    let wanted = SCREEN_WIDTH.max(longest + SCREEN_PADDING * 2.0);
-    let ceiling = screen_width - SCREEN_SIDE_MARGIN * 2.0;
+    // 往**上**取整，不是四舍五入：面板宽度是「这一屏最长那一行画得完」
+    // 的下限，而规格 L0 的取整（[`Rect::snap`]）最多能把面板削掉不到
+    // 一个像素——四舍五入下来正好会把「恰好放得下」变成「差 0.46px
+    // 放不下」（落地本条时实测：722.46 + 20 = 742.46 被舍成 742）。
+    // 先 `ceil` 一次，取整就再也咬不动它。
+    let wanted = SCREEN_WIDTH.max(longest + SCREEN_PADDING * 2.0).ceil();
+    // 上限反过来往**下**取整，同一条理由的另一半：面板再宽也不许越过
+    // 窗口边缘，取整不能把它推出去。
+    let ceiling = (screen_width - SCREEN_SIDE_MARGIN * 2.0).floor();
     // 窗口比最小宽度还窄时 `ceiling` 会小于 `SCREEN_WIDTH`——这时候取
     // `ceiling`（面板缩窄、文字换行），不取 `SCREEN_WIDTH`（面板伸出
     // 窗口、文字直接看不见）。
@@ -408,8 +436,17 @@ fn screen_geometry(
         wrap_width,
     );
     let panel_height = probe.content_height + SCREEN_PADDING * 2.0;
-    let origin = centered_origin(screen_width, screen_height, width, panel_height);
-    let content_origin = (origin.0 + SCREEN_PADDING, origin.1 + SCREEN_PADDING);
+    // 规格 L0：**这一处的取整刻意提前到几何算完那一刻**，不是等到
+    // `ScreenFrame::snap_to_pixels` 那个提交出口。
+    //
+    // 理由是 `row_rects` 有两个消费者：一个是画行高亮（走提交出口，会
+    // 被那一道取整），另一个是 `screen_row_rects` 拿去做**点击命中**
+    // （压根不进渲染帧，那一道摸不到它）。两者若一取整一不取整，玩家
+    // 点在两块行矩形交界那一像素上时，命中的行与高亮的行会差一格——
+    // 而这正是本模块 `row_rects` 字段文档点名要防的那种「静悄悄落到
+    // 隔壁那一行」。在这里取整一次，两个消费者拿到的就是同一份。
+    let panel = centered_origin(screen_width, screen_height, width, panel_height).snap();
+    let content_origin = (panel.x + SCREEN_PADDING, panel.y + SCREEN_PADDING);
     let laid = layout_screen(
         &texts,
         rows_start,
@@ -419,9 +456,9 @@ fn screen_geometry(
         wrap_width,
     );
     ScreenGeometry {
-        panel: Rect::new(origin.0, origin.1, width, panel_height),
+        panel,
         labels: laid.labels,
-        row_rects: laid.row_rects,
+        row_rects: laid.row_rects.into_iter().map(|r| r.snap()).collect(),
     }
 }
 
@@ -815,6 +852,23 @@ mod tests {
 
         // Assert：标题 + 占位行 + 提示行。
         assert_eq!(lines.len(), 3);
+    }
+
+    #[test]
+    fn 模态屏居中改走anchored之后逐像素与旧算术相同() {
+        // 规格 L2 第 5 处的「改写前后逐像素相同」回归断言。旧写法是
+        // `((screen_width - panel_width) / 2.0, (screen_height - panel_height) / 2.0)`。
+        //
+        // 反例验证（已实跑）：把 `centered_origin` 的
+        // `Anchor::Center` 换成 `Anchor::TopCenter`，本条红在 y 上。
+        // Arrange & Act
+        let rect = centered_origin(1280.0, 720.0, 520.0, 300.0);
+
+        // Assert
+        assert_eq!(rect.x, (1280.0 - 520.0) / 2.0);
+        assert_eq!(rect.y, (720.0 - 300.0) / 2.0);
+        assert_eq!(rect.width, 520.0);
+        assert_eq!(rect.height, 300.0);
     }
 
     #[test]

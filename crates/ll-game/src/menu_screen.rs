@@ -54,6 +54,7 @@ use ll_ui::widget::focus::focused_widget;
 use ll_ui::widget::state::{WidgetId, WidgetStateTable};
 use ll_world::entity::EntityId;
 
+use crate::nav_row::HorizontalRow;
 use crate::spawn_pick::SpawnOrigin;
 
 /// 模态屏当前开着哪一块。
@@ -260,6 +261,26 @@ pub enum SettingsRow {
     Save,
     /// 返回菜单屏。
     Back,
+}
+
+impl crate::nav_row::HorizontalRow for SettingsRow {
+    /// 三个取值行（语言 / 垂直同步 / 滤波）有取值；键位行、保存、返回与
+    /// 那条分隔标题都没有——它们的左右键因此等同上下键（规格 N12）。
+    ///
+    /// **键位行是 `MovesFocus` 而不是 `AdjustsValue`**：重绑一个键走的是
+    /// 「按确认进捕获态、再按一个物理键」那条路（见 `update_settings`），
+    /// 不是左右循环一个取值。它没有横向维度。
+    fn horizontal_role(self) -> crate::nav_row::HorizontalRole {
+        match self {
+            SettingsRow::Language | SettingsRow::Vsync | SettingsRow::ScaleFilter => {
+                crate::nav_row::HorizontalRole::AdjustsValue
+            }
+            SettingsRow::Keybind(_)
+            | SettingsRow::KeybindsHeader
+            | SettingsRow::Save
+            | SettingsRow::Back => crate::nav_row::HorizontalRole::MovesFocus,
+        }
+    }
 }
 
 impl crate::nav_row::NavRow for SettingsRow {
@@ -863,9 +884,22 @@ fn update_navigation(
     let Some(row) = rows.get(cursor).copied() else {
         return SettingsUpdate::idle();
     };
-    if input.was_just_pressed(GameKey::Left) || input.was_just_pressed(GameKey::Right) {
-        let forward = input.was_just_pressed(GameKey::Right);
-        adjust_value(row, ctx, forward);
+    if let Some(forward) = crate::chargen::horizontal(input) {
+        // 规格 N12：先问这一行有没有横向维度，再决定是改值还是移动焦点。
+        // 「返回」「保存」「键位」与那条分隔标题上按左右键此前什么都不
+        // 发生——与按坏了没有区别。分派走
+        // `HorizontalRow::horizontal_role`，那条声明因此是载重的：把
+        // `Language` 标成 `MovesFocus` 的那一刻，左右键就不再切语言了。
+        match row.horizontal_role() {
+            crate::nav_row::HorizontalRole::AdjustsValue => adjust_value(row, ctx, forward),
+            crate::nav_row::HorizontalRole::MovesFocus => {
+                *state = ScreenState::Settings {
+                    cursor: crate::nav_row::stepped_cursor(cursor, forward, rows.len()),
+                    capturing: false,
+                    origin,
+                };
+            }
+        }
         return SettingsUpdate::idle();
     }
     if !input.was_just_pressed(GameKey::Confirm) && !pointer.activated() {

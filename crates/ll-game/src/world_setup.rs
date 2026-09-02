@@ -34,6 +34,7 @@ use ll_world::terrain_shape::TerrainShape;
 
 use crate::chargen::{ChargenUpdate, cycle, horizontal, move_cursor};
 use crate::menu_screen::{ScreenNotice, ScreenState};
+use crate::nav_row::HorizontalRow;
 use crate::settings_view::labeled_row;
 use crate::spawn_pick::SpawnOrigin;
 
@@ -80,6 +81,25 @@ pub enum WorldSetupRow {
     Generate,
     /// 回到角色创建屏。
     Back,
+}
+
+impl crate::nav_row::HorizontalRow for WorldSetupRow {
+    /// 六个旋钮加存档模式有取值，「生成」「返回」没有——后两行的左右键
+    /// 因此等同上下键（规格 N12）。
+    fn horizontal_role(self) -> crate::nav_row::HorizontalRole {
+        match self {
+            WorldSetupRow::Preset
+            | WorldSetupRow::SeaLevel
+            | WorldSetupRow::MountainLevel
+            | WorldSetupRow::Octaves
+            | WorldSetupRow::ContinentShrink
+            | WorldSetupRow::ClimateBandWidth
+            | WorldSetupRow::Mode => crate::nav_row::HorizontalRole::AdjustsValue,
+            WorldSetupRow::Generate | WorldSetupRow::Back => {
+                crate::nav_row::HorizontalRole::MovesFocus
+            }
+        }
+    }
 }
 
 impl crate::nav_row::NavRow for WorldSetupRow {
@@ -170,6 +190,15 @@ pub fn update_world_setup(
     }
     let row = rows[(*cursor).min(rows.len() - 1)];
 
+    // 规格 N12：没有横向维度的行（「生成」「返回」）上，左右键等同上下键。
+    // 分派走 `HorizontalRow::horizontal_role`，那条声明因此是载重的——
+    // 把 `SeaLevel` 标成 `MovesFocus` 的那一刻，左右键就不再调海平面了。
+    if let Some(forward) = horizontal(input)
+        && row.horizontal_role() == crate::nav_row::HorizontalRole::MovesFocus
+    {
+        *cursor = crate::nav_row::stepped_cursor(*cursor, forward, rows.len());
+        return ChargenUpdate::idle();
+    }
     if row == WorldSetupRow::Mode && horizontal(input).is_some() {
         // 两档之间切换，方向无关（只有两个值，左右都是「换到另一个」）。
         *mode = match *mode {

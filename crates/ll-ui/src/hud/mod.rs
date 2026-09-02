@@ -72,6 +72,7 @@ pub mod equipment_panel;
 pub mod inventory_panel;
 pub mod placement;
 pub mod render;
+pub mod skinned_push;
 pub mod status_bar;
 pub mod world_map;
 
@@ -91,7 +92,12 @@ use crate::widget::list::RowCursor;
 pub const DEFAULT_LINE_HEIGHT: f32 = 18.0;
 /// 全部四块面板共用的默认内边距（像素）——面板背景（见
 /// [`crate::widget::panel::panel_quads`]）与内容文字之间的留白。
-pub const DEFAULT_PADDING: f32 = 6.0;
+///
+/// 规格 L3 之后它只是 [`crate::widget::metrics::PANEL_PADDING`] 的一个
+/// 别名：模态屏那套（原 `screen::SCREEN_PADDING` = 10）与本条（原 6）
+/// 合并成同一个刻度，理由与取值见那里。这条路径保留是为了不动全部
+/// 调用点与两道门禁。
+pub const DEFAULT_PADDING: f32 = crate::widget::metrics::PANEL_PADDING;
 /// 全部四块面板共用的默认字号（像素）。
 pub const DEFAULT_FONT_SIZE: f32 = 14.0;
 
@@ -123,7 +129,7 @@ pub struct PanelContent {
 /// 现在断行宽度只有这一个产出点，它的输入只有面板宽度一个。
 pub fn content_width(panel_width: f32) -> f32 {
     // 面板比两侧内边距还窄这种极端配置下会算出负数——**不钳制**，与
-    // `render::equipment_origin_x` 同一条取舍：钳制会把「面板宽度被配
+    // `render::equipment_rect` 同一条取舍：钳制会把「面板宽度被配
     // 错了」这种应该显形的问题掩盖成一块看起来正常、内容却被挤没了的
     // 面板。
     panel_width - DEFAULT_PADDING * 2.0

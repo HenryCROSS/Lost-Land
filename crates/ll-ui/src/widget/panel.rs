@@ -88,7 +88,16 @@ pub struct TexturedPanelAppearance {
 /// `rect` 的宽高小于 `2 * thickness` 时,边/中心尺寸被钳制到零而不是
 /// 负数（见 [`Rect::inset`]）——这种极端小尺寸不是本批次四块面板会
 /// 出现的情况,钳制只是防止产出负尺寸矩形导致的未定义绘制行为。
+///
+/// # 九块全部取整（规格 L0）
+///
+/// 先把外框 [`Rect::snap`] 一次，再切，切完每一块再 `snap` 一次
+/// （取整幂等，第二次只对付非整数的 `thickness`）。**取整的是边界不是
+/// 尺寸**，因此四角的右边界恒等于上下边块的左边界——九块之间既不留缝
+/// 也不重叠，见 [`Rect::snap`] 文档那一段推导。这是像素风面板边框不糊
+/// 的全部原因。
 fn nine_slice_rects(rect: Rect, thickness: f32) -> [Rect; 9] {
+    let rect = rect.snap();
     let t = thickness;
     let inner = rect.inset(t);
     [
@@ -102,6 +111,7 @@ fn nine_slice_rects(rect: Rect, thickness: f32) -> [Rect; 9] {
         Rect::new(rect.right() - t, inner.y, t, inner.height),
         Rect::new(inner.x, inner.y, inner.width, inner.height),
     ]
+    .map(|slice| slice.snap())
 }
 
 /// 把 `rect` 按九宫格分解成填色矩形——四角固定尺寸,四边与中心按
@@ -219,6 +229,59 @@ mod tests {
         // Assert
         assert_ne!(center.color, style.border_color);
         assert_eq!(center.color, style.fill_color);
+    }
+
+    #[test]
+    fn panel_quads对非整数矩形产出的九块边界全是整数且互不留缝重叠() {
+        // 规格 L0 的判据原文（`knowledge/design/ui-and-navigation.md`
+        // §6.1）。**先自证输入真的带半像素**，否则整条恒绿。
+        //
+        // 反例验证（已实跑）：把 `nine_slice_rects` 里的
+        // `.map(|slice| slice.snap())` 与开头那句 `let rect = rect.snap();`
+        // 一起去掉，本条红在「第 0 块的 x 带小数」。
+        // Arrange
+        let rect = Rect::new(10.3, 20.7, 100.4, 60.6);
+        assert!(
+            rect.x.fract() != 0.0 && rect.right().fract() != 0.0,
+            "测试输入必须真的带半像素"
+        );
+        let style = FlatPanelAppearance {
+            border_thickness: 2.5,
+            ..FlatPanelAppearance::DEFAULT
+        };
+
+        // Act
+        let quads = panel_quads(rect, &style);
+
+        // Assert 一：九块的四条边界全是整数。
+        for (i, quad) in quads.iter().enumerate() {
+            for (名, v) in [
+                ("x", quad.position[0]),
+                ("y", quad.position[1]),
+                ("right", quad.position[0] + quad.size[0]),
+                ("bottom", quad.position[1] + quad.size[1]),
+            ] {
+                assert_eq!(v.fract(), 0.0, "第 {i} 块的 {名} = {v} 带小数");
+            }
+        }
+
+        // Assert 二：左上角的右边界恰等于上边块的左边界（无缝无叠）。
+        // 顺序见 `nine_slice_rects`：0 左上角、4 上边。
+        let 左上角 = &quads[0];
+        let 上边 = &quads[4];
+        assert_eq!(
+            左上角.position[0] + 左上角.size[0],
+            上边.position[0],
+            "左上角与上边之间出现了缝或重叠"
+        );
+        // 左边（6）的下边界恰等于左下角（2）的上边界。
+        let 左边 = &quads[6];
+        let 左下角 = &quads[2];
+        assert_eq!(
+            左边.position[1] + 左边.size[1],
+            左下角.position[1],
+            "左边与左下角之间出现了缝或重叠"
+        );
     }
 
     #[test]

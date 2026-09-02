@@ -47,6 +47,18 @@ pub struct ScreenFrame {
     pub labels: Vec<crate::widget::label::Label>,
 }
 
+impl ScreenFrame {
+    /// **提交那一刻的取整**（规格 L0）——与
+    /// [`crate::widget::layer::LayeredFrame::snap_to_pixels`] 是同一件
+    /// 事、同一份算法（三个 `snap_*` 助手），只是本类型刻意不套
+    /// `LayeredFrame`（见类型文档），因此要自己开一个入口。
+    fn snap_to_pixels(&mut self) {
+        crate::widget::layer::snap_quads(&mut self.quads);
+        crate::widget::layer::snap_textured_quads(&mut self.textured_quads);
+        crate::widget::layer::snap_labels(&mut self.labels);
+    }
+}
+
 /// 现算这一帧模态屏需要的全部矩形与文本行——纯函数，不接触 GPU。
 pub fn build_screen_frame(
     data: &ScreenData<'_>,
@@ -75,11 +87,14 @@ pub fn build_screen_frame(
         )),
     }
     push_row_highlights(data, &content, skin, &mut quads, &mut textured_quads);
-    ScreenFrame {
+    let mut frame = ScreenFrame {
         quads,
         textured_quads,
         labels: content.labels,
-    }
+    };
+    // 规格 L0：取整发生在**提交那一刻**，中间的布局计算照旧用 `f32`。
+    frame.snap_to_pixels();
+    frame
 }
 
 /// 给聚焦行与悬停行各画一块高亮底——**「模态屏的每一行本身就是按钮」

@@ -640,15 +640,30 @@ mod tests {
     #[test]
     fn 上层处于菜单上下文时按键按菜单表解析() {
         // 这一条是「InputContext::Menu 运行期是死路径」那条缺陷的直接
-        // 回归断言：Tab 在 DEFAULT_MENU_BINDINGS 里**没有**任何绑定，
-        // 一旦解析路径把上下文写死回 Gameplay，它就会解析出
-        // GameKey::Menu，本断言当场变红。
+        // 回归断言：探针键在 DEFAULT_MENU_BINDINGS 里**没有**任何绑定，
+        // 一旦解析路径把上下文写死回 Gameplay，它就会解析出动作，本断言
+        // 当场变红。
+        //
+        // # 探针从 Tab 换成了 I（规格 N13 / D8）
+        //
+        // 原先用 Tab，理由是「Tab 在 DEFAULT_MENU_BINDINGS 里没有绑定」。
+        // 规格 N13 把 Tab **补进了**菜单表（能开菜单就得关得掉菜单），
+        // 那个前提不再成立。换探针，断言本身一个字没改：`Inventory`（I）
+        // 今天仍然只绑 `Gameplay`，且天然就该只绑那里。
         // Arrange
         let config = WindowConfig::default();
         let handler = 固定上下文(InputContext::Menu);
 
+        // 先自证探针有效：同一条解析路径在游戏内上下文下**能**解析出它。
+        let gameplay = 固定上下文(InputContext::Gameplay);
+        assert_eq!(
+            resolve_key_for(&config.bindings, &gameplay, KeyCode::KeyI, Modifiers::NONE),
+            Some(GameKey::Inventory),
+            "探针失效：I 在游戏内上下文下也解析不出动作"
+        );
+
         // Act
-        let action = resolve_key_for(&config.bindings, &handler, KeyCode::Tab, Modifiers::NONE);
+        let action = resolve_key_for(&config.bindings, &handler, KeyCode::KeyI, Modifiers::NONE);
 
         // Assert
         assert_eq!(action, None);

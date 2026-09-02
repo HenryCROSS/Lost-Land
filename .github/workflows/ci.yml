@@ -73,6 +73,19 @@ jobs:
         shell: bash
         run: bash scripts/ci/check_no_manual_euclidean_distance.sh
 
+  # 规格 L2（knowledge/design/ui-and-navigation.md §6.3）把「已知屏幕尺寸、
+  # 锚点、自身尺寸、边距，求原点」收敛成 `Rect::anchored` 一个函数。这道
+  # 门禁防的是它**重新长出第五份**——规格写这条时数的是四遍，等到真去收敛
+  # 已经是五份（批次 23 一边合并了两份、一边在动作菜单里新写了一份垂直
+  # 居中）。收敛解决当下那几份，设防才解决这一类，完整论证见脚本头注释。
+  single-anchor-impl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: 禁止第二份屏幕落位实现
+        shell: bash
+        run: bash scripts/ci/check_single_anchor_impl.sh
+
   # 本项目最顽固的失败模式：字段被声明、被存储、被序列化、被哈希、有测试
   # 守着往返——却没有任何游戏逻辑读它。已点名十九处，三个当前活着的例子
   # 是 `Agent.luck`（进 `WorldState::hash()`，全项目零逻辑读取）、
