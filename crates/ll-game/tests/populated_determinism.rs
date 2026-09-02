@@ -420,7 +420,32 @@ fn populated_world() -> GameWorld {
 // 抓到它的是**上面那张表对不上**：新增两条内容，后续索引却只平移了
 // **1**。改名成 `lostland:timber_log` 之后平移才变成 2。
 // 详见 `crates/ll-mod/src/tree.rs` 的 `TIMBER_ID` 文档。
-const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 10_411_288_278_210_867_400;
+//
+// 〔2026-09-01，跨表撞名门禁批次〕上面「没有任何门禁拦住它」那句已经
+// 不再成立（原文保留不改）：撞名现在由
+// `ll_mod::content_audit::detect_table_define_collisions` 在装载后阻断，
+// 门禁脚本是 `scripts/ci/check_content_index_table_exclusivity.sh`。
+// 那次普查另外抓到一处同类事故（本体地形「雪地」与本体天气「下雪」
+// 共用 `lostland:snow`），天气一侧已改名 `lostland:snowfall`——**本文件
+// 的基准值因此又变了一次**，理由与上面「新增内容会平移索引」逐字相同：
+// 改名让 `lostland:snow` 与 `lostland:snowfall` 成为两个 id，天气不再
+// 复用地形的索引 7，其后全部 `ContentIndex` 平移。
+//
+// **四步同样跑满**：
+//
+// 1. **基线红**：`left: 10943522416722902806` /
+//    `right: 10411288278210867400`。七条存在性断言全部通过，panic 落在
+//    最后那行 `assert_eq!(world.hash(), ..)`——世界没有变空。
+// 2. **把改动关掉，精确回到旧值**：只把 `ll_world::weather` 里那一个
+//    字面量改回 `"snow"`，并临时注释掉 `ll_game::content` 的
+//    `audit.table_exclusivity()?`（不然撞名会阻断装载，第 2 步跑不出
+//    摘要）——`ll_mod::content_audit` 的撞名检测、四条门禁测试、
+//    `tables_defining` 全部保留。本条**绿**，摘要精确等于
+//    `10411288278210867400`。这一步证明摘要变化只来自那一次改名，
+//    不掺杂本批其余改动带来的任何行为漂移。
+// 3. **恢复**那两处。
+// 4. **两个独立进程复现**新值 `10943522416722902806`。
+const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 10_943_522_416_722_902_806;
 
 #[test]
 fn 有人有城有物有势力的世界摘要跨平台稳定() {

@@ -47,6 +47,19 @@ jobs:
       # 缓存好了，跑一次 `cargo metadata` 的边际成本可以忽略。
       - name: 禁止 example target（2026-08-29 所有者裁定，ADR 0030）
         run: bash scripts/ci/check_no_examples.sh
+      # 跨表撞名门禁：一个 ContentIndex 至多被一张内容表 define。
+      #
+      # 与上一步同一条理由放在 `test` job：判据本身是 Rust 测试（撞名
+      # 只有在**装载完成后**才问得出「谁定义了这个索引」，ADR 0015），
+      # 这里 workspace 已经编译并缓存好，逐条点名重跑四条测试的边际
+      # 成本可以忽略；单开一个 job 反而要把整个 workspace 再编译一遍。
+      #
+      # 与 `run_tests.sh` 的 `cargo test --workspace` 不重复：那一步会
+      # 跑到这四条测试，但跑不出「它们还在不在」——本步骤用 `--exact`
+      # 点名并核对每条确实跑了 1 条，测试被删掉/改名/`#[ignore]` 时当场
+      # 红。完整论证见脚本头注释。
+      - name: 跨表撞名门禁（一个 ContentIndex 至多被一张内容表 define）
+        run: bash scripts/ci/check_content_index_table_exclusivity.sh
 
   licenses:
     runs-on: ubuntu-latest

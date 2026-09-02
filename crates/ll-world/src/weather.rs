@@ -526,8 +526,28 @@ pub struct BaseWeatherIds {
     /// 雾：不太暗，但极大缩短能看多远——与阴天正好互补，见
     /// [`WeatherDef::sight_scale`] 文档。
     pub fog: ContentIndex,
-    /// 雪：变暗且挡视线，几乎只在秋冬出现。
-    pub snow: ContentIndex,
+    /// 下雪：变暗且挡视线，几乎只在秋冬出现。
+    ///
+    /// # 为什么 id 是 `lostland:snowfall` 而不是 `lostland:snow`
+    ///
+    /// **`lostland:snow` 这个 id 已经被地形表占了**——雪地
+    /// （[`crate::terrain::BaseTerrainIds::snow`]，本体地形第 8 条）。
+    /// [`crate::terrain`] 的本体注册跑在本模块**之前**，两者共用同一个
+    /// [`crate::weather`] 之外的东西：`ll_mod::registry::Registry` 是
+    /// **一个** id ↔ `ContentIndex` 空间，`intern` 对同一个字符串返回
+    /// 同一个索引。天气曾经真的叫 `lostland:snow`，于是「雪地」与
+    /// 「下雪」在整个 2026-08 天气批次到 2026-09-01 之间一直共用索引 7：
+    /// 两张表各查各的、运行期看不出毛病，但值哈希只认第一张表
+    /// （`ll_mod::content_hash::classify_index` 取首个命中者），
+    /// **下雪那六个字段值从此完全不进内容哈希**——实测把
+    /// `light_scale` 从 720 改成 721，`lostland` 命名空间的内容哈希
+    /// 一位都不变；换成不撞名的雾做同样的改动，哈希立刻变。
+    ///
+    /// 改名的方向照 `ll_mod::tree` 的 `TIMBER_ID` 定下的先例：**先来的
+    /// 那张表保留原 id，后加的一方改名**（地形远早于天气）。撞名本身
+    /// 现在由 `ll_mod::content_audit::detect_table_define_collisions`
+    /// 在装载后阻断，不再依赖谁恰好注意到一个对不上的索引数字。
+    pub snowfall: ContentIndex,
 }
 
 /// 本体天气注册的唯一入口：本体与 mod 共用的注册路径。
@@ -607,7 +627,7 @@ pub fn materialize_base_weathers(
     let rain = define_base(&mut table, intern, "rain", 700, 900, -40, [20, 15, 15, 3])?;
     let wind = define_base(&mut table, intern, "wind", 900, 950, -30, [15, 8, 20, 12])?;
     let fog = define_base(&mut table, intern, "fog", 850, 700, -10, [12, 4, 15, 10])?;
-    let snow = define_base(&mut table, intern, "snow", 720, 800, -80, [0, 0, 2, 30])?;
+    let snowfall = define_base(&mut table, intern, "snowfall", 720, 800, -80, [0, 0, 2, 30])?;
 
     Ok((
         BaseWeatherIds {
@@ -616,7 +636,7 @@ pub fn materialize_base_weathers(
             rain,
             wind,
             fog,
-            snow,
+            snowfall,
         },
         table,
     ))
@@ -806,7 +826,7 @@ mod tests {
                 let weather = Weather::derive(seed, tick, &table);
                 assert_ne!(
                     weather.kind,
-                    Some(ids.snow),
+                    Some(ids.snowfall),
                     "春季权重为 0 的雪不该被抽中（种子 {seed}，周期 {period}）"
                 );
             }
@@ -828,7 +848,7 @@ mod tests {
         for seed in 0..8u64 {
             for period in 0..winter_periods {
                 let tick = Tick(winter_start + period * WEATHER_PERIOD_TICKS);
-                if Weather::derive(seed, tick, &table).kind == Some(ids.snow) {
+                if Weather::derive(seed, tick, &table).kind == Some(ids.snowfall) {
                     saw_snow = true;
                 }
             }
@@ -939,7 +959,7 @@ mod tests {
                 ids.rain,
                 ids.wind,
                 ids.fog,
-                ids.snow
+                ids.snowfall
             ]
         );
     }
@@ -952,7 +972,7 @@ mod tests {
         // Act & Assert
         assert_eq!(table.light_scale(ids.clear), WEATHER_SCALE_ONE);
         assert_eq!(table.sight_scale(ids.clear), WEATHER_SCALE_ONE);
-        assert_eq!(table.season_weights(ids.snow), [0, 0, 2, 30]);
+        assert_eq!(table.season_weights(ids.snowfall), [0, 0, 2, 30]);
         assert_eq!(
             table.display_name_key(ids.fog),
             Some(NamespacedId::parse("lostland:weather.fog.display_name").expect("合法"))
@@ -1025,17 +1045,20 @@ mod tests {
         let (ids, table) = base_weather_fixture();
 
         // Act
-        let snow = table.temperature_offset(ids.snow);
+        let snowfall = table.temperature_offset(ids.snowfall);
         let others: Vec<i32> = table
             .registered()
             .iter()
-            .filter(|index| **index != ids.snow)
+            .filter(|index| **index != ids.snowfall)
             .map(|index| table.temperature_offset(*index))
             .collect();
 
         // Assert
         for other in others {
-            assert!(snow < other, "雪的温度偏移 {snow} 应当严格低于 {other}");
+            assert!(
+                snowfall < other,
+                "雪的温度偏移 {snowfall} 应当严格低于 {other}"
+            );
         }
     }
 

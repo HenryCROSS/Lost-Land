@@ -1140,85 +1140,17 @@ pub struct ContentValueTables<'a> {
 /// 那张表全部条目会被判定成 `Opaque`,从而让这条测试变红,而不是像升级
 /// 前那样只能靠代码评审肉眼发现。
 pub fn classify_index(index: ContentIndex, tables: &ContentValueTables<'_>) -> ContentTableKind {
-    let ContentValueTables {
-        terrain,
-        class,
-        skill,
-        subclass,
-        quest,
-        race,
-        space_profile,
-        clip,
-        trait_def,
-        resource_pool,
-        item,
-        xp_curve,
-        formula,
-        weapon_category,
-        damage_category,
-        weather,
-        recipe,
-        recipe_category,
-        tag,
-        modifier_type,
-        resource,
-        culture,
-        dialogue,
-        dialogue_node,
-    } = *tables;
-
-    let terrain_kind = TerrainKind::from_index(index);
-    if terrain.is_defined(terrain_kind) {
-        ContentTableKind::Terrain
-    } else if class.is_defined(index) {
-        ContentTableKind::Class
-    } else if skill.is_defined(index) {
-        ContentTableKind::Skill
-    } else if subclass.is_defined(index) {
-        ContentTableKind::Subclass
-    } else if quest.is_defined(index) {
-        ContentTableKind::Quest
-    } else if race.is_defined(index) {
-        ContentTableKind::Race
-    } else if space_profile.is_defined(index) {
-        ContentTableKind::SpaceProfile
-    } else if clip.is_defined(index) {
-        ContentTableKind::Clip
-    } else if trait_def.is_defined(index) {
-        ContentTableKind::Trait
-    } else if resource_pool.is_defined(index) {
-        ContentTableKind::ResourcePool
-    } else if item.is_defined(index) {
-        ContentTableKind::Item
-    } else if xp_curve.get(index).is_some() {
-        ContentTableKind::XpCurve
-    } else if formula.get(index).is_some() {
-        ContentTableKind::Formula
-    } else if weapon_category.is_defined(index) {
-        ContentTableKind::WeaponCategory
-    } else if damage_category.is_defined(index) {
-        ContentTableKind::DamageCategory
-    } else if weather.is_defined(index) {
-        ContentTableKind::Weather
-    } else if recipe.is_defined(index) {
-        ContentTableKind::Recipe
-    } else if recipe_category.is_defined(index) {
-        ContentTableKind::RecipeCategory
-    } else if tag.is_defined(index) {
-        ContentTableKind::Tag
-    } else if modifier_type.is_defined(index) {
-        ContentTableKind::ModifierType
-    } else if resource.is_defined(index) {
-        ContentTableKind::Resource
-    } else if culture.is_defined(index) {
-        ContentTableKind::Culture
-    } else if dialogue.is_defined(index) {
-        ContentTableKind::Dialogue
-    } else if dialogue_node.is_defined(index) {
-        ContentTableKind::DialogueNode
-    } else {
-        ContentTableKind::Opaque
-    }
+    // 首个命中者胜出——保持本函数升级前逐条 `else if` 的语义不变。
+    // **当 `tables_defining` 返回不止一项时，本函数会沉默地只用第一项**，
+    // 那正是撞名事故的隐身之处（见 `tables_defining` 文档「一个索引至多
+    // 一张表」一节）；把它当异常来报是
+    // `ll_mod::content_audit::detect_table_define_collisions` 的职责，
+    // 不是本函数的——本函数在装载**失败**的路径上也会被调用，此处
+    // panic 会把一条可诊断的门禁消息换成一次崩溃。
+    crate::table_exclusivity::tables_defining(index, tables)
+        .first()
+        .copied()
+        .unwrap_or(ContentTableKind::Opaque)
 }
 
 /// 全部内容装载完毕后调用一次：把全部内容表的字段值折进 `registry`

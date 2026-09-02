@@ -858,7 +858,7 @@ impl fmt::Display for FieldCoverageError {
 impl std::error::Error for FieldCoverageError {}
 
 /// 内容表的人类可读名字，进错误文案。
-fn table_label(kind: ContentTableKind) -> &'static str {
+pub(crate) fn table_label(kind: ContentTableKind) -> &'static str {
     match kind {
         ContentTableKind::Opaque => "无归属 id",
         ContentTableKind::Terrain => "地形表",

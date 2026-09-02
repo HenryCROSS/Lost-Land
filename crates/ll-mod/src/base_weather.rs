@@ -59,7 +59,7 @@ mod tests {
             registry.intern(NamespacedId::parse("yourmod:ashfall").expect("合法标识符"));
 
         // Assert：materialize_base_weathers 内部注册顺序的最后一个是 snow。
-        assert_eq!(mod_index.get(), ids.snow.get() + 1);
+        assert_eq!(mod_index.get(), ids.snowfall.get() + 1);
     }
 
     #[test]

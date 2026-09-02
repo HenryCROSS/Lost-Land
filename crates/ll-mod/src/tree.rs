@@ -55,7 +55,15 @@ const FOREST_ID: &str = "lostland:forest";
 /// **本批真的踩了这一脚**：第一版就叫 `lostland:timber`，实测两者同为
 /// 索引 40（探针输出记在计划文档十节）。发现它的不是 schema 校验、也
 /// 不是 `content_audit`——是「新增两条内容却只让后续索引平移了 1」这个
-/// 对不上的数字。**没有任何门禁拦住它**，这笔账如实记在这里。
+/// 对不上的数字。
+///
+/// 〔2026-09-01，跨表撞名门禁批次〕**「没有任何门禁拦住它」这句话已经
+/// 不再成立**，原文保留在上面不改。那次全仓库普查
+/// （`ll_mod::content_audit::detect_table_define_collisions` 文档）另外
+/// 抓到一处同类事故：本体地形「雪地」与本体天气「下雪」共用
+/// `lostland:snow`，从 2026-08 天气批次起一直如此。判据现在是装载后的
+/// 硬失败：一个 `ContentIndex` 被两张表 `define` 就不许启动，见
+/// `ll_mod::content_audit::ContentAuditReport::table_exclusivity`。
 const TIMBER_ID: &str = "lostland:timber_log";
 /// `lostland:tree_seed` ——采果产出，培植消耗。
 const TREE_SEED_ID: &str = "lostland:tree_seed";

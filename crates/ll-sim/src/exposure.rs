@@ -479,10 +479,10 @@ mod tests {
             reverb_tag: space_table.reverb_tag(ids.surface),
         };
         let snow = Weather {
-            kind: Some(weather_ids.snow),
-            light_scale: weather_table.light_scale(weather_ids.snow),
-            sight_scale: weather_table.sight_scale(weather_ids.snow),
-            temperature_offset: weather_table.temperature_offset(weather_ids.snow),
+            kind: Some(weather_ids.snowfall),
+            light_scale: weather_table.light_scale(weather_ids.snowfall),
+            sight_scale: weather_table.sight_scale(weather_ids.snowfall),
+            temperature_offset: weather_table.temperature_offset(weather_ids.snowfall),
         };
         let winter_midnight = Tick(90 * TICKS_PER_DAY);
 

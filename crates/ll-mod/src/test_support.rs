@@ -129,4 +129,42 @@ impl OwnedTables {
             modifier_type: &mut self.modifier_type,
         }
     }
+
+    /// 同一批表的**只读**视图——值哈希与装载后校验那一侧要的形状，见
+    /// [`crate::content_hash::ContentValueTables`]。与
+    /// [`Self::as_gameplay_tables`] 同一条理由抽在这里：逐字段拼这个
+    /// 结构体有二十四行，在每个需要它的测试模块里各写一遍必然分叉。
+    ///
+    /// 不含 `xp_curve_bindings`/`class_behavior_bindings`——那两张是
+    /// 绑定表，不为自己的条目分配 `ContentIndex`，因此不在
+    /// `ContentValueTables` 里，见 `content_hash` 模块文档「例外，且是
+    /// 刻意的例外」一段。
+    pub(crate) fn as_value_tables(&self) -> crate::content_hash::ContentValueTables<'_> {
+        crate::content_hash::ContentValueTables {
+            terrain: &self.terrain,
+            class: &self.class,
+            skill: &self.skill,
+            subclass: &self.subclass,
+            quest: &self.quest,
+            dialogue: &self.dialogue,
+            dialogue_node: &self.dialogue_node,
+            race: &self.race,
+            clip: &self.clip,
+            xp_curve: &self.xp_curve,
+            trait_def: &self.trait_def,
+            resource_pool: &self.resource_pool,
+            item: &self.item,
+            formula: &self.formula,
+            weapon_category: &self.weapon_category,
+            damage_category: &self.damage_category,
+            tag: &self.tag,
+            space_profile: &self.space_profile,
+            resource: &self.resource,
+            culture: &self.culture,
+            weather: &self.weather,
+            recipe: &self.recipe,
+            recipe_category: &self.recipe_category,
+            modifier_type: &self.modifier_type,
+        }
+    }
 }

@@ -266,10 +266,10 @@ mod tests {
         let (ids, table) = base_weather_fixture();
         let tick = midnight_of(3);
         let snow = Weather {
-            kind: Some(ids.snow),
-            light_scale: table.light_scale(ids.snow),
-            sight_scale: table.sight_scale(ids.snow),
-            temperature_offset: table.temperature_offset(ids.snow),
+            kind: Some(ids.snowfall),
+            light_scale: table.light_scale(ids.snowfall),
+            sight_scale: table.sight_scale(ids.snowfall),
+            temperature_offset: table.temperature_offset(ids.snowfall),
         };
 
         // Act

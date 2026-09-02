@@ -173,7 +173,7 @@ fn 恶劣天气不把暗视削回默认值() {
     let ids = resolve_base_races(&registry, &race).expect("本体 mod 装载后契约必须解析成功");
     let harsh = [
         ("雾", weather_ids.fog),
-        ("雪", weather_ids.snow),
+        ("雪", weather_ids.snowfall),
         ("雨", weather_ids.rain),
         ("阴", weather_ids.overcast),
     ];

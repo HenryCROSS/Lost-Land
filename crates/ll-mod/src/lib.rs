@@ -180,6 +180,7 @@ pub mod resource_pool;
 pub mod roster;
 pub mod skill;
 pub mod subclass;
+pub mod table_exclusivity;
 /// 标签定义表（耐久标签批次）。
 pub mod tag;
 #[cfg(test)]

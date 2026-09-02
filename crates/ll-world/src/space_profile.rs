@@ -928,10 +928,10 @@ mod tests {
         profile.base_temperature = 100;
         let (ids, table) = crate::weather::base_weather_fixture();
         let snow = Weather {
-            kind: Some(ids.snow),
-            light_scale: table.light_scale(ids.snow),
-            sight_scale: table.sight_scale(ids.snow),
-            temperature_offset: table.temperature_offset(ids.snow),
+            kind: Some(ids.snowfall),
+            light_scale: table.light_scale(ids.snowfall),
+            sight_scale: table.sight_scale(ids.snowfall),
+            temperature_offset: table.temperature_offset(ids.snowfall),
         };
 
         // Act
@@ -985,10 +985,10 @@ mod tests {
         let (ids, table) = base_space_profile_fixture();
         let (weather_ids, weather_table) = crate::weather::base_weather_fixture();
         let snow = Weather {
-            kind: Some(weather_ids.snow),
-            light_scale: weather_table.light_scale(weather_ids.snow),
-            sight_scale: weather_table.sight_scale(weather_ids.snow),
-            temperature_offset: weather_table.temperature_offset(weather_ids.snow),
+            kind: Some(weather_ids.snowfall),
+            light_scale: weather_table.light_scale(weather_ids.snowfall),
+            sight_scale: weather_table.sight_scale(weather_ids.snowfall),
+            temperature_offset: weather_table.temperature_offset(weather_ids.snowfall),
         };
 
         // Act & Assert

@@ -68,6 +68,7 @@ use ll_mod::registry::Registry;
 use ll_mod::resource_pool::ResourcePoolTable;
 use ll_mod::skill::{BaseSkillIds, SkillError, SkillTable, resolve_base_skills};
 use ll_mod::subclass::{BaseSubclassIds, SubclassTable, resolve_base_subclasses};
+use ll_mod::table_exclusivity::TableDefineCollisionError;
 use ll_mod::tag::TagTable;
 use ll_mod::trait_def::TraitTable;
 use ll_mod::tree::RegisteredTrees;
@@ -555,6 +556,12 @@ pub enum ContentLoadError {
     /// `ll_mod::content_audit::ContentAuditReport::subclass_unlock_reachability`
     /// 文档。
     SubclassUnlockDeadlock(SubclassUnlockDeadlockError),
+    /// 跨表撞名——至少一个 `ContentIndex` 被不止一张内容表 `define`，
+    /// 于是「这个索引是哪张表的」问不清楚，且其中一张表的字段值会静默
+    /// 退出内容哈希。为什么它与引用完整性一样阻断启动，见
+    /// `ll_mod::content_audit::ContentAuditReport::table_exclusivity`
+    /// 文档。
+    TableDefineCollision(TableDefineCollisionError),
 }
 
 /// 把一条图校验错误牵涉到的索引反查成 id——[`ContentLoadError`] 两个
@@ -593,11 +600,18 @@ impl From<SubclassUnlockDeadlockError> for ContentLoadError {
     }
 }
 
+impl From<TableDefineCollisionError> for ContentLoadError {
+    fn from(error: TableDefineCollisionError) -> Self {
+        ContentLoadError::TableDefineCollision(error)
+    }
+}
+
 impl std::fmt::Display for ContentLoadError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             ContentLoadError::BaseContract(error) => write!(f, "{error}"),
             ContentLoadError::ReferenceIntegrity(error) => write!(f, "{error}"),
+            ContentLoadError::TableDefineCollision(error) => write!(f, "{error}"),
             ContentLoadError::SkillGraph { error, involved } => {
                 write!(
                     f,
@@ -806,6 +820,13 @@ pub fn load_content(
     // `ll_mod::content_audit::ContentAuditReport::subclass_unlock_reachability`
     // 文档「为什么归在②」一节。
     audit.subclass_unlock_reachability()?;
+    // 与上面两行同一档严重性（内容自身的错误、对全部已装载内容一视同仁、
+    // 运行期症状静默）——理由见
+    // `ll_mod::content_audit::ContentAuditReport::table_exclusivity` 文档
+    // 「为什么归在②」一节。必须排在 `apply_value_hashes` **之前**：撞名
+    // 恰恰会让值哈希对其中一张表失明，先算完再报等于用一份已知有洞的
+    // 哈希去做后续判断。
+    ll_mod::table_exclusivity::detect_table_define_collisions(&registry, &value_tables).result()?;
 
     // 值哈希升级：全部内容表此刻已经装载完毕（本体 + mod），在
     // 这里跑一次性收尾步骤,把字段值折进 registry 已有的 id 摘要——
@@ -1345,6 +1366,55 @@ mod tests {
             loaded.audit.references_checked >= 1,
             "仓库真实内容里至少有一处跨表引用（mods/example_mod/items.json5 \
              的 register-item-damage-formula 等），一处都没检查到说明校验空转了"
+        );
+    }
+
+    #[test]
+    fn 真实内容里一个索引至多被一张内容表定义且不是空转() {
+        // 装载后校验 pass 的第四条硬失败（跨表撞名）。装载能返回 `Ok`
+        // 本身已经蕴含"零撞名"（`load_content` 直接 `?` 掉了它），本条
+        // 真正守的是**非空转**：一个索引都没喂进去的撞名检查会恒为绿
+        // 且完全无声——谁把 `detect_table_define_collisions` 的循环接到
+        // 一个空注册表上，报告仍然是"零撞名"。
+        //
+        // # 为什么需要这条判据：三条既有判据一条都拦不住撞名
+        //
+        // 完整论证见 `ll_mod::content_audit::detect_table_define_collisions`
+        // 文档。一句话：`Registry` 是**一个** id ↔ ContentIndex 空间，
+        // `define` 却分散在二十四张互不知情的表上，于是"同一个 id 既是
+        // 一件物品又是一种资源"在类型层面完全合法，而 json5 schema
+        // 校验、跨表引用完整性、"清单不多不少"的名册测试对它**全部
+        // 是绿的**。
+        //
+        // # 这条判据落地时抓到的第一个真实缺口
+        //
+        // `lostland:snow` ——本体地形「雪地」与本体天气「下雪」在
+        // 2026-08 天气批次到 2026-09-01 之间一直共用索引 7。两张表各查
+        // 各的，运行期看不出毛病，但值哈希只认第一张表，**下雪那六个
+        // 字段值从此完全不进内容哈希**（实测：把 `light_scale` 从 720
+        // 改成 721，`lostland` 命名空间的内容哈希一位都不变；换成不撞名
+        // 的雾做同样改动，哈希立刻变）。天气一侧已改名为
+        // `lostland:snowfall`，见 `ll_world::weather::BaseWeatherIds::snowfall`
+        // 文档。
+        // Arrange & Act
+        let loaded = load_content(&repo_mods_dir(), &repo_assets_dir())
+            .expect("仓库真实 mods/ 目录下内容校验必须通过");
+
+        // Assert
+        let report = ll_mod::table_exclusivity::detect_table_define_collisions(
+            &loaded.registry,
+            &loaded.value_tables(),
+        );
+        assert_eq!(report.collisions, Vec::new());
+        assert!(report.result().is_ok());
+        assert_eq!(
+            report.indices_checked,
+            loaded.registry.snapshot().len(),
+            "撞名普查必须逐个看过本次装载注册的每一个索引，看漏了就是一道有覆盖缺口的门禁（ADR 0022）"
+        );
+        assert!(
+            report.indices_checked >= 1,
+            "仓库真实内容注册了上百条内容，一个索引都没喂进撞名普查说明检查空转了"
         );
     }
 

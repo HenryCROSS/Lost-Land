@@ -195,7 +195,7 @@ weather-overcast-display_name = 阴
 weather-rain-display_name = 雨
 weather-wind-display_name = 大风
 weather-fog-display_name = 雾
-weather-snow-display_name = 雪
+weather-snowfall-display_name = 雪
 
 # 资源展示名——本体七种资源（mods/lostland/resources.json5）。
 # 资源点由 (世界种子, 瓦片坐标) 纯派生，不进世界状态；这里只做展示名

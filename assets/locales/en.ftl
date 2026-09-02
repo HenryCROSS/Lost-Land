@@ -170,7 +170,7 @@ weather-overcast-display_name = Overcast
 weather-rain-display_name = Rain
 weather-wind-display_name = Wind
 weather-fog-display_name = Fog
-weather-snow-display_name = Snow
+weather-snowfall-display_name = Snow
 
 # Resource display names — the base game's seven resources
 # (mods/lostland/resources.json5). Resource nodes are derived from
