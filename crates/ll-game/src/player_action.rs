@@ -485,7 +485,7 @@ pub fn player_command(
         PlayerMenu::Closed => closed_menu_command(input, actor),
         PlayerMenu::Inventory { cursor } => {
             let entries = inventory_entries(agent);
-            match moved_cursor(input, cursor, entries.len()) {
+            match crate::nav_row::moved_cursor(input, cursor, entries.len()) {
                 Some(next) => {
                     *menu = PlayerMenu::Inventory { cursor: next };
                     PlayerCommand::Idle
@@ -497,7 +497,7 @@ pub fn player_command(
         }
         PlayerMenu::Craft { cursor } => {
             let entries = craft_entries(recipes);
-            match moved_cursor(input, cursor, entries.len()) {
+            match crate::nav_row::moved_cursor(input, cursor, entries.len()) {
                 Some(next) => {
                     *menu = PlayerMenu::Craft { cursor: next };
                     PlayerCommand::Idle
@@ -507,7 +507,7 @@ pub fn player_command(
         }
         PlayerMenu::InteractDirection { cursor } => {
             let tiles = interact_tiles(world, agent.pos, actor, talk);
-            match moved_cursor(input, cursor, tiles.len()) {
+            match crate::nav_row::moved_cursor(input, cursor, tiles.len()) {
                 Some(next) => {
                     *menu = PlayerMenu::InteractDirection { cursor: next };
                     PlayerCommand::Idle
@@ -543,7 +543,7 @@ pub fn player_command(
             from_direction,
         } => {
             let entries = interact_entries(world, pos, actor, talk);
-            match moved_cursor(input, cursor, entries.len()) {
+            match crate::nav_row::moved_cursor(input, cursor, entries.len()) {
                 Some(next) => {
                     *menu = PlayerMenu::Interact {
                         pos,
@@ -787,41 +787,13 @@ fn begin_interact(
 /// 光标当前真正指着第几行——列表为空或光标越界时是 `None`。
 ///
 /// 不就地钳制 `cursor`：钳制会让「列表在光标之下缩短了」与「玩家自己把
-/// 光标移到了这里」变得不可区分，而 [`moved_cursor`] 的环绕已经保证正常
+/// 光标移到了这里」变得不可区分，而 [`crate::nav_row::moved_cursor`] 的环绕已经保证正常
 /// 操作下光标恒在范围内；真落到越界，说明列表在两帧之间变短了（刚做完
 /// 一次消耗掉最后一味食材的制作之类），这一帧如实报告「没指着任何行」
 /// 比默默指到别的东西上安全——后者会让玩家丢掉/用掉一件他没打算动的
 /// 东西。
 fn cursor_row(cursor: usize, len: usize) -> Option<usize> {
     (cursor < len).then_some(cursor)
-}
-
-/// 这一帧光标该移到第几行——没有移动时返回 `None`，调用方据此接着
-/// 判动作键。
-///
-/// `was_activated` 而非 `was_just_pressed`：方向键参与自动重复
-/// （`GameKey::is_repeatable`），长按连续滚动与它们在地图上长按连续
-/// 移动是同一种手感，不该在菜单里变成一次一格。
-///
-/// 环绕而不是撞到头就停：列表短（本体一共十来条配方），从头绕到尾比
-/// 一路按回去快，且不需要玩家记得「到顶了」。
-fn moved_cursor(input: &InputState, cursor: usize, len: usize) -> Option<usize> {
-    if len == 0 {
-        return None;
-    }
-    let up = input.was_activated(GameKey::Up);
-    let down = input.was_activated(GameKey::Down);
-    // 同时按住上下视为无输入——与 `intent_from_input` 里
-    // `direction_from_input` 对相反方向同时按住的处理一致（两者抵消，
-    // 不猜测玩家意图）。
-    if up == down {
-        return None;
-    }
-    Some(if down {
-        (cursor + 1) % len
-    } else {
-        (cursor + len - 1) % len
-    })
 }
 
 /// 菜单关着、交互/拾取键也没按时：回落到既有的 `Move`/`Wait` 映射。

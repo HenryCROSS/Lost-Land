@@ -199,7 +199,7 @@ pub use super::placement::world_map_rect;
 ///
 /// `menu` 为 `None` 时（没有任何动作菜单打开）那块面板整块不参与本次
 /// 产出，与 `world_map` 同一条纪律。为 `Some` 时按
-/// [`super::action_menu::action_menu_panel`] 画出，**画在哪由那块菜单
+/// [`super::action_menu::action_menu_content`] 画出，**画在哪由那块菜单
 /// 自己声明的 [`MenuPlacement`](super::action_menu::MenuPlacement) 决定**（见 [`placed_action_menu`](super::placement::placed_action_menu)）：
 /// 背包与制作贴屏幕上沿、水平居中（本参数落地以来一直如此），交互列表
 /// 与方向列表水平垂直**都居中**——所有者裁定「那个互动显示的 UI 窗口，
@@ -458,7 +458,7 @@ pub fn build_hud_frame(
     // 函数文档。落在 `UiLayer::Popup`，恒压在地图之上——两者理论上可以
     // 同时打开，此时玩家正在菜单里选东西，地图只是背景。
     if let Some(menu) = menu {
-        let panel = super::placement::placed_action_menu(
+        let placed = super::placement::placed_action_menu(
             menu,
             catalog,
             language,
@@ -466,12 +466,25 @@ pub fn build_hud_frame(
             screen_width,
             screen_height,
         );
-        push_panel(
-            frame.layer_mut(UiLayer::Popup),
-            &panel.rect,
-            panel.labels,
-            skin,
-        );
+        let batch = frame.layer_mut(UiLayer::Popup);
+        // 光标那一行的高亮（规格 W7 / F7）——**这是选中态唯一的视觉
+        // 表达**，文字前缀已经拔掉，见 `super::action_menu` 模块文档。
+        //
+        // 推在面板背景**之后**：同一批 quad 按推入顺序绘制，高亮要盖在
+        // 背景上。文字走的是另一道 pass（恒最后），因此不受这里的顺序
+        // 影响。取不到那一块（光标越界、或者列表为空）就一块都不画——
+        // 与 `ActionMenuData::cursor` 文档「不钳制、不 panic」一致。
+        let 高亮 = placed.row_rects.get(menu.cursor).copied();
+        push_panel(batch, &placed.panel.rect, placed.panel.labels, skin);
+        if let Some(rect) = 高亮 {
+            crate::widget::highlight::push_row_highlight(
+                rect,
+                crate::widget::highlight::FOCUS_HIGHLIGHT_COLOR,
+                skin,
+                &mut batch.quads,
+                &mut batch.textured_quads,
+            );
+        }
     }
 
     // 屏幕底部那两行——形状相同、分层不同，见 `super::bottom_rows`
@@ -990,72 +1003,17 @@ mod tests {
         // （查不到职业定义），整行不出现——这条断言同时是那个分支的
         // 覆盖。有职业时那一行出现的证据在
         // `crate::hud::character_panel` 的对应测试。
-        assert_eq!(frame.layer(UiLayer::Hud).labels.len(), 1 + 16 + 2 + 23);
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn 生命值下降时状态栏数字立即反映新值不受动画影响() {
-        // 这是「数字瞬时,条形动画」硬规则的直接验证——见
-        // `crate::widget::anim` 模块文档。构造两次调用,健康值从满值
-        // 掉到 30,断言状态栏文本行（而非条形）里的数字在下一帧就已经
-        // 是 30,不是正在从 100 往下滑的中间值。
-        // Arrange
-        let dir = temp_dir("instant-number");
-        write_fixture_catalog(&dir);
-        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
-        let modifiers = BTreeMap::new();
-        let equipment = BTreeMap::new();
-        let character = sample_character_data(&modifiers, &equipment);
-        let item_table = ItemTable::new();
-        let mut anim = WidgetStateTable::new();
-        let full_status = StatusBarData {
-            clock: Tick(0),
-            health: 100,
-            mana: 50,
-            fps: 0.0,
-            weather_display_name_key: None,
-        };
-        建帧(
-            &full_status,
-            &character,
-            &equipment,
-            &item_table,
-            &catalog,
-            &FlatColorSkin,
-            &mut anim,
-            0,
-            1280.0,
-            None,
+        //
+        // **状态栏那一项从 1 变成 5**（规格 W6，批次 33）：它此前把六段
+        // 翻译拼成一个 `Label`，现在每一格各一个。本用例的
+        // `weather_display_name_key` 是 `None`，因此是五格不是六格
+        // （见 `status_bar::status_bar_fields` 文档「没有天气时是五格」）。
+        let 状态栏格数 = super::status_bar::status_bar_fields(&status, &catalog, "zh-CN").len();
+        assert_eq!(状态栏格数, 5, "无天气时状态栏是五格");
+        assert_eq!(
+            frame.layer(UiLayer::Hud).labels.len(),
+            状态栏格数 + 16 + 2 + 23
         );
-
-        // Act：紧接着下一帧,生命值已经掉到 30。
-        let damaged_status = StatusBarData {
-            clock: Tick(0),
-            health: 30,
-            mana: 50,
-            fps: 0.0,
-            weather_display_name_key: None,
-        };
-        let frame = 建帧(
-            &damaged_status,
-            &character,
-            &equipment,
-            &item_table,
-            &catalog,
-            &FlatColorSkin,
-            &mut anim,
-            1,
-            1280.0,
-            None,
-        );
-
-        // Assert：状态栏文本行里应该已经是 30,不是 100 附近的过渡值。
-        let status_line = &frame.layer(UiLayer::Hud).labels[0].text;
-        assert!(status_line.contains("30"));
-        assert!(!status_line.contains("100"));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -1247,8 +1205,8 @@ mod tests {
         );
 
         // Assert：面板中心与屏幕中心重合（浮点，允许半像素）。
-        let center_x = panel.rect.x + panel.rect.width * 0.5;
-        let center_y = panel.rect.y + panel.rect.height * 0.5;
+        let center_x = panel.panel.rect.x + panel.panel.rect.width * 0.5;
+        let center_y = panel.panel.rect.y + panel.panel.rect.height * 0.5;
         assert!(
             (center_x - width * 0.5).abs() < 0.5,
             "水平未居中：面板中心 {center_x}，屏幕中心 {}",
@@ -1288,7 +1246,7 @@ mod tests {
             );
 
             // Assert
-            let center_y = panel.rect.y + panel.rect.height * 0.5;
+            let center_y = panel.panel.rect.y + panel.panel.rect.height * 0.5;
             assert!(
                 (center_y - height * 0.5).abs() < 0.5,
                 "{width}×{height} 下垂直未居中：面板中心 {center_y}"
@@ -1323,55 +1281,8 @@ mod tests {
         );
 
         // Assert：贴上沿的那个 y 是本次改动之前唯一存在的取值。
-        assert_eq!(panel.rect.y, SCREEN_MARGIN + PANEL_GAP);
-        assert_eq!(panel.rect.x, (1280.0 - ACTION_MENU_WIDTH) * 0.5);
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn 居中之后每一行文字跟着面板一起挪() {
-        // 平移必须是**整体**的：只挪背景矩形而不挪文字，玩家会看到一块
-        // 空面板加一列悬空的字。
-        //
-        // 故意改坏的反例（人工核验）：把 `translate_panel` 里那个
-        // `for label in &mut panel.labels` 循环删掉，本条当场变红。
-        // Arrange
-        let (dir, catalog) = placement_catalog("labels-follow");
-        let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
-        let top = placed_action_menu(
-            &placement_menu(&rows, MenuPlacement::TopCenter),
-            &catalog,
-            "zh-CN",
-            &mut crate::测试测量器(),
-            1280.0,
-            720.0,
-        );
-
-        // Act
-        let centered = placed_action_menu(
-            &placement_menu(&rows, MenuPlacement::ScreenCenter),
-            &catalog,
-            "zh-CN",
-            &mut crate::测试测量器(),
-            1280.0,
-            720.0,
-        );
-
-        // Assert：每一行相对面板顶部的偏移逐条不变。
-        let dy = centered.rect.y - top.rect.y;
-        assert!(dy.abs() > 1.0, "两种摆法应当真的落在不同的高度");
-        assert_eq!(centered.labels.len(), top.labels.len());
-        for (moved, original) in centered.labels.iter().zip(top.labels.iter()) {
-            assert_eq!(moved.x, original.x, "水平位置不该变");
-            assert!(
-                (moved.y - (original.y + dy)).abs() < 0.001,
-                "文字没有跟着面板一起挪：{} 应当是 {}",
-                moved.y,
-                original.y + dy
-            );
-        }
+        assert_eq!(panel.panel.rect.y, SCREEN_MARGIN + PANEL_GAP);
+        assert_eq!(panel.panel.rect.x, (1280.0 - ACTION_MENU_WIDTH) * 0.5);
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

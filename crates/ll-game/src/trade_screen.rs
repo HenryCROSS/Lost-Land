@@ -193,10 +193,10 @@ pub fn update_trade(
         // 两边都拿不出可交易的东西：上下键无处可动，确认键无行可选。
         return TradeUpdate::idle();
     }
-    if input.was_just_pressed(GameKey::Down) {
-        *cursor = (*cursor + 1) % rows.len();
-    } else if input.was_just_pressed(GameKey::Up) {
-        *cursor = (*cursor + rows.len() - 1) % rows.len();
+    // 规格 N11：循环 + 长按连发，走九块屏共用的
+    // `crate::nav_row::moved_cursor`。
+    if let Some(next) = crate::nav_row::moved_cursor(input, *cursor, rows.len()) {
+        *cursor = next;
     }
     // 指针按下把光标挪过去（约定一：**悬停**不改焦点，按下才改）。
     if let Some(row) = pointer.focus_row() {

@@ -72,10 +72,11 @@ pub fn update_save_list(
         // 玩家按取消回首页。
         return SaveListUpdate::idle();
     }
-    if input.was_just_pressed(GameKey::Down) {
-        *cursor = (*cursor + 1) % slots.len();
-    } else if input.was_just_pressed(GameKey::Up) {
-        *cursor = (*cursor + slots.len() - 1) % slots.len();
+    // 规格 N11：循环 + 长按连发，与其余八块屏走同一个
+    // `crate::nav_row::moved_cursor`（此前这里是就地拼的一份，循环有、
+    // 连发没有——存档多起来之后长按滚不动）。
+    if let Some(next) = crate::nav_row::moved_cursor(input, *cursor, slots.len()) {
+        *cursor = next;
     }
     // 指针按下把光标挪过去（不钳制越界：`row` 只可能来自这块屏自己
     // 现算的行矩形，行数与 `slots` 同源）。
@@ -191,6 +192,59 @@ mod tests {
             crate::pointer::RowPointer::Idle,
         );
         assert_eq!(cursor, 2);
+    }
+
+    #[test]
+    fn 存档列表长按方向键会连发() {
+        // 规格 N11「长按一律连发」在这一块屏上的落点。此前这里用的是
+        // `was_just_pressed`（循环有、连发没有），存档多起来之后长按
+        // 滚不动。现在走 `crate::nav_row::moved_cursor`。
+        //
+        // **全程只调一次 `press`**（ADR 0025：不许合成按键）——光标继续
+        // 走靠的是 `begin_frame` 按时钟判定的自动重复。连发本身的时序
+        // 证据在 `crate::nav_row` 的
+        // `长按方向键连发是由时钟驱动的不是由按键次数驱动的`。
+        //
+        // 反例验证（已实跑）：把本函数里那句 `moved_cursor` 改回
+        // `was_just_pressed`，本条红在「长按之后光标应当走过好几格」。
+        // Arrange
+        let slots: Vec<SaveSlot> = (0..8)
+            .map(|n| {
+                槽位(
+                    &format!("s{n}"),
+                    &format!("第{n}份"),
+                    n,
+                    SaveMode::Permadeath,
+                )
+            })
+            .collect();
+        let config = ll_platform::input::RepeatConfig::default();
+        let t0 = std::time::Instant::now();
+        let mut input = InputState::new();
+        let mut cursor = 0_usize;
+
+        // Act：按下那一帧之后再也不调 `press`。
+        input.begin_frame(t0, config);
+        input.press(GameKey::Down);
+        for frame in 0..80_u64 {
+            if frame > 0 {
+                input.begin_frame(t0 + std::time::Duration::from_millis(16 * frame), config);
+            }
+            update_save_list(
+                &mut cursor,
+                &slots,
+                &input,
+                crate::pointer::RowPointer::Idle,
+            );
+            input.end_frame();
+        }
+
+        // Assert：不循环回原地才说明真的走过好几格——8 份存档、循环
+        // 列表，所以额外断言「至少动过一次」之外还要看它绕过几圈。
+        assert!(
+            cursor != 1,
+            "长按之后光标应当走过好几格（连发），实测停在第 {cursor} 行——             那正是只响应了按下那一次的样子"
+        );
     }
 
     #[test]

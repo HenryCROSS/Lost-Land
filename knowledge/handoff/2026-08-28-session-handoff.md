@@ -174,6 +174,26 @@ grep -n "pub const CONTENT_HASH_ALGORITHM_VERSION" crates/ll-mod/src/content_has
    > `CARGO_BUILD_JOBS=4` 两次都一遍过。
    > 记录方：`docs/superpowers/plans/2026-09-01-batch32-trees.md` 16.11 节。
 
+   > **【2026-09-01 再补记，批次 33：第五种症状，这一次崩的是 `rustc` 自己。】**
+   > 症状：`EXIT=101`、**一条测试都没跑到**，日志里没有任何 `LNK` 错误号，
+   > 而是
+   >
+   > ```
+   > error: could not compile `naga` (lib)
+   > process didn't exit successfully: `rustc.exe --crate-name naga ...`
+   >   (exit code: 0xc0000005, STATUS_ACCESS_VIOLATION)
+   > ```
+   >
+   > `0xc0000005` 是 Windows 的访问违规。崩的是**第三方 crate 的编译进程**，
+   > 与本仓库代码无关；磁盘剩 140 GB，也不是满盘。判据与本条原文逐字一致：
+   > `EXIT=101` + `test result` 行为零 + 崩在第三方 crate 上。
+   >
+   > 处置同样一致——**降并行重跑**。实测 `CARGO_BUILD_JOBS=4` 崩、
+   > `CARGO_BUILD_JOBS=2` 一遍过（3096 通过 / 138 个二进制 / 0 失败）。
+   > **注意这一条与前四种的区别**：`CARGO_BUILD_JOBS=4` 在批次 32 是「实测
+   > 一遍过」的推荐值，在这一次却是崩的那一档——推荐值不是保证，撞上就再降。
+   > 记录方：`docs/superpowers/plans/2026-09-01-batch33-ui-final.md` 第〇节。
+
 9. **更正必须写回被更正方，两边互相指向。** 发现另一份文档（或另一处代码
    注释）的某句话已经被推翻时，**只在自己这一份里如实记录是不够的**——
    打开被更正那一份的人拿不到这条信息，而**他恰恰是最需要它的人**。

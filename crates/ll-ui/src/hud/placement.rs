@@ -13,8 +13,7 @@
 //! [`super::bottom_rows`]，两者分界：本模块管**居中/浮动**的落位，
 //! `bottom_rows` 管**贴着下沿**的那两行。
 
-use super::PanelContent;
-use super::action_menu::{self, ActionMenuData, MenuPlacement};
+use super::action_menu::{self, ActionMenuContent, ActionMenuData, MenuPlacement};
 use super::render::{ACTION_MENU_WIDTH, PANEL_GAP, SCREEN_MARGIN};
 use crate::widget::geometry::Anchor;
 use crate::widget::geometry::Rect;
@@ -39,7 +38,7 @@ pub(super) fn placed_action_menu(
     measure: &mut dyn ll_text::MeasureText,
     screen_width: f32,
     screen_height: f32,
-) -> PanelContent {
+) -> ActionMenuContent {
     // 规格 L2：水平居中与垂直居中两份算术都走 `Rect::anchored`。
     let 贴上沿 = Rect::anchored(
         (screen_width, screen_height),
@@ -47,7 +46,7 @@ pub(super) fn placed_action_menu(
         (ACTION_MENU_WIDTH, 0.0),
         ACTION_MENU_TOP_MARGIN,
     );
-    let panel = action_menu::action_menu_panel(
+    let content = action_menu::action_menu_content(
         menu,
         catalog,
         language,
@@ -56,27 +55,35 @@ pub(super) fn placed_action_menu(
         ACTION_MENU_WIDTH,
     );
     match menu.placement {
-        MenuPlacement::TopCenter => panel,
+        MenuPlacement::TopCenter => content,
         MenuPlacement::ScreenCenter => {
             let 居中 = Rect::anchored(
                 (screen_width, screen_height),
                 Anchor::Center,
-                (ACTION_MENU_WIDTH, panel.rect.height),
+                (ACTION_MENU_WIDTH, content.panel.rect.height),
                 0.0,
             );
-            translate_panel(panel, 居中.y - 贴上沿.y)
+            translate_menu(content, 居中.y - 贴上沿.y)
         }
     }
 }
 
-/// 把一块已经建好的面板整体沿 y 轴平移 `dy` 像素——背景矩形与每一行
-/// 文字一起动，见 [`placed_action_menu`] 文档「先建一次、再整体平移」。
-fn translate_panel(mut panel: PanelContent, dy: f32) -> PanelContent {
-    panel.rect.y += dy;
-    for label in &mut panel.labels {
+/// 把一块已经建好的动作菜单整体沿 y 轴平移 `dy` 像素——背景矩形、每一
+/// 行文字、**每一个行矩形**一起动，见 [`placed_action_menu`] 文档
+/// 「先建一次、再整体平移」。
+///
+/// 行矩形必须跟着一起动：高亮画在它上面（规格 F7），漏掉它就会得到
+/// 「菜单在屏幕正中、高亮还留在屏幕顶上」——而那正是本函数当初选
+/// 「整体平移」而不是「再算一遍」要防的那类分叉。
+fn translate_menu(mut content: ActionMenuContent, dy: f32) -> ActionMenuContent {
+    content.panel.rect.y += dy;
+    for label in &mut content.panel.labels {
         label.y += dy;
     }
-    panel
+    for rect in &mut content.row_rects {
+        rect.y += dy;
+    }
+    content
 }
 
 /// 世界地图比例尺文案与面板边框的留白（像素）——比

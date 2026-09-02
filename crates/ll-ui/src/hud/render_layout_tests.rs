@@ -253,14 +253,22 @@ fn 动作菜单两种落位改走anchored之后逐像素与旧算术相同() {
     let 居中 = 摆(MenuPlacement::ScreenCenter);
 
     // Assert：两种落位的 x 都是旧的水平居中算术。
-    assert_eq!(贴上沿.rect.x, (w - ACTION_MENU_WIDTH) * 0.5, "贴上沿的 x");
-    assert_eq!(居中.rect.x, (w - ACTION_MENU_WIDTH) * 0.5, "居中的 x");
+    assert_eq!(
+        贴上沿.panel.rect.x,
+        (w - ACTION_MENU_WIDTH) * 0.5,
+        "贴上沿的 x"
+    );
+    assert_eq!(居中.panel.rect.x, (w - ACTION_MENU_WIDTH) * 0.5, "居中的 x");
     // 贴上沿的 y 是旧的 `SCREEN_MARGIN + PANEL_GAP`。
-    assert_eq!(贴上沿.rect.y, SCREEN_MARGIN + PANEL_GAP, "贴上沿的 y");
+    assert_eq!(贴上沿.panel.rect.y, SCREEN_MARGIN + PANEL_GAP, "贴上沿的 y");
     // 居中的 y 是旧的 `(screen_height - 面板高) * 0.5`。两种落位的面板
     // 高度相同（同一批行、同一个宽度），因此可以拿贴上沿那一份的高。
-    assert_eq!(居中.rect.height, 贴上沿.rect.height);
-    assert_eq!(居中.rect.y, (h - 贴上沿.rect.height) * 0.5, "居中的 y");
+    assert_eq!(居中.panel.rect.height, 贴上沿.panel.rect.height);
+    assert_eq!(
+        居中.panel.rect.y,
+        (h - 贴上沿.panel.rect.height) * 0.5,
+        "居中的 y"
+    );
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
@@ -381,6 +389,327 @@ fn 常驻层不占屏幕中段只落在左半右半或底栏() {
             "常驻区应当有六块面板加三条条形，实际只有 {常驻块数} 块（{w}×{h}）"
         );
     }
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// 建一帧只带动作菜单的 HUD，光标落在 `cursor` 行——F7 那两条要的
+/// 是「光标动了高亮跟着动」，别的面板都是噪声。
+fn 菜单帧(catalog: &Catalog, rows: &[String], cursor: usize) -> LayeredFrame {
+    let status = StatusBarData {
+        clock: Tick(0),
+        health: 100,
+        mana: 50,
+        fps: 0.0,
+        weather_display_name_key: None,
+    };
+    let modifiers = BTreeMap::new();
+    let equipment = BTreeMap::new();
+    let character = sample_character_data(&modifiers, &equipment);
+    let item_table = ItemTable::new();
+    let mut anim = WidgetStateTable::new();
+    let mut menu = placement_menu(rows, MenuPlacement::ScreenCenter);
+    menu.cursor = cursor;
+
+    build_hud_frame(
+        &status,
+        &character,
+        &[],
+        &equipment,
+        &[],
+        &NoItems,
+        &item_table,
+        catalog,
+        "zh-CN",
+        &FlatColorSkin,
+        &mut crate::测试测量器(),
+        &mut anim,
+        0,
+        1280.0,
+        720.0,
+        None,
+        Some(&menu),
+        None,
+        None,
+    )
+}
+
+/// 这一帧的 `Popup` 层里那**一块**聚焦高亮——先断言恰好一块，再返回
+/// 它。找不到会 panic 而不是返回 `None`：一个「找不到就跳过」的助手会
+/// 让所有调用它的断言在高亮消失那天集体变成空转（本会话点名的假绿
+/// 形状之二：被断言的对象根本不存在）。
+fn 唯一的高亮(frame: &LayeredFrame) -> crate::widget::quad::QuadInstance {
+    let 高亮: Vec<_> = frame
+        .layer(UiLayer::Popup)
+        .quads
+        .iter()
+        .filter(|q| q.color == crate::widget::highlight::FOCUS_HIGHLIGHT_COLOR)
+        .copied()
+        .collect();
+    assert_eq!(
+        高亮.len(),
+        1,
+        "弹窗层里应当恰好有一块聚焦高亮，实际 {} 块",
+        高亮.len()
+    );
+    高亮[0]
+}
+
+#[test]
+fn 动作菜单的高亮矩形落在光标那一行上() {
+    // **规格 W7 / F7 的主判据，也是「拔掉文字前缀之后哪一行被选中仍然
+    // 验得出来」的那条证据**：行文字里已经没有任何记号了（见
+    // `hud::action_menu` 的「行文字里不再有任何光标记号」），选中态
+    // 唯一的表达就是这一块矩形。
+    //
+    // 走 `build_hud_frame` 这条**生产渲染路径**，不是自己拼一块矩形
+    // ——批次 30 在动作菜单那两条回归断言上正栽在这里（测试自己重写了
+    // 一遍算术，改坏生产代码照样绿）。
+    //
+    // 反例验证（已实跑）：把 `build_hud_frame` 里那句
+    // `placed.row_rects.get(menu.cursor)` 的下标写死成 `0`，本条红在
+    // 「高亮的 y … 应当落在第 2 行」。
+    // Arrange
+    let (dir, catalog) = 布局夹具("f7-hud-highlight-follows-cursor");
+    let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
+
+    for cursor in 0..rows.len() {
+        // Act
+        let frame = 菜单帧(&catalog, &rows, cursor);
+        let 高亮 = 唯一的高亮(&frame);
+
+        // Assert：期望值从生产代码自己的行矩形现取（同一个
+        // `placed_action_menu`），再按提交出口那道取整算一次。
+        let mut menu = placement_menu(&rows, MenuPlacement::ScreenCenter);
+        menu.cursor = cursor;
+        let placed = placed_action_menu(
+            &menu,
+            &catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            1280.0,
+            720.0,
+        );
+        let 期望 = placed.row_rects[cursor].snap();
+        assert_eq!(
+            高亮.position,
+            [期望.x, 期望.y],
+            "光标在第 {cursor} 行时高亮没落在那一行上"
+        );
+        assert_eq!(高亮.size, [期望.width, 期望.height]);
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn 光标每下移一行高亮就跟着下移一整行高() {
+    // 上一条比的是「高亮 == 第 cursor 行的矩形」，两边都出自
+    // `placed_action_menu`——万一那个函数把每一行都算成同一个矩形，
+    // 上一条会照样绿。这一条盯的正是那种退化：**相邻两次的高亮必须
+    // 真的差一整行**。
+    //
+    // 反例验证（已实跑）：把高亮下标写死成 `0`，本条红在「差 0 应当
+    // 是 18」。
+    // Arrange
+    let (dir, catalog) = 布局夹具("f7-hud-highlight-steps-one-row");
+    let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
+
+    // Act
+    let ys: Vec<f32> = (0..rows.len())
+        .map(|cursor| 唯一的高亮(&菜单帧(&catalog, &rows, cursor)).position[1])
+        .collect();
+
+    // Assert
+    for pair in ys.windows(2) {
+        assert_eq!(
+            pair[1] - pair[0],
+            crate::hud::DEFAULT_LINE_HEIGHT,
+            "相邻两行的高亮应当正好差一整行高，实际 {ys:?}"
+        );
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn 光标越界时弹窗层里一块高亮都没有() {
+    // `ActionMenuData::cursor` 文档：不钳制、不 panic。落到渲染上就是
+    // 「一块高亮都不画」，而不是随便高亮一行。
+    // Arrange
+    let (dir, catalog) = 布局夹具("f7-hud-highlight-out-of-range");
+    let rows: Vec<String> = (0..3).map(|n| format!("行{n}")).collect();
+
+    // Act
+    let 越界 = 菜单帧(&catalog, &rows, 99);
+    let 界内 = 菜单帧(&catalog, &rows, 1);
+
+    // Assert：对照组先证明这条测试真的找得到高亮（否则「没有」恒真）。
+    assert_eq!(
+        界内
+            .layer(UiLayer::Popup)
+            .quads
+            .iter()
+            .filter(|q| q.color == crate::widget::highlight::FOCUS_HIGHLIGHT_COLOR)
+            .count(),
+        1,
+        "对照组：光标在界内时应当有一块高亮"
+    );
+    assert_eq!(
+        越界
+            .layer(UiLayer::Popup)
+            .quads
+            .iter()
+            .filter(|q| q.color == crate::widget::highlight::FOCUS_HIGHLIGHT_COLOR)
+            .count(),
+        0,
+        "光标越界时不该高亮任何一行"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// 下面这条从 `render.rs` 搬过来（规格 F7 那一批）：本文件不在行数棘轮
+// 的快照里，而 `render.rs` 在，往它里面加高亮那几行之前先把这条搬出来
+// ——先拆再 bless，与批次 23/30 三次搬家同一条做法。
+#[test]
+fn 居中之后每一行文字跟着面板一起挪() {
+    // 平移必须是**整体**的：只挪背景矩形而不挪文字，玩家会看到一块
+    // 空面板加一列悬空的字。
+    //
+    // 故意改坏的反例（人工核验）：把 `translate_menu` 里那个
+    // `for label in &mut content.panel.labels` 循环删掉，本条当场
+    // 变红；把 `for rect in &mut content.row_rects` 循环删掉，本条
+    // 的第二半（行矩形跟着挪）当场变红。
+    // Arrange
+    let (dir, catalog) = placement_catalog("labels-follow");
+    let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
+    let top = placed_action_menu(
+        &placement_menu(&rows, MenuPlacement::TopCenter),
+        &catalog,
+        "zh-CN",
+        &mut crate::测试测量器(),
+        1280.0,
+        720.0,
+    );
+
+    // Act
+    let centered = placed_action_menu(
+        &placement_menu(&rows, MenuPlacement::ScreenCenter),
+        &catalog,
+        "zh-CN",
+        &mut crate::测试测量器(),
+        1280.0,
+        720.0,
+    );
+
+    // Assert：每一行相对面板顶部的偏移逐条不变。
+    let dy = centered.panel.rect.y - top.panel.rect.y;
+    assert!(dy.abs() > 1.0, "两种摆法应当真的落在不同的高度");
+    assert_eq!(centered.panel.labels.len(), top.panel.labels.len());
+    for (moved, original) in centered.panel.labels.iter().zip(top.panel.labels.iter()) {
+        assert_eq!(moved.x, original.x, "水平位置不该变");
+        assert!(
+            (moved.y - (original.y + dy)).abs() < 0.001,
+            "文字没有跟着面板一起挪：{} 应当是 {}",
+            moved.y,
+            original.y + dy
+        );
+    }
+
+    // Assert 二：**行矩形也要跟着挪**（规格 F7：高亮画在它上面，
+    // 漏掉它就是「菜单在正中、高亮还留在顶上」）。
+    assert_eq!(centered.row_rects.len(), top.row_rects.len());
+    assert!(!centered.row_rects.is_empty(), "这块菜单必须真的有行");
+    for (moved, original) in centered.row_rects.iter().zip(top.row_rects.iter()) {
+        assert_eq!(moved.x, original.x, "水平位置不该变");
+        assert!(
+            (moved.y - (original.y + dy)).abs() < 0.001,
+            "行矩形没有跟着面板一起挪：{} 应当是 {}",
+            moved.y,
+            original.y + dy
+        );
+    }
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+// 下面这条也是从 `render.rs` 搬过来的（规格 W6 那一步）：状态栏拆成
+// 横排的若干格之后它要多几行来定位那几格，而 `render.rs` 在行数棘轮的
+// 快照里——先拆再 bless，同上。
+#[test]
+fn 生命值下降时状态栏数字立即反映新值不受动画影响() {
+    // 这是「数字瞬时,条形动画」硬规则的直接验证——见
+    // `crate::widget::anim` 模块文档。构造两次调用,健康值从满值
+    // 掉到 30,断言状态栏文本行（而非条形）里的数字在下一帧就已经
+    // 是 30,不是正在从 100 往下滑的中间值。
+    // Arrange
+    let dir = temp_dir("instant-number");
+    write_fixture_catalog(&dir);
+    let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
+    let modifiers = BTreeMap::new();
+    let equipment = BTreeMap::new();
+    let character = sample_character_data(&modifiers, &equipment);
+    let item_table = ItemTable::new();
+    let mut anim = WidgetStateTable::new();
+    let full_status = StatusBarData {
+        clock: Tick(0),
+        health: 100,
+        mana: 50,
+        fps: 0.0,
+        weather_display_name_key: None,
+    };
+    建帧(
+        &full_status,
+        &character,
+        &equipment,
+        &item_table,
+        &catalog,
+        &FlatColorSkin,
+        &mut anim,
+        0,
+        1280.0,
+        None,
+    );
+
+    // Act：紧接着下一帧,生命值已经掉到 30。
+    let damaged_status = StatusBarData {
+        clock: Tick(0),
+        health: 30,
+        mana: 50,
+        fps: 0.0,
+        weather_display_name_key: None,
+    };
+    let frame = 建帧(
+        &damaged_status,
+        &character,
+        &equipment,
+        &item_table,
+        &catalog,
+        &FlatColorSkin,
+        &mut anim,
+        1,
+        1280.0,
+        None,
+    );
+
+    // Assert：状态栏那几格里应该已经是 30,不是 100 附近的过渡值。
+    // 规格 W6 之后状态栏是横排的**若干格**（生命是其中一格），
+    // 不再是一整行，因此拼起来再判——比的仍然是同一件事：数字本身
+    // 从不经动画平滑（只有条形经）。
+    let 状态栏格数 = super::status_bar::status_bar_fields(&damaged_status, &catalog, "zh-CN").len();
+    let status_line = frame.layer(UiLayer::Hud).labels[..状态栏格数]
+        .iter()
+        .map(|label| label.text.as_str())
+        .collect::<Vec<_>>()
+        .join("  ");
+    assert!(status_line.contains("30"), "实际：{status_line}");
+    assert!(!status_line.contains("100"), "实际：{status_line}");
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);

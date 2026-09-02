@@ -897,7 +897,7 @@ fn update_navigation(
         *state = origin.screen();
         return SettingsUpdate::idle();
     }
-    if let Some(next) = moved_cursor(input, cursor, rows.len()) {
+    if let Some(next) = crate::nav_row::moved_cursor(input, cursor, rows.len()) {
         *state = ScreenState::Settings {
             cursor: next,
             capturing: false,
@@ -960,22 +960,6 @@ fn update_navigation(
         | SettingsRow::Vsync
         | SettingsRow::ScaleFilter => SettingsUpdate::idle(),
     }
-}
-
-/// 上下键移动光标——`was_activated` 而非 `was_just_pressed`：方向键参与
-/// 自动重复（`GameKey::is_repeatable`），二十几行的列表长按滚动是刚需。
-/// 与 `crate::player_action::moved_cursor` 同一套语义。
-fn moved_cursor(input: &InputState, cursor: usize, len: usize) -> Option<usize> {
-    if len == 0 {
-        return None;
-    }
-    if input.was_activated(GameKey::Down) {
-        return Some((cursor + 1) % len);
-    }
-    if input.was_activated(GameKey::Up) {
-        return Some((cursor + len - 1) % len);
-    }
-    None
 }
 
 /// 把这一行的取值往前/往后拨一格。
