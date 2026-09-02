@@ -239,6 +239,7 @@ mod tests {
         let rows = vec!["甲".to_string()];
         let data = ScreenData {
             title_key: "screen-menu-title",
+            title_args: None,
             rows: &rows,
             cursor: 0,
             empty_key: "screen-menu-empty",
@@ -268,6 +269,7 @@ mod tests {
         let rows = vec!["甲".to_string()];
         let data = ScreenData {
             title_key: "screen-menu-title",
+            title_args: None,
             rows: &rows,
             cursor: 0,
             empty_key: "screen-menu-empty",
@@ -330,6 +332,7 @@ mod tests {
         for cursor in 0..rows.len() {
             let data = ScreenData {
                 title_key: "screen-menu-title",
+                title_args: None,
                 rows: &rows,
                 cursor,
                 empty_key: "screen-menu-empty",
@@ -385,6 +388,7 @@ mod tests {
             .map(|cursor| {
                 let data = ScreenData {
                     title_key: "screen-menu-title",
+                    title_args: None,
                     rows: &rows,
                     cursor,
                     empty_key: "screen-menu-empty",

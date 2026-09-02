@@ -122,6 +122,57 @@ pub fn dialogue_title_key(node: ContentIndex, nodes: &DialogueNodeTable) -> Stri
         .unwrap_or_else(|| "screen-dialogue-missing".to_string())
 }
 
+/// 会话屏标题里 `{ $npc_name }` 那个参数的名字。
+///
+/// 与 `.ftl` 里写的 `{ $npc_name }` 必须一字不差；写成常量而不是在两处
+/// 各敲一遍字面量，是因为拼错了 Fluent **不会报错**——它会把整条消息
+/// 原样渲染成带花括号的模式串，而那正是「测试全绿但保护不存在」的形状。
+pub const NPC_NAME_ARG: &str = "npc_name";
+
+/// 说话人在这一帧该被称作什么——**渲染期现算，不进世界状态**。
+///
+/// 优先取按文化派生的给定名（`ll_world::naming::agent_given_name`）；
+/// 派生不出来时（身上没有文化归属、那份文化没声明 `naming`）回落到
+/// **职业显示名**，也就是 NPC 姓名批次之前的旧行为（「管理者」
+/// 「卫兵」）。ADR 0015：诚实表达「这个人没有名字」，不伪造一个。
+///
+/// 职业也查不到时回落到一条通用占位键——这一层降级与
+/// [`dialogue_title_key`] 查不到节点时那一层同一条理由：一块屏的内容
+/// 问题不该拖垮整局。
+///
+/// # 为什么名字不进 `Agent`
+///
+/// 见 `ll_world::naming::agent_given_name` 文档「为什么名字不是 `Agent`
+/// 的一个字段」一节（ADR 0009 最极端的一例）。本函数是那条派生在生产
+/// 路径上的**唯一**调用点。
+pub fn speaker_name(
+    speaker: EntityId,
+    world: &ll_world::state::WorldState,
+    content: &crate::content::LoadedContent,
+    catalog: &Catalog,
+    language: &str,
+) -> String {
+    let Some(agent) = world.actors.get(speaker) else {
+        return catalog.resolve(language, MISSING_SPEAKER_KEY);
+    };
+    if let Some(name) = ll_world::naming::agent_given_name(
+        agent,
+        speaker,
+        &content.culture_table,
+        language,
+        world.seed,
+    ) {
+        return name;
+    }
+    match content.class_table.get(agent.profession) {
+        Some(class) => catalog.resolve(language, &class.display_name_key.to_string()),
+        None => catalog.resolve(language, MISSING_SPEAKER_KEY),
+    }
+}
+
+/// 说话人既没有名字也没有职业显示名时用的占位键。
+const MISSING_SPEAKER_KEY: &str = "screen-dialogue-unknown-speaker";
+
 /// 一场会话的两位当事人。
 ///
 /// 把 `actor` 与 `speaker` 收成一个结构体，不是为了绕过
