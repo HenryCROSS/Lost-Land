@@ -231,20 +231,25 @@ pub fn cycle(current: usize, len: usize, forward: bool) -> usize {
     }
 }
 
-/// 上下移动光标，到头就停（与 `ll_ui::widget::focus::move_focus` 的
-/// 语义一致：列表是有序的，到头回绕会让玩家找不到自己在第几行）。
+/// 上下移动光标——**循环 + 长按连发**（规格 N11），走九块屏共用的
+/// [`crate::nav_row::moved_cursor`]。
+///
+/// # 这里此前是「到头就停 + 一次一格」
+///
+/// 原注释写的是「与 `ll_ui::widget::focus::move_focus` 的语义一致：
+/// 列表是有序的，到头回绕会让玩家找不到自己在第几行」——**那句话的
+/// 前半截说反了**：`move_focus` 从落地起就是回绕的（`(i + 1) %
+/// order.len()`）。规格 §7.5 N11 因此点名角色创建/世界配置这两块屏
+/// （它们共用本函数）「改过来」，统一到今天占多数的那一半。
+///
+/// 本函数保留下来只为那一层**越界钳制**：`cursor` 是跨帧带过来的一个
+/// 裸 `usize`，行数会随内容变，不钳制就会在行数变少的那一帧索引越界。
 pub fn move_cursor(cursor: usize, len: usize, input: &InputState) -> usize {
     if len == 0 {
         return 0;
     }
-    let mut next = cursor.min(len - 1);
-    if input.was_just_pressed(GameKey::Down) {
-        next = (next + 1).min(len - 1);
-    }
-    if input.was_just_pressed(GameKey::Up) {
-        next = next.saturating_sub(1);
-    }
-    next
+    let cursor = cursor.min(len - 1);
+    crate::nav_row::moved_cursor(input, cursor, len).unwrap_or(cursor)
 }
 
 /// 这一帧玩家有没有按左右键，按的是哪一边。

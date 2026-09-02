@@ -54,6 +54,8 @@
 //! 都是这样写的（`chargen.rs:290`、`world_setup.rs:192`、
 //! `menu_screen.rs:862` 与各自的取消键分支去同一个地方）。
 
+use ll_platform::input::{GameKey, InputState};
+
 /// 一行在导航里扮演的角色——见模块文档。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NavRole {
@@ -154,27 +156,82 @@ pub trait HorizontalRow: Copy {
     fn horizontal_role(self) -> HorizontalRole;
 }
 
-/// 左右键移动焦点时的下一个光标位置——**与上下键逐字同一套语义**
-/// （`crate::menu_screen::moved_cursor` / `crate::chargen::move_cursor`：
-/// 到边即停，不循环）。
+/// 一列 `len` 行的光标往前/往后走一格，**到边循环**——规格 N11
+/// 「上下键一律循环」与 N12「左右键等同上下键」在**同一个函数**上落地。
 ///
-/// 抽出来是因为三块屏都要它，而「左右键等同上下键」这句话一旦在三处
-/// 各写一遍，三处迟早在「到边循环不循环」上分叉——那正是 N12 想统一的
-/// 东西自己再分裂一次。
+/// # 循环，不是到边即停（规格 N11，批次 33）
 ///
-/// 不循环是**保守取舍**：规格 N11（上下键一律循环）是 P1、还没落地，
-/// 今天上下键到边即停。左右键此刻循环就会比上下键更「新」，两者在同一
-/// 块屏上行为不一致。N11 落地时这一个函数跟着改，三块屏不用动。
+/// 批次 30 落 N12 时这里刻意写的是「到边即停」，原话是：
+///
+/// > 不循环是**保守取舍**：规格 N11（上下键一律循环）是 P1、还没落地，
+/// > 今天上下键到边即停。左右键此刻循环就会比上下键更「新」，两者在
+/// > 同一块屏上行为不一致。**N11 落地时这一个函数跟着改，三块屏不用动。**
+///
+/// 本批就是它说的那一天：N11 已落地（`docs/superpowers/plans/
+/// 2026-09-01-batch33-ui-final.md`），上下键与左右键在**九块屏上**走的
+/// 都是这一个函数，循环语义因此不可能在两个轴上分叉。
+///
+/// # 为什么循环
+///
+/// 列表短（本体最长的设置屏也就二十来行，多数屏三五行），从头绕到尾
+/// 比一路按回去快，且不需要玩家记得「到顶了」——这正是首页与游戏内
+/// 菜单（`ll_ui::widget::focus::move_focus`）与 HUD 动作菜单
+/// （`crate::player_action`）从一开始就在用的那一套。
+///
+/// **例外一处，不在这里**：选出生地屏的**地图光标**保持到边即停——那是
+/// 空间坐标不是列表，循环意味着从地图左边缘瞬移到右边缘（见规格 §7.5
+/// N11 的「例外一处」）。它走的是 `crate::app` 自己的 `dx/dy`，压根不
+/// 经过本函数。
 pub fn stepped_cursor(cursor: usize, forward: bool, len: usize) -> usize {
     if len == 0 {
         return 0;
     }
     let cursor = cursor.min(len - 1);
     if forward {
-        (cursor + 1).min(len - 1)
+        (cursor + 1) % len
     } else {
-        cursor.saturating_sub(1)
+        (cursor + len - 1) % len
     }
+}
+
+/// 这一帧上下键把光标移到第几行——没有移动时返回 `None`，调用方据此
+/// 接着判动作键。**九块屏共用的那一份**（规格 N11）。
+///
+/// # `was_activated` 而非 `was_just_pressed`：长按连发
+///
+/// 方向键参与自动重复（`GameKey::is_repeatable`）。连发**不是合成
+/// 按键**（ADR 0025 禁止那种做法）：它由
+/// [`InputState::begin_frame`](ll_platform::input::InputState::begin_frame)
+/// 按**时钟**判定——按住不放，超过 `initial_delay` 才第一次重复，此后
+/// 每 `interval` 一次。玩家按一次键，帧循环推进时间，重复自己就来了；
+/// 没有任何一层伪造第二次按下。
+///
+/// 二十几行的设置屏长按滚动是刚需，而它与方向键在地图上长按连续移动
+/// 是同一种手感，不该在菜单里退化成一次一格。
+///
+/// # 同时按住上下视为无输入
+///
+/// 与 `crate::player_action` 里 `direction_from_input` 对相反方向同时
+/// 按住的处理一致：两者抵消，不猜测玩家意图。
+///
+/// # 为什么 `ll_ui::widget::focus` 不并进来
+///
+/// 首页与游戏内菜单走 `ll_ui::widget::focus::navigate_focus`，它**已经**
+/// 循环、也已经用 `was_activated`——N11 在那一侧本来就成立。但它操作的
+/// 是一张 `WidgetStateTable`（「谁的 `focused` 为真」）而不是一个 `usize`
+/// 光标，塞进同一个函数只会得到一个带分支的四不像，那是 ADR 0021 拦的
+/// 那种「为对称而抽象」。两边共享的是**语义**（循环 + 连发），不是
+/// 同一行代码——而语义分叉了会当场被两侧各自的断言抓住。
+pub fn moved_cursor(input: &InputState, cursor: usize, len: usize) -> Option<usize> {
+    if len == 0 {
+        return None;
+    }
+    let up = input.was_activated(GameKey::Up);
+    let down = input.was_activated(GameKey::Down);
+    if up == down {
+        return None;
+    }
+    Some(stepped_cursor(cursor, down, len))
 }
 
 #[cfg(test)]
@@ -400,6 +457,151 @@ mod tests {
         assert_ne!(
             shape.sea_level, 原海平面,
             "取值行上左右键应当改值，海平面没变"
+        );
+    }
+
+    /// 按住一个键：`press` 一次，此后**再也不调 `press`**。
+    fn 按住(key: GameKey) -> InputState {
+        let mut input = InputState::new();
+        input.press(key);
+        input
+    }
+
+    #[test]
+    fn 末行按下移动到首行首行按上移动到末行() {
+        // **规格 N11 的主判据**：上下键一律循环。批次 30 这里刻意写的是
+        // 「到边即停」，原话「N11 落地时这一个函数跟着改」——本批就是
+        // 那一天，见 `stepped_cursor` 文档。
+        //
+        // 反例验证（已实跑）：把 `stepped_cursor` 改回
+        // `(cursor + 1).min(len - 1)` / `saturating_sub(1)`，本条红在
+        // 「末行按下应当回到首行 4 ≠ 0」。
+        // Arrange & Act & Assert
+        assert_eq!(stepped_cursor(4, true, 5), 0, "末行按下应当回到首行");
+        assert_eq!(stepped_cursor(0, false, 5), 4, "首行按上应当回到末行");
+        assert_eq!(stepped_cursor(1, true, 5), 2);
+        assert_eq!(stepped_cursor(1, false, 5), 0);
+        // 越界的光标先钳回最后一行再走——行数会随内容变，而光标是跨帧
+        // 带过来的一个裸 `usize`。
+        assert_eq!(stepped_cursor(99, true, 5), 0);
+        // 零行不做除零也不越界（ADR 0015「查不到就是查不到」）。
+        assert_eq!(stepped_cursor(3, true, 0), 0);
+    }
+
+    #[test]
+    fn 角色创建与世界配置两块屏的上下键真的循环了() {
+        // 上一条测的是算法，这一条测**那两块屏真的在用它**——规格 N11
+        // 点名的正是这两块（它们共用 `chargen::move_cursor`）。
+        //
+        // 反例验证（已实跑）：把 `chargen::move_cursor` 改回自己那份
+        // 「到边即停」，本条红在「角色创建屏末行按下应当回到首行」。
+        // Arrange
+        let 下 = 按住(GameKey::Down);
+        let 上 = 按住(GameKey::Up);
+        let 角色 = character_rows().len();
+        let 世界 = world_setup_rows().len();
+
+        // Act & Assert：先自证这两块屏真的有好几行（一行的列表循环恒真）。
+        assert!(角色 > 1 && 世界 > 1);
+        assert_eq!(
+            crate::chargen::move_cursor(角色 - 1, 角色, &下),
+            0,
+            "角色创建屏末行按下应当回到首行"
+        );
+        assert_eq!(
+            crate::chargen::move_cursor(0, 角色, &上),
+            角色 - 1,
+            "角色创建屏首行按上应当回到末行"
+        );
+        assert_eq!(
+            crate::chargen::move_cursor(世界 - 1, 世界, &下),
+            0,
+            "世界配置屏末行按下应当回到首行"
+        );
+    }
+
+    #[test]
+    fn 同时按住上下视为无输入() {
+        // 与 `direction_from_input` 对相反方向同时按住的处理一致：
+        // 两者抵消，不猜测玩家意图。
+        // Arrange
+        let mut 两个都按 = InputState::new();
+        两个都按.press(GameKey::Up);
+        两个都按.press(GameKey::Down);
+
+        // Act & Assert
+        assert_eq!(moved_cursor(&两个都按, 2, 5), None);
+        assert_eq!(moved_cursor(&InputState::new(), 2, 5), None, "没按键不动");
+        assert_eq!(moved_cursor(&按住(GameKey::Down), 2, 0), None, "零行不动");
+    }
+
+    #[test]
+    fn 长按方向键连发是由时钟驱动的不是由按键次数驱动的() {
+        // **ADR 0025 的落点**：连发不许用「假装连续按了很多次」实现。
+        // 本条全程**只调一次 `press`**，此后一次都不再调——光标继续
+        // 往下走，靠的是 `InputState::begin_frame(now, RepeatConfig)`
+        // 按时钟判定的自动重复。
+        //
+        // 反例验证（已实跑）：把 `interval` 调成 10 秒（**不碰任何
+        // `press` 调用**），本条红在「初次重复之后每个 interval 应当
+        // 再动一格」——改的是时钟，红的是断言，这就是「由时钟驱动」
+        // 的证据。
+        // Arrange
+        let config = ll_platform::input::RepeatConfig::default();
+        let t0 = std::time::Instant::now();
+        let mut input = InputState::new();
+        let mut cursor = 0_usize;
+        let len = 100_usize; // 长到不会绕回来，免得「动了几格」被循环掩盖
+        let mut 按下次数 = 0_usize;
+
+        // Act：第 0 帧按下（唯一一次 `press`），之后每 16ms 推进一帧。
+        input.begin_frame(t0, config);
+        input.press(GameKey::Down);
+        按下次数 += 1;
+        if let Some(next) = moved_cursor(&input, cursor, len) {
+            cursor = next;
+        }
+        let 初次按下之后 = cursor;
+        input.end_frame();
+
+        let mut 首次重复的帧 = None;
+        let mut 走过的帧 = Vec::new();
+        for frame in 1..80 {
+            let now = t0 + std::time::Duration::from_millis(16 * frame);
+            input.begin_frame(now, config);
+            let 动了 = match moved_cursor(&input, cursor, len) {
+                Some(next) => {
+                    cursor = next;
+                    true
+                }
+                None => false,
+            };
+            if 动了 {
+                走过的帧.push(frame);
+                if 首次重复的帧.is_none() {
+                    首次重复的帧 = Some(frame);
+                }
+            }
+            input.end_frame();
+        }
+
+        // Assert
+        assert_eq!(按下次数, 1, "全程只允许按一次键——多按就成了合成按键");
+        assert_eq!(初次按下之后, 1, "按下那一帧走一格");
+        let 首次 = 首次重复的帧.expect("按住不放应当在等满初次延迟后开始连发");
+        let 首次毫秒 = 16 * 首次;
+        assert!(
+            首次毫秒 >= config.initial_delay.as_millis() as u64,
+            "连发不该早于初次延迟（{}ms），实测第 {首次} 帧 = {首次毫秒}ms",
+            config.initial_delay.as_millis()
+        );
+        assert!(
+            走过的帧.len() >= 5,
+            "80 帧（约 1.28s）里应当连发好几次，实测 {走过的帧:?}"
+        );
+        assert!(
+            cursor > 5,
+            "只按了一次键，光标却应当被时钟推着走了好几格，实测 {cursor}"
         );
     }
 
