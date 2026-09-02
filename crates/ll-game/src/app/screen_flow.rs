@@ -9,8 +9,7 @@ use ll_i18n::Catalog;
 use ll_platform::config::{GameConfig, ScaleFilter};
 use ll_platform::input::InputState;
 use ll_render::target::BlitFilter;
-use ll_render::wgpu;
-use ll_ui::screen::render::render_screen;
+use ll_ui::screen::render::push_screen_layer;
 use ll_ui::widget::state::WidgetStateTable;
 
 use crate::content::LoadedContent;
@@ -62,7 +61,7 @@ impl ScreenTransition {
 ///
 /// # 为什么抽出来
 ///
-/// 两个调用方要的是同一份东西：渲染侧（[`draw_screen`]）拿它排版，
+/// 两个调用方要的是同一份东西：渲染侧（[`push_screen`]）拿它排版，
 /// 输入侧（[`Demo::resolve_screen_pointer`]）拿它算出行矩形、判断鼠标
 /// 点在第几行。两处各算一遍就是两份同一个算法——**分叉时点击会静悄悄
 /// 地落到隔壁那一行上**，而没有任何东西会报错。
@@ -188,7 +187,7 @@ pub(super) fn screen_row_texts(
         ),
         // 选出生地屏**不画这块居中面板**：它的「屏」就是整张世界地图，
         // 一块盖在正中央的面板会挡住玩家要点的地方。它的画面全部由
-        // `draw_hud` 那一侧产出（地图 + 光标标记 + 提示行），见
+        // `build_hud_layers` 那一侧产出（地图 + 光标标记 + 提示行），见
         // `crate::spawn_pick` 模块文档。
         ScreenState::SpawnPick { .. } => return None,
     };
@@ -222,7 +221,7 @@ fn screen_title_key(state: ScreenState, content: &LoadedContent) -> String {
 
 /// [`screen_row_texts`] 的产出：这一帧这块屏的全部行、光标位置与标题键。
 ///
-/// **三样必须同源**：渲染侧（[`draw_screen`]）与输入侧
+/// **三样必须同源**：渲染侧（[`push_screen`]）与输入侧
 /// （[`Demo::resolve_screen_pointer`]）各算一遍就是两份同一个算法，
 /// 分叉时点击会静悄悄地落到隔壁那一行上。此前只有前两样，标题键是会话
 /// 屏落地时加进来的第三样——它进面板宽度的计算，因此同样不能两侧各算。
@@ -235,20 +234,25 @@ pub(super) struct ScreenRows {
     pub title_key: String,
 }
 
-/// 把模态屏（菜单/设置）画到 `view` 上——**排在 [`draw_hud`](super::hud_draw::draw_hud) 之后**，
-/// 因此那层压暗背板会把世界层与 HUD 一起压暗，见 `ll_ui::screen::render`
-/// 模块文档。
+/// 把模态屏（菜单/设置）推进这一帧的 `UiLayer::Modal` 层。
+///
+/// **它盖住世界层与 HUD 这件事由层级保证，不由调用顺序保证**（规格 N9）
+/// ——此前这里写的是「排在 `draw_hud` 之后，因此那层压暗背板会把世界层
+/// 与 HUD 一起压暗」，那句话把一条遮挡关系寄托在两句调用的书写次序上，
+/// 见 `ll_ui::widget::submit` 模块文档「为什么只许有一个」。
 ///
 /// `screen` 为 `None` 时整块不参与本次产出——不是「画出来但透明」，是
-/// 压根不调用渲染函数，与 `draw_hud` 对世界地图/动作菜单的同一条纪律。
-// 八个参数：全部是不同类型的具名值，调用点只有一处（`on_frame` 的渲染
+/// 压根不往那一层里推，与 `build_hud_layers` 对世界地图/动作菜单的同一条
+/// 纪律。
+// 参数全部是不同类型的具名值，调用点只有一处（`on_frame` 的渲染
 // 段）。本批次**净减了四个**——行文字改由 [`screen_row_texts`] 在调用点
 // 算好传进来（渲染侧与输入侧共用同一份），于是 `config`/`focus`/
 // `has_save`/`can_save_manually`/`slots`/`content`/`draft` 七个换成了
 // 一个 `rows_and_cursor` 加一个 `language`。收拢剩下这几个的正确形状是
 // 把「屏 + 提示 + 悬停行」打包成一个类型，那是一次独立的重构。
 #[allow(clippy::too_many_arguments)]
-pub(super) fn draw_screen(
+pub(super) fn push_screen(
+    frame: &mut ll_ui::widget::layer::LayeredFrame,
     screen: Option<ScreenState>,
     // 行文字与光标位置由 [`screen_row_texts`] 现算——**渲染侧与输入侧
     // 共用同一份**，见那个函数的文档。`None` 表示这块屏不画居中面板。
@@ -259,10 +263,9 @@ pub(super) fn draw_screen(
     // 指针这一刻悬停在第几行——只用来画那块淡高亮，**不改焦点**，见
     // `crate::pointer` 模块文档约定一。
     hovered_row: Option<usize>,
-    resources: &mut GpuResources,
+    resources: &GpuResources,
     // 见 `Demo::measurer` 字段文档：输入侧与渲染侧共用同一个测量器。
     measure: &mut dyn ll_text::MeasureText,
-    view: &wgpu::TextureView,
 ) {
     let Some(state) = screen else {
         return;
@@ -279,20 +282,15 @@ pub(super) fn draw_screen(
     let mut data = screen_data(state, &rows, cursor, notice_text.as_deref(), &title_key);
     data.hovered = hovered_row;
     let size = resources.window_size;
-    render_screen(
-        &mut resources.quad_renderer,
-        &mut resources.textured_quad_renderer,
-        &mut resources.text_renderer,
-        measure,
-        resources.gpu.device(),
-        resources.gpu.queue(),
-        view,
-        size.width,
-        size.height,
+    push_screen_layer(
+        frame,
         &data,
         catalog,
         language,
         &resources.skin,
+        measure,
+        size.width as f32,
+        size.height as f32,
     );
 }
 

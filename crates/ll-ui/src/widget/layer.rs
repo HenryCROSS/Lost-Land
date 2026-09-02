@@ -45,18 +45,29 @@
 //! | [`UiLayer::Hud`] | 常驻观测层：状态栏、生命/法力条、昼夜滑条、角色/背包/装备面板 | 一直在屏幕上，玩家不主动召唤它，它也不该抢注意力 |
 //! | [`UiLayer::Overlay`] | 玩家主动召唤的大块视图：世界地图 | 打开时它就是玩家正在看的东西，常驻 HUD 退居其次 |
 //! | [`UiLayer::Popup`] | 需要玩家当场做选择的浮窗：动作菜单 | 玩家正在它里面操作，它下面的一切都只是背景 |
-//! | [`UiLayer::Notice`] | 一次性通告：反馈行 | 它要说的正是「你刚才那一下没起作用」，被任何东西挡住就等于没说 |
+//! | [`UiLayer::Notice`] | 一次性通告：反馈行、自动存档的痕迹 | 它要说的正是「你刚才那一下没起作用」，被任何东西挡住就等于没说 |
+//! | [`UiLayer::Modal`] | 整屏压暗 + 居中面板：九块 `ScreenState` 屏 | 它开着的时候，底下的世界与整个 HUD 都只是被压暗的背景 |
 //!
 //! 拿不准就往**低**了放：放低了最坏结果是被别的东西挡住一次（看得见、
 //! 报得出来），放高了则会悄悄压住本该在上面的东西，而这类问题正是上面
 //! 那条实机缺陷躲过多轮验收的原因。
 //!
-//! # 模态屏不在这里
+//! # 模态屏也在这里了（规格 N9）
 //!
-//! 菜单/设置/首页（`crate::screen`）由 `ll_game::app::draw_screen` 在
-//! `draw_hud` **之后**单独提交，恒盖在本模块全部四层之上——那一层的
-//! 压暗背板本来就要把世界层与整个 HUD 一起压暗。它已经是对的，本模块
-//! 不接管它，也不需要为它加第五个变体。
+//! 菜单/设置/首页（`crate::screen`）此前**不在本模块**：它自带一个
+//! `ScreenFrame` 类型，由 `ll_game::app` 在 HUD 之后单独提交一次。那条
+//! 安排的理由写在当时的类型文档上——「模态屏这一层只有一块内容，整层
+//! 又恒盖在 HUD 之上，套一层层级只会多出三个永远为空的层」。
+//!
+//! **那条理由在模态屏独自看时成立，放回整块屏幕就不成立**：两条通道的
+//! 先后**只由调用点两句话的书写顺序决定**，而那正是本模块开头那条实机
+//! 缺陷的形状——「顺序」这条约定不在任何类型上，读代码看不出来。规格
+//! §7.5 N9 因此裁定把它收进 [`UiLayer::Modal`]，让
+//! [`LayeredFrame::draw_batches`] 重新成为遮挡关系的**唯一**真相源。
+//!
+//! 代价如实记下：不开模态屏的那些帧里，`Modal` 层是空的。空层不产出
+//! 批次（见 [`LayeredFrame::draw_batches`]），因此代价只是数组里多一个
+//! 空 [`LayerBatch`]，不是多一趟渲染 pass。
 
 use super::geometry::Rect;
 use super::label::Label;
@@ -74,8 +85,13 @@ pub enum UiLayer {
     Overlay,
     /// 需要玩家当场做选择的浮窗——动作菜单。
     Popup,
-    /// 一次性通告——反馈行。
+    /// 一次性通告——反馈行、自动存档的痕迹。
     Notice,
+    /// 模态屏——整屏压暗 + 居中面板的九块 `crate::screen` 屏。
+    ///
+    /// **它恒在最上面**：压暗背板要把世界层与整个 HUD 一起压暗，见模块
+    /// 文档「模态屏也在这里了」一节。
+    Modal,
 }
 
 impl UiLayer {
@@ -83,11 +99,12 @@ impl UiLayer {
     ///
     /// 做成常量数组而不是遍历某个容器：遍历顺序必须是确定的（约束 C5），
     /// 而数组字面量的顺序写在源码里、评审时一眼可见。
-    pub const ALL: [UiLayer; 4] = [
+    pub const ALL: [UiLayer; 5] = [
         UiLayer::Hud,
         UiLayer::Overlay,
         UiLayer::Popup,
         UiLayer::Notice,
+        UiLayer::Modal,
     ];
 
     /// 本层在 [`Self::ALL`] 里的下标——[`LayeredFrame`] 用它做数组
@@ -98,6 +115,7 @@ impl UiLayer {
             UiLayer::Overlay => 1,
             UiLayer::Popup => 2,
             UiLayer::Notice => 3,
+            UiLayer::Modal => 4,
         }
     }
 }
@@ -148,8 +166,9 @@ fn rect_of(position: [f32; 2], size: [f32; 2]) -> Rect {
 /// 与 [`snap_textured_quads`]/[`snap_labels`] 一起，是本 crate 里
 /// **唯一**把「一批要提交的东西对齐到像素格」这件事写出来的地方：
 /// [`LayeredFrame::snap_to_pixels`]（HUD 与三层浮层）与
-/// `crate::screen::render::ScreenFrame::snap_to_pixels`（模态屏，那一层
-/// 刻意不套 `LayeredFrame`，见其类型文档）都调它们，不各写一遍。
+/// [`LayeredFrame::snap_to_pixels`]（本 crate 唯一的提交出口
+/// [`crate::widget::submit::submit_frame`] 在提交前调它一次）走它们，
+/// 不各写一遍。
 pub(crate) fn snap_quads(quads: &mut [QuadInstance]) {
     for quad in quads {
         let snapped = rect_of(quad.position, quad.size).snap();
@@ -189,7 +208,7 @@ pub struct LayeredFrame {
 /// 一次渲染提交——[`LayeredFrame::draw_batches`] 产出的元素。
 ///
 /// 这个类型存在的唯一理由是让「提交顺序」成为**可断言的数据**：
-/// `crate::hud::render::render_hud` 直接遍历
+/// [`crate::widget::submit::submit_frame`] 直接遍历
 /// [`LayeredFrame::draw_batches`] 逐条提交，因此测试断言这个序列的先后
 /// 就等于断言了屏幕上的遮挡关系，不需要开窗口截图（ADR 0025 禁止用
 /// 合成按键做验收，视觉遮挡这类问题因此必须有数据层的抓手）。
@@ -251,8 +270,8 @@ impl LayeredFrame {
     /// 本帧真实的提交顺序：**按层升序**，层内纯色 → 贴图 → 文本，空
     /// 批次不出现。
     ///
-    /// 这是遮挡关系的**唯一真相源**——`render_hud` 遍历它逐条提交，
-    /// 测试也断言它，两者不可能分叉。
+    /// 这是遮挡关系的**唯一真相源**——[`crate::widget::submit::submit_frame`]
+    /// 遍历它逐条提交，测试也断言它，两者不可能分叉。
     pub fn draw_batches(&self) -> Vec<DrawBatch<'_>> {
         let mut batches = Vec::new();
         for layer in UiLayer::ALL {
@@ -299,6 +318,8 @@ mod tests {
         assert!(UiLayer::Hud < UiLayer::Overlay);
         assert!(UiLayer::Overlay < UiLayer::Popup);
         assert!(UiLayer::Popup < UiLayer::Notice);
+        // 规格 N9：模态屏排在通告层之后，也就是所有层的最上面。
+        assert!(UiLayer::Notice < UiLayer::Modal);
         for (index, layer) in UiLayer::ALL.iter().enumerate() {
             assert_eq!(layer.index(), index);
         }
@@ -326,6 +347,62 @@ mod tests {
         assert_eq!(batches.len(), 2);
         assert!(matches!(batches[0], DrawBatch::Textured(_)));
         assert!(matches!(batches[1], DrawBatch::Quads(_)));
+    }
+
+    #[test]
+    fn 模态层的批次永远排在浮层之后() {
+        // **规格 N9 的判据本身**：`draw_batches` 的输出里 `Modal` 批次
+        // 永远排在 `Overlay` 之后。本条不比枚举的 `Ord`（那是 ①
+        // 那条断言的事），比的是**提交序列**——屏幕上谁盖住谁只由它
+        // 决定。
+        //
+        // 推入顺序刻意写反（先推模态、后推浮层），证明结论不来自推入
+        // 顺序。
+        //
+        // 反例验证（已实跑）：把 `UiLayer` 声明里 `Modal` 与 `Notice`
+        // 两行对调，本条红在「模态层的批次应当排在浮层之后」。
+        // Arrange
+        let mut frame = LayeredFrame::default();
+        frame
+            .layer_mut(UiLayer::Modal)
+            .quads
+            .push(sample_quad([0.0, 0.0, 0.0, 0.6]));
+        frame
+            .layer_mut(UiLayer::Overlay)
+            .quads
+            .push(sample_quad([1.0, 0.0, 0.0, 1.0]));
+        frame.layer_mut(UiLayer::Notice).labels.push(Label {
+            text: "通告".to_string(),
+            x: 0.0,
+            y: 0.0,
+            max_width: 400.0,
+        });
+
+        // Act
+        let batches = frame.draw_batches();
+
+        // Assert：先证明三块都在（否则下面的下标比较是在比空气）。
+        assert_eq!(batches.len(), 3, "三层各推了一块，应当有三个批次");
+        let 模态 = batches
+            .iter()
+            .position(|b| matches!(b, DrawBatch::Quads(q) if q[0].color[3] == 0.6))
+            .expect("模态层那一块应当出现在提交序列里");
+        let 浮层 = batches
+            .iter()
+            .position(|b| matches!(b, DrawBatch::Quads(q) if q[0].color[0] == 1.0))
+            .expect("浮层那一块应当出现在提交序列里");
+        let 通告 = batches
+            .iter()
+            .position(|b| matches!(b, DrawBatch::Labels(_)))
+            .expect("通告层那一行应当出现在提交序列里");
+        assert!(
+            浮层 < 模态,
+            "模态层的批次应当排在浮层之后，实际 浮层={浮层} 模态={模态}"
+        );
+        assert!(
+            通告 < 模态,
+            "模态层的批次应当排在通告层之后，实际 通告={通告} 模态={模态}"
+        );
     }
 
     #[test]

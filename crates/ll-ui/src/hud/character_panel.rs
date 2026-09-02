@@ -378,9 +378,9 @@ pub fn experience_bar_fraction(data: &CharacterPanelData<'_>) -> f32 {
 
 /// 建出角色面板：背景矩形 + 全部文本行——接入 [`super::build_panel`]
 /// 现算面板高度。经验条本身（[`crate::widget::bar::bar_quads`]）由
-/// [`super::render::render_hud`] 用 [`experience_bar_fraction`] 另外
+/// [`super::render::build_hud_frame`] 用 [`experience_bar_fraction`] 另外
 /// 叠加在这块面板矩形之内，不在这里产出——[`PanelContent`] 目前只携带
-/// 背景矩形 + 文本行两类内容，条形走独立的 quad 列表，见 `render_hud`
+/// 背景矩形 + 文本行两类内容，条形走独立的 quad 列表，见 `build_hud_frame`
 /// 的组装逻辑。
 pub fn character_panel(
     data: &CharacterPanelData<'_>,

@@ -1,6 +1,14 @@
 //! HUD 的最外层薄封装：把四块面板的布局、面板背景、经验条、昼夜滑条、
 //! 文本行全部接起来，一次性提交到 GPU。
 //!
+//! # 本模块只建帧，不提交
+//!
+//! 提交（把一帧交给 GPU）住在 [`crate::widget::submit::submit_frame`]
+//! ——全 crate 唯一的一处，规格 N9 落地时从本模块搬走，见那个模块的
+//! 文档「为什么只许有一个」。本模块的产出是一个
+//! [`crate::widget::layer::LayeredFrame`]，模态屏
+//! （`crate::screen`）往同一个帧里推它自己那一层。
+//!
 //! # 谁盖住谁由 [`crate::widget::layer::UiLayer`] 决定
 //!
 //! 本模块**不**用「谁后推入谁在上面」表达遮挡关系——那条约定在这里从
@@ -51,9 +59,7 @@
 use ll_core::ident::ContentIndex;
 use ll_i18n::Catalog;
 use ll_mod::item::ItemTable;
-use ll_render::wgpu;
 use ll_sim::item::ItemCatalog;
-use ll_text::TextRenderer;
 use ll_world::item::{EquipSlot, ItemStack};
 
 use super::action_menu::ActionMenuData;
@@ -65,14 +71,13 @@ use super::world_map::{self, WorldMapPanelData};
 use crate::widget::anim::{DEFAULT_ANIM_DURATION_FRAMES, FrameTick};
 use crate::widget::geometry::{Anchor, Rect};
 use crate::widget::label::Label;
-use crate::widget::layer::{DrawBatch, LayeredFrame, UiLayer};
-use crate::widget::quad::QuadRenderer;
+#[cfg(test)]
+use crate::widget::layer::DrawBatch;
+use crate::widget::layer::{LayeredFrame, UiLayer};
 use crate::widget::skin::{BarStyleId, Skin};
 #[cfg(test)]
 use crate::widget::skin::{DayNightBarStyleId, PanelStyleId};
 use crate::widget::state::{WidgetStateTable, animate_experience_bar};
-use crate::widget::textured_quad::TexturedQuadRenderer;
-use glyphon::Color;
 use std::collections::BTreeMap;
 
 // 间距刻度（`SCREEN_MARGIN`/`PANEL_GAP`）住在 `crate::widget::metrics`
@@ -140,11 +145,6 @@ const EQUIPMENT_RIGHT_MARGIN: f32 = SCREEN_MARGIN;
 /// 「追赶」的滞后感,见 `crate::widget::bar::FlatTwoLayerBarAppearance`
 /// 模块文档。
 const AFTERGLOW_DURATION_FRAMES: u32 = DEFAULT_ANIM_DURATION_FRAMES * 3;
-/// 文本颜色——四块面板统一用同一个颜色,不按状态区分,理由见
-/// [`crate::widget::label`] 模块文档：HUD 面板没有「已加载/警告/失败」
-/// 这类需要颜色分组的语义,与 [`crate::load_report_view::LoadReportLine`]
-/// 的多色分组是两种不同的场景。
-const TEXT_COLOR: Color = Color::rgba(235, 235, 235, 255);
 
 // 这一帧要提交的内容现在装在 `crate::widget::layer::LayeredFrame` 里
 // （按层分装），不再是本模块自己的 `HudFrame`——「谁盖住谁」由层级
@@ -177,7 +177,7 @@ pub(super) use super::placement::WORLD_MAP_CAPTION_MARGIN;
 pub use super::placement::world_map_rect;
 
 /// 现算这一帧 HUD 需要的全部填色矩形/贴图矩形与文本行——纯函数,不
-/// 接触 GPU,是 [`render_hud`] 与本模块测试共用的核心逻辑。
+/// 接触 GPU,是生产渲染路径与本模块测试共用的核心逻辑。
 ///
 /// `anim`/`now` 只驱动条形（含昼夜滑条指针）的**视觉位置**
 /// （[`AnimatedValue`] 的显示值）——面板/文本内容与真实世界状态之间
@@ -517,124 +517,6 @@ pub fn build_hud_frame(
     // `LayeredFrame::snap_to_pixels` 文档「为什么这一层要有一道」一节。
     frame.snap_to_pixels();
     frame
-}
-
-/// 把 [`build_hud_frame`] 算出的内容真正提交到屏幕。
-///
-/// # 提交顺序 = [`LayeredFrame::draw_batches`]，不是「三道固定 pass」
-///
-/// 本函数**逐条遍历** [`LayeredFrame::draw_batches`]：按层升序，层内
-/// 纯色（[`QuadRenderer`]）→ 贴图（[`TexturedQuadRenderer`]）→ 文本
-/// （[`TextRenderer`]）。每条批次各自开一道 `LoadOp::Load` 的 pass，
-/// 不清屏，叠加在调用方已经画好的世界层之上（见
-/// [`crate::widget::quad`] 模块文档「为什么不复用 SpriteBatch」一节）。
-///
-/// **本函数不自己决定任何遮挡关系**——顺序全部来自 `draw_batches`，
-/// 那也正是测试断言的对象，两者因此不可能分叉。
-///
-/// 此前这里是「先提交完一整批纯色、再提交完一整批贴图、最后全部文本」
-/// 三道固定 pass。那个形状下，一块内容画在另一块之上与否取决于**皮肤
-/// 给不给贴图**，与调用点的推入顺序无关——世界地图被血条压住、昼夜
-/// 滑条的指针被自己的底图吞掉，都是它的直接后果，见
-/// [`crate::widget::layer`] 模块文档。
-#[allow(clippy::too_many_arguments)]
-pub fn render_hud(
-    quad_renderer: &mut QuadRenderer,
-    textured_quad_renderer: &mut TexturedQuadRenderer,
-    text_renderer: &mut TextRenderer,
-    // 测量器与绘制器分开收：调用方（`ll_game::app::Demo`）持有的那一个
-    // **同时**服务输入侧（模态屏行矩形）与渲染侧，两侧因此不可能对同
-    // 一行算出不同的高度，见 `ll_text::measure` 模块文档。
-    measure: &mut dyn ll_text::MeasureText,
-    device: &wgpu::Device,
-    queue: &wgpu::Queue,
-    target: &wgpu::TextureView,
-    resolution_width: u32,
-    resolution_height: u32,
-    status: &StatusBarData<'_>,
-    character: &CharacterPanelData<'_>,
-    inventory: &[ItemStack],
-    equipment: &BTreeMap<EquipSlot, ItemStack>,
-    // 观察者已经认得的物品种类——未鉴定的东西在两块物品面板上显示成
-    // 「未鉴定的物品」，见 `super::item_display_name`。
-    identified: &[ContentIndex],
-    items: &dyn ItemCatalog,
-    item_table: &ItemTable,
-    catalog: &Catalog,
-    language: &str,
-    skin: &dyn Skin,
-    anim: &mut WidgetStateTable,
-    now: FrameTick,
-    world_map: Option<&WorldMapPanelData<'_>>,
-    // `menu`/`feedback` 见 `build_hud_frame` 同名参数文档。
-    menu: Option<&ActionMenuData<'_>>,
-    feedback: Option<&str>,
-    key_hint: Option<&str>,
-) {
-    let frame = build_hud_frame(
-        status,
-        character,
-        inventory,
-        equipment,
-        identified,
-        items,
-        item_table,
-        catalog,
-        language,
-        skin,
-        measure,
-        anim,
-        now,
-        resolution_width as f32,
-        resolution_height as f32,
-        world_map,
-        menu,
-        feedback,
-        key_hint,
-    );
-
-    for batch in frame.draw_batches() {
-        match batch {
-            DrawBatch::Quads(quads) => quad_renderer.render(
-                device,
-                queue,
-                target,
-                resolution_width,
-                resolution_height,
-                quads,
-            ),
-            DrawBatch::Textured(textured) => textured_quad_renderer.render(
-                device,
-                queue,
-                target,
-                resolution_width,
-                resolution_height,
-                textured,
-            ),
-            DrawBatch::Labels(labels) => {
-                let runs: Vec<_> = labels
-                    .iter()
-                    .map(|label| {
-                        label.to_text_run(
-                            super::DEFAULT_FONT_SIZE,
-                            super::DEFAULT_LINE_HEIGHT,
-                            TEXT_COLOR,
-                        )
-                    })
-                    .collect();
-                if let Err(error) = text_renderer.render(
-                    device,
-                    queue,
-                    target,
-                    resolution_width,
-                    resolution_height,
-                    &runs,
-                ) {
-                    tracing::error!(%error, "HUD 文本渲染失败");
-                }
-            }
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1467,7 +1349,7 @@ mod tests {
     #[test]
     fn 世界地图的绘制批次恒排在常驻hud的全部批次之后() {
         // 所有者实机反馈「血条之类的 UI 会覆盖地图」的直接回归。判据走
-        // 数据层（`draw_batches` 就是 `render_hud` 逐条提交的那个序列），
+        // 数据层（`draw_batches` 就是提交出口逐条提交的那个序列），
         // 不走合成按键（ADR 0025）。
         // Arrange
         let (frame, dir) = build_textured_frame_with_map("layer-order-map");

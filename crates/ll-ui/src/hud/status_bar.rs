@@ -237,7 +237,7 @@ pub fn status_bar_fields(
 }
 
 /// 建出状态栏这一块面板：背景矩形 + **横排的那一列格子**
-/// （[`status_bar_fields`]）。这是状态栏在 [`super::render::render_hud`]
+/// （[`status_bar_fields`]）。这是状态栏在 [`super::render::build_hud_frame`]
 /// 里真正被调用的入口——常驻，不需要按任何键就能看见,见模块文档
 /// 开篇。
 pub fn status_bar_panel(

@@ -18,13 +18,17 @@
 //! 反过来说，本模块**刻意不提供** `ScreenZone → UiLayer` 的反向映射：
 //! 那会是一对多，写出来就等于请人去猜。
 //!
-//! # 模态区今天没有成员
+//! # 模态区的那一个成员（规格 N9 落地之后）
 //!
-//! 九块模态屏走的是 `crate::screen::render::ScreenFrame`，那条通道压根
-//! 不进 `LayeredFrame`（见其类型文档：模态屏恒盖在 HUD 全部层级之上，
-//! 套一层层级只会多出三个永远为空的层）。规格 N9 要把它收进一个新的
-//! `UiLayer::Modal`，**那是另一批的事**；本枚举先把这个区留出来，
-//! [`ScreenZone::of`] 里写清楚今天没有哪个 `UiLayer` 映射到它。
+//! 批次 30 建本模块时，九块模态屏走的是一条与 `LayeredFrame` 平行的独立
+//! 通道，[`ScreenZone::Modal`] 因此是一个**先留出来、暂时没有成员**的区，
+//! 当时的注释写着「规格 N9 要把它收进一个新的 `UiLayer::Modal`，那是另一
+//! 批的事」。
+//!
+//! **那一批就是批次 35**：[`UiLayer::Modal`] 已经存在，模态屏进了同一个
+//! `LayeredFrame`。这里因此多了一条分支——而当时**刻意不写 `_ =>` 兜底**
+//! 正是为了这一刻：加第五个变体的那一天，[`ScreenZone::of`] 当场编译不过，
+//! 逼人回答「新层属于哪个区」，比任何运行期断言都早。
 //!
 //! # 留白规则：中段不放常驻元素
 //!
@@ -62,16 +66,16 @@ impl ScreenZone {
     /// **这是「新面板必须声明自己属于哪个区」的全部实现**——选层是强制
     /// 的，选了层就选了区，见模块文档。
     ///
-    /// 今天没有任何 `UiLayer` 映射到 [`ScreenZone::Modal`]：模态屏走
-    /// `crate::screen::render::ScreenFrame` 那条独立通道，规格 N9 才会
-    /// 把它收进一个新的 `UiLayer::Modal`。那一天这里加一条分支，
-    /// `Self::of` 的调用方一行都不用改。
+    /// **没有 `_ =>` 兜底**：新加一层时编译期就红，见模块文档
+    /// 「模态区的那一个成员」一节——规格 N9 那一天它真的红了，本模块
+    /// 补上的就是最后那一支，`Self::of` 的调用方一行都没改。
     pub const fn of(layer: UiLayer) -> ScreenZone {
         match layer {
             UiLayer::Hud => ScreenZone::Resident,
             // 三层浮层的区别是「谁盖住谁」，不是「摆在哪」——世界地图、
             // 动作菜单、反馈行都相对常驻区之外的空白落位。
             UiLayer::Overlay | UiLayer::Popup | UiLayer::Notice => ScreenZone::Floating,
+            UiLayer::Modal => ScreenZone::Modal,
         }
     }
 }
@@ -81,31 +85,36 @@ mod tests {
     use super::*;
 
     #[test]
-    fn 每一层都能说出自己属于哪个区() {
+    fn 模态区恰好一个成员就是模态层() {
         // 这条盯的是「声明是强制的」这件事本身：`UiLayer::ALL` 是层集合
         // 的唯一真相源，遍历它就不可能有哪一层漏了声明——`of` 是
         // `match` 且没有 `_ =>` 兜底分支，新加一层时**编译期**就会红，
-        // 比任何运行期断言都早。
+        // 比任何运行期断言都早。本条是那道编译期保护的运行期陪衬。
         //
-        // 因此本条真正的价值在于第二条断言：`ALL` 里确实每一层都被走到，
-        // 而不是这个数组本身空了。
+        // 〔批次 35，规格 N9〕本条此前断言的是「没有任何层落在模态区」
+        // ——那句话的前提（模态屏走一条独立通道）已经被 N9 推翻。改成
+        // 「恰好一个，且就是它」：两个方向都咬得住——漏掉 `Modal` 那一支
+        // 会红在「恰好一个」上，把别的层错标成模态区也会红在同一句上。
         //
-        // 反例验证（已实跑）：给 `of` 加一条 `_ => ScreenZone::Modal`
-        // 兜底并把 `Hud` 那一支删掉，本条红在「常驻层不该落在模态区」。
-        // Arrange & Act & Assert
+        // 反例验证（已实跑）：把 `of` 里 `UiLayer::Modal` 那一支改成
+        // `ScreenZone::Floating`，本条红在「模态区应当恰好有一个成员」。
+        // Arrange & Act
         assert!(!UiLayer::ALL.is_empty(), "层集合不该是空的");
-        for layer in UiLayer::ALL {
-            let zone = ScreenZone::of(layer);
-            assert_ne!(
-                zone,
-                ScreenZone::Modal,
-                "{layer:?} 落在了模态区，而模态屏今天走的是 ScreenFrame 那条独立通道（规格 N9 才收进 UiLayer）"
-            );
-        }
+        let 模态区的层: Vec<UiLayer> = UiLayer::ALL
+            .into_iter()
+            .filter(|layer| ScreenZone::of(*layer) == ScreenZone::Modal)
+            .collect();
+
+        // Assert
+        assert_eq!(
+            模态区的层,
+            vec![UiLayer::Modal],
+            "模态区应当恰好有一个成员，且它就是模态层（规格 N9）"
+        );
     }
 
     #[test]
-    fn 常驻层落在常驻区其余三层落在浮层区() {
+    fn 常驻层落在常驻区三层浮层落在浮层区() {
         // Arrange & Act & Assert
         assert_eq!(ScreenZone::of(UiLayer::Hud), ScreenZone::Resident);
         for layer in [UiLayer::Overlay, UiLayer::Popup, UiLayer::Notice] {
