@@ -964,7 +964,27 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 ///
 /// 守门方式同前几批：本段文字 + 本模块单元测试
 /// `后果种类不同的两个对话节点摘要不同`。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 34;
+///
+/// ---
+///
+/// # 版本 35（NPC 姓名批次，对话批次 6）
+///
+/// **既有表加字段**，与版本 29 逐字同一档：
+/// [`ll_world::culture::CultureAttrs`] 多了 `naming`（这份文化的构词
+/// 材料——音节数区间 + 每种语言一张音素表），[`write_culture_fields`]
+/// 末尾多混入这一段。文化表以外的条目摘要一个字节都没变，但每一条文化
+/// 的摘要都变了（注册期拒了空声明，不存在「这条文化没有 naming」的
+/// 合法内容）。按 ADR 0027 必须递增。
+///
+/// **这一段是本模块第一段不经 [`Registry::resolve`] 的列表**：音素是
+/// 字面字符串、不是 `ContentIndex`，压根不进注册表，也就不会随装载
+/// 顺序漂移。混入形状是「音节数上下限 + 语言条数 + 逐语言（标签 +
+/// 三张表各自的长度 + 逐项字节）」，遍历顺序取 `BTreeMap` 的键序
+/// （约束 C5——那也是内容作者写的顺序之外唯一确定的顺序）。
+///
+/// 守门方式同前几批：本段文字 + 本模块单元测试
+/// `命名规则不同的两条文化摘要不同`。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 35;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -2000,6 +2020,34 @@ fn write_culture_fields(
                 }
             }
             hasher.write_u64(u64::from(*count));
+        }
+    }
+    // 命名规则（版本 35）：音节数区间，然后按 `BTreeMap` 的键序逐条混
+    // 「语言标签 + 三张表各自的长度 + 逐项字节」。
+    //
+    // **不经 `Registry::resolve`**，与上面每一段都不同：音素是字面字符串，
+    // 不是 `ContentIndex`——它们压根不进注册表，也就不会随装载顺序漂移，
+    // 本模块「`ContentIndex` 字段」那条纪律对它们不适用。
+    //
+    // 表长先写、再逐项写：与 `founder_races`/`buildings` 逐字同一形状，
+    // 且这里的长度本身就是判据的一部分（各语言表长必须相等，
+    // `ll_world::naming::CultureNaming::problem`）。
+    match table.naming(kind) {
+        None => hasher.write_u64(0),
+        Some(naming) => {
+            hasher.write_u64(1);
+            hasher.write_u64(u64::from(naming.syllables.0));
+            hasher.write_u64(u64::from(naming.syllables.1));
+            hasher.write_u64(naming.phonemes.len() as u64);
+            for (language, tables) in &naming.phonemes {
+                hasher.write_len_prefixed_bytes(language.as_bytes());
+                for phonemes in [&tables.onsets, &tables.nuclei, &tables.codas] {
+                    hasher.write_u64(phonemes.len() as u64);
+                    for phoneme in phonemes {
+                        hasher.write_len_prefixed_bytes(phoneme.as_bytes());
+                    }
+                }
+            }
         }
     }
 }
@@ -4572,6 +4620,7 @@ mod tests {
                         founder_races: vec![(race, 1)],
                         hostility: Vec::new(),
                         buildings,
+                        naming: ll_world::naming::bare_naming_fixture(),
                     },
                 )
                 .expect("声明自洽");
@@ -4601,6 +4650,91 @@ mod tests {
                 assert_ne!(
                     digests[left], digests[right],
                     "第 {left} 份与第 {right} 份建筑声明不同，摘要却相同——                     write_culture_fields 少混了某一项"
+                );
+            }
+        }
+    }
+
+    /// 命名规则真的进了摘要：同一条文化、只换 `naming` 的某一处，摘要
+    /// 必须不同（版本 35 守门，见 [`CONTENT_HASH_ALGORITHM_VERSION`]
+    /// 文档「版本 35」一节）。
+    ///
+    /// 五份声明两两比对，各自只差一处：音节数下限、音节数上限、语言
+    /// 标签、某一张表的内容、以及**只换 `codas`**。最后那一条不是凑数
+    /// ——`codas` 允许为空，是三张表里最容易被漏掉的一张。
+    #[test]
+    fn 命名规则不同的两条文化摘要不同() {
+        // Arrange
+        let mut registry = Registry::new();
+        let mut id = |raw: &str| {
+            registry.intern(ll_core::ident::NamespacedId::parse(raw).expect("合法标识符"))
+        };
+        let index = id("test:folk");
+        let race = id("test:race");
+        let digest = |naming: ll_world::naming::CultureNaming| -> u64 {
+            let mut table = CultureTable::new();
+            table
+                .define(
+                    index,
+                    ll_world::culture::CultureAttrs {
+                        display_name_key: ll_core::ident::NamespacedId::parse("test:name")
+                            .expect("合法标识符"),
+                        economy: ll_world::resource::ResourceCategory::Food,
+                        home_terrain: ll_world::terrain::TerrainKind::from_index(
+                            ContentIndex::default(),
+                        ),
+                        wall_terrain: ll_world::terrain::TerrainKind::from_index(
+                            ContentIndex::default(),
+                        ),
+                        founder_races: vec![(race, 1)],
+                        hostility: Vec::new(),
+                        buildings: ll_world::building::bare_building_fixture(),
+                        naming,
+                    },
+                )
+                .expect("声明自洽");
+            let mut hasher = StateHasher::new();
+            write_culture_fields(&mut hasher, &table, index, &registry);
+            hasher.finish()
+        };
+        let naming = |language: &str, syllables: (u8, u8), onset: &str, coda: &str| {
+            let mut phonemes = std::collections::BTreeMap::new();
+            phonemes.insert(
+                language.to_string(),
+                ll_world::naming::PhonemeTables {
+                    onsets: vec![onset.to_string()],
+                    nuclei: vec!["a".to_string()],
+                    codas: vec![coda.to_string()],
+                },
+            );
+            ll_world::naming::CultureNaming {
+                syllables,
+                phonemes,
+            }
+        };
+
+        // Act：五份声明，两两之间只差一处。
+        let digests = [
+            digest(naming("en", (2, 3), "k", "n")),
+            // 只换音节数下限
+            digest(naming("en", (1, 3), "k", "n")),
+            // 只换音节数上限
+            digest(naming("en", (2, 4), "k", "n")),
+            // 只换语言标签
+            digest(naming("zh-CN", (2, 3), "k", "n")),
+            // 只换声母
+            digest(naming("en", (2, 3), "t", "n")),
+            // 只换韵尾
+            digest(naming("en", (2, 3), "k", "r")),
+        ];
+
+        // Assert：六份两两不同。
+        for left in 0..digests.len() {
+            for right in (left + 1)..digests.len() {
+                assert_ne!(
+                    digests[left], digests[right],
+                    "第 {left} 份与第 {right} 份命名声明不同，摘要却相同——\
+                     write_culture_fields 少混了某一项"
                 );
             }
         }

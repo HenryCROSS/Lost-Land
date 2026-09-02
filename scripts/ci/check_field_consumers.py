@@ -467,6 +467,18 @@ EXEMPTIONS: dict[str, str] = {
         "解析路径决定城镇形态）与 crates/ll-game/tests/settlement_furniture.rs（端到端："
         "家具真的立在屋里、真的带着据点归属）。"
     ),
+    "CultureAttrs.naming": (
+        "NPC 姓名批次（对话批次 6）新增。真实消费者是 ll_world::naming::agent_given_name"
+        "（渲染期按文化派生一个给定名）与 ll_game::dialogue_screen::speaker_name（把它填进"
+        "会话屏标题的 { $npc_name }）。两处按本脚本的判据都不在决策层：naming.rs 在 ll-world"
+        "但不在 fov/light 两个白名单文件里，dialogue_screen.rs 在 ll-game——与同一张表其余"
+        "六条豁免完全同一种处境。**而且这一条比其余六条更彻底**：姓名是渲染期现算、不进"
+        "世界状态、不进存档（ADR 0009 最极端的一例），按定义就不该有任何结算逻辑读它——"
+        "真有一天结算读了名字，那才是缺陷。真正守着它的是 ll_world::naming 的单元测试、"
+        "crates/ll-mod/tests/culture_naming.rs（一份 cultures.json5 文本经真实解析路径产出"
+        "真名，且各语言音素表对不齐时当场拒绝）与 crates/ll-game/tests/dialogue_npc_name.rs"
+        "（端到端：会话屏标题里真的是那个 NPC 的名字，且三条黄金基准一条都没动）。"
+    ),
     # CultureAttrs.hostility 的豁免已在「文化归属与敌对判定」批次删掉：
     # ll_sim::ai_query::declared_hostile 现在直接读它（撞格路由把「走进
     # 对方那一格」判成攻击还是互换），ai_query.rs 落在决策层通配里，本

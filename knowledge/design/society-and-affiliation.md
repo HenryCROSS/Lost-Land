@@ -6,7 +6,7 @@
 >
 > **【2026-08-26 跟进：那份复核本身也有四处过期了】** 文化批次（提交 `4aec07e`）在同一天晚些时候落地，推翻了复核更正段的四条。见本文档最末「⚠ 跟进更正（2026-08-26，文化批次之后）」一节。**两条最要紧的**：`AffiliationKind` 现在是**五个**变体（`Profession` 已删除，一节正文与下面「落地状态」里的「六类」说法已过期）；文化已经有真正的内容表，但**类型不叫 `CultureDef`**，是 `CultureKind`/`CultureAttrs`/`CultureTable` 三个。
 
-**落地状态**：部分落地。`Affiliation`/`AffiliationKind`（`crates/ll-world/src/entity/affiliation.rs`）与 `Agent.affiliations`/`wallet`/`profession` 字段（`crates/ll-world/src/entity/agent.rs`）已落地；`NamingRules`（`crates/ll-world/src/naming.rs`）已落地，但只是 `CultureDef.naming` 这一个子字段，完整 `CultureDef` 未落地。关系派生基线、`Kinship`、`Traits`、`StructureKind`、宗教戒律系统、LOD 组织聚合均**未落地**，仍是纯设计。
+**落地状态**：部分落地。`Affiliation`/`AffiliationKind`（`crates/ll-world/src/entity/affiliation.rs`）与 `Agent.affiliations`/`wallet`/`profession` 字段（`crates/ll-world/src/entity/agent.rs`）已落地；`NamingRules`（`crates/ll-world/src/naming.rs`）已落地，但只是 `CultureDef.naming` 这一个子字段，完整 `CultureDef` 未落地〔**2026-09-02 批次 34 更正**：`CultureAttrs.naming` 已落地并有生产消费者，见五节落地对照表 `naming` 那一行〕。关系派生基线、`Kinship`、`Traits`、`StructureKind`、宗教戒律系统、LOD 组织聚合均**未落地**，仍是纯设计。
 
 所有数值一律整数，比例用千分比（见 [0002](../decisions/0002-integer-only-world-state.md)）。
 
@@ -557,7 +557,7 @@ pub struct Agent {
 | `building_materials` | `settlement.rs`：有人住一律木墙、废墟一律石墙 |
 | `site_terrain` | `chronicle.rs` 的 `try_found`：四条加分里没有文化项 |
 | `economy_weights` | `SettlementSite::resource_profile` 的排序里没有文化项 |
-| `naming` | 只有 demo 在用 |
+| `naming` | 只有 demo 在用〔**2026-09-02 批次 34 更正**：已接线，见下方落地对照表那一行〕 |
 
 **另外**：四之三「职业声望是局部的」要求「每个 `CultureDef` 带一张职业声望表」，
 但二节的结构体定义里**没有这个字段**——这是本文档自身的一处不完整，落地时要么补字段、要么明确它是另一张表。
@@ -632,7 +632,7 @@ Faction   Religion   Guild   Culture   Family
 | `building_materials` | ✅ 落地，但只有墙 | `wall_terrain` | `settlement.rs` 的 `house_tiles`/`ruin_tiles`（`:502`）。**地板仍恒为木地板**，代码注释写明「地板不影响可玩性」 |
 | `site_terrain` | ✅ 落地 | `home_terrain` | `chronicle.rs` 的 `EpochRun::culture_weights` |
 | `economy_weights` | ⚠️ 落地成**单值**而非权重表 | `economy: ResourceCategory` | 同上 |
-| `naming` | ❌ **仍未落地** | — | `NamingRules` 的唯一消费者仍是 `ll-sim/examples/p3_acceptance` 这个 demo。**NPC 至今没有名字**，`Agent` 连 `name` 字段都没有 |
+| `naming` | ~~❌ **仍未落地**~~ → ✅ **2026-09-02 落地**（批次 34） | `CultureAttrs::naming: CultureNaming` | `ll_world::naming::agent_given_name` ← `ll_game::dialogue_screen::speaker_name`：会话屏标题里的 `{ $npc_name }`。**渲染期现算，不进世界状态、不进存档**（ADR 0009），因此 `Agent` **仍然、也永远不会**有 `name` 字段——那一句原文成立，只是它当初的言下之意「所以 NPC 没有名字」已经不成立。收窄：只做给定名，`surname`/`full_name` 仍零调用（要 `FamilyId`，厚层无来源）。更正方：`docs/superpowers/plans/2026-09-01-batch34-npc-names.md` |
 | `social_structure` | ❌ 未落地 | — | — |
 | `religion_affinity` | ❌ 未落地 | — | — |
 | `race_affinity`（[种族系统](race-system.md) 十节追加） | ✅ 落地，但拆成了两个字段 | `founder_races: Vec<(ContentIndex, u32)>` 与 `hostility: Vec<(ContentIndex, u32)>` | `ll_mod::roster::settlement_founder_race`；`chronicle::wage_wars`/`pick_target` |

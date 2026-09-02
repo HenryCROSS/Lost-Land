@@ -1162,6 +1162,7 @@ mod tests {
                         founder_races,
                         hostility: Vec::new(),
                         buildings: ll_world::building::bare_building_fixture(),
+                        naming: ll_world::naming::bare_naming_fixture(),
                     },
                 )
                 .expect("首次定义");
@@ -1457,6 +1458,7 @@ mod tests {
                     founder_races: vec![(goblin, 10)],
                     hostility: Vec::new(),
                     buildings: ll_world::building::bare_building_fixture(),
+                    naming: ll_world::naming::bare_naming_fixture(),
                 },
             )
             .expect("首次定义");

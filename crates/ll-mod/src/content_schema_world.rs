@@ -16,8 +16,11 @@
 //! 形突然不挡视线了」，而没有任何报错。数值字段同理，除非缺省值本身
 //! 有明确语义（见各字段文档）。
 
+use std::collections::BTreeMap;
+
 use ll_world::building::BuildingTemplate;
 use ll_world::culture::{CultureAttrs, CultureError, CultureTable};
+use ll_world::naming::{CultureNaming, PhonemeTables};
 use ll_world::resource::{ResourceAttrs, ResourceCategory, ResourceError, ResourceTable};
 use ll_world::space_profile::{SpaceProfileAttrs, SpaceProfileError, SpaceProfileTable};
 use ll_world::terrain::{TerrainAttrs, TerrainError, TerrainKind, TerrainTable};
@@ -227,6 +230,41 @@ pub struct RawCulture {
     /// （见 [`RawCulture`] 类型文档）。漏写的症状是「这份文化的城镇里
     /// 每一栋屋子都是空的」，而那正是本字段落地要消灭的东西。
     pub buildings: Vec<RawBuilding>,
+    /// 这种文化怎么给人起名字，见
+    /// [`ll_world::culture::CultureAttrs::naming`]。
+    ///
+    /// **必填**，同一条纪律：漏写的症状是「这份文化的每个 NPC 都叫
+    /// 『无名氏』」——一个看得见却查不出来路的症状。
+    pub naming: RawNaming,
+}
+
+/// [`RawCulture::naming`]——构词材料。
+///
+/// 音节数不分语言（它是「这个名字有几个音」这个事实，与用什么字形写
+/// 下来无关），音素表每种语言一份且按下标对齐，理由见
+/// [`ll_world::naming::PhonemeTables`]。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawNaming {
+    /// 音节数的 `[下限, 上限]`，闭区间。
+    pub syllables: [i64; 2],
+    /// 语言标签（`"zh-CN"`/`"en"`……）到那种语言的三张音素表。
+    ///
+    /// 收 `BTreeMap` 而不是 `HashMap`：它的遍历顺序进内容哈希，也决定
+    /// 显示语言查不到时回落到哪一条（约束 C5）。
+    pub phonemes: BTreeMap<String, RawPhonemeTables>,
+}
+
+/// [`RawNaming::phonemes`] 的一项——一种语言的三张音素表。
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RawPhonemeTables {
+    /// 声母表，不得为空。
+    pub onsets: Vec<String>,
+    /// 韵腹表，不得为空。
+    pub nuclei: Vec<String>,
+    /// 韵尾表，允许为空（某些文化没有韵尾）。
+    pub codas: Vec<String>,
 }
 
 /// [`RawCulture::buildings`] 的一项——一种建筑类型。
@@ -337,6 +375,29 @@ pub fn apply_cultures(
                 furniture,
             });
         }
+        // 命名规则：全部是字面字符串，**一处 `intern` 都没有**——音素不是
+        // 内容 id，不进注册表，因此本字段不会让任何 `ContentIndex` 平移。
+        let naming = CultureNaming {
+            syllables: (
+                culture.naming.syllables[0].clamp(0, i64::from(u8::MAX)) as u8,
+                culture.naming.syllables[1].clamp(0, i64::from(u8::MAX)) as u8,
+            ),
+            phonemes: culture
+                .naming
+                .phonemes
+                .iter()
+                .map(|(language, tables)| {
+                    (
+                        language.clone(),
+                        PhonemeTables {
+                            onsets: tables.onsets.clone(),
+                            nuclei: tables.nuclei.clone(),
+                            codas: tables.codas.clone(),
+                        },
+                    )
+                })
+                .collect(),
+        };
         table
             .define(
                 index,
@@ -348,6 +409,7 @@ pub fn apply_cultures(
                     founder_races,
                     hostility,
                     buildings,
+                    naming,
                 },
             )
             .map_err(|err: CultureError| err.to_string())?;
