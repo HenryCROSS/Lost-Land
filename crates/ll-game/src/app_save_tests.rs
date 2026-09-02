@@ -36,7 +36,7 @@ fn 自动存档按世界时间触发而不是按墙钟() {
 
     // Act 1：世界时钟一动不动，连问一百次。
     for _ in 0..100 {
-        demo.maybe_autosave();
+        demo.maybe_autosave(ll_platform::window::FrameId(0));
     }
 
     // Assert 1：真实时间在流逝，世界时间没有 ⇒ 一次都不该存。
@@ -48,7 +48,7 @@ fn 自动存档按世界时间触发而不是按墙钟() {
     // Act 2：把世界时钟往前拨满一个周期。
     let 起点 = demo.test_world().world.clock;
     demo.test_world_mut().world.clock = ll_core::time::Tick(起点.0 + AUTOSAVE_INTERVAL_TICKS);
-    demo.maybe_autosave();
+    demo.maybe_autosave(ll_platform::window::FrameId(0));
 
     // Assert 2
     assert_eq!(
@@ -58,7 +58,7 @@ fn 自动存档按世界时间触发而不是按墙钟() {
     );
 
     // Act 3：紧接着再问一次，世界时钟没再动。
-    demo.maybe_autosave();
+    demo.maybe_autosave(ll_platform::window::FrameId(0));
 
     // Assert 3：节拍已经往前推了，不该连着存第二次。
     assert_eq!(
@@ -80,7 +80,7 @@ fn 不足一个周期不触发自动存档() {
 
     // Act：差一个 tick 就满一个周期。
     demo.test_world_mut().world.clock = ll_core::time::Tick(起点.0 + AUTOSAVE_INTERVAL_TICKS - 1);
-    demo.maybe_autosave();
+    demo.maybe_autosave(ll_platform::window::FrameId(0));
 
     // Assert
     assert!(crate::save_slot::list_slots(&saves_dir).is_empty());
@@ -799,4 +799,96 @@ fn 不在存档列表屏时不猜一份存档给他() {
 
     // Cleanup
     let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 自动存档成功之后屏上留下一条痕迹() {
+    // **规格 §9.2 F3 的判据前半句**：`maybe_autosave` 真的存了之后，
+    // 那条痕迹非空。走的是**生产路径**（真的写盘、真的看槽位），不是
+    // 直接给字段赋值。
+    //
+    // 反例验证（已实跑）：把 `maybe_autosave` 成功分支里那句
+    // `self.autosave_notice_frame = Some(frame.0)` 删掉，本条红在
+    // 「存成功之后应当留下痕迹」——证明注入点真的在生产路径上，
+    // 不是 `cfg(test)` 里的摆设。
+    // Arrange
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    assert!(
+        demo.autosave_notice_frame.is_none(),
+        "还没自动存过，痕迹本该是空的"
+    );
+
+    // Act 1：世界时钟没走满一个周期 ⇒ 不存，也就没有痕迹。
+    demo.maybe_autosave(ll_platform::window::FrameId(7));
+
+    // Assert 1：先证明「不存就没有痕迹」这一侧成立，下面那条才不是恒真。
+    assert!(
+        crate::save_slot::list_slots(&saves_dir).is_empty(),
+        "世界时钟没走满，本来就不该存"
+    );
+    assert!(demo.autosave_notice_frame.is_none(), "没存就不该有痕迹");
+
+    // Act 2：把世界时钟拨满一个周期再问一次。
+    let 起点 = demo.test_world().world.clock;
+    demo.test_world_mut().world.clock = ll_core::time::Tick(起点.0 + AUTOSAVE_INTERVAL_TICKS);
+    demo.maybe_autosave(ll_platform::window::FrameId(4_242));
+
+    // Assert 2：真的存了，而且痕迹记的是**那一帧**。
+    assert_eq!(
+        crate::save_slot::list_slots(&saves_dir).len(),
+        1,
+        "世界时钟走满一个周期就该存一次"
+    );
+    assert_eq!(
+        demo.autosave_notice_frame,
+        Some(4_242),
+        "存成功之后应当留下痕迹，且记的是存成的那一帧"
+    );
+    assert!(
+        crate::autosave_notice::autosave_notice_visible(demo.autosave_notice_frame, 4_242),
+        "存成的那一帧痕迹就该看得见"
+    );
+
+    // Assert 3（判据后半句）：**只推帧号、一次按键都不按**，时长走完
+    // 之后痕迹自己消失——ADR 0025 禁止用合成按键做验收，这条痕迹的
+    // 生命周期因此完全由时钟驱动。
+    // 判据里那个数写**规格给的一秒**（60 帧），不写
+    // `AUTOSAVE_NOTICE_FRAMES`——引用被判的那个常量会让本条对时长的
+    // 任何改动恒绿，见 `crate::autosave_notice` 测试里 `一秒的帧数`
+    // 那段注释（本批实测踩过这个坑）。
+    const 一秒的帧数: u64 = 60;
+    assert!(
+        !crate::autosave_notice::autosave_notice_visible(
+            demo.autosave_notice_frame,
+            4_242 + 一秒的帧数
+        ),
+        "一秒之后痕迹应当自己消失"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 已自动保存这句话在两种语言下各有各的文案() {
+    // 防「空 Catalog ⇒ 查不到 ⇒ 回落到另一门语言 ⇒ 用『文案 != 键名』
+    // 判恒绿」：用仓库真实的 `assets/locales`，断言**两种语言的文案
+    // 互不相同**。与 `app_navigation_tests` 里那条同一种形状。
+    //
+    // 反例（已实跑）：只往 zh-CN.ftl 加这条键、en.ftl 不加，本条红在
+    // 「两种语言互不相同」——en 会回落到中文那一句。
+    // Arrange
+    let locales = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/locales");
+    let catalog = ll_i18n::Catalog::load_one("lostland", &locales);
+    let key = crate::autosave_notice::AUTOSAVE_NOTICE_KEY;
+
+    // Act
+    let zh = catalog.resolve("zh-CN", key);
+    let en = catalog.resolve("en", key);
+
+    // Assert
+    assert_ne!(zh, key, "中文那一条必须真的存在");
+    assert_ne!(en, key, "英文那一条必须真的存在");
+    assert_ne!(zh, en, "两种语言各写各的，不是其中一种回落到另一种");
 }

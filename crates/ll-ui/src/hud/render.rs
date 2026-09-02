@@ -136,7 +136,7 @@ use super::skinned_push::{push_bar, push_day_night_bar, push_two_layer_bar};
 // 反馈行与按键提示行的宽度/位置常量搬去了 `super::bottom_rows`——
 // 两行形状相同，放在一起才不会各写一份。这里再导出一次，
 // `ll_ui::hud::render::FEEDBACK_WIDTH` 这条既有路径不变。
-pub use super::bottom_rows::{FEEDBACK_WIDTH, KEY_HINT_WIDTH};
+pub use super::bottom_rows::{AUTOSAVE_WIDTH, FEEDBACK_WIDTH, KEY_HINT_WIDTH};
 /// 装备栏与窗口右边缘的留白（像素）——见模块文档「装备放在屏幕右边」
 /// 一节，与 [`SCREEN_MARGIN`] 取同一个值，让装备栏与状态栏在视觉上
 /// 是对称锚定在屏幕两侧的一对。
@@ -248,6 +248,11 @@ pub fn build_hud_frame(
     // 本层只收**已经排好版的一句话**，键名怎么从当前键位表现查是
     // `ll_game::key_hint` 的事，见那个模块。
     key_hint: Option<&str>,
+    // 自动存档刚刚成功留下的那条痕迹（规格 F3），`None` = 这一刻不显示。
+    // 与 `feedback`/`key_hint` 完全同构：本层只收**已经排好版的一句话**，
+    // 「这一帧还该不该显示」由 `ll_game::autosave_notice` 那个纯函数按
+    // 帧计数决定，见那个模块的文档「两条时钟，各管各的」。
+    autosave: Option<&str>,
 ) -> LayeredFrame {
     let mut frame = LayeredFrame::default();
     // 常驻 HUD 全部落在最底层，见 `crate::widget::layer` 模块文档的
@@ -487,30 +492,21 @@ pub fn build_hud_frame(
         }
     }
 
-    // 屏幕底部那两行——形状相同、分层不同，见 `super::bottom_rows`
-    // 模块文档那张表。
-    if let Some(text) = key_hint {
-        let batch = frame.layer_mut(UiLayer::Hud);
-        super::bottom_rows::push_key_hint_row(
-            batch,
-            measure,
-            skin,
-            text,
-            screen_width,
-            screen_height,
-        );
-    }
-    if let Some(text) = feedback {
-        let batch = frame.layer_mut(UiLayer::Notice);
-        super::bottom_rows::push_feedback_row(
-            batch,
-            measure,
-            skin,
-            text,
-            screen_width,
-            screen_height,
-        );
-    }
+    // 屏幕底部那三行——形状相同、分层不同，见 `super::bottom_rows`
+    // 模块文档那张表。三行的分层与落位整段住在那个模块里，本函数只把
+    // 三句话递过去。
+    super::bottom_rows::push_bottom_rows(
+        &mut frame,
+        measure,
+        skin,
+        super::bottom_rows::BottomRowTexts {
+            key_hint,
+            feedback,
+            autosave,
+        },
+        screen_width,
+        screen_height,
+    );
 
     // 规格 L0：取整发生在**提交那一刻**，中间的布局计算照旧用 `f32`。
     // 放在这里（而不是逐块面板/条形/地图各取一次）的完整理由见
@@ -567,6 +563,7 @@ mod tests {
             screen_width,
             720.0,
             world_map,
+            None,
             None,
             None,
             None,

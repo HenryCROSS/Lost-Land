@@ -95,6 +95,7 @@ fn 满帧(catalog: &Catalog, screen_width: f32, screen_height: f32) -> LayeredFr
         Some(&menu),
         Some("这一下没起作用"),
         Some("I 背包　C 制作"),
+        Some("已自动保存"),
     )
 }
 
@@ -430,6 +431,7 @@ fn 菜单帧(catalog: &Catalog, rows: &[String], cursor: usize) -> LayeredFrame 
         720.0,
         None,
         Some(&menu),
+        None,
         None,
         None,
     )

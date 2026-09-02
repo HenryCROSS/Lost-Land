@@ -18,6 +18,7 @@
 pub mod animation;
 pub mod app;
 pub mod atlas_miss;
+pub mod autosave_notice;
 pub mod chargen;
 pub mod content;
 pub mod dialogue_screen;

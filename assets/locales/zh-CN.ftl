@@ -604,3 +604,6 @@ hud-interact-action-plant = 培植
 hud-interact-tree-oak = 一棵橡树
 hud-interact-tree-pine = 一棵松树
 hud-interact-tree-palm = 一棵棕榈
+
+# 自动存档留下的那条痕迹（规格 F3，批次 35）——底栏一行小字，一秒后自己消失。
+hud-autosave-saved = 已自动保存

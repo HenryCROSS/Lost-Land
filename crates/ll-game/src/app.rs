@@ -258,6 +258,15 @@ pub struct Demo {
     /// `WorldState`、不进存档、不参与回放。它只回答「屏幕看起来卡了
     /// 多久」，而那是一个关于**帧**的问题，世界时钟答不了它。
     not_yet_streak: u32,
+    /// 自动存档最近一次**成功**发生在第几帧——规格 F3 那条痕迹的全部
+    /// 状态，`None` = 这一局还没自动存过。
+    ///
+    /// 纯表现层，与 [`Demo::feedback`]/[`Demo::not_yet_streak`] 同一条
+    /// 纪律：不进 `GameWorld`/`WorldState`、不进存档、不参与回放。
+    /// **它记的是帧号不是世界时刻**，理由见
+    /// [`crate::autosave_notice`] 模块文档「两条时钟，各管各的」——
+    /// 「要不要存」按世界时钟（约束 C4），「痕迹还要显示多久」按帧计数。
+    autosave_notice_frame: Option<ll_ui::widget::anim::FrameTick>,
     /// 据点职业名册解析结果——[`crate::world::materialize_nearby_settlements`]
     /// 每次物化都要用，同样只在建局/读档后解析一次（`SettlementRoles::resolve`
     /// 只是几次注册表查询，但它的输入——注册表——装载后不再变化）。
@@ -468,6 +477,7 @@ impl Demo {
             hud_anim: WidgetStateTable::new(),
             feedback: None,
             not_yet_streak: 0,
+            autosave_notice_frame: None,
             settlement_roles,
             fps_counter: FpsCounter::new(),
             // 首页在**第一帧之前**就已经开着，见
@@ -569,7 +579,11 @@ impl Demo {
         // 自动存一次。次序不能反——玩家刚死的那一帧要存的是「模式已经
         // 转成普通」的那份，不是死之前那份。
         self.handle_player_death(input);
-        self.maybe_autosave();
+        // 规格 F3：自动存档成功要在屏上留一条痕迹，因此这里把**帧号**
+        // 递下去。「要不要存」仍然只由世界时钟决定（约束 C4，见
+        // `maybe_autosave` 文档），帧号只用来给痕迹计时，见
+        // `crate::autosave_notice` 模块文档那张两条时钟的表。
+        self.maybe_autosave(frame);
     }
 
     /// 世界地图那一层这一帧的全部输入：取消键关掉它、地图键开关它、
@@ -1162,6 +1176,18 @@ impl AppHandler for Demo {
         // `self.resources` 之前算**：它要读 `self.config.bindings` 与
         // `self.catalog`，而下面那个 `as_mut` 借的是整个 `self`。
         let key_hint = self.key_hint_line();
+        // 规格 F3 那条痕迹这一帧还该不该显示——判定在
+        // `crate::autosave_notice` 那个纯函数里（由**帧计数**驱动，
+        // 见那个模块的文档），本行只把它解析成一句话。同样**必须在借出
+        // `self.resources` 之前算**，理由同上一行。
+        let autosave_text =
+            crate::autosave_notice::autosave_notice_visible(self.autosave_notice_frame, frame.0)
+                .then(|| {
+                    self.catalog.resolve(
+                        &self.config.language,
+                        crate::autosave_notice::AUTOSAVE_NOTICE_KEY,
+                    )
+                });
 
         let Some(resources) = self.resources.as_mut() else {
             return FrameOutcome::Continue;
@@ -1237,6 +1263,7 @@ impl AppHandler for Demo {
                     self.modal.player_menu(),
                     self.feedback,
                     key_hint.as_deref(),
+                    autosave_text.as_deref(),
                     // 正常游玩：不改写任何东西。
                     None,
                 )
@@ -1273,6 +1300,8 @@ impl AppHandler for Demo {
                     None,
                     // 选出生地屏是一块模态屏，它自己底部有一行提示
                     // （规格 F5）——再叠一行世界层的按键提示是重复。
+                    None,
+                    // 选出生地屏那一刻还没有世界在跑，自动存档不可能发生。
                     None,
                     Some(SpawnPickHud {
                         exploration,

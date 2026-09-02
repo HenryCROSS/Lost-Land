@@ -124,6 +124,10 @@ pub(super) fn build_hud_layers(
     // 住在 `Demo::config` 上，本函数够不着——与 `feedback` 同一条分工，
     // 见 `crate::key_hint` 模块文档。
     key_hint: Option<&str>,
+    // 自动存档刚成功留下的那条痕迹（规格 F3），`None` = 这一刻不显示。
+    // 与 `key_hint` 同构：收的是**已经排好版的一句话**；「这一帧还该不该
+    // 显示」由 `crate::autosave_notice` 那个纯函数按帧计数回答。
+    autosave: Option<&str>,
     // 选出生地屏那一刻的两处改写，`None` 表示正常游玩，见
     // [`SpawnPickHud`]。
     spawn_pick: Option<SpawnPickHud<'_>>,
@@ -347,6 +351,7 @@ pub(super) fn build_hud_layers(
         menu_data.as_ref(),
         feedback_text.as_deref(),
         key_hint,
+        autosave,
     )
 }
 
