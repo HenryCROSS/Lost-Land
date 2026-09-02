@@ -89,6 +89,7 @@ use ll_game::layout::{
     is_terrain_variant_entry, terrain_atlas_key_for_variant, terrain_variant_count,
 };
 use ll_game::surface_draw::PLACED_FURNITURE_SPRITE;
+use ll_game::surface_draw::{TREE_SPRITE_PREFIX, tree_sprite_key};
 use ll_render::atlas_pack::{PackedAtlas, pack_atlas};
 use ll_ui::hud::world_map::{FOG_COLOR, terrain_color};
 use ll_ui::widget::skin::{
@@ -96,6 +97,7 @@ use ll_ui::widget::skin::{
     REQUIRED_SPRITE_KEYS, Skin,
 };
 use ll_world::terrain::{BaseTerrainIds, TerrainKind};
+use ll_world::tree::TreeSpecies;
 
 /// 仓库根——`ll-game` 到仓库根固定隔两级 `../..`，与
 /// `surface_render.rs` 的 `repo_mods`/`repo_assets` 同一条推导。
@@ -769,6 +771,133 @@ fn 本体家具的贴图两两之间至少四分之一像素不同() {
             assert!(
                 differing >= threshold,
                 "家具 {key_a} 与 {key_b} 的贴图只有 {differing} 个像素不同（门槛 {threshold}）——屏幕上分不出这两件家具"
+            );
+        }
+    }
+}
+
+// ─────────────────────────── 树（批次 32） ───────────────────────────
+
+/// 声明侧那份清单：`TreeSpecies::ALL` 每一种的图集键。
+///
+/// **遍历枚举而不是点名三个**：加第四种树时下面几条自动开始管它，不会
+/// 出现 [ADR 0022] 点名的「判据适用面被新代码绕过」。
+///
+/// [ADR 0022]: ../../../knowledge/decisions/0022-guard-coverage-gap-defeats-the-guard.md
+fn tree_keys() -> Vec<(TreeSpecies, String)> {
+    TreeSpecies::ALL
+        .into_iter()
+        .map(|species| (species, tree_sprite_key(species)))
+        .collect()
+}
+
+#[test]
+fn 每一种树在真实图集里都查得到条目() {
+    // 失效方式与家具那批逐字同型，只是更安静：
+    // `ll_game::surface_draw::tree_draws` 的 `fallback_key` 是 `None`
+    // ——查不到就**不画这一格的树**，不报错、不打日志。屏幕上只是「森林
+    // 里一棵树都没有」，而砍伐/采果照样能按（交互列表读的是世界状态，
+    // 不是图集）。这条断言是那件事的可执行版本。
+    //
+    // 键就是 `tree_sprite_key` 算出来的那个（带 `lostland:` 前缀），与
+    // 生产路径拿到的是同一个字符串——**不在这里另抄一份拼接**。上一批
+    // 五张 HUD 贴图正是栽在「查裸名字、图集里存带前缀的」这一步上。
+    // Arrange
+    let (_content, atlas) = real_content_and_atlas();
+    let keys = tree_keys();
+
+    // Act & Assert
+    assert!(
+        !keys.is_empty(),
+        "一种树都数不出来——TreeSpecies::ALL 空了，下面的断言会空跑"
+    );
+    for (species, key) in &keys {
+        assert!(
+            atlas.metadata.lookup(key).is_some(),
+            "{species:?} 的贴图 {key} 在真实图集里查不到——跑起来这一格的树\
+             会被静默跳过，森林里一棵树都看不见"
+        );
+        let pixels = tile_pixels(&atlas, key);
+        let opaque = pixels.iter().filter(|p| p[3] > 0).count();
+        assert!(
+            opaque > 0,
+            "{species:?} 的贴图 {key} 在真实图集里是一张空图"
+        );
+        // 树画在世界格子上，**不许铺满**：铺满会把这一格读成「地形变了」
+        // 而不是「这一格上长着一棵树」，且相邻两格的树冠会连成一片色块。
+        assert!(
+            opaque < pixels.len(),
+            "{species:?} 的贴图 {key} 铺满了整格——树是叠在地形之上的一层，\
+             必须留出透明"
+        );
+    }
+}
+
+#[test]
+fn 图集里不许有声明侧数不出来的树贴图() {
+    // **反向锁，与上面那条缺一不可**（与地形变体那一对同一条理由）。
+    //
+    // 正向那条只咬「声明了却没画」。反过来那一半——**画了却没声明**——
+    // 它一个字都管不到：从 `TreeSpecies` 删掉 `Palm` 而忘了删
+    // `ll-artgen` 的 `TREE_NAMES`，`assets/sprites/tree_palm.png` 就变成
+    // 一张永远查不到的孤儿图，正向那条照样全绿。
+    //
+    // 判据用生产代码公开的 `TREE_SPRITE_PREFIX`，**不在这里另抄一份
+    // 字符串**：抄一份的话两边分叉时这条会继续绿着。
+    // Arrange
+    let (_content, atlas) = real_content_and_atlas();
+    let declared: Vec<String> = tree_keys().into_iter().map(|(_, key)| key).collect();
+
+    // Act
+    let in_atlas: Vec<&str> = atlas
+        .metadata
+        .entries
+        .iter()
+        .map(|entry| entry.name.as_str())
+        .filter(|name| name.starts_with(TREE_SPRITE_PREFIX))
+        .collect();
+
+    // Assert
+    assert!(
+        !in_atlas.is_empty(),
+        "真实图集里一张树贴图都没有——要么 ll-artgen 的 TREE_NAMES 掉了，\
+         要么这条断言本身已经查错了表"
+    );
+    for name in in_atlas {
+        assert!(
+            declared.iter().any(|key| key == name),
+            "图集里有树贴图 {name}，但 TreeSpecies::ALL 里数不出它——\
+             这张图永远不会被查到，画面上等于没有"
+        );
+    }
+}
+
+#[test]
+fn 三种树的贴图两两之间至少四分之一像素不同() {
+    // 判据与「本体家具的贴图两两之间至少四分之一像素不同」逐字相同，
+    // 理由也一样：**「查得到条目」不等于「看得出区别」**。三种树会长在
+    // 同一片林子里（气候带是混合权重，不是一带一种），一眼分不开就等于
+    // 「多树种」这件事在画面上根本读不出来。
+    //
+    // **这条咬得住「三张不一样」，咬不住「这一张读起来像不像一棵松树」**
+    // ——后者没有可执行判据，只能靠 `tools/ll-artgen/src/tree.rs` 那段
+    // 「三张靠什么互相区分」的文档与生成后的肉眼核对。如实登记这条局限。
+    // Arrange
+    let (_content, atlas) = real_content_and_atlas();
+    let keys = tree_keys();
+
+    // Act & Assert
+    for (i, (a_species, a_key)) in keys.iter().enumerate() {
+        for (b_species, b_key) in keys.iter().skip(i + 1) {
+            let a = tile_pixels(&atlas, a_key);
+            let b = tile_pixels(&atlas, b_key);
+            assert_eq!(a.len(), b.len(), "树贴图尺寸不一致，无法逐像素比较");
+            let differing = a.iter().zip(&b).filter(|(x, y)| x != y).count();
+            assert!(
+                differing * 4 >= a.len(),
+                "{a_species:?} 与 {b_species:?} 的贴图只有 {differing}/{} 个像素不同\
+                 （门槛四分之一）——它们在同一片林子里分不开",
+                a.len()
             );
         }
     }

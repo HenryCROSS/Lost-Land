@@ -19,8 +19,8 @@
 use ll_core::torus::TorusPos;
 use ll_game::content::{LoadedContent, RuntimeCatalogs};
 use ll_game::player_action::{
-    DoorAction, Feedback, InteractTarget, PlayerCommand, PlayerMenu, TalkLookup, interact_entries,
-    interact_tiles, player_command,
+    DoorAction, Feedback, InteractLookup, InteractTarget, PlayerCommand, PlayerMenu,
+    interact_entries, interact_tiles, player_command,
 };
 use ll_game::world::{GameWorld, build_new_world};
 use ll_platform::input::{GameKey, InputState};
@@ -130,7 +130,7 @@ fn 关着的门出现在交互列表里且主交互是开门() {
         &game_world.world,
         east,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     );
 
     // Assert
@@ -163,7 +163,7 @@ fn 开着的门出现在交互列表里且主交互是关门() {
         &game_world.world,
         east,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     );
 
     // Assert
@@ -198,7 +198,7 @@ fn 有门的那一格进得了方向列表() {
         &game_world.world,
         player_pos,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     );
 
     // Assert
@@ -224,7 +224,7 @@ fn 平地不会被当成门() {
         &game_world.world,
         east,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     );
 
     // Assert
@@ -479,7 +479,7 @@ fn 门那一行排在地面物品之后() {
         &game_world.world,
         east,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     );
 
     // Assert
@@ -531,7 +531,7 @@ fn 每一件立着的家具都进得了交互列表() {
         &game_world.world,
         east,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     );
 
     // Assert
@@ -555,7 +555,7 @@ fn 在门那一格按确认(
         &game_world.world,
         door,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     )
     .iter()
     .position(|entry| matches!(entry, InteractTarget::Door { .. }))
@@ -573,7 +573,7 @@ fn 在门那一格按确认(
         &game_world.world,
         game_world.player,
         &content.recipe_table,
-        TalkLookup::none(),
+        InteractLookup::none(),
     )
 }
 

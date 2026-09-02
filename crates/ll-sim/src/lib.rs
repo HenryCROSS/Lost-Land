@@ -128,6 +128,7 @@ pub mod subclass;
 pub mod timeline;
 pub mod trade;
 pub mod traits;
+pub mod tree;
 pub mod turn;
 pub mod vision;
 pub mod xp_curve;

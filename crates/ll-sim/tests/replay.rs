@@ -1055,7 +1055,29 @@ fn play(world: &mut WorldState, intents: &[Intent]) {
 /// 根本没有机会跑（这条局限是它自己文档里早就写着的，本批只是又一次
 /// 实测确认）。`crates/ll-game/tests/populated_determinism.rs` 的
 /// `EXPECTED_POPULATED_WORLD_DIGEST` 与本条一起红。
-const EXPECTED_REPLAY_DIGEST: u64 = 9_888_838_904_816_377_323;
+//
+// # 树木批次（2026-09-01，批次 32）：**本条重冻**
+//
+// `WorldState::hash()` 末尾新增一行 `self.trees.write_hash(&mut hasher)`
+// （树木偏差表，`ll_world::tree::TreeDeviations`）。空表也写一个长度 0
+// 标记——否则「没有任何偏差」与「偏差恰好编码成空」在摘要上不可区分，
+// 那正是 ADR 0022 点名的判据空洞。本文件的世界一棵树都没被动过，因此
+// 摘要变化**全部**来自那一个长度 0。
+//
+// **四步重冻，全部 Windows 实跑：**
+//
+// 1. **基线红**：`left: 9641812801195310050` /
+//    `right: 11270479921196970914`。
+// 2. **把改动关掉，精确回到旧值**：**只**把 `self.trees.write_hash(..)`
+//    那一行注释掉（`ll_world::tree` 整个模块、`WorldState::trees` 字段、
+//    它的 serde 往返、`remap.rs` 的解构全部保留），三条基准**全部绿**、
+//    摘要精确等于各自旧常量。**这一步同时是「派生层没有消耗随机流」的
+//    证据**：树的派生层（`derived_tree_at`）在这一步里仍然完整存在并可
+//    被调用，若它动过 `DetRng` 或往世界状态里写过任何东西，关掉一行
+//    哈希混入是回不到旧值的。
+// 3. **恢复**那一行。
+// 4. **两个独立进程复现**新值。
+const EXPECTED_REPLAY_DIGEST: u64 = 8_626_273_720_694_163_787;
 
 // # 【2026-08-31 补记】本条够不到的那一块，现在有第三条基准接着
 //

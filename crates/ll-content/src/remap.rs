@@ -170,6 +170,16 @@ pub fn remap_world(
         // 静默指向另一个模板——正是上面那段注释点名的那类事故。这笔账同时
         // 记在 `OrgInstance` 的类型文档里。
         factions: _,
+        // 树木偏差表（树木批次）——**逐字段确认过不需要重映射**：
+        // `TreeDeviation` 里只有 `Option<TreeSpecies>`（引擎侧枚举，不是
+        // `ContentIndex`）与 `Option<Tick>`，键是 `TorusPos`。三者都不携带
+        // 任何依赖 mod 装载顺序的索引，换一批 mod 也指不到别处去。
+        //
+        // **等树种改成内容侧声明那天，这一行必须改**（`ll_world::tree::TreeSpecies`
+        // 文档「为什么在引擎侧」一节写着那条路留给什么时候走）：那时树种会
+        // 携带真实的 `ContentIndex`，`_` 会让它在换一批装载顺序之后静默指向
+        // 另一种树。这笔账同时记在那个枚举的文档里。
+        trees: _,
     } = *world;
 
     terrain.try_remap_resident_terrain(|kind| -> Result<TerrainKind, LoadError> {

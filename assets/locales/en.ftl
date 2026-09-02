@@ -544,3 +544,20 @@ screen-trade-empty = Neither of you has anything to trade.
 screen-trade-hint = Up/Down pick　Confirm deal　Cancel leave
 screen-trade-buy = Buy　{ $item } ({ $count })　{ $price }
 screen-trade-sell = Sell　{ $item } ({ $count })　{ $price }
+
+# ── Trees (batch 32) ─────────────────────────────────────────────
+# Two content items (felling yields timber, harvesting yields a seed
+# that planting consumes), three interaction actions, and three tree
+# names. Tree names go through HUD keys rather than an item table:
+# a tree is not a `ground_items` entry -- there are over a million of
+# them and they are derived, not stored (ADR 0009). Same tier as the
+# two door keys, see `interact_target_name` in ll-game.
+
+item-timber_log-display_name = Timber
+item-tree_seed-display_name = Tree Seed
+hud-interact-action-fell = fell
+hud-interact-action-harvest = harvest
+hud-interact-action-plant = plant
+hud-interact-tree-oak = an oak
+hud-interact-tree-pine = a pine
+hud-interact-tree-palm = a palm

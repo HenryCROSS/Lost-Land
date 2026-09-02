@@ -315,7 +315,7 @@ impl DialogueTable {
     /// 一张**常量**空表。
     ///
     /// `Default` 派生出来的构造器不是 `const fn`，而「一张永远查不到东西
-    /// 的对话表」需要能出现在常量上下文里：`ll_game::player_action::TalkLookup`
+    /// 的对话表」需要能出现在常量上下文里：`ll_game::player_action::InteractLookup`
     /// 借的是 `&DialogueTable`，它的「不接对话内容」构造器因此需要一个
     /// `'static` 的空表可借。`Vec::new()` 本身是 `const`，代价为零。
     pub const EMPTY: DialogueTable = DialogueTable {

@@ -20,6 +20,7 @@
 //! 提前做这件事。
 
 use crate::trade::TradeDirection;
+use crate::tree::TreeAction;
 use ll_core::ident::ContentIndex;
 use ll_platform::input::InputState;
 use ll_world::entity::{AttributeKind, EntityId};
@@ -865,6 +866,43 @@ pub enum Intent {
         /// 买还是卖。
         direction: TradeDirection,
     },
+    /// **对一棵树做点什么**：砍伐、培植、采果（树木批次）。
+    ///
+    /// 项目所有者的原始要求是「树变成部署在地形上的物品，可砍伐、
+    /// 可培植、可采果、多树种」；架构裁定走 ADR 0009「默认派生，只存
+    /// 偏差」，两层的定义与代价见 [`ll_world::tree`] 模块文档。
+    ///
+    /// # 为什么是**一个**变体带一个动作枚举，不是三个变体
+    ///
+    /// 三条路共用同样的四道前置（发起者活着、内容接线齐全、够得着、
+    /// 目标格是森林）与同样的一回合计费。拆成三个变体等于把那四道闸门
+    /// 抄三份，而抄出来的三份**会各自漂移**——ADR 0021 点名要拦的正是
+    /// 这个形状。[`Intent::Trade`] 用 `direction` 表达买/卖是同一条
+    /// 先例，理由逐字相同。
+    ///
+    /// # 为什么不带「产出什么」
+    ///
+    /// 与 [`Intent::PickUp`] 同一条纪律：`Intent` 只记录「想做什么」，
+    /// 不预判「结果如何」。砍出几份木料由树种决定、种下去长什么树由
+    /// 那块地的气候决定——两者都由 `resolve` 结合当时的 `WorldState`
+    /// 现算，不在这里抢答。
+    ///
+    /// # 谁会产出这个变体
+    ///
+    /// `ll_game::player_action::player_command`，由交互列表的
+    /// `InteractTarget::Tree` 那三行触发（与 `Facility`/`Loose`/`Door`
+    /// 同一条路）。**不由 [`intent_from_input`] 产出**：它要带
+    /// 「哪一格」与「做什么」两个参数，而那要求玩家先看见一张列表
+    /// ——与物品链那六个是同一条分工。
+    TendTree {
+        /// 发起者，同时是产出物的收件人。
+        actor: EntityId,
+        /// 对哪一格上的树动手，未经归一化——理由与够得着的范围同
+        /// [`Intent::PickUp`] 的 `pos` 字段文档。
+        pos: (i32, i32),
+        /// 砍、种，还是采。
+        action: TreeAction,
+    },
 }
 
 impl Intent {
@@ -903,7 +941,8 @@ impl Intent {
             | Intent::Experiment { actor, .. }
             | Intent::Identify { actor, .. }
             | Intent::DialogueChoose { actor, .. }
-            | Intent::Trade { actor, .. } => actor,
+            | Intent::Trade { actor, .. }
+            | Intent::TendTree { actor, .. } => actor,
         }
     }
 }

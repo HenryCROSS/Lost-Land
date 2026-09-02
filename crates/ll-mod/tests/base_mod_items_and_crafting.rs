@@ -207,7 +207,12 @@ fn 本体物品的id清单不多不少() {
         "lostland:sealed_relic_box",
         "lostland:smith_hammer",
         "lostland:tarnished_signet",
+        // 〔2026-09-01，批次 32〕树木批次的两件产出物。**本条当时真的
+        // 红了**，报的正是「多了 timber/tree_seed 两条」——这份清单
+        // 「多一条少一条都变红」那句话的又一次兑现。
+        "lostland:timber_log",
         "lostland:traveler_ring",
+        "lostland:tree_seed",
         "lostland:unmarked_phial",
         "lostland:wool_gloves",
     ]
@@ -215,8 +220,9 @@ fn 本体物品的id清单不多不少() {
     .map(str::to_string)
     .collect();
     assert_eq!(actual, expected);
-    // 36 条内容作者手写的 + 9 条引擎按种族自动注册的尸体。
-    assert_eq!(actual.len(), 45);
+    // 38 条内容作者手写的（批次 32 的树木两件在内）+ 9 条引擎按种族
+    // 自动注册的尸体。
+    assert_eq!(actual.len(), 47);
 }
 
 #[test]
@@ -517,6 +523,11 @@ fn 材料与消耗品可堆叠且一律不带耐久() {
         ("lostland:raw_meat", 20),
         ("lostland:roast_meat", 20),
         ("lostland:herbal_draught", 10),
+        // 〔2026-09-01，批次 32〕树木批次的两件产出物同属材料档：可堆叠、
+        // 无耐久、不可装备。加在这里而不是只加进上面那份 id 清单——
+        // 清单只钉住「有这两条」，本条钉住「它们真的是材料档」。
+        ("lostland:timber_log", 50),
+        ("lostland:tree_seed", 99),
     ] {
         let view = loaded.item_view(id);
         assert_eq!(view.stack_limit, stack_limit, "{id} 的堆叠上限");

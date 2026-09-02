@@ -146,7 +146,7 @@
 //! 需要理解的那条规则，少一个键、少一块面板、少一条规矩。
 
 pub use crate::interact_list::{
-    DoorAction, InteractTarget, InteractTile, TalkLookup, direction_row_text, interact_entries,
+    DoorAction, InteractLookup, InteractTarget, InteractTile, direction_row_text, interact_entries,
     interact_row_text, interact_tiles,
 };
 use ll_core::ident::ContentIndex;
@@ -423,7 +423,7 @@ pub fn player_command(
     world: &WorldState,
     actor: EntityId,
     recipes: &RecipeTable,
-    talk: TalkLookup<'_>,
+    talk: InteractLookup<'_>,
 ) -> PlayerCommand {
     let Some(agent) = world.actors.get(actor) else {
         return PlayerCommand::Idle;
@@ -693,6 +693,20 @@ fn interact_command(
             *menu = PlayerMenu::Closed;
             PlayerCommand::OpenDialogue { speaker, dialogue }
         }
+        // 砍伐 / 采果 / 培植（树木批次）——**这一支是 `Intent::TendTree`
+        // 在真实游戏里唯一的产出者**。
+        //
+        // 与 `Loose`/`Door` 同一个理由关掉菜单：这一格的候选列表按下去
+        // 就变了（砍完树没了，采完果子那一行没了，种完多出两行）。留着
+        // 一份已经过期的列表比关掉更糟。
+        InteractTarget::Tree { action, .. } => {
+            *menu = PlayerMenu::Closed;
+            PlayerCommand::Submit(Intent::TendTree {
+                actor,
+                pos: naked,
+                action,
+            })
+        }
     }
 }
 
@@ -716,7 +730,7 @@ fn cancelled_menu(
     world: &WorldState,
     origin: TorusPos,
     actor: EntityId,
-    talk: TalkLookup<'_>,
+    talk: InteractLookup<'_>,
 ) -> PlayerMenu {
     let PlayerMenu::Interact {
         pos,
@@ -745,7 +759,7 @@ fn begin_interact(
     world: &WorldState,
     origin: TorusPos,
     actor: EntityId,
-    talk: TalkLookup<'_>,
+    talk: InteractLookup<'_>,
 ) -> PlayerCommand {
     let tiles = interact_tiles(world, origin, actor, talk);
     match tiles.len() {
@@ -982,7 +996,7 @@ pub fn menu_rows(
     classes: &ClassTable,
     catalog: &Catalog,
     language: &str,
-    talk: TalkLookup<'_>,
+    talk: InteractLookup<'_>,
 ) -> Vec<String> {
     let Some(agent) = world.actors.get(actor) else {
         return Vec::new();

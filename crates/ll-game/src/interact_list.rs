@@ -29,10 +29,13 @@ use ll_mod::item::ItemTable;
 use ll_sim::ai_query::declared_hostile;
 use ll_sim::intent::Direction;
 use ll_sim::resolve::occupant_at;
+use ll_sim::tree::TreeAction;
 use ll_ui::hud::item_display_name;
 use ll_world::culture::CultureTable;
 use ll_world::entity::{AffiliationKind, Agent, EntityId, OrgRef};
 use ll_world::state::WorldState;
+use ll_world::terrain::TerrainKind;
+use ll_world::tree::{TreeSpecies, tree_at};
 
 /// 交互列表的一行指向脚下的什么东西。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +85,32 @@ pub enum InteractTarget {
         /// 按下去是开门还是关门。
         action: DoorAction,
     },
+    /// **这一格上长着一棵树**（树木批次）——主交互是砍伐、采果或培植。
+    ///
+    /// # 它与门、与说话那两支是同一类：目标不是一件物品
+    ///
+    /// [`InteractTarget::item_def`] 返回 `None`，于是
+    /// [`interact_row_text`] 的数量、按拾取键那条捷径在它身上自然什么
+    /// 都不做——门那一支当初把签名从裸 `ContentIndex` 改成
+    /// `Option<ContentIndex>` 白送的好处。
+    ///
+    /// 而且它比门更彻底：**树连世界状态里的一条记录都不是**。一百万棵
+    /// 以上的树由地形 + 确定性噪声现算（`ll_world::tree` 模块文档），
+    /// 只有被砍/被种/被采过的那一小撮才有存储。因此这一行的名字走 HUD
+    /// 文案键（`hud-interact-tree-*`），与门那两条键同一档。
+    ///
+    /// # 为什么带 `species`
+    ///
+    /// 只用来排版显示（三种树三个名字）。**「这一格现在有没有树」不缓存
+    /// 在这里**——那是世界状态（准确说是派生 ⊕ 偏差），重新问一次
+    /// `ll_world::tree::tree_at` 比在这里存一份更不容易过期，与门那一支
+    /// 「门当前是开是关不存在这个值里」逐字同一条理由。
+    Tree {
+        /// 是什么树，只用来排版显示。
+        species: TreeSpecies,
+        /// 按下去砍、采，还是种。
+        action: TreeAction,
+    },
     /// 站在这一格上的一个人——主交互是**开口说话**（打开会话屏）。
     ///
     /// # 它与门那一支是同一类：目标不是一件物品
@@ -123,42 +152,52 @@ pub enum InteractTarget {
 
 /// 「这一格上站着的人能不能说话、说哪一段」这个查询要的两份只读内容。
 ///
-/// # 为什么不是 `Option<TalkLookup>`
+/// # 为什么不是 `Option<InteractLookup>`
 ///
 /// 那会让「同一格、两个调用方、两份行列表」在类型上成为可能，而**玩家
 /// 按的是第几行**：渲染侧列出的第 2 行与输入侧结算的第 2 行必须是同一
 /// 行。收一个必填参数，调用方想「不接对话」就传一张空表——行为一样，
 /// 但那是一个显式的选择，不是一条可以忘记传的可选路径。
 #[derive(Clone, Copy)]
-pub struct TalkLookup<'a> {
+pub struct InteractLookup<'a> {
     /// 会话入口表——`match_speaker` 的宿主。
     pub dialogues: &'a DialogueTable,
     /// 文化表，敌对判定要它；`None` = 这个世界没有文化这一层，此时
     /// `ll_sim::ai_query::declared_hostile` 的文化那一半恒假（它自己
     /// 的既有降级，本模块不另作判断）。
     pub cultures: Option<&'a CultureTable>,
+    /// 哪一种地形是森林（树木批次）——`None` = **这个世界没有树这一层**，
+    /// 此时树那三行永远不出现，交互列表与树木批次之前逐条相同。
+    ///
+    /// 与 `cultures` 那一半同一条降级纪律：不接就是不接，不猜、不 panic。
+    pub forest: Option<TerrainKind>,
+    /// 树种（种子）是哪件物品——培植那一行的闸门要查背包里有没有它。
+    /// `None` 与 `forest` 为 `None` 同效（培植那一行不出现）。
+    pub tree_seed: Option<ContentIndex>,
 }
 
-/// [`TalkLookup::none`] 借出的那张空对话表。
+/// [`InteractLookup::none`] 借出的那张空对话表。
 ///
 /// 写成 `static` 而不是在 `const fn` 里借用 `DialogueTable::EMPTY`：后者
 /// 会造出一个需要析构的常量临时值（`Vec` 有 `Drop`），编译期拒绝。
 /// `static` 永不析构，正合此处语义——它是一张全局唯一、永远为空的表。
 static NO_DIALOGUES: DialogueTable = DialogueTable::EMPTY;
 
-impl TalkLookup<'_> {
-    /// **显式地不接对话内容**：一张常量空表 + 没有文化表，于是
-    /// [`InteractTarget::Talk`] 那一行永远不出现，交互列表与本批次之前
-    /// 逐条相同。
+impl InteractLookup<'_> {
+    /// **显式地什么内容都不接**：一张常量空表 + 没有文化表 + 没有森林
+    /// 地形，于是 [`InteractTarget::Talk`] 与 [`InteractTarget::Tree`] 那
+    /// 几行永远不出现，交互列表与对话/树木两批之前逐条相同。
     ///
     /// 给「这条测试的标的不是对话」的调用点用（地面物品去重、开关门
     /// ……）。**它是一个选择，不是一条可以忘记传的可选路径**——这正是
-    /// [`TalkLookup`] 收必填参数而不是 `Option` 的理由，见该类型文档
-    /// 「为什么不是 `Option<TalkLookup>`」一节。
-    pub const fn none() -> TalkLookup<'static> {
-        TalkLookup {
+    /// [`InteractLookup`] 收必填参数而不是 `Option` 的理由，见该类型文档
+    /// 「为什么不是 `Option<InteractLookup>`」一节。
+    pub const fn none() -> InteractLookup<'static> {
+        InteractLookup {
             dialogues: &NO_DIALOGUES,
             cultures: None,
+            forest: None,
+            tree_seed: None,
         }
     }
 }
@@ -184,7 +223,9 @@ impl InteractTarget {
             InteractTarget::Facility { def }
             | InteractTarget::Container { def }
             | InteractTarget::Loose { def } => Some(def),
-            InteractTarget::Door { .. } | InteractTarget::Talk { .. } => None,
+            InteractTarget::Door { .. }
+            | InteractTarget::Talk { .. }
+            | InteractTarget::Tree { .. } => None,
         }
     }
 }
@@ -212,7 +253,7 @@ pub fn interact_tiles(
     world: &WorldState,
     origin: TorusPos,
     actor: EntityId,
-    talk: TalkLookup<'_>,
+    talk: InteractLookup<'_>,
 ) -> Vec<InteractTile> {
     SCAN_ORDER
         .iter()
@@ -293,7 +334,7 @@ pub fn interact_entries(
     world: &WorldState,
     pos: TorusPos,
     actor: EntityId,
-    talk: TalkLookup<'_>,
+    talk: InteractLookup<'_>,
 ) -> Vec<InteractTarget> {
     let mut rows: Vec<InteractTarget> = Vec::new();
     // 对话这一行**排在最前**（规格六节第 2 条）：一格上同时有人和东西
@@ -324,7 +365,83 @@ pub fn interact_entries(
     if let Some(action) = door_action_at(world, pos) {
         rows.push(InteractTarget::Door { action });
     }
+    rows.extend(tree_rows(world, pos, actor, talk));
     rows
+}
+
+/// 这一格上的树能做什么——0 到 2 行（采果与砍伐可以同时出现；培植与
+/// 那两条互斥，因为它要求这一格**没有**树）。
+///
+/// # 三道闸门，与 `resolve_tend_tree` 是**同一批判据的呈现侧影子**
+///
+/// 这里判的是「这一行要不要显示出来」，`resolve` 判的是「按下去成不成」。
+/// 两者必须一致，否则会出现「列表里列着、按下去什么都不发生」——本仓库
+/// 反复付过代价的那种骗玩家的形状。
+///
+/// **一致性不靠抄一遍判据，靠调同一批函数**：这一格有没有树问
+/// `ll_world::tree::tree_at`（与 `resolve` 同一个），果子长好没有读它返回
+/// 的 `fruit_ready`（同一个字段），地形是不是森林比的是同一个
+/// `TerrainKind`。唯一在这里而不在 `resolve` 里的是「背包里有没有种子」，
+/// 而 `resolve` 侧那一道完全等价（`inventory.iter().find(def == seed)`）。
+///
+/// **仍有一条本层管不了的**：`within_reach`。交互列表本身只对够得着的
+/// 格子构造（`interact_tiles`），因此这里不重复判一次。
+fn tree_rows(
+    world: &WorldState,
+    pos: TorusPos,
+    actor: EntityId,
+    talk: InteractLookup<'_>,
+) -> Vec<InteractTarget> {
+    let Some(forest) = talk.forest else {
+        return Vec::new();
+    };
+    if world.terrain_at(pos) != Some(forest) {
+        return Vec::new();
+    }
+    match tree_at(world, pos, forest) {
+        Some(tree) => {
+            let mut rows = Vec::new();
+            // 采果排在砍伐前面：站在一棵挂着果子的树前，「摘一个」几乎
+            // 总是比「砍掉它」更常见的意图（与对话那一行排最前同一条
+            // 「几乎总是玩家的意图」的判断）。
+            if tree.fruit_ready {
+                rows.push(InteractTarget::Tree {
+                    species: tree.species,
+                    action: TreeAction::Harvest,
+                });
+            }
+            rows.push(InteractTarget::Tree {
+                species: tree.species,
+                action: TreeAction::Fell,
+            });
+            rows
+        }
+        None => {
+            // 空地上的培植：手上得真的有一颗种子，否则这一行按下去
+            // 什么都不会发生。
+            let Some(seed) = talk.tree_seed else {
+                return Vec::new();
+            };
+            let Some(agent) = world.actors.get(actor) else {
+                return Vec::new();
+            };
+            if !agent.inventory.iter().any(|stack| stack.def == seed) {
+                return Vec::new();
+            }
+            // `species` 这里填**那块地会长出来的那种**——培植长什么由
+            // 气候决定（`derived_species_at`，与 `resolve` 同一个函数），
+            // 所以列表上写的就是按下去真会长出来的那种树。
+            vec![InteractTarget::Tree {
+                species: ll_world::tree::derived_species_at(
+                    world.seed,
+                    pos,
+                    world.size.height(),
+                    world.terrain_shape.climate_band_width,
+                ),
+                action: TreeAction::Plant,
+            }]
+        }
+    }
 }
 
 /// `pos` 这一格上站着的那个人能不能说话；不能就返回 `None`。
@@ -352,7 +469,7 @@ fn talk_target(
     world: &WorldState,
     pos: TorusPos,
     actor: EntityId,
-    talk: TalkLookup<'_>,
+    talk: InteractLookup<'_>,
 ) -> Option<InteractTarget> {
     let viewer = world.actors.get(actor)?;
     let (speaker, other) = occupant_at(world, pos, actor)?;
@@ -443,7 +560,7 @@ pub fn direction_row_text(
     classes: &ClassTable,
     catalog: &Catalog,
     language: &str,
-    talk: TalkLookup<'_>,
+    talk: InteractLookup<'_>,
 ) -> String {
     let direction = catalog.resolve(language, direction_key(tile.dir));
     let entries = interact_entries(world, tile.pos, actor, talk);
@@ -487,6 +604,18 @@ pub fn interact_row_text(
             action: DoorAction::Close,
         } => "hud-interact-action-close_door",
         InteractTarget::Talk { .. } => "hud-interact-action-talk",
+        InteractTarget::Tree {
+            action: TreeAction::Fell,
+            ..
+        } => "hud-interact-action-fell",
+        InteractTarget::Tree {
+            action: TreeAction::Harvest,
+            ..
+        } => "hud-interact-action-harvest",
+        InteractTarget::Tree {
+            action: TreeAction::Plant,
+            ..
+        } => "hud-interact-action-plant",
     };
     let action = catalog.resolve(language, action_key);
     // **门这一行不写数量。** 「x1」对一件可以有好几堆的物品才有意义，
@@ -539,6 +668,17 @@ fn interact_target_name(
         // ——用职业显示名代替）。职业表查不到这一条时退回一句通用的
         // 「一个人」，与门那两条键同一档：不 panic，也不拿索引号冒充
         // 名字。NPC 姓名那一批（对话批次 6）会把这里换成真名。
+        // 树走 HUD 文案键，与门那两条同一档：树不是内容表里的一条，
+        // 没有 `display_name_key`（`ll_world::tree::TreeSpecies` 是引擎
+        // 侧枚举，理由见它自己的文档）。
+        InteractTarget::Tree { species, .. } => catalog.resolve(
+            language,
+            match species {
+                TreeSpecies::Oak => "hud-interact-tree-oak",
+                TreeSpecies::Pine => "hud-interact-tree-pine",
+                TreeSpecies::Palm => "hud-interact-tree-palm",
+            },
+        ),
         InteractTarget::Talk { profession, .. } => classes
             .get(profession)
             .map(|view| catalog.resolve(language, &view.display_name_key.to_string()))

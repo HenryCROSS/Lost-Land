@@ -53,6 +53,7 @@ use crate::ownership::Owner;
 use crate::space::{Space, SpaceId};
 use crate::surface_store::SurfaceStore;
 use crate::terrain::{BaseTerrainIds, TerrainKind, TerrainTable};
+use crate::tree::TreeDeviations;
 use crate::zone::ZoneLayout;
 
 /// `Surface` 与 `Interior` 共享的常驻上限默认值（设计文档五节，与关键
@@ -500,6 +501,36 @@ pub struct WorldState {
     /// 是 `Vec` 顺序，不涉及 `HashMap`/`HashSet` 迭代顺序（约束 C5），
     /// 编码见 [`crate::faction::FactionTable::write_hash`]。
     pub factions: FactionTable,
+    /// **被玩家动过的那些树**（树木批次，[ADR 0009]「默认派生，只存偏差」）。
+    ///
+    /// # 这里存的**不是**世界上的树
+    ///
+    /// 世界上有一百万棵以上的树，它们**一棵都不在这里**——树由地形 + 确定性
+    /// 噪声现算（[`crate::tree::derived_tree_at`]），零存储。这张表只装
+    /// 「被砍掉的、被种下的、被采过果的」那一小撮格子。
+    ///
+    /// **项目所有者知情并接受的代价**：不能给一棵没动过的树单独设属性——
+    /// 它在存档里根本不存在。单棵想特殊化可以（写成一条偏差记录），成片不行。
+    /// 完整论证与推翻它要付什么代价，见 [`crate::tree`] 模块文档
+    /// 「项目所有者知情并接受的代价」一节。
+    ///
+    /// # 为什么它必须进存档
+    ///
+    /// 它是这套架构里**唯一不可派生**的那一半。砍掉一棵树是玩家做过的事，
+    /// 不是种子的函数——不存它，读档之后被砍光的林子会原样长回来。
+    /// 与 [`Self::factions`] 同一条判据（「被占领后肯定会有变化的」）。
+    ///
+    /// # 参与 `hash()`（ADR 0022）
+    ///
+    /// 同一条先例第十次重演：`ll_sim::apply` 处理
+    /// `Effect::SetTreeDeviation` 时真实改写这个字段，缺席 `hash()` 就测不出
+    /// 「砍伐/培植/采果悄悄没落地」。编码在
+    /// [`crate::tree::TreeDeviations::write_hash`]（`BTreeMap` 按键自然顺序
+    /// 遍历，不涉及 `HashMap`/`HashSet` 迭代顺序，约束 C5）——**不写在本
+    /// 文件里**，理由与 `factions` 同一条：这个文件已经在行数棘轮快照里。
+    ///
+    /// [ADR 0009]: ../../../knowledge/decisions/0009-derive-by-default-store-only-deviation.md
+    pub trees: TreeDeviations,
 }
 
 /// [`WorldState`] 反序列化的中转表示。
@@ -570,6 +601,16 @@ struct WorldStateRepr {
     /// （`CURRENT_SCHEMA_VERSION` 已随本批递增）。
     #[serde(default)]
     factions: FactionTable,
+    /// 树木偏差表（树木批次）——**现在轮到它是本结构的最后一个字段**，
+    /// 上面 `factions` 那段「必须是最后一个字段」的论证原样适用于它：
+    /// 存档主体走 `postcard`（按声明顺序定位、不带字段名），新字段插在
+    /// 中间会让后续字段的字节被错位读成合法值。`#[serde(default)]` 的
+    /// 理由同上面那批：只服务本文件内部用 `serde_json::json!` 手写局部
+    /// 字段的测试固件；**老存档走的是「版本不对就明确拒绝」，不是靠它
+    /// 兜底**——`postcard` 非自描述，`#[serde(default)]` 在那条路上是
+    /// 空操作，`CURRENT_SCHEMA_VERSION` 已随本批递增到 7。
+    #[serde(default)]
+    trees: TreeDeviations,
 }
 
 impl TryFrom<WorldStateRepr> for WorldState {
@@ -619,6 +660,7 @@ impl TryFrom<WorldStateRepr> for WorldState {
             ground_items: repr.ground_items,
             materialized_settlements: repr.materialized_settlements,
             factions: repr.factions,
+            trees: repr.trees,
         })
     }
 }
@@ -671,6 +713,10 @@ impl WorldState {
             // 新造的世界还没有历史，因此还没有势力；建档路径随后会把
             // 编年史折叠出来的那一份搬进来（`ll_game::world::build_world`）。
             factions: FactionTable::new(),
+            // 新造的世界里一棵树都没被动过——一百万棵树全部由
+            // `crate::tree::derived_tree_at` 现算，这张表是空的，
+            // 而且**正常情况下它会一直很空**。
+            trees: TreeDeviations::new(),
         })
     }
 
@@ -1465,6 +1511,11 @@ impl WorldState {
         // Self::factions 文档「参与 hash()」一节。编码本身在
         // faction.rs 里（这个文件已经 3700+ 行，新代码不再往里堆）。
         self.factions.write_hash(&mut hasher);
+
+        // 树木偏差表（树木批次）——同一条先例第十次重演，理由见
+        // Self::trees 字段文档「参与 hash()」一节。编码本身在 tree.rs 里
+        // （这个文件已经在行数棘轮快照里，新代码不再往里堆）。
+        self.trees.write_hash(&mut hasher);
 
         hasher.finish()
     }

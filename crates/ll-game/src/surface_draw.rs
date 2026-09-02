@@ -140,6 +140,8 @@ use ll_mod::registry::Registry;
 use ll_render::sprite::Layer;
 use ll_world::entity::{EntityId, Gender};
 use ll_world::state::WorldState;
+use ll_world::terrain::TerrainKind;
+use ll_world::tree::{TreeSpecies, tree_at};
 
 /// 玩家标记在绘制顺序里固定的实体号（[`Layer::ENTITY`] 层）。
 ///
@@ -168,6 +170,22 @@ pub const GROUND_PILE_ENTITY_BASE: u64 = 0;
 /// 是 `i32::MAX / 2`，最大世界的格数上限约 `2^60`，仍远低于 `2^63`。
 pub const PLACED_FURNITURE_ENTITY_BASE: u64 = 1 << 63;
 
+/// 树木绘制顺序号的起始偏移（[`Layer::TERRAIN`] 层）。
+///
+/// # 为什么树在 `TERRAIN` 层而不是 `DECOR` 层
+///
+/// 树是**长在地上的**，掉在树下的东西、摆在树旁的家具、站在树前的人
+/// 都该盖在它前面。放进 `DECOR` 会让树与地面物品堆争同一层，而
+/// [`ll_render::sprite::DrawOrder`] 在同层同脚底纵坐标时比的是序号
+/// ——那就要在两个号段之间做一次没有语义的大小约定。放 `TERRAIN` 层
+/// 直接由「层」表达这件事：树恒在地形之上、恒在其余一切之下。
+///
+/// 取 `1 << 62` 而不是「世界格数」这类随世界大小变化的值，理由与
+/// [`PLACED_FURNITURE_ENTITY_BASE`] 逐字相同（号段起点必须是编译期
+/// 常量）。地形自己的号段是 `[1, 世界格数]`，最大世界的格数上限约
+/// `2^60`（见那一段推导），因此本号段与它**不可能相撞**。
+pub const TREE_ENTITY_BASE: u64 = 1 << 62;
+
 /// NPC 绘制顺序号的起始偏移（[`Layer::ENTITY`] 层）。
 ///
 /// 从 1 起，把 0 让给 [`PLAYER_ENTITY`]：NPC 的序号取
@@ -184,6 +202,36 @@ pub const PLACED_FURNITURE_SPRITE: &str = "lostland:furniture_placed";
 
 /// NPC 查不到种族自带贴图时的通用记号。
 pub const NPC_SPRITE: &str = "lostland:npc_idle_0";
+
+/// 树木贴图键的公共前缀（命名空间 + `tree_`）。
+///
+/// **唯一真相源**：[`tree_sprite_key`] 拼它，
+/// `crates/ll-game/tests/atlas_coverage.rs` 的反向锁
+/// （`图集里不许有声明侧数不出来的树贴图`）也扫它——判据放在生产代码
+/// 这一侧而不是在测试里另抄一份字符串，理由与该文件模块文档反复写的
+/// 那条一样：**凡是把真相源之外的副本当判据，迟早分叉，而分叉时没有
+/// 任何东西会报错**。
+pub const TREE_SPRITE_PREFIX: &str = "lostland:tree_";
+
+/// 一种树的图集键。
+///
+/// 拼的是命名空间前缀 + [`TreeSpecies::sprite_stem`]——后者与
+/// `tools/ll-artgen` 那三条配方的名字、与 `draw_entry` 的三支派发逐字
+/// 一致。运行期真正被查的键是**带前缀的**（`ll_mod::asset_vfs` 把清单
+/// 条目名与所属命名空间拼起来），上一批五张 HUD 贴图正是栽在「查裸
+/// 名字、图集里存的是带前缀的」这一步上，五张全部静默失效、不打任何
+/// 日志。
+///
+/// 与 [`GROUND_PILE_SPRITE`]/[`NPC_SPRITE`] 同一档：命名空间写死成
+/// `lostland:`。树不是内容表里的一条（一百万棵以上，它们是派生出来
+/// 的，见 `ll_world::tree` 模块文档），因此没有 `registry.resolve` 那
+/// 条路可走。
+pub fn tree_sprite_key(species: TreeSpecies) -> String {
+    format!(
+        "{TREE_SPRITE_PREFIX}{}",
+        species.sprite_stem().trim_start_matches("tree_")
+    )
+}
 
 /// NPC 职业挂件绘制顺序号的起始偏移（[`Layer::ENTITY`] 层）。
 ///
@@ -280,6 +328,51 @@ pub fn surface_draws(
     draws.extend(placed_furniture_draws(world, registry));
     draws.extend(npc_draws(world, registry, player));
     draws
+}
+
+/// 给定的这批格子里，每一格**现在真的长着树**的产出一条指令。
+///
+/// # 为什么入参是一串格子，而不是像其余三类那样扫世界状态
+///
+/// 因为树**不在世界状态里**。一百万棵以上的树由地形 + 确定性噪声现算
+/// （`ll_world::tree::derived_tree_at`），世界状态里只有被玩家动过的那
+/// 一小撮偏差记录——「扫一遍 `world` 把树列出来」这件事从定义上就做不
+/// 到，也不该做（那等于把一百万棵树物化一遍）。
+///
+/// 调用方给出「这一帧要画哪些格」，本函数逐格问一次
+/// [`ll_world::tree::tree_at`]。**这是全仓库唯一一处把树变成绘制指令的
+/// 地方**：生产渲染路径（`crate::app::surface`）与冻结像素基准
+/// （`crates/ll-game/tests/visual_baselines.rs`）调的是同一个函数，
+/// 不各写一遍（ADR 0021）。
+///
+/// # 确定性（约束 C5）
+///
+/// 产出次序 = 入参次序。调用方给的都是行主序的确定迭代（相机的
+/// `visible_tiles_zoomed` 与基准测试那两重 `for`），全程不碰任何哈希
+/// 容器。`entity` 取 `TREE_ENTITY_BASE + y * 宽 + x`，与地形瓦片同一套
+/// 行主序编号，因此**同一格恒得同一个号**，与这一帧画了几格无关。
+pub fn tree_draws(
+    world: &WorldState,
+    forest: TerrainKind,
+    tiles: impl Iterator<Item = TorusPos>,
+) -> Vec<SurfaceDraw> {
+    let width = world.size.width() as u64;
+    tiles
+        .filter_map(|pos| {
+            let tree = tree_at(world, pos, forest)?;
+            Some(SurfaceDraw {
+                pos,
+                layer: Layer::TERRAIN,
+                entity: TREE_ENTITY_BASE + pos.y() as u64 * width + pos.x() as u64,
+                preferred_keys: vec![tree_sprite_key(tree.species)],
+                superseded_by: Vec::new(),
+                // `None`：查不到就**不画这一格的树**，地形底图照常。
+                // 与 NPC 职业挂件同一档——退到一张「通用树记号」会让三
+                // 种树看起来是同一种，那比不画更糟。
+                fallback_key: None,
+            })
+        })
+        .collect()
 }
 
 /// 每一格「躺着东西」的地方产出恰好一条指令。

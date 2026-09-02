@@ -347,6 +347,12 @@ pub fn apply_with_xp_curves(world: &mut WorldState, effect: &Effect, curves: &dy
                 agent.known_recipes.push(*recipe);
             }
         }
+        Effect::SetTreeDeviation { pos, deviation } => {
+            // 一行写入，零判断——「这一格现在有没有树」「果子长好了没有」
+            // 「背包里有没有种子」全部在 resolve_tend_tree 判完，见
+            // Effect::SetTreeDeviation 文档「apply 一句判断都不做」一节。
+            world.trees.set(*pos, *deviation);
+        }
         Effect::IdentifyItem { actor, def } => {
             // 无条件 push——去重闸门在 resolve_identify 的产出侧，见
             // Effect::IdentifyItem 文档「apply 不做任何判断」一节，与

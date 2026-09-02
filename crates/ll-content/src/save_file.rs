@@ -189,7 +189,42 @@ use crate::remap::remap_world;
 /// `crates/ll-world/src/entity/agent.rs` 的
 /// `少一个末尾字段的旧形状用postcard解不回新形状` 则直接对着字节流验证
 /// 「少一个末尾字段就解不回来」。
-pub const CURRENT_SCHEMA_VERSION: u32 = 6;
+/// # 6 → 7（树木批次，2026-09-01，批次 32）——又一次最经典的那一档
+///
+/// [`ll_world::state::WorldState`] 末尾多了一个字段
+/// `trees: ll_world::tree::TreeDeviations`（**被玩家动过的那些树**——
+/// 砍掉的、种下的、采过果的。世界上一百万棵以上的树**一棵都不在里面**，
+/// 它们由地形 + 确定性噪声现算，见 ADR 0009「默认派生，只存偏差」）。
+///
+/// 门禁 `scripts/ci/check_save_schema_version.py` 实跑报出的正是这一档：
+/// `WorldState`/`WorldStateRepr` 字段序 16 → 17，且
+/// `TreeDeviations`/`TreeDeviation`/`TreeSpecies` 三个类型**新进入存档
+/// 主体闭包**。与 2 → 3 / 3 → 4 / 5 → 6 同形：**字节布局真的变了。**
+///
+/// **老存档不兼容，而且这件事不靠 `#[serde(default)]` 声称。**
+/// `WorldStateRepr::trees` 上确实写了 `#[serde(default)]`，但那**只服务
+/// 本文件内部用 `serde_json::json!` 手写局部字段的测试固件**（与
+/// `factions`/`ground_items` 那批同一条既有理由）；在 postcard 这条真正
+/// 的主体路径上它是**空操作**。本批**没有**据此声称任何兼容性。
+///
+/// **不兼容这件事有实测证据，不是一句声明**（照批次 3 那两条的写法，
+/// 一条验管线、一条验字节）：
+///
+/// - `crates/ll-content/src/save_file.rs` 的
+///   `树木批次之前的老存档被明确拒绝而不是静默按新布局误解析`——验读档
+///   管线在版本比较那一步就明确拒绝，走
+///   [`crate::load_error::LoadError::SchemaMigrationGap`]。
+/// - `crates/ll-world/src/tree.rs` 的
+///   `砍掉末尾树木字段的旧字节流用postcard解不回新形状`——**直接对着
+///   字节流**验证「少掉末尾那个字段就解不回来」，并断言**具体错误**是
+///   「缓冲区提前结束」，不是「大概会失败」。
+///
+/// **老存档里没有树的偏差，读回来会怎样？** 读不回来——它在版本比较那一
+/// 步就被拒了，**根本走不到主体解析**。这是既有的「版本不对就打不开」
+/// 策略（交接文档第〇之二第 9 条），与前六次一样**不配迁移函数**。
+/// 假想「如果绕过版本检查会怎样」的答案由上面第二条测试直接给出：
+/// postcard 撞上缓冲区末尾并报错，不是静默误解析——因为新字段在**末尾**。
+pub const CURRENT_SCHEMA_VERSION: u32 = 7;
 
 /// 头部 JSON 长度声明的安全上限——防御「声明长度与实际不符」类畸形
 /// 存档（规格 §14.3 fuzz 要求之一）：一个只有几十字节的文件却在长度
@@ -972,6 +1007,42 @@ mod tests {
             LoadOutcome::Rejected(LoadError::SchemaMigrationGap(detail)) => {
                 assert_eq!(detail.from, 5);
                 const _: () = assert!(5 < CURRENT_SCHEMA_VERSION);
+            }
+            other => panic!("期望 Rejected(SchemaMigrationGap)，实际 {other:?}"),
+        }
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn 树木批次之前的老存档被明确拒绝而不是静默按新布局误解析() {
+        // 树木批次把 CURRENT_SCHEMA_VERSION 从 6 升到 7：`WorldState`
+        // 末尾多了 `trees: TreeDeviations`（被玩家动过的那些树），而存档
+        // 主体走 postcard（non-self-describing、按声明顺序定位），一份
+        // 写于版本 6 的字节流用现在的布局去读会在末尾撞上「缓冲区提前
+        // 结束」——那一半由 `ll-world` 那一侧的
+        // `砍掉末尾树木字段的旧字节流用postcard解不回新形状` 直接对着
+        // 字节流验证，并断言的是**具体错误**。本条验的是另一半：
+        // **读档管线根本不会走到那一步**，它在版本比较那里就明确拒绝了。
+        //
+        // 交接文档第〇之二第 9 条已裁定**不写迁移**，因此正确行为就是
+        // 走「版本不对就打不开」这条既有路径。
+        //
+        // 反例验证（ADR 0022）：把 `check_schema_version` 的比较改成恒
+        // 返回 `Ok`，本条立刻红。
+        // Arrange：6 是树木批次之前的那个版本号。
+        let path = temp_path("pre-trees-save-rejected");
+        let mut header = sample_header(Vec::new());
+        header.schema_version = 6;
+        save_to_file(&path, &header, &test_world()).expect("写出应当成功");
+
+        // Act
+        let outcome = load_full(&path, &Registry::new(), &[], TerrainTable::default());
+
+        // Assert：明确拒绝，且错误里说得出是从哪个版本来的。
+        match outcome {
+            LoadOutcome::Rejected(LoadError::SchemaMigrationGap(detail)) => {
+                assert_eq!(detail.from, 6);
+                const _: () = assert!(6 < CURRENT_SCHEMA_VERSION);
             }
             other => panic!("期望 Rejected(SchemaMigrationGap)，实际 {other:?}"),
         }
