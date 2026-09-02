@@ -22,28 +22,39 @@
 //! 与 [`super::inventory_panel`] 自己查 `ItemTable` 并不矛盾：那块是
 //! **常驻只读**面板，本块是**通用选择器**，两者服务的问题不同。
 //!
-//! # 光标标记为什么是文字前缀，不是一块高亮矩形
+//! # 光标标记是一块高亮矩形，不是文字前缀（规格 W7 / F7）
 //!
-//! 一块高亮矩形要么需要知道每一行的实际文字宽度（本 crate 的文本测量
-//! 在 `ll-text`，HUD 这一层拿不到），要么就得画成整行等宽的色块——后者
-//! 在面板宽度固定而文字长短不一时看起来像是「选中了一整条空白」。
-//! 前缀标记（`> `）没有这些问题，且在 ADR 0025 禁止合成按键的前提下，
-//! 它是**可以被纯文本断言直接验证**的：测试只要看第几行以标记开头就
-//! 知道光标在哪，不需要比对像素。
+//! **此前是文字前缀**：光标那一行拼上 `"> "`、其余行拼上两个空格。那条
+//! 取舍当时写的理由是「高亮矩形要么拿不到文字宽度、要么画成整行色块」，
+//! 而它有一个说错了的前提——**内嵌字体是比例字体，`"> "` 与两个空格不
+//! 等宽**（10.91px 对 6.27px）。于是光标每上下移动一格，整列文字就左右
+//! 抖动 4.6px；`knowledge/design/ui-and-navigation.md` §8.5 W7 / §9.3 F7
+//! 记的正是这件事，§12 把守着那条「等宽」的断言点名成反面教材——它比的
+//! 是**字符数**，两个前缀字符数相同，所以从落地那天起就没有咬住过。
+//!
+//! 「找一个与 `"> "` 等宽的空白组合」在比例字体里没有精确解（空格
+//! 3.135px，除不尽），凑近似值等于把判据从「相等」放宽成「差不多」。
+//! 因此走另一条：**把光标记号从文本内容里拿出来**，改成一块高亮矩形。
+//!
+//! 「拿不到文字宽度」那个前提也已经消失——规格 W1 落地后本模块本来就
+//! 收着一个 [`MeasureText`]（面板宽度按内容现算要用它），行矩形因此与
+//! 行文字**出自同一次游标推进**（[`action_menu_content`]），不是按
+//! 「第 i 行 = i × 行高」反算出来的：那条公式在长行换行之后会静悄悄
+//! 错开一格，与 `crate::screen` 的 `layout_screen` 当初修的是同一个病。
+//!
+//! **可断言性一点没丢**（ADR 0025 禁止合成按键，程序化断言是本项目的
+//! 默认验证手段）：测试改为在渲染帧里找那一块高亮 quad，断言它落在
+//! `row_rects[cursor]` 上——这比看第几行以什么开头**更接近玩家真的看到
+//! 了什么**，因为文字前缀只是选中态的一个代理，高亮矩形就是选中态本身。
 
 use ll_i18n::Catalog;
 
 use super::{PanelContent, build_panel};
 use ll_text::MeasureText;
 
+use crate::widget::geometry::Rect;
 use crate::widget::label::Label;
 use crate::widget::list::RowCursor;
-
-/// 光标所在那一行的前缀，见模块文档「光标标记为什么是文字前缀」一节。
-pub const CURSOR_PREFIX: &str = "> ";
-/// 其余行的前缀——与 [`CURSOR_PREFIX`] **等宽**，否则整列文字会随光标
-/// 上下移动而左右抖动。
-pub const IDLE_PREFIX: &str = "  ";
 
 /// 一块动作菜单画在屏幕的什么位置。
 ///
@@ -80,9 +91,11 @@ pub struct ActionMenuData<'a> {
     pub title_key: &'a str,
     /// 全部可选行，已由调用方排好版（见模块文档）。
     pub rows: &'a [String],
-    /// 光标落在第几行。超出 `rows` 范围时不标记任何一行——不钳制、也
-    /// 不 panic：钳制会掩盖「调用方的光标维护有缺陷」这个应该显形的
-    /// 问题，panic 则会因为一个纯显示问题拖垮整个游戏。
+    /// 光标落在第几行——**这一行会被画上一块高亮矩形**
+    /// （[`ActionMenuContent::row_rects`]）。超出 `rows` 范围时不高亮
+    /// 任何一行——不钳制、也不 panic：钳制会掩盖「调用方的光标维护有
+    /// 缺陷」这个应该显形的问题，panic 则会因为一个纯显示问题拖垮整个
+    /// 游戏。
     pub cursor: usize,
     /// 列表为空时显示的占位行的 Fluent 键。
     pub empty_key: &'a str,
@@ -92,18 +105,34 @@ pub struct ActionMenuData<'a> {
     pub placement: MenuPlacement,
 }
 
-/// 建出动作菜单面板：标题 + 逐行（光标行带 [`CURSOR_PREFIX`]）+ 提示行。
-pub fn action_menu_panel(
+/// 一块动作菜单排完版之后的全部几何：面板本体 + **每一个可选行的
+/// 矩形**。
+///
+/// 行矩形与行文字出自同一次游标推进（见模块文档最后两段），高亮画在
+/// 哪儿因此不可能与文字画在哪儿对不上。形状与 `crate::screen` 的
+/// `ScreenContent::row_rects` 平行。
+pub struct ActionMenuContent {
+    /// 面板背景矩形与全部文本行。
+    pub panel: PanelContent,
+    /// 每一个**可选行**的矩形，下标与 [`ActionMenuData::rows`] 一一
+    /// 对应——标题行、占位行与提示行都不在里面（它们不是可选项）。
+    pub row_rects: Vec<Rect>,
+}
+
+/// 建出动作菜单面板：标题 + 逐行 + 提示行，外加每一个可选行的矩形。
+pub fn action_menu_content(
     data: &ActionMenuData<'_>,
     catalog: &Catalog,
     language: &str,
     measure: &mut dyn MeasureText,
     origin: (f32, f32),
     width: f32,
-) -> PanelContent {
-    build_panel(measure, origin, width, |cursor, lines| {
-        write_action_menu_lines(data, catalog, language, cursor, lines);
-    })
+) -> ActionMenuContent {
+    let mut row_rects = Vec::new();
+    let panel = build_panel(measure, origin, width, |cursor, lines| {
+        write_action_menu_lines(data, catalog, language, cursor, lines, &mut row_rects);
+    });
+    ActionMenuContent { panel, row_rects }
 }
 
 /// 产出动作菜单的全部文本行——纯函数，不接触 GPU，供本模块测试与
@@ -125,7 +154,14 @@ pub fn action_menu_lines(
         wrap_width,
     );
     let mut lines = Vec::new();
-    write_action_menu_lines(data, catalog, language, &mut cursor, &mut lines);
+    write_action_menu_lines(
+        data,
+        catalog,
+        language,
+        &mut cursor,
+        &mut lines,
+        &mut Vec::new(),
+    );
     lines
 }
 
@@ -135,21 +171,22 @@ fn write_action_menu_lines(
     language: &str,
     cursor: &mut RowCursor,
     lines: &mut Vec<Label>,
+    row_rects: &mut Vec<Rect>,
 ) {
     cursor.push(lines, catalog.resolve(language, data.title_key));
     if data.rows.is_empty() {
-        cursor.push(
-            lines,
-            format!("{IDLE_PREFIX}{}", catalog.resolve(language, data.empty_key)),
-        );
+        // 占位行**不是可选行**，因此不产出行矩形——列表空的时候没有
+        // 任何一行会被高亮，与 `data.cursor` 越界时同一个结果。
+        cursor.push(lines, catalog.resolve(language, data.empty_key));
     } else {
-        for (row, text) in data.rows.iter().enumerate() {
-            let prefix = if row == data.cursor {
-                CURSOR_PREFIX
-            } else {
-                IDLE_PREFIX
-            };
-            cursor.push(lines, format!("{prefix}{text}"));
+        for text in data.rows {
+            // 一行的矩形就是这一行推进前后的那一段，横向占满内容区
+            // ——与 `crate::screen` 的 `layout_screen` 逐字同一条纪律。
+            let top = cursor.cursor_y();
+            let x = cursor.x();
+            let width = cursor.wrap_width();
+            cursor.push(lines, text.clone());
+            row_rects.push(Rect::new(x, top, width, cursor.cursor_y() - top));
         }
     }
     cursor.push(lines, catalog.resolve(language, data.hint_key));
@@ -198,10 +235,27 @@ mod tests {
         .collect()
     }
 
+    /// 建一块动作菜单，返回面板 + 行矩形——测试共用的那一次调用。
+    fn content(data: &ActionMenuData<'_>, catalog: &Catalog) -> ActionMenuContent {
+        action_menu_content(
+            data,
+            catalog,
+            "zh-CN",
+            &mut crate::测试测量器(),
+            (0.0, 0.0),
+            crate::测试断行宽 + super::super::DEFAULT_PADDING * 2.0,
+        )
+    }
+
     #[test]
-    fn 光标所在那一行带标记其余行不带() {
+    fn 行文字里不再有任何光标记号() {
+        // 规格 W7：光标记号从**文本内容**里拿出来了，行文字就是调用方
+        // 给的那一串，一个字符都不多。
+        //
+        // 反例验证（已实跑）：把 `write_action_menu_lines` 的
+        // `text.clone()` 改回 `format!("> {text}")`，本条红在第 2 行。
         // Arrange
-        let catalog = fixture_catalog("cursor-marks-one-row");
+        let catalog = fixture_catalog("no-prefix-in-text");
         let rows = vec!["甲".to_string(), "乙".to_string(), "丙".to_string()];
         let data = ActionMenuData {
             title_key: "menu-title",
@@ -215,16 +269,87 @@ mod tests {
         // Act
         let lines = texts(&data, &catalog);
 
-        // Assert：标题 + 三行 + 提示。
+        // Assert：标题 + 三行 + 提示，行文字逐字等于原文。
         assert_eq!(lines.len(), 5);
-        assert_eq!(lines[1], "  甲");
-        assert_eq!(lines[2], "> 乙");
-        assert_eq!(lines[3], "  丙");
+        assert_eq!(lines[1], "甲");
+        assert_eq!(lines[2], "乙");
+        assert_eq!(lines[3], "丙");
     }
 
     #[test]
-    fn 光标越界时没有任何一行带标记() {
-        // 见 `ActionMenuData::cursor` 文档：不钳制、不 panic。
+    fn 每一个可选行都有一块正对着它自己那行文字的矩形() {
+        // **这是「拔掉文本前缀之后，哪一行被选中仍然验得出来」的地基**：
+        // 高亮画在 `row_rects[cursor]` 上，而这条断言保证那一批矩形与
+        // 行文字是同一次游标推进的产物。
+        //
+        // 反例验证（已实跑）：把 `write_action_menu_lines` 里的
+        // `row_rects.push(...)` 删掉，本条红在「行矩形条数 0 ≠ 3」。
+        // Arrange
+        let catalog = fixture_catalog("row-rects-match-lines");
+        let rows = vec!["甲".to_string(), "乙".to_string(), "丙".to_string()];
+        let data = ActionMenuData {
+            title_key: "menu-title",
+            rows: &rows,
+            cursor: 1,
+            empty_key: "menu-empty",
+            hint_key: "menu-hint",
+            placement: MenuPlacement::TopCenter,
+        };
+
+        // Act
+        let built = content(&data, &catalog);
+
+        // Assert：先确认对象真的存在（空集会让下面的循环恒绿）。
+        assert_eq!(
+            built.row_rects.len(),
+            rows.len(),
+            "每一个可选行恰好一块矩形"
+        );
+        for (i, rect) in built.row_rects.iter().enumerate() {
+            // 第 0 行是标题，所以第 i 个可选行的标签在下标 i + 1。
+            let label = &built.panel.labels[i + 1];
+            assert_eq!(label.text, rows[i]);
+            assert_eq!(rect.y, label.y, "第 {i} 行的矩形顶边应对着它的文字");
+            assert!(rect.height > 0.0, "第 {i} 行的矩形不该是零高");
+            assert_eq!(rect.width, label.max_width, "行矩形横向占满内容区");
+        }
+    }
+
+    #[test]
+    fn 列表为空时一块行矩形都没有() {
+        // 占位行不是可选项——没有任何一行会被高亮。
+        // Arrange
+        let catalog = fixture_catalog("empty-has-no-row-rects");
+        let data = ActionMenuData {
+            title_key: "menu-title",
+            rows: &[],
+            cursor: 0,
+            empty_key: "menu-empty",
+            hint_key: "menu-hint",
+            placement: MenuPlacement::TopCenter,
+        };
+
+        // Act
+        let built = content(&data, &catalog);
+
+        // Assert
+        assert!(built.row_rects.is_empty());
+        assert_eq!(
+            built
+                .panel
+                .labels
+                .iter()
+                .map(|label| label.text.clone())
+                .collect::<Vec<_>>(),
+            vec!["标题", "（空）", "提示"]
+        );
+    }
+
+    #[test]
+    fn 光标越界时取不到任何一块行矩形() {
+        // 见 `ActionMenuData::cursor` 文档：不钳制、不 panic。此前这条
+        // 验的是「没有一行以 `"> "` 开头」——那条判据随文本前缀一起
+        // 作废了，换成验「取不到高亮该画的那块矩形」。
         // Arrange
         let catalog = fixture_catalog("cursor-out-of-range");
         let rows = vec!["甲".to_string()];
@@ -238,13 +363,11 @@ mod tests {
         };
 
         // Act
-        let lines = texts(&data, &catalog);
+        let built = content(&data, &catalog);
 
-        // Assert
-        assert!(
-            !lines.iter().any(|line| line.starts_with(CURSOR_PREFIX)),
-            "光标越界时不应该有任何一行被标记，实际是 {lines:?}"
-        );
+        // Assert：先确认这块菜单真的有行（否则「取不到」恒真）。
+        assert_eq!(built.row_rects.len(), 1);
+        assert!(built.row_rects.get(data.cursor).is_none());
     }
 
     #[test]
@@ -264,28 +387,6 @@ mod tests {
         let lines = texts(&data, &catalog);
 
         // Assert
-        assert_eq!(lines, vec!["标题", "  （空）", "提示"]);
-    }
-
-    #[test]
-    fn 两种前缀等宽以免整列文字随光标抖动() {
-        // 见模块文档「光标标记为什么是文字前缀」一节最后一句。
-        //
-        // # 【2026-09-01 批次 30】这条断言比的是**字符数**，它咬不住
-        //
-        // `knowledge/design/ui-and-navigation.md` §12 点名它是反面教材：
-        // 比例字体里 `"> "` 是 10.91px、`"  "` 是 6.27px，**两个前缀今天
-        // 根本不等宽**，而本条比的是字符数，所以照样绿。规格 W7 要求把
-        // 它换成比**渲染宽度**。
-        //
-        // **批次 30 没有换**，如实登记原因：换了它当场就红，而消红只有
-        // 两条路——(a) 找一个与 `"> "` 等宽的空白组合，比例字体里没有
-        // 精确解（空格 3.135px，除不尽），凑近似值等于把判据放宽；
-        // (b) 规格 F7 的做法，把光标记号从**文本内容**里拿出来变成一块
-        // 高亮矩形，而全仓库几十条 `starts_with(CURSOR_PREFIX)` 的断言
-        // 建立在「记号在文本里」之上。(b) 是对的，也是自成一批的改造。
-        // W7 与 F7 因此留在同一批做，届时**换掉**本条而不是留着。
-        // Arrange & Act & Assert
-        assert_eq!(CURSOR_PREFIX.chars().count(), IDLE_PREFIX.chars().count());
+        assert_eq!(lines, vec!["标题", "（空）", "提示"]);
     }
 }

@@ -290,4 +290,128 @@ mod tests {
         // Assert
         assert!(frame.textured_quads.is_empty());
     }
+
+    /// 这一帧里那**一块**聚焦高亮——先断言恰好一块，再返回它。
+    /// 找不到就 panic 而不是返回 `None`：一个「找不到就跳过」的助手会
+    /// 让调用它的断言在高亮消失那天集体空转。
+    fn 唯一的聚焦高亮(frame: &ScreenFrame) -> QuadInstance {
+        let 高亮: Vec<_> = frame
+            .quads
+            .iter()
+            .filter(|q| q.color == highlight::FOCUS_HIGHLIGHT_COLOR)
+            .copied()
+            .collect();
+        assert_eq!(
+            高亮.len(),
+            1,
+            "应当恰好一块聚焦高亮，实际 {} 块",
+            高亮.len()
+        );
+        高亮[0]
+    }
+
+    #[test]
+    fn 模态屏的高亮矩形落在光标那一行上() {
+        // **规格 W7 / F7**：行文字里已经没有 `"> "` 了（见
+        // `crate::screen` 的「行文字里不再有任何光标记号」），选中态
+        // 唯一的表达就是这一块矩形——这条就是「拔掉文字前缀之后哪一行
+        // 被选中仍然验得出来」在模态屏这一侧的证据。
+        //
+        // 走 `build_screen_frame` 这条**生产渲染路径**，期望值从生产
+        // 代码自己的 `screen_row_rects` 现取。
+        //
+        // 反例验证（已实跑）：把 `push_row_highlights` 里
+        // `(Some(data.cursor), …)` 改成 `(Some(0), …)`，本条红在
+        // 「光标在第 1 行时高亮没落在那一行上」。
+        // Arrange
+        let catalog = 测试目录();
+        let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
+
+        for cursor in 0..rows.len() {
+            let data = ScreenData {
+                title_key: "screen-menu-title",
+                rows: &rows,
+                cursor,
+                empty_key: "screen-menu-empty",
+                hint_key: "screen-menu-hint",
+                notice: None,
+                hovered: None,
+            };
+
+            // Act
+            let frame = build_screen_frame(
+                &data,
+                &catalog,
+                "zh-CN",
+                &FlatColorSkin,
+                &mut crate::测试测量器(),
+                1280.0,
+                720.0,
+            );
+            let 高亮 = 唯一的聚焦高亮(&frame);
+
+            // Assert
+            let 期望 = super::super::screen_row_rects(
+                &data,
+                &catalog,
+                "zh-CN",
+                &mut crate::测试测量器(),
+                1280.0,
+                720.0,
+            )[cursor];
+            assert_eq!(
+                高亮.position,
+                [期望.x, 期望.y],
+                "光标在第 {cursor} 行时高亮没落在那一行上"
+            );
+            assert_eq!(高亮.size, [期望.width, 期望.height]);
+        }
+    }
+
+    #[test]
+    fn 光标每下移一行模态屏的高亮就跟着下移一整行高() {
+        // 与上一条互补：上一条比的是「高亮 == 第 cursor 行的矩形」，
+        // 两边同源；万一行矩形全算成同一个，那一条会照样绿。这一条盯
+        // 的正是那种退化。
+        //
+        // 反例验证（已实跑）：`push_row_highlights` 的下标写死成 0，
+        // 本条红在「差 0 应当是 18」。
+        // Arrange
+        let catalog = 测试目录();
+        let rows: Vec<String> = (0..4).map(|n| format!("行{n}")).collect();
+
+        // Act
+        let ys: Vec<f32> = (0..rows.len())
+            .map(|cursor| {
+                let data = ScreenData {
+                    title_key: "screen-menu-title",
+                    rows: &rows,
+                    cursor,
+                    empty_key: "screen-menu-empty",
+                    hint_key: "screen-menu-hint",
+                    notice: None,
+                    hovered: None,
+                };
+                唯一的聚焦高亮(&build_screen_frame(
+                    &data,
+                    &catalog,
+                    "zh-CN",
+                    &FlatColorSkin,
+                    &mut crate::测试测量器(),
+                    1280.0,
+                    720.0,
+                ))
+                .position[1]
+            })
+            .collect();
+
+        // Assert
+        for pair in ys.windows(2) {
+            assert_eq!(
+                pair[1] - pair[0],
+                SCREEN_LINE_HEIGHT,
+                "相邻两行的高亮应当正好差一整行高，实际 {ys:?}"
+            );
+        }
+    }
 }

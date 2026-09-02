@@ -112,6 +112,16 @@ impl<'m> RowCursor<'m> {
         self.cursor_y
     }
 
+    /// 这个游标每一行的左边界——即所在面板的**内容区左边界**。
+    ///
+    /// 需要逐行**矩形**（而不只是文字）的调用方要它：一行的矩形横向
+    /// 占满内容区，纵向是这一行推进前后的那一段（见
+    /// [`crate::hud::action_menu::action_menu_content`] 与
+    /// `crate::screen` 的 `layout_screen`）。
+    pub fn x(&self) -> f32 {
+        self.x
+    }
+
     /// 这个游标写出的每一行的断行宽度——即所在面板的内容宽。
     pub fn wrap_width(&self) -> f32 {
         self.wrap_width

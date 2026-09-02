@@ -99,26 +99,13 @@ pub const SCREEN_SIDE_MARGIN: f32 = crate::widget::metrics::SCREEN_MARGIN;
 /// 一个非有限值在那一层的行为没有文档承诺，不值得赌。
 const NATURAL_WIDTH_PROBE: f32 = 1.0e6;
 
-/// 光标所在那一行的前缀——与 [`crate::hud::action_menu::CURSOR_PREFIX`]
-/// 取同一个记号，理由见那里的模块文档「光标标记为什么是文字前缀」
-/// 一节：它可以被纯文本断言直接验证，而 ADR 0025 禁止用合成按键做验收，
-/// 可断言性正是本项目挑选交互表达方式时的首要判据。
-pub const CURSOR_PREFIX: &str = "> ";
-/// 其余行的前缀——与 [`CURSOR_PREFIX`] **等宽**，否则整列文字会随光标
-/// 上下移动而左右抖动。
-///
-/// # 【2026-09-01 批次 30】「等宽」这句话今天是假的
-///
-/// 比例字体里 `"> "` 是 10.91px、`"  "` 是 6.27px——**两者根本不等宽**，
-/// 整列文字确实会随光标上下移动而抖动
-/// （`knowledge/design/ui-and-navigation.md` §8.5 W7 / §9.3 F7）。守着
-/// 这句话的那条断言只在 `crate::hud::action_menu` 里有一份，而它比的是
-/// **字符数**，所以照样绿；§12 点名它是反面教材。
-///
-/// 修法与「为什么批次 30 没修」逐字见
-/// `crate::hud::action_menu` 那条测试原地的标记：W7 与 F7 是同一个问题，
-/// 必须同批做。本行文字先划出真相，免得下一个人照着「等宽」二字推理。
-pub const IDLE_PREFIX: &str = "  ";
+// 光标记号**不在文本内容里**（规格 W7 / F7）——它是一块高亮矩形，见
+// [`FOCUS_HIGHLIGHT_COLOR`] 与 `crate::screen::render` 的
+// `push_row_highlights`。此前这里有一对 `CURSOR_PREFIX = "> "` /
+// `IDLE_PREFIX = "  "`，文档写着两者「等宽」——而内嵌字体是比例字体，
+// 10.91px 对 6.27px，那句话从来就是假的，整列文字随光标上下移动而
+// 左右抖动 4.6px。理由与取舍逐字见 `crate::hud::action_menu` 模块文档
+// 「光标标记是一块高亮矩形」一节。
 
 /// 压暗整屏的背板颜色（RGBA，`0.0..=1.0`）。
 ///
@@ -263,21 +250,14 @@ pub fn screen_text_lines(
 ) -> (Vec<String>, Option<usize>) {
     let mut lines = vec![catalog.resolve(language, data.title_key)];
     let rows_start = if data.rows.is_empty() {
-        lines.push(format!(
-            "{IDLE_PREFIX}{}",
-            catalog.resolve(language, data.empty_key)
-        ));
+        lines.push(catalog.resolve(language, data.empty_key));
         None
     } else {
         let start = lines.len();
-        for (row, text) in data.rows.iter().enumerate() {
-            let prefix = if row == data.cursor {
-                CURSOR_PREFIX
-            } else {
-                IDLE_PREFIX
-            };
-            lines.push(format!("{prefix}{text}"));
-        }
+        // 行文字就是调用方给的那一串，一个字符都不多——光标记号是一块
+        // 高亮矩形，不在文本里（规格 W7 / F7，见本文件 `IDLE_PREFIX`
+        // 原址那段注释）。
+        lines.extend(data.rows.iter().cloned());
         Some(start)
     };
     if let Some(notice) = data.notice {
@@ -668,7 +648,12 @@ mod tests {
     }
 
     #[test]
-    fn 光标那一行带标记其余行不带() {
+    fn 行文字里不再有任何光标记号() {
+        // 规格 W7：光标记号从**文本内容**里拿出来了（改成一块高亮
+        // 矩形），行文字就是调用方给的那一串，一个字符都不多。
+        //
+        // 反例验证（已实跑）：把 `screen_text_lines` 的 `lines.extend`
+        // 改回拼前缀，本条红在第 2 行。
         // Arrange
         let rows = vec!["甲".to_string(), "乙".to_string(), "丙".to_string()];
         let data = 测试数据(&rows, 1);
@@ -684,33 +669,32 @@ mod tests {
         );
 
         // Assert：第 0 行是标题，所以第 1 条行内容在下标 1。
-        assert!(lines[1].text.starts_with(IDLE_PREFIX));
-        assert!(lines[2].text.starts_with(CURSOR_PREFIX));
-        assert!(lines[3].text.starts_with(IDLE_PREFIX));
+        assert_eq!(lines[1].text, "甲");
+        assert_eq!(lines[2].text, "乙");
+        assert_eq!(lines[3].text, "丙");
     }
 
     #[test]
-    fn 光标越界时没有任何一行带标记() {
+    fn 光标越界时取不到任何一块行矩形() {
+        // 此前这条验的是「没有一行以 `"> "` 开头」——那条判据随文本
+        // 前缀一起作废了。换成验高亮该画在哪儿：取不到，就一块都不画。
         // Arrange
         let rows = vec!["甲".to_string()];
         let data = 测试数据(&rows, 9);
 
         // Act
-        let lines = screen_lines(
+        let rects = screen_row_rects(
             &data,
             &测试目录(),
             "zh-CN",
             &mut crate::测试测量器(),
-            (0.0, 0.0),
-            crate::测试断行宽,
+            1024.0,
+            768.0,
         );
 
-        // Assert
-        assert!(
-            !lines
-                .iter()
-                .any(|line| line.text.starts_with(CURSOR_PREFIX))
-        );
+        // Assert：先确认这块屏真的有行（否则「取不到」恒真）。
+        assert_eq!(rects.len(), 1);
+        assert!(rects.get(data.cursor).is_none());
     }
 
     #[test]
@@ -942,12 +926,7 @@ mod tests {
         let content = build_screen_panel(&data, &catalog, "en", &mut measure, 560.0, 720.0);
         let wrap = content.panel.width - SCREEN_PADDING * 2.0;
         let 行数 = measure
-            .measure_text(
-                &format!("{CURSOR_PREFIX}{长行}"),
-                SCREEN_FONT_SIZE,
-                SCREEN_LINE_HEIGHT,
-                wrap,
-            )
+            .measure_text(&长行, SCREEN_FONT_SIZE, SCREEN_LINE_HEIGHT, wrap)
             .line_count;
         assert!(行数 > 1, "测试文案必须真的会换行，实测 {行数} 行");
 
