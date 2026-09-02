@@ -262,6 +262,14 @@ impl Demo {
         input: &mut InputState,
     ) {
         self.session = Some(Session::begin(world, &self.content, target));
+        // **草稿与 `session` 不共存**（规格 D6 的配套不变式）。新游戏那
+        // 条路由 `finish_entering_world` 的 `take()` 守着；读档这条路是
+        // 唯一的漏口——而 D6 之后草稿变得「回得去」了（首页按「开始
+        // 游戏」会接着上一份），留着它就等于留下一条数据丢失路径：
+        // 玩家死亡 → 留下一份持有旧世界与旧槽位的转生草稿 → 回首页 →
+        // 读档玩了很久 → 再回首页 →「开始游戏」把他送回死亡那一刻的
+        // 世界，此后每一次存档都写回同一个槽位。
+        self.new_game_draft = None;
         self.close_screen(input);
     }
 

@@ -655,7 +655,27 @@ impl Demo {
         }
     }
 
-    /// 首页的「开始游戏」：建一局全新的世界并进去。
+    /// 首页的「开始游戏」：进角色创建。
+    ///
+    /// # 已经有草稿就**接着那一份**，不新建（规格 D6）
+    ///
+    /// 这一句此前是**无条件覆盖**，而角色创建屏的 Esc 与「返回」行都
+    /// 只是回首页、`new_game_draft` 原样留着（对比 `back_to_title` 是
+    /// 显式清的）。两件事凑在一起，规格 §2.2 D6 记的两条后果就出来了：
+    ///
+    /// 1. 玩家挑好的种族/性别/职业，退出去再进来就没了；
+    /// 2. **转生**那条路上，那份草稿手里攥着一整个 `GameWorld`
+    ///    （玩家死亡那一刻的世界与它自己的槽位），回到首页之后**再没有
+    ///    任何路径能回到它**，只能从磁盘重新读档。
+    ///
+    /// 修法是「留着 + 回得去」而不是「清掉」：清掉只治得了第二条，
+    /// 第一条反而被治反了。规格只把 D6 列进 P1 清单、没有给裁定，
+    /// 这条选择记在 `docs/superpowers/plans/2026-09-01-batch35-ui-p1-rest.md`。
+    ///
+    /// 配套的另一半在 [`Demo::enter_world_in_slot`](crate::app::Demo)：草稿一旦变得
+    /// 「回得去」，**草稿与 `session` 不共存**就必须是一条真的不变式，
+    /// 否则「读档玩了很久之后回首页按开始游戏，竟然回到死亡那一刻的
+    /// 世界并写回同一个槽位」会成为一条新的数据丢失路径。
     ///
     /// # 这里就是下一批（角色创建 / 世界配置 / 选重生点）的衔接点
     ///
@@ -665,14 +685,18 @@ impl Demo {
     /// [`Session::begin`](crate::session::Session::begin)——那个函数是「世界准备好了，开始玩」这件事
     /// 唯一的入口，四条路径共用，见本批次计划文档第七节。
     pub(super) fn start_new_game(&mut self, input: &mut InputState) {
-        tracing::info!("首页：开始新游戏，进入角色创建");
         // **本批次把这里从「直接建世界进游戏」换成了「先进一串屏」**
         // ——批次 6 计划文档第七节写明的那个衔接点。三块屏走完之后，
         // 终点仍然是 `Session::begin`（见 [`Demo::enter_world`]）。
-        self.new_game_draft = Some(crate::chargen::NewGameDraft::new(
-            &self.content,
-            &self.config.new_game,
-        ));
+        if self.new_game_draft.is_none() {
+            self.new_game_draft = Some(crate::chargen::NewGameDraft::new(
+                &self.content,
+                &self.config.new_game,
+            ));
+            tracing::info!("首页：开始新游戏，进入角色创建");
+        } else {
+            tracing::info!("首页：接着上次那份草稿，回到角色创建");
+        }
         self.modal
             .set_screen(Some(ScreenState::CharacterCreation { cursor: 0 }), input);
         self.screen_notice = None;
