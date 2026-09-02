@@ -567,3 +567,182 @@ fn 加入据点不消耗回合() {
         "对话不消耗回合，下次行动时刻不动"
     );
 }
+
+/// `open-trade` 那一支**不产任何 `Effect`**（规格五节 5.3 原话）。
+///
+/// 这一条与下一条合起来是「不产效果，只推 UI」在 `ll-sim` 这一侧的
+/// 全部落点。UI 那一侧（一条只有 `open-trade` 的选项压根不提交意图）
+/// 在 `crates/ll-game/tests/dialogue_session.rs`。
+///
+/// 故意改坏的反例（本批实测）：给 `resolve/dialogue.rs` 的
+/// `DialogueOutcome::OpenTrade => {}` 那一支塞进任何一条效果，本条当场红。
+#[test]
+fn open_trade那一支不产任何效果() {
+    // Arrange
+    let mut world = test_world();
+    let actor = spawn_agent(&mut world);
+    let node = ContentIndex::default();
+    let dialogues = FakeDialogues {
+        node,
+        options: vec![(Vec::new(), vec![DialogueOutcome::OpenTrade])],
+    };
+
+    // Assert（先断言对象存在）：这条选项真的查得到，且真的带着这条后果。
+    let view = dialogues
+        .option(node, 0)
+        .expect("这条选项必须查得到，否则下面的空断言恒真");
+    assert_eq!(view.outcomes, [DialogueOutcome::OpenTrade]);
+
+    // Act
+    let effects = resolve_with_catalogs(
+        &world,
+        &Intent::DialogueChoose {
+            actor,
+            speaker: actor,
+            node,
+            option: 0,
+        },
+        &catalogs(&dialogues),
+    );
+
+    // Assert
+    assert!(
+        effects.is_empty(),
+        "open-trade 不产出任何 Effect，实际是 {effects:?}"
+    );
+}
+
+/// 一条 `[set-flag, open-trade]` 混着的选项：**另一半照常落地**。
+///
+/// 这条守的是「`open-trade` 不产效果」不能被实现成「带 `open-trade` 的
+/// 选项整条短路」。
+///
+/// 故意改坏的反例（本批实测）：把 `resolve_dialogue_choose` 的 `for`
+/// 循环改成「遇到 `OpenTrade` 就 `break`」，本条当场红。
+#[test]
+fn open_trade混在里面时另一半后果照常落地() {
+    // Arrange
+    let mut world = test_world();
+    let actor = spawn_agent(&mut world);
+    let node = ContentIndex::default();
+    let dialogues = FakeDialogues {
+        node,
+        options: vec![(
+            Vec::new(),
+            vec![DialogueOutcome::SetFlag(flag()), DialogueOutcome::OpenTrade],
+        )],
+    };
+
+    // Act
+    let effects = resolve_with_catalogs(
+        &world,
+        &Intent::DialogueChoose {
+            actor,
+            speaker: actor,
+            node,
+            option: 0,
+        },
+        &catalogs(&dialogues),
+    );
+
+    // Assert
+    assert_eq!(effects.len(), 1, "只有 set-flag 那一半产出效果");
+    assert!(matches!(effects[0], Effect::SetModState { .. }));
+}
+
+/// **`open-trade` 那一行也不消耗回合**——每一支后果各有自己的这一条。
+///
+/// 批次 3 记下过一个陷阱：批次 2 那条「不消耗回合」只走 `set-flag` 一支，
+/// 加了新变体之后它**不再覆盖新的那一支**。因此本批给 `open-trade` 与
+/// `Intent::Trade`（见 `crates/ll-sim/tests/trade.rs`）**各写一条**。
+///
+/// 故意改坏的反例（本批实测）：给 `OpenTrade` 那一支补一条
+/// `Effect::ScheduleNext`，本条当场红。
+#[test]
+fn open_trade那一行不消耗回合() {
+    // Arrange
+    let mut world = test_world();
+    let actor = spawn_agent(&mut world);
+    let node = ContentIndex::default();
+    let dialogues = FakeDialogues {
+        node,
+        // 混着 `set-flag`：**必须有一半真的落地**，否则「时钟没动」只是
+        // 因为整条什么都没发生（本会话点名的那个恒绿形状）。
+        options: vec![(
+            Vec::new(),
+            vec![DialogueOutcome::SetFlag(flag()), DialogueOutcome::OpenTrade],
+        )],
+    };
+    let mut timeline = ll_sim::timeline::Timeline::new();
+    timeline.schedule(actor, Tick(0));
+    let mut engine = TurnEngine::new(timeline);
+    let clock_before = world.clock;
+    let next_before = world
+        .actors
+        .get(actor)
+        .expect("刚生成必然存在")
+        .next_action_at;
+
+    // Act：先让引擎把玩家弹出来（受控实体早退路径），再提交这一次选择
+    // ——这正是真实游戏里 `run_turn` 走的那条链。
+    let mut on_effect = |_world: &WorldState, _effect: &Effect| {};
+    let mut ai =
+        |_world: &WorldState, actor: EntityId, _controlled: EntityId| Intent::Wait { actor };
+    engine.advance_ai(
+        &mut world,
+        actor,
+        &mut ai,
+        &catalogs(&dialogues),
+        &mut on_effect,
+    );
+    let outcome = engine.try_player_intent(
+        &mut world,
+        actor,
+        Intent::DialogueChoose {
+            actor,
+            speaker: actor,
+            node,
+            option: 0,
+        },
+        &catalogs(&dialogues),
+        &mut on_effect,
+    );
+
+    // Assert：先确认真的发生了事，再断言时钟没动。
+    assert_eq!(outcome, PlayerTurnOutcome::Acted);
+    assert!(
+        has_dialogue_flag(world.actors.get(actor).expect("还在"), &flag()),
+        "对照组：混在一起的 set-flag 真的落地了"
+    );
+    assert_eq!(world.clock, clock_before, "open-trade 那一行不消耗回合");
+    assert_eq!(
+        world.actors.get(actor).expect("还在").next_action_at,
+        next_before,
+        "open-trade 那一行不消耗回合：下次行动时刻不动"
+    );
+}
+
+/// `is_ui_only` 只对 `open-trade` 返回真——**其余四支都会改世界**。
+///
+/// 会话屏用它决定「要不要提交 `Intent::DialogueChoose`」；判错方向的
+/// 代价是一条真后果被静默吞掉（或者一条恒空的意图污染意图日志）。
+///
+/// 故意改坏的反例（本批实测）：把
+/// `DialogueOutcome::is_ui_only` 里 `SetFlag(_)` 那一支改成 `true`，
+/// 本条当场红。
+#[test]
+fn 只有open_trade是只推ui的后果() {
+    // Arrange & Act & Assert
+    assert!(DialogueOutcome::OpenTrade.is_ui_only());
+    for outcome in [
+        DialogueOutcome::SetFlag(flag()),
+        DialogueOutcome::JoinSettlement,
+        DialogueOutcome::CompleteQuest(ContentIndex::default()),
+        DialogueOutcome::GiveItem(ContentIndex::default()),
+    ] {
+        assert!(
+            !outcome.is_ui_only(),
+            "{outcome:?} 会改世界状态，不能被判成只推 UI"
+        );
+    }
+}

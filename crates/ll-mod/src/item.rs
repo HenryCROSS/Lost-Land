@@ -1118,6 +1118,9 @@ impl ItemCatalog for ItemTable {
     fn item(&self, item: ContentIndex) -> Option<ItemRule> {
         self.get(item).map(|view| ItemRule {
             stack_limit: view.stack_limit,
+            // 〔2026-09-01，批次 31〕`base_price` 第一次离开内容哈希
+            // 与内容审计，被结算路径读到：`ll_sim::trade::trade_price`。
+            base_price: view.base_price,
             equip_mask: view.equip_mask,
             stat_bonuses: view.stat_bonuses.to_vec(),
             use_effect: view.use_effect,
@@ -1324,6 +1327,14 @@ mod tests {
         assert_eq!(
             rule,
             Some(ItemRule {
+                // 〔2026-09-01，批次 31〕`base_price` 是本批新加的字段。
+                // 这里写的是 `ItemAttrs` 那一侧声明的**真值**（2 整单位
+                // = `Milli(2000)`），不是 `Milli::ZERO`——本条因此顺带
+                // 守住「定价真的从内容表搬到了 `ItemRule`」。
+                // 反例验证（本批实测）：把 `ItemTable::item` 里那句
+                // `base_price: view.base_price` 改成 `Milli::ZERO`，
+                // 本条当场红。
+                base_price: Milli::from_whole(2),
                 wear_channels: WearChannels::NONE,
                 max_durability: None,
                 taught_recipes: Vec::new(),

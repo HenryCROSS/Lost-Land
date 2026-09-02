@@ -358,16 +358,27 @@ fn 条件不满足的选项在会话屏上一行都不显示() {
     let texts: Vec<&str> = rows.iter().map(|row| row.text.as_str()).collect();
 
     // Assert：能显示的恰好是「我想在这里落脚」（not-affiliated）、
-    // 「有什么活干吗」（quest-not-completed）与无条件的「告辞」。
+    // 「有什么活干吗」（quest-not-completed）与两条无条件的
+    // （交易与告辞）。
+    //
+    // 〔2026-09-01，批次 31〕多出来的那一行是 `open-trade`——它无条件
+    // 显示，理由写在 `mods/lostland/dialogues.json5` 那一行的注释里
+    // （条件清单里今天没有「这个人是不是商贩」这条谓词，而加谓词必须
+    // 同批带真实内容用例）。
     assert_eq!(
         texts,
-        vec!["我想在这里落脚。", "有什么活干吗？", "（告辞）"],
+        vec![
+            "我想在这里落脚。",
+            "有什么活干吗？",
+            "你这儿有什么可换的？",
+            "（告辞）"
+        ],
         "过滤后的行不对：{texts:?}"
     );
-    // 原始下标必须带着走（0/3/5），不是过滤后的 0/1/2。
+    // 原始下标必须带着走（0/3/5/6），不是过滤后的 0/1/2/3。
     assert_eq!(
         rows.iter().map(|row| row.option).collect::<Vec<_>>(),
-        vec![0, 3, 5],
+        vec![0, 3, 5, 6],
         "提交给 resolve 的必须是**原始**下标"
     );
 }

@@ -125,6 +125,10 @@ pub fn set_dialogue_flag(actor: EntityId, flag: &NamespacedId) -> ModStateWrite 
 /// `ll_mod::content_schema_dialogue` 里仍然**报「尚未实现」而不是静默
 /// 接受**。
 ///
+/// 〔2026-09-01，批次 31〕`OpenTrade` 落地，**五支到齐**——
+/// `ll_mod::content_schema_dialogue` 里那条「尚未实现」的兜底分支就此
+/// 只剩「不认识的 kind」一种情形。
+///
 /// 而**枚举**这个形状本身是有价值的，本批第一次兑现：
 /// `write_dialogue_outcome`（内容哈希）与 `resolve` 两处都是穷尽
 /// `match`，加这一支时编译器逼那两处各自表态，没有出现「加了一种后果、
@@ -223,6 +227,56 @@ pub enum DialogueOutcome {
     /// 与 [`JoinSettlement`](DialogueOutcome::JoinSettlement) 把归属挂在
     /// 发起者身上同一条：后果作用于「按下这一行的那个人」。
     GiveItem(ContentIndex),
+    /// **把 UI 推进交易屏**（规格五节 5.3）——本枚举里唯一一支
+    /// **不改世界状态**的后果，见 [`DialogueOutcome::is_ui_only`]。
+    ///
+    /// # 「不产 `Effect`」与 C1 不矛盾
+    ///
+    /// 规格 5.3 原话：这条后果「**不产出任何 `Effect`**，只把 UI 推进
+    /// 交易界面——与 `InteractTarget::Facility` 落到『打开制作菜单』是
+    /// 同一形状」。**真正的交易（钱货两清）走
+    /// [`crate::intent::Intent::Trade`]**，它照旧经
+    /// [`crate::apply::apply`] 这个唯一写入口（约束 C1）。
+    ///
+    /// 分界与规格七节 7.1 那条逐字同一条：**「玩家现在停在哪块屏上」
+    /// 是 UI 状态，「谁的钱和货变了」是世界状态。**
+    ///
+    /// # 为什么不带参数
+    ///
+    /// 「跟谁交易」由**说话人**回答（会话屏一路带着的那个
+    /// [`EntityId`]），与 [`JoinSettlement`](DialogueOutcome::JoinSettlement)
+    /// 同理：内容文件里写不出一个世界生成期分配的实体号。
+    OpenTrade,
+}
+
+impl DialogueOutcome {
+    /// 这一支**只推 UI、不改世界**吗？
+    ///
+    /// 今天只有 [`OpenTrade`](DialogueOutcome::OpenTrade) 返回真。
+    ///
+    /// # 谁读它，为什么这条判据不能写在 UI 里
+    ///
+    /// 规格 7.2：「纯导航的选项（`outcomes` 为空）不提交 `Intent`
+    /// ……提交一个恒产出空效果的意图只会污染意图日志。」`open-trade`
+    /// 是同一档——它恒产出空效果。会话屏因此把「要不要提交
+    /// [`crate::intent::Intent::DialogueChoose`]」的判据从
+    /// 「`outcomes` 非空」收窄成「**存在一条不是只推 UI 的后果**」：
+    /// 一条只有 `open-trade` 的选项一个意图都不提交，一条
+    /// `[set-flag, open-trade]` 混着的照样提交（`set-flag` 那一半要落地）。
+    ///
+    /// 判据长在这里而不是 `ll-game`，与
+    /// [`all_conditions_hold`] 是同一条理由（模块文档「为什么住在
+    /// `ll-sim`」第 2 条）：**加一种后果时，编译器逼这个 `match` 表态**，
+    /// 而一份抄在 UI 里的 `matches!` 只会在下一支后果落地时静默漏掉它。
+    pub fn is_ui_only(&self) -> bool {
+        match self {
+            DialogueOutcome::OpenTrade => true,
+            DialogueOutcome::SetFlag(_)
+            | DialogueOutcome::JoinSettlement
+            | DialogueOutcome::CompleteQuest(_)
+            | DialogueOutcome::GiveItem(_) => false,
+        }
+    }
 }
 
 /// 「加入一座据点」给多少声望——项目所有者裁定

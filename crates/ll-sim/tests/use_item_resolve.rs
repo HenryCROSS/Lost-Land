@@ -116,6 +116,7 @@ fn potion_with_effect(effect: SkillEffect) -> (ContentIndex, FakeItems) {
         items: BTreeMap::from([(
             potion,
             ItemRule {
+                base_price: ll_core::scaled::Milli::ZERO,
                 wear_channels: WearChannels::NONE,
                 max_durability: None,
                 taught_recipes: Vec::new(),
@@ -288,6 +289,7 @@ fn 没有use_effect的物品使用后不产出任何效果() {
         items: BTreeMap::from([(
             ore,
             ItemRule {
+                base_price: ll_core::scaled::Milli::ZERO,
                 wear_channels: WearChannels::NONE,
                 max_durability: None,
                 taught_recipes: Vec::new(),

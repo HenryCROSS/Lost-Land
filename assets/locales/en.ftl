@@ -529,3 +529,18 @@ culture-sand_nomads-display_name = Sand Nomads
 
 dialogue-steward-report = I have walked the mountain road.
 dialogue-steward-take_reward = Then I will take it.
+
+# ── Trade (batch 31, dialogue batch 5) ────────────────────────────
+# The open-trade option on the steward's opening line, plus the trade
+# screen's own five keys. Row text goes through named-argument
+# interpolation (Catalog::resolve_with_args) rather than string
+# concatenation -- word order differs across languages, see the ADR
+# 0019 B-2 argument. Prices are in the smallest currency unit, the same
+# unit as the Milli in ItemDef.base_price.
+
+dialogue-steward-ask_trade = What have you got to trade?
+screen-trade-title = Trade
+screen-trade-empty = Neither of you has anything to trade.
+screen-trade-hint = Up/Down pick　Confirm deal　Cancel leave
+screen-trade-buy = Buy　{ $item } ({ $count })　{ $price }
+screen-trade-sell = Sell　{ $item } ({ $count })　{ $price }

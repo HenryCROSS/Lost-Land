@@ -96,6 +96,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
             (
                 gauntlets,
                 ItemRule {
+                    base_price: ll_core::scaled::Milli::ZERO,
                     // 「使用」通道：这件夹具在本文件里扮演"挥出去的
                     // 武器"，因此带 on-use、**不带** on-hit——耐久标签
                     // 批次之后这是它会不会磨损的唯一判据。
@@ -122,6 +123,7 @@ fn combat_items() -> (ContentIndex, ContentIndex, FakeItems) {
             (
                 armor,
                 ItemRule {
+                    base_price: ll_core::scaled::Milli::ZERO,
                     // 「挨打」通道：这件夹具扮演"穿在身上的甲"。
                     wear_channels: WearChannels::ON_HIT,
                     max_durability: None,
@@ -723,6 +725,7 @@ fn luck_ring_item() -> (ContentIndex, FakeItems) {
         items: BTreeMap::from([(
             ring,
             ItemRule {
+                base_price: ll_core::scaled::Milli::ZERO,
                 wear_channels: WearChannels::NONE,
                 max_durability: None,
                 taught_recipes: Vec::new(),

@@ -165,6 +165,9 @@ pub fn materialize_nearby_settlements(
             // 生产者，见 `ll_mod::roster::build_npc_agent` 文档「文化
             // 归属」一节。
             culture: site.culture,
+            // 人口直接转发给物化——NPC 初始钱包的两个因子之一（所有者
+            // 裁定第 4 条），见 `ll_mod::npc_wallet` 模块文档。
+            population: site.population,
         };
         let mut made = Vec::new();
         for (profile, pos) in roster.iter().zip(spots) {

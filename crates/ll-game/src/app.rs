@@ -17,6 +17,7 @@ mod gpu;
 mod hud_draw;
 mod save_flow;
 mod screen_flow;
+mod session_screens;
 mod surface;
 
 // 搬出去的项在这里重新引进本模块的作用域：对外的公开路径

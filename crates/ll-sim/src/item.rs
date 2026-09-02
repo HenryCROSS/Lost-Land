@@ -34,12 +34,22 @@
 //! **`max_durability` 后来被这条判据自己请了进来**（新造物品耐久批次）：
 //! `resolve_craft`/`resolve_identify` 造成品时要回答「这件刚造出来的
 //! 东西带多少耐久」，答案只能来自成品那条定义的耐久上限——这正是
-//! 「`resolve` 真正要读的字段才收进来」，不是判据松动。`base_weight`/
-//! `base_price` 照旧不收：负重与经济系统至今没有任何结算消费者。
+//! 「`resolve` 真正要读的字段才收进来」，不是判据松动。~~`base_weight`/
+//! `base_price` 照旧不收：负重与经济系统至今没有任何结算消费者。~~
+//!
+//! **〔2026-09-01，批次 31〕`base_price` 也被同一条判据请了进来**：
+//! `Intent::Trade` 的结算要回答「这一件多少钱」，答案只能来自那条定义
+//! 的基础价（[`crate::trade::trade_price`]）。同一批把
+//! `scripts/ci/check_field_consumers.py` 里 `ItemDef.base_price` 那条
+//! 豁免删掉了——它的原话正是「经济系统（买卖定价）尚未落地」，那句话
+//! 从这一批起不成立。**`base_weight` 照旧不收**：负重至今没有任何结算
+//! 消费者，它那条豁免原样留着。
+//! 上面划掉的两行原文保留以便追溯（纪律：推翻要留来由）。
 
 use std::collections::BTreeMap;
 
 use ll_core::ident::ContentIndex;
+use ll_core::scaled::Milli;
 
 pub use ll_world::item::{
     EquipSlot, GroundItemStack, ItemStack, ItemStackError, SlotMask, StatBonus, StatTarget,
@@ -109,6 +119,30 @@ use crate::skill::SkillEffect;
 pub struct ItemRule {
     /// 堆叠上限，即 [`merge_stacks`] 的 `stack_limit` 参数。
     pub stack_limit: u32,
+    /// 这件东西的**基础价**（`ll_mod::item::ItemDef::base_price` 原样
+    /// 搬过来），[`Milli`] 定点整数。
+    ///
+    /// # 谁读它
+    ///
+    /// [`crate::trade::trade_price`]——`Intent::Trade` 的占位价格公式。
+    /// 〔2026-09-01，批次 31〕**这个字段此前只进内容哈希与内容审计，
+    /// 一条结算路径都没读过它**；交易是它的第一个真实消费者。
+    ///
+    /// # 量纲：`Milli` 的最小单位就是 [`ll_world::entity::Agent::wallet`] 的单位
+    ///
+    /// 钱包的文档写的是「最小货币单位」。本体 `items.json5` 里一份烤肉
+    /// 是 `base_price: 900`——若把它按 `Milli::whole()` 取整就是 0，
+    /// 那件东西会变成白拿。因此定价读的是 `Milli` 的**原始值**
+    /// （`.0`），见 [`crate::trade::trade_price`] 文档。
+    ///
+    /// # 为什么是字段而不是 `ItemCatalog` 的一条带默认实现的方法
+    ///
+    /// 与 [`ItemCatalog::corpse_of`] 那条刻意相反：`corpse_of` 的默认
+    /// 实现返回 `None`（「没有尸体物品注册表」是一个诚实且无害的状态）；
+    /// 而「没有价格」的默认值只能是 0，那等于**静默地把每件东西变成
+    /// 免费**——一个夹具漏实现它，测试照样全绿而保护根本不存在。
+    /// 加成字段之后编译器会逼每一处构造点表态。
+    pub base_price: Milli,
     /// 装备占位掩码——`SlotMask::EMPTY` 表示这件物品不可装备。
     pub equip_mask: SlotMask,
     /// 静态属性加成列表——`crate::resolve::derive_stats` 汇总"装备"这
@@ -490,6 +524,7 @@ mod tests {
         fn item(&self, item: ContentIndex) -> Option<ItemRule> {
             self.0.get(&item).map(|mask| ItemRule {
                 stack_limit: 1,
+                base_price: Milli::ZERO,
                 equip_mask: *mask,
                 stat_bonuses: Vec::new(),
                 use_effect: None,

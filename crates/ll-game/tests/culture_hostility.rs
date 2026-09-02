@@ -545,6 +545,9 @@ fn 没有文化的据点物化出来的npc不挂归属() {
             surface_profile: ContentIndex::default(),
             now: ll_core::time::Tick(0),
             culture,
+            // 本用例只看文化归属，人口取一个非零值即可（钱包按它派生，
+            // 但这里不断言钱包）。
+            population: 1,
         };
         ll_mod::roster::build_npc_agent(&profile, size.wrap(0, 0), size.wrap(0, 0), &roles, &ctx)
     };

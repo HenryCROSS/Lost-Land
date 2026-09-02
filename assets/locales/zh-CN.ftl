@@ -575,3 +575,17 @@ culture-sand_nomads-display_name = 沙民
 
 dialogue-steward-report = 山道我已经走过一趟了。
 dialogue-steward-take_reward = 那我就收下了。
+
+# ── 交易（批次 31，对话系统的批次 5）─────────────────────────────
+# 管理者开场白上那一行 open-trade 选项，以及交易屏自己的五条。
+# 行文案走具名参数插值（Catalog::resolve_with_args），**不拼字符串**
+# ——语序在不同语言里不一样，见 ADR 0019 B-2 那段论证。
+# 价钱的单位是「最小货币单位」，与 ItemDef.base_price 那个 Milli 的
+# 最小单位是同一个（见 ll_sim::item::ItemRule::base_price 文档）。
+
+dialogue-steward-ask_trade = 你这儿有什么可换的？
+screen-trade-title = 交易
+screen-trade-empty = 两边都拿不出可换的东西。
+screen-trade-hint = ↑↓ 选择　确认 成交　取消 离开
+screen-trade-buy = 买　{ $item }（{ $count }）　{ $price }
+screen-trade-sell = 卖　{ $item }（{ $count }）　{ $price }

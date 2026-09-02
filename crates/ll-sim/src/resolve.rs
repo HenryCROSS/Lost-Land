@@ -91,6 +91,7 @@ mod movement;
 mod portal;
 mod progression;
 mod stats;
+mod trade;
 mod upkeep;
 
 // 搬出去的项在这里重新引进本模块的作用域：对外的公开路径
@@ -98,6 +99,7 @@ mod upkeep;
 // 因此一个字都不用改。
 use self::dialogue::resolve_dialogue_choose;
 pub(crate) use self::movement::step_destination;
+use self::trade::resolve_trade;
 // `occupant_at` 从 `pub(crate)` 开成 `pub`（对话批次 2）：`ll-game` 的
 // 交互列表要问「这一格上站着谁」，而那正是本函数文档
 // 「为什么必须只有这一份实现」里已经论证过的同一个问题。在输入层另写
@@ -818,6 +820,12 @@ fn resolve_dispatch(
                 items,
             },
         ),
+        Intent::Trade {
+            actor,
+            partner,
+            item,
+            direction,
+        } => resolve_trade(world, actor, partner, item, direction, items),
     };
     // 副职使用计数（副职获得机制批次）：一次**成功**的制作把对应配方
     // 类别的累计次数推进一格，达标就产出 `Effect::GrantSubclass`。

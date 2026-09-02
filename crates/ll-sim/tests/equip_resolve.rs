@@ -124,6 +124,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
             (
                 sword,
                 ItemRule {
+                    base_price: ll_core::scaled::Milli::ZERO,
                     wear_channels: WearChannels::NONE,
                     max_durability: None,
                     taught_recipes: Vec::new(),
@@ -144,6 +145,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
             (
                 shield,
                 ItemRule {
+                    base_price: ll_core::scaled::Milli::ZERO,
                     wear_channels: WearChannels::NONE,
                     max_durability: None,
                     taught_recipes: Vec::new(),
@@ -164,6 +166,7 @@ fn equip_items() -> (ContentIndex, ContentIndex, ContentIndex, FakeItems) {
             (
                 greatsword,
                 ItemRule {
+                    base_price: ll_core::scaled::Milli::ZERO,
                     wear_channels: WearChannels::NONE,
                     max_durability: None,
                     taught_recipes: Vec::new(),
@@ -438,6 +441,7 @@ fn 物品不可装备时装备意图静默无效() {
         items: BTreeMap::from([(
             ore,
             ItemRule {
+                base_price: ll_core::scaled::Milli::ZERO,
                 wear_channels: WearChannels::NONE,
                 max_durability: None,
                 taught_recipes: Vec::new(),

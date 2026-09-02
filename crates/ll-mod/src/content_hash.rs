@@ -947,7 +947,24 @@ use ll_sim::formula::{FormulaCond, FormulaOp, FormulaOperand};
 ///
 /// 守门方式同前几批：本段文字 + 本模块单元测试
 /// `后果种类不同的两个对话节点摘要不同`。
-pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 33;
+/// ---
+///
+/// # 版本 34（`open-trade`，对话系统的批次 5）
+///
+/// [`crate::dialogue::DialogueOutcome`] 再多一个变体 `OpenTrade`，
+/// [`write_dialogue_outcome`] 因此多一条判别值 `4` 的分支。**这一支与
+/// `JoinSettlement` 的载荷形状完全相同**（只有一个判别值，两支都不带
+/// 参数）——批次 26 那条记账预告的「等批次 5 的 `open-trade` 落地
+/// 判别值才成为真守卫」，本批兑现，见
+/// `后果种类不同的两个对话节点摘要不同` 的文档注释。
+///
+/// 「已有表的枚举加变体」那一档。既有内容的摘要照样会变：本批给管理者
+/// 开场白挂上了一条 `outcomes: [{ kind: "open-trade" }]` 的选项。
+/// **两件事都要求递增**（ADR 0027）。
+///
+/// 守门方式同前几批：本段文字 + 本模块单元测试
+/// `后果种类不同的两个对话节点摘要不同`。
+pub const CONTENT_HASH_ALGORITHM_VERSION: u32 = 34;
 
 /// 表种类判别——混入每条内容摘要判别字节的枚举形式，避免"一个地形的
 /// 字段值"与"一个种族的字段值"凑巧编码成同一段字节流时被误判成同一份
@@ -1763,6 +1780,17 @@ fn write_dialogue_outcome(
             hasher.write_u64(3);
             write_optional_resolved(hasher, Some(*item), registry);
         }
+        // 判别值 `4`：往后接，不挪前四条。这一支不带任何参数（「跟谁
+        // 交易」由说话人回答，与 `JoinSettlement` 同理），因此判别值本身
+        // 就是全部信息。
+        //
+        // **它与 `JoinSettlement` 是判别值这条纪律的第二对真守卫**：两支
+        // 的载荷形状完全相同（只有一个判别值），撞号之后字节流一模一样。
+        // 批次 26 那条记账预告的正是这一对（「等批次 5 的 `open-trade`
+        // 落地那一刻」），批次 29 已用 `CompleteQuest`/`GiveItem` 提前
+        // 兑现过一次，本批把它原本预告的这一对也验了，见
+        // `后果种类不同的两个对话节点摘要不同` 的文档注释。
+        DialogueOutcome::OpenTrade => hasher.write_u64(4),
     }
 }
 
@@ -4838,8 +4866,16 @@ mod tests {
     /// 第 10.5 节那一行已经加了指回本处的标注。
     ///
     /// 第二行仍然成立，由下面那句直接断言表达：**`JoinSettlement` 必须
-    /// 往哈希里写点什么**，不能整支空过——它至今还是唯一一个不带参数的
-    /// 变体，因此仍然需要这条单独的兜底。
+    /// 往哈希里写点什么**，不能整支空过。
+    ///
+    /// **〔2026-09-01，批次 31〕批次 26 原本预告的那一对现在也在了**：
+    /// `OpenTrade` 与 `JoinSettlement` **都不带参数**，两条字节流长度
+    /// 从此相同 ⇒ 判别值取什么值第一次在这一对上可观察。实测：把
+    /// `OpenTrade` 的 `write_u64(4)` 改成 `JoinSettlement` 的
+    /// `write_u64(1)`，本条**当场红**（「后果种类 2 与 5 的摘要撞了」）。
+    /// 上面那句「它至今还是唯一一个不带参数的变体」就此作废——但下面
+    /// 那条直接断言**不删**：它守的是「整支空过」，与撞号是两件事
+    /// （批次 26 那张表第二行至今只有它咬得住）。
     #[test]
     fn 后果种类不同的两个对话节点摘要不同() {
         // Arrange
@@ -4875,6 +4911,7 @@ mod tests {
             digest(vec![DialogueOutcome::JoinSettlement]),
             digest(vec![DialogueOutcome::CompleteQuest(quest)]),
             digest(vec![DialogueOutcome::GiveItem(quest)]),
+            digest(vec![DialogueOutcome::OpenTrade]),
         ];
 
         // Assert

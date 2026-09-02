@@ -22,16 +22,16 @@
       "reason": "合理：装载后内容校验的逐条规则平铺，与 content_hash.rs 同一形状——一条校验一段，规则之间不互相调用。文件长度等于校验条数。〔2026-08-31，批次 20〕+11 行：CultureAttrs::buildings 的字段覆盖。〔2026-08-31，批次 21〕+2 行：DialogueNodeAttrs::options::outcomes 的字段覆盖，追加在 inspect_dialogue_node 末尾。两批并行开工、各自 bless 过自己那一份，合并时数字是两者之和（2194+11+2）。拆不动——都是那一段逐字段登记的一行。"
     },
     "crates/ll-mod/src/content_hash.rs": {
-      "code_lines": 3041,
-      "reason": "合理：单一职责的逐类型平铺表——每个内容类型一段「哪些字段进哈希」，类型之间不互相调用。拆开等于把 CONTENT_HASH_ALGORITHM_VERSION 要盯住的那份唯一真相源分散到多处，而「真相源之外的副本」是本仓库最稳定的缺陷来源。〔2026-08-31，批次 20〕+70 行：write_culture_fields 的 buildings 段与守门它的单元测试「建筑类型不同的两条文化摘要不同」。〔2026-08-31，批次 21〕+53 行：write_dialogue_outcome（8 行）与守门它的单元测试「后果不同的两个对话节点摘要不同」（其余）。两批并行开工、各自 bless 过自己那一份，合并时数字是两者之和（2853+70+53）。测试刻意与被守门的那段代码同住一个文件——它守的正是 CONTENT_HASH_ALGORITHM_VERSION 那份唯一真相源，搬走就变成又一份会漂移的副本。（2026-08-31，批次 26）+50 行：`write_dialogue_outcome` 的 `JoinSettlement` 一支 + 新单元测试 `后果种类不同的两个对话节点摘要不同`（含一条如实登记的「改坏了它不红」及其原因）。理由同上面几批：判别值纪律与 `CONTENT_HASH_ALGORITHM_VERSION` 必须是同一份真相源，测试搬出去就够不着私有的 `write_dialogue_outcome`。〔2026-08-31，批次 29〕+10 行：`write_dialogue_outcome` 的 `CompleteQuest` 一支（它同时让这个函数第一次收 `Registry`——那一支携带的是有内容表的任务引用，必须反查成标识符再混）+ 同名单元测试多比一档。与前几批同一条理由：被测的是私有函数 `write_dialogue_outcome`，搬出去就够不着；而这一段与 `CONTENT_HASH_ALGORITHM_VERSION` 是同一处真相源。〔2026-08-31，批次 29 下半〕再 +5 行：`write_dialogue_outcome` 的 `GiveItem` 一支 + 同名单元测试再多比一档。同一批的另一处超限（`content_schema_dialogue.rs` 冲到 806）**没有 bless，是真的拆了**——它的整个 `mod tests` 搬进了 `crates/ll-mod/tests/dialogue_schema.rs`；本文件拆不动的理由见上一段（被测的是私有函数）。"
+      "code_lines": 3043,
+      "reason": "合理：单一职责的逐类型平铺表——每个内容类型一段「哪些字段进哈希」，类型之间不互相调用。拆开等于把 CONTENT_HASH_ALGORITHM_VERSION 要盯住的那份唯一真相源分散到多处，而「真相源之外的副本」是本仓库最稳定的缺陷来源。〔2026-08-31，批次 20〕+70 行：write_culture_fields 的 buildings 段与守门它的单元测试「建筑类型不同的两条文化摘要不同」。〔2026-08-31，批次 21〕+53 行：write_dialogue_outcome（8 行）与守门它的单元测试「后果不同的两个对话节点摘要不同」（其余）。两批并行开工、各自 bless 过自己那一份，合并时数字是两者之和（2853+70+53）。测试刻意与被守门的那段代码同住一个文件——它守的正是 CONTENT_HASH_ALGORITHM_VERSION 那份唯一真相源，搬走就变成又一份会漂移的副本。（2026-08-31，批次 26）+50 行：`write_dialogue_outcome` 的 `JoinSettlement` 一支 + 新单元测试 `后果种类不同的两个对话节点摘要不同`（含一条如实登记的「改坏了它不红」及其原因）。理由同上面几批：判别值纪律与 `CONTENT_HASH_ALGORITHM_VERSION` 必须是同一份真相源，测试搬出去就够不着私有的 `write_dialogue_outcome`。〔2026-08-31，批次 29〕+10 行：`write_dialogue_outcome` 的 `CompleteQuest` 一支（它同时让这个函数第一次收 `Registry`——那一支携带的是有内容表的任务引用，必须反查成标识符再混）+ 同名单元测试多比一档。与前几批同一条理由：被测的是私有函数 `write_dialogue_outcome`，搬出去就够不着；而这一段与 `CONTENT_HASH_ALGORITHM_VERSION` 是同一处真相源。〔2026-08-31，批次 29 下半〕再 +5 行：`write_dialogue_outcome` 的 `GiveItem` 一支 + 同名单元测试再多比一档。同一批的另一处超限（`content_schema_dialogue.rs` 冲到 806）**没有 bless，是真的拆了**——它的整个 `mod tests` 搬进了 `crates/ll-mod/tests/dialogue_schema.rs`；本文件拆不动的理由见上一段（被测的是私有函数）。〔2026-09-01，批次 31〕再 +2 行：`write_dialogue_outcome` 的 `OpenTrade` 一支（不带参数，只写判别值 `4`）+ 同名单元测试再多比一档。理由与前几批逐字相同：被测的是私有函数 `write_dialogue_outcome`，搬出去就够不着；而这一段与 `CONTENT_HASH_ALGORITHM_VERSION` 是同一处真相源。本批的另外两处新代码**没有 bless，是真的落在新文件里**（`crates/ll-sim/src/trade.rs`、`crates/ll-sim/src/resolve/trade.rs`、`crates/ll-game/src/trade_screen.rs`）。"
     },
     "crates/ll-mod/src/content_schema_gear.rs": {
       "code_lines": 1465,
       "reason": "合理：内容数据文件 schema 的装备与规则侧七类，逐类型平铺。它本身已经是从 content_schema.rs 拆出来的一半（分界线见两者模块文档），再拆会打碎「一个 JSON5 文件对应一段 schema」这条对应关系。"
     },
     "crates/ll-mod/src/roster.rs": {
-      "code_lines": 834,
-      "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。（2026-08-31，批次 26）+1 行：`build_npc_agent` 写 `home: Some(profile.home)`——`Agent::home` 唯一的非 `None` 生产者，把既有真相源 `NpcProfile.home` 搬进实体。结构体字面量必须列全字段，不可拆分。"
+      "code_lines": 836,
+      "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。（2026-08-31，批次 26）+1 行：`build_npc_agent` 写 `home: Some(profile.home)`——`Agent::home` 唯一的非 `None` 生产者，把既有真相源 `NpcProfile.home` 搬进实体。结构体字面量必须列全字段，不可拆分。〔2026-09-01，批次 31〕+1 行：`ItemRule` 加了 `base_price` 字段（交易的占位价格公式要读它），本文件 `mod tests` 里那个夹具因此多一行——编译器强制的一行，拆不动。**本批的 NPC 初始钱包没有加在这个文件里**，它落在新模块 `crates/ll-mod/src/npc_wallet.rs`。 再 +1 行：`MaterializeContext` 加 `population: u32` 字段（钱包的两个因子之一）。**钱包的计算本身按门禁原话拆进了新模块** `crates/ll-mod/src/npc_wallet.rs`；留在这里的只有一个字段声明与一行调用，拆不动。"
     },
     "crates/ll-sim/src/apply.rs": {
       "code_lines": 1182,
@@ -42,12 +42,12 @@
       "reason": "合理（批次 16 的搬移产物）：crate::resolve 的 45 条断言，用 #[path] 挂成 resolve 的子模块，与 app_save_tests.rs / app_navigation_tests.rs 同一手法。刻意不按意图族拆开——45 条断言与约十个共享夹具（test_world、spawn_agent、spawn_agent_with_luck 等）交错在一起，按族切开要么把夹具复制九份、要么造一个被九个模块回头调用的 test_support，那正是「一堆互相调来调去的小文件」。而且它不影响下一批的难度：新意图族在自己的模块里写自己的断言，不用碰这个文件。（2026-08-31，批次 26）+7 行：七处 `Agent` 测试夹具字面量各补一行 `home: None`。结构体字面量必须列全字段，不可拆分。"
     },
     "crates/ll-sim/src/rule_modifier.rs": {
-      "code_lines": 1925,
-      "reason": "合理：「一个实体此刻身上有哪些规则修正」这个问题的唯一答案处，加上建在它之上的五个消费者。五个消费者共用同一条 tie-break 规则，把它们拆走会让那条规则出现副本。"
+      "code_lines": 1926,
+      "reason": "合理：「一个实体此刻身上有哪些规则修正」这个问题的唯一答案处，加上建在它之上的五个消费者。五个消费者共用同一条 tie-break 规则，把它们拆走会让那条规则出现副本。〔2026-09-01，批次 31〕+1 行：`ItemRule` 加了 `base_price` 字段（交易的占位价格公式要读它），本文件 `mod tests` 里那个 `FixedItems` 夹具因此多一行——**编译器强制的一行**，字段加在 `ItemRule` 上是为了让每一处构造点表态（见该字段文档「为什么是字段而不是 `ItemCatalog` 的一条带默认实现的方法」）。拆不动：它是一个结构体字面量里的一行。"
     },
     "crates/ll-sim/tests/derive_stats_resolve.rs": {
-      "code_lines": 866,
-      "reason": "合理：集成测试文件——一个主题（derive_stats 接进战斗）下的断言集合，共享同一套 FakeItems/spawn_agent 夹具。代码行占比高（75%）属正常，断言本来就是代码。（2026-08-31，批次 26）+2 行：两处 `Agent` 测试夹具字面量各补一行 `home: None`。同上，不可拆分。"
+      "code_lines": 869,
+      "reason": "合理：集成测试文件——一个主题（derive_stats 接进战斗）下的断言集合，共享同一套 FakeItems/spawn_agent 夹具。代码行占比高（75%）属正常，断言本来就是代码。（2026-08-31，批次 26）+2 行：两处 `Agent` 测试夹具字面量各补一行 `home: None`。同上，不可拆分。〔2026-09-01，批次 31〕+3 行：同上，三处 `ItemRule` 字面量各多一行 `base_price`，编译器强制。拆不动。"
     },
     "crates/ll-ui/src/hud/render.rs": {
       "code_lines": 1118,

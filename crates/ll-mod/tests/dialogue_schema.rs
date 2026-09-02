@@ -1,4 +1,4 @@
-//! `mods/<id>/dialogues.json5` 的 **schema 解析**验收：十条谓词、四种
+//! `mods/<id>/dialogues.json5` 的 **schema 解析**验收：十条谓词、五种
 //! 后果、跨表引用与「不该有的参数必须没有」。
 //!
 //! # 为什么从 `content_schema_dialogue.rs` 搬出来
@@ -368,17 +368,20 @@ fn 不写outcomes的选项是纯导航选项() {
 }
 
 #[test]
-fn 尚未实现的后果报明确错误而不是静默接受() {
-    // 〔2026-08-31，批次 26〕`join-settlement` 已经实现，从这份清单里
-    // 挪走了——它现在由 `join_settlement后果解析成不带参数的变体`
-    // 与 `join_settlement带多余的flag参数报错` 两条守着。
-    // 〔2026-08-31，批次 29〕`complete-quest` 与 `give-item` 同样挪走了，
-    // 由 `complete_quest后果解析成一条任务引用`、
-    // `give_item后果解析成一条物品引用` 等几条守着。**清单里只剩
-    // `open-trade` 一种**，因此这里不再是一个循环（`clippy` 会把只有一个
-    // 元素的 `for` 判成 `single_element_loop`）；批次 5 落地那天这条测试
-    // 整条删掉，而不是把最后一个元素也拿走留一个空循环。
-    let kind = "open-trade";
+fn 不认识的后果kind报明确错误而不是静默接受() {
+    // 本条的前身叫 `尚未实现的后果报明确错误而不是静默接受`，守的是
+    // 那份「已声明但缺前置」的清单。**〔2026-09-01，批次 31〕清单空了**
+    // ——`open-trade` 是最后一种，它这一批落地了（现在由
+    // `open_trade后果解析成不带参数的变体` 与
+    // `open_trade带多余的flag参数报错` 两条守着）。前身那条注释里写着
+    // 「批次 5 落地那天这条测试整条删掉」，本批照办，但**不是白删**：
+    // 「静默无效比当场报错贵得多」这条纪律还剩另一半要守——**打错字的
+    // `kind`**。
+    //
+    // 反例验证（ADR 0022）：把 `RawDialogueOutcome::resolve` 的兜底
+    // 分支从 `Err(...)` 改成 `Ok(DialogueOutcome::SetFlag(...))` 之类的
+    // 静默接受，本条当场红。
+    let kind = "open-trad"; // 少一个 e——内容作者最可能犯的那种错
 
     // Arrange & Act
     let source = format!(
@@ -391,9 +394,58 @@ fn 尚未实现的后果报明确错误而不是静默接受() {
     let (_registry, _dialogues, _nodes, result) = 解析(&source);
 
     // Assert
-    let err = result.expect_err("尚未实现的后果必须报错");
-    assert!(err.contains("尚未实现"), "错误信息要说清楚为什么：{err}");
+    let err = result.expect_err("不认识的 kind 必须报错");
+    assert!(
+        err.contains("未知的对话后果"),
+        "错误信息要说清楚为什么：{err}"
+    );
     assert!(err.contains(kind), "错误信息要点名是哪一种：{err}");
+}
+
+#[test]
+fn open_trade后果解析成不带参数的变体() {
+    // 反例验证（ADR 0022）：把 `resolve` 里 `"open-trade"` 那一支删掉
+    // （落到兜底的 `Err`），本条当场红。
+    // Arrange & Act
+    let (_registry, _dialogues, nodes, result) = 解析(
+        r#"{
+          nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                     options: [ { text_key: "lostland:dialogue.x", next: "end",
+                                  outcomes: [ { kind: "open-trade" } ] } ] } ],
+        }"#,
+    );
+
+    // Assert
+    assert_eq!(result, Ok(()));
+    let index = nodes.defined_indices()[0];
+    let view = nodes.get(index).expect("刚定义过");
+    assert_eq!(
+        view.options[0].outcomes,
+        vec![DialogueOutcome::OpenTrade],
+        "open-trade 解析成一条不带参数的后果"
+    );
+}
+
+#[test]
+fn open_trade带多余的flag参数报错() {
+    // 「不该有的必须没有」那一半：`{ kind: "open-trade", flag: "…" }`
+    // 若被静默接受，作者会以为那个 `flag` 起了作用。
+    //
+    // 反例验证（ADR 0022）：把 `"open-trade"` 那一支的 `reject_extras`
+    // 去掉，本条当场红。
+    // Arrange & Act
+    let (_registry, _dialogues, _nodes, result) = 解析(
+        r#"{
+          nodes: [ { id: "lostland:a", text_key: "lostland:dialogue.a",
+                     options: [ { text_key: "lostland:dialogue.x", next: "end",
+                                  outcomes: [ { kind: "open-trade",
+                                                flag: "lostland:flag.a" } ] } ] } ],
+        }"#,
+    );
+
+    // Assert
+    let err = result.expect_err("多余参数必须报错");
+    assert!(err.contains("flag"), "错误信息要点名是哪个参数：{err}");
 }
 
 #[test]

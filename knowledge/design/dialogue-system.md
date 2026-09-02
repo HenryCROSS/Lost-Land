@@ -703,6 +703,39 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 
 ## 八、分批与优先级
 
+> **【2026-09-01 落地回填：批次 5（交易）已完成】**
+> 计划文档 `docs/superpowers/plans/2026-09-01-batch31-dialogue-trade.md`，
+> 工作树 `wt-dialogue5`。落点：`ll_sim::dialogue::DialogueOutcome::OpenTrade`
+> 与 `DialogueOutcome::is_ui_only`、`ll_sim::trade`（`TradeDirection`、
+> `trade_price`、`partner_standing`）、`ll_sim::intent::Intent::Trade` +
+> `ll_sim::resolve::trade::resolve_trade`、`ll_sim::item::ItemRule::base_price`、
+> `ll_mod::npc_wallet::npc_initial_wallet`（+ `MaterializeContext::population`）、
+> `ll_game::trade_screen` + `ScreenState::Trade`。
+> `CONTENT_HASH_ALGORITHM_VERSION` 33 → 34；`CURRENT_SCHEMA_VERSION` **不动**
+> （`Agent::wallet` 本来就在存档主体里，本批只改它的初值）。
+> **三条黄金基准里一条重冻**（`EXPECTED_POPULATED_WORLD_DIGEST`——NPC 钱包是
+> 世界生成的一部分），另外两条实测未变并给了三组对照证伪。
+>
+> **本节以下正文原样保留**，落地时对本文档有四处偏离与补充：
+>
+> 1. **五节 5.3 说「`Intent::Trade { partner, item, count, direction }`」，
+>    本批不带 `count`**——一次一件，与批次 4 的 `give-item` 同一条收窄
+>    （直接复用既有的 `Effect::ConsumeInventoryItem`；N > 1 要拆堆机械，
+>    今天没有内容需要它）。反转成本：加一个默认 1 的字段。
+> 2. **九节第 1 条那道题只被回答了一半**。所有者裁定的是「**对话**不消耗
+>    回合」；**交易消不消耗回合规格没说**，本批自裁「不消耗」，理由是
+>    反转成本不对称（加一条 `ScheduleNext` 是一行，撤一条要动回放摘要）
+>    加上「交易屏是模态屏，世界本来就不推进」。**这一条随时可被所有者
+>    推翻**，代价只有一行。
+> 3. **「买家归属系数」两个方向都读玩家那一条**。规格 5.3 写的是买家的
+>    系数，而玩家卖东西时买家是 NPC——NPC 对玩家没有 `standing` 这个量
+>    （`Agent::affiliations` 里只有文化与势力，没有「对某个个体的态度」）。
+>    因此两个方向同价、都按玩家与对方势力的关系算，**不设买卖差价**
+>    （差价是又一次数值裁定，而同价恰好让反复买卖的净收益恒为 0）。
+> 4. **交易屏压过选项自己的 `next`**，退出时回到**世界**而不是刚才那段
+>    对话——`ll_game::modal::Modal` 只有一个 `Option<ScreenState>`、不是
+>    栈。屏栈落地之后改一处即可反转。
+
 > **【2026-08-31 落地回填：批次 3（加入据点）已完成】**
 > 计划文档 `docs/superpowers/plans/2026-08-31-batch26-dialogue-join.md`，
 > 工作树 `wt-dialogue3`。落点：`ll_world::entity::Agent::home`
@@ -801,7 +834,7 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 | **2** ✅ | 进交互列表 + 会话 UI + `Intent::DialogueChoose` + `outcomes` 里的 `set-flag`（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch21-dialogue-ui.md`）。**此时对话已经能说话、能分支、能记住玩家的选择，但还没有丙档的三条后果** | 1；UI 形状等 `wt-uxdesign` | 否 |
 | **3** ✅ | **加入据点**（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch26-dialogue-join.md`）：`Agent.home` 字段（存档 schema 5 → 6）、`join-settlement` 后果、`affiliated`/`standing-at-least` 两条谓词真的有东西可读 | 2 | **否**——势力播种（2026-08-29）之后「加入据点」指的是真正的 `OrgInstance`，原表这一格写的「加入**势力**依赖 P9」已经不成立 |
 | **4** ✅ | **任务**（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch29-dialogue-quest.md`）：`complete-quest` 后果（调既有的 `mark_quest_completed`）、`give-item` 后果（**含 owner 校验硬前置**）。**一处偏离**：`give-item` **没有**成为 `Effect::TransferOwnership` 的第一个调用方——那个效果只改 `owner` 不搬运，与赠送必须同时做的两件事组合不出一条既正确又可观察的排法，归属改由 `resolve` 算好写进搬运效果（`resolve_pick_up` 的既有手法），完整论证见计划文档三节 3.5。**另一处收窄**：`give-item` 不带 `count`，一次一件 | 2 | 否 |
-| **5** | **交易**：NPC 初始钱包、`Intent::Trade`、占位价格公式（基础价 × 归属系数） | 3（归属系数要有 `standing` 可读） | **是**——真正的定价（库存/需求/政策/商路四因子、行会中介、商队）整体属 P9，本批只交付占位公式并在代码里写明它将来会被替换 |
+| **5** ✅ | **交易**（2026-09-01 已落地，计划文档 `docs/superpowers/plans/2026-09-01-batch31-dialogue-trade.md`）：NPC 初始钱包、`Intent::Trade`、占位价格公式（基础价 × 归属系数） | 3（归属系数要有 `standing` 可读） | **是**——真正的定价（库存/需求/政策/商路四因子、行会中介、商队）整体属 P9，本批只交付占位公式并在代码里写明它将来会被替换 |
 | **6** | **NPC 姓名**：`CultureAttrs.naming`、渲染期现算、对话文案从「职业名」换成 `{ $npc_name }`（**只改 `.ftl`，不改任何 JSON5**） | 1 | 否 |
 
 **两条门禁建议**（不属于任何一批的主线，但越早越省事）：`mods/**/*.json5` 的 CJK 字面量扫描
