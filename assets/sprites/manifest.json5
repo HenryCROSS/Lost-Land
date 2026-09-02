@@ -2279,6 +2279,42 @@
         "width": 1,
         "height": 1
       }
+    },
+    {
+      "name": "tree_oak",
+      "file": "tree_oak.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "tree_pine",
+      "file": "tree_pine.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
+    },
+    {
+      "name": "tree_palm",
+      "file": "tree_palm.png",
+      "pivot": {
+        "x": 0,
+        "y": 0
+      },
+      "footprint": {
+        "width": 1,
+        "height": 1
+      }
     }
   ]
 }

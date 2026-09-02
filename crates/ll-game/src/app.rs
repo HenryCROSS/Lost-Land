@@ -775,9 +775,18 @@ impl Demo {
                 world,
                 player,
                 &content.recipe_table,
-                crate::player_action::TalkLookup {
+                crate::player_action::InteractLookup {
                     dialogues: &content.dialogue_table,
                     cultures: Some(&content.culture_table),
+                    // 树木这一路（树木批次）：森林地形取自本体地形索引
+                    // 缓存；树种（种子）走 `ll_mod::tree::RegisteredTrees`
+                    // ——**不在这里另写一次 `lostland:tree_seed` 字面量**，
+                    // 那个 id 的唯一真相源是该类型的 `TREE_SEED_ID`。
+                    forest: Some(content.terrain_ids.forest),
+                    tree_seed: ll_mod::tree::RegisteredTrees {
+                        registry: &content.registry,
+                    }
+                    .tree_seed_index(),
                 },
             )
         });

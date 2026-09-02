@@ -897,7 +897,7 @@ fn 附近什么都没有时按空格给出提示而不是静默作废() {
             &demo.test_world().world,
             player_pos(&demo),
             demo.test_world().player,
-            crate::player_action::TalkLookup::none(),
+            crate::player_action::InteractLookup::none(),
         )
         .is_empty(),
         "Arrange 假设出生点周围没有任何地面物品"

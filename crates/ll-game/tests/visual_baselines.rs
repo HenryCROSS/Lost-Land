@@ -99,6 +99,7 @@ use ll_game::app::load_sprite_sources;
 use ll_game::content::{LoadedContent, load_content};
 use ll_game::surface_draw::{
     NPC_BADGE_ENTITY_BASE, NPC_ENTITY_BASE, PLAYER_ENTITY, SurfaceDraw, npc_draws, surface_draws,
+    tree_draws,
 };
 use ll_game::world::{GameWorld, build_new_world};
 use ll_render::atlas_pack::{PackedAtlas, pack_atlas};
@@ -220,7 +221,39 @@ fn 地表内容预览与基准逐像素一致() {
         }
     }
 
-    for draw in surface_draws(&world.world, &content.registry, world.player) {
+    // 树（批次 32）——**必须走生产代码那个 `tree_draws`**，不在这里另
+    // 铺一遍。树不在世界状态里（一百万棵以上，由地形 + 噪声现算），
+    // `surface_draws` 从定义上列不出它们，所以这里多一趟调用。
+    //
+    // 少了这一趟，这张冻结基准就看不见「树画出来长什么样」这件事，而
+    // 生产路径照画不误——正是 ADR 0022 点名的「判据覆盖不到它该覆盖的
+    // 东西」。铺的格子范围与上面那趟地形循环**逐字相同**。
+    let tree_tiles: Vec<_> = (-PREVIEW_TILES_Y / 2 - 1..=PREVIEW_TILES_Y / 2 + 1)
+        .flat_map(|dy| (-PREVIEW_TILES_X / 2 - 1..=PREVIEW_TILES_X / 2 + 1).map(move |dx| (dx, dy)))
+        .map(|(dx, dy)| {
+            world
+                .world
+                .size
+                .wrap(player_pos.x() + dx, player_pos.y() + dy)
+        })
+        .collect();
+    let mut all_draws = tree_draws(
+        &world.world,
+        content.terrain_ids.forest,
+        tree_tiles.into_iter(),
+    );
+    // **先断言真的画出了树**：`tree_draws` 接进来却一棵树都产不出，
+    // 这张基准就只是「又跑了一遍不含树的老场景」——ADR 0022 点名的
+    // 「断言恒绿因为被断言的对象根本不存在」。第一版就是这个状态
+    // （实测 `TREEDRAWS=0`：种子 20260826 的出生点附近一格森林都没有），
+    // 于是 `arrange_surface_scene` 里补了那一小片林子。
+    assert!(
+        !all_draws.is_empty(),
+        "预览场景里一棵树都没画出来——这张基准对树的覆盖是空的"
+    );
+    all_draws.extend(surface_draws(&world.world, &content.registry, world.player));
+
+    for draw in all_draws {
         let Some(name) = first_present(&atlas, &draw) else {
             continue;
         };
@@ -285,6 +318,25 @@ fn arrange_surface_scene(world: &mut GameWorld, content: &LoadedContent) {
     // 一座有自带贴图的家具，一件没有自带贴图的放置物（走通用记号）。
     drop_item(world, content, px + 2, py, "lostland:forge", true);
     drop_item(world, content, px + 2, py + 2, "lostland:iron_ingot", true);
+
+    // 一小片林子（树木批次）：**强制把这几格铺成森林**，而不是指望
+    // 种子 20260826 的出生点附近恰好有树。
+    //
+    // 第一版就是指望那个巧合，实测一棵都没有（`tree_draws` 返回空），
+    // 于是这张基准对树的覆盖是空的却照样全绿。依赖噪声巧合的场景还会
+    // 在换一次生成参数之后**静默**失去覆盖面——那正是这一批要避开的
+    // 那类失效。
+    //
+    // 铺成森林之后长不长树、长哪一种，仍然由派生层说了算（这里一个
+    // `TreeDeviation` 都不写）——这张图因此是**派生层的**端到端证据：
+    // 从地形出发，一路验到屏幕像素。
+    for (dx, dy) in [(-3, -3), (-2, -3), (-1, -3), (-3, -2), (-1, -2), (-3, -1)] {
+        let pos = world.world.size.wrap(px + dx, py + dy);
+        world
+            .world
+            .terrain
+            .set_terrain(pos, content.terrain_ids.forest);
+    }
 
     for ((dx, dy), race, profession) in [
         ((0, -2), content.race_ids.dwarf, "lostland:blacksmith"),

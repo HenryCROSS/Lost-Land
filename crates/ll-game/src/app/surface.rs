@@ -18,7 +18,9 @@ use crate::layout::{
     effective_sight_radius, effective_sight_radius_for_race, effective_tint, terrain_atlas_key,
     tile_tint,
 };
-use crate::surface_draw::{PLAYER_ENTITY, SurfaceDraw, TERRAIN_ENTITY_BASE, surface_draws};
+use crate::surface_draw::{
+    PLAYER_ENTITY, SurfaceDraw, TERRAIN_ENTITY_BASE, surface_draws, tree_draws,
+};
 use crate::world::GameWorld;
 
 use super::gpu::{GpuResources, atlas_contains};
@@ -110,6 +112,27 @@ pub(super) fn render_surface(
             order,
             sprite_instance(zx, zy, entry.sprite_size(), uv, pos_tint, zoom),
         );
+    }
+
+    // 树（树木批次）。**单独一趟遍历，走与冻结像素基准同一个函数**
+    // （`surface_draw::tree_draws`，ADR 0021：不许把同一段逻辑抄两遍）。
+    //
+    // 为什么不折进上面那趟地形循环：树不是地形，它是 `Layer::TERRAIN`
+    // 上另一档绘制指令，而上面那趟循环产出的是地形瓦片本身。把两件事
+    // 塞进一个循环体只会让「这一格该画什么」多一层分支，换不到任何
+    // 东西——`visible_tiles_zoomed` 本身很便宜，树的判定是 O(1) 纯函数。
+    //
+    // 与下面那批一样按 FOV 过滤：**不画「记得那里曾经有一棵树」**。
+    // 树会被砍掉，与物品和 NPC 同一档，不与地形的迷雾记忆同档。
+    for draw in tree_draws(
+        world,
+        content.terrain_ids.forest,
+        camera.visible_tiles_zoomed(zoom).into_iter(),
+    ) {
+        if !visible.contains(draw.pos) {
+            continue;
+        }
+        push_surface_draw(&draw, camera, tint, zoom, resources);
     }
 
     // 地面物品堆 / 放置家具 / NPC——地形与玩家之外的三类世界内容，见

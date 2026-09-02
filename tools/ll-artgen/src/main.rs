@@ -52,6 +52,7 @@ mod furniture;
 mod npc;
 mod sprite;
 mod terrain;
+mod tree;
 mod ui;
 mod world_marks;
 
@@ -205,6 +206,17 @@ const TERRAIN_VARIANT_NAMES: [&str; 5] = [
     "terrain_sand_alt1",
 ];
 
+/// 本体三种树的贴图条目名（树木批次）。
+///
+/// **必须与 `ll_world::tree::TreeSpecies::sprite_stem` 逐字一致**，
+/// 也必须与 [`draw_entry`] 的三支派发一致——三处对不上时
+/// `crates/ll-game/tests/atlas_coverage.rs` 的两条锁会从两个方向各红
+/// 一次（声明多了图没画 / 图画了声明没加）。
+///
+/// 走 [`LooseOnlyEntry`] 而不是加进 `placeholder.json`：见那个类型的
+/// 文档（那份 JSON 是四张冻结像素基准的来源）。
+const TREE_NAMES: [&str; 3] = ["tree_oak", "tree_pine", "tree_palm"];
+
 /// 昼夜滑条的**滑块**贴图。
 ///
 /// 走 [`LooseOnlyEntry`] 而不是加进 `placeholder.json`：见那个类型的
@@ -319,11 +331,22 @@ fn loose_only_entries() -> Vec<LooseOnlyEntry> {
         pivot: TERRAIN_PIVOT,
         footprint: TERRAIN_FOOTPRINT,
     });
+    // 三种树（批次 32）。与地形/家具同尺寸、同锚点——它们画在世界格子
+    // 上，与地面物品堆、放置家具完全一档。**追加在最末尾**，前面每一条
+    // 的文件名与清单次序因此逐字不变。
+    let trees = TREE_NAMES.iter().map(|name| LooseOnlyEntry {
+        name: name.to_string(),
+        width: TERRAIN_TILE_SIZE,
+        height: TERRAIN_TILE_SIZE,
+        pivot: TERRAIN_PIVOT,
+        footprint: TERRAIN_FOOTPRINT,
+    });
     npcs.chain(terrains)
         .chain(ui)
         .chain(furnitures)
         .chain(composites)
         .chain(terrain_variants)
+        .chain(trees)
         .collect()
 }
 
@@ -642,6 +665,13 @@ fn draw_entry(image: &mut RgbaImage, name: &str, rect: EntryRect) {
         // 顺手带的图，删掉就自动退回通用家具记号，见 `furniture` 模块
         // 文档。名字与 `FURNITURE_NAMES`、与 `items.json5` 里那六条的
         // 本地名三处逐字一致。
+        // 三种树（批次 32）。与家具那六张地位相同——渲染层按名字查图，
+        // 查不到就不画这一格的树，引擎里没有任何一处按具体树种分支。
+        // 名字与 `TREE_NAMES`、与 `ll_world::tree::TreeSpecies::sprite_stem`
+        // 三处逐字一致。
+        "tree_oak" => tree::decorate_oak(image, rect),
+        "tree_pine" => tree::decorate_pine(image, rect),
+        "tree_palm" => tree::decorate_palm(image, rect),
         "oak_chair" => furniture::decorate_oak_chair(image, rect),
         "oak_table" => furniture::decorate_oak_table(image, rect),
         "fur_bed" => furniture::decorate_fur_bed(image, rect),

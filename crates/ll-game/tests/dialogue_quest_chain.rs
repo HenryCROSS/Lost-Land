@@ -38,7 +38,7 @@ use ll_core::ident::{ContentIndex, NamespacedId};
 use ll_game::content::{LoadedContent, RuntimeCatalogs};
 use ll_game::dialogue_screen::{DialogueParticipants, DialogueRow, dialogue_rows, update_dialogue};
 use ll_game::menu_screen::ScreenState;
-use ll_game::player_action::{InteractTarget, TalkLookup, interact_entries};
+use ll_game::player_action::{InteractLookup, InteractTarget, interact_entries};
 use ll_game::pointer::RowPointer;
 use ll_game::world::{GameWorld, build_new_world};
 use ll_i18n::Catalog;
@@ -143,10 +143,14 @@ fn east_of_player(game_world: &GameWorld) -> ll_core::torus::TorusPos {
     game_world.world.size.wrap(pos.x() + 1, pos.y())
 }
 
-fn talk<'a>(content: &'a LoadedContent) -> TalkLookup<'a> {
-    TalkLookup {
+fn talk<'a>(content: &'a LoadedContent) -> InteractLookup<'a> {
+    InteractLookup {
         dialogues: &content.dialogue_table,
         cultures: Some(&content.culture_table),
+        // 树木这一路：本文件的标的是对话，不接树（`None` = 这个世界
+        // 没有树这一层，树那三行永远不出现）。
+        forest: None,
+        tree_seed: None,
     }
 }
 

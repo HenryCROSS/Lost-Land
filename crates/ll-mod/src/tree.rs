@@ -4,7 +4,7 @@
 //!
 //! 依赖倒置在树木上的落点，与 [`crate::quest::RegisteredQuests`]、
 //! [`crate::recipe::RegisteredRecipes`] 完全同一种形状：`ll-sim` 声明接口，
-//! 真正的 [`Registry`](crate::registry::Registry) 住在这里。
+//! 真正的 [`Registry`] 住在这里。
 //!
 //! # 为什么树种在引擎侧、这三个索引却在内容侧
 //!
@@ -79,6 +79,18 @@ impl RegisteredTrees<'_> {
     /// 「已注册」是两件事，查不到就是查不到，不 panic）。
     fn index_of(&self, id: &str) -> Option<ContentIndex> {
         self.registry.get(&NamespacedId::parse(id).ok()?)
+    }
+
+    /// 树种（种子）那件物品的索引——与 [`TreeCatalog::tree_seed`] 同一个
+    /// 答案，**不经 trait**。
+    ///
+    /// 存在的理由只有一个：`ll_game` 的交互列表要判「背包里有没有种子」
+    /// 才决定「培植」那一行显不显示，而那处拿到的是一个具体的
+    /// `RegisteredTrees` 值、不是 `&dyn TreeCatalog`；让它为了一次查询
+    /// 而 `use ll_sim::tree::TreeCatalog` 只是为了让方法可见，噪音大于
+    /// 收益。**`TREE_SEED_ID` 仍然只有一处**，两条路都读它。
+    pub fn tree_seed_index(&self) -> Option<ContentIndex> {
+        self.index_of(TREE_SEED_ID)
     }
 }
 

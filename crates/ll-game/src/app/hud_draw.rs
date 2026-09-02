@@ -305,9 +305,16 @@ pub(super) fn draw_hud(
         &content.class_table,
         catalog,
         language,
-        crate::player_action::TalkLookup {
+        crate::player_action::InteractLookup {
             dialogues: &content.dialogue_table,
             cultures: Some(&content.culture_table),
+            // 树木这一路（树木批次）——与 `app.rs` 那处逐字相同，理由
+            // 见那里：id 的唯一真相源是 `ll_mod::tree::RegisteredTrees`。
+            forest: Some(content.terrain_ids.forest),
+            tree_seed: ll_mod::tree::RegisteredTrees {
+                registry: &content.registry,
+            }
+            .tree_seed_index(),
         },
     );
     let menu_data = crate::player_action::menu_data(menu, &menu_rows);

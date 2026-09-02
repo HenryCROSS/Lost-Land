@@ -26,7 +26,7 @@
 use ll_core::ident::NamespacedId;
 use ll_core::torus::TorusPos;
 use ll_game::content::LoadedContent;
-use ll_game::player_action::{InteractTarget, TalkLookup, interact_entries};
+use ll_game::player_action::{InteractLookup, InteractTarget, interact_entries};
 use ll_game::world::{GameWorld, build_new_world};
 use ll_world::item::{GroundItemStack, ItemStack};
 
@@ -100,7 +100,7 @@ fn 一具哥布林尸体平铺后脚下交互列表是三行() {
         &game_world.world,
         pos,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     )
     .len();
     let corpse = index(&content, "lostland:goblin.corpse");
@@ -115,7 +115,7 @@ fn 一具哥布林尸体平铺后脚下交互列表是三行() {
         &game_world.world,
         pos,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     );
 
     // Assert
@@ -147,7 +147,7 @@ fn 同一格两具同物种的尸体只占交互列表一行() {
         &game_world.world,
         pos,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     )
     .len();
     let corpse = index(&content, "lostland:goblin.corpse");
@@ -159,7 +159,7 @@ fn 同一格两具同物种的尸体只占交互列表一行() {
         &game_world.world,
         pos,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     );
 
     // Assert
@@ -192,7 +192,7 @@ fn 列表长度随物品种类数增长而不是随堆数增长() {
         &game_world.world,
         pos,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     )
     .len();
     let defs = [
@@ -210,7 +210,7 @@ fn 列表长度随物品种类数增长而不是随堆数增长() {
         &game_world.world,
         pos,
         game_world.player,
-        TalkLookup::none(),
+        InteractLookup::none(),
     );
 
     // Assert
