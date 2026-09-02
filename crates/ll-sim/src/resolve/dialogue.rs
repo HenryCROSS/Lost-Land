@@ -221,7 +221,8 @@ pub(super) fn resolve_dialogue_choose(
 ///   有一堆同 `def` 同耐久、归属不同的东西，
 ///   `WorldState::transfer_item_ownership` 命中的是前一堆（它取第一条
 ///   匹配），新收的那一堆仍然挂着原主。而这恰恰是常见情形：玩家捡来的
-///   同种物品是 [`Owner::Player`]，NPC 的出生装备是 [`Owner::Unowned`]。
+///   同种物品是 [`ll_world::ownership::Owner::Player`]，NPC 的出生装备是
+///   [`ll_world::ownership::Owner::Unowned`]。
 ///
 /// 因此本批采纳 [`super::inventory::resolve_pick_up`] 已经在用的那条既有
 /// 手法：**归属由 `resolve` 算好、写进搬运效果携带的那一堆里**
