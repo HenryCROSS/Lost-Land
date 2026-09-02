@@ -372,7 +372,55 @@ fn populated_world() -> GameWorld {
 // **七条存在性断言在第 1 步基线红时全部通过**：panic 落在
 // `assert_eq!(world.hash(), ..)` 那一行（`populated_determinism.rs:415`），
 // 在它们**之后**——世界没有变空。一条都没重冻、一条都没删。
-const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 5_903_614_475_130_246_384;
+//
+// # 树木批次的**第二次**重冻（同一批次内，原因与上面那条完全不同）
+//
+// 上面那条重冻的原因是 `WorldState::hash()` 多混入了一张空偏差表。
+// 本条记的是**同一批次里第二次**摘要变化，它与哈希函数无关：
+// `mods/lostland/items.json5` 追加了两件内容物品（`lostland:timber_log`
+// 木料、`lostland:tree_seed` 树种）。
+//
+// **两件新内容为什么会动这个摘要**：注册表是按装载顺序分配
+// `ContentIndex` 的，`items.json5` 里多两条 ⇒ **在它之后注册的一切索引
+// 整体 +2**。实测（探针跑真实 `mods/`，两次装载各一遍）：
+//
+// | id | 加两件之前 | 加两件之后 |
+// |---|---|---|
+// | `lostland:forest`（地形，引擎侧先注册） | 4 | 4（不变） |
+// | `lostland:iron_ingot`（items.json5 里靠前） | 59 | 59（不变） |
+// | `lostland:oak_chair`（items.json5 里靠后） | 106 | 106（不变） |
+// | `lostland:warrior`（classes.json5，在 items 之后） | 127 | **129** |
+// | `lostland:human.corpse`（引擎在全部 mod 之后注册） | 235 | **237** |
+//
+// 这个世界的 `Agent::profession`/`race` 与地面物品的 `def` 全是
+// `ContentIndex`，且全部参与 `hash()` ⇒ 摘要必变。**这不是缺陷**，是
+// 「新增内容一律追加在注册表末尾」那条纪律所允许的、可解释的平移；
+// 追加在**中间**才是那条纪律要拦的事（那会让 `items.json5` 自己内部
+// 也平移，上表第 2/3 行就是它没有发生的证据）。
+//
+// **四步同样跑满**：
+//
+// 1. **基线红**：`left: 10411288278210867400` / `right: 5903614475130246384`
+//    （`5903614475130246384` 是本批第一次重冻后的值）。
+// 2. **把改动关掉，精确回到旧值**：只把 `items.json5` 末尾那两条删掉
+//    （`ll_world::tree` 整套、`Intent::TendTree`、`Effect`、`ll-mod` 的
+//    `RegisteredTrees` 全部保留），本条**绿**，摘要精确等于
+//    `5903614475130246384`。这一步证明摘要变化只来自那两条内容。
+// 3. **恢复**那两条。
+// 4. **两个独立进程复现**新值。
+//
+// # 第 ② 步顺带抓到一处真缺陷（这一步存在的全部理由）
+//
+// 第一版的木料叫 **`lostland:timber`**，而那个 id
+// **`mods/lostland/resources.json5` 早就用掉了**（据点资源「木材」）。
+// 注册表是一个 id ↔ 索引空间，两张不同的表用同一个 id 会共享同一个
+// `ContentIndex`。**没有任何门禁拦住它**——schema 校验、`content_audit`
+// 的跨表引用检查、清单不多不少那条断言，全部照样绿。
+//
+// 抓到它的是**上面那张表对不上**：新增两条内容，后续索引却只平移了
+// **1**。改名成 `lostland:timber_log` 之后平移才变成 2。
+// 详见 `crates/ll-mod/src/tree.rs` 的 `TIMBER_ID` 文档。
+const EXPECTED_POPULATED_WORLD_DIGEST: u64 = 10_411_288_278_210_867_400;
 
 #[test]
 fn 有人有城有物有势力的世界摘要跨平台稳定() {

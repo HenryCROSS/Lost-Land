@@ -34,8 +34,8 @@
       "reason": "合理：据点名册——从据点参数到「住着谁」的一条确定性派生链（职业槽位、权重、抽种族与性别、造 Agent），各步共享同一条确定性随机流。批次「五个新种族」是纯内容，不改这里。（2026-08-31，批次 26）+1 行：`build_npc_agent` 写 `home: Some(profile.home)`——`Agent::home` 唯一的非 `None` 生产者，把既有真相源 `NpcProfile.home` 搬进实体。结构体字面量必须列全字段，不可拆分。〔2026-09-01，批次 31〕+1 行：`ItemRule` 加了 `base_price` 字段（交易的占位价格公式要读它），本文件 `mod tests` 里那个夹具因此多一行——编译器强制的一行，拆不动。**本批的 NPC 初始钱包没有加在这个文件里**，它落在新模块 `crates/ll-mod/src/npc_wallet.rs`。 再 +1 行：`MaterializeContext` 加 `population: u32` 字段（钱包的两个因子之一）。**钱包的计算本身按门禁原话拆进了新模块** `crates/ll-mod/src/npc_wallet.rs`；留在这里的只有一个字段声明与一行调用，拆不动。"
     },
     "crates/ll-sim/src/apply.rs": {
-      "code_lines": 1182,
-      "reason": "合理：规格 C2 的「唯一写入口」——一个 Effect 一段落地逻辑，逐变体平铺在一个穷尽 match 上。这个文件的长度就是 Effect 变体的数量。拆开会让「写世界的地方」不再只有一处，与 C2 直接冲突。（2026-08-31，批次 26）+19 行：`Effect::AddAffiliation` 的 `apply` 分支（去重闸门 + `standing` 夹紧）。**这正是本文件预算理由说的那件事**——文件长度就是 `Effect` 变体的数量本身。新增的三条测试**已经拆出去**了（`crates/ll-sim/tests/affiliation_apply.rs`），留在这里的只有实现。"
+      "code_lines": 1185,
+      "reason": "合理：规格 C2 的「唯一写入口」——一个 Effect 一段落地逻辑，逐变体平铺在一个穷尽 match 上。这个文件的长度就是 Effect 变体的数量。拆开会让「写世界的地方」不再只有一处，与 C2 直接冲突。（2026-08-31，批次 26）+19 行：`Effect::AddAffiliation` 的 `apply` 分支（去重闸门 + `standing` 夹紧）。**这正是本文件预算理由说的那件事**——文件长度就是 `Effect` 变体的数量本身。新增的三条测试**已经拆出去**了（`crates/ll-sim/tests/affiliation_apply.rs`），留在这里的只有实现。 〔2026-09-01，批次 32，+3 行〕`Effect::SetTreeDeviation` 的分支：一行 `world.trees.set(..)` 加分支头尾。**本文件的形状就是「每个效果一支、每支只做机械写入」**，一个新效果加一支不可拆——拆出去等于把 `apply` 是唯一写入口这条约束拆成两处。树木的全部判断都在 `crates/ll-sim/src/resolve/tree.rs`（新文件，不进快照）。"
     },
     "crates/ll-sim/src/resolve_tests.rs": {
       "code_lines": 1803,

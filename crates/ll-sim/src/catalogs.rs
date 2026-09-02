@@ -45,6 +45,7 @@ use crate::skill::{NoSkills, SkillCatalog};
 use crate::skill_overview::SkillTreeCatalog;
 use crate::subclass::{NoSubclassUnlocks, SubclassUnlockCatalog};
 use crate::traits::{NoTraitGrants, NoTraits, TraitCatalog, TraitGrantSource};
+use crate::tree::{NoTrees, TreeCatalog};
 use crate::xp_curve::{FlatXpCurve, XpCurveCatalog};
 
 /// 一次结算需要的全部只读内容目录（借用，不持有所有权）。
@@ -183,6 +184,13 @@ pub struct ResolveCatalogs<'a> {
     ///
     /// 不接这一路（[`NoContentIds`]）时那两条谓词恒判为「未完成」。
     pub content_ids: &'a dyn ContentIdLookup,
+    /// 树木内容索引来源（树木批次）——`Intent::TendTree` 要知道哪一种
+    /// 地形是森林、木料与树种各是哪件物品，见
+    /// [`crate::tree::TreeCatalog`]。
+    ///
+    /// 不接这一路（[`NoTrees`]）时 `Intent::TendTree` 恒产出空效果，
+    /// 即「这个世界里没有树可以砍」。
+    pub trees: &'a dyn TreeCatalog,
 }
 
 /// [`ResolveCatalogs::empty`] 借出的各路目录空实现的 `'static` 实例。
@@ -208,6 +216,7 @@ const NO_RECIPES: NoRecipes = NoRecipes;
 const NO_SUBCLASS_UNLOCKS: NoSubclassUnlocks = NoSubclassUnlocks;
 const NO_DIALOGUES: NoDialogues = NoDialogues;
 const NO_CONTENT_IDS: NoContentIds = NoContentIds;
+const NO_TREES: NoTrees = NoTrees;
 
 impl ResolveCatalogs<'static> {
     /// 十路全空的一束——与「一份目录都没接」在行为上完全等价
@@ -241,6 +250,7 @@ impl ResolveCatalogs<'static> {
             subclass_unlocks: &NO_SUBCLASS_UNLOCKS,
             dialogues: &NO_DIALOGUES,
             content_ids: &NO_CONTENT_IDS,
+            trees: &NO_TREES,
         }
     }
 }

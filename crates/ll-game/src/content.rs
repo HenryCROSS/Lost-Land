@@ -70,6 +70,7 @@ use ll_mod::skill::{BaseSkillIds, SkillError, SkillTable, resolve_base_skills};
 use ll_mod::subclass::{BaseSubclassIds, SubclassTable, resolve_base_subclasses};
 use ll_mod::tag::TagTable;
 use ll_mod::trait_def::TraitTable;
+use ll_mod::tree::RegisteredTrees;
 use ll_mod::weapon_category::WeaponCategoryTable;
 use ll_mod::xp_curve::{RegistryXpCurves, XpCurveBindings, XpCurveTable};
 use ll_sim::catalogs::ResolveCatalogs;
@@ -321,6 +322,9 @@ pub struct RuntimeCatalogs<'a> {
     /// trait」的目录：`RegistryXpCurves` 要把曲线定义表、职业/种族
     /// 绑定表与保底默认曲线索引三样绑在一起，见其文档。
     xp_curves: RegistryXpCurves<'a>,
+    /// 树木索引目录（树木批次）——把注册表包成
+    /// `ll_mod::tree::RegisteredTrees`，见其文档。
+    trees: RegisteredTrees<'a>,
 }
 
 impl<'a> RuntimeCatalogs<'a> {
@@ -355,6 +359,9 @@ impl<'a> RuntimeCatalogs<'a> {
                 curves: &content.xp_curve_table,
                 bindings: &content.xp_curve_bindings,
                 default_curve: content.default_xp_curve_id,
+            },
+            trees: RegisteredTrees {
+                registry: &content.registry,
             },
         }
     }
@@ -454,6 +461,17 @@ impl<'a> RuntimeCatalogs<'a> {
             // 标识符才能读任务进度，见
             // `ll_sim::dialogue::ContentIdLookup` 文档。
             content_ids: &self.content.registry,
+            // 树木这一路（树木批次）：把注册表包成
+            // `ll_mod::tree::RegisteredTrees`，解析 `lostland:forest` 与
+            // 木料/树种两件物品，见那个类型的文档。
+            //
+            // **这一行是「砍伐/培植/采果真的改变世界」在真实游戏里唯一
+            // 的接线点**：`ll-game` 全程只经 `TurnEngine` 驱动世界，漏掉
+            // 它，`Intent::TendTree` 会恒查不到内容、恒产出空效果，而
+            // 全部证据仍能在集成测试里成立——与击杀经验、副职、对话那
+            // 三次「只在测试里成立的接线」是同一类缺陷。守卫是
+            // `crates/ll-game/tests/tree_end_to_end.rs`。
+            trees: &self.trees,
         }
     }
 }

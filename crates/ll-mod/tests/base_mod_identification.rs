@@ -117,6 +117,8 @@ impl Handle {
             // 对话这两路（对话批次 2 新增）：本条测试与对话无关，接空实现。
             dialogues: &ll_sim::dialogue::NoDialogues,
             content_ids: &ll_sim::dialogue::NoContentIds,
+            // 树木这一路（树木批次新增）：本条测试不砍树，接空实现。
+            trees: &ll_sim::tree::NoTrees,
         }
     }
 

@@ -186,6 +186,7 @@ pub mod tag;
 mod test_support;
 pub mod topo;
 pub mod trait_def;
+pub mod tree;
 pub mod version_constraint;
 pub mod weapon_category;
 pub mod xp_curve;

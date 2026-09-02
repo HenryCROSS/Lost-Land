@@ -18,6 +18,7 @@ use ll_world::mod_state::ModStateWrite;
 use ll_world::ownership::Owner;
 use ll_world::space::Space;
 use ll_world::terrain::TerrainKind;
+use ll_world::tree::TreeDeviation;
 
 use crate::item::ItemStack;
 use crate::skill::ResourceKind;
@@ -1078,6 +1079,38 @@ pub enum Effect {
         actor: EntityId,
         /// 认出了哪一**种**物品，指向物品表。
         def: ContentIndex,
+    },
+    /// **把一格的树木偏差写进世界状态**（树木批次）——砍伐、培植、采果
+    /// 三条路共用的唯一一条世界写入。
+    ///
+    /// # 为什么三条路共用一个变体
+    ///
+    /// `apply` 侧要做的机械操作**逐字相同**：往
+    /// [`ll_world::tree::TreeDeviations`] 里写一条记录。差别全部在
+    /// 「写的是哪条记录」这份数据上——砍伐写 `species: None`、培植写
+    /// `species: Some(那块地的气候树种)`、采果写 `harvested_at: Some(now)`。
+    /// 与 [`Effect::AddGroundItem`] 同时服务普通丢弃/尸体/放置家具是同一条
+    /// 理由（见那个变体文档「为什么复用同一个变体」一节）。
+    ///
+    /// # `apply` 一句判断都不做（约束 C1）
+    ///
+    /// 「这一格现在有没有树」「果子长好了没有」「背包里有没有种子」全部
+    /// 是规则判断，已经在 `crate::resolve::tree::resolve_tend_tree` 判完
+    /// ——闸门不过时它返回**空效果**，本变体根本不会被产出。`apply` 拿到
+    /// 的 `deviation` 已经是最终要写进去的完整数据。
+    ///
+    /// # 为什么写的是「结果」而不是「动作」
+    ///
+    /// 一个 `TendTree { action: Fell }` 形状的效果会逼着 `apply` 去查
+    /// 「原来是什么树」才能算出新记录——那就是把判断搬进了 `apply`。
+    /// 本变体带的是**算好的最终记录**，与 [`Effect::MergeIntoInventory`]
+    /// 「合并结果由 `resolve` 算好，`apply` 只做替换」逐字同一条纪律。
+    SetTreeDeviation {
+        /// 哪一格。已归一化（`resolve` 侧经 `world.size.wrap` 换算，
+        /// **不手写取模**）。
+        pos: TorusPos,
+        /// 写进去的完整记录。
+        deviation: TreeDeviation,
     },
 }
 

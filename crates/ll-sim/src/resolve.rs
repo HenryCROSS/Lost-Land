@@ -82,6 +82,8 @@ use crate::traits::{NO_TRAIT_GRANTS, NoTraitGrants, NoTraits, TraitCatalog, Trai
 
 // 按意图族拆开的九个子模块。分派表（`resolve_dispatch`）仍在本文件，
 // 每加一族新意图 = 加一个模块 + 在分派表上加一条 arm。
+const NO_TREES: NoTrees = NoTrees;
+
 mod combat;
 mod crafting;
 mod dialogue;
@@ -92,6 +94,7 @@ mod portal;
 mod progression;
 mod stats;
 mod trade;
+mod tree;
 mod upkeep;
 
 // 搬出去的项在这里重新引进本模块的作用域：对外的公开路径
@@ -100,6 +103,7 @@ mod upkeep;
 use self::dialogue::resolve_dialogue_choose;
 pub(crate) use self::movement::step_destination;
 use self::trade::resolve_trade;
+use crate::tree::{NoTrees, TreeCatalog};
 // `occupant_at` 从 `pub(crate)` 开成 `pub`（对话批次 2）：`ll-game` 的
 // 交互列表要问「这一格上站着谁」，而那正是本函数文档
 // 「为什么必须只有这一份实现」里已经论证过的同一个问题。在输入层另写
@@ -308,6 +312,7 @@ pub fn resolve_with_skills_and_traits(
         &NoSubclassUnlocks,
         &NoDialogues,
         &NoContentIds,
+        &NO_TREES,
     )
 }
 
@@ -356,6 +361,7 @@ pub fn resolve_with_skills_traits_and_pools(
         &NoSubclassUnlocks,
         &NoDialogues,
         &NoContentIds,
+        &NO_TREES,
     )
 }
 
@@ -404,6 +410,7 @@ pub fn resolve_with_skills_traits_pools_and_items(
         &NoSubclassUnlocks,
         &NoDialogues,
         &NoContentIds,
+        &NO_TREES,
     )
 }
 
@@ -452,6 +459,7 @@ pub fn resolve_with_skills_traits_pools_items_and_formulas(
         &NoSubclassUnlocks,
         &NoDialogues,
         &NoContentIds,
+        &NO_TREES,
     )
 }
 
@@ -506,6 +514,7 @@ pub fn resolve_with_skills_traits_pools_items_formulas_and_damage_categories(
         &NoSubclassUnlocks,
         &NoDialogues,
         &NoContentIds,
+        &NO_TREES,
     )
 }
 
@@ -569,6 +578,7 @@ pub fn resolve_with_all_catalogs(
         &NoSubclassUnlocks,
         &NoDialogues,
         &NoContentIds,
+        &NO_TREES,
     )
 }
 
@@ -610,6 +620,7 @@ pub fn resolve_with_catalogs(
         catalogs.subclass_unlocks,
         catalogs.dialogues,
         catalogs.content_ids,
+        catalogs.trees,
     )
 }
 
@@ -663,6 +674,7 @@ pub fn resolve_with_skills_and_quests(
         &NoSubclassUnlocks,
         &NoDialogues,
         &NoContentIds,
+        &NO_TREES,
     )
 }
 
@@ -704,6 +716,10 @@ fn resolve_dispatch(
     // 九个调用点的实参是按位置对上的，插在中间会让每一处静默错位。
     dialogues: &dyn DialogueCatalog,
     content_ids: &dyn ContentIdLookup,
+    // 树木批次新增的一路。**同样追加在参数表末尾**，理由与上面对话
+    // 批次那两路逐字相同：调用点的实参按位置对上，插在中间会让每一处
+    // 静默错位。
+    trees: &dyn TreeCatalog,
 ) -> Vec<Effect> {
     let mut effects = match *intent {
         Intent::Wait { actor } => resolve_wait(
@@ -826,6 +842,9 @@ fn resolve_dispatch(
             item,
             direction,
         } => resolve_trade(world, actor, partner, item, direction, items),
+        Intent::TendTree { actor, pos, action } => {
+            self::tree::resolve_tend_tree(world, actor, pos, action, trees, items)
+        }
     };
     // 副职使用计数（副职获得机制批次）：一次**成功**的制作把对应配方
     // 类别的累计次数推进一格，达标就产出 `Effect::GrantSubclass`。
@@ -965,6 +984,7 @@ pub fn resolve_with_skills_quests_and_experience(
         &NoSubclassUnlocks,
         &NoDialogues,
         &NoContentIds,
+        &NO_TREES,
     )
 }
 

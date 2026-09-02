@@ -589,3 +589,18 @@ screen-trade-empty = 两边都拿不出可换的东西。
 screen-trade-hint = ↑↓ 选择　确认 成交　取消 离开
 screen-trade-buy = 买　{ $item }（{ $count }）　{ $price }
 screen-trade-sell = 卖　{ $item }（{ $count }）　{ $price }
+
+# ── 树木（批次 32）───────────────────────────────────────────────
+# 两件内容物品（砍伐出木料、采果出树种，树种又被培植消耗）、三条交互
+# 动作、三个树名。树名走 HUD 文案键而不是物品表：树**不是**
+# `ground_items` 里的一条——一百万棵以上，它们是派生出来的、不存储
+# （ADR 0009）。与门那两条键同一档，见 ll-game 的 `interact_target_name`。
+
+item-timber_log-display_name = 木料
+item-tree_seed-display_name = 树种
+hud-interact-action-fell = 砍伐
+hud-interact-action-harvest = 采果
+hud-interact-action-plant = 培植
+hud-interact-tree-oak = 一棵橡树
+hud-interact-tree-pine = 一棵松树
+hud-interact-tree-palm = 一棵棕榈
