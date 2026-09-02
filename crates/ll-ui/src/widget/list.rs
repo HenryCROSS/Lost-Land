@@ -112,6 +112,52 @@ impl<'m> RowCursor<'m> {
         self.cursor_y
     }
 
+    /// 把**一行里的若干格**从左往右摆开：每一格量出自己的自然宽度，
+    /// 下一格接着往右挪 `gap` 像素，游标只推进**这一行**。
+    ///
+    /// # 为什么住在这里，不住在状态栏那个模块里
+    ///
+    /// 规格 W6 要求状态栏「拆成字段，不再拼成一整行」——横排是那一条
+    /// 的落点。它要的四样（起点 `x`、当前 `cursor_y`、字号、测量器）
+    /// 正是 `RowCursor` 已经持有的；写在外面就要把测量器再传一遍，而
+    /// [`RowCursor::push`] 与本方法对「这一行推进多少」必须给出同一个
+    /// 答案，两处实现迟早分叉。
+    ///
+    /// # 每一格的断行宽是「到内容区右边界还剩多少」
+    ///
+    /// 不是整块面板的内容宽：那样最后一格会以为自己还有整行可用，
+    /// 一路画到面板外面去。取剩余量之后，真的排不下的那一格会在**它
+    /// 自己身上**换行——难看，但看得见，而不是静悄悄溢出。
+    /// 纵向推进因此按**全部格子里最高的那一个**算（与
+    /// [`RowCursor::push`] 按实际渲染行数推进是同一条纪律，规格 W2）。
+    ///
+    /// `fields` 为空时什么都不做、游标也不动——没有内容就不占高度，
+    /// 与「没有就不画，不留占位」那条一贯纪律一致。
+    pub fn push_fields(&mut self, labels: &mut Vec<Label>, fields: &[String], gap: f32) {
+        if fields.is_empty() {
+            return;
+        }
+        let 内容右 = self.x + self.wrap_width;
+        let mut x = self.x;
+        let mut 最多行数 = 1_usize;
+        for text in fields {
+            let 剩余 = (内容右 - x).max(0.0);
+            let metrics = self
+                .measure
+                .measure_text(text, self.font_size, self.row_height, 剩余);
+            最多行数 = 最多行数.max(metrics.line_count);
+            // 规格 L0：提交出去的那一份取整，内部推进保持精确。
+            labels.push(Label {
+                text: text.clone(),
+                x: x.round(),
+                y: self.cursor_y.round(),
+                max_width: 剩余,
+            });
+            x += metrics.max_line_width + gap;
+        }
+        self.cursor_y += 最多行数 as f32 * self.row_height;
+    }
+
     /// 这个游标每一行的左边界——即所在面板的**内容区左边界**。
     ///
     /// 需要逐行**矩形**（而不只是文字）的调用方要它：一行的矩形横向

@@ -1003,72 +1003,17 @@ mod tests {
         // （查不到职业定义），整行不出现——这条断言同时是那个分支的
         // 覆盖。有职业时那一行出现的证据在
         // `crate::hud::character_panel` 的对应测试。
-        assert_eq!(frame.layer(UiLayer::Hud).labels.len(), 1 + 16 + 2 + 23);
-
-        // Cleanup
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn 生命值下降时状态栏数字立即反映新值不受动画影响() {
-        // 这是「数字瞬时,条形动画」硬规则的直接验证——见
-        // `crate::widget::anim` 模块文档。构造两次调用,健康值从满值
-        // 掉到 30,断言状态栏文本行（而非条形）里的数字在下一帧就已经
-        // 是 30,不是正在从 100 往下滑的中间值。
-        // Arrange
-        let dir = temp_dir("instant-number");
-        write_fixture_catalog(&dir);
-        let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
-        let modifiers = BTreeMap::new();
-        let equipment = BTreeMap::new();
-        let character = sample_character_data(&modifiers, &equipment);
-        let item_table = ItemTable::new();
-        let mut anim = WidgetStateTable::new();
-        let full_status = StatusBarData {
-            clock: Tick(0),
-            health: 100,
-            mana: 50,
-            fps: 0.0,
-            weather_display_name_key: None,
-        };
-        建帧(
-            &full_status,
-            &character,
-            &equipment,
-            &item_table,
-            &catalog,
-            &FlatColorSkin,
-            &mut anim,
-            0,
-            1280.0,
-            None,
+        //
+        // **状态栏那一项从 1 变成 5**（规格 W6，批次 33）：它此前把六段
+        // 翻译拼成一个 `Label`，现在每一格各一个。本用例的
+        // `weather_display_name_key` 是 `None`，因此是五格不是六格
+        // （见 `status_bar::status_bar_fields` 文档「没有天气时是五格」）。
+        let 状态栏格数 = super::status_bar::status_bar_fields(&status, &catalog, "zh-CN").len();
+        assert_eq!(状态栏格数, 5, "无天气时状态栏是五格");
+        assert_eq!(
+            frame.layer(UiLayer::Hud).labels.len(),
+            状态栏格数 + 16 + 2 + 23
         );
-
-        // Act：紧接着下一帧,生命值已经掉到 30。
-        let damaged_status = StatusBarData {
-            clock: Tick(0),
-            health: 30,
-            mana: 50,
-            fps: 0.0,
-            weather_display_name_key: None,
-        };
-        let frame = 建帧(
-            &damaged_status,
-            &character,
-            &equipment,
-            &item_table,
-            &catalog,
-            &FlatColorSkin,
-            &mut anim,
-            1,
-            1280.0,
-            None,
-        );
-
-        // Assert：状态栏文本行里应该已经是 30,不是 100 附近的过渡值。
-        let status_line = &frame.layer(UiLayer::Hud).labels[0].text;
-        assert!(status_line.contains("30"));
-        assert!(!status_line.contains("100"));
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);

@@ -638,3 +638,79 @@ fn 居中之后每一行文字跟着面板一起挪() {
     // Cleanup
     let _ = std::fs::remove_dir_all(&dir);
 }
+
+// 下面这条也是从 `render.rs` 搬过来的（规格 W6 那一步）：状态栏拆成
+// 横排的若干格之后它要多几行来定位那几格，而 `render.rs` 在行数棘轮的
+// 快照里——先拆再 bless，同上。
+#[test]
+fn 生命值下降时状态栏数字立即反映新值不受动画影响() {
+    // 这是「数字瞬时,条形动画」硬规则的直接验证——见
+    // `crate::widget::anim` 模块文档。构造两次调用,健康值从满值
+    // 掉到 30,断言状态栏文本行（而非条形）里的数字在下一帧就已经
+    // 是 30,不是正在从 100 往下滑的中间值。
+    // Arrange
+    let dir = temp_dir("instant-number");
+    write_fixture_catalog(&dir);
+    let catalog = Catalog::load_one(crate::TEST_LOCALE_NAMESPACE, &dir);
+    let modifiers = BTreeMap::new();
+    let equipment = BTreeMap::new();
+    let character = sample_character_data(&modifiers, &equipment);
+    let item_table = ItemTable::new();
+    let mut anim = WidgetStateTable::new();
+    let full_status = StatusBarData {
+        clock: Tick(0),
+        health: 100,
+        mana: 50,
+        fps: 0.0,
+        weather_display_name_key: None,
+    };
+    建帧(
+        &full_status,
+        &character,
+        &equipment,
+        &item_table,
+        &catalog,
+        &FlatColorSkin,
+        &mut anim,
+        0,
+        1280.0,
+        None,
+    );
+
+    // Act：紧接着下一帧,生命值已经掉到 30。
+    let damaged_status = StatusBarData {
+        clock: Tick(0),
+        health: 30,
+        mana: 50,
+        fps: 0.0,
+        weather_display_name_key: None,
+    };
+    let frame = 建帧(
+        &damaged_status,
+        &character,
+        &equipment,
+        &item_table,
+        &catalog,
+        &FlatColorSkin,
+        &mut anim,
+        1,
+        1280.0,
+        None,
+    );
+
+    // Assert：状态栏那几格里应该已经是 30,不是 100 附近的过渡值。
+    // 规格 W6 之后状态栏是横排的**若干格**（生命是其中一格），
+    // 不再是一整行，因此拼起来再判——比的仍然是同一件事：数字本身
+    // 从不经动画平滑（只有条形经）。
+    let 状态栏格数 = super::status_bar::status_bar_fields(&damaged_status, &catalog, "zh-CN").len();
+    let status_line = frame.layer(UiLayer::Hud).labels[..状态栏格数]
+        .iter()
+        .map(|label| label.text.as_str())
+        .collect::<Vec<_>>()
+        .join("  ");
+    assert!(status_line.contains("30"), "实际：{status_line}");
+    assert!(!status_line.contains("100"), "实际：{status_line}");
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&dir);
+}

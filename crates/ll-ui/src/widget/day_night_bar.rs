@@ -15,7 +15,7 @@
 //! # 数字瞬时，指针平滑——两者从不共用一个数
 //!
 //! 与 [`crate::widget::anim`] 模块文档「数字瞬时，条形动画」同一条硬
-//! 规则的延伸：[`crate::hud::status_bar::status_bar_text`] 显示的时间
+//! 规则的延伸：[`crate::hud::status_bar::status_bar_fields`] 显示的时间
 //! 文本永远是 `world.clock` 的瞬时真实值,从不经过任何动画；本模块的
 //! 指针位置由调用方（`crate::hud::render::build_hud_frame`）经
 //! [`crate::widget::state::WidgetStateTable::animate`] 平滑过渡后再传

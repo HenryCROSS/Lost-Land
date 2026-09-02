@@ -90,6 +90,17 @@ enum 宽度判据 {
     参数化(&'static str),
     /// 压根不画在任何面板里（窗口标题、装载期日志）。同样要显式声明。
     不画在面板里(&'static str),
+    /// **状态栏横排里的一格**（规格 W6）。状态栏此前把六段翻译拼成
+    /// 一条连续文本、交给一个 `Label`；拆成独立的格子之后，一格单独
+    /// 拿去和**整条状态栏的内容宽**比是一道永远绿的门禁（`FPS` 在
+    /// 608px 里当然只占一行）。
+    ///
+    /// 真正会退化的是**整行之和**：某一段变长，右边那几格一起往右挪，
+    /// 最后一格被挤出面板。那条判据由本文件的
+    /// [`状态栏整行在两种语言下都排得下`] 覆盖，它遍历四季 × 全部天气
+    /// × 两种语言，走生产代码 `status_bar_panel`。字符串是「为什么这一
+    /// 类不单独设行数预算」的理由，空着就红。
+    横排一格(&'static str),
 }
 
 /// 一条「这个前缀的键画在哪块面板里」的声明。
@@ -200,20 +211,23 @@ fn 分类表() -> Vec<分类规则> {
             判据: || 散文(模态屏内容宽()),
         },
         // ── 常驻 HUD ────────────────────────────────────────
+        // 规格 W6 落地（批次 33）之后这三类各自是状态栏横排里的**一格**，
+        // 不再是一整行。判据见 `宽度判据::横排一格` 与
+        // `状态栏整行在两种语言下都排得下`。
         分类规则 {
             前缀: "hud-status-",
-            面板: "状态栏",
-            判据: || 一行(content_width(STATUS_WIDTH)),
+            面板: "状态栏（横排一格）",
+            判据: || 宽度判据::横排一格("状态栏拆成字段后，牙在整行之和那条断言上"),
         },
         分类规则 {
             前缀: "season-",
-            面板: "状态栏",
-            判据: || 一行(content_width(STATUS_WIDTH)),
+            面板: "状态栏（横排一格）",
+            判据: || 宽度判据::横排一格("季节名是状态栏横排里的一格，同上"),
         },
         分类规则 {
             前缀: "weather-",
-            面板: "状态栏",
-            判据: || 一行(content_width(STATUS_WIDTH)),
+            面板: "状态栏（横排一格）",
+            判据: || 宽度判据::横排一格("天气名是状态栏横排里的一格，同上"),
         },
         分类规则 {
             前缀: "hud-character-rule-modifier-sources",
@@ -698,4 +712,143 @@ fn 每一块模态屏的每一行都画在面板里面() {
 
     // 自证这条测试真的量了东西（ADR 0022 的假绿形状）。
     assert!(量过的行数 >= 九块屏.len() * LANGUAGES.len() * 4);
+}
+
+/// 状态栏这六格里的四个标签键、四个季节名、六种天气名——**全部从
+/// 生产代码自己那份枚举现取**，不在这里抄一张清单（抄一份就是真相源
+/// 之外的副本，副本迟早分叉）。
+const 全部天气键: [&str; 6] = [
+    "lostland:weather.clear.display_name",
+    "lostland:weather.overcast.display_name",
+    "lostland:weather.rain.display_name",
+    "lostland:weather.wind.display_name",
+    "lostland:weather.fog.display_name",
+    "lostland:weather.snow.display_name",
+];
+
+#[test]
+fn 状态栏整行在两种语言下都排得下() {
+    // **规格 W6 的判据本体**：「en 下整行宽 ≤ 内容宽」。
+    //
+    // 这条取代了分类表里此前给 `hud-status-`/`season-`/`weather-` 三类
+    // 设的「一格在整条状态栏的内容宽里占一行」——那是一道永远绿的门禁
+    // （一格当然放得下）。真正会退化的是整行之和：某一段变长，右边那
+    // 几格一起往右挪，最后一格被挤出面板。
+    //
+    // **遍历四季 × 全部天气 × 两种语言**，不只测一个恰好很短的组合
+    // （生产数据让判据退化成恒真，是本会话点名的假绿形状之一）。文案
+    // 全部来自真实的 `assets/locales`。
+    //
+    // 反例验证（已实跑）：把 `hud::render::STATUS_WIDTH` 调窄，本条
+    // 立刻红并报出是哪一门语言、第几格、越界多少。
+    // Arrange
+    let catalog = 目录();
+    let mut measurer = TextMeasurer::new().expect("内置字体资产应能正常解析");
+    let 内容宽 = content_width(STATUS_WIDTH);
+    let 四季 =
+        [0_i64, 30, 60, 90].map(|day| ll_core::time::Tick(day * ll_core::time::TICKS_PER_DAY));
+    let mut 越界: Vec<String> = Vec::new();
+    let mut 真的量过的帧数 = 0_usize;
+
+    // Act
+    for language in LANGUAGES {
+        for clock in 四季 {
+            for weather in 全部天气键.iter().copied().map(Some).chain([None]) {
+                let data = ll_ui::hud::status_bar::StatusBarData {
+                    clock,
+                    // 三位数是本体今天能出现的最坏情况（起始生命 100）。
+                    health: 100,
+                    mana: 100,
+                    // 三位数帧率：不上锁垂直同步时真的会出现。
+                    fps: 144.0,
+                    weather_display_name_key: weather,
+                };
+                let panel = ll_ui::hud::status_bar::status_bar_panel(
+                    &data,
+                    &catalog,
+                    language,
+                    &mut measurer,
+                    (0.0, 0.0),
+                    STATUS_WIDTH,
+                );
+                真的量过的帧数 += 1;
+                let 内容左 = panel.rect.x + ll_ui::hud::DEFAULT_PADDING;
+                for (i, label) in panel.labels.iter().enumerate() {
+                    // 文案没解析出来（键名原样回落）就说明这条键在这门
+                    // 语言里缺文案——那是另一道门禁的事，但拿键名量宽度
+                    // 没有意义，这里显式报出来而不是静默跳过。
+                    assert!(
+                        !label.text.is_empty(),
+                        "{language} / 第 {i} 格是空串，这种断言永远绿"
+                    );
+                    let metrics = measurer.measure_text(
+                        &label.text,
+                        ll_ui::hud::DEFAULT_FONT_SIZE,
+                        ll_ui::hud::DEFAULT_LINE_HEIGHT,
+                        label.max_width,
+                    );
+                    let 右边界 = label.x + metrics.max_line_width;
+                    if 右边界 > 内容左 + 内容宽 + 0.5 {
+                        越界.push(format!(
+                            "{language} / {:?} / 天气 {:?}：第 {i} 格「{}」右边界 {:.1} 越过内容区右沿 {:.1}",
+                            clock.season(),
+                            weather,
+                            label.text,
+                            右边界,
+                            内容左 + 内容宽
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    // Assert：先自证这条测试真的量了东西。
+    assert_eq!(
+        真的量过的帧数,
+        LANGUAGES.len() * 4 * (全部天气键.len() + 1),
+        "四季 × 全部天气（含无天气）× 两种语言都要量一遍"
+    );
+    assert!(
+        越界.is_empty(),
+        "状态栏这几格排不进面板内容宽（{内容宽}px）：
+{}",
+        越界.join(
+            "
+"
+        )
+    );
+}
+
+#[test]
+fn 状态栏两种语言的文案真的不同() {
+    // 防「空 Catalog ⇒ 查不到就回落到另一门语言 ⇒ 上面那条恒绿」这个
+    // 形状：如果 `目录()` 没真的把两份 `.ftl` 都装进来，两种语言会量出
+    // 同一批字符串，上面那条就等于只测了一遍。
+    // Arrange
+    let catalog = 目录();
+    let data = ll_ui::hud::status_bar::StatusBarData {
+        clock: ll_core::time::Tick(0),
+        health: 100,
+        mana: 100,
+        fps: 60.0,
+        weather_display_name_key: Some(全部天气键[2]),
+    };
+
+    // Act
+    let zh = ll_ui::hud::status_bar::status_bar_fields(&data, &catalog, "zh-CN");
+    let en = ll_ui::hud::status_bar::status_bar_fields(&data, &catalog, "en");
+
+    // Assert：**比的是文案彼此不同**，不是「文案 != 键名」——后者在
+    // 回落到另一门语言时照样绿。
+    assert_eq!(zh.len(), en.len(), "两种语言的格子数应当相同");
+    assert_ne!(zh, en, "两种语言量出了同一批字符串，说明 catalog 没装全");
+    assert!(
+        zh.iter().all(|f| !f.contains("hud-status-")),
+        "zh 有格子回落成了键名：{zh:?}"
+    );
+    assert!(
+        en.iter().all(|f| !f.contains("hud-status-")),
+        "en 有格子回落成了键名：{en:?}"
+    );
 }

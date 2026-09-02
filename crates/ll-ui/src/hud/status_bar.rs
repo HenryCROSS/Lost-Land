@@ -99,13 +99,13 @@ fn season_key(season: Season) -> &'static str {
 
 /// 状态栏需要的全部输入：一次读三个世界状态来源（`world.clock`/
 /// `agent.health`/`agent.mana`）加一个表现层专属的 `fps`，不做任何衍生
-/// 计算——衍生（日/时/分换算）留给 [`status_bar_text`] 内部完成，本
+/// 计算——衍生（日/时/分换算）留给 [`status_bar_fields`] 内部完成，本
 /// 类型只是把调用方已经有的几个值打包传递，避免函数签名变成一长串裸
 /// 参数（未来若要加下一项状态量，改这里一处即可，调用点不用跟着改
 /// 参数列表）。
 ///
 /// `fps` 是本结构体里唯一不来自 `WorldState` 的字段——见其文档：来自
-/// `ll_platform::fps::FpsCounter`，只活在表现层，`status_bar_text` 只是
+/// `ll_platform::fps::FpsCounter`，只活在表现层，`status_bar_fields` 只是
 /// 把这个已经算好的浮点数格式化进文本，不知道、也不需要知道它是怎么
 /// 算出来的。因为混进了这个浮点字段，本结构体不再能派生 `Eq`（`f32`
 /// 不实现 `Eq`），只保留 `PartialEq`——这与
@@ -129,7 +129,7 @@ pub struct StatusBarData<'a> {
     pub mana: i32,
     /// 当前显示用的平滑帧率（见 `ll_platform::fps` 模块文档「平滑算法」
     /// 一节）——不是世界状态，纯粹的表现层读数，数字仍然瞬时显示（本
-    /// 字段本身已经是平滑过的值，`status_bar_text` 不会再对它做二次
+    /// 字段本身已经是平滑过的值，`status_bar_fields` 不会再对它做二次
     /// 动画，符合「数字瞬时，条形动画」硬规则：这里既不是条形，平滑也
     /// 发生在调用点而不是 `crate::widget::anim::AnimatedValue`）。
     pub fps: f32,
@@ -171,43 +171,73 @@ fn format_clock(clock: Tick) -> String {
     format!("{day} {hour:02}:{minute:02}")
 }
 
-/// 产出状态栏这一整行的最终显示文本——纯函数，不接触 GPU，可脱离窗口
-/// 单元测试（本模块的测试就是这么做的）。
+/// 状态栏这一帧的**每一格**——纯函数，不接触 GPU，可脱离窗口单元
+/// 测试（本模块的测试就是这么做的）。
 ///
-/// 五段标签（时间/季节/生命/法力/帧率）经 `catalog` 按 `language` 解析，
-/// 数值本身用 Rust 格式化拼接，不经 Fluent 变量插值——理由见 crate 顶层
-/// 任务书「i18n」一节的既有边界：数字格式化本身不是「属性名/槽位名/
-/// 物品名」那一类需要翻译的用户可见名词。季节名（[`season_key`]）与
-/// 属性名/槽位名同一类——是一个有限枚举的展示名，因此和它们一样走
-/// `catalog.resolve`，不是数字格式化。
+/// # 为什么是一列格子，不是一整行字符串（规格 W6）
+///
+/// 此前这里把六段翻译 `format!` 成**一个** `String`、交给一个 `Label`
+/// 画出去。`knowledge/design/ui-and-navigation.md` §8.5 W6 记着这条的
+/// 后果：那一整行只要有一段变长（英文的 `Overcast`、某个译者把「帧率」
+/// 写成「每秒帧数」），**整行**就一起超出面板内容宽，于是尾巴上的帧率
+/// 被挤到第二行去（溢出清单 O-1 的根子）。
+///
+/// 拆成独立的格子之后，某一段变长只影响它自己那一格与它右边那几格的
+/// 起点，不再把整行拖成两行。横排由
+/// [`crate::widget::list::RowCursor::push_fields`] 做，格间距取
+/// [`crate::widget::metrics::PANEL_GAP`]（批次 30 收敛出来的间距刻度，
+/// 不新造一个常量）。
+///
+/// # 括号为什么没有了
+///
+/// 季节与天气此前共用一对括号，理由原文是「分开成两组括号只会让这行
+/// 更拥挤」——那条理由的前提是这些段挤在**同一条连续文本**里。拆成
+/// 各自定位的格子之后，格与格之间靠间隔区分，括号不再承担分隔职责。
+///
+/// # 没有天气时是五格，不是一个空格子
+///
+/// [`StatusBarData::weather_display_name_key`] 本来就是 `Option`。编一个
+/// 空格子出来只会让那一格的间隔无缘无故存在（规格 W6 的判据写「≥6 个
+/// 标签」，说的是有天气那一档）。
+///
+/// 各段标签经 `catalog` 按 `language` 解析，数值本身用 Rust 格式化拼接，
+/// 不经 Fluent 变量插值——理由见 crate 顶层任务书「i18n」一节的既有
+/// 边界：数字格式化本身不是「属性名/槽位名/物品名」那一类需要翻译的
+/// 用户可见名词。季节名（[`season_key`]）与属性名/槽位名同一类——是一个
+/// 有限枚举的展示名，因此和它们一样走 `catalog.resolve`。
 ///
 /// `fps` 按四舍五入到整数显示（`{:.0}`）——玩家关心的是「大概多少帧」，
 /// 平滑算法本身已经抹平了逐帧抖动（见 `ll_platform::fps` 模块文档），
-/// 小数位不会带来任何额外信息，只会让这行文本更拥挤。
-pub fn status_bar_text(data: &StatusBarData<'_>, catalog: &Catalog, language: &str) -> String {
-    let time_label = catalog.resolve(language, "hud-status-time-label");
-    let health_label = catalog.resolve(language, "hud-status-health-label");
-    let mana_label = catalog.resolve(language, "hud-status-mana-label");
-    let fps_label = catalog.resolve(language, "hud-status-fps-label");
-    let season_name = catalog.resolve(language, season_key(data.clock.season()));
-    // 天气紧跟季节，共用同一对括号：两者都是「现在是什么时节/什么天」
-    // 这一类环境信息，分开成两组括号只会让这行更拥挤。没有天气时整段
-    // 退化成原先的「(季节)」，不留下一个空的分隔符。
-    let season_and_weather = match data.weather_display_name_key {
-        None => season_name,
-        Some(key) => format!("{season_name} · {}", catalog.resolve(language, key)),
-    };
-    format!(
-        "{time_label} {} ({season_and_weather})   {health_label} {}   {mana_label} {}   {fps_label} {:.0}",
-        format_clock(data.clock),
-        data.health,
-        data.mana,
-        data.fps,
-    )
+/// 小数位不会带来任何额外信息，只会让这一格更宽。
+pub fn status_bar_fields(
+    data: &StatusBarData<'_>,
+    catalog: &Catalog,
+    language: &str,
+) -> Vec<String> {
+    let 标签 = |key: &str| catalog.resolve(language, key);
+    let mut fields = vec![
+        format!(
+            "{} {}",
+            标签("hud-status-time-label"),
+            format_clock(data.clock)
+        ),
+        catalog.resolve(language, season_key(data.clock.season())),
+    ];
+    if let Some(key) = data.weather_display_name_key {
+        fields.push(catalog.resolve(language, key));
+    }
+    fields.push(format!(
+        "{} {}",
+        标签("hud-status-health-label"),
+        data.health
+    ));
+    fields.push(format!("{} {}", 标签("hud-status-mana-label"), data.mana));
+    fields.push(format!("{} {:.0}", 标签("hud-status-fps-label"), data.fps));
+    fields
 }
 
-/// 建出状态栏这一块面板：背景矩形 + 唯一一行文字
-/// （[`status_bar_text`]）。这是状态栏在 [`super::render::render_hud`]
+/// 建出状态栏这一块面板：背景矩形 + **横排的那一列格子**
+/// （[`status_bar_fields`]）。这是状态栏在 [`super::render::render_hud`]
 /// 里真正被调用的入口——常驻，不需要按任何键就能看见,见模块文档
 /// 开篇。
 pub fn status_bar_panel(
@@ -219,7 +249,11 @@ pub fn status_bar_panel(
     width: f32,
 ) -> PanelContent {
     build_panel(measure, origin, width, |cursor, labels| {
-        cursor.push(labels, status_bar_text(data, catalog, language));
+        cursor.push_fields(
+            labels,
+            &status_bar_fields(data, catalog, language),
+            crate::widget::metrics::PANEL_GAP,
+        );
     })
 }
 
@@ -227,6 +261,14 @@ pub fn status_bar_panel(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// 把这一帧的全部格子拼成一条字符串——**只给「这一行里有没有出现
+    /// 某段内容」那一类断言用**，不是生产代码里的第二份排版：真正画到
+    /// 屏幕上的是 [`status_bar_fields`] 的每一格各自一个 `Label`
+    /// （规格 W6）。格子的**位置**由 `状态栏面板*` 那几条直接断言。
+    fn 拼起来(data: &StatusBarData<'_>, catalog: &Catalog, language: &str) -> String {
+        status_bar_fields(data, catalog, language).join("  ")
+    }
 
     fn write_fixture_catalog(dir: &Path) {
         // 中文字面量与 `.expect(` 同一行——`check_i18n_strings.py` 按
@@ -261,7 +303,7 @@ mod tests {
         };
 
         // Act
-        let text = status_bar_text(&data, &catalog, "zh-CN");
+        let text = 拼起来(&data, &catalog, "zh-CN");
 
         // Assert
         assert!(text.contains("0 00:00"));
@@ -286,7 +328,7 @@ mod tests {
         };
 
         // Act
-        let text = status_bar_text(&data, &catalog, "zh-CN");
+        let text = 拼起来(&data, &catalog, "zh-CN");
 
         // Assert
         assert!(text.contains("2 08:05"));
@@ -313,20 +355,26 @@ mod tests {
         };
 
         // Act
-        let text = status_bar_text(&data, &catalog, "zh-CN");
+        let text = 拼起来(&data, &catalog, "zh-CN");
 
-        // Assert：季节与天气共用同一对括号，天气名经 catalog 解析而不是
-        // 把键名直接印出来。
-        assert!(text.contains("(春 · 雨)"), "实际文本：{text}");
+        // Assert：天气名经 catalog 解析而不是把键名直接印出来，且它
+        // 自己就是一格（规格 W6 拆字段之后括号不再承担分隔职责，见
+        // `status_bar_fields` 文档「括号为什么没有了」一节）。
+        assert!(text.contains("雨"), "实际文本：{text}");
+        let fields = status_bar_fields(&data, &catalog, "zh-CN");
+        assert_eq!(fields[1], "春", "第 2 格是季节");
+        assert_eq!(fields[2], "雨", "第 3 格是天气");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
-    fn 状态栏文本在没有天气时退回只显示季节() {
-        // 没有天气（晴空基准／世界里没注册任何天气）时不该留下一个空的
-        // 分隔符——「(春 · )」比不显示更糟。
+    fn 状态栏在没有天气时少一格而不是留一个空格子() {
+        // 没有天气（晴空基准／世界里没注册任何天气）时**不该留下一个
+        // 空格子**——那一格的间隔会无缘无故地存在。规格 W6 的判据写
+        // 「≥6 个标签」说的是有天气那一档，见 `status_bar_fields` 文档
+        // 「没有天气时是五格」一节。
         // Arrange
         let dir = temp_dir("weather-absent");
         write_fixture_catalog(&dir);
@@ -340,11 +388,14 @@ mod tests {
         };
 
         // Act
-        let text = status_bar_text(&data, &catalog, "zh-CN");
+        let text = 拼起来(&data, &catalog, "zh-CN");
 
         // Assert
-        assert!(text.contains("(春)"), "实际文本：{text}");
-        assert!(!text.contains("·"), "没有天气时不该留下分隔符：{text}");
+        assert!(text.contains("春"), "实际文本：{text}");
+        let fields = status_bar_fields(&data, &catalog, "zh-CN");
+        assert_eq!(fields.len(), 5, "无天气时五格：{fields:?}");
+        assert_eq!(fields[1], "春");
+        assert_eq!(fields[2], "生命 100", "季节之后直接接生命，中间没有空格子");
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -365,7 +416,7 @@ mod tests {
         };
 
         // Act
-        let text = status_bar_text(&data, &catalog, "zh-CN");
+        let text = 拼起来(&data, &catalog, "zh-CN");
 
         // Assert
         assert!(text.contains("42"));
@@ -389,7 +440,7 @@ mod tests {
         };
 
         // Act
-        let text = status_bar_text(&data, &catalog, "zh-CN");
+        let text = 拼起来(&data, &catalog, "zh-CN");
 
         // Assert
         assert!(text.contains("12"));
@@ -413,8 +464,8 @@ mod tests {
         };
 
         // Act
-        let zh_text = status_bar_text(&data, &catalog, "zh-CN");
-        let en_text = status_bar_text(&data, &catalog, "en");
+        let zh_text = 拼起来(&data, &catalog, "zh-CN");
+        let en_text = 拼起来(&data, &catalog, "en");
 
         // Assert
         assert_ne!(zh_text, en_text);
@@ -424,7 +475,7 @@ mod tests {
     }
 
     #[test]
-    fn 状态栏面板恒产出一行文字() {
+    fn 状态栏面板把每一格各画成一个标签且全部在同一行上() {
         // Arrange
         let dir = temp_dir("panel-one-line");
         write_fixture_catalog(&dir);
@@ -447,8 +498,40 @@ mod tests {
             400.0,
         );
 
-        // Assert
-        assert_eq!(panel.labels.len(), 1);
+        // Assert：规格 W6 的主判据——一格一个 `Label`，不是拼成一整行。
+        //
+        // 反例验证（已实跑）：把 `status_bar_panel` 改回
+        // `cursor.push(labels, fields.join(" "))`，本条红在「5 ≠ 1」。
+        let fields = status_bar_fields(&data, &catalog, "zh-CN");
+        assert_eq!(
+            panel.labels.len(),
+            fields.len(),
+            "每一格恰好一个标签：{fields:?}"
+        );
+        for (label, field) in panel.labels.iter().zip(fields.iter()) {
+            assert_eq!(&label.text, field);
+        }
+        // 真的是**横排**：全部格子同一个 y，且 x 严格递增。
+        //
+        // 反例验证（已实跑）：把 `RowCursor::push_fields` 改成逐格调
+        // `push`（即每格换一行），本条红在「第 1 格的 y」。
+        let 首行y = panel.labels[0].y;
+        for (i, label) in panel.labels.iter().enumerate() {
+            assert_eq!(label.y, 首行y, "第 {i} 格的 y 应当与第一格相同");
+        }
+        for pair in panel.labels.windows(2) {
+            assert!(
+                pair[1].x > pair[0].x,
+                "格子应当从左往右摆：{} 之后是 {}",
+                pair[0].x,
+                pair[1].x
+            );
+        }
+        // 面板只有一行高——横排不该把高度撑成五行。
+        assert_eq!(
+            panel.rect.height,
+            super::super::DEFAULT_LINE_HEIGHT + super::super::DEFAULT_PADDING * 2.0
+        );
 
         // Cleanup
         let _ = std::fs::remove_dir_all(&dir);
@@ -536,7 +619,7 @@ mod tests {
         };
 
         // Act
-        let text = status_bar_text(&data, &catalog, "zh-CN");
+        let text = 拼起来(&data, &catalog, "zh-CN");
 
         // Assert
         assert!(text.contains('夏'));
@@ -560,7 +643,7 @@ mod tests {
         };
 
         // Act
-        let text = status_bar_text(&data, &catalog, "zh-CN");
+        let text = 拼起来(&data, &catalog, "zh-CN");
 
         // Assert：59.6 四舍五入显示为 60，不带小数位。
         assert!(text.contains("60"));
@@ -589,8 +672,8 @@ mod tests {
         };
 
         // Act
-        let low_text = status_bar_text(&low_fps, &catalog, "zh-CN");
-        let high_text = status_bar_text(&high_fps, &catalog, "zh-CN");
+        let low_text = 拼起来(&low_fps, &catalog, "zh-CN");
+        let high_text = 拼起来(&high_fps, &catalog, "zh-CN");
 
         // Assert
         assert_ne!(low_text, high_text);
