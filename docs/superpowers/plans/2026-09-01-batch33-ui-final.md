@@ -336,5 +336,73 @@ bless**：新断言用 `#[path]` 挂进已有的 `render_layout_tests.rs`（批�
 
 ## 九、落地后的偏离与实测
 
-（收工回填：门禁 exit code、改前/改后测试数、视觉基准动没动、三条黄金
-基准核对、UI 规格还剩什么。）
+**改前基线**（本工作树实跑，`CARGO_BUILD_JOBS=2 bash scripts/ci/run_tests.sh`）：
+**3096 通过 / 138 个测试二进制 / 0 失败**。
+**改后**：`CARGO_BUILD_JOBS=4 bash scripts/ci/run_all.sh` **exit 0**（13 步
+全过，覆盖率那一步默认跳过），**3111 通过 / 138 个二进制 / 0 失败**。
+
+**三张视觉基准 PNG 逐字节未动**——`crates/ll-game/tests/visual_baselines.rs`
+三条「与基准逐像素一致」全绿，`git diff` 对 `crates/ll-game/tests/visual/`
+与 `crates/ll-render/tests/visual/` 为空。**一张都没有 bless。** 落地前的
+预判成立：那三张图走 `ll_render` 的精灵路径 + `ll_game::surface_draw`/
+`layout`，不引用 `ll_ui` 的任何符号，而本批改的全是 `ll_ui` 的 HUD 与
+模态屏。
+
+**三条黄金基准 / 内容哈希 / 存档 schema 相对本批基线全部未动**
+（`git diff 6e44591 --` 对 `crates/ll-world/tests/determinism.rs`、
+`crates/ll-sim/tests/replay.rs`、`crates/ll-game/tests/populated_determinism.rs`、
+`crates/ll-mod/src/content_hash.rs`、`crates/ll-content/src/save_file.rs`、
+`scripts/ci/save_body_shape.json` 全为空）。**没有新增任何 `.ftl` 条目**
+（W7/F7 是把文字**拿掉**、W6 是把同一批既有键分开摆、N11 是输入语义）。
+**`mods/` 下一个文件都没碰**，内容侧代码一行没动。
+
+### 与计划的偏离
+
+1. **计划的第 2、3 两个提交合并成一个**：拆开的话第 2 个提交里文字前缀
+   与高亮矩形会同时存在（同一行被标两次），而两条断言的红/绿也分不清是
+   哪一半造成的。合并之后那个提交自身是绿的。
+2. **文档回写没有单独一个提交**，并进了 N11 那个提交。后果是 W7/F7 与 W6
+   两个提交**自身没有带上各自的规格回写**——`git bisect` 到那两个提交时
+   规格里读到的还是「未落地」。如实登记。
+3. **两次「先拆再 bless」**（计划只预判到一次）：
+   - `hud/render.rs` 1118 → 1090（`居中之后每一行文字跟着面板一起挪`
+     搬进 `render_layout_tests.rs`，为 F7 的高亮那十来行腾地方）
+   - `hud/render.rs` 1090 → 1042（`生命值下降时状态栏数字立即反映新值
+     不受动画影响` 也搬过去，为 W6 那两条定位状态栏格子的断言腾地方）
+   两次都是**净额往紧的方向转**，`--bless` 的理由都写满了。
+4. **`status_bar_text` 直接删掉了**，没有留成「拼起来」的公开函数：留着
+   就是生产代码里的第二份排版。测试里那一族「这一行有没有出现某段内容」
+   的断言改用一个私有的 `拼起来` 助手，文档里写明它不是排版真相源。
+5. **`ll-platform` 一行没动**（计划没说要动，实际也确实不用动——
+   `begin_frame`/`RepeatConfig` 早就在那儿了）。
+
+### 一处「改坏了它不红」——没有
+
+本批七条反例逐条改坏、逐条确认红在预期的那一条上，**没有出现「改坏了
+它不红」**。逐条见最终报告第 8 节。
+
+### 提交自身是否绿
+
+**四个代码提交自身都跑得过 fmt / clippy / 测试 / 行数棘轮 / 文档断链**
+（每个提交都单跑过 `check_doc_links.sh`——本批删了两对公开常量、搬走了
+三个公开符号，断链风险最高的一批，两次真的被它抓到：`action_menu_panel`
+改名后的断链、`status_bar_text` 删掉后 `day_night_bar.rs` 的断链，都在
+提交前补上了）。**偏离见上面第 2 条**：规格回写落在最后一个提交里。
+
+### UI 规格现在还剩什么
+
+**§10 的 P2 一档已清空**（L3/L4/L5/N12/N13 在批次 30，W6/W7/F7 在本批）。
+**P0 十二条早在批次 15/19 全清。**
+
+**P1 十六条里还剩三条**：
+
+| 条 | 是什么 | 为什么没并进本批 |
+|---|---|---|
+| **N9** | 模态屏进 `UiLayer`（新增 `UiLayer::Modal`） | 它改的是**分层与提交次序**，会牵动 `LayeredFrame`/`ScreenFrame` 两个类型的关系（今天模态屏刻意不套 `LayeredFrame`），与本批改的「选中的是哪一行」零重叠 |
+| **F3** | 自动存档的自渐隐痕迹 | 要 `Notice` 层的**动画生命周期**，与 F6 的常驻行是两套生命周期，批次 23 已记「混在一批里两者的判据会互相污染」 |
+| **D6** | 角色创建退出不清草稿 | 那是 `new_game_draft` 的生命周期，**属世界侧不属 UI 层** |
+
+**怎么确认的**：逐行扫 `knowledge/design/ui-and-navigation.md` 里全部
+`> **XN（Pn）…**` 形式的条目（N1–N14 / W1–W7 / F1–F7 / L0–L5 / D6–D9），
+对照 §10 三张清单与批次 15/19/23/30/33 各自的落地记录逐条勾。**这一节
+不是空的**，剩下的三条各自要碰另一片代码。
