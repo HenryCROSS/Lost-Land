@@ -45,6 +45,7 @@ use ll_core::ident::ContentIndex;
 
 use crate::content::LoadedContent;
 use crate::menu_screen::{ScreenNotice, ScreenState};
+use crate::nav_row::HorizontalRow;
 use crate::settings_view::labeled_row;
 
 /// 界面上可选的种族与职业清单——**从注册表现查出来的快照**。
@@ -142,6 +143,19 @@ pub enum CharacterRow {
     Next,
     /// 回到首页。
     Back,
+}
+
+impl crate::nav_row::HorizontalRow for CharacterRow {
+    /// 三个选择行有取值，「下一步」「返回」没有——后两行的左右键因此
+    /// 等同上下键（规格 N12），不再是「按了什么都不发生」。
+    fn horizontal_role(self) -> crate::nav_row::HorizontalRole {
+        match self {
+            CharacterRow::Race | CharacterRow::Gender | CharacterRow::Profession => {
+                crate::nav_row::HorizontalRole::AdjustsValue
+            }
+            CharacterRow::Next | CharacterRow::Back => crate::nav_row::HorizontalRole::MovesFocus,
+        }
+    }
 }
 
 impl crate::nav_row::NavRow for CharacterRow {
@@ -261,18 +275,30 @@ pub fn update_character_creation(
     let row = rows[(*cursor).min(rows.len() - 1)];
 
     if let Some(forward) = horizontal(input) {
-        match row {
-            CharacterRow::Race => {
-                choice.race = cycle(choice.race, roster.races().len(), forward);
+        // 规格 N12：先问这一行有没有横向维度，再决定是改值还是移动焦点。
+        // 分派走 `HorizontalRow::horizontal_role`，因此那条声明是**载重
+        // 的**——把 `Race` 标成 `MovesFocus` 的那一刻，左右键就不再换
+        // 种族了，见 `crate::nav_row::HorizontalRole` 文档。
+        match row.horizontal_role() {
+            crate::nav_row::HorizontalRole::MovesFocus => {
+                *cursor = crate::nav_row::stepped_cursor(*cursor, forward, rows.len());
             }
-            CharacterRow::Gender => {
-                choice.gender = cycle(choice.gender, Gender::ALL.len(), forward);
-            }
-            CharacterRow::Profession => {
-                choice.profession = cycle(choice.profession, roster.professions().len(), forward);
-            }
-            // 「下一步」「返回」两行没有取值可调，左右键什么都不做。
-            CharacterRow::Next | CharacterRow::Back => {}
+            crate::nav_row::HorizontalRole::AdjustsValue => match row {
+                CharacterRow::Race => {
+                    choice.race = cycle(choice.race, roster.races().len(), forward);
+                }
+                CharacterRow::Gender => {
+                    choice.gender = cycle(choice.gender, Gender::ALL.len(), forward);
+                }
+                CharacterRow::Profession => {
+                    choice.profession =
+                        cycle(choice.profession, roster.professions().len(), forward);
+                }
+                // 这两行的角色是 `MovesFocus`，上面那一支已经接走了；
+                // 留着这条分支只为让 `match` 穷尽，不留 `_ =>` 兜底
+                // ——新增一行时编译器必须逼人回答它属于哪一类。
+                CharacterRow::Next | CharacterRow::Back => {}
+            },
         }
     }
 

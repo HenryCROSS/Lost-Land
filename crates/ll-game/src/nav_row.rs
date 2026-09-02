@@ -104,6 +104,79 @@ pub fn sole_nav_role<R: NavRow>(rows: &[R]) -> Result<Option<NavRole>, NavRoleCo
     Ok(found)
 }
 
+/// 左右键落在这一行上时该做什么（规格 N12，
+/// `knowledge/design/ui-and-navigation.md` §7.6）。
+///
+/// # 规格原文与它要修的东西
+///
+/// > **N12（P2）左右键在列表屏里一律等同上下键（移动焦点），只在有数值
+/// > 的行上改数值。**
+///
+/// 今天三块「光标 + 行」的屏（设置 / 角色创建 / 世界配置）都是一个
+/// `match row`：有取值的行左右键改值，**其余行左右键什么都不做**。
+/// 玩家在「返回」那一行上按左右键，屏幕纹丝不动——与按坏了没有区别。
+///
+/// # 为什么是行枚举自己的属性，不是另写一张表
+///
+/// 与 [`NavRow`] 逐字同一条理由（见模块文档「为什么不是『再写一张表』」
+/// 一节）：另写一张表就是真相源之外的第二份副本，副本迟早分叉，而分叉
+/// 时没有任何东西会报错。
+///
+/// 而且**真实分派要去问它**——三块屏的左右键分支走的就是
+/// [`HorizontalRow::horizontal_role`]。角色标错不是只有门禁会红：把
+/// `SettingsRow::Language` 标成 [`HorizontalRole::MovesFocus`] 的那一刻，
+/// 左右键就不再切语言了。
+///
+/// # 用焦点表的那几块屏不需要实现它
+///
+/// 首页与游戏内菜单走的是 `ll_ui::widget::focus`，而那一层**已经**把
+/// 左右键当上下键使（`focus.rs` 里 `Down || Right` / `Up || Left` 那两
+/// 行）。它们没有任何取值行，因此也不存在「哪一行该改值」这个问题——
+/// 给它们实现本 trait 只会得到一个恒返回同一个值的函数，那是 ADR 0021
+/// 拦的那种「为对称而抽象」。
+///
+/// **存档列表 / 存档命名 / 选出生地 / 会话屏**同样不实现：规格原文
+/// 「存档列表、命名屏按左右键仍然什么都不做是可以的（它们没有数值行，
+/// 也只有一列），但要在代码里写明这是『本屏无横向维度』而不是漏了」
+/// ——这一段就是那句写明。选出生地屏的左右键是**地图光标**（空间坐标，
+/// 不是列表），会话屏是对话选项，两者都不是「行 + 取值」的形状。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HorizontalRole {
+    /// 这一行有一个可以左右调的取值——左右键改值。
+    AdjustsValue,
+    /// 这一行没有取值——左右键**等同上下键**，移动焦点。
+    MovesFocus,
+}
+
+/// 一个行枚举回答「左右键落在这一行上该做什么」，见 [`HorizontalRole`]。
+pub trait HorizontalRow: Copy {
+    /// 这一行的横向角色。
+    fn horizontal_role(self) -> HorizontalRole;
+}
+
+/// 左右键移动焦点时的下一个光标位置——**与上下键逐字同一套语义**
+/// （`crate::menu_screen::moved_cursor` / `crate::chargen::move_cursor`：
+/// 到边即停，不循环）。
+///
+/// 抽出来是因为三块屏都要它，而「左右键等同上下键」这句话一旦在三处
+/// 各写一遍，三处迟早在「到边循环不循环」上分叉——那正是 N12 想统一的
+/// 东西自己再分裂一次。
+///
+/// 不循环是**保守取舍**：规格 N11（上下键一律循环）是 P1、还没落地，
+/// 今天上下键到边即停。左右键此刻循环就会比上下键更「新」，两者在同一
+/// 块屏上行为不一致。N11 落地时这一个函数跟着改，三块屏不用动。
+pub fn stepped_cursor(cursor: usize, forward: bool, len: usize) -> usize {
+    if len == 0 {
+        return 0;
+    }
+    let cursor = cursor.min(len - 1);
+    if forward {
+        (cursor + 1).min(len - 1)
+    } else {
+        cursor.saturating_sub(1)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -192,6 +265,142 @@ mod tests {
         );
         assert_eq!(next, None, "关闭不换屏，它把整块屏关掉");
         assert_eq!(MenuRow::Continue.nav_role(), Some(NavRole::Close));
+    }
+
+    #[test]
+    fn 三块屏的每一行都声明了自己有没有横向维度() {
+        // 规格 N12 的判据本体。**逐块屏从它自己那份行列表现取**，不抄一份
+        // 静态清单——`horizontal_role` 是没有 `_ =>` 兜底的 `match`，新增
+        // 一行时编译器就会逼人回答，本条则保证「行列表本身非空、且真的
+        // 两类都有」。
+        //
+        // 反例验证（已实跑）：把 `SettingsRow::Language` 的角色改成
+        // `MovesFocus`，本条红在「设置屏应当有取值行」……不，实测红在
+        // 下一条（左右键不再切语言），本条因为还有 Vsync/ScaleFilter
+        // 仍然绿——两条各咬一头，见下一条。
+        // Arrange & Act & Assert
+        for (屏, 角色) in [
+            (
+                "设置屏",
+                settings_rows()
+                    .iter()
+                    .map(|r| r.horizontal_role())
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "角色创建屏",
+                character_rows()
+                    .iter()
+                    .map(|r| r.horizontal_role())
+                    .collect::<Vec<_>>(),
+            ),
+            (
+                "世界配置屏",
+                world_setup_rows()
+                    .iter()
+                    .map(|r| r.horizontal_role())
+                    .collect::<Vec<_>>(),
+            ),
+        ] {
+            assert!(!角色.is_empty(), "{屏}的行列表是空的，本条无从谈起");
+            assert!(
+                角色.contains(&HorizontalRole::AdjustsValue),
+                "{屏}一个取值行都没有——那它就不该是「光标 + 行 + 取值」这种屏"
+            );
+            assert!(
+                角色.contains(&HorizontalRole::MovesFocus),
+                "{屏}每一行都有取值？那「返回」那一行去哪了"
+            );
+        }
+    }
+
+    #[test]
+    fn 声明成没有横向维度的那一行按左右键真的移动焦点() {
+        // 让「横向角色」这条声明是**载重的**，不是只有门禁读的一张表
+        // ——与 `声明成关闭的那一行按下去真的关掉整块屏` 同一条思路。
+        //
+        // 拿世界配置屏验（它的 `update_*` 只吃普通类型，不需要装载内容）：
+        // 光标停在「返回」（`MovesFocus`），按左键应当把光标往上挪一格，
+        // 而不是什么都不发生。
+        //
+        // 反例验证（已实跑）：把 `WorldSetupRow::Back` 的角色改成
+        // `AdjustsValue`，本条红——光标纹丝不动（`adjust_row` 对 `Back`
+        // 是空实现）。
+        // Arrange
+        let rows = world_setup_rows();
+        let 返回 = rows
+            .iter()
+            .position(|r| *r == WorldSetupRow::Back)
+            .expect("世界配置屏应当有「返回」那一行");
+        assert!(返回 > 0, "「返回」是首行的话「往上挪一格」无从谈起");
+        assert_eq!(
+            WorldSetupRow::Back.horizontal_role(),
+            HorizontalRole::MovesFocus,
+            "「返回」不该有横向取值"
+        );
+        let mut cursor = 返回;
+        let mut shape = ll_world::generate::TerrainShape::default();
+        let mut preset = 0usize;
+        let mut mode = ll_content::mode::SaveMode::Permadeath;
+        let mut input = ll_platform::input::InputState::new();
+        input.press(ll_platform::input::GameKey::Left);
+
+        // Act
+        let _ = crate::world_setup::update_world_setup(
+            &mut cursor,
+            &mut shape,
+            &mut preset,
+            &mut mode,
+            &input,
+            crate::pointer::RowPointer::Idle,
+        );
+
+        // Assert
+        assert_eq!(
+            cursor,
+            返回 - 1,
+            "左右键落在没有横向维度的行上应当移动焦点（规格 N12），实际光标没动"
+        );
+    }
+
+    #[test]
+    fn 声明成有取值的那一行按左右键改的是值不是焦点() {
+        // 上一条的对照：同一块屏、同一个键，落在「海平面」上时光标**不动**，
+        // 变的是取值。两条合起来才说明分派真的按角色走，而不是「一律移动
+        // 焦点」或「一律改值」。
+        //
+        // 反例验证（已实跑）：把 `WorldSetupRow::SeaLevel` 的角色改成
+        // `MovesFocus`，本条红在「海平面没变」。
+        // Arrange
+        let rows = world_setup_rows();
+        let 海平面 = rows
+            .iter()
+            .position(|r| *r == WorldSetupRow::SeaLevel)
+            .expect("世界配置屏应当有「海平面」那一行");
+        let mut cursor = 海平面;
+        let mut shape = ll_world::generate::TerrainShape::default();
+        let 原海平面 = shape.sea_level;
+        let mut preset = 0usize;
+        let mut mode = ll_content::mode::SaveMode::Permadeath;
+        let mut input = ll_platform::input::InputState::new();
+        input.press(ll_platform::input::GameKey::Right);
+
+        // Act
+        let _ = crate::world_setup::update_world_setup(
+            &mut cursor,
+            &mut shape,
+            &mut preset,
+            &mut mode,
+            &input,
+            crate::pointer::RowPointer::Idle,
+        );
+
+        // Assert
+        assert_eq!(cursor, 海平面, "取值行上左右键不该移动焦点");
+        assert_ne!(
+            shape.sea_level, 原海平面,
+            "取值行上左右键应当改值，海平面没变"
+        );
     }
 
     #[test]
