@@ -43,6 +43,7 @@ pub mod surface_draw;
 #[cfg(test)]
 mod test_support;
 pub mod title_screen;
+pub mod trade_screen;
 pub mod world;
 pub mod world_setup;
 pub mod worldgen;

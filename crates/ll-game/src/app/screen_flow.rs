@@ -13,7 +13,7 @@ use ll_render::wgpu;
 use ll_ui::screen::render::render_screen;
 use ll_ui::widget::state::WidgetStateTable;
 
-use crate::content::{LoadedContent, RuntimeCatalogs};
+use crate::content::LoadedContent;
 use crate::menu_screen::{
     ScreenNotice, ScreenOutcome, ScreenState, SettingsContext, screen_data, settings_rows,
     update_settings,
@@ -21,7 +21,6 @@ use crate::menu_screen::{
 use crate::pause_menu::{menu_focus_index, update_menu};
 use crate::settings_view::{menu_row_texts, settings_row_texts, title_row_texts};
 use crate::title_screen::{title_focus_index, update_title};
-use ll_sim::effect::Effect;
 
 use super::Demo;
 use super::gpu::GpuResources;
@@ -163,6 +162,26 @@ pub(super) fn screen_row_texts(
                     .collect(),
                     None => Vec::new(),
                 },
+                None => Vec::new(),
+            },
+            cursor,
+        ),
+        // 交易屏：行是两边的货，各带价钱。价钱与 `resolve` 结算用的是
+        // 同一个函数（`ll_sim::trade::trade_price`），见
+        // `crate::trade_screen` 模块文档「判据只写一份」。
+        ScreenState::Trade { partner, cursor } => (
+            match session {
+                Some((world, player)) => crate::trade_screen::trade_rows(
+                    world,
+                    player,
+                    partner,
+                    &content.item_table,
+                    catalog,
+                    language,
+                )
+                .into_iter()
+                .map(|row| row.text)
+                .collect(),
                 None => Vec::new(),
             },
             cursor,
@@ -335,6 +354,7 @@ impl Demo {
             | ScreenState::SaveList { .. }
             | ScreenState::SaveNaming { .. }
             | ScreenState::Dialogue { .. }
+            | ScreenState::Trade { .. }
             | ScreenState::Settings { .. } => WidgetStateTable::default(),
         }
     }
@@ -433,77 +453,6 @@ impl Demo {
         crate::pointer::resolve_row_pointer(&mut self.pointer, input, &rects)
     }
 
-    /// 会话屏这一帧：算行 → 交给 [`crate::dialogue_screen::update_dialogue`]
-    /// → 把它要提交的意图送进回合引擎。
-    ///
-    /// # 行在这里**又算了一遍**，这不是那个「两份同一个算法」的形状
-    ///
-    /// [`Demo::resolve_screen_pointer`] 刚刚算过一遍同样的行（为了拿行
-    /// 矩形）。两遍调的是**同一个函数**
-    /// （[`crate::dialogue_screen::dialogue_rows`]）、跑在同一帧的同一份
-    /// 世界上，因此逐条相同——与 `crate::player_action::menu_rows` 和
-    /// `player_command` 各自重建一次列表是同一条既有取舍，理由见那里
-    /// 的文档：攒成一个跨帧字段才是真正的风险（要有人负责让它失效）。
-    ///
-    /// # 提交意图这条路径
-    ///
-    /// 走的是与玩家按键完全相同的
-    /// [`ll_sim::turn::TurnEngine::try_player_intent`]——**不是**另开
-    /// 一条「屏里也能改世界」的小路（约束 C1）。因此
-    /// `Intent::DialogueChoose` 的结算、条件重新校验、效果落地全部与
-    /// `crate::player_action` 提交的那六个意图逐条同办。
-    fn update_dialogue_screen(
-        &mut self,
-        speaker: ll_world::entity::EntityId,
-        node: ll_core::ident::ContentIndex,
-        cursor: &mut usize,
-        input: &InputState,
-        pointer: crate::pointer::RowPointer,
-    ) -> (ScreenOutcome, Option<ScreenState>) {
-        let Some(session) = self.session.as_mut() else {
-            // 底下没有世界却停在会话屏上是不该发生的状态；关掉这块屏
-            // 比 panic 好，与本模块其余降级路径一致。
-            return (ScreenOutcome::Close, None);
-        };
-        let player = session.game_world.player;
-        let Some(agent) = session.game_world.world.actors.get(player) else {
-            return (ScreenOutcome::Close, None);
-        };
-        let rows = crate::dialogue_screen::dialogue_rows(
-            node,
-            &self.content.dialogue_node_table,
-            agent,
-            &self.content.registry,
-            &self.catalog,
-            &self.config.language,
-        );
-        let update = crate::dialogue_screen::update_dialogue(
-            node,
-            cursor,
-            &rows,
-            &self.content.dialogue_node_table,
-            crate::dialogue_screen::DialogueParticipants {
-                actor: player,
-                speaker,
-            },
-            input,
-            pointer,
-        );
-        if let Some(intent) = update.submit {
-            let runtime_catalogs = RuntimeCatalogs::new(&self.content);
-            let catalogs = runtime_catalogs.as_resolve_catalogs();
-            let mut on_effect = |_world: &ll_world::state::WorldState, _effect: &Effect| {};
-            session.engine.try_player_intent(
-                &mut session.game_world.world,
-                player,
-                intent,
-                &catalogs,
-                &mut on_effect,
-            );
-        }
-        (update.outcome, update.next)
-    }
-
     pub(super) fn update_screen(&mut self, input: &mut InputState) -> bool {
         let Some(state) = self.modal.screen() else {
             return false;
@@ -600,6 +549,14 @@ impl Demo {
                         node,
                         cursor,
                     })),
+                )
+            }
+            ScreenState::Trade { partner, cursor } => {
+                let mut cursor = cursor;
+                let outcome = self.update_trade_screen(partner, &mut cursor, input, pointer);
+                (
+                    outcome.0,
+                    outcome.1.or(Some(ScreenState::Trade { partner, cursor })),
                 )
             }
             ScreenState::Settings { .. } => {

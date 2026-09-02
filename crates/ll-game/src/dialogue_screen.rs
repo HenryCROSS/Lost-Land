@@ -46,6 +46,7 @@ use ll_core::ident::ContentIndex;
 use ll_i18n::Catalog;
 use ll_mod::dialogue::{ContentIdLookup, DialogueNext, DialogueNodeTable, all_conditions_hold};
 use ll_platform::input::{GameKey, InputState};
+use ll_sim::dialogue::DialogueOutcome;
 use ll_sim::intent::Intent;
 use ll_world::entity::{Agent, EntityId};
 
@@ -193,6 +194,13 @@ impl DialogueUpdate {
 /// 两条路的 `next` 处理完全一样：`End` 关掉整块屏，`Node` 换节点并把
 /// 光标复位到第一项（**每换一个节点都重新预选第一项**，所有者裁定第 1
 /// 条；不复位的话光标会停在一个新节点里毫不相干的行上）。
+///
+/// # 第三条路：`open-trade` 压过 `next`
+///
+/// 〔2026-09-01，批次 31〕带
+/// [`ll_sim::dialogue::DialogueOutcome::OpenTrade`] 的选项切到
+/// [`ScreenState::Trade`]，它自己那条 `next` 不生效。理由与代价见函数体
+/// 里那段注释。
 pub fn update_dialogue(
     node: ContentIndex,
     cursor: &mut usize,
@@ -253,6 +261,28 @@ pub fn update_dialogue(
             node,
             option: row.option,
         });
+    // **`open-trade` 压过 `next`**：这条后果的全部内容就是「把 UI 推进
+    // 交易屏」（规格五节 5.3），因此它决定接下来是哪一块屏。
+    //
+    // 代价如实记：`crate::modal::Modal` 只有一个 `Option<ScreenState>`、
+    // 不是栈，所以从交易屏退出回到的是**世界**，不是刚才这段对话。
+    // 反转成本是屏栈落地之后改这一处，见计划文档
+    // `docs/superpowers/plans/2026-09-01-batch31-dialogue-trade.md` 2.3。
+    if option
+        .outcomes
+        .iter()
+        .any(|outcome| matches!(outcome, DialogueOutcome::OpenTrade))
+    {
+        return DialogueUpdate {
+            outcome: ScreenOutcome::Idle,
+            next: Some(ScreenState::Trade {
+                partner: speaker,
+                cursor: 0,
+            }),
+            // 混着 `set-flag` 之类的选项照样把那一半提交出去。
+            submit,
+        };
+    }
     match option.next {
         // 「说完这句就散了」：屏关掉。带 `outcomes` 的告别选项**仍然会
         // 把那条后果提交出去**——两件事互不排斥，这正是 `submit` 与

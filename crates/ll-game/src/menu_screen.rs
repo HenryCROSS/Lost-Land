@@ -140,6 +140,28 @@ pub enum ScreenState {
         /// 见 `crate::dialogue_screen::DialogueRow`。
         cursor: usize,
     },
+    /// 交易屏——跟一个 NPC 买卖，见 [`crate::trade_screen`]。
+    ///
+    /// **它底下有一局正在进行的世界**，与 [`ScreenState::Dialogue`]
+    /// 同一种状态：世界不推进（`Demo::advance` 因 `screen.is_some()`
+    /// 早退），因此交易过程中对方不可能走开或死掉。
+    ///
+    /// 进这块屏的唯一入口是对话选项上的 `open-trade` 后果——**那条后果
+    /// 不产任何 `Effect`，只推 UI**（规格五节 5.3）；真正的钱货两清是
+    /// `ll_sim::intent::Intent::Trade`，照旧走 `apply` 唯一写入口。
+    ///
+    /// 退出时回到的是**世界**，不是刚才那段对话：`crate::modal::Modal`
+    /// 只有一个 `Option<ScreenState>`，不是栈。如实登记在计划文档
+    /// `docs/superpowers/plans/2026-09-01-batch31-dialogue-trade.md`
+    /// 二节 2.3 与十一节。
+    Trade {
+        /// 跟谁做这笔买卖——一路带到 `ll_sim::intent::Intent::Trade`，
+        /// 价格系数读的是玩家与**他所属势力**之间的声望。
+        partner: EntityId,
+        /// 光标落在第几行（`crate::trade_screen::trade_rows` 产出的
+        /// 那张表里的下标）。
+        cursor: usize,
+    },
     /// 设置界面。
     Settings {
         /// 光标落在第几行，见模块文档「焦点导航」一节。
@@ -589,6 +611,17 @@ pub fn screen_data<'a>(
             notice,
             // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
+            hovered: None,
+        },
+        // 交易屏：行是两边的货，标题是一个写死的字面量键（只有会话屏
+        // 的标题是现算的）。见 `crate::trade_screen` 模块文档那张表。
+        ScreenState::Trade { .. } => ScreenData {
+            title_key: "screen-trade-title",
+            rows,
+            cursor: focus,
+            empty_key: "screen-trade-empty",
+            hint_key: "screen-trade-hint",
+            notice,
             hovered: None,
         },
         ScreenState::Settings { capturing, .. } => ScreenData {
