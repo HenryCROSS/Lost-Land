@@ -132,6 +132,7 @@ pub mod button;
 pub mod day_night_bar;
 pub mod focus;
 pub mod geometry;
+pub mod highlight;
 pub mod hit_test;
 pub mod label;
 pub mod layer;

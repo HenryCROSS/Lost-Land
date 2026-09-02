@@ -496,24 +496,13 @@ pub fn screen_row_rects(
     .row_rects
 }
 
-/// 聚焦行的高亮矩形颜色（RGBA）——**「这一行现在会响应确认键」的视觉
-/// 承诺**，与 `crate::widget::button::FlatButtonAppearance::HOVERED` 的
-/// 填充同一份色，两处读起来要像同一个产品。
-pub const FOCUS_HIGHLIGHT_COLOR: [f32; 4] = [0.2, 0.35, 0.5, 0.75];
-
-/// 悬停行的高亮矩形颜色（RGBA）——比聚焦淡一档：指针划过去**不改变
-/// 焦点**（见 `ll_game::pointer` 模块文档那四条约定），它只是在说
-/// 「点下去会是这一行」。
-pub const HOVER_HIGHLIGHT_COLOR: [f32; 4] = [0.2, 0.35, 0.5, 0.32];
-
-/// 把某一行的矩形画成一块高亮底——[`backdrop_quad`] 的同形函数。
-pub fn row_highlight_quad(rect: Rect, color: [f32; 4]) -> crate::widget::quad::QuadInstance {
-    crate::widget::quad::QuadInstance {
-        position: [rect.x, rect.y],
-        size: [rect.width, rect.height],
-        color,
-    }
-}
+// 行高亮的两个颜色与那段皮肤分支**搬去了 [`crate::widget::highlight`]**
+// （规格 F7：HUD 的动作菜单也要画高亮，而 `hud` 与 `screen` 彼此不
+// 依赖，唯一都看得见的地方是 `widget`）。这里保留三条重导出，公开
+// 路径一条都不断——搬家不该逼调用方改 `use`。
+pub use crate::widget::highlight::{
+    FOCUS_HIGHLIGHT_COLOR, HOVER_HIGHLIGHT_COLOR, row_highlight_quad,
+};
 
 /// 压暗背板这一帧的填色矩形——恒一块，恒 [`BACKDROP_COLOR`]。
 pub fn backdrop_quad(rect: Rect) -> crate::widget::quad::QuadInstance {
