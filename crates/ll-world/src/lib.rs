@@ -56,6 +56,7 @@ pub mod surface_store;
 pub mod temperature;
 pub mod terrain;
 pub mod terrain_shape;
+pub mod tree;
 pub mod weather;
 pub mod world_map;
 pub mod zone;
