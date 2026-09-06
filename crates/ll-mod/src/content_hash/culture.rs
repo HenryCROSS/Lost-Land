@@ -36,7 +36,7 @@ use super::StateHasher;
 /// - `display_name_key` 是字面 `NamespacedId`，直接混；
 /// - `economy` 混的是内容文件里写的那个**字符串**
 ///   （`ResourceCategory::as_str`），不是枚举判别值，与
-///   [`write_resource_fields`] 的同名处理逐字相同；
+///   [`super::write_resource_fields`] 的同名处理逐字相同；
 /// - `home_terrain`/`wall_terrain`/`founder_races[].race`/
 ///   `hostility[].culture` 都是 `ContentIndex`，一律经
 ///   `Registry::resolve` 换成 id 再混。解析不出来时混一个与任何合法
@@ -156,7 +156,7 @@ mod tests {
     use super::*;
 
     /// 建筑类型真的进了摘要：同一条文化、只换 `buildings`，摘要必须不同
-    /// （版本 29 守门，见 [`CONTENT_HASH_ALGORITHM_VERSION`] 文档
+    /// （版本 29 守门，见 [`super::CONTENT_HASH_ALGORITHM_VERSION`] 文档
     /// 「版本 29」一节）。
     ///
     /// 三份声明两两比对，各自只差一处：权重、家具种类、家具件数。只比
@@ -165,7 +165,7 @@ mod tests {
     ///
     /// # 顺带如实记录一处**已经存在的**文档—代码分歧
     ///
-    /// [`CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 27」一节写着守门的
+    /// [`super::CONTENT_HASH_ALGORITHM_VERSION`] 文档「版本 27」一节写着守门的
     /// 是「本模块单元测试 `建材不同的两条文化摘要不同`」——**那条测试从
     /// 来没有存在过**（`grep 建材不同的两条文化摘要不同 crates/` 只命中
     /// 那句注释自己）。这正是同一段文字警告过的那件事：「提交信息声称
@@ -242,7 +242,7 @@ mod tests {
     }
 
     /// 命名规则真的进了摘要：同一条文化、只换 `naming` 的某一处，摘要
-    /// 必须不同（版本 35 守门，见 [`CONTENT_HASH_ALGORITHM_VERSION`]
+    /// 必须不同（版本 35 守门，见 [`super::CONTENT_HASH_ALGORITHM_VERSION`]
     /// 文档「版本 35」一节）。
     ///
     /// 五份声明两两比对，各自只差一处：音节数下限、音节数上限、语言
