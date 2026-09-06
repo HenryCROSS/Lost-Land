@@ -37,6 +37,40 @@ use crate::content::LoadedContent;
 /// 早八点」这个起点读起来自然，没有玩法含义。
 pub const NEW_GAME_START_TICK: Tick = Tick(8 * ll_core::time::TICKS_PER_HOUR);
 
+/// 玩家开局钱包里的钱（最小货币单位）。
+///
+/// # 这个数是**所有者裁定**，不是推导出来的
+///
+/// 2026-09-02 所有者裁定「1000」。它推翻的是交易批次
+/// （`docs/superpowers/plans/2026-09-01-batch31-dialogue-trade.md`
+/// 第十一节第 9 条）那条临时裁定「玩家初始钱包仍然是 0，等所有者裁定」
+/// ——那一条的后果是**玩家开局只能卖不能买**，交易这条后果落地即半残。
+///
+/// **不要试图从别处推出这个数**。给一条量纲对照免得后人以为它算得出来：
+/// 本体一件烤肉的 `base_price` 是 900（`mods/lostland/items.json5`），
+/// 占位价格公式是「基础价 × 归属系数」（`ll_sim::trade::trade_price`），
+/// 于是开局的玩家买得起**一件**中等价位的货、买不起两件。这与 NPC 钱包
+/// 那一侧「一座 40 人据点的管理者刚好买得起一把武器、买不起两把」
+/// （`ll_mod::npc_wallet`）是同一个量级感。
+///
+/// # 它会改变世界摘要，也会改变老存档吗
+///
+/// **会改前者，不会改后者。** `Agent::wallet` 进
+/// `ll_world::state::WorldState::hash`，因此
+/// `EXPECTED_POPULATED_WORLD_DIGEST` 随本常量重冻（四步证据写在那条常量
+/// 的文档里）。而钱包是**存档里的数据**、不是读档时重算的派生量
+/// （见 `Agent::wallet` 字段文档「厚层直接存值」），所以老存档里的玩家
+/// 仍然是他存盘时的数额，本批**不写迁移**——与交易批次对 NPC 钱包做的
+/// 判断逐字相同（交接文档第〇之二第 9 条那条纪律）。
+///
+/// # 为什么是常量而不是字面量
+///
+/// 与 `Agent::STARTING_HEALTH`/`STARTING_MANA` 同一形状：一个「新角色
+/// 进入世界时带什么」的数，要有一个能被 grep 到、能挂论证的名字。
+/// 改它会让 `玩家开局带着所有者裁定的那笔钱` 与三条基准里那一条同时红
+/// ——那正是它们的用途，逼改数值的人重新读一遍上面这段。
+pub const PLAYER_STARTING_WALLET: i64 = 1000;
+
 /// 区块边长（格）：固定 48，与 `ll_content::world_identity` 推荐预设表
 /// 一致（该模块文档：区块边长固定 48）。
 const ZONE_SPAN: u32 = 48;
@@ -672,7 +706,13 @@ pub fn build_player_agent(
         // 进存档与世界哈希的记录。NPC 那一条路径（`ll_mod::roster::
         // build_npc_agent`）会挂，两者不对称是有意的。
         affiliations: Vec::new(),
-        wallet: 0,
+        // **初始钱包不再是 0**（所有者 2026-09-02 裁定 1000，取值理由与
+        // 量纲对照见 [`PLAYER_STARTING_WALLET`]）。旧行为的代价是玩家
+        // 开局**只能卖不能买**——交易这条后果落地即半残。
+        //
+        // **这会改变经这条路径产生的世界的摘要**：`Agent::wallet` 进
+        // `ll_world::state::WorldState::hash`。
+        wallet: PLAYER_STARTING_WALLET,
         // 职业由调用方给出，**不再是占位索引**。
         //
         // # 这句注释此前写的是什么，为什么它双重过期
