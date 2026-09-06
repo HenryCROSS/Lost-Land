@@ -513,3 +513,75 @@ pub fn agent_given_name(
 - 九节「需要所有者裁定的问题」里，第 6 条（NPC 初始钱包）由批次 5 关闭，
   第 4 条（`standing` 的初始值、上限与折扣函数）**仍然开着**——它不属于
   对话链的实现，是一次数值裁定。
+
+---
+
+## 十、门禁与测试数（收工实测）
+
+`CARGO_BUILD_JOBS=2 bash scripts/ci/run_all.sh` → **EXIT=0**，15 步全过
+（覆盖率那一步默认跳过，与既有各批一致）。
+
+| | 通过 | 二进制 | 失败 |
+|---|---|---|---|
+| 改前（本工作树自己跑的基线） | **3115** | 138 | 0 |
+| 改后 | **3132** | 141 | 0 |
+
+新增 17 条测试、3 个测试二进制（`culture_naming` / `dialogue_npc_name` /
+`player_wallet`）。
+
+### 10.1 收工时门禁抓到的三件事（全部不是「跑一遍就绿」）
+
+**这一节是本批最诚实的部分**：前面各节写完时我以为已经完事了，
+`run_all.sh` 连红三次，每一次都抓到一件真的要处理的事。
+
+1. **存档主体形状 ↔ schema 版本联动检查（第 10 步）红。**
+   处理见 7.8 节：`CURRENT_SCHEMA_VERSION` 7 → 8 + `--bless`，并如实登记
+   这是那道门禁**同一处过度近似的第二次命中**（第一次是建筑类型批次
+   `e40cd6a`）。本批此前写下的「schema 不动」就是被这一步纠正的。
+2. **文件行数棘轮（第 11 步）红四条。**
+   - `content_hash.rs` +86 → **先拆再 bless**：`write_culture_fields` 与
+     守着它的两条测试搬进新模块 `crates/ll-mod/src/content_hash/culture.rs`，
+     拆完 **2969 → 2847，净缩 122 行**，棘轮为它收紧。
+   - `world.rs` +1 / `roster.rs` +2 / `chronicle.rs` +2 → **`--bless`**，
+     理由写进了提交信息：涨的全是**编译器强制的结构体字段初始化行**
+     （`CultureAttrs` 新增必填字段之后每个构造点必须多一行，没有第二种
+     写法），为两行去拆一个三千行的文件不成比例。三条的既有 `reason`
+     一字未动。
+3. **文档断链检查（第 13 步）红。**
+   `content_hash/culture.rs` 里 `[\`write_resource_fields\`]` 解析不到——
+   **正是本会话已有三批踩过的那个形状**：把符号搬进子模块之后，文档里的
+   短链接还指着搬走之前的作用域。连同四处
+   `[\`CONTENT_HASH_ALGORITHM_VERSION\`]` 一并改成 `super::` 限定。
+
+### 10.2 环境假失败（判据同交接纪律第 8 条）
+
+本批撞到两次，都是「`EXIT` 非 0、崩在第三方 crate 上」，**降/重跑即绿**，
+没有 debug 代码：
+
+- `check_clippy.sh`：`rustc` 编 `ttf-parser` 时 panic（`query stack during
+  panic` + `could not compile ttf-parser`），重跑一遍过。
+- `cargo test -p ll-sim --test replay`：编 `tracing-appender` 时
+  `exit code: 0xc0000005, STATUS_ACCESS_VIOLATION`，重跑一遍过。
+- `run_all.sh` 第一轮：`Doc-tests ll_content` 报
+  `only metadata stub found for rlib dependency core` + 一串 `can't find crate`
+  ——与交接纪律第 8 条补记的 `required to be available in rlib format`
+  同一族（target 里的元数据产物半成品），重跑不再出现。
+
+### 10.3 各提交与自身是否绿
+
+| hash | 提交 | 自身绿？ |
+|---|---|---|
+| `e47be9d` | feat(world): CultureAttrs.naming——按文化派生 NPC 姓名（渲染期现算） | **否**（如实登记）：那一刻 `CURRENT_SCHEMA_VERSION` 还没升、`content_hash.rs` 还没拆，第 10/11 步会红。两者都在收工时由后续提交补上 |
+| `405c753` | feat(ui): 会话屏标题插入 { $npc_name } | 同上 |
+| `a4ee24a` | feat(game): 玩家初始钱包 1000（所有者裁定） | 同上；且它的提交信息里「`CURRENT_SCHEMA_VERSION` 不动」**是错的**，已由 `ddb0eae` 更正并写回本文档 7.8 |
+| `895f0ee` | docs(plan): 批次 34 收工回填 | 同上（纯文档） |
+| `ddb0eae` | fix(content): 存档 schema 7 → 8 | **否**：此时第 11 步（行数棘轮）仍红 |
+| `234ac10` | refactor(mod): 文化表的内容值哈希拆进 content_hash/culture.rs | **否**：此时第 13 步（文档断链）红 |
+| `a673b54` | fix(mod): 补上搬走符号后留下的短链接 | **是**——`run_all.sh` 在这一提交上 EXIT=0 |
+
+**做不到「每个提交自身绿」的原因写在这里**（交接要求）：本批的三道
+收尾门禁（存档 schema、行数棘轮、文档断链）都只有在**全部内容改完**
+之后才知道会不会红，而它们的修法分别是「升版本 + bless」「拆文件」
+「改链接」——把这三样提前塞进 A/B 的功能提交里会让那两个提交同时承担
+三件不相干的事。选了「功能提交按主题分，收尾门禁各自一个提交」这一档，
+代价就是中间几个提交不是绿的，这里如实登记。
