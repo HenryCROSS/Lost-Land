@@ -377,8 +377,30 @@ pub fn agent_given_name(
 | 量 | 改前 | 改后 |
 |---|---|---|
 | `CONTENT_HASH_ALGORITHM_VERSION` | 34 | **35** |
-| `CURRENT_SCHEMA_VERSION` | 7 | **7（不动）** |
+| `CURRENT_SCHEMA_VERSION` | 7 | **8** |
 | 新增内容 id | — | **零**（音素是字面字符串，不进注册表） |
+
+**存档 schema 那一格是收工时被门禁纠正的**，本文档第二节 2.5 与第四节
+原先写的都是「不动」——**那是错的，此处更正**（原文留在上面各节，追溯用）。
+`scripts/ci/check_save_schema_version.py` 实跑报出：
+`CultureNaming`/`PhonemeTables` 新进入存档主体闭包、`CultureTable` 字段序
+10 → 11，因此按它的判据必须升版本并 `--bless`。
+
+**但存档主体的字节布局其实没有变**：`CultureTable` 跟着编年史走，而
+`SurfaceStore` 的手写 `SurfaceStoreData` repr 里根本没有 `chronicle` 字段。
+这是那道门禁**同一处过度近似的第二次命中**——第一次是建筑类型批次
+（`e40cd6a`，存档 4 → 5），两处已在 `CURRENT_SCHEMA_VERSION` 的文档里
+互相指向。与那一次不同的是，**本批没有第二个「真事」理由**（那一次派生的
+据点布局真的变了）：本批什么派生形状都没变，证据是
+`EXPECTED_POPULATED_WORLD_DIGEST` 在 NPC 姓名那一半下逐位不变。
+诚实说法是：**升版本是为了过那道阻断门禁，不是因为老存档会被误解析。**
+
+**老存档的实际处境没有因此变差**：内容哈希算法版本 34 → 35 之后，
+`check_content_hash_algorithm` 对版本不等一律 `Rejected`，且它排在读档
+流程更靠前的位置。那是每一次内容改动都要付的既有代价（ADR 0027），
+7 → 8 这一步**没有增加任何额外损失**。
+第 7.7 节那条实测验的是**读档路径不会用新初值覆盖存档里的值**，
+不是版本兼容性，两件事分开看。
 
 **跨表撞名门禁（第 15 道）绿**：本批不新增任何 `ContentIndex`，
 `naming` 里没有一处 `intern`，因此没有任何 id 会被第二张表 `define`。
