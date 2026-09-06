@@ -184,8 +184,11 @@ impl GpuResources {
 
     /// 取得本帧窗口 surface 纹理并把世界层（离屏 `render_target`）
     /// blit 上去——不在这一步就 `present`，留出空档让调用方在
-    /// [`Demo::on_frame`](ll_platform::window::AppHandler::on_frame) 里追加 HUD 这第二条渲染通道（[`draw_hud`](super::hud_draw::draw_hud)），
-    /// 再调用 [`Self::present_frame`] 真正提交。取不到可用 surface 帧时
+    /// [`Demo::on_frame`](ll_platform::window::AppHandler::on_frame) 里追加 UI 这第二条渲染通道
+    /// （[`build_hud_layers`](super::hud_draw::build_hud_layers) 与
+    /// [`push_screen`](super::screen_flow::push_screen) 建出**同一个**
+    /// `LayeredFrame`，由 `ll_ui::widget::submit::submit_frame` 一次提交，
+    /// 见规格 N9），再调用 [`Self::present_frame`] 真正提交。取不到可用 surface 帧时
     /// 返回 `None`，本帧直接跳过呈现（既有降级行为，只是从「一步做完」
     /// 拆成了两步）。
     pub(super) fn acquire_and_blit(&self) -> Option<(wgpu::SurfaceTexture, wgpu::TextureView)> {

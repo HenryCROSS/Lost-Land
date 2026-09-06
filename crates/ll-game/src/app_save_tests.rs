@@ -36,7 +36,7 @@ fn 自动存档按世界时间触发而不是按墙钟() {
 
     // Act 1：世界时钟一动不动，连问一百次。
     for _ in 0..100 {
-        demo.maybe_autosave();
+        demo.maybe_autosave(ll_platform::window::FrameId(0));
     }
 
     // Assert 1：真实时间在流逝，世界时间没有 ⇒ 一次都不该存。
@@ -48,7 +48,7 @@ fn 自动存档按世界时间触发而不是按墙钟() {
     // Act 2：把世界时钟往前拨满一个周期。
     let 起点 = demo.test_world().world.clock;
     demo.test_world_mut().world.clock = ll_core::time::Tick(起点.0 + AUTOSAVE_INTERVAL_TICKS);
-    demo.maybe_autosave();
+    demo.maybe_autosave(ll_platform::window::FrameId(0));
 
     // Assert 2
     assert_eq!(
@@ -58,7 +58,7 @@ fn 自动存档按世界时间触发而不是按墙钟() {
     );
 
     // Act 3：紧接着再问一次，世界时钟没再动。
-    demo.maybe_autosave();
+    demo.maybe_autosave(ll_platform::window::FrameId(0));
 
     // Assert 3：节拍已经往前推了，不该连着存第二次。
     assert_eq!(
@@ -80,7 +80,7 @@ fn 不足一个周期不触发自动存档() {
 
     // Act：差一个 tick 就满一个周期。
     demo.test_world_mut().world.clock = ll_core::time::Tick(起点.0 + AUTOSAVE_INTERVAL_TICKS - 1);
-    demo.maybe_autosave();
+    demo.maybe_autosave(ll_platform::window::FrameId(0));
 
     // Assert
     assert!(crate::save_slot::list_slots(&saves_dir).is_empty());
@@ -795,6 +795,229 @@ fn 不在存档列表屏时不猜一份存档给他() {
             .id,
         原槽位,
         "不该把玩家换到另一份存档上"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 自动存档成功之后屏上留下一条痕迹() {
+    // **规格 §9.2 F3 的判据前半句**：`maybe_autosave` 真的存了之后，
+    // 那条痕迹非空。走的是**生产路径**（真的写盘、真的看槽位），不是
+    // 直接给字段赋值。
+    //
+    // 反例验证（已实跑）：把 `maybe_autosave` 成功分支里那句
+    // `self.autosave_notice_frame = Some(frame.0)` 删掉，本条红在
+    // 「存成功之后应当留下痕迹」——证明注入点真的在生产路径上，
+    // 不是 `cfg(test)` 里的摆设。
+    // Arrange
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    assert!(
+        demo.autosave_notice_frame.is_none(),
+        "还没自动存过，痕迹本该是空的"
+    );
+
+    // Act 1：世界时钟没走满一个周期 ⇒ 不存，也就没有痕迹。
+    demo.maybe_autosave(ll_platform::window::FrameId(7));
+
+    // Assert 1：先证明「不存就没有痕迹」这一侧成立，下面那条才不是恒真。
+    assert!(
+        crate::save_slot::list_slots(&saves_dir).is_empty(),
+        "世界时钟没走满，本来就不该存"
+    );
+    assert!(demo.autosave_notice_frame.is_none(), "没存就不该有痕迹");
+
+    // Act 2：把世界时钟拨满一个周期再问一次。
+    let 起点 = demo.test_world().world.clock;
+    demo.test_world_mut().world.clock = ll_core::time::Tick(起点.0 + AUTOSAVE_INTERVAL_TICKS);
+    demo.maybe_autosave(ll_platform::window::FrameId(4_242));
+
+    // Assert 2：真的存了，而且痕迹记的是**那一帧**。
+    assert_eq!(
+        crate::save_slot::list_slots(&saves_dir).len(),
+        1,
+        "世界时钟走满一个周期就该存一次"
+    );
+    assert_eq!(
+        demo.autosave_notice_frame,
+        Some(4_242),
+        "存成功之后应当留下痕迹，且记的是存成的那一帧"
+    );
+    assert!(
+        crate::autosave_notice::autosave_notice_visible(demo.autosave_notice_frame, 4_242),
+        "存成的那一帧痕迹就该看得见"
+    );
+
+    // Assert 3（判据后半句）：**只推帧号、一次按键都不按**，时长走完
+    // 之后痕迹自己消失——ADR 0025 禁止用合成按键做验收，这条痕迹的
+    // 生命周期因此完全由时钟驱动。
+    // 判据里那个数写**规格给的一秒**（60 帧），不写
+    // `AUTOSAVE_NOTICE_FRAMES`——引用被判的那个常量会让本条对时长的
+    // 任何改动恒绿，见 `crate::autosave_notice` 测试里 `一秒的帧数`
+    // 那段注释（本批实测踩过这个坑）。
+    const 一秒的帧数: u64 = 60;
+    assert!(
+        !crate::autosave_notice::autosave_notice_visible(
+            demo.autosave_notice_frame,
+            4_242 + 一秒的帧数
+        ),
+        "一秒之后痕迹应当自己消失"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 已自动保存这句话在两种语言下各有各的文案() {
+    // 防「空 Catalog ⇒ 查不到 ⇒ 回落到另一门语言 ⇒ 用『文案 != 键名』
+    // 判恒绿」：用仓库真实的 `assets/locales`，断言**两种语言的文案
+    // 互不相同**。与 `app_navigation_tests` 里那条同一种形状。
+    //
+    // 反例（已实跑）：只往 zh-CN.ftl 加这条键、en.ftl 不加，本条红在
+    // 「两种语言互不相同」——en 会回落到中文那一句。
+    // Arrange
+    let locales = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../assets/locales");
+    let catalog = ll_i18n::Catalog::load_one("lostland", &locales);
+    let key = crate::autosave_notice::AUTOSAVE_NOTICE_KEY;
+
+    // Act
+    let zh = catalog.resolve("zh-CN", key);
+    let en = catalog.resolve("en", key);
+
+    // Assert
+    assert_ne!(zh, key, "中文那一条必须真的存在");
+    assert_ne!(en, key, "英文那一条必须真的存在");
+    assert_ne!(zh, en, "两种语言各写各的，不是其中一种回落到另一种");
+}
+
+#[test]
+fn 从角色创建退出再进来那份草稿还在() {
+    // **规格 §2.2 D6**。此前 `start_new_game` 是**无条件覆盖**：玩家
+    // 按 Esc 回首页时草稿原样留着（`chargen` 那两条出口都不动它），
+    // 再按「开始游戏」却把它整个换掉。后果两条——挑好的种族/性别/职业
+    // 没了；转生那条路上那份草稿攥着**一整个 `GameWorld`**，回首页之后
+    // 再没有任何路径回得到它。
+    //
+    // 本条走**转生**那条路，因为它是两条后果里代价大的那一条（一整个
+    // 世界），而且「是不是同一份草稿」有一个不会误判的判据：世界的哈希。
+    //
+    // Act 全程只有按键，走真实 `on_frame`（ADR 0025）。
+    //
+    // 反例验证（已实跑）：把 `start_new_game` 改回无条件
+    // `self.new_game_draft = Some(NewGameDraft::new(..))`，本条红在
+    // 「再进角色创建时应当还是原来那份转生草稿」。
+    // Arrange：走真实生产路径造出一份转生草稿（玩家死亡）。
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    let player = demo.test_world().player;
+    demo.test_world_mut().world.actors.despawn(player);
+    let mut input = InputState::new();
+    demo.handle_player_death(&mut input);
+    let draft = demo.new_game_draft.as_ref().expect("死亡后应当有一份草稿");
+    assert!(draft.world.is_reborn(), "Arrange：这是一份转生草稿");
+    let 原世界哈希 = draft
+        .world
+        .world()
+        .expect("转生草稿必然带着世界")
+        .world
+        .hash();
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::CharacterCreation { cursor: 0 }),
+        "Arrange：死亡之后停在角色创建屏"
+    );
+
+    // Act 1：在角色创建屏上按取消键回首页。
+    跑一帧(&mut demo, 1, &[ll_platform::input::GameKey::Cancel]);
+
+    // Assert 1：真的回到首页了，而草稿**没有被清掉**。
+    assert_eq!(demo.modal.screen(), Some(ScreenState::Title), "应当回首页");
+    assert!(
+        demo.new_game_draft.is_some(),
+        "退出角色创建不该把草稿丢掉——那一份攥着一整个世界"
+    );
+
+    // Act 2：在首页按确认（第 0 行是「开始游戏」，规格 N10 预选中）。
+    跑一帧(&mut demo, 2, &[ll_platform::input::GameKey::Confirm]);
+
+    // Assert 2：回到角色创建屏，手里仍是**同一份**草稿。
+    assert_eq!(
+        demo.modal.screen(),
+        Some(ScreenState::CharacterCreation { cursor: 0 }),
+        "「开始游戏」应当回到角色创建屏"
+    );
+    let draft = demo.new_game_draft.as_ref().expect("草稿仍在");
+    assert!(
+        draft.world.is_reborn(),
+        "再进角色创建时应当还是原来那份转生草稿，不是一份全新的"
+    );
+    assert_eq!(
+        draft
+            .world
+            .world()
+            .expect("转生草稿必然带着世界")
+            .world
+            .hash(),
+        原世界哈希,
+        "那一整个世界必须还是原来那一个"
+    );
+    assert!(
+        draft.world.existing_target().is_some(),
+        "槽位也还是原来那一个"
+    );
+
+    // Cleanup
+    let _ = std::fs::remove_dir_all(&saves_dir);
+}
+
+#[test]
+fn 读档进世界之后首页那份旧草稿不该还在() {
+    // **规格 D6 的配套不变式：草稿与 `session` 不共存**。D6 让草稿变得
+    // 「回得去」（首页按「开始游戏」会接着上一份），那么一份读档之后
+    // 还留着的旧草稿就是一条新的数据丢失路径——玩家死亡留下一份攥着
+    // 旧世界与旧槽位的转生草稿，回首页读档玩了很久，再回首页按「开始
+    // 游戏」会被送回死亡那一刻的世界，此后每一次存档都写回同一个槽位。
+    //
+    // 新游戏那条路由 `finish_entering_world` 的 `take()` 守着，读档这条
+    // 是唯一的漏口。
+    //
+    // 反例验证（已实跑）：把 `enter_world_in_slot` 里那句
+    // `self.new_game_draft = None;` 删掉，本条当场变红。
+    // Arrange：一份转生草稿 + 一份能读回来的存档。
+    let mut demo = test_demo();
+    let saves_dir = demo.saves_dir.clone();
+    demo.save_now();
+    assert_eq!(
+        crate::save_slot::list_slots(&saves_dir).len(),
+        1,
+        "Arrange：磁盘上得有一份存档可读"
+    );
+    demo.save_slots = crate::save_slot::list_slots(&saves_dir);
+    // 首页手里攥着一份草稿——不管它是新游戏那条路的还是转生那条路的，
+    // 不变式说的都是「不许与 session 共存」。这里取新游戏那份，转生
+    // 那条路上的世界哈希由上一条断言盯着。
+    demo.new_game_draft = Some(crate::chargen::NewGameDraft::new(
+        &demo.content,
+        &ll_platform::config::NewGameConfig::default(),
+    ));
+    demo.session = None;
+    let mut input = InputState::new();
+    // 玩家在存档列表屏上选中第 0 行——`selected_slot` 只在这块屏上给
+    // 答案（规格 D5），不摆好它读档会走「没有存档」那条降级路径。
+    demo.modal
+        .set_screen(Some(ScreenState::SaveList { cursor: 0 }), &mut input);
+
+    // Act：读档进世界。
+    demo.load_saved_game(&mut input);
+
+    // Assert：先证明真的进世界了（否则下面那条在比空气）。
+    assert!(demo.session.is_some(), "读档应当真的把玩家送进世界");
+    assert!(
+        demo.new_game_draft.is_none(),
+        "读档进世界之后不该还留着一份草稿——草稿与 session 不共存"
     );
 
     // Cleanup

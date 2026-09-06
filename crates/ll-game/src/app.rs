@@ -24,9 +24,9 @@ mod surface;
 // （`ll_game::app::load_sprite_sources`）与 `mod tests` 里的调用因此一个字都不用改。
 use self::gpu::GpuResources;
 pub use self::gpu::load_sprite_sources;
-use self::hud_draw::{SpawnPickHud, draw_hud};
+use self::hud_draw::{SpawnPickHud, build_hud_layers};
 use self::save_flow::write_save;
-use self::screen_flow::{draw_screen, screen_row_texts};
+use self::screen_flow::{push_screen, screen_row_texts};
 use self::surface::render_surface;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -258,6 +258,15 @@ pub struct Demo {
     /// `WorldState`、不进存档、不参与回放。它只回答「屏幕看起来卡了
     /// 多久」，而那是一个关于**帧**的问题，世界时钟答不了它。
     not_yet_streak: u32,
+    /// 自动存档最近一次**成功**发生在第几帧——规格 F3 那条痕迹的全部
+    /// 状态，`None` = 这一局还没自动存过。
+    ///
+    /// 纯表现层，与 [`Demo::feedback`]/[`Demo::not_yet_streak`] 同一条
+    /// 纪律：不进 `GameWorld`/`WorldState`、不进存档、不参与回放。
+    /// **它记的是帧号不是世界时刻**，理由见
+    /// [`crate::autosave_notice`] 模块文档「两条时钟，各管各的」——
+    /// 「要不要存」按世界时钟（约束 C4），「痕迹还要显示多久」按帧计数。
+    autosave_notice_frame: Option<ll_ui::widget::anim::FrameTick>,
     /// 据点职业名册解析结果——[`crate::world::materialize_nearby_settlements`]
     /// 每次物化都要用，同样只在建局/读档后解析一次（`SettlementRoles::resolve`
     /// 只是几次注册表查询，但它的输入——注册表——装载后不再变化）。
@@ -338,7 +347,7 @@ pub struct Demo {
     /// 而玩家还没决定在哪出生。
     ///
     /// 这样分还顺带保住了一条既有不变式：`session` 为 `Some` ⇔ 玩家真
-    /// 的在世界里，因此 `save_on_exit`、`advance`、`draw_hud` 三处的
+    /// 的在世界里，因此 `save_on_exit`、`advance`、`build_hud_layers` 三处的
     /// 判据一个字都不用改——选点期间退出游戏不会写出一份「玩家还没选
     /// 好出生地」的存档。
     new_game_draft: Option<crate::chargen::NewGameDraft>,
@@ -468,6 +477,7 @@ impl Demo {
             hud_anim: WidgetStateTable::new(),
             feedback: None,
             not_yet_streak: 0,
+            autosave_notice_frame: None,
             settlement_roles,
             fps_counter: FpsCounter::new(),
             // 首页在**第一帧之前**就已经开着，见
@@ -569,7 +579,11 @@ impl Demo {
         // 自动存一次。次序不能反——玩家刚死的那一帧要存的是「模式已经
         // 转成普通」的那份，不是死之前那份。
         self.handle_player_death(input);
-        self.maybe_autosave();
+        // 规格 F3：自动存档成功要在屏上留一条痕迹，因此这里把**帧号**
+        // 递下去。「要不要存」仍然只由世界时钟决定（约束 C4，见
+        // `maybe_autosave` 文档），帧号只用来给痕迹计时，见
+        // `crate::autosave_notice` 模块文档那张两条时钟的表。
+        self.maybe_autosave(frame);
     }
 
     /// 世界地图那一层这一帧的全部输入：取消键关掉它、地图键开关它、
@@ -755,7 +769,7 @@ impl Demo {
         // 它内部只认 `intent_from_input` 的 `Move`/`Wait` 两种，于是
         // 那六个意图在真实游戏里一个都提交不出来。
         //
-        // 查不到玩家实体时跳过（与 `draw_hud` 同一条降级纪律）：菜单
+        // 查不到玩家实体时跳过（与 `build_hud_layers` 同一条降级纪律）：菜单
         // 要读它的背包与装备。
         //
         // 菜单开关与模态栈的配对由 `crate::modal::Modal::with_player_menu`
@@ -1162,6 +1176,18 @@ impl AppHandler for Demo {
         // `self.resources` 之前算**：它要读 `self.config.bindings` 与
         // `self.catalog`，而下面那个 `as_mut` 借的是整个 `self`。
         let key_hint = self.key_hint_line();
+        // 规格 F3 那条痕迹这一帧还该不该显示——判定在
+        // `crate::autosave_notice` 那个纯函数里（由**帧计数**驱动，
+        // 见那个模块的文档），本行只把它解析成一句话。同样**必须在借出
+        // `self.resources` 之前算**，理由同上一行。
+        let autosave_text =
+            crate::autosave_notice::autosave_notice_visible(self.autosave_notice_frame, frame.0)
+                .then(|| {
+                    self.catalog.resolve(
+                        &self.config.language,
+                        crate::autosave_notice::AUTOSAVE_NOTICE_KEY,
+                    )
+                });
 
         let Some(resources) = self.resources.as_mut() else {
             return FrameOutcome::Continue;
@@ -1205,23 +1231,29 @@ impl AppHandler for Demo {
         // 文档。取不到可用帧时（`acquire_and_blit` 返回 `None`）本帧
         // 直接跳过，与既有降级行为一致。
         if let Some((surface_frame, view)) = resources.acquire_and_blit() {
+            // **一帧只有一个 `LayeredFrame`**（规格 N9）：HUD 那几层与
+            // 模态屏那一层都往它里面推，最后由
+            // `ll_ui::widget::submit::submit_frame` 一次提交。谁盖住谁
+            // 因此完全由 `UiLayer` 决定——此前这里是两条各自提交的通道，
+            // 遮挡关系寄托在下面两句调用的书写次序上，见
+            // `ll_ui::widget::submit` 模块文档「为什么只许有一个」。
+            //
             // HUD 是画在世界之上的观测层——没有世界就没有 HUD 可画
-            // （首页那一刻血条、时钟、背包全都无从谈起）。屏
-            // （`draw_screen`）不受影响：它本来就是盖住世界的模态层，
-            // 首页正是它唯一一种「底下没有世界」的用法。
+            // （首页那一刻血条、时钟、背包全都无从谈起），那时这一帧从
+            // 一个空帧起步。屏（`push_screen`）不受影响：它本来就是盖住
+            // 世界的模态层，首页正是它唯一一种「底下没有世界」的用法。
             //
             // 世界地图那两个参数（`continent_field`/`world_map_view`）
             // 同样从 `session` 上取：它们是世界的派生物，与世界同生同死，
             // 见 `crate::session::Session` 模块文档那张表。
-            if let Some(session) = self.session.as_ref() {
-                draw_hud(
+            let mut ui_frame = if let Some(session) = self.session.as_ref() {
+                build_hud_layers(
                     &session.game_world,
                     &self.content,
                     &self.catalog,
                     &self.config.language,
                     resources,
                     &mut self.measurer,
-                    &view,
                     &mut self.hud_anim,
                     frame,
                     fps,
@@ -1231,9 +1263,10 @@ impl AppHandler for Demo {
                     self.modal.player_menu(),
                     self.feedback,
                     key_hint.as_deref(),
+                    autosave_text.as_deref(),
                     // 正常游玩：不改写任何东西。
                     None,
-                );
+                )
             } else if matches!(self.modal.screen(), Some(ScreenState::SpawnPick { .. }))
                 && let Some(draft) = self.new_game_draft.as_ref()
                 && let (Some(world), Some(field), Some(view_of_map), Some(exploration)) = (
@@ -1250,14 +1283,13 @@ impl AppHandler for Demo {
                 // 四个 `as_ref` 写在一个 `let` 里而不是各自 `expect`：
                 // 它们四个同生同死（`generate_draft_world` 一次性全部
                 // 赋值），一条模式匹配比四条各自会 panic 的断言诚实。
-                draw_hud(
+                build_hud_layers(
                     world,
                     &self.content,
                     &self.catalog,
                     &self.config.language,
                     resources,
                     &mut self.measurer,
-                    &view,
                     &mut self.hud_anim,
                     frame,
                     fps,
@@ -1269,13 +1301,18 @@ impl AppHandler for Demo {
                     // 选出生地屏是一块模态屏，它自己底部有一行提示
                     // （规格 F5）——再叠一行世界层的按键提示是重复。
                     None,
+                    // 选出生地屏那一刻还没有世界在跑，自动存档不可能发生。
+                    None,
                     Some(SpawnPickHud {
                         exploration,
                         cursor_cell: draft.cursor_cell,
                     }),
-                );
-            }
-            draw_screen(
+                )
+            } else {
+                ll_ui::widget::layer::LayeredFrame::default()
+            };
+            push_screen(
+                &mut ui_frame,
                 screen,
                 screen_rows,
                 &self.catalog,
@@ -1284,7 +1321,17 @@ impl AppHandler for Demo {
                 hovered_row,
                 resources,
                 &mut self.measurer,
+            );
+            ll_ui::widget::submit::submit_frame(
+                &mut ui_frame,
+                &mut resources.quad_renderer,
+                &mut resources.textured_quad_renderer,
+                &mut resources.text_renderer,
+                resources.gpu.device(),
+                resources.gpu.queue(),
                 &view,
+                resources.window_size.width,
+                resources.window_size.height,
             );
             resources.present_frame(surface_frame);
         }

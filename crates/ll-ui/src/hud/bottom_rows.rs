@@ -1,33 +1,37 @@
-//! 屏幕底部那两行小面板：**反馈行**与**按键提示行**。
+//! 屏幕底部那三行小面板：**反馈行**、**按键提示行**、**自动存档的痕迹**。
 //!
 //! # 为什么它们住在一起
 //!
-//! 两者形状完全相同——一句已经排好版的话、一块水平居中、贴着屏幕下沿
+//! 三者形状完全相同——一句已经排好版的话、一块水平居中、贴着屏幕下沿
 //! 的单行面板。此前反馈行那一段直接写在 [`super::render::build_hud_frame`]
 //! 里；按键提示行（规格 F6）落地时若照抄一遍，那个函数就会有两段几乎
 //! 逐字相同的代码，而它已经是本仓库行数棘轮快照里的文件。搬出来之后
-//! 两者共用同一个 [`bottom_row_panel`]，`build_hud_frame` 那一侧只剩
-//! 两次调用。
+//! 三者共用同一个 [`bottom_row_panel`]，`build_hud_frame` 那一侧只剩
+//! 三次调用。
 //!
-//! # 两行分在两个层，不是同一层
+//! # 三行分在两个层，不是同一层
 //!
 //! | 行 | 层 | 为什么 |
 //! |---|---|---|
-//! | 反馈行 | [`UiLayer::Notice`](crate::widget::layer::UiLayer::Notice) | 它要说的正是「你刚才那一下没起作用」，被任何面板挡住就等于没说 |
-//! | 按键提示行 | [`UiLayer::Hud`](crate::widget::layer::UiLayer::Hud) | 它是常驻教学，被弹窗/地图盖住是**对的**——那时候玩家看的是别的东西，而那些面板自己带着自己的提示行 |
+//! | 反馈行 | [`UiLayer::Notice`] | 它要说的正是「你刚才那一下没起作用」，被任何面板挡住就等于没说 |
+//! | 自动存档痕迹 | [`UiLayer::Notice`] | 同上：一次性通告，说完自己消失 |
+//! | 按键提示行 | [`UiLayer::Hud`] | 它是常驻教学，被弹窗/地图盖住是**对的**——那时候玩家看的是别的东西，而那些面板自己带着自己的提示行 |
 //!
 //! 规格 §9.3 F6 原文写的是「`Hud` 层底部加一行常驻提示」，没有说层；
 //! 这里把它与反馈行的分层关系明确下来，记在批次 23 计划文档第八节。
 //!
-//! # 两行的纵向次序
+//! # 三行的纵向次序
 //!
-//! 按键提示行贴着最下沿，反馈行叠在它**上面**一格。此前反馈行自己贴在
-//! 下沿（`FEEDBACK_BOTTOM_MARGIN` = 48），提示行落地后两块会重叠——
+//! 按键提示行贴着最下沿，反馈行叠在它**上面**一格，自动存档的痕迹再叠
+//! 在反馈行上面一格。此前反馈行自己贴在下沿
+//! （`FEEDBACK_BOTTOM_MARGIN` = 48），提示行落地后两块会重叠——
 //! 于是反馈行往上让了一格。让的是反馈行而不是提示行：提示行是常驻的，
 //! 位置固定在最下沿玩家才会把它当成「窗台上的一行小字」而不是一条会
-//! 跳来跳去的通知。
+//! 跳来跳去的通知。规格 F3 的那条痕迹（批次 35）按同一条理由再往上让
+//! 一格：反馈行说的是「你刚那一下没起作用」，玩家正等着看它，不该被
+//! 一条背景动作挤走。
 
-use crate::widget::layer::LayerBatch;
+use crate::widget::layer::{LayerBatch, LayeredFrame, UiLayer};
 use crate::widget::skin::Skin;
 
 use super::{PanelContent, build_panel};
@@ -35,6 +39,15 @@ use super::{PanelContent, build_panel};
 /// 反馈行面板宽度——一句话的宽度，见
 /// [`super::render::build_hud_frame`] 的 `feedback` 参数文档。
 pub const FEEDBACK_WIDTH: f32 = 420.0;
+
+/// 自动存档痕迹那一行的面板宽度。
+///
+/// 比另外两行都窄：它只有一句四五个字的话（规格 §9.2 F3 的原话是
+/// 「小字」），而且它是**背景动作的回执**，不是要玩家读的东西——面板
+/// 越小越不打扰人。具体这个数由溢出门禁
+/// （`crates/ll-ui/tests/i18n_text_width.rs`）实测守着，两种语言都要
+/// 排得进一行。
+pub const AUTOSAVE_WIDTH: f32 = 220.0;
 
 /// 按键提示行面板宽度。
 ///
@@ -67,13 +80,62 @@ const KEY_HINT_BOTTOM_MARGIN: f32 = super::render::SCREEN_MARGIN;
 const FEEDBACK_BOTTOM_MARGIN: f32 =
     KEY_HINT_BOTTOM_MARGIN + ROW_PANEL_HEIGHT + super::render::PANEL_GAP;
 
+/// 自动存档痕迹的**底边**距窗口下沿多远——它再叠在反馈行上面一格，
+/// 见模块文档「三行的纵向次序」。同样由下一行的偏移派生，不写死。
+const AUTOSAVE_BOTTOM_MARGIN: f32 =
+    FEEDBACK_BOTTOM_MARGIN + ROW_PANEL_HEIGHT + super::render::PANEL_GAP;
+
 /// 屏幕最下沿那一条**底栏**有多高——规格 L1 的中段留白规则在这一条
 /// 窄边上开的例外（见 `hud/render_layout_tests.rs` 那条断言）。
 ///
-/// 取「最靠上的那一行的顶边距下沿多远」，也就是反馈行的偏移：底栏里
-/// 只有这两行，反馈行是上面那一行。**导出这个常量而不是让测试自己抄
-/// 一个数**——两行的位置将来再动一次，判据跟着动，不会分叉。
-pub const BOTTOM_STRIP_HEIGHT: f32 = FEEDBACK_BOTTOM_MARGIN + ROW_PANEL_HEIGHT;
+/// 取「最靠上的那一行的顶边距下沿多远」，也就是自动存档痕迹那一行的
+/// 偏移。**导出这个常量而不是让测试自己抄一个数**——三行的位置将来再
+/// 动一次，判据跟着动，不会分叉。
+///
+/// 〔批次 35〕F3 那条痕迹加进来之后这个数变高了一格。它只放宽 L1 那条
+/// 留白规则在**底栏**上的例外范围，而底栏里唯一的常驻区（`Hud` 层）
+/// 成员仍然只有按键提示行一条——另外两行都在 `Notice` 层，本来就不
+/// 参与那条断言。
+pub const BOTTOM_STRIP_HEIGHT: f32 = AUTOSAVE_BOTTOM_MARGIN + ROW_PANEL_HEIGHT;
+
+/// 这一帧底部三行各自要说的那句话，`None` = 这一行这一帧不显示。
+///
+/// 打成一个结构体而不是三个位置参数：三者类型相同
+/// （`Option<&str>`），排成一列位置参数时**调用点传反了编译器不会说
+/// 话**——而它们分属两个层、三个高度，传反了只会在屏幕上错位。
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct BottomRowTexts<'a> {
+    /// 常驻按键提示（规格 F6），画在 [`UiLayer::Hud`]。
+    pub key_hint: Option<&'a str>,
+    /// 反馈行，画在 [`UiLayer::Notice`]。
+    pub feedback: Option<&'a str>,
+    /// 自动存档的痕迹（规格 F3），画在 [`UiLayer::Notice`]。
+    pub autosave: Option<&'a str>,
+}
+
+/// 把这一帧要显示的底部行推进各自的层——**三行的分层与纵向次序全部
+/// 住在本模块**，见模块文档那两节。
+pub(super) fn push_bottom_rows(
+    frame: &mut LayeredFrame,
+    measure: &mut dyn ll_text::MeasureText,
+    skin: &dyn Skin,
+    texts: BottomRowTexts<'_>,
+    screen_width: f32,
+    screen_height: f32,
+) {
+    if let Some(text) = texts.key_hint {
+        let batch = frame.layer_mut(UiLayer::Hud);
+        push_key_hint_row(batch, measure, skin, text, screen_width, screen_height);
+    }
+    if let Some(text) = texts.feedback {
+        let batch = frame.layer_mut(UiLayer::Notice);
+        push_feedback_row(batch, measure, skin, text, screen_width, screen_height);
+    }
+    if let Some(text) = texts.autosave {
+        let batch = frame.layer_mut(UiLayer::Notice);
+        push_autosave_row(batch, measure, skin, text, screen_width, screen_height);
+    }
+}
 
 /// 排一块「水平居中、距下沿 `bottom_offset`」的单行小面板。
 ///
@@ -110,7 +172,7 @@ fn bottom_row_panel(
 }
 
 /// 反馈行：一句「你刚才那一下没起作用」，压在所有东西之上。
-pub(super) fn push_feedback_row(
+fn push_feedback_row(
     batch: &mut LayerBatch,
     measure: &mut dyn ll_text::MeasureText,
     skin: &dyn Skin,
@@ -129,8 +191,31 @@ pub(super) fn push_feedback_row(
     super::render::push_panel(batch, &panel.rect, panel.labels, skin);
 }
 
+/// 自动存档的痕迹（规格 F3）：一句「已自动保存」，叠在反馈行上面一格。
+///
+/// **只管画**——这一帧到底该不该画由 `ll_game::autosave_notice` 那个
+/// 纯函数按帧计数决定，见那个模块的文档。
+fn push_autosave_row(
+    batch: &mut LayerBatch,
+    measure: &mut dyn ll_text::MeasureText,
+    skin: &dyn Skin,
+    text: &str,
+    screen_width: f32,
+    screen_height: f32,
+) {
+    let panel = bottom_row_panel(
+        measure,
+        text,
+        AUTOSAVE_WIDTH,
+        AUTOSAVE_BOTTOM_MARGIN,
+        screen_width,
+        screen_height,
+    );
+    super::render::push_panel(batch, &panel.rect, panel.labels, skin);
+}
+
 /// 按键提示行：常驻，贴着屏幕最下沿。
-pub(super) fn push_key_hint_row(
+fn push_key_hint_row(
     batch: &mut LayerBatch,
     measure: &mut dyn ll_text::MeasureText,
     skin: &dyn Skin,
@@ -186,13 +271,15 @@ mod tests {
     }
 
     #[test]
-    fn 两行互不重叠且都在窗口内() {
-        // 「贴着下沿」与「叠在上面一格」这两句话的算术。改动任何一个
+    fn 三行互不重叠且都在窗口内() {
+        // 「贴着下沿」与「各叠在上面一格」这几句话的算术。改动任何一个
         // 常量都会在这里显形。
         //
         // 反例（已实跑）：把 `FEEDBACK_BOTTOM_MARGIN` 改回
         // `KEY_HINT_BOTTOM_MARGIN`，本条红在「反馈行底边不越过提示行
-        // 顶边」。
+        // 顶边」。另一条（已实跑）：把 `AUTOSAVE_BOTTOM_MARGIN` 改成
+        // 与 `FEEDBACK_BOTTOM_MARGIN` 相同，红在「痕迹行底边不越过
+        // 反馈行顶边」。
         // Arrange
         let mut measure = ll_text::TextMeasurer::new().expect("内置字体资产应能正常解析");
         let (w, h) = (1280.0, 720.0);
@@ -215,6 +302,15 @@ mod tests {
             h,
         );
 
+        let autosave = bottom_row_panel(
+            &mut measure,
+            "已自动保存",
+            AUTOSAVE_WIDTH,
+            AUTOSAVE_BOTTOM_MARGIN,
+            w,
+            h,
+        );
+
         // Assert
         assert!(
             hint.rect.y + hint.rect.height <= h,
@@ -223,6 +319,14 @@ mod tests {
         assert!(
             feedback.rect.y + feedback.rect.height <= hint.rect.y,
             "反馈行的底边不该越过提示行的顶边"
+        );
+        assert!(
+            autosave.rect.y + autosave.rect.height <= feedback.rect.y,
+            "自动存档痕迹的底边不该越过反馈行的顶边"
+        );
+        assert!(
+            autosave.rect.y >= h - BOTTOM_STRIP_HEIGHT,
+            "三行都该落在 BOTTOM_STRIP_HEIGHT 说的那条底栏之内——L1 的             留白例外就是照这个常量开的"
         );
     }
 }

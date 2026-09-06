@@ -61,8 +61,8 @@ use ll_i18n::Catalog;
 use ll_text::{MeasureText, TextMeasurer};
 use ll_ui::hud::content_width;
 use ll_ui::hud::render::{
-    ACTION_MENU_WIDTH, CHARACTER_WIDTH, EQUIPMENT_WIDTH, FEEDBACK_WIDTH, INVENTORY_WIDTH,
-    STATUS_WIDTH,
+    ACTION_MENU_WIDTH, AUTOSAVE_WIDTH, CHARACTER_WIDTH, EQUIPMENT_WIDTH, FEEDBACK_WIDTH,
+    INVENTORY_WIDTH, STATUS_WIDTH,
 };
 use ll_ui::screen::{SCREEN_FONT_SIZE, SCREEN_LINE_HEIGHT, SCREEN_PADDING, SCREEN_WIDTH};
 
@@ -319,6 +319,15 @@ fn 分类表() -> Vec<分类规则> {
             前缀: "hud-feedback-",
             面板: "反馈行",
             判据: || 散文(content_width(FEEDBACK_WIDTH)),
+        },
+        // 自动存档那条痕迹（批次 35，规格 F3）。判据是**一行**而不是
+        // 散文：它是底栏里最窄的一块面板（`AUTOSAVE_WIDTH` = 220），
+        // 而这一句话本来就该短到一眼扫过——排到第二行说明文案写长了，
+        // 那时改文案，不放宽这条规则。
+        分类规则 {
+            前缀: "hud-autosave-",
+            面板: "自动存档痕迹行",
+            判据: || 一行(content_width(AUTOSAVE_WIDTH)),
         },
         // ── 动作菜单（背包/制作/交互/方向四块共用一块弹窗） ────
         分类规则 {

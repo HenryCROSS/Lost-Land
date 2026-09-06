@@ -1,4 +1,10 @@
-//! `app::hud_draw`：把常驻 HUD 的几块面板喂给 `ll-ui` 并提交到这一帧。
+//! `app::hud_draw`：把常驻 HUD 的几块面板喂给 `ll-ui`，产出这一帧的
+//! HUD 那几层。
+//!
+//! **只建帧，不提交**（规格 N9）：产出是一个
+//! `ll_ui::widget::layer::LayeredFrame`，模态屏往同一个帧里推
+//! `UiLayer::Modal`，最后由 `ll_ui::widget::submit::submit_frame` 一次提交
+//! ——「谁盖住谁」因此完全由层级决定，不再由调用点两句话的先后决定。
 //!
 //! 本模块由 [`crate::app`] 按职责拆出（批次 16，纯搬移，没有改动任何逻辑）。
 //! 拆分的依据不是行数而是「下一批要往哪里加东西」：对话批次要加一块屏、
@@ -7,12 +13,12 @@
 
 use ll_i18n::Catalog;
 use ll_platform::window::FrameId;
-use ll_render::wgpu;
 use ll_sim::rule_modifier::{SubjectRegistry, agent_rule_modifiers, rule_modifier_displays};
 use ll_ui::hud::character_panel::CharacterPanelData;
-use ll_ui::hud::render::render_hud;
+use ll_ui::hud::render::build_hud_frame;
 use ll_ui::hud::status_bar::StatusBarData;
 use ll_ui::hud::world_map::{WorldMapPanelData, WorldMapSite};
+use ll_ui::widget::layer::LayeredFrame;
 use ll_ui::widget::state::WidgetStateTable;
 use ll_world::overview::ContinentField;
 use ll_world::settlement::SettlementStatus;
@@ -96,7 +102,7 @@ use super::gpu::GpuResources;
 /// 是 **O(当前视野覆盖的采样点数)**——随缩放档位变化，拉到最近时远小于
 /// 整个世界。
 #[allow(clippy::too_many_arguments)]
-pub(super) fn draw_hud(
+pub(super) fn build_hud_layers(
     game_world: &GameWorld,
     content: &LoadedContent,
     catalog: &Catalog,
@@ -104,7 +110,6 @@ pub(super) fn draw_hud(
     resources: &mut GpuResources,
     // 见 `Demo::measurer` 字段文档：输入侧与渲染侧共用同一个测量器。
     measure: &mut dyn ll_text::MeasureText,
-    view: &wgpu::TextureView,
     hud_anim: &mut WidgetStateTable,
     frame: FrameId,
     fps: f32,
@@ -119,19 +124,23 @@ pub(super) fn draw_hud(
     // 住在 `Demo::config` 上，本函数够不着——与 `feedback` 同一条分工，
     // 见 `crate::key_hint` 模块文档。
     key_hint: Option<&str>,
+    // 自动存档刚成功留下的那条痕迹（规格 F3），`None` = 这一刻不显示。
+    // 与 `key_hint` 同构：收的是**已经排好版的一句话**；「这一帧还该不该
+    // 显示」由 `crate::autosave_notice` 那个纯函数按帧计数回答。
+    autosave: Option<&str>,
     // 选出生地屏那一刻的两处改写，`None` 表示正常游玩，见
     // [`SpawnPickHud`]。
     spawn_pick: Option<SpawnPickHud<'_>>,
-) {
+) -> LayeredFrame {
     let Some(agent) = game_world.world.actors.get(game_world.player) else {
         tracing::warn!("玩家实体查不到，本帧跳过 HUD 绘制");
-        return;
+        return LayeredFrame::default();
     };
 
     // 状态栏里的天气：与 `render_surface` 各自派生一次，而不是从那边
     // 传过来。两处算出来的必然是同一个值（`Weather::derive` 是纯函数，
     // 输入只有世界种子与世界时钟，两处读的是同一个 `WorldState`），
-    // 把它拎成一个跨函数参数只会在 `draw_hud` 的参数表上再加一项，换
+    // 把它拎成一个跨函数参数只会在 `build_hud_layers` 的参数表上再加一项，换
     // 不来任何正确性——这正是「派生而不缓存」这条纪律的好处：不需要有
     // 人负责保证两处看到的天气一致。
     //
@@ -208,8 +217,8 @@ pub(super) fn draw_hud(
     };
 
     // 见本函数文档「世界地图」一节：`world_map_slice_data`/`world_map_sites`
-    // 声明在 `if` 之外，让 `world_map_data` 借用的数据在传给 `render_hud`
-    // 那一刻仍然存活。
+    // 声明在 `if` 之外，让 `world_map_data` 借用的数据在传给
+    // `build_hud_frame` 那一刻仍然存活。
     let world_map_slice_data;
     let world_map_sites;
     let world_map_data = if world_map_open {
@@ -320,16 +329,7 @@ pub(super) fn draw_hud(
     let menu_data = crate::player_action::menu_data(menu, &menu_rows);
     let feedback_text = feedback.map(|feedback| catalog.resolve(language, feedback.i18n_key()));
 
-    render_hud(
-        &mut resources.quad_renderer,
-        &mut resources.textured_quad_renderer,
-        &mut resources.text_renderer,
-        measure,
-        resources.gpu.device(),
-        resources.gpu.queue(),
-        view,
-        resources.window_size.width,
-        resources.window_size.height,
+    build_hud_frame(
         &status,
         &character,
         &agent.inventory,
@@ -342,13 +342,17 @@ pub(super) fn draw_hud(
         catalog,
         language,
         &resources.skin,
+        measure,
         hud_anim,
         frame.0,
+        resources.window_size.width as f32,
+        resources.window_size.height as f32,
         world_map_data.as_ref(),
         menu_data.as_ref(),
         feedback_text.as_deref(),
         key_hint,
-    );
+        autosave,
+    )
 }
 
 /// 选出生地屏对世界地图 HUD 的两处改写。

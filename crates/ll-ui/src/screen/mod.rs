@@ -172,7 +172,7 @@ pub struct ScreenData<'a> {
     /// 「点下去会是这一行」。合成一个字段就等于把那条约定抹掉。
     ///
     /// 两者落在同一行时只画聚焦那一块高亮（更亮的那个），见
-    /// [`crate::screen::render::build_screen_frame`]。
+    /// [`crate::screen::render::push_screen_layer`]。
     pub hovered: Option<usize>,
 }
 
@@ -417,7 +417,7 @@ fn screen_geometry(
     );
     let panel_height = probe.content_height + SCREEN_PADDING * 2.0;
     // 规格 L0：**这一处的取整刻意提前到几何算完那一刻**，不是等到
-    // `ScreenFrame::snap_to_pixels` 那个提交出口。
+    // `crate::widget::submit::submit_frame` 那个提交出口。
     //
     // 理由是 `row_rects` 有两个消费者：一个是画行高亮（走提交出口，会
     // 被那一道取整），另一个是 `screen_row_rects` 拿去做**点击命中**

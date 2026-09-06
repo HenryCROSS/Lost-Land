@@ -542,7 +542,7 @@ pub fn screen_data<'a>(
             empty_key: "screen-title-empty",
             hint_key: "screen-title-hint",
             notice,
-            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 悬停行由调用方（`app::push_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
             hovered: None,
         },
@@ -553,7 +553,7 @@ pub fn screen_data<'a>(
             empty_key: "screen-menu-empty",
             hint_key: "screen-menu-hint",
             notice,
-            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 悬停行由调用方（`app::push_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
             hovered: None,
         },
@@ -564,7 +564,7 @@ pub fn screen_data<'a>(
             empty_key: "screen-chargen-empty",
             hint_key: "screen-chargen-hint",
             notice,
-            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 悬停行由调用方（`app::push_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
             hovered: None,
         },
@@ -575,13 +575,13 @@ pub fn screen_data<'a>(
             empty_key: "screen-chargen-empty",
             hint_key: "screen-worldsetup-hint",
             notice,
-            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 悬停行由调用方（`app::push_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
             hovered: None,
         },
         // 选出生地屏**不走这块居中面板**：它的「屏」就是整张世界地图，
         // 一块盖在正中央的面板会挡住玩家要点的地方。调用方
-        // （`crate::app::draw_screen`）为这个变体整块跳过，本函数因此
+        // （`crate::app::push_screen`）为这个变体整块跳过，本函数因此
         // 永远不该收到它——但仍然给一个诚实的退化产出而不是 panic，
         // 与本模块其余降级路径一致。
         ScreenState::SpawnPick { .. } => ScreenData {
@@ -591,7 +591,7 @@ pub fn screen_data<'a>(
             empty_key: "screen-chargen-empty",
             hint_key: "screen-spawnpick-hint",
             notice,
-            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 悬停行由调用方（`app::push_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
             hovered: None,
         },
@@ -602,7 +602,7 @@ pub fn screen_data<'a>(
             empty_key: "screen-savelist-empty",
             hint_key: "screen-savelist-hint",
             notice,
-            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 悬停行由调用方（`app::push_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
             hovered: None,
         },
@@ -616,7 +616,7 @@ pub fn screen_data<'a>(
             empty_key: "screen-savelist-empty",
             hint_key: "screen-savename-hint",
             notice,
-            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 悬停行由调用方（`app::push_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
             hovered: None,
         },
@@ -630,7 +630,7 @@ pub fn screen_data<'a>(
             empty_key: "screen-dialogue-empty",
             hint_key: "screen-dialogue-hint",
             notice,
-            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 悬停行由调用方（`app::push_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
             hovered: None,
         },
@@ -656,7 +656,7 @@ pub fn screen_data<'a>(
                 "screen-settings-hint"
             },
             notice,
-            // 悬停行由调用方（`app::draw_screen`）在拿到这份数据之后
+            // 悬停行由调用方（`app::push_screen`）在拿到这份数据之后
             // 补上——它是**指针**这一帧的事实，不是屏状态的一部分。
             hovered: None,
         },

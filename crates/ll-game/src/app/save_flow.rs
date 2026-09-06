@@ -66,12 +66,21 @@ impl Demo {
     /// 新造一个魔数。游戏内一小时对应几十到上百个回合：既不会频繁到每
     /// 走几步就卡一次盘，也不会久到死一次要退回很远。
     ///
-    /// # 写盘失败只记一条日志
+    /// # 写盘失败只记一条日志，成功留一条不打扰人的痕迹
     ///
     /// 自动存档是背景动作，玩家没有在等它。弹一句提示会在他正走路时突然
     /// 盖住屏幕；而**下一次自动存档还会再试一遍**，一次失败不是终局。
     /// 真正要紧的那次（退出、回主菜单、手动存档）都会各自报错。
-    pub(super) fn maybe_autosave(&mut self) {
+    /// **失败那一侧因此仍然静默**，规格 §9.2 F3 明确赞成这条论证。
+    ///
+    /// 成功那一侧此前也一个像素都没有，于是玩家不知道游戏在替他存档，
+    /// 会反复手动存。规格 F3 裁定给它一条**自己会消失**的痕迹：这里只
+    /// 记下「是第几帧存成的」，画不画、画多久由
+    /// [`crate::autosave_notice`] 那个纯函数按帧计数回答。
+    ///
+    /// `frame` 是渲染层的帧号，**不参与「要不要存」这个判断**——那一条
+    /// 上面那两节已经论证过必须走世界时钟。
+    pub(super) fn maybe_autosave(&mut self, frame: ll_platform::window::FrameId) {
         let Some(session) = self.session.as_ref() else {
             return;
         };
@@ -80,11 +89,15 @@ impl Demo {
             return;
         }
         match write_save(&self.content, session, &self.character_name) {
-            Ok(()) => tracing::info!(
-                path = %session.save_target.path.display(),
-                world_tick = now.0,
-                "自动存档完成"
-            ),
+            Ok(()) => {
+                tracing::info!(
+                    path = %session.save_target.path.display(),
+                    world_tick = now.0,
+                    "自动存档完成"
+                );
+                // 规格 F3：成功才留痕迹，失败仍然静默。
+                self.autosave_notice_frame = Some(frame.0);
+            }
             Err(error) => tracing::error!(%error, "自动存档失败，下一次周期会再试"),
         }
         // 无论成败都把节拍往前推：失败时不推的话，下一帧会立刻再试一次，
@@ -249,6 +262,14 @@ impl Demo {
         input: &mut InputState,
     ) {
         self.session = Some(Session::begin(world, &self.content, target));
+        // **草稿与 `session` 不共存**（规格 D6 的配套不变式）。新游戏那
+        // 条路由 `finish_entering_world` 的 `take()` 守着；读档这条路是
+        // 唯一的漏口——而 D6 之后草稿变得「回得去」了（首页按「开始
+        // 游戏」会接着上一份），留着它就等于留下一条数据丢失路径：
+        // 玩家死亡 → 留下一份持有旧世界与旧槽位的转生草稿 → 回首页 →
+        // 读档玩了很久 → 再回首页 →「开始游戏」把他送回死亡那一刻的
+        // 世界，此后每一次存档都写回同一个槽位。
+        self.new_game_draft = None;
         self.close_screen(input);
     }
 

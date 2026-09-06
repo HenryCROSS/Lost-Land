@@ -62,7 +62,7 @@
 //! 重新声明全部要画的内容，渲染器自己不持有跨帧场景状态」，这个核实
 //! 结果支持而不是推翻项目所有者的倾向：本模块的五个控件全部是纯函数
 //! （`Rect`/`panel_quads`/`bar_quads`/`RowCursor::push` 都不跨帧保留
-//! 任何状态，每帧由 [`crate::hud::render::render_hud`] 重新调用一遍），
+//! 任何状态，每帧由 [`crate::hud::render::build_hud_frame`] 重新调用一遍），
 //! 与底层管线的模型一致，不需要另建一套控件树 + 失效/差分逻辑。
 //!
 //! # 布局的真实代价：子元素多大，画它之前不知道——本批次怎么解的
@@ -143,6 +143,7 @@ pub mod panel;
 pub mod quad;
 pub mod skin;
 pub mod state;
+pub mod submit;
 pub mod textured_quad;
 pub mod ui_mode;
 pub mod zone;

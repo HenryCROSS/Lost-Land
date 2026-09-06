@@ -561,3 +561,6 @@ hud-interact-action-plant = plant
 hud-interact-tree-oak = an oak
 hud-interact-tree-pine = a pine
 hud-interact-tree-palm = a palm
+
+# 自动存档留下的那条痕迹（规格 F3，批次 35）——底栏一行小字，一秒后自己消失。
+hud-autosave-saved = Autosaved
