@@ -295,7 +295,79 @@ D6 只动 `Demo` 上一个 `Option` 字段的生命周期，**不进 `GameWorld`
 
 ## 八、落地后的偏离与实测
 
-收工时回填。
+### 改前 / 改后（本工作树实跑，`CARGO_BUILD_JOBS=2 bash scripts/ci/run_tests.sh`）
+
+| | 二进制 | 通过 | 失败 |
+|---|---|---|---|
+| 改前（`origin/main` = `5f0761b`） | 138 | 3115 | 0 |
+| 改后 | 138 | 3128 | 0 |
+
+净增 13 条断言。`CARGO_BUILD_JOBS=2 bash scripts/ci/run_all.sh` **15 步 exit 0**。
+
+### 与计划的偏离
+
+1. **取整没有从 `build_hud_frame` 挪走**（计划 §1.5 说「只在提交前取一次」）。
+   实际是**两处都有**：`build_hud_frame` 结尾那一句留着（`render_layout_tests.rs`
+   的 L0 判据直接跑在它的产出上，挪走那条断言就空了），提交出口
+   `submit_frame` 再取一次。取整幂等，两道不打架；提交出口那一道的价值是
+   **它覆盖得到 `Modal` 层**，而模态屏这一侧原本自己有一个
+   `ScreenFrame::snap_to_pixels` 出口，现在删掉了。
+2. **多拆了一处**：F3 往底栏加第三行会让
+   `crates/ll-ui/src/hud/render.rs` 从 946 涨到 959，撞行数棘轮。照
+   「先拆再 bless」把三行那三段形状相同的 `if let Some(text)` 整体搬进
+   `hud/bottom_rows.rs` 的 `push_bottom_rows`，顺带把三个同类型的
+   `Option<&str>` 收进具名结构体 `BottomRowTexts`（三者类型相同，排成位置
+   参数时调用点传反了编译器不会说话，而它们分属两个层、三个高度）。
+   最终 1042 → 946（N9）→ 938（F3），两次都 bless 并写明理由。
+3. **D6 的不变式测试要先摆好存档列表屏**：`selected_slot` 只在
+   `ScreenState::SaveList` 上给答案（规格 D5 的落地形状），不摆它读档会走
+   「没有存档」那条降级路径，断言会红在 Arrange 上而不是主题上。
+
+### 一处「改坏了它不红」——查清并修好了
+
+**现象**：F3 的核心判据（痕迹在时长走完后自己消失）第一版把边界写成
+`AUTOSAVE_NOTICE_FRAMES` 本身。把那个常量改成 `u32::MAX`（正是本条要防的
+那种改动），断言的边界跟着一起挪，**测试照样绿**。两条测试都中招
+（`autosave_notice` 的单元条与 `app_save_tests` 的端到端条）。
+
+**根因**：判据来自**被判的那个数**，于是它对那个数的任何改动恒真——本会话
+点名的七个恒绿形状里「生产数据恰好让判据退化成恒真」的同族。
+
+**修法**：边界改写成**规格给的那个数**（一秒 = 60 帧，本项目主循环 60 帧
+每秒），两处各留一段注释说明为什么不能引用那个常量。改完复跑同一条反例，
+两条当场红。
+
+### 反例逐条实测（每条单独跑那一个二进制）
+
+| # | 注入 | 红的那一条 | 红在哪句 |
+|---|---|---|---|
+| ① | `UiLayer` 声明里 `Modal` 与 `Notice` 对调 | `widget::layer::模态层的批次永远排在浮层之后` | 「模态层的批次应当排在通告层之后，实际 通告=2 模态=1」 |
+| ①b | `ScreenZone::of` 换成 `_ => ScreenZone::Floating` | `widget::zone::模态区恰好一个成员就是模态层` | left `[]` / right `[Modal]` |
+| ①c | 模态屏改推 `UiLayer::Popup` | `screen::render::模态屏的内容落在模态层且排在浮层之后` | 「模态层应当拿到这一屏的全部内容」 |
+| ①d | `screen::SCREEN_FONT_SIZE` 改 16.0 | `widget::submit::两块屏共用的字号行高与文字色三者相同` | 「模态屏的字号必须与提交出口一致」 |
+| ② | `AUTOSAVE_NOTICE_FRAMES` = `u32::MAX`（不碰按键） | `autosave_notice::痕迹在一秒之后自己消失_由时钟驱动` + `app::save_tests::自动存档成功之后屏上留下一条痕迹` | 「一秒之后就不该再显示」（**修好判据之后**才红，见上一节） |
+| ②b | `maybe_autosave` 成功支里打痕迹那一句删掉 | `app::save_tests::自动存档成功之后屏上留下一条痕迹` | 「存成功之后应当留下痕迹」 |
+| ②c | 判定纯函数改成恒 `true` | 上面三条一起 | 同上 |
+| ②d | `build_hud_frame` 里 `autosave` 那一段删掉 | `hud::render::bottom_rows_tests::自动存档痕迹落在通告层且叠在反馈行上面一格` | 「通告层应当多出痕迹那一行字」 |
+| ②e | `AUTOSAVE_BOTTOM_MARGIN` 改成与反馈行相同 | 上条 + `hud::bottom_rows::三行互不重叠且都在窗口内` | 「痕迹应当叠在反馈行上面（y 更小），实际 痕迹=640 反馈=640」 |
+| ②f | 只往 `zh-CN.ftl` 加键、`en.ftl` 不加 | `app::save_tests::已自动保存这句话在两种语言下各有各的文案` | 「两种语言各写各的」（en 回落到中文那一句） |
+| ②g | 溢出门禁分类表里那条规则前缀改错 | `每一个键都声明了自己画在哪块面板里` + `分类表里没有一条死规则` | 两个方向都红，与该门禁的设计一致 |
+| ③ | `start_new_game` 改回无条件覆盖 | `app::save_tests::从角色创建退出再进来那份草稿还在` | 「再进角色创建时应当还是原来那份转生草稿」 |
+| ③b | `RebornWorld::world` 改成 `pub` | `draft_world::RebornWorld` 那条 `compile_fail` 文档测试 | 它本该编译不过，改 `pub` 之后编译过了 ⇒ 红。**证明那道防线仍然咬得住** |
+| ③c | `enter_world_in_slot` 里清草稿那一句删掉 | `app::save_tests::读档进世界之后首页那份旧草稿不该还在` | 「草稿与 session 不共存」 |
+
+### 三条黄金基准 / 内容哈希 / 存档 schema / 视觉基准
+
+全部**未动**，逐项核实：
+
+- `CONTENT_HASH_ALGORITHM_VERSION = 34`、`CURRENT_SCHEMA_VERSION = 7`、
+  `EXPECTED_POPULATED_WORLD_DIGEST = 10_943_522_416_722_902_806`
+  ——`git diff origin/main HEAD -- '*.rs'` 里一次都没出现。
+- 三张视觉基准 PNG 与 `origin/main` **blob 哈希逐张相同**
+  （`surface_preview.png` / `settlement_preview.png` / `npc_roster_preview.png`）。
+  N9 改了分层却不改像素，理由见 §1.6：那三张是纯 CPU 的世界层预览，
+  一行 HUD、一块模态屏都不画。另外合帧本身也不改提交序列——`Modal` 是最高层，
+  它的批次原本就排在全部 HUD 层之后。
 
 ---
 
