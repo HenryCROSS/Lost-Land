@@ -619,10 +619,9 @@ hud-interact-tree-oak = 一棵橡树
 hud-interact-tree-pine = 一棵松树
 hud-interact-tree-palm = 一棵棕榈
 
-<<<<<<< HEAD
 # 自动存档留下的那条痕迹（规格 F3，批次 35）——底栏一行小字，一秒后自己消失。
 hud-autosave-saved = 已自动保存
-=======
+
 # ── NPC 姓名（批次 34，对话批次 6） ───────────────────────────────
 #
 # 说话人**既派生不出名字、也查不到职业显示名**时用的称呼。这是双重
@@ -630,4 +629,3 @@ hud-autosave-saved = 已自动保存
 # speaker_name` 先试文化派生，再试职业显示名，都没有才落到这里。
 # 不写死在 Rust 里，是因为它是玩家看得见的字。
 screen-dialogue-unknown-speaker = 一个陌生人
->>>>>>> wt-npcnames

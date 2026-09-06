@@ -579,10 +579,9 @@ hud-interact-tree-oak = an oak
 hud-interact-tree-pine = a pine
 hud-interact-tree-palm = a palm
 
-<<<<<<< HEAD
 # 自动存档留下的那条痕迹（规格 F3，批次 35）——底栏一行小字，一秒后自己消失。
 hud-autosave-saved = Autosaved
-=======
+
 # -- NPC naming (batch 34, dialogue batch 6) ---------------------------
 #
 # What to call a speaker whose name cannot be derived AND whose profession
@@ -591,4 +590,3 @@ hud-autosave-saved = Autosaved
 # speaker_name tries the culture-derived name first, then the profession
 # display name, and only then this.
 screen-dialogue-unknown-speaker = A stranger
->>>>>>> wt-npcnames
