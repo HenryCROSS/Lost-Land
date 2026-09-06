@@ -70,6 +70,7 @@ use ll_core::ident::{ContentIndex, NamespacedId, WorldId};
 use ll_core::rng::DetRng;
 
 use crate::building::BuildingTemplate;
+use crate::naming::{CultureNaming, NamingProblem};
 use crate::resource::ResourceCategory;
 use crate::terrain::TerrainKind;
 
@@ -239,10 +240,44 @@ pub struct CultureAttrs {
     ///    [`crate::building::MAX_FURNITURE_PER_BUILDING`]——
     ///    [`CultureError::TooMuchFurniture`]。
     pub buildings: Vec<BuildingTemplate>,
+    /// 这种文化**怎么给人起名字**：构词材料（音节数区间 + 每种语言
+    /// 一张音素表）。NPC 姓名批次（2026-09-02，对话批次 6）新增。
+    ///
+    /// **谁读它**：`crate::naming::agent_given_name`——**渲染期现算**，
+    /// 由 `ll_game::dialogue_screen` 在会话屏上把 `{ $npc_name }` 填成
+    /// 一个真名。可观测结果：跟据点管理者说话时，开场那一句不再是
+    /// 「管理者从账册上抬起头」，而是他自己的名字。
+    ///
+    /// # 为什么名字跟文化走，不跟种族走
+    ///
+    /// `knowledge/design/naming-and-localization.md` 二节的裁定：
+    /// **名字是被取的，不是被继承的**——给孩子取名的是生活在某个文化
+    /// 里的父母。一个在人类聚落长大的矮人孤儿理应有一个人类名字。
+    ///
+    /// # 它**不进世界状态、不进存档**
+    ///
+    /// ADR 0009「默认派生，只存偏差」，而命名是其中最极端的一例
+    /// （连偏移都不允许）。`Agent` 没有、也不会有 `name` 字段；本字段
+    /// 只是那个纯函数缺的那一半输入。三条黄金基准因此**不该**因为本
+    /// 字段而变——真变了就说明有渲染期的东西漏进了世界状态。
+    ///
+    /// # 注册期校验（ADR 0017）
+    ///
+    /// 见 [`crate::naming::NamingProblem`] 三条，经
+    /// [`CultureError::Naming`] 当场拒绝。其中「各语言表长必须相等」
+    /// 那一条是 `naming-and-localization.md` 三节点名要做成门禁的那条
+    /// ——做在注册期而不是 shell 脚本里，因为 shell 只看得见本仓库的
+    /// `mods/`，而第三方 mod 装载时照样能塞一张对不齐的表。
+    pub naming: CultureNaming,
 }
 
 /// 文化注册期可能出现的错误。ADR 0017「注册期完整校验」。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+///
+/// **不是 `Copy`**（NPC 姓名批次起）：[`CultureError::Naming`] 的载荷
+/// 里带着语言标签字符串，因为「哪两种语言的表对不齐」是这条错误消息
+/// 唯一有用的信息。三处既有构造点全部是 `return Err(..)` 的一次性移动，
+/// 不受影响。
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CultureError {
     /// 同一个内容索引被定义了两次——纪律同
     /// [`crate::resource::ResourceError::DuplicateDefinition`]。
@@ -268,6 +303,9 @@ pub enum CultureError {
     /// 载荷是 `(文化索引, 声明的件数)`。静默丢弃超出的部分会让「我明明
     /// 声明了十件，屋里只有八件」变成一个查不出来的问题。
     TooMuchFurniture(ContentIndex, u32),
+    /// [`CultureAttrs::naming`] 的形状不合法，载荷是
+    /// `(文化索引, 具体问题)`。见 [`crate::naming::NamingProblem`]。
+    Naming(ContentIndex, NamingProblem),
 }
 
 impl fmt::Display for CultureError {
@@ -291,6 +329,21 @@ impl fmt::Display for CultureError {
                 index.get(),
                 crate::building::MAX_FURNITURE_PER_BUILDING
             ),
+            CultureError::Naming(index, problem) => match problem {
+                NamingProblem::NoLanguage => {
+                    write!(f, "文化索引 {} 的命名规则一种语言都没声明", index.get())
+                }
+                NamingProblem::EmptyPhonemeTable(language) => write!(
+                    f,
+                    "文化索引 {} 的命名规则在语言 {language:?} 下声母表或韵腹表为空",
+                    index.get()
+                ),
+                NamingProblem::LengthMismatch(left, right, table) => write!(
+                    f,
+                    "文化索引 {} 的命名规则在语言 {left:?} 与 {right:?} 下的 {table} 表长度不同——                     各语言音素表必须按下标对齐，否则玩家切换语言时全世界 NPC 会集体改名",
+                    index.get()
+                ),
+            },
         }
     }
 }
@@ -311,6 +364,7 @@ pub struct CultureTable {
     founder_races: Vec<Vec<(ContentIndex, u32)>>,
     hostility: Vec<Vec<(ContentIndex, u32)>>,
     buildings: Vec<Vec<BuildingTemplate>>,
+    naming: Vec<Option<CultureNaming>>,
     defined: Vec<bool>,
     order: Vec<CultureKind>,
     /// 「无文化」哨兵索引（`lostland:cultureless`，由
@@ -392,6 +446,9 @@ impl CultureTable {
                 return Err(CultureError::TooMuchFurniture(index, declared));
             }
         }
+        if let Some(problem) = attrs.naming.problem() {
+            return Err(CultureError::Naming(index, problem));
+        }
 
         let idx = index.get() as usize;
         if idx >= self.defined.len() {
@@ -404,6 +461,7 @@ impl CultureTable {
             self.founder_races.resize(new_len, Vec::new());
             self.hostility.resize(new_len, Vec::new());
             self.buildings.resize(new_len, Vec::new());
+            self.naming.resize(new_len, None);
         }
 
         if self.defined[idx] {
@@ -418,6 +476,7 @@ impl CultureTable {
         self.founder_races[idx] = attrs.founder_races;
         self.hostility[idx] = attrs.hostility;
         self.buildings[idx] = attrs.buildings;
+        self.naming[idx] = Some(attrs.naming);
         self.order.push(CultureKind::from_index(index));
         Ok(())
     }
@@ -488,6 +547,13 @@ impl CultureTable {
             .get(kind.index().get() as usize)
             .map(Vec::as_slice)
             .unwrap_or(&[])
+    }
+
+    /// 这种文化的构词材料，见 [`CultureAttrs::naming`]。未定义的索引
+    /// 返回 `None`——调用方（`crate::naming::agent_given_name`）据此
+    /// 回落到职业显示名，不伪造一个名字。
+    pub fn naming(&self, kind: CultureKind) -> Option<&CultureNaming> {
+        self.naming.get(kind.index().get() as usize)?.as_ref()
     }
 
     /// `attacker` 这种文化对 `defender` 那种文化的敌意分，没有声明就是
@@ -624,6 +690,7 @@ pub fn base_culture_fixture(
                 founder_races: vec![(metal_race, 10)],
                 hostility: Vec::new(),
                 buildings: crate::building::bare_building_fixture(),
+                naming: crate::naming::bare_naming_fixture(),
             },
         )
         .expect("夹具文化互不重复");
@@ -639,6 +706,7 @@ pub fn base_culture_fixture(
                 founder_races: vec![(tribal_race, 10)],
                 hostility: vec![(mountain_id, MAX_HOSTILITY)],
                 buildings: crate::building::bare_building_fixture(),
+                naming: crate::naming::bare_naming_fixture(),
             },
         )
         .expect("夹具文化互不重复");
@@ -736,6 +804,7 @@ mod tests {
             founder_races: vec![(race, 1)],
             hostility: Vec::new(),
             buildings: crate::building::bare_building_fixture(),
+            naming: crate::naming::bare_naming_fixture(),
         };
         let mut table = CultureTable::new();
         table.define(index, attrs()).expect("第一次定义应当成功");
@@ -771,6 +840,7 @@ mod tests {
                 founder_races: vec![(race, 1)],
                 hostility: vec![(other, MAX_HOSTILITY + 1)],
                 buildings: crate::building::bare_building_fixture(),
+                naming: crate::naming::bare_naming_fixture(),
             },
         );
 
@@ -804,6 +874,7 @@ mod tests {
                 founder_races: vec![(race, 0)],
                 hostility: Vec::new(),
                 buildings: crate::building::bare_building_fixture(),
+                naming: crate::naming::bare_naming_fixture(),
             },
         );
 

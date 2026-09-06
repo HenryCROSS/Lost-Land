@@ -495,11 +495,25 @@ screen-chargen-player-died = 你死了。这个世界保留下来，模式转为
 # 台词里不出现 NPC 的名字：`Agent` 今天没有 name 字段（设计文档三节 3.4
 # 采纳的是「第一批用职业显示名代替」那一条）。等 NPC 姓名那一批落地，把这里
 # 的称呼换成 { $npc_name } 即可，mods/**/dialogues.json5 一个字都不用改。
+#
+# 〔2026-09-02，批次 34（NPC 姓名，对话批次 6）〕上面那一段**已经兑现**
+# （原文保留以便追溯）：两条开场白里的职业名换成了 { $npc_name }，
+# 而 mods/lostland/dialogues.json5 **一个字都没改**——那正是「结构在 JSON5、
+# 文案在 .ftl」这条边界当初买下的东西。
+#
+# 名字从哪来：`ll_world::naming::agent_given_name` 按说话人所属**文化**
+# 的构词材料（mods/lostland/cultures.json5 的 naming）渲染期现算，不进
+# 世界状态、不进存档。派生不出来时回落到职业显示名，也就是这两行原来的
+# 措辞。
+#
+# **只有这两条带参数**：其余台词里出现的是「他/她」，不是称呼。带参数的键
+# 在溢出门禁里归「宽度判据::参数化」，真实宽度由 ll-game 那一侧对**拼好的
+# 整行**的断言覆盖（`会话屏标题在最长的名字下也排得进两行`）。
 
 dialogue-common-farewell = （告辞）
 dialogue-common-back = （还有别的事）
 
-dialogue-steward-root = 管理者从账册上抬起头。「又一个外乡人。说吧，你要什么。」
+dialogue-steward-root = { $npc_name }从账册上抬起头。「又一个外乡人。说吧，你要什么。」
 dialogue-steward-ask_join = 我想在这里落脚。
 dialogue-steward-join = 他把笔搁下，在名册末尾添了一行。「记上了。这一带的事，从今天起也有你一份。」
 dialogue-steward-ask_duties = 我该做些什么？
@@ -513,7 +527,7 @@ dialogue-steward-work = 「山道上不干净。」他朝北边扬了扬下巴�
 dialogue-steward-ask_reward = 我把事办完了。
 dialogue-steward-reward = 「我听说了。」他推过来一份干粮，「先拿着，库房清点完还有。」
 
-dialogue-guard-root = 卫兵横过长戟。「矿堡不接外客。想进去，先说个理由。」
+dialogue-guard-root = { $npc_name }横过长戟。「矿堡不接外客。想进去，先说个理由。」
 dialogue-guard-ask_toll = 过路的规矩我懂。
 dialogue-guard-toll = 他掂了掂钱袋，侧身让开半步。「规矩懂就好。别往深处走。」
 dialogue-guard-show_signet = （出示那枚发乌的印记）
@@ -605,5 +619,15 @@ hud-interact-tree-oak = 一棵橡树
 hud-interact-tree-pine = 一棵松树
 hud-interact-tree-palm = 一棵棕榈
 
+<<<<<<< HEAD
 # 自动存档留下的那条痕迹（规格 F3，批次 35）——底栏一行小字，一秒后自己消失。
 hud-autosave-saved = 已自动保存
+=======
+# ── NPC 姓名（批次 34，对话批次 6） ───────────────────────────────
+#
+# 说话人**既派生不出名字、也查不到职业显示名**时用的称呼。这是双重
+# 降级的最后一档（正常内容里到不了）：`ll_game::dialogue_screen::
+# speaker_name` 先试文化派生，再试职业显示名，都没有才落到这里。
+# 不写死在 Rust 里，是因为它是玩家看得见的字。
+screen-dialogue-unknown-speaker = 一个陌生人
+>>>>>>> wt-npcnames

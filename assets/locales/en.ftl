@@ -447,11 +447,28 @@ screen-chargen-player-died = You died. The world remains and switches to Normal 
 # doc 3.4 adopted "use the profession display name for the first batch"). When
 # NPC naming lands, swap the forms of address here for { $npc_name } - not one
 # character of mods/**/dialogues.json5 has to change.
+#
+# [2026-09-02, batch 34 (NPC naming, dialogue batch 6)] The paragraph above has
+# been made good (kept verbatim for the record): the two opening lines now carry
+# { $npc_name }, and mods/lostland/dialogues.json5 did not change by one
+# character - exactly what the "structure in JSON5, words in .ftl" boundary was
+# bought for.
+#
+# Where the name comes from: ll_world::naming::agent_given_name derives it at
+# render time from the speaker's culture (the `naming` block in
+# mods/lostland/cultures.json5). It never enters world state or a save file.
+# When it cannot be derived, the profession display name is used - the exact
+# wording these two lines used to have.
+#
+# Only these two lines take an argument; the rest say "he"/"she", not a form of
+# address. Parameterised keys are classified as 参数化 in the overflow gate;
+# their real width is covered by an assertion in ll-game over the assembled
+# line.
 
 dialogue-common-farewell = (take your leave)
 dialogue-common-back = (there was something else)
 
-dialogue-steward-root = The steward looks up from the ledger. "Another outsider. Say your piece."
+dialogue-steward-root = { $npc_name } looks up from the ledger. "Another outsider. Say your piece."
 dialogue-steward-ask_join = I would like to settle here.
 dialogue-steward-join = He sets down the pen and adds a line to the roll. "Written in. What happens here is your business now too."
 dialogue-steward-ask_duties = What is expected of me?
@@ -464,7 +481,7 @@ dialogue-steward-ask_work = Is there work going?
 dialogue-steward-work = "The mountain road is not clean." He tips his chin north. "If you have the stomach for it, clear it."
 dialogue-steward-ask_reward = The thing is done.
 dialogue-steward-reward = "So I hear." He pushes over a ration. "Take this. More once the stores are counted."
-dialogue-guard-root = The guard levels her halberd. "The hold takes no visitors. Give me a reason."
+dialogue-guard-root = { $npc_name } levels her halberd. "The hold takes no visitors. Give me a reason."
 dialogue-guard-ask_toll = I know what the road costs.
 dialogue-guard-toll = She weighs the purse and steps half aside. "Good. Do not wander deep."
 dialogue-guard-show_signet = (show the tarnished signet)
@@ -562,5 +579,16 @@ hud-interact-tree-oak = an oak
 hud-interact-tree-pine = a pine
 hud-interact-tree-palm = a palm
 
+<<<<<<< HEAD
 # 自动存档留下的那条痕迹（规格 F3，批次 35）——底栏一行小字，一秒后自己消失。
 hud-autosave-saved = Autosaved
+=======
+# -- NPC naming (batch 34, dialogue batch 6) ---------------------------
+#
+# What to call a speaker whose name cannot be derived AND whose profession
+# has no display name. This is the last rung of a two-step fallback and is
+# unreachable with well-formed content: ll_game::dialogue_screen::
+# speaker_name tries the culture-derived name first, then the profession
+# display name, and only then this.
+screen-dialogue-unknown-speaker = A stranger
+>>>>>>> wt-npcnames

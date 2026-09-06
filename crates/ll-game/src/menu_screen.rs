@@ -523,7 +523,7 @@ pub fn focus_index(table: &WidgetStateTable, ids: &[WidgetId]) -> usize {
 }
 
 /// 建出这一帧要交给 `ll_ui::screen` 的数据。
-/// `title_key` 只被 [`ScreenState::Dialogue`] 那一支读——其余各支的
+/// `title_key` 与 `title_args` 只被 [`ScreenState::Dialogue`] 那一支读——其余各支的
 /// 标题是一个写死的字面量键。收一个参数而不是让本函数自己去查内容表，
 /// 与本模块「只收已经排好版的字符串，不收领域类型」那条既有分工一致
 /// （见模块文档「为什么只有一种屏」一节）。
@@ -533,10 +533,12 @@ pub fn screen_data<'a>(
     focus: usize,
     notice: Option<&'a str>,
     title_key: &'a str,
+    title_args: Option<&'a ll_i18n::FluentArgs<'a>>,
 ) -> ScreenData<'a> {
     match state {
         ScreenState::Title => ScreenData {
             title_key: "screen-title-title",
+            title_args: None,
             rows,
             cursor: focus,
             empty_key: "screen-title-empty",
@@ -548,6 +550,7 @@ pub fn screen_data<'a>(
         },
         ScreenState::Menu => ScreenData {
             title_key: "screen-menu-title",
+            title_args: None,
             rows,
             cursor: focus,
             empty_key: "screen-menu-empty",
@@ -559,6 +562,7 @@ pub fn screen_data<'a>(
         },
         ScreenState::CharacterCreation { .. } => ScreenData {
             title_key: "screen-chargen-title",
+            title_args: None,
             rows,
             cursor: focus,
             empty_key: "screen-chargen-empty",
@@ -570,6 +574,7 @@ pub fn screen_data<'a>(
         },
         ScreenState::WorldSetup { .. } => ScreenData {
             title_key: "screen-worldsetup-title",
+            title_args: None,
             rows,
             cursor: focus,
             empty_key: "screen-chargen-empty",
@@ -586,6 +591,7 @@ pub fn screen_data<'a>(
         // 与本模块其余降级路径一致。
         ScreenState::SpawnPick { .. } => ScreenData {
             title_key: "screen-spawnpick-title",
+            title_args: None,
             rows,
             cursor: focus,
             empty_key: "screen-chargen-empty",
@@ -597,6 +603,7 @@ pub fn screen_data<'a>(
         },
         ScreenState::SaveList { cursor } => ScreenData {
             title_key: "screen-savelist-title",
+            title_args: None,
             rows,
             cursor,
             empty_key: "screen-savelist-empty",
@@ -608,6 +615,7 @@ pub fn screen_data<'a>(
         },
         ScreenState::SaveNaming { .. } => ScreenData {
             title_key: "screen-savename-title",
+            title_args: None,
             rows,
             // 命名屏没有「选中哪一行」这回事——两行都是给玩家看的，
             // 光标是那串字尾巴上的下划线。`usize::MAX` 是本仓库既有的
@@ -625,6 +633,10 @@ pub fn screen_data<'a>(
         // 不能像其余各支那样写一个字面量键，键由调用方现算好传进来。
         ScreenState::Dialogue { .. } => ScreenData {
             title_key,
+            // **只有这一支收参数**：会话屏的标题带 `{ $npc_name }`，
+            // 说话人的名字是渲染期按文化派生的，见
+            // `ll_ui::screen::ScreenData::title_args`。
+            title_args,
             rows,
             cursor: focus,
             empty_key: "screen-dialogue-empty",
@@ -638,6 +650,7 @@ pub fn screen_data<'a>(
         // 的标题是现算的）。见 `crate::trade_screen` 模块文档那张表。
         ScreenState::Trade { .. } => ScreenData {
             title_key: "screen-trade-title",
+            title_args: None,
             rows,
             cursor: focus,
             empty_key: "screen-trade-empty",
@@ -647,6 +660,7 @@ pub fn screen_data<'a>(
         },
         ScreenState::Settings { capturing, .. } => ScreenData {
             title_key: "screen-settings-title",
+            title_args: None,
             rows,
             cursor: focus,
             empty_key: "screen-settings-empty",

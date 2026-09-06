@@ -21,7 +21,7 @@
 
 | 事实 | 位置 |
 |---|---|
-| `Agent` **没有 `name` 字段**；姓名是 `naming.rs` 的纯函数，生产路径零调用 | `crates/ll-world/src/entity/agent.rs:98` 起；`crates/ll-world/src/naming.rs:69/78/84` |
+| `Agent` **没有 `name` 字段**；姓名是 `naming.rs` 的纯函数，生产路径零调用〔**2026-09-02 批次 34 更正**：前半句仍然成立且是裁定；后半句**已过期**——`given_name` 现在有生产调用点 `ll_world::naming::agent_given_name` ← `ll_game::dialogue_screen::speaker_name`。`surname`/`full_name` 仍然零调用（本批不做姓氏）〕 | `crates/ll-world/src/entity/agent.rs:98` 起；`crates/ll-world/src/naming.rs:69/78/84` |
 | `Agent` **也没有「我属于哪座据点」字段**——`NpcProfile.home` 在物化时被丢掉 | `crates/ll-mod/src/roster.rs:600`（`NpcProfile.home: WorldId`）vs `roster.rs:869` 起的 `build_npc_agent` |
 | `Agent.affiliations` 唯一生产者是 NPC 物化时挂的**一条文化归属**；`AffiliationKind::Faction` 零生产者 | `crates/ll-mod/src/roster.rs:900`；`crates/ll-world/src/entity/affiliation.rs:35-49` |
 | `OrgInstance` 类型在，**全仓库零构造点**（仅定义、re-export、两处 `#[cfg(test)]`）；`WorldState` 里没有 org 表 | `crates/ll-world/src/entity/org.rs:21` |
@@ -375,6 +375,29 @@ JSON 表示天然不重叠，条件与后果不满足这个前提。
 C 落地之后 B 自然升级成 `{ $npc_name }`，对话内容**一个字不用改**——因为参数插值是本地化那一层
 的事，`.ftl` 里把 `{ $speaker }` 从「职业名」换成「人名」不触碰任何 JSON5。这正是三节 3.1
 那条边界白送的好处。
+
+> **【2026-09-02 落地回填：C 已落地（批次 34），上面这段兑现】**
+> 计划文档 `docs/superpowers/plans/2026-09-01-batch34-npc-names.md`，
+> 工作树 `wt-npcnames`。落点：`ll_world::naming::{CultureNaming, PhonemeTables,
+> agent_given_name}`、`ll_world::culture::CultureAttrs::naming`、
+> `ll_mod::content_schema_world::RawNaming`、
+> `ll_game::dialogue_screen::speaker_name`、`ll_ui::screen::ScreenData::title_args`。
+> `CONTENT_HASH_ALGORITHM_VERSION` 34 → 35；`CURRENT_SCHEMA_VERSION` **不动**
+> （`Agent` 一个字段都没加——这正是 A 路被否决的理由本身）。
+> **`mods/lostland/dialogues.json5` 逐字未动**，改的只有两条 `.ftl` 台词。
+>
+> 对本节有三处偏离/补充：
+>
+> 1. **只做给定名，不做姓氏。** 上表 A 路那一格提到的 `surname`/`full_name`
+>    仍然是纯函数、仍然生产路径零调用——它们要 `FamilyId`，而厚层 `Agent`
+>    没有家族字段。家族系统落地那天三样一起接线，`naming.rs` 一行不用改。
+> 2. **音素表的 i18n 约束本节说「不归本文档管」，但落地时归本批做了**：
+>    `naming-and-localization.md` 三节要求的「各语言表长必须相同」做成了
+>    **注册期校验**（`CultureNaming::problem`）而不是该节建议的 CI 门禁
+>    ——shell 门禁只看得见本仓库的 `mods/`，第三方 mod 装载时照样能塞一张
+>    对不齐的表。
+> 3. **派生不出来时回落到职业显示名**，也就是 B 路的旧行为。因此 B 与 C
+>    在代码里是同一条路径的两档，不是两套。
 
 **顺带说明音素表的 i18n 约束不归本文档管**：`naming-and-localization.md` 三节已经定死
 「各语言版本表长必须相同、同一下标必须是同一个音」，并建议做成 CI 门禁。对话只是那条规则的
@@ -835,7 +858,7 @@ stream id**——先例是 `ROSTER_GENDER_STREAM_ID`（`roster.rs`）与 `CHRONI
 | **3** ✅ | **加入据点**（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch26-dialogue-join.md`）：`Agent.home` 字段（存档 schema 5 → 6）、`join-settlement` 后果、`affiliated`/`standing-at-least` 两条谓词真的有东西可读 | 2 | **否**——势力播种（2026-08-29）之后「加入据点」指的是真正的 `OrgInstance`，原表这一格写的「加入**势力**依赖 P9」已经不成立 |
 | **4** ✅ | **任务**（2026-08-31 已落地，计划文档 `docs/superpowers/plans/2026-08-31-batch29-dialogue-quest.md`）：`complete-quest` 后果（调既有的 `mark_quest_completed`）、`give-item` 后果（**含 owner 校验硬前置**）。**一处偏离**：`give-item` **没有**成为 `Effect::TransferOwnership` 的第一个调用方——那个效果只改 `owner` 不搬运，与赠送必须同时做的两件事组合不出一条既正确又可观察的排法，归属改由 `resolve` 算好写进搬运效果（`resolve_pick_up` 的既有手法），完整论证见计划文档三节 3.5。**另一处收窄**：`give-item` 不带 `count`，一次一件 | 2 | 否 |
 | **5** ✅ | **交易**（2026-09-01 已落地，计划文档 `docs/superpowers/plans/2026-09-01-batch31-dialogue-trade.md`）：NPC 初始钱包、`Intent::Trade`、占位价格公式（基础价 × 归属系数） | 3（归属系数要有 `standing` 可读） | **是**——真正的定价（库存/需求/政策/商路四因子、行会中介、商队）整体属 P9，本批只交付占位公式并在代码里写明它将来会被替换 |
-| **6** | **NPC 姓名**：`CultureAttrs.naming`、渲染期现算、对话文案从「职业名」换成 `{ $npc_name }`（**只改 `.ftl`，不改任何 JSON5**） | 1 | 否 |
+| **6** ✅ | **NPC 姓名**（2026-09-02 已落地，计划文档 `docs/superpowers/plans/2026-09-01-batch34-npc-names.md`）：`CultureAttrs.naming`（音节数区间 + **每种语言一张按下标对齐的音素表**）、渲染期现算（`ll_world::naming::agent_given_name`）、两条开场白的职业名换成 `{ $npc_name }`（**只改 `.ftl`，`mods/**/dialogues.json5` 一个字未动**）。**一处收窄**：只派生**给定名**，不做姓氏——`naming::surname` 要 `FamilyId`，而厚层 `Agent` 没有家族字段、`ThinPopulation.family` 生产路径零写入，加一个字段是存档 schema 改动 + 一个没有第二消费者的字段。**三条黄金基准一条都没动**（姓名不进世界状态，这正是判据），对照证伪见计划文档 | 1 | 否 |
 
 **两条门禁建议**（不属于任何一批的主线，但越早越省事）：`mods/**/*.json5` 的 CJK 字面量扫描
 （三节 3.1）、`text_key` 的多语言覆盖率检查（三节 3.5）。

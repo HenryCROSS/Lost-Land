@@ -118,6 +118,7 @@ const THIRD_PARTY_CULTURES: &str = r#"{
       home_terrain: "lostland:hill",
       wall_terrain: "lostland:wall_stone",
       founder_races: [ { race: "lostland:human", weight: 1 } ],
+      naming: { syllables: [2, 2], phonemes: { "en": { onsets: ["k"], nuclei: ["a"], codas: [] } } },
       buildings: [
         { weight: 1, furniture: [ { item: "mymod:clay_pot", count: 4 } ] },
       ],
@@ -130,6 +131,7 @@ const THIRD_PARTY_CULTURES: &str = r#"{
       home_terrain: "lostland:hill",
       wall_terrain: "lostland:wall_stone",
       founder_races: [ { race: "lostland:human", weight: 1 } ],
+      naming: { syllables: [2, 2], phonemes: { "en": { onsets: ["k"], nuclei: ["a"], codas: [] } } },
       buildings: [
         { weight: 1, furniture: [
           { item: "mymod:scroll_rack", count: 2 },
@@ -180,6 +182,7 @@ fn 家具件数超过一栋屋子摆得下的上限当场拒绝() {
       home_terrain: "lostland:hill",
       wall_terrain: "lostland:wall_stone",
       founder_races: [ { race: "lostland:human", weight: 1 } ],
+      naming: { syllables: [2, 2], phonemes: { "en": { onsets: ["k"], nuclei: ["a"], codas: [] } } },
       buildings: [
         { weight: 1, furniture: [ { item: "mymod:crate", count: 9 } ] },
       ],
@@ -214,6 +217,7 @@ fn 一条建筑类型都不声明的文化当场拒绝() {
       home_terrain: "lostland:hill",
       wall_terrain: "lostland:wall_stone",
       founder_races: [ { race: "lostland:human", weight: 1 } ],
+      naming: { syllables: [2, 2], phonemes: { "en": { onsets: ["k"], nuclei: ["a"], codas: [] } } },
       buildings: [],
     },
   ],

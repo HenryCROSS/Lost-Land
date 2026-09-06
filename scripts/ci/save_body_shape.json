@@ -1,7 +1,7 @@
 {
   "_note": "本文件由 scripts/ci/check_save_schema_version.py --bless 生成，不要手工编辑。它记录存档主体（postcard 编码的 WorldState 闭包）的线格式形状，以及生成它时的 CURRENT_SCHEMA_VERSION。",
-  "fingerprint": "c46b4aa4db8f3a648ec35f71cbbf605ae3ae6e65034ce8af876318604a82ae62",
-  "schema_version": 7,
+  "fingerprint": "5c38a1864fb7d9bf6afc594de9c6ad9686ab1623a60c7357b50735c87349966e",
+  "schema_version": 8,
   "types": {
     "ActiveStatModifier": {
       "container": [
@@ -492,6 +492,24 @@
         }
       ]
     },
+    "CultureNaming": {
+      "container": [],
+      "file": "crates/ll-world/src/naming.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "(u8, u8)"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "BTreeMap<String, PhonemeTables>"
+        }
+      ]
+    },
     "CultureTable": {
       "container": [],
       "file": "crates/ll-world/src/culture.rs",
@@ -536,16 +554,21 @@
         {
           "attrs": [],
           "i": 7,
-          "ty": "Vec<bool>"
+          "ty": "Vec<Option<CultureNaming>>"
         },
         {
           "attrs": [],
           "i": 8,
-          "ty": "Vec<CultureKind>"
+          "ty": "Vec<bool>"
         },
         {
           "attrs": [],
           "i": 9,
+          "ty": "Vec<CultureKind>"
+        },
+        {
+          "attrs": [],
+          "i": 10,
           "ty": "Option<ContentIndex>"
         }
       ]
@@ -1257,6 +1280,29 @@
           "payload": [
             "EntityId"
           ]
+        }
+      ]
+    },
+    "PhonemeTables": {
+      "container": [],
+      "file": "crates/ll-world/src/naming.rs",
+      "kind": "struct",
+      "manual_serde": {},
+      "members": [
+        {
+          "attrs": [],
+          "i": 0,
+          "ty": "Vec<String>"
+        },
+        {
+          "attrs": [],
+          "i": 1,
+          "ty": "Vec<String>"
+        },
+        {
+          "attrs": [],
+          "i": 2,
+          "ty": "Vec<String>"
         }
       ]
     },

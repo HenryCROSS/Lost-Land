@@ -43,7 +43,7 @@
 
 pub mod render;
 
-use ll_i18n::Catalog;
+use ll_i18n::{Catalog, FluentArgs};
 use ll_text::MeasureText;
 
 use crate::widget::geometry::{Anchor, Rect};
@@ -143,6 +143,23 @@ pub struct ScreenContent {
 pub struct ScreenData<'a> {
     /// 屏幕标题的 Fluent 键。
     pub title_key: &'a str,
+    /// 标题那条键的 Fluent 具名参数（`None` = 这条标题不带参数）。
+    ///
+    /// # 为什么标题这一栏收参数，而 `empty_key`/`hint_key` 不收
+    ///
+    /// 会话屏的标题**就是 NPC 说的那一句**（见
+    /// `ll_game::dialogue_screen` 模块文档那张表），而那句话里带着
+    /// `{ $npc_name }`——说话人的名字是渲染期按文化派生出来的，不是
+    /// 内容里写死的字。占位行与提示行没有这个问题：它们是这块屏自己
+    /// 的固定文案。
+    ///
+    /// **参数由调用方注入**，与同一结构体里 [`Self::notice`] 那条既有
+    /// 分工逐字相同：谁持有 `Catalog` 与领域数据，谁负责把参数备好。
+    /// 这里收的是参数而不是「已解析好的标题文本」，因为标题这一栏还有
+    /// 十二块屏在用写死的字面量键——把它们全改成「先解析再传进来」要
+    /// 给 `ll_game::menu_screen::screen_data` 塞两个新参数并改十二个
+    /// 分支，为一块屏的一个参数动十二块屏的分工。
+    pub title_args: Option<&'a FluentArgs<'a>>,
     /// 全部行，已由调用方排好版（见模块文档「为什么只有一种屏」）。
     pub rows: &'a [String],
     /// 光标落在第几行。超出 `rows` 范围时不标记任何一行——不钳制、也
@@ -248,7 +265,7 @@ pub fn screen_text_lines(
     catalog: &Catalog,
     language: &str,
 ) -> (Vec<String>, Option<usize>) {
-    let mut lines = vec![catalog.resolve(language, data.title_key)];
+    let mut lines = vec![catalog.resolve_with_args(language, data.title_key, data.title_args)];
     let rows_start = if data.rows.is_empty() {
         lines.push(catalog.resolve(language, data.empty_key));
         None
@@ -509,6 +526,7 @@ mod tests {
     fn 测试数据<'a>(rows: &'a [String], cursor: usize) -> ScreenData<'a> {
         ScreenData {
             title_key: "screen-menu-title",
+            title_args: None,
             rows,
             cursor,
             empty_key: "screen-menu-empty",

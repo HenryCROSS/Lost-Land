@@ -2112,6 +2112,7 @@ mod tests {
                     founder_races: vec![(race, 10)],
                     hostility: Vec::new(),
                     buildings: crate::building::bare_building_fixture(),
+                    naming: crate::naming::bare_naming_fixture(),
                 },
             )
             .expect("首次定义");
@@ -2127,6 +2128,7 @@ mod tests {
                     founder_races: vec![(tribe_race, 10)],
                     hostility: vec![(mining, hostility)],
                     buildings: crate::building::bare_building_fixture(),
+                    naming: crate::naming::bare_naming_fixture(),
                 },
             )
             .expect("首次定义");

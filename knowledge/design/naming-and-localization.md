@@ -4,6 +4,27 @@
 
 **落地状态**：部分落地。`NamingRules { onsets, nuclei, codas, syllables, surname_first }` 与 `given_name`/`surname`/`full_name` 三个纯函数（`crates/ll-world/src/naming.rs`）已完整落地并有测试覆盖，`hash → 索引 → 取音素表 → 拼接` 的核心机制与本文档描述一致。**以下均未落地**：与「出生地文化」挂钩的裁定（当前 `given_name`/`surname` 只接受调用方直接传入的一份 `NamingRules`，不涉及任何「查文化」的中间步骤，出生地/文化关联需要在调用方拼起来）、i18n 多语言音素表对齐机制、改名 `Effect` 与 `HistoricalEvent`、覆盖名存储、mod 命名钩子与 `tag` 体系。
 
+> **【2026-09-02 复核横幅：批次 34（NPC 姓名，对话批次 6）】**
+> 上面那段「以下均未落地」的清单**有两项已经兑现**（原文一个字未改，追溯用）：
+>
+> - **「与出生地文化挂钩的裁定」**（二节）：`CultureAttrs.naming` 落地，
+>   `ll_world::naming::agent_given_name` 从 `Agent` 的 `AffiliationKind::Culture`
+>   归属查到文化、取那份 `NamingRules`、算出给定名。**渲染期现算，不进世界
+>   状态、不进存档**（三条黄金基准一条都没动）。
+> - **「i18n 多语言音素表对齐机制」**（三节）：`CultureNaming.phonemes` 是
+>   `语言标签 → PhonemeTables` 的 `BTreeMap`，三节要求的「各语言表长必须相同」
+>   做成了**注册期校验**（`CultureNaming::problem` → `CultureError::Naming`），
+>   而不是三节末尾建议的 CI 门禁——理由：shell 门禁只看得见本仓库的 `mods/`，
+>   第三方 mod 装载时照样能塞一张对不齐的表。守卫是
+>   `crates/ll-mod/tests/culture_naming.rs`。
+>
+> **仍未落地**（清单其余各项一字未改）：改名 `Effect` 与 `HistoricalEvent`、
+> 覆盖名存储、mod 命名钩子与 `tag` 体系。**外加本批自己的一处收窄**：
+> 只派生**给定名**，`surname`/`full_name`/`surname_first` 仍然生产路径零调用
+> ——它们要 `FamilyId`，而厚层 `Agent` 没有家族字段（二节「零额外成本」那段
+> 预设的薄层 `birth_settlement` 一列今天也还没有生产写入点）。
+> 更正方：`docs/superpowers/plans/2026-09-01-batch34-npc-names.md`。
+
 ---
 
 ## 一、现状：命名已经是纯函数，先读代码再读本文档

@@ -154,6 +154,8 @@ fn 首页行矩形(demo: &Demo, viewport: (f32, f32)) -> Vec<ll_ui::widget::geom
         produced.cursor,
         None,
         &produced.title_key,
+        // 首页的标题不带参数（只有会话屏的带）。
+        None,
     );
     // 纯 CPU 的测量器：这条测试跑在没有图形适配器的环境里，
     // 见 `ll_text::measure` 模块文档。

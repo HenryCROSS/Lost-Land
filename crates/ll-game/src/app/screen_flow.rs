@@ -195,6 +195,12 @@ pub(super) fn screen_row_texts(
         rows,
         cursor,
         title_key: screen_title_key(state, content),
+        speaker_name: match (state, session) {
+            (ScreenState::Dialogue { speaker, .. }, Some((world, _))) => Some(
+                crate::dialogue_screen::speaker_name(speaker, world, content, catalog, language),
+            ),
+            _ => None,
+        },
     })
 }
 
@@ -219,6 +225,19 @@ fn screen_title_key(state: ScreenState, content: &LoadedContent) -> String {
     }
 }
 
+/// 把说话人的名字包成一份 Fluent 具名参数——`None` 时返回 `None`
+/// （其余各屏的标题不带参数）。
+///
+/// 返回**拥有所有权的** `FluentArgs`，调用方自己按引用传给
+/// `ll_ui::screen::ScreenData::title_args`：`FluentArgs` 借着传进去的
+/// 字符串，两者的生命周期必须在同一个作用域里锚住。
+fn title_args(speaker_name: Option<&str>) -> Option<ll_i18n::FluentArgs<'_>> {
+    let name = speaker_name?;
+    let mut args = ll_i18n::FluentArgs::new();
+    args.set(crate::dialogue_screen::NPC_NAME_ARG, name);
+    Some(args)
+}
+
 /// [`screen_row_texts`] 的产出：这一帧这块屏的全部行、光标位置与标题键。
 ///
 /// **三样必须同源**：渲染侧（[`push_screen`]）与输入侧
@@ -232,6 +251,14 @@ pub(super) struct ScreenRows {
     pub cursor: usize,
     /// 标题的 Fluent 键，见 [`screen_title_key`]。
     pub title_key: String,
+    /// 会话屏标题里 `{ $npc_name }` 那个参数的值——说话人这一帧该被
+    /// 称作什么（`crate::dialogue_screen::speaker_name`）。其余各屏
+    /// 恒为 `None`。
+    ///
+    /// **与行文字、标题键出自同一个产出点**，理由与那两样逐字相同：
+    /// 渲染侧与输入侧各算一遍就是同一个算法的两份副本，而面板宽度要量
+    /// 标题那一行——两侧算出两个名字就会算出两个宽度。
+    pub speaker_name: Option<String>,
 }
 
 /// 把模态屏（菜单/设置）推进这一帧的 `UiLayer::Modal` 层。
@@ -274,12 +301,21 @@ pub(super) fn push_screen(
         rows,
         cursor,
         title_key,
+        speaker_name,
     }) = rows_and_cursor
     else {
         return;
     };
     let notice_text = notice.map(|notice| notice.resolve(catalog, language));
-    let mut data = screen_data(state, &rows, cursor, notice_text.as_deref(), &title_key);
+    let title_args = title_args(speaker_name.as_deref());
+    let mut data = screen_data(
+        state,
+        &rows,
+        cursor,
+        notice_text.as_deref(),
+        &title_key,
+        title_args.as_ref(),
+    );
     data.hovered = hovered_row;
     let size = resources.window_size;
     push_screen_layer(
@@ -420,6 +456,7 @@ impl Demo {
                 rows,
                 cursor,
                 title_key,
+                speaker_name,
             }) = screen_row_texts(
                 state,
                 &self.config,
@@ -438,7 +475,15 @@ impl Demo {
             let notice_text = self
                 .screen_notice
                 .map(|notice| notice.resolve(&self.catalog, &self.config.language));
-            let data = screen_data(state, &rows, cursor, notice_text.as_deref(), &title_key);
+            let title_args = title_args(speaker_name.as_deref());
+            let data = screen_data(
+                state,
+                &rows,
+                cursor,
+                notice_text.as_deref(),
+                &title_key,
+                title_args.as_ref(),
+            );
             ll_ui::screen::screen_row_rects(
                 &data,
                 &self.catalog,
